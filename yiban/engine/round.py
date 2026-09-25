@@ -162,7 +162,8 @@ class _ClaimHeartbeat:
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
-                    event_sink=None, reclaim=False, delegated=None, window_guard=False):
+                    event_sink=None, reclaim=False, delegated=None, window_guard=False,
+                    retry_failed=False):
     """轮询队列 + 分散重试执行全部账号签到（`YIBAN_SCHEDULER_V3` 缺省关闭时的实际路径）。
 
     按 `schedule` 是否为空分成两条路径：空 = 手动，按 SIGN_MODE 定顺序逐个尝试、失败放回
@@ -178,6 +179,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     异常一律吞掉——留痕失败不得影响签到主流程。
     reclaim：True 才允许重领"当日已了结"的账号，只有手动 `--only` 这么传（用户主动点的照
     做）；补签轮与兜底 worker 不传——它们接手的是未了结账号，已了结的再登录纯属多余风控暴露。
+    retry_failed：True 才允许重领**预算耗尽/风控档**弃权的账号（"显式路径"）。补签轮、
+    兜底常驻、手动 `--only` 三条路径传 True（它们正是"补签链接得上失败账号"这一设计的
+    受益者）；默认 False 时只有"窗口外/无点位"档可再领，预算耗尽的账号不会被后面每一轮
+    无上限地重领一遍（每次重领都是一次真实登录）。**新增"会产生结论的轮次"时必须显式声明
+    本参数**，漏一处就是该路径再也接不到失败账号。
     delegated：出参 set，收"领不到"（不在本执行体范围内）的账号；汇总与退出码必须据此把它
     们从"失败"里摘出去，否则每个执行体都会把别人的活报成自己的失败。
     多执行体分工（动态领取 + 账号级租约）见 `_claim` 与 `_settle_claims`；在领账号由
@@ -243,6 +249,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         轮内重试会再次领取同一账号，此时必须带上第一次领到的 token：领取池对未了结行
         的准入只有"租约已过期"或"出示当前代"两条，不带 token 的重入一律拒绝（同名进程
         互相重入就是重复登录）。
+
+        `retry_failed`（显式路径）另开出"重领预算耗尽档失败账号"的口子：默认关，只有
+        补签轮/兜底/手动传 True。窗口外/无点位档不靠它——那两档在领取池里默认可再领。
         """
         if not db.is_initialized():
             # 残余缺口：**从未声明** `YIBAN_DB_FILE` 的部署会落到默认库 `yiban.db`，这里
@@ -259,6 +268,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         try:
             got, epoch = db.claim_sign_account(phone, day, executor_id,
                                                allow_settled=reclaim,
+                                               allow_failed=retry_failed,
                                                epoch=claimed_epoch.get(phone))
         except Exception as e:
             logger.error(f"[{_mask_phone(phone)}] 领取签到账号异常（fail-closed 拒跑）: {e}")
@@ -272,7 +282,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         """本轮结束后统一收尾本轮领到的账号（只认本轮领过的，避免误写他人在飞的记录）。
 
         了结口径与展示口径刻意一致：`_CLAIM_DONE_STATUSES` 记 done（当日无需再签），其余记
-        failed 但**未了结**——补签轮与兜底执行体正是为接手它们而存在。
+        failed 但**未了结**——补签轮与兜底执行体正是为接手它们而存在。failed 行按弃权原因
+        分档：窗口外/无点位默认可再领，预算耗尽/风控只有显式路径（补签/兜底/手动）可再领。
 
         收尾之后还要**轮末收尸**：本轮领到却没有结论的行（异常/提前离场留下的）显式弃权，
         把租约立刻放开而不是等满 900s（见 `claims.reap_unreported`）。
@@ -289,7 +300,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st),
                                     epoch=epoch)  # 被接管过的账号写不进去：迟到结论不得覆盖接管者
                 else:
-                    db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch)  # 放开租约，补签轮/兜底可接手
+                    # 按原因分档：窗口外/无点位默认可再领（该重试），预算耗尽/风控默认不可
+                    # （需显式路径）——否则后者当日会被后面每一轮重领一遍。
+                    db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch,
+                                     retryable=st in claims_mod.RETRYABLE_GIVE_UP_STATUSES)
             except Exception as e:
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
         try:
