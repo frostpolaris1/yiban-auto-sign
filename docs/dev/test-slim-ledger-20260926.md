@@ -414,3 +414,10 @@ SUM 行：3042 / 708 / — / 471 / 25。
    该配置维度失去显式断言（登记）。
 4. `test_schedule_v2.py` 删对照组后，`test_no_request_after_window_passes_during_wait` 若被测
    函数整体不调 `attempt_signin` 仍会通过（负例失去正例制衡），登记。
+5. **（2b 评审补充）T2#1-2 删除后**：`test_state_file_writes.py` 文件 docstring（:7）与
+   `:97-98` 注释仍声称覆盖"实现只有一份"守卫与 `os.replace` 原子性字符窗——对应两条已删，
+   文档措辞过实（评审 Minor1）。按"只删不改"纪律不动测试文件，登记于此；
+   状态写入原子性的真行为覆盖由集成树既有用例承担。
+6. **（2b 评审补充）T2#11 删除后**：`_env_write_lock` 委派关系失去直接断言
+   （原 `D4DivergentLocksRemovedTest::test_env_write_lock_delegates_to_primitive`），
+   仅余 `_file_lock` 行为级覆盖，登记。
