@@ -327,6 +327,16 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
 合并 L38、L63、L68、L20、L55。`generate_demo_data.py` 守卫是 `db_path == "demo-log/demo.db" or yes` 的**字面串比较**，`--yes` 即清空五表且**删的正是 `audit_logs`、链校验反显 ok**、无倒计时零留痕；`seed_accounts.py` 更硬——**有清五表能力且零守卫**（连 `--yes` 都没有），还会改写生产 `.env`；`load_env_file:274` 读不到就静默继承宿主环境 + `clear_session_cache:284` 无门 DELETE ⇒ 误指生产库即 **89 号真实重登风暴**。包装层两个脚本的 `main(argv)` 是死参数 ⇒ **`--dry-run` 被静默丢弃并真删，rc=0 像演练成功**；`backup.sh` 旗标只认 `${1}` ⇒ `--require-encrypt` 移位即门禁静默失效；`state --yes` 无口令无审计、**按文件名删掉 `db --backup` 写进状态目录的副本**。
 验收不变量：任何清库/删除类入口必须显式声明目标指纹（非路径字符串比较）+ 需要确认 + 入审计；被丢弃的参数必须报错而不是静默；"dry-run"三入口语义统一。`[已复现：demo/seed/包装层参数丢弃]`
 
+**处置（2026-09-26 批1 Task5，repair/m3-batch1）**：公共防线 `yiban/store/purge_guard.py`（指纹
+`PURGE-<sha256[:16]>` = 解析路径+字节数+六表行数，只读不建库；确认回显；审计 fail-closed，且校验
+留痕落点与目标库一致）——demo/seed/state --yes 三入口全接线；dry-run 三入口统一（真不删 + 将删清单
+含空 cred-state）；包装层死参数与 backup.sh `${1}` 旗标解析修掉（未知/多余参数报错非 0）；
+`load_env_file` 静默继承删除、`clear_session_cache` 加指纹门（误指生产库 ⇒ 拒绝）；
+备份副本按 SQLite 魔数内容保护（非文件名）。demo wipe 两段式（先清 audit_logs → 写存活留痕 → 再清
+业务表）。**残余面（批1 Task5b 清扫）**：`reset_state_dir`、`capacity_probe.ensure_platform` 红线、
+`child_env.py`/`web/services/env_io.py` 第三/四份 `.env` 读、`db_export` 族、`backup_sentinel.py`
+死参数 `main(argv)`。cron 策略清理按裁决不设指纹门（定时保留清理属部署自身配置，门针对人工误指）。
+
 ---
 
 ## D 簇 · 隐私与凭据（P1，一条总闸 + 若干出口）
