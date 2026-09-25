@@ -13,7 +13,8 @@
 
 **复用**
 Markdown 渲染子集只被合规文档族共用（`_inline_md` 是 `_render_md` 的行内格式唯一入口）；
-站点展示族被页面路由与模板上下文共用，`edge_front_sec` 是 `edge_config` 的便捷入口。
+站点展示族被页面路由与模板上下文共用；`edge_front_sec` 没有生产调用点，只为 `web/app.py`
+的同名转发留着（取前裁秒数的地方一律直接调 `edge_config()`）。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份
@@ -191,9 +192,17 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     （反射型 XSS 防护）：base_path 来自 request.script_root——攻击者可构造
     形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
     icp/police 文本与 police_link 均来自 .env，含引号/尖括号时同样破坏 HTML 结构。
-    四者统一
+    以上四项统一
     html.escape(quote=True)（同时覆盖文本与属性两种上下文）后才拼入模板，
-    转义收敛在本函数内，调用点（含传 request.script_root 的两处）无需各自处理。"""
+    转义收敛在本函数内，调用点（含传 request.script_root 的两处）无需各自处理。
+
+    本页是整页 f-string 拼接、不经 Jinja，所以转义只在上面那几行做，新增任何来自 .env
+    或请求的字段必须同步补 escape，漏一行就是直接落进 HTML。刻意未转义的两处：
+    body_html 是 `_read_doc_html` 渲染出的 HTML 片段（本页的主体内容，转义它等于把页面变成源码）；
+    title 原样进 `<title>`、`og:title` 与 `<h1>`——在册调用点（`web/routes/pages.py` 的
+    /terms 与 /privacy）只传"用户协议""隐私政策"两个字面量，若将来把 title 改成用户可控来源，
+    必须先按上面同一口径转义。police_link 在本函数与 footer 模板两条出口上都被转义过，
+    协议白名单在 `police_link()` 源头，两回事。"""
     base_path = html.escape(str(base_path), quote=True)
     icp_text = html.escape(str(icp_text), quote=True)
     police_text = html.escape(str(police_text), quote=True)
@@ -289,9 +298,11 @@ def police_link(env):
 
     备案号属于运营者身份信息，不入仓库：模板与文档页外壳回落到公安部通用
     门户，真实查询链接（含备案号）由部署方在 .env 配置。
-    scheme 白名单（复用 _SAFE_LINK_SCHEMES）：该值未经转义直接进公开页
-    href，配置 javascript:/data: 等即点击型 XSS——不在白名单（含空值）一律
-    回落公安部通用门户。
+    scheme 白名单（复用 _SAFE_LINK_SCHEMES）：两条出口都做了 HTML 转义——模板侧
+    （partials/footer.html 的 `href="{{ police_link }}"`）走 Jinja autoescape，独立文档页侧
+    （本模块 `_doc_page`）在拼 f-string 前 `html.escape(quote=True)`。转义挡得住引号/尖括号
+    破坏标签结构，**挡不住协议**：`javascript:` 转义后照样是可执行链接，所以协议只能在源头判——
+    不在白名单（含空值）一律回落公安部通用门户。
     """
     link = env.get("YIBAN_POLICE_LINK", "").strip()
     if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
@@ -327,5 +338,12 @@ def edge_config(env):
 
 
 def edge_front_sec(env):
-    """前裁秒数（兼容旧调用的便捷入口）。"""
+    """前裁秒数的便捷入口（等价 `edge_config(env)[0]`），**本仓无生产调用点**。
+
+    要取前裁秒数的地方都直接调 `edge_config()`：`web/routes/my.py:280`、
+    `web/routes/settings_api.py:225-227`、`web/services/capacity.py:85`、`web/app.py:889`。
+    现存唯一消费者是 `web/app.py:875` 的同名转发；那条转发存在只为保留拆分前的模块级名字
+    （`tests/test_web_boundary.py` 的再导出清单与 `edge_front_sec() == 90` 的取值断言在守它），
+    不代表还有旧调用方在跑。函数本身按要求保留。
+    """
     return edge_config(env)[0]
