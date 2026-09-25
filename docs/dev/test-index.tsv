@@ -29,10 +29,7 @@ tests/test_account_liveness_gate.py	AccountIsSignableTest.test_active_and_unknow
 tests/test_account_liveness_gate.py	AccountIsSignableTest.test_missing_row_not_signable	I	-	??
 tests/test_account_liveness_gate.py	AccountIsSignableTest.test_pending_and_rejected_not_signable	I	-	??
 tests/test_account_liveness_gate.py	AccountIsSignableTest.test_soft_deleted_not_signable	I	-	??
-tests/test_account_liveness_gate.py	AttemptSkipsRemovedAccountTest.test_account_without_id_is_not_gated	I	-	JSON/环境变量账号（account_id=0）不受库内状态门限制。
-tests/test_account_liveness_gate.py	AttemptSkipsRemovedAccountTest.test_deactivated_before_turn_is_skipped	I	-	??
 tests/test_account_liveness_gate.py	AttemptSkipsRemovedAccountTest.test_deleted_before_turn_is_skipped	I	-	??
-tests/test_account_liveness_gate.py	AttemptSkipsRemovedAccountTest.test_live_account_is_attempted	I	-	??
 tests/test_account_liveness_gate.py	AttemptSkipsRemovedAccountTest.test_verify_account_also_gated	I	-	??
 tests/test_account_liveness_gate.py	OrphanSessionCacheSweepTest.test_daily_cleanup_includes_sweep	I	-	??
 tests/test_account_liveness_gate.py	OrphanSessionCacheSweepTest.test_sweep_removes_only_orphans	I	-	??
@@ -159,6 +156,23 @@ tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_alert_facts_carry
 tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_alert_facts_without_cleanup_say_none	G	-	??
 tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_health_exposes_purge_total_and_last_cleanup	G	-	??
 tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_health_without_cleanup_reports_zero	G	-	??
+tests/test_backup_e2e.py	EncryptRoundtripTest.test_garbage_ciphertext_smaller_than_floor_detected	J	bash	尺寸下限（对齐 docker/backup-docker.sh B12-1）：小短密文不配被称为'已加密'。
+tests/test_backup_e2e.py	EncryptRoundtripTest.test_gpg_stub_garbage_ciphertext_keeps_plaintext_no_manifest_rc7	J	bash	活体反例：gpg"成功"但产物不可解 ⇒ 明文仍在、密文删除、无清单、rc=7。
+tests/test_backup_e2e.py	EncryptRoundtripTest.test_gpg_stub_hard_fail_keeps_plaintext_nonzero_rc	J	bash	验收不变量原文："gpg stub 必败 ⇒ 明文仍在 + rc 非 0"（回退明文轮 rc=6）。
+tests/test_backup_e2e.py	EncryptRoundtripTest.test_real_gpg_roundtrip_then_restore_closes_loop	J	bash	正例：真 gpg 对称加密 ⇒ 回环自检过 ⇒ 删明文留密文；且 --restore 真能解回。
+tests/test_backup_e2e.py	PlaintextGuardTest.test_backup_dir_locked_down_to_0700	J	bash	??
+tests/test_backup_e2e.py	PlaintextGuardTest.test_plaintext_artifact_not_healthy_for_sentinel	J	bash	MF-79 验收不变量的 e2e 侧：backup.sh 真产出的明文包，哨兵判不健康并发告警。
+tests/test_backup_e2e.py	PlaintextGuardTest.test_plaintext_run_warns_on_stderr_exits_dedicated_rc6	J	bash	??
+tests/test_backup_e2e.py	RestoreGuardTest.test_char_device_entry_rejected	J	bash	??
+tests/test_backup_e2e.py	RestoreGuardTest.test_good_package_still_restores	J	bash	正对照：护栏不得过敏——干净包正常恢复。
+tests/test_backup_e2e.py	RestoreGuardTest.test_symlink_entry_rejected	J	bash	??
+tests/test_backup_e2e.py	RestoreGuardTest.test_tar_listing_failure_is_guarded_not_skipped	J	bash	tar 列目录失败 ⇒ 护栏判码执行并报"读包列表失败"；不得静默放行到解包。
+tests/test_backup_e2e.py	RestoreGuardTest.test_traversal_entry_rejected	J	bash	??
+tests/test_backup_e2e.py	RotationGuardTest.test_plaintext_archives_expire_tighter_than_encrypted	J	bash	明文包（含全量密钥）保留期从紧：**默认 K=7 下界也压不过 ≤2 天承诺**。
+tests/test_backup_e2e.py	RotationGuardTest.test_retention_days_nonnumeric_refuses	J	bash	??
+tests/test_backup_e2e.py	RotationGuardTest.test_retention_days_zero_refuses_before_touching_anything	J	bash	??
+tests/test_backup_e2e.py	RotationGuardTest.test_rotation_keeps_newest_k_groups_regardless_of_age	J	bash	??
+tests/test_backup_e2e.py	RotationGuardTest.test_today_archive_deleted_by_rotation_detected_rc8	J	bash	删除后自检"当日包仍在"：轮转误删当天件 ⇒ 大声失败 rc=8，不许绿灯收工。
 tests/test_backup_require_encrypt.py	BackupRequireEncryptTest.test_bash_syntax_ok	J	bash	??
 tests/test_backup_require_encrypt.py	BackupRequireEncryptTest.test_fail_closed_on_encrypt_failure_kept	J	bash	??
 tests/test_backup_require_encrypt.py	BackupRequireEncryptTest.test_precheck_no_longer_requires_remote_backup	J	bash	??
@@ -170,10 +184,13 @@ tests/test_backup_sentinel.py	DriftTest.test_drift_alerts_even_when_backup_is_fi
 tests/test_backup_sentinel.py	DriftTest.test_drifted_copy_alerts_with_fingerprints	J	bash	??
 tests/test_backup_sentinel.py	DriftTest.test_identical_copy_is_silent	J	bash	??
 tests/test_backup_sentinel.py	DriftTest.test_installed_copy_absent_is_silent	J	bash	未按约定安装（自定义路径/单机试用）：无从比对，不报——缺包那一项兜底。
+tests/test_backup_sentinel.py	SentryVerdictTest.test_age_form_still_accepted	J	bash	age 形态是密文，认：认不出会在合法部署上误报"没有备份"，那正是要消灭的噪音。
 tests/test_backup_sentinel.py	SentryVerdictTest.test_archive_and_sidecar_present_is_silent	J	bash	??
 tests/test_backup_sentinel.py	SentryVerdictTest.test_missing_archive_alerts_with_expected_path	J	bash	??
 tests/test_backup_sentinel.py	SentryVerdictTest.test_missing_sidecar_alerts_even_when_archive_present	J	bash	??
-tests/test_backup_sentinel.py	SentryVerdictTest.test_plaintext_and_age_forms_also_accepted	J	bash	明文/age 形态也认：认不出会在合法部署上误报"没有备份"，那正是要消灭的噪音。
+tests/test_backup_sentinel.py	SentryVerdictTest.test_plaintext_alongside_encrypted_is_silent	J	bash	同日既有密文又有明文残留（加密切换的过渡日）：密文已满足健康，不双告警。
+tests/test_backup_sentinel.py	SentryVerdictTest.test_plaintext_not_matched_by_health_probe	J	bash	判定原语本身：_find_archive 不得把明文包认作当日归档。
+tests/test_backup_sentinel.py	SentryVerdictTest.test_plaintext_only_is_unhealthy	J	bash	验收不变量反例：目录里只放明文 .tar.gz（哪怕带清单）⇒ 哨兵必须告警。
 tests/test_backup_sentinel.py	SentryVerdictTest.test_yesterdays_archive_does_not_satisfy_today	J	bash	昨天的包不等于今天的备份——按包名精确比对，不做"目录非空"式的宽松判定。
 tests/test_backup_sentinel.py	ThrottleTest.test_second_run_in_window_is_throttled	J	bash	??
 tests/test_backup_sentinel.py	ThrottleTest.test_zero_cooldown_always_sends	J	bash	??
@@ -291,7 +308,7 @@ tests/test_claims.py	ClaimSemanticsTest.test_give_up_releases_lease_immediately	
 tests/test_claims.py	ClaimSemanticsTest.test_purge_keeps_recent_days	B	-	??
 tests/test_claims.py	ClaimSemanticsTest.test_refuses_when_table_missing	B	-	表未落地（迁移被延后）时**拒跑**，绝不答"可执行"。
 tests/test_claims.py	ClaimSemanticsTest.test_result_is_truncated	B	-	结果只存摘要：本表可能被运维导出，无界文本会把它撑成第二个日志表。
-tests/test_claims.py	ClaimSemanticsTest.test_same_owner_may_reclaim	B	-	自己重入是允许的：同一执行体内重试、进程重启后接管自己的记录。
+tests/test_claims.py	ClaimSemanticsTest.test_same_owner_may_reclaim	B	-	自己重入是允许的，但**要出示领取时拿到的 token**：同一执行体内重试。
 tests/test_claims.py	ClaimSemanticsTest.test_settle_is_owner_scoped	B	-	收尾必须带 owner 条件：被接管的旧执行体不能把结果写进去。
 tests/test_claims.py	ClaimSemanticsTest.test_settle_rejects_unknown_state	B	-	??
 tests/test_claims.py	ClaimSemanticsTest.test_settled_row_needs_explicit_reopen	B	-	已了结的账号默认不能再领；手动指定账号/补签重跑须显式 allow_settled。
@@ -304,7 +321,7 @@ tests/test_claims.py	SingleStatementClaimTest.test_no_returned_row_means_lost_ra
 tests/test_claims.py	SingleStatementClaimTest.test_settle_and_touch_are_owner_scoped_single_statements	B	-	??
 tests/test_claims_fencing.py	EpochReturnTest.test_new_row_starts_at_one	B	-	??
 tests/test_claims_fencing.py	EpochReturnTest.test_refused_claim_returns_zero_epoch	B	-	没领到就是 (False, 0)：调用方不得把 0 当成一个可用的 token。
-tests/test_claims_fencing.py	EpochReturnTest.test_same_owner_reclaim_is_monotonic	B	-	同 owner 重入（重试、进程重启接管自己的行）也必须单调递增。
+tests/test_claims_fencing.py	EpochReturnTest.test_same_owner_reclaim_is_monotonic	B	-	同 owner 重入（轮内重试）也必须单调递增。
 tests/test_claims_fencing.py	EpochReturnTest.test_takeover_by_other_owner_raises_epoch	B	-	??
 tests/test_claims_fencing.py	FailClosedTest.test_integrity_error_path_stays_silent_refusal	B	-	唯一键冲突是"别人刚领到"，不是"池子坏了"：不得告警，也不得吞成可执行。
 tests/test_claims_fencing.py	FailClosedTest.test_library_error_refuses_and_alerts_once	B	-	??
@@ -319,6 +336,46 @@ tests/test_claims_fencing.py	QueueStoreEpochTest.test_claim_batch_returns_and_bu
 tests/test_claims_fencing.py	QueueStoreEpochTest.test_requeue_task_is_fenced_by_epoch	B	-	??
 tests/test_claims_fencing.py	QueueStoreEpochTest.test_settle_tasks_is_fenced_by_epoch	B	-	owner 相同、epoch 落后 → 只有 epoch 守卫能拦住这次收尾（判别力所在）。
 tests/test_claims_fencing.py	QueueStoreEpochTest.test_settle_tasks_without_epochs_keeps_old_behaviour	B	-	??
+tests/test_claims_heartbeat.py	ClaimHeartbeatUnitTest.test_first_beat_touches_then_throttles_until_period	B	-	??
+tests/test_claims_heartbeat.py	ClaimHeartbeatUnitTest.test_force_beat_is_not_throttled	B	-	??
+tests/test_claims_heartbeat.py	ClaimHeartbeatUnitTest.test_sleep_renews_across_long_waits	B	-	单次长等跨越周期时必须分段续租——否则在领账号先过期、被别人接管。
+tests/test_claims_heartbeat.py	ClaimHeartbeatUnitTest.test_touch_failure_degrades_without_raising	B	-	心跳失败不得中断签到主流程：降级记录，不外呼、不抛。
+tests/test_claims_heartbeat.py	ClaimSignalSplitTest.test_configured_but_unavailable_refuses_and_alerts	B	-	??
+tests/test_claims_heartbeat.py	ClaimSignalSplitTest.test_unconfigured_runs_normally	B	-	??
+tests/test_claims_heartbeat.py	HeartbeatPeriodTest.test_period_is_far_below_lease	B	-	??
+tests/test_claims_heartbeat.py	HeartbeatWiringTest.test_no_db_deployment_never_touches_and_creates_no_db	B	-	未配库的纯状态文件形态：在领集合恒空 ⇒ 心跳与领取池都不碰库。
+tests/test_claims_heartbeat.py	HeartbeatWiringTest.test_round_renews_claimed_rows_with_current_epoch	B	-	??
+tests/test_claims_heartbeat.py	HeartbeatWiringTest.test_touch_failure_does_not_break_the_round	B	-	??
+tests/test_claims_heartbeat.py	PoolDbDeclaredProbeTest.test_cache_is_keyed_by_resolved_path	B	-	判据按解析出的路径缓存：一次"未声明"不得污染另一条路径的结论。
+tests/test_claims_heartbeat.py	PoolDbDeclaredProbeTest.test_declared_path_counts_as_configured_even_before_it_exists	B	-	??
+tests/test_claims_heartbeat.py	PoolDbDeclaredProbeTest.test_empty_declaration_is_not_configured	B	-	??
+tests/test_claims_heartbeat.py	RoundEndReapTest.test_reap_skips_rows_taken_over_by_others	B	-	??
+tests/test_claims_heartbeat.py	RoundEndReapTest.test_round_end_reap_is_wired	B	-	接线断言：轮末必须调用收尸（MF-47③ 的另一半——'无调用者'就是缺陷本身）。
+tests/test_claims_heartbeat.py	RoundEndReapTest.test_unreported_claim_is_explicitly_given_up_and_immediately_reclaimable	B	-	??
+tests/test_claims_mutex.py	CrashTakeoverFenceE2ETest.test_takeover_succeeds_and_old_owner_writes_are_fenced	B	-	??
+tests/test_claims_mutex.py	OwnerIdentityTest.test_legacy_owner_format_still_parses	B	-	库内旧格式 owner 行的解析/展示不得因新身份格式而崩（幂等宽容、不迁移旧数据）。
+tests/test_claims_mutex.py	OwnerIdentityTest.test_runtime_owner_appends_pid_and_generation	B	-	??
+tests/test_claims_mutex.py	OwnerIdentityTest.test_v2_default_executor_id_carries_pid	B	-	v2 消费路径（run_queue_retry）的缺省身份必须带本进程号。
+tests/test_claims_mutex.py	PurgeClockGuardTest.test_forward_clock_jump_skips_purge	B	-	??
+tests/test_claims_mutex.py	PurgeClockGuardTest.test_jump_only_skips_one_round	B	-	参照点随越界一并推进 ⇒ 下一轮恢复正常清理（不需要人工重置）。
+tests/test_claims_mutex.py	PurgeClockGuardTest.test_normal_purge_still_works	B	-	??
+tests/test_claims_mutex.py	ReclaimFenceTest.test_done_row_with_allow_settled_and_current_epoch_is_accepted	B	-	??
+tests/test_claims_mutex.py	ReclaimFenceTest.test_done_row_with_allow_settled_and_stale_epoch_is_refused	B	-	带 allow_settled 且 epoch 落后 ⇒ 拒绝（显式重开也要走同一 WHERE 口径）。
+tests/test_claims_mutex.py	ReclaimFenceTest.test_done_row_with_allow_settled_without_epoch_still_accepted	B	-	签名向后兼容：不给 epoch 的显式重开保持旧语义（迁移期调用方）。
+tests/test_claims_mutex.py	ReclaimFenceTest.test_done_row_without_allow_settled_is_refused	B	-	??
+tests/test_claims_mutex.py	SameOwnerExclusionE2ETest.test_two_processes_with_distinct_runtime_owners_claim_exactly_once	B	-	生产形态：两侧各用本进程的运行时身份（都含各自 PID，可辨识）。
+tests/test_claims_mutex.py	SameOwnerExclusionE2ETest.test_two_processes_with_same_literal_owner_claim_exactly_once	B	-	??
+tests/test_claims_mutex.py	SelfTokenReentryTest.test_expired_lease_takeover_still_works	B	-	崩溃自愈不能丢：租约过期后任何执行体都能接管（不需要 token）。
+tests/test_claims_mutex.py	SelfTokenReentryTest.test_live_lease_reentry_with_current_token_is_allowed	B	-	持有者带着自己的 token 重入（轮内重试）必须放行，且换一代新 token。
+tests/test_claims_mutex.py	SelfTokenReentryTest.test_live_lease_reentry_without_token_is_refused	B	-	判据的判别力：owner 串相同、租约有效、未出示 token ⇒ 必须拒绝。
+tests/test_claims_mutex.py	SelfTokenReentryTest.test_reentry_with_stale_token_is_refused	B	-	被判据的对象是 token 而不是 owner：owner 相同、token 落后 ⇒ 拒绝。
+tests/test_claims_mutex.py	V3RequeueGateTest.test_late_requeue_on_done_row_does_not_revive	B	-	e2e 注入形态：done 行 + 迟到 requeue ⇒ pending 数不变。
+tests/test_claims_mutex.py	V3RequeueGateTest.test_late_requeue_on_skipped_row_does_not_revive	B	-	??
+tests/test_claims_mutex.py	V3RequeueGateTest.test_requeue_claimed_row_with_current_epoch_revives	B	-	??
+tests/test_claims_mutex.py	V3RequeueGateTest.test_requeue_claimed_row_with_stale_epoch_does_not_revive	B	-	??
+tests/test_claims_mutex.py	V3RequeueGateTest.test_requeue_failed_row_revives_for_same_day_second_chance	B	-	failed 是未了结态：当日回炉口必须还能用（否则失败账号只能等第二天）。
+tests/test_claims_reap_e2e.py	CrashedWorkerTakeoverE2ETest.test_live_heartbeat_blocks_takeover_then_expiry_allows_fenced_takeover	B	-	??
+tests/test_claims_reap_e2e.py	SupervisorReapDeadWorkerE2ETest.test_round_end_reaps_claims_of_killed_child	B	-	??
 tests/test_cli_contract.py	CliContractTest.test_capacity_measure_forwards_extra_args	J	-	`--measure` 之后的多余参数属于工具自己的开关，不是 CLI 的用法错误。
 tests/test_cli_contract.py	CliContractTest.test_capacity_recommendation_matches_web_formula	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_config_and_check_config_do_not_migrate_target_db	J	-	F3：宣称"脱敏、不联网/只读"的配置检查不得对目标库跑迁移（写库）。
@@ -400,52 +457,52 @@ tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_event_to
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_rate_kpi_declares_event_caliber	F	node	成功率按事件（尝试）口径，标签/tooltip 必须写明。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_trend_view_reads_event_column	F	node	趋势视图的堆叠必须取事件口径（events），文案用「次」。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_two_calibers_are_not_equal	F	node	账号数与事件数必须分开存放且不相等（混装正是本轮修正的缺陷）。
-tests/test_db_integrity.py	BackupPlaintextP3Test.test_plaintext_local_warning_present	C	-	BACKUP_PLAINTEXT=1 时本地明文归档仍有大字告警。
-tests/test_db_integrity.py	BackupPlaintextP3Test.test_remote_no_longer_blocked_by_plaintext	C	-	异机路径不得再被 BACKUP_PLAINTEXT=1 拦截（本地豁免不取消异机加密副本）。
-tests/test_db_integrity.py	BackupPlaintextP3Test.test_remote_plaintext_warning_distinguishes_cases	C	-	明文导致异机缺位时的告警须明确"豁免只作用于本地、异机副本绝不传明文"。
-tests/test_db_integrity.py	BackupPlaintextP3Test.test_remote_still_attempts_encryption	C	-	本地为明文（含显式 BACKUP_PLAINTEXT=1）时仍尝试加密后再出站。
-tests/test_db_integrity.py	BatchTransactionTest.test_api_batch_accounts_db_error_returns_500	C	-	??
-tests/test_db_integrity.py	BatchTransactionTest.test_api_batch_approve_soft_skip_mixed	C	-	??
-tests/test_db_integrity.py	BatchTransactionTest.test_api_batch_restore_duplicate_same_owner_blocked	C	-	??
-tests/test_db_integrity.py	BatchTransactionTest.test_db_batch_account_ops_rollback_on_unknown_op	C	-	??
-tests/test_db_integrity.py	BatchTransactionTest.test_db_batch_user_ops_rollback_on_unknown_op	C	-	??
-tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_db_source_has_no_executescript_call	C	-	源码级回归绊线：db 与迁移实现都不得再出现 executescript 调用。
-tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_fresh_db_creates_all_schema	C	-	转换后的逐条 DDL 语义不变：新库仍建出全部基线 + 迁移表。
-tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_migrate_v8_failure_rolls_back_prior_ddl	C	-	迁移中途失败：同事务先前的 DDL 必须整体回滚（旧实现会被隐式 COMMIT 落盘）。
-tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_run_migrations_optional_failure_no_partial_tables	C	-	框架层：v8（可选）失败后先前的 session_cache 回滚、后续迁移照常、版本不提升。
-tests/test_db_integrity.py	DbFixes021Test.test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_migrate_v5_drops_old_unique_email_index	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_optional_migration_blocked_continues_and_retry_reaches_latest	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_optional_migration_failure_rolls_back_partial_write	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_purge_deleted_users_hard_skips_active_accounts	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_purge_expired_deleted_cleans_time_prefs	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_restore_user_only_restores_same_deleted_at_accounts	C	-	??
-tests/test_db_integrity.py	DbFixes021Test.test_time_pref_stats_excludes_deleted_accounts	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_delete_user_with_accounts_clears_session_cache	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_migrate_corrupt_json_logs_error	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_purge_account_clears_session_cache	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_rename_backup_disambiguates_same_day	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_row_to_account_no_conn_logs_no_writeback	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_soft_delete_user_clears_session_cache	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_update_integrity_error_reheals_plaintext	C	-	??
-tests/test_db_integrity.py	DbResidueTest.test_update_phone_change_clears_old_cache	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_aad_blocks_cross_account	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_add_account_encrypts	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_admin_verify_plain_fallback	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_audit_write	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_batch_purge_requires_deleted	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_batch_signin_requires_admin	C	-	非管理员调用 /api/signin/batch 应返回 403。
-tests/test_db_integrity.py	SmokeTest.test_csrf_wrong_token_rejected	C	-	携带错误/缺失 CSRF token 的 POST 应被拒绝（401 未登录 或 403 CSRF 失败）。
-tests/test_db_integrity.py	SmokeTest.test_decrypt_failure_wrapped_runtime_error	C	-	密文损坏（tag 校验失败）→ load_accounts 抛 RuntimeError（统一 JSON 收口），非 ValueError 透传。
-tests/test_db_integrity.py	SmokeTest.test_encrypt_decrypt_roundtrip	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_expired_soft_delete_cleaned	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_load_key_concurrent_single_key	C	-	多线程首启 load_key：只生成一份密钥并共享（_KEY_LOCK 双检）。
-tests/test_db_integrity.py	SmokeTest.test_migration_cipher_dict_format	C	-	0.16 生产格式：accounts.json 密文为 JSON 嵌套对象（dict）——迁移须序列化入库。
-tests/test_db_integrity.py	SmokeTest.test_migration_encrypts_and_decrypts	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_move_swap_order	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_optimistic_lock	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_phone_unique_conflict	C	-	??
-tests/test_db_integrity.py	SmokeTest.test_users_crud	C	-	??
+tests/test_db_integrity.py	BackupPlaintextP3Test.test_plaintext_artifact_not_healthy_for_sentinel	C	bash	backup.sh 真产出的明文包，哨兵不得计为健康（与 backup_sentinel 的 e2e 咬合）。
+tests/test_db_integrity.py	BackupPlaintextP3Test.test_plaintext_run_warns_on_stderr_and_exits_dedicated_rc6	C	bash	BACKUP_PLAINTEXT=1 ⇒ 大字告警走 stderr + 专用退出码 6 + 归档真实产出。
+tests/test_db_integrity.py	BackupPlaintextP3Test.test_remote_copy_still_encrypted_under_plaintext	C	bash	BACKUP_PLAINTEXT=1 只豁免本地：异机副本仍加密出站、绝不传明文。
+tests/test_db_integrity.py	BackupPlaintextP3Test.test_remote_plaintext_without_encryption_distinguishes_case	C	bash	显式明文 + 加密不可用 ⇒ 告警必须点名"豁免只作用于本地、异机绝不传明文"。
+tests/test_db_integrity.py	BatchTransactionTest.test_api_batch_accounts_db_error_returns_500	C	bash	??
+tests/test_db_integrity.py	BatchTransactionTest.test_api_batch_approve_soft_skip_mixed	C	bash	??
+tests/test_db_integrity.py	BatchTransactionTest.test_api_batch_restore_duplicate_same_owner_blocked	C	bash	??
+tests/test_db_integrity.py	BatchTransactionTest.test_db_batch_account_ops_rollback_on_unknown_op	C	bash	??
+tests/test_db_integrity.py	BatchTransactionTest.test_db_batch_user_ops_rollback_on_unknown_op	C	bash	??
+tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_db_source_has_no_executescript_call	C	bash	源码级回归绊线：db 与迁移实现都不得再出现 executescript 调用。
+tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_fresh_db_creates_all_schema	C	bash	转换后的逐条 DDL 语义不变：新库仍建出全部基线 + 迁移表。
+tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_migrate_v8_failure_rolls_back_prior_ddl	C	bash	迁移中途失败：同事务先前的 DDL 必须整体回滚（旧实现会被隐式 COMMIT 落盘）。
+tests/test_db_integrity.py	DbExecutescriptAtomicityP3Test.test_run_migrations_optional_failure_no_partial_tables	C	bash	框架层：v8（可选）失败后先前的 session_cache 回滚、后续迁移照常、版本不提升。
+tests/test_db_integrity.py	DbFixes021Test.test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_migrate_v5_drops_old_unique_email_index	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_optional_migration_blocked_continues_and_retry_reaches_latest	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_optional_migration_failure_rolls_back_partial_write	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_purge_deleted_users_hard_skips_active_accounts	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_purge_expired_deleted_cleans_time_prefs	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_restore_user_only_restores_same_deleted_at_accounts	C	bash	??
+tests/test_db_integrity.py	DbFixes021Test.test_time_pref_stats_excludes_deleted_accounts	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_delete_user_with_accounts_clears_session_cache	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_migrate_corrupt_json_logs_error	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_purge_account_clears_session_cache	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_rename_backup_disambiguates_same_day	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_row_to_account_no_conn_logs_no_writeback	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_soft_delete_user_clears_session_cache	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_update_integrity_error_reheals_plaintext	C	bash	??
+tests/test_db_integrity.py	DbResidueTest.test_update_phone_change_clears_old_cache	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_aad_blocks_cross_account	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_add_account_encrypts	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_admin_verify_plain_fallback	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_audit_write	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_batch_purge_requires_deleted	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_batch_signin_requires_admin	C	bash	非管理员调用 /api/signin/batch 应返回 403。
+tests/test_db_integrity.py	SmokeTest.test_csrf_wrong_token_rejected	C	bash	携带错误/缺失 CSRF token 的 POST 应被拒绝（401 未登录 或 403 CSRF 失败）。
+tests/test_db_integrity.py	SmokeTest.test_decrypt_failure_wrapped_runtime_error	C	bash	密文损坏（tag 校验失败）→ load_accounts 抛 RuntimeError（统一 JSON 收口），非 ValueError 透传。
+tests/test_db_integrity.py	SmokeTest.test_encrypt_decrypt_roundtrip	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_expired_soft_delete_cleaned	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_load_key_concurrent_single_key	C	bash	多线程首启 load_key：只生成一份密钥并共享（_KEY_LOCK 双检）。
+tests/test_db_integrity.py	SmokeTest.test_migration_cipher_dict_format	C	bash	0.16 生产格式：accounts.json 密文为 JSON 嵌套对象（dict）——迁移须序列化入库。
+tests/test_db_integrity.py	SmokeTest.test_migration_encrypts_and_decrypts	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_move_swap_order	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_optimistic_lock	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_phone_unique_conflict	C	bash	??
+tests/test_db_integrity.py	SmokeTest.test_users_crud	C	bash	??
 tests/test_db_migrations.py	DbMigrationTest.test_core_migration_failure_blocks_and_cleans_conn	C	-	??
 tests/test_db_migrations.py	DbMigrationTest.test_ensure_column_rejects_duplicated_name	C	-	防复发：_ensure_column 的 type_decl 不得再重复列名。
 tests/test_db_migrations.py	DbMigrationTest.test_new_db_gets_latest_version	C	-	??
@@ -510,16 +567,24 @@ tests/test_deploy_entry_imports.py	DeployEntryImportTest.test_bootstrap_precedes
 tests/test_deploy_entry_imports.py	DeployEntryImportTest.test_container_scheduler_imports	J	-	调度器必须能导入（不真跑主循环：模块体在 __main__ 守卫里才起循环）。
 tests/test_deploy_entry_imports.py	DeployEntryImportTest.test_signin_cli_imports_without_repo_root_on_path	J	-	??
 tests/test_deploy_paths_and_restore_verdict.py	BackupLogDirTest.test_backup_follows_configured_log_dir	J	bash	??
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_bash_syntax_ok	J	bash	??
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_default_mirror_dir_is_neutral	J	bash	默认镜像目录不得写入某个运维者的个人目录布局（本仓库公开）。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_freshness_selfcheck_present	J	bash	新鲜度自检：本地落后于远端、或远端本身停更 → 非 0 退出（供定时任务告警）。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_help_prints_usage	J	bash	??
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_incremental_backfill_documented	J	bash	补齐式增量是"开机时间不定"能成立的前提，必须写进脚本说明。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_only_pulls_ciphertext	J	bash	只搬密文（.tar.gz.gpg），绝不把明文 tar.gz 拉回工作站。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_readonly_contract_documented	J	bash	对生产只读是硬契约，必须写在脚本里（远端只允许 ls / sha256sum + scp 下载）。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_refuses_to_run_on_production_host	J	bash	防呆：别在生产机自己身上"做异机副本"。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_three_way_hash_check	J	bash	远端哈希 / 下载后复算 / 随行清单三处一致才入库，失败改名 .bad 保留证据。
-tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupContractTest.test_unknown_arg_exits_2	J	bash	??
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_bash_syntax_ok	J	bash	??
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_corrupted_download_is_quarantined_as_bad	J	bash	三向哈希校验的行为版：下载内容与远端哈希不一致 ⇒ 改名 .bad 保留证据、
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_default_mirror_dir_is_neutral	J	bash	默认镜像目录落在 $HOME/yiban-prod-mirror（行为验证：不传 LOCAL_MIRROR_DIR，
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_happy_path_pulls_verifies_and_exits_zero	J	bash	合法值 ⇒ 行为不变：列目录、取哈希、下载、复算一致后入库并写随行清单。
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_help_prints_usage	J	bash	??
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_incremental_backfill_second_run_redoes_nothing	J	bash	补齐式增量的行为版：首轮把缺的历史副本全部拉回，次轮零下载、按已同步收尾。
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_max_fetch_caps_download_count	J	bash	??
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_plaintext_archives_are_never_pulled	J	bash	只搬密文：明文 yiban-*.tar.gz 即使在生产目录里，也不得出现在任何远端命令
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_refuses_to_run_on_production_host	J	bash	防呆的行为版：本机存在 /opt/yiban-auto-sign（=生产机特征）⇒ 拒绝、非 0、
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_remote_side_is_readonly_ls_and_sha256_only	J	bash	只读契约的**行为**版：送达远端的每条命令只许 ls/sha256sum 与 head/awk 管道，
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_status_flags_local_behind_remote	J	bash	新鲜度自检的行为版②：本地落后于远端 ⇒ 非 0 并点名落后。
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_status_flags_stale_remote	J	bash	新鲜度自检的行为版①：本地与远端同为 10 天前的副本（不落后）、但远端超过
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupBehaviorTest.test_unknown_arg_exits_2	J	bash	??
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupInjectionTest.test_max_fetch_injection_refused	J	bash	??
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupInjectionTest.test_reflowed_filename_with_quote_is_quarantined	J	bash	远端 ls 文件名回流支：含单引号的"文件名"可闭合 :93-96 的 sha256sum 拼接。
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupInjectionTest.test_remote_dir_injection_refused_before_any_ssh	J	bash	登记表原文反例：REMOTE_BACKUP_DIR='x; id #' 一步成立注入——必须拒绝。
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupInjectionTest.test_ssh_host_option_injection_refused	J	bash	本机 RCE 臂：-oProxyCommand 作单 argv 可被 ssh 解析成执行体——必须拒绝，
+tests/test_deploy_paths_and_restore_verdict.py	PullProdBackupInjectionTest.test_valid_values_still_pass_whitelist	J	bash	护栏不得误伤合法配置：默认值与嵌套路径都要放行（行为=整轮 rc 0）。
 tests/test_deploy_paths_and_restore_verdict.py	ResolvePathTest.test_blank_values_fall_through_to_default	J	bash	??
 tests/test_deploy_paths_and_restore_verdict.py	ResolvePathTest.test_env_file_is_second_source	J	bash	??
 tests/test_deploy_paths_and_restore_verdict.py	ResolvePathTest.test_missing_env_file_is_not_fatal	J	bash	??
@@ -531,8 +596,26 @@ tests/test_deploy_paths_and_restore_verdict.py	RestoreVerdictTest.test_tool_cras
 tests/test_deploy_paths_and_restore_verdict.py	StateDirHonoursEnvFileTest.test_engine_state_dir_follows_env_file	J	bash	??
 tests/test_deploy_paths_and_restore_verdict.py	StateDirHonoursEnvFileTest.test_process_env_still_wins	J	bash	??
 tests/test_deploy_paths_and_restore_verdict.py	StateDirHonoursEnvFileTest.test_web_module_constants_follow_env_file	J	bash	web 是模块级常量，必须在导入期就解析对（gunicorn 走 create_app() 不跑 main）。
+tests/test_deploy_prod_artifacts.py	CheckDeployTargetTest.test_target_missing_on_remote_goes_red	J	bash	活体反例：MF-41 现状（gitee 停在旧提交 ⇒ 部署不可达）必须红。
+tests/test_deploy_prod_artifacts.py	CheckDeployTargetTest.test_target_on_remote_branch_is_reachable	J	bash	??
+tests/test_deploy_prod_artifacts.py	CheckDeployTargetTest.test_unknown_remote_or_branch_fails_with_readable_line	J	bash	??
+tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_live_counterexample_unprovenanced_path_goes_red	J	bash	活体反例（MF-91）：往 cron 表加一个无来源可执行路径 ⇒ 非 0 且点名。
+tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_manifest_sources_all_exist	J	bash	??
+tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_repo_cron_tables_all_have_provenance	J	bash	??
+tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_repo_relative_app_paths_must_exist	J	bash	/opt/yiban-auto-sign/<rel> 型路径：rel 在仓库不存在 ⇒ 非 0。
+tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_adopt_production_installs_repo_and_archives_drift	J	bash	??
+tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_fresh_install_places_all_manifest_entries_with_modes	J	bash	??
+tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_idempotent_second_run_changes_nothing	J	bash	??
+tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_refuses_checksum_mismatch_without_flag	J	bash	现网 3 行手工漂移：不得被静默覆盖（仓库=唯一来源，但先对峙再裁决）。
+tests/test_deploy_prod_artifacts.py	RealNameGateTest.test_real_name_never_appears_in_tracked_files	J	bash	??
+tests/test_deploy_prod_artifacts.py	RealNameGateTest.test_scanner_detects_planted_name	J	bash	活体反例：扫描器抓得住 planted 文件（门本身可失败）。
+tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_legacy_export_wrapper_goes_red_under_same_checker	J	bash	活体反例（MF-91）：把旧 export 形态喂给同一检查器 ⇒ 必须判脏。
+tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_child_env_has_no_passphrase_and_stdin_carries_it	J	bash	??
+tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_propagates_backup_rc	J	bash	??
+tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_real_backup_gpg_roundtrip	J	bash	正例加深：wrapper→真 backup.sh→真 gpg 单跳闭环（缺 gpg/sqlite3 则降级断言）。
+tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_refuses_group_readable_passphrase_file	J	bash	??
+tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_strips_legacy_env_injection	J	bash	现网 crontab 若还残留 BACKUP_GPG_PASSPHRASE=... 前缀，wrapper 必须先 unset。
 tests/test_docker_image_contents.py	DockerImageContentsTest.test_imported_local_packages_are_copied	J	-	被导入的本地顶级包必须在 Dockerfile 里 COPY（漏了容器起不来）。
-tests/test_docker_image_contents.py	DockerImageContentsTest.test_yiban_package_is_copied	J	-	显式钉住 `yiban/`：它是 signin/web 的共享包，且曾真的漏拷过。
 tests/test_effective_window.py	ClockTest.test_now_is_beijing_plus_eight	A	-	now() 恒为 UTC+8，与宿主 TZ 无关（本用例在任何时区的主机上都应通过）。
 tests/test_effective_window.py	ClockTest.test_now_is_naive	A	-	naive：既有全部 datetime 运算都与 naive 混用，带 tzinfo 会直接 TypeError。
 tests/test_effective_window.py	ClockTest.test_session_cache_clock_delegates_to_single_source	A	-	db 的会话缓存时钟（原为独立实现的固定 +8）已收口到唯一时钟。
@@ -782,6 +865,9 @@ tests/test_executor_v3.py	GiveUpNotifyTest.test_final_give_up_notifies_admin_and
 tests/test_executor_v3.py	GiveUpNotifyTest.test_no_position_does_not_notify	B	-	??
 tests/test_executor_v3.py	GiveUpNotifyTest.test_no_room_left_notifies_like_v2	B	-	??
 tests/test_executor_v3.py	GiveUpNotifyTest.test_retry_only_notifies_nothing	B	-	??
+tests/test_executor_v3.py	HolderIdentitySplitTest.test_ctx_exposes_stable_for_egress_and_runtime_for_holder	B	-	??
+tests/test_executor_v3.py	HolderIdentitySplitTest.test_real_refill_writes_runtime_owner_to_queue	B	-	??
+tests/test_executor_v3.py	HolderIdentitySplitTest.test_stable_name_is_the_shard_member_and_runtime_is_not	B	-	??
 tests/test_executor_v3.py	LaneTest.test_lane_count_and_thread_pool_follow_bucket_rate	B	-	??
 tests/test_executor_v3.py	LaneTest.test_lanes_run_attempts_concurrently	B	-	真并发：假 attempt_signin 在线程锁下记峰值并发，串行实现峰值恒为 1。
 tests/test_executor_v3.py	LaneTest.test_sleep_until_waits_on_the_live_clock	B	-	到点等待非阻塞：三条通道共享同一假时钟，总推进量由最晚落点决定。
@@ -862,14 +948,10 @@ tests/test_executor_write_guard.py	WritePasswordGateTest.test_slot_egress_requir
 tests/test_executor_write_guard.py	WritePasswordGateTest.test_update_requires_password_only_on_real_change	B	-	??
 tests/test_executor_write_guard.py	WritePasswordGateTest.test_whole_write_requires_password_only_on_real_change	B	-	??
 tests/test_executor_write_guard.py	WritePasswordGateTest.test_wrong_password_is_403_and_audit_has_no_password	B	-	??
-tests/test_executors_kpi_scope.py	ExecutorListWordingTest.test_doc_links_single_executor_and_guards_single_row_hint	B	-	「单执行体」＝清单只有一行「并行」时的显示名（账号页「上次实领」），且单行有出口提示。
-tests/test_executors_kpi_scope.py	ExecutorListWordingTest.test_fallback_row_occupies_a_number_in_doc_and_banner	B	-	故障转移行占号 → 并行行跳号属正常：卡头 ⓘ 与「添加执行体」成功横幅两处都要说。
 tests/test_executors_kpi_scope.py	FallbackModalSwitchPlacementTest.test_switch_field_comes_before_type_and_egress_fields	B	-	??
 tests/test_executors_kpi_scope.py	FallbackModalSwitchPlacementTest.test_switch_field_has_a_label	B	-	??
-tests/test_executors_kpi_scope.py	FallbackStateCellIsStatusOnlyTest.test_pointer_copy_never_comes_back	B	-	??
 tests/test_executors_kpi_scope.py	FallbackStateCellIsStatusOnlyTest.test_state_cell_has_no_second_write_path	B	-	??
 tests/test_executors_kpi_scope.py	FallbackStateCellIsStatusOnlyTest.test_state_cell_renders_status_badge_only	B	-	??
-tests/test_executors_kpi_scope.py	FallbackStatusCopyTest.test_off_state_names_the_switch_not_a_process	B	-	??
 tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_prompt_wording_follows_the_change	B	-	弹窗措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"。
 tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_save_posts_the_fallback_payload_literal	B	-	??
 tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_switch_initial_checked_reads_config_flag	B	-	??
@@ -877,10 +959,7 @@ tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_switch_only_sav
 tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_switch_value_is_one_or_zero	B	-	??
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_divides_by_parallel_rows_only	B	-	分母只数「并行」行——用后端 workers.configured，不自己按清单长度算。
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_uses_accounts_counted_not_users_quota	B	-	??
-tests/test_executors_kpi_scope.py	KpiScopeTest.test_capacity_card_label_names_accounts	B	-	??
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_first_card_is_todays_progress	B	-	首卡从「清单行数」换成「今日进度」：行数在表里一眼可见，卡片该回答"今天跑得怎么样"。
-tests/test_executors_kpi_scope.py	KpiScopeTest.test_info_text_states_the_new_scope	B	-	??
-tests/test_executors_kpi_scope.py	RowMenuDividerSpacingTest.test_floating_divider_has_no_margin	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_non_truthy_literals_are_off	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_pause_blocks_any_day	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_weekday_is_go	B	-	??
@@ -991,6 +1070,24 @@ tests/test_ledger_check.py	LedgerCheckTest.test_translated_row_counts_toward_rec
 tests/test_ledger_check.py	LedgerCheckTest.test_unexpected_exception_exits_two	C	-	非 sqlite 异常也归"无法定论"——`1` 只留给明确探测到的差异。
 tests/test_ledger_check.py	LedgerCheckTest.test_unexpected_exception_message_is_sanitized	C	-	兜底打印的异常消息含凭据形态时必须脱敏（与迁移侧同一口径）。
 tests/test_ledger_check.py	LedgerCheckTest.test_zero_coverage_exits_two	C	-	状态目录在、但一天的处理文件都没有 ⇒ 无法定论，不是平账。
+tests/test_loadtest_isolation.py	test_apply_iptables_reject_is_front_inserted	??	-	??
+tests/test_loadtest_isolation.py	test_assert_accounting_balanced_and_imbalanced	??	-	??
+tests/test_loadtest_isolation.py	test_capacity_probe_main_aborts_on_accounting_imbalance	??	-	常规层闭合「记账不等 ⇒ 非零」：把编排里除 verify_accounting 外的副作用全打桩，
+tests/test_loadtest_isolation.py	test_concurrency_probe_build_proc_env_strips_proxy	??	-	??
+tests/test_loadtest_isolation.py	test_concurrency_probe_mem_abort_not_reported_when_meminfo_unreadable	??	-	内存不可读时不得给出「内存饱和」的假结论：显式报错退出、非零。
+tests/test_loadtest_isolation.py	test_dry_run_no_iptables_still_ok	??	-	dry-run 不落任何改动：--no-iptables 无需知情标记也应放行（保持既有冒烟用例契约）。
+tests/test_loadtest_isolation.py	test_loadtest_session_trusts_env_false	??	-	??
+tests/test_loadtest_isolation.py	test_mock_env_requires_egress_probe_ip	??	-	??
+tests/test_loadtest_isolation.py	test_mock_state_counts_silently_dropped_log_writes	??	-	JSONL 落盘失败不再被静默吞掉：total 记账、durable 落盘、log_errors 丢弃分别计数。
+tests/test_loadtest_isolation.py	test_mock_stats_excludes_ops_and_balance_holds	??	-	端到端对平：真起 mock（回环/明文/端口0），发出 N 条请求 ⇒ /__stats.total==N==JSONL 行数；
+tests/test_loadtest_isolation.py	test_no_iptables_without_optin_refuses_before_touching_system	??	-	缺知情标记的 --no-iptables 必须拒绝，且拒绝发生在任何改系统动作之前。
+tests/test_loadtest_isolation.py	test_proxy_in_env_refuses_to_start	??	-	带 HTTPS_PROXY=x 直接拉起入口脚本：必须非零退出并说明代理原因。
+tests/test_loadtest_isolation.py	test_read_meminfo_raises_on_unreadable	??	-	??
+tests/test_loadtest_isolation.py	test_reset_state_dir_covers_all_transient_prefixes	??	-	??
+tests/test_loadtest_isolation.py	test_scale_driver_base_env_strips_proxy	??	-	??
+tests/test_loadtest_isolation.py	test_startup_guard_reports_offending_keys	??	-	进程环境断言：命中 *PROXY* 键时抛错并点名具体键名。
+tests/test_loadtest_isolation.py	test_verify_accounting_raises_on_imbalance	??	-	收尾对平原语：服务端权威 total != 驱动读到的 JSONL 条数 ⇒ IsolationError。
+tests/test_loadtest_isolation.py	test_verify_zero_egress_empty_probe_fails_not_skips	??	-	空探测目标必须判 FAIL（此前是 [SKIP] 并可能返回 True）。
 tests/test_loadtest_tools.py	test_capacity_aborts_ladder_when_env_prep_fails	J	-	mock_env 报告环境未就绪：不跑 K 阶梯、非零退出，并把子进程输出带出来。
 tests/test_loadtest_tools.py	test_capacity_hardware_ceiling_stops_before_degradation	J	-	硬件上限取「首个劣化>1.5× 或资源饱和」档**之前**的档。
 tests/test_loadtest_tools.py	test_capacity_measured_cycle_adds_back_first_account_gap	J	-	周期还原：压测的"平均墙钟"少了"第一个账号不等待间隔"的那部分（gap / n）。
@@ -1007,7 +1104,7 @@ tests/test_loadtest_tools.py	test_mock_all_endpoint_shapes	J	-	登录链 4 步 +
 tests/test_loadtest_tools.py	test_mock_config_hot_read	J	-	配置文件热读：运行中把 fail_rate 打开即生效，无需重启。
 tests/test_loadtest_tools.py	test_mock_default_binds_loopback_only	J	-	默认参数必须是回环地址，避免误暴露到公网。
 tests/test_loadtest_tools.py	test_mock_env_all_green_returns_zero	J	-	自检通过且规则就位：退出码保持 0（不要把成功路径一并判失败）。
-tests/test_loadtest_tools.py	test_mock_env_dry_run_ok	J	-	--dry-run 不触碰系统，退出码 0（Windows 也可跑）。
+tests/test_loadtest_tools.py	test_mock_env_dry_run_ok	J	-	--dry-run 不落任何改动：无副作用，无需 --egress-probe-ip / opt-in，退码 0。
 tests/test_loadtest_tools.py	test_mock_env_hosts_block_idempotent	J	-	??
 tests/test_loadtest_tools.py	test_mock_env_iptables_failure_returns_nonzero	J	-	出站兜底规则没装上也必须非零退出：缺 REJECT 时压测会直连真实易班。
 tests/test_loadtest_tools.py	test_mock_env_selfcheck_failure_returns_nonzero	J	-	零真实外联自检 FAIL 时 main 必须非零退出（此前返回值被丢弃 → 假"环境就绪"）。
@@ -1020,7 +1117,6 @@ tests/test_loadtest_tools.py	test_probe_partition_slices_disjoint	J	-	??
 tests/test_loadtest_tools.py	test_probe_scan_lock_errors	J	-	??
 tests/test_loadtest_tools.py	test_scale_driver_e2e_optional	J	-	??
 tests/test_loadtest_tools.py	test_scripts_help	J	-	??
-tests/test_locks.py	D4DivergentLocksRemovedTest.test_env_write_lock_delegates_to_primitive	G	-	??
 tests/test_locks.py	D4DivergentLocksRemovedTest.test_notify_state_file_lock_uses_primitive	G	-	??
 tests/test_locks.py	D4DivergentLocksRemovedTest.test_signin_state_file_lock_uses_primitive	G	-	??
 tests/test_locks.py	EnvLockTest.test_account_crypto_does_not_overwrite_existing_key	G	-	先写 key A，再调 _write_key_to_env_file(env, B) 返回 A 且文件仍为 A。
@@ -1035,7 +1131,6 @@ tests/test_locks.py	LockPrimitiveTest.test_platform_has_a_real_lock_backend	G	-	
 tests/test_locks.py	LockPrimitiveTest.test_reentrant_same_thread	G	-	??
 tests/test_locks.py	LockPrimitiveTest.test_released_after_exit	G	-	??
 tests/test_locks.py	LockPrimitiveTest.test_waits_for_holder_instead_of_degrading_immediately	G	-	**引入 portalocker 的核心理由**：抢不到锁要重试等待，不是立刻降级为进程内锁。
-tests/test_locks.py	LockPrimitiveTest.test_wrapper_passes_a_retry_timeout	G	-	守护配置：包装层必须把**正数**重试时长交给 portalocker。
 tests/test_log_masking_formatter.py	DisplayMaskingReuseTest.test_mask_log_phones_delegates_and_masks_bare_phone	G	-	??
 tests/test_log_masking_formatter.py	MaskPhoneSingleSourceTest.test_text_helper_reuses_mask_phone_semantics	G	-	??
 tests/test_log_masking_formatter.py	MaskPhonesInTextTest.test_bare_phone_masked	G	-	??
@@ -1164,14 +1259,8 @@ tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_safe_url_no_warning	H	
 tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_unsafe_url_warns_once_and_channel_still_configured	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_collect_and_flush_merges_one_mail	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_clears_collector	H	-	??
-tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_empty_skips	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_groups_by_subject	H	-	??
-tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_skips_admin_to_when_admin_notify_off	H	-	??
-tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_uses_filtered_recipients	H	-	??
-tests/test_mail_notify.py	SignUserFailMailTest.test_notify_off_skips	H	-	??
 tests/test_mail_notify.py	SignUserFailMailTest.test_notify_on_sends_masked	H	-	??
-tests/test_mail_notify.py	SignUserFailMailTest.test_owner_empty_skips	H	-	??
-tests/test_mail_notify.py	SignUserFailMailTest.test_unknown_user_skips	H	-	??
 tests/test_mail_smtp_target.py	MailChannelStateReportTest.test_broken_entries_missing_credentials_names_the_cause	H	-	条目缺发件账号/授权码：日报须点名病因（与"未配置"区分处置）。
 tests/test_mail_smtp_target.py	MailChannelStateReportTest.test_broken_undecryptable_blob_names_the_cause	H	-	密文解不开且旧键为空：日报须点名病因并标 ⚠，不得报「已开启」。
 tests/test_mail_smtp_target.py	MailChannelStateReportTest.test_empty_decrypted_list_reports_cleared_not_key_mismatch	H	-	解密成功但列表为空（端点允许 smtps: [] 的合法清空）→ 病因报「未配置/已清空」。
@@ -1288,20 +1377,56 @@ tests/test_masking_tokens.py	TokenMaskingTest.test_payment_object_repr_still_mas
 tests/test_migration_compat.py	MigrationCompatTest.test_full_chain_leaves_existing_tables_untouched	C	-	??
 tests/test_migration_compat.py	MigrationCompatTest.test_old_code_smoke_is_a_noop_on_a_higher_version_db	C	-	??
 tests/test_migration_compat.py	MigrationCompatTest.test_run_migrations_is_a_noop_when_version_is_already_at_top	C	-	??
+tests/test_migrations_fail_closed.py	ArtifactIntegrityTest.test_epoch_dropped_after_full_chain_refuses	C	-	MF-91 反例：全链跑完后有人把 epoch 列抹掉 ⇒ 下次启动拒启（点名 v19）。
+tests/test_migrations_fail_closed.py	ArtifactIntegrityTest.test_missing_epoch_refuses_and_names_v19	C	-	??
+tests/test_migrations_fail_closed.py	ArtifactIntegrityTest.test_stopped_v17_db_passes_verification	C	-	红线：库仍停在 v17（v18+ 未应用）⇒ 产物校验不得拿未应用版本的产物要人。
+tests/test_migrations_fail_closed.py	AtomicityTest.test_direct_helper_still_commits	C	-	登记表之外直调（旧语义保持）：_ensure_column 仍然自带提交，另开连接可见。
+tests/test_migrations_fail_closed.py	AtomicityTest.test_framework_migration_rolls_back_wholly	C	-	框架内迁移：中途 _ensure_column 已落列后抛错 ⇒ 整体回滚，半途列不得持久化。
+tests/test_migrations_fail_closed.py	BumpRecordAtomicityTest.test_pragma_user_version_joins_open_txn	C	-	顺序修法成立的存储前提：事务内的 user_version 拨动随事务提交/回滚，
+tests/test_migrations_fail_closed.py	BumpRecordAtomicityTest.test_record_write_crash_leaves_version_unbumped	C	-	??
+tests/test_migrations_fail_closed.py	ConservationTest.test_full_chain_preserves_rows_and_bumps_version	C	-	??
+tests/test_migrations_fail_closed.py	ConservationTest.test_rebuild_guard_fires_on_column_loss	C	-	must-fail 桩：重建后列集不覆盖重建前列集 ⇒ 抛错点名缺失列。
+tests/test_migrations_fail_closed.py	ConservationTest.test_rebuild_guard_fires_on_row_loss	C	-	must-fail 桩：重建后行数不符 ⇒ 守卫抛错（迁移失败），绝不静默吞。
+tests/test_migrations_fail_closed.py	CrashResumeTest.test_users_new_leftover_resumes	C	-	v5 中途 kill 的残留（users_new 建了没改名）：重跑必须先 DROP 再重建。
+tests/test_migrations_fail_closed.py	MarkerRecoveryTest.test_history_marker_outside_plan_day_is_kept	C	-	??
+tests/test_migrations_fail_closed.py	MarkerRecoveryTest.test_write_plan_never_overwrites_real_rows	C	-	??
+tests/test_migrations_fail_closed.py	MarkerRecoveryTest.test_write_plan_replaces_same_day_marker_and_row_becomes_claimable	C	-	??
+tests/test_migrations_fail_closed.py	MigrationRecordTest.test_applied_migrations_get_records	C	-	??
+tests/test_migrations_fail_closed.py	MigrationRecordTest.test_blocked_migration_is_not_recorded	C	-	可选迁移失败：改动落地但版本不提升 ⇒ 也不得有记录（下次启动整段重跑）。
+tests/test_migrations_fail_closed.py	MigrationRecordTest.test_inherited_db_without_table_boots	C	-	红线：存量库（旧链升上来的，无记录表）首次撞上新代码 ⇒ 继承回填、照常启动。
+tests/test_migrations_fail_closed.py	MigrationRecordTest.test_missing_record_refuses_startup_naming_migration	C	-	记录被抹 ⇒ 版本推进与迁移成功脱钩的反例 ⇒ 拒启并点名。
+tests/test_migrations_fail_closed.py	QuotingTest.test_v13_handles_double_quote_table_name	C	-	??
+tests/test_migrations_fail_closed.py	QuotingTest.test_v5_handles_single_quote_index_name	C	-	??
+tests/test_migrations_fail_closed.py	RegistryClassificationTest.test_claim_path_migrations_are_core	C	-	v17/v18/v19 是 v3 领取路径硬前置 ⇒ 核心档；v20 补账保持可选（延后可重试）。
+tests/test_migrations_fail_closed.py	RegistryClassificationTest.test_core_failure_blocks_and_cleans	C	-	??
+tests/test_migrations_fail_closed.py	RegistryClassificationTest.test_optional_failure_still_passes	C	-	??
+tests/test_migrations_fail_closed.py	StartupExitCodeTest.test_drifted_db_refuses_startup_with_rc4_naming_v19	C	-	不变量①进程级：user_version 声称过 v19 但 epoch 缺失 ⇒ 拒启 rc=4 + 点名。
+tests/test_migrations_fail_closed.py	StartupExitCodeTest.test_healthy_v17_db_boots_and_upgrades	C	-	不变量⑥：v17 形态库 → sign 正常走完迁移并进入业务判定（零账号 rc=1，
+tests/test_migrations_fail_closed.py	TmpPermissionTest.test_failed_rewrite_leaves_no_plaintext_tmp	C	-	replace 失败 ⇒ tmp（含重写中的明文/密文）必须被清理，不得永久残留。
+tests/test_migrations_fail_closed.py	TmpPermissionTest.test_plain_rename_bak_is_0600	C	-	??
+tests/test_migrations_fail_closed.py	TmpPermissionTest.test_reencrypt_bak_is_0600_and_no_tmp_leftover	C	-	??
+tests/test_migrations_fail_closed.py	TmpPermissionTest.test_tmp_created_0600_before_content	C	-	过程反例：往 tmp 写第一笔内容时权限就必须已是 0600（先权限后内容）。
+tests/test_migrations_fail_closed.py	V20UnreadableDirTest.test_absent_dir_still_passes_as_no_state	C	-	既有语义保持：目录不存在 = 无状态可补（全新部署常态），放行并提升版本。
+tests/test_migrations_fail_closed.py	V20UnreadableDirTest.test_unreadable_dir_defers_without_version_bump	C	-	注入"目录在而读不动"（EACCES）——root 环境权限位不设防，用 must-fail 桩。
+tests/test_migrations_fail_closed.py	V20UnreadableDirTest.test_unreadable_dir_real_chmod_defers	C	-	真反例（非 root CI）：chmod 000 的目录 ⇒ v20 延后、版本停在 19。
+tests/test_migrations_fail_closed.py	WorkersIntegrityRc4Test.test_child_rc4_outranks_normal_and_severe_codes	C	-	聚合腿：任一子进程 rc4 ⇒ 汇总 4——既不被"全成功 0"淹没，也优先于
+tests/test_migrations_fail_closed.py	WorkersIntegrityRc4Test.test_fallback_daemon_refuses_on_integrity	C	-	兜底常驻腿：窗口内每轮 load_accounts 撞完整性 ⇒ rc4 退出并清存活标记
+tests/test_migrations_fail_closed.py	WorkersIntegrityRc4Test.test_supervisor_refuses_before_spawning_children	C	-	监督进程预检撞完整性 ⇒ rc4 且**一个子进程都不拉**（半升级库上拉起 N 个
 tests/test_migrations_v18.py	DataShiftTest.test_old_table_kept_and_rows_intact	C	-	??
 tests/test_migrations_v18.py	DataShiftTest.test_rows_shift_field_by_field	C	-	??
 tests/test_migrations_v18.py	DataShiftTest.test_shift_is_idempotent	C	-	??
-tests/test_migrations_v18.py	OptionalRegistrationTest.test_v18_failure_does_not_block_startup	C	-	??
+tests/test_migrations_v18.py	OptionalRegistrationTest.test_optional_tier_entry_failure_does_not_block_startup	C	-	??
 tests/test_migrations_v18.py	SchemaTest.test_sign_tasks_columns_types_notnull_and_pk	C	-	??
 tests/test_migrations_v18.py	SchemaTest.test_synchronous_is_full_after_migration	C	-	claim/settle 所在表的耐久级必须是 FULL：WAL+NORMAL 会回滚终态 ⇒ 重复登录。
 tests/test_migrations_v18.py	SchemaTest.test_v18_bumps_version_and_creates_tables_and_indexes	C	-	??
 tests/test_migrations_v18.py	SynchronousAppliedByMigrationTest.test_migrate_v18_raises_synchronous_to_full	C	-	??
 tests/test_migrations_v19.py	IdempotenceTest.test_rerunning_v19_does_not_raise_nor_duplicate	C	-	可选迁移失败后下次启动整段重跑，故必须幂等（重复 ADD COLUMN 会报错）。
 tests/test_migrations_v19.py	IdempotenceTest.test_v19_adds_epoch_to_sign_tasks_when_missing	C	-	`sign_tasks.epoch` 本由 v18 建好；v18 被回退时 v19 是兜底护栏。
-tests/test_migrations_v19.py	OptionalRegistrationTest.test_v19_failure_does_not_block_startup	C	-	??
+tests/test_migrations_v19.py	RegistrationTierBehaviorTest.test_core_tier_entry_failure_blocks_startup	C	-	??
+tests/test_migrations_v19.py	RegistrationTierBehaviorTest.test_optional_tier_entry_failure_does_not_block_startup	C	-	??
 tests/test_migrations_v19.py	SchemaTest.test_existing_rows_default_to_zero	C	-	存量行（v17 时代建的）取默认 0——迁移不得要求重写业务行。
 tests/test_migrations_v19.py	SchemaTest.test_v19_bumps_version_and_adds_epoch_column	C	-	??
-tests/test_migrations_v19.py	SchemaTest.test_v19_is_optional	C	-	可选迁移：失败只告警不阻断启动（epoch 属护栏，不是启动必需能力）。
+tests/test_migrations_v19.py	SchemaTest.test_v19_is_core	C	-	核心迁移：epoch 是 try_claim 硬编列名，失败必须阻断启动（MF-40 改判）。
 tests/test_migrations_v19.py	SchemaTest.test_v20_is_registered_as_optional	C	-	v20 同为可选迁移（补账失败只告警，下次启动整段重跑收敛）。
 tests/test_migrations_v20.py	MigrateV20Test.test_backfilled_rows_are_lazy	C	-	补账行与平移行同形（vshard=-1）——不进入任何执行体的分片集合。
 tests/test_migrations_v20.py	MigrateV20Test.test_batched_commits_lose_no_rows	C	-	??
@@ -1523,10 +1648,6 @@ tests/test_probe.py	ProbeSigninTest.test_probe_due_every_day_and_already_ran	D	-
 tests/test_probe.py	ProbeSigninTest.test_probe_due_interval_n_days	D	-	??
 tests/test_probe.py	ProbeSigninTest.test_probe_due_not_time	D	-	??
 tests/test_probe.py	ProbeSigninTest.test_probe_due_once	D	-	??
-tests/test_probe.py	ProbeSigninTest.test_run_probe_collects_and_flushes	D	-	??
-tests/test_probe.py	ProbeSigninTest.test_run_probe_disabled_is_silent	D	-	??
-tests/test_probe.py	ProbeSigninTest.test_run_probe_once_auto_disable	D	-	??
-tests/test_probe.py	ProbeSigninTest.test_run_probe_skipped_when_enabled_but_not_due	D	-	??
 tests/test_probe.py	ProbeSigninTest.test_verify_account_exception	D	-	??
 tests/test_probe.py	ProbeSigninTest.test_verify_account_fail	D	-	??
 tests/test_probe.py	ProbeSigninTest.test_verify_account_ok	D	-	??
@@ -1722,10 +1843,21 @@ tests/test_review_flow.py	ReviewFlowTest.test_settings_save_writes_audit	E	-	??
 tests/test_review_flow.py	ReviewFlowTest.test_submit_approve_flow	E	-	??
 tests/test_review_flow.py	ReviewFlowTest.test_submit_reject_with_reason	E	-	??
 tests/test_review_flow.py	UsersReviewCountTest.test_review_count_covers_rejected	E	-	??
+tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_blocking_timeout_refuses_instead_of_continuing_unlocked	B	-	旧行为：等满 `YIBAN_RUN_LOCK_WAIT` 后 warning + **无锁继续**。现须拒绝。
+tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_missing_fcntl_refuses_instead_of_unlocked_handle	B	-	旧行为：无 fcntl 时 warning 后返回**未加锁**句柄。现须显式报不可用。
+tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_nonblocking_contention_still_raises_run_lock_held	B	-	既有语义不变：非阻塞（--only/兜底）被占仍抛 `_RunLockHeld`，不是新异常。
+tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_open_failure_logs_and_refuses	B	-	旧行为：`except OSError: return None`（零日志）。现须显式拒绝 + 留日志。
+tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_probe_treats_unverifiable_lock_as_contended	B	-	`_run_lock_held` 探测不出锁状态时按"有人在跑"处置（fail-closed）。
+tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_fallback_branch_returns_lock_busy_3	B	-	??
+tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_probe_branch_skips_with_0	B	-	探针是完整登录的只读健康检查；拿不到互斥时与"已有签到在跑"同一处置（跳过）。
+tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_single_executor_main_returns_3	B	-	主路径（全量/--only）：拿不到锁必须退出 3，不得进队列发起真实登录。
+tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_worker_supervisor_returns_3_without_spawning	B	-	??
+tests/test_run_lock_fail_closed.py	TwoProcessLockContentionE2ETest.test_second_process_refused_with_recorded_reason	B	-	??
 tests/test_run_sh_logging.py	ExitCodeContractTest.test_signin_codes_pass_through_verbatim	J	bash	??
 tests/test_run_sh_logging.py	ExitCodeContractTest.test_success_status_file_only_written_for_zero	J	bash	留痕逻辑不得改变状态文件口径：0 写 SUCCESS，2 写 SKIPPED，其余不写。
 tests/test_run_sh_logging.py	ExitTrailTest.test_already_success_path_logs_exit_zero	J	bash	??
 tests/test_run_sh_logging.py	ExitTrailTest.test_flock_busy_path_logs_exit_zero	J	bash	??
+tests/test_run_sh_logging.py	ExitTrailTest.test_forged_success_status_is_not_the_skip_path	J	bash	MF-82 活体反例（本文件侧的钉）：手写 SUCCESS、库内当日无完成 ⇒
 tests/test_run_sh_logging.py	ExitTrailTest.test_normal_completion_logs_exit_code	J	bash	??
 tests/test_run_sh_logging.py	ExitTrailTest.test_settled_marker_path_logs_exit_zero	J	bash	??
 tests/test_run_sh_logging.py	ExitTrailTest.test_timeout_kill_path_logs_the_killed_code	J	bash	timeout 击杀（124）是原先最静默的一条：状态文件也不写，日志全无。
@@ -1738,10 +1870,21 @@ tests/test_run_sh_logging.py	TriggerTagTest.test_manual_run_with_redirected_outp
 tests/test_run_sh_logging.py	TriggerTagTest.test_no_tty_is_scheduled	J	bash	??
 tests/test_run_sh_logging.py	TriggerTagTest.test_override_value_is_used_verbatim	J	bash	容器/CI 可注入自己的来源标签，日志里原样出现（便于跨系统对齐）。
 tests/test_run_sh_workers.py	CliLoggingSingleHandlerTest.test_import_webapp_and_signin_single_filehandler	B	bash	??
+tests/test_run_sh_workers.py	RunShMarkerTest.test_env_missing_warns_but_continues	B	bash	.env 不存在 ⇒ stderr + 日志显式告警，按默认值继续（不让 cron 天天红）。
+tests/test_run_sh_workers.py	RunShMarkerTest.test_env_unreadable_warns_but_continues	B	bash	.env 存在但不可读 ⇒ 显式告警并继续用默认值（MF-81④）。
 tests/test_run_sh_workers.py	RunShMarkerTest.test_first_trigger_runs_as_first_run	B	bash	当日首次触发：创建标记且不以补签轮身份运行。
 tests/test_run_sh_workers.py	RunShMarkerTest.test_flocked_out_trigger_leaves_marker	B	bash	被 flock 弹开（exit 0）发生在标记写入之后：弹开也留痕、不执行签到。
+tests/test_run_sh_workers.py	RunShMarkerTest.test_forged_success_status_without_db_facts_is_rejected	B	bash	活体反例（MF-82）：手写 SUCCESS 状态文件、临时库当日无完成事实 ⇒
+tests/test_run_sh_workers.py	RunShMarkerTest.test_global_pause_truthy_value_shares_one_domain	B	bash	MF-81⑤：YIBAN_GLOBAL_PAUSE 与 _need_second_round 统一走 _is_truthy——
+tests/test_run_sh_workers.py	RunShMarkerTest.test_real_db_facts_day_with_success_status_skips	B	bash	交叉核对的正向对照：当日库内有 skipped 了结行 ⇒ SUCCESS 正常采信。
+tests/test_run_sh_workers.py	RunShMarkerTest.test_run_marker_write_failure_refuses_and_is_not_second_run	B	bash	RUN_MARKER noclobber 写失败且文件不存在（路径被占成目录）⇒ 不得当成
+tests/test_run_sh_workers.py	RunShMarkerTest.test_second_run_truthy_value_shares_one_domain	B	bash	MF-81⑤：YIBAN_SECOND_RUN=true 必须以"补签轮身份"被识别——
 tests/test_run_sh_workers.py	RunShMarkerTest.test_second_trigger_after_flock_bounce_is_second_run	B	bash	核心链路：06:31 被 flock 弹开留痕 → 次轮（07:10）以 second_run 身份运行。
+tests/test_run_sh_workers.py	RunShMarkerTest.test_settled_marker_write_failure_escalates_exit_code	B	bash	收尾标记 `: > "$SECOND_DONE_MARKER"` 写失败（被占成目录）⇒ 不得 || true
+tests/test_run_sh_workers.py	RunShMarkerTest.test_status_write_failure_escalates_exit_code	B	bash	_status_write 的 mv 步失败（状态文件路径被占成目录）⇒ "成功"不得静默
 tests/test_run_sh_workers.py	RunShMarkerTest.test_success_status_check_still_skips_after_marker	B	bash	STATUS_FILE SUCCESS 幂等检查保持在标记块之后：已成功的当日直接跳过。
+tests/test_run_sh_workers.py	RunShMarkerTest.test_uncreatable_state_dir_is_fatal	B	bash	`mkdir -p "$STATE_DIR"` 判码：目录建不出来（父路径是文件）⇒ 不跑并告警。
+tests/test_run_sh_workers.py	RunShMarkerTest.test_unwritable_state_dir_refuses_run_without_round	B	bash	活体反例（MF-81）：状态目录置不可写 ⇒ 拒绝运行（不跑）、写不出任何
 tests/test_run_sh_workers.py	RunShTimeoutClampTest.test_empty_uses_dynamic_default_without_warning	B	bash	??
 tests/test_run_sh_workers.py	RunShTimeoutClampTest.test_negative_falls_back	B	bash	??
 tests/test_run_sh_workers.py	RunShTimeoutClampTest.test_non_numeric_falls_back	B	bash	??
@@ -1799,6 +1942,7 @@ tests/test_schedule_retry.py	RetryRescheduleTest.test_retry_slot_within_window_a
 tests/test_schedule_retry.py	RetryRescheduleTest.test_retry_upper_bound_follows_clamped_window	B	bash	缓冲过大被收缩：上界取收缩后的有效窗口结束（07:09），窗口还开着就不得放弃重试。
 tests/test_schedule_retry.py	RetryRescheduleTest.test_retry_upper_bound_pinned_to_sign_end_minus_edge	B	bash	正常窗口（无回退）：上界逐值等于 `sign_end - edge_back`（07:50 - 60s = 07:49）。
 tests/test_schedule_retry.py	RetryRescheduleTest.test_schedule_retry_state_and_log_include_reason	B	bash	需求1（调度分支）：失败账号入队重试时，状态文件与 warning 日志都补记失败原因。
+tests/test_schedule_retry.py	RunshSecondRoundTest.test_forged_success_does_not_short_circuit_second_round	B	bash	MF-82 进程内侧翼：桩首轮"成功"写出的 SUCCESS 若与库内当日事实相悖
 tests/test_schedule_retry.py	RunshSecondRoundTest.test_global_pause_skips_second_round	B	bash	全站暂停时补跑无意义：signin 立即 exit 2，只跑一轮（不为空跑延长持锁）。
 tests/test_schedule_retry.py	RunshSecondRoundTest.test_no_third_round_when_already_second_run	B	bash	本轮本身就是补签轮（07:12 兜底 cron 接管）→ 不再评估第三轮。
 tests/test_schedule_retry.py	RunshSecondRoundTest.test_second_round_can_be_disabled	B	bash	逃生开关 YIBAN_HOST_SECOND_ROUND=0 → 即使判定需要也只跑一轮。
@@ -1831,7 +1975,6 @@ tests/test_schedule_v2.py	ScheduleV2Test.test_small_n_random_differs	A	-	小人�
 tests/test_schedule_v2.py	ScheduleV2Test.test_small_n_sequence_same_block	A	-	小人数 + 顺序排序：块确定（可预期）——不同 seed 仍在同一块。
 tests/test_schedule_v2.py	ScheduleV2Test.test_small_n_uses_blocks	A	-	小人数复用分块：顺序×均匀 n=2 → 线性填块同块（块 0）；随机×均匀 → 循环填块分块。
 tests/test_schedule_v2.py	WindowRecheckAfterSleepTest.test_no_request_after_window_passes_during_wait	A	-	到点时间在窗口内、但等完之后已过窗口 → 零请求且记为窗口外跳过。
-tests/test_schedule_v2.py	WindowRecheckAfterSleepTest.test_normal_wait_still_executes	A	-	窗口内等待后照常执行（对照组，防误拦）。
 tests/test_scheduler_env_probe.py	MailSummaryTruncationTest.test_entries_capped_with_notice	B	-	??
 tests/test_scheduler_env_probe.py	MailerPortFallbackTest.test_invalid_and_missing_marked_fallback	B	-	??
 tests/test_scheduler_env_probe.py	ProbeEventsOnTest.test_only_probe_stage_returned_for_date	B	-	??
@@ -2009,8 +2152,6 @@ tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_pref_slots_not_all_di
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_pref_slots_pin_enabled_and_disabled_under_crop	A	-	有效窗口被前裁吃满 5 分钟（未吃空）：首片整片在裁剪区内 → 置灰，次片可选。
 tests/test_state_file_writes.py	SignStateBomReadTest.test_bom_file_keeps_existing_entries	D	-	??
 tests/test_state_file_writes.py	SigninWritesAreAtomicTest.test_cred_state_write_is_delegated	D	-	熔断状态文件的原子写归 `yiban/cred_state.py`（唯一读写入库）；
-tests/test_state_file_writes.py	SigninWritesAreAtomicTest.test_signin_state_writers_use_replace	D	-	??
-tests/test_state_file_writes.py	SigninWritesAreAtomicTest.test_writers_have_single_implementation	D	-	同上四处不得在兼容壳里留下第二份定义。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_corrupt_marker_is_treated_as_not_done	D	-	坏文件（历史遗留/手工改动）必须退化为"未跑过"，不得抛异常打断调度循环。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_failed_replace_leaves_no_partial_marker	D	-	替换失败时标记路径必须**不存在**（而不是存在但内容损坏）。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_interrupted_write_is_swept_later	D	-	被杀（SIGKILL）留下的半成品没有机会自清 → 由状态清理按 mtime 兜底。
