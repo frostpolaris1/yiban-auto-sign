@@ -119,9 +119,18 @@ class ClaimSemanticsTest(_Base):
                          "租约有效期内其他执行体不得领到同一账号")
 
     def test_same_owner_may_reclaim(self):
-        """自己重入是允许的：同一执行体内重试、进程重启后接管自己的记录。"""
-        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
-        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
+        """自己重入是允许的，但**要出示领取时拿到的 token**：同一执行体内重试。
+
+        只凭 owner 串相同不放行——同机上两个进程可能拿到同名身份串（cron 与网页手动），
+        把它们当成"自己人"就是两边同时登录同一账号（见 `tests/test_claims_mutex.py`）。
+        """
+        ok, e1 = db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self.assertTrue(ok)
+        self.assertFalse(self._claim(PHONE, DAY, OWNER_A),
+                         "不出示 token 的同名重入必须被拒（租约仍有效）")
+        ok2, e2 = db.claim_sign_account(PHONE, DAY, OWNER_A, epoch=e1)
+        self.assertTrue(ok2, "持有者带自己的 token 重入必须放行")
+        self.assertGreater(e2, e1, "重入换一代 token（旧的随即作废）")
 
     def test_expired_lease_can_be_taken_over(self):
         self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
