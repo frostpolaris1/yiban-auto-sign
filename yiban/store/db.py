@@ -109,6 +109,10 @@ CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.status.CLAI
 CLAIM_STATE_FAILED = _claims.STATE_FAILED
 CLAIM_SETTLED_STATES = _claims.SETTLED_STATES
 CLAIM_OPEN_STATES = _claims.OPEN_STATES
+# 弃权原因档的 result 前缀协议与"默认可再领"的状态集（领取层跨轮上限的判据口径）
+CLAIM_RESULT_RETRY_PREFIX = _claims.RESULT_RETRY_PREFIX
+CLAIM_RESULT_FINAL_PREFIX = _claims.RESULT_FINAL_PREFIX
+CLAIM_RETRYABLE_GIVE_UP_STATUSES = _claims.RETRYABLE_GIVE_UP_STATUSES
 claim_new_owner = _claims.new_owner
 claim_sign_account = _claims.try_claim  # 门面名与域内名不同：`db.try_claim` 不存在
 claim_touch = _claims.touch  # 续租只续自己持有的，返回 False = 已被接管

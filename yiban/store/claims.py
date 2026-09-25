@@ -12,7 +12,7 @@
 |-------|------|----------|
 | `claimed` | 已被某执行体领取、尚未收尾（含执行中） | 否 |
 | `done` | 收尾且**当日无需再签**（即 `yiban.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
-| `failed` | 收尾但结果未了结（本轮重试预算耗尽、窗口外跳过、无点位） | 否（当日仍可再领，见 `STATE_FAILED`） |
+| `failed` | 收尾但结果未了结（本轮重试预算耗尽、窗口外跳过、无点位） | 否（按原因档再领：窗口外/无点位默认可领，预算耗尽/风控需显式路径，见 `STATE_FAILED`） |
 
 **四条纪律**：
 
@@ -84,10 +84,9 @@ STATE_DONE = "done"
 #: 尝试过但**未了结**（本轮重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 #: 两点必须知道：①「预算」住在**单轮进程内**（`yiban.engine.attempts._retry_budget`），
-#: 换一轮即重新计数；本表的 `attempts` 列只被领取侧自增，没有任何判据读它。②所以预算
-#: 耗尽而弃权的账号，当日仍可被后面的轮次再接手、重走一遍登录+签到（会话缓存还有效时
-#: 是探活复用，缓存被清过的那一轮就是一次真实登录）——这正是补签链接得上失败账号的前提，
-#: 代价是领取层不按原因分档、也没有跨轮上限，跨轮的止损都在旁路（凭据熔断、站点限速）。
+#: 换一轮即重新计数；②故领取层必须**按弃权原因分档**，否则"预算耗尽"的账号会被
+#: 后面每一轮无上限地重领一遍（每次都是一次真实登录）。分档用 `result` 字段前缀表达
+#: （见 `RESULT_RETRY_PREFIX` / `RESULT_FINAL_PREFIX`，不动表结构）。
 STATE_FAILED = "failed"
 #: 终态集合（「了结」的账号）。
 SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
@@ -96,6 +95,21 @@ SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
                   & yiban_status.TASKS_SETTLED_STATES)  # 交集后只剩 done：failed 是"可再领"、不是终态
 #: 参与"未了结账号"统计的状态（与 done 互斥）
 OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
+
+#: 弃权原因档的 `result` 前缀协议（**无库迁移**：复用既有 result 列）。
+#: `give_up` 把原因档写成 `result` 的前缀，`try_claim` 的冲突分支据此决定"默认参数下
+#: 能不能再领"——这是领取层唯一能记住"为什么弃权"的字段。升级前写入的历史行不带前缀，
+#: 一律按保守档（默认不可再领）处置，只由显式路径放行；收尸路径主动写 `retry:` 档。
+RESULT_RETRY_PREFIX = "retry:"   # 窗口外/无点位：该重试，当日默认可被任何一轮再接手
+RESULT_FINAL_PREFIX = "final:"   # 预算耗尽/风控：不该无上限重试，需显式路径才可再领
+
+#: 默认可再领的弃权状态档（"窗口外/无点位"）。**必须是唯一一份**：`give_up` 写入前缀与
+#: `round._settle_claims` 选择档位都由它派生，各写一份会漂移成"记 retry、判 final"。
+RETRYABLE_GIVE_UP_STATUSES = frozenset((
+    yiban_status.STATUS_SKIPPED_WINDOW,
+    yiban_status.STATUS_SKIPPED_NORANGE,
+    yiban_status.STATUS_NO_POSITION,
+))
 
 
 #: 领取池不可用的一次性告警标记：`try_claim` 每个账号每轮都会被调到，而"表未落地/库锁"
@@ -158,31 +172,36 @@ def _utc_offset_str(seconds):
 
 
 def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settled=False,
-              epoch=None):
+              epoch=None, allow_failed=False):
     """原子领取一个账号。返回 `(ok, epoch)`。
 
     `ok=False` 表示"没领到，必须放弃该账号本轮"；`epoch` 是本次领取的 fencing token
     （单调递增，插入分支为 1），收尾时必须原样传给 `settle` / `give_up` / `touch`。
 
     领不到的情形：已被别的执行体领取且租约未过期，当日已了结（除非
-    `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用），或领取池不可用。
+    `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用），弃权档为"预算耗尽/
+    风控"（除非 `allow_failed=True`——同上显式路径），或领取池不可用。
 
     实现是**单条 upsert**：并发下 SQLite 串行化写者，后到者的 WHERE 会看到
     先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。判据与写入在同一条
     UPDATE 的 WHERE 里，没有"先查后写"可被撞上的跨语句窗口。
 
-    **冲突分支的准入判据（按行状态分两条）**：
+    **冲突分支的准入判据（按行状态分三条）**：
 
     - 已了结（`done`）：只由 `allow_settled` 决定——done 行无人持有，没有租约可校。
       `epoch` 另给了就要求行仍在这一代：`allow_settled` 的调用方若先读过行再重开，
       落后的代说明中间已被人改过，此时必须拒绝而不是盲目覆盖。
-    - 未了结（`claimed` / `failed`）：**租约已过期**（`heartbeat_at <= now - lease_sec`，
+    - 未了结且在飞（`claimed`）：**租约已过期**（`heartbeat_at <= now - lease_sec`，
       崩溃自愈的唯一入口），或**出示领取时拿到的 `epoch`**（真持有者本人的轮内重试）。
       **仅 owner 串相同不放行**：同机上两个进程可能拿到同一个身份串
       （cron 全量与网页手动曾都是 `single@{主机名}`），把同名认成"自己人"就是两边
       同时登录同一账号——本项目第一红线。故缺省身份须含进程号与代次
       （`yiban.egress.runtime_owner`），重入须出示 token；重启后的新进程没有上一代的
       token，只能等租约过期或由心跳/回收机制处置。
+    - 已弃权（`failed`）：租约在 `give_up` 时已被主动放开，故这里不看租约，**只看到
+      `result` 里的原因档前缀**——`retry:` 档（窗口外/无点位，"该重试"）默认可再领，
+      `final:` 档或历史无前缀行（预算耗尽/风控/收尸）默认拒绝，须 `allow_failed=True`
+      才放行。这一条正是跨轮上限：没有它，预算耗尽的账号会被后面每一轮重领一遍。
 
     `epoch=None` 保持迁移期调用方的旧语义（不校验代），但**同样不允许**同名重入。
 
@@ -193,8 +212,11 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     from yiban.store import db
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
-    # 两条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
+    retry_prefix_len = len(RESULT_RETRY_PREFIX)
+    # 三条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
     # <= 的比较口径：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期（见 give_up）。
+    # failed 分支用 `substr(...)=?` 而不是 `LIKE 'retry:%'`：主机名/结果文本里可能出现
+    # `_`（LIKE 的通配符），按字节前缀比较才不会被通配符吃掉。
     sql = (
         "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
         "state, result, attempts, epoch) VALUES (?, ?, ?, ?, ?, ?, '', 0, 1) "
@@ -204,7 +226,12 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         "epoch=sign_claims.epoch + 1, "
         "attempts=sign_claims.attempts + 1 "
         "WHERE (sign_claims.state = ? AND ? AND (? IS NULL OR sign_claims.epoch = ?))"
-        "   OR (sign_claims.state IN (?, ?) "
+        "   OR (sign_claims.state = ? "
+        "       AND (sign_claims.heartbeat_at <= ? "
+        "            OR (? IS NOT NULL AND sign_claims.owner = excluded.owner "
+        "                AND sign_claims.epoch = ?)))"
+        "   OR (sign_claims.state = ? "
+        "       AND (substr(sign_claims.result, 1, ?) = ? OR ?) "
         "       AND (sign_claims.heartbeat_at <= ? "
         "            OR (? IS NOT NULL AND sign_claims.owner = excluded.owner "
         "                AND sign_claims.epoch = ?))) "
@@ -216,8 +243,9 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
             cur = conn.execute(
                 sql, (phone, day, owner, ts, ts, STATE_CLAIMED,
                       STATE_DONE, 1 if allow_settled else 0, epoch, epoch,
-                      STATE_CLAIMED, STATE_FAILED, expired_before,
-                      epoch, epoch),
+                      STATE_CLAIMED, expired_before, epoch, epoch,
+                      STATE_FAILED, retry_prefix_len, RESULT_RETRY_PREFIX,
+                      1 if allow_failed else 0, expired_before, epoch, epoch),
             )
             # RETURNING 只对**真的写成**的行出行：条件不满足时零行，正是"没领到"。
             row = cur.fetchone()
@@ -316,12 +344,21 @@ def settle(phone, day, owner, state=STATE_DONE, result="", epoch=None):
     return False
 
 
-def give_up(phone, day, owner, result="", epoch=None):
+def give_up(phone, day, owner, result="", epoch=None, retryable=False):
     """本次执行放弃该账号，但**当日仍未了结**：置 `failed` 并**立刻放开租约**。
 
     为什么必须放开：补签轮（窗口内第二轮）与兜底执行体的存在意义就是接手失败账号。
     若把租约留满 900s，07:10 弃权的账号在 07:12 的补签轮里仍"被持有"→ 补签轮领不到、
-    当日再也签不上。放开后任何执行体/任何一轮都能立刻接手。
+    当日再也签不上。放开后**显式路径**（补签/兜底/手动）立刻能接手。
+
+    `retryable` 是弃权**原因档**（缺省保守档 = 不可再领），写进 `result` 前缀：
+
+    - `retryable=True`（窗口外/无点位，"该重试"）：默认参数下任何一轮都能再领；
+    - `retryable=False`（预算耗尽/风控，"不该无上限重试"）：只有显式路径
+      （`try_claim(allow_failed=True)`）才可再领——否则它会当日每轮重来一遍。
+
+    缺省保守是刻意的：判不清原因时宁可要求显式路径，也不要无上限重复真实登录。
+    调用方按 `RETRYABLE_GIVE_UP_STATUSES` 选档（`round._settle_claims`），不要各写一份。
 
     `epoch` 的语义同 `settle`（弃权同样是终态写：被接管者不得把接管者的在飞记录改成 failed）。
     返回是否写成功（被接管 / token 落后时为 False）。
@@ -330,7 +367,8 @@ def give_up(phone, day, owner, result="", epoch=None):
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=?")
     expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
-    params = [STATE_FAILED, (result or "")[:200], expired, phone, day, owner]
+    prefix = RESULT_RETRY_PREFIX if retryable else RESULT_FINAL_PREFIX
+    params = [STATE_FAILED, (prefix + (result or ""))[:200], expired, phone, day, owner]
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
@@ -367,12 +405,15 @@ def reap_unreported(owner, claimed, reported, result="轮末收尸：本轮未�
     这里**不动 `epoch`**：走的是 `give_up` 的轮内语义（行仍归本人，只是立刻放开租约），
     与轮内主动弃权同一条路径；自增 `epoch`（fence 迟到旧代写）的是监督进程侧的
     `reap_abandoned`——它面对的是已被确认死亡、可能换了持有者的行。
+
+    收尸一律按 `retryable=True` 记档（"本轮没产生结论"≠"预算耗尽"）：它默认就能被下一轮
+    接手，否则崩溃/提前离场的账号当天再也签不上——那正是收尸这条路径存在的理由。
     """
     done = []
     for phone, (day, epoch) in list(claimed.items()):
         if phone in reported:
             continue
-        if give_up(phone, day, owner, result, epoch=epoch):
+        if give_up(phone, day, owner, result, epoch=epoch, retryable=True):
             done.append(phone)
         else:
             logger.info("轮末收尸未生效（已被接管或已有终态）: %s",
@@ -394,14 +435,18 @@ def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退
 
     只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；终态行更
     不该动。`epoch + 1` 与 `reap_expired` 同一条红线——让任何迟到的旧代写被 fence。
+    结果里写 `retry:` 档（**覆盖**旧值）：死亡执行体没产出结论，不是"预算耗尽"，这行
+    默认就该能被下一轮接手。保留旧 result 会让上一轮遗留的 `final:` 前缀把这行判成
+    "不可再领"，崩溃账号当天再也签不上。
     库异常 → 0 + warning（收尸是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
     """
     from yiban.store import db
     prefix = owner + ":"
     expired = _utc_offset_str(LEASE_SECONDS)   # 与 give_up 同口径：立刻放开租约
-    sql = ("UPDATE sign_claims SET state=?, result=CASE WHEN result='' THEN ? ELSE result END, "
+    sql = ("UPDATE sign_claims SET state=?, result=?, "
            "heartbeat_at=?, epoch=epoch + 1 WHERE state=? AND (owner = ? OR instr(owner, ?) = 1)")
-    params = [STATE_FAILED, (result or "")[:200], expired, STATE_CLAIMED, owner, prefix]
+    params = [STATE_FAILED, (RESULT_RETRY_PREFIX + (result or ""))[:200],
+              expired, STATE_CLAIMED, owner, prefix]
     if day is not None:
         sql += " AND day=?"
         params.append(day)
