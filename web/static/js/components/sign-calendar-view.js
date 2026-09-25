@@ -1,4 +1,5 @@
-/* 「签到日历」页编排（用户端 /user/calendar 与管理端 /mine/calendar 共用的唯一实现）。
+/* 「签到日历」页编排（用户端 /user/calendar 与管理端 /my/calendar 共用的唯一实现；
+   /mine/calendar 只是后者的 302 旧路径，不在路由表里）。
 
    挂载到 window.YB.signCalendarView；classic script，公开面 mount(opts)。
 
