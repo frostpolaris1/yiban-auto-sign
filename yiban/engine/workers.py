@@ -100,11 +100,21 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
       真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
       调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致；容器侧不消费本
       退出码（docker/scheduler.py 的补签闸门读状态文件判定）。
+    - 全局锁拿不到时**不拉起任何子进程**，直接以 3（锁忙族）返回（fail-closed，
+      理由见函数体内注释）；被信号杀死的子进程（返回码为负）在轮末由
+      `_reap_dead_worker` 显式了结它在领的行。
     """
     slot_list = list(range(n)) if slots is None else list(slots)
     n = len(slot_list)
-    # 全局锁：本进程持有直到子进程全部结束（句柄必须保活，不能只用一次就丢）
-    _global_lock = cli_support._acquire_run_lock(False)
+    # 全局锁：本进程持有直到子进程全部结束（句柄必须保活，不能只用一次就丢）。
+    # 拿不到即拒绝拉起：无锁跑等于"散落的另一轮全量"与本轮执行体同时签同一批账号，
+    # 而领取池只保证同一账号被领一次、并不阻止两轮各自把没领到的当"别人的活"。
+    # 退出码取 3（"锁忙"族，与 `runner` 的手动/兜底分支同一处置），不新增码值。
+    try:
+        _global_lock = cli_support._acquire_run_lock(False)
+    except cli_support._RunLockUnavailable as e:
+        logger.error("多执行体：运行锁不可用，本次拒绝拉起执行体: %s", e)
+        return 3
     # 先在本进程把库初始化/迁移做完并校验账号配置：否则 N 个子进程会在同一秒
     # 抢着 init_db（实测 `PRAGMA journal_mode=WAL` 会报 "database is locked"），
     # 而且配置错误的报错会变成 N 份、互相淹没。
@@ -180,6 +190,12 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     codes = _await_workers(children, slot_list)
     for i, rc in enumerate(codes):
         logger.info("执行体 %d/%d（槽位 %d）结束，退出码 %s", i + 1, n, slot_list[i], rc)
+    # 轮末收尸：被信号杀死的执行体（rc < 0）来不及自己收尾，它在领的账号会一直挂着
+    # `claimed` 到 900s 租约过期才可能被别人接管。监督进程**直接观测到了**这次异常退出
+    # （比"心跳过期"更强的证据），故在轮末显式了结这些行，不留给下一轮按在飞误判。
+    for i, rc in enumerate(codes):
+        if rc is not None and rc < 0:
+            _reap_dead_worker(slot_list[i])
 
     if any(c == cli_support.EXIT_SCHEMA_MIGRATION for c in codes):
         # 迁移完整性拒启（MF-40）：任一执行体判定 schema 半升级，本轮账目整体不可信
@@ -194,6 +210,25 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     if any(c == 2 for c in codes):
         return 2
     return 0
+
+
+def _reap_dead_worker(slot):
+    """轮末收尸：显式了结某个**已确认死亡**的执行体槽位名下仍 `claimed` 的行。
+
+    判据不是心跳而是"监督进程看到它异常退出（返回码为负）"：这与"租约过期 ⇒ 可能死了"
+    是两个强度不同的证据——此处是**已知死亡**，故不必等满 900s。只按槽位身份前缀匹配
+    （`claims.reap_abandoned`），已被别人接管的行 owner 已换、不会被误动；代次同时自增，
+    任何迟到的旧代写仍被 fence。
+
+    收尸失败只留日志：它不影响本轮的退出码汇总，下一轮起跑仍会走"租约过期接管"兜住。
+    """
+    try:
+        n = db.claim_reap_abandoned(egress.worker_owner(slot))
+    except Exception as e:
+        logger.debug("轮末收尸失败（不影响退出码，下一轮仍可接手）: %s", e)
+        return
+    if n:
+        logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领记录已显式了结", slot, n)
 
 
 def run_fallback_worker(argv_rest, interval=None, deadline=None):

@@ -195,6 +195,9 @@ def main(argv=None):
         except cli_support._RunLockHeld:
             logger.warning("已有兜底常驻执行体在运行，本次不重复拉起（防同账号并发登录）")
             return 3
+        except cli_support._RunLockUnavailable as e:   # 拿不到互斥即拒跑，同族退出码 3
+            logger.error("兜底常驻执行体：运行锁不可用，本次拒绝运行: %s", e)
+            return 3
         return workers.run_fallback_worker(argv)
 
     # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
@@ -284,6 +287,9 @@ def main(argv=None):
         except cli_support._RunLockHeld:
             logger.warning("已有签到进程在运行，本轮探针跳过（防同账号并发）")
             return 0
+        except cli_support._RunLockUnavailable as e:   # 探针是完整登录，无互斥即跳过（族内 0）
+            logger.warning("签到运行锁不可用，本轮探针跳过（防同账号并发）: %s", e)
+            return 0
         if accounts:
             probe.run_probe(accounts)
         return 0
@@ -353,15 +359,19 @@ def main(argv=None):
             logger.info("==== 补签轮：当日账号均已了结，无需重跑 ====")
             return 0
 
-    # 进程级单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
-    # --only 被持有 → 留痕退出；全量被持有 → 等待至多 YIBAN_RUN_LOCK_WAIT 秒后继续
-    # （不因手动签到阻塞而漏签一整天）。
+    # 进程级单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。--only 被持有 →
+    # 留痕退出；全量被持有 → 等至多 YIBAN_RUN_LOCK_WAIT 秒，等满仍拿不到就拒绝运行。
     try:
         _run_lock_fh = cli_support._acquire_run_lock(bool(args.only))
     except cli_support._RunLockHeld:
         logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
         # 不能返回 0：web 会把"静默跳过"当成功展示。3 = 队列忙，
         # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
+        return 3
+    except cli_support._RunLockUnavailable as e:
+        # 拿不到互斥（锁文件不可写/平台无锁后端/等待超时）就是"队列忙"的一种：退出 3 让
+        # run.sh 与 web 如实提示"这轮没跑"，绝不静默继续；码值不新增（0/1/2/3/10）。
+        logger.error("签到运行锁不可用，本次拒绝运行（防同账号并发真实登录）: %s", e)
         return 3
 
     # 版本号写进轮次横幅：发布门槛靠它把"生产跑过的轮次"与提交对齐
