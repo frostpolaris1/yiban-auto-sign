@@ -119,6 +119,46 @@
 
 **涉及**：`deploy/prod/**`（新）、`scripts/check-deploy-target.sh`（新）、web 模板/文案 1 行、新测试。
 
+## Task 7 — CI 维护批（MF-39、MF-104、MF-105、MF-106 仓库内容部分）
+
+**现象（摘自登记表）**：
+- MF-39：`web/app.py:218-222` 一带与 `:364` 的 `# noqa: F401` 已无必要（对应导入实际被用到）⇒ `ruff check web/` 报 2 处 RUF100；本地门禁命令不含 `web/`。
+- MF-104：loadtest 测试只 patch `sys.platform` 不 patch `geteuid` ⇒ `scripts/loadtest/mock_env.py:397 ensure_platform()` 在非 root Linux（GitHub runner）exit 2，3 只测试 CI 必红；Windows（无 geteuid）与 WSL root 不显。
+- MF-105：`test_clock_jump_backward_blocked` 用裸 `datetime.now()`（runner 时区）对北京时区守卫断言 ⇒ UTC 环境必红（main 分支 CI 现存红）。
+- MF-106：ci.yml 的 ruff 钉 0.15.22 vs 本地 0.16.8；ci.yml ruff 用 `check .`；无 `workflow_dispatch`；`mirror.yml` 自首日即坏（3 段式 vs hub-mirror-action 要求 2 段式）且 `GITEE_PRIVATE_KEY`/`GITEE_TOKEN` 两 secret 不存在；`signin.yml` 已手动禁用且所需 secret 均不存在（CI 内跑真实签到危险且已被 WAF 打死过）。
+
+**修法方向**：
+1. MF-39：删 2 处失效 noqa；把门禁命令扩为 `ruff check yiban/ tests/ scripts/ web/`——全仓 grep 旧命令串找齐所有声明处（文档 + ci.yml）一并更新。
+2. MF-104：给相关测试 patch `os.geteuid`（或把 ensure_platform 的 root 判据抽成可注入）。验证证据：先构造"模拟非 root"手段（如 conftest 环境变量开关或 setpriv 降权），证明修前红、修后绿。
+3. MF-105：测试改用与守卫同源的 `clock.now()`（或 freeze 时间）。验证证据：`TZ=UTC` 与 `TZ=Asia/Shanghai` 双向跑同绿。
+4. MF-106：ci.yml 对齐本地门禁（ruff 版本钉与本地一致、ruff 步骤跑修复后的门禁命令）+ 加 `workflow_dispatch`；`mirror.yml` 删除（从未成功、secrets 不存在、gitee 由人工 push 维护，git 历史可恢复）；`signin.yml` 删除（推荐；CI 内真实签到危险）。
+5. `.github/dependabot.yml` 已在 develop 删除（434c33a），本分支确认无需额外动作。
+
+**验收不变量**：
+- `ruff check yiban/ tests/ scripts/ web/` 0 命中。
+- 3 只 geteuid 相关测试在模拟非 root 下绿（修前红、修后绿的 RED→GREEN 证据）。
+- `test_clock_jump_backward_blocked` 在 `TZ=UTC` 与 `TZ=Asia/Shanghai` 双绿。
+- ci.yml 含 `workflow_dispatch` 且 ruff 步骤与本地门禁命令逐字一致；`mirror.yml`/`signin.yml` 已不存在。
+- 既有全量保持绿。
+
+**涉及**：`web/app.py`（2 行）、loadtest 相关测试、时区测试文件、`.github/workflows/{ci.yml,mirror.yml,signin.yml}`、声明门禁命令的文档。
+**注意**：本分支改动经合并到 develop 生效；main/server-web 的 workflow 副本要到下一次晋升才跟上（在报告里注明）；CI 首跑验证在合并推送后进行（残余项）。
+
+## Task 8 — 生产机隔离演练预案（docs 交付；不改运行代码；不跑任何 git 命令）
+
+**背景**：用户 2026-09-25 指示——测试机非长期资源，随时可能收回或更换；release-gate §1 要求 server-web 晋升前完成"非生产形态演练（裸机 + 容器两形态）"，需要一份**在生产机上安全执行隔离演练**的预案。
+
+**交付**：`docs/dev/production-isolation-rehearsal-plan-20260925.md`，必须包含：
+1. **隔离原则**：与生产部署全维度隔离——目录树、端口（生产 web 17892 ⇒ 演练改口）、`STATE_DIR`/`LOG_DIR`/DB、cron **不安装**（只手工触发）、systemd 生产服务零接触；红线 = 绝不读写生产的 DB、日志、状态文件、cron 表、服务。
+2. **网络隔离设计（最关键）**：逐一评估现有机制的**机器全局副作用**——`/etc/hosts` 改写（全局，生产同机风险）、iptables REJECT（全局 OUTPUT 链，可打断生产流量）、代理键继承（Task 4 已做 strip + `trust_env=False`）、引擎指向 mock 上游的进程级手段（查 `yiban/engine/egress.py` 与 `YIBAN_*` 键是否支持 API base 覆盖）。给出"仅用进程级机制"的首选方案；机器全局机制若必须用，给时窗 + 即时回滚护栏 + 与生产签窗口（06:31-07:49）错峰的硬规则。
+3. **裸机形态操作单**：环境变量清单（语义照抄 compose 但指向隔离目录）、mock 上游启动与自检、一轮 `run.sh` 全程、判据（rc、`sign-status`、日志三行、记账对平、零真实外联探测）、清理与还原验证。
+4. **容器形态操作单**：docker build → run（端口重映射、卷隔离、内部网络）、web/sched 两进程 RUNNING 判据、与宿主 cron 共存安全。
+5. **证据格式**：映射 release-gate §1 的验收要求（演练证据怎么留、写进哪份文稿）。
+6. **中止与事故预案**：哪些征兆立即中止演练、中止后如何验证生产未受影响。
+
+**验收**：第三方可照执行；每步有判据与回滚；网络隔离方案有代码级依据（引用 `文件:符号`）。
+**约束**：只写这一份文档；**不跑任何 git 命令**（文件保持未跟踪，由协调者提交）；不改任何运行代码；基线 = `D:/code/yiban-wt-m3` 工作树（只读参考）。
+
 ## 批次边界（本批不做）
 
 MF-41 的 push 与发布线统一（用户执行）；MF-43/45/46/47/48 红线批；MF-71/72/75（分类与假成功批）；容量与口径批（MF-56 族）；CLI/前端批（MF-60/61）；semgrep 6 硬门入库（待裁决 #10）；SL-\* 项。以上排批次 1+。
