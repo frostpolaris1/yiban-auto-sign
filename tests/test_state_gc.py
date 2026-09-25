@@ -37,7 +37,7 @@ from yiban import clock, state_gc  # noqa: E402
 
 
 def _day(delta):  #文件名日期是判据，落盘 mtime 不是——所以造文件要连着造名字
-    return (datetime.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
+    return (clock.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
 
 
 class SweepPolicyTest(unittest.TestCase):
@@ -445,7 +445,7 @@ class CleanupResidueTest(unittest.TestCase):
         """系统时间比上次记录前进超过 72h → 跳过清理并告警，且参照点推进到当前时间。"""
         conn = db.get_conn()
         with db._conn_lock:
-            four_days_ago = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
+            four_days_ago = (clock.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("test_clock_fwd", four_days_ago))
             conn.commit()
@@ -477,7 +477,7 @@ class CleanupResidueTest(unittest.TestCase):
         """正常间隔（1h）→ 放行并更新参照。"""
         conn = db.get_conn()
         with db._conn_lock:
-            hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            hour_ago = (clock.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("test_clock_ok", hour_ago))
             ok, note = db._clock_jump_guard(conn, "test_clock_ok")
@@ -488,7 +488,7 @@ class CleanupResidueTest(unittest.TestCase):
         """拨快后 purge_expired_deleted_accounts 跳过本轮；参照点随之推进，下一轮恢复清除。"""
         # 记录一次"上次运行时刻" = 现在 - 10 天 → 本次调用视为跳变
         aid = self._add("13900000005")
-        old = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
         db.set_account_deleted(aid, True, old)  # 已软删且超 7 天保留期
         conn = db.get_conn()
         with db._conn_lock:
@@ -518,11 +518,11 @@ class CleanupResidueTest(unittest.TestCase):
         # 直接模拟"宽限期已过"：把 deleted_at 拨到 10 天前
         conn = db.get_conn()
         with db._conn_lock:
-            old = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+            old = (clock.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("UPDATE users SET deleted=1, deleted_at=? WHERE email=?",
                          (old, "victim2@test.local"))
         # 时钟参照设为正常（1 小时前），避免 M3 误拦
-        hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        hour_ago = (clock.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("purge_users_clock", hour_ago))
