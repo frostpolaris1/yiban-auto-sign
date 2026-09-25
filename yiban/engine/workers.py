@@ -42,7 +42,7 @@ from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, schedule, state_io
 from yiban.engine import round as round_mod
-from yiban.store import db
+from yiban.store import db, queue_store
 
 logger = logging.getLogger("yiban")
 
@@ -213,22 +213,35 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
 
 
 def _reap_dead_worker(slot):
-    """轮末收尸：显式了结某个**已确认死亡**的执行体槽位名下仍 `claimed` 的行。
+    """轮末收尸：显式了结某个**已确认死亡**的执行体槽位名下的在领记录。
 
     判据不是心跳而是"监督进程看到它异常退出（返回码为负）"：这与"租约过期 ⇒ 可能死了"
     是两个强度不同的证据——此处是**已知死亡**，故不必等满 900s。只按槽位身份前缀匹配
     （`claims.reap_abandoned`），已被别人接管的行 owner 已换、不会被误动；代次同时自增，
     任何迟到的旧代写仍被 fence。
 
+    **两套持有记录都要收**：旧领取表 `sign_claims`（`claims.reap_abandoned`）与 v3 任务
+    队列 `sign_tasks`（`queue_store.reap_abandoned`）各自记着自己的在领行，只收一侧会让
+    另一侧的行干等到 `reap_expired` 的租约 + 宽限期。两者身份前缀同源（都取本槽位的稳定
+    槽位名），故同一个 `owner` 传两处。
+
     收尸失败只留日志：它不影响本轮的退出码汇总，下一轮起跑仍会走"租约过期接管"兜住。
     """
+    stable = egress.worker_owner(slot)
     try:
-        n = db.claim_reap_abandoned(egress.worker_owner(slot))
+        n = db.claim_reap_abandoned(stable)
     except Exception as e:
         logger.debug("轮末收尸失败（不影响退出码，下一轮仍可接手）: %s", e)
-        return
+        n = 0
     if n:
         logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领记录已显式了结", slot, n)
+    try:
+        m = queue_store.reap_abandoned(stable)
+    except Exception as e:
+        logger.debug("轮末收尸 v3 任务失败（不影响退出码，下一轮仍可接手）: %s", e)
+        return
+    if m:
+        logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
 
 
 def run_fallback_worker(argv_rest, interval=None, deadline=None):

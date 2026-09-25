@@ -5,9 +5,11 @@
 覆盖：真子进程领取后**持续心跳**的在领行不可被接管；心跳停摆（真进程被 kill）后
    租约到期，接管方成功拿到更大的 epoch，原主用旧 epoch 的收尾/续租/弃权全被 fence；
    监督进程存活而执行体子进程异常死亡的场景下，轮末按"已知死亡"显式收尸（置 failed +
-   放开租约），下一轮可立刻接手。
+   放开租约），下一轮可立刻接手；**v3 队列的对称收尸**——被杀子进程在 `sign_tasks` 里留下的
+   `claimed` 行同样在轮末回退 `pending`、放开租约、`epoch+1`，下一次 `claim_batch` 即可领取。
 对应实现：yiban/store/claims.py（try_claim 的租约判据 / touch / reap_unreported /
-   reap_abandoned）、yiban/engine/workers.py（_await_workers 后的轮末收尸）、
+   reap_abandoned）、yiban/store/queue_store.py（reap_abandoned）、
+   yiban/engine/workers.py（_await_workers 后的轮末收尸）、
    yiban/engine/round.py（心跳与轮末收尸的调用点）。
 关键断言：两条路径都必须**显式**——活执行体持续心跳时接管者必须被拒（不是"也许没
    过期"），停心跳后必须恰好经由"租约过期 + epoch fencing"接手（不是静默并发双领取）。
@@ -37,7 +39,7 @@ import db  # noqa: E402
 
 from yiban import clock  # noqa: E402
 from yiban.engine import workers  # noqa: E402
-from yiban.store import claims  # noqa: E402
+from yiban.store import claims, queue_store  # noqa: E402
 
 #: 真 `subprocess.Popen` 的原始引用：组 3 要把它换成"拉真子进程"的替身，
 #: 替身内部必须用原引用，否则替换会递归。
@@ -83,6 +85,24 @@ db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None
 ok, epoch = db.claim_sign_account(os.environ["E2E_PHONE"], os.environ["E2E_DAY"], owner)
 with open(os.environ["E2E_OUT"], "w", encoding="utf-8") as f:
     json.dump({"ok": bool(ok), "epoch": int(epoch), "owner": owner}, f)
+os.kill(os.getpid(), signal.SIGKILL)   # 模拟崩溃：来不及收尾
+"""
+
+#: v3 队列（`sign_tasks`）的被杀子进程：用 claim_batch 领一条已到期的待领任务后自杀。
+#: owner 与旧表路径同源（稳定槽位名拼 PID/代次），故监督进程用同一稳定名前缀即可收尸。
+_CLAIM_TASK_DIE_SRC = r"""
+import json, os, signal, sys
+sys.path.insert(0, os.environ["E2E_REPO"])
+from yiban import egress
+from yiban.store import db, queue_store
+owner = egress.runtime_owner(os.environ["YIBAN_EXECUTOR_ID"])
+db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None,
+           cleanup=False)
+rows = queue_store.claim_batch(owner, os.environ["E2E_DAY"], (0,))
+with open(os.environ["E2E_OUT"], "w", encoding="utf-8") as f:
+    json.dump({"n": len(rows),
+               "epoch": rows[0]["epoch"] if rows else 0,
+               "owner": owner}, f)
 os.kill(os.getpid(), signal.SIGKILL)   # 模拟崩溃：来不及收尾
 """
 
@@ -269,6 +289,89 @@ class SupervisorReapDeadWorkerE2ETest(_ClaimE2EBase):
         # 下一轮（或另一个执行体）必须能立刻接手，不留给下一轮误判
         self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B)[0],
                         "收尸之后接管必须立刻可行")
+
+
+# ---------------------------------------------------------------------------
+# e2e 组 4：v3 队列（sign_tasks）的对称收尸——被杀子进程的在领任务回退待领
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(os.name == "posix" and hasattr(signal, "SIGKILL"),
+                     "SIGKILL 模拟崩溃仅 POSIX 可用")
+class SupervisorReapDeadWorkerV3E2ETest(_ClaimE2EBase):
+    """真子进程用 `claim_batch` 领取任务后自杀：监督进程轮末把该任务回退待领。
+
+    与组 3 对称：两套持有记录（旧表 `sign_claims` 与 v3 `sign_tasks`）必须在同一个轮末
+    收尸路径里各自处置。不做的话，被杀执行体的在领任务只能等 `reap_expired` 的租约 +
+    宽限期（数十分钟），期间该账号当天无人再签。
+    """
+
+    class _RealChildPopen:
+        """替身 Popen：真的拉起一个 v3 领任务子进程，保留 poll 语义。"""
+
+        def __init__(self, cmd, env=None, cwd=None):
+            src = os.path.join(os.environ["E2E_OUT_DIR"], "claim_task_and_die.py")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write(_CLAIM_TASK_DIE_SRC)
+            self.proc = _REAL_POPEN([sys.executable, src], env=env, cwd=cwd,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+
+        def poll(self):
+            return self.proc.poll()
+
+    def _task_row(self, phone=PHONE, day=DAY):
+        return dict(db.get_conn().execute(
+            "SELECT * FROM sign_tasks WHERE phone=? AND day=?", (phone, day)).fetchone())
+
+    def test_round_end_reaps_claimed_task_of_killed_v3_child(self):
+        """被杀子进程在 v3 队列留下的在领任务，轮末必须回退待领（下一次 claim_batch 可领）。"""
+        out_dir = os.path.join(self.tmp, "child_v3")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, "claim.json")
+        os.environ.update({
+            "E2E_OUT_DIR": out_dir,
+            "E2E_OUT": out_path,
+            "E2E_DB": self.db_file,
+            "E2E_ENV_FILE": self.env_file,
+            "E2E_PHONE": PHONE,
+            "E2E_DAY": DAY,
+            "E2E_REPO": BASE,
+        })
+        self.addCleanup(os.environ.pop, "E2E_OUT_DIR", None)
+        # 前置：一条已到期的待领任务（子进程的 claim_batch 领它）
+        conn = db.get_conn()
+        conn.execute(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+            "state, attempts, lease_until, result, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (PHONE, DAY, 0, "", _ts(seconds=-1), 5, "pending", 0, "", "",
+             _ts(seconds=-60)))
+        conn.commit()
+        acc = SimpleNamespace(phone=PHONE, user_paused=False, owner="u", password="p",
+                              account_id=0)
+        with mock.patch.object(workers.cli_support, "_acquire_run_lock",
+                               return_value=None), \
+                mock.patch.object(workers.accounts_mod, "load_accounts",
+                                  return_value=[acc]), \
+                mock.patch.object(workers.subprocess, "Popen",
+                                  self._RealChildPopen):
+            rc = workers.run_worker_supervisor(1, ["--workers", "1"], slots=[0])
+        self.assertIn(rc, (0, 1, 2, 3, 10), "退出码必须落在契约内")
+        # 前置佐证：子进程确实以运行时身份领到了那条任务（不是它根本没跑起来）
+        with open(out_path, encoding="utf-8") as f:
+            claimed = json.load(f)
+        self.assertEqual(claimed["n"], 1, "子进程必须真的领到那条任务")
+        self.assertIn("worker-0@", claimed["owner"], "持有者是该槽位的运行时身份")
+        row = self._task_row()
+        self.assertEqual(row["state"], "pending",
+                         "死执行体的在领任务必须在轮末回退待领（不是干等租约+宽限期）")
+        self.assertEqual(row["lease_until"], "", "收尸必须放开租约")
+        self.assertEqual(row["owner"], "", "回退后的行不再归任何执行体")
+        self.assertGreater(row["epoch"], claimed["epoch"],
+                           "收尸自增 epoch，fence 原持有者迟到的旧代写")
+        got = queue_store.claim_batch(OWNER_B, DAY, (0,), now=_ts())
+        self.assertEqual([r["phone"] for r in got], [PHONE],
+                         "收尸之后下一次 claim_batch 必须能立刻拿到该任务")
+        self.assertGreater(got[0]["epoch"], row["epoch"], "再领取换最新一代 fencing token")
 
 
 if __name__ == "__main__":
