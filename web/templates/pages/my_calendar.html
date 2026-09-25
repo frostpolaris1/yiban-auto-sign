@@ -1,7 +1,8 @@
-{# 管理端：签到日历（/mine/calendar）。
+{# 管理端：签到日历（在册路径 /my/calendar；`/mine/calendar` 只是 pages.py 旧路径映射里
+   的一条 302，不是端点）。
    正文与用户端 /user/calendar **同一份实现** —— partials/page_sign_calendar.html；
    行为编排在共享组件 components/sign-calendar-view.js（含日志面板 [data-sc-log]）。
-   管理员看的是本人邮箱归属账号（与 /mine 同口径，一人一号）。 #}
+   管理员看的是本人邮箱归属账号（与 /my/account 同口径，一人一号）。 #}
 {% extends "layout_admin.html" %}
 {% from "partials/page_sign_calendar.html" import body with context %}
 

@@ -1,4 +1,4 @@
-/* 管理端「签到日历」页（/mine/calendar）。
+/* 管理端「签到日历」页（在册路径 /my/calendar；/mine/calendar 是 302 旧路径）。
 
    正文由 partials/page_sign_calendar.html 渲染；行为编排在共享组件
    components/sign-calendar-view.js（与用户端 /user/calendar 同一份实现）。

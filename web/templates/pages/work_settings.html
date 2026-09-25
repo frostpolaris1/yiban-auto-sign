@@ -5,8 +5,10 @@
    切换行为由 core.js 承担，本页零新增切换 JS）。深链 ?tab=<id> 走 core.js 共享助手
    （tabDeepLink 初始选中、selectTab 守卫放行后 replaceState 落定，本组标 data-tab-url-own）。
 
-   个人域（改密 / 接收邮件提醒 / 归属邮箱显示偏好）已迁到 /mine；只读容量三分类与
-   连通性 ping 已删除（前者 /accounts 容量卡已有，后者 / 运行状态已有），本页不再重复。
+   个人域（改密 / 接收邮件提醒 / 归属邮箱显示偏好）已迁到管理端「我的账号」（/my/account，
+   旧路径 /mine 走 302）；只读容量三分类与连通性 ping 已删除（前者由「数据总览」页
+   pages/data_dashboard.js 的 capacityText 与 accounts_breakdown 承担，/accounts 页也不展示
+   容量；后者 / 运行状态已有），本页不再重复。
 
    **保存语义（全页统一）**：目录里的字段一律"改动只标脏、点各自卡片的保存按钮才提交"，
    没有哪个字段会在改动瞬间偷偷落盘；带破坏性的按钮（清空收件人 / 恢复默认调度 /
