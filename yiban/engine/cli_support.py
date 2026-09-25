@@ -54,6 +54,14 @@ _RUN_LOCK_WAIT_DEFAULT = 600
 #: 兜底常驻靠探测它决定是否让位（见 `_run_lock_held`）。
 GLOBAL_RUN_LOCK_NAME = "signin-run.lock"
 
+#: 迁移完整性拒启的专用退出码（MF-40）。`docs/dev/cli.md` §3 的 0/1/2/3/10 家族
+#: **只增不改**，4 未被占用。触发链：`init_db(migrate=True)` →
+#: `migrations._verify_migration_integrity` 抛 `db.MigrationIntegrityError`
+#: （版本声称已过某迁移、但该迁移的完成记录或核心产物缺失）→ `runner.main` /
+#: `workers.run_worker_supervisor` 捕获后以此码退出——调用方据此把"schema
+#: 半升级（下次启动重试/人工介入）"与"配置错误(1)"区分开。
+EXIT_SCHEMA_MIGRATION = 4
+
 # CLI 日志装配幂等标记（见 _setup_cli_logging）
 _cli_logging_ready = False
 

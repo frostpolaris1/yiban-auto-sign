@@ -42,6 +42,7 @@ from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, schedule, state_io
 from yiban.engine import round as round_mod
+from yiban.store import db
 
 logger = logging.getLogger("yiban")
 
@@ -93,8 +94,9 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
       **槽位号**算，故清单里**停用/删除的行不会被拉起**，且删中间行不影响其余槽位；
     - `migrate`：False = 本轮的配置预检也不跑 schema 迁移（`--check-config` 只读校验；
       子进程各自按同口径处理，监督进程先迁移会把"只读校验"打成写库）；
-    - 退出码汇总取"最严重"的一个：补签轮判定的「需要补跑」(10) 原样透出且优先于其余判定
-      （它表达调用方必须区分的语义，归一成 0 会让补签轮被静默吞掉），其后才是
+    - 退出码汇总取"最严重"的一个：schema 迁移完整性拒启(4)（MF-40，整轮不可信）最优先，
+      其次补签轮判定的「需要补跑」(10) 原样透出且优先于其余判定
+      （它表达调用方必须区分的语义，归一成 0 会让补签轮被静默吞掉），再其后才是
       真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
       调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致；容器侧不消费本
       退出码（docker/scheduler.py 的补签闸门读状态文件判定）。
@@ -110,6 +112,13 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     # 仍会把目标库改一遍（2026-09-21 测试机 47 E2E）。
     try:
         loaded_accounts = accounts_mod.load_accounts(migrate=migrate)
+    except db.MigrationIntegrityError as e:
+        # 迁移完整性拒启（MF-40）：与 runner.main 同口径——点名缺哪条迁移，独立码 4
+        # （0/1/2/3/10 家族只增不改），不得折叠进配置错误(1)。
+        logger.error(f"schema 迁移完整性校验失败，拒绝启动: {e}")
+        cli_support.report_fatal_error(
+            f"schema 迁移完整性校验失败，拒绝启动: {e}")
+        return cli_support.EXIT_SCHEMA_MIGRATION
     except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         logger.error(f"配置加载失败: {e}")
         cli_support.report_fatal_error(f"配置加载失败: {e}")
@@ -170,6 +179,10 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     for i, rc in enumerate(codes):
         logger.info("执行体 %d/%d（槽位 %d）结束，退出码 %s", i + 1, n, slot_list[i], rc)
 
+    if any(c == cli_support.EXIT_SCHEMA_MIGRATION for c in codes):
+        # 迁移完整性拒启（MF-40）：任一执行体判定 schema 半升级，本轮账目整体不可信
+        # ⇒ 优先于补签判定透出。
+        return cli_support.EXIT_SCHEMA_MIGRATION
     if any(c == _SECOND_RUN_CHECK_NEED for c in codes):
         return _SECOND_RUN_CHECK_NEED
     if any(c == 1 for c in codes):
@@ -255,6 +268,12 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         state_io._write_fallback_alive(now)
         try:
             accounts = accounts_mod.load_accounts()
+        except db.MigrationIntegrityError as e:
+            # 迁移完整性拒启（MF-40）：schema 半升级不是配置错误，独立码 4 透出，
+            # 常驻循环不得吞掉它继续空转。
+            logger.error(f"兜底执行体：schema 迁移完整性校验失败，拒绝启动: {e}")
+            state_io._clear_fallback_alive()
+            return cli_support.EXIT_SCHEMA_MIGRATION
         except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
             logger.error("兜底执行体：配置加载失败: %s", e)
             state_io._clear_fallback_alive()
