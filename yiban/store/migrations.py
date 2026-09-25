@@ -888,6 +888,8 @@ def migrate_v18(conn):
         "updated_at TEXT NOT NULL"
         ")"
     )
+    # result 逐字平移：`retry:`/`final:` 前缀协议是 sign_claims 层的约定，v3 目前不读
+    # sign_tasks.result——将来若加 v3 解析器，必须先按该前缀分档，否则会把两档混为一谈。
     conn.execute(
         "INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
         "priority, state, attempts, lease_until, result, created_at) "
