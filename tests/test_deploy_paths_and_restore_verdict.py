@@ -5,29 +5,34 @@
 标签：J · 运维：部署/备份/发布
 覆盖：`YIBAN_STATE_DIR`/`YIBAN_LOG_FILE` 在 `.env` 与进程环境两种来源下的解析优先级、
     引擎与 web 常量是否跟随 .env、backup.sh `--restore` 的四种结论（通过/篡改/工具崩溃/
-    工具缺失）、备份日志目录跟随配置、pull-prod-backup 脚本的参数与只读契约。
+    工具缺失）、备份日志目录跟随配置、pull-prod-backup 脚本的参数/只读/新鲜度契约与
+    环境变量注入护栏（MF-78：全部行为断言，ssh/scp 桩记录 argv 并真执行远端命令串）。
 对应实现：路径解析在 `yiban/infra/paths.py` 与 `run.sh`/`web/app.py`；恢复核验与结论
     分类在 `scripts/backup.sh` 的 `--restore` 分支。
 关键断言：① 进程环境优先于 .env，空值继续回落到默认值；② 恢复核验退出码 0=通过、
     1=检出篡改、2=无法定论（含工具缺失/崩溃），**退出码 1 不得当"无法核验"用**——
     解释器缺依赖时 Python 也以 1 退出，会把合法演练报成"审计被改写"。
 依赖：`ResolvePathTest`/`StateDirHonoursEnvFileTest` 纯 Python；`RestoreVerdictTest`、
-    `BackupLogDirTest`、`PullProdBackupContractTest` 需要 bash（class 级 skipIf，本机无
-    bash 时整类跳过），后者另有若干条在无 bash 时逐条 skipTest；起 bash 子进程真跑
-    `--restore`（含 tar 解包与 SQLite integrity_check）；不连网络、不需 docker。
+    `BackupLogDirTest` 需要 bash（class 级 skipIf）；`PullProdBackupBehaviorTest`/
+    `PullProdBackupInjectionTest` 起 bash 子进程真跑 pull-prod-backup.sh，ssh/scp 用
+    fakebin 桩替身（桩会真的执行收到的远端命令串，注入探针文件即失守证据），
+    不碰网络、无真实主机名；`--restore` 相关用例含 tar 解包与 SQLite integrity_check。
 
 两条都来自"真实部署者只照 README 做"的演练，且都会给出**错误结论**而不报错：
 `.env` 里的路径过去只对 `run.sh` 那条路生效，web 进程静默回落到 `/var/log/yiban`——
 同机第二份部署因此与第一份共用状态目录、锁与磁盘外锚点。
 """
 
+import datetime
 import io
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -275,80 +280,362 @@ class BackupLogDirTest(unittest.TestCase):
 
 SCRIPT = os.path.join(BASE, "scripts", "pull-prod-backup.sh")
 
+# ---- MF-78 行为测试脚手架：记录 argv 且**真的执行**远端命令串的 ssh/scp 桩 ----
+# 桩把收到的远端命令串原样交给 bash -c 跑：注入若成立（探针文件出现）即护栏失守；
+# 护栏生效 ⇒ 桩根本不会被调用（校验前置），或被调用的串里只有 ls/sha256sum 等合法命令。
+# 主机名与路径全部合成（prod.example / /tmp 夹具），无任何真实凭据或现网名。
 
-class PullProdBackupContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.bash = shutil.which("bash")
-        with io.open(SCRIPT, encoding="utf-8") as f:
-            cls.src = f.read()
+_FAKE_SSH = """#!/bin/bash
+# ssh 桩：记录 argv（\\x1e 分隔），再把最后一个参数当作"远端命令"就地执行。
+{ printf 'SSH'; printf '\\036%s' "$@"; printf '\\n'; } >> "$SSH_STUB_LOG"
+_last=""
+for _a in "$@"; do _last="$_a"; done
+exec bash -c "$_last"
+"""
 
-    def _bash(self, *args):
-        return subprocess.run([self.bash, SCRIPT, *args], capture_output=True)
+_FAKE_SCP = """#!/bin/bash
+# scp 桩：记录 argv；把 host:/path 当作源、绝对路径参数当目标（只支持下载方向）。
+{ printf 'SCP'; printf '\\036%s' "$@"; printf '\\n'; } >> "$SSH_STUB_LOG"
+pos=()
+for _a in "$@"; do
+    case "$_a" in
+        -*) ;;
+        *) pos+=("$_a") ;;
+    esac
+done
+src=""
+dst=""
+for _a in "${pos[@]}"; do
+    case "$_a" in
+        *:*) src="${_a#*:}" ;;
+        */*) dst="$_a" ;;
+    esac
+done
+[ -n "$src" ] && [ -n "$dst" ] || exit 1
+if [ "${SCP_STUB_MODE:-copy}" = "corrupt" ]; then
+    cp -f -- "$src" "$dst" && printf 'GARBAGE\\n' >> "$dst"
+else
+    cp -f -- "$src" "$dst"
+fi
+"""
+
+
+class _PullRunBase(unittest.TestCase):
+    """隔离的"生产端"夹具目录 + fakebin PATH 里的 ssh/scp 桩，子进程真跑脚本。"""
+
+    def setUp(self):
+        self.bash = shutil.which("bash")
+        self.tmp = tempfile.mkdtemp(prefix="pull-prod-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.remote = os.path.join(self.tmp, "remote")   # 生产备份目录替身
+        self.mirror = os.path.join(self.tmp, "mirror")   # 本地镜像目录
+        self.home = os.path.join(self.tmp, "home")
+        self.fakebin = os.path.join(self.tmp, "fakebin")
+        self.pwned = os.path.join(self.tmp, "PWNED")     # 注入被执行探针
+        for d in (self.remote, self.mirror, self.home, self.fakebin):
+            os.makedirs(d, exist_ok=True)
+        self.stub_log = os.path.join(self.tmp, "stub-calls.log")
+        self._fake("ssh", _FAKE_SSH)
+        self._fake("scp", _FAKE_SCP)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("YIBAN_", "REMOTE_", "PULL_", "LOCAL_", "STALE_"))}
+        env.update({
+            "PATH": self._u(self.fakebin) + os.pathsep + os.environ.get("PATH", ""),
+            "SSH_STUB_LOG": self._u(self.stub_log),
+            "YIBAN_SSH_HOST": "prod.example",            # 合成别名
+            "REMOTE_BACKUP_DIR": self._u(self.remote),
+            "LOCAL_MIRROR_DIR": self._u(self.mirror),
+            "HOME": self._u(self.home),
+        })
+        self.env = env
+
+    def _u(self, path):
+        """cygpath 归一（Git Bash 下 Windows 路径进不了 bash 世界），WSL 原样返回。"""
+        conv = subprocess.run([self.bash, "-c", 'cygpath -u "$1" 2>/dev/null || echo "$1"',
+                               "_", path], capture_output=True, text=True, timeout=60)
+        return conv.stdout.strip() or path
+
+    def _fake(self, name, body):
+        path = os.path.join(self.fakebin, name)
+        with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        os.chmod(path, 0o755)
+
+    def _remote_archive(self, days_ago=0, name=None):
+        """在生产端夹具里放一个合成密文包（名字/内容全假），返回文件名。"""
+        n = name or "yiban-%s.tar.gz.gpg" % (
+            (datetime.date.today() - datetime.timedelta(days=days_ago)).isoformat())
+        p = os.path.join(self.remote, n)
+        with open(p, "wb") as f:
+            f.write(os.urandom(64))
+        ts = time.time() - days_ago * 86400
+        os.utime(p, (ts, ts))
+        return n
+
+    def _run(self, args=(), extra_env=None, omit=()):
+        env = dict(self.env)
+        for k in omit:
+            env.pop(k, None)
+        env.update(extra_env or {})
+        r = subprocess.run([self.bash, SCRIPT, *args], capture_output=True,
+                           env=env, cwd=self.tmp, timeout=180)
+        out = ((r.stdout or b"") + (r.stderr or b"")).decode("utf-8", errors="replace")
+        return r.returncode, out
+
+    def _stub_calls(self):
+        """解析桩记录：[('SSH', argv...), ('SCP', argv...)]；未被调用则空列表。"""
+        if not os.path.exists(self.stub_log):
+            return []
+        calls = []
+        with io.open(self.stub_log, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                parts = raw.rstrip("\n").split("\x1e")
+                if parts and parts[0] in ("SSH", "SCP"):
+                    calls.append(parts)
+        return calls
+
+    def _ssh_cmds(self):
+        """每次 ssh 调用实际送达"远端"的命令串。"""
+        return [c[-1] for c in self._stub_calls() if c[0] == "SSH"]
+
+    def _scp_downloads(self):
+        """scp 下载对 (host:path, 本地目标)——桩里唯一可能的方向就是生产→工作站。"""
+        out = []
+        for c in self._stub_calls():
+            if c[0] != "SCP":
+                continue
+            src = [a for a in c[1:] if ":" in a and not a.startswith("-") and "=" not in a]
+            dst = [a for a in c[1:] if "/" in a and ":" not in a
+                   and not a.startswith("-") and "=" not in a]
+            out.append((src[0] if src else "", dst[-1] if dst else ""))
+        return out
+
+
+class PullProdBackupBehaviorTest(_PullRunBase):
+    """既有 10 条 assertIn 源码文本契约（假绿族，MF-78 登记）改造为行为断言。"""
 
     def test_bash_syntax_ok(self):
-        if not self.bash:
-            self.skipTest("无 bash 环境")
         r = subprocess.run([self.bash, "-n", SCRIPT], capture_output=True)
         self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
 
     def test_unknown_arg_exits_2(self):
-        if not self.bash:
-            self.skipTest("无 bash 环境")
-        r = self._bash("--nope")
-        self.assertEqual(r.returncode, 2, "未知参数应返回 2（用法错误）")
+        rc, _ = self._run(("--nope",))
+        self.assertEqual(rc, 2, "未知参数应返回 2（用法错误）")
 
     def test_help_prints_usage(self):
-        if not self.bash:
-            self.skipTest("无 bash 环境")
-        r = self._bash("-h")
+        r = subprocess.run([self.bash, SCRIPT, "-h"], capture_output=True, env=self.env)
         self.assertEqual(r.returncode, 0)
         self.assertIn("用法", r.stdout.decode("utf-8", "replace"))
 
-    def test_readonly_contract_documented(self):
-        """对生产只读是硬契约，必须写在脚本里（远端只允许 ls / sha256sum + scp 下载）。"""
-        self.assertIn("对生产完全只读", self.src)
-        self.assertIn("ls", self.src)
-        self.assertIn("sha256sum", self.src)
+    def test_happy_path_pulls_verifies_and_exits_zero(self):
+        """合法值 ⇒ 行为不变：列目录、取哈希、下载、复算一致后入库并写随行清单。"""
+        self._remote_archive(days_ago=0)
+        self._remote_archive(days_ago=1)
+        rc, out = self._run()
+        self.assertEqual(rc, 0, out)
+        names = sorted(os.listdir(self.mirror))
+        today = datetime.date.today().isoformat()
+        yest = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        want = ["yiban-%s.tar.gz.gpg" % today, "yiban-%s.tar.gz.gpg" % yest]
+        for n in want:
+            self.assertIn(n, names)
+            self.assertIn(n + ".sha256", names)
+        import hashlib
+        with open(os.path.join(self.mirror, want[0]), "rb") as f:
+            got = hashlib.sha256(f.read()).hexdigest()
+        with io.open(os.path.join(self.mirror, want[0] + ".sha256"), encoding="utf-8") as f:
+            self.assertEqual(f.read().split()[0], got, "随行清单必须是本地复算的哈希")
 
+    def test_remote_side_is_readonly_ls_and_sha256_only(self):
+        """只读契约的**行为**版：送达远端的每条命令只许 ls/sha256sum 与 head/awk 管道，
+        且 scp 只有下载方向（host:path → 本地镜像）。读源码文本证明不了这个。"""
+        self._remote_archive()
+        rc, out = self._run()
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self._ssh_cmds(), "至少要有一次远端 ls")
+        for cmd in self._ssh_cmds():
+            for seg in cmd.split("|"):
+                verb = seg.strip().split()[0]
+                self.assertIn(verb, ("ls", "sha256sum", "head", "awk"),
+                              "远端出现白名单外动词：%s" % cmd)
+            # 只允许吞诊断用的 2>/dev/null；其余重定向/复合执行片段一律算越界
+            stripped = cmd.replace("2>/dev/null", "")
+            for bad in (";", ">", "<", "&&", "||", "`", "$(", "rm ", "mv ", "dd "):
+                self.assertNotIn(bad, stripped, "远端命令串含写入/复合执行片段：%s" % cmd)
+        downloads = self._scp_downloads()
+        self.assertTrue(downloads, "应有 scp 下载")
+        for src, dst in downloads:
+            self.assertIn("prod.example:", src)
+            self.assertTrue(dst.startswith(self._u(self.mirror)),
+                            "scp 目标必须在本地镜像目录：%s" % dst)
+
+    def test_plaintext_archives_are_never_pulled(self):
+        """只搬密文：明文 yiban-*.tar.gz 即使在生产目录里，也不得出现在任何远端命令
+        或 scp 下载中。"""
+        self._remote_archive(days_ago=0, name="yiban-%s.tar.gz" %
+                             datetime.date.today().isoformat())
+        self._remote_archive(days_ago=0)
+        rc, out = self._run()
+        self.assertEqual(rc, 0, out)
+        for src, _dst in self._scp_downloads():
+            self.assertTrue(src.endswith(".tar.gz.gpg"), "拉了非密文件：%s" % src)
+        plain = [n for n in os.listdir(self.mirror)
+                 if n.endswith(".tar.gz") or (n.endswith(".gpg") and ".tar.gz.gpg" not in n)]
+        self.assertEqual(plain, [], "明文包混进镜像目录：%s" % plain)
+
+    def test_corrupted_download_is_quarantined_as_bad(self):
+        """三向哈希校验的行为版：下载内容与远端哈希不一致 ⇒ 改名 .bad 保留证据、
+        不入正式件、整轮非 0 退出。"""
+        self._remote_archive()
+        rc, out = self._run(extra_env={"SCP_STUB_MODE": "corrupt"})
+        self.assertEqual(rc, 1, out)
+        bad = [n for n in os.listdir(self.mirror) if n.endswith(".bad")]
+        self.assertEqual(len(bad), 1, "应留下且只留下一份 .bad：%s" % out)
+        self.assertEqual([n for n in os.listdir(self.mirror) if n.endswith(".tar.gz.gpg")],
+                         [], "校验失败的文件不得以正式名入库")
+        self.assertIn("校验失败", out)
+
+    def test_status_flags_stale_remote(self):
+        """新鲜度自检的行为版①：本地与远端同为 10 天前的副本（不落后）、但远端超过
+        STALE_DAYS 未更新 ⇒ --status 非 0 并点名疑似中断（备份链路停摆告警）。"""
+        old = self._remote_archive(days_ago=10)
+        shutil.copyfile(os.path.join(self.remote, old), os.path.join(self.mirror, old))
+        rc, out = self._run(("--status",))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("疑似中断", out)
+
+    def test_status_flags_local_behind_remote(self):
+        """新鲜度自检的行为版②：本地落后于远端 ⇒ 非 0 并点名落后。"""
+        import hashlib
+        old = self._remote_archive(days_ago=5)
+        self._remote_archive(days_ago=0)
+        data = open(os.path.join(self.remote, old), "rb").read()
+        dst = os.path.join(self.mirror, old)
+        with open(dst, "wb") as f:
+            f.write(data)
+        with io.open(dst + ".sha256", "w", encoding="utf-8", newline="\n") as f:
+            f.write("%s  %s\n" % (hashlib.sha256(data).hexdigest(), old))
+        rc, out = self._run(("--status",))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("落后于远端", out)
+
+    def test_incremental_backfill_second_run_redoes_nothing(self):
+        """补齐式增量的行为版：首轮把缺的历史副本全部拉回，次轮零下载、按已同步收尾。"""
+        self._remote_archive(days_ago=0)
+        self._remote_archive(days_ago=1)
+        self._remote_archive(days_ago=2)
+        rc, out = self._run()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self._scp_downloads()), 3, "首轮应补齐 3 份")
+        scp_before = len([c for c in self._stub_calls() if c[0] == "SCP"])
+        rc2, out2 = self._run()
+        self.assertEqual(rc2, 0, out2)
+        self.assertEqual(len([c for c in self._stub_calls() if c[0] == "SCP"]),
+                         scp_before, "次轮不该再下载")
+        self.assertIn("已同步 3 份", out2)
+
+    def test_max_fetch_caps_download_count(self):
+        self._remote_archive(days_ago=0)
+        self._remote_archive(days_ago=1)
+        self._remote_archive(days_ago=2)
+        rc, out = self._run(extra_env={"PULL_MAX_FETCH": "2"})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self._scp_downloads()), 2, "MAX_FETCH 上限必须生效：%s" % out)
+
+    @unittest.skipUnless(platform.system() == "Linux", "生产机防呆判定依赖 uname -s=Linux")
     def test_refuses_to_run_on_production_host(self):
-        """防呆：别在生产机自己身上"做异机副本"。"""
-        self.assertIn("/opt/yiban-auto-sign", self.src)
-        self.assertIn("异机副本必须在另一台机器上拉取", self.src)
-
-    def test_only_pulls_ciphertext(self):
-        """只搬密文（.tar.gz.gpg），绝不把明文 tar.gz 拉回工作站。"""
-        self.assertIn("yiban-*.tar.gz.gpg", self.src)
-        self.assertNotIn("yiban-*.tar.gz\"", self.src.replace("yiban-*.tar.gz.gpg", ""))
-
-    def test_three_way_hash_check(self):
-        """远端哈希 / 下载后复算 / 随行清单三处一致才入库，失败改名 .bad 保留证据。"""
-        self.assertIn("_remote_sha256", self.src)
-        self.assertIn(".bad", self.src)
-
-    def test_freshness_selfcheck_present(self):
-        """新鲜度自检：本地落后于远端、或远端本身停更 → 非 0 退出（供定时任务告警）。"""
-        self.assertIn("freshness_check", self.src)
-        self.assertIn("STALE_DAYS", self.src)
-        self.assertIn("生产的每日备份链路疑似中断", self.src)
-        self.assertIn("--status", self.src)
-
-    def test_incremental_backfill_documented(self):
-        """补齐式增量是"开机时间不定"能成立的前提，必须写进脚本说明。"""
-        self.assertIn("增量", self.src)
-        self.assertIn("补齐", self.src)
+        """防呆的行为版：本机存在 /opt/yiban-auto-sign（=生产机特征）⇒ 拒绝、非 0、
+        零远端调用。"""
+        sentinel = "/opt/yiban-auto-sign"
+        if os.path.exists(sentinel):
+            self.skipTest("%s 已存在（可能真在生产机上）" % sentinel)
+        if not os.access("/opt", os.W_OK):
+            self.skipTest("/opt 不可写，无法模拟生产机特征")
+        os.makedirs(sentinel)
+        self.addCleanup(os.rmdir, sentinel)
+        self._remote_archive()
+        rc, out = self._run()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("异机副本必须在另一台机器上拉取", out)
+        self.assertEqual(self._stub_calls(), [], "防呆生效后不得有任何远端调用")
 
     def test_default_mirror_dir_is_neutral(self):
-        """默认镜像目录不得写入某个运维者的个人目录布局（本仓库公开）。
+        """默认镜像目录落在 $HOME/yiban-prod-mirror（行为验证：不传 LOCAL_MIRROR_DIR，
+        真 HOME 下应出现镜像与日志），不得内嵌任何运维者个人目录布局。"""
+        self._remote_archive()
+        rc, out = self._run(omit=("LOCAL_MIRROR_DIR",))
+        self.assertEqual(rc, 0, out)
+        default_mirror = os.path.join(self.home, "yiban-prod-mirror")
+        self.assertTrue(os.path.isfile(os.path.join(default_mirror, "pull.log")),
+                        "默认镜像目录未按 $HOME/yiban-prod-mirror 创建：%s" % out)
+        self.assertTrue([n for n in os.listdir(default_mirror)
+                         if n.startswith("yiban-") and n.endswith(".tar.gz.gpg")],
+                        "默认镜像目录里应有密文副本")
+        # 防回退靠行为兜住：若有人把默认值改回个人目录（D:/code/... 等），此断言即红。
 
-        2026-09-10 复检：脚本首版把 Windows 默认写成 D:/code/backups/...（本机路径），
-        属个人环境信息泄漏到公开仓库；现改为跨平台中性的 $HOME/yiban-prod-mirror，
-        需要换盘由 LOCAL_MIRROR_DIR 覆盖。此断言防止回退。
-        """
-        self.assertIn('LOCAL_MIRROR_DIR="${LOCAL_MIRROR_DIR:-$HOME/yiban-prod-mirror}"',
-                      self.src)
-        self.assertNotIn("D:/code/", self.src)
-        self.assertNotIn("C:/Users/", self.src)
+
+class PullProdBackupInjectionTest(_PullRunBase):
+    """MF-78 活体反例：三个进远端命令串的环境变量都必须被白名单挡在门外（rc=3，
+    任何远端命令都不许被执行——ssh 桩记录必须为空、注入探针文件必须不出现）。"""
+
+    def _assert_refused(self, extra_env, var_name, rc_expected=3):
+        rc, out = self._run(extra_env=extra_env)
+        self.assertEqual(rc, rc_expected,
+                         "%s 非法值必须拒绝执行并退 %d（实际 rc=%d）：%s"
+                         % (var_name, rc_expected, rc, out))
+        self.assertIn(var_name, out, "stderr 必须点名违规变量 %s：%s" % (var_name, out))
+        self.assertEqual(self._stub_calls(), [],
+                         "校验必须前置：%s 非法时不得有任何 ssh/scp 调用" % var_name)
+        self.assertFalse(os.path.exists(self.pwned),
+                         "注入命令被执行了！探针文件 %s 出现" % self.pwned)
+
+    def test_remote_dir_injection_refused_before_any_ssh(self):
+        """登记表原文反例：REMOTE_BACKUP_DIR='x; id #' 一步成立注入——必须拒绝。"""
+        self._assert_refused({"REMOTE_BACKUP_DIR": "x; touch %s #" % self._u(self.pwned)},
+                             "REMOTE_BACKUP_DIR")
+
+    def test_max_fetch_injection_refused(self):
+        self._assert_refused({"PULL_MAX_FETCH": "1; id"}, "PULL_MAX_FETCH")
+
+    def test_ssh_host_option_injection_refused(self):
+        """本机 RCE 臂：-oProxyCommand 作单 argv 可被 ssh 解析成执行体——必须拒绝，
+        连 ssh 都不许被调起来。"""
+        self._assert_refused(
+            {"YIBAN_SSH_HOST": "-oProxyCommand=touch %s" % self._u(self.pwned)},
+            "YIBAN_SSH_HOST")
+
+    def test_reflowed_filename_with_quote_is_quarantined(self):
+        """远端 ls 文件名回流支：含单引号的"文件名"可闭合 :93-96 的 sha256sum 拼接。
+        白名单校验必须在进入任何远端命令/本地变量之前把它隔离；合法件照常拉取，
+        整轮因隔离计数而非 0（fail-closed，不静默）。"""
+        self._remote_archive(days_ago=1)  # 合法件先落，保证 ls 列表非空
+        # 合成注入文件名：含单引号与分号（闭合 sha256sum 的单引号拼接），touch 走相对
+        # 路径——桩 ssh 的 cwd 继承自脚本（=self.tmp），命中 PWNED 探针；文件名本身不含 /。
+        crafted = "yiban-2026-09-20.tar.gz.gpg'; touch PWNED; echo x #.tar.gz.gpg"
+        with open(os.path.join(self.remote, crafted), "wb") as f:
+            f.write(b"not-really-a-backup")
+        rc, out = self._run()
+        self.assertFalse(os.path.exists(self.pwned),
+                         "回流文件名里的注入被执行了（护栏失守）：%s" % out)
+        for cmd in self._ssh_cmds():
+            self.assertNotIn("touch", cmd, "远端命令串被回流名污染：%s" % cmd)
+        self.assertEqual(rc, 1, "隔离了非法回流行 ⇒ 整轮必须非 0（fail-closed）：%s" % out)
+        legit = "yiban-%s.tar.gz.gpg" % (
+            datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        self.assertIn(legit, os.listdir(self.mirror), "合法件仍应正常拉取：%s" % out)
+        self.assertIn(crafted[:20], out, "隔离动作必须留痕可查")
+
+    def test_valid_values_still_pass_whitelist(self):
+        """护栏不得误伤合法配置：默认值与嵌套路径都要放行（行为=整轮 rc 0）。"""
+        for good in ("/var/backups", self._u(self.remote), self._u(self.remote) + "/"):
+            rc, out = self._run(("--status",), extra_env={"REMOTE_BACKUP_DIR": good})
+            self.assertNotEqual(rc, 3, "合法值 %r 被误拒：%s" % (good, out))
+        for good in ("1", "30"):
+            rc, out = self._run(("--status",), extra_env={"PULL_MAX_FETCH": good})
+            self.assertNotEqual(rc, 3, "合法值 %r 被误拒：%s" % (good, out))
+        for good in ("yiban", "prod.example", "host-1.internal"):
+            rc, out = self._run(("--status",), extra_env={"YIBAN_SSH_HOST": good})
+            self.assertNotEqual(rc, 3, "合法值 %r 被误拒：%s" % (good, out))
 
 
 if __name__ == "__main__":
