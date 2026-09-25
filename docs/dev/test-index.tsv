@@ -176,6 +176,9 @@ tests/test_backup_e2e.py	RotationGuardTest.test_today_archive_deleted_by_rotatio
 tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_bash_syntax_ok	J	bash	??
 tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_help_exits_zero	J	bash	??
 tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_require_encrypt_then_unknown_is_rejected	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_restore_with_extra_arg_is_rejected	J	bash	`--restore a b c` 多出的 c 必须报错，不得被静默丢弃。
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_restore_with_missing_target_is_rejected_with_message	J	bash	`--restore <库>` 只剩 1 个位置参数：不得因解析尾部 shift 归零而静默退 1。
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_restore_with_two_args_is_rejected_with_message	J	bash	`--restore a b`（包不存在）：拒绝且带明确诊断，不静默中止。
 tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_restore_without_args_is_rejected	J	bash	??
 tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_unknown_first_flag_does_not_hide_later_require_encrypt	J	bash	旧实现只看 ${1}：首位不是旗标时次位的 --require-encrypt 被静默忽略。
 tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_unknown_flag_is_rejected	J	bash	??
@@ -578,9 +581,11 @@ tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_pri
 tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_restore_covers_legacy_mismatched_rows	L	-	??
 tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_restore_picks_single_latest_row	L	-	??
 tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_row_is_purged_after_owner_is_hard_deleted	L	-	??
-tests/test_demo_data_guard.py	DemoDataGuardTest.test_audit_failure_aborts_purge	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_audit_failure_aborts_purge	J	-	留痕写不进去即放弃：业务表零删除（audit_logs 是被重建的审计链本身）。
 tests/test_demo_data_guard.py	DemoDataGuardTest.test_correct_fingerprint_clears_and_leaves_one_audit_row	J	-	??
 tests/test_demo_data_guard.py	DemoDataGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_purge_begin_trail_survives_final_state	J	-	清空留痕写在 audit_logs 清零之后，必须存活到最终状态（不再被自己删掉）。
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_refusal_does_not_create_db_file	J	-	拒绝路径不得留下新库文件（确认门在 init_db 之前，指纹读取不建库）。
 tests/test_demo_data_guard.py	DemoDataGuardTest.test_unknown_argument_errors	J	-	??
 tests/test_demo_data_guard.py	DemoDataGuardTest.test_wrong_fingerprint_is_refused	J	-	??
 tests/test_demo_data_guard.py	DemoDataGuardTest.test_yes_alone_is_not_enough	J	-	??
@@ -1093,6 +1098,8 @@ tests/test_ledger_check.py	LedgerCheckTest.test_translated_row_counts_toward_rec
 tests/test_ledger_check.py	LedgerCheckTest.test_unexpected_exception_exits_two	C	-	非 sqlite 异常也归"无法定论"——`1` 只留给明确探测到的差异。
 tests/test_ledger_check.py	LedgerCheckTest.test_unexpected_exception_message_is_sanitized	C	-	兜底打印的异常消息含凭据形态时必须脱敏（与迁移侧同一口径）。
 tests/test_ledger_check.py	LedgerCheckTest.test_zero_coverage_exits_two	C	-	状态目录在、但一天的处理文件都没有 ⇒ 无法定论，不是平账。
+tests/test_loadtest_isolation.py	test_account_owners_missing_db_returns_none	??	-	??
+tests/test_loadtest_isolation.py	test_account_owners_reads_special_char_path	??	-	含空格的库路径也要能只读读到 owner（只读 URI 经 pathlib 转义，不拼裸路径）。
 tests/test_loadtest_isolation.py	test_apply_iptables_reject_is_front_inserted	??	-	??
 tests/test_loadtest_isolation.py	test_assert_accounting_balanced_and_imbalanced	??	-	??
 tests/test_loadtest_isolation.py	test_capacity_probe_main_aborts_on_accounting_imbalance	??	-	常规层闭合「记账不等 ⇒ 非零」：把编排里除 verify_accounting 外的副作用全打桩，
@@ -1100,6 +1107,7 @@ tests/test_loadtest_isolation.py	test_concurrency_probe_build_proc_env_strips_pr
 tests/test_loadtest_isolation.py	test_concurrency_probe_mem_abort_not_reported_when_meminfo_unreadable	??	-	内存不可读时不得给出「内存饱和」的假结论：显式报错退出、非零。
 tests/test_loadtest_isolation.py	test_dry_run_no_iptables_still_ok	??	-	dry-run 不落任何改动：--no-iptables 无需知情标记也应放行（保持既有冒烟用例契约）。
 tests/test_loadtest_isolation.py	test_loadtest_session_trusts_env_false	??	-	??
+tests/test_loadtest_isolation.py	test_loadtest_target_refuses_missing_db	??	-	库缺失 ⇒ 归属读不到 ⇒ 目标门拒绝（fail-closed），不再被空列表空过放行。
 tests/test_loadtest_isolation.py	test_mock_env_requires_egress_probe_ip	??	-	??
 tests/test_loadtest_isolation.py	test_mock_state_counts_silently_dropped_log_writes	??	-	JSONL 落盘失败不再被静默吞掉：total 记账、durable 落盘、log_errors 丢弃分别计数。
 tests/test_loadtest_isolation.py	test_mock_stats_excludes_ops_and_balance_holds	??	-	端到端对平：真起 mock（回环/明文/端口0），发出 N 条请求 ⇒ /__stats.total==N==JSONL 行数；
@@ -1700,8 +1708,11 @@ tests/test_purge_guard.py	ContentFingerprintTest.test_parts_drive_digest	G	-	??
 tests/test_purge_guard.py	DbContentFingerprintTest.test_different_scale_changes_fingerprint	G	-	行数/规模差异必须改变指纹——这正是它区分 demo 库与生产库的地方。
 tests/test_purge_guard.py	DbContentFingerprintTest.test_missing_db_does_not_create_file	G	-	??
 tests/test_purge_guard.py	DbContentFingerprintTest.test_same_target_is_stable_but_content_sensitive	G	-	??
+tests/test_purge_guard.py	DbContentFingerprintTest.test_special_char_path_is_still_readable	G	-	含空格的路径也要能只读到行数（只读 URI 经 pathlib 转义，不拼裸路径）。
 tests/test_purge_guard.py	DbContentFingerprintTest.test_summary_mentions_target_and_counts	G	-	??
+tests/test_purge_guard.py	DbContentFingerprintTest.test_unreadable_target_is_marked_not_readable	G	-	只读连接打不开时摘要须标「不可读」，不得退化成读写连接读出数字。
 tests/test_purge_guard.py	WritePurgeAuditTest.test_audit_failure_returns_false	G	-	??
+tests/test_purge_guard.py	WritePurgeAuditTest.test_connection_pointing_elsewhere_is_refused	G	-	单例连接指向别的库时不得把留痕写过去：按实际连接判定，返回 False。
 tests/test_purge_guard.py	WritePurgeAuditTest.test_missing_db_returns_false	G	-	??
 tests/test_purge_guard.py	WritePurgeAuditTest.test_success_writes_one_row	G	-	??
 tests/test_pw_gate_tiers.py	DelayAckTest.test_full_档不要求该字段	E	-	??
@@ -2104,6 +2115,7 @@ tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_two_operational_disciplin
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_audit_failure_aborts_wipe	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_correct_fingerprint_wipes_and_audits	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_refusal_does_not_create_db_file	J	-	拒绝路径不得留下新库文件（确认门在 init_db 之前，指纹读取不建库）。
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_refuses_db_with_non_loadtest_accounts	J	-	误指生产库：库内账号 owner 不是压测域 ⇒ 即便指纹匹配也拒绝且零删除。
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_wrong_fingerprint_is_refused	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_yes_alone_is_not_enough	J	-	??
@@ -2249,9 +2261,11 @@ tests/test_state_purge_guard.py	BackupCopyProtectionTest.test_plan_excludes_back
 tests/test_state_purge_guard.py	BackupCopyProtectionTest.test_sqlite_backup_copy_is_not_deleted_by_state_cleanup	D	-	文件名叫得像过期按日文件，但内容是 SQLite 库 ⇒ 必须保留（备份机制自管理）。
 tests/test_state_purge_guard.py	CliStateGuardTest.test_audit_failure_aborts_state_yes	D	-	??
 tests/test_state_purge_guard.py	CliStateGuardTest.test_correct_fingerprint_cleans_and_audits	D	-	??
+tests/test_state_purge_guard.py	CliStateGuardTest.test_fingerprint_covers_empty_cred_state	D	-	空 cred-state.json 属将删清单：它的出现必须改变 --yes 指纹（确认覆盖到它）。
 tests/test_state_purge_guard.py	CliStateGuardTest.test_wrong_fingerprint_is_refused	D	-	??
 tests/test_state_purge_guard.py	CliStateGuardTest.test_yes_without_fingerprint_is_refused	D	-	??
 tests/test_state_purge_guard.py	StateCleanupArgvTest.test_default_still_cleans_for_cron	D	-	??
+tests/test_state_purge_guard.py	StateCleanupArgvTest.test_dry_run_covers_empty_cred_state	D	-	空 cred-state.json 的删除必须出现在 dry-run 清单里（将删与实际一致）。
 tests/test_state_purge_guard.py	StateCleanupArgvTest.test_dry_run_reports_and_does_not_delete	D	-	??
 tests/test_state_purge_guard.py	StateCleanupArgvTest.test_unknown_argument_errors_and_deletes_nothing	D	-	??
 tests/test_static_routes.py	FaviconRouteTest.test_absent_returns_404	E	-	??
