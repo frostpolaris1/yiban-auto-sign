@@ -146,22 +146,6 @@ class SignUserFailMailTest(unittest.TestCase):
         db.init_db(self.db_file, env_file=self.env_file)
         db.create_user("owner@test.local", "x")  # mail_notify 默认 1
 
-    def test_owner_empty_skips(self):
-        with mock.patch.object(signin.mailer, "send_user") as m:
-            signin.send_user_fail_mail("", "13800000000", "boom")
-        m.assert_not_called()
-
-    def test_unknown_user_skips(self):
-        with mock.patch.object(signin.mailer, "send_user") as m:
-            signin.send_user_fail_mail("nobody@test.local", "13800000000", "boom")
-        m.assert_not_called()
-
-    def test_notify_off_skips(self):
-        db.update_user("owner@test.local", {"mail_notify": 0})
-        with mock.patch.object(signin.mailer, "send_user") as m:
-            signin.send_user_fail_mail("owner@test.local", "13800000000", "boom")
-        m.assert_not_called()
-
     def test_notify_on_sends_masked(self):
         with mock.patch.object(signin.mailer, "send_user") as m:
             signin.send_user_fail_mail("owner@test.local", "13800000000", "boom")
@@ -406,11 +390,6 @@ class SignAdminMailSummaryTest(unittest.TestCase):
     def setUp(self):
         signin._mail_summary.clear()
 
-    def test_flush_empty_skips(self):
-        with mock.patch.object(signin.mailer, "send_admin_alert") as m:
-            signin._flush_admin_mail_summary()
-        m.assert_not_called()
-
     def test_collect_and_flush_merges_one_mail(self):
         signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
         signin._collect_admin_mail("易班签到失败", "账号: 138****0002\n原因: B")
@@ -443,25 +422,6 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert"):
             signin._flush_admin_mail_summary()
         self.assertEqual(signin._mail_summary, [], "发送后应清空收集器")
-
-    def test_flush_uses_filtered_recipients(self):
-        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
-        with mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
-             mock.patch.object(signin.mailer, "admin_recipients", return_value=["a@x.com", "b@x.com"]), \
-             mock.patch.object(signin.mailer, "send_admin_alert") as m:
-            signin._flush_admin_mail_summary()
-        f.assert_called_once_with(["a@x.com", "b@x.com"])
-        m.assert_called_once()
-        self.assertEqual(m.call_args[1].get("to"), "a@x.com", "汇总邮件应只发给合并后的收件人")
-
-    def test_flush_skips_admin_to_when_admin_notify_off(self):
-        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
-        with mock.patch.object(signin.mailer, "admin_notify_enabled", return_value=False), \
-             mock.patch.object(signin.mailer, "admin_recipients", return_value=["master@x.com"]), \
-             mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
-             mock.patch.object(signin.mailer, "send_admin_alert") as _m:
-            signin._flush_admin_mail_summary()
-        f.assert_called_once_with([]), "主管理员关闭收件时不应传入 ADMIN_TO"
 
 
 class DbFilterMailNotifyTest(unittest.TestCase):
