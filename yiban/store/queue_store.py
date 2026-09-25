@@ -7,7 +7,8 @@
   SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）；
   领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
-- `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
+- `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；只对
+  未了结行生效（终态行不得被重排复活，否则会被重新领取＝当日再登录一次）；
 - `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
 - `steal_shards`：死主分片接管——把心跳过期执行体分片集内 `owner` 为**该死主**的
@@ -81,6 +82,11 @@ STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
 SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
 OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
+#: 可被 `requeue_task` 重排回 `pending` 的状态：所有**未了结**态（`OPEN_STATES`）。
+#: 终态（`done` / `skipped`）绝不许复活——复活会被 `claim_batch` 重新领取，等于同一
+#: 账号当日再登录一次，"当日是否了结"的闸门也会凭空又出现待办。`pending` 行重排只是
+#: 刷新落点/优先级（幂等），保留它以免调用方按"先看再排"写出跨语句窗口。
+REQUEUEABLE_STATES = OPEN_STATES
 
 
 def _queue_conn():
@@ -201,19 +207,27 @@ def settle_tasks(owner, day, outcomes, state=STATE_DONE, epochs=None):
 
 
 def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
-    """重试重排：返回受影响行数（0 = 该行不存在或被 token 拒）。
+    """重试重排：返回受影响行数（0 = 该行不存在 / 态不允许 / 被 token 拒）。
 
     `priority` 递增让重试任务排在新任务之后（活号优先）；`attempts` 落库后即**跨执行体
     共享**，接手者不再从 0 起算重试预算。任务回到 `pending` 意味着上一轮的 result 不再
     代表当前状态，故用传入值覆盖（缺省清空）。
 
+    **只重排未了结的行**（`OPEN_STATES`：`pending` / `claimed` / `failed` / `stolen`）：重排
+    的语义是"这次尝试要再来一遍"，而已了结（`done` / `skipped`）的行一旦被改回 `pending`
+    就会被 `claim_batch` 重新领取——那是一次重复真实登录，且"当日是否了结"的闸门
+    （`pending_count`）会凭空又出现待办。迟到的重排（持有者已被接管后才到达）正是这么
+    把 done 复活的。
+
     `epoch` 给了就带 `epoch=?`：只有当前持有者能把在飞任务重排回 `pending`，
     被接管者不得把接管者的任务重新投回池子（那会让同一账号被第三个执行体再领一次）。
+    生产调用方（执行体）必须传它；缺省 `None` 只为迁移期调用方与既有测试保留。
     """
     sql = ("UPDATE sign_tasks SET state=?, run_at=?, priority=priority+?, "
-           "attempts=attempts+1, lease_until='', result=? WHERE phone=? AND day=?")
+           "attempts=attempts+1, lease_until='', result=? "
+           f"WHERE phone=? AND day=? AND state IN ({','.join('?' for _ in REQUEUEABLE_STATES)})")
     params = [STATE_PENDING, run_at, int(priority_delta),
-              (result or "")[:RESULT_MAX], phone, day]
+              (result or "")[:RESULT_MAX], phone, day, *REQUEUEABLE_STATES]
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
