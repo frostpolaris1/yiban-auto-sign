@@ -148,9 +148,12 @@
     if (!ctx.isMaster) return Promise.resolve();   // 非主管理员不拉（整卡已禁用，避免渲染出"看似可编辑"的行）
     return YB.api("GET", "/api/mail-config").then(function (data) {
       // admin_to 是后端打码后的展示串：未配置时给 "<未配置>" 哨兵，单地址形如 abc***@x.com。
-      // ⚠ 别把它当"已完全脱敏"：本分支 _mask_addr 按第一个 @ 切分，逗号分隔的多地址里
-      // 第二项起会原样回显（实测 `alp******@example.test,bravo-two@example.test`）。
-      // 因此只可整串上屏展示，不得拆分、再分发或拼进其它文案/请求。
+      // 打码口径见 yiban/mail/config.py 的 _mask_addr：逗号分隔的多地址是**逐项**打码的
+      // （先按逗号拆开再递归），不存在"第二项起原样回显"；该口径由
+      // tests/test_masking_ssrf_gaps.py 的 MailAddrMaskingTest 守着。
+      // 仍未消掉的两点：打码只削用户名、**域名整段保留**，而且这串是展示态、不是可用地址，
+      // 因此只可整串上屏展示，不得拆分、再分发或拼进其它文案/请求（把它写回配置就等于
+      // 用打码串覆盖真值）。
       // 故"是否已配置"只排除哨兵与空串 —— 用 clean() 会把打码真值也当成空（那是给输入框用的口径）。
       var toShown = String((data && data.admin_to) || "");
       snap = {
