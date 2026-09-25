@@ -11,7 +11,7 @@
 2. **git 纪律**：git 在 Git Bash 跑；**禁止 push**；禁止 `git stash pop/apply`；禁止 `git add -A`（仓库有 0 字节 `nul` 文件须保持未跟踪）；逐文件 add。
 3. **门禁环境**：pytest 与 ruff 只在 WSL 跑（Windows venv 全量不可复现，登记表 MF-37）：
    - `wsl -e bash -c "cd /mnt/d/code/yiban-wt-m3 && ~/.venv-yiban-wsl/bin/python -m pytest <目标> -q"`
-   - `wsl -e bash -c "cd /mnt/d/code/yiban-wt-m3 && ~/.venv-yiban-wsl/bin/python -m ruff check yiban/ tests/ scripts/ --quiet"`
+   - `wsl -e bash -c "cd /mnt/d/code/yiban-wt-m3 && ~/.venv-yiban-wsl/bin/python -m ruff check yiban/ tests/ scripts/ web/ --quiet"`（Task 7 / MF-39 起纳入 `web/`，与 ci.yml 的 Lint 步骤逐字同口径；旧声明见 m1/m2 计划与登记表，属历史记录不改）
    - 全量基线 **2928 passed / 4 skipped / 0 failed**（约 60s）；全量红时先按 MF-38 单文件串行复跑再下结论（ManualSignExitTest 有跨文件干扰史）。每个任务提交前跑一次全量。
 4. **行为契约不得破坏**：CLI/脚本退出码族语义保持（特别是 `run.sh` 的 rc 契约与 `yiban/cli` 0/1/2/3/10）；`.env` 既有键语义不变；引擎代理出口（`yiban/engine/egress.py` 的 `YIBAN_PROXY*`）行为不变。
 5. **MF-91 元纪律（先行生效）**：凡验收不变量是"判据/闸门"，修复必须附带至少一条**活体反例**测试——把输入改坏 ⇒ 判据必须红。没有反例的闸门测试视为未完成。
