@@ -196,6 +196,8 @@ SUM 行：3042 / 708 / — / 471 / 25。
 
 ## 5. 剔除清单（三档）
 
+> **2b 执行结果见 §11（实际删除/保留逐行回填）。** 本节表格为 2a 原判，指挥者裁定覆盖见 §10 的「→ 裁定」行。
+
 ### 5.1 T1 确定可删 — 8 条（机械特征明确，且不损失安全/e2e 覆盖）
 
 | # | 用例 | 类 | 理由（已抽读正文） |
@@ -309,9 +311,106 @@ SUM 行：3042 / 708 / — / 471 / 25。
 4. 「rc 契约族」是否含 `test_host_exit_semantics.py` / `test_cli_contract.py` / `test_runsh_env_parse.py` 需指挥者裁定；
    本台账按**保守纳入禁区**处理（0 删）。
 
-## 10. 待指挥者裁定项
+## 10. 待指挥者裁定项（→ 后为 2b 收到的裁定）
 
 1. T3-b 前端源文本块是否整块放行（约 190 条）？还是只放行「纯文案」子集？
+   **→ 裁定：只放行「纯文案」子集**——逐条正文抽读，仅当断言为纯文案/措辞锚点（模板文本、
+   JS 字面量、CSS 文本，同 T1#1-7 形态）且无行为/结构价值才可删；结构/parity/路由注册/
+   模块采用/一致性守卫一律保留。2b 抽读结论：**0 条可删**（详见 §11.2）。
 2. 「rc 契约族」边界（是否含 host_exit_semantics / cli_contract / runsh_env_parse）。
+   **→ 裁定：保守边界维持**——`test_host_exit_semantics.py` / `test_cli_contract.py` /
+   `test_runsh_env_parse.py` 三文件 0 删（按 rc/CLI 契约族禁区对待）。
 3. T2 中 `test_web_boundary` 3 条（WebServices*SplitContract）是否属发布门判据（若是 → 转保留）。
+   **→ 裁定：判为 parity 守卫 → 转保留**（T2#24-26 不删）。
 4. 是否同意「深度不足 20% 如实报数」，或授权放宽到行为类测试。
+   **→ 裁定：同意如实报数**；未授权放宽到行为类测试，故 2b 实际删量远低于 20%（见 §11.1）。
+## 11. 2b 执行记录（2026-09-26，repair/m3-batch1）
+
+> 只删不改：仅移除被判删的整条用例；仅当 import/helper 因此在本文件内再无引用时才一并移除。
+> 未重写任何保留用例。执行方式：分文件删除 → 该文件聚焦跑（WSL，北京 + `TZ=UTC` 两变体）全绿 →
+> 提交；全部完成后跑安全子集 + 北京全量 + UTC 全量 + ruff。手机号一律 `138****0000` 形态。
+
+### 11.1 T1/T2 逐行回填
+
+| 序号 | 用例 | 2a 档 | 2b 处置 | 依据 |
+|---|---|---|---|---|
+| T1#1 | `test_executors_kpi_scope.py::KpiScopeTest::test_capacity_card_label_names_accounts` | T1 | **实际删除** | 模板文案 assertIn/assertNotIn |
+| T1#2 | `test_executors_kpi_scope.py::KpiScopeTest::test_info_text_states_the_new_scope` | T1 | **实际删除** | 模板口径句 assertIn×2 |
+| T1#3 | `test_executors_kpi_scope.py::FallbackStatusCopyTest::test_off_state_names_the_switch_not_a_process` | T1 | **实际删除** | JS 字面量 assertIn/assertNotRegex（整类移除） |
+| T1#4 | `test_executors_kpi_scope.py::FallbackStatusCellIsStatusOnlyTest::test_pointer_copy_never_comes_back` | T1 | **实际删除** | 源注释文本 assertNotIn（恒真型） |
+| T1#5 | `test_executors_kpi_scope.py::ExecutorListWordingTest::test_fallback_row_occupies_a_number_in_doc_and_banner` | T1 | **实际删除** | 模板措辞锚点（整类移除） |
+| T1#6 | `test_executors_kpi_scope.py::ExecutorListWordingTest::test_doc_links_single_executor_and_guards_single_row_hint` | T1 | **实际删除** | 同上（整类移除） |
+| T1#7 | `test_executors_kpi_scope.py::RowMenuDividerSpacingTest::test_floating_divider_has_no_margin` | T1 | **实际删除** | CSS 文本正则（整类移除） |
+| T1#8 | `test_docker_image_contents.py::DockerImageContentsTest::test_yiban_package_is_copied` | T1 | **实际删除** | Dockerfile 文本 assertRegex；其可删性以 T2#3（AST 门禁）存活为前提，见 §11.3 |
+| T2#1 | `test_state_file_writes.py::SigninWritesAreAtomicTest::test_signin_state_writers_use_replace` | T2 | **实际删除** | 源码字符窗 assertIn（MF-21） |
+| T2#2 | `test_state_file_writes.py::SigninWritesAreAtomicTest::test_writers_have_single_implementation` | T2 | **实际删除** | 源文本 assertNotIn；随删 `WRITERS`/`ClassVar` |
+| T2#3 | `test_docker_image_contents.py::DockerImageContentsTest::test_imported_local_packages_are_copied` | T2 | **保留（裁定冲突，见 §11.3）** | T3-a 亦登记该行且裁定 4「T3-a 全保留」；删两行会使该文件门禁归零 |
+| T2#4-6 | `test_mail_notify.py::SignUserFailMailTest::{test_owner_empty_skips, test_unknown_user_skips, test_notify_off_skips}` | T2 | **实际删除** | 仅 `assert_not_called` |
+| T2#7-8 | `test_mail_notify.py::SignAdminMailSummaryTest::{test_flush_empty_skips, test_flush_skips_admin_to_when_admin_notify_off}` | T2 | **实际删除** | 仅调用/计数断言 |
+| T2#9 | `test_mail_notify.py::SignAdminMailSummaryTest::test_flush_uses_filtered_recipients` | T2 | **实际删除** | 3 条断言全为调用/参数 |
+| T2#10 | `test_locks.py::LockPrimitiveTest::test_wrapper_passes_a_retry_timeout` | T2 | **实际删除** | 仅 mock 调用/kwargs 断言 |
+| T2#11 | `test_locks.py::D4DivergentLocksRemovedTest::test_env_write_lock_delegates_to_primitive` | T2 | **实际删除** | 仅 mock 调用断言 |
+| T2#12-14 | `test_account_liveness_gate.py::AttemptSkipsRemovedAccountTest::{test_live_account_is_attempted, test_deactivated_before_turn_is_skipped, test_account_without_id_is_not_gated}` | T2 | **实际删除** | 仅 `called` 断言 |
+| T2#15-16 | `test_effective_window.py::WindowDecisionUsesBeijingClockTest::{...}` | T2 | **保留（裁定 1）** | 北京时钟接线绑定，不删 |
+| T2#17-20 | `test_probe.py::ProbeSigninTest::{test_run_probe_collects_and_flushes, test_run_probe_once_auto_disable, test_run_probe_disabled_is_silent, test_run_probe_skipped_when_enabled_but_not_due}` | T2 | **实际删除** | 断言全为 mock 调用计数（删后 run_probe 无专用覆盖，见 §11.5 顾虑） |
+| T2#21-22 | `test_notify_ledger.py::UserFailMailQuotaTest::{test_send_failure_releases_quota, test_send_success_consumes_quota}` | T2 | **保留（裁定 1）** | 额度语义，不删 |
+| T2#23 | `test_schedule_v2.py::WindowRecheckAfterSleepTest::test_normal_wait_still_executes` | T2 | **实际删除** | 对照组仅 `call_count` |
+| T2#24-26 | `test_web_boundary.py::{WebServicesAccountsSplitContractTest::test_reject_account_cas_semantics, WebServicesNotifySplitContractTest::test_mail_alert_due_stub_reaches_send_notification, WebServicesNotifySplitContractTest::test_notify_capacity_once_uses_app_send_notification}` | T2 | **保留（裁定 1 / §10.3）** | 面拆分 parity 守卫 |
+
+**合计实删 26 条**（T1 8 + T2 18）≈ **0.85% / 3042**；保留裁定 8 条（T2#3、#15-16、#21-22、#24-26）。
+`pytest --collect-only -q` 实测 **3049 → 3023（-26）**，与实删数一致（无连带丢收集）。
+
+### 11.2 T3-b 纯文案子集正文抽读结论（0 删，逐文件一行理由）
+
+裁定 2「只删纯文案子集、结构/parity/路由注册/模块采用/一致性守卫一律保留、存疑即留」，
+逐文件全文抽读后判定：**本块无可删的纯文案用例（0 条）**。逐文件理由：
+
+| 文件（T3-b 列条目数） | 抽读结论 |
+|---|---|
+| `test_delay_ack_frontend.py`（点名的 ExecutorSaveCancelTest 3 + GatedCallSitesTest 6） | 9 条均为收尾分流/统一 helper 调用点/唯一实现/豁免登记的**结构守卫**，非纯文案；其余 node 行为用例不在范围 → 0 删 |
+| `test_static_routes.py`(25) | 全部经 Flask test client 真发请求的**路由行为**（404/500 分流、robots、合规文档渲染、scheme 白名单），断言落在响应体而非模板源文本 → 0 删 |
+| `test_web_js_modules.py`(18) | 脚本装配/加载顺序/顶层重名/id 不重/组件引入/裸 fetch/批量上限同源/深链唯一实现，全为**结构守卫** → 0 删 |
+| `test_executors_kpi_scope.py` 剩余(12) | 断言落在**函数体代码**（payload 字面量、控件构造、KPI 取值）；含文案的两处（今日进度/清单行数）同时含代码结构断言，属混合 → 0 删 |
+| `test_webui_inline_context.py`(9) | police_link scheme 白名单 + tojson/内联事件 **XSS 安全契约** → 0 删 |
+| `test_web_calendar_parity.py`(8) | 日历唯一实现/加载关系/a11y 契约/类名前缀不撞车 → **结构守卫** → 0 删 |
+| `test_web_component_adoption.py`(8) | 组件层唯一事实源（按元素/按语义判）+ 实算对比度 → **结构守卫** → 0 删 |
+| `test_subpath_deploy.py`(8) | 前缀探测/SCRIPT_NAME/根路径不回归/元测试路由推导 → **路由注册守卫** → 0 删 |
+| `test_settings_tiers_frontend_parity.py`(7) | 档位键↔前端控件双向对拍 + 豁免不空挂 → **parity 守卫** → 0 删 |
+| `test_web_font_closure.py`(6) | 字体栈收口令牌/旁路/对账 + 分片脚本进程级白名单 → **结构守卫** → 0 删 |
+| `test_web_text_contrast.py`(7) | 按主题**实算** WCAG 对比度 + 写反形态扫描（前提可执行证明）→ 行为/计算守卫 → 0 删 |
+| `test_web_design_tokens.py`(6) | 调色板↔tailwind config 双向完整 + 徽标单一事实源/实算 AA → **结构守卫** → 0 删 |
+| `test_dashboard_stats_caliber_js.py`(6) | node **真跑**双口径聚合 + 各视图取列钉点 → 行为守卫 → 0 删 |
+| `test_release_version_source.py`(6) | 版本单一来源/横幅带版本 → **一致性守卫**（发布门槛自证前提）→ 0 删 |
+| `test_web_render_golden.py`(6) | 渲染结构金标准 + 资源清单金标准 → **结构守卫** → 0 删 |
+| `test_schedule_edge_limit_js.py`(4) | node **真跑**前端上限↔服务端 `edge_cap_sec` 逐值对拍 → **parity 守卫** → 0 删 |
+| `test_yiban_fallback_sh.py`(5) | 兜底外壳静默/真起 `--fallback`/真值集/env 优先/.env 安全解析 → 行为守卫 → 0 删 |
+| `test_web_page_consistency.py`(3) | 整页唯一条目/侧栏导航→已注册路由/ARIA+roving 结构 → **路由注册/结构守卫** → 0 删 |
+| `test_web_class_hygiene.py`(1) | `dark:` 变体作用域/重复扫描 → **结构守卫** → 0 删 |
+| `test_module_size_gate.py`(7) | 模块规模门禁自身（含自检与登记表）→ **门禁守卫** → 0 删 |
+
+### 11.3 裁定冲突与处置（`test_docker_image_contents.py`）
+
+裁定 1 的删除集含 T2#3（`test_imported_local_packages_are_copied`），而裁定 4 又声明
+「T3-a rows: all retained」，该行在 §5.3 T3-a 表中被点名（备注即「见 T2#3」）。两条裁定对
+同一行结论相反。**处置：保留 T2#3（AST 门禁），改删 T1#8（Dockerfile 文本正则）**。理由：
+① 裁定 4 明确保留 T3-a 行；② T1#8 的删除理由原文即「同文件 AST 扫描用例已覆盖」，若 T2#3
+一并删除，该文件两条用例全无、Docker COPY 门禁**整体归零**，超出「剔冗余」意图；③ 遵「存疑即留」。
+该文件删后仍有 1 条 AST 门禁用例，聚焦跑全绿。
+
+### 11.4 与裁定 1 的字面差异
+
+* 裁定 1 字面为删除 27 条（T1 8 + T2 19）；实删 26 条，差 1 即 §11.3 的 T2#3（保留）。
+* T2#15-16 / #21-22 / #24-26 共 7 条按裁定保留，另 T2#3 因冲突保留，**保留裁定合计 8 条**。
+
+### 11.5 遗留顾虑（登记不动手）
+
+1. **深度未达 20%**：实删 26 条 ≈ 0.85%。与 §9.1 预判一致——裁定已锁死 C1（471）/C4（111）0 删、
+   T3-a 全保留、T3-b 仅纯文案子集（抽读后为 0）。达 20-40% 需动行为类测试，超出本批授权。
+2. **T2#17-20 删除后 `run_probe` 无专用覆盖**：`test_probe.py` 尚存 `_probe_due` 与
+   `_env_update_probe` 覆盖，但 `run_probe` 主流程（收集/落库 stage=probe/once 自关）已无用例。
+   裁定为删除，记录在此备后续测试质量批补真路径用例。
+3. `test_locks.py::test_wrapper_passes_a_retry_timeout` 删除后，包装层 timeout 仅经
+   `test_waits_for_holder_instead_of_degrading_immediately`（POSIX-only）间接覆盖；Windows 侧
+   该配置维度失去显式断言（登记）。
+4. `test_schedule_v2.py` 删对照组后，`test_no_request_after_window_passes_during_wait` 若被测
+   函数整体不调 `attempt_signin` 仍会通过（负例失去正例制衡），登记。
