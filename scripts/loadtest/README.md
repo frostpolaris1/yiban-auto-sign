@@ -129,19 +129,39 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 
 统一落 `<outdir>/`：
 
-- `run-<label>-n<N>.json`（驱动）/ `concurrency-<label>.json`（探测）：
-  字段名稳定，跨版本可直接对比。关键字段：
+- `run-<label>-n<N>.json`（驱动）：字段名稳定，跨版本可直接对比；键的权威清单是
+  `scale_driver.py` 里 `main()` 组装的那个 result 字典。关键字段：
   - `cycle_stats`：`{n, avg, min, p50, p95, max}`，单位秒；周期 = 相邻两次
     `GET /code/html` 起点差（= t + gap）。
-  - `request_time_stats`：单账号 6 次请求耗时之和（纯网络 t）。
-  - `max_inflight_in_run`：运行窗口内 mock 侧观测的最大并发（单进程应恒为 1，
-    是多 worker 串行/并行的直接证据）。
-  - `status_counts` / `completed` / `success` / `failed`：结果口径。
-  - `cpu_s` / `cpu_pct_1core` / `peak_rss_mb` / `threads_max` / `db_delta_kb`。
+  - `request_time_stats`：同形状；样本是"单账号 6 次请求耗时之和"（纯网络 t）。
+  - `max_inflight_in_run` / `inflight_ge2_records`：运行窗口内 mock 侧观测的最大并发
+    与并发 ≥ 2 的记录数（单进程应恒为 1，是多 worker 串行/并行的直接证据）。
+  - `status_counts` / `state_entries` / `completed` / `success` / `failed` / `skipped`：结果口径。
+  - `requests_run` / `requests_per_acct`：请求总数与每账号请求数。
+  - `cpu_s` / `cpu_pct_1core` / `peak_rss_kb` / `peak_rss_mb` / `threads_max` / `db_delta_kb`。
+  - `window` / `window_eff_s` / `finish_window` / `rc` / `created_at`。
   - `cap80_implied = int(4680 / cycle_min)`：换算到 80 分钟生产窗口的容量。
-- `results.csv` / `concurrency-<label>.csv`：上述字段的扁平化，列名固定
-  （见 `scale_driver.CSV_FIELDS` / `concurrency_probe.CSV_FIELDS`），按
-  `(label, config)` 或 `K` 定位。
+- `concurrency-<label>.json`（探测）：**与驱动不是同一套字段**，上面那批键里只有
+  `status_counts` / `completed` / `success` / `failed` 在此出现；`cycle_stats`、
+  `request_time_stats`、`max_inflight_in_run`、`cpu_s`、`cap80_implied` 本脚本一个都不产出。
+  顶层是 `{label, per_proc, gap, ncpu, mem_total_mb, mem_reserve_mb, rows, verdict, created_at}`，
+  每档实测放在 `rows[]`：`K` / `per_proc` / `accounts_total` / `wall_s` / `machine_cpu_pct` /
+  `engine_cpu_s` / `engine_cpu_onecore_pct` / `engine_cpu_machine_pct` / `mock_cpu_s` /
+  `mock_cpu_onecore_pct` / `peak_total_rss_mb` / `median_proc_rss_mb` / `min_available_mb` /
+  `db_delta_kb` / `lock_errors` / `lock_hits` / `oom_killed` / `mem_abort` / `proc_wall_avg_s` /
+  `proc_wall_max_s` / `per_acct_wall_s` / `degradation_x` / `throughput_acct_per_h` /
+  `max_inflight` / `mock_records` / `rcs`。
+- `results.csv`（驱动，固定追加到 `<outdir>/results.csv`）/ `concurrency-<label>.csv`（探测）：
+  列名固定，见 `scale_driver.CSV_FIELDS` / `concurrency_probe.CSV_FIELDS`，分别按
+  `(label, config)` 与 `K` 定位。**这两份不是上面 JSON 的原样扁平化**：驱动的
+  `cycle_stats` 在 CSV 里叫 `cycle_avg_s` / `cycle_p50_s` / `cycle_p95_s` / `cycle_min_s` /
+  `cycle_max_s`，`request_time_stats` 只留下 `t_avg_s` / `t_p95_s` 两列；探测侧
+  `engine_cpu_s` / `mock_cpu_s` / `mock_records` / `lock_hits` / `rcs` / `mem_abort` 只进 JSON、
+  不进 CSV，而 `db_write_p50_ms` / `db_write_p95_ms` / `db_write_max_ms` / `db_write_errors`
+  仅在该档开了 `--db-microbench` 时有值（关档写 None）。
+- 产出里**没有**下面这几项，它们是测量缺口、不是文档漏写：驱动不把写进 mock 的
+  `--delay-ms` / `--fail-rate` 档位回显到 JSON 或 CSV（只落在 `--mock-config` 那个文件里）；
+  探测侧没有 `requests_per_acct`；探测的每账号耗时只有 avg / max，没有账号级 p50 / p95。
 - 每个 K 的运行目录 `krun-<label>-k<K>/`：各进程独立 `state_p<i>/` 与
   `sign_p<i>.log`（失败现场）。
 
