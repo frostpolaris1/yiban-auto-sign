@@ -38,10 +38,12 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta  # 弹性冷却测试构造审计时间戳/窗口用
+from datetime import timedelta  # 弹性冷却测试构造审计时间戳/窗口用
 
 import db
 import signin
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -360,7 +362,7 @@ class TimePrefsTest(unittest.TestCase):
             token = self._login(c, "user1@test.local", USER_PASS)
             h = self._csrf(token)
             # 自由窗口：伪造 5 条近期审计 → 保存仍放行（5 < 20）
-            now = datetime.now()
+            now = clock.now()
             for i in range(5):
                 db.audit("user1@test.local", "time_pref_set", db.hash_phone("13800138001"),
                          (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
@@ -391,7 +393,7 @@ class TimePrefsTest(unittest.TestCase):
         h = self._csrf(token)
         r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        since = (datetime.now() - timedelta(seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
+        since = (clock.now() - timedelta(seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
         self.assertEqual(db.time_pref_set_count_since("13800138001", since), 1)
         conn = db.get_conn()
         row = conn.execute(
@@ -1452,7 +1454,7 @@ class TimePrefRestoreConsistencyTest(unittest.TestCase):
 
     def _age_deleted_at(self, days):
         """把用户与账号的 deleted_at 回拨到保留期之外（模拟宽限期已过）。"""
-        stale = (_datetime_TPREF.datetime.now() - _datetime_TPREF.timedelta(days=days)).strftime(
+        stale = (clock.now() - _datetime_TPREF.timedelta(days=days)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         conn = db.get_conn()
