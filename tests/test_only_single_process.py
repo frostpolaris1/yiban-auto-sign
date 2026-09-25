@@ -32,6 +32,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 包导入引导必须先于任何 yiban 导入：以文件路径直跑本模块时 `sys.path[0]` 只有 tests/，
+# 仓库根不在路径上（tests/test_deploy_entry_imports.py 按位置钉住这条顺序）。
+if BASE not in sys.path:
+    sys.path.insert(0, BASE)
 
 from web.services import manual_sign  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
