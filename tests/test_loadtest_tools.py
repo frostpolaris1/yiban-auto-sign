@@ -42,6 +42,7 @@ mock_env = importlib.import_module("loadtest.mock_env")
 scale_driver = importlib.import_module("loadtest.scale_driver")
 concurrency_probe = importlib.import_module("loadtest.concurrency_probe")
 capacity_probe = importlib.import_module("loadtest.capacity_probe")
+isolation = importlib.import_module("loadtest.isolation")
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +536,7 @@ def test_scale_driver_e2e_optional(tmp_path):
         [sys.executable, os.path.join(_LOADTEST, "scale_driver.py"),
          "--repo", repo, "--env", env, "--db", db, "--n", "2", "--label", "e2e",
          "--window-sec", "20", "--ca", ca, "--mock-log", mock_log,
+         "--db-fingerprint", isolation.loadtest_db_fingerprint(db),
          "--outdir", str(tmp_path)],
         capture_output=True, text=True, timeout=300,
     )
