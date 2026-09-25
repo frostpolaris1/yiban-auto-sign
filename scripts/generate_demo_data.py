@@ -233,6 +233,11 @@ def main(argv=None):
     # 必须把"审计表被本工具清空过（原 N 条）"与链结果一起报出来。
     print(f"审计链：本库 audit_logs 已被清空（原 {counts.get('audit_logs', 0)} 条）并重建；"
           f"哈希链校验 ok={ok}, broken={broken}, first_broken_id={first}")
+    # 本脚本整表清空 audit_logs，连"刚被独立见证记下的行"也一并删掉。装了 root 侧独立
+    # 见证的部署要由 root 重置见证文件、让下一轮 cron 重新播种——否则 audit_health 会
+    # 正确地把"被见证行消失"报成篡改（那不是故障，是预期）。此处只提示，不设门禁。
+    print("提示：整表清空 audit_logs 会删掉被独立见证记下的行；若该部署装了 root 侧"
+          "独立见证，请在清空后重置见证文件，让下一轮 cron 重新播种")
     return 0
 
 

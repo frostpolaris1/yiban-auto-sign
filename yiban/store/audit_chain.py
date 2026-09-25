@@ -1157,7 +1157,18 @@ def _anchor_witness_state(lines, meta, fingerprint_path, anchor_path=None):
             state, None,
         )
     owner = _witness_owner_state(anchor_path or audit_anchor_path(), fingerprint_path)
-    n = int(fp["lines"])
+    # 数值字段先就地判可解析：JSON 合法但字段非数字（手工损坏/拼接）时 int() 会抛
+    # ValueError，而本函数由 `_anchor_status` 的 try 之外调用——那样一次手工损坏就把
+    # 每日体检印成一次崩溃，而不是"控制面损坏 ⇒ 不健康"。归类为 corrupt 降级。
+    try:
+        n = int(fp["lines"])
+    except (TypeError, ValueError):
+        return (
+            "indeterminate",
+            "独立见证指纹文件的行数字段无法解析为整数（文件被手工损坏或伪造）"
+            "——校验无法定论（不等于无异常），请立即核查",
+            "corrupt", fp,
+        )
     if len(lines) < n:
         return (
             "tampered",
@@ -1186,9 +1197,19 @@ def _anchor_witness_state(lines, meta, fingerprint_path, anchor_path=None):
         )
     # 见证自身跨字段一致性：库内真实 max(id) 不可能小于同一时刻锚点自报的 max_id
     # （锚点记的就是库内链尾）。两者倒挂说明见证 JSON 被伪造或拼接，不是自洽记录。
-    if (fp.get("db_backed") and fp.get("db_max_id") is not None
-            and fp.get("max_id") is not None
-            and int(fp["db_max_id"]) < int(fp["max_id"])):
+    # 两个字段同样可能被手工改坏成非数字——就地按 corrupt 降级（见上）。
+    try:
+        max_id = int(fp["max_id"]) if fp.get("max_id") is not None else None
+        db_max_id = int(fp["db_max_id"]) if fp.get("db_max_id") is not None else None
+    except (TypeError, ValueError):
+        return (
+            "indeterminate",
+            "独立见证指纹文件的 max_id/db_max_id 字段无法解析为整数"
+            "（文件被手工损坏或伪造）——校验无法定论（不等于无异常），请立即核查",
+            "corrupt", fp,
+        )
+    if fp.get("db_backed") and db_max_id is not None and max_id is not None \
+            and db_max_id < max_id:
         return (
             "tampered",
             "独立见证自身不一致：库内真实 max_id 小于其锚点自报 max_id——见证被伪造",
@@ -1392,16 +1413,22 @@ def _anchor_status(path=None, fingerprint_path=None):
         # 仅删除这些行（无需双写）即可抹掉最近审计而 healthy=True。root 侧见证进程
         # 只读回库记下真实 max(id) 与该行哈希，判据据此闭合：当前 max_id 不得低于见证
         # 值，且见证记录的那一行必须仍在、内容未变。
+        #
+        # 被见证行**不适用**清理留痕豁免（曾用 _purge_event_covers 放行）。留痕住在
+        # 应用可写的 app_meta 里：删掉这些行后再种一条"把该 id 删掉了"的假事件，判据就
+        # 被自己的解释开关静默——连 audit_purge_total 都不用动。而按构造，被见证行至多
+        # 一个见证间隔（cron 间隔）之旧；合法保留期清理只删月级窗口，永远够不到它。
+        # 真正要整库/手工清理属 root 级维护，其运行手册步骤是重置独立见证文件（root
+        # 操作）再由下一轮 cron 重新播种——应用身份做不到这一步。所以一条声称覆盖被
+        # 见证行的清理事件本身就是篡改证据，不能拿来放行。
         if w_fp is not None and w_fp.get("db_backed") and w_fp.get("db_max_id") is not None:
             wdbid = int(w_fp["db_max_id"])
-            covered = _purge_event_covers(events, w_fp.get("purge_total"), wdbid)
-            if db_witnessed is None and not covered:
+            if db_witnessed is None:
                 return "tampered", (
-                    f"独立见证记录的库内链尾行 id={wdbid} 在库内已不存在，且无清理"
-                    "留痕可解释——见证之后新增的审计被删除（仅需库写权限即可掩盖），"
-                    "请立即核查"
+                    f"独立见证记录的库内链尾行 id={wdbid} 在库内已不存在——见证之后"
+                    "新增的审计被删除（仅需库写权限即可掩盖），请立即核查"
                 )
-            if not covered and cur_max < wdbid:
+            if cur_max < wdbid:
                 return "tampered", (
                     f"库内 max_id={cur_max} 低于独立见证记录的 {wdbid}——见证之后新增的"
                     f"{wdbid - cur_max} 条审计被删除，删尾检测已失效，请立即核查"
@@ -1530,7 +1557,13 @@ def _purge_events_after_anchor(events, anchor_pt):
 
 
 def _purge_event_covers(events, anchor_pt, row_id):
-    """是否有一条锚点之后的留痕事件恰好把 id=row_id 这条删掉了。"""
+    """是否有一条锚点之后的留痕事件恰好把 id=row_id 这条删掉了。
+
+    调用边界：只用于解释**比被见证行更旧**的行（锚点定点行及其以前）。被见证行
+    （见证 JSON 的 `db_max_id`）不得走本豁免——留痕住在应用可写的 app_meta 里，一条
+    伪造事件即可把删尾翻成通过；被见证行按构造至多一个见证间隔之旧，月级保留期清理
+    够不到它，能删它的事件本身即是篡改证据（详见 `_anchor_status` 的回库判据注释）。
+    """
     for ev in _purge_events_after_anchor(events, anchor_pt):
         before_max = ev.get("before_max")
         after_max = ev.get("after_max")
