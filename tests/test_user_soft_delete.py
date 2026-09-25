@@ -28,9 +28,9 @@ import tempfile
 import unittest
 from datetime import timedelta
 
-from yiban import clock
-
 from _mail_body import render_body
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
