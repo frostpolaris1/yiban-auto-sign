@@ -149,6 +149,9 @@ def _launch_signin_proc(m, only_arg):
         return subprocess.Popen(
             [sys.executable, script, "--only", only_arg],
             cwd=base, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+            # 自成进程组（POSIX setsid）：终止时可由 `_terminate_signin_proc` 整组 kill，
+            # 连带子进程可能拉起的执行体一起退出。Windows 忽略该参数（无进程组语义）。
+            start_new_session=True,
         )
     except FileNotFoundError:
         return None
@@ -219,7 +222,9 @@ def _spawn_signin(m, state, phone, accounts=None):
             return False, f"账号 {phone} 正在签到，请 {remain} 秒后再试"
         old = state["procs"].get(phone)
         if old and old.poll() is None:
-            old.terminate()  # 仍在运行 → 终止旧进程，防止同账号并发签到
+            # 仍在运行 → 终止旧进程（连同它的进程组），防止同账号并发签到；
+            # 只 terminate 监督进程会把执行体留成孤儿继续真实登录
+            m._terminate_signin_proc(old)
         state["last_trigger"][phone] = now
 
     proc = _launch_signin_proc(m, phone)
