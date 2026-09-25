@@ -34,7 +34,8 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASH = shutil.which("bash")
 
-WRAPPER = os.path.join(BASE, "deploy", "prod", "yiban-backup-wrapper.sh")
+PROD_DIR = os.path.join(BASE, "deploy", "prod")
+WRAPPER = os.path.join(PROD_DIR, "yiban-backup-wrapper.sh")
 INSTALL = os.path.join(BASE, "deploy", "prod", "install.sh")
 CRON_DIR = os.path.join(BASE, "deploy", "prod", "cron.d")
 MANIFEST = os.path.join(BASE, "deploy", "prod", "manifest.tsv")
@@ -98,6 +99,19 @@ def _scan_file_for_name(path):
     """在单个文件里找真名字面量（字节级，二进制安全）。"""
     with open(path, "rb") as f:
         return REAL_NAME_BYTES in f.read()
+
+
+def _missing_final_newline(path):
+    """文本文件是否缺少结尾换行（空文件与二进制文件不算）。
+
+    Vixie cron 对 /etc/cron.d 的表在没有结尾换行时可能丢掉最后一行；shell 脚本同理
+    （末行命令可能不被执行）。deploy/prod 下的执行件全是文本，一律以换行收尾。
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    if not data or b"\x00" in data:
+        return False
+    return not data.endswith(b"\n")
 
 
 def _ls_tracked():
@@ -460,6 +474,49 @@ class CheckDeployTargetTest(_TmpBase):
         r = self._check(self.sha_on_remote, remote=os.path.join(self.tmp, "missing.git"))
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue(self._out(r).strip(), "失败必须给人话结论，不能静默")
+
+
+# ------------------------------------------------- ⑥ deploy/prod 文本件尾换行门
+class DeployTextNewlineGateTest(unittest.TestCase):
+    """deploy/prod 下每个文本文件必须以换行结尾（cron 表丢末行 = 缓解整体空转）。
+
+    现象原文：审计见证的 cron 表与脚本缺结尾 0x0a。Vixie cron 对无结尾换行的
+    /etc/cron.d 表可能丢掉最后一行 ⇒ 根侧见证从不运行，独立见证空转。门覆盖
+    deploy/prod 全部文本件，并用现有 cron 表作为活体夹具。
+    """
+
+    def test_all_deploy_prod_text_files_end_with_newline(self):
+        """deploy/prod 下每个文本件都以换行结尾（cron 表丢末行 = 缓解整体空转）。"""
+        offenders = []
+        for root, _dirs, files in os.walk(PROD_DIR):
+            for name in files:
+                p = os.path.join(root, name)
+                if _missing_final_newline(p):
+                    offenders.append(os.path.relpath(p, BASE).replace(os.sep, "/"))
+        self.assertEqual([], offenders, f"以下 deploy/prod 文本件缺结尾换行：{offenders}")
+
+    def test_cron_tables_end_with_newline_as_live_fixtures(self):
+        """/etc/cron.d 的每张表都必须换行结尾（Vixie cron 可能丢末行）。"""
+        tables = sorted(n for n in os.listdir(CRON_DIR)
+                        if os.path.isfile(os.path.join(CRON_DIR, n)))
+        self.assertGreaterEqual(len(tables), 3, "cron.d 下应至少有三张表")
+        for name in tables:
+            p = os.path.join(CRON_DIR, name)
+            self.assertFalse(_missing_final_newline(p),
+                             f"cron 表缺结尾换行（末行可能被丢弃）: {name}")
+
+    def test_gate_catches_stripped_newline(self):
+        """活体反例：去掉 cron 表的结尾换行，同一检查器必须判脏。"""
+        d = tempfile.mkdtemp(prefix="newline-gate-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        src = os.path.join(CRON_DIR, "yiban-audit-witness")
+        with open(src, "rb") as f:
+            data = f.read()
+        stripped = os.path.join(d, "stripped")
+        with open(stripped, "wb") as f:
+            f.write(data.rstrip(b"\n"))
+        self.assertTrue(_missing_final_newline(stripped),
+                        "扫描器抓不住缺结尾换行，门是假的")
 
 
 # -------------------------------------------------------------------⑤ 真名示例门
