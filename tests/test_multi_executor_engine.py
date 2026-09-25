@@ -207,8 +207,13 @@ class NoDatabaseNoSideEffectTest(_Base):
             db._conn = None
         db._conn = None
         self.assertFalse(db.is_initialized(), "前置：库未初始化")
-        _r, calls, _s = self._run(PHONE_OK, (True, "签到成功", False,
-                                             signin.STATUS_SUCCESS))
+        # 类级夹具为了别的用例声明了 `YIBAN_DB_FILE`（setUp 里还建了库）。那属于"配了库
+        # 但本进程没连上"，与"部署未配库"是两回事——后者才该照旧放行（两档分叉的用例见
+        # `tests/test_claims_heartbeat.py` 的 ClaimSignalSplitTest）。本用例钉的是后者，
+        # 故把声明清空：这个部署没配库，磁盘上也没有池库可供协调。
+        with mock.patch.dict(os.environ, {"YIBAN_DB_FILE": ""}, clear=False):
+            _r, calls, _s = self._run(PHONE_OK, (True, "签到成功", False,
+                                                 signin.STATUS_SUCCESS))
         self.assertEqual(calls, [PHONE_OK], "无库时照常签到（领取池可有可无）")
         self.assertFalse(db.is_initialized(), "不得因为没有领取池就顺手开一个库")
 
