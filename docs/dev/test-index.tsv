@@ -111,6 +111,8 @@ tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_valid_append_by_a
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_double_write_attacker_is_caught_by_independent_file	G	-	模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_forged_v2_anchor_line_is_rejected	G	-	无密钥伪造 v2 锚点行（自报一个库内不存在的 max_id）必须被拦下。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_max_anchor_baseline_ignores_smaller_trailing_claim	G	-	基准取 max_id 最大真行：尾部再来一条更小 max_id 的"自洽"旧记录不算数。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_padding_rewrite_after_witness_is_refused_and_red	G	-	攻击变体①：见证已存在后把锚点**重写成更多行**（伪造自洽）⇒ 拒绝覆盖且判红。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_post_witness_tail_deletion_is_red	G	-	攻击变体②：见证之后**新增**的审计被删（只动库）⇒ 体检判红。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_witnessed_db_row_deleted_is_red	G	-	见证记的链尾行从库里消失（只动库、不动锚点）⇒ 独立见证当场点出。
 tests/test_audit_chain.py	AnchorFileIntegrityTest.test_clean_chain_passes	G	-	??
 tests/test_audit_chain.py	AnchorFileIntegrityTest.test_dropping_middle_anchor_line_is_detected	G	-	??
@@ -647,6 +649,9 @@ tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_live_counterexample_
 tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_manifest_sources_all_exist	J	bash	??
 tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_repo_cron_tables_all_have_provenance	J	bash	??
 tests/test_deploy_prod_artifacts.py	CronProvenanceTest.test_repo_relative_app_paths_must_exist	J	bash	/opt/yiban-auto-sign/<rel> 型路径：rel 在仓库不存在 ⇒ 非 0。
+tests/test_deploy_prod_artifacts.py	DeployTextNewlineGateTest.test_all_deploy_prod_text_files_end_with_newline	J	bash	deploy/prod 下每个文本件都以换行结尾（cron 表丢末行 = 缓解整体空转）。
+tests/test_deploy_prod_artifacts.py	DeployTextNewlineGateTest.test_cron_tables_end_with_newline_as_live_fixtures	J	bash	/etc/cron.d 的每张表都必须换行结尾（Vixie cron 可能丢末行）。
+tests/test_deploy_prod_artifacts.py	DeployTextNewlineGateTest.test_gate_catches_stripped_newline	J	bash	活体反例：去掉 cron 表的结尾换行，同一检查器必须判脏。
 tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_adopt_production_installs_repo_and_archives_drift	J	bash	??
 tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_fresh_install_places_all_manifest_entries_with_modes	J	bash	??
 tests/test_deploy_prod_artifacts.py	InstallScriptTest.test_idempotent_second_run_changes_nothing	J	bash	??
