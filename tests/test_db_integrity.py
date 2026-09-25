@@ -28,7 +28,6 @@ backup.sh（临时目录夹具，skipIf 无 bash），断言真实 stderr 告警
 """
 import contextlib
 import datetime
-import datetime as _dt
 import glob
 import importlib.util
 import json

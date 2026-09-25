@@ -43,9 +43,9 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
-from yiban import clock
-
 import flask
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
