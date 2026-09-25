@@ -112,6 +112,8 @@ CLAIM_OPEN_STATES = _claims.OPEN_STATES
 claim_new_owner = _claims.new_owner
 claim_sign_account = _claims.try_claim  # 门面名与域内名不同：`db.try_claim` 不存在
 claim_touch = _claims.touch  # 续租只续自己持有的，返回 False = 已被接管
+claim_reap_unreported = _claims.reap_unreported  # 轮末收尸：本轮领到却无结论的行显式弃权
+claim_reap_abandoned = _claims.reap_abandoned  # 监督进程对已确认死亡的执行体名下在领行收尸
 claim_settle = _claims.settle  # 必须带 try_claim 返回的 epoch，否则迟到的写会覆盖接管者的结论
 claim_give_up = _claims.give_up  # 弃单不等于收工：置 failed（当日仍未了结），租约即刻放开
 claim_states_for_day = _claims.states_for_day
@@ -298,6 +300,9 @@ DB_DEFAULT = _connection.DB_DEFAULT
 # `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 打桩仍然生效。
 get_conn = _connection.get_conn
 is_initialized = _connection.is_initialized
+# "部署声明了领取池库路径"的只读判据：执行侧据此区分"未配库（放行）"与"配了库但
+# 当前不可用（拒跑）"——两种形态都从 `is_initialized()=False` 出发、结论相反。
+pool_db_declared = _connection.pool_db_declared
 _conn_lock = _connection._conn_lock
 
 # 需要**读写转发**的模块级状态与账号域迁出名：模块级赋值/删除默认直写 `__dict__`、不触发
