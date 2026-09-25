@@ -71,6 +71,7 @@ from yiban.infra import env_io
 from yiban.masking import mask_phone
 from yiban.store import accounts as store_accounts
 from yiban.store import db as store_db
+from yiban.store import purge_guard
 
 USAGE = (
     "用法: python -m yiban.cli <子命令> [选项]\n"
@@ -415,12 +416,24 @@ def _cmd_capacity(args, view, extra):
 # ---------------------------------------------------------------------------
 # 子命令：state（状态文件清理，默认 dry-run）
 # ---------------------------------------------------------------------------
+def _state_fingerprint(state_dir, log_dir, candidates, detail):
+    """状态清理的目标指纹：由**目录内容**（目录、将删清单）派生，不是路径字符串比较。
+
+    误指生产状态目录时，条目数/清单差异会让指纹明显不同；`--yes` 必须逐字回显它
+    （见 `_cmd_state` 的确认门），单凭 `--yes` 不构成放行。
+    """
+    parts = [state_dir, log_dir, str(candidates), *sorted(detail)]
+    return purge_guard.content_fingerprint("state-dir", parts)
+
+
 def _cmd_state(args, view):
     """状态文件清理：**默认只报告不删**，`--yes` 才真删（`docs/dev/cli.md` §2 第 6 条）。
 
     路径与保留期口径全在 `yiban/state_gc.py`（宿主 `scripts/state_cleanup.py` 与容器
     调度器共用同一份），本子命令只做"报告 / 执行"与退出码翻译：
     0 正常（没有过期文件也是 0）/ 1 保留期配置非法或状态目录不可用。
+    `--yes` 是删除类入口，必须回显目标指纹（`--fingerprint`）并写一条审计留痕；
+    留痕写不进去就拒绝清理（fail-closed）——"删了但没留痕"正是要防的形态。
     运维日志 `cleanup.log` 仍由宿主脚本记录——CLI 只做清理本身，不重复写一份日志。
     """
     state_dir = state_gc.state_dir_from_env(view)
@@ -429,23 +442,46 @@ def _cmd_state(args, view):
     if not os.path.isdir(state_dir):
         return _fail("state", 1, [f"状态目录不存在: {state_dir}"], args.json,
                      dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
-                     retention_days=retention, candidates=0, removed=0, detail=[])
+                     retention_days=retention, candidates=0, removed=0, detail=[],
+                     fingerprint=None)
     try:
         retention["log"] = state_gc.retention_days("log", view)
         retention["snapshot"] = state_gc.retention_days("snapshot", view)
         if args.yes:
+            # 先算"将删清单"再核指纹：指纹出自与 sweep 同一套判定（plan/sweep 共用
+            # 迭代器），不会出现"确认的是 A、删的是 B"。
+            candidates, detail = state_gc.plan(state_dir, log_dir, view)
+            fp = _state_fingerprint(state_dir, log_dir, candidates, detail)
+            if not purge_guard.confirmation_ok(fp, getattr(args, "fingerprint", "")):
+                return _fail("state", 2, [
+                    "state --yes 是删除类入口：请先跑 `state --dry-run --json` 拿到目标指纹，"
+                    "再以 `--yes --fingerprint <指纹>` 逐字回显确认",
+                    f"目标指纹: {fp}",
+                ], args.json, dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                    retention_days=retention, candidates=candidates, removed=0,
+                    detail=detail, fingerprint=fp)
+            # 留痕先于不可逆删除；写不进去即拒绝（fail-closed），零删除。
+            if not purge_guard.write_purge_audit(
+                    "state_purge", fp,
+                    f"清理状态目录 {state_dir}：{candidates} 个过期文件"):
+                return _fail("state", 1, [
+                    "清库留痕写入失败（审计不可写），按 fail-closed 拒绝清理（未删除任何文件）",
+                ], args.json, dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                    retention_days=retention, candidates=candidates, removed=0,
+                    detail=detail, fingerprint=fp)
             removed, detail = state_gc.sweep(state_dir, log_dir, view)
             if state_gc.sweep_empty_cred_state(state_dir):
                 removed += 1
                 detail.append("cred-state.json（空内容）")
-            candidates = removed
         else:
             candidates, detail = state_gc.plan(state_dir, log_dir, view)
             removed = 0
     except ValueError as e:
         return _fail("state", 1, [f"保留期配置非法，未清理: {e}"], args.json,
                      dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
-                     retention_days=retention, candidates=0, removed=0, detail=[])
+                     retention_days=retention, candidates=0, removed=0, detail=[],
+                     fingerprint=None)
+    fp = _state_fingerprint(state_dir, log_dir, candidates, detail)
     payload = {
         "command": "state",
         "ok": True,
@@ -456,6 +492,7 @@ def _cmd_state(args, view):
         "candidates": candidates,
         "removed": removed,
         "detail": detail,
+        "fingerprint": fp,
     }
     verb = "已清理" if args.yes else "将清理（dry-run，加 --yes 才动手）"
     _say("==== 状态文件清理 ====")
@@ -466,6 +503,8 @@ def _cmd_state(args, view):
              + ("…" if len(detail) > 20 else ""))
     else:
         _say("无过期文件")
+    if not args.yes:
+        _say(f"目标指纹（--yes 时需逐字回显）: {fp}")
     if args.json:
         _emit_json(payload)
     return 0
@@ -687,6 +726,8 @@ def _build_parser():
     )
     p.add_argument("--yes", action="store_true", help="真的删除（默认只报告）")
     p.add_argument("--dry-run", action="store_true", help="只报告不删（默认行为，显式声明用）")
+    p.add_argument("--fingerprint", default="",
+                   help="回显目标指纹（--yes 删除类操作必填；由 `state --dry-run --json` 打印）")
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
     p = _sub(
