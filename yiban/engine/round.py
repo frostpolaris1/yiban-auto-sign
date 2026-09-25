@@ -245,6 +245,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         互相重入就是重复登录）。
         """
         if not db.is_initialized():
+            # 残余缺口：**从未声明** `YIBAN_DB_FILE` 的部署会落到默认库 `yiban.db`，这里
+            # 按"未声明"（`pool_db_declared()` 为假）放行——那个默认库即便不可用，也不会走到
+            # 下面的拒跑分支。生产不可达：`runner` 必经 `load_accounts` → `init_db`，故进到
+            # 这里时库已建、`is_initialized()` 为真；作为已知且可接受的边界记于此。
             if db.pool_db_declared():
                 # 与 try_claim 的库异常同一口径：告警（含当日汇总，进程内一次）+ 拒跑。
                 claims_mod.notify_pool_down(
