@@ -53,7 +53,6 @@ from unittest import mock
 
 import db
 import pytest
-
 import signin
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -24,9 +24,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban import clock
-
 import db
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
