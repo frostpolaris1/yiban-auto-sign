@@ -413,7 +413,7 @@ def test_mock_env_hosts_block_idempotent(tmp_path):
 
 
 def test_mock_env_dry_run_ok(tmp_path):
-    """--dry-run 不触碰系统，退出码 0（Windows 也可跑）。"""
+    """--dry-run 不落任何改动：无副作用，无需 --egress-probe-ip / opt-in，退码 0。"""
     hosts = tmp_path / "hosts"
     hosts.write_text("", encoding="utf-8")
     r = subprocess.run(
@@ -435,19 +435,29 @@ def test_mock_env_selfcheck_without_setup(tmp_path):
 
 
 def _patch_setup_peripherals(monkeypatch, tmp_path, *, egress_ok, ipt_ok):
-    """把搭建路径上的外部副作用换掉，只留"退出码是否反映实情"这一条被测行为。"""
+    """把搭建路径上的外部副作用换掉，只留"退出码是否反映实情"这一条被测行为。
+
+    含还原桩：搭建失败时 main 的 finally 会自动还原已生效改动（fail-closed 清理），
+    若不打桩就会在测试里真调 iptables。--egress-probe-ip 现为搭建路径必填项。
+    """
     monkeypatch.setattr(mock_env.sys, "platform", "linux")  # 绕过"仅 Linux"前置
+    # 绕过"需要 root"前置：CI runner 是普通用户（Linux 有 geteuid 且非 0 → main 直接退 2）
+    # raising=False：Windows 的 os 没有 geteuid，本地照样绿
+    monkeypatch.setattr(mock_env.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(mock_env, "ensure_certs", lambda *a, **k: {})
     monkeypatch.setattr(mock_env, "apply_hosts", lambda *a, **k: True)
     monkeypatch.setattr(mock_env, "verify_zero_egress", lambda *a, **k: egress_ok)
     monkeypatch.setattr(mock_env, "apply_iptables", lambda ipv6, dry_run=False: ipt_ok)
-    return ["--hosts-file", str(tmp_path / "hosts"), "--base-dir", str(tmp_path / "base")]
+    monkeypatch.setattr(mock_env, "restore_hosts", lambda *a, **k: False)
+    monkeypatch.setattr(mock_env, "restore_iptables", lambda *a, **k: False)
+    return ["--hosts-file", str(tmp_path / "hosts"), "--base-dir", str(tmp_path / "base"),
+            "--egress-probe-ip", "203.0.113.7"]
 
 
 def test_mock_env_selfcheck_failure_returns_nonzero(tmp_path, monkeypatch):
     """零真实外联自检 FAIL 时 main 必须非零退出（此前返回值被丢弃 → 假"环境就绪"）。"""
     cli = _patch_setup_peripherals(monkeypatch, tmp_path, egress_ok=False, ipt_ok=True)
-    assert mock_env.main([*cli, "--no-iptables"]) == 1
+    assert mock_env.main(cli) == 1
 
 
 def test_mock_env_iptables_failure_returns_nonzero(tmp_path, monkeypatch):

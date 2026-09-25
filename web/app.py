@@ -217,7 +217,7 @@ from web.services.channel_health import (  # noqa: E402
     # 名字面零损失：通道健康族的纯逻辑与常量（routes/测试按属性读取日报标记键）
     _HEALTH_REPORT_META_KEY,  # noqa: F401
     _audit_channel_health_degraded,  # noqa: F401
-    _channel_health_degraded,  # noqa: F401
+    _channel_health_degraded,
     _channel_health_facts,  # noqa: F401
     _daily_budget_desc,  # noqa: F401
     _health_report_sent_today,  # noqa: F401
@@ -361,7 +361,7 @@ from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配�
 # 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
 from yiban import mail as mailer  # noqa: E402,F401
-from yiban import notify  # noqa: E402,F401
+from yiban import notify  # noqa: E402  # 有自用点，原 F401 豁免已失效
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 
 # 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用

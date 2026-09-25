@@ -29,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -616,12 +617,40 @@ class RunshSecondRoundTest(unittest.TestCase):
 
         注：真实路径下 SUCCESS 与"需要补跑"不会同时成立（exit 0 蕴含无未了结账号），
         本用例锁住的是"矛盾输入下取保守且不浪费"的一侧。
+
+        MF-82 同批更新：SUCCESS 现在须与库内当日事实交叉核对才采信——给一个种了
+        当日 done 行的临时库，代表"真成功"（桩 timeout 直落桩 signin，不写库，
+        事实由用例预置）。
         """
         self._write_ctl("check_exit", 10)
         self._write_ctl("round_exit", 0)
-        r = self._run()
+        db = os.path.join(self.tmp, "facts.db")
+        con = sqlite3.connect(db)
+        try:
+            con.execute("CREATE TABLE sign_tasks (phone TEXT, day TEXT, state TEXT)")
+            con.execute("INSERT INTO sign_tasks VALUES (?,?,?)",
+                        ("138****0000", TODAY, "done"))
+            con.commit()
+        finally:
+            con.close()
+        r = self._run({"YIBAN_DB_FILE": db})
         self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
         self.assertEqual(self._rounds(), ["round second_run="], "SUCCESS 后不应补跑")
+
+    def test_forged_success_does_not_short_circuit_second_round(self):
+        """MF-82 进程内侧翼：桩首轮"成功"写出的 SUCCESS 若与库内当日事实相悖
+        （库不存在/无行）⇒ 不采信，补签轮照跑——伪造件不得吃掉当天兜底。"""
+        self._write_ctl("check_exit", 10)
+        self._write_ctl("round_exit", 0)
+        r = self._run({"YIBAN_DB_FILE": os.path.join(self.tmp, "no-such.db")})
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        rounds = self._rounds()
+        self.assertEqual(len(rounds), 2,
+                         f"无库内事实的 SUCCESS 不得短路补签轮，实际: {rounds}")
+        self.assertEqual(rounds[1], "round second_run=1")
+        log_path = os.path.join(self.state, "sign-%s.log" % TODAY)
+        with io.open(log_path, encoding="utf-8", errors="replace") as f:
+            self.assertIn("拒绝采信", f.read())
 
     def test_second_round_can_be_disabled(self):
         """逃生开关 YIBAN_HOST_SECOND_ROUND=0 → 即使判定需要也只跑一轮。"""

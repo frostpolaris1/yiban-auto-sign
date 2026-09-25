@@ -19,10 +19,10 @@
 与 `db` 门面、`scripts/backup.sh`。
 关键断言：`test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper` 与
 `tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
-签一遍"，后者等于给篡改者提供重链工具。`test_db_source_has_no_executescript_call` 与
-`BackupPlaintextP3Test` 是**源码文本级**断言：它们只保证那段文本还在原位，
-不执行脚本行为（原因见 `BackupScriptContractTest` 的同类说明——Windows 子进程按 GBK
-解码中文 stdout 会误报），别把它们读成"备份流程已被验证"。
+签一遍"，后者等于给篡改者提供重链工具。`test_db_source_has_no_executescript_call` 是**源码文本级**断言：它只保证那段文本还在原位。
+`BackupPlaintextP3Test` 原本是同类写法（MF-10 指出的假绿），现已改为**行为测试**——真跑
+backup.sh（临时目录夹具，skipIf 无 bash），断言真实 stderr 告警、专用退出码 6、异机密文
+副本与哨兵判定；输出按字节手动 utf-8 解码以避开旧注释所说的 Windows GBK 误报问题。
 依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩，
 无网络、无 skip。
 """
@@ -35,6 +35,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -800,34 +801,143 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
                              f"{'/'.join(rel)} 重新引入了 executescript（隐式 COMMIT 隐患）")
 
 
+BACKUP_SH = os.path.join(BASE, "scripts", "backup.sh")
+SENTINEL_PY = os.path.join(BASE, "scripts", "backup_sentinel.py")
+_FAKE_PASSPHRASE = "e2e-not-a-real-passphrase"  # 假口令，仅为走通 gpg 对称加密路径
+
+# gpg 桩：永远失败——模拟"配了口令但加密链路坏了"（本机没装 gpg 时的等价替身，
+# 装了 gpg 的机器上真 gpg 会成功，所以要桩才有确定性）
+_FAKE_GPG_FAIL = "#!/usr/bin/env bash\ncat > /dev/null 2>&1 || true\nexit 2\n"
+
+
+@unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
 class BackupPlaintextP3Test(unittest.TestCase):
-    """P3-3：backup.sh 明文模式的异机加密契约与告警（静态源码核验）。"""
+    """P3-3：backup.sh 明文模式告警/退出码/异机契约——行为钉死（MF-10 重写）。
 
-    @classmethod
-    def setUpClass(cls):
-        with open(os.path.join(BASE, "scripts", "backup.sh"), encoding="utf-8") as f:
-            cls.src = f.read()
+    旧版只断言 backup.sh 源码含 "BACKUP_PLAINTEXT=1"/"明文" 字串：纯注释行即满足，
+    把告警块整段删掉测试仍全绿——这正是 MF-10 记名的假绿。现改为真跑脚本
+    （临时目录夹具 + 故障注入桩），断言的真实来源全部是**行为**：stderr 告警、
+    专用退出码 6、异机侧真实落地的密文副本、哨兵对明文产物的 unhealthy 判定。
+    改坏/删掉对应实现块 ⇒ 相应用例必须红。
+    明文轮退出码 6 为 M3 批次0（MF-79）新增，与既有 rc=4（源库损坏）/rc=5（缺
+    sqlite3）不冲突；输出按字节手动 utf-8 解码（text=True 在 Windows 侧按 GBK
+    解中文输出会误报，旧类当年因此退化成源码断言）。
+    """
 
-    def test_plaintext_local_warning_present(self):
-        """BACKUP_PLAINTEXT=1 时本地明文归档仍有大字告警。"""
-        self.assertIn("BACKUP_PLAINTEXT=1", self.src)
-        self.assertIn("明文", self.src)
+    FAKE_KEY = "f" * 64  # 假数据密钥（64 位 hex 形态），不含任何真实凭据
 
-    def test_remote_no_longer_blocked_by_plaintext(self):
-        """异机路径不得再被 BACKUP_PLAINTEXT=1 拦截（本地豁免不取消异机加密副本）。"""
-        # 精确匹配可执行代码行（注释里引用旧代码属文档说明，不算回归）
-        self.assertNotIn('&& [ "${BACKUP_PLAINTEXT}" != "1" ]; then', self.src,
-                         "原拦截仍存在：BACKUP_PLAINTEXT=1 时异机副本会被整体丢弃")
+    def _fixture(self, extra_path_stub=None):
+        tmp = tempfile.mkdtemp(prefix="bkup-p3-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        app, backups = os.path.join(tmp, "app"), os.path.join(tmp, "backups")
+        state, logs = os.path.join(tmp, "state"), os.path.join(tmp, "logs")
+        for d in (app, backups, state, logs):
+            os.makedirs(d)
+        with open(os.path.join(app, ".env"), "w", encoding="utf-8", newline="\n") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + self.FAKE_KEY + "\n")
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("YIBAN_", "BACKUP_", "REMOTE_"))
+               and k not in ("RETENTION_DAYS", "KEY_FILE", "DB_FILE", "SIGN_STATE_DIR",
+                             "SIGN_LOG_DIR")}
+        env.update({
+            "APP_DIR": app, "BACKUP_DIR": backups,
+            "YIBAN_STATE_DIR": state,
+            "YIBAN_LOG_FILE": os.path.join(logs, "sign.log"),
+            "KEY_FILE": os.path.join(tmp, "no-accounts-key"),
+        })
+        if extra_path_stub:
+            name, body = extra_path_stub
+            fakebin = os.path.join(tmp, "fakebin")
+            os.makedirs(fakebin, exist_ok=True)
+            stub = os.path.join(fakebin, name)
+            with open(stub, "w", encoding="utf-8", newline="\n") as f:
+                f.write(body)
+            os.chmod(stub, 0o755)
+            env["PATH"] = fakebin + os.pathsep + env.get("PATH", "")
+        return tmp, backups, env
 
-    def test_remote_plaintext_warning_distinguishes_cases(self):
-        """明文导致异机缺位时的告警须明确"豁免只作用于本地、异机副本绝不传明文"。"""
-        self.assertIn("BACKUP_PLAINTEXT=1 只豁免本地归档的默认加密", self.src)
-        self.assertIn("异机副本绝不传明文", self.src)
+    def _run(self, env, args=()):
+        return subprocess.run([shutil.which("bash"), BACKUP_SH, *args],
+                              capture_output=True, env=env,
+                              cwd=os.path.dirname(env["APP_DIR"]), timeout=300)
 
-    def test_remote_still_attempts_encryption(self):
-        """本地为明文（含显式 BACKUP_PLAINTEXT=1）时仍尝试加密后再出站。"""
-        self.assertIn("try_encrypt", self.src)
-        self.assertIn("REMOTE_FILE", self.src)
+    @staticmethod
+    def _txt(raw):
+        return (raw or b"").decode("utf-8", errors="replace")
+
+    def _day(self):
+        return datetime.date.today().strftime("%Y-%m-%d")
+
+    def test_plaintext_run_warns_on_stderr_and_exits_dedicated_rc6(self):
+        """BACKUP_PLAINTEXT=1 ⇒ 大字告警走 stderr + 专用退出码 6 + 归档真实产出。"""
+        _, backups, env = self._fixture()
+        env["BACKUP_PLAINTEXT"] = "1"
+        r = self._run(env)
+        out = self._txt(r.stdout) + self._txt(r.stderr)
+        self.assertEqual(r.returncode, 6,
+                         f"明文轮必须与密文正常轮(rc=0)可区分——退出码 6：{out}")
+        stderr = self._txt(r.stderr)
+        self.assertIn("BACKUP_PLAINTEXT=1", stderr,
+                      "告警必须在 stderr：stdout 是 cron 日志里的例行流水，明文告警不得淹死其中")
+        self.assertIn("明文", stderr)
+        archive = os.path.join(backups, f"yiban-{self._day()}.tar.gz")
+        self.assertTrue(os.path.isfile(archive), f"告警之外本轮仍须真实产出归档：{out}")
+
+    def test_plaintext_artifact_not_healthy_for_sentinel(self):
+        """backup.sh 真产出的明文包，哨兵不得计为健康（与 backup_sentinel 的 e2e 咬合）。"""
+        _, backups, env = self._fixture()
+        env["BACKUP_PLAINTEXT"] = "1"
+        self.assertEqual(self._run(env).returncode, 6)
+        spec = importlib.util.spec_from_file_location("_sentinel_p3", SENTINEL_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        day = self._day()
+        found, _ = mod._find_archive(backups, day)
+        self.assertIsNone(found, "真实产出的明文归档被哨兵计成了健康归档")
+        self.assertIsNotNone(mod._find_plaintext(backups, day),
+                            "明文包应被识别（排查线索），只是不算健康")
+
+    def test_remote_copy_still_encrypted_under_plaintext(self):
+        """BACKUP_PLAINTEXT=1 只豁免本地：异机副本仍加密出站、绝不传明文。
+
+        行为替代旧源码断言 `test_remote_no_longer_blocked_by_plaintext` /
+        `test_remote_still_attempts_encryption`：REMOTE_BACKUP 指本地目录，
+        rsync/scp 真实落地一份【密文】。
+        """
+        if shutil.which("rsync") is None and shutil.which("scp") is None:
+            self.skipTest("需要 rsync 或 scp")
+        tmp, _, env = self._fixture()
+        remote = os.path.join(tmp, "remote")
+        os.makedirs(remote)
+        env.update({"BACKUP_PLAINTEXT": "1", "REMOTE_BACKUP": remote,
+                    "BACKUP_GPG_PASSPHRASE": _FAKE_PASSPHRASE})
+        r = self._run(env)
+        out = self._txt(r.stdout) + self._txt(r.stderr)
+        day = self._day()
+        self.assertTrue(os.path.isfile(os.path.join(remote, f"yiban-{day}.tar.gz.gpg")),
+                        f"异机加密副本必须落地（本地明文豁免不得把异机一并静默丢弃）：{out}")
+        self.assertFalse(os.path.isfile(os.path.join(remote, f"yiban-{day}.tar.gz")),
+                         "异机侧绝不许出现明文副本")
+        self.assertEqual(r.returncode, 6, f"本地仍是明文轮语义（rc=6）：{out}")
+
+    def test_remote_plaintext_without_encryption_distinguishes_case(self):
+        """显式明文 + 加密不可用 ⇒ 告警必须点名"豁免只作用于本地、异机绝不传明文"。
+
+        行为替代旧源码文本断言：gpg 桩恒失败（非交互无 age），异机缺位的告警
+        走真实执行路径，且远端目录保持为空（没有明文漏传）。
+        """
+        tmp, _, env = self._fixture(extra_path_stub=("gpg", _FAKE_GPG_FAIL))
+        remote = os.path.join(tmp, "remote")
+        os.makedirs(remote)
+        env.update({"BACKUP_PLAINTEXT": "1", "REMOTE_BACKUP": remote,
+                    "BACKUP_GPG_PASSPHRASE": _FAKE_PASSPHRASE})
+        r = self._run(env)
+        out = self._txt(r.stdout) + self._txt(r.stderr)
+        self.assertIn("BACKUP_PLAINTEXT=1 只豁免本地归档的默认加密", out,
+                      f"异机缺位告警须区分「显式明文」与「无加密方式」：{out}")
+        self.assertIn("异机副本绝不传明文", out)
+        self.assertEqual(r.returncode, 6, out)
+        self.assertEqual([], os.listdir(remote), "异机侧不得出现任何副本（明文绝不例外）")
 
 
 TEST_KEY_SMOKE = "a" * 64  # 64 位 hex = 32 字节 AES 密钥

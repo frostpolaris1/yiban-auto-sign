@@ -10,8 +10,12 @@
 坏掉、备份脚本自身逻辑错都不在它视野内；它自己没被 cron 调起时同样没人知道。
 
 两项检查：
-1. **当日包存在**：`${BACKUP_DIR:-/var/backups}/yiban-<今天>.tar.gz.gpg` 与它的
-   `.sha256` 旁挂件都在（明文/age 形态也认，见 `_archive_candidates`）；
+1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups}/yiban-<今天>.tar.gz.gpg` 与它的
+   `.sha256` 旁挂件都在（age 密文形态也认，见 `_archive_candidates`）。
+   **明文包（裸 `.tar.gz`）不计入健康**（M3 批次0 · MF-79）：backup.sh 只在加密配置
+   失效或显式 BACKUP_PLAINTEXT=1 时才产出明文包，把它当"当日备份完成"正是曾经
+   4 天静默失败的同型盲区；当日只有明文包 ⇒ 判不健康并走告警路径；
+   同日既有密文又有明文残留（加密切换过渡日）⇒ 以密文为准，不双告警。
 2. **防漂移**：`$APP_DIR/scripts/backup.sh`（仓库版）与 `$YIBAN_BACKUP_INSTALLED`
    （默认 `/usr/local/sbin/yiban-backup.sh`，cron 实际调的那个）内容一致——"运行脚本
    是仓库脚本的拷贝"是部署约定，判据与它挡的是什么见 `_drift_report`。安静路径上
@@ -68,10 +72,15 @@ DEFAULT_INSTALLED = "/usr/local/sbin/yiban-backup.sh"
 #: 告警标题：单类型节流的键，也是邮件主题；两处告警共用一条标题——它们是同一件事
 #: （"今天的备份没成"）的两个原因，分标题会让节流窗口各算一份。
 ALERT_TITLE = "备份失败哨兵告警"
-#: 归档后缀，按"部署契约优先"排序：`--require-encrypt` 下的产物是 `.tar.gz.gpg`
-#: （README 的部署命令就带这个标志）。另两种也认——认不出会在合法部署上误报"没有备份"，
-#: 那正是本脚本要消灭的那种噪音。
-ARCHIVE_SUFFIXES = (".tar.gz.gpg", ".tar.gz.age", ".tar.gz")
+#: **健康**归档后缀（只认密文形态），按"部署契约优先"排序：`--require-encrypt` 下的
+#: 产物是 `.tar.gz.gpg`（README 的部署命令就带这个标志）；age 同为密文也认——认不出
+#: 会在合法部署上误报"没有备份"，那正是本脚本要消灭的那种噪音。
+#: 裸 `.tar.gz`（明文）刻意**不在**名单里（M3 批次0 · MF-79）：明文包只可能来自
+#: 加密配置失效或显式 BACKUP_PLAINTEXT=1，两种都是需要人知道的异常态。
+ARCHIVE_SUFFIXES = (".tar.gz.gpg", ".tar.gz.age")
+#: 明文归档后缀：不算健康，但必须被识别并单独告警（否则与"整包缺失"混成同一条
+#: 误报，运维会白找加密配置——包其实躺在目录里，只是裸奔）
+PLAINTEXT_SUFFIX = ".tar.gz"
 
 
 def _env(name, default):
@@ -107,6 +116,16 @@ def _find_archive(backup_dir, day):
             # 与"整个包没生成"的排查方向不同，故不合并成一个布尔
             return path, os.path.isfile(path + ".sha256")
     return None, False
+
+
+def _find_plaintext(backup_dir, day):
+    """当日明文归档（裸 `.tar.gz`）路径；不存在返回 None。
+
+    仅用于把"当日只有明文包"与"什么都没生成"区分开——两种都不健康，但排查方向
+    完全不同（前者查加密配置为何失效，后者查 cron/脚本本身）。
+    """
+    path = os.path.join(backup_dir, f"yiban-{day}{PLAINTEXT_SUFFIX}")
+    return path if os.path.isfile(path) else None
 
 
 def _file_fingerprint(path):
@@ -170,8 +189,22 @@ def _send_admin_alert(title, mail):
     return bool(mailer.send_admin_alert(title, mail, to=",".join(recipients)))
 
 
-def _missing_mail(day, backup_dir, archive, sidecar_ok):
-    """当日包缺失/清单缺失的告警正文。"""
+def _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=None):
+    """当日包缺失/清单缺失/只有明文包的告警正文。"""
+    if archive is None and plaintext is not None:
+        summary = (f"当日只有【明文】备份包：{os.path.basename(plaintext)}。"
+                   "明文包不计入健康——它内含 .env 全部密钥、管理员口令哈希与全量数据库，"
+                   "备份目录被读 = 全库凭据泄露。")
+        fields = [
+            ("明文包", plaintext),
+            ("期望形态", "、".join(_archive_candidates(backup_dir, day))),
+            ("影响", "本轮加密链路失效或被显式关闭（BACKUP_PLAINTEXT=1），归档在裸奔"),
+        ]
+        advice = ["确认是否有人显式设了 BACKUP_PLAINTEXT：那是刻意为之，改回默认并补做加密副本",
+                  "否则检查 BACKUP_GPG_PASSPHRASE / BACKUP_GPG_RECIPIENT 与 gpg 是否可用"
+                  "（backup.sh 加密失败且未带 --require-encrypt 时会静默回退明文）",
+                  "处置后手工补跑一次 backup.sh --require-encrypt 并做恢复演练"]
+        return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level="urgent")
     if archive is None:
         summary = f"当日备份包不存在：{backup_dir} 下没有 yiban-{day} 的归档。"
         fields = [
@@ -219,6 +252,9 @@ def main(argv=None):
     day = _now()
 
     archive, sidecar_ok = _find_archive(backup_dir, day)
+    # 明文包只在"密文不存在"时才需要单独识别——密文在则当日健康已满足，
+    # 明文残留（加密切换过渡日）不双告警
+    plaintext = None if archive is not None else _find_plaintext(backup_dir, day)
     drift = _drift_report(os.path.join(app_dir, "scripts", "backup.sh"), installed)
 
     if archive is not None and sidecar_ok and drift is None:
@@ -228,6 +264,11 @@ def main(argv=None):
     if archive is not None and sidecar_ok:
         print(f"备份哨兵：{day} 的归档在（{archive}），但运行脚本已漂移：{drift['reason']}")
         mail = _drift_mail(os.path.join(app_dir, "scripts", "backup.sh"), installed, drift)
+    elif archive is None and plaintext is not None:
+        # MF-79：明文包不算健康——当日只有裸 .tar.gz 时加密链路已失效（或被显式
+        # 关闭），这正是"看着有备份、其实全库凭据裸奔"的那一格，必须发声
+        print(f"备份哨兵：{day} 只有【明文】归档（{plaintext}），不计入健康，已发告警")
+        mail = _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=plaintext)
     elif archive is None or not sidecar_ok:
         # 排在漂移之前：归档没成比脚本漂移严重，两病同发时先喊缺备份（同类型只发一封）
         print(f"备份哨兵：{day} 的备份不完整（归档 {archive or '缺失'}，"

@@ -11,13 +11,14 @@
 
 另有一条守卫：冻结映射表与 `yiban.status.ALL_STATUSES` 的键绑定（少一格即两头静默失效）。
 
-库是**手工搭到 v19** 的（v17 建 `sign_claims`、v18 建 `sign_tasks`）——不借 `db` 的
-全局连接，免得多用例共享单例连接互相干扰。
+库是**手工搭到 v19** 的（v17 建 `sign_claims`、v18 建 `sign_tasks`+`epoch`、v19 补
+`sign_claims.epoch`）——不借 `db` 的全局连接，免得多用例共享单例连接互相干扰。
 
 标签：C · 存储：迁移与库完整性
 覆盖：v20 backfill 的六类——版本提升与重入零新增、JSON 终态到池状态的逐类映射（在途/
 无记录不落库）、只认 `sign-state-<day>.json`（`sign-daily-*` 是符号表不得作输入）、
-不覆盖已有行（`INSERT OR IGNORE`）、某日损坏或目录缺失只跳过不抛、`run_at` 时间回退
+不覆盖已有行（`INSERT OR IGNORE`）、某日损坏或目录缺失只跳过不抛（目录**在而读不动**
+⇒ 延后不提版本，反例见 `tests/test_migrations_fail_closed.py`）、`run_at` 时间回退
 与批量提交不丢行；另钉映射表与 `ALL_STATUSES` 的键绑定。
 对应实现：`yiban/store/` 的 v20 backfill 与 `yiban/status.py::ALL_STATUSES`、
 `yiban/engine/state_io.py` 写出的状态文件形状。
@@ -74,6 +75,9 @@ class MigrateV20Test(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         migrations.migrate_v17(conn)
         migrations.migrate_v18(conn)
+        # v19 真的跑：user_version=19 的库必须有 sign_claims.epoch——迁移完整性校验
+        # （MF-40）会拒"版本声称已过 v19 但产物缺失"的漂移库，夹具不得是那种漂移库。
+        migrations.migrate_v19(conn)
         conn.execute("PRAGMA user_version = 19")
         conn.commit()
         return conn

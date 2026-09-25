@@ -395,7 +395,10 @@ def write_plan(rows, day=None):
     """幂等落库：单事务 `executemany` + `INSERT OR IGNORE`，按 `(phone, day)` 主键去重。
 
     返回**实际写入**行数（被 IGNORE 的重复行不计），故 Planner 崩溃后直接重跑即可。
-    已存在的行一律不覆盖（`state`/`result` 里的当日结论比计划新）；同时把槽宽写进
+    已存在的行一律不覆盖（`state`/`result` 里的当日结论比计划新）——**唯一例外**是
+    `vshard = -1` 的补账标记行（v18 平移 / v20 台账回填）：真实计划落库前显式接管
+    同 `(phone, day)` 的标记行（先删后插），否则被补账账号的当日计划会被标记行永久
+    挤占（MF-40 修法 4；历史日标记行作为台账证据保留）；同时把槽宽写进
     `app_meta`——槽宽由 `(行数, 当前配置)` 经 `slot_width_ms` 重新判定（与 `build_plan`
     同一判定函数，不另存一份口径），执行体读它即可知道是否处于压缩模式。库不可用时
     **抛异常**——失败语义必须显式，调用方据此降级（计划层故障不得影响签到）。
@@ -411,9 +414,17 @@ def write_plan(rows, day=None):
     ]
     sql = ("INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
            "priority, state, created_at) VALUES (?,?,?,?,?,?,?,?)")
+    # 真实计划（vshard>=0）先接管同 (phone, day) 的补账标记行（vshard=-1）：v18 平移
+    # 与 v20 补账用 `vshard=-1` 惰性标记行占住 (phone, day) 主键，若不先删，本函数
+    # 的 INSERT OR IGNORE 会被标记行挡掉 ⇒ 被补账账号当日真实计划永久写不进、全天
+    # 零签到（MF-40 修法 4）。只删 vshard=-1 行：真实终态行（vshard>=0）保留，
+    # INSERT OR IGNORE 继续不覆盖既有结论（`test_write_plan_never_overwrites_real_rows`）。
+    takeover = [(p[0], p[1]) for p in params if p[2] >= 0]
+    marker_sql = ("DELETE FROM sign_tasks WHERE phone=? AND day=? AND vshard=-1")
     try:
         conn, lock = queue_store._queue_conn()
         with lock:
+            conn.executemany(marker_sql, takeover)
             cur = conn.executemany(sql, params)
             conn.commit()
             written = cur.rowcount
