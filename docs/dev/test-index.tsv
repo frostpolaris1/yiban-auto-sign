@@ -173,6 +173,14 @@ tests/test_backup_e2e.py	RotationGuardTest.test_retention_days_nonnumeric_refuse
 tests/test_backup_e2e.py	RotationGuardTest.test_retention_days_zero_refuses_before_touching_anything	J	bash	??
 tests/test_backup_e2e.py	RotationGuardTest.test_rotation_keeps_newest_k_groups_regardless_of_age	J	bash	??
 tests/test_backup_e2e.py	RotationGuardTest.test_today_archive_deleted_by_rotation_detected_rc8	J	bash	删除后自检"当日包仍在"：轮转误删当天件 ⇒ 大声失败 rc=8，不许绿灯收工。
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_bash_syntax_ok	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_help_exits_zero	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_require_encrypt_then_unknown_is_rejected	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_restore_without_args_is_rejected	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_unknown_first_flag_does_not_hide_later_require_encrypt	J	bash	旧实现只看 ${1}：首位不是旗标时次位的 --require-encrypt 被静默忽略。
+tests/test_backup_flag_parsing.py	BackupFlagParsingBehaviorTest.test_unknown_flag_is_rejected	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingTextTest.test_no_single_position_flag_checks_remain	J	bash	??
+tests/test_backup_flag_parsing.py	BackupFlagParsingTextTest.test_parses_all_arguments_in_a_loop	J	bash	??
 tests/test_backup_require_encrypt.py	BackupRequireEncryptTest.test_bash_syntax_ok	J	bash	??
 tests/test_backup_require_encrypt.py	BackupRequireEncryptTest.test_fail_closed_on_encrypt_failure_kept	J	bash	??
 tests/test_backup_require_encrypt.py	BackupRequireEncryptTest.test_precheck_no_longer_requires_remote_backup	J	bash	??
@@ -397,7 +405,7 @@ tests/test_cli_contract.py	CliContractTest.test_json_output_is_single_line_objec
 tests/test_cli_contract.py	CliContractTest.test_never_reads_stdin	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_sign_config_load_failure_error_reaches_stderr_and_json	J	-	F2 同族：配置加载失败（坏 JSON）同样是 stderr 摘要 + --json error。
 tests/test_cli_contract.py	CliContractTest.test_sign_no_accounts_error_reaches_stderr_and_json	J	-	F2：`sign` 零账号（未配置任何账号）退出码 1 时，错误必须打到 stderr。
-tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_yes_deletes	J	-	??
+tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_yes_deletes_with_fingerprint	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_state_reports_missing_dir_loudly	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_unknown_and_empty_subcommand	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_version_matches_package	J	-	??
@@ -570,6 +578,12 @@ tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_pri
 tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_restore_covers_legacy_mismatched_rows	L	-	??
 tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_restore_picks_single_latest_row	L	-	??
 tests/test_delete_timeline_consistency.py	DeleteTimelineConsistencyTest.test_row_is_purged_after_owner_is_hard_deleted	L	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_audit_failure_aborts_purge	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_correct_fingerprint_clears_and_leaves_one_audit_row	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_unknown_argument_errors	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_wrong_fingerprint_is_refused	J	-	??
+tests/test_demo_data_guard.py	DemoDataGuardTest.test_yes_alone_is_not_enough	J	-	??
 tests/test_deploy_entry_imports.py	DeployEntryImportTest.test_all_local_package_importers_are_bootstrapped	J	-	凡导入 yiban 的运行时脚本，都必须自己保证仓库根在 sys.path 上。
 tests/test_deploy_entry_imports.py	DeployEntryImportTest.test_bootstrap_precedes_yiban_import	J	-	引导必须**先于**任何 yiban 导入——反过来写会在"直接跑脚本"时崩。
 tests/test_deploy_entry_imports.py	DeployEntryImportTest.test_container_scheduler_imports	J	-	调度器必须能导入（不真跑主循环：模块体在 __main__ 守卫里才起循环）。
@@ -1097,6 +1111,14 @@ tests/test_loadtest_isolation.py	test_scale_driver_base_env_strips_proxy	??	-	??
 tests/test_loadtest_isolation.py	test_startup_guard_reports_offending_keys	??	-	进程环境断言：命中 *PROXY* 键时抛错并点名具体键名。
 tests/test_loadtest_isolation.py	test_verify_accounting_raises_on_imbalance	??	-	收尾对平原语：服务端权威 total != 驱动读到的 JSONL 条数 ⇒ IsolationError。
 tests/test_loadtest_isolation.py	test_verify_zero_egress_empty_probe_fails_not_skips	??	-	空探测目标必须判 FAIL（此前是 [SKIP] 并可能返回 True）。
+tests/test_loadtest_purge_guard.py	test_clear_session_cache_ok_with_fingerprint	J	-	??
+tests/test_loadtest_purge_guard.py	test_clear_session_cache_refuses_non_loadtest_db	J	-	??
+tests/test_loadtest_purge_guard.py	test_clear_session_cache_requires_fingerprint	J	-	??
+tests/test_loadtest_purge_guard.py	test_concurrency_probe_main_requires_db_fingerprint	J	-	??
+tests/test_loadtest_purge_guard.py	test_load_env_file_missing_raises	J	-	??
+tests/test_loadtest_purge_guard.py	test_load_env_file_reads_existing	J	-	??
+tests/test_loadtest_purge_guard.py	test_load_env_file_unreadable_raises	J	-	??
+tests/test_loadtest_purge_guard.py	test_scale_driver_main_requires_db_fingerprint	J	-	??
 tests/test_loadtest_tools.py	test_capacity_aborts_ladder_when_env_prep_fails	J	-	mock_env 报告环境未就绪：不跑 K 阶梯、非零退出，并把子进程输出带出来。
 tests/test_loadtest_tools.py	test_capacity_hardware_ceiling_stops_before_degradation	J	-	硬件上限取「首个劣化>1.5× 或资源饱和」档**之前**的档。
 tests/test_loadtest_tools.py	test_capacity_measured_cycle_adds_back_first_account_gap	J	-	周期还原：压测的"平均墙钟"少了"第一个账号不等待间隔"的那部分（gap / n）。
@@ -1673,6 +1695,15 @@ tests/test_protocol_masking.py	CorruptedKeyContractTest.test_corrupted_key_retur
 tests/test_protocol_masking.py	CorruptedKeyContractTest.test_valid_page_still_parses	G	-	守卫不得变成"永远返回 (None, None)"：合法页两分支都要照常解出公钥。
 tests/test_protocol_masking.py	DiagnosticsHeaderTest.test_diagnostics_header_masks_phone	G	-	诊断日志首行 `[账号] 阶段诊断:` 的账号同样走脱敏口径。
 tests/test_protocol_masking.py	LoginFailureMessageTest.test_failure_message_masks_phone	G	-	usersure 回 error reUrl → 异常消息里的账号只能是 `138****8000` 形态。
+tests/test_purge_guard.py	ConfirmationTest.test_requires_exact_echo	G	-	??
+tests/test_purge_guard.py	ContentFingerprintTest.test_parts_drive_digest	G	-	??
+tests/test_purge_guard.py	DbContentFingerprintTest.test_different_scale_changes_fingerprint	G	-	行数/规模差异必须改变指纹——这正是它区分 demo 库与生产库的地方。
+tests/test_purge_guard.py	DbContentFingerprintTest.test_missing_db_does_not_create_file	G	-	??
+tests/test_purge_guard.py	DbContentFingerprintTest.test_same_target_is_stable_but_content_sensitive	G	-	??
+tests/test_purge_guard.py	DbContentFingerprintTest.test_summary_mentions_target_and_counts	G	-	??
+tests/test_purge_guard.py	WritePurgeAuditTest.test_audit_failure_returns_false	G	-	??
+tests/test_purge_guard.py	WritePurgeAuditTest.test_missing_db_returns_false	G	-	??
+tests/test_purge_guard.py	WritePurgeAuditTest.test_success_writes_one_row	G	-	??
 tests/test_pw_gate_tiers.py	DelayAckTest.test_full_档不要求该字段	E	-	??
 tests/test_pw_gate_tiers.py	DelayAckTest.test_可逆操作不要该字段	E	-	??
 tests/test_pw_gate_tiers.py	DelayAckTest.test_非布尔真值一律算缺	E	-	??
@@ -2070,6 +2101,12 @@ tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_attempt_rate_unit_is_stat
 tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_document_exists	B	-	??
 tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_gray_release_checklist_is_excerpted	B	-	R-T14 八条要点必须摘进文档（至少两条硬前置）。
 tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_two_operational_disciplines_present	B	-	??
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_audit_failure_aborts_wipe	J	-	??
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_correct_fingerprint_wipes_and_audits	J	-	??
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_refuses_db_with_non_loadtest_accounts	J	-	误指生产库：库内账号 owner 不是压测域 ⇒ 即便指纹匹配也拒绝且零删除。
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_wrong_fingerprint_is_refused	J	-	??
+tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_yes_alone_is_not_enough	J	-	??
 tests/test_session.py	Batch11CleanupClockGuardTest.test_audit_cleanup_skips_one_round_then_resumes	C	-	??
 tests/test_session.py	Batch11CleanupClockGuardTest.test_event_cleanup_skips_one_round_then_resumes	C	-	??
 tests/test_session.py	Batch11NotifyCoverageTest.test_account_delete_mails_owner	C	-	??
@@ -2208,6 +2245,15 @@ tests/test_state_gc.py	SweepPolicyTest.test_orphan_tmp_is_removed_but_fresh_one_
 tests/test_state_gc.py	SweepPolicyTest.test_recent_artifacts_are_kept	D	-	??
 tests/test_state_gc.py	SweepPolicyTest.test_retention_boundary_is_by_filename_date	D	-	保留期边界与旧 bash 同口径：删除**严格早于**截止日的文件，截止日当天保留。
 tests/test_state_gc.py	SweepPolicyTest.test_retention_cutoff_uses_business_clock_not_host_tz	D	-	H2：UTC 主机（宿主比北京慢 8 小时）上，保留期截止日必须按业务钟。
+tests/test_state_purge_guard.py	BackupCopyProtectionTest.test_plan_excludes_backup_copy	D	-	??
+tests/test_state_purge_guard.py	BackupCopyProtectionTest.test_sqlite_backup_copy_is_not_deleted_by_state_cleanup	D	-	文件名叫得像过期按日文件，但内容是 SQLite 库 ⇒ 必须保留（备份机制自管理）。
+tests/test_state_purge_guard.py	CliStateGuardTest.test_audit_failure_aborts_state_yes	D	-	??
+tests/test_state_purge_guard.py	CliStateGuardTest.test_correct_fingerprint_cleans_and_audits	D	-	??
+tests/test_state_purge_guard.py	CliStateGuardTest.test_wrong_fingerprint_is_refused	D	-	??
+tests/test_state_purge_guard.py	CliStateGuardTest.test_yes_without_fingerprint_is_refused	D	-	??
+tests/test_state_purge_guard.py	StateCleanupArgvTest.test_default_still_cleans_for_cron	D	-	??
+tests/test_state_purge_guard.py	StateCleanupArgvTest.test_dry_run_reports_and_does_not_delete	D	-	??
+tests/test_state_purge_guard.py	StateCleanupArgvTest.test_unknown_argument_errors_and_deletes_nothing	D	-	??
 tests/test_static_routes.py	FaviconRouteTest.test_absent_returns_404	E	-	??
 tests/test_static_routes.py	FaviconRouteTest.test_present_serves_png_with_short_cache	E	-	??
 tests/test_static_routes.py	GonganBeianRouteTest.test_absent_returns_404	E	-	??
