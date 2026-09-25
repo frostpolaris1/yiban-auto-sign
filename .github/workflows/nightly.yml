@@ -1,0 +1,62 @@
+name: Nightly
+
+# nightly 全量轨：完整测试套件（含 fast 轨的安全子集），是"CI 基线可信"的全量信号。
+# 与 ci.yml（fast 轨）分成两个文件：schedule 是 workflow 级触发，同文件会让 fast job
+# 也被排程触发，必须加事件守卫；两文件后各自的触发条件诚实、参数互不干扰。
+#
+# 排程时区（cron 一律 UTC，别按本地钟改）：
+#   '0 6 * * *' = 06:00 UTC = 北京时间 14:00
+# **禁止挪到 UTC 16:00–24:00（北京 00:00–08:00）**：该窗口 runner 的 UTC 日期与业务
+# 北京钟日期错位，是 MF-108 全量大面积红（36 failed/3011 passed）的窗口。批 1 Task 0
+# 已把测试族锚到业务钟（TZ=UTC 下全量绿），排程仍避开此窗口以防族级回归复发。
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+# 最小权限：仅读取代码
+permissions:
+  contents: read
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    # 全量：本机 24 核 -n 8 实测 90.8s（-n 4 为 137.8s）；CI 4 vCPU 更慢，留足余量
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install dependencies (locked)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+          # 与 ci.yml 同一组钉版工具，保证两轨判定口径一致
+          # （ruff 0.16.6 / pytest 9.1.1 / pytest-xdist 3.8.0）
+          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
+
+      # 全量轨也跑 Lint：夜间信号应覆盖 fast 轨的全部门禁，避免"白天 lint 漏判"
+      - name: Lint (ruff)
+        run: python -m ruff check yiban/ tests/ scripts/ web/ --quiet
+
+      # ---- 全量测试 ----
+      # 对齐发布门 §2① 全量行（python -m pytest tests/ -q -p no:randomly -n 8），仅追加
+      # --dist loadfile：套内存在文件内先后依赖（MF-107）与进程级 DB 单例，默认按单条
+      # 分发会误红，与 ci.yml 同理由。
+      # -n 8（非 auto）：CI runner 4 核，auto=4；本机 24 核实测 -n 8 (90.8s) 明显快于
+      #   -n 4 (137.8s)——全量按文件分发时进程多在等子进程/回环 HTTP，夜间无 3min 预算，
+      #   8 进程可掩盖等待。取 -n 8 也与发布门文档一致。
+      # -p no:randomly：关随机顺序（当前钉版工具集未装 pytest-randomly，属防御性声明，
+      #   保证日后误加插件也不会打乱顺序）。
+      - name: Full test suite
+        run: python -m pytest tests/ -q -p no:randomly -n 8 --dist loadfile
+
+      - name: Gate ready
+        run: echo "Nightly full gate active."
