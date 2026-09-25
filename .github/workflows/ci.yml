@@ -1,9 +1,12 @@
 name: CI
 
-# PR 门禁：独立于 .github/workflows/signin.yml（后者是定时签到服务自动化）
-# 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push
+# PR 门禁（signin.yml 定时签到与 mirror.yml Gitee 镜像已删除，MF-106：前者危险且
+# secret 不存在，后者首日即坏；gitee 同步改为人工 push 维护，历史可从 git 找回）
+# 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
+# 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
 # （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
 on:
+  workflow_dispatch:
   pull_request:
     branches: [develop, server-web, main]
   push:
@@ -34,10 +37,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.lock
           # 开发/门禁工具：与运行依赖分离，锁定版本保证 CI 可复现
-          # ruff 0.15.22 = 0.15 系列最终版（0.16 起默认规则集大改，待迁移后再升）
+          # ruff 0.16.6 = 与本地 WSL 门禁（~/.venv-yiban-wsl）逐字对齐（MF-106：
+          # 旧钉 0.15.22 与本地漂移，同一份代码两套编辑器判出不同结果）
           # pytest 9.1.1 = 含 CVE-2025-71176 修复（0~9.0.3 受影响）
           # pytest-xdist = 并发跑测试（-n auto 按 CI 核数分发；单测各自隔离临时目录）
-          pip install ruff==0.15.22 pytest==9.1.1 pytest-xdist==3.8.0
+          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
 
       # 提交/PR 标题规范校验（Conventional Commits）
       # 不符合 feat/fix/docs/... 前缀则门禁失败。
@@ -49,8 +53,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ---- Lint ----
+      # 与本地门禁命令逐字一致（含 web/：旧命令漏 web/ 曾藏 2 处 RUF100，MF-39）
       - name: Lint (ruff)
-        run: ruff check .
+        run: ruff check yiban/ tests/ scripts/ web/ --quiet
 
       # ---- Test ----
       # 单元/回归测试（tests/，pyproject.toml testpaths=["tests"]）
