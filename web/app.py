@@ -266,12 +266,13 @@ from web.services.logs import (  # noqa: E402
     clear_fuse_pause,  # noqa: F401
 )
 from web.services.manual_sign import (  # noqa: E402
-    # 名字面零损失：手动签到子进程族（等待回收、队列超时缩放、退出码词表）随族搬入
-    # web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
+    # 名字面零损失：手动签到子进程族（终止进程树、等待回收、队列超时缩放、退出码词表）
+    # 随族搬入 web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
     # `log_path_for`，故在下方转发
     _SIGNIN_EXIT_REASONS,  # noqa: F401
     _batch_wait_timeout,  # noqa: F401
     _manual_sign_failure_reason,  # noqa: F401
+    _terminate_signin_proc,  # noqa: F401
     _wait_signin_proc,  # noqa: F401
 )
 from web.services.measure import (  # noqa: E402
