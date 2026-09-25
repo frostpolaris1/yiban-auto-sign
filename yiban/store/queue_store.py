@@ -11,6 +11,8 @@
   未了结行生效（终态行不得被重排复活，否则会被重新领取＝当日再登录一次）；
 - `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
+- `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
+  `pending`——证据强于"租约过期"，故不等宽限期；
 - `steal_shards`：死主分片接管——把心跳过期执行体分片集内 `owner` 为**该死主**的
   `pending` 行改归本执行体（只动 `pending`，CAS 精确到死主 + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
@@ -287,6 +289,48 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
             return cur.rowcount
     except Exception as e:
         logger.warning("回收过期签到任务失败（按无可回收处理）: %s", e)
+        return 0
+
+
+def reap_abandoned(owner, day=None):
+    """显式回收某个**已确认死亡**的执行体名下仍 `claimed` 的任务：回退 `pending`，
+    清 `owner`/`lease_until`、`epoch = epoch + 1`。返回受影响行数。
+
+    `owner` 是**稳定槽位名**（`worker-3@{主机名}` 之类）。持有者列存的是运行时身份
+    （`{稳定名}:{进程号}:{代次}`，见 `yiban.egress.runtime_owner`），故按前缀匹配：
+    `owner = ?` 覆盖计划行写入的裸稳定名，`instr(owner, ?) = 1` 匹配运行时身份。
+    **不用 `LIKE`**——主机名里可能出现 `_`，那是 LIKE 的通配符，会把别的槽位一起吃掉。
+
+    与 `reap_expired` 的分工：后者按"租约过期 ⇒ 可能死了"回收（须过宽限期，见
+    `REAP_GRACE_SEC`）；本函数给**监督进程**用——子进程被信号杀死时它直接观测到了异常
+    退出（返回码为负），这比心跳过期更强，故不必等宽限期即可回收。不做这一步，被杀执行体
+    留下的在领任务只能等 `reap_expired` 的租约 + 宽限期（合计可达数十分钟），期间该账号
+    当天无人再签。
+
+    只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；`pending`
+    重排行与终态行也不该动。回退后的行 `pending` 且租约已放开，下一次 `claim_batch` 即可
+    领取。`epoch + 1` 与 `reap_expired` 同一条红线——让原持有者迟到的旧代结论被
+    `settle_tasks` 的 `epochs` fence。`vshard >= 0` 与 `reap_expired` 同界：排除 v18 平移 /
+    v20 补账的历史行，免得把它们回退成永不被领取（`claim_batch` 的 `vshard IN (...)` 挡着）
+    的假待办。`day` 给了就只回收该业务日。
+
+    库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
+    """
+    prefix = owner + ":"
+    sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
+           "WHERE state=? AND vshard >= 0 AND (owner = ? OR instr(owner, ?) = 1)")
+    params = [STATE_PENDING, STATE_CLAIMED, owner, prefix]
+    if day is not None:
+        sql += " AND day=?"
+        params.append(day)
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            cur = conn.execute(sql, tuple(params))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("轮末收尸签到任务失败（按未收尸处理）: %s", e)
         return 0
 
 
