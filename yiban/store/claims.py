@@ -124,6 +124,9 @@ def notify_pool_down(reason):
     if _pool_down_notified:
         return
     _pool_down_notified = True
+    # 去重是**全局**的（进程内一次），不是逐账号：同一场库故障下，第一个账号报一次 ERROR
+    # 并入当日汇总后，后续账号的拒跑一律静默——这是刻意的防洪，一条汇总已足够定责；
+    # 若逐账号重报，几百个账号会把同一场故障刷成几百条日志与邮件，掩盖真正的信号。
     logger.error("领取签到账号失败（fail-closed 拒跑）: %s", reason)
     # 局部导入：alerts 经引擎入口反向依赖本模块所在的数据层，模块级互引会成环
     # （与 yiban/engine/schedule.py 取 alerts 同一手法）。
@@ -360,6 +363,10 @@ def reap_unreported(owner, claimed, reported, result="轮末收尸：本轮未�
 
     收尸一律带领取时的 `epoch`：本进程若已被接管，收尸写会被存储端拒绝——不得把
     接管者的在飞行改成 failed（那会让接管者的结论无处可落）。
+
+    这里**不动 `epoch`**：走的是 `give_up` 的轮内语义（行仍归本人，只是立刻放开租约），
+    与轮内主动弃权同一条路径；自增 `epoch`（fence 迟到旧代写）的是监督进程侧的
+    `reap_abandoned`——它面对的是已被确认死亡、可能换了持有者的行。
     """
     done = []
     for phone, (day, epoch) in list(claimed.items()):

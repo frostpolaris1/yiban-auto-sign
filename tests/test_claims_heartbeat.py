@@ -313,7 +313,7 @@ class RoundEndReapTest(_DbBase):
         self.assertEqual(self._row(P1)["owner"], OWNER_B)
 
     def test_round_end_reap_is_wired(self):
-        """接线断言：轮末必须调用收尸（MF-47③ 的另一半——'无调用者'就是缺陷本身）。"""
+        """轮末必须真的调用收尸：没有调用者时，领到却无结论的行没人显式弃权。"""
         with mock.patch.object(round_mod.claims_mod, "reap_unreported",
                                return_value=[]) as reap:
             self._run([self._acc(P1)])

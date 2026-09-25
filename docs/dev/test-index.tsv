@@ -350,7 +350,7 @@ tests/test_claims_heartbeat.py	PoolDbDeclaredProbeTest.test_cache_is_keyed_by_re
 tests/test_claims_heartbeat.py	PoolDbDeclaredProbeTest.test_declared_path_counts_as_configured_even_before_it_exists	B	-	??
 tests/test_claims_heartbeat.py	PoolDbDeclaredProbeTest.test_empty_declaration_is_not_configured	B	-	??
 tests/test_claims_heartbeat.py	RoundEndReapTest.test_reap_skips_rows_taken_over_by_others	B	-	??
-tests/test_claims_heartbeat.py	RoundEndReapTest.test_round_end_reap_is_wired	B	-	接线断言：轮末必须调用收尸（MF-47③ 的另一半——'无调用者'就是缺陷本身）。
+tests/test_claims_heartbeat.py	RoundEndReapTest.test_round_end_reap_is_wired	B	-	轮末必须真的调用收尸：没有调用者时，领到却无结论的行没人显式弃权。
 tests/test_claims_heartbeat.py	RoundEndReapTest.test_unreported_claim_is_explicitly_given_up_and_immediately_reclaimable	B	-	??
 tests/test_claims_mutex.py	CrashTakeoverFenceE2ETest.test_takeover_succeeds_and_old_owner_writes_are_fenced	B	-	??
 tests/test_claims_mutex.py	OwnerIdentityTest.test_legacy_owner_format_still_parses	B	-	库内旧格式 owner 行的解析/展示不得因新身份格式而崩（幂等宽容、不迁移旧数据）。
@@ -376,6 +376,7 @@ tests/test_claims_mutex.py	V3RequeueGateTest.test_requeue_claimed_row_with_stale
 tests/test_claims_mutex.py	V3RequeueGateTest.test_requeue_failed_row_revives_for_same_day_second_chance	B	-	failed 是未了结态：当日回炉口必须还能用（否则失败账号只能等第二天）。
 tests/test_claims_reap_e2e.py	CrashedWorkerTakeoverE2ETest.test_live_heartbeat_blocks_takeover_then_expiry_allows_fenced_takeover	B	-	??
 tests/test_claims_reap_e2e.py	SupervisorReapDeadWorkerE2ETest.test_round_end_reaps_claims_of_killed_child	B	-	??
+tests/test_claims_reap_e2e.py	SupervisorReapDeadWorkerV3E2ETest.test_round_end_reaps_claimed_task_of_killed_v3_child	B	-	被杀子进程在 v3 队列留下的在领任务，轮末必须回退待领（下一次 claim_batch 可领）。
 tests/test_cli_contract.py	CliContractTest.test_capacity_measure_forwards_extra_args	J	-	`--measure` 之后的多余参数属于工具自己的开关，不是 CLI 的用法错误。
 tests/test_cli_contract.py	CliContractTest.test_capacity_recommendation_matches_web_formula	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_config_and_check_config_do_not_migrate_target_db	J	-	F3：宣称"脱敏、不联网/只读"的配置检查不得对目标库跑迁移（写库）。
