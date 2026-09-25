@@ -485,6 +485,13 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
   这个缺口在仓内不再有任何自认）。与 MF-47 的六条绕过路径**不同轴**：MF-47 讲"同一时刻被领两次"，
   本条讲"先后每一轮各领一次且无上限"。
 
+**处置（2026-09-26 批1 Task4，repair/m3-batch1）**：领取按弃权原因分档——`give_up` 写 `result` 前缀
+（`retry:`/`final:`，`RETRYABLE_GIVE_UP_STATUSES` 单一来源，零库迁移）；默认参数对 `final:` 档拒领，
+显式路径=补签轮/手动（`allow_failed=True`）；**常驻兜底不算显式路径**（无界循环），回落默认档只接
+`retry:` 与未领账号。旧格式无前缀行 **fail-closed**（升级当日旧行默认不可再领，靠补签/手动显式接手）
+——已知边界：既不跑补签也不跑手动的部署当日搁浅该批行。`attempts` 上限经裁决不采（会把防重复登录
+变成漏签新源）。
+
 ## 补充检出（MF-68..103，2026-09-25 收尾轮 · 全部经独立裁决）
 
 > 来源：`DISPATCH-REMAINING.md` 派发 2/3。semgrep 265 条归类（`_scratch/m2rev/out/SEMGREP-TRIAGE.md`）
@@ -534,6 +541,12 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
 **"与 MF-56 有顺序耦合"两头都是错的**：`executor_count`（`schedule.py:195-219`）从不参与派发（`runner.py:227-231`）；实测 `executor_count(89|122|361, 4200s, egress∈{1,2,4}) = 1` ⇒ 现网 K≡1 由"量 ÷ 窗口"造成、不是被出口数夹死。现网部署线 `6d4eafa` 同结构；唯一未知是启用 worker 行数（`PROD-FACTS.md` 未记 ⇒ 需 4 条只读命令）。
 另记：这不是疏忽而是**记录在案的取舍**——`runner.py:232-234` 注释自述"三者照旧派发"，且 `tests/test_multi_executor_engine.py:289-331` 正向断言每个子进程都带 `--only`；而 `docs/dev/reviewfix-intended-design-20260922.md` L4-2 写的是相反意图 ⇒ **待裁决 #8 已裁决（2026-09-25）**：门豁免确认现状；L4-2 的冲突实为派发拓扑（`--only` 单进程）⇒ 修法收敛为上述三条危害 + 扇出收敛，M3 同批改实现、注释与测试。〔C-02 · ADJ-2〕
 验收不变量：一条 `--only <单号>` 进程树整轮 `attempts.attempt_signin` 调用数 == 1、`Popen` 记录 ≤ 1、成功时 rc ∈ {0}；且 `--only` 必须仍能返回 3。
+
+**处置（2026-09-26 批1 Task4，repair/m3-batch1）**：`--only` 派发收敛为单进程内联执行（e2e：引擎
+`Popen==0`、attempt==1、成功 rc=0；撞全局锁仍 rc=3）；`terminate()` 改杀进程组（`start_new_session`
++ 自组守卫，歧义即放弃 killpg 走单杀），孤儿化消失；危害②由扇出收敛 + 批1 Task3-B 锁 fail-closed
+共同消失（未再改锁）；三处对齐完成（runner 派发注释重写为事实、旧正向断言测试改钉新行为、L4-2 加
+对齐说明）。门豁免语义未动（待裁决 #8 设计保持）。
 
 #### MF-75 容器调度器一次异常即让当天五项全废且不再重启（高，现网不触发）
 `docker/scheduler.py:341-393 main_loop` 循环体无兜底，其中 `_run_signin_child:228` 的 `Popen` 没有 `except OSError`——对照同文件 `_start_fallback_child:299` 的调用点 `:319-323` 接住并 print，即同一文件两种判法。外层无人救：`supervisord.conf` 未写 `startsecs/startretries`（默认 1s/3 次），崩溃发生在重启后第一 tick（`hm>=FIRST` 立判、`_mark_slot` 排在子进程之后）⇒ 秒级三连进 **FATAL 不再重启**；`docker-compose.yml:56-62` 的 healthcheck 只 curl web 端口 ⇒ `restart: unless-stopped` 永不救。后果是首签/补签/探针/兜底/清理同进程全废全天。
