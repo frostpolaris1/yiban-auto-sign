@@ -223,20 +223,28 @@ def main(argv=None):
     # 成进程树；argv 侧去 `--workers` 的老办法挡不住（清单路径根本不经 argv）。
     # 子进程身份由监督进程注入 `YIBAN_EXECUTOR_ID`（`worker-{i}@{主机名}`），据此短路。
     _already_child = bool(os.environ.get("YIBAN_EXECUTOR_ID", "").strip())
-    slots = None if _already_child else egress.launch_slots()
-    # 派发监督进程的参数（None = 不派发，走下面的进程内单执行体路径）：清单缺失/非法 →
-    # 旧口径 `--workers N`（槽位就是 0..N-1）；清单在场 → 数**拉起列表**的槽位
-    # （停用/兜底行不在其中）。
-    if slots is None:
-        _dispatch = (args.workers, None) if (
-            not _already_child and args.workers and args.workers > 1) else None
+    # `--only`（手动单号）**收敛为单进程**：它只该豁免门，不该让派发照旧。派发照旧时同一
+    # 单号会被 N 个子进程各自领一次，抢输的一路 rc=2 会让 web 把其实成功的那次点击写成
+    # "本轮未实际签到"；且各子进程持独立锁，只杀监督进程会留下孤儿。收敛后这些都不存在，
+    # 而"拿不到锁返回 3"与门豁免的语义不变（见下面 `if not args.only` 的门与运行锁）。
+    if args.only:
+        _dispatch = None
     else:
-        _dispatch = (len(slots), slots) if len(slots) > 1 else None
-    # 只有"真跑计划任务"的派发才在 spawn 之前过门：`--only` 是用户主动触发（必须放行）、
-    # `--check-config` 是部署验证（哪天都要能验）、`--probe` 自带一道门且跳过语义是
-    # `return 0` 而非 2——三者照旧派发，由子进程各自按既有语义处理，与门只写在下面时逐字一致。
+        slots = None if _already_child else egress.launch_slots()
+        # 派发监督进程的参数（None = 不派发，走下面的进程内单执行体路径）：清单缺失/非法 →
+        # 旧口径 `--workers N`（槽位就是 0..N-1）；清单在场 → 数**拉起列表**的槽位
+        # （停用/兜底行不在其中）。
+        if slots is None:
+            _dispatch = (args.workers, None) if (
+                not _already_child and args.workers and args.workers > 1) else None
+        else:
+            _dispatch = (len(slots), slots) if len(slots) > 1 else None
+    # 只有"真跑计划任务"的派发才在 spawn 之前过门：`--check-config` 是部署验证（哪天都要
+    # 能验）、`--probe` 自带一道门且跳过语义是 `return 0` 而非 2——两者照旧派发，由子进程
+    # 各自按既有语义处理，与门只写在下面时逐字一致。`--only` 不在派发之列（见上），故也
+    # 不在这里过门；它走单进程路径时由下方 `if not args.only` 的门豁免放行。
     if _dispatch is not None:
-        if not (args.only or args.check_config or args.probe):
+        if not (args.check_config or args.probe):
             # 周末/暂停门必须在 spawn 之前拦下：否则先按清单拉起一批执行体子进程，再由每个
             # 子进程各自撞门退出（读配置、连库、载账号都白做一遍）。
             _skip = _day_off_skip()
@@ -353,7 +361,10 @@ def main(argv=None):
     # 账号再次完整登录（风控暴露）。现剔除已了结账号（success/already），
     # 只重跑未完成者；全部已了结则静默结束（退出码 0，不空跑一轮）。
     # --only 手动签到不受影响。
-    if not args.only and state_io._is_second_run():
+    # 本轮的"补签轮"身份还要喂给领取池：补签轮是显式路径，允许重领预算耗尽档的失败账号
+    # （窗口外/无点位档不靠它）。故只读一次、两处共用同一个判定。
+    _second_run = state_io._is_second_run()
+    if not args.only and _second_run:
         accounts = state_io._second_run_drop_done(accounts)
         if not accounts:
             logger.info("==== 补签轮：当日账号均已了结，无需重跑 ====")
@@ -487,6 +498,10 @@ def main(argv=None):
             event_sink=event_rows.append, delegated=delegated,
             # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
             reclaim=bool(args.only),
+            # 显式路径才可重领"预算耗尽/风控"档弃权的账号：手动与补签轮都算（兜底在
+            # `workers.run_fallback_worker` 里同样传 True）。默认轮不传 ⇒ 那类账号不会被
+            # 后面每一轮无上限地重领一遍。
+            retry_failed=bool(args.only) or _second_run,
         )
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。

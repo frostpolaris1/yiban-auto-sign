@@ -344,7 +344,11 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
                                             delegated=delegated,
                                             # 兜底是"替全量轮捡漏"：窗口已关就该停手，
                                             # 一轮扫描内部不再对剩余账号发起真实登录
-                                            window_guard=True)
+                                            window_guard=True,
+                                            # 兜底是显式路径：预算耗尽/风控档弃权的账号也要
+                                            # 捡回来（那正是"补签链接得上失败账号"的落点）；
+                                            # 不传的话这类账号只能等补签轮，兜底就白常驻了
+                                            retry_failed=True)
         # 轮末写回熔断计数（口径与 runner 全量轮一致：按本轮账号增量合并）。不写回则
         # "连续凭据失败达阈值 → 暂停"只在磁盘上不存在：下一轮 read() 又从零开始，
         # 错密码账号被无限次真实登录（易班侧照实计数，加重风控）。
