@@ -32,6 +32,15 @@
    都带 `epoch=?`。只给领取侧发号而不校验收尾写等于没做——执行体被 STW 停顿/容器挂起卡住
    数分钟后醒来，仍以为自己持有该账号，迟到的写会覆盖接管者的结论。
 
+**两条显式处置"卡住的行"的路径（缺一条就有账号当天签不上）**：
+
+- **心跳**：领取之后由执行侧周期性调用 `touch`（周期见 `HEARTBEAT_SEC`，续租写同样带
+  `epoch`）。没有它，任何"领取 → 收尾"跨度超过租约的账号都会被别的执行体按"崩溃自愈"
+  接管，同一天被真实登录两次。
+- **轮末收尸**：`reap_unreported`（执行体对自己本轮未产生结论的行）与 `reap_abandoned`
+  （监督进程对**已确认死亡**的子进程名下的行）把租约立刻放开，而不是等满 900s 让补签轮
+  误判成"别人在飞"。判定死亡的证据强度不同（异常退出 > 心跳过期），故两者分开。
+
 连接与进程内锁取自同包的 `yiban.store.db`；门面对本模块是**重命名**再导出（`claim_*`
 前缀），逐条别名见 `yiban.store.db` 领取池绑定处的行尾注释。
 
@@ -56,6 +65,14 @@ logger = logging.getLogger("yiban.store.claims")
 #: 取太短会把"正在重试的慢账号"误判为死执行体而重复登录（同一账号两次登录
 #: 会加速触发易班侧风控），取太长会让崩溃后的账号等到窗口结束都没人接。
 LEASE_SECONDS = 900
+
+#: 心跳周期（秒）：执行侧对**在领账号**周期续租的间隔（`touch` 的生产调用者见
+#: `yiban/engine/round.py` 的 `_ClaimHeartbeat`）。
+#: 为什么必须显著小于 `LEASE_SECONDS`：一轮里每个账号的尝试之间隔着间隔对齐与重试等待，
+#: 那些等待可达数分钟，期间账号已被领取但没有任何请求；若心跳周期接近租约，一次正常的
+#: 长等待就会让在领行过期，被别的执行体按"崩溃自愈"接管 ⇒ 同一账号两次真实登录。
+#: 取 300s = 租约的 1/3：连丢两拍（600s）仍在租约内，留出一次容错。
+HEARTBEAT_SEC = 300
 
 #: 保留期（天）：只用于运维追溯与"昨日的了结情况"，展示口径不读它。
 RETENTION_DAYS = 14
@@ -93,24 +110,33 @@ def _integrity_errors():
     return sqlite3.IntegrityError
 
 
-def _notify_pool_down(e):
+def notify_pool_down(reason):
     """领取池不可用（fail-closed 拒跑）的告警：进程内只报一次 + 并入当日汇总邮件。
 
     只写日志不够：管理员在设置页看到的"多执行体"配置看起来生效，实际签到被静默拒跑，
     无人知情。故并入当日汇总（A 线），并用模块级标记去重。
+
+    调用方不止 `try_claim`：**配了库但库当前不可用**（部署要用领取池却读不到）时，
+    执行侧在调用领取之前就要拒跑（`round._claim`），那一路也走本函数——两处的口径必须
+    一致（同一句"池子坏了"、同一份去重），否则同一场库故障会被两条路径报成两件事。
     """
     global _pool_down_notified
     if _pool_down_notified:
         return
     _pool_down_notified = True
-    logger.error("领取签到账号失败（fail-closed 拒跑）: %s", e)
+    logger.error("领取签到账号失败（fail-closed 拒跑）: %s", reason)
     # 局部导入：alerts 经引擎入口反向依赖本模块所在的数据层，模块级互引会成环
     # （与 yiban/engine/schedule.py 取 alerts 同一手法）。
     from yiban.engine import alerts
     alerts._collect_admin_mail(
         "签到领取池不可用",
-        f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{e}",
+        f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{reason}",
     )
+
+
+# 旧名保留（`_pool_down_notified` 那套打桩口径不变）：既有调用点与测试按旧名取用的
+# 继续可用；新增调用点（执行侧的"配了库但不可用"分支）用公开名。
+_notify_pool_down = notify_pool_down
 
 
 def new_owner(prefix=""):
@@ -318,6 +344,69 @@ def give_up(phone, day, owner, result="", epoch=None):
     if epoch is not None:
         _explain_fenced_write(phone, day, "弃权")
     return False
+
+
+def reap_unreported(owner, claimed, reported, result="轮末收尸：本轮未产生结论"):
+    """轮末收尸：把自己领到、但本轮**没有产生结论**的行显式弃权。
+
+    `claimed` 是 `{phone: (day, epoch)}`（本进程领到的账号 → 业务日与领取时的 token），
+    `reported` 是本轮已给出结论的账号集合；返回被了结的手机号列表。
+
+    **为什么必须有这条路径**：领取与登录跨事务、收尾又在整轮末尾，中间任何让本进程
+    提前离场的路（异常、窗口关闭、被杀）都会留下"claimed 但没有结论"的行。它们要么
+    等满 900s 租约才被别人接管（当日可能等不到窗口结束），要么被下一轮按"别人在飞"
+    误判而跳过——两种情况都是"当天再也签不上"。显式收尸把租约**立刻**放开（`give_up`
+    的语义：置 failed、当日仍未了结），补签轮/兜底可马上接手。
+
+    收尸一律带领取时的 `epoch`：本进程若已被接管，收尸写会被存储端拒绝——不得把
+    接管者的在飞行改成 failed（那会让接管者的结论无处可落）。
+    """
+    done = []
+    for phone, (day, epoch) in list(claimed.items()):
+        if phone in reported:
+            continue
+        if give_up(phone, day, owner, result, epoch=epoch):
+            done.append(phone)
+        else:
+            logger.info("轮末收尸未生效（已被接管或已有终态）: %s",
+                        masking.mask_phone(phone))
+    return done
+
+
+def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退出，本轮未产生结论"):
+    """显式了结某个**已确认死亡**的持有者名下仍 `claimed` 的行，返回受影响行数。
+
+    `owner` 是**稳定槽位名**（`worker-3@{主机名}` 之类）。持有者列存的是运行时身份
+    （`runtime_owner(稳定名)`，见 `yiban.egress`），故这里按前缀匹配：`owner = ?`
+    覆盖旧格式/手工写入的裸稳定名，`instr(owner, ?) = 1` 匹配 `{稳定名}:{进程号}:{代次}`。
+    **不用 `LIKE`**——主机名里可能出现 `_`，那是 LIKE 的通配符，会把别的槽位一起吃掉。
+
+    与 `reap_unreported` 的分工：后者是执行体对自己（还活着的进程）的收尾；本函数给
+    **监督进程**用——子进程被信号杀死时来不及自己收尾，而监督进程直接观测到了它异常
+    退出（返回码为负），这比"心跳过期 ⇒ 可能死了"更强，故不必等满租约。
+
+    只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；终态行更
+    不该动。`epoch + 1` 与 `reap_expired` 同一条红线——让任何迟到的旧代写被 fence。
+    库异常 → 0 + warning（收尸是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
+    """
+    from yiban.store import db
+    prefix = owner + ":"
+    expired = _utc_offset_str(LEASE_SECONDS)   # 与 give_up 同口径：立刻放开租约
+    sql = ("UPDATE sign_claims SET state=?, result=CASE WHEN result='' THEN ? ELSE result END, "
+           "heartbeat_at=?, epoch=epoch + 1 WHERE state=? AND (owner = ? OR instr(owner, ?) = 1)")
+    params = [STATE_FAILED, (result or "")[:200], expired, STATE_CLAIMED, owner, prefix]
+    if day is not None:
+        sql += " AND day=?"
+        params.append(day)
+    try:
+        conn = db.get_conn()
+        with db._conn_lock:
+            cur = conn.execute(sql, tuple(params))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("轮末收尸失败（按未收尸处理）: %s", e)
+        return 0
 
 
 def _day_column(day, column):
