@@ -728,8 +728,7 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 - **验收不变量**：workflow 文件 yamllint/actionlint 零错误；mirror.yml 删除或修成 2 段式；
   sign-in 工作流删除（或文件头注明永久禁用理由）；CI 带 `workflow_dispatch`；
   ruff 版本与本地门禁对齐；`web/` 2 处 RUF100 清零（接 MF-39）。
-- **owner 动作（仓外）**：push develop；Settings 里真正关 Dependabot（注释文件不生效，PR #20 仍开）；
-  若保留 mirror 则配两个 Gitee secret。
+- **owner 动作（仓外）**：push develop（✅ 2026-09-25 已完成 b6457e6..fd0a08f）；Dependabot 幽灵 PR 已根因定位（体检补遗 `D:/code/_scratch/dependabot-triage-20260925.md`）：活跃 yml 曾在 main 存续 08-13..08-26，注释掉（`3f22376`）**不会注销已注册的更新任务**，pip 任务此后仍开出 #13..#16 与 #20（09-24，portalocker）——必须去 Settings → Dependabot → version updates **Pause/Delete 两个任务**（无 API，仅 UI），并 `gh pr close 20 --delete-branch`；yml 可顺带 `git rm`（注释态无作用）；若保留 mirror 则配两个 Gitee secret。
 - **修法**：仓库内容部分归 CI 维护批（Task 7）；owner 部分移交用户。
 
 **下一空号：MF-107**。
