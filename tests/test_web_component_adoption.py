@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """回归守卫（2026-09-10，V3-5c）：**组件层是唯一事实源** —— 不得再绕过它裸写。
 
+标签：F · 前端与界面守卫
+覆盖：组件层是唯一事实源——不得裸写主/危险按钮与带底色日志块、文本类输入必须带输入框组件类、语义提示条必须走 `.yb-alert-*`、组件类必须齐备，并**实算**配色是否达 AA
+对应实现：`web/static/css/app.css` 与 `partials/component_layer.html` 的组件类定义；各页面模板与组件源码是扫描对象
+关键断言：判据按**元素**（是 input/textarea/select 就必须带组件类）与按**语义组合**（底色与边框同色系就必须走组件类），不认具体 class 串——换任何新写法都躲不过；`.btn-danger` 白字对底色 ≥ AA；`.yb-inset` 底色在两种模式下都必须≠`.yb-card`；阈值常量本身也被钉（`AA_NORMAL_TEXT == 4.5`），防被改成宽松值
+依赖：纯本地——读 CSS/模板/JS 原文并按调色板实算对比度；本文件判定前**剥注释**（`_strip_comments`）。不执行 JS、无需 node、不联网
+
 ## 为什么需要这条守卫
 
 `app.css` 在 V3-0 已把样式 token 化（`--yb-*`），组件层（`partials/component_layer.html`）

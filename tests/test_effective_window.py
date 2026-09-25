@@ -1,6 +1,24 @@
 # -*- coding: utf-8 -*-
 """有效窗口单一口径（排计划 / 判关闭 / 算容量同源）。
 
+标签：A · 调度：计划与分片
+覆盖：窗口单一口径的三条入口一致性（bounds / from_env /
+   引擎与网页共用的remaining_sec、capacity_accounts）、缓冲吃空时的退化处置与容量非零、窗口关闭收尾对当日已有结论的
+   CAS 保护、零请求收尾轮的退出码、手动链路（schedule
+   为空）的逐账号窗口钳制、补签轮对 no_task 的「已了结」判定、业务钟（北京
+   +8，与宿主 TZ 无关）驱动窗口判定与按日留痕、非 5
+   分钟整数倍窗口的自选尾片。
+对应实现：yiban/window.py（Window、bounds、from_env、remaining_sec、full_sec）、yiban/clock.py（beijing_now、today、ts）、scripts/signin.py（_schedule_config、_schedule_blocks、_window_closed、capacity_accounts、run_queue_retry
+   的窗口收尾、main 的退出码）、yiban/db 会话缓存时钟。
+关键断言：窗口只准算一次：排计划与判关闭必须取自同一份有效窗口，两条入口（env /
+   cfg）必须逐值相等——否则有完整计划却整轮判「时段已结束」。缓冲吃空时保留管理员的窗口、只收缩缓冲，容量不得显示
+   0、不得回退内置默认窗口。剩余窗口必须扣掉已流逝时间，迟启动要能被发现。窗口关闭的收尾轮不得改写当日已记录的
+   failed / no_position（真实原因与失败告警一起丢），落盘前还要 CAS
+   拦下并发写入；退出码按账号的真实结论算。窗口判定只认业务钟：UTC 主机上的北京
+   06:40 必须照签，北京 08:10 必须判结束。
+依赖：纯本地：临时状态目录 + 打桩 attempt_signin / time.sleep /
+   _update_cred_state，不建库、不发网络请求。整文件在本机全部执行，无 skip。
+
 **缺陷**：窗口被算了四遍且各不相同——排计划（`_schedule_blocks`，含"裁剪吃空则回退
 默认窗口"）、判关闭（`_window_closed`，只看 sign_end−edge_back）、引擎容量预检
 （内联算一遍，无回退也不扣流逝时间）、网页预估（自己读 env 再算一遍）。于是：
@@ -47,7 +65,7 @@ def _cfg(**env):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = str(v)
-        return signin._schedule_config()
+        return signin._schedule_config() # 走真实解析器而不是手搓 dict：配置映射本身也得被核对一遍
     finally:
         for k, v in old.items():
             if v is None:
@@ -83,7 +101,7 @@ class WindowSourceTest(unittest.TestCase):
         self.assertEqual((win.front_sec, win.back_sec), (6, 6))
         self.assertEqual((win.lo_min, win.hi_min), (420.1, 420.9))
         # 计划（_schedule_blocks）与判定（_window_closed）同源
-        blocks, eff_lo, eff_hi = signin._schedule_blocks(cfg)
+        blocks, eff_lo, eff_hi = signin._schedule_blocks(cfg) # 计划侧的 eff_lo/eff_hi 与上面的 win 同源，这一行就是「单一口径」的落点
         self.assertGreater(len(blocks), 0, "收缩后窗口下应有完整计划")
         self.assertEqual((eff_lo, eff_hi), (win.lo_min, win.hi_min))
         self.assertFalse(
@@ -117,7 +135,7 @@ class WindowSourceTest(unittest.TestCase):
         env = {"YIBAN_SIGN_START": "06:40", "YIBAN_SIGN_END": "07:40",
                "YIBAN_WINDOW_EDGE_FRONT_SEC": "90", "YIBAN_WINDOW_EDGE_BACK_SEC": "30"}
         cfg = _cfg(**env)
-        a, b = window.from_env(env), window.bounds(cfg)
+        a, b = window.from_env(env), window.bounds(cfg) # 两条入口各算一遍再比：只钉一条就等于放任另一条自由漂移
         self.assertEqual((a.start_min, a.end_min, a.lo_min, a.hi_min),
                          (b.start_min, b.end_min, b.lo_min, b.hi_min))
 

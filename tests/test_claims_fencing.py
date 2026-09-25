@@ -1,16 +1,23 @@
 # -*- coding: utf-8 -*-
 """fencing epoch：领取自增、**所有终态写**都带 `epoch=?`，以及 `try_claim` 的 fail-closed。
 
-两条性质各有一组用例，它们都**必须是可判别的**——只做 owner 作用域而漏掉 epoch 守卫时
-照样全绿，等于没测：
-
-1. **fencing**：每次领取自增 epoch，`settle` / `give_up` / `touch` 的 WHERE 带
-   `epoch=?`。判别力靠"**同一 owner** 拿着陈旧 epoch 写入"这一形态——被接管（owner 已换人）
-   时 owner 条件本身就拦住了写，测不出 epoch 有没有进 WHERE；只有 owner 相同、
-   epoch 落后时，"写不进去"才唯一地归因于 epoch 守卫。
-2. **fail-closed**：库异常（表未落地/锁超时/IO）时 `try_claim` 拒跑并告警，**绝不**答
-   "可执行"——多执行体下 fail-open 会让两个执行体同时放行同一账号（两次真实登录，
-   踩上游风控红线，见 `yiban/store/claims.py` 模块纪律）。
+标签：B · 调度：领取/队列/执行体
+覆盖：epoch 的领取返回值（首行为 1、同 owner 重入单调递增、接管抬高、未领到返回
+   0）、settle / give_up / touch 三类终态写的 WHERE 带 epoch、写 0
+   行后的回读分档（已有终态按幂等键、无终态则告警）、库异常时 try_claim 的
+   fail-closed 与只告警一次、sign_tasks 侧同口径（claim_batch / settle_tasks /
+   requeue_task）。
+对应实现：yiban/store/claims.py（epoch 自增与守卫）、scripts/db.py（claim_sign_account
+   / claim_settle 的 fencing
+   参数）、yiban/store/queue_store.py（claim_batch、settle_tasks、requeue_task）、yiban/engine/alerts.py（fail-closed
+   告警）。
+关键断言：fencing 用例必须是可判别的：判别力只在「owner 相同、epoch
+   落后」这一形态上——被接管时 owner 条件本身就拦住了写，测不出 epoch 有没有进
+   WHERE。只做 owner 作用域而漏掉 epoch 守卫时照样全绿，等于没测。fail-closed
+   是另一条：库异常时拒跑并告警，绝不允许答「可执行」（多执行体下 fail-open =
+   同一账号两次真实登录）。唯一键冲突是「别人刚领到」，不得混进「池子坏了」的告警。
+依赖：临时 sqlite（每用例重建）+ 打桩
+   yiban.engine.alerts；无网络请求。整文件在本机执行，无 skip。
 
 `epoch=None`（不传）时的行为与改造前逐字一致，由既有 `tests/test_claims.py` 全绿覆盖。
 """
@@ -35,12 +42,12 @@ TEST_KEY = "a" * 64
 DAY = "2026-09-22"
 PHONE = "13800138000"
 PHONE_B = "13800138001"
-OWNER_A = "hostA:100:090000"
+OWNER_A = "hostA:100:090000" # 旧格式身份串：本文件只把它当不透明的持有者标识用
 OWNER_B = "hostB:200:090001"
 
 
 def _ts(**kw):
-    return (clock.now() + datetime.timedelta(**kw)).strftime("%Y-%m-%d %H:%M:%S")
+    return (clock.now() + datetime.timedelta(**kw)).strftime("%Y-%m-%d %H:%M:%S") # 相对业务钟取偏移：租约与心跳的判据必须落在同一根时间轴上
 
 
 class _Base(unittest.TestCase):
@@ -96,7 +103,7 @@ class EpochReturnTest(_Base):
     """领取把 fencing token 交回调用方：没有它，收尾侧无从带上 epoch。"""
 
     def test_new_row_starts_at_one(self):
-        ok, epoch = self._claim()
+        ok, epoch = self._claim() # ok 只是前置，epoch 才是本文件的断言对象
         self.assertTrue(ok)
         self.assertEqual(epoch, 1, "插入分支的 epoch 取 1（默认 0 表示从未领取）")
         self.assertEqual(self._row()["epoch"], 1)

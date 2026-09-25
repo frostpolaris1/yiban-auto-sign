@@ -4,16 +4,17 @@
 备份失败哨兵：当日备份包缺失时发一封管理员告警，并核对"运行脚本 = 仓库脚本"。
 
 备份是**唯一**没有自愈路径的环节：`scripts/backup.sh` 在加密配置失效时 fail-closed
-（不产出任何归档），cron 拿不到任何信号，于是"连续几天没有备份"这件事在任何页面上都
-看不出来——生产上真的静默失败过 4 天，直到手工翻备份目录才发现。本脚本就是把这条
-静默失败变成一声响。
+（不产出任何归档），cron 侧仍是正常退出，于是"连续几天没有备份"这件事在任何页面上都
+看不出来（生产上曾静默失败 4 天，最后靠手工翻备份目录才发现）。本脚本是这条静默失败
+目前**唯一**的自动发现途径，覆盖面止于"当日包与清单在不在、运行脚本是否漂移"：包内容
+坏掉、备份脚本自身逻辑错都不在它视野内；它自己没被 cron 调起时同样没人知道。
 
 两项检查：
 1. **当日包存在**：`${BACKUP_DIR:-/var/backups}/yiban-<今天>.tar.gz.gpg` 与它的
    `.sha256` 旁挂件都在（明文/age 形态也认，见 `_archive_candidates`）；
 2. **防漂移**：`$APP_DIR/scripts/backup.sh`（仓库版）与 `$YIBAN_BACKUP_INSTALLED`
    （默认 `/usr/local/sbin/yiban-backup.sh`，cron 实际调的那个）内容一致——"运行脚本
-   是仓库脚本的拷贝"是部署约定，拷贝漂移过一次（旧拷贝静默失败 4 天）。安静路径上
+   是仓库脚本的拷贝"是部署约定，判据与它挡的是什么见 `_drift_report`。安静路径上
    两者一致（或安装版不存在）时不输出任何东西。
 
 **归属**
@@ -99,6 +100,8 @@ def _find_archive(backup_dir, day):
     """
     for path in _archive_candidates(backup_dir, day):
         if os.path.isfile(path):
+            # 清单缺失单独带出来：不可核验的包等于没有备份，但它是"包在、清单没了"，
+            # 与"整个包没生成"的排查方向不同，故不合并成一个布尔
             return path, os.path.isfile(path + ".sha256")
     return None, False
 
@@ -121,7 +124,11 @@ def _file_fingerprint(path):
 
 
 def _drift_report(repo_copy, installed):
-    """两份备份脚本的内容差异；不存在/一致/无法读取时返回 None（安静路径）。"""
+    """两份备份脚本的内容差异；不存在/一致/无法读取时返回 None（安静路径）。
+
+    这一项删不掉：cron 调的是安装拷贝。仓库版修好了而拷贝没跟上时，备份照旧按旧脚本
+    跑（旧拷贝曾连续几天静默失败），"当日包缺失"那一项只能在事后才发现这件事。
+    """
     if not os.path.isfile(installed):
         # 未按约定安装（自定义路径/单机试用）：无从比对，不报——真正的备份失败由
         # "当日包缺失"那一项兜住，这里多喊只会制造噪音
@@ -134,7 +141,7 @@ def _drift_report(repo_copy, installed):
     except OSError as e:
         return {"reason": f"读取失败（{e}）"}
     if repo_fp["sha256"] == inst_fp["sha256"]:
-        return None
+        return None  # 只比内容哈希：重装/chmod 会改 size 与 mtime，那不算漂移
     return {"reason": "内容不一致", "repo": repo_fp, "installed": inst_fp}
 
 
@@ -145,18 +152,16 @@ def _alert_due(title):
     同时跑"这类重复；跨天的重复由 cron 每日一次的频次天然限制。
     """
     from yiban.notify import transport
-    return transport._throttle_due(title)
+    return transport._throttle_due(title)  # 刻意复用推送组件那份磁盘表：cron 每次新进程
 
 
 def _send_admin_alert(title, mail):
-    """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。
-
-    收件人为空时不静默跳过：只在日志留痕并返回 False——本脚本存在的意义就是"不允许
-    静默"，所以"没人收得到"必须能被上层看见（退出码 1 让 cron 自己报一声）。
-    """
+    """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。"""
     from web.services.notify_mail import _alert_mail_recipients
     recipients = _alert_mail_recipients()
     if not recipients:
+        # 空收件人不静默当成功：本脚本的意义就是"不允许静默"，"没人收得到"必须让上层
+        # 看见（退出码 1，cron 自己的报错邮件是最后一道声音）
         logger.warning("备份哨兵告警无可用收件人（ADMIN_TO 与开启接收的管理员均为空）")
         return False
     return bool(mailer.send_admin_alert(title, mail, to=",".join(recipients)))
@@ -221,6 +226,7 @@ def main(argv=None):
         print(f"备份哨兵：{day} 的归档在（{archive}），但运行脚本已漂移：{drift['reason']}")
         mail = _drift_mail(os.path.join(app_dir, "scripts", "backup.sh"), installed, drift)
     elif archive is None or not sidecar_ok:
+        # 排在漂移之前：归档没成比脚本漂移严重，两病同发时先喊缺备份（同类型只发一封）
         print(f"备份哨兵：{day} 的备份不完整（归档 {archive or '缺失'}，"
               f"清单 {'在' if sidecar_ok else '缺失'}）")
         mail = _missing_mail(day, backup_dir, archive, sidecar_ok)
@@ -229,6 +235,7 @@ def main(argv=None):
         mail = _drift_mail(os.path.join(app_dir, "scripts", "backup.sh"), installed, drift)
 
     if not _alert_due(ALERT_TITLE):
+        # stdout 结论在上面已经打过了：节流只挡邮件，cron 日志里每次都留一行
         print(f"备份哨兵：同类告警在节流窗口内已发过，本次不外发（{ALERT_TITLE}）")
         return 0
     try:

@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
-"""按天状态文件的清理策略（`yiban/state_gc.py`）与两处调用点。
+"""按天状态文件的清理策略与两处调用点。
 
-缺陷背景（DAT-6）：状态目录里凡按日生成的文件，除日志/结构化状态/调度快照外
-**都没有清理规则**（`sched-run-*`、`sched-slot-*`、`sign-daily-*`、`mail-user-fail-*`
-及其 `.lock` 伴生文件）。生产实测状态目录 257 个条目、其中 `sign-daily-` 53 个、
-`sched-run-` 14 个、`mail-user-fail-` 4 个——只增不减；web 日历又要按前缀
-`os.scandir` 整目录扫描，条目数随天数线性膨胀。根因不是"漏了某几个模式"，而是
-**规则写在 bash 里、容器侧另写一份**，新增一类按日文件没有机制提醒补规则。
+标签：D · 状态词汇与账号生命周期
+覆盖：各类按日文件按各自保留期删除/未过期保留、保留期边界按**文件名日期**而非 mtime、
+    截止按业务时钟而非宿主时区、`.lock` 伴生与孤儿 `.tmp*` 也被清、目录不存在不算错误、
+    日志目录与状态目录分开、环境变量覆盖保留期且非法值响亮失败、空凭据态只在真空时删；
+    元测试：仓库里每个"带日期后缀"的文件名必须落在策略表或 `ALLOWED_NON_STATE`；
+    宿主 CLI 与容器调度共用同一策略且目录键与 run.sh 同口径；清理残留与账号事件的连带。
+对应实现：策略在 `yiban/state_gc.py`（`sweep`），调用点 `scripts/state_cleanup.py`
+    与 `docker/scheduler.py`；bash 包装只做委托。
+关键断言：根因不是"漏了某几个模式"，而是**规则写在 bash 里、容器侧另写一份**——
+    所以钉的是"新增一类按日文件必须有交代"这条元测试，而不是逐条列举文件；
+    未登记的按日前缀必须给出"为什么不是状态文件"的理由。
+依赖：临时目录写真伪文件；importlib 加载 `scripts/state_cleanup.py`、
+    `docker/scheduler.py`；扫源码文本做元测试；不跑子进程、不需 bash/docker CLI。
 
-覆盖：
-1. 策略表生效：各类按日文件按各自保留期删除，未过期的保留；
-2. `.lock` 伴生文件与孤儿半成品（`.tmp*`）也被清；
-3. 保留期可用环境变量覆盖，非法值响亮失败（不静默退化）；
-4. 元测试：仓库里出现的每个按日状态文件名都必须在策略表里（防"新增文件忘了登记"）；
-5. 宿主 CLI 与容器调度都调用同一策略（且 CLI 的目录键与 run.sh 同口径）。
+生产实测状态目录 257 个条目、只增不减，web 日历还要按前缀整目录 scandir。
 """
 import contextlib
 import io
@@ -34,7 +36,7 @@ import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 from yiban import state_gc  # noqa: E402
 
 
-def _day(delta):
+def _day(delta):  #文件名日期是判据，落盘 mtime 不是——所以造文件要连着造名字
     return (datetime.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
 
 
@@ -184,7 +186,7 @@ class SweepPolicyTest(unittest.TestCase):
 
 
 # 扫描会命中、但不属于"状态目录里的按日文件"的前缀（逐条理由）
-ALLOWED_NON_STATE = {
+ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀必须逐条写清为什么不是状态文件
     "concurrency-": "loadtest 工具的输出 JSON/CSV（outdir，由压测者自行管理）",
     "i-": "build_lucide_sprite 生成的图标 id（构建期产物，不是文件）",
     "krun-": "loadtest 的每轮临时目录",

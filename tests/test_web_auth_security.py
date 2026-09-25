@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """0.21.0 Task 2：Web 认证/授权/安全配置修复测试。
 
-覆盖：
+标签：E · Web：认证/权限/API
+覆盖：登录来源与内置管理员邮箱冲突、旧会话缺 `auth_source` 的判定、SESSION_COOKIE_SECURE 与转发头信任链、Cookie Path 收窄、口令版本落盘的原子性、限速与失败计数的并发正确性、凭据改写的二次鉴权、注销冷却与用户容量、子进程超时回收
+对应实现：`web/app.py` 的登录/注册路由、`create_app` 的 Cookie 配置与逐请求 Secure 判定、`migrate_admin_password_to_hash` 与 `write_env_batch`、限速助手、账号提交与改绑门禁、`_wait_signin_proc`
+关键断言：注册邮箱撞上内置管理员时来源必须判为 user、缺 `auth_source` 的旧会话按未登录处理；`SESSION_COOKIE_SECURE` 的「显式 0 / 未配置 / 置 1」三态可分，未配置时只有第一跳可信的 HTTPS 转发头才自动升级且不粘进程；`pw_version` 的读取与落盘收进同一把 `.env` 写锁，并发改密不丢档；改绑手机号等同改写凭据、必须过二次鉴权，不带原始标识的「改绑」先被拒
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；并发用例起真线程压计数。`CredentialWriteGateTest` / `RoleHardeningTest` 等把 `YIBAN_PW_GATE` 钉成 `full`，主类 `SecurityFixes021Test` 未设档位（走默认 `risk`）
+
+逐项明细：
 - S1：内置管理员邮箱冲突时登录来源必须为 user，旧会话无 auth_source 视为未登录；
   注册/自动注册拒绝内置管理员邮箱。
 - H6：YIBAN_COOKIE_SECURE 开关控制 SESSION_COOKIE_SECURE。
@@ -212,6 +218,7 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
 
     def test_cookie_secure_on_from_environment_variable(self):
+        # 配置来源的第二条路径：环境变量（上一条钉的是 .env 侧），两条都得独立生效
         os.environ["YIBAN_COOKIE_SECURE"] = "true"
         try:
             app = self.webapp.create_app()

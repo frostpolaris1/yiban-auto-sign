@@ -27,16 +27,17 @@
 输出：三项结论 + 清理留痕数字到 stdout；退出码：全部通过 exit 0；检出异常 exit 1；
 无法定论（密钥缺失 / 校验过程异常）exit 2。
 调用谁：`db`（`yiban.store.db` / `audit_chain` 的兼容壳）。
-谁调用：运维手工取证（只读，无写盘）。
+谁调用：运维手工取证；`scripts/backup.sh` 恢复件双验（restore 流程在解包后调它做审计
+链核验，非 0 视为恢复件不可信）；backup.sh 头部示例还给了 cron 每日 02:30 定排的一条
+命令，把输出重定向到 `audit-verify.log`。只读，无写盘。
 
 --anchor：外部锚点文件路径。默认 db.audit_anchor_path()（YIBAN_STATE_DIR，
 裸机默认 /var/log/yiban，Windows 开发环境默认 cwd）。README 承诺"校验审计链并
-比对 audit-anchor.log 外部锚点"，故不传参即按默认路径比对，传参可指向取证副本。
+比对 audit-anchor.log 外部锚点"，故不传参即按默认路径比对；"锚点与库必须同源"
+的判据见 main() 的锚点推断分支。
 
---env：审计密钥（YIBAN_AUDIT_KEY）所在 .env 路径。不指定时取
-环境变量 YIBAN_ENV_FILE，两者都没有才回落到当前目录 .env；取证时请在任意
-目录下显式指定，否则会拿错密钥把完好链判成断链。显式指定的路径必须已存在
-（打错路径时直接 exit 2，不会在该位置新建 .env/生成新密钥）。
+--env：审计密钥（YIBAN_AUDIT_KEY）所在 .env 路径；回落次序与"显式指定的路径
+必须已存在"的理由见 main() 的 env 守卫注释。
 """
 import argparse
 import os
@@ -67,20 +68,18 @@ def main():
                              "**校验非本部署的库时必须显式指定**——锚点与库必须同源，"
                              "否则两套数据的差异会被误报成审计被篡改）")
     args = parser.parse_args()
-    # 只读校验语义三件套——
-    # 1) 库文件必须已存在：sqlite3.connect 缺库即建空库，空链 verify"通过"会对
-    #    真实库是否被篡改什么都没说（路径写错时静默误报通过）；
-    # 2) 不执行迁移（migrate=False）：迁移会用当前密钥重写审计链，抹平篡改痕迹；
-    # 3) 不执行启动清理（cleanup=False）。
-    # 显式 --env 也必须已存在——打错路径时同一套回落逻辑的其余工具
-    # （重置/清点）会在该位置新建 .env 并生成新审计密钥，把留痕用第三把钥匙
-    # 签坏；取证类 CLI 统一在碰任何数据前先拒绝。
+    # 只读校验三件套（理由见各自那一行）：--env 已存在、库文件已存在、不迁移不清理
     try:
+        # 显式 --env 也必须已存在：打错路径时同一套回落逻辑的其余取证 CLI（如
+        # `scripts/list_duplicate_owners.py`）会在该位置新建 .env 并生成新审计密钥，
+        # 把留痕用的第三把钥匙签坏——取证类 CLI 一律在碰任何数据前先拒绝
         env_file = db.require_existing_env_file(args.env)
     except ValueError as e:
         print(f"审计校验中止：{e}")
         sys.exit(2)
     db_path = args.db or os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
+    # 库必须已存在：sqlite3.connect 缺库即建空库，空链 verify"通过"对真实库有没有被
+    # 篡改什么都没说（路径写错时静默误报通过）
     if not os.path.exists(db_path):
         print(f"审计校验中止：数据库文件不存在: {db_path}（拒绝新建空库误报通过）")
         sys.exit(2)
@@ -97,6 +96,7 @@ def main():
                   "对副本取证请把该库的锚点一并拷来并用 --anchor 指定")
             sys.exit(2)
         anchor_path = db.audit_anchor_path()
+    # migrate=False：迁移会用当前密钥重写整条链、抹平篡改痕迹；cleanup=False 同理不落写
     db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
     health = db.audit_health(path=anchor_path)
     # 链校验过程异常/密钥缺失（broken == -1）不是"检出篡改"而是"无法定论"——

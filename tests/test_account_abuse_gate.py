@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """被盗号滥用面加固回归测试（2026-08-29）。
 
+标签：E · Web：认证/权限/API
+覆盖：被盗号滥用面三层加固的回归——高危告警邮件按标题节流（webhook 保持实时）、高危删除的冷却额度、删除类操作的当次口令二次鉴权；另覆盖 notify-config 写接口（加密落盘、权限、清除、测试端点前置校验）
+对应实现：`web/app.py` 的 `_mail_alert_due`、批量删除与 purge 路由、notify-config 读写路由；口令复核的统一入口见 `_sensitive_password_gate`
+关键断言：三条告警（两条同标题）只发 2 封邮件而 webhook 收满 3 条；缺/错口令返回 400 且 `db.find_user` 仍在（鉴权未过不得删除）；超 `YIBAN_ADMIN_DELETE_MAX` 的删除返回 429 且账号未被删；`YIBAN_NOTIFY_URGENT_ONLY` 关闭态必须显式落 `0` 而不是删键——该键默认为「开」，写空值等于回落
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；`mailer.send_admin_alert`、`notify.transport._send_custom`、`send_notification` 按需打桩。`setUpClass` 把 `YIBAN_PW_GATE` 钉成 `full`：默认档 `risk` 下这些动作不再当次要口令，档位矩阵由 `tests/test_pw_gate_tiers.py` 负责
+
 针对「盗号 → 反复批量删除用户 → 耗尽告警邮件额度」攻击链的三层加固：
 
 - 加固1 高危告警邮件节流：同类标题在窗口内只发一封邮件（YIBAN_MAIL_ALERT_COOLDOWN，

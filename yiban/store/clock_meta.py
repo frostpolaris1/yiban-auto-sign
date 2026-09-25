@@ -16,8 +16,12 @@ upsert 参照点"的方式调用它，cleanup / users / events 三域经门面�
 迁出。
 
 **复用**
-`web/services/channel_health.py`（告警通道日报的当日去重键）、`yiban/store/audit_chain.py`
-（库外锚点指纹与审计欠账计数）都经 `db.get_meta` / `db.set_meta` 读写。
+两条取用路径，改签名或打桩时都得想到：
+- 经 db 门面：`web/services/channel_health.py`（告警通道日报的当日去重键，
+  `db.get_meta` / `db.set_meta`）、`yiban/store/audit_chain.py`（库外锚点指纹与审计欠账计数）；
+- 模块直取（`clock_meta.get_meta` / `set_meta`，替身挂在 `db.*` 上对它们无效）：
+  `yiban/engine/executor_v3.py`（`_v_meta_key(day)` 键）、`yiban/engine/planner.py`
+  （写 `SLOT_WIDTH_META_KEY`）。
 
 **通信**
 连接与进程内锁、写事务入口（`_conn_lock` / `get_conn` / `_begin_immediate`）一律经
@@ -33,8 +37,7 @@ logger = logging.getLogger("yiban.store.clock_meta")
 def _facade():
     """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
 
-    打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
-    才会在函数体里生效。
+    为何按属性取而非 from-import：见模块说明「通信」。
     """
     from yiban.store import db
     return db

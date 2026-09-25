@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """受门禁操作提交的前端行为测试（node 真跑，非静态扫描）。
 
+标签：F · 前端与界面守卫
+覆盖：受门禁操作提交的前端真实行为——`YB.dangerousSubmit` 按后端 `reason` 分流（倒计时确认框 / 口令框）、重发时携带的凭据、多段提交的续发与取消回传步数，以及调用点的静态钉点
+对应实现：`web/static/js/core.js` 的 `pwGateReason` / `delayAckLabel` / `openDelayAckModal` / `dangerousSubmit`，与执行体保存、邮件设置等组件的收尾
+关键断言：倒计时 5 秒逐秒递减且期间保持禁用、归零才启用，取消与归零两条路径都必须 clearInterval；`delay_ack_required` 与 `password_required` 各弹各的框且只在重发时带上对应凭据；最多「首发 + 一次补凭据重发」，后端仍拒就上抛（绝不无限重发）；多段提交从**失败那一步**续上，取消与普通失败都回传 `completed` 步数、首步未提交时必须是 0；后端放行时一次点击只发一次请求、零弹窗零凭据（这才是「摩擦真的减掉了」的可证伪形态）
+依赖：⚠ **需要 node 真跑，非静态扫描**——函数从 core.js 按花括号配对抽出，配一套最小 DOM/模态/计时器替身在 node 里执行；`node` 不可用时 `DelayAckFrontendTest` 与 `MailClearAdminToTipTest` 两类整类 `skipUnless`，只剩 `ExecutorSaveCancelTest` / `GatedCallSitesTest` 的源码钉点仍会跑。不联网
+
 ## 为什么需要
 
 后端把「危险操作一律输口令」改成三档（`YIBAN_PW_GATE`），档位**只存在于后端**：前端不再
@@ -404,6 +410,7 @@ __FUNCS__
 def _run_harness(core_src):
     funcs = "\n\n".join(
         _extract_function(core_src, name)
+        # 四个函数是一整条控制流（判 reason→弹框→重发）：少抽一个，harness 就跑不到真分支
         for name in ("pwGateReason", "delayAckLabel", "openDelayAckModal", "dangerousSubmit")
     )
     script = (

@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """运行期账号有效性复核。
 
+标签：I · 容量、熔断与账号有效性
+覆盖：运行期账号有效性复核——快照里的账号在轮到它之前被删/停用时不得再发起请求，会话缓存不得写给已消失的账号，孤儿缓存由每日清理兜底
+对应实现：`account_is_signable`（判据）及其三处调用点——`attempt_signin`、`verify_account`、会话缓存落库；`purge_orphan_session_cache` 挂入每日清理
+关键断言：软删 / pending / rejected 不可签到，active 可；`account_id=0` 的 JSON/环境变量账号不受库内状态门限制（没有行可查）；「已删账号不得发起登录」以 `client.login_killyiban.called` 为假来断言，而不是看返回值；孤儿清理只删账号行已不存在的缓存，现存账号的不受影响
+依赖：纯本地——临时 SQLite + 打桩的假 client（不做真实登录、不联网）。无需 node
+
 **缺陷**：签到进程用**启动时的全量快照**跑完整轮
 （窗口最长 80 分钟），期间 web 端可能删除/停用账号。原实现只在启动时筛一次，于是：
 
@@ -23,6 +29,7 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+# 这两个名字不在包内，只靠上面插入的 `scripts/` sys.path 才解析得到
 import db  # noqa: E402
 import signin  # noqa: E402
 

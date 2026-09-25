@@ -1,9 +1,21 @@
 # -*- coding: utf-8 -*-
 """第三方隔离层（`yiban/fyiban/`）的**保护存在性断言**与边界守卫。
 
-背景（PROMPT 核心目标 1）：沿用上游 `onefeifan/fyiban`（AGPL-3.0）的定位算法与协议
-特征必须圈在一处、可独立核对替换。抽层的风险是"抽着抽着改了行为"或"留下第二份实现"，
-故本文件同时钉两类东西：
+标签：K · 登录协议与第三方隔离
+覆盖：算法行为（点在多边形内、水平边不除零、生成点必在界内、空与退化输入的兜底、缩放系数与上游一致）、请求头行为（两处版本号同值、键集合钉住、signin
+   只同名转发）、WAF
+   行为（无法识别的挑战页响亮失败、白名单由调用方注入、模块不自带安全策略）、结构守卫（实现只在隔离层、许可与来源声明随代码、本层不导入业务模块）、协议层边界（端点单点定义、不内联域名判定、不自带会话持久化、signin
+   转发同一对象、客户端外观不重写协议步骤）。
+对应实现：yiban/fyiban/（algo.py、headers.py、waf.py、protocol.py、PROVENANCE.md）、scripts/signin.py
+   的同名转发、yiban/security.py（被注入的白名单）。
+关键断言：抽层的风险是「抽着抽着改了行为」与「留下第二份实现」，两类都要钉：行为侧逐值对齐上游（改
+   SCALE_FACTOR 等于换算法），结构侧断言实现只出现在 yiban/fyiban/ 且 signin
+   拿到的是同一个对象（assertIs，不是等值）。安全策略（URL 白名单、WAF
+   关键词）属本项目层，必须由调用方注入——第三方隔离层自带一份就等于把策略圈在许可范围内改不掉。AGPL
+   要求修改声明与许可随代码分发，故 PROVENANCE
+   与许可文件的存在性本身是被测行为。
+依赖：读源码文本做结构断言 +
+   直接调用隔离层函数；不发网络请求、不建库。整文件在本机执行，无 skip。
 
 1. **行为**：算法在真实多边形上的判定结果、采样点必须落在多边形内、版本号两处一致、
    挑战解析对无法识别输入必须响亮失败（不静默返回错值）；
@@ -28,12 +40,12 @@ from yiban.fyiban import headers as fyiban_headers  # noqa: E402
 from yiban.fyiban import waf as fyiban_waf  # noqa: E402
 
 # 一个 1km 量级的近似方形多边形（经纬度，南京）
-SQUARE = [(118.88, 31.92), (118.90, 31.92), (118.90, 31.94), (118.88, 31.94)]
+SQUARE = [(118.88, 31.92), (118.90, 31.92), (118.90, 31.94), (118.88, 31.94)] # 经纬度的真实量级（约 1km）：退化判定按度算，随手写 0~1 会绕过它
 
 
 class AlgoBehaviorTest(unittest.TestCase):
     def test_point_in_polygon_basic(self):
-        inside = (118.89, 31.93)
+        inside = (118.89, 31.93) # 界内界外都取整分量，避免判差落在边界抖动上
         outside = (118.87, 31.93)
         self.assertTrue(fyiban_algo.point_in_polygon(*inside, SQUARE))
         self.assertFalse(fyiban_algo.point_in_polygon(*outside, SQUARE))
@@ -80,7 +92,7 @@ class HeadersBehaviorTest(unittest.TestCase):
     def test_header_keys_pinned(self):
         self.assertEqual(set(fyiban_headers.KILLYIBAN_HEADERS),
                          {"User-Agent", "AppVersion", "Origin", "Referer", "Connection"})
-        self.assertIn("X-Requested-With", fyiban_headers.HEADERS)
+        self.assertIn("X-Requested-With", fyiban_headers.HEADERS) # 键名逐个钉住：上游改头等于换协议，不是「多用一个键无所谓」
         self.assertEqual(fyiban_headers.HEADERS["Origin"], "https://app.uyiban.com")
         self.assertEqual(fyiban_headers.KILLYIBAN_HEADERS["Origin"], "https://c.uyiban.com")
 
@@ -99,7 +111,7 @@ class WafBehaviorTest(unittest.TestCase):
         """无法识别的挑战页必须抛错：静默返回空 cookie 会让登录少走一步且难排查。"""
         with self.assertRaises(RuntimeError):
             fyiban_waf.solve_ydclearance("<html>not a challenge</html>",
-                                         allow_url=lambda u: True)
+                                         allow_url=lambda u: True) # 白名单在这里恒真：本用例只看「认不出挑战页」，不想被 URL 判定干扰
 
     def test_whitelist_policy_is_injected_not_inlined(self):
         """白名单由调用方注入：signin 的包装必须传它自己的 `_is_fyiban_url`。"""

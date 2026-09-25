@@ -1,6 +1,19 @@
 # -*- coding: utf-8 -*-
 """签到轮守卫回归（2026-09-08）。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：补签轮只重跑未了结账号（含全了结静默退出、首签不过滤、状态文件缺失时宁多勿漏）、暂停/周末关闭期间探针跳过、死号先判后睡、SIGTERM
+   前冲刷管理员告警汇总、疑似首签但已过补签触发点的告警、窗口外起跑轮次的结果归类、批量与单条手动签到的全局冷却与速率上限（含判定次序契约）。
+对应实现：scripts/signin.py（main 的补签过滤与探针分支、run_queue_retry
+   的先判后睡、SIGTERM 处理器与
+   _flush_admin_mail_summary、_maybe_alert_zero_success）、web/app.py
+   的批量/单条签到入口与冷却、速率上限键。
+关键断言：补签轮的过滤发生在 main
+   读状态文件处，因此「今天周几」这个外部输入必须被钉成工作日，否则整组用例在周六/周日跑必红。探针在暂停/周末关闭期间不得发起完整登录（那等于白送风控暴露）。要跳过的账号不得先睡满间隔。被超时击杀时已收集的告警必须先发出再退出，否则唯一的失败线索随进程死亡。冷却先于速率上限判定：顺序反了会把「冷却中」误报成「过于频繁」。
+依赖：临时状态目录 + 固定业务日期（与运行当天的星期解耦）+ Flask test
+   client；批量触发的 Popen 在 setUp 级打桩防真实 spawn。BatchSignCooldownTest
+   的三条冷却用例是已知的负载敏感项（并发全量下偶发红，单文件串行复跑为绿）。不发网络请求。
+
 逐项活体复现 + 修复钉版：
 1. 补签轮只重跑未了结账号（当日已 success/already 不再二次登录）
 2. 一键暂停/周末签到关闭期间探针跳过（门在探针分支内部判定）
@@ -33,7 +46,7 @@ from _mail_body import render_body
 class _FakeDT(datetime):
     """signin.datetime 替身：now() 返回固定时刻。"""
 
-    _date = (2026, 9, 6)
+    _date = (2026, 9, 6) # 日期与时分拆成两个类属性：换样本只改一行，now() 的签名仍与真 datetime 同形
     _hm = (7, 12)
 
     @classmethod
@@ -96,7 +109,7 @@ class SecondRunFilterTest(unittest.TestCase):
     def _run_main(self, argv=None, accounts=None):
         """执行 signin.main()，返回 (退出码, run_queue_retry 收到的账号列表)。"""
         seen = []
-        sys.argv = ["signin.py"] + (argv or [])
+        sys.argv = ["signin.py"] + (argv or []) # main() 靠 argv 判 --probe/--only，不起子进程就得手动换 sys.argv
         with mock.patch.object(signin, "load_accounts", return_value=accounts), \
              mock.patch.object(signin, "build_schedule", return_value={}), \
              mock.patch.object(signin, "run_queue_retry",

@@ -10,6 +10,18 @@
 - 耐久性：迁移后连接的 `PRAGMA synchronous` 为 FULL（2）——签到的"是否已登录"判据
   落在这张表上，断电丢终态等于重复真实登录；
 - 登记口径：v18 是**可选迁移**，失败不阻断启动、不提升 user_version。
+
+标签：C · 存储：迁移与库完整性
+覆盖：v18 的四个面——`sign_tasks` + `egress_state` 的 schema（含逐列名/类型/NOT NULL/主键
+与两个领取回收索引）、`sign_claims` 存量平移的逐字段映射与幂等、旧表保留原行、
+迁移后 `PRAGMA synchronous` 为 FULL、失败时按可选迁移登记（不阻断、不提版本）。
+对应实现：`yiban/store/` 的 v18 迁移函数与 `sign_tasks` 定义点、
+`yiban/engine/state_io.py::worker_presence`（执行体存活走文件心跳，不走表）。
+关键断言：`test_synchronous_is_full_after_migration` 与"存活不走表"这两条看着像洁癖，
+实际各守一格——前者丢的是断电后的终态（等于重复真实登录），后者多建一张表就让
+执行体存活出现两套判据。**新代码打开旧库**方向由 `_init_at_v17` 起点覆盖；
+反方向（旧代码打开新库）在 `tests/test_migration_compat.py`。
+依赖：手工搭到 v17 再跑迁移，不借 `db` 全局连接；临时库/临时 `.env`，无网络、无 skip。
 """
 import contextlib
 import os

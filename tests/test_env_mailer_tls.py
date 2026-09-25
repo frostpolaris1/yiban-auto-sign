@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""修复回归测试（2026-08-28 深夜）。
+"""一批修复的回归合集（含 mailer 显式 TLS 校验）。
 
-覆盖：
-- P2-1  mailer 显式 TLS 证书校验（SMTP_SSL/starttls 均传 create_default_context）
-- P2-2  db_export / generate_demo_data 不触发启动清理（cleanup=False）
-- P2-3  env_lock Windows msvcrt 跨进程锁（导入与接口形态；平台行为差异仅冒烟）
-- P2-4  密钥/盐落盘临时文件创建即 0600 且无残留
-- P2-7  audit_verify 只读化：缺库报错退出、不执行迁移
-- P1-1/P2-10 child_env 共享模块：YIBAN_ 白名单 + 非法键名丢弃 + 覆盖注入
-- A1    SSH 重设主管理员密码 → 迁移检测明文与哈希不一致 → 递增 PW_VERSION
-- A2/A3 批量端点单次 10 上限（users/batch、accounts/batch）
-- A4    settings 部分更新不再静默清空未提交的延迟字段
-- A5    start_delay_max/gap_max 收归主管理员（注册管理员 403）
-- A6    登录成功写审计（action=login_ok，IP 匿名化；动作名后来由 login 收敛）
-
-用法（项目根目录）：
-    py -m pytest tests/test_batch8_fixes_0828.py -v
+标签：H · 通知：邮件与推送
+覆盖：其中与邮件/推送相关的是 mailer 显式 TLS 证书校验（`SMTP_SSL` 与 `starttls` 两条
+    路径都传 `create_default_context`）与密钥/盐落盘临时文件创建即 0600 且无残留；
+    其余条目跨子系统：`db_export`/`generate_demo_data` 不触发启动清理、env_lock
+    Windows msvcrt 跨进程锁、`audit_verify` 只读化（缺库报错退出、不执行迁移）、
+    child_env 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
+    递增、批量端点单次 10 上限、settings 部分更新不清空延迟字段、
+    `start_delay_max`/`gap_max` 收归主管理员、登录成功写审计（IP 匿名化）。
+对应实现：`yiban/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
+    `scripts/audit_verify.py`、`yiban/infra/child_env.py`、`web/app.py` 批量与设置端点。
+关键断言：TLS 必须带证书校验（不接受"能连上就算对"）；只读工具不得顺手跑迁移；
+    白名单之外的环境变量不得被子进程继承。
+依赖：⚠ 混合回归文件，按主题 importlib 单独加载多个脚本 + mock `smtplib`；
+    临时 DB/密钥文件；平台相关那条（msvcrt 锁）只做接口形态冒烟，行为差异不在本机断言；
+    不触网、不发真实邮件。
 """
 import contextlib
 import importlib.util

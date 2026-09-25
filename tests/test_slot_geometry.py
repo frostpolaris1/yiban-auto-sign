@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
 """自选片几何的准绳一致性：`schedule._slot_to_bi` / web `_pref_slots` 与 `_schedule_blocks` 同源。
 
-**覆盖**：
-- 正常窗口（06:30~07:50，前后各裁 60s）下 `_slot_to_bi` 逐键等价（显式期望字典钉住回归，
-  生产默认窗口无裁剪即此形态）；
-- 缓冲过大（合计 >= 窗口宽度）时 `window.bounds` **保留窗口、只收缩缓冲**，自选片仍能
-  映射到块，键集合等于收缩后窗口的片集合；
-- 块索引集合与 `_schedule_blocks` 的块数一一对应（两者准绳不得分叉）；
-- v2 / v3 两条链路在收缩缓冲的配置下仍尊重用户所选片，且不产出"不在今日可选范围"告警；
-- `slot_min` 是相对窗口起点的分钟偏移（`accounts_data._slot_to_label` 语义钉住）；
-- web 侧自选片同准绳（收缩后不全为灰，片号基点仍是窗口起点）。
+标签：A · 调度：计划与分片
+覆盖：自选片几何的准绳一致性：_slot_to_bi
+   在正常窗口逐键等价、缓冲收缩后仍等于收缩后窗口的片集合、块索引与
+   _schedule_blocks 的块数一一对应、v2 与 v3
+   两条链路在收缩配置下都尊重用户所选片且不告警、slot_min
+   的「相对窗口起点」语义、web 侧 _pref_slots
+   的置灰与基点、web.app.sign_window_bounds 只做转发。
+对应实现：scripts/signin.py（_slot_to_bi、_schedule_blocks、build_schedule）、yiban/engine/planner.py（v3
+   自选候选分片）、yiban/window.py（bounds）、web/routes/my.py 与
+   web/services/accounts_data.py（_pref_slots、_slot_to_label）。
+关键断言：片号只有一份准绳：调度侧的 _slot_to_bi、块数、web
+   侧的可点片与标签必须同时变化，任何一处另算一套就会出现「网页能选、调度判落窗外」的错位回退。缓冲收缩时基点仍是窗口起点（07:00
+   而非 07:01），否则用户看到的钟点与实际安排的时刻差一分钟。
+依赖：纯计算 + 打桩（mock signin / web
+   路由），不建库、不发网络请求。整文件在本机执行，无 skip。
 
 全程 mock / 纯计算，不访问易班服务器（无任何网络请求）。
 """
@@ -97,7 +103,7 @@ class SlotToBiYardstickTest(unittest.TestCase):
             win = window.bounds(cropped)
             self.assertTrue(win.edges_clamped, "缓冲合计 >= 窗口宽度应收缩缓冲")
             self.assertFalse(win.fell_back, "窗口可用时不得回退默认窗口")
-            mapping = signin._slot_to_bi(cropped)
+            mapping = signin._slot_to_bi(cropped) # 必须在 with 内取：出了上下文环境变量就还原了，拿到的是正常窗口的映射
         self.assertTrue(mapping, "收缩后映射为空 → 自选片被静默放弃")
         self.assertEqual(mapping, CLAMPED_SLOT_TO_BI)
 
@@ -114,7 +120,7 @@ class PrefSliceEndToEndTest(unittest.TestCase):
     #: 自选片 5（相对窗口起点）→ 窗口起点 06:30 + 5 分钟 = 06:35 起的片（后裁到 06:39）
     SLOT = 5
     SLOT_LO_HM = (6, 35)
-    SLOT_HI_HM = (6, 39)
+    SLOT_HI_HM = (6, 39) # 后裁吃掉这一片的尾巴（06:39 而非 06:40），上界跟着收缩后的边界取
 
     def _prefs(self, phone):
         return {phone: {"slot_min": self.SLOT, "updated_at": "2026-09-01 00:00:00"}}
@@ -123,7 +129,7 @@ class PrefSliceEndToEndTest(unittest.TestCase):
         """v2：缓冲收缩配置下自选片仍被采纳，且不再产出"不在今日可选范围"告警。"""
         phone = "13900000001"
         base = datetime(2026, 9, 22, 0, 0)
-        with _cfg_env(**CROPPED), self.assertLogs("yiban", level="WARNING") as cm:
+        with _cfg_env(**CROPPED), self.assertLogs("yiban", level="WARNING") as cm: # 日志与调度在同一次跑里收：分开断言的话「没告警」可能只是那条分支没走到
             sched = signin.build_schedule(
                 [signin.Account(phone=phone, password="pw")],
                 prefs=self._prefs(phone), now=base)

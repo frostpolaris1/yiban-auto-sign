@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """容量口径与容量上限设置（2026-09-08）。
 
+标签：I · 容量、熔断与账号有效性
+覆盖：保存延迟时的容量单门、`_accounts_at_capacity` 口径（裸账号计数与 `extra_accounts` 语义）、max_users / max_accounts 设置项（权限、钳位、携带才写、热读）、`capacity_estimate` 字段收敛、三分类拆解与设置页统计的解密读取
+对应实现：`webapp._capacity_estimate`、`_accounts_at_capacity`、`/api/settings` 读写路由、`signin.capacity_accounts`
+关键断言：注册用户多但活跃账号少应放行（旧 users 分支已删）；只带一个延迟字段的部分更新必须按 `.env` 现存的账号间隔算容量——缺省取 0 会把预估顶到窗口上限、把硬门整个绕过；0=不限、钳位 0~100000、字段未携带不得把已有值清零；引擎预检与 web 预估同一条公式（含「缓冲过大只收缩缓冲、窗口 1 分钟保留」的退化分支）；`cred-state.json` 损坏或缺失时接口仍 200 且 `cred_paused=0`（不得 500）
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；多处 importlib 以独立模块名装载 `web/app.py`（共用模块对象会读到别人的 `.env`）。各基类与多数用例都显式写 `YIBAN_PW_GATE=full`——默认档 `risk` 下这些写操作不再当次要口令
+
 - 保存延迟容量门单门化：活跃账号数 > _capacity_estimate(gap) 才拒；
   注册用户多但活跃账号少放行（旧 users 分支删除）
 - _accounts_at_capacity 新口径：占用 = 全部非删除活跃账号数（含 owner='admin'

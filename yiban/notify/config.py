@@ -4,6 +4,18 @@
 只做"读配置 + 判定通道可用性"，不发送也不记账。唯一例外是 `get_config` 要展示每日
 剩余额度，故在函数内延迟导入 `ledger`——否则 config ↔ ledger 会形成模块级导入环
 （ledger 反向依赖本层的 `_env_int` / `_env_str`）。
+
+**通信**
+输入：进程环境 `YIBAN_NOTIFY_*`（+ 无 `NOTIFY_` 前缀的 `YIBAN_LOGINFAIL_DAILY_MAX`），
+环境变量优先、回退 `.env`（口径来自 `env_io.env_path` / `parse_env_file`）。
+它调用：`account_crypto.load_key` / `decrypt_text`（解 `SECRET_ENC` 密文）、
+`ledger._daily_limit` / `_daily_remaining`、`ipaddress`。
+谁调用：`transport.send` / `send_test`（类型、密钥、白名单）、
+`web/routes/notify.py` 的 `api_notify_config` / `api_notify_config_save`（设置页读概览
+与保存前判定）、`yiban/engine/alerts.py`（`is_configured` 决定要不要走手机通道）。
+输出给前端的凭据只有一种形态：`get_config()` 里的 `secret_masked`（`_mask_secret` 的
+前 3 后 2 短指纹）。`get_secret()` 返回的是明文，只被 `transport` 拿去发请求；本层
+`logger` 的三处调用记的是解密/解析异常与 `url_desc(host)`，都不写出密钥本身。
 """
 import ipaddress
 import json
@@ -117,7 +129,7 @@ def is_safe_url(url):
     防 http 明文外泄与拿推送地址当 SSRF 跳板。域名目标放行（DNS rebinding 由发送
     超时兜底）。本函数是该口径的唯一实现，web 设置页与发送层共用。
 
-    **白名单外写法收严（Low-1）**：`localhost.`（尾点）、纯数字/十六进制/前导零
+    **白名单外写法收严**：`localhost.`（尾点）、纯数字/十六进制/前导零
     IPv4 字面量（`2130706433` = 127.0.0.1）、短式回环（`127.1`）等非 `ipaddress`
     可解析的 host 一律拒掉——否则 `https://2130706433/hook` 这类地址会直通。
     `[::ffff:127.0.0.1]` 等 IPv6 形式已由 `ipaddress` 拦下。

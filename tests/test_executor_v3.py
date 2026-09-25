@@ -1,19 +1,29 @@
 # -*- coding: utf-8 -*-
 """`yiban/engine/executor_v3.py`：v3 执行体核心与 `YIBAN_SCHEDULER_V3` 分流。
 
-覆盖：
-- `schedule.channel_count`（通道数 M 的唯一口径）与 `capacity_accounts_v3` 的逐值回归；
-- `queue_store.pending_count`（带 `vshard` 过滤的待办计数，即"当日是否了结"的闸门）；
-- `scheduler_v3_enabled` 真值表与 runner 的默认 0 分流（v2 路径零行为变化）；
-- asyncio 通道：M 条通道、真并发、非阻塞到点等待、批量领取、收干判据；
-- 退避落点（有界抖动、窗口上界）、终态映射与 fencing 透传、令牌桶三件接线；
-- 产品契约：每次尝试写 sign-state、dry_run 零写、计划不可用时不抛。
+标签：B · 调度：领取/队列/执行体
+覆盖：v3 执行体的通道数与容量口径、带 vshard 过滤的待办计数、YIBAN_SCHEDULER_V3
+   真值表与 runner 分流、asyncio
+   通道的并发与非阻塞到点等待、批量领取与收干判据、退避落点的有界抖动与窗口上界、终态映射与
+   fencing 透传、与 v2
+   对齐的放弃通知/日志、令牌桶三件接线、产品契约（每次尝试写
+   sign-state、dry_run
+   零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
+对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、steal_shards）、yiban/engine/runner.py
+   的分流点、yiban/engine/hrw.py 与 token_bucket.py。
+关键断言：开关缺省为 0 时 v2 路径必须零行为变化（断的是 `runner` 转调 `round.run_queue_retry`、`run_executor_v3` 零调用，两代实现只有一行之差）。写进
+   sign_tasks.vshard 的 V 必须与执行体分片集同源且当日稳定：V
+   落库后只读，行索引落在当日 v_for()
+   之外也仍要被领取，否则当天计划与领取集错位就永久漏领。vshard=-1
+   的历史行永不计入待办（算进去会让该日永远不了结）。领取池的崩溃回收必须排在领取循环里且带
+   day。死主接管的判据是「stale」四态而非「偷到几行」，且不得误伤
+   running/finished/idle
+   的活执行体。收尾标记只在正常返回路径写，异常与中断都必须让心跳过期后判
+   stale。
+依赖：临时 sqlite（sign_tasks）+ 假时钟（_now/_sleep/_mono
+   共用一份推进，用例不真实 sleep）+ 打桩 attempt_signin 与限速三件套；asyncio
+   用例在进程内跑。不发网络请求。整文件在本机执行，无 skip。
 
-关键断言：默认 0 时 `round.run_queue_retry` 被调用且 `run_executor_v3` 零调用；
-写 `sign_tasks.vshard` 的 V 与执行体分片集同源且当日稳定；`vshard=-1` 的历史行
-不计入"当日待办"（把它算作未了结会让该日永远不了结）。
-
-依赖：临时库（`sign_tasks`）、假时钟（用例不真实 sleep）、打桩的 `attempt_signin`。
 """
 import asyncio
 import contextlib
@@ -54,12 +64,12 @@ DAY = "2026-09-22"          # 周二，避开周末门
 #: 固定起跑时刻：默认窗口 06:30~07:50（有效窗口 06:31~07:49），06:40 在窗口内
 START = datetime.datetime(2026, 9, 22, 6, 40, 0)
 OWNER = "single@testhost"
-MY_SHARDS = (0, 1, 2, 3)
+MY_SHARDS = (0, 1, 2, 3) # 与 FOREIGN_SHARD 配对：任何顺手扫了别人分片的改动都会在这里现形
 FOREIGN_SHARD = 7
 
 
 def _ts(**kw):
-    return (START + datetime.timedelta(**kw)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    return (START + datetime.timedelta(**kw)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] # 截到毫秒：库里存的就是 %.3f，多留一位会让比对差在字符串上
 
 
 def _phone(i):
@@ -75,7 +85,7 @@ class _FakeClock:
 
     def __init__(self, t=START):
         self.t = t
-        self.mono = 10_000.0
+        self.mono = 10_000.0 # 单调钟起点刻意非零：从 0 起会掩盖「把墙钟当单调钟用」那一类错
         self.sleeps = []
 
     def now(self):
@@ -117,7 +127,7 @@ def _cfg(**over):
 class _PermissiveLimiter:
     """不设限的限速器替身：记录调用序，恒放行（避免用例被真实 GCRA 卡住）。"""
 
-    manual = False
+    manual = False # 类属性即可：用例只读它判是否人工接管，从不赋值
 
     def __init__(self, trace=None):
         self.trace = trace if trace is not None else []
@@ -125,7 +135,7 @@ class _PermissiveLimiter:
         self.restored = 0
 
     def bucket(self, egress):
-        return SimpleNamespace(retry_after=lambda now: 0.0)
+        return SimpleNamespace(retry_after=lambda now: 0.0) # 只暴露被调到的那一面：替身多出一个方法，就等于宣称实现会用它
 
     def acquire(self, egress, now):
         self.trace.append(("acquire", egress))
@@ -1214,7 +1224,7 @@ class LimiterWiringTest(_Base):
             asyncio.run(executor_v3._persist_loop(ctx))
         self.assertEqual(seen, [executor_v3.EGRESS_PERSIST_SEC] * 3)
         self.assertEqual(limiter.persisted, 2, "每 10s 落库一次（第三次睡到就被打断）")
-        self.assertEqual(executor_v3.EGRESS_PERSIST_SEC, 10)
+        self.assertEqual(executor_v3.EGRESS_PERSIST_SEC, 10) # 连周期常量一起钉：改了它，上面按 3 次 sleep 推出的 2 次落库就失去意义
 
     def test_manual_rate_is_a_ceiling_but_risk_still_backs_off(self):
         with mock.patch.dict(os.environ, {"YIBAN_EGRESS_RATE": "0.5"}):

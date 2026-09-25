@@ -11,6 +11,25 @@
 复用：`mask_phones_in_text` / `MaskingFormatter` / `mask_phone`。
 通信：直接构造 `logging.LogRecord` 格式化；另经临时文件 handler 落盘读回；
 由 pytest 收集 `unittest.TestCase`。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：`mask_phones_in_text` 的文本口径（裸号/方括号/多号/幂等/不误伤）与
+`MaskingFormatter` 的输出面兜底（成文行、异常文本、临时文件 handler 落盘结果），
+再加两条"同一实现"的接线断言。
+对应实现：`yiban/masking.py` 的 `mask_phones_in_text` / `mask_phone`、
+`yiban/logging_ext.py` 的 `MaskingFormatter.format`，展示层 `_mask_log_phones` 复用同一实现。
+关键断言：**遮罩发生在"最终成文之后"这一层**——`format()` 覆写的是
+`Formatter.format` 的返回串，所以 `%s` 插值后的号和 traceback 里的号都在射程内
+（`test_bare_phone_in_chinese_comma_text_masked` 与 `test_exception_text_masked`
+钉的就是这个落点）；
+它**不覆盖**：没挂 `MaskingFormatter` 的 handler（装配点只有 web 的日 handler 与 CLI 的
+`_setup_cli_logging` 两处）、非手机号形态的标识（邮箱/身份证/IP 一概不动）、
+以及非"11 位连续数字"的号码写法——实测 `+8613800138000`、`138-0013-8000`、
+`138 0013 8000` 都原样穿过（号码规则要求两侧不是数字、且只认连续 11 位），
+盘上按天日志仍可能留裸号（signin 写盘 + 状态解析依赖），那条出口靠 HTTP 层的
+`_mask_log_phones` 再遮一遍，见 `tests/test_logs_export_masking.py`。
+坐标/时间戳/非号码数字串"不得被误伤"与"不得漏"同权重：误伤会让日志失去诊断价值。
+依赖：无网络、无 skip；用固定 `rec.created` 钉住时间戳，避免挂钟影响断言。
 """
 import logging
 import os
