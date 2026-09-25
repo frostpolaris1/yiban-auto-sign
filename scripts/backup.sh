@@ -35,11 +35,17 @@
 #   BACKUP_PLAINTEXT=1 ./backup.sh   # 显式关闭默认加密（明文本地归档，大字告警）
 #
 # 安装（cron 每日 02:00；部署清单见 README「运维 → 备份与恢复」一节）：
-#   sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh
+#   M3 批次0 起生产执行件收编在 deploy/prod/（校验和对账 + 一键安装）：
+#   sudo DESTDIR= bash deploy/prod/install.sh    # 本脚本→/usr/local/sbin/yiban-backup.sh
+#   （或手工：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
 #   sudo crontab -e
 #   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
 #   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
-#   0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup.sh --require-encrypt >> /var/log/yiban/backup.log 2>&1
+#   # 口令经 wrapper 的 stdin fd 0 单跳注入（见 deploy/prod/yiban-backup-wrapper.sh），
+#   # 别再往 crontab 行/env 里写 BACKUP_GPG_PASSPHRASE——那会把口令带进整棵子进程树。
+#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 异机副本走 REMOTE_BACKUP：放 wrapper 之后的同一行 env 前缀即可（非机密主机名）：
+#   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
 #   30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
@@ -76,12 +82,38 @@ APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"          # 项目部署目录
 BACKUP_DIR="${BACKUP_DIR:-/var/backups}"            # 本地备份目录
 RETENTION_DAYS="${RETENTION_DAYS:-30}"              # 保留天数
 REMOTE_BACKUP="${REMOTE_BACKUP:-}"                  # 异机目标，如 user@host:/backup/yiban；留空 = 仅本地
-# gpg 对称加密口令（推荐用环境变量/密钥文件注入；旧名 BACKUP_AGE_PASSPHRASE 兼容回退——
+# gpg 对称加密口令（生产推荐经 yiban-backup-wrapper.sh 的 **stdin fd 0 单跳**注入，
+# 见下方 YIBAN_READ_PASSPHRASE_STDIN；环境变量 BACKUP_GPG_PASSPHRASE 保留给手工/
+# 恢复场景——注意它意味着口令进整棵子进程树 env。旧名 BACKUP_AGE_PASSPHRASE 兼容回退——
 # 2026-08-16 审查轮：原 AGE_PASSPHRASE 命名与 age 工具混淆，实际用途是 gpg AES-256 对称加密）
 GPG_PASSPHRASE="${BACKUP_GPG_PASSPHRASE:-${BACKUP_AGE_PASSPHRASE:-}}"
 GPG_RECIPIENT="${BACKUP_GPG_RECIPIENT:-}"           # gpg 接收者（公钥 ID），配置后走 gpg 公钥加密
 # M24：本地归档默认加密的总开关——1 = 显式关闭（明文本地归档，大字告警）
 BACKUP_PLAINTEXT="${BACKUP_PLAINTEXT:-0}"
+
+# ------------------------------------------------------------
+# M3 批次0 Task6（MF-42）：口令 --passphrase-fd 0 单跳摄取
+# yiban-backup-wrapper.sh 不再 export 口令（旧形态把口令带进 tar/sqlite3/rsync/gpg
+# 整棵子进程树的 environ，/proc/<pid>/environ 可读即泄露）。改由 wrapper 置
+# YIBAN_READ_PASSPHRASE_STDIN=1 并把口令经管道送 stdin：此处读进**非导出**的
+# GPG_PASSPHRASE shell 变量（下方加密/解密路径原样复用——它们本就
+# printf|gpg --passphrase-fd 0 单跳，从环境变量降为纯 shell 变量后子进程环境清零），
+# 并 unset 环境侧口令键。stdin 与 env 同时给了口令 ⇒ stdin 优先；只给标志既无
+# stdin 内容也无 env 口令 ⇒ 拒跑（fail-closed，绝不静默回退明文，rc 口径不变）。
+# ------------------------------------------------------------
+if [ "${YIBAN_READ_PASSPHRASE_STDIN:-0}" = "1" ]; then
+    _stdin_pass=""
+    IFS= read -r _stdin_pass || true
+    if [ -n "${_stdin_pass}" ]; then
+        GPG_PASSPHRASE="${_stdin_pass}"
+    elif [ -z "${GPG_PASSPHRASE}" ]; then
+        echo "错误：YIBAN_READ_PASSPHRASE_STDIN=1 但 stdin 与 BACKUP_GPG_PASSPHRASE 均无口令，拒绝执行" >&2
+        exit 1
+    fi
+    unset _stdin_pass
+    # 无论口令最终来自哪一路，环境侧键一律摘除——子进程树不再继承口令
+    unset BACKUP_GPG_PASSPHRASE BACKUP_AGE_PASSPHRASE
+fi
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
 DATA_FILES=(.env)
