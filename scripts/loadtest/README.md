@@ -78,13 +78,22 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `--hosts-file` | `/etc/hosts` | hosts 路径 |
 | `--domains` | 易班所需域名 | 需映射到回环的域名（逗号分隔） |
 | `--restore` | 关 | 还原 hosts + iptables（幂等） |
-| `--no-ipv6` / `--no-iptables` | 关 | 跳过对应步骤 |
+| `--no-ipv6` | 关 | 跳过 IPv6 处理 |
+| `--no-iptables` | 关 | 跳过 443 出站兜底（**隔离降级**，须配 `--i-understand-no-isolation`） |
+| `--i-understand-no-isolation` | 关 | 显式知情并接受 `--no-iptables` 的隔离降级，否则拒绝执行 |
 | `--force` | 关 | 强制重签证书 |
 | `--dry-run` | 关 | 只打印将执行的操作，不改系统 |
 | `--check` | 关 | 只做自检（解析是否全为回环 + 兜底规则是否存在） |
-| `--egress-probe-ip` | 空 | 可选：主动探测该 IP:443 应被拒绝 |
+| `--egress-probe-ip` | 空 | **搭建路径必填**：主动探测该 IP:443 应被拒绝（缺省即拒绝启动） |
 
 幂等性：重复 setup 不重复改 hosts/iptables；重复 `--restore` 无副作用。
+
+启动即断言（fail-closed，见 `isolation.py`）：四个入口（`mock_env`/`scale_driver`/
+`concurrency_probe`/`capacity_probe`）在解析参数前即要求**进程环境无任何 `*PROXY*` 键**
+（有则非零退出、原因打到 stderr），子进程环境构造处也会主动摘除代理键；`mock_env` 搭建
+另要求 `--egress-probe-ip` 非空（不再静默 `[SKIP]`）。出站兜底的 443 REJECT 与回环 ACCEPT
+一样用 `-I` 前插到链首（ACCEPT 占 1、REJECT 占 2），不再 `-A` 追加链尾被既有放行规则旁路。
+`capacity_probe` 收尾会比对「mock 侧记账条数 == 驱动读到的 JSONL 条数」，不等则本轮不出结论。
 
 ### seed_accounts.py（造号）
 | 参数 | 默认 | 说明 |
