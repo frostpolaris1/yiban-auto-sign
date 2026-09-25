@@ -26,7 +26,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -118,7 +120,7 @@ class LogsByDateTest(unittest.TestCase):
 
     # ---- 1. log_path_for：按天路径 ----
     def test_log_path_for_today_and_hist(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         self.assertEqual(
             self.webapp.log_path_for(),
             os.path.join(self.tmp, f"sign-{today}.log"),
@@ -167,7 +169,7 @@ class LogsByDateTest(unittest.TestCase):
     # ---- 3. parse_sign_log 兼容按天文件（0.19.6 起仅返回 recent 行，states 语义已移除）----
     def test_parse_sign_log_returns_recent_only(self):
         """口径与 `_log_lines_for` 同源（2026-09-19）：`yiban.*` 全级别入列，其它组件仅告警级。"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         self._write_date_log(today, [
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
             _log_line(today, "DEBUG", "yiban", "[13800138001] 内部细节"),
@@ -188,7 +190,7 @@ class LogsByDateTest(unittest.TestCase):
         return c
 
     def test_api_logs_default_is_today(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         self._write_date_log(today, [
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
         ])
@@ -255,7 +257,7 @@ class LogsByDateTest(unittest.TestCase):
 
 def _d(offset):
     """相对今天的日期字符串（避免硬编码日期随运行日漂移）。"""
-    return (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
+    return (clock.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
 
 
 class LogsRecentDateTest(unittest.TestCase):

@@ -226,8 +226,9 @@ class PlanMustNotClobberResultTest(_Base):
                             f"sign-state-{clock.today()}.json")
 
     def _write(self, status, message="", **kw):
-        with mock.patch.object(signin.clock, "now", datetime.now):
-            signin._write_sign_state(PHONE_OK, status, message, **kw)
+        # 当日状态文件名与写入时刻都取业务钟（signin.clock = yiban.clock），
+        # 与 _state_path 同源；此前打桩成宿主 datetime.now 会在 UTC 主机上错日。
+        signin._write_sign_state(PHONE_OK, status, message, **kw)
 
     def _read(self):
         import json

@@ -23,7 +23,6 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -244,7 +243,7 @@ class NoPositionRetryNotificationTest(unittest.TestCase):
 
     def test_schedule_mode_no_position_no_notifications(self):
         """schedule（时间驱动）分支同样跳过通知。"""
-        schedule = {self.acc.phone: datetime.now()}
+        schedule = {self.acc.phone: signin.clock.now()}
         results, m_mail, m_notify, m_user = self._run_queue(
             (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
             schedule=schedule,
@@ -255,7 +254,7 @@ class NoPositionRetryNotificationTest(unittest.TestCase):
         m_user.assert_not_called()
 
     def test_schedule_mode_real_failure_still_notifies(self):
-        schedule = {self.acc.phone: datetime.now()}
+        schedule = {self.acc.phone: signin.clock.now()}
         results, m_mail, _m_notify, _m_user = self._run_queue(
             (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
             schedule=schedule,
@@ -295,7 +294,7 @@ class NoPositionMainSummaryTest(unittest.TestCase):
         _code, tmp = _run_main(run_queue_result={
             "13800000000": (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
         })
-        daily_path = os.path.join(tmp, f"sign-daily-{datetime.now():%Y-%m-%d}.json")
+        daily_path = os.path.join(tmp, f"sign-daily-{signin.clock.today()}.json")
         self.assertTrue(os.path.exists(daily_path), "应写入按日状态文件")
         with open(daily_path, encoding="utf-8") as f:
             daily = json.load(f)
@@ -331,12 +330,12 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_marker(self):
-        with open(os.path.join(self.tmp, f"sched-run-{datetime.now():%Y-%m-%d}.json"),
+        with open(os.path.join(self.tmp, f"sched-run-{signin.clock.today()}.json"),
                   "w", encoding="utf-8") as f:
             json.dump({"completed": True}, f)
 
     def _write_state(self, data):
-        with open(os.path.join(self.tmp, f"sign-state-{datetime.now():%Y-%m-%d}.json"),
+        with open(os.path.join(self.tmp, f"sign-state-{signin.clock.today()}.json"),
                   "w", encoding="utf-8") as f:
             json.dump(data, f)
 

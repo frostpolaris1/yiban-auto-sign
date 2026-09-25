@@ -1150,7 +1150,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         （_mail_alert_due 的 300s 窗口重启即失效，兜不住）。本用例不靠 sleep 改日期——
         第二次调用即"进程重启后读同一份库"（去重判定的唯一数据来源就是 app_meta）。
         """
-        today = self.webapp.datetime.now().strftime("%Y-%m-%d")
+        today = self.webapp.clock.today()  # 去重标记按业务钟落 app_meta，宿主 TZ 下须同源
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]):
             self.assertTrue(self.webapp._send_channel_health_report())
             self.assertEqual(len(self.alerts), 1)
@@ -1573,7 +1573,7 @@ class _B14AccountBase(_B14AlertGateBase):
         if deleted:
             db.set_account_deleted(
                 acc_id, 1,
-                self.webapp.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                self.webapp.clock.ts(),
                 deleted_by="admin")
         return acc_id
 

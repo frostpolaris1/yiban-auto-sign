@@ -43,6 +43,8 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
+from yiban import clock
+
 import flask
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1474,7 +1476,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_log_file_assignment_reaches_every_log_reader(self):
         """`web.app.LOG_FILE` 直接赋值（既有测试写法）必须换掉整条日志读路径的目录。"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         fixture = (f"[{today} 06:40:04] [INFO] yiban: 签到开始\n"
                    f"[{today} 06:40:05] [INFO] yiban.client: [13800138000] 生成定位\n")
         with io.open(os.path.join(self.log_dir, f"sign-{today}.log"), "w",
@@ -1488,7 +1490,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
 
     def test_tail_lines_stub_reaches_parse_and_lines_for(self):
         """`web.app._tail_lines` 是既有打桩点：替换倒读输入后解析结果随之变化。"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         injected = [f"[{today} 06:00:00] [INFO] yiban: 注入行",
                     "[2026-01-02 06:00:00] [WARNING] mailer: 注入告警",
                     "[2026-01-02 06:00:00] [INFO] notify: 不该出现"]
@@ -1572,7 +1574,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         self.assertFalse(vis("INFO", "yibanx"), "前缀相近的 logger 不享受全级别")
 
     def test_parse_and_lines_for_filter_by_date_and_format(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         lines = [
             f"[{today} 06:40:04] [INFO] yiban: 签到开始",
             f"[{today} 06:40:05] [INFO] yiban.client: [13800138000] 生成定位: (1,2)",

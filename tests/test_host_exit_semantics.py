@@ -155,7 +155,7 @@ class SchedMarkerTest(unittest.TestCase):
         self.assertFalse(signin._sched_marker_exists())
 
     def test_marker_present_second_run(self):
-        path = os.path.join(self.tmp, f"sched-run-{__import__('datetime').date.today():%Y-%m-%d}.json")
+        path = os.path.join(self.tmp, f"sched-run-{signin.clock.today()}.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("{}")
         self.assertTrue(signin._sched_marker_exists())
