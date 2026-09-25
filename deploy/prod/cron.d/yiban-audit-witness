@@ -1,0 +1,11 @@
+# /etc/cron.d/yiban-audit-witness —— 审计锚点独立见证（生产 cron 表原件）
+# 仓库来源：deploy/prod/cron.d/yiban-audit-witness（install.sh 装到 /etc/cron.d/，0644 root:root）
+# 语义：以 root 每 10 分钟把锚点文件当前指纹写进 /var/lib/yiban-audit（install.sh 创建，
+#       root 属主）——该文件与锚点/库内指纹不同属主，应用身份改不动，故"同时改写锚点与
+#       库内指纹以掩盖删审计"会在这里露出不一致。实现见 scripts/audit_anchor_witness.py。
+# 必须 root：脚本只是薄包装，换个身份跑等于把独立见证写成又一份应用可改的副本。
+# 退出码 0 = 已更新/无需更新；1 = 检测到锚点被回退或改写；2 = 无法见证（锚点缺失/坏行）。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+*/10 * * * * root /usr/local/sbin/yiban-audit-witness.sh >> /var/log/yiban/audit-witness.log 2>&1
