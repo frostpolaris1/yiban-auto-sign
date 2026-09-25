@@ -78,6 +78,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 #: 假易班记账端点（回环，TLS）；证书 SAN 含 127.0.0.1，故直连回环即可，无需 hosts
 DEFAULT_MOCK_STATS_URL = "https://127.0.0.1"
 
+#: mock_env 搭建路径必填的出站探测目标：TEST-NET-3（RFC 5737）合成地址，不可路由，
+#: 绝不指向真实易班。REJECT 生效时该地址 443 被拒；用于满足「探测必填、不静默 SKIP」。
+DEFAULT_EGRESS_PROBE_IP = "203.0.113.7"
+
 #: 生效窗口：生产 06:30–07:50（80 分钟）去掉前后留白后的有效秒数
 DEFAULT_WINDOW_SEC = 4680
 
@@ -310,9 +314,11 @@ def ensure_platform():
         raise SystemExit("错误：需要 root（自签证书 + hosts 改写 + iptables 兜底）")
 
 
-def prepare_env(base_dir, repo):
+def prepare_env(base_dir, repo, egress_probe_ip=DEFAULT_EGRESS_PROBE_IP):
+    # mock_env 搭建路径现要求 --egress-probe-ip 非空（缺省即拒绝）；编排器代传安全默认
+    # （TEST-NET，绝不写入真实值），使一条命令仍能跑通全链。
     _run([_python(), os.path.join(repo, "scripts", "loadtest", "mock_env.py"),
-          "--base-dir", base_dir])
+          "--base-dir", base_dir, "--egress-probe-ip", egress_probe_ip])
 
 
 def restore_env(base_dir, repo):
@@ -426,6 +432,8 @@ def main(argv=None):
                     help="覆盖每进程账号数（默认用档位内置值）")
     ap.add_argument("--mock-stats-url", default=DEFAULT_MOCK_STATS_URL,
                     help="假易班记账端点（/stats 所在基址）")
+    ap.add_argument("--egress-probe-ip", default=DEFAULT_EGRESS_PROBE_IP,
+                    help="搭建时传给 mock_env 的出站探测目标（默认 TEST-NET，勿指向真实易班）")
     args = ap.parse_args(argv)
 
     repo = os.path.abspath(args.repo)
@@ -473,7 +481,7 @@ def main(argv=None):
             # 失败路径同样要走到 finally 的还原。
             env_ready = True
             try:
-                prepare_env(base, repo)
+                prepare_env(base, repo, args.egress_probe_ip)
             except RuntimeError as e:
                 # 环境未就绪（hosts/iptables 兜底没装好或零外联自检 FAIL）：
                 # **不跑 K 阶梯**——出站没被拦住时压测会直连真实易班。
