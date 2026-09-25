@@ -99,11 +99,12 @@ def _has_conclusion(entry):
 def _sched_marker_exists():
     """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
-    告警函数用它区分「首签轮」与「补签轮」——
-    标记在首签轮收尾写入（_write_sched_done），因此：
-      - 首签轮调用本函数时标记尚不存在 → 本轮是首签；
-      - 补签轮（07:10）调用时标记已存在 → 本轮是补签。
-    与容器 scheduler.py 的 _full_run_done_today() 语义一致（同一事实源）。
+    真实消费者只有 `_is_second_run()`：它把"标记已存在"当作补签轮的兜底判据（环境变量优先），
+    决定补签轮要不要剔除已了结账号。**告警函数已经不拿它分轮次**——
+    `alerts._maybe_alert_zero_success` 在 `is_second_run=None` 时仍会来取一次值，但抑制判据换成了
+    两个事实（窗口还开着、后面还有没有人接着跑），取到的值无人读取；所以别按"首签轮/补签轮"
+    去理解这条告警。标记本身在首签轮收尾写入（_write_sched_done），与容器 scheduler.py 的
+    _full_run_done_today() 是同一事实源。
     """
     state_dir = _state_dir()
     path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
