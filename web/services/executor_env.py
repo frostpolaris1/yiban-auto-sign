@@ -52,14 +52,12 @@ logger = logging.getLogger("web")
 def _executors_window(env_file, sign_window):
     """执行体接口口径的**有效签到窗口**（`window.effective_sec` 即容量换算的分母）。
 
-    前后裁剪按 `yiban.window.parse_edges` 解析（与引擎同一份缺省与旧键映射）：缺省 60s，
-    不是 0——示例 `.env` 把这两个键注释掉，缺省 0 会让页面显示的窗口、容量换算的分母与
-    "窗口内不做实测"的拦截都比引擎宽 1 分钟。容量估算与拦截都用它，保证页面上显示的
-    窗口与这两个判断同源。
-
-    `.env` 路径与窗口解析器由调用方传入：两者都是 `web.app` 上可被测试改写的模块级名字。
+    容量估算与"窗口内不做实测"的拦截都用这个窗口，保证页面显示与这两个判断同源。
+    参数注入口径见模块头「通信」。
     """
     start, end = sign_window()
+    # 缺省 60s 而不是 0（与引擎同一份缺省与旧键映射）：示例 .env 把这两个键注释掉了，
+    # 缺省 0 会让页面窗口、容量分母与拦截都比引擎宽 1 分钟
     front, back = yb_window.parse_edges(read_env(env_file))
     return yb_window.bounds({
         "sign_start": start, "sign_end": end,
@@ -109,9 +107,6 @@ def _executor_row_payload(row):
 def _executor_activity(day):
     """当日领取池归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
 
-    为什么必须脱敏：`owner` 形如 `{主机名}:{进程号}:w{序号}`，是部署信息（主机名与
-    进程号对攻击者是资产清单）。故**绝不回原串**——用 1-based 槽位号替代它，前端
-    拿到的信息量不变（"第 1 个并行执行体做了 10 个"），也看得懂。
     角色解析的唯一口径在 `yiban.egress.parse_owner`；`unknown` 照实回（历史数据里
     兜底与单执行体同前缀，本来就无法追溯，不假装能还原）。
 
@@ -119,6 +114,8 @@ def _executor_activity(day):
     """
     by_executor = []
     totals = {"claimed": 0, "failed": 0, "done": 0, "total": 0}
+    # 用 1-based 槽位号替代 owner 原串：owner 形如 {主机名}:{进程号}:w{序号}，主机名与
+    # 进程号是部署信息（对攻击者就是资产清单），绝不回原串；前端信息量不变
     for slot, row in enumerate(db.claim_activity(day), start=1):
         parsed = yb_egress.parse_owner(row.get("owner"))
         by_executor.append({
@@ -142,10 +139,10 @@ def _executor_activity(day):
 def _validated_proxy_value(raw):
     """行出口的校验 + 归一：返回 `(值, 错误信息)`；空/None = 直连（空串）。
 
-    换行在 strip **之前**拦（含尾随换行，与单段写接口同一纪律）；形状校验复用
-    `_is_http_proxy_url`（不写第二套）。错误回显先 `_mask_url_userinfo` 脱敏。
+    错误回显先 `_mask_url_userinfo` 脱敏（代理串按契约允许带 user:pass@）。
     """
     submitted = "" if raw is None else str(raw)
+    # strip **之前**就拦换行：尾随换行同样会把一行 .env 拆成两行（与单段写接口同一纪律）
     if _yiban_env_io.has_line_break(submitted):
         return None, "代理配置不能包含换行"
     value = submitted.strip()
@@ -157,11 +154,11 @@ def _validated_proxy_value(raw):
 def _validated_name(raw):
     """行自定义名的校验 + 归一：返回 `(值, 错误信息)`；空/None = 清除自定义名。
 
-    这条值要跟着 `slot/type/proxy` 一起挤进 `.env` 的**同一行**，故换行必须在 strip
-    之前拦住（与出口串同一纪律）；超长**明确拒绝**而不是静默截断（截断会让"我明明
-    起了这个名字"变成查不出来的困惑）。解析侧另走 `egress.clean_name`（宽容，见其说明）。
+    超长**明确拒绝**而不是静默截断：截断会让"我明明起了这个名字"变成查不出来的困惑。
+    解析侧另走 `egress.clean_name`（宽容，见其说明）。
     """
     submitted = "" if raw is None else str(raw)
+    # 同一个 strip 前拦截：这条值要跟着 slot/type/proxy 挤进 .env 的同一行
     if _yiban_env_io.has_line_break(submitted):
         return None, "名称不能包含换行"
     value = "".join(ch for ch in submitted.strip() if ch.isprintable()).strip()
@@ -248,20 +245,19 @@ def _mutate_executor_rows(mutator, env_path, write_batch):
 def _next_executor_slot(rows):
     """追加行的槽位号：清单最大 + 1，且**跳过保留期内真用过的号**（下标只增不复用）。
 
-    为什么需要这一步：纯函数 `next_slot` 只能给"清单最大值 + 1"，删掉当前最大行之后它会
-    把刚空出来的号再发一次，而那个号在领取池（`sign_claims.owner`）里已经有历史——重建的
-    执行体会被显示成前任的归属。故这里再按**领取历史**抬一次下限（保留期 14 天，与展示
-    口径同窗口）。历史里出现过的号一律不复用，跨主机也一样（同一个库＝同一个部署）。
-
-    库不可用/未初始化时退回"只按清单最大值 + 1"：编号可能重复，但**追加本身绝不能失败**。
+    库不可用/未初始化时退回"只按清单最大值 + 1"：编号可能重复，但**追加本身绝不能失败**
+    ——这一步失败会让设置页加不了执行体。
     """
+    # 纯 next_slot 只给"清单最大值 + 1"：删掉当前最大行后它会把刚空出的号再发一次，而
+    # 那个号在领取池（sign_claims.owner）里已有历史，重建的执行体会被显示成前任的归属。
+    # 故再按领取历史抬一次下限（保留期 14 天，与展示口径同窗口；同库＝同部署，跨主机同理）
     floor = 0
     try:
         for owner in db.claim_owners_since():
             parsed = yb_egress.parse_owner(owner)
             if parsed["role"] == yb_egress.ROLE_WORKER and isinstance(parsed["index"], int):
                 floor = max(floor, parsed["index"] + 1)
-    except Exception as e:   # 库抖动不影响追加（与领取池的降级纪律一致）
+    except Exception as e:   # 读历史失败只退回清单口径，不让追加整件事失败
         logging.getLogger("yiban").debug("读取执行体历史失败（追加槽位退回清单口径）: %s", e)
     return max(yb_egress.next_slot(rows), floor)
 

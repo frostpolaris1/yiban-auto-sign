@@ -9,6 +9,18 @@
 
 两处都用**真实 `ProtocolPolicy`** + 脚本化假会话钉住（不发网络请求）：断言的是注入
 路径真的接上了 `masking.mask_phone`，而不是"文件里有这个词"。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：登录失败消息与诊断响应头两处账号标识脱敏（都经 `RequestPolicy.mask_account` 注入），
+以及 `parse_login_page` 在"key 命中但损坏"时与"没命中"同价返回 `(None, None)`。
+对应实现：`yiban/fyiban/protocol.py` 的登录消息/`parse_login_page`、
+`yiban/security.py` 的 `RequestPolicy.mask_account`（实现为 `masking.mask_phone`）、
+`yiban/fyiban/protocol.py` 自带的 `ProtocolPolicy.mask_account`。
+关键断言：假会话是**脚本化的响应**、被测的 protocol 逻辑真跑，所以"异常消息里不含裸号"
+这类断言是行为级而非文本级；另配 `test_valid_page_still_parses` 一条正向对照，
+防止靠"任何页面都解析失败"把损坏分支伪造成通过。
+本文件守的是协议层自身的两处出口，不覆盖上层（web/日志）如何再处理这条消息。
+依赖：`Crypto.PublicKey.RSA` 现生成一次性公钥构造假页，无网络、无 skip。
 """
 import unittest
 

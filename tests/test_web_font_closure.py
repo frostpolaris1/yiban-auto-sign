@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """回归守卫：中文字体栈收口（防止中文回退到宋体 SimSun）。
 
+标签：F · 前端与界面守卫
+覆盖：中文字体栈收口——令牌定义正确、没有旁路（以通用族结尾的 `font-family` 必须点名中文字体）、Adminator 的每个相关选择器都被收口清单覆盖；另有分片脚本 outdir 白名单的进程级守卫
+对应实现：`web/static/css/app.css` 的 `--font-sans` / `--font-mono` 与两张收口清单、`adminator.css`；分片脚本的白名单判定
+关键断言：判据是「点名了中文字体」而非「必须用 Noto」——否则会把旧栈里本来正确的 `"Microsoft YaHei"` 栈误判成缺陷；注释里的示例声明不参与判定（判定前剥 CSS 注释）；分片脚本对越界 outdir 以退出码拒绝且**目标目录未被动过**（它是位置参数 + 整目录 rmtree）
+依赖：⚠ 需要**真跑子进程**——`FontSliceOutdirGuardTest` 用 `subprocess` 起分片脚本断言进程级行为（脚本导入期即依赖外部环境，故起子进程）；其余用例纯本地读 CSS/模板文本。无需 node、不联网
+
 ## 为什么需要它
 
 Adminator 在 **58 个组件级选择器**里声明了自己的 `font-family`，且多数以通用族结尾：

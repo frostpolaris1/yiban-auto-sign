@@ -22,15 +22,20 @@ ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手�
 两个进程共享同一份密钥与格式。
 
 **复用**
-`encrypt_field` / `decrypt_field` 族与 `load_key` / `has_key`、`SCHEMA_VERSION` 是
-唯一来源；`.env` 读写复用同目录 `env_io`，跨进程锁复用 `env_lock`。
+两族入口各有分工，别拿错：`encrypt_password` / `decrypt_password` 是账号字段口径
+（AAD = 手机号，密文绑定所属账号），`encrypt_text` / `decrypt_text` 是固定 AAD 的
+通用口径（通知 SendKey / webhook URL / 邮件口令这类配置值）。二者共用 v1 密文格式与
+`load_key` / `has_key` / `is_encrypted` / `SCHEMA_VERSION`；`.env` 读写复用同目录
+`env_io`，跨进程锁复用 `env_lock`。
 
 **通信**
 输入：明文敏感字段 + 手机号（AAD）、密钥来源（环境变量或 .env 路径）。
 输出：v1 密文对象（JSON 可序列化）或解密后的明文；密钥缺失时按 0600 生成并持久化。
 调用谁：`yiban.infra.env_io`、`yiban.infra.env_lock`、`Crypto.Cipher.AES`。
-谁调用：`yiban.engine.accounts`（装载解密）、`yiban.store.db`（落库加密）、
-web 服务层（账号增改与改密）。
+谁调用（import 点，未必穷尽）：`yiban.engine.accounts`、`yiban.store.accounts`、
+`yiban.store.session_cache`、`yiban.store.migrations`（账号侧加解密）、
+`yiban.notify.config`、`yiban.mail.config`、`web/routes/notify.py`、`web/security.py`
+（配置密钥侧）。
 前端调用点：`/api/accounts`、`/api/my-accounts`、`/api/me/password`
 （`web/static/js/components/account-form.js`、`web/static/js/components/my-accounts.js`）提交的密码经本模块
 加密落库——格式或密钥口径变化会直接影响这些页面保存/校验账号的成功与失败。
@@ -74,10 +79,10 @@ def load_key(env_file=None):
     两者都不存在时生成随机 32 字节密钥并持久化到 .env（0600）后返回；
     同一 env_file 的钥在同一进程内缓存复用（避免每次读 .env，见 _KEY_CACHE）。
     读-生成-写-缓存全程持 _KEY_LOCK：多线程首启只生成一份密钥。
-    自动建钥会抛错而不落盘（调用方须按"启动失败"处理）：密钥来源不确定（M3 守卫），
+    自动建钥会抛错而不落盘（调用方须按"启动失败"处理）：密钥来源不确定（来源守卫），
     或既有 .env 有行含潜伏行分隔符（见 _write_key_to_env_file）。
 
-    **来源守卫（M3）**：自动建钥只允许在"密钥来源确定"时发生——调用方显式传了
+    **来源守卫**：自动建钥只允许在"密钥来源确定"时发生——调用方显式传了
     `env_file`、或设了 `YIBAN_ENV_FILE`、或当前目录已有 `.env`。三者都没有而该
     路径又要**写**密文时，就地生成会在错误目录落一份游离 `.env` 与新密钥
     （与 `db._assert_key_source_certain` 同源缺陷；db 依赖本模块不能反向 import，

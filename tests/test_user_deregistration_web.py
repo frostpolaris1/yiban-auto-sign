@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""用户自助注销 Web/API 层测试（数据库 v5 软删除对接）。
+"""用户自助注销的 Web/API 层（对接 v5 软删除）。
 
-覆盖 docs/design/plan-frontend-user-deregistration.md 第 3 章 API 契约：
-- 登录要求 401 / CSRF 缺失 403
-- 密码确认：错误 400、连续失败达阈值锁定 429
-- 防批量冷却：用户维度 60s 1 次、IP 维度 60s 5 次 → 429（不暴露秒数）
-- 管理员保护：内置管理员 400、最后一个注册管理员 400
-- 成功路径：软删除标记 + 账号清除 + 会话失效 + 审计留痕 + 邮箱可重新注册
-
-全程 mock / 纯本地（Flask test client），无任何网络请求。
-用法（项目根目录）：
-    py -m pytest tests/test_user_deregistration_web.py -v
+标签：L · 注销与软删
+覆盖：`docs/design/plan-frontend-user-deregistration.md` 第 3 章 API 契约——登录要求
+    401、CSRF 缺失 403、密码错误 400、连续失败达阈值锁定 429、防批量冷却
+    （用户维度 60s 1 次 / IP 维度 60s 5 次 → 429 且不暴露秒数）、内置管理员与
+    最后一个注册管理员 400、成功路径的软删标记 + 账号清除 + 会话失效 + 审计留痕 +
+    邮箱可重新注册；以及超期 purge 对活跃用户的跳过。
+对应实现：`web/app.py` 的注销端点与冷却/口令校验，数据层落
+    `yiban/store/users.py`（`restore_user`、`purge_deleted_users`）。
+关键断言：429 的响应**不得回显剩余秒数**（那是给枚举者免费的探测器）；
+    "最后一个注册管理员"必须拒（否则自助注销能把管理面注销空）。
+依赖：Flask test client + 临时 sqlite/.env，冷却表与失败计数在进程内/临时目录；
+    不触网、不发真实邮件。
 """
 import contextlib
 import importlib.util

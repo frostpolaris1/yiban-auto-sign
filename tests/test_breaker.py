@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 """账密熔断器（circuit breaker）测试：v0.18.4 核心行为防回归。
 
+标签：I · 容量、熔断与账号有效性
+覆盖：账密熔断（连续 3 天失败→暂停 + 试探日、成功清除、网络类失败不计数）、`run_queue_retry` 的绕过与解冻、cred-state 的增量合并与跨进程锁、慢签到的耗时留痕与告警收敛
+对应实现：`scripts/signin.py` 的 `attempt_signin` / `_load_cred_state` / `_save_cred_state` / `_write_sign_state` 与 cred-state 存储的 `update` / `clear`；web 侧编辑账号的清熔断路径
+关键断言：同一天多次失败只计 1 天；试探日「登录已成功但窗口外 / 无 Range 被跳过」要解冻而非再冻 7 天，凭据类失败仍保持暂停并顺延试探日；调用方持有的空 dict 必须**就地**收到 `fail_days`（runner 收尾保存的正是同一个 dict，否则计数永不落盘）；旧快照不得复活被 Web 清掉的暂停；Web 清除与签到保存共用同一把文件锁，因而不可能交错
+依赖：纯本地——临时目录与文件、`attempt_signin` 打桩（不联网）。既可 `pytest` 收集，也可 `python tests/test_breaker.py` 直接运行。无需 node
+
 用法（在项目根目录）：
     py -m pytest tests/test_breaker.py -v        # 需要 pytest
     py tests/test_breaker.py                     # 无 pytest 也可直接运行
 
-覆盖：
+逐项明细：
 - 凭据失败计数：连续 3 天 → 暂停 + 试探日；同一天多次失败只计 1 天
 - 成功清除计数；网络类失败不计数
 - run_queue_retry：暂停中零请求；--only 手动签到绕过；半开试探日执行并恢复
@@ -127,6 +133,7 @@ class BreakerTest(unittest.TestCase):
             self._saved_cred_state = stack.enter_context(
                 mock.patch.object(signin, "_save_cred_state"))
             stack.enter_context(mock.patch.object(sys, "argv", argv))
+            # main() 可能以 SystemExit 收尾：吞掉它，本类断言的是调用序列与保存下来的 dict
             stack.enter_context(contextlib.suppress(SystemExit))
             signin.main()
 
@@ -145,6 +152,8 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(self._calls, [], "暂停中不应发起任何请求")
 
     def test_only_bypasses_pause(self):
+        """标签：命令行 `--only <手机号>` 的手动签到路径——它不受熔断暂停约束，
+        名字里的 only 指的是这个参数，不是「只有一个账号」。"""
         cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
                                  "paused_since": self.D3, "probe_date": "2026-08-26"}}
         self._run_main(datetime(2026, 8, 19, 6, 40), dict(cred), only=True)

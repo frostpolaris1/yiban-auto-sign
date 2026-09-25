@@ -1,26 +1,21 @@
 # -*- coding: utf-8 -*-
-"""无点位账号独立状态回归测试（2026-09-01，用户裁决）。
+"""无点位账号的独立状态（no_position）回归。
 
-背景：易班侧无签到点位（登录成功、signPosition 返回 code=0 但 Position 为空，
-如任务未配置/当日任务已关闭）此前并入 STATUS_FAILED，导致两个问题：
-  1. 与凭据/网络真失败混淆，逐账号触发"易班签到失败"邮件 + webhook + 用户邮件
-     ——管理员无从修复，属误报轰炸；
-  2. 展示上无法与真失败区分。
+标签：D · 状态词汇与账号生命周期
+覆盖：STATUS_NO_POSITION 的独立性与符号、attempt_signin 无点位分支的返回值、
+    队列/排程两种模式下无点位均不触发失败通知（真失败仍触发）、main() 汇总与退出码
+    （仅无点位=exit 2、含真失败=exit 1、有成功=exit 0）、每日状态文件写入 🚫、
+    容器补签闸门与宿主 run.sh 双路径一致、汇总邮件异常不得改退出码。
+对应实现：状态码权威定义 `yiban.status.STATUS_NO_POSITION`（符号
+    `yiban.status.SYMBOL`，未了结集合 `yiban.status.UNDONE_STATUSES`）；分支判定在
+    客户端/引擎侧，补签闸门在 `docker/scheduler.py` 的 `_UNDONE_STATUSES`。
+关键断言：无点位 ≠ 凭据/网络失败——此前并入 STATUS_FAILED 会造成逐账号误报轰炸；
+    retry budget 为 1（`NO_POSITION_MAX_ATTEMPTS`），不像 failed 那样反复重试；
+    但**当日仍未了结**，宿主侧 exit 2→SKIPPED→07:10 补签与容器侧补签必须同结论。
+依赖：进程内 mock + importlib 按路径加载 `docker/scheduler.py`（不 import 执行副作用）；
+    临时 STATE 目录写真伪状态文件；不起子进程、不触网、不需 bash/docker CLI。
 
-现改为独立状态 STATUS_NO_POSITION="no_position"：
-  - attempt_signin 无点位分支返回独立状态码；STATUS_SYMBOL 有独立符号 🚫；
-  - run_queue_retry 放弃时按"无点位"静默（不触发任何失败通知），仅留日志；
-  - main() 汇总归入跳过计数但单独展示（🚫 N 无点位），不计 has_real_failure；
-  - **不进入失败重试**：signin 内部 retry budget 1 次即止
-    （NO_POSITION_MAX_ATTEMPTS=1），不会像 failed 那样逐账号反复重试；
-  - **补签闸门视为未了结**（2026-09-01 修正）：scheduler._UNDONE_STATUSES 含
-    no_position——与宿主 run.sh 退出码 2 → SKIPPED → 07:10 补签轮重跑一致
-    （学校上午任务未配置=无点位，07:10 已配置=顺带补上；无点位账号 1 次即止、
-    幂等无害，不会白跑太多）；
-  - 每日状态文件（sign-daily）写入 🚫 供日历展示。
-
-用法（项目根目录）：
-    py -m pytest tests/test_no_position_status_091.py -v
+背景：登录成功、signPosition 返回 code=0 但 Position 为空（任务未配置/当日任务已关闭）。
 """
 import importlib.util
 import json
@@ -327,7 +322,7 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="sched-nopos-")
-        self.sched = _load_sched()
+        self.sched = _load_sched()  #调度器按文件路径加载：它在 docker/ 而非包内，直连 import 拿不到
         self.sched.STATEDIR = self.tmp
         self.sched.ENV_FILE = os.path.join(self.tmp, ".env")
 

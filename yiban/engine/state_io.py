@@ -111,13 +111,11 @@ def _sched_marker_exists():
 
 
 def _is_second_run():
-    """本轮是否为补签轮（07:10）：run.sh 补签轮 / 容器 scheduler SECOND 时段注入的
-    YIBAN_SECOND_RUN=1 优先，sched-run 标记兜底。
+    """本轮是否为补签轮（07:10）：环境变量优先，sched-run 标记兜底。
 
-    首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run
-    标记不写，07:10 补签轮仅靠标记会误判为首签轮 → 部分成功+窗口外零告警（B12-2
-    分支复发）。环境变量由 run.sh 补签轮分支 / 容器 scheduler SECOND 时段显式注入，
-    不依赖首签收尾，天然免疫 exit 124。
+    标记不能单独作数：首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run 不
+    写，只看标记会把它误判为首签轮 → 部分成功 + 窗口外零告警。`YIBAN_SECOND_RUN=1` 由 run.sh
+    补签轮分支 / 容器 scheduler SECOND 时段显式注入，不依赖首签收尾，故优先看它。
     """
     return os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()
 
@@ -180,20 +178,17 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
-    dur：单次签到尝试耗时秒数（P6，2026-08-16：慢响应可据此判断网络/接口问题）。
-    only_if_absent：仅当该账号**当日无结论**时才写入（return True），否则不覆盖
-    并返回 False。窗口关闭收尾（`_mark_window_skip`）用它做 CAS：快照判"无记录"
-    与落盘之间，另一执行体可能刚写入真实结论（failed 等）——锁内再判一次，
-    绝不让"窗口外跳过"覆盖掉真实失败（否则 `has_real_failure` 变 False、失败告警
-    被吞）。
+    dur：单次签到尝试耗时秒数（慢响应可据此判断网络/接口问题）。
+    only_if_absent：仅当该账号**当日无结论**时才写入（return True），否则不覆盖返回
+    False。窗口收尾（`round._mark_window_skip`）拿它做 CAS：锁内再判一次，绝不让"窗口外
+    跳过"覆盖掉真实失败（`has_real_failure` 随之变 False、失败告警被吞）。
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = _state_dir()
     path = _sign_state_path()
     try:
         os.makedirs(state_dir, exist_ok=True)
-        # M12：读-改-写整体持有状态文件锁，避免并发覆盖丢失条目
-        with cli_support._state_file_lock(path):
+        with cli_support._state_file_lock(path):  # 读改写整体持锁，否则并发覆盖丢条目
             data = {}
             if os.path.exists(path):
                 try:
@@ -206,17 +201,14 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
                 logger.warning("状态文件 %s 非 dict，按空数据重建", path)
                 data = {}
             now = clock.now()
-            # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
-            existing = data.get(phone)
+            existing = data.get(phone)  # 计划时间是当日事实：未显式传 scheduled 时保留既有值
             if not scheduled and isinstance(existing, dict):
                 scheduled = existing.get("scheduled")
             if only_if_absent and _has_conclusion(existing):
                 return False
-            # **计划态不覆盖已有结果**：`pending` 是"打算什么时候签"的预测，success/failed
-            # 等是"已经发生"的事实——事实优先。单执行体形态下计划写在前、结果写在后，看不出
-            # 差别；多执行体下每个执行体启动都会写一遍全量计划，晚启动者的计划会把先启动者
-            # 已写完的结果抹回 pending（实测：4 执行体 40 账号，2 个账号被抹成 pending），
-            # 既让日历显示"待签"，又让补签闸门把已签账号当未了结重跑一遍。
+            # 计划态不覆盖已有结果：pending 是"打算签"，success/failed 是"已发生"，事实优先。
+            # 多执行体下每个执行体启动都写一遍全量计划，晚启动者的计划会把先启动者已写
+            # 的结果抹回 pending（实测 4 执行体/40 账号抹掉 2 个），日历显示待签、补签重跑。
             if (
                 status == STATUS_PENDING
                 and isinstance(existing, dict)
@@ -237,19 +229,19 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
                 "task": "default",
             }
             if dur is not None:
-                entry["dur"] = round(float(dur), 2)  # 单次尝试耗时秒数（P6）
+                entry["dur"] = round(float(dur), 2)  # 两位秒足够判慢响应，不必留微秒
             if scheduled:
                 entry["scheduled"] = scheduled
             data[phone] = entry
-            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖（对抗性审查发现）
+            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖
             tmp = f"{path}.tmp{os.getpid()}"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, path)
             return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）；
-        # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值，C-SIGN-02）
+        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（不影响签到执行）；
+        # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值）
         logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
         return False
 
@@ -285,10 +277,10 @@ def _write_sched_done(counts=None):
 # ---------------------------------------------------------------------------
 # 补签轮判定（宿主 run.sh 与容器 docker/scheduler.py 共用的单一实现）
 # ---------------------------------------------------------------------------
-# 背景（2026-09-10 批次20 B3）：宿主原先靠**第二个独立 cron**（07:12）做补签，
+# 背景：宿主原先靠**第二个独立 cron**（07:12）做补签，
 # 但首签进程要 sleep 到最晚自选时间片（生产实测 07:25）才结束，flock 由脚本持有至
 # 退出 → 07:12 的 cron 每天撞锁 `exit 0`，补签轮从未真正执行（生产日志 12/12 天实证）。
-# 修法（用户裁决方案一）：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
+# 修法：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
 # 一次"是否需要补跑"，判定口径收敛到此处，两侧不再各写一份。
 #
 # 判定 = 「当日全量未收尾」或「当日存在未了结账号」：

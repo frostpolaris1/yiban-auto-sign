@@ -17,10 +17,10 @@
 
 {% block title %}数据总览 · 易班自动签到{% endblock %}
 
-{# KPI 卡即 <a>（P61 整卡可点）：真链接语义，Enter 直达、中键/Cmd+点可新开；
+{# KPI 卡（整卡可点）：真链接语义，Enter 直达、中键/Cmd+点可新开；
    卡内不再放「去账号管理 →」文字链。vendor 全局 a 已去下划线并继承色，
    卡面色仍由 .kpi-card.c-* 提供（喂 ::before 径向渐变），焦点环走 app.css
-   第 11 节统一令牌（:where 列表里的 a.kpi-card）。 #}
+   第 11 节统一令牌（:where 列表里的 a.kpi-card）。href 一律拼 request.script_root：子路径部署下写死根路径会 404。 #}
 {% macro kpi(card) %}
 <a class="kpi-card c-{{ card.color }}" href="{{ request.script_root }}{{ card.href }}">
   <div class="kpi-top">
@@ -79,7 +79,7 @@
     <button type="button" class="btn btn--ghost btn--sm" id="dash-retry-btn" hidden>重试</button>
   </p>
 
-  {# 深链 ?tab= 由 core.js 共享助手支持（P50）；tab id 已核对 work_accounts.html
+  {# 深链 ?tab= 由 core.js 共享助手支持；tab id 已核对 work_accounts.html
      的 data-tab-target：pending / active / deleted（没有 review）。 #}
   <section class="kpi-grid" aria-label="关键指标">
     {{ kpi({
@@ -159,8 +159,8 @@
       <div class="dash-cal-scroll">
         <div class="mini-cal-grid" id="mini-cal" role="grid" aria-label="签到结果日历"></div>
       </div>
-      {# 图例置热力图正下方居中（2026-09-14 用户裁决）：此前贴卡头右侧，与月份切换按钮
-         挨得太近、抢视觉重点。只列三种真实可辨的格面——「未来」是空白格，不另标注。 #}
+      {# 图例置热力图正下方居中，不贴卡头右侧——那里紧挨月份切换按钮，会抢视觉重点。
+         只列三种真实可辨的格面——「未来」是空白格，没有可标注的内容，故不进图例。 #}
       <div class="dash-cal-legend" id="cal-legend">
         <span class="dash-cal-key"><i class="is-ok"></i>全部成功</span>
         <span class="dash-cal-key"><i class="is-fail"></i>有失败</span>
@@ -250,6 +250,8 @@
 {% endblock %}
 
 {% block scripts %}
+{# vendor 与页面脚本都带 ?v= 查询参数（值由后端注入的构建号）：改静态资源后换号即可让缓存失效。
+   defer 按文档顺序执行，故 Chart.js 必须排在 data_dashboard.js 之前，否则页面脚本取不到 window.Chart。 #}
 <script defer src="{{ request.script_root }}/static/vendor/chartjs/chart.min.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/pages/data_dashboard.js?v={{ web_version }}"></script>
 {% endblock %}

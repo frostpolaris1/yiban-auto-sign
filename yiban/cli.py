@@ -246,7 +246,7 @@ def _cmd_sign(json_mode, extra):
 
     退出码非 0 时附带可选 `error` 字段（引擎致命错误的 stderr 摘要，"未配置任何账号"/
     "配置加载失败"类）：否则调用方只拿到一个光秃秃的 exit_code，失败原因仍埋在按天
-    日志文件里（2026-09-21 测试机 47 E2E）。
+    日志文件里。
     """
     code = runner.main(extra)
     if json_mode:
@@ -282,8 +282,8 @@ def _cmd_config(args, view):
     "零账号守卫"同一判据，免得"CLI 说没问题、签到却直接报未配置"）。
 
     `migrate=False`：本命令宣称"脱敏、不联网/只读"，就不能经 `load_accounts() →
-    db.init_db(migrate=True)` 对目标库跑迁移（重写审计链等）——2026-09-21 测试机
-    47 E2E 实测宣称只读的 config 把库迁到了 v17。账号表由 init_db 的基线建表保证
+    db.init_db(migrate=True)` 对目标库跑迁移（重写审计链等）——曾实测到宣称只读的
+    config 把库迁到了 v17。账号表由 init_db 的基线建表保证
     存在，只读模式下取账号不依赖迁移。
     """
     paths = _paths(view)
@@ -536,7 +536,7 @@ def _db_backup(args, db_file):
     丢，外部进程正在写也不会拷到半截（本项目是 WAL + 多进程形态，直接 copy 不安全）。
     """
     target = args.backup or (db_file + ".backup")
-    # 目标==源库必须拒绝（Low-2）：用 realpath 归一后比 inode——软链/相对路径/`..`
+    # 目标==源库必须拒绝：用 realpath 归一后比 inode——软链/相对路径/`..`
     # 都逃不过。WAL 库下原实现"报成功但副本就是活库本身"（误导运维），非 WAL 库
     # `src.backup(dst)` 直接无限阻塞（命令挂死）。放在 --yes 之前，dry-run 也拦。
     if os.path.exists(target) and os.path.exists(db_file) and \

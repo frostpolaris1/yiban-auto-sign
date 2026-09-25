@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""邮箱通知 B 线（用户签到失败邮件）+ 用户开关测试。
+"""邮箱通知 B 线（用户签到失败邮件）与用户开关。
 
-覆盖：
-- db 迁移 v9：新库 users 含 mail_notify 列；旧库（v8）缺列自动补齐；
-- B 线 send_user_fail_mail：owner 空 / 用户不存在 / 开关关闭 → 不发送；
-  开关开启 → 发送且内容脱敏（手机号打码、不含完整号）；
-- Web API /api/my-mail-notify：未登录默认开、401/400 防护、保存生效、审计留痕。
-
-全程本地（临时 sqlite + Flask test client + mock mailer），无真实网络请求。
-用法（项目根目录）：py -m pytest tests/test_mail_notify.py -v
+标签：H · 通知：邮件与推送
+覆盖：db 迁移 v9（新库 users 含 `mail_notify` 列、v8 旧库缺列自动补齐）；
+    `send_user_fail_mail` 的 owner 空 / 用户不存在 / 开关关闭三种不发送；
+    开关开启则发送且内容脱敏；`/api/my-mail-notify` 的未登录默认开、401/400 防护、
+    保存生效、审计留痕；汇总 flush 的空收件人与"管理员关通知则不转 admin"。
+对应实现：B 线发信与额度账本在 `yiban/engine/alerts.py`（`_user_fail_mail_reserve`）
+    与 `yiban/mail/`，迁移在 `yiban/store/migrations.py`，端点在 `web/app.py`。
+关键断言：内容必须脱敏（手机号打码、不含完整号）——正文会带上账号信息，
+    漏脱敏等于把手机号寄到别人邮箱。
+依赖：临时 sqlite（走真实迁移）+ Flask test client + mock mailer；复用同目录
+    `tests/_mail_body.py` 的 `render_body` 助手，需在仓库根跑 pytest；
+    不连 SMTP、不触网。
 """
 import contextlib
 import importlib.util

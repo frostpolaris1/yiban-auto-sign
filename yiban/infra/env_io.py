@@ -16,9 +16,14 @@
 `web/services/env_io.py` 是它在 web 侧的服务包装，不另立第二套行模型。
 
 **复用**
-`parse_env_file`、`write_env_key`、`ENV_LINE_BREAK_CHARS` 与 `resolve_path` 被引擎
-（`env_io` 调用点）、`account_crypto`、`audit_chain`、`tracking`、`state_gc`、`cred_state`
-与 web 服务层复用。
+`parse_env_file`（含 `env_path`）与 `write_env_key` / `write_env_keys` 由
+`yiban.infra.account_crypto`、`yiban.store.audit_chain`、`yiban.store.tracking`、
+`yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
+`web/routes/settings_api.py` 复用；行分隔符判定 `has_line_break` / `is_valid_env_key`
+/ `key_line_pattern` / `count_key_lines` / `find_env_key_collisions` 是同一套行模型的
+读侧与校验侧。`resolve_path` 是路径类配置（STATE_DIR / LOG_FILE / DB_FILE）的解析口径，
+`web/app.py`、`yiban.cred_state`、`yiban.engine.alerts`、`yiban.engine.cli_support`、
+`scripts/ledger_check.py` 共用。
 
 **通信**
 输入：`.env` 路径、键名与值、`strict` 错误策略、解析/写入的调用方参数。
