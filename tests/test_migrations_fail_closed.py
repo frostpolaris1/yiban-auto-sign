@@ -220,6 +220,7 @@ class ArtifactIntegrityTest(_DbTemp):
         return conn
 
     def test_missing_epoch_refuses_and_names_v19(self):
+        self._drifted_v19_db()
         conn = sqlite3.connect(self.db_file)
         conn.row_factory = sqlite3.Row
         self.assertNotIn("epoch", _cols(conn, "sign_claims"))
