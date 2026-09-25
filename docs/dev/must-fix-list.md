@@ -279,7 +279,7 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
 `[需确认：现网 v18–v20 是否落地]`
 
 ### MF-41 基线拉不到 + 生产有两个基线没有的提交
-合并 L61、L62。`gitee/develop` 实测停在 `b6457e6`，`9d3f491` 只在本地；现网部署命令是 `git pull gitee server-web` ⇒ **按现流程根本部署不到 M2 审的这份代码**。且 `rev-list --left-right --count ≈ 2/100`：生产有 2 个基线没有的提交（合计 1 行：备注 placeholder 示例改"电力123庄方宜"，`6d4eafa` 为空合并），merge 三方干净但 `checkout/reset` 到基线会**静默丢掉**且全仓无测试钉住。同提交链上另发现：GitHub 仓为 **PUBLIC**，该姓名样式示例已随 `origin/server-web` 外推。
+合并 L61、L62。`gitee/develop` 实测停在 `b6457e6`，`9d3f491` 只在本地；现网部署命令是 `git pull gitee server-web` ⇒ **按现流程根本部署不到 M2 审的这份代码**。且 `rev-list --left-right --count ≈ 2/100`：生产有 2 个基线没有的提交（合计 1 行：备注 placeholder 示例改"电力123庄**"，`6d4eafa` 为空合并），merge 三方干净但 `checkout/reset` 到基线会**静默丢掉**且全仓无测试钉住。同提交链上另发现：GitHub 仓为 **PUBLIC**，该姓名样式示例已随 `origin/server-web` 外推。
 修法方向：先统一发布线（哪个分支是部署线、远端是哪个），再把那 1 行回合或显式放弃，并决定公开仓是否要放真名样式示例。
 验收不变量：部署前一条命令断言"目标提交在部署远端可达"。`[已复现]`
 

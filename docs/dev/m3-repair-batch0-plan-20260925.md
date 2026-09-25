@@ -106,7 +106,7 @@
 
 ## Task 6 — 生产执行件入库与部署断言（MF-42 高 + MF-41 仓内半条 + 真名示例）
 
-**现象（摘自登记表）**：`/usr/local/sbin/yiban-backup.sh` 是手工拷贝（基线那份差 3 行）、`.bak-20260923` 旧件残留、**`yiban-backup-wrapper.sh`（口令注入点）与 `/etc/cron.d/yiban-{cleanup,sign,probe}` 三张 cron 表全仓无原件** ⇒ "审仓库 ≠ 审生产"。`backup.log` 实测 0644 全局可读（同目录 `cleanup.log` 0600），与 `backup.sh:643-645` 自述冲突（backup.log 权限在 Task 2 的 backup.sh 里顺手收，若属运行时行为则归本任务记录）；wrapper 用 `export` 把口令带进整棵子进程树环境。MF-41：`gitee/develop` 停在 `b6457e6`，现网部署命令是 `git pull gitee server-web` ⇒ 按现流程部署不到本线代码；生产有 2 个基线没有的提交（合计 1 行：备注 placeholder 示例改"电力123庄方宜"，待裁决 #6② 已定换合成名）；GitHub 仓 PUBLIC，该示例已外推。
+**现象（摘自登记表）**：`/usr/local/sbin/yiban-backup.sh` 是手工拷贝（基线那份差 3 行）、`.bak-20260923` 旧件残留、**`yiban-backup-wrapper.sh`（口令注入点）与 `/etc/cron.d/yiban-{cleanup,sign,probe}` 三张 cron 表全仓无原件** ⇒ "审仓库 ≠ 审生产"。`backup.log` 实测 0644 全局可读（同目录 `cleanup.log` 0600），与 `backup.sh:643-645` 自述冲突（backup.log 权限在 Task 2 的 backup.sh 里顺手收，若属运行时行为则归本任务记录）；wrapper 用 `export` 把口令带进整棵子进程树环境。MF-41：`gitee/develop` 停在 `b6457e6`，现网部署命令是 `git pull gitee server-web` ⇒ 按现流程部署不到本线代码；生产有 2 个基线没有的提交（合计 1 行：备注 placeholder 示例改"电力123庄**"，待裁决 #6② 已定换合成名）；GitHub 仓 PUBLIC，该示例已外推。
 
 **修法方向**：
 1. 新建 `deploy/prod/`（或沿用仓内既有部署目录约定，先查 `web/deploy/` 与 README）：收编 `yiban-backup.sh`（以生产实测版为准，差 3 行以生产版回填并 diff 说明）、`yiban-backup-wrapper.sh`、三张 cron 表原件；提供 `install.sh`（或 Makefile `install` 目标）：安装到对应绝对路径 + 安装后校验和输出。 `.bak-20260923` 类残留的处理写进安装脚本（安装时清理并记录）。
@@ -115,7 +115,7 @@
 4. **部署可达断言**：`scripts/check-deploy-target.sh`——断言部署远端（`gitee/server-web`）包含目标提交（`git fetch` + `git merge-base --is-ancestor` 或等价）；输出人类可读结论。**不做任何 push**；报告里写明"统一发布线需用户执行 push"交接事项。
 5. placeholder 示例换合成名：全仓 grep `电力123` 定位，改成中性占位（如「电力123示例站」样式或不带姓名的文案，实现者选定并报告）；报告记录"公开历史已有旧值，按待裁决 #6② 接受不 rewrite"。
 
-**验收不变量**：cron 路径来源测试绿（活体反例：往 cron 表加一个仓内不存在的路径 ⇒ 测试红）；wrapper 启动的子进程环境无口令（测试：stub gpg 记录 env ⇒ 断言无明文口令键）；`电力123庄方宜` 全仓零命中（测试或 grep 证据）；check-deploy-target 对"目标提交不在远端"给出非 0（用本地 fixture 远端测，不碰真远端）。
+**验收不变量**：cron 路径来源测试绿（活体反例：往 cron 表加一个仓内不存在的路径 ⇒ 测试红）；wrapper 启动的子进程环境无口令（测试：stub gpg 记录 env ⇒ 断言无明文口令键）；`电力123庄**` 全仓零命中（测试或 grep 证据）；check-deploy-target 对"目标提交不在远端"给出非 0（用本地 fixture 远端测，不碰真远端）。
 
 **涉及**：`deploy/prod/**`（新）、`scripts/check-deploy-target.sh`（新）、web 模板/文案 1 行、新测试。
 
