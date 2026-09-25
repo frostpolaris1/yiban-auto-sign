@@ -56,8 +56,9 @@ class ShellForwardingStubTest(unittest.TestCase):
 
     def _run_round(self, calls):
         """跑一轮单账号队列；三个高频打桩名都换成记录调用的替身。"""
-        from yiban.store import db as yiban_db
         import contextlib
+
+        from yiban.store import db as yiban_db
 
         # 本类只验证"替身穿透壳"，与领取池无关：清掉前序用例可能泄漏的库连接单例，
         # 并在运行期间不声明库路径（纯状态文件形态），使轮次走"未声明 ⇒ 放行且不碰库"分支。
