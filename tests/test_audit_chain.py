@@ -869,9 +869,17 @@ class BackupScriptContractTest(unittest.TestCase):
         self.assertIn("return \"$rc\"", block, "核验结论必须传出去（不得无条件报恢复成功）")
 
     def test_cron_template_requires_encrypt_and_daily_verify(self):
-        """(e) cron 模板带 --require-encrypt，并追加每日 audit_verify 跑。"""
+        """(e) cron 模板带 --require-encrypt，并追加每日 audit_verify 跑。
+
+        M3 批次0（MF-42）起 cron 入口是 wrapper——--require-encrypt 由 wrapper 钉死
+        （行为级已由 tests/test_deploy_prod_artifacts.py::WrapperPassphraseTest 的
+        stub argv 断言锁住），头注释必须同时点名 wrapper 与该旗标，防止有人把
+        模板改回直调 yiban-backup.sh 裸跑。
+        """
         header = self.src[:self.src.index("# 依赖：")]
-        self.assertIn("yiban-backup.sh --require-encrypt", header,
+        self.assertIn("yiban-backup-wrapper.sh", header,
+                      "cron 模板的备份入口必须是 wrapper（口令 fd0 单跳注入）")
+        self.assertIn("--require-encrypt", header,
                       "cron 模板不带 --require-encrypt 时，加密失效当天会静默产出明文归档")
         self.assertIn("audit_verify.py", header, "锚点判据不能只挂在 web 每日线程上")
         self.assertNotIn("docs/web-console/DEPLOY-CHECKLIST.md", self.src,
