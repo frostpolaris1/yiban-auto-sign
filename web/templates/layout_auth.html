@@ -27,9 +27,11 @@
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
 </head>
-{# data-page：core.js 据此决定是否初始化身份/时钟。
-   auth = 登录/注册等匿名页（跳过 /api/me、/api/clock，避免 401 噪音）；
-   user = 已登录的用户自助页（继承块覆盖为 "user"，走完整初始化）。 #}
+{# data-page：core.js 只有一条判据 —— 值等于 "auth" 时提前返回，跳过 /api/me 与
+   /api/clock（匿名页不该制造 401 噪音）；其余任何取值都走同一套完整初始化。
+   本外壳实际只会渲染出 "auth"：继承它的是 login.html 与 error.html，全树（模板/测试/脚本）
+   没有任何一处覆盖下面的 page_id 块，所以"子模板继承时覆盖为 user"从未发生 ——
+   用户自助页的 data-page="user" 写死在 layout_user.html，不经过本块。 #}
 <body data-page="{% block page_id %}auth{% endblock %}">
 {{ sprite() }}
 <div class="auth-shell">
