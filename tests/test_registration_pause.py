@@ -239,7 +239,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
     def test_root_logger_writes_daily_file(self):
         """create_app 后 root logger 挂 DailyFlockFileHandler 且 INFO 落入 sign-*.log。"""
         import logging
-        from datetime import datetime
+        from yiban import clock  # 按天日志 handler 按业务钟取日期：宿主 TZ 下须同源
         c = self.webapp.create_app().test_client()
         c.get("/api/registration_paused")  # 触发一条请求级日志路径
         root = logging.getLogger()
@@ -251,7 +251,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         self.assertEqual(root.level, logging.WARNING, "root 应保持 WARNING")
         self.assertEqual(logging.getLogger("web").level, logging.INFO,
                          "自有组件 web 应放开 INFO（否则 INFO 全被丢弃）")
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         log_path = os.path.join(self.log_dir, f"sign-{today}.log")
         self.assertTrue(os.path.exists(log_path), "按天日志文件应已创建")
         with open(log_path, encoding="utf-8") as f:
