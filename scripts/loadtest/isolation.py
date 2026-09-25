@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import pathlib
 import sqlite3
 
 #: 命中该子串（大小写不敏感）的环境变量名一律视为代理相关键
@@ -38,6 +39,15 @@ PROXY_MARK = "PROXY"
 
 #: 压测账号归属域：判"这个库像不像压测库"的内容判据（防误指生产库）
 LOADTEST_OWNER_SUFFIX = "@mock.invalid"
+
+
+def _readonly_uri(db_path):
+    """只读连接 URI：pathlib 转 `file://` 再挂 `mode=ro`（Windows 盘符/特殊字符路径）。
+
+    直接拼 `file:{path}?mode=ro` 会拼出坏 URI，旧实现随即 `continue`/退化成不可读，
+    把"读不到"误当"没有非压测账号"放行。
+    """
+    return pathlib.Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
 
 
 class IsolationError(RuntimeError):
@@ -79,11 +89,15 @@ def require_egress_probe(ip):
 
 
 def _account_owners(db_path):
-    """只读取 accounts.owner 列表；库/表缺失返回 None（读不到不等于"像压测库"）。"""
+    """只读取 accounts.owner 列表；库/表缺失返回 None（读不到 ≠ "像压测库"）。
+
+    返回 None 而非空列表：空列表会被 `assert_loadtest_target` 当成"没有非压测账号"
+    而放行——库缺失/不可读恰恰是最不能放行的形态（fail-closed）。
+    """
     if not os.path.exists(db_path):
-        return []
+        return None
     try:
-        conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(_readonly_uri(db_path), uri=True, timeout=5)
     except sqlite3.Error:
         return None
     try:
@@ -105,8 +119,7 @@ def loadtest_db_fingerprint(db_path):
     if os.path.exists(db_path):
         for table in counts:
             try:
-                conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro",
-                                       uri=True, timeout=5)
+                conn = sqlite3.connect(_readonly_uri(db_path), uri=True, timeout=5)
             except sqlite3.Error:
                 continue
             try:

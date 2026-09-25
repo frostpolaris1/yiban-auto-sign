@@ -83,6 +83,23 @@ class DbContentFingerprintTest(unittest.TestCase):
         self.assertIn("accounts=2", joined)
         self.assertIn("audit_logs=1", joined)
 
+    def test_special_char_path_is_still_readable(self):
+        """含空格的路径也要能只读到行数（只读 URI 经 pathlib 转义，不拼裸路径）。"""
+        d = os.path.join(self.tmp, "dir with space")
+        os.makedirs(d)
+        path = os.path.join(d, "demo db.db")
+        _touch_sqlite(path, {"accounts": 2})
+        self.assertEqual(purge_guard.table_counts(path)["accounts"], 2)
+
+    def test_unreadable_target_is_marked_not_readable(self):
+        """只读连接打不开时摘要须标「不可读」，不得退化成读写连接读出数字。"""
+        d = os.path.join(self.tmp, "adir")
+        os.makedirs(d)  # 目录不是库：只读连接必然打不开
+        fp, lines = purge_guard.db_content_fingerprint(d)
+        self.assertTrue(fp.startswith("PURGE-"))
+        self.assertTrue(any("不可读" in ln for ln in lines), lines)
+        self.assertNotIn("accounts=1", "\n".join(lines))
+
 
 class ContentFingerprintTest(unittest.TestCase):
     def test_parts_drive_digest(self):
@@ -160,6 +177,31 @@ class WritePurgeAuditTest(unittest.TestCase):
                 "state_purge", "PURGE-x", "d",
                 db_file=self.db_file, env_file=self.env_file)
         self.assertFalse(ok, "审计写入失败必须让调用方拿到 False（fail-closed）")
+
+    def test_connection_pointing_elsewhere_is_refused(self):
+        """单例连接指向别的库时不得把留痕写过去：按实际连接判定，返回 False。"""
+        self._make_db()
+        other = os.path.join(self.tmp, "other.db")
+        from yiban.store import connection
+        from yiban.store import db as store_db
+        conn = connection.current()
+        if conn is not None:
+            conn.close()
+        connection.reset_conn()
+        store_db.init_db(db_file=other, env_file=self.env_file, cleanup=False)
+        try:
+            ok = purge_guard.write_purge_audit(
+                "state_purge", "PURGE-x", "d",
+                db_file=self.db_file, env_file=self.env_file)
+            self.assertFalse(ok, "连接指向别的库时必须拒绝留痕（否则审计落到别处）")
+            n = connection.current().execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='state_purge'").fetchone()[0]
+            self.assertEqual(n, 0, "不得把留痕落到别的库")
+        finally:
+            c = connection.current()
+            if c is not None:
+                c.close()
+            connection.reset_conn()
 
 
 if __name__ == "__main__":
