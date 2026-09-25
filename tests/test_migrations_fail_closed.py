@@ -43,7 +43,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402  (tests/conftest 注入 yiban/store 到 sys.path)
 
 from yiban import clock  # noqa: E402
-from yiban.engine import planner  # noqa: E402
+from yiban.engine import cli_support, planner, workers  # noqa: E402
 from yiban.infra import account_crypto  # noqa: E402
 from yiban.store import migrations, queue_store  # noqa: E402
 
@@ -204,6 +204,89 @@ class MigrationRecordTest(_DbTemp):
         with self.assertRaises(migrations.MigrationIntegrityError) as cm:
             migrations._run_migrations(conn)
         self.assertIn("v18", str(cm.exception))
+
+
+class _FailRecordWriteConn:
+    """透明代理连接：仅"写 schema_migrations 完成记录"这一步失败（模拟崩溃在记录落盘时）。
+
+    其余语句原样透传（含 BEGIN/commit/rollback 与 in_transaction），反例观察点
+    只有一个：记录写失败后 user_version 是否**没有**先行落盘。
+    """
+
+    def __init__(self, real):
+        self._real = real
+
+    def execute(self, sql, *args, **kwargs):
+        if ("schema_migrations" in sql
+                and sql.lstrip().upper().startswith("INSERT")):
+            raise OSError("simulated crash writing migration record")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def commit(self):
+        return self._real.commit()
+
+    def rollback(self):
+        return self._real.rollback()
+
+    def close(self):
+        return self._real.close()
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    @property
+    def row_factory(self):
+        return self._real.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self._real.row_factory = value
+
+
+class BumpRecordAtomicityTest(_DbTemp):
+    """评审轮 1 [Important#1]：bump↔record 原子性对**所有**迁移成立。
+
+    迁移体以自己的 conn.commit() 收尾（v4/v16/v17/v19/v20 皆此形态）时，框架的
+    BEGIN IMMEDIATE 在 bump 前已关闭；旧顺序先 `PRAGMA user_version`（默认隔离级别
+    下 PRAGMA 不自开事务 ⇒ autocommit 立刻生效）、后写记录——两步之间崩溃即
+    "版本已提升、记录没写上"，回填救不回非空表 ⇒ 下次启动被拒、要人工补 INSERT，
+    破"合法重启不得要求人工干预"红线。新顺序 INSERT 先开事务、PRAGMA 并入同事务、
+    一次 commit；两条用例分别钉**行为**与**成立前提**。
+    """
+
+    def test_record_write_crash_leaves_version_unbumped(self):
+        self._init(upto=18)
+        _close_global_conn()
+        conn = self._reopen()
+        with self.assertRaises(OSError):
+            migrations._run_migrations(_FailRecordWriteConn(conn))
+        self.assertEqual(_user_version(conn), 18,
+                         "记录没写上 ⇒ user_version 必须仍停在 18（旧顺序在此已变 19）")
+        self.assertNotIn(19, {r[0] for r in conn.execute(
+            "SELECT version FROM schema_migrations").fetchall()})
+        conn.close()
+        # 合法重启即收敛（无人工干预）：v19 整段幂等重跑，记录与版本一并补上
+        conn2 = db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        self.assertEqual(_user_version(conn2),
+                         max(m[0] for m in migrations._MIGRATIONS))
+        self.assertIn(19, {r[0] for r in conn2.execute(
+            "SELECT version FROM schema_migrations").fetchall()})
+
+    def test_pragma_user_version_joins_open_txn(self):
+        """顺序修法成立的存储前提：事务内的 user_version 拨动随事务提交/回滚，
+        不是"PRAGMA 恒 autocommit"——否则 INSERT→PRAGMA→commit 依旧两个窗口。"""
+        conn = self._init(upto=18)
+        db._begin_immediate(conn)
+        conn.execute("PRAGMA user_version = 99")
+        conn.rollback()
+        self.assertEqual(_user_version(conn), 18)
+        db._begin_immediate(conn)
+        conn.execute("PRAGMA user_version = 99")
+        conn.commit()
+        self.assertEqual(_user_version(conn), 99)
+        conn.execute("PRAGMA user_version = 18")
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +747,92 @@ class StartupExitCodeTest(unittest.TestCase):
         # 诊断入口本身还能用
         self.assertNotEqual(self._run(["sign", "--check-config"]).returncode, 4,
                             "--check-config 不跑迁移，不得被完整性门误伤")
+
+
+# ---------------------------------------------------------------------------
+# 评审轮 1 [Important#2]：workers 三处 rc4 门的活体反例
+# （runner.main 腿由上方 StartupExitCodeTest 的真实子进程覆盖；此处逐门补）
+# ---------------------------------------------------------------------------
+class WorkersIntegrityRc4Test(_DbTemp):
+    """`--workers` 监督腿 / 子进程码聚合腿 / 兜底常驻腿各自必须拒启（rc4）。
+
+    打桩只落在**边界**（账号加载、子进程拉起、等待聚合、窗口门）——判定与聚合
+    代码全部真实执行，行为可观察：返回码与"有没有拉起子进程"。
+    """
+
+    def test_supervisor_refuses_before_spawning_children(self):
+        """监督进程预检撞完整性 ⇒ rc4 且**一个子进程都不拉**（半升级库上拉起 N 个
+        执行体只会把一次拒启放大成 N 份事故）。反证：不拒启时会走到 Popen。"""
+        popen = mock.Mock()
+        with mock.patch.object(workers.accounts_mod, "load_accounts",
+                               side_effect=migrations.MigrationIntegrityError(
+                                   "v19（v19_fencing_epoch）产物列 sign_claims.epoch 缺失")), \
+             mock.patch.object(workers.subprocess, "Popen", popen):
+            code = workers.run_worker_supervisor(2, ["sign", "--workers", "2"])
+        self.assertEqual(code, cli_support.EXIT_SCHEMA_MIGRATION)
+        self.assertEqual(popen.call_count, 0, "拒启腿不得拉起任何子进程")
+
+    def test_child_rc4_outranks_normal_and_severe_codes(self):
+        """聚合腿：任一子进程 rc4 ⇒ 汇总 4——既不被"全成功 0"淹没，也优先于
+        补签(10)/真失败(1)（schema 半升级整轮不可信）。同时每个子进程的退出码
+        必须逐条上报（正常子进程的结果不被吞：日志里能看到它的真实码）。
+        对照组 [0,0]/[0,1] 维持旧口径，证明 4 档只在命中 4 时改变结果。"""
+        cases = (
+            ((0, cli_support.EXIT_SCHEMA_MIGRATION), cli_support.EXIT_SCHEMA_MIGRATION),
+            ((cli_support.EXIT_SCHEMA_MIGRATION, 10), cli_support.EXIT_SCHEMA_MIGRATION),
+            ((1, cli_support.EXIT_SCHEMA_MIGRATION), cli_support.EXIT_SCHEMA_MIGRATION),
+            ((0, 0), 0),
+            ((0, 1), 1),
+        )
+        for codes, expected in cases:
+            with self.subTest(codes=codes), \
+                mock.patch.object(workers.accounts_mod, "load_accounts",
+                                  return_value=[{"phone": PHONE_A},
+                                                {"phone": PHONE_B}]), \
+                mock.patch.object(workers.subprocess, "Popen",
+                                  return_value=mock.MagicMock()), \
+                mock.patch.object(workers, "_await_workers",
+                                  return_value=list(codes)), \
+                mock.patch.object(workers.state_io, "mark_worker_started"), \
+                self.assertLogs("yiban", level="INFO") as logs:
+                self.assertEqual(
+                    workers.run_worker_supervisor(2, ["sign", "--workers", "2"]),
+                    expected)
+            out = "\n".join(logs.output)
+            for i, rc in enumerate(codes):
+                self.assertIn(f"退出码 {rc}", out,
+                              f"子进程 {i}（码 {rc}）的结果必须逐条上报，不得吞掉")
+
+    def test_fallback_daemon_refuses_on_integrity(self):
+        """兜底常驻腿：窗口内每轮 load_accounts 撞完整性 ⇒ rc4 退出并清存活标记
+        （不得吞成配置错误 1，更不得 continue 空转成"看似在跑实则永不签到"）。
+        对照组：普通配置错误仍回 1——4 档专属于完整性拒启。"""
+        with mock.patch.object(workers.schedule, "day_off", return_value=None), \
+             mock.patch.object(workers.schedule, "_window_closed", return_value=False), \
+             mock.patch.object(workers.schedule, "_window_open", return_value=True), \
+             mock.patch.object(workers.cli_support, "_run_lock_held", return_value=False), \
+             mock.patch.object(workers.state_io, "_write_fallback_alive"), \
+             mock.patch.object(workers.state_io, "_clear_fallback_alive") as clear, \
+             mock.patch.object(workers.accounts_mod, "load_accounts",
+                               side_effect=migrations.MigrationIntegrityError(
+                                   "v19（v19_fencing_epoch）产物列 sign_claims.epoch 缺失")):
+            self.assertEqual(
+                workers.run_fallback_worker([], interval=60,
+                                            deadline=clock.now() + timedelta(minutes=5)),
+                cli_support.EXIT_SCHEMA_MIGRATION)
+        clear.assert_called_once()
+        with mock.patch.object(workers.schedule, "day_off", return_value=None), \
+             mock.patch.object(workers.schedule, "_window_closed", return_value=False), \
+             mock.patch.object(workers.schedule, "_window_open", return_value=True), \
+             mock.patch.object(workers.cli_support, "_run_lock_held", return_value=False), \
+             mock.patch.object(workers.state_io, "_write_fallback_alive"), \
+             mock.patch.object(workers.state_io, "_clear_fallback_alive"), \
+             mock.patch.object(workers.accounts_mod, "load_accounts",
+                               side_effect=RuntimeError("配置错误")):
+            self.assertEqual(
+                workers.run_fallback_worker([], interval=60,
+                                            deadline=clock.now() + timedelta(minutes=5)),
+                1, "普通配置错误保持旧口径 1，4 只属于完整性拒启")
 
 
 if __name__ == "__main__":

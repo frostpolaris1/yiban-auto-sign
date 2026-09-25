@@ -16,8 +16,11 @@
   启动、可选迁移失败或延后只置 blocked 且不提升版本（下次启动重试）；`_MIGRATIONS`
   是「版本号 → 名称 → 函数 → 是否核心」的登记表（v17/v18/v19 为核心档：v3 领取路径
   把它们的产物当硬编列名用，缺了整条路径静默拒跑，见登记表注释）；
-- 迁移完成记录表 `schema_migrations`：成功提升与 `PRAGMA user_version` 在**同一事务**
-  写记录（失败/未提升 ⇒ 无记录）；存量库（记录表上线前升的级）首见时按继承回填。
+- 迁移完成记录表 `schema_migrations`：bump 分支按 **INSERT 记录 → `PRAGMA user_version`
+  → commit** 的固定顺序在**同一事务**落库（失败/未提升 ⇒ 无记录；顺序不可倒——
+  `PRAGMA` 放最前会在"迁移体自带 conn.commit()"的迁移里走 autocommit 抢先提升版本，
+  与记录写入之间崩溃即留下"版本已提升、记录没写上"、下次启动被完整性门拒启且继承
+  回填救不回）。存量库（记录表上线前升的级）首见时按继承回填。
   链尾 `_verify_migration_integrity` fail-closed 校验：版本已过某迁移却无记录、或
   核心迁移产物（表/列）缺失 ⇒ 抛 `MigrationIntegrityError` 点名该迁移并拒绝启动
   （MF-40：不接受"版本声称过了、产物没落地"的库继续跑）；
@@ -93,7 +96,8 @@ class MigrationIntegrityError(Exception):
     """
 
 
-# 迁移完成记录表：成功提升与写记录在同一事务（`_run_migrations` 的 bump 分支），
+# 迁移完成记录表：成功提升与写记录在同一事务（`_run_migrations` 的 bump 分支，
+# 先 INSERT 记录、后 PRAGMA user_version，见该分支注释的原因），
 # 表本身在整链开跑前建好；记录缺失 ⇒ `MigrationIntegrityError`。
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 
@@ -1240,12 +1244,21 @@ def _run_migrations(conn):
                     conn.commit()
                     logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
                 else:
-                    conn.execute(f"PRAGMA user_version = {target_version}")
+                    # 记录必须先写、版本后拨：部分迁移体以自己的 conn.commit() 收尾
+                    # （v4/v16/v17/v19/v20；v18 是 PRAGMA synchronous 的合法例外），
+                    # 框架的 BEGIN IMMEDIATE 到 bump 时**已经关闭**。默认隔离级别下
+                    # PRAGMA 不自开事务——放前面就按 autocommit 立刻落盘，与随后
+                    # INSERT+commit 之间崩溃即留下"版本已提升、记录没写上"的库态，
+                    # 下次启动被完整性门拒启且回填救不回（= 人工干预，破红线）。
+                    # INSERT 先执行则隐式开事务，PRAGMA 落在事务内与记录**同 commit
+                    # 原子生效、同 rollback 一起消失**（反例见
+                    # tests/test_migrations_fail_closed.py::BumpRecordAtomicityTest）。
                     conn.execute(
                         f"INSERT OR REPLACE INTO {_SCHEMA_MIGRATIONS_TABLE} "
                         "(version, name, applied_at) VALUES (?, ?, ?)",
                         (target_version, name, clock.ts()),
                     )
+                    conn.execute(f"PRAGMA user_version = {target_version}")
                     conn.commit()
                     version = target_version
                     logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
