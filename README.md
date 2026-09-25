@@ -375,6 +375,8 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 
 > ⚠️ GitHub Actions 的服务器在海外，可能被易班 WAF 风控拦截（返回「风险访问服务禁用」），且海外 IP 反复失败可能触发账号风控。**有云服务器时请改用 [服务器部署](#服务器部署分步详解)**；以下仅作免服务器场景的备选。
 
+> ⛔ **已退役（2026-09-25，MF-106）**：`.github/workflows/signin.yml` 已从仓库删除——所需 secrets 均不存在、CI 内跑真实签到危险且早已被易班 WAF 打死（工作流在 GitHub 上长期处于手动禁用状态）。以下小节仅作历史记录保留，**不再是受支持的部署路径**；部署请走[服务器部署](#服务器部署分步详解)或 [Docker 部署](#docker-部署可选)。同理 `mirror.yml`（Gitee 镜像）已删除：该工作流自加入首日起即因参数格式错误从未成功运行，Gitee 同步改为人工 `git push` 维护。
+
 ### 第 1 步：Fork 仓库
 
 点击仓库右上角 **Fork**。建议取消勾选「Copy the main branch only」以获取完整历史（只勾主分支也能用）。
@@ -1069,7 +1071,7 @@ GitHub 官方政策：**仓库连续 60 天无活动，定时工作流会被自�
 ### Q3 未在签到时间内
 
 - 当前时间不在管理员设置的签到窗口内；
-- Actions 的触发延迟（实测约 55–120 分钟）可能导致实际执行时超出窗口，可调整 `.github/workflows/signin.yml` 的 `cron`，或等下一次触发；
+- Actions 的触发延迟（实测约 55–120 分钟）可能导致实际执行时超出窗口——该通道已随 `signin.yml` 删除而退役（MF-106，见「GitHub Actions（备选）」开头说明）；服务器 cron 部署不受影响；
 - 此错误**不会**让 Actions 标记为失败（退出码仍为 0）。
 
 
