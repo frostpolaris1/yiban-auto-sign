@@ -10,8 +10,10 @@
 #       /usr/local/sbin/yiban-backup-sentinel.sh
 #   sudo crontab -e
 #   5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
-#   # 退出码 0 = 检查完成（含"缺失但告警已发出"）；1 = 告警发不出去，此时 cron 自己
-#   # 的报错邮件是最后一道声音。日志与 backup.sh 同文件，排查时按时间挨着看。
+#   # 退出码 0 = 检查完成（含"缺失但告警已发出"）；1 = 检查本身失败或告警发不出去。
+#   # ⚠ 上面这行把 stderr 并进了 backup.log，所以 cron 不会发报错邮件（全仓无 MAILTO
+#   # 设置）：退出码 1 只在有人翻日志时才看得见，别把它当成告警。要它自己响，得去掉
+#   # `2>&1` 并配 MAILTO，或把退出码接进监控。日志与 backup.sh 同文件，排查时按时间挨着看。
 #
 # 环境变量（与 backup.sh / run.sh 同口径）：
 #   BACKUP_DIR（默认 /var/backups）、APP_DIR（默认 /opt/yiban-auto-sign）、
