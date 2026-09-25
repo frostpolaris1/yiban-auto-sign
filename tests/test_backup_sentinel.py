@@ -10,7 +10,8 @@
 关键断言：① 缺包/缺清单/漂移 → 恰好一封管理员告警且正文带排查路径；② 正常路径
     （都在且一致）**零输出零外发**——哨兵自己不许变成噪音源；③ 未安装
     `YIBAN_BACKUP_INSTALLED` → 不报漂移，由缺包那一项兜底；④ 收件人为空/发送失败/
-    发送抛异常 → 返回 1（cron 报错是最后一道声音）；⑤ 第二次运行落在窗口内不再外发。
+    发送抛异常 → 返回 1（这条"看不见"的兜底能走多远，见 `scripts/backup_sentinel.py`
+    头部对 `>> backup.log 2>&1` 的提醒）；⑤ 第二次运行落在窗口内不再外发。
 依赖：Python 判定部分进程内跑（临时目录 + 打桩 `_send_admin_alert`），不连 SMTP、
     不碰本机真实备份目录；wrapper 相关两条要 bash 与 python3（Git Bash/WSL），
     缺任一按 SkipTest 跳过整类；不需 docker。
@@ -205,7 +206,8 @@ class ThrottleTest(_Base):
 
 
 class DeliveryFailureTest(_Base):
-    """发不出去必须能被看见：返回 1，让 cron 自己的报错邮件成为最后一道声音。"""
+    """发不出去必须与"检查通过"可区分：返回 1（不承诺有人因此收到信——退出码能否
+    变成一次通知，取决于 cron 排期行有没有把 stderr 吞进日志）。"""
 
     def test_send_returning_false_exits_nonzero(self):
         self.assertEqual(self._run(send=lambda title, mail: False), 1)

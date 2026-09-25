@@ -1334,7 +1334,10 @@ def _channel_status_lines(status=None):
 
 
 def _send_channel_health_report(force=False):
-    """告警通道健康日报（每日线程调用，实现见 web/services/channel_health.py）。
+    """告警通道健康报告（旧称"日报"，实现见 web/services/channel_health.py）。
+
+    清理线程每日醒一次，但例行播报只在 `_HEALTH_REPORT_WEEKDAY` 那天（周一）落地；
+    通道降级或当日额度耗尽时由 `_channel_health_report_due()` 放行当天照发。
 
     状态生产者 / 状态行 / 告警出口三个入口都按调用时刻现取本模块的（既有测试在
     `web.app` 上打桩 `_channel_status_lines` 做"纯文案改版"对拍，又打桩
@@ -2425,11 +2428,11 @@ def create_app(host=None):
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)
-            # 告警通道健康日报——本系统所有安全告警只有邮件 +
+            # 告警通道健康报告（旧称"日报"）——本系统所有安全告警只有邮件 +
             # 手机推送两条出口，两条同时失效时管理员将彻底失明（活体复现的
             # 攻击链正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加
-            # 一层兜底：每日固定报告两条通道当前状态与今日额度，通道被关也照样
-            # 发一封"已关闭"，让"报警器被拆"这件事本身有个可观测的周期性痕迹。
+            # 一层兜底：报告两条通道当前状态与今日额度，通道被关也照样发一封"已关闭"，
+            # 让"报警器被拆"这件事本身有个可观测的周期性痕迹。
             # 修复轮 1 ④：本线程在启动 60 秒后即跑第一轮，故"每日至多一封"的去重
             # 标记与"通道降级"痕迹都在函数内落库（app_meta + db.audit），重启不重发、
             # 两通道全断时也仍留得住证据。

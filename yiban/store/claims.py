@@ -12,7 +12,7 @@
 |-------|------|----------|
 | `claimed` | 已被某执行体领取、尚未收尾（含执行中） | 否 |
 | `done` | 收尾且**当日无需再签**（即 `yiban.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
-| `failed` | 收尾但结果未了结（重试预算耗尽、窗口外跳过、无点位） | 否（当日仍可再领，见 `STATE_FAILED`） |
+| `failed` | 收尾但结果未了结（本轮重试预算耗尽、窗口外跳过、无点位） | 否（当日仍可再领，见 `STATE_FAILED`） |
 
 **四条纪律**：
 
@@ -61,8 +61,12 @@ RETENTION_DAYS = 14
 STATE_CLAIMED = "claimed"
 #: **当日了结**：无需再签（成员见 `yiban.status.CLAIM_DONE_STATUSES`）。
 STATE_DONE = "done"
-#: 尝试过但**未了结**（重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
+#: 尝试过但**未了结**（本轮重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
+#: 两点必须知道：①「预算」住在**单轮进程内**（`yiban.engine.attempts._retry_budget`），
+#: 换一轮即重新计数；本表的 `attempts` 列只被领取侧自增，没有任何判据读它。②所以预算
+#: 耗尽而弃权的账号，当日仍可被后面的轮次再接手并再次真实登录——这正是补签链接得上
+#: 失败账号的前提，代价是领取层没有跨轮上限，日级止损只剩凭据熔断与站点限速两处。
 STATE_FAILED = "failed"
 #: 终态集合（「了结」的账号）。
 SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
