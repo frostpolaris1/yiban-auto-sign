@@ -29,6 +29,8 @@ import time
 import unittest
 from unittest import mock
 
+from yiban import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -578,7 +580,9 @@ PHONE_KEYED_TABLES = {"time_prefs", "session_cache", "sign_events", "verify_jobs
 
 
 def _ago(seconds):
-    return (datetime.datetime.now() - datetime.timedelta(seconds=seconds)).strftime(
+    # 时间戳回拨的参照必须是业务钟（收口/保留期 cutoff 都取 clock.now），
+    # 裸 host now() 在 UTC 主机上早 8 小时，会把"新鲜"任务造进超龄档
+    return (clock.now() - datetime.timedelta(seconds=seconds)).strftime(
         "%Y-%m-%d %H:%M:%S")
 
 
@@ -1380,8 +1384,8 @@ class VerifyJobRetentionTest(_A4Base):
 
     def test_purge_removes_only_expired(self):
         import datetime as _dt
-        stale = (_dt.datetime.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
-        fresh = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stale = (clock.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        fresh = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         job_old, _ = db.create_verify_job(1, PHONE, EMAIL)
         job_new, _ = db.create_verify_job(1, PHONE, EMAIL)
         conn = db.get_conn()
@@ -1394,7 +1398,7 @@ class VerifyJobRetentionTest(_A4Base):
 
     def test_event_cleanup_also_trims_jobs(self):
         import datetime as _dt
-        stale = (_dt.datetime.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        stale = (clock.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         job_id, _ = db.create_verify_job(1, PHONE, EMAIL)
         conn = db.get_conn()
         conn.execute("UPDATE verify_jobs SET created_at=? WHERE id=?", (stale, job_id))
