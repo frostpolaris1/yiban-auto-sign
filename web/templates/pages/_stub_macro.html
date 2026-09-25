@@ -1,6 +1,16 @@
 {# 占位页公共块：外壳（导航/身份/主题/时钟/通知）已就绪，主体待按功能清单填充。
-   旧实现完整保留在部署分支的 index.html 对应 tab；
-   功能契约见 docs/refactor/02-frontend-inventory.md 与 01-api-inventory.md。 #}
+
+   以下三条是实测现状，引用本文件前先看：
+   1) 本宏零引用 —— 全仓（模板 / JS / 路由 / app.py / 测试 / 脚本）没有任何一处
+      从本文件 import stub，也没有 stub() 调用点；文件名在 tests 里唯一一次出现，
+      是 test_web_js_modules.py 把它从"实际渲染的页面模板"清单中显式剔除。
+   2) 旧句"旧实现完整保留在部署分支的 index.html 对应 tab"在本仓不成立 ——
+      templates/base.html 与 templates/index.html 已整体退役（见
+      web/static/vendor/MANIFEST.md 的旧栈退役说明），仓库里不存在这两份文件。
+   3) 旧句"功能契约见 docs/refactor/02-frontend-inventory.md 与 01-api-inventory.md"
+      是悬空引用 —— docs/ 下当前只有 docs/dev/，没有 refactor/ 目录。
+
+   该不该留这个文件由简化流定，本注释只负责把上面三句话说准。 #}
 {% macro stub(title, planned) %}
 {% from "macros/ui.html" import icon with context %}
 <div class="page-head">

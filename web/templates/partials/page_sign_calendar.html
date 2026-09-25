@@ -1,4 +1,5 @@
-{# 用户端与管理端**共用**的「签到日历」正文（/user/calendar 与 /mine/calendar）。
+{# 用户端与管理端**共用**的「签到日历」正文（在册端点 /user/calendar 与 /my/calendar；
+   /mine/calendar 不在路由表里，只是 pages.py 旧路径映射中的一条 302，排查别 grep 它）。
 
    左列按账号纵向排列月历卡，右列是常驻的「签到记录」面板——未选日期时显示引导空态，
    选中后回显当天日志；面板在宽屏下 sticky 跟随。
