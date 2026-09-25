@@ -156,18 +156,27 @@ audit_row_count = _audit_chain.audit_row_count
 verify_audit_chain = _audit_chain.verify_audit_chain
 
 audit_anchor_path = _audit_chain.audit_anchor_path
+audit_anchor_fingerprint_path = _audit_chain.audit_anchor_fingerprint_path
 _anchor_line_sha = _audit_chain._anchor_line_sha
 _parse_anchor_line = _audit_chain._parse_anchor_line
 _read_anchor_lines = _audit_chain._read_anchor_lines
+_read_anchor_lines_ex = _audit_chain._read_anchor_lines_ex
+_parse_anchor_lines = _audit_chain._parse_anchor_lines
 _get_anchor_meta = _audit_chain._get_anchor_meta
 _audit_purge_total = _audit_chain._audit_purge_total
 _audit_purge_events = _audit_chain._audit_purge_events
 audit_purge_total = _audit_chain.audit_purge_total
 audit_purge_events = _audit_chain.audit_purge_events
 record_audit_anchor = _audit_chain.record_audit_anchor
+record_audit_anchor_witness = _audit_chain.record_audit_anchor_witness
 _record_anchor_trace = _audit_chain._record_anchor_trace
 _last_audit_anchor = _audit_chain._last_audit_anchor
+_last_anchor_of = _audit_chain._last_anchor_of
+_max_anchor_of = _audit_chain._max_anchor_of
 _anchor_file_state = _audit_chain._anchor_file_state
+_anchor_file_state_ex = _audit_chain._anchor_file_state_ex
+_anchor_witness_state = _audit_chain._anchor_witness_state
+_anchor_status = _audit_chain._anchor_status
 verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
 _purge_event_covers = _audit_chain._purge_event_covers
@@ -191,6 +200,8 @@ _PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
 _RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
 _RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
+_ANCHOR_FP_DEFAULT_DIR_POSIX = _audit_chain._ANCHOR_FP_DEFAULT_DIR_POSIX
+_ANCHOR_FP_FILENAME = _audit_chain._ANCHOR_FP_FILENAME
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
 # 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
