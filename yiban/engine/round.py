@@ -13,8 +13,12 @@
 （定时全量）、`workers`（并行/兜底执行体）与手动 `--only` 都落到 `run_queue_retry`。
 
 **复用**
-`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）；
-`SIGN_MODE`、`_DEFAULT_SLOW_SIGN_SEC` 供告警与容量计算对齐。
+`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）。
+`SIGN_MODE` 与 `_DEFAULT_SLOW_SIGN_SEC` **不对齐任何外部口径**，只在本文件内自用（前者喂
+随机模式判定，后者喂慢签告警）：读 `YIBAN_SIGN_MODE` 的另外五处（`engine/schedule.py`、
+`web/routes/me.py`、`web/routes/settings_api.py`、`web/services/accounts_data.py`、
+`web/services/env_io.py`）各自现取环境变量、不经本常量，容量计算也不读这两个值。
+"同一件事六份读法"是既存口径，改模式语义时六处得一起改。
 
 **通信**
 输入：账号列表、时间表（schedule，空即手动队列）、`--only` 过滤后的子集。
