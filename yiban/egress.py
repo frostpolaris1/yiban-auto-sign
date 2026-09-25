@@ -120,21 +120,25 @@ SLOT_SEP = ","
 def worker_owner(index, hostname=None):
     """并行执行体身份（**唯一构造处**）：`worker-{序号}@{主机名}`。
 
-    名字**跨重启稳定**（同一台机器上同一槽位永远同名），故重启后立即认领自己上一轮
-    的在飞账号，不必等租约过期。**代价与红线见模块 docstring**：名字稳定 ⇒ 同一
-    槽位名不得有两台机器同时跑。`hostname` 省略时取本机名（`socket.gethostname()`）；
-    显式传入只为测试与"父进程代子进程构造"。
+    名字**跨重启稳定**（同一台机器上同一槽位永远同名），是界面"执行体"、槽位号与
+    各类持久化键的口径；但名字相同**不再等于可立即重入**：领取池的重入必须出示上一代
+    领取时拿到的 epoch，而重启后的新进程没有它，只能等租约过期或由心跳/回收机制处置
+    后才重新认领自己的在飞账号（见模块 docstring）。**代价与红线见模块 docstring**：
+    名字稳定 ⇒ 同一槽位名不得有两台机器同时跑。`hostname` 省略时取本机名
+    （`socket.gethostname()`）；显式传入只为测试与"父进程代子进程构造"。
     """
     return f"{OWNER_WORKER_PREFIX}{index}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
 def fallback_owner(hostname=None):
-    """兜底常驻执行体身份：`fallback@{主机名}`（同 `worker_owner` 的稳定名字纪律）。"""
+    """兜底常驻执行体身份：`fallback@{主机名}`（同 `worker_owner` 的稳定名字纪律：
+    跨重启稳定的只是名字与持久化键，重入仍须出示上一代 epoch，不等同于重启即接手）。"""
     return f"{OWNER_FALLBACK_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
 def single_owner(hostname=None):
-    """单执行体身份：`single@{主机名}`（同 `worker_owner` 的稳定名字纪律）。"""
+    """单执行体身份：`single@{主机名}`（同 `worker_owner` 的稳定名字纪律：名字稳定
+    只服务界面与持久化键，重入不复用同名，须出示当前 epoch）。"""
     return f"{OWNER_SINGLE_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
