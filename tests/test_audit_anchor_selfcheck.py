@@ -196,9 +196,14 @@ class ThreeBranchJudgeTest(_Fixture):
         """正例对照：应用自己追加一行（库内高水位同步抬高）不得误报。"""
         self._seed(2)
         db.record_audit_anchor(self.anchor)
+        # 生产形态：先落独立见证。否则"见证缺失"本身（控制面不可用）会判不健康，
+        # 掩盖本用例真正要测的"合法追加不触发锚点三支判据"。
+        self.assertEqual(db.record_audit_anchor_witness(self.anchor, self.witness)[0], "written")
         self._seed(2)
         db.record_audit_anchor(self.anchor)
-        self.assertTrue(self._health()["healthy"])
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "ok", h["anchor_msg"])
+        self.assertTrue(h["healthy"], h["anchor_msg"])
 
     def test_truncation_still_goes_red(self):
         self._seed(3)
@@ -323,11 +328,55 @@ class WitnessThreeWayTest(_Fixture):
         self.assertIn("见证", h["anchor_msg"])
         self.assertIn("id=10", h["anchor_msg"])
 
+    def test_padding_rewrite_after_witness_is_refused_and_red(self):
+        """攻击变体①：见证已存在后把锚点**重写成更多行**（伪造自洽）⇒ 拒绝覆盖且判红。
+
+        旧实现只在"行数相等"时比末行哈希；行数变多则不做任何内容校验地覆盖——root cron
+        遂把伪造态 bless 成新见证，此后逐日校验对着假见证一路 healthy。前缀不变性是判据：
+        见证记录的那一行必须还在原位且内容未变，合法追加（前缀完整）仍放行。
+        """
+        self._seed(6)
+        db.record_audit_anchor(self.anchor)
+        self.assertEqual(db.record_audit_anchor_witness(self.anchor, self.witness)[0], "written")
+        # 攻击者：删掉最近 3 条审计，把锚点整份重写成两条"自洽"行（比见证的 1 行更多）
+        self._raw("DELETE FROM audit_logs WHERE id > 3")
+        l1 = f"2026-01-01 00:00:00 1 3 3 0 {self._row_hash(3)} {db._ANCHOR_GENESIS}"
+        l2 = f"2026-01-01 00:00:01 1 3 3 0 {self._row_hash(3)} {db._anchor_line_sha(l1)}"
+        self._write_lines([l1, l2])
+        self._set_meta(2, db._anchor_line_sha(l2))
+        # root cron 再跑一次见证：旧实现覆盖并 bless 伪造态，新实现必须拒绝
+        state, _msg = db.record_audit_anchor_witness(self.anchor, self.witness)
+        self.assertEqual(state, "rewritten",
+                         "把锚点重写成更多行不得被见证覆盖（覆盖即 bless 伪造态）")
+        self.assertFalse(self._health()["healthy"], "锚点历史被重写必须判红")
+
+    def test_post_witness_tail_deletion_is_red(self):
+        """攻击变体②：见证之后**新增**的审计被删（只动库）⇒ 体检判红。
+
+        锚点与旧见证都只看锚点当时的状态，锚点之后 ~24h 内新增的审计行对两者都不可见，
+        只删这些行即抹掉最近审计且 healthy=True。修复后见证回库记真实 max(id)+该行哈希，
+        判据要求当前 max_id 不低于见证值且该行仍在。
+        """
+        self._seed(6)
+        db.record_audit_anchor(self.anchor)
+        self._seed(4)  # 锚点之后新增 4 条：旧实现锚点/见证都看不见
+        self.assertEqual(db.record_audit_anchor_witness(self.anchor, self.witness)[0], "written")
+        with open(self.witness, encoding="utf-8") as f:
+            witness_json = json.load(f)
+        self.assertEqual(witness_json.get("db_max_id"), 10,
+                         "见证必须回库记下真实 max(id)——否则删尾无法检出")
+        self._raw("DELETE FROM audit_logs WHERE id > 6")  # 只删见证之后新增的 4 条
+        h = self._health()
+        self.assertFalse(h["healthy"], "见证之后新增的审计被删必须判红")
+        self.assertIn("见证", h["anchor_msg"])
+
     def test_double_write_attacker_is_caught_by_independent_file(self):
         """模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
 
         这是 MF-52 唯一"权限实测"的缺口：锚点与库内指纹同属应用身份，删掉最近 N 条
         审计后把两者一起改写即可自洽。独立见证由另一属主写入，改不动，于是留下缺口。
+        删掉见证后同一手双写不再有独立证据可比对（锚点判据确实看不出），但按控制面
+        可用性 fail-closed，见证缺失本身即判不健康——攻击拿不到 healthy=True。
         """
         self._baseline_with_witness(10)
         with open(self.witness, encoding="utf-8") as f:
@@ -338,11 +387,15 @@ class WitnessThreeWayTest(_Fixture):
                   f"{db._ANCHOR_GENESIS}")
         self._write_lines([forged])
         self._set_meta(1, db._anchor_line_sha(forged))
-        # 降级形态（无独立见证）下这一手确实骗得过——已声明的残余风险，用它反证
-        # "拦住攻击的正是独立见证本身"。
+        # 降级形态（无独立见证）：锚点判据确实看不出这一手（anchor_ok=True），但
+        # 见证控制面不可用（目录已预建、文件被删）⇒ fail-closed 判不健康，攻击拿不到绿。
         os.remove(self.witness)
-        self.assertTrue(db.audit_health(self.anchor, self.witness)["healthy"],
-                        "无独立见证时双写自洽确实通过——这是降级形态的残余风险")
+        degraded = db.audit_health(self.anchor, self.witness)
+        self.assertTrue(degraded["anchor_ok"],
+                        "无独立见证时锚点三方判据确实看不出双写——这是降级形态的残余风险")
+        self.assertFalse(degraded["healthy"],
+                         "见证缺失（生产形态）即控制面不可用，必须判不健康")
+        self.assertIn("独立见证", degraded["note"])
         # 把"攻击前"的见证放回去：同一手攻击立刻暴露
         with open(self.witness, "w", encoding="utf-8") as f:
             f.write(legit_witness)
