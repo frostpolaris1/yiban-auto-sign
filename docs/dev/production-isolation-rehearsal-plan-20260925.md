@@ -105,18 +105,22 @@
 ### S0 基线快照（只读，全部留存到 `$R/evidence/baseline/`）
 
 ```bash
-date; ip netns list > baseline/netns.txt
+date; ip netns list > baseline/netns.txt            # 空 = 机器本无 netns（合法零态，如实留档）
 md5sum /etc/hosts > baseline/hosts.md5
-iptables -S OUTPUT > baseline/ipt4.txt; ip6tables -S OUTPUT > baseline/ipt6.txt
+iptables -S OUTPUT > baseline/ipt4.txt 2>/dev/null || echo "ABSENT: iptables 不可用" > baseline/ipt4.txt
+ip6tables -S OUTPUT > baseline/ipt6.txt 2>/dev/null || echo "ABSENT: ip6tables 不可用" > baseline/ipt6.txt
 ss -ltnp > baseline/ports.txt                       # 确认 17892 在生产侧监听
-systemctl show -p NRestarts yiban-web > baseline/svc.txt
-ls -la /etc/cron.d/ > baseline/crond.txt; crontab -l > baseline/cron-root.txt
-crontab -l -u yiban > baseline/cron-yiban.txt
-ls -la /var/log/yiban > baseline/state-ls.txt      # 只看清单不读内容
-git -C /opt/yiban-auto-sign rev-parse HEAD > baseline/prod-head.txt
+{ systemctl cat yiban-web >/dev/null 2>&1 && systemctl show -p NRestarts yiban-web || echo "ABSENT: yiban-web unit 不在位"; } > baseline/svc.txt
+ls -la /etc/cron.d/ > baseline/crond.txt
+crontab -l > baseline/cron-root.txt 2>/dev/null || echo "ABSENT: root 无 crontab" > baseline/cron-root.txt
+crontab -l -u yiban > baseline/cron-yiban.txt 2>/dev/null || echo "ABSENT: yiban 用户不在位或无 crontab" > baseline/cron-yiban.txt
+ls -la /var/log/yiban > baseline/state-ls.txt 2>/dev/null || echo "ABSENT: 生产状态目录不在位" > baseline/state-ls.txt      # 只看清单不读内容
+git -C /opt/yiban-auto-sign rev-parse HEAD > baseline/prod-head.txt 2>/dev/null || echo "ABSENT: 生产应用树不在位" > baseline/prod-head.txt
 ```
 
-**判据**：以上文件全部生成且非空。**回滚**：无（只读）。
+> [2026-09-26 勘误 E5] 原命令在缺位机（iptables/crontab/unit/生产树不存在）上产出空文件或把报错漏进 stdout，S7 对账分不清"已还原"与"本就缺位"——演练确立**缺席态标记**约定：缺位项以单行 `ABSENT:` 标记作为显式基线条目落盘，S7 两侧用同一表达式比对（缺↔缺 = SAME），见 e2e 演练报告 S0 行、D-3 与 §3 对账表。
+
+**判据**：以上文件全部生成——真实输出项非空；可缺位项含 `ABSENT:` 标记行（E5）；`netns.txt` 允许为空（合法零态）。**回滚**：无（只读）。
 
 ### S1 演练目录树（候选提交）
 
@@ -139,7 +143,7 @@ ip -n $NS link set lo up
 ip netns exec $NS ip route                          # 判据用
 ```
 
-**判据**：`ip netns list` 含 `$NS`；`ip -n $NS link` 显示 lo UP；**`ip -n $NS ip route` 输出为空**（无路由是隔离本体，有路由 = 有人加了，异常）。**回滚**：`ip netns del $NS`（先确认无进程驻留，见 §8 中止步）。
+**判据**：`ip netns list` 含 `$NS`；`ip -n $NS link` 显示 lo UP；**`ip -n $NS route` 输出为空**（无路由是隔离本体，有路由 = 有人加了，异常）。[2026-09-26 勘误 E2] 此处原文 `ip -n $NS ip route` 是 iproute2 拒绝的无效语法（6.19 报 `Object "ip" is unknown`，报错输出为空 = 假绿），正确形式为 `ip -n $NS route` 或本步命令块中的 `ip netns exec $NS ip route`，见 e2e 演练报告 S2 行与 §4-E2。**回滚**：`ip netns del $NS`（先确认无进程驻留，见 §8 中止步）。
 
 ### S3 netns 专属 hosts + 证书（复用 mock_env，零全局写）
 
@@ -171,7 +175,7 @@ PY
 # (b) 全新 ip netns exec 跑完整 mock_env：over-mount 钉住 (a) 已落盘的标记块 inode ⇒
 #     进程内 getaddrinfo 见回环、自检通过；其内部 apply_hosts 幂等命中"已是目标内容，跳过"
 #     （返回 False ⇒ hosts_changed=False ⇒ 绝不触发 finally --restore），不会剥掉 (a) 的预置；
-#     证书仍由 ensure_certs 就地生成（幂等）。
+#     证书仍由 ensure_certs 就地生成（幂等；该 CA 无 keyUsage，S4 启动 mock 前必须按 E1 勘误重签）。
 ip netns exec $NS python3 $R/scripts/loadtest/mock_env.py \
   --base-dir $B --hosts-file /etc/netns/$NS/hosts \
   --no-iptables --i-understand-no-isolation \
@@ -193,6 +197,19 @@ over-mount 即命中该 inode，自检当场通过、rc=0、证书就绪。**判
 
 ### S4 mock 上游启动 + 自检
 
+> [2026-09-26 勘误 E1] `mock_env.ensure_certs` 生成的 CA **不带 `keyUsage`/`basicConstraints` 扩展**，Python ≥3.14（默认 `VERIFY_X509_STRICT`）会在 TLS 校验层把整轮 mock 全灭、且 **mock 记账为 0**（失败安静，极易误诊为隔离链问题）——S3(b) 就地生成证书后、启动 mock 前，用 openssl 重签 CA 与 server（复用 `$B/ca/` 在盘的 `ca.key`/`server.csr`/`san.cnf`，SAN 与域名清单仍与 mock_env 同源，零仓库代码改动），见 e2e 演练报告 S6 轮1/S6b 轮2、D-9 与 §4-E1。
+
+```bash
+openssl req -x509 -new -nodes -key $B/ca/ca.key -sha256 -days 3650 \
+  -subj "/CN=yiban-loadtest-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -out $B/ca/ca.pem
+openssl x509 -req -in $B/ca/server.csr -CA $B/ca/ca.pem -CAkey $B/ca/ca.key \
+  -CAcreateserial -days 3650 -sha256 -extfile $B/ca/san.cnf -extensions v3_req \
+  -out $B/ca/server.pem
+```
+
 ```bash
 ip netns exec $NS nohup python3 $R/scripts/loadtest/mock_yiban.py \
   --cert $B/ca/server.pem --key $B/ca/server.key \
@@ -202,15 +219,17 @@ ip netns exec $NS curl --cacert $B/ca/ca.pem https://api.uyiban.com/__health   #
 ip netns exec $NS curl --cacert $B/ca/ca.pem https://api.uyiban.com/__stats    # total == 0
 ```
 
-**判据**：ready 文件含端口 443（`mock_yiban.py:--ready-file/--port` 默认 443、只绑 `127.0.0.1`/`::1`，mock_yiban.py:457-497 的 `create_servers`）；`__health` 200；`__stats.total`==0。证书 SAN 覆盖五个域名（`mock_env.py:_san_conf`），域名清单即 `mock_env.py:DEFAULT_DOMAINS`。**回滚**：`pkill -f "$R/scripts/loadtest/mock_yiban.py"`。
+**判据**：ready 文件含端口 443（`mock_yiban.py:--ready-file/--port` 默认 443、只绑 `127.0.0.1`/`::1`，mock_yiban.py:457-497 的 `create_servers`）；`__health` 200；`__stats.total`==0。证书 SAN 覆盖五个域名（`mock_env.py:_san_conf`），域名清单即 `mock_env.py:DEFAULT_DOMAINS`；CA 含 keyUsage（`openssl x509 -in $B/ca/ca.pem -noout -text` 的 Key Usage 显示 keyCertSign,cRLSign——E1 勘误项）。**回滚**：`pkill -f "$R/scripts/loadtest/mock_yiban.py"`。
 
 ### S5 造号 + 演练 .env
 
 ```bash
 ip netns exec $NS python3 $R/scripts/loadtest/seed_accounts.py --n 3 \
   --db $R/yiban.db --env $R/.env --state-dir $S --log-file $S/sign.log \
-  --gap 2 --window-start <now+10min 的 HH:MM> --window-end <now+50min 的 HH:MM>
+  --gap 2 --window-start <now+90s 的 HH:MM> --window-end <起点起 ≤10 分钟的 HH:MM>
 ```
+
+> [2026-09-26 勘误 E4] 原模板 `+10min/+50min` 与本节末"超 15 分钟不收敛即按 §8 中止"的上限自相矛盾（块填充下最后一签可拖至 ~+45min；§3.4.4"指到执行时刻附近"才是本意）——演练实取 **now+90s 起、时长 ≤10min、终点不跨日历日**（当日收轮），见 e2e 演练报告 D-6 与 §4-E4。
 
 **判据**：rc=0；`$R/.env` 含自造 `YIBAN_ACCOUNTS_KEY` 与合成窗口键（seed_accounts.py 头注释：密钥自造、绝不用生产密钥；账号手机号为测试桩号码，本预案示例一律 `138****0000` 形态）。**回滚**：删 `$R/.env` 与 `$R/yiban.db`。
 
@@ -235,7 +254,7 @@ ip netns exec $NS env \
    - `开始执行签到（v<版本>）`——`yiban/engine/runner.py:370`（版本号来自 `yiban/__init__.py:__version__`，release-gate §4）；
    - `签到汇总（v<版本>）：✅ 3 成功，❌ 0 失败`——`runner.py:551/558`；
    - `=== run.sh 退出，退出码: 0 ===`——`run.sh:_on_exit:121`（现行字面量，release-gate §3 的"run.sh 执行完成，退出码: 0"按此现行格式采证，映射关系记入证据文稿）；
-4. **记账对平**：`__stats.total` == `$B/logs/mock.jsonl` 行数，且 > 0（`isolation.py:assert_accounting` 语义；差值 = 有请求旁路出真实出口，红线事故）；mock JSONL 的 peer 只含 `127.0.0.1`/`::1`；
+4. **记账对平**：`__stats.total` == `$B/logs/mock.jsonl` 行数，且 > 0（`isolation.py:assert_accounting` 语义；差值 = 有请求旁路出真实出口，红线事故）。[2026-09-26 勘误 E3] 原文"mock JSONL 的 peer 只含 `127.0.0.1`/`::1`"不成立——记账 JSONL **无 `peer` 字段**（`MockState.record` 只记 `host`），回环收口改为结构等价采证（见 e2e 演练报告 S6b 判据4、D-8 与 §4-E3）：mock 启动日志 `listening` 行只含 `https://127.0.0.1:443, https://::1:443`（只绑回环 ⇒ 非回环 peer 不可能存在），且 `__stats.by_host` 域名集合 ⊆ `mock_env.DEFAULT_DOMAINS`；
 5. **零真实外联复核**：`ip netns exec $NS ip route` 仍为空 + `ip netns exec $NS python3 -c "import socket;s=socket.create_connection(('203.0.113.7',443),3)"` 必须抛错。
 
 **回滚**：`timeout` 包整步或记秒表——超 15 分钟不收敛即按 §8 中止（生产机不是压测场）。
@@ -246,11 +265,16 @@ ip netns exec $NS env \
 pkill -f "$R/scripts/loadtest/mock_yiban.py" || true
 ip netns exec $NS python3 $R/scripts/loadtest/mock_env.py --base-dir $B --hosts-file /etc/netns/$NS/hosts --restore
 ip netns del $NS; rm -rf /etc/netns/$NS
-# 还原对账（与 S0 基线逐项 diff，全部只读）：
-md5sum -c baseline/hosts.md5; diff <(iptables -S OUTPUT) baseline/ipt4.txt
-diff <(ss -ltnp) baseline/ports.txt; systemctl show -p NRestarts yiban-web   # 与 baseline 相同
+# 还原对账（与 S0 基线逐项 diff，全部只读；带 `ABSENT:` 标记的缺位项按"缺↔缺"比对，见 S0 E5 勘误）：
+md5sum -c baseline/hosts.md5
+diff <(iptables -S OUTPUT 2>/dev/null || echo "ABSENT: iptables 不可用") baseline/ipt4.txt
+diff <(ss -ltnp) baseline/ports.txt
+diff <(systemctl cat yiban-web >/dev/null 2>&1 && systemctl show -p NRestarts yiban-web || echo "ABSENT: yiban-web unit 不在位") baseline/svc.txt
+diff <(crontab -l 2>/dev/null || echo "ABSENT: root 无 crontab") baseline/cron-root.txt
+diff <(crontab -l -u yiban 2>/dev/null || echo "ABSENT: yiban 用户不在位或无 crontab") baseline/cron-yiban.txt
+diff <(git -C /opt/yiban-auto-sign rev-parse HEAD 2>/dev/null || echo "ABSENT: 生产应用树不在位") baseline/prod-head.txt
 ip netns list | grep -c $NS || true                                          # 0
-ls -la /var/log/yiban | diff - baseline/state-ls.txt || true                 # 仅允许生产自身的正常日增量
+diff <(ls -la /var/log/yiban 2>/dev/null || echo "ABSENT: 生产状态目录不在位") baseline/state-ls.txt || true   # 仅允许生产自身的正常日增量
 ```
 
 **判据**：除"生产自身正常增量"（cron 轮、web 日志）外全绿；`$R/evidence/` 按 §7 归档后整个 `$R`、`$S`、`$L` 删除。**回滚**：本步即回滚；若 `ip netns del` 报 busy，说明有驻留进程——按 §8 的进程清退步处理，不得留着过夜。
@@ -275,7 +299,7 @@ docker run --rm yiban-rehearsal:<short-sha> ls /app/yiban/__init__.py /app/scrip
 mkdir -p $R/data && cd $R
 python3 scripts/loadtest/seed_accounts.py --n 3 --db $R/data/yiban.db \
   --env $R/data/.env --state-dir $R/data/state --log-file $R/data/logs/sign.log \
-  --gap 2 --window-start <now+10min> --window-end <now+50min>
+  --gap 2 --window-start <now+90s> --window-end <起点起 ≤10 分钟>   # 窗口取值随 S5 勘误 E4：≤10min、终点不跨日历日
 ```
 
 `.env` 放卷内（`YIBAN_ENV_FILE=/data/.env`），密钥自造。**判据**：卷目录里 `.env`/`yiban.db` 就位，文件 mode 0600/0700（umask 077）。**回滚**：删 `$R/data`。
