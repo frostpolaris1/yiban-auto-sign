@@ -104,10 +104,13 @@ tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_alert_facts_nam
 tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_invalid_utf8_is_indeterminate_not_healthy	G	-	??
 tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_record_anchor_refuses_to_append_onto_broken_file	G	-	读不出的锚点文件不得续写：按空列表续写会把行间链接到假前驱并掩盖现场。
 tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_unparseable_line_without_meta_is_indeterminate	G	-	无库内指纹可比时，结构坏行仍必须是"无法定论"而不是"无异常"。
+tests/test_audit_anchor_selfcheck.py	PurgeEventForgeryTest.test_forged_purge_event_with_counter_cannot_excuse_deletion	G	-	连累计数一起配平、让假留痕与稠密判据自洽 ⇒ 被见证行仍不得被解释掉。
+tests/test_audit_anchor_selfcheck.py	PurgeEventForgeryTest.test_forged_purge_event_without_counter_cannot_excuse_deletion	G	-	删掉锚点之后新增的审计 + 覆盖被见证 id 的假事件、不动累计数 ⇒ 仍判红。
 tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_claimed_count_mismatch_goes_red	G	-	锚点自报与库内真值不一致（声称 count=2，链内实有 6 行）必须判红。
 tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_garbage_line_append_goes_red_by_growth_branch	G	-	只追加 1 条垃圾行——旧实现两道判据同时"无异常"，现在必须判红。
 tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_truncation_still_goes_red	G	-	??
 tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_valid_append_by_app_is_not_flagged	G	-	正例对照：应用自己追加一行（库内高水位同步抬高）不得误报。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_corrupt_witness_json_is_indeterminate_not_crash	G	-	手工损坏的见证 JSON（数值字段变成字符串）⇒ corrupt 降级，不得抛穿体检。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_double_write_attacker_is_caught_by_independent_file	G	-	模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_forged_v2_anchor_line_is_rejected	G	-	无密钥伪造 v2 锚点行（自报一个库内不存在的 max_id）必须被拦下。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_max_anchor_baseline_ignores_smaller_trailing_claim	G	-	基准取 max_id 最大真行：尾部再来一条更小 max_id 的"自洽"旧记录不算数。
