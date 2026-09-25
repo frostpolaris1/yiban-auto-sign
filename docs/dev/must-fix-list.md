@@ -728,7 +728,7 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 - **验收不变量**：workflow 文件 yamllint/actionlint 零错误；mirror.yml 删除或修成 2 段式；
   sign-in 工作流删除（或文件头注明永久禁用理由）；CI 带 `workflow_dispatch`；
   ruff 版本与本地门禁对齐；`web/` 2 处 RUF100 清零（接 MF-39）。
-- **owner 动作（仓外）**：push develop（✅ 2026-09-25 已完成 b6457e6..fd0a08f）；Dependabot 幽灵 PR 已根因定位（体检补遗 `D:/code/_scratch/dependabot-triage-20260925.md`）：活跃 yml 曾在 main 存续 08-13..08-26，注释掉（`3f22376`）**不会注销已注册的更新任务**，pip 任务此后仍开出 #13..#16 与 #20（09-24，portalocker）——必须去 Settings → Dependabot → version updates **Pause/Delete 两个任务**（无 API，仅 UI），并 `gh pr close 20 --delete-branch`；yml 可顺带 `git rm`（注释态无作用）；若保留 mirror 则配两个 Gitee secret。
+- **owner 动作（仓外）**：push develop（✅ 2026-09-25 已完成 b6457e6..fd0a08f）；**Dependabot 幽灵 PR 已定案（用户质疑后取证升级，2026-09-25）**：版本更新本无设置开关（机制=默认分支上的 dependabot.yml 文件本身），用户从未开过任何选项、且按文档注释禁用正确——但 **5 个 PR（#13/#14/#15/#16/#20）的基线提交经 `git merge-base` 取证全部包含禁用提交 `3f22376`**（最早 08-27 基线 663362a、最晚 09-24 基线 1d24006 内 yml 为整文件注释态）⇒ GitHub 对已禁用配置持续开 PR 一个月，属平台侧异常。处置：① main 删除 yml 已备本地提交 `5d793b1`（待 push，注释禁用被证明不够，按文档「完全禁用」路径删文件）；② `gh pr close 20 --delete-branch`（#13-16 已关）；③ 观察一周，复发则携 PR 基线取证开 GitHub Support 工单。取证：`D:/code/_scratch/dependabot-triage-20260925.md`；若保留 mirror 则配两个 Gitee secret。
 - **修法**：仓库内容部分归 CI 维护批（Task 7）；owner 部分移交用户。
 
 **下一空号：MF-107**。
