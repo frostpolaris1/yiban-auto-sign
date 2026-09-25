@@ -3,12 +3,16 @@
 """生成本地 demo 数据库（大量占位用户/账号/统计事件），用于 WebUI 对接测试。
 
 用法：
-    python3 scripts/generate_demo_data.py [--db demo-log/demo.db] [--users 500]
+    python3 scripts/generate_demo_data.py --dry-run            # 只看将清哪些表、多少行
+    python3 scripts/generate_demo_data.py --yes --fingerprint <上面打印的指纹>
 
 说明：
 - 仅用于本地测试，不部署。
 - 会生成 users / accounts / audit_logs / time_prefs / sign_events。
 - 使用固定随机种子，结果可复现。
+- **清空旧 demo 数据是不可逆动作**：必须回显由目标库内容派生的指纹（`--fingerprint`）
+  加 `--yes` 才放行；缺确认或指纹不匹配一律拒绝且零删除。每次真实清空写一条审计留痕，
+  留痕写不进去就放弃清空（fail-closed）。
 """
 import argparse
 import datetime
@@ -20,12 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 
+from yiban.store import purge_guard
+
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 
-
-def _is_allowed_demo_db(db_path, yes=False):
-    """非默认 demo 库必须显式 --yes 才允许继续（防误清真实库）。"""
-    return db_path == DEFAULT_DEMO_DB or yes
+# 清空顺序：先事件/日志后账号/用户（初始化时 foreign_keys=OFF，顺序只影响可读性）
+_WIPE_ORDER = ("sign_events", "time_prefs", "audit_logs", "accounts", "users")
 
 
 def _phone(i):
@@ -43,36 +47,76 @@ def _ts(days_ago=0, hour=8, minute=0):
     )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="生成本地 demo 数据库")
     parser.add_argument("--db", default=DEFAULT_DEMO_DB, help="demo 数据库路径")
-    parser.add_argument("--yes", action="store_true", help="确认清空非默认 demo 数据库")
+    parser.add_argument("--yes", action="store_true", help="确认清空（须与 --fingerprint 同时给出）")
+    parser.add_argument("--fingerprint", default="",
+                        help="回显目标库指纹（由库内容派生；先 --dry-run 查看）")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="只打印将清空的表与行数，不做任何改动")
     parser.add_argument("--env", default=None, help="demo .env 路径（默认使用项目根 .env）")
     parser.add_argument("--users", type=int, default=500, help="普通用户数量")
     parser.add_argument("--admin-accounts", type=int, default=10, help="admin 共享账号数量")
     parser.add_argument("--events-per-day", type=int, default=200, help="每天签到事件数量")
     parser.add_argument("--days", type=int, default=30, help="统计事件覆盖天数")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    except SystemExit as e:  # argparse 的 --help(0)/用法错误(2) 转成返回值
+        code = getattr(e, "code", 2)
+        return code if isinstance(code, int) else 2
 
-    if not _is_allowed_demo_db(args.db, args.yes):
-        print(f"目标数据库路径: {args.db}")
-        print("非默认 demo 数据库，请加 --yes 确认后继续")
-        sys.exit(2)
+    # 目标指纹由库内容（各表行数 + 规模）派生：路径写对不代表库指对，指纹要让人
+    # 一眼看出"这是 demo 库还是生产库"（行数差异天然可辨）。
+    fingerprint, summary = purge_guard.db_content_fingerprint(args.db)
+    counts = purge_guard.table_counts(args.db)
+    total = sum(counts.get(t, 0) for t in _WIPE_ORDER)
+    print(f"目标库指纹: {fingerprint}")
+    for line in summary:
+        print(f"  {line}")
+
+    if args.dry_run:
+        print("dry-run：以下表将被清空并重建 demo 数据（未做任何改动）：")
+        for table in _WIPE_ORDER:
+            print(f"  {table}: {counts.get(table, 0)} 行")
+        print(f"  合计 {total} 行")
+        return 0
+
+    if not (args.yes and purge_guard.confirmation_ok(fingerprint, args.fingerprint)):
+        print("拒绝执行：清空 demo 库需同时提供 --yes 与 --fingerprint（逐字回显上面打印的指纹）。",
+              file=sys.stderr)
+        print(f"  目标库指纹: {fingerprint}", file=sys.stderr)
+        return 2
 
     os.makedirs(os.path.dirname(os.path.abspath(args.db)), exist_ok=True)
     random.seed(args.seed)
 
     # 与 db_export 同理——demo 脚本不得在初始化时触发破坏性清理
     db.init_db(args.db, env_file=args.env, cleanup=False)
+
+    # 清空前的审计能力前置校验：留痕写不进去就不许动（fail-closed）。这条随后会被
+    # 清空 audit_logs 一并删掉，它的意义是"在不可逆动作之前证明留痕可用"。
+    if not db.audit("demo-data", "demo_purge_begin", fingerprint,
+                    f"授权清空 demo 库（原 {total} 行）"):
+        print("拒绝执行：清库留痕写入失败，按 fail-closed 放弃清空（未删除任何行）。",
+              file=sys.stderr)
+        return 1
+
     conn = db.get_conn()
 
-    # 清空旧 demo 数据（只清 demo 相关表，避免误伤真实库）
-    print(f"将清空目标数据库: {args.db}")
-    for table in ("sign_events", "time_prefs",
-                  "audit_logs", "accounts", "users"):
+    # 清空旧 demo 数据（含 audit_logs：demo 审计链整体重建）
+    print(f"将清空目标数据库: {args.db}（指纹 {fingerprint}）")
+    for table in _WIPE_ORDER:
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
+
+    # 清空后写一条留痕，作为重建后 demo 审计链的起点。写不进去必须响亮失败——
+    # "删了但没留痕"正是要防的形态。
+    if not db.audit("demo-data", "demo_purge", fingerprint,
+                    f"已清空 5 表（原 {total} 行）并重建 demo 数据"):
+        print("清库留痕写入失败（数据已清、审计未落），按失败退出。", file=sys.stderr)
+        return 1
 
     users = args.users
     print(f"生成 {users} 个普通用户 ...")
@@ -167,19 +211,23 @@ def main():
                 1,
             )
 
-    counts = {
+    final = {
         "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
         "accounts": conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0],
         "audit_logs": conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0],
         "sign_events": conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0],
     }
     print("demo 数据生成完成：")
-    for k, v in counts.items():
+    for k, v in final.items():
         print(f"  {k}: {v}")
 
     ok, broken, first = db.verify_audit_chain()
-    print(f"审计哈希链校验: ok={ok}, broken={broken}, first_broken_id={first}")
+    # 清空 audit_logs 是显式动作：空链/新链的 verify 结果不能按"通过"一语带过，
+    # 必须把"审计表被本工具清空过（原 N 条）"与链结果一起报出来。
+    print(f"审计链：本库 audit_logs 已被清空（原 {counts.get('audit_logs', 0)} 条）并重建；"
+          f"哈希链校验 ok={ok}, broken={broken}, first_broken_id={first}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
