@@ -2428,7 +2428,24 @@ def create_app(host=None):
                 # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
-                logger.warning("审计链每日校验/锚点写入失败: %s", e)
+                # 整段自检没执行本身就是安全事件：只落一条 WARNING 管理员看不到，
+                # 而一条非法字节/一次读失败就能让"当日校验"从此静默。这里把异常送到与
+                # "审计链异常"同一条用户可见通道（邮件 + 推送），并点明"未执行"——
+                # 绝不能让它看起来像一次通过。
+                logger.error("审计链每日校验/锚点写入失败: %s", e)
+                with contextlib.suppress(Exception):
+                    send_notification(
+                        "审计链自检未执行",
+                        mail_layout.Mail(
+                            summary="审计可追溯性每日自检未能执行（不等于通过）："
+                                    "无法确认审计记录是否完整。",
+                            fields=[("失败原因", _nl_safe(str(e)))],
+                            advice=["立即人工核查审计链与库外锚点",
+                                    "本次自检没有结论，勿按「无异常」对待"],
+                            level="urgent",
+                        ),
+                        urgent=True,
+                    )
             # 告警通道健康报告（旧称"日报"）——本系统所有安全告警只有邮件 +
             # 手机推送两条出口，两条同时失效时管理员将彻底失明（活体复现的
             # 攻击链正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加

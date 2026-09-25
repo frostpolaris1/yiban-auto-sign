@@ -104,11 +104,19 @@ def main():
     if health["broken"] == -1:
         print("审计校验中止：哈希链校验过程异常或未配置 YIBAN_AUDIT_KEY（无法定论）")
         sys.exit(2)
+    # 锚点自检"无法定论"（非法编码/坏行/读不出）同理：它既不是通过也不是确证篡改，
+    # 编成 exit 1 会让运维把一次编码事故当成失陷响应，编成 0 等于把"没验成"印成通过。
+    if health.get("anchor_status") == "indeterminate":
+        print(f"审计校验中止：锚点自检无法定论——{health['anchor_msg']}")
+        print("（这不等于审计被篡改，也不等于无异常；请修好锚点文件后重跑，"
+              "确认之前不要据此下任何结论）")
+        sys.exit(2)
     print(f"锚点文件：{anchor_path}")
     print(f"链内自洽：{'通过' if health['chain_ok'] else '失败'}"
           f"（broken={health['broken']}）")
     print(f"锚点比对：{'通过' if health['anchor_ok'] else '失败'}"
           f"（{health['anchor_msg'] or '无提示'}）")
+    print(f"锚点独立见证：{health.get('anchor_witness') or '未知'}")
     print(f"写入欠账：{health['write_failures']} 次")
     print(f"全表重链留痕：{len(health['rechain_events'])} 条；"
           f"空 hash 行：{health['empty_hash_rows']} 条")

@@ -65,17 +65,40 @@ def _audit_actor():
     return (session.get("username") or "?")[:64]  # 无会话（后台线程/脚本）时是 "?"，不假装有主
 
 
+#: 独立见证形态 → 告警正文文本（缺失/不可读 = 降级：双写掩盖无独立证据）
+_WITNESS_TEXT = {
+    "separate": "跨权限独立文件已启用（属主与锚点不同）",
+    "same-owner": "在位但与锚点同属主（降级：同 uid 双写者仍可一起改）",
+    "unknown": "在位（属主未知）",
+    "absent": "未启用（降级：同属主双写无独立证据）",
+    "unreadable": "存在但不可读（降级：本次无法比对）",
+    "corrupt": "存在但损坏（需人工核查）",
+}
+
+
 def _audit_alert_facts(health):
     """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
 
     `诊断备注` 不能删：`audit_health` 有两种"链自洽=是、锚点=一致，但体检仍判不健康"
     的原因（锚点之后又跑了全表重链、有记录签名被清空等着被重签），它们只写进 `note`。
     不带出来时管理员收到的是一条"各项都正常"的告警，只能靠猜。
+
+    `库外锚点` 对"无法定论"单独一档：它既不是"一致"也不是"不一致"，混淆会让管理员
+    要么忽略一次真的没验成、要么把编码事故当成确证篡改去响应。
     """
+    status = health.get("anchor_status")
+    if status == "indeterminate":
+        anchor_text = "无法定论（本次没验成，不等于无异常）"
+    elif health["anchor_ok"]:
+        anchor_text = "一致"
+    else:
+        anchor_text = "不一致"
     return [
         ("链自洽", "是" if health["chain_ok"] else f"否（断点 {health['broken']} 处）"),
-        ("库外锚点", "一致" if health["anchor_ok"] else "不一致"),
+        ("库外锚点", anchor_text),
         ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
+        # 独立见证的形态：跨权限存放是否生效。缺失/不可读 = 降级（同属主双写无独立证据）
+        ("锚点独立见证", _WITNESS_TEXT.get(health.get("anchor_witness"), "（未知）")),
         ("审计写入失败次数", health["write_failures"]),
         # 清理量出箱（异机核对用）：本机时钟被渐进拨快时，本机自校验不会报警，
         # 但"累计删除条数"与"最近一次清理的截止点"会持续变化——日报是唯一能把它
