@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -39,6 +40,7 @@ mock_yiban = importlib.import_module("loadtest.mock_yiban")
 mock_env = importlib.import_module("loadtest.mock_env")
 scale_driver = importlib.import_module("loadtest.scale_driver")
 concurrency_probe = importlib.import_module("loadtest.concurrency_probe")
+capacity_probe = importlib.import_module("loadtest.capacity_probe")
 
 # 合成主机（TEST-NET，见 RFC 5737），绝不写入真实值
 _FAKE_PROXY = "http://127.0.0.1:3128"
@@ -196,6 +198,50 @@ def test_mock_stats_excludes_ops_and_balance_holds(tmp_path):
         srv.server_close()
 
 
+def test_verify_accounting_raises_on_imbalance(monkeypatch):
+    """收尾对平原语：服务端权威 total != 驱动读到的 JSONL 条数 ⇒ IsolationError。"""
+    monkeypatch.setattr(capacity_probe.isolation, "mock_recorded_total",
+                        lambda *a, **k: 9)  # 假装 mock 记账 9 条
+    with pytest.raises(isolation.IsolationError) as cm:
+        capacity_probe.verify_accounting([{"mock_records": 4}], ca_path="",
+                                         stats_url="http://127.0.0.1:1")
+    assert "记账不平衡" in str(cm.value)
+    # 对平则不抛，并返回权威条数
+    monkeypatch.setattr(capacity_probe.isolation, "mock_recorded_total",
+                        lambda *a, **k: 6)
+    assert capacity_probe.verify_accounting([{"mock_records": 4}, {"mock_records": 2}],
+                                            ca_path="", stats_url="http://127.0.0.1:1") == 6
+
+
+def test_capacity_probe_main_aborts_on_accounting_imbalance(tmp_path, monkeypatch):
+    """常规层闭合「记账不等 ⇒ 非零」：把编排里除 verify_accounting 外的副作用全打桩，
+    注入不等 ⇒ capacity_probe.main 必须非零退出（SystemExit），且不产出结论文件。
+
+    这是 root e2e 之外、真正跑到「IsolationError → SystemExit」接线的用例。
+    """
+    monkeypatch.setattr(capacity_probe, "ensure_platform", lambda: None)
+    monkeypatch.setattr(capacity_probe, "prepare_env", lambda *a, **k: None)
+    monkeypatch.setattr(capacity_probe, "seed", lambda *a, **k: None)
+    monkeypatch.setattr(capacity_probe, "restore_env", lambda *a, **k: None)
+    monkeypatch.setattr(capacity_probe, "run_ladder", lambda *a, **k: None)
+    monkeypatch.setattr(capacity_probe, "stop_mock", lambda *a, **k: None)
+    monkeypatch.setattr(capacity_probe, "start_mock",
+                        lambda *a, **k: types.SimpleNamespace(pid=4242))
+    # 驱动读到 4 条，mock 侧却记账 9 条 ⇒ 不等
+    monkeypatch.setattr(capacity_probe, "read_probe_result",
+                        lambda *a, **k: {"rows": [{"mock_records": 4}]})
+    monkeypatch.setattr(capacity_probe.isolation, "mock_recorded_total",
+                        lambda *a, **k: 9)
+
+    base = tmp_path / "b"
+    with pytest.raises(SystemExit) as cm:
+        capacity_probe.main(["--repo", str(tmp_path), "--base-dir", str(base),
+                             "--profile", "simulated"])
+    assert "记账不平衡" in str(cm.value.code)
+    # 结论文件不应产出（测量被判不可信）
+    assert not (base / "results" / "capacity-verdict.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # 6. iptables REJECT 改为 -I 前插（与 ACCEPT 对齐，不再落链尾）
 # ---------------------------------------------------------------------------
@@ -226,13 +272,24 @@ def test_apply_iptables_reject_is_front_inserted(monkeypatch):
 # ---------------------------------------------------------------------------
 # 7. --no-iptables 不再静默退 0（要么显式知情，要么拒绝）
 # ---------------------------------------------------------------------------
-def test_no_iptables_without_optin_refuses(tmp_path):
-    rc = mock_env.main(["--base-dir", str(tmp_path / "base"),
-                        "--hosts-file", str(tmp_path / "hosts"),
+def test_no_iptables_without_optin_refuses_before_touching_system(tmp_path):
+    """缺知情标记的 --no-iptables 必须拒绝，且拒绝发生在任何改系统动作之前。
+
+    探针可失败：若门禁被挪到 ensure_certs/apply_hosts 之后，(base/ca) 会被生成、
+    hosts 会被改写，下面两条断言随即转红。
+    """
+    hosts = tmp_path / "hosts"
+    sentinel = "127.0.0.1 localhost\nSENTINEL-UNTOUCHED\n"
+    hosts.write_text(sentinel, encoding="utf-8")
+    base = tmp_path / "base"
+    rc = mock_env.main(["--base-dir", str(base),
+                        "--hosts-file", str(hosts),
                         "--egress-probe-ip", _TESTNET_IP,
-                        "--no-iptables"])
+                        "--no-iptables"])   # 故意不给 --i-understand-no-isolation
     assert rc != 0
-    assert not (tmp_path / "base" / "ca").exists() or True  # 拒绝须发生在改系统之前
+    assert not (base / "ca").exists(), "拒绝前不应生成证书目录（门禁须早于 ensure_certs）"
+    assert hosts.read_text(encoding="utf-8") == sentinel, \
+        "拒绝前不应改写 hosts（门禁须早于 apply_hosts）"
 
 
 def test_dry_run_no_iptables_still_ok(tmp_path):
