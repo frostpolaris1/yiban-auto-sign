@@ -58,7 +58,7 @@
 > 一律**只登记未修**。证据标记：✅=协调者或汇总者真复跑过；📄=静态读码可核（命令已给）；
 > ⚠=代理自报、数字或结论待独立取证。
 > **编号预约已兑现（2026-09-25 汇总）**：审查流初稿原 MF-4..25 按本节预约整体 **+36** 重编号为 **MF-40..61**；跨流对账（FA-vs-ANNOTATE）带出的 5 条注释回归记 **MF-62..66**；注释流据那 5 条反查代码、新立 **MF-67**（领取层无当日跨轮上限）。
-> **收尾轮已兑现（2026-09-25 下午）**：派发 2/3 的产出登记为 **MF-68..103**（36 条，见"补充检出"节）。其简报写"下一空号 MF-67"时先于注释流 MF-67 入库，且 8 个分片代理各自自报编号造成撞车；合并入库时整体 **+1** 重排，**最终号-内容映射以该节为准**。**下一空号：MF-104**（MF-67 已被注释流占用，勿双写）。
+> **收尾轮已兑现（2026-09-25 下午）**：派发 2/3 的产出登记为 **MF-68..103**（36 条，见"补充检出"节）。其简报写"下一空号 MF-67"时先于注释流 MF-67 入库，且 8 个分片代理各自自报编号造成撞车；合并入库时整体 **+1** 重排，**最终号-内容映射以该节为准**。**收尾轮结束时空号推进至 MF-104**（MF-67 已被注释流占用，勿双写）。
 
 ### 高
 
@@ -694,6 +694,45 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 3. MF-83/MF-84/MF-86/MF-87/MF-89/MF-90（配置面 + 凭据 + 隐私出口）。
 4. MF-92..MF-100（自检面与假信号），最后 MF-101/102/103（低危三条可打包）。
 5. **派发 1（假上游故障注入旋钮 + L3 剩余 16 格）属修复流**：本轮再次确认有 5 条（MF-71 腿②、MF-72、MF-90、C-05、C-12 族）的现网三态**只有注入才能坐实**，旋钮落地前不要把这几条当"已复现"。
+
+## CI 维护检出（MF-104..106，2026-09-25 GitHub Actions 体检）
+
+> 来源：只读体检报告 `D:/code/_scratch/gh-actions-check-20260925.md`（gh 实跑取证，run id 已录）。
+> 结论先行：Actions 名存实亡——CI 工作流历史仅 1 绿（首跑 08-14），其后 114 连红；mirror 工作流 0 绿；
+> sign-in 工作流 08-07 起手动禁用。以下三条是修好后 CI 才有意义的缺陷。
+
+### MF-104 loadtest 测试只 patch `sys.platform` 不 patch `geteuid` ⇒ 非 root Linux CI 三连红（CI-only）
+- **现象**：`scripts/loadtest/mock_env.py:397 ensure_platform()` 在 `os.geteuid() != 0` 时 exit 2；
+  相关测试只 patch `sys.platform` 未 patch `geteuid` ⇒ GitHub Actions（非 root Linux runner）必红 3 条。
+  Windows（无 geteuid）与 WSL root 通过——**这同时解释了 MF-37"基线只在特定环境可复现"的环境之谜**
+  （Windows 无 geteuid / WSL root / CI 非 root Linux，三种环境三种命）。
+- **证据**：体检报告 §4；run 35740634978（server-web@6d4eafa 11 红中含此族）。
+- **验收不变量**：判据可注入或测试 patch `os.geteuid` 后，`TZ` 与 root 与否四象限同绿；活体反例：
+  非 root 环境不 patch ⇒ 红仍可见（不许把判据改成恒真）。
+- **现网三态**：CI-only（现网 cron 为 root，不触发）。
+- **修法**：与 MF-39 同批（本地门禁扩 web/ 时顺手）；属 CI 维护批内容。
+
+### MF-105 时区脆弱测试：`test_clock_jump_backward_blocked` 用裸 `datetime.now()` 对北京时间守卫断言 ⇒ UTC runner 必红
+- **现象**：main 分支 CI 仅存的红（run 证据在体检报告 §4）。测试用 runner 本地时区的 naive
+  `datetime.now()`，而 clock_guard 用北京时区 `clock.now()` ⇒ UTC 环境把 2 小时回拨算成 6 小时前跳，断言翻转。
+- **验收不变量**：测试显式锚定时区（改用与守卫同源的 `clock.now()` 或 freeze 时间）后，
+  `TZ=UTC` 与 `TZ=Asia/Shanghai` 双向跑同绿。
+- **修法**：CI 维护批，与 MF-104 同批。
+
+### MF-106 CI 工作流维护簇（仓库内容可修的部分 + owner 动作清单）
+- **现象**：① CI 的 ruff 钉 0.15.22、本地 0.16.8，判定可能分叉；② CI ruff 用 `check .` 含 web/，
+  web/ 有 2 处 RUF100（与 MF-39 同一面，CI 侧先爆）；③ `mirror.yml` 的 src/dst 写成 3 段式而
+  hub-mirror-action 要求 2 段 ⇒ 自首提交 `1d5012c` 起 0 次成功，且 `GITEE_PRIVATE_KEY`/`GITEE_TOKEN`
+  两 secret 不存在——纯噪音工作流；④ `Yiban Sign-in` 定时工作流被 WAF 打死后手动禁用，
+  其三个 secret 均不存在 ⇒ 在 CI 里跑真实签到既不可靠也危险；⑤ CI 无 `workflow_dispatch`，无法手动触发。
+- **验收不变量**：workflow 文件 yamllint/actionlint 零错误；mirror.yml 删除或修成 2 段式；
+  sign-in 工作流删除（或文件头注明永久禁用理由）；CI 带 `workflow_dispatch`；
+  ruff 版本与本地门禁对齐；`web/` 2 处 RUF100 清零（接 MF-39）。
+- **owner 动作（仓外）**：push develop；Settings 里真正关 Dependabot（注释文件不生效，PR #20 仍开）；
+  若保留 mirror 则配两个 Gitee secret。
+- **修法**：仓库内容部分归 CI 维护批（Task 7）；owner 部分移交用户。
+
+**下一空号：MF-107**。
 
 ## 待裁决（11 条：十条已裁决或关闭，仅 #11 备份口令轮换等你手动执行）
 
