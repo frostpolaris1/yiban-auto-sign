@@ -66,7 +66,11 @@ def _terminate_signin_proc(proc, hard=False):
                 if pgid == os.getpgid(0):
                     pgid = None          # 子进程没自成组：killpg 会打到 web 自己
             except OSError:
-                pass
+                # 取不到本进程组号就无法证明目标组不是 web 自己那一组——**存疑即
+                # fail-safe**：置空、退回单进程信号，绝不对未经核实的组 killpg
+                # （误杀整个 web 服务端远比留一个执行体孤儿严重）。
+                logger.warning("无法确认本进程组号，放弃进程组 kill（退回单进程信号）")
+                pgid = None
         if pgid is not None:
             try:
                 os.killpg(pgid, sig)
