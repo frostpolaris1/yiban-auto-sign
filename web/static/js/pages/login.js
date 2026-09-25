@@ -1,6 +1,8 @@
 /* 登录 / 注册页行为。
-   依赖 core.js 的公开面（YB.api / YB.openModal / YB.escapeHtml / YB.passwordClasses /
-   YB.PW_*），口令判定与模态无障碍逻辑一律复用共享实现，本文件不再各自维护一份。
+   依赖 core.js 的公开面（YB.api / YB.openModal / YB.passwordClasses / YB.PW_MIN_LEN /
+   YB.PW_MIN_CLASSES / YB.PW_POLICY_HINT / YB.BASE / YB.iconEl），口令判定与模态无障碍逻辑
+   一律复用共享实现，本文件不再各自维护一份。本文件**不用** YB.escapeHtml：向页面写内容只走
+   textContent 与 cloneNode，全文无 innerHTML 赋值，因此不存在需要转义的拼接面。
 
    功能清单（迁移自旧栈 login.html，逐项保留）：
    · 登录 / 注册 tab 切换（含切换淡入、aria-selected 同步、注册暂停时禁止切入）
