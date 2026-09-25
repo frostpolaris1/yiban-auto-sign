@@ -9,12 +9,15 @@
   且幂等（连跑两次不重复插入）、旧表不删且原行原样保留；
 - 耐久性：迁移后连接的 `PRAGMA synchronous` 为 FULL（2）——签到的"是否已登录"判据
   落在这张表上，断电丢终态等于重复真实登录；
-- 登记口径：v18 是**可选迁移**，失败不阻断启动、不提升 user_version。
+- 登记口径：v18 是**核心迁移**（MF-40 修复改判：executor_v3 的领取/待办闸门全建在
+  `sign_tasks` 上，失败必须阻断启动）；本文件另以打桩条目守住框架对"可选档失败
+  只告警、不提升版本"的通用语义。
 
 标签：C · 存储：迁移与库完整性
 覆盖：v18 的四个面——`sign_tasks` + `egress_state` 的 schema（含逐列名/类型/NOT NULL/主键
 与两个领取回收索引）、`sign_claims` 存量平移的逐字段映射与幂等、旧表保留原行、
-迁移后 `PRAGMA synchronous` 为 FULL、失败时按可选迁移登记（不阻断、不提版本）。
+迁移后 `PRAGMA synchronous` 为 FULL、登记表可选档条目的通用失败语义（打桩条目，
+不阻断、不提版本）。
 对应实现：`yiban/store/` 的 v18 迁移函数与 `sign_tasks` 定义点、
 `yiban/engine/state_io.py::worker_presence`（执行体存活走文件心跳，不走表）。
 关键断言：`test_synchronous_is_full_after_migration` 与"存活不走表"这两条看着像洁癖，
@@ -250,9 +253,12 @@ class SynchronousAppliedByMigrationTest(_Base):
 
 
 class OptionalRegistrationTest(_Base):
-    """v18 是可选迁移：失败只告警不阻断启动、不提升 user_version（防误登记为核心）。"""
+    """登记表可选档条目的通用语义：失败只告警不阻断启动、不提升 user_version。
 
-    def test_v18_failure_does_not_block_startup(self):
+    （v18 **本体**已是核心档——登记值由 tests/test_migrations_fail_closed.py
+    `RegistryClassificationTest` 钉住；本类打桩替换登记表，测的是档位处理框架。）"""
+
+    def test_optional_tier_entry_failure_does_not_block_startup(self):
         def failing_v18(conn):
             raise RuntimeError("boom")
 

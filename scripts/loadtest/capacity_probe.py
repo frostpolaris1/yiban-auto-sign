@@ -67,7 +67,20 @@ import subprocess
 import sys
 import time
 
+# 隔离断言（fail-closed）。见 scripts/loadtest/isolation.py 的加载兼容说明。
+try:
+    from loadtest import isolation
+except ImportError:  # pragma: no cover - 取决于加载方式
+    import isolation
+
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+#: 假易班记账端点（回环，TLS）；证书 SAN 含 127.0.0.1，故直连回环即可，无需 hosts
+DEFAULT_MOCK_STATS_URL = "https://127.0.0.1"
+
+#: mock_env 搭建路径必填的出站探测目标：TEST-NET-3（RFC 5737）合成地址，不可路由，
+#: 绝不指向真实易班。REJECT 生效时该地址 443 被拒；用于满足「探测必填、不静默 SKIP」。
+DEFAULT_EGRESS_PROBE_IP = "203.0.113.7"
 
 #: 生效窗口：生产 06:30–07:50（80 分钟）去掉前后留白后的有效秒数
 DEFAULT_WINDOW_SEC = 4680
@@ -301,9 +314,11 @@ def ensure_platform():
         raise SystemExit("错误：需要 root（自签证书 + hosts 改写 + iptables 兜底）")
 
 
-def prepare_env(base_dir, repo):
+def prepare_env(base_dir, repo, egress_probe_ip=DEFAULT_EGRESS_PROBE_IP):
+    # mock_env 搭建路径现要求 --egress-probe-ip 非空（缺省即拒绝）；编排器代传安全默认
+    # （TEST-NET，绝不写入真实值），使一条命令仍能跑通全链。
     _run([_python(), os.path.join(repo, "scripts", "loadtest", "mock_env.py"),
-          "--base-dir", base_dir])
+          "--base-dir", base_dir, "--egress-probe-ip", egress_probe_ip])
 
 
 def restore_env(base_dir, repo):
@@ -321,7 +336,8 @@ def start_mock(base_dir, repo, delay_ms, log_path, ready_path, pubkey_path):
     if pubkey_path and os.path.exists(pubkey_path):
         cmd += ["--pubkey-file", pubkey_path]
     log("$ " + " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                            env=isolation.strip_proxy(os.environ))
     deadline = time.time() + 20
     while time.time() < deadline:
         if os.path.exists(ready_path):
@@ -363,7 +379,28 @@ def read_probe_result(outdir, label):
         return json.load(f)
 
 
+def verify_accounting(rows, ca_path, *, stats_url=DEFAULT_MOCK_STATS_URL):
+    """启动即/收尾记账对平断言：mock 服务端权威记账 == 驱动从 JSONL 读到的条数。
+
+    二者不等说明有请求处理了却没进驱动读到的账（旁路真实出口 / mock 静默丢日志），
+    本轮容量结论不可信 —— 抛 IsolationError，由 main 转成非零退出。用 trust_env=False
+    的会话取 /__stats，代理机也不会被假账骗过。
+    """
+    session = isolation.loadtest_session(ca=ca_path)
+    issued = isolation.mock_recorded_total(stats_url, session=session)
+    accounted = sum(int(r.get("mock_records") or 0) for r in rows)
+    isolation.assert_accounting(issued, accounted)
+    log(f"记账对平：mock 发出 {issued} 条 == 驱动读到 {accounted} 条")
+    return issued
+
+
 def main(argv=None):
+    # 启动即断言（fail-closed，早于 argparse）：见 isolation.assert_no_proxy 与 MF-68。
+    try:
+        isolation.assert_no_proxy(os.environ, source="capacity_probe 进程")
+    except isolation.IsolationError as e:
+        raise SystemExit(f"错误：{e}") from e
+
     ap = argparse.ArgumentParser(
         prog="capacity_probe.py",
         description="容量基准：一条命令测出本机可承载账号数并给出建议（测试机专用）",
@@ -393,6 +430,10 @@ def main(argv=None):
                     help="覆盖档位内置的 K 阶梯（逗号分隔；用于把已测范围加大）")
     ap.add_argument("--per-proc", type=int, default=0,
                     help="覆盖每进程账号数（默认用档位内置值）")
+    ap.add_argument("--mock-stats-url", default=DEFAULT_MOCK_STATS_URL,
+                    help="假易班记账端点（/stats 所在基址）")
+    ap.add_argument("--egress-probe-ip", default=DEFAULT_EGRESS_PROBE_IP,
+                    help="搭建时传给 mock_env 的出站探测目标（默认 TEST-NET，勿指向真实易班）")
     args = ap.parse_args(argv)
 
     repo = os.path.abspath(args.repo)
@@ -440,7 +481,7 @@ def main(argv=None):
             # 失败路径同样要走到 finally 的还原。
             env_ready = True
             try:
-                prepare_env(base, repo)
+                prepare_env(base, repo, args.egress_probe_ip)
             except RuntimeError as e:
                 # 环境未就绪（hosts/iptables 兜底没装好或零外联自检 FAIL）：
                 # **不跑 K 阶梯**——出站没被拦住时压测会直连真实易班。
@@ -473,10 +514,16 @@ def main(argv=None):
                 run_ladder(base, repo, db_path, env_path, ca_path, mock_log,
                            cfg["k_list"], cfg["per_proc"], cfg["gap"], label,
                            outdir, mock.pid, args.timeout_per_k)
+                # 记账对平必须在 mock 还活着时做：服务端权威 total == 驱动读到的条数，
+                # 不等则本轮测量不可信（fail-closed，不产出建议值）。
+                result = read_probe_result(outdir, label)
+                rows = result.get("rows") or []
+                try:
+                    verify_accounting(rows, ca_path, stats_url=args.mock_stats_url)
+                except isolation.IsolationError as e:
+                    raise SystemExit(f"错误：{e}") from e
             finally:
                 stop_mock(mock)
-            result = read_probe_result(outdir, label)
-            rows = result.get("rows") or []
             v = build_verdict(rows, users=args.users, window_sec=args.window_sec,
                               gap=cfg["gap"], ratio=args.ratio)
             v["profile"] = p

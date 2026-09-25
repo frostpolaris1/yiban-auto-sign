@@ -41,6 +41,7 @@ iptables 443 兜底规则，以及自检结论到 stdout；退出码 0 正常，
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ipaddress
 import json
 import os
@@ -48,6 +49,13 @@ import shutil
 import socket
 import subprocess
 import sys
+
+# 隔离断言（fail-closed）。直接 `python mock_env.py` 运行时 isolation.py 与本文件同目录
+# （sys.path[0]）；被作为 `loadtest.mock_env` 导入时走命名空间包。两种加载都覆盖。
+try:
+    from loadtest import isolation
+except ImportError:  # pragma: no cover - 取决于加载方式
+    import isolation
 
 DEFAULT_DOMAINS = [
     "oauth.yiban.cn",
@@ -247,7 +255,7 @@ def apply_iptables(ipv6, dry_run=False):
     cmd = _ipt_cmd(ipv6)
     accept, reject = _rule_specs(ipv6)
     ok = True
-    # ACCEPT 用 -I 插到最前，保证先于任何既有 REJECT 生效
+    # ACCEPT 用 -I 插到链首，保证先于任何既有 REJECT 生效
     if not _ipt_has(cmd, accept):
         rc, _ = run([cmd, "-I", "OUTPUT", "1", *accept], dry_run=dry_run)
         if rc != 0 and not dry_run:
@@ -257,13 +265,16 @@ def apply_iptables(ipv6, dry_run=False):
             print(f"{cmd}: 已放行回环 443 出站")
     else:
         print(f"{cmd}: 回环放行规则已存在")
+    # REJECT 同样 -I 前插到第 2 位（ACCEPT 之后、既有规则之前）。此前用 -A 追加链尾，
+    # 与 ACCEPT 的 -I 1 顺序错配：链中任何一条既有 443 ACCEPT 都会抢在兜底前放行，
+    # 出站兜底形同虚设。
     if not _ipt_has(cmd, reject):
-        rc, _ = run([cmd, "-A", "OUTPUT", *reject], dry_run=dry_run)
+        rc, _ = run([cmd, "-I", "OUTPUT", "2", *reject], dry_run=dry_run)
         if rc != 0 and not dry_run:
             print(f"警告：{cmd} 添加 443 REJECT 规则失败（可能无权限）", file=sys.stderr)
             ok = False
         else:
-            print(f"{cmd}: 已添加其余 443 出站 REJECT")
+            print(f"{cmd}: 已在链首添加其余 443 出站 REJECT")
     else:
         print(f"{cmd}: 443 REJECT 规则已存在")
     return ok
@@ -344,7 +355,10 @@ def verify_zero_egress(domains, hosts_path, probe_ip="", timeout=3.0):
         except OSError as e:
             print(f"  [OK] 到 {probe_ip}:443 被拒绝/不可达（{e.__class__.__name__}）")
     else:
-        print("  [SKIP] 未指定 --egress-probe-ip，跳过主动出站探测")
+        # 缺省即恒走 [SKIP] 是"代理路径下必报绿"的假担保本体：无主动探测时，本机
+        # hosts 与 443 REJECT 双双旁落于代理出口，自检不得凭域名解析就宣称零外联。
+        print("  [FAIL] 未指定 --egress-probe-ip——无法主动验证零真实外联，判失败")
+        ok = False
     print(f"== 自检结论：{'通过（域名均指向回环）' if ok else '未通过，请检查'} ==")
     return ok
 
@@ -365,12 +379,15 @@ def main(argv=None):
                     help="需要映射到回环的域名（逗号分隔）")
     ap.add_argument("--restore", action="store_true", help="还原 hosts 与 iptables 改动")
     ap.add_argument("--no-ipv6", action="store_true", help="不做 IPv6 处理")
-    ap.add_argument("--no-iptables", action="store_true", help="跳过 iptables 兜底")
+    ap.add_argument("--no-iptables", action="store_true",
+                    help="跳过 iptables 兜底（隔离降级；须同时 --i-understand-no-isolation）")
+    ap.add_argument("--i-understand-no-isolation", action="store_true",
+                    help="显式知情并接受 --no-iptables 造成的隔离降级（否则拒绝执行）")
     ap.add_argument("--force", action="store_true", help="强制重新生成证书")
     ap.add_argument("--dry-run", action="store_true", help="只打印将执行的操作，不改系统")
     ap.add_argument("--check", action="store_true", help="只做自检，不做任何改动")
     ap.add_argument("--egress-probe-ip", default="",
-                    help="可选：主动探测该 IP:443 应被拒绝（不写入仓库的临时值）")
+                    help="搭建路径必填：主动探测该 IP:443 应被拒绝（缺省即拒绝启动）")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出自检明细")
     args = ap.parse_args(argv)
 
@@ -381,6 +398,29 @@ def main(argv=None):
 
     hosts_path = args.hosts_file
     backup_path = os.path.join(args.base_dir, "hosts.orig")
+
+    # 搭建路径的启动即断言（fail-closed）：任一隔离前提不满足，就在改系统之前拒绝。
+    # --restore/--check 是清理/诊断，不发起压测流量，不受这些前置约束。
+    if not args.restore and not args.check:
+        try:
+            isolation.assert_no_proxy(os.environ, source="mock_env 进程")
+        except isolation.IsolationError as e:
+            print(f"错误：{e}", file=sys.stderr)
+            return 2
+        if not args.dry_run:
+            try:
+                isolation.require_egress_probe(args.egress_probe_ip)
+            except isolation.IsolationError as e:
+                print(f"错误：{e}", file=sys.stderr)
+                return 2
+            if args.no_iptables and not args.i_understand_no_isolation:
+                print("错误：--no-iptables 会关掉 443 出站兜底（隔离降级），必须同时显式 "
+                      "--i-understand-no-isolation 才允许，否则拒绝执行。", file=sys.stderr)
+                return 2
+            if args.no_iptables:
+                print("警告：隔离已降级——已显式接受跳过 iptables 兜底。本机 443 出站未被"
+                      "拦截，请确认仅在纯回环/强隔离沙箱内压测，勿在有真实易班可达的机器上使用。",
+                      file=sys.stderr)
 
     if args.check:
         ok, rows = selfcheck(domains, hosts_path, ipv6=not args.no_ipv6)
@@ -409,31 +449,52 @@ def main(argv=None):
         return 0
 
     print("== 搭建压测环境 ==")
-    certs = ensure_certs(args.base_dir, domains, force=args.force, dry_run=args.dry_run)
-    apply_hosts(hosts_path, domains, backup_path, dry_run=args.dry_run)
-    ipt_ok = True
-    if not args.no_iptables:
-        ipt_ok = apply_iptables(False, dry_run=args.dry_run)
-        if not args.no_ipv6:
+    # 搭建段全程用 try/finally 兜底：中途异常或自检失败都不得把「半隔离」状态留在
+    # 系统上（此前全树无 atexit/finally，ensure_certs→apply_hosts→apply_iptables 任一步
+    # 抛错都会让已改的 hosts/已装的规则无人还原）。成功(rc0)则按约定保留环境。
+    certs = {}
+    hosts_changed = False
+    ipt_touched = False
+    built_ok = False
+    try:
+        certs = ensure_certs(args.base_dir, domains, force=args.force, dry_run=args.dry_run)
+        hosts_changed = apply_hosts(hosts_path, domains, backup_path, dry_run=args.dry_run)
+        ipt_ok = True
+        if not args.no_iptables:
+            ipt_touched = True
+            r4 = apply_iptables(False, dry_run=args.dry_run)
             # 不用 and 短路：IPv4 失败时 IPv6 也要照装，且两侧结果都要拿到
-            ipt_ok = apply_iptables(True, dry_run=args.dry_run) and ipt_ok
+            r6 = apply_iptables(True, dry_run=args.dry_run) if not args.no_ipv6 else True
+            ipt_ok = bool(r4) and bool(r6)
 
-    if not args.dry_run:
-        egress_ok = verify_zero_egress(domains, hosts_path, probe_ip=args.egress_probe_ip)
-        print("\n提示：压测结束后务必执行 --restore 还原 hosts 与 iptables。")
-    else:
-        egress_ok = True
-    print("证书路径：")
-    for k, v in certs.items():
-        print(f"  {k}: {v}")
-    # 自检只是打印结论会让"未通过"静默变成成功：出站兜底没装好或域名仍解析到真实
-    # 地址时，压测会直连真实易班。退出码必须反映实情，让调用方（capacity_probe）
-    # 拒绝在此环境上跑 K 阶梯。
-    if not args.dry_run and not (egress_ok and ipt_ok):
-        print("错误：零真实外联自检未通过或出站兜底规则未装好，环境不可用"
-              "（修正后请用 --check 复核）", file=sys.stderr)
-        return 1
-    return 0
+        if not args.dry_run:
+            egress_ok = verify_zero_egress(domains, hosts_path, probe_ip=args.egress_probe_ip)
+            print("\n提示：压测结束后务必执行 --restore 还原 hosts 与 iptables。")
+        else:
+            egress_ok = True
+        print("证书路径：")
+        for k, v in certs.items():
+            print(f"  {k}: {v}")
+        # 自检只是打印结论会让"未通过"静默变成成功：出站兜底没装好或域名仍解析到真实
+        # 地址时，压测会直连真实易班。退出码必须反映实情，让调用方（capacity_probe）
+        # 拒绝在此环境上跑 K 阶梯。
+        if not args.dry_run and not (egress_ok and ipt_ok):
+            print("错误：零真实外联自检未通过或出站兜底规则未装好，环境不可用"
+                  "（修正后请用 --check 复核）", file=sys.stderr)
+            return 1
+        built_ok = True
+        return 0
+    finally:
+        if not built_ok and hosts_changed and not args.dry_run:
+            print("提示：搭建未完整成功，正在还原本次已生效的 hosts/iptables 改动"
+                  "（避免半隔离残留）…", file=sys.stderr)
+            with contextlib.suppress(Exception):
+                restore_hosts(hosts_path, backup_path)
+            if ipt_touched:
+                with contextlib.suppress(Exception):
+                    restore_iptables(False)
+                    if not args.no_ipv6:
+                        restore_iptables(True)
 
 
 if __name__ == "__main__":

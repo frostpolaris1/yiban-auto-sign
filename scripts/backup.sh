@@ -35,11 +35,17 @@
 #   BACKUP_PLAINTEXT=1 ./backup.sh   # 显式关闭默认加密（明文本地归档，大字告警）
 #
 # 安装（cron 每日 02:00；部署清单见 README「运维 → 备份与恢复」一节）：
-#   sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh
+#   M3 批次0 起生产执行件收编在 deploy/prod/（校验和对账 + 一键安装）：
+#   sudo DESTDIR= bash deploy/prod/install.sh    # 本脚本→/usr/local/sbin/yiban-backup.sh
+#   （或手工：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
 #   sudo crontab -e
 #   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
 #   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
-#   0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup.sh --require-encrypt >> /var/log/yiban/backup.log 2>&1
+#   # 口令经 wrapper 的 stdin fd 0 单跳注入（见 deploy/prod/yiban-backup-wrapper.sh），
+#   # 别再往 crontab 行/env 里写 BACKUP_GPG_PASSPHRASE——那会把口令带进整棵子进程树。
+#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 异机副本走 REMOTE_BACKUP：放 wrapper 之后的同一行 env 前缀即可（非机密主机名）：
+#   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
 #   30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
@@ -53,6 +59,17 @@
 #   - 本地打包：tar / find / sqlite3（系统自带）
 #   - 默认加密/异机副本：age（apt install age）或 gpg（系统自带）；
 #     rsync（apt install rsync）或 scp（系统自带）
+#
+# 退出码（M3 批次0 起完整口径；4/5 为既有契约，6/7/8 为本轮新增，互不重叠）：
+#   0  正常（密文归档且回环自检通过）
+#   1  拒绝执行/一般失败（RETENTION_DAYS 非法、--require-encrypt 不满足、解密失败等）
+#   4  本轮归档照留，但【源库】integrity_check 未过（垂死库的最后素材）
+#   5  本轮归档照留，但快照因缺 sqlite3 未经 integrity 核验
+#   6  本轮产物是【明文】归档（显式 BACKUP_PLAINTEXT=1，或无可用加密方式回退）——
+#      备份在，但全库凭据裸奔，cron 必须能把它与 0 区分开
+#   7  加密"成功"但密文回环自检（解密→解包→integrity）未过：明文保留、清单不出、
+#      半成品密文删除（MF-76 契约：可解才删明文）
+#   8  轮转后当日归档失踪（保留策略误删当天件）——必须人工立即介入
 # ============================================================
 
 set -euo pipefail
@@ -65,12 +82,38 @@ APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"          # 项目部署目录
 BACKUP_DIR="${BACKUP_DIR:-/var/backups}"            # 本地备份目录
 RETENTION_DAYS="${RETENTION_DAYS:-30}"              # 保留天数
 REMOTE_BACKUP="${REMOTE_BACKUP:-}"                  # 异机目标，如 user@host:/backup/yiban；留空 = 仅本地
-# gpg 对称加密口令（推荐用环境变量/密钥文件注入；旧名 BACKUP_AGE_PASSPHRASE 兼容回退——
+# gpg 对称加密口令（生产推荐经 yiban-backup-wrapper.sh 的 **stdin fd 0 单跳**注入，
+# 见下方 YIBAN_READ_PASSPHRASE_STDIN；环境变量 BACKUP_GPG_PASSPHRASE 保留给手工/
+# 恢复场景——注意它意味着口令进整棵子进程树 env。旧名 BACKUP_AGE_PASSPHRASE 兼容回退——
 # 2026-08-16 审查轮：原 AGE_PASSPHRASE 命名与 age 工具混淆，实际用途是 gpg AES-256 对称加密）
 GPG_PASSPHRASE="${BACKUP_GPG_PASSPHRASE:-${BACKUP_AGE_PASSPHRASE:-}}"
 GPG_RECIPIENT="${BACKUP_GPG_RECIPIENT:-}"           # gpg 接收者（公钥 ID），配置后走 gpg 公钥加密
 # M24：本地归档默认加密的总开关——1 = 显式关闭（明文本地归档，大字告警）
 BACKUP_PLAINTEXT="${BACKUP_PLAINTEXT:-0}"
+
+# ------------------------------------------------------------
+# M3 批次0 Task6（MF-42）：口令 --passphrase-fd 0 单跳摄取
+# yiban-backup-wrapper.sh 不再 export 口令（旧形态把口令带进 tar/sqlite3/rsync/gpg
+# 整棵子进程树的 environ，/proc/<pid>/environ 可读即泄露）。改由 wrapper 置
+# YIBAN_READ_PASSPHRASE_STDIN=1 并把口令经管道送 stdin：此处读进**非导出**的
+# GPG_PASSPHRASE shell 变量（下方加密/解密路径原样复用——它们本就
+# printf|gpg --passphrase-fd 0 单跳，从环境变量降为纯 shell 变量后子进程环境清零），
+# 并 unset 环境侧口令键。stdin 与 env 同时给了口令 ⇒ stdin 优先；只给标志既无
+# stdin 内容也无 env 口令 ⇒ 拒跑（fail-closed，绝不静默回退明文，rc 口径不变）。
+# ------------------------------------------------------------
+if [ "${YIBAN_READ_PASSPHRASE_STDIN:-0}" = "1" ]; then
+    _stdin_pass=""
+    IFS= read -r _stdin_pass || true
+    if [ -n "${_stdin_pass}" ]; then
+        GPG_PASSPHRASE="${_stdin_pass}"
+    elif [ -z "${GPG_PASSPHRASE}" ]; then
+        echo "错误：YIBAN_READ_PASSPHRASE_STDIN=1 但 stdin 与 BACKUP_GPG_PASSPHRASE 均无口令，拒绝执行" >&2
+        exit 1
+    fi
+    unset _stdin_pass
+    # 无论口令最终来自哪一路，环境侧键一律摘除——子进程树不再继承口令
+    unset BACKUP_GPG_PASSPHRASE BACKUP_AGE_PASSPHRASE
+fi
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
 DATA_FILES=(.env)
@@ -164,6 +207,67 @@ try_encrypt() {
 }
 
 # ------------------------------------------------------------
+# MF-76「可解才删明文」：try_encrypt 返回 0 只证明 gpg 没报错，不证明密文可解
+# （退出码判据的缺口正是 docker/backup-docker.sh:103-118 早已堵上的——尺寸下限 +
+# 解密解包自检 + 失败删件非 0 退出）。这里用与 --restore 同源的逻辑对当日密文做
+# 一次真实回环：解密到临时目录 → tar 可列可解 → 包内数据库在 sqlite3 可用时必须
+# integrity_check=ok。任何一步失败 ⇒ 调用方【不得删明文、不得出清单】并以 rc=7 结束。
+# age 是交互口令加密（仅手动运行时可用），无法无人值守解密——只能做尺寸下限并
+# 大字提醒立刻手工跑 --restore；这是刻意保留的最小核查，报告里已声明该边界。
+# 解密产物只落在 TMPDIR_BAK（0700，trap 统一清理），不新增第二处明文驻留。
+# ------------------------------------------------------------
+MIN_ENC_BYTES=200
+verify_encrypted_archive() {
+    local enc="$1" vdir="${TMPDIR_BAK}/roundtrip" plain="${TMPDIR_BAK}/roundtrip.tar.gz"
+    local bytes ic
+    rm -rf "${vdir}" "${plain}"
+    mkdir -p "${vdir}"
+    bytes="$(wc -c < "${enc}" 2>/dev/null || echo 0)"
+    if [ "${bytes}" -lt "${MIN_ENC_BYTES}" ]; then
+        log "回环自检：密文仅 ${bytes} 字节（下限 ${MIN_ENC_BYTES}），疑似空包/半写入" >&2
+        return 1
+    fi
+    case "${enc}" in
+        *.gpg)
+            if [ -n "${GPG_PASSPHRASE}" ]; then
+                if ! printf '%s\n' "${GPG_PASSPHRASE}" | \
+                    gpg --batch --yes --decrypt --passphrase-fd 0 \
+                        -o "${plain}" "${enc}"; then
+                    log "回环自检：密文解密失败（口令/密钥环异常或包损坏）" >&2
+                    return 1
+                fi
+            elif ! gpg --batch --yes --decrypt -o "${plain}" "${enc}"; then
+                log "回环自检：公钥密文解密失败（gpg 密钥环不可用？）" >&2
+                return 1
+            fi
+            ;;
+        *.age)
+            log "回环自检：age 密文无法无人值守解密——本轮仅做尺寸下限核查，" \
+                "请立刻手工跑一次 --restore 演练（${enc}）" >&2
+            return 0
+            ;;
+    esac
+    if ! tar -tzf "${plain}" > /dev/null; then
+        log "回环自检：解密产物不是可列目录的 tar.gz（加密过程损坏？）" >&2
+        return 1
+    fi
+    if ! tar -xzf "${plain}" -C "${vdir}"; then
+        log "回环自检：解密产物解包失败" >&2
+        return 1
+    fi
+    if [ -f "${vdir}/data/${DB_FILE}" ] && command -v sqlite3 > /dev/null 2>&1; then
+        ic="$(sqlite3 "${vdir}/data/${DB_FILE}" "PRAGMA integrity_check;")" \
+            || { log "回环自检：integrity_check 无法执行" >&2; return 1; }
+        if [ "${ic}" != "ok" ]; then
+            log "回环自检：integrity_check 未通过：${ic}" >&2
+            return 1
+        fi
+        log "回环自检：解密→解包→integrity_check=ok 全部通过"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------
 # 恢复模式：--restore <备份包> <目标目录>
 # ------------------------------------------------------------
 restore() {
@@ -197,27 +301,44 @@ restore() {
             age -d -o "$plain" "$archive" 2>/dev/null || { echo "错误：.age 解密失败（需交互输入口令或身份文件）" >&2; exit 1; }
             ;;
     esac
-    # 安全校验：拒绝含路径穿越（../ 或绝对路径）或符号链接的条目，防止恶意备份包写出目标目录
-    if tar -tzf "$plain" 2>/dev/null | grep -E '(^|/)\.\.(/|$)|^/' | grep -q .; then
+    # 安全校验（M3 批次0 · MF-80 重写）：三条护栏改为显式判码执行。
+    # 旧写法 `if tar -tzf … 2>/dev/null | grep …` 在 set -eo pipefail 下，tar 一旦非 0
+    # （包损坏/被替换/读错误）整条管道短路为假 ⇒ 三条护栏【全部跳过】（活体复现
+    # GUARD_SKIPPED），失败被拖到解包那一步撞运气。现在"列目录读不了"本身就是
+    # 拒绝解包的理由；tar 的诊断也不再被 2>/dev/null 吞掉。
+    local list vlist
+    if ! list="$(tar -tzf "$plain" 2>&1)"; then
+        echo "错误：读包列表失败（tar 非零退出：包损坏或 tar 不可用），拒绝解包" >&2
+        printf '%s\n' "${list}" >&2
+        exit 1
+    fi
+    if printf '%s\n' "${list}" | grep -qE '(^|/)\.\.(/|$)|^/'; then
         echo "错误：备份包含不安全条目（路径穿越/绝对路径），已拒绝解包" >&2
         exit 1
     fi
-    if tar -tvzf "$plain" 2>/dev/null | grep -qE '^l'; then
+    if ! vlist="$(tar -tvzf "$plain" 2>&1)"; then
+        echo "错误：读包列表失败（长列表 tar 非零退出），拒绝解包" >&2
+        printf '%s\n' "${vlist}" >&2
+        exit 1
+    fi
+    if printf '%s\n' "${vlist}" | grep -qE '^l'; then
         echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
         exit 1
     fi
     # 2026-08-21 对抗性审查加固：同时拒绝设备/字符设备/FIFO 条目——root 恢复时
     # 恶意包可在目标目录创建设备节点（前提苛刻，属纵深防御）
-    if tar -tvzf "$plain" 2>/dev/null | grep -qE '^[bcp]'; then
+    if printf '%s\n' "${vlist}" | grep -qE '^[bcp]'; then
         echo "错误：备份包含设备/FIFO 特殊条目，已拒绝解包" >&2
         exit 1
     fi
     mkdir -p "$dest"
-    tar -xzf "$plain" -C "$dest" --anchored --no-overwrite-dir 2>/dev/null || \
-        tar -xzf "$plain" -C "$dest" --no-overwrite-dir 2>/dev/null || {
+    # --anchored 移除（MF-80："死选项"）：GNU tar 的 --anchored 只在配有 pattern 时
+    # 生效，本命令没有 pattern，旧"首选 --anchored 失败 ⇒ 回退不带"的结构里首选
+    # 永远白跑一遍，加固从未存在；防逃逸的职责已由上面解包前的三条护栏承担。
+    if ! tar -xzf "$plain" -C "$dest" --no-overwrite-dir; then
         echo "错误：解包失败（备份包可能损坏）" >&2
         exit 1
-    }
+    fi
     log "已从 $archive 恢复到 $dest"
 
     # 1) 停服提示：进程还活着时覆盖数据目录 = 把主库和它自己的 WAL 写成两份不一致
@@ -325,6 +446,21 @@ if [ "${1:-}" = "--require-encrypt" ]; then
     REQUIRE_ENCRYPT=1
 fi
 
+# RETENTION_DAYS 校验（M3 批次0 · MF-77）：原实现零校验，`RETENTION_DAYS=0` 是合法值
+# （find -mtime +0 = 删掉除当天外全部历史），一次误配置就能把 30 天素材清成 1 天，
+# 且删完不数不验不写日志——完全静默。非数字（如 "30d"）同理会让四条 find 集体报错或
+# 误删。备份轮一律拒绝执行；--restore 在上方已分发，不受此校验牵连（它是只读恢复）。
+case "${RETENTION_DAYS}" in
+    '' | *[!0-9]*)
+        echo "错误：RETENTION_DAYS 必须是正整数（收到：'${RETENTION_DAYS}'），拒绝执行以免误删历史备份" >&2
+        exit 1
+        ;;
+esac
+if [ "${RETENTION_DAYS}" -lt 1 ]; then
+    echo "错误：RETENTION_DAYS=0 等于删掉除当天外全部历史备份，拒绝执行（要更短保留请显式设为 >=1 的合理值）" >&2
+    exit 1
+fi
+
 # --require-encrypt 前置校验：打包前确认加密工具可用，不满足则直接退出。
 # 只强制"本轮归档必须加密成功"，与异机副本（REMOTE_BACKUP）解耦——未配异机的
 # 单机部署同样需要可用的强制加密（2026-09-08）：REMOTE_BACKUP 为空时不再阻止
@@ -352,7 +488,15 @@ fi
 # ------------------------------------------------------------
 # 本地打包
 # ------------------------------------------------------------
+# MF-79：归档内是 .env（管理员口令哈希/数据密钥）+ 整库 + accounts-key——文件 0600
+# 但目录从不设防（umask 077 只护新建文件，已有目录、以及此前建的目录都不在保护范围）。
+# 备份目录与主库同机时"目录被列 = 全部备份可枚举"，这里显式收紧 0700；收紧失败
+# （目录属主不是运行用户）必须当场失败，不能让裸奔的旧 0755 混过本轮。
 mkdir -p "${BACKUP_DIR}"
+if ! chmod 0700 "${BACKUP_DIR}"; then
+    echo "错误：无法将备份目录 ${BACKUP_DIR} 收紧为 0700（属主不对/只读挂载？），拒绝继续" >&2
+    exit 1
+fi
 mkdir -p "${TMPDIR_BAK}/data" "${TMPDIR_BAK}/keys"
 
 log "=== 易班自动签到备份开始（${DATE}）==="
@@ -548,17 +692,38 @@ if [ "${BACKUP_PLAINTEXT}" = "1" ] && [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
     rm -f "$ARCHIVE"
     exit 1
 fi
+# 本轮产物是否为明文（BACKUP_PLAINTEXT=1 显式关闭 / 无可用加密方式回退）——
+# 收尾以专用退出码 6 让 cron 与"密文正常轮"区分（MF-79）。
+PLAINTEXT_LOCAL=0
 if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
-    log "════════════════════════════════════════════════════════════"
-    log "⚠⚠⚠ 已显式设置 BACKUP_PLAINTEXT=1：本轮生成【明文】本地归档 ⚠⚠⚠"
-    log "⚠⚠⚠ 归档内含 .env 全部密钥、管理员口令哈希与全量数据库！   ⚠⚠⚠"
-    log "════════════════════════════════════════════════════════════"
+    PLAINTEXT_LOCAL=1
+    # 告警走 stderr（M3 批次0 · MF-79）：stdout 是 backup.log 里的例行流水，
+    # 明文轮的大字告警不该淹死在其中；退出码 6 + stderr 双通道才可能被接进监控。
+    log "════════════════════════════════════════════════════════════" >&2
+    log "⚠⚠⚠ 已显式设置 BACKUP_PLAINTEXT=1：本轮生成【明文】本地归档 ⚠⚠⚠" >&2
+    log "⚠⚠⚠ 归档内含 .env 全部密钥、管理员口令哈希与全量数据库！   ⚠⚠⚠" >&2
+    log "⚠⚠⚠ 本轮将以退出码 6 结束；明文包保留期从紧（≤2 天），哨兵不认它。 ⚠⚠⚠" >&2
+    log "════════════════════════════════════════════════════════════" >&2
     # 明文豁免只作用于【本地】归档；配置了 REMOTE_BACKUP 时
     # 异机副本仍会加密后出站（异机副本绝不传明文），不是一并取消。
     [ -n "${REMOTE_BACKUP}" ] && log "已配置 REMOTE_BACKUP：异机副本仍将加密后出站（非明文）"
 elif try_encrypt; then
-    rm -f "${ARCHIVE}"
-    log "已启用本地默认加密：明文归档已移除，本轮密文为 ${ENC_FILE}"
+    # MF-76 契约：可解才删明文。旧实现在 try_encrypt 报 0 后【立刻】rm 明文——
+    # 但"加密退出码 0"与"密文可解"之间从未有任何一步真实回环（--restore 才是
+    # 唯一能证明可解的路径，而它没有任何自动调用点）。现在先解密→解包→integrity
+    # 回环一次，通过才删明文；失败则保留明文、删除坏密文、不出清单、rc=7 结束。
+    if verify_encrypted_archive "${ENC_FILE}"; then
+        rm -f "${ARCHIVE}"
+        log "已启用本地默认加密：回环自检通过，明文归档已移除，本轮密文为 ${ENC_FILE}"
+    else
+        log "════════════════════════════════════════════════════════════" >&2
+        log "⚠⚠⚠ 密文回环自检失败：无法证明 ${ENC_FILE} 可解且完好        ⚠⚠⚠" >&2
+        log "⚠⚠⚠ 契约（MF-76）：可解才删明文——本轮【保留】明文归档 ${ARCHIVE}" >&2
+        log "⚠⚠⚠ 不出校验清单；半成品密文已删除；退出码 7。请立即人工核查  ⚠⚠⚠" >&2
+        log "════════════════════════════════════════════════════════════" >&2
+        rm -f "${ENC_FILE}"
+        exit 7
+    fi
 else
     # --require-encrypt 契约必须 fail-closed——管理员显式要求加密时，
     # 加密失败（gpg 密钥环损坏/口令错误/IO 错误）绝不允许静默回退明文归档。
@@ -571,9 +736,11 @@ else
         rm -f "${ARCHIVE}" "${ARCHIVE}.sha256"
         exit 1
     fi
+    PLAINTEXT_LOCAL=1
     log "════════════════════════════════════════════════════════════" >&2
     log "⚠⚠⚠ 无法加密本地归档（未配置 BACKUP_GPG_RECIPIENT/BACKUP_GPG_PASSPHRASE， ⚠⚠⚠" >&2
     log "⚠⚠⚠ 且非交互终端无法使用 age）：本轮为【明文】归档，请尽快配置加密！     ⚠⚠⚠" >&2
+    log "⚠⚠⚠ 本轮将以退出码 6 结束；备份哨兵同样不会把明文包计为健康。           ⚠⚠⚠" >&2
     log "════════════════════════════════════════════════════════════" >&2
 fi
 
@@ -638,16 +805,78 @@ else
 fi
 
 # ------------------------------------------------------------
-# 本地保留策略：删除超过 30 天的本地备份包
+# 本地保留策略（M3 批次0 · MF-77 重写）：mtime 判过期 + 文件名日期"最近 K 组"下界
+# + 逐件写日志 + 删后自检当日件
 # ------------------------------------------------------------
 # .sha256 侧车必须一起轮转：原三条 glob 只覆盖 tar.gz/.age/.gpg，侧车永久堆积——
 # 既无限增长，又把"哪天做了备份、产物叫什么名"整份泄露给任何能读备份目录的账号
 # （对攻击者这就是一张"哪天该去删哪条审计"的地图）。
-find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz' -mtime "+${RETENTION_DAYS}" -delete
-find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz.age' -mtime "+${RETENTION_DAYS}" -delete
-find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz.gpg' -mtime "+${RETENTION_DAYS}" -delete
-find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.sha256' -mtime "+${RETENTION_DAYS}" -delete
-log "本地清理完成（保留 ${RETENTION_DAYS} 天，含 .sha256 侧车）"
+# 原实现的四条 find -mtime +N -delete 有三个洞：RETENTION_DAYS 零校验（已在上方
+# 拒绝）、命中即删不留一行日志（删错了无从追溯）、删完不数不验（历史被清空而
+# 当天件在位时，只查当日包的哨兵完全静默）。这里对齐同仓 pull-prod-backup.sh
+# "按文件名日期保留最近 N 份"的口径补上界之外的下界：
+# - 下界：按文件名日期（yiban-YYYY-MM-DD*，一天一组，密文/侧车同组共命运）倒序
+#   保留最近 ${MIN_KEEP_ARCHIVES} 组——mtime 再老也不许把地板删穿（时钟前跳、
+#   cp -p 保时间戳导入、RETENTION 被改小都是真实触发路径）；
+# - 明文包从紧：裸 .tar.gz 与其侧车至多留 ${PLAIN_MAX_AGE_DAYS} 天——明文归档含
+#   .env 全部密钥，30 天保留期=30 天泄露窗口，2 天已够"昨天出事今天还有素材可查"；
+#   与 RETENTION_DAYS 取小者执行。**明文 pass 豁免下界（终审 Important①）**：日备机器
+#   第 3 天的明文包仍落在最近 7 组内，下界会把头注释/rc=6 承诺的"≤2 天"静默压成 ~7 天
+#   ——下界保护可恢复性（密文是资产），明文是泄露面不是资产；机制取调用点 nofloor 标志。
+# K=7 的理由：一周兜底份数——单日误删/坏包时还有可回退的最近一整个星期；
+# 可用 BACKUP_MIN_KEEP 覆盖（0=关闭下界，仅剩 mtime 判据——自担风险）。
+MIN_KEEP_ARCHIVES="${BACKUP_MIN_KEEP:-7}"
+case "${MIN_KEEP_ARCHIVES}" in
+    '' | *[!0-9]*)
+        echo "错误：BACKUP_MIN_KEEP 必须是非负整数（收到：'${MIN_KEEP_ARCHIVES}'）" >&2
+        exit 1
+        ;;
+esac
+PLAIN_MAX_AGE_DAYS=2
+
+# 保留最近 K 组的"组键"（文件名里的 YYYY-MM-DD 段，按字典序=日期序倒排）。
+# 不用 head（pipefail 下 head 提前关管道会让 sort 吃 SIGPIPE 而整体失败），用 awk。
+KEEP_KEYS="$(find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*' -printf '%f\n' 2>/dev/null \
+    | sed -nE 's/^yiban-([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' \
+    | sort -u -r | awk -v n="${MIN_KEEP_ARCHIVES}" 'NR<=n')"
+
+rotate_pass() {  # $1=文件名模式 $2=生效天数 $3=nofloor(非空=豁免最近 K 组下界，明文 pass 专用)
+    local pat="$1" days="$2" nofloor="${3:-}" f key why
+    [ -n "${nofloor}" ] && why="> ${days} 天，明文从紧·豁免下界" || why="> ${days} 天且已过最近 ${MIN_KEEP_ARCHIVES} 组下界"
+    while IFS= read -r f; do
+        [ -f "${f}" ] || continue  # 前面的 pass 可能已删过同组侧车，不重复报删除
+        key="$(basename "${f}" | sed -nE 's/^yiban-([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p')"
+        if [ -z "${nofloor}" ] && [ -n "${key}" ] && [ -n "${KEEP_KEYS}" ] \
+            && printf '%s\n' "${KEEP_KEYS}" | grep -qxF "${key}"; then
+            continue  # 下界保护：最近 K 组之内，mtime 再老也不删（明文 pass 豁免此门）
+        fi
+        rm -f "${f}"
+        log "轮转删除（${why}）：$(basename "${f}")"
+    done < <(find "${BACKUP_DIR}" -maxdepth 1 -name "${pat}" -mtime "+${days}")
+}
+
+PLAIN_DAYS="${RETENTION_DAYS}"
+if [ "${PLAIN_MAX_AGE_DAYS}" -lt "${PLAIN_DAYS}" ]; then
+    PLAIN_DAYS="${PLAIN_MAX_AGE_DAYS}"
+fi
+# 明文两条 pass 传 nofloor：过期即删，即使日期组仍在最近 K 内（终审 Important①）；密文/兜底仍受下界保护。
+rotate_pass 'yiban-*.tar.gz' "${PLAIN_DAYS}" nofloor
+rotate_pass 'yiban-*.tar.gz.sha256' "${PLAIN_DAYS}" nofloor
+rotate_pass 'yiban-*.tar.gz.gpg' "${RETENTION_DAYS}"
+rotate_pass 'yiban-*.tar.gz.gpg.sha256' "${RETENTION_DAYS}"
+rotate_pass 'yiban-*.tar.gz.age' "${RETENTION_DAYS}"
+rotate_pass 'yiban-*.tar.gz.age.sha256' "${RETENTION_DAYS}"
+# 兜底：旧命名/孤儿的其它 yiban-*.sha256 侧车按主保留期清（防止回到"侧车永久堆积"）
+rotate_pass 'yiban-*.sha256' "${RETENTION_DAYS}"
+log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
+
+# 删后自检（MF-77）：轮转"删完不数不验"正是历史被清而无人知的成因之一。
+# 当日归档是整条保留策略的锚点——它不在就说明轮转（或别的什么）删错了东西，
+# 必须以最大声音失败，绝不允许绿灯收工。
+if [ ! -f "${FINAL_LOCAL}" ]; then
+    echo "错误：轮转后当日归档失踪（${FINAL_LOCAL} 不在）——保留策略误删当天件，请立即重跑备份并排查" >&2
+    exit 8
+fi
 
 log "=== 备份完成：${FINAL_LOCAL} ==="
 log "恢复演练：bash backup.sh --restore ${FINAL_LOCAL} /tmp/yiban-restore-test"
@@ -662,4 +891,10 @@ fi
 if [ "${DB_SNAPSHOT_PRESENT:-0}" -eq 1 ] && [ "${DB_SNAPSHOT_VERIFIED}" -ne 1 ]; then
     echo "警告：本轮数据库快照未经 integrity_check 核验（缺 sqlite3 命令）" >&2
     exit 5
+fi
+if [ "${PLAINTEXT_LOCAL:-0}" -eq 1 ]; then
+    # MF-79：明文轮不再与密文轮共用退出码 0——"备份在，但全库凭据裸奔"必须让
+    # cron/监控一眼可辨（哨兵侧的 unhealthy 判定见 scripts/backup_sentinel.py）。
+    echo "提示：本轮产物为【明文】归档（BACKUP_PLAINTEXT=1 或无可用加密方式），退出码 6" >&2
+    exit 6
 fi

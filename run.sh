@@ -43,14 +43,41 @@ if [ -r "$ENV_PATH" ]; then
         fi
         export "$key=$value"
     done < "$ENV_PATH"
+else
+    # MF-81④：.env 缺失/不可读过去完全静默——所有配置（STATE_DIR、通知、窗口时间）
+    # 悄悄回落默认值，排障时无人知道"配置读没读到"。现在显式告警（下面 _log 可用后
+    # 写入日志）。选择"告警后继续"而不是退出：现网可能以读不到 root-only .env 的身份跑
+    # cron，直接退非 0 会天天红；"告警 + 继续用默认值 + 日志/stderr 留痕"是更安全的取舍。
+    if [ -e "$ENV_PATH" ]; then
+        ENV_WARNING=".env 存在但当前用户不可读，全部配置回落默认值: $ENV_PATH"
+    else
+        ENV_WARNING=".env 不存在，全部配置回落默认值: $ENV_PATH"
+    fi
 fi
 
 # 状态/日志根目录：优先 YIBAN_STATE_DIR
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
-# 确保状态目录存在：否则下面 RUN_MARKER 的 noclobber 创建会失败，被误判成
-# "当日已触发过"（导出 YIBAN_SECOND_RUN=1），在原生 run.sh 里只是告警口径偏差，
-# 但在新逻辑下会**关掉进程内补签轮**——必须在写标记前建好目录。
-mkdir -p "$STATE_DIR" 2>/dev/null || true
+# MF-81：状态目录承载全部"跑/不跑"判定件（RUN_MARKER / 状态文件 / 收尾标记），
+# 它的可用性必须显式校验，对齐下面锁目录的既有做法——旧实现 `mkdir -p || true`
+# 吞掉一切失败：目录建不出来/不可写时，noclobber 标记写失败会被误判成
+# "当日已触发过"（导出 YIBAN_SECOND_RUN=1 静默关掉进程内补签轮），或让收尾/状态
+# 写入静默丢失（下一触发误判再跑整轮真实登录）。写失败 = fail-closed：不跑并告警。
+# 此刻 _log/LOG_FILE 尚不可用，声音只能走 stderr + 非零退出码。
+if [ ! -d "$STATE_DIR" ]; then
+    if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+        echo "致命: 无法创建状态目录 $STATE_DIR，无法完成跑/不跑判定，拒绝运行" >&2
+        exit 1
+    fi
+    # 新建目录：属主必须是本用户且收紧 700（与锁目录同一判据），否则判定件可被
+    # 同机其他用户预占/伪造
+    if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
+        echo "致命: 状态目录 $STATE_DIR 不安全（新建后非本用户属主或权限收紧失败），拒绝运行" >&2
+        exit 1
+    fi
+elif [ ! -w "$STATE_DIR" ]; then
+    echo "致命: 状态目录 $STATE_DIR 不可写，无法完成跑/不跑判定，拒绝运行" >&2
+    exit 1
+fi
 
 # 日志按天分文件（2026-08-16）：sign-YYYY-MM-DD.log，web 端按日期直接读取对应文件；
 # 保留 YIBAN_LOG_FILE 配置的目录语义（默认 $STATE_DIR/sign.log）。
@@ -76,6 +103,13 @@ fi
 _log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$TRIGGER_TAG] $*" >> "$LOG_FILE"
 }
+
+# .env 缺失/不可读的告警在此补报（解析处 _log 尚未定义，见上面 ENV_WARNING 赋值处）。
+# fail-open（继续用默认值跑）+ 双声音：stderr + 当日日志。
+if [ -n "${ENV_WARNING:-}" ]; then
+    echo "警告: $ENV_WARNING" >&2
+    _log "警告: $ENV_WARNING"
+fi
 
 # 任何退出路径都落一行带退出码的日志。原先只有正常收尾那一行，于是 flock 跳过（0）、
 # 当日已签到成功跳过（0）、当日已收尾跳过（0）、timeout 击杀（124）全都静默收场——
@@ -109,8 +143,17 @@ trap 'exit 130' INT
 RUN_MARKER="$STATE_DIR/yiban-run-today-$(date +%Y-%m-%d).marker"
 if ( set -o noclobber; : > "$RUN_MARKER" ) 2>/dev/null; then
     : # 今日首次触发：本轮按首签轮运行
-else
+elif [ -f "$RUN_MARKER" ]; then
+    # 创建失败且文件确实在——才是真"当日已触发过"
     export YIBAN_SECOND_RUN=1
+else
+    # MF-81②：noclobber 失败但文件不存在 = 写失败（目录竞态被搬走、磁盘满、路径
+    # 被占成目录等），不是"已触发过"。旧实现把两者混为一谈：静默导出
+    # YIBAN_SECOND_RUN=1 → 进程内补签轮被关掉（漏签，而现网补签只剩这一条通道）。
+    # fail-closed：无法判定首签/补签 ⇒ 不跑并告警（stderr + 日志 + 非零码）。
+    echo "警告: 无法写入当日触发标记 $RUN_MARKER，无法判定首签/补签，拒绝运行" >&2
+    _log "警告: 当日触发标记写入失败（$RUN_MARKER 不存在且不可创建），拒绝运行本轮"
+    exit 1
 fi
 
 # 单实例锁：自动错峰模式下 06:31 进程可能 sleep 等待时间点，
@@ -143,6 +186,10 @@ STATUS_FILE="$STATE_DIR/sign-status-$(date +%Y-%m-%d).txt"
 # 例如首轮 06:35 就结束、且已完成补签轮，此时 07:12 的 cron 会拿到锁，
 # 没有本标记它会因为状态非 SUCCESS 再跑一轮（幂等但多一轮真实登录请求）。
 SECOND_DONE_MARKER="$STATE_DIR/yiban-settled-$(date +%Y-%m-%d).marker"
+# sign-status 采信的交叉核对源库（MF-82）：与引擎同一个键 YIBAN_DB_FILE、同一
+# 默认值口径（引擎 resolve_path = 进程环境 → .env → 默认 "yiban.db"；此处 .env
+# 已 export，cwd 即 APP_DIR，与引擎子进程的相对路径基准一致）。
+DB_FILE="${YIBAN_DB_FILE:-yiban.db}"
 
 # Python 解释器：优先项目虚拟环境，缺失时回退系统 Python
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
@@ -198,7 +245,9 @@ _wait_until_hhmm() {
 # 补签轮判定（调用 signin.py --second-run-check）：退出码 10 = 需要补跑
 _need_second_round() {
     _is_truthy "$SECOND_ROUND_ENABLED" || return 1
-    [ "${YIBAN_SECOND_RUN:-0}" = "1" ] && return 1   # 本轮本身就是补签轮 → 不再评估
+    # MF-81⑤：YIBAN_SECOND_RUN 统一走 _is_truthy 一处解析（与 .env/脚本自身的
+    # "1" 兼容，也接受 true/yes/on；不再存在"= 1 字面比较"的第二套取值域）
+    _is_truthy "${YIBAN_SECOND_RUN:-0}" && return 1   # 本轮本身就是补签轮 → 不再评估
     # 全站暂停（管理员一键暂停）：signin 会立刻 exit 2，补跑没有任何意义，
     # 只会把锁多占一会儿（原逻辑下 07:12 的 cron 也会同样空跑一次，属既有行为）
     _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}" && return 1
@@ -257,28 +306,106 @@ _run_signin_round() {
 # （部分成功 + 部分 skipped_window/norange）——signin.py 此时返回 2，
 # 这里写 SKIPPED 而非 SUCCESS，补签才会重跑，
 # 窗口外账号不因"有账号成功"而失去当天兜底（容器调度器同语义）。
-# 原子写：写临时文件 + mv，防止掉电/被杀时文件处于半写状态
+# 原子写：写临时文件 + mv，防止掉电/被杀时文件处于半写状态。
+# MF-81：mktemp/echo/mv 三步全部判码——状态文件决定后续触发"跑/不跑"，任何一步
+# 失败都必须显式失败返回（rc 1），由调用方升级退出码，绝不静默续跑。
 _status_write() {
-    local content="$1"
-    local tmp
-    tmp=$(mktemp "${STATUS_FILE}.tmp.XXXXXX")
-    echo "$content" > "$tmp"
-    mv -f "$tmp" "$STATUS_FILE"
+    local content="$1" tmp
+    if ! tmp=$(mktemp "${STATUS_FILE}.tmp.XXXXXX" 2>/dev/null); then
+        echo "警告: 状态文件临时件创建失败（mktemp ${STATUS_FILE}.tmp.*）" >&2
+        return 1
+    fi
+    if ! echo "$content" > "$tmp" 2>/dev/null; then
+        echo "警告: 状态文件临时件写入失败: $tmp" >&2
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    # 目标是已存在目录时 `mv -f` 会把临时件**搬进目录里**并返回 0（GNU 语义）——
+    # 状态看似写成功、实际没写：这正是"写失败==已完成"的等价类，必须显式拒绝。
+    if [ -d "$STATUS_FILE" ] || ! mv -f "$tmp" "$STATUS_FILE" 2>/dev/null; then
+        echo "警告: 状态文件原子替换失败: $STATUS_FILE" >&2
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    return 0
 }
 
 _write_status_from_exit() {
-    local exit_code="$1"
+    local exit_code="$1" want=""
     if [ "$exit_code" -eq 0 ]; then
-        _status_write "SUCCESS"
+        want="SUCCESS"
     elif [ "$exit_code" -eq 2 ]; then
-        # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE=1）写 GLOBAL_PAUSED，
-        # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可直接区分"人为暂停"与"技术性跳过"
-        if [ "${YIBAN_GLOBAL_PAUSE:-0}" = "1" ]; then
-            _status_write "GLOBAL_PAUSED"
+        # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE）写 GLOBAL_PAUSED，
+        # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可直接区分"人为暂停"与"技术性跳过"。
+        # MF-81⑤：与 _need_second_round 统一走 _is_truthy 一处解析，不再两套取值域。
+        if _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}"; then
+            want="GLOBAL_PAUSED"
         else
-            _status_write "SKIPPED"
+            want="SKIPPED"
         fi
+    else
+        return 0   # 其余退出码不写状态文件（既有口径）
     fi
+    if ! _status_write "$want"; then
+        _log "警告: 状态文件写入失败（本轮结果 $want 未落盘），本轮不得按已完成处理"
+        return 1
+    fi
+    return 0
+}
+
+# ---- sign-status 采信（MF-82）----
+# 状态文本单独不可信：伪造（或在磁盘满时"丢失又补回"）一个 SUCCESS，就能让当天
+# 全部账号一次不签。修法三选定的交叉核对方式：只读 sqlite 查当日**库内了结事实**
+# （sign_tasks 的 done/skipped，兼容 v17 写者 sign_claims 的 done）——数量 > 0 才
+# 与 SUCCESS 相称。查询失败（python 缺失/库不存在/库损坏）与计数为 0 同样按
+# "不一致"处理：拒绝采信 + 双声音告警 + 按未完成继续（fail-closed 的"不轻信"侧）。
+_db_settled_today() {
+    "$PY" - "$DB_FILE" "$(date +%Y-%m-%d)" 2>/dev/null <<'PYEOF'
+import os
+import sqlite3
+import sys
+from urllib.parse import quote
+
+db, day = os.path.abspath(sys.argv[1]), sys.argv[2]
+try:
+    con = sqlite3.connect("file:" + quote(db) + "?mode=ro", uri=True, timeout=5)
+except sqlite3.Error:
+    sys.exit(1)
+n = 0
+try:
+    for table, cond in (("sign_tasks", "state IN ('done','skipped')"),
+                        ("sign_claims", "state = 'done'")):
+        try:
+            n += con.execute(
+                "SELECT COUNT(*) FROM " + table + " WHERE day=? AND " + cond,
+                (day,)).fetchone()[0]
+        except sqlite3.Error:
+            pass   # 表不存在（未跑过对应迁移）按 0 计
+    print(int(n))
+except sqlite3.Error:
+    sys.exit(1)
+finally:
+    con.close()
+PYEOF
+}
+
+_status_credible_success() {
+    local content facts
+    [ -f "$STATUS_FILE" ] || return 1
+    content=$(cat "$STATUS_FILE" 2>/dev/null) || return 1
+    [ "$content" = "SUCCESS" ] || return 1   # 非 SUCCESS 文本：不是"谎报成功"，静默不采信
+    if ! facts=$(_db_settled_today); then
+        echo "警告: sign-status 声称 SUCCESS，但当日库内事实查询失败（$DB_FILE），拒绝采信" >&2
+        _log "警告: sign-status 拒绝采信（库内事实查询失败: $DB_FILE），按未完成处理"
+        return 1
+    fi
+    case "$facts" in ''|*[!0-9]*) facts=0 ;; esac
+    if [ "$facts" -le 0 ]; then
+        echo "警告: sign-status 声称 SUCCESS，但库内当日无已了结任务（疑似伪造/搬运 STATE_DIR），拒绝采信" >&2
+        _log "警告: sign-status 与库内当日事实不符（了结数=$facts），拒绝采信、按未完成处理"
+        return 1
+    fi
+    return 0
 }
 
 # 当日收尾标记已存在 → 当天该做的都已做完（含补签轮），本次触发无需再跑。
@@ -288,13 +415,10 @@ if [ -f "$SECOND_DONE_MARKER" ]; then
     exit 0
 fi
 
-# 检查今天是否已经签到成功
-if [ -f "$STATUS_FILE" ]; then
-    STATUS=$(cat "$STATUS_FILE")
-    if [ "$STATUS" = "SUCCESS" ]; then
-        _log "今天已签到成功，跳过执行 ==="
-        exit 0
-    fi
+# 检查今天是否已经签到成功（MF-82：文本 SUCCESS 必须与库内当日事实交叉核对后才采信）
+if _status_credible_success; then
+    _log "今天已签到成功，跳过执行 ==="
+    exit 0
 fi
 
 # 记录脚本开始执行
@@ -305,7 +429,12 @@ _log "Python版本: $("$PY" --version 2>&1)"
 # ---- 第一轮（首签轮）----
 _run_signin_round
 EXIT_CODE=$?
-_write_status_from_exit "$EXIT_CODE"
+if ! _write_status_from_exit "$EXIT_CODE"; then
+    # MF-81：本轮结果未能落盘——"成功但没人记得"不得按成功收场（写失败 == 已完成
+    # 的等价类禁止存在）。退出码升为 1 给监控声音；下一触发因无状态文件按未完成
+    # 继续判定，这是带告警的降级，不是静默。
+    if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
+fi
 
 # ---- 第二轮（补签轮，进程内）----
 # 首轮结束后仍持锁，任何其他触发（含 07:12 的 cron）都被 flock 挡在外面，
@@ -313,22 +442,33 @@ _write_status_from_exit "$EXIT_CODE"
 if _need_second_round; then
     _wait_until_hhmm "$SECOND_HHMM"
     # 等待期间其它进程进不来（锁在本进程手上）；若等待前状态已是 SUCCESS 则不必补跑
-    if [ -f "$STATUS_FILE" ] && [ "$(cat "$STATUS_FILE")" = "SUCCESS" ]; then
+    # （MF-82：同样必须过库内事实交叉核对，缺省/伪造的 SUCCESS 不再短路补签轮）
+    if _status_credible_success; then
         _log "补签轮：状态已是 SUCCESS，跳过"
     else
         _log "=== 开始补签轮（第二轮）==="
         export YIBAN_SECOND_RUN=1   # signin 据此判定 is_second_run（告警口径/剔除已成功账号）
         _run_signin_round
         EXIT_CODE=$?
-        _write_status_from_exit "$EXIT_CODE"
+        if ! _write_status_from_exit "$EXIT_CODE"; then
+            # 同首签轮：补签轮结果未落盘，"成功"不得静默收场
+            if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
+        fi
         _log "=== 补签轮结束，退出码: $EXIT_CODE ==="
     fi
 else
     _log "补签轮：无需补跑（当日已收尾且无未了结账号）"
 fi
 
-# 当日收尾：标记"该做的都做完了"，避免 07:12 的兜底 cron 再跑第三轮
-: > "$SECOND_DONE_MARKER" 2>/dev/null || true
+# 当日收尾：标记"该做的都做完了"，避免 07:12 的兜底 cron 再跑第三轮。
+# MF-81①：旧实现 `|| true` 零留痕——标记缺失时下一触发判"未收尾"，状态若非
+# SUCCESS 就再跑一整轮真实登录（重复真实登录且无人知晓）。写失败必须双声音；
+# 本轮本以成功收场时把退出码升为 1，让 cron/监控听见。
+if ! : > "$SECOND_DONE_MARKER" 2>/dev/null; then
+    echo "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮" >&2
+    _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
+    if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
+fi
 
 # 退出码与收场日志由 _on_exit（trap EXIT）统一收口：正常收尾、超时击杀、各处跳过
 # 都在同一处留痕，不再各自 echo 一行、也不再漏掉任一条路径
