@@ -842,8 +842,20 @@ class BackupScriptContractTest(unittest.TestCase):
                           f"{name} 不在备份数组里——恢复后该类状态静默丢失")
 
     def test_retention_covers_sha256_sidecars(self):
-        """(c) 清理 glob 必须覆盖 .sha256 侧车（否则无限堆积并泄露每日归档清单）。"""
-        self.assertIn("-name 'yiban-*.sha256'", self.src)
+        """(c) 清理 glob 必须覆盖 .sha256 侧车（否则无限堆积并泄露每日归档清单）。
+
+        M3 批次0（MF-77）把四条裸 find 改写成 rotate_pass（RETENTION 校验 + 最近 K 组
+        下界 + 逐件日志 + 明文从紧 + 删后自检），glob 以参数传入——此处同步钉新形态。
+        行为侧（旧包连侧车一起删、下界内不动、明文侧车 2 天先过期）已由
+        tests/test_backup_e2e.py::RotationGuardTest 活体反证钉死，本条只守"侧车 glob
+        仍在轮转清单里"这一最低静态契约。
+        """
+        self.assertIn("rotate_pass 'yiban-*.sha256'", self.src,
+                      "兜底 glob 不得丢：孤儿/旧命名 .sha256 侧车仍须进轮转")
+        for p in ("'yiban-*.tar.gz.sha256'", "'yiban-*.tar.gz.gpg.sha256'",
+                  "'yiban-*.tar.gz.age.sha256'"):
+            self.assertIn("rotate_pass " + p, self.src,
+                          f"侧车须与各形态归档同命运轮转，缺 {p}")
 
     def test_restore_section(self):
         """(d) --restore 必须有停服提示、删残留 -wal/-shm、恢复锚点、双验。"""
