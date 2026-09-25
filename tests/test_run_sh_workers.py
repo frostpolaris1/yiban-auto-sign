@@ -6,6 +6,12 @@
    标记前移（flock 弹开也留痕、次轮以 second_run 身份运行、SUCCESS
    幂等检查仍在标记块之后）、显式 YIBAN_RUN_TIMEOUT_SEC 的钳位矩阵、
    日志装配延迟到 main() 后 root 只有一个 FileHandler。
+   M3 批次0（MF-81/82）扩展：决定跑/不跑的写入全部判码并 fail-closed
+   （状态目录建不出/不可写、RUN_MARKER noclobber 写失败、_status_write 的
+   mktemp/echo/mv、收尾标记），写失败不得等价于"已完成"；sign-status 的
+   SUCCESS 须与库内当日事实（_db_settled_today 只读 sqlite）交叉核对才采信，
+   伪造件拒绝采信+告警+按未完成继续；.env 缺失/不可读显式告警不静默回落；
+   YIBAN_SECOND_RUN / YIBAN_GLOBAL_PAUSE 统一 _is_truthy 一处解析。
 对应实现：run.sh（workers 参数拼装、noclobber 标记、flock 分支、timeout
    钳位）、scripts/signin.py 的日志装配。
 关键断言：教程里写的 YIBAN_WORKERS=4
@@ -23,6 +29,7 @@
 import io
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -31,6 +38,39 @@ from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
+
+
+def _write_python_wrapper(app_dir):
+    """在 $APP_DIR/.venv/bin/python3 放一个转调当前解释器的包装。
+
+    run.sh 的 sign-status 库内事实交叉核对（MF-82）直接调 $PY（不经假 timeout），
+    必须保证它在 Git Bash 与 WSL 下都存在且能跑 sqlite3。
+    """
+    venv_bin = os.path.join(app_dir, ".venv", "bin")
+    os.makedirs(venv_bin, exist_ok=True)
+    path = os.path.join(venv_bin, "python3")
+    with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+    os.chmod(path, os.stat(path).st_mode | 0o755)
+    return path
+
+
+def _seed_facts_db(db_path, day, states):
+    """建一个最小 sign_tasks 表并写入当日事实行（MF-82 交叉核对的数据源）。
+
+    只建 run.sh 采信查询用到的三列（phone/day/state）——刻意不复用引擎的建库代码，
+    这样 run.sh 侧查询与表结构的耦合一旦漂移，这里的用例会红而不是静默放行。
+    """
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS sign_tasks "
+                    "(phone TEXT, day TEXT, state TEXT)")
+        for st in states:
+            con.execute("INSERT INTO sign_tasks VALUES (?,?,?)",
+                        ("138****0000", day, st))
+        con.commit()
+    finally:
+        con.close()
 
 FAKE_FLOCK = "#!/usr/bin/env bash\nexit 0\n"
 #: 记录被调用的全部参数（`$*`）：要看的就是 "--workers 4" 有没有传下去
@@ -168,7 +208,7 @@ class RunShMarkerTest(unittest.TestCase):
             "FAKE_FLOCK_EXIT": "0",
         })
         for k in ("YIBAN_SECOND_RUN", "YIBAN_RUN_TIMEOUT_SEC", "YIBAN_SIGN_END",
-                  "YIBAN_LOG_FILE"):
+                  "YIBAN_LOG_FILE", "YIBAN_GLOBAL_PAUSE", "YIBAN_DB_FILE"):
             self.env.pop(k, None)
         # PATH 注入假命令（Git Bash 需 POSIX 路径；无 cygpath 时做朴素转换）
         conv = subprocess.run(
@@ -231,18 +271,220 @@ class RunShMarkerTest(unittest.TestCase):
         self.assertIn("SECOND_RUN=1", calls,
                       f"次轮必须以补签轮身份运行，实际: {calls}")
 
+    def _status_path(self):
+        return os.path.join(self.state, f"sign-status-{_today()}.txt")
+
+    def _settled_path(self):
+        return os.path.join(self.state, f"yiban-settled-{_today()}.marker")
+
+    def _stderr(self, r):
+        return r.stderr.decode("utf-8", "replace")
+
+    def _probe_state_writable(self):
+        """True = 状态目录当前仍可创建文件（注入未生效）。"""
+        probe = os.path.join(self.state, ".perm-probe")
+        try:
+            with io.open(probe, "w"):
+                os.remove(probe)
+            return True
+        except OSError:
+            return False
+
+    def _make_state_dir_unwritable_or_skip(self):
+        """把状态目录变成"实际不可写"：chattr +i（对 root 也生效）→ chmod 0500
+        （仅非 root 有意义）→ 都不生效（Windows/drvfs、无 e2fsprogs）时 skip。"""
+        if shutil.which("chattr"):
+            r = subprocess.run(["chattr", "+i", self.state],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                if not self._probe_state_writable():
+                    self.addCleanup(subprocess.run, ["chattr", "-i", self.state],
+                                    capture_output=True)
+                    return
+                subprocess.run(["chattr", "-i", self.state], capture_output=True)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root 且 chattr 不可用：权限位约束不住写入")
+        os.chmod(self.state, 0o500)
+        self.addCleanup(os.chmod, self.state, 0o700)
+        if not self._probe_state_writable():
+            return
+        os.chmod(self.state, 0o700)
+        self.skipTest("当前文件系统不强制 unix 写权限位（如 Windows drvfs）")
+
+    # ---------------- MF-82：sign-status 采信必须交叉核对库内事实 ----------------
+
     def test_success_status_check_still_skips_after_marker(self):
-        """STATUS_FILE SUCCESS 幂等检查保持在标记块之后：已成功的当日直接跳过。"""
+        """STATUS_FILE SUCCESS 幂等检查保持在标记块之后：已成功的当日直接跳过。
+
+        MF-82 同批更新：SUCCESS 现在必须与库内当日事实一致才采信——本用例补种
+        一条当日 done 行使"真成功的当日"仍走幂等跳过（旧断言钉的是"文本即采信"）。
+        """
+        _write_python_wrapper(self.tmp)
+        db = os.path.join(self.tmp, "facts.db")
+        _seed_facts_db(db, _today(), ["done"])
+        self.env["YIBAN_DB_FILE"] = db
         self.assertTrue(os.path.exists(self._marker_path()) is False)
         with io.open(self._marker_path(), "w", encoding="utf-8") as f:
             f.write("")
-        with io.open(os.path.join(self.state, f"sign-status-{_today()}.txt"),
-                     "w", encoding="utf-8") as f:
+        with io.open(self._status_path(), "w", encoding="utf-8") as f:
             f.write("SUCCESS")
         r = self._run()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("今天已签到成功", self._log_text())
         self.assertEqual(self._timeout_calls(), [], "SUCCESS 幂等跳过不得执行签到")
+
+    def test_forged_success_status_without_db_facts_is_rejected(self):
+        """活体反例（MF-82）：手写 SUCCESS 状态文件、临时库当日无完成事实 ⇒
+        拒绝采信 + 双声音告警 + 按未完成继续（本轮真实执行），且不得以成功退 0。"""
+        _write_python_wrapper(self.tmp)
+        db = os.path.join(self.tmp, "facts.db")
+        _seed_facts_db(db, _today(), [])        # 库存在但当日 0 条已了结
+        self.env["YIBAN_DB_FILE"] = db
+        self.env["FAKE_TIMEOUT_EXIT"] = "2"     # 本轮以"未了结"收场：伪造件会被 SKIPPED 覆盖
+        with io.open(self._status_path(), "w", encoding="utf-8") as f:
+            f.write("SUCCESS")                 # 伪造/搬运来的状态文件
+        r = self._run()
+        self.assertNotEqual(r.returncode, 0, "伪造 SUCCESS 不得让脚本退 0 报成功")
+        self.assertIn("拒绝采信", self._stderr(r))
+        self.assertIn("拒绝采信", self._log_text(), "告警必须双声音（stderr + 当日日志）")
+        calls = self._timeout_calls()
+        self.assertTrue(any(c.startswith("SECOND_RUN=") for c in calls),
+                        f"拒绝采信后必须按未完成继续执行，实际调用: {calls}")
+        with io.open(self._status_path(), encoding="utf-8") as f:
+            self.assertNotEqual(f.read().strip(), "SUCCESS",
+                                "本轮失败后不得仍挂着 SUCCESS")
+
+    def test_real_db_facts_day_with_success_status_skips(self):
+        """交叉核对的正向对照：当日库内有 skipped 了结行 ⇒ SUCCESS 正常采信。"""
+        _write_python_wrapper(self.tmp)
+        db = os.path.join(self.tmp, "facts.db")
+        _seed_facts_db(db, _today(), ["skipped"])
+        self.env["YIBAN_DB_FILE"] = db
+        with io.open(self._marker_path(), "w", encoding="utf-8") as f:
+            f.write("")
+        with io.open(self._status_path(), "w", encoding="utf-8") as f:
+            f.write("SUCCESS")
+        r = self._run()
+        self.assertEqual(r.returncode, 0, self._stderr(r))
+        self.assertIn("今天已签到成功", self._log_text())
+        self.assertEqual(self._timeout_calls(), [], "可信 SUCCESS 不得触发重复签到")
+
+    # ---------------- MF-81：决定跑/不跑的写入全部判码、fail-closed ----------------
+
+    def test_unwritable_state_dir_refuses_run_without_round(self):
+        """活体反例（MF-81）：状态目录置不可写 ⇒ 拒绝运行（不跑）、写不出任何
+        SUCCESS、也绝不执行签到轮次，并给出带声音的告警。
+
+        注入走 chattr +i（root 也挡）或 chmod 0500；两条拒绝线（STATE_DIR 预检 /
+        RUN_MARKER 写失败判码）任一命中都算拒绝——共同口径是"拒绝运行"。"""
+        self._make_state_dir_unwritable_or_skip()
+        r = self._run()
+        self.assertEqual(r.returncode, 1, self._stderr(r))
+        self.assertIn("拒绝运行", self._stderr(r))
+        self.assertEqual(self._timeout_calls(), [], "状态目录不可写时不得执行签到轮次")
+        self.assertFalse(os.path.exists(self._status_path()),
+                         "不得留下（更不得写出）SUCCESS")
+
+    def test_uncreatable_state_dir_is_fatal(self):
+        """`mkdir -p "$STATE_DIR"` 判码：目录建不出来（父路径是文件）⇒ 不跑并告警。
+
+        不依赖权限位，Windows/WSL 都必须成立。
+        """
+        blocker = os.path.join(self.tmp, "blocker")
+        with io.open(blocker, "w", encoding="utf-8") as f:
+            f.write("x")
+        self.env["YIBAN_STATE_DIR"] = os.path.join(blocker, "state")
+        r = self._run()
+        self.assertEqual(r.returncode, 1, self._stderr(r))
+        self.assertIn("无法创建状态目录", self._stderr(r))
+        self.assertEqual(self._timeout_calls(), [], "状态目录建不出来时不得执行签到")
+
+    def test_run_marker_write_failure_refuses_and_is_not_second_run(self):
+        """RUN_MARKER noclobber 写失败且文件不存在（路径被占成目录）⇒ 不得当成
+        "当日已触发过"（那会静默关掉进程内补签轮）：必须不跑 + 告警。"""
+        os.mkdir(self._marker_path())
+        r = self._run()
+        self.assertEqual(r.returncode, 1, self._stderr(r))
+        self.assertIn("无法写入当日触发标记", self._stderr(r))
+        self.assertEqual(self._timeout_calls(), [], "判定不了首签/补签时不得执行签到")
+        self.assertIn("拒绝运行本轮", self._log_text(), "告警必须进当日日志")
+
+    def test_status_write_failure_escalates_exit_code(self):
+        """_status_write 的 mv 步失败（状态文件路径被占成目录）⇒ "成功"不得静默
+        收场：告警 + 退出码升为 1 + 不残留 .tmp 半写件。"""
+        os.mkdir(self._status_path())
+        r = self._run()                          # 假 timeout 退 0（= 签到"成功"）
+        self.assertEqual(r.returncode, 1,
+                         "状态写失败时成功不得按 0 收场（写失败==完成的等价类禁止）")
+        self.assertIn("状态文件原子替换失败", self._stderr(r))
+        self.assertIn("状态文件写入失败", self._log_text())
+        leftovers = [n for n in os.listdir(self.state) if ".tmp." in n]
+        self.assertEqual(leftovers, [], "失败的临时件必须清掉")
+
+    def test_settled_marker_write_failure_escalates_exit_code(self):
+        """收尾标记 `: > "$SECOND_DONE_MARKER"` 写失败（被占成目录）⇒ 不得 || true
+        静默：告警 + 退出码升为 1（下一触发重判未收尾的风险必须有声音）。"""
+        os.mkdir(self._settled_path())
+        r = self._run()
+        self.assertEqual(r.returncode, 1, self._stderr(r))
+        self.assertIn("当日收尾标记写入失败", self._stderr(r))
+        self.assertIn("当日收尾标记写入失败", self._log_text())
+
+    # ---------------- MF-81④⑤：.env 显式告警 / 取值域统一 ----------------
+
+    def test_env_missing_warns_but_continues(self):
+        """.env 不存在 ⇒ stderr + 日志显式告警，按默认值继续（不让 cron 天天红）。"""
+        r = self._run()
+        self.assertEqual(r.returncode, 0, self._stderr(r))
+        self.assertIn(".env 不存在", self._stderr(r))
+        self.assertIn(".env 不存在", self._log_text())
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root 无视权限位")
+    def test_env_unreadable_warns_but_continues(self):
+        """.env 存在但不可读 ⇒ 显式告警并继续用默认值（MF-81④）。"""
+        env_file = os.path.join(self.tmp, ".env")
+        with io.open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_SIGN_END=07:50\n")
+        try:
+            os.chmod(env_file, 0o000)
+            if os.access(env_file, os.R_OK):
+                self.skipTest("当前文件系统不强制读权限位")
+            r = self._run()
+        finally:
+            os.chmod(env_file, 0o644)
+        self.assertEqual(r.returncode, 0, self._stderr(r))
+        self.assertIn("不可读", self._stderr(r))
+
+    def test_global_pause_truthy_value_shares_one_domain(self):
+        """MF-81⑤：YIBAN_GLOBAL_PAUSE 与 _need_second_round 统一走 _is_truthy——
+        "true" 必须同样写 GLOBAL_PAUSED（旧口径 `= "1"` 会误写成 SKIPPED）。"""
+        self.env["YIBAN_GLOBAL_PAUSE"] = "true"
+        self.env["FAKE_TIMEOUT_EXIT"] = "2"
+        r = self._run()
+        self.assertEqual(r.returncode, 2, self._stderr(r))
+        with io.open(self._status_path(), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "GLOBAL_PAUSED")
+
+    def test_second_run_truthy_value_shares_one_domain(self):
+        """MF-81⑤：YIBAN_SECOND_RUN=true 必须以"补签轮身份"被识别——
+        旧口径 `= "1"` 会把 true 当成首签轮去评估第三轮（本用例钉住不再评估）。"""
+        scripts = os.path.join(self.tmp, "scripts")
+        os.makedirs(scripts, exist_ok=True)
+        # 桩 signin：--second-run-check 恒答 10（需要补跑）。若 true 未被识别为
+        # 补签轮身份，就会真的进入"等待→二轮"分支（00:01 已过点），行为可观测。
+        with io.open(os.path.join(scripts, "signin.py"), "w", encoding="utf-8",
+                     newline="\n") as f:
+            f.write("import sys\nsys.exit(10 if '--second-run-check' in sys.argv else 0)\n")
+        _write_python_wrapper(self.tmp)
+        self.env["YIBAN_SECOND_RUN"] = "true"
+        self.env["YIBAN_SECOND_RUN_TIME"] = "00:01"
+        r = self._run()
+        self.assertEqual(r.returncode, 0, self._stderr(r))
+        calls = self._timeout_calls()
+        self.assertEqual([c for c in calls if c.startswith("SECOND_RUN=")],
+                         ["SECOND_RUN=true"],
+                         f"true 身份下不得再评估第三轮，实际: {calls}")
+        self.assertIn("无需补跑", self._log_text())
 
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
