@@ -34,6 +34,8 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
+from yiban import clock
+
 from _mail_body import render_body
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -238,8 +240,7 @@ class Batch16FixesTest(unittest.TestCase):
              mock.patch.object(h, "handleError"):
             h.emit(record)  # 失败降级
         h.emit(record)  # 目录已"恢复"，重试应成功
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()  # 按天 handler 取业务钟（yiban.clock），宿主 TZ 下须同源
         path = os.path.join(self.log_dir, f"sign-{today}.log")
         self.assertTrue(os.path.exists(path), "重试后日志文件应已创建")
         with open(path, encoding="utf-8") as f:
@@ -1276,7 +1277,7 @@ class Batch18FixesTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         db.create_user("old@qq.com", self.webapp.generate_password_hash(USER_PASS_B18F))
         db.soft_delete_user_with_accounts("old@qq.com")
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn = db.get_conn()
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "old@qq.com"))
         conn.commit()
