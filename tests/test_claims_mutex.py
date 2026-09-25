@@ -43,7 +43,8 @@ TEST_KEY = "a" * 64
 DAY = "2026-09-16"
 PHONE = "13800138000"
 PHONE_B = "13800138001"
-#: 旧格式身份串（含进程号段）：本文件多数用例只把它当不透明的持有者标识
+#: 竞位者身份串（合成值，非真实旧格式——真实旧格式含 `:workers:` 中缀，本串按解析
+#: 口径落到 unknown）：本文件多数用例只把它当不透明的持有者标识
 OWNER_A = "hostA:100:090000"
 OWNER_B = "hostB:200:090001"
 
@@ -229,8 +230,8 @@ class SameOwnerExclusionE2ETest(_Base):
         wins = [r for r in results if r["ok"]]
         self.assertEqual(len(wins), 1,
                          f"两个不同进程的身份串必须恰一个领到，实际 {[r['ok'] for r in results]}")
-        self.assertIn(f":{wins[0]['owner'].split(':')[-2]}:", wins[0]["owner"],
-                      "获胜方的身份串必须含自己的进程号（可追溯是谁在跑）")
+        self.assertIn(wins[0]["owner"], (owner1, owner2),
+                      "获胜方必须是两个竞争者身份串之一（各自带本进程号，可追溯是谁在跑）")
         self.assertEqual(self._row()["owner"], wins[0]["owner"],
                          "库里持有者必须就是报告获胜的那一方")
 

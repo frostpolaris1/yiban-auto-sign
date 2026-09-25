@@ -134,10 +134,12 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     children = []
     for i, slot in enumerate(slot_list):
         env = os.environ.copy()
-        # 身份串的唯一构造处在 egress（写入与解析同一份口径）：稳定槽位名
-        # `worker-{槽位}@{主机名}`——跨重启不变，故重启后立刻认领自己上一轮的在飞账号；
-        # 代价是同一槽位名不得两台机器同时跑（跨主机靠 @主机名 区分，同机由本进程
-        # 持有的全局锁 signin-run.lock 挡住，故那把锁不能去掉）。
+        # 身份串的唯一构造处在 egress（写入与解析同一份口径）：这里传的稳定槽位名
+        # `worker-{槽位}@{主机名}` 跨重启不变（界面对象、槽位号与持久化键的口径），
+        # 但**不再等于重启后立刻认领自己上一轮的在飞账号**——重入须出示上一代 epoch，
+        # 重启后的新进程没有它，只能等租约过期或心跳回收。代价是同一槽位名不得两台机器
+        # 同时跑（跨主机靠 @主机名 区分，同机由本进程持有的全局锁 signin-run.lock 挡住，
+        # 故那把锁不能去掉）。
         env["YIBAN_EXECUTOR_ID"] = egress.worker_owner(slot)
         env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{slot}"
         proxy = egress.resolve(egress.ROLE_WORKER, slot)
@@ -221,8 +223,9 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     interval = interval or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
     os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
     # 身份串：兜底常驻与单执行体/并行执行体各用**稳定的槽位名**（`fallback@{主机名}`），
-    # 跨重启不变 ⇒ 重启后立刻接手自己上一轮的在飞账号；代价是同一槽位名不得两台机器
-    # 同时跑（跨主机靠 @主机名 区分，同机由下面那把 `signin-run.lock.fallback` 挡住）。
+    # 跨重启不变只服务界面与持久化键；**不等于重启后立刻接手自己上一轮的在飞账号**——
+    # 重入须出示上一代 epoch，重启后没有它，只能等租约过期或心跳回收。代价是同一槽位名
+    # 不得两台机器同时跑（跨主机靠 @主机名 区分，同机由下面那把 `signin-run.lock.fallback` 挡住）。
     os.environ.setdefault("YIBAN_EXECUTOR_ID", egress.fallback_owner())
     proxy = egress.resolve(egress.ROLE_FALLBACK)
     logger.info("兜底执行体启动（出口: %s，扫描间隔 %ss）", egress.describe(proxy), interval)
