@@ -608,3 +608,26 @@ ORIGINAL (596)          counted=596  limit=600  violations=NONE
 本轮协调者自己犯并当场改掉的一个错，记下来当反面样本：改准 MF-63 时把 occurrence 计数写成
 "24 处直接向用户承诺天数"——那正是被判出回归的同一类过强陈述（里面混着注释行和一处不相干的
 「每 7 天」排期选项）。改法是只报命令可复点的两个数，并把两个例外写进句子。
+
+### 11.8 FA-2A 收尾轮执行结果（09-25 下午，三组并行 + 协调者残留批）
+
+18 条判定：**已改准 16 / 已改到位 1（FA-64，真落点在 `alerts.py` 而非派发表的
+`workers.py`——FA 表那行标错了文件）/ 前置未满足不动 1**；另有 FA-69 因"句子在 `round.py`
+不在 `schedule.py`"被组 A 按越界规则移交、由协调者改准。**代理报的数不采信，逐条独立复核**：
+
+| 组 | 提交 | 文件 | 独立复核结果 |
+|---|---|---|---|
+| B | `90bf781` | render.py + 4 只 JS | 剥注释后逐字节相同；`edge_front_sec` 确无生产调用点（唯一读者 `app.py:875` 转发 + `test_web_boundary.py:3081/3179`）；`_mask_addr` 确为逗号逐项打码（`config.py:141`）且 `MailAddrMaskingTest` 在守；`data-view` 全仓仅 `date-field.js:90` 一处写入 |
+| C | `3b1c989` | 5 模板 + 1 JS + loadtest README | `ui.html` 的"越界"是**注释例字自触发**：原版那句讲"注释不嵌套"的例字里就带着注释结束标记，块被提前闭合、后面的散文当正文输出。另 6 文件剥注释相同；`{% include %}` 引用 ui.html 实测 0 处（前置解除）、from-import 真实引用点 16 处（代理报 16，含自身示例行 1 处已剔除口径核对） |
+| A | `5c02ed7` | state_cleanup / audit_chain / mail/__init__ | 3 文件 AST 等价；`state_cleanup.py` 项目内 import 只有 `state_gc` 一条、取时两处走 stdlib（宿主时区），生效截止在 `state_gc._cutoff`（北京钟）——UTC 主机上日志文案与实际删除口径差一天，代理把这条难看的写进去了，没软化 |
+| 残留批 | 协调者自做 | round / state_io / mail + 5 模板 2 JS | 9 文件剥注释相同；`_sched_marker_exists` 的真实读者是 `_is_second_run()`→`runner.py:342`（补签轮剔除已了结账号），告警侧只是取来不读 |
+
+**门禁**：合并后全量 `5 failed, 2901 passed, 7 skipped, 19 errors`——红集是基线 7 条的**子集**
+（docker 4 + `MailClearAdminToTipTest` 1；两条 `ManualSignExitTest` 这轮绿）。基线本身在三次
+近乎相同的树上跑出过 7 / 8 / 5 三种红数 ⇒ **单轮全量不可作判据**，这条要写进 MF-38 的证据里。
+
+**未进登记表、已移交的三件事**（避免双写编号，留给审查流收口或用户拍板）：
+1. `loadtest` 三条代码缺口（`delay_ms/fail_rate` 不回显、探测侧无 `requests_per_account`、
+   每账号耗时缺 p50/p95）——只在 R12b 单元报告里，登记表 grep 无命中。
+2. FA-56 原文括注"`app.py` 转发器同样零读者"已过期（`test_web_boundary.py` 在读）。
+3. `/mine` 别称在 10+ 文件里仍与在册端点混写（本轮只清了 FA-113 点名的 8 处叙述）。
