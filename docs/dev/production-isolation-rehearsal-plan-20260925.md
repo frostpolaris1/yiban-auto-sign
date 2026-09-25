@@ -143,22 +143,52 @@ ip netns exec $NS ip route                          # 判据用
 
 ### S3 netns 专属 hosts + 证书（复用 mock_env，零全局写）
 
+> ⚠ **S3 收敛顺序（终审 Important②，先读再做）**：`ip netns exec` 在 exec 启动的瞬间，把
+> `/etc/netns/$NS/hosts` **当前 inode** over-mount 到 `/etc/hosts`（iproute2 语义）；而
+> `mock_env.py:apply_hosts` 用 tmp + `os.replace`（rename）落盘，会换一个新 inode。若在**同一次
+> exec** 内既写 hosts 又做 `verify_zero_egress`，自检里的 `getaddrinfo` 只看得见 exec 启动时
+> 钉住的那个旧 inode（首轮 = 覆盖文件尚未存在 ⇒ 回落到宿主真实 `/etc/hosts`；后续轮 = rename
+> 前的旧 inode），**永远看不到本轮刚写进去的标记块** ⇒ 自检必失败 ⇒ rc≠0 触发 `mock_env.py`
+> 的 try/finally `--restore`（`488-497`）把标记块剥掉。反复重跑停在同一状态=确定性死胡同。
+> 因此把「写 hosts」与「验证零外联」拆到**两个进程**：先无 netns、用 `apply_hosts` 一次落盘
+> （不带自检、不带 finally，故不会被剥），再另起一次全新 `ip netns exec`——那次的 over-mount
+> 钉住的正是已含标记块的 inode，自检的 `getaddrinfo` 当场可见 ⇒ 通过。
+
 ```bash
-mkdir -p /etc/netns/$NS
+mkdir -p /etc/netns/$NS $B
 env | grep -i proxy && { echo "环境含代理键，中止"; exit 2; }   # isolation.assert_no_proxy 同源要求
+# (a) 预置（pre-seed）hosts：宿主 shell 里、任何 ip netns exec 之前。先拿宿主当前 hosts 作底
+#     （netns 私阅副本，localhost 等条目不丢，绝不写回宿主），再直接调用 mock_env 的写函数
+#     （幂等、无自检、无 finally），rename 一次把标记块落进源文件，令其 inode 立即携带映射。
+cp /etc/hosts /etc/netns/$NS/hosts
+R=$R NS=$NS B=$B python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["R"], "scripts", "loadtest"))
+from mock_env import apply_hosts, DEFAULT_DOMAINS
+seed = os.path.join("/etc", "netns", os.environ["NS"], "hosts")
+apply_hosts(seed, DEFAULT_DOMAINS, os.path.join(os.environ["B"], "hosts.orig"))
+PY
+# (b) 全新 ip netns exec 跑完整 mock_env：over-mount 钉住 (a) 已落盘的标记块 inode ⇒
+#     进程内 getaddrinfo 见回环、自检通过；其内部 apply_hosts 幂等命中"已是目标内容，跳过"
+#     （返回 False ⇒ hosts_changed=False ⇒ 绝不触发 finally --restore），不会剥掉 (a) 的预置；
+#     证书仍由 ensure_certs 就地生成（幂等）。
 ip netns exec $NS python3 $R/scripts/loadtest/mock_env.py \
   --base-dir $B --hosts-file /etc/netns/$NS/hosts \
   --no-iptables --i-understand-no-isolation \
   --egress-probe-ip 203.0.113.7
 ```
 
-要点（都有代码依据，不猜）：`--hosts-file` 只写该路径（`mock_env.py:apply_hosts`），不碰 `/etc/hosts`；`--no-iptables` 在 netns 路径下是**升级而非降级**——netns 无路由，iptables 兜底本无必要（`apply_iptables` 若误跑，作用域也仅是 netns 的空表）；`--egress-probe-ip` 必填是 Task 4 的 fail-closed 门（`mock_env.py:404-415` 启动断言 + `verify_zero_egress:358-360`），203.0.113.7 为 RFC 5737 TEST-NET-3 合成靶（`capacity_probe.py:84-85` 同款），在 netns 内必然"不可达"= 判定通过。
+要点（都有代码依据，不猜）：`--hosts-file` 只写该路径（`mock_env.py:apply_hosts`），不碰宿主 `/etc/hosts`；(a) 的 `apply_hosts` 与 (b) 的 mock_env 内部 `apply_hosts` 是**同一函数**（`mock_env.py:183`，幂等 tmp+rename），(a) 预置后 (b) 命中"已是目标内容，跳过"分支（`mock_env.py:191-193`），故 (b) 不会二次改 inode、也不触发 `488` 的 finally；`--no-iptables` 在 netns 路径下是**升级而非降级**——netns 无路由，iptables 兜底本无必要（`apply_iptables` 若误跑，作用域也仅是 netns 的空表）；`--egress-probe-ip` 必填是 Task 4 的 fail-closed 门（`mock_env.py:404-415` 启动断言 + `verify_zero_egress:358-360`），203.0.113.7 为 RFC 5737 TEST-NET-3 合成靶（`capacity_probe.py:84-85` 同款），在 netns 内必然"不可达"= 判定通过。
 
-**判据**：`mock_env.py` rc=0；双向核验——
+**首轮预期行为（拆序后）**：(a) 只落盘一次 hosts（宿主私阅 + 标记块），不跑自检、不改 iptables、不生成证书——
+无"自检失败被 finally 剥回"的窗口，源文件 inode 稳定携带标记块；(b) 是第一次 `ip netns exec`，
+over-mount 即命中该 inode，自检当场通过、rc=0、证书就绪。**判据**：`mock_env.py` rc=0；双向核验——
 `ip netns exec $NS grep -c 'yiban-loadtest-begin' /etc/hosts` ≥ 1（over-mount 生效）；
 `grep -c 'yiban-loadtest-begin' /etc/hosts`（宿主）**= 0**；
 `getent hosts api.uyiban.com`（宿主）仍解析真实地址；
 `md5sum /etc/hosts` == S0 基线；`iptables -S OUTPUT` diff 基线 == 空。
+**若 rc≠0 或双向核验不过**：先按本节顶部"收敛顺序"复查 (a)/(b) 是否拆到两个进程、(a) 是否早于任何
+`ip netns exec`——**不要**改判为"要动机器全局机制"（那是 §6 的独立前提，见 G4）。
 **回滚**：`ip netns exec $NS python3 .../mock_env.py --base-dir $B --hosts-file /etc/netns/$NS/hosts --restore`；`rm -rf /etc/netns/$NS`。
 
 ### S4 mock 上游启动 + 自检
@@ -389,7 +419,7 @@ python3 $R/scripts/loadtest/mock_env.py --base-dir $B --restore   # 仅 §6 路�
 - **G1（本预案第一依据缺口）**：引擎无进程级 API base 覆盖（`yiban/fyiban/protocol.py:52-58` 常量直连、URL 固定 443），导致裸机演练必须借道 netns。**建议**（不是本批范围）：协议层加一个受 `YIBAN_UPSTREAM_*` 环境变量驱动的 host 映射注入点（同 `egress.py` 的"单口径"风格），落地后裸机路径可去掉 hosts 机制，仅留 CA env + 无代理。
 - **G2**：代理通道（`client.py:140-142`）是现成的进程级出口改写，但 `mock_yiban.py` 无 CONNECT/MITM 形态，代理指 mock 这条路今天走不通；若 G1 落地则此路可废弃。
 - **G3**：引擎 `requests.Session` 的 `trust_env=True` 无法按进程关闭（`isolation.py:loadtest_session` 的 `trust_env=False` 只管 loadtest 自建会话，docstring 自述"不触碰 yiban/ 引擎"）。本预案以"演练 shell 起手 `env | grep -i proxy` 必须为空"（S3）+ `isolation.strip_proxy` 同源纪律兜住；长期建议加 `YIBAN_TRUST_ENV=0` 显式键。
-- **G4**：`ip netns exec` 对 `/etc/netns/<ns>/hosts` 的 over-mount 依赖 iproute2 行为，不同发行版/版本未逐一实测——操作单已用"双向核验"（S3 判据）把这一点从假设降级为每轮必查项；若目标机核验不过，直接落 §6 兜底并复盘。
+- **G4**：`ip netns exec` 对 `/etc/netns/<ns>/hosts` 的 over-mount 依赖 iproute2 行为，不同发行版/版本未逐一实测——操作单已用"双向核验"（S3 判据）把这一点从假设降级为每轮必查项。核验不过时**第一反应是复查 S3 的收敛顺序**（(a) 预写是否落实在任何 `ip netns exec` 之前、"写"与"验证"是否拆成了两个进程、`/etc/netns/$NS/hosts` 磁盘内容当下是否含标记块）——"自检永不过、标记块被 finally 剥掉"的表象与"over-mount 不生效"几乎不可分辨，直接跳 §6 会把**顺序误调用**成机器全局改写（生产机 hosts/iptables）的许可，正是本预案要防的误诊陷阱；§6 只属于它自己的前提（netns 与 docker 双双不可用），确有证据表明目标机 iproute2 无按文件 over-mount 语义时才进入 §6，并复盘记入当批"异常与处置"。
 - **G5**：容器形态 `supervisord.conf` 无 `[unix_http_server]`/ctl 配置，`supervisorctl status` 不可用——C4 判据因此用 `docker top` + 回环探测替代；若日后要 supervisorctl 化，属容器基建，另立任务。
 - **G6**：`mock_env.py:488` 的 finally 还原门条件偏窄（Task 4 台账已 defer："hosts_changed and …" 应含 `ipt_touched`），仅在 §6 兜底路径有残留风险，S7/§6-4 的 `--check` 复核是它的运行时补丁；代码修复随批次 1+。
 - **G7**：本预案验证的是"部署路径 + 零真实外联"，**不**产生 release-gate §1 条件②（生产机真实签到一轮）与 §3 有效轮次——晋升 `server-web` 仍需演练之后单独完成真实轮取证，两份证据不可互替。
