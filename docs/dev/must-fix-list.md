@@ -742,7 +742,26 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 - **修法**：用例自备状态、不依赖文件内顺序；归测试质量批（与 MF-38 干扰家族同批）。
 - **现网三态**：不适用（纯测试面）。
 
-**下一空号：MF-108**。
+### MF-108 CI 日期边界测试族：裸 `now()`/字面日期与北京钟错位 ⇒ 机器时区日期≠北京日期的时段全量大面积红（CI-only）
+- **现象**（2026-09-25 批次 0 合并 push 首跑发现）：被测代码统一走 `yiban.clock` 北京钟，
+  而一批用例自带裸 `datetime.now()`/`date.today()`/字面日期，两者**日期**在"机器时区日期≠北京日期"
+  的时段（UTC 16:00–24:00，即北京 00:00–08:00）错位 ⇒ 全量大面积红。实测 CI（develop@19d6f13，
+  run 36160538401，16:24 UTC 触发）：**36 failed / 3011 passed / 348s**；同代码本机（北京时区）
+  同时段仅 2 败（同文件同族）；此前白天全量绿 ⇒ 历史上 CI 也有"深夜跑必红、白天跑绿"的潜规则。
+- **证据**：`TZ=UTC` 本机复现抽样 **4/4 同名**（`test_logs_by_date` 两条、
+  `test_breaker::test_write_sign_state_records_dur`、`test_state_gc::test_retention_boundary_is_by_filename_date`）；
+  断言原文可见双钟错位（`sign-2026-09-26.log != sign-2026-09-25.log`、
+  `datetime(2026,9,26,2,21) not <= datetime(2026,9,25,23,59)`）。MF-105 是本族单例
+  （批 0 Task 7 只修了 `test_clock_jump_backward_blocked` 等三处个例），未做族级清扫。
+  失败清单 36 条全数符合该模式（scheduler_gate/container_scheduler/schedule_retry/state_gc/
+  masking_ssrf_gaps/run_sh_workers/breaker/logs_by_date/no_position/host_exit_semantics/
+  multi_executor_engine/registration_pause/admin_creds_masked_ops/login_e2e_mock/manual_sign_reporting/verify_jobs）。
+- **验收不变量**：`grep -rnE "datetime\.now\(|date\.today\(|utcnow\(" tests/` 中凡涉"当日"语义者
+  一律锚到 `yiban.clock`（或显式 freeze）；**`TZ=UTC` 下全量 0 失败**（MF-105 判据推广到族）。
+- **现网三态**：不涉现网（纯测试面）；现网影响 = CI 深夜跑必红 ⇒ CI 信号不可信。
+- **处置**：随批 1 第 0 段（CI 双轨 + 测试瘦身）同批修；修前 CI 全量轨排程避开 UTC 16:00–24:00 窗口。
+
+**下一空号：MF-109**。
 
 ## 待裁决（11 条：十条已裁决或关闭，仅 #11 备份口令轮换等你手动执行）
 
