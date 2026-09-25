@@ -9,7 +9,7 @@
 - `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
 - `_db_file` / `_env_file`：最近一次 `init_db(...)` 的库路径 / .env 路径
 - `DB_DEFAULT`：库路径默认值（`YIBAN_DB_FILE` 或 `"yiban.db"`）
-- `get_conn()` / `is_initialized()` / `pool_db_declared()`
+- `get_conn()` / `is_initialized()` / `current_db_file()` / `pool_db_declared()`
 
 **为什么 `init_db` 不在这里**：`tests/test_store_db_move.py` 钉住"真正的 `init_db` 定义
 只能在 `yiban/store/db.py`"（建连与建表/迁移同属启动序列，还要与冻结的历史迁移函数
@@ -23,6 +23,7 @@
 副本上、真连接关不掉——详见 db.py 里 `__getattr__` 与 `_StateForwardingModule` 的说明）。
 """
 import os
+import sqlite3
 import threading
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
@@ -62,6 +63,24 @@ def is_initialized():
     不启用缓存——避免 get_conn 隐式 init 在工作目录创建空库。
     """
     return _conn is not None
+
+
+def current_db_file():
+    """当前单例连接**实际**指向的库文件（`PRAGMA database_list` 的 main）；取不到 → ""。
+
+    与 `_db_file` 的分工：`_db_file` 是"最近一次 `init_db` 声明的路径"，而 `init_db`
+    在单例连接已存在时会刷新 `_db_file` 却直接复用旧连接——此时两者不一致。凡"必须
+    写进目标库"的调用（如清库留痕）都要按**实际连接**判定，否则审计会落到另一个库。
+    """
+    if _conn is None:
+        return ""
+    try:
+        for row in _conn.execute("PRAGMA database_list"):
+            if row[1] == "main":
+                return row[2] or ""
+    except sqlite3.Error:
+        return ""
+    return ""
 
 
 def set_conn(conn):

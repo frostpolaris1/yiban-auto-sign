@@ -30,6 +30,7 @@
 """
 import hashlib
 import os
+import pathlib
 import sqlite3
 
 #: 清库要看的表（指纹口径与"清空对象"对齐）：缺失的表按 0 计，不因旧 schema 报错。
@@ -44,16 +45,33 @@ def _digest(payload):
     return _FP_PREFIX + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def table_counts(db_path, tables=PURGE_TABLES):
-    """→ {表: 行数}。只读计数；库/表缺失一律按 0，绝不建库建表。"""
+def _readonly_uri(abs_path):
+    """只读连接 URI：pathlib 转 `file://` URI 再挂 `mode=ro`。
+
+    不能直接拼 `file:{abs_path}?mode=ro`：Windows 盘符路径（`D:\\...`）与含空格/
+    特殊字符的路径会拼出坏 URI，`sqlite3.connect` 报错后旧实现会兜底成**读写**连接
+    ——"只看目标"这一步就悄悄放弃了只读保证。
+    """
+    return pathlib.Path(abs_path).as_uri() + "?mode=ro"
+
+
+def _readonly_conn(abs_path):
+    """→ 只读连接；打不开返回 None（绝不放宽为读写连接）。"""
+    try:
+        return sqlite3.connect(_readonly_uri(abs_path), uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+
+
+def _count_table_rows(db_path, tables=PURGE_TABLES):
+    """→ (counts, readable)。只读计数；库缺失或只读连接打不开时 counts 全 0。"""
     counts = {t: 0 for t in tables}
     abs_path = os.path.abspath(db_path)
     if not os.path.exists(abs_path):
-        return counts
-    try:
-        conn = sqlite3.connect(f"file:{abs_path}?mode=ro", uri=True, timeout=5)
-    except sqlite3.Error:
-        conn = sqlite3.connect(abs_path, timeout=5)
+        return counts, True
+    conn = _readonly_conn(abs_path)
+    if conn is None:
+        return counts, False
     try:
         conn.row_factory = sqlite3.Row
         for table in tables:
@@ -64,7 +82,12 @@ def table_counts(db_path, tables=PURGE_TABLES):
                 counts[table] = 0
     finally:
         conn.close()
-    return counts
+    return counts, True
+
+
+def table_counts(db_path, tables=PURGE_TABLES):
+    """→ {表: 行数}。只读计数；库/表缺失一律按 0，绝不建库建表。"""
+    return _count_table_rows(db_path, tables)[0]
 
 
 def db_content_fingerprint(db_path, tables=PURGE_TABLES):
@@ -75,7 +98,7 @@ def db_content_fingerprint(db_path, tables=PURGE_TABLES):
     """
     abs_path = os.path.abspath(db_path)
     size = os.path.getsize(abs_path) if os.path.exists(abs_path) else 0
-    counts = table_counts(abs_path, tables)
+    counts, readable = _count_table_rows(abs_path, tables)
     payload = "db|%s|%d|%s" % (
         abs_path, size, ",".join("%s=%d" % (t, counts.get(t, 0)) for t in tables))
     lines = [
@@ -83,6 +106,10 @@ def db_content_fingerprint(db_path, tables=PURGE_TABLES):
         f"文件大小: {size} 字节",
         "表行数: " + " ".join(f"{t}={counts.get(t, 0)}" for t in tables),
     ]
+    if not readable:
+        # 只读连接打不开（权限/损坏/被占用）时把"行数不可信"显式说出来，而不是
+        # 悄悄用读写连接读出数字、让人以为目标已核清。
+        lines.append("不可读：只读连接打不开本库（行数按 0 计，仅文件大小/路径可辨）")
     return _digest(payload), lines
 
 
@@ -100,9 +127,9 @@ def confirmation_ok(expected, provided):
 def write_purge_audit(action, target, detail, db_file=None, env_file=None):
     """把一条清库/删除留痕写进部署库的审计链；→ 是否已落库。
 
-    **fail-closed 口径**：库文件不存在、初始化失败、审计写入失败（`audit` 返回
-    False 或其内部抛出）一律返回 False，调用方必须据此放弃删除。库不存在时**不建库**
-    （`init_db` 会 `sqlite3.connect` 出空库，等于给一次拒绝留下新库文件）。
+    **fail-closed 口径**：库文件不存在、初始化失败、连接没指向目标库、审计写入失败
+    （`audit` 返回 False 或其内部抛出）一律返回 False，调用方必须据此放弃删除。库不存在
+    时**不建库**（`init_db` 会 `sqlite3.connect` 出空库，等于给一次拒绝留下新库文件）。
     `cleanup=False, migrate=False`：留痕是只读之外的最小写入，不得顺带跑启动清理
     或重写审计链（否则"记录这次删除"本身会改动目标库）。
     """
@@ -116,6 +143,21 @@ def write_purge_audit(action, target, detail, db_file=None, env_file=None):
         if env_file is None:
             env_file = env_io.env_path()
         store_db.init_db(db_file=db_file, env_file=env_file, cleanup=False, migrate=False)
+        # `init_db` 在单例连接已存在时会直接复用它（只刷新声明的 `_db_file`）：
+        # 若那个连接指向另一个库，这条留痕会落到别的库上、目标库反而无痕。按**实际
+        # 连接**核对目标，不一致即视为不可写（fail-closed）。
+        if not _conn_points_at(db_file):
+            return False
         return bool(store_db.audit("purge-guard", action, target, str(detail)[:200]))
     except Exception:  # 初始化/审计任一失败都不得放行删除
         return False
+
+
+def _conn_points_at(db_file):
+    """当前单例连接实际指向的库是否就是 db_file（realpath + normcase 归一）。"""
+    from yiban.store import connection
+    actual = connection.current_db_file()
+    if not actual:
+        return False
+    return os.path.normcase(os.path.realpath(actual)) == os.path.normcase(
+        os.path.realpath(os.path.abspath(db_file)))
