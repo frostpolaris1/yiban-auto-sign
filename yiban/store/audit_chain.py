@@ -625,7 +625,16 @@ def _read_anchor_lines(path):
 
 
 def _get_anchor_meta():
-    """读库内锚点指纹 {"lines","last_hash","ts"}；无记录/缺表/JSON 损坏 → {}。"""
+    """读库内锚点指纹，原样返回写入方存进 app_meta 的那份 dict
+    {"lines","last_hash","ts"}；无记录/缺表/JSON 损坏/非 dict → {}。
+
+    三个键并非都有读者：包内唯一的调用方 `_anchor_file_state` 只读 `lines` 与
+    `last_hash`，`ts` **自写入后无人读取**——它与同一事务里写入的 `audit_anchor_last`
+    键逐字相同（见 `_record_anchor_trace`），"锚点曾存在"这条判据由那一键承担。
+    `db._get_anchor_meta` 是本函数的转发别名，全仓无人经它调用（含 tests/）。
+    删这个键会改变库内 JSON 的形状（属行为变更），故这里保持原样返回整份 dict，
+    既不补消费方，也不在读取侧改写它。
+    """
     raw = _facade().get_meta(_ANCHOR_META_KEY, "")
     if not raw:
         return {}
