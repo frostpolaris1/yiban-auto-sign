@@ -5,12 +5,22 @@
 **功能**
 - 基线建表 `_create_tables`：accounts / users / audit_logs / time_prefs /
   user_delete_requests 五张表与其索引（幂等 IF NOT EXISTS）；
-- 迁移项 `migrate_v1..v20`：每项对应一个已发布、且**不可再修改**的 schema 版本；
+- 迁移项 `migrate_v1..v20`：每项对应一个已发布、且**不可再修改**的 schema 版本
+  （MF-40 修复批次按 brief 明示豁免了该纪律做缺陷修复——v5 崩溃重跑/原子提交/标识符
+  转义、v13 转义/守恒、v17-v19 档位与 v20 目录可读性；可观测成功路径逐条保持原样，
+  反例测试见 tests/test_migrations_fail_closed.py）；
 - 迁移助手 `_table_columns` / `_ensure_column` / `_ensure_index` 与表名白名单
   `_ALLOWED_TABLES`（助手对白名单外的表名直接拒绝，防拼接 SQL 的注入面）；
-- 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败阻断
+- 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE（框架持事务期间
+  助手与被包迁移内部的 commit 不提前落盘，"整段迁移原子"成立）、核心迁移失败抛出阻断
   启动、可选迁移失败或延后只置 blocked 且不提升版本（下次启动重试）；`_MIGRATIONS`
-  是「版本号 → 名称 → 函数 → 是否核心」的登记表；
+  是「版本号 → 名称 → 函数 → 是否核心」的登记表（v17/v18/v19 为核心档：v3 领取路径
+  把它们的产物当硬编列名用，缺了整条路径静默拒跑，见登记表注释）；
+- 迁移完成记录表 `schema_migrations`：成功提升与 `PRAGMA user_version` 在**同一事务**
+  写记录（失败/未提升 ⇒ 无记录）；存量库（记录表上线前升的级）首见时按继承回填。
+  链尾 `_verify_migration_integrity` fail-closed 校验：版本已过某迁移却无记录、或
+  核心迁移产物（表/列）缺失 ⇒ 抛 `MigrationIntegrityError` 点名该迁移并拒绝启动
+  （MF-40：不接受"版本声称过了、产物没落地"的库继续跑）；
 - `MigrationDeferred`：可选迁移遇到需人工处理的数据时主动延后；
 - JSON → SQLite 自动导入 `_maybe_migrate` / `_rename_backup`：库仍为空且 JSON 存在时把
   accounts/users 导入 SQLite（幂等），两个文件都成功后一起改名 `.bak` 保留逃生门。
@@ -69,6 +79,56 @@ def _facade():
 
 class MigrationDeferred(Exception):
     """迁移暂缓：本次不应用，下次启动重试（用于可选迁移遇到需人工处理的数据）。"""
+
+
+class MigrationIntegrityError(Exception):
+    """迁移完整性校验失败 ⇒ **拒绝启动**（fail-closed，MF-40）。
+
+    抛出即说明 `user_version` 与库的实际 schema 脱节：版本声称已过了某条迁移，但该迁移
+    的完成记录缺失、或核心迁移的产物（表/列）不存在。典型成因：旧链"可选失败只告警"
+    时代留下的半升级库、有人手工拨 PRAGMA、绕过链直接改 schema。让 `try_claim` /
+    执行体在这种库上继续跑只会把静默拒跑变成运维事故，故启动即拒、异常文本点名是哪条
+    迁移缺了什么。调用面：`yiban.engine.runner` / `workers` 捕获后按退出码 4 退出
+    （见 `docs/dev/cli.md` §3）。
+    """
+
+
+# 迁移完成记录表：成功提升与写记录在同一事务（`_run_migrations` 的 bump 分支），
+# 表本身在整链开跑前建好；记录缺失 ⇒ `MigrationIntegrityError`。
+_SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
+
+# 核心迁移的产物清单（表, 列|None=只要表）。校验按登记表逐个核对：这些名字是领取/
+# 队列路径的**硬编引用**（claims.try_claim 的 INSERT 列名含 epoch、executor_v3 的
+# WHERE vshard），缺一个就是整条 v3 路径静默失效，所以缺了必须拒启。
+_CORE_ARTIFACTS = {
+    17: (("sign_claims", None),),
+    18: (("sign_tasks", None), ("egress_state", None)),
+    19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),
+}
+
+
+def _quote_ident(name):
+    """SQLite 双引号标识符转义（表/列名里的 `"` 双写），防 f-string SQL 被打断。"""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _quote_str_literal(text):
+    """SQL 单引号字符串参数转义（如 PRAGMA index_info('...') 的名字入参）。"""
+    return str(text).replace("'", "''")
+
+
+# 登记表框架事务标志：`_run_migrations` 在 BEGIN IMMEDIATE 里执行迁移函数时置真，
+# 期间 `_ensure_column` / `_ensure_index` / migrate_v5 内部的 commit 一律**不提前
+# 落盘**（原子性承诺的兑现点）；登记表之外直调（旧调用面/测试直接调迁移函数）时标志
+# 为假，commit 行为与历史完全一致。单线程写路径（init_db 全程持 `_conn_lock`）。
+_framework_txn = False
+
+
+def _commit_if_free(conn):
+    """迁移体内的提交点：框架持事务时交给框架末尾统一提交，直调时照旧自提。"""
+    if not _framework_txn:
+        conn.commit()
+
 
 # ---------------------------------------------------------------------------
 # 表结构
@@ -169,10 +229,11 @@ _ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete
 
 
 def _table_columns(conn, table):
-    """返回表的所有列名（PRAGMA table_info）。"""
+    """返回表的所有列名（PRAGMA table_info）。标识符转义后入参（MF-40 修法 6）。"""
     if table not in _ALLOWED_TABLES:
         raise ValueError(f"非法表名: {table!r}")
-    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    return {r["name"] for r in conn.execute(
+        f"PRAGMA table_info({_quote_ident(table)})").fetchall()}
 
 
 def _ensure_column(conn, table, column, type_decl):
@@ -196,13 +257,13 @@ def _ensure_column(conn, table, column, type_decl):
         )
     if column not in _table_columns(conn, table):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_decl}")
-        conn.commit()
+        _commit_if_free(conn)
 
 
 def _ensure_index(conn, create_sql):
     """按给定 CREATE INDEX / CREATE UNIQUE INDEX 语句幂等创建（依赖 IF NOT EXISTS）。"""
     conn.execute(create_sql)
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v1(conn):
@@ -332,14 +393,35 @@ def migrate_v4(conn):
     conn.commit()
 
 
+def _assert_rebuild_preserved(conn, table, expected_count, expected_cols):
+    """重建型迁移（CREATE→INSERT→DROP→RENAME）的守恒断言。
+
+    行数必须与重建前一致，列集必须覆盖重建前的列集（列清单由 PRAGMA 现场读取，
+    不硬编码——硬编码会在后续迁移补列后自己打自己）。不守恒说明重建丢数据/丢列，
+    这种半途形态**不得**被记为迁移成功：抛错让核心档阻断启动，可选档下次重跑。
+    """
+    after_count = conn.execute(
+        f"SELECT COUNT(*) FROM {_quote_ident(table)}").fetchone()[0]
+    # 不走 `_table_columns`：那层白名单只覆盖建表域助手，v13 重建的是 sqlite_master
+    # 现场发现的任意表（可含白名单外的历史表），表名已按 `_quote_ident` 转义入参。
+    after_cols = {r["name"] for r in conn.execute(
+        f"PRAGMA table_info({_quote_ident(table)})").fetchall()}
+    missing = sorted(set(expected_cols) - after_cols)
+    if after_count != expected_count or missing:
+        raise RuntimeError(
+            f"{table} 表重建守恒断言失败：行数 {expected_count}→{after_count}，"
+            f"缺失列 {missing}（拒绝提交半程 schema）")
+
+
 def migrate_v5(conn):
     """v5：用户注销支持——users 增加 deleted/deleted_at，邮箱唯一改为活跃唯一，新增注销请求表。"""
-    cols = _table_columns(conn, "users")
+    orig_cols = _table_columns(conn, "users")
+    cols = orig_cols
     if "deleted" not in cols:
         # 使用 ALTER TABLE ADD COLUMN 而非表重建，避免崩溃窗口数据丢失
         conn.execute("ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
         conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
-        conn.commit()
+        _commit_if_free(conn)
     # 旧库 users.email TEXT UNIQUE 会生成 sqlite_autoindex_users_N 全局唯一索引，
     # 与“同邮箱可有一个活跃 + 多个已注销”的部分唯一索引冲突，必须先移除。
     # SQLite 不允许直接 DROP 与 UNIQUE 列约束关联的自动索引，因此重建 users 表
@@ -349,34 +431,46 @@ def migrate_v5(conn):
         name = idx["name"]
         if name == "idx_users_email_live" or not idx["unique"]:
             continue
-        info = conn.execute(f"PRAGMA index_info('{name}')").fetchall()
+        # 索引名里的单引号必须转义后入参：不转义时 f-string 拼出的 SQL 被打断，
+        # 最坏直接 OperationalError 卡死启动（MF-40 修法 6）。
+        info = conn.execute(
+            f"PRAGMA index_info('{_quote_str_literal(name)}')").fetchall()
         if [r["name"] for r in info] == ["email"]:
             old_email_indexes.append(name)
     if old_email_indexes:
-        col_list = "id, email, password_hash, role, created_at, pw_version"
-        cols = _table_columns(conn, "users")
-        if "deleted" in cols:
-            col_list += ", deleted"
-        if "deleted_at" in cols:
-            col_list += ", deleted_at"
-        conn.execute(
-            "CREATE TABLE users_new ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "email TEXT NOT NULL, "
-            "password_hash TEXT NOT NULL, "
-            "role TEXT NOT NULL DEFAULT 'user', "
-            "created_at TEXT NOT NULL DEFAULT '', "
-            "pw_version INTEGER NOT NULL DEFAULT 1, "
-            "deleted INTEGER NOT NULL DEFAULT 0, "
-            "deleted_at TEXT NOT NULL DEFAULT ''"
-            ")"
-        )
+        # 列清单由 schema 驱动（MF-40 修法 6）：新表 DDL 按旧表 PRAGMA table_info
+        # 现场生成，携带各列的类型/非空/默认值；email 上的旧 UNIQUE 约束不在
+        # table_info 里，随重建自然消失（这正是重建的目的）。硬编码列清单会把
+        # 基线/其他迁移已存在的列（如 mail_notify）"成功重建"成静默丢列点。
+        old_cols = conn.execute("PRAGMA table_info(users)").fetchall()
+        col_list = ", ".join(_quote_ident(c["name"]) for c in old_cols)
+        defs = []
+        for c in old_cols:
+            qname = _quote_ident(c["name"])
+            if c["pk"]:
+                # id 主键按原语义重建为 AUTOINCREMENT（历史 users 表皆为此形态）
+                defs.append(f"{qname} INTEGER PRIMARY KEY AUTOINCREMENT")
+                continue
+            piece = f"{qname} {c['type'] or 'TEXT'}"
+            if c["notnull"]:
+                piece += " NOT NULL"
+            if c["dflt_value"] is not None:
+                piece += f" DEFAULT {c['dflt_value']}"
+            defs.append(piece)
+        before_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        # 半程崩溃的残留（上次 CREATE 了没改名）必须先清：否则重跑必抛
+        # "table users_new already exists" ⇒ 启动永久阻断（MF-40 现象③）。
+        conn.execute("DROP TABLE IF EXISTS users_new")
+        conn.execute(f"CREATE TABLE users_new ({', '.join(defs)})")
         conn.execute(
             f"INSERT INTO users_new ({col_list}) SELECT {col_list} FROM users"
         )
         conn.execute("DROP TABLE users")
         conn.execute("ALTER TABLE users_new RENAME TO users")
-        conn.commit()
+        # 守恒：行数不变 + 列集覆盖重建前（另加本迁移补的 deleted*，若走到这必已含）
+        _assert_rebuild_preserved(
+            conn, "users", before_count, orig_cols | {"deleted", "deleted_at"})
+        _commit_if_free(conn)
     _ensure_index(
         conn,
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
@@ -393,7 +487,7 @@ def migrate_v5(conn):
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v6(conn):
@@ -573,22 +667,32 @@ def migrate_v13(conn):
                 (name,),
             )
         ]
-        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({name})")]
+        # 表名/列名一律转义后入 SQL：名字里含 `"` 时裸插值会把语句打断，
+        # 最坏 OperationalError 卡死启动（MF-40 修法 6）。
+        cols = [r["name"] for r in conn.execute(
+            f"PRAGMA table_info({_quote_ident(name)})").fetchall()]
+        before_count = conn.execute(
+            f"SELECT COUNT(*) FROM {_quote_ident(name)}").fetchone()[0]
         tmp = f"{name}__v13"
-        conn.execute(f'DROP TABLE IF EXISTS "{tmp}"')
-        # 只替换首个表名出现处：DDL 里其余位置可能含同名子串（如索引名）
-        fixed_tmp = fixed.replace(f'TABLE "{name}"', f'TABLE "{tmp}"', 1)
+        conn.execute(f"DROP TABLE IF EXISTS {_quote_ident(tmp)}")
+        # 只替换首个表名出现处：DDL 里其余位置可能含同名子串（如索引名）。
+        # 检索串按转义形态构造，与 sqlite_master 里的原样书写一致（带引号的
+        # 特殊名存储时引号已双写；裸名书写时 `_quote_ident` 串匹配不上，落兜底分支）。
+        fixed_tmp = fixed.replace(f"TABLE {_quote_ident(name)}",
+                                  f"TABLE {_quote_ident(tmp)}", 1)
         if fixed_tmp == fixed:
             fixed_tmp = fixed.replace(f"TABLE {name}", f"TABLE {tmp}", 1)
         conn.execute(fixed_tmp)
-        collist = ", ".join(f'"{c}"' for c in cols)
-        conn.execute(f'INSERT INTO "{tmp}" ({collist}) SELECT {collist} FROM "{name}"')
-        conn.execute(f'DROP TABLE "{name}"')
-        conn.execute(f'ALTER TABLE "{tmp}" RENAME TO "{name}"')
+        collist = ", ".join(_quote_ident(c) for c in cols)
+        conn.execute(f"INSERT INTO {_quote_ident(tmp)} ({collist}) "
+                     f"SELECT {collist} FROM {_quote_ident(name)}")
+        conn.execute(f"DROP TABLE {_quote_ident(name)}")
+        conn.execute(f"ALTER TABLE {_quote_ident(tmp)} RENAME TO {_quote_ident(name)}")
         for idx_sql in indexes:
             conn.execute(idx_sql)
+        _assert_rebuild_preserved(conn, name, before_count, cols)
         logger.info("schema 修复：重建表 %s（%d 列，%d 索引）", name, len(cols), len(indexes))
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v14(conn):
@@ -685,7 +789,9 @@ def migrate_v16(conn):
 
 
 def migrate_v17(conn):
-    """v17：签到领取池 `sign_claims`（多执行体协调）。可选迁移，失败只告警不阻断启动。
+    """v17：签到领取池 `sign_claims`（多执行体协调）。**核心迁移**（MF-40 改判）：
+    领取路径（claims.try_claim / queue_store）把本表当硬编表名用，缺表 ⇒ 整条 v3
+    路径 fail-closed 拒跑 ⇒ 失败必须阻断启动，不得只告警。
 
     为什么独立成表：多执行体的分工靠"原子领取 + 租约"而不是静态分片——静态分片下
     最慢的那一份决定全天成败。领取记录同时承担"当日是否了结"的判据（state）。
@@ -717,8 +823,11 @@ def migrate_v18(conn):
     """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）；
     sign_claims 数据平移进 sign_tasks。
 
-    可选迁移（is_core=False，同 v17 口径）：失败只告警不阻断启动，下次启动整段重跑，
-    故必须幂等（CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE）。
+    核心迁移（MF-40 改判，is_core=True）：executor_v3 的批领/待办闸门全建在
+    `sign_tasks` 上，缺表等于当日没有队列 ⇒ 失败阻断启动。重跑（版本未提升的下次
+    启动）必须幂等，故建表用 IF NOT EXISTS、平移用 INSERT OR IGNORE；平移行是
+    vshard=-1 的**显式标记行**——不进任何分片集、不被批领、不计入 `pending_count`，
+    真实计划到来时由 `planner.write_plan` 显式接管同键行（当日计划不因补账丢失）。
 
     `sign_tasks` 一行 = 一个账号在一个业务日的计划、当前状态与**跨执行体共享**的
     尝试数（v17 `sign_claims` 的语义整体并入）。`state` 取值：
@@ -791,7 +900,11 @@ def migrate_v18(conn):
 
 
 def migrate_v19(conn):
-    """v19：`sign_claims` 补 fencing token 列 `epoch`（可选迁移，失败只告警不阻断）。
+    """v19：`sign_claims` 补 fencing token 列 `epoch`。
+
+    **核心迁移**（MF-40 改判）：`try_claim`/`settle`/`claim_batch` 把 `epoch` 当
+    硬编列名引用——缺列时领取整表 fail-closed 返回"不可执行"，全天零签到却只留下
+    warning。失败必须阻断启动并点名，产物缺失同样拒启（`_CORE_ARTIFACTS`）。
 
     为什么需要：账号级租约 900s 的判据是"心跳时间串"，而执行体会被 STW 停顿/容器
     挂起卡住数分钟——它醒来后仍以为自己持有该账号，会把迟到的结论写进去，覆盖接管者
@@ -802,7 +915,7 @@ def migrate_v19(conn):
     `epoch = epoch + 1`，NULL 会让算术静默变 NULL、守卫全失效。
 
     `sign_tasks.epoch` 由 v18 建齐；此处一并 `_ensure_column` 兜底——v18 若被回退，
-    本迁移仍能把队列侧的护栏补上。两条 ALTER 都幂等，可选迁移失败后下次启动整段重跑。
+    本迁移仍能把队列侧的护栏补上。两条 ALTER 都幂等，失败后版本不提升、下次启动重跑。
     """
     _ensure_column(conn, "sign_claims", "epoch", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "sign_tasks", "epoch", "INTEGER NOT NULL DEFAULT 0")
@@ -896,6 +1009,25 @@ def _entry_time(entry):
     return raw if _BACKFILL_TIME_RE.match(raw) else "00:00:00"
 
 
+def _ensure_state_dir_readable(state_dir):
+    """v20 前置：**目录存在但读不动** ⇒ 延后（MigrationDeferred），绝不"空跑成功"。
+
+    旧实现把整目录不可读折叠成"每天都没有状态文件"，返回 0 行还照样提升版本——台账
+    从此对这段窗口永久空白且不再重试（MF-40 现象⑤）。区分两种形态：目录不存在 =
+    无状态可补（全新部署常态）→ 放行；目录在而列不动（权限/挂载故障）→ 延后 +
+    告警，下次启动整段重试。
+    """
+    if not os.path.isdir(state_dir):
+        return
+    try:
+        os.listdir(state_dir)
+    except OSError as e:
+        logger.warning(
+            "v20 backfill：状态目录不可读，本次延后（user_version 不提升，下次启动重试）: "
+            "%s [%s: %s]", state_dir, type(e).__name__, _sanitize_text(e))
+        raise MigrationDeferred(f"v20 状态目录不可读，台账补账延后: {state_dir}") from e
+
+
 def migrate_v20(conn):
     """v20：把 `sign-state-*.json` 里的终态补进 `sign_tasks`（可选迁移，失败只告警不阻断）。
 
@@ -904,7 +1036,9 @@ def migrate_v20(conn):
     领取池，只做 v18 的话台账对"已跳过"的账号仍是空白。
 
     只读 `sign-state-<day>.json`（按日结构化状态文件）；最近 `_BACKFILL_DAYS` 天里
-    文件缺失或损坏的日**跳过**（台账以两张表为准），不报错也不阻断。
+    文件缺失或损坏的日**跳过**（台账以两张表为准），不报错也不阻断。但**状态目录
+    存在而不可读**时延后（`_ensure_state_dir_readable`）：不补任何行、不提升版本、
+    下次启动整段重试——旧实现让它"空跑成功"，台账窗口从此永久空白。
 
     `owner='backfill'` + `vshard=-1` 是与 v18 平移行同形的**惰性历史行**：`-1` 与任何
     执行体的分片集合不相交，既不参与批领也不被分片级窃取。`INSERT OR IGNORE` 让本
@@ -914,6 +1048,7 @@ def migrate_v20(conn):
     返回本次**实际补入**的行数（重跑为 0），供调用方与运维判断收敛。
     """
     state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    _ensure_state_dir_readable(state_dir)
     # owner 直接内联：`_BACKFILL_OWNER` 是模块常量，不进绑定参数
     sql = ("INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
            "priority, state, attempts, lease_until, result, created_at) "
@@ -951,6 +1086,13 @@ def migrate_v20(conn):
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
+#
+# v17/v18/v19 于 MF-40 修复改判为核心：登记成"可选"后任一失败只发 warning、
+# user_version 永不提升，而 v3 领取路径（claims.try_claim / queue_store.claim_batch /
+# executor_v3）把这三版的产物当**硬编表名/列名**引用——缺了不会崩，只会整日静默
+# 零签到。档位是数据（第 4 元），`_verify_migration_integrity` 按 `_CORE_ARTIFACTS`
+# 核对产物、按 `schema_migrations` 核对完成记录，两侧都点名报错。
+# v20 保持可选：它只补台账数据，延后重试无正确性代价（但"目录读不动"不再算成功）。
 _MIGRATIONS = [
     (1, "v1_add_account_user_paused", migrate_v1, True),
     (2, "v2_unique_owner_live", migrate_v2, False),
@@ -968,23 +1110,112 @@ _MIGRATIONS = [
     (14, "v14_drop_legacy_stats", migrate_v14, False),
     (15, "v15_verify_jobs", migrate_v15, False),
     (16, "v16_verify_job_prev_status", migrate_v16, False),
-    (17, "v17_sign_claims", migrate_v17, False),
-    (18, "v18_sign_tasks", migrate_v18, False),
-    (19, "v19_fencing_epoch", migrate_v19, False),
+    (17, "v17_sign_claims", migrate_v17, True),
+    (18, "v18_sign_tasks", migrate_v18, True),
+    (19, "v19_fencing_epoch", migrate_v19, True),
     (20, "v20_backfill_json_terminals", migrate_v20, False),
 ]
 
 
+def _create_schema_migrations(conn):
+    """建迁移完成记录表（幂等）。列刻意不带前缀下划线以外的语义：version 即目标版本号。"""
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {_SCHEMA_MIGRATIONS_TABLE} ("
+        "version INTEGER PRIMARY KEY, "
+        "name TEXT NOT NULL, "
+        "applied_at TEXT NOT NULL)"
+    )
+
+
+def _backfill_inherited_records(conn, version):
+    """存量库（记录表上线前升的级）首见时按继承回填记录，红线要求的兼容。
+
+    现网 `user_version=17` 的库没有任何记录——那些版本提升由旧链做出，"记录缺失"
+    不是漂移而是史前事实；不回填的话新代码第一次启动就把全部存量库拒之门外。
+    真·漂移（拨 PRAGMA / 抹记录行）由紧随其后的 `_verify_migration_integrity`
+    抓：继承回填只覆盖"登记表里 ≤ 当前版本"的那些项，抹掉**已回填过**的记录
+    （表非空时不再回填）照样报错。判据是"表为空且版本 > 0"：全新库（版本 0）
+    没有史前提升，不回填。
+    """
+    if version <= 0:
+        return
+    if conn.execute(f"SELECT COUNT(*) FROM {_SCHEMA_MIGRATIONS_TABLE}").fetchone()[0]:
+        return
+    for target_version, name, _fn, _core in _MIGRATIONS:
+        if target_version <= version:
+            conn.execute(
+                f"INSERT OR IGNORE INTO {_SCHEMA_MIGRATIONS_TABLE} "
+                "(version, name, applied_at) VALUES (?, ?, 'inherited')",
+                (target_version, name),
+            )
+
+
+def _verify_migration_integrity(conn):
+    """链尾 fail-closed 校验（MF-40 验收不变量①）：版本过了谁，谁就必须真的完成过。
+
+    对登记表里 `target <= user_version` 的每一项核两件事：
+    1. `schema_migrations` 有完成记录——没有 ⇒ 版本推进与迁移执行脱钩（手工拨
+       PRAGMA、绕过链改 schema 等）⇒ 拒启；
+    2. 核心档迁移的产物（`_CORE_ARTIFACTS`：表/列）仍存在于当前 schema——缺了
+       ⇒ 该迁移声称完成而效果不在（迁移后被人删列也算）⇒ 拒启。
+    错误文本必须点名迁移（版本 + 名称 + 缺的东西），运维不用读代码就能定位。
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if _SCHEMA_MIGRATIONS_TABLE not in tables:
+        raise MigrationIntegrityError(
+            f"迁移记录表 {_SCHEMA_MIGRATIONS_TABLE} 缺失（user_version={version}）——"
+            "完整性校验的基准不存在，拒绝启动")
+    recorded = {r[0] for r in conn.execute(
+        f"SELECT version FROM {_SCHEMA_MIGRATIONS_TABLE}").fetchall()}
+    for target_version, name, _fn, is_core in _MIGRATIONS:
+        if target_version > version:
+            continue
+        if target_version not in recorded:
+            # 点名缺什么不能只到"迁移名"粒度：核心迁移的产物（表.列）一并列出，
+            # 运维拿报错就能直接对照 PRAGMA 检查，不必再翻登记表。
+            hints = "、".join(
+                f"{t}.{c}" if c else t
+                for t, c in _CORE_ARTIFACTS.get(target_version, ()))
+            raise MigrationIntegrityError(
+                f"迁移完整性校验失败: user_version={version} 声称已过 v{target_version}"
+                f"（{name}），但 {_SCHEMA_MIGRATIONS_TABLE} 无该迁移的完成记录"
+                + (f"（该迁移的产物：{hints}）" if hints else "")
+                + "——版本推进与迁移执行脱钩，拒绝启动")
+        if not is_core:
+            continue
+        for table, column in _CORE_ARTIFACTS.get(target_version, ()):
+            if table not in tables:
+                raise MigrationIntegrityError(
+                    f"迁移完整性校验失败: 核心迁移 v{target_version}（{name}）的产物表"
+                    f" {table} 缺失（user_version={version}）——拒绝启动")
+            if column is not None and column not in _table_columns(conn, table):
+                raise MigrationIntegrityError(
+                    f"迁移完整性校验失败: 核心迁移 v{target_version}（{name}）的产物列"
+                    f" {table}.{column} 缺失（user_version={version}）——该列是领取路径"
+                    "的硬编引用，缺列整条 v3 路径静默拒跑——拒绝启动")
+
+
 def _run_migrations(conn):
-    """按 PRAGMA user_version 顺序执行未应用的迁移。
+    """按 PRAGMA user_version 顺序执行未应用的迁移，链尾做完整性 fail-closed 校验。
 
     核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动），包括核心迁移抛
     MigrationDeferred；可选迁移失败/延后时先回滚该迁移的部分写入，再置 blocked
     并 continue，后续迁移照常执行，但 blocked 期间任何迁移都不提升 user_version，
-    下次启动重试。
+    下次启动重试。成功提升与写 `schema_migrations` 记录在**同一事务**——版本推进
+    自此与迁移完成互相见证，链尾 `_verify_migration_integrity` 兜底点名。
+
+    执行迁移函数期间 `_framework_txn` 置真：`_ensure_column` / `_ensure_index` /
+    migrate_v5 内部的提交点不再提前 commit，"BEGIN IMMEDIATE 包整段迁移"的原子性
+    承诺自此成立（半途失败整体回滚，不留半列半表）。
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    _create_schema_migrations(conn)
+    _backfill_inherited_records(conn, version)
+    conn.commit()
     blocked = False
+    global _framework_txn
     for target_version, name, fn, is_core in _MIGRATIONS:
         if version >= target_version:
             continue
@@ -998,16 +1229,23 @@ def _run_migrations(conn):
             # 且若迁移在窗口中失败，核心迁移会一并阻断进程启动。
             # 包进 BEGIN IMMEDIATE 后整段迁移原子，中间态对外不可见。
             _facade()._begin_immediate(conn)
+            _framework_txn = True
             try:
                 fn(conn)
                 if blocked:
                     # 不提升 user_version：后续启动会重跑本迁移（实现必须幂等）。
                     # 显式提交：不提交则改动滞留在未决事务中，是否被后续某次 commit
                     # 带走取决于执行顺序；幂等迁移下显式提交可预期。
+                    # blocked 路径**不写记录**——记录只见证"版本提升发生过"。
                     conn.commit()
                     logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
                 else:
                     conn.execute(f"PRAGMA user_version = {target_version}")
+                    conn.execute(
+                        f"INSERT OR REPLACE INTO {_SCHEMA_MIGRATIONS_TABLE} "
+                        "(version, name, applied_at) VALUES (?, ?, ?)",
+                        (target_version, name, clock.ts()),
+                    )
                     conn.commit()
                     version = target_version
                     logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
@@ -1015,6 +1253,8 @@ def _run_migrations(conn):
                 with contextlib.suppress(Exception):
                     conn.rollback()
                 raise
+            finally:
+                _framework_txn = False
         except MigrationDeferred as e:
             if is_core:
                 logger.error("核心 schema 迁移延后: %s: %s", name, e)
@@ -1031,6 +1271,7 @@ def _run_migrations(conn):
                 conn.rollback()
             logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
             blocked = True
+    _verify_migration_integrity(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -1170,8 +1411,11 @@ def _rename_backup(path, reencrypt=False, key=None):
         logger.warning("迁移备份目标 %s 已存在，源文件改存为 %s", bak, new_bak)
         bak = new_bak
     os.rename(path, bak)
-    with contextlib.suppress(OSError):  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
+    try:  # 尽力而为、不阻断迁移，但失败必须出声（MF-40：.bak 里可能是明文凭据）
         os.chmod(bak, 0o600)
+    except OSError as e:  # 非 POSIX 平台或权限受限
+        logger.error("迁移备份权限收紧失败（.bak 可能仍组/其他可读，请手工检查）: %s [%s]",
+                     bak, e)
     if reencrypt and key is not None:
         try:
             with open(bak, encoding="utf-8") as f:
@@ -1193,10 +1437,21 @@ def _rename_backup(path, reencrypt=False, key=None):
                         changed = True
                 if changed:
                     tmp = bak + ".tmp" + str(os.getpid())
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False)
-                    os.chmod(tmp, 0o600)
-                    os.replace(tmp, bak)
+                    # 权限先于内容（MF-40 修法 5）：旧写法 open(tmp,"w") 先按 umask
+                    # 建出 0644 的文件、写完才 chmod——两步之间崩溃/失败即留下
+                    # **永久**的组/其他可读明文残留。O_CREAT 直接把建文件权限
+                    # 定死 0600（umask 只能收紧、放不大创建位），失败路径清 tmp。
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(tmp)  # 陈旧同名 tmp 的权限不可信，先清
+                    try:
+                        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False)
+                        os.replace(tmp, bak)
+                    except (OSError, ValueError, TypeError):
+                        with contextlib.suppress(OSError):
+                            os.unlink(tmp)
+                        raise
                     logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
         except (OSError, ValueError, TypeError):
             logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
