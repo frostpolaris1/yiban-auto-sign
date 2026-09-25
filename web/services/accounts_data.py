@@ -56,11 +56,11 @@ ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑�
 PHONE_RE = re.compile(r"^1\d{10}$")
 
 # 注销宽限期（天）：**必须**取 db.SOFT_DELETE_RETENTION_DAYS（账号保留期唯一事实源），
-# 不要再写字面量。漂移不是假想：常量之外全仓还散着 48 处「7 天」字面量（其中 24 处在
-# `web/templates/` 与 `web/static/js/` 里直接向用户承诺天数，改法见
-# `grep -ro "7 天\|7天" web yiban --include=*.py --include=*.js --include=*.html`），
+# 不要再写字面量。漂移不是假想：常量之外全仓还散着 48 处「7 天」字面量（含注释，其中
+# 24 处落在 `web/templates/` 与 `web/static/js/`，另有 1 处是不相干的「每 7 天」排期选项；
+# 复点：`grep -ro "7 天\|7天" web yiban --include=*.py --include=*.js --include=*.html`），
 # 保留期一改，账号会被提前物理清除，而页面/邮件/接口提示仍按旧天数承诺——用户点
-# "恢复"会看到成功、实际账号已经没了（静默数据丢失）。把这 48 处收敛到同一来源归 M3。
+# "恢复"会看到成功、实际账号已经没了（静默数据丢失）。把这些处收敛到同一来源归 M3。
 DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
 # ---------------------------------------------------------------------------
