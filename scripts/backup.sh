@@ -442,9 +442,17 @@ RESTORE_MODE=0 RESTORE_ARCHIVE="" RESTORE_TARGET="" REQUIRE_ENCRYPT=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --require-encrypt) REQUIRE_ENCRYPT=1 ;;
+        # 每个位置参数各自判 $# 再 shift：`--restore <包>` 这类只剩 1 个参数时，
+        # 无条件的尾部 shift 会让 $# 归 0 而 shift 返回 1——set -euo pipefail 下
+        # 整个脚本立刻退出 1 且零输出（连"备份包不存在"的诊断都看不到）。
+        # 缺参留给 restore() 报明确原因；`--restore a b c` 里多出的 c 会被下面的
+        # `*)` 分支按未知参数拒绝，不再被静默丢弃。
         --restore)
-            RESTORE_MODE=1; RESTORE_ARCHIVE="${2:-}"; RESTORE_TARGET="${3:-}"
-            shift 2 2>/dev/null || true   # 缺参留给 restore() 报"备份包不存在"
+            RESTORE_MODE=1
+            shift
+            RESTORE_ARCHIVE="${1:-}"; if [ $# -gt 0 ]; then shift; fi
+            RESTORE_TARGET="${1:-}";  if [ $# -gt 0 ]; then shift; fi
+            continue
             ;;
         -h|--help)
             echo "用法: backup.sh [--require-encrypt] | backup.sh --restore <备份包> <目标目录>"
