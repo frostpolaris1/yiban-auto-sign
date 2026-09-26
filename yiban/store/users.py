@@ -480,13 +480,18 @@ def purge_deleted_users(days=None):
         logger.warning("清理已注销用户失败: %s", e)
 
 
-def purge_deleted_users_hard(emails):
+def purge_deleted_users_hard(emails, audit_spec=None):
     """管理员手动物理清除指定的已注销用户（不等 7 天自动清除）。
 
     安全边界：仅处理 deleted=1 的用户行——传入活跃用户邮箱时直接跳过（误操作/并发注册
     新同邮箱用户都不可能误删活跃数据）；账号行只删 deleted=1 的软删账号，活跃账号跳过，
     避免误删用户注销后重新添加的账号。单事务连带清理这些账号的 time_prefs / 会话 /
     事件（_cascade_phone_owned）与用户行。返回实际清除的邮箱列表（供审计与回显）。
+
+    audit_spec 非 None 时（dict：username/action，可带 request_id；target/detail 缺省由
+    本函数按**实际清除结果**在事务内补齐），审计行与本次清除**同事务**写入（口径见
+    create_user）：清除清单要跑完才知道，留痕若落在提交之后，进程在两个事务之间被杀
+    就留下"用户已消失、审计表无此条、欠账仍为 0"。一行未清不留痕。
     """
     if not emails:
         return []
@@ -521,6 +526,16 @@ def purge_deleted_users_hard(emails):
                 if cur.rowcount > 0:
                     purged.append(email)
                     _delete_user_delete_requests(conn, email)  # 冷却计数连带清除
+            if purged and audit_spec:
+                # target/计数在事务内按实际清除结果产出：按"请求清单"写会把被
+                # 跳过的（非已注销）项也留痕成清除过。
+                spec = dict(audit_spec)
+                spec.setdefault("target", ",".join(purged))
+                spec.setdefault(
+                    "detail",
+                    f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
+                )
+                _facade().record_in_txn(conn, **spec)
             conn.commit()
         except Exception:
             with contextlib.suppress(Exception):

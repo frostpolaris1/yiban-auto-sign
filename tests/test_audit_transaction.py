@@ -22,6 +22,7 @@ MF-53 的缺陷是"写了但追不到人、丢了你不知道"：业务写与审
 对应实现：`yiban/store/audit_chain.py`（`audit` / `audit_unit` / `record_in_txn` /
 `audit_or_refuse` / `audit_head_hash_ex` / `_rechain_audit_logs` / 欠账基线）、
 `yiban/store/accounts.py`（`add_account` / `update_account` 的 `audit_spec`）、
+`yiban/store/users.py`（`purge_deleted_users_hard` 的 `audit_spec`：清除清单事务内产出）、
 `scripts/audit_verify.py`。
 关键断言：**"未查"与"通过"必须是两个不同返回值，"锁住"与"检出篡改"必须不同码**；
 业务效果可见 ⇒ 审计行必在（kill 注入后两者同在或同不在）；重链失败必须回滚到原链。
@@ -272,6 +273,94 @@ class CredentialPathTransactionTest(_Fixture):
         self.assertEqual(self._count("SELECT COUNT(*) FROM accounts"), 1)
         self.assertEqual(
             self._count("SELECT COUNT(*) FROM audit_logs WHERE action='my_account_add'"), 1)
+
+
+class PurgeAuditWindowTest(_Fixture):
+    """`user_deleted_purge` 的"审计落 commit 之后"窗口已不存在（回归钉死）。
+
+    清除清单只有事务跑完才可知（非已注销行被跳过），旧接线把审计留在提交后独立
+    写：进程在 commit 与审计之间被杀 ⇒ 用户已物理消失、审计表无此条、欠账仍为 0。
+    现清单/计数在事务内产出后交给 `record_in_txn`：业务效果与留痕同在或同不在。
+    """
+
+    SPEC = {"username": "master@admin.local", "action": "user_deleted_purge"}
+
+    def _make_deleted_user(self, email):
+        db.create_user(email, "hash", role="user")
+        self.assertTrue(db.soft_delete_user_with_accounts(email))
+
+    def _audit_rows(self):
+        conn = db.get_conn()
+        return [dict(r) for r in conn.execute(
+            "SELECT target, detail FROM audit_logs WHERE action='user_deleted_purge'"
+        ).fetchall()]
+
+    def test_audit_write_failure_rolls_back_purge(self):
+        """审计写入注入失败 ⇒ 清除整体回滚——"清了却无痕"不得存在。"""
+        self._make_deleted_user("purge-fail@test.local")
+        with (
+            mock.patch.object(db, "_audit_hash",
+                              side_effect=RuntimeError("inject audit failure")),
+            self.assertRaises(RuntimeError),
+        ):
+            db.purge_deleted_users_hard(["purge-fail@test.local"], audit_spec=self.SPEC)
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM users WHERE email='purge-fail@test.local'"),
+            1, "审计写失败时用户行必须仍在（业务与留痕同生共死）")
+        self.assertEqual(self._audit_rows(), [])
+
+    def test_kill_inside_purge_txn_leaves_neither(self):
+        """真子进程在 purge 事务内算链哈希时被杀 ⇒ 用户未被清除、审计无此条。
+
+        旧接线的丢失窗正在此处：purge 已 commit、审计还没写。同事务后未提交事务
+        随进程退出回滚，窗口不存在（与 CredentialPathTransactionTest 同一判据）。
+        """
+        script = "\n".join([
+            "import os, sys",
+            f"sys.path.insert(0, {BASE!r})",
+            f"sys.path.insert(0, {os.path.join(BASE, 'scripts')!r})",
+            "import db",
+            "db.init_db(cleanup=False)",
+            "db.create_user('purge-kill@test.local', 'hash', role='user')",
+            "db.soft_delete_user_with_accounts('purge-kill@test.local')",
+            "db._audit_hash = lambda *a, **k: os._exit(0)",
+            "db.purge_deleted_users_hard(['purge-kill@test.local'],",
+            "    audit_spec={'username': 'master@admin.local',",
+            "                'action': 'user_deleted_purge'})",
+        ])
+        r = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                           env=self._sub_env(), cwd=BASE)
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-2000:])
+        db._conn = None
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM users WHERE email='purge-kill@test.local'"),
+            1, "业务写必须随未提交事务回滚——'删了无留痕'状态不得存在")
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM audit_logs WHERE action='user_deleted_purge'"),
+            0, "审计行同样不得留下（两者同在或同不在）")
+
+    def test_committed_purge_writes_business_and_audit_together(self):
+        """正常提交组：用户消失 ⇒ 审计行必在，target/计数按**实际清除**结果产出。"""
+        self._make_deleted_user("purge-ok@test.local")
+        purged = db.purge_deleted_users_hard(
+            ["purge-ok@test.local", "ghost@test.local"], audit_spec=self.SPEC)
+        self.assertEqual(purged, ["purge-ok@test.local"])
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM users WHERE email='purge-ok@test.local'"), 0)
+        rows = self._audit_rows()
+        self.assertEqual(len(rows), 1, "业务生效 ⇒ 审计行必在")
+        self.assertEqual(rows[0]["target"], "purge-ok@test.local",
+                         "target 只含实际清除项，未被清除的 ghost 不得进留痕")
+        self.assertIn("1 个已注销用户", rows[0]["detail"])
+
+    def test_nothing_purged_writes_no_audit(self):
+        """一行未清 ⇒ 无业务效果也不留痕（口径同 create_user 的"实际创建才写"）。"""
+        db.create_user("alive@test.local", "hash", role="user")  # 活跃用户：必被跳过
+        purged = db.purge_deleted_users_hard(["alive@test.local"], audit_spec=self.SPEC)
+        self.assertEqual(purged, [])
+        self.assertEqual(self._audit_rows(), [])
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM users WHERE email='alive@test.local'"), 1)
 
 
 class RequestScopeTest(_Fixture):
