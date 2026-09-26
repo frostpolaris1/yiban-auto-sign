@@ -23,8 +23,9 @@
 `BackupPlaintextP3Test` 原本是同类写法（MF-10 指出的假绿），现已改为**行为测试**——真跑
 backup.sh（临时目录夹具，skipIf 无 bash），断言真实 stderr 告警、专用退出码 6、异机密文
 副本与哨兵判定；输出按字节手动 utf-8 解码以避开旧注释所说的 Windows GBK 误报问题。
-依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩，
-无网络、无 skip。
+依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩；
+`BackupPlaintextP3Test` 真起 **bash** 子进程跑 backup.sh（`skipIf` 无 bash 时整类跳过）。
+无网络（其余用例无 skip）。
 """
 import contextlib
 import datetime
