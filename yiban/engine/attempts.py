@@ -48,7 +48,7 @@ RETRY_GAP_MAX = 30
 SESSION_STALE_MAX_ATTEMPTS = 2
 # 易班侧无签到点位（总尝试上限 1 次）：属数据/任务配置问题，重试拿不到就是拿不到
 NO_POSITION_MAX_ATTEMPTS = 1
-# 挑战解析/白名单/非 JSON 硬失败（总尝试上限 1 次）：判据词元在 `yiban.security.HARD_FAIL_TOKENS`
+# 挑战解析/白名单/非 JSON/假成功（无签发方回执）硬失败（总尝试上限 1 次）：判据词元在 `yiban.security.HARD_FAIL_TOKENS`
 # （唯一真值源，档位与探针共用）。同一输入必然同一结果，重试只是把同一死页重发；会话停在
 # 未通过的挑战/拦截链上，一并清除（`_retry_budget` 联动 clear_cache=True）。
 HARD_FAIL_MAX_ATTEMPTS = 1
@@ -155,7 +155,7 @@ account_still_signable = accounts_store.account_still_signable
 def classify_failure(message):
     """对失败信息分级，返回总尝试上限。
 
-    - 挑战解析/白名单/非 JSON 硬失败（词元在 `yiban.security.HARD_FAIL_TOKENS`，唯一真值源）：
+    - 挑战解析/白名单/非 JSON/假成功（无签发方回执）硬失败（词元在 `yiban.security.HARD_FAIL_TOKENS`，唯一真值源）：
       仅首试 1 次——同一输入必然同一结果，重试只会把同一死页重发
     - 风控/凭据类：最多重试 1 次（RISK_MAX_ATTEMPTS），避免加重账号标记
     - 其他失败（网络/未知）：最多重试 MAX_ATTEMPTS 次
