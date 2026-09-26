@@ -34,7 +34,9 @@ from flask import jsonify, session
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
+from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import window as yb_window
+from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 
 
 def _executor_write_guard(data, action, changed):
@@ -586,15 +588,22 @@ def api_settings_save():
         updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
     try:
         m.write_env_batch(m.ENV_FILE, updates)
-    except ValueError as e:
+    except _EnvWriteRefused as e:
         # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
         # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
-        # 冲突需要人工清理 .env 后才能保存，不是服务器故障。
+        # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
         m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+        return _env_write_refused_response()
+    except ValueError as e:
+        # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
+        # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
+        # 区分。"行分隔符"这类值错误与"潜伏分隔符"文件态是两回事，故文案分开。
+        m.logger.error("设置写入值非法: %s", e)
         return jsonify({
-            "error": "配置写入被拒绝：.env 存在行模型歧义（潜伏行分隔符或未请求的键变化），"
-                     "请按启动告警提示人工清理该行后重试"
-        }), 409
+            "error": "配置值不合法（键名非法，或值包含行分隔符/超出长度上限），未写入；"
+                     "请修正后重试",
+            "reason": "invalid_value",
+        }), 400
     sunday_display = "不变" if sunday_sign is None else sunday_sign
     saturday_display = "不变" if saturday_sign is None else saturday_sign
     pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
@@ -892,6 +901,8 @@ def api_scheduler_executors_save():
             if denied:
                 return denied
             m.write_env_batch(m.ENV_FILE, updates)
+    except _EnvWriteRefused:
+        raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     # 审计只记键名：代理串可能带凭据，不得进审计链
@@ -987,6 +998,8 @@ def api_scheduler_executor_row_add():
 
     try:
         slot = m._mutate_executor_rows(_apply)
+    except _EnvWriteRefused:
+        raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
@@ -1043,6 +1056,8 @@ def api_scheduler_executor_row_update(slot):
 
     try:
         row = m._mutate_executor_rows(_apply)
+    except _EnvWriteRefused:
+        raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
@@ -1079,6 +1094,8 @@ def api_scheduler_executor_row_delete(slot):
 
     try:
         rtype = m._mutate_executor_rows(_apply)
+    except _EnvWriteRefused:
+        raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
