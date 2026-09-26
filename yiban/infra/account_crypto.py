@@ -80,7 +80,9 @@ def load_key(env_file=None):
     同一 env_file 的钥在同一进程内缓存复用（避免每次读 .env，见 _KEY_CACHE）。
     读-生成-写-缓存全程持 _KEY_LOCK：多线程首启只生成一份密钥。
     自动建钥会抛错而不落盘（调用方须按"启动失败"处理）：密钥来源不确定（来源守卫），
-    或既有 .env 有行含潜伏行分隔符（见 _write_key_to_env_file）。
+    或既有 .env 有行含潜伏行分隔符（见 _write_key_to_env_file）。配置值（环境变量与
+    .env 两档）命中公开模板内置示例钥同样抛 ValueError——精确比对、零误杀、即阻断
+    （见 _PUBLISHED_EXAMPLE_KEY）。
 
     **来源守卫**：自动建钥只允许在"密钥来源确定"时发生——调用方显式传了
     `env_file`、或设了 `YIBAN_ENV_FILE`、或当前目录已有 `.env`。三者都没有而该
@@ -294,6 +296,17 @@ def _parse_env_file(env_file):
         raise
 
 
+# 仓库公开示例模板（.env.example 历史上第 18 行）内置的示例钥。它**逃过**下面全部
+# 三条弱钥判据——判据 3 比的是**字节值**连续，而模板串连续的是**十六进制字符**
+# （解出 01 23 45 67 89 ab cd ef 的 8 字节循环节，既非全零、也非单字节、更非
+# 0..31 连续）——但它随公开仓库人人可读，用它 ⇒ 存量密文等同明文。修法裁为
+# **精确比对 ⇒ 阻断**：随机钥不可能命中这条定长公开串，零误杀；命中即拒绝启动
+# （load_key 抛 ValueError，调用方按启动失败处理）。刻意**不做**通用熵/KDF 检测：
+# Web 侧不管理这把钥（没有写侧校验点可挂），把判定做成"读侧启动即崩"的通用判据会
+# 把外泄风险换成全站不可用，且撞存量密钥不可轮换的现实约束。
+_PUBLISHED_EXAMPLE_KEY = bytes.fromhex("0123456789abcdef" * 4)
+
+
 def _decode_key(raw):
     """把 hex 字符串密钥解码为 bytes；格式/长度非法抛 ValueError。"""
     try:
@@ -302,6 +315,13 @@ def _decode_key(raw):
         raise ValueError("YIBAN_ACCOUNTS_KEY 格式非法：应为 64 位十六进制字符串") from e
     if len(key) != 32:
         raise ValueError("YIBAN_ACCOUNTS_KEY 长度非法：应为 32 字节（64 位十六进制）")
+    # 精确比对公开模板内置串 ⇒ 阻断（判据与理由见 _PUBLISHED_EXAMPLE_KEY 注释）。
+    # 大小写十六进制写法都命中：bytes.fromhex 不分大小写，比对的是解出的字节。
+    if key == _PUBLISHED_EXAMPLE_KEY:
+        raise ValueError(
+            "YIBAN_ACCOUNTS_KEY 命中仓库公开示例模板内置的示例钥——任何读过本仓库的人"
+            "都能解密存量密文，拒绝使用。请生成随机密钥替换（python3 -c "
+            '"import secrets;print(secrets.token_hex(32))"）后重启')
     # 弱密钥检测：全零、单字节重复、顺序/逆序等明显弱模式 → 警告（不阻断，避免误杀合法密钥）
     if key == b"\x00" * 32:
         logger.warning("YIBAN_ACCOUNTS_KEY 为全零密钥，极易被破解，请立即更换")
