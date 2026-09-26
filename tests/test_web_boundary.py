@@ -1332,7 +1332,6 @@ PURE_REEXPORTS_LOGS = (
 PURE_REEXPORTS_SIGNSTATUS = (
     "_env_flag",
     "_in_sign_window",
-    "_day_off_reason",
     "check_connectivity",
     "_TRUTHY_LITERALS",
 )
@@ -1352,6 +1351,9 @@ FORWARDED_SIGNSTATUS = (
     "_sign_window",
     "_in_run_period",
     "sign_status",
+    # 注入型（非纯再导出）：调用时刻现读 `.env` 真值后交给同一份门判定——门语义未改，
+    # 改的只是"读到的是哪份值"（原先落回 os.environ，`.env` 的急停/周末在 web 侧恒不生效）
+    "_day_off_reason",
 )
 
 
@@ -2903,10 +2905,10 @@ class WebSecuritySplitContractTest(unittest.TestCase):
 M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
 
 
-M_ROUTE_NAMES_TOTAL = 200
+M_ROUTE_NAMES_TOTAL = 201
 
 
-M_ROUTE_COMPAT_NAMES = 199
+M_ROUTE_COMPAT_NAMES = 200
 
 
 M_ROUTE_NAME_EXCLUDED = frozenset({"__file__"})
