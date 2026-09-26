@@ -24,7 +24,9 @@
 **通信**
 输入：执行体清单（环境变量 `YIBAN_EXECUTORS`）、槽位数与 `argv`（`--workers` 及其后随值
 不透传给子进程）。输出：子进程退出码、心跳与日志。
-调用谁：`round.run_queue_retry`（真正干活）、`state_io`（心跳）、`cli_support`、`egress`。
+调用谁：执行路径按 `YIBAN_SCHEDULER_V3` 分流——关时 `round.run_queue_retry`（真正干活），
+开时 `executor_v3.run_executor_v3`（兜底身份用 `claim_all` 扫全分片、`requeue_during_run`
+会话内回炉默认档）；`state_io`（心跳）、`cli_support`、`egress`。
 谁调用：`runner` 的多执行体分支。
 前端调用点：执行体存活四态由 `/api/scheduler/executors*` 族读写
 （`web/static/js/components/settings-executors.js`、`settings-quota.js`），清单由系统设置页
@@ -40,7 +42,7 @@ import time
 from yiban import clock, egress
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import cli_support, schedule, state_io
+from yiban.engine import cli_support, executor_v3, schedule, state_io
 from yiban.engine import round as round_mod
 from yiban.store import db, queue_store
 
@@ -299,9 +301,11 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     为什么需要它：学校晚放号、窗口内新审核通过的账号、被慢账号拖住的、失败待重试的
     ——都能被**随手接手**，而不是等下一轮定时任务。
 
-    做法刻意简单可靠：每一轮重新加载账号并调用同一条执行路径（`run_queue_retry`，
-    schedule 为空=立即执行）。**分工由领取池承担**：已了结的账号领不到、别的执行体
-    正在做的领不到，所以"全量账号列表"作为输入也不会重复签——不需要在这里再写一套筛选。
+    做法刻意简单可靠：每一轮重新加载账号并调用同一条执行路径（v2 为 `run_queue_retry`，
+    schedule 为空=立即执行；`YIBAN_SCHEDULER_V3` 开闸时分流到 `run_executor_v3`——
+    只换执行体实现，档位纪律不变，见分流处注释）。**分工由领取池/任务队列承担**：
+    已了结的账号领不到、别的执行体正在做的领不到，所以"全量账号列表"作为输入也不会
+    重复签——不需要在这里再写一套筛选。
 
     独立锁 `signin-run.lock.fallback` **由调用方**（`runner.main` 的兜底分支）取：
     本函数只把锁名写进环境变量，好让子路径/日志口径一致；撞上已在跑的兜底时由调用方
@@ -396,23 +400,41 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             continue
 
         delegated = set()
-        # 本轮熔断状态快照：`read()` 每轮返回新 dict，`run_queue_retry` 就地改它，
+        # 本轮熔断状态快照：`read()` 每轮返回新 dict，执行路径就地改它，
         # 故必须持有引用以便轮末写回（不能像过去那样现取现传、写回时已无对象）。
         cred_state = state_io._load_cred_state()
-        results = round_mod.run_queue_retry(accounts, os.environ.get("YIBAN_NOTIFY_URL", ""), 0,
-                                            schedule._env_int("YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600),
-                                            schedule=None, cred_state=cred_state,
-                                            delegated=delegated,
-                                            # 兜底是"替全量轮捡漏"：窗口已关就该停手，
-                                            # 一轮扫描内部不再对剩余账号发起真实登录
-                                            window_guard=True,
-                                            # **不给 retry_failed**（取默认 False）：它要求调用方
-                                            # 是"有界的一次性显式路径"（补签轮/手动 `--only`），
-                                            # 而兜底是常驻无界循环、每 ~60s 就重扫一遍——传 True
-                                            # 会让预算耗尽/风控档账号在窗口内每轮都被重领重登一次
-                                            # （一轮扫描一次真实登录，四小时窗口下以百计）。
-                                            # 这类账号的第二次机会只留给一次性补签轮与手动。
-                                            )
+        if executor_v3.scheduler_v3_enabled():
+            # v3 分流（开关每轮重读，与窗口/三道门的重判同节拍）：兜底腿只换执行体
+            # 实现，档位纪律不变。
+            # - `claim_all`：兜底身份不是执行体清单成员，HRW 分片集对它为空——不放宽
+            #   领取范围就是"看着在跑、零领取"的静默空转；互斥仍由 state+epoch 门兜住。
+            # - `requeue_during_run`：本轮会话刚弃权的 retry: 档由恢复周期就地回炉，
+            #   这是兜底"失败当日接手"的 v3 等价物，不等下一场会话。
+            # - **不传 `requeue_final`**：兜底是常驻无界循环，不是"有界的一次性显式
+            #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
+            #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
+            #   第二次机会只留给一次性补签轮与手动。
+            results = executor_v3.run_executor_v3(
+                accounts, day=now.strftime("%Y-%m-%d"),
+                notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
+                cred_state=cred_state, delegated=delegated,
+                claim_all=True, requeue_during_run=True)
+        else:
+            results = round_mod.run_queue_retry(accounts, os.environ.get("YIBAN_NOTIFY_URL", ""), 0,
+                                                schedule._env_int("YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600),
+                                                schedule=None, cred_state=cred_state,
+                                                delegated=delegated,
+                                                # 兜底是"替全量轮捡漏"：窗口已关就该停手，
+                                                # 一轮扫描内部不再对剩余账号发起真实登录
+                                                window_guard=True,
+                                                # **不给 retry_failed**（取默认 False）：它要求调用方
+                                                # 是"有界的一次性显式路径"（补签轮/手动 `--only`），
+                                                # 而兜底是常驻无界循环、每 ~60s 就重扫一遍——传 True
+                                                # 会让预算耗尽/风控档账号在窗口内每轮都被重领重登一次
+                                                # （一轮扫描一次真实登录，四小时窗口下以百计）。
+                                                # 这类账号的第二次机会只留给一次性补签轮与手动。
+                                                # v3 分支的 `requeue_final` 缺省同为纪律另一面。
+                                                )
         # 轮末写回熔断计数（口径与 runner 全量轮一致：按本轮账号增量合并）。不写回则
         # "连续凭据失败达阈值 → 暂停"只在磁盘上不存在：下一轮 read() 又从零开始，
         # 错密码账号被无限次真实登录（易班侧照实计数，加重风控）。
