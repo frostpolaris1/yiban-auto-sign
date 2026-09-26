@@ -323,8 +323,14 @@ def migrate_v3(conn):
             )
         head_before = _chain_head(conn)
         rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        _facade()._rechain_audit_logs(conn)
-        _facade()._record_rechain_event(conn, version, rows, empty, head_before, _chain_head(conn))
+        # 重链留痕在同一事务内写（head_after 在重链完成后才取）——链重签与它的留痕
+        # 要么都在要么都不在，不留"重签却无痕"。
+        _facade()._rechain_audit_logs(
+            conn,
+            lambda: _facade()._record_rechain_event(
+                conn, version, rows, empty, head_before, _chain_head(conn)
+            ),
+        )
         conn.commit()
 
 
