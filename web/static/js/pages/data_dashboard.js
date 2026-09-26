@@ -111,7 +111,9 @@
 
   /* ---------------- 状态词表（sign_events.status 的真实取值） ----------------
      取值与 scripts/signin.py 的 STATUS_* 常量一一对应，新增状态必须同步本表，
-     否则分布图会把它当作「跳过」并显示英文原文。
+     否则分布图会把它当作「跳过」并显示英文原文。本表是 yiban.status 之外的第二份
+     状态清单（图表短名有意区别于日历图例，完整单源接线属前后端协同任务）；其**键集合**
+     已被 tests/test_yiban_status_single_source.py 钉到唯一事实源 ALL_STATUSES，漏一格即红。
      success/already=成功；failed=失败；其余（no_task/retrying/skipped_* 等）=
      跳过或未了结。探针 stage 同样写 success/failed，故本页请求显式带
      stage=sign，只统计真实签到（见 loadSign）。 */
