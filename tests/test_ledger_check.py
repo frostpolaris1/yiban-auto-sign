@@ -18,7 +18,10 @@
 `test_unexpected_exception_message_is_sanitized` 钉的是对账工具自己把异常打出来时
 不得带裸手机号（工具输出常进 CI 日志与工单）。
 依赖：**真起子进程**跑脚本（口径见模块头），依赖 `sys.executable` 与临时库/临时状态目录；
-不碰本机真实 `.env`；本机无网络、无 skip。
+不碰本机真实 `.env`；本机无网络、无 skip。两个进程内注入异常的用例把
+`YIBAN_STATE_DIR` / `YIBAN_DB_FILE` / `YIBAN_ENV_FILE` **在用例内显式指到临时路径**
+（缺库守卫排在注入点之前，环境不指全就短路，用例只在全量靠别处泄漏环境变量时才绿——
+聚焦单跑必红的根因），不依赖任何跨用例环境。
 """
 import contextlib
 import importlib.util
@@ -222,9 +225,18 @@ class LedgerCheckTest(unittest.TestCase):
 
         异常文本多来自连接层/`.env` 解析，可能带出配置值；原样打印等于把它写进
         运维终端与日志。判定与实现共用 `yiban.masking.sanitize_text`。
+
+        前置条件必须**在本用例内自建**：`main()` 在进程内跑，读的是进程环境；缺库
+        守卫（拒绝新建空库）排在 `init_db` 注入点**之前**，环境没指到位就短路返回，
+        断言的脱敏输出根本不会产生——依赖别处用例泄漏的环境变量转绿，等于把测试
+        之间的隐式耦合当正确性。库文件由 `setUp` 建库时真实存在，守卫自然放行。
         """
         module = _load_script()
-        with mock.patch.object(
+        with mock.patch.dict(os.environ, {
+                "YIBAN_STATE_DIR": self.state_dir,
+                "YIBAN_DB_FILE": self.db_file,
+                "YIBAN_ENV_FILE": os.path.join(self.tmp, ".env"),
+        }), mock.patch.object(
                 module.db, "init_db",
                 side_effect=RuntimeError("连接失败 token=SECRET123")):
             buf = io.StringIO()
@@ -240,15 +252,25 @@ class LedgerCheckTest(unittest.TestCase):
 
         故障注入点只能从进程内给（CLI 不暴露），故直接断言 `main()` 的返回值：它就是
         `sys.exit(main())` 交给进程的退出码。
+
+        前置条件与同文件脱敏用例一样**在本用例内自建**（理由见彼处）。守卫短路也回
+        2 且带"无法定论"字样——只断这两样会在"注入从未执行"时空转全绿，故再钉
+        "未预期异常"：它只出现在兜底 except 分支，能证明真走到了注入点。
         """
         module = _load_script()
-        with mock.patch.object(module.db, "init_db",
-                               side_effect=RuntimeError("注入的连接层故障")):
+        with mock.patch.dict(os.environ, {
+                "YIBAN_STATE_DIR": self.state_dir,
+                "YIBAN_DB_FILE": self.db_file,
+                "YIBAN_ENV_FILE": os.path.join(self.tmp, ".env"),
+        }), mock.patch.object(module.db, "init_db",
+                              side_effect=RuntimeError("注入的连接层故障")):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = module.main(["--day", DAY])
         self.assertEqual(rc, 2, buf.getvalue())
         self.assertIn("无法定论", buf.getvalue())
+        self.assertIn("未预期异常", buf.getvalue(),
+                      "必须钉住兜底异常分支，而非缺库守卫的短路")
 
     # ---- 14. 白名单补项 ----
     def test_allowed_tables_covers_egress_state_and_app_meta(self):
