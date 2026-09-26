@@ -31,7 +31,6 @@
 
 import contextlib
 import logging
-import os
 import re
 import secrets
 from datetime import datetime
@@ -261,23 +260,41 @@ def ensure_secret_key(env_path, atomic_write, audit=None):
     .env 不可写、或既有行含潜伏行分隔符（写入被 fail-closed 拒绝）时降级为进程内随机
     密钥并告警（服务可用，重启后会话失效）——与口令哈希迁移的降级策略一致：宁可告警后
     带病运行，也不让启动直接失败。行模型/校验单源在 `yiban.infra.env_io.write_env_keys`。
+
+    判定"已有密钥/全新部署"走**严格读**（`strict=True`，与 account_crypto 建钥支、
+    audit_chain 审计密钥支同口径）：宽松读把"文件存在但读不到"（权限/占用/upsert 截断
+    与编辑器 unlink-新建造成的空残缺窗口）吞成空 dict，误判未配置就生成新钥落盘——
+    旧钥被同键折叠悄悄顶掉、`REGISTRATION_PAUSE=1` 把注册静默关闭，正是"读失败误判
+    未配置会静默生成新钥覆盖旧钥，宁可启动失败"在本仓写侧的翻版。严格读到 OSError 时
+    **一次都不写**：无法确认旧钥是否存在就不能生成新钥，降级为进程内随机密钥并告警。
+    判定与取值**共用这一次读取**（不再 os.path.exists + 宽松读两次不同源——两次之间
+    文件可以换内容，判"全新"与写"新钥"就会各看一版）。
     """
     with _env_write_lock(env_path):
-        # 全新部署判定必须在读取前——.env 不存在 = 首次初始化，默认写入「暂停注册」；
-        # 既有部署（文件已存在，如升级安装）不写此键，注册行为保持不变
-        # （用户裁决：默认允许，新部署才默认暂停）。
-        # touch 空 .env / 复制 .env.example 后文件存在但无任何有效键
-        # 仍视为全新部署（此前判定仅看文件存在性，会把空配置误判为既有部署
-        # 而不写暂停键，新部署默认开放注册）。
-        env = read_env(env_path)
-        new_deployment = not os.path.exists(env_path) or not env
+        try:
+            env = _env_io.parse_env_file(env_path, strict=True)
+        except OSError as e:
+            logger.warning(
+                "无法读取 %s（%s）：无法确认既有 YIBAN_SECRET_KEY，拒绝生成新钥落盘"
+                "（换钥会静默顶掉旧钥并可能翻转注册开关）；仅本次进程使用随机密钥，"
+                "重启后会话将失效，请检查文件权限后重启",
+                env_path, e,
+            )
+            return secrets.token_hex(32)
+        # 全新部署判定与取值同源于上面这一次严格读——文件不存在/空/仅注释（无任何
+        # 有效键）= 首次初始化，默认写入「暂停注册」；既有部署不写此键，注册行为
+        # 保持不变（用户裁决：默认允许，新部署才默认暂停）。touch 空 .env / 复制
+        # .env.example 后无有效键仍视为全新部署。
+        new_deployment = not env
         key = env.get("YIBAN_SECRET_KEY", "").strip()
         if key:
             return key
         key = secrets.token_hex(32)
         # 常量字面量写入（暂停键），无注入面；管理员完成初始配置后在设置页开启注册。
-        # 旧键折叠由 write_env_keys 的 key_line_pattern 承担（`YIBAN_SECRET_KEY = `
-        # 这类带空白写法同样是该键的行，不会被漏判出重复影子行）。
+        # 同键旧行折叠由 write_env_keys 的 key_line_pattern 承担（影子行判据：同名键
+        # 占多行时解析器按后写覆盖先写，生效值由落盘顺序决定）——`YIBAN_SECRET_KEY = `
+        # 带空白写法、以及万一残留的旧 `YIBAN_REGISTRATION_PAUSE=0` 行都会被折成唯一
+        # 一行，不会与本次新行并存成 =1/=0 双行。
         updates = {"YIBAN_SECRET_KEY": key}
         if new_deployment:
             updates["YIBAN_REGISTRATION_PAUSE"] = "1"
