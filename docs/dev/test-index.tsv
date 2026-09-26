@@ -1568,8 +1568,18 @@ tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_solve_ydclearance_settim
 tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_write_sign_state_rebuilds_corrupt_json	G	-	??
 tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_write_sign_state_rebuilds_non_dict_json	G	-	??
 tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_write_sign_state_unwritable_dir_does_not_raise	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_fragment_high_entropy_and_phone_masked	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_fragment_token_masked	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_opaque_fragment_untouched	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_query_and_fragment_same_caliber	G	-	??
 tests/test_masking_ssrf_gaps.py	UrlPhoneTest.test_high_entropy_value_rule_still_works	G	-	??
 tests/test_masking_ssrf_gaps.py	UrlPhoneTest.test_phone_in_query_masked_by_name_and_by_value	G	-	??
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_authorization_bearer_spanning_space	G	-	`Bearer <token> <尾巴>` 整段遮：旧实现只吞到 token 首段。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_bare_value_after_unclosed_quote_masked	G	-	引号未配对时裸值分支兜底：`token="abc def` 不得留下 ` def"`。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_comma_prose_without_pair_shape_untouched	G	-	对照例①：含逗号的正文没有键值形态，一字不改。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_cookie_pairs_masked_item_by_item	G	-	对照例③（也是裸值不放宽到行尾的理由）：cookie 串逐对遮，非凭据属性留在原地。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_following_non_credential_pair_kept	G	-	对照例②：值在"后续新 key= 对"处收尾——非凭据对不被连坐吞掉。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_registered_truncation_examples_fully_masked	G	-	登记实测五例 + password 同族例：旧实现全部残留明文尾（`*** def"` 等）。
 tests/test_masking_tokens.py	TokenMaskingTest.test_access_token_literal_is_masked	G	-	??
 tests/test_masking_tokens.py	TokenMaskingTest.test_authorization_bearer_is_masked	G	-	??
 tests/test_masking_tokens.py	TokenMaskingTest.test_cookie_and_session_literals_are_masked	G	-	??
