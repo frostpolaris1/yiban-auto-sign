@@ -28,9 +28,9 @@ import json
 from flask import jsonify, session
 
 from web.routes import appmod as _appmod
-from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
+from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 
 
 def api_mail_config():

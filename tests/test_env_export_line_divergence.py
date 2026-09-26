@@ -2,6 +2,10 @@
 r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉死收敛不变量。
 
 标签：J · 运维：部署/备份/发布 · G · 安全：脱敏/审计/配置注入
+覆盖：`export KEY=value` 行在 env_io / child_env / shell 三读取方的收敛不变量——
+    正向（真实键三处同值可读）与反向（export 键三处不可读、env_io 侧挂畸形键、
+    其余整行丢弃）；不覆盖：行内 value 的逐字一致性（由 tests/test_runsh_env_parse.py
+    的文本断言钉住）。
 背景：`.env` 有三个独立读取方，各用不同行模型（`yiban.infra.env_io.parse_env_file`
     读侧宽松、`scripts/child_env.parse_env_file` YIBAN_ 前缀+合法键名双白名单、
     `run.sh`/`run_probe.sh` 的 shell 键名正则判据）。`export KEY=value` 这种从 shell rc
@@ -15,7 +19,8 @@ r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉
 
 对应实现：`yiban/infra/env_io.py`（`parse_env_file` / `key_line_pattern` /
     `env_key_values` / `render_env_write`）、`scripts/child_env.py`、
-    `run.sh` / `run_probe.sh` 的加载循环（逐字同构复现 + 文本一致性核验）。
+    `run.sh` / `run_probe.sh` 的加载循环（文本逐字一致性由
+    `tests/test_runsh_env_parse.py` 钉住，本文件钉行为面收敛）。
 关键断言：反向不止断 `get("KEY")` 为空——env_io 侧另钉"export 行确实解析进了 dict
     但挂在畸形键下"（分叉形态本体；将来任何'归一'剥前缀的改动都会红在这里）；
     折叠正则不得吃掉 export 行；shell 侧先断两份脚本的解析段与本测试复刻段逐字
@@ -171,8 +176,8 @@ class ShellPathTest(_EnvFixture):
         r = subprocess.run([BASH, "-c", script, "probe", path],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        lines = dict(l.split("=", 1) for l in r.stdout.strip().splitlines()
-                     if l.startswith(("DECOY=", "PLAIN=")))
+        lines = dict(ln.split("=", 1) for ln in r.stdout.strip().splitlines()
+                     if ln.startswith(("DECOY=", "PLAIN=")))
         self.assertEqual(lines.get("PLAIN"), PLAIN_VAL, "正向：真实键照常导出")
         self.assertEqual(lines.get("DECOY"), "unset",
                          "反向：export 行不得导出成生效环境变量")

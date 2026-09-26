@@ -39,6 +39,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import ClassVar
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -284,7 +285,7 @@ class DeleteOwnerAccountsAuditTest(_Fixture):
     现留痕由 store 追加**实际删除行数**，有操作必有如实留痕。
     """
 
-    SPEC = {"username": "master@admin.local", "action": "user_delete",
+    SPEC: ClassVar[dict] = {"username": "master@admin.local", "action": "user_delete",
             "target": "zero-del@test.local", "detail": "mode=accounts_only"}
 
     def _details(self):
@@ -321,7 +322,7 @@ class PurgeAuditWindowTest(_Fixture):
     现清单/计数在事务内产出后交给 `record_in_txn`：业务效果与留痕同在或同不在。
     """
 
-    SPEC = {"username": "master@admin.local", "action": "user_deleted_purge"}
+    SPEC: ClassVar[dict] = {"username": "master@admin.local", "action": "user_deleted_purge"}
 
     def _make_deleted_user(self, email):
         db.create_user(email, "hash", role="user")
