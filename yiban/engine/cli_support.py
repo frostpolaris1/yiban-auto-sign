@@ -172,7 +172,9 @@ def _acquire_run_lock(only_mode, name=None):
 
 
 def _run_lock_held(name=None):
-    """此刻是否**有别的进程持着运行锁**（兜底常驻据此给全量轮让位）。
+    """此刻是否**有别的进程持着运行锁**（兜底常驻仅在**无领取池**的部署据此给全量轮
+    整段让位；有池时让位收窄到同一账号，由 `yiban/store/claims.py` 的领取仲裁，
+    见 `workers.run_fallback_worker`）。
 
     做法就是"拿一下立刻放"：flock 只能靠尝试获取来问，拿到说明没人跑、当场释放。
     **显式传 `name`** 才能拿到全局锁的答案（不传时取 `YIBAN_RUN_LOCK_NAME`，

@@ -1093,6 +1093,13 @@ tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_switch_value_is
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_divides_by_parallel_rows_only	B	-	分母只数「并行」行——用后端 workers.configured，不自己按清单长度算。
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_uses_accounts_counted_not_users_quota	B	-	??
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_first_card_is_todays_progress	B	-	首卡从「清单行数」换成「今日进度」：行数在表里一眼可见，卡片该回答"今天跑得怎么样"。
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_fallbacks_own_give_ups_are_excluded	B	-	兜底自己弃权的行不进签名：否则"扫→弃权→签名变→立刻再扫"接成紧循环重登。
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_final_give_up_does_not_move_signature	B	-	final: 档（预算耗尽/风控）兜底默认领不动：为它唤醒只会空转，绝不计入。
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_reclaim_of_retry_row_moves_signature	B	-	他人重领 retry: 行同样动签名（出队也是迁移）：最多多扫一次，由池仲裁不重签。
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_retry_give_up_by_other_executor_moves_signature	B	-	??
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_settle_done_does_not_move_signature	B	-	??
+tests/test_fallback_event_yield.py	PoolYieldCounterexampleTest.test_inflight_blocks_fallback_but_rounds_failed_account_is_taken	B	-	??
+tests/test_fallback_event_yield.py	PoolYieldCounterexampleTest.test_settled_done_by_round_is_not_reattempted	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_non_truthy_literals_are_off	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_pause_blocks_any_day	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_weekday_is_go	B	-	??
@@ -1100,6 +1107,9 @@ tests/test_fallback_gates.py	DayOffGateTest.test_weekend_off_by_default	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_weekend_on_when_enabled	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_weekend_takes_precedence_over_pause	B	-	顺序与历史行为一致（周日 → 周六 → 暂停）：原因串决定日志措辞。
 tests/test_fallback_gates.py	FallbackCredStatePersistTest.test_round_saves_cred_state_incrementally	B	-	??
+tests/test_fallback_gates.py	FallbackEventDrivenWakeTest.test_no_pool_keeps_blind_interval	B	-	无池 = 没有可轮询的事件源：退回盲的整段间隔（原节律逐字保留）。
+tests/test_fallback_gates.py	FallbackEventDrivenWakeTest.test_quiet_pool_ticks_out_full_interval	B	-	无新事件：短轮询数满扫描间隔为止（事件驱动是延迟优化，上限仍是间隔）。
+tests/test_fallback_gates.py	FallbackEventDrivenWakeTest.test_wakes_on_pool_event_before_interval	B	-	反例（a）时机面：别的执行体弃权（签名第 3 拍变化）⇒ 不必等满 60s 就二扫。
 tests/test_fallback_gates.py	FallbackGateTest.test_paused_never_scans	B	-	??
 tests/test_fallback_gates.py	FallbackGateTest.test_saturday_off_never_scans	B	-	??
 tests/test_fallback_gates.py	FallbackGateTest.test_sunday_off_never_scans	B	-	??
@@ -1113,8 +1123,8 @@ tests/test_fallback_gates.py	RunLockProbeTest.test_probe_ignores_own_lock_name_e
 tests/test_fallback_gates.py	RunLockProbeTest.test_probe_sees_held_lock_and_frees_after	B	-	??
 tests/test_fallback_gates.py	SharedGateWiringTest.test_runner_delegates_to_shared_gate	B	-	??
 tests/test_fallback_gates.py	SharedGateWiringTest.test_runner_still_returns_2_on_saturday_off	B	-	??
-tests/test_fallback_gates.py	YieldToFullRoundTest.test_yields_repeatedly_while_round_running	B	-	全量轮一直在跑 ⇒ 兜底一直不扫（只轮询），不会偷偷插进去签账号。
-tests/test_fallback_gates.py	YieldToFullRoundTest.test_yields_while_round_running_then_takes_over	B	-	??
+tests/test_fallback_gates.py	YieldPerAccountTest.test_scans_while_round_holds_lock_when_pool_present	B	-	反例（a）主循环面：全量轮持锁 + 池在场 ⇒ 兜底仍扫描（旧代码在此睡整段）。
+tests/test_fallback_gates.py	YieldPerAccountTest.test_stands_down_entirely_when_no_pool_while_round_runs	B	-	无池（纯状态文件部署）：账号级互斥不存在，让位仍是整段停摆。
 tests/test_fyiban_concave_sampling.py	ConcaveFenceSamplingTest.test_arithmetic_mean_of_concave_fence_is_outside	K	-	先确认缺陷前提成立：凹形围栏的顶点算术平均确实在围栏外。
 tests/test_fyiban_concave_sampling.py	ConcaveFenceSamplingTest.test_closed_ring_and_repeated_vertices_still_sample_inside	K	-	首尾写同一点（闭合环）与相邻重复顶点是常见写法，不能被当成退化输入。
 tests/test_fyiban_concave_sampling.py	ConcaveFenceSamplingTest.test_concave_fences_always_sample_inside	K	-	L 形与门形各采 2000 点，必须全部落在围栏内（凹口不是采样区）。
