@@ -247,17 +247,20 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
     return min(max(1, need), egress)
 
 
-def _schedule_config():
+def _schedule_config(now=None):
     """读取调度 v2 配置（每次调用读取，便于测试与热改）。
 
     兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
     新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
     返回 dict：order/dist/edge_front_sec/edge_back_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
+
+    `now` 只用于把"业务日"交给 `reset_daily_alerts`（见其文档）：常驻兜底这类每轮都
+    已经取过当前时刻的调用方顺手传进来，省掉一次多余的 `clock.now()`。
     """
     # 业务日翻页先把三个告警去重标记复位（唯一复位点，理由见 reset_daily_alerts）：
     # 本函数是每一轮调度的入口，复位挂在这里，调用方不必记得手动清理。
-    reset_daily_alerts()
+    reset_daily_alerts(now)
     # 局部导入：alerts 反向依赖本模块的窗口判定（告警要判"窗口是否还开着"），
     # 模块级互引会成环；本函数每天只调用几次，局部导入的开销可忽略。
     from yiban.engine import alerts

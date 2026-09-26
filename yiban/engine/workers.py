@@ -280,10 +280,14 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     if proxy:
         os.environ["YIBAN_PROXY"] = proxy
 
-    sch_cfg = schedule._schedule_config()
+    sch_cfg = None   # 每轮在循环内重读（见下）
     last_code = 0
     while True:
         now = clock.now()
+        # 配置每轮重读，并把本轮时刻交给 `_schedule_config`（与下面 `day_off` 的每轮重判
+        # 同口径：管理员中途改窗口/开关，下一轮即生效）；顺手传时刻是为了让它的告警复位点
+        # 不必再取一次时钟——常驻进程每秒级的取时不该翻倍。
+        sch_cfg = schedule._schedule_config(now)
         if deadline is not None and now >= deadline:
             logger.info("兜底执行体：到达截止时刻，退出")
             break
