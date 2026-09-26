@@ -435,6 +435,8 @@ def api_my_account_add():
     err, clean = m.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
+    # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
+    m.fold_phone_code(clean)
     # 预筛：资格校验全部前置到网络验证之前，杜绝「先向易班发起真实登录、再发现
     # 根本没资格」的凭据试探滥用面。权威校验仍保留在下方写入临界区
     # （预筛通过≠最终名额，双检以锁内为准）。
@@ -699,11 +701,9 @@ def api_my_account_update(idx):
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
-        if clean["phone_code"] == m.CLEAR_SENTINEL:
-            clean.pop("phone_code", None)
-        elif not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
+        # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变
+        # （与 /api/accounts/<idx> 及两条添加路径共用同一折算）
+        m.fold_phone_code(clean, old.get("phone_code", ""))
         clean["owner"] = old.get("owner", "")
         # 改绑手机号一律回待审核重审——否则 ACTIVE 号可被改绑成任意新号免审生效，
         # 历史审核结论不再可信。无论原状态（含 ACTIVE）；REJECTED 本就回 pending。

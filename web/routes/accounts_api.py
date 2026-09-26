@@ -157,6 +157,8 @@ def api_account_add():
     err, clean = m.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
+    # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
+    m.fold_phone_code(clean)
     # 预筛（同 api_my_account_add）：容量/手机号占用/内置邮箱先拦，注定失败的
     # 添加不再消耗易班网络验证。权威校验仍在下方写锁内。
     with m._file_lock:
@@ -391,11 +393,9 @@ def api_account_update(idx):
         # 密码留空 = 保持不变（密码明文永不下发前端）
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变（表单不预填防误清空）
-        if clean["phone_code"] == m.CLEAR_SENTINEL:
-            clean.pop("phone_code", None)
-        elif not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
+        # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变。
+        # 全部消费点共用 fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
+        m.fold_phone_code(clean, old.get("phone_code", ""))
         # 归属保持不变（管理员编辑不改变提交者）
         clean["owner"] = old.get("owner", "admin")
         # 改绑手机号一律回待审核重审——
