@@ -76,7 +76,7 @@ class MigrateV20Test(unittest.TestCase):
         migrations.migrate_v17(conn)
         migrations.migrate_v18(conn)
         # v19 真的跑：user_version=19 的库必须有 sign_claims.epoch——迁移完整性校验
-        # （MF-40）会拒"版本声称已过 v19 但产物缺失"的漂移库，夹具不得是那种漂移库。
+        # 会拒"版本声称已过 v19 但产物缺失"的漂移库，夹具不得是那种漂移库。
         migrations.migrate_v19(conn)
         conn.execute("PRAGMA user_version = 19")
         conn.commit()

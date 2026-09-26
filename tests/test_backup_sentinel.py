@@ -3,7 +3,7 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖：当日归档与 .sha256 清单齐不齐（只有密文形态 gpg/age 计入健康——M3 批次0
-    MF-79：明文包不再算数，且单独触发告警）、昨日包不算今日备份、
+    明文模式护栏：明文包不再算数，且单独触发告警）、昨日包不算今日备份、
     运行拷贝与仓库版的漂移比对、跨进程节流真的接上、发不出去要能看见、
     wrapper 切工作目录与导出 .env、wrapper 头部文档与"只转发"契约。
 对应实现：`scripts/backup_sentinel.py`（判定与外发）、`scripts/yiban-backup-sentinel.sh`
@@ -120,7 +120,7 @@ class SentryVerdictTest(_Base):
     def test_age_form_still_accepted(self):
         """age 形态是密文，认：认不出会在合法部署上误报"没有备份"，那正是要消灭的噪音。
 
-        M3 批次0（MF-79）：`.tar.gz`（明文）从"也认"名单里移除——"明文包直接满足
+        M3 批次0（明文模式护栏）：`.tar.gz`（明文）从"也认"名单里移除——"明文包直接满足
         当日包存在=健康"曾让告警链整体静默；明文判定见 test_plaintext_only_is_unhealthy。
         """
         self._write_archive(suffix=".tar.gz.age")

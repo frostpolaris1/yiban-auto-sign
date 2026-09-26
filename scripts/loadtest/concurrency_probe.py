@@ -276,25 +276,28 @@ def db_write_microbench(path, concurrency, per_thread=20, timeout=15.0):
 # 环境装配
 # ---------------------------------------------------------------------------
 def load_env_file(path):
+    """读 .env 为 dict；**读不到必须报错**（不得静默返回空 dict 让子进程继承宿主环境）。"""
     env = {}
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip()
-                if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-                    v = v[1:-1]
-                env[k] = v
-    except OSError:
-        pass
+    with open(path, encoding="utf-8-sig") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            env[k] = v
     return env
 
 
-def clear_session_cache(db_path):
-    """清空会话缓存：保证每档每个账号都走完整登录链（口径一致、写入量可比）。"""
+def clear_session_cache(db_path, fingerprint=None):
+    """清空会话缓存：保证每档每个账号都走完整登录链（口径一致、写入量可比）。
+
+    清空前必须过 `isolation.assert_loadtest_target`（声明指纹 + 目标像压测库）：
+    误指生产库的 DELETE 会让全部账号真实重登，故缺指纹/指纹不符/非压测账号都抛错。
+    """
+    isolation.assert_loadtest_target(db_path, fingerprint)
     try:
         conn = sqlite3.connect(db_path)
         try:
@@ -390,7 +393,7 @@ def run_k(args, k, slices, run_dir):
     if os.path.isdir(run_dir):
         shutil.rmtree(run_dir, ignore_errors=True)  # 清掉同档旧状态，防统计污染
     os.makedirs(run_dir, exist_ok=True)
-    clear_session_cache(args.db)  # 每档起点一致：全量登录链 + 等量 session_cache 写
+    clear_session_cache(args.db, args.db_fingerprint)  # 每档起点一致：全量登录链 + 等量 session_cache 写
     total_mem_mb, avail0 = read_meminfo()
 
     # 子进程 CPU/内存由 RUSAGE_CHILDREN 差分获得（探针自身不 fork 其它子进程）
@@ -601,6 +604,8 @@ def main(argv=None):
     ap.add_argument("--repo", required=True, help="被测仓库根目录")
     ap.add_argument("--env", required=True, help="测试 .env 路径")
     ap.add_argument("--db", required=True, help="测试库路径")
+    ap.add_argument("--db-fingerprint", default="",
+                    help="目标库指纹（清空会话缓存前必填；先跑一次看打印值）")
     ap.add_argument("--ca", required=True, help="mock CA 证书路径")
     ap.add_argument("--mock-log", default="", help="mock JSONL 路径（用于并发/请求统计）")
     ap.add_argument("--mock-pid", type=int, default=0,
@@ -622,6 +627,14 @@ def main(argv=None):
     args.repo = os.path.abspath(args.repo)
     args.env = os.path.abspath(args.env)
     args.db = os.path.abspath(args.db)
+
+    # 目标指纹门（fail-closed，早于任何清空）：未声明/不符即退 2，不做任何重活。
+    actual_fp = isolation.loadtest_db_fingerprint(args.db)
+    if str(args.db_fingerprint).strip() != actual_fp:
+        print(f"错误：目标库指纹未声明或不匹配。实际指纹：{actual_fp}\n"
+              f"      请确认目标为压测库后加 `--db-fingerprint {actual_fp}` 重跑。",
+              file=sys.stderr)
+        return 2
 
     k_list = [int(x) for x in args.k_list.split(",") if x.strip()]
     max_accounts = max(k_list) * args.per_proc

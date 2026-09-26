@@ -82,6 +82,20 @@ else
 fi
 
 TS=$(date +%Y%m%d%H%M%S)
+
+# 审计锚点独立见证目录：与锚点文件（<STATE_DIR>/audit-anchor.log）分离存放，root 建、
+# 应用只读；root 侧见证进程（yiban-audit-witness）写 0644 于此。之所以放 /var/lib 而
+# 不是状态目录：状态目录对应用可写，见证落那里就等于同一份权限，"双写掩盖"再无独立
+# 证据。应用若读不到此目录只会降级为告警里的"独立见证未启用"，不影响启动。
+WITNESS_DIR="$DESTDIR/var/lib/yiban-audit"
+mkdir -p "$WITNESS_DIR"
+if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
+    chown root:root "$WITNESS_DIR" 2>/dev/null \
+        || echo "yiban-install: note: 独立见证目录属主设置失败: $WITNESS_DIR" >&2
+fi
+chmod 0755 "$WITNESS_DIR"
+echo "witness dir: $WITNESS_DIR mode=0755"
+
 for row in "${ROWS[@]}"; do
     IFS=$'\t' read -r mode src dest <<< "$row"
     srcpath="$REPO_ROOT/$src"

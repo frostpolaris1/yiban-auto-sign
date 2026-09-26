@@ -21,11 +21,12 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
 import db
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -219,7 +220,7 @@ class ManualSignExitTest(_WebAppMixin, unittest.TestCase):
 
     def _today_log(self):
         path = os.path.join(
-            self.tmp, f"sign-{datetime.now().strftime('%Y-%m-%d')}.log")
+            self.tmp, f"sign-{clock.today()}.log")
         return path
 
     def _wait_reap(self):

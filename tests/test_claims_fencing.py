@@ -19,7 +19,10 @@
 依赖：临时 sqlite（每用例重建）+ 打桩
    yiban.engine.alerts；无网络请求。整文件在本机执行，无 skip。
 
-`epoch=None`（不传）时的行为与改造前逐字一致，由既有 `tests/test_claims.py` 全绿覆盖。
+`epoch=None`（不传）时收尾/续租的行为与改造前一致（不校验代），由既有
+`tests/test_claims.py` 覆盖。**领取侧的同 owner 重入不再只看 owner 串**：冲突分支要求
+出示上一代的 token（`try_claim(..., epoch=)`），故同 owner 重入的用例都要先拿到 e1
+再带它重入——只凭同名放行正是"同名进程互相重入 ⇒ 同一账号两次登录"的路径。
 """
 import contextlib
 import datetime
@@ -109,12 +112,15 @@ class EpochReturnTest(_Base):
         self.assertEqual(self._row()["epoch"], 1)
 
     def test_same_owner_reclaim_is_monotonic(self):
-        """同 owner 重入（重试、进程重启接管自己的行）也必须单调递增。
+        """同 owner 重入（轮内重试）也必须单调递增。
 
         收尾写的是"最近一次领取"的 epoch，若重入不递增，旧 epoch 就仍然能写进去。
+        重入要出示上一代的 token：不带 token 的同名重入在领取侧就被拒（同名进程可能
+        是两个进程，见 `tests/test_claims_mutex.py`）。
         """
         _ok, e1 = self._claim()
-        _ok, e2 = self._claim()
+        ok2, e2 = self._claim(epoch=e1)
+        self.assertTrue(ok2, "持有者带自己的 token 重入必须放行")
         self.assertGreater(e2, e1, "同 owner 重入必须严格递增")
         self.assertEqual(self._row()["epoch"], e2)
 
@@ -136,7 +142,7 @@ class FencedSettleTest(_Base):
     def test_stale_epoch_same_owner_is_refused(self):
         """判别力所在：owner 相同、epoch 落后 → 只有 epoch 守卫能拦住这次写。"""
         _ok, e1 = self._claim()
-        _ok, e2 = self._claim()          # 同 owner 重入 → e2 > e1
+        _ok, e2 = self._claim(epoch=e1)  # 同 owner 重入（要出示上一代 token）→ e2 > e1
         self.assertFalse(
             db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE, "陈旧", epoch=e1),
             "陈旧 epoch 的收尾必须被拒（否则被接管者迟到写会覆盖接管者的结论）")
@@ -187,7 +193,7 @@ class FencedGiveUpTouchTest(_Base):
 
     def test_give_up_refused_with_stale_epoch_same_owner(self):
         _ok, e1 = self._claim()
-        _ok, e2 = self._claim()
+        _ok, e2 = self._claim(epoch=e1)  # 同 owner 重入（出示上一代 token）
         self.assertFalse(db.claim_give_up(PHONE, DAY, OWNER_A, "陈旧", epoch=e1))
         row = self._row()
         self.assertEqual(row["state"], db.CLAIM_STATE_CLAIMED, "陈旧 epoch 不得置 failed")
@@ -205,7 +211,7 @@ class FencedGiveUpTouchTest(_Base):
     def test_touch_refused_with_stale_epoch_same_owner(self):
         """续租也要 fencing：被接管者续租会把租约重新拉长，让死执行体继续占位。"""
         _ok, e1 = self._claim()
-        _ok, e2 = self._claim()
+        _ok, e2 = self._claim(epoch=e1)  # 同 owner 重入（出示上一代 token）
         self.assertFalse(db.claim_touch(PHONE, DAY, OWNER_A, epoch=e1))
         self.assertTrue(db.claim_touch(PHONE, DAY, OWNER_A, epoch=e2))
 

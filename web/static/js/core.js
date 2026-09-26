@@ -167,6 +167,49 @@
     csrfToken = "";
     return fetchMe().then(function () { return perform(req, true); });
   }
+  /* ---------- .env 行分隔符提交前校验 ----------
+     常量由后端渲染进页面（window.YB_ENV_LINE_BREAK_CODES，见
+     templates/pages/work_settings.html 与 web/routes/pages.py）——与后端
+     yiban.infra.env_io.ENV_LINE_BREAK_CHARS 是**同一份清单**，前端不得再写死第二份。
+     缺常量（未注入的页面）时不拦：真正的兜底在后端写入口，前端只做友好前置校验，
+     不能因为少一个常量就把所有表单变成死表单。 */
+  var ENV_LINE_BREAK_CODES = (window.YB_ENV_LINE_BREAK_CODES || []).slice();
+
+  function hasEnvLineBreak(s) {
+    var t = String(s == null ? "" : s), i;
+    for (i = 0; i < t.length; i++) {
+      if (ENV_LINE_BREAK_CODES.indexOf(t.charCodeAt(i)) !== -1) return true;
+    }
+    return false;
+  }
+
+  // 递归找第一个含行分隔符的字段（返回字段路径，找不到返回 null）；只用于错误提示。
+  function envBodyLineBreak(body) {
+    if (typeof body === "string") return hasEnvLineBreak(body) ? "(body)" : null;
+    if (!body || typeof body !== "object") return null;
+    var keys = Object.keys(body), i;
+    for (i = 0; i < keys.length; i++) {
+      var v = body[keys[i]];
+      if (typeof v === "string") {
+        if (hasEnvLineBreak(v)) return keys[i];
+      } else if (Array.isArray(v)) {
+        for (var j = 0; j < v.length; j++) {
+          var e = v[j];
+          if (typeof e === "string") {
+            if (hasEnvLineBreak(e)) return keys[i] + "[" + j + "]";
+          } else if (e && typeof e === "object") {
+            var subA = envBodyLineBreak(e);
+            if (subA) return keys[i] + "[" + j + "]." + subA;
+          }
+        }
+      } else if (v && typeof v === "object") {
+        var subO = envBodyLineBreak(v);
+        if (subO) return keys[i] + "." + subO;
+      }
+    }
+    return null;
+  }
+
   function normalizeRequest(method, path, body) {
     if (typeof method === "string" && method.charAt(0) === "/") { // 兼容 api(path, {method, body})
       var opts = (path && typeof path === "object") ? path : {};
@@ -183,7 +226,16 @@
   var inflightGets = {};
   function api(method, path, body) {
     var req = normalizeRequest(method, path, body);
-    if (req.method !== "GET") return perform(req, false);
+    if (req.method !== "GET") {
+      // 写请求提交前的行分隔符拦截：含换行族的字段会注入出新的 .env 配置行
+      // （后端写入口另有 fail-closed 兜底；这里只是把"提交后 500/409"提前成"提交前提示"）。
+      var badField = envBodyLineBreak(req.body);
+      if (badField) {
+        return Promise.reject(new Error(
+          "字段「" + badField + "」含换行或行分隔符，配置只能单行存储"));
+      }
+      return perform(req, false);
+    }
     var key = req.path + "\u0000" + (req.body == null ? "" : String(req.body))
       + "\u0000" + JSON.stringify(req.headers || {});
     if (inflightGets[key]) return inflightGets[key];
@@ -1494,6 +1546,7 @@
     pwGateMessage: pwGateMessage,
     openDelayAckModal: openDelayAckModal,
     dangerousSubmit: dangerousSubmit,
+    hasEnvLineBreak: hasEnvLineBreak,
     applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
     toggleTheme: toggleTheme,

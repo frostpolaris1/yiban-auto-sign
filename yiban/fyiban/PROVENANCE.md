@@ -28,6 +28,7 @@
 | `waf.py::looks_like_challenge` | 同上（Auto-Test 的挑战模板字面量；`onefeifan/fyiban` 无此分支） | **本项目原创的识别函数**：特征为 `Set-Cookie` 含 `https_ydclearance`，或页面含 `window.onload=setTimeout` + `eval("qo=eval;qo(po);")`（模板字面量取自 Auto-Test）。"是不是挑战页"属平台识别留本层；"这个跳转能不能信"仍靠注入的白名单。 |
 | `protocol.py` 全部端点/参数/正则 | `Core/*Req.kt`、`Core/SchoolBased.kt`、登录流程（KillYiBan `p101w2/b.java`） | **平台事实**：端点与客户端标识、页面正则、`scope`/`display` 取值、成功标志（`code == "s200"`）；新流"四步"对。**归因修正**：① 旧流程实测 **6 次请求**（命中挑战 7 次），不是"五步"；② 旧流第 4 步的挑战分支是本项目原创，上游无此分支；③ `OutState` 的 `1`/`1.0` 是两个参考实现各自的取值（KillYiBan `1` / 旧 Auto-Test 脚本 `1.0`），官方 App 真值未取得，**不属平台事实**。 |
 | `protocol.py::encrypt_password` | 同上（RSA-1024 + PKCS1_v1_5 + base64 提交密码） | **编码方式一致**。**差异（有意）**：提交前加"密码超过 117 字节"的显式报错——上游是 Kotlin/Android，不存在 pycryptodome；本实现用它的 `PKCS1_v1_5`，超长时抛的是其 `ValueError`，我们换成可执行的处置建议。 |
+| `protocol.py::login_killyiban` 尾部签发回执判据 | 上游 `Core/SchoolBasedAuth.kt::auth`（核对版本 `d854182`）最终认证**只判 `code != 0`** | **本项目自有的假成功防线，非上游知识**：`code==0` 但 `data` 载荷缺失/为 null 一律拒认登录成功（不落成功日志、不写会话缓存）。形状依据：同一端点的入口步应答与同族签到接口的成功载荷都带 `data`（`login_legacy`/`client` 的读法即在此），`mock_yiban` 录制成功形状为 `{"code":0,"data":{},"msg":""}`——空容器是录制到的真实成功形状之一，故判据只拒"无回执"、不拒空载荷。拒绝文案的词元经 `security.HARD_FAIL_TOKENS` 落不可重试档（判断本体在本项目安全层，本层只按形状把关）。 |
 
 **不在本层的第三方内容**：上游的 Android UI、Gradle/Kotlin 构建、持久化 Cookie 实现、
 网络重试机制均未使用（本项目的对应实现为原创：`yiban/attempt`、`yiban/schedule`、

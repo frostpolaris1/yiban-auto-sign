@@ -195,6 +195,9 @@ def main(argv=None):
         except cli_support._RunLockHeld:
             logger.warning("已有兜底常驻执行体在运行，本次不重复拉起（防同账号并发登录）")
             return 3
+        except cli_support._RunLockUnavailable as e:   # 拿不到互斥即拒跑，同族退出码 3
+            logger.error("兜底常驻执行体：运行锁不可用，本次拒绝运行: %s", e)
+            return 3
         return workers.run_fallback_worker(argv)
 
     # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
@@ -220,20 +223,28 @@ def main(argv=None):
     # 成进程树；argv 侧去 `--workers` 的老办法挡不住（清单路径根本不经 argv）。
     # 子进程身份由监督进程注入 `YIBAN_EXECUTOR_ID`（`worker-{i}@{主机名}`），据此短路。
     _already_child = bool(os.environ.get("YIBAN_EXECUTOR_ID", "").strip())
-    slots = None if _already_child else egress.launch_slots()
-    # 派发监督进程的参数（None = 不派发，走下面的进程内单执行体路径）：清单缺失/非法 →
-    # 旧口径 `--workers N`（槽位就是 0..N-1）；清单在场 → 数**拉起列表**的槽位
-    # （停用/兜底行不在其中）。
-    if slots is None:
-        _dispatch = (args.workers, None) if (
-            not _already_child and args.workers and args.workers > 1) else None
+    # `--only`（手动单号）**收敛为单进程**：它只该豁免门，不该让派发照旧。派发照旧时同一
+    # 单号会被 N 个子进程各自领一次，抢输的一路 rc=2 会让 web 把其实成功的那次点击写成
+    # "本轮未实际签到"；且各子进程持独立锁，只杀监督进程会留下孤儿。收敛后这些都不存在，
+    # 而"拿不到锁返回 3"与门豁免的语义不变（见下面 `if not args.only` 的门与运行锁）。
+    if args.only:
+        _dispatch = None
     else:
-        _dispatch = (len(slots), slots) if len(slots) > 1 else None
-    # 只有"真跑计划任务"的派发才在 spawn 之前过门：`--only` 是用户主动触发（必须放行）、
-    # `--check-config` 是部署验证（哪天都要能验）、`--probe` 自带一道门且跳过语义是
-    # `return 0` 而非 2——三者照旧派发，由子进程各自按既有语义处理，与门只写在下面时逐字一致。
+        slots = None if _already_child else egress.launch_slots()
+        # 派发监督进程的参数（None = 不派发，走下面的进程内单执行体路径）：清单缺失/非法 →
+        # 旧口径 `--workers N`（槽位就是 0..N-1）；清单在场 → 数**拉起列表**的槽位
+        # （停用/兜底行不在其中）。
+        if slots is None:
+            _dispatch = (args.workers, None) if (
+                not _already_child and args.workers and args.workers > 1) else None
+        else:
+            _dispatch = (len(slots), slots) if len(slots) > 1 else None
+    # 只有"真跑计划任务"的派发才在 spawn 之前过门：`--check-config` 是部署验证（哪天都要
+    # 能验）、`--probe` 自带一道门且跳过语义是 `return 0` 而非 2——两者照旧派发，由子进程
+    # 各自按既有语义处理，与门只写在下面时逐字一致。`--only` 不在派发之列（见上），故也
+    # 不在这里过门；它走单进程路径时由下方 `if not args.only` 的门豁免放行。
     if _dispatch is not None:
-        if not (args.only or args.check_config or args.probe):
+        if not (args.check_config or args.probe):
             # 周末/暂停门必须在 spawn 之前拦下：否则先按清单拉起一批执行体子进程，再由每个
             # 子进程各自撞门退出（读配置、连库、载账号都白做一遍）。
             _skip = _day_off_skip()
@@ -283,6 +294,9 @@ def main(argv=None):
             _probe_lock_fh = cli_support._acquire_run_lock(only_mode=True)
         except cli_support._RunLockHeld:
             logger.warning("已有签到进程在运行，本轮探针跳过（防同账号并发）")
+            return 0
+        except cli_support._RunLockUnavailable as e:   # 探针是完整登录，无互斥即跳过（族内 0）
+            logger.warning("签到运行锁不可用，本轮探针跳过（防同账号并发）: %s", e)
             return 0
         if accounts:
             probe.run_probe(accounts)
@@ -347,21 +361,28 @@ def main(argv=None):
     # 账号再次完整登录（风控暴露）。现剔除已了结账号（success/already），
     # 只重跑未完成者；全部已了结则静默结束（退出码 0，不空跑一轮）。
     # --only 手动签到不受影响。
-    if not args.only and state_io._is_second_run():
+    # 本轮的"补签轮"身份还要喂给领取池：补签轮是显式路径，允许重领预算耗尽档的失败账号
+    # （窗口外/无点位档不靠它）。故只读一次、两处共用同一个判定。
+    _second_run = state_io._is_second_run()
+    if not args.only and _second_run:
         accounts = state_io._second_run_drop_done(accounts)
         if not accounts:
             logger.info("==== 补签轮：当日账号均已了结，无需重跑 ====")
             return 0
 
-    # 进程级单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
-    # --only 被持有 → 留痕退出；全量被持有 → 等待至多 YIBAN_RUN_LOCK_WAIT 秒后继续
-    # （不因手动签到阻塞而漏签一整天）。
+    # 进程级单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。--only 被持有 →
+    # 留痕退出；全量被持有 → 等至多 YIBAN_RUN_LOCK_WAIT 秒，等满仍拿不到就拒绝运行。
     try:
         _run_lock_fh = cli_support._acquire_run_lock(bool(args.only))
     except cli_support._RunLockHeld:
         logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
         # 不能返回 0：web 会把"静默跳过"当成功展示。3 = 队列忙，
         # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
+        return 3
+    except cli_support._RunLockUnavailable as e:
+        # 拿不到互斥（锁文件不可写/平台无锁后端/等待超时）就是"队列忙"的一种：退出 3 让
+        # run.sh 与 web 如实提示"这轮没跑"，绝不静默继续；码值不新增（0/1/2/3/10）。
+        logger.error("签到运行锁不可用，本次拒绝运行（防同账号并发真实登录）: %s", e)
         return 3
 
     # 版本号写进轮次横幅：发布门槛靠它把"生产跑过的轮次"与提交对齐
@@ -470,13 +491,22 @@ def main(argv=None):
     if not args.only and executor_v3.scheduler_v3_enabled():
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
-            event_sink=event_rows.append, delegated=delegated)
+            event_sink=event_rows.append, delegated=delegated,
+            # 补签轮就是 v3 当日回炉口的显式路径（对齐下面 v2 的
+            # `retry_failed=bool(args.only) or _second_run`——手动 `--only` 不走 v3，
+            # 故这里只剩补签轮一个来源）。普通轮 False：`final:`/无前缀保守档绝不
+            # 被定时轮自动复活，档位纪律与领取层同一份。
+            requeue_final=_second_run)
     else:
         results = round_mod.run_queue_retry(
             accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
             # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
             reclaim=bool(args.only),
+            # 显式路径才可重领"预算耗尽/风控"档弃权的账号：手动（--only）与补签轮都算。
+            # 兜底常驻不传——无界循环不算有界显式路径，见 `workers.run_fallback_worker`。
+            # 默认轮不传 ⇒ 那类账号不会被后面每一轮无上限地重领一遍。
+            retry_failed=bool(args.only) or _second_run,
         )
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
@@ -614,7 +644,12 @@ def main(argv=None):
 
     # 全量运行完成标记：调度器首签/补签闸门的事实源。
     # 仅全量模式写入；--only 手动签到不写——手动成功不得压制调度器当日判定。
-    if not args.only:
+    # 多执行体形态下**只有监督进程写这一标记**（`workers.run_worker_supervisor`）：
+    # 子执行体各写一份时，先收尾的那份会盖掉"还有兄弟被杀/没跑完"的事实，
+    # "当日全量已收尾"从此不可信，补签闸门随之被喂假信号。子进程都带着监督进程
+    # 注入的 `YIBAN_EXECUTOR_ID`（`_already_child` 分流判据即此），据此关停本行。
+    # 单执行体直跑（无监督进程、无该身份）仍是自写——它本来就是这个标记的唯一作者。
+    if not args.only and not _already_child:
         state_io._write_sched_done({"ok_n": ok_n, "fail_n": fail_n, "skip_n": skip_n})
 
     # 退出码（run.sh 依据退出码写状态文件）：

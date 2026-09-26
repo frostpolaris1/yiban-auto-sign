@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""loadtest 隔离链 fail-closed 断言（MF-68 高）。
+"""loadtest 隔离链 fail-closed 断言。
 
-覆盖任务 4 的四条「启动即断言 / 记账对平」验收不变量（全部真执行，不做源码断言）：
+标签：J · 运维：部署/备份/发布
+覆盖：任务 4 的四条「启动即断言 / 记账对平」验收不变量（全部真执行，不做源码断言）：
 
   1. 代理注入 ⇒ 拒绝启动（四个入口都以子进程实跑，反例可失败）；
   2. ``--egress-probe-ip`` 缺省 ⇒ 拒绝启动（不再静默 [SKIP]）；
@@ -11,7 +12,10 @@
 
 另含：子进程环境构造处主动摘除 ``*PROXY*`` 键、iptables REJECT 改为 ``-I`` 前插、
 ``reset_state_dir`` 前缀白名单补齐、``read_meminfo`` 读取失败显式报错。
-
+对应实现：`scripts/loadtest/isolation.py`（代理摘除、egress-probe 门、`reset_state_dir`
+白名单、`read_meminfo`）与四个压测入口 `scale_driver.py` / `concurrency_probe.py` /
+`capacity_probe.py` / `mock_env.py` 的启动自检与 `trust_env=False` 会话装配。
+关键断言：以子进程实跑的退出码 / 抛错 / 记账条数为准（活体反例可失败），不 grep 被测源码。
 依赖：纯函数与真起 mock 子进程（回环、明文、端口 0）的用例均可在普通套件跑；
 iptables 真装规则需 root+Linux，改用「捕获下发的命令串」做等价断言，不碰系统。
 """
@@ -21,6 +25,7 @@ from __future__ import annotations
 import http.client
 import importlib
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -355,3 +360,33 @@ def test_concurrency_probe_mem_abort_not_reported_when_meminfo_unreadable(
     assert rc != 0
     out = (capsys.readouterr().out + "").lower()
     assert "内存饱和" not in out
+
+
+# ---------------------------------------------------------------------------
+# 10. 归属读取：库缺失 ⇒ None（owner 检查不得空过放行）
+# ---------------------------------------------------------------------------
+def test_account_owners_missing_db_returns_none(tmp_path):
+    assert isolation._account_owners(str(tmp_path / "no-such.db")) is None
+
+
+def test_loadtest_target_refuses_missing_db(tmp_path):
+    """库缺失 ⇒ 归属读不到 ⇒ 目标门拒绝（fail-closed），不再被空列表空过放行。"""
+    missing = str(tmp_path / "no-such.db")
+    with pytest.raises(isolation.IsolationError):
+        isolation.assert_loadtest_target(
+            missing, isolation.loadtest_db_fingerprint(missing))
+
+
+def test_account_owners_reads_special_char_path(tmp_path):
+    """含空格的库路径也要能只读读到 owner（只读 URI 经 pathlib 转义，不拼裸路径）。"""
+    d = tmp_path / "dir with space"
+    d.mkdir()
+    p = d / "lt.db"
+    conn = sqlite3.connect(str(p))
+    try:
+        conn.execute("CREATE TABLE accounts (owner TEXT)")
+        conn.execute("INSERT INTO accounts (owner) VALUES ('a@mock.invalid')")
+        conn.commit()
+    finally:
+        conn.close()
+    assert isolation._account_owners(str(p)) == ["a@mock.invalid"]

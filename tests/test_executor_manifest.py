@@ -845,24 +845,47 @@ class DispatchGateTest(unittest.TestCase):
         m_popen.assert_not_called()
         m_load.assert_not_called()
 
-    def test_manual_only_still_dispatches_on_day_off(self):
-        """`--only` 是用户主动触发（既有语义：不受周末/暂停门限制），多执行体下照旧派发。
+    def test_manual_only_converges_to_single_process_and_skips_day_off(self):
+        """`--only` 收敛为单进程，且仍不被周末/暂停门拦下。
 
-        被提前门拦下等于"用户点了手动签到却被静默跳过"——门只写在单执行体路径时
-        根本到不了这里（子进程各自按 `if not args.only` 放行），故豁免必须与之一致。
+        门豁免的既有语义（用户主动触发应放行）由下面 `if not args.only` 那道门承担；
+        派发侧不再为手动单号拉起 N 个执行体（同一单号被 N 个子进程各领一次，抢输的
+        一路 rc=2 会把成功的点击报成"未实际签到"）。故本用例断言：不派发监督进程、
+        走进程内单执行体路径、且**不返回 2**（没被门拦下）。
         """
         from yiban.engine import runner, workers
+        ok = (True, "签到成功", False, "success")
+        acc = SimpleNamespace(phone="13800000000", user_paused=False, owner="",
+                              password="p", account_id=0)
         for label, now, extra in (("周日", self.SUNDAY_06_31, {}),
                                   ("暂停", WEEKDAY_06_40, {"YIBAN_GLOBAL_PAUSE": "1"})):
             with self.subTest(label=label):
                 with mock.patch.dict(os.environ, self._manifest_env(**extra)), \
                         mock.patch.object(runner.clock, "now", lambda now=now: now), \
                         mock.patch.object(runner, "SUNDAY_SIGN", False), \
-                        mock.patch.object(workers, "run_worker_supervisor",
-                                          return_value=7) as m_sup:
+                        mock.patch.object(runner.accounts_mod, "load_accounts",
+                                          return_value=[acc]), \
+                        mock.patch.object(runner.db, "purge_expired_deleted_accounts",
+                                          lambda: None), \
+                        mock.patch.object(runner.cli_support, "_acquire_run_lock",
+                                          return_value=None), \
+                        mock.patch.object(runner.state_io, "_is_second_run",
+                                          return_value=False), \
+                        mock.patch.object(runner.state_io, "_load_cred_state",
+                                          return_value={}), \
+                        mock.patch.object(runner.state_io, "_save_cred_state",
+                                          lambda *a, **k: None), \
+                        mock.patch.object(runner.alerts, "_maybe_alert_zero_success",
+                                          lambda *a, **k: None), \
+                        mock.patch.object(runner.alerts, "_flush_admin_mail_summary",
+                                          lambda *a, **k: None), \
+                        mock.patch.object(runner.round_mod, "run_queue_retry",
+                                          return_value={acc.phone: ok}) as m_run, \
+                        mock.patch.object(workers, "run_worker_supervisor") as m_sup:
                     rc = runner.main(["--only", "13800000000"])
-                self.assertEqual(rc, 7, "用户主动触发被门拦下 = 手动签到被静默跳过")
-                m_sup.assert_called_once()
+                self.assertEqual(rc, 0, "用户主动触发不得被门拦下（不是 SKIPPED 的 2）")
+                m_sup.assert_not_called()
+                self.assertEqual(m_run.call_count, 1, "手动单号走进程内单执行体路径")
 
     def test_check_config_and_probe_still_dispatch_on_day_off(self):
         """`--check-config`（部署验证，哪天都要能验）与 `--probe`（自带门、跳过语义是 0）同样不被拦。"""

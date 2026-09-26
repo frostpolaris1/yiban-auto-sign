@@ -7,9 +7,15 @@
   SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）；
   领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
-- `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
+- `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；只对
+  未了结行生效（终态行不得被重排复活，否则会被重新领取＝当日再登录一次）；
+- `requeue_failed`：当日回炉——把 `failed` 行按 `retry:`/`final:` 档位逐行走
+  `requeue_task`（state+epoch 门沿用，不另造协议），`claim_batch` 只取 `pending`，
+  没有这条路 v3 的当日失败就无人接手；
 - `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
+- `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
+  `pending`——证据强于"租约过期"，故不等宽限期；
 - `steal_shards`：死主分片接管——把心跳过期执行体分片集内 `owner` 为**该死主**的
   `pending` 行改归本执行体（只动 `pending`，CAS 精确到死主 + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
@@ -47,6 +53,7 @@ import logging
 
 from yiban import clock
 from yiban import status as yiban_status
+from yiban.store import claims as claims_mod
 
 logger = logging.getLogger("yiban.store.queue_store")
 
@@ -81,6 +88,11 @@ STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
 SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
 OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
+#: 可被 `requeue_task` 重排回 `pending` 的状态：所有**未了结**态（`OPEN_STATES`）。
+#: 终态（`done` / `skipped`）绝不许复活——复活会被 `claim_batch` 重新领取，等于同一
+#: 账号当日再登录一次，"当日是否了结"的闸门也会凭空又出现待办。`pending` 行重排只是
+#: 刷新落点/优先级（幂等），保留它以免调用方按"先看再排"写出跨语句窗口。
+REQUEUEABLE_STATES = OPEN_STATES
 
 
 def _queue_conn():
@@ -201,19 +213,27 @@ def settle_tasks(owner, day, outcomes, state=STATE_DONE, epochs=None):
 
 
 def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
-    """重试重排：返回受影响行数（0 = 该行不存在或被 token 拒）。
+    """重试重排：返回受影响行数（0 = 该行不存在 / 态不允许 / 被 token 拒）。
 
     `priority` 递增让重试任务排在新任务之后（活号优先）；`attempts` 落库后即**跨执行体
     共享**，接手者不再从 0 起算重试预算。任务回到 `pending` 意味着上一轮的 result 不再
     代表当前状态，故用传入值覆盖（缺省清空）。
 
+    **只重排未了结的行**（`OPEN_STATES`：`pending` / `claimed` / `failed` / `stolen`）：重排
+    的语义是"这次尝试要再来一遍"，而已了结（`done` / `skipped`）的行一旦被改回 `pending`
+    就会被 `claim_batch` 重新领取——那是一次重复真实登录，且"当日是否了结"的闸门
+    （`pending_count`）会凭空又出现待办。迟到的重排（持有者已被接管后才到达）正是这么
+    把 done 复活的。
+
     `epoch` 给了就带 `epoch=?`：只有当前持有者能把在飞任务重排回 `pending`，
     被接管者不得把接管者的任务重新投回池子（那会让同一账号被第三个执行体再领一次）。
+    生产调用方（执行体）必须传它；缺省 `None` 只为迁移期调用方与既有测试保留。
     """
     sql = ("UPDATE sign_tasks SET state=?, run_at=?, priority=priority+?, "
-           "attempts=attempts+1, lease_until='', result=? WHERE phone=? AND day=?")
+           "attempts=attempts+1, lease_until='', result=? "
+           f"WHERE phone=? AND day=? AND state IN ({','.join('?' for _ in REQUEUEABLE_STATES)})")
     params = [STATE_PENDING, run_at, int(priority_delta),
-              (result or "")[:RESULT_MAX], phone, day]
+              (result or "")[:RESULT_MAX], phone, day, *REQUEUEABLE_STATES]
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
@@ -226,6 +246,61 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
     except Exception as e:
         logger.warning("重排签到任务失败: %s", e)
         return 0
+
+
+def requeue_failed(day, shards, include_final=False, run_at=None):
+    """当日回炉：把本业务日 `failed` 行逐行经 `requeue_task` 翻回 `pending`，返回翻回数。
+
+    **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
+    `failed` 行若没有这条路，当日就**无人接手**——v2 的等价物是领取层"默认参数可再领
+    `retry:` 档"（`claims.try_claim`），v3 的队列以 `pending` 为唯一可领态，档位语义只能
+    靠这里翻态来兑现。**档位判据沿用领取层的同一份常量**（`claims.RESULT_RETRY_PREFIX`
+    /`RESULT_FINAL_PREFIX`，v18 平移时逐字带过来的协议，不另造一套）：
+
+    - 缺省只回炉 `retry:` 档（窗口外/无点位/"本轮没产生结论"，"该重试"）——当日任何
+      后续轮次都接得动的默认档；
+    - `include_final=True` 是**有界显式路径**（补签轮）才给的口子：连同 `final:` 档
+      （预算耗尽/风控）与**无前缀的历史行**一并回炉。无前缀按保守档与
+      `try_claim`"历史行须 `allow_failed` 才放行"同一纪律——判不清原因的宁可要求显式
+      路径，也不要无上限重复真实登录。
+
+    实现逐行调 `requeue_task(..., epoch=SELECT 时读到的 epoch)`：状态与 epoch 门全部
+    沿用既有原语，不另起第二条写路径。列举与回炉之间被他人重领/接管的行 epoch 已进
+    一代，写被 fence 拒（0 行不计入）；`done`/`skipped` 终态行不在 SELECT 里、又被
+    `REQUEUEABLE_STATES` 挡第二道——绝不复活（复活 = 当日重复真实登录，第一红线）。
+    `vshard=-1` 的历史行不属于任何分片集，回收成 pending 只会变成永不被领取的空转行，
+    一律不碰（与 `reap_expired`/`pending_count` 同界）。
+
+    `run_at` 缺省取"现在"（毫秒格式与 `run_at` 同型，字符串序比较不出偏）：回炉行
+    立刻可领，与 v2"后续轮次马上接得动"同拍；`priority` 仍按 `requeue_task` 递增一档，
+    回炉排在新任务之后。空分片集 → 0 且不取连接；库异常 → 0 + warning（回炉是补偿
+    动作，失败不该打断调用方的本轮领取）。
+    """
+    shard_set = tuple(shards or ())
+    if not shard_set:
+        return 0
+    placeholders = ",".join("?" for _ in shard_set)
+    sql = ("SELECT phone, epoch, result FROM sign_tasks "
+           f"WHERE day=? AND state=? AND vshard >= 0 AND vshard IN ({placeholders})")
+    stamp = run_at or clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(sql, (day, STATE_FAILED, *shard_set)).fetchall()
+    except Exception as e:
+        logger.warning("读取当日弃用任务失败（按无可回炉处理）: %s", e)
+        return 0
+    retry_prefix = claims_mod.RESULT_RETRY_PREFIX
+    flipped = 0
+    for r in rows:
+        result = str(r["result"] or "")
+        # 前缀比较按**字节前缀**（startswith）而不是 LIKE：结果文本里可能出现 `_`
+        # （LIKE 通配符），与 `claims.fallback_event` 的同一避坑纪律
+        if not include_final and not result.startswith(retry_prefix):
+            continue
+        if requeue_task(r["phone"], day, stamp, result="", epoch=r["epoch"]):
+            flipped += 1
+    return flipped
 
 
 def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
@@ -276,17 +351,66 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
         return 0
 
 
-def steal_shards(me, dead_owner, shards, day, now=None):
-    """接管死主分片集内的待办：把「分片集内 + `state='pending'` + `owner` 恰为死主」的行
-    改为 `owner=<me>`、`epoch = epoch + 1`。返回受影响行数。
+def reap_abandoned(owner, day=None):
+    """显式回收某个**已确认死亡**的执行体名下仍 `claimed` 的任务：回退 `pending`，
+    清 `owner`/`lease_until`、`epoch = epoch + 1`。返回受影响行数。
 
-    **两个身份分开传**：`me` 是接管者（本执行体），`dead_owner` 是心跳已被判过期的那具
-    死主。单参数表达不了"从谁手里接管"，CAS 只能退化成 `owner != me`——那会连**活着的**
-    第三个执行体先接管的行一起改写，把别人的在飞任务抢过来。故 CAS 精确写成
-    `owner = <dead_owner>`：只动死主的行。
+    `owner` 是**稳定槽位名**（`worker-3@{主机名}` 之类）。持有者列存的是运行时身份
+    （`{稳定名}:{进程号}:{代次}`，见 `yiban.egress.runtime_owner`），故按前缀匹配：
+    `owner = ?` 覆盖计划行写入的裸稳定名，`instr(owner, ?) = 1` 匹配运行时身份。
+    **不用 `LIKE`**——主机名里可能出现 `_`，那是 LIKE 的通配符，会把别的槽位一起吃掉。
+
+    与 `reap_expired` 的分工：后者按"租约过期 ⇒ 可能死了"回收（须过宽限期，见
+    `REAP_GRACE_SEC`）；本函数给**监督进程**用——子进程被信号杀死时它直接观测到了异常
+    退出（返回码为负），这比心跳过期更强，故不必等宽限期即可回收。不做这一步，被杀执行体
+    留下的在领任务只能等 `reap_expired` 的租约 + 宽限期（合计可达数十分钟），期间该账号
+    当天无人再签。
+
+    只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；`pending`
+    重排行与终态行也不该动。回退后的行 `pending` 且租约已放开，下一次 `claim_batch` 即可
+    领取。`epoch + 1` 与 `reap_expired` 同一条红线——让原持有者迟到的旧代结论被
+    `settle_tasks` 的 `epochs` fence。`vshard >= 0` 与 `reap_expired` 同界：排除 v18 平移 /
+    v20 补账的历史行，免得把它们回退成永不被领取（`claim_batch` 的 `vshard IN (...)` 挡着）
+    的假待办。`day` 给了就只回收该业务日。
+
+    库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
+    """
+    prefix = owner + ":"
+    sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
+           "WHERE state=? AND vshard >= 0 AND (owner = ? OR instr(owner, ?) = 1)")
+    params = [STATE_PENDING, STATE_CLAIMED, owner, prefix]
+    if day is not None:
+        sql += " AND day=?"
+        params.append(day)
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            cur = conn.execute(sql, tuple(params))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("轮末收尸签到任务失败（按未收尸处理）: %s", e)
+        return 0
+
+
+def steal_shards(me, dead_owner, shards, day, now=None):
+    """接管死主分片集内的待办：把「分片集内 + `state='pending'` + owner 是**死主**」的行
+    改为 `owner=<me>`（运行时身份）、`epoch = epoch + 1`。返回受影响行数。
+
+    **两个身份分开传**：`me` 是接管者（本执行体，写库用它的运行时身份）；`dead_owner`
+    是心跳已被判过期的那具死主的**稳定槽位名**。单参数表达不了"从谁手里接管"，CAS 只能
+    退化成 `owner != me`——那会连**活着的**第三个执行体先接管的行一起改写，把别人的在飞
+    任务抢过来。故 CAS 精确指向死主。
+
+    **死主的行有两种 owner，必须都算进来**（这是本函数与"精确等于一个串"的差别）：
+    计划行由 `planner.write_plan` 写**稳定槽位名**（HRW 归属），而被 `requeue_task` 重排
+    回 `pending` 的行仍带着原持有者的**运行时身份**（`{稳定名}:{进程号}:{代次}`，见
+    `yiban.egress.runtime_owner`）。只匹配前者会让"死主失败重排过的活"无人接管。
+    匹配写成 `owner = ? OR instr(owner, ?) = 1`（`?` 为稳定名与 `稳定名:`），**不用
+    `LIKE`**：主机名里可能出现 `_`，那是 LIKE 的通配符，会误伤别的槽位。
 
     `shards` 由调用方保证**只含死主的分片集**（判据是文件心跳四态，不落库）；本层不校验
-    归属，只按"这些分片里还是 `pending` 且 owner 是死主"来写。
+    归属，只按"这些分片里还是 `pending` 且 owner 指向死主"来写。
 
     **只动 `pending`**：`claimed` 是他人仍在飞的行（租约未到不该抢，租约到了由
     `reap_expired` 回收），终态行更不该动。`vshard = -1` 的历史行不属于任何分片集，
@@ -301,8 +425,8 @@ def steal_shards(me, dead_owner, shards, day, now=None):
     placeholders = ",".join("?" for _ in shard_set)
     sql = ("UPDATE sign_tasks SET owner=?, epoch=epoch + 1 "
            f"WHERE day=? AND vshard >= 0 AND vshard IN ({placeholders}) "
-           "AND state=? AND owner=?")
-    params = (me, day, *shard_set, STATE_PENDING, dead_owner)
+           "AND state=? AND (owner = ? OR instr(owner, ?) = 1)")
+    params = (me, day, *shard_set, STATE_PENDING, dead_owner, dead_owner + ":")
     try:
         conn, lock = _queue_conn()
         with lock:

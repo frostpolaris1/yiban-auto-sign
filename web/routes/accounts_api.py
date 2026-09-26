@@ -267,6 +267,14 @@ def api_account_add():
                     created = m.db.create_user(
                         email, initial_hash, "user",
                         m.clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
+                        # 与开放注册同口径的注册留痕，且与 INSERT 同事务：注册即建立
+                        # 账号凭据，中间被杀不留"建了却无痕"。
+                        audit_spec={
+                            "username": session.get("username") or "?",
+                            "action": "user_register",
+                            "target": email,
+                            "detail": "管理员添加账号自动注册",
+                        },
                     )
                 except sqlite3.IntegrityError:
                     return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
@@ -279,19 +287,20 @@ def api_account_add():
             clean["owner"] = "admin"
             clean["status"] = m.ACCOUNT_STATUS_ACTIVE
         try:
-            new_id = m.db.add_account(clean)
+            # 审计与 INSERT 同事务（audit_spec）：账号建了却没有审计行这件事不可能
+            # 发生——中间被杀也不会留下"做了无留痕、欠账仍为 0"。
+            new_id = m.db.add_account(clean, audit_spec={
+                "username": session.get("username") or "?",
+                "action": "account_add",
+                "target": m._mask_phone(clean["phone"]),
+                "detail": f"归属 {m._mask_email(clean['owner'])} 状态 {clean['status']}",
+            })
         except m.db.DuplicatePhoneError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
         except m.db.DuplicateOwnerError:
             return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发重复兜底
-        m.db.audit(
-            session.get("username") or "?",
-            "account_add",
-            m._mask_phone(clean["phone"]),
-            f"归属 {m._mask_email(clean['owner'])} 状态 {clean['status']}",
-        )
         accounts = m.load_accounts()  # 重读（含新行，返回前端列表）
     m.logger.info(
         "添加账号 %s（归属 %s，状态 %s）",
@@ -401,10 +410,19 @@ def api_account_update(idx):
         else:
             clean["status"] = old.get("status", m.ACCOUNT_STATUS_ACTIVE)
         try:
+            # 审计与本次 UPDATE 同事务：改写他人易班凭据必须与留痕共存亡——凭据已改而
+            # 审计表无此条，正是"改了凭据但追不到谁改的"的核心症状。
             result = m.db.update_account(
                 old["id"],
                 clean,
                 expect_snapshot=snapshot if isinstance(snapshot, dict) else None,
+                audit_spec={
+                    "username": session.get("username") or "?",
+                    "action": "account_update",
+                    "target": m._mask_phone(clean["phone"]),
+                    "detail": ("编辑账号" + (" 改绑回审" if rebind else "")
+                               + (" 改写凭据" if creds_written else "")),
+                },
             )
         except m.db.DuplicatePhoneError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
@@ -423,13 +441,7 @@ def api_account_update(idx):
         # 凭据变更（改密码/改绑手机号）才清除熔断暂停，立即恢复签到；
         # 仅改备注/状态等不动熔断计数（防任意编辑把 fail_days 清零、熔断永不跳闸）
         m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
-        m.db.audit(
-            session.get("username") or "?",
-            "account_update",
-            m._mask_phone(clean["phone"]),
-            ("编辑账号" + (" 改绑回审" if rebind else "")
-             + (" 改写凭据" if creds_written else "")),
-        )
+        # 审计行已随 update_account 同事务写入（见上面 audit_spec）
         # 当事人必须知情（管理员改写他人易班凭据除二次鉴权外，还要绕过
         # 其通知开关发变更信）。send_user 直收地址、不读 mail_notify——攻击者把本人
         # 的接收开关关掉也照样收得到，与自助改密、审核拒绝同一口径。未启用邮件/无
@@ -683,12 +695,12 @@ def api_account_delete(idx):
         m.db.set_account_deleted(
             acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             deleted_by="admin",
-        )
-        m.db.audit(
-            session.get("username") or "?",
-            "account_delete",
-            m._mask_phone(acc.get("phone", "")),
-            "软删除",
+            audit_spec={
+                "username": session.get("username") or "?",
+                "action": "account_delete",
+                "target": m._mask_phone(acc.get("phone", "")),
+                "detail": "软删除",
+            },
         )
         # 软删不再外发即时告警：留痕由上面的审计行承担，且软删可逆
         # （DELETED_RETENTION_DAYS 天内可在待删除列表恢复）。
@@ -722,13 +734,12 @@ def api_account_restore(idx):
             return jsonify(
                 {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
-        m.db.set_account_deleted(acc["id"], 0)
-        m.db.audit(
-            session.get("username") or "?",
-            "account_restore",
-            m._mask_phone(acc.get("phone", "")),
-            "撤销软删除",
-        )
+        m.db.set_account_deleted(acc["id"], 0, audit_spec={
+            "username": session.get("username") or "?",
+            "action": "account_restore",
+            "target": m._mask_phone(acc.get("phone", "")),
+            "detail": "撤销软删除",
+        })
         accounts = m.load_accounts()
         m.logger.info("恢复账号 %s", m._mask_phone(acc.get("phone", "")))
         return jsonify(

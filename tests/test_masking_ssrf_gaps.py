@@ -37,7 +37,6 @@ import shutil
 import tempfile
 import unittest
 import unittest.mock as mock
-from datetime import datetime
 
 import signin
 
@@ -215,7 +214,7 @@ class SigninFixes021Test(unittest.TestCase):
 
     # ---- H2 ----
     def test_write_sign_state_rebuilds_corrupt_json(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = signin.clock.today()
         state_path = os.path.join(self._tmp, f"sign-state-{today}.json")
         with open(state_path, "w", encoding="utf-8") as f:
             f.write("{ not json !!!")
@@ -225,7 +224,7 @@ class SigninFixes021Test(unittest.TestCase):
         self.assertEqual(data["13800138000"]["status"], "success")
 
     def test_write_sign_state_rebuilds_non_dict_json(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = signin.clock.today()
         state_path = os.path.join(self._tmp, f"sign-state-{today}.json")
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(["not", "dict"], f)
@@ -412,7 +411,7 @@ class SigninFixes021Test(unittest.TestCase):
         from random import Random as _R
         acc = signin.Account(phone="13800138000", password="p")
         sleeps = []
-        scheduled_at = datetime.now()
+        scheduled_at = signin.clock.now()
         captured = {}
         orig_next = signin._next_retry_at
 
@@ -444,12 +443,12 @@ class SigninFixes021Test(unittest.TestCase):
         self.assertIn("nxt", captured, "schedule 分支应计算重试落点")
         # 落点距失败时刻 ≥ retry_min_interval（5s，容差 2s），且不超出窗口末端（eff_hi=23:59）
         self.assertGreaterEqual(
-            captured["nxt"] - datetime.now(),
+            captured["nxt"] - signin.clock.now(),
             __import__("datetime").timedelta(seconds=3),
             "重试落点不得早于 now + retry_min_interval",
         )
         # 落点 ≤ eff_hi = sign_end - edge_back = 23:59（当日）
-        eff_hi = datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
+        eff_hi = signin.clock.now().replace(hour=23, minute=59, second=0, microsecond=0)
         self.assertLessEqual(captured["nxt"], eff_hi, "重试落点不得越过窗口末端")
 
     # ---- 通知组件化（2026-08-29）----

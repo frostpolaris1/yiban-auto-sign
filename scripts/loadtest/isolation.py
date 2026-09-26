@@ -29,10 +29,25 @@ fail-closed：任一不变量不满足即拒绝启动（非 0 + 原因）。
 
 from __future__ import annotations
 
+import hashlib
 import os
+import pathlib
+import sqlite3
 
 #: 命中该子串（大小写不敏感）的环境变量名一律视为代理相关键
 PROXY_MARK = "PROXY"
+
+#: 压测账号归属域：判"这个库像不像压测库"的内容判据（防误指生产库）
+LOADTEST_OWNER_SUFFIX = "@mock.invalid"
+
+
+def _readonly_uri(db_path):
+    """只读连接 URI：pathlib 转 `file://` 再挂 `mode=ro`（Windows 盘符/特殊字符路径）。
+
+    直接拼 `file:{path}?mode=ro` 会拼出坏 URI，旧实现随即 `continue`/退化成不可读，
+    把"读不到"误当"没有非压测账号"放行。
+    """
+    return pathlib.Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
 
 
 class IsolationError(RuntimeError):
@@ -71,6 +86,81 @@ def require_egress_probe(ip):
             "隔离失败：--egress-probe-ip 必填。缺省空值会跳过主动出站探测，"
             "代理机上的隔离无法自证——请显式给出一个应被拒绝的目标 IP:443。")
     return str(ip).strip()
+
+
+def _account_owners(db_path):
+    """只读取 accounts.owner 列表；库/表缺失返回 None（读不到 ≠ "像压测库"）。
+
+    返回 None 而非空列表：空列表会被 `assert_loadtest_target` 当成"没有非压测账号"
+    而放行——库缺失/不可读恰恰是最不能放行的形态（fail-closed）。
+    """
+    if not os.path.exists(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(_readonly_uri(db_path), uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+    try:
+        try:
+            return [str(r[0] or "") for r in conn.execute("SELECT owner FROM accounts")]
+        except sqlite3.Error:
+            return None
+    finally:
+        conn.close()
+
+
+def loadtest_db_fingerprint(db_path):
+    """→ 压测库目标指纹（由库**内容**派生：路径 + 账号数 + 压测账号数 + 会话数）。
+
+    只读，不建库。行数/归属差异让它能区分"压测库"与"误指的生产库"——生产库账号数
+    成千且 owner 是真实邮箱，指纹与归属判据都会露出来。
+    """
+    counts = {"accounts": 0, "session_cache": 0}
+    if os.path.exists(db_path):
+        for table in counts:
+            try:
+                conn = sqlite3.connect(_readonly_uri(db_path), uri=True, timeout=5)
+            except sqlite3.Error:
+                continue
+            try:
+                try:
+                    counts[table] = int(
+                        conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                except sqlite3.Error:
+                    counts[table] = 0
+            finally:
+                conn.close()
+    owners = _account_owners(db_path) or []
+    mock = sum(1 for o in owners if o.endswith(LOADTEST_OWNER_SUFFIX))
+    payload = "loadtest|%s|accounts=%d|session=%d|mock=%d" % (
+        os.path.abspath(db_path), counts["accounts"], counts["session_cache"], mock)
+    return "LT-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def assert_loadtest_target(db_path, fingerprint):
+    """清空会话缓存前的目标门：声明指纹 + 目标像压测库，二者缺一即拒（fail-closed）。
+
+    为什么这道门存在：`clear_session_cache` 对目标库做 `DELETE FROM session_cache`，
+    误指生产库会让全部账号下次都走完整登录链——真实重登风暴。故（1）必须显式声明
+    指纹（`--db-fingerprint`，先跑一次看打印值）；（2）库内非空账号的 owner 必须全部
+    属压测域——两者都按**内容**判，不看路径字符串。返回实际指纹供调用方复用。
+    """
+    actual = loadtest_db_fingerprint(db_path)
+    declared = str(fingerprint or "").strip()
+    if not declared:
+        raise IsolationError(
+            f"清空会话缓存前必须显式声明目标指纹。实际指纹：{actual}；"
+            f"确认目标是压测库后，用 --db-fingerprint {actual} 重跑。")
+    if declared != actual:
+        raise IsolationError(
+            f"目标指纹不匹配（声明 {declared} ≠ 实际 {actual}）：目标库可能被换或误指，"
+            f"拒绝清空会话缓存。")
+    owners = _account_owners(db_path)
+    if owners is None or any(not o.endswith(LOADTEST_OWNER_SUFFIX) for o in owners):
+        raise IsolationError(
+            f"目标库含非压测账号（owner 不以 {LOADTEST_OWNER_SUFFIX} 结尾），"
+            f"疑似误指生产库：拒绝清空会话缓存（防真实重登风暴）。")
+    return actual
 
 
 def assert_accounting(issued, recorded):

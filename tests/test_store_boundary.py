@@ -59,6 +59,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+from yiban import clock  # noqa: E402
 from yiban.store import accounts as accounts_mod  # noqa: E402
 from yiban.store import clock_meta as meta_mod  # noqa: E402
 from yiban.store import connection as conn_mod  # noqa: E402
@@ -398,7 +399,7 @@ class _ClockMetaSplitBase(unittest.TestCase):
 
     def _trip_guard(self, key="test_clock_meta_fwd"):
         """把参照点拨到 100h 前再调守卫 → 必然判定跳变（>72h）。"""
-        old = (datetime.datetime.now() - datetime.timedelta(hours=100)).strftime(
+        old = (clock.now() - datetime.timedelta(hours=100)).strftime(
             "%Y-%m-%d %H:%M:%S")
         conn = self._set_reference(key, old)
         return impl._clock_jump_guard(conn, key)
@@ -493,7 +494,7 @@ class WriteForwardingTest_CLOCK(_ClockMetaSplitBase):
         """越界路径：告警只走 logger.error，参照点则被推进到当前时间。"""
         self._init()
         key = "test_clock_meta_real"
-        old = (datetime.datetime.now() - datetime.timedelta(hours=100)).strftime(
+        old = (clock.now() - datetime.timedelta(hours=100)).strftime(
             "%Y-%m-%d %H:%M:%S")
         conn = self._set_reference(key, old)
         with self.assertLogs("yiban.db", level="ERROR") as captured:
@@ -563,7 +564,7 @@ class FacadeBehaviourTest_CLOCK(_ClockMetaSplitBase):
     def test_guard_reference_advanced_on_both_paths(self):
         """放行与越界都推进参照点——"跳过一轮"因此真的只有一轮。"""
         conn = impl.get_conn()
-        hour_ago = (datetime.datetime.now() - datetime.timedelta(hours=1)).strftime(
+        hour_ago = (clock.now() - datetime.timedelta(hours=1)).strftime(
             "%Y-%m-%d %H:%M:%S")
         self._set_reference("test_clock_meta_ok", hour_ago)
         ok, note = impl._clock_jump_guard(conn, "test_clock_meta_ok")

@@ -30,6 +30,7 @@ from flask import jsonify, session
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
+from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 
 
 def api_mail_config():
@@ -208,6 +209,11 @@ def api_mail_config_save():
                 json.dumps(smtps_list, ensure_ascii=False),
                 m.account_crypto.load_key(m.ENV_FILE),
             )
+        except _EnvWriteRefused:
+            # load_key 的"缺钥自动生成写回"被写入口 fail-closed 拒绝（脏 .env）：
+            # 交 Flask 统一 409+清理指引，不得并入下面的 500 把"需人工清理配置"
+            # 说成"加密失败"（与公告/执行体等写点的 except 顺序同族）
+            raise
         except ValueError as e:
             return jsonify({"error": f"加密失败：{e}"}), 500
         smtps_enc = json.dumps(enc, ensure_ascii=False)
@@ -375,6 +381,8 @@ def api_notify_config_save():
         try:
             enc = m.account_crypto.encrypt_text(secret, m.account_crypto.load_key(m.ENV_FILE))
             updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
+        except _EnvWriteRefused:
+            raise  # 同上：自动生成密钥的写回被拒走统一 409，不伪装成加密失败
         except ValueError as e:
             return jsonify({"error": f"加密失败：{e}"}), 500
     m.write_env_batch(m.ENV_FILE, updates)

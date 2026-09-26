@@ -164,8 +164,15 @@ def api_me_password():
                     "password_hash": m.generate_password_hash(new_password, method=m.SCRYPT_METHOD),
                     "pw_version": u.get("pw_version", 1) + 1,  # 旧会话随之失效
                 },
+                # 审计与口令 UPDATE 同事务：改密这类凭据变更若"已生效却无痕"，事后
+                # 无法在 HMAC 链上追责，中间被杀还会留下欠账为 0 的静默丢失。
+                audit_spec={
+                    "username": username,
+                    "action": "user_password",
+                    "target": username,
+                    "detail": "自助改密",
+                },
             )
-            m.db.audit(username, "user_password", username, "自助改密")
             # 自助改密轮换 sid——当前会话保持有效（同步 session），
             # 被窃取的 cookie 副本随旧 sid 失效
             new_sid = secrets.token_hex(16)

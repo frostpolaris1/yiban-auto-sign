@@ -4,7 +4,9 @@
 压测环境一键搭建/还原（**仅限测试机**）。
 
 做四件事，全部幂等：
-  1. 生成自签 CA 与服务器证书（SAN 覆盖所需易班域名），并导出登录页用 RSA 公钥；
+  1. 生成自签 CA 与服务器证书（CA 带 basicConstraints(CA:TRUE)+keyUsage
+     (keyCertSign,cRLSign)，Python ≥3.14 默认 VERIFY_X509_STRICT 才能过握手；
+     SAN 覆盖所需易班域名），并导出登录页用 RSA 公钥；
   2. 改写 /etc/hosts：把所需域名双栈（127.0.0.1 + ::1）指向本机回环；
   3. 出站 443 兜底 REJECT：放行回环、拒绝其余，防止压测误连真实易班；
   4. 自检「零真实外联」并打印结论。
@@ -115,16 +117,30 @@ def ensure_certs(base_dir, domains, force=False, dry_run=False):
     san_cnf = os.path.join(ca_dir, "san.cnf")
 
     if not force and all(os.path.exists(p) for p in (ca_key, ca_pem, srv_key, srv_pem, pub_pem)):
-        print(f"证书已存在，跳过生成：{ca_dir}")
-        return {"ca": ca_pem, "cert": srv_pem, "key": srv_key, "pub": pub_pem}
+        # 存量自检：修复前生成的 CA 缺 keyUsage/basicConstraints——幂等跳过等于
+        # 把"整轮 mock 握手全灭"的坏证书永远留在盘上，必须验扩展、缺则就地重签。
+        rc, out = run(["openssl", "x509", "-in", ca_pem, "-noout", "-text"])
+        strict_ok = (rc == 0 and "X509v3 Basic Constraints" in out
+                     and "CA:TRUE" in out and "X509v3 Key Usage" in out)
+        if strict_ok:
+            print(f"证书已存在，跳过生成：{ca_dir}")
+            return {"ca": ca_pem, "cert": srv_pem, "key": srv_key, "pub": pub_pem}
+        print(f"检测到存量 CA 缺 strict 校验所需扩展（basicConstraints/keyUsage），重新生成：{ca_dir}")
 
     if not dry_run:
         with open(san_cnf, "w", encoding="utf-8") as f:
             f.write(_san_conf(domains))
 
+    # CA 必须带 basicConstraints(critical,CA:TRUE) 与 keyUsage(critical,
+    # keyCertSign,cRLSign)：Python ≥3.14 默认开 VERIFY_X509_STRICT，缺扩展的自签
+    # CA 会在 TLS 校验层被拒（"CA cert does not include key usage extension"），
+    # 整轮 mock 于握手全灭且记账为 0——失败安静，极易误诊为网络隔离问题。
+    # 手工 openssl 重签路径（演练预案勘误段）与本代码路径并存，两路口径一致。
     run(["openssl", "genrsa", "-out", ca_key, "2048"], dry_run=dry_run, check=True)
     run(["openssl", "req", "-x509", "-new", "-nodes", "-key", ca_key,
          "-sha256", "-days", "3650", "-subj", "/CN=yiban-loadtest-ca",
+         "-addext", "basicConstraints=critical,CA:TRUE",
+         "-addext", "keyUsage=critical,keyCertSign,cRLSign",
          "-out", ca_pem], dry_run=dry_run, check=True)
     run(["openssl", "genrsa", "-out", srv_key, "2048"], dry_run=dry_run, check=True)
     run(["openssl", "req", "-new", "-key", srv_key,

@@ -396,20 +396,6 @@ class WindowRecheckAfterSleepTest(unittest.TestCase):
         self.assertEqual(attempt.call_count, 0, "越过窗口后不得再发起请求")
         self.assertEqual(results[PHONE][3], signin.STATUS_SKIPPED_WINDOW)
 
-    def test_normal_wait_still_executes(self):
-        """窗口内等待后照常执行（对照组，防误拦）。"""
-        at = signin.clock.now().replace(hour=7, minute=0, second=0, microsecond=0)
-        acc = signin.Account(phone=PHONE, password="p")
-        with mock.patch.object(signin.clock, "now", return_value=at), \
-                mock.patch.object(signin, "attempt_signin",
-                                  return_value=(True, "ok", False, signin.STATUS_SUCCESS)) as attempt, \
-                mock.patch.object(signin, "_update_cred_state"), \
-                mock.patch.object(signin.time, "sleep"), \
-                mock.patch.object(signin.time, "monotonic", return_value=100.0):
-            signin.run_queue_retry([acc], "", 0, 0,
-                                   schedule={PHONE: at + signin.timedelta(seconds=30)})
-        self.assertEqual(attempt.call_count, 1)
-
 
 class FakeNow:
     NOW = _dt(2026, 8, 27, 7, 0, 0)

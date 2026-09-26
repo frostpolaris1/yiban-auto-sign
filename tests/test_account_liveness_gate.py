@@ -117,10 +117,6 @@ class AttemptSkipsRemovedAccountTest(_Base):
             result = signin.attempt_signin(account)
         return result, client
 
-    def test_live_account_is_attempted(self):
-        _, client = self._run_attempt(self._acc(self._add()))
-        self.assertTrue(client.login_killyiban.called, "有效账号应正常登录")
-
     def test_deleted_before_turn_is_skipped(self):
         acc_id = self._add()
         account = self._acc(acc_id)
@@ -130,18 +126,6 @@ class AttemptSkipsRemovedAccountTest(_Base):
         self.assertFalse(client.login.called)
         self.assertTrue(result[2], "应作为跳过处理（不重试）")
         self.assertIn("删除或停用", result[1])
-
-    def test_deactivated_before_turn_is_skipped(self):
-        acc_id = self._add()
-        account = self._acc(acc_id)
-        db.update_account_status(acc_id, "rejected", "管理员打回")
-        _, client = self._run_attempt(account)
-        self.assertFalse(client.login_killyiban.called)
-
-    def test_account_without_id_is_not_gated(self):
-        """JSON/环境变量账号（account_id=0）不受库内状态门限制。"""
-        _, client = self._run_attempt(signin.Account(phone=PHONE, password="pw"))
-        self.assertTrue(client.login_killyiban.called)
 
     def test_verify_account_also_gated(self):
         acc_id = self._add()

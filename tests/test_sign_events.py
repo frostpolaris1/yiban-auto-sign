@@ -33,6 +33,8 @@ import shutil
 import tempfile
 import unittest
 
+from yiban import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -129,8 +131,8 @@ class VisualTablesTest(unittest.TestCase):
         db.add_sign_event("2026-08-16 06:30:00", "13800138000", "success")
 
     def test_cleanup_removes_expired(self):
-        old = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime("%Y-%m-%d %H:%M:%S")
-        recent = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - datetime.timedelta(days=400)).strftime("%Y-%m-%d %H:%M:%S")
+        recent = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_event(old, "13800138000", "success")
         db.add_sign_event(recent, "13900139000", "success")
         db._event_cleanup(db.get_conn())
@@ -140,8 +142,8 @@ class VisualTablesTest(unittest.TestCase):
     def test_read_functions_return_expected_shape(self):
         # 时间戳用相对时间（此前硬编码 2026-08-16 会随真实时钟过期：
         # sign_event_stats 按 now 过滤 days 窗口，隔天跑即空——2026-08-17 发现）
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        earlier = (datetime.datetime.now() - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        now = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+        earlier = (clock.now() - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_event(now, "13800138000", "success", "ok", "signin", 1)
         db.add_sign_event(earlier, "13900139000", "failed", "bad", "signin", 1)
         sign_stats = db.sign_event_stats(days=30)
@@ -194,7 +196,7 @@ def _recent(days=0, hours=0, minutes=0):
     会在窗口滑过该日期后假红。
     """
     delta = datetime.timedelta(days=days, hours=hours, minutes=minutes)
-    return (datetime.datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
+    return (clock.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class WebuiStatsDbTest(unittest.TestCase):
@@ -282,7 +284,7 @@ class WebuiStatsDbTest(unittest.TestCase):
     # ---- 聚合口径：按账号去重，同时保留原始行数 ----
     def _stat_for(self, status):
         """取今日该状态的那条聚合行（找不到返回 None）。"""
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         for row in db.sign_event_stats(days=30):
             if row["day"] == today and row["status"] == status:
                 return row

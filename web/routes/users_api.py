@@ -136,16 +136,15 @@ def api_users_deleted_purge():
     gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)  # irreversible：非 full 档还要倒计时确认
     if gate:
         return gate
+    admin = session.get("username") or "admin"
     with m._file_lock:
-        purged = m.db.purge_deleted_users_hard(emails)
-        if purged:
-            admin = session.get("username") or "admin"
-            m.db.audit(
-                admin,
-                "user_deleted_purge",
-                ",".join(purged),
-                f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
-            )
+        # 审计与清除同事务：清单与计数由 store 在事务内按**实际清除**结果产出
+        # （非已注销行被跳过，按请求清单留痕会把没删的写成删过）——commit 之后
+        # 再补审计的窗口（进程被杀⇒删了无痕、欠账仍为 0）在此不存在。
+        purged = m.db.purge_deleted_users_hard(
+            emails,
+            audit_spec={"username": admin, "action": "user_deleted_purge"},
+        )
     skipped = [e for e in emails if e not in purged]
     m.logger.info("主管理员手动清除已注销用户: 成功 %d 个", len(purged))
     # 物理清除不再外发即时告警：留痕由上面的审计行承担（谁、清了哪些、数量），
@@ -251,9 +250,24 @@ def api_users_batch():
                 ops.append(("delete_user_with_accounts", email, builtin_ok))
                 sim_users.pop(email, None)
         done = len(ops)
+        # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
+        # 重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
+        audit_detail = (f"处理 {done} 个: " + ",".join(
+            m._mask_email(e) for e in (emails or [])[:20]
+        ))[:200]
+        if action == "reset_password" and done < len(emails or []):
+            audit_detail += f"；跳过 {len(emails or []) - done} 个"
+        audit_spec = {
+            "username": session.get("username") or "?",
+            "action": "users_batch",
+            "target": action,
+            "detail": audit_detail,
+        }
         if ops:
             try:
-                m.db.batch_user_ops(ops)
+                # 审计与整批操作同事务：批量重置口令/删除是凭据路径，生效与留痕
+                # 必须同生共死（命中最后管理员/异常时整批回滚，另走下面的单独留痕）。
+                m.db.batch_user_ops(ops, audit_spec=audit_spec)
             except m.db.LastAdminError:
                 # db 事务内复核兜底（跨进程竞态时整体回滚转 400）
                 m.db.audit(
@@ -272,7 +286,7 @@ def api_users_batch():
                     "失败，已回滚",
                 )
                 return jsonify({"error": "批量操作失败，已全部回滚"}), 500
-            # 批量删除/重置密码不再外发即时告警：留痕由下面的审计行承担
+            # 批量删除/重置密码不再外发即时告警：留痕由上面的审计行承担
             # （动作 + 目标清单），管理操作逐条发信会把告警邮件刷成"操作日志"。
             # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）。
             # 只轮换**真正重置了密码**的账号（processed）：若遍历请求里的 emails
@@ -282,19 +296,9 @@ def api_users_batch():
                 for e in processed:
                     with contextlib.suppress(Exception):
                         m.db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
-        # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
-        # 重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
-        audit_detail = (f"处理 {done} 个: " + ",".join(
-            m._mask_email(e) for e in (emails or [])[:20]
-        ))[:200]
-        if action == "reset_password" and done < len(emails or []):
-            audit_detail += f"；跳过 {len(emails or []) - done} 个"
-        m.db.audit(
-            session.get("username") or "?",
-            "users_batch",
-            action,
-            audit_detail,
-        )
+        else:
+            # 无实际可操作项：无业务效果，仅留一条"处理 0 个"的痕迹（无同事务对象）
+            m.db.audit(session.get("username") or "?", "users_batch", action, audit_detail)
         m.logger.info("批量%s用户 %d 个", action, done)
         msg = {
             "reset_password": f"已重置密码 {done} 个用户",
@@ -358,19 +362,21 @@ def api_user_role(email):
         # 跨进程并发（多实例）同时把最后一个注册管理员降权
         try:
             changed = m.db.set_user_role(
-                email, new_role, allow_last_admin=m._builtin_admin_loginable()
+                email, new_role, allow_last_admin=m._builtin_admin_loginable(),
+                # 审计与角色 UPDATE 同事务：权限面变更必须与生效同事务落库，
+                # 中间被杀不留"权限改了却无痕"。
+                audit_spec={
+                    "username": username,
+                    "action": "user_role",
+                    "target": m._mask_email(email),
+                    "detail": f"角色 → {new_role}",
+                },
             )
         except m.db.LastAdminError:
             return jsonify({"error": "至少保留 1 个管理员"}), 400
         if changed == 0:
             # 0 行 = 目标已被并发删除，不得谎报成功
             return jsonify({"error": "用户不存在"}), 404
-        m.db.audit(
-            username,
-            "user_role",
-            m._mask_email(email),
-            f"角色 → {new_role}",
-        )
         m.logger.info("主管理员 %s 将用户 %s 角色 → %s", m._mask_email(username), m._mask_email(email), new_role)
         # 提降权不再外发即时告警：留痕由上面的审计行承担（谁把谁改成了什么角色）。
         # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
@@ -411,18 +417,20 @@ def api_user_password(email):
                 "password_hash": m.generate_password_hash(password, method=m.SCRYPT_METHOD),
                 "pw_version": target.get("pw_version", 1) + 1,  # 被重置用户的旧会话随之失效
             },
+            # 审计与口令 UPDATE 同事务：管理员重置他人密码是账号控制权转移，
+            # 生效与留痕必须同生共死。
+            audit_spec={
+                "username": session.get("username") or "?",
+                "action": "user_password_reset",
+                "target": m._mask_email(email),
+                "detail": "管理员重置密码",
+            },
         ) == 0:
             # 0 行 = 目标已被并发删除
             return jsonify({"error": "用户不存在"}), 404
         # 轮换目标 sid，被盗 cookie 即便未因 pw_version 失效（如
         # 旧版本客户端）也双重确保吊销
         m.db.set_user_sid(email.strip().lower(), secrets.token_hex(16))
-        m.db.audit(
-            session.get("username") or "?",
-            "user_password_reset",
-            m._mask_email(email),
-            "管理员重置密码",
-        )
         m.logger.info("已重置用户 %s 密码", m._mask_email(email))
         # 重置他人密码不再外发即时告警：留痕由上面的审计行承担（谁重置了谁），
         # 目标用户的旧会话已随 sid 轮换失效，管理操作逐条发信只会把告警刷成操作日志。
@@ -464,23 +472,26 @@ def api_user_delete(email):
             if len(admins) <= 1 and not m._builtin_admin_loginable():
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
         # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
+        # 审计随业务写同事务：删除不可逆，且一次请求即可清空该用户全部易班凭据，
+        # 中途被杀不得留下"删了却无痕、欠账仍为 0"。
+        delete_spec = {
+            "username": session.get("username") or "?",
+            "action": "user_delete",
+            "target": m._mask_email(email),
+            "detail": f"mode={mode}",
+        }
         if mode == "full":
             # 事务内复核最后一个注册管理员（allow 与原预检同语义：
             # 内置管理员确实进得来时允许删掉 users 表最后一个注册管理员）
             try:
                 m.db.delete_user_with_accounts(
-                    email, allow_last_admin=m._builtin_admin_loginable()
+                    email, allow_last_admin=m._builtin_admin_loginable(),
+                    audit_spec=delete_spec,
                 )
             except m.db.LastAdminError:
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
         else:
-            m.db.delete_accounts_by_owner(email)
-        m.db.audit(
-            session.get("username") or "?",
-            "user_delete",
-            m._mask_email(email),
-            f"mode={mode}",
-        )
+            m.db.delete_accounts_by_owner(email, audit_spec=delete_spec)
         if mode == "full":
             m.logger.info("完全删除用户 %s（含易班账号）", m._mask_email(email))
             # 完全删除不再外发即时告警：留痕由上面的审计行承担（谁、删了谁、mode）。

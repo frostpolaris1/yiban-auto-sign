@@ -48,7 +48,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import window  # noqa: E402
+from yiban import clock, window  # noqa: E402
 
 
 class FakeNow:
@@ -394,7 +394,13 @@ class ContainerInjectsRetrySlotTest(unittest.TestCase):
                          f"{scheduler.SECOND[0]:02d}:{scheduler.SECOND[1]:02d}")
 
 
+#: run.sh 的按日文件（sign-status-<date>.txt / sign-<date>.log）与库内当日事实查询
+#: 都用宿主 `date +%Y-%m-%d`（run.sh:183 等），跑 run.sh 的用例须与宿主日对齐。
 TODAY = datetime.now().strftime("%Y-%m-%d")
+
+#: signin/scheduler 的 sched-run-<date>.json / sign-state-<date>.json 取业务钟
+#: （yiban.clock，北京 +8），跨宿主 TZ 时与 TODAY 可能不同日——这两类消费方必须用 BIZ_TODAY。
+BIZ_TODAY = clock.today()
 
 
 _MISSING = object()  # 哨兵：区分"不创建该文件"
@@ -407,12 +413,15 @@ STUB_SIGNIN = '''# -*- coding: utf-8 -*-
 - 否则：把本轮调用追加到 $STATE_DIR/rounds.log（记录 YIBAN_SECOND_RUN），
   并把 $STATE_DIR/sched-run-<today>.json 写成 completed=true，
   再按 $STATE_DIR/round_exit 的值退出（缺省 0）
+- 若 $STATE_DIR/flip_after_second 存在且本轮是补签轮（YIBAN_SECOND_RUN=1）：
+  把 check_exit 翻成 0——模拟"补签跑完后库内事实干净"，供封存闸门用例消费
 """
 import json, os, sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 state = os.environ.get("YIBAN_STATE_DIR", ".")
-today = datetime.now().strftime("%Y-%m-%d")
+# 模拟生产 signin 的按日留痕（yiban.clock 北京钟）：固定 +8，不随宿主 TZ 漂移
+today = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
 
 
 def _read_int(name, default):
@@ -430,6 +439,10 @@ with open(os.path.join(state, "rounds.log"), "a", encoding="utf-8") as f:
     f.write("round second_run=%s\\n" % os.environ.get("YIBAN_SECOND_RUN", ""))
 with open(os.path.join(state, "sched-run-%s.json" % today), "w", encoding="utf-8") as f:
     json.dump({"completed": True}, f)
+if (os.environ.get("YIBAN_SECOND_RUN") == "1"
+        and os.path.exists(os.path.join(state, "flip_after_second"))):
+    with open(os.path.join(state, "check_exit"), "w", encoding="utf-8") as f:
+        f.write("0")
 sys.exit(_read_int("round_exit", 0))
 '''
 
@@ -454,55 +467,55 @@ class NeedSecondRunTest(unittest.TestCase):
 
     def test_no_sched_marker_needs_second(self):
         """当日全量未收尾（标记缺失）→ 需要补跑。"""
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_done_and_all_success_no_second(self):
         """已收尾 + 全部 success → 不需要补跑。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {
             "13800000001": {"status": "success"},
             "13800000002": {"status": "already"},
             "13800000003": {"status": "no_task"},
         })
-        self.assertFalse(signin.need_second_run(self.tmp, TODAY))
+        self.assertFalse(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_done_with_failed_needs_second(self):
         """已收尾但有 failed 账号 → 需要补跑（补签轮的核心价值）。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {
             "13800000001": {"status": "success"},
             "13800000002": {"status": "failed"},
         })
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_done_with_window_skip_needs_second(self):
         """已收尾但有 skipped_window（学校窗口晚于本地配置）→ 需要补跑。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {"13800000001": {"status": "skipped_window"}})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "skipped_window"}})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_completed_false_needs_second(self):
         """标记存在但 completed=false（首轮被 timeout 击杀）→ 需要补跑。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": False})
-        self._write(f"sign-state-{TODAY}.json", {"13800000001": {"status": "success"}})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": False})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "success"}})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_missing_state_file_fails_safe(self):
         """标记已写但状态文件缺失 → 按"未了结"处理（宁多跑一轮，不漏签）。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_corrupted_state_file_fails_safe(self):
         """状态文件损坏 → 同样按"需要补跑"。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", "{ 不是合法 JSON")
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", "{ 不是合法 JSON")
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_empty_state_dict_fails_safe(self):
         """状态文件是空对象 → 按"需要补跑"。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_cli_exit_code_contract(self):
         """CLI 契约：需要补跑 → 10；不需要 → 0（run.sh 依赖该退出码）。"""
@@ -515,8 +528,8 @@ class NeedSecondRunTest(unittest.TestCase):
                          "无标记时应返回 10（需要补跑）")
         self.assertEqual(signin.SECOND_RUN_CHECK_NEED, 10, "退出码契约不得改动")
 
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {"13800000001": {"status": "success"}})
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "success"}})
         r2 = subprocess.run(cmd, capture_output=True, env=env, cwd=BASE)
         self.assertEqual(r2.returncode, signin.SECOND_RUN_CHECK_SKIP,
                          "已收尾且无未了结账号时应返回 0")
@@ -618,7 +631,7 @@ class RunshSecondRoundTest(unittest.TestCase):
         注：真实路径下 SUCCESS 与"需要补跑"不会同时成立（exit 0 蕴含无未了结账号），
         本用例锁住的是"矛盾输入下取保守且不浪费"的一侧。
 
-        MF-82 同批更新：SUCCESS 现在须与库内当日事实交叉核对才采信——给一个种了
+        同批更新：SUCCESS 现在须与库内当日事实交叉核对才采信——给一个种了
         当日 done 行的临时库，代表"真成功"（桩 timeout 直落桩 signin，不写库，
         事实由用例预置）。
         """
@@ -638,7 +651,7 @@ class RunshSecondRoundTest(unittest.TestCase):
         self.assertEqual(self._rounds(), ["round second_run="], "SUCCESS 后不应补跑")
 
     def test_forged_success_does_not_short_circuit_second_round(self):
-        """MF-82 进程内侧翼：桩首轮"成功"写出的 SUCCESS 若与库内当日事实相悖
+        """进程内侧翼：桩首轮"成功"写出的 SUCCESS 若与库内当日事实相悖
         （库不存在/无行）⇒ 不采信，补签轮照跑——伪造件不得吃掉当天兜底。"""
         self._write_ctl("check_exit", 10)
         self._write_ctl("round_exit", 0)
@@ -680,9 +693,15 @@ class RunshSecondRoundTest(unittest.TestCase):
                          "只跑一轮，且该轮已带补签身份")
 
     def test_settled_marker_short_circuits_later_invocation(self):
-        """收尾标记落地后，再次调用 run.sh 直接跳过（07:12 兜底 cron 不再多跑）。"""
+        """收尾标记落地后，再次调用 run.sh 直接跳过（07:12 兜底 cron 不再多跑）。
+
+        封存的前置是**库内事实**"确实无未了结"（`--second-run-check` 判 0），不是轮次
+        自报收工：本用例用 flip_after_second 模拟"补签轮跑完后事实翻干净"，第一轮才
+        封得上存——事实仍有未了结时不得封存，那条反例钉在 test_second_round_rc_contract。
+        """
         self._write_ctl("check_exit", 10)
         self._write_ctl("round_exit", 2)
+        self._write_ctl("flip_after_second", "")   # 补签轮跑完后 --second-run-check 答 0
         self._run()
         self.assertEqual(len(self._rounds()), 2)
         # 第二次调用（模拟 07:12 的 cron；不带 YIBAN_SECOND_RUN 也应被收尾标记挡住）
@@ -735,19 +754,19 @@ class HostContainerAgreementTest(unittest.TestCase):
             if name.startswith(("sched-run-", "sign-state-")):
                 os.remove(os.path.join(self.tmp, name))
         if sched_payload is not _MISSING:
-            with io.open(os.path.join(self.tmp, f"sched-run-{TODAY}.json"), "w",
+            with io.open(os.path.join(self.tmp, f"sched-run-{BIZ_TODAY}.json"), "w",
                          encoding="utf-8") as f:
                 f.write(sched_payload if isinstance(sched_payload, str)
                         else json.dumps(sched_payload))
         if state_payload is not _MISSING:
-            with io.open(os.path.join(self.tmp, f"sign-state-{TODAY}.json"), "w",
+            with io.open(os.path.join(self.tmp, f"sign-state-{BIZ_TODAY}.json"), "w",
                          encoding="utf-8") as f:
                 f.write(state_payload if isinstance(state_payload, str)
                         else json.dumps(state_payload))
 
     def _assert_agree(self, sched_payload, state_payload, expected):
         self._setup(sched_payload, state_payload)
-        host = signin.need_second_run(self.tmp, TODAY)
+        host = signin.need_second_run(self.tmp, BIZ_TODAY)
         container = (not self.scheduler._full_run_done_today()) or \
             self.scheduler._has_undone_today()
         self.assertEqual(host, container,

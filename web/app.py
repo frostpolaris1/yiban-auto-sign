@@ -266,12 +266,13 @@ from web.services.logs import (  # noqa: E402
     clear_fuse_pause,  # noqa: F401
 )
 from web.services.manual_sign import (  # noqa: E402
-    # 名字面零损失：手动签到子进程族（等待回收、队列超时缩放、退出码词表）随族搬入
-    # web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
+    # 名字面零损失：手动签到子进程族（终止进程树、等待回收、队列超时缩放、退出码词表）
+    # 随族搬入 web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
     # `log_path_for`，故在下方转发
     _SIGNIN_EXIT_REASONS,  # noqa: F401
     _batch_wait_timeout,  # noqa: F401
     _manual_sign_failure_reason,  # noqa: F401
+    _terminate_signin_proc,  # noqa: F401
     _wait_signin_proc,  # noqa: F401
 )
 from web.services.measure import (  # noqa: E402
@@ -303,7 +304,6 @@ from web.services.signstatus import (  # noqa: E402
     # 保留 web.app.<名字> 的兼容面；
     # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
     _TRUTHY_LITERALS,  # noqa: F401
-    _day_off_reason,
     _env_flag,
     _in_sign_window,
     check_connectivity,  # noqa: F401
@@ -437,6 +437,16 @@ def _in_run_period(bounds, now=None):
     （`_in_sign_window` 与 `_day_off_reason` 在既有测试中被直接打桩）。
     """
     return _signstatus._in_run_period(bounds, _in_sign_window, _day_off_reason, now)
+
+
+def _day_off_reason(now=None):
+    """今天此刻是否被周末门/一键暂停挡下 → 原因串（实现见 web/services/signstatus.py）。
+
+    与引擎读**同一份 `.env` 真值**：`.env` 的键值按调用时刻现读后注入（原先落回
+    `os.environ`，`.env` 里的急停/周末开关在 web 进程里恒不生效——引擎真暂停、界面说
+    "排队待签"）。`.env` 路径与读取器都会被测试与 `--config` 改写，故按调用时刻现取。
+    """
+    return _signstatus._day_off_reason(read_env(ENV_FILE), now)
 
 
 def _executors_window():
@@ -960,6 +970,24 @@ _env_key_line_re = env_io.key_line_pattern
 _count_env_key_lines = env_io.count_key_lines
 
 
+def _env_write_refuse_audit(code, detail):
+    """.env 写入被拒的 fail-closed 审计回调（写入与业务无法同事务，见 audit_or_refuse）。
+
+    注入给 `write_env_batch` 与 `ensure_secret_key`：任何"写入被拒"都必须留痕，否则一次
+    被拒的注入尝试在审计链上等于没发生。detail 已由 env_io 保证只含键名/行号，绝不回带
+    值原文（口令/明文代理串不进审计）。审计失败也不把拒绝变成放行——写入本来就已经被拒，
+    本回调只吞异常并记日志，绝不向上抛（抛错会盖住真正的拒绝原因）。
+    """
+    try:
+        actor = session.get("username") or "?"
+    except Exception:  # 无请求上下文（启动路径/CLI）：如实记 system，不猜身份
+        actor = "system"
+    try:
+        db.audit_or_refuse(actor, "env_write_refused", "env", f"{code}｜{detail}")
+    except Exception as e:
+        logger.error("拒绝 .env 写入的审计失败（写入已被拒绝，立场不变）: %s", e)
+
+
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
@@ -973,8 +1001,11 @@ def write_env_batch(env_path, updates):
 
     落盘交给本模块现取的 `_atomic_write`：它是"每一次 .env 落盘"的观测点（测试在此
     打桩快照全文），且 Windows 上的替换重试策略在那里；服务层另持绑定会让打桩静默失效。
+    行模型/校验/键集合 diff 单源在 `yiban.infra.env_io.write_env_keys`；写入被拒时经
+    `_env_write_refuse_audit` 强制留痕。
     """
-    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write)
+    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write,
+                                       _env_write_refuse_audit)
 
 
 def ensure_secret_key(env_path):
@@ -982,7 +1013,8 @@ def ensure_secret_key(env_path):
 
     落盘同样交本模块现取的 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
     """
-    return _env_io_svc.ensure_secret_key(env_path, _atomic_write)
+    return _env_io_svc.ensure_secret_key(env_path, _atomic_write,
+                                         _env_write_refuse_audit)
 
 
 # 内置主管理员（.env 账号）的会话凭据键名与会话凭据族（_new_admin_sid /
@@ -1290,6 +1322,37 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
     """
     return _notify_mail.send_notification(
         title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
+
+
+def _alert_audit_unhealthy(health):
+    """审计链异常告警的一次尝试：按账目变化触发、按**送达**推进基线。
+
+    返回本次是否真正外发（任一通道送达）。签名未变（与上次已告警的同一故障态）时只留
+    ERROR 日志、不外发，返回 False。**送达失败时不推进基线**：告警因此保持待发，下一轮
+    （次日或下次进程启动）仍会重试，而不是一次发送失败就被永久静默。
+    """
+    if not db.audit_alert_needs_attention(health):
+        logger.error("审计链异常态与上次已告警的相同，本次不重复外发（结论未变，日志照留）")
+        return False
+    delivered = send_notification(
+        "审计链异常告警",
+        mail_layout.Mail(
+            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
+                    "或存在未留痕的管理操作。",
+            fields=_audit_alert_facts(health),
+            advice=["立即核查审计链与库外锚点",
+                    "确认之前不要依赖审计记录做处置结论"],
+            level="urgent",
+        ),
+        urgent=True,
+    )
+    if delivered:
+        db.mark_audit_alert_sent(health)
+        db.mark_audit_write_failures_notified()
+    else:
+        logger.error("审计链异常告警未能送达（邮件与推送均未成功），基线不推进，"
+                     "下一轮将继续重试")
+    return bool(delivered)
 
 
 # 判定"推送这路是否曾配置过"的键表与其唯一实现见 web/services/notify_mail.py，
@@ -1719,6 +1782,20 @@ def create_app(host=None):
         if want and not _secure_auto_notice["logged"]:
             _secure_auto_notice["logged"] = True
             logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
+    @app.before_request
+    def _bind_audit_scope():
+        """为每个请求绑定审计作用域 id，使审计行能回答"这是哪个请求做的"。
+
+        来源列只有可伪造的加盐 IP 哈希（输入 XFF/remote_addr 客户端可控），区分不了
+        同一出口内的多次操作；请求 id 由服务端生成、编码进审计 detail，链 HMAC 覆盖它。
+        线程局部在 teardown 清除——Flask 复用工作线程，残留会让后续后台线程误带旧 id。
+        """
+        db.set_request_scope("web-" + secrets.token_hex(8))
+
+    @app.teardown_request
+    def _clear_audit_scope(_exc=None):
+        db.set_request_scope(None)
+
     if host is not None and not _is_loopback_host(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
@@ -2104,6 +2181,15 @@ def create_app(host=None):
         logger.error("数据层错误: %s", e)  # 详细信息只入日志，不回显客户端（防内部路径/字段泄露）
         return jsonify({"error": "服务器内部错误，请稍后重试或联系管理员"}), 500
 
+    # ---- .env 写入 fail-closed 拒绝的统一出口（公告 / 告警通道 / 改密 / 执行体等写点）----
+    # 这些写点此前让 `EnvWriteRefused` 冒泡成 500（无清理指引）；只有 /api/settings 自己
+    # 映射过 409。集中在这里回同一份 409 body + 清理指引；吞掉该异常再改报 400 的写点
+    # （executor_env 与执行体路由）已改为放行本类型（见各自 except 顺序）。
+    @app.errorhandler(env_io.EnvWriteRefused)
+    def _handle_env_write_refused(e):
+        logger.error("配置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+        return _env_io_svc.env_write_refused_response()
+
     # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
     # 这几个闭包依赖请求上下文与会话状态，出不了 `create_app`；路由模块经 `web.routes`
     # 的取回函数按 app 实例拿它们（登记键见 `app.extensions["yiban_sensitive_password_gate"]`）。
@@ -2407,27 +2493,42 @@ def create_app(host=None):
                     # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
                     logger.error("审计链异常告警: %s",
                                  "；".join(f"{k} {v}" for k, v in _facts))
-                    send_notification(
-                        "审计链异常告警",
-                        mail_layout.Mail(
-                            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
-                                    "或存在未留痕的管理操作。",
-                            fields=_facts,
-                            advice=["立即核查审计链与库外锚点",
-                                    "确认之前不要依赖审计记录做处置结论"],
-                            level="urgent",
-                        ),
-                        urgent=True,
-                    )
-                elif _health["anchor_msg"]:
-                    # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
-                    logger.info("审计链提示: %s", _health["anchor_msg"])
+                    # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
+                    # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
+                    # 基线只按**送达**推进（见 _alert_audit_unhealthy）：未送达则保持
+                    # 待发、下一轮重试；签名不变时仍留 ERROR 日志（可 grep）不外发。
+                    _alert_audit_unhealthy(_health)
+                else:
+                    if _health["anchor_msg"]:
+                        # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
+                        logger.info("审计链提示: %s", _health["anchor_msg"])
+                    # 恢复健康时复位告警基线：下一轮再出现异常（即使与上次同形）也要
+                    # 重新告警——基线不归零就等于给同一形态的复发免票。
+                    if db.audit_alert_needs_attention(_health):
+                        db.mark_audit_alert_sent(_health)
                 # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
                 # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
                 # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
-                logger.warning("审计链每日校验/锚点写入失败: %s", e)
+                # 整段自检没执行本身就是安全事件：只落一条 WARNING 管理员看不到，
+                # 而一条非法字节/一次读失败就能让"当日校验"从此静默。这里把异常送到与
+                # "审计链异常"同一条用户可见通道（邮件 + 推送），并点明"未执行"——
+                # 绝不能让它看起来像一次通过。
+                logger.error("审计链每日校验/锚点写入失败: %s", e)
+                with contextlib.suppress(Exception):
+                    send_notification(
+                        "审计链自检未执行",
+                        mail_layout.Mail(
+                            summary="审计可追溯性每日自检未能执行（不等于通过）："
+                                    "无法确认审计记录是否完整。",
+                            fields=[("失败原因", _nl_safe(str(e)))],
+                            advice=["立即人工核查审计链与库外锚点",
+                                    "本次自检没有结论，勿按「无异常」对待"],
+                            level="urgent",
+                        ),
+                        urgent=True,
+                    )
             # 告警通道健康报告（旧称"日报"）——本系统所有安全告警只有邮件 +
             # 手机推送两条出口，两条同时失效时管理员将彻底失明（活体复现的
             # 攻击链正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加

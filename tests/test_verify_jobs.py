@@ -29,6 +29,8 @@ import time
 import unittest
 from unittest import mock
 
+from yiban import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -297,7 +299,8 @@ class VerifyCooldownWebTest(_WebAppBase):
         self.assertEqual(row["action"], "my_account_add_verify_fail")
         self.assertEqual(row["username"], EMAIL_COOL)
         self.assertEqual(row["target"], "138****0001")
-        self.assertEqual(row["detail"], "验证未通过（认证失败）")
+        # 审计行携带请求作用域后缀（` [req=...]`），按前缀断言正文未被改写
+        self.assertTrue(row["detail"].startswith("验证未通过（认证失败）"), row["detail"])
         self.assertNotIn("secret-pw", row["detail"], "审计不得含密码")
 
     def test_network_failure_not_counted(self):
@@ -311,8 +314,10 @@ class VerifyCooldownWebTest(_WebAppBase):
                 self.assertEqual(r.status_code, 400)
             self.assertEqual(va.call_count, 3, "网络类失败不触发冷却")
         rows = self._verify_fail_rows()
-        self.assertEqual([r["detail"] for r in rows],
-                         ["验证未通过（其他失败）"] * 3)
+        # 审计行携带请求作用域后缀（` [req=...]`），逐条按前缀断言正文未被改写
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r["detail"].startswith("验证未通过（其他失败）") for r in rows),
+                        [r["detail"] for r in rows])
 
     def test_cooldown_is_per_phone(self):
         token = self._login(EMAIL_COOL, USER_PASS)
@@ -364,7 +369,8 @@ class AdminAddVerifyAuditTest(_WebAppBase):
         self.assertEqual(rows[0]["action"], "account_add_verify_fail")
         self.assertEqual(rows[0]["username"], "admin")
         self.assertEqual(rows[0]["target"], "138****0003")
-        self.assertEqual(rows[0]["detail"], "验证未通过（认证失败）")
+        # 审计行携带请求作用域后缀（` [req=...]`），按前缀断言正文未被改写
+        self.assertTrue(rows[0]["detail"].startswith("验证未通过（认证失败）"), rows[0]["detail"])
 
 
 class VerifyConcurrencyGateTest(_WebAppBase):
@@ -578,7 +584,9 @@ PHONE_KEYED_TABLES = {"time_prefs", "session_cache", "sign_events", "verify_jobs
 
 
 def _ago(seconds):
-    return (datetime.datetime.now() - datetime.timedelta(seconds=seconds)).strftime(
+    # 时间戳回拨的参照必须是业务钟（收口/保留期 cutoff 都取 clock.now），
+    # 裸 host now() 在 UTC 主机上早 8 小时，会把"新鲜"任务造进超龄档
+    return (clock.now() - datetime.timedelta(seconds=seconds)).strftime(
         "%Y-%m-%d %H:%M:%S")
 
 
@@ -1380,8 +1388,8 @@ class VerifyJobRetentionTest(_A4Base):
 
     def test_purge_removes_only_expired(self):
         import datetime as _dt
-        stale = (_dt.datetime.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
-        fresh = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stale = (clock.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        fresh = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         job_old, _ = db.create_verify_job(1, PHONE, EMAIL)
         job_new, _ = db.create_verify_job(1, PHONE, EMAIL)
         conn = db.get_conn()
@@ -1394,7 +1402,7 @@ class VerifyJobRetentionTest(_A4Base):
 
     def test_event_cleanup_also_trims_jobs(self):
         import datetime as _dt
-        stale = (_dt.datetime.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        stale = (clock.now() - _dt.timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         job_id, _ = db.create_verify_job(1, PHONE, EMAIL)
         conn = db.get_conn()
         conn.execute("UPDATE verify_jobs SET created_at=? WHERE id=?", (stale, job_id))

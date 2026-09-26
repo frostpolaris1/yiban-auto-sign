@@ -272,6 +272,10 @@ class _B14Fixture(unittest.TestCase):
         for p in (self.env_file, os.path.join(self.work, ".env")):
             if os.path.exists(p):
                 os.remove(p)
+        # 锚点文件随类只建一份且只追加：留到下一用例，文件里就有属于上一个库化身
+        # 的锚点行（行哈希随秒级时间戳变化）。校验基准若取到它就报"链尾被篡改"。
+        # 每例清空，让 record_deploy_anchor 从"文件缺失"起步。
+        shutil.rmtree(os.path.join(self.work, "_state"), ignore_errors=True)
 
     def tearDown(self):
         _close_db()
@@ -293,6 +297,25 @@ class _B14Fixture(unittest.TestCase):
         ok, broken, first = db.verify_audit_chain()
         self.assertTrue(ok, f"前置条件失败：种子链应自洽（broken={broken} id={first}）")
         _close_db()
+
+    def record_deploy_anchor(self):
+        """写一份与库同源的锚点。
+
+        `audit_verify` 现在把"无锚点"判为"未查"（exit 2）——本类用例断言的是**密钥
+        来源**（换目录仍读到正确密钥），必须有锚点才会走到"校验通过"那段。
+        锚点落在子进程的状态目录（`_run_cli` 把 YIBAN_STATE_DIR 钉在 `<cwd>/_state`）。
+        """
+        _clear_caches()
+        db.init_db(db_file=self.db_file, env_file=self.env_file,
+                   cleanup=False, migrate=False)
+        try:
+            line = db.record_audit_anchor(
+                os.path.join(self.work, "_state", "audit-anchor.log"))
+        finally:
+            _close_db()
+        # 写入失败只返回 None（如文件不可解析拒绝续写）：不拦住的话，子进程会按
+        # 缺失或陈旧锚点做校验，用例断言以与被测行为无关的方式失真。
+        self.assertIsNotNone(line, "锚点行写入失败：子进程将按缺失/陈旧锚点校验")
 
     def verify_chain_with_prod_env(self, db_file=None):
         """用部署 .env 里的 YIBAN_AUDIT_KEY 重开库校验链（返回 (ok, broken, first)）。"""
@@ -466,6 +489,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
 
     def test_audit_verify_reads_key_from_env_flag(self):
         """audit_verify --env：换目录也能读到正确密钥并报"校验通过"（此前报"过程异常"）。"""
+        self.record_deploy_anchor()
         r = _run_cli("audit_verify.py", ["--db", self.db_file, "--env", self.env_file],
                      cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -483,6 +507,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
 
     def test_cli_honours_yiban_env_file_without_flag(self):
         """不传 --env 时 YIBAN_ENV_FILE 同样生效（回落链第二档），仍无游离 .env。"""
+        self.record_deploy_anchor()
         r = _run_cli("audit_verify.py", ["--db", self.db_file], cwd=self.work,
                      extra_env={"YIBAN_ENV_FILE": self.env_file})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -924,6 +949,9 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         rows = self._audit_rows("notify_config")
         self.assertTrue(rows, "notify_config 变更须留审计")
         detail = json.loads(rows[-1]["detail"])
+        # 审计行携带请求作用域 id（结构化 detail 以 `_req` 键承载，不破坏 JSON 可解析）
+        self.assertIn("_req", detail)
+        detail.pop("_req")
         self.assertNotIn("type", detail,
                          "未提交 type 就不得记 type（审计只记实际落盘的键，"
                          "按 off 记录会把「没动通道」伪造成「关过通道」）")
@@ -937,16 +965,19 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
             "confirm_password": ADMIN_PASS})
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         detail2 = json.loads(self._audit_rows("notify_config")[-1]["detail"])
+        detail2.pop("_req", None)
         self.assertEqual(detail2, {"type": "serverchan", "secret": "updated"})
         r3 = c.put("/api/notify-config", headers=self._csrf(t), json={
             "type": "", "confirm_password": ADMIN_PASS})
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         detail3 = json.loads(self._audit_rows("notify_config")[-1]["detail"])
+        detail3.pop("_req", None)
         self.assertEqual(detail3, {"type": "off", "secret": "cleared"})
         r4 = c.put("/api/mail-config", headers=self._csrf(t),
                    json={"enabled": False, "confirm_password": ADMIN_PASS})
         self.assertEqual(r4.status_code, 200, r4.get_data(as_text=True))
         mail_detail = json.loads(self._audit_rows("mail_config")[-1]["detail"])
+        mail_detail.pop("_req", None)
         self.assertEqual(mail_detail, {"enabled": False})
 
     def test_registered_admin_still_403_on_both_endpoints(self):
@@ -1115,12 +1146,14 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertIn("（记录数 ", content)
 
     def test_health_report_omits_anchor_line_when_db_unavailable(self):
-        """db 读失败（db 不可用/查询抛错）→ 锚点行省略，日报本体照发。"""
+        """链头三态读成 error（读失败 ≠ 空链）→ 锚点行省略，日报本体照发。
+
+        channel_health 走 `audit_head_hash_ex` 的三态读取；打桩必须落在这一支上
+        （旧桩打的是已不再被它调用的 `audit_head_hash`，分支从未真被执行）。
+        """
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp.db, "audit_head_hash",
-                               side_effect=OSError("db locked")), \
-             mock.patch.object(self.webapp.db, "audit_row_count",
-                               side_effect=OSError("db locked")):
+             mock.patch.object(self.webapp.db, "audit_head_hash_ex",
+                               return_value=("error", None)):
             self.assertTrue(self.webapp._send_channel_health_report())
         _title, content, _urgent = self.alerts[-1]
         self.assertIn("邮件通道：", content, "日报本体不受锚点读取失败影响")
@@ -1150,7 +1183,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         （_mail_alert_due 的 300s 窗口重启即失效，兜不住）。本用例不靠 sleep 改日期——
         第二次调用即"进程重启后读同一份库"（去重判定的唯一数据来源就是 app_meta）。
         """
-        today = self.webapp.datetime.now().strftime("%Y-%m-%d")
+        today = self.webapp.clock.today()  # 去重标记按业务钟落 app_meta，宿主 TZ 下须同源
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]):
             self.assertTrue(self.webapp._send_channel_health_report())
             self.assertEqual(len(self.alerts), 1)
@@ -1573,7 +1606,7 @@ class _B14AccountBase(_B14AlertGateBase):
         if deleted:
             db.set_account_deleted(
                 acc_id, 1,
-                self.webapp.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                self.webapp.clock.ts(),
                 deleted_by="admin")
         return acc_id
 

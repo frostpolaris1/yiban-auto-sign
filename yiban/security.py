@@ -15,8 +15,12 @@
   只放行 `yiban.cn` / `uyiban.com` 体系的 https 链接，防服务端被劫持时把登录态导流；
 - `is_fyiban_url` —— **严格**白名单：ydclearance 挑战页吐出的跳转目标，主机必须精确
   等于 `f.yiban.cn`；
-- `is_waf_blocked` —— 只在**短响应**里找拦截关键词，避免把含"风控""拦截"字样的
+- `is_waf_blocked` —— **挑战形态**（`yiban/fyiban/waf.looks_like_challenge` 的特征对）不受
+  长度限制一律判拦；**仅关键词**命中才按**短响应**设界，避免把含"风控""拦截"字样的
   正常法律文本误判成拦截页。
+- `HARD_FAIL_TOKENS` / `is_hard_fail_message` / `hard_fail_pattern` —— 失败分类的**唯一
+  真值源**（挑战解析/白名单/非 JSON 响应/无签发方回执四类确定性失败），`engine.attempts`
+  （重试档位）与 `engine.probe`（硬失败预警）都从这里取，全仓不得出现第二份手抄清单。
 
 **归属**
 `yiban` 包根的安全策略实现层，服务第三方隔离层：`yiban.client` 把本模块的函数组装成
@@ -25,14 +29,19 @@
 
 **复用**
 `is_yiban_trusted_url` / `is_fyiban_url` / `is_waf_blocked` 与
-`WAF_BLOCKED_MESSAGE`、`_WHITELIST_MESSAGES`（对外文案单一来源）；脱敏口径复用
+`WAF_BLOCKED_MESSAGE`、`_WHITELIST_MESSAGES`（对外文案单一来源）；失败分类的档位词元
+（`HARD_FAIL_TOKENS`/`is_hard_fail_message`/`hard_fail_pattern`）与 `WAF_KEYWORDS` 同在本模块，
+是重试档位（`yiban.engine.attempts`）与探针硬失败判据（`yiban.engine.probe`）的**唯一真值源**；
+挑战形态特征复用 `yiban.fyiban.waf.looks_like_challenge`（不另抄特征串）；脱敏口径复用
 `yiban.masking`。
 
 **通信**
 输入：URL、响应文本/头部/状态码、待脱敏文本。输出：布尔判定或脱敏/诊断后的文本。
-调用谁：`yiban.masking`、`urlsplit`。
+调用谁：`yiban.masking`、`urlsplit`、`yiban.fyiban.waf`（挑战形态特征，单向依赖：隔离层
+不得反向 import 本模块）。
 谁调用：`yiban.client`（组装 `RequestPolicy` 注入协议层）、`yiban/fyiban/protocol.py`
-经注入的策略回调、以及各日志/错误消息点。
+经注入的策略回调、`yiban/engine/attempts.py` 与 `yiban/engine/probe.py`（档位词元单一来源）、
+以及各日志/错误消息点。
 前端调用点：无直接调用点；本模块的结果经登录/签到错误消息（最终进入签到日志与
 `/api/my-logs`、`/api/admin/sign-events` 页面）间接可见——白名单/脱敏口径变化会改变
 这些页面的错误文案与打码效果。
@@ -42,6 +51,7 @@ import re
 from urllib.parse import urlsplit
 
 from yiban import masking
+from yiban.fyiban import waf as fyiban_waf
 
 logger = logging.getLogger("yiban.security")
 
@@ -50,6 +60,33 @@ WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 
 # 被风控拦截时的统一对外文案（多处使用，文案变更必须同一处改）
 WAF_BLOCKED_MESSAGE = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
+
+# 硬失败词元（失败分类的**唯一真值源**，重试档位与探针判据都从这里取）：
+# - "ydclearance"：挑战解析失败（`yiban/fyiban/waf.solve_ydclearance` 的全部 raise 文案
+#   前缀）与挑战跳转白名单拒绝——同一输入必然得出同一结果，重试只会把同一死页重发；
+#   会话残片停在未通过的挑战链上，没有复用价值（attempts 据此联动清缓存）。
+# - "Expecting value"：requests 对非 JSON 响应调 .json() 的固定报错开头——JSON 期望
+#   端点返回了整页 HTML（典型为漏过关键词检测的长拦截页），属响应形状问题，与凭据和
+#   网络瞬断都无关，同样重试无用。
+# - "无签发方回执"：最终认证应答 code==0 但缺 data 载荷（协议层的签发回执判据）——
+#   重发同一请求只会再拿到同一份无回执应答，且会话残破没有复用价值，与上两类同档。
+# 这些消息是 `waf.py`/requests/`protocol.py` 的 raise **输出**，本表按前缀词元匹配、
+# 不复制文案全文；新增解析失败路径只要消息仍含词元即自动入档（词元变更须与产生方同批核对）。
+HARD_FAIL_TOKENS = ("ydclearance", "Expecting value", "无签发方回执")
+
+
+def is_hard_fail_message(message):
+    """该失败消息是否属"确定性硬失败"（挑战解析/白名单/非 JSON/无回执）——档位判据的唯一入口。"""
+    return any(token in message for token in HARD_FAIL_TOKENS)
+
+
+def hard_fail_pattern():
+    """风控/硬失败家族的**正则片段源文**（`engine.probe` 构造硬失败判据用）。
+
+    探针与档位必须共享同一批词元（`WAF_KEYWORDS` + `HARD_FAIL_TOKENS`）——探针此前
+    手抄了一份不含解析失败的词表，导致该族失败对探针零预警。
+    """
+    return "|".join(re.escape(token) for token in (*WAF_KEYWORDS, *HARD_FAIL_TOKENS))
 
 # 白名单失败文案按"协议步骤"定位：说清是哪一步的 URL 不合格，管理员才能判断是
 # 服务端被劫持、还是我们的解析出了偏差。
@@ -65,12 +102,18 @@ _WHITELIST_MESSAGES = {
 def is_waf_blocked(response_text):
     """判断响应是否为 WAF 风控拦截。
 
-    WAF 拦截页通常很短（< 2000 字符），而正常页面（OAuth 授权页、服务协议等）
-    内容较长且可能包含"风控""拦截"等正常法律文本，故仅在响应较短时才检测关键词。
+    两条判据、两种长度口径：
+    - **形态**判据（`waf.looks_like_challenge` 的双 JS 特征）不受长度限制：挑战/拦截页是
+      平台产物，其形状就是判据本身；真实拦截页可以很长，旧"`len>2000` 一律不判"的短路
+      失效方向是 fail-open（长拦截页被放行、被当「网络抖动」打满重试）。
+    - **关键词**判据只在短响应里找：正常长文（服务协议、法律文本）合法含"风控""拦截"
+      字样，防误伤的长度上界照旧保留。
 
     易班 WAF 返回 JSON 时中文会被 Unicode 转义（如 \\u98ce\\u9669 = "风险"），
     需先解码再匹配。
     """
+    if fyiban_waf.looks_like_challenge(response_text):
+        return True
     if len(response_text) > 2000:
         return False
     # 解码 \uXXXX 形式的 Unicode 转义序列后一并检测

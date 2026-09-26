@@ -323,8 +323,14 @@ def migrate_v3(conn):
             )
         head_before = _chain_head(conn)
         rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        _facade()._rechain_audit_logs(conn)
-        _facade()._record_rechain_event(conn, version, rows, empty, head_before, _chain_head(conn))
+        # 重链留痕在同一事务内写（head_after 在重链完成后才取）——链重签与它的留痕
+        # 要么都在要么都不在，不留"重签却无痕"。
+        _facade()._rechain_audit_logs(
+            conn,
+            lambda: _facade()._record_rechain_event(
+                conn, version, rows, empty, head_before, _chain_head(conn)
+            ),
+        )
         conn.commit()
 
 
@@ -888,6 +894,8 @@ def migrate_v18(conn):
         "updated_at TEXT NOT NULL"
         ")"
     )
+    # result 逐字平移：`retry:`/`final:` 前缀协议是 sign_claims 层的约定，v3 目前不读
+    # sign_tasks.result——将来若加 v3 解析器，必须先按该前缀分档，否则会把两档混为一谈。
     conn.execute(
         "INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
         "priority, state, attempts, lease_until, result, created_at) "

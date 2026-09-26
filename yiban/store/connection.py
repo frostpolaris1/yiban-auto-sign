@@ -9,7 +9,7 @@
 - `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
 - `_db_file` / `_env_file`：最近一次 `init_db(...)` 的库路径 / .env 路径
 - `DB_DEFAULT`：库路径默认值（`YIBAN_DB_FILE` 或 `"yiban.db"`）
-- `get_conn()` / `is_initialized()`
+- `get_conn()` / `is_initialized()` / `current_db_file()` / `pool_db_declared()`
 
 **为什么 `init_db` 不在这里**：`tests/test_store_db_move.py` 钉住"真正的 `init_db` 定义
 只能在 `yiban/store/db.py`"（建连与建表/迁移同属启动序列，还要与冻结的历史迁移函数
@@ -23,6 +23,7 @@
 副本上、真连接关不掉——详见 db.py 里 `__getattr__` 与 `_StateForwardingModule` 的说明）。
 """
 import os
+import sqlite3
 import threading
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
@@ -64,6 +65,24 @@ def is_initialized():
     return _conn is not None
 
 
+def current_db_file():
+    """当前单例连接**实际**指向的库文件（`PRAGMA database_list` 的 main）；取不到 → ""。
+
+    与 `_db_file` 的分工：`_db_file` 是"最近一次 `init_db` 声明的路径"，而 `init_db`
+    在单例连接已存在时会刷新 `_db_file` 却直接复用旧连接——此时两者不一致。凡"必须
+    写进目标库"的调用（如清库留痕）都要按**实际连接**判定，否则审计会落到另一个库。
+    """
+    if _conn is None:
+        return ""
+    try:
+        for row in _conn.execute("PRAGMA database_list"):
+            if row[1] == "main":
+                return row[2] or ""
+    except sqlite3.Error:
+        return ""
+    return ""
+
+
 def set_conn(conn):
     """登记单例连接（`db.init_db` 建连后立即调用，早于建表/迁移）。"""
     global _conn
@@ -86,3 +105,30 @@ def set_env_file(path):
     """刷新 .env 路径（`init_db` 入口**无条件**调用，即使连接已存在）。"""
     global _env_file
     _env_file = path
+
+
+#: "部署是否声明了领取池库路径"的解析结果缓存：键 = 解析出的路径串（空串=未声明）。
+#: 为什么要缓存：`round._claim` 每个账号每次尝试都会问一次，而解析要读 .env；缓存使
+#: "同一条配置每次问一遍"变成一次。键取实际值，故 .env 改路径后下一次即重算。
+_pool_declared_cache = {}
+
+
+def pool_db_declared(env=None, env_file=None):
+    """部署是否**声明**了领取池库路径（`YIBAN_DB_FILE` 在进程环境或 .env 里非空）。
+
+    执行侧要区分"部署未配库（纯状态文件形态，照旧放行）"与"配了库但当前不可用
+    （必须拒跑——放行等于让两个执行体同时登录同一账号）"。两种形态的现场都是
+    `is_initialized()` 为假，能分开它们的只有**部署声明的路径**这一条事实。
+
+    为什么判据不是别的：
+    - "磁盘上有没有库文件"会被开发机/旧部署留在工作目录里的 `yiban.db` 误判成池部署
+      （默认路径恰是 `yiban.db`），把纯状态文件部署打成拒跑；
+    - "本进程曾连上过库"分不开"连接被人为关闭"与"库真的不可用"，而后者才需要拒跑。
+
+    只做一次只读解析（**不传 default**，故未声明时得到空串），不建连接、不建库、不建表。
+    """
+    from yiban.infra import env_io
+    path = env_io.resolve_path("YIBAN_DB_FILE", "", env=env, env_file=env_file)
+    if path not in _pool_declared_cache:
+        _pool_declared_cache[path] = bool(path)
+    return _pool_declared_cache[path]
