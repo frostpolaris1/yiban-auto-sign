@@ -57,6 +57,21 @@ class RunShExitTrailTest(unittest.TestCase):
         os.makedirs(self.fakebin)
         self.calls = os.path.join(self.tmp, "timeout-calls.log")
         self._install_fakes(flock_body=FAKE_FLOCK_OK)
+        # 封存前置：run.sh 封存当日收尾标记前须以库内事实判"确实无未了结"
+        # （$PY scripts/signin.py --second-run-check），判定不可得 ⇒ 不封存并把
+        # "成功"收场的退出码升 1。本文件钉的是 rc 契约透传与日志留痕，应用目录
+        # 须备好恒答 0（无未了结）的桩件 + 转调当前解释器的 $PY 包装（双宿主确定）。
+        scripts = os.path.join(self.app_dir, "scripts")
+        os.makedirs(scripts, exist_ok=True)
+        with io.open(os.path.join(scripts, "signin.py"), "w", encoding="utf-8",
+                     newline="\n") as f:
+            f.write("import sys\nsys.exit(0)\n")
+        venv_bin = os.path.join(self.app_dir, ".venv", "bin")
+        os.makedirs(venv_bin, exist_ok=True)
+        pyw = os.path.join(venv_bin, "python3")
+        with io.open(pyw, "w", encoding="utf-8", newline="\n") as f:
+            f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+        os.chmod(pyw, os.stat(pyw).st_mode | 0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}  #剥掉宿主 YIBAN_*：否则本机 .env 直接决定 run.sh 走哪条分支
         self.env.update({
             "YIBAN_APP_DIR": self.app_dir,
