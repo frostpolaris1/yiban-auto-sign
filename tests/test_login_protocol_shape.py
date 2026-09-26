@@ -638,7 +638,8 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
         """
         challenge = ('<script>window.onload=setTimeout("yy(1701368163)", 200);'
                      'eval("qo=eval;qo(po);");</script>')
-        self.assertTrue(signin.is_waf_blocked(challenge), "短挑战页判拦截（照旧）")
+        self.assertTrue(signin.is_waf_blocked(challenge),
+                        "短挑战页判拦截（形态支新行为：旧 len>2000 短路下判 False）")
         self.assertTrue(signin.is_waf_blocked("x" * 3000 + challenge),
                         "长挑战页必须判拦截——旧 len>2000 短路在此为红")
         long_text = "风险访问" + "正文" * 2000
