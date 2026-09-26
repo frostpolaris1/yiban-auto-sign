@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""迁移 fail-closed（MF-40）：分级拒绝启动、迁移记录表、断点重跑、tmp 权限、守恒断言。
+"""迁移 fail-closed：分级拒绝启动、迁移记录表、断点重跑、tmp 权限、守恒断言。
 
 验收不变量逐条（task-5 brief）：
 - ① 迁移链跑完后 `epoch` 仍缺失 ⇒ 非零退出并点名缺哪条迁移（`ArtifactIntegrityTest`
@@ -318,7 +318,7 @@ class ArtifactIntegrityTest(_DbTemp):
         conn.close()
 
     def test_epoch_dropped_after_full_chain_refuses(self):
-        """MF-91 反例：全链跑完后有人把 epoch 列抹掉 ⇒ 下次启动拒启（点名 v19）。"""
+        """活体反例：全链跑完后有人把 epoch 列抹掉 ⇒ 下次启动拒启（点名 v19）。"""
         conn = self._init()
         self.assertIn("epoch", _cols(conn, "sign_claims"))
         conn.execute("ALTER TABLE sign_claims DROP COLUMN epoch")

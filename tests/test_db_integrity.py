@@ -20,7 +20,7 @@
 关键断言：`test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper` 与
 `tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
 签一遍"，后者等于给篡改者提供重链工具。`test_db_source_has_no_executescript_call` 是**源码文本级**断言：它只保证那段文本还在原位。
-`BackupPlaintextP3Test` 原本是同类写法（MF-10 指出的假绿），现已改为**行为测试**——真跑
+`BackupPlaintextP3Test` 原本是同类写法（登记在册的那条假绿），现已改为**行为测试**——真跑
 backup.sh（临时目录夹具，skipIf 无 bash），断言真实 stderr 告警、专用退出码 6、异机密文
 副本与哨兵判定；输出按字节手动 utf-8 解码以避开旧注释所说的 Windows GBK 误报问题。
 依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩；
@@ -814,14 +814,14 @@ _FAKE_GPG_FAIL = "#!/usr/bin/env bash\ncat > /dev/null 2>&1 || true\nexit 2\n"
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
 class BackupPlaintextP3Test(unittest.TestCase):
-    """P3-3：backup.sh 明文模式告警/退出码/异机契约——行为钉死（MF-10 重写）。
+    """P3-3：backup.sh 明文模式告警/退出码/异机契约——行为钉死（假绿整改重写）。
 
     旧版只断言 backup.sh 源码含 "BACKUP_PLAINTEXT=1"/"明文" 字串：纯注释行即满足，
-    把告警块整段删掉测试仍全绿——这正是 MF-10 记名的假绿。现改为真跑脚本
+    把告警块整段删掉测试仍全绿——这正是当年记名整改的那条假绿。现改为真跑脚本
     （临时目录夹具 + 故障注入桩），断言的真实来源全部是**行为**：stderr 告警、
     专用退出码 6、异机侧真实落地的密文副本、哨兵对明文产物的 unhealthy 判定。
     改坏/删掉对应实现块 ⇒ 相应用例必须红。
-    明文轮退出码 6 为 M3 批次0（MF-79）新增，与既有 rc=4（源库损坏）/rc=5（缺
+    明文轮退出码 6 为 M3 批次0（明文模式护栏）新增，与既有 rc=4（源库损坏）/rc=5（缺
     sqlite3）不冲突；输出按字节手动 utf-8 解码（text=True 在 Windows 侧按 GBK
     解中文输出会误报，旧类当年因此退化成源码断言）。
     """

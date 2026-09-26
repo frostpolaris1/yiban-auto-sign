@@ -631,7 +631,7 @@ class RunshSecondRoundTest(unittest.TestCase):
         注：真实路径下 SUCCESS 与"需要补跑"不会同时成立（exit 0 蕴含无未了结账号），
         本用例锁住的是"矛盾输入下取保守且不浪费"的一侧。
 
-        MF-82 同批更新：SUCCESS 现在须与库内当日事实交叉核对才采信——给一个种了
+        同批更新：SUCCESS 现在须与库内当日事实交叉核对才采信——给一个种了
         当日 done 行的临时库，代表"真成功"（桩 timeout 直落桩 signin，不写库，
         事实由用例预置）。
         """
@@ -651,7 +651,7 @@ class RunshSecondRoundTest(unittest.TestCase):
         self.assertEqual(self._rounds(), ["round second_run="], "SUCCESS 后不应补跑")
 
     def test_forged_success_does_not_short_circuit_second_round(self):
-        """MF-82 进程内侧翼：桩首轮"成功"写出的 SUCCESS 若与库内当日事实相悖
+        """进程内侧翼：桩首轮"成功"写出的 SUCCESS 若与库内当日事实相悖
         （库不存在/无行）⇒ 不采信，补签轮照跑——伪造件不得吃掉当天兜底。"""
         self._write_ctl("check_exit", 10)
         self._write_ctl("round_exit", 0)

@@ -462,7 +462,7 @@ class CleanupResidueTest(unittest.TestCase):
         参照点必须与守卫同源：`db._clock_jump_guard` 用业务时钟 `clock.now()`
         （北京时间）比对 app_meta，测试若改用裸 `datetime.now()` 取的是宿主时区
         ——UTC runner 上"回拨 2h"实际比守卫的当前时刻早 6h，前进未超 72h →
-        放行 → 本用例在 UTC 环境必红（main 分支 CI 现存红，MF-105）。
+        放行 → 本用例在 UTC 环境必红（main 分支 CI 曾现存红的时区脆弱缺陷）。
         """
         conn = db.get_conn()
         with db._conn_lock:
