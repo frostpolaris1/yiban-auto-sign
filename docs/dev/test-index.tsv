@@ -552,6 +552,27 @@ tests/test_container_scheduler.py	MainLoopGateTest.test_marker_blocks_both_signs
 tests/test_container_scheduler.py	MainLoopGateTest.test_no_marker_triggers_both_signs	B	-	无标记 → 首签与补签都触发（探针开启时也周期尝试一次）。
 tests/test_container_scheduler.py	MainLoopGateTest.test_probe_disabled_skips_spawn	B	-	探针未开启（.env 无/为 0）：周期尝试时不 spawn 子进程，首签/补签不受影响。
 tests/test_container_scheduler.py	SchedulerTimeoutTest.test_timeout_does_not_kill_loop	B	-	??
+tests/test_creds_write_accounting.py	AdminSentinelClearTest.test_哨兵清空库行真变空且返回如实	E	-	??
+tests/test_creds_write_accounting.py	AdminSentinelClearTest.test_对已为空的字段发哨兵结果语义仍是空	E	-	??
+tests/test_creds_write_accounting.py	AdminSentinelClearTest.test_正常值改写与留空保持不变零回归	E	-	??
+tests/test_creds_write_accounting.py	ClearFuseOnCodeChangeTest.test_改写或清除识别码清熔断	E	-	??
+tests/test_creds_write_accounting.py	ClearFuseOnCodeChangeTest.test_识别码未变与未带字段不清熔断	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_哨兵折算成空串且键仍在	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_正常值原样保留	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_添加口无旧值可保哨兵同样折空	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_留空回填旧值	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档只改无关字段不进门禁零信号	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档只改识别码无口令被拒且库不动	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档带口令放行且标位发当事人信	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档清除哨兵同样过门	E	-	??
+tests/test_creds_write_accounting.py	RiskDefaultTierTest.test_risk档只改无关字段仍零信号	E	-	??
+tests/test_creds_write_accounting.py	RiskDefaultTierTest.test_risk缺省档只改识别码免口令但标位发信	E	-	??
+tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_哨兵字面量只在账号数据族一处定义	E	-	??
+tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_四个消费点全部接入折算	E	-	??
+tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_进SET前不再pop识别码	E	-	??
+tests/test_creds_write_accounting.py	UserSideClearTest.test_用户侧哨兵真清空且返回如实	E	-	??
+tests/test_creds_write_accounting.py	UserSideClearTest.test_用户提交哨兵不落字面量	E	-	??
+tests/test_creds_write_accounting.py	UserSideClearTest.test_管理添加口哨兵不落字面量	E	-	??
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_dist_view_reads_account_column	F	node	分布视图的取值源必须是账号口径（byStatus，由 cnt 累加）。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_distribution_counts_dedup_accounts	F	node	分布口径 = 账号数：同一账号两行只算一次（user_cancelled 计 1，不是 2）。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_event_total_counts_rows	F	node	事件口径 = 行数：两行 + 一行 = 3（重试/多执行体各写一行都是事实）。
