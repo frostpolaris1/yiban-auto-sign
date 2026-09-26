@@ -1170,7 +1170,9 @@ class SmokeTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["username"], "tester")
         self.assertEqual(row["action"], "account_add")
-        self.assertEqual(row["detail"], "测试审计")
+        # 审计行携带请求/进程作用域后缀（` [req=...]`），故按前缀断言正文未被改写
+        self.assertTrue(row["detail"].startswith("测试审计"), row["detail"])
+        self.assertIn("[req=", row["detail"], "必须携带请求/进程作用域 id")
 
 
     # ---- 11. 解密失败统一收口（对抗性审查 2026-08-15 L1）----
