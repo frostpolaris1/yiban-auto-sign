@@ -243,6 +243,10 @@ _wait_until_hhmm() {
 }
 
 # 补签轮判定（调用 signin.py --second-run-check）：退出码 10 = 需要补跑
+# SEAL_CHECK_RC 记录**最近一次库内事实判定**的原始退出码（"" = 本轮还没判过）：
+# 收尾标记的封存闸门与补签判定消费同一次判定结果，不各查各的（判定口径唯一：
+# signin 的 need_second_run = 领取池 + 状态文件的库内事实，不是子执行体自报的 rc）。
+SEAL_CHECK_RC=""
 _need_second_round() {
     _is_truthy "$SECOND_ROUND_ENABLED" || return 1
     # MF-81⑤：YIBAN_SECOND_RUN 统一走 _is_truthy 一处解析（与 .env/脚本自身的
@@ -252,8 +256,8 @@ _need_second_round() {
     # 只会把锁多占一会儿（原逻辑下 07:12 的 cron 也会同样空跑一次，属既有行为）
     _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}" && return 1
     "$PY" scripts/signin.py --second-run-check >> "$LOG_FILE" 2>&1
-    local rc=$?
-    [ "$rc" -eq 10 ]
+    SEAL_CHECK_RC=$?
+    [ "$SEAL_CHECK_RC" -eq 10 ]
 }
 
 # 执行一轮签到；每轮按当前时刻重算超时（原实现只在脚本开头算一次，
@@ -426,6 +430,37 @@ _log "=== run.sh 开始执行 ==="
 _log "工作目录: $(pwd)"
 _log "Python版本: $("$PY" --version 2>&1)"
 
+# ---- 兜底常驻的接线核对：`YIBAN_FALLBACK_ENABLE=1` 而无进程 ⇒ 启动即告警并拉起 ----
+# 旧语义：开关只是 .env 里的一个键，必须部署者再手工挂一条 cron（scripts/yiban-
+# fallback.sh）才真有进程——网页把开关显示成"已启用"而机器上什么都没有。现在每次
+# 拿到锁、确实要跑本轮时核对一次。存活判定复用唯一口径 `state_io.fallback_alive`
+# （心跳文件新鲜度 ≤ 2×扫描间隔；以文件内时间戳而非"文件在不在"为准——被 kill -9
+# 的进程不会清心跳）。不在跑 ⇒ 双声音告警 + 后台拉起与 cron 件**同一条入口**
+# （`-m yiban.cli sign --fallback`）。周末/暂停/窗口门不在此重复实现：引擎每轮自
+# 重判并自行退出，误拉起一个"该休息"的进程只会立刻安静结束；独立锁
+# `signin-run.lock.fallback` 保证撞上已在跑的兜底以退出码 3 结束，绝不叠进程。
+# 子进程不得继承 fd 9（本轮持有的全局运行锁）：兜底与全量轮并存靠让位+领取池，
+# 不是替全量轮继续持锁——否则本脚本退出后锁仍被兜底攥着，下一触发整天撞锁。
+_check_fallback_wiring() {
+    _is_truthy "${YIBAN_FALLBACK_ENABLE:-0}" || return 0
+    if "$PY" - >> "$LOG_FILE" 2>&1 <<'PYEOF'
+import os
+import sys
+sys.path.insert(0, os.getcwd())
+from yiban.engine import state_io
+_alive, _age = state_io.fallback_alive()
+sys.exit(0 if _alive else 1)
+PYEOF
+    then
+        return 0
+    fi
+    echo "警告: YIBAN_FALLBACK_ENABLE=1 但未检测到兜底执行体在跑（心跳缺失或已过期），本轮启动即拉起" >&2
+    _log "警告: 兜底开关置 1 而无兜底进程（心跳缺失/过期），拉起兜底常驻执行体（-m yiban.cli sign --fallback）"
+    nohup "$PY" -m yiban.cli sign --fallback < /dev/null >> "$LOG_FILE" 2>&1 9<&- &
+    return 0
+}
+_check_fallback_wiring
+
 # ---- 第一轮（首签轮）----
 _run_signin_round
 EXIT_CODE=$?
@@ -460,15 +495,38 @@ else
     _log "补签轮：无需补跑（当日已收尾且无未了结账号）"
 fi
 
-# 当日收尾：标记"该做的都做完了"，避免 07:12 的兜底 cron 再跑第三轮。
-# MF-81①：旧实现 `|| true` 零留痕——标记缺失时下一触发判"未收尾"，状态若非
-# SUCCESS 就再跑一整轮真实登录（重复真实登录且无人知晓）。写失败必须双声音；
-# 本轮本以成功收场时把退出码升为 1，让 cron/监控听见。
-if ! : > "$SECOND_DONE_MARKER" 2>/dev/null; then
-    echo "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮" >&2
-    _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
+# ---- 当日收尾标记的封存：前置 = 库内事实"确实无未了结" ----
+# 旧实现在这里**无条件**封存——封存的前置必须是"确实无未了结"，而"无未了结"以
+# **库内查询**为准（--second-run-check：领取池 + 状态文件），不是子执行体的自报退出码：
+# 整批没领、部分没轮到、被信号杀后半途而废，rc 都可能粉饰成"跑完了"，一封存就把
+# 07:12 的当日恢复腿（flock 即存活判据，唯一"主进程消失后才动"的腿）永久弹开。
+# 判定 0 ⇒ 封存；判定 10（仍有未了结）⇒ 不封存、把恢复留给后继触发——这是设计结果，
+# 不是失败，不改退出码；判定不可得（其余码/判不了）⇒ 不封存 + 双声音，本轮若以成功
+# 收场则退出码升 1，"无法判定"绝不静默等价于"做完了"（MF-81 同一纪律）。
+# MF-81①：真正封存时写失败仍须双声音留痕，本轮成功则升 1。
+_seal_second_done_marker() {
+    if [ "$SEAL_CHECK_RC" != "0" ]; then
+        "$PY" scripts/signin.py --second-run-check >> "$LOG_FILE" 2>&1
+        SEAL_CHECK_RC=$?
+    fi
+    if [ "$SEAL_CHECK_RC" = "0" ]; then
+        if ! : > "$SECOND_DONE_MARKER" 2>/dev/null; then
+            echo "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮" >&2
+            _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
+            if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
+        fi
+        return 0
+    fi
+    if [ "$SEAL_CHECK_RC" = "10" ]; then
+        _log "收尾标记：库内仍有未了结账号（判定 10），不封存，留给 07:12 兜底轮继续处理"
+        return 0
+    fi
+    echo "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存；下一触发将重判" >&2
+    _log "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存"
     if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
-fi
+    return 0
+}
+_seal_second_done_marker
 
 # 退出码与收场日志由 _on_exit（trap EXIT）统一收口：正常收尾、超时击杀、各处跳过
 # 都在同一处留痕，不再各自 echo 一行、也不再漏掉任一条路径
