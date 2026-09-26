@@ -380,12 +380,22 @@ def api_account_update(idx):
             and m.find_account_index(accounts, clean["phone"]) is not None
         ):
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-        # 改写他人易班凭据（填了新密码 / 改绑手机号）与"不可逆清除"同档：拿到被窃
-        # 管理员会话的人一次 PUT 就能把某用户的账号换成自己的凭据——此后签到在攻击
-        # 者侧完成、真用户被静默挤出，界面上看不出任何异常。只改备注/设备型号不算。
+        # 设备识别码先折算成将进 SET 的最终值，再进下面的"改写凭据"判定——写侧
+        # （store/accounts.py）把 phone_code 与 password 同档加密/重加密，读侧若少认
+        # 这一项，"只改写设备识别码"就会既不过门、不标位、也不发信：写侧干了凭据
+        # 的活，读侧记账口径却是零。哨兵/留空的语义与 /my-accounts 及添加路径共用
+        # fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
+        old_code = old.get("phone_code") or ""
+        code_written = m.fold_phone_code(clean, old_code) != old_code
+        # 改写他人易班凭据（填了新密码 / 改绑手机号 / 改写或清除设备识别码）与
+        # "不可逆清除"同档：拿到被窃管理员会话的人一次 PUT 就能把某用户的账号换成
+        # 自己的凭据——此后签到在攻击者侧完成、真用户被静默挤出，界面上看不出任何
+        # 异常；设备识别码是学校开"设备绑定"时的登录要素，静默改写它同样能把签到
+        # 打成失败（可用性轴）。只改备注/设备型号/名称不算。
         # 走 _high_risk_gate：先二次鉴权、通过后才占高危额度（顺序即该函数的立身之本）。
-        creds_written = bool(str(data.get("password", "")).strip()) or (
-            clean["phone"] != old.get("phone"))
+        creds_written = (bool(str(data.get("password", "")).strip())
+                         or clean["phone"] != old.get("phone")
+                         or code_written)
         if creds_written:
             denied = _high_risk_gate()(data, "改写他人易班凭据")
             if denied is not None:
@@ -393,9 +403,6 @@ def api_account_update(idx):
         # 密码留空 = 保持不变（密码明文永不下发前端）
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变。
-        # 全部消费点共用 fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
-        m.fold_phone_code(clean, old.get("phone_code", ""))
         # 归属保持不变（管理员编辑不改变提交者）
         clean["owner"] = old.get("owner", "admin")
         # 改绑手机号一律回待审核重审——
@@ -438,9 +445,10 @@ def api_account_update(idx):
         # 避免更新失败时误删旧号自选（防孤儿 pref 占容量）
         if clean["phone"] != old.get("phone"):
             m.db.clear_time_pref(old.get("phone", ""))
-        # 凭据变更（改密码/改绑手机号）才清除熔断暂停，立即恢复签到；
+        # 凭据变更（改密码/改绑手机号/改写识别码）才清除熔断暂停，立即恢复签到；
         # 仅改备注/状态等不动熔断计数（防任意编辑把 fail_days 清零、熔断永不跳闸）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
+        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
+                                    old_code)
         # 审计行已随 update_account 同事务写入（见上面 audit_spec）
         # 当事人必须知情（管理员改写他人易班凭据除二次鉴权外，还要绕过
         # 其通知开关发变更信）。send_user 直收地址、不读 mail_notify——攻击者把本人
@@ -455,6 +463,9 @@ def api_account_update(idx):
                         _what.append("重设了易班登录密码")
                     if rebind:
                         _what.append("改绑了手机号（需管理员重新审核后才参与签到）")
+                    if code_written:
+                        _what.append("改写或清除了设备识别码"
+                                     "（开启设备绑定的学校，签到时提交给易班的验证码随之改变）")
                     m.mailer.send_user(
                         _owner,
                         "【易班签到】您的易班账号信息被管理员修改",
