@@ -21,7 +21,8 @@ MF-53 的缺陷是"写了但追不到人、丢了你不知道"：业务写与审
 （0 通过 / 1 篡改 / 2 未查·锁住·无法定论）。
 对应实现：`yiban/store/audit_chain.py`（`audit` / `audit_unit` / `record_in_txn` /
 `audit_or_refuse` / `audit_head_hash_ex` / `_rechain_audit_logs` / 欠账基线）、
-`yiban/store/accounts.py`（`add_account` / `update_account` 的 `audit_spec`）、
+`yiban/store/accounts.py`（`add_account` / `update_account` /
+`delete_accounts_by_owner` 的 `audit_spec`）、
 `yiban/store/users.py`（`purge_deleted_users_hard` 的 `audit_spec`：清除清单事务内产出）、
 `scripts/audit_verify.py`。
 关键断言：**"未查"与"通过"必须是两个不同返回值，"锁住"与"检出篡改"必须不同码**；
@@ -273,6 +274,43 @@ class CredentialPathTransactionTest(_Fixture):
         self.assertEqual(self._count("SELECT COUNT(*) FROM accounts"), 1)
         self.assertEqual(
             self._count("SELECT COUNT(*) FROM audit_logs WHERE action='my_account_add'"), 1)
+
+
+class DeleteOwnerAccountsAuditTest(_Fixture):
+    """`delete_accounts_by_owner` 的留痕必须如实报数：0 行与 N 行不得写成同一条。
+
+    "清空该用户全部账号"是一次真实操作（users_batch 的"处理 0 个"同理仍留痕），
+    但旧实现把 0 行与 N 行写成逐字相同的 detail——事后翻审计分不出清了几个。
+    现留痕由 store 追加**实际删除行数**，有操作必有如实留痕。
+    """
+
+    SPEC = {"username": "master@admin.local", "action": "user_delete",
+            "target": "zero-del@test.local", "detail": "mode=accounts_only"}
+
+    def _details(self):
+        conn = db.get_conn()
+        return [r[0] for r in conn.execute(
+            "SELECT detail FROM audit_logs WHERE action='user_delete'").fetchall()]
+
+    def test_zero_account_owner_still_traced_factually(self):
+        db.create_user("zero-del@test.local", "hash", role="user")  # 名下 0 个账号
+        n = db.delete_accounts_by_owner("zero-del@test.local", audit_spec=self.SPEC)
+        self.assertEqual(n, 0)
+        details = self._details()
+        self.assertEqual(len(details), 1, "操作发生了就留痕（与 users_batch '处理 0 个'同族）")
+        self.assertIn("实际删除 0", details[0],
+                      "0 行必须写明 0——不得与真删了账号的留痕逐字同形")
+        self.assertIn("mode=accounts_only", details[0], "原有语义前缀保留")
+
+    def test_nonzero_delete_audit_counts_rows(self):
+        first = db.add_account({"name": "n0", "phone": "13800000001", "password": "p",
+                                "owner": "zero-del@test.local"})
+        db.set_account_deleted(first, 1, deleted_by="zero-del@test.local")
+        db.add_account({"name": "n1", "phone": "13800000002", "password": "p",
+                        "owner": "zero-del@test.local"})
+        n = db.delete_accounts_by_owner("zero-del@test.local", audit_spec=self.SPEC)
+        self.assertEqual(n, 2, "清空口径含软删行（WHERE owner 无 deleted 过滤）")
+        self.assertIn("实际删除 2", self._details()[0])
 
 
 class PurgeAuditWindowTest(_Fixture):
