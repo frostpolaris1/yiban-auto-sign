@@ -593,6 +593,16 @@ EXPORT_MAX = 6  # 窗口内最大导出次数
 DETAIL_WINDOW = 60  # 窗口（秒）
 DETAIL_MAX = 60  # 窗口内最大详情读取次数（超限 429）
 
+# 个人提交预检「号码在册」命中计数限速（每会话 DUPCHECK_MAX 次 / DUPCHECK_WINDOW 秒）。
+# 预检判重打在全站账号表上、且早于任何真实外呼，等于给"已登录且名下无未删账号"的
+# 会话一个零成本零留痕的定向确认面：全局 IP 限速（60 次/10 秒 ≈ 21600 次/时）比
+# 详情/导出等同档面宽几个数量级，压不住定向确认。只计「判重命中」——未重号的正常
+# 提交不吃额度、不写这行审计，400/成功语义与文案不动；超限改答 429，不再继续
+# 确认。按会话计数与详情限速同口径（校园网出口高度共享，按 IP 会把共用出口的正常
+# 用户互相挡死）。
+DUPCHECK_WINDOW = 60  # 窗口（秒）
+DUPCHECK_MAX = 5  # 窗口内最大判重命中数（超限 429）
+
 # 只读面聚合审计：同一管理员对同一资源类在一个窗口内只按档位落几行，detail 带
 # 累计次数与脱敏目标摘要。逐请求一行会把审计表变成"被盗会话的免费打字机"——
 # 拒绝面已经实测过这个洞（拿 429 当产出），读取面若做成逐条就是换个口子重开。
@@ -1864,6 +1874,9 @@ def create_app(host=None):
     # 高度共享，按 IP 会把两个管理员的运维互相挡死，与"新 IP 即告警"同一理由）
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.detail_limits()
     app.extensions["yiban_detail_limits"] = {}
+    # 个人提交判重预检命中限速 {actor: (count, window_start)}（按会话而非 IP，同详情）
+    # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.dupcheck_limits()
+    app.extensions["yiban_dupcheck_limits"] = {}
     # 只读面聚合审计计数 {(actor, 资源类): (count, window_start)}
     _read_audit_counts = {}
     # 只读面聚合审计的目标摘要 {(actor, 资源类): [脱敏目标样本, 目标总数, window_start]}
