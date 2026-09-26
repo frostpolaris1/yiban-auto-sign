@@ -106,6 +106,9 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `--egress-probe-ip` | 空 | **搭建路径必填**：主动探测该 IP:443 应被拒绝（缺省即拒绝启动） |
 
 幂等性：重复 setup 不重复改 hosts/iptables；重复 `--restore` 无副作用。
+宿主警示：WSL 会由系统生成器**运行期自动重写 /etc/hosts 并清空 iptables**（实测）——
+全局形态在此类宿主上不持久，长链演练用 netns 裸机形态（见批 0 演练预案 §4）或
+分步快跑，setup 后先 `--check` 再起链。
 
 证书扩展（E1）：`ensure_certs` 生成的自签 CA 带 `basicConstraints(critical,CA:TRUE)`
 与 `keyUsage(critical,keyCertSign,cRLSign)`——Python ≥3.14 默认开 `VERIFY_X509_STRICT`，
