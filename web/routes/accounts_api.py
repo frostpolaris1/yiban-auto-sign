@@ -267,6 +267,14 @@ def api_account_add():
                     created = m.db.create_user(
                         email, initial_hash, "user",
                         m.clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
+                        # 与开放注册同口径的注册留痕，且与 INSERT 同事务：注册即建立
+                        # 账号凭据，中间被杀不留"建了却无痕"。
+                        audit_spec={
+                            "username": session.get("username") or "?",
+                            "action": "user_register",
+                            "target": email,
+                            "detail": "管理员添加账号自动注册",
+                        },
                     )
                 except sqlite3.IntegrityError:
                     return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
