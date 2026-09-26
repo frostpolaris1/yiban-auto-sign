@@ -158,15 +158,20 @@ fi
 
 # 单实例锁：自动错峰模式下 06:31 进程可能 sleep 等待时间点，
 # 防止 07:12 的 cron 并发启动第二个进程（重复签到/并发竞争）
-# 使用 /var/lock（仅 yiban 用户可写），避免 /tmp 下可被任意用户预测/占用导致 DoS
+# 使用 /var/lock（仅 yiban 用户可写），避免 /tmp 下可被任意用户预测/占用导致 DoS。
+# fail-closed：主锁目录创建失败即拒绝运行（rc=1），不回退共享临时目录——旧回退分支
+# 与上面注释的威胁模型自相矛盾（/tmp 恰是"可被预测/占用"的位置），且回退 mkdir
+# 结果未检查（建不成也在假锁路径上继续 flock）。需要替代路径的人显式设
+# YIBAN_LOCK_DIR，该路径属主/权限风险自担；本脚本对显式路径同样执行
+# "属主为本用户 + chmod 700 成功"的同一道硬检查，不给第二套判法。
 LOCK_DIR="${YIBAN_LOCK_DIR:-/var/lock/yiban}"
 if [ ! -d "$LOCK_DIR" ]; then
     if ! mkdir -p "$LOCK_DIR" 2>/dev/null; then
-        echo "警告: 无法创建 $LOCK_DIR，回退 /tmp" >&2
-        LOCK_DIR="/tmp/yiban-sign-$(id -u)"
-        mkdir -p "$LOCK_DIR"
+        echo "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）" >&2
+        _log "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行"
+        exit 1
     fi
-    # 2026-08-21 对抗性审查加固：回退目录必须属主为本用户且 chmod 700 成功——
+    # 2026-08-21 对抗性审查加固：新建锁目录必须属主为本用户且 chmod 700 成功——
     # 否则同机其他用户可预建目录/符号链接截断文件或抢占锁使签到静默跳过
     if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
         echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
