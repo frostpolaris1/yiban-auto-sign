@@ -179,7 +179,8 @@ def get_session_cache(phone):
                 raise ValueError("csrf 字段不是密文对象（旧版明文行）")
             csrf = account_crypto.decrypt_password(csrf_obj, key, phone)
         except (ValueError, TypeError, json.JSONDecodeError) as e:
-            logger.warning("会话缓存解密失败（按未命中清除重登）: %s: %s", phone, e)
+            logger.warning("会话缓存解密失败（按未命中清除重登）: %s: %s",
+                           _mask_phone(phone), e)
             with contextlib.suppress(Exception):
                 conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
                 conn.commit()
