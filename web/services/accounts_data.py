@@ -6,7 +6,8 @@
 账号与用户的读取 `load_accounts` / `load_accounts_raw` / `load_users`、出站展示序列化
 `mask_account`（含邮箱脱敏 `_mask_email` 与归属展示名 `_owner_display_of`）、按手机号
 定位 `find_account_index`、字段清洗与重提冲突文案 `validate_account` /
-`_duplicate_phone_error` / `_owner_has_other_live`、按 idx 寻址的错位守卫 `_stale_idx_guard`、
+`_duplicate_phone_error` / `_owner_has_other_live`、设备识别码表单协议折算
+`fold_phone_code`（`CLEAR_SENTINEL` 唯一真源）、按 idx 寻址的错位守卫 `_stale_idx_guard`、
 注销冷却剩余 `_delete_grace_remaining`、口令策略 `_password_policy_error` /
 `_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`，
 以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`。
@@ -54,6 +55,11 @@ ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑�
 
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
 PHONE_RE = re.compile(r"^1\d{10}$")
+
+# 账号编辑表单里"清除设备识别码"的哨兵值（收到 = 显式清空该字段）。唯一真源在本模块，
+# `web/app.py` 经导入区再导出以保 m.CLEAR_SENTINEL 名字面；前端 account-form.js 内联
+# 同一字面量（跨语言无法 import，靠本常量与折算函数单点在 Python 侧收敛语义）。
+CLEAR_SENTINEL = "__clear__"
 
 # 注销宽限期（天）：**必须**取 db.SOFT_DELETE_RETENTION_DAYS（账号保留期唯一事实源），
 # 不要再写字面量。漂移不是假想：常量之外全仓还散着 48 处「7 天」字面量（含注释，其中
@@ -238,6 +244,27 @@ def validate_account(data, require_password):
         "phone_model": phone_model,
         "phone_code": phone_code,
     }
+
+
+def fold_phone_code(clean, old_code=None):
+    """把清洗字段里的设备识别码折算成**将写入库的最终值**，就地更新 clean，返回该值。
+
+    表单协议（全部消费点共用同一折算，防各路由自行解读漂移）：
+    - 空串 = 保持不变：回填 `old_code`（编辑表单不预填本字段，防误清空）。
+    - `__clear__` 哨兵 = 显式清空：**折算成 ""** 留在字段里随 UPDATE 进 SET。
+      哨兵是协议令牌而非用户数据，既不能原样落库，也不能在进 SET 前被摘掉——
+      摘掉就是"用户点清除、看到已保存、库里值原封不动"的静默空操作。
+    - 其余值原样保留。
+
+    `old_code=None` 表示添加路径（没有旧值可保），空串原样留空。返回值供调用方
+    与旧值比对，判定"本次是否改写了指认码"。
+    """
+    raw = clean.get("phone_code", "")
+    if raw == CLEAR_SENTINEL:
+        clean["phone_code"] = ""
+    elif not raw and old_code is not None:
+        clean["phone_code"] = old_code or ""
+    return clean.get("phone_code", "")
 
 
 def _stale_idx_guard(acc, data, *, fail_closed=False):

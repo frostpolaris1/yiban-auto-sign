@@ -183,6 +183,7 @@ from web.services.accounts_data import (  # noqa: E402
     ACCOUNT_STATUS_REJECTED,  # noqa: F401
     ADMIN_PASSWORD_MIN_CLASSES,  # noqa: F401
     ADMIN_PASSWORD_MIN_LEN,  # noqa: F401
+    CLEAR_SENTINEL,  # noqa: F401
     DELETE_GRACE_DAYS,  # noqa: F401
     PASSWORD_MIN_LEN,  # noqa: F401
     PHONE_RE,  # noqa: F401
@@ -197,6 +198,7 @@ from web.services.accounts_data import (  # noqa: E402
     _stale_idx_guard,  # noqa: F401
     _verify_account_clean,
     find_account_index,  # noqa: F401
+    fold_phone_code,  # noqa: F401
     load_accounts,
     load_accounts_raw,  # noqa: F401
     load_users,  # noqa: F401
@@ -413,8 +415,9 @@ DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
 # 已随安全域搬入 web/security.py，此处以导入区再导出保持 m.SCRYPT_METHOD 可达。
 
-# 账号编辑时识别码清空哨兵值（收到该值 = 显式删除设备识别码字段）
-CLEAR_SENTINEL = "__clear__"
+# 账号编辑时识别码清空哨兵值与表单折算（CLEAR_SENTINEL / fold_phone_code）唯一真源
+# 在 web/services/accounts_data.py，上方导入区再导出保 m.CLEAR_SENTINEL 名字面；
+# 折算必须发生在进 SET 之前——哨兵若在进 SET 前被摘掉，"清除"就成了库里无感的空操作。
 
 # 单次批量操作上限：批量通过/删除/设管理员/重置密码
 # 与「清除已注销用户」共用同一上限——被盗管理员会话即使一个请求，一次最多影响 10 条，
