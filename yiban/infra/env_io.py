@@ -67,7 +67,7 @@ def parse_env_file(path, *, strict=False):
     若剥掉 `export` 前缀"归一"到本模型，会把历史上一向未生效的行扶正成生效配置
     （改既有文件读取结果；行内若藏 `GLOBAL_PAUSE`/`ADMIN_PASSWORD_HASH` 即把潜伏
     载荷实体化成提权面）——正撞"键语义不变"红线，故保留三态、以双向测试钉住
-    "真实键可读到、export 键读不到"这一收敛不变量（见 tests/test_runsh_env_parse.py）。
+    "真实键可读到、export 键读不到"这一收敛不变量（见 tests/test_env_export_line_divergence.py）。
     """
     result = {}
     try:

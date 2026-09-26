@@ -195,9 +195,15 @@ tests/test_audit_transaction.py	CredentialPathTransactionTest.test_me_password_p
 tests/test_audit_transaction.py	CredentialPathTransactionTest.test_me_password_path_kill_leaves_neither	G	-	me.py 自助改密：`update_user` 内审计前被杀 ⇒ 口令未改、审计无此条。
 tests/test_audit_transaction.py	CredentialPathTransactionTest.test_my_credentials_path_both_present_when_committed	G	-	??
 tests/test_audit_transaction.py	CredentialPathTransactionTest.test_my_credentials_path_kill_leaves_neither	G	-	my.py 提交易班凭据：`add_account` 内审计前被杀 ⇒ 账号未建、审计无此条。
+tests/test_audit_transaction.py	DeleteOwnerAccountsAuditTest.test_nonzero_delete_audit_counts_rows	G	-	??
+tests/test_audit_transaction.py	DeleteOwnerAccountsAuditTest.test_zero_account_owner_still_traced_factually	G	-	??
 tests/test_audit_transaction.py	FullRechainDetectionTest.test_content_change_plus_rechain_is_detected	G	-	??
 tests/test_audit_transaction.py	HeadHashStateTest.test_empty_chain_is_empty_state	G	-	??
 tests/test_audit_transaction.py	HeadHashStateTest.test_read_failure_is_error_state_not_empty	G	-	??
+tests/test_audit_transaction.py	PurgeAuditWindowTest.test_audit_write_failure_rolls_back_purge	G	-	审计写入注入失败 ⇒ 清除整体回滚——"清了却无痕"不得存在。
+tests/test_audit_transaction.py	PurgeAuditWindowTest.test_committed_purge_writes_business_and_audit_together	G	-	正常提交组：用户消失 ⇒ 审计行必在，target/计数按**实际清除**结果产出。
+tests/test_audit_transaction.py	PurgeAuditWindowTest.test_kill_inside_purge_txn_leaves_neither	G	-	真子进程在 purge 事务内算链哈希时被杀 ⇒ 用户未被清除、审计无此条。
+tests/test_audit_transaction.py	PurgeAuditWindowTest.test_nothing_purged_writes_no_audit	G	-	一行未清 ⇒ 无业务效果也不留痕（口径同 create_user 的"实际创建才写"）。
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_failure_restores_original_chain	G	-	??
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_success_keeps_chain_consistent	G	-	??
 tests/test_audit_transaction.py	RequestScopeTest.test_process_scope_when_no_request	G	-	??
@@ -821,6 +827,8 @@ tests/test_egress_and_executors_api.py	WorkerPresenceTest.test_four_states	B	-	?
 tests/test_egress_and_executors_api.py	WorkerPresenceTest.test_other_day_is_idle_and_unparsable_ts_is_stale	B	-	??
 tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_admin_add_auto_register_allows_real_provider	H	-	??
 tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_admin_add_auto_register_blocks_placeholder_domain	H	-	??
+tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_auto_register_leaves_user_register_audit	H	-	自动注册与开放注册同口径：用户行创建成功必有同事务的 user_register 留痕。
+tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_auto_register_repeat_attempt_writes_no_second_audit	H	-	同邮箱重复添加（未实际建用户）不得再写一条 user_register——没做的事不留痕。
 tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_register_allowlist_from_env	H	-	??
 tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_register_allows_real_provider	H	-	??
 tests/test_email_domain_review.py	EmailDomainReviewWebTest.test_register_blocklist_extra_from_env	H	-	??
@@ -843,6 +851,15 @@ tests/test_engine_shell_forwarding.py	ShellForwardingStubTest.test_run_queue_ret
 tests/test_engine_shell_forwarding.py	ShellForwardingStubTest.test_runner_main_returns_code_instead_of_exiting	J	-	`runner.main` 返回 int（壳负责 sys.exit）——两端契约不同，勿合并。
 tests/test_engine_shell_forwarding.py	ShellForwardingStubTest.test_update_cred_state_stub_reaches_the_engine	J	-	`_update_cred_state` 的调用点在引擎轮次里（熔断计数随一轮队列走）。
 tests/test_engine_shell_forwarding.py	ShellForwardingStubTest.test_write_sign_state_stub_reaches_the_engine	J	-	`_write_sign_state` 的调用点在引擎轮次里（状态文件写入随一轮队列走）。
+tests/test_env_export_line_divergence.py	ChildEnvPathTest.test_export_key_dropped_whole	J	bash	??
+tests/test_env_export_line_divergence.py	ChildEnvPathTest.test_real_key_read	J	bash	??
+tests/test_env_export_line_divergence.py	EnvIoPathTest.test_export_and_real_key_do_not_cross	J	bash	反向：export 与真实键并存互不串台（生效值只认真实键行）。
+tests/test_env_export_line_divergence.py	EnvIoPathTest.test_export_key_never_becomes_effective	J	bash	反向：export 行读不到诱饵键，但它确实挂在畸形键下（分叉形态本体钉死）。
+tests/test_env_export_line_divergence.py	EnvIoPathTest.test_real_key_read	J	bash	正向：真实键读到。
+tests/test_env_export_line_divergence.py	EnvIoPathTest.test_write_fold_does_not_consume_export_line	J	bash	折叠口径：key_line_pattern 不认 export 行；写真实键不得吃掉它，也扶不正它。
+tests/test_env_export_line_divergence.py	ShellPathTest.test_both_scripts_carry_the_keyname_guard	J	bash	两份脚本都必须持有拒畸形键名的那道判据（"export KEY" 正是被它挡下）。
+tests/test_env_export_line_divergence.py	ShellPathTest.test_export_key_never_exported	J	bash	反向：真 bash 跑同构判据段——export 行不导出，只告警（与另两侧收敛）。
+tests/test_env_export_line_divergence.py	ShellPathTest.test_real_key_still_exported	J	bash	正向：同一段判据对真实键照常导出。
 tests/test_env_fail_loud.py	EnvParseFailLoudTest.test_load_key_fails_loud_not_regenerate_on_unreadable_env	G	-	关键：.env 读不了时 load_key 宁可抛出，也绝不静默生成新钥覆盖旧钥。
 tests/test_env_fail_loud.py	EnvParseFailLoudTest.test_missing_file_returns_empty	G	-	??
 tests/test_env_fail_loud.py	EnvParseFailLoudTest.test_unreadable_path_raises_not_silent	G	-	??
@@ -908,6 +925,9 @@ tests/test_env_line_model_unified.py	KeySetDiffTest.test_writer_added_unrequeste
 tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_legal_add_and_delete	G	-	??
 tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_legal_change_touches_only_target_line	G	-	??
 tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_read_tolerates_existing_wide_separators	G	-	??
+tests/test_env_line_model_unified.py	SecretAutoGenDirtyEnvTest.test_clean_env_auto_key_generation_still_succeeds	G	-	阳性对照：干净 .env 上自动生成写回照常 200（本清扫不改这条路径）。
+tests/test_env_line_model_unified.py	SecretAutoGenDirtyEnvTest.test_mail_smtps_save_refused_as_409	G	-	??
+tests/test_env_line_model_unified.py	SecretAutoGenDirtyEnvTest.test_notify_secret_save_refused_as_409	G	-	??
 tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_extra_breaks_are_the_eight_beyond_crlf	G	-	??
 tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_line_model_predicate_matches_splitlines	G	-	??
 tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_splitlines_boundary_set_is_exactly_ten	G	-	??
@@ -2220,6 +2240,9 @@ tests/test_scheduler_exception_surface.py	HeartbeatTest.test_touch_writes_heartb
 tests/test_scheduler_exception_surface.py	MainLoopTickGuardTest.test_body_exception_logged_and_next_tick_normal	B	bash	活体反例主形态：第一 tick 闸门判定即抛 RuntimeError，
 tests/test_scheduler_exception_surface.py	MainLoopTickGuardTest.test_keyboard_interrupt_not_swallowed	B	bash	KeyboardInterrupt 从 tick 体内抛出也必须穿出（监督停机路径依赖信号语义）。
 tests/test_scheduler_exception_surface.py	MainLoopTickGuardTest.test_system_exit_not_swallowed	B	bash	??
+tests/test_scheduler_exception_surface.py	RunProbeLockDirTest.test_explicit_lock_dir_respected_and_probe_runs	B	bash	显式可建路径：自建自负责，锁落在**该路径**且探针照常放行（对照不误伤）。
+tests/test_scheduler_exception_surface.py	RunProbeLockDirTest.test_no_tmp_fallback_branch_left_in_source	B	bash	判据不许留后门：源码里不得再有 /tmp/yiban-sign 回退分支。
+tests/test_scheduler_exception_surface.py	RunProbeLockDirTest.test_uncreatable_lock_dir_refuses_run_rc1	B	bash	活体反例：锁目录父级是普通文件 ⇒ mkdir 必失败 ⇒ rc=1 且探针不跑。
 tests/test_scheduler_exception_surface.py	RunShLockDirTest.test_explicit_lock_dir_created_and_run_proceeds	B	bash	显式 YIBAN_LOCK_DIR 指向不存在的可建路径：自建自负责，正常运行不误伤。
 tests/test_scheduler_exception_surface.py	RunShLockDirTest.test_no_tmp_fallback_wording_left_on_failure	B	bash	判据不许留后门：失败路径的文案里不得再有'回退 /tmp'。
 tests/test_scheduler_exception_surface.py	RunShLockDirTest.test_uncreatable_lock_dir_refuses_run_rc1	B	bash	活体反例：锁目录路径的父级是普通文件 ⇒ mkdir 必失败 ⇒ rc=1 且一轮不跑。
