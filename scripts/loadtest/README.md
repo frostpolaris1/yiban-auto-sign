@@ -61,15 +61,33 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `--pubkey-file` | 内置测试公钥 | 登录页 `input#key` 内嵌的 RSA 公钥 PEM |
 | `--delay-ms` | `0` | 每请求固定人工延迟 |
 | `--tail-delay-ms` / `--tail-every` | `0` / `0` | 每 N 个请求追加一次尾延迟 |
-| `--fail-rate` / `--fail-stage` | `0` / `none` | 失败注入概率与注入点（`login`/`signIn`/`signPosition`） |
-| `--config` | 空 | 热读 JSON 配置（运行中切换档位，字段同上） |
+| `--fail-rate` / `--fail-stage` | `0` / `none` | 失败注入概率与注入点（四类故障注入旋钮 `login`/`signIn`/`waf`/`nonjson`，另有 `signPosition`；**默认 none=全关，不开零变化**） |
+| `--config` | 空 | 热读 JSON 配置（运行中切换档位，字段同上；场景声明形态的注入旋钮同样可经此热切） |
 | `--keep-alive` | 关 | 启用 HTTP keep-alive；默认关（每请求新连接，压测更稳、不触发偶发重试） |
 | `--log` | 空 | 逐请求 JSONL 落盘路径 |
 | `--ready-file` | 空 | 启动后写入实际端口，供驱动等待就绪 |
 
 覆盖接口：`GET /code/html`、`POST /code/usersure`、`GET /iframe/index`、
-`GET /base/c/auth/yiban`（登录链 4 步）、`GET .../signPosition`、`POST .../signIn`
-（签到 2 步 + 探针入口），以及 `GET /__stats`、`GET /__health`。
+`GET /base/c/auth/yiban`（登录链 4 步）、`GET .../iapp7463`（旧流程落地）、
+`GET .../signPosition`、`POST .../signIn`（签到 2 步 + 探针入口），
+以及 `GET /__stats`、`GET /__health`。
+
+#### 假上游故障注入旋钮（`--fail-stage`，默认全关）
+
+四类注入以**场景声明**形态落地（CLI `--fail-stage`，或经 `--config` 热读 JSON
+运行中切换，无需重启；两者都只由 mock 进程消费，引擎无感知，可从 run.sh 全链
+入口穿透）。旋钮值语义：
+
+| 旋钮 | 注入点 | 形态 |
+|---|---|---|
+| `login` | `POST /code/usersure` | 账密错形态（`code != s200`），登录端点报失败 |
+| `signIn` | `POST .../signIn` | 非登录阶段的签到提交失败（业务码失败，不抛异常） |
+| `signPosition` | `GET .../signPosition` | 拉任务失败（历史档位） |
+| `waf` | `GET /iapp7463` | ydclearance **挑战页**（形态对照 `yiban/fyiban/waf.py` 的 `looks_like_challenge` 真实输入：`window.onload=setTimeout`+`eval("qo=eval;qo(po);")` 双特征 + `Set-Cookie: https_ydclearance`），喂风控识别支路 |
+| `nonjson` | JSON 期望端点（`POST /code/usersure`、`POST .../signIn`、`GET /base/c/auth/yiban`、`GET .../signPosition`） | `200` + >2000 字符非 JSON 拦截 HTML——现网 `Expecting value:` 的形态（长页过 `is_waf_blocked` 长度界后 `.json()` 抛） |
+
+配合 `--fail-rate 1.0` 即确定性注入；`none`（默认）不改变任何响应。记账侧
+`injected` 计数与 JSONL 逐条 `injected` 标记同步（`--log`），每请求可审计。
 
 ### mock_env.py（环境）
 | 参数 | 默认 | 说明 |
@@ -87,6 +105,12 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `--egress-probe-ip` | 空 | **搭建路径必填**：主动探测该 IP:443 应被拒绝（缺省即拒绝启动） |
 
 幂等性：重复 setup 不重复改 hosts/iptables；重复 `--restore` 无副作用。
+
+证书扩展（E1）：`ensure_certs` 生成的自签 CA 带 `basicConstraints(critical,CA:TRUE)`
+与 `keyUsage(critical,keyCertSign,cRLSign)`——Python ≥3.14 默认开 `VERIFY_X509_STRICT`，
+缺扩展会在 TLS 握手层整轮全灭且 **mock 记账为 0**（失败安静，极易误诊为隔离问题）。
+幂等跳过分支会探测存量 CA 扩展，缺则自动重签；也可手工 `--force`。演练预案里的手工
+openssl 重签路径与本代码路径并存、口径一致。
 
 启动即断言（fail-closed，见 `isolation.py`）：四个入口（`mock_env`/`scale_driver`/
 `concurrency_probe`/`capacity_probe`）在解析参数前即要求**进程环境无任何 `*PROXY*` 键**
