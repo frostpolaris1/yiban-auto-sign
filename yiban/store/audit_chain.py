@@ -421,6 +421,9 @@ def mark_audit_alert_sent(health):
 _REQUEST_SCOPE = threading.local()
 _PROCESS_SCOPE_SEEN = {}
 _SCOPE_MARKER = " [req="
+# 入参 detail 里出现的标记字面量消毒成该形态：与真标记不再相撞，也不像另一枚真标记
+# （供下游按 `_SCOPE_MARKER in detail` 判定"是否已带作用域"时不会误判为已带）。
+_SCOPE_MARKER_SANITIZED = " [req_"
 
 
 def set_request_scope(rid):
@@ -444,16 +447,24 @@ def _process_scope():
 
 
 def _scope_detail(detail, request_id=None):
-    """把作用域 id 编码进 detail（幂等）。
+    """把作用域 id 编码进 detail（重复调用只留一个真实标记）。
 
     两形态：detail 是 JSON 对象时注入 `"_req"` 键（保住 JSON 可解析——配置变更类审计
     的 detail 就是被下游 `json.loads` 还原"改了哪些键"的结构化记录，追加裸后缀会把它
     弄成非法 JSON 而丢掉还原能力）；其余情况追加 `[req=...]` 后缀。标记被截掉就答不了
-    "哪个请求做的"，故先留足标记额度再截正文。已带标记的 detail 原样返回，避免重复追加。
+    "哪个请求做的"，故先留足标记额度再截正文。
+
+    入参 detail 中出现的 `[req=` 字面量一律先**消毒**（用户可控字段带进来的标记会被
+    下方幂等判据误当成"已带作用域"，从而抑止真实 id 的附加——即让请求体伪造归属），
+    再统一附加真实标记。
+
+    **已知缺口**：JSON 对象序列化后超过 200 字符时，`"_req"` 键这条路径放不下，退化为
+    追加后缀并截断，产出的 detail 不再是合法 JSON（下游按 JSON 还原会失败）。这是
+    200 字符上限与"保住 JSON"两个目标在超长结构化 detail 下不可兼得时的取舍。
     """
     detail = detail or ""
-    if _SCOPE_MARKER in detail:
-        return detail[:200]
+    # 先消毒再附加：不让任何入参内容冒充真实作用域标记（见 docstring）
+    detail = detail.replace(_SCOPE_MARKER, _SCOPE_MARKER_SANITIZED)
     rid = request_id or current_request_scope() or _process_scope()
     stripped = detail.strip()
     if stripped.startswith("{"):
@@ -461,7 +472,9 @@ def _scope_detail(detail, request_id=None):
             obj = json.loads(stripped)
         except ValueError:
             obj = None
-        if isinstance(obj, dict) and "_req" not in obj:
+        if isinstance(obj, dict):
+            # 真实作用域 id 覆盖入参里可能已被用户塞入的 `_req`（伪造归属），与
+            # 非 JSON 分支的标记消毒同口径：只认本函数追加的值。
             obj["_req"] = rid
             out = json.dumps(obj, ensure_ascii=False)
             if len(out) <= 200:
@@ -578,10 +591,16 @@ def record_in_txn(conn, username, action, target="", detail="", request_id=None)
 def audit_unit(username, action, target="", detail="", request_id=None):
     """把一段业务写与它的审计行放进**同一个 BEGIN IMMEDIATE 事务**。
 
-    用法：`with db.audit_unit(actor, "user_create", email, "新增用户") as conn:`
-    体内用传入的 conn 做业务写；退出时业务写与审计行一次 commit，抛异常则整体
-    rollback（业务与审计都不留）。业务写**必须用传入的 conn**——另开事务会撞
-    "within a transaction"，业务写自成事务则又把窗口还回来。
+    用法：`with db.audit_unit(actor, "action", target, detail) as conn:` 体内用传入的
+    conn 做业务写；退出时业务写与审计行一次 commit，抛异常则整体 rollback（业务与审计
+    都不留）。业务写**必须用传入的 conn**——另开事务会撞 "within a transaction"，业务
+    写自成事务则又把窗口还回来。
+
+    **生产调用点不经本上下文**：现有同事务审计由 store 层各写函数内嵌 `record_in_txn`
+    完成（`accounts.py` / `users.py` 的 `audit_spec` 参数、`purge_guard.py` 的
+    `audit_or_refuse`），不新增一个"每个调用点各写一遍上下文"的面。本上下文是测试与
+    自定义组合写路径的入口——`tests/test_audit_transaction.py` 用它复现 kill 注入，
+    验证"未提交事务随进程退出被回滚"。
 
     与"先业务后 audit()"的差别：那两个事务之间被杀会留下"业务已生效、审计表无此条、
     欠账计数仍为 0"，本上下文消除该窗口（kill 注入下要么两者都在，要么都不在）。

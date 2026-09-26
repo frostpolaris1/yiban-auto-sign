@@ -95,6 +95,9 @@ tests/test_audit_anchor.py	UpdateAccountLockTest.test_update_account_waits_for_w
 tests/test_audit_anchor_field_source.py	AnchorFieldCoherenceTest.test_head_matches_the_row_recorded_as_max_id	G	-	??
 tests/test_audit_anchor_field_source.py	RechainDiagnosisReachableTest.test_hash_mismatch_yields_diagnosis_not_exception	G	-	??
 tests/test_audit_anchor_field_source.py	RechainDiagnosisReachableTest.test_rechain_hint_is_callable_with_anchor_only	G	-	签名固定为单参：多传一个实参会抛 TypeError，被外层兜成通用异常。
+tests/test_audit_anchor_selfcheck.py	AlertDeliveryGatingTest.test_send_notification_reports_delivery_from_any_channel	G	-	??
+tests/test_audit_anchor_selfcheck.py	AlertDeliveryGatingTest.test_unhealthy_alert_marks_baseline_only_when_delivered	G	-	??
+tests/test_audit_anchor_selfcheck.py	AlertDeliveryGatingTest.test_unhealthy_alert_retries_when_delivery_fails	G	-	??
 tests/test_audit_anchor_selfcheck.py	CliIndeterminateTest.test_cli_exit_two_on_indeterminate_anchor	G	-	??
 tests/test_audit_anchor_selfcheck.py	CorruptAnchorMetaTest.test_corrupt_meta_lines_does_not_crash_health	G	-	??
 tests/test_audit_anchor_selfcheck.py	CorruptAnchorMetaTest.test_corrupt_meta_lines_is_indeterminate_in_witness_state	G	-	直接打 `_anchor_witness_state`：库内指纹行数非整数 ⇒ 无法定论（不抛）。
@@ -187,12 +190,18 @@ tests/test_audit_transaction.py	CliExitCodeTest.test_healthy_is_zero	G	-	??
 tests/test_audit_transaction.py	CliExitCodeTest.test_locked_db_exit_two_not_tampered	G	-	真占写锁后跑校验：必须 exit 2（无法定论），不得用 exit 1 冒充"检出篡改"。
 tests/test_audit_transaction.py	CliExitCodeTest.test_no_anchor_is_not_checked_exit_two	G	-	无锚点 = "未查"，必须独立返回值（exit 2），不得印成"通过"（exit 0）。
 tests/test_audit_transaction.py	CliExitCodeTest.test_tail_deletion_detected_exit_one	G	-	删尾（删掉最近审计）必须 exit 1，与"未查/锁住"分码。
+tests/test_audit_transaction.py	CredentialPathTransactionTest.test_me_password_path_both_present_when_committed	G	-	??
+tests/test_audit_transaction.py	CredentialPathTransactionTest.test_me_password_path_kill_leaves_neither	G	-	me.py 自助改密：`update_user` 内审计前被杀 ⇒ 口令未改、审计无此条。
+tests/test_audit_transaction.py	CredentialPathTransactionTest.test_my_credentials_path_both_present_when_committed	G	-	??
+tests/test_audit_transaction.py	CredentialPathTransactionTest.test_my_credentials_path_kill_leaves_neither	G	-	my.py 提交易班凭据：`add_account` 内审计前被杀 ⇒ 账号未建、审计无此条。
 tests/test_audit_transaction.py	FullRechainDetectionTest.test_content_change_plus_rechain_is_detected	G	-	??
 tests/test_audit_transaction.py	HeadHashStateTest.test_empty_chain_is_empty_state	G	-	??
 tests/test_audit_transaction.py	HeadHashStateTest.test_read_failure_is_error_state_not_empty	G	-	??
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_failure_restores_original_chain	G	-	??
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_success_keeps_chain_consistent	G	-	??
 tests/test_audit_transaction.py	RequestScopeTest.test_process_scope_when_no_request	G	-	??
+tests/test_audit_transaction.py	RequestScopeTest.test_user_supplied_json_req_is_overwritten	G	-	JSON detail 里预置的 `_req` 必须被真实作用域覆盖（不得伪造归属）。
+tests/test_audit_transaction.py	RequestScopeTest.test_user_supplied_marker_cannot_suppress_real_scope	G	-	入参 detail 自带 `[req=...]` 不得冒充"已带作用域"而抑止真实 id 的附加。
 tests/test_audit_transaction.py	RequestScopeTest.test_web_request_scope_tagged_into_detail	G	-	??
 tests/test_audit_transaction.py	SameTransactionTest.test_add_account_audit_is_same_transaction_and_rolls_back_on_failure	G	-	生产调用点（add_account + audit_spec）：审计失败 ⇒ 账号不落库。
 tests/test_audit_transaction.py	SameTransactionTest.test_audit_or_refuse_raises_when_audit_fails	G	-	跨存储调用点的 fail-closed 审计：audit 返回 False ⇒ 抛 AuditWriteRefused。
@@ -1882,7 +1891,7 @@ tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_fla
 tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_includes_audit_anchor_line	G	-	日报正文带审计链锚点行（链头哈希前缀 + 记录数）。
 tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_leaves_audit_trail_when_delivery_impossible	G	-	评审 ④b：两条通道同时被拆、日报本身发不出去时，仍必须留下本地痕迹。
 tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_not_urgent_on_healthy_day	G	-	两条通道都**真的可用**的健康日：日报按非紧急发，不占用每日紧急额度。
-tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_omits_anchor_line_when_db_unavailable	G	-	db 读失败（db 不可用/查询抛错）→ 锚点行省略，日报本体照发。
+tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_omits_anchor_line_when_db_unavailable	G	-	链头三态读成 error（读失败 ≠ 空链）→ 锚点行省略，日报本体照发。
 tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_sent_at_most_once_per_day_across_restart	G	-	评审 ④a：日报去重必须落在库内 app_meta，而不是进程内状态。
 tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_health_report_states_both_channels_even_when_closed	G	-	两条通道都被关掉时，日报仍须逐条写出"被关"——状态行不依赖被改配置本身。
 tests/test_rekey_key_source.py	ChannelHealthReportB14Test.test_mail_only_deployment_push_never_configured_is_not_degraded	G	-	修复轮 3：邮件单通道（推送从未配置）是合法终态，不得天天判降级。
