@@ -491,7 +491,12 @@ def main(argv=None):
     if not args.only and executor_v3.scheduler_v3_enabled():
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
-            event_sink=event_rows.append, delegated=delegated)
+            event_sink=event_rows.append, delegated=delegated,
+            # 补签轮就是 v3 当日回炉口的显式路径（对齐下面 v2 的
+            # `retry_failed=bool(args.only) or _second_run`——手动 `--only` 不走 v3，
+            # 故这里只剩补签轮一个来源）。普通轮 False：`final:`/无前缀保守档绝不
+            # 被定时轮自动复活，档位纪律与领取层同一份。
+            requeue_final=_second_run)
     else:
         results = round_mod.run_queue_retry(
             accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,

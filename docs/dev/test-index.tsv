@@ -2792,6 +2792,29 @@ tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_resubmit_same_phon
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_undo_blocked_when_owner_has_other_live	L	-	??
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_undo_rejected_for_admin_deleted	L	-	??
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_user_delete_soft_then_undo	L	-	??
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_attempts_and_priority_advance_through_requeue_task	B	-	??
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_claimed_and_terminal_never_flipped	B	-	在飞（claimed）与终态（done/skipped）绝不回炉——前者重复登录、后者谎报了结。
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_default_tier_flips_conservative_needs_explicit	B	-	??
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_empty_shards_does_not_touch_db	B	-	??
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_idempotent_second_pass_zero	B	-	??
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_primitive_reuse_and_epoch_gate	B	-	回炉必须经 requeue_task 原语并带上 SELECT 时的 epoch（不另造第二套写路径）。
+tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_scope_shard_day_and_history_rows	B	-	??
+tests/test_v3_same_day_requeue.py	RunnerRequeueFinalTest.test_first_run_is_not_explicit	B	-	??
+tests/test_v3_same_day_requeue.py	RunnerRequeueFinalTest.test_second_run_is_explicit	B	-	??
+tests/test_v3_same_day_requeue.py	SessionRequeueTest.test_delegated_shards_are_swept_with_claim_all	B	-	兜底身份不在 HRW 候选集：claim_all 让 v3 兜底扫全部分片（否则零领取=静默空转）。
+tests/test_v3_same_day_requeue.py	SessionRequeueTest.test_final_tier_needs_explicit_path	B	-	反例 (b)：final: 档普通轮绝不自动复活；显式路径（requeue_final=True）才回炉。
+tests/test_v3_same_day_requeue.py	SessionRequeueTest.test_other_day_failed_not_touched	B	-	??
+tests/test_v3_same_day_requeue.py	SessionRequeueTest.test_requeue_during_run_recovers_retry_tier_mid_session	B	-	兜底 v3 会话内：恢复周期把刚弃权的 retry: 档回炉，不等下一场会话。
+tests/test_v3_same_day_requeue.py	SessionRequeueTest.test_retry_tier_is_reflown_by_normal_round	B	-	反例 (a)：retry: 档 failed → 普通轮轮首回炉 → 本轮领到并签成。
+tests/test_v3_same_day_requeue.py	SessionRequeueTest.test_unprefixed_history_row_is_conservative	B	-	历史无前缀行按保守档处置（与领取层"无前缀=需显式路径"同一判据）。
+tests/test_v3_same_day_requeue.py	TierPrefixSettleTest.test_done_result_has_no_prefix	B	-	??
+tests/test_v3_same_day_requeue.py	TierPrefixSettleTest.test_exhausted_budget_carries_final_prefix	B	-	??
+tests/test_v3_same_day_requeue.py	TierPrefixSettleTest.test_no_position_carries_retry_prefix	B	-	??
+tests/test_v3_same_day_requeue.py	TierPrefixSettleTest.test_paused_zero_request_carries_final_prefix	B	-	??
+tests/test_v3_same_day_requeue.py	TierPrefixSettleTest.test_tier_authority_is_the_same_set_as_v2	B	-	分档判据只有一份：与 v2 `_settle_claims` 共用 `RETRYABLE_GIVE_UP_STATUSES`。
+tests/test_v3_same_day_requeue.py	TierPrefixSettleTest.test_window_skip_carries_retry_prefix	B	-	??
+tests/test_v3_same_day_requeue.py	_FallbackHarness.test_v3_enabled_fallback_routes_to_v3_executor	B	-	反例 (c)：`YIBAN_SCHEDULER_V3=1` 的兜底走任务队列执行体，不再硬编 v2/sign_claims。
+tests/test_v3_same_day_requeue.py	_FallbackHarness.test_v3_off_fallback_keeps_v2_path_and_default_tier	B	-	开关关时兜底逐字走旧路径（不新增 v3 调用、不传 retry_failed）。
 tests/test_verify_jobs.py	AdminAddVerifyAuditTest.test_admin_add_fail_audits_and_cooldowns	E	-	??
 tests/test_verify_jobs.py	AdminDecisionWinsTest.test_cas_skips_when_status_changed	E	-	??
 tests/test_verify_jobs.py	AdminDecisionWinsTest.test_cas_writes_when_status_unchanged	E	-	??
