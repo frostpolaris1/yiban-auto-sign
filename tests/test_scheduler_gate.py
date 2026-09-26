@@ -281,7 +281,15 @@ class DbLayerB12Test(unittest.TestCase):
             expected = os.path.join(".", "audit-anchor.log")
         else:
             expected = "/var/log/yiban/audit-anchor.log"
-        self.assertEqual(os.path.normpath(db.audit_anchor_path()), os.path.normpath(expected))
+        # "默认路径"判据要求进程环境里没有该键；conftest 现给会话级临时默认（见 ⑬），
+        # 故显式摘除后再断言真实的"未设态回落"、测毕还原——让本用例语义与是否设默认无关。
+        old = os.environ.pop("YIBAN_STATE_DIR", None)
+        try:
+            self.assertEqual(os.path.normpath(db.audit_anchor_path()),
+                             os.path.normpath(expected))
+        finally:
+            if old is not None:
+                os.environ["YIBAN_STATE_DIR"] = old
         old = os.environ.get("YIBAN_STATE_DIR")
         try:
             os.environ["YIBAN_STATE_DIR"] = "/data/state"
