@@ -299,7 +299,8 @@ class VerifyCooldownWebTest(_WebAppBase):
         self.assertEqual(row["action"], "my_account_add_verify_fail")
         self.assertEqual(row["username"], EMAIL_COOL)
         self.assertEqual(row["target"], "138****0001")
-        self.assertEqual(row["detail"], "验证未通过（认证失败）")
+        # 审计行携带请求作用域后缀（` [req=...]`），按前缀断言正文未被改写
+        self.assertTrue(row["detail"].startswith("验证未通过（认证失败）"), row["detail"])
         self.assertNotIn("secret-pw", row["detail"], "审计不得含密码")
 
     def test_network_failure_not_counted(self):
@@ -313,8 +314,10 @@ class VerifyCooldownWebTest(_WebAppBase):
                 self.assertEqual(r.status_code, 400)
             self.assertEqual(va.call_count, 3, "网络类失败不触发冷却")
         rows = self._verify_fail_rows()
-        self.assertEqual([r["detail"] for r in rows],
-                         ["验证未通过（其他失败）"] * 3)
+        # 审计行携带请求作用域后缀（` [req=...]`），逐条按前缀断言正文未被改写
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r["detail"].startswith("验证未通过（其他失败）") for r in rows),
+                        [r["detail"] for r in rows])
 
     def test_cooldown_is_per_phone(self):
         token = self._login(EMAIL_COOL, USER_PASS)
@@ -366,7 +369,8 @@ class AdminAddVerifyAuditTest(_WebAppBase):
         self.assertEqual(rows[0]["action"], "account_add_verify_fail")
         self.assertEqual(rows[0]["username"], "admin")
         self.assertEqual(rows[0]["target"], "138****0003")
-        self.assertEqual(rows[0]["detail"], "验证未通过（认证失败）")
+        # 审计行携带请求作用域后缀（` [req=...]`），按前缀断言正文未被改写
+        self.assertTrue(rows[0]["detail"].startswith("验证未通过（认证失败）"), rows[0]["detail"])
 
 
 class VerifyConcurrencyGateTest(_WebAppBase):
