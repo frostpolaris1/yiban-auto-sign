@@ -2176,6 +2176,24 @@ tests/test_scheduler_env_probe.py	UserFailMailDailyCapTest.test_different_phone_
 tests/test_scheduler_env_probe.py	UserFailMailDailyCapTest.test_same_phone_second_mail_suppressed	B	-	??
 tests/test_scheduler_env_probe.py	VerifyPrescreenWebTest.test_perscreen_reject_skips_network_verify	B	-	??
 tests/test_scheduler_env_probe.py	VerifyPrescreenWebTest.test_verify_throttle_per_user	B	-	??
+tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_oserror_still_marks_slot_once_not_respanwed	B	bash	失败留痕后仍走既有槽位标记：同一时段不逐秒反复 spawn（重启即双跑源），
+tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_popen_oserror_does_not_propagate	B	bash	今天（红）：OSError 直接穿出 _run_signin_child，把 main_loop 带崩。
+tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_popen_oserror_logs_trace	B	bash	接住也要出声：与兜底拉起调用点同款 print 留痕（不静默吞）。
+tests/test_scheduler_exception_surface.py	ComposeHealthcheckSchedTest.test_healthcheck_covers_sched_and_web	B	bash	??
+tests/test_scheduler_exception_surface.py	ComposeHealthcheckSchedTest.test_web_only_curl_goes_red	B	bash	活体反例：旧形态（只 curl web）用同一条判据必须红。
+tests/test_scheduler_exception_surface.py	HeartbeatTest.test_check_health_cli_exit_code	B	bash	--check-health 是可执行出口：compose 的 healthcheck 直接调它（真跑子进程）。
+tests/test_scheduler_exception_surface.py	HeartbeatTest.test_healthcheck_main_fresh_ok_stale_and_missing_fail	B	bash	新鲜 0 / mtime 归零（远超容忍窗）1 / 文件缺失 1——探活判据 fail-closed。
+tests/test_scheduler_exception_surface.py	HeartbeatTest.test_heartbeat_write_failure_does_not_break_tick	B	bash	心跳是旁路观测件：写不进去（目录被占成文件）只留痕，不掀翻本 tick。
+tests/test_scheduler_exception_surface.py	HeartbeatTest.test_main_loop_tick_writes_heartbeat	B	bash	??
+tests/test_scheduler_exception_surface.py	HeartbeatTest.test_touch_writes_heartbeat	B	bash	??
+tests/test_scheduler_exception_surface.py	MainLoopTickGuardTest.test_body_exception_logged_and_next_tick_normal	B	bash	活体反例主形态：第一 tick 闸门判定即抛 RuntimeError，
+tests/test_scheduler_exception_surface.py	MainLoopTickGuardTest.test_keyboard_interrupt_not_swallowed	B	bash	KeyboardInterrupt 从 tick 体内抛出也必须穿出（监督停机路径依赖信号语义）。
+tests/test_scheduler_exception_surface.py	MainLoopTickGuardTest.test_system_exit_not_swallowed	B	bash	??
+tests/test_scheduler_exception_surface.py	RunShLockDirTest.test_explicit_lock_dir_created_and_run_proceeds	B	bash	显式 YIBAN_LOCK_DIR 指向不存在的可建路径：自建自负责，正常运行不误伤。
+tests/test_scheduler_exception_surface.py	RunShLockDirTest.test_no_tmp_fallback_wording_left_on_failure	B	bash	判据不许留后门：失败路径的文案里不得再有'回退 /tmp'。
+tests/test_scheduler_exception_surface.py	RunShLockDirTest.test_uncreatable_lock_dir_refuses_run_rc1	B	bash	活体反例：锁目录路径的父级是普通文件 ⇒ mkdir 必失败 ⇒ rc=1 且一轮不跑。
+tests/test_scheduler_exception_surface.py	SupervisordLivenessTest.test_sched_autorestart_still_on	B	bash	??
+tests/test_scheduler_exception_surface.py	SupervisordLivenessTest.test_sched_has_explicit_startsecs_and_startretries	B	bash	??
 tests/test_scheduler_gate.py	BackupDockerScriptTest.test_backup_produces_real_archive	B	bash	??
 tests/test_scheduler_gate.py	BackupDockerScriptTest.test_backup_rejects_empty_product	B	bash	??
 tests/test_scheduler_gate.py	BackupDockerScriptTest.test_restore_accepts_clean_archive	B	bash	??
