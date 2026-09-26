@@ -730,9 +730,10 @@ def api_my_account_update(idx):
             m._mask_phone(clean["phone"]),
             "用户编辑 改绑回审" if rebind else "用户编辑",
         )
-        # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
+        # 用户改密码/改绑手机号/改写识别码（凭据变更）才清除熔断暂停；
         # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
+        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
+                                    old.get("phone_code") or "")
         m.logger.info("用户 %s 编辑账号 %s", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
         if rebind or old.get("status") == m.ACCOUNT_STATUS_REJECTED:
             return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})

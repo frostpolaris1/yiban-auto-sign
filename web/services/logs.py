@@ -279,13 +279,19 @@ def clear_fuse_pause(phone):
                        _mask_phone(phone), e)
 
 
-def clear_fuse_on_cred_change(old_phone, old_password, clean):
-    """仅凭据（密码/手机号）实际变更时清除熔断计数；只改备注/状态等不清。
+def clear_fuse_on_cred_change(old_phone, old_password, clean, old_phone_code=None):
+    """仅凭据（密码/手机号/设备识别码）实际变更时清除熔断计数；只改备注/状态等不清。
 
     只清真正变过的那一项：备注/状态等编辑一律不清——任意编辑都清会让 fail_days 反复
-    归零，熔断永不跳闸。
+    归零，熔断永不跳闸。设备识别码与 password 同档（store 写侧同档加密/重加密、只进
+    登录表单的 Code），改写它同样可能让签到从失败转可用，故按凭据变更对待；
+    `old_phone_code=None`（调用方没带旧识别码）或 clean 里没有该字段（部分字段更新）
+    时一律不比较，防把"没提供"当成"改过"。
     """
     if old_phone != clean["phone"]:
         clear_fuse_pause(old_phone)  # 改绑：主体已迁走，清旧手机号的条目
     if clean["password"] != old_password:
         clear_fuse_pause(clean["phone"])  # 改密：新密码可能已经能用，立刻给一次重试资格
+    if (old_phone_code is not None and "phone_code" in clean
+            and (clean["phone_code"] or "") != (old_phone_code or "")):
+        clear_fuse_pause(clean["phone"])  # 改写/清除识别码：换码后可能已经能用，给一次重试资格
