@@ -1720,6 +1720,20 @@ def create_app(host=None):
         if want and not _secure_auto_notice["logged"]:
             _secure_auto_notice["logged"] = True
             logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
+    @app.before_request
+    def _bind_audit_scope():
+        """为每个请求绑定审计作用域 id，使审计行能回答"这是哪个请求做的"。
+
+        来源列只有可伪造的加盐 IP 哈希（输入 XFF/remote_addr 客户端可控），区分不了
+        同一出口内的多次操作；请求 id 由服务端生成、编码进审计 detail，链 HMAC 覆盖它。
+        线程局部在 teardown 清除——Flask 复用工作线程，残留会让后续后台线程误带旧 id。
+        """
+        db.set_request_scope("web-" + secrets.token_hex(8))
+
+    @app.teardown_request
+    def _clear_audit_scope(_exc=None):
+        db.set_request_scope(None)
+
     if host is not None and not _is_loopback_host(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
@@ -2408,21 +2422,37 @@ def create_app(host=None):
                     # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
                     logger.error("审计链异常告警: %s",
                                  "；".join(f"{k} {v}" for k, v in _facts))
-                    send_notification(
-                        "审计链异常告警",
-                        mail_layout.Mail(
-                            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
-                                    "或存在未留痕的管理操作。",
-                            fields=_facts,
-                            advice=["立即核查审计链与库外锚点",
-                                    "确认之前不要依赖审计记录做处置结论"],
-                            level="urgent",
-                        ),
-                        urgent=True,
-                    )
-                elif _health["anchor_msg"]:
-                    # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
-                    logger.info("审计链提示: %s", _health["anchor_msg"])
+                    # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
+                    # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
+                    # 签名不变时仍留 ERROR 日志（可 grep），只是不再外发。
+                    if db.audit_alert_needs_attention(_health):
+                        send_notification(
+                            "审计链异常告警",
+                            mail_layout.Mail(
+                                summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
+                                        "或存在未留痕的管理操作。",
+                                fields=_facts,
+                                advice=["立即核查审计链与库外锚点",
+                                        "确认之前不要依赖审计记录做处置结论"],
+                                level="urgent",
+                            ),
+                            urgent=True,
+                        )
+                        # 发信成功后才推进基线（与"降级时也留痕"同一纪律：只有真发出
+                        # 去的那次才该被记住，否则一次发送失败会让此后永久静默）
+                        db.mark_audit_alert_sent(_health)
+                        db.mark_audit_write_failures_notified()
+                    else:
+                        logger.error("审计链异常态与上次已告警的相同，本次不重复外发"
+                                     "（结论未变，日志照留）")
+                else:
+                    if _health["anchor_msg"]:
+                        # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
+                        logger.info("审计链提示: %s", _health["anchor_msg"])
+                    # 恢复健康时复位告警基线：下一轮再出现异常（即使与上次同形）也要
+                    # 重新告警——基线不归零就等于给同一形态的复发免票。
+                    if db.audit_alert_needs_attention(_health):
+                        db.mark_audit_alert_sent(_health)
                 # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
                 # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
                 # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
