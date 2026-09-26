@@ -5,7 +5,8 @@
 **功能**
 `.env` 的全部读写入口：宽松解析 `read_env`、整数配置 `load_env_int`、键值写入
 `write_env_key` / `write_env_int` 与批量原子写 `write_env_batch`、首次启动的
-`YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`；外加设置项展示族
+`YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`、写拒绝的统一
+409 响应 `env_write_refused_response`；外加设置项展示族
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`。
@@ -34,6 +35,8 @@ import os
 import re
 import secrets
 from datetime import datetime
+
+from flask import jsonify
 
 from yiban import window as yb_window
 from yiban.infra import env_io as _env_io
@@ -233,6 +236,22 @@ def write_env_batch(env_path, updates, atomic_write, audit=None):
             env_path, updates,
             write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
             audit=audit, delete_empty=True)
+
+
+# 写拒绝的统一响应文案（web 全部 .env 写点共用）。此前只有 `/api/settings` 把拒绝
+# 映射成 409+清理指引；公告 / 告警通道 / 改密 / 执行体等写点抛裸 `EnvWriteRefused`
+# 后被兜底成 500（无指引）。现由 `web.app.create_app` 注册的 Flask errorhandler 与
+# 各路由的显式 catch 共回这一份——写点不再各自编文案。
+ENV_WRITE_REFUSED_MESSAGE = (
+    "配置写入被拒绝：.env 存在行模型歧义（潜伏行分隔符或未请求的键变化），"
+    "请按启动告警提示人工清理该行后重试"
+)
+
+
+def env_write_refused_response():
+    """写拒绝的 409 响应（含清理指引）——web 各 .env 写点的唯一出口。"""
+    return jsonify({"error": ENV_WRITE_REFUSED_MESSAGE,
+                    "reason": "env_write_refused"}), 409
 
 
 def ensure_secret_key(env_path, atomic_write, audit=None):

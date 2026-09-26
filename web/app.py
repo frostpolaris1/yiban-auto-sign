@@ -2172,6 +2172,15 @@ def create_app(host=None):
         logger.error("数据层错误: %s", e)  # 详细信息只入日志，不回显客户端（防内部路径/字段泄露）
         return jsonify({"error": "服务器内部错误，请稍后重试或联系管理员"}), 500
 
+    # ---- .env 写入 fail-closed 拒绝的统一出口（公告 / 告警通道 / 改密 / 执行体等写点）----
+    # 这些写点此前让 `EnvWriteRefused` 冒泡成 500（无清理指引）；只有 /api/settings 自己
+    # 映射过 409。集中在这里回同一份 409 body + 清理指引；吞掉该异常再改报 400 的写点
+    # （executor_env 与执行体路由）已改为放行本类型（见各自 except 顺序）。
+    @app.errorhandler(env_io.EnvWriteRefused)
+    def _handle_env_write_refused(e):
+        logger.error("配置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+        return _env_io_svc.env_write_refused_response()
+
     # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
     # 这几个闭包依赖请求上下文与会话状态，出不了 `create_app`；路由模块经 `web.routes`
     # 的取回函数按 app 实例拿它们（登记键见 `app.extensions["yiban_sensitive_password_gate"]`）。

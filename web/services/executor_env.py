@@ -196,6 +196,10 @@ def _save_slot_egress(env_path, key, index, value, write_batch):
             return "现有代理配置含换行符，请先手工清理该键", 400
         try:
             write_batch(env_path, {key: updated})
+        except _yiban_env_io.EnvWriteRefused:
+            # fail-closed 拒绝（脏 .env / 未请求键变化）：交 Flask 统一 409 + 清理指引，
+            # 不得在这里改报 400 把"需人工清理配置"说成"输入不合法"
+            raise
         except ValueError as e:
             return str(e), 400
     return None, None
@@ -273,6 +277,8 @@ def _save_row_egress(env_path, slot, value, write_batch):
 
     try:
         _mutate_executor_rows(_apply, env_path, write_batch)
+    except _yiban_env_io.EnvWriteRefused:
+        raise  # 统一 409：交 Flask errorhandler，不在这里改报 400
     except ValueError as e:
         return str(e), 400
     return None, None
@@ -288,6 +294,8 @@ def _save_fallback_egress(env_path, value, write_batch):
 
     try:
         _mutate_executor_rows(_apply, env_path, write_batch)
+    except _yiban_env_io.EnvWriteRefused:
+        raise  # 统一 409：交 Flask errorhandler，不在这里改报 400
     except ValueError as e:
         return str(e), 400
     return None, None
