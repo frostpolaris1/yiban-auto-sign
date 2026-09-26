@@ -6,7 +6,7 @@
    不带 Origin 与 Referer、每个响应点上的 WAF
    分支真的被走到、跳转目标换成非白名单域必须响亮失败、reUrl 为 null 不抛裸
    TypeError、签到两接口形状与三态语义、会话缓存命中与失效两分支、已登录标志的主机与路径判定（含子域伪装）、URL
-   白名单边界与逐跳校验、风控文案识别的长度上限与转义解码。
+   白名单边界与逐跳校验、风控形态判定的长度边界（挑战形态不受限、仅关键词维持上界）与转义解码。
 对应实现：yiban/fyiban/protocol.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_trusted_yiban_url、_is_strict_fyiban_url、WAF
    文案识别）、scripts/signin.py 的签到接口。
 关键断言：这份断言的存在理由是「抽完再核对」：直接搬代码时删掉一整段 WAF 分支或改掉
@@ -628,10 +628,22 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "登录入口 URL 不在白名单"):
             policy.require_redir_chain_trusted(landing, "login_entry")
 
-    def test_waf_detection_is_length_bounded_and_decodes_escapes(self):
-        """长页面（正常协议文本）不算拦截；Unicode 转义的风控文案要能识别。"""
+    def test_waf_detection_shape_unbounded_keyword_length_bounded(self):
+        """挑战形态判定不受长度限制；仅关键词匹配维持长度上界（法律文本防误伤）。
+
+        旧口径"`len>2000` 一律不判"是 fail-open：真实拦截/挑战页可以很长，被放行后按
+        「网络抖动」打满重试（裁决 #9 判缺陷）。形态判定直接走 `waf.looks_like_challenge`
+        的双 JS 特征对（不另抄特征串）；长度上界只保留给关键词支——正常长文（服务协议、
+        法律文本）合法含"风控""拦截"字样。Unicode 转义解码口径不变。
+        """
+        challenge = ('<script>window.onload=setTimeout("yy(1701368163)", 200);'
+                     'eval("qo=eval;qo(po);");</script>')
+        self.assertTrue(signin.is_waf_blocked(challenge), "短挑战页判拦截（照旧）")
+        self.assertTrue(signin.is_waf_blocked("x" * 3000 + challenge),
+                        "长挑战页必须判拦截——旧 len>2000 短路在此为红")
         long_text = "风险访问" + "正文" * 2000
-        self.assertFalse(signin.is_waf_blocked(long_text))
+        self.assertFalse(signin.is_waf_blocked(long_text),
+                         "长文本仅关键词命中仍不拦（防误伤边界保留）")
         self.assertTrue(signin.is_waf_blocked("\\u98ce\\u9669\\u8bbf\\u95ee"))  # 风险访问
         self.assertTrue(signin.is_waf_blocked("访问服务禁用"))
         self.assertFalse(signin.is_waf_blocked('{"code":0,"msg":""}'))
