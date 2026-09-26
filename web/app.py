@@ -961,6 +961,24 @@ _env_key_line_re = env_io.key_line_pattern
 _count_env_key_lines = env_io.count_key_lines
 
 
+def _env_write_refuse_audit(code, detail):
+    """.env 写入被拒的 fail-closed 审计回调（写入与业务无法同事务，见 audit_or_refuse）。
+
+    注入给 `write_env_batch` 与 `ensure_secret_key`：任何"写入被拒"都必须留痕，否则一次
+    被拒的注入尝试在审计链上等于没发生。detail 已由 env_io 保证只含键名/行号，绝不回带
+    值原文（口令/明文代理串不进审计）。审计失败也不把拒绝变成放行——写入本来就已经被拒，
+    本回调只吞异常并记日志，绝不向上抛（抛错会盖住真正的拒绝原因）。
+    """
+    try:
+        actor = session.get("username") or "?"
+    except Exception:  # 无请求上下文（启动路径/CLI）：如实记 system，不猜身份
+        actor = "system"
+    try:
+        db.audit_or_refuse(actor, "env_write_refused", "env", f"{code}｜{detail}")
+    except Exception as e:
+        logger.error("拒绝 .env 写入的审计失败（写入已被拒绝，立场不变）: %s", e)
+
+
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
@@ -974,8 +992,11 @@ def write_env_batch(env_path, updates):
 
     落盘交给本模块现取的 `_atomic_write`：它是"每一次 .env 落盘"的观测点（测试在此
     打桩快照全文），且 Windows 上的替换重试策略在那里；服务层另持绑定会让打桩静默失效。
+    行模型/校验/键集合 diff 单源在 `yiban.infra.env_io.write_env_keys`；写入被拒时经
+    `_env_write_refuse_audit` 强制留痕。
     """
-    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write)
+    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write,
+                                       _env_write_refuse_audit)
 
 
 def ensure_secret_key(env_path):
@@ -983,7 +1004,8 @@ def ensure_secret_key(env_path):
 
     落盘同样交本模块现取的 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
     """
-    return _env_io_svc.ensure_secret_key(env_path, _atomic_write)
+    return _env_io_svc.ensure_secret_key(env_path, _atomic_write,
+                                         _env_write_refuse_audit)
 
 
 # 内置主管理员（.env 账号）的会话凭据键名与会话凭据族（_new_admin_sid /

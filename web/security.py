@@ -366,6 +366,16 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
             e,
         )
         return
+    except ValueError as e:
+        # .env 既有行含潜伏行分隔符 ⇒ 写入口 fail-closed 拒绝（不实体化载荷）。
+        # 迁移失败只告警不阻断启动，明文回退比对仍可登录；清理动作交启动告警提示。
+        logger.warning(
+            "管理员口令明文迁移被拒绝（%s 行模型歧义）：%s；将暂时回退明文比对，"
+            "请按启动告警清理 .env 中的潜伏行分隔符",
+            env_path,
+            e,
+        )
+        return
     if rotated:
         logger.warning(
             "检测到管理员口令被外部更改（%s，明文与现存哈希不一致）：已重迁移哈希"
