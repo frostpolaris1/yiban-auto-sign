@@ -163,6 +163,7 @@ _read_anchor_lines = _audit_chain._read_anchor_lines
 _read_anchor_lines_ex = _audit_chain._read_anchor_lines_ex
 _parse_anchor_lines = _audit_chain._parse_anchor_lines
 _get_anchor_meta = _audit_chain._get_anchor_meta
+_anchor_meta_line_count = _audit_chain._anchor_meta_line_count
 _audit_purge_total = _audit_chain._audit_purge_total
 _audit_purge_events = _audit_chain._audit_purge_events
 audit_purge_total = _audit_chain.audit_purge_total

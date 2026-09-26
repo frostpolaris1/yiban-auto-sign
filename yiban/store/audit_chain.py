@@ -691,6 +691,27 @@ def _get_anchor_meta():
     return val if isinstance(val, dict) else {}
 
 
+def _anchor_meta_line_count(meta):
+    """库内锚点指纹的 `lines` 字段 → `(计数, 状态)`，status ∈ ok/corrupt。
+
+    `lines` 住在**应用可写**的 app_meta（audit_anchor_meta），与独立见证文件里的
+    同名整数字段同等对待：非数字值（手工损坏/拼接/旧格式）时若直接 int() 会抛
+    ValueError，而两个调用方分别位于 `_anchor_status` 与 `audit_health` 的 try 之外
+    ——一次手工损坏即让每日体检整体抛异常、被 web 日线线程吞成 WARNING，当日校验
+    静默不跑（正是"把查不动印成无异常"的失败形态）。故就地降级为 corrupt，由调用方
+    转成"无法定论 ⇒ 不健康"，绝不外抛。
+    """
+    if not meta:
+        return 0, "ok"
+    raw = meta.get("lines")
+    if raw is None:
+        return 0, "ok"
+    try:
+        return int(raw), "ok"
+    except (TypeError, ValueError):
+        return 0, "corrupt"
+
+
 def _audit_purge_total(conn):
     """累计"已留痕的物理删除条数"（audit_logs 口径）。缺表/缺键 → 0。
 
@@ -1182,7 +1203,14 @@ def _anchor_witness_state(lines, meta, fingerprint_path, anchor_path=None):
             f"独立见证记录的第 {n} 行内容已变——锚点历史被改写",
             owner, fp,
         )
-    recorded = int(meta.get("lines") or 0) if meta else 0
+    recorded, meta_state = _anchor_meta_line_count(meta)
+    if meta_state == "corrupt":
+        return (
+            "indeterminate",
+            "库内锚点指纹的行数字段无法解析为整数（app_meta 被手工损坏或改写）"
+            "——校验无法定论（不等于无异常），请立即核查",
+            "corrupt", fp,
+        )
     if recorded and recorded < n:
         return (
             "tampered",
@@ -1239,7 +1267,14 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None, fingerprint_path=Non
             return "ok", "", "absent", None
     if meta is None:
         meta = _get_anchor_meta()
-    recorded = int(meta.get("lines") or 0) if meta else 0
+    recorded, meta_state = _anchor_meta_line_count(meta)
+    if meta_state == "corrupt":
+        return (
+            "indeterminate",
+            "库内锚点指纹的行数字段无法解析为整数（app_meta 被手工损坏或改写）"
+            "——校验无法定论（不等于无异常），请立即核查",
+            "absent", None,
+        )
     if recorded:
         if len(lines) < recorded:
             return (

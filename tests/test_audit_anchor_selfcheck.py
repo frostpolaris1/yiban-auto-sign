@@ -531,6 +531,37 @@ class CliIndeterminateTest(_Fixture):
         self.assertIn("无法定论", self._out(r))
 
 
+class CorruptAnchorMetaTest(_Fixture):
+    """库内锚点指纹（audit_anchor_meta，应用可写）字段损坏不得让体检抛异常。
+
+    该键住在 app_meta，值可被应用身份改写/手工损坏。`_anchor_witness_state` 与
+    `_anchor_file_state_ex` 读它的 `lines` 字段时若直接 int()，一个非数字值就会抛
+    ValueError；两个调用点分别位于 `_anchor_status` 与 `audit_health` 的 try 之外，
+    一次手工损坏即让每日体检整体抛异常、被 web 日线线程吞成 WARNING —— 当日校验
+    静默不跑（正是 MF-52 的失败形态）。加固：库内字段与见证文件字段同等对待，
+    损坏 ⇒ indeterminate/corrupt 降级，healthy=False。
+    """
+
+    def test_corrupt_meta_lines_does_not_crash_health(self):
+        self._seed(3)
+        db.record_audit_anchor(self.anchor)
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_anchor_meta",
+                   json.dumps({"lines": "x", "last_hash": "", "ts": "x"})))
+        h = self._health()  # 旧实现：audit_health 直接抛 ValueError
+        self.assertEqual(h["anchor_status"], "indeterminate", h["anchor_msg"])
+        self.assertFalse(h["healthy"], "损坏的库内指纹必须判不健康，不得静默")
+
+    def test_corrupt_meta_lines_is_indeterminate_in_witness_state(self):
+        """直接打 `_anchor_witness_state`：库内指纹行数非整数 ⇒ 无法定论（不抛）。"""
+        line = f"2026-01-01 00:00:00 1 1 1 0 {'a' * 64} {'0' * 64}"
+        with open(self.witness, "w", encoding="utf-8") as f:
+            json.dump({"lines": 1, "line_hash": db._anchor_line_sha(line),
+                       "max_id": 1, "head": "h"}, f)
+        status = db._anchor_witness_state([line], {"lines": "x"}, self.witness, self.anchor)
+        self.assertEqual(status[0], "indeterminate", status[1])
+
+
 def _load_webapp(tag):
     """加载 web.app 做事实清单断言（与 test_audit_cleanup_visibility 同法）。"""
     spec = importlib.util.spec_from_file_location(
