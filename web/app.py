@@ -1293,6 +1293,37 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
         title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
 
 
+def _alert_audit_unhealthy(health):
+    """审计链异常告警的一次尝试：按账目变化触发、按**送达**推进基线。
+
+    返回本次是否真正外发（任一通道送达）。签名未变（与上次已告警的同一故障态）时只留
+    ERROR 日志、不外发，返回 False。**送达失败时不推进基线**：告警因此保持待发，下一轮
+    （次日或下次进程启动）仍会重试，而不是一次发送失败就被永久静默。
+    """
+    if not db.audit_alert_needs_attention(health):
+        logger.error("审计链异常态与上次已告警的相同，本次不重复外发（结论未变，日志照留）")
+        return False
+    delivered = send_notification(
+        "审计链异常告警",
+        mail_layout.Mail(
+            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
+                    "或存在未留痕的管理操作。",
+            fields=_audit_alert_facts(health),
+            advice=["立即核查审计链与库外锚点",
+                    "确认之前不要依赖审计记录做处置结论"],
+            level="urgent",
+        ),
+        urgent=True,
+    )
+    if delivered:
+        db.mark_audit_alert_sent(health)
+        db.mark_audit_write_failures_notified()
+    else:
+        logger.error("审计链异常告警未能送达（邮件与推送均未成功），基线不推进，"
+                     "下一轮将继续重试")
+    return bool(delivered)
+
+
 # 判定"推送这路是否曾配置过"的键表与其唯一实现见 web/services/notify_mail.py，
 # 此处以导入区再导出保持 m.* 可达。
 
@@ -2424,27 +2455,9 @@ def create_app(host=None):
                                  "；".join(f"{k} {v}" for k, v in _facts))
                     # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
                     # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
-                    # 签名不变时仍留 ERROR 日志（可 grep），只是不再外发。
-                    if db.audit_alert_needs_attention(_health):
-                        send_notification(
-                            "审计链异常告警",
-                            mail_layout.Mail(
-                                summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
-                                        "或存在未留痕的管理操作。",
-                                fields=_facts,
-                                advice=["立即核查审计链与库外锚点",
-                                        "确认之前不要依赖审计记录做处置结论"],
-                                level="urgent",
-                            ),
-                            urgent=True,
-                        )
-                        # 发信成功后才推进基线（与"降级时也留痕"同一纪律：只有真发出
-                        # 去的那次才该被记住，否则一次发送失败会让此后永久静默）
-                        db.mark_audit_alert_sent(_health)
-                        db.mark_audit_write_failures_notified()
-                    else:
-                        logger.error("审计链异常态与上次已告警的相同，本次不重复外发"
-                                     "（结论未变，日志照留）")
+                    # 基线只按**送达**推进（见 _alert_audit_unhealthy）：未送达则保持
+                    # 待发、下一轮重试；签名不变时仍留 ERROR 日志（可 grep）不外发。
+                    _alert_audit_unhealthy(_health)
                 else:
                     if _health["anchor_msg"]:
                         # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
