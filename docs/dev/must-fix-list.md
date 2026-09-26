@@ -364,6 +364,14 @@ V2 手法（U+0085 潜伏注释）路由级真跑拒绝、.env 逐字节不变�
 合并 V6、L03、L04、L41、R3g、R5d。① `reclaim=bool(args.only)` 使 done 行**不校验 owner/租约**即改回 claimed；② `owner = excluded.owner` 命中即**短路整个租约判据**，缺省身份 `single@{host}` 不含 PID ⇒ cron 与 web 手动零互斥；③ 领取与登录跨事务、收尾在整轮末尾 ⇒ 崩溃后 900s 被接管再登一次，而 **`claims.touch` 生产端无调用者** ⇒ 心跳永不续、任何 >900s 的账号对所有人可接管；④ v3 `requeue_task` 的 WHERE 不含 state、epoch 自愿 ⇒ 迟到重排把 done 复活成 pending；⑤ flock 分名（`.w{i}`/`.fallback`）且超时"无锁继续"，运行锁三条 fail-open（超时放行 / `OSError→None` 零日志 / 无 fcntl→未加锁句柄）**四个调用点全不检查返回值**；⑥ `claims.purge` 未接时钟跳变守卫（同库另 5 处都接了）⇒ 前跳 >14 天整删当日互斥面。另有 `_claim` 未初始化即放行（链3）、容器 scheduler 与宿主 cron 互斥面为 0（现网未部署容器形态）。**V5 已用临时库实验证明 v2/v3 同日双放行、V6 用双进程证明同名 owner 可双领取。**
 验收不变量：领取必须"同事务内校验+写入"，owner 必须含 PID/代次；心跳由执行侧周期性写入并有断言（"任何 >900s 仍 claimed"必须被 reaper 处理，而不是被接管）；purge 走跳变守卫。`[需确认]`
 
+**处置（2026-09-26 批1 Task3，repair/m3-batch1）**：领取互斥收口——`try_claim` 单语句
+校验（upsert+WHERE 同语句判定，租约/epoch 围栏不可绕）、`runtime_owner` 落 PID/代次
+（执行体身份可追）、执行体内 per-account yield（同轮撞车降为账号级让位）、
+`reap_unreported`/`reap_abandoned` 双路收尸。活体反例族：同日同账号双执行体抢单、心跳
+过期接管、epoch 落后拒绝。3-A/3-B 两轮审查 + 终审接缝抽验（与 Task 10 唤醒前缀同源）。
+残余（终审复核无害）：reap 无 day 参数/`lease_until != ''` 惰性条件——claim_batch 按
+日过滤兜底，属冗余安全位。
+
 ### MF-48 三处零守卫清库 + `--dry-run` 假演练
 合并 L38、L63、L68、L20、L55。`generate_demo_data.py` 守卫是 `db_path == "demo-log/demo.db" or yes` 的**字面串比较**，`--yes` 即清空五表且**删的正是 `audit_logs`、链校验反显 ok**、无倒计时零留痕；`seed_accounts.py` 更硬——**有清五表能力且零守卫**（连 `--yes` 都没有），还会改写生产 `.env`；`load_env_file:274` 读不到就静默继承宿主环境 + `clear_session_cache:284` 无门 DELETE ⇒ 误指生产库即 **89 号真实重登风暴**。包装层两个脚本的 `main(argv)` 是死参数 ⇒ **`--dry-run` 被静默丢弃并真删，rc=0 像演练成功**；`backup.sh` 旗标只认 `${1}` ⇒ `--require-encrypt` 移位即门禁静默失效；`state --yes` 无口令无审计、**按文件名删掉 `db --backup` 写进状态目录的副本**。
 验收不变量：任何清库/删除类入口必须显式声明目标指纹（非路径字符串比较）+ 需要确认 + 入审计；被丢弃的参数必须报错而不是静默；"dry-run"三入口语义统一。`[已复现：demo/seed/包装层参数丢弃]`
@@ -626,6 +634,33 @@ auth 建号 / users_api 角色与重置与两型删除与批量（kill 注入 e2
 `docker/scheduler.py:341-393 main_loop` 循环体无兜底，其中 `_run_signin_child:228` 的 `Popen` 没有 `except OSError`——对照同文件 `_start_fallback_child:299` 的调用点 `:319-323` 接住并 print，即同一文件两种判法。外层无人救：`supervisord.conf` 未写 `startsecs/startretries`（默认 1s/3 次），崩溃发生在重启后第一 tick（`hm>=FIRST` 立判、`_mark_slot` 排在子进程之后）⇒ 秒级三连进 **FATAL 不再重启**；`docker-compose.yml:56-62` 的 healthcheck 只 curl web 端口 ⇒ `restart: unless-stopped` 永不救。后果是首签/补签/探针/兜底/清理同进程全废全天。
 **双跑改判**：`docker stop` **不产孤儿**（supervisord 是 PID 1，namespace 一起死）；真孤儿源是 `supervisorctl restart sched`（`stopasgroup/killasgroup` 未设）与崩溃重启，且容器子进程**其实拿引擎全局锁**（`runner.py:352`），只是全量模式 600s 后 fail-open（`cli_support.py:117-135`）＋同机 owner 同为 `single@{host}`（`round.py:169`）令 `claims.py:157` 恒放行 ⇒ 归 MF-47 补句，本条只登异常面。启用容器（`docker-compose up -d` 且不停宿主 cron）即变"已在现网"。〔C-08 · ADJ-15〕
 
+**处置（2026-09-26 批1 Task12-A，repair/m3-batch1）**：四份分类口径归一为单一真值源
+`yiban.security.HARD_FAIL_TOKENS`/`is_hard_fail_message`/`hard_fail_pattern`——挑战
+解析 15 处 raise 文案与腿② `Expecting value:` 全部落**显式不可重试档**
+（`HARD_FAIL_MAX_ATTEMPTS=1` + 清会话联动，不借风控词表）；probe 硬失败正则改同源
+拼接（手抄词表消除）；`is_waf_blocked` 的 len>2000 短路按裁决 #9 移除（挑战形态不受
+长度限制、长页纯关键词维持不拦防误伤）；同批改钉 `test_login_protocol_shape.py`。
+审查 10 项必查全过（8 子串 2^8 组合穷举对照、15 文案逐条喂判据亲跑）。
+挂账（批 2 登记）：探针的 `Expecting value` 词元会把瞬态网关故障（5xx 回 HTML）判硬
+失败——建议出"按状态码/响应形状细分"的收紧裁决。
+
+**处置（2026-09-26 批1 Task12-B，repair/m3-batch1）**：`login_killyiban` 成功门新增
+**签发方回执判据**——`code==0` 且 `data` 键缺失/为 null ⇒ 拒绝（不落"登录成功"、不写
+缓存、词元入 `HARD_FAIL_TOKENS` 落不可重试档）；未采用"data 非空"更严读法（mock 录制
+真成功 = `{"code":0,"data":{},"msg":""}`，更严会判死真成功）。测试侧：会话缓存
+四用例废除整体 mock 改真库行断言（消除"对假成功是瞎的"）；假成功注入 `login-shallow`
+旋钮（默认关闭）+ run.sh 全链 e2e。审查 8 项必查全过。
+销项清单：①**登机核对项**——记录现网最终认证真成功载荷形状，若出现 `data:null` 形状
+同批改词元源（方向安全：误拒=一轮响亮自愈重登）；②`:382/:407` 形参 csrf 被缓存值覆盖
+——本条"现状"另半句，行为语义另案（批 2+ 评估），本批测试已按该语义写断言不误吞。
+
+**处置（2026-09-26 批1 Task13，repair/m3-batch1）**：调度器异常面——签到子进程 Popen
+接住 OSError 留痕、main_loop 单 tick 兜底（信号直通）、心跳 + `--check-health` 探活
+出口；容器面 supervisord `startsecs=5`/`startretries=10` + compose web/sched 双检。
+配套 run.sh **LOCK_DIR fail-closed**（mkdir 失败 rc=1 拒跑、显式 `YIBAN_LOCK_DIR`
+属主自担、删 /tmp 静默回退）。批 1 隔离演练六步实跑确认（判码抽验含 LOCK_DIR 活体）。
+残余：docker 链生产演练待上线日执行。
+
 ### K 簇 · 备份与运维脚本（可恢复性不可证明 + 命令注入）
 #### MF-76 备份"完成"不证明可解：明文唯一副本在验证前就被删，哨兵件从未安装（中）
 `scripts/backup.sh:559-561` 在 `try_encrypt` 返回 0（判据只有 gpg 退出码 `:146-153`）后**立刻 `rm -f "${ARCHIVE}"`**；全仓唯一能证明密文可读的 `--restore`（`:169-214` 解密 + 三重包校验 → `:260-303` integrity/audit 双验）**没有任何 cron 或代码调用点**（只在 `:653` 当提示、README:287/742 手写命令）；`:585` 的 `sha256sum "${FINAL_LOCAL}"` 是对密文自指纹，证不了可解。**同仓反证**：`docker/backup-docker.sh:103-118` 已经做了"尺寸下限 + 流式解密解包自检 + 失败删件非 0 退出"⇒ 一个仓库两套契约，**弱的那套正是 cron 装的**。口径修正：删明文那一刻 `TMPDIR_BAK` 里还有明文组件（`:108-109` EXIT trap 收尾才清），且删除发生在异机同步之前。另一半是 **`backup_sentinel` 在现网从未安装**（V8 三源同判：L19 内容在登记表零命中；MF-34/MF-65 只覆盖相邻的退出码与注释）。
@@ -855,6 +890,12 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
   一律锚到 `yiban.clock`（或显式 freeze）；**`TZ=UTC` 下全量 0 失败**（MF-105 判据推广到族）。
 - **现网三态**：不涉现网（纯测试面）；现网影响 = CI 深夜跑必红 ⇒ CI 信号不可信。
 - **处置**：随批 1 第 0 段（CI 双轨 + 测试瘦身）同批修；修前 CI 全量轨排程避开 UTC 16:00–24:00 窗口。
+
+**处置（2026-09-26 批1 Task0，repair/m3-batch1）**：按天文件名/状态判定全部锚定
+`yiban.clock` 业务钟（CI 首跑 36 红的 UTC/北京日期边界家族修复）；双 TZ 回归自此
+常态化（全量默认 + `TZ=UTC` 各一遍）。批内日期敏感件沿用同纪律（Task 10 时间窗夹具
+锚业务钟、跨午夜敏感的 e2e 以构造定结果）。残余：运维脚本宿主钟（state_cleanup/
+backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
 
 ### MF-109 运维脚本按天文件用宿主 `date` 命名/判定，与引擎业务钟（`yiban.clock` 北京钟）分叉（条件触发，现网不触发）
 - **现象**（2026-09-26 批 1 Task 0 全量审查时发现，tests-only 未改生产）：`run.sh`/`yiban-fallback.sh`/
