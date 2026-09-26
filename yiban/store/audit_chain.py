@@ -1142,11 +1142,19 @@ def _max_anchor_of(lines):
     即可把基准换成一个与现状自洽的旧记录，让删尾判据对着错的锚点算。取最大 max_id
     使基准只会被更强的记录替换；伪造一条更大的 max_id 也无用——那一行在库内不存在
     或哈希对不上，定点判据随即为红。
+
+    并列必须取靠后（最新自报）而非靠前：清理后补锚、链尾重签后重锚都会追加
+    max_id 相同的新行，只有最新一行描述库内现状，取靠前会拿陈旧 head 定点、把
+    合法重锚误判成篡改。`max()` 并列返回首个，故这里显式 >= 扫描。
     """
     parsed = _parse_anchor_lines(lines)
     if not parsed:
         return None
-    return max(parsed, key=lambda p: p["max_id"])
+    best = parsed[0]
+    for p in parsed[1:]:
+        if p["max_id"] >= best["max_id"]:
+            best = p
+    return best
 
 
 def _last_audit_anchor(path):

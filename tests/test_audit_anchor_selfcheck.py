@@ -320,6 +320,23 @@ class WitnessThreeWayTest(_Fixture):
         picked = db._max_anchor_of(self._lines())
         self.assertEqual(picked["max_id"], 6, "必须选 max_id 最大的真行，而不是最后一行")
 
+    def test_max_anchor_tie_takes_the_later_line(self):
+        """max_id 并列取靠后（最新自报）：取靠前会拿陈旧 head 定点、误报篡改。
+
+        清理后补锚、链尾重签后重锚都会追加 max_id 相同的新行，此时只有最新一行
+        描述库内现状；`max()` 并列返回首个，与"并列取靠后的"意图相反。
+        """
+        self._seed(2)
+        db.record_audit_anchor(self.anchor)
+        self._raw("UPDATE audit_logs SET hash=? WHERE id=2", ("e" * 64,))
+        db.record_audit_anchor(self.anchor)
+        lines = self._lines()
+        self.assertEqual(len(lines), 2, "前提：重锚须真正追加一行")
+        self.assertEqual(lines[0].split()[3], lines[1].split()[3], "前提：两行 max_id 并列")
+        picked = db._max_anchor_of(lines)
+        self.assertEqual(picked["head"], "e" * 64,
+                         "并列必须取靠后（最新自报），取靠前会拿陈旧 head 定点")
+
     def test_witnessed_db_row_deleted_is_red(self):
         """见证记的链尾行从库里消失（只动库、不动锚点）⇒ 独立见证当场点出。"""
         self._baseline_with_witness(10)
