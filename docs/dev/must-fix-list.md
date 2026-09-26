@@ -959,6 +959,9 @@ backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
 引号键形态不在值域轴内。来源：批 2 Task 2-2 实现自报（登记 MF-4 修的是**值形态轴**
 （空格/逗号截断），本条是**键形态轴**，故未随 MF-4 扩）。证据：构造输入实测（审查复核中）。
 处置时点：批 2 随净化器收口（与 MF-4/8 同族，需给"不误伤 JSON 正文"判据）。
+**同源残余面（Task 2-2 审查补充）**：`Authorization: Basic ZGVmOg==` 的 base64 尾巴留白
+（`authorization=*** ZGVmOg==`，新旧行为一致、既有）——与 MF-4 自报残余 `token=a b==` 同根：
+含 `=` 的后续段被判为新 key=value 对。两条并一条脱敏口径处理（键形态轴 + 含等号段判定）。
 
 ### MF-112 `test_ledger_check.py::test_unexpected_exception_message_is_sanitized` 隔离运行必红（测试隔离缺陷，中）
 该用例聚焦单跑必红：批 1 清库守卫的短路发生在该用例注入点之前（依赖别处测试泄漏的
