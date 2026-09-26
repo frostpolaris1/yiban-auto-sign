@@ -272,6 +272,10 @@ class _B14Fixture(unittest.TestCase):
         for p in (self.env_file, os.path.join(self.work, ".env")):
             if os.path.exists(p):
                 os.remove(p)
+        # 锚点文件随类只建一份且只追加：留到下一用例，文件里就有属于上一个库化身
+        # 的锚点行（行哈希随秒级时间戳变化）。校验基准若取到它就报"链尾被篡改"。
+        # 每例清空，让 record_deploy_anchor 从"文件缺失"起步。
+        shutil.rmtree(os.path.join(self.work, "_state"), ignore_errors=True)
 
     def tearDown(self):
         _close_db()
@@ -305,9 +309,13 @@ class _B14Fixture(unittest.TestCase):
         db.init_db(db_file=self.db_file, env_file=self.env_file,
                    cleanup=False, migrate=False)
         try:
-            db.record_audit_anchor(os.path.join(self.work, "_state", "audit-anchor.log"))
+            line = db.record_audit_anchor(
+                os.path.join(self.work, "_state", "audit-anchor.log"))
         finally:
             _close_db()
+        # 写入失败只返回 None（如文件不可解析拒绝续写）：不拦住的话，子进程会按
+        # 缺失或陈旧锚点做校验，用例断言以与被测行为无关的方式失真。
+        self.assertIsNotNone(line, "锚点行写入失败：子进程将按缺失/陈旧锚点校验")
 
     def verify_chain_with_prod_env(self, db_file=None):
         """用部署 .env 里的 YIBAN_AUDIT_KEY 重开库校验链（返回 (ok, broken, first)）。"""
