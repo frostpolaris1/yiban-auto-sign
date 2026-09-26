@@ -531,10 +531,14 @@ class FallbackTickTest(_GateBase):
         self.assertEqual(self.spawns, [])
 
     def test_switch_off_is_silent(self):
-        """开关关：不 spawn、不打印任何东西（cron/容器日志不得被刷错误）。"""
+        """开关关：不 spawn、不打印任何东西（cron/容器日志不得被刷错误）。
+
+        留痕改走 logging 后，"静默"两路都断：stdout 不着一字，scheduler logger 零记录。
+        """
         for env in ({}, {"YIBAN_FALLBACK_ENABLE": "0"}):
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(buf), \
+                    self.assertNoLogs("scheduler", level="INFO"):
                 self.assertFalse(self.sched._tick_fallback(_at(WED, (6, 35)), env=env))
             self.assertEqual(buf.getvalue(), "", "开关关闭时不该产出任何日志")
         self.assertEqual(self.spawns, [])
@@ -572,11 +576,10 @@ class FallbackTickTest(_GateBase):
 
         self.sched.subprocess = type("_Stub", (), {
             "Popen": staticmethod(_boom), "TimeoutExpired": _sp.TimeoutExpired})()
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with self.assertLogs("scheduler", level="WARNING") as captured:
             self.assertFalse(self.sched._tick_fallback(_at(WED, (6, 35)), env=self.env))
         self.assertIsNone(self.sched._fallback_proc)
-        self.assertIn("拉起兜底常驻执行体失败", buf.getvalue())
+        self.assertIn("拉起兜底常驻执行体失败", "\n".join(captured.output))
 
 
 class MainLoopFallbackWiringTest(_GateBase):
