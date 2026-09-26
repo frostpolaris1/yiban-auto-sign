@@ -16,9 +16,13 @@
    必须还原成逻辑形态，不然逐跳白名单校验会把回环地址误判成站外。
 依赖：进程内假服务端（127.0.0.1 随机端口、明文 HTTP）+ requests 适配器改写 +
    真回环；本机装有按 Host 转发的加速器/TUN
-   时会被守卫判为拦截并报错要求先退出。test_full_chain_rehearsal 与
-   test_legacy_chain_rehearsal
-   是已知的时序敏感项（并发全量下偶发红，单文件串行复跑为绿）。
+   时会被守卫判为拦截并报错要求先退出。演练用**串行**假服务端
+   （`create_servers(threaded=False)`）：单线程顺序处理使 JSONL
+   落盘序=请求到达序，握手顺序断言因此确定。此前默认线程化、落盘序=
+   **完成序**，满载 runner 上末条登录记录可能被探针反超（两个
+   rehearsal 曾"并发全量偶发红、串行复跑绿"），根因与修复见
+   `.superpowers/sdd/m3-batch1-plan-20260925/task-e2e-rerun.md`「CI
+   flake 根治」节。
 
 假服务端跑在回环**明文 HTTP** 上；客户端的 https URL 由**测试侧适配器**改写到本机
 端口——不改被测代码的任何常量或分支，CI 也不需要 root/TLS/改 hosts。
@@ -93,6 +97,7 @@ class _FakeYiban:
         servers, state, config = mock_yiban.create_servers(
             host="127.0.0.1", port=0, cert=None, key=None, # port=0 让系统挑空闲端口：并发跑测时各用例的假服务端不互相抢口
             state=state, config=config, enable_ipv6=False,
+            threaded=False, # 单线程串行：落盘序=到达序（默认线程化时落盘序=完成序，满载 runner 上握手轨迹会乱序，CI 曾因此偶发红）
         )
         self.server, self.state = servers[0], state # enable_ipv6=False 下只有一个 listener，取错索引就连到不监听的 socket 上
         self.port = self.server.server_address[1]
@@ -144,6 +149,9 @@ class _FakeYiban:
 
     def requests(self):
         """逐请求记录（按发生顺序），来自假服务端的 JSONL。
+
+        "按发生顺序"由串行假服务端保证：上一请求落盘后才会 accept 下一请求，
+        到达序=落盘序（线程化服务则只保证完成序，握手轨迹会乱序）。
 
         ⚠ 容错：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
         并发下可能读到只写了一半的末行 → `json.loads` 抛 JSONDecodeError。

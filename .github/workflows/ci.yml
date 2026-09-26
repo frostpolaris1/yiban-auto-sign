@@ -75,8 +75,9 @@ jobs:
         run: python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
 
       # ---- e2e smoke ----
-      # 真 HTTP 回环全链演练（假易班服务端，绝不外联）。**串行**：该文件 docstring 明示
-      # test_full_chain_rehearsal / test_legacy_chain_rehearsal 是时序敏感项，并发下偶发红。
+      # 真 HTTP 回环全链演练（假易班服务端，绝不外联）。保留**串行**作为额外保险；
+      # 曾致其"并发下偶发红"的落盘乱序根因（线程化假服务端按完成序写 JSONL）已由
+      # threaded=False 串行假服务端根治（落盘序=到达序），Security subset 并发下同样稳定。
       - name: E2E smoke (full chain)
         run: python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 

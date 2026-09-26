@@ -542,13 +542,36 @@ class V6Server(V4Server):
     address_family = socket.AF_INET6
 
 
+class SerialServer(HTTPServer):
+    """单线程顺序服务变体（create_servers(threaded=False)）：一次只处理一个连接。
+
+    为什么需要：默认 V4Server 每请求起线程，而 JSONL 记账发生在**响应字节已发出之后**
+    （wfile 不缓冲），落盘序=线程完成序而非到达序——满载 runner 上，第 N 个请求的
+    handler 线程可能在「响应已发出、记录未写」窗口被 OS 换下，第 N+1 个请求反而先
+    落行。握手顺序断言（test_login_e2e_mock 的 paths 前缀）因此概率性乱序红
+    （2026-09-26 CI fast 轨 run 36256565772 即此根因，详见
+    .superpowers/sdd/m3-batch1-plan-20260925/task-e2e-rerun.md「CI flake 根治」）。
+    串行化后 accept 必然发生在上一请求落盘之后，到达序=落盘序，顺序断言恢复确定。
+    压测吞吐场景仍用默认 threaded=True——本类只为「按发生顺序」这一记账保真度存在。
+    """
+    allow_reuse_address = True
+    request_queue_size = 128
+
+
+class SerialV6Server(SerialServer):
+    address_family = socket.AF_INET6
+
+
 def create_servers(host="127.0.0.1", port=443, ipv6_host="::1",
                    cert=None, key=None, state=None, config=None,
-                   pubkey_pem=None, enable_ipv6=True, keep_alive=False):
+                   pubkey_pem=None, enable_ipv6=True, keep_alive=False,
+                   threaded=True):
     """创建（但不启动）mock 服务器列表；port=0 时返回实际绑定端口。
 
     返回 ``(servers, state, config)``；调用方负责在后台线程里 serve_forever。
     无 cert/key 时不启用 TLS（仅测试用，正式压测应始终带证书）。
+    ``threaded=False`` 用单线程串行服务（见 SerialServer）：JSONL 落盘序=请求
+    到达序，供握手顺序敏感的演练使用；默认 True 保持压测吞吐语义逐字不变。
     """
     state = state or MockState()
     config = config or MockConfig()
@@ -559,14 +582,15 @@ def create_servers(host="127.0.0.1", port=443, ipv6_host="::1",
         tls_ctx.load_cert_chain(cert, key)
     handler = build_handler(state, config, pubkey_pem, tls_ctx, keep_alive=keep_alive)
     servers = []
+    v4_cls, v6_cls = (V4Server, V6Server) if threaded else (SerialServer, SerialV6Server)
 
-    s4 = V4Server((host, port), handler)
+    s4 = v4_cls((host, port), handler)
     actual_port = s4.server_address[1]
     servers.append(s4)
 
     if enable_ipv6:
         try:
-            s6 = V6Server((ipv6_host, actual_port), handler)
+            s6 = v6_cls((ipv6_host, actual_port), handler)
             servers.append(s6)
         except OSError:
             # 无 IPv6 栈的环境（部分容器/CI）静默跳过，IPv4 回环仍可用
