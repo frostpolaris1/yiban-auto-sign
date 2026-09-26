@@ -23,7 +23,7 @@
 输出：`sign_events`（stage=probe）、管理员汇总（并入 A 线）与用户预警；退出码口径与
 `runner` 一致。
 调用谁：`client`（真实登录）、`security`（硬失败词元单一来源）、`alerts`、`state_io`、
-`cli_support`、`env_lock`、`db`。
+`cli_support`、`env_io`（once 自动关闭写 `.env`）、`db`。
 谁调用：`runner`（`--probe`）、web 注册/改密路径（`web/services/accounts_data.py`）。
 前端调用点：注册与改密表单（`web/static/js/components/account-form.js`、
 `web/static/js/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
@@ -41,7 +41,7 @@ from datetime import datetime
 from yiban import client as yiban_client
 from yiban import clock, security
 from yiban.engine import alerts, cli_support, state_io
-from yiban.infra import env_io, env_lock
+from yiban.infra import env_io
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
@@ -181,33 +181,19 @@ def _health_probe_due(now=None):
 
 
 def _env_update_probe(auto_disable=False):
-    """探针执行后更新 .env：once 模式自动关闭 YIBAN_PROBE_ENABLE（跨进程写锁）。
+    """探针执行后更新 .env：once 模式自动关闭 YIBAN_PROBE_ENABLE。
 
     仅在 once 单次执行后调用；失败只记日志，不影响本次探测结果。
+    落盘走 `env_io.write_env_key`：跨进程写锁、同键旧行折叠、逐行校验与原子 0600
+    替换单源在 `write_env_keys`。此前就地自写"宽 splitlines + 精确前缀滤行"的
+    读-改-写：不认 `KEY = v` 带空格旧行（折不掉、留影子行），还会把注释里潜伏的
+    换行族字符拆行实体化成新配置行。
     """
     if not auto_disable:
         return
     env_path = os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
     try:
-        with env_lock.env_write_lock(env_path):
-            lines = []
-            if os.path.exists(env_path):
-                with open(env_path, encoding="utf-8-sig") as f:
-                    lines = f.read().splitlines()
-            out = [ln for ln in lines if not ln.strip().startswith("YIBAN_PROBE_ENABLE=")]
-            out.append("YIBAN_PROBE_ENABLE=0")
-            tmp = env_path + ".tmp" + str(os.getpid())
-            # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace 之间
-            # （及崩溃残留时）整个 .env 对同机其他用户可读。原先只靠事后 chmod，
-            # 且默认 umask 未必是 077（交互 shell 手工跑 --probe 即可能命中）
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write("\n".join(out) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, env_path)
-            with contextlib.suppress(OSError):
-                os.chmod(env_path, 0o600)
+        env_io.write_env_key(env_path, "YIBAN_PROBE_ENABLE", "0")
     except Exception as e:
         # 升级为 ERROR（2026-08-27 审查）：once 自动关闭失败会让"单次探针"事实变成
         # 每晚全量探测（反复真实登录扩大风控面 + 每日重复告警）；选了 once 的运维
