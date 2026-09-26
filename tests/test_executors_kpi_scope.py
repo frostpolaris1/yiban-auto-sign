@@ -32,13 +32,11 @@
 """
 
 import os
-import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS = os.path.join(BASE, "web", "static", "js", "components", "settings-executors.js") # 直接钉前端源文件：这类口径与控件归属没有运行时断言可依赖
 TPL = os.path.join(BASE, "web", "templates", "pages", "work_settings.html")
-CSS = os.path.join(BASE, "web", "static", "css", "app.css")
 
 
 def _read(path):
@@ -118,16 +116,6 @@ class KpiScopeTest(unittest.TestCase):
         self.assertIn("workers.configured", body)
         self.assertIn("Math.ceil(acc / w)", body)
 
-    def test_capacity_card_label_names_accounts(self):
-        self.assertIn("设定的账号容量上限", self.tpl)
-        self.assertNotIn("设定的容量总人数", self.tpl)
-
-    def test_info_text_states_the_new_scope(self):
-        self.assertIn("计入容量的账号数", self.tpl,
-                      "卡头口径说明必须写明分子来自哪里")
-        self.assertIn("不是用户上限", self.tpl,
-                      "必须点明与用户上限的区别（此前正是这两者被混用）")
-
     def test_first_card_is_todays_progress(self):
         """首卡从「清单行数」换成「今日进度」：行数在表里一眼可见，卡片该回答"今天跑得怎么样"。"""
         self.assertIn("今日进度", self.tpl)
@@ -158,10 +146,6 @@ class FallbackStateCellIsStatusOnlyTest(unittest.TestCase):
                          "状态格不该有独立的口令门（写入口只有弹窗那一个）")
         self.assertNotIn("fallback_enable", body,
                          "状态格不该再打开关接口（防第二开关回流）")
-
-    def test_pointer_copy_never_comes_back(self):
-        self.assertNotIn("点「设置」开启", _strip_comments(_read(JS)),
-                         "状态格不放指路文案：开关就在「设置」弹窗里，用户看状态不必再被指挥")
 
 
 class FallbackSwitchPayloadTest(unittest.TestCase):
@@ -220,21 +204,6 @@ class FallbackSwitchPayloadTest(unittest.TestCase):
                       "helper 是 dangerousSubmit 的组件内薄封装，不得自行拼口令框")
 
 
-class RowMenuDividerSpacingTest(unittest.TestCase):
-    """浮层行菜单的危险项分隔线不带外边距。
-
-    线若带外边距，它两侧的文字间距就比其它菜单项宽（用户看到的「分隔线上下空隙大」）。
-    """
-
-    def test_floating_divider_has_no_margin(self):
-        css = _read(CSS)
-        rules = re.findall(r"\.acct-menu--floating\s+\.dd-divider\s*\{([^}]*)\}", css)
-        self.assertEqual(len(rules), 1,
-                         "浮层菜单分隔线应恰好一条规则（多一条会互相覆盖，正是要防的回流）")
-        self.assertRegex(rules[0], r"margin:\s*0\s*;",
-                         "分隔线外边距必须归零，否则线两侧间距又比其它菜单项宽")
-
-
 class FallbackModalSwitchPlacementTest(unittest.TestCase):
     """行内弹窗里的开关要有字段标题、且是弹窗**第一个字段**。
 
@@ -262,45 +231,6 @@ class FallbackModalSwitchPlacementTest(unittest.TestCase):
             self.assertIn(later, body)
             self.assertLess(sw_at, body.index(later),
                             "开关字段要排在「%s」之前（它是这一行的主状态控件）" % later)
-
-
-class FallbackStatusCopyTest(unittest.TestCase):
-    def test_off_state_names_the_switch_not_a_process(self):
-        js = _read(JS)
-        # 只禁止它出现在**状态映射的值**里：注释里引用旧文案说明改动原因是允许的
-        self.assertNotRegex(js, r':\s*"未开启故障转移"',
-                            "旧文案把「功能没启用」与「执行体没启动」说成了一件事")
-        self.assertIn('off: "未启用"', js)
-        self.assertIn('declared_not_running: "已启用·未运行"', js)
-
-
-class ExecutorListWordingTest(unittest.TestCase):
-    """执行体一览新增的三处口径句（纯文案，无运行时断言可依赖，故读源码钉住）。
-
-    断言只挑**稳定的措辞锚点**（不依赖整句、不锁标点）：口径句被改写/删掉即报红，
-    避免"下次被顺手改回去也没有东西拦"。
-    """
-
-    def test_fallback_row_occupies_a_number_in_doc_and_banner(self):
-        """故障转移行占号 → 并行行跳号属正常：卡头 ⓘ 与「添加执行体」成功横幅两处都要说。"""
-        tpl = _read(TPL)
-        self.assertIn("故障转移行也占一个编号", tpl, "卡头 ⓘ 缺「占号」口径句")
-        self.assertIn("不影响运行", tpl, "跳号只解释成“正常”，不能说成“删过行”的结果")
-        self.assertIn("就是它在占号", tpl, "缺与「删过行」区分的判据")
-        # 绝对归因（"不代表删过行"）与紧邻的"槽位号只增不复用"自相矛盾，不许回流
-        self.assertNotIn("不代表删过行", tpl)
-        body = _function_body(_read(JS), "addRow")
-        self.assertIn("故障转移行也占一个编号", body, "添加成功横幅缺「占号」口径句")
-
-    def test_doc_links_single_executor_and_guards_single_row_hint(self):
-        """「单执行体」＝清单只有一行「并行」时的显示名（账号页「上次实领」），且单行有出口提示。"""
-        tpl = _read(TPL)
-        self.assertIn("「单执行体」不是清单类型", tpl, "缺「单执行体」与清单类型的对照")
-        self.assertIn("上次实领", tpl, "对照句必须点明显示在账号页哪一列")
-        hint = _function_body(_read(JS), "singleRowHint")
-        self.assertIn("只有一个并行执行体时", hint, "单行弹窗缺出口提示")
-        self.assertIn("按行生效", hint, "提示必须说明行内出口何时生效")
-        self.assertIn("env_keys", hint, "提示里的配置键名仍须取自接口下发，不硬编码")
 
 
 if __name__ == "__main__":

@@ -844,7 +844,7 @@ class BackupScriptContractTest(unittest.TestCase):
     def test_retention_covers_sha256_sidecars(self):
         """(c) 清理 glob 必须覆盖 .sha256 侧车（否则无限堆积并泄露每日归档清单）。
 
-        M3 批次0（MF-77）把四条裸 find 改写成 rotate_pass（RETENTION 校验 + 最近 K 组
+        M3 批次0（备份轮转下界）把四条裸 find 改写成 rotate_pass（RETENTION 校验 + 最近 K 组
         下界 + 逐件日志 + 明文从紧 + 删后自检），glob 以参数传入——此处同步钉新形态。
         行为侧（旧包连侧车一起删、下界内不动、明文侧车 2 天先过期）已由
         tests/test_backup_e2e.py::RotationGuardTest 活体反证钉死，本条只守"侧车 glob
@@ -859,7 +859,9 @@ class BackupScriptContractTest(unittest.TestCase):
 
     def test_restore_section(self):
         """(d) --restore 必须有停服提示、删残留 -wal/-shm、恢复锚点、双验。"""
-        block = self._block('restore() {', 'if [ "${1:-}" = "--restore" ]')
+        # 切片边界取 restore() 之后的参数解析初始化行：旧的 `if [ "${1:-}" = "--restore" ]`
+        # 已被全参数 case 解析取代（不再按位置判旗标），沿用旧串会在 index() 抛错。
+        block = self._block('restore() {', 'RESTORE_MODE=0 RESTORE_ARCHIVE=')
         self.assertIn("systemctl stop yiban-web", block, "缺停服提示")
         self.assertIn("-wal", block)
         self.assertIn("-shm", block)
@@ -871,7 +873,7 @@ class BackupScriptContractTest(unittest.TestCase):
     def test_cron_template_requires_encrypt_and_daily_verify(self):
         """(e) cron 模板带 --require-encrypt，并追加每日 audit_verify 跑。
 
-        M3 批次0（MF-42）起 cron 入口是 wrapper——--require-encrypt 由 wrapper 钉死
+        M3 批次0（生产执行件入库）起 cron 入口是 wrapper——--require-encrypt 由 wrapper 钉死
         （行为级已由 tests/test_deploy_prod_artifacts.py::WrapperPassphraseTest 的
         stub argv 断言锁住），头注释必须同时点名 wrapper 与该旗标，防止有人把
         模板改回直调 yiban-backup.sh 裸跑。

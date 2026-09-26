@@ -20,15 +20,15 @@
 关键断言：`test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper` 与
 `tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
 签一遍"，后者等于给篡改者提供重链工具。`test_db_source_has_no_executescript_call` 是**源码文本级**断言：它只保证那段文本还在原位。
-`BackupPlaintextP3Test` 原本是同类写法（MF-10 指出的假绿），现已改为**行为测试**——真跑
+`BackupPlaintextP3Test` 原本是同类写法（登记在册的那条假绿），现已改为**行为测试**——真跑
 backup.sh（临时目录夹具，skipIf 无 bash），断言真实 stderr 告警、专用退出码 6、异机密文
 副本与哨兵判定；输出按字节手动 utf-8 解码以避开旧注释所说的 Windows GBK 误报问题。
-依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩，
-无网络、无 skip。
+依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩；
+`BackupPlaintextP3Test` 真起 **bash** 子进程跑 backup.sh（`skipIf` 无 bash 时整类跳过）。
+无网络（其余用例无 skip）。
 """
 import contextlib
 import datetime
-import datetime as _dt
 import glob
 import importlib.util
 import json
@@ -42,6 +42,8 @@ import unittest
 from unittest import mock
 
 import db
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -295,7 +297,7 @@ class DbFixes021Test(unittest.TestCase):
     def test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper(self):
         db.init_db(self.db_file, env_file=self.env_file)
         conn = db.get_conn()
-        old_ts = (datetime.datetime.now() - datetime.timedelta(days=200)).strftime(
+        old_ts = (clock.now() - datetime.timedelta(days=200)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         h1 = _insert_audit_row(conn, old_ts, "admin", "old1", prev_hash="")
@@ -340,7 +342,7 @@ class DbFixes021Test(unittest.TestCase):
         db.init_db(self.db_file, env_file=self.env_file)
         account_id = self._add_account("user@test.local", "13800000031")
         db.set_time_pref("13800000031", 480, "2026-08-17 10:00:00")
-        old = (datetime.datetime.now() - datetime.timedelta(days=8)).strftime(
+        old = (clock.now() - datetime.timedelta(days=8)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         db.set_account_deleted(account_id, 1, old)
@@ -597,7 +599,7 @@ class DbResidueTest(unittest.TestCase):
         src = os.path.join(self.tmp, "accounts.json")
         with open(src, "w", encoding="utf-8") as f:
             json.dump([{"phone": "13800138000", "password": "plain"}], f)
-        bak0 = src + ".bak-" + _dt.datetime.now().strftime("%Y%m%d")
+        bak0 = src + ".bak-" + clock.now().strftime("%Y%m%d")
         with open(bak0, "w", encoding="utf-8") as f:
             f.write("[]")  # 预置今日已存在的同名 .bak，制造冲突
         key = db.account_crypto.load_key(self.env_file)
@@ -812,14 +814,14 @@ _FAKE_GPG_FAIL = "#!/usr/bin/env bash\ncat > /dev/null 2>&1 || true\nexit 2\n"
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
 class BackupPlaintextP3Test(unittest.TestCase):
-    """P3-3：backup.sh 明文模式告警/退出码/异机契约——行为钉死（MF-10 重写）。
+    """P3-3：backup.sh 明文模式告警/退出码/异机契约——行为钉死（假绿整改重写）。
 
     旧版只断言 backup.sh 源码含 "BACKUP_PLAINTEXT=1"/"明文" 字串：纯注释行即满足，
-    把告警块整段删掉测试仍全绿——这正是 MF-10 记名的假绿。现改为真跑脚本
+    把告警块整段删掉测试仍全绿——这正是当年记名整改的那条假绿。现改为真跑脚本
     （临时目录夹具 + 故障注入桩），断言的真实来源全部是**行为**：stderr 告警、
     专用退出码 6、异机侧真实落地的密文副本、哨兵对明文产物的 unhealthy 判定。
     改坏/删掉对应实现块 ⇒ 相应用例必须红。
-    明文轮退出码 6 为 M3 批次0（MF-79）新增，与既有 rc=4（源库损坏）/rc=5（缺
+    明文轮退出码 6 为 M3 批次0（明文模式护栏）新增，与既有 rc=4（源库损坏）/rc=5（缺
     sqlite3）不冲突；输出按字节手动 utf-8 解码（text=True 在 Windows 侧按 GBK
     解中文输出会误报，旧类当年因此退化成源码断言）。
     """
@@ -1019,7 +1021,7 @@ class SmokeTest(unittest.TestCase):
 
     # ---- 2. JSON→SQLite 迁移 + 解密 + 惰性清理 ----
     def test_migration_encrypts_and_decrypts(self):
-        old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
+        old = (clock.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
         self._write_accounts([
             {"name": "测试", "phone": "13800138000", "password": "plain-pass", "status": "active"},
             # 超期软删除账号：迁移后 load 时应被惰性清理
@@ -1081,7 +1083,7 @@ class SmokeTest(unittest.TestCase):
         db.add_account({"name": "正常", "phone": "13800138000", "password": "p1", "status": "active"})
         deleted_id = db.add_account({"name": "已删", "phone": "13900139000", "password": "p2",
                                      "status": "active"})
-        db.set_account_deleted(deleted_id, 1, datetime.datetime.now().isoformat(timespec="seconds"))
+        db.set_account_deleted(deleted_id, 1, clock.now().isoformat(timespec="seconds"))
         # 模拟批量 purge 逻辑：仅删 deleted 的
         accounts = db.load_accounts()
         deleted = [a for a in accounts if a.get("deleted")]
@@ -1094,7 +1096,7 @@ class SmokeTest(unittest.TestCase):
     # ---- 5. 软删除超期清理（2026-08-20 契约变更：移出读路径，显式调用）----
     def test_expired_soft_delete_cleaned(self):
         self._init_db()
-        old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
+        old = (clock.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
         db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
         db.set_account_deleted(db.load_accounts()[0]["id"], 1, old)
         # 读路径不再惰性清理（防 idx 寻址漂移）：超期行在列表中保持原位
@@ -1156,7 +1158,7 @@ class SmokeTest(unittest.TestCase):
         # A 上移（已到顶，失败）
         self.assertFalse(db.move_account(id1, -1))
         # 软删除的账号不参与交换
-        db.set_account_deleted(id2, 1, datetime.datetime.now().isoformat(timespec="seconds"))
+        db.set_account_deleted(id2, 1, clock.now().isoformat(timespec="seconds"))
         self.assertFalse(db.move_account(id3, 1))  # C 之后无未删除账号
 
     # ---- 10. 审计写入 ----
@@ -1169,7 +1171,9 @@ class SmokeTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["username"], "tester")
         self.assertEqual(row["action"], "account_add")
-        self.assertEqual(row["detail"], "测试审计")
+        # 审计行携带请求/进程作用域后缀（` [req=...]`），故按前缀断言正文未被改写
+        self.assertTrue(row["detail"].startswith("测试审计"), row["detail"])
+        self.assertIn("[req=", row["detail"], "必须携带请求/进程作用域 id")
 
 
     # ---- 11. 解密失败统一收口（对抗性审查 2026-08-15 L1）----

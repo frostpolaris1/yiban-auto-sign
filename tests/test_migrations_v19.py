@@ -6,7 +6,7 @@
   领取路径要拿它做算术，NULL 会让 `epoch = epoch + 1` 静默变 NULL）；
 - 幂等：重跑不报错、不重复加列（迁移失败则版本不提升，下次启动整段重跑）；
 - 兜底：`sign_tasks` 缺 `epoch` 时由本迁移补上（v18 若被回退，v19 仍是可用的护栏）；
-- 登记口径：v19 是**核心迁移**（MF-40 修复改判：`try_claim`/`claim_batch` 把 `epoch`
+- 登记口径：v19 是**核心迁移**（迁移 fail-closed 修复改判：`try_claim`/`claim_batch` 把 `epoch`
   当硬编列名，缺列则整条 v3 领取路径静默拒跑——失败必须阻断启动，不得只告警）。
   v20 仍为可选档（补的是台账数据，延后重试即可）。
 
@@ -110,7 +110,7 @@ class SchemaTest(_Base):
         self.assertEqual(str(col["dflt_value"]), "0")
 
     def test_v19_is_core(self):
-        """核心迁移：epoch 是 try_claim 硬编列名，失败必须阻断启动（MF-40 改判）。"""
+        """核心迁移：epoch 是 try_claim 硬编列名，失败必须阻断启动（fail-closed 改判）。"""
         narrow = self._registry_up_to(19)
         self.assertEqual(narrow[-1][0], 19, "≤19 的登记尾项应是 v19")
         self.assertIs(narrow[-1][3], True)

@@ -433,17 +433,44 @@ restore() {
     return "$rc"
 }
 
-if [ "${1:-}" = "--restore" ]; then
+# ------------------------------------------------------------
+# 参数解析：解析**全部**参数（顺序无关、未知即拒绝）。
+# 只看 `${1}` 会让旗标出现在其它位置时门禁静默失效（加密配置坏了也照出明文归档），
+# 未知参数被当"没有参数"直接跑一轮备份。故必须扫全部参数，未知/移位一律在重活前拒绝。
+# ------------------------------------------------------------
+RESTORE_MODE=0 RESTORE_ARCHIVE="" RESTORE_TARGET="" REQUIRE_ENCRYPT=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --require-encrypt) REQUIRE_ENCRYPT=1 ;;
+        # 每个位置参数各自判 $# 再 shift：`--restore <包>` 这类只剩 1 个参数时，
+        # 无条件的尾部 shift 会让 $# 归 0 而 shift 返回 1——set -euo pipefail 下
+        # 整个脚本立刻退出 1 且零输出（连"备份包不存在"的诊断都看不到）。
+        # 缺参留给 restore() 报明确原因；`--restore a b c` 里多出的 c 会被下面的
+        # `*)` 分支按未知参数拒绝，不再被静默丢弃。
+        --restore)
+            RESTORE_MODE=1
+            shift
+            RESTORE_ARCHIVE="${1:-}"; if [ $# -gt 0 ]; then shift; fi
+            RESTORE_TARGET="${1:-}";  if [ $# -gt 0 ]; then shift; fi
+            continue
+            ;;
+        -h|--help)
+            echo "用法: backup.sh [--require-encrypt] | backup.sh --restore <备份包> <目标目录>"
+            exit 0
+            ;;
+        *)
+            echo "错误：未知参数：$1（支持 --require-encrypt 与 --restore <包> <目标目录>）" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+if [ "$RESTORE_MODE" -eq 1 ]; then
     # restore() 会带回核验结论（integrity_check / audit_verify 不通过时非 0）——
     # 原实现无条件 exit 0，等于"恢复件是坏的"也报恢复成功。
-    restore "${2:-}" "${3:-}"
+    restore "$RESTORE_ARCHIVE" "$RESTORE_TARGET"
     exit $?
-fi
-
-# --require-encrypt：强制本轮归档加密，加密不可用时拒绝执行（防未加密备份泄露全部凭证）
-REQUIRE_ENCRYPT=0
-if [ "${1:-}" = "--require-encrypt" ]; then
-    REQUIRE_ENCRYPT=1
 fi
 
 # RETENTION_DAYS 校验（M3 批次0 · MF-77）：原实现零校验，`RETENTION_DAYS=0` 是合法值

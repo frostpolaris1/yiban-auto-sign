@@ -193,10 +193,15 @@ def _issue_admin_sid(env_path, write_env_key, read_env):
     sid = _new_admin_sid()
     try:
         write_env_key(env_path, ADMIN_SID_ENV_KEY, sid)
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # 两种失败同姿态降级：OSError = 文件不可写；ValueError = 写入口 fail-closed
+        # 拒绝（.env 既有行含潜伏行分隔符，见 yiban.infra.env_io）。后者尤其关键——
+        # 此刻正是"唯一能清理 .env 的运维"在登录，500 会把他锁在门外、而 login_ok
+        # 已审计（取证上误导）。返回 .env 旧值让本次登录照常可用，清理动作交告警。
         logger.error(
-            "内置主管理员会话凭据落盘失败（%s 不可写？）：%s；本次登录沿用旧值，"
-            "服务端吊销面暂时缺位，请修复权限", env_path, e,
+            "内置主管理员会话凭据落盘失败或被拒（%s 不可写或含潜伏行分隔符？）：%s；"
+            "本次登录沿用旧值，服务端吊销面暂时缺位，请修复权限/清理 .env 后重试",
+            env_path, e,
         )
         return read_env(env_path).get(ADMIN_SID_ENV_KEY, "").strip()
     return sid
@@ -362,6 +367,16 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
         logger.warning(
             "管理员口令明文迁移失败（%s 不可写？）：%s；将暂时回退明文比对，"
             "请修复权限后重启或手动改密",
+            env_path,
+            e,
+        )
+        return
+    except ValueError as e:
+        # .env 既有行含潜伏行分隔符 ⇒ 写入口 fail-closed 拒绝（不实体化载荷）。
+        # 迁移失败只告警不阻断启动，明文回退比对仍可登录；清理动作交启动告警提示。
+        logger.warning(
+            "管理员口令明文迁移被拒绝（%s 行模型歧义）：%s；将暂时回退明文比对，"
+            "请按启动告警清理 .env 中的潜伏行分隔符",
             env_path,
             e,
         )

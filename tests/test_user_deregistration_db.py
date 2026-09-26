@@ -19,6 +19,8 @@ import shutil
 import tempfile
 import unittest
 
+from yiban import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -170,7 +172,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
         self.assertTrue(db.is_last_registered_admin("admin1@test.local"))
 
     def test_delete_request_count_and_record(self):
-        since = (datetime.datetime.now() - datetime.timedelta(minutes=1)).strftime(
+        since = (clock.now() - datetime.timedelta(minutes=1)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         db.record_user_delete_request("user@test.local", "iphash1")
@@ -184,7 +186,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
         db.soft_delete_user_with_accounts("old@test.local")
         # 把 deleted_at 改成超过 3 天
         conn = db.get_conn()
-        old = (datetime.datetime.now() - datetime.timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - datetime.timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "old@test.local"))
         conn.commit()
         db.purge_deleted_users(days=3)
@@ -201,7 +203,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
             "保留期内记录不应被清理")
         # 改成 31 天前 → 清除
         conn = db.get_conn()
-        old = (datetime.datetime.now() - datetime.timedelta(days=31)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - datetime.timedelta(days=31)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE user_delete_requests SET created_at=?", (old,))
         conn.commit()
         db.purge_old_delete_requests(days=30)

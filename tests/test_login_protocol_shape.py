@@ -5,8 +5,10 @@
 覆盖：旧流登录五步与默认流四步的 URL/query/表单字段/顺序/是否跟随重定向、usersure
    不带 Origin 与 Referer、每个响应点上的 WAF
    分支真的被走到、跳转目标换成非白名单域必须响亮失败、reUrl 为 null 不抛裸
-   TypeError、签到两接口形状与三态语义、会话缓存命中与失效两分支、已登录标志的主机与路径判定（含子域伪装）、URL
-   白名单边界与逐跳校验、风控文案识别的长度上限与转义解码。
+   TypeError、签到两接口形状与三态语义、会话缓存命中与失效两分支（真临时库读写，
+   不 mock 缓存写）、默认流假成功拒绝（code==0 无签发回执 ⇒ 不落"登录成功"日志、
+   零缓存写入、落硬失败不可重试档）与真成功（回执齐全）写缓存回归、已登录标志的主机与路径判定（含子域伪装）、URL
+   白名单边界与逐跳校验、风控形态判定的长度边界（挑战形态不受限、仅关键词维持上界）与转义解码。
 对应实现：yiban/fyiban/protocol.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_trusted_yiban_url、_is_strict_fyiban_url、WAF
    文案识别）、scripts/signin.py 的签到接口。
 关键断言：这份断言的存在理由是「抽完再核对」：直接搬代码时删掉一整段 WAF 分支或改掉
@@ -17,8 +19,8 @@
    f.yiban.cn.evil.com 不得命中。断言走真实 requests.Session（只换
    send），Origin 置 None 这类删头手法只有真实 prepare_request 才观察得到。
 依赖：真实 requests.Session + 脚本化 send 替身、PyCryptodome 现场生成 1024
-   位测试公钥（模块级缓存复用）；不发任何真实网络请求、不建库。整文件在本机执行，无
-   skip。
+   位测试公钥（模块级缓存复用）、会话缓存用例走真 db 门面 + 临时库/临时 .env（测试密钥）；
+   不发任何真实网络请求。整文件在本机执行，无 skip。
 
 1. 旧流登录 6 次请求的 URL / query / 表单字段 / 顺序 / 是否跟随重定向；
 2. `usersure` **必须不带 Origin/Referer**（实测带 Origin → e001 无效应用端编号）；
@@ -30,8 +32,13 @@
 "mock 掉 session 再看调用参数"：`Origin: None` 这类删除头部的手法只有走真实的
 `prepare_request`（headers 合并时丢弃 None 值）才能被观察到。
 """
+import contextlib
+import io
 import json
+import logging
 import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 from urllib.parse import parse_qsl, urlsplit
@@ -39,6 +46,8 @@ from urllib.parse import parse_qsl, urlsplit
 import requests
 import signin
 from Crypto.PublicKey import RSA
+
+from yiban import security
 
 # 测试用 RSA-1024 公钥（登录页里的 input#key 必须是合法 PEM，签名侧只做公钥加密）。
 # 生成一次即可：RSA 生成较慢，且各用例共用不影响隔离性。
@@ -169,6 +178,37 @@ def _run(recorder, fn):
         return fn()
 
 
+def _killyiban_happy_responses():
+    """默认流四步的成功脚本。最终认证载荷带**签发回执**（`data` 存在，可为空容器）：
+    形状对照 `scripts/loadtest/mock_yiban.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
+    return [
+        _resp(text=_KILLYIBAN_PAGE % _pubkey_pem(),
+              url="https://oauth.yiban.cn/code/html"),
+        _resp({"code": "s200", "msgCN": ""}),
+        _resp(text="", status=302,
+              headers={"Location": "https://api.uyiban.com/base/c/auth/yiban"
+                                  "?verify_request=VTOK&CSRF=x"}),
+        _resp({"code": 0, "data": {}, "msg": ""}),
+    ]
+
+
+@contextlib.contextmanager
+def _capture_logs(name):
+    """挂临时 StreamHandler 抓指定 logger 的 INFO 及以上输出（断"日志出没出现"用）。"""
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger = logging.getLogger(name)
+    old_level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        yield buf
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+
 # ---------------------------------------------------------------------------
 # 旧流程（YIBAN_LEGACY_LOGIN=1）：实测 6 次请求（命中挑战 7 次）
 # ---------------------------------------------------------------------------
@@ -289,15 +329,7 @@ class LegacyLoginShapeTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class KillyibanLoginShapeTest(unittest.TestCase):
     def _happy_responses(self):
-        return [
-            _resp(text=_KILLYIBAN_PAGE % _pubkey_pem(),
-                  url="https://oauth.yiban.cn/code/html"),
-            _resp({"code": "s200", "msgCN": ""}),
-            _resp(text="", status=302,
-                  headers={"Location": "https://api.uyiban.com/base/c/auth/yiban"
-                                      "?verify_request=VTOK&CSRF=x"}),
-            _resp({"code": 0, "msg": ""}),
-        ]
+        return _killyiban_happy_responses()
 
     def test_four_step_request_shapes(self):
         client, rec = _killyiban_client(self._happy_responses())
@@ -347,7 +379,7 @@ class KillyibanLoginShapeTest(unittest.TestCase):
             _resp({"code": "s200"}),
             _resp(text="", status=302,
                   headers={"Location": "https://f.yiban.cn/iapp7463?verify_request=TAILTOKEN"}),
-            _resp({"code": 0}),
+            _resp({"code": 0, "data": {}}),
         ])
         _run(rec, client.login_killyiban)
         self.assertEqual(rec.query(3)["verifyRequest"], "TAILTOKEN")
@@ -370,7 +402,7 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         resp[3] = _resp(text="", status=302,
                         headers={"Location": "https://api.uyiban.com/base/c/auth/yiban/done"},
                         url="https://api.uyiban.com/base/c/auth/yiban")
-        resp.insert(4, _resp({"code": 0, "msg": ""}))
+        resp.insert(4, _resp({"code": 0, "data": {}, "msg": ""}))
         client, rec = _killyiban_client(resp)
         _run(rec, client.login_killyiban)
         self.assertTrue(client.logged_in)
@@ -396,32 +428,91 @@ class KillyibanLoginShapeTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "请求被 WAF 风控拦截"):
                     _run(rec, client.login_killyiban)
 
+_TEST_ACCOUNTS_KEY = "a" * 64  # 测试专用密钥，与生产无任何关系
+_TEST_AUDIT_KEY = "b" * 64
+
+
+class _RealSessionStoreFixture(unittest.TestCase):
+    """临时库 + 临时 `.env` 的真实会话缓存底座：读、写、清都走真 db 门面。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-login-shape-")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={_TEST_ACCOUNTS_KEY}\n"
+                    f"YIBAN_AUDIT_KEY={_TEST_AUDIT_KEY}\n")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = _TEST_ACCOUNTS_KEY
+        os.environ["YIBAN_AUDIT_KEY"] = _TEST_AUDIT_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+
+    @classmethod
+    def tearDownClass(cls):
+        db = signin.db
+        if getattr(db, "_conn", None) is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for key in ("YIBAN_ACCOUNTS_KEY", "YIBAN_AUDIT_KEY", "YIBAN_ENV_FILE",
+                    "YIBAN_DB_FILE", "YIBAN_SESSION_TTL_HOURS"):
+            os.environ.pop(key, None)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        db = signin.db
+        # 逐用例重建空库：上一用例留下的连接/行不得串台（与 test_session.py 同法）
+        if getattr(db, "_conn", None) is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        os.environ.pop("YIBAN_SESSION_TTL_HOURS", None)
+        db.init_db(self.db_file, env_file=self.env_file)
+
+    def _cache_rows(self):
+        return signin.db.get_conn().execute(
+            "SELECT COUNT(*) FROM session_cache").fetchone()[0]
+
+
+class KillyibanSessionStoreTest(_RealSessionStoreFixture):
+    """默认流登录 × 会话缓存的**真读真写**：命中复用、失效重建、假成功零写入。
+
+    这里不得把 `set_session_cache` 整体 mock 掉——"假成功是否落密文库"正是本类要断的
+    事，mock 写入闸门等于对缺口重新闭眼。
+    """
+
+    PHONE = "13800138000"  # 与 _killyiban_client 的账号一致
+
     def test_session_cache_hit_skips_usersure(self):
         """缓存会话仍有效（探针 302 到 iapp7463）→ 免登录：**不得**提交账号密码。"""
         client, rec = _killyiban_client(
             [_resp(text="", status=302,
                    headers={"Location": "https://f.yiban.cn/iapp7463?x=1"})])
-        with mock.patch.object(signin.db, "is_initialized", return_value=True), \
-                mock.patch.object(signin.db, "get_session_cache",
-                                  return_value={"cookies": json.dumps({"csrf_token": "c"}),
-                                                "csrf": "cached-csrf"}):
-            _run(rec, client.login_killyiban)
+        signin.db.set_session_cache(self.PHONE, json.dumps({"csrf_token": "c"}), "cached-csrf")
+        _run(rec, client.login_killyiban)
         self.assertEqual(len(rec.calls), 1, "命中缓存只做一次探针")
         self.assertEqual(client.csrf, "cached-csrf")
         self.assertTrue(client.logged_in)
+        # 复用路径没有新的签发事件，不得重写缓存行
+        self.assertEqual(signin.db.get_session_cache(self.PHONE)["csrf"], "cached-csrf")
 
     def test_stale_cache_is_cleared_and_full_login_runs(self):
-        """探针返回登录页（缓存已失效）→ 清缓存并走完整流程。"""
-        # 探针返回的是登录页（200）→ 缓存已失效，必须走完整流程
-        client, rec = _killyiban_client(self._happy_responses())
-        with mock.patch.object(signin.db, "is_initialized", return_value=True), \
-                mock.patch.object(signin.db, "get_session_cache",
-                                  return_value={"cookies": "{}", "csrf": "stale"}), \
-                mock.patch.object(signin.db, "clear_session_cache") as cleared, \
-                mock.patch.object(signin.db, "set_session_cache"):
-            _run(rec, client.login_killyiban)
-        cleared.assert_called_once_with("13800138000")
+        """探针返回登录页（缓存已失效）→ 清缓存走完整流程，新会话**覆盖式**重建。"""
+        client, rec = _killyiban_client(_killyiban_happy_responses())
+        signin.db.set_session_cache(self.PHONE, "{}", "stale-csrf")
+        _run(rec, client.login_killyiban)
         self.assertEqual(rec.path(1), "/code/usersure", "缓存失效后必须重新提交登录")
+        row = signin.db.get_session_cache(self.PHONE)
+        self.assertIsNotNone(row, "回执齐全的完整登录应重建缓存")
+        self.assertEqual(row["csrf"], client.csrf)
+        # 种子行 cookies 为空 dict；重建后的行必须带真实会话 cookie（证明是覆盖写，
+        # 而不是清完没写/压根没清）
+        self.assertTrue(json.loads(row["cookies"]), "重建的缓存行必须带会话 cookies")
 
     def test_logged_in_marker_requires_fyiban_host_and_path(self):
         """M7：302 落在非 f.yiban.cn 的 /iapp7463 不得判"已登录"。
@@ -439,16 +530,16 @@ class KillyibanLoginShapeTest(unittest.TestCase):
              _resp(text="", status=302,
                    headers={"Location": "https://api.uyiban.com/base/c/auth/yiban"
                                        "?verify_request=VTOK&CSRF=x"}),
-             _resp({"code": 0, "msg": ""}),
+             _resp({"code": 0, "data": {}, "msg": ""}),
              ])
-        with mock.patch.object(signin.db, "is_initialized", return_value=True), \
-                mock.patch.object(signin.db, "get_session_cache",
-                                  return_value={"cookies": "{}", "csrf": "stale"}), \
-                mock.patch.object(signin.db, "clear_session_cache"), \
-                mock.patch.object(signin.db, "set_session_cache"):
-            _run(rec, client.login_killyiban)
+        signin.db.set_session_cache(self.PHONE, "{}", "stale-csrf")
+        _run(rec, client.login_killyiban)
         self.assertEqual(rec.path(1), "/code/usersure",
                          "非易班主机的 /iapp7463 不得被当成已登录")
+        row = signin.db.get_session_cache(self.PHONE)
+        self.assertEqual(row["csrf"], client.csrf,
+                         "失效缓存被清后由真实登录重建（不留 stale 行）")
+        self.assertTrue(json.loads(row["cookies"]), "重建的缓存行必须带会话 cookies")
 
     def test_logged_in_marker_rejects_subdomain_spoof(self):
         """子域伪装 f.yiban.cn.evil.com 带 query 里的 iapp7463 不得命中。"""
@@ -459,16 +550,73 @@ class KillyibanLoginShapeTest(unittest.TestCase):
              _resp(text="", status=302,
                    headers={"Location": "https://api.uyiban.com/base/c/auth/yiban"
                                        "?verify_request=VTOK&CSRF=x"}),
-             _resp({"code": 0, "msg": ""}),
+             _resp({"code": 0, "data": {}, "msg": ""}),
              ])
-        with mock.patch.object(signin.db, "is_initialized", return_value=True), \
-                mock.patch.object(signin.db, "get_session_cache",
-                                  return_value={"cookies": "{}", "csrf": "stale"}), \
-                mock.patch.object(signin.db, "clear_session_cache"), \
-                mock.patch.object(signin.db, "set_session_cache"):
-            _run(rec, client.login_killyiban)
+        signin.db.set_session_cache(self.PHONE, "{}", "stale-csrf")
+        _run(rec, client.login_killyiban)
         self.assertEqual(rec.path(1), "/code/usersure",
                          "子域伪装不得被当成已登录")
+        row = signin.db.get_session_cache(self.PHONE)
+        self.assertEqual(row["csrf"], client.csrf,
+                         "子域伪装路径同样不得保留 stale 缓存行")
+        self.assertTrue(json.loads(row["cookies"]), "重建的缓存行必须带会话 cookies")
+
+    def _assert_receiptless_rejected(self, final_body):
+        resp = _killyiban_happy_responses()
+        resp[-1] = _resp(final_body)
+        client, rec = _killyiban_client(resp)
+        with _capture_logs("yiban.fyiban.protocol") as buf, \
+                self.assertRaises(RuntimeError) as ctx:
+            _run(rec, client.login_killyiban)
+        msg = str(ctx.exception)
+        self.assertIn("无签发方回执", msg)
+        self.assertNotIn("登录成功", buf.getvalue(),
+                         "假成功不得落「登录成功」日志（审计可信是登记的直接后果）")
+        self.assertFalse(client.logged_in)
+        self.assertEqual(self._cache_rows(), 0, "假成功不得写会话缓存密文库")
+        self.assertIsNone(signin.db.get_session_cache(self.PHONE))
+        # 落 A 段不可重试档：档位判据单一真值源 + 联动清缓存语义
+        self.assertTrue(security.is_hard_fail_message(msg))
+        self.assertEqual(signin._retry_budget(msg), (signin.HARD_FAIL_MAX_ATTEMPTS, True))
+        # 签发请求照常发出过一次（判据在响应侧，不改变协议形状）
+        self.assertEqual(rec.path(1), "/code/usersure")
+
+    def test_fake_success_missing_receipt_rejected(self):
+        """活体反例：code==0 但响应缺 data 载荷 → 拒绝、零缓存写入、无成功日志。"""
+        self._assert_receiptless_rejected({"code": 0, "msg": "ok"})
+
+    def test_fake_success_null_variants_rejected(self):
+        """回执缺失的两种退化形状：data 键不存在 / data 显式 null，一律拒绝。"""
+        for body in ({"code": 0}, {"code": 0, "data": None, "msg": ""}):
+            with self.subTest(body=body):
+                self._assert_receiptless_rejected(body)
+
+    def test_fake_success_does_not_update_existing_cache(self):
+        """已有缓存行时遇假成功：拒绝路径自身零写入（行只会被既有探针判死清掉）。"""
+        resp = _killyiban_happy_responses()
+        resp[-1] = _resp({"code": 0, "msg": "ok"})
+        client, rec = _killyiban_client(resp)
+        signin.db.set_session_cache(self.PHONE, json.dumps({"csrf_token": "old"}), "old-csrf")
+        with _capture_logs("yiban.fyiban.protocol") as buf, self.assertRaises(RuntimeError):
+            _run(rec, client.login_killyiban)
+        self.assertNotIn("登录成功", buf.getvalue())
+        self.assertEqual(self._cache_rows(), 0,
+                         "假成功不得产生/更新任何缓存行（哪怕覆盖旧行也不行）")
+
+    def test_real_success_with_receipt_saves_cache(self):
+        """真成功回归：回执齐全 → "登录成功"日志恰一次 + 缓存正常写入，行为与现状一致。"""
+        resp = _killyiban_happy_responses()
+        resp[-1] = _resp({"code": 0, "data": {"Token": "mock-receipt"}, "msg": ""},
+                         cookies={"yiban_sess": "mock|sess"})
+        client, rec = _killyiban_client(resp)
+        with _capture_logs("yiban.fyiban.protocol") as buf:
+            _run(rec, client.login_killyiban)
+        self.assertTrue(client.logged_in)
+        self.assertEqual(buf.getvalue().count("登录成功"), 1)
+        row = signin.db.get_session_cache(self.PHONE)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["csrf"], client.csrf)
+        self.assertEqual(self._cache_rows(), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -628,10 +776,23 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "登录入口 URL 不在白名单"):
             policy.require_redir_chain_trusted(landing, "login_entry")
 
-    def test_waf_detection_is_length_bounded_and_decodes_escapes(self):
-        """长页面（正常协议文本）不算拦截；Unicode 转义的风控文案要能识别。"""
+    def test_waf_detection_shape_unbounded_keyword_length_bounded(self):
+        """挑战形态判定不受长度限制；仅关键词匹配维持长度上界（法律文本防误伤）。
+
+        旧口径"`len>2000` 一律不判"是 fail-open：真实拦截/挑战页可以很长，被放行后按
+        「网络抖动」打满重试（裁决 #9 判缺陷）。形态判定直接走 `waf.looks_like_challenge`
+        的双 JS 特征对（不另抄特征串）；长度上界只保留给关键词支——正常长文（服务协议、
+        法律文本）合法含"风控""拦截"字样。Unicode 转义解码口径不变。
+        """
+        challenge = ('<script>window.onload=setTimeout("yy(1701368163)", 200);'
+                     'eval("qo=eval;qo(po);");</script>')
+        self.assertTrue(signin.is_waf_blocked(challenge),
+                        "短挑战页判拦截（形态支新行为：旧 len>2000 短路下判 False）")
+        self.assertTrue(signin.is_waf_blocked("x" * 3000 + challenge),
+                        "长挑战页必须判拦截——旧 len>2000 短路在此为红")
         long_text = "风险访问" + "正文" * 2000
-        self.assertFalse(signin.is_waf_blocked(long_text))
+        self.assertFalse(signin.is_waf_blocked(long_text),
+                         "长文本仅关键词命中仍不拦（防误伤边界保留）")
         self.assertTrue(signin.is_waf_blocked("\\u98ce\\u9669\\u8bbf\\u95ee"))  # 风险访问
         self.assertTrue(signin.is_waf_blocked("访问服务禁用"))
         self.assertFalse(signin.is_waf_blocked('{"code":0,"msg":""}'))

@@ -30,7 +30,8 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -204,7 +205,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
         self._reset_db()
         self._add_account("13800138000")
         id2 = self._add_account("13900139000")
-        db.set_account_deleted(id2, 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        db.set_account_deleted(id2, 1, clock.ts())
         c = self._client()
         token = self._login_admin(c)
         # idx1 是已软删的 139 账号；携带错误 phone 应 409（防漂移后误删他人）
@@ -265,7 +266,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
         db.add_account({"name": "Mine", "phone": "13800138000", "password": "p1",
                         "status": "active", "owner": "u1@test.local"})
         # 构造今日日志行（含完整手机号）
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         log_path = os.path.join(self.log_dir, f"sign-{today}.log")
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(f"[{today} 07:10:00] [INFO] yiban: [13800138000] ✅ 签到成功\n")

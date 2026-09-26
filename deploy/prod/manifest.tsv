@@ -13,3 +13,5 @@
 0644	deploy/prod/cron.d/yiban-cleanup	/etc/cron.d/yiban-cleanup
 0644	deploy/prod/cron.d/yiban-sign	/etc/cron.d/yiban-sign
 0644	deploy/prod/cron.d/yiban-probe	/etc/cron.d/yiban-probe
+0700	deploy/prod/yiban-audit-witness.sh	/usr/local/sbin/yiban-audit-witness.sh
+0644	deploy/prod/cron.d/yiban-audit-witness	/etc/cron.d/yiban-audit-witness

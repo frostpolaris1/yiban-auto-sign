@@ -109,9 +109,15 @@ CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.status.CLAI
 CLAIM_STATE_FAILED = _claims.STATE_FAILED
 CLAIM_SETTLED_STATES = _claims.SETTLED_STATES
 CLAIM_OPEN_STATES = _claims.OPEN_STATES
+# 弃权原因档的 result 前缀协议与"默认可再领"的状态集（领取层跨轮上限的判据口径）
+CLAIM_RESULT_RETRY_PREFIX = _claims.RESULT_RETRY_PREFIX
+CLAIM_RESULT_FINAL_PREFIX = _claims.RESULT_FINAL_PREFIX
+CLAIM_RETRYABLE_GIVE_UP_STATUSES = _claims.RETRYABLE_GIVE_UP_STATUSES
 claim_new_owner = _claims.new_owner
 claim_sign_account = _claims.try_claim  # 门面名与域内名不同：`db.try_claim` 不存在
 claim_touch = _claims.touch  # 续租只续自己持有的，返回 False = 已被接管
+claim_reap_unreported = _claims.reap_unreported  # 轮末收尸：本轮领到却无结论的行显式弃权
+claim_reap_abandoned = _claims.reap_abandoned  # 监督进程对已确认死亡的执行体名下在领行收尸
 claim_settle = _claims.settle  # 必须带 try_claim 返回的 epoch，否则迟到的写会覆盖接管者的结论
 claim_give_up = _claims.give_up  # 弃单不等于收工：置 failed（当日仍未了结），租约即刻放开
 claim_states_for_day = _claims.states_for_day
@@ -121,6 +127,7 @@ claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
 claim_latest_day = _claims.latest_claims_day
 claim_owners_since = _claims.owners_since
+claim_fallback_event = _claims.fallback_event  # 兜底常驻的"失败即入队"读取端：默认档未了结行的事件签名，短轮询变化即接手
 purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，展示口径不读它
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
@@ -145,23 +152,48 @@ _reset_audit_fail_memory = _audit_chain._reset_audit_fail_memory
 audit_persisted_write_failures = _audit_chain.audit_persisted_write_failures
 audit_write_failures = _audit_chain.audit_write_failures
 audit = _audit_chain.audit
+# 请求作用域（审计行携带"哪个请求做的"）与"业务+审计同事务"原语：
+# `audit_unit` 上下文管理器、`record_in_txn`（业务事务内插审计行）、
+# `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
+set_request_scope = _audit_chain.set_request_scope
+current_request_scope = _audit_chain.current_request_scope
+record_in_txn = _audit_chain.record_in_txn
+audit_unit = _audit_chain.audit_unit
+audit_or_refuse = _audit_chain.audit_or_refuse
+AuditWriteRefused = _audit_chain.AuditWriteRefused
 audit_head_hash = _audit_chain.audit_head_hash
+audit_head_hash_ex = _audit_chain.audit_head_hash_ex
 audit_row_count = _audit_chain.audit_row_count
 verify_audit_chain = _audit_chain.verify_audit_chain
+audit_write_failures_unnotified = _audit_chain.audit_write_failures_unnotified
+mark_audit_write_failures_notified = _audit_chain.mark_audit_write_failures_notified
+audit_alert_signature = _audit_chain.audit_alert_signature
+audit_alert_needs_attention = _audit_chain.audit_alert_needs_attention
+mark_audit_alert_sent = _audit_chain.mark_audit_alert_sent
 
 audit_anchor_path = _audit_chain.audit_anchor_path
+audit_anchor_fingerprint_path = _audit_chain.audit_anchor_fingerprint_path
 _anchor_line_sha = _audit_chain._anchor_line_sha
 _parse_anchor_line = _audit_chain._parse_anchor_line
 _read_anchor_lines = _audit_chain._read_anchor_lines
+_read_anchor_lines_ex = _audit_chain._read_anchor_lines_ex
+_parse_anchor_lines = _audit_chain._parse_anchor_lines
 _get_anchor_meta = _audit_chain._get_anchor_meta
+_anchor_meta_line_count = _audit_chain._anchor_meta_line_count
 _audit_purge_total = _audit_chain._audit_purge_total
 _audit_purge_events = _audit_chain._audit_purge_events
 audit_purge_total = _audit_chain.audit_purge_total
 audit_purge_events = _audit_chain.audit_purge_events
 record_audit_anchor = _audit_chain.record_audit_anchor
+record_audit_anchor_witness = _audit_chain.record_audit_anchor_witness
 _record_anchor_trace = _audit_chain._record_anchor_trace
 _last_audit_anchor = _audit_chain._last_audit_anchor
+_last_anchor_of = _audit_chain._last_anchor_of
+_max_anchor_of = _audit_chain._max_anchor_of
 _anchor_file_state = _audit_chain._anchor_file_state
+_anchor_file_state_ex = _audit_chain._anchor_file_state_ex
+_anchor_witness_state = _audit_chain._anchor_witness_state
+_anchor_status = _audit_chain._anchor_status
 verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
 _purge_event_covers = _audit_chain._purge_event_covers
@@ -173,6 +205,8 @@ _rechain_diagnostics = _audit_chain._rechain_diagnostics
 
 _AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
 _AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY
+_AUDIT_FAIL_NOTIFIED_KEY = _audit_chain._AUDIT_FAIL_NOTIFIED_KEY
+_AUDIT_ALERT_STATE_KEY = _audit_chain._AUDIT_ALERT_STATE_KEY
 _AUDIT_FAIL_LOCK = _audit_chain._AUDIT_FAIL_LOCK
 _AUDIT_RETRIES = _audit_chain._AUDIT_RETRIES
 _AUDIT_RETRY_BASE_DELAY = _audit_chain._AUDIT_RETRY_BASE_DELAY
@@ -185,6 +219,8 @@ _PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
 _RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
 _RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
+_ANCHOR_FP_DEFAULT_DIR_POSIX = _audit_chain._ANCHOR_FP_DEFAULT_DIR_POSIX
+_ANCHOR_FP_FILENAME = _audit_chain._ANCHOR_FP_FILENAME
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
 # 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
@@ -298,6 +334,9 @@ DB_DEFAULT = _connection.DB_DEFAULT
 # `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 打桩仍然生效。
 get_conn = _connection.get_conn
 is_initialized = _connection.is_initialized
+# "部署声明了领取池库路径"的只读判据：执行侧据此区分"未配库（放行）"与"配了库但
+# 当前不可用（拒跑）"——两种形态都从 `is_initialized()=False` 出发、结论相反。
+pool_db_declared = _connection.pool_db_declared
 _conn_lock = _connection._conn_lock
 
 # 需要**读写转发**的模块级状态与账号域迁出名：模块级赋值/删除默认直写 `__dict__`、不触发

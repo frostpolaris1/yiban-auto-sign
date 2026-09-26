@@ -19,6 +19,7 @@
 import contextlib
 import importlib.util
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -104,6 +105,41 @@ class StatusSingleSourceTest(unittest.TestCase):
         self.assertNotIn(yiban_status.STATUS_NO_POSITION, yiban_status.ICON)
         self.assertIn(yiban_status.STATUS_PENDING, yiban_status.ICON)
         self.assertNotIn(yiban_status.STATUS_PENDING, yiban_status.SYMBOL)
+
+    # ---- 前端"第二份表"的漂移门（清扫单⑪：急停可见性整改明列不属其范围、"同一事实 N 份定义"同族）----
+    # 仪表盘与 my-accounts 各留一份状态表，完整单源接线属前后端协同的"同一事实 N 份定义"总账，本批不
+    # 强推渲染改造；但把它们与唯一事实源 `yiban.status` 之间**可静默分叉**的两处
+    # （键集合 / 完成文案）钉成测试，杜绝"加状态码 / 改文案而漏改前端"的无声漂移。
+
+    DASH_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_dashboard.js")
+    MYACC_JS = os.path.join(BASE, "web", "static", "js", "components", "my-accounts.js")
+
+    def test_dashboard_label_keys_cover_the_status_enum(self):
+        """仪表盘 STATUS_LABEL 的**键集合**必须等于 `ALL_STATUSES`。
+
+        分布图把表里没有的状态码静默归成「跳过」并显示英文原文——新增状态码若漏进
+        本表即假绿。这里不校验各值的中文短名（图表短名与日历图例短名有意不同），
+        只钉"每条状态码都在表里有一格"，把第二份定义的键集合绑到唯一事实源。
+        """
+        with open(self.DASH_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        block = re.search(r"STATUS_LABEL\s*=\s*\{(.*?)\};", src, re.S)
+        self.assertIsNotNone(block, "data_dashboard.js 未找到 STATUS_LABEL 表")
+        keys = set(re.findall(r"([A-Za-z_]\w*)\s*:", block.group(1)))
+        self.assertEqual(keys, set(yiban_status.ALL_STATUSES),
+                         "仪表盘状态标签表与唯一事实源的状态码集合已分叉")
+
+    def test_my_accounts_done_text_mirrors_display(self):
+        """my-accounts 账号卡「今日状态」完成行的字面量必须等于 DISPLAY 成功态文案。
+
+        它是 DISPLAY 之外的第二处"今日已完成签到"文案（不含急停/周末门判定）；
+        DISPLAY 改这句而这里漏改即两侧显示分叉——本用例把它钉回唯一事实源。
+        """
+        with open(self.MYACC_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        done_text = yiban_status.DISPLAY[yiban_status.STATUS_SUCCESS]["text"]
+        self.assertIn(done_text, src,
+                      "my-accounts 今日完成文案与 DISPLAY 成功态文案已分叉")
 
 
 if __name__ == "__main__":
