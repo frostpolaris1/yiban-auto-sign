@@ -650,11 +650,14 @@ class RunShKnobChainTest(unittest.TestCase):
 
     def test_nonjson_knob_engine_loop_single_attempt(self):
         """nonjson 旋钮 → leg② "Expecting value:" → 显式档：尝试 1 次即止、不再伪装
-        网络抖动打满重试；记账为一次登录链。"""
+        网络抖动打满重试；种子会话缓存被联动清除；记账为一次登录链。"""
         port = self._start_mock(["--fail-stage", "nonjson", "--fail-rate", "1.0"])
         _, engine = self._run(port, engine_loop=True, seed_cache=True)
         self.assertIn("Expecting value:", engine.get("error", ""))
         self.assertEqual(engine.get("attempts"), 1)
+        self.assertEqual(engine.get("cache_before"), True, "前置：种子会话缓存存在")
+        self.assertEqual(engine.get("cache_after"), False,
+                         "硬失败档联动 clear_session_cache_quiet 必须清掉会话缓存")
         self._assert_accounting(port, ["/code/html", "/code/usersure"], 1)
 
     def test_engine_loop_off_regression(self):
