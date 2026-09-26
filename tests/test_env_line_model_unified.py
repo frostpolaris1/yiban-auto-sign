@@ -24,7 +24,7 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 （后 8 个是相对 `\n\r` 的差集，即本次新增覆盖面）。
 
 标签：G · 安全：脱敏/审计/配置注入
-覆盖：`.env` 行模型单源（web 服务层无第二份 splitlines）、10 分隔符实测清单、含 U+0085 潜伏注释的 V2 实体化反例（GLOBAL_PAUSE 与 ADMIN_PASSWORD_HASH 两变体）、两侧同一句拒绝、写入前后键集合 diff 强制与回滚审计、值长度上限、读取容忍与合法流逐字节回归
+覆盖：`.env` 行模型单源（web 服务层无第二份 splitlines）、10 分隔符实测清单、含 U+0085 潜伏注释的 V2 实体化反例（GLOBAL_PAUSE 与 ADMIN_PASSWORD_HASH 两变体）、两侧同一句拒绝、8 分隔符单载荷两侧同拒、写入前后键集合 diff 强制与 BOM/CRLF 字节级回滚审计、值长度上限、路由级拒绝钉死 409（设置与公告两写点）、内置管理员脏 .env 登录降级非 500、读取容忍与合法流逐字节回归
 对应实现：`yiban/infra/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`
 关键断言：拒绝必须**同时**断"抛错 + .env 字节不变 + 不实体化出未请求的键 + 有审计记录"；只断抛错会漏掉"先实体化再报错"的半生效；两侧同一句拒绝要断言**消息字符串相等**而不是各自含关键词，否则两份校验器可以各写一句都过
 依赖：临时 `.env` + Flask test client + 临时 DB，无网络、无 skip；分隔符按码位逐个枚举
@@ -37,6 +37,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from yiban.infra import env_io
 
@@ -259,13 +260,66 @@ class V2LatentCommentTest(_WebBase):
         before_bytes = _read_bytes(self.env_file)
         c, h = self._sub_admin_client()
         r = c.post("/api/settings", json={"sign_order": "random"}, headers=h)
-        self.assertNotEqual(r.status_code, 200,
-                            f"被污染的 .env 上写入必须失败，实际 {r.status_code}")
+        self.assertEqual(r.status_code, 409,
+                         f"被污染的 .env 上写入必须回 409（配置冲突需人工清理），"
+                         f"实际 {r.status_code}：{r.get_data(as_text=True)}")
         self.assertEqual(_read_bytes(self.env_file), before_bytes,
                          "被拒绝的设置保存不得改动 .env")
         self.assertNotIn("YIBAN_GLOBAL_PAUSE", self.webapp.read_env(self.env_file),
                          "急停键被静默实体化")
         self.assertIn("env_write_refused", self._audit_actions())
+
+    def test_route_level_announcement_draft_is_refused_409(self):
+        """非设置写点（公告草稿）同样回统一 409 + 清理指引，而非裸 500。
+
+        证明 `EnvWriteRefused` 由 Flask errorhandler 统一映射（不是只有 /api/settings
+        自己映射）——公告/告警通道/改密/执行体写点共用同一出口。"""
+        self._inject_after_first_line("# 例行备注\u0085YIBAN_GLOBAL_PAUSE=1")
+        before_bytes = _read_bytes(self.env_file)
+        c, h = self._sub_admin_client()
+        r = c.put("/api/announcement", json={"text": "今晚维护"}, headers=h)
+        self.assertEqual(r.status_code, 409,
+                         f"公告草稿写点必须回统一 409：{r.status_code} "
+                         f"{r.get_data(as_text=True)}")
+        self.assertIn("清理", r.get_json()["error"], "409 正文须含人工清理指引")
+        self.assertEqual(_read_bytes(self.env_file), before_bytes,
+                         "被拒绝的公告草稿不得改动 .env")
+
+
+class BuiltinAdminDirtyEnvLoginTest(_WebBase):
+    """内置主管理员（.env）在脏 .env 上登录必须**降级成功**，而非 500。
+
+    此前 `_issue_admin_sid` 只 catch `OSError`：新写入口对脏 .env fail-closed 抛
+    `ValueError`（`EnvWriteRefused`）后，这条路径会先 `session.clear()` + 审计
+    `login_ok`、再 500——把唯一能清理 .env 的运维锁在门外，且取证上"已登录成功"
+    与"500"自相矛盾。降级姿态与口令迁移 / `ensure_secret_key` 同口径：沿用 .env 旧值。
+    """
+
+    def test_builtin_admin_login_degrades_on_dirty_env(self):
+        real_hash = self.webapp.generate_password_hash(
+            ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
+        env = self.base_env.replace(
+            "YIBAN_ADMIN_PASSWORD_HASH=scrypt:frozen-hash-not-used-in-login",
+            f"YIBAN_ADMIN_PASSWORD_HASH={real_hash}")
+        lines = env.split("\n")
+        lines.insert(1, "# 例行备注\u0085YIBAN_GLOBAL_PAUSE=1")
+        self._write_fixture("\n".join(lines))
+        self.webapp._env_collision_reported = False
+        with mock.patch.object(self.webapp, "send_notification"):
+            app = self.webapp.create_app()
+        c = app.test_client()
+        with self.assertLogs("web", level="ERROR") as logs:
+            r = c.post("/api/login",
+                       json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200,
+                         f"内置管理员在脏 .env 上登录必须降级成功：{r.status_code} "
+                         f"{r.get_data(as_text=True)}")
+        self.assertTrue(any("会话凭据" in m for m in logs.output),
+                        f"sid 落盘被拒必须留 ERROR 日志（降级可见）：{logs.output}")
+        # 降级后会话仍可用：sid 未换发（沿用 .env 旧值=空）不把管理员锁在门外
+        me = c.get("/api/me")
+        self.assertEqual(me.status_code, 200, me.get_data(as_text=True))
+        self.assertEqual(me.get_json().get("role"), "admin")
 
 
 class BothSidesSameSentenceTest(_WebBase):
@@ -285,6 +339,23 @@ class BothSidesSameSentenceTest(_WebBase):
                 self.assertEqual(str(cw.exception), str(ce.exception),
                                  "两侧拒绝文案必须同源（同一校验器同一句）")
                 self.assertIn("YIBAN_SIGN_ORDER", str(cw.exception))
+
+    def test_all_eight_wide_breaks_in_one_value_refused_identically(self):
+        """一个值里同时带全 8 个宽分隔符：两侧仍必须抛同一句、且磁盘零改动。
+
+        逐个分隔符的负例挡不住"校验只查第一个命中"的实现——单载荷塞满全部 8 个，
+        任一字符漏判都会被这条抓住。"""
+        self._write_fixture(self.PRISTINE)
+        before = _read_bytes(self.env_file)
+        payload = "x" + "".join(EXTRA_BREAKS) + "y"
+        with self.assertRaises(ValueError) as cw:
+            self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": payload})
+        with self.assertRaises(ValueError) as ce:
+            env_io.write_env_keys(self.env_file, {"YIBAN_SIGN_ORDER": payload})
+        self.assertEqual(str(cw.exception), str(ce.exception),
+                         "8 分隔符单载荷两侧拒绝文案必须同源")
+        self.assertIn("YIBAN_SIGN_ORDER", str(cw.exception))
+        self.assertEqual(_read_bytes(self.env_file), before, "拒绝必须零写盘")
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +456,29 @@ class KeySetDiffTest(_EngineBase):
         # web 侧 delete_empty=True；引擎侧保持追加语义，两者都不得误报
         env_io.write_env_keys(self.env_file, {"YIBAN_KEEP": ""}, delete_empty=True)
         self.assertNotIn("YIBAN_KEEP", env_io.parse_env_file(self.env_file))
+
+    def test_rollback_restores_bom_and_crlf_bytes_exactly(self):
+        """回滚必须是**字节级**：BOM + CRLF 文件被越权写入后按原始字节还原。
+
+        文本回滚（utf-8-sig 读 + 文本写）会把 BOM 剥掉、CRLF 归一成 LF，
+        对这类文件等于"回滚后仍与写入前不同"——本用例正是钉住这一点。"""
+        raw = "\ufeffYIBAN_SIGN_ORDER=sequence\r\nYIBAN_KEEP=1\r\n".encode("utf-8")
+        with open(self.env_file, "wb") as f:
+            f.write(raw)
+        state = {"n": 0}
+
+        def corrupting_writer(path, text):
+            state["n"] += 1
+            extra = "YIBAN_GLOBAL_PAUSE=1\n" if state["n"] == 1 else ""
+            with io.open(path, "w", encoding="utf-8") as f:
+                f.write(text + extra)
+
+        with self.assertRaises(env_io.EnvWriteRefused):
+            env_io.write_env_keys(self.env_file, {"YIBAN_SIGN_ORDER": "random"},
+                                  write_text=corrupting_writer,
+                                  audit=lambda code, detail: None)
+        self.assertEqual(self._bytes(), raw,
+                         "回滚必须逐字节还原（BOM + CRLF 原样）；归一过即不算还原")
 
 
 # ---------------------------------------------------------------------------
