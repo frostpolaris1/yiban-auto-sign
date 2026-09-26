@@ -1334,7 +1334,7 @@ tests/test_login_protocol_shape.py	SigninShapeTest.test_waf_branch_is_live_on_si
 tests/test_login_protocol_shape.py	UrlWhitelistBoundaryTest.test_redir_chain_requires_every_hop_trusted	K	-	M8：跟随重定向后每一跳（含落点）都必须在白名单内。
 tests/test_login_protocol_shape.py	UrlWhitelistBoundaryTest.test_strict_fyiban_url_boundaries	K	-	??
 tests/test_login_protocol_shape.py	UrlWhitelistBoundaryTest.test_trusted_yiban_url_boundaries	K	-	??
-tests/test_login_protocol_shape.py	UrlWhitelistBoundaryTest.test_waf_detection_is_length_bounded_and_decodes_escapes	K	-	长页面（正常协议文本）不算拦截；Unicode 转义的风控文案要能识别。
+tests/test_login_protocol_shape.py	UrlWhitelistBoundaryTest.test_waf_detection_shape_unbounded_keyword_length_bounded	K	-	挑战形态判定不受长度限制；仅关键词匹配维持长度上界（法律文本防误伤）。
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_export_bad_date_and_missing	F	node	??
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_export_download	F	node	??
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_logs_all_flag	F	node	??
@@ -1613,11 +1613,14 @@ tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_challenge_body_ma
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_fail_stages_list_four_knobs	J	bash	??
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_help_and_readme_document_knobs_and_default_off	J	bash	约束说明义务：旋钮清单 + 默认关闭契约必须进 --help 与 loadtest README。
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_nonjson_body_reproduces_leg2_shape	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_engine_loop_off_regression	J	bash	关闭态（无注入）走引擎档位循环：一次成功、会话缓存被正常保存、零注入记账。
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_login_fail_knob	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_nonjson_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_nonjson_knob_engine_loop_single_attempt	J	bash	nonjson 旋钮 → leg② "Expecting value:" → 显式档：尝试 1 次即止、不再伪装
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_off_regression_full_chain_success	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_submit_fail_knob	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_waf_challenge_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_waf_knob_engine_loop_single_attempt_clears_cache	J	bash	waf 旋钮 → 真实 attempt_signin 链 → 挑战解析失败 → 显式档：尝试 1 次即止、
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_hot_config_scenario_declaration_switches_at_runtime	J	bash	??
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_knobs_off_baseline_transparent	J	bash	??
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_nonjson_knob_injects_long_block_on_json_endpoints	J	bash	??
@@ -2921,6 +2924,17 @@ tests/test_verify_jobs.py	VerifyJobIntegrationTest.test_submit_creates_job_with_
 tests/test_verify_jobs.py	VerifyJobRetentionTest.test_event_cleanup_also_trims_jobs	E	-	??
 tests/test_verify_jobs.py	VerifyJobRetentionTest.test_purge_removes_only_expired	E	-	??
 tests/test_verify_jobs.py	VerifyJobsSchemaTest.test_v15_creates_table	E	-	标签：schema 版本。v15 = 建 verify_jobs 表的那版迁移；钉的是「新库的 user_version
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_blocked_message_stays_risk_tier	B	-	??
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_every_waf_raise_message_lands_hard_tier	B	-	??
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_hard_fail_tokens_are_the_single_source	B	-	??
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_leg2_non_json_message_lands_hard_tier	B	-	??
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_network_failure_stays_normal_tier	B	-	??
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_waf_raise_messages_count_pinned	B	-	??
+tests/test_waf_failure_tier.py	ChallengeParseTierTest.test_whitelist_message_from_security_table_lands_hard_tier	B	-	??
+tests/test_waf_failure_tier.py	ProbeHardFailSameSourceTest.test_probe_regex_hits_every_waf_raise_message	B	-	??
+tests/test_waf_failure_tier.py	ProbeHardFailSameSourceTest.test_probe_regex_hits_leg2_message	B	-	??
+tests/test_waf_failure_tier.py	ProbeHardFailSameSourceTest.test_probe_regex_still_hits_legacy_features	B	-	??
+tests/test_waf_failure_tier.py	ProbeHardFailSameSourceTest.test_probe_regex_terms_derived_not_recopied	B	-	??
 tests/test_web_api_security.py	AdversarialTest.test_api_me_requires_login	E	-	??
 tests/test_web_api_security.py	AdversarialTest.test_idor_user_cannot_operate_other_account	E	-	??
 tests/test_web_api_security.py	AdversarialTest.test_invalid_json_returns_400	E	-	??
