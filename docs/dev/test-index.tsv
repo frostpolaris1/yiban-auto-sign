@@ -1098,6 +1098,9 @@ tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_final_give_up
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_reclaim_of_retry_row_moves_signature	B	-	他人重领 retry: 行同样动签名（出队也是迁移）：最多多扫一次，由池仲裁不重签。
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_retry_give_up_by_other_executor_moves_signature	B	-	??
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_settle_done_does_not_move_signature	B	-	??
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_v3_fallbacks_own_give_ups_are_excluded	B	-	v3 侧同样剔除兜底自己的弃权（含 `{稳定名}:{进程号}:{代次}` 运行时身份）：
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_v3_final_give_up_does_not_move_signature	B	-	v3 的 final: 档弃权同样不得惊动兜底：分档门与回炉口（requeue_failed 缺省
+tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_v3_retry_give_up_moves_signature	B	-	v3 弃权（sign_tasks 的 retry: 档 failed 行）必须惊动兜底：分档灰度下
 tests/test_fallback_event_yield.py	PoolYieldCounterexampleTest.test_inflight_blocks_fallback_but_rounds_failed_account_is_taken	B	-	??
 tests/test_fallback_event_yield.py	PoolYieldCounterexampleTest.test_settled_done_by_round_is_not_reattempted	B	-	??
 tests/test_fallback_gates.py	DayOffGateTest.test_non_truthy_literals_are_off	B	-	??
