@@ -9,6 +9,9 @@
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；只对
   未了结行生效（终态行不得被重排复活，否则会被重新领取＝当日再登录一次）；
+- `requeue_failed`：当日回炉——把 `failed` 行按 `retry:`/`final:` 档位逐行走
+  `requeue_task`（state+epoch 门沿用，不另造协议），`claim_batch` 只取 `pending`，
+  没有这条路 v3 的当日失败就无人接手；
 - `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
 - `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
@@ -50,6 +53,7 @@ import logging
 
 from yiban import clock
 from yiban import status as yiban_status
+from yiban.store import claims as claims_mod
 
 logger = logging.getLogger("yiban.store.queue_store")
 
@@ -242,6 +246,61 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
     except Exception as e:
         logger.warning("重排签到任务失败: %s", e)
         return 0
+
+
+def requeue_failed(day, shards, include_final=False, run_at=None):
+    """当日回炉：把本业务日 `failed` 行逐行经 `requeue_task` 翻回 `pending`，返回翻回数。
+
+    **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
+    `failed` 行若没有这条路，当日就**无人接手**——v2 的等价物是领取层"默认参数可再领
+    `retry:` 档"（`claims.try_claim`），v3 的队列以 `pending` 为唯一可领态，档位语义只能
+    靠这里翻态来兑现。**档位判据沿用领取层的同一份常量**（`claims.RESULT_RETRY_PREFIX`
+    /`RESULT_FINAL_PREFIX`，v18 平移时逐字带过来的协议，不另造一套）：
+
+    - 缺省只回炉 `retry:` 档（窗口外/无点位/"本轮没产生结论"，"该重试"）——当日任何
+      后续轮次都接得动的默认档；
+    - `include_final=True` 是**有界显式路径**（补签轮）才给的口子：连同 `final:` 档
+      （预算耗尽/风控）与**无前缀的历史行**一并回炉。无前缀按保守档与
+      `try_claim`"历史行须 `allow_failed` 才放行"同一纪律——判不清原因的宁可要求显式
+      路径，也不要无上限重复真实登录。
+
+    实现逐行调 `requeue_task(..., epoch=SELECT 时读到的 epoch)`：状态与 epoch 门全部
+    沿用既有原语，不另起第二条写路径。列举与回炉之间被他人重领/接管的行 epoch 已进
+    一代，写被 fence 拒（0 行不计入）；`done`/`skipped` 终态行不在 SELECT 里、又被
+    `REQUEUEABLE_STATES` 挡第二道——绝不复活（复活 = 当日重复真实登录，第一红线）。
+    `vshard=-1` 的历史行不属于任何分片集，回收成 pending 只会变成永不被领取的空转行，
+    一律不碰（与 `reap_expired`/`pending_count` 同界）。
+
+    `run_at` 缺省取"现在"（毫秒格式与 `run_at` 同型，字符串序比较不出偏）：回炉行
+    立刻可领，与 v2"后续轮次马上接得动"同拍；`priority` 仍按 `requeue_task` 递增一档，
+    回炉排在新任务之后。空分片集 → 0 且不取连接；库异常 → 0 + warning（回炉是补偿
+    动作，失败不该打断调用方的本轮领取）。
+    """
+    shard_set = tuple(shards or ())
+    if not shard_set:
+        return 0
+    placeholders = ",".join("?" for _ in shard_set)
+    sql = ("SELECT phone, epoch, result FROM sign_tasks "
+           f"WHERE day=? AND state=? AND vshard >= 0 AND vshard IN ({placeholders})")
+    stamp = run_at or clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(sql, (day, STATE_FAILED, *shard_set)).fetchall()
+    except Exception as e:
+        logger.warning("读取当日弃用任务失败（按无可回炉处理）: %s", e)
+        return 0
+    retry_prefix = claims_mod.RESULT_RETRY_PREFIX
+    flipped = 0
+    for r in rows:
+        result = str(r["result"] or "")
+        # 前缀比较按**字节前缀**（startswith）而不是 LIKE：结果文本里可能出现 `_`
+        # （LIKE 通配符），与 `claims.fallback_event` 的同一避坑纪律
+        if not include_final and not result.startswith(retry_prefix):
+            continue
+        if requeue_task(r["phone"], day, stamp, result="", epoch=r["epoch"]):
+            flipped += 1
+    return flipped
 
 
 def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):

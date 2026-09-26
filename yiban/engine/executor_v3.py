@@ -30,7 +30,8 @@
 告警与用户失败邮件）、`clock_meta`（当日虚分片数落库）、`schedule`（配置、窗口关闭判定、
 通道数）——均在 `yiban.engine` / `yiban.store` 下。
 谁调用：`runner.main` 的分流点——`YIBAN_SCHEDULER_V3` 为真且非 `--only` 时替换
-`round.run_queue_retry` 那一行调用。
+`round.run_queue_retry` 那一行调用；兜底常驻（`workers.run_fallback_worker`）在同一
+开关下分流到本入口（`claim_all` + `requeue_during_run`）。
 """
 import asyncio
 import contextlib
@@ -47,6 +48,7 @@ from yiban.engine import alerts, attempts, hrw, planner, schedule, state_io, tok
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 from yiban.masking import sanitize_text as _sanitize_text
+from yiban.store import claims as claims_mod
 from yiban.store import clock_meta, queue_store
 
 logger = logging.getLogger("yiban")
@@ -297,7 +299,7 @@ class _Ctx:
 
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
                  cred_state, delegated, notify_url, event_sink, rng, slot=0,
-                 runtime_id=None):
+                 runtime_id=None, requeue_during_run=False):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
@@ -328,6 +330,9 @@ class _Ctx:
         self.inflight = 0
         self.busy = 0
         self.last_delay = {}
+        # 会话内恢复周期是否顺带回炉默认档（常驻/长会话的兜底腿用它"当日接手"，
+        # 一次性定时轮靠轮首回炉即可，不开这个口子以免在同一轮里重开保守档之外的循环）
+        self.requeue_during_run = requeue_during_run
 
 
 def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
@@ -362,11 +367,17 @@ def _settle(ctx, phone, epoch, state, message):
 
 
 def _finish(ctx, phone, epoch, result, state_message, state):
-    """零请求收尾（暂停 / 账号已不在配置）：写状态、事件、结果并了结该行。"""
+    """零请求收尾（暂停 / 账号已不在配置）：写状态、事件、结果并了结该行。
+
+    以 `failed` 了结时同样带档位前缀（账密暂停属保守档，只有显式路径可回炉——
+    自动回炉等于绕开凭据熔断反复真实登录）；`done` 是了结态，不带前缀。
+    """
     _ok, _msg, _skip, status = result
     ctx.results[phone] = result
     state_io._write_sign_state(phone, status, state_message)
     _emit_event(ctx, phone, status, state_message)
+    if state == queue_store.STATE_FAILED:
+        state_message = _tier_prefix(status) + state_message
     _settle(ctx, phone, epoch, state, state_message)
 
 
@@ -380,6 +391,20 @@ def _is_risk_signal(message):
     """
     return attempts.is_waf_blocked(message) or any(
         kw in message for kw in attempts.RISK_FAIL_KEYWORDS)
+
+
+def _tier_prefix(status):
+    """弃权收尾的档位前缀——**分档判据与领取层同一份**，不另造第二套协议。
+
+    `sign_tasks.result` 的 `retry:`/`final:` 前缀是当日回炉口
+    （`queue_store.requeue_failed`）区分"默认档自动回炉 / 须显式路径"的唯一判据；
+    成员表只认 `claims.RETRYABLE_GIVE_UP_STATUSES`（v2 的 `claims.give_up` 与
+    `round._settle_claims` 选档用的是同一 frozenset）。各写一份会漂移成
+    "记成 retry、判成 final"——回炉口对默认档失明，当日失败又没人接手。
+    """
+    return (claims_mod.RESULT_RETRY_PREFIX
+            if status in claims_mod.RETRYABLE_GIVE_UP_STATUSES
+            else claims_mod.RESULT_FINAL_PREFIX)
 
 
 def _log_give_up(phone, tried, status, message):
@@ -485,7 +510,8 @@ async def _attempt(ctx, item):
         ctx.limiter.on_risk_signal(ctx.egress, _mono())
     if skip:
         ctx.results[phone] = (False, message, True, status)
-        _settle(ctx, phone, epoch, queue_store.STATE_FAILED, message)
+        _settle(ctx, phone, epoch, queue_store.STATE_FAILED,
+                _tier_prefix(status) + message)
         return
     max_attempts, clear_cache = attempts._retry_budget(message)
     if clear_cache:
@@ -508,7 +534,11 @@ async def _attempt(ctx, item):
         _log_give_up(phone, attempts_n + 1, status, message)
     ctx.results[phone] = (False, message, False, status)
     _alert_give_up(ctx, acc, phone, status, message)
-    _settle(ctx, phone, epoch, queue_store.STATE_FAILED, message)
+    # 弃权收尾带档位前缀：这是回炉口唯一的判据（窗口外/无点位→默认档当日自动回炉，
+    # 预算耗尽/风控→保守档，只由显式路径放行）。不带前缀的 failed 行会被当作
+    # 保守档——判不清原因的宁可要求显式路径，也不要无上限重复真实登录。
+    _settle(ctx, phone, epoch, queue_store.STATE_FAILED,
+            _tier_prefix(status) + message)
 
 
 async def _lane(queue, lane_id, ctx):
@@ -609,6 +639,12 @@ async def _refiller(queue, shards, ctx):
         if _mono() - last_recover >= RECOVER_SEC:
             queue_store.reap_expired(now=_stamp_ms(_now()), day=ctx.day)
             shards = _widen_with_dead_peers(ctx, shards)
+            if getattr(ctx, "requeue_during_run", False):
+                # 会话内回炉（默认档）：本轮刚弃权的 `retry:` 档行立刻翻回
+                # `pending`，下一拍就能被自己的通道重新领到——不等下一场会话。
+                # **只回炉默认档**：`final:`/无前缀保守档的第二次机会只留给有界的
+                # 显式路径（补签轮），常驻会话没有预算上界，自动复活等于无上限重登。
+                queue_store.requeue_failed(ctx.day, shards, include_final=False)
             last_recover = _mono()
         rows = queue_store.claim_batch(
             ctx.runtime_id, ctx.day, shards, now=_stamp_ms(_now()),
@@ -709,13 +745,27 @@ def _mark_window_skips(ctx, accounts):
 # ---------------------------------------------------------------------------
 def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
                     cred_state=None, notify_url="", event_sink=None,
-                    cfg=None, rng=None):
+                    cfg=None, rng=None, requeue_final=False, claim_all=False,
+                    requeue_during_run=False):
     """同步入口（内部 `asyncio.run`）：跑一轮 v3，返回
     `{phone: (success, message, skip, status)}`——**与 `round.run_queue_retry` 同形**，故调用方
     的收尾与退出码汇总零改动。
 
     **当前默认不生效**：`YIBAN_SCHEDULER_V3` 缺省 0，未开闸时轮次走 `round.run_queue_retry`，
-    只有 `scheduler_v3_enabled` 被 `runner.main` 与 `schedule.capacity_of` 读取。
+    只有 `scheduler_v3_enabled` 被 `runner.main`、`schedule.capacity_of` 与兜底腿的分流点读取。
+
+    当日回炉口（v3 的队列以 `pending` 为唯一可领态，`failed` 行不翻态就当日无人接手）：
+
+    - 轮首回炉默认发生，且**只回炉默认档**（`retry:` 前缀）——与 v2 领取层"默认参数可
+      再领 retry: 档"同一条档位纪律；`final:` 与无前缀历史行是保守档，缺省绝不自动复活
+      （复活 = 风控账号每轮重登）。
+    - `requeue_final=True`：显式路径口子（对齐 v2 的 `retry_failed`：补签轮/有界一次性
+      轮次才传），连同 `final:` 档与无前缀历史行一并回炉。常驻兜底与定时轮都不传。
+    - `claim_all=True`：领取范围从"本执行体 HRW 分片集"放宽为全部分片。兜底身份
+      （`fallback@…`）不在执行体候选集里，`hrw.shards_of` 对它返回空集——不放宽就是
+      "看着在跑、其实零领取"的静默空转。
+    - `requeue_during_run=True`：补货循环的恢复周期（每 `RECOVER_SEC`）顺带把本轮刚
+      弃权的默认档翻回 `pending`，不等下一场会话。只回炉默认档，保守档不变。
 
     `dry_run=True` 只转调 `shadow_stats`（零落库 / 零领取 / 零请求）并返回空结果。
     `cred_state` **就地改传入的那个 dict**：调用方持有同一引用并在收尾保存，重新绑定会让熔断
@@ -774,14 +824,20 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         ctx = _Ctx(
             accounts={a.phone: a for a in accounts},
             day=day, cfg=cfg, v=v,
-            shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
+            shards=(tuple(range(v)) if claim_all
+                    else hrw.shards_of(executor_id, cfg["executors"], day, v)),
             executor_id=executor_id, runtime_id=runtime_id, results={},
             cred_state=cred_state,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
-            rng=rng or random.Random(), slot=slot)
+            rng=rng or random.Random(), slot=slot,
+            requeue_during_run=requeue_during_run)
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
         # 分片并入后这些账号已归本执行体，不该再被登记成"别人负责的活"。
         ctx.shards = _widen_with_dead_peers(ctx, ctx.shards)
+        # 轮首回炉（作用域=本轮领取集 + 本业务日）：默认档 failed 翻回 pending 才谈得上
+        # 被本轮领到；回炉逐行走 `requeue_task` 的 state+epoch 门，在飞/终态行绝不复活。
+        # 放在接管之后、预扫之前：死主分片并入后一并扫到；`claim_all` 时即全分片扫尾。
+        queue_store.requeue_failed(day, ctx.shards, include_final=bool(requeue_final))
         _prescan(ctx, accounts)
         ctx.limiter.restore_from_store(ctx.egress, now=_mono())
         if ctx.global_limiter.invalid:
