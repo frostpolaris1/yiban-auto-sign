@@ -4,7 +4,8 @@
 
 **功能**
 `.env` 开关值解析 `_env_flag`；签到窗口解析 `_sign_window`；"现在是否在窗口内"的纯钟点
-判定 `_in_sign_window` 与含周末门/暂停门的 `_in_run_period`（附门原因 `_day_off_reason`）；
+判定 `_in_sign_window` 与含周末门/暂停门的 `_in_run_period`（门原因 `_day_off_reason` 读
+调用方现取的 `.env` 真值，配套日历页显示载荷 `day_off_payload` / `DAY_OFF_TEXT`）；
 系统信息族的 `sign_status`（状态文案与配色，钟点取有效窗口端点，附分钟格式化 `_hm`）
 与 `check_connectivity`（不登录的可达性探测）。
 
@@ -29,6 +30,7 @@
 """
 
 import logging
+import os
 
 import requests
 
@@ -74,16 +76,51 @@ def _in_sign_window(bounds, now=None):
     return bounds.lo_min <= now_min <= bounds.hi_min
 
 
-def _day_off_reason(now=None):
+def _day_off_reason(file_env, now=None):
     """今天此刻是否被周末门/一键暂停挡下 → 原因串；空串=照常（与引擎同一实现）。
 
+    真值来源必须是**引擎读的同一份 `.env`**：引擎进程由 `run.sh` 把 `.env` 灌进进程
+    环境，而 web 进程未必有这些键——原先直接调 `day_off(now)`（落回 `os.environ`），
+    于是 `.env` 里的急停/周末开关在 web 侧**恒不生效**：引擎真的暂停、界面却说
+    "待签到 · 前方排队 N 人"。这里把 `.env` 的键值叠在进程环境之上（`.env` 有键即以
+    `.env` 为准）后交给**同一个** `schedule.day_off`——判定实现、播出文案与门语义一行
+    未改，只把"读到的是哪份值"对齐（显示与真值同源 ≠ 改门）。
+
+    `file_env` 由调用方在调用时刻现读（`web.app.read_env(ENV_FILE)`）：`.env` 路径会被
+    测试与 `--config` 改写，本模块另持一份绑定会让改写静默失效。
     """
     # 只此一处组合口径（yiban.engine.schedule.day_off）：页面提示与引擎行为必须看同一个
     # 判据，否则就是"页面说会跑、进程其实不跑"
     try:
-        return yb_schedule.day_off(now)
+        src = dict(os.environ)
+        src.update(file_env or {})
+        return yb_schedule.day_off(now, env=src)
     except Exception:   # 读不到配置就按"照常"：宁可多显示一次窗口内，也不谎报今天跳过
         return ""
+
+
+#: 门原因（`yiban.engine.schedule.day_off` 的返回值）→ 日历页文案与语气档。
+#: 与 `day_off` 的原因常量一一对应；未列出的原因返回空串（绝不给一个编出来的说法）。
+DAY_OFF_TEXT = {
+    yb_schedule.DAY_OFF_SUNDAY: "今日无需签到（周日）",
+    yb_schedule.DAY_OFF_SATURDAY: "今日无需签到（周六）",
+    yb_schedule.DAY_OFF_PAUSED: "全局暂停（急停）：今日自动签到已停止",
+}
+
+
+def day_off_payload(reason):
+    """门原因 → 日历页显示载荷 {reason,text,tone}；无门（空串）返回 None。
+
+    语气档：急停是"管理员刚做的动作、必须被看到"，用 warn；周末是例行无需签到，用 muted。
+    文案与判据都不在这里新写——原因串来自 `day_off`，文案取自 `DAY_OFF_TEXT`。
+    """
+    if not reason:
+        return None
+    text = DAY_OFF_TEXT.get(reason, "")
+    if not text:
+        return None
+    return {"reason": reason, "text": text,
+            "tone": "warn" if reason == yb_schedule.DAY_OFF_PAUSED else "muted"}
 
 
 def _in_run_period(bounds, in_sign_window, day_off_reason, now=None):
