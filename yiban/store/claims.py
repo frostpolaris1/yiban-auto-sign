@@ -506,16 +506,26 @@ def in_flight_phones(day, lease_sec=LEASE_SECONDS):
 
 
 def fallback_event(day, exclude_owner=""):
-    """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新心跳)`。
+    """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新迁移标记)`
+    ——领取池（`sign_claims`）与任务队列（`sign_tasks`）**两池并集**，恒为四元组。
 
     为什么这一行就是"失败即入队"：`give_up` 在同一事务里把行置 `failed` 并**立刻**
     把租约置过期——补签链的兜底腿不必另建队列，池的这次行迁移就是它与全量轮（两个
     进程）之间的交接：give_up 即入队，try_claim 即出队。兜底扫空后按短周期轮询本
     签名，一变即接手，不必等满一个扫描间隔；签名不变则等满间隔为上限。
 
-    **两条收紧，防止唤醒被放大成重复真实登录**：
-    - 只数 `retry:` 档：`final:` 档（预算耗尽/风控）在默认参数下兜底**领不动**
-      （见 `try_claim` 的 failed 分支与 `RESULT_FINAL_PREFIX`），为它醒来只会空转，
+    为什么 v3 侧必须并入：`YIBAN_SCHEDULER_V3` 下全量轮的弃权发生在 `sign_tasks`
+    队列（收尾带 `retry:`/`final:` 档位前缀，回炉口见 `queue_store.requeue_failed`），
+    领取池里不产生任何新事实——只读 `sign_claims` 会让唤醒恰好在最需要"失败即接手"
+    的分档灰度配置里退化回等满间隔的盲轮询。两池按"当日单一写者"的运维规则互斥，
+    但本函数不感知开关、恒并两侧：另一池的贡献是常量，不影响"一变即醒"。
+    `sign_tasks` 没有心跳列，其"最新迁移标记"取 `MAX(epoch)`——epoch 每次领取进一
+    且永不回退，弃权/接手两向迁移都会动它。
+
+    **两条收紧，防止唤醒被放大成重复真实登录**（两池同一套口径）：
+    - 只数 `retry:` 档：`final:` 档（预算耗尽/风控）在默认参数下兜底**接不动**
+      （领取池见 `try_claim` 的 failed 分支与 `RESULT_FINAL_PREFIX`；队列侧见
+      `requeue_failed` 的缺省档位门），为它醒来只会空转，
       事件频率必须与"可接手频率"同集；
     - 剔除 `exclude_owner`（兜底自己的稳定槽位名，含 `{稳定名}:{进程号}:{代次}`
       运行时形态）弃权：它一轮扫完本就有紧接的再扫节律，自己的弃权再触发自己的
@@ -526,18 +536,24 @@ def fallback_event(day, exclude_owner=""):
     不是正确性依赖，读不到时绝不据此做任何互斥判断。
     """
     from yiban.store import db
-    sql = ("SELECT COUNT(*) AS n, MAX(heartbeat_at) AS h FROM sign_claims "
-           "WHERE day=? AND state=? AND substr(result, 1, ?)=?")
-    params = [day, STATE_FAILED, len(RESULT_RETRY_PREFIX), RESULT_RETRY_PREFIX]
+    tail, ex = "", []
     if exclude_owner:
-        sql += " AND owner<>? AND instr(owner, ?)<>1"
-        params += [exclude_owner, exclude_owner]
+        tail = " AND owner<>? AND instr(owner, ?)<>1"
+        ex = [exclude_owner, exclude_owner]
+    probe = [day, STATE_FAILED, len(RESULT_RETRY_PREFIX), RESULT_RETRY_PREFIX, *ex]
+    sql = ("SELECT COUNT(*) AS n, MAX(heartbeat_at) AS h FROM sign_claims "
+           "WHERE day=? AND state=? AND substr(result, 1, ?)=?" + tail)
+    sql_tasks = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
+                 "WHERE day=? AND state=? AND substr(result, 1, ?)=?" + tail)
     try:
         with db._conn_lock:
-            row = db.get_conn().execute(sql, tuple(params)).fetchone()
-        return (int(row["n"] or 0), row["h"] or "")
+            conn = db.get_conn()
+            row = conn.execute(sql, tuple(probe)).fetchone()
+            row_t = conn.execute(sql_tasks, tuple(probe)).fetchone()
+        return (int(row["n"] or 0), row["h"] or "",
+                int(row_t["n"] or 0), int(row_t["h"] or 0))
     except Exception as e:
-        logger.debug("读取领取池兜底事件签名失败（按无事件处理）: %s", e)
+        logger.debug("读取领取池/任务队列兜底事件签名失败（按无事件处理）: %s", e)
         return None
 
 

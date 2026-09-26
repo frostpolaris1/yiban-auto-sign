@@ -2,8 +2,10 @@
 """兜底"失败即入队"的事件源与"同一账号让位"的仲裁面：这两件事都由领取池的**行迁移**承担。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：`claims.fallback_event` 事件签名（只数 retry: 档未了结行的 (条数, 最新弃权时刻)，
-   final: 档弃权不动签名、兜底自己的弃权被剔除、他人收尾 done 不进子集、他人重领 retry:
+覆盖：`claims.fallback_event` 事件签名（领取池 + 任务队列**两池并集**、只数 retry: 档
+   未了结行的 (条数, 最新迁移标记)，final: 档弃权不动签名、兜底自己的弃权被剔除、
+   v3 弃权（sign_tasks 的 retry: 档）同样动签名而 final: 档不动、v3 侧兜底自己的弃权
+   同样剔除、他人收尾 done 不进子集、他人重领 retry:
    行同样动签名、库不可用返回 None），以及同一轮持锁窗口内池级的三条反例（全量轮在飞
    的 A/B/C 兜底领不到、轮中途弃权到 retry: 档的 D 兜底立刻领得到、轮把 A 收尾成 done
    后兜底不再重领；此外从未被碰过的 E 默认可接手）。
@@ -14,8 +16,10 @@
    retry: 档放、final: 档默认拒"四条判据本身就是"同一账号让位"与池内去重；事件签名必须
    与"可接手"严格同集（数了 final: 就是为一个永远领不动的行白唤醒，唤醒频率不得被不可
    接手的弃权放大；数了兜底自己的弃权会把"扫→弃权→唤醒→再扫"接成紧循环重复真实登录）。
+   分档灰度（调度 v3）下弃权写在 `sign_tasks` 而不是领取池——签名不并入 v3 侧，唤醒就
+   恰好在最需要即时接手的配置里退化回盲轮询。
 依赖：真临时库（init_db + 领取/弃权/收尾的行形状与 tests/test_claims_cross_round.py
-   一致）；不起子进程、不发网络请求、不打桩时钟。
+   一致；v3 侧走 queue_store 真实 claim/settle 原语）；不起子进程、不发网络请求、不打桩时钟。
 
 用法（项目根目录）：
     py -m pytest tests/test_fallback_event_yield.py -v
@@ -26,7 +30,7 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.store import claims, db
+from yiban.store import claims, db, queue_store
 
 #: 测试业务日与三方身份：全量轮执行体（worker）、兜底（fallback）、以及"没人碰过"的对照组
 DAY = "2026-09-02"
@@ -120,7 +124,25 @@ class PoolYieldCounterexampleTest(_TempDbCase):
 
 
 class FallbackEventSignatureTest(_TempDbCase):
-    """事件签名与"兜底可接手"严格同集：只数别人弃到 retry: 档的行。"""
+    """事件签名与"兜底可接手"严格同集：两池都只数别人弃到 retry: 档的行。"""
+
+    def _v3_give_up(self, phone, owner, result):
+        """v3 弃权的一次真实行迁移：批量领取（epoch 进位）→ 收尾成 failed + 档位前缀。
+
+        走 `queue_store` 的既有原语而不是手插终态行——"入队"的证据就是这次迁移本身。
+        """
+        conn = db.get_conn()
+        conn.execute(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+            "state, attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,0,?,'2026-09-02 00:00:00.000',5,'pending',0,'','',0,"
+            "'2026-09-02 00:00:00.000')", (phone, DAY, owner))
+        conn.commit()
+        taken = queue_store.claim_batch(owner, DAY, (0,))
+        epoch = next(t["epoch"] for t in taken if t["phone"] == phone)
+        self.assertEqual(queue_store.settle_tasks(
+            owner, DAY, [(phone, result)], state=queue_store.STATE_FAILED,
+            epochs={phone: epoch}), 1, f"前置：v3 弃权应写成功 {phone}")
 
     def test_retry_give_up_by_other_executor_moves_signature(self):
         base = claims.fallback_event(DAY, FB)
@@ -164,6 +186,36 @@ class FallbackEventSignatureTest(_TempDbCase):
         sig = claims.fallback_event(DAY, FB)
         self.assertNotEqual(sig, after_give)
         self.assertEqual(sig[0], after_give[0] - 1)
+
+    def test_v3_retry_give_up_moves_signature(self):
+        """v3 弃权（sign_tasks 的 retry: 档 failed 行）必须惊动兜底：分档灰度下
+        全量轮的"失败即入队"只发生在任务队列，领取池里没有这条新事实。"""
+        base = claims.fallback_event(DAY, FB)
+        self._v3_give_up(PHONES["G"], "worker-9@roundhost:9001:063500",
+                         claims.RESULT_RETRY_PREFIX + "skipped_window")
+        sig = claims.fallback_event(DAY, FB)
+        self.assertNotEqual(sig, base, "v3 弃权=入队，签名必须变（兜底据此提前醒来）")
+        self.assertEqual(sig[0], base[0], "v2 侧无迁移，领取池计数不得跟着动")
+        self.assertEqual(sig[2], base[2] + 1, "队列侧 retry: 档弃权行计入条数")
+        self.assertEqual(sig[3], base[3] + 1, "epoch 进位即'最新迁移标记'变化")
+
+    def test_v3_final_give_up_does_not_move_signature(self):
+        """v3 的 final: 档弃权同样不得惊动兜底：分档门与回炉口（requeue_failed 缺省
+        只翻 retry: 档）同集，为领不动的行醒来就是空转。"""
+        base = claims.fallback_event(DAY, FB)
+        self._v3_give_up(PHONES["G"], "worker-9@roundhost:9001:063500",
+                         claims.RESULT_FINAL_PREFIX + "failed")
+        self.assertEqual(claims.fallback_event(DAY, FB), base,
+                         "v3 final: 档弃权不得动签名（镜像 v2 的 final 档纪律）")
+
+    def test_v3_fallbacks_own_give_ups_are_excluded(self):
+        """v3 侧同样剔除兜底自己的弃权（含 `{稳定名}:{进程号}:{代次}` 运行时身份）：
+        否则"扫→弃权→签名变→立刻再扫"接成紧循环重登。"""
+        base = claims.fallback_event(DAY, FB)
+        self._v3_give_up(PHONES["G"], FB + ":7777:063500",
+                         claims.RESULT_RETRY_PREFIX + "skipped_window")
+        self.assertEqual(claims.fallback_event(DAY, FB), base,
+                         "兜底自己的 v3 弃权不得再触发自己的唤醒")
 
 
 if __name__ == "__main__":

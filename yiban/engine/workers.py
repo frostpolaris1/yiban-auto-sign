@@ -481,8 +481,13 @@ def _await_pool_event(day, budget_sec):
     """
     owner = os.environ.get("YIBAN_EXECUTOR_ID", "").strip() or egress.fallback_owner()
     last = db.claim_fallback_event(day, owner)
-    for _ in range(max(1, -(-budget_sec // _POOL_WATCH_SEC))):
-        time.sleep(_POOL_WATCH_SEC)
+    # 按剩余预算切分睡眠：节拍取 `min(间隔, 剩余)`——节拍数向上取整会睡超预算，
+    # 预算短于节拍时更不该被迫睡满一整拍才到点。
+    remaining = float(budget_sec)
+    while remaining > 0:
+        step = min(_POOL_WATCH_SEC, remaining)
+        time.sleep(step)
+        remaining -= step
         sig = db.claim_fallback_event(day, owner)
         if sig is None:
             continue
