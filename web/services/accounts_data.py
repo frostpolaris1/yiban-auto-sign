@@ -257,7 +257,7 @@ def fold_phone_code(clean, old_code=None):
     - 其余值原样保留。
 
     `old_code=None` 表示添加路径（没有旧值可保），空串原样留空。返回值供调用方
-    与旧值比对，判定"本次是否改写了指认码"。
+    与旧值比对，判定"本次是否改写了设备识别码"。
     """
     raw = clean.get("phone_code", "")
     if raw == CLEAR_SENTINEL:
