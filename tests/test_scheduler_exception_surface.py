@@ -19,7 +19,8 @@
    本机不可起容器，以配置级断言 + 可执行出口（--check-health 真跑）交付，
    容器内整链生效待生产演练。
 依赖：调度器用例按文件路径加载 docker/scheduler.py + subprocess/time 模块桩
-   （真循环靠 sleep 抛异常打断）；心跳探活 CLI 用例起 sys.executable 子进程；
+   （真循环靠 sleep 抛异常打断）；心跳探活 CLI 用例不加载调度器（心跳手写落盘、
+   起 sys.executable 子进程，缺业务依赖的机器也能跑）；
    run.sh 锁目录用例真起 bash 子进程（无 bash 时整类跳过，同 test_schedule_retry
    惯例）；supervisord/compose 为纯文本/INI 解析断言。不发网络请求。
 
@@ -248,13 +249,31 @@ class HeartbeatTest(_SchedBase):
         os.remove(hb)
         self.assertEqual(self.sched.healthcheck_main(self.tmp), 1)
 
+class CheckHealthCliTest(unittest.TestCase):
+    """--check-health 是可执行出口：compose 的 healthcheck 直接调它（真跑子进程）。
+
+    故意不继承 _SchedBase：CLI 快路在业务导入图之前就 sys.exit，判据只看心跳
+    mtime——心跳手写落盘即可，任何机器（缺业务依赖也一样）都能跑这条反例。
+    """
+
+    HEARTBEAT = "sched-heartbeat.json"   # 与 scheduler.py 的 HEARTBEAT_FILE 同名
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="sched-hb-cli-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.hb = os.path.join(self.tmp, self.HEARTBEAT)
+
+    def _touch(self):
+        with open(self.hb, "w", encoding="utf-8") as fh:
+            json.dump({"pid": os.getpid(),
+                       "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, fh)
+
     def test_check_health_cli_exit_code(self):
-        """--check-health 是可执行出口：compose 的 healthcheck 直接调它（真跑子进程）。"""
         env = dict(os.environ, YIBAN_STATE_DIR=self.tmp)
-        self.sched._touch_heartbeat(self.tmp)
+        self._touch()
         r = subprocess_run_health(env)
         self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
-        os.remove(self._hb_path())
+        os.remove(self.hb)
         r2 = subprocess_run_health(env)
         self.assertEqual(r2.returncode, 1, "心跳缺失必须判非健康")
 
@@ -283,6 +302,7 @@ class SupervisordLivenessTest(unittest.TestCase):
                       "缺省 startsecs=1：启动后第一 tick 崩溃永远赶不上'已启动'判定")
         self.assertIn("startretries", sec,
                       "缺省 startretries=3：秒级三连崩进 FATAL，全天无人再拉起")
+        self.assertGreaterEqual(int(sec["startsecs"]), 5)
         self.assertGreaterEqual(int(sec["startretries"]), 10)
 
     def test_sched_autorestart_still_on(self):

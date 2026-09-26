@@ -229,8 +229,10 @@ def _start_heartbeat():
         while not _heartbeat_stop.wait(HEARTBEAT_INTERVAL):
             try:
                 _touch_heartbeat()
-            except Exception:
-                return  # 心跳线程任何异常都静默退场：观测件绝不把噪声灌进主进程日志
+            except Exception as e:
+                # 单次意外（磁盘抖动等）不该永久杀死心跳线程：线程一退，心跳
+                # 断流就是一份无人可恢复的假不健康。留痕一行后进下一拍继续。
+                print(f"[sched-heartbeat] 心跳落盘异常，下一拍重试: {e!r}", flush=True)
 
     threading.Thread(target=_beat, daemon=True, name="sched-heartbeat").start()
 
