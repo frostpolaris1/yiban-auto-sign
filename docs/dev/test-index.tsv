@@ -834,6 +834,12 @@ tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_latent_separator
 tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_plain_write_preserves_other_lines	G	-	??
 tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_space_shadow_line_is_folded	G	-	`YIBAN_TRACK_SALT = `（= 前带空格、值为空）是同一条键的行，必须折掉。
 tests/test_env_key_line_model.py	WriteEnvKeysTmpCleanupTest.test_failed_replace_leaves_no_tmp	G	-	??
+tests/test_env_line_break_frontend.py	FrontendConstantSourceTest.test_core_reads_rendered_constant	F	node	??
+tests/test_env_line_break_frontend.py	FrontendConstantSourceTest.test_template_renders_backend_constant_into_page	F	node	??
+tests/test_env_line_break_frontend.py	FrontendConstantSourceTest.test_write_api_rejects_body_with_line_break	F	node	??
+tests/test_env_line_break_frontend.py	HasLineBreakBehaviorTest.test_all_ten_separators_detected_and_plain_text_passes	F	node	??
+tests/test_env_line_break_frontend.py	PaintUnknownEnumTest.test_paint_never_rewrites_hidden_input	F	node	??
+tests/test_env_line_break_frontend.py	PaintUnknownEnumTest.test_resolve_keeps_unknown_value	F	node	??
 tests/test_env_line_break_injection.py	AlertBodyLineSafeTest.test_every_splitlines_break_is_escaped	G	-	??
 tests/test_env_line_break_injection.py	AlertBodyLineSafeTest.test_plain_text_untouched_and_repeat_is_stable	G	-	正常值零改动；二次调用不得再改（同一值可能被链路上多处净化）。
 tests/test_env_line_break_injection.py	AmbiguousAdminHashTest.test_ambiguity_recovery_is_one_write_away	G	-	「不 brick」的另一半：把 .env 折叠成唯一一行即恢复登录（无需重启/改代码）。
@@ -864,6 +870,24 @@ tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_key_name_
 tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_ordinary_values_still_write	G	-	不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。
 tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_rejects_every_break_in_key	G	-	??
 tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_rejects_every_break_in_value	G	-	??
+tests/test_env_line_model_unified.py	BothSidesSameSentenceTest.test_each_extra_break_refused_with_identical_message	G	-	??
+tests/test_env_line_model_unified.py	EngineIncomingValidationTest.test_every_break_in_value_is_refused_and_disk_untouched	G	-	??
+tests/test_env_line_model_unified.py	EngineIncomingValidationTest.test_illegal_key_is_refused	G	-	??
+tests/test_env_line_model_unified.py	EngineIncomingValidationTest.test_value_length_cap	G	-	??
+tests/test_env_line_model_unified.py	KeySetDiffTest.test_requested_change_passes_without_false_positive	G	-	??
+tests/test_env_line_model_unified.py	KeySetDiffTest.test_requested_delete_passes	G	-	??
+tests/test_env_line_model_unified.py	KeySetDiffTest.test_writer_added_unrequested_key_rolls_back_and_audits	G	-	??
+tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_legal_add_and_delete	G	-	??
+tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_legal_change_touches_only_target_line	G	-	??
+tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_read_tolerates_existing_wide_separators	G	-	??
+tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_extra_breaks_are_the_eight_beyond_crlf	G	-	??
+tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_line_model_predicate_matches_splitlines	G	-	??
+tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_splitlines_boundary_set_is_exactly_ten	G	-	??
+tests/test_env_line_model_unified.py	SingleLineModelSourceTest.test_engine_exposes_the_canonical_line_model	G	-	??
+tests/test_env_line_model_unified.py	SingleLineModelSourceTest.test_web_env_service_has_no_second_splitlines	G	-	??
+tests/test_env_line_model_unified.py	V2LatentCommentTest.test_route_level_unrelated_save_is_refused	G	-	路由级同型：一次"只改签到模式"的 POST /api/settings 也必须被拒。
+tests/test_env_line_model_unified.py	V2LatentCommentTest.test_u0085_latent_comment_cannot_materialize_admin_hash	G	-	??
+tests/test_env_line_model_unified.py	V2LatentCommentTest.test_u0085_latent_comment_cannot_materialize_global_pause	G	-	??
 tests/test_env_mailer_tls.py	AdminPasswordRotationTest.test_externally_changed_password_bumps_pw_version	H	-	??
 tests/test_env_mailer_tls.py	AdminPasswordRotationTest.test_first_migration_no_bump	H	-	??
 tests/test_env_mailer_tls.py	AdminPasswordRotationTest.test_same_password_no_bump	H	-	??
