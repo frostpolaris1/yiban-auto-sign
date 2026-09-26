@@ -289,12 +289,18 @@ def api_register():
                 role="user",
                 created_at=m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
+                # 审计与 INSERT 同事务：注册即建立账号凭据，中间被杀不留"建了却无痕"。
+                audit_spec={
+                    "username": email,
+                    "action": "user_register",
+                    "target": email,
+                    "detail": "开放注册",
+                },
             )
         except sqlite3.IntegrityError:
             return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
         if not created:
             return jsonify({"error": "该邮箱已注册"}), 400  # OR IGNORE 未实际创建
-        m.db.audit(email, "user_register", email, "开放注册")
     # 成功注册计数：原子重读后递增，避免并发注册丢失计数
     m._bump_window_count(_register_limits(), ip, now, m.REGISTER_WINDOW)
     m.logger.info("新用户注册: %s", m._mask_email(email))
