@@ -62,7 +62,7 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `--delay-ms` | `0` | 每请求固定人工延迟 |
 | `--tail-delay-ms` / `--tail-every` | `0` / `0` | 每 N 个请求追加一次尾延迟 |
 | `--fail-rate` / `--fail-stage` | `0` / `none` | 失败注入概率与注入点（四类故障注入旋钮 `login`/`signIn`/`waf`/`nonjson`，另有 `signPosition` 与假成功档 `login-shallow`；**默认 none=全关，不开零变化**） |
-| `--config` | 空 | 热读 JSON 配置（运行中切换档位，字段同上；场景声明形态的注入旋钮同样可经此热切） |
+| `--config` | 空 | 热读 JSON 配置（运行中切换档位，字段同上；场景声明形态的注入旋钮同样可经此热切；档位名须精确小写，热读通道不做大小写归一） |
 | `--keep-alive` | 关 | 启用 HTTP keep-alive；默认关（每请求新连接，压测更稳、不触发偶发重试） |
 | `--log` | 空 | 逐请求 JSONL 落盘路径 |
 | `--ready-file` | 空 | 启动后写入实际端口，供驱动等待就绪 |

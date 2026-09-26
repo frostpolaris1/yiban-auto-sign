@@ -66,7 +66,7 @@ PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
 PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"
 
 # 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）。
-# WAF/风控/挑战解析/非 JSON 家族**不得手抄**：词元来自 `yiban.security.hard_fail_pattern()`
+# WAF/风控/挑战解析/非 JSON/假成功家族**不得手抄**：词元来自 `yiban.security.hard_fail_pattern()`
 # （与重试档位同一真值源）——此前手抄的词表不含解析失败与非 JSON 文案，探针对该族零预警。
 PROBE_HARD_FAIL_RE = re.compile(
     r"图形验证|图片验证|滑块验证|人机验证|captcha"
