@@ -202,22 +202,31 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
     同类型告警邮件节流 `mail_alert_due` 由调用方传入（`web.app` 的 `_mail_alert_due`）：
     它是既有测试的打桩点（`mock.patch.object(webapp, "_mail_alert_due")`），本模块另持一份
     绑定会让那个桩静默失效。
+
+    **返回值**：本次是否**任一通道真的送达**（邮件 `mailer.send_admin_alert` 或推送
+    `notify.send` 返回 True）。两路都不返回 True（含未配置、节流命中、发送失败）时返回
+    False。调用方据此决定"告警基线是否推进"：只有送达才推进，否则保持待发、下一轮重试。
     """
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
     # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
     # recipients 排在最前是有意的：and 短路让"收件人为空"这一路不去调
     # mail_alert_due，于是不登记时间戳、不白占一个节流窗口
+    mail_sent = False
     if recipients and (force or mail_alert_due(title)):
-        mailer.send_admin_alert(title, content, to=",".join(recipients))
+        # 送达 bool 必须上抛：运输层失败只记日志不抛出，丢掉它就会把"没发出去"
+        # 当成"已送达"推进告警基线，一次发送失败被放大成此后永久静默。
+        mail_sent = bool(mailer.send_admin_alert(title, content, to=",".join(recipients)))
     elif recipients:
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger)
+    push_sent = bool(notify.send(
+        title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger))
     # 推送额度耗尽不再在这里"补一封"：告知并进通道健康报告（web/services/channel_health.py
     # 的 _send_channel_health_report 会取走待告知标记并写进报告正文），与其余通道状态
     # 同源同频——耗尽告知本身是"通道状态"的一部分，挂在每条告警后面只会让它在主告警
     # 之外又刷一层。
+    return mail_sent or push_sent
 
 
 _NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}
