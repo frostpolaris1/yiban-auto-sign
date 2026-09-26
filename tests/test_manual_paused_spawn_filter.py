@@ -101,6 +101,10 @@ class PausedSpawnFilterTest(unittest.TestCase):
                 db._conn.close()
             db._conn = None
         shutil.rmtree(cls.tmp, ignore_errors=True)
+        # 动态加载的 webapp 模块在 setUpClass 里以独占名注册进 sys.modules（供 exec_module
+        # 期自我引用）。类结束若撤销 patch 却留着这条注册，那份绑到已删临时库/已关连接的模块
+        # 身份会滞留整个会话——与 test_rekey 的 pop 同口径补上，恢复 sys.modules 的原貌。
+        sys.modules.pop("webapp_paused_spawn", None)
         for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_FILE",
                   "YIBAN_USERS_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR"):
             os.environ.pop(k, None)
