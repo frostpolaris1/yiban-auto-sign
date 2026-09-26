@@ -870,12 +870,15 @@ tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_key_name_
 tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_ordinary_values_still_write	G	-	不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。
 tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_rejects_every_break_in_key	G	-	??
 tests/test_env_line_break_injection.py	WriteEnvBatchInjectionTest.test_rejects_every_break_in_value	G	-	??
+tests/test_env_line_model_unified.py	BothSidesSameSentenceTest.test_all_eight_wide_breaks_in_one_value_refused_identically	G	-	一个值里同时带全 8 个宽分隔符：两侧仍必须抛同一句、且磁盘零改动。
 tests/test_env_line_model_unified.py	BothSidesSameSentenceTest.test_each_extra_break_refused_with_identical_message	G	-	??
+tests/test_env_line_model_unified.py	BuiltinAdminDirtyEnvLoginTest.test_builtin_admin_login_degrades_on_dirty_env	G	-	??
 tests/test_env_line_model_unified.py	EngineIncomingValidationTest.test_every_break_in_value_is_refused_and_disk_untouched	G	-	??
 tests/test_env_line_model_unified.py	EngineIncomingValidationTest.test_illegal_key_is_refused	G	-	??
 tests/test_env_line_model_unified.py	EngineIncomingValidationTest.test_value_length_cap	G	-	??
 tests/test_env_line_model_unified.py	KeySetDiffTest.test_requested_change_passes_without_false_positive	G	-	??
 tests/test_env_line_model_unified.py	KeySetDiffTest.test_requested_delete_passes	G	-	??
+tests/test_env_line_model_unified.py	KeySetDiffTest.test_rollback_restores_bom_and_crlf_bytes_exactly	G	-	回滚必须是**字节级**：BOM + CRLF 文件被越权写入后按原始字节还原。
 tests/test_env_line_model_unified.py	KeySetDiffTest.test_writer_added_unrequested_key_rolls_back_and_audits	G	-	??
 tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_legal_add_and_delete	G	-	??
 tests/test_env_line_model_unified.py	ReadToleranceAndLegalFlowTest.test_legal_change_touches_only_target_line	G	-	??
@@ -885,6 +888,7 @@ tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_line_model_pred
 tests/test_env_line_model_unified.py	SeparatorLineModelTest.test_splitlines_boundary_set_is_exactly_ten	G	-	??
 tests/test_env_line_model_unified.py	SingleLineModelSourceTest.test_engine_exposes_the_canonical_line_model	G	-	??
 tests/test_env_line_model_unified.py	SingleLineModelSourceTest.test_web_env_service_has_no_second_splitlines	G	-	??
+tests/test_env_line_model_unified.py	V2LatentCommentTest.test_route_level_announcement_draft_is_refused_409	G	-	非设置写点（公告草稿）同样回统一 409 + 清理指引，而非裸 500。
 tests/test_env_line_model_unified.py	V2LatentCommentTest.test_route_level_unrelated_save_is_refused	G	-	路由级同型：一次"只改签到模式"的 POST /api/settings 也必须被拒。
 tests/test_env_line_model_unified.py	V2LatentCommentTest.test_u0085_latent_comment_cannot_materialize_admin_hash	G	-	??
 tests/test_env_line_model_unified.py	V2LatentCommentTest.test_u0085_latent_comment_cannot_materialize_global_pause	G	-	??
@@ -1234,6 +1238,7 @@ tests/test_loadtest_tools.py	test_probe_partition_slices_disjoint	J	-	??
 tests/test_loadtest_tools.py	test_probe_scan_lock_errors	J	-	??
 tests/test_loadtest_tools.py	test_scale_driver_e2e_optional	J	-	??
 tests/test_loadtest_tools.py	test_scripts_help	J	-	??
+tests/test_loadtest_tools.py	test_seed_accounts_upsert_env_uses_line_model	J	-	第三个 .env 写入方（压测造数）也必须并入单一行模型：值含潜伏分隔符即拒且零写盘。
 tests/test_locks.py	D4DivergentLocksRemovedTest.test_notify_state_file_lock_uses_primitive	G	-	??
 tests/test_locks.py	D4DivergentLocksRemovedTest.test_signin_state_file_lock_uses_primitive	G	-	??
 tests/test_locks.py	EnvLockTest.test_account_crypto_does_not_overwrite_existing_key	G	-	先写 key A，再调 _write_key_to_env_file(env, B) 返回 A 且文件仍为 A。

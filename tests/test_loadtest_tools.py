@@ -6,7 +6,7 @@
 覆盖：mock_yiban 全部接口形状 + 失败注入 + JSONL 落盘 + 配置热读 + 默认只绑 loopback；
     scale_driver 的解析/统计纯函数（N=2 模拟日志）；concurrency_probe 的切片、锁错误、
     饱和点判定；capacity_probe 的容量换算与建议值（实测 × 2/3、执行体数、硬件上限）；
-    mock_env 的 hosts 标记块读写与 --dry-run 幂等；五个脚本的 --help 可执行性。
+    mock_env 的 hosts 标记块读写与 --dry-run 幂等；seed_accounts 的 upsert_env 并入 .env 单一行模型（拒潜伏分隔符、保留注释与其余键）；五个脚本的 --help 可执行性。
 对应实现：`scripts/loadtest/` 下的 mock_yiban、scale_driver、concurrency_probe、
     capacity_probe、mock_env、seed_accounts。
 关键断言：容量结论的可信方向——未饱和只能当**下界**、硬件上限要在校准前刹车、
@@ -519,6 +519,30 @@ def test_scripts_help(name):
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     assert "usage:" in r.stdout.lower()
+
+
+def test_seed_accounts_upsert_env_uses_line_model(tmp_path):
+    """第三个 .env 写入方（压测造数）也必须并入单一行模型：值含潜伏分隔符即拒且零写盘。
+
+    旧实现就地宽 `splitlines()` 拆分 + 手写读-改-写，既不校验（可写进分隔符）也非原子；
+    现走 `yiban.infra.env_io.write_env_keys`，与本仓其余写入方同一套校验/折叠/原子替换。
+    """
+    seed_accounts = importlib.import_module("loadtest.seed_accounts")
+    env = tmp_path / "test.env"
+    env.write_text("# 头\nYIBAN_SIGN_ORDER=sequence\nYIBAN_KEEP=1\n", encoding="utf-8")
+    before = env.read_bytes()
+    with pytest.raises(ValueError):
+        seed_accounts.upsert_env(str(env), {"YIBAN_KEEP": "x\u2028y"})
+    assert env.read_bytes() == before, "被拒的 upsert 必须零写盘"
+    # 合法更新：折叠目标键、保留其它键与注释（delete_empty=False：空值仍写 KEY=）
+    seed_accounts.upsert_env(str(env), {"YIBAN_SIGN_ORDER": "random",
+                                        "YIBAN_NEW": "v", "YIBAN_EMPTY": ""})
+    text = env.read_text(encoding="utf-8")
+    assert "YIBAN_SIGN_ORDER=random" in text
+    assert "YIBAN_KEEP=1" in text
+    assert "# 头" in text
+    assert "YIBAN_NEW=v" in text
+    assert "YIBAN_EMPTY=" in text
 
 
 # ---------------------------------------------------------------------------
