@@ -63,13 +63,56 @@ LRkfPxBheozagMaKWfgd+IkdI/CBqvOFS6m/tvzOHnn3fx0TyrhwqId/I3WrHIKX
 ZO2F/jOXAwpzw0UKTwIDAQAB
 -----END PUBLIC KEY-----"""
 
-# 失败注入可选点（与 signin 实际调用的接口一一对应）
-FAIL_STAGES = ("none", "login", "signIn", "signPosition")
+# 失败注入可选点（与 signin 实际调用的接口一一对应）。全部**默认关闭**
+# （none）——不开时对引擎零变化。四类故障注入旋钮 = login / signIn / waf /
+# nonjson（另有历史点 signPosition）：
+#   login      POST /code/usersure 回账密错形态（code != s200）；
+#   signIn     POST 签到提交回业务失败码（非登录阶段的提交失败）；
+#   waf        旧流程真实遇 ydclearance 挑战的落点 GET /iapp7463 回挑战页，
+#              形态对照 `yiban/fyiban/waf.py` 的 looks_like_challenge 真实输入
+#              （window.onload=setTimeout + eval("qo=eval;qo(po);") 双特征 +
+#              Set-Cookie https_ydclearance），保证识别支路按真页走；
+#   nonjson    JSON 期望端点（POST usersure/signIn、GET auth/signPosition）回
+#              200 + >2000 字符拦截 HTML——现网"Expecting value:"腿的形状：
+#              长页过 `security.is_waf_blocked` 的 len 短路后在 .json() 处抛。
+FAIL_STAGES = ("none", "login", "signIn", "signPosition", "waf", "nonjson")
 # 大小写不敏感归一：signIn 这类驼峰名不能被 lower() 直接比较
 _STAGE_CANON = {s.lower(): s for s in FAIL_STAGES}
 
 # 签名/验证路由 -> 登录失败注入使用的「登录点」别名
 LOGIN_FAIL_PATH = "/code/usersure"
+
+# waf 旋钮的挑战页下发时附带的反爬 cookie（真页在浏览器解出前即随响应下发，
+# looks_like_challenge 的第一判据就是它）
+WAF_CHALLENGE_SET_COOKIE = "https_ydclearance=mock01clearance02; Path=/; Domain=.yiban.cn"
+
+
+def waf_challenge_body():
+    """`waf` 旋钮的响应体：ydclearance 挑战页形态。
+
+    逐字对照 `yiban/fyiban/waf.py:looks_like_challenge` 的文本特征对；刻意
+    **不含**可被 `solve_ydclearance` 提取的挑战函数模板——真实改版/半页场景
+    最常触发的就是"识别成挑战但解析失败"，故障注入要喂给分类判据的正是这个
+    最难看的形状。
+    """
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        "<title>verify</title></head><body>"
+        '<script>window.onload=setTimeout("yy(1701368163)", 200);'
+        'eval("qo=eval;qo(po);");</script>'
+        "</body></html>"
+    )
+
+
+def nonjson_block_body():
+    """`nonjson` 旋钮的响应体：>2000 字符的拦截 HTML。
+
+    现网 `Expecting value:` 文案的产生条件是"长拦截页过了按短响应设计的
+    is_waf_blocked 长度界、再被 .json() 判死"，故此处刻意超界且非 JSON。
+    """
+    head = ("<!DOCTYPE html><html><head><title>访问拦截</title></head><body>"
+            "<p>您的访问存在风险访问，已被拦截，请联系管理员</p><!--")
+    return head + "p" * 2400 + "--></body></html>"
 
 
 def _now_epoch_ms() -> float:
@@ -278,10 +321,12 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                 time.sleep(d)
             return d
 
-        def _send(self, body: bytes, code: int, ctype: str):
+        def _send(self, body: bytes, code: int, ctype: str, extra_headers=()):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            for name, value in extra_headers:
+                self.send_header(name, value)
             if not keep_alive:
                 self.send_header("Connection", "close")
                 self.close_connection = True
@@ -310,6 +355,23 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
         def _should_fail(self, cfg, stage) -> bool:
             return (cfg.get("fail_stage") == stage
                     and random.random() < float(cfg.get("fail_rate", 0) or 0))
+
+        def _maybe_inject(self, cfg, kind) -> bool:
+            """按旋钮形态应答（waf=挑战页 / nonjson=>2000 拦截 HTML）。
+
+            命中即已发响应并返回 True（调用方据此记账 injected）；未命中零副作用
+            返回 False——旋钮默认关闭时这里恒 False，现行为零变化。
+            """
+            if not self._should_fail(cfg, kind):
+                return False
+            if kind == "waf":
+                self._send(waf_challenge_body().encode("utf-8"), 200,
+                           "text/html; charset=utf-8",
+                           extra_headers=[("Set-Cookie", WAF_CHALLENGE_SET_COOKIE)])
+            else:
+                self._send(nonjson_block_body().encode("utf-8"), 200,
+                           "text/html; charset=utf-8")
+            return True
 
         # ---- HTTP 入口 ----
         def do_GET(self):
@@ -350,23 +412,31 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                 elif p == "/base/c/auth/yiban":
                     # 带 verifyRequest = 完成认证（两条流程的最后一步）；
                     # 不带 = 旧 iOS 流程的第 1 步：取 OAuth 入口 URL（客户端据此再请求）
-                    if "verifyRequest" in self.path:
-                        self._send_json({"code": 0, "data": {}, "msg": ""})
-                    else:
-                        self._send_json({"code": 0, "data": {
-                            "Data": "https://oauth.yiban.cn/code/html"
-                                    "?client_id=95626fa3080300ea"
-                                    "&redirect_uri=https://f.yiban.cn/iapp7463"}})
+                    injected = self._maybe_inject(cfg, "nonjson")
+                    if not injected:
+                        if "verifyRequest" in self.path:
+                            self._send_json({"code": 0, "data": {}, "msg": ""})
+                        else:
+                            self._send_json({"code": 0, "data": {
+                                "Data": "https://oauth.yiban.cn/code/html"
+                                        "?client_id=95626fa3080300ea"
+                                        "&redirect_uri=https://f.yiban.cn/iapp7463"}})
                 elif p == "/iapp7463":
-                    # 旧 iOS 流程第 4 步的落地页：再跳一次，令牌在下一跳的 Location 里
-                    self._send_redirect(
-                        "https://c.uyiban.com/iframe/index?act=iapp7463")
+                    # 旧 iOS 流程第 4 步的落地页：再跳一次，令牌在下一跳的 Location 里。
+                    # waf 旋钮的真实注入点——两条流程里只有这里会被
+                    # looks_like_challenge 检查（protocol.py 的 ydclearance 支路）
+                    injected = self._maybe_inject(cfg, "waf")
+                    if not injected:
+                        self._send_redirect(
+                            "https://c.uyiban.com/iframe/index?act=iapp7463")
                 elif p == "/nightAttendance/student/index/signPosition":
                     injected = self._should_fail(cfg, "signPosition")
                     if injected:
                         self._send_json({"code": 1, "msg": "mock injected signPosition failure"})
                     else:
-                        self._send_position()
+                        injected = self._maybe_inject(cfg, "nonjson")
+                        if not injected:
+                            self._send_position()
                 else:
                     self._send_json({"code": 404, "msg": "not found"}, code=404)
                 if not is_ops:
@@ -397,6 +467,8 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                     injected = self._should_fail(cfg, "login")
                     if injected:
                         self._send_json({"code": "e001", "msgCN": "mock injected login failure"})
+                    elif self._maybe_inject(cfg, "nonjson"):
+                        injected = True
                     elif b"scope=1%2C2%2C3%2C4%2C" in body:
                         self._send_json({"reUrl": "https://f.yiban.cn/iapp7463"})
                     else:
@@ -405,6 +477,8 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                     injected = self._should_fail(cfg, "signIn")
                     if injected:
                         self._send_json({"code": 1, "msg": "mock injected signIn failure"})
+                    elif self._maybe_inject(cfg, "nonjson"):
+                        injected = True
                     else:
                         self._send_json({"code": 0, "data": {"Id": "1", "Msg": "ok"}})
                 else:
@@ -510,7 +584,12 @@ def main(argv=None):
                     help="每 N 个请求追加一次尾延迟（<=0 关闭）")
     ap.add_argument("--fail-rate", type=float, default=0.0, help="失败注入概率 0~1")
     ap.add_argument("--fail-stage", default="none", choices=list(FAIL_STAGES),
-                    help="失败注入点（none 关闭）")
+                    help="故障注入旋钮（默认 none=全关，不开零变化）：login=登录端点回"
+                         "账密错形态；signIn=签到提交回业务失败；signPosition=拉任务失败；"
+                         "waf=旧流程挑战落点 GET /iapp7463 回 ydclearance 挑战页"
+                         "（形态对照 yiban/fyiban/waf.py 识别输入）；nonjson=JSON 期望"
+                         "端点回 200+超长拦截 HTML（现网 Expecting value: 形状）。"
+                         "作用域为全局按端点路由；亦可经 --config 热读场景声明运行中切换")
     ap.add_argument("--config", default="",
                     help="热读配置 JSON 路径（字段同上方参数，可运行中切换档位）")
     ap.add_argument("--log", default="", help="逐请求 JSONL 落盘路径（缺省不落盘）")
