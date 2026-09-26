@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """审计追责链的活体反例：同事务、判码、欠账归零、删尾与整链重签。
 
-MF-53 的缺陷是"写了但追不到人、丢了你不知道"：业务写与审计写永远两个事务（中间
+被整改的缺陷是"写了但追不到人、丢了你不知道"：业务写与审计写永远两个事务（中间
 被杀即"做了无留痕、欠账仍为 0"）；无会话/请求 id；`audit_head_hash` 读失败与空链同
 返回 `""`；欠账单调无归零口径（urgent 永久刷屏）；`_rechain_audit_logs` 分批 commit
 击穿原子承诺；`audit_verify.py` 无顶层兜底（`database is locked` 以 exit 1 冒充"检出
@@ -126,7 +126,7 @@ class SameTransactionTest(_Fixture):
     def test_kill_between_business_and_audit_leaves_neither(self):
         """真子进程在 audit_unit 体内做完业务写后 os._exit ⇒ 业务与审计都不留。
 
-        复现 MF-53 的丢法：旧实现里业务 COMMIT 与 audit() 的 COMMIT 之间被杀，
+        复现整改前的丢法：旧实现里业务 COMMIT 与 audit() 的 COMMIT 之间被杀，
         业务效果在库、审计表无此条且欠账计数仍为 0（欠账检测结构性看不见）。
         同事务后该窗口不存在：未提交事务随进程退出被 SQLite 回滚。
         """

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""loadtest 隔离链 fail-closed 断言（MF-68 高）。
+"""loadtest 隔离链 fail-closed 断言。
 
 标签：J · 运维：部署/备份/发布
 覆盖：任务 4 的四条「启动即断言 / 记账对平」验收不变量（全部真执行，不做源码断言）：

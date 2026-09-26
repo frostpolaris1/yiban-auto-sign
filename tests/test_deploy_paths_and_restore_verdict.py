@@ -6,7 +6,7 @@
 覆盖：`YIBAN_STATE_DIR`/`YIBAN_LOG_FILE` 在 `.env` 与进程环境两种来源下的解析优先级、
     引擎与 web 常量是否跟随 .env、backup.sh `--restore` 的四种结论（通过/篡改/工具崩溃/
     工具缺失）、备份日志目录跟随配置、pull-prod-backup 脚本的参数/只读/新鲜度契约与
-    环境变量注入护栏（MF-78：全部行为断言，ssh/scp 桩记录 argv 并真执行远端命令串）。
+    环境变量注入护栏（全部行为断言，ssh/scp 桩记录 argv 并真执行远端命令串）。
 对应实现：路径解析在 `yiban/infra/paths.py` 与 `run.sh`/`web/app.py`；恢复核验与结论
     分类在 `scripts/backup.sh` 的 `--restore` 分支。
 关键断言：① 进程环境优先于 .env，空值继续回落到默认值；② 恢复核验退出码 0=通过、
@@ -280,7 +280,7 @@ class BackupLogDirTest(unittest.TestCase):
 
 SCRIPT = os.path.join(BASE, "scripts", "pull-prod-backup.sh")
 
-# ---- MF-78 行为测试脚手架：记录 argv 且**真的执行**远端命令串的 ssh/scp 桩 ----
+# ---- 行为测试脚手架：记录 argv 且**真的执行**远端命令串的 ssh/scp 桩 ----
 # 桩把收到的远端命令串原样交给 bash -c 跑：注入若成立（探针文件出现）即护栏失守；
 # 护栏生效 ⇒ 桩根本不会被调用（校验前置），或被调用的串里只有 ls/sha256sum 等合法命令。
 # 主机名与路径全部合成（prod.example / /tmp 夹具），无任何真实凭据或现网名。
@@ -412,7 +412,7 @@ class _PullRunBase(unittest.TestCase):
 
 
 class PullProdBackupBehaviorTest(_PullRunBase):
-    """既有 10 条 assertIn 源码文本契约（假绿族，MF-78 登记）改造为行为断言。"""
+    """既有 10 条 assertIn 源码文本契约（假绿族整改项）改造为行为断言。"""
 
     def test_bash_syntax_ok(self):
         r = subprocess.run([self.bash, "-n", SCRIPT], capture_output=True)
@@ -575,7 +575,7 @@ class PullProdBackupBehaviorTest(_PullRunBase):
 
 
 class PullProdBackupInjectionTest(_PullRunBase):
-    """MF-78 活体反例：三个进远端命令串的环境变量都必须被白名单挡在门外（rc=3，
+    """活体反例：三个进远端命令串的环境变量都必须被白名单挡在门外（rc=3，
     任何远端命令都不许被执行——ssh 桩记录必须为空、注入探针文件必须不出现）。"""
 
     def _assert_refused(self, extra_env, var_name, rc_expected=3):

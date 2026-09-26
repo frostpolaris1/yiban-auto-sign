@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""backup.sh 的活体端到端契约（M3 批次0：MF-76 / MF-79 / MF-80 / MF-77 / MF-10）。
+"""backup.sh 的活体端到端契约（加密可解才删明文 / 明文模式护栏 / tar 护栏判码 / 轮转下界 / 行为断言取代源码文本断言）。
 
 标签：J · 运维：部署/备份/发布
 覆盖：以真实 bash 子进程跑 `scripts/backup.sh`（gpg/tar/find 按需注入故障桩），钉四条
     验收不变量：
-    ① 可解才删明文（MF-76）——加密产物必须过"解密→解包→integrity"回环才允许删除
+    ① 可解才删明文——加密产物必须过"解密→解包→integrity"回环才允许删除
       明文与出清单；回环失败 ⇒ 明文仍在、无清单、rc=7；加密整体失败 ⇒ 明文仍在、
       rc=6（不再是静默 0）。正例用真实 gpg 加密 + 真实 `--restore` 闭环。
-    ② 明文模式护栏（MF-79）——BACKUP_PLAINTEXT=1 ⇒ stderr 大字告警 + 专用退出码 6
+    ② 明文模式护栏——BACKUP_PLAINTEXT=1 ⇒ stderr 大字告警 + 专用退出码 6
       + 备份目录 chmod 0700；且产物**不被哨兵计为健康**。
-    ③ tar 护栏判码（MF-80）——tar 列目录失败时护栏必须执行并让脚本失败（旧实现
+    ③ tar 护栏判码——tar 列目录失败时护栏必须执行并让脚本失败（旧实现
       pipefail 下三条护栏整体被跳过）；符号链接/路径穿越/设备节点逐类真包反证。
-    ④ 轮转下界（MF-77）——RETENTION_DAYS<1 或非数字 ⇒ 拒绝执行；按文件名日期保留
+    ④ 轮转下界——RETENTION_DAYS<1 或非数字 ⇒ 拒绝执行；按文件名日期保留
       最近 K 组地板；明文包过期从紧（2 天）；轮转误删当日包 ⇒ rc=8。
 对应实现：`scripts/backup.sh`（纯 shell）、`scripts/backup_sentinel.py`（②的哨兵断言）。
 关键断言：全部是**行为断言**——执行真脚本、检查真产物、读真退出码——不 grep backup.sh
@@ -173,7 +173,7 @@ class _BackupRunBase(unittest.TestCase):
 
 
 class PlaintextGuardTest(_BackupRunBase):
-    """MF-79 修法2：明文模式要"看得见、认得出、目录不裸奔"，且产物不算健康。"""
+    """明文模式护栏：要"看得见、认得出、目录不裸奔"，且产物不算健康。"""
 
     def test_plaintext_run_warns_on_stderr_exits_dedicated_rc6(self):
         r, out = self._run_plaintext()
@@ -195,7 +195,7 @@ class PlaintextGuardTest(_BackupRunBase):
         self.assertEqual(mode, 0o700, f"备份目录必须收紧到 0700（MF-79），实际 {oct(mode)}")
 
     def test_plaintext_artifact_not_healthy_for_sentinel(self):
-        """MF-79 验收不变量的 e2e 侧：backup.sh 真产出的明文包，哨兵判不健康并发告警。"""
+        """明文模式护栏验收不变量的 e2e 侧：backup.sh 真产出的明文包，哨兵判不健康并发告警。"""
         r, out = self._run_plaintext()
         self.assertEqual(r.returncode, 6, out)
         import importlib.util
@@ -220,7 +220,7 @@ class PlaintextGuardTest(_BackupRunBase):
 
 
 class EncryptRoundtripTest(_BackupRunBase):
-    """MF-76 修法1：可解才删明文；不可解 ⇒ 明文仍在、不出清单、非 0 退出。"""
+    """可解才删明文：不可解 ⇒ 明文仍在、不出清单、非 0 退出。"""
 
     def _pass_env(self):
         return {"BACKUP_GPG_PASSPHRASE": FAKE_PASSPHRASE}
@@ -277,7 +277,7 @@ class EncryptRoundtripTest(_BackupRunBase):
 
 
 class RestoreGuardTest(_BackupRunBase):
-    """MF-80 修法4：tar 失败时三条护栏必须执行且脚本失败；恶意条目逐类真包反证。"""
+    """tar 护栏判码：tar 失败时三条护栏必须执行且脚本失败；恶意条目逐类真包反证。"""
 
     def _pkg(self, members):
         """members: [(name, type|None, content)]，type∈{None,'l','c'}。"""
@@ -350,7 +350,7 @@ class RestoreGuardTest(_BackupRunBase):
 
 
 class RotationGuardTest(_BackupRunBase):
-    """MF-77 修法5：RETENTION 校验、最近 K 组下界、明文从紧、逐件日志、当日件自检。"""
+    """轮转下界：RETENTION 校验、最近 K 组下界、明文从紧、逐件日志、当日件自检。"""
 
     def _seed_group(self, day, days_old, suffix=".tar.gz.gpg"):
         base = os.path.join(self.backups, f"yiban-{day}{suffix}")

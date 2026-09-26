@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""生产执行件入库与部署断言（M3 批次0：MF-42 高 / MF-41 仓内半条 / 真名示例）。
+"""生产执行件入库与部署断言（M3 批次0：执行件入版本控制（高）/ 基线拉不到（仓内半条）/ 真名示例）。
 
 标签：J · 运维：部署/备份/发布
 覆盖：e2e 为准——全部真跑 bash 子进程 + 真实文件系统，不 grep 被测脚本源码。逐面：
@@ -67,7 +67,7 @@ printf '%s\\n' "$@" > "$STUB_ARGS_FILE"
 exit "${STUB_EXIT:-0}"
 """
 
-# 旧生产形态（MF-42 现象原文）：export 把口令带进整棵子进程树——活体反例用
+# 旧生产形态（登记的现象原文）：export 把口令带进整棵子进程树——活体反例用
 LEGACY_EXPORT_WRAPPER = """#!/usr/bin/env bash
 set -euo pipefail
 export BACKUP_GPG_PASSPHRASE="$(cat "$YIBAN_BACKUP_PASSPHRASE_FILE")"
@@ -199,7 +199,7 @@ class CronProvenanceTest(_TmpBase):
         self.assertIn("definitely-not-here.sh", self._out(r))
 
     def test_live_counterexample_unprovenanced_path_goes_red(self):
-        """活体反例（MF-91）：往 cron 表加一个无来源可执行路径 ⇒ 非 0 且点名。"""
+        """活体反例：往 cron 表加一个无来源可执行路径 ⇒ 非 0 且点名。"""
         d = os.path.join(self.tmp, "cron.d")
         shutil.copytree(CRON_DIR, d)
         with io.open(os.path.join(d, "yiban-sign"), "a", encoding="utf-8", newline="\n") as f:
@@ -278,7 +278,7 @@ class WrapperPassphraseTest(_TmpBase):
         self._assert_child_env_clean()
 
     def test_legacy_export_wrapper_goes_red_under_same_checker(self):
-        """活体反例（MF-91）：把旧 export 形态喂给同一检查器 ⇒ 必须判脏。"""
+        """活体反例：把旧 export 形态喂给同一检查器 ⇒ 必须判脏。"""
         legacy = os.path.join(self.tmp, "legacy-wrapper.sh")
         _write(legacy, LEGACY_EXPORT_WRAPPER, 0o755)
         r = self._run_wrapper(legacy)
@@ -470,7 +470,7 @@ class CheckDeployTargetTest(_TmpBase):
         self.assertIn(self.sha_on_remote[:7], out)
 
     def test_target_missing_on_remote_goes_red(self):
-        """活体反例：MF-41 现状（gitee 停在旧提交 ⇒ 部署不可达）必须红。"""
+        """活体反例：整改前现状（gitee 停在旧提交 ⇒ 部署不可达）必须红。"""
         r = self._check(self.sha_local_only)
         self.assertNotEqual(r.returncode, 0, "目标提交不在远端却报可达 ⇒ 断言是假的")
         out = self._out(r)

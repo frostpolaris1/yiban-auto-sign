@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """审计锚点自检的活体反例：把输入改坏，工具必须响。
 
-MF-52 的缺陷是"判据在自动层面等于没有"：锚点文件只判"行数变少/相等"两支，
+被整改的缺陷是"判据在自动层面等于没有"：锚点文件只判"行数变少/相等"两支，
 **仅追加 1 条垃圾行**就让两道判据同时返回"无异常"；非法 UTF-8 抛
 `UnicodeDecodeError`，被 web 每日线程的兜底 except 吞成一条 WARNING ⇒ 当日校验
 整体不执行；无密钥即可伪造被采信的 v2 锚点行（`prev_line_hash` 是无密钥 sha256，
@@ -409,7 +409,7 @@ class WitnessThreeWayTest(_Fixture):
     def test_double_write_attacker_is_caught_by_independent_file(self):
         """模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
 
-        这是 MF-52 唯一"权限实测"的缺口：锚点与库内指纹同属应用身份，删掉最近 N 条
+        这是该缺陷唯一"权限实测"的缺口：锚点与库内指纹同属应用身份，删掉最近 N 条
         审计后把两者一起改写即可自洽。独立见证由另一属主写入，改不动，于是留下缺口。
         删掉见证后同一手双写不再有独立证据可比对（锚点判据确实看不出），但按控制面
         可用性 fail-closed，见证缺失本身即判不健康——攻击拿不到 healthy=True。
@@ -556,7 +556,7 @@ class CorruptAnchorMetaTest(_Fixture):
     `_anchor_file_state_ex` 读它的 `lines` 字段时若直接 int()，一个非数字值就会抛
     ValueError；两个调用点分别位于 `_anchor_status` 与 `audit_health` 的 try 之外，
     一次手工损坏即让每日体检整体抛异常、被 web 日线线程吞成 WARNING —— 当日校验
-    静默不跑（正是 MF-52 的失败形态）。加固：库内字段与见证文件字段同等对待，
+    静默不跑（正是被整改的失败形态）。加固：库内字段与见证文件字段同等对待，
     损坏 ⇒ indeterminate/corrupt 降级，healthy=False。
     """
 

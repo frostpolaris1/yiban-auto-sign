@@ -133,7 +133,7 @@ class ExitTrailTest(RunShExitTrailTest):
         self._assert_exit_line(text, 0)
 
     def _seed_success_facts(self):
-        """MF-82 同批更新：SUCCESS 现在要与库内当日事实交叉核对后才采信。
+        """同批更新：SUCCESS 现在要与库内当日事实交叉核对后才采信。
 
         给 run.sh 一个可执行的解释器（$APP_DIR/.venv/bin/python3 包装，交叉核对
         走 $PY 直查 sqlite，不经假 timeout）+ 一个种了当日 done 行的临时库。
@@ -167,7 +167,7 @@ class ExitTrailTest(RunShExitTrailTest):
         self._assert_exit_line(text, 0)
 
     def test_forged_success_status_is_not_the_skip_path(self):
-        """MF-82 活体反例（本文件侧的钉）：手写 SUCCESS、库内当日无完成 ⇒
+        """活体反例（本文件侧的钉）：手写 SUCCESS、库内当日无完成 ⇒
         该路径不再是"已签到成功跳过"——拒绝采信 + 告警，本轮照常执行。"""
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
         db = self._seed_success_facts()

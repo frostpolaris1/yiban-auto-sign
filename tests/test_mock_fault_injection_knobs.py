@@ -716,7 +716,7 @@ class RunShKnobChainTest(unittest.TestCase):
             "/code/html", "/code/usersure", "/iframe/index", "/base/c/auth/yiban",
         ], 1)
 
-    # ---- 引擎档位闭环：MF-71 的"总尝试=1 + 清会话"在全链上的第三方证据 ----
+    # ---- 引擎档位闭环：风控档位"总尝试=1 + 清会话"在全链上的第三方证据 ----
     def test_waf_knob_engine_loop_single_attempt_clears_cache(self):
         """waf 旋钮 → 真实 attempt_signin 链 → 挑战解析失败 → 显式档：尝试 1 次即止、
         种子会话缓存被联动清除、mock 记账恰为**一次**登录链（旧档位=3 次在此为红）。"""

@@ -106,8 +106,8 @@ class StatusSingleSourceTest(unittest.TestCase):
         self.assertIn(yiban_status.STATUS_PENDING, yiban_status.ICON)
         self.assertNotIn(yiban_status.STATUS_PENDING, yiban_status.SYMBOL)
 
-    # ---- 前端"第二份表"的漂移门（清扫单⑪：MF-45 明列不属其范围、MF-54 同族）----
-    # 仪表盘与 my-accounts 各留一份状态表，完整单源接线属前后端协同的 MF-54，本批不
+    # ---- 前端"第二份表"的漂移门（清扫单⑪：急停可见性整改明列不属其范围、"同一事实 N 份定义"同族）----
+    # 仪表盘与 my-accounts 各留一份状态表，完整单源接线属前后端协同的"同一事实 N 份定义"总账，本批不
     # 强推渲染改造；但把它们与唯一事实源 `yiban.status` 之间**可静默分叉**的两处
     # （键集合 / 完成文案）钉成测试，杜绝"加状态码 / 改文案而漏改前端"的无声漂移。
 
