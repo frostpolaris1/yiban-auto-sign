@@ -7,7 +7,8 @@
     口径差异（认领表侧只认 done、`queue_store.SETTLED_STATES` 认 done+skipped、
     `TASKS_OPEN_STATES` 与 `TASKS_SETTLED_STATES` 合起来必须覆盖全词表）；
     `is_concluded_status` 对空串/缺键/未知值/首尾空白的判定；补签轮剔除与
-    `state_io.has_undone_accounts_today`（领取池当日有行时以池为准，无行才回退状态文件）；
+    `state_io.has_undone_accounts_today`（池与状态文件两个事实源取并集，任一有活即
+    未了结；池当日无行时状态文件才是唯一源）；
     窗口外跳过预筛不得改写未知状态。
 对应实现：集合与判定的**权威定义全在 `yiban/status.py`**（`ALL_STATUSES`、
     `CONCLUDED_JSON_STATUSES`、`UNDONE_STATUSES`、`CLAIM_DONE_STATUSES`、
@@ -293,7 +294,12 @@ class WindowSkipPrefilterAgreementTest(unittest.TestCase):
 
 
 class HasUndoneAccountsTest(unittest.TestCase):
-    """`has_undone_accounts_today` 按源择一的行为不变。"""
+    """`has_undone_accounts_today` 取并集：池与状态文件任一"有活"即未了结。
+
+    封存/补签判定的前置必须是**库内事实**：领取池回答"领到的那些了结没有"，状态文件
+    回答"每个账号最后写成什么状态"——池里有行且全 `done` 不等于当日已了结（整批没领/
+    部分没轮到时，池根本不知道这些账号的存在），池判干净后仍要过一遍状态文件。
+    """
 
     DAY = "2026-09-16"
 
@@ -319,13 +325,16 @@ class HasUndoneAccountsTest(unittest.TestCase):
     def _undone(self):
         return state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY)
 
-    def test_claims_rows_win_over_state_file(self):
-        """池里当日有行即以池为准：状态文件的 failed 不改变结果。"""
+    def test_pool_clean_state_file_open_still_counts_undone(self):
+        """池干净不豁免状态文件：账号最后是 failed（未了结词表）⇒ 仍判未了结。"""
         self._write_state({PHONE: {"status": yiban_status.STATUS_FAILED}})
         with self._pool(1, 0):
-            self.assertFalse(self._undone())
+            self.assertTrue(self._undone())
         with self._pool(1, 1):
             self.assertTrue(self._undone())
+        self._write_state({PHONE: {"status": yiban_status.STATUS_SUCCESS}})
+        with self._pool(1, 0):
+            self.assertFalse(self._undone())
 
     def test_falls_back_to_state_file_without_claims_rows(self):
         """池里当日无行（还没人领过）才回退状态文件。"""

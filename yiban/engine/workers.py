@@ -97,7 +97,12 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     - 退出码汇总取"最严重"的一个：schema 迁移完整性拒启(4)（MF-40，整轮不可信）最优先，
       其次补签轮判定的「需要补跑」(10) 原样透出且优先于其余判定
       （它表达调用方必须区分的语义，归一成 0 会让补签轮被静默吞掉），再其后才是
-      真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
+      真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。**任何**非零子退出码都会被
+      接住：信号杀（负数）与契约外的未知码统一折进真失败(1)——"其余归 0"曾让
+      被 SIGKILL 的执行体把整轮报成成功，宿主据此写 SUCCESS 并弹开当日恢复腿；
+    - 全量完成标记（sched-run-<日期>.json）由**本函数单点写**（仅在全部子执行体
+      正常退出、且无迁移拒启时写一次）；子执行体不各写一份，"当日全量已收尾"
+      因此重新等于事实；
       调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致；容器侧不消费本
       退出码（docker/scheduler.py 的补签闸门读状态文件判定）。
     - 全局锁拿不到时**不拉起任何子进程**，直接以 3（锁忙族）返回（fail-closed，
@@ -197,19 +202,56 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
         if rc is not None and rc < 0:
             _reap_dead_worker(slot_list[i])
 
+    # rc 契约（宿主 run.sh 与容器读的是**同一份码**）：任何非零子退出码都必须被汇总
+    # 结果接住，**不得归 0**——`Popen.poll()` 对信号杀返回负数（-9 = SIGKILL），
+    # 外部击杀/解释器异常还可能给出契约外的正码（如 124）；这些旧实现一律折进
+    # "其余归 0"，宿主据此写 SUCCESS，补签判定被同一份坏 rc 否决、当日恢复腿整条弹开。
+    # 负数与未知码统一折进"真失败"(1)，码值不新增；已知优先序逐字不变。
     if any(c == cli_support.EXIT_SCHEMA_MIGRATION for c in codes):
         # 迁移完整性拒启（MF-40）：任一执行体判定 schema 半升级，本轮账目整体不可信
         # ⇒ 优先于补签判定透出。
-        return cli_support.EXIT_SCHEMA_MIGRATION
-    if any(c == _SECOND_RUN_CHECK_NEED for c in codes):
-        return _SECOND_RUN_CHECK_NEED
-    if any(c == 1 for c in codes):
-        return 1
-    if any(c == 3 for c in codes):
-        return 3
-    if any(c == 2 for c in codes):
-        return 2
-    return 0
+        _round_settled = False
+        _final = cli_support.EXIT_SCHEMA_MIGRATION
+    elif any(c == _SECOND_RUN_CHECK_NEED for c in codes):
+        _round_settled = all(_settled_child_code(c) for c in codes)
+        _final = _SECOND_RUN_CHECK_NEED
+    elif any(c is None or c < 0 or c == 1 or c not in (0, 1, 2, 3) for c in codes):
+        # 真失败(1)：契约内的 1 原样透出；信号杀（负数）、`None`、契约外的未知码
+        # （外部击杀的 124、解释器异常的杂码）**统一折进同一支**——rc 契约不新增
+        # 码值，两种来源共享"真失败"这一个处置。
+        _round_settled = all(_settled_child_code(c) for c in codes)
+        _final = 1
+    elif any(c == 3 for c in codes):
+        _round_settled = all(_settled_child_code(c) for c in codes)
+        _final = 3
+    elif any(c == 2 for c in codes):
+        _round_settled = all(_settled_child_code(c) for c in codes)
+        _final = 2
+    else:
+        _round_settled = all(_settled_child_code(c) for c in codes)
+        _final = 0
+    # 全量完成标记（sched-run-<日期>.json）**单点写在本函数**：旧实现由每个子执行体
+    # 在 `runner.main` 末尾各写一份——先收尾的那份会把"还有执行体被杀/没跑完"的
+    # 事实盖掉，"当日全量已收尾"从此不可信。现在只有监督进程在全员正常退出后写一次；
+    # 子执行体侧的写入口按身份（`YIBAN_EXECUTOR_ID`）关停，见 `runner.main`。
+    # 只读校验形态（--check-config / --probe / --second-run-check 派发给子执行体）
+    # 不作证"全量已收尾"：那类轮次一个账号都不签，写标记等于谎报。
+    _readonly_round = any(a in ("--check-config", "--probe", "--second-run-check")
+                          for a in argv)
+    if _round_settled and not _readonly_round:
+        state_io._write_sched_done()
+    return _final
+
+
+def _settled_child_code(rc):
+    """该子退出码是否代表"跑到了自己的收尾"（可为全量完成标记作证）。
+
+    只认契约内的正常退出族（0/1/2/3 与透出的 10）：负数（信号杀）、`None`、迁移拒启(4)
+    以及契约外的未知码（外部击杀给出的 124、解释器异常的杂码）**都不算**——这些情形
+    执行体没走到自己的收尾链路，整轮是否了结必须由下一触发按库内事实重判，
+    标记一次都不该替它说"已做完"。
+    """
+    return rc in (0, 1, 2, 3, _SECOND_RUN_CHECK_NEED)
 
 
 def _reap_dead_worker(slot):

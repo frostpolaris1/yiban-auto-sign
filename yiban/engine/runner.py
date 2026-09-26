@@ -639,7 +639,12 @@ def main(argv=None):
 
     # 全量运行完成标记：调度器首签/补签闸门的事实源。
     # 仅全量模式写入；--only 手动签到不写——手动成功不得压制调度器当日判定。
-    if not args.only:
+    # 多执行体形态下**只有监督进程写这一标记**（`workers.run_worker_supervisor`）：
+    # 子执行体各写一份时，先收尾的那份会盖掉"还有兄弟被杀/没跑完"的事实，
+    # "当日全量已收尾"从此不可信，补签闸门随之被喂假信号。子进程都带着监督进程
+    # 注入的 `YIBAN_EXECUTOR_ID`（`_already_child` 分流判据即此），据此关停本行。
+    # 单执行体直跑（无监督进程、无该身份）仍是自写——它本来就是这个标记的唯一作者。
+    if not args.only and not _already_child:
         state_io._write_sched_done({"ok_n": ok_n, "fail_n": fail_n, "skip_n": skip_n})
 
     # 退出码（run.sh 依据退出码写状态文件）：
