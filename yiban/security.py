@@ -19,8 +19,8 @@
   长度限制一律判拦；**仅关键词**命中才按**短响应**设界，避免把含"风控""拦截"字样的
   正常法律文本误判成拦截页。
 - `HARD_FAIL_TOKENS` / `is_hard_fail_message` / `hard_fail_pattern` —— 失败分类的**唯一
-  真值源**（挑战解析/白名单/非 JSON 响应三类确定性失败），`engine.attempts`（重试档位）与
-  `engine.probe`（硬失败预警）都从这里取，全仓不得出现第二份手抄清单。
+  真值源**（挑战解析/白名单/非 JSON 响应/无签发方回执四类确定性失败），`engine.attempts`
+  （重试档位）与 `engine.probe`（硬失败预警）都从这里取，全仓不得出现第二份手抄清单。
 
 **归属**
 `yiban` 包根的安全策略实现层，服务第三方隔离层：`yiban.client` 把本模块的函数组装成
@@ -68,13 +68,15 @@ WAF_BLOCKED_MESSAGE = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理
 # - "Expecting value"：requests 对非 JSON 响应调 .json() 的固定报错开头——JSON 期望
 #   端点返回了整页 HTML（典型为漏过关键词检测的长拦截页），属响应形状问题，与凭据和
 #   网络瞬断都无关，同样重试无用。
-# 这些消息是 `waf.py`/requests 的 raise **输出**，本表按前缀词元匹配、不复制文案全文；
-# 新增解析失败路径只要消息仍含词元即自动入档（词元变更须与产生方同批核对）。
-HARD_FAIL_TOKENS = ("ydclearance", "Expecting value")
+# - "无签发方回执"：最终认证应答 code==0 但缺 data 载荷（协议层的签发回执判据）——
+#   重发同一请求只会再拿到同一份无回执应答，且会话残破没有复用价值，与上两类同档。
+# 这些消息是 `waf.py`/requests/`protocol.py` 的 raise **输出**，本表按前缀词元匹配、
+# 不复制文案全文；新增解析失败路径只要消息仍含词元即自动入档（词元变更须与产生方同批核对）。
+HARD_FAIL_TOKENS = ("ydclearance", "Expecting value", "无签发方回执")
 
 
 def is_hard_fail_message(message):
-    """该失败消息是否属"确定性硬失败"（挑战解析/白名单/非 JSON）——档位判据的唯一入口。"""
+    """该失败消息是否属"确定性硬失败"（挑战解析/白名单/非 JSON/无回执）——档位判据的唯一入口。"""
     return any(token in message for token in HARD_FAIL_TOKENS)
 
 

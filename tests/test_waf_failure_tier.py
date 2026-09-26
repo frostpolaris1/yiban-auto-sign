@@ -3,7 +3,8 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：classify_failure/_retry_budget 的显式不可重试档（ydclearance 挑战解析失败全部 raise 文案、
-   白名单文案、requests 的 "Expecting value:" 非 JSON 文案）、该档总尝试=1 且联动清会话缓存、
+   白名单文案、requests 的 "Expecting value:" 非 JSON 文案、protocol 的"无签发方回执"假成功
+   拒绝文案——词元真值源同步改钉）、该档总尝试=1 且联动清会话缓存、
    PROBE_HARD_FAIL_RE 从 security 同一来源构造（WAF_KEYWORDS+HARD_FAIL_TOKENS 逐词元在场）、
    WAF_BLOCKED_MESSAGE 维持风控档、网络类失败维持普通档、硬失败不计入凭据熔断。
 对应实现：yiban/security.py（档位判据唯一真值源）、yiban/engine/attempts.py（档位与清缓存联动）、
@@ -78,8 +79,11 @@ class ChallengeParseTierTest(unittest.TestCase):
         self.assertEqual(signin._retry_budget(LEG2_NON_JSON_MESSAGE), (1, True))
 
     def test_hard_fail_tokens_are_the_single_source(self):
-        # 真值源只有一处：attempts 的档位判据、probe 的正则都从 security 这两组词元派生
-        self.assertEqual(security.HARD_FAIL_TOKENS, ("ydclearance", "Expecting value"))
+        # 真值源只有一处：attempts 的档位判据、probe 的正则都从 security 这组词元派生。
+        # 新增成员必须同族（对同一输入重试必然同果）："无签发方回执"是登录最终认证的
+        # 确定性失败（protocol 判据），档位与探针自动共用。
+        self.assertEqual(security.HARD_FAIL_TOKENS,
+                         ("ydclearance", "Expecting value", "无签发方回执"))
         self.assertFalse(security.is_hard_fail_message(
             "HTTPSConnectionPool(host='oauth.yiban.cn', port=443): Read timed out"))
 
