@@ -194,7 +194,7 @@ def _issue_admin_sid(env_path, write_env_key, read_env):
     try:
         write_env_key(env_path, ADMIN_SID_ENV_KEY, sid)
     except (OSError, ValueError) as e:
-        # 两类失败同姿态降级：OSError = 文件不可写；ValueError = 写入口 fail-closed
+        # 两种失败同姿态降级：OSError = 文件不可写；ValueError = 写入口 fail-closed
         # 拒绝（.env 既有行含潜伏行分隔符，见 yiban.infra.env_io）。后者尤其关键——
         # 此刻正是"唯一能清理 .env 的运维"在登录，500 会把他锁在门外、而 login_ok
         # 已审计（取证上误导）。返回 .env 旧值让本次登录照常可用，清理动作交告警。
