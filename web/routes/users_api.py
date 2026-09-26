@@ -140,9 +140,10 @@ def api_users_deleted_purge():
         purged = m.db.purge_deleted_users_hard(emails)
         if purged:
             admin = session.get("username") or "admin"
-            # 已注明的例外：同事务原语的 audit_spec 只接静态 target/detail，而本函数真正
-            # 清除的清单要跑完才知道（跳过非已注销行），静态 spec 会谎报；此处只物理
-            # 清除**已软删**用户（非活跃凭据），且 master-only + 限速门禁。
+            # 有意留在提交后的审计：清除清单要跑完才知道（非已注销行被跳过），
+            # 而提交前能备好的 target/detail 只能按"请求清单"写，会把没清除的
+            # 项也写成清除过；此处只物理清除**已软删**用户（非活跃凭据），
+            # 且 master-only + 限速门禁。
             m.db.audit(
                 admin,
                 "user_deleted_purge",

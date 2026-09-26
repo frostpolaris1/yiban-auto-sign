@@ -366,7 +366,7 @@ def add_account(fields, audit_spec=None):
 
     audit_spec 非 None 时（dict：username/action/target/detail/request_id），审计行与本
     INSERT **同事务**写入，`db.record_in_txn` 失败即整体回滚——消除"账号已建、审计表
-    却没有这条且欠账为 0"的静默丢失窗口（见 audit_chain.audit_unit）。
+    却没有这条且欠账为 0"的静默丢失窗口（见 audit_chain.record_in_txn）。
     """
     db = _facade()
     conn = db.get_conn()
