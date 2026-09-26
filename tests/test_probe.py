@@ -125,6 +125,9 @@ class ProbeSigninTest(unittest.TestCase):
 
         事后 chmod 不够：写完到 os.replace 之间（及崩溃残留时）整个 .env 对同机
         其他用户可读，而默认 umask 未必是 077（交互 shell 手工跑 --probe 即可能命中）。
+        落盘已并入 `env_io.write_env_key`（单一行模型 + 内持写锁），tmp 由
+        `env_io._atomic_replace_env` 创建——间谍按 `.tmp` 路径过滤，别把锁文件的
+        0600 当成用例证据。
         """
         env_path = os.path.join(self._state_dir, "probe-once.env")
         with open(env_path, "w", encoding="utf-8") as f:
@@ -132,16 +135,17 @@ class ProbeSigninTest(unittest.TestCase):
         os.environ["YIBAN_ENV_FILE"] = env_path
 
         real_open = os.open
-        modes = []
+        tmp_modes = []
 
         def _spy(path, flags, mode=0o777):
-            modes.append(mode)
+            if ".tmp" in str(path):
+                tmp_modes.append(mode)
             return real_open(path, flags, mode)
 
         with mock.patch.object(self.s.os, "open", side_effect=_spy):
             self.s._env_update_probe(auto_disable=True)
 
-        self.assertIn(0o600, modes, "临时文件必须创建即 0600，不能靠事后 chmod")
+        self.assertIn(0o600, tmp_modes, "临时文件必须创建即 0600，不能靠事后 chmod")
         with open(env_path, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("YIBAN_PROBE_ENABLE=0", text)
@@ -150,6 +154,24 @@ class ProbeSigninTest(unittest.TestCase):
         if os.name == "posix":
             import stat as _stat
             self.assertEqual(_stat.S_IMODE(os.stat(env_path).st_mode), 0o600)
+
+    def test_env_update_probe_folds_spaced_shadow_line(self):
+        """`YIBAN_PROBE_ENABLE = 1`（带空格旧行）也必须折掉。
+
+        自写读-改-写只滤精确前缀 `YIBAN_PROBE_ENABLE=`，带空格写法折不掉、与新行
+        并存成影子行（解析器后写覆盖先写，"自动关闭"可能被旧行悄悄顶掉）。
+        单一行模型的 key_line_pattern 认两种写法。
+        """
+        from yiban.infra import env_io
+        env_path = os.path.join(self._state_dir, "probe-shadow.env")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("YIBAN_PROBE_ENABLE = 1\n")
+        os.environ["YIBAN_ENV_FILE"] = env_path
+        self.s._env_update_probe(auto_disable=True)
+        self.assertEqual(env_io.count_key_lines(env_path, "YIBAN_PROBE_ENABLE"), 1,
+                         "同键只剩一行：旧影子行必须被折叠")
+        with open(env_path, encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "YIBAN_PROBE_ENABLE=0")
 
     def test_env_update_probe_noop_when_not_auto_disable(self):
         """非 once 模式不得改动 .env。"""

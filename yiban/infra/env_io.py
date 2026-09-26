@@ -12,7 +12,8 @@
 无 = 的行跳过。
 
 **归属**
-`yiban.infra` 的基础设施层（无项目内依赖），是全项目 `.env` 读写的**唯一实现**；
+`yiban.infra` 的基础设施层（唯一项目内依赖是同包 `env_lock`——`write_env_keys` 的
+跨进程写锁），是全项目 `.env` 读写的**唯一实现**；
 `web/services/env_io.py` 是它在 web 侧的服务包装，不另立第二套行模型。
 
 **复用**
@@ -21,8 +22,8 @@
 `yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
 `web/routes/settings_api.py`、`scripts/loadtest/seed_accounts.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
 `env_key_values` / `validate_env_key` / `validate_env_value` / `validate_env_updates` /
-`render_env_write`，`write_env_keys` 是唯一写入口（内部做写入前后"键集合 diff"、
-越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
+`render_env_write`，`write_env_keys` 是唯一写入口（内部自持 `env_lock.env_write_lock`
+跨进程写锁、做写入前后"键集合 diff"、越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
 / `key_line_pattern` / `count_key_lines` / `find_env_key_collisions` 与写入口共用同一套
 行模型；`resolve_path` 是路径类配置（STATE_DIR / LOG_FILE / DB_FILE）的解析口径，
 `web/app.py`、`yiban.cred_state`、`yiban.engine.alerts`、`yiban.engine.cli_support`、
@@ -39,7 +40,8 @@
 严格模式的理由（勿简化掉）：密钥/审计盐的自动生成路径若把"读失败"误判为"未配置"，
 会静默生成新钥覆盖旧钥，致存量密文与审计链永久不可解——宁可启动失败也不生成替代密钥。
 
-调用谁：仅标准库（`os` / `re` / `secrets` / `contextlib`）。
+调用谁：标准库（`os` / `re` / `secrets` / `contextlib`）与同包 `env_lock`——
+`write_env_keys` 内部统一取得跨进程 `.env` 写锁（锁责任不再推给调用方）。
 谁调用：`yiban.engine.*`、`yiban.store.*`、`yiban.infra.account_crypto`、
 `web/services/env_io.py` 与设置页写入路径。
 前端调用点：系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的开关落盘经
@@ -52,6 +54,8 @@ import contextlib
 import os
 import re
 import secrets
+
+from yiban.infra import env_lock
 
 
 def parse_env_file(path, *, strict=False):
@@ -479,45 +483,49 @@ def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_emp
     `delete_empty`（调用方契约，非行模型）：web 侧空值 = 删键；引擎侧缺省保留追加语义。
     `audit(code, detail)` 由调用方注入（web 传 db.audit，引擎启动路径无 actor 可传 None）。
 
-    调用方须自行持有 `env_lock.env_write_lock(env_file)`（跨进程 .env 写互斥）：本函数
-    不做加锁，把"写前重读既有值"的判定留在调用方，避免嵌套取锁。
+    跨进程 `.env` 写锁（`env_lock.env_write_lock`）在本函数**内部**取得：外层调用方
+    漏拿锁也保证读-改-写串行——锁责任曾写在 docstring 里推给调用方，多个写入点只要
+    漏一个，并发读-改-写的后落盘者就把对方刚写入的整行静默抹掉。锁同线程可重入
+    （`locks.file_lock` 语义）："写前判定读取"仍需与落盘同临界区的外层调用方照旧自持
+    外层锁即可，嵌套同一归一路径直接放行，不构成死锁。
     """
-    raw = _read_env_text(env_file)
-    # 回滚快照：**二进制**读取（BOM/CRLF 原样保留），文本读取已把它们归一掉，
-    # 拿文本回滚无法还原 BOM/CRLF 文件的原字节（见 _read_env_bytes）。
-    raw_bytes = _read_env_bytes(env_file)
-    before = env_key_values(raw)
-    # 调用方入参非法（键名/值含换行族、值过长）：直接拒绝，**不入审计**——这是普通
-    # 输入错误（路由层已先行友好校验），不是"文件态歧义/未请求键变化"这类需要留痕的
-    # 运行时越权；混进审计只会让正常的 400 刷审计链。此处必须独立先校验一次：若省掉它、
-    # 只靠 render_env_write 内部的同名校验，入参错误会被下方 `except ValueError` 当成
-    # 文件态留痕（并错报为"潜伏分隔符"）。render 内部那次是给其它调用方的纵深防御，
-    # render 的任何入参错误到这里都已被本行挡住，故 try 内必为文件态。
-    validate_env_updates(updates)
-    try:
-        new_text = render_env_write(raw, updates, env_file=env_file,
-                                    delete_empty=delete_empty)
-    except ValueError as e:
-        # 走到这里 = 既有文件行含潜伏分隔符（render 的入参校验已在上一步做过，此处必为
-        # 文件态）：这是"一次无关保存会实体化载荷"的现场，必须留痕。
-        _refuse(audit, "env_write_rejected", str(e))
-    requested = set(updates)
-    changed = _unrequested_key_changes(before, env_key_values(new_text), requested)
-    if changed:
-        _refuse(audit, "unrequested_key_change",
-                "未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
-    commit = write_text or _atomic_replace_env
-    commit(env_file, new_text)
-    after = env_key_values(_read_env_text(env_file))
-    changed = _unrequested_key_changes(before, after, requested)
-    if changed:
-        # 写入器越权改了未请求的键：按**写入前原始字节**回滚（含 BOM/CRLF），再拒绝。
-        # 回滚不走调用方注入的 commit（它收文本，还原不了原始字节）；best-effort——
-        # 回滚自身失败也不能把"未请求的键已变"这件事说成成功。
-        with contextlib.suppress(OSError):
-            _restore_env_bytes(env_file, raw_bytes)
-        _refuse(audit, "unrequested_key_change_after_write",
-                "落盘后未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
+    with env_lock.env_write_lock(env_file):
+        raw = _read_env_text(env_file)
+        # 回滚快照：**二进制**读取（BOM/CRLF 原样保留），文本读取已把它们归一掉，
+        # 拿文本回滚无法还原 BOM/CRLF 文件的原字节（见 _read_env_bytes）。
+        raw_bytes = _read_env_bytes(env_file)
+        before = env_key_values(raw)
+        # 调用方入参非法（键名/值含换行族、值过长）：直接拒绝，**不入审计**——这是普通
+        # 输入错误（路由层已先行友好校验），不是"文件态歧义/未请求键变化"这类需要留痕的
+        # 运行时越权；混进审计只会让正常的 400 刷审计链。此处必须独立先校验一次：若省掉它、
+        # 只靠 render_env_write 内部的同名校验，入参错误会被下方 `except ValueError` 当成
+        # 文件态留痕（并错报为"潜伏分隔符"）。render 内部那次是给其它调用方的纵深防御，
+        # render 的任何入参错误到这里都已被本行挡住，故 try 内必为文件态。
+        validate_env_updates(updates)
+        try:
+            new_text = render_env_write(raw, updates, env_file=env_file,
+                                        delete_empty=delete_empty)
+        except ValueError as e:
+            # 走到这里 = 既有文件行含潜伏分隔符（render 的入参校验已在上一步做过，此处
+            # 必为文件态）：这是"一次无关保存会实体化载荷"的现场，必须留痕。
+            _refuse(audit, "env_write_rejected", str(e))
+        requested = set(updates)
+        changed = _unrequested_key_changes(before, env_key_values(new_text), requested)
+        if changed:
+            _refuse(audit, "unrequested_key_change",
+                    "未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
+        commit = write_text or _atomic_replace_env
+        commit(env_file, new_text)
+        after = env_key_values(_read_env_text(env_file))
+        changed = _unrequested_key_changes(before, after, requested)
+        if changed:
+            # 写入器越权改了未请求的键：按**写入前原始字节**回滚（含 BOM/CRLF），再拒绝。
+            # 回滚不走调用方注入的 commit（它收文本，还原不了原始字节）；best-effort——
+            # 回滚自身失败也不能把"未请求的键已变"这件事说成成功。
+            with contextlib.suppress(OSError):
+                _restore_env_bytes(env_file, raw_bytes)
+            _refuse(audit, "unrequested_key_change_after_write",
+                    "落盘后未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
 
 
 def write_env_key(env_file, key, value):

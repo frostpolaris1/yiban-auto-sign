@@ -221,21 +221,22 @@ def write_env_batch(env_path, updates, atomic_write, audit=None):
     避免多次独立写入时进程崩溃导致配置不一致。
     updates: dict {key: value}，value 为空字符串则删除该键。
 
-    行模型、键/值校验、写入前后"键集合 diff"**全部单源在**
+    行模型、键/值校验、写入前后"键集合 diff"、跨进程写锁**全部单源在**
     `yiban.infra.env_io.write_env_keys`（web 与引擎共用一个实现，两侧拒绝文案同源）：
-    本函数只负责 web 侧特有的两件事——跨进程写锁（`_env_write_lock`）与落盘注入
-    （`atomic_write`）。`audit` 由调用方（web.app 转发）注入 db 审计回调：写入被拒
-    （潜伏分隔符/未请求的键变化）时必须留痕，调用方不传也不影响拒绝本身。
+    本函数只负责 web 侧特有的落盘注入（`atomic_write`）。外层锁已就此去重——写锁
+    下沉进 `write_env_keys` 后，这里再包一层是对同一路径的纯冗余嵌套；只在本函数
+    之外还有"判定读取"要与之同临界区的调用方（改密、保存设置、执行体读-改-写）才
+    需要继续自持 `_env_write_lock`。`audit` 由调用方（web.app 转发）注入 db 审计回调：
+    写入被拒（潜伏分隔符/未请求的键变化）时必须留痕，调用方不传也不影响拒绝本身。
 
     为什么不再自己用宽行模型读-改-写：宽行模型会把注释里潜伏的
     U+0085/U+2028 等先拆成两行、再把后半截实体化成真配置行（一次无关保存即可注入
     `YIBAN_GLOBAL_PAUSE=1`）。单一行模型同时是"校验行模型 = 写入行模型"的前提。
     """
-    with _env_write_lock(env_path):
-        _env_io.write_env_keys(
-            env_path, updates,
-            write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
-            audit=audit, delete_empty=True)
+    _env_io.write_env_keys(
+        env_path, updates,
+        write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
+        audit=audit, delete_empty=True)
 
 
 # 写拒绝的统一响应文案（web 全部 .env 写点共用）。此前只有 `/api/settings` 把拒绝
