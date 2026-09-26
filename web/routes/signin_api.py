@@ -114,6 +114,31 @@ def _signin_rate_message(m):
             "请稍后再试")
 
 
+#: 手动签到拒因文案 → HTTP 状态码的**单一判定表**（顺序敏感：先具体后兜底）。
+#: 判据是"用户可见整句里是否含该子串"而不是让 `_spawn_signin` 直接回状态码，因为它的拒因
+#: 散在多处判定、返回值是给前端看的整句。把子串与状态码集中成一张表：改文案/加拒因时
+#: 只动这张表与被测函数一处，并有测试钉住"每条已知文案都显式命中一条、绝不静默落兜底"——
+#: 否则文案一改、HTTP 契约就无声漂移（客户端拒因被伪装成 500）。
+_SIGNIN_DENY_STATUS = (
+    ("不在配置中", 404),      # 请求引用的账号不在登记名单：资源不存在
+    ("不可手动签到", 400),    # 未生效 / 已删除：当前状态不允许该操作
+    ("已自暂停", 400),        # 用户自行暂停：需在「我的账号」恢复，非服务端问题
+    ("签到队列忙", 429),      # 定时签到占用运行锁：稍后可重试
+    ("冷却中", 429),          # 全局冷却窗口内（单条与批量共用同一基准）
+    ("过于频繁", 429),        # 窗口内总次数超限
+    ("正在签到", 429),        # per-phone 防抖：同账号短时重复触发
+    ("启动失败", 500),        # 子进程脚本缺失等：服务端无法拉起，属内部错误
+)
+
+
+def _signin_deny_status(msg):
+    """把 `_spawn_signin` 返回的拒因整句归一到一个 HTTP 状态码；未命中显式文案一律 500。"""
+    for key, code in _SIGNIN_DENY_STATUS:
+        if key in msg:
+            return code
+    return 500
+
+
 def _reap_signin(m, state, phone, proc):
     """子进程结束后在锁内从子进程表移除同对象（防僵尸记录/重复 terminate）。"""
     try:
@@ -255,19 +280,9 @@ def api_signin():
     phone = str(data.get("phone", "")).strip()
     ok, msg = _spawn_signin(m, state, phone)
     if not ok:
-        if "不在配置中" in msg:
-            return jsonify({"error": msg}), 404
-        if "不可手动签到" in msg:
-            return jsonify({"error": msg}), 400
-        if "已自暂停" in msg:  # 用户自暂停：派发前剔除，据实告知而不是"已触发"
-            return jsonify({"error": msg}), 400
-        if "冷却中" in msg:  # 单条与批量共用的全局签到冷却
-            return jsonify({"error": msg}), 429
-        if "过于频繁" in msg:  # 全局次数上限（与冷却区分：文案与判定都是另一道闸）
-            return jsonify({"error": msg}), 429
-        if "正在签到" in msg or "签到队列忙" in msg:
-            return jsonify({"error": msg}), 429
-        return jsonify({"error": msg}), 500
+        # 拒因 → 状态码走单源判定表（见 `_SIGNIN_DENY_STATUS`）：不再在本处逐条 `in msg`，
+        # 文案与契约解耦，改文案只动表且测试会拦住漏项。
+        return jsonify({"error": msg}), _signin_deny_status(msg)
     m.db.audit(session.get("username") or "?", "signin_manual", m._mask_phone(phone), "手动签到")
     return jsonify({"ok": True, "msg": msg})
 
