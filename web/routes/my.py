@@ -521,15 +521,16 @@ def api_my_account_add():
         # 即生效，并且这一步会单独留 account_review 审计（隐式置 ACTIVE 不留任何痕迹）。
         clean["status"] = m.ACCOUNT_STATUS_PENDING
         try:
-            new_id = m.db.add_account(clean)
+            # 审计与 INSERT 同事务：用户提交的是易班凭据，落库即"账号已建"这一事实
+            # 必须在同一事务留痕，中间被杀不会留下"凭据已存、审计表无此条"。
+            new_id = m.db.add_account(clean, audit_spec={
+                "username": clean["owner"],
+                "action": "my_account_add",
+                "target": m._mask_phone(clean["phone"]),
+                "detail": f"用户提交 状态 {clean['status']}",
+            })
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发提交兜底
-        m.db.audit(
-            clean["owner"],
-            "my_account_add",
-            m._mask_phone(clean["phone"]),
-            f"用户提交 状态 {clean['status']}",
-        )
         m.logger.info("用户 %s 提交账号 %s（待审核）", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
         # 申请入库后管理员侧零通知，只能靠主动打开后台发现，于是出现"用户说交了
         # 申请、管理员说没收到"。补一条非紧急告警：邮件必达，手机推送受「仅推送
