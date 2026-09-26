@@ -55,7 +55,20 @@ import secrets
 
 
 def parse_env_file(path, *, strict=False):
-    """解析 .env 全部键值，返回 dict。strict 语义见模块 docstring。"""
+    """解析 .env 全部键值，返回 dict。strict 语义见模块 docstring。
+
+    **`export KEY=v` 行为设计上的分叉，勿"归一"**：三个 .env 读取方对它各有不同处理，
+    但对**任何真实键的取值**恒一致（KEY 一律读不到，export 行永不生效）——
+      · 本实现（读侧宽松）：按首个 `=` 切，键名是整串 `"export KEY"`（含空格，
+        不匹配任何 `get("KEY")`，惰性挂在一个畸形键下）；写侧折叠 `key_line_pattern`
+        同样不认它，故该行原样驻留、被后续任何 `get("真实键")` 无视；
+      · `scripts/child_env.py`（YIBAN_ 前缀 + 合法键名双白名单）：直接丢弃；
+      · `run.sh` / `run_probe.sh`（键名 `^[A-Za-z_]` 校验）：告警后跳过。
+    若剥掉 `export` 前缀"归一"到本模型，会把历史上一向未生效的行扶正成生效配置
+    （改既有文件读取结果；行内若藏 `GLOBAL_PAUSE`/`ADMIN_PASSWORD_HASH` 即把潜伏
+    载荷实体化成提权面）——正撞"键语义不变"红线，故保留三态、以双向测试钉住
+    "真实键可读到、export 键读不到"这一收敛不变量（见 tests/test_runsh_env_parse.py）。
+    """
     result = {}
     try:
         with open(path, encoding="utf-8-sig") as f:
