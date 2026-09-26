@@ -24,8 +24,14 @@
 **通信**
 用法：`python3 scripts/audit_verify.py [--db 路径] [--env .env 路径] [--anchor 路径]`
 输入：命令行 `--db` / `--env` / `--anchor`（缺省走环境变量与默认路径）。
-输出：三项结论 + 清理留痕数字到 stdout；退出码：全部通过 exit 0；检出异常 exit 1；
-无法定论（密钥缺失 / 校验过程异常）exit 2。
+输出：三项结论 + 清理留痕数字到 stdout。
+
+退出码映射（"未查"与"通过"必须是两个不同返回值，"锁住了"与"检出篡改"必须不同码）：
+  0  通过（链自洽 + 锚点一致 + 无欠账，且锚点比对**确实执行过**）；
+  1  检出异常（链断 / 锚点不一致 / 删尾 / 整表重签 / 有未留痕的管理操作）；
+  2  无法定论（"未查"）：密钥缺失、链校验过程异常、`database is locked` 等库/锁
+     故障、锚点自检无法定论、**从未写过锚点**（没得比对）——一律不得印成通过，
+     也不得用 1 冒充一次成功的取证。
 调用谁：`db`（`yiban.store.db` / `audit_chain` 的兼容壳）。
 谁调用：运维手工取证；`scripts/backup.sh` 恢复件双验（restore 流程在解包后调它做审计
 链核验，非 0 视为恢复件不可信）；backup.sh 头部示例还给了 cron 每日 02:30 定排的一条
@@ -41,11 +47,31 @@
 """
 import argparse
 import os
+import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
+
+
+def _indeterminate(msg):
+    """按"无法定论"中止（exit 2）：既不是通过，也不是确证篡改。"""
+    print(f"审计校验中止：{msg}")
+    sys.exit(2)
+
+
+def _is_locked_error(exc):
+    """异常是否由库写锁竞争（`database is locked`/`busy`）引起。
+
+    与"检出篡改"必须分开：锁竞争下校验压根没跑成，报 exit 1 会让运维把一次并发
+    故障当成失陷响应。按 sqlite3.OperationalError 的消息判定（不同版本措辞不一，
+    故按关键字匹配而非全等）。
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
 
 
 def _same_path(a, b):
@@ -68,6 +94,23 @@ def main():
                              "**校验非本部署的库时必须显式指定**——锚点与库必须同源，"
                              "否则两套数据的差异会被误报成审计被篡改）")
     args = parser.parse_args()
+    # 顶层兜底：任何未预期异常（含 init_db/PRAGMA 在写锁竞争下抛出的
+    # `database is locked`）都按"无法定论 exit 2"处置，绝不让一次并发故障以 exit 1
+    # 冒充"检出篡改"。
+    try:
+        _verify(args)
+    except SystemExit:
+        raise
+    except Exception as e:
+        if _is_locked_error(e):
+            _indeterminate(
+                f"数据库被写锁占用（{e}）——本次校验未完成，无法定论。"
+                "这不等于检出篡改；请等持锁事务结束后重跑，确认之前不要据此下结论"
+            )
+        _indeterminate(f"校验过程异常（{e!r}）——本次校验未完成，无法定论")
+
+
+def _verify(args):
     # 只读校验三件套（理由见各自那一行）：--env 已存在、库文件已存在、不迁移不清理
     try:
         # 显式 --env 也必须已存在：打错路径时同一套回落逻辑的其余取证 CLI（如
@@ -75,14 +118,12 @@ def main():
         # 把留痕用的第三把钥匙签坏——取证类 CLI 一律在碰任何数据前先拒绝
         env_file = db.require_existing_env_file(args.env)
     except ValueError as e:
-        print(f"审计校验中止：{e}")
-        sys.exit(2)
+        _indeterminate(str(e))
     db_path = args.db or os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
     # 库必须已存在：sqlite3.connect 缺库即建空库，空链 verify"通过"对真实库有没有被
     # 篡改什么都没说（路径写错时静默误报通过）
     if not os.path.exists(db_path):
-        print(f"审计校验中止：数据库文件不存在: {db_path}（拒绝新建空库误报通过）")
-        sys.exit(2)
+        _indeterminate(f"数据库文件不存在: {db_path}（拒绝新建空库误报通过）")
     anchor_path = args.anchor
     if anchor_path is None:
         # 锚点文件与审计库是**一套**数据，而锚点路径来自部署的状态目录（机器级路径），
@@ -91,10 +132,11 @@ def main():
         # 这种情况按"无法定论"中止，并要求显式 --anchor（取证时把锚点一并拷来）。
         deployed_db = os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
         if not _same_path(db_path, deployed_db):
-            print("审计校验中止：--db 指向的不是本部署的库，无法推断它对应的锚点文件"
-                  "（锚点与库必须同源，否则会把两套数据误报成篡改）。"
-                  "对副本取证请把该库的锚点一并拷来并用 --anchor 指定")
-            sys.exit(2)
+            _indeterminate(
+                "--db 指向的不是本部署的库，无法推断它对应的锚点文件"
+                "（锚点与库必须同源，否则会把两套数据误报成篡改）。"
+                "对副本取证请把该库的锚点一并拷来并用 --anchor 指定"
+            )
         anchor_path = db.audit_anchor_path()
     # migrate=False：迁移会用当前密钥重写整条链、抹平篡改痕迹；cleanup=False 同理不落写
     db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
@@ -102,15 +144,23 @@ def main():
     # 链校验过程异常/密钥缺失（broken == -1）不是"检出篡改"而是"无法定论"——
     # 按中止处理（exit 2），绝不用 exit 1 冒充一次成功的取证。
     if health["broken"] == -1:
-        print("审计校验中止：哈希链校验过程异常或未配置 YIBAN_AUDIT_KEY（无法定论）")
-        sys.exit(2)
+        _indeterminate("哈希链校验过程异常或未配置 YIBAN_AUDIT_KEY（无法定论）")
     # 锚点自检"无法定论"（非法编码/坏行/读不出）同理：它既不是通过也不是确证篡改，
     # 编成 exit 1 会让运维把一次编码事故当成失陷响应，编成 0 等于把"没验成"印成通过。
     if health.get("anchor_status") == "indeterminate":
-        print(f"审计校验中止：锚点自检无法定论——{health['anchor_msg']}")
-        print("（这不等于审计被篡改，也不等于无异常；请修好锚点文件后重跑，"
-              "确认之前不要据此下任何结论）")
-        sys.exit(2)
+        _indeterminate(
+            f"锚点自检无法定论——{health['anchor_msg']}\n"
+            "（这不等于审计被篡改，也不等于无异常；请修好锚点文件后重跑，"
+            "确认之前不要据此下任何结论）"
+        )
+    # 从未写过锚点 = "未查"，不是"通过"：没有锚点就无从比对删尾/整表重签，此时把
+    # exit 0 印成"校验通过"会让一次没做的比对冒充取证结论。首次运行可接受，但必须
+    # 以独立返回值（exit 2 族）暴露"本次未比对"，不得与 0 混同。
+    if health.get("anchor_status") == "none":
+        _indeterminate(
+            "从未记录过锚点（audit-anchor.log 不存在且无锚点留痕）——本次未做"
+            "锚点比对，'未查'不等于'通过'。请先让每日线程/见证 cron 写入锚点后重跑"
+        )
     print(f"锚点文件：{anchor_path}")
     print(f"链内自洽：{'通过' if health['chain_ok'] else '失败'}"
           f"（broken={health['broken']}）")
