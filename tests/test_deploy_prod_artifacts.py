@@ -3,7 +3,7 @@
 """生产执行件入库与部署断言（M3 批次0：MF-42 高 / MF-41 仓内半条 / 真名示例）。
 
 标签：J · 运维：部署/备份/发布
-覆盖（e2e 为准——全部真跑 bash 子进程 + 真实文件系统，不 grep 被测脚本源码）：
+覆盖：e2e 为准——全部真跑 bash 子进程 + 真实文件系统，不 grep 被测脚本源码。逐面：
     ① cron 路径来源断言：`scripts/check-cron-provenance.sh` 解析 `deploy/prod/cron.d/`
       三张表的每个绝对路径，必须能回指仓库来源（manifest dest 或 /opt/yiban-auto-sign
       仓库相对路径）。活体反例：往临时拷贝的 cron 表加一个无来源路径 ⇒ 非 0 并点名。
@@ -20,6 +20,13 @@
     ⑤ 真名示例门（合法的字面量门——字符串本身就是缺陷）：真实姓名（此处仅以转义
       拼接出现，测试文件自身不得命中）在**所有 git 跟踪文件**里零命中；同一扫描
       器对含名 fixture 必须命中（活体反例）。
+对应实现：`scripts/check-cron-provenance.sh`、`deploy/prod/yiban-backup-wrapper.sh`、
+`deploy/prod/install.sh`、`scripts/check-deploy-target.sh`、`scripts/backup.sh`（②正例）
+与 git 跟踪树扫描器（⑤）。
+关键断言：一律以真子进程的**退出码/产物/stdin/环境**为准（含旧 export 式 wrapper 必判脏、
+校验和不符必拒装、无来源路径必点名、含名 fixture 必命中）——不 grep 被测脚本源码字符串。
+依赖：bash（`skipIf` 整文件；Git Bash/WSL）；②正例真 gpg（无则单条 skip）；git（跟踪树
+扫描与本地裸仓 fixture）；无网络、不 push。
 
 测试夹具里的口令全部是明显的假值（"e2e-"前缀），不含任何真实凭据。
 """
