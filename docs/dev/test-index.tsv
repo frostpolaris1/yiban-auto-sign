@@ -119,6 +119,7 @@ tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_corrupt_witness_js
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_double_write_attacker_is_caught_by_independent_file	G	-	模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_forged_v2_anchor_line_is_rejected	G	-	无密钥伪造 v2 锚点行（自报一个库内不存在的 max_id）必须被拦下。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_max_anchor_baseline_ignores_smaller_trailing_claim	G	-	基准取 max_id 最大真行：尾部再来一条更小 max_id 的"自洽"旧记录不算数。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_max_anchor_tie_takes_the_later_line	G	-	max_id 并列取靠后（最新自报）：取靠前会拿陈旧 head 定点、误报篡改。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_padding_rewrite_after_witness_is_refused_and_red	G	-	攻击变体①：见证已存在后把锚点**重写成更多行**（伪造自洽）⇒ 拒绝覆盖且判红。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_post_witness_tail_deletion_is_red	G	-	攻击变体②：见证之后**新增**的审计被删（只动库）⇒ 体检判红。
 tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_witnessed_db_row_deleted_is_red	G	-	见证记的链尾行从库里消失（只动库、不动锚点）⇒ 独立见证当场点出。

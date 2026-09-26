@@ -110,7 +110,8 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 与 `keyUsage(critical,keyCertSign,cRLSign)`——Python ≥3.14 默认开 `VERIFY_X509_STRICT`，
 缺扩展会在 TLS 握手层整轮全灭且 **mock 记账为 0**（失败安静，极易误诊为隔离问题）。
 幂等跳过分支会探测存量 CA 扩展，缺则自动重签；也可手工 `--force`。演练预案里的手工
-openssl 重签路径与本代码路径并存、口径一致。
+openssl 重签路径与本代码路径并存、口径一致。版本下限：`openssl req -addext` 需
+openssl ≥ 1.1.1，更老的发行版会在 CA 生成处直接报错退出（不会产出无扩展 CA 后静默失败）。
 
 启动即断言（fail-closed，见 `isolation.py`）：四个入口（`mock_env`/`scale_driver`/
 `concurrency_probe`/`capacity_probe`）在解析参数前即要求**进程环境无任何 `*PROXY*` 键**
