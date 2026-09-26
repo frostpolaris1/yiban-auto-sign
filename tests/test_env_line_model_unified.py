@@ -24,8 +24,8 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 （后 8 个是相对 `\n\r` 的差集，即本次新增覆盖面）。
 
 标签：G · 安全：脱敏/审计/配置注入
-覆盖：`.env` 行模型单源（web 服务层无第二份 splitlines）、10 分隔符实测清单、含 U+0085 潜伏注释的 V2 实体化反例（GLOBAL_PAUSE 与 ADMIN_PASSWORD_HASH 两变体）、两侧同一句拒绝、8 分隔符单载荷两侧同拒、写入前后键集合 diff 强制与 BOM/CRLF 字节级回滚审计、值长度上限、路由级拒绝钉死 409（设置与公告两写点）、内置管理员脏 .env 登录降级非 500、读取容忍与合法流逐字节回归
-对应实现：`yiban/infra/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`
+覆盖：`.env` 行模型单源（web 服务层无第二份 splitlines）、10 分隔符实测清单、含 U+0085 潜伏注释的 V2 实体化反例（GLOBAL_PAUSE 与 ADMIN_PASSWORD_HASH 两变体）、两侧同一句拒绝、8 分隔符单载荷两侧同拒、写入前后键集合 diff 强制与 BOM/CRLF 字节级回滚审计、值长度上限、路由级拒绝钉死 409（设置与公告两写点）、内置管理员脏 .env 登录降级非 500、notify/mail 保存路径密钥自动生成写拒统一 409（不伪装成"加密失败 500"）+ 干净 .env 阳性对照、读取容忍与合法流逐字节回归
+对应实现：`yiban/infra/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`、`web/routes/notify.py`（`EnvWriteRefused` 放行次序）、`yiban/infra/account_crypto.py:load_key`
 关键断言：拒绝必须**同时**断"抛错 + .env 字节不变 + 不实体化出未请求的键 + 有审计记录"；只断抛错会漏掉"先实体化再报错"的半生效；两侧同一句拒绝要断言**消息字符串相等**而不是各自含关键词，否则两份校验器可以各写一句都过
 依赖：临时 `.env` + Flask test client + 临时 DB，无网络、无 skip；分隔符按码位逐个枚举
 """
@@ -320,6 +320,102 @@ class BuiltinAdminDirtyEnvLoginTest(_WebBase):
         me = c.get("/api/me")
         self.assertEqual(me.status_code, 200, me.get_data(as_text=True))
         self.assertEqual(me.get_json().get("role"), "admin")
+
+
+class SecretAutoGenDirtyEnvTest(_WebBase):
+    """notify/mail 保存路径的密钥自动生成：写被拒不得伪装成"加密失败 500"。
+
+    `account_crypto.load_key` 在键缺失时"生成新钥并写回 .env"；既有行含潜伏分隔符
+    时写入口 fail-closed 抛 `EnvWriteRefused`（ValueError 子类），两处保存的
+    `except ValueError ⇒ 加密失败 500` 会把"需要人工清理 .env"说成内部加密错误，
+    并绕开 web.app 统一的 409+清理指引（公告/执行体等 12 个写点同族姿态）。
+    """
+
+    def _dirty_env_without_accounts_key(self):
+        real_hash = self.webapp.generate_password_hash(
+            ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
+        lines = []
+        for ln in self.base_env.split("\n"):
+            if ln.startswith("YIBAN_ACCOUNTS_KEY="):
+                continue  # 删掉现成密钥行：逼保存路径走"自动生成→写回→被拒"
+            if ln.startswith("YIBAN_ADMIN_PASSWORD_HASH="):
+                ln = f"YIBAN_ADMIN_PASSWORD_HASH={real_hash}"
+            lines.append(ln)
+        lines.insert(1, "# 例行备注\u0085YIBAN_GLOBAL_PAUSE=1")
+        self._write_fixture("\n".join(lines))
+
+    def _login_master(self):
+        self.webapp._env_collision_reported = False
+        with mock.patch.object(self.webapp, "send_notification"):
+            app = self.webapp.create_app()
+        c = app.test_client()
+        r = c.post("/api/login",
+                   json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        return c, {"X-CSRF-Token": c.get("/api/me").get_json()["csrf_token"]}
+
+    def _assert_refused(self, r):
+        self.assertEqual(r.status_code, 409,
+                         f"写被拒必须是 409+清理指引（实际 {r.status_code} "
+                         f"{r.get_data(as_text=True)}）")
+        body = r.get_json()
+        self.assertEqual(body.get("reason"), "env_write_refused")
+        self.assertNotIn("加密失败", body.get("error", ""),
+                         "不得把'写被拒绝'伪装成'加密失败'")
+
+    def _no_key_written(self, before):
+        self.assertEqual(_read_bytes(self.env_file), before, "拒绝必须零写盘")
+        self.assertNotIn("YIBAN_ACCOUNTS_KEY", self.webapp.read_env(self.env_file),
+                         "被拒后不得留下半写的新密钥")
+
+    def test_notify_secret_save_refused_as_409(self):
+        from yiban.infra import account_crypto
+        self._dirty_env_without_accounts_key()
+        before = _read_bytes(self.env_file)
+        c, csrf = self._login_master()
+        with mock.patch.dict(os.environ, {"YIBAN_ACCOUNTS_KEY": ""}), \
+                mock.patch.object(account_crypto, "_KEY_CACHE", None):
+            r = c.put("/api/notify-config", json={
+                "type": "serverchan", "secret": "SCT" + "a" * 32,
+                "confirm_password": ADMIN_PASS}, headers=csrf)
+        self._assert_refused(r)
+        self._no_key_written(before)
+
+    def test_mail_smtps_save_refused_as_409(self):
+        from yiban.infra import account_crypto
+        self._dirty_env_without_accounts_key()
+        before = _read_bytes(self.env_file)
+        c, csrf = self._login_master()
+        with mock.patch.dict(os.environ, {"YIBAN_ACCOUNTS_KEY": ""}), \
+                mock.patch.object(account_crypto, "_KEY_CACHE", None):
+            r = c.put("/api/mail-config", json={
+                "smtps": [{"host": "smtp.example.com", "port": 465,
+                           "user": "u@example.com", "pass": "p"}],
+                "confirm_password": ADMIN_PASS}, headers=csrf)
+        self._assert_refused(r)
+        self._no_key_written(before)
+
+    def test_clean_env_auto_key_generation_still_succeeds(self):
+        """阳性对照：干净 .env 上自动生成写回照常 200（本清扫不改这条路径）。"""
+        from yiban.infra import account_crypto
+        real_hash = self.webapp.generate_password_hash(
+            ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
+        lines = []
+        for ln in self.base_env.split("\n"):
+            if ln.startswith("YIBAN_ACCOUNTS_KEY="):
+                continue
+            if ln.startswith("YIBAN_ADMIN_PASSWORD_HASH="):
+                ln = f"YIBAN_ADMIN_PASSWORD_HASH={real_hash}"
+            lines.append(ln)
+        self._write_fixture("\n".join(lines))
+        c, csrf = self._login_master()
+        with mock.patch.dict(os.environ, {"YIBAN_ACCOUNTS_KEY": ""}), \
+                mock.patch.object(account_crypto, "_KEY_CACHE", None):
+            r = c.put("/api/notify-config", json={
+                "type": "serverchan", "secret": "SCT" + "b" * 32,
+                "confirm_password": ADMIN_PASS}, headers=csrf)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("YIBAN_ACCOUNTS_KEY", self.webapp.read_env(self.env_file))
 
 
 class BothSidesSameSentenceTest(_WebBase):
