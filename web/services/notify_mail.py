@@ -65,18 +65,51 @@ def _audit_actor():
     return (session.get("username") or "?")[:64]  # 无会话（后台线程/脚本）时是 "?"，不假装有主
 
 
+#: 独立见证形态 → 告警正文文本（缺失/不可读 = 降级：双写掩盖无独立证据）
+_WITNESS_TEXT = {
+    "separate": "跨权限独立文件已启用（属主与锚点不同）",
+    "same-owner": "在位但与锚点同属主（降级：同 uid 双写者仍可一起改）",
+    "unknown": "在位（属主未知）",
+    "anchor-missing": "锚点文件缺失/不可读（见证形态无法比对）",
+    "absent": "未启用（降级：同属主双写无独立证据）",
+    "unreadable": "存在但不可读（降级：本次无法比对）",
+    "corrupt": "存在但损坏（需人工核查）",
+}
+
+
 def _audit_alert_facts(health):
     """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
 
     `诊断备注` 不能删：`audit_health` 有两种"链自洽=是、锚点=一致，但体检仍判不健康"
     的原因（锚点之后又跑了全表重链、有记录签名被清空等着被重签），它们只写进 `note`。
     不带出来时管理员收到的是一条"各项都正常"的告警，只能靠猜。
+
+    `库外锚点` 对"无法定论"单独一档：它既不是"一致"也不是"不一致"，混淆会让管理员
+    要么忽略一次真的没验成、要么把编码事故当成确证篡改去响应。
     """
+    status = health.get("anchor_status")
+    if status == "indeterminate":
+        anchor_text = "无法定论（本次没验成，不等于无异常）"
+    elif health["anchor_ok"]:
+        anchor_text = "一致"
+    else:
+        anchor_text = "不一致"
+    # 独立见证的形态：跨权限存放是否生效。控制面不可用（生产形态下见证缺失/读不出/
+    # 损坏）必须显式点名"判定不健康"——它只写进 note 时，管理员收到的会是一条"各项
+    # 都正常"的告警，独立见证整体空转却无人看见（fail-open of control availability）。
+    witness_text = _WITNESS_TEXT.get(health.get("anchor_witness"), "（未知）")
+    if health.get("anchor_witness_unhealthy"):
+        witness_text += "——控制面不可用，本次判定不健康"
     return [
         ("链自洽", "是" if health["chain_ok"] else f"否（断点 {health['broken']} 处）"),
-        ("库外锚点", "一致" if health["anchor_ok"] else "不一致"),
+        ("库外锚点", anchor_text),
         ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
+        ("锚点独立见证", witness_text),
         ("审计写入失败次数", health["write_failures"]),
+        # 总账单调（取证事实），但告警按"账目变化"触发：这一行给出自上次告警以来
+        # 的新增数，管理员据此判断"是刚出的新问题还是旧账"——只看总账会把旧账
+        # 当成持续告警反复响应。
+        ("其中自上次告警后新增", health.get("write_failures_new", 0)),
         # 清理量出箱（异机核对用）：本机时钟被渐进拨快时，本机自校验不会报警，
         # 但"累计删除条数"与"最近一次清理的截止点"会持续变化——日报是唯一能把它
         # 带离本机的通道，异机侧据此判断清理是否异常。
@@ -169,22 +202,31 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
     同类型告警邮件节流 `mail_alert_due` 由调用方传入（`web.app` 的 `_mail_alert_due`）：
     它是既有测试的打桩点（`mock.patch.object(webapp, "_mail_alert_due")`），本模块另持一份
     绑定会让那个桩静默失效。
+
+    **返回值**：本次是否**任一通道真的送达**（邮件 `mailer.send_admin_alert` 或推送
+    `notify.send` 返回 True）。两路都不返回 True（含未配置、节流命中、发送失败）时返回
+    False。调用方据此决定"告警基线是否推进"：只有送达才推进，否则保持待发、下一轮重试。
     """
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
     # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
     # recipients 排在最前是有意的：and 短路让"收件人为空"这一路不去调
     # mail_alert_due，于是不登记时间戳、不白占一个节流窗口
+    mail_sent = False
     if recipients and (force or mail_alert_due(title)):
-        mailer.send_admin_alert(title, content, to=",".join(recipients))
+        # 送达 bool 必须上抛：运输层失败只记日志不抛出，丢掉它就会把"没发出去"
+        # 当成"已送达"推进告警基线，一次发送失败被放大成此后永久静默。
+        mail_sent = bool(mailer.send_admin_alert(title, content, to=",".join(recipients)))
     elif recipients:
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger)
+    push_sent = bool(notify.send(
+        title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger))
     # 推送额度耗尽不再在这里"补一封"：告知并进通道健康报告（web/services/channel_health.py
     # 的 _send_channel_health_report 会取走待告知标记并写进报告正文），与其余通道状态
     # 同源同频——耗尽告知本身是"通道状态"的一部分，挂在每条告警后面只会让它在主告警
     # 之外又刷一层。
+    return mail_sent or push_sent
 
 
 _NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}

@@ -22,7 +22,9 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -201,7 +203,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("expired@test.local", "hash")
         db.soft_delete_user_with_accounts("expired@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired@test.local"))
         conn.commit()
         r = c.get("/api/users/deleted")
@@ -217,7 +219,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("expired-boot@test.local", "hash")
         db.soft_delete_user_with_accounts("expired-boot@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired-boot@test.local"))
         conn.commit()
         # 模拟进程重启：关闭当前连接，让 create_app() 重新执行 init_db 启动清理
@@ -389,7 +391,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("oldone@test.local", "hash")
         db.soft_delete_user_with_accounts("oldone@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
         conn.commit()
         c = self.webapp.create_app().test_client()
@@ -468,7 +470,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("oldone@test.local", "hash")
         db.soft_delete_user_with_accounts("oldone@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
         conn.commit()
         c = self.webapp.create_app().test_client()

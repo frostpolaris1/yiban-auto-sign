@@ -37,6 +37,13 @@
 
 {% block title %}系统设置 · 易班自动签到{% endblock %}
 
+{# `.env` 行分隔符码点由后端下发（`yiban.infra.env_io.ENV_LINE_BREAK_CHARS`，与写入口
+   同一份清单）：core.js 的写请求前置校验读它，前端不另抄第二份字符清单。
+   放在 head（非 defer）确保早于 defer 的 core.js 执行。 #}
+{% block head_scripts %}
+<script>window.YB_ENV_LINE_BREAK_CODES = {{ env_line_break_codes | tojson }};</script>
+{% endblock %}
+
 {# 信息浮层：hover + focus 双触发（键盘可达），文案为短标签 + <b> 分点。
    pop_id 唯一：aria-describedby 指向浮层本体，读屏聚焦按钮时可读出说明（不靠 hover）。 #}
 {% macro exec_kpi(label, value_id, icon_name, tone) %}

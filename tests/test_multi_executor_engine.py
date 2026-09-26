@@ -2,14 +2,14 @@
 """多执行体的**引擎侧**行为断言：领取池进入执行循环后的分派与了结语义。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：领取池进入执行循环后的四条性质：当日已了结账号下一轮不再自动碰、未了结账号必须能被下一轮接手、别的执行体在飞时不碰且租约过期可接管、库未初始化时零副作用；计划态与结果态的覆盖次序；子进程入口与
+覆盖：领取池进入执行循环后的四条性质：当日已了结账号下一轮不再自动碰、未了结账号按弃权原因分档接手（窗口外默认可领、预算耗尽只走显式路径）、别的执行体在飞时不碰且租约过期可接管、库未初始化时零副作用；计划态与结果态的覆盖次序；子进程入口与
    --workers 下传剔除；监督进程退出码汇总。
 对应实现：scripts/signin.py（run_queue_retry 的领取/收尾/接管路径、_write_sign_state
    的状态优先级）、yiban/engine/workers.py（run_worker_supervisor、子进程 argv
-   与退出码汇总）。
-关键断言：「同一账号同一天只碰一次」与「未了结必须被下一轮接手」是一对：前者是防重复登录的第一道闸，后者是补签轮存在的意义——这里一起挡等于把补签轮废掉。no_task
+   与退出码汇总）、yiban/store/claims.py（give_up 分档 / try_claim 的 allow_failed）。
+关键断言：「同一账号同一天只碰一次」与「未了结必须能被下一轮接手」是一对：前者是防重复登录的第一道闸，后者是补签轮存在的意义——但接手要**分档**：预算耗尽档默认拦住（否则当日每轮重领一次真实登录），只有有界显式路径（补签轮/手动）能接。no_task
    也算了结（再登录一次纯属风控暴露），而 --only
-   是用户主动触发可豁免。每个执行体启动都会写一遍全量计划，故计划态不得覆盖已有结果，但事实之间照旧后写覆盖。子进程入口必须是
+   是用户主动触发可豁免（且已收敛为单进程，不再派发执行体）。每个执行体启动都会写一遍全量计划，故计划态不得覆盖已有结果，但事实之间照旧后写覆盖。子进程入口必须是
    python -m yiban.cli sign 且 argv 不得带 --workers（否则递归拉起）。
 依赖：临时 sqlite（每用例重建）+ 固定业务时钟 + 打桩 attempt_signin / 写盘 /
    sleep；拉起断言为源码与 argv 检查，不 spawn 真子进程。不发网络请求。无
@@ -103,7 +103,8 @@ class _Base(unittest.TestCase):
 
         return mock.patch.object(signin.clock, "now", _FakeDT.now)
 
-    def _run(self, phone, result, *, reclaim=False, executor="", schedule=True):
+    def _run(self, phone, result, *, reclaim=False, executor="", schedule=True,
+             retry_failed=False):
         """跑一轮单账号队列，返回 (results, 实际发起尝试的账号, 状态写入记录)。"""
         calls = []
         states = []
@@ -123,7 +124,7 @@ class _Base(unittest.TestCase):
             # sleep 与写盘都在上面的 with 里打桩：过点账号仍会走间隔等待，不打桩就真睡
             results = signin.run_queue_retry([self._acc(phone)], None, 0, 0,
                                              schedule=sched, cred_state={},
-                                             reclaim=reclaim)
+                                             reclaim=reclaim, retry_failed=retry_failed)
         return results, calls, states
 
 
@@ -150,10 +151,12 @@ class SettledAccountNotRetriedTest(_Base):
 
 
 class OpenAccountIsHandedOverTest(_Base):
-    """② 未了结的账号必须能被下一轮接手（补签轮的存在意义）。"""
+    """② 未了结的账号必须能被接手——但**分档**：窗口外默认可领，预算耗尽只走显式路径。"""
 
-    def test_failed_account_is_retried_by_next_run(self):
-        # "账号或密码错误"= 确定性认证失败 → 本轮只试 1 次即放弃（不重试）
+    OK = (True, "签到成功", False, signin.STATUS_SUCCESS)
+
+    def test_budget_failed_account_not_retried_by_default_but_by_explicit_path(self):
+        # "账号或密码错误"= 确定性认证失败 → 本轮只试 1 次即放弃（不重试），落 final 档
         failed = (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)
         _r, calls1, _s = self._run(PHONE_FAIL, failed, executor="exec-A:1")
         self.assertEqual(calls1, [PHONE_FAIL])
@@ -161,11 +164,24 @@ class OpenAccountIsHandedOverTest(_Base):
                          "失败应落 failed 而不是 done")
         self.assertEqual(db.claim_stats(DAY)["open"], 1, "failed 属于未了结")
 
-        _r2, calls2, _s2 = self._run(PHONE_FAIL, (True, "签到成功", False,
-                                                  signin.STATUS_SUCCESS),
-                                     executor="exec-B:2")
-        self.assertEqual(calls2, [PHONE_FAIL], "未了结账号必须能被下一轮接手")
+        # 默认轮（下一个定时执行体）：预算耗尽档**不得**被重领——否则当日每轮重来一遍
+        _r2, calls2, _s2 = self._run(PHONE_FAIL, self.OK, executor="exec-B:2")
+        self.assertEqual(calls2, [], "预算耗尽档弃权的账号不得被默认轮重领（跨轮上限）")
+
+        # 有界显式路径（补签轮/手动，retry_failed=True）：必须能接手并了结
+        _r3, calls3, _s3 = self._run(PHONE_FAIL, self.OK, executor="exec-C:3",
+                                     retry_failed=True)
+        self.assertEqual(calls3, [PHONE_FAIL], "补签轮/手动（显式路径）必须能接手失败账号")
         self.assertEqual(db.claim_states_for_day(DAY)[PHONE_FAIL], db.CLAIM_STATE_DONE)
+
+    def test_window_out_account_is_retried_by_default(self):
+        """窗口外档（skipped_window）默认可再领：窗口重开后补签/兜底不该被 handler 挡住。"""
+        skip = (True, "未在签到时段", True, signin.STATUS_SKIPPED_WINDOW)
+        _r, calls1, _s = self._run(PHONE_FAIL, skip, executor="exec-A:1")
+        self.assertEqual(calls1, [PHONE_FAIL])
+        self.assertEqual(db.claim_states_for_day(DAY)[PHONE_FAIL], db.CLAIM_STATE_FAILED)
+        _r2, calls2, _s2 = self._run(PHONE_FAIL, self.OK, executor="exec-B:2")
+        self.assertEqual(calls2, [PHONE_FAIL], "窗口外档默认就该能被下一轮接手")
 
     def test_manual_reclaim_resigns_settled_account(self):
         """手动指定账号（--only，reclaim=True）不受"当日已了结"限制。"""
@@ -207,8 +223,13 @@ class NoDatabaseNoSideEffectTest(_Base):
             db._conn = None
         db._conn = None
         self.assertFalse(db.is_initialized(), "前置：库未初始化")
-        _r, calls, _s = self._run(PHONE_OK, (True, "签到成功", False,
-                                             signin.STATUS_SUCCESS))
+        # 类级夹具为了别的用例声明了 `YIBAN_DB_FILE`（setUp 里还建了库）。那属于"配了库
+        # 但本进程没连上"，与"部署未配库"是两回事——后者才该照旧放行（两档分叉的用例见
+        # `tests/test_claims_heartbeat.py` 的 ClaimSignalSplitTest）。本用例钉的是后者，
+        # 故把声明清空：这个部署没配库，磁盘上也没有池库可供协调。
+        with mock.patch.dict(os.environ, {"YIBAN_DB_FILE": ""}, clear=False):
+            _r, calls, _s = self._run(PHONE_OK, (True, "签到成功", False,
+                                                 signin.STATUS_SUCCESS))
         self.assertEqual(calls, [PHONE_OK], "无库时照常签到（领取池可有可无）")
         self.assertFalse(db.is_initialized(), "不得因为没有领取池就顺手开一个库")
 
@@ -226,8 +247,9 @@ class PlanMustNotClobberResultTest(_Base):
                             f"sign-state-{clock.today()}.json")
 
     def _write(self, status, message="", **kw):
-        with mock.patch.object(signin.clock, "now", datetime.now):
-            signin._write_sign_state(PHONE_OK, status, message, **kw)
+        # 当日状态文件名与写入时刻都取业务钟（signin.clock = yiban.clock），
+        # 与 _state_path 同源；此前打桩成宿主 datetime.now 会在 UTC 主机上错日。
+        signin._write_sign_state(PHONE_OK, status, message, **kw)
 
     def _read(self):
         import json
@@ -267,6 +289,10 @@ class WorkerRelaunchCommandTest(_Base):
     会把"包内模块"当脚本跑（模块体只有定义，跑完就退）——多执行体必然坏掉，而且是
     静默的（子进程退出码 0）。同时 `--workers` 与其数值必须继续从子命令行走剔掉，
     否则子进程会再次进入监督分支、递归拉起。
+
+    ⚠ 监督进程**不再**经 `--only` 到达：手动单号在 `runner.main` 已收敛为单进程
+    （见 `tests/test_only_single_process.py`），故这里的 argv 夹具用 `--check-config`
+    这类仍会派发的开关，不拿 `--only` 当"每个子进程都带它"的正向断言。
     """
 
     def _run_supervisor(self, n, argv, slots=None):
@@ -294,7 +320,7 @@ class WorkerRelaunchCommandTest(_Base):
         return rc, spawned
 
     def test_child_entry_is_module_cli_not_file_path(self):
-        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--only", PHONE_OK])
+        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--check-config"])
         self.assertEqual(rc, 0)
         self.assertEqual(len(spawned), 2, "应拉起 n 个子进程")
         for i, rec in enumerate(spawned):
@@ -310,12 +336,12 @@ class WorkerRelaunchCommandTest(_Base):
 
     def test_child_argv_drops_workers_flag_and_its_value(self):
         """`--workers 2` 与其数值都不得下传（否则子进程递归拉起执行体）。"""
-        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--only", PHONE_OK])
+        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--check-config"])
         self.assertEqual(rc, 0)
         for rec in spawned:
             tail = rec["cmd"][4:]   # [python, -m, yiban.cli, sign, *child_argv]
             self.assertNotIn("--workers", tail)
-            self.assertEqual(tail, ["--only", PHONE_OK])
+            self.assertEqual(tail, ["--check-config"])
 
     def test_child_argv_drops_workers_value_not_equal_to_slot_count(self):
         """清单模式：槽位数与命令行 `--workers N` 的 N 不等时，N 也不得下传。
@@ -328,14 +354,14 @@ class WorkerRelaunchCommandTest(_Base):
         for flag in (["--workers", "4"], ["--workers=4"]):
             with self.subTest(flag=flag):
                 rc, spawned = self._run_supervisor(
-                    3, [*flag, "--only", PHONE_OK], slots=[0, 1, 3])
+                    3, [*flag, "--check-config"], slots=[0, 1, 3])
                 self.assertEqual(rc, 0)
                 self.assertEqual(len(spawned), 3, "应按 3 个槽位拉起")
                 for rec in spawned:
                     tail = rec["cmd"][4:]
                     self.assertNotIn("--workers", tail)
                     self.assertNotIn("4", tail, "命令行 N 不得下传（子进程会当位置参数）")
-                    self.assertEqual(tail, ["--only", PHONE_OK])
+                    self.assertEqual(tail, ["--check-config"])
 
     def test_argv_position_does_not_eat_lookalike_values(self):
         """只吃 `--workers` 的后随值：其余参数里同名的值照旧下传。

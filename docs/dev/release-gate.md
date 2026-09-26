@@ -22,9 +22,10 @@
 
 ```bash
 # 安全 / 鉴权 / 脱敏相关用例
-python -m pytest tests/ -q -n 8 -k "security or mask or audit or login or private or csrf or ratelimit"
+# --dist loadfile 必带：同文件顺序依赖（MF-107）在纯 xdist 分片下会误红（与 ci.yml fast 轨逐字同口径）
+python -m pytest tests/ -q -n 8 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
 # 全量（含上述）
-python -m pytest tests/ -q -p no:randomly -n 8
+python -m pytest tests/ -q -p no:randomly -n 8 --dist loadfile
 # 脱敏自查：不得含真实域名/IP/邮箱/手机号/密钥、部署与备案信息
 # 排除 tests/：测试桩里的示例号码（形如 13800138000）与回环地址不算泄漏
 git diff <旧提交>..HEAD -- . ":(exclude)tests" | grep -E "^\+" \

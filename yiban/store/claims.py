@@ -12,7 +12,7 @@
 |-------|------|----------|
 | `claimed` | 已被某执行体领取、尚未收尾（含执行中） | 否 |
 | `done` | 收尾且**当日无需再签**（即 `yiban.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
-| `failed` | 收尾但结果未了结（本轮重试预算耗尽、窗口外跳过、无点位） | 否（当日仍可再领，见 `STATE_FAILED`） |
+| `failed` | 收尾但结果未了结（本轮重试预算耗尽、窗口外跳过、无点位） | 否（按原因档再领：窗口外/无点位默认可领，预算耗尽/风控需显式路径，见 `STATE_FAILED`） |
 
 **四条纪律**：
 
@@ -20,7 +20,10 @@
    写入时机不动——它是日历/状态展示的事实源，本表只回答"谁领了、了结没有"。
 2. **写入带 owner 条件（CAS）+ fencing token**：租约被接管后，被接管的旧执行体写不进去，
    避免"两个执行体都以为自己签成功了"；owner 相同但 `epoch` 落后时同样写不进去
-   （同 owner 重入会让 epoch 递增，见纪律 4）。
+   （同 owner 重入会让 epoch 递增，见纪律 4）。**owner 串本身不是身份证明**：同一个
+   稳定槽位名（`single@{主机名}` 之类）可能同机两个进程共用（cron 全量与网页手动），
+   故缺省身份由 `yiban.egress.runtime_owner` 拼上进程号与代次，且冲突分支不认
+   "owner 相同即重入"——重入必须出示上一代的 `epoch`。
 3. **协调不可用即拒跑（fail-closed）**：表未落地（迁移被延后）或库抖动时，`try_claim`
    返回 `(False, 0)` 并告警，**绝不**答"可执行"。答"可执行"在多执行体下会让两个执行体
    同时放行同一账号 ⇒ 两次真实登录，踩上游风控红线（"同一账号一天只真实登录一次"是本
@@ -28,6 +31,15 @@
 4. **每次写都带 fencing token**：领取自增 `epoch`，`settle` / `give_up` / `touch` 的 WHERE
    都带 `epoch=?`。只给领取侧发号而不校验收尾写等于没做——执行体被 STW 停顿/容器挂起卡住
    数分钟后醒来，仍以为自己持有该账号，迟到的写会覆盖接管者的结论。
+
+**两条显式处置"卡住的行"的路径（缺一条就有账号当天签不上）**：
+
+- **心跳**：领取之后由执行侧周期性调用 `touch`（周期见 `HEARTBEAT_SEC`，续租写同样带
+  `epoch`）。没有它，任何"领取 → 收尾"跨度超过租约的账号都会被别的执行体按"崩溃自愈"
+  接管，同一天被真实登录两次。
+- **轮末收尸**：`reap_unreported`（执行体对自己本轮未产生结论的行）与 `reap_abandoned`
+  （监督进程对**已确认死亡**的子进程名下的行）把租约立刻放开，而不是等满 900s 让补签轮
+  误判成"别人在飞"。判定死亡的证据强度不同（异常退出 > 心跳过期），故两者分开。
 
 连接与进程内锁取自同包的 `yiban.store.db`；门面对本模块是**重命名**再导出（`claim_*`
 前缀），逐条别名见 `yiban.store.db` 领取池绑定处的行尾注释。
@@ -54,6 +66,14 @@ logger = logging.getLogger("yiban.store.claims")
 #: 会加速触发易班侧风控），取太长会让崩溃后的账号等到窗口结束都没人接。
 LEASE_SECONDS = 900
 
+#: 心跳周期（秒）：执行侧对**在领账号**周期续租的间隔（`touch` 的生产调用者见
+#: `yiban/engine/round.py` 的 `_ClaimHeartbeat`）。
+#: 为什么必须显著小于 `LEASE_SECONDS`：一轮里每个账号的尝试之间隔着间隔对齐与重试等待，
+#: 那些等待可达数分钟，期间账号已被领取但没有任何请求；若心跳周期接近租约，一次正常的
+#: 长等待就会让在领行过期，被别的执行体按"崩溃自愈"接管 ⇒ 同一账号两次真实登录。
+#: 取 300s = 租约的 1/3：连丢两拍（600s）仍在租约内，留出一次容错。
+HEARTBEAT_SEC = 300
+
 #: 保留期（天）：只用于运维追溯与"昨日的了结情况"，展示口径不读它。
 RETENTION_DAYS = 14
 
@@ -64,10 +84,9 @@ STATE_DONE = "done"
 #: 尝试过但**未了结**（本轮重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 #: 两点必须知道：①「预算」住在**单轮进程内**（`yiban.engine.attempts._retry_budget`），
-#: 换一轮即重新计数；本表的 `attempts` 列只被领取侧自增，没有任何判据读它。②所以预算
-#: 耗尽而弃权的账号，当日仍可被后面的轮次再接手、重走一遍登录+签到（会话缓存还有效时
-#: 是探活复用，缓存被清过的那一轮就是一次真实登录）——这正是补签链接得上失败账号的前提，
-#: 代价是领取层不按原因分档、也没有跨轮上限，跨轮的止损都在旁路（凭据熔断、站点限速）。
+#: 换一轮即重新计数；②故领取层必须**按弃权原因分档**，否则"预算耗尽"的账号会被
+#: 后面每一轮无上限地重领一遍（每次都是一次真实登录）。分档用 `result` 字段前缀表达
+#: （见 `RESULT_RETRY_PREFIX` / `RESULT_FINAL_PREFIX`，不动表结构）。
 STATE_FAILED = "failed"
 #: 终态集合（「了结」的账号）。
 SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
@@ -76,6 +95,21 @@ SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
                   & yiban_status.TASKS_SETTLED_STATES)  # 交集后只剩 done：failed 是"可再领"、不是终态
 #: 参与"未了结账号"统计的状态（与 done 互斥）
 OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
+
+#: 弃权原因档的 `result` 前缀协议（**无库迁移**：复用既有 result 列）。
+#: `give_up` 把原因档写成 `result` 的前缀，`try_claim` 的冲突分支据此决定"默认参数下
+#: 能不能再领"——这是领取层唯一能记住"为什么弃权"的字段。升级前写入的历史行不带前缀，
+#: 一律按保守档（默认不可再领）处置，只由显式路径放行；收尸路径主动写 `retry:` 档。
+RESULT_RETRY_PREFIX = "retry:"   # 窗口外/无点位：该重试，当日默认可被任何一轮再接手
+RESULT_FINAL_PREFIX = "final:"   # 预算耗尽/风控：不该无上限重试，需显式路径才可再领
+
+#: 默认可再领的弃权状态档（"窗口外/无点位"）。**必须是唯一一份**：`give_up` 写入前缀与
+#: `round._settle_claims` 选择档位都由它派生，各写一份会漂移成"记 retry、判 final"。
+RETRYABLE_GIVE_UP_STATUSES = frozenset((
+    yiban_status.STATUS_SKIPPED_WINDOW,
+    yiban_status.STATUS_SKIPPED_NORANGE,
+    yiban_status.STATUS_NO_POSITION,
+))
 
 
 #: 领取池不可用的一次性告警标记：`try_claim` 每个账号每轮都会被调到，而"表未落地/库锁"
@@ -90,24 +124,36 @@ def _integrity_errors():
     return sqlite3.IntegrityError
 
 
-def _notify_pool_down(e):
+def notify_pool_down(reason):
     """领取池不可用（fail-closed 拒跑）的告警：进程内只报一次 + 并入当日汇总邮件。
 
     只写日志不够：管理员在设置页看到的"多执行体"配置看起来生效，实际签到被静默拒跑，
     无人知情。故并入当日汇总（A 线），并用模块级标记去重。
+
+    调用方不止 `try_claim`：**配了库但库当前不可用**（部署要用领取池却读不到）时，
+    执行侧在调用领取之前就要拒跑（`round._claim`），那一路也走本函数——两处的口径必须
+    一致（同一句"池子坏了"、同一份去重），否则同一场库故障会被两条路径报成两件事。
     """
     global _pool_down_notified
     if _pool_down_notified:
         return
     _pool_down_notified = True
-    logger.error("领取签到账号失败（fail-closed 拒跑）: %s", e)
+    # 去重是**全局**的（进程内一次），不是逐账号：同一场库故障下，第一个账号报一次 ERROR
+    # 并入当日汇总后，后续账号的拒跑一律静默——这是刻意的防洪，一条汇总已足够定责；
+    # 若逐账号重报，几百个账号会把同一场故障刷成几百条日志与邮件，掩盖真正的信号。
+    logger.error("领取签到账号失败（fail-closed 拒跑）: %s", reason)
     # 局部导入：alerts 经引擎入口反向依赖本模块所在的数据层，模块级互引会成环
     # （与 yiban/engine/schedule.py 取 alerts 同一手法）。
     from yiban.engine import alerts
     alerts._collect_admin_mail(
         "签到领取池不可用",
-        f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{e}",
+        f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{reason}",
     )
+
+
+# 旧名保留（`_pool_down_notified` 那套打桩口径不变）：既有调用点与测试按旧名取用的
+# 继续可用；新增调用点（执行侧的"配了库但不可用"分支）用公开名。
+_notify_pool_down = notify_pool_down
 
 
 def new_owner(prefix=""):
@@ -125,17 +171,39 @@ def _utc_offset_str(seconds):
     return t.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settled=False):
+def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settled=False,
+              epoch=None, allow_failed=False):
     """原子领取一个账号。返回 `(ok, epoch)`。
 
     `ok=False` 表示"没领到，必须放弃该账号本轮"；`epoch` 是本次领取的 fencing token
     （单调递增，插入分支为 1），收尾时必须原样传给 `settle` / `give_up` / `touch`。
 
     领不到的情形：已被别的执行体领取且租约未过期，当日已了结（除非
-    `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用），或领取池不可用。
+    `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用），弃权档为"预算耗尽/
+    风控"（除非 `allow_failed=True`——同上显式路径），或领取池不可用。
 
     实现是**单条 upsert**：并发下 SQLite 串行化写者，后到者的 WHERE 会看到
-    先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。
+    先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。判据与写入在同一条
+    UPDATE 的 WHERE 里，没有"先查后写"可被撞上的跨语句窗口。
+
+    **冲突分支的准入判据（按行状态分三条）**：
+
+    - 已了结（`done`）：只由 `allow_settled` 决定——done 行无人持有，没有租约可校。
+      `epoch` 另给了就要求行仍在这一代：`allow_settled` 的调用方若先读过行再重开，
+      落后的代说明中间已被人改过，此时必须拒绝而不是盲目覆盖。
+    - 未了结且在飞（`claimed`）：**租约已过期**（`heartbeat_at <= now - lease_sec`，
+      崩溃自愈的唯一入口），或**出示领取时拿到的 `epoch`**（真持有者本人的轮内重试）。
+      **仅 owner 串相同不放行**：同机上两个进程可能拿到同一个身份串
+      （cron 全量与网页手动曾都是 `single@{主机名}`），把同名认成"自己人"就是两边
+      同时登录同一账号——本项目第一红线。故缺省身份须含进程号与代次
+      （`yiban.egress.runtime_owner`），重入须出示 token；重启后的新进程没有上一代的
+      token，只能等租约过期或由心跳/回收机制处置。
+    - 已弃权（`failed`）：租约在 `give_up` 时已被主动放开，故这里不看租约，**只看到
+      `result` 里的原因档前缀**——`retry:` 档（窗口外/无点位，"该重试"）默认可再领，
+      `final:` 档或历史无前缀行（预算耗尽/风控/收尸）默认拒绝，须 `allow_failed=True`
+      才放行。这一条正是跨轮上限：没有它，预算耗尽的账号会被后面每一轮重领一遍。
+
+    `epoch=None` 保持迁移期调用方的旧语义（不校验代），但**同样不允许**同名重入。
 
     库异常（表未落地/锁超时/IO）时 **fail-closed**：告警 + 返回 `(False, 0)`。
     语义：多执行体下"按可执行处理"会让两个执行体同时放行同一账号 ⇒ 两次真实登录，
@@ -144,11 +212,11 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     from yiban.store import db
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
-    # 冲突分支的两种情形分开写清楚：
-    #  ① 已了结（done）：**无人持有**，故租约条件不适用——只由 allow_settled 决定；
-    #  ② 未了结（claimed 在飞 / failed 弃过）：自己的可重入；他人的须租约已过期
-    #     （<=：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期，见 give_up）。
-    # 两条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
+    retry_prefix_len = len(RESULT_RETRY_PREFIX)
+    # 三条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
+    # <= 的比较口径：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期（见 give_up）。
+    # failed 分支用 `substr(...)=?` 而不是 `LIKE 'retry:%'`：主机名/结果文本里可能出现
+    # `_`（LIKE 的通配符），按字节前缀比较才不会被通配符吃掉。
     sql = (
         "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
         "state, result, attempts, epoch) VALUES (?, ?, ?, ?, ?, ?, '', 0, 1) "
@@ -157,10 +225,16 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         "heartbeat_at=excluded.heartbeat_at, state=excluded.state, "
         "epoch=sign_claims.epoch + 1, "
         "attempts=sign_claims.attempts + 1 "
-        "WHERE (sign_claims.state = ? AND ?)"
-        "   OR (sign_claims.state IN (?, ?) "
-        "       AND (sign_claims.owner = excluded.owner "
-        "            OR sign_claims.heartbeat_at <= ?)) "
+        "WHERE (sign_claims.state = ? AND ? AND (? IS NULL OR sign_claims.epoch = ?))"
+        "   OR (sign_claims.state = ? "
+        "       AND (sign_claims.heartbeat_at <= ? "
+        "            OR (? IS NOT NULL AND sign_claims.owner = excluded.owner "
+        "                AND sign_claims.epoch = ?)))"
+        "   OR (sign_claims.state = ? "
+        "       AND (substr(sign_claims.result, 1, ?) = ? OR ?) "
+        "       AND (sign_claims.heartbeat_at <= ? "
+        "            OR (? IS NOT NULL AND sign_claims.owner = excluded.owner "
+        "                AND sign_claims.epoch = ?))) "
         "RETURNING epoch"
     )
     try:
@@ -168,8 +242,10 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         with db._conn_lock:
             cur = conn.execute(
                 sql, (phone, day, owner, ts, ts, STATE_CLAIMED,
-                      STATE_DONE, 1 if allow_settled else 0,
-                      STATE_CLAIMED, STATE_FAILED, expired_before),
+                      STATE_DONE, 1 if allow_settled else 0, epoch, epoch,
+                      STATE_CLAIMED, expired_before, epoch, epoch,
+                      STATE_FAILED, retry_prefix_len, RESULT_RETRY_PREFIX,
+                      1 if allow_failed else 0, expired_before, epoch, epoch),
             )
             # RETURNING 只对**真的写成**的行出行：条件不满足时零行，正是"没领到"。
             row = cur.fetchone()
@@ -268,12 +344,22 @@ def settle(phone, day, owner, state=STATE_DONE, result="", epoch=None):
     return False
 
 
-def give_up(phone, day, owner, result="", epoch=None):
+def give_up(phone, day, owner, result="", epoch=None, retryable=False):
     """本次执行放弃该账号，但**当日仍未了结**：置 `failed` 并**立刻放开租约**。
 
     为什么必须放开：补签轮（窗口内第二轮）与兜底执行体的存在意义就是接手失败账号。
     若把租约留满 900s，07:10 弃权的账号在 07:12 的补签轮里仍"被持有"→ 补签轮领不到、
-    当日再也签不上。放开后任何执行体/任何一轮都能立刻接手。
+    当日再也签不上。放开租约只解决"被持有"这半边；能不能接手仍由弃权原因档决定——
+    显式路径（补签轮/手动，`allow_failed=True`）任何档都能接手，兜底常驻只接默认档。
+
+    `retryable` 是弃权**原因档**（缺省保守档 = 不可再领），写进 `result` 前缀：
+
+    - `retryable=True`（窗口外/无点位，"该重试"）：默认参数下任何一轮都能再领；
+    - `retryable=False`（预算耗尽/风控，"不该无上限重试"）：只有显式路径
+      （`try_claim(allow_failed=True)`）才可再领——否则它会当日每轮重来一遍。
+
+    缺省保守是刻意的：判不清原因时宁可要求显式路径，也不要无上限重复真实登录。
+    调用方按 `RETRYABLE_GIVE_UP_STATUSES` 选档（`round._settle_claims`），不要各写一份。
 
     `epoch` 的语义同 `settle`（弃权同样是终态写：被接管者不得把接管者的在飞记录改成 failed）。
     返回是否写成功（被接管 / token 落后时为 False）。
@@ -282,7 +368,8 @@ def give_up(phone, day, owner, result="", epoch=None):
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=?")
     expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
-    params = [STATE_FAILED, (result or "")[:200], expired, phone, day, owner]
+    prefix = RESULT_RETRY_PREFIX if retryable else RESULT_FINAL_PREFIX
+    params = [STATE_FAILED, (prefix + (result or ""))[:200], expired, phone, day, owner]
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
@@ -299,6 +386,80 @@ def give_up(phone, day, owner, result="", epoch=None):
     if epoch is not None:
         _explain_fenced_write(phone, day, "弃权")
     return False
+
+
+def reap_unreported(owner, claimed, reported, result="轮末收尸：本轮未产生结论"):
+    """轮末收尸：把自己领到、但本轮**没有产生结论**的行显式弃权。
+
+    `claimed` 是 `{phone: (day, epoch)}`（本进程领到的账号 → 业务日与领取时的 token），
+    `reported` 是本轮已给出结论的账号集合；返回被了结的手机号列表。
+
+    **为什么必须有这条路径**：领取与登录跨事务、收尾又在整轮末尾，中间任何让本进程
+    提前离场的路（异常、窗口关闭、被杀）都会留下"claimed 但没有结论"的行。它们要么
+    等满 900s 租约才被别人接管（当日可能等不到窗口结束），要么被下一轮按"别人在飞"
+    误判而跳过——两种情况都是"当天再也签不上"。显式收尸把租约**立刻**放开（`give_up`
+    的语义：置 failed、当日仍未了结），补签轮/兜底可马上接手。
+
+    收尸一律带领取时的 `epoch`：本进程若已被接管，收尸写会被存储端拒绝——不得把
+    接管者的在飞行改成 failed（那会让接管者的结论无处可落）。
+
+    这里**不动 `epoch`**：走的是 `give_up` 的轮内语义（行仍归本人，只是立刻放开租约），
+    与轮内主动弃权同一条路径；自增 `epoch`（fence 迟到旧代写）的是监督进程侧的
+    `reap_abandoned`——它面对的是已被确认死亡、可能换了持有者的行。
+
+    收尸一律按 `retryable=True` 记档（"本轮没产生结论"≠"预算耗尽"）：它默认就能被下一轮
+    接手，否则崩溃/提前离场的账号当天再也签不上——那正是收尸这条路径存在的理由。
+    """
+    done = []
+    for phone, (day, epoch) in list(claimed.items()):
+        if phone in reported:
+            continue
+        if give_up(phone, day, owner, result, epoch=epoch, retryable=True):
+            done.append(phone)
+        else:
+            logger.info("轮末收尸未生效（已被接管或已有终态）: %s",
+                        masking.mask_phone(phone))
+    return done
+
+
+def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退出，本轮未产生结论"):
+    """显式了结某个**已确认死亡**的持有者名下仍 `claimed` 的行，返回受影响行数。
+
+    `owner` 是**稳定槽位名**（`worker-3@{主机名}` 之类）。持有者列存的是运行时身份
+    （`runtime_owner(稳定名)`，见 `yiban.egress`），故这里按前缀匹配：`owner = ?`
+    覆盖旧格式/手工写入的裸稳定名，`instr(owner, ?) = 1` 匹配 `{稳定名}:{进程号}:{代次}`。
+    **不用 `LIKE`**——主机名里可能出现 `_`，那是 LIKE 的通配符，会把别的槽位一起吃掉。
+
+    与 `reap_unreported` 的分工：后者是执行体对自己（还活着的进程）的收尾；本函数给
+    **监督进程**用——子进程被信号杀死时来不及自己收尾，而监督进程直接观测到了它异常
+    退出（返回码为负），这比"心跳过期 ⇒ 可能死了"更强，故不必等满租约。
+
+    只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；终态行更
+    不该动。`epoch + 1` 与 `reap_expired` 同一条红线——让任何迟到的旧代写被 fence。
+    结果里写 `retry:` 档（**覆盖**旧值）：死亡执行体没产出结论，不是"预算耗尽"，这行
+    默认就该能被下一轮接手。保留旧 result 会让上一轮遗留的 `final:` 前缀把这行判成
+    "不可再领"，崩溃账号当天再也签不上。
+    库异常 → 0 + warning（收尸是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
+    """
+    from yiban.store import db
+    prefix = owner + ":"
+    expired = _utc_offset_str(LEASE_SECONDS)   # 与 give_up 同口径：立刻放开租约
+    sql = ("UPDATE sign_claims SET state=?, result=?, "
+           "heartbeat_at=?, epoch=epoch + 1 WHERE state=? AND (owner = ? OR instr(owner, ?) = 1)")
+    params = [STATE_FAILED, (RESULT_RETRY_PREFIX + (result or ""))[:200],
+              expired, STATE_CLAIMED, owner, prefix]
+    if day is not None:
+        sql += " AND day=?"
+        params.append(day)
+    try:
+        conn = db.get_conn()
+        with db._conn_lock:
+            cur = conn.execute(sql, tuple(params))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("轮末收尸失败（按未收尸处理）: %s", e)
+        return 0
 
 
 def _day_column(day, column):
@@ -342,6 +503,58 @@ def in_flight_phones(day, lease_sec=LEASE_SECONDS):
     except Exception as e:
         logger.debug("读取在飞账号失败（按空处理）: %s", e)
         return []
+
+
+def fallback_event(day, exclude_owner=""):
+    """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新迁移标记)`
+    ——领取池（`sign_claims`）与任务队列（`sign_tasks`）**两池并集**，恒为四元组。
+
+    为什么这一行就是"失败即入队"：`give_up` 在同一事务里把行置 `failed` 并**立刻**
+    把租约置过期——补签链的兜底腿不必另建队列，池的这次行迁移就是它与全量轮（两个
+    进程）之间的交接：give_up 即入队，try_claim 即出队。兜底扫空后按短周期轮询本
+    签名，一变即接手，不必等满一个扫描间隔；签名不变则等满间隔为上限。
+
+    为什么 v3 侧必须并入：`YIBAN_SCHEDULER_V3` 下全量轮的弃权发生在 `sign_tasks`
+    队列（收尾带 `retry:`/`final:` 档位前缀，回炉口见 `queue_store.requeue_failed`），
+    领取池里不产生任何新事实——只读 `sign_claims` 会让唤醒恰好在最需要"失败即接手"
+    的分档灰度配置里退化回等满间隔的盲轮询。两池按"当日单一写者"的运维规则互斥，
+    但本函数不感知开关、恒并两侧：另一池的贡献是常量，不影响"一变即醒"。
+    `sign_tasks` 没有心跳列，其"最新迁移标记"取 `MAX(epoch)`——epoch 每次领取进一
+    且永不回退，弃权/接手两向迁移都会动它。
+
+    **两条收紧，防止唤醒被放大成重复真实登录**（两池同一套口径）：
+    - 只数 `retry:` 档：`final:` 档（预算耗尽/风控）在默认参数下兜底**接不动**
+      （领取池见 `try_claim` 的 failed 分支与 `RESULT_FINAL_PREFIX`；队列侧见
+      `requeue_failed` 的缺省档位门），为它醒来只会空转，
+      事件频率必须与"可接手频率"同集；
+    - 剔除 `exclude_owner`（兜底自己的稳定槽位名，含 `{稳定名}:{进程号}:{代次}`
+      运行时形态）弃权：它一轮扫完本就有紧接的再扫节律，自己的弃权再触发自己的
+      唤醒会把"扫→弃权→醒→再扫"接成紧循环。
+
+    匹配口径与 `reap_abandoned` 一致（等值 + `instr` 前缀，不用 LIKE——主机名里的
+    `_` 是通配符）。库不可用返回 None：调用方退回等满间隔——事件驱动是**延迟优化**，
+    不是正确性依赖，读不到时绝不据此做任何互斥判断。
+    """
+    from yiban.store import db
+    tail, ex = "", []
+    if exclude_owner:
+        tail = " AND owner<>? AND instr(owner, ?)<>1"
+        ex = [exclude_owner, exclude_owner]
+    probe = [day, STATE_FAILED, len(RESULT_RETRY_PREFIX), RESULT_RETRY_PREFIX, *ex]
+    sql = ("SELECT COUNT(*) AS n, MAX(heartbeat_at) AS h FROM sign_claims "
+           "WHERE day=? AND state=? AND substr(result, 1, ?)=?" + tail)
+    sql_tasks = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
+                 "WHERE day=? AND state=? AND substr(result, 1, ?)=?" + tail)
+    try:
+        with db._conn_lock:
+            conn = db.get_conn()
+            row = conn.execute(sql, tuple(probe)).fetchone()
+            row_t = conn.execute(sql_tasks, tuple(probe)).fetchone()
+        return (int(row["n"] or 0), row["h"] or "",
+                int(row_t["n"] or 0), int(row_t["h"] or 0))
+    except Exception as e:
+        logger.debug("读取领取池/任务队列兜底事件签名失败（按无事件处理）: %s", e)
+        return None
 
 
 def stats(day):
@@ -456,12 +669,25 @@ def owners_since(days=RETENTION_DAYS):
 
 
 def purge(days=RETENTION_DAYS):
-    """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。"""
+    """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。
+
+    接入时钟跳变守卫（同库其余清理同形，见 `yiban.store.db._clock_jump_guard`）：
+    系统时间被拨快 >72h 时按日比较的 cutoff 会一下子跳到未来，"保留期外"的判据于是
+    把最近几天的行全部算超期——本表是**当日互斥面**（(phone, day) 的持有记录），
+    整删当日行等于把当天所有账号放行给下一个执行体重复真实登录。跳变只跳本轮：
+    守卫在越界路径上也推进参照点，下一轮（≤24h 后）即恢复正常清理。
+    守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作 DELETE 的事务边界。
+    """
     from yiban.store import db
     cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         conn = db.get_conn()
         with db._conn_lock:
+            ok, note = db._clock_jump_guard(conn, "purge_claims_clock")
+            if not ok:
+                logger.error("%s", note)
+                conn.rollback()   # 越界路径已在守卫内提交参照点；此处只是解除写锁
+                return 0
             cur = conn.execute("DELETE FROM sign_claims WHERE day < ?", (cutoff,))
             conn.commit()
             return cur.rowcount

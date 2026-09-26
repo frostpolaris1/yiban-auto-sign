@@ -63,6 +63,34 @@ _invalid_window_notified = False
 _window_clamped_notified = False
 _window_fallback_notified = False
 
+#: 上面三个告警标记所属的**业务日**（"YYYY-MM-DD"）；空串=尚未复位过。
+#: 复位点唯一：`reset_daily_alerts`（由 `_schedule_config` 每日首调触发）。
+_alert_mark_day = ""
+
+
+def reset_daily_alerts(now=None):
+    """业务日翻页时复位三个窗口告警去重标记；返回本次是否真的复位了。
+
+    为什么必须有复位点：这三个标记是"同一配置错误当日只并入一次汇总邮件"的去重位，
+    但它们原先**只在模块导入时为假、全仓没有任何生产复位点**。兜底常驻进程每 60 秒扫
+    一轮且从不重启，于是同一配置错误在第一天报过之后，第二天起彻底无声——管理员看到的
+    是"一切正常"，而配置依旧是错的（窗口非法/缓冲吃满/窗口回退三类都如此）。
+
+    复位时机取**业务日翻页**：复位必须发生在三个标记的产生分支之前，而翻页必然早于当日
+    窗口开启，故它等价于"新窗口开启时复位"，但只有一个可判时点（每次调用比日期）。
+    同一业务日内的重复调用不复位——否则退化成"每轮一次"，去重失效、告警刷屏。
+    """
+    global _alert_mark_day, _invalid_window_notified
+    global _window_clamped_notified, _window_fallback_notified
+    day = (now or clock.now()).strftime("%Y-%m-%d")
+    if day == _alert_mark_day:
+        return False
+    _alert_mark_day = day
+    _invalid_window_notified = False
+    _window_clamped_notified = False
+    _window_fallback_notified = False
+    return True
+
 
 def _env_int(name, default, lo=None, hi=None):
     """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。"""
@@ -219,14 +247,20 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
     return min(max(1, need), egress)
 
 
-def _schedule_config():
+def _schedule_config(now=None):
     """读取调度 v2 配置（每次调用读取，便于测试与热改）。
 
     兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
     新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
     返回 dict：order/dist/edge_front_sec/edge_back_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
+
+    `now` 只用于把"业务日"交给 `reset_daily_alerts`（见其文档）：常驻兜底这类每轮都
+    已经取过当前时刻的调用方顺手传进来，省掉一次多余的 `clock.now()`。
     """
+    # 业务日翻页先把三个告警去重标记复位（唯一复位点，理由见 reset_daily_alerts）：
+    # 本函数是每一轮调度的入口，复位挂在这里，调用方不必记得手动清理。
+    reset_daily_alerts(now)
     # 局部导入：alerts 反向依赖本模块的窗口判定（告警要判"窗口是否还开着"），
     # 模块级互引会成环；本函数每天只调用几次，局部导入的开销可忽略。
     from yiban.engine import alerts

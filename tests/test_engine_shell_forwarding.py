@@ -56,6 +56,16 @@ class ShellForwardingStubTest(unittest.TestCase):
 
     def _run_round(self, calls):
         """跑一轮单账号队列；三个高频打桩名都换成记录调用的替身。"""
+        import contextlib
+
+        from yiban.store import db as yiban_db
+
+        # 本类只验证"替身穿透壳"，与领取池无关：清掉前序用例可能泄漏的库连接单例，
+        # 并在运行期间不声明库路径（纯状态文件形态），使轮次走"未声明 ⇒ 放行且不碰库"分支。
+        if yiban_db._conn is not None:
+            with contextlib.suppress(Exception):
+                yiban_db._conn.close()
+            yiban_db._conn = None
 
         def fake_attempt(_acc):
             calls["attempt_signin"].append(_acc.phone)
@@ -70,7 +80,8 @@ class ShellForwardingStubTest(unittest.TestCase):
         with mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
                 mock.patch.object(signin, "_update_cred_state", side_effect=fake_cred), \
                 mock.patch.object(signin, "_write_sign_state", side_effect=fake_state), \
-                mock.patch.object(signin.time, "sleep"):  #顺手挡掉真实 sleep：轮次之间要退避，用例不该为此等
+                mock.patch.object(signin.time, "sleep"), \
+                mock.patch.dict(os.environ, {"YIBAN_DB_FILE": ""}, clear=False):  #顺手挡掉真实 sleep：轮次之间要退避，用例不该为此等
             signin.run_queue_retry([self._acc()], "", 0, 0, schedule=None, cred_state={})  #必须从壳发起：只有穿壳一次才证明写入同步到了实现模块
 
     def test_attempt_signin_stub_reaches_the_engine(self):

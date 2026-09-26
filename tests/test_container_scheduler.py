@@ -47,6 +47,7 @@ from unittest import mock
 
 import db
 
+from yiban import clock
 from yiban.engine import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -108,7 +109,8 @@ def _stub_module(**members):
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    # 调度器标记/状态文件名取业务钟（clock.now），宿主 TZ 下须同源
+    return clock.today()
 
 
 class FullRunGateTest(unittest.TestCase):

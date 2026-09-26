@@ -196,12 +196,13 @@ class CliContractTest(unittest.TestCase):
         self.assertIsNone(cli_support.last_fatal_error(),
                           "上一轮的致命原因被带到了本轮（应已在 main 入口清空）")
 
-    # ---- ③ state 默认 dry-run，--yes 才动手 ----
+    # ---- ③ state 默认 dry-run，--yes 需回显目标指纹才动手 ----
 
-    def test_state_defaults_to_dry_run_and_yes_deletes(self):
+    def test_state_defaults_to_dry_run_and_yes_deletes_with_fingerprint(self):
         expired = os.path.join(self.state_dir, EXPIRED_STATE_FILE)
         with open(expired, "w", encoding="utf-8") as f:
             f.write("{}")
+        _make_db(self.root, self.env)          # 留痕要写进部署库的审计链
         r = _run(["state", "--json"], self.env)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         payload = json.loads(r.stdout)
@@ -210,13 +211,20 @@ class CliContractTest(unittest.TestCase):
         self.assertGreaterEqual(payload["candidates"], 1)
         self.assertIn(EXPIRED_STATE_FILE, " ".join(payload["detail"]))
         self.assertTrue(os.path.exists(expired), "dry-run 不得删文件")
+        fingerprint = payload["fingerprint"]
+        self.assertTrue(fingerprint, "dry-run 必须打印目标指纹供 --yes 回显")
 
+        # 缺指纹（或指纹不符）的 --yes 一律拒绝且零删除
         r = _run(["state", "--yes", "--json"], self.env)
+        self.assertNotEqual(r.returncode, 0, "state --yes 缺目标指纹必须拒绝")
+        self.assertTrue(os.path.exists(expired), "拒绝路径不得删文件")
+
+        r = _run(["state", "--yes", "--fingerprint", fingerprint, "--json"], self.env)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         payload = json.loads(r.stdout)
         self.assertFalse(payload["dry_run"])
         self.assertGreaterEqual(payload["removed"], 1)
-        self.assertFalse(os.path.exists(expired), "--yes 应当真删")
+        self.assertFalse(os.path.exists(expired), "--yes 回显指纹后应当真删")
 
     def test_state_reports_missing_dir_loudly(self):
         env = _cli_env(self.root, {"YIBAN_STATE_DIR": str(self.root / "nope")})

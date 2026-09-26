@@ -26,7 +26,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -118,7 +120,7 @@ class LogsByDateTest(unittest.TestCase):
 
     # ---- 1. log_path_for：按天路径 ----
     def test_log_path_for_today_and_hist(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         self.assertEqual(
             self.webapp.log_path_for(),
             os.path.join(self.tmp, f"sign-{today}.log"),
@@ -167,7 +169,7 @@ class LogsByDateTest(unittest.TestCase):
     # ---- 3. parse_sign_log 兼容按天文件（0.19.6 起仅返回 recent 行，states 语义已移除）----
     def test_parse_sign_log_returns_recent_only(self):
         """口径与 `_log_lines_for` 同源（2026-09-19）：`yiban.*` 全级别入列，其它组件仅告警级。"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         self._write_date_log(today, [
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
             _log_line(today, "DEBUG", "yiban", "[13800138001] 内部细节"),
@@ -188,7 +190,7 @@ class LogsByDateTest(unittest.TestCase):
         return c
 
     def test_api_logs_default_is_today(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         self._write_date_log(today, [
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
         ])
@@ -255,7 +257,7 @@ class LogsByDateTest(unittest.TestCase):
 
 def _d(offset):
     """相对今天的日期字符串（避免硬编码日期随运行日漂移）。"""
-    return (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
+    return (clock.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
 
 
 class LogsRecentDateTest(unittest.TestCase):
@@ -380,7 +382,14 @@ INVALID_DATES = ("2026-02-29", "2026-13-01", "2026-00-10", "2026-09-31",
 def _extract_function(src, name):
     """从源码里按花括号配对抽出 `function <name>(...) { ... }` 整段。
 
-    正则字面量里的 `{4}`/`{2}` 是成对出现，配对计数不受影响。
+    测试专用、够用即可——刻意不做通用 JS 解析。已知脆弱（改动被测 JS 时若命中即抛错、
+    不会静默抓错段，故失效方向是红不是假绿）：
+    - 定位靠字面量 `"function <name>("`：目标若被格式化（`function name (`、箭头函数、
+      对象属性式 `name: function(`）或该字面量在更早的注释/字符串里先出现过，会 ValueError
+      或抓错段——被抽函数须保持这一书写形式；
+    - 只数 `{`/`}`、不数 `()`/`[]`：字符串/模板串/注释里的裸花括号被计入，会提前或延后闭合；
+      （正则字面量里的 `{4}`/`{2}` 成对出现，暂不受影响）
+    - 参数默认值带对象解构（`function f(a, {b}=…)`）时，首个 `{` 落在参数表内、配对起点即偏。
     """
     start = src.index("function " + name + "(")
     i = src.index("{", start)

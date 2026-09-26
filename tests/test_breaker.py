@@ -298,7 +298,8 @@ class BreakerTest(unittest.TestCase):
 
     def test_write_sign_state_records_dur(self):
         signin._write_sign_state("13800138000", "success", "签到成功", dur=3.45)
-        with open(os.path.join(self.tmp, "sign-state-" + datetime.now().strftime("%Y-%m-%d") + ".json"),
+        # 状态文件名取业务钟（与被测 _write_sign_state 同源），裸 host now() 会在 UTC 主机上错日
+        with open(os.path.join(self.tmp, "sign-state-" + signin.clock.today() + ".json"),
                   encoding="utf-8") as f:
             data = json.load(f)
         entry = data["13800138000"]

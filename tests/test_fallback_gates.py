@@ -3,16 +3,16 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：day_off
-   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、全量轮在跑时让位、兜底独立锁确实被取、全局锁探测、定时轮与兜底共用同一份门。
+   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、让位收窄到同一账号（领取池在场时全量轮持锁期间兜底仍扫描仍接手，仅无池部署整段停摆）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、全局锁探测、定时轮与兜底共用同一份门。
 对应实现：yiban/engine/schedule.py（day_off 与 DAY_OFF_*
    常量）、yiban/engine/runner.py（兜底常驻分支与派发前的门）、yiban/engine/cli_support.py（_run_lock_held）、yiban/engine/schedule.py
    的窗口判定与 state_io 心跳。
 关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
    run_queue_retry
-   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据取全局锁探测且显式用全局锁名——兜底自己的环境变量里放的是它自己的。
+   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位分两档：有领取池时按**同一账号**让位（池对"谁在做谁"仲裁，全量轮持锁期间兜底照常扫描，判据是池而不是全局锁探测）；无池（纯状态文件部署）没有账号级互斥可依赖，才退回全局锁探测的整段停摆——显式用全局锁名，兜底自己的环境变量里放的是它自己的。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
 依赖：临时状态目录 + clock.now 替身（按序列返回、超过 max_calls
    抛错以暴露死循环）+ 打桩 run_queue_retry / 锁探测 /
-   心跳写盘。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上 self.skipTest（flock 仅 POSIX），其余全跑。
+   心跳写盘 / 领取池在场判定（`pool=True` 时 `pool_db_declared`、`is_initialized` 同为真）/ 池事件签名（按 `events` 序列返回，用尽重复末值）。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上 self.skipTest（flock 仅 POSIX），其余全跑。
 
 钉的四条：
 1. 周末门未开时，兜底一轮都不扫（也不写心跳）；
@@ -23,6 +23,7 @@
 用法（项目根目录）：
     py -m pytest tests/test_fallback_gates.py -v
 """
+import contextlib
 import datetime as _dt
 import os
 import shutil
@@ -32,6 +33,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from yiban.engine import cli_support, runner, schedule, workers
+from yiban.store import db
 
 #: 2026-09 的三个样例日（下面的 weekday 断言保证它们仍是周三/周六/周日）
 WED = _dt.date(2026, 9, 2) # 这三个日期只是「星期几」的样本，_WeekdayGuard 每次先验证前提仍成立
@@ -126,21 +128,33 @@ class _FallbackHarness(_WeekdayGuard):
     """主循环测试骨架：把循环跑起来并记录"睡过几次、扫了几次、写没写心跳"。"""
 
     def _run(self, times, env=None, accounts=None, results=None, lock_held=None,
-             mutate_cred=None):
+             mutate_cred=None, pool=False, events=None):
         """跑一次兜底常驻主循环，返回 (退出码, 睡过的秒数, 心跳时刻, 扫描次数)。
 
         `lock_held`：全局锁探测的返回序列（缺省全 False = 没有全量轮在跑）。
         必须显式打桩：真探测会去读宿主 `YIBAN_STATE_DIR`，测试之间会互相串味。
         `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
         `self.saves`（(data, touched) 列表）。
+        `pool`：领取池在场判定（`pool_db_declared` 与 `is_initialized` 一起给）——
+        有池才走"同一账号让位 + 事件唤醒"，无池退回整段停摆 + 盲间隔。
+        `events`：池事件签名的返回序列（用尽后重复末值；缺省一个恒定签名 = 无新事件）。
         """
         sleeps, beats, scans, saves = [], [], [], [] # 四本流水账分别对应睡过/心跳/扫过/写回，主循环的每个副作用都留痕
         self.saves = saves
+        #: 兜底腿**真实**传给 run_queue_retry 的关键字（供判定"是不是显式重领路径"）
+        self.retry_kwargs = {}
         held = list(lock_held) if lock_held else []
+        evs = list(events) if events else [("sig", "t0")]
+
+        def _sig(*a, **k):
+            # 序列只弹到剩最后一条为止，之后恒等于末值（模拟"池安静"）
+            return evs.pop(0) if len(evs) > 1 else evs[0]
+
         acc = mock.Mock(phone="13800000000", user_paused=False)
 
         def _retry(*a, **k):
             scans.append(k.get("delegated"))
+            self.retry_kwargs = dict(k)
             if mutate_cred is not None:
                 mutate_cred(k.get("cred_state"))
             return results if results is not None else {}
@@ -156,6 +170,9 @@ class _FallbackHarness(_WeekdayGuard):
                 mock.patch.object(workers.state_io, "_load_cred_state", lambda: {}), \
                 mock.patch.object(workers.state_io, "_save_cred_state",
                                   lambda data, touched=None: saves.append((data, touched))), \
+                mock.patch.object(workers.db, "pool_db_declared", lambda: pool), \
+                mock.patch.object(workers.db, "is_initialized", lambda: pool), \
+                mock.patch.object(workers.db, "claim_fallback_event", _sig, create=True), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
                                   lambda: ([acc] if accounts is None else accounts)), \
                 mock.patch.object(workers.round_mod, "run_queue_retry", _retry):
@@ -230,31 +247,149 @@ class FallbackCredStatePersistTest(_FallbackHarness):
         self.assertEqual(rc, 0)
 
 
-class YieldToFullRoundTest(_FallbackHarness):
-    """全量轮在跑时**让位**：不抢账号。
+class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
+    """兜底常驻的兜底腿**不是**显式重领路径：不得传 `retry_failed=True`。
 
-    否则兜底按列表顺序一路签下去，会把全量轮的错峰计划（按账号计划时刻逐个领取）与
-    多执行体的分工一起冲掉——它抢的正是"还没被领走"的那些账号。
+    `retry_failed` 是给"有界的一次性显式路径"（补签轮、手动 `--only`）开的口子：预算
+    耗尽/风控档账号在领取池里默认被拦住，正是靠它防住"当日每轮重领一遍"。兜底是**常驻
+    无界循环**（每 ~60s 扫一遍、窗口内可上百轮），把它当成显式路径会让这类账号在窗口内
+    每轮重登一次——一轮扫描 = 一次真实登录。故兜底腿只领 `retry:` 档（窗口外/无点位）
+    与从未被领过的账号；`final:` 档的第二次机会留给一次性补签轮与手动。判据分两层：
+    先取兜底**实际**传的关键字，再把它喂给真领取池，证明 final 档领不到而 retry 档领得到
+    （领取/弃权形状与 `tests/test_claims_cross_round.py` 一致）。
     """
 
-    def test_yields_while_round_running_then_takes_over(self):
+    FINAL_PHONE = "13800000001"
+    RETRY_PHONE = "13800000002"
+    DAY = "2026-09-02"   # 与 _at(WED, …) 的业务日一致
+
+    def test_fallback_leg_reclaims_retry_tier_but_not_final_tier(self):
+        # ① 取兜底腿真实传给 run_queue_retry 的关键字（窗口内扫一轮即记录）
+        _rc, _sleeps, _beats, scans = self._run([_at(WED, (6, 35)), _at(WED, (8, 30))])
+        self.assertEqual(len(scans), 1, "前置：窗口内应扫一轮以记录调用参数")
+        allow_failed = bool(self.retry_kwargs.get("retry_failed"))
+        self.assertFalse(
+            allow_failed,
+            "兜底是无界常驻循环，不得作为显式重领路径：传 retry_failed=True 会让"
+            "预算耗尽/风控档账号在窗口内每轮重领重登")
+
+        # ② 把该关键字喂给真领取池：final 档领不到、retry 档领得到
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-claim-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env_file = os.path.join(tmp, ".env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\n")
+        keys = ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
+                "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+        saved = {k: os.environ.get(k) for k in keys}
+        os.environ.update({
+            "YIBAN_ACCOUNTS_KEY": "a" * 64,
+            "YIBAN_ENV_FILE": env_file,
+            "YIBAN_DB_FILE": os.path.join(tmp, "yiban.db"),
+            "YIBAN_STATE_DIR": tmp,
+            "YIBAN_LOG_FILE": os.path.join(tmp, "sign.log"),
+        })
+        try:
+            if db._conn is not None:
+                with contextlib.suppress(Exception):
+                    db._conn.close()
+                db._conn = None
+            db.init_db(os.environ["YIBAN_DB_FILE"], env_file=env_file, cleanup=False)
+
+            ok, e1 = db.claim_sign_account(self.FINAL_PHONE, self.DAY, "seed:1:090000")
+            self.assertTrue(ok, "前置：final 档行先被领到")
+            db.claim_give_up(self.FINAL_PHONE, self.DAY, "seed:1:090000", "failed", epoch=e1)
+
+            ok_r, e_r = db.claim_sign_account(self.RETRY_PHONE, self.DAY, "seed:2:090000")
+            self.assertTrue(ok_r, "前置：retry 档行先被领到")
+            db.claim_give_up(self.RETRY_PHONE, self.DAY, "seed:2:090000", "skipped_window",
+                             epoch=e_r, retryable=True)
+
+            got_final, _ = db.claim_sign_account(self.FINAL_PHONE, self.DAY,
+                                                 "fallback:9:090100", allow_failed=allow_failed)
+            self.assertFalse(got_final,
+                             "预算耗尽(final)档不得被兜底腿重领——旧行为每轮重登一次")
+            got_retry, _ = db.claim_sign_account(self.RETRY_PHONE, self.DAY,
+                                                 "fallback:9:090100", allow_failed=allow_failed)
+            self.assertTrue(got_retry, "窗口外(retry)档在兜底腿下仍应可接手")
+        finally:
+            if db._conn is not None:
+                with contextlib.suppress(Exception):
+                    db._conn.close()
+                db._conn = None
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
+class YieldPerAccountTest(_FallbackHarness):
+    """让位收窄到**同一账号**：有领取池时，全量轮持锁期间兜底照常扫描。
+
+    旧形态"全局锁被持有就整段停摆"把失败高峰（全量轮正在批量弃权）变成兜底完全
+    不可用的时段——恰恰是它存在的理由失效。账号级互斥本来就由领取池仲裁（同一事务
+    的 upsert：在飞未过期领不到、done 领不到、retry: 档弃权行默认可接手），所以让位
+    的正确颗粒是"这一账号"，不是"这一轮"。无池部署（纯状态文件）没有这套仲裁，
+    才保留整段停摆——否则全量轮与兜底并发就是同一账号两次真实登录（第一红线）。
+    """
+
+    def test_scans_while_round_holds_lock_when_pool_present(self):
+        """反例（a）主循环面：全量轮持锁 + 池在场 ⇒ 兜底仍扫描（旧代码在此睡整段）。"""
         rc, sleeps, beats, scans = self._run(
-            [_at(WED, (6, 35)), _at(WED, (6, 35)), _at(WED, (8, 30))],
-            lock_held=[True, False])
-        self.assertEqual(len(scans), 1, "全量轮在跑时该让位，跑完才该接手")
-        self.assertEqual(sleeps[0], workers._YIELD_POLL_SEC, "让位期间的轮询间隔不对")
-        # 让位那一轮不算"在跑"：不写心跳（页面不该显示成一个在干活的进程）
-        self.assertEqual(len(beats), 1)
-        self.assertEqual(beats[0], _at(WED, (6, 35)))
+            [_at(WED, (6, 35)), _at(WED, (8, 30))],
+            lock_held=[True], pool=True)
+        self.assertEqual(len(scans), 1, "有池时全量轮持锁不该让兜底整段停摆")
+        self.assertEqual(len(beats), 1, "它确实在干活：应写存活心跳")
+        self.assertNotIn(workers._YIELD_POLL_SEC, sleeps, "不该再有整段停摆的睡步")
         self.assertEqual(rc, 0)
 
-    def test_yields_repeatedly_while_round_running(self):
-        """全量轮一直在跑 ⇒ 兜底一直不扫（只轮询），不会偷偷插进去签账号。"""
-        _, _, beats, scans = self._run(
-            [_at(WED, (6, 35))] * 5 + [_at(WED, (8, 30))],
-            lock_held=[True] * 5)
-        self.assertEqual(scans, [])
+    def test_stands_down_entirely_when_no_pool_while_round_runs(self):
+        """无池（纯状态文件部署）：账号级互斥不存在，让位仍是整段停摆。"""
+        _, sleeps, beats, scans = self._run(
+            [_at(WED, (6, 35))] * 3 + [_at(WED, (8, 30))],
+            lock_held=[True] * 3, pool=False)
+        self.assertEqual(scans, [], "无池时并发跑等于同账号重复真实登录（第一红线）")
         self.assertEqual(beats, [])
+        self.assertEqual(sleeps, [workers._YIELD_POLL_SEC] * 3,
+                         "让位期间的轮询间隔不对")
+
+
+class FallbackEventDrivenWakeTest(_FallbackHarness):
+    """兜底的"失败即入队"读取端：扫空后不再盲睡满间隔，而是短轮询池事件签名。
+
+    `give_up` 把行置 failed 并立刻放开租约——那一行就是入队动作，池的行迁移就是
+    全量轮与兜底（两个进程）之间的那次交接。签名一变，下一拍即接手；签名不变则
+    数满一个扫描间隔作为上限（新审核账号没有池行、无事件可感，仍由全量轮发现）。
+    """
+
+    def test_wakes_on_pool_event_before_interval(self):
+        """反例（a）时机面：别的执行体弃权（签名第 3 拍变化）⇒ 不必等满 60s 就二扫。"""
+        rc, sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (6, 35)), _at(WED, (8, 30))],
+            pool=True,
+            events=[("sig", "t0"), ("sig", "t0"), ("sig", "t0"), ("sig", "t1")])
+        self.assertEqual(len(scans), 2, "事件签名变化后应立即再扫，而不是睡满间隔")
+        self.assertEqual(sleeps[:3], [workers._POOL_WATCH_SEC] * 3,
+                         "唤醒应发生在第 3 拍短轮询，不掺杂整段间隔的睡")
+        self.assertNotIn(60, sleeps, "有池在场时不该再有盲的整段间隔睡步")
+        self.assertEqual(rc, 0)
+
+    def test_quiet_pool_ticks_out_full_interval(self):
+        """无新事件：短轮询数满扫描间隔为止（事件驱动是延迟优化，上限仍是间隔）。"""
+        _rc, sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (6, 35)), _at(WED, (8, 30))], pool=True)
+        ticks = -(-60 // workers._POOL_WATCH_SEC)
+        self.assertEqual(len(scans), 2)
+        self.assertEqual(sleeps, [workers._POOL_WATCH_SEC] * (ticks * 2),
+                         "安静时的等待总预算必须等于一个扫描间隔")
+
+    def test_no_pool_keeps_blind_interval(self):
+        """无池 = 没有可轮询的事件源：退回盲的整段间隔（原节律逐字保留）。"""
+        _rc, sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (6, 35)), _at(WED, (8, 30))], pool=False)
+        self.assertEqual(len(scans), 2)
+        self.assertEqual(sleeps, [60, 60])
 
 
 class FallbackOwnLockTest(unittest.TestCase):

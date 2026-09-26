@@ -27,6 +27,16 @@ if "YIBAN_LOG_FILE" not in os.environ:
         tempfile.mkdtemp(prefix="yiban-test-logs-"), "sign.log"
     )
 
+# 状态目录的会话级临时默认——与 YIBAN_LOG_FILE 同法。init_db / 迁移 v20 / 状态读写在
+# 没有 YIBAN_STATE_DIR 时回落到真实 `/var/log/yiban`（机器级路径）：WSL 以 root 跑测时
+# 会把临时用例写下的状态"补账"进真实部署目录，成为跨用例的环境依赖型 flake（本次
+# test_capacity_of 3 红、test_rekey flake 的共同放大器）。设一个会话级临时默认后，任何
+# 用例即便 pop 掉本键、经类级环境快照（_restore_environ_around_class）还原，也回到这个
+# 临时目录而非真实机器路径。各测试类仍可显式覆盖或摘除来验证"未设态回落"。
+if "YIBAN_STATE_DIR" not in os.environ:
+    import tempfile
+    os.environ["YIBAN_STATE_DIR"] = tempfile.mkdtemp(prefix="yiban-test-state-")
+
 
 def _close_root_file_handlers():
     """关闭并移除 root logger 上全部文件 handler（DailyFlockFileHandler /

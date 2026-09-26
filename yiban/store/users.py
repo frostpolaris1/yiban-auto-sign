@@ -167,23 +167,37 @@ def admin_mail_recipients(extra_emails=()):
     return sorted(recipients)
 
 
-def create_user(email, password_hash, role="user", created_at="", pw_version=1):
+def create_user(email, password_hash, role="user", created_at="", pw_version=1,
+                audit_spec=None):
+    """新增用户（INSERT OR IGNORE + rowcount 判断是否实际创建，返回是否创建）。
+
+    audit_spec 非 None 时（dict：username/action/target/detail/request_id），审计行与本次
+    INSERT **同事务**写入——**实际创建才写**（OR IGNORE 未创建时无业务效果，不留痕）；
+    审计写失败即整体回滚，消除"用户已建、审计表却没有这条且欠账为 0"的静默丢失窗口
+    （见 audit_chain.record_in_txn）。
+    """
     conn = _facade().get_conn()
     with _facade()._conn_lock, conn:
-        # INSERT OR IGNORE + rowcount 判断是否实际创建
         cur = conn.execute(
             "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version, deleted, deleted_at) "
             "VALUES (?,?,?,?,?,0,'')",
             (email, password_hash, role, created_at, pw_version),
         )
-        return cur.rowcount > 0
+        created = cur.rowcount > 0
+        if created and audit_spec:
+            _facade().record_in_txn(conn, **audit_spec)
+        return created
 
 
-def update_user(email, fields):
+def update_user(email, fields, audit_spec=None):
     """更新用户字段；返回受影响行数。
 
     返回 rowcount 而不是 None：调用方要能区分"更新成功"与"邮箱不存在/已注销"的静默
     no-op——邮件通知开关等接口对内置管理员（不在 users 表）不得谎报成功。
+
+    audit_spec 非 None 且实际命中行（rowcount>0）时，审计行与本次 UPDATE **同事务**
+    写入（口径见 create_user）。未命中行为不写审计——"没做的事不留痕"，也不会留下
+    "留痕了却没做"的假记录。
     """
     conn = _facade().get_conn()
     with _facade()._conn_lock, conn:
@@ -198,6 +212,8 @@ def update_user(email, fields):
         cur = conn.execute(
             f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
         )
+        if cur.rowcount > 0 and audit_spec:
+            _facade().record_in_txn(conn, **audit_spec)
         return cur.rowcount
 
 
@@ -227,12 +243,15 @@ def _assert_not_last_admin(conn, email, allow_last_admin):
             )
 
 
-def delete_user_with_accounts(email, allow_last_admin=False):
+def delete_user_with_accounts(email, allow_last_admin=False, audit_spec=None):
     """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。
 
     allow_last_admin=False（默认）时事务内复核是否为最后一个注册管理员（含跨进程并发
     窗口），命中抛 LastAdminError 且库保持原状；仅「内置管理员存在」的调用方应显式传
     True。
+
+    audit_spec 非 None 时，审计行与本次删除**同事务**写入（口径见 create_user）：删除
+    不可逆，同事务使"删了却无痕"在同一事务内不可能（复核未过整体回滚时也不留痕）。
     """
     conn = _facade().get_conn()
     with _facade()._conn_lock:
@@ -245,6 +264,8 @@ def delete_user_with_accounts(email, allow_last_admin=False):
             _facade()._cascade_phone_owned(conn, phones)
             conn.execute("DELETE FROM users WHERE email=?", (email,))
             _delete_user_delete_requests(conn, email)  # 冷却计数连带清除
+            if audit_spec:
+                _facade().record_in_txn(conn, **audit_spec)
             conn.commit()
             return cur.rowcount
         except Exception:
@@ -253,11 +274,14 @@ def delete_user_with_accounts(email, allow_last_admin=False):
             raise
 
 
-def set_user_role(email, new_role, allow_last_admin=False):
+def set_user_role(email, new_role, allow_last_admin=False, audit_spec=None):
     """单行角色变更（降权最后一个注册管理员的复核下沉事务内）。
 
     返回受影响行数（0 = 用户不存在/已删除）；降权最后一个注册管理员且
     allow_last_admin=False 时抛 LastAdminError（库保持原状）。
+
+    audit_spec 非 None 且实际命中行（rowcount>0）时，审计行与本次 UPDATE **同事务**
+    写入（口径见 create_user）：权限面变更必须与生效同事务，未命中行不留痕。
     """
     conn = _facade().get_conn()
     with _facade()._conn_lock:
@@ -268,6 +292,8 @@ def set_user_role(email, new_role, allow_last_admin=False):
             cur = conn.execute(
                 "UPDATE users SET role=? WHERE email=? AND deleted=0", (new_role, email)
             )
+            if cur.rowcount > 0 and audit_spec:
+                _facade().record_in_txn(conn, **audit_spec)
             conn.commit()
             return cur.rowcount
         except Exception:
@@ -454,13 +480,18 @@ def purge_deleted_users(days=None):
         logger.warning("清理已注销用户失败: %s", e)
 
 
-def purge_deleted_users_hard(emails):
+def purge_deleted_users_hard(emails, audit_spec=None):
     """管理员手动物理清除指定的已注销用户（不等 7 天自动清除）。
 
     安全边界：仅处理 deleted=1 的用户行——传入活跃用户邮箱时直接跳过（误操作/并发注册
     新同邮箱用户都不可能误删活跃数据）；账号行只删 deleted=1 的软删账号，活跃账号跳过，
     避免误删用户注销后重新添加的账号。单事务连带清理这些账号的 time_prefs / 会话 /
     事件（_cascade_phone_owned）与用户行。返回实际清除的邮箱列表（供审计与回显）。
+
+    audit_spec 非 None 时（dict：username/action，可带 request_id；target/detail 缺省由
+    本函数按**实际清除结果**在事务内补齐），审计行与本次清除**同事务**写入（口径见
+    create_user）：清除清单要跑完才知道，留痕若落在提交之后，进程在两个事务之间被杀
+    就留下"用户已消失、审计表无此条、欠账仍为 0"。一行未清不留痕。
     """
     if not emails:
         return []
@@ -495,6 +526,16 @@ def purge_deleted_users_hard(emails):
                 if cur.rowcount > 0:
                     purged.append(email)
                     _delete_user_delete_requests(conn, email)  # 冷却计数连带清除
+            if purged and audit_spec:
+                # target/计数在事务内按实际清除结果产出：按"请求清单"写会把被
+                # 跳过的（非已注销）项也留痕成清除过。
+                spec = dict(audit_spec)
+                spec.setdefault("target", ",".join(purged))
+                spec.setdefault(
+                    "detail",
+                    f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
+                )
+                _facade().record_in_txn(conn, **spec)
             conn.commit()
         except Exception:
             with contextlib.suppress(Exception):
@@ -595,7 +636,7 @@ def is_last_registered_admin(email):
         return target is not None and total <= 1
 
 
-def batch_user_ops(ops):
+def batch_user_ops(ops, audit_spec=None):
     """在一个事务内批量执行用户操作（整体成功或整体回滚）。
 
     ops 为 (op, params) 列表，op 支持：
@@ -604,6 +645,10 @@ def batch_user_ops(ops):
                                                     # 最后管理员事务内复核的放行开关
       ("delete_user_with_accounts", email)
       ("delete_user_with_accounts", email, allow_last_admin)  # 同上
+
+    audit_spec 非 None 时，审计行与整批操作**同事务**写入（口径见 create_user）：
+    批量重置口令/删除是凭据路径，同事务使"整批生效却无痕"不可能；任一 op 失败整体
+    回滚时审计行同样不落（拒绝/失败另由调用方单独留痕）。
     """
     conn = _facade().get_conn()
     with _facade()._conn_lock:
@@ -643,6 +688,8 @@ def batch_user_ops(ops):
                     _delete_user_delete_requests(conn, email)
                 else:
                     raise ValueError(f"未知批量用户操作: {kind}")
+            if audit_spec:
+                _facade().record_in_txn(conn, **audit_spec)
             conn.commit()
         except Exception:
             with contextlib.suppress(Exception):

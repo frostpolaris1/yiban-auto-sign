@@ -57,6 +57,21 @@ class RunShExitTrailTest(unittest.TestCase):
         os.makedirs(self.fakebin)
         self.calls = os.path.join(self.tmp, "timeout-calls.log")
         self._install_fakes(flock_body=FAKE_FLOCK_OK)
+        # 封存前置：run.sh 封存当日收尾标记前须以库内事实判"确实无未了结"
+        # （$PY scripts/signin.py --second-run-check），判定不可得 ⇒ 不封存并把
+        # "成功"收场的退出码升 1。本文件钉的是 rc 契约透传与日志留痕，应用目录
+        # 须备好恒答 0（无未了结）的桩件 + 转调当前解释器的 $PY 包装（双宿主确定）。
+        scripts = os.path.join(self.app_dir, "scripts")
+        os.makedirs(scripts, exist_ok=True)
+        with io.open(os.path.join(scripts, "signin.py"), "w", encoding="utf-8",
+                     newline="\n") as f:
+            f.write("import sys\nsys.exit(0)\n")
+        venv_bin = os.path.join(self.app_dir, ".venv", "bin")
+        os.makedirs(venv_bin, exist_ok=True)
+        pyw = os.path.join(venv_bin, "python3")
+        with io.open(pyw, "w", encoding="utf-8", newline="\n") as f:
+            f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+        os.chmod(pyw, os.stat(pyw).st_mode | 0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}  #剥掉宿主 YIBAN_*：否则本机 .env 直接决定 run.sh 走哪条分支
         self.env.update({
             "YIBAN_APP_DIR": self.app_dir,
@@ -118,7 +133,7 @@ class ExitTrailTest(RunShExitTrailTest):
         self._assert_exit_line(text, 0)
 
     def _seed_success_facts(self):
-        """MF-82 同批更新：SUCCESS 现在要与库内当日事实交叉核对后才采信。
+        """同批更新：SUCCESS 现在要与库内当日事实交叉核对后才采信。
 
         给 run.sh 一个可执行的解释器（$APP_DIR/.venv/bin/python3 包装，交叉核对
         走 $PY 直查 sqlite，不经假 timeout）+ 一个种了当日 done 行的临时库。
@@ -152,7 +167,7 @@ class ExitTrailTest(RunShExitTrailTest):
         self._assert_exit_line(text, 0)
 
     def test_forged_success_status_is_not_the_skip_path(self):
-        """MF-82 活体反例（本文件侧的钉）：手写 SUCCESS、库内当日无完成 ⇒
+        """活体反例（本文件侧的钉）：手写 SUCCESS、库内当日无完成 ⇒
         该路径不再是"已签到成功跳过"——拒绝采信 + 告警，本轮照常执行。"""
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
         db = self._seed_success_facts()

@@ -1,7 +1,11 @@
 name: CI
 
-# PR 门禁（signin.yml 定时签到与 mirror.yml Gitee 镜像已删除，MF-106：前者危险且
-# secret 不存在，后者首日即坏；gitee 同步改为人工 push 维护，历史可从 git 找回）
+# fast 轨（push/PR）：Lint + 安全子集 + e2e smoke，目标 ≤3min 含 setup。
+# 全量轨独立为 nightly.yml（schedule 06:00 UTC / 14:00 北京）——拆成两文件而非同文件两 job，
+# 理由：schedule 是 workflow 级触发，若与 fast job 同文件则必须给 fast job 加
+# `if: github.event_name != 'schedule'` 的事件守卫，语义更脆；两文件让每个 workflow 的
+# 触发条件各自诚实，且 nightly 可用独立的 timeout/并行度。（取舍全文见
+# .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
 # （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
@@ -18,9 +22,11 @@ permissions:
   pull-requests: read
 
 jobs:
+  # job 名保持 verify（不改成 fast）：仓库分支保护/必需检查可能按 job 名引用，
+  # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +46,7 @@ jobs:
           # ruff 0.16.6 = 与本地 WSL 门禁（~/.venv-yiban-wsl）逐字对齐（MF-106：
           # 旧钉 0.15.22 与本地漂移，同一份代码两套编辑器判出不同结果）
           # pytest 9.1.1 = 含 CVE-2025-71176 修复（0~9.0.3 受影响）
-          # pytest-xdist = 并发跑测试（-n auto 按 CI 核数分发；单测各自隔离临时目录）
+          # pytest-xdist = 并发跑测试（-n 按 CI 核数分发；单测各自隔离临时目录）
           pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
 
       # 提交/PR 标题规范校验（Conventional Commits）
@@ -53,19 +59,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ---- Lint ----
-      # 与本地门禁命令逐字一致（含 web/：旧命令漏 web/ 曾藏 2 处 RUF100，MF-39）
+      # 与本地 WSL 门禁命令逐字一致（`python -m ruff` + 含 web/：旧命令漏 web/ 曾藏
+      # 2 处 RUF100，MF-39；`python -m` 形式不依赖 PATH）
       - name: Lint (ruff)
-        run: ruff check yiban/ tests/ scripts/ web/ --quiet
+        run: python -m ruff check yiban/ tests/ scripts/ web/ --quiet
 
-      # ---- Test ----
-      # 单元/回归测试（tests/，pyproject.toml testpaths=["tests"]）
-      # -n auto：按 runner 核数并发（GitHub 默认 2 核 → 提速约 2 倍）
-      # --dist loadfile：**按文件**分发、文件内保持原顺序。默认分发（按单条测试）会把
-      #   同一个类拆到不同 worker，叠加进程级 DB 连接单例，导致确定性失败
-      #   （test_web_security_gates 的 cookie path 用例报 401）；本套测试原本按
-      #   "同文件内用例有先后依赖"写就，故必须用 loadfile。
-      - name: Test (pytest)
-        run: pytest -q -n auto --dist loadfile
+      # ---- 安全子集（发布门 §2① 同口径） ----
+      # -k 词集与 docs/dev/release-gate.md §2① 逐字一致；仅并行度按 CI runner 4 vCPU 定为 -n 4
+      # （本机 24 核实测 -n 4 与 -n 8 同为 ~50s——子集按文件分发时关键路径是最大文件单文件
+      #   时长，加宽 xdist 无增益；故取 4，避免 4 vCPU 上过度订阅）。
+      # --dist loadfile：**不得去掉**。默认按单条测试分发会拆散同文件用例，而测试套存在
+      #   文件内先后依赖（MF-107：test_web_security_gates 的 cookie path 用例单跑必红、
+      #   同文件按序跑绿）与进程级 DB 单例，去掉即误红。
+      - name: Security subset (release-gate §2①)
+        run: python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
+
+      # ---- e2e smoke ----
+      # 真 HTTP 回环全链演练（假易班服务端，绝不外联）。**串行**：该文件 docstring 明示
+      # test_full_chain_rehearsal / test_legacy_chain_rehearsal 是时序敏感项，并发下偶发红。
+      - name: E2E smoke (full chain)
+        run: python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 
       - name: Gate ready
-        run: echo "Lint + Test gate active."
+        run: 'echo "Fast gate active: lint + security subset + e2e smoke."'
