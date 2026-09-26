@@ -33,6 +33,10 @@ if _SCRIPTS not in sys.path:
 
 import db  # noqa: E402  （scripts/db.py 兼容壳；导入即补仓库根到 sys.path）
 
+from yiban.infra import (  # noqa: E402
+    env_io,
+    env_lock,
+)
 from yiban.store import purge_guard  # noqa: E402
 
 # 需要在测试 .env 中落地的压测参数（键 -> 说明），值由参数决定
@@ -68,31 +72,16 @@ def _looks_like_loadtest_db(db_path):
 
 
 def upsert_env(path, updates):
-    """按行更新/追加 KEY=VALUE，保留其它键（含 db 生成的密钥）。"""
-    try:
-        with open(path, encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except OSError:
-        lines = []
-    out, seen = [], set()
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in updates:
-                out.append(f"{key}={updates[key]}")
-                seen.add(key)
-                continue
-        out.append(line)
-    missing = [k for k in updates if k not in seen]
-    if missing and out and out[-1].strip():
-        out.append("")
-    for k in missing:
-        out.append(f"{k}={updates[k]}")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
+    """按行更新/追加 KEY=VALUE，保留其它键（含 db 生成的密钥）。
+
+    写入并入全项目唯一的 `.env` 行模型：键/值走 `env_io.validate_env_updates` 同一套
+    校验（禁换行族、键名白名单、值长度上限），折叠同键旧行、保留注释与其余行，原子
+    0600 替换（`env_io.write_env_keys`，落盘即 0600）。`delete_empty=False` 保持本工具
+    原语义——空值仍写一行 `KEY=`，不删键（压测参数全是有值写入）。本工具是单进程
+    离线造数、无并发写方，但仍按 `write_env_keys` 的调用契约自持写锁。
+    """
+    with env_lock.env_write_lock(path):
+        env_io.write_env_keys(path, updates)
 
 
 def seed(n, db_path, env_path, wipe=True, fingerprint=""):

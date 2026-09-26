@@ -19,7 +19,7 @@
 `parse_env_file`（含 `env_path`）与 `write_env_key` / `write_env_keys` 由
 `yiban.infra.account_crypto`、`yiban.store.audit_chain`、`yiban.store.tracking`、
 `yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
-`web/routes/settings_api.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
+`web/routes/settings_api.py`、`scripts/loadtest/seed_accounts.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
 `env_key_values` / `validate_env_key` / `validate_env_value` / `validate_env_updates` /
 `render_env_write`，`write_env_keys` 是唯一写入口（内部做写入前后"键集合 diff"、
 越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
@@ -330,8 +330,11 @@ def find_env_key_collisions(env_path):
                 counts[k] = counts.get(k, 0) + 1
         return counts
 
+    # 宽模型（splitlines）是**刻意**的：它比窄模型多认 8 个分隔符，正因如此才能
+    # 看见"尚未实体化"的潜伏载荷。窄模型这一侧走单一实现 split_env_lines（不再
+    # 就地重抄一遍 replace/split），保证与写入侧的行模型永远同源。
     wide = _counts(content.splitlines())
-    narrow = _counts(content.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+    narrow = _counts(split_env_lines(content))
     return {
         k: (wide[k], narrow.get(k, 0))
         for k in wide
@@ -345,6 +348,45 @@ def _read_env_text(env_file):
         return ""
     with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
         return f.read()
+
+
+def _read_env_bytes(env_file):
+    """读取 .env **原始字节**（不剥 BOM、不做普适换行）；文件不存在返回 None。
+
+    回滚路径专用：文本读取（`_read_env_text`）的 utf-8-sig 与普适换行会把 BOM/CRLF
+    归一掉，拿文本回滚无法还原 BOM/CRLF 文件的原始字节。返回 None 表达"写入前并无
+    此文件"，回滚 = 删除本次新创建的文件，而不是落一个零字节文件假装还原。
+    """
+    if not os.path.exists(env_file):
+        return None
+    with open(env_file, "rb") as f:
+        return f.read()
+
+
+def _restore_env_bytes(env_file, data):
+    """把回滚快照（原始字节 / None=删除文件）原子落回 .env。
+
+    与 `_atomic_replace_env` 同纪律：tmp 创建即 0600、fsync 后 `os.replace`、失败清 tmp。
+    data=None 表示写入前文件并不存在，回滚即 unlink（best-effort，失败由调用方吞）。
+    """
+    if data is None:
+        with contextlib.suppress(OSError):
+            os.unlink(env_file)
+        return
+    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_file)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    with contextlib.suppress(OSError):
+        os.chmod(env_file, 0o600)
 
 
 def _atomic_replace_env(env_file, text):
@@ -376,6 +418,11 @@ def _unrequested_key_changes(before, after, requested):
 
     判定比"键增删"更宽：同名键的**值**变了、或从"有值"变"无值"，都算"发生变化"——
     未请求的键本应逐字保留，任何变化都是写入实现越权。`requested` 是本次 updates 的键。
+
+    **已知盲区（勿据此以为 diff 能兜住一切）**：`env_key_values` 是"后写覆盖先写"的
+    dict，故某个**被请求键**自身的影子重复行（同键多行、或同键行长里潜伏分隔符）在
+    本 diff 里不可见——diff 只比对键→最终值的映射，不比对行数。这类歧义由
+    `find_env_key_collisions` 在启动时只读报告，不靠本 diff 兜。
     """
     changed = set()
     for key in set(before) | set(after):
@@ -409,10 +456,12 @@ def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_emp
        否则含载荷的旧行会被静默删掉）；任一既有行或本次值含换行族字符即拒绝，磁盘零改动；
     2. **写入前**对"原文键集合"与"渲染后键集合"做 diff，本次未请求的键发生变化即拒绝；
     3. 提交（`write_text` 注入 web 的 `_atomic_write` 打桩点；缺省用引擎原子替换）；
-    4. **写入后**重读文件再做一次 diff：写入实现若越权改了未请求的键，回滚到写入前内容
-       （再次调用 `write_text` 落回原文）+ 审计 + 抛 `EnvWriteRefused`。
+    4. **写入后**重读文件再做一次 diff：写入实现若越权改了未请求的键，按**写入前原始
+       字节**回滚（`_restore_env_bytes`，BOM/CRLF 原样还原；不依赖注入的 `write_text`）
+       + 审计 + 抛 `EnvWriteRefused`。
     第 2 步挡"渲染阶段引入的越权"，第 4 步挡"落盘阶段引入的越权"——两道都做才覆盖
-    "写入实现自述可信"这条假设。
+    "写入实现自述可信"这条假设。第 4 步的回滚是**字节级**且无条件成立：快照在写入前
+    以二进制读取取得，故即使原文件带 BOM 或 CRLF 也能逐字节还原。
 
     `delete_empty`（调用方契约，非行模型）：web 侧空值 = 删键；引擎侧缺省保留追加语义。
     `audit(code, detail)` 由调用方注入（web 传 db.audit，引擎启动路径无 actor 可传 None）。
@@ -421,10 +470,16 @@ def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_emp
     不做加锁，把"写前重读既有值"的判定留在调用方，避免嵌套取锁。
     """
     raw = _read_env_text(env_file)
+    # 回滚快照：**二进制**读取（BOM/CRLF 原样保留），文本读取已把它们归一掉，
+    # 拿文本回滚无法还原 BOM/CRLF 文件的原字节（见 _read_env_bytes）。
+    raw_bytes = _read_env_bytes(env_file)
     before = env_key_values(raw)
     # 调用方入参非法（键名/值含换行族、值过长）：直接拒绝，**不入审计**——这是普通
     # 输入错误（路由层已先行友好校验），不是"文件态歧义/未请求键变化"这类需要留痕的
-    # 运行时越权；混进审计只会让正常的 400 刷审计链。
+    # 运行时越权；混进审计只会让正常的 400 刷审计链。此处必须独立先校验一次：若省掉它、
+    # 只靠 render_env_write 内部的同名校验，入参错误会被下方 `except ValueError` 当成
+    # 文件态留痕（并错报为"潜伏分隔符"）。render 内部那次是给其它调用方的纵深防御，
+    # render 的任何入参错误到这里都已被本行挡住，故 try 内必为文件态。
     validate_env_updates(updates)
     try:
         new_text = render_env_write(raw, updates, env_file=env_file,
@@ -443,10 +498,11 @@ def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_emp
     after = env_key_values(_read_env_text(env_file))
     changed = _unrequested_key_changes(before, after, requested)
     if changed:
-        # 写入器越权改了未请求的键：先回滚到写入前内容，再拒绝（best-effort 回滚，
-        # 回滚自身失败也不能把"未请求的键已变"这件事说成成功）
+        # 写入器越权改了未请求的键：按**写入前原始字节**回滚（含 BOM/CRLF），再拒绝。
+        # 回滚不走调用方注入的 commit（它收文本，还原不了原始字节）；best-effort——
+        # 回滚自身失败也不能把"未请求的键已变"这件事说成成功。
         with contextlib.suppress(OSError):
-            commit(env_file, raw)
+            _restore_env_bytes(env_file, raw_bytes)
         _refuse(audit, "unrequested_key_change_after_write",
                 "落盘后未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
 
