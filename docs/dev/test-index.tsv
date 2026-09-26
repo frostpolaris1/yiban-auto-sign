@@ -1314,13 +1314,17 @@ tests/test_login_e2e_mock.py	LegacyLoginE2ETest.test_legacy_chain_rehearsal	K	-	
 tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_final_auth_redirect_inside_whitelist_is_followed_manually	K	-	白名单内 302（落点才是 JSON）：手动跟跳取回落点响应，登录照常成功。
 tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_final_auth_redirect_outside_whitelist_is_rejected	K	-	N1：最终认证那一跳是默认流唯一会跟随的重定向——302 到白名单外必须在
 tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_four_step_request_shapes	K	-	??
-tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_logged_in_marker_rejects_subdomain_spoof	K	-	子域伪装 f.yiban.cn.evil.com 带 query 里的 iapp7463 不得命中。
-tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_logged_in_marker_requires_fyiban_host_and_path	K	-	M7：302 落在非 f.yiban.cn 的 /iapp7463 不得判"已登录"。
 tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_s200_is_the_success_marker	K	-	成功标志是 code == "s200"（App 判定方式），其他值一律当失败并回报 msgCN。
-tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_session_cache_hit_skips_usersure	K	-	缓存会话仍有效（探针 302 到 iapp7463）→ 免登录：**不得**提交账号密码。
-tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_stale_cache_is_cleared_and_full_login_runs	K	-	探针返回登录页（缓存已失效）→ 清缓存并走完整流程。
 tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_verify_request_regex_tolerates_token_at_query_end	K	-	令牌放在 query 末位（后面没有 `&`）也必须能提取——曾因此全站登录失败。
 tests/test_login_protocol_shape.py	KillyibanLoginShapeTest.test_waf_branch_is_live_on_usersure_and_final_auth	K	-	??
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_fake_success_does_not_update_existing_cache	K	-	已有缓存行时遇假成功：拒绝路径自身零写入（行只会被既有探针判死清掉）。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_fake_success_missing_receipt_rejected	K	-	活体反例：code==0 但响应缺 data 载荷 → 拒绝、零缓存写入、无成功日志。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_fake_success_null_variants_rejected	K	-	回执缺失的两种退化形状：data 键不存在 / data 显式 null，一律拒绝。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_logged_in_marker_rejects_subdomain_spoof	K	-	子域伪装 f.yiban.cn.evil.com 带 query 里的 iapp7463 不得命中。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_logged_in_marker_requires_fyiban_host_and_path	K	-	M7：302 落在非 f.yiban.cn 的 /iapp7463 不得判"已登录"。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_real_success_with_receipt_saves_cache	K	-	真成功回归：回执齐全 → "登录成功"日志恰一次 + 缓存正常写入，行为与现状一致。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_session_cache_hit_skips_usersure	K	-	缓存会话仍有效（探针 302 到 iapp7463）→ 免登录：**不得**提交账号密码。
+tests/test_login_protocol_shape.py	KillyibanSessionStoreTest.test_stale_cache_is_cleared_and_full_login_runs	K	-	探针返回登录页（缓存已失效）→ 清缓存走完整流程，新会话**覆盖式**重建。
 tests/test_login_protocol_shape.py	LegacyLoginShapeTest.test_five_step_request_shapes	K	-	??
 tests/test_login_protocol_shape.py	LegacyLoginShapeTest.test_oauth_url_not_whitelisted_is_rejected	K	-	??
 tests/test_login_protocol_shape.py	LegacyLoginShapeTest.test_reurl_not_whitelisted_is_rejected	K	-	??
@@ -1612,17 +1616,23 @@ tests/test_mock_fault_injection_knobs.py	CertExtensionTest.test_strict_tls_hands
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_challenge_body_matches_real_recognition_input	J	bash	??
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_fail_stages_list_four_knobs	J	bash	??
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_help_and_readme_document_knobs_and_default_off	J	bash	约束说明义务：旋钮清单 + 默认关闭契约必须进 --help 与 loadtest README。
+tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_login_shallow_stage_contract	J	bash	假成功档：code==0 但无签发回执；默认关闭；只打带 verifyRequest 的完成认证步。
 tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_nonjson_body_reproduces_leg2_shape	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_engine_loop_off_regression	J	bash	关闭态（无注入）走引擎档位循环：一次成功、会话缓存被正常保存、零注入记账。
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_login_fail_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_login_shallow_knob	J	bash	假成功档全链：客户端必须以"无签发方回执"拒绝，链停在最终认证之后。
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_login_shallow_knob_engine_loop_single_attempt_no_cache	J	bash	假成功 × 引擎档位闭环：拒绝（A 段不可重试档 ⇒ 总尝试=1）、联动清种子缓存、
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_nonjson_knob	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_nonjson_knob_engine_loop_single_attempt	J	bash	nonjson 旋钮 → leg② "Expecting value:" → 显式档：尝试 1 次即止、不再伪装
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_off_regression_full_chain_success	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_submit_fail_knob	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_waf_challenge_knob	J	bash	??
 tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_waf_knob_engine_loop_single_attempt_clears_cache	J	bash	waf 旋钮 → 真实 attempt_signin 链 → 挑战解析失败 → 显式档：尝试 1 次即止、
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_hot_config_can_switch_to_login_shallow	J	bash	假成功注入优先走 Task 11 的 --config 热读场景声明（无需额外通道）。
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_hot_config_scenario_declaration_switches_at_runtime	J	bash	??
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_knobs_off_baseline_transparent	J	bash	??
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_login_shallow_knob_injects_receiptless_success	J	bash	假成功注入：完成认证步回 code==0 **无 data 载荷**；入口步与关闭态不受影响。
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_login_shallow_off_keeps_receipt	J	bash	关闭态：完成认证仍带回执（data 存在）——不开零变化。
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_nonjson_knob_injects_long_block_on_json_endpoints	J	bash	??
 tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_waf_knob_injects_challenge_at_real_landing	J	bash	??
 tests/test_module_size_gate.py	ModuleSizeGateTest.test_entries_exist	J	-	登记表不得指向已不存在的文件（拆走后请删除条目）。
