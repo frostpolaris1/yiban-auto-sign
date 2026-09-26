@@ -4,13 +4,15 @@
 标签：J · 运维：部署/备份/发布
 覆盖：mock_yiban 四类注入旋钮（登录失败 / 提交失败 / 风控挑战页 / 非 JSON 响应）的
    默认关闭契约、注入形态与真实判据的对照（yiban/fyiban/waf.py 的
-   looks_like_challenge 输入、yiban/security.py 的 is_waf_blocked 短路形状）、
+   looks_like_challenge 输入、yiban/security.py 的 is_waf_blocked 双判据形状——挑战形态
+   不受长度限制、仅关键词命中按 len>2000 设界）、
    热读场景声明（--config 运行中切换）、记账对平（total==durable+log_errors、
    JSONL 行数==__stats.total、injected 计数）；mock_env.ensure_certs 生成的 CA
    带 basicConstraints(critical,CA:TRUE) 与 keyUsage(critical,keyCertSign,cRLSign)
    的**扩展存在性**断言与 strict TLS 活体握手；四类旋钮 × run.sh 入口全链实跑
    （桩 signin 走真实客户端链 → 假易班进程按 CLI 旋钮注入 → JSONL 记账断言）
-   与旋钮关闭态回归。
+   与旋钮关闭态回归；引擎档位闭环（YIBAN_E2E_ENGINE_LOOP）：waf/nonjson 旋钮经真实
+   attempt_signin+_retry_budget+清缓存联动决策，JSONL 对"总尝试=1"给出第三方证据。
 对应实现：scripts/loadtest/mock_yiban.py（旋钮与注入形态、MockState 记账）、
    scripts/loadtest/mock_env.py（ensure_certs）、run.sh（全链入口）、
    yiban/fyiban/waf.py 与 yiban/security.py（注入形态所对照的真实判据，只读）。
@@ -18,8 +20,8 @@
    判据的输入**逐字
    对照而非自造：挑战页喂 looks_like_challenge（window.onload=setTimeout +
    eval("qo=eval;qo(po);") 双特征，注入在旧流程真实遇挑战的 GET /iapp7463 落点）；
-   非 JSON 页喂"leg② 形状"——>2000 字符的拦截 HTML 过 is_waf_blocked 的 len 短路后
-   在 .json() 处抛 Expecting value:。CA 缺 keyUsage/basicConstraints 时 ≥3.14 默认
+   非 JSON 页喂"leg② 形状"——>2000 字符、无挑战形态的拦截 HTML 在 is_waf_blocked 的
+   关键词长度界外放行、在 .json() 处抛 Expecting value:。CA 缺 keyUsage/basicConstraints 时 ≥3.14 默认
    VERIFY_X509_STRICT 会在握手层全灭且记账为 0（失败安静），因此扩展断言 +
    strict 握手必须同时钉住；记账与请求不对平的注入轮测不得用。
 依赖：仅标准库 + requests（测试侧适配器）；证书用例需 PATH 上有 openssl（缺则跳过）；
@@ -101,15 +103,17 @@ class KnobContractTest(unittest.TestCase):
                         "挑战页必须命中 waf.looks_like_challenge 的真实特征对")
         self.assertTrue(waf.looks_like_challenge("", "https_ydclearance=x") is True)
         self.assertLess(len(body), 2000, "挑战页是短 JS 页，不得撞 is_waf_blocked 的长度界")
-        self.assertFalse(security.is_waf_blocked(body),
-                         "挑战页形态不应混入拦截关键词页（两类判据各喂各的）")
+        self.assertFalse(any(kw in body for kw in security.WAF_KEYWORDS),
+                         "挑战页体不应混入拦截关键词（关键词判据与形态判据各自独立喂）")
+        self.assertTrue(security.is_waf_blocked(body),
+                        "挑战形态经归一后的 is_waf_blocked 必须拦（形态判定不受长度限制）")
 
     def test_nonjson_body_reproduces_leg2_shape(self):
         body = mock_yiban.nonjson_block_body()
         self.assertGreater(len(body), 2000,
                            "leg② 形状=「>2000 拦截页过 is_waf_blocked 短路后 .json() 抛」")
         self.assertFalse(security.is_waf_blocked(body),
-                         "现状短路口径下该页必须漏检（判据本身归分类修复条）")
+                         "长页仅关键词命中、无挑战形态——维持不拦（法律文本防误伤边界保留）")
         try:
             json.loads(body)
         except ValueError as e:
@@ -375,6 +379,45 @@ except Exception as e:
 import signin
 acc = signin.Account(phone="13800138000", password="secret-pw", account_id=0)
 os.environ.pop("YIBAN_PROXY", None)
+if os.environ.get("YIBAN_E2E_ENGINE_LOOP", "") == "1":
+    # 引擎档位闭环：以真实 attempt_signin/_retry_budget/clear_session_cache_quiet 复刻
+    # round 的逐账号决策顺序（尝试→档位→清缓存→上限比较）；会话缓存用真实临时库，
+    # mock 的 JSONL 即"总尝试数"的第三方证据。RETRY_MIN_INTERVAL 休眠与重试落点采样
+    # 与档位判据无关，本桩不复刻。
+    signin.db.init_db(db_file=os.path.join(STATE, "e2e.db"), cleanup=False)
+    result = {"legacy": os.environ.get("YIBAN_LEGACY_LOGIN", "")}
+    if os.environ.get("YIBAN_E2E_SEED_CACHE", "") == "1":
+        signin.db.set_session_cache(acc.phone, json.dumps({"seeded": "1"}), "seeded-csrf")
+    result["cache_before"] = signin.db.get_session_cache(acc.phone) is not None
+
+    _RealClient = signin.YibanClient
+
+    class _LoopClient(_RealClient):
+        def __init__(self, account):
+            super().__init__(account)
+            self.session.mount("https://", _Rewrite())
+            self.session.trust_env = False
+            self.session.proxies = {}
+
+    signin.YibanClient = _LoopClient
+    attempts_n = 0
+    success, message, skip, status = False, "", False, ""
+    while attempts_n < 10:
+        attempts_n += 1
+        success, message, skip, status = signin.attempt_signin(acc)
+        if success or skip:
+            break
+        budget, clear_cache = signin._retry_budget(message)
+        if clear_cache:
+            signin.clear_session_cache_quiet(acc.phone)
+        if attempts_n >= budget:
+            break
+    result["attempts"] = attempts_n
+    result["signin"] = [bool(success), str(message), bool(skip), str(status)]
+    result["cache_after"] = signin.db.get_session_cache(acc.phone) is not None
+    if not success:
+        result["error"] = str(message)
+    _out(result, 0 if success else 1)
 with _mock.patch.object(signin.db, "is_initialized", return_value=False):
     client = signin.YibanClient(acc)
 client.session.mount("https://", _Rewrite())
@@ -504,6 +547,10 @@ class RunShKnobChainTest(unittest.TestCase):
             env.pop(k, None)
         if controls.get("legacy"):
             env["YIBAN_LEGACY_LOGIN"] = "1"
+        if controls.get("engine_loop"):
+            env["YIBAN_E2E_ENGINE_LOOP"] = "1"
+        if controls.get("seed_cache"):
+            env["YIBAN_E2E_SEED_CACHE"] = "1"
         with io.open(os.path.join(self.state_dir, "check_exit"), "w", encoding="utf-8") as f:
             f.write("0")
         r = subprocess.run([self.bash, _RUN_SH], capture_output=True, env=env,
@@ -584,6 +631,46 @@ class RunShKnobChainTest(unittest.TestCase):
         self.assertIn("Expecting value:", engine["error"],
                       "leg② 现网文案是 requests 的 Expecting value: ——注入须引出同一文案")
         self._assert_accounting(port, ["/code/html", "/code/usersure"], 1)
+
+    # ---- 引擎档位闭环：MF-71 的"总尝试=1 + 清会话"在全链上的第三方证据 ----
+    def test_waf_knob_engine_loop_single_attempt_clears_cache(self):
+        """waf 旋钮 → 真实 attempt_signin 链 → 挑战解析失败 → 显式档：尝试 1 次即止、
+        种子会话缓存被联动清除、mock 记账恰为**一次**登录链（旧档位=3 次在此为红）。"""
+        port = self._start_mock(["--fail-stage", "waf", "--fail-rate", "1.0"])
+        _, engine = self._run(port, legacy=True, engine_loop=True, seed_cache=True)
+        self.assertIn("ydclearance 挑战解析失败", engine.get("error", ""))
+        self.assertEqual(engine.get("cache_before"), True, "前置：种子会话缓存存在")
+        self.assertEqual(engine.get("attempts"), 1,
+                         "硬失败档总尝试必须=1（旧口径落普通档 3 次并复用死会话）")
+        self.assertEqual(engine.get("cache_after"), False,
+                         "档位联动 clear_session_cache_quiet 必须清掉会话缓存")
+        self._assert_accounting(port, [
+            "/base/c/auth/yiban", "/code/html", "/code/usersure", "/iapp7463",
+        ], 1)
+
+    def test_nonjson_knob_engine_loop_single_attempt(self):
+        """nonjson 旋钮 → leg② "Expecting value:" → 显式档：尝试 1 次即止、不再伪装
+        网络抖动打满重试；记账为一次登录链。"""
+        port = self._start_mock(["--fail-stage", "nonjson", "--fail-rate", "1.0"])
+        _, engine = self._run(port, engine_loop=True, seed_cache=True)
+        self.assertIn("Expecting value:", engine.get("error", ""))
+        self.assertEqual(engine.get("attempts"), 1)
+        self._assert_accounting(port, ["/code/html", "/code/usersure"], 1)
+
+    def test_engine_loop_off_regression(self):
+        """关闭态（无注入）走引擎档位循环：一次成功、会话缓存被正常保存、零注入记账。"""
+        port = self._start_mock()
+        _, engine = self._run(port, engine_loop=True)
+        self.assertEqual(engine.get("error"), None, engine)
+        self.assertTrue(engine.get("signin", [False])[0], "关闭态整链必须成功")
+        self.assertEqual(engine.get("attempts"), 1)
+        self.assertEqual(engine.get("cache_after"), True,
+                         "登录成功路径应写会话缓存（档位闭环不干扰成功侧）")
+        self._assert_accounting(port, [
+            "/code/html", "/code/usersure", "/iframe/index", "/base/c/auth/yiban",
+            "/nightAttendance/student/index/signPosition",
+            "/nightAttendance/student/index/signIn",
+        ], 0)
 
 
 if __name__ == "__main__":

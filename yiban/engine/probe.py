@@ -22,7 +22,8 @@
 输入：账号列表、探针配置（`YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` 等，经 .env 传入）。
 输出：`sign_events`（stage=probe）、管理员汇总（并入 A 线）与用户预警；退出码口径与
 `runner` 一致。
-调用谁：`client`（真实登录）、`alerts`、`state_io`、`cli_support`、`env_lock`、`db`。
+调用谁：`client`（真实登录）、`security`（硬失败词元单一来源）、`alerts`、`state_io`、
+`cli_support`、`env_lock`、`db`。
 谁调用：`runner`（`--probe`）、web 注册/改密路径（`web/services/accounts_data.py`）。
 前端调用点：注册与改密表单（`web/static/js/components/account-form.js`、
 `web/static/js/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
@@ -38,7 +39,7 @@ import re
 from datetime import datetime
 
 from yiban import client as yiban_client
-from yiban import clock
+from yiban import clock, security
 from yiban.engine import alerts, cli_support, state_io
 from yiban.infra import env_io, env_lock
 from yiban.masking import mask_phone as _mask_phone
@@ -64,13 +65,15 @@ PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
 # 触发频率：正整数=每 N 天；once=下一次计划时间单次执行（执行后自动关闭）
 PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"
 
-# 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）
+# 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）。
+# WAF/风控/挑战解析/非 JSON 家族**不得手抄**：词元来自 `yiban.security.hard_fail_pattern()`
+# （与重试档位同一真值源）——此前手抄的词表不含解析失败与非 JSON 文案，探针对该族零预警。
 PROBE_HARD_FAIL_RE = re.compile(
     r"图形验证|图片验证|滑块验证|人机验证|captcha"
     r"|校本化|未授权|授权失效|Auth Error|Get Night Attendance Sign Tasks Error"
     r"|登录失败|密码错误|账号或密码"
     r"|授权设备|获取登录入口失败|登录响应异常|最终认证失败"
-    r"|WAF|风控|拦截"
+    r"|(?:" + security.hard_fail_pattern() + r")"
 )
 
 
