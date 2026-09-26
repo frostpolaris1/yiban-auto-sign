@@ -61,7 +61,7 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `--pubkey-file` | 内置测试公钥 | 登录页 `input#key` 内嵌的 RSA 公钥 PEM |
 | `--delay-ms` | `0` | 每请求固定人工延迟 |
 | `--tail-delay-ms` / `--tail-every` | `0` / `0` | 每 N 个请求追加一次尾延迟 |
-| `--fail-rate` / `--fail-stage` | `0` / `none` | 失败注入概率与注入点（四类故障注入旋钮 `login`/`signIn`/`waf`/`nonjson`，另有 `signPosition`；**默认 none=全关，不开零变化**） |
+| `--fail-rate` / `--fail-stage` | `0` / `none` | 失败注入概率与注入点（四类故障注入旋钮 `login`/`signIn`/`waf`/`nonjson`，另有 `signPosition` 与假成功档 `login-shallow`；**默认 none=全关，不开零变化**） |
 | `--config` | 空 | 热读 JSON 配置（运行中切换档位，字段同上；场景声明形态的注入旋钮同样可经此热切） |
 | `--keep-alive` | 关 | 启用 HTTP keep-alive；默认关（每请求新连接，压测更稳、不触发偶发重试） |
 | `--log` | 空 | 逐请求 JSONL 落盘路径 |
@@ -74,7 +74,7 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 
 #### 假上游故障注入旋钮（`--fail-stage`，默认全关）
 
-四类注入以**场景声明**形态落地（CLI `--fail-stage`，或经 `--config` 热读 JSON
+各类注入以**场景声明**形态落地（CLI `--fail-stage`，或经 `--config` 热读 JSON
 运行中切换，无需重启；两者都只由 mock 进程消费，引擎无感知，可从 run.sh 全链
 入口穿透）。旋钮值语义：
 
@@ -85,6 +85,7 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # �
 | `signPosition` | `GET .../signPosition` | 拉任务失败（历史档位） |
 | `waf` | `GET /iapp7463` | ydclearance **挑战页**（形态对照 `yiban/fyiban/waf.py` 的 `looks_like_challenge` 真实输入：`window.onload=setTimeout`+`eval("qo=eval;qo(po);")` 双特征 + `Set-Cookie: https_ydclearance`），喂风控识别支路 |
 | `nonjson` | JSON 期望端点（`POST /code/usersure`、`POST .../signIn`、`GET /base/c/auth/yiban`、`GET .../signPosition`） | `200` + >2000 字符非 JSON 拦截 HTML——现网 `Expecting value:` 的形态（长页过 `is_waf_blocked` 长度界后 `.json()` 抛） |
+| `login-shallow` | `GET /base/c/auth/yiban`（仅带 `verifyRequest` 的完成认证步） | **假成功**：`code==0` 但签发回执 `data` 载荷缺失——只判 `code` 的旧登录门会误认成功并写会话缓存，带回执判据的客户端必须拒绝；旧流程入口步（不带 `verifyRequest`）不受影响 |
 
 配合 `--fail-rate 1.0` 即确定性注入；`none`（默认）不改变任何响应。记账侧
 `injected` 计数与 JSONL 逐条 `injected` 标记同步（`--log`），每请求可审计。
