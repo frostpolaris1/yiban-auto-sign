@@ -315,6 +315,17 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
 修法方向：一处行模型、一处校验器（含全部换行族），写入前后各做一次"键集合 diff"并强制入审计。
 验收不变量：任意"本次未请求的键发生变化"必须让写入失败；一个含 8 个宽分隔符字符的入参在两侧都被同一句拒绝。`[需确认：现网 .env 内容不可读]`
 
+**处置（2026-09-26 批1 Task8，repair/m3-batch1）**：单一行模型收口 `yiban/infra/env_io.py`
+（`split_env_lines` 唯一切行 + `validate_env_*` 单一校验器，分隔符清单锚定 `str.splitlines` 全 Unicode
+实测 10 个）；写前/写后**解析键集合 diff**，"未请求的键变化"⇒ 拒绝 + 字节级回滚（`_restore_env_bytes`，
+BOM/CRLF 保真）+ 审计 `env_write_refused`；web 全部写点单口 `write_env_batch`（12 端点共享
+`errorhandler(EnvWriteRefused)`→409+清理指引），引擎 3 处经 `write_env_keys`，seed 第三写入方并入；
+两侧拒绝消息逐字相等；`paint()` 不再静默换枚举/污染 snap；前端同源分隔符常量拦截。
+V2 手法（U+0085 潜伏注释）路由级真跑拒绝、.env 逐字节不变。**读取容忍/写入拒绝边界**：历史脏文件
+可读（启动只读告警），保存 fail-closed 需人工清理。
+残余（批尾 5b）：`export KEY=` 三处解析分叉（MF-46③）、notify 密钥自动生成路径 `except ValueError`
+吞 `EnvWriteRefused` 致 500（次级键自生成路径）。
+
 ---
 
 ## C 簇 · 互斥与重复真实登录（P0，"认领两次"族的总账）
