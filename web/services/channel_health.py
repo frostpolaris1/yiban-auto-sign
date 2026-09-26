@@ -375,14 +375,14 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
     # 删链/篡改即可被发现。只读（不创建、不轮转锚点）；读取失败省略该行，
     # 不影响日报本体的发送与降级判定。
     try:
-        head = db.audit_head_hash()
+        # 三态读取：空链与"读失败"必须分开——把读失败当空链会打印"空链"（把"没查"
+        # 印成"没有"），而那正是审计状态出问题最需要看见的时刻。
+        state, head = db.audit_head_hash_ex()
         count = db.audit_row_count()
-        if not head and count:
-            # 链头读取失败被 audit_head_hash 吞成空串、而记录数却非零：两侧读到的
-            # 不是同一份一致状态，锚点行宁缺毋滥
-            logger.warning("审计链头读取异常（记录数 %d 但链头为空），日报内省略锚点行", count)
+        if state == "error":
+            logger.warning("审计链头读取失败（记录数 %d），日报内省略锚点行", count)
         else:
-            desc = f"{head[:12]}…" if head else "空链"
+            desc = "空链" if state == "empty" else f"{head[:12]}…"
             lines.append(f"审计链锚点：head_hash={desc}（记录数 {count}）")
     except Exception as e:
         logger.warning("读取审计链锚点失败（日报内省略该行）: %s", e)

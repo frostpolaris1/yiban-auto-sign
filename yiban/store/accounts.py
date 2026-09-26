@@ -357,12 +357,16 @@ def _convert_integrity_error(e):
     raise e
 
 
-def add_account(fields):
+def add_account(fields, audit_spec=None):
     """新增账号（fields 为业务层明文 dict），返回新 id。
 
     敏感字段写库前加密（AAD=手机号）；手机号重复抛 sqlite3.IntegrityError（业务层捕获）。
     BEGIN IMMEDIATE：跨进程（多 worker）并发时提前获取写锁，
     保证 MAX(sort_order)+1 的读与 INSERT 原子（防并发重复排序号）。
+
+    audit_spec 非 None 时（dict：username/action/target/detail/request_id），审计行与本
+    INSERT **同事务**写入，`db.record_in_txn` 失败即整体回滚——消除"账号已建、审计表
+    却没有这条且欠账为 0"的静默丢失窗口（见 audit_chain.audit_unit）。
     """
     db = _facade()
     conn = db.get_conn()
@@ -385,6 +389,8 @@ def add_account(fields):
                 ),
             )
             new_id = cur.lastrowid
+            if audit_spec:
+                db.record_in_txn(conn, **audit_spec)
             conn.commit()
             return new_id
         except sqlite3.IntegrityError as e:
@@ -395,7 +401,7 @@ def add_account(fields):
             raise
 
 
-def update_account(account_id, fields, expect_snapshot=None):
+def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
     """更新单行；expect_snapshot 为乐观锁指纹 dict（name/phone/phone_model/status/deleted），不匹配返回 False。
 
     手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
@@ -406,6 +412,10 @@ def update_account(account_id, fields, expect_snapshot=None):
     标签页并发编辑同一账号时，后提交者静默覆盖前者。危险的是 web 用户自编辑路径不传
     expect_snapshot、且总把 old["password"] 回填，覆盖时可能把用户刚改的密码静默回滚。
     持锁后读-改-写原子，即使调用方不传乐观锁指纹，并发也不会丢更新。
+
+    audit_spec 非 None 时，审计行与本次 UPDATE **同事务**写入（写入在 _body 内、由
+    外层统一 commit）；未发生实际更新（快照不匹配/行不存在/无字段变化）不写审计——
+    "没做的事不留痕"，也不会留下"留痕了却没做"的假记录。
     """
     db = _facade()
     conn = db.get_conn()
@@ -460,6 +470,10 @@ def update_account(account_id, fields, expect_snapshot=None):
         vals.append(account_id)
         try:
             conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+            if audit_spec:
+                # 与实际 UPDATE 同事务（外层 commit）：审计写失败即整体回滚，
+                # 不会出现"凭据已改、审计表无此条"的静默丢失。
+                db.record_in_txn(conn, **audit_spec)
         except sqlite3.IntegrityError as e:
             conn.rollback()
             # 主更新失败回滚会连带撤销 _row_to_account 的明文自愈；凭据不留明文优先，
@@ -487,10 +501,13 @@ def update_account(account_id, fields, expect_snapshot=None):
             raise
 
 
-def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
+def set_account_deleted(account_id, deleted, deleted_at="", deleted_by="", audit_spec=None):
     """软删除/恢复账号；deleted_by 留痕删除来源（用户邮箱 / 'admin' / ''=系统），v10。
 
     恢复（deleted=0）时 deleted_by 一并清空，避免残留旧来源被后续语义误读。
+    audit_spec（dict username/action/target/detail）非 None 时，审计行与本次 UPDATE
+    同事务写入（`with conn` 退出时统一提交）：软删除不可逆程度不高但同属"改了谁"的
+    追责点，同事务使"删了却无痕"不存在。
     """
     db = _facade()
     conn = db.get_conn()
@@ -499,6 +516,8 @@ def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
             "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
             (1 if deleted else 0, deleted_at, deleted_by if deleted else "", account_id),
         )
+        if audit_spec:
+            db.record_in_txn(conn, **audit_spec)
 
 
 def purge_account(account_id):
