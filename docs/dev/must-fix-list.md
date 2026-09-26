@@ -301,6 +301,24 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
 修法顺序（不可颠倒）：② rc 契约修好 → ① 改成真事件驱动且让位只让"同一账号"不让"整段" → ⑤ 给 v3 `failed` 回炉口 → 才谈撤 ③。撤 ③ 前置 6 条：常驻真在跑（开关+cron 件）、rc 已修、让位不整段停摆、单进程吞吐判据、v3 有回炉口、四条契约迁移（含 `PROMPT.md §6.10`"有效轮次"定义需你点头）。
 验收不变量：任何非零退出（含负数/信号）不得被写成 SUCCESS；marker 封存必须以"确实无未了结"为前置；开关置 1 后若无进程，启动即告警。`[需确认：现网 fallback 开关状态（.env 不可读）]`
 
+**处置（2026-09-26 批1 Task10，repair/m3-batch1，五段拼装）**：
+② rc 契约——监督归集负数/信号/未知码为真失败（优先序 4>10>1>3>2>0 保持），run.sh SUCCESS 只认
+真 rc；`SECOND_DONE_MARKER` 单点写（监督写）且封存前置=库内事实（`has_undone_accounts_today`
+= 领取池 ∪ 状态文件并集，经 `--second-run-check` 单一判定权威；不可得 ⇒ 不封存+双声音+rc 升 1）；
+`YIBAN_FALLBACK_ENABLE=1` 无进程 ⇒ 启动即双声音告警并拉起。
+① 事件驱动——领取池行迁移即事件源（`fallback_event` 签名四元组：v2 计数+心跳、v3 计数+epoch，
+双池并集、owner 排除、wake-set ⊆ takeable-set）；让位收窄到同一账号（同事务仲裁拒领），纯状态
+文件部署保留整段停摆降级形态；5s 轮询预算精确。
+⑤ v3 回炉——`requeue_failed` 沿用 v2 `retry:`/`final:` 档位协议（零字面量复制），走
+`requeue_task` state+epoch 门；round-start 回炉 + `requeue_final` 显式档（补签轮透传）+
+会话内 `requeue_during_run` + `claim_all` 全分片扫尾。B 类——`--fallback` 走 v2/v3 分流。
+e2e 主证据：真 SIGKILL 链路（真 run.sh→真监督→真 OS 子进程），三判据绿且判别力已验（回退旧
+口径⇒用例红）。
+③ **撤除未排期未执行**——6 条前置 checklist 见
+`docs/dev/fallback-removal-preconditions-20260926.md`（4 闭 2 开：单进程吞吐判据=测量任务、
+四条契约迁移需用户点头）。
+残余：现网 cron.d 无 fallback 条目（部署面事实，T2 记录）；现网 fallback 开关状态仍未取证。
+
 ### MF-44 告警链：四种"发了但没到"和"该发但静默"叠成完全无声
 合并 L27、L28、R4c、R10a、R10b。`send_admin_alert` 返回 False 被 `notify_mail.py:184` 丢弃 ⇒ `degraded` 恒假、周报走**同一条 SMTP**、`channel_health.py:409` 在被吞失败后**照写去重标记**（docstring 与实现相反）；记账三面不一致：额度有 `BudgetTicket` 退还，**去重位在扣额度之前写盘且永不回滚**，`notified` 取走即置位无退还；Server酱 返回合法 JSON 但非对象 ⇒ `AttributeError` 逃逸、`_refund_daily_budget` 被跳过（**额度 5→4 且永不恢复**）；custom 出口按 `status_code<400` 判成功 ⇒ 3xx 与"200+错误 body"都算已送达并真实扣额；`URGENT_ONLY=false` **静默保持开启**、`DAILY_MAX=-1` 钳成不限额、`is_configured` 与 `send` 在 TYPE/白名单两处口径分叉。邮件正文侧：对 `yiban.masking` 零依赖、`sanitize_text` 不遮裸号、告警正文含被爆破账号明文邮箱、`_fold` 漏 9 个换行族字符可伪造正文行、`user` 字段零校验可致 SMTP 命令注入。
 验收不变量："送达"与"已发送"必须是两个状态且都入库；任何额度占用必须有对应送达回执或退还；一条"SMTP 拒收 → 仍有声音"的端到端用例。
