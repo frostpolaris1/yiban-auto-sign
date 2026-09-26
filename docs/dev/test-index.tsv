@@ -954,6 +954,15 @@ tests/test_env_write_transient_failure.py	ConcurrentReadWriteTest.test_no_failur
 tests/test_env_write_transient_failure.py	ReplaceRetryTest.test_attempt_budget_is_finite	G	-	重试次数有上界（不能变成无限等锁）。
 tests/test_env_write_transient_failure.py	ReplaceRetryTest.test_persistent_failure_raises_and_removes_tmp	G	-	一直失败：原样抛出，但**不许**把整份 .env 副本留在磁盘上。
 tests/test_env_write_transient_failure.py	ReplaceRetryTest.test_transient_permission_error_is_retried_then_succeeds	G	-	前两次 WinError 5、第三次成功：写入成功、内容正确、无残留。
+tests/test_env_writers_take_lock.py	NoUnlockedEnvWriterTest.test_every_env_shaped_write_is_under_lock	G	-	??
+tests/test_env_writers_take_lock.py	NoUnlockedEnvWriterTest.test_low_level_rewriters_only_reachable_from_write_env_keys	G	-	豁免面不失控：两个原子写助手在 env_io 内各**只剩一处**引用，且在
+tests/test_env_writers_take_lock.py	NoUnlockedEnvWriterTest.test_write_env_keys_itself_holds_the_lock	G	-	源码判据：锁在函数体内取（`with env_lock.env_write_lock(env_file)` 包住读-改-写）。
+tests/test_env_writers_take_lock.py	SeedAccountsHeadUnderLockTest.test_upsert_creates_headered_file_and_writes_keys	G	-	??
+tests/test_env_writers_take_lock.py	SeedAccountsHeadUnderLockTest.test_upsert_head_creation_holds_lock	G	-	建头路径经函数级判据：`_ensure_env_headed` 只能在持锁临界区内被调用——
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_lock_acquired_without_any_outer_caller	G	-	外层什么都不持：write_env_keys 仍必须自己走 env_write_lock（验收不变量）。
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_other_thread_blocks_until_outer_releases	G	-	另一线程持锁期间，写方被**挡在门外**；释放后才落盘——内层锁是真互斥。
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_real_lock_file_created	G	-	不加桩的真调用必须创建 `<env>.lock` 锁文件（真锁原语在场，不是纸面互斥）。
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_same_thread_outer_lock_nests_fine	G	-	外层已持同一路径锁：内层直接放行（可重入），不得死锁。
 tests/test_executor_manifest.py	DispatchGateTest.test_check_config_and_probe_still_dispatch_on_day_off	B	-	`--check-config`（部署验证，哪天都要能验）与 `--probe`（自带门、跳过语义是 0）同样不被拦。
 tests/test_executor_manifest.py	DispatchGateTest.test_check_config_dispatches_supervisor_without_migrate	B	-	F3：`--check-config` 派发监督进程时，监督进程的配置预检也不跑迁移。
 tests/test_executor_manifest.py	DispatchGateTest.test_day_off_returns_2_before_dispatch	B	-	周日签到未开启 + 清单 2 槽位 → 返回 2，不派发监督进程、也不加载账号。
@@ -1884,6 +1893,7 @@ tests/test_planner.py	WritePlanTest.test_empty_rows_is_noop	A	-	??
 tests/test_planner.py	WritePlanTest.test_existing_rows_are_not_overwritten	A	-	已存在的行不被覆盖（先手工改成 done，重跑后仍为 done）。
 tests/test_planner.py	WritePlanTest.test_insert_then_rerun_is_idempotent	A	-	幂等落库：连跑两次行数不变，第二次写入 0 行。
 tests/test_planner.py	WritePlanTest.test_normal_plan_writes_second_slot_width	A	-	??
+tests/test_probe.py	ProbeSigninTest.test_env_update_probe_folds_spaced_shadow_line	D	-	`YIBAN_PROBE_ENABLE = 1`（带空格旧行）也必须折掉。
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_noop_when_not_auto_disable	D	-	非 once 模式不得改动 .env。
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_writes_disable_and_creates_tmp_0600	D	-	写 YIBAN_PROBE_ENABLE=0 且临时文件**创建即 0600**。
 tests/test_probe.py	ProbeSigninTest.test_probe_due_disabled	D	-	??
@@ -1901,6 +1911,15 @@ tests/test_protocol_masking.py	CorruptedKeyContractTest.test_corrupted_key_retur
 tests/test_protocol_masking.py	CorruptedKeyContractTest.test_valid_page_still_parses	G	-	守卫不得变成"永远返回 (None, None)"：合法页两分支都要照常解出公钥。
 tests/test_protocol_masking.py	DiagnosticsHeaderTest.test_diagnostics_header_masks_phone	G	-	诊断日志首行 `[账号] 阶段诊断:` 的账号同样走脱敏口径。
 tests/test_protocol_masking.py	LoginFailureMessageTest.test_failure_message_masks_phone	G	-	usersure 回 error reUrl → 异常消息里的账号只能是 `138****8000` 形态。
+tests/test_public_example_key_blocked.py	EnvExamplePlaceholderTest.test_template_no_longer_contains_the_published_key	G	-	??
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_env_file_source_blocked_and_file_untouched	G	-	??
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_env_var_source_blocked	G	-	??
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_existing_file_recheck_on_key_write_also_blocks	G	-	`_write_key_to_env_file` 的"写前重读既有值"分支同走 `_decode_key`：
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_random_key_end_to_end_ok	G	-	??
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_exact_public_string_blocked	G	-	??
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_random_keys_never_false_blocked	G	-	零误杀：200 把 `token_hex(32)` 随机钥全部正常解出（随机命中公开串的
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_three_weak_criteria_cannot_catch_the_template	G	-	实算反向钉（登记数字的来源）：模板解出的字节既非全零、非单字节重复、
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_weak_patterns_still_warn_only	G	-	三条弱钥判据维持 WARNING 不阻断（存量部署语义不变，登记口径不动）。
 tests/test_purge_guard.py	ConfirmationTest.test_requires_exact_echo	G	-	??
 tests/test_purge_guard.py	ContentFingerprintTest.test_parts_drive_digest	G	-	??
 tests/test_purge_guard.py	DbContentFingerprintTest.test_different_scale_changes_fingerprint	G	-	行数/规模差异必须改变指纹——这正是它区分 demo 库与生产库的地方。
@@ -2350,6 +2369,12 @@ tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_signal_k
 tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_both_sources_clean	B	bash	??
 tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_pool_clean_but_state_file_open_counts_undone	B	bash	??
 tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_pool_open_counts_undone	B	bash	??
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_comment_only_file_treated_as_fresh_single_key	G	-	仅注释的文件 = 无有效键 = 全新部署：建钥 + PAUSE=1，注释保留。
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_decision_is_one_strict_read	G	-	??
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_existing_key_returned_without_any_write	G	-	??
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_truncated_window_folds_to_single_lines	G	-	截断成空文件 = 合法"全新部署"（与既有裁决一致：无有效键即判新）；
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_window_counterexample_old_shape_swaps_key	G	-	旧判定形状在瞬态读窗里把"读失败"当"未配置"：宽松读吞掉失败 ⇒ 判全新
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_window_new_impl_never_touches_disk	G	-	新实现：严格读失败 ⇒ 判定不可信 ⇒ 一次都不写；返回进程内随机钥 + 告警。
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_audit_failure_aborts_wipe	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_correct_fingerprint_wipes_and_audits	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
