@@ -77,7 +77,10 @@ services:
     network_mode: "service:yiban"
     depends_on:
       yiban:
-        condition: service_healthy
+        # healthcheck 留作可观测性/重启依据，不作为 nginx 启动门槛：双探活下
+        # sched 侧一次故障就让整容器"不健康"，若 nginx 等健康再起，web 会因
+        # sched 故障连坐全下线（旧单探 web 形态无此耦合）。
+        condition: service_started
     volumes:
       - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/yiban/certs:ro   # 需 ./certs/fullchain.pem 和 ./certs/key.pem
