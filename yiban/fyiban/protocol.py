@@ -482,6 +482,17 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
+    # code==0 只代表"签发方没有否认"，不代表签发发生过：成功签发附带的回执在 data
+    # 载荷（同一端点的入口步应答即 `data.Data`，签到成功门也 code/data 并读）。
+    # `data` 键缺失或为 null 即无签发信封形状——网关/降级层伪造 code:0 的假成功正落在
+    # 这一形状上，不得写"登录成功"日志、更不得把残破会话送进缓存密文库。空容器
+    # （`{}`）是录制到的真实成功形状之一，放行；判据只拒"无回执"。
+    # 错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一无回执应答必然同果，
+    # 落不可重试档并联动清会话。
+    if data.get("data") is None:
+        _msg = data.get("msg")
+        raise RuntimeError("最终认证失败: 无签发方回执（code=0 但 data 载荷缺失）"
+                           + (f": msg={policy.sanitize(_msg)}" if _msg else ""))
     logger.info(f"[{policy.mask_account(phone)}] 登录成功")
     if session_store is not None:
         # 完整登录成功：保存会话缓存供下次免登录复用（失败仅告警，不影响签到）
