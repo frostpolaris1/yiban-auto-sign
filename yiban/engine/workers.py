@@ -49,8 +49,15 @@ logger = logging.getLogger("yiban")
 #: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
 FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
-#: 给全量轮让位时的轮询间隔（秒）：只是一次 flock 探测，比常规扫描密，全量轮一结束就接手
+#: **无领取池**（纯状态文件部署）时给全量轮整段让位的轮询间隔（秒）：只是一次 flock
+#: 探测。有池的部署不走这条路——让位收窄到"同一账号"，由领取池仲裁谁在做谁。
 _YIELD_POLL_SEC = 30
+
+#: 扫空后轮询领取池事件签名的短间隔（秒）：兜底的"失败即入队"读取端。别的执行体
+#: 弃权（retry: 档）就是入队，签名一变立刻接手，失败账号最坏只等这一拍而不是等满
+#: 一个扫描间隔；只是一次 COUNT/MAX 读，代价远低于一轮签到。等待总预算仍以扫描
+#: 间隔为上限（新账号没有池行、无事件可感，照旧由全量节律发现）。
+_POOL_WATCH_SEC = 5
 
 #: 三道门（周日/周六未开、一键暂停）的日志措辞——门本身在 `schedule.day_off`（唯一实现），
 #: 这里只给兜底自己的说法（定时轮的措辞在 `runner._GATE_SKIP_MESSAGES`）。
@@ -303,9 +310,12 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     **运行前会先过四道关**（每轮重判，不是启动时判一次）：周末签到未开、一键暂停
     （都由 `schedule.day_off` 判定，与定时轮同源）→ 直接退出；签到时段**尚未开始**
      → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
-     **全量轮正在跑**（全局锁被持有）→ 让位，等它结束再扫。故它的运行区间严格落在
-    "配置的有效窗口内、今天该签、且没有全量轮在跑"——它是**捡漏**的那个，不与
-    定时轮/多执行体抢活。
+     **全量轮正在跑且无领取池**（纯状态文件部署，没有账号级互斥可依赖）→ 整段让位。
+    有池在场时**让位只让"同一账号"**：全量轮持锁期间照常扫，池对在飞/已了结的账号
+    拒领（见循环内注释），该轮没碰的与中途弃权的照接。扫空后的等待是**事件驱动**的：
+    短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的执行体一弃权
+    就接手，等待上限仍是扫描间隔。故它是**捡漏**的那个——与定时轮/多执行体并发，
+    但"谁在做谁"由池仲裁，第一红线（同一账号当日一次真实登录）不因此松动。
 
     退出：窗口关闭 / 三道门命中 / 到达 `deadline` / 账号列表为空且已过窗口。
     返回退出码语义与单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
@@ -353,12 +363,17 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             logger.info("兜底执行体：签到时段尚未开始（%d 秒后开始），%d 秒后再看", opens_in, wait)
             time.sleep(wait)
             continue
-        if cli_support._run_lock_held():
-            # **给全量轮让位**：全量轮/多执行体在跑时不抢账号——否则兜底会按列表顺序
-            # 一路签下去，把全量轮的错峰计划与多执行体的分工一起冲掉（它抢的是"还没被
-            # 领走的"，而全量轮只在每个账号的计划时刻才领取）。
+        if not db.pool_db_declared() and cli_support._run_lock_held():
+            # **让位的颗粒度是"全量轮正在做的那一个账号"，仲裁者是领取池不是这把锁**：
+            # 有池在场时这里不让位、照常扫——轮在飞的行 `try_claim` 拒领（在飞未过期
+            # =领不到，done=领不到，retry: 档弃权行=默认可接手），兜底只接"该轮没碰的
+            # / 该轮中途弃权的"账号。旧形态"全局锁被持有=整段停摆"让兜底恰好在失败
+            # 高峰（全量轮正在批量弃权）时段完全不可用——那正是它该捡漏的时刻。
+            # 例外是**没有池可仲裁**的纯状态文件部署：账号级互斥不存在，并发跑等于
+            # 同一账号两次真实登录（第一红线），所以只有那里保留整段停摆。
             # 让位期间的轮询比常规扫描密：全量轮一结束就接手，而这次探测只是一次 flock。
-            logger.info("兜底执行体：全量轮正在运行，让位（%d 秒后再看）", _YIELD_POLL_SEC)
+            logger.info("兜底执行体：全量轮正在运行且无领取池，整段让位（%d 秒后再看）",
+                        _YIELD_POLL_SEC)
             time.sleep(_YIELD_POLL_SEC)
             continue
 
@@ -414,13 +429,45 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             if status in (STATUS_FAILED,) and not skip:
                 last_code = 1
         if own == 0:
-            time.sleep(interval)
+            if db.is_initialized():
+                # **事件驱动**：扫空后不再盲睡满间隔，而是轮询领取池的事件签名——别的
+                # 执行体把账号弃权到默认档就是"入队"（见 `claims.fallback_event`），
+                # 一变即接手。等待总预算仍是 interval：新审核账号没有池行、无事件可感，
+                # 由全量节律兜底发现。
+                _await_pool_event(now.strftime("%Y-%m-%d"), interval)
+            else:
+                # 无池可轮询（纯状态文件部署）：退回盲的整段间隔原节律
+                time.sleep(interval)
         else:
             # 有活干就连续扫（不睡满间隔），直到没活为止——窗口是有限的
             time.sleep(min(interval, 5))
     state_io._clear_fallback_alive()
     logger.info("兜底执行体已退出（心跳已清除）")
     return last_code
+
+
+def _await_pool_event(day, budget_sec):
+    """扫空后的等待：短轮询领取池事件签名，变化即返回，安静则等满 `budget_sec`。
+
+    取舍（对"失败即入队"字面另建一条队列）：全量轮与兜底是**两个进程**，`give_up`
+    在同一事务里把行置 failed 并即刻放开租约——这一行迁移本身就是入队动作，队列就是
+    领取池，`try_claim` 就是出队。再造一条独立队列必然与领取层漂移成"谁持有谁"的两套
+    事实；因此这里的事件源是池的签名，不是新管道。签名只数兜底默认档接得动的行
+    （`fallback_event`：`retry:` 档、剔除自己的弃权），唤醒频率与可接手频率同集。
+    读不到签名（库抖动）按"无事件"处理——事件驱动是延迟优化、不是正确性依赖，
+    最坏仍由扫描间隔这个上限兜住。
+    """
+    owner = os.environ.get("YIBAN_EXECUTOR_ID", "").strip() or egress.fallback_owner()
+    last = db.claim_fallback_event(day, owner)
+    for _ in range(max(1, -(-budget_sec // _POOL_WATCH_SEC))):
+        time.sleep(_POOL_WATCH_SEC)
+        sig = db.claim_fallback_event(day, owner)
+        if sig is None:
+            continue
+        if sig != last:
+            logger.info("兜底执行体：领取池事件签名变化 %s（业务日 %s），立即接手", sig, day)
+            return
+        last = sig
 
 
 def _await_workers(children, slots=None):

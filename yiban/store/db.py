@@ -127,6 +127,7 @@ claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
 claim_latest_day = _claims.latest_claims_day
 claim_owners_since = _claims.owners_since
+claim_fallback_event = _claims.fallback_event  # 兜底常驻的"失败即入队"读取端：默认档未了结行的事件签名，短轮询变化即接手
 purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，展示口径不读它
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
