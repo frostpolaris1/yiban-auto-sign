@@ -26,8 +26,41 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# 活体心跳与探活快路（必须位于业务导入图之前）
+# ---------------------------------------------------------------------------
+# compose 的 healthcheck 原本只 curl web 端口——sched 崩溃/躺平（supervisord
+# FATAL）时容器依旧"健康"，`restart: unless-stopped` 永不救。现在调度进程用
+# 守护线程周期性落一个心跳文件（首签/补签子进程 wait 期间主循环合法阻塞数分钟
+# ~数小时，tick-only 心跳会在正常工作状态下"陈旧"误报；线程随进程死——进程
+# 没了心跳断流，正是探活要抓的形态），探活只读一个事实：心跳 mtime。
+# `--check-health` 在 import signin/yiban 之前退出：30s 一次的探测不该拖着
+# 整条业务导入链（耗时，且任何第三方依赖抖动都会把健康的 sched 误杀成
+# "不健康"——观测件的判据必须比被观测对象更简单）。
+# 容器内整链生效待生产演练。
+STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
+HEARTBEAT_FILE = "sched-heartbeat.json"
+HEARTBEAT_INTERVAL = 10          # 守护线程落盘周期（秒）
+HEARTBEAT_MAX_AGE_SECONDS = 60   # 容忍窗 = 6 个落盘周期；陈旧/缺失一律不健康
+
+
+def _heartbeat_is_fresh(path=None):
+    """心跳 mtime 在容忍窗内 ⇒ True；文件缺失/不可读 ⇒ False（fail-closed）。"""
+    p = path or os.path.join(STATEDIR, HEARTBEAT_FILE)
+    try:
+        return (time.time() - os.path.getmtime(p)) < HEARTBEAT_MAX_AGE_SECONDS
+    except OSError:
+        return False
+
+
+if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
+    sys.exit(0 if _heartbeat_is_fresh() else 1)
+
+# ---------------------------------------------------------------------------
 
 # 包导入引导：本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
 # `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
@@ -49,9 +82,9 @@ from child_env import build_child_env, parse_env_file  # noqa: E402
 from yiban import clock, state_gc, window  # noqa: E402
 from yiban.engine import schedule, workers  # noqa: E402
 
-STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
 ENV_FILE = os.environ.get("YIBAN_ENV_FILE", "/data/.env")
+# （STATEDIR 与心跳常量在文件头的探活快路区，探活不得依赖本行之后的导入图）
 
 
 # 当日状态/全量标记的路径与判定统一在 signin（full_run_done_today /
@@ -144,6 +177,70 @@ def _mark_slot(kind):
             os.remove(tmp)
 
 
+def _heartbeat_path(state_dir=None):
+    return os.path.join(state_dir or STATEDIR, HEARTBEAT_FILE)
+
+
+def _touch_heartbeat(state_dir=None):
+    """落活体心跳（pid + 业务时刻；tmp + os.replace 原子写，同 _mark_slot 口径）。
+
+    只写进**已存在**的目录：心跳是旁路观测件，不承担建目录职责（容器入口
+    entrypoint.sh 已建 /data/state）。目录不在就静默跳过——写失败同样静默：
+    探活侧看到的"心跳断流"正是期望中的不健康信号，观测件绝不反噬调度循环，
+    也不许把已清理的目录"复活"（守护线程生命周期长于单次用例）。
+    """
+    path = _heartbeat_path(state_dir)
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        return
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            # 内容用系统钟：与 mtime（探活真正的判据）同钟同口径，仅作人工排查
+            # 现场；业务钟不参与——观测链路不该依赖调度语义，也不得反过来
+            # 抢占/干扰主循环的判据时钟。
+            json.dump({"pid": os.getpid(),
+                       "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
+_heartbeat_started = False
+_heartbeat_stop = threading.Event()
+
+
+def _start_heartbeat():
+    """主循环入口：先同步落一次心跳（首刻即可被探活），再起守护线程周期重写。
+
+    每进程只起一条心跳线程（重复调用只补落一次）；daemon=True——它是进程
+    活体的旁路证明，不该独立于主进程存活。节拍用 Event.wait 而非 time.sleep：
+    心跳线程与调度循环各走各的时钟通道，测试/桩替换主循环的 sleep 不得
+    顺带劫持观测件。
+    """
+    global _heartbeat_started
+    _touch_heartbeat()
+    if _heartbeat_started:
+        return
+    _heartbeat_started = True
+
+    def _beat():
+        while not _heartbeat_stop.wait(HEARTBEAT_INTERVAL):
+            try:
+                _touch_heartbeat()
+            except Exception:
+                return  # 心跳线程任何异常都静默退场：观测件绝不把噪声灌进主进程日志
+
+    threading.Thread(target=_beat, daemon=True, name="sched-heartbeat").start()
+
+
+def healthcheck_main(state_dir=None):
+    """模块级探活入口：与 `__main__` 的 --check-health 快路共用同一判据
+    （_heartbeat_is_fresh），供常驻进程与测试直接复用。"""
+    return 0 if _heartbeat_is_fresh(_heartbeat_path(state_dir)) else 1
+
+
 def _cleanup_state():
     """按天状态文件的过期清理（策略唯一在 `yiban/state_gc.py`，与宿主 cron 同一份）。
 
@@ -225,7 +322,15 @@ def _run_signin_child(extra=None, env=None):
     env["YIBAN_SECOND_RUN_TIME"] = f"{SECOND[0]:02d}:{SECOND[1]:02d}"
     timeout = _child_timeout(env)
     cmd = ["python3", "scripts/signin.py"] + (extra or [])
-    proc = subprocess.Popen(cmd, cwd="/app", env=env)
+    # 与同文件 `_start_fallback_child` 调用点同一判法：OSError（解释器丢失、fork
+    # 资源耗尽等）接住留痕返回，**绝不穿透 main_loop**——同一文件不许出现两种判法
+    # （兜底接、首签不接，等于一次 spawn 失败带崩全天调度）。失败后调用方仍照常
+    # 落槽位标记：同一时段不会逐秒反复 spawn（容器重启即双跑，监督重启同罪）。
+    try:
+        proc = subprocess.Popen(cmd, cwd="/app", env=env)
+    except OSError as e:
+        print(f"[scheduler] 签到子进程拉起失败: {e}", flush=True)
+        return
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -332,66 +437,81 @@ def main_loop(sleep_seconds=1):
 
     SECOND 不受 FIRST 影响：若首签子进程一直占用到越过 07:10，循环恢复后
     hm>=SECOND 仍会补一次（signin 内状态文件已防重），不再全天丢失补签。
+
+    单 tick 兜底：循环体内任意异常记日志后进下一 tick——一次闸门/落盘/清理的
+    意外不得让首签/补签/探针/兜底/清理同进程全废全天。兜底边界是 Exception：
+    KeyboardInterrupt/SystemExit 直通（监督停机与容器 stop 依赖的信号语义不许
+    被吞）。time.sleep 在兜底之外，异常 tick 同样照常歇到下一拍。
     """
     done_sign_first = None   # date | None
     done_sign_second = None
     last_probe_try = None    # datetime | None：上次尝试探针的时刻（周期尝试）
     last_fallback_try = None  # datetime | None：上次检查兜底常驻的时刻（周期检查）
     last_clean = None
+    _start_heartbeat()
     while True:
-        now = clock.now()
-        today = now.date()
-        hm = (now.hour, now.minute)
-        # 每次触发前重新解析 .env（2026-08-28 审查 F2）：
-        # 子进程环境原先只在启动时构造一次，管理员在 Web 后台改的 YIBAN_GLOBAL_PAUSE
-        # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_SATURDAY_SIGN / YIBAN_PROBE_* 在容器
-        # 重启前静默不生效。
-        # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
-        if (hm >= FIRST and done_sign_first != today
-                and not _full_run_done_today() and not _slot_done("first")):
-            # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
-            _run_signin_child()
-            _mark_slot("first")
-            done_sign_first = today
-        if (hm >= SECOND and done_sign_second != today
-                and (not _full_run_done_today() or _has_undone_today())
-                and not _slot_done("second")):
-            # 补签闸门：全量未跑过（首签错过的补偿）或存在未了结
-            # 账号（failed/retrying/pending/skipped_window/skipped_norange/no_position）
-            # 才执行；全员了结则跳过，不再被「任一账号
-            # 成功」误导跳过失败账号的兜底。no_position（无点位）视为未了结
-            # 与宿主 run.sh 退出码 2 → SKIPPED → 07:10 重跑一致，
-            # 07:10 补签轮顺带重试一次（signin 内部 1 次即止，幂等无害）。
-            # 补签轮注入 YIBAN_SECOND_RUN=1——与宿主 run.sh 补签轮
-            # 导出的同一信号，signin.py 据此判定 is_second_run（环境变量优先，
-            # sched-run 标记兜底），修复首签被 timeout 击杀时「部分成功+窗口外」
-            # 零告警（B12-2 分支复发）
-            env = build_child_env(ENV_FILE)
-            env["YIBAN_SECOND_RUN"] = "1"
-            _run_signin_child(env=env)
-            _mark_slot("second")
-            done_sign_second = today
-        if last_probe_try is None or (now - last_probe_try).total_seconds() >= PROBE_TRY_SECONDS:
-            # 探针周期尝试：未开启不 spawn（避免无谓子进程）；开启则交由
-            # signin.py 内部 _health_probe_due（PROBE_TIME / 频率 / 当日防重）
-            # 裁决，未到触发点零请求退出。每次尝试重新解析 .env（F2），
-            # Web 后台改探针开关 / 时间即时生效，无需重启容器。
-            last_probe_try = now
-            env = build_child_env(ENV_FILE)
-            if str(env.get("YIBAN_PROBE_ENABLE", "0")).strip().lower() in ("1", "true", "on", "yes"):
-                _run_signin_child(extra=["--probe"], env=env)
-        if (last_fallback_try is None
-                or (now - last_fallback_try).total_seconds() >= FALLBACK_TRY_SECONDS):
-            # 兜底常驻：窗口内拉起、窗口结束由进程自行退出。判据只看 `.env`
-            # （网页写入的开关与窗口设置），不构造完整子进程环境——未开时不产生
-            # 任何副作用（不 spawn、不打日志）。
-            last_fallback_try = now
-            _tick_fallback(now)
-        if now.hour >= 3 and last_clean != today:
-            _cleanup_state()
-            last_clean = today
+        try:
+            now = clock.now()
+            today = now.date()
+            hm = (now.hour, now.minute)
+            # 每次触发前重新解析 .env（2026-08-28 审查 F2）：
+            # 子进程环境原先只在启动时构造一次，管理员在 Web 后台改的 YIBAN_GLOBAL_PAUSE
+            # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_SATURDAY_SIGN / YIBAN_PROBE_* 在容器
+            # 重启前静默不生效。
+            # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
+            if (hm >= FIRST and done_sign_first != today
+                    and not _full_run_done_today() and not _slot_done("first")):
+                # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
+                _run_signin_child()
+                _mark_slot("first")
+                done_sign_first = today
+            if (hm >= SECOND and done_sign_second != today
+                    and (not _full_run_done_today() or _has_undone_today())
+                    and not _slot_done("second")):
+                # 补签闸门：全量未跑过（首签错过的补偿）或存在未了结
+                # 账号（failed/retrying/pending/skipped_window/skipped_norange/no_position）
+                # 才执行；全员了结则跳过，不再被「任一账号
+                # 成功」误导跳过失败账号的兜底。no_position（无点位）视为未了结
+                # 与宿主 run.sh 退出码 2 → SKIPPED → 07:10 重跑一致，
+                # 07:10 补签轮顺带重试一次（signin 内部 1 次即止，幂等无害）。
+                # 补签轮注入 YIBAN_SECOND_RUN=1——与宿主 run.sh 补签轮
+                # 导出的同一信号，signin.py 据此判定 is_second_run（环境变量优先，
+                # sched-run 标记兜底），修复首签被 timeout 击杀时「部分成功+窗口外」
+                # 零告警（B12-2 分支复发）
+                env = build_child_env(ENV_FILE)
+                env["YIBAN_SECOND_RUN"] = "1"
+                _run_signin_child(env=env)
+                _mark_slot("second")
+                done_sign_second = today
+            if last_probe_try is None or (now - last_probe_try).total_seconds() >= PROBE_TRY_SECONDS:
+                # 探针周期尝试：未开启不 spawn（避免无谓子进程）；开启则交由
+                # signin.py 内部 _health_probe_due（PROBE_TIME / 频率 / 当日防重）
+                # 裁决，未到触发点零请求退出。每次尝试重新解析 .env（F2），
+                # Web 后台改探针开关 / 时间即时生效，无需重启容器。
+                last_probe_try = now
+                env = build_child_env(ENV_FILE)
+                if str(env.get("YIBAN_PROBE_ENABLE", "0")).strip().lower() in ("1", "true", "on", "yes"):
+                    _run_signin_child(extra=["--probe"], env=env)
+            if (last_fallback_try is None
+                    or (now - last_fallback_try).total_seconds() >= FALLBACK_TRY_SECONDS):
+                # 兜底常驻：窗口内拉起、窗口结束由进程自行退出。判据只看 `.env`
+                # （网页写入的开关与窗口设置），不构造完整子进程环境——未开时不产生
+                # 任何副作用（不 spawn、不打日志）。
+                last_fallback_try = now
+                _tick_fallback(now)
+            if now.hour >= 3 and last_clean != today:
+                _cleanup_state()
+                last_clean = today
+        except (KeyboardInterrupt, SystemExit):
+            raise  # 停机/中断语义直通，兜底只吃 Exception
+        except Exception as e:
+            # 单 tick 兜底（本文件唯一一处 Exception 级判法，其余按类型接）：
+            # 记痕进下一 tick，绝不让一次意外废掉全天调度
+            print(f"[scheduler] 本 tick 异常，记日志后进下一 tick: {e!r}", flush=True)
         time.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":
+    # --check-health 已在文件头（业务导入图之前）短路退出，能走到这里的
+    # 只有常驻调度主循环（supervisord 的启动形态）。
     main_loop()
