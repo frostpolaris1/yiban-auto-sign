@@ -505,6 +505,42 @@ def in_flight_phones(day, lease_sec=LEASE_SECONDS):
         return []
 
 
+def fallback_event(day, exclude_owner=""):
+    """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新心跳)`。
+
+    为什么这一行就是"失败即入队"：`give_up` 在同一事务里把行置 `failed` 并**立刻**
+    把租约置过期——补签链的兜底腿不必另建队列，池的这次行迁移就是它与全量轮（两个
+    进程）之间的交接：give_up 即入队，try_claim 即出队。兜底扫空后按短周期轮询本
+    签名，一变即接手，不必等满一个扫描间隔；签名不变则等满间隔为上限。
+
+    **两条收紧，防止唤醒被放大成重复真实登录**：
+    - 只数 `retry:` 档：`final:` 档（预算耗尽/风控）在默认参数下兜底**领不动**
+      （见 `try_claim` 的 failed 分支与 `RESULT_FINAL_PREFIX`），为它醒来只会空转，
+      事件频率必须与"可接手频率"同集；
+    - 剔除 `exclude_owner`（兜底自己的稳定槽位名，含 `{稳定名}:{进程号}:{代次}`
+      运行时形态）弃权：它一轮扫完本就有紧接的再扫节律，自己的弃权再触发自己的
+      唤醒会把"扫→弃权→醒→再扫"接成紧循环。
+
+    匹配口径与 `reap_abandoned` 一致（等值 + `instr` 前缀，不用 LIKE——主机名里的
+    `_` 是通配符）。库不可用返回 None：调用方退回等满间隔——事件驱动是**延迟优化**，
+    不是正确性依赖，读不到时绝不据此做任何互斥判断。
+    """
+    from yiban.store import db
+    sql = ("SELECT COUNT(*) AS n, MAX(heartbeat_at) AS h FROM sign_claims "
+           "WHERE day=? AND state=? AND substr(result, 1, ?)=?")
+    params = [day, STATE_FAILED, len(RESULT_RETRY_PREFIX), RESULT_RETRY_PREFIX]
+    if exclude_owner:
+        sql += " AND owner<>? AND instr(owner, ?)<>1"
+        params += [exclude_owner, exclude_owner]
+    try:
+        with db._conn_lock:
+            row = db.get_conn().execute(sql, tuple(params)).fetchone()
+        return (int(row["n"] or 0), row["h"] or "")
+    except Exception as e:
+        logger.debug("读取领取池兜底事件签名失败（按无事件处理）: %s", e)
+        return None
+
+
 def stats(day):
     """当日各状态计数——供设置页/CLI 展示"了结进度"。"""
     from yiban.store import db
