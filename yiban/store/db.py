@@ -151,9 +151,24 @@ _reset_audit_fail_memory = _audit_chain._reset_audit_fail_memory
 audit_persisted_write_failures = _audit_chain.audit_persisted_write_failures
 audit_write_failures = _audit_chain.audit_write_failures
 audit = _audit_chain.audit
+# 请求作用域（审计行携带"哪个请求做的"）与"业务+审计同事务"原语：
+# `audit_unit` 上下文管理器、`record_in_txn`（业务事务内插审计行）、
+# `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
+set_request_scope = _audit_chain.set_request_scope
+current_request_scope = _audit_chain.current_request_scope
+record_in_txn = _audit_chain.record_in_txn
+audit_unit = _audit_chain.audit_unit
+audit_or_refuse = _audit_chain.audit_or_refuse
+AuditWriteRefused = _audit_chain.AuditWriteRefused
 audit_head_hash = _audit_chain.audit_head_hash
+audit_head_hash_ex = _audit_chain.audit_head_hash_ex
 audit_row_count = _audit_chain.audit_row_count
 verify_audit_chain = _audit_chain.verify_audit_chain
+audit_write_failures_unnotified = _audit_chain.audit_write_failures_unnotified
+mark_audit_write_failures_notified = _audit_chain.mark_audit_write_failures_notified
+audit_alert_signature = _audit_chain.audit_alert_signature
+audit_alert_needs_attention = _audit_chain.audit_alert_needs_attention
+mark_audit_alert_sent = _audit_chain.mark_audit_alert_sent
 
 audit_anchor_path = _audit_chain.audit_anchor_path
 audit_anchor_fingerprint_path = _audit_chain.audit_anchor_fingerprint_path
@@ -189,6 +204,8 @@ _rechain_diagnostics = _audit_chain._rechain_diagnostics
 
 _AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
 _AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY
+_AUDIT_FAIL_NOTIFIED_KEY = _audit_chain._AUDIT_FAIL_NOTIFIED_KEY
+_AUDIT_ALERT_STATE_KEY = _audit_chain._AUDIT_ALERT_STATE_KEY
 _AUDIT_FAIL_LOCK = _audit_chain._AUDIT_FAIL_LOCK
 _AUDIT_RETRIES = _audit_chain._AUDIT_RETRIES
 _AUDIT_RETRY_BASE_DELAY = _audit_chain._AUDIT_RETRY_BASE_DELAY

@@ -6,8 +6,12 @@
 - 密钥来源与缓存：`_parse_env_file` / `_decode_audit_key` / `_resolve_key_env_file` /
   `_write_audit_key_to_env_file` / `_assert_key_source_certain` / `_audit_key`（含
   `_AUDIT_KEY_CACHE`、`_AUDIT_KEY_LOCK`）与签名计算 `_audit_hash`；
-- 写入链路：`audit()`、写入失败欠账计数（`_bump_audit_write_failure` 等）与只读口径
-  （`audit_head_hash` / `audit_row_count` / `verify_audit_chain`）；
+- 写入链路：`audit()`、请求作用域（`set_request_scope` / `_scope_detail`，web 每请求一个
+  id、CLI 退化为进程级 id）、"业务+审计同事务"原语（`audit_unit` / `record_in_txn` /
+  失败即拒绝的 `audit_or_refuse`）、写入失败欠账计数（`_bump_audit_write_failure` 等）与
+  只读口径（`audit_head_hash` / `audit_head_hash_ex` / `audit_row_count` / `verify_audit_chain`）；
+- 欠账告警"按账目变化"触发：总账单调（取证事实）而通知基线随发信推进
+  （`audit_write_failures_unnotified` / `audit_alert_needs_attention` / `mark_audit_alert_sent`）；
 - 全表重链留痕：`_rechain_audit_logs` / `_record_rechain_event` / `audit_rechain_events`；
 - 库外锚点族与最近清理口径：`record_audit_anchor` / `verify_audit_anchor` / `audit_health` /
   `_rechain_hint` / `audit_purge_total` / `audit_purge_events`。
@@ -195,40 +199,45 @@ def _audit_hash(prev_hash, ts, username, action, target, detail):
     return hmac.new(_audit_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _rechain_audit_logs(conn):
-    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。
+def _rechain_audit_logs(conn, record_event=None):
+    """按 id 升序重建审计哈希链（从库内首行原 prev_hash 接续）。
 
-    改为按 id 游标分批重链——原 LIMIT 10000 一次性截断，审计量超限
-    时第 10001 行起的旧 hash 未重算且其 prev 指向的行刚被改写，链永久断裂，
-    每日告警"狼来了"掩盖真实篡改。
+    单事务原子承诺：旧实现按 10000 行游标**分批 commit**，中途失败/被杀会留下
+    "前半段用新密钥、后半段还是旧 hash"的半重链——它是自洽链里最难发现的一种，且
+    再重跑一次还会因为 user_version 已推进而不再触发。改为全部 UPDATE 在一个事务内
+    完成后一次 commit；任何异常回滚到重链前状态（原链完好），不留半重链。代价是把
+    全表读进内存（不再分批），换取"要么全链重签、要么原样不动"。
+
+    不要在这里 BEGIN IMMEDIATE：调用方（migrate_v3）此前可能已有未提交的
+    `ALTER TABLE ADD COLUMN`（SQLite DDL 也在事务内），显式 BEGIN 会撞
+    "within a transaction"、回滚式解除又会把刚补的列一起丢掉。首个 UPDATE 自带的
+    隐式事务已提供原子性。
+
+    record_event：可选无参回调，在同一事务内、commit 之前执行。生产由 migrate_v3
+    传入"写重链留痕"——让"重写整条链"与"记下这次重写"同事务，中间被杀不会留下
+    "链被重签却无留痕"的静默状态。
     """
-    _BATCH = 10000
-    last_id = 0
-    prev = ""
-    # prev 必须接续库内首行之前的链（重链从全表语义出发时为空串）
-    first = conn.execute(
-        "SELECT prev_hash FROM audit_logs ORDER BY id LIMIT 1"
-    ).fetchone()
-    if first is not None:
-        prev = first["prev_hash"] or ""
-    while True:
-        rows = conn.execute(
-            "SELECT id, ts, username, action, target, detail FROM audit_logs "
-            "WHERE id > ? ORDER BY id LIMIT ?",
-            (last_id, _BATCH),
-        ).fetchall()
-        if not rows:
-            break
+    rows = conn.execute(
+        "SELECT id, ts, username, action, target, detail, prev_hash FROM audit_logs ORDER BY id"
+    ).fetchall()
+    prev = (rows[0]["prev_hash"] or "") if rows else ""
+    try:
         for r in rows:
-            h = _facade()._audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
+            h = _facade()._audit_hash(
+                prev, r["ts"], r["username"], r["action"], r["target"], r["detail"]
+            )
             conn.execute(
                 "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
                 (prev, h, r["id"]),
             )
             prev = h
-            last_id = r["id"]
-        conn.commit()  # 分批落盘：超大表迁移不因单事务超长而失败
-    conn.commit()
+        if record_event is not None:
+            record_event()
+        conn.commit()
+    except BaseException:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
 
 
 def _record_rechain_event(conn, from_version, rows, empty_hash_rows, head_before, head_after):
@@ -358,8 +367,114 @@ def audit_write_failures():
     return audit_persisted_write_failures() + _unflushed_audit_failures()
 
 
-def audit(username, action, target="", detail=""):
+# 欠账告警基线：总账单调累加（取证事实，不归零），但**告警按"账目变化"触发**。同一笔
+# 欠账若每天都发一封 urgent，紧急额度会被它吃光、真告警反而发不出去（永久刷屏）；故另
+# 存一条"已确认到的总账值"，只有总账高于它（有新欠账）才算新事件。归零口径：基线随发信
+# 推进，总账不动——"续计"以总账为准，"不再重发"以基线为准。
+_AUDIT_FAIL_NOTIFIED_KEY = "audit_write_fail_notified"
+# 体检级告警签名基线：链/锚点/见证/欠账/重链任一变化才重发（同一故障态不刷屏）。
+_AUDIT_ALERT_STATE_KEY = "audit_alert_state"
+
+
+def audit_write_failures_unnotified():
+    """自上次确认以来**新增**的审计欠账条数（无新增 → 0，不重复告警）。"""
+    return max(0, audit_write_failures() - _meta_int(_AUDIT_FAIL_NOTIFIED_KEY))
+
+
+def mark_audit_write_failures_notified():
+    """把欠账告警基线推进到当前总账（告警发出后调用）；失败只告警不抛。"""
+    return _facade().set_meta(_AUDIT_FAIL_NOTIFIED_KEY, str(audit_write_failures()))
+
+
+def audit_alert_signature(health):
+    """体检结果的告警签名：只有**内容变化**才值得再发一封 urgent。
+
+    覆盖会独立改变结论的字段（链自洽/断点数、锚点三态、见证形态、欠账总账、空 hash
+    行、是否有重链留痕）。不含消息文本（文本随同一事实抖动会造成假"变化"）。
+    """
+    return "|".join(str(x) for x in (
+        health.get("chain_ok"), health.get("broken"), health.get("anchor_status"),
+        health.get("anchor_witness"), health.get("write_failures"),
+        health.get("empty_hash_rows"), bool(health.get("rechain_events")),
+    ))
+
+
+def audit_alert_needs_attention(health):
+    """本次不健康结论是否与上次已告警的**不同**（纯读，无副作用）。"""
+    return _facade().get_meta(_AUDIT_ALERT_STATE_KEY, "") != audit_alert_signature(health)
+
+
+def mark_audit_alert_sent(health):
+    """告警发出后推进签名基线，使同一故障态不再逐日重发。"""
+    return _facade().set_meta(_AUDIT_ALERT_STATE_KEY, audit_alert_signature(health))
+
+
+# ---------------------------------------------------------------------------
+# 请求/会话作用域
+# ---------------------------------------------------------------------------
+# 审计的"来源"列只有加盐 IP 哈希，而其输入（X-Forwarded-For / remote_addr）是客户端
+# 可控的 —— 它回答不了"同上出口的哪一次操作是谁做的"。故审计行额外携带**请求作用域
+# id**：web 侧由 before_request 钩子为每个请求生成随机 id 写进线程局部，CLI/离线脚本
+# 退化为进程级 id（pid + 进程认领时刻）。id 编码进 detail（不新增列、不改链构造；
+# 链 HMAC 覆盖 detail，改不动），并以 `[req=...]` 标记自证。
+# 明确不承诺：IP 哈希仍可伪造，作用域 id 只解决"同一出口内区分请求"，不解决身份。
+_REQUEST_SCOPE = threading.local()
+_PROCESS_SCOPE_SEEN = {}
+_SCOPE_MARKER = " [req="
+
+
+def set_request_scope(rid):
+    """设置当前线程的请求作用域 id（web before_request 钩子调用；None 清除）。"""
+    _REQUEST_SCOPE.rid = rid or None
+
+
+def current_request_scope():
+    """当前线程的请求作用域 id；未设置返回 None（由 `_process_scope` 兜底）。"""
+    return getattr(_REQUEST_SCOPE, "rid", None)
+
+
+def _process_scope():
+    """进程级作用域 id（CLI/离线脚本）：pid + 该进程首次认领的时刻，重启可区分。"""
+    pid = os.getpid()
+    seen = _PROCESS_SCOPE_SEEN.get(pid)
+    if seen is None:
+        seen = clock.now().strftime("%Y%m%d%H%M%S")
+        _PROCESS_SCOPE_SEEN[pid] = seen
+    return f"proc{pid}-{seen}"
+
+
+def _scope_detail(detail, request_id=None):
+    """把作用域 id 编码进 detail（幂等）。
+
+    两形态：detail 是 JSON 对象时注入 `"_req"` 键（保住 JSON 可解析——配置变更类审计
+    的 detail 就是被下游 `json.loads` 还原"改了哪些键"的结构化记录，追加裸后缀会把它
+    弄成非法 JSON 而丢掉还原能力）；其余情况追加 `[req=...]` 后缀。标记被截掉就答不了
+    "哪个请求做的"，故先留足标记额度再截正文。已带标记的 detail 原样返回，避免重复追加。
+    """
+    detail = detail or ""
+    if _SCOPE_MARKER in detail:
+        return detail[:200]
+    rid = request_id or current_request_scope() or _process_scope()
+    stripped = detail.strip()
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and "_req" not in obj:
+            obj["_req"] = rid
+            out = json.dumps(obj, ensure_ascii=False)
+            if len(out) <= 200:
+                return out
+    tag = f"{_SCOPE_MARKER}{rid}]"
+    return (detail[: max(0, 200 - len(tag))] + tag)[:200]
+
+
+def audit(username, action, target="", detail="", request_id=None):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
+
+    `request_id` 为请求作用域 id；缺省取当前线程的请求作用域，再退化为进程级 id，
+    最终以 `[req=...]` 标记附加在 detail 末尾（见上方作用域注释）。
 
     写入 HMAC 哈希链：prev_hash 取上一条 hash，hash 由 `_audit_hash` 对
     [prev_hash, ts, username, action, target, detail] 计算。**prev_hash 的读取必须与
@@ -377,7 +492,7 @@ def audit(username, action, target="", detail=""):
     """
     conn = None
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-    detail = detail[:200]
+    detail = _scope_detail(detail[:200], request_id)
     last_err = None
     for attempt in range(_AUDIT_RETRIES):
         try:
@@ -428,12 +543,97 @@ def audit(username, action, target="", detail=""):
     return False
 
 
+class AuditWriteRefused(RuntimeError):
+    """审计写入失败且要求 fail-closed：调用方必须回滚/拒绝对应的业务操作。
+
+    只在 `audit_or_refuse` 抛出；`audit()` 的返回 False 口径不变（既有调用点不检查
+    返回值，由每日欠账判据兜住）。
+    """
+
+
+def record_in_txn(conn, username, action, target="", detail="", request_id=None):
+    """在**调用方已开启的写事务**内插入审计行（不 BEGIN、不 commit）。返回本条 hash。
+
+    给"业务写与审计写同事务"的调用方用：业务写与这一步同一 BEGIN IMMEDIATE，调用方
+    一次 commit 让两者同在、rollback 让两者同不在——中间被杀不会留下"做了无留痕、
+    欠账仍为 0"（欠账计数结构性看不见这种丢法）。要求调用方已持 `_conn_lock` 且事务
+    已开启：读链尾与 INSERT 之间若无跨进程互斥，会读到同一 prev_hash 造成链分叉。
+    """
+    ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    detail = _scope_detail((detail or "")[:200], request_id)
+    row = conn.execute(
+        "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    prev_hash = row["hash"] if row else ""
+    h = _facade()._audit_hash(prev_hash, ts, username, action, target, detail)
+    conn.execute(
+        "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (ts, username, action, target, detail, prev_hash, h),
+    )
+    return h
+
+
+@contextlib.contextmanager
+def audit_unit(username, action, target="", detail="", request_id=None):
+    """把一段业务写与它的审计行放进**同一个 BEGIN IMMEDIATE 事务**。
+
+    用法：`with db.audit_unit(actor, "user_create", email, "新增用户") as conn:`
+    体内用传入的 conn 做业务写；退出时业务写与审计行一次 commit，抛异常则整体
+    rollback（业务与审计都不留）。业务写**必须用传入的 conn**——另开事务会撞
+    "within a transaction"，业务写自成事务则又把窗口还回来。
+
+    与"先业务后 audit()"的差别：那两个事务之间被杀会留下"业务已生效、审计表无此条、
+    欠账计数仍为 0"，本上下文消除该窗口（kill 注入下要么两者都在，要么都不在）。
+    """
+    with _facade()._conn_lock:
+        conn = _facade().get_conn()
+        _facade()._begin_immediate(conn)
+        try:
+            yield conn
+            record_in_txn(conn, username, action, target, detail, request_id)
+            conn.commit()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
+
+
+def audit_or_refuse(username, action, target="", detail="", request_id=None):
+    """fail-closed 审计：成功返回 True，失败抛 `AuditWriteRefused`。
+
+    给**无法与业务并事务**的调用点用（业务写跨另一存储、另开连接或异步，SQLite 事务
+    覆盖不到：.env 口令/清单写、跨库清库、后台任务）。这些路径必须"审计失败即拒绝
+    业务"，而不是"先做业务再补审计"。范例见 `yiban/store/purge_guard.py` 的
+    `write_purge_audit`（返回 False 时调用方放弃删除，本函数是同一口径的异常版）。
+    """
+    if _facade().audit(username, action, target, detail, request_id=request_id):
+        return True
+    raise AuditWriteRefused(
+        f"审计写入失败，拒绝业务操作（fail-closed）: action={action} target={target}"
+    )
+
+
 def audit_head_hash():
-    """返回审计链当前头哈希（空链返回空串）；供外部锚点导出（append-only 日志）。
+    """审计链当前头哈希；空链返回 ""，**读取失败返回 None**。
 
     锚点存在的理由：HMAC 链密钥与数据同盘时"整体重算"零成本，
     把链头哈希定期追加到独立文件（web 每日线程写 STATE_DIR/audit-anchor.log），
     使重写库内审计链还需同步篡改锚点文件，外部锚定抬高伪造成本。
+
+    读失败与空链**必须分开**：旧实现两者都返回 ""，"读不动"于是被当成"空链"，
+    锚点/日报据此省略判定——把"没查"印成"没有"。调用方需要三态时用
+    `audit_head_hash_ex`；本函数对读失败返回 None 作为兼容的显式降级信号。
+    """
+    state, head = audit_head_hash_ex()
+    return head if state == "ok" else ("" if state == "empty" else None)
+
+
+def audit_head_hash_ex():
+    """审计链头读取的三态：`(state, head)`，state ∈ ok（有记录）/ empty（空链）/ error。
+
+    空链是**查清了的结论**（head=""），读失败是**没查成**（head=None）；两者下游
+    处置相反（空链可正常写锚点/报"空链"，读失败必须省略判定并告警）。
     """
     try:
         with _facade()._conn_lock:
@@ -441,10 +641,12 @@ def audit_head_hash():
             row = conn.execute(
                 "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
             ).fetchone()
-            return row["hash"] if row else ""
+            if row is None or not (row["hash"] or ""):
+                return "empty", ""
+            return "ok", row["hash"]
     except Exception as e:
         logger.warning("读取审计链头失败: %s", e)
-        return ""
+        return "error", None
 
 
 def audit_row_count():
@@ -1759,6 +1961,9 @@ def audit_health(path=None, fingerprint_path=None):
         "anchor_witness_unhealthy": bool(witness_control_lost),
         "anchor_msg": anchor_msg,
         "write_failures": write_failures,
+        # 自上次确认以来新增的欠账：告警按"账目变化"触发的输入（见
+        # audit_write_failures_unnotified 处的口径注释）。总账仍单调，不改取证事实。
+        "write_failures_new": audit_write_failures_unnotified(),
         "rechain_events": rechain_events,
         "empty_hash_rows": empty_hash_rows,
         "purge_total": purge_total,
