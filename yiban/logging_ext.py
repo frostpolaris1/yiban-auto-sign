@@ -8,8 +8,9 @@
   加锁时由 locks 告警留痕；
 - **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径；
 - **出站脱敏**：`MaskingFormatter` 对格式化后的整行兜底遮**手机号**。覆盖面 = 装上这个
-  formatter 的那些 handler——全仓只有 `yiban.engine.cli_support._setup_cli_logging` 与
-  web `create_app` 两处装配，别处自建 handler 写的日志不在保护范围内。且这一层只遮号码：
+  formatter 的那些 handler——三个入口各装配一处：CLI
+  `yiban.engine.cli_support._setup_cli_logging`、web `create_app`、容器调度器
+  `docker/scheduler.py::_setup_logging`；别处自建 handler 写的日志不在保护范围内。且这一层只遮号码：
   口令、token、cookie 类字面量要靠调用点先过 `yiban.masking.sanitize_text`，未过它的
   调用点不会被本层救回；号码写成编码或分段形态（凑不出连续 11 位数字）同样照漏。
 
@@ -30,8 +31,9 @@ class MaskingFormatter(logging.Formatter):
     挂在**输出面**而不是逐个调用点：脱敏此前靠调用点手工调 `mask_phone`，漏一处就
     漏一处（新写的日志天然不受保护）。放在 formatter 而非 handler filter，是因为
     formatter 拿到的是最终成文（含 `%(message)s` 插值与异常 traceback），一处覆盖
-    全部落盘/降级通道；且两个日志装配点（CLI 的 `_setup_cli_logging`、web 的
-    `create_app`）都经 `setFormatter` 装配，改这两处即可，改动面最小。
+    全部落盘/降级通道；且三个日志装配点（CLI 的 `_setup_cli_logging`、web 的
+    `create_app`、容器调度器的 `_setup_logging`）都经 `setFormatter` 装配，
+    新增入口按同一形状挂即可。
 
     覆盖 `format`（而非 `formatMessage`）：异常栈文本由 `Formatter.format` 追加，
     它可能内嵌上游回显的手机号，只有对最终串替换才兜得住。
