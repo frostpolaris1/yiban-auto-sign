@@ -584,7 +584,17 @@ def api_settings_save():
         updates["YIBAN_MAX_USERS"] = str(max_users_val)
     if max_accounts_val is not None:
         updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
-    m.write_env_batch(m.ENV_FILE, updates)
+    try:
+        m.write_env_batch(m.ENV_FILE, updates)
+    except ValueError as e:
+        # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
+        # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
+        # 冲突需要人工清理 .env 后才能保存，不是服务器故障。
+        m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+        return jsonify({
+            "error": "配置写入被拒绝：.env 存在行模型歧义（潜伏行分隔符或未请求的键变化），"
+                     "请按启动告警提示人工清理该行后重试"
+        }), 409
     sunday_display = "不变" if sunday_sign is None else sunday_sign
     saturday_display = "不变" if saturday_sign is None else saturday_sign
     pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
