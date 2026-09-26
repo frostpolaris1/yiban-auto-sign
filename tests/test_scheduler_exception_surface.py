@@ -7,11 +7,12 @@
    主循环单 tick 兜底（任意 Exception 记日志进下一 tick，KeyboardInterrupt/SystemExit
    直通不被吞）、心跳落盘与探活出口（--check-health 新鲜 0 / 陈旧或非 0）、
    supervisord 对 sched 的存活参数（startsecs/startretries 显式写死，崩溃重启不进
-   FATAL 躺平）、compose healthcheck 同时覆盖 web 与 sched、宿主 run.sh 锁目录
-   mkdir 失败时拒绝运行（不再静默回退 /tmp，与 08-21 加固注释同一威胁模型）。
+   FATAL 躺平）、compose healthcheck 同时覆盖 web 与 sched、宿主 run.sh 与
+   run_probe.sh 锁目录 mkdir 失败时拒绝运行（不再静默回退 /tmp，与 08-21 加固
+   注释同一威胁模型；探针并采信显式 YIBAN_LOCK_DIR）。
 对应实现：docker/scheduler.py（_run_signin_child、main_loop、_touch_heartbeat、
    healthcheck_main、__main__ 出口）、docker/supervisord.conf（[program:sched]）、
-   docker-compose.yml（healthcheck）、run.sh（LOCK_DIR 块）。
+   docker-compose.yml（healthcheck）、run.sh（LOCK_DIR 块）、run_probe.sh（LOCK_DIR 块）。
 关键断言：一次 Popen 失败或一次 tick 内异常不得让首签/补签/探针/兜底/清理同进程全废；
    兜底的边界是 Exception——监督停机/容器 stop 依赖的信号通路必须原样穿出；
    健康信号必须覆盖 sched 本身而不只 web 端口；锁目录建不成 ⇒ rc=1，
@@ -449,6 +450,113 @@ class RunShLockDirTest(unittest.TestCase):
         combined = (r.stderr.decode("utf-8", "replace")
                     + r.stdout.decode("utf-8", "replace"))
         self.assertNotIn("回退 /tmp", combined)
+
+
+# ---------------------------------------------------------------------------
+# run_probe.sh LOCK_DIR：与 run.sh 同族 fail-closed（真起 bash）
+# ---------------------------------------------------------------------------
+
+_STUB_SIGNIN_PROBE = '''# -*- coding: utf-8 -*-
+"""探针桩：记一次运行即退出（判据只关心锁目录，不跑真探测）。"""
+import os
+
+state = os.environ.get("YIBAN_STATE_DIR", ".")
+with open(os.path.join(state, "rounds.log"), "a", encoding="utf-8") as f:
+    f.write("probe\\n")
+raise SystemExit(0)
+'''
+
+
+class RunProbeLockDirTest(unittest.TestCase):
+    """探针脚本与签到共用同一威胁模型：锁目录建不成 ⇒ 拒跑，不回退 /tmp。
+
+    run.sh 已改 fail-closed（删除 /tmp 回退、支持显式 YIBAN_LOCK_DIR），而
+    run_probe.sh 曾是旧形态：LOCK_DIR 硬编码、mkdir 失败静默落到
+    `/tmp/yiban-sign-<uid>`（可预测路径，恰是锁目录加固注释点名的威胁面）、
+    回退 mkdir 结果不检查——同一把 `sign.lock` 出现两把不同位置的锁，
+    "探针与签到共用单实例锁"的互斥前提即告失效。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not BASH:
+            raise unittest.SkipTest("无 bash 环境")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="probe-lock-")
+        self.app = os.path.join(self.tmp, "app")
+        self.state = os.path.join(self.tmp, "state")
+        for d in (os.path.join(self.app, "scripts"),
+                  os.path.join(self.app, ".venv", "bin"), self.state):
+            os.makedirs(d, exist_ok=True)
+        with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
+                     encoding="utf-8") as f:
+            f.write(_STUB_SIGNIN_PROBE)
+        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+            f.write("")
+        py = os.path.join(self.app, ".venv", "bin", "python3")
+        with io.open(py, "w", encoding="utf-8", newline="\n") as f:
+            f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+        os.chmod(py, os.stat(py).st_mode | stat.S_IEXEC)
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin, exist_ok=True)
+        p = os.path.join(self.bin, "flock")
+        with io.open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, lock_dir):
+        env = dict(os.environ)
+        env.update({
+            "PATH": self.bin + os.pathsep + env.get("PATH", ""),
+            "YIBAN_APP_DIR": self.app,
+            "YIBAN_STATE_DIR": self.state,
+            "YIBAN_LOG_FILE": os.path.join(self.state, "sign.log"),
+            "YIBAN_PROBE_ENABLE": "1",
+            "YIBAN_LOCK_DIR": lock_dir,
+        })
+        return _sp.run([BASH, os.path.join(BASE, "run_probe.sh")],
+                       capture_output=True, env=env, cwd=self.app)
+
+    def test_uncreatable_lock_dir_refuses_run_rc1(self):
+        """活体反例：锁目录父级是普通文件 ⇒ mkdir 必失败 ⇒ rc=1 且探针不跑。
+
+        旧形态：YIBAN_LOCK_DIR 被无视、失败后静默落 /tmp 继续跑（rc=0）——
+        探针与签到各锁各的目录，互斥只剩假象。
+        """
+        blocker = os.path.join(self.tmp, "blocker")
+        with io.open(blocker, "w", encoding="utf-8") as f:
+            f.write("占位：普通文件，子路径 mkdir 必失败")
+        r = self._run(os.path.join(blocker, "lock"))
+        err = r.stderr.decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 1,
+                         "锁目录建不成必须拒绝运行 rc=1（实际 rc=%d, stderr=%s）"
+                         % (r.returncode, err))
+        self.assertIn("拒绝运行", err)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "rounds.log")),
+                         "拒绝运行时不得拉起探针")
+
+    def test_explicit_lock_dir_respected_and_probe_runs(self):
+        """显式可建路径：自建自负责，锁落在**该路径**且探针照常放行（对照不误伤）。"""
+        lock = os.path.join(self.tmp, "fresh-lock")
+        r = self._run(lock)
+        self.assertTrue(os.path.isdir(lock),
+                        "显式 YIBAN_LOCK_DIR 必须被探针采信（err=%s）"
+                        % r.stderr.decode("utf-8", "replace"))
+        self.assertTrue(os.path.exists(os.path.join(lock, "sign.lock")),
+                        "锁文件必须建在显式路径里（两把锁=没有锁）")
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertTrue(os.path.exists(os.path.join(self.state, "rounds.log")))
+
+    def test_no_tmp_fallback_branch_left_in_source(self):
+        """判据不许留后门：源码里不得再有 /tmp/yiban-sign 回退分支。"""
+        with io.open(os.path.join(BASE, "run_probe.sh"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("/tmp/yiban-sign", src,
+                         "探针锁目录不得回退到可预测的 /tmp 路径（与 run.sh 同判据）")
 
 
 if __name__ == "__main__":

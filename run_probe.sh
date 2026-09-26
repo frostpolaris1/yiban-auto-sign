@@ -55,11 +55,16 @@ if [ -n "$_ENV_WARNINGS" ]; then
 fi
 
 # 与签到共用单实例锁：探针与签到进程互斥，防止并发操作同一批账号
-LOCK_DIR="/var/lock/yiban"
+# fail-closed 与 run.sh 同一纪律：建不成主锁目录就拒绝运行（rc=1）——旧回退分支把锁
+# 静默挪进 /tmp 下的按 uid 命名目录，恰是锁目录加固注释点名的"可被预测/占用"位置，
+# 且回退 mkdir 结果不检查；两把不同位置的锁=没有锁，探针与签到的互斥前提失效。
+# 需要替代路径显式设 YIBAN_LOCK_DIR（与 run.sh 同键），属主/权限风险自担；对显式
+# 路径同样执行"属主为本用户 + chmod 700 成功"的硬检查，不给第二套判法。
+LOCK_DIR="${YIBAN_LOCK_DIR:-/var/lock/yiban}"
 if [ ! -d "$LOCK_DIR" ]; then
     if ! mkdir -p "$LOCK_DIR" 2>/dev/null; then
-        LOCK_DIR="/tmp/yiban-sign-$(id -u)"
-        mkdir -p "$LOCK_DIR"
+        echo "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）" >&2
+        exit 1
     fi
     if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
         echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
