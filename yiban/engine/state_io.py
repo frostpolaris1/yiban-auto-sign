@@ -320,17 +320,20 @@ def full_run_done_today(state_dir=None, day=None):
 def has_undone_accounts_today(state_dir=None, day=None):
     """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。
 
-    **多执行体形态优先看领取池**：那里是账号级了结的事实源（`done`=当日了结，
-    `claimed`/`failed`=未了结），而状态文件只能说"这个账号最后写成什么状态"。
-    当池里当日有记录时以池为准；没有记录（无库/池未启用/当日还没人领过）再回退到
-    状态文件——两条口径都可用时，池更准。
+    **两个事实源取并集，任一"有活"即未了结**：领取池回答"领到的那些了结没有"
+    （`done`=当日了结，`claimed`/`failed`=未了结），状态文件回答"每个账号最后写成
+    什么状态"。旧实现池里有行就只看池——一个执行体半途被杀/漏领时，已收尾的行全
+    `done`、没领过的账号在池里根本没有行，池判"无未了结"，而这批账号在状态文件里
+    仍是 pending（计划从未被执行）——"整批没领被判没活"的跨轮翻版。故池判干净后
+    仍要过一遍状态文件；池里没有行（无库/池未启用/当日还没人领过）时状态文件是唯一
+    事实源，行为不变。
     """
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
         if db.is_initialized():
             stats = db.claim_stats(today)
-            if stats.get("total"):
-                return stats.get("open", 0) > 0
+            if stats.get("total") and stats.get("open", 0) > 0:
+                return True
     except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
         logger.debug("读取领取池失败（回退状态文件口径）: %s", e)
     d = state_dir or _state_dir()
