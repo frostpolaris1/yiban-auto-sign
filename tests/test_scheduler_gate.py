@@ -683,7 +683,8 @@ class WebB12Test(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         rows = self._audit_rows("forbidden_path")
         self.assertGreaterEqual(len(rows), 1, "越权访问管理面必须留痕（B12-14）")
-        self.assertEqual(rows[-1]["detail"], "/api/users")
+        # 审计行携带请求作用域后缀（` [req=...]`），故按前缀断言正文（同 test_logs_export_masking）
+        self.assertTrue(rows[-1]["detail"].startswith("/api/users"), rows[-1]["detail"])
 
     # ---- sign_events 消费端 ----
     def test_logs_api_exposes_sign_events(self):
