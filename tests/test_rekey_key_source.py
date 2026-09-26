@@ -294,6 +294,21 @@ class _B14Fixture(unittest.TestCase):
         self.assertTrue(ok, f"前置条件失败：种子链应自洽（broken={broken} id={first}）")
         _close_db()
 
+    def record_deploy_anchor(self):
+        """写一份与库同源的锚点。
+
+        `audit_verify` 现在把"无锚点"判为"未查"（exit 2）——本类用例断言的是**密钥
+        来源**（换目录仍读到正确密钥），必须有锚点才会走到"校验通过"那段。
+        锚点落在子进程的状态目录（`_run_cli` 把 YIBAN_STATE_DIR 钉在 `<cwd>/_state`）。
+        """
+        _clear_caches()
+        db.init_db(db_file=self.db_file, env_file=self.env_file,
+                   cleanup=False, migrate=False)
+        try:
+            db.record_audit_anchor(os.path.join(self.work, "_state", "audit-anchor.log"))
+        finally:
+            _close_db()
+
     def verify_chain_with_prod_env(self, db_file=None):
         """用部署 .env 里的 YIBAN_AUDIT_KEY 重开库校验链（返回 (ok, broken, first)）。"""
         _clear_caches()
@@ -466,6 +481,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
 
     def test_audit_verify_reads_key_from_env_flag(self):
         """audit_verify --env：换目录也能读到正确密钥并报"校验通过"（此前报"过程异常"）。"""
+        self.record_deploy_anchor()
         r = _run_cli("audit_verify.py", ["--db", self.db_file, "--env", self.env_file],
                      cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -483,6 +499,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
 
     def test_cli_honours_yiban_env_file_without_flag(self):
         """不传 --env 时 YIBAN_ENV_FILE 同样生效（回落链第二档），仍无游离 .env。"""
+        self.record_deploy_anchor()
         r = _run_cli("audit_verify.py", ["--db", self.db_file], cwd=self.work,
                      extra_env={"YIBAN_ENV_FILE": self.env_file})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -924,6 +941,9 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         rows = self._audit_rows("notify_config")
         self.assertTrue(rows, "notify_config 变更须留审计")
         detail = json.loads(rows[-1]["detail"])
+        # 审计行携带请求作用域 id（结构化 detail 以 `_req` 键承载，不破坏 JSON 可解析）
+        self.assertIn("_req", detail)
+        detail.pop("_req")
         self.assertNotIn("type", detail,
                          "未提交 type 就不得记 type（审计只记实际落盘的键，"
                          "按 off 记录会把「没动通道」伪造成「关过通道」）")
@@ -937,16 +957,19 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
             "confirm_password": ADMIN_PASS})
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         detail2 = json.loads(self._audit_rows("notify_config")[-1]["detail"])
+        detail2.pop("_req", None)
         self.assertEqual(detail2, {"type": "serverchan", "secret": "updated"})
         r3 = c.put("/api/notify-config", headers=self._csrf(t), json={
             "type": "", "confirm_password": ADMIN_PASS})
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         detail3 = json.loads(self._audit_rows("notify_config")[-1]["detail"])
+        detail3.pop("_req", None)
         self.assertEqual(detail3, {"type": "off", "secret": "cleared"})
         r4 = c.put("/api/mail-config", headers=self._csrf(t),
                    json={"enabled": False, "confirm_password": ADMIN_PASS})
         self.assertEqual(r4.status_code, 200, r4.get_data(as_text=True))
         mail_detail = json.loads(self._audit_rows("mail_config")[-1]["detail"])
+        mail_detail.pop("_req", None)
         self.assertEqual(mail_detail, {"enabled": False})
 
     def test_registered_admin_still_403_on_both_endpoints(self):

@@ -96,6 +96,8 @@ tests/test_audit_anchor_field_source.py	AnchorFieldCoherenceTest.test_head_match
 tests/test_audit_anchor_field_source.py	RechainDiagnosisReachableTest.test_hash_mismatch_yields_diagnosis_not_exception	G	-	??
 tests/test_audit_anchor_field_source.py	RechainDiagnosisReachableTest.test_rechain_hint_is_callable_with_anchor_only	G	-	签名固定为单参：多传一个实参会抛 TypeError，被外层兜成通用异常。
 tests/test_audit_anchor_selfcheck.py	CliIndeterminateTest.test_cli_exit_two_on_indeterminate_anchor	G	-	??
+tests/test_audit_anchor_selfcheck.py	CorruptAnchorMetaTest.test_corrupt_meta_lines_does_not_crash_health	G	-	??
+tests/test_audit_anchor_selfcheck.py	CorruptAnchorMetaTest.test_corrupt_meta_lines_is_indeterminate_in_witness_state	G	-	直接打 `_anchor_witness_state`：库内指纹行数非整数 ⇒ 无法定论（不抛）。
 tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_clean_state_is_healthy_with_witness	G	-	??
 tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_witness_is_monotonic_and_idempotent	G	-	??
 tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_witness_path_is_separate_from_anchor_path	G	-	独立见证的**默认路径**必须与锚点分离：同目录 = 同权限 = 保护归零。
@@ -178,6 +180,24 @@ tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_alert_facts_carry
 tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_alert_facts_without_cleanup_say_none	G	-	??
 tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_health_exposes_purge_total_and_last_cleanup	G	-	??
 tests/test_audit_cleanup_visibility.py	HealthAndAlertTest.test_health_without_cleanup_reports_zero	G	-	??
+tests/test_audit_transaction.py	ArrearsNotificationTest.test_alert_needs_attention_only_on_content_change	G	-	??
+tests/test_audit_transaction.py	ArrearsNotificationTest.test_health_exposes_new_arrears_field	G	-	??
+tests/test_audit_transaction.py	ArrearsNotificationTest.test_unnotified_zeroes_after_mark	G	-	??
+tests/test_audit_transaction.py	CliExitCodeTest.test_healthy_is_zero	G	-	??
+tests/test_audit_transaction.py	CliExitCodeTest.test_locked_db_exit_two_not_tampered	G	-	真占写锁后跑校验：必须 exit 2（无法定论），不得用 exit 1 冒充"检出篡改"。
+tests/test_audit_transaction.py	CliExitCodeTest.test_no_anchor_is_not_checked_exit_two	G	-	无锚点 = "未查"，必须独立返回值（exit 2），不得印成"通过"（exit 0）。
+tests/test_audit_transaction.py	CliExitCodeTest.test_tail_deletion_detected_exit_one	G	-	删尾（删掉最近审计）必须 exit 1，与"未查/锁住"分码。
+tests/test_audit_transaction.py	FullRechainDetectionTest.test_content_change_plus_rechain_is_detected	G	-	??
+tests/test_audit_transaction.py	HeadHashStateTest.test_empty_chain_is_empty_state	G	-	??
+tests/test_audit_transaction.py	HeadHashStateTest.test_read_failure_is_error_state_not_empty	G	-	??
+tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_failure_restores_original_chain	G	-	??
+tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_success_keeps_chain_consistent	G	-	??
+tests/test_audit_transaction.py	RequestScopeTest.test_process_scope_when_no_request	G	-	??
+tests/test_audit_transaction.py	RequestScopeTest.test_web_request_scope_tagged_into_detail	G	-	??
+tests/test_audit_transaction.py	SameTransactionTest.test_add_account_audit_is_same_transaction_and_rolls_back_on_failure	G	-	生产调用点（add_account + audit_spec）：审计失败 ⇒ 账号不落库。
+tests/test_audit_transaction.py	SameTransactionTest.test_audit_or_refuse_raises_when_audit_fails	G	-	跨存储调用点的 fail-closed 审计：audit 返回 False ⇒ 抛 AuditWriteRefused。
+tests/test_audit_transaction.py	SameTransactionTest.test_audit_write_failure_rolls_back_business	G	-	审计写入注入失败 ⇒ 同一事务的业务写整体回滚（fail-closed）。
+tests/test_audit_transaction.py	SameTransactionTest.test_kill_between_business_and_audit_leaves_neither	G	-	真子进程在 audit_unit 体内做完业务写后 os._exit ⇒ 业务与审计都不留。
 tests/test_backup_e2e.py	EncryptRoundtripTest.test_garbage_ciphertext_smaller_than_floor_detected	J	bash	尺寸下限（对齐 docker/backup-docker.sh B12-1）：小短密文不配被称为'已加密'。
 tests/test_backup_e2e.py	EncryptRoundtripTest.test_gpg_stub_garbage_ciphertext_keeps_plaintext_no_manifest_rc7	J	bash	活体反例：gpg"成功"但产物不可解 ⇒ 明文仍在、密文删除、无清单、rc=7。
 tests/test_backup_e2e.py	EncryptRoundtripTest.test_gpg_stub_hard_fail_keeps_plaintext_nonzero_rc	J	bash	验收不变量原文："gpg stub 必败 ⇒ 明文仍在 + rc 非 0"（回退明文轮 rc=6）。

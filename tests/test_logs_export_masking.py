@@ -251,8 +251,8 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertEqual(
             c.get(f"/api/logs/export?date={HIST_DATE}").status_code, 403)
         rows = self._audit_rows("forbidden_path")
-        # 既有口径：target=hash_ip、detail=越权路径
-        self.assertTrue(any(row["detail"] == "/api/logs/export" for row in rows),
+        # 既有口径：target=hash_ip、detail=越权路径（+ 请求作用域后缀 ` [req=...]`）
+        self.assertTrue(any(row["detail"].startswith("/api/logs/export") for row in rows),
                         f"普通用户越权导出应留 forbidden_path 审计: {[dict(r) for r in rows]}")
 
     # ---- 5b. 越权路径里的换行必须被压平（%0A 能在日志/审计里伪造第二行）----
