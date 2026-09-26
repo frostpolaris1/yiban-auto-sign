@@ -193,6 +193,87 @@ class SameTransactionTest(_Fixture):
             self.assertTrue(db.audit_or_refuse("tester", "env_write", "x", "d"))
 
 
+class CredentialPathTransactionTest(_Fixture):
+    """生产凭据路径的 kill 注入：me.py 自助改密 / my.py 提交易班凭据。
+
+    这两条路径的审计由 store 层内嵌 `audit_spec` 与业务写同事务（`update_user` /
+    `add_account`）。真子进程在链尾哈希计算处 `os._exit` ⇒ 未提交事务随进程退出回滚，
+    业务与审计都不落库；控制组同样调用正常提交 ⇒ 两者同在。旧实现"业务 COMMIT 后再
+    audit()"的窗口在这里不存在。
+    """
+
+    def _run_kill(self, body_lines):
+        script = "\n".join([
+            "import os, sys",
+            f"sys.path.insert(0, {BASE!r})",
+            f"sys.path.insert(0, {os.path.join(BASE, 'scripts')!r})",
+            "import db",
+            "db.init_db(cleanup=False)",
+            "db.set_request_scope(None)",
+            *body_lines,
+        ])
+        r = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                           env=self._sub_env(), cwd=BASE)
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-2000:])
+        db._conn = None
+
+    def test_me_password_path_kill_leaves_neither(self):
+        """me.py 自助改密：`update_user` 内审计前被杀 ⇒ 口令未改、审计无此条。"""
+        self._run_kill([
+            "db.create_user('victim@test.local', 'oldhash', role='user')",
+            "db._audit_hash = lambda *a, **k: os._exit(0)",
+            "db.update_user('victim@test.local',",
+            "    {'password_hash': 'newhash', 'pw_version': 2},",
+            "    audit_spec={'username': 'victim@test.local', 'action': 'user_password',",
+            "                'target': 'victim@test.local', 'detail': '自助改密'})",
+        ])
+        self.assertEqual(
+            self._count("SELECT password_hash FROM users WHERE email='victim@test.local'"),
+            "oldhash", "业务写必须随未提交事务回滚——'改了密却无痕'不得存在")
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM audit_logs WHERE action='user_password'"), 0,
+            "审计行同样不得留下（两者同在或同不在）")
+
+    def test_me_password_path_both_present_when_committed(self):
+        db.create_user("victim2@test.local", "oldhash", role="user")
+        changed = db.update_user(
+            "victim2@test.local", {"password_hash": "newhash", "pw_version": 2},
+            audit_spec={"username": "victim2@test.local", "action": "user_password",
+                        "target": "victim2@test.local", "detail": "自助改密"})
+        self.assertEqual(changed, 1)
+        self.assertEqual(
+            self._count("SELECT password_hash FROM users WHERE email='victim2@test.local'"),
+            "newhash")
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM audit_logs WHERE action='user_password'"), 1,
+            "业务生效 ⇒ 审计行必在")
+
+    def test_my_credentials_path_kill_leaves_neither(self):
+        """my.py 提交易班凭据：`add_account` 内审计前被杀 ⇒ 账号未建、审计无此条。"""
+        self._run_kill([
+            "db._audit_hash = lambda *a, **k: os._exit(0)",
+            "db.add_account({'name': 'n', 'phone': '13800000000', 'password': 'p',",
+            "                'owner': 'u@test.local'},",
+            "               audit_spec={'username': 'u@test.local',",
+            "                           'action': 'my_account_add',",
+            "                           'target': '138****0000', 'detail': '用户提交'})",
+        ])
+        self.assertEqual(self._count("SELECT COUNT(*) FROM accounts"), 0,
+                         "凭据账号必须随未提交事务回滚")
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM audit_logs WHERE action='my_account_add'"), 0)
+
+    def test_my_credentials_path_both_present_when_committed(self):
+        new_id = db.add_account(
+            {"name": "n", "phone": "13900000000", "password": "p", "owner": "u2@test.local"},
+            audit_spec={"username": "u2@test.local", "action": "my_account_add",
+                        "target": "139****0000", "detail": "用户提交"})
+        self.assertTrue(new_id)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM accounts"), 1)
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM audit_logs WHERE action='my_account_add'"), 1)
+
+
 class RequestScopeTest(_Fixture):
     """审计行携带请求/进程作用域 id（来源列只有可伪造 IP 哈希，答不了"哪个请求"）。"""
 
@@ -209,6 +290,24 @@ class RequestScopeTest(_Fixture):
         row = db.get_conn().execute(
             "SELECT detail FROM audit_logs WHERE action='procscoped'").fetchone()
         self.assertIn(f"[req=proc{os.getpid()}-", row["detail"])
+
+    def test_user_supplied_marker_cannot_suppress_real_scope(self):
+        """入参 detail 自带 `[req=...]` 不得冒充"已带作用域"而抑止真实 id 的附加。"""
+        db.set_request_scope("web-real")
+        db.audit("tester", "forged_scope", "t", "d [req=evil]")
+        row = db.get_conn().execute(
+            "SELECT detail FROM audit_logs WHERE action='forged_scope'").fetchone()
+        self.assertIn("[req=web-real]", row["detail"], "真实作用域必须照常附加")
+        self.assertNotIn("[req=evil]", row["detail"], "用户可控的标记字面量必须被消毒")
+
+    def test_user_supplied_json_req_is_overwritten(self):
+        """JSON detail 里预置的 `_req` 必须被真实作用域覆盖（不得伪造归属）。"""
+        db.set_request_scope("web-real2")
+        db.audit("tester", "forged_json", "t", '{"a": 1, "_req": "evil"}')
+        row = db.get_conn().execute(
+            "SELECT detail FROM audit_logs WHERE action='forged_json'").fetchone()
+        self.assertIn('"_req": "web-real2"', row["detail"])
+        self.assertNotIn("evil", row["detail"])
 
 
 class HeadHashStateTest(_Fixture):

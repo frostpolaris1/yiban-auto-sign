@@ -577,8 +577,12 @@ def move_account(account_id, direction):
             raise
 
 
-def delete_accounts_by_owner(owner):
-    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
+def delete_accounts_by_owner(owner, audit_spec=None):
+    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。
+
+    audit_spec 非 None 时，审计行与本次 DELETE **同事务**写入（口径见 add_account）：
+    一次请求清空该用户全部凭据属不可逆操作，同事务使"清了却无痕"不可能。
+    """
     db = _facade()
     conn = db.get_conn()
     with db._conn_lock, conn:
@@ -586,6 +590,8 @@ def delete_accounts_by_owner(owner):
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
         phones = [r["phone"] for r in rows]
         db._cascade_phone_owned(conn, phones)  # 自选/会话/事件/校验任务连带清理
+        if audit_spec:
+            db.record_in_txn(conn, **audit_spec)
         return cur.rowcount
 
 
