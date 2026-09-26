@@ -10,6 +10,7 @@
     POST /code/usersure                               -> JSON {"code": "s200"}
     GET  /iframe/index                                -> 302 Location 带 verify_request
     GET  /base/c/auth/yiban                           -> JSON {"code": 0}（带 verifyRequest）
+                                                        login-shallow 档此步改发 {"code":0,"msg":"ok"}，无 data（假成功档）
   登录链（旧 iOS 流程，YIBAN_LEGACY_LOGIN=1 时启用，多一步跳转）
     GET  /base/c/auth/yiban（不带 verifyRequest）      -> JSON data.Data = OAuth 入口 URL
     POST /code/usersure（scope=1,2,3,4,）             -> JSON {"reUrl": ...}（旧流程的成功标志）
