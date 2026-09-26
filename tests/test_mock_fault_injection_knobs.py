@@ -2,17 +2,19 @@
 """假上游故障注入旋钮 + mock CA 证书扩展（E1）的 RED→GREEN 用例。
 
 标签：J · 运维：部署/备份/发布
-覆盖：mock_yiban 四类注入旋钮（登录失败 / 提交失败 / 风控挑战页 / 非 JSON 响应）的
+覆盖：mock_yiban 四类注入旋钮（登录失败 / 提交失败 / 风控挑战页 / 非 JSON 响应）与
+   假成功档 login-shallow（最终认证 code==0 无签发回执）的
    默认关闭契约、注入形态与真实判据的对照（yiban/fyiban/waf.py 的
    looks_like_challenge 输入、yiban/security.py 的 is_waf_blocked 双判据形状——挑战形态
-   不受长度限制、仅关键词命中按 len>2000 设界）、
-   热读场景声明（--config 运行中切换）、记账对平（total==durable+log_errors、
+   不受长度限制、仅关键词命中按 len>2000 设界；假成功形状对照 protocol 的签发回执判据）、
+   热读场景声明（--config 运行中切换，含 login-shallow）、记账对平（total==durable+log_errors、
    JSONL 行数==__stats.total、injected 计数）；mock_env.ensure_certs 生成的 CA
    带 basicConstraints(critical,CA:TRUE) 与 keyUsage(critical,keyCertSign,cRLSign)
-   的**扩展存在性**断言与 strict TLS 活体握手；四类旋钮 × run.sh 入口全链实跑
+   的**扩展存在性**断言与 strict TLS 活体握手；各旋钮 × run.sh 入口全链实跑
    （桩 signin 走真实客户端链 → 假易班进程按 CLI 旋钮注入 → JSONL 记账断言）
-   与旋钮关闭态回归；引擎档位闭环（YIBAN_E2E_ENGINE_LOOP）：waf/nonjson 旋钮经真实
-   attempt_signin+_retry_budget+清缓存联动决策，JSONL 对"总尝试=1"给出第三方证据。
+   与旋钮关闭态回归；引擎档位闭环（YIBAN_E2E_ENGINE_LOOP）：waf/nonjson/login-shallow
+   经真实 attempt_signin+_retry_budget+清缓存联动决策，JSONL 对"总尝试=1"给出第三方证据，
+   login-shallow 链另取证"登录成功"日志计数（假成功=0、真成功=1）与缓存零写入。
 对应实现：scripts/loadtest/mock_yiban.py（旋钮与注入形态、MockState 记账）、
    scripts/loadtest/mock_env.py（ensure_certs）、run.sh（全链入口）、
    yiban/fyiban/waf.py 与 yiban/security.py（注入形态所对照的真实判据，只读）。
@@ -121,16 +123,25 @@ class KnobContractTest(unittest.TestCase):
         else:
             self.fail("非 JSON 体必须让 .json() 抛 Expecting value:")
 
+    def test_login_shallow_stage_contract(self):
+        """假成功档：code==0 但无签发回执；默认关闭；只打带 verifyRequest 的完成认证步。"""
+        self.assertIn("login-shallow", mock_yiban.FAIL_STAGES)
+        self.assertEqual(mock_yiban.MockConfig().snapshot()["fail_stage"], "none",
+                         "假成功档同样必须默认关闭——不开时对现行为零变化")
+        cfg = mock_yiban.MockConfig(fail_stage="login-shallow", fail_rate=1.0)
+        self.assertEqual(cfg.snapshot()["fail_stage"], "login-shallow")
+
     def test_help_and_readme_document_knobs_and_default_off(self):
         """约束说明义务：旋钮清单 + 默认关闭契约必须进 --help 与 loadtest README。"""
         p = subprocess.run([sys.executable, os.path.join(_LOADTEST, "mock_yiban.py"),
                             "--help"], capture_output=True, text=True, check=False)
         self.assertEqual(p.returncode, 0, p.stderr)
-        for token in ("login", "signIn", "waf", "nonjson", "默认 none=全关", "零变化"):
-            self.assertIn(token, p.stdout, "--help 必须列全四旋钮并写明默认关闭")
+        for token in ("login", "signIn", "waf", "nonjson", "login-shallow",
+                      "默认 none=全关", "零变化"):
+            self.assertIn(token, p.stdout, "--help 必须列全旋钮并写明默认关闭")
         with io.open(os.path.join(_LOADTEST, "README.md"), encoding="utf-8") as f:
             readme = f.read()
-        for token in ("waf", "nonjson", "默认全关", "零变化"):
+        for token in ("waf", "nonjson", "login-shallow", "默认全关", "零变化"):
             self.assertIn(token, readme, "README 必须同口径记录旋钮与默认关闭契约")
 
 
@@ -228,6 +239,36 @@ class _InProcessMock(unittest.TestCase):
         snap = self.state.snapshot({})
         self.assertEqual(snap["injected"], 1)
 
+    def test_login_shallow_knob_injects_receiptless_success(self):
+        """假成功注入：完成认证步回 code==0 **无 data 载荷**；入口步与关闭态不受影响。"""
+        self._serve(fail_stage="login-shallow", fail_rate=1.0)
+        st, _, body = self._get("/base/c/auth/yiban?verifyRequest=x&CSRF=y",
+                                host="api.uyiban.com")
+        self.assertEqual(st, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload.get("code"), 0, "假成功仍须伪装 code==0")
+        self.assertNotIn("data", payload, "回执载荷必须缺失（这正是被拒的形状）")
+        # 旧流程入口步（同路径、不带 verifyRequest）不受该档影响
+        st, _, body = self._get("/base/c/auth/yiban?CSRF=y", host="api.uyiban.com")
+        self.assertEqual(json.loads(body)["data"]["Data"],
+                         "https://oauth.yiban.cn/code/html"
+                         "?client_id=95626fa3080300ea"
+                         "&redirect_uri=https://f.yiban.cn/iapp7463")
+        rows = self._wait_rows(2)
+        snap = self.state.snapshot({})
+        self.assertEqual(snap["injected"], 1, "只注入完成认证那一跳")
+        self.assertEqual([r["injected"] for r in rows], [True, False],
+                         "假成功那一跳带 injected 标记、入口步不带（逐条可对账）")
+        self.assertEqual(snap["total"], len(rows), "记账与 JSONL 对平")
+        self.assertEqual(snap["durable"], snap["total"])
+
+    def test_login_shallow_off_keeps_receipt(self):
+        """关闭态：完成认证仍带回执（data 存在）——不开零变化。"""
+        self._serve()
+        st, _, body = self._get("/base/c/auth/yiban?verifyRequest=x&CSRF=y",
+                                host="api.uyiban.com")
+        self.assertEqual((st, "data" in json.loads(body)), (200, True))
+
     def test_hot_config_scenario_declaration_switches_at_runtime(self):
         tmp = tempfile.mkdtemp(prefix="knob-cfg-")
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -246,6 +287,24 @@ class _InProcessMock(unittest.TestCase):
             f.write('{"fail_stage": "none"}')
         st, _, _ = self._get("/iapp7463")
         self.assertEqual(st, 302, "场景撤回后回到零注入")
+
+    def test_hot_config_can_switch_to_login_shallow(self):
+        """假成功注入优先走 Task 11 的 --config 热读场景声明（无需额外通道）。"""
+        tmp = tempfile.mkdtemp(prefix="knob-cfg-shallow-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        cfg_path = os.path.join(tmp, "mock_config.json")
+        with io.open(cfg_path, "w", encoding="utf-8") as f:
+            f.write('{"fail_stage": "none"}')
+        self._serve(config_path=cfg_path)
+        auth = "/base/c/auth/yiban?verifyRequest=x&CSRF=y"
+        st, _, body = self._get(auth, host="api.uyiban.com")
+        self.assertEqual((st, "data" in json.loads(body)), (200, True), "关闭态带回执")
+        with io.open(cfg_path, "w", encoding="utf-8") as f:
+            f.write('{"fail_stage": "login-shallow", "fail_rate": 1.0}')
+        st, _, body = self._get(auth, host="api.uyiban.com")
+        payload = json.loads(body)
+        self.assertEqual((st, payload.get("code"), "data" in payload), (200, 0, False),
+                         "热读声明切档后必须是无回执的假成功")
 
 
 @unittest.skipUnless(_HAS_OPENSSL, "需要 openssl 可执行文件")
@@ -384,11 +443,24 @@ if os.environ.get("YIBAN_E2E_ENGINE_LOOP", "") == "1":
     # round 的逐账号决策顺序（尝试→档位→清缓存→上限比较）；会话缓存用真实临时库，
     # mock 的 JSONL 即"总尝试数"的第三方证据。RETRY_MIN_INTERVAL 休眠与重试落点采样
     # 与档位判据无关，本桩不复刻。
+    import logging
     signin.db.init_db(db_file=os.path.join(STATE, "e2e.db"), cleanup=False)
     result = {"legacy": os.environ.get("YIBAN_LEGACY_LOGIN", "")}
     if os.environ.get("YIBAN_E2E_SEED_CACHE", "") == "1":
         signin.db.set_session_cache(acc.phone, json.dumps({"seeded": "1"}), "seeded-csrf")
     result["cache_before"] = signin.db.get_session_cache(acc.phone) is not None
+
+    # "登录成功"日志的出现次数直接取证（假成功链上必须为 0、真成功链上恰好 1）：
+    # 挂在协议 logger 上，桩是唯一 handler，不依赖 root 级别。
+    _logged = []
+
+    class _LogCap(logging.Handler):
+        def emit(self, record):
+            _logged.append(record.getMessage())
+
+    _plog = logging.getLogger("yiban.fyiban.protocol")
+    _plog.addHandler(_LogCap())
+    _plog.setLevel(logging.INFO)
 
     _RealClient = signin.YibanClient
 
@@ -415,6 +487,7 @@ if os.environ.get("YIBAN_E2E_ENGINE_LOOP", "") == "1":
     result["attempts"] = attempts_n
     result["signin"] = [bool(success), str(message), bool(skip), str(status)]
     result["cache_after"] = signin.db.get_session_cache(acc.phone) is not None
+    result["login_success_logged"] = sum(1 for m in _logged if "登录成功" in m)
     if not success:
         result["error"] = str(message)
     _out(result, 0 if success else 1)
@@ -632,6 +705,17 @@ class RunShKnobChainTest(unittest.TestCase):
                       "leg② 现网文案是 requests 的 Expecting value: ——注入须引出同一文案")
         self._assert_accounting(port, ["/code/html", "/code/usersure"], 1)
 
+    def test_login_shallow_knob(self):
+        """假成功档全链：客户端必须以"无签发方回执"拒绝，链停在最终认证之后。"""
+        port = self._start_mock(["--fail-stage", "login-shallow", "--fail-rate", "1.0"])
+        r, engine = self._run(port)
+        self.assertIn("无签发方回执", engine.get("error", ""), engine)
+        self.assertNotIn("login", engine, "假成功不得置登录成功（引擎侧无 login=ok）")
+        self.assertEqual(r.returncode, 1, "假成功轮必须以失败 rc 收尾，不得误报 0")
+        self._assert_accounting(port, [
+            "/code/html", "/code/usersure", "/iframe/index", "/base/c/auth/yiban",
+        ], 1)
+
     # ---- 引擎档位闭环：MF-71 的"总尝试=1 + 清会话"在全链上的第三方证据 ----
     def test_waf_knob_engine_loop_single_attempt_clears_cache(self):
         """waf 旋钮 → 真实 attempt_signin 链 → 挑战解析失败 → 显式档：尝试 1 次即止、
@@ -669,11 +753,30 @@ class RunShKnobChainTest(unittest.TestCase):
         self.assertEqual(engine.get("attempts"), 1)
         self.assertEqual(engine.get("cache_after"), True,
                          "登录成功路径应写会话缓存（档位闭环不干扰成功侧）")
+        self.assertEqual(engine.get("login_success_logged"), 1,
+                         '"登录成功"取证通道在场且真成功恰落一次（回执判据不改真成功行为）')
         self._assert_accounting(port, [
             "/code/html", "/code/usersure", "/iframe/index", "/base/c/auth/yiban",
             "/nightAttendance/student/index/signPosition",
             "/nightAttendance/student/index/signIn",
         ], 0)
+
+    def test_login_shallow_knob_engine_loop_single_attempt_no_cache(self):
+        """假成功 × 引擎档位闭环：拒绝（A 段不可重试档 ⇒ 总尝试=1）、联动清种子缓存、
+        "登录成功"日志零出现、mock 记账恰一条假成功注入。"""
+        port = self._start_mock(["--fail-stage", "login-shallow", "--fail-rate", "1.0"])
+        _, engine = self._run(port, engine_loop=True, seed_cache=True)
+        self.assertIn("无签发方回执", engine.get("error", ""), engine)
+        self.assertEqual(engine.get("attempts"), 1,
+                         "假成功落不可重试档：总尝试必须=1（拒绝后重发同一应答必然同果）")
+        self.assertEqual(engine.get("cache_before"), True, "前置：种子会话缓存存在")
+        self.assertEqual(engine.get("cache_after"), False,
+                         "种子缓存被档位联动清除，且假成功零写入——全链后必须无缓存行")
+        self.assertEqual(engine.get("login_success_logged"), 0,
+                         '"登录成功"日志在假成功链上必须零出现（审计不可信是登记的直接后果）')
+        self._assert_accounting(port, [
+            "/code/html", "/code/usersure", "/iframe/index", "/base/c/auth/yiban",
+        ], 1)
 
 
 if __name__ == "__main__":

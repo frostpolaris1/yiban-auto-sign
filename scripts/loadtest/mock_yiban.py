@@ -64,18 +64,23 @@ ZO2F/jOXAwpzw0UKTwIDAQAB
 -----END PUBLIC KEY-----"""
 
 # 失败注入可选点（与 signin 实际调用的接口一一对应）。全部**默认关闭**
-# （none）——不开时对引擎零变化。四类故障注入旋钮 = login / signIn / waf /
-# nonjson（另有历史点 signPosition）：
-#   login      POST /code/usersure 回账密错形态（code != s200）；
-#   signIn     POST 签到提交回业务失败码（非登录阶段的提交失败）；
-#   waf        旧流程真实遇 ydclearance 挑战的落点 GET /iapp7463 回挑战页，
-#              形态对照 `yiban/fyiban/waf.py` 的 looks_like_challenge 真实输入
-#              （window.onload=setTimeout + eval("qo=eval;qo(po);") 双特征 +
-#              Set-Cookie https_ydclearance），保证识别支路按真页走；
-#   nonjson    JSON 期望端点（POST usersure/signIn、GET auth/signPosition）回
-#              200 + >2000 字符拦截 HTML——现网"Expecting value:"腿的形状：
-#              长页过 `security.is_waf_blocked` 的 len 短路后在 .json() 处抛。
-FAIL_STAGES = ("none", "login", "signIn", "signPosition", "waf", "nonjson")
+# （none）——不开时对引擎零变化。故障注入旋钮 = login / signIn / waf /
+# nonjson（另有历史点 signPosition，与"假成功"档 login-shallow）：
+#   login          POST /code/usersure 回账密错形态（code != s200）；
+#   signIn         POST 签到提交回业务失败码（非登录阶段的提交失败）；
+#   waf            旧流程真实遇 ydclearance 挑战的落点 GET /iapp7463 回挑战页，
+#                  形态对照 `yiban/fyiban/waf.py` 的 looks_like_challenge 真实输入
+#                  （window.onload=setTimeout + eval("qo=eval;qo(po);") 双特征 +
+#                  Set-Cookie https_ydclearance），保证识别支路按真页走；
+#   nonjson        JSON 期望端点（POST usersure/signIn、GET auth/signPosition）回
+#                  200 + >2000 字符拦截 HTML——现网"Expecting value:"腿的形状：
+#                  长页过 `security.is_waf_blocked` 的 len 短路后在 .json() 处抛。
+#   login-shallow  最终认证 GET /base/c/auth/yiban（带 verifyRequest）回
+#                  code==0 但**无 data 载荷**的"假成功"——只判 code 的旧登录门会
+#                  把它当真成功写会话缓存；带回执判据的客户端必须拒绝。仅打带
+#                  verifyRequest 的完成认证步，旧流程入口步（不带 verifyRequest）不受影响。
+FAIL_STAGES = ("none", "login", "signIn", "signPosition", "waf", "nonjson",
+               "login-shallow")
 # 大小写不敏感归一：signIn 这类驼峰名不能被 lower() 直接比较
 _STAGE_CANON = {s.lower(): s for s in FAIL_STAGES}
 
@@ -416,7 +421,14 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                     injected = self._maybe_inject(cfg, "nonjson")
                     if not injected:
                         if "verifyRequest" in self.path:
-                            self._send_json({"code": 0, "data": {}, "msg": ""})
+                            if self._should_fail(cfg, "login-shallow"):
+                                # 假成功（shallow success）：code==0 但签发回执 data
+                                # 载荷缺失——只判 code 的旧登录门会误认成功
+                                injected = True
+                                self._send_json({"code": 0,
+                                                 "msg": "mock shallow success (no receipt)"})
+                            else:
+                                self._send_json({"code": 0, "data": {}, "msg": ""})
                         else:
                             self._send_json({"code": 0, "data": {
                                 "Data": "https://oauth.yiban.cn/code/html"
@@ -589,7 +601,9 @@ def main(argv=None):
                          "账密错形态；signIn=签到提交回业务失败；signPosition=拉任务失败；"
                          "waf=旧流程挑战落点 GET /iapp7463 回 ydclearance 挑战页"
                          "（形态对照 yiban/fyiban/waf.py 识别输入）；nonjson=JSON 期望"
-                         "端点回 200+超长拦截 HTML（现网 Expecting value: 形状）。"
+                         "端点回 200+超长拦截 HTML（现网 Expecting value: 形状）；"
+                         "login-shallow=最终认证回 code==0 但无 data 载荷的假成功"
+                         "（只判 code 的旧登录门会误写会话缓存，带回执判据必须拒绝）。"
                          "作用域为全局按端点路由；亦可经 --config 热读场景声明运行中切换")
     ap.add_argument("--config", default="",
                     help="热读配置 JSON 路径（字段同上方参数，可运行中切换档位）")
