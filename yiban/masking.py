@@ -55,7 +55,18 @@ _PHONE_IN_TEXT_RE = re.compile(r"(?<!\d)" + _PHONE_VALUE_RE.pattern.strip("^$") 
 _CRED_KEY = r"(?:token|secret|passwd|password|pwd|cookie|session|csrf|authorization|api[-_]?key)"
 # 值按"配对的同种引号串（含反斜杠转义）或裸值"取：`[^'"]*` 会在口令内含
 # 另一种引号时截断，残留首引号之后的明文（repr 对含单引号的口令正好用双引号包裹）。
-_QUOTED_OR_BARE = r"(?:\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|[^\s,;]+)"
+# 裸值取整段：空格/逗号/分号**不单独终止**——值截半是最典型的"截断残留"失效，
+# 尾巴会作为正文继续外泄。终止判据是"下一段看起来是新的 `key=value` 对"
+# （下一段在下个分隔符前含 `=`）：
+# - 保住 cookie 形态 `k=v; k2=v2` 的逐对遮罩——`;` 后带 `=` 的段视为新对，
+#   各自按键名判定，`path=/` 这类非凭据属性留在原地（放宽成"吃到行尾"会连它一起吞）；
+# - 兜底层的取舍是宁过遮不漏：值后面的普通散文若不含 `=` 会被一并遮掉，
+#   这是刻意的代价，日志可读性让位于泄漏面。
+# 如实记录残余绕过面：值本身以"空格+含等号段"续接时（如 `token=a b==`）被判成
+# 值结束，尾段 ` b==` 原样留存——它与"后文另一个 key= 对"在文本上不可区分，
+# 按 cookie 逐对口径让位给后者。
+_BARE_VALUE = r"[^\s,;]+(?:[ ,;]+(?![^\s,;]*=)[^\s,;]+)*"
+_QUOTED_OR_BARE = r"(?:\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|" + _BARE_VALUE + r")"
 
 
 def sanitize_text(text):
@@ -65,9 +76,10 @@ def sanitize_text(text):
     # 整体替换 Account(...) 对象（正则配对单引号串，跨过值内的 `)` 与 `(` 不截断），
     # 并兜底替换命名字段。
     s = re.sub(r"Account\((?:[^()']|'[^']*')*\)", "Account(***)", s)
-    # authorization 专项必须**先于**下面的通用键规则：值是 "Bearer xxx" 含空格，
-    # 通用规则的 `[^\s,;]+` 只吞得掉 "Bearer"，会把 token 留在原地。
-    s = re.sub(r"(?i)\bauthorization\b\s*:?\s*(?:bearer\s+)?[^\s,;]+",
+    # authorization 专项必须**先于**下面的通用键规则：它把方案名 "Bearer" 一起
+    # 吃掉并归一为 `authorization=***`；值按通用取值（配对引号或整段裸值），
+    # 截断留尾与凭据键规则同罪。
+    s = re.sub(r"(?i)\bauthorization\b\s*:?\s*(?:bearer\s+)?" + _QUOTED_OR_BARE,
                r"authorization=***", s)
     s = re.sub(rf"(?i)\b(password|phone_code)\s*[:=]\s*{_QUOTED_OR_BARE}", r"\1=***", s)
     # dict/repr 形态（vars()/json.dumps 调试输出）：键自身带引号，故以引号为界
@@ -76,8 +88,11 @@ def sanitize_text(text):
                r"\1***", s)
     # 凭据字面量：意外落入文本的 token/cookie/session 等直接抹值，
     # 键名允许带前后缀（refresh_token / session_id / JSESSIONID / x-csrf / api_key）。
+    # 值与 password 同用 `_QUOTED_OR_BARE`：`[^\s,;]+` 在引号/空格/逗号处截半，
+    # `refresh_token="abc def"` 会留下 ` def"` 这种明文尾巴——本层是最后兜底，
+    # 截半等于没遮。
     s = re.sub(
-        rf"(?i)(?<![\w-])([a-z0-9_\-]*{_CRED_KEY}[a-z0-9_\-]*)\s*[:=]\s*[^\s,;]+",
+        rf"(?i)(?<![\w-])([a-z0-9_\-]*{_CRED_KEY}[a-z0-9_\-]*)\s*[:=]\s*{_QUOTED_OR_BARE}",
         r"\1=***",
         s,
     )
