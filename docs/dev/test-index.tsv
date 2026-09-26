@@ -1190,6 +1190,10 @@ tests/test_fyiban_isolation.py	WafBehaviorTest.test_whitelist_policy_is_injected
 tests/test_global_pause.py	TestGlobalPause.test_auto_signin_paused_exits_2	D	-	自动签到 + 全局暂停 → exit 2（SKIPPED 语义，在周日检查之后、执行签到之前）。
 tests/test_global_pause.py	TestGlobalPause.test_manual_signin_not_blocked	D	-	--only 手动签到不受全局暂停影响（不应 exit 2）。
 tests/test_global_pause.py	TestGlobalPause.test_status_constant_and_symbol_mapping	D	-	全局暂停的状态码取值与符号映射（前端按符号渲染，改动需同步前端映射）。
+tests/test_global_pause_chain_e2e.py	GlobalPauseChainTest.test_pause_full_chain_rc2_and_display_same_source	D	bash	??
+tests/test_global_pause_chain_e2e.py	GlobalPauseChainTest.test_release_flips_status_and_display_on_the_same_chain	D	bash	只翻暂停键 ⇒ 同一链路上 GLOBAL_PAUSED 判码与页面急停显示一起消失。
+tests/test_global_pause_chain_e2e.py	GlobalPauseChainTest.test_same_source_equality_bites_on_forged_display_side	D	bash	活体反例：把 web 读源伪造掉（旧病灶 `env=None` 落回 os.environ 的形状），
+tests/test_global_pause_chain_e2e.py	GlobalPauseChainTest.test_single_source_file_flip_moves_engine_and_page_together	D	bash	活体反例（事实侧）：引擎事实与显示各自独立地现读**同一份文件**；
 tests/test_host_exit_semantics.py	AlertSuppressionFactsTest.test_alerts_when_no_later_round_and_window_closed	B	-	补签点已过、没有兜底、窗口也关了 → 必须告警（当天不再有触发）。
 tests/test_host_exit_semantics.py	AlertSuppressionFactsTest.test_alerts_when_window_closed_even_with_fallback	B	-	窗口已关：兜底也做不了什么了 → 告警（让管理员当天知情）。
 tests/test_host_exit_semantics.py	AlertSuppressionFactsTest.test_fallback_alive_suppresses_even_after_retry_point	B	-	兜底执行体还在跑 → 即便补签点已过也不告警（它还在重试，会自己收敛）。
