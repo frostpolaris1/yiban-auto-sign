@@ -136,20 +136,15 @@ def api_users_deleted_purge():
     gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)  # irreversible：非 full 档还要倒计时确认
     if gate:
         return gate
+    admin = session.get("username") or "admin"
     with m._file_lock:
-        purged = m.db.purge_deleted_users_hard(emails)
-        if purged:
-            admin = session.get("username") or "admin"
-            # 有意留在提交后的审计：清除清单要跑完才知道（非已注销行被跳过），
-            # 而提交前能备好的 target/detail 只能按"请求清单"写，会把没清除的
-            # 项也写成清除过；此处只物理清除**已软删**用户（非活跃凭据），
-            # 且 master-only + 限速门禁。
-            m.db.audit(
-                admin,
-                "user_deleted_purge",
-                ",".join(purged),
-                f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
-            )
+        # 审计与清除同事务：清单与计数由 store 在事务内按**实际清除**结果产出
+        # （非已注销行被跳过，按请求清单留痕会把没删的写成删过）——commit 之后
+        # 再补审计的窗口（进程被杀⇒删了无痕、欠账仍为 0）在此不存在。
+        purged = m.db.purge_deleted_users_hard(
+            emails,
+            audit_spec={"username": admin, "action": "user_deleted_purge"},
+        )
     skipped = [e for e in emails if e not in purged]
     m.logger.info("主管理员手动清除已注销用户: 成功 %d 个", len(purged))
     # 物理清除不再外发即时告警：留痕由上面的审计行承担（谁、清了哪些、数量），
