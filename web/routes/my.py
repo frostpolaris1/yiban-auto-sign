@@ -17,7 +17,8 @@
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配；`verify_fails()` / `verify_limits()`
-取回账号验证冷却与配额（与管理员添加路径共用同一份账）。
+取回账号验证冷却与配额（与管理员添加路径共用同一份账）；`dupcheck_limits()` 取回
+个人提交判重预检的命中限速表，`read_audit_denied_trace()` 是超限拒绝的聚合留痕口。
 
 **通信**
 视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
@@ -36,7 +37,7 @@ from datetime import datetime, timedelta
 from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
-from web.routes import verify_fails, verify_limits
+from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
 
 
 def _my_account_indices_of(accounts):
@@ -454,6 +455,25 @@ def api_my_account_add():
         if holds_live:
             return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
         if m.find_account_index(accounts_pre, clean["phone"]) is not None:
+            # 预检命中即向调用方确认"该号码在册"——这是个可定向确认的出口，按详情/
+            # 导出等同档面收口：命中才计会话额度（未重号的正常提交不占额、不留这行
+            # 审计），每次命中落一条审计（目标为遮罩号，不泄露归属口径不变），超限
+            # 改答 429 不再继续确认；被拒留痕每窗口至多一行，防拒绝面刷审计表。
+            m._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + m._IP_STORE_MAX_AGE)
+            _dup_cnt, _dup_start, dup_allowed = m._bump_window_count(
+                dupcheck_limits(), email_pre[:64], time.time(),
+                m.DUPCHECK_WINDOW, limit=m.DUPCHECK_MAX,
+            )
+            if not dup_allowed:
+                read_audit_denied_trace()("my_account_add_dup_denied")
+                # 文案不带阈值数字（信息分层，与其余 429 一致）
+                return jsonify({"error": "账号提交过于频繁，请稍后再试"}), 429
+            m.db.audit(
+                email_pre,
+                "my_account_add_dup_hit",
+                m._mask_phone(clean["phone"]),
+                f"窗口内第 {_dup_cnt} 次在册确认命中",
+            )
             err = m._duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
             if err:
                 return jsonify({"error": err}), 400
