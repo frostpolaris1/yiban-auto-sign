@@ -2374,6 +2374,16 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   line-height: 1;
   color: var(--cal-off-fg);
 }
+/* 状态符号角标（时段外/无点位/账密暂停等非成功失败态）：与 .sc-off 同一个位置约定，
+   两者互斥渲染（周末停签格不叠状态符号）。符号本身即冗余编码，不依赖颜色。 */
+.sc-sym {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1;
+}
 /* 错误态（P61-B5）：文案 + 重试按钮纵向居中排布；grid-column 让它占满 42 格区 */
 .sc-error {
   grid-column: 1 / -1;
@@ -2414,19 +2424,9 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   font-style: normal;
   line-height: 1;
 }
-.sc-swatch--ok { position: relative; background: var(--cal-ok-bg); color: var(--cal-ok-fg); }
-.sc-swatch--bad { position: relative; background: var(--cal-bad-bg); color: var(--cal-bad-fg); }
-.sc-swatch--ok::after, .sc-swatch--bad::after {
-  content: "";
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-}
-.sc-swatch--ok::after { background: var(--success); }
-.sc-swatch--bad::after { background: var(--danger); }
+/* 图例色块：状态项由状态表渲染（符号 + 名称），成功/失败不再是两个写死的色块——
+   同源后图例覆盖全部 12 个状态码，颜色只作辅助编码。下面两个非状态通道（周末停签/
+   今天）保留原有色块：它们不是状态码，符号走「休」角标与 today ring。 */
 .sc-swatch--off { background: var(--cal-off-bg); color: var(--cal-off-fg); }
 .sc-swatch--today { background: transparent; box-shadow: inset 0 0 0 2px var(--primary); }
 
