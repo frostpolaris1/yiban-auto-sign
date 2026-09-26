@@ -2237,6 +2237,7 @@ tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_two_operational_disciplin
 tests/test_second_round_rc_contract.py	RunShFallbackBootTest.test_disabled_boots_nothing	B	bash	??
 tests/test_second_round_rc_contract.py	RunShFallbackBootTest.test_enabled_with_process_stays_quiet	B	bash	??
 tests/test_second_round_rc_contract.py	RunShFallbackBootTest.test_enabled_without_process_alerts_and_boots	B	bash	??
+tests/test_second_round_rc_contract.py	RunShRealSigkillDrillTest.test_real_sigkill_no_success_no_seal_judgment_open	B	bash	??
 tests/test_second_round_rc_contract.py	RunShSealGateTest.test_facts_clean_seals_marker	B	bash	判定=0（库内确实无未了结）⇒ 封存收尾标记，状态写 SUCCESS（轮 rc 0）。
 tests/test_second_round_rc_contract.py	RunShSealGateTest.test_open_facts_block_seal_for_recovery_round	B	bash	判定=10（仍有未了结）⇒ 不得封存——07:12 的恢复腿必须还能被放行。
 tests/test_second_round_rc_contract.py	RunShSealGateTest.test_second_round_then_seals_when_facts_clear	B	bash	补签轮跑完后复查库内事实：桩在补签轮把判定翻 0 ⇒ 允许封存。
