@@ -139,16 +139,26 @@ class OwnerIdentityTest(_Base):
 
         只断言 store 构造器不够：真正写库的是消费侧拼出来的 executor_id，它若仍用
         `single@{主机名}`，同机 cron 与网页手动就还是同一个身份串、零互斥。
+
+        **时刻锚定业务钟**：领取发生在窗口闸门之后（`_window_closed` 只看"现在是
+        几点"），把当前时刻钉在窗口正中、并把窗口键显式写成缺省值，本用例便与宿主
+        墙钟和 TZ 无关。窗口判定读的是 `yiban.clock`（北京时间），与全系统同源，
+        所以钉它就等于钉住"这一轮落在窗口内"——不钉则窗口外的时刻一个账号都不领，
+        用例查不到行，只在 06:30~07:50 之间"碰巧"能跑。
         """
         import signin  # 兼容壳（转发到 yiban.engine.round）
         phone = "13800138888"
         acc = type("A", (), {"phone": phone, "user_paused": False, "owner": "",
                              "account_id": 0, "password": "p"})()
-        with mock.patch.dict(os.environ, {"YIBAN_EXECUTOR_ID": ""}, clear=False), \
+        in_window = clock.now().replace(hour=7, minute=0, second=0, microsecond=0)
+        with mock.patch.dict(os.environ, {"YIBAN_EXECUTOR_ID": "",
+                                          "YIBAN_SIGN_START": "06:30",
+                                          "YIBAN_SIGN_END": "07:50"}, clear=False), \
+                mock.patch.object(clock, "now", return_value=in_window), \
                 mock.patch.object(signin, "attempt_signin",
                                   return_value=(True, "签到成功", False, "success")):
             signin.run_queue_retry([acc], None, 0, 0,
-                                   schedule={phone: clock.now() - datetime.timedelta(seconds=5)},
+                                   schedule={phone: in_window - datetime.timedelta(seconds=5)},
                                    cred_state={})
         owner = db.get_conn().execute(
             "SELECT owner FROM sign_claims WHERE phone=?", (phone,)).fetchone()["owner"]
