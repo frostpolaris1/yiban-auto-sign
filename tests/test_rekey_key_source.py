@@ -1138,12 +1138,14 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertIn("（记录数 ", content)
 
     def test_health_report_omits_anchor_line_when_db_unavailable(self):
-        """db 读失败（db 不可用/查询抛错）→ 锚点行省略，日报本体照发。"""
+        """链头三态读成 error（读失败 ≠ 空链）→ 锚点行省略，日报本体照发。
+
+        channel_health 走 `audit_head_hash_ex` 的三态读取；打桩必须落在这一支上
+        （旧桩打的是已不再被它调用的 `audit_head_hash`，分支从未真被执行）。
+        """
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp.db, "audit_head_hash",
-                               side_effect=OSError("db locked")), \
-             mock.patch.object(self.webapp.db, "audit_row_count",
-                               side_effect=OSError("db locked")):
+             mock.patch.object(self.webapp.db, "audit_head_hash_ex",
+                               return_value=("error", None)):
             self.assertTrue(self.webapp._send_channel_health_report())
         _title, content, _urgent = self.alerts[-1]
         self.assertIn("邮件通道：", content, "日报本体不受锚点读取失败影响")
