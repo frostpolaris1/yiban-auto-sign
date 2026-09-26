@@ -37,6 +37,14 @@ from flask import (
 )
 
 from web.routes import appmod as _appmod
+from yiban.infra import env_io as _env_io
+
+
+# `.env` 行分隔符码点：前端"提交前拒含换行族的输入"必须与后端**同一份清单**
+# （`yiban.infra.env_io.ENV_LINE_BREAK_CHARS`），故由后端渲染进页面而不是前端另抄一份。
+# 只渲染页面（不引入构建步骤）；核心符号换取时值仍与写入口字符集同源。
+def _env_line_break_codes():
+    return sorted(ord(ch) for ch in _env_io.ENV_LINE_BREAK_CHARS)
 
 
 def _render_admin_page(template, nav_key, crumbs):
@@ -57,6 +65,7 @@ def _render_admin_page(template, nav_key, crumbs):
         crumbs=crumbs,
         current_username=session.get("username", ""),
         current_role=m._current_role() or "",
+        env_line_break_codes=_env_line_break_codes(),
     )
 
 
