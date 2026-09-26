@@ -749,6 +749,11 @@ tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_real_back
 tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_refuses_group_readable_passphrase_file	J	bash	??
 tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_strips_legacy_env_injection	J	bash	现网 crontab 若还残留 BACKUP_GPG_PASSPHRASE=... 前缀，wrapper 必须先 unset。
 tests/test_docker_image_contents.py	DockerImageContentsTest.test_imported_local_packages_are_copied	J	-	被导入的本地顶级包必须在 Dockerfile 里 COPY（漏了容器起不来）。
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_consecutive_hits_quota_then_429_single_denied_row	E	-	??
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_dup_hit_keeps_400_wording_and_audits_masked	E	-	??
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_own_deleted_guidance_unchanged_and_counted	E	-	"你刚删除的账号"差异化 400 也走命中记账——确认面不因文案分叉而免检。
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_unique_submission_unbilled_and_actor_isolated	E	-	??
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_window_rollover_restores_quota	E	-	??
 tests/test_effective_window.py	ClockTest.test_now_is_beijing_plus_eight	A	-	now() 恒为 UTC+8，与宿主 TZ 无关（本用例在任何时区的主机上都应通过）。
 tests/test_effective_window.py	ClockTest.test_now_is_naive	A	-	naive：既有全部 datetime 运算都与 naive 混用，带 tzinfo 会直接 TypeError。
 tests/test_effective_window.py	ClockTest.test_session_cache_clock_delegates_to_single_source	A	-	db 的会话缓存时钟（原为独立实现的固定 +8）已收口到唯一时钟。
