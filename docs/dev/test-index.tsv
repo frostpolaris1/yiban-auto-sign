@@ -1604,6 +1604,23 @@ tests/test_migrations_v20.py	MigrateV20Test.test_run_at_falls_back_to_midnight_w
 tests/test_migrations_v20.py	MigrateV20Test.test_sign_daily_symbol_table_is_not_an_input	C	-	??
 tests/test_migrations_v20.py	MigrateV20Test.test_unreadable_state_file_logs_a_sanitized_exception	C	-	异常文本入日志前走 `sanitize_text`（与 `state_io` 同口径）。
 tests/test_migrations_v20.py	TerminalMapGuardTest.test_map_keys_are_all_statuses_minus_in_flight	C	-	表键 == `ALL_STATUSES` − {`retrying`, `pending`}。
+tests/test_mock_fault_injection_knobs.py	CertExtensionTest.test_ca_carries_critical_basic_constraints_and_key_usage	J	bash	??
+tests/test_mock_fault_injection_knobs.py	CertExtensionTest.test_server_cert_still_ca_false_with_san	J	bash	??
+tests/test_mock_fault_injection_knobs.py	CertExtensionTest.test_stale_ca_without_keyusage_is_upgraded_in_place	J	bash	存量幂等分支不得把"握手全灭"的坏 CA 永远留在盘上。
+tests/test_mock_fault_injection_knobs.py	CertExtensionTest.test_strict_tls_handshake_against_mock	J	bash	活体反证 E1：strict 校验（≥3.14 默认开启）下对 mock 完成 TLS 握手。
+tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_challenge_body_matches_real_recognition_input	J	bash	??
+tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_fail_stages_list_four_knobs	J	bash	??
+tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_help_and_readme_document_knobs_and_default_off	J	bash	约束说明义务：旋钮清单 + 默认关闭契约必须进 --help 与 loadtest README。
+tests/test_mock_fault_injection_knobs.py	KnobContractTest.test_nonjson_body_reproduces_leg2_shape	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_login_fail_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_nonjson_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_off_regression_full_chain_success	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_submit_fail_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	RunShKnobChainTest.test_waf_challenge_knob	J	bash	??
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_hot_config_scenario_declaration_switches_at_runtime	J	bash	??
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_knobs_off_baseline_transparent	J	bash	??
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_nonjson_knob_injects_long_block_on_json_endpoints	J	bash	??
+tests/test_mock_fault_injection_knobs.py	_InProcessMock.test_waf_knob_injects_challenge_at_real_landing	J	bash	??
 tests/test_module_size_gate.py	ModuleSizeGateTest.test_entries_exist	J	-	登记表不得指向已不存在的文件（拆走后请删除条目）。
 tests/test_module_size_gate.py	ModuleSizeGateTest.test_gate_rejects_unregistered_oversized	J	-	自检：未登记的超限文件必须被拦下，已登记者放行（临时文件即用即删）。
 tests/test_module_size_gate.py	ModuleSizeGateTest.test_no_file_runs_away	J	-	绝对上限：拦"失控式堆砌"，与逐行红线无关。
