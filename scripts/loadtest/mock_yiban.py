@@ -210,14 +210,6 @@ class MockState:
             return self.req_seq
 
     def record(self, host, path, status, delay_s, inflight, injected, outcome):
-        with self._lock:
-            self.total += 1
-            self.by_path[path] = self.by_path.get(path, 0) + 1
-            self.by_host[host] = self.by_host.get(host, 0) + 1
-            if injected:
-                self.injected += 1
-        if not self.log_path:
-            return
         now_ms = _now_epoch_ms()
         row = {
             "ts": _iso_ms(now_ms / 1000.0),
@@ -230,14 +222,23 @@ class MockState:
             "injected": bool(injected),
             "outcome": outcome,
         }
-        try:
-            with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            with self._lock:
+        # 写行与 durable 计数必须对读者原子：分两段拿锁时，snapshot 会在"行已写、
+        # 计数未加"的瞬态看到 total > durable，让对平断言概率性红。文件 I/O 留在
+        # 锁内——mock 工具吞吐无碍，对平语义（durable = 确认落盘的行数）不变。
+        with self._lock:
+            self.total += 1
+            self.by_path[path] = self.by_path.get(path, 0) + 1
+            self.by_host[host] = self.by_host.get(host, 0) + 1
+            if injected:
+                self.injected += 1
+            if not self.log_path:
+                return
+            try:
+                with open(self.log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 self.durable += 1
-        except OSError:
-            # 不再静默吞：计入 log_errors，使 total≠durable 可被驱动侧记账对平检出（MF-68）
-            with self._lock:
+            except OSError:
+                # 不再静默吞：计入 log_errors，使 total≠durable 可被驱动侧记账对平检出（MF-68）
                 self.log_errors += 1
 
     def snapshot(self, cfg):
