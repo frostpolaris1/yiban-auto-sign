@@ -31,6 +31,20 @@
   生产生效需下一次部署；若要求更快，属单独 hotfix 决策。
 - **红线关联**：脱敏属 PROMPT.md §6.10 门禁口径（安全测试第一条），修复后需补/改对应测试。
 
+**处置（2026-09-27 批2 Task2-1，repair/m3-batch2）**：四步按序闭合——
+①兜底：`masking.MaskingFormatter`（M2 期 `2437bfb` 落 CLI/Web 两入口；本任务 `97fa697` 补
+**容器调度器入口**——此前完全缺席：无 logging 初始化、8 处裸 print）；②点修：
+`session_cache` 作废/清理分支（`2437bfb`）+ 解密失败分支（`92a5d67`，与 MF-7 并闭）；
+③展示/导出同一实现（`2437bfb` 委托 `mask_phones_in_text`）；④不变量测试：formatter 级
+（`2437bfb`）+ **入口级挂载钉 5 例**（`d0ca45c`，三入口各钉，含 RED 实证）。
+**口径订正（重要）**：本条原文"没有兜底脱敏机制"系**生产取证快照**（v0.4.7@6d4eafa，
+09-23）表述，对 HEAD 已失真；"全仓 addFilter/logging.Filter 零命中"字面至 HEAD 仍真
+（修法走 Formatter 而非 Filter 路线）。登记表文首入库（`8a78ee6`）晚于 M2 修复提交
+（`2437bfb`）约 14h——"修在登记之后"只对生产取证事件时点成立。
+生效待下次部署；联动批 3 MF-100：部署验收前置项="三入口挂载已被测试钉住"+ sched.log
+抽查遮罩行。运维知会：容器 sched.log 留痕行形态变为 `[时间] [级别] scheduler: …`
+（原裸 `[scheduler]` 前缀），runbook 人肉 grep 习惯需一句提示。
+
 ## MF-2 vshard 集中错配
 
 - **现象**：虚分片（vshard）分工可能出现「集中错配」——账号/任务堆到少数分片或执行体，具体表现面待 M2 定位。
@@ -113,6 +127,14 @@
 不经该 formatter 的 sink（裸 StreamHandler、`caplog`、测试自建 handler）就是裸号。
 〔A1 提出，A1-r2 / A3-r2 复核仍在并补覆盖面〕属 MF-1 点修清单的一部分，M3。
 
+**处置（2026-09-27 批2 Task2-1，repair/m3-batch2）**：✅ 销项——解密失败分支调用点
+遮号 `92a5d67`（`session_cache.py:181-183`），作废/清理分支 `2437bfb`；调用点传参
+钉测试 `test_decrypt_failure_log_masks_phone_at_call_site`。覆盖面订正：装配点由原文
+"两处"更新为**三处**——CLI `cli_support.py:242`、Web `web/app.py:1682`、容器
+`docker/scheduler.py:115`（后者 97fa697 新增）；全仓生产代码仅此三处装配（grep 亲核），
+不经 formatter 的 sink（裸 StreamHandler/caplog/测试自建）仍是残余面——常驻入口已由
+挂载钉全覆，残余仅测试/临时脚本自建 handler 通道（见 MF-8 订正）。
+
 ## MF-8 手机号兜底脱敏覆盖面比宣称窄 ✅
 `masking.mask_phones_in_text` 只认**连续 11 位数字**：`+8613800138000`、`138-0013-8000`、
 `138 0013 8000` 实测原样穿过；且保护与否取决于"该 handler 有没有挂 formatter"。
@@ -120,6 +142,13 @@
 注释面已由 A3-r2/B2 改成如实表述，**代码面未动**。复跑：
 `python -c "import sys;sys.path.insert(0,'.');from yiban import masking as m;
 print(m.mask_phones_in_text('+8613800138000'), m.mask_phones_in_text('138-0013-8000'))"`。M3，与 MF-1/MF-4 同族。
+
+**处置（2026-09-27 批2 Task2-1，repair/m3-batch2）**：**保持开放**（设计取舍，非缺陷
+回归）——连续 11 位以外的分段/编码形态（`+86…`/`138-0013-8000`/`138 0013 8000`）实测
+仍原样穿过，扩大口径与"不误伤坐标/时间戳类数字串"判据相抵（`116.397428,39.90923`
+需原样）。覆盖面表述按现状收窄：常驻三入口（CLI/Web/容器）已由入口级挂载钉全覆
+（`d0ca45c`，含 RED 实证）；残余面=绕开 formatter 自建 handler 的测试/临时脚本通道。
+若将来要求覆盖分段形态，需另立裁决并给出不误伤判据。
 
 ## MF-9 `sanitize_url` 完全不解析 fragment ✅
 只取 `parts.query`，故 `https://x/cb#access_token=ABCDEF` 原样返回。OAuth 隐式流把令牌放 fragment；
