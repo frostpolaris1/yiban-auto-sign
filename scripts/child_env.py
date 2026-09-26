@@ -26,6 +26,9 @@ def parse_env_file(path):
 
     与 run.sh 同口径：忽略空行/# 注释行，按首个 = 切分并 strip；
     非 YIBAN_ 前缀与非法键名一律丢弃（不向子进程注入无关变量）。
+    `export KEY=v` 行同被丢弃（键以 "export" 起头，不是 YIBAN_ 前缀）——与
+    `yiban.infra.env_io` / shell 入口的收敛口径一致："export 行不生效"
+    （差异钉死见 env_io.parse_env_file 注释）。
     """
     pattern = _key_pattern()
     out = {}
