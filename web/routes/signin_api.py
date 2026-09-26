@@ -202,6 +202,11 @@ def _spawn_signin(m, state, phone, accounts=None):
     acc = accounts[idx]
     if acc.get("deleted") or acc.get("status") != m.ACCOUNT_STATUS_ACTIVE:
         return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
+    if acc.get("user_paused"):
+        # 用户自暂停：派发前就剔除。不剔除的话请求返回"已触发"、子进程起来后才被引擎侧
+        # 拦下并写"用户已取消签到"——用户侧得到的是一次假成功（引擎侧拦截保持不动，
+        # 这里是第二道保险之前的"不派发"）。
+        return False, f"账号 {phone} 已自暂停签到，跳过（可在「我的账号」恢复）"
     if _signin_run_lock_busy(m):
         return False, "签到队列忙（定时签到进行中），请稍后再试"
     with state["batch_lock"]:
@@ -254,6 +259,8 @@ def api_signin():
             return jsonify({"error": msg}), 404
         if "不可手动签到" in msg:
             return jsonify({"error": msg}), 400
+        if "已自暂停" in msg:  # 用户自暂停：派发前剔除，据实告知而不是"已触发"
+            return jsonify({"error": msg}), 400
         if "冷却中" in msg:  # 单条与批量共用的全局签到冷却
             return jsonify({"error": msg}), 429
         if "过于频繁" in msg:  # 全局次数上限（与冷却区分：文案与判定都是另一道闸）
@@ -289,6 +296,7 @@ def api_signin_batch():
             i: str(phones_in[k]).strip() for k, i in enumerate(ids) if type(i) is int
         }
     phones = []
+    paused_skipped = 0
     for i in ids:
         if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(accounts):
             continue
@@ -298,10 +306,21 @@ def api_signin_batch():
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if acc.get("deleted") or acc.get("status") != m.ACCOUNT_STATUS_ACTIVE:
             continue
+        if acc.get("user_paused"):
+            # 用户自暂停：派发前剔除并计数。不剔除的话"N 个账号"与批量审计计数都是虚的，
+            # 子进程起来后由引擎侧拦下（`round.py` 的第二道拦截保持不动）——用户看到
+            # "已触发 N 个"而实际一个都没签。
+            paused_skipped += 1
+            continue
         phone = str(acc.get("phone", "")).strip()
         if phone:
             phones.append(phone)
     if not phones:
+        if paused_skipped:
+            return jsonify({
+                "error": f"选中的账号均已自暂停签到，跳过（{paused_skipped} 个），"
+                         "可在「我的账号」恢复"
+            }), 400
         return jsonify({"error": "选中的账号均不可手动签到（未生效或已删除）"}), 400
     # 单次批量签到账号数与 /api/accounts/batch 同口径（BATCH_OP_LIMIT）。
     # 队列子进程的等待超时按账号数缩放，无上限的"全选"会把后台队列线程长时间占死；
@@ -351,9 +370,15 @@ def api_signin_batch():
         ",".join(m._mask_phone(p) for p in phones),
         f"批量签到 {len(phones)} 个",
     )
+    skip_note = f"{paused_skipped} 个已自暂停，跳过；" if paused_skipped else ""
     return jsonify({
         "ok": True,
-        "msg": f"已加入批量签到队列（{len(phones)} 个账号，合并为一个队列执行、只发一封汇总邮件，日志约几分钟内刷新）",
+        # 计数口径：`count` 是**实际派发**的账号数（被自暂停剔掉的只计入 skipped_paused），
+        # 与 `--only` 的账号串、审计明细、后台日志逐字一致。
+        "count": len(phones),
+        "skipped_paused": paused_skipped,
+        "msg": skip_note + f"已加入批量签到队列（{len(phones)} 个账号，合并为一个队列执行、"
+                           "只发一封汇总邮件，日志约几分钟内刷新）",
     })
 
 
