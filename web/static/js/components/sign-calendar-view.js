@@ -27,21 +27,34 @@
     return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
   }
 
-  /* 当前签到状态（含排队位次）：签到状态属于"结果"信息，从账号页迁到此处 */
-  function statusLine(a) {
+  /* 当前签到状态（含排队位次）：签到状态属于"结果"信息，从账号页迁到此处。
+
+     文案与语气档一律取自**服务端下发的状态表**（`window.YB_CALENDAR_STATE.by_code`，
+     唯一事实源是 `yiban.status.DISPLAY`）。为什么不再逐码手写：手写清单会漏码——
+     `global_paused`（急停）与 `no_position`（无点位）原先都落进默认分支，被渲染成
+     "待签到 · 前方排队 N 人"，于是引擎真的暂停了、面板却报"在排队"。
+
+     没有当日记录的账号（pending）先看今天是否被急停/周末门挡下（`ctx.day_off`，
+     由服务端读 `.env` 真值后下发），否则才按排队口径。 */
+  function statusLine(a, ctx) {
+    ctx = ctx || {};
     var s = a.state_status || "pending";
-    if (s === "success" || s === "already") return { cls: "state-line--ok", text: "今日已完成签到" };
-    if (s === "no_task") return { cls: "state-line--muted", text: "今日无需签到" };
-    if (s === "skipped_window" || s === "skipped_norange") return { cls: "state-line--warn", text: "未在签到时段" };
-    if (s === "failed") {
-      return { cls: "state-line--bad", text: "今日签到失败" + (a.state_message ? "：" + a.state_message : "") };
+    if (s === "pending") {
+      if (ctx.day_off) {
+        return { cls: "state-line--" + (ctx.day_off.tone || "muted"), text: ctx.day_off.text };
+      }
+      // 待签：state_message 形如"计划 HH:MM"（自动错峰），其余情况不展示
+      var plan = a.state_message && a.state_message.indexOf("计划") === 0 ? " · 今日" + a.state_message : "";
+      return { cls: "state-line--muted", text: "待签到" + plan + " · 前方排队 " + a.queue_ahead + " 人" };
     }
-    if (s === "paused") return { cls: "state-line--bad", text: "账号密码异常，签到已暂停，请到「我的账号」修改密码" };
-    if (s === "user_cancelled") return { cls: "state-line--bad", text: "已取消签到（可在「我的账号」恢复）" };
-    if (s === "retrying") return { cls: "state-line--warn", text: "签到重试中" };
-    // 待签：state_message 形如"计划 HH:MM"（自动错峰），其余情况不展示
-    var plan = a.state_message && a.state_message.indexOf("计划") === 0 ? " · 今日" + a.state_message : "";
-    return { cls: "state-line--muted", text: "待签到" + plan + " · 前方排队 " + a.queue_ahead + " 人" };
+    var d = (ctx.by_code || {})[s];
+    if (!d) {
+      // 未知状态码：如实报告未知，绝不冒充"排队待签"（表更新前的最安全失效方向）
+      return { cls: "state-line--muted", text: "状态未知（" + s + "），请刷新页面后重试" };
+    }
+    var text = d.text;
+    if (s === "failed") text += a.state_message ? "：" + a.state_message : "";
+    return { cls: "state-line--" + d.tone, text: text };
   }
 
   /* 一张账号日历卡：卡头是账号名 + 当前状态，卡体是共享日历挂载点 */
@@ -55,7 +68,7 @@
       class: "panel-sub",
       text: String(a.phone || "") + (a.phone_model ? " · " + a.phone_model : "")
     }));
-    var line = statusLine(a);
+    var line = statusLine(a, window.YB_CALENDAR_STATE || {});
     head.appendChild(YB.el("p", { class: "panel-sub " + line.cls, text: line.text }));
     card.appendChild(head);
     var mount = YB.el("div", { class: "sc-mount" });
