@@ -290,6 +290,26 @@ class SessionCacheDbTest(_SessionCacheFixture):
             "解密失败行应被顺手清除",
         )
 
+    # ---- 解密失败分支同样不得印裸号（作废/清理分支的同一口径）----
+    def test_decrypt_failure_log_masks_phone_at_call_site(self):
+        db.init_db(self.db_file, env_file=self.env_file)
+        # 读写同钟钉死：行恒"同日未过期"，判据必落在解密失败分支而非作废分支
+        with mock.patch.object(db, "_session_cache_now", return_value=self.NOW):
+            db.set_session_cache(PHONE, '{"sessionid":"sid"}', "c")
+            conn = db.get_conn()
+            conn.execute(
+                "UPDATE session_cache SET phone='13999999999' WHERE phone=?", (PHONE,)
+            )
+            conn.commit()
+            # assertLogs 用默认 formatter（只取 message），故此处断言的是调用点自身
+            # 传入的文本，而非输出面 formatter 的兜底效果。
+            with self.assertLogs("yiban.store.session_cache", level="INFO") as captured:
+                self.assertIsNone(db.get_session_cache("13999999999"))
+        joined = "\n".join(captured.output)
+        self.assertIn("会话缓存解密失败", joined, "解密失败路径应留痕")
+        self.assertNotIn("13999999999", joined, "调用点日志不得含裸号")
+        self.assertIn("139****9999", joined)
+
     # ---- 迁移：v7 旧库升级到 v8（建表 + 存量数据保留）----
     def test_upgrade_from_v7_creates_session_cache(self):
         old_migrations = db._MIGRATIONS
