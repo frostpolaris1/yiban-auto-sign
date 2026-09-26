@@ -6,7 +6,7 @@
    标记前移（flock 弹开也留痕、次轮以 second_run 身份运行、SUCCESS
    幂等检查仍在标记块之后）、显式 YIBAN_RUN_TIMEOUT_SEC 的钳位矩阵、
    日志装配延迟到 main() 后 root 只有一个 FileHandler。
-   M3 批次0（MF-81/82）扩展：决定跑/不跑的写入全部判码并 fail-closed
+   M3 批次0 扩展：决定跑/不跑的写入全部判码并 fail-closed
    （状态目录建不出/不可写、RUN_MARKER noclobber 写失败、_status_write 的
    mktemp/echo/mv、收尾标记），写失败不得等价于"已完成"；sign-status 的
    SUCCESS 须与库内当日事实（_db_settled_today 只读 sqlite）交叉核对才采信，
@@ -43,7 +43,7 @@ RUN_SH = os.path.join(BASE, "run.sh")
 def _write_python_wrapper(app_dir):
     """在 $APP_DIR/.venv/bin/python3 放一个转调当前解释器的包装。
 
-    run.sh 的 sign-status 库内事实交叉核对（MF-82）直接调 $PY（不经假 timeout），
+    run.sh 的 sign-status 库内事实交叉核对直接调 $PY（不经假 timeout），
     必须保证它在 Git Bash 与 WSL 下都存在且能跑 sqlite3。
     """
     venv_bin = os.path.join(app_dir, ".venv", "bin")
@@ -73,7 +73,7 @@ def _install_seal_stub(app_dir):
 
 
 def _seed_facts_db(db_path, day, states):
-    """建一个最小 sign_tasks 表并写入当日事实行（MF-82 交叉核对的数据源）。
+    """建一个最小 sign_tasks 表并写入当日事实行（采信交叉核对的数据源）。
 
     只建 run.sh 采信查询用到的三列（phone/day/state）——刻意不复用引擎的建库代码，
     这样 run.sh 侧查询与表结构的耦合一旦漂移，这里的用例会红而不是静默放行。
@@ -332,12 +332,12 @@ class RunShMarkerTest(unittest.TestCase):
         os.chmod(self.state, 0o700)
         self.skipTest("当前文件系统不强制 unix 写权限位（如 Windows drvfs）")
 
-    # ---------------- MF-82：sign-status 采信必须交叉核对库内事实 ----------------
+    # ---------------- sign-status 采信必须交叉核对库内事实 ----------------
 
     def test_success_status_check_still_skips_after_marker(self):
         """STATUS_FILE SUCCESS 幂等检查保持在标记块之后：已成功的当日直接跳过。
 
-        MF-82 同批更新：SUCCESS 现在必须与库内当日事实一致才采信——本用例补种
+        同批更新：SUCCESS 现在必须与库内当日事实一致才采信——本用例补种
         一条当日 done 行使"真成功的当日"仍走幂等跳过（旧断言钉的是"文本即采信"）。
         """
         _write_python_wrapper(self.tmp)
@@ -355,7 +355,7 @@ class RunShMarkerTest(unittest.TestCase):
         self.assertEqual(self._timeout_calls(), [], "SUCCESS 幂等跳过不得执行签到")
 
     def test_forged_success_status_without_db_facts_is_rejected(self):
-        """活体反例（MF-82）：手写 SUCCESS 状态文件、临时库当日无完成事实 ⇒
+        """活体反例：手写 SUCCESS 状态文件、临时库当日无完成事实 ⇒
         拒绝采信 + 双声音告警 + 按未完成继续（本轮真实执行），且不得以成功退 0。"""
         _write_python_wrapper(self.tmp)
         db = os.path.join(self.tmp, "facts.db")
@@ -390,10 +390,10 @@ class RunShMarkerTest(unittest.TestCase):
         self.assertIn("今天已签到成功", self._log_text())
         self.assertEqual(self._timeout_calls(), [], "可信 SUCCESS 不得触发重复签到")
 
-    # ---------------- MF-81：决定跑/不跑的写入全部判码、fail-closed ----------------
+    # ---------------- 决定跑/不跑的写入全部判码、fail-closed ----------------
 
     def test_unwritable_state_dir_refuses_run_without_round(self):
-        """活体反例（MF-81）：状态目录置不可写 ⇒ 拒绝运行（不跑）、写不出任何
+        """活体反例：状态目录置不可写 ⇒ 拒绝运行（不跑）、写不出任何
         SUCCESS、也绝不执行签到轮次，并给出带声音的告警。
 
         注入走 chattr +i（root 也挡）或 chmod 0500；两条拒绝线（STATE_DIR 预检 /
@@ -451,7 +451,7 @@ class RunShMarkerTest(unittest.TestCase):
         self.assertIn("当日收尾标记写入失败", self._stderr(r))
         self.assertIn("当日收尾标记写入失败", self._log_text())
 
-    # ---------------- MF-81④⑤：.env 显式告警 / 取值域统一 ----------------
+    # ---------------- .env 显式告警 / 取值域统一 ----------------
 
     def test_env_missing_warns_but_continues(self):
         """.env 不存在 ⇒ stderr + 日志显式告警，按默认值继续（不让 cron 天天红）。"""
@@ -462,7 +462,7 @@ class RunShMarkerTest(unittest.TestCase):
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root 无视权限位")
     def test_env_unreadable_warns_but_continues(self):
-        """.env 存在但不可读 ⇒ 显式告警并继续用默认值（MF-81④）。"""
+        """.env 存在但不可读 ⇒ 显式告警并继续用默认值。"""
         env_file = os.path.join(self.tmp, ".env")
         with io.open(env_file, "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
@@ -477,7 +477,7 @@ class RunShMarkerTest(unittest.TestCase):
         self.assertIn("不可读", self._stderr(r))
 
     def test_global_pause_truthy_value_shares_one_domain(self):
-        """MF-81⑤：YIBAN_GLOBAL_PAUSE 与 _need_second_round 统一走 _is_truthy——
+        """取值域统一：YIBAN_GLOBAL_PAUSE 与 _need_second_round 统一走 _is_truthy——
         "true" 必须同样写 GLOBAL_PAUSED（旧口径 `= "1"` 会误写成 SKIPPED）。"""
         self.env["YIBAN_GLOBAL_PAUSE"] = "true"
         self.env["FAKE_TIMEOUT_EXIT"] = "2"
@@ -487,7 +487,7 @@ class RunShMarkerTest(unittest.TestCase):
             self.assertEqual(f.read().strip(), "GLOBAL_PAUSED")
 
     def test_second_run_truthy_value_shares_one_domain(self):
-        """MF-81⑤：YIBAN_SECOND_RUN=true 必须以"补签轮身份"被识别——
+        """取值域统一：YIBAN_SECOND_RUN=true 必须以"补签轮身份"被识别——
         旧口径 `= "1"` 会把 true 当成首签轮去评估第三轮（本用例钉住不再评估）。"""
         scripts = os.path.join(self.tmp, "scripts")
         os.makedirs(scripts, exist_ok=True)
