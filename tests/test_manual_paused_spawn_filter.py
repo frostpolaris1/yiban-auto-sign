@@ -231,5 +231,40 @@ class PausedSpawnFilterTest(unittest.TestCase):
         self.assertNotIn("已自暂停", body["msg"])
 
 
+class DenyStatusMappingTest(unittest.TestCase):
+    """手动签到拒因文案 → HTTP 状态码的单源判定表。
+
+    钉住"改文案不得静默改 HTTP 契约"：`_spawn_signin` 每条已知拒因整句都必须被判定表
+    里的某条子串显式命中——否则它就会无声落进兜底 500（客户端拒因被伪装成服务端错误）。
+    新增/改写文案而漏改表 ⇒ 本用例先红。
+    """
+
+    def setUp(self):
+        import importlib
+        self.signin_api = importlib.import_module("web.routes.signin_api")
+
+    def test_every_known_deny_message_maps_explicitly(self):
+        # 号码/秒数占位不影响子串判定；这里逐条给出 `_spawn_signin` 实际产出的整句。
+        cases = [
+            ("账号 13800000000 不在配置中", 404),
+            ("账号 13800000000 不可手动签到（未生效或已删除）", 400),
+            ("账号 13800000000 已自暂停签到，跳过（可在「我的账号」恢复）", 400),
+            ("签到队列忙（定时签到进行中），请稍后再试", 429),
+            ("签到冷却中（约 1 分 0 秒后可重试）", 429),
+            ("手动签到触发过于频繁（10 分钟内最多 10 次），请稍后再试", 429),
+            ("账号 13800000000 正在签到，请 20 秒后再试", 429),
+            ("账号 13800000000 手动签到启动失败，请稍后重试", 500),
+        ]
+        keys = [k for k, _ in self.signin_api._SIGNIN_DENY_STATUS]
+        for msg, want in cases:
+            with self.subTest(msg=msg):
+                self.assertTrue(any(k in msg for k in keys),
+                                "已知拒因文案没有显式映射条目，会静默回退 500")
+                self.assertEqual(self.signin_api._signin_deny_status(msg), want)
+
+    def test_unknown_message_falls_back_to_500(self):
+        self.assertEqual(self.signin_api._signin_deny_status("某种没登记过的文案"), 500)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
