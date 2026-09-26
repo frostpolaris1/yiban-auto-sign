@@ -6,10 +6,15 @@
     在 `.env` 写 `YIBAN_GLOBAL_PAUSE=1` 时整轮 rc=2、run.sh 按判码契约写状态文件
     GLOBAL_PAUSED、引擎日志打暂停门措辞、假上游记账为零；把同一份 `.env` 的暂停键翻成 0
     后同一条链的 rc/状态文件/页面显示**一起翻转**（判据与显示都现读同一份文件）；
+    解除轮的判码**由构造决定、不由平台/日期/用例先后决定**：台账归零 + 运行锁空置 ⇒
+    rc=2/SKIPPED（干净腿），持住运行锁构造忙态 ⇒ rc=3 且不写状态文件（活体反例
+    "忙态被拒"）；
     web 侧 `_day_off_reason` 与日历页内联上下文（day_off/图例/状态表载荷）与引擎判定同源；
     活体反例：伪造 web 读源（read_env 桩成空）或只翻文件一侧 ⇒ 同源性判据必须变红
 对应实现：run.sh（`.env` 装载、`_write_status_from_exit` 判码契约）、
-    yiban/engine/runner.py（`_day_off_skip`→2）、yiban/engine/schedule.py（`day_off`
+    yiban/engine/runner.py（`_day_off_skip`→2、取锁争抢→3）、
+    yiban/engine/cli_support.py（`_acquire_run_lock`：忙/无锁后端一律 fail-closed）、
+    yiban/engine/schedule.py（`day_off`
     三道门的唯一实现）、web/app.py（`_day_off_reason` 现读注入）、
     web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/status.py
     （`DISPLAY`/`legend_items`/`display_payload`）、scripts/loadtest/mock_yiban.py（假上游记账）
@@ -41,6 +46,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -53,9 +59,14 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 MOCK_YIBAN = os.path.join(BASE, "scripts", "loadtest", "mock_yiban.py")
 _HAS_BASH = shutil.which("bash") is not None
-# 平台无 fcntl（Windows）时引擎在全量轮取运行锁处 fail-closed rc=3，走不到账号级门；
-# 解除轮据此分支（rc=3 本身即"暂停门已释放、链没有冻死"的证据）。
-_HAS_FCNTL = hasattr(os, "fcntl")
+# 运行锁争抢的构造件（忙态反例要真的"持住"锁）。注意判据必须落在 fcntl **模块本身**
+# （与引擎同源，见 yiban/engine/cli_support.py 的 try-import）：旧版在此写
+# `hasattr(os, "fcntl")` 恒为 False——fcntl 是顶层模块，`os` 上没有这个属性——于是
+# "按平台分支的解除轮断言"永远走 rc=3 一侧，Linux 语义的 rc=2 一侧从未生效。
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
 
 TEST_KEY = "a" * 64
 FAKE_PHONE = "13800000001"
@@ -258,8 +269,13 @@ class _ChainBase(unittest.TestCase):
         self._stop_mock()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _write_env(self, *, pause, user_paused):
-        """唯一真值出口：本轮 run 的一切"暂停/自暂停"事实都只写在这一个文件里。"""
+    def _write_env(self, *, pause, user_paused, run_lock_wait=None):
+        """唯一真值出口：本轮 run 的一切"暂停/自暂停"事实都只写在这一个文件里。
+
+        `run_lock_wait`：把全量轮引擎等锁上限（`YIBAN_RUN_LOCK_WAIT`，秒）写进 `.env`，
+        运行锁忙态用例据此把默认的 600s 压成几秒（等满即拒跑 rc=3）；不传则该键
+        根本不存在，引擎走默认值。配置真值只有 `.env` 一个出口，测试不打环境补丁。
+        """
         accounts_json = json.dumps([{
             "phone": FAKE_PHONE, "password": FAKE_PW,
             "name": "e2e-fake", "user_paused": user_paused,
@@ -273,8 +289,32 @@ class _ChainBase(unittest.TestCase):
                 "YIBAN_SIGN_START=06:30\n"
                 "YIBAN_SIGN_END=07:50\n"
                 "YIBAN_ACCOUNTS_JSON=%s\n" % accounts_json +
-                "YIBAN_GLOBAL_PAUSE=%s\n" % pause
+                "YIBAN_GLOBAL_PAUSE=%s\n" % pause +
+                (("YIBAN_RUN_LOCK_WAIT=%s\n" % run_lock_wait) if run_lock_wait else "")
             )
+
+    def _zero_test_account_ledger(self):
+        """把测试账号在领取池（sign_tasks / sign_claims）里的台账行清零。
+
+        类级 DB 在同一 pytest 进程内跨用例、跨业务日共享：解除轮的断言若想要**构造
+        决定**而非"谁先跑过、跑在哪个业务日"决定，发起轮次前必须显式把台账置为已知
+        状态。机理复核（2026-09-26 批）实证：领取池的当日 claimed 残留行**不改变**
+        本轮判码（照常 rc=2，只翻转 run.sh 补签/封存的收口形状），判码的忙源是引擎
+        进程级运行锁而非台账——归零因此是"轮型唯一化"的保险，不是 rc 的成因。
+        """
+        con = sqlite3.connect(self.db_file)
+        try:
+            for table in ("sign_tasks", "sign_claims"):
+                # 表未落地（迁移未及）：本就无台账行，等价于已归零
+                with contextlib.suppress(sqlite3.OperationalError):
+                    con.execute("DELETE FROM " + table + " WHERE phone=?", (FAKE_PHONE,))
+            con.commit()
+        finally:
+            con.close()
+
+    def _engine_run_lock_path(self):
+        """引擎全量轮的进程级运行锁路径（与 cli_support._acquire_run_lock 同口径）。"""
+        return os.path.join(self.state, "signin-run.lock")
 
     # ---- 假易班（进程外，Task 11 的 CLI 入口与记账） ----
     def _start_mock(self):
@@ -426,9 +466,29 @@ class GlobalPauseChainTest(_ChainBase):
         这是"暂停导致的 rc=2/GLOBAL_PAUSED 来自暂停键本身"的反事实：键置 0 后
         run.sh 不再可能写出 GLOBAL_PAUSED、web 不再可能渲染急停；同时账号侧带
         `user_paused=true` 的测试号保证任何时刻跑链都在登录之前被挡下（不触网）。
+
+        **判码由构造决定，不由平台分支/日期/用例先后决定**（机理复核 2026-09-26 批）：
+        旧实现在这里用 `hasattr(os, "fcntl")` 分支 rc=2/rc=3——该判据恒为 False
+        （fcntl 是顶层模块，`os` 上无此属性；引擎的平台判定在 cli_support 的
+        try-import，见 yiban/engine/cli_support.py），rc=3 一侧永远生效，而真实轮
+        取到哪一侧只取决于**引擎能否取到进程级运行锁**：被活进程占用（或锁后端缺失
+        ——无 fcntl 的解释器在同一取锁点同样"不可用"）⇒ fail-closed rc=3，恰好
+        "匹配"死分支而假绿；取得到 ⇒ 走账号级跳过 rc=2、判红。本文件每用例的
+        STATE_DIR 都是新建 tmp，正常全量跑不存在占锁，故本用例把判码钉成构造的
+        必然：
+        ①台账归零（领取池行不是判码成因，实证见 `_zero_test_account_ledger`，清它是
+        为了让 run.sh 补签/封存的收口形状唯一）；②前置断言本轮 STATE_DIR 里
+        运行锁件不存在（每用例新建 tmp ⇒ 天然空置，断言把前提钉在明面上）。
+        ⇒ 无条件钉：解除轮过门取锁成功、止步账号级自暂停（rc=2），run.sh 按判码
+        契约写 SKIPPED。无锁后端平台（Windows）在同一取锁点 fail-closed 到 rc=3
+        的既有语义不再在本用例分支，改由 `test_release_run_lock_busy_is_rejected_rc3`
+        对照用例钉住（构造持锁 ⇒ 无锁后端平台同码），平台差异只留这段注记，不留死分支。
         """
         from yiban import clock
         self._write_env(pause="0", user_paused="true")
+        self._zero_test_account_ledger()
+        self.assertFalse(os.path.exists(self._engine_run_lock_path()),
+                         "前提：本轮运行锁件应随每用例新建的 STATE_DIR 空置（解除轮 rc=2 依赖此前提）")
         run = self._run_chain()
         self.assertNotEqual(run["rc"], 0, "解除急停轮不得被误读为「放行真实签到」（本用例无真实凭据）")
         self.assertNotIn("GLOBAL_PAUSED", run["statuses"],
@@ -438,22 +498,50 @@ class GlobalPauseChainTest(_ChainBase):
         stats, business = self._mock_evidence()
         self.assertEqual((business, stats["total"]), ([], 0),
                          "解除轮也不得触碰上游（离线性保险：账号级门先于登录）")
-        if _HAS_FCNTL:
-            # 平台判码契约：解除轮 Linux 走账号级跳过（rc=2→SKIPPED），
-            # Windows 无 fcntl 在运行锁处 fail-closed（rc=3、不写状态文件）。
-            self.assertEqual(run["rc"], 2, run["log"])
-            self.assertEqual(run["statuses"], ["SKIPPED"], run["statuses"])
-        else:
-            self.assertEqual(run["rc"], 3,
-                             "Windows 下解除轮应止步于运行锁 fail-closed（rc=3，既有平台语义）：%s"
-                             % run["log"])
-            self.assertEqual(run["statuses"], [], run["statuses"])
+        # 判码契约（无条件钉，构造决定）：门放行 → 取锁成功 → 账号级自暂停以"全 skip"
+        # 收场（runner 返 2），run.sh 对 rc=2+非急停写 SKIPPED。
+        self.assertEqual(run["rc"], 2,
+                         "解除轮应止步账号级跳过（rc=2→SKIPPED）：log=%s" % run["log"])
+        self.assertEqual(run["statuses"], ["SKIPPED"], run["statuses"])
 
         now = clock.now()
         self.assertEqual(self._engine_truth_reason(now), "", "引擎判定未随文件翻转")
         self.assertEqual(self.webapp._day_off_reason(now), "", "web 显示判定未随文件翻转")
         ctx = self._inline_context(self._calendar_html())
         self.assertIsNone(ctx["day_off"])
+
+    @unittest.skipIf(_fcntl is None, "持锁构造需要 fcntl 锁后端（Windows 腿走同一判码但无从构造忙态）")
+    def test_release_run_lock_busy_is_rejected_rc3(self):
+        """活体反例（运行锁侧）：忙态下的解除轮必须被**拒跑**（rc=3），不得无锁照跑。
+
+        rc=3（队列忙）族的唯一产线源头：引擎进程级运行锁 `signin-run.lock` 的争抢
+        ——`_RunLockHeld`/`_RunLockUnavailable`（等待超时、无锁后端、锁件不可开）
+        一律 fail-closed 返 3（yiban/engine/runner.py），run.sh 对非 0/2 码**不写
+        状态文件**（`_write_status_from_exit`）⇒ statuses 为空。
+        构造：与干净腿同一轮型（暂停键翻 0 + 账号级自暂停）且台账同样归零——本轮
+        **唯一变量是"锁忙/锁闲"**：本测试进程用 fcntl 持住该锁件（模拟"前一轮还
+        活着"），`.env` 把等锁上限压到 3s（引擎等满即拒）。干净腿钉 rc=2、本用例钉
+        rc=3，两侧都由构造保证，与业务日、用例先后、平台一律无关。
+        """
+        self._write_env(pause="0", user_paused="true", run_lock_wait="3")
+        self._zero_test_account_ledger()
+        fh = io.open(self._engine_run_lock_path(), "a+", encoding="utf-8")
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        try:
+            run = self._run_chain()
+        finally:
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+            fh.close()
+        self.assertEqual(run["rc"], 3,
+                         "锁忙态的解除轮必须走队列忙判码 3（拿不到互斥绝不无锁照跑）：%s"
+                         % run["log"])
+        self.assertEqual(run["statuses"], [],
+                         "rc=3 不属 run.sh 写状态文件的码族（忙≠已有结论）：%s" % run["statuses"])
+        self.assertIn("拒绝运行", run["log"],
+                      "忙态拒跑必须留痕（fail-closed 不得静默），log=%s" % run["log"])
+        stats, business = self._mock_evidence()
+        self.assertEqual((business, stats["total"]), ([], 0),
+                         "被拒的忙轮同样不得触碰上游（运行锁在登录链之前）")
 
     def test_same_source_equality_bites_on_forged_display_side(self):
         """活体反例：把 web 读源伪造掉（旧病灶 `env=None` 落回 os.environ 的形状），
