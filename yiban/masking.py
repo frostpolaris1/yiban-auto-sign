@@ -6,8 +6,8 @@
 
 - `sanitize_text`：服务端可控内容（异常消息、上游返回）落日志/通知前转义换行并
   抹掉可能内嵌的凭据字面量——防日志注入与凭据泄露；
-- `sanitize_url`：URL 入日志前对 query 里的凭据类参数打码（OAuth code / CSRF /
-  session 标识 / 未知高熵令牌）；
+- `sanitize_url`：URL 入日志前对 query 与 fragment 里的凭据类参数打码（OAuth code /
+  CSRF / session 标识 / 隐式流放进 fragment 的令牌 / 未知高熵令牌）；
 - `mask_phone`：11 位手机号 → `138****8000`；
 - `mask_phones_in_text`：自由文本里**所有** 11 位手机号 → `138****8000`，供日志输出面
   与展示/导出层共用（同一口径，不另起第二套）。
@@ -123,23 +123,29 @@ def mask_phones_in_text(text):
 
 
 def sanitize_url(url):
-    """URL 入日志前对 query 敏感参数脱敏。
+    """URL 入日志前对 query 与 fragment 敏感参数脱敏。
 
     诊断日志需要的是 scheme/host/path 与"带了哪些参数"，不是参数值：可能携带
     凭据的（OAuth code、CSRF、session 标识等）一律替换为 ***；≥24 位连续
     URL-safe 字符的高熵值无论参数名一律打码，兜底未知令牌参数名（阈值取 24：
     真实 code/token 通常远长于此，避免误伤 client_id 这类恰好 16 位的公开标识）。
-    解析失败返回占位符，绝不抛异常影响主流程。
+    fragment 与 query 同一套判定：跟随重定向时 requests 会把 Location 头的
+    fragment 传播进最终 `resp.url`，隐式流把令牌放在 `#access_token=…`，
+    只查 query 会整段放行。解析失败返回占位符，绝不抛异常影响主流程。
     """
     raw = str(url)
     try:
         parts = urlsplit(raw)
-        # 分隔符只认 `&`：`#access_token=…` 整段落进 fragment 不参与打码；`;token=…`
-        # 会被当成上一个参数的**值**收下来，随后因不含敏感参数名而原样回显。
+        # query 分隔符只认 `&`：`;token=…` 会被当成上一个参数的**值**收下来，
+        # 随后因不含敏感参数名而原样回显（fragment 同理）。
         pairs = parse_qsl(parts.query, keep_blank_values=True)  # 键名在此解码，故编码键名绕不开本层
+        # fragment 里大量形态是不透明路由（`#/route`），空值段会被 parse_qsl 收
+        # 成键再回填成 `#/route=` 造成改写；空白值不含凭据，跳过即可（宁遮不漏
+        # 不在此处让渡——被跳过的只有**空值**，非空值一律进判定）。
+        frag_pairs = parse_qsl(parts.fragment, keep_blank_values=False)
     except ValueError:
         return "<url 解析失败已省略>"
-    if not pairs:
+    if not pairs and not frag_pairs:
         return raw
 
     def _masked(key, value):
@@ -153,12 +159,16 @@ def sanitize_url(url):
             return f"{key}={value[:3]}****{value[7:]}"
         return f"{key}={value}"  # 参数名不在片段表 + 值不够"高熵" = 原样回显，这是常态不是异常
 
-    # 注意输出是**解码后**的 query（`%2F` 变回 `/`、`;` 分隔段的值里带回了原文），
-    # 只能拿去写日志；回填成请求会改变实际发出去的内容。
-    return urlunsplit(parts._replace(query="&".join(_masked(k, v) for k, v in pairs)))
+    # 注意输出是**解码后**的 query/fragment（`%2F` 变回 `/`、`;` 分隔段的值里带回了
+    # 原文），只能拿去写日志；回填成请求会改变实际发出去的内容。
+    # 一侧无参数对时保留原样（opaque fragment 不因另一侧的改写而被连带重排）。
+    query = "&".join(_masked(k, v) for k, v in pairs) if pairs else parts.query
+    fragment = ("&".join(_masked(k, v) for k, v in frag_pairs)
+                if frag_pairs else parts.fragment)
+    return urlunsplit(parts._replace(query=query, fragment=fragment))
 
 #: URL 里的 userinfo（`scheme://user:pass@host`）——代理串按契约允许带凭据，
-#: 而 `sanitize_url` 只管 query 参数，**不碰 userinfo**，故单独一个口径。
+#: 而 `sanitize_url` 只管 query/fragment 参数，**不碰 userinfo**，故单独一个口径。
 _URL_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
 
 

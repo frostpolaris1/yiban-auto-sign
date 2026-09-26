@@ -13,7 +13,8 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：脱敏三处残余绕过面（复合凭据键名、引号配对截断、`is_safe_url` 段覆盖：CGNAT/组播/
 保留段与 IPv4-mapped IPv6 写法）、收件人逗号列表逐项遮罩、通知密钥定宽遮罩、
-URL query 手机号按名/按值两条口径；末尾另有一组 signin 修复用例（状态文件自愈、
+URL query 手机号按名/按值两条口径、URL fragment 与 query 同口径打码（不透明
+fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自愈、
 ydclearance 挑战解码与跳转白名单）。
 对应实现：`yiban/masking.py` 的 `sanitize_text` / `sanitize_url`（`_CRED_KEY`、
 `_QUOTED_OR_BARE`）、`yiban/notify/config.py` 的 `is_safe_url` 与 `_mask_secret`、
@@ -144,6 +145,40 @@ class UrlPhoneTest(unittest.TestCase):
     def test_high_entropy_value_rule_still_works(self):
         out = sanitize_url("https://f.yiban.cn/cb?x=" + "A" * 30)
         self.assertNotIn("A" * 30, out)
+
+
+class UrlFragmentTest(unittest.TestCase):
+    """`sanitize_url` 必须解析 fragment：跟随重定向时 requests 把 Location 的
+    fragment 传播进最终 `resp.url`，隐式流把令牌放 `#access_token=…` 处。
+
+    与 query 同口径按 `_URL_SENSITIVE_KEY_PARTS` / 高熵 / 手机号形态打码；
+    不含 `=` 的不透明 fragment（前端路由）不得被改写。
+    """
+
+    def test_fragment_token_masked(self):
+        out = sanitize_url("https://x/cb#access_token=ABCDEF")
+        self.assertNotIn("ABCDEF", out)
+        self.assertIn("#access_token=***", out)
+
+    def test_query_and_fragment_same_caliber(self):
+        out = sanitize_url("https://x/cb?code=C1#access_token=T1&mode=dark")
+        self.assertNotIn("C1", out)
+        self.assertNotIn("T1", out)
+        self.assertIn("code=***", out)
+        self.assertIn("access_token=***", out)
+        self.assertIn("mode=dark", out, "非敏感参数名保留——与 query 层同一张判定表")
+
+    def test_fragment_high_entropy_and_phone_masked(self):
+        out = sanitize_url("https://x/cb#u=" + "A" * 30)
+        self.assertNotIn("A" * 30, out)
+        out = sanitize_url("https://x/cb#mobile=13800008000")
+        self.assertNotIn("13800008000", out)
+        self.assertIn("mobile=***", out, "参数名命中片段表时整值打码（与 query 按名口径一致）")
+
+    def test_opaque_fragment_untouched(self):
+        for url in ("https://x/docs#section-2", "https://x/app#/route", "https://x/cb#"):
+            with self.subTest(url=url):
+                self.assertEqual(sanitize_url(url), url)
 
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
