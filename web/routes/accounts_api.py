@@ -411,7 +411,7 @@ def api_account_update(idx):
             clean["status"] = old.get("status", m.ACCOUNT_STATUS_ACTIVE)
         try:
             # 审计与本次 UPDATE 同事务：改写他人易班凭据必须与留痕共存亡——凭据已改而
-            # 审计表无此条，正是"改了凭据但追不到谁改的"（MF-53 的核心症状）。
+            # 审计表无此条，正是"改了凭据但追不到谁改的"的核心症状。
             result = m.db.update_account(
                 old["id"],
                 clean,
