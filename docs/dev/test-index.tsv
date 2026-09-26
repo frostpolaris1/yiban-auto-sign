@@ -296,6 +296,30 @@ tests/test_builtin_admin_sid.py	RevocationTest.test_mismatched_sid_in_env_revoke
 tests/test_builtin_admin_sid.py	RevocationTest.test_owner_session_dead_after_logout_too	E	-	登出对本人会话同样有效（sid 轮换 + session.clear 双重）。
 tests/test_builtin_admin_sid.py	RevocationTest.test_password_change_rotates_sid	E	-	??
 tests/test_builtin_admin_sid.py	RevocationTest.test_ssh_recovery_rotation_revokes	E	-	SSH 追回路径（运维手改明文 → 启动时重迁移 + 递增 PW_VERSION）一并轮换 sid。
+tests/test_calendar_state_visibility.py	CalendarCellJsTest.test_empty_day_has_no_badge	F	node	??
+tests/test_calendar_state_visibility.py	CalendarCellJsTest.test_off_day_does_not_overlay_a_state_badge	F	node	周末停签格已有「休」角标，状态符号不得叠在同一角（角标互挤不可读）。
+tests/test_calendar_state_visibility.py	CalendarCellJsTest.test_ok_and_bad_cells_keep_their_dots	F	node	??
+tests/test_calendar_state_visibility.py	CalendarCellJsTest.test_other_states_show_a_symbol_badge	F	node	时段外/无点位等不再渲染成空白格——那是日历侧的另一半"看起来没发生任何事"。
+tests/test_calendar_state_visibility.py	CalendarPageRendersTableTest.test_inline_context_carries_the_same_table	F	node	??
+tests/test_calendar_state_visibility.py	CalendarPageRendersTableTest.test_legend_is_generated_not_hand_written	F	node	模板不得再手写图例项：表里没有的符号不会凭空出现在图例里，反之亦然。
+tests/test_calendar_state_visibility.py	CalendarPageRendersTableTest.test_legend_renders_every_item_of_the_table	F	node	??
+tests/test_calendar_state_visibility.py	DayOffTruthTest.test_day_off_reason_never_raises_on_missing_env	F	node	`.env` 读不到 ⇒ 按"照常"返回空串（展示侧不得因为读不到配置而 500）。
+tests/test_calendar_state_visibility.py	DayOffTruthTest.test_global_pause_env_file_is_visible_to_web_display	F	node	置位 `.env` 里的急停 ⇒ web 侧显示判定与引擎行为同为"暂停"；复位即恢复。
+tests/test_calendar_state_visibility.py	DayOffTruthTest.test_weekend_gate_env_file_is_visible_to_web_display	F	node	周末门同源：`.env` 关周六签到 ⇒ 周六 web 侧判"周六不签"（原先恒不生效）。
+tests/test_calendar_state_visibility.py	DayOffTruthTest.test_weekend_gate_open_when_env_file_says_so	F	node	`.env` 开启周六签到 ⇒ 周六不再被判"不签"（读到的是真值而不是缺省）。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_emergency_stop_and_no_position_are_not_pending_semantics	F	node	急停/无点位两态必须有自己的语义，且语气档不是"待签"的中性档。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_legend_covers_every_symbol_in_the_table	F	node	图例项覆盖表里出现的**每一个**符号——"渲染认得、图例不认得"正是本条要杜绝的。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_new_status_code_enters_the_legend_automatically	F	node	新增状态码 ⇒ 图例自动含：直接往表里塞一格，图例与前端载荷两侧都要出现。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_symbol_lookup_has_no_tone_conflict	F	node	同一符号的不同状态码必须共享同一语气档（否则日期格按符号取档会随状态抖动）。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_table_covers_every_status_code	F	node	`DISPLAY` 必须与 `ALL_STATUSES` 一一对应——漏一格就意味着某状态无人认领。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_table_entries_are_complete	F	node	每格都要有符号 / 文案 / 图例名 / 语气档；语气档必须落在状态行既有的四个类里。
+tests/test_calendar_state_visibility.py	StatusDisplayTableTest.test_table_symbols_agree_with_the_existing_maps	F	node	表里的符号必须与既有的 SYMBOL/ICON 同一取值（日历格与状态行看的是同一个符号）。
+tests/test_calendar_state_visibility.py	StatusLineJsTest.test_emergency_stop_is_visible_not_queueing	F	node	急停：无当日记录的账号显示急停文案（当前红：落回"待签到 · 前方排队 N 人"）。
+tests/test_calendar_state_visibility.py	StatusLineJsTest.test_failed_keeps_the_message_suffix	F	node	失败态保留"：原因"后缀（既有可见契约不回归）。
+tests/test_calendar_state_visibility.py	StatusLineJsTest.test_global_paused_status_code_uses_the_table	F	node	`state_status=global_paused`（历史/异常数据）：走表文案，不是"排队待签"。
+tests/test_calendar_state_visibility.py	StatusLineJsTest.test_no_position_status_uses_the_table	F	node	`no_position`：无点位语义（当前红：也落回"排队待签"）。
+tests/test_calendar_state_visibility.py	StatusLineJsTest.test_pending_without_gate_still_shows_the_queue	F	node	没有门挡下时，pending 保持既有排队口径（不得把正常待签也说成异常）。
+tests/test_calendar_state_visibility.py	StatusLineJsTest.test_unknown_status_code_does_not_claim_queueing	F	node	未知状态码：如实报告未知，绝不冒充"排队待签"（新增状态而前端未更新时）。
 tests/test_capacity_audit_scope.py	ApproveGateTest.test_approve_allowed_after_freeing_slot	I	-	??
 tests/test_capacity_audit_scope.py	ApproveGateTest.test_approve_refused_at_capacity	I	-	??
 tests/test_capacity_audit_scope.py	ApproveGateTest.test_reject_never_gated	I	-	拒绝不需要名额（它是"减少负载"的方向）。
@@ -1452,6 +1476,11 @@ tests/test_mailer.py	test_send_admin_alert_requires_filtered_to	H	-	P2-3 回归�
 tests/test_mailer.py	test_send_admin_alert_skipped_when_disabled	H	-	??
 tests/test_mailer.py	test_send_admin_alert_success	H	-	??
 tests/test_mailer.py	test_send_failure_logs_safe	H	-	??
+tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_all_paused_reports_and_does_not_spawn	E	-	全选皆自暂停：如实说明并拒绝，不派发空队列子进程。
+tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_count_matches_actual_spawn	E	-	批量：混入自暂停号 ⇒ 计数 == 实际 spawn 数，且被跳过数明说。
+tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_without_paused_accounts_is_unchanged	E	-	没有自暂停号时行为不变（既不报跳过，也不改计数）。
+tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_single_active_account_still_spawns	E	-	正常账号不受影响（改动不得把正常手动签到也挡住）。
+tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_single_paused_account_is_rejected_before_spawn	E	-	单条：已自暂停号在 spawn 前被拒（400 + 明确文案），不派发子进程。
 tests/test_manual_sign_reporting.py	FuseResetGateTest.test_admin_note_only_edit_keeps_fail_days	E	-	只改备注：熔断条目原样保留（fail_days 不清零，熔断仍会跳闸）。
 tests/test_manual_sign_reporting.py	FuseResetGateTest.test_admin_password_change_clears_fuse_pause	E	-	改密码（凭据变更）：须当次口令，通过后熔断条目清除、立即恢复签到资格。
 tests/test_manual_sign_reporting.py	FuseResetGateTest.test_user_note_only_edit_keeps_fail_days	E	-	用户侧只改备注：同样不得重置熔断计数。
@@ -3206,6 +3235,12 @@ tests/test_webui_inline_context.py	PoliceLinkSchemeTest.test_javascript_rejected
 tests/test_webui_inline_context.py	TemplateInlineContextTest.test_base_uses_tojson_in_all_templates	E	-	??
 tests/test_webui_inline_context.py	TemplateInlineContextTest.test_delegated_data_attribute_form_present	E	-	??
 tests/test_webui_inline_context.py	TemplateInlineContextTest.test_no_inline_event_handlers_in_reviewed_page_templates	E	-	负例：账号页与用户管理页不得回退到内联事件处理器属性。
+tests/test_window_alert_reset.py	ResetPointTest.test_reset_clears_all_three_markers_on_a_new_day	J	-	??
+tests/test_window_alert_reset.py	ResetPointTest.test_reset_is_per_business_day_not_per_call	J	-	同一业务日重复调用不再复位——否则退化成"每轮一次"，去重失效、邮件刷屏。
+tests/test_window_alert_reset.py	ResetPointTest.test_schedule_config_calls_the_reset_point	J	-	复位点必须挂在每日必过的调度入口上（调用方不必记得手动调）。
+tests/test_window_alert_reset.py	WindowAlertResetTest.test_clamped_buffer_alert_fires_again_on_the_next_business_day	J	-	缓冲被收缩：同一业务日一次、第二天再一次。
+tests/test_window_alert_reset.py	WindowAlertResetTest.test_fallback_alert_fires_again_on_the_next_business_day	J	-	窗口不可用被回退：同一业务日一次、第二天再一次。
+tests/test_window_alert_reset.py	WindowAlertResetTest.test_invalid_window_alert_fires_again_on_the_next_business_day	J	-	窗口配置非法：翻页前一次、翻页后**再**一次（当前红：永久无声）。
 tests/test_window_edge_clamp.py	BoundsClampTest.test_clamped_edges_are_idempotent	A	-	收缩结果喂回 `bounds` 不再触发收缩：配置自洽（不会逐轮越缩越短）。
 tests/test_window_edge_clamp.py	BoundsClampTest.test_markers_default_false	A	-	两个标记都是构造参数，缺省为假（外部按关键字构造不改变既有行为）。
 tests/test_window_edge_clamp.py	BoundsClampTest.test_minimum_window_still_has_positive_effective_window	A	-	最小可用窗口（1 分钟）+ 各 300s：收缩后仍必须 lo < hi（不得留空窗口）。
