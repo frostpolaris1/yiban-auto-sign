@@ -304,7 +304,6 @@ from web.services.signstatus import (  # noqa: E402
     # 保留 web.app.<名字> 的兼容面；
     # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
     _TRUTHY_LITERALS,  # noqa: F401
-    _day_off_reason,
     _env_flag,
     _in_sign_window,
     check_connectivity,  # noqa: F401
@@ -438,6 +437,16 @@ def _in_run_period(bounds, now=None):
     （`_in_sign_window` 与 `_day_off_reason` 在既有测试中被直接打桩）。
     """
     return _signstatus._in_run_period(bounds, _in_sign_window, _day_off_reason, now)
+
+
+def _day_off_reason(now=None):
+    """今天此刻是否被周末门/一键暂停挡下 → 原因串（实现见 web/services/signstatus.py）。
+
+    与引擎读**同一份 `.env` 真值**：`.env` 的键值按调用时刻现读后注入（原先落回
+    `os.environ`，`.env` 里的急停/周末开关在 web 进程里恒不生效——引擎真暂停、界面说
+    "排队待签"）。`.env` 路径与读取器都会被测试与 `--config` 改写，故按调用时刻现取。
+    """
+    return _signstatus._day_off_reason(read_env(ENV_FILE), now)
 
 
 def _executors_window():
