@@ -2224,6 +2224,24 @@ tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_attempt_rate_unit_is_stat
 tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_document_exists	B	-	??
 tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_gray_release_checklist_is_excerpted	B	-	R-T14 八条要点必须摘进文档（至少两条硬前置）。
 tests/test_scheduler_v3_doc.py	SchedulerV3DocTest.test_two_operational_disciplines_present	B	-	??
+tests/test_second_round_rc_contract.py	RunShFallbackBootTest.test_disabled_boots_nothing	B	bash	??
+tests/test_second_round_rc_contract.py	RunShFallbackBootTest.test_enabled_with_process_stays_quiet	B	bash	??
+tests/test_second_round_rc_contract.py	RunShFallbackBootTest.test_enabled_without_process_alerts_and_boots	B	bash	??
+tests/test_second_round_rc_contract.py	RunShSealGateTest.test_facts_clean_seals_marker	B	bash	判定=0（库内确实无未了结）⇒ 封存收尾标记，状态写 SUCCESS（轮 rc 0）。
+tests/test_second_round_rc_contract.py	RunShSealGateTest.test_open_facts_block_seal_for_recovery_round	B	bash	判定=10（仍有未了结）⇒ 不得封存——07:12 的恢复腿必须还能被放行。
+tests/test_second_round_rc_contract.py	RunShSealGateTest.test_second_round_then_seals_when_facts_clear	B	bash	补签轮跑完后复查库内事实：桩在补签轮把判定翻 0 ⇒ 允许封存。
+tests/test_second_round_rc_contract.py	RunShSealGateTest.test_signal_failure_no_success_no_seal	B	bash	轮以真失败收场（round rc 1）⇒ 不写状态、不封存、补签判定不被闭眼。
+tests/test_second_round_rc_contract.py	RunShSealGateTest.test_unjudgeable_seal_blocks_and_escalates	B	bash	判定不可得（check 非 0/10）⇒ 不封存 + 双声音；本轮成功收场则退出码升 1。
+tests/test_second_round_rc_contract.py	SchedMarkerChildGuardTest.test_direct_full_run_still_writes_marker	B	bash	??
+tests/test_second_round_rc_contract.py	SchedMarkerChildGuardTest.test_spawned_child_does_not_write_marker	B	bash	??
+tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_clean_exit_writes_sched_done_once	B	bash	??
+tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_known_priority_unchanged	B	bash	??
+tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_migration_refusal_does_not_write_sched_done	B	bash	??
+tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_negative_and_unknown_codes_never_surface_as_zero	B	bash	??
+tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_signal_killed_child_aggregates_to_one	B	bash	??
+tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_both_sources_clean	B	bash	??
+tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_pool_clean_but_state_file_open_counts_undone	B	bash	??
+tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_pool_open_counts_undone	B	bash	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_audit_failure_aborts_wipe	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_correct_fingerprint_wipes_and_audits	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
@@ -2410,8 +2428,8 @@ tests/test_status_sets.py	HasConclusionTest.test_every_known_status_is_a_conclus
 tests/test_status_sets.py	HasConclusionTest.test_pending_is_plan_not_conclusion	D	-	??
 tests/test_status_sets.py	HasConclusionTest.test_surrounding_whitespace_is_normalized	D	-	??
 tests/test_status_sets.py	HasConclusionTest.test_unknown_status_counts_as_conclusion	D	-	12 个状态码之外的串按「已有结论」处理（排除法判据，失效方向偏安全）。
-tests/test_status_sets.py	HasUndoneAccountsTest.test_claims_rows_win_over_state_file	D	-	池里当日有行即以池为准：状态文件的 failed 不改变结果。
 tests/test_status_sets.py	HasUndoneAccountsTest.test_falls_back_to_state_file_without_claims_rows	D	-	池里当日无行（还没人领过）才回退状态文件。
+tests/test_status_sets.py	HasUndoneAccountsTest.test_pool_clean_state_file_open_still_counts_undone	D	-	池干净不豁免状态文件：账号最后是 failed（未了结词表）⇒ 仍判未了结。
 tests/test_status_sets.py	HasUndoneAccountsTest.test_pool_error_falls_back_to_state_file	D	-	池读取异常同样回退状态文件，绝不把「读不到」当「已了结」。
 tests/test_status_sets.py	HasUndoneAccountsTest.test_pool_unavailable_is_fail_safe	D	-	无库且状态文件缺失 → 判「有未了结」（宁多跑一轮，不漏签）。
 tests/test_status_sets.py	SecondRunDropDoneTest.test_missing_state_file_keeps_everything	D	-	状态文件缺失/损坏按「无记录」处理：宁可多跑一轮，不可漏签。

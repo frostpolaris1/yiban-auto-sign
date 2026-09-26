@@ -55,6 +55,23 @@ def _write_python_wrapper(app_dir):
     return path
 
 
+def _install_seal_stub(app_dir):
+    """放一个恒答 0 的 `scripts/signin.py` 桩（封存前置的"库内事实"判定件）。
+
+    run.sh 在封存当日收尾标记前必须以**库内事实**判"确实无未了结"（前置不是子执行体
+    自报退出码）：它调 `$PY scripts/signin.py --second-run-check`，判定不可得
+    （文件缺失/解释器不在）按"无法判定"处理 ⇒ 不封存 + 本轮"成功"收场时退出码升 1。
+    本文件钉的是外壳参数拼装/超时钳位/标记前移，应用目录若没有这个桩，rc 0 断言会被
+    封存闸门升级成 1——与本文件主题无关的劫持。桩答 0 = "当日无未了结"，封存照常。
+    """
+    scripts = os.path.join(app_dir, "scripts")
+    os.makedirs(scripts, exist_ok=True)
+    with io.open(os.path.join(scripts, "signin.py"), "w", encoding="utf-8",
+                 newline="\n") as f:
+        f.write("import sys\nsys.exit(0)\n")
+    _write_python_wrapper(app_dir)
+
+
 def _seed_facts_db(db_path, day, states):
     """建一个最小 sign_tasks 表并写入当日事实行（MF-82 交叉核对的数据源）。
 
@@ -97,6 +114,7 @@ class RunShWorkersTest(unittest.TestCase):
                 f.write(body)
             os.chmod(path, 0o755) # Git Bash 同样只看执行位，桩没有它就直接 126
         self.calls = os.path.join(self.tmp, "timeout-calls.log")
+        _install_seal_stub(self.tmp)            # 封存前置：--second-run-check 恒答 0
         self.env = dict(os.environ)
         self.env.update({
             "YIBAN_STATE_DIR": self.state,
@@ -104,7 +122,8 @@ class RunShWorkersTest(unittest.TestCase):
             "FAKE_TIMEOUT_LOG": self.calls,
         })
         for k in ("YIBAN_WORKERS", "YIBAN_SECOND_RUN", "YIBAN_LOG_FILE",
-                  "YIBAN_SIGN_END", "YIBAN_RUN_TIMEOUT_SEC"):
+                  "YIBAN_SIGN_END", "YIBAN_RUN_TIMEOUT_SEC",
+                  "YIBAN_FALLBACK_ENABLE"):
             self.env.pop(k, None)
         conv = subprocess.run(
             [self.bash, "-c", 'cygpath -u "$1" 2>/dev/null || echo "$1"', "_", self.fakebin],
@@ -197,6 +216,7 @@ class RunShMarkerTest(unittest.TestCase):
                 f.write(body)
             os.chmod(p, 0o755)
         self.timeout_log = os.path.join(self.tmp, "timeout-calls.log")
+        _install_seal_stub(self.tmp)            # 封存前置：--second-run-check 恒答 0
         self.env = dict(os.environ)
         self.env.update({
             "YIBAN_STATE_DIR": self.state,
@@ -208,7 +228,8 @@ class RunShMarkerTest(unittest.TestCase):
             "FAKE_FLOCK_EXIT": "0",
         })
         for k in ("YIBAN_SECOND_RUN", "YIBAN_RUN_TIMEOUT_SEC", "YIBAN_SIGN_END",
-                  "YIBAN_LOG_FILE", "YIBAN_GLOBAL_PAUSE", "YIBAN_DB_FILE"):
+                  "YIBAN_LOG_FILE", "YIBAN_GLOBAL_PAUSE", "YIBAN_DB_FILE",
+                  "YIBAN_WORKERS", "YIBAN_FALLBACK_ENABLE"):
             self.env.pop(k, None)
         # PATH 注入假命令（Git Bash 需 POSIX 路径；无 cygpath 时做朴素转换）
         conv = subprocess.run(
@@ -514,8 +535,9 @@ class RunShTimeoutClampTest(unittest.TestCase):
             "FAKE_TIMEOUT_LOG": self.timeout_log,
             "FAKE_FLOCK_EXIT": "0",
         })
+        _install_seal_stub(self.tmp)            # 封存前置：--second-run-check 恒答 0
         for k in ("YIBAN_SECOND_RUN", "YIBAN_RUN_TIMEOUT_SEC", "YIBAN_SIGN_END",
-                  "YIBAN_LOG_FILE"):
+                  "YIBAN_LOG_FILE", "YIBAN_WORKERS", "YIBAN_FALLBACK_ENABLE"):
             self.env.pop(k, None)
         conv = subprocess.run(
             [self.bash, "-c", 'cygpath -u "$1" 2>/dev/null || echo "$1"', "_", self.fakebin],

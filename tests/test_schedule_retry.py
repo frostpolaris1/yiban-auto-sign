@@ -413,6 +413,8 @@ STUB_SIGNIN = '''# -*- coding: utf-8 -*-
 - 否则：把本轮调用追加到 $STATE_DIR/rounds.log（记录 YIBAN_SECOND_RUN），
   并把 $STATE_DIR/sched-run-<today>.json 写成 completed=true，
   再按 $STATE_DIR/round_exit 的值退出（缺省 0）
+- 若 $STATE_DIR/flip_after_second 存在且本轮是补签轮（YIBAN_SECOND_RUN=1）：
+  把 check_exit 翻成 0——模拟"补签跑完后库内事实干净"，供封存闸门用例消费
 """
 import json, os, sys
 from datetime import datetime, timedelta
@@ -437,6 +439,10 @@ with open(os.path.join(state, "rounds.log"), "a", encoding="utf-8") as f:
     f.write("round second_run=%s\\n" % os.environ.get("YIBAN_SECOND_RUN", ""))
 with open(os.path.join(state, "sched-run-%s.json" % today), "w", encoding="utf-8") as f:
     json.dump({"completed": True}, f)
+if (os.environ.get("YIBAN_SECOND_RUN") == "1"
+        and os.path.exists(os.path.join(state, "flip_after_second"))):
+    with open(os.path.join(state, "check_exit"), "w", encoding="utf-8") as f:
+        f.write("0")
 sys.exit(_read_int("round_exit", 0))
 '''
 
@@ -687,9 +693,15 @@ class RunshSecondRoundTest(unittest.TestCase):
                          "只跑一轮，且该轮已带补签身份")
 
     def test_settled_marker_short_circuits_later_invocation(self):
-        """收尾标记落地后，再次调用 run.sh 直接跳过（07:12 兜底 cron 不再多跑）。"""
+        """收尾标记落地后，再次调用 run.sh 直接跳过（07:12 兜底 cron 不再多跑）。
+
+        封存的前置是**库内事实**"确实无未了结"（`--second-run-check` 判 0），不是轮次
+        自报收工：本用例用 flip_after_second 模拟"补签轮跑完后事实翻干净"，第一轮才
+        封得上存——事实仍有未了结时不得封存，那条反例钉在 test_second_round_rc_contract。
+        """
         self._write_ctl("check_exit", 10)
         self._write_ctl("round_exit", 2)
+        self._write_ctl("flip_after_second", "")   # 补签轮跑完后 --second-run-check 答 0
         self._run()
         self.assertEqual(len(self._rounds()), 2)
         # 第二次调用（模拟 07:12 的 cron；不带 YIBAN_SECOND_RUN 也应被收尾标记挡住）
