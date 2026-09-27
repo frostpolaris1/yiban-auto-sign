@@ -1275,6 +1275,7 @@ tests/test_fyiban_isolation.py	ProtocolLayerTest.test_signin_forwards_the_same_o
 tests/test_fyiban_isolation.py	WafBehaviorTest.test_unrecognized_text_fails_loudly	K	-	无法识别的挑战页必须抛错：静默返回空 cookie 会让登录少走一步且难排查。
 tests/test_fyiban_isolation.py	WafBehaviorTest.test_waf_module_has_no_security_policy_of_its_own	K	-	第三方层不得自带 URL 白名单实现（安全策略属本项目，须注入）。
 tests/test_fyiban_isolation.py	WafBehaviorTest.test_whitelist_policy_is_injected_not_inlined	K	-	白名单由调用方注入：signin 的包装必须传它自己的 `_is_fyiban_url`。
+tests/test_gate_manifest_sync.py	GateManifestSyncTest.test_gate_manifest_bidirectional_sync	E	-	??
 tests/test_global_pause.py	TestGlobalPause.test_auto_signin_paused_exits_2	D	-	自动签到 + 全局暂停 → exit 2（SKIPPED 语义，在周日检查之后、执行签到之前）。
 tests/test_global_pause.py	TestGlobalPause.test_manual_signin_not_blocked	D	-	--only 手动签到不受全局暂停影响（不应 exit 2）。
 tests/test_global_pause.py	TestGlobalPause.test_status_constant_and_symbol_mapping	D	-	全局暂停的状态码取值与符号映射（前端按符号渲染，改动需同步前端映射）。
@@ -1956,6 +1957,7 @@ tests/test_only_single_process.py	ManualOnlyDispatchConvergenceTest.test_only_wi
 tests/test_only_single_process.py	OnlyProcessTreeE2ETest.test_only_still_returns_3_when_global_lock_held	B	-	??
 tests/test_only_single_process.py	OnlyProcessTreeE2ETest.test_single_engine_process_attempts_once	B	-	??
 tests/test_only_single_process.py	TerminateProcessTreeE2ETest.test_terminate_leaves_no_orphan_child	B	-	??
+tests/test_panel_false_signals.py	PanelFalseSignalTest.test_paused_overwrite_respects_today_conclusion	E	-	??
 tests/test_planner.py	CapacityV3Test.test_does_not_fall_back_to_the_old_two_point_six_formula	A	-	反例：原稿拿通道吞吐 M/avg 算容量（忽略令牌桶封顶）会得 8960，高估 2.3 倍。
 tests/test_planner.py	CapacityV3Test.test_legacy_capacity_function_is_unchanged	A	-	旧串行公式（web 保存闸门仍按它取数）一字未改：4200s / avg 3 / gap 10 → 323。
 tests/test_planner.py	CapacityV3Test.test_m_is_min_of_sixteen_and_twice_the_bucket	A	-	??
@@ -2107,6 +2109,7 @@ tests/test_rate_limit_tiers.py	RateLimitTierTest.test_anonymous_write_uses_stric
 tests/test_rate_limit_tiers.py	RateLimitTierTest.test_auth_get_bucket_does_not_consume_strict_bucket	E	-	??
 tests/test_rate_limit_tiers.py	RateLimitTierTest.test_authenticated_get_is_relaxed	E	-	??
 tests/test_rate_limit_tiers.py	RateLimitTierTest.test_authenticated_write_still_strict	E	-	??
+tests/test_register_admin_email_indist.py	RegisterAdminEmailTest.test_builtin_admin_email_indistinguishable_from_duplicate	E	-	??
 tests/test_registration_pause.py	RegistrationPauseWebTest.test_existing_deployment_not_touched	E	-	.env 已存在（既有部署，缺该键）→ ensure_secret_key 不写暂停键。
 tests/test_registration_pause.py	RegistrationPauseWebTest.test_fresh_deployment_writes_pause	E	-	.env 不存在（全新部署）→ ensure_secret_key 创建时默认写入暂停键。
 tests/test_registration_pause.py	RegistrationPauseWebTest.test_log_page_shows_component_warnings	E	-	日志页解析口径（2026-09-19 改）：`yiban.*` 全级别入列，其它组件仅 WARNING+。
@@ -2220,6 +2223,8 @@ tests/test_release_version_source.py	EngineLogsReleaseVersionTest.test_summary_l
 tests/test_release_version_source.py	SingleVersionSourceTest.test_changelog_top_entry_matches	J	-	??
 tests/test_release_version_source.py	SingleVersionSourceTest.test_version_defined_once	J	-	??
 tests/test_release_version_source.py	SingleVersionSourceTest.test_web_side_takes_version_from_the_package	J	-	网页侧从 yiban 取版本，不自己定义（`web/__init__.py` 是纯包说明）。
+tests/test_review_bypass_and_fake_success.py	ReplaceAccountsDefaultTest.test_statusless_rows_land_pending_not_active	E	-	??
+tests/test_review_bypass_and_fake_success.py	VerifyGateBusyHonestTest.test_gate_busy_response_is_honest	E	-	??
 tests/test_review_flow.py	ReviewFlowTest.test_approve_sends_no_owner_mail	E	-	??
 tests/test_review_flow.py	ReviewFlowTest.test_batch_approve	E	-	??
 tests/test_review_flow.py	ReviewFlowTest.test_batch_reject_mails_each_owner_once	E	-	??
