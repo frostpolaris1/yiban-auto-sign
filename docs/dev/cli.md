@@ -155,6 +155,8 @@ dry-run、只报告计划。真正的恢复需要 `--yes --fingerprint <指纹>`
 结果（integrity ok 且 `user_version` 与备份一致），失败时 `--json` 的 `pre_restore_copy`
 给出可回退的副本路径。该子命令不碰 `scripts/backup.sh` 的归档（`.tar.gz/.gpg`）——那套是
 `backup.sh --restore` 的职责，本命令只认 `db --backup` 产出的裸 SQLite 副本。
+`--json` 的 `user_version` 字段只在 `--status` 模式出现；`--restore` 模式报的是**备份的**
+schema 版本 `backup_user_version`（恢复后的库版本已由 `--integrity` 独立回读校验）。
 
 ## 5. 相关文档
 
