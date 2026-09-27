@@ -31,6 +31,10 @@ from flask import Response, jsonify, request, session
 from web.routes import appmod as _appmod
 from web.routes import export_limits, read_audit_trace
 
+# 全量查看的封顶行数：模块级常量而非分支内局部值——三元组（total/truncated/
+# returned）必须按同一个 cap 判定，"是否还有更多"才只有一份答案。
+_LOG_VIEW_CAP = 5000
+
 
 def api_logs_export():
     """导出某日签到日志（脱敏副本，管理员）。
@@ -82,24 +86,24 @@ def api_logs():
     # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
     if not date:
         date = m._most_recent_log_date()
-    logs = m._log_lines_for(date)
+    _line_stats = {}
+    logs = m._log_lines_for(date, _line_stats)
     # 检索与全量查看。q=子串过滤（大小写不敏感，作用于当日全量行）；
-    # all=1 返回当日全部行（封顶 5000 行防拖垮浏览器，truncated 标记）；
+    # all=1 返回当日全部行（封顶 _LOG_VIEW_CAP 防拖垮浏览器）；
     # 缺省仍返回最后 80 行（轮询口径不变，靠前日志经 all=1 或导出获取）。
+    # 三元组同轴：total_lines / out_lines / truncated 必须从**同一份**过滤后的
+    # masked_all 推出（曾 total 取过滤前、truncated 取过滤后、cap 藏在分支体内
+    # ⇒ 前端按 truncated 判"还有更多"必然判错）。truncated 的语义收口为
+    # "结果集比本次返回的行数更大"——封顶截断与尾部 80 行截断共用同一个判据。
     q = str(request.args.get("q", "")).strip()
     show_all = str(request.args.get("all", "")).strip() == "1"
     masked_all = [m._mask_log_phones(ln) for ln in logs]
-    total_lines = len(masked_all)
     if q:
         _ql = q.lower()
         masked_all = [ln for ln in masked_all if _ql in ln.lower()]
-    if show_all:
-        _LOG_VIEW_CAP = 5000
-        out_lines = masked_all[:_LOG_VIEW_CAP]
-        truncated = len(masked_all) > _LOG_VIEW_CAP
-    else:
-        out_lines = masked_all[-80:]
-        truncated = False
+    total_lines = len(masked_all)
+    out_lines = masked_all[:_LOG_VIEW_CAP] if show_all else masked_all[-80:]
+    truncated = len(masked_all) > len(out_lines)
     # 探针结构化事件：stage="probe" 若无 HTTP 出口只落库不可见，故随日志接口
     # 附带当日探测记录（独立字段，不混入签到文本流；手机号打码，条数封顶）。
     probe_events = []
@@ -160,6 +164,10 @@ def api_logs():
             "total_lines": total_lines,
             "returned": len(out_lines),
             "truncated": truncated,
+            # 宽行模型（splitlines）把含裸 NEL/LS/PS 的行劈成两半后，后半行
+            # 过不了解析、原先整块静默消失。不改切行语义，只把丢了多少数出来：
+            # 返回面上 `dropped_lines` > 0 即"另有 N 行没被算进去"。
+            "dropped_lines": _line_stats.get("dropped", 0),
             "q": q,
             "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
             "date": date,
