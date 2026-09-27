@@ -379,8 +379,10 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 > ```
 >
 > 4. **两侧同时换成新钥**：`.env`（或 `YIBAN_ENV_FILE` 指向的文件）的 `YIBAN_ACCOUNTS_KEY` 与环境
->    变量档 `/etc/yiban/accounts-key`（存在即必须同步——它是装单元时 `install … .env /etc/yiban/accounts-key`
->    整份拷贝出来的，照装法重做一次并 `systemctl daemon-reload`）；
+>    变量档 `/etc/yiban/accounts-key`（存在即必须同步——它是装单元时由 `.env` 生成的启动快照：
+>    旧装法整份 `.env` 拷贝、新装法只拷 `YIBAN_ACCOUNTS_KEY` 一行。按现行装法重做一次并
+>    `systemctl daemon-reload`；整份拷贝的旧部署建议顺手收窄成只含密钥行，否则其余被冻结的
+>    键会持续压住设置页写入 `.env` 的新值，见「邮箱通知」节注记）；
 > 5. 重启全部进程，确认启动日志出现 `账号密钥自证：… kid=<第 2 步打印的 kid>`；若报
 >    "两侧不一致"拒启，就是还有一侧没改（断言替你兜住了），按日志里两个 kid 核对补齐；
 > 6. 抽样解密自校验（任一账号试手动签到或读回解密）→ 用 `scripts/audit_verify.py` 校验审计链。
@@ -628,6 +630,8 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 
 > ⚠️ `YIBAN_MAIL_PASS` 是**授权码**而非邮箱登录密码；属敏感凭据，只写入服务器本地 `.env`（已被 `.gitignore` 排除）。不配置邮箱通知时，Webhook 通知不受任何影响。
 
+> ❄️ 「保存即时生效」的前提：`YIBAN_MAIL_*` 这些键**不同时存在于 web 进程的环境变量里**（读取序为 env 档优先、`.env` 文件档兜底）。systemd 部署若把整份 `.env` 拷成 `EnvironmentFile`（历史装法），保存的新值会一直被启动快照压住、`systemctl restart` 也修不好——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行；已整份拷贝的部署把该文件收窄后 daemon-reload + restart 即恢复。
+
 </details>
 
 ### 代理配置（可选）
@@ -706,7 +710,13 @@ python3 -m web
 # 或 EnvironmentFile 报错启动失败）：
 #   useradd -r -s /usr/sbin/nologin yiban                     # 模板的 User=yiban
 #   install -d -m 0750 -o yiban -g yiban /etc/yiban           # .env 分盘存放目录（可选）
-#   install -m 0640 -o root -g yiban .env /etc/yiban/accounts-key   # 模板的 EnvironmentFile
+#   grep '^YIBAN_ACCOUNTS_KEY=' .env >/tmp/yiban-accounts-key && \
+#     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
+#     && rm -f /tmp/yiban-accounts-key                         # 模板的 EnvironmentFile：只放启动密钥这一行
+#   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：邮件等配置的读序是 env 档优先、.env 兜底，
+#   整份拷贝会把「系统设置」页写入 .env 的新值压进启动快照，保存后连 systemctl restart
+#   都不生效（要生效得每次重新生成该文件）。旧部署若已整份拷贝，收窄成只含上面这一行
+#   并 daemon-reload + restart，即恢复"保存即时生效"。
 # 若部署目录不是 /opt/yiban-auto-sign，必须同步改单元里的 WorkingDirectory / ExecStart /
 # ReadWritePaths（模板是写死的绝对路径）。
 #
