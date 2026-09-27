@@ -36,6 +36,7 @@ from yiban import mail as mailer
 from yiban import notify
 from yiban.infra.env_io import ENV_LINE_BREAK_CHARS as _ENV_LINE_BREAK_CHARS
 from yiban.mail import layout as mail_layout
+from yiban.masking import mask_email
 from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
@@ -137,10 +138,14 @@ def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent
 
     `operator` 缺省取当前会话用户；调用方已有目标用户名（如权限变更用的是局部
     `username`）时显式传入，避免在路由里再拼一遍字段。
+
+    操作者一律过 `mask_email`（幂等，已遮形态原样穿过）：注册管理员的会话用户名
+    就是邮箱，缺省路径不得把明文邮箱打进外发邮件（MF-49 出口字段，与审计 actor
+    同一份口径，见 `yiban.masking.mask_email`）。
     """
     fields = list(detail or [])
-    fields.append(("操作者", _nl_safe(
-        session.get("username", "?") if operator is None else operator)))
+    fields.append(("操作者", _nl_safe(mask_email(
+        session.get("username", "?") if operator is None else operator))))
     return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level=level)
 
 

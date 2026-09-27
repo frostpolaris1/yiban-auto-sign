@@ -94,10 +94,23 @@ def _bounded_audit_json(detail):
                 len(json.dumps(d, ensure_ascii=False)) > _AUDIT_DETAIL_BUDGET:
             d[key] = d[key][:-1]
             d[key + "_cut"] = True
+    # 2-8 审查移交的尾巴：上面的逐条裁剪只救 `smtps` 两个**数组视图**，极端
+    # `admin_to`（多条长地址逐项打码后仍超预算）无人管——届时 `audit()` 层的
+    # `_scope_detail` 走后缀退化截断，把整段 JSON 截烂（下游还原失败，"可还原
+    # 目标"落空）。字符串字段同法限量：逐段收缩并打 `_cut`；旧收件人先牺牲
+    # （"改到哪"比"从哪来"更常被追问，与 smtps 先新后旧的裁剪次序同理）。
+    for key in ("admin_to_from", "admin_to"):
+        while isinstance(d.get(key), str) and d[key] and \
+                len(json.dumps(d, ensure_ascii=False)) > _AUDIT_DETAIL_BUDGET:
+            d[key] = d[key][:-4]
+            d[key + "_cut"] = True
     if len(json.dumps(d, ensure_ascii=False)) > _AUDIT_DETAIL_BUDGET:
-        # 连裁剪后的最小形态都放不下（超长 host 的病态输入）：视图整体让位给
-        # 计数与显式标注，至少保住 enabled/admin_to 等其余键的 JSON 完整性
-        for key in ("smtps_from", "smtps_to", "smtps_from_cut", "smtps_to_cut"):
+        # 连逐条收缩后的最小形态都放不下（超长 host + 超长收件人的病态组合）：
+        # 地址类视图（smtps 两清单与 admin_to 两串）整体让位给计数与显式标注，
+        # 至少保住 enabled/admin_notify 开关键与 JSON 可解析性——宁可缺一面，
+        # 不产一条"截烂的伪存证"。
+        for key in ("smtps_from", "smtps_to", "smtps_from_cut", "smtps_to_cut",
+                    "admin_to", "admin_to_from", "admin_to_cut", "admin_to_from_cut"):
             d.pop(key, None)
         d["smtps_view"] = "too_long"
     return json.dumps(d, ensure_ascii=False)

@@ -40,9 +40,11 @@
     if (p.indexOf("*") !== -1) return p;
     return p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p;
   }
-  // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径）：保留最多 3 个字符 + 域名；
+  // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径，两份实现由
+  // tests/test_web_mask_email_parity.py 真跑对拍钉住）：保留最多 3 个字符 + 域名；
   // 已含 * 或非邮箱（无 @ / @ 在首位）原样返回。完整邮箱只允许存在于 JS 内存态与
-  // 请求体/URL path，禁止写入 DOM 文本或属性（用户管理页据此渲染，见 pages/work_users.js）。
+  // 请求体，禁止写入 DOM 文本或属性、禁止编进 URL path（单条操作走不透明 id）、
+  // 禁止进 sessionStorage 缓存（用户管理页据此渲染，见 pages/work_users.js）。
   function maskEmail(e) {
     e = String(e == null ? "" : e);
     if (e.indexOf("*") !== -1) return e;
@@ -252,7 +254,10 @@
      快速切页时同一份外壳数据被反复拉取——既是单 worker 上的无谓请求，也是触发全局限速
      429 的主因。apiCached 按 key 缓存成功结果（带写入时间戳 + TTL），命中则不产生网络请求；
      任何写请求成功返回后整体失效（见 perform 的 cacheClearAll），会话边界（登录/退出）
-     因此天然清理，不会串会话。失败/空结果不写缓存，避免把错误态粘住。
+     因此天然清理，不会串会话；退出另有主动清理（doLogout 发请求前先清，
+     logout 请求失败的残留也带走）。失败/空结果不写缓存，避免把错误态粘住。
+     缓存准入：只允许**无敏感字段**的响应或标量投影（/api/me 与 /api/users 整表
+     含 csrf_token/明文邮箱，一律不进——见各自调用点注释，MF-49 出口面）。
      sessionStorage 按标签页隔离，键前缀统一便于整体清理与排查。 */
   var CACHE_PREFIX = "yiban-cache:";
   function cacheGet(key) {
@@ -1012,12 +1017,20 @@
 
   /* ---------- 退出 ---------- */
   function doLogout() {
+    // 清缓存放在**发请求之前**且无条件：POST /api/logout 成功时 perform 的写后清理
+    // 是第二道；但网络失败/5xx 的失败路径原来不清——会话已按用户意愿终止，
+    // 外壳缓存里可能躺着整表用户邮箱（MF-49 出口面），绝不能因"退出没退干净"
+    // 而滞留到标签页关闭。cacheClearAll 自身容错（隐私模式不抛）。
+    cacheClearAll();
     return api("POST", "/api/logout").catch(function () {}).then(function () {
       location.href = url("/login");
     });
   }
 
-  /* ---------- 身份 ---------- */
+  /* ---------- 身份（/api/me 不进 sessionStorage：响应含 csrf_token 与登录邮箱，
+     属敏感字段，缓存整包会把它们驻进标签页全生命周期的磁盘可见存储。页面内的
+     重复读由 identity() 的去重链与 api() 的并发 GET 合并兜住；跨页重取一次是
+     MPA 外壳的原语义。见 tests/test_users_exit_surface_frontend.py） ---------- */
   var me = null;
   var mePending = null;
   function roleLabel(m) {
@@ -1026,9 +1039,9 @@
     return m.role === "admin" ? "管理员" : m.role === "user" ? "普通用户" : (m.role || "");
   }
   function hydrateIdentity() {
-    // 外壳身份走 30s 会话缓存：切页不再重复拉 /api/me（CSRF token 随会话稳定，
-    // 缓存内一并带回；写请求成功会清缓存，角色变更最多滞后 30s）。
-    return apiCached("me", 30000, function () { return api("GET", "/api/me"); }).then(function (data) {
+    // 直连取身份，不经 apiCached——见上方"身份"节注释（MF-49 出口面：
+    // csrf_token 与登录邮箱不进 sessionStorage）。
+    return api("GET", "/api/me").then(function (data) {
       me = data;
       if (data && data.csrf_token) csrfToken = data.csrf_token;
       var name = data.username || data.email || "";
@@ -1128,11 +1141,17 @@
         return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
       }).length);
     }).catch(function () {});
-    apiCached("nav-users", 60000, function () { return api("GET", "/api/users"); }).then(function (data) {
-      var list = (data && data.users) || [];
-      // 待处理用户 = 名下有「待审核或已拒绝」账号的用户数。
-      // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
-      var review = list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
+    // 徽标只用到「有待处理的用户数」这一个计数，缓存**投影后的标量**而非整表：
+    // /api/users 全量含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
+    // 敏感字段不入磁盘可见存储）。apiCached 仍在 60s 窗口内把外壳请求收敛成一次，
+    // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变。
+    apiCached("nav-users", 60000, function () {
+      return api("GET", "/api/users").then(function (data) {
+        var list = (data && data.users) || [];
+        // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
+        return list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
+      });
+    }).then(function (review) {
       setNavBadge("work-users", review);
     }).catch(function () {});
   }
