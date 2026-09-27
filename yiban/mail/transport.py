@@ -111,10 +111,20 @@ def _send(subject, text, to):
         return False
     entries = config.smtp_list()
     # 正文在条目循环**之外**定稿：同封 failover 的每一条都必须是同一封——同
-    # plain/html、同 Message-ID（键含正文，正文若在循环内二次排版，哈希跟着漂移，
-    # 幂等键就白造）。
-    plain, html_body = layout.as_body(text)
-    message_id = _message_id(subject, to, plain)
+    # plain/html、同 Message-ID（键含正文，哈希跟着正文走，正文若在循环内二次
+    # 排版，幂等键就白造）。
+    # 排版定稿同样进 try：本层契约是"静默失败（记日志不抛出）"，而排版吃的是
+    # 调用方拼出来的正文（用户名/邮箱/理由等外部输入可携带孤立代理对，utf-8
+    # 编码直接失败）。此前这段与 MIME 构造都露在 try 外，一次坏字符会把异常
+    # 抛回所有在 `_file_lock` 里同步发信的调用点——业务已落盘、锁内爆 500、
+    # 排在其后的审计行也没了。
+    try:
+        plain, html_body = layout.as_body(text)
+        message_id = _message_id(subject, to, plain)
+    except Exception as e:
+        # 细节走 ascii() 转义：坏字符正是失败原因本身，原样进日志会在写流时二次爆
+        logger.warning("邮件正文渲染失败（本封不发，只记不抛）: %s", ascii(e))
+        return False
     for idx, entry in enumerate(entries):
         host = str(entry.get("host") or "").strip()
         port = entry.get("port", 465)
@@ -145,21 +155,24 @@ def _send(subject, text, to):
         user = escape_line_breaks(str(entry.get("user") or "").strip())
         password = str(entry.get("pass") or "")
 
-        if html_body:
-            # multipart/alternative：parts 按"偏好递增"排（先 plain 后 html），
-            # 不支持 HTML 的客户端与终端读到的仍是排好的纯文本——排版层只是增益，
-            # 不构成新的送达依赖。
-            msg = MIMEMultipart("alternative")
-            msg.attach(MIMEText(plain, "plain", "utf-8"))
-            msg.attach(MIMEText(html_body, "html", "utf-8"))
-        else:
-            msg = MIMEText(plain, "plain", "utf-8")
-        msg["Subject"] = Header(subject, "utf-8")
-        msg["From"] = user
-        msg["To"] = to
-        msg["Message-ID"] = message_id
-
         try:
+            # MIME 构造与序列化一起进 try：孤立代理对这类坏字符在
+            # `Header(...).encode()` / `as_string()` 时才真正抛 UnicodeEncodeError，
+            # 构造语句挪进来但 except 不收口等于没挪（下方 Exception 分支）。
+            if html_body:
+                # multipart/alternative：parts 按"偏好递增"排（先 plain 后 html），
+                # 不支持 HTML 的客户端与终端读到的仍是排好的纯文本——排版层只是增益，
+                # 不构成新的送达依赖。
+                msg = MIMEMultipart("alternative")
+                msg.attach(MIMEText(plain, "plain", "utf-8"))
+                msg.attach(MIMEText(html_body, "html", "utf-8"))
+            else:
+                msg = MIMEText(plain, "plain", "utf-8")
+            msg["Subject"] = Header(subject, "utf-8")
+            msg["From"] = user
+            msg["To"] = to
+            msg["Message-ID"] = message_id
+
             # 显式证书校验——smtplib 默认 context（ssl._create_stdlib_context）
             # verify_mode=CERT_NONE 不校验服务器证书，SMTP 授权码可被中间人窃取后
             # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
@@ -203,6 +216,15 @@ def _send(subject, text, to):
                 # 不再无声；上界 = smtp_list() 长度（配置面 MAIL_SMTPS_MAX=10 封顶）。
                 logger.info(
                     "同封重投：条目 %d/%d 接手（id=%s）", idx + 2, len(entries), message_id)
+        except Exception as e:
+            # 消息级缺陷（构造/序列化对坏字符敏感，如孤立代理对 →
+            # UnicodeEncodeError）：换条目重投的是同一封、必然同样失败，直接按
+            # "本封未送达"收口。不在本层收口的话异常会抛回调用方——多为持
+            # `_file_lock` 同步发信的路径，等于让一封坏邮件在锁内爆 500、
+            # 并把排在其后的审计留痕一起带走。细节走 ascii() 转义：坏字符
+            # 正是失败原因本身，原样进日志会在写流时二次爆。
+            logger.warning("邮件构造/序列化失败（本封不再换条目重试）: %s", ascii(e))
+            return False
     return False
 
 
