@@ -8,6 +8,7 @@
 """
 import logging
 import os
+import sys
 
 from yiban.masking import mask_phone as _mask_phone
 
@@ -32,19 +33,25 @@ def parse_env_int(name, default):
 
 
 def print_config_summary(accounts):
-    """打印账号配置摘要（手机号与密码脱敏），不发任何网络请求。
+    """打印账号配置摘要（手机号与密码脱敏）到 **stderr**，不发任何网络请求。
 
     设备识别码只报"已配置"、不打印任何前缀（防摘要泄露设备指纹），型号按原值展示
     便于排查；手机号脱敏后仍可区分账号（形如 138****8000）。
+
+    走 stderr 而非 stdout 是契约（`docs/dev/cli.md` §2 第 2/10 条：stdout 只放结果，
+    人类可读汇总走 stderr）：此前用 `print` 直写 stdout，`sign --check-config --json`
+    会把摘要行和随后的 JSON 行混在 stdout 上，破坏单行 JSON 契约。宿主 run.sh 的
+    `2>&1` 与终端都会照常显示这行摘要，可读性不变。
     """
-    print("==== 账号配置检查 ====")
+    out = sys.stderr
+    print("==== 账号配置检查 ====", file=out)
     for i, acc in enumerate(accounts, 1):
         if acc.has_device_info:
             device = f"设备: {acc.phone_model} / 识别码已配置"
         else:
             device = "设备: 未配置（如学校开启设备绑定，签到将失败）"
-        print(f"  {i}. {_mask_phone(acc.phone)} | 密码: {'*' * 8} | {device}")
-    print(f"共 {len(accounts)} 个账号，配置检查通过。")
+        print(f"  {i}. {_mask_phone(acc.phone)} | 密码: {'*' * 8} | {device}", file=out)
+    print(f"共 {len(accounts)} 个账号，配置检查通过。", file=out)
 
 
 def _apply_only_filter(accounts, only_arg):
