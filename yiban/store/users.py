@@ -548,7 +548,7 @@ def purge_deleted_users_hard(emails, audit_spec=None):
                 spec = dict(audit_spec)
                 # target 逐条遮罩（其余动作的 target 早就是 `_mask_email` 形态，purge 曾整表明文——
                 # 同列三套口径即"actor/target 面失守"本体）。追人靠遮罩形态 + 同事务业务行 +
-                # `_req` 作用域标记；碰撞口径的结论见批 2 报告（遮罩为线索层非身份层）。
+                # `_req` 作用域标记；遮罩是线索层非身份层，碰撞时靠同事务业务行追人。
                 spec.setdefault("target", ",".join(mask_email(e) for e in purged))
                 spec.setdefault(
                     "detail",
