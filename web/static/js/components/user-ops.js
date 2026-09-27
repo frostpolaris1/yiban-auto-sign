@@ -5,8 +5,11 @@
    页面只提供 ctx：
      ctx.busy(on)     置/复位忙碌
      ctx.refresh()    写操作成功后重拉两个列表并重渲染
-     ctx.resolve(uid) 由内部 uid 回查用户记录（含完整邮箱）——完整邮箱只在请求体
-                      或既有契约的 URL path 里出现，绝不写入 DOM
+     ctx.resolve(uid) 由内部 uid 回查用户记录（含 id 与完整邮箱）——完整邮箱只出现在
+                      请求体（batch/purge 契约），绝不写入 DOM、绝不编进 URL path：
+                      单条端点按**不透明 id** 定位（/api/users/<int:id>/…，服务端按 id
+                      解析回邮箱；path 会被 nginx `combined` 记进 `$request`、经同源
+                      Referrer 外送——MF-49 出口字段）
 
    与后端门禁逐条对齐（web/app.py）：
      · role        仅主管理员 + _high_risk_gate
@@ -53,12 +56,20 @@
       var rec = ctx.resolve(uid);
       return rec && rec.email ? rec.email : "";
     }
-    function path(email, tail) { return "/api/users/" + encodeURIComponent(email) + tail; }
+    function idOf(uid) {
+      var rec = ctx.resolve(uid);
+      return rec && rec.id != null ? rec.id : null;
+    }
+    // 单条端点（role/password/delete）按**不透明 id** 定位——路由是 `<int:user_id>`，
+    // 邮箱绝不进 path：path 会被 nginx `combined` 记进 `$request`、经同源 Referrer
+    // 再外送（MF-49 出口字段）。id 缺失（数据过期/服务端口径回退）时拒绝发请求，
+    // 不回落"邮箱编 path"的旧形态。
+    function path(id, tail) { return "/api/users/" + encodeURIComponent(id) + tail; }
 
     // 角色变更：仅主管理员（后端 403 兜底）；确认影响面 → 提交（口令由 helper 按后端 reason 收）
     function role(uid, newRole) {
-      var email = emailOf(uid);
-      if (!email) return;
+      var email = emailOf(uid), id = idOf(uid);
+      if (!email || id == null) return;
       var action = newRole === "admin" ? "设为管理员" : "取消管理员";
       YB.confirmDialog({
         title: action,
@@ -67,7 +78,7 @@
       }).then(function (ok) {
         if (!ok) return;
         run(YB.dangerousSubmit({
-          path: path(email, "/role"),
+          path: path(id, "/role"),
           body: { role: newRole },
           desc: action + " " + YB.maskEmail(email) + "？请输入当前管理员密码确认。"
         }), newRole === "admin" ? "已设为管理员" : "已取消管理员", false);
@@ -76,10 +87,10 @@
 
     // 重置密码：新密码由页面模态收集并过完整策略，此处直接提交（口令由 helper 按后端 reason 收）
     function resetPassword(uid, newPassword) {
-      var email = emailOf(uid);
-      if (!email || !newPassword) return;
+      var email = emailOf(uid), id = idOf(uid);
+      if (!email || id == null || !newPassword) return;
       run(YB.dangerousSubmit({
-        path: path(email, "/password"),
+        path: path(id, "/password"),
         body: { password: newPassword },
         desc: "确认重置 " + YB.maskEmail(email) + " 的密码？重置后其旧会话立即失效。请输入当前管理员密码确认。"
       }), "密码已重置", false);
@@ -89,8 +100,8 @@
     // 删除不可逆：走 dangerousSubmit（后端按档位决定要口令还是倒计时确认），
     // 由响应 reason 分流，前端不判断档位。
     function deleteUser(uid, mode) {
-      var email = emailOf(uid);
-      if (!email) return;
+      var email = emailOf(uid), id = idOf(uid);
+      if (!email || id == null) return;
       var full = mode === "full";
       YB.confirmDialog({
         title: full ? "删除用户" : "清空账号",
@@ -101,7 +112,7 @@
       }).then(function (ok) {
         if (!ok) return;
         run(YB.dangerousSubmit({
-          path: path(email, "/delete"),
+          path: path(id, "/delete"),
           body: { mode: mode },
           desc: (full ? "完全删除用户 " : "清空用户账号 ") + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
           delayDesc: full

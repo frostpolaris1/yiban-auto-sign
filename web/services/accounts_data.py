@@ -43,6 +43,7 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 
 from web.services.locks import _file_lock
 from yiban import clock
+from yiban.masking import mask_email, mask_email_local
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
@@ -134,21 +135,27 @@ def load_users():
 # 展示序列化
 # ---------------------------------------------------------------------------
 def _mask_email(e):
-    """日志/列表脱敏：邮箱 → abc***@example.com（保留域名）；已脱敏或非邮箱原样返回（幂等）。"""
-    e = str(e)
-    if "*" in e:
-        return e
-    i = e.find("@")
-    if i <= 0:
-        return e
-    return e[: min(3, i)] + "***" + e[i:]
+    """日志/列表脱敏：邮箱 → abc***@example.com（幂等）。
+
+    真源在 `yiban.masking.mask_email`——展示面与审计 `actor` 列共用同一份口径，
+    这里只是 web 侧的名字转发（前端 `maskEmail` 由对拍测试钉住同口径）。
+    """
+    return mask_email(e)
 
 
 def _owner_display_of(owner_email):
-    """把账号归属邮箱映射为展示名（后台归属列用）：普通用户显示邮箱前缀（@ 前）。"""
+    """账号归属展示名（后台归属列与用户下拉共用唯一口径，服务端算好再下发）。
+
+    普通用户显示**遮罩后的**邮箱本地部（`mask_email_local`：号形态→`138****0000`，
+    其余→前 3 字符 + `***`）。旧实现整段本地部外发——现网约一成账号的本地部
+    **就是手机号**（MF-49 出口字段），且 `account-form.js` 的 `email.split("@")[0]`
+    曾按同一规则在前端另算一份。收敛后拆分与遮罩只在这一处，前端一律消费
+    服务端下发的结果字段，不得本地再拆。
+    """
     if owner_email in ("admin", ""):
         return "管理员"
-    return owner_email.split("@")[0] if "@" in owner_email else owner_email
+    local = owner_email.split("@")[0] if "@" in owner_email else owner_email
+    return mask_email_local(local)
 
 
 def mask_account(acc, index, masked=True):
