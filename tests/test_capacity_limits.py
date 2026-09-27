@@ -576,6 +576,41 @@ class CapacityFormulaTest(_Base_B19):
                     signin.capacity_accounts(4680, gap),
                 )
 
+    def test_estimate_takes_avg_from_env_file_layer(self):
+        """MF-93 行为钉：同一次估算只从一份配置层取值，avg 跟随 `.env` 真值。
+
+        web 进程从不把 `.env` 装进环境（run.sh 才逐行 export），而 gap 一直读
+        `.env`——修复前 avg/开关落在进程环境，一次估算跨两层，按缺省 avg=3 高估
+        （W=4200/gap=10 时 .env 写 avg=12：展示与闸门都给 323，真值应为 191）。
+        修复后转发层把"进程环境为底、`.env` 覆盖"的生效层一并传给 `capacity_of`：
+        - `.env` 写 avg=12 而进程环境没有该键 ⇒ 必须按 12 算（修复前回退缺省 3 → 假绿）；
+        - 进程环境带着同名陈旧值（systemd EnvironmentFile 冻结拷贝的形态）⇒ 仍按 `.env`；
+        - 改 `.env` 的 avg ⇒ 预估值跟着变。展示面与判定面共用这**同一个**
+          `_capacity_estimate`，两侧同值由构造保证，这里钉的就是那个唯一出口。
+        """
+        env2 = os.path.join(self.tmp, "env-avg.env")
+
+        def _write_env_avg(avg):
+            with io.open(env2, "w", encoding="utf-8") as f:
+                f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AVG_ATTEMPT_SEC={avg}\n")
+
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(self.webapp, "ENV_FILE", env2):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            os.environ.pop("YIBAN_SCHEDULER_V3", None)
+            # 有效窗口 4800s、gap=10：avg=12 → (4800-12)//22+1 = 218
+            _write_env_avg("12")
+            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 12) // 22 + 1)
+            # 陈旧环境值压不住 `.env` 真值（.env 覆盖优先级与 run.sh 一致）
+            os.environ["YIBAN_AVG_ATTEMPT_SEC"] = "3"
+            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 12) // 22 + 1)
+            # 改 `.env` ⇒ 两侧共同的这个出口同步变化：avg=3 → (4800-3)//13+1 = 370
+            _write_env_avg("3")
+            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 3) // 13 + 1)
+
 
 def _load_webapp_CAP():
     spec = importlib.util.spec_from_file_location("webapp_capbd", os.path.join(BASE, "web", "app.py"))
