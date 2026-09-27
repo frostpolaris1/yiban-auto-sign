@@ -1038,6 +1038,7 @@ tests/test_executor_manifest.py	MigrationWritebackTest.test_get_fields_match_old
 tests/test_executor_manifest.py	MigrationWritebackTest.test_get_migrates_and_keeps_legacy_keys	B	-	??
 tests/test_executor_manifest.py	MigrationWritebackTest.test_manifest_wins_over_stale_legacy_keys	B	-	清单与旧键并存 → **以清单为准**（旧键只作回退读取）。
 tests/test_executor_manifest.py	MigrationWritebackTest.test_second_get_does_not_rewrite_manifest	B	-	??
+tests/test_executor_manifest.py	MigrationWritebackTest.test_single_mode_false_when_worker_rows_exist	B	-	有并行行时 single_mode 必须为 False——它不是"配置为空"的恒真旗。
 tests/test_executor_manifest.py	OwnersSinceTest.test_reads_distinct_owners_in_window	B	-	??
 tests/test_executor_manifest.py	OwnersSinceTest.test_rows_outside_retention_are_ignored	B	-	??
 tests/test_executor_manifest.py	RowIsolationTest.test_legacy_slot_endpoint_maintains_manifest	B	-	旧单段接口在清单模式下也必须生效（不能写旧键后被"以清单为准"盖过）。
@@ -1561,9 +1562,21 @@ tests/test_mailer.py	MailConfigSmtpsApiTest.test_get_smtps_masking_and_never_ech
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_empty_pass_keeps_old	H	-	??
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_empty_user_keeps_old	H	-	??
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_invalid_entries_400	H	-	??
-tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_null_fields_not_persisted_as_none	H	-	JSON null 入参兜底：host=null → 400；user/pass=null 视为留空（按索引保留旧值），
+tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_null_fields_not_persisted_as_none	H	-	JSON null 入参兜底：host=null → 400；user/pass=null 视为留空（按稳定身份/
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_requires_confirm_password	H	-	??
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_writes_enc_and_roundtrips	H	-	PUT 传入含 admin_to 的条目：该死键不再落盘，保存结果只含有效字段。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_ambiguous_legacy_target_fails_closed	H	-	旧配置里同 host:port 两条（歧义）+ 无 id 提交：不猜归属，留空按空落盘。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_audit_clearing_all_smtps_keeps_old_targets	H	-	清空发信清单也是改告警去向：smtps_from 保留全部旧目标，smtps_to 为空。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_audit_records_from_to_without_secrets	H	-	中继与收件人的变更审计必须能读出"从哪改到哪"（打码口径），零凭据。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_audit_view_over_budget_degrades_loudly_not_broken	H	-	超出审计 200 字符预算时：裁剪 + `_cut` 标注，detail 仍是合法 JSON。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_bad_id_shapes_rejected	H	-	id 是不透明标识不是自由文本：非法形状/请求内重复 → 400，且零落盘。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_delete_middle_row_credentials_follow_id	H	-	删掉中间那行后，剩余两条必须各自保住**自己**的授权码/账号。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_generated_id_shape_and_roundtrip	H	-	无 id 提交→后端补发稳定 id；GET 原样带回；显式 id 保存后不变。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_host_change_never_carries_old_credentials	H	-	只改 host = 换中继：同 id 也**不得**把旧授权码/旧发件账号带过去。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_legacy_blob_readable_and_id_assigned_on_save	H	-	旧形状密文（无 id）：GET 可读（id=null）、可发（smtp_list 不受影响），
+tests/test_mailer.py	SmtpEntryIdentityTest.test_legacy_middle_delete_credentials_follow_host	H	-	旧配置 + 旧客户端删中间行：剩余两条的凭据按 host 找回自己那条。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_port_change_same_target_rule	H	-	同 host 换端口也算换目标（凭据按中继+端口整体走），同样不沿用。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_reorder_credentials_follow_id	H	-	整表重排：凭据跟着 id 走，不跟着位置走。
 tests/test_mailer.py	SmtpListTest.test_enc_non_dict_entries_filtered	H	-	解密列表中的非 dict 元素被过滤（脏数据不让调用方 e.get 崩溃）。
 tests/test_mailer.py	SmtpListTest.test_enc_roundtrip	H	-	??
 tests/test_mailer.py	SmtpListTest.test_fallback_empty_when_no_config	H	-	??
@@ -2535,6 +2548,18 @@ tests/test_slot_geometry.py	SlotToBiYardstickTest.test_default_window_mapping_is
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_app_forward_hands_window_over_to_bounds	A	-	`web.app.sign_window_bounds` 只转发：起止与前后裁剪交给 `yiban.window.bounds`。
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_pref_slots_not_all_disabled_when_edges_clamped	A	-	web 同准绳：缓冲收缩后自选片不全为灰，片号基点仍是窗口起点。
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_pref_slots_pin_enabled_and_disabled_under_crop	A	-	有效窗口被前裁吃满 5 分钟（未吃空）：首片整片在裁剪区内 → 置灰，次片可选。
+tests/test_smtp_identity_frontend.py	ExecutorsZeroWorkersStaticTest.test_kpi_still_reads_backend_configured	F	node	??
+tests/test_smtp_identity_frontend.py	ExecutorsZeroWorkersStaticTest.test_single_mode_hint_present	F	node	??
+tests/test_smtp_identity_frontend.py	NotifyQuotaCaliberJsTest.test_unlimited_and_hidden_branches	F	node	??
+tests/test_smtp_identity_frontend.py	NotifyQuotaCaliberJsTest.test_used_count_visible_not_only_remaining	F	node	??
+tests/test_smtp_identity_frontend.py	SmtpMailEmptyStatusStaticTest.test_collect_carries_row_id	F	node	??
+tests/test_smtp_identity_frontend.py	SmtpMailEmptyStatusStaticTest.test_save_status_gate_unchanged	F	node	留空沿用/门禁等既有提交面不因 id 改动：smtps 仍只在 tableDirty 时提交。
+tests/test_smtp_identity_frontend.py	SmtpMailEmptyStatusStaticTest.test_status_line_names_the_empty_list	F	node	??
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_empty_list_has_explicit_hint	F	node	空清单不再静默：占位行必须明确说出"尚未配置发件 SMTP、告警不可送达"。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_host_drift_placeholder_follows	F	node	改了 host 的行，授权码占位必须当场改口；改回则恢复原案。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_legacy_null_ids_get_fresh_valid_ids	F	node	旧格式条目（id=null）渲染时现造 id：形状与后端校验同口径且行间不撞。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_middle_row_delete_shifts_nothing	F	node	删中间行后，剩余两条的 id 序列必须是 [第1条, 第3条]。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_rendered_rows_carry_ids	F	node	??
 tests/test_state_file_writes.py	SignStateBomReadTest.test_bom_file_keeps_existing_entries	D	-	??
 tests/test_state_file_writes.py	SigninWritesAreAtomicTest.test_cred_state_write_is_delegated	D	-	熔断状态文件的原子写归 `yiban/cred_state.py`（唯一读写入库）；
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_corrupt_marker_is_treated_as_not_done	D	-	坏文件（历史遗留/手工改动）必须退化为"未跑过"，不得抛异常打断调度循环。
