@@ -1682,6 +1682,11 @@ tests/test_mailer.py	test_send_admin_alert_skipped_when_disabled	H	-	??
 tests/test_mailer.py	test_send_admin_alert_success	H	-	??
 tests/test_mailer.py	test_send_failure_logs_safe	H	-	??
 tests/test_mailer.py	test_sender_user_newlines_never_reach_smtp	H	-	D11（MF-44）：`user` 字段一处最小收口——发送前同源单行化。
+tests/test_maintenance_readonly.py	InitDbReadonlyTest.test_create_false_connection_rejects_writes	J	-	??
+tests/test_maintenance_readonly.py	InitDbReadonlyTest.test_create_false_missing_db_raises_without_creating	J	-	??
+tests/test_maintenance_readonly.py	MaintenanceScriptsReadOnlyTest.test_audit_verify_does_not_create_missing_tables	J	-	库缺表时 audit_verify 只报 rc=2，不得顺手 `CREATE TABLE`（此前经 init_db 会）。
+tests/test_maintenance_readonly.py	MaintenanceScriptsReadOnlyTest.test_scripts_do_not_create_db_in_empty_cwd	J	-	空 cwd（库不存在）：脚本不得当场建库；缺库按非 0 明确报告。
+tests/test_maintenance_readonly.py	MaintenanceScriptsReadOnlyTest.test_scripts_leave_existing_db_untouched	J	-	既有库：库文件 mtime/大小/表清单/user_version 全不变；新增文件只限 SQLite sidecar。
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_every_known_deny_message_maps_explicitly	E	-	??
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_unknown_message_falls_back_to_500	E	-	??
 tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_all_paused_reports_and_does_not_spawn	E	-	全选皆自暂停：如实说明并拒绝，不派发空队列子进程。
