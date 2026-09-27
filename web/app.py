@@ -1807,7 +1807,10 @@ def create_app(host=None):
         同一出口内的多次操作；请求 id 由服务端生成、编码进审计 detail，链 HMAC 覆盖它。
         线程局部在 teardown 清除——Flask 复用工作线程，残留会让后续后台线程误带旧 id。
         """
-        db.set_request_scope("web-" + secrets.token_hex(8))
+        # 作用域 id 形状（含中段连字符）契约在真源 `db.new_request_scope_id`：
+        # 十六进制串有约千分之一概率全为数字，构成 ≥11 位数字连段会被裸手机号
+        # 子串判据（脱敏回归等扫描消费方）偶发误报，切段后最长连段 8 位。
+        db.set_request_scope(db.new_request_scope_id())
 
     @app.teardown_request
     def _clear_audit_scope(_exc=None):

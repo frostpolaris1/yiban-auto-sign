@@ -157,6 +157,7 @@ audit = _audit_chain.audit
 # `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
 set_request_scope = _audit_chain.set_request_scope
 current_request_scope = _audit_chain.current_request_scope
+new_request_scope_id = _audit_chain.new_request_scope_id
 record_in_txn = _audit_chain.record_in_txn
 audit_unit = _audit_chain.audit_unit
 audit_or_refuse = _audit_chain.audit_or_refuse
