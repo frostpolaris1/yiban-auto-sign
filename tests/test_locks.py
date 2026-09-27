@@ -12,7 +12,8 @@
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：锁原语本身（后端存在性、锁文件 0600、同线程可重入、退出即释放、等待而非立即降级、
-包装方确实传了重试超时、跨进程互斥），以及三处历史各写一份的调用方现在都走同一原语。
+    包装方确实传了重试超时、跨进程互斥、_acquire 失败/临界区异常后 held 记账复位），
+    以及三处历史各写一份的调用方现在都走同一原语。
 对应实现：`yiban/infra/locks.py` 的 `lock_kind` / `file_lock`、
 `yiban/infra/env_lock.py` 的 `env_write_lock`、
 `yiban/engine/cli_support._state_file_lock`（signin 侧经它）与
@@ -77,6 +78,50 @@ class LockPrimitiveTest(unittest.TestCase):
         with locks.file_lock(self.target):
             pass
         with locks.file_lock(self.target):  # 能再次进入 = 已释放
+            pass
+
+    def test_acquire_baseexception_does_not_leak_held_flag(self):
+        """`_acquire` 抛非 Exception 级异常（30s 重试等待被打断这类）后，本线程的
+        held 记账必须已复位：下一次同名锁**真的重新拿锁**，而不是被当成"重入"
+        静默放行。
+
+        修复前：`held.add(path)` 与内层 try 之间没有兜底，异常一漏该路径就永久
+        留在 held 集里——此后该线程所有同名锁全部零告警地跳过文件锁与进程内锁
+        （登记判"高"的失效面）。修复后由最外层 finally 结构封死，本用例钉住
+        "泄漏态可发现/可复位"。
+        """
+        path = os.path.abspath(self.target)
+        real_acquire = locks._acquire
+
+        def _interrupted(p, t):
+            raise KeyboardInterrupt("模拟等待期间的中断（BaseException 级）")
+
+        with mock.patch.object(locks, "_acquire", _interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                with locks.file_lock(self.target):
+                    pass  # 不该到达
+        self.assertNotIn(path, locks._held_paths(), "held 记账不得残留")
+
+        # 下一次调用必须真正走到 _acquire（修复前：被 held 判重入，一次都不调）
+        seen = []
+
+        def _spy(p, t):
+            seen.append(p)
+            return real_acquire(p, t)
+
+        with mock.patch.object(locks, "_acquire", _spy):
+            with locks.file_lock(self.target):
+                pass
+        self.assertEqual(seen, [path], "泄漏后的同名锁不得静默跳过真实加锁")
+
+    def test_body_exception_also_resets_held_flag(self):
+        """临界区内抛普通异常同样不得让 held 残留（内层 finally 语义回归）。"""
+        path = os.path.abspath(self.target)
+        with self.assertRaises(ValueError):
+            with locks.file_lock(self.target):
+                raise ValueError("业务异常")
+        self.assertNotIn(path, locks._held_paths())
+        with locks.file_lock(self.target):  # 还能正常进 = 记账已复位
             pass
 
     @unittest.skipUnless(os.name == "posix", "跨进程 flock 断言仅 POSIX 可用")
