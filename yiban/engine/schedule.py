@@ -279,9 +279,11 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
     的有效速率 `W×bucket×0.8`（`util` 与容量公式同口径：重试与尾延迟降额）。
 
     结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
-    只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。`egress_count`
-    缺省 1；`bucket_rate` 非正回退出厂速率（与 `channel_count` 同口径）；窗口 <= 0 时无
-    速率可言，回退 1。
+    只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。**与
+    `capacity_probe` 的建议数不是同一口径**：探针按"每进程各持一桶"实测（跨进程共享
+    是 v3 目标），"20–22 个桶"≈要声明同数物理出口；未声明出口清单时 K≡1 是设计语义
+    而非被夹死的缺陷（README「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate`
+    非正回退出厂速率（与 `channel_count` 同口径）；窗口 <= 0 时回退 1。
     """
     r = _DEFAULT_RETRY_RATIO if retry_ratio is None else max(0.0, float(retry_ratio))
     n = max(0, int(n_accounts))
