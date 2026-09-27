@@ -2510,6 +2510,10 @@ tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_corrupt_marker_is
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_failed_replace_leaves_no_partial_marker	D	-	替换失败时标记路径必须**不存在**（而不是存在但内容损坏）。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_interrupted_write_is_swept_later	D	-	被杀（SIGKILL）留下的半成品没有机会自清 → 由状态清理按 mtime 兜底。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_mark_slot_replaces_atomically	D	-	??
+tests/test_state_file_writes.py	StateWriteChannelSourceGuardTest.test_guard_fires_on_the_shape_it_must_reject	D	-	活体反例（N 簇元判据）：把守卫喂给它该拒的旧形态，必须命中。
+tests/test_state_file_writes.py	StateWriteChannelSourceGuardTest.test_no_builtin_open_tmp_write	D	-	??
+tests/test_state_file_writes.py	StateWritesArePrivateUnderWideUmaskTest.test_every_state_site_is_0600_under_umask_0000	D	-	14 站点逐条：umask(0o000) 反例矩阵（含 6 处明手机号站点优先覆盖）。
+tests/test_state_file_writes.py	StateWritesArePrivateUnderWideUmaskTest.test_worker_alive_heartbeat_also_private	D	-	既有用法（并行执行体心跳）同口径回归：它是最早走单通道的一处。
 tests/test_state_gc.py	CleanupEntryPointsTest.test_bash_wrapper_delegates_and_keeps_login_safe_log	D	-	??
 tests/test_state_gc.py	CleanupEntryPointsTest.test_cli_end_to_end_writes_cleanup_log	D	-	??
 tests/test_state_gc.py	CleanupEntryPointsTest.test_cli_fails_loudly_on_bad_retention	D	-	??
