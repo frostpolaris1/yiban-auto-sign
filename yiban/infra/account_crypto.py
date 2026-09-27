@@ -7,12 +7,15 @@
 - 密钥：环境变量 YIBAN_ACCOUNTS_KEY → 回退 .env 同键 → 缺失时生成并持久化（0600）
 - AAD = 手机号（防密文跨账号互换）；解密 tag 校验失败即抛错
 
-密文对象格式（v1）：
-    {"v": 1, "nonce": "<hex>", "ct": "<hex>", "tag": "<hex>"}
+密文对象格式（v2，携带密钥标识 kid）：
+    {"v": 2, "kid": "<16位hex>", "nonce": "<hex>", "ct": "<hex>", "tag": "<hex>"}
+    kid = HMAC-SHA256(密钥, 固定上下文) 前 8 字节的十六进制——单向指纹，只用于
+    "自证这份密文是哪把钥写的 / 当前钥是不是那把"，不可反推密钥材料。
 
-已知限制：密文不带密钥指纹（无 kid / 校验值）——"这把钥对不对"只能在解密撞
-ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手前预判；故 v1 格式不变、
-存量密文不迁移（迁移需读写两侧同步，属 v2 的事）。
+兼容：v1 密文（{"v": 1, …}，无 kid）永久可读——按 tag 校验，行为与 v2 落地前逐字
+一致（既有库与 `.env` 密文面不强制迁移）；v2 密文解密前先比 kid，错钥立刻拿到
+"密文 kid vs 当前钥 kid"两个可比对的指纹，而不是等 AES tag 撞败后只知道"解不开"。
+新写入一律 v2（含明文自愈回写与轮换后的手工重写）。
 
 ⚠️ 密钥丢失 = 已加密的账号密码不可恢复：备份数据时必须连同密钥一起备份
 （密钥与数据分开放，如 .env 与 yiban.db 分开打包）。
@@ -24,8 +27,8 @@ ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手�
 **复用**
 两族入口各有分工，别拿错：`encrypt_password` / `decrypt_password` 是账号字段口径
 （AAD = 手机号，密文绑定所属账号），`encrypt_text` / `decrypt_text` 是固定 AAD 的
-通用口径（通知 SendKey / webhook URL / 邮件口令这类配置值）。二者共用 v1 密文格式与
-`load_key` / `has_key` / `is_encrypted` / `SCHEMA_VERSION`；`.env` 读写复用同目录
+通用口径（通知 SendKey / webhook URL / 邮件 SMTPS 这类配置值）。二者共用 v2 密文格式
+（v1 可读）与 `load_key` / `has_key` / `is_encrypted` / `SCHEMA_VERSION`；`.env` 读写复用同目录
 `env_io`，跨进程锁复用 `env_lock`。
 
 **通信**
@@ -41,6 +44,8 @@ ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手�
 加密落库——格式或密钥口径变化会直接影响这些页面保存/校验账号的成功与失败。
 """
 
+import hashlib
+import hmac
 import logging
 import os
 import secrets
@@ -55,8 +60,15 @@ from yiban.infra import (
 
 logger = logging.getLogger("yiban-crypto")
 
-# 密文对象格式版本（AES-256-GCM，v1）
-SCHEMA_VERSION = 1
+# 密文对象格式版本（AES-256-GCM）：v2 起携带 kid（密钥单向指纹）；v1（无 kid）
+# 永久可读——存量库内两列与 .env 密文面不强制迁移，读出按需重写。
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+# kid 派生上下文：域分隔常量，防"同钥同式子"与其他 HMAC 用途产出同值指纹。
+KID_CONTEXT = b"yiban-accounts-kid-v1"
+# kid 取 HMAC-SHA256 前 8 字节（16 位 hex）：肉眼可比对、日志可打印，8 字节截断
+# 只影响碰撞概率，不影响"由 kid 反推密钥"的不可能性。
+KID_HEX_LEN = 16
 DEFAULT_ENV_FILE = ".env"
 
 # 进程内密钥缓存：dict[env_file] -> key（bytes），**按来源分开存**。
@@ -165,18 +177,20 @@ def is_encrypted(value):
 
 
 def encrypt_password(plain, key, phone):
-    """AES-256-GCM 加密明文为密文对象；空明文返回空字符串（保持空值语义）。
+    """AES-256-GCM 加密明文为 v2 密文对象（携带 kid）；空明文返回空字符串（保持空值语义）。
 
     AAD = 手机号（UTF-8）：密文绑定所属账号，跨账号互换密文会在解密时失败。
     """
     if not plain:
         return ""
+    _check_key(key)
     nonce = secrets.token_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     cipher.update(str(phone).encode("utf-8"))
     ct, tag = cipher.encrypt_and_digest(str(plain).encode("utf-8"))
     return {
         "v": SCHEMA_VERSION,
+        "kid": key_fingerprint(key),
         "nonce": nonce.hex(),
         "ct": ct.hex(),
         "tag": tag.hex(),
@@ -197,17 +211,60 @@ def _check_key(key):
         raise ValueError("YIBAN_ACCOUNTS_KEY 长度非法：应为 32 字节（64 位十六进制）")
 
 
-def decrypt_password(entry, key, phone):
-    """解密密文对象为明文 str。
+def key_fingerprint(key):
+    """密钥单向指纹（kid）：HMAC-SHA256(key, KID_CONTEXT) 前 8 字节的十六进制（16 位）。
 
-    key 不是 32 字节 bytes / entry 不是密文对象 / 密文被篡改 / 密钥不匹配 /
-    AAD 手机号不匹配（tag 校验失败）时抛 ValueError——绝不静默返回错误结果。
+    用途是让"这份密文是哪把钥写的 / 我手上这把钥是不是那把"在**不解密、不泄露密钥
+    材料**的前提下可比对可留痕：密文自带 kid，日志与巡检脚本打印 kid 即可自证，
+    错钥从"撞 tag 后只知道解不开"变成"两个指纹直接对比"。
+    """
+    _check_key(key)
+    return hmac.new(bytes(key), KID_CONTEXT, hashlib.sha256).digest()[:KID_HEX_LEN // 2].hex()
+
+
+def _key_fork_error(env_key, file_key, env_file):
+    """两侧（env 档 / .env 档）读到两把钥时的统一拒启错误。"""
+    return ValueError(
+        "YIBAN_ACCOUNTS_KEY 两侧不一致：环境变量档 kid=%s，%s 文件档 kid=%s——"
+        "环境变量优先于 .env，这种不对称下 web（systemd EnvironmentFile 注入）与引擎"
+        "（读 .env）各用一把钥，一侧写入的密文另一侧静默不可解。拒绝启动；请把两侧"
+        "改成同一把钥（或删去过时一侧）后重启，处置步骤见 README『账号凭据密钥泄露处置』。"
+        % (key_fingerprint(env_key), env_file, key_fingerprint(file_key))
+    )
+
+
+def _check_entry_version(entry, key):
+    """版本兼容 + kid 自证：v1 放行（按 tag），v2 先比 kid 再进 AES。
+
+    返回密文版本号。v2 且 kid 不匹配时抛的 ValueError 同时带密文 kid 与当前钥
+    kid——错钥可自证；v1 无 kid 可依，只能撞 tag（兼容红线：既有密文必须仍可解）。
+    """
+    ver = entry.get("v")
+    if ver not in SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"不支持的密文版本: {ver}（当前可读: "
+            f"{'/'.join(map(str, SUPPORTED_SCHEMA_VERSIONS))}）")
+    if ver == 2:
+        kid = str(entry.get("kid") or "")
+        mine = key_fingerprint(key)
+        if kid != mine:
+            raise ValueError(
+                f"密钥不匹配：密文 kid={kid or '<缺失>'}，当前钥 kid={mine}"
+                "（YIBAN_ACCOUNTS_KEY 用错或两侧分叉，见 README 密钥处置）")
+    return ver
+
+
+def decrypt_password(entry, key, phone):
+    """解密密文对象为明文 str（v1/v2 均可读，v2 先验 kid）。
+
+    key 不是 32 字节 bytes / entry 不是密文对象 / 版本不可读 / v2 kid 不匹配 /
+    密文被篡改 / 密钥不匹配 / AAD 手机号不匹配（tag 校验失败）时抛 ValueError
+    ——绝不静默返回错误结果。
     """
     _check_key(key)
     if not is_encrypted(entry):
         raise ValueError("密码字段不是有效的密文对象（缺 v/ct 键）")
-    if entry.get("v") != SCHEMA_VERSION:
-        raise ValueError(f"不支持的密文版本: {entry.get('v')}（当前支持 v{SCHEMA_VERSION}）")
+    _check_entry_version(entry, key)
     try:
         nonce = bytes.fromhex(str(entry["nonce"]))
         ct = bytes.fromhex(str(entry["ct"]))
@@ -240,12 +297,14 @@ def encrypt_text(plain, key, aad=b"yiban-notify"):
     """
     if not plain:
         return ""
+    _check_key(key)
     nonce = secrets.token_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     cipher.update(aad)
     ct, tag = cipher.encrypt_and_digest(str(plain).encode("utf-8"))
     return {
         "v": SCHEMA_VERSION,
+        "kid": key_fingerprint(key),
         "nonce": nonce.hex(),
         "ct": ct.hex(),
         "tag": tag.hex(),
@@ -253,16 +312,15 @@ def encrypt_text(plain, key, aad=b"yiban-notify"):
 
 
 def decrypt_text(entry, key, aad=b"yiban-notify"):
-    """解密密文对象为明文 str（AAD 固定）。
+    """解密密文对象为明文 str（AAD 固定；v1/v2 均可读，v2 先验 kid）。
 
-    key 不是 32 字节 bytes / entry 不是密文对象 / 密文被篡改 / 密钥不匹配
-    （tag 校验失败）时抛 ValueError——绝不静默返回错误结果。
+    key 不是 32 字节 bytes / entry 不是密文对象 / 版本不可读 / v2 kid 不匹配 /
+    密文被篡改 / 密钥不匹配（tag 校验失败）时抛 ValueError——绝不静默返回错误结果。
     """
     _check_key(key)
     if not is_encrypted(entry):
         raise ValueError("密文对象格式非法（缺 v/ct 键）")
-    if entry.get("v") != SCHEMA_VERSION:
-        raise ValueError(f"不支持的密文版本: {entry.get('v')}（当前支持 v{SCHEMA_VERSION}）")
+    _check_entry_version(entry, key)
     try:
         nonce = bytes.fromhex(str(entry["nonce"]))
         ct = bytes.fromhex(str(entry["ct"]))
