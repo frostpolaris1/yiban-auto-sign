@@ -235,10 +235,14 @@ def run_probe(accounts):
     for acc in accounts:
         ok, message = verify_account(acc)
         hard = (not ok) and bool(PROBE_HARD_FAIL_RE.search(message or ""))
-        # 落库：stage=probe（复用 db.add_sign_event，内部 _conn_lock 并发保护）
+        # 落库：stage=probe（复用 db.add_sign_event，内部 _conn_lock 并发保护）。
+        # 记账口径 = 探测结论：未通过（含网络类软失败）一律记 failed——原式
+        # `"failed" if hard else "success"` 把软失败涂成 success，探针断网时台账上
+        # 仍是"全员可用"（现网 255 行全 success、0 failed）。硬/软的区分由告警分支
+        # 与 message 承载，探测行为与预警口径不变。
         try:
             db.add_sign_event(
-                ts, acc.phone, "failed" if hard else "success",
+                ts, acc.phone, "success" if ok else "failed",
                 _sanitize_text(message), stage="probe",
             )
         except Exception as e:
