@@ -27,6 +27,7 @@ import re
 import unicodedata
 
 from yiban import clock
+from yiban.infra.env_io import escape_line_breaks
 from yiban.masking import mask_phones_in_text
 
 # 正文行宽（显示列，全角算 2）。72 列是保守值：主流客户端按 76~80 列折行，留出缩进
@@ -89,7 +90,11 @@ def _fold(text, width=_PLAIN_WIDTH, first="", cont=""):
     """
     limit = max(8, width - max(_dwidth(first), _dwidth(cont)))
     out = []
-    for raw in str(text).split("\n"):
+    # 折行之前先收口换行族：只 split("\\n") 时，其余 9 个被 str.splitlines 视为行边界
+    # 的字符（U+0085 / U+2028 …）会原样穿进正文，邮件客户端却在它们处断行——正文里
+    # 就多出伪造行（MF-44 登记项）。净化走全项目唯一的单行安全原语（与 `.env` 写侧
+    # 同一字符集），`\\n` 保留为内容自身的换行语义。
+    for raw in escape_line_breaks(text, keep_newline=True).split("\n"):
         raw = raw.rstrip()
         if not raw:
             out.append("")
