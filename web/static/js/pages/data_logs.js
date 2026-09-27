@@ -88,7 +88,9 @@
   /* ---------------- 日志渲染 ---------------- */
   function infoText(data) {
     if (state.search) return data.returned + " 行匹配 / 共 " + data.total_lines + " 行";
-    if (data.truncated) return "已截断：显示前 " + data.returned + " / 共 " + data.total_lines + " 行";
+    // 不写"前/后"：带搜索时是过滤后前 N 行，缺省视图是**尾部** N 行（truncated 现在照实为
+    // True），同一句要同时成立，故只报"显示 N / 共 M"
+    if (data.truncated) return "已截断：显示 " + data.returned + " / 共 " + data.total_lines + " 行";
     // 只报总数：截断口径已由上一行覆盖，「显示全部 / 导出」按钮就在同一行，无需再用文字解释
     return "共 " + data.total_lines + " 行";
   }
