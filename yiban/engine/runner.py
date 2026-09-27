@@ -62,7 +62,7 @@ from yiban.engine import (
 )
 from yiban.engine import round as round_mod
 from yiban.engine import schedule as schedule_mod
-from yiban.infra import env_io
+from yiban.infra import account_crypto, env_io
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
@@ -223,6 +223,17 @@ def main(argv=None):
         ),
     )
     args = parser.parse_args(argv)
+
+    # 账号凭据密钥两侧自证（fail-closed）：env 档（如 systemd EnvironmentFile 注入）
+    # 与 .env 文件档并存且不同 ⇒ 引擎拒绝本轮——"env 优先"下静默用另一把钥，签到会把
+    # web 写的密文解不开烧成整轮登录失败。兜底/补签判定/派发子进程全部模式共享此断言
+    # （各自重进 main）；不一致按"配置错误"落 rc=1，不新增退出码。
+    try:
+        account_crypto.assert_key_sources_agree(config_check._key_env_file())
+    except ValueError as e:
+        logger.error(f"密钥自证失败，拒绝启动: {e}")
+        cli_support.report_fatal_error(f"密钥自证失败，拒绝启动: {e}")
+        return 1
 
     # 兜底常驻执行体：先于其他分支（它自带循环与退出条件）
     if args.fallback:
