@@ -56,7 +56,6 @@
 """
 import argparse
 import os
-import pathlib
 import sqlite3
 import subprocess
 import sys
@@ -152,22 +151,12 @@ def _paths(view):
 # SQLite：只读打开与账号计数
 # ---------------------------------------------------------------------------
 def _open_ro(db_file):
-    """只读打开 SQLite；文件不存在返回 None。
+    """只读打开 SQLite；文件不存在返回 None（实现与判定收在 `store.connection.open_readonly`）。
 
     维护类子命令**不得**顺手建库或跑迁移（`db.get_conn()` 会 `init_db()` 建表 + 迁移），
     故这里直连并对文件缺失显式返回 None，由调用方决定是"报 0"还是"响亮失败"。
-    WAL 库在无 -shm 可写的场景下只读打开可能失败，此时退化为普通连接 + `query_only`。
     """
-    if not os.path.isfile(db_file):
-        return None
-    uri = pathlib.Path(os.path.abspath(db_file)).as_uri() + "?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True)
-    except sqlite3.Error:
-        conn = sqlite3.connect(db_file)
-        conn.execute("PRAGMA query_only=ON")
-    conn.row_factory = sqlite3.Row
-    return conn
+    return store_db.open_readonly(db_file)
 
 
 def _account_counts(conn):
