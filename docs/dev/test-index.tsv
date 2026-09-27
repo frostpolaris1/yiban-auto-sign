@@ -605,12 +605,14 @@ tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_进SET前不�
 tests/test_creds_write_accounting.py	UserSideClearTest.test_用户侧哨兵真清空且返回如实	E	-	??
 tests/test_creds_write_accounting.py	UserSideClearTest.test_用户提交哨兵不落字面量	E	-	??
 tests/test_creds_write_accounting.py	UserSideClearTest.test_管理添加口哨兵不落字面量	E	-	??
-tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_dist_view_reads_account_column	F	node	分布视图的取值源必须是账号口径（byStatus，由 cnt 累加）。
-tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_distribution_counts_dedup_accounts	F	node	分布口径 = 账号数：同一账号两行只算一次（user_cancelled 计 1，不是 2）。
-tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_event_total_counts_rows	F	node	事件口径 = 行数：两行 + 一行 = 3（重试/多执行体各写一行都是事实）。
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_dist_view_reads_backend_final_value	F	node	分布与日历的取值源必须是后端终值（statusAccounts/dayFinal），且无人读 `r.cnt`。
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_distribution_counts_dedup_accounts	F	node	分布口径 = 后端窗口去重终值：总数取 total（2），不拿有交集的桶合计（3）冒充；
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_event_total_counts_rows	F	node	事件口径 = 行数：2 跳 + 1 成 + 1（次日）成；跨天相加仍是事实，不混进账号桶。
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_probe_exclusion_pinned_in_request_url	F	node	防探针混算的唯一防线 = 请求 URL 里 `stage=sign` 这 10 个字符，必须钉死。
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_rate_denominator_excludes_skip_and_unknown	F	node	`rateOf` 分母只含 成功+失败；`statusKind` 穷举且未知码落 unknown 不静默落 skip。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_rate_kpi_declares_event_caliber	F	node	成功率按事件（尝试）口径，标签/tooltip 必须写明。
-tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_trend_view_reads_event_column	F	node	趋势视图的堆叠必须取事件口径（events），文案用「次」。
-tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_two_calibers_are_not_equal	F	node	账号数与事件数必须分开存放且不相等（混装正是本轮修正的缺陷）。
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_trend_view_reads_event_column	F	node	趋势视图的堆叠必须取事件（行数）桶，文案用「次」。
+tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_two_calibers_are_not_equal_and_cnt_not_read	F	node	账号终值(2) ≠ 事件合计(4)；且 JS 根本不读 `cnt`——把 cnt 全改成 999 结果不变。
 tests/test_db_integrity.py	BackupPlaintextP3Test.test_plaintext_artifact_not_healthy_for_sentinel	C	bash	backup.sh 真产出的明文包，哨兵不得计为健康（与 backup_sentinel 的 e2e 咬合）。
 tests/test_db_integrity.py	BackupPlaintextP3Test.test_plaintext_run_warns_on_stderr_and_exits_dedicated_rc6	C	bash	BACKUP_PLAINTEXT=1 ⇒ 大字告警走 stderr + 专用退出码 6 + 归档真实产出。
 tests/test_db_integrity.py	BackupPlaintextP3Test.test_remote_copy_still_encrypted_under_plaintext	C	bash	BACKUP_PLAINTEXT=1 只豁免本地：异机副本仍加密出站、绝不传明文。
@@ -2549,6 +2551,7 @@ tests/test_sign_events.py	VisualTablesTest.test_read_functions_return_expected_s
 tests/test_sign_events.py	VisualTablesTest.test_upgrade_from_v13_drops_legacy_stats_keeps_sign_events	C	-	存量库路径：v13 库（两张遗留表在位）升到 v14 后表被删、签到事件保留。
 tests/test_sign_events.py	VisualTablesTest.test_write_functions_degrade_when_table_missing	C	-	??
 tests/test_sign_events.py	VisualTablesTest.test_write_functions_succeed	C	-	??
+tests/test_sign_events.py	WebuiStatsDbTest.test_accounts_summary_emits_final_values	C	-	`sign_event_accounts_summary` 出账号数终值：窗口去重总数 / 按状态去重 / 按日最终态。
 tests/test_sign_events.py	WebuiStatsDbTest.test_add_sign_event_with_new_fields	C	-	??
 tests/test_sign_events.py	WebuiStatsDbTest.test_batch_write_functions	C	-	??
 tests/test_sign_events.py	WebuiStatsDbTest.test_migration_v6_schema	C	-	??
