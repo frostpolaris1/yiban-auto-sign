@@ -5,7 +5,7 @@
 覆盖：非法参数/未知子命令/缺子命令/多余参数/互斥开关（一律 rc=2）、`--check-config`
     摘要不得混入 stdout、每个成功 `--json` 都带 `exit_code`、`db --backup` 覆盖守卫
     （目标已存在须 `--force`）、`db --restore` 破坏性守卫（默认 dry-run / 指纹回显 /
-    覆盖前副本 / 损坏备份拒绝，仅用自造库与自造副本）。
+    覆盖前副本 / 损坏备份拒绝，仅用自造库与自造副本）、`--help` 列明四个路径环境变量。
 对应实现：`yiban/cli.py`（`_emit_json_error` / `_fail` / `_UsageError` / `main` 解析兜底）
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
@@ -382,6 +382,30 @@ class RestoreGuardTest(unittest.TestCase):
         r = _run(["db", "--restore", self.db_file, "--yes", "--json"], self.env)
         self.assertEqual(r.returncode, 1, r.stderr[-400:])
         self.assertIn("同一个文件", _one_json_line(self, r)["errors"][0])
+
+
+class PathHelpTest(unittest.TestCase):
+    """路径变量必须可见：根与 `config`/`db` 子命令的 `--help` 列明四个 `YIBAN_*` 路径键。
+
+    登记原文：唯一改道变量 `YIBAN_DB_FILE` 不在任何 help 里 ⇒ `.env` 写了账号仍报
+    "未配置任何账号"却同时回显 `env_file:.env`。这里只钉"事实写进 help"，不改解析行为。
+    """
+
+    VARS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-cli-mf60help-")
+        self.addCleanup(self.tmp.cleanup)
+        self.env = _cli_env(self.tmp.name)
+
+    def test_path_vars_listed_in_help(self):
+        for argv in (["--help"], ["config", "--help"], ["db", "--help"]):
+            with self.subTest(argv=argv):
+                r = _run(argv, self.env)
+                self.assertEqual(r.returncode, 0, r.stderr[-300:])
+                for var in self.VARS:
+                    self.assertIn(var, r.stdout, f"{argv} 的 --help 未列明 {var}")
+                self.assertIn("当前工作目录", r.stdout, f"{argv} 未说明相对路径按 cwd 解析")
 
 
 class ExitKindFamilyTest(unittest.TestCase):
