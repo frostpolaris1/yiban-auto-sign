@@ -1493,6 +1493,7 @@ tests/test_logs_by_date.py	LogsByDateTest.test_log_lines_for_blocks_crossday_lef
 tests/test_logs_by_date.py	LogsByDateTest.test_log_lines_for_filters	F	node	签到链路的子 logger 与 DEBUG 必须入列——细节行原先被正则漏掉，页面只剩结果。
 tests/test_logs_by_date.py	LogsByDateTest.test_log_lines_for_missing_file	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_log_path_for_today_and_hist	F	node	??
+tests/test_logs_by_date.py	LogsByDateTest.test_my_calendar_weekend_flags_are_int_01	F	node	`sunday_sign`/`saturday_sign` 必须是整数 0/1——`calendar.js` 用 `=== 1` 判定置灰。
 tests/test_logs_by_date.py	LogsByDateTest.test_my_logs_bad_date_400	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_my_logs_hist_date_filters_own_phone	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_my_logs_missing_date_empty	F	node	??
