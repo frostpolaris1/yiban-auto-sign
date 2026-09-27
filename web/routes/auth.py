@@ -155,7 +155,16 @@ def api_login():
             m.db.set_user_sid(username.lower(), sid)
         return jsonify({"ok": True, "role": role})
     if recoverable:
-        # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
+        # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）。
+        # 留痕：口令验对却走不到 login_ok 汇合点、也不计失败——不记这一条，
+        # /api/login 在注销冷静期里就是一台零留痕的凭据验证器（应用侧只剩
+        # nginx 访问日志，不可归因）。动作名与 login_ok 分开：这里没有建立
+        # 会话，只是"口令已被验证 + 恢复被引导过"的痕迹；三元组口径同
+        # login_ok（username 截 64、IP 经 hash_ip、detail 不落凭据）。
+        m.db.audit(
+            (username.lower() or "?")[:64], "login_recoverable", m.db.hash_ip(ip),
+            "注销冷静期内口令正确，未建会话（引导恢复）",
+        )
         return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
     fails = m._bump_login_failure(_login_fails(), fail_key, now)
     # 失败登录留痕审计链：失败原仅内存计数+日志，"被盗号溯源"
