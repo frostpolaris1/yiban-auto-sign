@@ -151,11 +151,11 @@ def executor_capacity(window_sec, cycle_sec, gap=0):
     if _REPO_ROOT not in sys.path:
         sys.path.insert(0, _REPO_ROOT)
     from yiban.engine.schedule import capacity_accounts
-    gap = max(0, int(gap or 0))
-    avg = int(round(cycle)) - gap
+    gap = max(0, gap or 0)
+    avg = round(cycle) - gap
     if avg < 1:
-        avg, gap = int(round(cycle)), 0
-    return capacity_accounts(int(window_sec), gap, max(1, avg))
+        avg, gap = round(cycle), 0
+    return capacity_accounts(window_sec, gap, max(1, avg))
 
 
 def recommend_per_executor(capacity, ratio=DEFAULT_RATIO):

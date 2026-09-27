@@ -96,10 +96,9 @@ class LockPrimitiveTest(unittest.TestCase):
         def _interrupted(p, t):
             raise KeyboardInterrupt("模拟等待期间的中断（BaseException 级）")
 
-        with mock.patch.object(locks, "_acquire", _interrupted):
-            with self.assertRaises(KeyboardInterrupt):
-                with locks.file_lock(self.target):
-                    pass  # 不该到达
+        with mock.patch.object(locks, "_acquire", _interrupted), \
+                self.assertRaises(KeyboardInterrupt), locks.file_lock(self.target):
+            pass  # 不该到达
         self.assertNotIn(path, locks._held_paths(), "held 记账不得残留")
 
         # 下一次调用必须真正走到 _acquire（修复前：被 held 判重入，一次都不调）
@@ -109,17 +108,15 @@ class LockPrimitiveTest(unittest.TestCase):
             seen.append(p)
             return real_acquire(p, t)
 
-        with mock.patch.object(locks, "_acquire", _spy):
-            with locks.file_lock(self.target):
-                pass
+        with mock.patch.object(locks, "_acquire", _spy), locks.file_lock(self.target):
+            pass
         self.assertEqual(seen, [path], "泄漏后的同名锁不得静默跳过真实加锁")
 
     def test_body_exception_also_resets_held_flag(self):
         """临界区内抛普通异常同样不得让 held 残留（内层 finally 语义回归）。"""
         path = os.path.abspath(self.target)
-        with self.assertRaises(ValueError):
-            with locks.file_lock(self.target):
-                raise ValueError("业务异常")
+        with self.assertRaises(ValueError), locks.file_lock(self.target):
+            raise ValueError("业务异常")
         self.assertNotIn(path, locks._held_paths())
         with locks.file_lock(self.target):  # 还能正常进 = 记账已复位
             pass
