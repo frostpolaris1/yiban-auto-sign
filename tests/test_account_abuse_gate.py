@@ -29,6 +29,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "c" * 64
@@ -249,21 +251,23 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("s1@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        r = c.post("/api/users/s1@test.local/delete",
+        # 单条操作按不透明 id 定位（`/api/users/<int:id>/…`，MF-49 出口面 2-9b）
+        delpath = user_path(db, "s1@test.local", "/delete")
+        r = c.post(delpath,
                    json={"mode": "full"},
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("s1@test.local"))
         # （accounts_only 门禁）：仅清空账号同样接入二次鉴权——
         # 无口令 400；带正确口令放行
-        r2 = c.post("/api/users/s1@test.local/delete",
+        r2 = c.post(delpath,
                     json={"mode": "accounts_only"},
                     headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
+        self.assertEqual(r2.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("s1@test.local"))
         db.add_account({"name": "A", "phone": "13700137001", "password": "pw",
                         "status": "active", "owner": "s1@test.local"})
-        r3 = c.post("/api/users/s1@test.local/delete",
+        r3 = c.post(delpath,
                     json={"mode": "accounts_only", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(t))
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
