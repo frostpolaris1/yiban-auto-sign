@@ -84,7 +84,8 @@ def _active_templates():
     login = os.path.join(TEMPLATES_DIR, "login.html")
     if os.path.isfile(login):
         out.append(login)
-    return [p for p in out if os.path.basename(p) != "_stub_macro.html"]
+    # pages/*.html 现均为活页面；旧的占位宏文件（_stub_macro.html）已退役。
+    return out
 
 _JS_REF_RE = re.compile(r"/static/js/([^\"'?\s]+)")
 _EXTENDS_RE = re.compile(r'{%-?\s*extends\s+"([^"]+)"\s*-?%}')
