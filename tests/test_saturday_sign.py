@@ -170,6 +170,19 @@ class SaturdaySignStatusTest(unittest.TestCase):
         self.assertNotEqual(text, "今日无需打卡（周六）")
         self.assertIn("已结束", text)
 
+    def test_sign_status_saturday_true_same_as_on(self):
+        """周六 + `=true`（布尔值域）→ 与 `=1` 同判：引擎照签，面板不得标休。
+
+        原先面板侧各自用整数解析（`int("true")` 失败回退 0），`=true` 时引擎照签
+        而状态行/日历标休——同一开关两种结论（MF-54 的"两套值域"分叉点）。
+        现与引擎同一解析口径（`schedule.weekend_flags`）。
+        """
+        self._env("YIBAN_SATURDAY_SIGN=true\n")
+        with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
+            text, _ = self.webapp.sign_status(now=_weekday_dt(5))
+        self.assertNotEqual(text, "今日无需打卡（周六）")
+        self.assertIn("已结束", text)
+
 
 class SaturdaySettingsWebTest(unittest.TestCase):
     """/api/settings 周六开关读写（默认 0、POST 显式写 0/1、部分更新不串改、普通管理员可改）。"""
