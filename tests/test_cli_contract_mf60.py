@@ -3,7 +3,8 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖：非法参数/未知子命令/缺子命令/多余参数/互斥开关（一律 rc=2）、`--check-config`
-    摘要不得混入 stdout、每个成功 `--json` 都带 `exit_code`。
+    摘要不得混入 stdout、每个成功 `--json` 都带 `exit_code`、`db --backup` 覆盖守卫
+    （目标已存在须 `--force`）。
 对应实现：`yiban/cli.py`（`_emit_json_error` / `_fail` / `_UsageError` / `main` 解析兜底）
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
@@ -202,6 +203,65 @@ class ReadOnlyPromiseTest(unittest.TestCase):
                              migrations._MIGRATIONS[-1][0])
         finally:
             conn.close()
+
+
+class BackupOverwriteGuardTest(unittest.TestCase):
+    """`db --backup` 不得静默覆盖上一份副本（MF-60）：目标已存在时必须 `--force`。
+
+    验收不变量：同一路径连续 `--backup --yes` 两次，第二份不得覆盖第一份——未带
+    `--force` 时拒绝且非 0（零写入），带 `--force` 才允许。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-cli-mf60backup-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.db_file = os.path.join(self.root, "yiban.db")
+        self.target = os.path.join(self.root, "copy.db")
+        self.env = dict(_cli_env(self.root), YIBAN_DB_FILE=self.db_file)
+        self._init_db()
+
+    def _init_db(self):
+        code = ("import sys; from yiban.store import db;"
+                "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
+                "db.get_conn().close()")
+        r = subprocess.run([sys.executable, "-c", code, self.db_file,
+                            os.path.join(self.root, ".env")], cwd=BASE, env=self.env,
+                           capture_output=True, text=True, encoding="utf-8", timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+
+    def test_second_backup_without_force_is_refused(self):
+        first = _run(["db", "--backup", self.target, "--yes", "--json"], self.env)
+        self.assertEqual(first.returncode, 0, first.stderr[-400:])
+        self.assertTrue(os.path.exists(self.target))
+        _one_json_line(self, first)
+        before = os.path.getmtime(self.target)
+
+        second = _run(["db", "--backup", self.target, "--yes", "--json"], self.env)
+        self.assertEqual(second.returncode, 1, second.stderr[-400:])
+        payload = _one_json_line(self, second)
+        self.assertFalse(payload["ok"], payload)
+        self.assertFalse(payload["overwrite_allowed"], payload)
+        self.assertEqual(payload["error_kind"], "runtime_error", payload)
+        self.assertEqual(os.path.getmtime(self.target), before,
+                         "未带 --force 的第二次备份改动了已存在的副本")
+
+    def test_backup_force_allows_overwrite(self):
+        _run(["db", "--backup", self.target, "--yes", "--json"], self.env)
+        forced = _run(["db", "--backup", self.target, "--yes", "--force", "--json"], self.env)
+        self.assertEqual(forced.returncode, 0, forced.stderr[-400:])
+        payload = _one_json_line(self, forced)
+        self.assertTrue(payload["overwrite_allowed"], payload)
+
+    def test_backup_dry_run_reports_force_needed_without_writing(self):
+        _run(["db", "--backup", self.target, "--yes", "--json"], self.env)
+        before = os.path.getmtime(self.target)
+        plan = _run(["db", "--backup", self.target, "--json"], self.env)
+        self.assertEqual(plan.returncode, 0, plan.stderr[-400:])
+        payload = _one_json_line(self, plan)
+        self.assertTrue(payload["dry_run"], payload)
+        self.assertFalse(payload["overwrite_allowed"], payload)
+        self.assertEqual(os.path.getmtime(self.target), before, "dry-run 不得写盘")
 
 
 class ExitKindFamilyTest(unittest.TestCase):

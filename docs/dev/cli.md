@@ -96,6 +96,8 @@ state_io / accounts / workers / config_check / cli_support），SQLite 层在 `y
 python3 -m yiban.cli version --json
 python3 -m yiban.cli config --json            # 脱敏配置检查（不联网）
 python3 -m yiban.cli db --status --json       # user_version / 表 / 账号数
+python3 -m yiban.cli db --backup /tmp/copy.db --yes          # 写一致性副本（目标不存在）
+python3 -m yiban.cli db --backup /tmp/copy.db --yes --force  # 目标已存在：必须显式 --force
 python3 -m yiban.cli state                    # 默认 dry-run，只报告
 python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
 python3 -m yiban.cli capacity --json          # 读实测值给建议
@@ -119,6 +121,12 @@ bash run.sh                                   # 宿主入口：读 .env（含 YI
 
 > `capacity --measure` 转发的是 `scripts/loadtest/capacity_probe.py`（自建假易班、零真实外联、
 > 跑完自动还原），**只在隔离测试机上跑**；与 `--json` 互斥（转发工具的 stdout 自成一路）。
+
+`db --backup` 的目标已存在时**不得静默覆盖**上一份副本：不带 `--force` 的 `--yes` 直接
+拒绝（退出码 1、零写入），dry-run 只报告"需 `--force`"。这与 §2 第 5 条"幂等"的边界是：
+同一命令重复执行不会**累积**副作用（备份仍是同一路径的一份副本），但必须由调用方显式
+确认是否要顶掉旧副本，不允许"再跑一次就把上一份悄悄换掉"。`--json` 里 `overwrite_allowed`
+给出该判定结果。
 
 ## 5. 相关文档
 
