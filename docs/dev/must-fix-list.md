@@ -987,12 +987,18 @@ failover 行为本身保留（那是送达鲁棒性，非本条病根；病根�
 #### MF-92 `ledger_check` 拿补账的输入去对账补出来的表 ⇒ 且窗口外反向**恒红**（高）
 `ledger_check.py:128-133` 用 `sign-state-<day>.json` 验 `sign_tasks`，而 `migrations.py:861/934` 的补账来源正是同一份 `terminal_task_state` ⇒ 对被 v20 补出的那批行 check 1 构造上恒真。**措辞要改**：不是"恒通过"——check 1 只 `SELECT phone` **不比状态**，而 v20 是 `INSERT OR IGNORE` ⇒ planner 先写的行赢，"JSON 说 success / 台账说 failed"**永久失明**；而窗口之外（v20 一次性、只回看 14 天，删账号还会连带删台账）它**恒红**。骗过的门有两处：设计文档 `ledger-dual-version-design-20260923.md:258` 把它写成"迁移的唯一验收门"并承诺**三方对账**，交付时被瘦成单向；`tests/test_ledger_check.py:80-86` 的夹具刻意绕开 backfill ⇒ 13 例全绿证的不是生产数据流。另 `:144-155` check3 的 `other = total − translated − backfilled` 是残差定义（不构成独立证据）。〔C-26 · ADJ-10〕
 
+**处置（2026-09-27 批3a Task3a-1，repair/m3-batch3a）**：三处主张全落——①check 1 由"比存在性"改**比状态**，期望值复用 `migrations.terminal_task_state` **单源**（不另写第二份判据，规避 MF-54 反模式）；②**窗口外缺行改判"无法定论"**（`rc=2`）——与 `scripts/audit_verify.py` 的"0 通过 / 1 篡改 / 2 无法定论"**三分法同源**，且 `ledger_check` 自己的 docstring 本就写着"`1` 只留给明确探测到的差异，其余一律 `2`"，故这是**向该脚本既有契约收敛**，**不是**改 rc 契约（run.sh 0/1/2/3、cli 0/1/2/3/10 两文件零改动）；③check 3 的 `other = total − translated − backfilled` 显式标注为**残差定义、非独立证据**。**活体反例（同一构造夹具，两树各跑真脚本）**：窗口内"JSON=success / 台账=failed"由 **rc=0「对账平」**（"永久失真实"复现）→ **rc=1「状态不一致：JSON=success→done，台账=failed」**；窗口外（−30 天）缺行由 **rc=1「对账不平」**（恒红复现）→ **rc=2「不在补账窗口内：无法定论」**；窗口内缺行**仍 rc=1**（判据未放宽）。窗口 `[applied−13, applied]` 与 v20 的 `range(_BACKFILL_DAYS=14)` 逐一对齐；版本号按名字反查 `_MIGRATIONS`，未抄第二份字面量 `20`。残余（非阻塞）：`sqlite_master` 表存在性 4 行守卫最接近"遇不到"（去掉只把 rc=2 换成崩栈文案、判码不变），可留可删。
+
 #### MF-93 容量估算是"一份算式跨两个配置层"⇒ 保存闸门按偏大值放行（中）
 `capacity.py:93` 只传 `gap`，`avg/enabled` 落 `schedule.py:69` 的 `os.environ`；**web 进程从不把 `.env` 装进环境**（`web/*.py` 内 `load_dotenv`/`os.environ[` 零命中），而 `gap` 偏偏读 `.env`（`settings_api.py:310-312`）⇒ 同一次估算跨两层。复算：W=4200/gap=10 时 avg=3⇒**323**、avg=12⇒**191**（台账写 190，差一），高估 **69%**（≈台账的"约 70%"）。骗过的门是闸门自己：展示面 `:202/:213` 与判定面 `:312-314` 共用同一个偏大值 ⇒ 两出口永远互相对齐；`test_capacity_*.py` 18 处全用 `mock.patch.dict(os.environ,…)` 造输入，测的是另一个前提。现网 89 < 191 ⇒ **当前不越线**，但界面白送约 130 个名额的错觉。〔C-27/L11 · ADJ-10〕
+
+**处置（2026-09-27 批3a Task3a-1，repair/m3-batch3a）**：容量预估收敛到**同一配置层**——展示面（`settings_api.py`）与判定面同调单一漏斗 `web/app.py::_capacity_estimate`，`avg/开关` 跟随 `.env` 真值，不再是"`gap` 读 `.env`、`avg/enabled` 落 `os.environ`"的跨层取值。**真跑对照**（窗口 4800s / gap=10 / `.env avg=12`、进程环境无该键）：修复前 **370**（avg 落进程缺省 3，跨两层实锤）→ 修复后 **218**（`=(4800−12)//22+1`，与 `.env` 真值同步）；进程环境再塞陈旧 3 仍 **218**（`.env` 覆盖，与 run.sh 的 export 优先级一致）；`.env` 改 3 ⇒ 两侧同步 **370**。`sign_window`/`edge_config` 读值面**未扩**（登记未点名，不顺手扩大战场）；引擎/CLI 调用点（`runner.py`、`cli.py`）不传 env ⇒ `os.environ` 缺省路径逐字不变。**未新增 env 键、未改键语义**。
 
 #### MF-94 邮件配置"写 `.env`、读进程环境"+ README 教的部署方式会把新值冻住（中，含 L43 订正）
 真不同源在**读序**：`mail/config.py:_get` 是 env 优先、`.env` 兜底，而 `README.md:634` 指示的部署正是把整份 `.env` 拷成 `EnvironmentFile` ⇒ 保存的新值被启动期冻结拷贝压住，**restart 也修不好**。与 MF-51（按数组位置沿用凭据 ⇒ 才是"界面 A 凭据 B"的真路径）**不是同一条**；与 MF-50 同拓扑、不同后果面。另有 1 个新增低危点：`host` 写成 `127.0.0.1:465` 会因 `_is_ipv4_literal_like` 的"4 段全数字"判据被放成"真域名"（构造性绕过，但 `getaddrinfo` 必失败 ⇒ 后果低）。`SMTP_PORT` 非法→回退 465 有**两份实现**且发送侧零日志。
 需订正：**台账 L43 的两条主张在基线上为假**（`check_smtp_host:91-92` 显式拒 `localhost`；设置页渲染与发送侧同用 `smtp_list()` ⇒ 不存在"界面说 A 真走 B"）⇒ 本条即其收窄后的幸存形态。三态：②③④⑤代码级即可判；①需现网取证 `/proc/<gunicorn pid>/environ` 是否含 `YIBAN_MAIL_*`（按红线未登机）。〔C-22/L43 · ADJ-10〕
+
+**处置（2026-09-27 批3a Task3a-1，repair/m3-batch3a）**：**选 (a) 改部署教法**——README 的 `EnvironmentFile` 装法改为**只注入 `YIBAN_ACCOUNTS_KEY` 一行**，并写明"整份 `.env` 拷成 EnvironmentFile 会把「系统设置」页写入的新值压进启动快照、连 `systemctl restart` 都不生效"，另给旧部署的收窄处置（收窄成一行 + daemon-reload + restart 即恢复"保存即时生效"）与轮换第 4 步同步。与 `yiban/mail/config.py::_get` 的"**env 优先、`.env` 兜底**"读序**自洽**（新教法不再制造冻结），与单元模板 `web/deploy/yiban-web.service` 的 `EnvironmentFile=/etc/yiban/accounts-key` 一致。(b) 统一读序会改发送侧读值来源、撞升级子句，主动放弃。**未登机取证**：提交内容级扫描 `ssh|scp|/proc/|journalctl|systemctl|curl http` **零命中**。残余（登记原文、非本任务验收）：三态①需现网 `/proc/<pid>/environ` 是否含 `YIBAN_MAIL_*`（按红线**未登机、记待取证**）；两低危点（`127.0.0.1:465` 被当"真域名"放行、`SMTP_PORT` 双份回退实现）按章程"只修本体、不碰发送契约"**未动**。
 
 #### MF-95 注销冷静期把 `/api/login` 变成零留痕的凭据验证器（中，代码已在现网、当前可达集合 0）
 `auth.py:92-99` 判据与 `:157-159 recoverable` 出口 ⇒ 口令输对但账号处于冷静期时既不写 `login_ok` 审计（`db.audit` 在 `if role:` 块 `:104-126` 内）也不计失败（`:160`）。应用侧确实零留痕：`audit_chain.py:359/404` 是唯一写入口且未被走到，`page_visits`/`server_metrics` 已由 v14 删除，两个限速表是进程内 dict ⇒ 只剩 nginx 一条同为 200 的 access log（不可归因）。
@@ -1173,6 +1179,8 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 - **验收不变量**：该用例单跑绿（自带 setup 或显式声明依赖）；同文件与全量保持绿。
 - **修法**：用例自备状态、不依赖文件内顺序；归测试质量批（与 MF-38 干扰家族同批）。
 - **现网三态**：不适用（纯测试面）。
+
+**处置（2026-09-27 批3a Task3a-1，repair/m3-batch3a）**：用例**自备前置**——把登录请求挪进 `mock.patch.object(ENV_FILE…)` 块内，使 `.env` 打桩罩住整段 `create_app` + 登录，不再依赖文件内前序用例建立的状态（原病灶：登录落在 patch 之外，读 `env_file` 落在"明文在、哈希缺"的 fail-closed 态）。**断言集合新旧逐条恒等（程序化比对 2/2）**，零删、零放宽——修的只是"请求位置 + 为什么"。**单跑绿**（`1 passed in 1.5s`）、同文件全量 **79 passed**、全量绿。残余（非阻塞）：同族其它用例的顺序共享**未做族级清扫**（本条只治登记点名的那一条）。
 
 ### MF-108 CI 日期边界测试族：裸 `now()`/字面日期与北京钟错位 ⇒ 机器时区日期≠北京日期的时段全量大面积红（CI-only）
 - **现象**（2026-09-25 批次 0 合并 push 首跑发现）：被测代码统一走 `yiban.clock` 北京钟，
