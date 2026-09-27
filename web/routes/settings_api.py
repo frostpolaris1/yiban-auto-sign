@@ -90,6 +90,12 @@ def _executor_change_alert(action, changed):
                 advice=["如非本人操作，请核对 .env 的执行体清单与出口并回滚"],
             ),
             urgent=True,
+            # 具名账本 admin_change，不再挤占紧急日账（MF-44/MF-51 同族登记）：本告警
+            # 是"管理员本人操作的回执"，与"告警通道被拆""审计链断裂"抢同一本
+            # DEFAULT_URGENT_DAILY_MAX=3 的账，改几次清单就把当日紧急额度吃光、耗尽后
+            # 只剩 _log_skip。也不取 force=True 免额度方案——免额度等于给这条高频可达
+            # 的写路径开后门，"喷洒烧光紧急账"的守卫会被它自己绕开；具名账两头都不占。
+            ledger="admin_change",
         )
     except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
         m.logger.warning("执行体变更告警发送失败（不影响已写入的配置）: %s", e)
