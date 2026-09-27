@@ -2353,7 +2353,7 @@ tests/test_saturday_sign.py	SaturdaySigninGateTest.test_sunday_default_still_ski
 tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_apply_consumes_window_fallback_text	F	node	回填时消费服务端的窗口异常提示（否则该异常在设置页看不见）。
 tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_edge_max_matches_server_cap	F	node	前端上限（分钟）必须逐值等于服务端 `edge_cap_sec / 60`。
 tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_limits_are_written_to_data_max	F	node	上限确实落到 `data-max`（弹窗数字框/滑杆的量程读的就是它）。
-tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_unknown_window_keeps_full_range	F	node	窗口未知（0）时退回既有量程 5 分钟，不把滑块锁成 0。
+tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_unusable_window_is_fail_closed	F	node	窗口不可用（0/负）时上限为 0，与服务端一致——不退回最大量程（fail-open）。
 tests/test_schedule_retry.py	ContainerInjectsRetrySlotTest.test_child_env_carries_actual_slot	B	bash	??
 tests/test_schedule_retry.py	ContainerInjectsRetrySlotTest.test_injection_wins_over_stale_env_key	B	bash	.env 里若写了该键，容器也不据此调度 → 必须以容器实际值覆盖，
 tests/test_schedule_retry.py	HostContainerAgreementTest.test_matrix_agrees	B	bash	??
