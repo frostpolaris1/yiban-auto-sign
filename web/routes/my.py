@@ -43,13 +43,16 @@ from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, v
 def _my_account_indices_of(accounts):
     """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
 
-    管理员：**仅本人邮箱归属**的账号（一人一号）。无人认领的裸账号（owner='admin'）
-    属「代管」，只在账号管理页（/api/accounts）维护，不进「我的账号」视图 ——
-    否则内置管理员会把名下全部裸账号当成"我的账号"列出，与一人一号口径冲突。
+    管理员：归属邮箱等于会话用户名的账号。裸账号的 owner 是字面量 `admin`，因此当
+    YIBAN_ADMIN_USER 也取 `admin`（默认值）时，内置管理员的「我的账号」会把这批
+    裸账号一并列出——两义在存储上不可区分，属**已知默认配置取舍**（实现按 owner
+    精确匹配，不做特殊排除）。这不构成越权增量：能命中这批账号的会话只有内置管理员
+    本人（注册用户名必为邮箱，`admin` 非邮箱、注册口亦拒），而其对全表本就有
+    /api/accounts 的全量管理权；且 /mine 侧对这些号的写入并不比管理页更弱——暂停
+    直接 403、编辑强制回 pending、删除仅软删（7 天可撤，与管理页同档），物理 purge
+    在 /mine 无入口。代价是视图口径与"一人一号"展示混在一起，生产建议把
+    YIBAN_ADMIN_USER 设为管理员本人邮箱以分开两义。
     普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
-
-    注意：裸账号的 owner 是字面量 `admin`，当 YIBAN_ADMIN_USER 也取 `admin`（默认值）
-    时两者不可区分；生产建议把 YIBAN_ADMIN_USER 设为管理员本人邮箱。
     """
     m = _appmod()
     email = session.get("username", "").lower()
@@ -580,8 +583,13 @@ def api_my_account_add():
                 resp["job_id"] = job_id
                 resp["status"] = "verifying"
             except m.VerifyGateBusy:
+                # 配额已扣而任务没建成本次真实提交的一部分事实：不能静默回
+                # "ok" 当无事发生（用户以为在验证、且尝试额度已消耗），如实报——
+                # status 明示"未排上在线校验"，msg 交代后续动作由用户重试触发。
                 m.logger.warning("校验任务队列已满，账号 %s 未建校验任务",
                                m._mask_phone(clean["phone"]))
+                resp["status"] = "verify_deferred"
+                resp["msg"] = "已提交，等待管理员审核后参与签到（校验队列繁忙，本次未排上在线校验，请稍后重试）"
         return jsonify(resp)
 
 
