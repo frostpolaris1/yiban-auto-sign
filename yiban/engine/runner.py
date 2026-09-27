@@ -335,26 +335,35 @@ def main(argv=None):
         return 1
 
     # 探针模式必须先于「零账号守卫」处理：空账号部署误开探针时，走「未配置任何账号」
-    # 的 ERROR 分支会夜夜报错；探针语义下零账号=无事可做，静默成功退出。
+    # 的 ERROR 分支会夜夜报错；探针语义下零账号=无事可做，静默成功退出（0="无需执行"）。
     if args.probe:
+        if not accounts:
+            return 0
         # 探针对全部账号做完整登录（等同一次真实签到，风控敏感）：一键暂停 /
         # 周末签到关闭期间照跑会把暂停语义打穿。门在探针分支内部判定——
         # 不上移全局门，保住「探针先于零账号守卫」的既有语义与 --check-config 路径。
+        # 三种结局必须给外部监控可区分的非 0 码（此前一律 0，探针坏了永远看不见）：
+        # 跳过（暂停/周末门、未开启、未到点）=2（"全部跳过或窗口外未了结"），
+        # 撞锁（队列忙）=3，真跑通过=0，真跑有失败=1。
         if schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN):
             logger.info("==== 签到已暂停/周末签到关闭，本轮探针跳过（避免暂停期完整登录） ====")
-            return 0
+            return 2
         # 探针与真实签到必须互斥，否则探针会与手动签到并发登录同一账号
         try:
             _probe_lock_fh = cli_support._acquire_run_lock(only_mode=True)
         except cli_support._RunLockHeld:
             logger.warning("已有签到进程在运行，本轮探针跳过（防同账号并发）")
-            return 0
-        except cli_support._RunLockUnavailable as e:   # 探针是完整登录，无互斥即跳过（族内 0）
+            return 3
+        except cli_support._RunLockUnavailable as e:
+            # 锁不可用与"锁被持有"同属"队列忙"：探针是完整登录，无互斥即不跑，但
+            # 必须让监控看见"这轮没跑"（3），不得静默当成功。
             logger.warning("签到运行锁不可用，本轮探针跳过（防同账号并发）: %s", e)
-            return 0
-        if accounts:
-            probe.run_probe(accounts)
-        return 0
+            return 3
+        failed = probe.run_probe(accounts)
+        if failed is None:
+            # 未开启 / 未到触发时间频率：这一轮没做检查 → 2（区别于真跑通过）。
+            return 2
+        return 1 if failed else 0
 
     # 超期软删账号物理清理：cron/Actions 部署可能没有常驻 web 进程，
     # 每日签到进程是清理的唯一时机；失败不阻断签到。
