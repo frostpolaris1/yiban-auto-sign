@@ -997,19 +997,60 @@ failover 行为本身保留（那是送达鲁棒性，非本条病根；病根�
 **两处原报口径必须改**：①限速绑的是 `auth.py:71` 的 **10 次/60 秒/IP（600/h）**，`app.py:541-542` 的 60/10s（21600/h）是更宽的全局桶 ⇒ "无限次"与"21600/h"都不成立（XFF 由 nginx 覆盖式写、不可伪造；`-w 1` 计数不分叉）；②时延放大器**方向反了**：冷静期账号对错都跑 2 次 scrypt，不存在/活跃只 1 次 ⇒ 2× 标出的是"7 天内注销过的邮箱"（**免口令枚举**），而口令对错由响应体直告。
 三态：`6d4eafa` 的 `auth.py:92-99/153-155` 同形 ⇒ 代码已在现网；`deleted=1` 是冷静期的**超集**，"软删 0 ⇒ 此刻可达集合 0"成立，但窗口由任一用户自助注销打开 7 天 ⇒ 写"已在现网、当前可达集合 0"，**不采纳**"现网不触发"。〔C-42 · ADJ-15〕
 
+**处置（2026-09-27 批3a Task3a-2，repair/m3-batch3a2）**：只做"补留痕"半条——冷静期口令正确的
+路径经**既有** `db.audit` 落一条 `login_recoverable`（三元组与 `login_ok` 同构：username 遮罩+截断、
+IP 走 `hash_ip`、detail 不落凭据；没有建会话，故与 `login_ok` 分动作名），失败/不存在路径零改动。
+上面两处口径订正随本注记留档为**登记侧纠正**，无需代码：限速口径 = `auth.py` 的 10 次/60 秒/IP
+（600/h，`app.py` 60/10s 是更宽的全局桶），"无限次/21600/h"均不成立；时延放大器方向反了，2× 标出
+的是"7 天内注销过的邮箱"，口令对错由响应体直告。**残余（章程降级，另立裁决才做）**：免口令枚举
+（时延/响应体两路）本任务不作验收项，未动。判据钉：`test_login_recoverable_writes_one_attributable_audit`。
+
 ### O 簇 · 面板与接口给假信号
 #### MF-96 `POST /api/notify-test`：`force=True` 跳过冷却与两本每日额度、零审计（中）
 `web/routes/notify.py:406-414` 确实只判 `_is_builtin_admin_session()`、无 `_high_risk_gate`、零 `db.audit`（notify.py 的审计只有 `:238/:398`；全站唯一 `after_request`（`app.py:2088`）只设响应头）。外呼为真但**不是 SMTP**：`transport.py:182-188 → send(force=True)`，`:153` 把 cooldown（`:158`）与两本每日额度（`:161`）一起跳过，出口是 `:71-100` 的 ServerChan HTTPS POST 或经白名单的 custom webhook；**不能群发到任意地址**（view 不读任何请求参数，收件方 100% 来自服务端配置）。"无限额"订正为：仍吃全站 `RATE_MAX=60/10s`（`app.py:541-542,1870-1890`）+ CSRF（`:1979-2011`）+ nginx 50r/s。"不在 `app.py:2380-2390` 清单"= **同 MF-58** 的根（那份 docstring 是"必须当次输口令"的落点表，不是审计清单，提报定性偏了）。现网：该路由在部署线 `6d4eafa` 存在（`:459/:476`），触发需主管理员会话被盗。〔C-44 · ADJ-7〕
 验收不变量：第 4 次调用必须 429 且**零外呼**；每次外呼必须落一条含操作者的审计。
 
+**处置（2026-09-27 批3a Task3a-2，repair/m3-batch3a2，控制者裁定：只落审计半条）**：每次调用
+`api_notify_test` 落一条 `notify_test` 审计（含操作者；成功与失败都记——force 出口的"失败"多为
+请求已发出后被拒/异常，只记成功会漏真外呼）。**刻意不加**"第 4 次 429 + 会话配额"那半条验收：
+该按钮是管理员自用排障入口，按用户章程第 2 条（防"过强防护阻碍管理员日常"）由控制者裁定降级，
+全站 `RATE_MAX=60/10s` + CSRF + nginx 限速维持原样；登记验收不变量以前半句为准，后半句作废留此注记。
+判据钉：`test_notify_test_each_call_leaves_attributable_audit`。
+
 #### MF-97 `/api/logs` 的三元组各说一件事 ⇒ 前端"是否还有更多"必然判错（中，已在现网）
 `web/routes/data.py:api_logs:91-102`：`total_lines = len(masked_all)` 在 `if q:` **之前**；`_LOG_VIEW_CAP = 5000` 在 `if show_all:` 分支**体内**赋值；`truncated = len(masked_all) > _LOG_VIEW_CAP` 在过滤**之后** ⇒ 三个数不同轴。同族两份封顶口径（`-80:` 裸字面量 vs `_LOG_VIEW_CAP`）属 MF-54 补句。复核状态：**单源未独立裁决**（纯计数逻辑，可由读码直接判）。〔C-48 · GAP-4〕
+
+**处置（2026-09-27 批3a Task3a-2，repair/m3-batch3a2）**：三元组收成同轴——`total_lines` 取**过滤后**
+的同一份 `masked_all`，`_LOG_VIEW_CAP` 上收为 `data.py` 模块级单源常量，`truncated` 判据统一为
+"结果集 > 本次返回行数"（封顶截断与缺省尾 80 截断共用一个判据，缺省视图的"还有更多"从恒 False
+改为说真话）。既有 `test_logs_search_filters_full_day` 的 `total_lines=4` 断言钉的正是"过滤前"病灶，
+随契约订正为 2。同族那半条两份封顶口径（`-80:` 字面量）未动，归 **MF-54 补句**。判据钉：
+`test_logs_triple_same_axis_at_cap_boundary`（命中数恰好 =cap 与 cap+1 两侧各断一组三元组）。
 
 #### MF-98 "我的日历"把"状态目录读不到"渲染成"这个月没签"，还把伴生文件当成额外的天（中，幻影键已在现网）
 `web/routes/my.py:615-627`：`except OSError: pass` ⇒ `ok:true` + 全月空白 + 零日志；`date = entry.name[11:-5]` 不过滤伴生文件 ⇒ `X.json.lock` 被切成 `"X.json"`、`X.json.tmp1234` 切成 `"X.json.tm"`。造键源 `runner.py:572`（每天必造 `.lock`）+ `locks.py:62` + `state_gc.py:7/81-85`（`_TMP_MARK=".tmp"`、`_TMP_MAX_AGE_SEC=86400`）。幻影键部分**已在现网**（只要写过 `sign-daily-<date>.json` 就必有 `.lock`，`python -c` 切片实跑验证），空白日历部分未知（需权限异常/目录分叉）。属 MF-45/MF-61"面板给假安心"的反面同族 ⇒ 交叉引用不合并。〔C-34 · ST-3，实跑取证〕
 
+**处置（2026-09-27 批3a Task3a-2，repair/m3-batch3a2）**：两处都改，一行级。①取日期改按"后缀+形态"识别
+（只收 `startswith(prefix) and endswith('.json')` 且中段恰为两位数字者），`.lock`/`.tmp<pid>-<tid>` 伴生文件
+不再被截成幻影键；②`except OSError` 不再 `pass`——写一条 `logger.warning` + 返回 `ok:false`/500，读不到
+不再是"这个月没签"的肯定空白。**升级子句核对（读不到要出声是否改响应契约）**：唯一 HTTP 消费点是
+`web/static/js/calendar.js` 的 `/api/my-calendar` 拉取（:232-284），走 `YB.api`——core.js:165 对
+`data.ok === false` 抛错、calendar.js:275 catch 已有"卡内错误态 + 重试"分支 ⇒ `ok:false` 本就是既有
+消费语义，未新增字段、未改 `ok` 的含义（只是不再谎报 true），前端一行未动，不触升级子句。
+判据钉：`test_my_calendar_companion_files_and_unreadable_dir`（一条用例同时钉幻影键与读不到出声，
+含修复前红→修复后绿的实跑证据）。
+
 #### MF-99 日志页用宽行模型切日志、不匹配就 `continue` ⇒ 被撑开的后半行整块静默消失（中，取证未知）
 `web/services/logs.py:91 raw.decode(…).splitlines()`，`parse_sign_log:94-116` 内 `:107` 不中即 `:110-111 continue`；`_log_lines_for:139-152` 还要 `startswith(f"[{date_str} ")` ⇒ 半行永久丢失且无计数。对照窄侧 `:85 f.readline()`。可达性依赖与 MF-86 同一个"无字符集校验"字段。与 MF-46 的 `.env` 行模型同族但对象是日志文件 ⇒ **勿并**。复核状态：单源（ST-4），机制读码可判、触发需生产日志里的裸 U+0085。〔C-36 · ST-4〕
+
+**处置（2026-09-27 批3a Task3a-2，repair/m3-batch3a2，章程取最小）**：不改切行模型（那会动所有行的
+归属），只让丢弃可观测——`_log_lines_for` 新增可选 `stats` dict 出参，把"因解析不出而被丢弃的行"
+计数（当日前缀但过不了 `SIGN_LOG_RE` 的残行 + 非本日且同样解析不出的半行/续行；外日**完整**残留行与
+可见性过滤属设计内剔除，不计），`/api/logs` 以 `dropped_lines` 回显"另有 N 行没算进去"。收录行集合
+与原口径逐字一致。判据钉：`test_logs_dropped_lines_observable`（一条逻辑行含裸 U+0085 ⇒ 前半收录、
+后半计数；干净文件 ⇒ 计数 0 不误报）。**残余**：`parse_sign_log`（`my.py:84` 的「最近记录」切片）
+有同型 `continue`，未一并计数——非日志页返回面，章程内主动简化。触发前提未变：需生产日志出现裸
+U+0085（可达性仍绑 MF-86 的无字符集校验字段）。
 
 #### MF-100 脱敏上线后运维按完整手机号 `grep`/`journalctl` 恒返回空，且没有替代口径与 runbook 禁则（中，代码外面）
 盘上不再有 11 位连续数字 ⇒ 按完整号码的 shell/journalctl 检索恒空，会把人引向"这台机器没签过这个号"的错误结论。修法缺口：MF-49 的方向只覆盖"单一原语 + 展示层禁止第二套口径 + 版本号可判别"，**没有** a) 后 4 位/遮罩形态的反查工具 b) runbook 禁则。本流独立复核 `journalctl|runbook|后 4 位|反查` 在登记表命中 0。与 MF-49③（UI 侧 `q=`）分两半：代码内 vs 代码外 ⇒ 独立成条、双向交叉引用。〔C-49 · GAP-4〕
