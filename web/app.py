@@ -815,12 +815,13 @@ def log_path_for(date_str=None):
     return _logs_svc.log_path_for(LOG_FILE, date_str)
 
 
-def _log_lines_for(date_str):
+def _log_lines_for(date_str, stats=None):
     """读取指定日期日志的行（实现见 web/services/logs.py）。
 
     路径与倒读实现都按调用时刻现取本模块的（`LOG_FILE` 可被测试直接赋值改写）。
+    `stats` 可选 dict：服务层把解析不出而被丢弃的行数写进 `stats["dropped"]`。
     """
-    return _logs_svc._log_lines_for(date_str, log_path_for, _tail_lines)
+    return _logs_svc._log_lines_for(date_str, log_path_for, _tail_lines, stats)
 
 
 def _today_has_logs():
