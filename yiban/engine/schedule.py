@@ -123,12 +123,9 @@ def avg_attempt_sec(env=None):
 
 
 def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
-    """容量**告警阈值**的 avg 输入：缺省档换成实测分位数（MF-56③）。
-
-    优先级：显式配置 `YIBAN_AVG_ATTEMPT_SEC`（管理员钉住）> 实测 p95（近 `days` 天
-    `sign_events.dur_sec`，每次尝试端到端）> 配置缺省档；样本不足/读库失败一律回退
-    缺省档，绝不让留痕查询把预检拖崩。只喂预检告警——保存闸门/展示按计划口径与
-    配置值，"能不能保存"不该跟着昨天的网络抖。
+    """容量**告警阈值**的 avg 输入：显式配置（管理员钉住）> 实测 p95（近 `days` 天
+    `sign_events.dur_sec`）> 配置缺省档；读不到实测就回退缺省档，绝不把预检拖崩。
+    只喂预检告警——保存闸门/展示按计划口径，"能不能保存"不该跟着昨天的网络抖。
     """
     if os.environ.get("YIBAN_AVG_ATTEMPT_SEC", "").strip():
         return cfg_avg if cfg_avg is not None else avg_attempt_sec()
@@ -139,7 +136,7 @@ def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
     except Exception as e:  # 防御：db 替身缺属性（测试打桩面）也不炸预检
         logger.warning("读取实测尝试耗时失败（告警回退配置值）: %s", e)
         p95 = None
-    return max(1, int(math.ceil(p95))) if p95 else max(1, int(cfg_avg))
+    return max(1, math.ceil(p95)) if p95 else max(1, int(cfg_avg))
 
 
 def _env_float(name, default, lo=None, hi=None):
@@ -246,11 +243,9 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
     两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
     `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
 
-    `retry_reserve`（**只喂告警阈值**，MF-56④）：v2 侧把每个账号的周期放大到
-    `attempts.MAX_ATTEMPTS × (avg + gap)`——分级重试预算上限 3 次尝试，重试同样吃
-    墙钟；按零重试排满窗口正是 122–360 静默死带的根。计划/展示/保存闸门不传、
-    取值不变。v3 侧不参与：`util`（缺省 0.8）本身就是重试/尾延迟降额，且 K 按含
-    重试的总尝试量算（`executor_count` 的 `retry_ratio`），再扣一次是双重计算。
+    `retry_reserve`（**只喂告警阈值**）：v2 侧把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
+    重试同样吃墙钟——按零重试排满窗口正是 122–360 静默死带的根（计划/展示/闸门不传）。
+    v3 不参与：`util` 缺省 0.8 本身就是重试降额，再扣一次是双重计算。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
@@ -280,10 +275,10 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
 
     结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
     只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。**与
-    `capacity_probe` 的建议数不是同一口径**：探针按"每进程各持一桶"实测（跨进程共享
-    是 v3 目标），"20–22 个桶"≈要声明同数物理出口；未声明出口清单时 K≡1 是设计语义
-    而非被夹死的缺陷（README「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate`
-    非正回退出厂速率（与 `channel_count` 同口径）；窗口 <= 0 时回退 1。
+    `capacity_probe` 的建议数不是同一口径**：探针按"每进程各持一桶"实测，"20–22 个桶"
+    ≈要声明同数物理出口；未声明出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
+    「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate` 非正回退出厂速率（与
+    `channel_count` 同口径）；窗口 <= 0 时回退 1。
     """
     r = _DEFAULT_RETRY_RATIO if retry_ratio is None else max(0.0, float(retry_ratio))
     n = max(0, int(n_accounts))
@@ -521,6 +516,15 @@ DAY_OFF_SATURDAY = "saturday"
 DAY_OFF_PAUSED = "paused"
 
 
+def weekend_flags(env=None):
+    """周末签到开关（周六, 周日）的**唯一解析口径**（`_env_flag`：1/true/on/yes 为真）。
+
+    `day_off` 与 web 展示（面板状态行、我的日历置灰）都只读这里——原先 web 侧各自
+    用整数解析，`=true` 时引擎照签而面板标休（两套值域分叉）。
+    """
+    return (_env_flag("YIBAN_SATURDAY_SIGN", env), _env_flag("YIBAN_SUNDAY_SIGN", env))
+
+
 def day_off(now=None, sat=None, sun=None, env=None):
     """今天这一刻是否**有意不签到** → 原因串；空串=照常。
 
@@ -531,10 +535,10 @@ def day_off(now=None, sat=None, sun=None, env=None):
 
     `sat`/`sun` 可显式传入（定时轮传导入期快照常量，便于既有测试注入）；不给则读环境。
     """
-    if sat is None:
-        sat = _env_flag("YIBAN_SATURDAY_SIGN", env)
-    if sun is None:
-        sun = _env_flag("YIBAN_SUNDAY_SIGN", env)
+    if sat is None or sun is None:
+        def_sat, def_sun = weekend_flags(env)
+        sat = def_sat if sat is None else sat
+        sun = def_sun if sun is None else sun
     weekday = (now or clock.now()).weekday()
     if weekday == 6 and not sun:
         return DAY_OFF_SUNDAY
