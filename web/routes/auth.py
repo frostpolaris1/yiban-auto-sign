@@ -251,9 +251,12 @@ def api_register():
     pw_err = m._password_policy_error(password)
     if pw_err:
         return jsonify({"error": pw_err}), 400
-    # 内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用
+    # 内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用。
+    # 与"该邮箱已注册"同文案、同补一次 dummy scrypt：独有文案且排在口令散列之前
+    # 等于给匿名者一个零成本的超管邮箱探针（注册面 = 公开面）。
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
-        return jsonify({"error": "内置管理员邮箱不可注册"}), 400
+        m._constant_time_dummy(password)
+        return jsonify({"error": "该邮箱已注册"}), 400
     # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
     ip = m._client_ip()
     now = time.time()
