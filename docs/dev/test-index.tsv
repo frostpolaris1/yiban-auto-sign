@@ -519,6 +519,10 @@ tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_ye
 tests/test_cli_contract.py	CliContractTest.test_state_reports_missing_dir_loudly	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_unknown_and_empty_subcommand	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_version_matches_package	J	-	??
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_config_error_kind_is_config_error	J	-	??
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_exit_code_family_unchanged	J	-	`docs/dev/cli.md` §3 既有码的机读分族：0/1/2/3/4/10 只增不改。
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_illegal_args_carry_distinguishable_error_kind	J	-	六种非法参数 + 缺子命令：`error_kind` 覆盖用法族，且每种的取值可区分。
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_sign_and_probe_json_expose_error_kind	J	-	sign/probe 的机器可读输出是退出码；`--json` 下补同族的 error_kind。
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_check_config_summary_not_on_stdout	J	-	`sign --check-config --json`：摘要走 stderr，stdout 只剩一行 JSON。
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_distinguishable	J	-	六种非法参数 + 缺子命令的输出不得再"逐字节相同"。
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_is_single_parseable_line	J	-	??
