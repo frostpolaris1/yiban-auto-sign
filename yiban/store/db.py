@@ -237,6 +237,7 @@ sign_events_since = _events.sign_events_since
 probe_events_on = _events.probe_events_on
 sign_events_on = _events.sign_events_on
 sign_events_recent_date = _events.sign_events_recent_date
+attempt_dur_quantile = _events.attempt_dur_quantile  # 容量告警的实测输入（MF-56③）
 _event_cleanup = _events._event_cleanup
 
 # 会话缓存域（唯一定义点在 yiban/store/session_cache.py）：函数走下方读写转发（内部调用点
