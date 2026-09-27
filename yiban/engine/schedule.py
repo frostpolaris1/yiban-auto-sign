@@ -208,7 +208,7 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8,
 
 
 def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
-                util=0.8, enabled=None, env=None):
+                util=0.8, enabled=None, env=None, retry_reserve=False):
     """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
 
     为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
@@ -225,6 +225,14 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
     传了 `env`，本次估算的 avg 与开关就从**同一份** `env` 读，不再跨"进程环境 + .env"
     两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
     `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
+
+    `retry_reserve`（**告警阈值口径**，见 `capacity_accounts` 的周期式；MF-56④）：v2 侧
+    先把每个账号的周期放大到 `attempts.MAX_ATTEMPTS × (avg + gap)`——分级重试预算上限
+    3 次尝试，重试同样吃墙钟。按零重试把窗口排满正是 122–360 静默死带的根（当天必签
+    不完、预检却到 361 才告警）。**计划/展示/保存闸门不扣**（那里的语义是"这套配置能
+    排下几个"），只有引擎预检告警传 True。v3 侧此参数不参与：`util`（缺省 0.8）本身
+    就是 v3 的重试/尾延迟降额，且 K 按含重试的总尝试量算（`executor_count` 的
+    `retry_ratio`）——再乘一次 MAX_ATTEMPTS 是双重扣减。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
@@ -232,6 +240,14 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
         from yiban.engine import executor_v3
         enabled = executor_v3.scheduler_v3_enabled(env)
     if not enabled:
+        if retry_reserve:
+            # 等价于"窗口 − 重试储备"的实算阈值：储备 = (MAX_ATTEMPTS−1) 份
+            # 单账号周期/账号，折进 gap 复用 `capacity_accounts` 这一个式子
+            # （不造第二套公式，见 MF-54）。
+            from yiban.engine import attempts  # 局部导入：attempts 带整条客户端链
+            avg_eff = max(1, int(avg if avg is not None else avg_attempt_sec(env)))
+            gap_eff = max(0, int(gap or 0))
+            gap = gap_eff + (attempts.MAX_ATTEMPTS - 1) * (avg_eff + gap_eff)
         return capacity_accounts(window_sec, gap, avg, env=env)
     return capacity_accounts_v3(window_sec, 1 if k is None else k, avg,
                                 bucket_rate, util, env=env)
