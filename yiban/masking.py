@@ -97,7 +97,13 @@ def _mask_quoted_key_value(m):
 
 
 def sanitize_text(text):
-    """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
+    """服务端可控内容进入错误消息/日志/通知前转义换行、遮裸号、抹凭据字面量。
+
+    手机号按 `mask_phones_in_text`（与 `MaskingFormatter` 同一份号码口径，MF-49 的
+    统一原语）收口在这里：上游异常消息/返回体里回显的裸号（如账号标识）随文本进
+    告警与日志，此前只靠调用点自觉——出口面兜底脱敏与展示层必须共用一条规则，
+    本函数补上最后一格，而不是在调用点再抄一份。
+    """
     s = str(text).replace("\r", "\\r").replace("\n", "\\n")
     # 异常消息可能含 Account dataclass repr（带明文密码/令牌）：
     # 整体替换 Account(...) 对象——引号串按**两种引号各自配对**跨过值内的 `)` 与 `(`
@@ -131,7 +137,9 @@ def sanitize_text(text):
         r"\1=***",
         s,
     )
-    return s
+    # 裸号收口（文档字符串所述）：放在凭据规则**之后**——键值对形态先归值，再按
+    # 值形态扫剩余号码；`mask_phones_in_text` 幂等，已遮形态不会二次变形。
+    return mask_phones_in_text(s)
 
 
 def mask_phone(phone):

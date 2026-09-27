@@ -191,7 +191,10 @@ def api_login():
             m.mail_layout.Mail(
                 summary=f"IP {m._nl_safe(ip)} 连续 {fails} 次登录失败。",
                 fields=[
-                    ("尝试用户名", m._nl_safe(username)),
+                    # 尝试用户名是受害者输入的邮箱（注册用户即邮箱登录）——爆破告警
+                    # 正文不得带出被爆破账号明文邮箱（MF-49 展示/告警面同一口径：
+                    # `mask_email` 非邮箱原样返回，内置 admin 用户名不受影响）。
+                    ("尝试用户名", m._nl_safe(m._mask_email(username))),
                     ("该 IP 试过的不同用户名", f"{distinct_users} 个"),
                 ],
                 advice=["如非本人操作，请检查是否有人尝试暴力破解"],

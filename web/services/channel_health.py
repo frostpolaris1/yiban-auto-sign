@@ -345,9 +345,12 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
     名列表，不看正文有没有 ⚠；痕迹摘要同样按结构化事实拼，两侧都记。
 
     返回 True 表示本次已排出一封日报（含"发不出去但痕迹已落库"），
-    False 表示今日已播过、本次跳过。force=True 只越过"今日已播"判定，
-    仍会写入标记——人工补发同样算当日那一封。
-    发信抛异常时异常原样上抛（调用方记日志），且**不落**去重标记：当日稍后仍可重试。
+    False 表示今日已播过、本次跳过。force=True 只越过"今日已播"判定。
+    去重标记**只在送达时落**：发信抛异常（异常原样上抛，调用方记日志）与
+    被吞失败（send_notification 返回 False）都不落——两种失败都保留当日重试资格，
+    "送达才销账"与 A 组额度不变量同一口径（MF-44 验收不变量第 1 条）。
+    未送达时取走的额度耗尽告知同步退还（pending 重挂，见
+    `yiban.notify.restore_exhaustion_notice`），重试的那封仍带得出"哪本账用尽"。
 
     状态生产者、状态行生产者与发信出口都由调用方传入（`web.app` 的
     `_alert_channel_status` / `_channel_status_lines` / `send_notification`）：三者在
@@ -402,13 +405,25 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
     # 两侧事实无条件都在，不再从正文里挑 ⚠ 行拼。
     if degraded:
         _audit_channel_health_degraded(facts)
-    send_notification("告警通道健康日报", report, urgent=degraded)
-    # 去重标记刻意落在发信**之后**：写在之前等于"今天只要想过一遍就
-    # 永久不再试"——send_notification 抛异常或 SMTP 瞬断时，当天这封日报既没出去、
-    # 标记又已落库，直到次日都不会再播，一次瞬断被放大成整天静默，与"宁可多播不少播"
-    # 的取向相反。目标仍是"跨重启每日至多一封"（成功即落标记，重启不会各发一封），
+    delivered = bool(send_notification("告警通道健康日报", report, urgent=degraded))
+    if not delivered and exhausted:
+        # 与 A 组同一不变量（"占用"必须有送达回执或被退还）在告知标记上的落点：
+        # pop 是取走语义，取走随本封信生效——信没送到就退还 pending，当日稍后重试
+        # 仍会带上"哪本账用尽"，而不是"取走即消失、一次瞬断吞掉当日告知"。
+        try:
+            notify.restore_exhaustion_notice(exhausted)
+        except Exception as e:  # 退还自身失败只剩日志（换日归零兜底），不得反噬日报
+            logger.warning("退还推送额度耗尽告知失败（当日该告知可能缺失）: %s", e)
+    if not delivered:
+        # 被吞失败（send_notification 返回 False，不抛异常）同样不落标记。
+        # 旧实现只覆盖了**异常**路径——返回值被丢弃，失败照写"今日已播"，一次瞬断
+        # 被放大成整天静默且重启不救（标记在库里），与 docstring 的承诺相反。
+        # 痕迹已在发信前落审计链，"无论是否发出都留痕"不变；这里改的是重试资格。
+        return True
+    # 去重标记刻意落在发信**之后**且**只在送达时落**：写在之前等于"今天只要想过一遍
+    # 就永久不再试"。目标仍是"跨重启每日至多一封"（成功即落标记，重启不会各发一封），
     # 只是失败那一次不占名额：当日稍后（进程重启后的下一轮、或人工 force 补发）还能重试。
-    # 不为此另起第三套状态存储——仍用同一个 app_meta 键，只是写入时机后移。
+    # 不为此另起第三套状态存储——仍用同一个 app_meta 键，只是写入时机后移、条件收紧。
     db.set_meta(_HEALTH_REPORT_META_KEY, json.dumps(
         {"date": today, "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
          "degraded": degraded, "channels": len(lines),
