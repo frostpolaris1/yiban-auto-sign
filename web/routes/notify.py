@@ -24,6 +24,8 @@ account_crypto / write_env_batch / send_notification / db / _json_body 等）必
 `POST /api/notify-test` 的测试消息经 `send_notification` 发出。
 """
 import json
+import re
+import uuid
 
 from flask import jsonify, session
 
@@ -32,6 +34,74 @@ from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 
+# SMTP 条目的稳定 id：贯穿「前端行 ↔ 落盘条目 ↔ 凭据沿用」的唯一身份，位置不参与身份。
+# 字符集/长度收紧（不透明短标识而非自由文本）：id 一旦能夹带任意内容，就成了绕脱敏
+# 把值写进审计/配置的旁路通道。前端自产同形状（"smtp-" 前缀 + base36），两侧同口径。
+_SMTP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
+
+
+def _smtp_id_ok(value):
+    return isinstance(value, str) and bool(_SMTP_ID_RE.match(value))
+
+
+def _new_smtp_id():
+    return "smtp-" + uuid.uuid4().hex[:12]
+
+
+def _norm_smtp_port(value):
+    """身份匹配用的端口读数：缺失/不可解析按 465（与发送路径的端口回退同口径）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 465
+
+
+def _smtp_target(entry):
+    """条目的「告警去向」判据：host + port。凭据只随目标走，目标变了就是换中继。"""
+    return (str(entry.get("host") or "").strip(), _norm_smtp_port(entry.get("port")))
+
+
+def _smtp_dest_view(entries):
+    """条目的「告警去向」审计视图：每条一个紧凑串 `host:port`。
+
+    审计 detail 的预算是 200 字符（含作用域标记，见 audit_chain._scope_detail），
+    结构必须尽量小才可能把**整份旧清单**原样留下（可还原目标）。授权码/发件账号
+    不进视图：前者是红线，后者属凭据而非去向；收件人口径由 admin_to(_from) 打码值
+    单独覆盖。
+    """
+    return [f"{e.get('host') or ''}:{_norm_smtp_port(e.get('port'))}" for e in entries]
+
+
+# db.audit 对 detail 的硬预算 200 字符，且 _scope_detail 会在 JSON 里注入
+# `,"_req": "web-<8hex>-<8hex>"`（33 字符）。超预算时宁可显式裁剪并标注，也不能让
+# audit 层把 JSON 截成非法串——截断的 JSON 下游还原不了，"可还原目标"就成了一句空话。
+_AUDIT_DETAIL_BUDGET = 167
+
+
+def _bounded_audit_json(detail):
+    """把 detail 编进审计预算；放不下时逐条裁剪视图数组并留 `_cut` 标注。
+
+    裁剪顺序刻意先新后旧：`smtps_to` 的新去向马上能在 GET /api/mail-config 与
+    下一条审计里再看到，`smtps_from` 却是**唯一**的旧去向存证——预算不够时先牺牲
+    可再生的那一份。
+    """
+    s = json.dumps(detail, ensure_ascii=False)
+    if len(s) <= _AUDIT_DETAIL_BUDGET:
+        return s
+    d = dict(detail)
+    for key in ("smtps_to", "smtps_from"):
+        while d.get(key) and \
+                len(json.dumps(d, ensure_ascii=False)) > _AUDIT_DETAIL_BUDGET:
+            d[key] = d[key][:-1]
+            d[key + "_cut"] = True
+    if len(json.dumps(d, ensure_ascii=False)) > _AUDIT_DETAIL_BUDGET:
+        # 连裁剪后的最小形态都放不下（超长 host 的病态输入）：视图整体让位给
+        # 计数与显式标注，至少保住 enabled/admin_to 等其余键的 JSON 完整性
+        for key in ("smtps_from", "smtps_to", "smtps_from_cut", "smtps_to_cut"):
+            d.pop(key, None)
+        d["smtps_view"] = "too_long"
+    return json.dumps(d, ensure_ascii=False)
+
 
 def api_mail_config():
     """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。
@@ -39,6 +109,9 @@ def api_mail_config():
     smtps：SMTP 发信条目列表（mailer.smtp_list 解密结果；pass 绝不回显，
     仅以 has_pass 标记该条是否已有授权码；user 同顶层字段口径经
     mail_config._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
+    id 是条目的稳定身份（前端据此携带、后端按它取旧凭据）；旧格式落盘的条目
+    无 id，序列化回 null——前端为其现生成、后端保存时经 (host,port) 唯一匹配
+    认领旧凭据（迁移口径），下一次保存起持久化 id。
     条目级 admin_to 不参与序列化：发送路径只读顶层旧键 ADMIN_TO，条目
     携带的收件人从不生效，不再序列化/落盘。顶层 admin_to 是活字段（A 线告警
     收件算法的唯一来源，见 mail_config.admin_recipients），保留序列化与状态行
@@ -60,6 +133,9 @@ def api_mail_config():
         "admin_to": cfg.get("admin_to", ""),
         "smtps": [
             {
+                # id：条目的稳定身份（旧格式条目无 id 时为 null，前端为其现造、
+                # 保存时按迁移口径认领旧凭据并落定 id）
+                "id": e.get("id") if _smtp_id_ok(e.get("id")) else None,
                 "host": str(e.get("host", "")),
                 "port": e.get("port", 465),
                 "user": m.mail_config._mask_addr(e.get("user")),
@@ -82,9 +158,14 @@ def api_mail_config_save():
     地址，避免误清），清空走单独的「清空」按钮。不再需要收 ADMIN_TO 时优先用
     同卡「接收发给我自己的邮件提醒」开关，那只是停止本人接收、不影响其他管理员。
     smtps：SMTP 发信条目列表（主备 failover），每条
-    {host, port=465, user, pass}；pass 留空且该索引旧条目已有
-    授权码 → 保留旧 pass（不改授权码时无需重输），user 留空同理按索引
-    沿用旧值（GET 打码后前端不回显完整地址），落盘前 AES-GCM 加密为
+    {id?, host, port=465, user, pass}。条目身份是**稳定 id**（前端建行时自产、
+    GET 原样带回；无 id 的新条目保存时补发），位置不参与身份。pass 留空时
+    沿用「按 id 认领到旧条目、且 (host,port) 目标未变」的旧授权码，user 同理
+    （GET 打码后前端不回显完整地址，留空提交才不会误清空）；改目标 = 换中继，
+    **不**沿用旧凭据——旧授权码绝不随新域名一起发出，代价是改 host/port 后须
+    重新输入授权码，这是刻意的取舍。旧格式存量条目与不带 id 的旧客户端提交走
+    迁移口径：按 (host,port) **唯一**匹配认领，歧义即不猜（留空按空值落盘）。
+    id 非法形状或同请求内重复 → 400。落盘前 AES-GCM 加密为
     YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不接受也不写入（发送路径从不读该键）。
 
     邮件通道是全部安全告警的最后一条送达路径——"先关通知再作案"
@@ -140,9 +221,12 @@ def api_mail_config_save():
             return jsonify({"error": "smtps 应为列表"}), 400
         if len(raw_list) > m.MAIL_SMTPS_MAX:
             return jsonify({"error": f"SMTP 发信条目最多 {m.MAIL_SMTPS_MAX} 条"}), 400
-        # 旧列表取自改动前的解密结果：pass 留空且该索引旧条目已有授权码 → 保留旧值
+        # 旧列表取自改动前的解密结果。凭据沿用的身份匹配分两轮认领（见下方
+        # smtps_list 组装处），任何一步都不看数组位置——位置一致只是巧合的来源，
+        # 不是身份。
         old_entries = m.mailer.smtp_list()
-        smtps_list = []
+        parsed = []
+        seen_ids = set()
         for i, e in enumerate(raw_list):
             if not isinstance(e, dict):
                 return jsonify({"error": f"smtps 第 {i + 1} 条格式无效"}), 400
@@ -159,26 +243,79 @@ def api_mail_config_save():
             _host_reason = m.mail_config.check_smtp_host(host)
             if _host_reason:
                 return jsonify({"error": f"smtps 第 {i + 1} 条：{_host_reason}"}), 400
-            # user 留空 = 沿用该索引旧条目的 user（与 pass 的按索引保留一致：
-            # GET 已打码，前端不回显完整发件账号，留空提交才不会误清空）；
-            # 无旧值可沿用时存空串（同 pass 口径）
-            if not user and i < len(old_entries) and old_entries[i].get("user"):
-                user = str(old_entries[i]["user"])
             try:
                 port = int(e.get("port", 465))
             except (TypeError, ValueError):
                 return jsonify({"error": f"smtps 第 {i + 1} 条端口无效"}), 400
             if not 1 <= port <= 65535:
                 return jsonify({"error": f"smtps 第 {i + 1} 条端口应为 1~65535"}), 400
-            pwd = str(e.get("pass", "") or "")
-            if not pwd and i < len(old_entries) and old_entries[i].get("pass"):
-                pwd = str(old_entries[i]["pass"])  # 留空 = 不修改该条授权码
-            smtps_list.append({
+            # id 校验：形状非法直接 400（id 是不透明身份标识，不是自由文本——放任意
+            # 内容就成了一条绕开脱敏写进配置/审计的旁路）；null/缺失/空串按"无 id"
+            # 走迁移口径。同一请求内 id 重复也 400：两条条目认领同一旧身份必有一条错配。
+            eid = e.get("id")
+            if eid is None:
+                eid = ""
+            else:
+                eid = str(eid).strip()
+                if eid and not _SMTP_ID_RE.match(eid):
+                    return jsonify({"error": f"smtps 第 {i + 1} 条 id 无效"}), 400
+            if eid:
+                if eid in seen_ids:
+                    return jsonify({"error": f"smtps 第 {i + 1} 条 id 与前面条目重复"}), 400
+                seen_ids.add(eid)
+            parsed.append({
+                "id": eid,
                 "host": host,
                 "port": port,
                 "user": user,
-                "pass": pwd,
+                "pass": str(e.get("pass", "") or ""),
+                "src": None,
             })
+        # 第 1 轮：按 id 认领旧条目。id 认领**不看目标**——同 id 改 host 也仍认到
+        # 同一条旧目，凭据是否沿用由第 3 步的"目标未变"判据单独把关。
+        claimed = set()
+        for p in parsed:
+            if not p["id"]:
+                continue
+            for j, oe in enumerate(old_entries):
+                if j not in claimed and _smtp_id_ok(oe.get("id")) and oe["id"] == p["id"]:
+                    claimed.add(j)
+                    p["src"] = oe
+                    break
+        # 第 2 轮（迁移口径）：无 id/未知 id 的提交按 (host,port) 在**未被认领**的旧条目里
+        # 找唯一匹配；同目标多条旧目（或一条旧目对多条提交）时不猜——fail-closed 让
+        # 留空按空值落盘。这一步同时兜住旧客户端（不带 id）与旧配置（条目无 id）：
+        # 认领看的是**目标逐字相同**、不看数组位置，凭据因此只会随同一个中继走；
+        # 删中间行/重排都不再产生凭据错配。
+        for p in parsed:
+            if p["src"] is not None:
+                continue
+            cands = [j for j, oe in enumerate(old_entries)
+                     if j not in claimed and _smtp_target(oe) == (p["host"], p["port"])]
+            if len(cands) == 1:
+                claimed.add(cands[0])
+                p["src"] = old_entries[cands[0]]
+        # 第 3 步：凭据沿用。留空 user/pass 只在认领到的旧条目**目标未变**时回填——
+        # 改 host/port = 换中继，旧授权码/旧发件账号绝不跟去新域名（risk 档此前
+        # "零口令零确认"就漏在这一步，现在由后端硬判据封口，不依赖前端自觉）。
+        smtps_list = []
+        for p in parsed:
+            src = p["src"]
+            if src is not None and _smtp_target(src) == (p["host"], p["port"]):
+                if not p["user"] and src.get("user"):
+                    p["user"] = str(src["user"])
+                if not p["pass"] and src.get("pass"):
+                    p["pass"] = str(src["pass"])
+            smtps_list.append({
+                "id": p["id"] or _new_smtp_id(),
+                "host": p["host"],
+                "port": p["port"],
+                "user": p["user"],
+                "pass": p["pass"],
+            })
+    # 旧收件人值必须在落盘**之前**取——写后再读只会读到刚写进去的新值，
+    # "从哪改到哪"就塌成"从哪改到哪自己"。
+    admin_to_old = m.mail_config._get("ADMIN_TO") if admin_to_val is not None else None
     # smtps 与 admin_to 同属"改告警送达路径"，合并为一次口令确认
     # （同时提交只验一次；两者都不涉及则不做口令校验）
     if smtps_list is not None or admin_to_val is not None:
@@ -228,23 +365,30 @@ def api_mail_config_save():
     m.write_env_batch(m.ENV_FILE, updates)
     # 通道变更不再外发告警（开关 / SMTP 条目 / 收件人三处都是）：改告警通道本身就
     # 是"把报警器拆掉"的动作，用它自己那条通道去通报"通道被改了"只在通道还活着时
-    # 成立；留痕统一交给下面的审计行（含收件人的打码值与各开关的新值），运维按
-    # 审计页即可回答"谁在什么时候动了哪一路"。
+    # 成立；留痕统一交给下面的审计行（开关新值 + 收件人/中继的打码"从哪→到哪"），
+    # 运维按审计页即可回答"谁在什么时候把告警从哪一路改到了哪一路"。
     detail = {
         "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
         for k, v in flags.items()
     }
     if smtps_list is not None:
         detail["smtps_count"] = len(smtps_list)
+        # 改中继 = 改告警去向：审计必须能回答"从哪改到哪"并留下可还原目标
+        # （新旧两条 host:port 清单；授权码永不入审计）。只记新值时，误改/被篡改
+        # 后连"原来发往哪个中继"都无从查起。
+        detail["smtps_from"] = _smtp_dest_view(old_entries)
+        detail["smtps_to"] = _smtp_dest_view(smtps_list)
     if admin_to_val is not None:
-        # 审计记打码值：留痕要能回答"收件人被谁改到哪个域名"，但不落完整地址
+        # 审计记打码值：留痕要能回答"收件人被谁改到哪个域名"，但不落完整地址；
+        # 旧值同口径打码一并留下（"从哪改到哪"的"从哪"）。
         detail["admin_to"] = m.mail_config._mask_addr(admin_to_val)
+        detail["admin_to_from"] = m.mail_config._mask_addr(admin_to_old)
     resp = {"ok": True}
     resp.update(detail)
     m.db.audit(
         session.get("username") or "?",
         "mail_config", "mail_config",
-        json.dumps(detail, ensure_ascii=False),
+        _bounded_audit_json(detail),
     )
     return jsonify(resp)
 
