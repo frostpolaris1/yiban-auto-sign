@@ -442,6 +442,35 @@ class NotifyConfigApiTest(_B13WebBase):
         r = c.post("/api/notify-test", headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
 
+    def test_notify_test_each_call_leaves_attributable_audit(self):
+        """MF-96（只落审计半条）：每次外呼恰好一条含操作者的审计，不外加配额。
+
+        成功与失败都记——send(force=True) 的失败往往发生在请求已发出之后
+        （对端拒收/异常），只记成功会漏掉真外呼。刻意钉"连点两次不被限流"：
+        这是管理员自用排障按钮，按用户章程不对其加会话配额/429。
+        """
+        import sqlite3
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        with mock.patch.object(self.webapp.notify, "send_test", return_value=True):
+            r_ok = c.post("/api/notify-test", headers=self._csrf(t))
+        with mock.patch.object(self.webapp.notify, "send_test", return_value=False):
+            r_ng = c.post("/api/notify-test", headers=self._csrf(t))
+        self.assertEqual(r_ok.status_code, 200, r_ok.get_data(as_text=True))
+        self.assertEqual(r_ng.status_code, 400, "失败仍报 400，行为不变")
+        conn = sqlite3.connect(self.db_file)
+        try:
+            rows = conn.execute(
+                "SELECT username, detail FROM audit_logs "
+                "WHERE action='notify_test' ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(rows), 2, "两次外呼尝试各落一条，不多不少（含被拒的）")
+        self.assertEqual({r[0] for r in rows}, {"admin"}, "每条必须含操作者")
+        self.assertIn("已发送", rows[0][1])
+        self.assertIn("未送达", rows[1][1])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
