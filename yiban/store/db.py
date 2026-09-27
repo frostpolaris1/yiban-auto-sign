@@ -232,6 +232,7 @@ _normalize_limit = _events._normalize_limit
 add_sign_event = _events.add_sign_event
 add_sign_events_batch = _events.add_sign_events_batch
 sign_event_stats = _events.sign_event_stats
+sign_event_accounts_summary = _events.sign_event_accounts_summary
 sign_events_by_phone = _events.sign_events_by_phone
 sign_events_since = _events.sign_events_since
 probe_events_on = _events.probe_events_on
