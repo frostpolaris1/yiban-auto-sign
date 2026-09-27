@@ -94,7 +94,7 @@ def _bounded_audit_json(detail):
                 len(json.dumps(d, ensure_ascii=False)) > _AUDIT_DETAIL_BUDGET:
             d[key] = d[key][:-1]
             d[key + "_cut"] = True
-    # 2-8 审查移交的尾巴：上面的逐条裁剪只救 `smtps` 两个**数组视图**，极端
+    # 上面的逐条裁剪只救 `smtps` 两个**数组视图**，极端
     # `admin_to`（多条长地址逐项打码后仍超预算）无人管——届时 `audit()` 层的
     # `_scope_detail` 走后缀退化截断，把整段 JSON 截烂（下游还原失败，"可还原
     # 目标"落空）。字符串字段同法限量：逐段收缩并打 `_cut`；旧收件人先牺牲
