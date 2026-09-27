@@ -3486,19 +3486,11 @@ tests/test_web_calendar_parity.py	CalendarSingleSourceTest.test_no_template_inli
 tests/test_web_calendar_parity.py	CalendarSingleSourceTest.test_old_inline_cell_markup_is_gone	F	-	旧的内联拼日期格写法不得复活。
 tests/test_web_calendar_parity.py	CalendarSingleSourceTest.test_shared_implementation_keeps_the_a11y_and_state_contract	F	-	共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。
 tests/test_web_class_hygiene.py	ClassAttributeHygieneTest.test_no_duplicate_or_unscoped_dark_color_tokens	F	-	class 属性里不得有同变体重复、或与 dark:hover 同值的常驻 dark 声明。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_alert_variants_meet_aa	F	-	4 个语义提示条的「文字 on 底色」在两个模式下都达 AA（按调色板实时计算）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_component_layer_provides_required_classes	F	-	组件层必须齐全（缺了就会被裸写法替代）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_danger_button_text_meets_aa	F	-	危险按钮：白字对底色的对比度必须达 AA（原 `bg-red-500` 只有 3.76:1）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_inset_differs_from_card_in_both_modes	F	-	嵌面板底色在两种模式下都必须**不等于**卡片底色（否则等于没有底色）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_no_raw_markup_bypassing_component_layer	F	-	不得绕过组件层裸写（失败时给出文件:行 + 该改用的组件类）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_palette_and_threshold_helpers_are_wired	F	-	本文件用到的阈值应与 WCAG 一致（防被改成宽松值）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_semantic_alert_bars_must_use_yb_alert	F	-	**按语义组合判**：`bg-<语义>-50` + `border-<语义>-<档>` 同时出现 → 必须用 `.yb-alert-*`。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_text_inputs_must_use_yb_input	F	-	**按元素判**：文本类 `<input>`/`<textarea>`/`<select>` 必须带输入框组件类。
-tests/test_web_design_tokens.py	BadgeContractTest.test_badge_base_class_is_present	F	-	基础类必须存在，且显式 nowrap（此前 7 处有 7 处无）。
+tests/test_web_component_adoption.py	ComponentAdoptionTest.test_no_raw_markup_bypassing_component_classes	F	-	不得绕过组件类裸写（失败时给出文件:行 + 该改用的组件类）。
+tests/test_web_component_adoption.py	ComponentAdoptionTest.test_semantic_alert_bars_must_use_alert	F	-	**按语义组合判**：`bg-<语义>-50` + `border-<语义>-<档>` 同时出现 → 必须用 `.alert`。
+tests/test_web_component_adoption.py	ComponentAdoptionTest.test_text_inputs_must_use_input_class	F	-	**按元素判**：文本类 `<input>`/`<textarea>`/`<select>` 必须带输入框组件类。
 tests/test_web_design_tokens.py	BadgeContractTest.test_badge_thresholds_are_consistent_with_wcag	F	-	本文件用到的两个阈值应与 WCAG 一致（防被误改成宽松值）。
-tests/test_web_design_tokens.py	BadgeContractTest.test_badge_variants_meet_aa	F	-	5 个变体的「文字 on 徽标底」在两个模式下都达 AA（按调色板实时计算）。
-tests/test_web_design_tokens.py	BadgeContractTest.test_no_inline_badge_markup	F	-	徽标必须走 .yb-badge 系列类，不得再出现内联的整段写法。
-tests/test_web_design_tokens.py	PaletteCompletenessTest.test_every_used_shade_is_declared_in_tailwind_config	F	-	用到的每个档位也必须在 tailwind_config 的 colors 里声明（否则类不会被生成）。
+tests/test_web_design_tokens.py	BadgeContractTest.test_no_inline_badge_markup	F	-	徽标必须走 `.badge` + 语义色调档位，不得再出现内联的整段写法。
 tests/test_web_design_tokens.py	PaletteCompletenessTest.test_every_used_shade_is_defined_in_palette	F	-	用到的每个档位都必须在 app.css 里有 `--c-<族>-<档>`（否则计算值无效）。
 tests/test_web_file_lock_slow_ops.py	WebFileLockSlowOpsStaticTest.test_known_slow_list_matches_code	G	-	账实相符：还掉的债必须同步从清单删除（防清单腐烂成"永远绿"）。
 tests/test_web_file_lock_slow_ops.py	WebFileLockSlowOpsStaticTest.test_no_new_slow_call_inside_file_lock	G	-	增长面归零：扫描结果减去存量清单必须为空。
