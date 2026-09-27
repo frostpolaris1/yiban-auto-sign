@@ -34,7 +34,7 @@ NOCONC_PHONE = "13800000005"   # 假号（遮罩形态 138****0005）
 
 
 class PanelFalseSignalTest(unittest.TestCase):
-    """① 已了结当日结论不被"已取消"覆写；③ 内置管理员 /mine 与裸账号隔离。"""
+    """① 已了结当日结论不被"已取消"覆写（登记原 ③ 的隔离项经裁定按默认配置取舍，未实现）。"""
 
     @classmethod
     def setUpClass(cls):
