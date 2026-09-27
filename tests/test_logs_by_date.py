@@ -254,6 +254,32 @@ class LogsByDateTest(unittest.TestCase):
         c = self._user_client()
         self.assertEqual(c.get("/api/my-logs?date=bad").status_code, 400)
 
+    # ---- 5b. /api/my-calendar：周末开关载荷形状（MF-54：=true 与 =1 同判）----
+    def test_my_calendar_weekend_flags_are_int_01(self):
+        """`sunday_sign`/`saturday_sign` 必须是整数 0/1——`calendar.js` 用 `=== 1` 判定置灰。
+
+        两字段原先在 web 侧各走整数解析（`=true` 解析不出），于是引擎照签而日历把周末
+        置灰（两套值域的分叉点）。现改走与引擎同一的 `schedule.weekend_flags`
+        （1/true/on/yes 为真），故 `=true`/`=on` 必须都映射为 1，且类型仍是 int。
+        """
+        c = self._admin_client()
+        base = c.get("/api/my-calendar?month=2026-08").get_json()
+        self.assertEqual((base["sunday_sign"], base["saturday_sign"]), (0, 0), base)
+        self.assertIsInstance(base["saturday_sign"], int)
+        self.assertIsInstance(base["sunday_sign"], int)
+
+        original = open(self.env_file, encoding="utf-8").read()
+        try:
+            with open(self.env_file, "a", encoding="utf-8") as f:
+                f.write("YIBAN_SATURDAY_SIGN=true\nYIBAN_SUNDAY_SIGN=on\n")
+            data = c.get("/api/my-calendar?month=2026-08").get_json()
+            self.assertEqual(data["saturday_sign"], 1, "=true 必须与 =1 同判")
+            self.assertEqual(data["sunday_sign"], 1, "=on 必须与 =1 同判")
+            self.assertIsInstance(data["saturday_sign"], int)
+        finally:
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original)
+
 
 def _d(offset):
     """相对今天的日期字符串（避免硬编码日期随运行日漂移）。"""

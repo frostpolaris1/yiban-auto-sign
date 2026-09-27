@@ -364,6 +364,37 @@ def sign_events_recent_date(stage, max_days=30):
     return ""
 
 
+def attempt_dur_quantile(pct=0.95, days=7, min_samples=20):
+    """近 `days` 天真实签到尝试耗时的分位数（秒）；样本不足/查询失败返回 None。
+
+    容量告警阈值的**实测输入**（MF-56③）：`capacity_accounts` 的单账号耗时此前
+    只有配置缺省（1.87~3s 来自 mock 注入，登记表判"不是实测"），继承它的阈值算的
+    是假设。`sign_events.dur_sec` 本就按"每次尝试（登录链+签到链）端到端"落盘
+    （`round._emit_event`），取近几天成功/已签事件的 p95 即可——**不新增任何持久化
+    键/表**，旧库/旧状态文件照常可读（列缺席的老行 dur_sec 为 NULL，天然被过滤）。
+    样本 < min_samples 时不拿小样本冒充分位数，返回 None 让调用方回退配置值。
+    """
+    try:
+        with _facade()._conn_lock:
+            conn = _facade().get_conn()
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT dur_sec FROM sign_events WHERE stage='sign' AND dur_sec IS NOT NULL"
+                " AND status IN ('success','already') AND ts >= ? ORDER BY dur_sec",
+                (cutoff,),
+            ).fetchall()
+    except Exception as e:
+        logger.warning("attempt_dur_quantile 失败: %s", e)
+        return None
+    vals = [float(r[0]) for r in rows if r[0] is not None]
+    if len(vals) < max(1, int(min_samples)):
+        return None
+    idx = max(0, min(len(vals) - 1, int(pct * len(vals))))  # 升序第 ⌈pct×n⌉ 个（0 基）
+    return vals[idx]
+
+
 # ---------------------------------------------------------------------------
 # 暂停冷却（audit_logs 表，按表归属落在本模块）
 # ---------------------------------------------------------------------------
