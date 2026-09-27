@@ -128,6 +128,11 @@ def open_readonly(db_file, immutable=None):
     代价是 `mode=ro` 在 WAL 库上可能新建 `-shm`/`-wal`（SQLite 的读簿记，非数据改动）。
     传 `True` 强制 immutable（调用方自担"读不到并发写"的责任）。
 
+    边界（**如实声明**）：`immutable=1` 只在库确实静默时才是安全快照。若库处于
+    rollback-journal 模式且有并发写者，immutable 只读可能读不到该写者已提交的改动，
+    也不会参与文件锁（锁库期间照旧读出旧快照）。本项目统一 WAL、只读运维面向静默库，
+    故自动档默认用它，风险低；取证类"必须见锁"的调用方显式传 `immutable=False`。
+
     `mode=ro` 在个别平台/WAL 组合下仍可能打不开，此时退化为普通连接 + `PRAGMA
     query_only=ON`（读得到、写不进），由 SQLite 自己拒绝任何写。
     """

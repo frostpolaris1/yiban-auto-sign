@@ -86,6 +86,14 @@ USAGE = (
     "（见 `python -m yiban.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
 )
 
+#: 路径相关环境变量的说明：根 `--help` 与 `config` / `db` 子命令描述共用同一份，避免
+#: 三处各写一遍而漂移（`YIBAN_DB_FILE` 此前不在任何 help 里，`.env` 写了账号仍报
+#: "未配置任何账号"却回显 `env_file:.env`，就是"唯一改道变量不可见"造成的误判）。
+_PATHS_HELP = (
+    "路径相关环境变量：YIBAN_ENV_FILE（.env 密钥来源）/ YIBAN_DB_FILE（库文件）/ "
+    "YIBAN_STATE_DIR（状态目录）/ YIBAN_LOG_FILE（日志文件）；相对路径一律按当前工作目录解析。"
+)
+
 #: 仓库根（`yiban/cli.py` 上溯两层）。**只用来定位转发给子进程的工具脚本**，
 #: 不是包导入引导：本模块是包内模块，入口一律 `python -m yiban.cli`（以文件路径
 #: 直接执行既不支持、也不需要），故这里没有也不需要 sys.path 操作。
@@ -499,7 +507,7 @@ def _build_parser():
         prog="python -m yiban.cli",
         description="易班自动签到统一入口（agent 侧；契约见 docs/dev/cli.md）",
         epilog=("stdout 只放结果（--json 时是一整行 JSON 对象），人类可读汇总走 stderr；"
-                "本命令不读 stdin、不做交互确认。"),
+                "本命令不读 stdin、不做交互确认。 " + _PATHS_HELP),
     )
     subs = parser.add_subparsers(
         dest="command", metavar="{sign,probe,config,capacity,state,db,version}")
@@ -532,7 +540,8 @@ def _build_parser():
 
     p = _sub(
         "config", help="配置检查（脱敏、不联网）",
-        description="检查账号配置并脱敏打印，不发起任何网络请求；含本次解析到的路径。",
+        description=("检查账号配置并脱敏打印，不发起任何网络请求；含本次解析到的路径。"
+                     + _PATHS_HELP),
     )
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
@@ -564,7 +573,8 @@ def _build_parser():
                      "--integrity 跑 PRAGMA integrity_check；--backup 写一致性副本"
                      "（在线备份 API，不加 --yes 只报告计划；目标已存在需 --force）；"
                      "--restore 从该副本恢复（默认只报告，--yes 需回显 --fingerprint，"
-                     "覆盖前自动留副本）。只读路径全程只读连接，不建库、不迁移。"),
+                     "覆盖前自动留副本）。只读路径全程只读连接，不建库、不迁移。"
+                     + _PATHS_HELP),
     )
     group = p.add_mutually_exclusive_group()
     group.add_argument("--status", action="store_true", help="只读状态（默认）")
