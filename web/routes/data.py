@@ -234,6 +234,10 @@ def api_admin_sign_events():
         m.signin._mask_phone(phone) if phone else f"{days} 天 {len(events)} 条事件",
     )
     stats = m.db.sign_event_stats(days=days, stage=stage or None)
+    # 账号数终值：`daily_stats.cnt` 按 (day,status) 各自去重、桶间不互斥，前端拿不到
+    # phone 明细也无从自行去重——「涉及多少账号」「按日最终态」只能在这里出权威值
+    # （把 cnt 跨天跨状态直加当总数是现网 953 vs 真值 94 的来源，MF-55）。
+    accounts_stats = m.db.sign_event_accounts_summary(days=days, stage=stage or None)
     return jsonify(
         {
             "ok": True,
@@ -242,6 +246,7 @@ def api_admin_sign_events():
             "count": len(events),
             "events": events,
             "daily_stats": stats,
+            "accounts_stats": accounts_stats,
         }
     )
 
