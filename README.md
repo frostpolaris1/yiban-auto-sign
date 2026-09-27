@@ -726,6 +726,12 @@ python3 -m web
 #   systemctl status yiban-web        # 启动失败看 journalctl -u yiban-web -n 50
 ```
 
+> ⚠️ **关掉系统的自动重启**：Debian/Ubuntu 的 `unattended-upgrades` 在自动升级后**默认会重启**
+> （`Unattended-Upgrade::Automatic-Reboot` 上游缺省为 `true`）。本项目的签到由定时任务按固定时点
+> 发起，重启落在窗口内会**静默漏签一轮**（不报错，只是少签）。请显式写死：新建
+> `/etc/apt/apt.conf.d/51unattended-noreboot`，内容一行 `Unattended-Upgrade::Automatic-Reboot "false";`
+> ——另起一个文件，别改 `50unattended-upgrades`（那是包提供的文件，改它升级时会被 `.dpkg-dist` 顶掉）。
+
 浏览器访问 `https://你的域名`（经 nginx 反代）或 `http://127.0.0.1:17892`（本机调试）。**默认不监听全网卡**：确需直连局域网请显式 `python3 -m web --host 0.0.0.0`（明文 HTTP 无防护，自担风险）。
 
 管理员侧导航：**数据总览 / 签到日志 / 账号管理 / 用户管理 / 系统设置**（个人域为 **我的日历 / 我的账号**）。普通用户走邮箱注册，提交自己的易班账号（名称 + 手机号 + 密码 + 设备信息），管理员审核通过后参与每日自动签到；每人限一个账号，可自助注销（两次确认 + 密码验证，7 天内可登录撤销）。
