@@ -73,11 +73,22 @@
     if (data.quota_visible === false) {
       parts.push("今日额度：仅主管理员可见");
     } else {
-      var g = data.daily_remaining == null ? "不限" : data.daily_remaining + " 条";
-      var u = data.urgent_daily_remaining == null ? "不限" : data.urgent_daily_remaining + " 条";
-      parts.push("今日额度：非紧急剩余 " + g + " / 紧急剩余 " + u);
+      parts.push("今日额度：" + quotaPart("非紧急", data.daily_max, data.daily_remaining) +
+        " / " + quotaPart("紧急", data.urgent_daily_max, data.urgent_daily_remaining) +
+        "（已用按占用计数：占用先于发送，未必等于已送达）");
     }
     el.textContent = parts.join("；");
+  }
+
+  // 计数口径 = 「已用 X/上限 Y（剩 R）」，不再只显余额：额度是被一条条**占用**吃掉的，
+  // 占用发生在发送之前——发出失败会退还，但"从未发出却没退成"的占用（见告警链交付账）
+  // 只显余额时完全隐形。本函数只做显示换算，占用/退还的机制与回执口径在账本层。
+  function quotaPart(name, max, remaining) {
+    if (remaining == null) return name + " 不限";
+    var m = Number(max) || 0;
+    var r = Number(remaining) || 0;
+    if (m <= 0) return name + " 不限";
+    return name + " 已用 " + Math.max(0, m - r) + "/" + m + "（剩 " + r + "）";
   }
 
   // 读取失败就地提示 + 提供重试（不再静默吞掉：用户看不到"配置其实是旧的/空的"）
