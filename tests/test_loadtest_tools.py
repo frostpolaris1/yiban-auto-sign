@@ -317,6 +317,48 @@ def test_capacity_measured_cycle_adds_back_first_account_gap():
     assert capacity_probe.executor_capacity(0, 8.0) == 0
 
 
+def test_capacity_executor_capacity_shares_engine_formula():
+    """MF-56⑥：换算必须转调引擎的 `capacity_accounts`，不得再有一份 `W // cycle`。
+
+    实测周期 cycle = avg + gap ⇒ 还原 avg = cycle − gap 后代入引擎式子；周期比
+    配置 gap 还短（没按 gap 整形）时整段归 avg、gap 置 0——同一式子，输入如实。
+    """
+    from yiban.engine.schedule import capacity_accounts
+    # 生产档：周期 11.99、gap 10 → avg 2，逐值 == 引擎式子，且与历史实测 390 同值
+    assert capacity_probe.executor_capacity(4680, 11.99, 10) == capacity_accounts(4680, 10, 2) == 390
+    # 变异样本：非整周期下 `W // cycle`（=850）与引擎式子（=780）分道——旧算术在此必红
+    assert capacity_probe.executor_capacity(4680, 5.5) == capacity_accounts(4680, 0, 6) == 780
+    # cycle < gap：整段归 avg、gap 置 0（== 引擎按 avg=8、gap=0 的取值 585）
+    assert capacity_probe.executor_capacity(4680, 8.0, 10) == capacity_accounts(4680, 0, 8) == 585
+    # build_verdict 真的把 gap 传下去了：基线行带 per_proc=6/墙钟 10.321 ⇒ 周期 11.99
+    rows = [{"K": 1, "per_proc": 6, "per_acct_wall_s": 10.321, "degradation_x": 1.0,
+             "machine_cpu_pct": 25, "success": 6, "failed": 0,
+             "status_counts": {"success": 6}}]
+    v = capacity_probe.build_verdict(rows, users=5000, window_sec=4680, gap=10)
+    assert v["single_executor_capacity"] == capacity_accounts(4680, 10, 2)
+
+
+def test_capacity_verdict_requires_real_results():
+    """MF-56⑥：白天跑全落 skipped_window 时**不得**再报"够用"——判据读真实结果。
+
+    修复前判据只看墙钟：窗口外引擎零请求直接收尾，墙钟又快又干净，照样产出
+    "single_executor_capacity/够用"。修复后基线（K=1）无真实 success/failed 或
+    有 skipped_window 即拒绝产出建议（ok=False + 可执行的 why）。
+    """
+    fake_fast = [{"K": 1, "per_proc": 16, "per_acct_wall_s": 0.2, "degradation_x": 1.0,
+                  "machine_cpu_pct": 10, "accounts_total": 16, "success": 0, "failed": 0,
+                  "status_counts": {"skipped_window": 16}}]
+    v = capacity_probe.build_verdict(fake_fast, users=5000, window_sec=4680, gap=10)
+    assert v["ok"] is False
+    assert "skipped_window" in v["why"] and "窗口" in v["why"]
+    # 同墙钟、但基线真签成了 ⇒ 正常产出建议（证明挡的是"无真实结果"而非墙钟本身）
+    real = [dict(r) for r in fake_fast]
+    real[0].update(per_acct_wall_s=10.321, success=14, failed=2,
+                   status_counts={"success": 14, "failed": 2})
+    assert capacity_probe.build_verdict(real, users=5000, window_sec=4680,
+                                        gap=10)["ok"] is True
+
+
 def test_capacity_recommend_applies_two_thirds():
     """用户裁决口径：建议每执行体账号数 = 实测 × 2/3（向下取整，至少 1）。"""
     assert capacity_probe.recommend_per_executor(300) == 200
