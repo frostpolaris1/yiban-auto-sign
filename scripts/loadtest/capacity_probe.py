@@ -14,7 +14,9 @@
 
 ## 结论口径（三个数，全部来自实测）
 
-1. **单执行体容量** = `窗口秒数 ÷ (单账号实测耗时 + 账号间隔)`；
+1. **单执行体容量** = **与引擎同一个式子**：把实测周期还原成 avg/capacity 入参后
+   转调 `yiban.engine.schedule.capacity_accounts`（此前是另写的 `窗口 ÷ 周期`，
+   引擎口径一改两边静默分叉，见 MF-56⑥）；
 2. **建议每执行体账号数** = 单执行体容量 **× 2/3**（用户裁决的余量口径）；
 3. **需要几个执行体** = `用户数 ÷ 建议每执行体账号数` 向上取整，再与
    **本机实测能同时跑几个执行体**（首个耗时劣化/资源饱和档之前）对照：跑不下就明说
@@ -74,6 +76,10 @@ except ImportError:  # pragma: no cover - 取决于加载方式
     import isolation
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: 仓库根：本文件在 `scripts/loadtest/` 下，容量换算必须转调仓库内的引擎公式
+#: （`yiban.engine.schedule`，见 `executor_capacity`），脚本单独运行时
+#: sys.path[0] 只有 `scripts/loadtest`，不补这一级就 import 不到 `yiban`。
+_REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 
 #: 假易班记账端点（回环，TLS）；证书 SAN 含 127.0.0.1，故直连回环即可，无需 hosts
 DEFAULT_MOCK_STATS_URL = "https://127.0.0.1"
@@ -129,15 +135,27 @@ def measured_cycle(per_acct_wall_s, gap, per_proc):
     return per_acct + float(gap) / float(per_proc)
 
 
-def executor_capacity(window_sec, cycle_sec):
-    """**单执行体**在一个窗口内能跑完的账号数 = 窗口 ÷ 单账号周期。
+def executor_capacity(window_sec, cycle_sec, gap=0):
+    """**单执行体**容量：**与引擎同一个式子**——转调 `yiban.engine.schedule.capacity_accounts`。
 
-    周期由 `measured_cycle` 从压测结果还原（已含间隔对齐），此处不再做任何修正。
+    修复前这里另写了一份 `窗口 // 周期`（MF-56⑥：与引擎不同式，引擎口径一改两边
+    静默分叉，白天测出的"够用"与引擎实际排布对不上）。引擎口径 =
+    `floor((W−avg)/(avg+gap))+1`，本工具实测口径是周期 `cycle = avg + gap` ⇒
+    `avg = cycle − gap` 还原后代入。若 `cycle − gap < 1s`（实测周期比配置 gap 还短，
+    说明这轮没有按 gap 整形——如纯机器能力档或夹具），整段周期归 avg、gap 置 0；
+    仍是同一个引擎式子，只是输入按实测还原，不另造第二套算术。
     """
     cycle = float(cycle_sec or 0)
     if cycle <= 0:
         return 0
-    return int(float(window_sec) // cycle)
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    from yiban.engine.schedule import capacity_accounts
+    gap = max(0, int(gap or 0))
+    avg = int(round(cycle)) - gap
+    if avg < 1:
+        avg, gap = int(round(cycle)), 0
+    return capacity_accounts(int(window_sec), gap, max(1, avg))
 
 
 def recommend_per_executor(capacity, ratio=DEFAULT_RATIO):
@@ -181,9 +199,22 @@ def build_verdict(rows, *, users, window_sec, gap, ratio=DEFAULT_RATIO):
     if not rows:
         return {"ok": False, "why": "没有测量结果"}
     base = next((r for r in rows if r["K"] == 1), rows[0])
+    # 判据必须读真实结果（MF-56⑥）：造号窗口写死在生产时段，白天跑时引擎在窗口外
+    # 直接收尾——账号全落 skipped_window，wall 又快又干净，只看墙钟的旧判据照样报
+    # "够用"。基线（K=1）没有一条真实 success/failed、或有账号被窗口挡下，本轮测量
+    # 就是无效的：拒绝产出建议，而不是给一个乐观数字。（字段缺席=旧版测量文件，
+    # 不在此判——由 `--reuse-results` 的使用者自行负责新鲜度。）
+    success, failed = base.get("success"), base.get("failed")
+    if success is not None or failed is not None:
+        skipped_win = int(((base.get("status_counts") or {}).get("skipped_window")) or 0)
+        if int(success or 0) + int(failed or 0) == 0 or skipped_win > 0:
+            return {"ok": False, "why":
+                    f"基线测量无真实签到结果（success=0、failed={int(failed or 0)}、"
+                    f"skipped_window={skipped_win}）——大概率在签到窗口外跑的（引擎没发请求，"
+                    "墙钟不可信）；请在有效签到窗口内重跑，勿用 --skip-env 复用旧结果"}
     cycle = measured_cycle(base.get("per_acct_wall_s"),
                            gap, base.get("per_proc"))
-    capacity = executor_capacity(window_sec, cycle)
+    capacity = executor_capacity(window_sec, cycle, gap)
     per_exec = recommend_per_executor(capacity, ratio)
     need = executors_needed(users, per_exec)
     ceiling_k, ceiling_why = hardware_ceiling(rows)
