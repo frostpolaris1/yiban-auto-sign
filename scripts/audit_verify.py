@@ -138,8 +138,11 @@ def _verify(args):
                 "对副本取证请把该库的锚点一并拷来并用 --anchor 指定"
             )
         anchor_path = db.audit_anchor_path()
-    # migrate=False：迁移会用当前密钥重写整条链、抹平篡改痕迹；cleanup=False 同理不落写
-    db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
+    # migrate=False：迁移会用当前密钥重写整条链、抹平篡改痕迹；cleanup=False 同理不落写。
+    # create=False：**只读**初始化（`connection.open_readonly`）——取证对象在校验过程中
+    # 不得被改动，故连建表/切 WAL 都不做；本脚本此前经 init_db 会顺带 `_create_tables`
+    # 并把库切到 WAL，对一次"只读取证"是多余的写。
+    db.init_db(db_file=db_path, env_file=env_file, create=False)
     health = db.audit_health(path=anchor_path)
     # 链校验过程异常/密钥缺失（broken == -1）不是"检出篡改"而是"无法定论"——
     # 按中止处理（exit 2），绝不用 exit 1 冒充一次成功的取证。

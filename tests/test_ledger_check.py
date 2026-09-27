@@ -256,7 +256,7 @@ class LedgerCheckTest(unittest.TestCase):
         运维终端与日志。判定与实现共用 `yiban.masking.sanitize_text`。
 
         前置条件必须**在本用例内自建**：`main()` 在进程内跑，读的是进程环境；缺库
-        守卫（拒绝新建空库）排在 `init_db` 注入点**之前**，环境没指到位就短路返回，
+        守卫（拒绝新建空库）排在 `open_readonly` 注入点**之前**，环境没指到位就短路返回，
         断言的脱敏输出根本不会产生——依赖别处用例泄漏的环境变量转绿，等于把测试
         之间的隐式耦合当正确性。库文件由 `setUp` 建库时真实存在，守卫自然放行。
         """
@@ -266,7 +266,7 @@ class LedgerCheckTest(unittest.TestCase):
                 "YIBAN_DB_FILE": self.db_file,
                 "YIBAN_ENV_FILE": os.path.join(self.tmp, ".env"),
         }), mock.patch.object(
-                module.db, "init_db",
+                module.db, "open_readonly",
                 side_effect=RuntimeError("连接失败 token=SECRET123")):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -291,7 +291,7 @@ class LedgerCheckTest(unittest.TestCase):
                 "YIBAN_STATE_DIR": self.state_dir,
                 "YIBAN_DB_FILE": self.db_file,
                 "YIBAN_ENV_FILE": os.path.join(self.tmp, ".env"),
-        }), mock.patch.object(module.db, "init_db",
+        }), mock.patch.object(module.db, "open_readonly",
                               side_effect=RuntimeError("注入的连接层故障")):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):

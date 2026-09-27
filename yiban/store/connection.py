@@ -108,7 +108,7 @@ def set_env_file(path):
     _env_file = path
 
 
-def open_readonly(db_file):
+def open_readonly(db_file, immutable=None):
     """只读打开一个 SQLite 库（文件不存在 → None）；**不建库、不建表、不切 WAL**。
 
     为什么需要独立于 `init_db` 的连接：`init_db` 会建库/建表/跑迁移/切 WAL——任何
@@ -122,6 +122,12 @@ def open_readonly(db_file):
     - 有 `-shm`（有进程正持有 WAL）或 `-wal` 非空（崩溃残留待恢复）→ `mode=ro`：
       必须读 WAL 里的已提交帧，不能 immutable 跳过。
 
+    `immutable`：`None`（默认）按上面的静默判定自动选择；**传 `False` 强制 `mode=ro`**
+    ——取证类调用方（`scripts/audit_verify.py`）要的是"看得见并发写者与锁"：immutable
+    只读会绕过文件锁、忽略 WAL 里已提交但未合并的帧，把"库正被独占写"读成"一切正常"。
+    代价是 `mode=ro` 在 WAL 库上可能新建 `-shm`/`-wal`（SQLite 的读簿记，非数据改动）。
+    传 `True` 强制 immutable（调用方自担"读不到并发写"的责任）。
+
     `mode=ro` 在个别平台/WAL 组合下仍可能打不开，此时退化为普通连接 + `PRAGMA
     query_only=ON`（读得到、写不进），由 SQLite 自己拒绝任何写。
     """
@@ -131,7 +137,8 @@ def open_readonly(db_file):
     wal = abs_path + "-wal"
     shm = abs_path + "-shm"
     quiescent = not os.path.exists(shm) and not (os.path.exists(wal) and os.path.getsize(wal) > 0)
-    uri = pathlib.Path(abs_path).as_uri() + ("?mode=ro&immutable=1" if quiescent else "?mode=ro")
+    use_immutable = quiescent if immutable is None else bool(immutable)
+    uri = pathlib.Path(abs_path).as_uri() + ("?mode=ro&immutable=1" if use_immutable else "?mode=ro")
     try:
         conn = sqlite3.connect(uri, uri=True)
     except sqlite3.Error:
