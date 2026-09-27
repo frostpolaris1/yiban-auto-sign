@@ -55,7 +55,6 @@
 这些页面。
 """
 import argparse
-import json
 import os
 import pathlib
 import sqlite3
@@ -67,8 +66,17 @@ from yiban import state_gc, window
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, runner
 from yiban.engine import schedule as schedule_mod
+from yiban.engine.cli_support import (
+    _emit_json,
+    _emit_json_error,
+    _exit_code,
+    _fail,
+    _guess_command,
+    _say,
+    _UsageError,
+)
 from yiban.infra import env_io
-from yiban.masking import mask_phone, mask_phones_in_text
+from yiban.masking import mask_phone
 from yiban.store import accounts as store_accounts
 from yiban.store import db as store_db
 from yiban.store import purge_guard
@@ -89,62 +97,6 @@ CAPACITY_PROBE = os.path.join(_REPO_DIR, "scripts", "loadtest", "capacity_probe.
 
 #: 参数原样透传给引擎、CLI 只接 `--json` 的子命令
 _PASSTHROUGH = ("sign", "probe")
-
-
-# ---------------------------------------------------------------------------
-# 输出：结果进 stdout（单行 JSON），人话进 stderr
-# ---------------------------------------------------------------------------
-def _masked_tree(node):
-    """递归遮罩 JSON 树里所有**字符串叶子**的手机号（口径 = `mask_phones_in_text`）。
-
-    只动 str 叶子、不动数字：对序列化后的整行打码会连 11 位整数字段值（如巨型库
-    的 `size_bytes`）一起改写，产出 `138****0000` 这种非法 JSON——遮罩必须在
-    "值还是字符串"的时候做。键名是本模块写死的字段名，不承载用户数据，不经过这里。
-    """
-    if isinstance(node, str):
-        return mask_phones_in_text(node)
-    if isinstance(node, dict):
-        return {k: _masked_tree(v) for k, v in node.items()}
-    if isinstance(node, (list, tuple)):
-        return [_masked_tree(v) for v in node]
-    return node
-
-
-def _emit_json(payload):
-    """把结果对象打成**一整行** JSON 写 stdout（调用方直接 `json.loads`）。
-
-    维护类子命令（config/capacity/state/db/version）不建引擎的日志装配，
-    `errors`/`detail` 等字段夹带的异常原文可能内嵌裸号——叶子遮罩（见
-    `_masked_tree`）是 stdout 面唯一的出口收口，序列化前做。
-    """
-    sys.stdout.write(json.dumps(_masked_tree(payload), ensure_ascii=False) + "\n")
-    sys.stdout.flush()
-
-
-def _say(message):
-    """人类可读汇总：一律走 stderr（stdout 必须保持"只有结果"）。
-
-    与 `_emit_json` 同口径过遮罩（`mask_phones_in_text`，即 `MaskingFormatter`
-    用的那一份）：这里是维护类子命令唯一的"人话"出口，且 stderr 会被 run.sh 的
-    `2>&1` 原样落进当天日志文件——formatter 管不到直写。
-    """
-    sys.stderr.write(mask_phones_in_text(str(message)) + "\n")
-    sys.stderr.flush()
-
-
-def _fail(command, code, errors, json_mode, **extra):
-    """失败路径：错误信息进 stderr；`--json` 时仍打一行 `ok=false` 的对象后返回退出码。
-
-    失败也保持"stdout 可解析"是刻意的：调用方不必先看退出码再决定怎么解析输出，
-    按 `ok` 分支即可（退出码仍按契约表返回）。
-    """
-    for line in errors:
-        _say(line)
-    if json_mode:
-        payload = {"command": command, "ok": False, "errors": list(errors)}
-        payload.update(extra)
-        _emit_json(payload)
-    return code
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +226,18 @@ def _cmd_sign(json_mode, extra):
     退出码非 0 时附带可选 `error` 字段（引擎致命错误的 stderr 摘要，"未配置任何账号"/
     "配置加载失败"类）：否则调用方只拿到一个光秃秃的 exit_code，失败原因仍埋在按天
     日志文件里。
+
+    引擎自身的 argparse 拒绝（`sign --bogus`）会以 SystemExit(2) 直接结束进程：`--json`
+    下这里必须把它转成一行结构化错误，否则 stdout 又是零字节（引擎的 usage 仍照原样
+    留在 stderr）。
     """
-    code = runner.main(extra)
+    try:
+        code = runner.main(extra)
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode:
+            _emit_json_error("sign", code, [f"引擎参数错误: {' '.join(extra)}"])
+        return code
     if json_mode:
         payload = {"command": "sign", "exit_code": code}
         if code != 0:
@@ -287,8 +249,19 @@ def _cmd_sign(json_mode, extra):
 
 
 def _cmd_probe(json_mode, extra):
-    """只读健康检查：转引擎的 `--probe` 语义（是否真跑由探针开关/频率/暂停门决定）。"""
-    code = runner.main(["--probe", *extra])
+    """只读健康检查：转引擎的 `--probe` 语义（是否真跑由探针开关/频率/暂停门决定）。
+
+    退出码分族见 `docs/dev/cli.md` §3：真跑通过 0 / 真跑有失败 1 / 未做检查（开关关、
+    窗口外、暂停/周末门）2 / 队列忙 3。引擎 argparse 拒绝同样要落成一行 JSON（同
+    `_cmd_sign`）。
+    """
+    try:
+        code = runner.main(["--probe", *extra])
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode:
+            _emit_json_error("probe", code, [f"引擎参数错误: {' '.join(extra)}"])
+        return code
     if json_mode:
         payload = {"command": "probe", "exit_code": code}
         if code != 0:
@@ -328,6 +301,7 @@ def _cmd_config(args, view):
     payload = {
         "command": "config",
         "ok": True,
+        "exit_code": 0,
         "accounts": len(accounts),
         "accounts_missing_device": missing_device,
         "phones_masked": masked,
@@ -415,6 +389,7 @@ def _cmd_capacity(args, view, extra):
     payload = {
         "command": "capacity",
         "ok": True,
+        "exit_code": 0,
         "accounts": signable,
         "accounts_total": accounts,
         "paths": paths,
@@ -511,6 +486,7 @@ def _cmd_state(args, view):
     payload = {
         "command": "state",
         "ok": True,
+        "exit_code": 0,
         "dry_run": not args.yes,
         "state_dir": state_dir,
         "log_dir": log_dir,
@@ -563,6 +539,7 @@ def _cmd_db(args, view):
     payload = {
         "command": "db",
         "ok": True,
+        "exit_code": 0,
         "mode": mode,
         "db_file": db_file,
         "size_bytes": os.path.getsize(db_file),
@@ -613,6 +590,7 @@ def _db_backup(args, db_file):
     payload = {
         "command": "db",
         "ok": True,
+        "exit_code": 0,
         "mode": "backup",
         "db_file": db_file,
         "backup_path": target,
@@ -665,6 +643,7 @@ def _cmd_version(args, view):
     """
     payload = {
         "command": "version",
+        "exit_code": 0,
         "version": RELEASE_VERSION,
         "python": "%d.%d.%d" % sys.version_info[:3],
         "user_version": None,
@@ -781,7 +760,7 @@ def _build_parser():
 
 
 def _dispatch(args, extra, subs):
-    """按子命令分发（返回值即退出码；用法错误走 argparse 的 2）。"""
+    """按子命令分发（返回值即退出码；用法错误抛 `_UsageError`，由入口统一落成 2）。"""
     cmd = args.command
     if cmd in _PASSTHROUGH:
         handler = _cmd_sign if cmd == "sign" else _cmd_probe
@@ -789,12 +768,13 @@ def _dispatch(args, extra, subs):
     if extra and not (cmd == "capacity" and args.measure):
         # 多余参数只在两处合法：sign/probe（原样透传给引擎，见上）与
         # `capacity --measure`（透传给容量基准工具）。其余是用法错误 → stderr 用法 + 退出码 2
-        subs[cmd].error("无法识别的参数: " + " ".join(extra))
+        raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd)
     # `--dry-run` / `--yes` 只有 state 与 db 定义（其余子命令没有这两个开关）
     if getattr(args, "dry_run", False) and getattr(args, "yes", False):
-        subs[cmd].error("--dry-run 与 --yes 互斥（默认就是 dry-run）")
+        raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd)
     if cmd == "capacity" and args.measure and args.json:
-        subs[cmd].error("--measure 与 --json 不能同时使用（转发的工具自成一路输出）")
+        raise _UsageError("--measure 与 --json 不能同时使用（转发的工具自成一路输出）",
+                          subs[cmd], cmd)
     view = _env_view()
     handlers = {
         "config": _cmd_config,
@@ -809,33 +789,58 @@ def _dispatch(args, extra, subs):
     return handler(args, view)
 
 
+def _fail_usage(exc, json_mode):
+    """CLI 用法错误的统一收口：stderr 保留 argparse 形态的 usage，`--json` 再打一行对象。"""
+    sys.stderr.write(exc.parser.format_usage())
+    sys.stderr.write(f"{exc.parser.prog}: error: {exc}\n")
+    sys.stderr.flush()
+    if json_mode:
+        _emit_json_error(exc.command, 2, [str(exc)])
+    return 2
+
+
 def main(argv=None) -> int:
     """执行子命令并**返回**退出码（调用方决定是否 `sys.exit`；本函数不抛 SystemExit）。
 
     空子命令与未知子命令都会在 stderr 打用法并返回 2（`docs/dev/cli.md` §2 第 1/4 条），
-    全程不读 stdin。`--help` 由 argparse 打印后返回 0。
+    全程不读 stdin。`--help` 由 argparse 打印后返回 0。任何带 `--json` 的调用（含上面的
+    用法错误路径）都在 stdout 留下一整行结构化错误对象（见 `_emit_json_error`）。
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     # 进程 umask 077——与引擎入口同口径：本进程创建的文件（数据库备份副本等）
     # 创建即 0600（Windows 无实际效果，忽略）。
     os.umask(0o077)
+    json_mode = "--json" in argv
     parser, subs = _build_parser()
+    command = _guess_command(argv, subs)
     try:
         args, extra = parser.parse_known_args(argv)
-        if args.command is None:
-            _say(USAGE)
-            return 2
-        # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
-        # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
-        # （formatter 缺席 = 手机号兜底整条防线被旁路）；装配后这些记录经
-        # `MaskingFormatter` 落按天日志或降级 handler。
-        cli_support._setup_cli_logging()
-        return _dispatch(args, extra, subs)
     except SystemExit as e:
         # argparse 的 --help（0）与用法错误（2）都以此形式退出：转成返回值，
-        # 使 `main(argv)` 对调用方始终是"返回码"而非异常。
-        code = getattr(e, "code", 2)
-        return code if isinstance(code, int) else 2
+        # 使 `main(argv)` 对调用方始终是"返回码"而非异常。--json 下补一行结构化错误。
+        code = _exit_code(e)
+        if json_mode and code != 0:
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"])
+        return code
+    if args.command is None:
+        _say(USAGE)
+        if json_mode:
+            _emit_json_error(command, 2, ["未指定子命令"])
+        return 2
+    # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
+    # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
+    # （formatter 缺席 = 手机号兜底整条防线被旁路）；装配后这些记录经
+    # `MaskingFormatter` 落按天日志或降级 handler。
+    cli_support._setup_cli_logging()
+    try:
+        return _dispatch(args, extra, subs)
+    except _UsageError as e:
+        return _fail_usage(e, json_mode)
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode and code != 0:
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"])
+        return code
 
 
 if __name__ == "__main__":
