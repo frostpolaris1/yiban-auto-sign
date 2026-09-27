@@ -26,7 +26,23 @@ python3 -m yiban.cli <子命令> [选项]
 `scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连 `yiban.notify` / `yiban.mail`。
 
 模块落位：引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
-state_io / accounts / workers / config_check / cli_support），SQLite 层在 `yiban/store/db.py`。
+state_io / accounts / workers / config_check / cli_support / db_maintenance），SQLite 层在
+`yiban/store/db.py`。入口一律 `python3 -m yiban.cli`（以文件路径直接跑既不支持也不需要）；
+开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.cli`（cwd 为仓库根）。
+
+## 1.1 路径相关环境变量（四个，与 run.sh 同源）
+
+| 变量 | 作用 | 默认 |
+|------|------|------|
+| `YIBAN_ENV_FILE` | `.env` 文件路径（加密密钥 / 审计密钥来源） | `.env`（当前目录） |
+| `YIBAN_DB_FILE` | SQLite 库文件路径 | `yiban.db` |
+| `YIBAN_STATE_DIR` | 状态目录（状态文件 / 锁 / 库外锚点） | `/var/log/yiban` |
+| `YIBAN_LOG_FILE` | 日志文件路径（按天文件按它的目录落） | `<YIBAN_STATE_DIR>/sign.log` |
+
+**相对路径一律按当前工作目录解析**（`run.sh` 先 `cd` 到部署目录再 export，故"相对路径"
+在两条路径下都应指向同一处；在别处直接调用 CLI 时请用绝对路径或先 `cd`）。解析优先级：
+进程环境 → `.env` → 默认值。四个变量名在根 `--help`、`config --help`、`db --help` 的
+文本里都列明。
 
 ## 2. 硬性约定（实施与评审都按这几条）
 

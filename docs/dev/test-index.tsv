@@ -530,6 +530,7 @@ tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_check_config_s
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_distinguishable	J	-	六种非法参数 + 缺子命令的输出不得再"逐字节相同"。
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_is_single_parseable_line	J	-	??
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_success_json_has_exit_code	J	-	每个维护子命令的成功 `--json` 也带 exit_code（调用方统一按它分支）。
+tests/test_cli_contract_mf60.py	PathHelpTest.test_path_vars_listed_in_help	J	-	??
 tests/test_cli_contract_mf60.py	ProbeExitFamilyTest.test_skip_and_failure_are_distinct_and_nonzero	J	-	??
 tests/test_cli_contract_mf60.py	ProbeExitFamilyTest.test_zero_accounts_probe_is_noop_success	J	-	零账号 = 无需执行（0）；探针分支先于零账号守卫，不落 ERROR。
 tests/test_cli_contract_mf60.py	ReadOnlyPromiseTest.test_readonly_commands_do_not_create_db_in_empty_cwd	J	-	空目录 + 只有 .env：只读命令不得当场建出 yiban.db（登记原文黑箱复现点）。
