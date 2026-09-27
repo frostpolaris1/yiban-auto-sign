@@ -20,6 +20,23 @@ tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_off	E	
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_off_lands_zero_in_env	E	-	关闭态必须显式落 `YIBAN_NOTIFY_URGENT_ONLY=0`，不能写空值/删键。
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_partial_preserves_channel	E	-	??
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_requires_master	E	-	??
+tests/test_account_ciphertext_kid.py	BadKeyValueErrorTest.test_empty_plaintext_with_bad_key_still_returns_empty	G	-	??
+tests/test_account_ciphertext_kid.py	BadKeyValueErrorTest.test_encrypt_rejects_bad_key_with_value_error	G	-	加密侧的坏钥同样收口成 ValueError（与解密侧对称，调用方只 except ValueError）。
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_aad_semantics_not_weakened_by_kid_check	G	-	kid 检查只挡"钥不对"，不得顶替 AAD：同钥改手机号仍须撞 tag 失败。
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_tampered_v2_ciphertext_rejected	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_unsupported_version_still_rejected	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_v2_missing_kid_rejected_as_mismatch	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_v2_text_wrong_key_message_carries_both_kids	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_v2_wrong_key_message_carries_both_kids	G	-	??
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_ciphertexts_of_same_key_share_kid_across_families	G	-	同钥跨账号列/邮件/SendKey 全同面：一把钥的 kid 在两族入口里同值。
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_empty_plaintext_stays_empty_string	G	-	空值语义不因 kid 改变：空即空，不产出"看似密文的空串"。
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_kid_is_stable_one_way_and_key_specific	G	-	??
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_new_password_ciphertext_is_v2_with_kid	G	-	??
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_new_text_ciphertext_is_v2_with_kid	G	-	??
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_ciphertext_survives_json_store_roundtrip	G	-	库内存的是 JSON 串——v1 串经 dumps/loads 后形状判据与解密都照常。
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_password_decrypts_with_right_key	G	-	??
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_password_still_rejects_wrong_key	G	-	??
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_text_decrypts_and_rejects	G	-	??
 tests/test_account_crypto_key_source.py	KeySourceGuardTest.test_env_var_source_still_generates	G	-	YIBAN_ENV_FILE 已设 → 来源确定，照常生成。
 tests/test_account_crypto_key_source.py	KeySourceGuardTest.test_existing_cwd_dotenv_still_generates	G	-	cwd 已有 .env（来源确定）→ 行为不变（正常首启在应用根生成）。
 tests/test_account_crypto_key_source.py	KeySourceGuardTest.test_explicit_env_file_still_generates	G	-	显式 env_file → 来源确定，照常生成（目录须已存在，与既有行为一致）。
@@ -207,6 +224,7 @@ tests/test_audit_transaction.py	PurgeAuditWindowTest.test_nothing_purged_writes_
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_failure_restores_original_chain	G	-	??
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_success_keeps_chain_consistent	G	-	??
 tests/test_audit_transaction.py	RequestScopeTest.test_process_scope_when_no_request	G	-	??
+tests/test_audit_transaction.py	RequestScopeTest.test_scope_ids_cannot_look_like_bare_phone	G	-	形状契约：作用域 id 内不得出现 ≥11 位连续数字。
 tests/test_audit_transaction.py	RequestScopeTest.test_user_supplied_json_req_is_overwritten	G	-	JSON detail 里预置的 `_req` 必须被真实作用域覆盖（不得伪造归属）。
 tests/test_audit_transaction.py	RequestScopeTest.test_user_supplied_marker_cannot_suppress_real_scope	G	-	入参 detail 自带 `[req=...]` 不得冒充"已带作用域"而抑止真实 id 的附加。
 tests/test_audit_transaction.py	RequestScopeTest.test_web_request_scope_tagged_into_detail	G	-	??
@@ -896,7 +914,8 @@ tests/test_env_key_line_model.py	CryptoLineModelTest.test_latent_separator_in_dr
 tests/test_env_key_line_model.py	CryptoLineModelTest.test_latent_separator_in_existing_line_refuses_write	G	-	既有行值藏 U+2028：写回会坐实其后的半截 → 抛错且 .env 未被改写。
 tests/test_env_key_line_model.py	CryptoLineModelTest.test_space_shadow_key_line_is_folded	G	-	带空格影子行被折掉，不追加出同键第二行；同前缀的其他键、其他行都保留。
 tests/test_env_key_line_model.py	KeyCacheSourceTest.test_decrypt_rejects_bad_key_with_value_error	G	-	key=None / 非 bytes / 长度错 → ValueError（TypeError 会越过调用方的收口）。
-tests/test_env_key_line_model.py	KeyCacheSourceTest.test_env_var_key_does_not_stand_in_for_file_key	G	-	环境变量撤掉后不得再拿它的钥冒充 .env 的钥（缓存不记环境变量这一档）。
+tests/test_env_key_line_model.py	KeyCacheSourceTest.test_env_var_key_diverging_from_file_key_is_refused	G	-	env 档与 .env 档并存且**不同** ⇒ 两侧同钥断言拒绝（拓扑分叉反例）。
+tests/test_env_key_line_model.py	KeyCacheSourceTest.test_env_var_key_matching_file_key_passes_regardless_of_case	G	-	两档解出同一把钥即放行——十六进制大小写写法不同不算分叉（不误杀）。
 tests/test_env_key_line_model.py	KeyCacheSourceTest.test_second_env_file_gets_its_own_key	G	-	load a → load b：b 必须拿到 b 文件里的钥（缓存按来源分开）。
 tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_latent_separator_in_other_line_refuses_write	G	-	既有无关键行里藏 U+2028：写盐会坐实其后的注入行 → 拒绝且零改动。
 tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_plain_write_preserves_other_lines	G	-	??
@@ -1266,6 +1285,18 @@ tests/test_infra_layer.py	InfraLayerTest.test_old_paths_are_gone	M	-	??
 tests/test_infra_layer.py	LegacyShellRemovalTest.test_no_bare_notify_mailer_imports_in_runtime_dirs	M	-	??
 tests/test_infra_layer.py	LegacyShellRemovalTest.test_packages_expose_the_public_surface	M	-	壳曾转发的**公共名**必须能从包直接拿到（下划线名走子模块）。
 tests/test_infra_layer.py	LegacyShellRemovalTest.test_shells_are_gone	M	-	??
+tests/test_key_sources_startup_assert.py	EngineStartupWiringTest.test_engine_refuses_fork_before_loading_accounts	G	-	??
+tests/test_key_sources_startup_assert.py	EngineStartupWiringTest.test_engine_refuses_fork_in_sign_mode_too	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_both_tiers_differing_refuses_startup	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_both_tiers_same_key_agrees_with_kid_log	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_case_difference_is_not_a_fork	G	-	十六进制大小写不同解出同一把钥——放行（判据比较解码字节）。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_env_file_locator_via_YIBAN_ENV_FILE	G	-	不显式传路径时按 YIBAN_ENV_FILE 定位文件档（与 load_key 同回落链）。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_env_only_tier_warns_about_second_key_generation	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_file_only_tier_infos_with_kid	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_file_tier_illegal_hex_counts_as_disagreement	G	-	文件档存在但非法（短 hex）：对面进程解不出钥 ⇒ 必然不一致，抛。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_load_key_env_branch_enforces_too	G	-	运行期纵深：不止启动那一刻——任何 load_key 走 env 档都重比对。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_no_tier_returns_none_without_generating	G	-	两档皆无 = 首启尚未建钥：断言无对象，返回 None 且**不得**触发自动建钥。
+tests/test_key_sources_startup_assert.py	StartupWiringSourceGuardTest.test_web_and_engine_both_call_the_assert	G	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_all_days_window_reaches_the_same_verdict	C	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_allowed_tables_covers_egress_state_and_app_meta	C	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_empty_state_files_exit_two	C	-	状态文件在、但没有一条终态记录 ⇒ 仍是零覆盖，不可读成平账。
