@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from unittest import mock
 
 from yiban import clock
@@ -161,6 +162,34 @@ class LedgerCheckTest(unittest.TestCase):
         self.assertIn("库", r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "absent.db")),
                          "库缺失时不得被 connect 顺手新建出空库")
+
+    def test_state_mismatch_is_caught_and_out_of_window_is_inconclusive(self):
+        """MF-92 行为钉：存在性判据的"永久失明"必须被状态比对补上；窗口外不得红不得绿。
+
+        前半（活体反例）：JSON 说 `success`，台账行却是 planner 先写的 `failed`
+        （v20 `INSERT OR IGNORE` 不覆盖先写行）——旧判据只看 phone 存在，构造性放过；
+        新判据按 `terminal_task_state` 的期望逐条比状态，必须报出并 exit 1。
+        后半：补账窗口外的一天有 JSON 终态、台账无行——缺行既可能"从未被补"也可能
+        "被删"，无法定论：不得 exit 1（不是探测到的差异），也不得 exit 0（没有证据说平）。
+        补账窗口按 `schema_migrations` 里 v20 的真实应用时间算，本文件夹具在建库时
+        刚跑完 v20，故"今天"在窗口内、"30 天前"必在窗口外，无需拨时钟。
+        """
+        self._write_state(DAY, {PHONE_OK: {"status": "success", "time": "07:00:00"}})
+        self._insert_task(PHONE_OK, DAY, "failed", owner="worker-0@host")
+        r = _run(["--day", DAY], self.env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("状态不一致", r.stdout)
+        self.assertIn("JSON=success→done，台账=failed", r.stdout)
+        self.assertNotIn(PHONE_OK, r.stdout, "对外输出不得含完整手机号")
+
+        old_day = (clock.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        self._write_state(old_day, {PHONE_MISSING: {"status": "paused"}})
+        r = _run(["--day", old_day], self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("无法定论", r.stdout)
+        self.assertIn("补账窗口", r.stdout)
+        self.assertNotIn("对账平", r.stdout)
+        self.assertNotIn("对账不平", r.stdout)
 
     # ---- 11. 状态值越界 ----
     def test_out_of_vocabulary_state_is_reported(self):
