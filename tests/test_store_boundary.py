@@ -1030,7 +1030,7 @@ class StoreDbLayoutTest(unittest.TestCase):
 DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
 
 
-FORWARDED_COUNT = 55
+FORWARDED_COUNT = 57
 
 
 EXPECTED_MODULE_FUNCS = {

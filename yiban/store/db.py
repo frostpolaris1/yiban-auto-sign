@@ -388,6 +388,10 @@ _FORWARDED_STATE = {
     "decrypt_account_rows": _accounts,
     "read_accounts": _accounts,
     "load_accounts": _accounts,
+    # 只读装载（MF-60）：不经 init_db，不建库/不建表/不迁移，供"只读"维护路径用
+    "load_accounts_readonly": _accounts,
+    # 只读打开（MF-60）：与 init_db 分道，不切 WAL、不建 -shm/-wal（连接层定义点）
+    "open_readonly": _connection,
     "_next_sort_order": _accounts,
     "_convert_integrity_error": _accounts,
     "add_account": _accounts,
