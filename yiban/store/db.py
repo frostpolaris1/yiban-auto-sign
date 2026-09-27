@@ -259,6 +259,7 @@ set_user_sid = _users.set_user_sid
 load_users = _users.load_users
 find_user = _users.find_user
 find_user_any = _users.find_user_any
+find_user_by_id = _users.find_user_by_id
 filter_mail_notify = _users.filter_mail_notify
 admin_mail_recipients = _users.admin_mail_recipients
 create_user = _users.create_user
