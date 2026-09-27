@@ -38,6 +38,7 @@ import datetime
 import logging
 
 from yiban import clock
+from yiban.masking import mask_email
 
 logger = logging.getLogger("yiban.store.users")
 
@@ -118,6 +119,21 @@ def find_user_any(email):
         conn = _facade().get_conn()
         row = conn.execute(
             "SELECT * FROM users WHERE email=? ORDER BY deleted ASC, id DESC LIMIT 1", (email,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def find_user_by_id(user_id):
+    """按行主键 id 查找有效（未注销）用户——管理面单条操作的不透明定位入口。
+
+    URL path 不再编入明文邮箱（MF-49 出口字段：邮箱进 path 会被 nginx `combined`
+    记进 `$request`、再经同源 Referrer 外送）；id 不携带 PII，服务端按 id 解析回
+    邮箱再执行。与 `find_user` 同口径只认活跃行。
+    """
+    with _facade()._conn_lock:
+        conn = _facade().get_conn()
+        row = conn.execute(
+            "SELECT * FROM users WHERE id=? AND deleted=0", (user_id,)
         ).fetchone()
         return dict(row) if row else None
 
@@ -530,7 +546,10 @@ def purge_deleted_users_hard(emails, audit_spec=None):
                 # target/计数在事务内按实际清除结果产出：按"请求清单"写会把被
                 # 跳过的（非已注销）项也留痕成清除过。
                 spec = dict(audit_spec)
-                spec.setdefault("target", ",".join(purged))
+                # target 逐条遮罩（其余动作的 target 早就是 `_mask_email` 形态，purge 曾整表明文——
+                # 同列三套口径即"actor/target 面失守"本体）。追人靠遮罩形态 + 同事务业务行 +
+                # `_req` 作用域标记；碰撞口径的结论见批 2 报告（遮罩为线索层非身份层）。
+                spec.setdefault("target", ",".join(mask_email(e) for e in purged))
                 spec.setdefault(
                     "detail",
                     f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",

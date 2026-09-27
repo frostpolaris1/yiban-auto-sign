@@ -43,8 +43,20 @@ import datetime
 import logging
 
 from yiban import clock
+from yiban.masking import mask_email
 
 logger = logging.getLogger("yiban.store.events")
+
+
+def _actor_forms(username):
+    """审计 actor 列查询的**双形态**匹配集：原值 + 遮罩值。
+
+    MF-49 actor 收口后新行的 `username` 是遮罩形态，历史行仍是明文——只按传入原值查
+    会永远查不到新行，只按遮罩查会在升级边界丢历史行。两形态同查（`mask_email` 幂等，
+    非邮箱标识两形态同值，`IN` 集自然去重），暂停冷却在升级前后都成立。
+    """
+    u = username or ""
+    return [u, mask_email(u)]
 
 
 def _facade():
@@ -304,9 +316,9 @@ def last_pause_at(username):
         with db._conn_lock:
             conn = db.get_conn()
             row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
+                "SELECT ts FROM audit_logs WHERE username IN (?, ?) AND action='my_account_pause' "
                 "ORDER BY id DESC LIMIT 1",
-                (username or "",),
+                tuple(_actor_forms(username)),
             ).fetchone()
             return row["ts"] if row else None
     except Exception as e:
@@ -320,9 +332,9 @@ def pause_count_since(username, since_ts):
         with db._conn_lock:
             conn = db.get_conn()
             row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
+                "SELECT COUNT(*) FROM audit_logs WHERE username IN (?, ?) "
                 "AND action='my_account_pause' AND ts >= ?",
-                (username or "", since_ts),
+                (*_actor_forms(username), since_ts),
             ).fetchone()
             return row[0] if row else 0
     except Exception as e:
