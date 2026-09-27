@@ -1468,8 +1468,14 @@ def _capacity_estimate(gap=0):
 
     窗口解析器与掐头去尾口径按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`
     与 `web.app.edge_config`），故转发必须现取后传入。
+
+    `env` 传**生效配置层**（进程环境为底、`.env` 覆盖，与 run.sh 起引擎前的 export
+    同一优先级）：web 进程从不把 `.env` 装进环境，avg/开关若按 os.environ 读而
+    gap 按 `.env` 读，一次估算就跨两层、按缺省 avg 高估容量（MF-93）。
     """
-    return _capacity._capacity_estimate(gap, sign_window=_sign_window, edge_config=edge_config)
+    return _capacity._capacity_estimate(
+        gap, sign_window=_sign_window, edge_config=edge_config,
+        env={**os.environ, **read_env(ENV_FILE)})
 
 
 def _accounts_at_capacity(extra_accounts=0):
