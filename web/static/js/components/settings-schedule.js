@@ -53,11 +53,11 @@
     var e = parseInt(b[0], 10) * 3600 + parseInt(b[1], 10) * 60;
     return e > s ? e - s : 0;
   }
-  // 缓冲单边上限（分钟）：窗口宽度的 20%，且不超过既有量程 5 分钟；按 30s 粒度向下取整。
-  // 与服务端 `yiban.window.edge_cap_sec` 同一条式子（粒度也必须一致，否则前端允许的值
-  // 服务端会夹小、用户看到"保存后数字变了"）。
+  // 缓冲单边上限（分钟）：与 `yiban.window.edge_cap_sec` 同一条式子（窗口宽度的 20%、
+  // 封顶 5 分钟、按 30s 粒度向下取整）。窗口不可用（宽度 <= 0）时上限为 0，**不退回最大
+  // 量程**——否则窗口倒置（起 >= 止）会把缓冲上限放到最大（fail-open），而服务端夹取
+  // 只会给出 0，前端宽服务端窄正是"保存后数字变小"的来源。
   function edgeMaxMin(winSec) {
-    if (!(winSec > 0)) return 5;
     var cap = Math.floor(winSec * 0.2 / 30) * 30 / 60;
     return Math.max(0, Math.min(5, cap));
   }
