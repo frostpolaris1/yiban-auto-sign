@@ -171,6 +171,24 @@ def has_line_break(s):
     return not ENV_LINE_BREAK_CHARS.isdisjoint(str(s))
 
 
+def escape_line_breaks(value, keep_newline=False):
+    """单行安全原语（唯一实现）：把换行族字符转成**可见字面量**，杜绝其物理断行。
+
+    字符集直接取 `ENV_LINE_BREAK_CHARS`——与 `.env` 写侧同一个行模型，判据只留一份
+    （MF-44 的教训之一：告警正文侧的净化各自挑字符集，`_fold` 只认 `\\n`，其余 9 个
+    换行族字符原样穿进邮件正文，邮件客户端在它们处断行 = 正文伪造行）。
+    `keep_newline=True` 保留 `\\n` 为内容自身的换行语义（邮件正文折行需要），
+    但 `\\r` 与其余 8 个宽字符仍然转义——它们在任何消费端都只该是可见字面量。
+    """
+    s = str(value)
+    if not keep_newline:
+        s = s.replace("\n", "\\n")
+    s = s.replace("\r", "\\r")
+    for ch in sorted(ENV_LINE_BREAK_CHARS - {"\r", "\n"}):
+        s = s.replace(ch, f"\\u{ord(ch):04x}")
+    return s
+
+
 def is_valid_env_key(key):
     """写入口的键名白名单：`^[A-Z][A-Z0-9_]*$`（本项目所有配置键都在这个形态里）。
 
