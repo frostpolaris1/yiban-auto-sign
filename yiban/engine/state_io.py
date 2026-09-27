@@ -48,7 +48,7 @@ from datetime import datetime
 from yiban import clock, cred_state
 from yiban import status as yiban_status
 from yiban.engine import cli_support, schedule
-from yiban.infra import env_io
+from yiban.infra import env_io, private_json
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import db
 
@@ -218,10 +218,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
                 if scheduled:
                     existing["scheduled"] = scheduled
                 data[phone] = existing
-                tmp = f"{path}.tmp{os.getpid()}"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False)
-                os.replace(tmp, path)
+                _write_private_json(path, data)
                 return True
             entry = {
                 "status": status,
@@ -234,11 +231,8 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
             if scheduled:
                 entry["scheduled"] = scheduled
             data[phone] = entry
-            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖
-            tmp = f"{path}.tmp{os.getpid()}"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, path)
+            # 唯一临时名与 0600 创建由单通道保证（防跨进程固定 .tmp 名互相覆盖）
+            _write_private_json(path, data)
             return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
         # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（不影响签到执行）；
@@ -268,10 +262,7 @@ def _write_sched_done(counts=None):
         }
         if isinstance(counts, dict):
             payload.update(counts)
-        tmp = path + ".tmp" + str(os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        _write_private_json(path, payload)
     except OSError as e:
         logger.warning("写入全量完成标记失败（调度器可能重复触发当日签到）: %s", e)
 
@@ -402,15 +393,9 @@ def _fallback_alive_path():
 def _write_fallback_alive(at=None):
     """刷新兜底执行体心跳（每轮扫描写一次）。失败静默——心跳不该影响签到。"""
     path = _fallback_alive_path()
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp = f"{path}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"at": (at or clock.now()).strftime(_TS_FMT),
-                       "pid": os.getpid()}, f)
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        _write_private_json(path, {"at": (at or clock.now()).strftime(_TS_FMT),
+                                   "pid": os.getpid()})
 
 
 def _clear_fallback_alive():
@@ -543,13 +528,13 @@ def _read_worker_alive(index):
 
 
 def _write_private_json(path, payload):
-    """原子写 JSON、**创建即 0600**：心跳含本机部署节律，不该对同机其他用户可读。"""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    """原子写 JSON、**创建即 0600**——状态文件私有写的唯一通道。
+
+    实现在 `yiban.infra.private_json`（infra 层，熔断/账本/调度器等不能反向依赖
+    engine 的模块也共用同一条通道）；此处保留名字作为既有锚点，不再自带一份
+    实现——"补 chmod"劣于"所有站点只走一个通道"。
+    """
+    private_json.write_private_json(path, payload)
 
 
 def _alive_record(index, at):

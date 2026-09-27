@@ -82,6 +82,7 @@ from child_env import build_child_env, parse_env_file  # noqa: E402
 
 from yiban import clock, state_gc, window  # noqa: E402
 from yiban.engine import schedule, workers  # noqa: E402
+from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
 
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
@@ -193,25 +194,19 @@ def _slot_done(kind):
 
 
 def _mark_slot(kind):
-    """落盘「该时段已 spawn 过子进程」标记（tmp + os.replace 原子写）。
+    """落盘「该时段已 spawn 过子进程」标记（状态文件私有写单通道，tmp + os.replace）。
 
     原实现直接 `open(path, "w")`：容器在写入中途被杀会留下半截 JSON，
     `_slot_done` 的 json.load 恒失败 → 判定为「本时段没跑过」，
     hm >= FIRST/SECOND 的无上界判定于是再触发一轮全站登录（幂等但多一轮真实请求，
     且覆盖当日已 success 的状态文件）。与 signin.py 的状态文件写入同口径。
     """
-    path = _slot_marker(kind)
-    tmp = f"{path}.tmp{os.getpid()}"
-    try:
-        os.makedirs(STATEDIR, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"triggered_at": clock.now().strftime("%H:%M:%S")}, fh)
-        os.replace(tmp, path)
-    except OSError:
-        # 写失败与读失败同向（退化为既有闩锁语义：读不到即允许触发），
-        # 仅清掉自己的半成品，不告警
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
+    # 写失败与读失败同向（退化为既有闩锁语义：读不到即允许触发），不告警；
+    # 半成品 tmp 已由单通道就地清掉，残留兜底归 state_gc
+    with contextlib.suppress(OSError):
+        private_json.write_private_json(
+            _slot_marker(kind),
+            {"triggered_at": clock.now().strftime("%H:%M:%S")})
 
 
 def _heartbeat_path(state_dir=None):
@@ -230,18 +225,18 @@ def _touch_heartbeat(state_dir=None):
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         return
-    tmp = f"{path}.tmp{os.getpid()}"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            # 内容用系统钟：与 mtime（探活真正的判据）同钟同口径，仅作人工排查
-            # 现场；业务钟不参与——观测链路不该依赖调度语义，也不得反过来
-            # 抢占/干扰主循环的判据时钟。
-            json.dump({"pid": os.getpid(),
-                       "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, fh)
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
+    # 写失败静默：探活侧看到的"心跳断流"正是期望中的不健康信号；半成品归单通道清
+    with contextlib.suppress(OSError):
+        # 内容用系统钟：与 mtime（探活真正的判据）同钟同口径，仅作人工排查
+        # 现场；业务钟不参与——观测链路不该依赖调度语义，也不得反过来
+        # 抢占/干扰主循环的判据时钟。
+        # ensure_dir=False：旁路观测件不得把已清理的目录"复活"（上面 isdir 门 +
+        # 不建目录，模式仍由单通道钉死 0600）。
+        private_json.write_private_json(
+            path,
+            {"pid": os.getpid(),
+             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            ensure_dir=False)
 
 
 _heartbeat_started = False
