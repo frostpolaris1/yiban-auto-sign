@@ -582,7 +582,9 @@ class LogSearchAllExportTest(_Base):
         # q 作用于打码后的行（与页面展示一致）：原始手机号已变 [139****9000]
         r = c.get(f"/api/logs?date={date}&q=138%2A%2A%2A%2A9000", headers=h)
         data = r.get_json()
-        self.assertEqual(data["total_lines"], 4)
+        # 三元组同轴（total 取**过滤后**集合，与 returned/truncated 同一份）：
+        # 曾 total=过滤前 4 行，前端"匹配 X / 共 Y 行"与 truncated 各说一件事
+        self.assertEqual(data["total_lines"], 2)
         self.assertEqual(data["returned"], 2)
         self.assertTrue(all("138****9000" in ln for ln in data["logs"]))
         # 大小写不敏感子串（对 ERROR 级别关键字）
@@ -600,6 +602,76 @@ class LogSearchAllExportTest(_Base):
         # 首行可见（修复「看不到当日靠前的日志」）
 
         self.assertIn("06:30:01", data["logs"][0])
+
+    def _write_day_rows(self, date, n_keep, n_miss):
+        """写一份按天日志：`n_keep` 行含 KEEP 标记、`n_miss` 行不含。"""
+        path = os.path.join(self.tmp, f"sign-{date}.log")
+        with io.open(path, "w", encoding="utf-8") as f:
+            for i in range(n_keep):
+                f.write(f"[{date} 06:{i // 60 % 60:02d}:{i % 60:02d}] "
+                        f"[INFO] yiban: KEEP 第{i}行\n")
+            for i in range(n_miss):
+                f.write(f"[{date} 07:{i // 60 % 60:02d}:{i % 60:02d}] "
+                        f"[INFO] yiban: MISS 第{i}行\n")
+        self.addCleanup(lambda p=path: os.path.exists(p) and os.remove(p))
+        return path
+
+    def test_logs_triple_same_axis_at_cap_boundary(self):
+        """MF-97：total/truncated/returned 由同一份过滤后集合与同一个 cap 推出。
+
+        修复前三数不同轴——total 在 q 过滤**前**取、cap 藏在 all=1 分支体内、
+        truncated 在过滤**后**判 ⇒ "all=1 + 检索"下前端"还有更多"必然判错。
+        本用例把命中数钉在 cap 两侧：恰好等于 cap ⇒ 不截断；cap+1 ⇒ 截断，
+        且三个数任何时刻互相自洽（total==命中数、returned==min(total,cap)）。
+        """
+        cap = 5000  # 与 data.py 的 _LOG_VIEW_CAP 同值；改动即红，逼迫两处同步
+        from web.routes import data as data_routes
+        self.assertEqual(data_routes._LOG_VIEW_CAP, cap, "cap 常量单源")
+        c, h = self._master()
+        # 边界一：命中恰好 = cap（日文件总量 > cap，过滤后正好等于 cap）
+        self._write_day_rows("2026-09-05", cap, 501)
+        d1 = c.get("/api/logs?date=2026-09-05&all=1&q=KEEP", headers=h).get_json()
+        self.assertEqual(d1["total_lines"], cap, "total 必须是过滤后命中数")
+        self.assertEqual(d1["returned"], cap)
+        self.assertFalse(d1["truncated"], "恰好等于 cap 不算截断")
+        # 边界二：命中 = cap + 1 ⇒ 截断，且 total/returned 同轴可对账
+        self._write_day_rows("2026-09-06", cap + 1, 500)
+        d2 = c.get("/api/logs?date=2026-09-06&all=1&q=KEEP", headers=h).get_json()
+        self.assertEqual(d2["total_lines"], cap + 1)
+        self.assertEqual(d2["returned"], cap)
+        self.assertTrue(d2["truncated"], "超过 cap 必须报截断")
+        # 缺省尾 80 行视图同样同轴：还有更多由 truncated 说真话（修复前恒 False）
+        d3 = c.get("/api/logs?date=2026-09-06", headers=h).get_json()
+        self.assertEqual(d3["total_lines"], cap + 501)
+        self.assertEqual(d3["returned"], 80)
+        self.assertTrue(d3["truncated"], "结果集大于返回行数即有更多")
+
+    def test_logs_dropped_lines_observable(self):
+        """MF-99：宽行模型劈出的后半行不再静默消失——返回面给出丢弃计数。
+
+        U+0085(NEL) 经 utf-8 落盘后被 `splitlines()`（宽行模型）当行分隔符切开：
+        前半仍像合法行照常收录，后半既不匹配日期前缀也过不了行正则。修复前
+        `continue` 吞掉、无计数；修复后 `dropped_lines` 数出"另有 N 行没算进去"，
+        收录行的集合本身一字不改（不改切行语义）。
+        """
+        date = "2026-09-08"
+        path = os.path.join(self.tmp, f"sign-{date}.log")
+        with io.open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(f"[{date} 06:00:00] [INFO] yiban: 完整行一\n")
+            # 一条逻辑行内含裸 NEL：宽侧切成两半，后半为孤儿
+            f.write(f"[{date} 06:00:01] [INFO] yiban: 被撑开的前半\u0085丢失的后半\n")
+            f.write(f"[{date} 06:00:02] [INFO] yiban: 完整行二\n")
+        self.addCleanup(lambda p=path: os.path.exists(p) and os.remove(p))
+        c, h = self._master()
+        data = c.get(f"/api/logs?date={date}&all=1", headers=h).get_json()
+        self.assertEqual(data["dropped_lines"], 1,
+                         "劈出的后半行必须被数出来（不再静默消失）")
+        self.assertEqual(data["total_lines"], 3, "收录集合保持原口径不变")
+        self.assertFalse(any("丢失的后半" in ln for ln in data["logs"]))
+        # 无脏行时计数为 0（正常日不误报）
+        clean = self._write_day_rows("2026-09-09", 2, 0)  # noqa: F841 只用其写文件
+        d2 = c.get("/api/logs?date=2026-09-09&all=1", headers=h).get_json()
+        self.assertEqual(d2["dropped_lines"], 0)
 
     def test_export_download(self):
         date = "2026-09-07"
