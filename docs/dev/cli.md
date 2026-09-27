@@ -17,7 +17,7 @@ python3 -m yiban.cli <子命令> [选项]
   config    配置检查（脱敏打印，不联网）
   capacity  容量基准与建议（默认只读建议；--measure 转发基准工具，需 root 隔离测试机）
   state     状态文件清理（默认 dry-run，--yes 才动手）
-  db        数据库维护（--status / --integrity / --backup [路径]）
+  db        数据库维护（--status / --integrity / --backup [路径] / --restore [路径]）
   version   版本与库版本
 ```
 
@@ -98,6 +98,8 @@ python3 -m yiban.cli config --json            # 脱敏配置检查（不联网�
 python3 -m yiban.cli db --status --json       # user_version / 表 / 账号数
 python3 -m yiban.cli db --backup /tmp/copy.db --yes          # 写一致性副本（目标不存在）
 python3 -m yiban.cli db --backup /tmp/copy.db --yes --force  # 目标已存在：必须显式 --force
+python3 -m yiban.cli db --restore /tmp/copy.db --json        # 默认 dry-run：只报告计划 + 目标指纹
+python3 -m yiban.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # 覆盖当前库
 python3 -m yiban.cli state                    # 默认 dry-run，只报告
 python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
 python3 -m yiban.cli capacity --json          # 读实测值给建议
@@ -127,6 +129,16 @@ bash run.sh                                   # 宿主入口：读 .env（含 YI
 同一命令重复执行不会**累积**副作用（备份仍是同一路径的一份副本），但必须由调用方显式
 确认是否要顶掉旧副本，不允许"再跑一次就把上一份悄悄换掉"。`--json` 里 `overwrite_allowed`
 给出该判定结果。
+
+`db --restore [路径]` 从 `db --backup` 写出的 SQLite 副本恢复，是**破坏性操作**，默认
+dry-run、只报告计划。真正的恢复需要 `--yes --fingerprint <指纹>`（指纹由当前库与备份副本
+的内容共同派生，先跑 dry-run 拿）。`--yes` 前还必须满足三条守卫，任一不满足即拒绝且
+**零写入**：① 备份可读、`integrity_check` ok、是本项目结构（有 `accounts` 表）；② 备份里的
+账号密文能用当前密钥解开（`load_accounts_readonly` 与运行期同一份 AES-GCM 口径）；③ 覆盖前
+自动留一份 `<库文件>.pre-restore-<时间戳>` 副本（写不出副本就拒绝恢复）。恢复成功后再校验
+结果（integrity ok 且 `user_version` 与备份一致），失败时 `--json` 的 `pre_restore_copy`
+给出可回退的副本路径。该子命令不碰 `scripts/backup.sh` 的归档（`.tar.gz/.gpg`）——那套是
+`backup.sh --restore` 的职责，本命令只认 `db --backup` 产出的裸 SQLite 副本。
 
 ## 5. 相关文档
 

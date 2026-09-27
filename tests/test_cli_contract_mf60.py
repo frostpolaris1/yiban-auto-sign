@@ -4,7 +4,8 @@
 标签：J · 运维：部署/备份/发布
 覆盖：非法参数/未知子命令/缺子命令/多余参数/互斥开关（一律 rc=2）、`--check-config`
     摘要不得混入 stdout、每个成功 `--json` 都带 `exit_code`、`db --backup` 覆盖守卫
-    （目标已存在须 `--force`）。
+    （目标已存在须 `--force`）、`db --restore` 破坏性守卫（默认 dry-run / 指纹回显 /
+    覆盖前副本 / 损坏备份拒绝，仅用自造库与自造副本）。
 对应实现：`yiban/cli.py`（`_emit_json_error` / `_fail` / `_UsageError` / `main` 解析兜底）
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
@@ -262,6 +263,125 @@ class BackupOverwriteGuardTest(unittest.TestCase):
         self.assertTrue(payload["dry_run"], payload)
         self.assertFalse(payload["overwrite_allowed"], payload)
         self.assertEqual(os.path.getmtime(self.target), before, "dry-run 不得写盘")
+
+
+class RestoreGuardTest(unittest.TestCase):
+    """`db --restore`：破坏性操作必须默认 dry-run、`--yes` 回显指纹、恢复前留副本。
+
+    只用**自造库与自造副本**，绝不碰任何真实生产备份。验收不变量：不带 `--yes` 不改动
+    任何库文件；备份损坏时拒绝并给非 0 码；成功恢复后 `db --integrity` ok 且
+    `user_version` 与备份一致；覆盖前自动留一份副本。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-cli-mf60restore-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.db_file = os.path.join(self.root, "yiban.db")
+        self.backup = os.path.join(self.root, "copy.db")
+        self.env = dict(_cli_env(self.root), YIBAN_DB_FILE=self.db_file)
+        self._sqlite(self.db_file,
+                     "import sys; from yiban.store import db;"
+                     "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
+                     "db.get_conn().close()", os.path.join(self.root, ".env"))
+        self.assertEqual(
+            _run(["db", "--backup", self.backup, "--yes", "--json"], self.env).returncode, 0)
+
+    def _sqlite(self, db_file, code, *extra):
+        r = subprocess.run([sys.executable, "-c", code, db_file, *extra], cwd=BASE,
+                           env=self.env, capture_output=True, text=True,
+                           encoding="utf-8", timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+
+    def _user_version(self, path):
+        import sqlite3
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+
+    def _fingerprint(self):
+        r = _run(["db", "--restore", self.backup, "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        return _one_json_line(self, r)["fingerprint"]
+
+    def test_dry_run_does_not_touch_live_db(self):
+        """不带 --yes：只报告计划 + 指纹，当前库零改动、目录无新文件。"""
+        before_entries = sorted(os.listdir(self.root))
+        before_mtime = os.path.getmtime(self.db_file)
+        r = _run(["db", "--restore", self.backup, "--json"], self.env)
+        payload = _one_json_line(self, r)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertTrue(payload["dry_run"], payload)
+        self.assertTrue(payload["fingerprint"], payload)
+        self.assertEqual(os.path.getmtime(self.db_file), before_mtime, "dry-run 改动了当前库")
+        self.assertEqual(sorted(os.listdir(self.root)), before_entries, "dry-run 留下了新文件")
+
+    def test_yes_without_fingerprint_is_refused(self):
+        before_mtime = os.path.getmtime(self.db_file)
+        r = _run(["db", "--restore", self.backup, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 2, r.stderr[-400:])
+        payload = _one_json_line(self, r)
+        self.assertEqual(payload["error_kind"], "confirmation_required", payload)
+        self.assertEqual(os.path.getmtime(self.db_file), before_mtime, "拒绝路径改动了当前库")
+
+    def test_wrong_fingerprint_is_refused(self):
+        r = _run(["db", "--restore", self.backup, "--yes", "--fingerprint", "PURGE-deadbeef",
+                  "--json"], self.env)
+        self.assertEqual(r.returncode, 2, r.stderr[-400:])
+        self.assertEqual(_one_json_line(self, r)["error_kind"], "confirmation_required")
+
+    def test_yes_restores_and_keeps_pre_restore_copy(self):
+        """成功恢复：内容回到备份态、user_version 一致、覆盖前副本留下旧内容。"""
+        import sqlite3
+        self._sqlite(self.db_file,
+                     "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]);"
+                     "c.execute('PRAGMA user_version=777');"
+                     "c.execute(\"INSERT INTO app_meta(key, value) VALUES('restore-probe','1')\");"
+                     "c.commit(); c.close()")
+        fp = self._fingerprint()
+        r = _run(["db", "--restore", self.backup, "--yes", "--fingerprint", fp, "--json"],
+                 self.env)
+        payload = _one_json_line(self, r)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertTrue(payload["integrity_ok"], payload)
+        self.assertEqual(self._user_version(self.db_file), payload["backup_user_version"])
+        pre = payload["pre_restore_copy"]
+        self.assertTrue(pre and os.path.exists(pre), payload)
+        self.assertEqual(self._user_version(pre), 777, "覆盖前副本必须保留旧库内容")
+        # 恢复后库里没有那条探针行
+        conn = sqlite3.connect(self.db_file)
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key='restore-probe'").fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(row, "恢复后仍残留旧库的探针行")
+
+    def test_corrupt_backup_is_refused(self):
+        corrupt = os.path.join(self.root, "corrupt.db")
+        with open(corrupt, "wb") as f:
+            f.write(b"this is not a sqlite database")
+        before_mtime = os.path.getmtime(self.db_file)
+        r = _run(["db", "--restore", corrupt, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = _one_json_line(self, r)
+        self.assertEqual(payload["error_kind"], "runtime_error", payload)
+        self.assertEqual(os.path.getmtime(self.db_file), before_mtime, "拒绝路径改动了当前库")
+
+    def test_backup_without_accounts_table_is_refused(self):
+        foreign = os.path.join(self.root, "foreign.db")
+        self._sqlite(foreign, "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]);"
+                              "c.execute('CREATE TABLE t(x)'); c.commit(); c.close()")
+        r = _run(["db", "--restore", foreign, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        self.assertIn("accounts", _one_json_line(self, r)["errors"][0])
+
+    def test_restore_source_equal_target_is_refused(self):
+        r = _run(["db", "--restore", self.db_file, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        self.assertIn("同一个文件", _one_json_line(self, r)["errors"][0])
 
 
 class ExitKindFamilyTest(unittest.TestCase):
