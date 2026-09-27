@@ -413,11 +413,20 @@ def _db_restore(args, paths):
     except sqlite3.Error as e:
         return _fail("db", 1, [f"恢复写入失败（{backup} → {db_file}）: {e}"], args.json,
                      error_kind="runtime_error", **meta)
-    ok_after, detail_after, _uv = validate_restorable(db_file, env_file=env_file)
+    ok_after, detail_after, uv_after = validate_restorable(db_file, env_file=env_file)
     meta["integrity_ok"] = bool(ok_after)
     if not ok_after:
         return _fail("db", 1, [
             f"恢复结果校验失败（{db_file}）: {detail_after}",
+            (f"覆盖前副本: {meta['pre_restore_copy']}" if meta["pre_restore_copy"]
+             else "无覆盖前副本（目标库此前不存在）"),
+        ], args.json, error_kind="runtime_error", **meta)
+    # schema 版本一致性：副本是**快照拷贝**，正常必然相等；单列一条是因为
+    # "恢复了但版本对不上"意味着覆盖写与备份源不一致（或 _snapshot_copy 有缺陷），
+    # 这种不一致必须当场暴露，不能只报 integrity ok 就当恢复成功。
+    if uv_after != user_version:
+        return _fail("db", 1, [
+            f"恢复后 schema 版本与备份不一致（{db_file}: {uv_after} ≠ 备份 {user_version}）",
             (f"覆盖前副本: {meta['pre_restore_copy']}" if meta["pre_restore_copy"]
              else "无覆盖前副本（目标库此前不存在）"),
         ], args.json, error_kind="runtime_error", **meta)
