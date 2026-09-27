@@ -470,9 +470,10 @@ def main(argv=None):
         # 与 web 容量预估同一函数（`capacity_of` 按开关分派）：账号间隔是「上一次完成 →
         # 下一次开始」的下限，故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约
         # 2.3 倍）。告警阈值再扣「重试储备」（retry_reserve，MF-56④）：按零重试排满
-        # 窗口就是 122–360 静默死带——当天必签不完却要到 361 才出声。
-        _cap_args = {"gap": gap_max, "avg": _cfg["avg_attempt_sec"],
-                     "retry_reserve": True}
+        # 窗口就是 122–360 静默死带——当天必签不完却要到 361 才出声。avg 用实测分位数
+        # （warn_avg_attempt_sec，MF-56③）：缺省档 3s 来自 mock 注入，不是实测。
+        _avg_warn = schedule_mod.warn_avg_attempt_sec(_cfg["avg_attempt_sec"])
+        _cap_args = {"gap": gap_max, "avg": _avg_warn, "retry_reserve": True}
         if _v3_on:
             # K 只在 v3 侧算并传入（`executor_count` 是 K 的唯一口径，入参要桶速率与
             # 出口数）：v2 侧连算都不算、也不读这两个键，逐字走旧公式。
@@ -500,14 +501,14 @@ def main(argv=None):
                 "容量预检: %d 个账号 > 剩余有效窗口 %d 秒告警阈值 %d 个"
                 "（单账号 %.0fs + 账号间隔 %ds，每账号已预留 3 次尝试的重试储备，"
                 "窗口至 %s），部分账号可能无法在窗口内完成",
-                active_n, int(_rest_sec), _cap, _cfg["avg_attempt_sec"], gap_max, _win_end,
+                active_n, int(_rest_sec), _cap, _avg_warn, gap_max, _win_end,
             )
             # 超载必须通知管理员，不能只留在日志里。文案只有一份（原先邮件与推送
             # 各写一遍同样的字面量，改一处必漏另一处）。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("当前账号", f"{active_n} 个"),
                 ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），告警阈值 {_cap} 个"),
-                ("单账号耗时", f"{_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s，"
+                ("单账号耗时", f"{_avg_warn}s + 账号间隔 {gap_max}s，"
                                "阈值已按每账号 3 次尝试预留重试储备"),
                 ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
             ], push=False)

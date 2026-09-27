@@ -442,6 +442,72 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         self._run(n=89, cfg=cfg)
         self.assertEqual(self.last_notify.call_count, 0,
                          "现网 89 个账号（阈值之下）保持静默")
+        # MF-56③ 接线面：实测分位数真的流进预检。撤掉显式配置（setUp 钉了 8）、
+        # 喂 p95=30s ⇒ 告警 avg=30、阈值 (4140−30)//(3×40)+1 = 35 ⇒ 89 号也越限。
+        # 变异核验：runner 若回传递推 cfg_avg=3（阈值 107），此断言必红。
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=30.0):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            self._run(n=89, cfg=cfg)
+            self.assertEqual(self.last_notify.call_count, 1,
+                             "实测 p95=30s 必须顶掉缺省档 3s 进入告警阈值（35 < 89）")
+
+
+class MeasuredAttemptInputTest(unittest.TestCase):
+    """MF-56③：告警阈值的 avg 输入换成实测分位数（复用既有 sign_events.dur_sec）。
+
+    登记原文：容量输入量 `1.87~3s` 不是实测（mock 注入/配置缺省），所有继承它的
+    数字继承的是假设。修复不新增任何持久化键/表——每次尝试端到端耗时本就落在
+    `sign_events.dur_sec`（round._emit_event），只读侧取分位数。
+    """
+
+    def test_warn_avg_priority_explicit_then_measured_then_default(self):
+        # 未显式配置且有实测 ⇒ 用 p95 向上取整（5.2 → 6）
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=5.2):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            self.assertEqual(schedule.warn_avg_attempt_sec(3), 6)
+        # 显式配置 YIBAN_AVG_ATTEMPT_SEC 钉住实测（人工口径优先）
+        with mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "9"}), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=5.2):
+            self.assertEqual(schedule.warn_avg_attempt_sec(9), 9)
+        # 样本不足/查询失败（None）⇒ 回退配置档，预检绝不因留痕面炸掉
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=None):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            self.assertEqual(schedule.warn_avg_attempt_sec(3), 3)
+
+    def test_attempt_dur_quantile_on_real_table(self):
+        dbm = schedule.db
+        tmp = tempfile.mkdtemp(prefix="yiban-p95-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        old_db = os.environ.get("YIBAN_DB_FILE")
+        os.environ["YIBAN_DB_FILE"] = os.path.join(tmp, "p95.db")
+        try:
+            if dbm._conn is not None:
+                dbm._conn.close()
+                dbm._conn = None
+            dbm.init_db(os.environ["YIBAN_DB_FILE"])
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for i in range(30):
+                dbm.add_sign_event(ts, f"1380000{i:04d}", "success",
+                                   stage="sign", dur_sec=1.0 + i * 0.1)
+            # 升序 30 样本 ⇒ p95 落第 int(0.95×30)=28 个（0 基）= 1.0+2.8
+            self.assertAlmostEqual(dbm.attempt_dur_quantile(), 3.8, places=2)
+            # 样本 < min_samples：不拿小样本冒充分位数
+            self.assertIsNone(dbm.attempt_dur_quantile(min_samples=31))
+        finally:
+            if dbm._conn is not None:
+                dbm._conn.close()
+                dbm._conn = None
+            if old_db is None:
+                os.environ.pop("YIBAN_DB_FILE", None)
+            else:
+                os.environ["YIBAN_DB_FILE"] = old_db
 
 
 if __name__ == "__main__":
