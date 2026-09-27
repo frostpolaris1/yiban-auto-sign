@@ -370,6 +370,7 @@ tests/test_capacity_limits.py	CapacityBreakdownTest.test_three_buckets_mutually_
 tests/test_capacity_limits.py	CapacityFormulaTest.test_degenerate_window_falls_back_like_engine	I	-	??
 tests/test_capacity_limits.py	CapacityFormulaTest.test_edge_shrinks_capacity	I	-	??
 tests/test_capacity_limits.py	CapacityFormulaTest.test_engine_and_web_share_one_formula	I	-	引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。
+tests/test_capacity_limits.py	CapacityFormulaTest.test_estimate_takes_avg_from_env_file_layer	I	-	MF-93 行为钉：同一次估算只从一份配置层取值，avg 跟随 `.env` 真值。
 tests/test_capacity_limits.py	CapacityFormulaTest.test_formula_single_tier	I	-	??
 tests/test_capacity_limits.py	CapacityFormulaTest.test_trimmed_empty_window_matches_engine_plan	I	-	缓冲过大 → 只收缩缓冲（窗口 1 分钟保留）；网页容量与引擎计划同源。
 tests/test_capacity_limits.py	CapacitySettingsTest.test_delay_requires_confirm_password	I	-	随机延迟属 A 档：缺口令/错口令都由设置路由统一的 403 拒绝（不落盘）。
@@ -1336,6 +1337,7 @@ tests/test_ledger_check.py	LedgerCheckTest.test_flat_reconciliation_exits_zero	C
 tests/test_ledger_check.py	LedgerCheckTest.test_json_terminal_missing_from_tasks_lists_the_row_and_exits_one	C	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_missing_state_dir_or_db_exits_two	C	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_out_of_vocabulary_state_is_reported	C	-	??
+tests/test_ledger_check.py	LedgerCheckTest.test_state_mismatch_is_caught_and_out_of_window_is_inconclusive	C	-	MF-92 行为钉：存在性判据的"永久失明"必须被状态比对补上；窗口外不得红不得绿。
 tests/test_ledger_check.py	LedgerCheckTest.test_third_writer_breaks_count_reconciliation	C	-	行数 ≠ 平移 + 补账 ⇒ exit 1 并打印该差异（真实分片行既非平移也非补账）。
 tests/test_ledger_check.py	LedgerCheckTest.test_translated_row_counts_toward_reconciliation	C	-	平移行是 `vshard=-1` 且 `owner` 为领取池原值（v18 平移保留 owner）；
 tests/test_ledger_check.py	LedgerCheckTest.test_unexpected_exception_exits_two	C	-	非 sqlite 异常也归"无法定论"——`1` 只留给明确探测到的差异。
