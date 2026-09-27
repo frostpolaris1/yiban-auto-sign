@@ -394,15 +394,19 @@ tests/test_capacity_of.py	CapacityOfDispatchTest.test_disabled_matches_v2_formul
 tests/test_capacity_of.py	CapacityOfDispatchTest.test_enabled_defaults_to_the_switch_when_not_passed	I	-	enabled 缺省取 `executor_v3.scheduler_v3_enabled()`——开关即回滚。
 tests/test_capacity_of.py	CapacityOfDispatchTest.test_enabled_matches_v3_formula_verbatim	I	-	??
 tests/test_capacity_of.py	CapacityOfDispatchTest.test_enabled_without_k_is_single_executor	I	-	k 缺省 = 1（单执行体零额外配置），与 `capacity_accounts_v3` 的缺省一致。
+tests/test_capacity_of.py	CapacityOfDispatchTest.test_retry_reserve_warn_threshold	I	-	告警阈值（MF-56④）：v2 侧折进重试储备、复用同一个式子；v3 侧不参与。
 tests/test_capacity_of.py	ExecutorCountTest.test_clamped_into_one_and_egress_count	I	-	??
 tests/test_capacity_of.py	ExecutorCountTest.test_exact_value_matches_formula	I	-	??
 tests/test_capacity_of.py	ExecutorCountTest.test_monotonic_non_decreasing_in_n	I	-	??
 tests/test_capacity_of.py	ExecutorCountTest.test_retry_ratio_widens_the_estimate	I	-	??
 tests/test_capacity_of.py	ExecutorCountTest.test_smaller_bucket_rate_does_not_lower_k	I	-	桶越小，同样的账号量需要越多执行体（K 与 bucket_rate 反向）。
 tests/test_capacity_of.py	ExecutorCountTest.test_zero_window_floors_at_one	I	-	??
+tests/test_capacity_of.py	MeasuredAttemptInputTest.test_attempt_dur_quantile_on_real_table	I	-	??
+tests/test_capacity_of.py	MeasuredAttemptInputTest.test_warn_avg_priority_explicit_then_measured_then_default	I	-	??
 tests/test_capacity_of.py	OtherCallSitesRouteThroughCapacityOfTest.test_cli_capacity_per_executor_value_unchanged	I	-	??
 tests/test_capacity_of.py	OtherCallSitesRouteThroughCapacityOfTest.test_settings_api_measure_passes_k_one	I	-	现场实测换算：真实路由体跑一遍，验证它把 `k=1` 传给了 `capacity_of`。
 tests/test_capacity_of.py	OtherCallSitesRouteThroughCapacityOfTest.test_signin_shell_forwards_capacity_of	I	-	`scripts/signin.py` 是全量转发壳，`m.signin.capacity_of` 自动可用。
+tests/test_capacity_of.py	RunnerPrecheckSwitchOffTest.test_dead_band_warns_and_current_load_stays_silent	I	-	登记验收不变量（MF-56④）：122–360 账号不再是静默死带，现网 89 号不误报。
 tests/test_capacity_of.py	RunnerPrecheckSwitchOffTest.test_switch_off_does_not_read_planner_config	I	-	开关关时预检连 `planner_config` 都不该读。
 tests/test_capacity_of.py	RunnerPrecheckSwitchOffTest.test_switch_off_value_is_explicit_and_unchanged	I	-	??
 tests/test_capacity_of.py	RunnerPrecheckSwitchOffTest.test_switch_on_passes_k_from_executor_count	I	-	开关开时 K 真的参与计算：`executor_count` 的入参口径与结果都要落到调用上。
@@ -1377,6 +1381,7 @@ tests/test_loadtest_purge_guard.py	test_load_env_file_reads_existing	J	-	??
 tests/test_loadtest_purge_guard.py	test_load_env_file_unreadable_raises	J	-	??
 tests/test_loadtest_purge_guard.py	test_scale_driver_main_requires_db_fingerprint	J	-	??
 tests/test_loadtest_tools.py	test_capacity_aborts_ladder_when_env_prep_fails	J	-	mock_env 报告环境未就绪：不跑 K 阶梯、非零退出，并把子进程输出带出来。
+tests/test_loadtest_tools.py	test_capacity_executor_capacity_shares_engine_formula	J	-	MF-56⑥：换算必须转调引擎的 `capacity_accounts`，不得再有一份 `W // cycle`。
 tests/test_loadtest_tools.py	test_capacity_hardware_ceiling_stops_before_degradation	J	-	硬件上限取「首个劣化>1.5× 或资源饱和」档**之前**的档。
 tests/test_loadtest_tools.py	test_capacity_measured_cycle_adds_back_first_account_gap	J	-	周期还原：压测的"平均墙钟"少了"第一个账号不等待间隔"的那部分（gap / n）。
 tests/test_loadtest_tools.py	test_capacity_not_saturated_is_a_lower_bound_not_a_ceiling	J	-	「未触及饱和」是**下界**：需求超出已测范围时不得据此断言"机器不够"。
@@ -1384,6 +1389,7 @@ tests/test_loadtest_tools.py	test_capacity_profiles_are_consistent	J	-	档位定
 tests/test_loadtest_tools.py	test_capacity_recommend_applies_two_thirds	J	-	用户裁决口径：建议每执行体账号数 = 实测 × 2/3（向下取整，至少 1）。
 tests/test_loadtest_tools.py	test_capacity_run_failure_message_includes_child_output	J	-	子进程非零退出时，失败信息要带上它的输出尾部（只报退出码无从定位）。
 tests/test_loadtest_tools.py	test_capacity_verdict_is_feasible_only_when_machine_holds	J	-	结论必须做「需要几个执行体 ≤ 本机实测能跑几个」的对照，不够就明说不够。
+tests/test_loadtest_tools.py	test_capacity_verdict_requires_real_results	J	-	MF-56⑥：白天跑全落 skipped_window 时**不得**再报"够用"——判据读真实结果。
 tests/test_loadtest_tools.py	test_driver_compute_window	J	-	??
 tests/test_loadtest_tools.py	test_driver_env_and_csv	J	-	??
 tests/test_loadtest_tools.py	test_driver_parse_jsonl_cycles_n2	J	-	模拟 N=2：两条 /code/html 起点 → 1 个周期；并解析请求耗时与最大并发。
@@ -1414,6 +1420,8 @@ tests/test_locks.py	EnvLockTest.test_env_write_lock_reentrant_same_thread	G	-	�
 tests/test_locks.py	EnvLockTest.test_lock_failure_logs_warning_and_degrades	G	-	加锁本身失败（抢锁超时/平台无锁后端/文件系统不支持）：必须告警留痕。
 tests/test_locks.py	EnvLockTest.test_lock_failure_still_excludes_within_process	G	-	降级后**进程内**互斥仍然生效（同线程重入不阻塞、跨线程会互斥）。
 tests/test_locks.py	EnvLockTest.test_open_failure_logs_warning_and_degrades_to_inprocess_lock	G	-	锁文件打不开（目录不可写等）：warning 留痕，仍返回进程内锁，业务不阻断。
+tests/test_locks.py	LockPrimitiveTest.test_acquire_baseexception_does_not_leak_held_flag	G	-	`_acquire` 抛非 Exception 级异常（30s 重试等待被打断这类）后，本线程的
+tests/test_locks.py	LockPrimitiveTest.test_body_exception_also_resets_held_flag	G	-	临界区内抛普通异常同样不得让 held 残留（内层 finally 语义回归）。
 tests/test_locks.py	LockPrimitiveTest.test_cross_process_exclusion_posix	G	-	??
 tests/test_locks.py	LockPrimitiveTest.test_lock_file_created_0600	G	-	??
 tests/test_locks.py	LockPrimitiveTest.test_platform_has_a_real_lock_backend	G	-	本平台必须有真锁后端——None 意味着只剩进程内互斥（曾经的静默降级）。
@@ -1488,6 +1496,7 @@ tests/test_logs_by_date.py	LogsByDateTest.test_log_lines_for_blocks_crossday_lef
 tests/test_logs_by_date.py	LogsByDateTest.test_log_lines_for_filters	F	node	签到链路的子 logger 与 DEBUG 必须入列——细节行原先被正则漏掉，页面只剩结果。
 tests/test_logs_by_date.py	LogsByDateTest.test_log_lines_for_missing_file	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_log_path_for_today_and_hist	F	node	??
+tests/test_logs_by_date.py	LogsByDateTest.test_my_calendar_weekend_flags_are_int_01	F	node	`sunday_sign`/`saturday_sign` 必须是整数 0/1——`calendar.js` 用 `=== 1` 判定置灰。
 tests/test_logs_by_date.py	LogsByDateTest.test_my_logs_bad_date_400	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_my_logs_hist_date_filters_own_phone	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_my_logs_missing_date_empty	F	node	??
@@ -1563,6 +1572,10 @@ tests/test_mail_notify.py	SignAdminMailSummaryTest.test_collect_and_flush_merges
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_clears_collector	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_groups_by_subject	H	-	??
 tests/test_mail_notify.py	SignUserFailMailTest.test_notify_on_sends_masked	H	-	??
+tests/test_mail_send_never_raises.py	SendNeverRaisesTest.test_lone_surrogate_in_body_returns_false_without_raise	H	-	修复前：`_message_id` 在 try 外 encode 正文 → UnicodeEncodeError 抛回调用方。
+tests/test_mail_send_never_raises.py	SendNeverRaisesTest.test_lone_surrogate_in_subject_returns_false_without_raise	H	-	??
+tests/test_mail_send_never_raises.py	SendNeverRaisesTest.test_serialize_failure_does_not_retry_other_entries	H	-	构造级失败（此处注入到 as_string 消费点）换条目重投必然同样失败：
+tests/test_mail_send_never_raises.py	SendNeverRaisesTest.test_transport_failure_still_fails_over	H	-	回归防线：运输级失败（连接错误）的主备 failover 与本修复前逐字一致。
 tests/test_mail_smtp_target.py	MailChannelStateReportTest.test_broken_entries_missing_credentials_names_the_cause	H	-	条目缺发件账号/授权码：日报须点名病因（与"未配置"区分处置）。
 tests/test_mail_smtp_target.py	MailChannelStateReportTest.test_broken_undecryptable_blob_names_the_cause	H	-	密文解不开且旧键为空：日报须点名病因并标 ⚠，不得报「已开启」。
 tests/test_mail_smtp_target.py	MailChannelStateReportTest.test_empty_decrypted_list_reports_cleared_not_key_mismatch	H	-	解密成功但列表为空（端点允许 smtps: [] 的合法清空）→ 病因报「未配置/已清空」。
@@ -2303,6 +2316,7 @@ tests/test_saturday_sign.py	SaturdaySettingsWebTest.test_saturday_toggle_saves_e
 tests/test_saturday_sign.py	SaturdaySettingsWebTest.test_settings_get_default_saturday_off	D	-	GET /api/settings：saturday_sign 默认 0（v0.29.0 起默认关闭），sunday_sign 默认 0。
 tests/test_saturday_sign.py	SaturdaySignStatusTest.test_sign_status_saturday_default_off	D	-	周六 + 缺省（默认关闭）→ 「今日无需打卡（周六）」（v0.29.0 语义反转）。
 tests/test_saturday_sign.py	SaturdaySignStatusTest.test_sign_status_saturday_on_proceeds	D	-	周六 + 显式开启 → 走正常窗口逻辑（此时 10:00 已过 07:50 → 已结束）。
+tests/test_saturday_sign.py	SaturdaySignStatusTest.test_sign_status_saturday_true_same_as_on	D	-	周六 + `=true`（布尔值域）→ 与 `=1` 同判：引擎照签，面板不得标休。
 tests/test_saturday_sign.py	SaturdaySigninGateTest.test_saturday_default_off_exits_2	D	-	周六 + SATURDAY_SIGN 缺省（False）→ exit 2（SKIPPED 语义，v0.29.0 反转）。
 tests/test_saturday_sign.py	SaturdaySigninGateTest.test_saturday_manual_not_blocked	D	-	周六 + 开关关闭 + --only → 放行（用户主动触发不受限，不 exit 2）。
 tests/test_saturday_sign.py	SaturdaySigninGateTest.test_saturday_off_exits_2	D	-	周六 + SATURDAY_SIGN=False（显式关闭）→ exit 2。
@@ -3454,6 +3468,8 @@ tests/test_web_design_tokens.py	BadgeContractTest.test_badge_variants_meet_aa	F	
 tests/test_web_design_tokens.py	BadgeContractTest.test_no_inline_badge_markup	F	-	徽标必须走 .yb-badge 系列类，不得再出现内联的整段写法。
 tests/test_web_design_tokens.py	PaletteCompletenessTest.test_every_used_shade_is_declared_in_tailwind_config	F	-	用到的每个档位也必须在 tailwind_config 的 colors 里声明（否则类不会被生成）。
 tests/test_web_design_tokens.py	PaletteCompletenessTest.test_every_used_shade_is_defined_in_palette	F	-	用到的每个档位都必须在 app.css 里有 `--c-<族>-<档>`（否则计算值无效）。
+tests/test_web_file_lock_slow_ops.py	WebFileLockSlowOpsStaticTest.test_known_slow_list_matches_code	G	-	账实相符：还掉的债必须同步从清单删除（防清单腐烂成"永远绿"）。
+tests/test_web_file_lock_slow_ops.py	WebFileLockSlowOpsStaticTest.test_no_new_slow_call_inside_file_lock	G	-	增长面归零：扫描结果减去存量清单必须为空。
 tests/test_web_font_closure.py	FontSliceOutdirGuardTest.test_outside_repo_is_refused_and_untouched	F	-	??
 tests/test_web_font_closure.py	FontSliceOutdirGuardTest.test_under_whitelist_passes_the_guard	F	-	白名单内的合法落点必须过闸（后续因假字体失败，但不再是白名单拒绝）。
 tests/test_web_font_closure.py	FontSliceOutdirGuardTest.test_whitelist_root_and_prefix_sibling_refused	F	-	白名单根自身与"前缀相似"的同级目录都不算命中（后者防字符串前缀误判）。

@@ -54,6 +54,25 @@ class CapacityOfDispatchTest(unittest.TestCase):
                                  enabled=False),
             base)
 
+    def test_retry_reserve_warn_threshold(self):
+        """告警阈值（MF-56④）：v2 侧折进重试储备、复用同一个式子；v3 侧不参与。
+
+        缺省配置（4680s 有效窗口、avg=3、gap=10）：计划容量 360、告警阈值
+        = floor((4680−3)/39)+1 = 120 ⇒ 登记验收不变量「122 ≤ 账号数 < 361 必须触发
+        告警」被阈值 120 完整覆盖。v3 侧 `util` 本身就是重试/尾延迟降额，再乘
+        MAX_ATTEMPTS 是双重扣减，所以该参数不改变 v3 取值。
+        """
+        plan = schedule.capacity_accounts(4680, 10, 3)
+        warn = schedule.capacity_of(4680, gap=10, avg=3, enabled=False, retry_reserve=True)
+        self.assertEqual(plan, 360, "计划/展示口径不变（保存闸门不受本修复牵连）")
+        self.assertEqual(warn, 120)
+        self.assertLess(warn, 122, "122 账号必须越限——静默死带不得复发")
+        self.assertEqual(
+            schedule.capacity_of(4680, avg=3, k=2, bucket_rate=1.0, enabled=True,
+                                 retry_reserve=True),
+            schedule.capacity_accounts_v3(4680, 2, 3, 1.0),
+            "retry_reserve 不得改变 v3 分支的取值")
+
     def test_enabled_matches_v3_formula_verbatim(self):
         for ws in (0, 10, 4200, 4140):
             for k in (1, 2, 4):
@@ -319,6 +338,7 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
             return out
 
         planner_config = planner_config or (lambda: cfg)
+        self.last_notify = mock.Mock()
         with mock.patch.dict(os.environ, {}, clear=False):
             if v3:
                 os.environ["YIBAN_SCHEDULER_V3"] = "1"
@@ -349,7 +369,9 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
                  mock.patch.object(runner_mod.db, "add_sign_events_batch"), \
                  mock.patch.object(runner_mod.db, "purge_expired_deleted_accounts"), \
                  mock.patch.object(runner_mod.alerts, "_maybe_alert_zero_success"), \
-                 mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"):
+                 mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"), \
+                 mock.patch.object(runner_mod.alerts, "notify_admin_entry",
+                                   self.last_notify):
                 code = runner_mod.main([])
         return code, seen
 
@@ -364,22 +386,27 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
         self.assertFalse(boom.called, "开关关时预检不得读 planner_config")
-        self.assertEqual(seen[0][2], 230, "关时数值仍逐值不变")
+        # 告警阈值含重试储备（MF-56④）：avg=8、gap=10 → 每账号 3×18=54s → (4140-8)//54+1=77
+        self.assertEqual(seen[0][2], 77, "关时告警阈值按「窗口−重试储备」实算")
 
     def test_switch_off_value_is_explicit_and_unchanged(self):
         code, seen = self._run()
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
         args, kw, out = seen[0]
-        # 剩余有效窗口 = 07:49 − 06:40 = 4140s；avg=8、gap=10 → (4140-8)//18+1 = 230
+        # 剩余有效窗口 = 07:49 − 06:40 = 4140s；告警阈值 = 窗口 − 重试储备（MF-56④）：
+        # avg=8、gap=10、每账号预留 MAX_ATTEMPTS=3 个周期（3×18=54）→ (4140-8)//54+1 = 77
         self.assertEqual(args, (4140.0,))
-        self.assertEqual(kw["gap"], 10)
+        self.assertEqual(kw["gap"], 10, "传进公式的是配置原值，储备在 capacity_of 内折算")
         self.assertEqual(kw["avg"], 8)
         self.assertIs(kw["enabled"], False, "关时必须显式走 v2 分支，不靠默认值")
+        self.assertTrue(kw["retry_reserve"],
+                        "预检告警必须走「窗口 − 重试储备」阈值——122–360 静默死带的修复点")
         self.assertNotIn("k", kw, "关时不得计算/传入 K")
         self.assertNotIn("bucket_rate", kw, "关时不得读桶速率")
-        self.assertEqual(out, 230, "开关缺省 0 时预检容量逐值不变")
-        self.assertEqual(out, schedule.capacity_accounts(4140, 10, 8))
+        self.assertEqual(out, 77, "告警阈值 = 窗口−重试储备 的实算值")
+        self.assertEqual(out, schedule.capacity_accounts(4140, 46, 8),
+                         "储备折进 gap（10+2×18=46）后复用同一个 capacity_accounts 式子")
 
     def test_switch_on_passes_k_from_executor_count(self):
         """开关开时 K 真的参与计算：`executor_count` 的入参口径与结果都要落到调用上。"""
@@ -396,6 +423,91 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         self.assertEqual(kw["bucket_rate"], 1.0)
         self.assertEqual(out, schedule.capacity_accounts_v3(4140, k, 8, 1.0))
         self.assertNotEqual(out, 230, "开时走的必须是 v3 公式，不是 v2 的 230")
+
+    def test_dead_band_warns_and_current_load_stays_silent(self):
+        """登记验收不变量（MF-56④）：122–360 账号不再是静默死带，现网 89 号不误报。
+
+        夹具 06:40 起跑（剩余 4140s）、avg=3、gap=10 ⇒ 告警阈值 = (4140−3)//39+1 = 107；
+        修复前按同窗口算 319，122 个账号一路静默到当天签不完。n=122 正是"修复前必红"
+        的变异样本。
+        """
+        cfg = self._cfg(avg_attempt_sec=3)
+        code, _ = self._run(n=122, cfg=cfg)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.last_notify.call_count, 1,
+                         "122 账号越过告警阈值 107，必须并入容量超载通知")
+        self._run(n=360, cfg=cfg)
+        self.assertEqual(self.last_notify.call_count, 1,
+                         "360 账号（修复前的静默死带上界）同样必须触发")
+        self._run(n=89, cfg=cfg)
+        self.assertEqual(self.last_notify.call_count, 0,
+                         "现网 89 个账号（阈值之下）保持静默")
+        # MF-56③ 接线面：实测分位数真的流进预检。撤掉显式配置（setUp 钉了 8）、
+        # 喂 p95=30s ⇒ 告警 avg=30、阈值 (4140−30)//(3×40)+1 = 35 ⇒ 89 号也越限。
+        # 变异核验：runner 若回传递推 cfg_avg=3（阈值 107），此断言必红。
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=30.0):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            self._run(n=89, cfg=cfg)
+            self.assertEqual(self.last_notify.call_count, 1,
+                             "实测 p95=30s 必须顶掉缺省档 3s 进入告警阈值（35 < 89）")
+
+
+class MeasuredAttemptInputTest(unittest.TestCase):
+    """MF-56③：告警阈值的 avg 输入换成实测分位数（复用既有 sign_events.dur_sec）。
+
+    登记原文：容量输入量 `1.87~3s` 不是实测（mock 注入/配置缺省），所有继承它的
+    数字继承的是假设。修复不新增任何持久化键/表——每次尝试端到端耗时本就落在
+    `sign_events.dur_sec`（round._emit_event），只读侧取分位数。
+    """
+
+    def test_warn_avg_priority_explicit_then_measured_then_default(self):
+        # 未显式配置且有实测 ⇒ 用 p95 向上取整（5.2 → 6）
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=5.2):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            self.assertEqual(schedule.warn_avg_attempt_sec(3), 6)
+        # 显式配置 YIBAN_AVG_ATTEMPT_SEC 钉住实测（人工口径优先）
+        with mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "9"}), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=5.2):
+            self.assertEqual(schedule.warn_avg_attempt_sec(9), 9)
+        # 样本不足/查询失败（None）⇒ 回退配置档，预检绝不因留痕面炸掉
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule.db, "attempt_dur_quantile",
+                                  return_value=None):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            self.assertEqual(schedule.warn_avg_attempt_sec(3), 3)
+
+    def test_attempt_dur_quantile_on_real_table(self):
+        dbm = schedule.db
+        tmp = tempfile.mkdtemp(prefix="yiban-p95-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        old_db = os.environ.get("YIBAN_DB_FILE")
+        os.environ["YIBAN_DB_FILE"] = os.path.join(tmp, "p95.db")
+        try:
+            if dbm._conn is not None:
+                dbm._conn.close()
+                dbm._conn = None
+            dbm.init_db(os.environ["YIBAN_DB_FILE"])
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for i in range(30):
+                dbm.add_sign_event(ts, f"1380000{i:04d}", "success",
+                                   stage="sign", dur_sec=1.0 + i * 0.1)
+            # 升序 30 样本 ⇒ p95 落第 int(0.95×30)=28 个（0 基）= 1.0+2.8
+            self.assertAlmostEqual(dbm.attempt_dur_quantile(), 3.8, places=2)
+            # 样本 < min_samples：不拿小样本冒充分位数
+            self.assertIsNone(dbm.attempt_dur_quantile(min_samples=31))
+        finally:
+            if dbm._conn is not None:
+                dbm._conn.close()
+                dbm._conn = None
+            if old_db is None:
+                os.environ.pop("YIBAN_DB_FILE", None)
+            else:
+                os.environ["YIBAN_DB_FILE"] = old_db
 
 
 if __name__ == "__main__":
