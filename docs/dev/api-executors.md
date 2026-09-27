@@ -95,7 +95,8 @@
 
 | 字段 | 类型 | 语义与页面用法 |
 |------|------|----------------|
-| `workers.configured` | int ≥ 1 | 当前配置的并行执行体数：**清单里 `type=worker` 的行数**（`disabled`/`fallback` 不计）；清单缺失时回退旧口径（`YIBAN_WORKERS`，未配置=1） |
+| `workers.configured` | int ≥ 0 | 当前配置的并行执行体数：**清单里 `type=worker` 的行数**（`disabled`/`fallback` 不计），**如实计数**——0 行报 0，不再抬成"并行 1"；清单缺失时回退旧口径（`YIBAN_WORKERS`，未配置=1） |
+| `workers.single_mode` | bool | true = 清单没有任何 `worker` 行，运行时按**单执行体形态**跑（`assignments` 的 index 0 那条即实际在跑的单执行体，出口读 `YIBAN_PROXY`）。页面据此给"并行 0"配解释，不拿它当坏数 |
 | `workers.assignments[]` | list | 逐个执行体的出口描述 + `role`/`label`，`index` 是**清单槽位号**（清单缺失时即 `YIBAN_PROXY_LIST` 的下标）；**空位/空串显示为「直连（本机出口）」**。只列 `worker` 行——停用行只在 `executors[]` 里看得到 |
 | `workers.assignments[].state` | string | 该执行体的存活四态，见下表。**页面直接用，不要自己拿文件/时间去拼** |
 | `workers.assignments[].last_seen_at` | string \| **null** | 最后一次见到它活着的时刻（`YYYY-MM-DD HH:MM:SS`）；本业务日无记录时为 `null`。**不含 pid/主机名** |
