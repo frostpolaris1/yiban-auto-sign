@@ -34,9 +34,9 @@
       if (e && e.canceled) return;
       YB.toast.error((e && e.message) || "操作失败，请稍后再试");
     }
-    // 单目标端点的成功 msg 含**完整邮箱**（role / password / delete 三处），一律不使用后端
-    // msg 上屏，只弹本地无 PII 文案——否则完整邮箱经 toast 进入 DOM。batch / purge 的 msg
-    // 只含数量，才允许使用后端 msg（useServerMsg=true）。
+    // 单目标端点的成功 msg 回显遮罩邮箱；本组件仍一律只弹本地无 PII 文案，不依赖服务端
+    // 脱敏口径。batch / purge 的 msg 只含数量与跳过数，才使用后端 msg——否则真实计数与
+    // "跳过 N 个"被本地 fallback 吞掉，部分未生效也显示成全部成功。
     function successMsg(data, fallback, useServerMsg) {
       if (!fallback) return "";
       if (!useServerMsg) return fallback;
@@ -137,7 +137,7 @@
           body: { emails: [email] },
           desc: "再次确认：彻底清除 " + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
           delayDesc: "彻底清除 " + YB.maskEmail(email) + " 将物理删除用户、其易班账号与自选签到时间，不可恢复。确认继续？"
-        }), "已彻底清除");
+        }), "已彻底清除", true);
       });
     }
 
@@ -157,7 +157,7 @@
         path: "/api/users/batch",
         body: { action: "reset_password", emails: emails, password: newPassword },
         desc: "确认批量重置 " + emails.length + " 个用户的新密码？重置后其旧会话立即失效。请输入当前管理员密码确认。"
-      }), "已重置密码");
+      }), "已重置密码", true);
     }
 
     function batchDelete(uids) {
@@ -174,7 +174,7 @@
           body: { action: "delete", emails: emails },
           desc: "再次确认：删除 " + emails.length + " 个用户？请输入当前管理员密码确认。",
           delayDesc: "删除这 " + emails.length + " 个用户及其全部易班账号不可恢复。确认继续？"
-        }), "已删除用户");
+        }), "已删除用户", true);
       });
     }
 
@@ -192,7 +192,7 @@
           body: { emails: emails },
           desc: "再次确认：彻底清除 " + emails.length + " 个已注销用户？请输入当前管理员密码确认。",
           delayDesc: "彻底清除这 " + emails.length + " 个已注销用户将物理删除用户、易班账号与自选时间，不可恢复。确认继续？"
-        }), "已彻底清除");
+        }), "已彻底清除", true);
       });
     }
 
