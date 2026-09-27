@@ -1317,7 +1317,10 @@ def sign_status(now=None):
     （测试会打桩 `web.app._sign_window` / `web.app.edge_config`，窗口打桩经
     `sign_window_bounds` 现取后穿透）。
     """
-    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now)
+    # file_env 现读传入：周末门判定走引擎同一份解析，且必须读到 web 的这份 .env
+    #（web 进程环境里未必有这些键——口径见 _day_off_reason 的说明）。
+    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now,
+                                   file_env=read_env(ENV_FILE))
 
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /

@@ -38,6 +38,7 @@ from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from yiban.engine import schedule as yb_schedule
 
 
 def _my_account_indices_of(accounts):
@@ -663,12 +664,15 @@ def api_my_calendar():
             "ok": False,
             "error": "无法读取签到状态目录，请稍后重试或联系管理员",
         }), 500
+    _sat_sign, _sun_sign = yb_schedule.weekend_flags(env=m.read_env(m.ENV_FILE))
     return jsonify({
         "ok": True,
         "month": month,
         "days": result,
-        "sunday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),  # 前端据此决定周日是否置灰/可查
-        "saturday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),  # 默认关闭；前端据此决定周六是否置灰/可查
+        # 周末开关与引擎同一解析口径（`schedule.weekend_flags`，1/true/on/yes 为真）：
+        # 原先这里走整数解析，`=true` 时引擎照签而日历把周末置灰——两套值域的分叉点。
+        "sunday_sign": int(_sun_sign),  # 前端据此决定周日是否置灰/可查
+        "saturday_sign": int(_sat_sign),  # 默认关闭；前端据此决定周六是否置灰/可查
     })
 
 
