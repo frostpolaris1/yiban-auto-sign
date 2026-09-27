@@ -10,6 +10,7 @@ tests/test_account_abuse_gate.py	MailAlertThrottleTest.test_mail_alert_due_respe
 tests/test_account_abuse_gate.py	MailAlertThrottleTest.test_mail_alert_due_window_zero_disables	E	-	??
 tests/test_account_abuse_gate.py	MailAlertThrottleTest.test_same_title_email_throttled_webhook_kept	E	-	??
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_get_config_default_off	E	-	??
+tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_notify_test_each_call_leaves_attributable_audit	E	-	MF-96（只落审计半条）：每次外呼恰好一条含操作者的审计，不外加配额。
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_notify_test_requires_config	E	-	??
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_bad_type_400	E	-	??
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_clear_disables	E	-	??
@@ -1471,7 +1472,9 @@ tests/test_logs_by_date.py	LogSearchAllExportTest.test_export_bad_date_and_missi
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_export_download	F	node	??
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_logs_all_flag	F	node	??
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_logs_default_last_80_with_totals	F	node	??
+tests/test_logs_by_date.py	LogSearchAllExportTest.test_logs_dropped_lines_observable	F	node	MF-99：宽行模型劈出的后半行不再静默消失——返回面给出丢弃计数。
 tests/test_logs_by_date.py	LogSearchAllExportTest.test_logs_search_filters_full_day	F	node	??
+tests/test_logs_by_date.py	LogSearchAllExportTest.test_logs_triple_same_axis_at_cap_boundary	F	node	MF-97：total/truncated/returned 由同一份过滤后集合与同一个 cap 推出。
 tests/test_logs_by_date.py	LogsByDateTest.test_api_logs_bad_date_400	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_api_logs_default_is_today	F	node	??
 tests/test_logs_by_date.py	LogsByDateTest.test_api_logs_hist_date	F	node	??
@@ -3014,6 +3017,7 @@ tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_empty_passw
 tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_failed_password_lockout	L	-	??
 tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_last_registered_admin_cannot_delete	L	-	??
 tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_login_recoverable_flag	L	-	??
+tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_login_recoverable_writes_one_attributable_audit	L	-	冷静期 + 正确口令 = 一次既成的凭据验证事实，审计链上必须有一条可归因留痕。
 tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_login_recoverable_wrong_password_still_fails	L	-	??
 tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_purge_deleted_users_success	L	-	??
 tests/test_user_deregistration_web.py	UserDeregistrationWebTest.test_purge_empty_emails	L	-	??
@@ -3501,6 +3505,7 @@ tests/test_web_security_gates.py	Batch18FixesTest.test_cookie_path_narrowed_when
 tests/test_web_security_gates.py	Batch18FixesTest.test_doc_page_icp_police_escaped	E	-	备案文本含引号/尖括号时同样转义（quote=True 覆盖属性上下文）。
 tests/test_web_security_gates.py	Batch18FixesTest.test_mail_config_change_sends_no_alert	E	-	mail-config 变更只落盘，不再外发告警（关通道这个"拔线"动作也一视同仁）。
 tests/test_web_security_gates.py	Batch18FixesTest.test_mail_config_close_without_password_400_no_alert	E	-	mail-config 关闭动作未带口令 → 400、零写入、零告警（先验口令才发告警）。
+tests/test_web_security_gates.py	Batch18FixesTest.test_my_calendar_companion_files_and_unreadable_dir	E	-	MF-98：伴生文件不得变幻影日期；状态目录读不到必须出声而不是"这月没签"。
 tests/test_web_security_gates.py	Batch18FixesTest.test_my_calendar_hides_pending_history	E	-	pending 行提交后 my-calendar 不返回该号历史（验收用例）。
 tests/test_web_security_gates.py	Batch18FixesTest.test_my_calendar_shows_active_history_after_approve	E	-	对照：审核通过（active）后日历正常回显该号历史。
 tests/test_web_security_gates.py	Batch18FixesTest.test_my_logs_hide_pending_and_show_active	E	-	my-logs 同口径：pending 不回显，active 回显（脱敏形态）。
