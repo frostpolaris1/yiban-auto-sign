@@ -13,6 +13,9 @@
 #      由 systemd 注入为环境变量（web/app.py 会通过 .env / 环境变量读取）。
 #      若服务器不使用该密钥文件，可删除 EnvironmentFile 一行，
 #      并确保 /opt/yiban-auto-sign/.env 中 YIBAN_SECRET_KEY 已配置。
+#      ⚠️ 轮换 YIBAN_ACCOUNTS_KEY 时必须同步改这份 EnvironmentFile 与 .env——
+#      启动断言"两侧读到同一把钥"，不一致即拒绝启动（fail-closed，日志报两侧
+#      kid），不再允许 env 静默压住 .env 造成 web/engine 分叉。见 README 处置节。
 #
 # gunicorn 安装二选一（本模板默认用虚拟环境 .venv/bin/gunicorn）：
 #   方式 A（推荐，隔离依赖）：cd /opt/yiban-auto-sign && python3 -m venv .venv \

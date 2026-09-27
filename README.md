@@ -326,11 +326,68 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 
 **场景 B：仅会话 cookie 被盗（密码未失守）**：只做第 1 步的 PW_VERSION+1（实时生效）；如需全端下线再做第 4 步。
 
-> **`YIBAN_ACCOUNTS_KEY` 疑似泄露时怎么办**：该键用于静态加密账号凭据，SSH 失陷时攻击者可读 `.env` 后离线解密。
-> 现版本**不再提供自动轮换工具**——轮换是十年一遇场景，且"自动重加密全库"本身就要求停服窗口与崩溃恢复流程，
-> 维护成本高于收益。真要轮换，按以下顺序手工做（每一步都可中断重来）：停服（Docker `docker compose stop yiban`；
-> 裸机 `systemctl stop yiban-web`）→ 用新钥重新加密 `accounts.password` / `phone_code` → 自校验抽样解密 →
-> 改 `.env` 的 `YIBAN_ACCOUNTS_KEY` → 重启全部进程 → 用 `scripts/audit_verify.py` 校验审计链。
+> **`YIBAN_ACCOUNTS_KEY` 疑似泄露时怎么办（手工轮换全序）**：该键用于静态加密账号凭据，SSH 失陷时攻击者可读 `.env` 后离线解密。
+>
+> **先认清两个"面"，漏一个就是静默事故**：
+> 1. **同钥密文面不止库内两列**——① `accounts.password` / `accounts.phone_code`（AAD=手机号）、
+>    ② `.env` 的 `YIBAN_MAIL_SMTPS_ENC`（告警邮件凭据）、③ `.env` 的 `YIBAN_NOTIFY_SECRET_ENC`
+>    （Server酱 SendKey / webhook URL）都是这把钥加密的；换钥只重加密①，②③立刻解不开——
+>    **告警通道静默死亡**。（`session_cache` 的 cookie 密文是此钥 HKDF 派生后加密的**可再生数据**：
+>    轮换后旧缓存读侧解不开自动清行、用户重登重建，无需手工重写。）
+> 2. **钥来源有两档**——环境变量档（现网 web 由 systemd `EnvironmentFile=/etc/yiban/accounts-key`
+>    注入）与 `.env` 文件档，且 **env 档优先于 `.env`**；只改其中一侧 ⇒ "web 一把钥、引擎另一把钥"，
+>    一侧新写的密文另一侧永远解不开。
+>
+> **自证手段（动手前后都可用）**：v0.5.0 起新写密文为 v2 格式、携带 `kid`（密钥单向指纹，16 位
+> hex；既有 v1 无 kid 密文永久可读、按需重写）。程序启动时对两档钥做**一致性断言**：两档都能读到
+> 且不是同一把 ⇒ **拒绝启动**（fail-closed，web 与引擎日志各报两侧 kid）——换对了能不能起、
+> 换错了卡在哪侧，由启动日志自证，不靠碰运气；正常启动时日志打印 `账号密钥自证：… kid=…`。
+>
+> 现版本**仍不提供自动轮换工具**（十年一遇场景，"自动重加密全库"的停服窗口与崩溃恢复维护成本
+> 高于收益），真要轮换按以下顺序手工做（每一步都可中断重来）：
+>
+> 1. 停服全部进程（Docker `docker compose stop yiban`；裸机 `systemctl stop yiban-web`，并停掉
+>    cron / 兜底常驻 / 容器调度器）；
+> 2. 生成新钥：`python3 -c "import secrets;print(secrets.token_hex(32))"`；
+> 3. 用旧钥解密、新钥重加密上面①②③三个面（库内两列与 `.env` 两键一并做；解不开即抛错停下，
+>    绝不跳过坏行）：
+>
+> ```bash
+> cd /opt/yiban-auto-sign   # Docker 部署在容器内相应目录
+> OLD_KEY='<旧钥64hex>' NEW_KEY='<新钥64hex>' YIBAN_ENV_FILE=.env \
+> python3 - <<'PY'
+> import json, os, sqlite3
+> from yiban.infra import account_crypto as ac, env_io
+> old, new = bytes.fromhex(os.environ["OLD_KEY"]), bytes.fromhex(os.environ["NEW_KEY"])
+> conn = sqlite3.connect(os.environ.get("YIBAN_DB_FILE", "yiban.db"))
+> for pid, pwd, code in conn.execute("SELECT phone, password, phone_code FROM accounts"):
+>     for col, v in (("password", pwd), ("phone_code", code)):
+>         if v:
+>             plain = ac.decrypt_password(json.loads(v), old, pid)
+>             ct = json.dumps(ac.encrypt_password(plain, new, pid))  # 新写即 v2+kid
+>             conn.execute(f"UPDATE accounts SET {col}=? WHERE phone=?", (ct, pid))
+> conn.commit(); conn.close()
+> envf = env_io.env_path()
+> env = env_io.parse_env_file(envf, strict=True)
+> for k in ("YIBAN_MAIL_SMTPS_ENC", "YIBAN_NOTIFY_SECRET_ENC"):
+>     raw = env.get(k, "").strip()
+>     if raw:
+>         plain = ac.decrypt_text(json.loads(raw), old)
+>         env_io.write_env_key(envf, k, json.dumps(ac.encrypt_text(plain, new)))
+> print("三面重加密完成，新钥 kid =", ac.key_fingerprint(new))
+> PY
+> ```
+>
+> 4. **两侧同时换成新钥**：`.env`（或 `YIBAN_ENV_FILE` 指向的文件）的 `YIBAN_ACCOUNTS_KEY` 与环境
+>    变量档 `/etc/yiban/accounts-key`（存在即必须同步——它是装单元时 `install … .env /etc/yiban/accounts-key`
+>    整份拷贝出来的，照装法重做一次并 `systemctl daemon-reload`）；
+> 5. 重启全部进程，确认启动日志出现 `账号密钥自证：… kid=<第 2 步打印的 kid>`；若报
+>    "两侧不一致"拒启，就是还有一侧没改（断言替你兜住了），按日志里两个 kid 核对补齐；
+> 6. 抽样解密自校验（任一账号试手动签到或读回解密）→ 用 `scripts/audit_verify.py` 校验审计链。
+>
+> **过渡态处置**：升级后若部署本就处于"两侧不一致"而被拒启——先按第 5 步的日志比对存量密文的 kid，
+> 确认存量密文实际属于哪一档的钥，把两侧统一成那把并重启（先恢复可启动），再走上面的轮换全序。
+> **不要**删断言或绕过它——它是这套流程唯一的自证面。
 > 旧密钥一律视为已泄露：若攻击者拷走过数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
 
 **事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log`

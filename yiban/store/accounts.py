@@ -236,11 +236,18 @@ def _is_encrypted_value(v):
 
 
 def _encrypt_field(value, phone):
-    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone）→ JSON 串；空值原样。
+    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone，
+    新写 v2 带 kid）→ JSON 串。
 
-    无密钥时 load_key 自动生成并持久化（与 web 现状一致）；密钥非法则抛错（绝不静默降级明文）。
+    **空凭据显式语义**：空值（None/""/假值）按空串 "" 落库——空即空，既不产出
+    "看似密文的空串"，也不触 load_key（空值写入不依赖密钥存在与否）。此前这一支
+    完全静默，凭据真被清空时库内与"从来就空"不可分辨，现留 DEBUG 痕。
+    非空但密钥非法则抛错（绝不静默降级明文）；无密钥时 load_key 自动生成并持久化
+    （与 web 现状一致）。
     """
     if not value:
+        logger.debug("凭据字段为空（type=%s），按空值语义落空串（不加密）",
+                     type(value).__name__)
         return ""
     if isinstance(value, dict):
         return json.dumps(value)  # 已是密文对象
