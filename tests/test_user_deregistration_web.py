@@ -354,6 +354,41 @@ class UserDeregistrationWebTest(unittest.TestCase):
         r = c.post("/api/login", json={"username": "user1@test.local", "password": "bad-pass"})
         self.assertEqual(r.status_code, 401, "密码错误不返回 recoverable 标记")
 
+    def _recoverable_audit_rows(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db_file)
+        try:
+            return conn.execute(
+                "SELECT username, detail FROM audit_logs WHERE action='login_recoverable' ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def test_login_recoverable_writes_one_attributable_audit(self):
+        """冷静期 + 正确口令 = 一次既成的凭据验证事实，审计链上必须有一条可归因留痕。
+
+        修复前这条路径既不写 login_ok（`db.audit` 在 `if role:` 块内）也不计失败
+        ⇒ /api/login 在注销冷静期里是零留痕的凭据验证器（限速表是进程内 dict，
+        应用侧只剩 nginx 访问日志，不可归因）。同时钉住失败路径零回归：
+        口令错误不得产生该动作行。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        r = c.post("/api/login", json={"username": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json().get("recoverable"))
+        rows = self._recoverable_audit_rows()
+        self.assertEqual(len(rows), 1, "口令正确恰好落一条留痕")
+        # `db.audit` 落库时按 MF-49 口径遮罩邮箱（与 login_ok 同形态），
+        # 可归因 ≠ 明文：钉"指向的就是这个账号"即可
+        self.assertEqual(rows[0][0], "use***@test.local", "留痕必须可归因到被验证的账号")
+        # 失败路径行为不变：口令错误仍走 401 + 失败计数，不新增本动作行
+        bad = c.post("/api/login", json={"username": "user1@test.local", "password": "bad"})
+        self.assertEqual(bad.status_code, 401)
+        self.assertEqual(len(self._recoverable_audit_rows()), 1,
+                         "口令错误不得写 login_recoverable")
+
     def test_restore_success(self):
         # 直接 DB 构造冷却中账号（不经 /api/me/delete，避免注销冷却记录挡住恢复的 60s 窗口）
         db.soft_delete_user_with_accounts("user1@test.local")
