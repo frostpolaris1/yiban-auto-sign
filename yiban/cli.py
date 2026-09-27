@@ -27,7 +27,7 @@
 | `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
 | `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
 | `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
-| `db` | 数据库维护（状态/完整性/备份） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `dry_run` | 0 / 1 |
+| `db` | 数据库维护（状态/完整性/备份/恢复） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `restore_from` `fingerprint` `backup_user_version` `backup_size_bytes` `pre_restore_copy` `dry_run` | 0 / 1 / 2 |
 | `version` | 打印版本 | `command` `version` `python` `user_version` | 0 |
 
 `capacity --measure` 与 `db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
@@ -559,11 +559,12 @@ def _build_parser():
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
     p = _sub(
-        "db", help="数据库维护（状态 / 完整性 / 备份）",
+        "db", help="数据库维护（状态 / 完整性 / 备份 / 恢复）",
         description=("默认 --status（只读：user_version、表清单、账号数、文件大小）；"
                      "--integrity 跑 PRAGMA integrity_check；--backup 写一致性副本"
-                     "（在线备份 API，不加 --yes 只报告计划；目标已存在需 --force）。"
-                     "全程只读连接，不建库、不迁移。"),
+                     "（在线备份 API，不加 --yes 只报告计划；目标已存在需 --force）；"
+                     "--restore 从该副本恢复（默认只报告，--yes 需回显 --fingerprint，"
+                     "覆盖前自动留副本）。只读路径全程只读连接，不建库、不迁移。"),
     )
     group = p.add_mutually_exclusive_group()
     group.add_argument("--status", action="store_true", help="只读状态（默认）")
@@ -571,9 +572,14 @@ def _build_parser():
     group.add_argument("--backup", nargs="?", const="", default=None, metavar="路径",
                        help=("写一致性副本（默认 <库文件>.backup；不加 --yes 只报告计划；"
                              "目标已存在时必须加 --force）"))
-    p.add_argument("--yes", action="store_true", help="备份时真的写盘（默认只报告）")
+    group.add_argument("--restore", nargs="?", const="", default=None, metavar="路径",
+                       help=("从 db --backup 写的副本恢复（默认 <库文件>.backup；"
+                             "不加 --yes 只报告计划，--yes 需 --fingerprint 且先校验备份）"))
+    p.add_argument("--yes", action="store_true", help="备份/恢复时真的动手（默认只报告）")
     p.add_argument("--force", action="store_true",
                    help="允许覆盖已存在的备份目标（拒绝静默顶掉上一份副本）")
+    p.add_argument("--fingerprint", default="",
+                   help="回显目标指纹（--restore --yes 必填；由 `db --restore --dry-run --json` 打印）")
     p.add_argument("--dry-run", action="store_true", help="只报告不写盘（默认行为，显式声明用）")
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
