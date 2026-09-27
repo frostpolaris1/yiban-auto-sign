@@ -130,24 +130,40 @@ def log_path_for(log_file, date_str=None):
     return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
 
 
-def _log_lines_for(date_str, path_for, tail_lines):
+def _log_lines_for(date_str, path_for, tail_lines, stats=None):
     """读取指定日期日志的行（行首日期过滤防跨天残留；可见性口径见 `_log_line_visible`）。
 
     文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
     路径与倒读实现由调用方传入，故日志目录切到别处的既有打桩面继续生效。
+
+    `stats`：可选 dict，读入 `stats["dropped"]` = 被丢弃的**无法解析**行数。
+    上游按宽行模型（`splitlines()`）切文本，行内裸 NEL/LS/PS 会把一条逻辑行
+    劈成两半：前半仍像合法行照常展示，后半既不匹配行首日期前缀也过不了
+    `SIGN_LOG_RE`——不计数就整块静默消失，"看起来只有一半日志"。这里刻意
+    不改切行语义（窄侧 `readline()` 只按 `\\n` 切，改成一致会动所有行的
+    归属），只把丢掉多少数出来给调用方回显（MF-99）。收录行的集合与原
+    口径逐字一致；可见性过滤只是**设计内**的隐藏，不算丢弃。
     """
     prefix = f"[{date_str} "
     out = []
+    dropped = 0
     for line in tail_lines(path_for(date_str)):
-        if not line.startswith(prefix):
+        if line.startswith(prefix):
+            m = SIGN_LOG_RE.match(line.strip())
+            if not m:
+                dropped += 1  # 当日前缀却解析不出：形状残缺的脏行
+            elif _log_line_visible(m.group(2), m.group(3)):
+                out.append(line.strip())
+            # 能解析但被可见性过滤：设计内的隐藏，不是"没算进去的行"，不计
             continue
-        m = SIGN_LOG_RE.match(line.strip())
-        if not m:
-            continue
-        _, level, logger_name, _msg = m.groups()
-        if not _log_line_visible(level, logger_name):
-            continue
-        out.append(line.strip())
+        stripped = line.strip()
+        if not stripped:
+            continue  # 空行无内容可丢，不计
+        if SIGN_LOG_RE.match(stripped):
+            continue  # 能解析 = 完整的外日残留行（跨天口径，设计内剔除）
+        dropped += 1  # 解析不出：被撑开的后半行/续行，静默消失正是要消灭的害
+    if stats is not None:
+        stats["dropped"] = dropped
     return out
 
 
