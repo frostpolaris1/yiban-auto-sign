@@ -436,12 +436,29 @@ def current_request_scope():
     return getattr(_REQUEST_SCOPE, "rid", None)
 
 
+def new_request_scope_id(prefix="web"):
+    """生成 web 请求作用域 id（唯一真源；web before_request 钩子调用）。
+
+    形状 `web-<8hex>-<8hex>`：16 位十六进制若整串恰全为数字（约千分之一），会构成
+    ≥11 位数字连段——全部按裸手机号子串判据（`1[3-9]\\d{9}` 系）扫描审计/日志的
+    消费方会偶发误报（脱敏回归被自己的随机 id 咬）。中段补连字符把数字连段最长压到
+    8 位，判据物理上不可能命中；熵不变（仍 8 字节随机）。形状契约由测试钉死。
+    """
+    rid = secrets.token_hex(8)
+    return f"{prefix}-{rid[:8]}-{rid[8:]}"
+
+
 def _process_scope():
-    """进程级作用域 id（CLI/离线脚本）：pid + 该进程首次认领的时刻，重启可区分。"""
+    """进程级作用域 id（CLI/离线脚本）：pid + 该进程首次认领的时刻，重启可区分。
+
+    时刻串在日期与时间之间补连字符（%Y%m%d-%H%M%S）：14 位连续数字可掐出 11 位
+    "裸手机号"窗口（脱敏回归按子串判据扫描），切段后任一数字连段 ≤8 位，作用域
+    id 不再可能伪装成手机号（与 web 请求档的切段同理由）。
+    """
     pid = os.getpid()
     seen = _PROCESS_SCOPE_SEEN.get(pid)
     if seen is None:
-        seen = clock.now().strftime("%Y%m%d%H%M%S")
+        seen = clock.now().strftime("%Y%m%d-%H%M%S")
         _PROCESS_SCOPE_SEEN[pid] = seen
     return f"proc{pid}-{seen}"
 
