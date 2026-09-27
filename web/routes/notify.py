@@ -567,6 +567,15 @@ def api_notify_test():
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
     ok = m.notify.send_test()
+    # 每次外呼必留一条含操作者的审计：send(force=True) 跳过节流与两本每日额度，
+    # 这是唯一一条管理员会话可直接驱动对外 HTTPS POST 的入口。失败结果同样落
+    # 一行——对被拒/异常的尝试，请求往往已经发出，只记成功会漏掉真外呼。
+    # 刻意不加会话配额：管理员自用排障按钮，强防护只会挡住日常（全站限速
+    # + CSRF + 前端入口已把滥用面压在"会话被盗"这一前提上，那时审计更值钱）。
+    m.db.audit(
+        session.get("username") or "?", "notify_test", "notify_test",
+        "测试推送已发送" if ok else "测试推送未送达（未配置或推送被拒，详见服务日志）",
+    )
     if not ok:
         return jsonify({"error": "测试消息发送失败（未配置或推送被拒，详见服务日志）"}), 400
     return jsonify({"ok": True, "msg": "测试消息已发送，请检查手机/接收端"})
