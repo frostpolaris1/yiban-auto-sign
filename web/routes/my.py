@@ -637,17 +637,32 @@ def api_my_calendar():
     prefix = f"sign-daily-{year:04d}-{mon:02d}-"
     try:
         for entry in os.scandir(m.STATE_DIR):
-            if entry.name.startswith(prefix):
-                date = entry.name[len("sign-daily-") : -len(".json")]
-                try:
-                    with open(entry.path, encoding="utf-8") as f:
-                        daily = json.load(f)
-                except Exception:
-                    daily = {}
-                # setdefault：异常文件名（非 YYYY-MM-DD）不落入本月键时自动补空，防 KeyError 500
-                result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
-    except OSError:
-        pass  # STATE_DIR 不存在等：按无记录返回
+            # 伴生文件按"后缀+形态"识别，不按截字符串：每日状态写入必带
+            # `<名>.lock`，崩溃残留还有 `<名>.tmp<pid>-<tid>`——它们同样命中月份
+            # 前缀，原先"截掉末尾 5 字符"会把伴生文件切成幻影日期
+            # （`X.json.lock` → `X.json`），日历平白多出一个不存在的天。
+            if not (entry.name.startswith(prefix) and entry.name.endswith(".json")):
+                continue
+            day = entry.name[len(prefix) : -len(".json")]
+            if len(day) != 2 or not day.isdigit():
+                continue
+            date = f"{year:04d}-{mon:02d}-{day}"
+            try:
+                with open(entry.path, encoding="utf-8") as f:
+                    daily = json.load(f)
+            except Exception:
+                daily = {}
+            # setdefault：异常文件名（非 YYYY-MM-DD）不落入本月键时自动补空，防 KeyError 500
+            result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
+    except OSError as e:
+        # 读不到 ≠ 没有记录：静默吞会把"状态目录不可读"渲染成全月空白的
+        # "这个月没签"假安心。出声——日志一条 + 响应显式失败（前端 YB.api 见
+        # ok:false 走卡内错误态+重试，不再展示空白月）。
+        m.logger.warning("读取签到状态目录失败（月历 %s）: %s: %s", month, m.STATE_DIR, e)
+        return jsonify({
+            "ok": False,
+            "error": "无法读取签到状态目录，请稍后重试或联系管理员",
+        }), 500
     return jsonify({
         "ok": True,
         "month": month,
