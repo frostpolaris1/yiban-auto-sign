@@ -56,6 +56,34 @@ state_io / accounts / workers / config_check / cli_support），SQLite 层在 `y
 
 `--workers N` 的汇总码取"最严重者"：`4 > 10 > 1 > 3 > 2 > 0`（4 = 任一执行体迁移拒启，整轮不可信，优先于补签判定）。
 
+### 3.1 `--json` 失败对象与 `error_kind`（机读分族）
+
+凡带 `--json` 的调用，**任何**退出路径（含用法错误、未知子命令、多余参数、互斥开关、
+引擎 argparse 拒绝）都在 stdout 打出**恰一行** JSON 对象；成功对象与失败对象都带
+`exit_code`（与进程返回码一致）。失败对象（`ok=false`）额外带机读分族字段 `error_kind`
+（取值只增不改、不复用旧名）：
+
+| `error_kind` | 何时出现 | 典型退出码 |
+|---|---|---|
+| `ok` | 成功 | 0 |
+| `failure` | 存在真实失败（账号/网络/配置） | 1 |
+| `skipped` | 全部跳过 / 窗口外未了结（含 `probe` 这一轮没做检查） | 2 |
+| `locked` | 队列忙（运行锁被持有或不可用） | 3 |
+| `schema_migration` | schema 迁移完整性拒启 | 4 |
+| `second_run_check` | 需要补跑第二轮 | 10 |
+| `usage` | 用法错误（未知子命令、被 argparse 拦下的互斥开关） | 2 |
+| `usage_no_command` | 未给子命令 | 2 |
+| `usage_extra_args` | 维护子命令收到多余参数 | 2 |
+| `usage_conflict` | 互斥开关同时给出（`--yes --dry-run`、`--measure --json`） | 2 |
+| `usage_engine` | sign/probe 透传的引擎 argparse 拒绝 | 2 |
+| `config_error` | 配置错误（配置加载失败 / 零账号 / 保留期非法） | 1 |
+| `runtime_error` | 运行期失败（库不可读或不存在、备份失败、目录不可用、审计不可写） | 1 |
+| `confirmation_required` | 删除类入口未回显目标指纹 | 2 |
+
+六种非法参数此前 stdout 逐字节相同（皆零字节）；现按 `command`、具体 `errors` 文本与
+`error_kind` 三者可区分。`rc=2` 的码值**不变**（`run.sh` / 兼容壳依赖它），分族只表达
+在错误对象里。
+
 ## 4. 命令速查
 
 新入口（推荐给脚本/agent；`--json` 时 stdout 是**单行** JSON 对象）：

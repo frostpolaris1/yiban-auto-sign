@@ -73,6 +73,7 @@ from yiban.engine.cli_support import (
     _guess_command,
     _say,
     _UsageError,
+    exit_kind,
 )
 from yiban.infra import env_io
 from yiban.masking import mask_phone
@@ -225,10 +226,11 @@ def _cmd_sign(json_mode, extra):
     except SystemExit as e:
         code = _exit_code(e)
         if json_mode:
-            _emit_json_error("sign", code, [f"引擎参数错误: {' '.join(extra)}"])
+            _emit_json_error("sign", code, [f"引擎参数错误: {' '.join(extra)}"],
+                             error_kind="usage_engine")
         return code
     if json_mode:
-        payload = {"command": "sign", "exit_code": code}
+        payload = {"command": "sign", "exit_code": code, "error_kind": exit_kind(code)}
         if code != 0:
             error = cli_support.last_fatal_error()
             if error:
@@ -249,10 +251,11 @@ def _cmd_probe(json_mode, extra):
     except SystemExit as e:
         code = _exit_code(e)
         if json_mode:
-            _emit_json_error("probe", code, [f"引擎参数错误: {' '.join(extra)}"])
+            _emit_json_error("probe", code, [f"引擎参数错误: {' '.join(extra)}"],
+                             error_kind="usage_engine")
         return code
     if json_mode:
-        payload = {"command": "probe", "exit_code": code}
+        payload = {"command": "probe", "exit_code": code, "error_kind": exit_kind(code)}
         if code != 0:
             error = cli_support.last_fatal_error()
             if error:
@@ -271,19 +274,21 @@ def _cmd_config(args, view):
     "零账号守卫"同一判据，免得"CLI 说没问题、签到却直接报未配置"）。
 
     `migrate=False`：本命令宣称"脱敏、不联网/只读"，就不能经 `load_accounts() →
-    db.init_db(migrate=True)` 对目标库跑迁移（重写审计链等）——曾实测到宣称只读的
-    config 把库迁到了 v17。账号表由 init_db 的基线建表保证
-    存在，只读模式下取账号不依赖迁移。
+    db.init_db()` 建库/建表/迁移/切 WAL——曾实测到宣称只读的 config 把库迁到旧 schema 顶，
+    并在空目录当场建出 69632B 的伪库。只读装载由 `db.load_accounts_readonly` 承担
+    （独立只读连接；库/表不存在即按"无账号"回落其它来源）。
     """
     paths = _paths(view)
     try:
         accounts = accounts_mod.load_accounts(migrate=False)
     except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         return _fail("config", 1, [f"配置加载失败: {e}"], args.json,
+                     error_kind="config_error",
                      accounts=0, phones_masked=[], paths=paths)
     if not accounts:
         return _fail("config", 1, ["未配置任何账号（数据库 / YIBAN_ACCOUNTS_JSON / "
                                   "YIBAN_ACCOUNTS / YIBAN_PHONE 均为空）"], args.json,
+                     error_kind="config_error",
                      accounts=0, phones_masked=[], paths=paths)
     masked = [mask_phone(a.phone) for a in accounts]
     missing_device = sum(1 for a in accounts if not a.has_device_info)
@@ -359,7 +364,8 @@ def _cmd_capacity(args, view, extra):
     """
     if args.measure:
         if not os.path.isfile(CAPACITY_PROBE):
-            return _fail("capacity", 1, [f"容量基准工具不存在: {CAPACITY_PROBE}"], False)
+            return _fail("capacity", 1, [f"容量基准工具不存在: {CAPACITY_PROBE}"], False,
+                         error_kind="runtime_error")
         cmd = [sys.executable, CAPACITY_PROBE, *extra]
         _say("转发容量基准工具（需 root / 隔离测试机；输出与退出码原样透传）: "
              + " ".join(cmd[1:]))
@@ -370,7 +376,7 @@ def _cmd_capacity(args, view, extra):
         snapshot = _db_snapshot(paths["db_file"])
     except sqlite3.Error as e:
         return _fail("capacity", 1, [f"读取账号数失败（{paths['db_file']}）: {e}"], args.json,
-                     accounts=0, paths=paths)
+                     error_kind="runtime_error", accounts=0, paths=paths)
     accounts, signable = (0, 0) if snapshot is None else (snapshot[3], snapshot[4])
     if snapshot is not None:
         snapshot[0].close()
@@ -431,6 +437,7 @@ def _cmd_state(args, view):
     retention = {"log": None, "snapshot": None}
     if not os.path.isdir(state_dir):
         return _fail("state", 1, [f"状态目录不存在: {state_dir}"], args.json,
+                     error_kind="runtime_error",
                      dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
                      retention_days=retention, candidates=0, removed=0, detail=[],
                      fingerprint=None)
@@ -447,7 +454,8 @@ def _cmd_state(args, view):
                     "state --yes 是删除类入口：请先跑 `state --dry-run --json` 拿到目标指纹，"
                     "再以 `--yes --fingerprint <指纹>` 逐字回显确认",
                     f"目标指纹: {fp}",
-                ], args.json, dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                ], args.json, error_kind="confirmation_required",
+                    dry_run=False, state_dir=state_dir, log_dir=log_dir,
                     retention_days=retention, candidates=candidates, removed=0,
                     detail=detail, fingerprint=fp)
             # 留痕先于不可逆删除；写不进去即拒绝（fail-closed），零删除。
@@ -456,7 +464,8 @@ def _cmd_state(args, view):
                     f"清理状态目录 {state_dir}：{candidates} 个过期文件"):
                 return _fail("state", 1, [
                     "清库留痕写入失败（审计不可写），按 fail-closed 拒绝清理（未删除任何文件）",
-                ], args.json, dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                ], args.json, error_kind="runtime_error",
+                    dry_run=False, state_dir=state_dir, log_dir=log_dir,
                     retention_days=retention, candidates=candidates, removed=0,
                     detail=detail, fingerprint=fp)
             removed, detail = state_gc.sweep(state_dir, log_dir, view)
@@ -468,6 +477,7 @@ def _cmd_state(args, view):
             removed = 0
     except ValueError as e:
         return _fail("state", 1, [f"保留期配置非法，未清理: {e}"], args.json,
+                     error_kind="config_error",
                      dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
                      retention_days=retention, candidates=0, removed=0, detail=[],
                      fingerprint=None)
@@ -520,10 +530,10 @@ def _cmd_db(args, view):
         snapshot = _db_snapshot(db_file)
     except sqlite3.Error as e:
         return _fail("db", 1, [f"数据库不可读（{db_file}）: {e}"], args.json,
-                     mode=mode, db_file=db_file)
+                     error_kind="runtime_error", mode=mode, db_file=db_file)
     if snapshot is None:
         return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json,
-                     mode=mode, db_file=db_file)
+                     error_kind="runtime_error", mode=mode, db_file=db_file)
     conn, user_version, tables, accounts, signable = snapshot
     payload = {
         "command": "db",
@@ -544,6 +554,7 @@ def _cmd_db(args, view):
         conn.close()
         payload["integrity_ok"] = rows == ["ok"]
         payload["integrity_detail"] = "; ".join(rows[:5])
+        payload["exit_code"] = 0 if payload["integrity_ok"] else 1
         _say("==== 数据库完整性检查 ====")
         _say(f"库 {db_file} | user_version={user_version} | "
              f"{'ok' if payload['integrity_ok'] else '发现问题'}: {payload['integrity_detail']}")
@@ -573,6 +584,7 @@ def _db_backup(args, db_file):
     if os.path.exists(target) and os.path.exists(db_file) and \
             os.path.samefile(os.path.realpath(target), os.path.realpath(db_file)):
         return _fail("db", 1, [f"备份目标与源库是同一个文件，已拒绝: {target}"], args.json,
+                     error_kind="runtime_error",
                      mode="backup", db_file=db_file, backup_path=target,
                      dry_run=not args.yes)
     exists = os.path.exists(target)
@@ -599,7 +611,8 @@ def _db_backup(args, db_file):
     try:
         src = _open_ro(db_file)
         if src is None:
-            return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json, mode="backup",
+            return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json,
+                         error_kind="runtime_error", mode="backup",
                          db_file=db_file, backup_path=target, dry_run=False)
         try:
             dst = sqlite3.connect(target)
@@ -612,6 +625,7 @@ def _db_backup(args, db_file):
             src.close()
     except sqlite3.Error as e:
         return _fail("db", 1, [f"备份失败（{db_file} → {target}）: {e}"], args.json,
+                     error_kind="runtime_error",
                      mode="backup", db_file=db_file, backup_path=target, dry_run=False)
     payload["size_bytes"] = os.path.getsize(target)
     _say("==== 数据库备份 ====")
@@ -757,13 +771,15 @@ def _dispatch(args, extra, subs):
     if extra and not (cmd == "capacity" and args.measure):
         # 多余参数只在两处合法：sign/probe（原样透传给引擎，见上）与
         # `capacity --measure`（透传给容量基准工具）。其余是用法错误 → stderr 用法 + 退出码 2
-        raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd)
+        raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd,
+                          kind="usage_extra_args")
     # `--dry-run` / `--yes` 只有 state 与 db 定义（其余子命令没有这两个开关）
     if getattr(args, "dry_run", False) and getattr(args, "yes", False):
-        raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd)
+        raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd,
+                          kind="usage_conflict")
     if cmd == "capacity" and args.measure and args.json:
         raise _UsageError("--measure 与 --json 不能同时使用（转发的工具自成一路输出）",
-                          subs[cmd], cmd)
+                          subs[cmd], cmd, kind="usage_conflict")
     view = _env_view()
     handlers = {
         "config": _cmd_config,
@@ -784,7 +800,7 @@ def _fail_usage(exc, json_mode):
     sys.stderr.write(f"{exc.parser.prog}: error: {exc}\n")
     sys.stderr.flush()
     if json_mode:
-        _emit_json_error(exc.command, 2, [str(exc)])
+        _emit_json_error(exc.command, 2, [str(exc)], error_kind=exc.kind)
     return 2
 
 
@@ -809,12 +825,13 @@ def main(argv=None) -> int:
         # 使 `main(argv)` 对调用方始终是"返回码"而非异常。--json 下补一行结构化错误。
         code = _exit_code(e)
         if json_mode and code != 0:
-            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"])
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"],
+                             error_kind="usage")
         return code
     if args.command is None:
         _say(USAGE)
         if json_mode:
-            _emit_json_error(command, 2, ["未指定子命令"])
+            _emit_json_error(command, 2, ["未指定子命令"], error_kind="usage_no_command")
         return 2
     # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
     # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
@@ -828,7 +845,7 @@ def main(argv=None) -> int:
     except SystemExit as e:
         code = _exit_code(e)
         if json_mode and code != 0:
-            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"])
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"], error_kind="usage")
         return code
 
 

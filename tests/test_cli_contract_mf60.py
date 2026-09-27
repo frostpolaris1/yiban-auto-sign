@@ -203,5 +203,62 @@ class ReadOnlyPromiseTest(unittest.TestCase):
             conn.close()
 
 
+class ExitKindFamilyTest(unittest.TestCase):
+    """退出码分族：`--json` 错误对象带机读 `error_kind`，既有码含义不动。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-cli-mf60c-")
+        self.addCleanup(self.tmp.cleanup)
+        self.env = _cli_env(self.tmp.name)
+
+    def test_illegal_args_carry_distinguishable_error_kind(self):
+        """六种非法参数 + 缺子命令：`error_kind` 覆盖用法族，且每种的取值可区分。"""
+        expected = {
+            ("nope",): "usage",
+            (): "usage_no_command",
+            ("version", "--bogus"): "usage_extra_args",
+            ("db", "--status", "--integrity"): "usage",
+            ("state", "--yes", "--dry-run"): "usage_conflict",
+            ("capacity", "--measure"): "usage_conflict",
+            ("sign", "--bogus"): "usage_engine",
+        }
+        for argv, kind in expected.items():
+            with self.subTest(argv=argv):
+                r = _run([*argv, "--json"], self.env)
+                self.assertEqual(r.returncode, 2, r.stderr[-300:])
+                payload = _one_json_line(self, r)
+                self.assertEqual(payload["error_kind"], kind, payload)
+        self.assertGreaterEqual(
+            len(set(expected.values())), 5,
+            "用法错误的 error_kind 取值太少，六种非法参数无法按族区分")
+
+    def test_exit_code_family_unchanged(self):
+        """`docs/dev/cli.md` §3 既有码的机读分族：0/1/2/3/4/10 只增不改。"""
+        from yiban.engine import cli_support
+        self.assertEqual(cli_support.exit_kind(0), "ok")
+        self.assertEqual(cli_support.exit_kind(1), "failure")
+        self.assertEqual(cli_support.exit_kind(2), "skipped")
+        self.assertEqual(cli_support.exit_kind(3), "locked")
+        self.assertEqual(cli_support.exit_kind(cli_support.EXIT_SCHEMA_MIGRATION),
+                         "schema_migration")
+        self.assertEqual(cli_support.exit_kind(10), "second_run_check")
+        self.assertEqual(cli_support.exit_kind(99), "unknown")
+
+    def test_config_error_kind_is_config_error(self):
+        r = _run(["config", "--json"], self.env)   # 零账号 = 配置错误(1)
+        self.assertEqual(r.returncode, 1, r.stderr[-300:])
+        payload = _one_json_line(self, r)
+        self.assertEqual(payload["error_kind"], "config_error")
+
+    def test_sign_and_probe_json_expose_error_kind(self):
+        """sign/probe 的机器可读输出是退出码；`--json` 下补同族的 error_kind。"""
+        r = _run(["sign", "--json"], self.env)     # 零账号 = failure(1)
+        self.assertEqual(r.returncode, 1, r.stderr[-300:])
+        self.assertEqual(_one_json_line(self, r)["error_kind"], "failure")
+        r = _run(["probe", "--json"], self.env)    # 零账号 = 无需执行(0)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertEqual(_one_json_line(self, r)["error_kind"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()
