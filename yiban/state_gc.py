@@ -78,8 +78,8 @@ ARTIFACTS = (
 # 按日文件的锁也按日生成，同样要清；先剥掉它再匹配前后缀，孤儿锁也能被扫到。
 _LOCK_SUFFIX = ".lock"
 
-# 半成品临时文件：写盘走 tmp + os.replace，进程被杀会留下 `<name>.tmp<pid>`。
-# 这类文件没有日期可判，按 mtime（超过 1 天必是孤儿）清理。
+# 半成品临时文件：写盘走私有写单通道（tmp + os.replace），进程被杀会留下
+# `<name>.tmp<pid>-<线程id>`。这类文件没有日期可判，按 mtime（超过 1 天必是孤儿）清理。
 _TMP_MARK = ".tmp"
 _TMP_MAX_AGE_SEC = 86400
 

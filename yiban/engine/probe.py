@@ -122,12 +122,7 @@ def _read_probe_state():
 
 def _write_probe_state(state):
     try:
-        path = _probe_state_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp" + str(os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        state_io._write_private_json(_probe_state_path(), state)
     except OSError:
         logger.warning("探针状态文件不可写（不影响本次探测）")
 
