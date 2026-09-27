@@ -36,6 +36,7 @@ from dataclasses import dataclass
 
 from yiban.engine import config_check
 from yiban.infra import account_crypto
+from yiban.mail.config import _mask_addr
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import db
@@ -46,12 +47,15 @@ logger = logging.getLogger("yiban")
 # ---------------------------------------------------------------------------
 # 账号数据模型
 # ---------------------------------------------------------------------------
-@dataclass
+@dataclass(repr=False)
 class Account:
     """单个易班账号配置。
 
     通过 Web 管理后台添加（存于 SQLite 数据库），
     一次输入一个账号的完整信息，无需用符号分隔。
+
+    repr 被显式替换为脱敏版（见 `__repr__`）：默认 dataclass repr 会把明文口令、
+    设备识别码、裸号、归属邮箱写进任何带该对象的文本。
     """
 
     phone: str
@@ -70,6 +74,22 @@ class Account:
     @property
     def has_device_info(self):
         return bool(self.phone_model and self.phone_code)
+
+    def __repr__(self):
+        """脱敏 repr：对象出现在任何文本里都不带凭据与裸号。
+
+        为什么不能只在调用点防：`repr(account)` 会经异常消息、未捕获 traceback 的
+        调试串、`%s account` 直出到 formatter **管不到的出口**（stderr 被 run.sh 的
+        `2>&1` 与 web 手动签到的 `stdout=log_fh` 原样落进当天日志文件）。口径复用
+        既有单一原语：号码 `mask_phone`（幂等、与 `MaskingFormatter` 同规则）、
+        邮箱 `_mask_addr`（与告警收件人同一份，不另造第二套）；口令与设备识别码
+        只留"配没配"——定位到"哪个账号"仍然够用，可读性不牺牲。
+        """
+        return (f"Account(phone={_mask_phone(self.phone)!r}, "
+                f"password={'***' if self.password else ''!r}, "
+                f"has_device_info={self.has_device_info!r}, "
+                f"name={self.name!r}, owner={_mask_addr(self.owner)!r}, "
+                f"user_paused={self.user_paused!r}, account_id={self.account_id!r})")
 
 
 # ---------------------------------------------------------------------------

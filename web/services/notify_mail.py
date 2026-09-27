@@ -23,8 +23,8 @@
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
 模块）。`.env` 路径与读取器由调用方传入；同类型告警邮件节流 `_mail_alert_due` 同样作为
 显式参数接收：它在 `web.app` 上会被测试打桩（`mock.patch.object(webapp, "_mail_alert_due")`），
-本模块另持一份绑定会让这个桩静默失效。段落净化用的行分隔符字符集直接取
-`yiban.infra.env_io` 的真源 `ENV_LINE_BREAK_CHARS`，与本仓 `.env` 写入侧同源，不另抄一份。
+本模块另持一份绑定会让这个桩静默失效。段落净化的行分隔符字符集与转义实现都取自
+`yiban.infra.env_io`（真源 `escape_line_breaks`），与本仓 `.env` 写入侧同源，不另抄一份。
 """
 
 import logging
@@ -34,8 +34,9 @@ from flask import session
 
 from yiban import mail as mailer
 from yiban import notify
-from yiban.infra.env_io import ENV_LINE_BREAK_CHARS as _ENV_LINE_BREAK_CHARS
+from yiban.infra import env_io
 from yiban.mail import layout as mail_layout
+from yiban.masking import mask_email
 from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
@@ -47,13 +48,11 @@ def _nl_safe(value):
 
     外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前把换行转义成字面量，
     防止请求体夹带换行在告警正文中伪造额外行。与 .env 写入侧同一个行模型，判据只留一份。
+
+    实现住在 `yiban.infra.env_io.escape_line_breaks`（唯一定义）：邮件折叠层与 SMTP
+    发信侧消费的必须是同一份净化，此前"各处各挑字符集"正是 MF-44 登记的分叉面。
     """
-    s = str(value).replace("\r", "\\r").replace("\n", "\\n")
-    # 剩下 8 个分隔符（U+0085 / U+2028 …）也一并转义成 \uXXXX：邮件客户端与日志页同样
-    # 会在它们处断行，只压 \r\n 等于留 8 条"在管理员告警里伪造一行"的口子
-    for ch in sorted(_ENV_LINE_BREAK_CHARS - {"\r", "\n"}):
-        s = s.replace(ch, f"\\u{ord(ch):04x}")
-    return s
+    return env_io.escape_line_breaks(value)
 
 
 def _audit_actor():
@@ -137,10 +136,14 @@ def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent
 
     `operator` 缺省取当前会话用户；调用方已有目标用户名（如权限变更用的是局部
     `username`）时显式传入，避免在路由里再拼一遍字段。
+
+    操作者一律过 `mask_email`（幂等，已遮形态原样穿过）：注册管理员的会话用户名
+    就是邮箱，缺省路径不得把明文邮箱打进外发邮件（MF-49 出口字段，与审计 actor
+    同一份口径，见 `yiban.masking.mask_email`）。
     """
     fields = list(detail or [])
-    fields.append(("操作者", _nl_safe(
-        session.get("username", "?") if operator is None else operator)))
+    fields.append(("操作者", _nl_safe(mask_email(
+        session.get("username", "?") if operator is None else operator))))
     return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level=level)
 
 
@@ -229,7 +232,10 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
     return mail_sent or push_sent
 
 
-_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}
+# 账本中文名表与 `yiban/notify/ledger.py` 的 `_LEDGER_IDS` 同集合：新账本进表，
+# 日报与耗尽告知的文案才不会对未知账本退化成裸键名
+_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急",
+                         "login_fail": "登录失败告警", "admin_change": "管理变更回执"}
 
 
 # 两个邮件开关的中文名表（env_key → 可读名）：高危动作标签按字段区分用，

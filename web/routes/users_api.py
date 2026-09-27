@@ -5,9 +5,11 @@
 **功能**
 `GET /api/users` 用户列表（含内置管理员信息与账号计数）；`GET /api/users/deleted`
 已注销用户与剩余宽限期；`POST /api/users/deleted/purge` 主管理员物理清除；
-`POST /api/users/batch` 批量重置密码/删除；`POST /api/users/<email>/role`
-设置/取消管理员；`POST /api/users/<email>/password` 重置密码；
-`POST /api/users/<email>/delete` 完全删除或仅清空其易班账号。
+`POST /api/users/batch` 批量重置密码/删除；`POST /api/users/<int:id>/role`
+设置/取消管理员；`POST /api/users/<int:id>/password` 重置密码；
+`POST /api/users/<int:id>/delete` 完全删除或仅清空其易班账号。
+单条视图按**不透明 id** 定位（服务端按 id 解析回邮箱再操作）：明文邮箱不编进
+URL path——path 进 nginx `combined` 的 `$request`、经同源 Referrer 外送（MF-49 出口字段）。
 
 **归属**
 `web.app.create_app` 的"用户管理"面（管理端）。工厂骨架、跨域中间件（前置限速、登录
@@ -61,7 +63,13 @@ def api_users():
             owner_review_count[owner] = owner_review_count.get(owner, 0) + 1
     result = [
         {
+            # id 是单条操作（角色/重置口令/删除）的**不透明定位符**：URL path 不再编
+            # 明文邮箱（MF-49 出口字段——path 进 nginx `$request` 与同源 Referrer）。
+            "id": u.get("id"),
             "email": u.get("email", ""),
+            # display：邮箱本地部的遮罩展示形态，口径唯一住在服务端
+            # `_owner_display_of`；前端下拉/列表按它渲染，不得再 `split("@")` 自算一份。
+            "display": m._owner_display_of(u.get("email", "")),
             "role": u.get("role", "user"),
             "created_at": u.get("created_at", ""),
             # 计数排除软删除账号（删除后不占账号数/待审核数）
@@ -307,13 +315,16 @@ def api_users_batch():
         return jsonify({"ok": True, "msg": msg})
 
 
-def api_user_role(email):
+def api_user_role(user_id):
     """设为管理员 / 取消管理员。仅主管理员（.env 内置管理员）可操作；
     只能将「正式用户」（有生效账号且无待审核）设为管理员；
     防呆：内置管理员不可改；至少保留 1 个管理员。
 
     角色变更是权限面变更，接入高危门禁（口令复核是否索要随 `YIBAN_PW_GATE` 档位 + 限速）；
     批量角色变更入口已移除，本端点是唯一变更路径。
+
+    定位走**不透明 id**（`/api/users/<int:id>/role`）：明文邮箱不再编进 URL path
+    （path 会被 nginx `combined` 记进 `$request`、经同源 Referrer 外送，MF-49 出口字段）。
     """
     m = _appmod()
     # 权限：仅主管理员（普通管理员无管理员权限变更权）
@@ -327,6 +338,10 @@ def api_user_role(email):
     new_role = data.get("role")
     if new_role not in ("admin", "user"):
         return jsonify({"error": "未知角色"}), 400
+    row = m.db.find_user_by_id(user_id)
+    if not row:
+        return jsonify({"error": "用户不存在"}), 404
+    email = row["email"]
     # 内置管理员（.env）不可修改角色
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可修改角色"}), 400
@@ -388,9 +403,11 @@ def api_user_role(email):
         )
 
 
-def api_user_password(email):
+def api_user_password(user_id):
     """重置用户密码（管理员无法查看原密码，只能设置新密码）。
-    目标为注册管理员时仅主管理员可操作（防普通管理员横向接管）。"""
+    目标为注册管理员时仅主管理员可操作（防普通管理员横向接管）。
+
+    定位走**不透明 id**（口径同 `api_user_role`，明文邮箱不进 URL path）。"""
     m = _appmod()
     data = m._json_body()
     password = str(data.get("password", ""))
@@ -404,6 +421,10 @@ def api_user_password(email):
             data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
         if gate:
             return gate
+    row = m.db.find_user_by_id(user_id)
+    if not row:
+        return jsonify({"error": "用户不存在"}), 404
+    email = row["email"]
     is_master = m._is_builtin_admin_session()
     with m._file_lock:
         target = m.db.find_user(email)
@@ -437,16 +458,22 @@ def api_user_password(email):
         return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 密码已重置"})
 
 
-def api_user_delete(email):
+def api_user_delete(user_id):
     """删除用户：mode=accounts_only 仅清空其易班账号（保留用户可重新提交）；
     mode=full 完全删除用户及其账号。
-    目标为注册管理员时仅主管理员可操作（与 role/密码重置口径一致）。"""
+    目标为注册管理员时仅主管理员可操作（与 role/密码重置口径一致）。
+
+    定位走**不透明 id**（口径同 `api_user_role`，明文邮箱不进 URL path）。"""
     m = _appmod()
     data = m._json_body()
     mode = data.get("mode", "full")
     if mode not in ("accounts_only", "full"):
         return jsonify({"error": "未知操作"}), 400
-    if email.strip().lower() == m._builtin_admin_email().strip().lower():
+    row = m.db.find_user_by_id(user_id)
+    email = row["email"] if row else ""
+    # 「不存在」的 404 排在口令门禁**之后**（沿用邮箱时代既有次序）：存在性不是
+    # 免复核的理由——不存在的 id 同样先被门禁拦下，防探测枚举的行为与改路由前一致。
+    if email.strip().lower() and email.strip().lower() == m._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可删除"}), 400
     is_master = m._is_builtin_admin_session()
     # accounts_only 也进门禁的理由：一次请求就把该用户**全部**易班凭据清零，滥用面与
@@ -460,6 +487,8 @@ def api_user_delete(email):
     )
     if gate:
         return gate
+    if not row:
+        return jsonify({"error": "用户不存在"}), 404
     with m._file_lock:
         target = m.db.find_user(email)
         if not target:
@@ -519,8 +548,11 @@ def register(app):
     app.add_url_rule("/api/users/deleted/purge", view_func=api_users_deleted_purge,
                      methods=["POST"])
     app.add_url_rule("/api/users/batch", view_func=api_users_batch, methods=["POST"])
-    app.add_url_rule("/api/users/<email>/role", view_func=api_user_role, methods=["POST"])
-    app.add_url_rule("/api/users/<email>/password", view_func=api_user_password,
+    # `<int:...>` 转换器：只有纯数字段能路由进来——旧"邮箱编进 path"的形态在此
+    # 直接 404（不再被当作邮箱解析），从路由层杜绝明文邮箱回潮。
+    app.add_url_rule("/api/users/<int:user_id>/role", view_func=api_user_role,
                      methods=["POST"])
-    app.add_url_rule("/api/users/<email>/delete", view_func=api_user_delete,
+    app.add_url_rule("/api/users/<int:user_id>/password", view_func=api_user_password,
+                     methods=["POST"])
+    app.add_url_rule("/api/users/<int:user_id>/delete", view_func=api_user_delete,
                      methods=["POST"])

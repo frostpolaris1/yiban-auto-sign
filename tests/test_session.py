@@ -42,6 +42,7 @@ from unittest import mock
 
 import db
 import signin
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 from yiban.infra import account_crypto
 
@@ -289,6 +290,26 @@ class SessionCacheDbTest(_SessionCacheFixture):
             0,
             "解密失败行应被顺手清除",
         )
+
+    # ---- 解密失败分支同样不得印裸号（作废/清理分支的同一口径）----
+    def test_decrypt_failure_log_masks_phone_at_call_site(self):
+        db.init_db(self.db_file, env_file=self.env_file)
+        # 读写同钟钉死：行恒"同日未过期"，判据必落在解密失败分支而非作废分支
+        with mock.patch.object(db, "_session_cache_now", return_value=self.NOW):
+            db.set_session_cache(PHONE, '{"sessionid":"sid"}', "c")
+            conn = db.get_conn()
+            conn.execute(
+                "UPDATE session_cache SET phone='13999999999' WHERE phone=?", (PHONE,)
+            )
+            conn.commit()
+            # assertLogs 用默认 formatter（只取 message），故此处断言的是调用点自身
+            # 传入的文本，而非输出面 formatter 的兜底效果。
+            with self.assertLogs("yiban.store.session_cache", level="INFO") as captured:
+                self.assertIsNone(db.get_session_cache("13999999999"))
+        joined = "\n".join(captured.output)
+        self.assertIn("会话缓存解密失败", joined, "解密失败路径应留痕")
+        self.assertNotIn("13999999999", joined, "调用点日志不得含裸号")
+        self.assertIn("139****9999", joined)
 
     # ---- 迁移：v7 旧库升级到 v8（建表 + 存量数据保留）----
     def test_upgrade_from_v7_creates_session_cache(self):
@@ -673,7 +694,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         """重置他人口令：动作生效、目标旧会话被吊销，但不再外发管理员告警。"""
         self._user_with_account(EMAIL, "13800138004")
         ac, at = self._admin_client()
-        r = ac.post(f"/api/users/{EMAIL}/password",
+        r = ac.post(user_path(db, EMAIL, "/password"),
                     json={"password": "Reset#12345", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -708,7 +729,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self._user_with_account(EMAIL, "13800138006")
         ac, at = self._admin_client()
         # 2026-09-05：角色变更接入高危门禁，须携带当前管理员密码二次鉴权
-        r = ac.post(f"/api/users/{EMAIL}/role",
+        r = ac.post(user_path(db, EMAIL, "/role"),
                     json={"role": "admin", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -724,7 +745,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
     def test_role_change_without_reconfirm_rejected(self):
         self._user_with_account(EMAIL, "13800138007")
         ac, at = self._admin_client()
-        r = ac.post(f"/api/users/{EMAIL}/role", json={"role": "admin"},
+        r = ac.post(user_path(db, EMAIL, "/role"), json={"role": "admin"},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         u = db.find_user(EMAIL)

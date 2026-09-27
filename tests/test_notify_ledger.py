@@ -201,10 +201,11 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", KEY)
     monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "no-such.env"))
     notify_ledger._throttle_ts.clear()
-    notify_ledger._general_daily["state"].update({"date": "", "count": 0})
-    notify_ledger._urgent_daily["state"].update({"date": "", "count": 0})
-    for ledger in (notify_ledger._general_daily, notify_ledger._urgent_daily):
-        ledger["notice"].update({"pending": False, "notified": False, "warned": False})
+    # 逐本账复位（含具名账 login_fail/admin_change）：账本集合扩容后不再漏重置——
+    # 只写死 general/urgent 会让新账的当日计数跨用例残留。
+    for _led in notify_ledger._LEDGERS.values():
+        _led["state"].update({"date": "", "count": 0})
+        _led["notice"].update({"pending": False, "notified": False, "warned": False})
     notify_ledger._skip_logged.clear()
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
@@ -250,6 +251,32 @@ def test_refund_after_failure_restores_count(tmp_path, monkeypatch):
     assert disk["general"]["count"] == 1, "退还必须落盘，另一进程才能读到回退"
     assert notify.budget_exhausted_today(False) is False
     assert notify.pop_exhaustion_notice() == [], "退还后虚警告知应被撤回"
+
+
+def test_restore_exhaustion_notice_round_trip(tmp_path, monkeypatch):
+    """MF-44 B6：`pop_exhaustion_notice` 不再是"取走即置位、永不退还"。
+
+    交付失败方（通道健康日报未送达）用 `restore_exhaustion_notice` 把取走的告知放回
+    ——pending 重挂、notified 复位，当日重试仍带得出"哪本账用尽"；额度已恢复到未耗尽
+    时**不**重挂（与 `_unmark_exhausted_locked` 同一虚警判据，制造不出必到的假告知）。
+    """
+    monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "1")
+    ticket = notify_ledger._consume_daily_budget("general")   # 占满 1/1 → 挂 pending
+    assert ticket.allowed
+    assert notify.has_pending_exhaustion_notice() is True
+    assert notify.pop_exhaustion_notice() == ["general"]      # 日报取走
+    assert notify.has_pending_exhaustion_notice() is False
+    # 未送达 → 退还：重试的那封仍带得出告知
+    notify.restore_exhaustion_notice(["general"])
+    assert notify.has_pending_exhaustion_notice() is True, "取走的告知必须可退还（占走同源于送达）"
+    disk = _read_disk(tmp_path)
+    assert disk["general"]["pending"] is True and disk["general"]["notified"] is False, \
+        "退还同样落盘——web 常驻与重启后的下一轮读到的是同一事实"
+    # 再取走后额度恢复（失败退还）→ 虚警不重挂
+    assert notify.pop_exhaustion_notice() == ["general"]
+    notify_ledger._refund_daily_budget(ticket)                # count 1→0：不再耗尽
+    notify.restore_exhaustion_notice(["general"])
+    assert notify.has_pending_exhaustion_notice() is False, "已不再耗尽：不得重挂必到的虚警"
 
 
 def test_refund_across_day_is_voided(tmp_path, monkeypatch):

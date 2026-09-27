@@ -54,7 +54,22 @@ from pathlib import Path
 
 from yiban import clock
 from yiban.infra import env_io, env_lock
+from yiban.masking import mask_email
 from yiban.store import connection as _connection
+
+
+def actor_tag(username):
+    """审计 `username`（actor）列的唯一遮罩口径：邮箱形态 → `mask_email`（幂等），
+    非邮箱标识（`admin`/`system`/`?`/进程作用域串）原样穿过（`mask_email` 的无 `@`
+    分支天然等价——显式命名只为语义可见，不另造第二套判据）。
+
+    收口动机（MF-49 审计侧）：注册管理员的会话用户名就是邮箱，现网 actor 列约六成
+    为明文邮箱；本列进备份包、进 `db --export`、进日志页渲染——磁盘面失守。遮罩后
+    仍保住两条硬性质：**同输入同输出**（可按 actor 聚人、与历史行可比对）与
+    **不可逆**（本地部只剩前 3 字符，反查不回完整地址）。遮罩是**线索层**非身份层：
+    碰撞时追人配合同事务业务行与 `_req` 作用域标记，不靠本列唯一。
+    """
+    return mask_email(username)
 
 logger = logging.getLogger("yiban.store.audit_chain")
 
@@ -436,12 +451,29 @@ def current_request_scope():
     return getattr(_REQUEST_SCOPE, "rid", None)
 
 
+def new_request_scope_id(prefix="web"):
+    """生成 web 请求作用域 id（唯一真源；web before_request 钩子调用）。
+
+    形状 `web-<8hex>-<8hex>`：16 位十六进制若整串恰全为数字（约千分之一），会构成
+    ≥11 位数字连段——全部按裸手机号子串判据（`1[3-9]\\d{9}` 系）扫描审计/日志的
+    消费方会偶发误报（脱敏回归被自己的随机 id 咬）。中段补连字符把数字连段最长压到
+    8 位，判据物理上不可能命中；熵不变（仍 8 字节随机）。形状契约由测试钉死。
+    """
+    rid = secrets.token_hex(8)
+    return f"{prefix}-{rid[:8]}-{rid[8:]}"
+
+
 def _process_scope():
-    """进程级作用域 id（CLI/离线脚本）：pid + 该进程首次认领的时刻，重启可区分。"""
+    """进程级作用域 id（CLI/离线脚本）：pid + 该进程首次认领的时刻，重启可区分。
+
+    时刻串在日期与时间之间补连字符（%Y%m%d-%H%M%S）：14 位连续数字可掐出 11 位
+    "裸手机号"窗口（脱敏回归按子串判据扫描），切段后任一数字连段 ≤8 位，作用域
+    id 不再可能伪装成手机号（与 web 请求档的切段同理由）。
+    """
     pid = os.getpid()
     seen = _PROCESS_SCOPE_SEEN.get(pid)
     if seen is None:
-        seen = clock.now().strftime("%Y%m%d%H%M%S")
+        seen = clock.now().strftime("%Y%m%d-%H%M%S")
         _PROCESS_SCOPE_SEEN[pid] = seen
     return f"proc{pid}-{seen}"
 
@@ -505,6 +537,9 @@ def audit(username, action, target="", detail="", request_id=None):
     """
     conn = None
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    # actor 列在**写入口**收口（见 `actor_tag`）：哈希链对已写形态验真，遮罩先于哈希，
+    # 链与内容口径从此一致；不存在"库里明文、出口才遮"的第二份。
+    username = actor_tag(username)
     detail = _scope_detail(detail[:200], request_id)
     last_err = None
     for attempt in range(_AUDIT_RETRIES):
@@ -573,6 +608,7 @@ def record_in_txn(conn, username, action, target="", detail="", request_id=None)
     已开启：读链尾与 INSERT 之间若无跨进程互斥，会读到同一 prev_hash 造成链分叉。
     """
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    username = actor_tag(username)
     detail = _scope_detail((detail or "")[:200], request_id)
     row = conn.execute(
         "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"

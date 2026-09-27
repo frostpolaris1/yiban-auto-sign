@@ -1044,8 +1044,12 @@ class ReadAuditTest(unittest.TestCase):
         rows = self._rows("account_detail_read")
         self.assertEqual(len(rows), 3, f"聚合口径应为档位 1/10/50 三行，实得 {len(rows)}")
         self.assertNotEqual(len(rows), 50, "读审计绝不允许逐请求一行")
-        self.assertTrue(all(r["username"] == SUB_ADMIN for r in rows),
-                        "actor 必须是真实会话用户名")
+        # MF-49 actor 收口（Task 2-9b）：审计写入口把 actor 统一遮罩（`yiban.masking.
+        # mask_email` 口径，与展示面同源），磁盘面上不再有明文邮箱。断言相应钉
+        # "遮罩后的真实会话用户名"——actor 丢了、错置成别人的形态照样红，判据不放松。
+        from yiban.masking import mask_email
+        self.assertTrue(all(r["username"] == mask_email(SUB_ADMIN) for r in rows),
+                        "actor 必须是真实会话用户名的遮罩形态")
         last = rows[-1]["detail"]
         self.assertIn("50", last, "末行要带窗口内累计次数，否则看不出被读了多少")
         self.assertIn(_masked(0), last, "detail 里应是被读目标的脱敏标识")

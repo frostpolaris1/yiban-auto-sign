@@ -183,6 +183,7 @@ from web.services.accounts_data import (  # noqa: E402
     ACCOUNT_STATUS_REJECTED,  # noqa: F401
     ADMIN_PASSWORD_MIN_CLASSES,  # noqa: F401
     ADMIN_PASSWORD_MIN_LEN,  # noqa: F401
+    CLEAR_SENTINEL,  # noqa: F401
     DELETE_GRACE_DAYS,  # noqa: F401
     PASSWORD_MIN_LEN,  # noqa: F401
     PHONE_RE,  # noqa: F401
@@ -197,6 +198,7 @@ from web.services.accounts_data import (  # noqa: E402
     _stale_idx_guard,  # noqa: F401
     _verify_account_clean,
     find_account_index,  # noqa: F401
+    fold_phone_code,  # noqa: F401
     load_accounts,
     load_accounts_raw,  # noqa: F401
     load_users,  # noqa: F401
@@ -368,7 +370,7 @@ from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一�
 from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
 from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402,F401
 from yiban.infra import (  # noqa: E402
-    account_crypto,  # noqa: F401  # 本模块已无自用点，保留：web.app.<名字> 仍可 import（打桩面零损失）
+    account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
     env_lock,  # noqa: F401  # 跨进程写锁真源（写路径已入 web/services/env_io.py），保留名字面
 )
@@ -413,8 +415,9 @@ DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
 # 已随安全域搬入 web/security.py，此处以导入区再导出保持 m.SCRYPT_METHOD 可达。
 
-# 账号编辑时识别码清空哨兵值（收到该值 = 显式删除设备识别码字段）
-CLEAR_SENTINEL = "__clear__"
+# 账号编辑时识别码清空哨兵值与表单折算（CLEAR_SENTINEL / fold_phone_code）唯一真源
+# 在 web/services/accounts_data.py，上方导入区再导出保 m.CLEAR_SENTINEL 名字面；
+# 折算必须发生在进 SET 之前——哨兵若在进 SET 前被摘掉，"清除"就成了库里无感的空操作。
 
 # 单次批量操作上限：批量通过/删除/设管理员/重置密码
 # 与「清除已注销用户」共用同一上限——被盗管理员会话即使一个请求，一次最多影响 10 条，
@@ -589,6 +592,16 @@ EXPORT_MAX = 6  # 窗口内最大导出次数
 # 不停，人类运维到不了；对照 EXPORT_WINDOW/EXPORT_MAX 同量级的"整份数据出口"口径。
 DETAIL_WINDOW = 60  # 窗口（秒）
 DETAIL_MAX = 60  # 窗口内最大详情读取次数（超限 429）
+
+# 个人提交预检「号码在册」命中计数限速（每会话 DUPCHECK_MAX 次 / DUPCHECK_WINDOW 秒）。
+# 预检判重打在全站账号表上、且早于任何真实外呼，等于给"已登录且名下无未删账号"的
+# 会话一个零成本零留痕的定向确认面：全局 IP 限速（60 次/10 秒 ≈ 21600 次/时）比
+# 详情/导出等同档面宽几个数量级，压不住定向确认。只计「判重命中」——未重号的正常
+# 提交不吃额度、不写这行审计，400/成功语义与文案不动；超限改答 429，不再继续
+# 确认。按会话计数与详情限速同口径（校园网出口高度共享，按 IP 会把共用出口的正常
+# 用户互相挡死）。
+DUPCHECK_WINDOW = 60  # 窗口（秒）
+DUPCHECK_MAX = 5  # 窗口内最大判重命中数（超限 429）
 
 # 只读面聚合审计：同一管理员对同一资源类在一个窗口内只按档位落几行，detail 带
 # 累计次数与脱敏目标摘要。逐请求一行会把审计表变成"被盗会话的免费打字机"——
@@ -1703,6 +1716,10 @@ def create_app(host=None):
     reject_default_admin_password(ENV_FILE)
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
     migrate_admin_password_to_hash(ENV_FILE)
+    # 账号凭据密钥两侧自证（fail-closed，须在 init_db 之前——init_db 的迁移会用这把钥
+    # 重加密账号列）：env 档（systemd EnvironmentFile 注入）与 .env 档并存且不同 ⇒ 拒绝
+    # 启动，杜绝"web 一把钥、引擎另一把钥"的静默分叉；一致则把 kid 打进启动日志。
+    account_crypto.assert_key_sources_agree(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
     # JSON 改名 .bak 保留逃生门）；多 worker 各自调用幂等（模块级连接缓存）
     db.init_db(DB_FILE, migrate_from=ACCOUNTS_FILE, env_file=ENV_FILE)
@@ -1790,7 +1807,10 @@ def create_app(host=None):
         同一出口内的多次操作；请求 id 由服务端生成、编码进审计 detail，链 HMAC 覆盖它。
         线程局部在 teardown 清除——Flask 复用工作线程，残留会让后续后台线程误带旧 id。
         """
-        db.set_request_scope("web-" + secrets.token_hex(8))
+        # 作用域 id 形状（含中段连字符）契约在真源 `db.new_request_scope_id`：
+        # 十六进制串有约千分之一概率全为数字，构成 ≥11 位数字连段会被裸手机号
+        # 子串判据（脱敏回归等扫描消费方）偶发误报，切段后最长连段 8 位。
+        db.set_request_scope(db.new_request_scope_id())
 
     @app.teardown_request
     def _clear_audit_scope(_exc=None):
@@ -1861,6 +1881,9 @@ def create_app(host=None):
     # 高度共享，按 IP 会把两个管理员的运维互相挡死，与"新 IP 即告警"同一理由）
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.detail_limits()
     app.extensions["yiban_detail_limits"] = {}
+    # 个人提交判重预检命中限速 {actor: (count, window_start)}（按会话而非 IP，同详情）
+    # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.dupcheck_limits()
+    app.extensions["yiban_dupcheck_limits"] = {}
     # 只读面聚合审计计数 {(actor, 资源类): (count, window_start)}
     _read_audit_counts = {}
     # 只读面聚合审计的目标摘要 {(actor, 资源类): [脱敏目标样本, 目标总数, window_start]}

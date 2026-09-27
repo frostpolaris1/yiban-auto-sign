@@ -36,8 +36,11 @@ import unittest
 from unittest import mock
 
 from _mail_body import render_body
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE)
+import db  # noqa: E402  # 顶层导入供 user_path(db, …) 与既有局部导入共用
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -220,7 +223,7 @@ class _TierBase(unittest.TestCase):
 
     def _op_user_delete(self, c, hdr, **extra):
         self._ensure_user("u1@test.local")
-        return c.post("/api/users/u1@test.local/delete",
+        return c.post(user_path(db, "u1@test.local", "/delete"),
                       json={"mode": "full", **extra}, headers=hdr)
 
     def _call(self, op, c, hdr, **extra):
@@ -622,7 +625,7 @@ class UserDeleteAlertTest(_TierBase):
     def test_清空账号模式也有告警(self):
         c, hdr = self._fresh()
         self._ensure_user("u1@test.local")
-        r = c.post("/api/users/u1@test.local/delete",
+        r = c.post(user_path(db, "u1@test.local", "/delete"),
                    json={"mode": "accounts_only", "confirm_delay_ack": True}, headers=hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         titles = [t for t, _b, _u in self.alerts]
@@ -636,11 +639,10 @@ class UserDeleteAlertTest(_TierBase):
         """full 分支的即时告警已下线：清空账号那一路的补偿信号不受此影响（见上一例）。"""
         c, hdr = self._fresh()
         self._ensure_user("u1@test.local")
-        r = c.post("/api/users/u1@test.local/delete",
+        r = c.post(user_path(db, "u1@test.local", "/delete"),
                    json={"mode": "full", "confirm_delay_ack": True}, headers=hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.alerts, [], f"完全删除告警已下线，实际 {self.alerts}")
-        import db
         rows = [dict(x) for x in db.get_conn().execute(
             "SELECT detail FROM audit_logs WHERE action='user_delete'").fetchall()]
         self.assertTrue(rows, "完全删除必须留在审计链上")

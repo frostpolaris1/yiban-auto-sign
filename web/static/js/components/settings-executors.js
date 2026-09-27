@@ -214,6 +214,7 @@
     if (!loaded) kpiSet("set-exec-kpi-capacity", null, "人", "—");
     else if (amax === 0) kpiSet("set-exec-kpi-capacity", null, "人", "不限");
     else kpiSet("set-exec-kpi-capacity", amax, "人");
+    setHidden($("set-exec-solo"), !(loaded && lastData.workers && lastData.workers.single_mode));  // 文案在模板 #set-exec-solo
   }
 
   // 状态与当日各占一栏：两串字挤进同一格，读者分不清哪串是状态、哪串是当日计数。
@@ -548,7 +549,7 @@
   // 单并行行的出口提示：清单只有 1 个「并行」行时运行时走进程内路径（`single` 角色），
   // 出口读全局配置键（`workers.env_keys.single`，即 YIBAN_PROXY），本行这一格要到出现第二个
   // 并行行后才按行生效。不提示的话用户会以为行内出口已生效——而页面此时显示的正是行内值。
-  // 判据用后端 `workers.configured`（只数 worker 行，0 行时按契约仍为 1 = 单执行体形态），
+  // 判据用后端 `workers.configured`（只数 worker 行；0 行时本页无「并行」行，单执行体形态由表下 #set-exec-solo 提示说破），
   // 键名同样由接口下发，本文件不写死配置键名。
   function singleRowHint(type) {
     if (type !== "worker") return null;

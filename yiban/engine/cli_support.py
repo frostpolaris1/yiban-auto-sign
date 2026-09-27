@@ -36,6 +36,7 @@ from contextlib import contextmanager, suppress
 from yiban import clock
 from yiban.infra import env_io, locks
 from yiban.logging_ext import FlockFileHandler, MaskingFormatter
+from yiban.masking import mask_phones_in_text, sanitize_text
 
 logger = logging.getLogger("yiban")
 
@@ -263,9 +264,15 @@ def report_fatal_error(summary):
     全空，错误只进日志文件。stdout 仍保持"只有结果"
     （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
     （`yiban/cli.py`）经 `last_fatal_error()` 取用。
+
+    **脱敏必须在生成本处做，不能指望 formatter**：这条摘要的下游出口全都不经过
+    日志装配——stderr 会被 run.sh 的 `2>&1` 与 web 手动签到的 `stdout=log_fh`
+    原样落进当天日志文件，`last_fatal_error()` 又原样进 `--json` 的 error 字段。
+    口径与 `MaskingFormatter` 同一份原语（`sanitize_text` + `mask_phones_in_text`），
+    不另起第二套；摘要"一行"的契约靠 sanitize_text 的换行转义兜住。
     """
     global _LAST_FATAL_ERROR
-    _LAST_FATAL_ERROR = str(summary)
+    _LAST_FATAL_ERROR = mask_phones_in_text(sanitize_text(str(summary)))
     try:
         sys.stderr.write(f"错误: {_LAST_FATAL_ERROR}\n")
         sys.stderr.flush()
