@@ -637,7 +637,12 @@ def replace_accounts(accounts):
                         a.get("phone_model", ""),
                         _encrypt_field(a.get("phone_code"), a.get("phone", "")),
                         a.get("owner", "admin"),
-                        a.get("status", "active"),
+                        # 缺省状态与 add_account 及建表 DDL 同一口径（pending）：
+                        # 缺 status 的行曾按 active 落库，使"整体替换/导入"成为绕开
+                        # 审核直进主链的第二入口（引擎只跳 pending/rejected，active
+                        # 会被真实签到外呼）。带 status 的整表回环（导出→导入）不受
+                        # 影响——显式状态原样保留。
+                        a.get("status", "pending"),
                         a.get("reject_reason", ""),
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),

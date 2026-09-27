@@ -580,8 +580,13 @@ def api_my_account_add():
                 resp["job_id"] = job_id
                 resp["status"] = "verifying"
             except m.VerifyGateBusy:
+                # 配额已扣而任务没建成本次真实提交的一部分事实：不能静默回
+                # "ok" 当无事发生（用户以为在验证、且尝试额度已消耗），如实报——
+                # status 明示"未排上在线校验"，msg 交代后续动作由用户重试触发。
                 m.logger.warning("校验任务队列已满，账号 %s 未建校验任务",
                                m._mask_phone(clean["phone"]))
+                resp["status"] = "verify_deferred"
+                resp["msg"] = "已提交，等待管理员审核后参与签到（校验队列繁忙，本次未排上在线校验，请稍后重试）"
         return jsonify(resp)
 
 
