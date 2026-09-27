@@ -399,6 +399,18 @@ V2 手法（U+0085 潜伏注释）路由级真跑拒绝、.env 逐字节不变�
 合并 L18。工具链被 S1 删除后，README 手工流程只重加密库内两列、**漏掉同钥加密的 `.env` 密文**（`YIBAN_MAIL_SMTPS_ENC`、SendKey）⇒ 换钥即告警通道静默死亡；且流程只让改 `.env`，而现网 web 的钥由 systemd `EnvironmentFile=/etc/yiban/accounts-key` 注入、**env 优先级高于 `.env`** ⇒ 照做必致"web 一把钥、engine 另一把钥"；无 `kid`，动手前后都无法自证。密码学本身经生产实测通过（GCM/AAD/tag、重复 nonce 0/96）；但**无 rehash 升级路径**（现网 1 行 `role=admin` 仍是 `scrypt:32768:8:1`，N 减半）、`_encrypt_field` 把空凭据静默写 `""`、一行坏密文拖停整轮。
 验收不变量：密文带 `kid`；启动时断言"两侧读到同一把钥"，不一致即拒绝启动而非静默解密失败。`[已复现（拓扑侧）]`
 
+**处置（2026-09-27 批2 Task2-7，repair/m3-batch2）**：验收不变量全落——①密文升 v2 携带
+kid（HMAC-SHA256 单向指纹 16hex，两族入口同形状、同钥跨面同值），v1 无 kid 密文**永久可读**、
+读出按需重写、不强制全量迁移；v2 错钥诊断带"密文 kid vs 当前钥 kid"双指纹（可自证）；
+②两侧同钥断言 fail-closed：env 档与 `.env` 档并存且解出不同钥 ⇒ 拒启——断言本体在
+`load_key` env 档分支（运行期纵深）+ `assert_key_sources_agree`（web create_app / 引擎
+runner.main 启动接线，引擎分叉按既有"配置错误"rc=1，不新增退出码），启动日志打印 kid；
+③README 轮换节改准：列全同钥密文三面（库内两列 / SMTPS_ENC / SECRET_ENC）+ 两侧来源同步
+（EnvironmentFile 与 .env 一并换）+ 手工重加密命令序列 + kid/启动断言作自证 + 过渡态处置
+（先统一两侧恢复启动、不得撤断言）。顺带：`_encrypt_field` 空凭据显式语义留 DEBUG 痕。
+残余（登记原文、非本任务验收）：scrypt rehash 升级路径（现网 1 行 N 减半）与"一行坏密文
+拖停整轮"未在本笔扩大范围。
+
 ### MF-51 SMTP 条目以数组位置为身份 ⇒ 删一行即凭据错配
 合并 L59。`collectSmtps` 用位置当身份、后端 `notify.py:164,175` 按索引沿用旧 user/pass ⇒ 中间删一行就凭据错配；只改 host 时**旧授权码随新域名一起发出**，risk 档零口令零确认。同文件族：额度 UI 只显余额（看不出被"从未发出的信"吃掉，接 MF-44）、`configured = max(1,…)` 把 0 执行体包装成"并行 1"、空清单无提示。
 验收不变量：配置条目必须有稳定 id，禁止以位置作身份；改中继/收件人属"改告警去向"，必须入审计并留可还原目标。`[已复现：configured 三条]`
