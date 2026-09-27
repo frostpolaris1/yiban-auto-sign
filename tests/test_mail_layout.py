@@ -244,5 +244,28 @@ class ChannelEntryPointsTest(unittest.TestCase):
         self.assertEqual(layout.Mail(summary="s", level="bogus").level, "info")
 
 
+class FoldLineBreakFamilyTest(unittest.TestCase):
+    """MF-44 D10：`_fold` 此前只 split("\\n")，9 个换行族字符原样穿进正文可伪造行。
+
+    收口到全项目唯一的单行安全原语（`yiban.infra.env_io.escape_line_breaks`，与
+    `.env` 写侧同一字符集）；`\\n` 保留为内容自身的换行语义。
+    """
+
+    def test_non_lf_breaks_become_visible_literals(self):
+        from yiban.infra.env_io import ENV_LINE_BREAK_CHARS
+        forged = "真行\u2028伪造A\u0085伪造B\u2029伪造C\x0b\x0c\x1c\x1d\x1e\x0d完"
+        plain = layout.Mail(fields=[("用户", forged)]).to_plain()
+        for ch in ENV_LINE_BREAK_CHARS - {"\n"}:
+            self.assertNotIn(ch, plain, f"U+{ord(ch):04X} 不得以物理字符穿进正文")
+        self.assertIn("\\u2028伪造A", plain, "要转成**可见**字面量：伪造形态当场可辨")
+        self.assertIn("真行", plain)
+
+    def test_intended_newline_survives(self):
+        # 分组条目 `"账号: x\n原因: y"` 的 \n 是既有排版契约，收口不得顺手杀掉
+        plain = layout.Mail(groups=[("明细", ["账号: a\n原因: b"])], time="").to_plain()
+        self.assertIn("原因: b", plain)
+        self.assertNotIn("\\n", plain, "显式换行不该被转义成字面量")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

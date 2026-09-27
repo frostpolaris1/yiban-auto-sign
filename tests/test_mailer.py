@@ -17,6 +17,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -1147,3 +1148,159 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(alerts, [], "通道变更告警已下线")
         self.assertEqual(self._read_enc_entries()[0]["user"], "a@x.com")
+
+
+# ---- MF-44 / MF-90：投递账、幂等键、发信账号单行化 ----
+
+def test_recipients_refused_writes_delivery_ledger(monkeypatch, tmp_path):
+    """B5（MF-44 补句）：`SMTPRecipientsRefused.recipients` 不再是零消费者。
+
+    旧实现把逐地址拒收结果聚合成一行粗分类 warning——管理员无法回答"哪个地址死了、
+    是退信还是中继拒绝"。现在每收件人一条可机读投递账，落**既有审计面**（不新造
+    第二套状态存储）；对端回显的完整收件人地址先换成打码形态（隐私与日志注入同收口）。
+    """
+    import smtplib
+
+    from yiban.store import db as store_db
+
+    _isolate_env(monkeypatch, tmp_path)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")
+    # 投递账要落库：为本用例起一颗独立临时库（结束后复位连接，不牵连同文件其它用例）
+    db_file = str(tmp_path / "delivery.db")
+    monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", _KEY)
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    with contextlib.suppress(Exception):
+        if store_db._conn is not None:
+            store_db._conn.close()
+    store_db._conn = None
+    store_db.init_db(db_file, env_file=str(tmp_path / "nope.env"))
+
+    victim = "victim@qq.com"
+    refused = smtplib.SMTPRecipientsRefused(
+        {victim: (550, b"<victim@qq.com>: Recipient address rejected: User unknown")})
+
+    class RefusedServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            raise refused
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", RefusedServer)
+    assert mailer_transport.send_admin_alert("爆破告警", "正文", to=victim) is False
+
+    conn = sqlite3.connect(db_file)
+    try:
+        rows = conn.execute(
+            "SELECT target, detail FROM audit_logs WHERE action='mail_refused'").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1, f"每收件人一条投递账：{rows}"
+    target, detail = rows[0]
+    assert target == "v*****@qq.com", f"target 必须是打码形态：{target}"
+    assert "code=550" in detail and "entry=1/1" in detail, detail
+    assert victim not in target + detail, "投递账不得含明文收件地址（含对端回显段）"
+    with contextlib.suppress(Exception):
+        store_db._conn.close()
+    store_db._conn = None
+
+
+def test_failover_resends_identical_message_id_and_logs_retry(monkeypatch, tmp_path, caplog):
+    """C7+C8（MF-90）：QUIT 抛异常换条目重投的是同一封——同确定性 Message-ID，重投可见。
+
+    机制：`smtplib.SMTP.__exit__` 的 QUIT 抛 SMTPResponseException ⇒ 捕获后换下一条
+    重投；旧构造无 `Message-ID`，接收端无从去重 ⇒ 同一封最多可送达 10 次（条目上限）。
+    现在 10 次尝试携带同一个由内容哈希出的键（非随机 nonce），且每次换条目留一行
+    "同封重投"记录——上界从 10 降到 1 的机制基础 + 有界可观测。
+    """
+    import logging
+    import re
+    import smtplib
+
+    entries = [{"host": f"smtp{i}.example.test", "port": 465,
+                "user": f"sender{i}@qq.com", "pass": "secret"} for i in range(10)]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    monkeypatch.setenv("YIBAN_MAIL_ENABLE", "1")
+    captured = []
+
+    class QuitBadServer:
+        """login/sendmail 都"成功"，__exit__ 的 QUIT 抛——前 9 条炸，第 10 条放行。"""
+
+        def __init__(self, host, port, **k):
+            self.host = host
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            if self.host != "smtp9.example.test":
+                raise smtplib.SMTPResponseException(421, b"server busy, quitting later")
+            return False
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            captured.append(msg)
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", QuitBadServer)
+    with caplog.at_level(logging.INFO, logger="mailer"):
+        assert mailer_transport.send_admin_alert("同一封告警", "正文", to="admin@qq.com") is True
+    assert len(captured) == 10, "QUIT 炸 9 次 + 第 10 条成功 = 恰好投了 10 次（有界）"
+    ids = re.findall(r"(?m)^Message-ID: (.*)$", "\n".join(captured))
+    assert len(ids) == 10 and set(ids) == {ids[0]}, \
+        f"跨条目重投必须同幂等键（同封可辨识）：{set(ids)}"
+    assert re.fullmatch(r"<[0-9a-f]{32}@yiban>", ids[0]), f"幂等键须确定性可辨：{ids[0]}"
+    assert caplog.text.count("同封重投") == 9, "换条目重投每条都要有结构化记录"
+    # 确定性：同告警同键；换了内容/收件人即换键（不许撞车）
+    mid = mailer_transport._message_id
+    assert mid("a", "b", "c") == mid("a", "b", "c")
+    assert mid("a", "b", "c") != mid("a", "b", "c2")
+    assert mid("a", "b", "c") != mid("a", "d", "c")
+
+
+def test_sender_user_newlines_never_reach_smtp(monkeypatch, tmp_path):
+    """D11（MF-44）：`user` 字段一处最小收口——发送前同源单行化。
+
+    管理员把 SMTP 用户名写成含 CRLF 属"只可能由管理员本人制造"的情形（章程校准：
+    一处收口、不建校验框架）：单行化后注入形态变成必然被对端拒绝的坏地址，
+    MAIL FROM / From 头的物理注入面不存在。
+    """
+    _isolate_env(monkeypatch, tmp_path)
+    sneaky = "evil@qq.com\r\nMAIL FROM:<pwn@evil.test>"
+    _set_mail(monkeypatch, ENABLE="1", USER=sneaky, PASS="secret")
+    seen = {}
+
+    class CaptureServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, u, p):
+            seen["login_user"] = u
+
+        def sendmail(self, frm, to, msg):
+            seen["frm"] = frm
+            seen["msg"] = msg
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", CaptureServer)
+    assert mailer_transport.send_admin_alert("告警", "正文", to="admin@qq.com") is True
+    assert "\r" not in seen["login_user"] and "\n" not in seen["login_user"]
+    assert "\r" not in seen["frm"] and "\n" not in seen["frm"]
+    assert "\r\nMAIL FROM:<pwn@evil.test>" not in seen["msg"], \
+        "换行注入体不得以物理行形态进入邮件数据"
+    assert "MAIL FROM:<pwn@evil.test>" in seen["msg"], "收口是单行化（可见字面量），不是静默删除"

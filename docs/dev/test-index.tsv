@@ -1505,6 +1505,8 @@ tests/test_mail_layout.py	ChannelEntryPointsTest.test_mail_yields_both_parts	H	-
 tests/test_mail_layout.py	ChannelEntryPointsTest.test_plain_string_passthrough_unchanged	H	-	普通字符串必须逐字透传且不出 HTML——既有调用方与测试的行为一字不变。
 tests/test_mail_layout.py	DisplayWidthTest.test_cjk_counts_two_latin_one	H	-	??
 tests/test_mail_layout.py	DisplayWidthTest.test_combining_and_control_count_zero	H	-	??
+tests/test_mail_layout.py	FoldLineBreakFamilyTest.test_intended_newline_survives	H	-	??
+tests/test_mail_layout.py	FoldLineBreakFamilyTest.test_non_lf_breaks_become_visible_literals	H	-	??
 tests/test_mail_layout.py	FoldTest.test_ascii_word_never_split_when_breakable_exists	H	-	??
 tests/test_mail_layout.py	FoldTest.test_breaks_after_chinese_comma_not_mid_word	H	-	??
 tests/test_mail_layout.py	FoldTest.test_explicit_newline_always_forced	H	-	??
@@ -1547,7 +1549,7 @@ tests/test_mail_notify.py	MailNotifyApiTest.test_save_off_then_read	H	-	??
 tests/test_mail_notify.py	MailNotifyApiTest.test_save_on_restores	H	-	??
 tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_safe_then_unsafe_still_warns	H	-	合格地址不置旗，随后的不合格地址仍应告警（旗只被"不通过"置位）。
 tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_safe_url_no_warning	H	-	??
-tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_unsafe_url_warns_once_and_channel_still_configured	H	-	??
+tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_unsafe_url_warns_once_and_channel_still_configured	H	-	加载期复核 warn-only（地址不变、只记一次）；但 is_configured 与 send 同判据。
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_collect_and_flush_merges_one_mail	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_clears_collector	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_groups_by_subject	H	-	??
@@ -1619,6 +1621,7 @@ tests/test_mailer.py	test_channel_state_broken_when_nothing_configured	H	-	??
 tests/test_mailer.py	test_channel_state_off_when_disabled	H	-	??
 tests/test_mailer.py	test_channel_state_ok_with_enc_blob	H	-	??
 tests/test_mailer.py	test_channel_state_ok_with_legacy_keys	H	-	??
+tests/test_mailer.py	test_failover_resends_identical_message_id_and_logs_retry	H	-	C7+C8（MF-90）：QUIT 抛异常换条目重投的是同一封——同确定性 Message-ID，重投可见。
 tests/test_mailer.py	test_get_config_never_exposes_password	H	-	??
 tests/test_mailer.py	test_is_enabled_false_without_config	H	-	??
 tests/test_mailer.py	test_is_enabled_true_only_for_ok_state	H	-	is_enabled 与三态单源：坏 blob / 关开关都不是启用；旧键齐全才是启用。
@@ -1627,12 +1630,14 @@ tests/test_mailer.py	test_mask_addr_empty	H	-	??
 tests/test_mailer.py	test_mask_addr_masks_local_part	H	-	??
 tests/test_mailer.py	test_mask_addr_non_email_passthrough	H	-	??
 tests/test_mailer.py	test_mask_addr_short_name_keeps_one_char	H	-	??
+tests/test_mailer.py	test_recipients_refused_writes_delivery_ledger	H	-	B5（MF-44 补句）：`SMTPRecipientsRefused.recipients` 不再是零消费者。
 tests/test_mailer.py	test_send_admin_alert_explicit_to	H	-	显式 to 覆盖 ADMIN_TO：仅发给传入列表（调用方已按个人开关过滤）。
 tests/test_mailer.py	test_send_admin_alert_multi_recipients	H	-	??
 tests/test_mailer.py	test_send_admin_alert_requires_filtered_to	H	-	P2-3 回归：to 缺省时 fail-closed 拒发（不回退 ADMIN_TO 绕过个人开关）。
 tests/test_mailer.py	test_send_admin_alert_skipped_when_disabled	H	-	??
 tests/test_mailer.py	test_send_admin_alert_success	H	-	??
 tests/test_mailer.py	test_send_failure_logs_safe	H	-	??
+tests/test_mailer.py	test_sender_user_newlines_never_reach_smtp	H	-	D11（MF-44）：`user` 字段一处最小收口——发送前同源单行化。
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_every_known_deny_message_maps_explicitly	E	-	??
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_unknown_message_falls_back_to_500	E	-	??
 tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_all_paused_reports_and_does_not_spawn	E	-	全选皆自暂停：如实说明并拒绝，不派发空队列子进程。
@@ -1856,6 +1861,7 @@ tests/test_notify_ledger.py	test_no_process_lock_concurrent_not_overspent	H	-	�
 tests/test_notify_ledger.py	test_readonly_remaining_does_not_rewrite_disk	H	-	纯读路径（_daily_remaining）不触发写盘：无修改就不落盘。
 tests/test_notify_ledger.py	test_refund_across_day_is_voided	H	-	跨日凭证作废：23:59:59 占用、次日才失败退还，不得扣到次日账上。
 tests/test_notify_ledger.py	test_refund_after_failure_restores_count	H	-	发送失败退还：内存与磁盘计数同步回退，虚警耗尽标记被撤回。
+tests/test_notify_ledger.py	test_restore_exhaustion_notice_round_trip	H	-	MF-44 B6：`pop_exhaustion_notice` 不再是"取走即置位、永不退还"。
 tests/test_notify_throttle.py	test_concurrent_same_title_only_one_passes	H	-	8 线程冻结时钟同刻请求同标题：恰好一次放行、7 次被磁盘判定拦下。
 tests/test_notify_throttle.py	test_cooldown_zero_disabled_and_no_disk	H	-	cooldown=0 关闭节流：每次都放行，且不产生磁盘文件。
 tests/test_notify_throttle.py	test_corrupt_file_archived_warned_and_restarts	H	-	写坏 JSON：放行（按空表）且 warning + 归档留证，不静默。
@@ -1892,6 +1898,7 @@ tests/test_notify_webhook.py	Batch18Knife2WebTest.test_p36_atomic_write_roundtri
 tests/test_notify_webhook.py	test_bad_encrypted_secret_returns_empty	H	-	??
 tests/test_notify_webhook.py	test_cooldown_explicit_zero_from_env_file_disables_throttle	H	-	生产口径回归：.env 里显式 YIBAN_NOTIFY_COOLDOWN=0 必须真的关闭节流（而非回落 60）。
 tests/test_notify_webhook.py	test_cross_day_resets_both_ledgers	H	-	跨日两本账同时归零、耗尽告知标记同步重置。
+tests/test_notify_webhook.py	test_custom_3xx_or_error_body_refunds_not_charged	H	-	A1：custom 成功判据从 `<400` 收成 2xx 一档，并认 200+错误 body。
 tests/test_notify_webhook.py	test_custom_rejects_unsafe_url	H	-	??
 tests/test_notify_webhook.py	test_custom_sends_json_and_masks_host	H	-	??
 tests/test_notify_webhook.py	test_daily_budget_force_bypasses	H	-	??
@@ -1920,6 +1927,7 @@ tests/test_notify_webhook.py	test_refund_kept_when_limit_switched_to_unlimited	H
 tests/test_notify_webhook.py	test_refund_ticket_is_one_shot	H	-	凭证一次性：同一笔占用退两次只退一次，否则等于白送一条额度。
 tests/test_notify_webhook.py	test_send_exception_refunds_urgent_budget	H	-	HTTP 异常同样退还，且只退所属那本账。
 tests/test_notify_webhook.py	test_send_rejected_refunds_budget	H	-	服务端拒绝（code!=0）不扣额度，退还后仍可再试（旧口径失败照扣=可被烧额度）。
+tests/test_notify_webhook.py	test_serverchan_json_non_object_refunds_not_leaks	H	-	A1：Server酱 返回合法 JSON 但**非对象**（数组/字符串/数字）时判失败并退还额度。
 tests/test_notify_webhook.py	test_serverchan_nonzero_code_fails_and_masks_key	H	-	??
 tests/test_notify_webhook.py	test_serverchan_raise_fails_silently	H	-	??
 tests/test_notify_webhook.py	test_serverchan_success_format	H	-	??
@@ -1932,6 +1940,7 @@ tests/test_notify_webhook.py	test_unsafe_url_rejection_refunds_budget	H	-	SSRF �
 tests/test_notify_webhook.py	test_urgent_budget_zero_unlimited	H	-	紧急账 0=不限；设 0 时该账永不判耗尽。
 tests/test_notify_webhook.py	test_urgent_exhausted_does_not_block_general	H	-	紧急账打满不影响非紧急可达：两本账各自独立计数。
 tests/test_notify_webhook.py	test_urgent_last_message_filling_budget_still_notifies	H	-	修复轮①：紧急账同理——打满即挂标记，不等下一次被拒。
+tests/test_notify_webhook.py	test_urgent_only_accepts_false_and_daily_max_negative_not_unlimited	H	-	A3：URGENT_ONLY=false 必须**关掉**开关；DAILY_MAX=-1 不得静默放开成不限额。
 tests/test_notify_webhook.py	test_urgent_only_force_bypasses	H	-	??
 tests/test_notify_webhook.py	test_urgent_only_off_pushes_all	H	-	??
 tests/test_notify_webhook.py	test_urgent_only_skips_non_urgent	H	-	??
