@@ -2908,10 +2908,12 @@ class WebSecuritySplitContractTest(unittest.TestCase):
 M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
 
 
-M_ROUTE_NAMES_TOTAL = 204  # +1：users_api 用 m._owner_display_of（用户列表展示，同一单源规则，已复核）
+M_ROUTE_NAMES_TOTAL = 205  # +1：users_api 用 m._owner_display_of（用户列表展示，同一单源规则，已复核）
+# +1：accounts_api 用 m.yiban_status——暂停合成的"当日是否已有结论"判据走状态词汇表
+# 单源 `is_concluded_status`（排除法），不另写第二份状态集合（MF-54 反模式），已复核。
 
 
-M_ROUTE_COMPAT_NAMES = 203  # +1 同上（新名未在 EXCLUDED 内，兼容面同步 +1）
+M_ROUTE_COMPAT_NAMES = 204  # +2 同上（两个新名均不在 EXCLUDED 内，兼容面同步）
 
 
 M_ROUTE_NAME_EXCLUDED = frozenset({"__file__"})

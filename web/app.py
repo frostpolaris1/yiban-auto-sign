@@ -1881,6 +1881,8 @@ def create_app(host=None):
     app.extensions["yiban_verify_fails"] = {}
     # 高危删除操作冷却 {username.lower(): (count, window_start)}
     _admin_delete_limits = {}
+    # 高危额度整体被关（limit<=0 或 cooldown<=0）时是否已留过审计，防逐请求刷审计表
+    _admin_delete_limit_off_audited = [False]
     # 日志导出限速 {ip: (count, window_start)}
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.export_limits()
     app.extensions["yiban_export_limits"] = {}
@@ -2239,6 +2241,19 @@ def create_app(host=None):
         window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
         limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
         if window <= 0 or limit <= 0:
+            # 关闭动作本身要有痕迹：这两个键把高危额度整体置 0 后，全站删除/彻底
+            # 清除/改告警通道都不再受"每管理员窗口"限制，而此前既无日志也无审计，
+            # 事后无从还原是谁、在什么时候拆了这道闸。走**既有** db.audit、每 app
+            # 实例至多一条（判定即占用语义不变，返回 False 仍照常放行）。
+            if not _admin_delete_limit_off_audited[0]:
+                _admin_delete_limit_off_audited[0] = True
+                db.audit(
+                    session.get("username") or "?",
+                    "admin_delete_limit_off",
+                    "?",
+                    f"高危删除额度整体关闭（窗口={window}s 上限={limit}），"
+                    f"本次由首个触发该配置的高危操作留痕",
+                )
             return False  # 关闭 = 不限速而不是全拒：返回 False 让调用方照常往下走
         # 写入前顺带 trim（与其余限速表同口径防无界增长）
         with _rate_lock:
@@ -2295,6 +2310,14 @@ def create_app(host=None):
                            SENSITIVE_PW_FAIL_WINDOW + _IP_STORE_MAX_AGE)
         cnt, _start, _allowed = _bump_window_count(
             _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
+        if cnt == 1:
+            # 窗口内第一次被挡就落一条审计：原先只有第 N 次的告警/审计，前 N-1 次
+            # 错口令"白撞无痕"。也不能逐条写（拒绝面会被人当免费打字机刷审计表），
+            # 每窗口首尾各一行、上限两条封顶。
+            db.audit(
+                key[1], "sensitive_pw_denied", db.hash_ip(key[0]),
+                f"「{action}」口令复核失败（窗口内首次）",
+            )
         if cnt >= SENSITIVE_PW_FAIL_NOTIFY and cooldown > 0:
             # 冷却按 `>= 阈值`**每次失败都续期**：只在"恰好等于阈值"那一次布防的话，冷却
             # 到期后的第 4、5… 次失败既不再告警也不再被挡，等于把同一个洞留回原处。续期后
@@ -2319,14 +2342,15 @@ def create_app(host=None):
                 ),
                 urgent=True,
             )
-            # 只在布防那一刻留一条审计：429 本身不逐条写，否则被盗会话又能拿
-            # "拒绝"当免费打字机刷审计表。
-            if cooldown > 0:
-                db.audit(
-                    key[1], "sensitive_pw_cooldown", db.hash_ip(key[0]),
-                    f"「{action}」口令复核连续失败 {cnt} 次，"
-                    f"敏感操作暂停 {cooldown} 秒",
-                )
+            # 达阈值这一行审计**不随 cooldown 走**：cooldown=0 的部署只是不进冷却，
+            # "失败到阈值"这个事实照样要能事后取证。429 本身仍不逐条写，否则被盗
+            # 会话又能拿"拒绝"当免费打字机刷审计表。
+            db.audit(
+                key[1], "sensitive_pw_cooldown", db.hash_ip(key[0]),
+                f"「{action}」口令复核连续失败 {cnt} 次，"
+                + (f"敏感操作暂停 {cooldown} 秒"
+                   if cooldown > 0 else "本部署未配冷却，仅告警"),
+            )
         return jsonify({"error": PW_DENY_TEXT[deny_status],
                         "reason": PW_DENY_REASON["wrong"]}), deny_status
 
@@ -2453,17 +2477,26 @@ def create_app(host=None):
         不传，避免把"可回滚"的动作也变成不可撤销的确认负担。
 
         本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用）。
-        覆盖面（按端点列，不写"几处"——计数会随路由漂移）：
-        账号/用户的不可逆清除与删除（/api/accounts/batch 的 purge、
-        /api/accounts/<idx>/delete、/api/users/batch 的 delete、
-        /api/users/<email>/delete 的 full 与 accounts_only、
-        /api/users/deleted/purge）、关闭告警通道或改其密钥/额度（/api/mail-config 的
-        开关、/api/notify-config）、角色变更（/api/users/<email>/role）、
-        重置他人口令（/api/users/<email>/password）。
+        覆盖面（每行 = `METHOD /path`，形态即清单；由 `tests/test_gate_manifest_sync.py`
+        与 url_map / 视图源码**双向自动比对**，改名漏登即红——这份表不再是手抄件）：
+        - POST /api/accounts/batch（purge 分支）
+        - POST /api/accounts/<int:idx>/purge
+        - PUT /api/accounts/<int:idx>（改写他人易班凭据时）
+        - POST /api/users/batch（delete / reset_password 分支）
+        - POST /api/users/deleted/purge
+        - POST /api/users/<int:user_id>/role
+        - POST /api/users/<int:user_id>/password
+        - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
+        - PUT /api/mail-config（关闭通道时）
+        - PUT /api/notify-config（关闭/换密钥/改额度时）
         同为 always_required 但不占高危额度的还有 /api/mail-config 的 SMTP/收件人变更
         （直连 _reconfirm_admin_password）。
         可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的系统开关、
         /api/settings 的签到随机延迟与容量上限、/api/scheduler/executors* 的写操作。
+        **只占额度、刻意不过本门禁**的（可逆不加口令——加了只增误伤；留痕在审计行；
+        非本函数覆盖面，故不写成 `METHOD /path` 形态）：账号软删（路径
+        `/api/accounts/<int:idx>` 的删除方法，以及上面 accounts/batch 那条的
+        delete 分支）。
         """
         # 顺序就是本函数的全部要点：口令在前、占额度在后。反序（先判后增再鉴权）的话，一个
         # 只拿到 Cookie、不知道口令的被盗会话用错口令反复尝试，就能把主管理员的"删除 +

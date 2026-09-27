@@ -54,10 +54,19 @@ def api_accounts():
     # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
     # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
     states = m.load_sign_state()
-    # 用户自暂停账号：状态直接呈现"已取消"（⏹️）——无需等下次签到执行写状态文件，
-    # 管理员面板立即反映
+    # 用户自暂停账号：当日还没有结论时直接呈现"已取消"（⏹️）——无需等下次签到执行
+    # 写状态文件，管理员面板立即反映。**只在无结论时合成**：无条件覆写会把"先签
+    # 成功、再自暂停"的已了结事实涂成"已取消"，面板与 sign_events 台账给出相反信号。
     for acc in accounts:
         if acc.get("user_paused"):
+            _prev = states.get(acc.get("phone", ""))
+            # 无记录 = 空串（`is_concluded_status` 的"无结论"档），不能传 None——
+            # str(None)="None" 会被排除法误判成"已有结论"，把该合成的"已取消"也吞掉
+            _prev_status = _prev.get("status", "") if isinstance(_prev, dict) else ""
+            # is_concluded_status 是排除法：看不懂的状态串按"已有结论"处理（宁可不
+            # 覆盖，也不把真实失败从面板上抹掉）
+            if m.yiban_status.is_concluded_status(_prev_status):
+                continue
             states[acc.get("phone", "")] = {
                 "status": m.STATUS_USER_CANCELLED,
                 "message": "用户已取消签到",
@@ -578,7 +587,7 @@ def api_accounts_batch():
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
 
         ops = []
-        batch_targets = []  # 审计留目标清单（脱敏截断）
+        batch_targets = []  # 审计留目标清单（脱敏截断）：只收真正产出了操作的行
         reject_notify_owners = {}  # 批量拒绝每户一封
         # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
         live_owners = {
@@ -588,6 +597,7 @@ def api_accounts_batch():
         }
         for i in valid:
             acc = accounts[i]
+            _ops_before = len(ops)  # 本行是否真的产出了操作（目标清单与 ops 同口径的判据）
             if action == "approve":
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
                 if not acc.get("deleted") and acc.get("status") in (
@@ -623,7 +633,11 @@ def api_accounts_batch():
                 ops.append(
                     ("set_deleted", acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"))
                 )
-            batch_targets.append(acc.get("phone", ""))
+            # 目标清单与 ops 同源：不满足前置（本行没生成操作）的行不进审计——
+            # 此前 `done=len(ops)` 数操作、`batch_targets` 数全部合法下标，
+            # 同一条审计行里"处理 N 个"与其后清单是两套口径。
+            if len(ops) > _ops_before:
+                batch_targets.append(acc.get("phone", ""))
         done = len(ops)
         if ops:
             try:
