@@ -32,6 +32,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
+from yiban.store.audit_chain import actor_tag  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
 USER_PASS = "secret1"
@@ -398,7 +400,8 @@ class BatchCapAndSettingsTest(unittest.TestCase):
             "SELECT username, action, target FROM audit_logs WHERE action='login_ok'"
         ).fetchall()
         self.assertTrue(rows, "登录成功应写审计")
-        self.assertEqual(rows[-1]["username"], "admin@test.local")
+        self.assertEqual(rows[-1]["username"], actor_tag("admin@test.local"),
+                         "MF-49：actor 列按写入口遮罩")
         self.assertNotIn("127.0.0.1", rows[-1]["target"], "IP 必须匿名化（hash_ip）")
         self.assertRegex(rows[-1]["target"], r"^[0-9a-f]{64}$")
 

@@ -22,6 +22,7 @@ tick 采用「分钟级到点闩锁」而非「秒==0 命中」：调度循环�
 """
 import contextlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -81,9 +82,46 @@ from child_env import build_child_env, parse_env_file  # noqa: E402
 
 from yiban import clock, state_gc, window  # noqa: E402
 from yiban.engine import schedule, workers  # noqa: E402
+from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
+from yiban.logging_ext import MaskingFormatter  # noqa: E402
 
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
 ENV_FILE = os.environ.get("YIBAN_ENV_FILE", "/data/.env")
+
+logger = logging.getLogger("scheduler")
+
+# 日志装配幂等标记（见 _setup_logging）
+_logging_ready = False
+
+
+def _setup_logging():
+    """容器调度进程日志装配：stdout 处理器挂输出面脱敏 formatter，只在常驻入口调用。
+
+    本进程会转调引擎模块（signin/window/schedule/state_gc 的读盘与判定路径都可能经
+    logging 出声），而 sched 常驻此前没有任何日志装配：root 无 handler 时 WARNING+
+    由 lastResort 裸写 stderr——CLI 与 web 入口都挂的出站手机号兜底在这里缺席。
+    补挂同一个 `MaskingFormatter`（对最终成文幂等遮 11 位号）后，容器入口的日志面
+    与 CLI/web 同口径；进程自身的留痕也统一走 logging 而非裸 print，新写的日志天然
+    在防线内。
+
+    装配放 `__main__` 而不在模块导入期：测试按文件路径装载本模块复用内部函数，
+    导入期挂 root handler 会污染同进程的全部用例。级别口径对齐 web 入口——root 保持
+    WARNING（第三方库 INFO 不进常驻 sched.log），自有组件单独放开 INFO。
+    """
+    global _logging_ready
+    if _logging_ready:
+        return
+    _logging_ready = True
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(MaskingFormatter(
+        "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    for _name in ("yiban", "signin", "scheduler"):
+        logging.getLogger(_name).setLevel(logging.INFO)
 # （STATEDIR 与心跳常量在文件头的探活快路区，探活不得依赖本行之后的导入图）
 
 
@@ -156,25 +194,19 @@ def _slot_done(kind):
 
 
 def _mark_slot(kind):
-    """落盘「该时段已 spawn 过子进程」标记（tmp + os.replace 原子写）。
+    """落盘「该时段已 spawn 过子进程」标记（状态文件私有写单通道，tmp + os.replace）。
 
     原实现直接 `open(path, "w")`：容器在写入中途被杀会留下半截 JSON，
     `_slot_done` 的 json.load 恒失败 → 判定为「本时段没跑过」，
     hm >= FIRST/SECOND 的无上界判定于是再触发一轮全站登录（幂等但多一轮真实请求，
     且覆盖当日已 success 的状态文件）。与 signin.py 的状态文件写入同口径。
     """
-    path = _slot_marker(kind)
-    tmp = f"{path}.tmp{os.getpid()}"
-    try:
-        os.makedirs(STATEDIR, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"triggered_at": clock.now().strftime("%H:%M:%S")}, fh)
-        os.replace(tmp, path)
-    except OSError:
-        # 写失败与读失败同向（退化为既有闩锁语义：读不到即允许触发），
-        # 仅清掉自己的半成品，不告警
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
+    # 写失败与读失败同向（退化为既有闩锁语义：读不到即允许触发），不告警；
+    # 半成品 tmp 已由单通道就地清掉，残留兜底归 state_gc
+    with contextlib.suppress(OSError):
+        private_json.write_private_json(
+            _slot_marker(kind),
+            {"triggered_at": clock.now().strftime("%H:%M:%S")})
 
 
 def _heartbeat_path(state_dir=None):
@@ -193,18 +225,18 @@ def _touch_heartbeat(state_dir=None):
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         return
-    tmp = f"{path}.tmp{os.getpid()}"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            # 内容用系统钟：与 mtime（探活真正的判据）同钟同口径，仅作人工排查
-            # 现场；业务钟不参与——观测链路不该依赖调度语义，也不得反过来
-            # 抢占/干扰主循环的判据时钟。
-            json.dump({"pid": os.getpid(),
-                       "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, fh)
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
+    # 写失败静默：探活侧看到的"心跳断流"正是期望中的不健康信号；半成品归单通道清
+    with contextlib.suppress(OSError):
+        # 内容用系统钟：与 mtime（探活真正的判据）同钟同口径，仅作人工排查
+        # 现场；业务钟不参与——观测链路不该依赖调度语义，也不得反过来
+        # 抢占/干扰主循环的判据时钟。
+        # ensure_dir=False：旁路观测件不得把已清理的目录"复活"（上面 isdir 门 +
+        # 不建目录，模式仍由单通道钉死 0600）。
+        private_json.write_private_json(
+            path,
+            {"pid": os.getpid(),
+             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            ensure_dir=False)
 
 
 _heartbeat_started = False
@@ -232,7 +264,7 @@ def _start_heartbeat():
             except Exception as e:
                 # 单次意外（磁盘抖动等）不该永久杀死心跳线程：线程一退，心跳
                 # 断流就是一份无人可恢复的假不健康。留痕一行后进下一拍继续。
-                print(f"[sched-heartbeat] 心跳落盘异常，下一拍重试: {e!r}", flush=True)
+                logger.warning("[sched-heartbeat] 心跳落盘异常，下一拍重试: %r", e)
 
     threading.Thread(target=_beat, daemon=True, name="sched-heartbeat").start()
 
@@ -255,9 +287,9 @@ def _cleanup_state():
     try:
         removed, _detail = state_gc.sweep(STATEDIR, LOGDIR)
         if removed:
-            print(f"[scheduler] 已清理 {removed} 个过期状态/日志文件", flush=True)
+            logger.info("已清理 %d 个过期状态/日志文件", removed)
     except (OSError, ValueError) as e:
-        print(f"[scheduler] 状态清理失败（不影响调度）: {e}", flush=True)
+        logger.warning("状态清理失败（不影响调度）: %s", e)
 
 
 # 首签 / 补签 时间点（分钟级），用「已进入该分钟且当天未执行过」的闩锁语义，
@@ -331,7 +363,7 @@ def _run_signin_child(extra=None, env=None):
     try:
         proc = subprocess.Popen(cmd, cwd="/app", env=env)
     except OSError as e:
-        print(f"[scheduler] 签到子进程拉起失败: {e}", flush=True)
+        logger.warning("签到子进程拉起失败: %s", e)
         return
     try:
         proc.wait(timeout=timeout)
@@ -342,7 +374,7 @@ def _run_signin_child(extra=None, env=None):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        print(f"[scheduler] 签到子进程超时（>{timeout}s）被终止，已留痕继续调度", flush=True)
+        logger.warning("签到子进程超时（>%ds）被终止，已留痕继续调度", timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -426,9 +458,9 @@ def _tick_fallback(now=None, env=None):
     try:
         _fallback_proc = _start_fallback_child()
     except OSError as e:
-        print(f"[scheduler] 拉起兜底常驻执行体失败: {e}", flush=True)
+        logger.warning("拉起兜底常驻执行体失败: %s", e)
         return False
-    print("[scheduler] 已在签到窗口内拉起兜底常驻执行体（窗口结束自行退出）", flush=True)
+    logger.info("已在签到窗口内拉起兜底常驻执行体（窗口结束自行退出）")
     return True
 
 
@@ -509,11 +541,12 @@ def main_loop(sleep_seconds=1):
         except Exception as e:
             # 单 tick 兜底（本文件唯一一处 Exception 级判法，其余按类型接）：
             # 记痕进下一 tick，绝不让一次意外废掉全天调度
-            print(f"[scheduler] 本 tick 异常，记日志后进下一 tick: {e!r}", flush=True)
+            logger.warning("本 tick 异常，记日志后进下一 tick: %r", e)
         time.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":
     # --check-health 已在文件头（业务导入图之前）短路退出，能走到这里的
     # 只有常驻调度主循环（supervisord 的启动形态）。
+    _setup_logging()
     main_loop()

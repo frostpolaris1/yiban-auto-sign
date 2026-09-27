@@ -35,14 +35,11 @@
 import json
 import logging
 import os
-import secrets
 
 from . import clock
-from .infra import env_io
+from .infra import env_io, private_json
 
 logger = logging.getLogger("yiban.cred_state")
-
-TMP_SUFFIX_LEN = 4
 
 
 def path():
@@ -118,17 +115,13 @@ def clear(phone):
 
 
 def _write(p, data):
-    """原子写（唯一临时名 + os.replace）；空数据删除文件（保持既有语义）。"""
+    """原子写（唯一临时名 + os.replace，创建即 0600 的单通道）；空数据删除文件（保持既有语义）。"""
     try:
         if not data:
             if os.path.exists(p):
                 os.remove(p)
             return
-        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-        tmp = f"{p}.tmp{secrets.token_hex(TMP_SUFFIX_LEN)}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, p)
+        private_json.write_private_json(p, data)
     except OSError as e:
         # 与既有实现同口径：目录不可写只告警，不影响签到执行
         logger.warning("写入账密状态文件失败（%s）: %s", os.path.basename(p), e)

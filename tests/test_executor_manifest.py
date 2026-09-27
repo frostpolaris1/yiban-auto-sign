@@ -383,18 +383,29 @@ class MigrationWritebackTest(_WebBase):
     def test_all_rows_disabled_falls_back_to_single_executor_shape(self):
         """清单里一个 worker 行都没有（全停用/删除）→ 回退单执行体形态，出口读 YIBAN_PROXY。
 
-        `workers.configured` 按契约仍 ≥1；停用行的出口不参与分配，故显示的出口必须是
-        **实际运行**的单执行体用的 `YIBAN_PROXY`，不是某行停用行留下的出口。
+        `workers.configured` 如实为 **0**（不再 max(1,…) 包装成"并行 1"——两种世界
+        同形就没人在页面上能发现"并行早被清空了"）；单执行体形态改由
+        `workers.single_mode=true` 显式表达。停用行的出口不参与分配，故
+        assignments 显示的出口必须是**实际运行**的单执行体用的 `YIBAN_PROXY`。
         """
         rows = [{"slot": 0, "type": "disabled", "proxy": "http://disabled:1"},
                 {"slot": 1, "type": "fallback", "proxy": "http://fb:2"}]
         self._write_env("YIBAN_PROXY=http://solo:9",
                         f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
         body = self._get(self._login())
-        self.assertEqual(body["workers"]["configured"], 1)
+        self.assertEqual(body["workers"]["configured"], 0, "0 条并行行如实报 0")
+        self.assertIs(body["workers"]["single_mode"], True, "单执行体形态要能显式读出")
         self.assertEqual([(a["index"], a["egress"]) for a in body["workers"]["assignments"]],
                          [(0, "http://solo:9")])
         self.assertEqual([e["type"] for e in body["executors"]], ["disabled", "fallback"])
+
+    def test_single_mode_false_when_worker_rows_exist(self):
+        """有并行行时 single_mode 必须为 False——它不是"配置为空"的恒真旗。"""
+        rows = [{"slot": 0, "type": "worker", "proxy": ""}]
+        self._write_env(f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
+        body = self._get(self._login())
+        self.assertEqual(body["workers"]["configured"], 1)
+        self.assertIs(body["workers"]["single_mode"], False)
 
     def test_manifest_wins_over_stale_legacy_keys(self):
         """清单与旧键并存 → **以清单为准**（旧键只作回退读取）。"""

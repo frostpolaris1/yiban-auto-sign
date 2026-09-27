@@ -116,6 +116,15 @@ def detail_limits():
     return current_app.extensions["yiban_detail_limits"]
 
 
+def dupcheck_limits():
+    """个人提交判重预检命中限速表 {actor: (count, window_start)}（每 app 实例一份）。
+
+    按会话而非 IP 计数（校园网出口共享，按 IP 会把同出口的正常用户互相挡死）；
+    只计"判重命中"，未重号的正常提交不占额度。
+    """
+    return current_app.extensions["yiban_dupcheck_limits"]
+
+
 def export_limits():
     """日志导出限速表 {ip: (count, window_start)}（每 app 实例一份）。
 

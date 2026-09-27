@@ -234,6 +234,21 @@ OVERSIZED = {
     # 必须同时改"解析器"与"handler"，两个文件互为唯一调用方，没有独立变更轴（门禁判据②③）。
     # 当前 700 余行，其中约 45 行是给 agent 看的字段契约表。下一步：若超过 900 行，按
     # 「透传 sign/probe」与「只读运维子命令（config/capacity/state/db/version）」一分为二。
+    # yiban/notify/ledger.py：推送日额度的四本账（general/urgent/login_fail/admin_change）
+    # 状态机——结构校验、按日归零、文件锁临界区内的占用/退还、耗尽告知的挂起与退还。
+    # 规模来自"读-改-写必须同临界区"这条硬约束：占用、退还、告知三件事共用同一份
+    # state/notice 与同一把锁，拆开就得把 state 与判据在模块间来回传（门禁判据①②：
+    # 同一状态机、通信成本高于收益）。下一步：若超过 700 行，把「耗尽告知的挂起/取走/
+    # 退还」（pop_exhaustion_notice/restore_exhaustion_notice/_mark·_unmark）独立成
+    # notice 子模块——它只经 count 与 limit 两个入参触达账本，额度占用/退还主体留在本模块。
+    "yiban/notify/ledger.py": (700, (
+        "推送日额度四本账（general/urgent/login_fail/admin_change）的状态机：账本结构校验、"
+        "按日归零、文件锁临界区内的额度占用与失败退还、耗尽告知的挂起/取走/退还。规模来自"
+        "「读-改-写必须同临界区」这条硬约束——占用、退还、告知三件事共用同一份 state/notice"
+        "与同一把锁，拆开就得把 state 与判据在模块间来回传（判据①②：同一状态机、通信成本"
+        "高于收益）。当前 650 余行。下一步：若超过 700 行，把耗尽告知那一族（pop/restore/"
+        "_mark_exhausted/_unmark_exhausted）独立成 notice 子模块，额度占用与退还主体留在本模块。"
+    )),
     "yiban/cli.py": (None, (
         "命令行统一入口：argparse 装配 + 七个子命令实现 + 单行 JSON 字段契约。整块服务于"
         "同一件事——命令行面与其退出码（每加一个子命令都要同时改解析与分发，拆成两个"

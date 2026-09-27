@@ -43,6 +43,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from yiban.store.audit_chain import actor_tag
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -326,8 +328,9 @@ class AuditActorTest(_GuardBase):
             "SELECT username, detail FROM audit_logs WHERE target='executors'"
         ).fetchall()
         self.assertGreaterEqual(len(rows), 4, f"四条写路径都应留痕，实际 {len(rows)} 行")
-        self.assertEqual({r["username"] for r in rows}, {"admin@test.local"},
-                         "actor 必须是登录名，不是硬编码的 admin")
+        self.assertEqual({r["username"] for r in rows},
+                         {actor_tag("admin@test.local")},
+                         "actor 必须是登录名（MF-49 后按写入口遮罩形态），不是硬编码的 admin")
 
 
 if __name__ == "__main__":

@@ -77,11 +77,26 @@ def upsert_env(path, updates):
     写入并入全项目唯一的 `.env` 行模型：键/值走 `env_io.validate_env_updates` 同一套
     校验（禁换行族、键名白名单、值长度上限），折叠同键旧行、保留注释与其余行，原子
     0600 替换（`env_io.write_env_keys`，落盘即 0600）。`delete_empty=False` 保持本工具
-    原语义——空值仍写一行 `KEY=`，不删键（压测参数全是有值写入）。本工具是单进程
-    离线造数、无并发写方，但仍按 `write_env_keys` 的调用契约自持写锁。
+    原语义——空值仍写一行 `KEY=`，不删键（压测参数全是有值写入）。
+    写锁已下沉进 `write_env_keys`，这里外层自持锁是为了把"建新文件头"与"读-改-写"
+    圈进同一临界区：两者之间混进别的 .env 写方（同一测试 env 被两个造数进程用）会让
+    exists 判据被击穿、裸 open("w") 把对方刚落的密钥整文件截掉。
     """
     with env_lock.env_write_lock(path):
+        _ensure_env_headed(path)
         env_io.write_env_keys(path, updates)
+
+
+def _ensure_env_headed(path):
+    """.env 不存在时建带注释头的初始文件——**调用方必须已持 `env_write_lock(path)`**。
+
+    裸 `open(path, "w")` 就地截断曾是本脚本的不持锁写入点：并发写方刚落盘的密钥与
+    参数整行消失。文件锁同线程可重入，外层临界区内调用直接放行；建头与后续读-改-写
+    因此始终处于同一把锁下。
+    """
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_ENV_HEADER)
 
 
 def seed(n, db_path, env_path, wipe=True, fingerprint=""):
@@ -175,9 +190,10 @@ def main(argv=None):
         d = os.path.dirname(os.path.abspath(p))
         if d:
             os.makedirs(d, exist_ok=True)
-    if not os.path.exists(args.env):
-        with open(args.env, "w", encoding="utf-8") as f:
-            f.write(_ENV_HEADER)
+    # 建文件头挪进写锁临界区（裸 open("w") 不持锁就地截断曾是不持锁写入点）；
+    # 先于 seed——db.init_db 会在既有文件上折叠写键，头注释必须在它之前就位。
+    with env_lock.env_write_lock(args.env):
+        _ensure_env_headed(args.env)
 
     n = seed(args.n, args.db, args.env, wipe=not args.no_wipe, fingerprint=fingerprint)
     if n is None:

@@ -4,7 +4,7 @@
 为什么单独一个口径：出口串按契约**允许带 `user:pass@`**，而
 - web 的"地址格式不正确: <你填的值>"会把用户输入回显进响应/DOM；
 - 引擎的异常消息（requests 会把完整 URL 嵌进去）会落日志。
-`sanitize_url` 只处理 **query 参数**，不碰 userinfo（实测无 query 时原样返回），
+`sanitize_url` 只处理 **query 与 fragment 参数**，不碰 userinfo（实测无参数时原样返回），
 故这两处必须各自过一遍 `mask_url_userinfo`。
 
 标签：G · 安全：脱敏/审计/配置注入
