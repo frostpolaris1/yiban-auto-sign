@@ -53,6 +53,8 @@ tests/test_account_liveness_gate.py	OrphanSessionCacheSweepTest.test_daily_clean
 tests/test_account_liveness_gate.py	OrphanSessionCacheSweepTest.test_sweep_removes_only_orphans	I	-	??
 tests/test_account_liveness_gate.py	SessionCacheNotWrittenForDeadAccountTest.test_cache_skipped_when_account_purged	I	-	??
 tests/test_account_liveness_gate.py	SessionCacheNotWrittenForDeadAccountTest.test_cache_written_for_live_account	I	-	??
+tests/test_account_ops_reentry.py	AccountOpsReentryTest.test_batch_blocks_reentry_after_confirm	F	node	批量入口在确认后重入同样被挡——弹窗只挡一次点击。
+tests/test_account_ops_reentry.py	AccountOpsReentryTest.test_single_op_blocks_reentry_but_releases	F	node	同步双击只发一次；首个请求结束后守卫释放，下一次触发可发。
 tests/test_account_plaintext_patch.py	PlaintextPatchTest.test_legacy_env_no_warning_when_unset	G	-	??
 tests/test_account_plaintext_patch.py	PlaintextPatchTest.test_legacy_env_warns_without_leaking	G	-	??
 tests/test_account_plaintext_patch.py	PlaintextPatchTest.test_load_accounts_decrypt_error_rolls_back_dangling_txn	G	-	P1：某行解密抛错时不得在共享连接留下悬挂事务（2026-08-27）。
