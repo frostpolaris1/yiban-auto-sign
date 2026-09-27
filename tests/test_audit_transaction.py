@@ -46,6 +46,8 @@ import unittest
 from typing import ClassVar
 from unittest import mock
 
+from yiban.masking import mask_email
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -392,8 +394,9 @@ class PurgeAuditWindowTest(_Fixture):
             self._count("SELECT COUNT(*) FROM users WHERE email='purge-ok@test.local'"), 0)
         rows = self._audit_rows()
         self.assertEqual(len(rows), 1, "业务生效 ⇒ 审计行必在")
-        self.assertEqual(rows[0]["target"], "purge-ok@test.local",
-                         "target 只含实际清除项，未被清除的 ghost 不得进留痕")
+        self.assertEqual(rows[0]["target"], mask_email("purge-ok@test.local"),
+                         "target 只含实际清除项，未被清除的 ghost 不得进留痕"
+                         "（MF-49：actor/target 列现按写入口遮罩，比对遮罩形态）")
         self.assertIn("1 个已注销用户", rows[0]["detail"])
 
     def test_nothing_purged_writes_no_audit(self):

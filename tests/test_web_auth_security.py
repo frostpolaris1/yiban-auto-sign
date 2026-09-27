@@ -34,6 +34,10 @@ import unittest
 from unittest import mock
 
 from _mail_body import render_body
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+
+# 单条端点改不透明 id 后，"不存在用户"用例用一个不会撞上的数字 id 表达。
+GHOST_ID = 987654321
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -908,7 +912,7 @@ class RoleHardeningTest(unittest.TestCase):
     def test_role_without_reconfirm_rejected(self):
         self._make_formal_user("u2@test.local", "13800138002")
         ac, at = self._admin_client()
-        r = ac.post("/api/users/u2@test.local/role", json={"role": "admin"},
+        r = ac.post(user_path(db, "u2@test.local", "/role"), json={"role": "admin"},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(db.find_user("u2@test.local").get("role"), "user")
@@ -916,7 +920,7 @@ class RoleHardeningTest(unittest.TestCase):
     def test_role_wrong_reconfirm_rejected(self):
         self._make_formal_user("u3@test.local", "13800138003")
         ac, at = self._admin_client()
-        r = ac.post("/api/users/u3@test.local/role",
+        r = ac.post(user_path(db, "u3@test.local", "/role"),
                     json={"role": "admin", "confirm_password": "WrongPass#999"},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
@@ -927,7 +931,7 @@ class RoleHardeningTest(unittest.TestCase):
         self._make_formal_user("u4@test.local", "13800138004")
         ac, at = self._admin_client()
         with mock.patch.object(self.webapp, "send_notification") as notify:
-            r = ac.post("/api/users/u4@test.local/role",
+            r = ac.post(user_path(db, "u4@test.local", "/role"),
                         json={"role": "admin", "confirm_password": ADMIN_PASS_ROLE},
                         headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -942,7 +946,7 @@ class RoleHardeningTest(unittest.TestCase):
         db.create_user("reg-admin@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "reg-admin@test.local", USER_PASS)
-        r = c.post("/api/users/u5@test.local/role",
+        r = c.post(user_path(db, "u5@test.local", "/role"),
                    json={"role": "admin", "confirm_password": USER_PASS},
                    headers={"X-CSRF-Token": t})
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
@@ -1335,7 +1339,9 @@ class P18IsolationTest(_GateBase):
         for _ in range(self.webapp.LOGIN_MAX_FAILS):
             r = c.post("/api/login", json={"username": "admin", "password": WRONG_PASS})
         self.assertEqual(r.status_code, 429, "前置：登录侧此刻已锁定")
-        r = c.post("/api/users/ghost@test.local/delete",
+        # 单条操作按不透明 id 定位（2-9b）：用一个**不存在的数字 id** 复刻旧
+        # ghost 邮箱用例——路由匹配、门禁照过、落到 find_user_by_id 的 404。
+        r = c.post(f"/api/users/{GHOST_ID}/delete",
                    json={"mode": "full", "confirm_password": ADMIN_PASS},
                    headers=self._hdr(c))
         self.assertEqual(r.status_code, 404,
@@ -1416,13 +1422,16 @@ class ExemptionTest(_GateBase):
         每例各建新 app：门禁冷却表是 per-app 的，共用一份会让第 4 例撞进冷却、
         把"豁免不该放行"这件事掩盖成 429。
         """
+        # 单条三个端点走 `<int:user_id>`：ghost 用**不存在的数字 id** 表达（2-9b）。
+        # 断言的语义不变——门禁必须先于存在性拦下（400 password_required），
+        # 而不是 id 不存在就绕过复核。
         cases = (
             ("POST", "/api/users/batch",
              {"action": "delete", "emails": ["ghost@test.local"]}),
-            ("POST", "/api/users/ghost@test.local/role", {"role": "admin"}),
-            ("POST", "/api/users/ghost@test.local/password", {"password": ADMIN_PASS}),
-            ("POST", "/api/users/ghost@test.local/delete", {"mode": "full"}),
-            ("POST", "/api/users/ghost@test.local/delete", {"mode": "accounts_only"}),
+            ("POST", f"/api/users/{GHOST_ID}/role", {"role": "admin"}),
+            ("POST", f"/api/users/{GHOST_ID}/password", {"password": ADMIN_PASS}),
+            ("POST", f"/api/users/{GHOST_ID}/delete", {"mode": "full"}),
+            ("POST", f"/api/users/{GHOST_ID}/delete", {"mode": "accounts_only"}),
             ("POST", "/api/users/deleted/purge", {"emails": ["ghost@test.local"]}),
             ("POST", "/api/accounts/batch",
              {"action": "purge", "ids": [1], "h_idx": 0, "h_phone": "138****0000"}),

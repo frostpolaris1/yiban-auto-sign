@@ -3032,6 +3032,35 @@ tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_resubmit_same_phon
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_undo_blocked_when_owner_has_other_live	L	-	??
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_undo_rejected_for_admin_deleted	L	-	??
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_user_delete_soft_then_undo	L	-	??
+tests/test_users_exit_surface.py	AccountReprSwallowTest.test_apostrophe_name_repr_swallowed	G	-	撇号名让 dataclass repr 改用**双引号**包裹——旧吞除正则只配单引号，
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_audit_actor_masked_at_write_entry	G	-	??
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_non_email_actor_passthrough	G	-	??
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_pause_cooldown_dual_form_across_upgrade	G	-	冷却查询双形态：新行 actor 是遮罩态，但按**明文邮箱**查仍命中
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_purge_target_masked_per_address	G	-	purge 的 target 逐条遮罩（旧形态整表明文），计数与 detail 语义不变。
+tests/test_users_exit_surface.py	BoundedAuditJsonTest.test_extreme_admin_to_cuts_with_flag_and_fits_budget	G	-	极端 admin_to（多条长地址逐项打码后仍超预算）：字符串字段逐段收缩并打
+tests/test_users_exit_surface.py	BoundedAuditJsonTest.test_hopeless_combo_gives_up_view_keeps_keys_parseable	G	-	超长 host（不可裁剪字段）+ 超长收件人的病态组合：地址类视图整体让位
+tests/test_users_exit_surface.py	BoundedAuditJsonTest.test_small_detail_untouched	G	-	??
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_authorization_basic_tail_swallowed	G	-	??
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_benign_json_not_harmed	G	-	"不误伤 JSON 正文"判据：非凭据键的值、数字/布尔/null 叶子原样保留；
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_cookie_pairs_still_masked_individually	G	-	??
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_numeric_leaf_invariant	G	-	数字叶子不变量（2-9a 入册）：凭据键后的**数字**不被改写——
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_quoted_key_credential_full_table	G	-	整张凭据名表的**引号键形态**（vars()/json.dumps 调试输出）都要被拦。
+tests/test_users_exit_surface.py	OpaqueIdRoutingTest.test_email_in_path_is_dead_route	G	-	旧"邮箱编进 path"的形态在 `<int:...>` 转换器处直接 404——
+tests/test_users_exit_surface.py	OpaqueIdRoutingTest.test_ghost_numeric_id_returns_json_404	G	-	不存在的 id 走业务 404（`用户不存在`）：证明服务端按 id 解析回邮箱再操作。
+tests/test_users_exit_surface.py	OpaqueIdRoutingTest.test_role_change_by_id_works_and_url_has_no_email	G	-	真 id 定位：设为/取消管理员生效，且审计/响应面不含操作目标邮箱明文。
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_api_users_row_has_masked_display	G	-	/api/users 每行带不透明 id 与遮罩 display（前端禁止再算第二套）。
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_mask_account_owner_display_masked	G	-	??
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_mask_email_local_general_and_idempotent	G	-	??
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_mask_email_local_phone_form	G	-	本地部即手机号 → 号遮罩形态；**不是**整段本地部直出（旧行为）。
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_owner_display_of_endpoints	G	-	??
+tests/test_users_exit_surface_frontend.py	AccountFormOwnerDisplayTest.test_dropdown_uses_server_display	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_identity_never_touches_session_storage	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_logout_clears_cache_on_success	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_logout_clears_cache_when_request_fails	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_nav_users_caches_scalar_projection_only	F	node	??
+tests/test_users_exit_surface_frontend.py	StaticNoSecondSplitTest.test_components_and_pages_clean	F	node	??
+tests/test_users_exit_surface_frontend.py	UserOpsOpaqueIdTest.test_single_ops_use_id_and_batch_keeps_body_emails	F	node	??
+tests/test_users_exit_surface_frontend.py	WorkUsersStateCarriesIdTest.test_fetch_users_maps_id_and_display	F	node	??
 tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_attempts_and_priority_advance_through_requeue_task	B	-	??
 tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_claimed_and_terminal_never_flipped	B	-	在飞（claimed）与终态（done/skipped）绝不回炉——前者重复登录、后者谎报了结。
 tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_default_tier_flips_conservative_needs_explicit	B	-	??
@@ -3433,6 +3462,7 @@ tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_doc_pages_have_desc
 tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_env_overrides_description	G	node	??
 tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_login_page_has_description_and_og	G	node	??
 tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_site_image_requires_https	G	node	og:image 仅接受 https 绝对地址，其余一律忽略。
+tests/test_web_mask_email_parity.py	WebForwarderParityTest.test_forwarder_matches_source	G	node	??
 tests/test_web_page_consistency.py	PageConsistencyTest.test_no_page_level_entry_moved_into_a_tab	F	-	导航必须是真实页面链接；整页唯一条目不得按页复制、不得靠 tab 显隐。
 tests/test_web_page_consistency.py	PageConsistencyTest.test_version_and_source_appear_exactly_once_per_page	F	-	每个整页（含其共享外壳/页脚）里，版本号与开源入口都必须**恰好 1 处**。
 tests/test_web_page_consistency.py	TabAriaRovingTest.test_tab_partitions_render_aria_tabs_with_roving_tabindex	F	-	含分区的页面必须以 WAI-ARIA tabs 模式渲染，且 roving tabindex 初始态正确。
