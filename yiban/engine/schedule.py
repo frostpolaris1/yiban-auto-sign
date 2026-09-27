@@ -92,9 +92,15 @@ def reset_daily_alerts(now=None):
     return True
 
 
-def _env_int(name, default, lo=None, hi=None):
-    """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。"""
-    raw = os.environ.get(name, "").strip()
+def _env_int(name, default, lo=None, hi=None, env=None):
+    """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。
+
+    `env` 给出时只读它、不回落进程环境——口径与 `_env_flag` 一致。容量预估这类
+    "一次估算多个键"的调用方必须用它：web 进程的环境里没有 `.env` 的键（run.sh
+    才逐行 export），gap 从 `.env` 读而 avg 落进程环境就是跨两个配置层取值（MF-93）。
+    """
+    src = os.environ if env is None else env
+    raw = str(src.get(name, "")).strip()
     if not raw:
         return default
     try:
@@ -108,9 +114,12 @@ def _env_int(name, default, lo=None, hi=None):
     return v
 
 
-def avg_attempt_sec():
-    """单账号签到耗时估算（秒）：YIBAN_AVG_ATTEMPT_SEC 显式配置优先，缺省 3s。"""
-    return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300)
+def avg_attempt_sec(env=None):
+    """单账号签到耗时估算（秒）：YIBAN_AVG_ATTEMPT_SEC 显式配置优先，缺省 3s。
+
+    `env` 口径见 `_env_int`：web 侧容量预估必须把生效配置层传进来，与 gap 同源。
+    """
+    return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300, env=env)
 
 
 def _env_float(name, default, lo=None, hi=None):
@@ -129,7 +138,7 @@ def _env_float(name, default, lo=None, hi=None):
     return v
 
 
-def capacity_accounts(window_sec, gap=0, avg=None):
+def capacity_accounts(window_sec, gap=0, avg=None, env=None):
     """有效窗口内可容纳的账号数（容量口径唯一源：引擎预检与 web 容量预估共用）。
 
     模型：首个账号立刻占用 avg 秒，此后每个账号按「上一次完成 + 间隔下限」推进，
@@ -138,10 +147,11 @@ def capacity_accounts(window_sec, gap=0, avg=None):
 
     window_sec：有效窗口秒数（已扣掐头去尾）
     gap：账号间隔下限秒（YIBAN_ACCOUNT_GAP_MAX）
-    avg：单账号耗时秒；缺省取 avg_attempt_sec()
+    avg：单账号耗时秒；缺省取 avg_attempt_sec(env)
+    env：avg 的取值层（口径见 `_env_int`）；同一次估算的所有键必须同一来源（MF-93）
     """
     if avg is None:
-        avg = avg_attempt_sec()
+        avg = avg_attempt_sec(env)
     avg = max(1, int(avg))
     gap = max(0, int(gap or 0))
     slack = int(window_sec) - avg
@@ -171,7 +181,8 @@ def channel_count(bucket_rate, avg=None):
     return min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
 
 
-def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
+def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8,
+                         env=None):
     """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
 
     `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数（唯一口径见
@@ -181,9 +192,10 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
 
     `util` 缺省 0.8（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
     单位是**账号尝试数**（单账号 ≈6 次 HTTP 请求），不是请求数。
+    `avg`/`env` 口径同 `capacity_accounts`（同一次估算同一配置层）。
     """
     if avg is None:
-        avg = avg_attempt_sec()
+        avg = avg_attempt_sec(env)
     avg = max(1, int(avg))
     k = max(1, int(k))
     util = min(max(float(util), 0.0), 1.0)
@@ -196,7 +208,7 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
 
 
 def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
-                util=0.8, enabled=None):
+                util=0.8, enabled=None, env=None):
     """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
 
     为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
@@ -204,20 +216,25 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
     一处后，v2 侧（开关缺省关）**逐字**走 `capacity_accounts`（行为不变），v3 侧走
     `capacity_accounts_v3`，随开关切换自动生效（开关即回滚）。
 
-    `enabled` 缺省取 `executor_v3.scheduler_v3_enabled()`（`YIBAN_SCHEDULER_V3`，缺省 0）；
+    `enabled` 缺省取 `executor_v3.scheduler_v3_enabled(env)`（`YIBAN_SCHEDULER_V3`，缺省 0）；
     显式传入只为测试与"不读环境"的调用方。`k` 是执行体数，缺省 1（单执行体零额外配置，
     与 `capacity_accounts_v3` 的缺省一致）——需要按账号量自动定尺的调用方先用
     `executor_count` 算出 K 再传入。`bucket_rate`/`util` 只在 v3 侧参与。
+
+    `env`：`avg`/`enabled` 未显式给出时的取值配置层（口径见 `_env_int`）。调用方一旦
+    传了 `env`，本次估算的 avg 与开关就从**同一份** `env` 读，不再跨"进程环境 + .env"
+    两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
+    `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
         # 本函数只被保存闸门/引擎预检/CLI 调用，频率低，局部导入的开销可忽略。
         from yiban.engine import executor_v3
-        enabled = executor_v3.scheduler_v3_enabled()
+        enabled = executor_v3.scheduler_v3_enabled(env)
     if not enabled:
-        return capacity_accounts(window_sec, gap, avg)
+        return capacity_accounts(window_sec, gap, avg, env=env)
     return capacity_accounts_v3(window_sec, 1 if k is None else k, avg,
-                                bucket_rate, util)
+                                bucket_rate, util, env=env)
 
 
 def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
