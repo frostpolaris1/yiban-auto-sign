@@ -2010,6 +2010,7 @@ tests/test_planner.py	WritePlanTest.test_empty_rows_is_noop	A	-	??
 tests/test_planner.py	WritePlanTest.test_existing_rows_are_not_overwritten	A	-	已存在的行不被覆盖（先手工改成 done，重跑后仍为 done）。
 tests/test_planner.py	WritePlanTest.test_insert_then_rerun_is_idempotent	A	-	幂等落库：连跑两次行数不变，第二次写入 0 行。
 tests/test_planner.py	WritePlanTest.test_normal_plan_writes_second_slot_width	A	-	??
+tests/test_probe.py	ProbeAccountingTest.test_soft_fail_records_failed_not_success	D	-	??
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_folds_spaced_shadow_line	D	-	`YIBAN_PROBE_ENABLE = 1`（带空格旧行）也必须折掉。
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_noop_when_not_auto_disable	D	-	非 once 模式不得改动 .env。
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_writes_disable_and_creates_tmp_0600	D	-	写 YIBAN_PROBE_ENABLE=0 且临时文件**创建即 0600**。
