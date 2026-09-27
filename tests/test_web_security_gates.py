@@ -35,6 +35,7 @@ from datetime import timedelta
 from unittest import mock
 
 from _mail_body import render_body
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 from yiban import clock
 
@@ -181,11 +182,11 @@ class Batch16FixesTest(unittest.TestCase):
         self._mk_user("user1@test.local")
         c = self.webapp.create_app().test_client()
         token = self._login(c, "regadmin@test.local", ADMIN_PASS)
-        r = c.post("/api/users/user1@test.local/password",
+        r = c.post(user_path(db, "user1@test.local", "/password"),
                    json={"password": NEW_PASS}, headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(self._pw_version("user1@test.local"), 1)
-        r2 = c.post("/api/users/user1@test.local/password",
+        r2 = c.post(user_path(db, "user1@test.local", "/password"),
                     json={"password": NEW_PASS, "confirm_password": ADMIN_PASS},
                     headers=self._csrf(token))
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
@@ -521,14 +522,18 @@ class DraftWriteTest(_AnnBase):
         self.assertFalse(force)
         self.assertIn("公告草稿已更新", body)
         self.assertIn("待主管理员发布", body)
-        self.assertIn(REG_ADMIN, body)
+        # MF-49 actor 收口（2-9b）：外发告警正文的"操作者"过 mask_email，
+        # 注册管理员邮箱不再明文外送；遮罩形态仍可辨是谁（同输入同输出）。
+        self.assertIn("reg***@test.local", body, "操作者应以遮罩形态出现")
+        self.assertNotIn(REG_ADMIN, body, "告警正文不得含完整操作者邮箱")
 
     def test_draft_audit_marks_pending(self):
         c = self._reg_admin()
         self._put_draft(c, "维护通知")
         rows = self._audit("announcement_draft_save")
         self.assertEqual(len(rows), 1, f"草稿写入须留一条审计，实际 {self._audit('announcement')}")
-        self.assertEqual(rows[0]["username"], REG_ADMIN)
+        # actor 写入口即遮罩（MF-49·2-9b）：磁盘面存遮罩形态，可辨不可逆。
+        self.assertEqual(rows[0]["username"], "reg***@test.local")
         self.assertIn("待发布", rows[0]["detail"])
         self.assertIn("维护通知", rows[0]["detail"])
         self.assertEqual(self._audit("announcement_publish"), [], "写草稿不得记成发布")
@@ -1233,7 +1238,7 @@ class Batch18FixesTest(unittest.TestCase):
         db.add_account({"name": "A", "phone": PHONE, "password": "pw",
                         "status": "active", "owner": "m3@test.local"})
         ac, at = self._admin_client()
-        r = ac.post("/api/users/m3@test.local/delete",
+        r = ac.post(user_path(db, "m3@test.local", "/delete"),
                     json={"mode": "accounts_only"}, headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["reason"], "password_required")
@@ -1245,7 +1250,7 @@ class Batch18FixesTest(unittest.TestCase):
         db.add_account({"name": "A", "phone": PHONE, "password": "pw",
                         "status": "active", "owner": "m3b@test.local"})
         ac, at = self._admin_client()
-        r = ac.post("/api/users/m3b@test.local/delete",
+        r = ac.post(user_path(db, "m3b@test.local", "/delete"),
                     json={"mode": "accounts_only", "confirm_password": ADMIN_PASS_B18F},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))

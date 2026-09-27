@@ -30,6 +30,8 @@ import time
 import unittest
 from unittest import mock
 
+from yiban.store.audit_chain import actor_tag
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "c" * 64
@@ -137,7 +139,8 @@ class DupcheckOracleTest(unittest.TestCase):
         self.assertIn("已被使用", r.get_json().get("error", ""))
         rows = self._audit(DUP_HIT)
         self.assertEqual(len(rows), 1, "每次预检命中必须落一条可归因审计")
-        self.assertEqual(rows[0]["username"], ACTOR)
+        self.assertEqual(rows[0]["username"], actor_tag(ACTOR),
+                         "MF-49：审计 actor 列按写入口遮罩（actor_tag）")
         self.assertEqual(rows[0]["target"], "138****0000")
         for v in rows[0].values():
             self.assertNotIn(PHONE_TAKEN, str(v), "审计行不得含完整号码")
@@ -175,7 +178,7 @@ class DupcheckOracleTest(unittest.TestCase):
         _post_account(c, token, PHONE_TAKEN)  # 第二次被拒
         denied = self._audit(DUP_DENIED)
         self.assertEqual(len(denied), 1, "拒绝面每窗口至多一行，不得刷审计表")
-        self.assertEqual(denied[0]["username"], ACTOR)
+        self.assertEqual(denied[0]["username"], actor_tag(ACTOR))
 
     # ---- 3. 正常路径零回归：未重号不吃额度、不写命中审计；按会话隔离；翻窗复位 ----
     def test_unique_submission_unbilled_and_actor_isolated(self):

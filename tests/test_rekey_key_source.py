@@ -106,6 +106,7 @@ from _frontend_src import frontend_source
 
 # 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
 from _mail_body import render_body
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -1943,12 +1944,23 @@ class LoginTrailB14Test(_B14AlertGateBase):
         return "".join(str(v) for v in row.values())
 
     def _assert_triple(self, row, want_username):
-        """三类留痕共用的口径断言（与 forbidden_path 同构）：用户名、匿名 target、长度上限。"""
-        self.assertEqual(row["username"], want_username)
+        """三类留痕共用的口径断言（与 forbidden_path 同构）：用户名、匿名 target、长度上限。
+
+        MF-49 actor 收口（2-9b）：audit 写入口统一过 `actor_tag`（=`mask_email`），
+        邮箱形态操作者存遮罩态（同输入同输出仍可辨），非邮箱标识（admin/system）原样。
+        这里仍按"真实会话用户名的遮罩态"钉死 actor（不是"任意值"），并额外断言整行
+        不含完整邮箱明文——防的就是 actor 面回潮。
+        """
+        from yiban.masking import mask_email
+        self.assertEqual(row["username"], mask_email(want_username),
+                         "actor 必须是真实会话用户名的遮罩形态")
         self.assertLessEqual(len(row["username"]), 64, "username 必须截断到 64")
         self.assertRegex(row["target"], r"^[0-9a-f]{64}$",
                          "target 必须是 hash_ip 的 HMAC 输出，不落明文 IP")
         self.assertNotIn("127.0.0.1", self._row_text(row), "整行都不得出现明文 IP")
+        if "@" in want_username:
+            self.assertNotIn(want_username, self._row_text(row),
+                             "整行都不得出现操作者邮箱明文")
 
     # ---- ① 成功登录 ----
     def test_registered_user_login_writes_single_login_ok(self):
@@ -2145,7 +2157,10 @@ class LoginTrailB14Test(_B14AlertGateBase):
         self.assertEqual([r["action"] for r in rows],
                          ["login_ok", "logout_ok"] * 2,
                          "起止两端必须成对且按时间顺序可重建")
-        self.assertTrue(all(r["username"] == email for r in rows))
+        # actor 遮罩态（MF-49·2-9b）：同输入同输出，取证仍可聚到同一操作者。
+        from yiban.masking import mask_email
+        want_actor = mask_email(email)
+        self.assertTrue(all(r["username"] == want_actor for r in rows))
         ok, broken, first = db.verify_audit_chain()
         self.assertTrue(ok, f"新增留痕不得签坏既有链，broken={broken} first={first}")
 
@@ -2498,14 +2513,14 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         db.create_user(email, self.webapp.generate_password_hash("OldPass#2026"))
         c = self._client()
         token = self._login(c, "admin", ADMIN_PASS)
-        r = c.post(f"/api/users/{email}/password", json={"password": "1234567890"},
+        r = c.post(user_path(db, email, "/password"), json={"password": "1234567890"},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["error"], f"新密码不符合要求：密码需包含{PW_CLASS_SENTENCE}",
                          "管理员重置端点前缀与状态码不变")
         self.assertEqual((db.find_user(email) or {}).get("pw_version"), 1,
                          "被拒重置不得动 pw_version（旧会话不得被无谓吊销）")
-        r2 = c.post(f"/api/users/{email}/password",
+        r2 = c.post(user_path(db, email, "/password"),
                     json={"password": "!@#$%^&*()12",
                           "confirm_password": ADMIN_PASS},  #：管理员重置二次鉴权
                     headers=self._csrf(token))

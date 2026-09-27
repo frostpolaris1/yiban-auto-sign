@@ -42,6 +42,7 @@ from unittest import mock
 
 import db
 import signin
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 from yiban.infra import account_crypto
 
@@ -693,7 +694,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         """重置他人口令：动作生效、目标旧会话被吊销，但不再外发管理员告警。"""
         self._user_with_account(EMAIL, "13800138004")
         ac, at = self._admin_client()
-        r = ac.post(f"/api/users/{EMAIL}/password",
+        r = ac.post(user_path(db, EMAIL, "/password"),
                     json={"password": "Reset#12345", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -728,7 +729,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self._user_with_account(EMAIL, "13800138006")
         ac, at = self._admin_client()
         # 2026-09-05：角色变更接入高危门禁，须携带当前管理员密码二次鉴权
-        r = ac.post(f"/api/users/{EMAIL}/role",
+        r = ac.post(user_path(db, EMAIL, "/role"),
                     json={"role": "admin", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -744,7 +745,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
     def test_role_change_without_reconfirm_rejected(self):
         self._user_with_account(EMAIL, "13800138007")
         ac, at = self._admin_client()
-        r = ac.post(f"/api/users/{EMAIL}/role", json={"role": "admin"},
+        r = ac.post(user_path(db, EMAIL, "/role"), json={"role": "admin"},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         u = db.find_user(EMAIL)

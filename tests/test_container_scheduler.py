@@ -46,6 +46,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import db
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 from yiban import clock
 from yiban.engine import workers
@@ -813,7 +814,8 @@ class Batch9WebTest(unittest.TestCase):
         name, val = self._session_cookie(c)
         ac = self.webapp.create_app().test_client()
         at = self._login(ac, "admin@test.local", ADMIN_PASS)
-        r = ac.post(f"/api/users/{EMAIL}/password",
+        # 单条操作按不透明 id 定位（2-9b：明文邮箱不进 URL path）
+        r = ac.post(user_path(db, EMAIL, "/password"),
                     json={"password": "NewPass#777", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
