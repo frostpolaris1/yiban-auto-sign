@@ -365,6 +365,11 @@ def test_legacy_url_uses_custom_channel(monkeypatch):
     class FakeResp:
         status_code = 200
 
+        def json(self):
+            # 按生产形态补齐：requests.Response 恒有 .json()，body 非 JSON 抛 ValueError
+            # （无回执可读的 2xx 按 HTTP 状态判送达，判据见 `_custom_receipt_refuses`）
+            raise ValueError("body not json")
+
     monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(k.get("json")) or FakeResp())
     assert notify.send("告警", "内容") is True
     assert calls == [{"title": "告警", "content": "内容"}]
@@ -663,6 +668,99 @@ def test_unsafe_url_rejection_refunds_budget(monkeypatch):
     assert notify.send("告警", "内容") is False
     assert calls == []
     assert notify.get_config()["daily_remaining"] == 2
+
+
+# ---- MF-44 A 组：额度占用与退还（"该响的不响"的根因）----
+
+def test_serverchan_json_non_object_refunds_not_leaks(monkeypatch, caplog):
+    """A1：Server酱 返回合法 JSON 但**非对象**（数组/字符串/数字）时判失败并退还额度。
+
+    旧实现 `result.get("code")` 在 list/str/int 上抛 `AttributeError`，异常逃逸出
+    组件、跳过 send() 的"未送达即退还"那行 ⇒ 占用被吃掉且永不回来（登记实测
+    "额度 5→4 且永不恢复"）。收口为"非对象体无送达回执字段 ⇒ 失败"。
+    """
+    _configure_serverchan(monkeypatch, cooldown=0)
+    _set(monkeypatch, DAILY_MAX="1")
+
+    class _ArrResp:
+        status_code = 200
+
+        def json(self):
+            return [0]  # 合法 JSON，但非对象
+
+    calls = []
+    monkeypatch.setattr(notify_transport.requests,
+                        "post", lambda *a, **k: calls.append(1) or _ArrResp())
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify.send("告警", "内容") is False  # 绝不外抛（组件契约）
+    assert notify.get_config()["daily_remaining"] == 1, "非对象回执必须退还，不得吃额度"
+    assert notify.pop_exhaustion_notice() == []
+
+
+def test_custom_3xx_or_error_body_refunds_not_charged(monkeypatch):
+    """A1：custom 成功判据从 `<400` 收成 2xx 一档，并认 200+错误 body。
+
+    旧判据两处把假回执算成"已送达"并真扣额：① `allow_redirects=False` 下的 3xx——
+    信根本没投到处理逻辑（跳转目标从未经白名单），② 钉钉族"HTTP 200 + code/errcode
+    非零"的业务失败。两条都得判失败并退还。
+    """
+    _clear(monkeypatch)
+    _set(monkeypatch, TYPE="custom", DAILY_MAX="2", COOLDOWN="0",
+         SECRET_ENC=_enc("https://hook.example.com/push"))
+    calls = []
+
+    class _R:
+        def __init__(self, status, body):
+            self.status_code = status
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    # 3xx：旧 `<400` 会误判成功
+    monkeypatch.setattr(notify_transport.requests,
+                        "post", lambda *a, **k: calls.append(1) or _R(302, None))
+    assert notify.send("重定向", "x") is False, "3xx 未跟随跳转 = 未送达"
+    # 200 + errcode 非零：钉钉族业务失败
+    monkeypatch.setattr(notify_transport.requests, "post",
+                        lambda *a, **k: calls.append(1) or _R(200, {"errcode": 40001}))
+    assert notify.send("业务失败", "x") is False, "200+错误 body 判失败（旧算成功）"
+    assert notify.get_config()["daily_remaining"] == 2, "两次假回执都不得扣额"
+    # 对照：200 + code:0 才算真送达并扣 1 条
+    monkeypatch.setattr(notify_transport.requests, "post",
+                        lambda *a, **k: calls.append(1) or _R(200, {"code": 0}))
+    assert notify.send("正常", "x") is True
+    assert notify.get_config()["daily_remaining"] == 1
+
+
+def test_urgent_only_accepts_false_and_daily_max_negative_not_unlimited(monkeypatch, caplog):
+    """A3：URGENT_ONLY=false 必须**关掉**开关；DAILY_MAX=-1 不得静默放开成不限额。
+
+    两处旧口径分叉（都在 `_env_int` 上）：① 管理员照直觉写 `URGENT_ONLY=false`，
+    `_env_int` 抛 ValueError 回退缺省 1 = **想关却静默保持开启**；② `DAILY_MAX=-1`
+    被 `max(0,·)` 钳成 0，而 0 在额度键上是"不限额"——误写负数 = 静默放开上限。
+    修法：开关走 `_env_flag`（认 0/false/off/no），额度负值判非法回退缺省并出声。
+    """
+    _configure_serverchan(monkeypatch, cooldown=0)
+    # ① 写 false 应关闭档位：非紧急也能推出去
+    _set(monkeypatch, URGENT_ONLY="false")
+    calls = []
+    _ok_post(monkeypatch, calls)
+    assert notify.send("非紧急", "x") is True, "URGENT_ONLY=false 必须真的关掉『仅重要』门"
+    # ② 负值额度：按缺省处理（非不限额）并记一次告警
+    _clear(monkeypatch)
+    notify_config._bad_value_warned.clear()
+    _set(monkeypatch, TYPE="serverchan", SECRET_ENC=_enc(SCT_KEY), DAILY_MAX="-1",
+         URGENT_ONLY="0", COOLDOWN="0")
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify_config._env_int("DAILY_MAX", 5) == 5, "-1 应回退缺省而非钳成 0(不限额)"
+    assert any("负值" in r.getMessage() for r in caplog.records), "误写负数要出声"
+    # ③ TYPE 分叉：未知类型 send() 必拒发 ⇒ is_configured 不得再答"出口存在"
+    _set(monkeypatch, TYPE="telegram")
+    assert notify.is_configured() is False, "is_configured 与 send 同一份判据（MF-44）"
+    # 对照：显式写 0 才是合法的不限额（返回 0，调用侧判 <=0 为不限）
+    _set(monkeypatch, DAILY_MAX="0")
+    assert notify_config._env_int("DAILY_MAX", 5) == 0
 
 
 def test_refund_across_day_does_not_charge_next_day(monkeypatch):

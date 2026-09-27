@@ -649,7 +649,11 @@ class _B14AlertGateBase(unittest.TestCase):
                 self.webapp, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
-                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, render_body(c), urgent)),
+                # 返回 True = "送达"：MF-44 后日报的去重标记只在 send_notification 返回
+                # 送达时才落，假实现必须给出送达回执，否则跨重启每日至多一封的既有用例
+                # 会因标记不落而失败（返回值消费是本任务的新契约）。
+                side_effect=lambda t, c, urgent=False, force=False, ledger=None: (
+                    self.alerts.append((t, render_body(c), urgent)), True)[1],
             )
             p.start()
             self.addCleanup(p.stop)
@@ -1540,9 +1544,12 @@ class BothChannelsDeadCombinationVariantB14Test(_B14AlertGateBase):
         self.assertIn("收件人0", detail)
         self.assertIn("主管理员接收=否", detail)
         self.assertIn("推送通道=未配置", detail, "摘要必须完整记录两侧事实")
-        meta = json.loads(db.get_meta(self.webapp._HEALTH_REPORT_META_KEY, ""))
-        self.assertTrue(meta["degraded"])
-        self.assertIn("推送通道=未配置", meta["summary"], "标记里的摘要同样要含推送侧")
+        # B4 新契约（本批修复）：真实 send_notification 本场景返回 False（两路皆无人可
+        # 收）→ "今日已播"去重标记**不落**——被吞失败不再占当日名额，重启后的下一轮
+        # 仍可重试（旧实现忽略返回值、失败照写标记，正是"一次瞬断放大成整天静默"）。
+        # 标记内容与摘要的正面证据走送达路径：test_health_report_sent_at_most_once…
+        self.assertEqual(db.get_meta(self.webapp._HEALTH_REPORT_META_KEY, ""), "",
+                         "未送达不得落去重标记（送达才销账，保留当日重试资格）")
         ok, broken, _first = db.verify_audit_chain()
         self.assertTrue(ok, f"痕迹须进既有哈希链，broken={broken}")
 
