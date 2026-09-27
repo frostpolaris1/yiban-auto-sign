@@ -9,8 +9,9 @@
 
 - 潜伏分隔符 → ValueError 且磁盘一个字节都不改、不留 tmp；
 - 折叠认得 `KEY = v`（= 前带空白）写法，不积累出同键第二行；
-- 密钥缓存按 `env_file` 分开取值，环境变量来源不冒充文件来源，非法 key 抛 ValueError
-  （调用方只 except ValueError，TypeError 会漏出去）。
+- 密钥缓存按 `env_file` 分开取值，非法 key 抛 ValueError（调用方只 except
+  ValueError，TypeError 会漏出去）；env 变量档与文件档并存且不同 ⇒ 两侧同钥断言
+  拒绝（fail-closed，MF-50），撤掉环境变量后回退 .env 的缓存语义保留。
 
 功能：字段密钥与写键行模型的注入面回归。
 归属：`yiban/infra`（env_io / account_crypto）与 `yiban/store` 写键方的测试。
@@ -19,7 +20,8 @@
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：三处写键方（账号密钥 / 审计密钥 / 追踪盐）与 `env_io` 的行模型是否同一套；
-潜伏分隔符拒绝写入；`KEY = v` 空白影子行折叠；密钥缓存按 `env_file` 分源取值。
+潜伏分隔符拒绝写入；`KEY = v` 空白影子行折叠；密钥缓存按 `env_file` 分源取值；
+env 档与文件档分叉的两侧同钥断言（含大小写不误杀正例）。
 对应实现：`yiban/infra/env_io.py` 的 `parse_env_file` / `write_env_keys` / `write_env_key` /
 `has_line_break` / `is_valid_env_key` / `key_line_pattern`，以及
 `yiban/infra/account_crypto.py` 的 `load_key` / `encrypt_password` / `decrypt_password`。
@@ -78,14 +80,32 @@ class KeyCacheSourceTest(unittest.TestCase):
         self.assertEqual(account_crypto.load_key(b).hex(), KEY_B, "第二个 .env 串到了第一个的钥")
         self.assertEqual(account_crypto.load_key(a).hex(), KEY_A, "回到 a 仍须取 a 的钥")
 
-    def test_env_var_key_does_not_stand_in_for_file_key(self):
-        """环境变量撤掉后不得再拿它的钥冒充 .env 的钥（缓存不记环境变量这一档）。"""
+    def test_env_var_key_diverging_from_file_key_is_refused(self):
+        """env 档与 .env 档并存且**不同** ⇒ 两侧同钥断言拒绝（拓扑分叉反例）。
+
+        旧语义"env 静默压住 .env"正是现网 web（EnvironmentFile 注入）与引擎（读
+        .env）分叉的成因，已从合法态改为 fail-closed；诊断必须带两侧 kid（可自证）。
+        env 档不落缓存的既有语义保留：撤掉环境变量后回退 .env 的钥。
+        """
         a = self._env_file("a.env", KEY_A)
         os.environ["YIBAN_ACCOUNTS_KEY"] = KEY_B
 
-        self.assertEqual(account_crypto.load_key(a).hex(), KEY_B, "环境变量优先级最高")
+        with self.assertRaises(ValueError) as ctx:
+            account_crypto.load_key(a)
+        msg = str(ctx.exception)
+        self.assertIn("两侧不一致", msg)
+        self.assertIn(account_crypto.key_fingerprint(bytes.fromhex(KEY_B)), msg,
+                      "诊断须含 env 档 kid")
+        self.assertIn(account_crypto.key_fingerprint(bytes.fromhex(KEY_A)), msg,
+                      "诊断须含文件档 kid")
         os.environ.pop("YIBAN_ACCOUNTS_KEY")
         self.assertEqual(account_crypto.load_key(a).hex(), KEY_A, "撤掉环境变量后应回退到 .env")
+
+    def test_env_var_key_matching_file_key_passes_regardless_of_case(self):
+        """两档解出同一把钥即放行——十六进制大小写写法不同不算分叉（不误杀）。"""
+        a = self._env_file("a.env", KEY_A)
+        os.environ["YIBAN_ACCOUNTS_KEY"] = KEY_A.upper()
+        self.assertEqual(account_crypto.load_key(a).hex(), KEY_A)
 
     def test_decrypt_rejects_bad_key_with_value_error(self):
         """key=None / 非 bytes / 长度错 → ValueError（TypeError 会越过调用方的收口）。"""
