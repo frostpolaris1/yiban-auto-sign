@@ -54,7 +54,22 @@ from pathlib import Path
 
 from yiban import clock
 from yiban.infra import env_io, env_lock
+from yiban.masking import mask_email
 from yiban.store import connection as _connection
+
+
+def actor_tag(username):
+    """审计 `username`（actor）列的唯一遮罩口径：邮箱形态 → `mask_email`（幂等），
+    非邮箱标识（`admin`/`system`/`?`/进程作用域串）原样穿过（`mask_email` 的无 `@`
+    分支天然等价——显式命名只为语义可见，不另造第二套判据）。
+
+    收口动机（MF-49 审计侧）：注册管理员的会话用户名就是邮箱，现网 actor 列约六成
+    为明文邮箱；本列进备份包、进 `db --export`、进日志页渲染——磁盘面失守。遮罩后
+    仍保住两条硬性质：**同输入同输出**（可按 actor 聚人、与历史行可比对）与
+    **不可逆**（本地部只剩前 3 字符，反查不回完整地址）。碰撞口径的结论（批 2 报告：
+    遮罩为**线索层**非身份层，追人配合同事务业务行与 `_req` 作用域标记）也记在那里。
+    """
+    return mask_email(username)
 
 logger = logging.getLogger("yiban.store.audit_chain")
 
@@ -522,6 +537,9 @@ def audit(username, action, target="", detail="", request_id=None):
     """
     conn = None
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    # actor 列在**写入口**收口（见 `actor_tag`）：哈希链对已写形态验真，遮罩先于哈希，
+    # 链与内容口径从此一致；不存在"库里明文、出口才遮"的第二份。
+    username = actor_tag(username)
     detail = _scope_detail(detail[:200], request_id)
     last_err = None
     for attempt in range(_AUDIT_RETRIES):
@@ -590,6 +608,7 @@ def record_in_txn(conn, username, action, target="", detail="", request_id=None)
     已开启：读链尾与 INSERT 之间若无跨进程互斥，会读到同一 prev_hash 造成链分叉。
     """
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    username = actor_tag(username)
     detail = _scope_detail((detail or "")[:200], request_id)
     row = conn.execute(
         "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
