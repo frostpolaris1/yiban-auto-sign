@@ -210,5 +210,49 @@ class WebVerifyTest(unittest.TestCase):
             self.assertFalse(self.w._account_verify_enabled())
 
 
+class ProbeAccountingTest(unittest.TestCase):
+    """探针记账口径：未通过（含网络类软失败）一律记 failed，不得涂成 success。
+
+    原式 `"failed" if hard else "success"` 把软失败涂成 success，探针自身断网时
+    台账仍是"全员可用"（生产 255 行全 success、0 failed）。本钉锁"记账=探测结论"；
+    硬/软的区分仍由告警分支与 message 承载，探测行为与预警口径不变。
+    """
+
+    def test_soft_fail_records_failed_not_success(self):
+        import signin
+
+        import yiban.engine.probe as probe
+
+        recorded = []
+        soft_msg = "探测连接不可达 (ECONNREFUSED)"
+        # 前置自检：这条消息必须确实落在"软失败"档（不匹配硬失败特征），
+        # 否则本钉锁的不是它声称要锁的分支
+        self.assertFalse(probe.PROBE_HARD_FAIL_RE.search(soft_msg))
+        accounts = [
+            signin.Account(phone="13800000001", password="pw", phone_model="", phone_code=""),
+            signin.Account(phone="13800000002", password="pw", phone_model="", phone_code=""),
+        ]
+        with mock.patch.object(probe, "PROBE_ENABLE", True), \
+                mock.patch.object(probe, "PROBE_INTERVAL", ""), \
+                mock.patch.object(probe, "_health_probe_due", return_value=True), \
+                mock.patch.object(probe, "_update_probe_state_run"), \
+                mock.patch.object(probe, "verify_account",
+                                  side_effect=[(True, "ok"), (False, soft_msg)]), \
+                mock.patch.object(probe.state_io, "_load_cred_state", return_value={}), \
+                mock.patch.object(probe.alerts, "_collect_admin_mail"), \
+                mock.patch.object(probe.alerts, "send_user_fail_mail") as user_mail, \
+                mock.patch.object(probe.alerts, "_flush_admin_mail_summary"), \
+                mock.patch.object(probe.db, "add_sign_event",
+                                  side_effect=lambda *a, **k: recorded.append(a)):
+            probe.run_probe(accounts)
+        statuses = [row[2] for row in recorded]
+        self.assertEqual(
+            statuses, ["success", "failed"],
+            "软失败必须记 failed——涂成 success 会让探针断网时台账显示全员可用",
+        )
+        # 软失败不出用户预警（告警口径不变：只有硬失败才发个人邮件）
+        user_mail.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

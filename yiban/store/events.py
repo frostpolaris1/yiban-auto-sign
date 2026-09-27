@@ -5,7 +5,8 @@
 **功能**
 - 写入：`add_sign_event`（单条，失败仅告警）与 `add_sign_events_batch`（单事务批量，
   供 signin 一轮结束后落库）；
-- 查询与统计：`sign_event_stats`（按天 × 状态聚合）、`sign_events_by_phone`（单账号
+- 查询与统计：`sign_event_stats`（按天 × 状态聚合）、`sign_event_accounts_summary`
+  （账号数终值：窗口去重总数 / 按状态去重 / 按日最终态）、`sign_events_by_phone`（单账号
   时间线）、`sign_events_since`（实时事件流）、`probe_events_on` / `sign_events_on`
   （指定日期的探针 / 签到事件）、`sign_events_recent_date`（窗口内最近有数据的日期）；
 - 暂停冷却：`last_pause_at` / `pause_count_since` 查 audit_logs 表里
@@ -154,8 +155,8 @@ def sign_event_stats(days=30, stage=None):
 
     两条语义边界（消费方须自行处理）：
     1. 各状态桶**分别**去重 ⇒ 同一天"先失败后成功"的账号会**同时出现在两个桶**，把各桶
-       `cnt` 相加当"账号总数"仍会偏大；若要"最终状态"口径，需按账号取当日最后一条事件
-       （不在本聚合范围内）。
+       `cnt` 相加当"账号总数"仍会偏大；"最终状态"与窗口去重总数由
+       `sign_event_accounts_summary` 出终值，消费方不得对 `cnt` 跨维直加。
     2. 事件**列表**仍会显示多行——那是各执行体各自的事实；写入侧去重（同一
        `(phone, day, status, stage)` 只写一次）不在本聚合范围内。
 
@@ -184,6 +185,67 @@ def sign_event_stats(days=30, stage=None):
     except Exception as e:
         logger.warning("sign_events 统计失败: %s", e)
         return []
+
+
+def sign_event_accounts_summary(days=30, stage=None):
+    """账号数**终值**（看板「涉及多少账号」的唯一权威口径，见 MF-55）。
+
+    `sign_event_stats` 的 `cnt` 按 `(day, status)` 各自去重，桶与桶**不**互斥
+    （同账号跨天/跨状态各计一次）——把它跨天跨状态直加当「账号总数」正是现网
+    「953 vs 真值 94」的来源。前端拿不到 phone 明细，无法自行去重，所以终值
+    必须由后端出：
+
+    - `total`：窗口内 `COUNT(DISTINCT phone)`——「签到账号总数」的真值；
+    - `by_status`：每个状态在窗口内的去重账号数（各桶独立去重；桶间仍可有交集，
+      展示为占比时以各桶自身为分子，**不得相加当总数**）；
+    - `by_day`：日 × **最终状态** 分桶——每账号当日取最后一条事件（id 最大者）的
+      状态。日内每号恰落一桶 ⇒ 桶互斥、当日相加合法；日历染色由「fail 优先」
+      （先败后成的日子被涂红）改为最终态（当日最后事实是失败才红）。
+
+    stage 语义与 `sign_event_stats` 相同：签到口径必须显式传 "sign"，否则
+    探针事件混入账号数。失败返回空骨架（与 `sign_event_stats` 的失败口径一致）。
+    """
+    empty = {"total": 0, "by_status": {}, "by_day": []}
+    try:
+        with _facade()._conn_lock:
+            conn = _facade().get_conn()
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            where = "ts >= ?"
+            params = [cutoff]
+            if stage:
+                where += " AND stage = ?"
+                params.append(stage)
+            total = conn.execute(
+                f"SELECT COUNT(DISTINCT phone) FROM sign_events WHERE {where}",
+                params,
+            ).fetchone()[0]
+            status_rows = conn.execute(
+                f"SELECT status, COUNT(DISTINCT phone) AS accounts "
+                f"FROM sign_events WHERE {where} GROUP BY status",
+                params,
+            ).fetchall()
+            day_rows = conn.execute(
+                "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS accounts "
+                "FROM sign_events WHERE id IN ("
+                "  SELECT MAX(id) FROM sign_events"
+                f"  WHERE {where} GROUP BY phone, substr(ts, 1, 10)"
+                ") GROUP BY day, status ORDER BY day",
+                params,
+            ).fetchall()
+            return {
+                "total": int(total or 0),
+                "by_status": {str(r["status"]): int(r["accounts"]) for r in status_rows},
+                "by_day": [
+                    {"day": str(r["day"]), "status": str(r["status"]),
+                     "accounts": int(r["accounts"])}
+                    for r in day_rows
+                ],
+            }
+    except Exception as e:
+        logger.warning("sign_event_accounts_summary 统计失败: %s", e)
+        return empty
 
 
 def sign_events_by_phone(phone, days=30):

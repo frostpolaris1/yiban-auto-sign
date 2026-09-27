@@ -309,7 +309,8 @@ class WebuiStatsDbTest(unittest.TestCase):
 
     def test_stats_same_phone_in_both_status_buckets(self):
         # 语义边界：各状态桶分别去重 ⇒ 先失败后成功的账号同时出现在两个桶，
-        # 各桶相加当"账号总数"仍会偏大（最终状态口径不在本聚合范围内）。
+        # 各桶相加当"账号总数"仍会偏大（账号终值口径由 sign_event_accounts_summary 出，
+        # 见 test_accounts_summary_emits_final_values——消费方禁止对 cnt 跨维直加）。
         db.add_sign_event(_recent(minutes=3), "13800138000", "failed")
         db.add_sign_event(_recent(minutes=2), "13800138000", "success")
         failed = self._stat_for("failed")
@@ -318,3 +319,49 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(success["cnt"], 1)
         self.assertEqual(failed["cnt"] + success["cnt"], 2,
                          "同一账号在两个桶各计一次（分桶去重的必然结果）")
+
+    # ======== 新增聚焦钉（MF-55 主体：账号数终值由后端出） ========
+    def test_accounts_summary_emits_final_values(self):
+        """`sign_event_accounts_summary` 出账号数终值：窗口去重总数 / 按状态去重 / 按日最终态。
+
+        回退即红的三格：① total 必须是 COUNT(DISTINCT phone)——旧前端把
+        daily_stats.cnt 跨天跨状态直加，现网 953 对真值 94（10.1 倍）；② 探针行
+        （stage=probe）不得混入（防混算的另一半在后端过滤，URL 那 10 个字符已另行钉死）；
+        ③ by_day 是日终态分桶——先败后成的账号只落最终桶，日历染色不再 fail 优先。
+        """
+        def _noon(days_ago, minute=0):
+            # 本地正午时刻：跨 UTC/本地时区双跑时，"日"的切分仍由被测代码自己一致地算，
+            # 避开用数在午夜边缘漂到相邻日
+            return ((clock.now() - datetime.timedelta(days=days_ago))
+                    .replace(hour=12, minute=minute, second=0, microsecond=0)
+                    .strftime("%Y-%m-%d %H:%M:%S"))
+        d2, d1 = _noon(2)[:10], _noon(1)[:10]
+        a, b, c = "13800138000", "13800138001", "13800138002"
+        db.add_sign_event(_noon(2, 0), a, "failed", stage="sign")     # A 先败
+        db.add_sign_event(_noon(2, 30), a, "success", stage="sign")   # 后成 ⇒ 当日终态 success
+        db.add_sign_event(_noon(2, 10), b, "success", stage="sign")   # B 当日成功
+        db.add_sign_event(_noon(1, 0), a, "success", stage="sign")    # A 次日又成功（跨天）
+        db.add_sign_event(_noon(1, 20), c, "success", stage="probe")  # 探针行：不得混入
+        s = db.sign_event_accounts_summary(days=30, stage="sign")
+        # ① 总数 = 窗口去重（A、B 两个账号；A 跨两天、跨两个状态桶都只算一次）
+        self.assertEqual(s["total"], 2, "「签到账号总数」= 窗口 COUNT(DISTINCT phone)")
+        naive = sum(r["cnt"] for r in db.sign_event_stats(days=30, stage="sign"))
+        self.assertGreater(naive, s["total"],
+                           "cnt 跨天跨状态直加必虚增（登记现网 953 vs 94 的机制）")
+        # ② stage 过滤在查询端也成立：不带 stage 时探针账号混进来
+        self.assertEqual(s["by_status"], {"failed": 1, "success": 2},
+                         "success 桶含 A、B（窗口去重），failed 桶含 A——桶间有交集")
+        self.assertGreater(sum(s["by_status"].values()), s["total"],
+                           "桶有交集：桶合计不得当总数（占比只按桶自身计）")
+        no_stage = db.sign_event_accounts_summary(days=30)
+        self.assertEqual(no_stage["total"], 3, "不过滤时探针账号混入——stage 过滤是真防线")
+        # ③ 日终态分桶：每账号当日恰落一桶（桶互斥 ⇒ 日内相加合法）
+        by_day = {(r["day"], r["status"]): r["accounts"] for r in s["by_day"]}
+        self.assertEqual(by_day.get((d2, "failed"), 0), 0,
+                         "A 先败后成 ⇒ 当日终态不再落 failed 桶（日历不再被涂红）")
+        self.assertEqual(by_day[(d2, "success")], 2, "D2：A、B 终态都成功")
+        self.assertEqual(by_day[(d1, "success")], 1, "D1：只有 A（探针 C 已排除）")
+        day_totals = {}
+        for r in s["by_day"]:
+            day_totals[r["day"]] = day_totals.get(r["day"], 0) + r["accounts"]
+        self.assertEqual(day_totals, {d2: 2, d1: 1}, "日终态桶合计 = 当下去重账号数")

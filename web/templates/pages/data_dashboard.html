@@ -4,7 +4,8 @@
 
    数据全部客户端拉取（服务端不新增查询上下文）：
      GET /api/settings               → 账号/用户容量与拆解、全局/注册暂停
-     GET /api/admin/sign-events      → daily_stats/events（趋势、分布、日历、成功率）
+     GET /api/admin/sign-events      → daily_stats.row_cnt（趋势、成功率按事件行数）与
+        accounts_stats（账号数终值：窗口去重总数/按状态去重/按日最终态 → 分布卡、日历格）
      GET /api/time-prefs/stats       → 自选时间片人数
      GET /api/accounts               → 待处理账号（待审核 + 已拒绝）
      GET /api/clock /api/announcement、POST /api/ping → 系统状态
