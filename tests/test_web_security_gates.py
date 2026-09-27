@@ -1296,13 +1296,21 @@ class Batch18FixesTest(unittest.TestCase):
     # =====================================================================
     def test_cookie_path_narrowed_when_base_path_env_set(self):
         """验收用例：YIBAN_BASE_PATH=/tool/yiban-auto-sign/demo → 登录 Set-Cookie
-        含 Path=/tool/yiban-auto-sign/demo/。"""
+        含 Path=/tool/yiban-auto-sign/demo/。
+
+        MF-107（用例自备前置）：`ENV_FILE` 的打桩必须**罩住整段**——create_app 与
+        登录都得看同一份 env2。登录凭据在请求时刻经 `web.app.ENV_FILE` 现取，而
+        明文口令 → scrypt 哈希的启动迁移也只对 create_app 当时看到的那份 `.env`
+        生效：patch 提前退出后登录读的是 cls.env_file，其哈希要靠**同文件前序用例**
+        跑过一次未打桩的 create_app 才存在——单跑本用例时 cls.env_file 仍是
+        "明文在、哈希缺"的 fail-closed 形态，必得 401（全文件绿纯属顺序巧合）。
+        """
         env2 = os.path.join(self.tmp, "env-basepath.env")
         with io.open(env2, "w", encoding="utf-8") as f:
             f.write(self._env_content + "YIBAN_BASE_PATH=/tool/yiban-auto-sign/demo\n")
         with mock.patch.object(self.webapp, "ENV_FILE", env2):
             c = self.webapp.create_app().test_client()
-        r = c.post("/api/login", json={"username": "admin", "password": ADMIN_PASS_B18F})
+            r = c.post("/api/login", json={"username": "admin", "password": ADMIN_PASS_B18F})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         cookie = r.headers.get("Set-Cookie", "")
         self.assertIn("Path=/tool/yiban-auto-sign/demo/", cookie,
