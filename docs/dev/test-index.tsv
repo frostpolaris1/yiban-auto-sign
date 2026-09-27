@@ -527,6 +527,8 @@ tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_check_config_s
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_distinguishable	J	-	六种非法参数 + 缺子命令的输出不得再"逐字节相同"。
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_is_single_parseable_line	J	-	??
 tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_success_json_has_exit_code	J	-	每个维护子命令的成功 `--json` 也带 exit_code（调用方统一按它分支）。
+tests/test_cli_contract_mf60.py	ProbeExitFamilyTest.test_skip_and_failure_are_distinct_and_nonzero	J	-	??
+tests/test_cli_contract_mf60.py	ProbeExitFamilyTest.test_zero_accounts_probe_is_noop_success	J	-	零账号 = 无需执行（0）；探针分支先于零账号守卫，不落 ERROR。
 tests/test_cli_contract_mf60.py	ReadOnlyPromiseTest.test_readonly_commands_do_not_create_db_in_empty_cwd	J	-	空目录 + 只有 .env：只读命令不得当场建出 yiban.db（登记原文黑箱复现点）。
 tests/test_cli_contract_mf60.py	ReadOnlyPromiseTest.test_readonly_commands_leave_existing_db_untouched	J	-	已有库：mtime、user_version、文件集合全不变（连 WAL 的 -shm/-wal 都不新增）。
 tests/test_cli_exit_surface.py	CliChokeUnitTest.test_emit_json_masks_string_leaves_and_keeps_numbers	G	-	`_emit_json`：字符串叶子遮号、**整数字段原样**（否则整行 JSON 被遮成非法）。
@@ -2269,7 +2271,7 @@ tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_nonblocking_conten
 tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_open_failure_logs_and_refuses	B	-	旧行为：`except OSError: return None`（零日志）。现须显式拒绝 + 留日志。
 tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_probe_treats_unverifiable_lock_as_contended	B	-	`_run_lock_held` 探测不出锁状态时按"有人在跑"处置（fail-closed）。
 tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_fallback_branch_returns_lock_busy_3	B	-	??
-tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_probe_branch_skips_with_0	B	-	探针是完整登录的只读健康检查；拿不到互斥时与"已有签到在跑"同一处置（跳过）。
+tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_probe_branch_lock_unavailable_returns_3	B	-	探针是完整登录的健康检查；拿不到互斥 = 队列忙，退出 3（不得静默当成功 0）。
 tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_single_executor_main_returns_3	B	-	主路径（全量/--only）：拿不到锁必须退出 3，不得进队列发起真实登录。
 tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_worker_supervisor_returns_3_without_spawning	B	-	??
 tests/test_run_lock_fail_closed.py	TwoProcessLockContentionE2ETest.test_second_process_refused_with_recorded_reason	B	-	??
@@ -2604,8 +2606,8 @@ tests/test_sign_round_guards.py	DeadAccountSkipTest.test_queue_branch_user_cance
 tests/test_sign_round_guards.py	DeadAccountSkipTest.test_schedule_branch_dead_account_skips_without_slot_sleep	B	-	调度 v2 分支：熔断暂停号的槽位在 +180s，活号立即执行——
 tests/test_sign_round_guards.py	LateFirstRunAlertTest.test_after_second_trigger_time_alerts	B	-	07:10 之后仍挂着首签身份：不再有第三轮兜底 → 必须告警。
 tests/test_sign_round_guards.py	LateFirstRunAlertTest.test_before_second_trigger_time_stays_silent	B	-	07:10 之前的首签轮：补签会重跑，维持既有不打扰语义。
-tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_saturday_when_saturday_sign_off	B	-	周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）。
-tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_when_global_paused	B	-	一键暂停开启：探针不发起 run_probe（完整登录=风控暴露），静默退出。
+tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_saturday_when_saturday_sign_off	B	-	周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）→ rc=2。
+tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_when_global_paused	B	-	一键暂停开启：探针不发起 run_probe（完整登录=风控暴露），按"跳过"退出 2。
 tests/test_sign_round_guards.py	SecondRunFilterTest.test_first_run_keeps_all_accounts	B	-	首签轮（无补签信号）：不做过滤，两个账号都进队列。
 tests/test_sign_round_guards.py	SecondRunFilterTest.test_second_run_all_done_exits_silently	B	-	补签轮：全员已了结 → 不进入签到队列、退出码 0（静默结束）。
 tests/test_sign_round_guards.py	SecondRunFilterTest.test_second_run_missing_state_keeps_all_accounts	B	-	状态文件缺失（如目录被清）：宁多勿漏，全量重跑。

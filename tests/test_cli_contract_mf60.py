@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -258,6 +259,71 @@ class ExitKindFamilyTest(unittest.TestCase):
         r = _run(["probe", "--json"], self.env)    # 零账号 = 无需执行(0)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertEqual(_one_json_line(self, r)["error_kind"], "ok")
+
+
+class ProbeExitFamilyTest(unittest.TestCase):
+    """probe 判码分族：跳过 / 撞锁 / 真跑失败三者可区分且非 0（登记原文验收不变量）。
+
+    本类在**进程内**调 `runner.main(["--probe"])` 并打桩引擎外部依赖（网络/锁/挂钟），
+    理由同 `tests/test_run_lock_fail_closed.py`：探针是真实登录，进程级真跑会打真网络；
+    "判码映射"这一步与网络无关，打桩边界正好落在它外面。
+    """
+
+    def setUp(self):
+        from types import SimpleNamespace
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-cli-mf60d-")
+        self.addCleanup(self.tmp.cleanup)
+        self._ns = SimpleNamespace
+        patcher = mock.patch.dict(os.environ, {
+            "YIBAN_STATE_DIR": self.tmp.name,
+            "YIBAN_LOG_FILE": os.path.join(self.tmp.name, "sign.log"),
+        }, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _acc(self):
+        return self._ns(phone="13800138000", user_paused=False, owner="",
+                        password="p", account_id=0)
+
+    def _run_probe_main(self, probe_result, lock_exc=None):
+        from yiban.engine import runner
+        lock = (mock.patch.object(runner.cli_support, "_acquire_run_lock",
+                                  side_effect=lock_exc) if lock_exc is not None
+                else mock.patch.object(runner.cli_support, "_acquire_run_lock",
+                                       return_value=object()))
+        with mock.patch.object(runner.cli_support, "_setup_cli_logging"), \
+                mock.patch.object(runner.accounts_mod, "load_accounts",
+                                  return_value=[self._acc()]), \
+                mock.patch.object(runner.schedule_mod, "day_off", return_value=None), \
+                mock.patch.object(runner.probe, "run_probe",
+                                  return_value=probe_result), \
+                lock:
+            return runner.main(["--probe"])
+
+    def test_skip_and_failure_are_distinct_and_nonzero(self):
+        from yiban.engine import cli_support
+        skipped = self._run_probe_main(None)          # 未开启/未到点：没做检查
+        healthy = self._run_probe_main(0)             # 真跑全绿
+        failed = self._run_probe_main(2)              # 真跑有失败
+        locked = self._run_probe_main(0, lock_exc=cli_support._RunLockHeld())
+        self.assertEqual(skipped, 2, "跳过必须是 2（非 0）")
+        self.assertEqual(failed, 1, "真跑有失败必须是 1")
+        self.assertNotEqual(skipped, failed, "跳过与真跑失败必须可区分")
+        self.assertNotEqual(skipped, 0)
+        self.assertNotEqual(failed, 0)
+        self.assertEqual(healthy, 0, "真跑全绿才是 0")
+        self.assertEqual(locked, 3, "撞锁沿用既有 3（队列忙）")
+
+    def test_zero_accounts_probe_is_noop_success(self):
+        """零账号 = 无需执行（0）；探针分支先于零账号守卫，不落 ERROR。"""
+        from yiban.engine import runner
+        with mock.patch.object(runner.cli_support, "_setup_cli_logging"), \
+                mock.patch.object(runner.accounts_mod, "load_accounts", return_value=[]), \
+                mock.patch.object(runner.schedule_mod, "day_off", return_value=None), \
+                mock.patch.object(runner.probe, "run_probe") as m_probe:
+            rc = runner.main(["--probe"])
+        self.assertEqual(rc, 0)
+        m_probe.assert_not_called()
 
 
 if __name__ == "__main__":

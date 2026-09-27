@@ -107,7 +107,7 @@ class AcquireFailClosedTest(_StateDirBase):
 # 四个调用点：拒绝运行必须在调用点真的中断本轮（既有退出码族）
 # ---------------------------------------------------------------------------
 class CallSiteRefusalTest(_StateDirBase):
-    """四个调用点各自把不可用信号落成既有退出码（3=锁忙 / 0=探针跳过）。"""
+    """四个调用点各自把不可用信号落成既有退出码（3=锁忙，探针撞锁同族）。"""
 
     def _acc(self, phone="13800138000"):
         return SimpleNamespace(phone=phone, user_paused=False, owner="", password="p",
@@ -123,8 +123,8 @@ class CallSiteRefusalTest(_StateDirBase):
         self.assertEqual(rc, 3, "锁不可用必须按既有'锁忙'语义退出，不得继续跑")
         self.assertEqual(called, [], "拒绝之后不得再拉起兜底循环")
 
-    def test_probe_branch_skips_with_0(self):
-        """探针是完整登录的只读健康检查；拿不到互斥时与"已有签到在跑"同一处置（跳过）。"""
+    def test_probe_branch_lock_unavailable_returns_3(self):
+        """探针是完整登录的健康检查；拿不到互斥 = 队列忙，退出 3（不得静默当成功 0）。"""
         with mock.patch.object(runner.cli_support, "_acquire_run_lock",
                                side_effect=_unavailable()), \
                 mock.patch.object(runner.accounts_mod, "load_accounts",
@@ -132,7 +132,7 @@ class CallSiteRefusalTest(_StateDirBase):
                 mock.patch.object(runner.schedule_mod, "day_off", return_value=None), \
                 mock.patch.object(runner.probe, "run_probe") as run_probe,                 self.assertLogs("yiban", "WARNING"):
             rc = runner.main(["--probe"])
-        self.assertEqual(rc, 0, "探针跳过沿用既有 rc（与'已有签到进程在运行'一致）")
+        self.assertEqual(rc, 3, "探针撞锁按'队列忙'退出（既有码语义），外部监控可见")
         run_probe.assert_not_called()
 
     def test_single_executor_main_returns_3(self):

@@ -203,21 +203,21 @@ class ProbeGateTest(unittest.TestCase):
         return code, m_probe
 
     def test_probe_skipped_when_global_paused(self):
-        """一键暂停开启：探针不发起 run_probe（完整登录=风控暴露），静默退出。"""
+        """一键暂停开启：探针不发起 run_probe（完整登录=风控暴露），按"跳过"退出 2。"""
         os.environ["YIBAN_GLOBAL_PAUSE"] = "1"
         code, m_probe = self._run_probe_main()
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2, "这一轮没做检查 → rc=2（区别于真跑通过的 0）")
         m_probe.assert_not_called()
 
     def test_probe_skipped_saturday_when_saturday_sign_off(self):
-        """周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）。"""
+        """周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）→ rc=2。"""
         os.environ.pop("YIBAN_GLOBAL_PAUSE", None)
         fake = type("_SatDT", (_FakeDT,), {"_date": (2026, 9, 5), "_hm": (10, 0)})
         with mock.patch.object(signin.clock, "now", fake.now), \
              mock.patch.object(signin, "SATURDAY_SIGN", False), \
              mock.patch.object(signin, "SUNDAY_SIGN", False):
             code, m_probe = self._run_probe_main()
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         m_probe.assert_not_called()
 
 
