@@ -2940,6 +2940,8 @@ tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_reg_same_value_wi
 tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_sensitive_pw_fail_alerts_once_at_threshold	E	-	统一门禁：口令复核失败走独立计数，首达阈值发一次紧急告警。
 tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_sensitive_pw_fail_no_repeat_alert_in_same_window	E	-	同一窗口内超阈值后再多失败也不重复告警（避免刷屏），改为进冷却拒绝。
 tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_wrong_password_does_not_touch_login_fail_counter	E	-	P18 回归守卫：门禁错口令绝不写与登录共用的 _login_fails。
+tests/test_time_field_norm.py	TimeFieldNormRangeTest.test_out_of_range_falls_back	F	node	超 24 小时制的值必须回退，不得原样返回（否则显示/落盘/生效三段不等）。
+tests/test_time_field_norm.py	TimeFieldNormRangeTest.test_valid_shape_and_values_pass	F	node	合法值原样返回；缺位/非数字等形状不符仍回退。
 tests/test_time_prefs.py	EdgeScheduleTest.test_asymmetric_front_back	A	-	前 30s + 后 300s：所有计划时刻 ∈ [06:30.5, 07:45]（默认窗口 06:30~07:50）。
 tests/test_time_prefs.py	EdgeScheduleTest.test_front_back_sum_overflows_window_fallback	A	-	前 5 分 + 后 5 分 超过窗口（06:30~06:40 共 10 分钟）→ 回退默认窗口，不崩溃。
 tests/test_time_prefs.py	EdgeScheduleTest.test_half_minute_front_edge_precision	A	-	0.5 分钟（30s）粒度：前裁 0.5 分钟 → 首块 lo=390.5（浮点分钟精确）。
