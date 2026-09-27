@@ -348,7 +348,7 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
     False 表示今日已播过、本次跳过。force=True 只越过"今日已播"判定。
     去重标记**只在送达时落**：发信抛异常（异常原样上抛，调用方记日志）与
     被吞失败（send_notification 返回 False）都不落——两种失败都保留当日重试资格，
-    "送达才销账"与 A 组额度不变量同一口径（MF-44 验收不变量第 1 条）。
+    "送达才销账"与额度占用不变量同一口径（MF-44 验收不变量第 1 条）。
     未送达时取走的额度耗尽告知同步退还（pending 重挂，见
     `yiban.notify.restore_exhaustion_notice`），重试的那封仍带得出"哪本账用尽"。
 
@@ -407,7 +407,7 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
         _audit_channel_health_degraded(facts)
     delivered = bool(send_notification("告警通道健康日报", report, urgent=degraded))
     if not delivered and exhausted:
-        # 与 A 组同一不变量（"占用"必须有送达回执或被退还）在告知标记上的落点：
+        # 与额度占用同一不变量（"占用"必须有送达回执或被退还）在告知标记上的落点：
         # pop 是取走语义，取走随本封信生效——信没送到就退还 pending，当日稍后重试
         # 仍会带上"哪本账用尽"，而不是"取走即消失、一次瞬断吞掉当日告知"。
         try:

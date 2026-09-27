@@ -81,6 +81,7 @@ tests/test_admin_privilege_web.py	AdminPrivilegeWebTest.test_regular_admin_canno
 tests/test_admin_privilege_web.py	AdminPrivilegeWebTest.test_regular_admin_cannot_reset_admin_password	E	-	??
 tests/test_admin_privilege_web.py	AdminPrivilegeWebTest.test_regular_admin_cannot_toggle_probe_or_verify	E	-	注册管理员改 account_verify / probe_* → 403（会产生对外真实登录）。
 tests/test_alert_channel_dispatch.py	LoginAlertRealChannelTest.test_login_failure_still_reaches_the_notification_layer	H	-	降级只降"推不推手机"的账本归属，不得在应用层就把通知整条跳过。
+tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_alert_body_masks_the_bruteforced_account_email	H	-	爆破告警正文不得带出被爆破账号的明文邮箱。
 tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_below_threshold_sends_nothing	H	-	??
 tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_same_user_repeated_mistake_is_not_urgent	H	-	本人忘密码：连续 3 次输错 → 仍告警（可追溯），但走非紧急账不占手机额度。
 tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_spray_across_users_is_urgent	H	-	同一 IP 打多个用户名且某账号已到阈值 → 撞库特征，升级紧急。
