@@ -1229,6 +1229,52 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertEqual(len(data["logs"]), 1)
         self.assertIn("138****8001", data["logs"][0], "回显行保持出站脱敏")
 
+    def test_my_calendar_companion_files_and_unreadable_dir(self):
+        """MF-98：伴生文件不得变幻影日期；状态目录读不到必须出声而不是"这月没签"。
+
+        两个害一条用例钉：
+        ① runner 每天写 `sign-daily-<date>.json` 必带 `.lock`、崩溃残留还有
+        `.tmp<pid>-<tid>`——按"截掉末尾 5 字符"取日期会把伴生文件切出
+        `2026-09-15.json` 这类幻影键，日历多出一个不存在的天；
+        ② 目录不可读时 scandir 抛 OSError 被 `pass` 静默吞 ⇒ `ok:true` +
+        全月空白，"读不到"被渲染成"这个月没签"的假安心。
+        """
+        self._write_daily_state()
+        for name in (f"sign-daily-{CAL_DATE}.json.lock",
+                     f"sign-daily-{CAL_DATE}.json.tmp123-456"):
+            p = os.path.join(self.tmp, name)
+            with io.open(p, "w", encoding="utf-8") as f:
+                f.write("{}")
+            self.addCleanup(lambda p=p: os.path.exists(p) and os.remove(p))
+        self._make_formal_user("mf98@test.local", PHONE)
+        c = self.webapp.create_app().test_client()
+        self._login(c, "mf98@test.local", USER_PASS_B18F)
+        data = c.get(f"/api/my-calendar?month={CAL_MONTH}").get_json()
+        phantoms = [k for k in data["days"]
+                    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", k)]
+        self.assertEqual(phantoms, [], f"伴生文件被切成幻影日期键: {phantoms}")
+        self.assertEqual(data["days"][CAL_DATE], {PHONE: "✅"},
+                         "过滤伴生文件不得误伤真状态文件")
+        # —— ②读不到要出声：STATE_DIR 指向普通文件 ⇒ scandir 抛 NotADirectoryError
+        bogus = os.path.join(self.tmp, "state-dir-is-a-file")
+        with io.open(bogus, "w", encoding="utf-8") as f:
+            f.write("x")
+        old_dir = self.webapp.STATE_DIR
+        self.webapp.STATE_DIR = bogus
+        try:
+            with self.assertLogs("web", level="WARNING") as cap:
+                r = c.get(f"/api/my-calendar?month={CAL_MONTH}")
+            self.assertEqual(r.status_code, 500)
+            body = r.get_json()
+            self.assertIs(body.get("ok"), False,
+                          "读不到不得返回 ok:true 的肯定语义")
+            self.assertIn("状态目录", body.get("error", ""))
+            self.assertTrue(any("sign-daily" in m or "状态目录" in m
+                                for m in cap.output),
+                            f"读失败必须留一条日志: {cap.output}")
+        finally:
+            self.webapp.STATE_DIR = old_dir
+
     # =====================================================================
     # 5. M3 accounts_only 门禁
     # =====================================================================
