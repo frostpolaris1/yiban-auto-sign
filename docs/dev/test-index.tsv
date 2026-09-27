@@ -3658,6 +3658,8 @@ tests/test_window_edge_clamp.py	BoundsClampTest.test_zero_width_window_falls_bac
 tests/test_window_edge_clamp.py	ScheduleBlocksWarningTest.test_clamped_edges_warn_window_and_edges	A	-	收缩缓冲：告警与邮件都要说清"窗口 X~Y + 缓冲从 fs/bs 收缩到 fs'/bs'"。
 tests/test_window_edge_clamp.py	ScheduleBlocksWarningTest.test_fallback_keeps_one_warning	A	-	防御分支（窗口宽度 <= 0）：仍有一条"已回退默认窗口"的告警与邮件。
 tests/test_window_edge_clamp.py	ScheduleBlocksWarningTest.test_normal_window_silent	A	-	正常窗口：既不告警也不并入邮件。
+tests/test_work_accounts_selection.py	SelectionIdentityTest.test_selection_survives_reorder	F	node	重排前后同一选中项解析到同一手机号 / 其新 index。
+tests/test_work_accounts_selection.py	SelectionIdentityTest.test_stale_selection_is_dropped	F	node	账号已不在列表时，选中项不解析出任何目标（不回落成别人的 index）。
 tests/test_yiban_fallback_sh.py	YibanFallbackShTest.test_disabled_is_silent_and_does_not_start_cli	B	bash	默认态（未设/0/false/写错的词）一律静默：这是**最常见**的形态。
 tests/test_yiban_fallback_sh.py	YibanFallbackShTest.test_dotenv_is_parsed_safely	B	bash	`.env` 里带 BOM/CRLF/多余空白/杂键时仍能读到开关（与 run.sh 同源解析）。
 tests/test_yiban_fallback_sh.py	YibanFallbackShTest.test_enabled_in_dotenv_starts_cli_with_fallback	B	bash	开关由网页写进 .env（cron 环境里没有这个变量）——这正是本脚本存在的理由。

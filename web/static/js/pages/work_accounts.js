@@ -52,21 +52,26 @@
       return s.indexOf(q) !== -1 || s.indexOf(masked) !== -1;
     });
   }
-  function byIndex(idx) {
-    return state.accounts.filter(function (a) { return a.index === idx; })[0];
+  // 选中集以**手机号**为身份键：index 只是列表位置，move 改持久化顺序后同一 index
+  // 指向另一个账号，按 index 记选中会让"上移"把勾选粘到邻居身上，批量操作误伤他人。
+  function byPhone(phone) {
+    return state.accounts.filter(function (a) { return a.phone === phone; })[0];
+  }
+  function selectedAccounts(group) {
+    return Object.keys(state.sel[group]).map(byPhone).filter(Boolean);
   }
   function selectedIds(group) {
-    return Object.keys(state.sel[group]).map(Number).filter(function (n) { return !isNaN(n); });
+    return selectedAccounts(group).map(function (a) { return a.index; });
   }
   function selectedPhones(group) {
-    return selectedIds(group).map(function (i) { var a = byIndex(i); return a ? a.phone : ""; });
+    return selectedAccounts(group).map(function (a) { return a.phone; });
   }
 
   /* ---------------- 数据加载 ---------------- */
   function pruneSelection() {
     Object.keys(state.sel).forEach(function (g) {
       Object.keys(state.sel[g]).forEach(function (k) {
-        if (!byIndex(Number(k))) delete state.sel[g][k];
+        if (!byPhone(k)) delete state.sel[g][k];
       });
     });
   }
@@ -97,7 +102,7 @@
   /* ---------------- 渲染 ---------------- */
   function sortedPending() {
     // 待审核置顶（新提交在前）、已拒绝沉底；accounts 表无时间戳，id 与提交先后单调一致，
-    // 以 index 作时间代理。显示顺序不影响批量操作（按 index + phones 对齐校验）。
+    // 以 index 作时间代理。显示顺序不影响批量操作（选中以手机号对齐，见 selectedAccounts）。
     return state.accounts.filter(function (a) {
       return (a.status === "pending" || a.status === "rejected") && !a.deleted;
     }).sort(function (a, b) {
@@ -128,12 +133,12 @@
     clear(tbody);
     filtered.forEach(function (a) {
       tbody.appendChild(YB.accountTable.row({
-        group: group, account: a, selected: !!state.sel[group][a.index],
+        group: group, account: a, selected: !!state.sel[group][a.phone],
         states: state.states, stateMsgs: state.stateMsgs, stateDurs: state.stateDurs,
         handlers: handlers,
         onToggle: function (acc, on) {
-          if (on) state.sel[group][acc.index] = true;
-          else delete state.sel[group][acc.index];
+          if (on) state.sel[group][acc.phone] = true;
+          else delete state.sel[group][acc.phone];
           updateBatchBar(group);
           syncSelectAll(group, filtered);
         }
@@ -225,9 +230,9 @@
   function syncSelectAll(group, filtered) {
     var box = $(GROUPS[group].all);
     if (!box) return;
-    var allSelected = filtered.length > 0 && filtered.every(function (a) { return state.sel[group][a.index]; });
+    var allSelected = filtered.length > 0 && filtered.every(function (a) { return state.sel[group][a.phone]; });
     box.checked = allSelected;
-    box.indeterminate = !allSelected && filtered.some(function (a) { return state.sel[group][a.index]; });
+    box.indeterminate = !allSelected && filtered.some(function (a) { return state.sel[group][a.phone]; });
   }
 
   /* ---------------- 写操作（委托 account-ops） ---------------- */
@@ -353,7 +358,7 @@
         var kw = state[group + "Search"];
         var filtered = groupAll(group).filter(function (a) { return accountMatch(a, kw); });
         state.sel[group] = {};
-        if (box.checked) filtered.forEach(function (a) { state.sel[group][a.index] = true; });
+        if (box.checked) filtered.forEach(function (a) { state.sel[group][a.phone] = true; });
         renderAll();
       });
     });
