@@ -15,12 +15,14 @@
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`audit_unit` / `record_in_txn` 的同事务原子性、`audit_or_refuse` 的 fail-closed、
-`audit()` 的请求作用域标记、`audit_head_hash_ex` 的三态、欠账告警基线
+`audit()` 的请求作用域标记（含作用域 id 形状契约：不得掐出 ≥11 位数字连段）、
+`audit_head_hash_ex` 的三态、欠账告警基线
 （`audit_write_failures_unnotified` / `audit_alert_needs_attention`）、
 `_rechain_audit_logs` 的单事务回滚，以及 `scripts/audit_verify.py` 的退出码映射
 （0 通过 / 1 篡改 / 2 未查·锁住·无法定论）。
 对应实现：`yiban/store/audit_chain.py`（`audit` / `audit_unit` / `record_in_txn` /
-`audit_or_refuse` / `audit_head_hash_ex` / `_rechain_audit_logs` / 欠账基线）、
+`audit_or_refuse` / `audit_head_hash_ex` / `_rechain_audit_logs` / 欠账基线 /
+`new_request_scope_id` 与 `_process_scope` 的切段形状）、
 `yiban/store/accounts.py`（`add_account` / `update_account` /
 `delete_accounts_by_owner` 的 `audit_spec`）、
 `yiban/store/users.py`（`purge_deleted_users_hard` 的 `audit_spec`：清除清单事务内产出）、
@@ -31,8 +33,10 @@
 故依赖 `sys.executable` 并对子进程 stdout 按本地代码页解码；无网络、无 skip。
 """
 import contextlib
+import datetime as dt
 import locale
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -436,6 +440,31 @@ class RequestScopeTest(_Fixture):
             "SELECT detail FROM audit_logs WHERE action='forged_json'").fetchone()
         self.assertIn('"_req": "web-real2"', row["detail"])
         self.assertNotIn("evil", row["detail"])
+
+    def test_scope_ids_cannot_look_like_bare_phone(self):
+        """形状契约：作用域 id 内不得出现 ≥11 位连续数字。
+
+        ≥11 位数字连段必然存在掐出裸手机号判据（`1[3-9]\\d{9}`）窗口的可能——
+        扫描审计/日志流的脱敏回归会被服务端自己生成的随机 id 偶发误报红
+        （全数字十六进制 ≈ 千分之一，实测全量套件 3516 例炸 1 次）。
+        """
+        for _ in range(2000):  # 覆盖随机性：2000 抽样下若切段失效，误报窗命中概率≈1
+            rid = db.new_request_scope_id()
+            self.assertRegex(rid, r"^web-[0-9a-f]{8}-[0-9a-f]{8}$")
+            self.assertIsNone(re.search(r"\d{11}", rid), rid)
+        from yiban.store import audit_chain
+        old = dict(audit_chain._PROCESS_SCOPE_SEEN)
+        try:
+            for day in range(1, 29):
+                audit_chain._PROCESS_SCOPE_SEEN.clear()
+                ts = dt.datetime(2026, 9, day, 13, 40, 12)
+                with mock.patch.object(audit_chain.clock, "now",
+                                       return_value=ts):
+                    scope = audit_chain._process_scope()
+                self.assertIsNone(re.search(r"\d{11}", scope), scope)
+        finally:
+            audit_chain._PROCESS_SCOPE_SEEN.clear()
+            audit_chain._PROCESS_SCOPE_SEEN.update(old)
 
 
 class HeadHashStateTest(_Fixture):
