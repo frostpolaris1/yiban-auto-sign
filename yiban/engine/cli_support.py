@@ -342,20 +342,24 @@ def _say(message):
     sys.stderr.flush()
 
 
-def _emit_json_error(command, code, errors, **extra):
+def _emit_json_error(command, code, errors, error_kind="error", **extra):
     """失败路径的 stdout 收口：一整行 `ok=false` 的对象，`exit_code` 与进程返回码一致。
 
     凡带 `--json` 的调用，**任何**退出路径（含用法错误、未知子命令、多余参数、互斥
     参数、引擎 argparse 拒绝）都必须留下这一行——否则调用方拿到非 0 退出码却解析不到
     任何原因（`sign --bogus --json` 曾 rc=2 且 stdout 零字节）。
+
+    `error_kind`：**机读**的失败分族字段（值域见 `_EXIT_KINDS` 与 `docs/dev/cli.md`
+    §3）。退出码承担不了全部分族（rc=2 同时承载"用法错误"与"本轮全部跳过"），故失败
+    对象里再给一个稳定字段；新增取值只追加，不复用旧名。
     """
     payload = {"command": command, "ok": False, "exit_code": code,
-               "errors": list(errors)}
+               "error_kind": error_kind, "errors": list(errors)}
     payload.update(extra)
     _emit_json(payload)
 
 
-def _fail(command, code, errors, json_mode, **extra):
+def _fail(command, code, errors, json_mode, error_kind="error", **extra):
     """失败路径：错误信息进 stderr；`--json` 时仍打一行 `ok=false` 的对象后返回退出码。
 
     失败也保持"stdout 可解析"是刻意的：调用方不必先看退出码再决定怎么解析输出，
@@ -364,21 +368,43 @@ def _fail(command, code, errors, json_mode, **extra):
     for line in errors:
         _say(line)
     if json_mode:
-        _emit_json_error(command, code, errors, **extra)
+        _emit_json_error(command, code, errors, error_kind=error_kind, **extra)
     return code
+
+
+#: 退出码 → 机读分族（`docs/dev/cli.md` §3 的码表；**只增不改**既有码含义）。
+_EXIT_KINDS = {
+    0: "ok",
+    1: "failure",
+    2: "skipped",
+    3: "locked",
+    EXIT_SCHEMA_MIGRATION: "schema_migration",
+    10: "second_run_check",
+}
+
+
+def exit_kind(code):
+    """退出码 → 机读分族（sign/probe 这类"机器可读输出就是退出码"的子命令用）。
+
+    2 的语义是"全部跳过或窗口外未了结"、3 是"队列忙"、4 是迁移拒启、10 是需补跑；
+    未知码回退 `"unknown"`，绝不猜。
+    """
+    return _EXIT_KINDS.get(code, "unknown")
 
 
 class _UsageError(Exception):
     """CLI 解析层的用法错误（多余参数 / 互斥开关）：不直接 `sys.exit`，交给入口统一处置。
 
-    带出 `parser` 与 `command` 是为了让 stderr 保留 argparse 形态的 usage（"人类可读的
-    usage 仍可走 stderr"），同时让 `--json` 路径能打出带 `command` 的结构化错误对象。
+    带出 `parser` 与 `command`/`kind` 是为了让 stderr 保留 argparse 形态的 usage（"人类
+    可读的 usage 仍可走 stderr"），同时让 `--json` 路径能打出带 `command` 与 `error_kind`
+    的结构化错误对象——六种非法参数此前输出逐字节相同，不可区分。
     """
 
-    def __init__(self, message, parser, command):
+    def __init__(self, message, parser, command, kind="usage"):
         super().__init__(message)
         self.parser = parser
         self.command = command
+        self.kind = kind
 
 
 def _exit_code(exc):
