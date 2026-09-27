@@ -43,13 +43,16 @@ from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, v
 def _my_account_indices_of(accounts):
     """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
 
-    管理员：**仅本人邮箱归属**的账号（一人一号）。无人认领的裸账号（owner='admin'）
-    属「代管」，只在账号管理页（/api/accounts）维护，不进「我的账号」视图 ——
-    否则内置管理员会把名下全部裸账号当成"我的账号"列出，与一人一号口径冲突。
+    管理员：归属邮箱等于会话用户名的账号。裸账号的 owner 是字面量 `admin`，因此当
+    YIBAN_ADMIN_USER 也取 `admin`（默认值）时，内置管理员的「我的账号」会把这批
+    裸账号一并列出——两义在存储上不可区分，属**已知默认配置取舍**（实现按 owner
+    精确匹配，不做特殊排除）。这不构成越权增量：能命中这批账号的会话只有内置管理员
+    本人（注册用户名必为邮箱，`admin` 非邮箱、注册口亦拒），而其对全表本就有
+    /api/accounts 的全量管理权；且 /mine 侧对这些号的写入并不比管理页更弱——暂停
+    直接 403、编辑强制回 pending、删除仅软删（7 天可撤，与管理页同档），物理 purge
+    在 /mine 无入口。代价是视图口径与"一人一号"展示混在一起，生产建议把
+    YIBAN_ADMIN_USER 设为管理员本人邮箱以分开两义。
     普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
-
-    注意：裸账号的 owner 是字面量 `admin`，当 YIBAN_ADMIN_USER 也取 `admin`（默认值）
-    时两者不可区分；生产建议把 YIBAN_ADMIN_USER 设为管理员本人邮箱。
     """
     m = _appmod()
     email = session.get("username", "").lower()
