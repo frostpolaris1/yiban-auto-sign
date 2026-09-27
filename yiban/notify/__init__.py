@@ -7,7 +7,7 @@
 `transport` 负责发送与失败退还。
 
 设计原则：不配置 = 不启用；发送异常只记日志、绝不抛出（不拖累签到主流程）；每日额度
-按 general / urgent / login_fail 三本独立账互不挤占；额度只在发送成功后才最终扣减，
+按 general / urgent / login_fail / admin_change 四本独立账互不挤占；额度只在发送成功后才最终扣减，
 失败凭占用凭证退还；自定义 URL 走 SSRF 白名单。
 
 **通信**
@@ -38,6 +38,7 @@ from .ledger import (  # noqa: F401
     budget_exhausted_today,
     has_pending_exhaustion_notice,
     pop_exhaustion_notice,
+    restore_exhaustion_notice,
 )
 from .transport import (  # noqa: F401
     DEFAULT_URL_TIMEOUT,
