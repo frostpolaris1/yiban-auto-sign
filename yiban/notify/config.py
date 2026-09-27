@@ -49,6 +49,10 @@ DEFAULT_URGENT_ONLY = 1
 # （环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
 LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
+# "管理员本人操作的回执"类告警（执行体清单变更）的独立日额。刻意只有代码内缺省、
+# 不配 env 键：本账的意义是把这类高频可达的管理侧告警从紧急账里摘出来（喷洒者烧光
+# 紧急账的守卫不能被一条"改清单回执"顶掉），给管理员再加一个可拨开关不扩大问题面。
+DEFAULT_ADMIN_CHANGE_DAILY_MAX = 3
 # CGNAT（RFC 6598）：`ipaddress.is_private` 不覆盖，而云厂商元数据服务常落在此段
 _CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
 
@@ -78,12 +82,55 @@ def _env_str(key, envs=None):
     return envs.get(_PREFIX + key, "").strip()
 
 
+# 非法值告警的一次性旗标（键名集合）：同一键在进程生命周期内只喊一次，不刷屏
+_bad_value_warned = set()
+# 布尔开关键的取值口径（与 `YIBAN_MAIL_ENABLE` 等既有开关的 truthy 表同源词汇）
+_FLAG_TRUE = ("1", "true", "on", "yes")
+_FLAG_FALSE = ("0", "false", "off", "no")
+
+
 def _env_int(key, default, envs=None):
-    """读整数键：非法值回退 default，负值钳到 0（额度类键不接受负上限）。"""
+    """读整数键：非法值回退 default；负值同样非法——回退 default 并出声一次。
+
+    旧实现把负值 `max(0, ·)` 钳成 0，可 0 在额度类键上是**有含义的合法值**（"不限额"）、
+    在 COOLDOWN 上是"不节流"——`YIBAN_NOTIFY_DAILY_MAX=-1` 就此静默变成"放开上限"
+    （MF-44 登记项）。想要哪种放开形态就显式写 0；写负数是笔误，笔误应当出声，
+    不该被折叠成最危险的那一档。
+    """
+    raw = _env_str(key, envs)
     try:
-        return max(0, int(_env_str(key, envs)))
+        value = int(raw)
     except (TypeError, ValueError):
         return default
+    if value < 0:
+        if key not in _bad_value_warned:
+            _bad_value_warned.add(key)
+            logger.warning("YIBAN_NOTIFY_%s=%r 为负值（非法键值），本次按缺省 %d 处理；"
+                           "需要放开上限/关闭节流请显式写 0", key, raw, default)
+        return default
+    return value
+
+
+def _env_flag(key, default, envs=None):
+    """读布尔开关键：1/true/on/yes 开、0/false/off/no 关；其余回退缺省并出声一次。
+
+    治的是「仅推送重要告警」的口径分叉（MF-44）：旧实现在这条开关上走 `_env_int`，
+    而 `_env_int` 只认整数——管理员照直觉写 `YIBAN_NOTIFY_URGENT_ONLY=false`，
+    ValueError 回退缺省 1 = **想关却静默保持开启**，非紧急告警从此不再推手机。
+    开关语义按开关的词汇读，不再按整数读；认不出的写法不猜意图：保持缺省 + 喊一次。
+    """
+    raw = _env_str(key, envs).strip().lower()
+    if raw in _FLAG_TRUE:
+        return 1
+    if raw in _FLAG_FALSE:
+        return 0
+    if not raw:
+        return default
+    if key not in _bad_value_warned:
+        _bad_value_warned.add(key)
+        logger.warning("YIBAN_NOTIFY_%s=%r 不是可辨认的开关写法，本次按缺省 %d 处理；"
+                       "可写 1/true/on/yes 或 0/false/off/no", key, raw, default)
+    return default
 
 
 def _mask_secret(secret):
@@ -258,7 +305,9 @@ def get_config():
         "secret_masked": _mask_secret(secret) if enabled else "",
         "configured": bool(ntype or secret),
         "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN, envs),
-        "urgent_only": bool(_env_int("URGENT_ONLY", DEFAULT_URGENT_ONLY, envs)),
+        # 开关判据与 transport.send 门②同一份 `_env_flag`：发送判定与上报值若各自
+        # 解析，设置页显示与实际行为就会分叉（本文件头注释写明的口径）
+        "urgent_only": bool(_env_flag("URGENT_ONLY", DEFAULT_URGENT_ONLY, envs)),
         # daily_* 两字段语义是「非紧急账」（字段名不变，前端与既有调用方无需改），
         # 紧急账并列暴露为 urgent_daily_*
         "daily_max": general_max,
@@ -268,13 +317,36 @@ def get_config():
     }
 
 
-def is_configured():
-    """推送通道是否已配置可用：类型已设（或回退旧明文 URL）且密钥可解出。
+#: send() 只会走的出口类型；具名之外的 TYPE 值 send() 拒发（"未知通知类型"），
+#: 判据必须与那条 else 同源，否则"出口是否存在"两处各说各话。
+_KNOWN_PUSH_TYPES = ("serverchan", "custom")
 
-    与 send() 自身的未配置短路同一口径——未配置时 send 必然返回 False，先判定可省一次
-    发送尝试；调用方据此在发送前判断「推送出口是否存在」。
+
+def channel_usable(ntype, secret):
+    """「推送出口真实存在」的唯一判据：有密钥 + 类型已知 +（custom 时）过白名单。
+
+    这是 MF-44 登记的口径分叉的收口：`is_configured()` 曾只看"类型已设且密钥解得出"，
+    不看 TYPE 白名单也不看 custom 白名单，而 `send()` 的门①/门⑤遇到未知类型或
+    白名单外地址**必然拒发**——引擎侧（`yiban/engine/alerts.py`）据此判"有推送出口"
+    就会少发一封本该走的邮件，告警在两个判定都"正常"的地方静默消失。
+    判据从 send() 的行为机械导出：未知类型不猜出口、不安全 URL 不放行。
+    """
+    if not secret:
+        return False
+    t = str(ntype or "").strip().lower() or "custom"  # 旧明文 URL 兼容口径与 send() 一致
+    if t not in _KNOWN_PUSH_TYPES:
+        return False
+    if t == "custom":
+        return bool(is_safe_url(secret))  # 只有 custom 的 URL 本身就是投递目标，须过白名单
+    return True
+
+
+def is_configured():
+    """推送通道是否已配置可用：与 send() 的门①+门⑤同一判据（见 `channel_usable`）。
+
+    未配置时 send 必然返回 False，先判定可省一次发送尝试；调用方据此在发送前判断
+    「推送出口是否存在」。此前该函数漏了 TYPE 白名单与 custom 白名单两档，与 send()
+    分叉——修复动机与判据来源见 `channel_usable` 的文档。
     """
     envs = _read_env_file()
-    secret = get_secret(envs)
-    ntype = _env_str("TYPE", envs).strip().lower() or ("custom" if secret else "")
-    return bool(ntype and secret)
+    return channel_usable(_env_str("TYPE", envs), get_secret(envs))

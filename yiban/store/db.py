@@ -157,6 +157,7 @@ audit = _audit_chain.audit
 # `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
 set_request_scope = _audit_chain.set_request_scope
 current_request_scope = _audit_chain.current_request_scope
+new_request_scope_id = _audit_chain.new_request_scope_id
 record_in_txn = _audit_chain.record_in_txn
 audit_unit = _audit_chain.audit_unit
 audit_or_refuse = _audit_chain.audit_or_refuse
@@ -258,6 +259,7 @@ set_user_sid = _users.set_user_sid
 load_users = _users.load_users
 find_user = _users.find_user
 find_user_any = _users.find_user_any
+find_user_by_id = _users.find_user_by_id
 filter_mail_notify = _users.filter_mail_notify
 admin_mail_recipients = _users.admin_mail_recipients
 create_user = _users.create_user

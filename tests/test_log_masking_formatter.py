@@ -22,8 +22,9 @@
 `Formatter.format` 的返回串，所以 `%s` 插值后的号和 traceback 里的号都在射程内
 （`test_bare_phone_in_chinese_comma_text_masked` 与 `test_exception_text_masked`
 钉的就是这个落点）；
-它**不覆盖**：没挂 `MaskingFormatter` 的 handler（装配点只有 web 的日 handler 与 CLI 的
-`_setup_cli_logging` 两处）、非手机号形态的标识（邮箱/身份证/IP 一概不动）、
+它**不覆盖**：没挂 `MaskingFormatter` 的 handler（装配点为三入口各一处——CLI
+`_setup_cli_logging`、web `create_app`、容器调度器 `_setup_logging`，各自挂载由
+`tests/test_log_masking_entry_mounts.py` 钉住）、非手机号形态的标识（邮箱/身份证/IP 一概不动）、
 以及非"11 位连续数字"的号码写法——实测 `+8613800138000`、`138-0013-8000`、
 `138 0013 8000` 都原样穿过（号码规则要求两侧不是数字、且只认连续 11 位），
 盘上按天日志仍可能留裸号（signin 写盘 + 状态解析依赖），那条出口靠 HTTP 层的

@@ -46,6 +46,7 @@ from unittest import mock
 import flask
 
 from yiban import clock
+from yiban.masking import mask_email_local
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -483,7 +484,8 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         view = self.webapp.mask_account(acc, 0)
         self.assertEqual(view["phone"], "138****8000")
         self.assertEqual(view["owner"], "use***@example.com")
-        self.assertEqual(view["owner_display"], "user")
+        self.assertEqual(view["owner_display"], mask_email_local("user"),
+                         "MF-49：归属展示名只出遮罩后的本地部")
         self.assertEqual(view["display_name"], "小明")
         self.assertEqual(view["status"], "active", "缺 status 时按已生效展示")
         self.assertTrue(view["has_password"])
@@ -509,8 +511,9 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         od = self.webapp._owner_display_of
         self.assertEqual(od("admin"), "管理员")
         self.assertEqual(od(""), "管理员")
-        self.assertEqual(od("someone@x.io"), "someone")
-        self.assertEqual(od("plain"), "plain")
+        self.assertEqual(od("someone@x.io"), mask_email_local("someone"),
+                         "MF-49：本地部遮罩后再下发（前端不得自拆）")
+        self.assertEqual(od("plain"), mask_email_local("plain"))
 
     def test_stale_idx_guard_matches_and_fails_closed(self):
         g = self.webapp._stale_idx_guard
@@ -2905,10 +2908,10 @@ class WebSecuritySplitContractTest(unittest.TestCase):
 M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
 
 
-M_ROUTE_NAMES_TOTAL = 201
+M_ROUTE_NAMES_TOTAL = 204  # +1：users_api 用 m._owner_display_of（用户列表展示，同一单源规则，已复核）
 
 
-M_ROUTE_COMPAT_NAMES = 200
+M_ROUTE_COMPAT_NAMES = 203  # +1 同上（新名未在 EXCLUDED 内，兼容面同步 +1）
 
 
 M_ROUTE_NAME_EXCLUDED = frozenset({"__file__"})

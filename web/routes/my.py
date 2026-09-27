@@ -17,7 +17,8 @@
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配；`verify_fails()` / `verify_limits()`
-取回账号验证冷却与配额（与管理员添加路径共用同一份账）。
+取回账号验证冷却与配额（与管理员添加路径共用同一份账）；`dupcheck_limits()` 取回
+个人提交判重预检的命中限速表，`read_audit_denied_trace()` 是超限拒绝的聚合留痕口。
 
 **通信**
 视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
@@ -36,7 +37,7 @@ from datetime import datetime, timedelta
 from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
-from web.routes import verify_fails, verify_limits
+from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
 
 
 def _my_account_indices_of(accounts):
@@ -435,6 +436,8 @@ def api_my_account_add():
     err, clean = m.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
+    # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
+    m.fold_phone_code(clean)
     # 预筛：资格校验全部前置到网络验证之前，杜绝「先向易班发起真实登录、再发现
     # 根本没资格」的凭据试探滥用面。权威校验仍保留在下方写入临界区
     # （预筛通过≠最终名额，双检以锁内为准）。
@@ -452,6 +455,25 @@ def api_my_account_add():
         if holds_live:
             return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
         if m.find_account_index(accounts_pre, clean["phone"]) is not None:
+            # 预检命中即向调用方确认"该号码在册"——这是个可定向确认的出口，按详情/
+            # 导出等同档面收口：命中才计会话额度（未重号的正常提交不占额、不留这行
+            # 审计），每次命中落一条审计（目标为遮罩号，不泄露归属口径不变），超限
+            # 改答 429 不再继续确认；被拒留痕每窗口至多一行，防拒绝面刷审计表。
+            m._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + m._IP_STORE_MAX_AGE)
+            _dup_cnt, _dup_start, dup_allowed = m._bump_window_count(
+                dupcheck_limits(), email_pre[:64], time.time(),
+                m.DUPCHECK_WINDOW, limit=m.DUPCHECK_MAX,
+            )
+            if not dup_allowed:
+                read_audit_denied_trace()("my_account_add_dup_denied")
+                # 文案不带阈值数字（信息分层，与其余 429 一致）
+                return jsonify({"error": "账号提交过于频繁，请稍后再试"}), 429
+            m.db.audit(
+                email_pre,
+                "my_account_add_dup_hit",
+                m._mask_phone(clean["phone"]),
+                f"窗口内第 {_dup_cnt} 次在册确认命中",
+            )
             err = m._duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
             if err:
                 return jsonify({"error": err}), 400
@@ -699,11 +721,9 @@ def api_my_account_update(idx):
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
-        if clean["phone_code"] == m.CLEAR_SENTINEL:
-            clean.pop("phone_code", None)
-        elif not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
+        # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变
+        # （与 /api/accounts/<idx> 及两条添加路径共用同一折算）
+        m.fold_phone_code(clean, old.get("phone_code", ""))
         clean["owner"] = old.get("owner", "")
         # 改绑手机号一律回待审核重审——否则 ACTIVE 号可被改绑成任意新号免审生效，
         # 历史审核结论不再可信。无论原状态（含 ACTIVE）；REJECTED 本就回 pending。
@@ -730,9 +750,10 @@ def api_my_account_update(idx):
             m._mask_phone(clean["phone"]),
             "用户编辑 改绑回审" if rebind else "用户编辑",
         )
-        # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
+        # 用户改密码/改绑手机号/改写识别码（凭据变更）才清除熔断暂停；
         # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
+        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
+                                    old.get("phone_code") or "")
         m.logger.info("用户 %s 编辑账号 %s", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
         if rebind or old.get("status") == m.ACCOUNT_STATUS_REJECTED:
             return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})

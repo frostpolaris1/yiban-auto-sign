@@ -20,6 +20,23 @@ tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_off	E	
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_off_lands_zero_in_env	E	-	关闭态必须显式落 `YIBAN_NOTIFY_URGENT_ONLY=0`，不能写空值/删键。
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_partial_preserves_channel	E	-	??
 tests/test_account_abuse_gate.py	NotifyConfigApiTest.test_put_urgent_only_requires_master	E	-	??
+tests/test_account_ciphertext_kid.py	BadKeyValueErrorTest.test_empty_plaintext_with_bad_key_still_returns_empty	G	-	??
+tests/test_account_ciphertext_kid.py	BadKeyValueErrorTest.test_encrypt_rejects_bad_key_with_value_error	G	-	加密侧的坏钥同样收口成 ValueError（与解密侧对称，调用方只 except ValueError）。
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_aad_semantics_not_weakened_by_kid_check	G	-	kid 检查只挡"钥不对"，不得顶替 AAD：同钥改手机号仍须撞 tag 失败。
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_tampered_v2_ciphertext_rejected	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_unsupported_version_still_rejected	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_v2_missing_kid_rejected_as_mismatch	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_v2_text_wrong_key_message_carries_both_kids	G	-	??
+tests/test_account_ciphertext_kid.py	KidSelfProofTest.test_v2_wrong_key_message_carries_both_kids	G	-	??
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_ciphertexts_of_same_key_share_kid_across_families	G	-	同钥跨账号列/邮件/SendKey 全同面：一把钥的 kid 在两族入口里同值。
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_empty_plaintext_stays_empty_string	G	-	空值语义不因 kid 改变：空即空，不产出"看似密文的空串"。
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_kid_is_stable_one_way_and_key_specific	G	-	??
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_new_password_ciphertext_is_v2_with_kid	G	-	??
+tests/test_account_ciphertext_kid.py	KidShapeTest.test_new_text_ciphertext_is_v2_with_kid	G	-	??
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_ciphertext_survives_json_store_roundtrip	G	-	库内存的是 JSON 串——v1 串经 dumps/loads 后形状判据与解密都照常。
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_password_decrypts_with_right_key	G	-	??
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_password_still_rejects_wrong_key	G	-	??
+tests/test_account_ciphertext_kid.py	V1CompatibilityMatrixTest.test_v1_text_decrypts_and_rejects	G	-	??
 tests/test_account_crypto_key_source.py	KeySourceGuardTest.test_env_var_source_still_generates	G	-	YIBAN_ENV_FILE 已设 → 来源确定，照常生成。
 tests/test_account_crypto_key_source.py	KeySourceGuardTest.test_existing_cwd_dotenv_still_generates	G	-	cwd 已有 .env（来源确定）→ 行为不变（正常首启在应用根生成）。
 tests/test_account_crypto_key_source.py	KeySourceGuardTest.test_explicit_env_file_still_generates	G	-	显式 env_file → 来源确定，照常生成（目录须已存在，与既有行为一致）。
@@ -64,6 +81,7 @@ tests/test_admin_privilege_web.py	AdminPrivilegeWebTest.test_regular_admin_canno
 tests/test_admin_privilege_web.py	AdminPrivilegeWebTest.test_regular_admin_cannot_reset_admin_password	E	-	??
 tests/test_admin_privilege_web.py	AdminPrivilegeWebTest.test_regular_admin_cannot_toggle_probe_or_verify	E	-	注册管理员改 account_verify / probe_* → 403（会产生对外真实登录）。
 tests/test_alert_channel_dispatch.py	LoginAlertRealChannelTest.test_login_failure_still_reaches_the_notification_layer	H	-	降级只降"推不推手机"的账本归属，不得在应用层就把通知整条跳过。
+tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_alert_body_masks_the_bruteforced_account_email	H	-	爆破告警正文不得带出被爆破账号的明文邮箱。
 tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_below_threshold_sends_nothing	H	-	??
 tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_same_user_repeated_mistake_is_not_urgent	H	-	本人忘密码：连续 3 次输错 → 仍告警（可追溯），但走非紧急账不占手机额度。
 tests/test_alert_channel_dispatch.py	LoginAlertUrgencyTest.test_spray_across_users_is_urgent	H	-	同一 IP 打多个用户名且某账号已到阈值 → 撞库特征，升级紧急。
@@ -207,6 +225,7 @@ tests/test_audit_transaction.py	PurgeAuditWindowTest.test_nothing_purged_writes_
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_failure_restores_original_chain	G	-	??
 tests/test_audit_transaction.py	RechainAtomicTest.test_rechain_success_keeps_chain_consistent	G	-	??
 tests/test_audit_transaction.py	RequestScopeTest.test_process_scope_when_no_request	G	-	??
+tests/test_audit_transaction.py	RequestScopeTest.test_scope_ids_cannot_look_like_bare_phone	G	-	形状契约：作用域 id 内不得出现 ≥11 位连续数字。
 tests/test_audit_transaction.py	RequestScopeTest.test_user_supplied_json_req_is_overwritten	G	-	JSON detail 里预置的 `_req` 必须被真实作用域覆盖（不得伪造归属）。
 tests/test_audit_transaction.py	RequestScopeTest.test_user_supplied_marker_cannot_suppress_real_scope	G	-	入参 detail 自带 `[req=...]` 不得冒充"已带作用域"而抑止真实 id 的附加。
 tests/test_audit_transaction.py	RequestScopeTest.test_web_request_scope_tagged_into_detail	G	-	??
@@ -494,6 +513,17 @@ tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_ye
 tests/test_cli_contract.py	CliContractTest.test_state_reports_missing_dir_loudly	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_unknown_and_empty_subcommand	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_version_matches_package	J	-	??
+tests/test_cli_exit_surface.py	CliChokeUnitTest.test_emit_json_masks_string_leaves_and_keeps_numbers	G	-	`_emit_json`：字符串叶子遮号、**整数字段原样**（否则整行 JSON 被遮成非法）。
+tests/test_cli_exit_surface.py	CliChokeUnitTest.test_say_masks_raw_phone_on_stderr	G	-	`_say` 的 stderr 行不得带裸号：遮罩形态在场、裸形态缺席。
+tests/test_cli_exit_surface.py	CliProbePassthroughWiringTest.test_passthrough_commands_delegate_runner	G	-	结构钉：sign/probe 经 runner.main（装配与生成点遮罩随透传自动生效）。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_capacity_exit_has_no_raw_phone	G	-	capacity 读库（phone 列即裸号）但出口只有数字与路径：裸号必须全程缺席。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_check_config_stdout_print_masked	G	-	`sign --check-config` 的 stdout 直印（`config_check.print_config_summary`）：
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_config_fail_masks_stderr_and_json_errors	G	-	密文与钥不匹配 ⇒ 异常消息含裸号；`config` 的 stderr 与 `--json errors` 双出口都遮。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_config_success_masks_every_field	G	-	装载成功态：`--json` 的 phones_masked 与 stderr 明细行都只有遮罩形态。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_db_exit_has_no_raw_phone	G	-	db --integrity 读的是含裸号行的库：出口（表清单/计数/detail）不得带出裸号。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_maintenance_command_mounts_masking_assembly	G	-	维护子命令必须接上 `_setup_cli_logging`：lastResort 裸写 stderr 的旁路堵死。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_state_exit_has_no_raw_phone	G	-	state 明细是固定形态的按日文件名：裸号必须全程缺席（含 --yes 前的指纹行）。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_version_exit_has_no_raw_phone	G	-	version 出口（版本号/Python/schema 版本）与账号数据无交集：裸号缺席的实证。
 tests/test_config_input_caps.py	MailInputCapsTest.test_admin_to_at_cap_accepted	G	-	??
 tests/test_config_input_caps.py	MailInputCapsTest.test_admin_to_count_capped	G	-	??
 tests/test_config_input_caps.py	MailInputCapsTest.test_smtps_at_cap_accepted	G	-	??
@@ -552,6 +582,27 @@ tests/test_container_scheduler.py	MainLoopGateTest.test_marker_blocks_both_signs
 tests/test_container_scheduler.py	MainLoopGateTest.test_no_marker_triggers_both_signs	B	-	无标记 → 首签与补签都触发（探针开启时也周期尝试一次）。
 tests/test_container_scheduler.py	MainLoopGateTest.test_probe_disabled_skips_spawn	B	-	探针未开启（.env 无/为 0）：周期尝试时不 spawn 子进程，首签/补签不受影响。
 tests/test_container_scheduler.py	SchedulerTimeoutTest.test_timeout_does_not_kill_loop	B	-	??
+tests/test_creds_write_accounting.py	AdminSentinelClearTest.test_哨兵清空库行真变空且返回如实	E	-	??
+tests/test_creds_write_accounting.py	AdminSentinelClearTest.test_对已为空的字段发哨兵结果语义仍是空	E	-	??
+tests/test_creds_write_accounting.py	AdminSentinelClearTest.test_正常值改写与留空保持不变零回归	E	-	??
+tests/test_creds_write_accounting.py	ClearFuseOnCodeChangeTest.test_改写或清除识别码清熔断	E	-	??
+tests/test_creds_write_accounting.py	ClearFuseOnCodeChangeTest.test_识别码未变与未带字段不清熔断	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_哨兵折算成空串且键仍在	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_正常值原样保留	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_添加口无旧值可保哨兵同样折空	E	-	??
+tests/test_creds_write_accounting.py	FoldPhoneCodeTest.test_留空回填旧值	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档只改无关字段不进门禁零信号	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档只改识别码无口令被拒且库不动	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档带口令放行且标位发当事人信	E	-	??
+tests/test_creds_write_accounting.py	GateMatrixTest.test_full档清除哨兵同样过门	E	-	??
+tests/test_creds_write_accounting.py	RiskDefaultTierTest.test_risk档只改无关字段仍零信号	E	-	??
+tests/test_creds_write_accounting.py	RiskDefaultTierTest.test_risk缺省档只改识别码免口令但标位发信	E	-	??
+tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_哨兵字面量只在账号数据族一处定义	E	-	??
+tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_四个消费点全部接入折算	E	-	??
+tests/test_creds_write_accounting.py	SentinelSingleSourceTest.test_进SET前不再pop识别码	E	-	??
+tests/test_creds_write_accounting.py	UserSideClearTest.test_用户侧哨兵真清空且返回如实	E	-	??
+tests/test_creds_write_accounting.py	UserSideClearTest.test_用户提交哨兵不落字面量	E	-	??
+tests/test_creds_write_accounting.py	UserSideClearTest.test_管理添加口哨兵不落字面量	E	-	??
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_dist_view_reads_account_column	F	node	分布视图的取值源必须是账号口径（byStatus，由 cnt 累加）。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_distribution_counts_dedup_accounts	F	node	分布口径 = 账号数：同一账号两行只算一次（user_cancelled 计 1，不是 2）。
 tests/test_dashboard_stats_caliber_js.py	DashboardStatsCaliberTest.test_event_total_counts_rows	F	node	事件口径 = 行数：两行 + 一行 = 3（重试/多执行体各写一行都是事实）。
@@ -728,6 +779,11 @@ tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_real_back
 tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_refuses_group_readable_passphrase_file	J	bash	??
 tests/test_deploy_prod_artifacts.py	WrapperPassphraseTest.test_wrapper_strips_legacy_env_injection	J	bash	现网 crontab 若还残留 BACKUP_GPG_PASSPHRASE=... 前缀，wrapper 必须先 unset。
 tests/test_docker_image_contents.py	DockerImageContentsTest.test_imported_local_packages_are_copied	J	-	被导入的本地顶级包必须在 Dockerfile 里 COPY（漏了容器起不来）。
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_consecutive_hits_quota_then_429_single_denied_row	E	-	??
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_dup_hit_keeps_400_wording_and_audits_masked	E	-	??
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_own_deleted_guidance_unchanged_and_counted	E	-	"你刚删除的账号"差异化 400 也走命中记账——确认面不因文案分叉而免检。
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_unique_submission_unbilled_and_actor_isolated	E	-	??
+tests/test_dupcheck_oracle.py	DupcheckOracleTest.test_window_rollover_restores_quota	E	-	??
 tests/test_effective_window.py	ClockTest.test_now_is_beijing_plus_eight	A	-	now() 恒为 UTC+8，与宿主 TZ 无关（本用例在任何时区的主机上都应通过）。
 tests/test_effective_window.py	ClockTest.test_now_is_naive	A	-	naive：既有全部 datetime 运算都与 naive 混用，带 tzinfo 会直接 TypeError。
 tests/test_effective_window.py	ClockTest.test_session_cache_clock_delegates_to_single_source	A	-	db 的会话缓存时钟（原为独立实现的固定 +8）已收口到唯一时钟。
@@ -870,7 +926,8 @@ tests/test_env_key_line_model.py	CryptoLineModelTest.test_latent_separator_in_dr
 tests/test_env_key_line_model.py	CryptoLineModelTest.test_latent_separator_in_existing_line_refuses_write	G	-	既有行值藏 U+2028：写回会坐实其后的半截 → 抛错且 .env 未被改写。
 tests/test_env_key_line_model.py	CryptoLineModelTest.test_space_shadow_key_line_is_folded	G	-	带空格影子行被折掉，不追加出同键第二行；同前缀的其他键、其他行都保留。
 tests/test_env_key_line_model.py	KeyCacheSourceTest.test_decrypt_rejects_bad_key_with_value_error	G	-	key=None / 非 bytes / 长度错 → ValueError（TypeError 会越过调用方的收口）。
-tests/test_env_key_line_model.py	KeyCacheSourceTest.test_env_var_key_does_not_stand_in_for_file_key	G	-	环境变量撤掉后不得再拿它的钥冒充 .env 的钥（缓存不记环境变量这一档）。
+tests/test_env_key_line_model.py	KeyCacheSourceTest.test_env_var_key_diverging_from_file_key_is_refused	G	-	env 档与 .env 档并存且**不同** ⇒ 两侧同钥断言拒绝（拓扑分叉反例）。
+tests/test_env_key_line_model.py	KeyCacheSourceTest.test_env_var_key_matching_file_key_passes_regardless_of_case	G	-	两档解出同一把钥即放行——十六进制大小写写法不同不算分叉（不误杀）。
 tests/test_env_key_line_model.py	KeyCacheSourceTest.test_second_env_file_gets_its_own_key	G	-	load a → load b：b 必须拿到 b 文件里的钥（缓存按来源分开）。
 tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_latent_separator_in_other_line_refuses_write	G	-	既有无关键行里藏 U+2028：写盐会坐实其后的注入行 → 拒绝且零改动。
 tests/test_env_key_line_model.py	TrackingSaltLineModelTest.test_plain_write_preserves_other_lines	G	-	??
@@ -954,6 +1011,15 @@ tests/test_env_write_transient_failure.py	ConcurrentReadWriteTest.test_no_failur
 tests/test_env_write_transient_failure.py	ReplaceRetryTest.test_attempt_budget_is_finite	G	-	重试次数有上界（不能变成无限等锁）。
 tests/test_env_write_transient_failure.py	ReplaceRetryTest.test_persistent_failure_raises_and_removes_tmp	G	-	一直失败：原样抛出，但**不许**把整份 .env 副本留在磁盘上。
 tests/test_env_write_transient_failure.py	ReplaceRetryTest.test_transient_permission_error_is_retried_then_succeeds	G	-	前两次 WinError 5、第三次成功：写入成功、内容正确、无残留。
+tests/test_env_writers_take_lock.py	NoUnlockedEnvWriterTest.test_every_env_shaped_write_is_under_lock	G	-	??
+tests/test_env_writers_take_lock.py	NoUnlockedEnvWriterTest.test_low_level_rewriters_only_reachable_from_write_env_keys	G	-	豁免面不失控：两个原子写助手在 env_io 内各**只剩一处**引用，且在
+tests/test_env_writers_take_lock.py	NoUnlockedEnvWriterTest.test_write_env_keys_itself_holds_the_lock	G	-	源码判据：锁在函数体内取（`with env_lock.env_write_lock(env_file)` 包住读-改-写）。
+tests/test_env_writers_take_lock.py	SeedAccountsHeadUnderLockTest.test_upsert_creates_headered_file_and_writes_keys	G	-	??
+tests/test_env_writers_take_lock.py	SeedAccountsHeadUnderLockTest.test_upsert_head_creation_holds_lock	G	-	建头路径经函数级判据：`_ensure_env_headed` 只能在持锁临界区内被调用——
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_lock_acquired_without_any_outer_caller	G	-	外层什么都不持：write_env_keys 仍必须自己走 env_write_lock（验收不变量）。
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_other_thread_blocks_until_outer_releases	G	-	另一线程持锁期间，写方被**挡在门外**；释放后才落盘——内层锁是真互斥。
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_real_lock_file_created	G	-	不加桩的真调用必须创建 `<env>.lock` 锁文件（真锁原语在场，不是纸面互斥）。
+tests/test_env_writers_take_lock.py	WriteEnvKeysInternalLockBehaviorTest.test_same_thread_outer_lock_nests_fine	G	-	外层已持同一路径锁：内层直接放行（可重入），不得死锁。
 tests/test_executor_manifest.py	DispatchGateTest.test_check_config_and_probe_still_dispatch_on_day_off	B	-	`--check-config`（部署验证，哪天都要能验）与 `--probe`（自带门、跳过语义是 0）同样不被拦。
 tests/test_executor_manifest.py	DispatchGateTest.test_check_config_dispatches_supervisor_without_migrate	B	-	F3：`--check-config` 派发监督进程时，监督进程的配置预检也不跑迁移。
 tests/test_executor_manifest.py	DispatchGateTest.test_day_off_returns_2_before_dispatch	B	-	周日签到未开启 + 清单 2 槽位 → 返回 2，不派发监督进程、也不加载账号。
@@ -984,6 +1050,7 @@ tests/test_executor_manifest.py	MigrationWritebackTest.test_get_fields_match_old
 tests/test_executor_manifest.py	MigrationWritebackTest.test_get_migrates_and_keeps_legacy_keys	B	-	??
 tests/test_executor_manifest.py	MigrationWritebackTest.test_manifest_wins_over_stale_legacy_keys	B	-	清单与旧键并存 → **以清单为准**（旧键只作回退读取）。
 tests/test_executor_manifest.py	MigrationWritebackTest.test_second_get_does_not_rewrite_manifest	B	-	??
+tests/test_executor_manifest.py	MigrationWritebackTest.test_single_mode_false_when_worker_rows_exist	B	-	有并行行时 single_mode 必须为 False——它不是"配置为空"的恒真旗。
 tests/test_executor_manifest.py	OwnersSinceTest.test_reads_distinct_owners_in_window	B	-	??
 tests/test_executor_manifest.py	OwnersSinceTest.test_rows_outside_retention_are_ignored	B	-	??
 tests/test_executor_manifest.py	RowIsolationTest.test_legacy_slot_endpoint_maintains_manifest	B	-	旧单段接口在清单模式下也必须生效（不能写旧键后被"以清单为准"盖过）。
@@ -1114,6 +1181,25 @@ tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_switch_value_is
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_divides_by_parallel_rows_only	B	-	分母只数「并行」行——用后端 workers.configured，不自己按清单长度算。
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_uses_accounts_counted_not_users_quota	B	-	??
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_first_card_is_todays_progress	B	-	首卡从「清单行数」换成「今日进度」：行数在表里一眼可见，卡片该回答"今天跑得怎么样"。
+tests/test_exit_surface_generation.py	ChildStdoutRedirectTest.test_signin_child_redirect_file_has_no_raw_phone	G	-	??
+tests/test_exit_surface_generation.py	ReportFatalErrorGenerationTest.test_plain_summary_passes_through_idempotently	G	-	不含敏感形态的摘要原样通过（幂等遮罩不加戏）。
+tests/test_exit_surface_generation.py	ReportFatalErrorGenerationTest.test_summary_masked_before_stderr_and_registry	G	-	stderr 行与 `last_fatal_error()`（即 `--json.errors` 的来源）同一份遮罩；
+tests/test_exit_surface_generation.py	RunShStaticTest.test_runsh_never_interpolates_credential_keys	G	-	??
+tests/test_exit_surface_generation.py	RunShStaticTest.test_runsh_redirections_only_carry_python_children	G	-	每条 `2>&1` 都必须落在 `"$PY"` 调用行上：新增 shell 侧直出前，先被这条钉拦住。
+tests/test_exit_surface_generation.py	SignJsonErrorExitTest.test_sign_json_error_field_masked	G	-	??
+tests/test_exit_surface_generation.py	SpawnArgvEnvironSurfaceTest.test_argv_carries_identifier_not_credentials	G	-	argv 面（/proc/<pid>/cmdline 全局可读）：只允许 `--only <号>`；
+tests/test_exit_surface_generation.py	SpawnArgvEnvironSurfaceTest.test_child_env_still_holds_credentials_same_uid	G	-	environ 面钉桩：.env 的 YIBAN_* 仍注入子进程环境（机制事实，
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_empty_account_repr_falsy_password	G	-	空口令账号 repr 不报错，且口令位显示为空串（区别于已配置显示 ***）。
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_repr_has_no_credentials_or_raw_phone	G	-	??
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_repr_keeps_readable_identity_shape	G	-	遮罩不得牺牲"定位是哪个账号"：名称/id/型号仍在，号与邮有遮罩形态。
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_sanitize_text_still_swallow_account_repr	G	-	既有纵深不破：`sanitize_text` 对 `Account(...)` 形态整体吞成 `Account(***)`。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_email_domain_untouched_by_phone_layer	G	-	构造层只管号码——邮箱仍归调用点/收件人层（_mask_addr），这里不越位。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_html_masks_all_string_leaves	G	-	??
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_markdown_masks_all_string_leaves	G	-	推送（Server酱 desp 走 Markdown）与邮件同一构造 ⇒ 同一收口。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_masking_is_idempotent_for_already_masked_text	G	-	调用点已 `_mask_phone` 过的正文再经构造层不变形（幂等）。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_non_str_leaves_untouched	G	-	只动字符串叶子：数字/布尔/None 原样（不产生非法渲染）。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_plain_masks_all_string_leaves	G	-	??
+tests/test_exit_surface_repr_mail.py	PushBodySharesConstructionTest.test_notify_admin_entry_push_content_masked	G	-	??
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_fallbacks_own_give_ups_are_excluded	B	-	兜底自己弃权的行不进签名：否则"扫→弃权→签名变→立刻再扫"接成紧循环重登。
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_final_give_up_does_not_move_signature	B	-	final: 档（预算耗尽/风控）兜底默认领不动：为它唤醒只会空转，绝不计入。
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_reclaim_of_retry_row_moves_signature	B	-	他人重领 retry: 行同样动签名（出队也是迁移）：最多多扫一次，由池仲裁不重签。
@@ -1231,6 +1317,18 @@ tests/test_infra_layer.py	InfraLayerTest.test_old_paths_are_gone	M	-	??
 tests/test_infra_layer.py	LegacyShellRemovalTest.test_no_bare_notify_mailer_imports_in_runtime_dirs	M	-	??
 tests/test_infra_layer.py	LegacyShellRemovalTest.test_packages_expose_the_public_surface	M	-	壳曾转发的**公共名**必须能从包直接拿到（下划线名走子模块）。
 tests/test_infra_layer.py	LegacyShellRemovalTest.test_shells_are_gone	M	-	??
+tests/test_key_sources_startup_assert.py	EngineStartupWiringTest.test_engine_refuses_fork_before_loading_accounts	G	-	??
+tests/test_key_sources_startup_assert.py	EngineStartupWiringTest.test_engine_refuses_fork_in_sign_mode_too	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_both_tiers_differing_refuses_startup	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_both_tiers_same_key_agrees_with_kid_log	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_case_difference_is_not_a_fork	G	-	十六进制大小写不同解出同一把钥——放行（判据比较解码字节）。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_env_file_locator_via_YIBAN_ENV_FILE	G	-	不显式传路径时按 YIBAN_ENV_FILE 定位文件档（与 load_key 同回落链）。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_env_only_tier_warns_about_second_key_generation	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_file_only_tier_infos_with_kid	G	-	??
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_file_tier_illegal_hex_counts_as_disagreement	G	-	文件档存在但非法（短 hex）：对面进程解不出钥 ⇒ 必然不一致，抛。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_load_key_env_branch_enforces_too	G	-	运行期纵深：不止启动那一刻——任何 load_key 走 env 档都重比对。
+tests/test_key_sources_startup_assert.py	StartupAssertMatrixTest.test_no_tier_returns_none_without_generating	G	-	两档皆无 = 首启尚未建钥：断言无对象，返回 None 且**不得**触发自动建钥。
+tests/test_key_sources_startup_assert.py	StartupWiringSourceGuardTest.test_web_and_engine_both_call_the_assert	G	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_all_days_window_reaches_the_same_verdict	C	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_allowed_tables_covers_egress_state_and_app_meta	C	-	??
 tests/test_ledger_check.py	LedgerCheckTest.test_empty_state_files_exit_two	C	-	状态文件在、但没有一条终态记录 ⇒ 仍是零覆盖，不可读成平账。
@@ -1316,6 +1414,11 @@ tests/test_locks.py	LockPrimitiveTest.test_platform_has_a_real_lock_backend	G	-	
 tests/test_locks.py	LockPrimitiveTest.test_reentrant_same_thread	G	-	??
 tests/test_locks.py	LockPrimitiveTest.test_released_after_exit	G	-	??
 tests/test_locks.py	LockPrimitiveTest.test_waits_for_holder_instead_of_degrading_immediately	G	-	**引入 portalocker 的核心理由**：抢不到锁要重试等待，不是立刻降级为进程内锁。
+tests/test_log_masking_entry_mounts.py	CliEntryMountTest.test_runner_main_wires_setup_cli_logging	G	-	CLI 真实入口是 `runner.main`（scripts/signin.py 与 yiban.cli 都转交它）。
+tests/test_log_masking_entry_mounts.py	CliEntryMountTest.test_setup_cli_logging_mounts_masking_formatter_and_masks_file	G	-	??
+tests/test_log_masking_entry_mounts.py	ContainerEntryMountTest.test_main_entry_wires_setup_logging	G	-	`__main__`（supervisord 常驻形态）必须先装配日志再进主循环。
+tests/test_log_masking_entry_mounts.py	ContainerEntryMountTest.test_setup_logging_mounts_masking_formatter_and_masks_output	G	-	??
+tests/test_log_masking_entry_mounts.py	WebEntryMountTest.test_create_app_mounts_masking_formatter_and_masks_file	G	-	??
 tests/test_log_masking_formatter.py	DisplayMaskingReuseTest.test_mask_log_phones_delegates_and_masks_bare_phone	G	-	??
 tests/test_log_masking_formatter.py	MaskPhoneSingleSourceTest.test_text_helper_reuses_mask_phone_semantics	G	-	??
 tests/test_log_masking_formatter.py	MaskPhonesInTextTest.test_bare_phone_masked	G	-	??
@@ -1403,6 +1506,8 @@ tests/test_mail_layout.py	ChannelEntryPointsTest.test_mail_yields_both_parts	H	-
 tests/test_mail_layout.py	ChannelEntryPointsTest.test_plain_string_passthrough_unchanged	H	-	普通字符串必须逐字透传且不出 HTML——既有调用方与测试的行为一字不变。
 tests/test_mail_layout.py	DisplayWidthTest.test_cjk_counts_two_latin_one	H	-	??
 tests/test_mail_layout.py	DisplayWidthTest.test_combining_and_control_count_zero	H	-	??
+tests/test_mail_layout.py	FoldLineBreakFamilyTest.test_intended_newline_survives	H	-	??
+tests/test_mail_layout.py	FoldLineBreakFamilyTest.test_non_lf_breaks_become_visible_literals	H	-	??
 tests/test_mail_layout.py	FoldTest.test_ascii_word_never_split_when_breakable_exists	H	-	??
 tests/test_mail_layout.py	FoldTest.test_breaks_after_chinese_comma_not_mid_word	H	-	??
 tests/test_mail_layout.py	FoldTest.test_explicit_newline_always_forced	H	-	??
@@ -1445,7 +1550,7 @@ tests/test_mail_notify.py	MailNotifyApiTest.test_save_off_then_read	H	-	??
 tests/test_mail_notify.py	MailNotifyApiTest.test_save_on_restores	H	-	??
 tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_safe_then_unsafe_still_warns	H	-	合格地址不置旗，随后的不合格地址仍应告警（旗只被"不通过"置位）。
 tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_safe_url_no_warning	H	-	??
-tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_unsafe_url_warns_once_and_channel_still_configured	H	-	??
+tests/test_mail_notify.py	NotifyCustomUrlRecheckTest.test_unsafe_url_warns_once_and_channel_still_configured	H	-	加载期复核 warn-only（地址不变、只记一次）；但 is_configured 与 send 同判据。
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_collect_and_flush_merges_one_mail	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_clears_collector	H	-	??
 tests/test_mail_notify.py	SignAdminMailSummaryTest.test_flush_groups_by_subject	H	-	??
@@ -1490,9 +1595,21 @@ tests/test_mailer.py	MailConfigSmtpsApiTest.test_get_smtps_masking_and_never_ech
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_empty_pass_keeps_old	H	-	??
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_empty_user_keeps_old	H	-	??
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_invalid_entries_400	H	-	??
-tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_null_fields_not_persisted_as_none	H	-	JSON null 入参兜底：host=null → 400；user/pass=null 视为留空（按索引保留旧值），
+tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_null_fields_not_persisted_as_none	H	-	JSON null 入参兜底：host=null → 400；user/pass=null 视为留空（按稳定身份/
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_requires_confirm_password	H	-	??
 tests/test_mailer.py	MailConfigSmtpsApiTest.test_put_smtps_writes_enc_and_roundtrips	H	-	PUT 传入含 admin_to 的条目：该死键不再落盘，保存结果只含有效字段。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_ambiguous_legacy_target_fails_closed	H	-	旧配置里同 host:port 两条（歧义）+ 无 id 提交：不猜归属，留空按空落盘。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_audit_clearing_all_smtps_keeps_old_targets	H	-	清空发信清单也是改告警去向：smtps_from 保留全部旧目标，smtps_to 为空。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_audit_records_from_to_without_secrets	H	-	中继与收件人的变更审计必须能读出"从哪改到哪"（打码口径），零凭据。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_audit_view_over_budget_degrades_loudly_not_broken	H	-	超出审计 200 字符预算时：裁剪 + `_cut` 标注，detail 仍是合法 JSON。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_bad_id_shapes_rejected	H	-	id 是不透明标识不是自由文本：非法形状/请求内重复 → 400，且零落盘。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_delete_middle_row_credentials_follow_id	H	-	删掉中间那行后，剩余两条必须各自保住**自己**的授权码/账号。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_generated_id_shape_and_roundtrip	H	-	无 id 提交→后端补发稳定 id；GET 原样带回；显式 id 保存后不变。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_host_change_never_carries_old_credentials	H	-	只改 host = 换中继：同 id 也**不得**把旧授权码/旧发件账号带过去。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_legacy_blob_readable_and_id_assigned_on_save	H	-	旧形状密文（无 id）：GET 可读（id=null）、可发（smtp_list 不受影响），
+tests/test_mailer.py	SmtpEntryIdentityTest.test_legacy_middle_delete_credentials_follow_host	H	-	旧配置 + 旧客户端删中间行：剩余两条的凭据按 host 找回自己那条。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_port_change_same_target_rule	H	-	同 host 换端口也算换目标（凭据按中继+端口整体走），同样不沿用。
+tests/test_mailer.py	SmtpEntryIdentityTest.test_reorder_credentials_follow_id	H	-	整表重排：凭据跟着 id 走，不跟着位置走。
 tests/test_mailer.py	SmtpListTest.test_enc_non_dict_entries_filtered	H	-	解密列表中的非 dict 元素被过滤（脏数据不让调用方 e.get 崩溃）。
 tests/test_mailer.py	SmtpListTest.test_enc_roundtrip	H	-	??
 tests/test_mailer.py	SmtpListTest.test_fallback_empty_when_no_config	H	-	??
@@ -1505,6 +1622,7 @@ tests/test_mailer.py	test_channel_state_broken_when_nothing_configured	H	-	??
 tests/test_mailer.py	test_channel_state_off_when_disabled	H	-	??
 tests/test_mailer.py	test_channel_state_ok_with_enc_blob	H	-	??
 tests/test_mailer.py	test_channel_state_ok_with_legacy_keys	H	-	??
+tests/test_mailer.py	test_failover_resends_identical_message_id_and_logs_retry	H	-	C7+C8（MF-90）：QUIT 抛异常换条目重投的是同一封——同确定性 Message-ID，重投可见。
 tests/test_mailer.py	test_get_config_never_exposes_password	H	-	??
 tests/test_mailer.py	test_is_enabled_false_without_config	H	-	??
 tests/test_mailer.py	test_is_enabled_true_only_for_ok_state	H	-	is_enabled 与三态单源：坏 blob / 关开关都不是启用；旧键齐全才是启用。
@@ -1513,12 +1631,14 @@ tests/test_mailer.py	test_mask_addr_empty	H	-	??
 tests/test_mailer.py	test_mask_addr_masks_local_part	H	-	??
 tests/test_mailer.py	test_mask_addr_non_email_passthrough	H	-	??
 tests/test_mailer.py	test_mask_addr_short_name_keeps_one_char	H	-	??
+tests/test_mailer.py	test_recipients_refused_writes_delivery_ledger	H	-	B5（MF-44 补句）：`SMTPRecipientsRefused.recipients` 不再是零消费者。
 tests/test_mailer.py	test_send_admin_alert_explicit_to	H	-	显式 to 覆盖 ADMIN_TO：仅发给传入列表（调用方已按个人开关过滤）。
 tests/test_mailer.py	test_send_admin_alert_multi_recipients	H	-	??
 tests/test_mailer.py	test_send_admin_alert_requires_filtered_to	H	-	P2-3 回归：to 缺省时 fail-closed 拒发（不回退 ADMIN_TO 绕过个人开关）。
 tests/test_mailer.py	test_send_admin_alert_skipped_when_disabled	H	-	??
 tests/test_mailer.py	test_send_admin_alert_success	H	-	??
 tests/test_mailer.py	test_send_failure_logs_safe	H	-	??
+tests/test_mailer.py	test_sender_user_newlines_never_reach_smtp	H	-	D11（MF-44）：`user` 字段一处最小收口——发送前同源单行化。
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_every_known_deny_message_maps_explicitly	E	-	??
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_unknown_message_falls_back_to_500	E	-	??
 tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_all_paused_reports_and_does_not_spawn	E	-	全选皆自暂停：如实说明并拒绝，不派发空队列子进程。
@@ -1563,8 +1683,18 @@ tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_solve_ydclearance_settim
 tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_write_sign_state_rebuilds_corrupt_json	G	-	??
 tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_write_sign_state_rebuilds_non_dict_json	G	-	??
 tests/test_masking_ssrf_gaps.py	SigninFixes021Test.test_write_sign_state_unwritable_dir_does_not_raise	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_fragment_high_entropy_and_phone_masked	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_fragment_token_masked	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_opaque_fragment_untouched	G	-	??
+tests/test_masking_ssrf_gaps.py	UrlFragmentTest.test_query_and_fragment_same_caliber	G	-	??
 tests/test_masking_ssrf_gaps.py	UrlPhoneTest.test_high_entropy_value_rule_still_works	G	-	??
 tests/test_masking_ssrf_gaps.py	UrlPhoneTest.test_phone_in_query_masked_by_name_and_by_value	G	-	??
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_authorization_bearer_spanning_space	G	-	`Bearer <token> <尾巴>` 整段遮：旧实现只吞到 token 首段。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_bare_value_after_unclosed_quote_masked	G	-	引号未配对时裸值分支兜底：`token="abc def` 不得留下 ` def"`。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_comma_prose_without_pair_shape_untouched	G	-	对照例①：含逗号的正文没有键值形态，一字不改。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_cookie_pairs_masked_item_by_item	G	-	对照例③（也是裸值不放宽到行尾的理由）：cookie 串逐对遮，非凭据属性留在原地。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_following_non_credential_pair_kept	G	-	对照例②：值在"后续新 key= 对"处收尾——非凭据对不被连坐吞掉。
+tests/test_masking_tokens.py	CredentialValueSpanTest.test_registered_truncation_examples_fully_masked	G	-	登记实测五例 + password 同族例：旧实现全部残留明文尾（`*** def"` 等）。
 tests/test_masking_tokens.py	TokenMaskingTest.test_access_token_literal_is_masked	G	-	??
 tests/test_masking_tokens.py	TokenMaskingTest.test_authorization_bearer_is_masked	G	-	??
 tests/test_masking_tokens.py	TokenMaskingTest.test_cookie_and_session_literals_are_masked	G	-	??
@@ -1732,6 +1862,7 @@ tests/test_notify_ledger.py	test_no_process_lock_concurrent_not_overspent	H	-	�
 tests/test_notify_ledger.py	test_readonly_remaining_does_not_rewrite_disk	H	-	纯读路径（_daily_remaining）不触发写盘：无修改就不落盘。
 tests/test_notify_ledger.py	test_refund_across_day_is_voided	H	-	跨日凭证作废：23:59:59 占用、次日才失败退还，不得扣到次日账上。
 tests/test_notify_ledger.py	test_refund_after_failure_restores_count	H	-	发送失败退还：内存与磁盘计数同步回退，虚警耗尽标记被撤回。
+tests/test_notify_ledger.py	test_restore_exhaustion_notice_round_trip	H	-	MF-44 B6：`pop_exhaustion_notice` 不再是"取走即置位、永不退还"。
 tests/test_notify_throttle.py	test_concurrent_same_title_only_one_passes	H	-	8 线程冻结时钟同刻请求同标题：恰好一次放行、7 次被磁盘判定拦下。
 tests/test_notify_throttle.py	test_cooldown_zero_disabled_and_no_disk	H	-	cooldown=0 关闭节流：每次都放行，且不产生磁盘文件。
 tests/test_notify_throttle.py	test_corrupt_file_archived_warned_and_restarts	H	-	写坏 JSON：放行（按空表）且 warning + 归档留证，不静默。
@@ -1768,6 +1899,7 @@ tests/test_notify_webhook.py	Batch18Knife2WebTest.test_p36_atomic_write_roundtri
 tests/test_notify_webhook.py	test_bad_encrypted_secret_returns_empty	H	-	??
 tests/test_notify_webhook.py	test_cooldown_explicit_zero_from_env_file_disables_throttle	H	-	生产口径回归：.env 里显式 YIBAN_NOTIFY_COOLDOWN=0 必须真的关闭节流（而非回落 60）。
 tests/test_notify_webhook.py	test_cross_day_resets_both_ledgers	H	-	跨日两本账同时归零、耗尽告知标记同步重置。
+tests/test_notify_webhook.py	test_custom_3xx_or_error_body_refunds_not_charged	H	-	A1：custom 成功判据从 `<400` 收成 2xx 一档，并认 200+错误 body。
 tests/test_notify_webhook.py	test_custom_rejects_unsafe_url	H	-	??
 tests/test_notify_webhook.py	test_custom_sends_json_and_masks_host	H	-	??
 tests/test_notify_webhook.py	test_daily_budget_force_bypasses	H	-	??
@@ -1796,6 +1928,7 @@ tests/test_notify_webhook.py	test_refund_kept_when_limit_switched_to_unlimited	H
 tests/test_notify_webhook.py	test_refund_ticket_is_one_shot	H	-	凭证一次性：同一笔占用退两次只退一次，否则等于白送一条额度。
 tests/test_notify_webhook.py	test_send_exception_refunds_urgent_budget	H	-	HTTP 异常同样退还，且只退所属那本账。
 tests/test_notify_webhook.py	test_send_rejected_refunds_budget	H	-	服务端拒绝（code!=0）不扣额度，退还后仍可再试（旧口径失败照扣=可被烧额度）。
+tests/test_notify_webhook.py	test_serverchan_json_non_object_refunds_not_leaks	H	-	A1：Server酱 返回合法 JSON 但**非对象**（数组/字符串/数字）时判失败并退还额度。
 tests/test_notify_webhook.py	test_serverchan_nonzero_code_fails_and_masks_key	H	-	??
 tests/test_notify_webhook.py	test_serverchan_raise_fails_silently	H	-	??
 tests/test_notify_webhook.py	test_serverchan_success_format	H	-	??
@@ -1808,6 +1941,7 @@ tests/test_notify_webhook.py	test_unsafe_url_rejection_refunds_budget	H	-	SSRF �
 tests/test_notify_webhook.py	test_urgent_budget_zero_unlimited	H	-	紧急账 0=不限；设 0 时该账永不判耗尽。
 tests/test_notify_webhook.py	test_urgent_exhausted_does_not_block_general	H	-	紧急账打满不影响非紧急可达：两本账各自独立计数。
 tests/test_notify_webhook.py	test_urgent_last_message_filling_budget_still_notifies	H	-	修复轮①：紧急账同理——打满即挂标记，不等下一次被拒。
+tests/test_notify_webhook.py	test_urgent_only_accepts_false_and_daily_max_negative_not_unlimited	H	-	A3：URGENT_ONLY=false 必须**关掉**开关；DAILY_MAX=-1 不得静默放开成不限额。
 tests/test_notify_webhook.py	test_urgent_only_force_bypasses	H	-	??
 tests/test_notify_webhook.py	test_urgent_only_off_pushes_all	H	-	??
 tests/test_notify_webhook.py	test_urgent_only_skips_non_urgent	H	-	??
@@ -1869,6 +2003,7 @@ tests/test_planner.py	WritePlanTest.test_empty_rows_is_noop	A	-	??
 tests/test_planner.py	WritePlanTest.test_existing_rows_are_not_overwritten	A	-	已存在的行不被覆盖（先手工改成 done，重跑后仍为 done）。
 tests/test_planner.py	WritePlanTest.test_insert_then_rerun_is_idempotent	A	-	幂等落库：连跑两次行数不变，第二次写入 0 行。
 tests/test_planner.py	WritePlanTest.test_normal_plan_writes_second_slot_width	A	-	??
+tests/test_probe.py	ProbeSigninTest.test_env_update_probe_folds_spaced_shadow_line	D	-	`YIBAN_PROBE_ENABLE = 1`（带空格旧行）也必须折掉。
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_noop_when_not_auto_disable	D	-	非 once 模式不得改动 .env。
 tests/test_probe.py	ProbeSigninTest.test_env_update_probe_writes_disable_and_creates_tmp_0600	D	-	写 YIBAN_PROBE_ENABLE=0 且临时文件**创建即 0600**。
 tests/test_probe.py	ProbeSigninTest.test_probe_due_disabled	D	-	??
@@ -1886,6 +2021,15 @@ tests/test_protocol_masking.py	CorruptedKeyContractTest.test_corrupted_key_retur
 tests/test_protocol_masking.py	CorruptedKeyContractTest.test_valid_page_still_parses	G	-	守卫不得变成"永远返回 (None, None)"：合法页两分支都要照常解出公钥。
 tests/test_protocol_masking.py	DiagnosticsHeaderTest.test_diagnostics_header_masks_phone	G	-	诊断日志首行 `[账号] 阶段诊断:` 的账号同样走脱敏口径。
 tests/test_protocol_masking.py	LoginFailureMessageTest.test_failure_message_masks_phone	G	-	usersure 回 error reUrl → 异常消息里的账号只能是 `138****8000` 形态。
+tests/test_public_example_key_blocked.py	EnvExamplePlaceholderTest.test_template_no_longer_contains_the_published_key	G	-	??
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_env_file_source_blocked_and_file_untouched	G	-	??
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_env_var_source_blocked	G	-	??
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_existing_file_recheck_on_key_write_also_blocks	G	-	`_write_key_to_env_file` 的"写前重读既有值"分支同走 `_decode_key`：
+tests/test_public_example_key_blocked.py	LoadKeyBlockedEndToEndTest.test_random_key_end_to_end_ok	G	-	??
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_exact_public_string_blocked	G	-	??
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_random_keys_never_false_blocked	G	-	零误杀：200 把 `token_hex(32)` 随机钥全部正常解出（随机命中公开串的
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_three_weak_criteria_cannot_catch_the_template	G	-	实算反向钉（登记数字的来源）：模板解出的字节既非全零、非单字节重复、
+tests/test_public_example_key_blocked.py	PublishedExampleKeyDecodeBlockedTest.test_weak_patterns_still_warn_only	G	-	三条弱钥判据维持 WARNING 不阻断（存量部署语义不变，登记口径不动）。
 tests/test_purge_guard.py	ConfirmationTest.test_requires_exact_echo	G	-	??
 tests/test_purge_guard.py	ContentFingerprintTest.test_parts_drive_digest	G	-	??
 tests/test_purge_guard.py	DbContentFingerprintTest.test_different_scale_changes_fingerprint	G	-	行数/规模差异必须改变指纹——这正是它区分 demo 库与生产库的地方。
@@ -2237,7 +2381,7 @@ tests/test_scheduler_env_probe.py	VerifyPrescreenWebTest.test_verify_throttle_pe
 tests/test_scheduler_exception_surface.py	CheckHealthCliTest.test_check_health_cli_exit_code	B	bash	??
 tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_oserror_still_marks_slot_once_not_respanwed	B	bash	失败留痕后仍走既有槽位标记：同一时段不逐秒反复 spawn（重启即双跑源），
 tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_popen_oserror_does_not_propagate	B	bash	今天（红）：OSError 直接穿出 _run_signin_child，把 main_loop 带崩。
-tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_popen_oserror_logs_trace	B	bash	接住也要出声：与兜底拉起调用点同款 print 留痕（不静默吞）。
+tests/test_scheduler_exception_surface.py	ChildPopenOSErrorTest.test_popen_oserror_logs_trace	B	bash	接住也要出声：经 scheduler 日志链留痕（不静默吞），落进输出面兜底射程。
 tests/test_scheduler_exception_surface.py	ComposeHealthcheckSchedTest.test_healthcheck_covers_sched_and_web	B	bash	??
 tests/test_scheduler_exception_surface.py	ComposeHealthcheckSchedTest.test_web_only_curl_goes_red	B	bash	活体反例：旧形态（只 curl web）用同一条判据必须红。
 tests/test_scheduler_exception_surface.py	HeartbeatTest.test_healthcheck_main_fresh_ok_stale_and_missing_fail	B	bash	新鲜 0 / mtime 归零（远超容忍窗）1 / 文件缺失 1——探活判据 fail-closed。
@@ -2335,6 +2479,12 @@ tests/test_second_round_rc_contract.py	SupervisorRcAggregationTest.test_signal_k
 tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_both_sources_clean	B	bash	??
 tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_pool_clean_but_state_file_open_counts_undone	B	bash	??
 tests/test_second_round_rc_contract.py	UndoneFactsUnionTest.test_pool_open_counts_undone	B	bash	??
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_comment_only_file_treated_as_fresh_single_key	G	-	仅注释的文件 = 无有效键 = 全新部署：建钥 + PAUSE=1，注释保留。
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_decision_is_one_strict_read	G	-	??
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_existing_key_returned_without_any_write	G	-	??
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_truncated_window_folds_to_single_lines	G	-	截断成空文件 = 合法"全新部署"（与既有裁决一致：无有效键即判新）；
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_window_counterexample_old_shape_swaps_key	G	-	旧判定形状在瞬态读窗里把"读失败"当"未配置"：宽松读吞掉失败 ⇒ 判全新
+tests/test_secret_key_strict_read.py	EnsureSecretKeyStrictReadTest.test_window_new_impl_never_touches_disk	G	-	新实现：严格读失败 ⇒ 判定不可信 ⇒ 一次都不写；返回进程内随机钥 + 告警。
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_audit_failure_aborts_wipe	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_correct_fingerprint_wipes_and_audits	J	-	??
 tests/test_seed_accounts_guard.py	SeedAccountsGuardTest.test_dry_run_reports_and_does_not_delete	J	-	??
@@ -2365,6 +2515,7 @@ tests/test_session.py	SessionCacheBusinessDayTest.test_same_day_five_hours_ago_s
 tests/test_session.py	SessionCacheBusinessDayTest.test_write_and_read_share_one_clock	C	-	写入与判定必须同钟：宿主时区为 UTC 时否则 updated_at 凭空领先 8 小时永不过期。
 tests/test_session.py	SessionCacheDbTest.test_ciphertext_bound_to_phone_aad	C	-	??
 tests/test_session.py	SessionCacheDbTest.test_cookies_stored_encrypted_not_plaintext	C	-	??
+tests/test_session.py	SessionCacheDbTest.test_decrypt_failure_log_masks_phone_at_call_site	C	-	??
 tests/test_session.py	SessionCacheDbTest.test_fresh_db_reaches_v8_with_session_cache_table	C	-	??
 tests/test_session.py	SessionCacheDbTest.test_session_cache_crud_roundtrip	C	-	??
 tests/test_session.py	SessionCacheDbTest.test_ttl_env_override_extends_validity	C	-	??
@@ -2437,12 +2588,28 @@ tests/test_slot_geometry.py	SlotToBiYardstickTest.test_default_window_mapping_is
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_app_forward_hands_window_over_to_bounds	A	-	`web.app.sign_window_bounds` 只转发：起止与前后裁剪交给 `yiban.window.bounds`。
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_pref_slots_not_all_disabled_when_edges_clamped	A	-	web 同准绳：缓冲收缩后自选片不全为灰，片号基点仍是窗口起点。
 tests/test_slot_geometry.py	WebPrefSlotsYardstickTest.test_pref_slots_pin_enabled_and_disabled_under_crop	A	-	有效窗口被前裁吃满 5 分钟（未吃空）：首片整片在裁剪区内 → 置灰，次片可选。
+tests/test_smtp_identity_frontend.py	ExecutorsZeroWorkersStaticTest.test_kpi_still_reads_backend_configured	F	node	??
+tests/test_smtp_identity_frontend.py	ExecutorsZeroWorkersStaticTest.test_single_mode_hint_present	F	node	??
+tests/test_smtp_identity_frontend.py	NotifyQuotaCaliberJsTest.test_unlimited_and_hidden_branches	F	node	??
+tests/test_smtp_identity_frontend.py	NotifyQuotaCaliberJsTest.test_used_count_visible_not_only_remaining	F	node	??
+tests/test_smtp_identity_frontend.py	SmtpMailEmptyStatusStaticTest.test_collect_carries_row_id	F	node	??
+tests/test_smtp_identity_frontend.py	SmtpMailEmptyStatusStaticTest.test_save_status_gate_unchanged	F	node	留空沿用/门禁等既有提交面不因 id 改动：smtps 仍只在 tableDirty 时提交。
+tests/test_smtp_identity_frontend.py	SmtpMailEmptyStatusStaticTest.test_status_line_names_the_empty_list	F	node	??
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_empty_list_has_explicit_hint	F	node	空清单不再静默：占位行必须明确说出"尚未配置发件 SMTP、告警不可送达"。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_host_drift_placeholder_follows	F	node	改了 host 的行，授权码占位必须当场改口；改回则恢复原案。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_legacy_null_ids_get_fresh_valid_ids	F	node	旧格式条目（id=null）渲染时现造 id：形状与后端校验同口径且行间不撞。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_middle_row_delete_shifts_nothing	F	node	删中间行后，剩余两条的 id 序列必须是 [第1条, 第3条]。
+tests/test_smtp_identity_frontend.py	SmtpRowIdentityJsTest.test_rendered_rows_carry_ids	F	node	??
 tests/test_state_file_writes.py	SignStateBomReadTest.test_bom_file_keeps_existing_entries	D	-	??
 tests/test_state_file_writes.py	SigninWritesAreAtomicTest.test_cred_state_write_is_delegated	D	-	熔断状态文件的原子写归 `yiban/cred_state.py`（唯一读写入库）；
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_corrupt_marker_is_treated_as_not_done	D	-	坏文件（历史遗留/手工改动）必须退化为"未跑过"，不得抛异常打断调度循环。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_failed_replace_leaves_no_partial_marker	D	-	替换失败时标记路径必须**不存在**（而不是存在但内容损坏）。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_interrupted_write_is_swept_later	D	-	被杀（SIGKILL）留下的半成品没有机会自清 → 由状态清理按 mtime 兜底。
 tests/test_state_file_writes.py	SlotMarkerAtomicWriteTest.test_mark_slot_replaces_atomically	D	-	??
+tests/test_state_file_writes.py	StateWriteChannelSourceGuardTest.test_guard_fires_on_the_shape_it_must_reject	D	-	活体反例（N 簇元判据）：把守卫喂给它该拒的旧形态，必须命中。
+tests/test_state_file_writes.py	StateWriteChannelSourceGuardTest.test_no_builtin_open_tmp_write	D	-	??
+tests/test_state_file_writes.py	StateWritesArePrivateUnderWideUmaskTest.test_every_state_site_is_0600_under_umask_0000	D	-	14 站点逐条：umask(0o000) 反例矩阵（含 6 处明手机号站点优先覆盖）。
+tests/test_state_file_writes.py	StateWritesArePrivateUnderWideUmaskTest.test_worker_alive_heartbeat_also_private	D	-	既有用法（并行执行体心跳）同口径回归：它是最早走单通道的一处。
 tests/test_state_gc.py	CleanupEntryPointsTest.test_bash_wrapper_delegates_and_keeps_login_safe_log	D	-	??
 tests/test_state_gc.py	CleanupEntryPointsTest.test_cli_end_to_end_writes_cleanup_log	D	-	??
 tests/test_state_gc.py	CleanupEntryPointsTest.test_cli_fails_loudly_on_bad_retention	D	-	??
@@ -2875,6 +3042,35 @@ tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_resubmit_same_phon
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_undo_blocked_when_owner_has_other_live	L	-	??
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_undo_rejected_for_admin_deleted	L	-	??
 tests/test_user_soft_delete.py	UserAccountSoftDeleteTest.test_user_delete_soft_then_undo	L	-	??
+tests/test_users_exit_surface.py	AccountReprSwallowTest.test_apostrophe_name_repr_swallowed	G	-	撇号名让 dataclass repr 改用**双引号**包裹——旧吞除正则只配单引号，
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_audit_actor_masked_at_write_entry	G	-	??
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_non_email_actor_passthrough	G	-	??
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_pause_cooldown_dual_form_across_upgrade	G	-	冷却查询双形态：新行 actor 是遮罩态，但按**明文邮箱**查仍命中
+tests/test_users_exit_surface.py	ActorSurfaceTest.test_purge_target_masked_per_address	G	-	purge 的 target 逐条遮罩（旧形态整表明文），计数与 detail 语义不变。
+tests/test_users_exit_surface.py	BoundedAuditJsonTest.test_extreme_admin_to_cuts_with_flag_and_fits_budget	G	-	极端 admin_to（多条长地址逐项打码后仍超预算）：字符串字段逐段收缩并打
+tests/test_users_exit_surface.py	BoundedAuditJsonTest.test_hopeless_combo_gives_up_view_keeps_keys_parseable	G	-	超长 host（不可裁剪字段）+ 超长收件人的病态组合：地址类视图整体让位
+tests/test_users_exit_surface.py	BoundedAuditJsonTest.test_small_detail_untouched	G	-	??
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_authorization_basic_tail_swallowed	G	-	??
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_benign_json_not_harmed	G	-	"不误伤 JSON 正文"判据：非凭据键的值、数字/布尔/null 叶子原样保留；
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_cookie_pairs_still_masked_individually	G	-	??
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_numeric_leaf_invariant	G	-	数字叶子不变量（2-9a 入册）：凭据键后的**数字**不被改写——
+tests/test_users_exit_surface.py	MF111SanitizeTest.test_quoted_key_credential_full_table	G	-	整张凭据名表的**引号键形态**（vars()/json.dumps 调试输出）都要被拦。
+tests/test_users_exit_surface.py	OpaqueIdRoutingTest.test_email_in_path_is_dead_route	G	-	旧"邮箱编进 path"的形态在 `<int:...>` 转换器处直接 404——
+tests/test_users_exit_surface.py	OpaqueIdRoutingTest.test_ghost_numeric_id_returns_json_404	G	-	不存在的 id 走业务 404（`用户不存在`）：证明服务端按 id 解析回邮箱再操作。
+tests/test_users_exit_surface.py	OpaqueIdRoutingTest.test_role_change_by_id_works_and_url_has_no_email	G	-	真 id 定位：设为/取消管理员生效，且审计/响应面不含操作目标邮箱明文。
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_api_users_row_has_masked_display	G	-	/api/users 每行带不透明 id 与遮罩 display（前端禁止再算第二套）。
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_mask_account_owner_display_masked	G	-	??
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_mask_email_local_general_and_idempotent	G	-	??
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_mask_email_local_phone_form	G	-	本地部即手机号 → 号遮罩形态；**不是**整段本地部直出（旧行为）。
+tests/test_users_exit_surface.py	OwnerDisplayTest.test_owner_display_of_endpoints	G	-	??
+tests/test_users_exit_surface_frontend.py	AccountFormOwnerDisplayTest.test_dropdown_uses_server_display	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_identity_never_touches_session_storage	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_logout_clears_cache_on_success	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_logout_clears_cache_when_request_fails	F	node	??
+tests/test_users_exit_surface_frontend.py	CoreCacheLifecycleTest.test_nav_users_caches_scalar_projection_only	F	node	??
+tests/test_users_exit_surface_frontend.py	StaticNoSecondSplitTest.test_components_and_pages_clean	F	node	??
+tests/test_users_exit_surface_frontend.py	UserOpsOpaqueIdTest.test_single_ops_use_id_and_batch_keeps_body_emails	F	node	??
+tests/test_users_exit_surface_frontend.py	WorkUsersStateCarriesIdTest.test_fetch_users_maps_id_and_display	F	node	??
 tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_attempts_and_priority_advance_through_requeue_task	B	-	??
 tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_claimed_and_terminal_never_flipped	B	-	在飞（claimed）与终态（done/skipped）绝不回炉——前者重复登录、后者谎报了结。
 tests/test_v3_same_day_requeue.py	RequeueFailedStoreTest.test_default_tier_flips_conservative_needs_explicit	B	-	??
@@ -3276,6 +3472,7 @@ tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_doc_pages_have_desc
 tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_env_overrides_description	G	node	??
 tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_login_page_has_description_and_og	G	node	??
 tests/test_web_mask_email_parity.py	SiteDescriptionTest.test_site_image_requires_https	G	node	og:image 仅接受 https 绝对地址，其余一律忽略。
+tests/test_web_mask_email_parity.py	WebForwarderParityTest.test_forwarder_matches_source	G	node	??
 tests/test_web_page_consistency.py	PageConsistencyTest.test_no_page_level_entry_moved_into_a_tab	F	-	导航必须是真实页面链接；整页唯一条目不得按页复制、不得靠 tab 显隐。
 tests/test_web_page_consistency.py	PageConsistencyTest.test_version_and_source_appear_exactly_once_per_page	F	-	每个整页（含其共享外壳/页脚）里，版本号与开源入口都必须**恰好 1 处**。
 tests/test_web_page_consistency.py	TabAriaRovingTest.test_tab_partitions_render_aria_tabs_with_roving_tabindex	F	-	含分区的页面必须以 WAI-ARIA tabs 模式渲染，且 roving tabindex 初始态正确。

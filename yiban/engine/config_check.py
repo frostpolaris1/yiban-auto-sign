@@ -58,7 +58,8 @@ def _apply_only_filter(accounts, only_arg):
     filtered = [a for a in accounts if a.phone in only_set]
     missing = sorted(only_set - {a.phone for a in filtered})
     for phone in missing:
-        # 这里必须自己脱敏：裸号不带 [] 定界符，web 侧 _mask_log_phones（只认
-        # [11 位号]）盖不住，落盘即明文。web 展示层/导出不得出现完整号。
+        # 调用点自脱敏：未挂输出面兜底的通道（裸 handler、stderr 降级）也要落得干净；
+        # 同模块的 --check-config 账号清单走 print（不经 logging 链）已按此口径遮，
+        # 两处号码形态必须一致。mask_phone 幂等，兜底再遮一遍不变形。
         logger.warning("--only 指定账号不在配置中: %s", _mask_phone(phone))
     return filtered, missing

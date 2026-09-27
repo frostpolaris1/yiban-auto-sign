@@ -68,7 +68,7 @@ from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, runner
 from yiban.engine import schedule as schedule_mod
 from yiban.infra import env_io
-from yiban.masking import mask_phone
+from yiban.masking import mask_phone, mask_phones_in_text
 from yiban.store import accounts as store_accounts
 from yiban.store import db as store_db
 from yiban.store import purge_guard
@@ -94,15 +94,41 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 # 输出：结果进 stdout（单行 JSON），人话进 stderr
 # ---------------------------------------------------------------------------
+def _masked_tree(node):
+    """递归遮罩 JSON 树里所有**字符串叶子**的手机号（口径 = `mask_phones_in_text`）。
+
+    只动 str 叶子、不动数字：对序列化后的整行打码会连 11 位整数字段值（如巨型库
+    的 `size_bytes`）一起改写，产出 `138****0000` 这种非法 JSON——遮罩必须在
+    "值还是字符串"的时候做。键名是本模块写死的字段名，不承载用户数据，不经过这里。
+    """
+    if isinstance(node, str):
+        return mask_phones_in_text(node)
+    if isinstance(node, dict):
+        return {k: _masked_tree(v) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_masked_tree(v) for v in node]
+    return node
+
+
 def _emit_json(payload):
-    """把结果对象打成**一整行** JSON 写 stdout（调用方直接 `json.loads`）。"""
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    """把结果对象打成**一整行** JSON 写 stdout（调用方直接 `json.loads`）。
+
+    维护类子命令（config/capacity/state/db/version）不建引擎的日志装配，
+    `errors`/`detail` 等字段夹带的异常原文可能内嵌裸号——叶子遮罩（见
+    `_masked_tree`）是 stdout 面唯一的出口收口，序列化前做。
+    """
+    sys.stdout.write(json.dumps(_masked_tree(payload), ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
 def _say(message):
-    """人类可读汇总：一律走 stderr（stdout 必须保持"只有结果"）。"""
-    sys.stderr.write(str(message) + "\n")
+    """人类可读汇总：一律走 stderr（stdout 必须保持"只有结果"）。
+
+    与 `_emit_json` 同口径过遮罩（`mask_phones_in_text`，即 `MaskingFormatter`
+    用的那一份）：这里是维护类子命令唯一的"人话"出口，且 stderr 会被 run.sh 的
+    `2>&1` 原样落进当天日志文件——formatter 管不到直写。
+    """
+    sys.stderr.write(mask_phones_in_text(str(message)) + "\n")
     sys.stderr.flush()
 
 
@@ -799,6 +825,11 @@ def main(argv=None) -> int:
         if args.command is None:
             _say(USAGE)
             return 2
+        # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
+        # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
+        # （formatter 缺席 = 手机号兜底整条防线被旁路）；装配后这些记录经
+        # `MaskingFormatter` 落按天日志或降级 handler。
+        cli_support._setup_cli_logging()
         return _dispatch(args, extra, subs)
     except SystemExit as e:
         # argparse 的 --help（0）与用法错误（2）都以此形式退出：转成返回值，

@@ -17,6 +17,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -680,13 +681,20 @@ class MailConfigSmtpsApiTest(_Base_FAILOVER):
                  "admin_to": "boss@x.com"}]
 
     def test_put_smtps_writes_enc_and_roundtrips(self):
-        """PUT 传入含 admin_to 的条目：该死键不再落盘，保存结果只含有效字段。"""
+        """PUT 传入含 admin_to 的条目：该死键不再落盘，保存结果只含有效字段。
+
+        id 是条目稳定身份、保存时补发（本用例不带 id → 后端生成一个形状合法的），
+        所以精确断言前先摘掉 id，形状本身由 SmtpEntryIdentityTest 钉。
+        """
         self._reset_env_file()
         c, h = self._master()
         r = c.put("/api/mail-config",
                   json={"smtps": self.smtps(), "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         entries = self._read_enc_entries()
+        self.assertRegex(entries[0].get("id"), r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+                         "无 id 提交应被补发稳定 id（禁止以位置为身份）")
+        entries[0].pop("id")
         self.assertEqual(entries, [{
             "host": "smtp.x.com", "port": 465, "user": "a@x.com",
             "pass": "topsecret",
@@ -745,8 +753,8 @@ class MailConfigSmtpsApiTest(_Base_FAILOVER):
         self.assertEqual(r.status_code, 400)
 
     def test_put_smtps_null_fields_not_persisted_as_none(self):
-        """JSON null 入参兜底：host=null → 400；user/pass=null 视为留空（按索引保留旧值），
-        均不得经 str(None) 落盘为 "None"。"""
+        """JSON null 入参兜底：host=null → 400；user/pass=null 视为留空（按稳定身份/
+        目标认领保留旧值，非按数组位置），均不得经 str(None) 落盘为 "None"。"""
         self._reset_env_file()
         c, h = self._master()
         r = c.put("/api/mail-config",
@@ -758,7 +766,7 @@ class MailConfigSmtpsApiTest(_Base_FAILOVER):
                         "confirm_password": ADMIN_PASS},
                   headers=h)
         self.assertEqual(r.status_code, 400, "host=null 应拒绝（不得落盘为 \"None\"）")
-        # user/pass=null：视为留空 → 按索引保留旧条目的 user/pass
+        # user/pass=null：视为留空 → 该条无 id、按 (host,port) 迁移口径认领旧条目并沿用其 user/pass
         r = c.put("/api/mail-config",
                   json={"smtps": [{"host": "smtp.x.com", "user": None, "pass": None}],
                         "confirm_password": ADMIN_PASS},
@@ -790,6 +798,272 @@ class MailConfigSmtpsApiTest(_Base_FAILOVER):
         self.assertNotIn("topsecret", body, "响应全文不得含 pass 明文")
         self.assertNotIn("a@x.com", body, "响应全文不得含完整发件账号")
         self.assertNotIn("boss@x.com", body, "响应全文不得含完整 admin_to 地址")
+
+
+class SmtpEntryIdentityTest(_Base_FAILOVER):
+    """SMTP 条目稳定 id：身份= id（不是数组位置），凭据只随"同 id 且目标未变"沿用。
+
+    反例矩阵（修复前全部翻车）：中间删一行凭据错配 / 只改 host 旧授权码随新域名
+    发出 / 旧格式配置（无 id）必须照旧可读可改（迁移口径）/ 改中继收件人必须
+    入审计且留可还原目标。id 形状与 web/routes/notify.py 的 _SMTP_ID_RE 同口径。
+    """
+
+    ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$"
+
+    def _put(self, c, h, smtps, **extra):
+        body = dict(extra)
+        body.update({"smtps": smtps, "confirm_password": ADMIN_PASS})
+        return c.put("/api/mail-config", json=body, headers=h)
+
+    def _three(self):
+        """三条典型清单。host 刻意取短：审计视图预算 165 字符（含作用域标记），
+        超长 host 的裁剪行为另有专门用例（test_audit_view_over_budget…）钉。"""
+        return [
+            {"id": "smtp-aaaa00000001", "host": "a.io", "port": 465,
+             "user": "a@x.com", "pass": "passA"},
+            {"id": "smtp-bbbb00000002", "host": "b.io", "port": 587,
+             "user": "b@x.com", "pass": "passB"},
+            {"id": "smtp-cccc00000003", "host": "c.io", "port": 465,
+             "user": "c@x.com", "pass": "passC"},
+        ]
+
+    def _write_legacy_blob(self, entries):
+        """不经端点、直接落一份旧形状（无 id）密文——现网存量配置的样貌。"""
+        enc = account_crypto.encrypt_text(
+            json.dumps(entries, ensure_ascii=False), account_crypto.load_key(self.env_file))
+        self._reset_env_file(f"YIBAN_MAIL_SMTPS_ENC={json.dumps(enc, ensure_ascii=False)}\n")
+
+    def _last_audit_detail(self):
+        rows = self.db._conn.execute(
+            "SELECT detail FROM audit_logs WHERE action='mail_config' ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+        self.assertTrue(rows, "应写入 mail_config 审计")
+        return rows[0][0]
+
+    # ---- ① id 契约 ----
+    def test_generated_id_shape_and_roundtrip(self):
+        """无 id 提交→后端补发稳定 id；GET 原样带回；显式 id 保存后不变。"""
+        self._reset_env_file()
+        c, h = self._master()
+        r = self._put(c, h, [{"host": "smtp.x.com", "user": "a@x.com", "pass": "p1"}])
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        saved = self._read_enc_entries()[0]
+        self.assertRegex(saved["id"], self.ID_RE)
+        got = c.get("/api/mail-config", headers=h).get_json()["smtps"][0]
+        self.assertEqual(got["id"], saved["id"], "GET 必须带回落盘 id（前后端同口径）")
+        r = self._put(c, h, [{"id": "smtp-manual00001", "host": "smtp.x.com",
+                              "user": "a@x.com", "pass": ""}])
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._read_enc_entries()[0]["id"], "smtp-manual00001")
+
+    def test_bad_id_shapes_rejected(self):
+        """id 是不透明标识不是自由文本：非法形状/请求内重复 → 400，且零落盘。"""
+        self._reset_env_file()
+        c, h = self._master()
+        before = self._read_env_all()
+        for bad in ("bad id!", "x" * 65, "smtp/../etc"):
+            r = self._put(c, h, [{"id": bad, "host": "smtp.x.com", "user": "a@x.com"}])
+            self.assertEqual(r.status_code, 400, bad)
+        r = self._put(c, h, [{"id": "smtp-dup0000001", "host": "smtp.x.com"},
+                             {"id": "smtp-dup0000001", "host": "smtp.y.com"}])
+        self.assertEqual(r.status_code, 400, "同一请求内 id 重复=两条目认领同一身份")
+        self.assertEqual(self._read_env_all(), before, "被拒请求不得动 .env")
+
+    # ---- ② 反例矩阵：删中间行 / 重排 / 只改 host ----
+    def test_delete_middle_row_credentials_follow_id(self):
+        """删掉中间那行后，剩余两条必须各自保住**自己**的授权码/账号。
+
+        修复前：后端按提交索引取旧条目，第二条（c.io）会沿用到被删那条
+        （passB）的授权码——凭据错配。
+        """
+        self._reset_env_file()
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, self._three()).status_code, 200)
+        kept = [{"id": "smtp-aaaa00000001", "host": "a.io", "port": 465,
+                 "user": "", "pass": ""},
+                {"id": "smtp-cccc00000003", "host": "c.io", "port": 465,
+                 "user": "", "pass": ""}]
+        self.assertEqual(self._put(c, h, kept).status_code, 200)
+        saved = self._read_enc_entries()
+        self.assertEqual([e["id"] for e in saved],
+                         ["smtp-aaaa00000001", "smtp-cccc00000003"])
+        self.assertEqual([e["pass"] for e in saved], ["passA", "passC"],
+                         "留空沿用必须按 id 找回各自的旧授权码（旧实现第二条会拿到 passB）")
+        self.assertEqual([e["user"] for e in saved], ["a@x.com", "c@x.com"])
+
+    def test_reorder_credentials_follow_id(self):
+        """整表重排：凭据跟着 id 走，不跟着位置走。"""
+        self._reset_env_file()
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, self._three()).status_code, 200)
+        shuffled = [
+            {"id": "smtp-cccc00000003", "host": "c.io", "port": 465, "user": "", "pass": ""},
+            {"id": "smtp-aaaa00000001", "host": "a.io", "port": 465, "user": "", "pass": ""},
+            {"id": "smtp-bbbb00000002", "host": "b.io", "port": 587, "user": "", "pass": ""},
+        ]
+        self.assertEqual(self._put(c, h, shuffled).status_code, 200)
+        saved = self._read_enc_entries()
+        self.assertEqual([e["pass"] for e in saved], ["passC", "passA", "passB"])
+
+    def test_host_change_never_carries_old_credentials(self):
+        """只改 host = 换中继：同 id 也**不得**把旧授权码/旧发件账号带过去。
+
+        修复前这正是"risk 档零口令零确认"下最静默的泄漏：留空被当成"沿用"，
+        旧码随新域名发出。现在留空按空值落盘，has_pass 变 false。
+        """
+        self._reset_env_file()
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, self._three()).status_code, 200)
+        moved = [{"id": "smtp-aaaa00000001", "host": "smtp.evil-new.com",
+                  "port": 465, "user": "", "pass": ""}]
+        self.assertEqual(self._put(c, h, moved).status_code, 200)
+        saved = self._read_enc_entries()
+        self.assertEqual(saved[0]["id"], "smtp-aaaa00000001", "目标变了身份可以保留（同一行的语义）")
+        self.assertEqual(saved[0]["pass"], "", "旧授权码绝不随新域名发出")
+        self.assertEqual(saved[0]["user"], "", "旧发件账号同样不跟去新目标")
+        got = c.get("/api/mail-config", headers=h).get_json()["smtps"][0]
+        self.assertFalse(got["has_pass"], "GET 必须如实报告这条已经没有授权码了")
+
+    def test_port_change_same_target_rule(self):
+        """同 host 换端口也算换目标（凭据按中继+端口整体走），同样不沿用。"""
+        self._reset_env_file()
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, [{"id": "smtp-port0000001", "host": "smtp.x.com",
+                                           "port": 465, "user": "a@x.com", "pass": "pS"}]).status_code, 200)
+        self.assertEqual(self._put(c, h, [{"id": "smtp-port0000001", "host": "smtp.x.com",
+                                           "port": 587, "user": "", "pass": ""}]).status_code, 200)
+        self.assertEqual(self._read_enc_entries()[0]["pass"], "")
+
+    # ---- ③ 迁移口径：旧配置（无 id）兼容读取 + 反例 ----
+    def test_legacy_blob_readable_and_id_assigned_on_save(self):
+        """旧形状密文（无 id）：GET 可读（id=null）、可发（smtp_list 不受影响），
+        下一次保存按 (host,port) 唯一匹配认领旧凭据并落定 id。"""
+        legacy = [
+            {"host": "smtp.a.com", "port": 465, "user": "a@x.com", "pass": "passA"},
+            {"host": "smtp.b.com", "port": 465, "user": "b@x.com", "pass": "passB"},
+        ]
+        self._write_legacy_blob(legacy)
+        import yiban.mail as mailer_mod
+        self.assertEqual(mailer_mod.smtp_list(), legacy, "旧配置发送路径读取不得受影响")
+        c, h = self._master()
+        got = c.get("/api/mail-config", headers=h).get_json()["smtps"]
+        self.assertEqual([e["id"] for e in got], [None, None], "旧格式条目 id 回 null（前端现造）")
+        # 旧客户端（完全不带 id）留空保存：仍按 host:port 认领，旧凭据不丢
+        self.assertEqual(self._put(c, h, [
+            {"host": "smtp.b.com", "port": 465, "user": "", "pass": ""},
+            {"host": "smtp.a.com", "port": 465, "user": "", "pass": ""},
+        ]).status_code, 200)
+        saved = self._read_enc_entries()
+        self.assertEqual([e["pass"] for e in saved], ["passB", "passA"],
+                         "重排 + 无 id：host:port 唯一匹配，位置不参与身份")
+        for e in saved:
+            self.assertRegex(e["id"], self.ID_RE, "保存后 id 必须落定（迁移只此一次）")
+
+    def test_legacy_middle_delete_credentials_follow_host(self):
+        """旧配置 + 旧客户端删中间行：剩余两条的凭据按 host 找回自己那条。
+
+        修复前这是最典型事故：删掉中间一行后，第三条滑到索引 1，沿用被删那行的
+        passB——凭据错配。
+        """
+        self._write_legacy_blob([
+            {"host": "smtp.a.com", "port": 465, "user": "a@x.com", "pass": "passA"},
+            {"host": "smtp.b.com", "port": 465, "user": "b@x.com", "pass": "passB"},
+            {"host": "smtp.c.com", "port": 465, "user": "c@x.com", "pass": "passC"},
+        ])
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, [
+            {"host": "smtp.a.com", "port": 465, "user": "", "pass": ""},
+            {"host": "smtp.c.com", "port": 465, "user": "", "pass": ""},
+        ]).status_code, 200)
+        saved = self._read_enc_entries()
+        self.assertEqual([e["pass"] for e in saved], ["passA", "passC"],
+                         "旧实现第二条会拿到 passB（按索引）")
+
+    def test_ambiguous_legacy_target_fails_closed(self):
+        """旧配置里同 host:port 两条（歧义）+ 无 id 提交：不猜归属，留空按空落盘。"""
+        self._write_legacy_blob([
+            {"host": "smtp.d.com", "port": 465, "user": "d1@x.com", "pass": "passD1"},
+            {"host": "smtp.d.com", "port": 465, "user": "d2@x.com", "pass": "passD2"},
+        ])
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, [
+            {"host": "smtp.d.com", "port": 465, "user": "", "pass": ""},
+        ]).status_code, 200)
+        saved = self._read_enc_entries()
+        self.assertEqual(saved[0]["pass"], "", "歧义时宁可清空也不猜——猜错就是凭据错配")
+
+    # ---- ④ 改告警去向 = 入审计且留可还原目标 ----
+    def test_audit_records_from_to_without_secrets(self):
+        """中继与收件人的变更审计必须能读出"从哪改到哪"（打码口径），零凭据。
+
+        host 刻意取短：审计预算 200 字符（含作用域标记），超长清单的裁剪行为由
+        下一条用例单独钉，本用例验的是典型规模下 from/to 双方完整可读。
+        """
+        self._reset_env_file("YIBAN_MAIL_ADMIN_TO=boss@o.io\n")
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, self._three()).status_code, 200)
+        moved = [{"id": "smtp-aaaa00000001", "host": "a.io", "port": 465,
+                  "user": "a@x.com", "pass": "passA"},
+                 {"id": "smtp-new00000009", "host": "s9.io", "port": 465,
+                  "user": "z@x.com", "pass": "passZ"}]
+        r = self._put(c, h, moved, admin_to="alert@new.io")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        raw = self._last_audit_detail()
+        detail = json.loads(raw)
+        self.assertEqual(detail["smtps_from"],
+                         ["a.io:465", "b.io:587", "c.io:465"],
+                         "旧去向必须逐条留下（可还原目标）")
+        self.assertEqual(detail["smtps_to"], ["a.io:465", "s9.io:465"])
+        self.assertEqual(detail["admin_to"], "a****@new.io")
+        self.assertEqual(detail["admin_to_from"], "b***@o.io",
+                         "from 必须是落盘前的旧值，不能是刚写进去的新值")
+        for secret in ("passA", "passZ", "passB", "passC", "boss@o.io",
+                       "alert@new.io", "a@x.com", "z@x.com", "b@x.com", "c@x.com",
+                       '"pass"'):
+            self.assertNotIn(secret, raw, f"审计不得含敏感值：{secret}")
+
+    def test_audit_view_over_budget_degrades_loudly_not_broken(self):
+        """超出审计 200 字符预算时：裁剪 + `_cut` 标注，detail 仍是合法 JSON。
+
+        默认实现（audit 层 [:200] 直切）会把 JSON 截成非法串——下游还原失败，
+        "可还原目标"名存实亡。本用例钉"放不下要出声，不能截烂"。
+        """
+        self._reset_env_file()
+        c, h = self._master()
+        long_host = "smtp-" + "a" * 48 + ".example-long.test"
+        many = [{"id": f"smtp-long{i:011d}", "host": f"{chr(97 + i)}{long_host}",
+                 "port": 465, "user": "u@x.com", "pass": "p"}
+                for i in range(6)]
+        self.assertEqual(self._put(c, h, many).status_code, 200)
+        # 第二次保存同规模清单（换 host 前缀即可）：from 与 to 都装不进预算，
+        # 两侧同受裁剪——钉"截烂"回归与"先新后旧"的裁剪方向
+        many2 = [dict(e, id=f"smtp-new{i:011d}",
+                      host=f"{chr(106 + i)}{long_host}") for i, e in enumerate(many)]
+        self.assertEqual(self._put(c, h, many2).status_code, 200)
+        detail = self._last_audit_detail()
+        self.assertLessEqual(len(detail), 200, "detail 必须在审计预算内")
+        parsed = json.loads(detail)   # 非法 JSON 在这里直接炸——即回归点
+        self.assertTrue(any(k.endswith("_cut") for k in parsed) or parsed.get("smtps_view"),
+                        "裁剪必须显式标注而不是静默截烂")
+        self.assertEqual(parsed["smtps_count"], 6, "计数等骨架键不得随视图丢失")
+        # 新清单先被牺牲、旧存证尽量保完整（to 可再生，from 是全库唯一的旧去向）
+        self.assertLessEqual(len(parsed.get("smtps_to", [])),
+                             len(parsed.get("smtps_from", [])))
+
+    def test_audit_clearing_all_smtps_keeps_old_targets(self):
+        """清空发信清单也是改告警去向：smtps_from 保留全部旧目标，smtps_to 为空。"""
+        self._reset_env_file()
+        c, h = self._master()
+        self.assertEqual(self._put(c, h, self._three()).status_code, 200)
+        self.assertEqual(self._put(c, h, []).status_code, 200)
+        detail = json.loads(self._last_audit_detail())
+        self.assertEqual(detail["smtps_count"], 0)
+        self.assertEqual(len(detail["smtps_from"]), 3, "清掉的去向才是最需要能还原的现场")
+        self.assertEqual(detail["smtps_to"], [])
+
+    def _read_env_all(self):
+        from yiban.infra import env_io
+        return env_io.parse_env_file(self.env_file)
 
 
 class MailConfigSaveAtomicTest(_Base_FAILOVER):
@@ -874,3 +1148,159 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(alerts, [], "通道变更告警已下线")
         self.assertEqual(self._read_enc_entries()[0]["user"], "a@x.com")
+
+
+# ---- MF-44 / MF-90：投递账、幂等键、发信账号单行化 ----
+
+def test_recipients_refused_writes_delivery_ledger(monkeypatch, tmp_path):
+    """B5（MF-44 补句）：`SMTPRecipientsRefused.recipients` 不再是零消费者。
+
+    旧实现把逐地址拒收结果聚合成一行粗分类 warning——管理员无法回答"哪个地址死了、
+    是退信还是中继拒绝"。现在每收件人一条可机读投递账，落**既有审计面**（不新造
+    第二套状态存储）；对端回显的完整收件人地址先换成打码形态（隐私与日志注入同收口）。
+    """
+    import smtplib
+
+    from yiban.store import db as store_db
+
+    _isolate_env(monkeypatch, tmp_path)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")
+    # 投递账要落库：为本用例起一颗独立临时库（结束后复位连接，不牵连同文件其它用例）
+    db_file = str(tmp_path / "delivery.db")
+    monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", _KEY)
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    with contextlib.suppress(Exception):
+        if store_db._conn is not None:
+            store_db._conn.close()
+    store_db._conn = None
+    store_db.init_db(db_file, env_file=str(tmp_path / "nope.env"))
+
+    victim = "victim@qq.com"
+    refused = smtplib.SMTPRecipientsRefused(
+        {victim: (550, b"<victim@qq.com>: Recipient address rejected: User unknown")})
+
+    class RefusedServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            raise refused
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", RefusedServer)
+    assert mailer_transport.send_admin_alert("爆破告警", "正文", to=victim) is False
+
+    conn = sqlite3.connect(db_file)
+    try:
+        rows = conn.execute(
+            "SELECT target, detail FROM audit_logs WHERE action='mail_refused'").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1, f"每收件人一条投递账：{rows}"
+    target, detail = rows[0]
+    assert target == "v*****@qq.com", f"target 必须是打码形态：{target}"
+    assert "code=550" in detail and "entry=1/1" in detail, detail
+    assert victim not in target + detail, "投递账不得含明文收件地址（含对端回显段）"
+    with contextlib.suppress(Exception):
+        store_db._conn.close()
+    store_db._conn = None
+
+
+def test_failover_resends_identical_message_id_and_logs_retry(monkeypatch, tmp_path, caplog):
+    """C7+C8（MF-90）：QUIT 抛异常换条目重投的是同一封——同确定性 Message-ID，重投可见。
+
+    机制：`smtplib.SMTP.__exit__` 的 QUIT 抛 SMTPResponseException ⇒ 捕获后换下一条
+    重投；旧构造无 `Message-ID`，接收端无从去重 ⇒ 同一封最多可送达 10 次（条目上限）。
+    现在 10 次尝试携带同一个由内容哈希出的键（非随机 nonce），且每次换条目留一行
+    "同封重投"记录——上界从 10 降到 1 的机制基础 + 有界可观测。
+    """
+    import logging
+    import re
+    import smtplib
+
+    entries = [{"host": f"smtp{i}.example.test", "port": 465,
+                "user": f"sender{i}@qq.com", "pass": "secret"} for i in range(10)]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    monkeypatch.setenv("YIBAN_MAIL_ENABLE", "1")
+    captured = []
+
+    class QuitBadServer:
+        """login/sendmail 都"成功"，__exit__ 的 QUIT 抛——前 9 条炸，第 10 条放行。"""
+
+        def __init__(self, host, port, **k):
+            self.host = host
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            if self.host != "smtp9.example.test":
+                raise smtplib.SMTPResponseException(421, b"server busy, quitting later")
+            return False
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            captured.append(msg)
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", QuitBadServer)
+    with caplog.at_level(logging.INFO, logger="mailer"):
+        assert mailer_transport.send_admin_alert("同一封告警", "正文", to="admin@qq.com") is True
+    assert len(captured) == 10, "QUIT 炸 9 次 + 第 10 条成功 = 恰好投了 10 次（有界）"
+    ids = re.findall(r"(?m)^Message-ID: (.*)$", "\n".join(captured))
+    assert len(ids) == 10 and set(ids) == {ids[0]}, \
+        f"跨条目重投必须同幂等键（同封可辨识）：{set(ids)}"
+    assert re.fullmatch(r"<[0-9a-f]{32}@yiban>", ids[0]), f"幂等键须确定性可辨：{ids[0]}"
+    assert caplog.text.count("同封重投") == 9, "换条目重投每条都要有结构化记录"
+    # 确定性：同告警同键；换了内容/收件人即换键（不许撞车）
+    mid = mailer_transport._message_id
+    assert mid("a", "b", "c") == mid("a", "b", "c")
+    assert mid("a", "b", "c") != mid("a", "b", "c2")
+    assert mid("a", "b", "c") != mid("a", "d", "c")
+
+
+def test_sender_user_newlines_never_reach_smtp(monkeypatch, tmp_path):
+    """D11（MF-44）：`user` 字段一处最小收口——发送前同源单行化。
+
+    管理员把 SMTP 用户名写成含 CRLF 属"只可能由管理员本人制造"的情形（章程校准：
+    一处收口、不建校验框架）：单行化后注入形态变成必然被对端拒绝的坏地址，
+    MAIL FROM / From 头的物理注入面不存在。
+    """
+    _isolate_env(monkeypatch, tmp_path)
+    sneaky = "evil@qq.com\r\nMAIL FROM:<pwn@evil.test>"
+    _set_mail(monkeypatch, ENABLE="1", USER=sneaky, PASS="secret")
+    seen = {}
+
+    class CaptureServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, u, p):
+            seen["login_user"] = u
+
+        def sendmail(self, frm, to, msg):
+            seen["frm"] = frm
+            seen["msg"] = msg
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", CaptureServer)
+    assert mailer_transport.send_admin_alert("告警", "正文", to="admin@qq.com") is True
+    assert "\r" not in seen["login_user"] and "\n" not in seen["login_user"]
+    assert "\r" not in seen["frm"] and "\n" not in seen["frm"]
+    assert "\r\nMAIL FROM:<pwn@evil.test>" not in seen["msg"], \
+        "换行注入体不得以物理行形态进入邮件数据"
+    assert "MAIL FROM:<pwn@evil.test>" in seen["msg"], "收口是单行化（可见字面量），不是静默删除"

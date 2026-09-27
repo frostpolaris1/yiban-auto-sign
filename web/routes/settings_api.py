@@ -90,6 +90,12 @@ def _executor_change_alert(action, changed):
                 advice=["如非本人操作，请核对 .env 的执行体清单与出口并回滚"],
             ),
             urgent=True,
+            # 具名账本 admin_change，不再挤占紧急日账（MF-44/MF-51 同族登记）：本告警
+            # 是"管理员本人操作的回执"，与"告警通道被拆""审计链断裂"抢同一本
+            # DEFAULT_URGENT_DAILY_MAX=3 的账，改几次清单就把当日紧急额度吃光、耗尽后
+            # 只剩 _log_skip。也不取 force=True 免额度方案——免额度等于给这条高频可达
+            # 的写路径开后门，"喷洒烧光紧急账"的守卫会被它自己绕开；具名账两头都不占。
+            ledger="admin_change",
         )
     except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
         m.logger.warning("执行体变更告警发送失败（不影响已写入的配置）: %s", e)
@@ -684,7 +690,11 @@ def api_executors():
 
     前端要做"执行体配置"页时读这个接口即可，不必知道 .env 键名。字段说明：
 
-    - `workers.configured`：当前配置的并行执行体数（`YIBAN_WORKERS`，0/未设=1）
+    - `workers.configured`：清单里「并行」行的**真实条数**（0 就报 0——曾经用
+      `max(1,…)` 把 0 条包装成"并行 1"，页面上"一个并行执行体"与"其实没有并行行、
+      按单执行体形态在跑"两种世界同形，无从分辨）
+    - `workers.single_mode`：true = 清单没有「并行」行，定时轮按单执行体形态运行
+      （`assignments` 里那一条 index 0 是**实际在跑**的单执行体，不是并行行）
     - `workers.assignments[]`：每个执行体的出口描述 + 角色标签（**已脱敏**，见下）
     - `fallback`：兜底常驻执行体的出口、扫描间隔、角色标签，以及
       `enabled`（.env 里声明的开关）/ `alive`（心跳判定是否真在跑）/
@@ -702,7 +712,8 @@ def api_executors():
     清单与旧键的关系（迁移期）：`YIBAN_EXECUTORS`（单键 JSON 数组）优先；清单缺失时
     按旧三键（`YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`）读取。
     **首次读到旧键且清单缺失时**会一次性迁移写回清单键（旧键保留一个版本周期）。
-    `workers.*` / `fallback.*` 的取值口径不变：`workers.configured` 只数 `worker` 行，
+    `workers.*` / `fallback.*` 的取值口径：`workers.configured` 只数 `worker` 行
+    （0 行=0，配合 `workers.single_mode` 说明单执行体形态），
     `fallback.egress` 取清单里的兜底行（没有该行则继续按旧键解析）。
 
     脱敏：① 代理串可能带 `user:pass@`，一律只回 `scheme://host[:port]`；
@@ -720,7 +731,11 @@ def api_executors():
     # `workers.configured` 只数 `worker` 行（disabled 与 fallback 都不计，
     # 与"建议值分母只数 worker"同一口径）；列表项 index 就是清单槽位号。
     active = m.yb_egress.worker_rows(rows)
-    configured = max(1, len(active))
+    # 如实计数：0 条并行行就报 0。旧实现 max(1, len(active)) 把"没有并行执行体、
+    # 按单执行体形态运行"包装成"并行 1"，两种世界在页面上长得一样；单执行体这个
+    # 事实改由 workers.single_mode 显式表达（assignments 的 index 0 条目仍是那条
+    # **实际在跑**的出口，口径不变）。
+    configured = len(active)
     if active:
         assignments = [
             {"index": r["slot"], "egress": m.yb_egress.describe(r["proxy"]),
@@ -729,9 +744,10 @@ def api_executors():
             for r in active
         ]
     else:
-        # 清单里没有并行执行体行（全被停用/删除）→ 回退旧口径的单执行体形态：
-        # configured 按契约仍 ≥1，出口走 `single` 角色（= `YIBAN_PROXY`）——
-        # 这正是这种情况下**实际运行**的单执行体用的出口（停用行的出口不参与分配）
+        # 清单里没有并行执行体行（全被停用/删除）→ 运行时按旧口径的单执行体形态跑：
+        # 出口走 `single` 角色（= `YIBAN_PROXY`）——这正是这种情况下**实际运行**的
+        # 单执行体用的出口（停用行的出口不参与分配）。并行条数照实为 0，
+        # 形态由 workers.single_mode=true 说明。
         fallback_single = m.yb_egress.resolve(m.yb_egress.ROLE_SINGLE, 0, env=env)
         assignments = [{"index": 0, "egress": m.yb_egress.describe(fallback_single),
                         "role": m.yb_egress.ROLE_WORKER,
@@ -768,6 +784,9 @@ def api_executors():
         "ok": True,
         "workers": {
             "configured": configured,
+            # 0 并行行时"没有并行执行体、按单执行体形态跑"是事实本身，
+            # 独立成字段说明，不再靠把 configured 抬到 1 来暗示
+            "single_mode": configured == 0,
             "assignments": assignments,
             "env_keys": {
                 "list": m.yb_egress.ENV_WORKER_LIST,

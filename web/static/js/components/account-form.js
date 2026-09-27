@@ -160,7 +160,8 @@
   }
 
   // 绑定用户下拉的固定条目 + 分组头；分组用户列表由 loadAvailableUsers 异步补齐。
-  // 可见文本仍是邮箱 local part（脱敏口径不变），完整邮箱只进 value（既有行为）。
+  // 可见文本是**服务端下发的遮罩 local part**（`display`，口径唯一住在
+  // accounts_data._owner_display_of），完整邮箱只进 value（既有提交契约，走请求体）。
   function emailBaseItems() {
     return [
       { v: "", t: "不绑定（管理员自有账号，直接生效）" },
@@ -179,8 +180,11 @@
         items.push({ empty: "（暂无）" });   // 不可选空态行，替代原 optgroup 里的凑数 option
       } else {
         list.forEach(function (u) {
-          var email = String(u.email || "");
-          items.push({ v: email, t: email.split("@")[0] });
+          // 旧形态 `email.split("@")[0]` 是同一条归属展示规则的**第二份定义**：本地部
+          // 直出下拉文本，号形态时等于把完整手机号外显（MF-49 出口面，现网约一成
+          // 账号如此）。收敛后前端不再自拆自显，一律消费服务端 `display`（已遮罩），
+          // 拆分与遮罩只在 accounts_data._owner_display_of 一处。
+          items.push({ v: String(u.email || ""), t: String(u.display || "") });
         });
       }
       YB.selectField.setOptions("af-email", items);

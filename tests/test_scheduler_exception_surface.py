@@ -123,11 +123,14 @@ class ChildPopenOSErrorTest(_SchedBase):
     """_run_signin_child 的 Popen 判法：与兜底拉起调用点同文件同风格——接住并留痕。"""
 
     def _run(self):
+        """跑一次 Popen 必炸的首签拉起，返回 scheduler logger 留痕全文（无记录为空串）。"""
         self.sched.subprocess = self._stub_subprocess(_boom_popen)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            self.sched._run_signin_child()
-        return buf.getvalue()
+        try:
+            with self.assertLogs("scheduler", level="INFO") as captured:
+                self.sched._run_signin_child()
+        except AssertionError:
+            return ""  # assertLogs 无记录即抛——"是否出声"由本类两条用例各自断言
+        return "\n".join(captured.output)
 
     def test_popen_oserror_does_not_propagate(self):
         """今天（红）：OSError 直接穿出 _run_signin_child，把 main_loop 带崩。"""
@@ -137,7 +140,7 @@ class ChildPopenOSErrorTest(_SchedBase):
             self.fail(f"Popen OSError 未被接住（应留痕继续调度）: {e}")
 
     def test_popen_oserror_logs_trace(self):
-        """接住也要出声：与兜底拉起调用点同款 print 留痕（不静默吞）。"""
+        """接住也要出声：经 scheduler 日志链留痕（不静默吞），落进输出面兜底射程。"""
         out = self._run()
         self.assertIn("签到子进程拉起失败", out)
 
@@ -174,12 +177,12 @@ class MainLoopTickGuardTest(_SchedBase):
             lambda cmd, **kw: self.spawns.append(cmd) or _FakeProc())
         time_stub, state = self._stub_time(2)
         self.sched.time = time_stub
-        buf = io.StringIO()
+        # assertLogs 须在 assertRaises 外层：_Stop 被内层吞掉后本层仍要能核对留痕
         with mock.patch.object(self.sched.clock, "now", _now), \
-                contextlib.redirect_stdout(buf), self.assertRaises(_Stop):
+                self.assertLogs("scheduler", level="WARNING") as captured, \
+                self.assertRaises(_Stop):
             self.sched.main_loop(sleep_seconds=1)
-        out = buf.getvalue()
-        self.assertIn("tick 异常", out)
+        self.assertIn("tick 异常", "\n".join(captured.output))
         self.assertEqual(state["n"], 2, "异常 tick 后必须继续下一 tick")
 
     def test_keyboard_interrupt_not_swallowed(self):

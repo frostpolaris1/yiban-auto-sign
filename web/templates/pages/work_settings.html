@@ -621,6 +621,10 @@
           <tbody id="set-exec-assign"></tbody>
         </table>
       </div>
+      {# 「并行 0」如实计数后（workers.configured 不再被 max(1,…) 抬成"并行 1"），"此刻按单
+         执行体形态在跑"必须在页面上说破，否则 0 读起来像显示坏数。显隐由 settings-executors.js
+         按后端算好的 workers.single_mode 控制（组件登记上限已满，文案放这里）。 #}
+      <p class="alert info set-exec-hint" id="set-exec-solo" role="status" hidden>清单中没有「并行」执行体：定时轮按<b>单执行体形态</b>运行（出口读全局配置）。需要并行请点下面的「添加执行体」。</p>
       {# 添加执行体：表格底部单开一行、只在中间放一个按钮 #}
       <div class="set-exec-addrow">
         <button type="button" class="btn btn--ghost btn--sm" id="set-exec-row-add">添加执行体</button>

@@ -514,6 +514,13 @@ class NotifyCustomUrlRecheckTest(unittest.TestCase):
                     "YIBAN_NOTIFY_SECRET_ENC=" + json.dumps(enc, ensure_ascii=False) + "\n")
 
     def test_unsafe_url_warns_once_and_channel_still_configured(self):
+        """加载期复核 warn-only（地址不变、只记一次）；但 is_configured 与 send 同判据。
+
+        旧断言把"is_configured=True 而 send 恒拒发"的**口径分叉**钉成了设计（引擎侧
+        据此判"推送出口存在"却发不出信，告警在此静默丢失）——MF-44 明列为缺陷。
+        收口方向只能收紧判定侧对齐 send()：白名单外的 custom 地址同判"出口不存在"；
+        **不**反向弱化 send 的 SSRF 拒发。复核函数自身仍只告警不改行为。
+        """
         self._write_custom("http://127.0.0.1/hook")
         with self.assertLogs("notify", level="WARNING") as logs:
             secret = notify_config.get_secret()
@@ -522,8 +529,9 @@ class NotifyCustomUrlRecheckTest(unittest.TestCase):
         hits = [line for line in logs.output if "安全复核" in line]
         self.assertEqual(len(hits), 1, "同一进程内只应记一条复核告警")
         self.assertIn("设置页", hits[0], "应提示在设置页更正")
-        # 告警是 warn-only：通道仍判定为已配置，发送调用仍可执行（不抛出）
-        self.assertTrue(notify_config.is_configured(), "不合格地址不得让通道变为未配置")
+        # 同一份判据：send 拒发的地址，is_configured 也答"出口不存在"（分叉消除）
+        self.assertFalse(notify_config.is_configured(),
+                         "白名单外的 custom：is_configured 必须与 send 同判 False")
         self.assertFalse(notify_transport.send("t", "c", force=True))
 
     def test_safe_url_no_warning(self):

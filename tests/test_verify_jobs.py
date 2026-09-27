@@ -30,6 +30,7 @@ import unittest
 from unittest import mock
 
 from yiban import clock
+from yiban.store.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -297,7 +298,8 @@ class VerifyCooldownWebTest(_WebAppBase):
         self.assertEqual(len(rows), 2)
         row = rows[0]
         self.assertEqual(row["action"], "my_account_add_verify_fail")
-        self.assertEqual(row["username"], EMAIL_COOL)
+        self.assertEqual(row["username"], actor_tag(EMAIL_COOL),
+                         "MF-49：actor 列按写入口遮罩")
         self.assertEqual(row["target"], "138****0001")
         # 审计行携带请求作用域后缀（` [req=...]`），按前缀断言正文未被改写
         self.assertTrue(row["detail"].startswith("验证未通过（认证失败）"), row["detail"])

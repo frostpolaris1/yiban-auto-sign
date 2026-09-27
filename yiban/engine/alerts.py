@@ -310,10 +310,7 @@ def _user_fail_mail_reserve(phone, today_str):
             if used >= cap:
                 return False
             data[phone] = used + 1
-            tmp = path + ".tmp" + str(os.getpid())
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, path)
+            state_io._write_private_json(path, data)
         return True
     except OSError:
         # 状态目录不可写：退回不限频（不因限频设施故障吞掉真实失败告警）
@@ -342,10 +339,7 @@ def _user_fail_mail_release(phone, today_str):
             except (TypeError, ValueError):
                 return
             data[phone] = max(0, used - 1)
-            tmp = path + ".tmp" + str(os.getpid())
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, path)
+            state_io._write_private_json(path, data)
     except OSError as e:
         logger.warning("归还失败提醒额度失败（不影响签到）: %s", e)
 
