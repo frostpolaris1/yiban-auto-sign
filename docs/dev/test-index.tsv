@@ -519,6 +519,9 @@ tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_ye
 tests/test_cli_contract.py	CliContractTest.test_state_reports_missing_dir_loudly	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_unknown_and_empty_subcommand	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_version_matches_package	J	-	??
+tests/test_cli_contract_mf60.py	BackupOverwriteGuardTest.test_backup_dry_run_reports_force_needed_without_writing	J	-	??
+tests/test_cli_contract_mf60.py	BackupOverwriteGuardTest.test_backup_force_allows_overwrite	J	-	??
+tests/test_cli_contract_mf60.py	BackupOverwriteGuardTest.test_second_backup_without_force_is_refused	J	-	??
 tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_config_error_kind_is_config_error	J	-	??
 tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_exit_code_family_unchanged	J	-	`docs/dev/cli.md` §3 既有码的机读分族：0/1/2/3/4/10 只增不改。
 tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_illegal_args_carry_distinguishable_error_kind	J	-	六种非法参数 + 缺子命令：`error_kind` 覆盖用法族，且每种的取值可区分。

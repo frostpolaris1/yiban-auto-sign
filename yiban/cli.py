@@ -27,7 +27,7 @@
 | `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
 | `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
 | `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
-| `db` | 数据库维护（状态/完整性/备份） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `dry_run` | 0 / 1 |
+| `db` | 数据库维护（状态/完整性/备份） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `dry_run` | 0 / 1 |
 | `version` | 打印版本 | `command` `version` `python` `user_version` | 0 |
 
 `capacity --measure` 与 `db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
@@ -63,7 +63,7 @@ import sys
 from yiban import __version__ as RELEASE_VERSION
 from yiban import state_gc, window
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import cli_support, runner
+from yiban.engine import cli_support, db_maintenance, runner
 from yiban.engine import schedule as schedule_mod
 from yiban.engine.cli_support import (
     _emit_json,
@@ -77,7 +77,6 @@ from yiban.engine.cli_support import (
 )
 from yiban.infra import env_io
 from yiban.masking import mask_phone
-from yiban.store import accounts as store_accounts
 from yiban.store import db as store_db
 from yiban.store import purge_guard
 
@@ -146,60 +145,6 @@ def _paths(view):
         "log_file": _cfg_value(view, "YIBAN_LOG_FILE") or os.path.join(state_dir, "sign.log"),
         "db_file": _cfg_value(view, "YIBAN_DB_FILE") or store_db.DB_DEFAULT,
     }
-
-
-# ---------------------------------------------------------------------------
-# SQLite：只读打开与账号计数
-# ---------------------------------------------------------------------------
-def _open_ro(db_file):
-    """只读打开 SQLite；文件不存在返回 None（实现与判定收在 `store.connection.open_readonly`）。
-
-    维护类子命令**不得**顺手建库或跑迁移（`db.get_conn()` 会 `init_db()` 建表 + 迁移），
-    故这里直连并对文件缺失显式返回 None，由调用方决定是"报 0"还是"响亮失败"。
-    """
-    return store_db.open_readonly(db_file)
-
-
-def _account_counts(conn):
-    """→ (未删除账号数, 会签到的账号数)。
-
-    "会签到"的判据与 web/signin 同源：未删除且审核态不在
-    `yiban.store.accounts.ACCOUNT_AUDIT_INACTIVE`——那个元组是**库内落库值**的唯一
-    列举点（`signs_in` 用的就是它），此处按它拼 SQL 条件，不另写一套字面量。
-    """
-    inactive = tuple(store_accounts.ACCOUNT_AUDIT_INACTIVE)
-    total = conn.execute("SELECT COUNT(*) FROM accounts WHERE deleted=0").fetchone()[0]
-    marks = ",".join("?" * len(inactive))
-    signable = conn.execute(
-        "SELECT COUNT(*) FROM accounts WHERE deleted=0"
-        f" AND (status IS NULL OR status NOT IN ({marks}))",
-        inactive,
-    ).fetchone()[0]
-    return int(total), int(signable)
-
-
-def _read_user_version(conn):
-    return int(conn.execute("PRAGMA user_version").fetchone()[0])
-
-
-def _db_snapshot(db_file):
-    """→ (conn, user_version, 表清单, 未删除账号数, 会签到账号数)；库文件不存在返回 None。
-
-    sqlite3.Error 原样抛出，由调用方按"响亮失败"处理（不静默报 0——那会让人以为
-    库是空的）。
-    """
-    conn = _open_ro(db_file)
-    if conn is None:
-        return None
-    try:
-        user_version = _read_user_version(conn)
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-        accounts, signable = _account_counts(conn)
-    except sqlite3.Error:
-        conn.close()
-        raise
-    return conn, user_version, tables, accounts, signable
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +318,7 @@ def _cmd_capacity(args, view, extra):
     paths = _paths(view)
     # 账号数口径与网页 `_capacity_account_count` 同源；库不存在按 0（新部署没有库很正常）
     try:
-        snapshot = _db_snapshot(paths["db_file"])
+        snapshot = db_maintenance.db_snapshot(paths["db_file"])
     except sqlite3.Error as e:
         return _fail("capacity", 1, [f"读取账号数失败（{paths['db_file']}）: {e}"], args.json,
                      error_kind="runtime_error", accounts=0, paths=paths)
@@ -512,131 +457,6 @@ def _cmd_state(args, view):
 
 
 # ---------------------------------------------------------------------------
-# 子命令：db（状态 / 完整性 / 备份）
-# ---------------------------------------------------------------------------
-def _cmd_db(args, view):
-    """数据库维护：默认 `--status`（只读）；`--integrity` 跑完整性检查；
-    `--backup [路径]` 用 SQLite 在线备份 API 写一致性副本。
-
-    备份**不加 `--yes` 只报告计划**（`docs/dev/cli.md` §2 第 6 条：默认不加 `--yes`
-    不动手；目标已存在时尤其不该默认覆盖）。状态与完整性检查全程只读——用只读连接
-    直查，绝不顺手建库或跑迁移。
-    """
-    db_file = _paths(view)["db_file"]
-    if args.backup is not None:
-        return _db_backup(args, db_file)
-    mode = "integrity" if args.integrity else "status"
-    try:
-        snapshot = _db_snapshot(db_file)
-    except sqlite3.Error as e:
-        return _fail("db", 1, [f"数据库不可读（{db_file}）: {e}"], args.json,
-                     error_kind="runtime_error", mode=mode, db_file=db_file)
-    if snapshot is None:
-        return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json,
-                     error_kind="runtime_error", mode=mode, db_file=db_file)
-    conn, user_version, tables, accounts, signable = snapshot
-    payload = {
-        "command": "db",
-        "ok": True,
-        "exit_code": 0,
-        "mode": mode,
-        "db_file": db_file,
-        "size_bytes": os.path.getsize(db_file),
-        "user_version": user_version,
-        "tables": tables,
-        "accounts": accounts,
-        "accounts_signable": signable,
-        "integrity_ok": None,
-        "integrity_detail": "",
-    }
-    if mode == "integrity":
-        rows = [str(r[0]) for r in conn.execute("PRAGMA integrity_check")]
-        conn.close()
-        payload["integrity_ok"] = rows == ["ok"]
-        payload["integrity_detail"] = "; ".join(rows[:5])
-        payload["exit_code"] = 0 if payload["integrity_ok"] else 1
-        _say("==== 数据库完整性检查 ====")
-        _say(f"库 {db_file} | user_version={user_version} | "
-             f"{'ok' if payload['integrity_ok'] else '发现问题'}: {payload['integrity_detail']}")
-        if args.json:
-            _emit_json(payload)
-        return 0 if payload["integrity_ok"] else 1
-    conn.close()
-    _say("==== 数据库状态 ====")
-    _say(f"库 {db_file} | {payload['size_bytes']} 字节 | user_version={user_version}")
-    _say(f"表 {len(tables)} 张: " + "、".join(tables))
-    _say(f"账号 {accounts} 个（其中会签到的 {signable} 个）")
-    if args.json:
-        _emit_json(payload)
-    return 0
-
-
-def _db_backup(args, db_file):
-    """写一致性副本：源库用只读连接，目标用 SQLite **在线备份 API**（`Connection.backup`）。
-
-    与"复制文件"的区别：备份 API 在事务快照上拷贝，`-wal` 里已提交但未合并的帧不会
-    丢，外部进程正在写也不会拷到半截（本项目是 WAL + 多进程形态，直接 copy 不安全）。
-    """
-    target = args.backup or (db_file + ".backup")
-    # 目标==源库必须拒绝：用 realpath 归一后比 inode——软链/相对路径/`..`
-    # 都逃不过。WAL 库下原实现"报成功但副本就是活库本身"（误导运维），非 WAL 库
-    # `src.backup(dst)` 直接无限阻塞（命令挂死）。放在 --yes 之前，dry-run 也拦。
-    if os.path.exists(target) and os.path.exists(db_file) and \
-            os.path.samefile(os.path.realpath(target), os.path.realpath(db_file)):
-        return _fail("db", 1, [f"备份目标与源库是同一个文件，已拒绝: {target}"], args.json,
-                     error_kind="runtime_error",
-                     mode="backup", db_file=db_file, backup_path=target,
-                     dry_run=not args.yes)
-    exists = os.path.exists(target)
-    payload = {
-        "command": "db",
-        "ok": True,
-        "exit_code": 0,
-        "mode": "backup",
-        "db_file": db_file,
-        "backup_path": target,
-        "backup_exists": exists,
-        "dry_run": not args.yes,
-        "size_bytes": None,
-        "user_version": None,
-    }
-    if not args.yes:
-        _say("==== 数据库备份（计划）====")
-        _say(f"源 {db_file} → 目标 {target}"
-             + ("（目标已存在，--yes 将覆盖）" if exists else "（目标不存在）"))
-        _say("未加 --yes：只报告计划，未写盘")
-        if args.json:
-            _emit_json(payload)
-        return 0
-    try:
-        src = _open_ro(db_file)
-        if src is None:
-            return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json,
-                         error_kind="runtime_error", mode="backup",
-                         db_file=db_file, backup_path=target, dry_run=False)
-        try:
-            dst = sqlite3.connect(target)
-            try:
-                src.backup(dst)
-                payload["user_version"] = _read_user_version(dst)
-            finally:
-                dst.close()
-        finally:
-            src.close()
-    except sqlite3.Error as e:
-        return _fail("db", 1, [f"备份失败（{db_file} → {target}）: {e}"], args.json,
-                     error_kind="runtime_error",
-                     mode="backup", db_file=db_file, backup_path=target, dry_run=False)
-    payload["size_bytes"] = os.path.getsize(target)
-    _say("==== 数据库备份 ====")
-    _say(f"已写入一致性副本: {target}（{payload['size_bytes']} 字节，"
-         f"user_version={payload['user_version']}）")
-    if args.json:
-        _emit_json(payload)
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # 子命令：version
 # ---------------------------------------------------------------------------
 def _cmd_version(args, view):
@@ -652,12 +472,12 @@ def _cmd_version(args, view):
         "user_version": None,
     }
     try:
-        conn = _open_ro(_paths(view)["db_file"])
+        conn = db_maintenance.open_ro(_paths(view)["db_file"])
     except sqlite3.Error:
         conn = None
     if conn is not None:
         try:
-            payload["user_version"] = _read_user_version(conn)
+            payload["user_version"] = db_maintenance.read_user_version(conn)
         except sqlite3.Error:
             payload["user_version"] = None
         finally:
@@ -742,14 +562,18 @@ def _build_parser():
         "db", help="数据库维护（状态 / 完整性 / 备份）",
         description=("默认 --status（只读：user_version、表清单、账号数、文件大小）；"
                      "--integrity 跑 PRAGMA integrity_check；--backup 写一致性副本"
-                     "（在线备份 API，不加 --yes 只报告计划）。全程只读连接，不建库、不迁移。"),
+                     "（在线备份 API，不加 --yes 只报告计划；目标已存在需 --force）。"
+                     "全程只读连接，不建库、不迁移。"),
     )
     group = p.add_mutually_exclusive_group()
     group.add_argument("--status", action="store_true", help="只读状态（默认）")
     group.add_argument("--integrity", action="store_true", help="SQLite 完整性检查")
     group.add_argument("--backup", nargs="?", const="", default=None, metavar="路径",
-                       help="写一致性副本（默认 <库文件>.backup；不加 --yes 只报告计划）")
+                       help=("写一致性副本（默认 <库文件>.backup；不加 --yes 只报告计划；"
+                             "目标已存在时必须加 --force）"))
     p.add_argument("--yes", action="store_true", help="备份时真的写盘（默认只报告）")
+    p.add_argument("--force", action="store_true",
+                   help="允许覆盖已存在的备份目标（拒绝静默顶掉上一份副本）")
     p.add_argument("--dry-run", action="store_true", help="只报告不写盘（默认行为，显式声明用）")
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
@@ -781,11 +605,14 @@ def _dispatch(args, extra, subs):
         raise _UsageError("--measure 与 --json 不能同时使用（转发的工具自成一路输出）",
                           subs[cmd], cmd, kind="usage_conflict")
     view = _env_view()
+    if cmd == "db":
+        # db 维护族（快照 / 备份）实现在 yiban/engine/db_maintenance.py：入口模块只做
+        # 路径解析与分派，避免体量门继续膨胀（见该模块头部说明）。
+        return db_maintenance.cmd_db(args, _paths(view))
     handlers = {
         "config": _cmd_config,
         "capacity": _cmd_capacity,
         "state": _cmd_state,
-        "db": _cmd_db,
         "version": _cmd_version,
     }
     handler = handlers[cmd]
