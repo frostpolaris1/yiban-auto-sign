@@ -27,6 +27,7 @@ from test_rekey_key_source import _B14AlertGateBase
 import web.security as web_security
 from yiban import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.infra import account_crypto
+from yiban.masking import mask_email
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -269,6 +270,24 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         self.assertIn("不同用户名", got[0][1])
         self.assertIn(f"{self.webapp.LOGIN_SPRAY_USERS} 个", got[0][1],
                       "正文须交代升级依据，否则管理员无从判断是不是误报")
+
+    def test_alert_body_masks_the_bruteforced_account_email(self):
+        """爆破告警正文不得带出被爆破账号的明文邮箱。
+
+        注册用户即邮箱登录 ⇒ "尝试用户名"就是受害者的邮箱，而爆破告警进邮件、进推送、
+        进审计摘要，全是离开本机的出口（MF-49 的展示/告警面同一口径）。只遮 @ 之后或
+        只遮本地部都是半吊子形态，故本地部也单独钉一条。
+        """
+        c = self._client()
+        email = "victim01@qq.com"
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+            c.post("/api/login", json={"username": email, "password": "WrongPass#111"})
+        got = self._alerts()
+        self.assertEqual(len(got), 1, f"每轮应只告警一次：{got}")
+        body = got[0][1]
+        self.assertNotIn(email, body, "告警正文不得含明文邮箱")
+        self.assertNotIn(email.split("@")[0], body, "本地部同样不得原样带出")
+        self.assertIn(mask_email(email), body, "须以遮罩形态交代尝试的用户名")
 
 
 class LoginAlertRealChannelTest(_B14AlertGateBase):
