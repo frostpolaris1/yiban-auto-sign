@@ -122,6 +122,26 @@ def avg_attempt_sec(env=None):
     return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300, env=env)
 
 
+def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
+    """容量**告警阈值**的 avg 输入：缺省档换成实测分位数（MF-56③）。
+
+    优先级：显式配置 `YIBAN_AVG_ATTEMPT_SEC`（管理员钉住）> 实测 p95（近 `days` 天
+    `sign_events.dur_sec`，每次尝试端到端）> 配置缺省档；样本不足/读库失败一律回退
+    缺省档，绝不让留痕查询把预检拖崩。只喂预检告警——保存闸门/展示按计划口径与
+    配置值，"能不能保存"不该跟着昨天的网络抖。
+    """
+    if os.environ.get("YIBAN_AVG_ATTEMPT_SEC", "").strip():
+        return cfg_avg if cfg_avg is not None else avg_attempt_sec()
+    if cfg_avg is None:
+        cfg_avg = avg_attempt_sec()
+    try:
+        p95 = db.attempt_dur_quantile(days=days, min_samples=min_samples)
+    except Exception as e:  # 防御：db 替身缺属性（测试打桩面）也不炸预检
+        logger.warning("读取实测尝试耗时失败（告警回退配置值）: %s", e)
+        p95 = None
+    return max(1, int(math.ceil(p95))) if p95 else max(1, int(cfg_avg))
+
+
 def _env_float(name, default, lo=None, hi=None):
     """读浮点环境变量；缺失/非法回退默认（与 `_env_int` 同一套回退 + 告警口径）。"""
     raw = os.environ.get(name, "").strip()
@@ -226,13 +246,11 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
     两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
     `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
 
-    `retry_reserve`（**告警阈值口径**，见 `capacity_accounts` 的周期式；MF-56④）：v2 侧
-    先把每个账号的周期放大到 `attempts.MAX_ATTEMPTS × (avg + gap)`——分级重试预算上限
-    3 次尝试，重试同样吃墙钟。按零重试把窗口排满正是 122–360 静默死带的根（当天必签
-    不完、预检却到 361 才告警）。**计划/展示/保存闸门不扣**（那里的语义是"这套配置能
-    排下几个"），只有引擎预检告警传 True。v3 侧此参数不参与：`util`（缺省 0.8）本身
-    就是 v3 的重试/尾延迟降额，且 K 按含重试的总尝试量算（`executor_count` 的
-    `retry_ratio`）——再乘一次 MAX_ATTEMPTS 是双重扣减。
+    `retry_reserve`（**只喂告警阈值**，MF-56④）：v2 侧把每个账号的周期放大到
+    `attempts.MAX_ATTEMPTS × (avg + gap)`——分级重试预算上限 3 次尝试，重试同样吃
+    墙钟；按零重试排满窗口正是 122–360 静默死带的根。计划/展示/保存闸门不传、
+    取值不变。v3 侧不参与：`util`（缺省 0.8）本身就是重试/尾延迟降额，且 K 按含
+    重试的总尝试量算（`executor_count` 的 `retry_ratio`），再扣一次是双重计算。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
@@ -241,9 +259,7 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
         enabled = executor_v3.scheduler_v3_enabled(env)
     if not enabled:
         if retry_reserve:
-            # 等价于"窗口 − 重试储备"的实算阈值：储备 = (MAX_ATTEMPTS−1) 份
-            # 单账号周期/账号，折进 gap 复用 `capacity_accounts` 这一个式子
-            # （不造第二套公式，见 MF-54）。
+            # 储备 = (MAX_ATTEMPTS−1) 份单账号周期/账号，折进 gap 复用同一个式子
             from yiban.engine import attempts  # 局部导入：attempts 带整条客户端链
             avg_eff = max(1, int(avg if avg is not None else avg_attempt_sec(env)))
             gap_eff = max(0, int(gap or 0))
