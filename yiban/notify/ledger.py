@@ -33,7 +33,7 @@ _throttle_lock = threading.Lock()
 _skip_logged = {}
 _skip_log_lock = threading.Lock()
 
-# 每日推送预算：拆成 general / urgent / login_fail 三本账，各自按日归零、各自持锁。
+# 每日推送预算：拆成 general / urgent / login_fail / admin_change 四本账，各自按日归零、各自持锁。
 # 进程内计数是缓存，磁盘账本（$YIBAN_STATE_DIR/notify-ledger.json）才是事实源——web
 # （常驻）与 signin（每次 cron 新进程）共享同一份额度，Server酱免费版 5 条/天是第三方
 # **全局**约束；跨日由 _roll_locked_inner 归零。
@@ -67,8 +67,18 @@ _loginfail_daily = {
     "notice": {"pending": False, "notified": False, "warned": False},
     "lock": threading.Lock(),
 }
-_LEDGER_IDS = ("general", "urgent", "login_fail")
-_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily, "login_fail": _loginfail_daily}
+# 管理侧"本人操作回执"类告警（执行体清单变更）的独立账本。此前它以 urgent=True 挤占
+# 紧急账（默认 3 条/天）：管理员改一次清单就吃掉一格，真紧急信号被回执类挤光——而
+# 若改用 force=True 免额度，"喷洒烧光紧急账"的守卫又会被这条同样可达的写路径绕开。
+# 具名账本机制（与 login_fail 同款）两头都不占：回执类烧的是自己的账，紧急账完整。
+_adminchange_daily = {
+    "state": {"date": "", "count": 0},
+    "notice": {"pending": False, "notified": False, "warned": False},
+    "lock": threading.Lock(),
+}
+_LEDGER_IDS = ("general", "urgent", "login_fail", "admin_change")
+_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily,
+            "login_fail": _loginfail_daily, "admin_change": _adminchange_daily}
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +183,7 @@ def _save_ledger_file(data):
 
 
 def _ensure_ledger_structure(disk):
-    """校验盘上账本结构完整（含三本账），缺失键补默认值（不覆盖已有值）。"""
+    """校验盘上账本结构完整（含全部账本），缺失键补默认值（不覆盖已有值）。"""
     for ledger_id in _LEDGER_IDS:
         cur = disk.get(ledger_id)
         if not isinstance(cur, dict):
@@ -248,7 +258,7 @@ def _daily_today():
 
 
 def _ledger(ledger_id):
-    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent / login_fail。
+    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent / login_fail / admin_change。
 
     threading.Lock 不可重入：调用方持有返回值的 lock 时只能直接读写 state / notice
     （跨日与告知标记重置由 _with_ledger_locked 统一在文件锁内完成），不得再进入
@@ -269,22 +279,37 @@ def _loginfail_daily_limit(envs=None):
             envs = config._read_env_file()
         value = envs.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
     try:
-        return max(0, int(value))  # 负值收敛成 0，而 0 的含义是"不限额"：填 -1 = 放开上限
+        parsed = int(value)
     except (TypeError, ValueError):
         return config.DEFAULT_LOGINFAIL_DAILY_MAX
+    if parsed < 0:
+        # 负值非法：回退缺省并出声一次。旧实现 `max(0, ·)` 把 -1 钳成 0，而 0 在额度
+        # 键上是有含义的"不限额"——误写负数等于静默放开上限（MF-44 登记项；本函数
+        # docstring 一直写着"负值回退默认"，代码与注释相矛盾，以改代码对齐判据）。
+        # 需要不限额就显式写 0。
+        if "LOGINFAIL_DAILY_MAX" not in config._bad_value_warned:
+            config._bad_value_warned.add("LOGINFAIL_DAILY_MAX")
+            logger.warning("%s=%r 为负值（非法键值），本次按缺省 %d 处理；需要不限额请显式写 0",
+                           config.LOGINFAIL_DAILY_MAX_KEY, value,
+                           config.DEFAULT_LOGINFAIL_DAILY_MAX)
+        return config.DEFAULT_LOGINFAIL_DAILY_MAX
+    return parsed
 
 
 def _daily_limit(ledger_id, envs=None):
     """该本账的每日上限（0 = 不限）。
 
     urgent → YIBAN_NOTIFY_URGENT_DAILY_MAX；login_fail → YIBAN_LOGINFAIL_DAILY_MAX
-    （独立账本）；其余（general）→ YIBAN_NOTIFY_DAILY_MAX。
+    （独立账本）；admin_change → 代码内缺省额（不新增 env 键，判据见 ledger 头部该账
+    本注释）；其余（general 与兜底：未知 id 也算 general 账）→ YIBAN_NOTIFY_DAILY_MAX。
     """
     if ledger_id == "urgent":
         return config._env_int("URGENT_DAILY_MAX", config.DEFAULT_URGENT_DAILY_MAX, envs)
     if ledger_id == "login_fail":
         return _loginfail_daily_limit(envs)
-    return config._env_int("DAILY_MAX", config.DEFAULT_DAILY_MAX, envs)  # 兜底：未知 id 也算 general 账
+    if ledger_id == "admin_change":
+        return config.DEFAULT_ADMIN_CHANGE_DAILY_MAX
+    return config._env_int("DAILY_MAX", config.DEFAULT_DAILY_MAX, envs)
 
 
 def _daily_remaining(ledger_id, limit=None):
@@ -334,7 +359,7 @@ def _roll_locked_inner(ledger_id, disk, today):
 def _merge_ledger_into_disk(disk, ledger_id, led):
     """把某本账内存态合并进磁盘 dict（调用方必须已持有文件锁）。
 
-    仅更新本账本，其余键原样保留；写回前补齐三本账的缺失结构。本函数由
+    仅更新本账本，其余键原样保留；写回前补齐全部账本的缺失结构。本函数由
     `_with_ledger_locked`（单次锁临界区，读-改-写一致）使用，故直接覆盖本账本五个
     字段即可——锁内读到的盘值就是最新值，不存在陈旧内存回退问题。
     """
@@ -503,10 +528,47 @@ def _mark_exhausted_locked(ledger_id):
 def _unmark_exhausted_locked(ledger_id):
     """额度因失败退还而回到未耗尽：撤回还没被取走的告知（调用方必须已持有该账本 lock）。
 
-    只撤 pending：notified（调用方已取走、邮件已发出）无法撤销，warned 也不撤销，
-    以免通道长期失败时"占满→退还→再占满"把 warning 刷成日志风暴。
+    只撤 pending：notified（调用方已取走）在这里无法判定"带走它的那封信是否送达"，
+    撤销由 `restore_exhaustion_notice` 在**交付失败的确证时刻**做（同源退还）；
+    warned 也不撤销，以免通道长期失败时"占满→退还→再占满"把 warning 刷成日志风暴。
     """
     _LEDGERS[ledger_id]["notice"]["pending"] = False
+
+
+def _restore_notice_locked(led, ledger_id, limit_now):
+    """锁内：日报**未送达**时把取走的耗尽告知退还（调用方必须已持有该账本 lock 与文件锁）。
+
+    只退还**仍然处于耗尽态**的账：取走告知后、送达失败前，额度可能已被同轮的失败
+    退还恢复到未耗尽——那时"额度已用尽"这句话不再成立，退还 pending 等于制造一条
+    必到的虚警行，与 `_unmark_exhausted_locked` 的虚警撤回同一判据。
+    """
+    notice = led["notice"]
+    if not notice["notified"]:
+        return
+    if limit_now <= 0 or led["state"]["count"] < limit_now:
+        return  # 已不再耗尽（或本账不限额）：告知不再成立，不退还
+    notice["notified"] = False
+    notice["pending"] = True
+
+
+def restore_exhaustion_notice(kinds):
+    """交付失败退还：把 `pop_exhaustion_notice` 取走、而搭载它的那封信**没有送达**的
+    告知标记放回去（pending 重挂、notified 复位），当日稍后重试仍会带上"哪本账用尽"。
+
+    MF-44 验收不变量"任何占用必须有对应送达回执或退还"在告知标记上的落点：旧语义是
+    "取走即置位、无退还"——日报被一次 SMTP 瞬断吞掉后，告知随 pop 一起静默消失，
+    恰好是最不该安静的失败。账本结构不新增键（pending/notified 均为既有字段），
+    跨进程与跨日口径与 pop 完全同源：逐本账各持一次锁，绝不两把同持。
+    """
+    for ledger_id in kinds:
+        if ledger_id not in _LEDGERS:
+            continue  # 只可能来自本模块自己的 pop 结果；防御未知名，不新增状态
+        led = _ledger(ledger_id)
+        limit_now = _daily_limit(ledger_id)  # 锁外解析，别持锁做文件 I/O
+        with led["lock"]:
+            _with_ledger_locked(
+                ledger_id, lambda led_, disk_, lid=ledger_id, lim=limit_now:
+                _restore_notice_locked(led_, lid, lim))
 
 
 def _log_exhaustion_warning(ledger_id):
@@ -515,6 +577,8 @@ def _log_exhaustion_warning(ledger_id):
         label, env_key = "紧急", "YIBAN_NOTIFY_URGENT_DAILY_MAX"
     elif ledger_id == "login_fail":
         label, env_key = "登录失败告警", config.LOGINFAIL_DAILY_MAX_KEY
+    elif ledger_id == "admin_change":
+        label, env_key = "管理变更回执", "（代码内缺省额，无 env 键）"
     else:
         label, env_key = "非紧急", "YIBAN_NOTIFY_DAILY_MAX"
     logger.warning(
