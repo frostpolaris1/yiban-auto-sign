@@ -512,6 +512,17 @@ tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_ye
 tests/test_cli_contract.py	CliContractTest.test_state_reports_missing_dir_loudly	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_unknown_and_empty_subcommand	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_version_matches_package	J	-	??
+tests/test_cli_exit_surface.py	CliChokeUnitTest.test_emit_json_masks_string_leaves_and_keeps_numbers	G	-	`_emit_json`：字符串叶子遮号、**整数字段原样**（否则整行 JSON 被遮成非法）。
+tests/test_cli_exit_surface.py	CliChokeUnitTest.test_say_masks_raw_phone_on_stderr	G	-	`_say` 的 stderr 行不得带裸号：遮罩形态在场、裸形态缺席。
+tests/test_cli_exit_surface.py	CliProbePassthroughWiringTest.test_passthrough_commands_delegate_runner	G	-	结构钉：sign/probe 经 runner.main（装配与生成点遮罩随透传自动生效）。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_capacity_exit_has_no_raw_phone	G	-	capacity 读库（phone 列即裸号）但出口只有数字与路径：裸号必须全程缺席。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_check_config_stdout_print_masked	G	-	`sign --check-config` 的 stdout 直印（`config_check.print_config_summary`）：
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_config_fail_masks_stderr_and_json_errors	G	-	密文与钥不匹配 ⇒ 异常消息含裸号；`config` 的 stderr 与 `--json errors` 双出口都遮。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_config_success_masks_every_field	G	-	装载成功态：`--json` 的 phones_masked 与 stderr 明细行都只有遮罩形态。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_db_exit_has_no_raw_phone	G	-	db --integrity 读的是含裸号行的库：出口（表清单/计数/detail）不得带出裸号。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_maintenance_command_mounts_masking_assembly	G	-	维护子命令必须接上 `_setup_cli_logging`：lastResort 裸写 stderr 的旁路堵死。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_state_exit_has_no_raw_phone	G	-	state 明细是固定形态的按日文件名：裸号必须全程缺席（含 --yes 前的指纹行）。
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_version_exit_has_no_raw_phone	G	-	version 出口（版本号/Python/schema 版本）与账号数据无交集：裸号缺席的实证。
 tests/test_config_input_caps.py	MailInputCapsTest.test_admin_to_at_cap_accepted	G	-	??
 tests/test_config_input_caps.py	MailInputCapsTest.test_admin_to_count_capped	G	-	??
 tests/test_config_input_caps.py	MailInputCapsTest.test_smtps_at_cap_accepted	G	-	??
@@ -1169,6 +1180,25 @@ tests/test_executors_kpi_scope.py	FallbackSwitchPayloadTest.test_switch_value_is
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_divides_by_parallel_rows_only	B	-	分母只数「并行」行——用后端 workers.configured，不自己按清单长度算。
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_average_uses_accounts_counted_not_users_quota	B	-	??
 tests/test_executors_kpi_scope.py	KpiScopeTest.test_first_card_is_todays_progress	B	-	首卡从「清单行数」换成「今日进度」：行数在表里一眼可见，卡片该回答"今天跑得怎么样"。
+tests/test_exit_surface_generation.py	ChildStdoutRedirectTest.test_signin_child_redirect_file_has_no_raw_phone	G	-	??
+tests/test_exit_surface_generation.py	ReportFatalErrorGenerationTest.test_plain_summary_passes_through_idempotently	G	-	不含敏感形态的摘要原样通过（幂等遮罩不加戏）。
+tests/test_exit_surface_generation.py	ReportFatalErrorGenerationTest.test_summary_masked_before_stderr_and_registry	G	-	stderr 行与 `last_fatal_error()`（即 `--json.errors` 的来源）同一份遮罩；
+tests/test_exit_surface_generation.py	RunShStaticTest.test_runsh_never_interpolates_credential_keys	G	-	??
+tests/test_exit_surface_generation.py	RunShStaticTest.test_runsh_redirections_only_carry_python_children	G	-	每条 `2>&1` 都必须落在 `"$PY"` 调用行上：新增 shell 侧直出前，先被这条钉拦住。
+tests/test_exit_surface_generation.py	SignJsonErrorExitTest.test_sign_json_error_field_masked	G	-	??
+tests/test_exit_surface_generation.py	SpawnArgvEnvironSurfaceTest.test_argv_carries_identifier_not_credentials	G	-	argv 面（/proc/<pid>/cmdline 全局可读）：只允许 `--only <号>`；
+tests/test_exit_surface_generation.py	SpawnArgvEnvironSurfaceTest.test_child_env_still_holds_credentials_same_uid	G	-	environ 面钉桩：.env 的 YIBAN_* 仍注入子进程环境（机制事实，
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_empty_account_repr_falsy_password	G	-	空口令账号 repr 不报错，且口令位显示为空串（区别于已配置显示 ***）。
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_repr_has_no_credentials_or_raw_phone	G	-	??
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_repr_keeps_readable_identity_shape	G	-	遮罩不得牺牲"定位是哪个账号"：名称/id/型号仍在，号与邮有遮罩形态。
+tests/test_exit_surface_repr_mail.py	AccountReprSurfaceTest.test_sanitize_text_still_swallow_account_repr	G	-	既有纵深不破：`sanitize_text` 对 `Account(...)` 形态整体吞成 `Account(***)`。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_email_domain_untouched_by_phone_layer	G	-	构造层只管号码——邮箱仍归调用点/收件人层（_mask_addr），这里不越位。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_html_masks_all_string_leaves	G	-	??
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_markdown_masks_all_string_leaves	G	-	推送（Server酱 desp 走 Markdown）与邮件同一构造 ⇒ 同一收口。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_masking_is_idempotent_for_already_masked_text	G	-	调用点已 `_mask_phone` 过的正文再经构造层不变形（幂等）。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_non_str_leaves_untouched	G	-	只动字符串叶子：数字/布尔/None 原样（不产生非法渲染）。
+tests/test_exit_surface_repr_mail.py	MailBodyMaskingTest.test_plain_masks_all_string_leaves	G	-	??
+tests/test_exit_surface_repr_mail.py	PushBodySharesConstructionTest.test_notify_admin_entry_push_content_masked	G	-	??
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_fallbacks_own_give_ups_are_excluded	B	-	兜底自己弃权的行不进签名：否则"扫→弃权→签名变→立刻再扫"接成紧循环重登。
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_final_give_up_does_not_move_signature	B	-	final: 档（预算耗尽/风控）兜底默认领不动：为它唤醒只会空转，绝不计入。
 tests/test_fallback_event_yield.py	FallbackEventSignatureTest.test_reclaim_of_retry_row_moves_signature	B	-	他人重领 retry: 行同样动签名（出队也是迁移）：最多多扫一次，由池仲裁不重签。
