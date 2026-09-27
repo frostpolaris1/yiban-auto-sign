@@ -35,6 +35,7 @@
 读执行体产生的存活态——退出码语义变化会改变这些页面的成功/失败提示与执行体行。
 """
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -120,6 +121,48 @@ def _day_off_skip():
         return None
     logger.info(_GATE_SKIP_MESSAGES[gate])
     return 2  # run.sh 据此写 SKIPPED 状态，次日正常执行
+
+
+def _write_sched_snapshot(state_dir, attempt_date):
+    """调度快照标记落盘（单通道私有写）。
+
+    web 端保存自选时间片时以本时刻为"今日/明日生效"分界——快照后改选必为明日生效，
+    提示与实际一致（web 侧兜底按"有效窗口起点"折算，与 cron 实际读取时刻仍有偏差窗口）。
+    """
+    path = os.path.join(state_dir, f"sched-snapshot-{attempt_date}.json")
+    state_io._write_private_json(path, {"snapshot_at": clock.now().strftime("%H:%M:%S")})
+
+
+def _write_sign_daily(state_dir, accounts, results):
+    """写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）。
+
+    符号按状态码：success/already→✅、no_task→➖、failed→❌、no_position→🚫。
+    锁内读-改-写，写盘走状态文件私有写单通道。
+    """
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        # 以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
+        daily_path = os.path.join(state_dir, f"sign-daily-{clock.now().strftime('%Y-%m-%d')}.json")
+        with cli_support._state_file_lock(daily_path):
+            daily = {}
+            if os.path.exists(daily_path):
+                try:
+                    with open(daily_path, encoding="utf-8") as f:
+                        daily = json.load(f)
+                except (OSError, ValueError, TypeError):
+                    logger.warning("按日状态文件 %s 损坏，按空数据重建", daily_path)
+                    daily = {}
+            if not isinstance(daily, dict):
+                logger.warning("按日状态文件 %s 非 dict，按空数据重建", daily_path)
+                daily = {}
+            for acc in accounts:
+                _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
+                if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
+                              STATUS_FAILED, STATUS_NO_POSITION):
+                    daily[acc.phone] = STATUS_SYMBOL[status]
+            state_io._write_private_json(daily_path, daily)
+    except (OSError, ValueError, TypeError) as e:
+        logger.warning("写入按日状态文件失败: %s", e)
 
 
 def main(argv=None):
@@ -462,19 +505,10 @@ def main(argv=None):
                     f"计划 {t.strftime('%H:%M')}", scheduled=t.strftime("%H:%M:%S"),
                 )
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
-        # 调度快照标记：web 端保存自选时间片时以此时刻为"今日/明日生效"分界——
-        # 快照后改选必为明日生效，提示与实际一致（web 侧兜底按"有效窗口起点"折算，
-        # 与 cron 实际读取时刻仍有偏差窗口）
-        try:
-            _snap_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
-            os.makedirs(_snap_dir, exist_ok=True)
-            _snap_path = os.path.join(_snap_dir, f"sched-snapshot-{attempt_date}.json")
-            _snap_tmp = _snap_path + ".tmp" + str(os.getpid())
-            with open(_snap_tmp, "w", encoding="utf-8") as _f:
-                json.dump({"snapshot_at": clock.now().strftime("%H:%M:%S")}, _f)
-            os.replace(_snap_tmp, _snap_path)
-        except OSError:
-            pass  # 标记不可写时 web 端回退旧分界，不影响签到
+        # 调度快照标记：见 `_write_sched_snapshot`；标记不可写时 web 端回退旧分界，不影响签到
+        with contextlib.suppress(OSError):
+            _write_sched_snapshot(
+                env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban"), attempt_date)
 
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else state_io._load_cred_state()
@@ -600,37 +634,8 @@ def main(argv=None):
     if event_rows:
         db.add_sign_events_batch(event_rows)
 
-    # 写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）
-    # 符号按状态码：success/already→✅、no_task→➖、failed→❌、no_position→🚫
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
-    try:
-        os.makedirs(state_dir, exist_ok=True)
-        # 以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
-        daily_path = os.path.join(state_dir, f"sign-daily-{clock.now().strftime('%Y-%m-%d')}.json")
-        with cli_support._state_file_lock(daily_path):
-            daily = {}
-            if os.path.exists(daily_path):
-                try:
-                    with open(daily_path, encoding="utf-8") as f:
-                        daily = json.load(f)
-                except (OSError, ValueError, TypeError):
-                    logger.warning("按日状态文件 %s 损坏，按空数据重建", daily_path)
-                    daily = {}
-            if not isinstance(daily, dict):
-                logger.warning("按日状态文件 %s 非 dict，按空数据重建", daily_path)
-                daily = {}
-            for acc in accounts:
-                _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
-                if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
-                              STATUS_FAILED, STATUS_NO_POSITION):
-                    daily[acc.phone] = STATUS_SYMBOL[status]
-            # tmp + os.replace 原子写，避免半截文件
-            daily_tmp = daily_path + ".tmp" + str(os.getpid())
-            with open(daily_tmp, "w", encoding="utf-8") as f:
-                json.dump(daily, f, ensure_ascii=False)
-            os.replace(daily_tmp, daily_path)
-    except (OSError, ValueError, TypeError) as e:
-        logger.warning("写入按日状态文件失败: %s", e)
+    _write_sign_daily(env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban"),
+                      accounts, results)
 
     # A 线：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。

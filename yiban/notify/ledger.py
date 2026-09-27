@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager, suppress
 
 from yiban import clock
-from yiban.infra import locks
+from yiban.infra import locks, private_json
 
 from . import config
 
@@ -165,13 +165,9 @@ def _archive_corrupt_state_file(path):
 
 
 def _save_ledger_file(data):
-    """原子写磁盘账本（tmp + os.replace），失败仅告警不影响发送主流程。"""
+    """原子写磁盘账本（单通道私有写，tmp 名含 pid+线程 id），失败仅告警不影响发送主流程。"""
     try:
-        os.makedirs(os.path.dirname(_ledger_path()) or ".", exist_ok=True)
-        tmp = _ledger_path() + ".tmp" + str(os.getpid()) + "-" + str(threading.get_ident())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, _ledger_path())
+        private_json.write_private_json(_ledger_path(), data)
     except OSError as e:
         logger.warning("写入推送额度账本失败（额度仍按内存计数）: %s", e)
 
@@ -218,13 +214,9 @@ def _load_throttle_file():
 
 
 def _save_throttle_file(data):
-    """原子写磁盘节流表（tmp + os.replace），失败仅告警不影响发送主流程。"""
+    """原子写磁盘节流表（单通道私有写，tmp 名含 pid+线程 id），失败仅告警不影响发送主流程。"""
     try:
-        os.makedirs(os.path.dirname(_throttle_path()) or ".", exist_ok=True)
-        tmp = _throttle_path() + ".tmp" + str(os.getpid()) + "-" + str(threading.get_ident())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, _throttle_path())
+        private_json.write_private_json(_throttle_path(), data)
     except OSError as e:
         logger.warning("写入推送节流状态失败（节流按内存态执行）: %s", e)
 
