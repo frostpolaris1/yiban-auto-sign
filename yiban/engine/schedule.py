@@ -122,6 +122,23 @@ def avg_attempt_sec(env=None):
     return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300, env=env)
 
 
+def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
+    """容量**告警阈值**的 avg 输入：显式配置（管理员钉住）> 实测 p95（近 `days` 天
+    `sign_events.dur_sec`）> 配置缺省档；读不到实测就回退缺省档，绝不把预检拖崩。
+    只喂预检告警——保存闸门/展示按计划口径，"能不能保存"不该跟着昨天的网络抖。
+    """
+    if os.environ.get("YIBAN_AVG_ATTEMPT_SEC", "").strip():
+        return cfg_avg if cfg_avg is not None else avg_attempt_sec()
+    if cfg_avg is None:
+        cfg_avg = avg_attempt_sec()
+    try:
+        p95 = db.attempt_dur_quantile(days=days, min_samples=min_samples)
+    except Exception as e:  # 防御：db 替身缺属性（测试打桩面）也不炸预检
+        logger.warning("读取实测尝试耗时失败（告警回退配置值）: %s", e)
+        p95 = None
+    return max(1, math.ceil(p95)) if p95 else max(1, int(cfg_avg))
+
+
 def _env_float(name, default, lo=None, hi=None):
     """读浮点环境变量；缺失/非法回退默认（与 `_env_int` 同一套回退 + 告警口径）。"""
     raw = os.environ.get(name, "").strip()
@@ -208,7 +225,7 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8,
 
 
 def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
-                util=0.8, enabled=None, env=None):
+                util=0.8, enabled=None, env=None, retry_reserve=False):
     """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
 
     为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
@@ -225,6 +242,10 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
     传了 `env`，本次估算的 avg 与开关就从**同一份** `env` 读，不再跨"进程环境 + .env"
     两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
     `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
+
+    `retry_reserve`（**只喂告警阈值**）：v2 侧把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
+    重试同样吃墙钟——按零重试排满窗口正是 122–360 静默死带的根（计划/展示/闸门不传）。
+    v3 不参与：`util` 缺省 0.8 本身就是重试降额，再扣一次是双重计算。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
@@ -232,6 +253,12 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
         from yiban.engine import executor_v3
         enabled = executor_v3.scheduler_v3_enabled(env)
     if not enabled:
+        if retry_reserve:
+            # 储备 = (MAX_ATTEMPTS−1) 份单账号周期/账号，折进 gap 复用同一个式子
+            from yiban.engine import attempts  # 局部导入：attempts 带整条客户端链
+            avg_eff = max(1, int(avg if avg is not None else avg_attempt_sec(env)))
+            gap_eff = max(0, int(gap or 0))
+            gap = gap_eff + (attempts.MAX_ATTEMPTS - 1) * (avg_eff + gap_eff)
         return capacity_accounts(window_sec, gap, avg, env=env)
     return capacity_accounts_v3(window_sec, 1 if k is None else k, avg,
                                 bucket_rate, util, env=env)
@@ -247,9 +274,11 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
     的有效速率 `W×bucket×0.8`（`util` 与容量公式同口径：重试与尾延迟降额）。
 
     结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
-    只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。`egress_count`
-    缺省 1；`bucket_rate` 非正回退出厂速率（与 `channel_count` 同口径）；窗口 <= 0 时无
-    速率可言，回退 1。
+    只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。**与
+    `capacity_probe` 的建议数不是同一口径**：探针按"每进程各持一桶"实测，"20–22 个桶"
+    ≈要声明同数物理出口；未声明出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
+    「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate` 非正回退出厂速率（与
+    `channel_count` 同口径）；窗口 <= 0 时回退 1。
     """
     r = _DEFAULT_RETRY_RATIO if retry_ratio is None else max(0.0, float(retry_ratio))
     n = max(0, int(n_accounts))
@@ -487,6 +516,15 @@ DAY_OFF_SATURDAY = "saturday"
 DAY_OFF_PAUSED = "paused"
 
 
+def weekend_flags(env=None):
+    """周末签到开关（周六, 周日）的**唯一解析口径**（`_env_flag`：1/true/on/yes 为真）。
+
+    `day_off` 与 web 展示（面板状态行、我的日历置灰）都只读这里——原先 web 侧各自
+    用整数解析，`=true` 时引擎照签而面板标休（两套值域分叉）。
+    """
+    return (_env_flag("YIBAN_SATURDAY_SIGN", env), _env_flag("YIBAN_SUNDAY_SIGN", env))
+
+
 def day_off(now=None, sat=None, sun=None, env=None):
     """今天这一刻是否**有意不签到** → 原因串；空串=照常。
 
@@ -497,10 +535,10 @@ def day_off(now=None, sat=None, sun=None, env=None):
 
     `sat`/`sun` 可显式传入（定时轮传导入期快照常量，便于既有测试注入）；不给则读环境。
     """
-    if sat is None:
-        sat = _env_flag("YIBAN_SATURDAY_SIGN", env)
-    if sun is None:
-        sun = _env_flag("YIBAN_SUNDAY_SIGN", env)
+    if sat is None or sun is None:
+        def_sat, def_sun = weekend_flags(env)
+        sat = def_sat if sat is None else sat
+        sun = def_sun if sun is None else sun
     weekday = (now or clock.now()).weekday()
     if weekday == 6 and not sun:
         return DAY_OFF_SUNDAY

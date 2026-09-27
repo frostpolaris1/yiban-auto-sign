@@ -159,7 +159,7 @@ def window_fallback_text(bounds):
     return (f"配置异常：签到窗口不可用，已按 {_hm(bounds.lo_min)}~{_hm(bounds.hi_min)} 运行")
 
 
-def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
+def sign_status(env_file, load_env_int, sign_window_bounds, now=None, file_env=None):
     """基于服务器时间计算签到状态。
 
     返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
@@ -171,13 +171,22 @@ def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
     窗口本身不可用时（`fell_back`，防御分支）改出"配置异常、已按 X~Y 运行"整句：
     此时管理员设的窗口根本没被采用，继续报三段状态等于谎报。
 
+    `file_env` 是**现读的 `.env` 键值**（与 `_day_off_reason` 同一口径）：周末门的
+    判定走引擎同一份解析，缺省 None 时退回进程环境（生产调用方必须现读传入，否则
+    `.env` 里的周末开关在面板上不生效）。
+
     参数注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `sign_window_bounds`）。
     """
     now = now or clock.now()
-    if now.weekday() == 6 and not load_env_int(env_file, "YIBAN_SUNDAY_SIGN", 0):
+    # 周末门判定与引擎**同源**（`_day_off_reason` = `schedule.day_off`，值域含
+    # true/on/yes）：原先这里各自用整数解析，`=true` 时引擎照签而面板标休——
+    # 两套值域的分叉点。文案与分支语义不变（只认周日/周六两档原因，暂停档仍由
+    # 日历与运行期门负责），改的只是"读到的是哪套判据"。
+    day_reason = _day_off_reason(file_env, now)
+    if day_reason == yb_schedule.DAY_OFF_SUNDAY:
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
         return "今日无需打卡（周日）", "#a1a1aa"
-    if now.weekday() == 5 and not load_env_int(env_file, "YIBAN_SATURDAY_SIGN", 0):
+    if day_reason == yb_schedule.DAY_OFF_SATURDAY:
         # 周六：默认关闭；开启后走正常窗口逻辑
         return "今日无需打卡（周六）", "#a1a1aa"
     win = sign_window_bounds()  # 单次读取（每次调用都会重读 .env，避免重复解析）
