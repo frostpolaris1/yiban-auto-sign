@@ -370,7 +370,7 @@ from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一�
 from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
 from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402,F401
 from yiban.infra import (  # noqa: E402
-    account_crypto,  # noqa: F401  # 本模块已无自用点，保留：web.app.<名字> 仍可 import（打桩面零损失）
+    account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
     env_lock,  # noqa: F401  # 跨进程写锁真源（写路径已入 web/services/env_io.py），保留名字面
 )
@@ -1716,6 +1716,10 @@ def create_app(host=None):
     reject_default_admin_password(ENV_FILE)
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
     migrate_admin_password_to_hash(ENV_FILE)
+    # 账号凭据密钥两侧自证（fail-closed，须在 init_db 之前——init_db 的迁移会用这把钥
+    # 重加密账号列）：env 档（systemd EnvironmentFile 注入）与 .env 档并存且不同 ⇒ 拒绝
+    # 启动，杜绝"web 一把钥、引擎另一把钥"的静默分叉；一致则把 kid 打进启动日志。
+    account_crypto.assert_key_sources_agree(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
     # JSON 改名 .bak 保留逃生门）；多 worker 各自调用幂等（模块级连接缓存）
     db.init_db(DB_FILE, migrate_from=ACCOUNTS_FILE, env_file=ENV_FILE)

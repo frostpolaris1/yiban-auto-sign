@@ -33,7 +33,8 @@
 
 **通信**
 输入：明文敏感字段 + 手机号（AAD）、密钥来源（环境变量或 .env 路径）。
-输出：v1 密文对象（JSON 可序列化）或解密后的明文；密钥缺失时按 0600 生成并持久化。
+输出：v2 密文对象（JSON 可序列化，携带 kid；v1 无 kid 密文照常可读）或解密后的明文；
+密钥缺失时按 0600 生成并持久化。启动/取钥时两档（env 与 .env）都做同钥断言。
 调用谁：`yiban.infra.env_io`、`yiban.infra.env_lock`、`Crypto.Cipher.AES`。
 谁调用（import 点，未必穷尽）：`yiban.engine.accounts`、`yiban.store.accounts`、
 `yiban.store.session_cache`、`yiban.store.migrations`（账号侧加解密）、
@@ -95,6 +96,10 @@ def load_key(env_file=None):
     或既有 .env 有行含潜伏行分隔符（见 _write_key_to_env_file）。配置值（环境变量与
     .env 两档）命中公开模板内置示例钥同样抛 ValueError——精确比对、零误杀、即阻断
     （见 _PUBLISHED_EXAMPLE_KEY）。
+    **两侧同钥断言（fail-closed，见 _assert_env_matches_env_file）**：环境变量档命中
+    时若目标 .env 也带 YIBAN_ACCOUNTS_KEY，两档必须解出同一把钥，不一致即抛——
+    "env 优先于 .env"的静默覆盖正是现网 web（EnvironmentFile 注入）与引擎（读 .env）
+    分叉的成因，这里把它从"另一侧静默解不开"换成"本侧立即拒启动"。
 
     **来源守卫**：自动建钥只允许在"密钥来源确定"时发生——调用方显式传了
     `env_file`、或设了 `YIBAN_ENV_FILE`、或当前目录已有 `.env`。三者都没有而该
@@ -109,7 +114,9 @@ def load_key(env_file=None):
     if env_key:
         # 环境变量档每次现取现解码，既不读缓存也不落缓存：同进程改环境变量必须当场换钥，
         # 而落缓存会让它在撤掉后继续冒充 .env 的钥（缓存的每一格都只代表它的来源）。
-        return _decode_key(env_key)
+        key = _decode_key(env_key)
+        _assert_env_matches_env_file(env_file, key)
+        return key
     cached = _cache_get(env_file)
     if cached is not None:
         return cached
@@ -127,6 +134,59 @@ def load_key(env_file=None):
         key = _write_key_to_env_file(env_file, secrets.token_bytes(32))
         _cache_put(env_file, key)
         return key
+
+
+def _assert_env_matches_env_file(env_file, env_key):
+    """env 档密钥已取用时，核对 .env 档：两档都在且不同 ⇒ 抛（同钥才放行）。
+
+    只有一档可读时没有可对比的另一侧，放行（单档形态的"对面会分叉"风险提示在
+    `assert_key_sources_agree` 的启动日志里）。对比的是**解码后的字节**——
+    十六进制大小写写法不同不算分叉（避免误杀）。.env 档存在但格式非法同样抛：
+    那一侧的进程解不出钥，两侧必然不一致，"非法"不是"没有"。
+    """
+    file_key_raw = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
+    if not file_key_raw:
+        return
+    file_key = _decode_key(file_key_raw)
+    if file_key != env_key:
+        raise _key_fork_error(env_key, file_key, env_file)
+
+
+def assert_key_sources_agree(env_file=None):
+    """启动自证：断言"两侧（env 变量档 / .env 文件档）读到同一把钥"，并把 kid 打进日志。
+
+    web `create_app` 与引擎 `runner.main` 启动时各调一次——两侧进程启动即自证同钥；
+    不一致抛 ValueError（拒绝启动，fail-closed），绝不退回"env 静默压住 .env"的
+    旧拓扑（systemd EnvironmentFile 注入 env 档，照旧流程只改 .env 必致分叉）。
+    返回当前生效密钥的 kid（无钥可断言时返回 None），供调用方留痕。
+    单档形态下没有可比对的第二侧，不抛，但 env-only 要 WARNING：未被注入的进程
+    会在同一文件里自动生成**第二把**钥（正是轮换事故的路径）。
+    """
+    env_file = env_file or (os.environ.get("YIBAN_ENV_FILE") or "").strip() \
+        or DEFAULT_ENV_FILE
+    env_key_raw = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()
+    file_key_raw = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
+    env_key = _decode_key(env_key_raw) if env_key_raw else None
+    file_key = _decode_key(file_key_raw) if file_key_raw else None
+    if env_key is not None and file_key is not None:
+        if env_key != file_key:
+            raise _key_fork_error(env_key, file_key, env_file)
+        logger.info("账号密钥自证：env 档与 %s 文件档为同一把钥（kid=%s）",
+                    env_file, key_fingerprint(env_key))
+        return key_fingerprint(env_key)
+    if env_key is not None:
+        kid = key_fingerprint(env_key)
+        logger.warning(
+            "账号密钥只来自环境变量档（%s 内无 YIBAN_ACCOUNTS_KEY，当前 kid=%s）——"
+            "未注入该环境变量的进程会在这份文件里自动生成第二把钥，轮换时必须两侧"
+            "同步维护（见 README『账号凭据密钥泄露处置』）", env_file, kid)
+        return kid
+    if file_key is not None:
+        kid = key_fingerprint(file_key)
+        logger.info("账号密钥自证：仅 %s 文件档（kid=%s）", env_file, kid)
+        return kid
+    # 两档皆无 = 首启尚未建钥（load_key 的自动生成路径自有守卫），无断言对象
+    return None
 
 
 def _cache_get(source):
