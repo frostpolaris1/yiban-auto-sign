@@ -17,7 +17,12 @@
 
    脱敏：GET /api/mail-config 的 admin_to 与 smtps[].user 已由后端打码；授权码绝不
    回显（pass 输入框恒为空，留空=沿用旧值；user 留空同理，打码值只作 placeholder）。
-   SMTP 列表用模板 .data-table 行内编辑。动态节点一律 YB.el。 */
+   SMTP 列表用模板 .data-table 行内编辑。动态节点一律 YB.el。
+
+   条目身份是**稳定 id**（data-smtp-id）：建行时自产、GET 带回的旧条目原样沿用，
+   删除/重排都不改它——"留空沿用"与"改 host 不带走旧授权码"两件事都靠 id 而不是
+   靠数组位置对齐（后端同口径按 id 取旧凭据，目标变了就不给沿用）。id 为 null 的
+   旧格式条目在本端现造一个，保存时由后端按 host:port 唯一匹配认领旧凭据。 */
 (function () {
   "use strict";
   var YB = window.YB;
@@ -65,6 +70,17 @@
     return (!s || s.indexOf("*") !== -1 || s.charAt(0) === "<") ? "" : s;
   }
 
+  // 稳定 id：形状与后端校验（^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$）同口径。
+  // 只用 Math.random 不引新依赖；页面里行数量级（≤10）+ 后端对重复 id 直接 400，
+  // 撞车会显式暴露成保存失败，而不是静默把凭据错配给别的条目。
+  function newSmtpId() {
+    var r = "";
+    while (r.length < 12) {
+      r += Math.random().toString(36).slice(2);
+    }
+    return "smtp-" + r.slice(0, 12).replace(/[^a-z0-9]/g, "0");
+  }
+
   // 非敏感字段（host / port）回填当前值，便于在原配置上修改
   function cellInput(name, type, placeholder, ariaLabel, value) {
     var input = YB.el("input", {
@@ -87,7 +103,19 @@
   }
 
   function smtpRow(entry, index) {
-    var tr = YB.el("tr", { class: "sm-row" });
+    // data-smtp-id：该行的稳定身份。删除/重排只动 DOM，不动 id——"留空沿用"
+    // 因此永远指回**这一条**旧目，不会再按数组位置错位到邻居的凭据上。
+    // data-host0/data-port0/data-haspass：建行时的目标快照，供 host 漂移提示用。
+    var tr = YB.el("tr", {
+      class: "sm-row",
+      dataset: {
+        smtpId: entry.id || newSmtpId(),
+        host0: String(entry.host || ""),
+        port0: String(entry.port || 465),
+        user0: String(entry.user || "留空沿用"),
+        haspass: entry.has_pass ? "1" : ""
+      }
+    });
     // data-label：≤720 该行纵向堆叠（表头隐藏），标签由 ::before 从属性取，
     // 保证堆叠后每个字段仍有可见名称（仅靠 aria-label 对读屏以外不可见）。
     var tdHost = YB.el("td", { "data-label": "服务器 host" });
@@ -115,6 +143,33 @@
     tr.appendChild(tdPass);
     tr.appendChild(tdOps);
     return tr;
+  }
+
+  // 目标漂移提示：改了 host/端口 = 换中继，后端对这种行**不会**沿用旧授权码
+  // （旧授权码绝不随新域名发出）。"留空沿用"的占位文案此刻就成了谎话，
+  // 必须当场改口，否则用户留空保存后才发现要重输。
+  function driftTargets() {
+    var body = tbody();
+    if (!body) return;
+    [].forEach.call(body.querySelectorAll("tr"), function (tr) {
+      var pass = tr.querySelector('[data-f="pass"]');
+      var user = tr.querySelector('[data-f="user"]');
+      var host = tr.querySelector('[data-f="host"]');
+      var port = tr.querySelector('[data-f="port"]');
+      if (!pass || !host) return;
+      var drifted = String(host.value || "").trim() !== (tr.dataset.host0 || "") ||
+        String(port ? port.value : "") !== (tr.dataset.port0 || "");
+      if (tr.dataset.haspass === "1" && drifted && !pass.value) {
+        pass.placeholder = "服务器已更换，旧授权码不再沿用，请重新输入";
+        if (user) user.placeholder = "服务器已更换，如需换发件账号请重填";
+      } else if (pass.placeholder.indexOf("服务器已更换") === 0) {
+        // 改回原目标：恢复默认文案（只在当前文案是自己改过的那句时恢复，不覆盖别态）
+        pass.placeholder = "已配置，留空沿用";
+        if (user && user.placeholder.indexOf("服务器已更换") === 0) {
+          user.placeholder = tr.dataset.user0 || "留空沿用";
+        }
+      }
+    });
   }
 
   // 删除后重排行内 aria-label（保持读屏序号与服务端顺序一致）
@@ -162,11 +217,15 @@
       };
       var status = $("sm-status");
       if (status) {
+        // 开关"已开启"不等于告警能送达：发信清单为空时这一路是哑的，
+        // 状态行必须自己说破（此前只剩表格占位行一句小字，开关读着"已开启"极易漏看）。
+        var smtpEmpty = !(data.smtps && data.smtps.length);
         status.textContent = data.enabled
-          ? "已开启 · 发件 " + (data.user || "未配置") + " · 告警收件 " + (data.admin_to || "未配置")
-          : (data.smtps && data.smtps.length
-            ? "未开启（已配置发件 SMTP，可由主管理员开启）"
-            : "未开启（未配置发件 SMTP）");
+          ? "已开启 · 发件 " + (data.user || "未配置") + " · 告警收件 " + (data.admin_to || "未配置") +
+            (smtpEmpty ? " · 注意：无发信 SMTP，告警邮件一封都发不出去" : "")
+          : (smtpEmpty
+            ? "未开启（未配置发件 SMTP）"
+            : "未开启（已配置发件 SMTP，可由主管理员开启）");
       }
       var g = $("sm-global"); if (g) g.checked = snap.enabled;
       var to = $("sm-to");
@@ -186,7 +245,10 @@
     return [].map.call(body.querySelectorAll("tr"), function (row) {
       var host = row.querySelector('[data-f="host"]');
       if (!host) return null;
+      // id 随行不随位：提交顺序变了，后端仍按 id 找回各自的旧凭据
+      var id = row.getAttribute("data-smtp-id") || "";
       return {
+        id: id,
         host: clean(host.value),
         port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
         user: clean(row.querySelector('[data-f="user"]').value),
@@ -317,7 +379,11 @@
     var g = $("sm-global"); if (g) g.addEventListener("change", markDirty);
     var to = $("sm-to"); if (to) to.addEventListener("input", markDirty);
     var body = tbody();
-    if (body) body.addEventListener("input", function () { tableDirty = true; markDirty(); });
+    if (body) body.addEventListener("input", function () {
+      tableDirty = true;
+      markDirty();
+      driftTargets();   // host/端口一改口，授权码占位文案必须当场跟上（见函数注释）
+    });
     var saveBtn = $("sm-save"); if (saveBtn) saveBtn.addEventListener("click", function () { save(); });
     var toClear = $("sm-to-clear"); if (toClear) toClear.addEventListener("click", clearAdminTo);
     var add = $("sm-add-smtp"); if (add) add.addEventListener("click", addSmtp);
