@@ -312,6 +312,54 @@ class DisplayReadsTest(_Base):
         self.assertEqual(queue_store.owners_since(days=0), [])
 
 
+class PurgeTasksClockGuardTest(_Base):
+    """`purge_sign_tasks`：保留期外的行删掉；系统时间前跳 >72h 跳过本轮（复用时钟守卫）。"""
+
+    GUARD_KEY = "purge_sign_tasks_clock"
+
+    def _add_old_row(self, phone=None):
+        phone = _phone(1) if phone is None else phone
+        old_day = (clock.now() - datetime.timedelta(days=20)).strftime("%Y-%m-%d")
+        self._add_task(phone, day=old_day, state="done")
+        return old_day
+
+    def _seed_reference(self, value):
+        conn = db.get_conn()
+        with db._conn_lock:
+            conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                         (self.GUARD_KEY, value))
+            conn.commit()
+
+    def _days(self):
+        return {r["day"] for r in db.get_conn().execute(
+            "SELECT day FROM sign_tasks").fetchall()}
+
+    def test_forward_clock_jump_skips_purge(self):
+        old_day = self._add_old_row()
+        self._seed_reference((clock.now() - datetime.timedelta(days=10)).strftime(
+            "%Y-%m-%d %H:%M:%S"))   # 参照点在 10 天前 → 本次视为前跳
+        self.assertEqual(queue_store.purge(14), 0, "跳变必须跳过本轮清理")
+        self.assertIn(old_day, self._days(),
+                      "跳变时超期行不得被删（否则当日计划/了结事实被整删 ⇒ 重复真实登录）")
+
+    def test_jump_only_skips_one_round(self):
+        """参照点随越界一并推进 ⇒ 下一轮恢复正常清理（不需要人工重置）。"""
+        old_day = self._add_old_row()
+        self._seed_reference((clock.now() - datetime.timedelta(days=10)).strftime(
+            "%Y-%m-%d %H:%M:%S"))
+        queue_store.purge(14)
+        self.assertEqual(queue_store.purge(14), 1, "参照点推进后下一轮必须恢复清理")
+        self.assertNotIn(old_day, self._days())
+
+    def test_normal_purge_keeps_window_and_deletes_older(self):
+        """cutoff 前的保留、cutoff 外的删除：当日行必须留着。"""
+        old_day = self._add_old_row()
+        self._add_task(_phone(2), day=DAY, state="done")
+        self.assertEqual(queue_store.purge(14), 1)
+        self.assertNotIn(old_day, self._days())
+        self.assertIn(DAY, self._days())
+
+
 class DayCountsTest(_Base):
     def test_counts_match_direct_sql(self):
         for i, state in enumerate(("pending", "pending", "claimed", "done",

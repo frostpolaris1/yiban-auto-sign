@@ -24,6 +24,7 @@
   闸门，见该函数说明）；
 - `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
   事件签名 `(条数, 最新迁移标记)`，短轮询变化即接手；
+- `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/store/cleanup.py` 编排）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
   "当日是否了结"、给进度展示取数；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
@@ -138,7 +139,7 @@ def _shift_stamp(stamp, sec):
 
 
 def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
-                lease_sec=LEASE_SECONDS):
+                lease_sec=LEASE_SECONDS, phones=None):
     """按分片（`vshard`）批量领取到期任务。返回
     `[{"phone","run_at","attempts","epoch"}, ...]`。
 
@@ -150,6 +151,11 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
     `epoch` 是本次领取的 fencing token（**每次领取自增**，单调）：调用方收尾时必须把它
     原样传回 `settle_tasks` / `requeue_task`。没有它，被接管者迟到的写会覆盖接管者的结论。
 
+    `phones` 是本轮**允许领取的账号允许集**（`None` = 不限，保持既有调用点语义）：
+    手动 `--only` 轮只该领取"本轮传进来的那几个账号"，宽分片集不得把当日别人的
+    `pending` 领走（否则那些行会在执行体里被误当了结——见 `executor_v3` 的 `acc is None`
+    处置）。分片集与允许集是**与**关系，两者都满足才领。
+
     `vshards=()` 返回 `[]`（本轮不该领活，不算故障）；表未落地/库异常返回 `[]` **并
     告警**——与"表在、但无到期行"的空返回是两件事，调用方据此决定是否退回动态领取
     路径（本层不替调用方做降级决策）。
@@ -158,6 +164,13 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
     if not shards:
         return []
     placeholders = ",".join("?" for _ in shards)
+    phone_filter, phone_params = "", []
+    if phones is not None:
+        allowed = tuple(phones)
+        if not allowed:
+            return []
+        phone_filter = f"AND phone IN ({','.join('?' for _ in allowed)}) "
+        phone_params = list(allowed)
     sql = (
         "UPDATE sign_tasks SET state='claimed', owner=?, lease_until=?, "
         "epoch=epoch + 1 "
@@ -165,10 +178,12 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
         "SELECT phone, day FROM sign_tasks "
         f"WHERE day=? AND vshard IN ({placeholders}) "
         "AND state='pending' AND run_at<=? "
+        + phone_filter +
         "ORDER BY priority, run_at LIMIT ?"
         ") RETURNING phone, run_at, attempts, epoch"
     )
-    params = (owner, _lease_until(lease_sec), day, *shards, now or clock.ts(), int(limit))
+    params = (owner, _lease_until(lease_sec), day, *shards, now or clock.ts(),
+              *phone_params, int(limit))
     try:
         conn, lock = _queue_conn()
         with lock:
@@ -249,7 +264,7 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
         return 0
 
 
-def requeue_failed(day, shards, include_final=False, run_at=None):
+def requeue_failed(day, shards, include_final=False, run_at=None, phones=None):
     """当日回炉：把本业务日 `failed` 行逐行经 `requeue_task` 翻回 `pending`，返回翻回数。
 
     **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
@@ -276,18 +291,30 @@ def requeue_failed(day, shards, include_final=False, run_at=None):
     立刻可领，与 v2"后续轮次马上接得动"同拍；`priority` 仍按 `requeue_task` 递增一档，
     回炉排在新任务之后。空分片集 → 0 且不取连接；库异常 → 0 + warning（回炉是补偿
     动作，失败不该打断调用方的本轮领取）。
+
+    `phones` 是本轮回炉的**账号允许集**（`None` = 不限，既有调用点语义不变）：手动
+    `--only` 轮只回炉"本轮传进来的那几个账号"的 failed 行，不得把当日别人的
+    `final:` 档行一并复活——那会让别人的账号在本轮被误接手（见 `claim_batch` 同参数）。
     """
     shard_set = tuple(shards or ())
     if not shard_set:
         return 0
     placeholders = ",".join("?" for _ in shard_set)
+    phone_filter, phone_params = "", []
+    if phones is not None:
+        allowed = tuple(phones)
+        if not allowed:
+            return 0
+        phone_filter = f" AND phone IN ({','.join('?' for _ in allowed)})"
+        phone_params = list(allowed)
     sql = ("SELECT phone, epoch, result FROM sign_tasks "
-           f"WHERE day=? AND state=? AND vshard >= 0 AND vshard IN ({placeholders})")
+           "WHERE day=? AND state=? AND vshard >= 0 "
+           f"AND vshard IN ({placeholders})" + phone_filter)
     stamp = run_at or clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     try:
         conn, lock = _queue_conn()
         with lock:
-            rows = conn.execute(sql, (day, STATE_FAILED, *shard_set)).fetchall()
+            rows = conn.execute(sql, (day, STATE_FAILED, *shard_set, *phone_params)).fetchall()
     except Exception as e:
         logger.warning("读取当日弃用任务失败（按无可回炉处理）: %s", e)
         return 0
@@ -532,6 +559,35 @@ def save_egress_state(egress, rate, burst, tat, now=None):
         return False
 
 
+def purge(days=claims_mod.RETENTION_DAYS):
+    """清理保留期外的任务行（按业务日字符串比较）。失败仅告警，返回删除行数。
+
+    本表是**唯一台账**（当日计划 + 了结事实 + 手机号/owner/结果），不清理会逐日无限
+    增长。**复用与 `claims.purge` 同一套时钟跳变守卫**（`db._clock_jump_guard`，各表各
+    一份参照点）：系统时间被拨快 >72h 时按日比较的 cutoff 会一下子跳到未来，"保留期外"
+    的判据于是把最近几天的行全算超期——整删当日行等于把当天所有账号放回"待登录"
+    （补签轮会重复真实登录）。跳变只跳本轮：守卫在越界路径上也推进参照点，下一轮
+    （≤24h 后）即恢复正常清理。守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，
+    兼作 DELETE 的事务边界。
+    """
+    from yiban.store import db
+    cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            ok, note = db._clock_jump_guard(conn, "purge_sign_tasks_clock")
+            if not ok:
+                logger.error("%s", note)
+                conn.rollback()   # 越界路径已在守卫内提交参照点；此处只是解除写锁
+                return 0
+            cur = conn.execute("DELETE FROM sign_tasks WHERE day < ?", (cutoff,))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("清理签到任务失败: %s", e)
+        return 0
+
+
 def fallback_event(day, exclude_owner=""):
     """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新迁移标记)`。
 
@@ -573,14 +629,17 @@ def fallback_event(day, exclude_owner=""):
         return None
 
 
-def pending_count(day, vshards):
+def pending_count(day, vshards, phones=None):
     """当日「我的分片集」内仍待办（`state='pending'`）的行数——**当日是否了结的闸门**。
 
-    为什么必须带 `vshard` 过滤，而不能用 `day_counts(day)["open"]`：v18 的 `sign_claims`
-    平移行与 v20 的补账行都写 `vshard=-1`，其中 `state='failed'` 属 `OPEN_STATES`，可它们
-    永不被 `claim_batch` 领取、也没有 owner/epoch 可供 `requeue`。把它们算作"未了结"，
-    该日就**永远不了结**（补签轮反复空跑）。分片集恒是 `0..V-1` 的子集，故历史行天然
-    不在其中；SQL 里再显式写一遍 `vshard >= 0` 是双保险（防调用方传入非法分片集）。
+    为什么必须带 `vshard` 过滤，而不能用 `day_counts(day)["open"]`：历史平移/补账写入的
+    `vshard=-1` 行里 `state='failed'` 属 `OPEN_STATES`，可它们永不被 `claim_batch` 领取、
+    也没有 owner/epoch 可供 `requeue`。把它们算作"未了结"，该日就**永远不了结**（补签轮
+    反复空跑）。分片集恒是 `0..V-1` 的子集，故历史行天然不在其中；SQL 里再显式写一遍
+    `vshard >= 0` 是双保险（防调用方传入非法分片集）。
+
+    `phones` 与 `claim_batch` 同义（`None` = 不限）：收干判据必须与领取范围**同集**，
+    否则手动 `--only` 轮会因"同分片里别人的 pending 行"永远数不完而空转到超时。
 
     `vshards=()` → 0（本轮不该领活，不算故障，与 `claim_batch` 同口径）；库异常 → 0 +
     warning（调用方据此走"没有待办"的收干分支，而不是抛出去打断签到）。
@@ -589,12 +648,19 @@ def pending_count(day, vshards):
     if not shards:
         return 0
     placeholders = ",".join("?" for _ in shards)
+    phone_filter, phone_params = "", []
+    if phones is not None:
+        allowed = tuple(phones)
+        if not allowed:
+            return 0
+        phone_filter = f" AND phone IN ({','.join('?' for _ in allowed)})"
+        phone_params = list(allowed)
     sql = ("SELECT COUNT(*) FROM sign_tasks WHERE day=? AND state=? "
-           f"AND vshard >= 0 AND vshard IN ({placeholders})")
+           f"AND vshard >= 0 AND vshard IN ({placeholders})" + phone_filter)
     try:
         conn, lock = _queue_conn()
         with lock:
-            row = conn.execute(sql, (day, STATE_PENDING, *shards)).fetchone()
+            row = conn.execute(sql, (day, STATE_PENDING, *shards, *phone_params)).fetchone()
     except Exception as e:
         logger.warning("读取当日待办任务计数失败（按无待办处理）: %s", e)
         return 0

@@ -14,6 +14,11 @@
 （`sign_claims`）时代的执行路径，保留在仓内仅供既有单测覆盖其四柱语义（双章围栏 / 超时
 回收 / 到点领取 / 限速间隔在 v3 侧另有等价实现与用例），不再被 `runner` / `workers` 调用。
 
+**外部集成不得调用**：`run_queue_retry` 会**静默写冻结的 `sign_claims`**、绕开唯一台账
+`sign_tasks`（当日计划/了结事实都以新表为准），任何部署脚本、cron、容器调度或第三方集成
+都**不得**直接调用它（也不要经 `scripts/signin.py` 兼容壳的裸名转发调用）；对外入口只有
+`yiban.engine.runner.main`（`python -m yiban.cli sign` / `scripts/signin.py` 的 `main`）。
+
 **复用**
 `run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）。
 `SIGN_MODE` 与 `_DEFAULT_SLOW_SIGN_SEC` **不对齐任何外部口径**，只在本文件内自用（前者喂

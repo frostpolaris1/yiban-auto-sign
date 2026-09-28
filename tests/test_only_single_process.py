@@ -94,8 +94,8 @@ class ManualOnlyDispatchConvergenceTest(unittest.TestCase):
                         "手动指定账号保留重签已了结账号的语义")
         self.assertTrue(m_run.call_args.kwargs.get("requeue_final"),
                         "手动是显式路径：必须允许重领预算耗尽档的失败账号")
-        self.assertTrue(m_run.call_args.kwargs.get("claim_all"),
-                        "手动身份可能不在执行体清单的 HRW 候选集里")
+        self.assertFalse(m_run.call_args.kwargs.get("claim_all"),
+                         "手动轮不得用通配宽分片：会把当日别人的行一并领走/回炉")
 
     def test_only_still_returns_3_when_lock_unavailable(self):
         """`--only` 仍能返回 3 的既有语义不变（锁不可用 = 队列忙）。"""
@@ -244,6 +244,94 @@ class _OnlyE2EBase(unittest.TestCase):
             f.write(_DRIVER_SRC)
         return subprocess.run([sys.executable, src], env=self._env(), cwd=BASE,
                               capture_output=True, text=True, timeout=180)
+
+
+class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
+    """`--only` 真跑一轮：库里**别的账号**的行与 sign-state 一字不变（FAIL-1 回归）。
+
+    越界点：手动轮曾用通配宽分片 ⇒ 轮首把当日**所有** `failed` 回炉、`claim_batch` 再把
+    当日**所有** `pending` 领走；不在本轮账号集里的行在 `_attempt` 走 `acc is None` 分支被
+    `_finish(done/user_cancelled)`——不登录却判成了结，补签轮随后据 `pending_count=0` 判
+    "已了结" ⇒ 静默漏签。本用例把同分片、已到期的"别的账号"种进去，跑真进程树的
+    `--only`，断言它们的行与 sign-state 完全没动。
+    """
+
+    OTHER_PENDING = "13900000077"
+    OTHER_FAILED = "13900000078"
+
+    def _today(self):
+        from yiban import clock
+        return clock.now().strftime("%Y-%m-%d")
+
+    def _parent_env(self):
+        return {
+            "YIBAN_ACCOUNTS_KEY": TEST_KEY,
+            "YIBAN_ENV_FILE": self.env_file,
+            "YIBAN_DB_FILE": self.db_file,
+            "YIBAN_STATE_DIR": self.tmp,
+        }
+
+    def _seed_other_rows(self):
+        """在同分片里种"别的账号"的待办与 retry: 弃权行，并写一条 sign-state。"""
+        from yiban.engine import hrw, state_io
+        from yiban.store import connection
+        from yiban.store import db as store_db
+        store_db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        day = self._today()
+        sh = hrw.vshard_of(PHONE, day, hrw.v_for(1))   # 与本轮账号同分片（最坏几何）
+        conn = store_db.get_conn()
+        with store_db._conn_lock:
+            for phone, state, result in (
+                    (self.OTHER_PENDING, "pending", ""),
+                    (self.OTHER_FAILED, "failed", "retry:skipped_window")):
+                conn.execute(
+                    "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, "
+                    "priority, state, attempts, lease_until, result, epoch, created_at) "
+                    "VALUES (?,?,?,'','2026-01-01 00:00:00.000',5,?,0,'',?,0,"
+                    "'2026-01-01 00:00:00.000')", (phone, day, sh, state, result))
+            conn.commit()
+        # 父进程写状态文件要先指到本轮 state 目录（否则落到宿主真实目录）
+        with mock.patch.dict(os.environ, self._parent_env(), clear=False):
+            state_io._write_sign_state(self.OTHER_PENDING, "pending", "计划 06:31")
+        rows = {p: tuple(conn.execute(
+            "SELECT state, owner, result, epoch FROM sign_tasks WHERE phone=? AND day=?",
+            (p, day)).fetchone()) for p in (self.OTHER_PENDING, self.OTHER_FAILED)}
+        conn.close()
+        connection.reset_conn()
+        return day, rows
+
+    def _read_other(self, day):
+        import json as _json
+
+        from yiban.store import connection
+        from yiban.store import db as store_db
+        store_db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        conn = store_db.get_conn()
+        with store_db._conn_lock:
+            rows = {p: tuple(conn.execute(
+                "SELECT state, owner, result, epoch FROM sign_tasks WHERE phone=? AND day=?",
+                (p, day)).fetchone()) for p in (self.OTHER_PENDING, self.OTHER_FAILED)}
+        conn.close()
+        connection.reset_conn()
+        with open(os.path.join(self.tmp, f"sign-state-{day}.json"),
+                  encoding="utf-8-sig") as f:
+            state = _json.load(f).get(self.OTHER_PENDING)
+        return rows, state
+
+    def test_manual_round_leaves_other_accounts_untouched(self):
+        import json as _json
+        day, before = self._seed_other_rows()
+        with open(os.path.join(self.tmp, f"sign-state-{day}.json"),
+                  encoding="utf-8-sig") as f:
+            before_state = _json.load(f).get(self.OTHER_PENDING)
+        proc = self._run_driver()
+        self.assertEqual(proc.returncode, 0,
+                         f"stderr={proc.stderr!r}\nrecords={self._records()}")
+        after, after_state = self._read_other(day)
+        self.assertEqual(after, before,
+                         "别的账号的行状态/owner/result/epoch 一字不变")
+        self.assertEqual(after_state, before_state,
+                         "别的账号的 sign-state 不得被改写成 user_cancelled")
 
 
 class OnlyProcessTreeE2ETest(_OnlyE2EBase):

@@ -561,10 +561,11 @@ class SessionRequeueTest(_Base):
         flips = []
         real = queue_store.requeue_failed
 
-        def spy(day, shards, include_final=False, run_at=None):
+        def spy(day, shards, include_final=False, run_at=None, phones=None):
             seen.append({"day": day, "shards": tuple(shards),
-                         "include_final": include_final})
-            flips.append(real(day, shards, include_final=include_final, run_at=run_at))
+                         "include_final": include_final, "phones": phones})
+            flips.append(real(day, shards, include_final=include_final, run_at=run_at,
+                              phones=phones))
             return flips[-1]
 
         async def fake_lane(queue, lane_id, ctx):

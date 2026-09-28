@@ -397,6 +397,50 @@ class ManualReclaimTest(_Base):
         self.assertEqual(self._row(_phone(1))["state"], "done")
 
 
+class ManualReclaimIsolationTest(_Base):
+    """手动 `--only`（reclaim）**只碰本轮账号**：库里别人的行与 sign-state 一字不变。
+
+    回归点（越界收尾 ⇒ 静默漏签）：`reclaim` 曾配通配宽分片（`claim_all`），于是轮首
+    `requeue_failed(include_final=True)` 把当日**所有**账号的 `failed` 行翻回 `pending`、
+    `claim_batch` 再把当日**所有** `pending` 领走；凡不在 `ctx.accounts` 的行在 `_attempt`
+    走 `acc is None` 分支被 `_finish(done/user_cancelled)`——不登录却判成了结，补签轮随后
+    据 `pending_count=0` 判"已了结"。修法：领取/回炉/待办计数收窄到本轮账号的虚分片 +
+    账号允许集，且 `phone ∉ accounts` 的行绝不了结。
+    """
+
+    V = 64
+
+    def _other_vshard_for(self, phone):
+        """别人的行放进"与本轮账号同分片"——不带允许集就会被 greedy 领走（判别力所在）。"""
+        return hrw.vshard_of(phone, DAY, self.V)
+
+    def test_other_accounts_rows_and_state_untouched(self):
+        a, b, c = _phone(1), _phone(2), _phone(3)
+        self._seed_v(self.V)
+        sh = self._other_vshard_for(a)
+        # B：同分片、pending、已到期（修法前会被领走并误判 done）
+        self._add_task(b, vshard=sh, state="pending", run_at=_ts(seconds=-5))
+        # C：同分片、retry: 档 failed（修法前会被 require_final 一并回炉后领走）
+        self._add_task(c, vshard=sh, state="failed", result="retry:skipped_window",
+                       run_at=_ts(seconds=-5))
+        # A：本轮账号，已了结（reclaim 应把它翻回并重签）
+        self._add_task(a, vshard=sh, state="done", owner="w:1:1", attempts=1)
+        state_io._write_sign_state(b, "pending", "计划 06:31")
+        before_b, before_c = self._row(b), self._row(c)
+        before_state_b = self._read_state().get(b)
+        calls = []
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (calls.append(acc.phone),
+                                            (True, "ok", False, "success"))[1]):
+            self._run_v3(self._accounts(a), reclaim=True, requeue_final=True)
+        self.assertEqual(calls, [a], "只该执行本轮账号")
+        self.assertEqual(self._row(b), before_b, "别人的 pending 行不得被领走/改动")
+        self.assertEqual(self._row(c), before_c, "别人的 retry: 档 failed 行不得被回炉")
+        self.assertEqual(self._read_state().get(b), before_state_b,
+                         "别人的 sign-state 不得被改写成 user_cancelled")
+        self.assertEqual(self._row(a)["state"], "done", "本轮账号被重签并收尾")
+
+
 # ---------------------------------------------------------------------------
 # 通道数 M：唯一口径
 # ---------------------------------------------------------------------------
@@ -1485,12 +1529,13 @@ class RunnerSplitTest(unittest.TestCase):
                         "补签轮是显式路径：透传 requeue_final=True")
 
     def test_only_routes_to_v3_explicit_path(self):
-        """手动 `--only` 也走 v3，但带显式路径参数（reclaim + claim_all + requeue_final）。"""
+        """手动 `--only` 也走 v3，但带显式路径参数（reclaim + requeue_final，**不用** claim_all）。"""
         code, _accounts, _sched, _cred, v3_calls = self._run(["--only", _phone(0)])
         self.assertEqual(len(v3_calls), 1, "--only 走 v3（单池后无第二轨）")
         kw = v3_calls[0][1]
         self.assertTrue(kw["reclaim"], "手动签到允许重签当日已了结账号")
-        self.assertTrue(kw["claim_all"], "手动身份可能不在执行体清单的 HRW 候选集里")
+        self.assertFalse(kw.get("claim_all"),
+                         "手动轮不得用通配宽分片：会把当日别人的行一并领走/回炉")
         self.assertTrue(kw["requeue_final"], "手动是显式路径：允许重领预算耗尽档")
         self.assertEqual(code, 0)
 

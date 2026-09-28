@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""容量口径按开关分派：`schedule.capacity_of` / `schedule.executor_count` 与四处调用点。
+"""容量口径：`schedule.capacity_of` / `schedule.executor_count` 与四处调用点。
 
 标签：I · 容量、熔断与账号有效性
-覆盖：容量口径按 v3 开关分派（`capacity_of` 与 `capacity_accounts` / `capacity_accounts_v3` 逐值相同）、K 的唯一口径 `executor_count` 的边界，以及四处调用点在开关缺省时数值不变
+覆盖：`capacity_of` 两套公式的逐值等价（`enabled=False` ↔ `capacity_accounts`、
+`enabled=True` ↔ `capacity_accounts_v3`）、K 的唯一口径 `executor_count` 的边界，以及
+四处调用点在单池化后的数值不变（展示/闸门/预检均显式固定 v2 口径）
 对应实现：`schedule.capacity_of` / `schedule.executor_count`、`web/services/capacity.py::_capacity_estimate`、`yiban/engine/runner.py` 的容量预检、CLI `capacity` 与现场实测换算、`scripts/signin.py` 的转发壳
-关键断言：`enabled=False` 时 k / bucket_rate / util 一律不参与（v2 侧逐字不变）；`executor_count` 夹在 `[1, 出口数]`、随 N 单调不减、`bucket_rate` 变小则 K 不变或变大；`enabled` 缺省取 `executor_v3.scheduler_v3_enabled()`（开关即回滚）；另两处调用点用「包住 `capacity_of` 看它收到什么」来断言 `k=1`——源码文本断言会被无关重构误伤
+关键断言：`enabled=False` 时 k / bucket_rate / util 一律不参与（v2 公式逐字不变）；`executor_count` 夹在 `[1, 出口数]`、随 N 单调不减、`bucket_rate` 变小则 K 不变或变大；双轨开关已随单池消失，`enabled` 缺省**恒为 v3 口径**（`scheduler_v3_enabled` 保留但恒真），生产调用点则显式传 `enabled=False` 以守住批 4 取值；另两处调用点用「包住 `capacity_of` 看它收到什么」来断言 `k=1`——源码文本断言会被无关重构误伤
 依赖：纯本地——假时钟与假配置快照（runner 预检不读真实 `.env`、不联网、不落库）。无需 node
 
-覆盖（对应简报 ⑤ 的容量部分）：
-1. `capacity_of(..., enabled=False)` 与 `capacity_accounts(...)` 多组逐值相同（v2 侧硬门）；
+覆盖：
+1. `capacity_of(..., enabled=False)` 与 `capacity_accounts(...)` 多组逐值相同（v2 硬门）；
 2. `capacity_of(..., enabled=True)` 与 `capacity_accounts_v3(...)` 多组逐值相同；
 3. `executor_count`（K 的唯一口径）的边界：夹到 `[1, 出口数]`、随 N 单调不减、
    `bucket_rate` 变小则 K 不变或变大；
-4. 四处调用点在开关缺省 0 时**数值不变**：`web/services/capacity.py` 与
+4. 四处调用点**数值不变**：`web/services/capacity.py` 与
    `yiban/engine/runner.py` 两处用显式期望值钉住；另两处（`settings_api` / `cli`）
    以"包住 `capacity_of` 看它收到什么"作行为断言，验证 `k=1`（单执行体语义）。
 

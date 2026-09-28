@@ -140,6 +140,7 @@ task_owners_for_day = _queue_store.owners_for_day  # 当日 phone -> owner（一
 task_activity = _queue_store.activity  # 当日按执行体归属的 KPI 计数（已折 KPI 三键）
 task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日
 task_owners_since = _queue_store.owners_since  # 保留期内出现过的执行体身份串
+purge_sign_tasks = _queue_store.purge  # 唯一台账（sign_tasks）的保留期清理（带时钟跳变守卫）
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
 # `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
