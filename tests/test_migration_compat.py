@@ -8,7 +8,7 @@
    任何迁移项、不降版本。回滚路径（换回旧代码、库不动）就建立在这条性质上。
 2. **既有表零变更**：完整迁移链（0→20）跑完后，升级前既有的 **10 张表**逐表行数相等
    （基线五表 + `sign_events`/`session_cache`/`app_meta`/`verify_jobs`/`sign_claims`），
-   `sign_claims` 的列集合只多出一个 `epoch`。
+   `sign_claims` 的列集合只多出一个 `epoch`；`sign_tasks` 建成空表（v18 不平移旧行）。
 
 库是手工搭的（`_create_tables` + 直接调用 v1..v17 的迁移函数），不借 `db` 的全局连接。
 每张表都先种一行：全是空表时"行数不变"是 `0 == 0` 的空断言，整表清空一类的回归测不出来。
@@ -183,8 +183,9 @@ class MigrationCompatTest(unittest.TestCase):
                          "既有表行数必须逐表不变")
         self.assertEqual(self._columns("sign_claims"), cols_before | {"epoch"},
                          "sign_claims 只允许新增 epoch 一列")
-        self.assertEqual(self._count("sign_tasks"), before["sign_claims"],
-                         "平移行数应等于平移时点的 sign_claims 行数")
+        self.assertEqual(self._count("sign_tasks"), 0,
+                         "单池化后 v18 不平移 sign_claims：任务队列升级后为空，"
+                         "旧表存量行原样保留（冻结、零写入）")
 
 
 if __name__ == "__main__":

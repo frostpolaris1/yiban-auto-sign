@@ -83,7 +83,7 @@ class ManualOnlyDispatchConvergenceTest(unittest.TestCase):
                                   lambda *a, **k: None), \
                 mock.patch.object(runner.alerts, "_flush_admin_mail_summary",
                                   lambda *a, **k: None), \
-                mock.patch.object(runner.round_mod, "run_queue_retry",
+                mock.patch.object(runner.executor_v3, "run_executor_v3",
                                   return_value={PHONE: ok_result}) as m_run, \
                 mock.patch.object(workers, "run_worker_supervisor") as m_sup:
             rc = runner.main(["--only", PHONE, "--workers", "2"])
@@ -92,8 +92,10 @@ class ManualOnlyDispatchConvergenceTest(unittest.TestCase):
         self.assertEqual(m_run.call_count, 1, "手动单号必须走进程内的单执行体路径")
         self.assertTrue(m_run.call_args.kwargs.get("reclaim"),
                         "手动指定账号保留重签已了结账号的语义")
-        self.assertTrue(m_run.call_args.kwargs.get("retry_failed"),
+        self.assertTrue(m_run.call_args.kwargs.get("requeue_final"),
                         "手动是显式路径：必须允许重领预算耗尽档的失败账号")
+        self.assertTrue(m_run.call_args.kwargs.get("claim_all"),
+                        "手动身份可能不在执行体清单的 HRW 候选集里")
 
     def test_only_still_returns_3_when_lock_unavailable(self):
         """`--only` 仍能返回 3 的既有语义不变（锁不可用 = 队列忙）。"""
@@ -103,7 +105,7 @@ class ManualOnlyDispatchConvergenceTest(unittest.TestCase):
                                   lambda: None), \
                 mock.patch.object(runner.cli_support, "_acquire_run_lock",
                                   side_effect=runner.cli_support._RunLockUnavailable("注入")), \
-                mock.patch.object(runner.round_mod, "run_queue_retry") as m_run, \
+                mock.patch.object(runner.executor_v3, "run_executor_v3") as m_run, \
                 self.assertLogs("yiban", "ERROR"):
             rc = runner.main(["--only", PHONE, "--workers", "2"])
         self.assertEqual(rc, 3)

@@ -694,16 +694,11 @@ class _FallbackHarness(unittest.TestCase):
     def _at(hm):
         return datetime.datetime(2026, 9, 2, hm[0], hm[1], 0)
 
-    def _drive(self, *, v3_enabled):
+    def _drive(self):
         sleeps = []
-        v2_kwargs = []
         v3_kwargs = []
         acc = SimpleNamespace(phone="13800000000", user_paused=False)
         results = {"13800000000": (True, "ok", False, "success")}
-
-        def _retry(*a, **kw):
-            v2_kwargs.append(kw)
-            return results
 
         def _v3(*a, **kw):
             v3_kwargs.append(kw)
@@ -717,9 +712,7 @@ class _FallbackHarness(unittest.TestCase):
                 raise AssertionError("兜底主循环没有在窗口关闭后退出")
             return t
 
-        with mock.patch.dict(os.environ, {**self.BASE_ENV,
-                                          "YIBAN_SCHEDULER_V3": "1" if v3_enabled else "0"},
-                             clear=False), \
+        with mock.patch.dict(os.environ, {**self.BASE_ENV}, clear=False), \
                 mock.patch.object(workers, "time", SimpleNamespace(sleep=sleeps.append)), \
                 mock.patch.object(workers.clock, "now", _now), \
                 mock.patch.object(workers.cli_support, "_run_lock_held",
@@ -734,34 +727,21 @@ class _FallbackHarness(unittest.TestCase):
                 mock.patch.object(workers.db, "is_initialized", lambda: True), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
                                   lambda *a, **k: [acc]), \
-                mock.patch.object(workers.round_mod, "run_queue_retry", _retry), \
                 mock.patch.object(workers.executor_v3, "run_executor_v3", _v3):
             rc = workers.run_fallback_worker(["--fallback"])
-        return rc, sleeps, v2_kwargs, v3_kwargs
+        return rc, sleeps, v3_kwargs
 
-    def test_v3_enabled_fallback_routes_to_v3_executor(self):
-        """反例 (c)：`YIBAN_SCHEDULER_V3=1` 的兜底走任务队列执行体，不再硬编 v2/sign_claims。"""
-        rc, _sleeps, v2_kwargs, v3_kwargs = self._drive(v3_enabled=True)
-        self.assertEqual(v2_kwargs, [], "--fallback 仍硬编 v2 路径（兜底对 v3 队列零作用）")
+    def test_fallback_routes_to_v3_executor(self):
+        """兜底恒定走任务队列执行体（台账单池化后 `sign_tasks` 是唯一台账）。"""
+        rc, _sleeps, v3_kwargs = self._drive()
         self.assertEqual(len(v3_kwargs), 1)
         kw = v3_kwargs[0]
         self.assertTrue(kw.get("claim_all"),
                         "兜底身份不在 HRW 候选集：不 claim_all 就是零领取的空转")
         self.assertTrue(kw.get("requeue_during_run"),
                         "会话内周期回炉是兜底腿\"失败当日接手\"的 v3 等价物")
-        self.assertNotIn("retry_failed", kw)
         self.assertIsNone(kw.get("requeue_final"),
                           "兜底是无界常驻：不得作为显式路径复活 final: 档")
-        self.assertEqual(rc, 0)
-
-    def test_v3_off_fallback_keeps_v2_path_and_default_tier(self):
-        """开关关时兜底逐字走旧路径（不新增 v3 调用、不传 retry_failed）。"""
-        rc, _sleeps, v2_kwargs, v3_kwargs = self._drive(v3_enabled=False)
-        self.assertEqual(v3_kwargs, [])
-        self.assertEqual(len(v2_kwargs), 1)
-        self.assertFalse(v2_kwargs[0].get("retry_failed"),
-                         "兜底腿不得作为显式重领路径（Task 4 档位钉不变）")
-        self.assertTrue(v2_kwargs[0].get("window_guard"))
         self.assertEqual(rc, 0)
 
 

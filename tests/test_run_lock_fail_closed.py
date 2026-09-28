@@ -143,10 +143,10 @@ class CallSiteRefusalTest(_StateDirBase):
                                   return_value=[self._acc()]), \
                 mock.patch.object(runner.db, "purge_expired_deleted_accounts",
                                   lambda: None), \
-                mock.patch.object(runner.round_mod, "run_queue_retry") as run_queue,                 self.assertLogs("yiban", "ERROR"):
+                mock.patch.object(runner.executor_v3, "run_executor_v3") as run_exec,                 self.assertLogs("yiban", "ERROR"):
             rc = runner.main(["--only", "13800138000"])
         self.assertEqual(rc, 3, "锁不可用必须按'锁忙'退出")
-        run_queue.assert_not_called()
+        run_exec.assert_not_called()
 
     def test_worker_supervisor_returns_3_without_spawning(self):
         spawned = []

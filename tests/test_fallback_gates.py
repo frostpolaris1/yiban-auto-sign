@@ -172,10 +172,10 @@ class _FallbackHarness(_WeekdayGuard):
                                   lambda data, touched=None: saves.append((data, touched))), \
                 mock.patch.object(workers.db, "pool_db_declared", lambda: pool), \
                 mock.patch.object(workers.db, "is_initialized", lambda: pool), \
-                mock.patch.object(workers.db, "claim_fallback_event", _sig, create=True), \
+                mock.patch.object(workers.queue_store, "fallback_event", _sig), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
                                   lambda: ([acc] if accounts is None else accounts)), \
-                mock.patch.object(workers.round_mod, "run_queue_retry", _retry):
+                mock.patch.object(workers.executor_v3, "run_executor_v3", _retry):
             rc = workers.run_fallback_worker(["--fallback"])
         return rc, sleeps, beats, scans
 
@@ -267,11 +267,12 @@ class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
         # ① 取兜底腿真实传给 run_queue_retry 的关键字（窗口内扫一轮即记录）
         _rc, _sleeps, _beats, scans = self._run([_at(WED, (6, 35)), _at(WED, (8, 30))])
         self.assertEqual(len(scans), 1, "前置：窗口内应扫一轮以记录调用参数")
-        allow_failed = bool(self.retry_kwargs.get("retry_failed"))
+        allow_failed = bool(self.retry_kwargs.get("retry_failed")
+                            or self.retry_kwargs.get("requeue_final"))
         self.assertFalse(
             allow_failed,
-            "兜底是无界常驻循环，不得作为显式重领路径：传 retry_failed=True 会让"
-            "预算耗尽/风控档账号在窗口内每轮重领重登")
+            "兜底是无界常驻循环，不得作为显式重领路径：传 retry_failed/requeue_final=True "
+            "会让预算耗尽/风控档账号在窗口内每轮重领重登")
 
         # ② 把该关键字喂给真领取池：final 档领不到、retry 档领得到
         tmp = tempfile.mkdtemp(prefix="yiban-fallback-claim-")

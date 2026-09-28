@@ -95,14 +95,14 @@ class _Base(unittest.TestCase):
         self._close_conn()
 
     def _add_task(self, phone, vshard=0, state="pending", run_at=None, priority=5, # 默认值就是「已到期、可领」的那一行，用例只改与断言有关的那一维
-                  owner="", attempts=0, lease_until="", result="", day=DAY):
+                  owner="", attempts=0, lease_until="", result="", day=DAY, epoch=0):
         conn = db.get_conn()
         conn.execute(
             "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
-            "state, attempts, lease_until, result, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "state, attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (phone, day, vshard, owner, run_at or _ts(seconds=-1), priority, state,
-             attempts, lease_until, result, _ts(seconds=-60)))
+             attempts, lease_until, result, epoch, _ts(seconds=-60)))
         conn.commit()
 
     def _row(self, phone, day=DAY):
@@ -246,6 +246,70 @@ class RequeueTaskTest(_Base):
         self._add_task(_phone(1), state="pending", priority=5)
         queue_store.requeue_task(_phone(1), DAY, _ts(minutes=+1), priority_delta=3)
         self.assertEqual(self._row(_phone(1))["priority"], 8)
+
+
+class ReclaimTasksTest(_Base):
+    """`reclaim_tasks`：手动 `--only` 的显式重签——只翻终态、`run_at` 置现在、不动在飞。"""
+
+    def test_terminal_rows_flip_to_pending_with_bumped_epoch(self):
+        self._add_task(_phone(1), state="done", owner=OWNER, attempts=1)
+        self._add_task(_phone(2), state="skipped", owner=OWNER)
+        n = queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2)])
+        self.assertEqual(n, 2)
+        for p in (_phone(1), _phone(2)):
+            row = self._row(p)
+            self.assertEqual(row["state"], "pending")
+            self.assertEqual(row["owner"], "")
+            self.assertEqual(row["lease_until"], "")
+            self.assertGreater(row["epoch"], 0, "翻态必须换一代 token（fence 迟到旧代写）")
+
+    def test_inflight_and_failed_rows_are_not_state_changed(self):
+        """`claimed`（他人在飞）不改状态、不动 token；`failed` 由回炉口管，不在此翻。"""
+        self._add_task(_phone(1), state="claimed", owner="other:1:1", epoch=7)
+        self._add_task(_phone(2), state="failed", owner="other:1:1", epoch=3)
+        queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2)])
+        r1 = self._row(_phone(1))
+        self.assertEqual((r1["state"], r1["owner"], r1["epoch"]),
+                         ("claimed", "other:1:1", 7), "在飞行不得被手动重签打断")
+        r2 = self._row(_phone(2))
+        self.assertEqual((r2["state"], r2["epoch"]), ("failed", 3),
+                         "failed 不归重签口管（走 requeue_failed）")
+
+    def test_historical_and_unknown_rows_are_untouched(self):
+        self._add_task(_phone(1), vshard=-1, state="done")
+        self._add_task(_phone(2), state="done")
+        n = queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2), "19999999999"])
+        self.assertEqual(n, 1, "只翻在册且分片内的那一行")
+        self.assertEqual(self._row(_phone(1))["state"], "done", "vshard=-1 历史行不碰")
+        self.assertEqual(self._row(_phone(2))["state"], "pending")
+
+
+class DisplayReadsTest(_Base):
+    """展示读口径（`sign_tasks` 为唯一台账）：latest_day / owners_for_day / activity / owners_since。"""
+
+    def test_latest_day_and_owners_for_day(self):
+        self._add_task(_phone(1), state="done", owner=OWNER, day=DAY)
+        self._add_task(_phone(2), state="done", owner=OWNER, day="2026-09-20")
+        self.assertEqual(queue_store.latest_day(), DAY)
+        self.assertEqual(queue_store.owners_for_day(DAY), {_phone(1): OWNER})
+        self.assertEqual(queue_store.owners_for_day("2026-01-01"), {})
+
+    def test_activity_folds_states_into_kpi_keys(self):
+        # 同一 owner：done/skipped 归 done、claimed/stolen 归 claimed、pending/failed 归 failed
+        for i, st in enumerate(("done", "skipped", "claimed", "stolen", "pending", "failed")):
+            self._add_task(_phone(i + 1), state=st, owner=OWNER)
+        rows = queue_store.activity(DAY)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["owner"], OWNER)
+        self.assertEqual((row["done"], row["claimed"], row["failed"], row["total"]),
+                         (2, 2, 2, 6))
+
+    def test_owners_since_window(self):
+        self._add_task(_phone(1), state="done", owner="worker-0@h", day=DAY)
+        self._add_task(_phone(2), state="done", owner="fallback@h", day=DAY)
+        self.assertEqual(queue_store.owners_since(), ["fallback@h", "worker-0@h"])
+        self.assertEqual(queue_store.owners_since(days=0), [])
 
 
 class DayCountsTest(_Base):

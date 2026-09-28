@@ -442,8 +442,9 @@ class SlotNeverReusedAfterDeleteTest(_WebBase):
         conn = db.get_conn()
         with db._conn_lock:
             conn.execute(
-                "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
-                "state, result, attempts) VALUES (?, ?, ?, ?, ?, 'done', '', 0)",
+                "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+                "state, attempts, lease_until, result, epoch, created_at) "
+                "VALUES (?, ?, 0, ?, ?, 5, 'done', 0, '', '', 0, ?)",
                 ("13800138000", clock.today(), egress.worker_owner(slot, "testhost"),
                  clock.ts(), clock.ts()))
             conn.commit()
@@ -479,15 +480,16 @@ class SlotNeverReusedAfterDeleteTest(_WebBase):
 
 
 class OwnersSinceTest(_WebBase):
-    """`claims.owners_since`：保留期内的身份串（去重、升序），保留期外的不算。"""
+    """`queue_store.owners_since`：保留期内的身份串（去重、升序），保留期外的不算。"""
 
     def _insert(self, phone, day, owner):
         import db
         conn = db.get_conn()
         with db._conn_lock:
             conn.execute(
-                "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
-                "state, result, attempts) VALUES (?, ?, ?, ?, ?, 'done', '', 0)",
+                "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+                "state, attempts, lease_until, result, epoch, created_at) "
+                "VALUES (?, ?, 0, ?, ?, 5, 'done', 0, '', '', 0, ?)",
                 (phone, day, owner, clock.ts(), clock.ts()))
             conn.commit()
 
@@ -498,7 +500,7 @@ class OwnersSinceTest(_WebBase):
                             ("13800138001", "worker-0@h"),
                             ("13800138002", "fallback@h")):
             self._insert(phone, today, owner)
-        self.assertEqual(db.claim_owners_since(), ["fallback@h", "worker-0@h"])
+        self.assertEqual(db.task_owners_since(), ["fallback@h", "worker-0@h"])
 
     def test_rows_outside_retention_are_ignored(self):
         import datetime as _dt
@@ -507,7 +509,7 @@ class OwnersSinceTest(_WebBase):
         old_day = (clock.now()
                    - _dt.timedelta(days=db.CLAIM_RETENTION_DAYS + 1)).strftime("%Y-%m-%d")
         self._insert("13800138000", old_day, "worker-7@h")
-        self.assertEqual(db.claim_owners_since(), [],
+        self.assertEqual(db.task_owners_since(), [],
                          "保留期外的记录不参与槽位下限（展示口径同样读不到它）")
 
 
@@ -890,7 +892,7 @@ class DispatchGateTest(unittest.TestCase):
                                           lambda *a, **k: None), \
                         mock.patch.object(runner.alerts, "_flush_admin_mail_summary",
                                           lambda *a, **k: None), \
-                        mock.patch.object(runner.round_mod, "run_queue_retry",
+                        mock.patch.object(runner.executor_v3, "run_executor_v3",
                                           return_value={acc.phone: ok}) as m_run, \
                         mock.patch.object(workers, "run_worker_supervisor") as m_sup:
                     rc = runner.main(["--only", "13800000000"])
