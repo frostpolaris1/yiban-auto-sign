@@ -2234,7 +2234,9 @@ def create_app(host=None):
     @app.errorhandler(env_io.EnvWriteRefused)
     def _handle_env_write_refused(e):
         logger.error("配置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
-        return _env_io_svc.env_write_refused_response()
+        # 定位载荷（问题行号/键名 + 脱敏片段，绝不回显值原文）随 409 下发，
+        # 前端据此渲染"一键定位/清理"入口（缩减批 6a A4-4）。
+        return _env_io_svc.env_write_refused_response(e, ENV_FILE)
 
     # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
     # 这几个闭包依赖请求上下文与会话状态，出不了 `create_app`；路由模块经 `web.routes`
