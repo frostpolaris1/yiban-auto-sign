@@ -98,6 +98,22 @@ fi
 
 mkdir -p "$LOCAL_MIRROR_DIR" || { echo "无法创建本地镜像目录 $LOCAL_MIRROR_DIR" >&2; exit 1; }
 LOG="$LOCAL_MIRROR_DIR/pull.log"
+# 项目根（脚本在 <repo>/scripts/ 下）：业务日取时经 yiban.clock 与引擎同源
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    PY="$APP_DIR/.venv/bin/python3"
+else
+    PY="$(command -v python3 || echo /usr/bin/python3)"
+fi
+# 业务日唯一来源（MF-109）：yiban.clock 的北京钟；退化链与 backup.sh 同口径
+business_day() {
+    if "$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null; then
+        return 0
+    fi
+    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    date +%F
+}
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG" >&2; }
 
 # 防呆：别在生产机自己身上"做异机副本"
@@ -175,7 +191,11 @@ freshness_check() {
         log "新鲜度：本地镜像为空（尚未成功拉取过）"
         return 1
     fi
-    today_epoch="$(date +%s)"
+    # 新鲜度锚定业务日（MF-109）：备份包名由 backup.sh 按业务日（yiban.clock 北京钟）
+    # 生成，宿主时区≠北京时"今天"与包名差一天，会把新鲜副本误判成陈旧。取不到
+    # yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
+    _biz_today="$(business_day)"
+    today_epoch="$(date -d "$_biz_today" +%s 2>/dev/null || date +%s)"
     r_epoch="$(date -d "$rdate" +%s 2>/dev/null || echo "")"
     if [ -n "$r_epoch" ]; then
         age_days=$(( (today_epoch - r_epoch) / 86400 ))
