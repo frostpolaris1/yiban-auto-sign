@@ -719,6 +719,23 @@ DEFAULT_MAX_ACCOUNTS = 200
 # 权力收在主管理员手里。
 # 新增设置键时必须改这里而不是在路由里再列一遍键名：此前 403 清单只写在 handler 内，
 # 与前端各页自己的收控件清单两处各写一遍、必然漂移（测试里的元测试负责比对这两份）。
+#
+# 逐键复核（2026-09-28 用户判据：**在不当时间——窗口前几秒或窗口内——改它，能不能
+# 静悄悄把签到序列搞炸？能，就留口令门**；不能的仅剩"只增摩擦"的键）：
+#   留门（能静默搞炸，或属安全网本身）：
+#     sign_window / window_edge_sec / edge_front_sec / edge_back_sec
+#       ——窗口改窄或首尾裁切吃光有效窗口 ⇒ 当天整批账号静默跳过；
+#     sunday_sign / saturday_sign —— 当天整天空签且不报错（面板会显示休息，但没人盯着看）；
+#     start_delay_max / gap_max —— 延迟或间隔 × 账号数超出窗口 ⇒ 后段账号排队到最后全落空；
+#     account_verify / registration_pause —— 关验证/重开注册 ⇒ 未验证的批量账号涌入主链
+#       对易班发起真实登录 ⇒ 平台风控封号（§5.2 明列的用户面合规事故）；
+#     probe_enable / probe_time / probe_interval —— 探针是发现账号异常的眼睛，改坏即
+#       静默失去监测（与 SMTP 条目同属"安全网本身"，故同判据留门）；
+#     global_pause 0→1 —— 全站停签（见下）。
+#   仅摩擦、按判据可以放开（本次刻意不动：这三个键半年改一次，放开要连前端面板的收控件
+#   一起改，收益不抵新增面；若日后摩擦真的咬人再动）：
+#     max_users / max_accounts —— 只影响**新提交**的配额判定（有明确报错），
+#       不触碰已排定的签到序列，改小也不会让在册账号掉队。
 MASTER_ONLY_KEYS = frozenset({
     "sign_window", "window_edge_sec", "edge_front_sec", "edge_back_sec",
     "sunday_sign", "saturday_sign", "registration_pause",
