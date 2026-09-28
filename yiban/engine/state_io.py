@@ -311,18 +311,18 @@ def full_run_done_today(state_dir=None, day=None):
 def has_undone_accounts_today(state_dir=None, day=None):
     """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。
 
-    **两个事实源取并集，任一"有活"即未了结**：领取池回答"领到的那些了结没有"
-    （`done`=当日了结，`claimed`/`failed`=未了结），状态文件回答"每个账号最后写成
-    什么状态"。旧实现池里有行就只看池——一个执行体半途被杀/漏领时，已收尾的行全
-    `done`、没领过的账号在池里根本没有行，池判"无未了结"，而这批账号在状态文件里
-    仍是 pending（计划从未被执行）——"整批没领被判没活"的跨轮翻版。故池判干净后
+    **两个事实源取并集，任一"有活"即未了结**：任务队列回答"领到的那些了结没有"
+    （`done`/`skipped`=当日了结，`pending`/`claimed`/`failed`/`stolen`=未了结），状态文件
+    回答"每个账号最后写成什么状态"。旧实现池里有行就只看池——一个执行体半途被杀/漏领时，
+    已收尾的行全 `done`、没领过的账号在池里根本没有行，池判"无未了结"，而这批账号在状态
+    文件里仍是 pending（计划从未被执行）——"整批没领被判没活"的跨轮翻版。故池判干净后
     仍要过一遍状态文件；池里没有行（无库/池未启用/当日还没人领过）时状态文件是唯一
-    事实源，行为不变。
+    事实源，行为不变。台账单池化后读的是**任务队列**（唯一生产台账），不是旧领取池。
     """
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
         if db.is_initialized():
-            stats = db.claim_stats(today)
+            stats = db.task_stats(today)
             if stats.get("total") and stats.get("open", 0) > 0:
                 return True
     except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
