@@ -23,6 +23,7 @@
 """
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -249,6 +250,75 @@ class CredsQuotaSplitE2ETest(_GateNarrowBase):
                           "confirm_password": ADMIN_PASS}, headers=hdr)
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         self.assertIsNone(db.find_user("q@test.local"))
+
+
+class EnvWriteRefusedOperationalE2ETest(_GateNarrowBase):
+    """A4-4：脏 `.env` 上保存 → 409 附 problems（行号 + 脱敏片段，值已隐去）；
+    一键清理端点只吃"确含行分隔符的行"，清理后保存恢复。"""
+
+    SECRET_MARKER = "s3cret-mail-pass-value"
+
+    def _inject_poison(self):
+        """注入一行潜伏分隔符行：注释尾带 U+0085，其后是攻击载荷与口令形状文本。"""
+        with io.open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("# 例行备注\u0085YIBAN_GLOBAL_PAUSE=1 MAIL_PASS="
+                         + self.SECRET_MARKER + "\n")
+        with io.open(self.env_file, encoding="utf-8") as f:
+            return f.read()
+
+    def _read_env(self):
+        with io.open(self.env_file, encoding="utf-8") as f:
+            return f.read()
+
+    def test_409_problems_and_cleanup_restore_saving(self):
+        c, t = self._admin_client()
+        hdr = {"X-CSRF-Token": t}
+        before = self._inject_poison()
+        # 保存触发 fail-closed：409 + problems 定位载荷（full 档的设置保存带当次口令）
+        r = c.post("/api/settings", json={"sign_order": "random",
+                                          "confirm_password": ADMIN_PASS}, headers=hdr)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body.get("reason"), "env_write_refused")
+        problems = body.get("problems") or []
+        line_pbs = [p for p in problems if p.get("kind") == "line"]
+        self.assertTrue(line_pbs, f"409 必须带行定位：{body}")
+        snippet = line_pbs[0].get("snippet") or ""
+        self.assertTrue(line_pbs[0]["line"] >= 1)
+        self.assertNotIn(self.SECRET_MARKER, snippet, "片段绝不回显值原文")
+        self.assertIn("***", snippet, "值必须以隐去形态出现")
+        self.assertIn("YIBAN_GLOBAL_PAUSE", snippet, "键名保留（定位信息）")
+        self.assertEqual(self._read_env(), before, "被拒的保存不得改动 .env")
+        # 一键清理：行号来自 409 载荷；该行（含口令形状文本）被整行移除
+        r2 = c.post("/api/settings/env-cleanup",
+                    json={"line": line_pbs[0]["line"]}, headers=hdr)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        after = self._read_env()
+        self.assertNotIn(self.SECRET_MARKER, after, "含载荷的行必须整行移除")
+        self.assertNotIn("YIBAN_GLOBAL_PAUSE=1", after, "载荷实体化前就被清掉")
+        # 清理入口不是编辑器：干净行拒绝清理
+        r3 = c.post("/api/settings/env-cleanup", json={"line": 1}, headers=hdr)
+        self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
+        # 清理后保存恢复
+        r4 = c.post("/api/settings", json={"sign_order": "random",
+                                           "confirm_password": ADMIN_PASS}, headers=hdr)
+        self.assertEqual(r4.status_code, 200, r4.get_data(as_text=True))
+
+    def test_cleanup_is_master_admin_only(self):
+        c, t = self._admin_client()
+        hdr = {"X-CSRF-Token": t}
+        self._inject_poison()
+        db.create_user("ra@test.local", self.webapp.generate_password_hash("Radmin#1234"),
+                       role="admin")
+        rc = self.webapp.create_app().test_client()
+        r = rc.post("/api/login", json={"username": "ra@test.local", "password": "Radmin#1234"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        rh = {"X-CSRF-Token": rc.get("/api/me").get_json()["csrf_token"]}
+        r2 = rc.post("/api/settings/env-cleanup", json={"line": 2}, headers=rh)
+        self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
+        # 主管理员同样被"行干净"判据拦下（line 1 是配置行）
+        r3 = c.post("/api/settings/env-cleanup", json={"line": 1}, headers=hdr)
+        self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
 
 
 if __name__ == "__main__":
