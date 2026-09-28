@@ -271,14 +271,24 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
             "YIBAN_STATE_DIR": self.tmp,
         }
 
+    #: 当日虚分片数：**种子里就要钉死**，否则真进程 `_ensure_plan` 取 `_max_vshard+1`
+    #: 作 V ⇒ 与本用例算出的 V 不等，"同分片最坏几何"实际不成立（E2E 会在变异下仍绿）。
+    V = 64
+
     def _seed_other_rows(self):
-        """在同分片里种"别的账号"的待办与 retry: 弃权行，并写一条 sign-state。"""
-        from yiban.engine import hrw, state_io
-        from yiban.store import connection
+        """把当日 V 钉死，并在**实际会采用的 V** 下的同一分片里种别人的行。"""
+        from yiban.engine import executor_v3, hrw, state_io
+        from yiban.store import clock_meta, connection
         from yiban.store import db as store_db
         store_db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
         day = self._today()
-        sh = hrw.vshard_of(PHONE, day, hrw.v_for(1))   # 与本轮账号同分片（最坏几何）
+        # 钉死当日 V：落进 app_meta 的 V 元数据键 ⇒ 真进程 `_plan_v` 只读它（不再按
+        # `_max_vshard+1` 兜底），故这里算的分片与执行体实际使用的分片**逐值一致**。
+        clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + day, self.V)
+        sh = hrw.vshard_of(PHONE, day, self.V)   # 与本轮账号同分片（最坏几何）
+        self.assertEqual(
+            hrw.vshard_of(PHONE, day, hrw.v_for(1)), sh,
+            "夹具前提：本轮账号在 v_for(1) 与本用例钉死的 V 下都落在同一分片")
         conn = store_db.get_conn()
         with store_db._conn_lock:
             for phone, state, result in (

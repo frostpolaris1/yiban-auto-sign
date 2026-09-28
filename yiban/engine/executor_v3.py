@@ -793,10 +793,11 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
       弃权的默认档翻回 `pending`，不等下一场会话。只回炉默认档，保守档不变。
     - `reclaim=True`：**手动 `--only` 专用**的有界显式路径——把到手账号当日已了结
       （`done` / `skipped`）的行翻回 `pending` 并补建计划行，使"用户主动点的那一下照做"
-      的旧领取池语义（`allow_settled=True`）在单池下仍有等价形态。**领取/回炉/待办计数
-      全部收窄到本轮账号的虚分片 + 账号允许集**，并跳过跨账号恢复（`reap_expired`、死主
-      接管），且遇 `phone ∉ accounts` 的行绝不了结——手动轮不得碰别人的行（否则那些行会
-      被误判"已了结"⇒ 静默漏签）。缺省关，定时轮与兜底都不传。
+      的旧领取池语义（`allow_settled=True`）在单池下仍有等价形态。**领取/回收/回炉/待办
+      计数全部收窄到本轮账号的虚分片 + 账号允许集**（回收也按允许集收窄：只回收本轮账号
+      自己的陈旧 `claimed`，不碰别人的行），并跳过跨账号的死主接管，且遇
+      `phone ∉ accounts` 的行绝不了结——手动轮不得碰别人的行（否则那些行会被误判
+      "已了结"⇒ 静默漏签）。缺省关，定时轮与兜底都不传。
 
     `dry_run=True` 只转调 `shadow_stats`（零落库 / 零领取 / 零请求）并返回空结果。
     `cred_state` **就地改传入的那个 dict**：调用方持有同一引用并在收尾保存，重新绑定会让熔断
@@ -850,7 +851,12 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 整轮无人领取，补签轮沿用同一套分片划分仍无人领 ⇒ **静默漏签**。判死口径与补货循环
     # 共用 `_widen_with_dead_peers`（不另起第二份），只有 `stale` 才算死，活着的执行体不受影响。
     state_io.mark_worker_started(slot, now=_now())
-    queue_store.reap_expired(now=_stamp_ms(_now()), day=day)
+    # 允许集在**回收之前**就要定下来（回收也要按它收窄）：手动 `--only` 轮只回收本轮
+    # 账号自己的陈旧 `claimed` 行，不碰别人的行（回收别人的行是跨账号写，`epoch+1` 还会
+    # fence 掉一个仍存活但慢的持有者的迟到收尾）。**不整段跳过回收**——手动账号自身若是
+    # 陈旧 `claimed`，正需要这条路径把它拉回来（`reclaim_tasks` 只翻 `done`/`skipped`）。
+    allowed_phones = frozenset(a.phone for a in accounts) if reclaim else None
+    queue_store.reap_expired(now=_stamp_ms(_now()), day=day, phones=allowed_phones)
     try:
         ctx = _Ctx(
             accounts={a.phone: a for a in accounts},
@@ -867,7 +873,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
             rng=rng or random.Random(), slot=slot,
             requeue_during_run=requeue_during_run, reclaim=reclaim,
-            allowed_phones=(frozenset(a.phone for a in accounts) if reclaim else None))
+            allowed_phones=allowed_phones)
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
         # 分片并入后这些账号已归本执行体，不该再被登记成"别人负责的活"。
         # 手动 `--only` 轮不接管死主分片：那是跨账号写别人的行，不是用户点这一下的范围。
