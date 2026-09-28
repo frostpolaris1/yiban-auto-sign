@@ -1385,3 +1385,26 @@ faulthandler 无法转储、`/proc/<pid>/wchan` 不可读）。已用 bisect 证
 L1 84 份报告覆盖划分表全部 86 个单元 ID（`R12ef`/`R13ij` 各合写两单元）；`web/static/vendor/**` 31,331 行第三方与 `web/static/css/**` 4,508 行样式**未审**，`tests/**` 属注释流范围；V1–V8 只覆盖被点名的 8 条高危；L2 覆盖任务书点名的 5 条链；**L3 只有 4/20 格有真 HTTP 全链路证据**（余下卡在假上游无故障注入能力，见派发 1）；S 只覆盖清单内测试项目。
 **收尾轮（2026-09-25 下午）新增**：semgrep 11 规则 265 命中已逐条四类归类（`out/SEMGREP-TRIAGE.md`，闭合 265 = 真缺陷 20 / 已知面 63 / 误报 114 / 噪音 68），候选 61 条去重成 50 簇（`out/MF-CANDIDATES.md`），并派 **16 个独立裁决代理**逐条复现 ⇒ 新立 MF-68..103（36 条）。其中 **32 条经独立裁决**（裁决累计驳回 14 条主张，清单见该节末"本流否证追加"）、**4 条（MF-97/98/99/100）是单源取证未二次裁决**，另有 10 余簇未编号待复现（见上"未编号候选"）。
 **仍未做**：跨用户并发压测、真实浏览器端到端、v3 开态实测、旧服务器、以及任何依赖读 `.env` 内容/`/etc/nginx` 全文的判定；`/etc/yiban/*` 内容与备份口令文件**一律未读**。
+
+---
+
+## 批 6c-1 登记（2026-09-29 · 台账单池化，基座 = sign_tasks）
+
+**用户裁决**：选 A——单池基座改用 `sign_tasks`（四柱最全），删 `sign_claims` 代码路径；接受"生产从没跑过的流程切过来"的风险（放假窗口，漏签无后果）。双侧轨开关 `YIBAN_SCHEDULER_V3` 随之消失。
+
+**本条顺带销项（原登记项）**
+- **B 类分支错误（原 `--fallback` 硬编 v2/`sign_claims`）** → 已消：兜底常驻经 `workers.run_fallback_worker` 走**同一个** `executor_v3.run_executor_v3`（`claim_all=True` + `requeue_during_run=True`），`runner.py` 的 `--fallback` 早返回不再是一条独立的 v2 腿；v3 的 `sign_tasks.failed` 当日回炉口随之打通（原条目的两条前置已满足前一条）。
+- **"两池互斥 / 灰度开关不进生产"** → 概念消失：不再是两池，双轨与开关已删。
+- **C-19（v20 回填明文驻留无上界）** → 已消：新增 `queue_store.purge`（`day < cutoff`，复用与 `claims.purge` **同一**时钟跳变守卫）+ `db.purge_sign_tasks` + `cleanup.run_daily_cleanup` 调用；此前全仓唯一 `DELETE FROM sign_tasks` 是按 phone。
+
+**降级 / 残留（登记，非本批验收）**
+- **ND-6c1-1**：`sign_claims` 仍有 **3 处**触碰——监督收尸（空表恒 0 行）、账号级联 DELETE（本批前就已同时删 `sign_tasks`）、保留期清理 DELETE。均为**空表上的无害操作**，不产生新领取事实。严格"零写入"需连带删四柱（超时回收）的 v2 侧收尾用例，故按**最小安全侧**保留。
+- **`round.run_queue_retry` 冻结保留**：已无生产调用点（定时/手动/兜底/容器/web 手动全走 `executor_v3`），但**未物理删**——删它会连带失去约 20 条非 `sign_claims` 语义（窗口/熔断/脱敏/暂停）的唯一覆盖入口；`scripts/signin.py` 兼容壳仍可裸名调它（会静默写冻结表、绕开新台账），已在函数与壳的 docstring 标"外部集成不得调用"。
+- **`capacity_of` 的 `enabled` 缺省现恒为 v3 口径（323→3360）**：批 4 容量口径**逐值不变**的前提是四处生产调用点全部**显式传参**（`runner.py` / `web/services/capacity.py` / `web/routes/settings_api.py` / `yiban/cli.py`）；缺省值本身成了留给未来调用者的陷阱，建议后续去掉缺省（本批未做，避免改既有调用点语义）。
+- **`executor_count`** 现无生产调用点（仅测试）。
+- **`_attempt` 的 reclaim 保险**（`phone ∉ accounts` 绝不 `_finish`）是**冗余第二道防线**，无独立用例（变异证明：单独停它新用例仍绿；它被 `allowed_phones` 允许集兜住）。
+- **`SLOT_WIDTH_META_KEY`** 全仓无生产读者（grep 结论）。
+
+**升级面（部署必读）**：现网实测 `user_version=17`，`sign_tasks`/`egress_state` 在现网**不存在** ⇒ 升级后**首次启动会在生产库上真跑 v18→v20**（建表 + v19 加 epoch 列 + v20 回填惰性历史行，均幂等且均为 `vshard=-1`/`owner=backfill` 的**不被领取**行）。与以往"无需迁移直接使用"不同，**升级前先做备份**。CHANGELOG v0.5.0 已写明。
+
+**门禁证据（控制器亲跑）**：全量 `3658 passed / 7 skipped / 0 failed`（默认 TZ，`-p no:randomly`）；`ruff check .` 0；四柱用例**一行未删**（`test_claims_fencing.py`/`test_claims_mutex.py`/`test_claims_reap_e2e.py` 原样通过）；独立审查两轮：**FAIL(1)** 已修并**复验 PASS**（`--only` 手动轮越界收尾别的账号 ⇒ 静默漏签；含 OBS-1 起跑回收收窄、OBS-3 E2E 同分片几何钉死，均带变异判别力证据）。
