@@ -398,7 +398,7 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 > 旧密钥一律视为已泄露：若攻击者拷走过数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
 
 **事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log`
-一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
+一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防**锚点覆盖区内**的删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
 退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
 审计（登录失败阈值/越权 403/数据导出同样留痕）。
 
@@ -406,6 +406,8 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 > 链、锚点与库内指纹同属可写面，本机自洽时抹痕可以不被发现（本版本已接受该威胁模型）。要真正排除，靠的是
 > **离开本机的两份留痕**：告警通道健康邮件里的链头哈希与记录数（常规每周一发，通道降级当天就发）、以及异机备份副本（`REMOTE_BACKUP`，其中已含审计锚点文件）。
 > 怀疑失陷时先取这两处比对，再决定是否按密钥泄露处理。
+>
+> **独立见证纵深已移除**：随之失去的是"锚点之后新增的行被删除"这一窗口的本机检出能力（锚点看不见它之后写入的行，删掉它们无需双写即可不被本机发现）。要覆盖它，只能比对上面那两份离机留痕里的链头哈希与记录数。
 
 **时钟守卫**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，守卫会**记 ERROR 日志并跳过本轮物理清理**（不删任何数据），同时把参照点推进到当前时间 ⇒ **只跳一轮**，下一轮自动恢复。之所以"只跳一轮"而不是一直冻结：冻结需要人工重置，而重置工具本身就是运维负担。诚实边界：正向拨快被拦后参照点落在被拨后的时间，若此后被 NTP 校正回真实时间，会再触发一次回拨跳变 ⇒ 最多连跳两轮。核实系统时间后无需任何操作，等下一轮即可。
 
@@ -843,6 +845,8 @@ sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh 
 sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
   bash scripts/backup.sh --restore <备份包> <目标目录>
 ```
+
+> ℹ️ **升级提示（曾装过"审计独立见证"的旧部署请清理）**：审计的独立见证纵深已移除，`deploy/prod` 不再提供 `yiban-audit-witness.sh` 与 `/etc/cron.d/yiban-audit-witness`。此前按旧文档装过见证的主机请手工删掉这两个文件——`sudo rm -f /usr/local/sbin/yiban-audit-witness.sh /etc/cron.d/yiban-audit-witness`——否则残留的 root cron 会每 10 分钟调用已删除的脚本并持续报错（仅噪声，不影响体检结论）。移除后"锚点之后的追加行被删除"这一窗口不再由本机检出（见上文「诚实边界」）。
 
 > ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
 >

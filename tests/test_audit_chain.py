@@ -635,13 +635,18 @@ class MigrationBackfillTest(_DbFixture):
         self.assertEqual(db.audit_health()["empty_hash_rows"], 0)
 
     def test_runtime_empty_hash_rows_are_reported(self):
-        """运行期出现 hash='' 行（人为清签）→ 体检须给出可诊断信息。"""
+        """运行期出现 hash='' 行（人为清签）→ 体检须给出可诊断信息。
+
+        `empty_hash_rows` 与 `chain_ok` 在这一形态下同源（空 hash 必然断链），故本用例
+        不构成两者各自独立的证据；它钉住的是"计数如实出箱 + note 点名"这条可观测契约
+        （`healthy` 里的 `not empty_hash_rows` 是深度防御，不是可单独触发的旁路）。
+        """
         self._seed(5)
         db.record_audit_anchor()
         self._raw("UPDATE audit_logs SET hash='', prev_hash='' WHERE id=3")
         h = db.audit_health()
         self.assertFalse(h["chain_ok"], "空 hash 行必须断链")
-        self.assertFalse(h["healthy"], "空 hash 行必须参与 healthy 结论（不能只是诊断信息）")
+        self.assertFalse(h["healthy"], "空 hash 行必须使体检不健康")
         self.assertEqual(h["empty_hash_rows"], 1)
         self.assertIn("hash 为空", h["note"])
 
