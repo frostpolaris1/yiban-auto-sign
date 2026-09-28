@@ -95,7 +95,7 @@ def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
         # 不依赖用例文件的导入顺序。**周六门原先漏了补丁**：周六跑全量时本组 4 条必红
         # （2026-09-19 实测，develop 上同样复现）。
         with mock.patch.object(signin, "load_accounts", side_effect=_fake_load_accounts), \
-             mock.patch.object(signin, "run_queue_retry", return_value=result), \
+             mock.patch.object(signin.executor_v3, "run_executor_v3", return_value=result), \
              mock.patch.object(signin, "SUNDAY_SIGN", True), \
              mock.patch.object(signin, "SATURDAY_SIGN", True), \
              mock.patch.object(signin, "_acquire_run_lock", return_value=None), \

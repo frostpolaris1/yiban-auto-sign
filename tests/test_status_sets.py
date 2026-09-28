@@ -318,7 +318,7 @@ class HasUndoneAccountsTest(unittest.TestCase):
     def _pool(self, total, open_=0):
         """打桩领取池当日计数：`total` 为 0 表示池里当日无行（回退状态文件）。"""
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "claim_stats",
+                mock.patch.object(state_io.db, "task_stats",
                                   return_value={"total": total, "open": open_}):
             yield
 
@@ -354,7 +354,7 @@ class HasUndoneAccountsTest(unittest.TestCase):
         """池读取异常同样回退状态文件，绝不把「读不到」当「已了结」。"""
         self._write_state({PHONE: {"status": yiban_status.STATUS_SUCCESS}})
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "claim_stats",
+                mock.patch.object(state_io.db, "task_stats",
                                   side_effect=RuntimeError("库抖动")):
             self.assertFalse(self._undone())
 

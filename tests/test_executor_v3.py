@@ -1,21 +1,22 @@
 # -*- coding: utf-8 -*-
-"""`yiban/engine/executor_v3.py`：v3 执行体核心与 `YIBAN_SCHEDULER_V3` 分流。
+"""`yiban/engine/executor_v3.py`：v3 执行体核心（台账单池化后的唯一生产执行体）。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：v3 执行体的通道数与容量口径、带 vshard 过滤的待办计数、YIBAN_SCHEDULER_V3
-   真值表与 runner 分流、asyncio
+覆盖：v3 执行体的通道数与容量口径、带 vshard 过滤的待办计数、`scheduler_v3_enabled`
+   恒真与 runner 恒定转调、asyncio
    通道的并发与非阻塞到点等待、批量领取与收干判据、退避落点的有界抖动与窗口上界、终态映射与
-   fencing 透传、与 v2
+   fencing 透传、与旧领取池
    对齐的放弃通知/日志、令牌桶三件接线、产品契约（每次尝试写
    sign-state、dry_run
    零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
-对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、steal_shards）、yiban/engine/runner.py
-   的分流点、yiban/engine/hrw.py 与 token_bucket.py。
-关键断言：开关缺省为 0 时 v2 路径必须零行为变化（断的是 `runner` 转调 `round.run_queue_retry`、`run_executor_v3` 零调用，两代实现只有一行之差）。写进
+对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、steal_shards、reclaim_tasks）、yiban/engine/runner.py
+   的执行调用点、yiban/engine/hrw.py 与 token_bucket.py。
+关键断言：单池后 `runner` 恒定转调 `run_executor_v3`（`--only` 走显式路径：reclaim +
+   claim_all + requeue_final），`round.run_queue_retry` 无生产调用点。写进
    sign_tasks.vshard 的 V 必须与执行体分片集同源且当日稳定：V
    落库后只读，行索引落在当日 v_for()
    之外也仍要被领取，否则当天计划与领取集错位就永久漏领。vshard=-1
-   的历史行永不计入待办（算进去会让该日永远不了结）。领取池的崩溃回收必须排在领取循环里且带
+   的历史行永不计入待办（算进去会让该日永远不了结）。崩溃回收必须排在领取循环里且带
    day。死主接管的判据是「stale」四态而非「偷到几行」，且不得误伤
    running/finished/idle
    的活执行体。收尾标记只在正常返回路径写，异常与中断都必须让心跳过期后判
@@ -319,7 +320,8 @@ class _Base(unittest.TestCase):
 
     def _run_v3(self, accounts, items=None, *, cfg=None, rng=None, limiter=None,
                 gate=None, delegated=None, cred_state=None, event_sink=None,
-                dry_run=False, notify_url=""):
+                dry_run=False, notify_url="", requeue_final=False, claim_all=False,
+                reclaim=False, requeue_during_run=False):
         """跑一轮 v3。
 
         `items` 给了就用"一次性投递 + 哨兵"的假补货（时序完全可控，行需已领取）；
@@ -344,30 +346,55 @@ class _Base(unittest.TestCase):
             return executor_v3.run_executor_v3(
                 accounts, day=DAY, cfg=cfg, rng=rng or random.Random(7),
                 delegated=delegated, cred_state=cred_state, event_sink=event_sink,
-                dry_run=dry_run, notify_url=notify_url)
+                dry_run=dry_run, notify_url=notify_url, requeue_final=requeue_final,
+                claim_all=claim_all, reclaim=reclaim,
+                requeue_during_run=requeue_during_run)
         finally:
             for p in reversed(patches):
                 p.stop()
 
 
 # ---------------------------------------------------------------------------
-# 开关真值表（分流谓词的唯一来源）
+# 执行体启用判定（单池后恒真）
 # ---------------------------------------------------------------------------
-class SchedulerV3FlagTest(unittest.TestCase):
-    def test_default_and_falsy_values_are_off(self):
-        for raw in (None, "", "0", "false", "no", "off", "nonsense", "2"):
+class SchedulerV3EnabledTest(unittest.TestCase):
+    """台账单池化后 `scheduler_v3_enabled` 恒真；双轨开关的键与缺省常量已删除。"""
+
+    def test_always_true_regardless_of_env(self):
+        for raw in (None, "", "0", "false", "no", "off", "nonsense", "2", "1", "true"):
             env = {} if raw is None else {"YIBAN_SCHEDULER_V3": raw}
-            self.assertFalse(executor_v3.scheduler_v3_enabled(env), repr(raw))
+            self.assertTrue(executor_v3.scheduler_v3_enabled(env), repr(raw))
 
-    def test_truthy_values_are_on_case_insensitively(self):
-        for raw in ("1", "true", "ON", "Yes", " true "):
-            self.assertTrue(
-                executor_v3.scheduler_v3_enabled({"YIBAN_SCHEDULER_V3": raw}), repr(raw))
-
-    def test_env_key_and_default_constants(self):
-        self.assertEqual(executor_v3.ENV_SCHEDULER_V3, "YIBAN_SCHEDULER_V3")
+    def test_switch_key_and_default_constants_are_gone(self):
+        self.assertFalse(hasattr(executor_v3, "ENV_SCHEDULER_V3"),
+                         "双轨开关的键随单池消失")
+        self.assertFalse(hasattr(executor_v3, "DEFAULT_V3"))
         self.assertEqual(executor_v3.ENV_GLOBAL_RATE, "YIBAN_GLOBAL_RATE")
-        self.assertFalse(executor_v3.DEFAULT_V3)
+
+
+class ManualReclaimTest(_Base):
+    """手动 `--only` 的 `reclaim`：已了结（done）行被翻回 pending 并再次真实执行。"""
+
+    def _attempts(self, calls):
+        return mock.patch.object(
+            executor_v3.attempts, "attempt_signin",
+            lambda acc: (calls.append(acc.phone), (True, "ok", False, "success"))[1])
+
+    def test_done_row_is_reclaimed_and_reexecuted(self):
+        self._add_task(_phone(1), state="done", owner="w:1:1", attempts=1)
+        calls = []
+        with self._attempts(calls):
+            self._run_v3(self._accounts(_phone(1)), reclaim=True)
+        self.assertEqual(calls, [_phone(1)], "reclaim 必须让已了结账号再执行一次")
+        self.assertEqual(self._row(_phone(1))["state"], "done", "执行后被收尾成 done")
+
+    def test_without_reclaim_done_row_stays_done(self):
+        self._add_task(_phone(1), state="done", owner="w:1:1", attempts=1)
+        calls = []
+        with self._attempts(calls):
+            self._run_v3(self._accounts(_phone(1)))
+        self.assertEqual(calls, [], "普通轮不得复活已了结账号")
+        self.assertEqual(self._row(_phone(1))["state"], "done")
 
 
 # ---------------------------------------------------------------------------
@@ -1375,10 +1402,10 @@ class ProductContractTest(_Base):
 
 
 # ---------------------------------------------------------------------------
-# runner 分流：缺省 0 时 v2 路径逐字不变
+# runner 分流：单池后恒定走 v3 执行体
 # ---------------------------------------------------------------------------
 class RunnerSplitTest(unittest.TestCase):
-    """`runner.main` 的分流点：开关缺省关时只有一行之差（执行体实现）。"""
+    """`runner.main`：台账单池化后生产执行体恒定是 `run_executor_v3`。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-v3-runner-")
@@ -1407,22 +1434,17 @@ class RunnerSplitTest(unittest.TestCase):
                 os.environ[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _run(self, argv=None, outcome=None):
+    def _run(self, argv=None, outcome=None, second_run=False):
         accounts = [SimpleNamespace(phone=_phone(0), user_paused=False, owner="u@1")]
         sched = {_phone(0): START}
         cred = {"seed": 1}
-        # 两个执行体替身返回**同形**的结果：退出码由 runner 的汇总算出，与谁执行无关
         outcome = dict(outcome) if outcome is not None else {
             _phone(0): (True, "签到成功", False, "success")}
-        retry_calls = []
         v3_calls = []
         with mock.patch.object(runner_mod.accounts_mod, "load_accounts",
                                return_value=accounts), \
              mock.patch.object(runner_mod.schedule_mod, "build_schedule",
                                return_value=sched), \
-             mock.patch.object(runner_mod.round_mod, "run_queue_retry",
-                               side_effect=lambda *a, **kw: (retry_calls.append((a, kw)),
-                                                             dict(outcome))[1]), \
              mock.patch.object(runner_mod.executor_v3, "run_executor_v3",
                                side_effect=lambda *a, **kw: (v3_calls.append((a, kw)),
                                                              dict(outcome))[1]), \
@@ -1430,61 +1452,50 @@ class RunnerSplitTest(unittest.TestCase):
                                return_value=cred), \
              mock.patch.object(runner_mod.state_io, "_save_cred_state"), \
              mock.patch.object(runner_mod.state_io, "_is_second_run",
-                               return_value=False), \
+                               return_value=second_run), \
+             mock.patch.object(runner_mod.state_io, "_second_run_drop_done",
+                               return_value=accounts), \
              mock.patch.object(runner_mod.state_io, "_write_sched_done"), \
              mock.patch.object(runner_mod.db, "add_sign_events_batch"), \
              mock.patch.object(runner_mod.db, "purge_expired_deleted_accounts"), \
              mock.patch.object(runner_mod.alerts, "_maybe_alert_zero_success"), \
              mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"):
             code = runner_mod.main(argv or [])
-        return code, accounts, sched, cred, retry_calls, v3_calls
+        return code, accounts, sched, cred, v3_calls
 
-    def test_default_off_keeps_the_v2_call_verbatim(self):
-        code, accounts, sched, cred, retry_calls, v3_calls = self._run()
+    def test_full_round_routes_to_v3(self):
+        """单池后普通全量轮恒定走 v3 执行体（不再有旧领取池分支）。"""
+        code, accounts, _sched, cred, v3_calls = self._run()
         self.assertEqual(code, 0, "退出码由 runner 按 results 汇总（成功 → 0）")
-        self.assertEqual(v3_calls, [], "缺省 0 时 run_executor_v3 零调用")
-        self.assertEqual(len(retry_calls), 1)
-        args, kw = retry_calls[0]
-        self.assertEqual(args[0], accounts)
-        self.assertEqual(args[1], "")
-        self.assertIs(kw["schedule"], sched, "schedule 按引用透传，不复制")
-        self.assertIs(kw["cred_state"], cred, "cred_state 按引用透传")
-        self.assertIsInstance(kw["delegated"], set)
-        self.assertTrue(callable(kw["event_sink"]))
-        self.assertFalse(kw["reclaim"])
-
-    def test_switch_on_routes_to_v3_and_skips_v2(self):
-        os.environ["YIBAN_SCHEDULER_V3"] = "1"
-        code, accounts, _sched, cred, retry_calls, v3_calls = self._run()
-        self.assertEqual(retry_calls, [], "开关打开时不再走 v2 执行体")
         self.assertEqual(len(v3_calls), 1)
         args, kw = v3_calls[0]
         self.assertEqual(args[0], accounts)
         self.assertEqual(kw["notify_url"], "")
-        self.assertIs(kw["cred_state"], cred)
+        self.assertIs(kw["cred_state"], cred, "cred_state 按引用透传")
         self.assertIsInstance(kw["delegated"], set)
         self.assertTrue(callable(kw["event_sink"]))
-        self.assertEqual(code, 0, "退出码汇总仍归 runner，与执行体实现无关")
+        self.assertFalse(kw.get("reclaim"))
+        self.assertFalse(kw.get("claim_all"))
+        self.assertFalse(kw["requeue_final"], "普通轮不得自动复活 final: 档")
 
-    def test_only_never_routes_to_v3(self):
-        os.environ["YIBAN_SCHEDULER_V3"] = "1"
-        _code, _accounts, _sched, _cred, retry_calls, v3_calls = self._run(
-            ["--only", _phone(0)])
-        self.assertEqual(v3_calls, [], "--only 是用户主动触发，不走 v3")
-        self.assertEqual(len(retry_calls), 1)
-        self.assertTrue(retry_calls[0][1]["reclaim"], "手动签到允许重签当日已了结账号")
+    def test_second_run_passes_requeue_final(self):
+        _code, _accounts, _sched, _cred, v3_calls = self._run(second_run=True)
+        self.assertEqual(len(v3_calls), 1)
+        self.assertTrue(v3_calls[0][1]["requeue_final"],
+                        "补签轮是显式路径：透传 requeue_final=True")
 
-    def test_falsy_switch_value_keeps_v2(self):
-        for raw in ("0", "false", "nonsense"):
-            os.environ["YIBAN_SCHEDULER_V3"] = raw
-            with self.subTest(raw=raw):
-                _, _, _, _, retry_calls, v3_calls = self._run()
-                self.assertEqual(v3_calls, [])
-                self.assertEqual(len(retry_calls), 1)
+    def test_only_routes_to_v3_explicit_path(self):
+        """手动 `--only` 也走 v3，但带显式路径参数（reclaim + claim_all + requeue_final）。"""
+        code, _accounts, _sched, _cred, v3_calls = self._run(["--only", _phone(0)])
+        self.assertEqual(len(v3_calls), 1, "--only 走 v3（单池后无第二轨）")
+        kw = v3_calls[0][1]
+        self.assertTrue(kw["reclaim"], "手动签到允许重签当日已了结账号")
+        self.assertTrue(kw["claim_all"], "手动身份可能不在执行体清单的 HRW 候选集里")
+        self.assertTrue(kw["requeue_final"], "手动是显式路径：允许重领预算耗尽档")
+        self.assertEqual(code, 0)
 
     def test_empty_results_from_executor_yield_contract_exit_code(self):
         """执行体返回空结果（**丢结果**那一档兜底的输出）时，runner 仍给出契约内退出码。"""
-        os.environ["YIBAN_SCHEDULER_V3"] = "1"
         code, *_ = self._run(outcome={})
         self.assertIn(code, (0, 1, 2, 3, 10))
         self.assertEqual(code, 1, "无结果按失败汇总，不得落到契约之外")
@@ -1495,7 +1506,6 @@ class RunnerSplitTest(unittest.TestCase):
         窗口收尾失败返回的是"已完成账号的结果集"，不是空结果——runner 按它汇总出
         成功（0），而不是把一轮基本成功的活报成"全部未执行"（1 + 失败邮件）。
         """
-        os.environ["YIBAN_SCHEDULER_V3"] = "1"
         code, *_ = self._run(outcome={_phone(0): (True, "签到成功", False, "success")})
         self.assertIn(code, (0, 1, 2, 3, 10))
         self.assertEqual(code, 0, "保留的结果集按真实结论汇总，不得落到契约之外")

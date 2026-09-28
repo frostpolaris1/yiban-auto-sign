@@ -105,8 +105,8 @@ class ShellForwardingStubTest(unittest.TestCase):
         self.assertEqual(calls["_write_sign_state"], [PHONE],
                          "替身没被调用：状态写入打桩静默失效")
 
-    def test_run_queue_retry_stub_reaches_the_entry(self):
-        """`run_queue_retry` 的调用点在 `yiban/engine/runner.py::main`。
+    def test_executor_v3_stub_reaches_the_entry(self):
+        """`run_executor_v3` 的调用点在 `yiban/engine/runner.py::main`（单池后唯一执行体）。
 
         同时钉住壳入口的退出码传递：`signin.main()` 抛 `SystemExit(码)`（旧调用方与
         run.sh 依赖它），而 `yiban.engine.runner.main` 只**返回**码。
@@ -115,21 +115,21 @@ class ShellForwardingStubTest(unittest.TestCase):
         # 归"窗口外未了结"→ 退出码 2（run.sh 据此写 SKIPPED 并触发补签）
         window_skip = {PHONE: (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW)}
         with mock.patch.object(signin, "load_accounts", return_value=[acc]), \
-                mock.patch.object(signin, "run_queue_retry",
-                                  return_value=window_skip) as m_round, \
+                mock.patch.object(signin.executor_v3, "run_executor_v3",
+                                  return_value=window_skip) as m_exec, \
                 mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False), \
                 self.assertRaises(SystemExit) as ctx:
             signin.main(["--only", PHONE])
         self.assertEqual(ctx.exception.code, 2)
-        m_round.assert_called_once()
-        self.assertEqual(m_round.call_args[0][0], [acc], "实参应是本轮账号列表")
+        m_exec.assert_called_once()
+        self.assertEqual(m_exec.call_args[0][0], [acc], "实参应是本轮账号列表")
 
     def test_runner_main_returns_code_instead_of_exiting(self):
         """`runner.main` 返回 int（壳负责 sys.exit）——两端契约不同，勿合并。"""
         from yiban.engine import runner
         window_skip = {PHONE: (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW)}
         with mock.patch.object(signin, "load_accounts", return_value=[self._acc()]), \
-                mock.patch.object(signin, "run_queue_retry", return_value=window_skip), \
+                mock.patch.object(signin.executor_v3, "run_executor_v3", return_value=window_skip), \
                 mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False):
             code = runner.main(["--only", PHONE])
         self.assertEqual(code, 2)
