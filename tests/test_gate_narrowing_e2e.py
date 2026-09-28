@@ -9,10 +9,11 @@
 通信：Flask test client 走真 HTTP 语义（json + CSRF 头）；.env/SQLite 全部落
     本文件临时目录；零真实外联（mailer/notify 的告警由测试内打桩记录）。
 
-覆盖：A4-1 门收窄面——可逆操作（改角色 / 邮件开关关闭 / 推送数值参数）full 档
+覆盖：A4-1 门收窄面——可逆操作（改角色 / 开启邮件通道 / 推送数值参数）full 档
     主管理员无口令直达成功且各自落审计行；反例——删除类（accounts/batch purge、
-    users/<id>/delete）与换钥类（notify 换钥）无口令仍 400 password_required，
-    带口令成功后仍消耗删除额度（MAX=1 时第二次 429）。
+    users/<id>/delete）、换钥类（notify 换钥）与**关闭邮件通道**（拆掉告警最后一条
+    送达路径）无口令仍 400 password_required，带口令成功后仍消耗对应额度
+    （MAX=1 时第二次 429）。
 对应实现：`web/app.py::_high_risk_gate`（docstring 即清单，`test_gate_manifest_sync`
     钉清单↔路由同源）、`web/routes/users_api.py`、`web/routes/notify.py`、
     `web/routes/accounts_api.py`。
@@ -155,7 +156,7 @@ class GateNarrowingE2ETest(_GateNarrowBase):
     """A4-1：可逆操作免门直达 + 不可逆操作仍受门与删除额度（管理员视角一条链）。"""
 
     def test_reversible_ops_reach_success_without_password_and_leave_audit(self):
-        """主管理员一次会话内：改角色 / 关邮件开关 / 调推送数值，全程零口令、
+        """主管理员一次会话内：改角色 / 开启邮件通道 / 调推送数值，全程零口令、
         零 429，且每个动作各落一行审计（免门不等于免痕）。"""
         self._seed_formal_user("narrowee@test.local", "13800000001")
         c, t = self._admin_client()
@@ -166,10 +167,11 @@ class GateNarrowingE2ETest(_GateNarrowBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(db.find_user("narrowee@test.local").get("role"), "admin")
         self.assertTrue(self._audit_rows("user_role"), "角色变更必须落审计行")
-        # ② 邮件开关关闭（曾要口令 + 占删除额度）
-        r2 = c.put("/api/mail-config", json={"enabled": False}, headers=hdr)
+        # ② 邮件通道**开启**（关闭方向受门——它是告警最后一条送达路径，见下方专门用例；
+        #    把告警装回去不是"拆报警器"，故开启免门免额度）
+        r2 = c.put("/api/mail-config", json={"enabled": True}, headers=hdr)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
-        self.assertTrue(self._audit_rows("mail_config"), "邮件开关变更必须落审计行")
+        self.assertTrue(self._audit_rows("mail_config"), "邮件通道开启必须落审计行")
         # ③ 推送数值参数（曾要口令 + 占删除额度）
         r3 = c.put("/api/notify-config", json={"cooldown": 45, "daily_max": 9}, headers=hdr)
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
@@ -220,6 +222,58 @@ class GateNarrowingE2ETest(_GateNarrowBase):
         self.assertEqual(r4.status_code, 429, r4.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("victim2@test.local"),
                              "被 429 拒下的删除不得生效")
+
+
+class MailChannelCloseGateE2ETest(_GateNarrowBase):
+    """关闭邮件通道 = 拆掉告警最后一条送达路径：必须过口令门，且占**凭据**额度。
+
+    `mail_config._get` 环境变量优先于 `.env`，而本机 conftest 把 YIBAN_MAIL_ENABLE
+    钉成 0；关闭方向的"值真变化"判据读的就是这个口径，故这里显式改环境变量并登记还原。
+    """
+
+    def _set_mail_enable(self, value):
+        old = os.environ.get("YIBAN_MAIL_ENABLE")
+        os.environ["YIBAN_MAIL_ENABLE"] = value
+
+        def _restore():
+            if old is None:
+                os.environ.pop("YIBAN_MAIL_ENABLE", None)
+            else:
+                os.environ["YIBAN_MAIL_ENABLE"] = old
+
+        self.addCleanup(_restore)
+
+    def test_closing_channel_needs_password_then_bills_creds_quota(self):
+        """通道当前是开的：无口令关闭 → 400 password_required；带口令 → 200 且落审计；
+        关闭占凭据额度（MAX=1）→ 第二次关闭 429 且不落盘。"""
+        self._env(("YIBAN_ADMIN_CREDS_MAX=1\n",))
+        self._set_mail_enable("1")
+        c, t = self._admin_client()
+        hdr = {"X-CSRF-Token": t}
+        r1 = c.put("/api/mail-config", json={"enabled": False}, headers=hdr)
+        self.assertEqual(r1.status_code, 400, r1.get_data(as_text=True))
+        self.assertEqual(r1.get_json().get("reason"), "password_required")
+        r2 = c.put("/api/mail-config",
+                   json={"enabled": False, "confirm_password": ADMIN_PASS}, headers=hdr)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        self.assertEqual(len(self._audit_rows("mail_config")), 1,
+                         "关闭邮件通道必须恰好落一行审计")
+        # 凭据额度那一格已被关闭动作占用：再关一次 → 429，且被拒动作不落盘
+        r3 = c.put("/api/mail-config",
+                   json={"enabled": False, "confirm_password": ADMIN_PASS}, headers=hdr)
+        self.assertEqual(r3.status_code, 429, r3.get_data(as_text=True))
+        self.assertEqual(len(self._audit_rows("mail_config")), 1, "429 被拒的动作不得落审计")
+
+    def test_opening_and_already_off_close_are_gate_free(self):
+        """通道当前是关的：关闭方向"值真变化"不成立 → 不设门；开启方向从不设门。"""
+        self._set_mail_enable("0")
+        c, t = self._admin_client()
+        hdr = {"X-CSRF-Token": t}
+        r1 = c.put("/api/mail-config", json={"enabled": False}, headers=hdr)
+        self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
+        r2 = c.put("/api/mail-config", json={"enabled": True}, headers=hdr)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        self.assertTrue(self._audit_rows("mail_config"))
 
 
 class CredsQuotaSplitE2ETest(_GateNarrowBase):
