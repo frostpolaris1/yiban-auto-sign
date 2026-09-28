@@ -24,7 +24,7 @@
 `update_account` 读-改-写的跨线程互斥与换绑重加密。
 对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
 `record_audit_anchor` / `verify_audit_anchor` / `audit_health` / `_audit_cleanup` /
-`_rechain_audit_logs`）与 `yiban/store/accounts.py` 的 `update_account`。
+`_backfill_audit_hashes`）与 `yiban/store/accounts.py` 的 `update_account`。
 关键断言：锚点类用例都是"破坏后必须 False"**成对**配一条"合法清理必须 True"——只留一边
 就会把告警调成常亮或常灭而无人发现。锚点只比 min_id/max_id/head_hash 三元组，**内容篡改
 由 `verify_audit_chain` 的逐行哈希负责**（见 `test_anchor_detects_tail_tamper` 里为什么
@@ -197,7 +197,7 @@ class AuditTraceabilityTest(unittest.TestCase):
                 (old_ts, "tester", "old", f"o{i}", f"d{i}"),
             )
             conn.commit()
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         self._seed(2)
         db.record_audit_anchor()
         db._audit_cleanup(conn)  # 走真实清理路径：删除与留痕同事务

@@ -11,8 +11,8 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：库内 HMAC 链（迁移加列、连续写入自洽、任意行篡改断链、清理换新根、存量回填）；
 库外锚点文件的行格式与自身完整性（截断/改中间行/删中间行）；锚点判定三重
-（定点 / 稠密 / 留痕）对"删尾后追加""删前缀无留痕""膨胀留痕"的取舍；重链事件登记；
-写债务（write debt）持久化；`scripts/audit_verify.py` 的退出码；备份脚本的取证契约；
+（定点 / 稠密 / 留痕）对"删尾后追加""删前缀无留痕""膨胀留痕"的取舍；升级回填
+（migrate_v3 对残缺旧库）；写债务（write debt）持久化；`scripts/audit_verify.py` 的退出码；备份脚本的取证契约；
 以及审计**读侧**的聚合与出站不携裸号。
 对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
 `record_audit_anchor` / `verify_audit_anchor` / `audit_health`）、
@@ -130,7 +130,7 @@ class AuditChainTest(unittest.TestCase):
         conn.commit()
         conn.close()
         # 模拟 _audit_cleanup 的“删除后重建链”
-        db._rechain_audit_logs(db.get_conn())
+        db._backfill_audit_hashes(db.get_conn())
         ok, broken, first = db.verify_audit_chain()
         self.assertTrue(ok, (broken, first))
 
@@ -443,7 +443,7 @@ class AnchorJudgmentTest(_DbFixture):
                 (old_ts, "tester", "old", f"t{i}", f"d{i}"),
             )
             conn.commit()
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         self._seed(2)
         conn = db.get_conn()
         db._audit_cleanup(conn)
@@ -489,7 +489,7 @@ class AnchorJudgmentTest(_DbFixture):
                 (old_ts, "tester", "old", f"t{i}", f"d{i}"),
             )
             conn.commit()
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         self._seed(2)
         db.record_audit_anchor()
         db._audit_cleanup(db.get_conn())  # 删掉 4 条超期旧行，并写留痕
@@ -509,7 +509,7 @@ class AnchorJudgmentTest(_DbFixture):
                 (old_ts, "tester", "old", f"t{i}", f"d{i}"),
             )
             conn.commit()
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         self._seed(2)
         db.record_audit_anchor()
         db._audit_cleanup(db.get_conn())  # 留痕：删 6 条
@@ -579,8 +579,8 @@ class AnchorJudgmentTest(_DbFixture):
         self.assertFalse(ok, "v1 锚点下的'删尾后追加'仍须由定点判据检出")
 
 
-class RechainGuardTest(_DbFixture):
-    """migrate_v3 全表重链：只允许在真正升级那一次发生，且必须留痕。"""
+class MigrationBackfillTest(_DbFixture):
+    """migrate_v3 对残缺旧库回填哈希链：升级后链必须自洽（正确性不变量）。"""
 
     def _make_v2_db(self, rows=2):
         """造一个 user_version=2、audit_logs 尚无哈希列的旧库。"""
@@ -610,67 +610,32 @@ class RechainGuardTest(_DbFixture):
         finally:
             conn.close()
 
-    def test_v2_upgrade_records_rechain_event(self):
+    def test_v2_upgrade_backfills_hash_chain(self):
+        """低版本旧库升级：空 hash 行被回填成自洽链，且每行 hash 非空。"""
         self._make_v2_db(rows=3)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        events = db.audit_rechain_events()
-        self.assertEqual(len(events), 1, "真正从 v2 升级的重链必须留痕")
-        ev = events[0]
-        self.assertEqual(ev["from_version"], 2)
-        self.assertEqual(ev["rows"], 3)
-        self.assertEqual(ev["empty_hash_rows"], 3)
-        self.assertEqual(ev["head_before"], "", "重链前全表 hash 为空")
-        self.assertEqual(ev["head_after"], db.audit_head_hash())
-        self.assertIn("ts", ev)
         ok, broken, _first = db.verify_audit_chain()
-        self.assertTrue(ok, f"回填后链应自洽: broken={broken}")
+        self.assertTrue(ok, f"升级后链必须自洽: broken={broken}")
+        rows = db.get_conn().execute(
+            "SELECT id, prev_hash, hash FROM audit_logs ORDER BY id").fetchall()
+        self.assertEqual(len(rows), 3)
+        for r in rows:
+            self.assertNotEqual(r["hash"], "", "回填后不得留空 hash 行")
+        self.assertNotEqual(db.audit_head_hash(), "", "回填后链头必须非空")
+        h = db.audit_health()
+        self.assertTrue(h["chain_ok"])
+        self.assertEqual(h["empty_hash_rows"], 0, "升级完成后不应再有空 hash 行")
 
-    def test_no_rechain_event_when_nothing_to_sign(self):
-        """没有空 hash 行就不许留重链痕——否则"重链留痕"会失去指认伪造的能力。"""
+    def test_no_backfill_needed_on_migrated_db_restart(self):
+        """已迁移库重启：无空 hash 行，链保持自洽（回填不误伤正常库）。"""
         self._seed(3)
-        self.assertEqual(db.audit_rechain_events(), [])
-        db.init_db(self.db_file, cleanup=False)  # 已迁移库重启：不应产生事件
-        self.assertEqual(db.audit_rechain_events(), [])
-
-    def test_rechain_event_after_anchor_is_unhealthy(self):
-        """锚点之后出现全表重链：合法升级必然发生在任何锚点之前。"""
-        self._seed(4)
-        db.record_audit_anchor()
-        forged = [{
-            "ts": "2099-01-01 00:00:00", "from_version": 2, "rows": 4,
-            "empty_hash_rows": 4, "head_before": "", "head_after": "f" * 64,
-        }]
-        db.set_meta(db._RECHAIN_EVENTS_KEY, json.dumps(forged))
-        h = db.audit_health()
-        self.assertTrue(h["anchor_ok"], "夹具前提：锚点判据本身应仍通过")
-        self.assertFalse(h["healthy"], "锚点之后的重链事件必须让体检判失败")
-        self.assertEqual(h["rechain_events"], forged)
-        self.assertIn("重链", h["note"])
-
-    def test_unhealthy_but_all_green_still_explains_itself(self):
-        """这种"各项都正常却报警"的体检结果，告警正文必须自带原因。
-
-        每日线程把 `audit_health` 摊成事实清单发管理员邮件；链自洽与库外锚点两行
-        都显示"正常"时，唯一说得出为什么报警的就是 `note`。漏掉它，管理员看到的
-        就是一条看着像误报的告警（真出问题时第一反应是忽略）。
-        """
-        self._seed(4)
-        db.record_audit_anchor()
-        db.set_meta(db._RECHAIN_EVENTS_KEY, json.dumps([{
-            "ts": "2099-01-01 00:00:00", "from_version": 2, "rows": 4,
-            "empty_hash_rows": 4, "head_before": "", "head_after": "f" * 64,
-        }]))
-        h = db.audit_health()
-        self.assertFalse(h["healthy"])
-        import web.app as webapp  # 惰性：本文件其余用例只碰 db，不加载 web
-        facts = dict(webapp._audit_alert_facts(h))
-        self.assertEqual(facts["链自洽"], "是", "夹具前提：链本身仍自洽")
-        self.assertEqual(facts["库外锚点"], "一致", "夹具前提：锚点判据仍通过")
-        self.assertIn("全表重链", facts["诊断备注"], "正文必须写明这次报警的原因")
-        self.assertEqual(len(facts["诊断备注"].splitlines()), 1, "日志行必须保持单行")
+        db.init_db(self.db_file, cleanup=False)
+        ok, _broken, _first = db.verify_audit_chain()
+        self.assertTrue(ok)
+        self.assertEqual(db.audit_health()["empty_hash_rows"], 0)
 
     def test_runtime_empty_hash_rows_are_reported(self):
-        """运行期出现 hash='' 行（清空哈希等着被重签）→ 体检须给出可诊断信息。"""
+        """运行期出现 hash='' 行（人为清签）→ 体检须给出可诊断信息。"""
         self._seed(5)
         db.record_audit_anchor()
         self._raw("UPDATE audit_logs SET hash='', prev_hash='' WHERE id=3")
