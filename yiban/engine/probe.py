@@ -202,23 +202,28 @@ def _env_update_probe(auto_disable=False):
 def run_probe(accounts):
     """探针模式主流程：对全部账号做只读健康检查。
 
-    - 未到触发时间/频率（或未开启）则直接返回（零请求）。
+    - 未到触发时间/频率（或未开启）则直接返回（零请求）→ 返回 `None`，表示**这一轮
+      没做检查**（调用方据此返回"跳过"退出码 2，而不是 0）。
     - 结果写入 sign_events（stage=probe，复用 db 写锁 _conn_lock，天然并发安全），
       时间戳为当前时刻，追加在最近签到日志之后。
     - 无法自愈问题：管理员合并预警邮件（复用 A 线 _collect/_flush）+ 对应用户个人
       预警（复用 B 线 send_user_fail_mail，尊重用户开关）。
     - 执行后更新 last_run；once 模式自动关闭探针（.env 写锁）。
+
+    返回**未通过检查的账号数**（硬失败 + 网络类软失败；真跑且全绿为 0）或 `None`
+    （跳过）。退出码由调用方按它分族——外部监控原来看不出"探针跳过 / 撞锁 / 真跑
+    失败"的区别（一律 0），这是把三种结局分开的可判据。
     """
     if not PROBE_ENABLE:
         # 探针关闭：完全静默退出（不产生任何日志、不落库、不写状态）
-        return
+        return None
     if not _health_probe_due():
         # 周期轮询的常态路径（容器调度器每 600s / 宿主 cron */10 都会走到）：
         # "未到触发点"属预期行为而非异常，逐次 INFO 会刷屏（约 144 条/日）。
         # 降为 DEBUG——默认级别下日志只保留签到结果与探针实际执行结果；
         # 需排查轮询是否如期触发时，开 DEBUG 级别即可看到每次尝试轨迹。
         logger.debug("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
-        return
+        return None
     # last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
     # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
     _update_probe_state_run(clock.now().strftime("%Y-%m-%d"))
@@ -289,3 +294,4 @@ def run_probe(accounts):
     logger.info(
         f"==== 探针模式完成：健康 {healthy_n}，网络类失败 {soft_fail_n}，预警 {len(hard_fail)} ===="
     )
+    return len(hard_fail) + soft_fail_n

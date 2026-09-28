@@ -84,7 +84,8 @@ def _active_templates():
     login = os.path.join(TEMPLATES_DIR, "login.html")
     if os.path.isfile(login):
         out.append(login)
-    return [p for p in out if os.path.basename(p) != "_stub_macro.html"]
+    # pages/*.html 现均为活页面；旧的占位宏文件（_stub_macro.html）已退役。
+    return out
 
 _JS_REF_RE = re.compile(r"/static/js/([^\"'?\s]+)")
 _EXTENDS_RE = re.compile(r'{%-?\s*extends\s+"([^"]+)"\s*-?%}')
@@ -298,8 +299,9 @@ class JsAssemblyGuardTest(unittest.TestCase):
     def test_user_ops_never_puts_server_msg_on_screen(self):
         """`components/user-ops.js` 不得出现 `data.msg`（钉住单目标 PII 修复）。
 
-        后端 role/password/delete 的成功 msg 含**完整邮箱**，一旦用后端 msg 上屏，
-        完整邮箱就进入 DOM；本组件只允许 batch/purge（msg 仅数量）使用后端 msg。
+        单目标 role/password/delete 的成功 msg 回显遮罩邮箱；本组件仍一律只用本地无 PII
+        文案，不依赖服务端脱敏口径，故不得出现 `data.msg`。batch/purge 的计数型 msg
+        经 `successMsg(..., true)` 走 `data["msg"]`，不在本禁例内。
         """
         src = _read(os.path.join(JS_DIR, "components", "user-ops.js"))
         self.assertNotIn(

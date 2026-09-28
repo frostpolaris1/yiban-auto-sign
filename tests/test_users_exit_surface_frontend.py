@@ -188,12 +188,12 @@ class UserOpsOpaqueIdTest(unittest.TestCase):
     def test_single_ops_use_id_and_batch_keeps_body_emails(self):
         script = (
             self.mask_email_js + "\n"
-            "var submitted = [], dialogs = [], errors = [];\n"
+            "var submitted = [], dialogs = [], errors = [], successes = [];\n"
             "var window = {YB: {"
             "  maskEmail: maskEmail,"
             "  confirmDialog: function (o) { dialogs.push({title: o.title, body: o.body}); return Promise.resolve(true); },"
             "  dangerousSubmit: function (o) { submitted.push({path: o.path, body: o.body, desc: o.desc, delayDesc: o.delayDesc || ''}); return Promise.resolve({ok: true, msg: 'x'}); },"
-            "  toast: {error: function (m) { errors.push(m);}, success: function () {}}"
+            "  toast: {error: function (m) { errors.push(m);}, success: function (m) { successes.push(m); }}"
             "}};\n"
             + self.src + "\n"
             "var records = {\n"
@@ -210,7 +210,7 @@ class UserOpsOpaqueIdTest(unittest.TestCase):
             "ops.batchReset(['u1'], 'NewPass#123');\n"
             "ops.batchDelete(['u1']);\n"
             "ops.role('uNoid', 'admin');\n"     # id 缺失：拒绝发请求，不回落邮箱编 path
-            + _flush("{submitted: submitted, dialogs: dialogs, errors: errors}"))
+            + _flush("{submitted: submitted, dialogs: dialogs, errors: errors, successes: successes}"))
         out = _run_node(script, "user-ops")
         paths = sorted(s["path"] for s in out["submitted"])
         # role/delete/purge 先弹确认（异步），password/batchReset 直发（同步），
@@ -236,6 +236,14 @@ class UserOpsOpaqueIdTest(unittest.TestCase):
         self.assertEqual(bodies_with_emails, sorted(
             ["/api/users/deleted/purge", "/api/users/batch", "/api/users/batch"]))
         self.assertEqual(len(out["submitted"]), 6, "uNoid（无 id）不得发出请求")
+        # batch/purge 的 msg 只含数量（'x' 即后端 msg）：必须上屏，否则真实计数与跳过数
+        # 被本地 fallback 吞掉；单目标 role/password/delete 走本地无 PII 文案，不碰后端 msg。
+        self.assertEqual(
+            sorted(m for m in out["successes"] if m == "x"),
+            ["x", "x", "x"],
+            "purge / batchReset / batchDelete 必须使用后端计数型 msg")
+        self.assertNotIn("trail-user@test.local", json.dumps(out["successes"]),
+                         "成功提示不得出现完整邮箱")
 
 
 @unittest.skipUnless(NODE, "node 不可用：跳过 Task 2-9b 前端出口真跑")

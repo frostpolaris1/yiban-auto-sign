@@ -143,12 +143,15 @@ def _mask_phone_display(phone):
     return phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
 
 
-def _decrypt_row(row):
+def _decrypt_row(row, env_file=None):
     """纯 CPU：把一行原始行转成账号 dict，并摘出需要明文自愈的字段。
 
     **不访问数据库、不加锁**。调用方负责在 `_conn_lock` **之外**调用它——逐行 AES-GCM
     解密若全程持锁，web 侧数十个调用点会把全站 DB 访问串行化——再把摘出的 pending
     交给 `_apply_plaintext_heal` 在锁内落库。
+
+    `env_file`：密钥来源 .env 路径；None 时取连接层最近一次 `init_db` 记录的路径。
+    只读装载路径不经 `init_db`，由调用方显式传入，免得密钥来源依赖 cwd。
 
     返回 `(account_dict, pending)`；pending 元素为
     `(字段名, 行 id, 明文原值, 手机号, 打码手机号)`。
@@ -156,6 +159,7 @@ def _decrypt_row(row):
     a = dict(row)
     a["deleted"] = bool(a["deleted"])
     a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
+    key_env_file = _connection._env_file if env_file is None else env_file
     pending = []
     # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
     for k in ("password", "phone_code"):
@@ -167,11 +171,11 @@ def _decrypt_row(row):
         except (TypeError, ValueError):
             obj = None
         if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(_connection._env_file):
+            if not account_crypto.has_key(key_env_file):
                 raise RuntimeError(
                     "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
                 )
-            key = account_crypto.load_key(_connection._env_file)
+            key = account_crypto.load_key(key_env_file)
             try:
                 a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
             except ValueError as e:
@@ -344,6 +348,39 @@ def load_accounts():
     启动时显式执行。
     """
     return read_accounts(accounts_snapshot)
+
+
+def load_accounts_readonly(db_file, env_file=None):
+    """只读装载账号：返回与 `load_accounts()` 同形的 dict 列表，但**零写操作**。
+
+    与 `load_accounts()` 的差别正是它存在的理由：本函数用 `connection.open_readonly`
+    独立连库，**不建库、不建表、不迁移、不切 WAL、不做明文自愈回写**——自称"只读"
+    的维护路径（`config` / `sign --check-config`）不得因为"读账号"就把库造出来或改掉。
+    库文件或 accounts 表不存在 → `[]`（调用方据此回落 JSON/环境变量来源，而不是报错）。
+
+    解密沿用 `_decrypt_row`（同一份 AES-GCM 口径与手机号 AAD），`env_file` 显式传入
+    密钥来源；明文驻留行只告警不回写（回写是写操作，只读路径不做）。
+    """
+    conn = _connection.open_readonly(db_file)
+    if conn is None:
+        return []
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "accounts" not in names:
+            return []
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM accounts ORDER BY sort_order").fetchall()]
+    finally:
+        conn.close()
+    accts = []
+    for row in rows:
+        account, pending = _decrypt_row(row, env_file=env_file)
+        for field, _row_id, _plain, _phone, masked in pending:
+            logger.warning("只读装载：账号 %s 的 %s 为明文存储（只读路径不回写）",
+                           masked, field)
+        accts.append(account)
+    return accts
 
 
 # ---------------------------------------------------------------------------

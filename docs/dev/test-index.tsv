@@ -53,6 +53,8 @@ tests/test_account_liveness_gate.py	OrphanSessionCacheSweepTest.test_daily_clean
 tests/test_account_liveness_gate.py	OrphanSessionCacheSweepTest.test_sweep_removes_only_orphans	I	-	??
 tests/test_account_liveness_gate.py	SessionCacheNotWrittenForDeadAccountTest.test_cache_skipped_when_account_purged	I	-	??
 tests/test_account_liveness_gate.py	SessionCacheNotWrittenForDeadAccountTest.test_cache_written_for_live_account	I	-	??
+tests/test_account_ops_reentry.py	AccountOpsReentryTest.test_batch_blocks_reentry_after_confirm	F	node	批量入口在确认后重入同样被挡——弹窗只挡一次点击。
+tests/test_account_ops_reentry.py	AccountOpsReentryTest.test_single_op_blocks_reentry_but_releases	F	node	同步双击只发一次；首个请求结束后守卫释放，下一次触发可发。
 tests/test_account_plaintext_patch.py	PlaintextPatchTest.test_legacy_env_no_warning_when_unset	G	-	??
 tests/test_account_plaintext_patch.py	PlaintextPatchTest.test_legacy_env_warns_without_leaking	G	-	??
 tests/test_account_plaintext_patch.py	PlaintextPatchTest.test_load_accounts_decrypt_error_rolls_back_dangling_txn	G	-	P1：某行解密抛错时不得在共享连接留下悬挂事务（2026-08-27）。
@@ -519,11 +521,34 @@ tests/test_cli_contract.py	CliContractTest.test_state_defaults_to_dry_run_and_ye
 tests/test_cli_contract.py	CliContractTest.test_state_reports_missing_dir_loudly	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_unknown_and_empty_subcommand	J	-	??
 tests/test_cli_contract.py	CliContractTest.test_version_matches_package	J	-	??
+tests/test_cli_contract_mf60.py	BackupOverwriteGuardTest.test_backup_dry_run_reports_force_needed_without_writing	J	-	??
+tests/test_cli_contract_mf60.py	BackupOverwriteGuardTest.test_backup_force_allows_overwrite	J	-	??
+tests/test_cli_contract_mf60.py	BackupOverwriteGuardTest.test_second_backup_without_force_is_refused	J	-	??
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_config_error_kind_is_config_error	J	-	??
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_exit_code_family_unchanged	J	-	`docs/dev/cli.md` §3 既有码的机读分族：0/1/2/3/4/10 只增不改。
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_illegal_args_carry_distinguishable_error_kind	J	-	六种非法参数 + 缺子命令：`error_kind` 覆盖用法族，且每种的取值可区分。
+tests/test_cli_contract_mf60.py	ExitKindFamilyTest.test_sign_and_probe_json_expose_error_kind	J	-	sign/probe 的机器可读输出是退出码；`--json` 下补同族的 error_kind。
+tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_check_config_summary_not_on_stdout	J	-	`sign --check-config --json`：摘要走 stderr，stdout 只剩一行 JSON。
+tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_distinguishable	J	-	六种非法参数 + 缺子命令的输出不得再"逐字节相同"。
+tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_illegal_args_json_is_single_parseable_line	J	-	??
+tests/test_cli_contract_mf60.py	JsonErrorOnEveryExitPathTest.test_success_json_has_exit_code	J	-	每个维护子命令的成功 `--json` 也带 exit_code（调用方统一按它分支）。
+tests/test_cli_contract_mf60.py	PathHelpTest.test_path_vars_listed_in_help	J	-	??
+tests/test_cli_contract_mf60.py	ProbeExitFamilyTest.test_skip_and_failure_are_distinct_and_nonzero	J	-	??
+tests/test_cli_contract_mf60.py	ProbeExitFamilyTest.test_zero_accounts_probe_is_noop_success	J	-	零账号 = 无需执行（0）；探针分支先于零账号守卫，不落 ERROR。
+tests/test_cli_contract_mf60.py	ReadOnlyPromiseTest.test_readonly_commands_do_not_create_db_in_empty_cwd	J	-	空目录 + 只有 .env：只读命令不得当场建出 yiban.db（登记原文黑箱复现点）。
+tests/test_cli_contract_mf60.py	ReadOnlyPromiseTest.test_readonly_commands_leave_existing_db_untouched	J	-	已有库：mtime、user_version、文件集合全不变（连 WAL 的 -shm/-wal 都不新增）。
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_backup_without_accounts_table_is_refused	J	-	??
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_corrupt_backup_is_refused	J	-	??
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_dry_run_does_not_touch_live_db	J	-	不带 --yes：只报告计划 + 指纹，当前库零改动、目录无新文件。
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_restore_source_equal_target_is_refused	J	-	??
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_wrong_fingerprint_is_refused	J	-	??
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_yes_restores_and_keeps_pre_restore_copy	J	-	成功恢复：内容回到备份态、user_version 一致、覆盖前副本留下旧内容。
+tests/test_cli_contract_mf60.py	RestoreGuardTest.test_yes_without_fingerprint_is_refused	J	-	??
 tests/test_cli_exit_surface.py	CliChokeUnitTest.test_emit_json_masks_string_leaves_and_keeps_numbers	G	-	`_emit_json`：字符串叶子遮号、**整数字段原样**（否则整行 JSON 被遮成非法）。
 tests/test_cli_exit_surface.py	CliChokeUnitTest.test_say_masks_raw_phone_on_stderr	G	-	`_say` 的 stderr 行不得带裸号：遮罩形态在场、裸形态缺席。
 tests/test_cli_exit_surface.py	CliProbePassthroughWiringTest.test_passthrough_commands_delegate_runner	G	-	结构钉：sign/probe 经 runner.main（装配与生成点遮罩随透传自动生效）。
 tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_capacity_exit_has_no_raw_phone	G	-	capacity 读库（phone 列即裸号）但出口只有数字与路径：裸号必须全程缺席。
-tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_check_config_stdout_print_masked	G	-	`sign --check-config` 的 stdout 直印（`config_check.print_config_summary`）：
+tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_check_config_summary_masked_on_stderr	G	-	`sign --check-config` 的摘要（`config_check.print_config_summary`）走 stderr：
 tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_config_fail_masks_stderr_and_json_errors	G	-	密文与钥不匹配 ⇒ 异常消息含裸号；`config` 的 stderr 与 `--json errors` 双出口都遮。
 tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_config_success_masks_every_field	G	-	装载成功态：`--json` 的 phones_masked 与 stderr 明细行都只有遮罩形态。
 tests/test_cli_exit_surface.py	CliSubprocessExitTest.test_db_exit_has_no_raw_phone	G	-	db --integrity 读的是含裸号行的库：出口（表清单/计数/detail）不得带出裸号。
@@ -1660,6 +1685,11 @@ tests/test_mailer.py	test_send_admin_alert_skipped_when_disabled	H	-	??
 tests/test_mailer.py	test_send_admin_alert_success	H	-	??
 tests/test_mailer.py	test_send_failure_logs_safe	H	-	??
 tests/test_mailer.py	test_sender_user_newlines_never_reach_smtp	H	-	D11（MF-44）：`user` 字段一处最小收口——发送前同源单行化。
+tests/test_maintenance_readonly.py	InitDbReadonlyTest.test_create_false_connection_rejects_writes	J	-	??
+tests/test_maintenance_readonly.py	InitDbReadonlyTest.test_create_false_missing_db_raises_without_creating	J	-	??
+tests/test_maintenance_readonly.py	MaintenanceScriptsReadOnlyTest.test_audit_verify_does_not_create_missing_tables	J	-	库缺表时 audit_verify 只报 rc=2，不得顺手 `CREATE TABLE`（此前经 init_db 会）。
+tests/test_maintenance_readonly.py	MaintenanceScriptsReadOnlyTest.test_scripts_do_not_create_db_in_empty_cwd	J	-	空 cwd（库不存在）：脚本不得当场建库；缺库按非 0 明确报告。
+tests/test_maintenance_readonly.py	MaintenanceScriptsReadOnlyTest.test_scripts_leave_existing_db_untouched	J	-	既有库：库文件 mtime/大小/表清单/user_version 全不变；新增文件只限 SQLite sidecar。
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_every_known_deny_message_maps_explicitly	E	-	??
 tests/test_manual_paused_spawn_filter.py	DenyStatusMappingTest.test_unknown_message_falls_back_to_500	E	-	??
 tests/test_manual_paused_spawn_filter.py	PausedSpawnFilterTest.test_batch_all_paused_reports_and_does_not_spawn	E	-	全选皆自暂停：如实说明并拒绝，不派发空队列子进程。
@@ -2259,7 +2289,7 @@ tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_nonblocking_conten
 tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_open_failure_logs_and_refuses	B	-	旧行为：`except OSError: return None`（零日志）。现须显式拒绝 + 留日志。
 tests/test_run_lock_fail_closed.py	AcquireFailClosedTest.test_probe_treats_unverifiable_lock_as_contended	B	-	`_run_lock_held` 探测不出锁状态时按"有人在跑"处置（fail-closed）。
 tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_fallback_branch_returns_lock_busy_3	B	-	??
-tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_probe_branch_skips_with_0	B	-	探针是完整登录的只读健康检查；拿不到互斥时与"已有签到在跑"同一处置（跳过）。
+tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_probe_branch_lock_unavailable_returns_3	B	-	探针是完整登录的健康检查；拿不到互斥 = 队列忙，退出 3（不得静默当成功 0）。
 tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_single_executor_main_returns_3	B	-	主路径（全量/--only）：拿不到锁必须退出 3，不得进队列发起真实登录。
 tests/test_run_lock_fail_closed.py	CallSiteRefusalTest.test_worker_supervisor_returns_3_without_spawning	B	-	??
 tests/test_run_lock_fail_closed.py	TwoProcessLockContentionE2ETest.test_second_process_refused_with_recorded_reason	B	-	??
@@ -2325,7 +2355,7 @@ tests/test_saturday_sign.py	SaturdaySigninGateTest.test_sunday_default_still_ski
 tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_apply_consumes_window_fallback_text	F	node	回填时消费服务端的窗口异常提示（否则该异常在设置页看不见）。
 tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_edge_max_matches_server_cap	F	node	前端上限（分钟）必须逐值等于服务端 `edge_cap_sec / 60`。
 tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_limits_are_written_to_data_max	F	node	上限确实落到 `data-max`（弹窗数字框/滑杆的量程读的就是它）。
-tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_unknown_window_keeps_full_range	F	node	窗口未知（0）时退回既有量程 5 分钟，不把滑块锁成 0。
+tests/test_schedule_edge_limit_js.py	EdgeLimitParityTest.test_unusable_window_is_fail_closed	F	node	窗口不可用（0/负）时上限为 0，与服务端一致——不退回最大量程（fail-open）。
 tests/test_schedule_retry.py	ContainerInjectsRetrySlotTest.test_child_env_carries_actual_slot	B	bash	??
 tests/test_schedule_retry.py	ContainerInjectsRetrySlotTest.test_injection_wins_over_stale_env_key	B	bash	.env 里若写了该键，容器也不据此调度 → 必须以容器实际值覆盖，
 tests/test_schedule_retry.py	HostContainerAgreementTest.test_matrix_agrees	B	bash	??
@@ -2594,8 +2624,8 @@ tests/test_sign_round_guards.py	DeadAccountSkipTest.test_queue_branch_user_cance
 tests/test_sign_round_guards.py	DeadAccountSkipTest.test_schedule_branch_dead_account_skips_without_slot_sleep	B	-	调度 v2 分支：熔断暂停号的槽位在 +180s，活号立即执行——
 tests/test_sign_round_guards.py	LateFirstRunAlertTest.test_after_second_trigger_time_alerts	B	-	07:10 之后仍挂着首签身份：不再有第三轮兜底 → 必须告警。
 tests/test_sign_round_guards.py	LateFirstRunAlertTest.test_before_second_trigger_time_stays_silent	B	-	07:10 之前的首签轮：补签会重跑，维持既有不打扰语义。
-tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_saturday_when_saturday_sign_off	B	-	周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）。
-tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_when_global_paused	B	-	一键暂停开启：探针不发起 run_probe（完整登录=风控暴露），静默退出。
+tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_saturday_when_saturday_sign_off	B	-	周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）→ rc=2。
+tests/test_sign_round_guards.py	ProbeGateTest.test_probe_skipped_when_global_paused	B	-	一键暂停开启：探针不发起 run_probe（完整登录=风控暴露），按"跳过"退出 2。
 tests/test_sign_round_guards.py	SecondRunFilterTest.test_first_run_keeps_all_accounts	B	-	首签轮（无补签信号）：不做过滤，两个账号都进队列。
 tests/test_sign_round_guards.py	SecondRunFilterTest.test_second_run_all_done_exits_silently	B	-	补签轮：全员已了结 → 不进入签到队列、退出码 0（静默结束）。
 tests/test_sign_round_guards.py	SecondRunFilterTest.test_second_run_missing_state_keeps_all_accounts	B	-	状态文件缺失（如目录被清）：宁多勿漏，全量重跑。
@@ -2912,6 +2942,8 @@ tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_reg_same_value_wi
 tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_sensitive_pw_fail_alerts_once_at_threshold	E	-	统一门禁：口令复核失败走独立计数，首达阈值发一次紧急告警。
 tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_sensitive_pw_fail_no_repeat_alert_in_same_window	E	-	同一窗口内超阈值后再多失败也不重复告警（避免刷屏），改为进冷却拒绝。
 tests/test_switch_password_gate.py	SwitchPasswordGateTest.test_wrong_password_does_not_touch_login_fail_counter	E	-	P18 回归守卫：门禁错口令绝不写与登录共用的 _login_fails。
+tests/test_time_field_norm.py	TimeFieldNormRangeTest.test_out_of_range_falls_back	F	node	超 24 小时制的值必须回退，不得原样返回（否则显示/落盘/生效三段不等）。
+tests/test_time_field_norm.py	TimeFieldNormRangeTest.test_valid_shape_and_values_pass	F	node	合法值原样返回；缺位/非数字等形状不符仍回退。
 tests/test_time_prefs.py	EdgeScheduleTest.test_asymmetric_front_back	A	-	前 30s + 后 300s：所有计划时刻 ∈ [06:30.5, 07:45]（默认窗口 06:30~07:50）。
 tests/test_time_prefs.py	EdgeScheduleTest.test_front_back_sum_overflows_window_fallback	A	-	前 5 分 + 后 5 分 超过窗口（06:30~06:40 共 10 分钟）→ 回退默认窗口，不崩溃。
 tests/test_time_prefs.py	EdgeScheduleTest.test_half_minute_front_edge_precision	A	-	0.5 分钟（30s）粒度：前裁 0.5 分钟 → 首块 lo=390.5（浮点分钟精确）。
@@ -3454,19 +3486,11 @@ tests/test_web_calendar_parity.py	CalendarSingleSourceTest.test_no_template_inli
 tests/test_web_calendar_parity.py	CalendarSingleSourceTest.test_old_inline_cell_markup_is_gone	F	-	旧的内联拼日期格写法不得复活。
 tests/test_web_calendar_parity.py	CalendarSingleSourceTest.test_shared_implementation_keeps_the_a11y_and_state_contract	F	-	共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。
 tests/test_web_class_hygiene.py	ClassAttributeHygieneTest.test_no_duplicate_or_unscoped_dark_color_tokens	F	-	class 属性里不得有同变体重复、或与 dark:hover 同值的常驻 dark 声明。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_alert_variants_meet_aa	F	-	4 个语义提示条的「文字 on 底色」在两个模式下都达 AA（按调色板实时计算）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_component_layer_provides_required_classes	F	-	组件层必须齐全（缺了就会被裸写法替代）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_danger_button_text_meets_aa	F	-	危险按钮：白字对底色的对比度必须达 AA（原 `bg-red-500` 只有 3.76:1）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_inset_differs_from_card_in_both_modes	F	-	嵌面板底色在两种模式下都必须**不等于**卡片底色（否则等于没有底色）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_no_raw_markup_bypassing_component_layer	F	-	不得绕过组件层裸写（失败时给出文件:行 + 该改用的组件类）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_palette_and_threshold_helpers_are_wired	F	-	本文件用到的阈值应与 WCAG 一致（防被改成宽松值）。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_semantic_alert_bars_must_use_yb_alert	F	-	**按语义组合判**：`bg-<语义>-50` + `border-<语义>-<档>` 同时出现 → 必须用 `.yb-alert-*`。
-tests/test_web_component_adoption.py	ComponentAdoptionTest.test_text_inputs_must_use_yb_input	F	-	**按元素判**：文本类 `<input>`/`<textarea>`/`<select>` 必须带输入框组件类。
-tests/test_web_design_tokens.py	BadgeContractTest.test_badge_base_class_is_present	F	-	基础类必须存在，且显式 nowrap（此前 7 处有 7 处无）。
+tests/test_web_component_adoption.py	ComponentAdoptionTest.test_no_raw_markup_bypassing_component_classes	F	-	不得绕过组件类裸写（失败时给出文件:行 + 该改用的组件类）。
+tests/test_web_component_adoption.py	ComponentAdoptionTest.test_semantic_alert_bars_must_use_alert	F	-	**按语义组合判**：`bg-<语义>-50` + `border-<语义>-<档>` 同时出现 → 必须用 `.alert`。
+tests/test_web_component_adoption.py	ComponentAdoptionTest.test_text_inputs_must_use_input_class	F	-	**按元素判**：文本类 `<input>`/`<textarea>`/`<select>` 必须带输入框组件类。
 tests/test_web_design_tokens.py	BadgeContractTest.test_badge_thresholds_are_consistent_with_wcag	F	-	本文件用到的两个阈值应与 WCAG 一致（防被误改成宽松值）。
-tests/test_web_design_tokens.py	BadgeContractTest.test_badge_variants_meet_aa	F	-	5 个变体的「文字 on 徽标底」在两个模式下都达 AA（按调色板实时计算）。
-tests/test_web_design_tokens.py	BadgeContractTest.test_no_inline_badge_markup	F	-	徽标必须走 .yb-badge 系列类，不得再出现内联的整段写法。
-tests/test_web_design_tokens.py	PaletteCompletenessTest.test_every_used_shade_is_declared_in_tailwind_config	F	-	用到的每个档位也必须在 tailwind_config 的 colors 里声明（否则类不会被生成）。
+tests/test_web_design_tokens.py	BadgeContractTest.test_no_inline_badge_markup	F	-	徽标必须走 `.badge` + 语义色调档位，不得再出现内联的整段写法。
 tests/test_web_design_tokens.py	PaletteCompletenessTest.test_every_used_shade_is_defined_in_palette	F	-	用到的每个档位都必须在 app.css 里有 `--c-<族>-<档>`（否则计算值无效）。
 tests/test_web_file_lock_slow_ops.py	WebFileLockSlowOpsStaticTest.test_known_slow_list_matches_code	G	-	账实相符：还掉的债必须同步从清单删除（防清单腐烂成"永远绿"）。
 tests/test_web_file_lock_slow_ops.py	WebFileLockSlowOpsStaticTest.test_no_new_slow_call_inside_file_lock	G	-	增长面归零：扫描结果减去存量清单必须为空。
@@ -3626,6 +3650,8 @@ tests/test_window_edge_clamp.py	BoundsClampTest.test_zero_width_window_falls_bac
 tests/test_window_edge_clamp.py	ScheduleBlocksWarningTest.test_clamped_edges_warn_window_and_edges	A	-	收缩缓冲：告警与邮件都要说清"窗口 X~Y + 缓冲从 fs/bs 收缩到 fs'/bs'"。
 tests/test_window_edge_clamp.py	ScheduleBlocksWarningTest.test_fallback_keeps_one_warning	A	-	防御分支（窗口宽度 <= 0）：仍有一条"已回退默认窗口"的告警与邮件。
 tests/test_window_edge_clamp.py	ScheduleBlocksWarningTest.test_normal_window_silent	A	-	正常窗口：既不告警也不并入邮件。
+tests/test_work_accounts_selection.py	SelectionIdentityTest.test_selection_survives_reorder	F	node	重排前后同一选中项解析到同一手机号 / 其新 index。
+tests/test_work_accounts_selection.py	SelectionIdentityTest.test_stale_selection_is_dropped	F	node	账号已不在列表时，选中项不解析出任何目标（不回落成别人的 index）。
 tests/test_yiban_fallback_sh.py	YibanFallbackShTest.test_disabled_is_silent_and_does_not_start_cli	B	bash	默认态（未设/0/false/写错的词）一律静默：这是**最常见**的形态。
 tests/test_yiban_fallback_sh.py	YibanFallbackShTest.test_dotenv_is_parsed_safely	B	bash	`.env` 里带 BOM/CRLF/多余空白/杂键时仍能读到开关（与 run.sh 同源解析）。
 tests/test_yiban_fallback_sh.py	YibanFallbackShTest.test_enabled_in_dotenv_starts_cli_with_fallback	B	bash	开关由网页写进 .env（cron 环境里没有这个变量）——这正是本脚本存在的理由。

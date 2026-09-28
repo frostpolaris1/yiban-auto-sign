@@ -36,9 +36,8 @@
 零覆盖——一天的处理文件都没有，或处理文件里一条终态记录都没有 /
 补账窗口外缺行——有终态输入但因窗口外无法定论且无任何明确差异）。`1` 只留给
 **明确探测到的差异**，其余一律 `2`：把一次崩溃或空覆盖读成"对账不平/对账平"都会误导运维。
-调用谁：`yiban.store.db`（`init_db(migrate=False, cleanup=False)` 的只读口径）、
-`yiban.store.migrations`、`yiban.store.queue_store`、`yiban.infra.env_io`、
-`yiban.clock`。
+调用谁：`yiban.store.db`（`open_readonly` 的只读连接）、`yiban.store.migrations`、
+`yiban.store.queue_store`、`yiban.infra.env_io`、`yiban.clock`。
 谁调用：运维在库升级后手工跑一次；无其它调用点（web 与 `yiban.cli` 都不调它）。
 """
 import argparse
@@ -250,9 +249,12 @@ def _reconcile(args):
     inconclusive = 0
     days_with_file = 0
     days_with_terminal = 0
-    # 只读口径：migrate=False 尤其关键——迁移会写库、v20 还顺手补行，被核对对象在
-    # 核对过程中被改动，对账就不再是核对
-    conn = db.init_db(db_file=db_path, cleanup=False, migrate=False)
+    # 只读连接：绝不经 `init_db`——即便 `migrate=False`，它仍会建表并切 WAL（对被核对
+    # 对象来说就是"核对过程中被改动"）。`open_readonly` 不建库/不建表/不迁移/不切 WAL。
+    conn = db.open_readonly(db_path)
+    if conn is None:
+        print(f"对账无法定论：数据库不可只读打开 {db_path}")
+        return 2
     # 补账窗口在开库之后、逐日核对之前取一次：窗口外缺行不是证据，判据必须先确定
     window = _backfill_window(conn)
     for day in days:

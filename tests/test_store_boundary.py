@@ -1030,7 +1030,7 @@ class StoreDbLayoutTest(unittest.TestCase):
 DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
 
 
-FORWARDED_COUNT = 55
+FORWARDED_COUNT = 57
 
 
 EXPECTED_MODULE_FUNCS = {
@@ -2393,12 +2393,12 @@ class ConfigSummaryMaskingTest(unittest.TestCase):
 
     def test_summary_masks_phone(self):
         import io as _io
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stderr
         accs = [signin.Account(phone="13800138000", password="p",
                                phone_model="Vivo-XXXX", phone_code="code"),
                 signin.Account(phone="13900139001", password="p")]
         buf = _io.StringIO()
-        with redirect_stdout(buf):
+        with redirect_stderr(buf):     # 摘要走 stderr（stdout 只放结果，见 docs/dev/cli.md §2）
             signin.print_config_summary(accs)
         out = buf.getvalue()
         self.assertNotIn("13800138000", out, "完整手机号不得出现在摘要里")

@@ -253,11 +253,13 @@ OVERSIZED = {
         "_mark_exhausted/_unmark_exhausted）独立成 notice 子模块，额度占用与退还主体留在本模块。"
     )),
     "yiban/cli.py": (None, (
-        "命令行统一入口：argparse 装配 + 七个子命令实现 + 单行 JSON 字段契约。整块服务于"
+        "命令行统一入口：argparse 装配 + 子命令分发 + 单行 JSON 字段契约。整块服务于"
         "同一件事——命令行面与其退出码（每加一个子命令都要同时改解析与分发，拆成两个"
-        "文件只增加跨文件对偶，没有独立变更轴）。当前 700 余行（含约 45 行字段契约表与"
-        "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
-        "（config/capacity/state/db/version）」切成两个模块。"
+        "文件只增加跨文件对偶，没有独立变更轴）。当前 696 行（含字段契约表与逐条硬约定"
+        "说明）：db 维护族（只读快照 / 在线备份 / 恢复）已按登记的下一步拆入"
+        "`yiban/engine/db_maintenance.py`（独立变更轴 + 被 capacity/version 复用的只读快照）。"
+        "若再增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
+        "（config/capacity/state/version）」继续切分。"
     )),
     "web/static/js/components/settings-executors.js": (800, (
         "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 每个写操作的口令门 + 写明细口径的注释）。"
