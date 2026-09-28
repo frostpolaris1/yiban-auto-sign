@@ -440,6 +440,29 @@ class ManualReclaimIsolationTest(_Base):
                          "别人的 sign-state 不得被改写成 user_cancelled")
         self.assertEqual(self._row(a)["state"], "done", "本轮账号被重签并收尾")
 
+    def test_reap_scoped_to_this_rounds_accounts(self):
+        """起跑回收也必须按允许集收窄：别的账号的陈旧 `claimed` 一行不动，本轮账号自己的
+        陈旧 `claimed` 被回收（**不整段跳过回收**——否则手动账号自己卡住就没人拉回来）。"""
+        a, b = _phone(1), _phone(2)
+        self._seed_v(self.V)
+        sh = self._other_vshard_for(a)
+        # 别人的陈旧 claimed（租约远超宽限期）：修法前起跑那次无条件回收会改它（跨账号写）
+        self._add_task(b, vshard=sh, state="claimed", owner="other:1:1",
+                       lease_until=_ts(seconds=-600), epoch=5)
+        # 本轮账号自己也是陈旧 claimed：必须被回收 → 重新领取执行
+        self._add_task(a, vshard=sh, state="claimed", owner="me:1:1",
+                       lease_until=_ts(seconds=-600), epoch=3)
+        before_b = self._row(b)
+        calls = []
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (calls.append(acc.phone),
+                                            (True, "ok", False, "success"))[1]):
+            self._run_v3(self._accounts(a), reclaim=True, requeue_final=True)
+        self.assertEqual(self._row(b), before_b,
+                         "别人的陈旧 claimed 不得被跨账号回收（owner/epoch 逐字段不变）")
+        self.assertEqual(calls, [a], "本轮账号自己的陈旧 claimed 被回收后应重新执行")
+        self.assertEqual(self._row(a)["state"], "done")
+
 
 # ---------------------------------------------------------------------------
 # 通道数 M：唯一口径
