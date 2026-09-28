@@ -192,7 +192,6 @@ _anchor_file_state_ex = _audit_chain._anchor_file_state_ex
 _anchor_status = _audit_chain._anchor_status
 verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
-_purge_event_covers = _audit_chain._purge_event_covers
 _purge_event_sets_min = _audit_chain._purge_event_sets_min
 audit_health = _audit_chain.audit_health
 
