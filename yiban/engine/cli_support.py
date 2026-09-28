@@ -1,32 +1,38 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**功能**
-CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
+CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以及 CLI 的 stdout/stderr
+输出收口与退出码分族。
 
-三件事都属"进程外壳"而非签到逻辑：谁在跑（单实例锁，防 cron 全量与手动 `--only`
+前几件事属"进程外壳"而非签到逻辑：谁在跑（单实例锁，防 cron 全量与手动 `--only`
 并发登录同一账号）、日志写哪儿（按天文件 handler，装配延迟到入口、导入零副作用）、
-状态文件怎么安全读改写（跨进程文件锁）。引擎其余部分与入口都依赖它们，故独立成模块。
+状态文件怎么安全读改写（跨进程文件锁）。输出收口（`_emit_json` / `_say` / `_fail` /
+`_emit_json_error` / `_UsageError` / `_exit_code`）与退出码常量同属"命令行契约"这一
+独立变更轴：调用方（`yiban/cli.py`）按它们解析 stdout 与退出码，引擎侧不碰。
 
 **归属**
-`yiban.engine` 的进程外壳支撑层（`runner` / `workers` / `round` / `probe` / `alerts`
-与 web 服务层都依赖它）。
+`yiban.engine` 的进程外壳与命令行契约支撑层（`runner` / `workers` / `round` / `probe`
+/ `alerts` 与 web 服务层都依赖它）。
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
 `GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。
 运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
 互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
+输出收口供 `yiban/cli.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
+一律 `_emit_json_error` 保证 `--json` 下 stdout 可解析）。
 
 **通信**
-输入：日志级别/路径等环境配置、状态文件路径与加锁范围。
-输出：配置好的 logger/handler、被加锁的读改写上下文。
+输入：日志级别/路径等环境配置、状态文件路径与加锁范围、结果对象。
+输出：配置好的 logger/handler、被加锁的读改写上下文、stdout 单行 JSON / stderr 人话。
 调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
-谁调用：`yiban/cli.py`（读 `last_fatal_error` 的 `--json` 摘要）、`runner`、`workers`、
-`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
+谁调用：`yiban/cli.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
+`workers`、`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
 页面的"正在跑/存活"判定依赖本模块的全局运行锁。
 本模块内部用裸名，跨模块一律走模块属性访问。
 """
+import json
 import logging
 import os
 import sys
@@ -294,3 +300,129 @@ def clear_fatal_error():
     """
     global _LAST_FATAL_ERROR
     _LAST_FATAL_ERROR = None
+
+
+# ---------------------------------------------------------------------------
+# CLI 输出与错误对象（stdout 单行 JSON / stderr 人话；退出码族的分族字段）
+# ---------------------------------------------------------------------------
+def _masked_tree(node):
+    """递归遮罩 JSON 树里所有**字符串叶子**的手机号（口径 = `mask_phones_in_text`）。
+
+    只动 str 叶子、不动数字：对序列化后的整行打码会连 11 位整数字段值（如巨型库
+    的 `size_bytes`）一起改写，产出 `138****0000` 这种非法 JSON——遮罩必须在
+    "值还是字符串"的时候做。键名是调用方写死的字段名，不承载用户数据，不经过这里。
+    """
+    if isinstance(node, str):
+        return mask_phones_in_text(node)
+    if isinstance(node, dict):
+        return {k: _masked_tree(v) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_masked_tree(v) for v in node]
+    return node
+
+
+def _emit_json(payload):
+    """把结果对象打成**一整行** JSON 写 stdout（调用方直接 `json.loads`）。
+
+    维护类子命令不建引擎的日志装配，`errors`/`detail` 等字段夹带的异常原文可能内嵌
+    裸号——叶子遮罩（见 `_masked_tree`）是 stdout 面唯一的出口收口，序列化前做。
+    """
+    sys.stdout.write(json.dumps(_masked_tree(payload), ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _say(message):
+    """人类可读汇总：一律走 stderr（stdout 必须保持"只有结果"）。
+
+    与 `_emit_json` 同口径过遮罩（`mask_phones_in_text`）：这里是维护类子命令唯一的
+    "人话"出口，且 stderr 会被 run.sh 的 `2>&1` 原样落进当天日志文件——formatter
+    管不到直写。
+    """
+    sys.stderr.write(mask_phones_in_text(str(message)) + "\n")
+    sys.stderr.flush()
+
+
+def _emit_json_error(command, code, errors, error_kind="error", **extra):
+    """失败路径的 stdout 收口：一整行 `ok=false` 的对象，`exit_code` 与进程返回码一致。
+
+    凡带 `--json` 的调用，**任何**退出路径（含用法错误、未知子命令、多余参数、互斥
+    参数、引擎 argparse 拒绝）都必须留下这一行——否则调用方拿到非 0 退出码却解析不到
+    任何原因（`sign --bogus --json` 曾 rc=2 且 stdout 零字节）。
+
+    `error_kind`：**机读**的失败分族字段（值域见 `_EXIT_KINDS` 与 `docs/dev/cli.md`
+    §3）。退出码承担不了全部分族（rc=2 同时承载"用法错误"与"本轮全部跳过"），故失败
+    对象里再给一个稳定字段；新增取值只追加，不复用旧名。
+    """
+    payload = {"command": command, "ok": False, "exit_code": code,
+               "error_kind": error_kind, "errors": list(errors)}
+    payload.update(extra)
+    _emit_json(payload)
+
+
+def _fail(command, code, errors, json_mode, error_kind="error", **extra):
+    """失败路径：错误信息进 stderr；`--json` 时仍打一行 `ok=false` 的对象后返回退出码。
+
+    失败也保持"stdout 可解析"是刻意的：调用方不必先看退出码再决定怎么解析输出，
+    按 `ok` 分支即可（退出码仍按契约表返回）。
+    """
+    for line in errors:
+        _say(line)
+    if json_mode:
+        _emit_json_error(command, code, errors, error_kind=error_kind, **extra)
+    return code
+
+
+#: 退出码 → 机读分族（`docs/dev/cli.md` §3 的码表；**只增不改**既有码含义）。
+_EXIT_KINDS = {
+    0: "ok",
+    1: "failure",
+    2: "skipped",
+    3: "locked",
+    EXIT_SCHEMA_MIGRATION: "schema_migration",
+    10: "second_run_check",
+}
+
+
+def exit_kind(code):
+    """退出码 → 机读分族（sign/probe 这类"机器可读输出就是退出码"的子命令用）。
+
+    2 的语义是"全部跳过或窗口外未了结"、3 是"队列忙"、4 是迁移拒启、10 是需补跑；
+    未知码回退 `"unknown"`，绝不猜。
+    """
+    return _EXIT_KINDS.get(code, "unknown")
+
+
+class _UsageError(Exception):
+    """CLI 解析层的用法错误（多余参数 / 互斥开关）：不直接 `sys.exit`，交给入口统一处置。
+
+    带出 `parser` 与 `command`/`kind` 是为了让 stderr 保留 argparse 形态的 usage（"人类
+    可读的 usage 仍可走 stderr"），同时让 `--json` 路径能打出带 `command` 与 `error_kind`
+    的结构化错误对象——六种非法参数此前输出逐字节相同，不可区分。
+    """
+
+    def __init__(self, message, parser, command, kind="usage"):
+        super().__init__(message)
+        self.parser = parser
+        self.command = command
+        self.kind = kind
+
+
+def _exit_code(exc):
+    """SystemExit → 进程返回码（`--help` 为 0；用法错误为 2；非整数码按 2）。"""
+    code = getattr(exc, "code", 2)
+    return code if isinstance(code, int) else 2
+
+
+def _guess_command(argv, subs):
+    """从 argv 猜出子命令名（只为结构化错误对象里的 `command` 字段）。
+
+    正常解析走 `args.command`；本函数服务"解析都没过"的路径（未知子命令 / 缺子命令），
+    此时 `args` 取不到。命中已注册子命令即返回，遇到首个非选项 token 原样返回（未知
+    子命令也如实报出来），都没有则空串。
+    """
+    for token in argv:
+        if token in subs:
+            return token
+        if not token.startswith("-"):
+            return token
+    return ""

@@ -19,6 +19,9 @@
   }
 
   function create(ctx) {
+    // 防重入：写操作在途时后续触发一律早退。此前只置 ctx.busy（页面拿它暂停轮询），
+    // 不挡重复点击——restore/move/signin 这类无确认弹窗的入口双击即重发。
+    var inflight = false;
     function fail(e) {
       // 用户取消弹窗（dangerousSubmit 以 canceled 标记拒绝）：不是失败，不提示
       if (e && e.canceled) return;
@@ -27,15 +30,19 @@
     // 统一链路：置忙 → 请求 → 成功提示 + 刷新 → 复位。fallback 为空表示不弹成功提示。
     // suffix 追加在（后端 msg 或 fallback）之后，用于「软删除可恢复」这类固定补充说明。
     // after 在刷新完成后执行（ctx.refresh 需返回 Promise），用于对新生行的就地反馈。
-    function run(promise, fallback, after, suffix) {
+    // makeReq 是**延迟构造**请求的 thunk：若把已构造的 promise 当参数传入，请求在进入
+    // 本函数前就已发出，守卫形同虚设。
+    function run(makeReq, fallback, after, suffix) {
+      if (inflight) return;
+      inflight = true;
       ctx.busy(true);
-      return promise.then(function (data) {
+      return makeReq().then(function (data) {
         if (fallback || suffix) {
           YB.toast.success(((data && data.msg) || fallback || "操作成功") + (suffix || ""));
         }
         var ref = ctx.refresh();
         if (after) return Promise.resolve(ref).then(function () { after(data); });
-      }).catch(fail).then(function () { ctx.busy(false); });
+      }).catch(fail).then(function () { inflight = false; ctx.busy(false); });
     }
 
     // 列表刷新会整表重建：按行上的 data-acct-idx 找回新行，做一次短暂高亮。
@@ -86,7 +93,7 @@
       }
       ask.then(function (ok) {
         if (!ok) return;
-        run(YB.api("POST", "/api/accounts/" + a.index + "/review", body),
+        run(function () { return YB.api("POST", "/api/accounts/" + a.index + "/review", body); },
           action === "approve" ? "已通过" : "已拒绝");
       });
     }
@@ -98,33 +105,40 @@
         confirmText: "删除", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        run(YB.api("DELETE", "/api/accounts/" + a.index, { phone: a.phone }), "已删除账号", null,
-          " · 可在『待删除账号』恢复（7 天内）");
+        run(function () { return YB.api("DELETE", "/api/accounts/" + a.index, { phone: a.phone }); },
+          "已删除账号", null, " · 可在『待删除账号』恢复（7 天内）");
       });
     }
 
     function restore(a) {
-      run(YB.api("POST", "/api/accounts/" + a.index + "/restore", { phone: a.phone }), "已恢复");
+      run(function () {
+        return YB.api("POST", "/api/accounts/" + a.index + "/restore", { phone: a.phone });
+      }, "已恢复");
     }
 
     // 彻底删除账号不可逆：走 dangerousSubmit，由后端响应 reason 决定要口令还是倒计时确认
     function purge(a) {
-      run(YB.dangerousSubmit({
-        path: "/api/accounts/" + a.index + "/purge",
-        body: { phone: a.phone },
-        desc: "彻底删除「" + a.display_name + "」(" + a.phone + ")？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
-        delayDesc: "彻底删除「" + a.display_name + "」(" + a.phone + ") 会物理清除其凭据，不可恢复。确认继续？"
-      }), "已彻底删除");
+      run(function () {
+        return YB.dangerousSubmit({
+          path: "/api/accounts/" + a.index + "/purge",
+          body: { phone: a.phone },
+          desc: "彻底删除「" + a.display_name + "」(" + a.phone + ")？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
+          delayDesc: "彻底删除「" + a.display_name + "」(" + a.phone + ") 会物理清除其凭据，不可恢复。确认继续？"
+        });
+      }, "已彻底删除");
     }
 
     function move(a, dir) {
       // 行重排后位置可能落在视口外：成功提示 + 新行短暂高亮，避免用户重复点击
-      run(YB.api("POST", "/api/accounts/" + a.index + "/move", { dir: dir, phone: a.phone }),
-        dir === -1 ? "已上移" : "已下移", function () { flashRow(a.index); });
+      run(function () {
+        return YB.api("POST", "/api/accounts/" + a.index + "/move", { dir: dir, phone: a.phone });
+      }, dir === -1 ? "已上移" : "已下移", function () { flashRow(a.index); });
     }
 
     function signin(a) {
       // 手动签到需要完整手机号：按需取详情，完整号只在本次请求体内使用
+      if (inflight) return;
+      inflight = true;
       ctx.busy(true);
       YB.api("GET", "/api/accounts/" + a.index + "/detail").then(function (d) {
         var full = d && d.account && d.account.phone;
@@ -135,7 +149,7 @@
         // 先就地显示「待签中」，随后重拉真实状态，不等 10s 轮询
         markSigning(a.index);
         setTimeout(function () { ctx.refresh(); }, 1000);
-      }).catch(fail).then(function () { ctx.busy(false); });
+      }).catch(fail).then(function () { inflight = false; ctx.busy(false); });
     }
 
     function batch(action, ids, phones) {
@@ -187,6 +201,8 @@
     // gated（可选）：不可逆批量操作传 {desc, delayDesc}，改走 dangerousSubmit 由后端
     // 响应 reason 分流（口令 / 倒计时确认）；不传则沿用原请求路径。
     function submit(path, body, gated) {
+      if (inflight) return;
+      inflight = true;
       ctx.busy(true);
       var isDelete = !!(body && body.action === "delete");
       var req = gated
@@ -202,7 +218,7 @@
       }).catch(function (e) {
         // 409 = 列表在快照后漂移，后端文案已提示刷新
         fail(e);
-      }).then(function () { ctx.busy(false); });
+      }).then(function () { inflight = false; ctx.busy(false); });
     }
 
     return { review: review, remove: remove, restore: restore, purge: purge, move: move, signin: signin, batch: batch };

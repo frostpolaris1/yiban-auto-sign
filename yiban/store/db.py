@@ -388,6 +388,10 @@ _FORWARDED_STATE = {
     "decrypt_account_rows": _accounts,
     "read_accounts": _accounts,
     "load_accounts": _accounts,
+    # 只读装载（MF-60）：不经 init_db，不建库/不建表/不迁移，供"只读"维护路径用
+    "load_accounts_readonly": _accounts,
+    # 只读打开（MF-60）：与 init_db 分道，不切 WAL、不建 -shm/-wal（连接层定义点）
+    "open_readonly": _connection,
     "_next_sort_order": _accounts,
     "_convert_integrity_error": _accounts,
     "add_account": _accounts,
@@ -484,7 +488,8 @@ class _StateForwardingModule(types.ModuleType):
 sys.modules[__name__].__class__ = _StateForwardingModule
 
 
-def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True):
+def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True,
+            create=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
@@ -494,6 +499,12 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     校验类工具应传 False，避免只读校验改变数据。
     migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
     （v3 rechain）等，使"被校验对象在校验过程中被改动"。
+    create=False：**只读初始化**——只打开既有库（`connection.open_readonly(...,
+    immutable=False)`，`mode=ro` 见得到并发写者与锁），**不建库、不建表、不迁移、不切
+    WAL、不跑清理**，供取证类只读调用方（如 `scripts/audit_verify.py`）复用
+    `db.get_conn()` 体系而不改动目标库。库文件不存在时抛 FileNotFoundError（绝不
+    `sqlite3.connect` 出空库——空库会让只读校验在空集上误报"通过"）。默认 True =
+    既有行为逐字不变。
     """
     # 库路径 / .env 路径**无条件刷新**（即使连接已存在——它们是"最近一次 init_db 的
     # 来源"），经 connection 的显式 API 写入
@@ -506,6 +517,18 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     # 看到的根本不是同一个库（2026-09-21 测试机 47 E2E 实测）。
     db_path = db_file or env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)
     _connection.set_db_file(db_path)
+    if not create:
+        # 只读初始化：已初始化过就直接复用（只读入口只在进程首次打开库时有意义，
+        # 不能把既有连接静默换成另一条只读连接）。
+        existing = _connection.current()
+        if existing is not None:
+            return existing
+        conn = _connection.open_readonly(db_path, immutable=False)
+        if conn is None:
+            raise FileNotFoundError(f"数据库文件不存在: {db_path}（只读初始化不建库）")
+        _connection.set_conn(conn)
+        conn.execute("PRAGMA busy_timeout=15000")
+        return conn
     conn = _connection.current()
     if conn is not None:
         return conn

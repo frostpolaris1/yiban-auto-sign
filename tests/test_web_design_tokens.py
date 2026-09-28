@@ -1,34 +1,25 @@
 # -*- coding: utf-8 -*-
-"""回归守卫（2026-09-10，V3-5）：设计令牌的两类"静默失败"。
+"""回归守卫：设计令牌的"静默失败"。
 
 标签：F · 前端与界面守卫
-覆盖：设计令牌的两类静默失败——用到的色档必须在 app.css 有 `--c-*` 且在 tailwind config 声明（缺一即类不生效或属性静默丢失）；状态徽标必须是单一事实源且配色达 AA
-对应实现：`web/templates/partials/tailwind_config.html` 的 colors 声明、`web/static/css/app.css`的调色板与 `.yb-badge` 系列
-关键断言：两个方向各一条用例（config 有 / 调色板无，与反之）；徽标的内联整段写法不得复活、基础类必须显式 nowrap；5 个变体的对比度由 `_wcag` 从调色板**实时算出**且两种模式都达 AA；阈值常量与 WCAG 一致
+覆盖：用到的色档必须在 app.css 调色板里有 `--c-*`（否则计算值无效、属性静默丢失）；状态徽标不得再现内联整段写法；阈值常量与 WCAG 一致
+对应实现：`web/static/css/app.css` 的调色板与 `.badge` 语义色调档位（`badge--ok/bad/warn/info/muted`）
+关键断言：单方向一条用例（用到的档位必须在调色板里定义）；徽标内联整段写法不得复活；阈值常量与 WCAG 一致
 依赖：纯本地——扫前端源码**原文且不剥注释**（故注释里出现色值或徽标 class 串会被判成违规），无需 node、不联网
 
-## 一、调色板完整性：用了但没定义的档位 → 属性**静默丢失**
+## 调色板完整性：用了但没定义的档位 → 属性**静默丢失**
 
-本项目的 Tailwind 用自定义色板：`tailwind_config.html` 声明
-`blue: {200:'rgb(var(--c-blue-200)/<alpha-value>)', …}`，`app.css` 给出
-`--c-blue-200:191 219 254`。**两者缺一，类就不生效**：
-  · 只在 config 里声明、调色板没有 → 变量未定义 → 计算值无效 → 属性丢失；
-  · 只在调色板里有、config 没声明 → **Tailwind 根本不生成这个类**。
-两者都不报错、不警告 —— 页面上只是"某处少了个底色/边框"，极难发现。
+`app.css` 给出 `--c-blue-200:191 219 254`，前端写 `bg-blue-200` 时用的是同名变量。
+调色板缺档位 → 变量未定义 → 计算值无效 → 属性丢失，不报错、不警告 —— 页面上只是
+"某处少了个底色/边框"，极难发现。V3-5 实测 `bg-blue-50` ×3 与两处 hover 档位都因此
+静默失效，已按 Tailwind 官方标准值补齐，并由本文件的用例钉住"再也不能缺"。
 
-V3-5 实测到的三例（都因此静默失效）：
-  · `bg-blue-50`   ×3 —— 管理员角色徽标 → **底色为空**；
-  · `hover:bg-green-100` ×2、`hover:bg-red-100` ×2 —— 日历格 hover 无效果
-    （blue 族从 200 起、green/red 从 200 起，都没有 50/100）。
-已按 Tailwind 官方标准值补齐，并由本文件的两个用例钉住"再也不能缺"。
+## 状态徽标必须是**单一事实源**（不得再出现内联写法）
 
-## 二、状态徽标必须是**单一事实源**（不得再出现内联写法）
-
-徽标这段 class 串此前被复制 **14 处、9 种写法**，伴随四项缺陷（`whitespace-nowrap`
-7 有 7 无；error 用 `text-red-600` = 4.41:1 不达 AA；neutral 用 `text-zinc-500` on
-`bg-zinc-100` = 4.40:1 不达 AA；info 用不存在的 `bg-blue-50`）。V3-5 收敛为组件层的
-`.yb-badge` + 5 个语义变体，本文件钉住：① 内联写法不得复活；② 变体配色在两个模式下
-都达 AA（对比度由 `_wcag` 从调色板实时算出）。
+徽标 class 串此前被复制 **14 处、9 种写法**（`whitespace-nowrap` 7 有 7 无；error
+不达 AA；info 用不存在的档位）。现统一走 Adminator `.badge` + app.css 的
+`badge--{ok,bad,warn,info,muted}` 语义色调档位，本文件钉住内联写法不得复活；
+各档配色的 AA 由 `test_web_text_contrast.py` 从调色板实时校验。
 """
 
 import os
@@ -38,23 +29,13 @@ import unittest
 from _wcag import (
     AA_NON_TEXT,
     AA_NORMAL_TEXT,
-    BG_DARK,
-    BG_LIGHT,
     COLOR_FAMILIES,
     WEB,
-    blend,
-    contrast,
-    load_config_shades,
     load_palette,
 )
 
 SCAN_DIRS = (os.path.join(WEB, "templates"), os.path.join(WEB, "static", "js"))
 SCAN_EXTS = (".html", ".js")
-
-COMPONENT_LAYER = os.path.join(WEB, "templates", "partials", "component_layer.html")
-
-# 徽标语义变体 → 该变体代表的含义（供失败信息可读）
-BADGE_VARIANTS = ("neutral", "info", "success", "warning", "error")
 
 # 任意「工具-色族-档位」（允许 dark:/hover: 等前缀）
 _UTIL_RE = re.compile(
@@ -107,26 +88,10 @@ class PaletteCompletenessTest(unittest.TestCase):
                 "变量未定义会让该属性**静默丢失**：\n" + detail
             )
 
-    def test_every_used_shade_is_declared_in_tailwind_config(self):
-        """用到的每个档位也必须在 tailwind_config 的 colors 里声明（否则类不会被生成）。"""
-        declared = load_config_shades()
-        missing = []
-        for token, where in sorted(_used_shades().items()):
-            fam, shade = token.rsplit("-", 1)
-            if fam not in declared:
-                missing.append(f"  {token}  色族 {fam!r} 未在 colors 里声明（{where[0]}）")
-            elif shade not in declared[fam]:
-                missing.append(
-                    f"  {token}  {fam} 已声明但缺 {shade} 档"
-                    f"（现有 {sorted(declared[fam], key=int)}，见 {where[0]}）"
-                )
-        if missing:
-            self.fail("以下档位未被 tailwind_config 声明 —— Tailwind 不会生成对应类：\n" + "\n".join(missing))
-
 
 class BadgeContractTest(unittest.TestCase):
     def test_no_inline_badge_markup(self):
-        """徽标必须走 .yb-badge 系列类，不得再出现内联的整段写法。"""
+        """徽标必须走 `.badge` + 语义色调档位，不得再出现内联的整段写法。"""
         hits = [
             f"  {rel}:{lineno}  {line.strip()[:120]}"
             for rel, lineno, line in _scan_frontend_sources()
@@ -134,65 +99,9 @@ class BadgeContractTest(unittest.TestCase):
         ]
         if hits:
             self.fail(
-                f"发现 {len(hits)} 处内联徽标写法（应改为 `yb-badge yb-badge-<变体>`，"
-                "见 web/templates/partials/component_layer.html 的说明）：\n" + "\n".join(hits)
+                f"发现 {len(hits)} 处内联徽标写法（应改为 `badge badge--<变体>`，"
+                "语义色调档位见 app.css）：\n" + "\n".join(hits)
             )
-
-    def test_badge_base_class_is_present(self):
-        """基础类必须存在，且显式 nowrap（此前 7 处有 7 处无）。"""
-        with open(COMPONENT_LAYER, encoding="utf-8") as fh:
-            css = fh.read()
-        m = re.search(r"\.yb-badge\s*\{([^}]*)\}", css)
-        self.assertIsNotNone(m, "component_layer 里找不到 .yb-badge 基础类")
-        body = m.group(1)
-        self.assertIn("white-space: nowrap", body, ".yb-badge 必须显式 nowrap（防长徽标折行）")
-        self.assertIn("border-radius: 9999px", body, ".yb-badge 必须保持胶囊形（rounded-full）")
-
-    def test_badge_variants_meet_aa(self):
-        """5 个变体的「文字 on 徽标底」在两个模式下都达 AA（按调色板实时计算）。"""
-        with open(COMPONENT_LAYER, encoding="utf-8") as fh:
-            css = fh.read()
-        palette = load_palette()
-
-        blocks = {}
-        for m in re.finditer(r"([^{}]*?)\.yb-badge-(\w+)\s*\{([^}]*)\}", css):
-            selector, variant, body = m.group(1), m.group(2), m.group(3)
-            if variant not in BADGE_VARIANTS:
-                continue
-            mode = "dark" if ".dark" in selector else "light"
-            blocks[(variant, mode)] = body
-
-        problems = []
-        for variant in BADGE_VARIANTS:
-            for mode in ("light", "dark"):
-                body = blocks.get((variant, mode))
-                if body is None:
-                    problems.append(f"  {variant} / {mode}：component_layer 里找不到该变体的定义")
-                    continue
-                bg_m = re.search(
-                    r"background-color:\s*rgb\(var\(--c-([a-z]+-\d+)\)(?:\s*/\s*([\d.]+))?\)", body
-                )
-                # ⚠ 必须锚定行首式 `color:`：`border-color:` 也以 `color:` 结尾，
-                # 不锚定会把边框色当成文字色（会让本用例误报）。
-                fg_m = re.search(r"(?<![\w-])color:\s*rgb\(var\(--c-([a-z]+-\d+)\)\)", body)
-                if not bg_m or not fg_m:
-                    problems.append(f"  {variant} / {mode}：解析不出底色或文字色")
-                    continue
-                fg = palette[fg_m.group(1)]
-                bases = [palette[BG_LIGHT]] if mode == "light" else [
-                    palette[BG_DARK], palette["zinc-800"]  # 徽标既在页面底也在卡片底上
-                ]
-                for base in bases:
-                    alpha = float(bg_m.group(2)) if bg_m.group(2) else 1.0
-                    bg = blend(palette[bg_m.group(1)], base, alpha)
-                    ratio = contrast(fg, bg)
-                    if round(ratio, 2) < AA_NORMAL_TEXT:
-                        problems.append(
-                            f"  {variant} / {mode}：{fg_m.group(1)} on {bg_m.group(1)}"
-                            f" = {ratio:.2f}:1 < AA {AA_NORMAL_TEXT}:1"
-                        )
-        if problems:
-            self.fail("状态徽标配色不达标：\n" + "\n".join(problems))
 
     def test_badge_thresholds_are_consistent_with_wcag(self):
         """本文件用到的两个阈值应与 WCAG 一致（防被误改成宽松值）。"""
