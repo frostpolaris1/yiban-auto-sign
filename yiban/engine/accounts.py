@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 
 from yiban.engine import config_check
-from yiban.infra import account_crypto
+from yiban.infra import account_crypto, env_io
 from yiban.mail.config import _mask_addr
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
@@ -146,10 +146,20 @@ def _load_accounts_from_file(migrate=True):
 
     db 层返回已解密明文；此处只做审核状态过滤。
 
-    migrate=False 时**不跑 schema 迁移**（只读校验模式，见 `load_accounts`）。
+    migrate=False 是**只读装载**（`config` / `sign --check-config`）：走
+    `db.load_accounts_readonly`——独立只读连接，不建库/不建表/不迁移/不切
+    WAL/不回写，库文件或表不存在即返回空（随后由 `load_accounts` 回落 JSON/
+    环境变量来源）。此前的实现仍经 `init_db(migrate=False)`，会在空目录当场建出
+    一个 69632B 的伪库：宣称"只读"的 config 反而写盘。
     """
-    db.init_db(env_file=config_check._key_env_file(), cleanup=False, migrate=migrate)
-    all_accounts = db.load_accounts()
+    if migrate:
+        db.init_db(env_file=config_check._key_env_file(), cleanup=False, migrate=True)
+        all_accounts = db.load_accounts()
+    else:
+        all_accounts = db.load_accounts_readonly(
+            env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT),
+            env_file=config_check._key_env_file(),
+        )
     # 跳过待审核（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝（status=rejected：管理员审核不通过，不得签到）与待删除账号
     # （deleted：网页端软删除，保留期内可恢复，不参与签到）。
@@ -257,11 +267,10 @@ def _dedupe_by_phone(accounts):
 def load_accounts(migrate=True):
     """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量（按手机号去重）。
 
-    migrate：False = **只读校验模式**（`config` 子命令 / `sign --check-config`）：
-    不跑 schema 迁移。迁移会重写审计链（v3 rechain）等，使"被校验对象在校验过程
-    中被改动"——`db.init_db` 的文档自述"校验类工具应传 False"（宣称只读的配置检查实际会把目标
-    库迁到 v17）。账号表由 `init_db` 的基线
-    建表保证存在（`CREATE TABLE IF NOT EXISTS`），故只读模式下取账号不依赖迁移。
+    migrate：False = **只读装载模式**（`config` 子命令 / `sign --check-config`）：
+    经 `db.load_accounts_readonly` 用独立只读连接读账号——不建库、不建表、不迁移、
+    不切 WAL、不回写。迁移会重写审计链（v3 rechain）等，使"被校验对象在校验过程中
+    被改动"（曾实测宣称只读的 config 把库迁到当时 schema 顶，并在空目录建出伪库）。
     """
     for loader in (
         # 文件来源是唯一碰库的加载器：migrate 只对它有意义

@@ -27,7 +27,7 @@
 | `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
 | `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
 | `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
-| `db` | 数据库维护（状态/完整性/备份） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `dry_run` | 0 / 1 |
+| `db` | 数据库维护（状态/完整性/备份/恢复） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `restore_from` `fingerprint` `backup_user_version` `backup_size_bytes` `pre_restore_copy` `dry_run` | 0 / 1 / 2 |
 | `version` | 打印版本 | `command` `version` `python` `user_version` | 0 |
 
 `capacity --measure` 与 `db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
@@ -55,9 +55,7 @@
 这些页面。
 """
 import argparse
-import json
 import os
-import pathlib
 import sqlite3
 import subprocess
 import sys
@@ -65,11 +63,20 @@ import sys
 from yiban import __version__ as RELEASE_VERSION
 from yiban import state_gc, window
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import cli_support, runner
+from yiban.engine import cli_support, db_maintenance, runner
 from yiban.engine import schedule as schedule_mod
+from yiban.engine.cli_support import (
+    _emit_json,
+    _emit_json_error,
+    _exit_code,
+    _fail,
+    _guess_command,
+    _say,
+    _UsageError,
+    exit_kind,
+)
 from yiban.infra import env_io
-from yiban.masking import mask_phone, mask_phones_in_text
-from yiban.store import accounts as store_accounts
+from yiban.masking import mask_phone
 from yiban.store import db as store_db
 from yiban.store import purge_guard
 
@@ -77,6 +84,14 @@ USAGE = (
     "用法: python -m yiban.cli <子命令> [选项]\n"
     "子命令: sign | probe | config | capacity | state | db | version\n"
     "（见 `python -m yiban.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
+)
+
+#: 路径相关环境变量的说明：根 `--help` 与 `config` / `db` 子命令描述共用同一份，避免
+#: 三处各写一遍而漂移（`YIBAN_DB_FILE` 此前不在任何 help 里，`.env` 写了账号仍报
+#: "未配置任何账号"却回显 `env_file:.env`，就是"唯一改道变量不可见"造成的误判）。
+_PATHS_HELP = (
+    "路径相关环境变量：YIBAN_ENV_FILE（.env 密钥来源）/ YIBAN_DB_FILE（库文件）/ "
+    "YIBAN_STATE_DIR（状态目录）/ YIBAN_LOG_FILE（日志文件）；相对路径一律按当前工作目录解析。"
 )
 
 #: 仓库根（`yiban/cli.py` 上溯两层）。**只用来定位转发给子进程的工具脚本**，
@@ -89,62 +104,6 @@ CAPACITY_PROBE = os.path.join(_REPO_DIR, "scripts", "loadtest", "capacity_probe.
 
 #: 参数原样透传给引擎、CLI 只接 `--json` 的子命令
 _PASSTHROUGH = ("sign", "probe")
-
-
-# ---------------------------------------------------------------------------
-# 输出：结果进 stdout（单行 JSON），人话进 stderr
-# ---------------------------------------------------------------------------
-def _masked_tree(node):
-    """递归遮罩 JSON 树里所有**字符串叶子**的手机号（口径 = `mask_phones_in_text`）。
-
-    只动 str 叶子、不动数字：对序列化后的整行打码会连 11 位整数字段值（如巨型库
-    的 `size_bytes`）一起改写，产出 `138****0000` 这种非法 JSON——遮罩必须在
-    "值还是字符串"的时候做。键名是本模块写死的字段名，不承载用户数据，不经过这里。
-    """
-    if isinstance(node, str):
-        return mask_phones_in_text(node)
-    if isinstance(node, dict):
-        return {k: _masked_tree(v) for k, v in node.items()}
-    if isinstance(node, (list, tuple)):
-        return [_masked_tree(v) for v in node]
-    return node
-
-
-def _emit_json(payload):
-    """把结果对象打成**一整行** JSON 写 stdout（调用方直接 `json.loads`）。
-
-    维护类子命令（config/capacity/state/db/version）不建引擎的日志装配，
-    `errors`/`detail` 等字段夹带的异常原文可能内嵌裸号——叶子遮罩（见
-    `_masked_tree`）是 stdout 面唯一的出口收口，序列化前做。
-    """
-    sys.stdout.write(json.dumps(_masked_tree(payload), ensure_ascii=False) + "\n")
-    sys.stdout.flush()
-
-
-def _say(message):
-    """人类可读汇总：一律走 stderr（stdout 必须保持"只有结果"）。
-
-    与 `_emit_json` 同口径过遮罩（`mask_phones_in_text`，即 `MaskingFormatter`
-    用的那一份）：这里是维护类子命令唯一的"人话"出口，且 stderr 会被 run.sh 的
-    `2>&1` 原样落进当天日志文件——formatter 管不到直写。
-    """
-    sys.stderr.write(mask_phones_in_text(str(message)) + "\n")
-    sys.stderr.flush()
-
-
-def _fail(command, code, errors, json_mode, **extra):
-    """失败路径：错误信息进 stderr；`--json` 时仍打一行 `ok=false` 的对象后返回退出码。
-
-    失败也保持"stdout 可解析"是刻意的：调用方不必先看退出码再决定怎么解析输出，
-    按 `ok` 分支即可（退出码仍按契约表返回）。
-    """
-    for line in errors:
-        _say(line)
-    if json_mode:
-        payload = {"command": command, "ok": False, "errors": list(errors)}
-        payload.update(extra)
-        _emit_json(payload)
-    return code
 
 
 # ---------------------------------------------------------------------------
@@ -197,70 +156,6 @@ def _paths(view):
 
 
 # ---------------------------------------------------------------------------
-# SQLite：只读打开与账号计数
-# ---------------------------------------------------------------------------
-def _open_ro(db_file):
-    """只读打开 SQLite；文件不存在返回 None。
-
-    维护类子命令**不得**顺手建库或跑迁移（`db.get_conn()` 会 `init_db()` 建表 + 迁移），
-    故这里直连并对文件缺失显式返回 None，由调用方决定是"报 0"还是"响亮失败"。
-    WAL 库在无 -shm 可写的场景下只读打开可能失败，此时退化为普通连接 + `query_only`。
-    """
-    if not os.path.isfile(db_file):
-        return None
-    uri = pathlib.Path(os.path.abspath(db_file)).as_uri() + "?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True)
-    except sqlite3.Error:
-        conn = sqlite3.connect(db_file)
-        conn.execute("PRAGMA query_only=ON")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _account_counts(conn):
-    """→ (未删除账号数, 会签到的账号数)。
-
-    "会签到"的判据与 web/signin 同源：未删除且审核态不在
-    `yiban.store.accounts.ACCOUNT_AUDIT_INACTIVE`——那个元组是**库内落库值**的唯一
-    列举点（`signs_in` 用的就是它），此处按它拼 SQL 条件，不另写一套字面量。
-    """
-    inactive = tuple(store_accounts.ACCOUNT_AUDIT_INACTIVE)
-    total = conn.execute("SELECT COUNT(*) FROM accounts WHERE deleted=0").fetchone()[0]
-    marks = ",".join("?" * len(inactive))
-    signable = conn.execute(
-        "SELECT COUNT(*) FROM accounts WHERE deleted=0"
-        f" AND (status IS NULL OR status NOT IN ({marks}))",
-        inactive,
-    ).fetchone()[0]
-    return int(total), int(signable)
-
-
-def _read_user_version(conn):
-    return int(conn.execute("PRAGMA user_version").fetchone()[0])
-
-
-def _db_snapshot(db_file):
-    """→ (conn, user_version, 表清单, 未删除账号数, 会签到账号数)；库文件不存在返回 None。
-
-    sqlite3.Error 原样抛出，由调用方按"响亮失败"处理（不静默报 0——那会让人以为
-    库是空的）。
-    """
-    conn = _open_ro(db_file)
-    if conn is None:
-        return None
-    try:
-        user_version = _read_user_version(conn)
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-        accounts, signable = _account_counts(conn)
-    except sqlite3.Error:
-        conn.close()
-        raise
-    return conn, user_version, tables, accounts, signable
-
-
-# ---------------------------------------------------------------------------
 # 子命令：sign / probe（引擎参数的透传）
 # ---------------------------------------------------------------------------
 def _cmd_sign(json_mode, extra):
@@ -274,10 +169,21 @@ def _cmd_sign(json_mode, extra):
     退出码非 0 时附带可选 `error` 字段（引擎致命错误的 stderr 摘要，"未配置任何账号"/
     "配置加载失败"类）：否则调用方只拿到一个光秃秃的 exit_code，失败原因仍埋在按天
     日志文件里。
+
+    引擎自身的 argparse 拒绝（`sign --bogus`）会以 SystemExit(2) 直接结束进程：`--json`
+    下这里必须把它转成一行结构化错误，否则 stdout 又是零字节（引擎的 usage 仍照原样
+    留在 stderr）。
     """
-    code = runner.main(extra)
+    try:
+        code = runner.main(extra)
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode:
+            _emit_json_error("sign", code, [f"引擎参数错误: {' '.join(extra)}"],
+                             error_kind="usage_engine")
+        return code
     if json_mode:
-        payload = {"command": "sign", "exit_code": code}
+        payload = {"command": "sign", "exit_code": code, "error_kind": exit_kind(code)}
         if code != 0:
             error = cli_support.last_fatal_error()
             if error:
@@ -287,10 +193,22 @@ def _cmd_sign(json_mode, extra):
 
 
 def _cmd_probe(json_mode, extra):
-    """只读健康检查：转引擎的 `--probe` 语义（是否真跑由探针开关/频率/暂停门决定）。"""
-    code = runner.main(["--probe", *extra])
+    """只读健康检查：转引擎的 `--probe` 语义（是否真跑由探针开关/频率/暂停门决定）。
+
+    退出码分族见 `docs/dev/cli.md` §3：真跑通过 0 / 真跑有失败 1 / 未做检查（开关关、
+    窗口外、暂停/周末门）2 / 队列忙 3。引擎 argparse 拒绝同样要落成一行 JSON（同
+    `_cmd_sign`）。
+    """
+    try:
+        code = runner.main(["--probe", *extra])
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode:
+            _emit_json_error("probe", code, [f"引擎参数错误: {' '.join(extra)}"],
+                             error_kind="usage_engine")
+        return code
     if json_mode:
-        payload = {"command": "probe", "exit_code": code}
+        payload = {"command": "probe", "exit_code": code, "error_kind": exit_kind(code)}
         if code != 0:
             error = cli_support.last_fatal_error()
             if error:
@@ -309,25 +227,28 @@ def _cmd_config(args, view):
     "零账号守卫"同一判据，免得"CLI 说没问题、签到却直接报未配置"）。
 
     `migrate=False`：本命令宣称"脱敏、不联网/只读"，就不能经 `load_accounts() →
-    db.init_db(migrate=True)` 对目标库跑迁移（重写审计链等）——曾实测到宣称只读的
-    config 把库迁到了 v17。账号表由 init_db 的基线建表保证
-    存在，只读模式下取账号不依赖迁移。
+    db.init_db()` 建库/建表/迁移/切 WAL——曾实测到宣称只读的 config 把库迁到旧 schema 顶，
+    并在空目录当场建出 69632B 的伪库。只读装载由 `db.load_accounts_readonly` 承担
+    （独立只读连接；库/表不存在即按"无账号"回落其它来源）。
     """
     paths = _paths(view)
     try:
         accounts = accounts_mod.load_accounts(migrate=False)
     except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         return _fail("config", 1, [f"配置加载失败: {e}"], args.json,
+                     error_kind="config_error",
                      accounts=0, phones_masked=[], paths=paths)
     if not accounts:
         return _fail("config", 1, ["未配置任何账号（数据库 / YIBAN_ACCOUNTS_JSON / "
                                   "YIBAN_ACCOUNTS / YIBAN_PHONE 均为空）"], args.json,
+                     error_kind="config_error",
                      accounts=0, phones_masked=[], paths=paths)
     masked = [mask_phone(a.phone) for a in accounts]
     missing_device = sum(1 for a in accounts if not a.has_device_info)
     payload = {
         "command": "config",
         "ok": True,
+        "exit_code": 0,
         "accounts": len(accounts),
         "accounts_missing_device": missing_device,
         "phones_masked": masked,
@@ -396,7 +317,8 @@ def _cmd_capacity(args, view, extra):
     """
     if args.measure:
         if not os.path.isfile(CAPACITY_PROBE):
-            return _fail("capacity", 1, [f"容量基准工具不存在: {CAPACITY_PROBE}"], False)
+            return _fail("capacity", 1, [f"容量基准工具不存在: {CAPACITY_PROBE}"], False,
+                         error_kind="runtime_error")
         cmd = [sys.executable, CAPACITY_PROBE, *extra]
         _say("转发容量基准工具（需 root / 隔离测试机；输出与退出码原样透传）: "
              + " ".join(cmd[1:]))
@@ -404,10 +326,10 @@ def _cmd_capacity(args, view, extra):
     paths = _paths(view)
     # 账号数口径与网页 `_capacity_account_count` 同源；库不存在按 0（新部署没有库很正常）
     try:
-        snapshot = _db_snapshot(paths["db_file"])
+        snapshot = db_maintenance.db_snapshot(paths["db_file"])
     except sqlite3.Error as e:
         return _fail("capacity", 1, [f"读取账号数失败（{paths['db_file']}）: {e}"], args.json,
-                     accounts=0, paths=paths)
+                     error_kind="runtime_error", accounts=0, paths=paths)
     accounts, signable = (0, 0) if snapshot is None else (snapshot[3], snapshot[4])
     if snapshot is not None:
         snapshot[0].close()
@@ -415,6 +337,7 @@ def _cmd_capacity(args, view, extra):
     payload = {
         "command": "capacity",
         "ok": True,
+        "exit_code": 0,
         "accounts": signable,
         "accounts_total": accounts,
         "paths": paths,
@@ -467,6 +390,7 @@ def _cmd_state(args, view):
     retention = {"log": None, "snapshot": None}
     if not os.path.isdir(state_dir):
         return _fail("state", 1, [f"状态目录不存在: {state_dir}"], args.json,
+                     error_kind="runtime_error",
                      dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
                      retention_days=retention, candidates=0, removed=0, detail=[],
                      fingerprint=None)
@@ -483,7 +407,8 @@ def _cmd_state(args, view):
                     "state --yes 是删除类入口：请先跑 `state --dry-run --json` 拿到目标指纹，"
                     "再以 `--yes --fingerprint <指纹>` 逐字回显确认",
                     f"目标指纹: {fp}",
-                ], args.json, dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                ], args.json, error_kind="confirmation_required",
+                    dry_run=False, state_dir=state_dir, log_dir=log_dir,
                     retention_days=retention, candidates=candidates, removed=0,
                     detail=detail, fingerprint=fp)
             # 留痕先于不可逆删除；写不进去即拒绝（fail-closed），零删除。
@@ -492,7 +417,8 @@ def _cmd_state(args, view):
                     f"清理状态目录 {state_dir}：{candidates} 个过期文件"):
                 return _fail("state", 1, [
                     "清库留痕写入失败（审计不可写），按 fail-closed 拒绝清理（未删除任何文件）",
-                ], args.json, dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                ], args.json, error_kind="runtime_error",
+                    dry_run=False, state_dir=state_dir, log_dir=log_dir,
                     retention_days=retention, candidates=candidates, removed=0,
                     detail=detail, fingerprint=fp)
             removed, detail = state_gc.sweep(state_dir, log_dir, view)
@@ -504,6 +430,7 @@ def _cmd_state(args, view):
             removed = 0
     except ValueError as e:
         return _fail("state", 1, [f"保留期配置非法，未清理: {e}"], args.json,
+                     error_kind="config_error",
                      dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
                      retention_days=retention, candidates=0, removed=0, detail=[],
                      fingerprint=None)
@@ -511,6 +438,7 @@ def _cmd_state(args, view):
     payload = {
         "command": "state",
         "ok": True,
+        "exit_code": 0,
         "dry_run": not args.yes,
         "state_dir": state_dir,
         "log_dir": log_dir,
@@ -537,125 +465,6 @@ def _cmd_state(args, view):
 
 
 # ---------------------------------------------------------------------------
-# 子命令：db（状态 / 完整性 / 备份）
-# ---------------------------------------------------------------------------
-def _cmd_db(args, view):
-    """数据库维护：默认 `--status`（只读）；`--integrity` 跑完整性检查；
-    `--backup [路径]` 用 SQLite 在线备份 API 写一致性副本。
-
-    备份**不加 `--yes` 只报告计划**（`docs/dev/cli.md` §2 第 6 条：默认不加 `--yes`
-    不动手；目标已存在时尤其不该默认覆盖）。状态与完整性检查全程只读——用只读连接
-    直查，绝不顺手建库或跑迁移。
-    """
-    db_file = _paths(view)["db_file"]
-    if args.backup is not None:
-        return _db_backup(args, db_file)
-    mode = "integrity" if args.integrity else "status"
-    try:
-        snapshot = _db_snapshot(db_file)
-    except sqlite3.Error as e:
-        return _fail("db", 1, [f"数据库不可读（{db_file}）: {e}"], args.json,
-                     mode=mode, db_file=db_file)
-    if snapshot is None:
-        return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json,
-                     mode=mode, db_file=db_file)
-    conn, user_version, tables, accounts, signable = snapshot
-    payload = {
-        "command": "db",
-        "ok": True,
-        "mode": mode,
-        "db_file": db_file,
-        "size_bytes": os.path.getsize(db_file),
-        "user_version": user_version,
-        "tables": tables,
-        "accounts": accounts,
-        "accounts_signable": signable,
-        "integrity_ok": None,
-        "integrity_detail": "",
-    }
-    if mode == "integrity":
-        rows = [str(r[0]) for r in conn.execute("PRAGMA integrity_check")]
-        conn.close()
-        payload["integrity_ok"] = rows == ["ok"]
-        payload["integrity_detail"] = "; ".join(rows[:5])
-        _say("==== 数据库完整性检查 ====")
-        _say(f"库 {db_file} | user_version={user_version} | "
-             f"{'ok' if payload['integrity_ok'] else '发现问题'}: {payload['integrity_detail']}")
-        if args.json:
-            _emit_json(payload)
-        return 0 if payload["integrity_ok"] else 1
-    conn.close()
-    _say("==== 数据库状态 ====")
-    _say(f"库 {db_file} | {payload['size_bytes']} 字节 | user_version={user_version}")
-    _say(f"表 {len(tables)} 张: " + "、".join(tables))
-    _say(f"账号 {accounts} 个（其中会签到的 {signable} 个）")
-    if args.json:
-        _emit_json(payload)
-    return 0
-
-
-def _db_backup(args, db_file):
-    """写一致性副本：源库用只读连接，目标用 SQLite **在线备份 API**（`Connection.backup`）。
-
-    与"复制文件"的区别：备份 API 在事务快照上拷贝，`-wal` 里已提交但未合并的帧不会
-    丢，外部进程正在写也不会拷到半截（本项目是 WAL + 多进程形态，直接 copy 不安全）。
-    """
-    target = args.backup or (db_file + ".backup")
-    # 目标==源库必须拒绝：用 realpath 归一后比 inode——软链/相对路径/`..`
-    # 都逃不过。WAL 库下原实现"报成功但副本就是活库本身"（误导运维），非 WAL 库
-    # `src.backup(dst)` 直接无限阻塞（命令挂死）。放在 --yes 之前，dry-run 也拦。
-    if os.path.exists(target) and os.path.exists(db_file) and \
-            os.path.samefile(os.path.realpath(target), os.path.realpath(db_file)):
-        return _fail("db", 1, [f"备份目标与源库是同一个文件，已拒绝: {target}"], args.json,
-                     mode="backup", db_file=db_file, backup_path=target,
-                     dry_run=not args.yes)
-    exists = os.path.exists(target)
-    payload = {
-        "command": "db",
-        "ok": True,
-        "mode": "backup",
-        "db_file": db_file,
-        "backup_path": target,
-        "backup_exists": exists,
-        "dry_run": not args.yes,
-        "size_bytes": None,
-        "user_version": None,
-    }
-    if not args.yes:
-        _say("==== 数据库备份（计划）====")
-        _say(f"源 {db_file} → 目标 {target}"
-             + ("（目标已存在，--yes 将覆盖）" if exists else "（目标不存在）"))
-        _say("未加 --yes：只报告计划，未写盘")
-        if args.json:
-            _emit_json(payload)
-        return 0
-    try:
-        src = _open_ro(db_file)
-        if src is None:
-            return _fail("db", 1, [f"数据库不存在: {db_file}"], args.json, mode="backup",
-                         db_file=db_file, backup_path=target, dry_run=False)
-        try:
-            dst = sqlite3.connect(target)
-            try:
-                src.backup(dst)
-                payload["user_version"] = _read_user_version(dst)
-            finally:
-                dst.close()
-        finally:
-            src.close()
-    except sqlite3.Error as e:
-        return _fail("db", 1, [f"备份失败（{db_file} → {target}）: {e}"], args.json,
-                     mode="backup", db_file=db_file, backup_path=target, dry_run=False)
-    payload["size_bytes"] = os.path.getsize(target)
-    _say("==== 数据库备份 ====")
-    _say(f"已写入一致性副本: {target}（{payload['size_bytes']} 字节，"
-         f"user_version={payload['user_version']}）")
-    if args.json:
-        _emit_json(payload)
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # 子命令：version
 # ---------------------------------------------------------------------------
 def _cmd_version(args, view):
@@ -665,17 +474,18 @@ def _cmd_version(args, view):
     """
     payload = {
         "command": "version",
+        "exit_code": 0,
         "version": RELEASE_VERSION,
         "python": "%d.%d.%d" % sys.version_info[:3],
         "user_version": None,
     }
     try:
-        conn = _open_ro(_paths(view)["db_file"])
+        conn = db_maintenance.open_ro(_paths(view)["db_file"])
     except sqlite3.Error:
         conn = None
     if conn is not None:
         try:
-            payload["user_version"] = _read_user_version(conn)
+            payload["user_version"] = db_maintenance.read_user_version(conn)
         except sqlite3.Error:
             payload["user_version"] = None
         finally:
@@ -697,7 +507,7 @@ def _build_parser():
         prog="python -m yiban.cli",
         description="易班自动签到统一入口（agent 侧；契约见 docs/dev/cli.md）",
         epilog=("stdout 只放结果（--json 时是一整行 JSON 对象），人类可读汇总走 stderr；"
-                "本命令不读 stdin、不做交互确认。"),
+                "本命令不读 stdin、不做交互确认。 " + _PATHS_HELP),
     )
     subs = parser.add_subparsers(
         dest="command", metavar="{sign,probe,config,capacity,state,db,version}")
@@ -730,7 +540,8 @@ def _build_parser():
 
     p = _sub(
         "config", help="配置检查（脱敏、不联网）",
-        description="检查账号配置并脱敏打印，不发起任何网络请求；含本次解析到的路径。",
+        description=("检查账号配置并脱敏打印，不发起任何网络请求；含本次解析到的路径。"
+                     + _PATHS_HELP),
     )
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
@@ -757,17 +568,28 @@ def _build_parser():
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
     p = _sub(
-        "db", help="数据库维护（状态 / 完整性 / 备份）",
+        "db", help="数据库维护（状态 / 完整性 / 备份 / 恢复）",
         description=("默认 --status（只读：user_version、表清单、账号数、文件大小）；"
                      "--integrity 跑 PRAGMA integrity_check；--backup 写一致性副本"
-                     "（在线备份 API，不加 --yes 只报告计划）。全程只读连接，不建库、不迁移。"),
+                     "（在线备份 API，不加 --yes 只报告计划；目标已存在需 --force）；"
+                     "--restore 从该副本恢复（默认只报告，--yes 需回显 --fingerprint，"
+                     "覆盖前自动留副本）。只读路径全程只读连接，不建库、不迁移。"
+                     + _PATHS_HELP),
     )
     group = p.add_mutually_exclusive_group()
     group.add_argument("--status", action="store_true", help="只读状态（默认）")
     group.add_argument("--integrity", action="store_true", help="SQLite 完整性检查")
     group.add_argument("--backup", nargs="?", const="", default=None, metavar="路径",
-                       help="写一致性副本（默认 <库文件>.backup；不加 --yes 只报告计划）")
-    p.add_argument("--yes", action="store_true", help="备份时真的写盘（默认只报告）")
+                       help=("写一致性副本（默认 <库文件>.backup；不加 --yes 只报告计划；"
+                             "目标已存在时必须加 --force）"))
+    group.add_argument("--restore", nargs="?", const="", default=None, metavar="路径",
+                       help=("从 db --backup 写的副本恢复（默认 <库文件>.backup；"
+                             "不加 --yes 只报告计划，--yes 需 --fingerprint 且先校验备份）"))
+    p.add_argument("--yes", action="store_true", help="备份/恢复时真的动手（默认只报告）")
+    p.add_argument("--force", action="store_true",
+                   help="允许覆盖已存在的备份目标（拒绝静默顶掉上一份副本）")
+    p.add_argument("--fingerprint", default="",
+                   help="回显目标指纹（--restore --yes 必填；由 `db --restore --dry-run --json` 打印）")
     p.add_argument("--dry-run", action="store_true", help="只报告不写盘（默认行为，显式声明用）")
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
@@ -781,7 +603,7 @@ def _build_parser():
 
 
 def _dispatch(args, extra, subs):
-    """按子命令分发（返回值即退出码；用法错误走 argparse 的 2）。"""
+    """按子命令分发（返回值即退出码；用法错误抛 `_UsageError`，由入口统一落成 2）。"""
     cmd = args.command
     if cmd in _PASSTHROUGH:
         handler = _cmd_sign if cmd == "sign" else _cmd_probe
@@ -789,18 +611,24 @@ def _dispatch(args, extra, subs):
     if extra and not (cmd == "capacity" and args.measure):
         # 多余参数只在两处合法：sign/probe（原样透传给引擎，见上）与
         # `capacity --measure`（透传给容量基准工具）。其余是用法错误 → stderr 用法 + 退出码 2
-        subs[cmd].error("无法识别的参数: " + " ".join(extra))
+        raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd,
+                          kind="usage_extra_args")
     # `--dry-run` / `--yes` 只有 state 与 db 定义（其余子命令没有这两个开关）
     if getattr(args, "dry_run", False) and getattr(args, "yes", False):
-        subs[cmd].error("--dry-run 与 --yes 互斥（默认就是 dry-run）")
+        raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd,
+                          kind="usage_conflict")
     if cmd == "capacity" and args.measure and args.json:
-        subs[cmd].error("--measure 与 --json 不能同时使用（转发的工具自成一路输出）")
+        raise _UsageError("--measure 与 --json 不能同时使用（转发的工具自成一路输出）",
+                          subs[cmd], cmd, kind="usage_conflict")
     view = _env_view()
+    if cmd == "db":
+        # db 维护族（快照 / 备份）实现在 yiban/engine/db_maintenance.py：入口模块只做
+        # 路径解析与分派，避免体量门继续膨胀（见该模块头部说明）。
+        return db_maintenance.cmd_db(args, _paths(view))
     handlers = {
         "config": _cmd_config,
         "capacity": _cmd_capacity,
         "state": _cmd_state,
-        "db": _cmd_db,
         "version": _cmd_version,
     }
     handler = handlers[cmd]
@@ -809,33 +637,59 @@ def _dispatch(args, extra, subs):
     return handler(args, view)
 
 
+def _fail_usage(exc, json_mode):
+    """CLI 用法错误的统一收口：stderr 保留 argparse 形态的 usage，`--json` 再打一行对象。"""
+    sys.stderr.write(exc.parser.format_usage())
+    sys.stderr.write(f"{exc.parser.prog}: error: {exc}\n")
+    sys.stderr.flush()
+    if json_mode:
+        _emit_json_error(exc.command, 2, [str(exc)], error_kind=exc.kind)
+    return 2
+
+
 def main(argv=None) -> int:
     """执行子命令并**返回**退出码（调用方决定是否 `sys.exit`；本函数不抛 SystemExit）。
 
     空子命令与未知子命令都会在 stderr 打用法并返回 2（`docs/dev/cli.md` §2 第 1/4 条），
-    全程不读 stdin。`--help` 由 argparse 打印后返回 0。
+    全程不读 stdin。`--help` 由 argparse 打印后返回 0。任何带 `--json` 的调用（含上面的
+    用法错误路径）都在 stdout 留下一整行结构化错误对象（见 `_emit_json_error`）。
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     # 进程 umask 077——与引擎入口同口径：本进程创建的文件（数据库备份副本等）
     # 创建即 0600（Windows 无实际效果，忽略）。
     os.umask(0o077)
+    json_mode = "--json" in argv
     parser, subs = _build_parser()
+    command = _guess_command(argv, subs)
     try:
         args, extra = parser.parse_known_args(argv)
-        if args.command is None:
-            _say(USAGE)
-            return 2
-        # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
-        # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
-        # （formatter 缺席 = 手机号兜底整条防线被旁路）；装配后这些记录经
-        # `MaskingFormatter` 落按天日志或降级 handler。
-        cli_support._setup_cli_logging()
-        return _dispatch(args, extra, subs)
     except SystemExit as e:
         # argparse 的 --help（0）与用法错误（2）都以此形式退出：转成返回值，
-        # 使 `main(argv)` 对调用方始终是"返回码"而非异常。
-        code = getattr(e, "code", 2)
-        return code if isinstance(code, int) else 2
+        # 使 `main(argv)` 对调用方始终是"返回码"而非异常。--json 下补一行结构化错误。
+        code = _exit_code(e)
+        if json_mode and code != 0:
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"],
+                             error_kind="usage")
+        return code
+    if args.command is None:
+        _say(USAGE)
+        if json_mode:
+            _emit_json_error(command, 2, ["未指定子命令"], error_kind="usage_no_command")
+        return 2
+    # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
+    # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
+    # （formatter 缺席 = 手机号兜底整条防线被旁路）；装配后这些记录经
+    # `MaskingFormatter` 落按天日志或降级 handler。
+    cli_support._setup_cli_logging()
+    try:
+        return _dispatch(args, extra, subs)
+    except _UsageError as e:
+        return _fail_usage(e, json_mode)
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode and code != 0:
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"], error_kind="usage")
+        return code
 
 
 if __name__ == "__main__":

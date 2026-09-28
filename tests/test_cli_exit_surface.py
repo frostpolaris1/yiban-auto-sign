@@ -220,15 +220,17 @@ class CliSubprocessExitTest(_CliExitHarness):
         combined = r.stdout + r.stderr
         self.assertNotIn(PHONE_RAW, combined)
 
-    def test_check_config_stdout_print_masked(self):
-        """`sign --check-config` 的 stdout 直印（`config_check.print_config_summary`）：
-        号码遮罩在调用点已有，这里钉它不被绕过、口令位恒为星号、邮箱不出现。"""
+    def test_check_config_summary_masked_on_stderr(self):
+        """`sign --check-config` 的摘要（`config_check.print_config_summary`）走 stderr：
+        号码遮罩在调用点已有，这里钉它不被绕过、口令位恒为星号、邮箱不出现，且 stdout
+        保持"只有结果"（摘要混进 stdout 会破坏 `--json` 单行契约）。"""
         items = [{"phone": PHONE_RAW, "password": "plain-pw", "owner": OWNER_EMAIL,
                   "phone_model": "Pixel 7", "phone_code": "code-1"}]
         r = _run_cli(["sign", "--check-config"],
                      self.env({"YIBAN_ACCOUNTS_JSON": json.dumps(items)}))
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
-        self.assertIn(PHONE_MASKED, r.stdout)
+        self.assertIn(PHONE_MASKED, r.stderr)
+        self.assertEqual(r.stdout, "", "人类可读摘要不得进 stdout")
         self.assertNotIn(PHONE_RAW, r.stdout + r.stderr)
         self.assertNotIn("plain-pw", r.stdout + r.stderr)
         self.assertNotIn(OWNER_EMAIL, r.stdout + r.stderr)
