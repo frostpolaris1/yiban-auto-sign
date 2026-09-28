@@ -37,8 +37,8 @@ load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路
 `YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
 调用谁：`yiban.store.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
 `on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）。
-唯一生产入口是 `executor_v3`，它受 `YIBAN_SCHEDULER_V3` 分流、**缺省 0**：开关未开时
-本模块在产线零调用，`egress_state` 表也不会被写。
+唯一生产入口是 `executor_v3`——台账单池化后它是唯一执行体，本模块因此在产线恒被调用，
+出口桶状态落 `egress_state` 表。
 """
 import logging
 import os

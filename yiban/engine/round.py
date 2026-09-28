@@ -9,8 +9,10 @@
 的账号级租约：领不到即"别人正在做它"，本进程不碰（不写状态、不重试、不告警）。
 
 **归属**
-`yiban.engine` 的签到执行核心，也是 v3 开关缺省关闭时的实际执行路径；`runner`
-（定时全量）、`workers`（并行/兜底执行体）与手动 `--only` 都落到 `run_queue_retry`。
+`yiban.engine` 的签到执行核心。**冻结（台账单池化后无生产调用点）**：生产执行已恒定走
+`executor_v3.run_executor_v3`（`sign_tasks` 队列），本模块的 `run_queue_retry` 是旧领取池
+（`sign_claims`）时代的执行路径，保留在仓内仅供既有单测覆盖其四柱语义（双章围栏 / 超时
+回收 / 到点领取 / 限速间隔在 v3 侧另有等价实现与用例），不再被 `runner` / `workers` 调用。
 
 **复用**
 `run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）。
@@ -25,7 +27,7 @@
 输出：按日状态（经 `state_io`）、`sign_events`、告警（`alerts`）；返回本轮统计供
 `runner` 汇总退出码。
 调用谁：`attempts`（单次尝试，`client` 由它调用）、`state_io`、`alerts`、`schedule`、`db`。
-谁调用：`runner.main` 的 v2 分支与 `workers` 拉起的执行体子进程。
+谁调用：**无生产调用点**（冻结，见「归属」）；仅既有单测直接调用。
 前端调用点：账号页与我的账号页（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
 `/api/my-calendar`、`/api/my-logs`）与仪表盘 `/api/admin/sign-events` 读本模块写入的
@@ -164,7 +166,7 @@ class _ClaimHeartbeat:
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
                     event_sink=None, reclaim=False, delegated=None, window_guard=False,
                     retry_failed=False):
-    """轮询队列 + 分散重试执行全部账号签到（`YIBAN_SCHEDULER_V3` 缺省关闭时的实际路径）。
+    """轮询队列 + 分散重试执行全部账号签到（**冻结**：旧领取池时代的执行路径，无生产调用点）。
 
     按 `schedule` 是否为空分成两条路径：空 = 手动，按 SIGN_MODE 定顺序逐个尝试、失败放回
     队尾等下一轮；非空 = 自动错峰，按 {phone: datetime} 到点执行（已过点立即）、失败经
