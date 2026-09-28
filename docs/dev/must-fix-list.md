@@ -1250,6 +1250,22 @@ backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
 
 **处置（2026-09-27 批 3 分诊，repair 流）**：**不修**。现网宿主为北京时区 ⇒ **现网不触发**（登记原文即写"条件触发"）；触发条件是换宿主/改时区/容器化部署。按章程第 4 条（裁"压根遇不到"的情况）不修，改在运维文档补一句"宿主时区须为业务时区（北京）"。与 MF-108（CI 日期族，批 1 已修）同模式但对象是运维脚本，勿混。归缩减批二次确认。
 
+**处置（2026-09-28 缩减批 6a，repair/m3-shrink6a，用户拍板必修、撤销批 3 的降级）**：**修**。
+按天命名/判定统一取**单一业务日源**（`yiban.clock` 北京钟，与引擎/web 同一事实源）——
+四个 shell 入口（`run.sh` / `scripts/yiban-fallback.sh` / `scripts/backup.sh` /
+`scripts/pull-prod-backup.sh`）各立 `business_day()`：主路 `python -c "from yiban.clock
+import today"`，退化 `TZ=Asia/Shanghai date`（宿主缺 tzdata 时），再退化宿主 `date`
+（保持可运行的降级形态）；三个 python 入口（`state_cleanup.py` 的日志"截止"文案、
+`backup_sentinel.py` 的当日归档判定、`generate_demo_data.py` 的演示数据锚点）直接改走
+`yiban.clock`（backup_sentinel 的"两边同钟"注释随 backup.sh 口径翻转同步改写）。
+`run.sh` 的 0/1/2/3 判码与执行语义逐字未动（只换日期来源；`PY` 解析上移到按天命名
+之前属顺序搬移，判定块零改动）；`scripts/backup.sh` 自检退出码 6/7/8 未动。
+**验收对拍（本机真跑）**：TZ=UTC 与默认 TZ 各真跑一轮 `run.sh`（暂停门 rc=2 SKIPPED、
+零外联），状态/日志/触发标记文件名均 `2026-09-28` = `yiban.clock.today()`；`backup.sh`
+TZ=UTC 真跑归档名 `yiban-2026-09-28.tar.gz`；另以 stub 宿主 `date`（2026-09-27）模拟
+UTC 16:00-24:00 错位窗——三个脚本的 `business_day()` 仍返回引擎业务日 09-28（python
+主路压过宿主钟），python 缺失时才退化到宿主钟。README 部署章节补时区建议一行。
+
 ### MF-110 测试标签块/生成式索引的门约定失效：批0 新增测试无标签块、索引过期、CI 未接 `--check`（脚本自称已接）
 - **现象**（2026-09-26 批 1 期间翻查写作规范时发现）：`scripts/test_index.py` 约定 `tests/test_*.py`
   头部五字段标签块（标签/覆盖/对应实现/关键断言/依赖）并生成 `docs/dev/test-index.tsv`，
