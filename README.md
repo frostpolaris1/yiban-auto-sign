@@ -529,7 +529,8 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_MAX_USERS` / `YIBAN_MAX_ACCOUNTS` | 容量上限（默认 `500` 用户 / `200` 账号；`0`=不限）。调小不删存量，只限制新增；主管理员可在「系统设置 → 容量配额」直接设置 | 可选 |
 | `YIBAN_BATCH_SIGN_COOLDOWN_SEC` | 手动签到全局冷却秒数（默认 `60`，`0`=关闭）：批量与单条共用；30 秒同账号防抖与此独立 | 可选 |
 | `YIBAN_SIGNIN_RATE_WINDOW_SEC` / `YIBAN_SIGNIN_RATE_MAX` | 手动签到全局速率上限（默认 `600` 秒内最多 `10` 次，任一为 `0`=关闭）：冷却是两次触发之间的最小间隔，这是窗口内总次数；按会话用户名计数，只在冷却放行后计数，超限 429（文案「手动签到触发过于频繁」） | 可选 |
-| `YIBAN_ADMIN_DELETE_MAX` / `YIBAN_ADMIN_DELETE_COOLDOWN_SEC` | 同管理员窗口内的高危操作额度（默认 `20` 次 / `60` 秒，任一为 `0`=关闭）：删除类与告警通道变更共用一套计数，超限 429 | 可选 |
+| `YIBAN_ADMIN_DELETE_MAX` / `YIBAN_ADMIN_DELETE_COOLDOWN_SEC` | 同管理员窗口内的**删除类**高危操作额度（默认 `20` 次 / `60` 秒，任一为 `0`=关闭）：账号软删/批量删除/彻底清除/清库清理，超限 429 | 可选 |
+| `YIBAN_ADMIN_CREDS_MAX` / `YIBAN_ADMIN_CREDS_COOLDOWN_SEC` | 同管理员窗口内的**凭据改写类**高危操作额度（默认 `20` 次 / `60` 秒，任一为 `0`=关闭）：改写他人易班凭据/重置他人口令/换推送密钥，与删除类分开计数（批量重绑与批量清理互不撞 429） | 可选 |
 | `YIBAN_LOGINFAIL_DAILY_MAX` | 登录失败告警独立推送日额度（默认 `3`，`0`=不限），与普通/紧急告警额度分账 | 可选 |
 | `YIBAN_SLOW_SIGN_SEC` | 单次签到耗时告警阈值（秒，默认 `30`） | 可选 |
 | `YIBAN_NOTIFY_TYPE` + `YIBAN_NOTIFY_SECRET_ENC` | 消息推送类型（`serverchan` / `custom`）与密钥密文；建议在网页「系统设置 → 通知通道」配置（自动加密落盘）。旧明文 `YIBAN_NOTIFY_URL` 仍兼容（按 `custom` 处理） | 可选 |

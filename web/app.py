@@ -685,6 +685,14 @@ DELETE_MAX_REQUESTS_PER_IP = 5
 # .env 可调（YIBAN_ADMIN_DELETE_COOLDOWN_SEC / YIBAN_ADMIN_DELETE_MAX，0=关闭）。
 ADMIN_DELETE_COOLDOWN_SEC = 60
 ADMIN_DELETE_MAX = 20
+# 凭据改写类高危操作（改写他人易班凭据/重置他人口令/换推送密钥）**独立额度**，
+# 与删除类分开计数（缩减批 6a 分流）：删除额度按"批量清理垃圾账号"的规模定，
+# 凭据批量重绑（换号、换密码）是另一条合法高频运维动作——共用一套计数时，重绑
+# 几下就把删除预算吃光，反过来删几个账号也会把重绑撞进 429。既有
+# YIBAN_ADMIN_DELETE_* 两键的语义逐字未动，本组是**新增键**：
+# .env 可调（YIBAN_ADMIN_CREDS_COOLDOWN_SEC / YIBAN_ADMIN_CREDS_MAX，0=关闭）。
+ADMIN_CREDS_COOLDOWN_SEC = 60
+ADMIN_CREDS_MAX = 20
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐，与 db.purge_deleted_users
 # 默认一致；已注销用户视图按此计算剩余天数。常量本体（取 db.SOFT_DELETE_RETENTION_DAYS
 # ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
@@ -1886,6 +1894,9 @@ def create_app(host=None):
     _admin_delete_limits = {}
     # 高危额度整体被关（limit<=0 或 cooldown<=0）时是否已留过审计，防逐请求刷审计表
     _admin_delete_limit_off_audited = [False]
+    # 凭据改写类高危额度（独立于删除类计数，缩减批 6a 分流）+ 同款关闭留痕位
+    _admin_creds_limits = {}
+    _admin_creds_limit_off_audited = [False]
     # 日志导出限速 {ip: (count, window_start)}
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.export_limits()
     app.extensions["yiban_export_limits"] = {}
@@ -2228,47 +2239,80 @@ def create_app(host=None):
     # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
     # 这几个闭包依赖请求上下文与会话状态，出不了 `create_app`；路由模块经 `web.routes`
     # 的取回函数按 app 实例拿它们（登记键见 `app.extensions["yiban_sensitive_password_gate"]`）。
-    def _admin_delete_limited():
-        """高危操作限速：同一管理员窗口内超限返回 True（应拒绝 429）。
+    def _admin_quota_limited(table, off_audited, window_key, limit_key,
+                             window_default, limit_default, off_action, kind):
+        """删除类/凭据类高危额度的共用计数核：先判后增，窗口内超限返回 True。
 
-        键 = 会话用户名（统一小写）；窗口/上限由 .env 调整，0 = 关闭。
-        与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，之后拒绝。
-
-        刻意与"关闭邮件通道 / 关闭推送 / 清空或更换推送密钥"共用同一套计数，不另建第二套
-        ——在攻击者手里"删数据"与"拆报警器"是同一条链，合并计数才真的限制得住一个被盗
-        会话能造成多大静默。
-
-        本函数**判定即占用**额度，唯一的调用序约定（先过口令、通过了才占）写在
-        `_high_risk_gate` 的调用行上；要给别的端点加限速前先读那里。
+        键 = 会话用户名（统一小写）；窗口/上限由 .env 键调整，0 = 关闭（关闭本身
+        留一条审计，防"拆了闸却无痕"）。两个额度族共用这一份实现，保证语义
+        （判定即占用、0=不限速而非全拒、trim 防无界增长）逐字一致。
         """
-        window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
-        limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
+        window = load_env_int(ENV_FILE, window_key, window_default)
+        limit = load_env_int(ENV_FILE, limit_key, limit_default)
         if window <= 0 or limit <= 0:
-            # 关闭动作本身要有痕迹：这两个键把高危额度整体置 0 后，全站删除/彻底
-            # 清除/改告警通道都不再受"每管理员窗口"限制，而此前既无日志也无审计，
-            # 事后无从还原是谁、在什么时候拆了这道闸。走**既有** db.audit、每 app
-            # 实例至多一条（判定即占用语义不变，返回 False 仍照常放行）。
-            if not _admin_delete_limit_off_audited[0]:
-                _admin_delete_limit_off_audited[0] = True
+            # 关闭动作本身要有痕迹：把额度置 0 后该类高危操作不再受"每管理员窗口"
+            # 限制，而此前既无日志也无审计，事后无从还原是谁、在什么时候拆了这道闸。
+            # 走**既有** db.audit、每 app 实例至多一条（判定即占用语义不变，
+            # 返回 False 仍照常放行）。
+            if not off_audited[0]:
+                off_audited[0] = True
                 db.audit(
                     session.get("username") or "?",
-                    "admin_delete_limit_off",
+                    off_action,
                     "?",
-                    f"高危删除额度整体关闭（窗口={window}s 上限={limit}），"
+                    f"高危{kind}额度整体关闭（窗口={window}s 上限={limit}），"
                     f"本次由首个触发该配置的高危操作留痕",
                 )
             return False  # 关闭 = 不限速而不是全拒：返回 False 让调用方照常往下走
         # 写入前顺带 trim（与其余限速表同口径防无界增长）
         with _rate_lock:
-            _ip_store_trim(_admin_delete_limits, window + _IP_STORE_MAX_AGE)
+            _ip_store_trim(table, window + _IP_STORE_MAX_AGE)
         _cnt, _start, allowed = _bump_window_count(
-            _admin_delete_limits,
+            table,
             (session.get("username") or "?").strip().lower(),
             time.time(),
             window,
             limit=limit,
         )
         return not allowed
+
+    def _admin_delete_limited():
+        """删除类高危额度：同一管理员窗口内超限返回 True（应拒绝 429）。
+
+        键 = 会话用户名（统一小写）；窗口/上限由 .env 调整（YIBAN_ADMIN_DELETE_*，
+        0 = 关闭）。与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，
+        之后拒绝。
+
+        自缩减批 6a 起**只计删除类落点**（账号软删/彻底删除、用户删除、批量删除、
+        清库清理），与凭据改写类（`_admin_creds_limited`）分开计数——删除额度按
+        批量清理的规模定，凭据批量重绑共用它会互相撞 429。曾合并计数的理由
+        （"删数据与拆报警器是同一条链"）随口令门收窄失效：告警通道开关已免门，
+        不再消耗任何高危额度。
+
+        本函数**判定即占用**额度，唯一的调用序约定（先过口令、通过了才占）写在
+        `_high_risk_gate` 的调用行上；要给别的端点加限速前先读那里。
+        """
+        return _admin_quota_limited(
+            _admin_delete_limits, _admin_delete_limit_off_audited,
+            "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", "YIBAN_ADMIN_DELETE_MAX",
+            ADMIN_DELETE_COOLDOWN_SEC, ADMIN_DELETE_MAX,
+            "admin_delete_limit_off", "删除")
+
+    def _admin_creds_limited():
+        """凭据改写类高危额度（独立于删除类）：同一管理员窗口内超限返回 True。
+
+        覆盖"改写他人易班凭据 / 重置他人口令（单条与批量）/ 换推送密钥"。
+        键 = 会话用户名（统一小写）；窗口/上限由**新增** .env 键调整
+        （YIBAN_ADMIN_CREDS_COOLDOWN_SEC / YIBAN_ADMIN_CREDS_MAX，0 = 关闭），
+        语义与删除类逐字一致（先判后增、判定即占用、0=关闭并留审计）。
+        分流的动机：删除额度按"批量清理垃圾账号"规模定，凭据批量重绑（换号/换密码）
+        是另一条合法高频动作——共用一套计数时两个方向互相撞 429。
+        """
+        return _admin_quota_limited(
+            _admin_creds_limits, _admin_creds_limit_off_audited,
+            "YIBAN_ADMIN_CREDS_COOLDOWN_SEC", "YIBAN_ADMIN_CREDS_MAX",
+            ADMIN_CREDS_COOLDOWN_SEC, ADMIN_CREDS_MAX,
+            "admin_creds_limit_off", "凭据改写")
 
     def _verify_session_password(password):
         """当前会话管理员口令纯比对（不读写失败计数、不判定锁定）。
@@ -2469,11 +2513,14 @@ def create_app(host=None):
             irreversible=irreversible)
 
     def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试",
-                        irreversible=False):
-        """高危动作统一门禁：先过口令二次鉴权，**通过之后**才占用高危限速额度。
+                        irreversible=False, quota="delete"):
+        """高危动作统一门禁：先过口令二次鉴权，**通过之后**才占用对应类别的额度。
 
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
-        额度仍复用 `_admin_delete_limited` 那同一套计数，不改变"超限即 429"的语义。
+        `quota` 选额度族：`"delete"` = 删除类（YIBAN_ADMIN_DELETE_*，账号/用户删除、
+        清库清理）；`"creds"` = 凭据改写类（YIBAN_ADMIN_CREDS_*，改写他人易班凭据、
+        重置他人口令、换推送密钥）——两族分开计数（缩减批 6a 分流），"超限即 429"
+        的语义两族一致。
 
         口令门收窄（缩减批 6a，用户拍板清单）：门内只剩**不可逆/凭据类**动作
         ——删除账号、清库清理、换钥、改管理员口令、改他人凭据。改设备识别码、
@@ -2510,7 +2557,7 @@ def create_app(host=None):
         """
         # 顺序就是本函数的全部要点：口令在前、占额度在后。反序（先判后增再鉴权）的话，一个
         # 只拿到 Cookie、不知道口令的被盗会话用错口令反复尝试，就能把主管理员的"删除 +
-        # 告警通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）全部吃掉，
+        # 凭据改写"预算（ADMIN_DELETE_MAX / ADMIN_CREDS_MAX 次每窗口）全部吃掉，
         # 反过来让合法运维每次高危操作都撞 429（运维 DoS）。口令暴力本就由
         # _sensitive_password_gate 的独立计数与门禁级冷却承担（第 3 次告警并暂停敏感操作），
         # 额度只该被**真实执行过**的高危动作消耗。
@@ -2518,7 +2565,8 @@ def create_app(host=None):
             data, action_label, always_required=True, irreversible=irreversible)
         if pw_err:
             return pw_err  # 口令没过：一分额度都没被占用
-        if _admin_delete_limited():
+        limited = _admin_creds_limited() if quota == "creds" else _admin_delete_limited()
+        if limited:
             return jsonify({"error": limit_msg}), 429  # 走到这里说明口令已过，额度已扣一次、不退还
         return None
 
@@ -2529,6 +2577,7 @@ def create_app(host=None):
     app.extensions["yiban_high_risk_gate"] = _high_risk_gate
     app.extensions["yiban_reconfirm_admin_password"] = _reconfirm_admin_password
     app.extensions["yiban_admin_delete_limited"] = _admin_delete_limited
+    app.extensions["yiban_admin_creds_limited"] = _admin_creds_limited
     app.extensions["yiban_read_audit_trace"] = _read_audit_trace
     app.extensions["yiban_read_audit_denied_trace"] = _read_audit_denied_trace
     app.extensions["yiban_sensitive_password_gate"] = _sensitive_password_gate

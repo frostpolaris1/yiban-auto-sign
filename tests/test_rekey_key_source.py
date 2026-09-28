@@ -975,7 +975,7 @@ class HighRiskGateOrderB14Test(_B14AlertGateBase):
 
         缩减批 6a 后邮件开关关闭免门，本不变量的落点改为仍受门的换钥动作。
         """
-        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
+        self._append_env("YIBAN_ADMIN_CREDS_MAX=1\n")
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         for _ in range(2):
@@ -998,7 +998,7 @@ class HighRiskGateOrderB14Test(_B14AlertGateBase):
 
     def test_swap_secret_budget_still_enforced_after_auth(self):
         """反向保护（换钥侧）：顺序调整不得放宽限速——口令正确但超额度，仍然 429 且零写入。"""
-        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
+        self._append_env("YIBAN_ADMIN_CREDS_MAX=1\n")
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config",

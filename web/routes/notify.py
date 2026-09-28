@@ -517,8 +517,9 @@ def api_notify_config_save():
             else "清空消息推送密钥" if clear_secret
             else "调整推送限流/额度参数"
         )
-        # 统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）
-        gate = _high_risk_gate()(data, label)
+        # 统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）；
+        # 换钥/清钥属凭据改写类，占独立的凭据额度（缩批 6a 分流，不与删除互撞）
+        gate = _high_risk_gate()(data, label, quota="creds")
         if gate:
             return gate
     # 密钥加密刻意排在闸门**之后**：account_crypto.load_key 在既无
