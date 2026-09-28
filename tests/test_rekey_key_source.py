@@ -703,51 +703,60 @@ class _B14AlertGateBase(unittest.TestCase):
 
 
 class AlertChannelGateB14Test(_B14AlertGateBase):
-    """P1-1 门禁：关闭/换钥必须二次鉴权 + 限速，纯数值改动不受影响。"""
+    """P1-1 门禁的缩减批 6a 收窄形态：触碰**密钥**（换钥/清钥/关闭随钥清）与 SMTP
+    凭据变更仍要二次鉴权；通道开关、收件人与推送数值参数可逆，免门免额度
+    （留痕靠审计行，见 test_audit_details_* 与 test_mail_close_* 系列）。"""
 
-    def test_mail_close_without_password_400_and_env_untouched(self):
-        """无口令关闭邮件通道 → 400，且 .env 一个字节都没改、没有变更告警。
+    def test_mail_close_without_password_200_and_audited(self):
+        """开关关闭（可逆）免门（缩减批 6a）：无口令 → 200 + 落盘 + 审计行 + 零告警。
 
-        这是活体复现的攻击链首步（拿到内置主管理员 Cookie 即可一步静默全部告警）。
+        原 P1-1 的"一步静默全部告警"由审计行承担回答"谁在什么时候关的哪一路"，
+        通道本身仍无法可靠通报自己的变更（见路由内注释），故无变更告警是既有语义。
         """
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
-        # 快照必须在 create_app/登录之后取：启动会迁移管理员口令哈希并补 YIBAN_SECRET_KEY
-        before = _read_env(self.env_file)
         for body in ({"enabled": False}, {"admin_notify": False}):
             with self.subTest(body=body):
                 r = c.put("/api/mail-config", json=body, headers=self._csrf(t))
-                self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-                self.assertEqual(r.get_json()["reason"], "password_required")
-        self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
-        self.assertEqual(self.alerts, [], "被拒绝的关闭不应发出变更告警")
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = _read_env(self.env_file)
+        self.assertIn("YIBAN_MAIL_ENABLE=0", env)
+        self.assertIn("YIBAN_MAIL_ADMIN_NOTIFY=0", env)
+        rows = self._audit_rows("mail_config")
+        self.assertTrue(rows, "免门不等于免痕：开关关闭必须落审计行")
+        self.assertEqual(self.alerts, [], "通道变更只留审计（既有语义）")
 
-    def test_mail_close_wrong_password_alerts_at_threshold(self):
-        """错口令：连续失败达阈值触发"高危操作二次鉴权失败告警"（同阈值/同计数）。"""
+    def test_mail_smtp_change_wrong_password_alerts_at_threshold(self):
+        """错口令：SMTP 凭据变更（换钥类，仍受门）连续失败达阈值触发
+        "高危操作二次鉴权失败告警"（同阈值/同计数，urgent）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         # 快照必须在 create_app/登录之后取：启动会迁移管理员口令哈希并补 YIBAN_SECRET_KEY
         before = _read_env(self.env_file)
+        smtps = [{"id": "smtpnew01", "host": "smtp.example.org", "port": 465,
+                  "user": "alert@example.org", "pass": "auth-code-fake"}]
         for _ in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):
             r = c.put("/api/mail-config",
-                      json={"enabled": False, "confirm_password": "wrong-pass"},
+                      json={"smtps": smtps, "confirm_password": "wrong-pass"},
                       headers=self._csrf(t))
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(_read_env(self.env_file), before)
         fails = [a for a in self.alerts if a[0] == "高危操作二次鉴权失败告警"]
         self.assertEqual(len(fails), 1, f"达阈值应告警一次，实际 {self.alerts}")
-        self.assertTrue(fails[0][2], "二次鉴权失败告警必须是 urgent（邮件通道正被攻击者盯着关）")
+        self.assertTrue(fails[0][2], "二次鉴权失败告警必须是 urgent（SMTP 凭据正被攻击者盯着改）")
 
-    def test_mail_close_with_password_200_no_alert(self):
-        """对口令关闭 → 200 + 落盘 + 零告警（通道变更只留审计）。"""
+    def test_mail_close_repeatable_no_quota(self):
+        """开关关闭免门也免额度（缩减批 6a）：连关两次都 200，不占高危限速计数。"""
+        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
-        r = c.put("/api/mail-config",
-                  json={"enabled": False, "confirm_password": ADMIN_PASS},
-                  headers=self._csrf(t))
+        r = c.put("/api/mail-config", json={"enabled": False}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertFalse(r.get_json()["enabled"])
-        self.assertIn("YIBAN_MAIL_ENABLE=0", _read_env(self.env_file))
+        r2 = c.put("/api/mail-config", json={"admin_notify": False}, headers=self._csrf(t))
+        self.assertEqual(r2.status_code, 200,
+                         "可逆开关不再消耗删除额度：第二次关闭不得 429 "
+                         + r2.get_data(as_text=True))
+        self.assertIn("YIBAN_MAIL_ADMIN_NOTIFY=0", _read_env(self.env_file))
         self.assertEqual(self.alerts, [], f"通道变更告警已下线，实际 {self.alerts}")
 
     def test_mail_open_and_enable_need_no_password(self):
@@ -773,23 +782,6 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                   headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(_read_env(self.env_file), before, "校验失败必须零写入（不留半套配置）")
-
-    def test_mail_close_rate_limited_second_429(self):
-        """限速复用高危删除同一套计数：窗口内超限 → 429，且仍然零写入。"""
-        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
-        c = self._client()
-        t = self._login(c, "admin", ADMIN_PASS)
-        r = c.put("/api/mail-config",
-                  json={"enabled": False, "confirm_password": ADMIN_PASS},
-                  headers=self._csrf(t))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        r2 = c.put("/api/mail-config",
-                   json={"admin_notify": False, "confirm_password": ADMIN_PASS},
-                   headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
-        self.assertIn("YIBAN_MAIL_ENABLE=0", _read_env(self.env_file), "第一次成功的写入须保留")
-        self.assertNotIn("YIBAN_MAIL_ADMIN_NOTIFY=0", _read_env(self.env_file),
-                         "被限速拒绝的第二次不得写入")
 
     def test_notify_close_and_swap_secret_need_password(self):
         """推送侧三类动作（关闭/清钥/换钥）都要口令；无口令 400 且零写入。"""
@@ -826,25 +818,16 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertNotIn("YIBAN_NOTIFY_SECRET_ENC=", env, "关闭须连密钥一起清掉")
         self.assertEqual(self.alerts, [], f"通道变更告警已下线，实际 {self.alerts}")
 
-    def test_notify_numeric_changes_require_password(self):
-        """（参数收口）：cooldown/urgent_only/daily_max/urgent_daily_max
-        也纳入二次鉴权——无口令 400 且零写入；带口令 200 并落盘。"""
+    def test_notify_numeric_changes_need_no_password(self):
+        """收窄（缩减批 6a）：cooldown/urgent_only/daily_max/urgent_daily_max 是
+        可逆的送达节奏参数，免门免额度——无口令直接 200 并落盘（留痕靠审计行，
+        见 test_audit_details_include_numeric_and_flag_changes）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
-        before = _read_env(self.env_file)
         for body in ({"cooldown": 30}, {"urgent_only": True},
                      {"daily_max": 7}, {"urgent_daily_max": 2}):
             with self.subTest(body=body):
                 r = c.put("/api/notify-config", json=body, headers=self._csrf(t))
-                self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-                self.assertEqual(r.get_json()["reason"], "password_required")
-        self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
-        # 带正确口令 → 逐项落盘
-        for body in ({"cooldown": 30}, {"urgent_only": True},
-                     {"daily_max": 7}, {"urgent_daily_max": 2}):
-            with self.subTest(body=body):
-                r = c.put("/api/notify-config",
-                          json={**body, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = _read_env(self.env_file)
         self.assertIn("YIBAN_NOTIFY_COOLDOWN=30", env)
@@ -857,7 +840,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         self._append_env("YIBAN_NOTIFY_COOLDOWN=30\n")
-        # cooldown 属收口范围 → 带二次口令
+        # cooldown 属可逆数值参数（收窄后免门），confirm_password 字段被忽略
         r = c.put("/api/notify-config",
                   json={"cooldown": 0, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -867,7 +850,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
 
     def test_notify_urgent_daily_max_write_rules(self):
         """追加 B：urgent_daily_max 与 daily_max 同规则——整数、0 显式落盘、非法 400、缺省不写。
-        （数值项带二次口令；非法值在校验层即 400，无需口令）"""
+        （数值项免门后 confirm_password 字段被忽略；非法值在校验层即 400）"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config",
@@ -918,33 +901,9 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
             self.assertNotIn("YIBAN_ACCOUNTS_KEY=", after, "缺键时不得被 load_key 顺手生成并落盘")
             self.assertNotIn("YIBAN_NOTIFY_SECRET_ENC=", after, "被拒绝的换钥不得写入密文")
 
-    def test_mail_close_alert_label_distinguishes_which_flag(self):
-        """评审 ⑤：关全局开关与只关主管理员个人接收危害面不同，告警文案必须分得清。
-
-        标签只在"高危操作二次鉴权失败告警"正文里可见（对「<label>」连续 N 次口令验证
-        失败），是运维判断"对方当时想拆哪一路报警器"的唯一线索。
-        """
-        for field, want, unwant in (
-            ("enabled", "全局邮件通知", "主管理员个人接收"),
-            ("admin_notify", "主管理员个人接收", "全局邮件通知"),
-        ):
-            with self.subTest(field=field):
-                self.alerts.clear()  # 两个 subTest 共用记录列表，须各算各的
-                c = self._client()  # _login_fails / 限速表都是 create_app 内的，需新会话
-                t = self._login(c, "admin", ADMIN_PASS)
-                for _ in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):  # 达阈值触发告警
-                    r = c.put("/api/mail-config",
-                              json={field: False, "confirm_password": "wrong-pass"},
-                              headers=self._csrf(t))
-                    self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-                fails = [a for a in self.alerts if a[0] == "高危操作二次鉴权失败告警"]
-                self.assertEqual(len(fails), 1, f"应恰好告警一次，实际 {self.alerts}")
-                self.assertIn(want, fails[0][1], f"告警文案须点明关的是{want}")
-                self.assertNotIn(unwant, fails[0][1], "不得把另一路也写成被关闭")
-
     def test_audit_details_include_numeric_and_flag_changes(self):
         """评审 ⑥：两个配置端点的审计详情须含具体变更项（只有 type 时事后无法还原）。
-        （数值项属收口范围，带二次口令）"""
+        （数值项免门后仍逐键入审计——免门不等于免痕）"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config", headers=self._csrf(t), json={
@@ -1011,38 +970,47 @@ class HighRiskGateOrderB14Test(_B14AlertGateBase):
     额度只该被真实执行过的高危动作消耗。
     """
 
-    def test_mail_wrong_password_tries_do_not_consume_budget(self):
-        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")  # 窗口内只允许 1 次高危动作
+    def test_swap_secret_wrong_password_tries_do_not_consume_budget(self):
+        """门禁顺序不变量的现钉（换钥侧）：错口令尝试不得挤占高危额度。
+
+        缩减批 6a 后邮件开关关闭免门，本不变量的落点改为仍受门的换钥动作。
+        """
+        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         for _ in range(2):
-            r = c.put("/api/mail-config",
-                      json={"enabled": False, "confirm_password": "wrong-pass"},
+            r = c.put("/api/notify-config",
+                      json={"type": "serverchan", "secret": "SCT406257NEWWWWWWWWWWWWW",
+                            "confirm_password": "wrong-pass"},
                       headers=self._csrf(t))
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertNotIn("YIBAN_MAIL_ENABLE=0", _read_env(self.env_file), "错口令不得关闭通道")
-        # 关键：两次失败尝试没有吃掉那唯一一格额度 → 合法管理员的关闭仍应放行
-        r2 = c.put("/api/mail-config",
-                   json={"enabled": False, "confirm_password": ADMIN_PASS},
+        self.assertNotIn("YIBAN_NOTIFY_SECRET_ENC=", _read_env(self.env_file),
+                         "错口令不得换钥")
+        # 关键：两次失败尝试没有吃掉那唯一一格额度 → 合法管理员的换钥仍应放行
+        r2 = c.put("/api/notify-config",
+                   json={"type": "serverchan", "secret": "SCT406257NEWWWWWWWWWWWWW",
+                         "confirm_password": ADMIN_PASS},
                    headers=self._csrf(t))
         self.assertEqual(r2.status_code, 200,
                          f"错口令尝试不得挤占高危额度（旧顺序此处为 429）："
                          f"{r2.get_data(as_text=True)}")
-        self.assertIn("YIBAN_MAIL_ENABLE=0", _read_env(self.env_file))
+        self.assertIn("YIBAN_NOTIFY_SECRET_ENC=", _read_env(self.env_file))
 
-    def test_mail_budget_still_enforced_after_auth(self):
-        """反向保护：顺序调整不得放宽限速——口令正确但超额度，仍然 429 且零写入。"""
+    def test_swap_secret_budget_still_enforced_after_auth(self):
+        """反向保护（换钥侧）：顺序调整不得放宽限速——口令正确但超额度，仍然 429 且零写入。"""
         self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
-        r = c.put("/api/mail-config",
-                  json={"enabled": False, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        r = c.put("/api/notify-config",
+                  json={"type": "serverchan", "secret": "SCT406257FIRSTTEST0000001",
+                        "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        r2 = c.put("/api/mail-config",
-                   json={"admin_notify": False, "confirm_password": ADMIN_PASS},
-                   headers=self._csrf(t))
+        r2 = c.put("/api/notify-config",
+                   json={"type": "serverchan", "secret": "SCT406257SECONDTEST00002",
+                         "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r2.status_code, 429, "占过额度的成功动作之后仍须按上限拦下")
-        self.assertNotIn("YIBAN_MAIL_ADMIN_NOTIFY=0", _read_env(self.env_file))
+        self.assertNotIn("SCT406257SECONDTEST00002",
+                         _read_env(self.env_file), "被限速拒绝的第二次不得写入")
 
     def test_batch_delete_wrong_password_does_not_consume_budget(self):
         """既有三处高危删除同口径：错口令尝试不得挤占删除额度。"""

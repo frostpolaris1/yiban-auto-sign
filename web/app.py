@@ -2457,9 +2457,10 @@ def create_app(host=None):
 
         薄封装：返回约定（None = 通过，否则 `(响应, 状态码)` 元组）与失败处置
         （独立计数、告警、冷却）全在 `_sensitive_password_gate`，本函数不改写语义。
-        `always_required` 默认 True——本函数的调用点本来就是一串"不可逆清除 / 角色变更 /
-        重置他人口令 / 关闭告警通道"，这些必须当次输口令；只有设置页里两个纯配置项
-        （签到随机延迟、容量上限）显式传 False 走豁免。
+        `always_required` 默认 True——经 `_high_risk_gate` 的落点本就是一串"不可逆
+        清除 / 重置他人口令"（必须当次输口令）；设置页里两个纯配置项（签到随机
+        延迟、容量上限）显式传 False 走豁免。另一直连调用点是 /api/mail-config 的
+        SMTP 凭据变更（换中继/授权码 = 换钥类，要口令但不占高危额度）。
         """
         return _sensitive_password_gate(
             # 第一个参数收**整个请求体**而不是单独的口令串：非 `full` 档还要看同一请求里
@@ -2474,26 +2475,32 @@ def create_app(host=None):
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
         额度仍复用 `_admin_delete_limited` 那同一套计数，不改变"超限即 429"的语义。
 
+        口令门收窄（缩减批 6a，用户拍板清单）：门内只剩**不可逆/凭据类**动作
+        ——删除账号、清库清理、换钥、改管理员口令、改他人凭据。改设备识别码、
+        备注、签到时窗、改角色、开关告警通道、调推送额度等**可逆操作一律免门
+        免额度**，但保留审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之
+        回退）。
+
         `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
         删用户）：非 `full` 档下它们还要求请求体带倒计时确认凭据，见
-        `_sensitive_password_gate`。可逆动作（角色变更、重置口令、关通道/换密钥）
-        不传，避免把"可回滚"的动作也变成不可撤销的确认负担。
+        `_sensitive_password_gate`。可逆动作不传，避免把"可回滚"的动作也变成
+        不可撤销的确认负担。
 
         本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用）。
         覆盖面（每行 = `METHOD /path`，形态即清单；由 `tests/test_gate_manifest_sync.py`
         与 url_map / 视图源码**双向自动比对**，改名漏登即红——这份表不再是手抄件）：
         - POST /api/accounts/batch（purge 分支）
         - POST /api/accounts/<int:idx>/purge
-        - PUT /api/accounts/<int:idx>（改写他人易班凭据时）
+        - PUT /api/accounts/<int:idx>（改写他人易班凭据时——密码/改绑手机号；
+          只改设备识别码不过本门，仅标审计位 + 发信）
         - POST /api/users/batch（delete / reset_password 分支）
         - POST /api/users/deleted/purge
-        - POST /api/users/<int:user_id>/role
-        - POST /api/users/<int:user_id>/password
+        - POST /api/users/<int:user_id>/password（改他人凭据）
         - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
-        - PUT /api/mail-config（关闭通道时）
-        - PUT /api/notify-config（关闭/换密钥/改额度时）
-        同为 always_required 但不占高危额度的还有 /api/mail-config 的 SMTP/收件人变更
-        （直连 _reconfirm_admin_password）。
+        - PUT /api/notify-config（触碰推送密钥时——换钥/清钥；调额度/节流参数免门）
+        免门（缩减批 6a 起，均保留审计）：POST /api/users/<int:user_id>/role（主管理员
+        专属 + 角色变更与审计同事务）、PUT /api/mail-config 的开关与收件人变更
+        （SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、不占额度）。
         可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的系统开关、
         /api/settings 的签到随机延迟与容量上限、/api/scheduler/executors* 的写操作。
         **只占额度、刻意不过本门禁**的（可逆不加口令——加了只增误伤；留痕在审计行；
