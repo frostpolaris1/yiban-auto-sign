@@ -25,7 +25,7 @@
 `yiban.store.clock_meta`（计划元数据）。
 谁调用：唯一生产调用点是 `executor_v3`——`_ensure_plan` 在当日没有可用计划行时调
 `build_plan` + `write_plan` 补建，`shadow_stats` 调 `plan_stats` 做影子对账。
-`executor_v3` 自身受 `YIBAN_SCHEDULER_V3` 分流、**缺省 0**：开关未开时本模块零生产调用点。
+台账单池化后 `executor_v3` 是唯一生产执行体，本模块因此在产线恒被调用。
 运维与影子期另可直接调 `plan_stats` 对比落点分布与容量。
 """
 import datetime

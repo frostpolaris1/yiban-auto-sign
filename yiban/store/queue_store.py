@@ -12,6 +12,8 @@
 - `requeue_failed`：当日回炉——把 `failed` 行按 `retry:`/`final:` 档位逐行走
   `requeue_task`（state+epoch 门沿用，不另造协议），`claim_batch` 只取 `pending`，
   没有这条路 v3 的当日失败就无人接手；
+- `reclaim_tasks`：显式重签——把指定账号当日的**终态**行（`done`/`skipped`）翻回
+  `pending`，只服务手动 `--only`（终态复活默认是红线，故无缺省调用者）；
 - `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
 - `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
@@ -20,6 +22,8 @@
   `pending` 行改归本执行体（只动 `pending`，CAS 精确到死主 + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
   闸门，见该函数说明）；
+- `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
+  事件签名 `(条数, 最新迁移标记)`，短轮询变化即接手；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
   "当日是否了结"、给进度展示取数；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
@@ -28,8 +32,8 @@
 **归属**
 `sign_tasks` 由 `yiban/store/migrations.py` 的 v18 迁移建立；本模块是该表与
 `egress_state` 在 store 层的**唯一访问点**——表结构、SQL 与降级口径都收在这里，
-调用方不自己拼 SQL。v17 的 `sign_claims` 平移进本表后进入只读过渡期，其访问点仍是
-`yiban/store/claims.py`。
+调用方不自己拼 SQL。台账单池化后本表是**唯一生产台账**（`sign_claims` 已冻结、零写入，
+其旧访问层 `yiban/store/claims.py` 保留但无生产调用点）。
 
 **复用**
 调用方按模块属性取（`from yiban.store import queue_store` 后 `queue_store.claim_batch(...)`），
@@ -38,13 +42,10 @@
 **通信**
 数据源连接与进程内写锁暂取 `yiban.store.connection` 的单例 `get_conn()` / `_conn_lock`
 （`_queue_conn()` 是唯一取点：将来本表迁到独立库文件、换独立连接时只改这一处）。
-设计上的调用方是执行入口 `yiban/engine/round.py`（领取/收尾）与调度 v3 的执行体
-`yiban/engine/executor_v3.py`（批量领取/收尾/重排/待办计数/桶状态落库），展示侧是
-`yiban/engine/state_io.py`、`web/services/executor_env.py`（经路由
-`web/routes/accounts_api.py` 暴露）。**注意这两条路径读写的不是同一张表**：`round.py`
-与展示侧读写的仍是 v17 的 `sign_claims`（经 `yiban/store/db.py` 的再导出调用
-`claims.py`），只有 `executor_v3.py` 消费本模块的 `sign_tasks`——过渡期两个写者按
-"当日单一写者"的运维规则互斥。
+设计上的调用方是执行入口 `yiban/engine/executor_v3.py`（批量领取/收尾/重排/待办计数/
+重签/桶状态落库）与展示侧 `yiban/engine/state_io.py`、`web/services/executor_env.py`
+（经路由 `web/routes/accounts_api.py` 暴露）——单池后两条路径读写的是**同一张表**
+`sign_tasks`。
 `egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /
 `restore_from_store`）。
 """
@@ -303,6 +304,54 @@ def requeue_failed(day, shards, include_final=False, run_at=None):
     return flipped
 
 
+def reclaim_tasks(day, phones):
+    """显式重签：把指定账号当日**终态**行（`done` / `skipped`）翻回 `pending`，并把
+    这些账号的 `run_at` 一概置为"现在"（让手动签到不必等到计划时刻），返回行数。
+
+    只服务手动 `--only`（"用户主动点的那一下应当照做"）这条有界显式路径：终态复活默认
+    是红线（复活回 `pending` 会被 `claim_batch` 重新领取 ⇒ 同一账号当日再真实登录一次），
+    故本函数没有缺省调用者，必须显式传具体 `phones`；且只翻 `done`/`skipped` 两类——
+    `failed` 走当日回炉口（`requeue_failed`），`claimed`（他人在飞）不改状态。
+
+    `run_at` 置"现在"对两类行都做：`pending` 行（当日计划尚未到点）也要能被立刻领到，
+    否则手动签到会睡到计划时刻（窗口外更会一直等）。`epoch` 只在**翻态**的行上自增
+    （在飞 `claimed` 行不动 token，免得打断当前持有者的收尾）；清 `owner`/`lease_until`
+    同理只对翻态行做。`vshard < 0` 的历史行不属于任何分片集，一律不碰（与 `reap_expired`
+    / `pending_count` 同界）。空 `phones` → 0 且不取连接；库异常 → 0 + warning。
+    """
+    items = tuple(phones or ())
+    if not items:
+        return 0
+    placeholders = ",".join("?" for _ in items)
+    stamp = clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把终态行翻回 pending，
+    # 非终态行只刷新 run_at，一次 UPDATE 完成两件事。
+    sql = (
+        "UPDATE sign_tasks SET "
+        "state=CASE WHEN state IN (?, ?) THEN ? ELSE state END, "
+        "owner=CASE WHEN state IN (?, ?) THEN '' ELSE owner END, "
+        "lease_until=CASE WHEN state IN (?, ?) THEN '' ELSE lease_until END, "
+        "epoch=epoch + CASE WHEN state IN (?, ?) THEN 1 ELSE 0 END, "
+        "run_at=? "
+        "WHERE day=? AND vshard >= 0 "
+        f"AND phone IN ({placeholders})"
+    )
+    params = (STATE_DONE, STATE_SKIPPED, STATE_PENDING,
+              STATE_DONE, STATE_SKIPPED,
+              STATE_DONE, STATE_SKIPPED,
+              STATE_DONE, STATE_SKIPPED,
+              stamp, day, *items)
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("重签已了结签到任务失败（按未重签处理）: %s", e)
+        return 0
+
+
 def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
     """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
     `lease_until < now - grace_sec` 的行回退为 `pending`（清 `owner`/`lease_until`、
@@ -483,6 +532,47 @@ def save_egress_state(egress, rate, burst, tat, now=None):
         return False
 
 
+def fallback_event(day, exclude_owner=""):
+    """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新迁移标记)`。
+
+    为什么这一行就是"失败即入队"：执行体弃权（give-up 档）在同一事务里把行置 `failed`
+    并写入 `retry:`/`final:` 档位前缀——兜底扫空后按短周期轮询本签名，一变即接手，
+    不必等满一个扫描间隔；签名不变则等满间隔为上限。
+
+    **两条收紧，防止唤醒被放大成重复真实登录**：
+    - 只数 `retry:` 档：`final:` 档（预算耗尽/风控）在默认参数下兜底**接不动**
+      （`requeue_failed` 的缺省档位门），为它醒来只会空转，事件频率必须与"可接手频率"同集；
+    - 剔除 `exclude_owner`（兜底自己的稳定槽位名，含 `{稳定名}:{进程号}:{代次}`
+      运行时形态）弃权：它一轮扫完本就有紧接的再扫节律，自己的弃权再触发自己的
+      唤醒会把"扫→弃权→醒→再扫"接成紧循环。
+
+    "最新迁移标记"取 `MAX(epoch)`——epoch 每次领取进一且永不回退，弃权/接手两向迁移
+    都会动它。前缀比较按**字节前缀**（`substr`）而不是 LIKE：主机名/结果文本里可能出现
+    `_`（LIKE 通配符），与 `requeue_failed` / `reap_abandoned` 同一避坑纪律；匹配口径
+    也同源（等值 + `instr` 前缀）。
+    `vshard >= 0` 与其它当日读一致：v18 平移 / v20 补账的 `vshard=-1` 历史行不属于任何
+    分片集、永远接不动，不得计入唤醒频率。
+    库不可用返回 None：调用方退回等满间隔——事件驱动是**延迟优化**，不是正确性依赖，
+    读不到时绝不据此做任何互斥判断。
+    """
+    tail, ex = "", []
+    if exclude_owner:
+        tail = " AND owner<>? AND instr(owner, ?)<>1"
+        ex = [exclude_owner, exclude_owner]
+    sql = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
+           "WHERE day=? AND state=? AND vshard >= 0 AND substr(result, 1, ?)=?" + tail)
+    probe = [day, STATE_FAILED, len(claims_mod.RESULT_RETRY_PREFIX),
+             claims_mod.RESULT_RETRY_PREFIX, *ex]
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            row = conn.execute(sql, tuple(probe)).fetchone()
+        return (int(row["n"] or 0), int(row["h"] or 0))
+    except Exception as e:
+        logger.debug("读取兜底事件签名失败（按无事件处理）: %s", e)
+        return None
+
+
 def pending_count(day, vshards):
     """当日「我的分片集」内仍待办（`state='pending'`）的行数——**当日是否了结的闸门**。
 
@@ -543,3 +633,102 @@ def day_counts(day):
     out["open"] = sum(out[s] for s in OPEN_STATES)
     out["total"] = out["settled"] + out["open"]
     return out
+
+
+def latest_day():
+    """`sign_tasks` 里最近一次有记录的业务日（`MAX(day)`）；表空 / 库不可用返回 None。
+
+    展示口径的"上次实领是哪天"：取最近一次**有记录**的日而不是"昨天"——周末停签后按
+    "昨天"取会让整列空白到下一个工作日。
+    """
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            row = conn.execute("SELECT MAX(day) FROM sign_tasks").fetchone()
+    except Exception as e:
+        logger.debug("读取最近一次签到任务日失败（按空处理）: %s", e)
+        return None
+    return row[0] if row else None
+
+
+def owners_for_day(day):
+    """某业务日 `phone -> owner` 映射，供账号列表批量标注归属。
+
+    **必须一次取全**：账号列表可能有几百行，逐账号查会让一次列表请求变成几百次查询。
+    只回 owner 原串、**不解析角色、不脱敏**——角色口径与脱敏是展示层的事（Web 层用
+    `yiban.egress.parse_owner` 折成角色与槽位，绝不把 owner 原串回给前端）。
+    库未初始化/表未落地 → `{}`（与 `day_counts` 同口径不抛）。
+    """
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(
+                "SELECT phone, owner FROM sign_tasks WHERE day=?", (day,)).fetchall()
+        return {r["phone"]: r["owner"] for r in rows}
+    except Exception as e:
+        logger.debug("读取当日任务归属失败（按空处理）: %s", e)
+        return {}
+
+
+def owners_since(days=None):
+    """保留期内出现过的执行体身份串（去重，升序）——供"槽位号只增不复用"用。
+
+    用途：删除清单里**当前最大**那一行之后，纯函数只能给出"最大值 + 1"（它会拿到刚空出
+    的号）；追加接口据此再跳过"保留期内真用过的号"。只回答"出现过哪些身份串"，
+    **不解析角色**（解析是展示层的事）。库不可用时返回 `[]`（调用方退回"只按清单
+    最大值 +1"，不影响追加本身）。
+    """
+    days = claims_mod.RETENTION_DAYS if days is None else days
+    cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(
+                "SELECT DISTINCT owner FROM sign_tasks WHERE day >= ? ORDER BY owner",
+                (cutoff,)).fetchall()
+        return [r["owner"] for r in rows if r["owner"]]
+    except Exception as e:
+        logger.debug("读取执行体历史身份失败（按空处理）: %s", e)
+        return []
+
+
+def activity(day):
+    """当日**按执行体归属**的分组计数（前端"谁做了多少"的数据来源），已折成 KPI 三键。
+
+    与 `day_counts(day)` 的区别只在分组维度：`day_counts` 回答"当日了结了多少"，本函数
+    回答"这些活分别是谁做的"。`sign_tasks` 的 state 词汇比旧领取池多（`pending`/`skipped`/
+    `stolen`），故按 KPI 语义折一次（**折叠口径只此一处**，展示层不再各写一份）：
+
+    | 返回键 | 折叠来源 | 含义 |
+    |--------|----------|------|
+    | `claimed` | `claimed` + `stolen` | 正在被某执行体持有（在飞） |
+    | `done` | `done` + `skipped` | 当日已了结（`TASKS_SETTLED_STATES`） |
+    | `failed` | `pending` + `failed` | 未了结：待领取或已弃权待接手 |
+    | `total` | 全部行 | 当日总行数 |
+
+    只回 owner 原串、**不解析角色、不脱敏**（角色与脱敏是展示层的事，见 `owners_for_day`）。
+    返回 `[{"owner":…, "claimed":n, "done":n, "failed":n, "total":n}, …]`（按 owner 升序，
+    顺序稳定）；空库/库未初始化 → `[]`，与 `day_counts` 同口径不抛。未登记的 state 照实
+    计进 `total` 但不进三键（不丢数）。
+    """
+    out = {}
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(
+                "SELECT owner, state, COUNT(*) AS n FROM sign_tasks "
+                "WHERE day=? GROUP BY owner, state ORDER BY owner", (day,)).fetchall()
+    except Exception as e:
+        logger.debug("读取执行体归属计数失败（按空处理）: %s", e)
+        return []
+    for r in rows:
+        out.setdefault(r["owner"], {})[r["state"]] = r["n"]
+    result = []
+    for owner, counts in out.items():
+        claimed = counts.get(STATE_CLAIMED, 0) + counts.get(STATE_STOLEN, 0)
+        done = counts.get(STATE_DONE, 0) + counts.get(STATE_SKIPPED, 0)
+        failed = counts.get(STATE_PENDING, 0) + counts.get(STATE_FAILED, 0)
+        item = {"owner": owner, "claimed": claimed, "done": done, "failed": failed}
+        item["total"] = sum(counts.values())
+        result.append(item)
+    return result
