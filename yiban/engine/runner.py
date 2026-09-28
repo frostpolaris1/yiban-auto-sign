@@ -474,9 +474,9 @@ def main(argv=None):
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
         # 与 web 容量预估同一函数（`capacity_of`）：账号间隔是「上一次完成 →
         # 下一次开始」的下限，故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约
-        # 2.3 倍）。告警阈值再扣「重试储备」（retry_reserve，MF-56④）：按零重试排满
+        # 2.3 倍）。告警阈值再扣「重试储备」（retry_reserve）：按零重试排满
         # 窗口就是 122–360 静默死带——当天必签不完却要到 361 才出声。avg 用实测分位数
-        # （warn_avg_attempt_sec，MF-56③）：缺省档 3s 来自 mock 注入，不是实测。
+        # （warn_avg_attempt_sec）：缺省档 3s 来自 mock 注入，不是实测。
         _avg_warn = schedule_mod.warn_avg_attempt_sec(_cfg["avg_attempt_sec"])
         _cap = schedule_mod.capacity_of(
             max(0.0, _rest_sec), gap=gap_max, avg=_avg_warn,
