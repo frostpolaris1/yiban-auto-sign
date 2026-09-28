@@ -181,7 +181,7 @@ def api_mail_config_save():
     id 非法形状或同请求内重复 → 400。落盘前 AES-GCM 加密为
     YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不接受也不写入（发送路径从不读该键）。
 
-    邮件通道是全部安全告警的最后一条送达路径。口令门收窄（缩减批 6a，用户拍板
+    邮件通道是全部安全告警的最后一条送达路径。口令门收窄（，用户拍板
     清单）后的口径：开关（enabled/admin_notify）与收件人（admin_to）都是**可逆
     改动**（设回即可）→ 免口令门免额度，留痕统一交给落盘后的审计行（谁、把哪路
     从哪改到哪）；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令（直连
@@ -329,7 +329,7 @@ def api_mail_config_save():
     # "从哪改到哪"就塌成"从哪改到哪自己"。
     admin_to_old = m.mail_config._get("ADMIN_TO") if admin_to_val is not None else None
     # SMTP 凭据变更（中继/授权码 = 换钥类）要当次口令；admin_to 是可逆路由改动，
-    # 缩减批 6a 起免口令（不拖累同请求的 smtps 一起免——两字段分别判定）
+    # 免口令（不拖累同请求的 smtps 一起免——两字段分别判定）
     if smtps_list is not None:
         # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组；
         # 第一个参数是整个请求体（门禁还要看 confirm_delay_ack 之类的同请求字段）
@@ -338,7 +338,7 @@ def api_mail_config_save():
             return denied
     if not flags and smtps_list is None and admin_to_val is None:
         return jsonify({"error": "缺少有效配置项"}), 400
-    # 开关关闭曾走 _high_risk_gate（二次鉴权 + 高危额度）：缩减批 6a 收窄为免门
+    # 开关关闭曾走 _high_risk_gate（二次鉴权 + 高危额度）：改为免门
     # 免额度——开关可逆（设回即可），留痕靠落盘后的审计行（见下方 db.audit），
     # 高危额度只留给删除/清库/换钥/改凭据这类不可逆或凭据动作。
     # 加密排在口令确认之后（同 notify-config：失败请求零写盘痕迹）
@@ -432,7 +432,7 @@ def api_notify_config_save():
     "关闭推送 / 清空密钥 / 换密钥"触碰**密钥本身**（判定 = type 或 secret 在场），
     仍过高危门禁（换钥/清钥属用户拍板门清单的"换钥"类），与高危删除同口径共用
     限速计数；调额度与节流参数（cooldown/urgent_only/daily_max/urgent_daily_max）
-    是可逆改动，缩减批 6a 起免门免额度（留痕靠审计行）。
+    是可逆改动，免门免额度（留痕靠审计行）。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
@@ -458,15 +458,15 @@ def api_notify_config_save():
             return jsonify({"error": f"自定义地址过长（最多 {m.NOTIFY_URL_MAX_LEN} 字符）"}), 400
         if not m.notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
-    # ---- 高危判定（缩减批 6a 收窄）----
+    # ---- 高危判定（收窄后）----
     # 触碰**密钥**（type 或 secret 任一在场：换钥 / 清钥 / 关闭随钥清）→ 仍过高危
     # 门禁（换钥/清钥属用户拍板的"换钥"类，落点在凭据上，非 full 档还要倒计时确认的
     # 场景不受影响）；纯数值/节流参数（cooldown/urgent_only/daily_max/urgent_daily_max）
     # 是可逆改动 → 免门免额度，留痕靠落盘后的审计行。
     touches_channel = ("type" in data) or ("secret" in data)
     close_channel = "type" in data and ntype == ""  # (a) type 置空 = 关闭推送
-    clear_secret = touches_channel and not secret  # (b) 本次落盘后不再有密钥 = 清空密钥
-    swap_secret = bool(secret)  # (c) 携带新密钥 = 换钥
+    # (b) 携带新密钥 = 换钥；(c) 其余触碰通道键的情形（换型不留旧钥等）= 清空密钥
+    swap_secret = bool(secret)
     # 门条件 = 触碰通道键（换钥/清钥/关闭清钥三类，互斥且并集恰为 touches_channel）；
     # 曾纳入的 (d) 额度/节流键不再进门——压额度、开 urgent_only 都可逆，免门。
     need_reconfirm = touches_channel
@@ -511,14 +511,14 @@ def api_notify_config_save():
         numeric["urgent_daily_max"] = udm
     if need_reconfirm:
         # 高危动作（含额度/节流参数调整）通过后才占用高危额度
+        # 三类互斥且并集恰为 touches_channel（额度/节流键已在上面被排除），无第四种情形。
         label = (
             "关闭消息推送通道" if close_channel
             else "更换消息推送密钥" if swap_secret
-            else "清空消息推送密钥" if clear_secret
-            else "调整推送限流/额度参数"
+            else "清空消息推送密钥"
         )
         # 统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）；
-        # 换钥/清钥属凭据改写类，占独立的凭据额度（缩批 6a 分流，不与删除互撞）
+        # 换钥/清钥属凭据改写类，占独立的凭据额度（与删除类分开计数，不互撞）
         gate = _high_risk_gate()(data, label, quota="creds")
         if gate:
             return gate
