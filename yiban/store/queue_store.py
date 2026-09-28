@@ -379,7 +379,7 @@ def reclaim_tasks(day, phones):
         return 0
 
 
-def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
+def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None):
     """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
     `lease_until < now - grace_sec` 的行回退为 `pending`（清 `owner`/`lease_until`、
     `epoch = epoch + 1`）。返回受影响行数。
@@ -401,6 +401,11 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
     回收成 `pending` 只会变成永不被领取的行（`claim_batch` 的 `vshard IN (...)` 挡着），
     白白制造"看着有活、其实无人领"的假象。`day` 给了就只回收该业务日。
 
+    `phones` 是回收的**账号允许集**（`None` = 不限，既有调用点语义不变）：手动 `--only`
+    轮只该回收"本轮账号自己"的陈旧 `claimed` 行——回收别人的行是跨账号写，还会 `epoch+1`
+    fence 掉一个仍存活但慢的持有者的迟到收尾。**不整段跳过回收**：手动账号自身若是陈旧
+    `claimed`，正需要这条路径把它拉回来（`reclaim_tasks` 只翻 `done`/`skipped`）。
+
     幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常 → 0 + warning（回收是补偿动作，
     失败不该打断签到；下一轮会再试）；`now` 不可解析是**调用方入参问题**，单独一条
     warning（不与库异常共用文案，免得把排查方向带到存储层）。
@@ -417,6 +422,12 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
         if day is not None:
             sql += " AND day=?"
             params.append(day)
+        if phones is not None:
+            allowed = tuple(phones)
+            if not allowed:
+                return 0
+            sql += f" AND phone IN ({','.join('?' for _ in allowed)})"
+            params.extend(allowed)
         conn, lock = _queue_conn()
         with lock:
             cur = conn.execute(sql, tuple(params))
