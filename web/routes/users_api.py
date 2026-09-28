@@ -208,6 +208,8 @@ def api_users_batch():
             if action == "delete" else "重置操作过于频繁，请稍后再试",
             # 只有 delete 不可逆；批量重置口令可再重置一次，不套倒计时确认
             irreversible=(action == "delete"),
+            # 删除占删除额度；重置他人密码属凭据改写类，占独立凭据额度（缩批 6a 分流）
+            quota="delete" if action == "delete" else "creds",
         )
         if gate:
             return gate
@@ -417,7 +419,8 @@ def api_user_password(user_id):
     # 普通用户自改密码走 /api/me/password（验当前旧密码），不落本门禁。
     if m._current_role() == "admin":
         gate = high_risk_gate()(
-            data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
+            data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试",
+            quota="creds")
         if gate:
             return gate
     row = m.db.find_user_by_id(user_id)
