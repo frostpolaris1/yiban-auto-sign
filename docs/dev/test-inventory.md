@@ -136,8 +136,8 @@ python -m pytest tests/ -q -k mine_or_planner_or_hrw               # 按关键�
 | `test_account_plaintext_patch.py` | 6 | 2026-08-27 对抗性审查补丁测试：账号凭据明文驻留三缺口。 |
 | `test_admin_creds_masked_ops.py` | 11 | 2026-08-20 对抗性审查修复回归测试。 |
 | `test_audit_anchor.py` | 15 | 审计可追溯性与并发安全回归测试（2026-08-28 审查）。 |
-| `test_audit_anchor_field_source.py` | 3 | 锚点行的字段同源与"篡改/重链"诊断的可达性。 |
-| `test_audit_chain.py` | 54 | Phase 3：审计日志 HMAC 哈希链测试。 |
+| `test_audit_anchor_field_source.py` | 2 | 锚点行的字段同源与"链尾哈希不符→判篡改"诊断的可达性。 |
+| `test_audit_chain.py` | 52 | Phase 3：审计日志 HMAC 哈希链测试。 |
 | `test_audit_cleanup_visibility.py` | 7 | 清理量随体检/日报/取证 CLI 出箱。 |
 | `test_config_input_caps.py` | 15 | 推送/邮件配置的写侧输入上限与"按落盘后实际类型校验"。 |
 | `test_env_fail_loud.py` | 3 | 2026-08-27：.env 解析快速失败（防静默重建密钥）回归测试。 |
