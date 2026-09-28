@@ -26,6 +26,11 @@
 python -m pytest tests/ -q -n 8 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
 # 全量（含上述）
 python -m pytest tests/ -q -p no:randomly -n 8 --dist loadfile
+# 时区专项子集（仅本子集双 TZ：改时钟/日期相关代码时才需要跑这条）
+# 名字含 date/midnight/rollover/utc/tz/retention/saturday/weekend/cross_day 的
+# 日期敏感用例（按天文件名、跨天/跨午夜、保留期、周末边界），TZ=UTC 下 ~10s；
+# 与 .github/workflows/nightly.yml 的时区专项步逐字同词集。
+TZ=UTC python -m pytest tests/ -q -p no:randomly -n 4 --dist loadfile -k "date or midnight or rollover or utc or tz or retention or saturday or weekend or cross_day"
 # 脱敏自查：不得含真实域名/IP/邮箱/手机号/密钥、部署与备案信息
 # 排除 tests/：测试桩里的示例号码（形如 13800138000）与回环地址不算泄漏
 git diff <旧提交>..HEAD -- . ":(exclude)tests" | grep -E "^\+" \

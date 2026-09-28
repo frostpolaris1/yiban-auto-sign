@@ -1232,6 +1232,8 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 锚业务钟、跨午夜敏感的 e2e 以构造定结果）。残余：运维脚本宿主钟（state_cleanup/
 backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
 
+**处置（2026-09-28 缩减批 6a，repair/m3-shrink6a）**：**双 TZ 常态化收窄为"单遍全量 + 时区专项子集"**。CI 实况本就单遍（ci.yml 快车道无 TZ 步；nightly 全量默认 TZ 单遍），常态化的"全量默认 + TZ=UTC 各一遍"只存在于本地习惯口径。收窄后：nightly 全量保持单遍，新增"时区专项子集"步（-k "date or midnight or rollover or utc or tz or retention or saturday or weekend or cross_day"，133 条 ~10s，TZ=UTC）作金丝雀；子集词集同步写进 release-gate.md §2①，改时钟相关代码时本地照此双跑。子集实测 TZ=UTC 全绿。
+
 ### MF-109 运维脚本按天文件用宿主 `date` 命名/判定，与引擎业务钟（`yiban.clock` 北京钟）分叉（条件触发，现网不触发）
 - **现象**（2026-09-26 批 1 Task 0 全量审查时发现，tests-only 未改生产）：`run.sh`/`yiban-fallback.sh`/
   `backup.sh`/`pull-prod-backup.sh` 给按天键文件命名与判定（`sign-status-<date>.txt`、`sign-<date>.log`、
