@@ -299,7 +299,8 @@ class _Ctx:
 
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
                  cred_state, delegated, notify_url, event_sink, rng, slot=0,
-                 runtime_id=None, requeue_during_run=False, reclaim=False):
+                 runtime_id=None, requeue_during_run=False, reclaim=False,
+                 allowed_phones=None):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
@@ -336,6 +337,11 @@ class _Ctx:
         # 手动 `--only` 的显式重签：豁免窗口关闭判定（用户主动触发应当放行，与旧领取池
         # 的手动链路一致），其余路径不受影响
         self.reclaim = reclaim
+        # 本轮**允许领取/回炉的账号允许集**（`None` = 按分片集不限）：手动 `--only` 只
+        # 处理本轮传进来的账号，宽分片集不得把当日别人的行领走或把别人的 `failed` 回炉
+        # ——那些行会走 `_attempt` 的 `acc is None` 分支被误当"了结"（静默漏签）。
+        self.allowed_phones = (None if allowed_phones is None
+                               else frozenset(allowed_phones))
 
 
 def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
@@ -479,6 +485,13 @@ async def _attempt(ctx, item):
     today = _now().strftime("%Y-%m-%d")
     acc = ctx.accounts.get(phone)
     if acc is None:
+        if getattr(ctx, "reclaim", False):
+            # 手动 `--only` 的保险：本轮允许集已把它挡在领取/回炉之外，正常不会到达这里。
+            # 真到了也**绝不了结**它——既不 `_finish`（会在执行体里被当成"本轮账号已不在
+            # 配置"记 `done`/`user_cancelled`）、也不写 sign-state；留给下一轮/别的执行体。
+            logger.warning("手动轮遇到不在本轮账号集里的行，跳过不动（不改状态/不写了结）: %s",
+                           _mask_phone(phone))
+            return
         # 运行期被删/停用：不发请求，但必须了结该行——否则它永远 pending，本轮收不干
         _finish(ctx, phone, epoch, (False, "账号已不在本轮配置", True,
                                     STATUS_USER_CANCELLED),
@@ -629,10 +642,15 @@ async def _refiller(queue, shards, ctx):
       领取范围——否则死主的行没有任何人领。
     另按 `WORKER_HEARTBEAT_SEC` 刷新本执行体心跳：一轮可能十几分钟，只在起跑/收尾写盘会
     让长轮次被执行体页判成 `stale`（异常），比"显示 idle"更糟。
+
+    领取/回炉/待办计数一律带上 `ctx.allowed_phones`（`None` = 按分片集不限）：手动
+    `--only` 轮**只领、只回炉本轮传进来的账号**，且在 reclaim 轮**跳过跨账号恢复**
+    （`reap_expired` / 死主接管会改别人的行，手动轮不该做）。
     """
     shards = tuple(shards)
     last_beat = _mono()
     last_recover = _mono()
+    allowed = getattr(ctx, "allowed_phones", None)
     while True:
         # 手动 `--only` 豁免窗口判定：用户主动触发应当放行（与旧领取池的手动链路同语义）。
         if not getattr(ctx, "reclaim", False) and schedule._window_closed(ctx.cfg, _now()):
@@ -640,7 +658,8 @@ async def _refiller(queue, shards, ctx):
         if _mono() - last_beat >= state_io.WORKER_HEARTBEAT_SEC:
             state_io.mark_worker_beat(getattr(ctx, "slot", 0), now=_now())
             last_beat = _mono()
-        if _mono() - last_recover >= RECOVER_SEC:
+        if (not getattr(ctx, "reclaim", False)
+                and _mono() - last_recover >= RECOVER_SEC):
             queue_store.reap_expired(now=_stamp_ms(_now()), day=ctx.day)
             shards = _widen_with_dead_peers(ctx, shards)
             if getattr(ctx, "requeue_during_run", False):
@@ -648,16 +667,19 @@ async def _refiller(queue, shards, ctx):
                 # `pending`，下一拍就能被自己的通道重新领到——不等下一场会话。
                 # **只回炉默认档**：`final:`/无前缀保守档的第二次机会只留给有界的
                 # 显式路径（补签轮），常驻会话没有预算上界，自动复活等于无上限重登。
-                queue_store.requeue_failed(ctx.day, shards, include_final=False)
+                queue_store.requeue_failed(ctx.day, shards, include_final=False,
+                                           phones=allowed)
             last_recover = _mono()
         rows = queue_store.claim_batch(
             ctx.runtime_id, ctx.day, shards, now=_stamp_ms(_now()),
-            limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS)
+            limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS,
+            phones=allowed)
         for r in rows:
             queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
                               r["attempts"], r["epoch"]))
         if (not rows and ctx.inflight == 0 and ctx.busy == 0
-                and queue.empty() and queue_store.pending_count(ctx.day, shards) == 0):
+                and queue.empty()
+                and queue_store.pending_count(ctx.day, shards, phones=allowed) == 0):
             break
         await _sleep(REFILL_SEC)
     for _ in range(ctx.m):
@@ -763,15 +785,18 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
       （复活 = 风控账号每轮重登）。
     - `requeue_final=True`：显式路径口子（对齐旧领取池的 `retry_failed`：补签轮/有界一次性
       轮次才传），连同 `final:` 档与无前缀历史行一并回炉。常驻兜底与定时轮都不传。
-    - `claim_all=True`：领取范围从"本执行体 HRW 分片集"放宽为全部分片。兜底身份
-      （`fallback@…`）与手动 `--only`（身份可能不在执行体清单里）都不必受 HRW 候选集约束，
-      不放宽就是"看着在跑、其实零领取"的静默空转。
+    - `claim_all=True`：领取范围从"本执行体 HRW 分片集"放宽为全部分片。**只给兜底腿**
+      （`fallback@…` 身份不在执行体候选集里，不放宽就是"看着在跑、其实零领取"的静默
+      空转）；兜底传的是全量账号，故宽分片不会越界。手动 `--only` **不用**它——它改用
+      "本轮账号自己的虚分片 + 账号允许集"的窄范围（见 `reclaim`）。
     - `requeue_during_run=True`：补货循环的恢复周期（每 `RECOVER_SEC`）顺带把本轮刚
       弃权的默认档翻回 `pending`，不等下一场会话。只回炉默认档，保守档不变。
     - `reclaim=True`：**手动 `--only` 专用**的有界显式路径——把到手账号当日已了结
       （`done` / `skipped`）的行翻回 `pending` 并补建计划行，使"用户主动点的那一下照做"
-      的旧领取池语义（`allow_settled=True`）在单池下仍有等价形态。缺省关，定时轮与兜底
-      都不传（终态复活默认是红线）。
+      的旧领取池语义（`allow_settled=True`）在单池下仍有等价形态。**领取/回炉/待办计数
+      全部收窄到本轮账号的虚分片 + 账号允许集**，并跳过跨账号恢复（`reap_expired`、死主
+      接管），且遇 `phone ∉ accounts` 的行绝不了结——手动轮不得碰别人的行（否则那些行会
+      被误判"已了结"⇒ 静默漏签）。缺省关，定时轮与兜底都不传。
 
     `dry_run=True` 只转调 `shadow_stats`（零落库 / 零领取 / 零请求）并返回空结果。
     `cred_state` **就地改传入的那个 dict**：调用方持有同一引用并在收尾保存，重新绑定会让熔断
@@ -830,24 +855,33 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         ctx = _Ctx(
             accounts={a.phone: a for a in accounts},
             day=day, cfg=cfg, v=v,
-            shards=(tuple(range(v)) if claim_all
-                    else hrw.shards_of(executor_id, cfg["executors"], day, v)),
+            # 手动 `--only`：分片集取**本轮账号自己的虚分片**（不依赖本执行体是否是 HRW
+            # 候选集成员，也不用通配 `claim_all`——宽分片会顺手领走别人的行）；配合
+            # `allowed_phones` 的与关系，只有本轮传进来的账号可被领取/回炉。
+            shards=((tuple(sorted({hrw.vshard_of(a.phone, day, v) for a in accounts}))
+                     if reclaim else
+                     (tuple(range(v)) if claim_all
+                      else hrw.shards_of(executor_id, cfg["executors"], day, v)))),
             executor_id=executor_id, runtime_id=runtime_id, results={},
             cred_state=cred_state,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
             rng=rng or random.Random(), slot=slot,
-            requeue_during_run=requeue_during_run, reclaim=reclaim)
+            requeue_during_run=requeue_during_run, reclaim=reclaim,
+            allowed_phones=(frozenset(a.phone for a in accounts) if reclaim else None))
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
         # 分片并入后这些账号已归本执行体，不该再被登记成"别人负责的活"。
-        ctx.shards = _widen_with_dead_peers(ctx, ctx.shards)
+        # 手动 `--only` 轮不接管死主分片：那是跨账号写别人的行，不是用户点这一下的范围。
+        if not reclaim:
+            ctx.shards = _widen_with_dead_peers(ctx, ctx.shards)
         # 显式重签（手动 `--only`）：先把到手账号当日已了结的行翻回 `pending`，否则
         # `claim_batch` 只取 `pending`，用户点下的那一下会沦为"未执行"。
         if reclaim:
             queue_store.reclaim_tasks(day, [a.phone for a in accounts])
-        # 轮首回炉（作用域=本轮领取集 + 本业务日）：默认档 failed 翻回 pending 才谈得上
-        # 被本轮领到；回炉逐行走 `requeue_task` 的 state+epoch 门，在飞/终态行绝不复活。
-        # 放在接管之后、预扫之前：死主分片并入后一并扫到；`claim_all` 时即全分片扫尾。
-        queue_store.requeue_failed(day, ctx.shards, include_final=bool(requeue_final))
+        # 轮首回炉（作用域=本轮领取集 + 本业务日 + 允许集）：默认档 failed 翻回 pending
+        # 才谈得上被本轮领到；回炉逐行走 `requeue_task` 的 state+epoch 门，在飞/终态行绝不
+        # 复活。放在接管之后、预扫之前：死主分片并入后一并扫到。
+        queue_store.requeue_failed(day, ctx.shards, include_final=bool(requeue_final),
+                                   phones=ctx.allowed_phones)
         _prescan(ctx, accounts)
         ctx.limiter.restore_from_store(ctx.egress, now=_mono())
         if ctx.global_limiter.invalid:

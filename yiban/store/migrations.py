@@ -1008,9 +1008,9 @@ def _ensure_state_dir_readable(state_dir):
 def migrate_v20(conn):
     """v20：把 `sign-state-*.json` 里的终态补进 `sign_tasks`（可选迁移，失败只告警不阻断）。
 
-    为什么需要：v18 的平移源是 `sign_claims`，而它只记**真实领取过**的账号（唯一写入点
-    `claims.try_claim`）——JSON 里的跳过类终态（`paused`/`skipped_window`/…）从未进入
-    领取池，只做 v18 的话台账对"已跳过"的账号仍是空白。
+    为什么需要：v18 已**不再平移** `sign_claims`（单池化后旧表冻结），而 JSON 里的跳过类
+    终态（`paused`/`skipped_window`/…）从来只在状态文件里、不在任务队列——只做 v18 的话
+    台账对"已跳过"的账号仍是空白，故由本迁移从状态文件补回。
 
     只读 `sign-state-<day>.json`（按日结构化状态文件）；最近 `_BACKFILL_DAYS` 天里
     文件缺失或损坏的日**跳过**（台账以两张表为准），不报错也不阻断。但**状态目录

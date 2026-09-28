@@ -23,7 +23,8 @@ sign_events 的保留期清理（同事务兼清超期 verify_jobs）留在 `yib
 连接、锁、时钟守卫、清理留痕（`get_conn` / `_conn_lock` / `_clock_jump_guard` /
 `_table_min_max` / `_record_purge_event` / `_audit_purge_total`）与各域清理函数
 （`_event_cleanup` / `purge_orphan_session_cache` / `purge_deleted_users` /
-`purge_old_delete_requests` / `purge_sign_claims` / `_cascade_phone_owned`，以及
+`purge_old_delete_requests` / `purge_sign_claims` / `purge_sign_tasks` /
+`_cascade_phone_owned`，以及
 `SOFT_DELETE_RETENTION_SECONDS` / `PURGE_SKIP_CANCELLED_OWNER`）一律经 `_facade()`
 按属性取——按属性取保证 `db.<名字> = 替身` 打桩可见。
 """
@@ -187,4 +188,5 @@ def run_daily_cleanup():
     _facade().purge_expired_deleted_accounts()
     _facade().purge_deleted_users()
     _facade().purge_old_delete_requests()
-    _facade().purge_sign_claims()
+    _facade().purge_sign_claims()   # 旧领取池（冻结）的存量清理：保留期外删除
+    _facade().purge_sign_tasks()    # 唯一台账（sign_tasks）的保留期清理：不跑会逐日无限增长

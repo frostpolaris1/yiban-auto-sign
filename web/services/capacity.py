@@ -19,8 +19,9 @@
 **复用**
 `_capacity_account_count` 与 `_capacity_audit_count` 互斥互补（两者之和 = 全部非删除
 账号），判定口径唯一来源是 `yiban.store.accounts.signs_in`；`_capacity_estimate` 的公式
-与引擎共用 `yiban.engine.schedule.capacity_of`（按开关分派：v2 侧即
-`capacity_accounts`），有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
+与引擎共用 `yiban.engine.schedule.capacity_of`（**显式固定 v2 公式**，即
+`capacity_accounts` 那一支：双轨开关已随单池消失，展示/闸门口径保持批 4 的取值不变），
+有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
 不另写一套容量模型。`_accounts_at_capacity` 复用 `_capacity_account_count`，
 `_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。
 
