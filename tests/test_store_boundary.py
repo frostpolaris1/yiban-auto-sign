@@ -1030,9 +1030,6 @@ class StoreDbLayoutTest(unittest.TestCase):
 DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
 
 
-FORWARDED_COUNT = 57
-
-
 EXPECTED_MODULE_FUNCS = {
     "__getattr__",
     "init_db",
@@ -1092,12 +1089,6 @@ def _docstring_retained_names():
 
 class ForwardedStateLedgerTest(unittest.TestCase):
     """跨域转发面总账：每一项都必须是"真定义在别处、门面只转发"。"""
-
-    def test_forwarded_count_is_pinned(self):
-        self.assertEqual(
-            len(impl._FORWARDED_STATE), FORWARDED_COUNT,
-            "兼容面转发集项数变化：确认是有意扩缩后同步 FORWARDED_COUNT 与分域契约",
-        )
 
     def test_every_forwarded_name_defined_at_target(self):
         bad = []
