@@ -34,6 +34,7 @@ from flask import jsonify, session
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
+from web.services.env_io import cleanup_env_ambiguous_line
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
@@ -599,7 +600,7 @@ def api_settings_save():
         # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
         # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
         m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
-        return _env_write_refused_response()
+        return _env_write_refused_response(e, m.ENV_FILE)
     except ValueError as e:
         # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
         # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
@@ -1403,9 +1404,38 @@ def api_announcement_publish():
     return jsonify({"ok": True, "msg": "公告已发布", "text": draft})
 
 
+def api_env_cleanup():
+    """主管理员：一键清理 `.env` 中含潜伏行分隔符的那一行（A4-4 可操作化）。
+
+    body: {"line": <1-based 行号>}——行号来自写入被拒时 409 响应的 problems 定位
+    载荷（行片段只含键名与脱敏形状，值已隐去）。服务端把"可清理"收窄为
+    **确含行分隔符的物理行**（行模型歧义的唯一现场），普通配置行一律拒绝——
+    本端点是歧义行的清理入口，不是 .env 编辑器。写路径与写入口同一套纪律
+    （跨进程写锁、失败按原字节回滚、审计留痕），成功后前端提示重试保存。
+    """
+    m = _appmod()
+    if not m._is_builtin_admin_session():
+        return jsonify({"error": "仅主管理员可操作"}), 403
+    data = m._json_body()
+    try:
+        line_no = int(data.get("line"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "line 参数无效（须为 1-based 行号）"}), 400
+    if line_no < 1:
+        return jsonify({"error": "line 参数无效（须为 1-based 行号）"}), 400
+    ok, message, _remaining = cleanup_env_ambiguous_line(
+        m.ENV_FILE, line_no, audit=lambda code, detail: m.db.audit(
+            session.get("username") or "?", code, ".env", detail))
+    if not ok:
+        # 400：调用方拿着过期的定位信息来清理（行已被人工处理/行号越界/行本身干净）
+        return jsonify({"error": message}), 400
+    return jsonify({"ok": True, "removed_line": line_no, "message": message})
+
+
 def register(app):
-    """在本域注册十五条设置/执行体/公告路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册十六条设置/执行体/公告路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/settings", view_func=api_settings)
+    app.add_url_rule("/api/settings/env-cleanup", view_func=api_env_cleanup, methods=["POST"])
     app.add_url_rule("/api/settings", view_func=api_settings_save, methods=["POST"])
     app.add_url_rule("/api/changelog", view_func=api_changelog)
     app.add_url_rule("/api/scheduler/executors", view_func=api_executors)
