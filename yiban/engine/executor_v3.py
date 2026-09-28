@@ -9,14 +9,13 @@
 `yiban.engine` 的执行层（调度 v3）。计划层（`planner`）决定"何时做"、`token_bucket`
 决定"多快做"，本模块把两者与队列消费接起来；入口与退出码汇总仍在 `runner`。
 
-**当前是否生效**：否——`YIBAN_SCHEDULER_V3` 缺省 0，未开闸时本模块不执行签到，轮次走
-`round.run_queue_retry`，这里只有 `scheduler_v3_enabled` 被 `runner.main` 与
-`schedule.capacity_of` 读取；开闸后 `runner.main` 才把执行体换成 `run_executor_v3`。
+**是否生效**：是——台账单池化后本模块是**唯一的生产执行体**，`runner.main`（定时全量、
+手动 `--only`）与兜底常驻都恒定调 `run_executor_v3`。旧领取池（`sign_claims`）的实现
+（`round.run_queue_retry` / `store.claims`）保留在仓内但已无生产调用点（冻结）。
 
 **复用**
-`scheduler_v3_enabled` 是开关的唯一判据（分流谓词的另一半在调用方）；`next_retry_at_v3`
-是 v3 的重试落点（与 v2 的 `round._next_retry_at` 同窗口准绳、不同采样）；`shadow_stats`
-是影子期（`dry_run`）的落点对账入口。
+`next_retry_at_v3` 是重试落点（与旧领取池的 `round._next_retry_at` 同窗口准绳、不同采样）；
+`shadow_stats` 是影子期（`dry_run`）的落点对账入口。
 
 **通信**
 输入：账号序列、业务日、可选 `cfg`（`schedule.planner_config()` 的同形快照）与 `rng`
@@ -29,9 +28,9 @@
 `state_io`（按日状态、执行体文件心跳）、`attempts`（单次尝试与失败分级）、`alerts`（最终放弃时的管理员
 告警与用户失败邮件）、`clock_meta`（当日虚分片数落库）、`schedule`（配置、窗口关闭判定、
 通道数）——均在 `yiban.engine` / `yiban.store` 下。
-谁调用：`runner.main` 的分流点——`YIBAN_SCHEDULER_V3` 为真且非 `--only` 时替换
-`round.run_queue_retry` 那一行调用；兜底常驻（`workers.run_fallback_worker`）在同一
-开关下分流到本入口（`claim_all` + `requeue_during_run`）。
+谁调用：`runner.main`（`run_executor_v3` 是唯一执行入口，非 `--only` 时 `requeue_final`
+取补签轮身份，`--only` 时 `claim_all` + `reclaim` + `requeue_final`）；兜底常驻
+（`workers.run_fallback_worker`）用 `claim_all` + `requeue_during_run`。
 """
 import asyncio
 import contextlib
@@ -53,10 +52,6 @@ from yiban.store import clock_meta, queue_store
 
 logger = logging.getLogger("yiban")
 
-#: 开关缺省值：关闭（未设 / `0` / `false` / 非法值全部走旧路径，开关即回滚）
-DEFAULT_V3 = False
-#: 分流开关的键：真值表口径复用 `schedule._env_flag`（1/true/on/yes，大小写不敏感）
-ENV_SCHEDULER_V3 = "YIBAN_SCHEDULER_V3"
 #: 全局聚合速率上界 Λ 的键（attempt/s，缺省空 = 不限）。本模块是它唯一的读取点。
 ENV_GLOBAL_RATE = "YIBAN_GLOBAL_RATE"
 #: 退避落点的硬上限（秒）：安全类参数，恒为常量、不随窗口或速率自适应
@@ -156,14 +151,15 @@ def _stamp_ms(dt):
 
 
 # ---------------------------------------------------------------------------
-# 开关与影子模式
+# 执行体启用判定
 # ---------------------------------------------------------------------------
 def scheduler_v3_enabled(env=None):
-    """`YIBAN_SCHEDULER_V3` 是否为真（真值表口径唯一在 `schedule._env_flag`）。
+    """恒真（单池后保留）：台账单池化后 v3 是唯一生产执行路径，本函数不再读任何开关。
 
-    未设 / 空 / `0` / `false` / 手写错值一律为假——缺省即走旧路径，开关即回滚。
+    保留它只有一个消费方——`schedule.capacity_of` 的 `enabled` 缺省形参（容量口径按
+    同一份判定分派）。单池后该判定恒为真，故此处不再读环境变量，也不再存在双轨开关。
     """
-    return schedule._env_flag(ENV_SCHEDULER_V3, env)
+    return True
 
 
 def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None):
@@ -262,7 +258,7 @@ def _plan_v(day, cfg, accounts, top):
     return v
 
 
-def _ensure_plan(accounts, day, cfg):
+def _ensure_plan(accounts, day, cfg, force=False):
     """保证当日有**可用**计划行（v3 的队列就是计划），返回当日 V。
 
     "有计划"的判据必须是当日有真实计划行（`vshard >= 0`）：历史平移与补账留下的
@@ -271,13 +267,17 @@ def _ensure_plan(accounts, day, cfg):
     这类行按设计保持原样，只是不再充当"计划已就绪"的证据（`write_plan` 是
     `INSERT OR IGNORE`，补建也不会覆盖它们）。
 
+    `force=True`（手动 `--only`）时**无计划也补建**：给到手的账号补上计划行
+    （`INSERT OR IGNORE` 不覆盖既有行），使当日中途新增/此前未进过计划的账号也能被
+    手动签到领到。普通轮不传，行为逐字不变。
+
     `write_plan` 失败会抛，由调用方捕获后放弃本轮——没有计划行就没有队列，发不出任何
     请求，裸抛只会把 traceback 交给调用方。
     """
     top = _max_vshard(day)
     v = _plan_v(day, cfg, accounts, top)
-    if top is None:
-        if planner.has_plan(day):
+    if top is None or force:
+        if top is None and planner.has_plan(day):
             logger.error(
                 "当日只有历史惰性行（无 vshard >= 0 的计划行），视为无可用计划："
                 "按 %s 补建计划，历史行保持原样", v)
@@ -299,7 +299,7 @@ class _Ctx:
 
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
                  cred_state, delegated, notify_url, event_sink, rng, slot=0,
-                 runtime_id=None, requeue_during_run=False):
+                 runtime_id=None, requeue_during_run=False, reclaim=False):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
@@ -333,6 +333,9 @@ class _Ctx:
         # 会话内恢复周期是否顺带回炉默认档（常驻/长会话的兜底腿用它"当日接手"，
         # 一次性定时轮靠轮首回炉即可，不开这个口子以免在同一轮里重开保守档之外的循环）
         self.requeue_during_run = requeue_during_run
+        # 手动 `--only` 的显式重签：豁免窗口关闭判定（用户主动触发应当放行，与旧领取池
+        # 的手动链路一致），其余路径不受影响
+        self.reclaim = reclaim
 
 
 def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
@@ -631,7 +634,8 @@ async def _refiller(queue, shards, ctx):
     last_beat = _mono()
     last_recover = _mono()
     while True:
-        if schedule._window_closed(ctx.cfg, _now()):
+        # 手动 `--only` 豁免窗口判定：用户主动触发应当放行（与旧领取池的手动链路同语义）。
+        if not getattr(ctx, "reclaim", False) and schedule._window_closed(ctx.cfg, _now()):
             break
         if _mono() - last_beat >= state_io.WORKER_HEARTBEAT_SEC:
             state_io.mark_worker_beat(getattr(ctx, "slot", 0), now=_now())
@@ -716,11 +720,13 @@ def _prescan(ctx, accounts):
 def _mark_window_skips(ctx, accounts):
     """窗口已关时，把本执行体分片集内没轮到结果的账号落 `skipped_window`。
 
-    只在窗口已关时动手（与 v2 的 `round._mark_window_skip` 同时机）：窗口还开着却没有
+    只在窗口已关时动手（与旧领取池的 `round._mark_window_skip` 同时机）：窗口还开着却没有
     结果，只可能是计划行缺失或库异常，那属于要暴露的异常，不该被"窗口外"盖掉。已有当日
     结论的账号按原结论透传（不覆盖真实失败），写入走 `only_if_absent` 的 CAS 兜住并发。
+    手动 `--only`（`reclaim`）豁免本判定：用户主动触发不看窗口，"窗口外跳过"不许盖住
+    他这一下的真实结论。
     """
-    if not schedule._window_closed(ctx.cfg, _now()):
+    if getattr(ctx, "reclaim", False) or not schedule._window_closed(ctx.cfg, _now()):
         return
     recorded = state_io._daily_statuses()
     for acc in accounts:
@@ -746,32 +752,32 @@ def _mark_window_skips(ctx, accounts):
 def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
                     cred_state=None, notify_url="", event_sink=None,
                     cfg=None, rng=None, requeue_final=False, claim_all=False,
-                    requeue_during_run=False):
-    """同步入口（内部 `asyncio.run`）：跑一轮 v3，返回
-    `{phone: (success, message, skip, status)}`——**与 `round.run_queue_retry` 同形**，故调用方
-    的收尾与退出码汇总零改动。
+                    requeue_during_run=False, reclaim=False):
+    """同步入口（内部 `asyncio.run`）：跑一轮，返回
+    `{phone: (success, message, skip, status)}`——调用方的收尾与退出码汇总零改动。
 
-    **当前默认不生效**：`YIBAN_SCHEDULER_V3` 缺省 0，未开闸时轮次走 `round.run_queue_retry`，
-    只有 `scheduler_v3_enabled` 被 `runner.main`、`schedule.capacity_of` 与兜底腿的分流点读取。
+    当日回炉口（队列以 `pending` 为唯一可领态，`failed` 行不翻态就当日无人接手）：
 
-    当日回炉口（v3 的队列以 `pending` 为唯一可领态，`failed` 行不翻态就当日无人接手）：
-
-    - 轮首回炉默认发生，且**只回炉默认档**（`retry:` 前缀）——与 v2 领取层"默认参数可
+    - 轮首回炉默认发生，且**只回炉默认档**（`retry:` 前缀）——与旧领取池"默认参数可
       再领 retry: 档"同一条档位纪律；`final:` 与无前缀历史行是保守档，缺省绝不自动复活
       （复活 = 风控账号每轮重登）。
-    - `requeue_final=True`：显式路径口子（对齐 v2 的 `retry_failed`：补签轮/有界一次性
+    - `requeue_final=True`：显式路径口子（对齐旧领取池的 `retry_failed`：补签轮/有界一次性
       轮次才传），连同 `final:` 档与无前缀历史行一并回炉。常驻兜底与定时轮都不传。
     - `claim_all=True`：领取范围从"本执行体 HRW 分片集"放宽为全部分片。兜底身份
-      （`fallback@…`）不在执行体候选集里，`hrw.shards_of` 对它返回空集——不放宽就是
-      "看着在跑、其实零领取"的静默空转。
+      （`fallback@…`）与手动 `--only`（身份可能不在执行体清单里）都不必受 HRW 候选集约束，
+      不放宽就是"看着在跑、其实零领取"的静默空转。
     - `requeue_during_run=True`：补货循环的恢复周期（每 `RECOVER_SEC`）顺带把本轮刚
       弃权的默认档翻回 `pending`，不等下一场会话。只回炉默认档，保守档不变。
+    - `reclaim=True`：**手动 `--only` 专用**的有界显式路径——把到手账号当日已了结
+      （`done` / `skipped`）的行翻回 `pending` 并补建计划行，使"用户主动点的那一下照做"
+      的旧领取池语义（`allow_settled=True`）在单池下仍有等价形态。缺省关，定时轮与兜底
+      都不传（终态复活默认是红线）。
 
     `dry_run=True` 只转调 `shadow_stats`（零落库 / 零领取 / 零请求）并返回空结果。
     `cred_state` **就地改传入的那个 dict**：调用方持有同一引用并在收尾保存，重新绑定会让熔断
-    计数写不回（见 `round.run_queue_retry` 的持有引用注释）。`notify_url` 只为与 v2 的调用签名
-    对齐：逐次失败不在这里通知（汇总邮件是 runner 收尾的职责，v2 亦只在最终放弃时通知一次）。
-    计划不可用时返回空结果并留 error：v3 的队列就是 `sign_tasks`，没有可用的库就没有队列。
+    计数写不回。`notify_url` 只为与旧调用签名对齐：逐次失败不在这里通知（汇总邮件是
+    runner 收尾的职责，只在最终放弃时通知一次）。
+    计划不可用时返回空结果并留 error：队列就是 `sign_tasks`，没有可用的库就没有队列。
 
     **未预期异常一律不外逃**：本函数是 `runner` 退出码汇总的前置调用，traceback 逃出去退出码
     就落到契约（0/1/2/3/10）之外，`run.sh` 的补签闸门与状态写入随之失真。按"结果是否已成型"
@@ -785,7 +791,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         return {}
     cred_state = cred_state if cred_state is not None else {}
     try:
-        v = _ensure_plan(accounts, day, cfg)
+        v = _ensure_plan(accounts, day, cfg, force=reclaim)
     except Exception as e:
         # 丢结果档①：ctx 构建 → 预扫 → 装桶 → asyncio.run 这一段失败时，ctx.results 里可能已有
         # 跑完的账号，但一律丢弃（异常可能在写状态/收尾中途冒出，留下的结果集不完整、不可信），
@@ -830,10 +836,14 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
             cred_state=cred_state,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
             rng=rng or random.Random(), slot=slot,
-            requeue_during_run=requeue_during_run)
+            requeue_during_run=requeue_during_run, reclaim=reclaim)
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
         # 分片并入后这些账号已归本执行体，不该再被登记成"别人负责的活"。
         ctx.shards = _widen_with_dead_peers(ctx, ctx.shards)
+        # 显式重签（手动 `--only`）：先把到手账号当日已了结的行翻回 `pending`，否则
+        # `claim_batch` 只取 `pending`，用户点下的那一下会沦为"未执行"。
+        if reclaim:
+            queue_store.reclaim_tasks(day, [a.phone for a in accounts])
         # 轮首回炉（作用域=本轮领取集 + 本业务日）：默认档 failed 翻回 pending 才谈得上
         # 被本轮领到；回炉逐行走 `requeue_task` 的 state+epoch 门，在飞/终态行绝不复活。
         # 放在接管之后、预扫之前：死主分片并入后一并扫到；`claim_all` 时即全分片扫尾。

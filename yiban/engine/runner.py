@@ -25,8 +25,8 @@
 输入：`argv`（缺省取 `sys.argv[1:]`）与环境变量/.env（配置只从环境读，命令行不接受
 敏感值）。输出：进程退出码（0/1/2/3/4/10 口径见 `docs/dev/cli.md` §3；4 = 迁移完整性
 拒启，MF-40）与日志；`--json` 由 `cli.py` 包裹。
-调用谁：`accounts` / `probe` / `workers` / `round` / `executor_v3` / `state_io` / `alerts`
-/ `cli_support`（跨模块一律走模块属性访问）。
+调用谁：`accounts` / `probe` / `workers` / `executor_v3`（唯一执行体） / `state_io` /
+`alerts` / `cli_support`（跨模块一律走模块属性访问）。
 谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
 `docker/scheduler.py`。
 前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
@@ -48,8 +48,8 @@ from yiban import clock, egress, window
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 
-# 三个模块以带后缀的别名导入：本模块内部有同名局部量（`accounts` 本轮账号列表、
-# `schedule` 本轮时间表、以及内置函数名 `round`），同名会互相遮蔽。
+# 模块以带后缀的别名导入：本模块内有同名局部量（`accounts` 本轮账号列表、
+# `schedule` 本轮时间表），同名会互相遮蔽。
 from yiban.engine import (
     alerts,
     attempts,
@@ -60,7 +60,6 @@ from yiban.engine import (
     state_io,
     workers,
 )
-from yiban.engine import round as round_mod
 from yiban.engine import schedule as schedule_mod
 from yiban.infra import account_crypto, env_io
 from yiban.masking import mask_phone as _mask_phone
@@ -402,11 +401,9 @@ def main(argv=None):
         config_check.print_config_summary(accounts)
         return 0
 
-    # 启动延迟已废弃：仅为兼容旧调用签名而读取，值不再使用（run_queue_retry 里同样
-    # 只占参数位）；账号间隔 gap_max 仍生效
-    start_delay_max = config_check.parse_env_int("YIBAN_START_DELAY_MAX", 0)
-    # 缺省 10 与 web 设置页「默认开启 10 秒」口径一致（web 端 DEFAULT_ACCOUNT_GAP_MAX）：
-    # 纯 signin 部署（.env 未配置该键）升级后自动获得 10s 账号间隔
+    # 启动延迟已废弃：旧领取池的实现仍收该形参，但生产执行已不读取它
+    # 账号间隔：缺省 10 与 web 设置页「默认开启 10 秒」口径一致（web 端
+    # DEFAULT_ACCOUNT_GAP_MAX）：纯 signin 部署（.env 未配置该键）升级后自动获得 10s 账号间隔
     gap_max = config_check.parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 10)
 
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
@@ -458,14 +455,13 @@ def main(argv=None):
     # 自动错峰（仅自动签到；--only 手动签到立即执行，不走计划）
     schedule = {} if args.only else schedule_mod.build_schedule(accounts)
     if schedule:
-        # 容量预检（调度 v2 第三层）：可容纳账号数 < 待签到账号数 → 告警不静默
+        # 容量预检（告警阈值口径）：可容纳账号数 < 待签到账号数 → 告警不静默
         # 用户自暂停账号不参与调度，也不计入容量
-        _v3_on = executor_v3.scheduler_v3_enabled()
-        # 配置快照按开关分读：v3 要计划层的超集快照（多带桶速率与执行体清单，K 与容量
-        # 都从它取，免得两处口径分叉）；v2 只读调度配置——关时不因此新增环境键依赖，
-        # 旧路径的数值与行为逐字不变。
-        _cfg = (schedule_mod.planner_config() if _v3_on
-                else schedule_mod._schedule_config())
+        # **口径保留**：单池后执行体是 v3，但本预检仍是"窗口 − 重试储备"的告警阈值
+        # （`retry_reserve`，v2 公式分支）——登记验收不变量「122–360 不得静默」压在这条
+        # 阈值上，且 `capacity_of` 的取值逐值不动；K/桶速率不参与本行（`executor_count`
+        # 语法保留，见 `schedule.executor_count`）。
+        _cfg = schedule_mod._schedule_config()
         _win = window.bounds(_cfg)
         # 预检按**剩余**有效窗口算：本进程此刻才起跑，已流逝的窗口签不了。
         # 按完整窗口算会在迟启动时按满容量放行且不告警，超出的账号只能落
@@ -476,21 +472,15 @@ def main(argv=None):
             _win.hi_min,
         ).strftime("%H:%M")
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
-        # 与 web 容量预估同一函数（`capacity_of` 按开关分派）：账号间隔是「上一次完成 →
+        # 与 web 容量预估同一函数（`capacity_of`）：账号间隔是「上一次完成 →
         # 下一次开始」的下限，故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约
         # 2.3 倍）。告警阈值再扣「重试储备」（retry_reserve，MF-56④）：按零重试排满
         # 窗口就是 122–360 静默死带——当天必签不完却要到 361 才出声。avg 用实测分位数
         # （warn_avg_attempt_sec，MF-56③）：缺省档 3s 来自 mock 注入，不是实测。
         _avg_warn = schedule_mod.warn_avg_attempt_sec(_cfg["avg_attempt_sec"])
-        _cap_args = {"gap": gap_max, "avg": _avg_warn, "retry_reserve": True}
-        if _v3_on:
-            # K 只在 v3 侧算并传入（`executor_count` 是 K 的唯一口径，入参要桶速率与
-            # 出口数）：v2 侧连算都不算、也不读这两个键，逐字走旧公式。
-            _cap_args["k"] = schedule_mod.executor_count(
-                active_n, max(0.0, _rest_sec), bucket_rate=_cfg["bucket_rate"],
-                egress_count=len(_cfg["executors"]) or 1)
-            _cap_args["bucket_rate"] = _cfg["bucket_rate"]
-        _cap = schedule_mod.capacity_of(max(0.0, _rest_sec), enabled=_v3_on, **_cap_args)
+        _cap = schedule_mod.capacity_of(
+            max(0.0, _rest_sec), gap=gap_max, avg=_avg_warn,
+            retry_reserve=True, enabled=False)
         if _rest_sec <= 0:
             logger.warning(
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
@@ -537,36 +527,31 @@ def main(argv=None):
 
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else state_io._load_cred_state()
-    # 签到事件收集器——run_queue_retry 每次尝试/迁移经 sink 上报，
+    # 签到事件收集器——执行体每次尝试/迁移经 sink 上报，
     # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
     event_rows = []
-    delegated = set()   # 不在本执行体范围内的账号（多执行体分工，见 run_queue_retry 说明）
-    # 调度 v3 分流（`YIBAN_SCHEDULER_V3`，缺省关；缺省时下面两行逐字不变 = 开关即回滚）。
-    # 分流点**选在执行调用这一行**（而不是更早的 `build_schedule` 处）：v3 只换执行体
-    # 实现，v2 的容量预检 / 计划写状态文件 / `sched-snapshot` / 账密状态收尾 / 事件批量
-    # 落库 / 全量收尾标记 / 退出码汇总全部原样复用——退出码契约 0/1/2/3/10 因此零改动。
-    # 代价是 v2 的时间表白算一遍（可接受：它只是本地计算，不发请求、不落库）。
-    # `--only` 手动签到不走 v3：用户主动触发应当放行，且它用 reclaim 语义重签已了结账号。
-    if not args.only and executor_v3.scheduler_v3_enabled():
+    delegated = set()   # 不在本执行体范围内的账号（多执行体分工）
+    # 台账单池化后生产执行恒定走 v3 队列执行体（`sign_tasks`）。旧领取池
+    # （`sign_claims`）的实现仍在本仓（`round.run_queue_retry` / `store.claims`），
+    # 但已无生产调用点——冻结保留，仅由既有单测覆盖其四柱语义。容量预检 / 计划写状态
+    # 文件 / `sched-snapshot` / 账密状态收尾 / 事件批量落库 / 全量收尾标记 / 退出码汇总
+    # 全部原样复用（退出码契约 0/1/2/3/10 零改动）。
+    # `--only` 手动签到同样走 v3，但走**显式路径**：`reclaim`（重签当日已了结账号，
+    # 用户主动点的照做）+ `claim_all`（手动身份可能不在执行体清单的 HRW 候选集里）
+    # + `requeue_final`（重领预算耗尽/风控档），对齐旧领取池的
+    # `reclaim=True, retry_failed=True` 语义。
+    if args.only:
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
-            # 补签轮就是 v3 当日回炉口的显式路径（对齐下面 v2 的
-            # `retry_failed=bool(args.only) or _second_run`——手动 `--only` 不走 v3，
-            # 故这里只剩补签轮一个来源）。普通轮 False：`final:`/无前缀保守档绝不
-            # 被定时轮自动复活，档位纪律与领取层同一份。
-            requeue_final=_second_run)
+            claim_all=True, reclaim=True, requeue_final=True)
     else:
-        results = round_mod.run_queue_retry(
-            accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
+        results = executor_v3.run_executor_v3(
+            accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
-            # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
-            reclaim=bool(args.only),
-            # 显式路径才可重领"预算耗尽/风控"档弃权的账号：手动（--only）与补签轮都算。
-            # 兜底常驻不传——无界循环不算有界显式路径，见 `workers.run_fallback_worker`。
-            # 默认轮不传 ⇒ 那类账号不会被后面每一轮无上限地重领一遍。
-            retry_failed=bool(args.only) or _second_run,
-        )
+            # 补签轮就是显式路径：`final:`/无前缀保守档只在有界一次性轮次复活。
+            # 普通轮 False：保守档绝不被定时轮自动复活，档位纪律与领取层同一份。
+            requeue_final=_second_run)
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
     # 不能用本次（仅含目标账号的）状态整体覆盖保存：空 dict 时会直接删除状态文件，
