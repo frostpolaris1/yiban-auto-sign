@@ -181,15 +181,14 @@ def api_mail_config_save():
     id 非法形状或同请求内重复 → 400。落盘前 AES-GCM 加密为
     YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不接受也不写入（发送路径从不读该键）。
 
-    邮件通道是全部安全告警的最后一条送达路径——"先关通知再作案"
-    是活体复现的攻击链首步（拿到内置主管理员 Cookie 后一个 PUT 就能让所有
-    告警静默）。故**关闭**类改动纳入高危门禁：与三处高危删除同口径，
-    统一走 _high_risk_gate()（二次鉴权 + 复用同一份高危限速计数；顺序为
-    "先验口令，通过了才占用额度"）；
-    纯开启、以及不带开关的改动不要求口令（不得给正常成功路径加摩擦）。
-    smtps/admin_to 变更与开关关闭是两套并存的高危门禁（不合并）：两者
-    同属"改告警送达路径"，共用一次 _reconfirm_admin_password，不占高危
-    限速额度；同时提交时只验一次口令。
+    邮件通道是全部安全告警的最后一条送达路径。口令门收窄（缩减批 6a，用户拍板
+    清单）后的口径：开关（enabled/admin_notify）与收件人（admin_to）都是**可逆
+    改动**（设回即可）→ 免口令门免额度，留痕统一交给落盘后的审计行（谁、把哪路
+    从哪改到哪）；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令（直连
+    _reconfirm_admin_password，不占高危限速额度）。曾把"关闭"纳入高危门禁的理由
+    （"先关通知再作案"）随威胁模型降级让位于"审计可回溯 + 操作可逆"——审计行
+    仍逐次落盘，告警通道自身无法可靠通报自己的变更（见下方落盘处注释）。
+    smtps 与 admin_to 同请求提交时口令只按 smtps 需要（admin_to 免门，不拖累）。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
@@ -329,9 +328,9 @@ def api_mail_config_save():
     # 旧收件人值必须在落盘**之前**取——写后再读只会读到刚写进去的新值，
     # "从哪改到哪"就塌成"从哪改到哪自己"。
     admin_to_old = m.mail_config._get("ADMIN_TO") if admin_to_val is not None else None
-    # smtps 与 admin_to 同属"改告警送达路径"，合并为一次口令确认
-    # （同时提交只验一次；两者都不涉及则不做口令校验）
-    if smtps_list is not None or admin_to_val is not None:
+    # SMTP 凭据变更（中继/授权码 = 换钥类）要当次口令；admin_to 是可逆路由改动，
+    # 缩减批 6a 起免口令（不拖累同请求的 smtps 一起免——两字段分别判定）
+    if smtps_list is not None:
         # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组；
         # 第一个参数是整个请求体（门禁还要看 confirm_delay_ack 之类的同请求字段）
         denied = _reconfirm_admin_password()(data, "修改邮件 SMTP 配置")
@@ -339,18 +338,9 @@ def api_mail_config_save():
             return denied
     if not flags and smtps_list is None and admin_to_val is None:
         return jsonify({"error": "缺少有效配置项"}), 400
-    # 高危判定：任一开关被置为"关"即为关闭通道（admin_notify=false 只关主管理员
-    # 本人的 ADMIN_TO 收件，同样是给报警器拔线）
-    closing = [k for k, v in flags.items() if v is False]
-    if closing:
-        # 动作标签按字段区分——"全站告警邮件停发"与"只拔主管理员本人的
-        # ADMIN_TO 收件"危害面完全不同，二次鉴权失败告警里必须看得见对方当时
-        # 想关的是哪一路（键名来自代码常量，无注入面）
-        label = "关闭邮件告警通道（" + "、".join(m._MAIL_FLAG_NAMES[k] for k in closing) + "）"
-        # 限速与鉴权的顺序由统一门禁保证——先验口令，通过了才占额度
-        gate = _high_risk_gate()(data, label)
-        if gate:
-            return gate
+    # 开关关闭曾走 _high_risk_gate（二次鉴权 + 高危额度）：缩减批 6a 收窄为免门
+    # 免额度——开关可逆（设回即可），留痕靠落盘后的审计行（见下方 db.audit），
+    # 高危额度只留给删除/清库/换钥/改凭据这类不可逆或凭据动作。
     # 加密排在口令确认之后（同 notify-config：失败请求零写盘痕迹）
     smtps_enc = None
     if smtps_list is not None:
@@ -439,9 +429,10 @@ def api_notify_config_save():
     （0 显式落盘，不再"删键回落默认"）；urgent_only = 仅推送重要告警（非紧急仅走邮件）；
     daily_max / urgent_daily_max 0 = 不限（两本账分账）。
 
-    "关闭推送 / 清空密钥 / 换密钥 / 调额度与节流"这几类动作等同给报警器拔线，都过
-    高危门禁（判定条件 (a)~(d) 见下面的代码段），与高危删除同口径共用限速计数、
-    不新建第二套。
+    "关闭推送 / 清空密钥 / 换密钥"触碰**密钥本身**（判定 = type 或 secret 在场），
+    仍过高危门禁（换钥/清钥属用户拍板门清单的"换钥"类），与高危删除同口径共用
+    限速计数；调额度与节流参数（cooldown/urgent_only/daily_max/urgent_daily_max）
+    是可逆改动，缩减批 6a 起免门免额度（留痕靠审计行）。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
@@ -467,18 +458,18 @@ def api_notify_config_save():
             return jsonify({"error": f"自定义地址过长（最多 {m.NOTIFY_URL_MAX_LEN} 字符）"}), 400
         if not m.notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
-    # ---- 高危判定：(a)~(d) 任一命中就过这道门禁（是否真要口令随 `YIBAN_PW_GATE` 档位）----
-    # (b) 的隐蔽路径：只提交 type 却不带 secret，同样会把旧密文删掉。
+    # ---- 高危判定（缩减批 6a 收窄）----
+    # 触碰**密钥**（type 或 secret 任一在场：换钥 / 清钥 / 关闭随钥清）→ 仍过高危
+    # 门禁（换钥/清钥属用户拍板的"换钥"类，落点在凭据上，非 full 档还要倒计时确认的
+    # 场景不受影响）；纯数值/节流参数（cooldown/urgent_only/daily_max/urgent_daily_max）
+    # 是可逆改动 → 免门免额度，留痕靠落盘后的审计行。
     touches_channel = ("type" in data) or ("secret" in data)
     close_channel = "type" in data and ntype == ""  # (a) type 置空 = 关闭推送
     clear_secret = touches_channel and not secret  # (b) 本次落盘后不再有密钥 = 清空密钥
     swap_secret = bool(secret)  # (c) 携带新密钥 = 换钥
-    weakens_alerting = any(  # (d) 出现任一额度/节流键 = 调送达节奏：压额度、开 urgent_only 与拔线同效
-        k in data for k in ("cooldown", "urgent_only", "daily_max", "urgent_daily_max")
-    )
-    # 前三类互斥，其并集恰好等于"触碰通道"的请求：带 type/secret 时要么有密钥
-    # （换钥）要么没有（关闭或清钥）；(d) 与之可叠加（一次请求既换钥又调参数）
-    need_reconfirm = close_channel or clear_secret or swap_secret or weakens_alerting
+    # 门条件 = 触碰通道键（换钥/清钥/关闭清钥三类，互斥且并集恰为 touches_channel）；
+    # 曾纳入的 (d) 额度/节流键不再进门——压额度、开 urgent_only 都可逆，免门。
+    need_reconfirm = touches_channel
     # 支持部分更新：仅在请求体出现的字段才写入（如「仅重要告警」开关单独保存时
     # 不携带 type/secret，避免误清空已配置的推送通道）
     updates = {}
