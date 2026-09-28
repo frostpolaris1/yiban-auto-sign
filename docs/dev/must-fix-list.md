@@ -643,9 +643,22 @@ auth 建号 / users_api 角色与重置与两型删除与批量（kill 注入 e2
 修法方向：把"只读"承诺变成代码断言（只读连接 + 不建表）；退出码分族；`--json` 永远输出结构化错误（含 rc=2 路径）；补 `restore` 或在 help 明示不存在及替代路径。
 验收不变量：任一"只读"子命令跑完后 `git status`/库文件 mtime 不变；非法参数必须有可区分退出码。`[已复现（黑箱自测）]`
 
+**处置（2026-09-28 批5 Task5a+5b，repair/m3-batch5，`f15cefb`/`d7a2802`/`b113fb9`/`3606933`/`26da571`/`e5e1aaa`/`e4a3298`/`76eddec`）**：**四条修法方向全落**——
+①「只读」变**代码断言**：新增 `store.connection.open_readonly`（静默库 `mode=ro&immutable=1`、有 WAL 待读帧走 `mode=ro`）与 `store.accounts.load_accounts_readonly`；`config`/`sign --check-config` 不再经 `init_db`——空 cwd 跑完**零新文件**、既有库 mtime/schema 逐字不变（基线**会**建 69632B 伪库，反例红）；`init_db` 增显式 `create=False`（默认行为不变），维护脚本（`audit_verify`/`ledger_check`/`list_duplicate_owners`——含那个**漏登入口**）改走只读连接。
+②`--json` **任何**退出路径（含 rc=2 用法错误、未知子命令、多余参数）都打**一行**结构化错误含 `exit_code`/`error_kind`（基线六种非法参数 stdout **全 0 字节**）；`print_config_summary` 改走 stderr，不再破单行契约。
+③退出码分族：既有 `0/1/2/3/4/10` 含义**逐字不改**（`cli.md` §3 原表未动一行），分族表达在新增稳定字段 `error_kind`（`cli.md` §3.1 扩表）。
+④`probe` 判码分族：真跑通过=0、真跑失败=1、**跳过=2**、**撞锁=3**（此前三结局全 0）；消费方（`docker/scheduler.py`、cron 模板）经复核**不读** probe rc ⇒ 非回归。
+另补两处：`db --restore`（默认 dry-run、`--yes` 须回显 `--fingerprint`、恢复前**校验备份可读且账号可解密**、覆盖前**自动留时间戳副本**、恢复后校验 integrity 与 schema 版本一致）；`db --backup` 目标已存在时**拒绝静默覆盖**（须 `--force`，采纳待裁决 #1）；`--help`/`cli.md` 列明四个路径环境变量并说明相对路径按 cwd 解析。
+规模：`cli.py` 842 → 853 → 拆出 `yiban/engine/db_maintenance.py` 后 **696** 行（走体积门自带拆分路径，非注释凑数）。`[已复现]` → 四条全部销项。
+
 ### MF-61 前端"假成功 / 假可用"一族（P2，逐点改）
 合并 L48、L49、L52、L40、L65、L46。`useServerMsg` 零调用点传 true ⇒ batch/purge 的后端 msg 永不上屏；`state.busy` 只暂停轮询、非防抖 ⇒ `signin/restore/move/purge` 可双击重发；`__clear__` 空操作却回 200 + toast"已保存"（**现网 21/96 个号可见**）；选中键用数组 `index` 而 `move` 改持久化顺序 ⇒ 单人即可误删他人账号；`configured=max(1,…)`；`apiCached` 把 `/api/users` 整表邮箱与 CSRF 写进 sessionStorage；`time-field.norm` 只查形状不查范围 ⇒ 显示 `25:00`/落盘 `23:00`/生效 `06:30~23:00` 三段不等；`windowSec()` 窗口倒置返回 0 ⇒ 缓冲上限放到最大（fail-open）；"3 个不剥注释的门"在给一个**永不发布**的 `component_layer.html` 把关（`_stub_macro.html`、`tailwind_config.html` 同为死档）。
 验收不变量：写操作后必须回读校验；`index` 禁止作身份键；形状与范围校验同一处；死档要么接线要么删。
+
+**处置（2026-09-28 批5 Task5c，repair/m3-batch5，`13138a0`/`d9ca392`/`14e13fa`/`bc53752`/`8c01242`/`c281f5e`）**：**9 点逐点核实——6 点仍开已修/删，3 点批 2 已修（仅取证、未动）**——
+仍开已修：①`useServerMsg` 四个计数型调用点补 `true`（batch/purge 的"跳过 N 个"不再被吞）；②账号写操作加**在途防重入**守卫，且 `run` 的请求改**延迟构造 thunk**（原先进守卫前就已发出、守卫形同虚设）；④选中集键由数组 `index` 改**手机号**（`move` 重排后不再误指他号，`ids[i]↔phones[i]` 对齐）；⑦`time-field.norm` **同处**校验形状与范围（`25:00` 不再显示/落盘/生效三段不等）；⑧`edgeMaxMin` 窗口不可用时 **fail-closed 为 0**（原 fail-open 放最大），与 `window.edge_cap_sec` 逐值同式（原把 fail-open 钉成期望的用例改钉 fail-closed）。
+已修未动（批 2 已修）：③`__clear__` 真清空（`fold_phone_code` 哨兵 → `""`）；⑤`configured = len(active)`（不再 `max(1,…)`）；⑥`apiCached` 只缓存标量投影，`/api/users` 整表邮箱与 CSRF 不落 sessionStorage。
+死档（待裁决 #2）：`component_layer.html`/`tailwind_config.html`/`_stub_macro.html` 经**全仓引用面复核确为死档**，**连同只给它们把关的 7 个用例一并删除**；被削的门禁逐处定性为"合法删 / 必要改钉"（活代码断言未放松，变异注入仍报红）。`[需确认]` → 9 点全处置。
 
 ---
 
