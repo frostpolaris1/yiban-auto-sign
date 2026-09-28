@@ -221,5 +221,35 @@ class GateNarrowingE2ETest(_GateNarrowBase):
                              "被 429 拒下的删除不得生效")
 
 
+class CredsQuotaSplitE2ETest(_GateNarrowBase):
+    """A4-2：凭据改写类额度与删除类额度分开计数——两个方向互不撞 429。"""
+
+    def test_creds_quota_independent_from_delete_quota(self):
+        """凭据额度耗尽后删除类仍可执行（反向：删除额度耗尽不影响凭据面由
+        GateNarrowingE2ETest 的 429 反例覆盖）；两族各自超限都 429。"""
+        self._env(("YIBAN_ADMIN_DELETE_MAX=1\n", "YIBAN_ADMIN_CREDS_MAX=1\n"))
+        c, t = self._admin_client()
+        hdr = {"X-CSRF-Token": t}
+        self._seed_formal_user("q@test.local", "13800000011", admin=(c, t))
+        # 凭据改写①：改写他人易班密码 → 200，占凭据额度那唯一一格
+        r1 = c.put("/api/accounts/0",
+                   json={"name": "n", "phone": "13800000011", "password": "FreshPw#2468",
+                         "confirm_password": ADMIN_PASS},
+                   headers=hdr)
+        self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
+        # 凭据改写②：凭据额度已尽 → 429（口令正确也拦——额度在口令之后）
+        r2 = c.put("/api/accounts/0",
+                   json={"name": "n", "phone": "13800000011", "password": "FreshPw#1357",
+                         "confirm_password": ADMIN_PASS},
+                   headers=hdr)
+        self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+        # 删除类不受凭据额度影响：批量删除（占删除额度）仍 200
+        r3 = c.post("/api/users/batch",
+                    json={"action": "delete", "emails": ["q@test.local"],
+                          "confirm_password": ADMIN_PASS}, headers=hdr)
+        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+        self.assertIsNone(db.find_user("q@test.local"))
+
+
 if __name__ == "__main__":
     unittest.main()
