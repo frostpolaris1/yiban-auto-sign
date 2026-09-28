@@ -686,7 +686,7 @@ DELETE_MAX_REQUESTS_PER_IP = 5
 ADMIN_DELETE_COOLDOWN_SEC = 60
 ADMIN_DELETE_MAX = 20
 # 凭据改写类高危操作（改写他人易班凭据/重置他人口令/换推送密钥）**独立额度**，
-# 与删除类分开计数（缩减批 6a 分流）：删除额度按"批量清理垃圾账号"的规模定，
+# 与删除类分开计数（与删除类分开计数）：删除额度按"批量清理垃圾账号"的规模定，
 # 凭据批量重绑（换号、换密码）是另一条合法高频运维动作——共用一套计数时，重绑
 # 几下就把删除预算吃光，反过来删几个账号也会把重绑撞进 429。既有
 # YIBAN_ADMIN_DELETE_* 两键的语义逐字未动，本组是**新增键**：
@@ -1911,7 +1911,7 @@ def create_app(host=None):
     _admin_delete_limits = {}
     # 高危额度整体被关（limit<=0 或 cooldown<=0）时是否已留过审计，防逐请求刷审计表
     _admin_delete_limit_off_audited = [False]
-    # 凭据改写类高危额度（独立于删除类计数，缩减批 6a 分流）+ 同款关闭留痕位
+    # 凭据改写类高危额度（独立于删除类计数，两族分开计数）+ 同款关闭留痕位
     _admin_creds_limits = {}
     _admin_creds_limit_off_audited = [False]
     # 日志导出限速 {ip: (count, window_start)}
@@ -2252,7 +2252,7 @@ def create_app(host=None):
     def _handle_env_write_refused(e):
         logger.error("配置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
         # 定位载荷（问题行号/键名 + 脱敏片段，绝不回显值原文）随 409 下发，
-        # 前端据此渲染"一键定位/清理"入口（缩减批 6a A4-4）。
+        # 前端据此渲染"一键定位/清理"入口（写拒绝定位）。
         return _env_io_svc.env_write_refused_response(e, ENV_FILE)
 
     # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
@@ -2302,7 +2302,7 @@ def create_app(host=None):
         0 = 关闭）。与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，
         之后拒绝。
 
-        自缩减批 6a 起**只计删除类落点**（账号软删/彻底删除、用户删除、批量删除、
+        现在**只计删除类落点**（账号软删/彻底删除、用户删除、批量删除、
         清库清理），与凭据改写类（`_admin_creds_limited`）分开计数——删除额度按
         批量清理的规模定，凭据批量重绑共用它会互相撞 429。曾合并计数的理由
         （"删数据与拆报警器是同一条链"）随口令门收窄失效：告警通道开关已免门，
@@ -2538,12 +2538,12 @@ def create_app(host=None):
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
         `quota` 选额度族：`"delete"` = 删除类（YIBAN_ADMIN_DELETE_*，账号/用户删除、
         清库清理）；`"creds"` = 凭据改写类（YIBAN_ADMIN_CREDS_*，改写他人易班凭据、
-        重置他人口令、换推送密钥）——两族分开计数（缩减批 6a 分流），"超限即 429"
+        重置他人口令、换推送密钥）——两族分开计数（与删除类分开计数），"超限即 429"
         的语义两族一致。
 
-        口令门收窄（缩减批 6a，用户拍板清单）：门内只剩**不可逆/凭据类**动作
+        口令门收窄（，用户拍板清单）：门内只剩**不可逆/凭据类**动作
         ——删除账号、清库清理、换钥、改管理员口令、改他人凭据。改设备识别码、
-        备注、签到时窗、改角色、开关告警通道、调推送额度等**可逆操作一律免门
+        备注、改角色、调推送额度/节流参数、邮件通道开关与收件人变更等**可逆操作一律免门
         免额度**，但保留审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之
         回退）。
 
@@ -2564,11 +2564,12 @@ def create_app(host=None):
         - POST /api/users/<int:user_id>/password（改他人凭据）
         - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
         - PUT /api/notify-config（触碰推送密钥时——换钥/清钥；调额度/节流参数免门）
-        免门（缩减批 6a 起，均保留审计）：POST /api/users/<int:user_id>/role（主管理员
+        免门（均保留审计）：POST /api/users/<int:user_id>/role（主管理员
         专属 + 角色变更与审计同事务）、PUT /api/mail-config 的开关与收件人变更
         （SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、不占额度）。
-        可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的系统开关、
-        /api/settings 的签到随机延迟与容量上限、/api/scheduler/executors* 的写操作。
+        可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的 B 档（排序风格与
+        自选权）、/api/scheduler/executors* 的写操作；A 档（签到窗口与缓冲边距、周末开关、
+        随机延迟、账号间隔、容量上限、探针、注册面）在设置路由走 A 档门禁、**不吃豁免**。
         **只占额度、刻意不过本门禁**的（可逆不加口令——加了只增误伤；留痕在审计行；
         非本函数覆盖面，故不写成 `METHOD /path` 形态）：账号软删（路径
         `/api/accounts/<int:idx>` 的删除方法，以及上面 accounts/batch 那条的

@@ -396,7 +396,7 @@ def api_account_update(idx):
         # fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
         old_code = old.get("phone_code") or ""
         code_written = m.fold_phone_code(clean, old_code) != old_code
-        # 凭据改写分两档（缩减批 6a 收窄，用户拍板清单）：
+        # 凭据改写分两档（按用户拍板清单收窄）：
         # - **过门**：改易班密码 / 改绑手机号（改他人凭据类）——拿到被窃管理员会话的人
         #   一次 PUT 就能把某用户的账号换成自己的凭据，此后签到在攻击者侧完成、真用户
         #   被静默挤出，界面上看不出异常。走 _high_risk_gate：先二次鉴权、通过后才占
@@ -497,7 +497,7 @@ def api_account_update(idx):
         # 改写他人凭据靠"事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员
         # 可追溯、可回滚（此前只通知当事人，管理员侧零信号）。抑制口径随门走：
         # 本次若真被口令门拦过（门内动作 + full 档）就不重复发；识别码免门后
-        # （缩减批 6a），full 档的识别码改动同样需要这封事后告警。
+        # ，full 档的识别码改动同样需要这封事后告警。
         gated_creds = (bool(str(data.get("password", "")).strip())
                        or clean["phone"] != old.get("phone"))
         if (creds_written and not (gated_creds and

@@ -164,7 +164,7 @@
     }
     if (!resp.ok || data.ok === false) {
       // .env 写拒绝（409 env_write_refused）附带定位载荷（问题行号/键名 + 脱敏片段，
-      // 值已隐去）：弹出"定位/清理"专用模态（缩减批 6a A4-4），错误仍照常上抛——
+      // 值已隐去）：弹出"定位/清理"专用模态（写拒绝定位），错误仍照常上抛——
       // 各写点自己的 catch 继续走既有文案，模态只是补充可操作入口，不改请求语义。
       if (resp.status === 409 && data && data.reason === "env_write_refused"
           && data.problems && data.problems.length) {
@@ -1539,7 +1539,7 @@
     try { document.dispatchEvent(new CustomEvent("yiban:owner-email-pref", { detail: { visible: !!v } })); } catch (e) {}
   }
 
-  /* ---------- .env 写拒绝的定位/清理模态（缩减批 6a A4-4） ----------
+  /* ---------- .env 写拒绝的定位/清理模态（写拒绝定位） ----------
      409 的 problems 由后端组装（行号/键名 + 脱敏片段，值已隐去）。这里只做展示与
      "一键清理"按钮：清理走 POST /api/settings/env-cleanup（服务端把可清理范围收窄为
      确含行分隔符的物理行），成功后提示重试保存。错误照常上抛，本模态不改请求语义。 */
