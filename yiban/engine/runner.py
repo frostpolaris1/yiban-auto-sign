@@ -537,14 +537,15 @@ def main(argv=None):
     # 文件 / `sched-snapshot` / 账密状态收尾 / 事件批量落库 / 全量收尾标记 / 退出码汇总
     # 全部原样复用（退出码契约 0/1/2/3/10 零改动）。
     # `--only` 手动签到同样走 v3，但走**显式路径**：`reclaim`（重签当日已了结账号，
-    # 用户主动点的照做）+ `claim_all`（手动身份可能不在执行体清单的 HRW 候选集里）
-    # + `requeue_final`（重领预算耗尽/风控档），对齐旧领取池的
-    # `reclaim=True, retry_failed=True` 语义。
+    # 用户主动点的照做；领取/回炉/待办计数都收窄到本轮账号的虚分片 + 账号允许集，
+    # 不会碰别人的行）+ `requeue_final`（重领预算耗尽/风控档），对齐旧领取池的
+    # `reclaim=True, retry_failed=True` 语义。**不用** `claim_all`：通配宽分片会把
+    # 当日别人的行一并领走/回炉（越界收尾 ⇒ 静默漏签）。
     if args.only:
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
-            claim_all=True, reclaim=True, requeue_final=True)
+            reclaim=True, requeue_final=True)
     else:
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,

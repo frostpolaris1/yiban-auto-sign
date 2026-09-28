@@ -76,7 +76,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 
 | 能力 | 状态 |
 |------|------|
-| 领取池与账号级租约（一个账号一天只被一个执行体做） | 已实现（表 `sign_claims`，v17） |
+| 领取池与账号级租约（一个账号一天只被一个执行体做） | 已实现（唯一台账表 `sign_tasks`，v18；旧表 `sign_claims` 已冻结） |
 | 并行执行体 | 已实现：`signin sign --workers N`（父进程监督 + 子进程领活） |
 | 兜底常驻执行体 | 已实现：`signin sign --fallback`（窗口内反复扫"未了结"账号，时段结束退出） |
 | 容器形态的兜底常驻 | 已实现：容器调度器在**有效签到窗口内**按开关自动拉起、窗口结束由进程自行退出（与宿主同一个 `YIBAN_FALLBACK_ENABLE`、同一把独立锁、同一份心跳） |
