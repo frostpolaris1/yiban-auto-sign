@@ -107,12 +107,12 @@ class SecondRunFilterTest(unittest.TestCase):
                  for p, s in statuses.items()}, f)
 
     def _run_main(self, argv=None, accounts=None):
-        """执行 signin.main()，返回 (退出码, run_queue_retry 收到的账号列表)。"""
+        """执行 signin.main()，返回 (退出码, run_executor_v3 收到的账号列表)。"""
         seen = []
         sys.argv = ["signin.py"] + (argv or []) # main() 靠 argv 判 --probe/--only，不起子进程就得手动换 sys.argv
         with mock.patch.object(signin, "load_accounts", return_value=accounts), \
              mock.patch.object(signin, "build_schedule", return_value={}), \
-             mock.patch.object(signin, "run_queue_retry",
+             mock.patch.object(signin.executor_v3, "run_executor_v3",
                                side_effect=lambda accs, *a, **kw: seen.append(list(accs)) or {}), \
              mock.patch.object(signin, "_save_cred_state"):
             try:

@@ -176,7 +176,7 @@ class SchedMarkerChildGuardTest(unittest.TestCase):
                                   return_value={}), \
                 mock.patch.object(runner_mod.schedule_mod, "day_off",
                                   return_value=None), \
-                mock.patch.object(runner_mod.round_mod, "run_queue_retry",
+                mock.patch.object(runner_mod.executor_v3, "run_executor_v3",
                                   return_value=dict(outcome)), \
                 mock.patch.object(runner_mod.state_io, "_load_cred_state",
                                   return_value={}), \
@@ -225,7 +225,7 @@ class UndoneFactsUnionTest(unittest.TestCase):
                     '{"13800000001": {"status": "pending"}, '
                     '"13800000002": {"status": "success"}}')
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "claim_stats",
+                mock.patch.object(state_io.db, "task_stats",
                                   return_value={"claimed": 0, "done": 1, "failed": 0,
                                                 "settled": 1, "open": 0, "total": 1}):
             self.assertTrue(state_io.has_undone_accounts_today(self.tmp, day),
@@ -237,7 +237,7 @@ class UndoneFactsUnionTest(unittest.TestCase):
         self._write(f"sched-run-{day}.json", '{"completed": true}')
         self._write(f"sign-state-{day}.json", '{"13800000001": {"status": "success"}}')
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "claim_stats",
+                mock.patch.object(state_io.db, "task_stats",
                                   return_value={"claimed": 1, "done": 0, "failed": 0,
                                                 "settled": 0, "open": 1, "total": 1}):
             self.assertTrue(state_io.has_undone_accounts_today(self.tmp, day))
@@ -247,7 +247,7 @@ class UndoneFactsUnionTest(unittest.TestCase):
         self._write(f"sched-run-{day}.json", '{"completed": true}')
         self._write(f"sign-state-{day}.json", '{"13800000001": {"status": "success"}}')
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "claim_stats",
+                mock.patch.object(state_io.db, "task_stats",
                                   return_value={"claimed": 0, "done": 1, "failed": 0,
                                                 "settled": 1, "open": 0, "total": 1}):
             self.assertFalse(state_io.has_undone_accounts_today(self.tmp, day))
