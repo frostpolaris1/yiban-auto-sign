@@ -150,9 +150,13 @@ KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
 # 与保留期"当天件"判定必须落在引擎业务日上（宿主时区≠北京时差一天，会把"当天归档
 # 失踪"误报或漏报）。取不到 yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
 business_day() {
-    if "$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null; then
-        return 0
-    fi
+    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
+    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
+    local _d
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    case "$_d" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
+    esac
     TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
     date +%F
 }
