@@ -1301,11 +1301,18 @@ def _anchor_status(path=None):
                 f"——疑似整表被清空（无任何清理留痕可解释，留痕累计={explained}）"
             )
 
-        # ---- 判据一：定点 ----
+        # ---- 判据一：定点（锚点定点行**无条件**必须还在）----
         # 锚点 max_id 那一行必须还在、哈希必须还对得上。原判据是
         # "cur_max == anchor.max_id 时才比 head"，于是"删掉链尾若干条 + 再写一条"
         # 就足以让整套比对静默（新行 id 更大，head 比对被跳过）。
-        if anchored is None and not _purge_event_covers(events, anchor_pt, anchor["max_id"]):
+        #
+        # 该定点行**不享有清理留痕豁免**（曾用 `_purge_event_covers` 放行）。留痕住在
+        # 应用可写的 app_meta 里：删掉这些行后再种一条"把该 id 删掉了"的假事件，判据就
+        # 被自己的解释开关静默——连 `audit_purge_total` 都不用动。而锚点定点行按构造
+        # 至多一个锚点间隔之旧；合法保留期清理只删月级窗口，永远够不到它。真要做整库/
+        # 手工清理属 root 级维护，其运行手册步骤是重置锚点文件、由下一轮每日线程重新
+        # 播种——所以一条声称覆盖锚点定点行的清理事件本身就是篡改证据，不能拿来放行。
+        if anchored is None:
             trend = (
                 f"当前 max_id={cur_max} 小于锚点 max_id={anchor['max_id']}（条数减少，"
                 f"疑似删掉最近 {anchor['max_id'] - cur_max} 条）"
@@ -1313,18 +1320,14 @@ def _anchor_status(path=None):
                 else f"当前 max_id={cur_max} 反而更大——删尾后用新写入掩盖"
             )
             return "tampered", (
-                f"锚点记录的链尾行 id={anchor['max_id']} 已不存在，且无清理留痕可解释："
-                f"{trend}；锚点以来有留痕的删除累计={explained}"
+                f"锚点记录的链尾行 id={anchor['max_id']} 已不存在：{trend}；"
+                f"锚点以来有留痕的删除累计={explained}"
             )
-        if anchored is not None and anchored["hash"] != anchor["head"]:
+        if anchored["hash"] != anchor["head"]:
             return "tampered", (
                 f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
                 "全表重签）"
             )
-        if anchored is None:
-            # 定点被留痕事件解释掉了（长期空闲后保留期清理删到了链尾）——
-            # 这条锚点已不再描述当前链尾，后续判据照常执行
-            logger.info("锚点链尾行 id=%s 已由清理留痕解释，跳过 head 比对", anchor["max_id"])
 
         # ---- 判据二：稠密（v1 锚点无 count，降级跳过）----
         if anchor_count is not None:
@@ -1410,24 +1413,6 @@ def _purge_events_after_anchor(events, anchor_pt):
         if anchor_pt is None or int(seq) > int(anchor_pt):
             out.append(ev)
     return out
-
-
-def _purge_event_covers(events, anchor_pt, row_id):
-    """是否有一条锚点之后的留痕事件恰好把 id=row_id 这条删掉了。
-
-    调用边界：只用于解释**比被见证行更旧**的行（锚点定点行及其以前）。被见证行
-    （见证 JSON 的 `db_max_id`）不得走本豁免——留痕住在应用可写的 app_meta 里，一条
-    伪造事件即可把删尾翻成通过；被见证行按构造至多一个见证间隔之旧，月级保留期清理
-    够不到它，能删它的事件本身即是篡改证据（详见 `_anchor_status` 的回库判据注释）。
-    """
-    for ev in _purge_events_after_anchor(events, anchor_pt):
-        before_max = ev.get("before_max")
-        after_max = ev.get("after_max")
-        if before_max is None or int(row_id) > int(before_max):
-            continue
-        if after_max is None or int(row_id) > int(after_max):
-            return True
-    return False
 
 
 def _purge_event_sets_min(events, anchor_pt, cur_min):

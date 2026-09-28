@@ -286,6 +286,35 @@ class AnchorTwoPartyJudgeTest(_Fixture):
                          "并列必须取靠后（最新自报），取靠前会拿陈旧 head 定点")
 
 
+class AnchorPointRowNotExemptTest(_Fixture):
+    """锚点定点行不享有清理留痕豁免：删它 + 种假留痕事件仍须判红。
+
+    留痕住在应用可写的 app_meta 里；判据一若在 `anchored is None` 时先问"有没有一条
+    事件恰好把它删掉了"，一条假事件就能把删尾翻成通过。锚点定点行按构造至多一个锚点
+    间隔之旧，合法保留期清理只删月级窗口、够不到它，故取消豁免。
+    """
+
+    def _forge_purge_event(self, before_max, after_max):
+        ev = {
+            "kind": "audit_cleanup", "table": "audit_logs", "cutoff": "x",
+            "deleted": 1, "before_min": 1, "before_max": before_max,
+            "after_min": 1, "after_max": after_max,
+            "ts": "2026-01-01 00:00:00", "audit_seq": 1,
+        }
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_purge_events", json.dumps([ev])))
+
+    def test_forged_purge_event_cannot_excuse_anchor_point_row_deletion(self):
+        self._seed(6)
+        db.record_audit_anchor(self.anchor)
+        self._raw("DELETE FROM audit_logs WHERE id = 6")      # 删锚点定点行
+        self._forge_purge_event(before_max=6, after_max=5)    # 假事件声称覆盖 id=6
+        h = self._health()
+        self.assertFalse(h["healthy"], "留痕不得成为翻绿开关")
+        self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
+        self.assertIn("id=6", h["anchor_msg"])
+
+
 class CliIndeterminateTest(_Fixture):
     """取证 CLI：无法定论必须 exit 2，不能用 exit 1 冒充"检出篡改"。"""
 
