@@ -46,8 +46,8 @@
 
 **通信**
 迁移函数一律接收调用方传入的 `conn`（事务由 `_run_migrations` 经写事务入口开启），本模块
-从不自取连接。跨域调用——写事务入口 `_begin_immediate`、审计链重签 `_rechain_audit_logs`
-与重链留痕 `_record_rechain_event`、JSON 导入的进程内写锁 `_conn_lock`——经 `_facade()`
+从不自取连接。跨域调用——写事务入口 `_begin_immediate`、审计链升级回填
+`_backfill_audit_hashes`、JSON 导入的进程内写锁 `_conn_lock`——经 `_facade()`
 按属性延迟取 `yiban.store.db`：函数内导入避免导入环，按属性取保证 `db.<名字> = 替身`
 一类打桩可见。库与密钥来源路径直接读连接模块（`_connection._env_file`；`db._env_file =
 path` 的写入由 db 门面转发落到那里），账号域的加密值判定按父提交同形直取
@@ -58,7 +58,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 from datetime import timedelta
 
 from yiban import clock
@@ -300,47 +299,18 @@ def migrate_v2(conn):
 def migrate_v3(conn):
     """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。
 
-    重链守卫：_rechain_audit_logs 用**当前密钥**重签全表，等于给"改掉内容 →
-    清空 hash → 重启（正常启动路径）→ 链重新自洽"留了一条路。迁移器只在
-    PRAGMA user_version < 3 时调用本函数，所以"低版本升级"是它唯一的合法触发
-    场景；这里显式读出 from_version 并把它连同重链前后链头一并留痕到 app_meta，
-    使 audit_health 能把"锚点之后发生的重链"指认为异常。
+    升级正确性：旧库（`user_version < 3`）的历史审计行在补出两列后 hash 仍为空，
+    必须用**当前密钥**把整条链算出来，否则升级后 `verify_audit_chain` 每次都判断链。
+    回填本体（单事务、失败整段回滚）见 `_backfill_audit_hashes`；本函数只负责
+    "有缺口才补"。
     """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
     _ensure_column(conn, "audit_logs", "prev_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "audit_logs", "hash", "TEXT NOT NULL DEFAULT ''")
-    # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
     empty = conn.execute(
         "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
     ).fetchone()["n"]
     if empty:
-        if version >= 3:
-            # 不该发生：>=3 的库迁移器不会再跑本迁移。真发生了说明有人绕过了
-            # 版本门控（或直接调 _rechain_audit_logs），留痕照记，由 audit_health 判失败。
-            logger.error(
-                "migrate_v3 在 user_version=%s 的库上被调用且发现 %s 条空 hash 审计行——"
-                "迁移版本门控被绕过，已记录重链留痕", version, empty
-            )
-        head_before = _chain_head(conn)
-        rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        # 重链留痕在同一事务内写（head_after 在重链完成后才取）——链重签与它的留痕
-        # 要么都在要么都不在，不留"重签却无痕"。
-        _facade()._rechain_audit_logs(
-            conn,
-            lambda: _facade()._record_rechain_event(
-                conn, version, rows, empty, head_before, _chain_head(conn)
-            ),
-        )
-        conn.commit()
-
-
-def _chain_head(conn):
-    """当前链头哈希（空链/缺列 → 空串）。迁移内部用，不取锁（调用方已持有连接）。"""
-    try:
-        row = conn.execute("SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1").fetchone()
-    except sqlite3.Error:
-        return ""
-    return (row["hash"] or "") if row else ""
+        _facade()._backfill_audit_hashes(conn)
 
 
 def migrate_v4(conn):

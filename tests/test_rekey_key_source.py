@@ -498,7 +498,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
 
     def test_list_duplicate_owners_reads_key_from_env_flag(self):
-        """list_duplicate_owners 会跑迁移（v3 重链要用审计密钥）：同样不得依赖 cwd。"""
+        """list_duplicate_owners 会跑迁移（v3 审计链回填要用审计密钥）：同样不得依赖 cwd。"""
         r = _run_cli("list_duplicate_owners.py",
                      ["--db", self.db_file, "--env", self.env_file], cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -525,7 +525,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         empty = self.fresh_empty_cwd()
         cases = [
             ("audit_verify.py", []),                      # create=False → fail-closed
-            ("list_duplicate_owners.py", []),             # 会跑迁移（重链要用审计密钥）
+            ("list_duplicate_owners.py", []),             # 会跑迁移（审计链回填要用审计密钥）
         ]
         for script, cli in cases:
             with self.subTest(script=script):

@@ -99,7 +99,7 @@ class _CleanupFixture(unittest.TestCase):
                 "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
                 "VALUES ('2020-01-01 00:00:00','tester','old',?,?,'','')", (f"t{i}", f"d{i}"))
             conn.commit()
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         for i in range(fresh_rows):
             db.audit("tester", "seed", f"f{i}", "d")
         conn = db.get_conn()

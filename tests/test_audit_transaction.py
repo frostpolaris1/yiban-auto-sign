@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""审计追责链的活体反例：同事务、判码、欠账归零、删尾与整链重签。
+"""审计追责链的活体反例：同事务、判码、欠账归零、删尾。
 
 被整改的缺陷是"写了但追不到人、丢了你不知道"：业务写与审计写永远两个事务（中间
 被杀即"做了无留痕、欠账仍为 0"）；无会话/请求 id；`audit_head_hash` 读失败与空链同
-返回 `""`；欠账单调无归零口径（urgent 永久刷屏）；`_rechain_audit_logs` 分批 commit
+返回 `""`；欠账单调无归零口径（urgent 永久刷屏）；`_backfill_audit_hashes` 分批 commit
 击穿原子承诺；`audit_verify.py` 无顶层兜底（`database is locked` 以 exit 1 冒充"检出
-篡改"、无锚点把"没查"印成"通过"、删尾/整链重签检不出）。
+篡改"、无锚点把"没查"印成"通过"、删尾检不出）。
 
 本文件按"每道判据自带一条把输入改坏 ⇒ 工具必须响"的纪律逐条钉死修复后的行为：
 业务+审计间 kill 注入不产生"做了无留痕"、审计写失败回滚业务、锁库判码 ≠ 篡改判码、
@@ -18,17 +18,17 @@
 `audit()` 的请求作用域标记（含作用域 id 形状契约：不得掐出 ≥11 位数字连段）、
 `audit_head_hash_ex` 的三态、欠账告警基线
 （`audit_write_failures_unnotified` / `audit_alert_needs_attention`）、
-`_rechain_audit_logs` 的单事务回滚，以及 `scripts/audit_verify.py` 的退出码映射
+`_backfill_audit_hashes` 的单事务回滚，以及 `scripts/audit_verify.py` 的退出码映射
 （0 通过 / 1 篡改 / 2 未查·锁住·无法定论）。
 对应实现：`yiban/store/audit_chain.py`（`audit` / `audit_unit` / `record_in_txn` /
-`audit_or_refuse` / `audit_head_hash_ex` / `_rechain_audit_logs` / 欠账基线 /
+`audit_or_refuse` / `audit_head_hash_ex` / `_backfill_audit_hashes` / 欠账基线 /
 `new_request_scope_id` 与 `_process_scope` 的切段形状）、
 `yiban/store/accounts.py`（`add_account` / `update_account` /
 `delete_accounts_by_owner` 的 `audit_spec`）、
 `yiban/store/users.py`（`purge_deleted_users_hard` 的 `audit_spec`：清除清单事务内产出）、
 `scripts/audit_verify.py`。
 关键断言：**"未查"与"通过"必须是两个不同返回值，"锁住"与"检出篡改"必须不同码**；
-业务效果可见 ⇒ 审计行必在（kill 注入后两者同在或同不在）；重链失败必须回滚到原链。
+业务效果可见 ⇒ 审计行必在（kill 注入后两者同在或同不在）；回填失败必须回滚到原链。
 依赖：临时库 + 临时 `.env` + 临时锚点文件；CLI 与 kill 注入用例起真子进程，
 故依赖 `sys.executable` 并对子进程 stdout 按本地代码页解码；无网络、无 skip。
 """
@@ -511,10 +511,10 @@ class ArrearsNotificationTest(_Fixture):
         self.assertIn("write_failures_new", h)
 
 
-class RechainAtomicTest(_Fixture):
-    """`_rechain_audit_logs` 单事务：失败回滚到重链前状态（不留半重链）。"""
+class BackfillAtomicTest(_Fixture):
+    """`_backfill_audit_hashes` 单事务：失败回滚到回填前状态（不留半链）。"""
 
-    def test_rechain_failure_restores_original_chain(self):
+    def test_backfill_failure_restores_original_chain(self):
         self._seed(4)
         conn = db.get_conn()
         before = [tuple(r) for r in conn.execute(
@@ -525,21 +525,21 @@ class RechainAtomicTest(_Fixture):
         def flaky(*a, **k):
             calls["n"] += 1
             if calls["n"] >= 3:
-                raise RuntimeError("inject rechain failure")
+                raise RuntimeError("inject backfill failure")
             return real(*a, **k)
 
         with mock.patch.object(db, "_audit_hash", side_effect=flaky),                 self.assertRaises(RuntimeError):
-            db._rechain_audit_logs(conn)
+            db._backfill_audit_hashes(conn)
         after = [tuple(r) for r in conn.execute(
             "SELECT id, prev_hash, hash FROM audit_logs ORDER BY id").fetchall()]
-        self.assertEqual(before, after, "重链失败必须回滚到重链前状态，不留半重链")
+        self.assertEqual(before, after, "回填失败必须回滚到回填前状态，不留半链")
         self.assertTrue(db.verify_audit_chain()[0], "原链必须仍然自洽")
 
-    def test_rechain_success_keeps_chain_consistent(self):
+    def test_backfill_success_keeps_chain_consistent(self):
         self._seed(4)
         self._raw("UPDATE audit_logs SET hash='', prev_hash='' WHERE id<=2")
-        db._rechain_audit_logs(db.get_conn())
-        self.assertTrue(db.verify_audit_chain()[0], "重链成功后整条链必须自洽")
+        db._backfill_audit_hashes(db.get_conn())
+        self.assertTrue(db.verify_audit_chain()[0], "回填成功后整条链必须自洽")
 
 
 class CliExitCodeTest(_Fixture):

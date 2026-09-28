@@ -142,9 +142,7 @@ _write_audit_key_to_env_file = _audit_chain._write_audit_key_to_env_file
 _assert_key_source_certain = _audit_chain._assert_key_source_certain
 _audit_key = _audit_chain._audit_key
 _audit_hash = _audit_chain._audit_hash
-_rechain_audit_logs = _audit_chain._rechain_audit_logs
-_record_rechain_event = _audit_chain._record_rechain_event
-audit_rechain_events = _audit_chain.audit_rechain_events
+_backfill_audit_hashes = _audit_chain._backfill_audit_hashes
 
 _bump_audit_write_failure = _audit_chain._bump_audit_write_failure
 _unflushed_audit_failures = _audit_chain._unflushed_audit_failures
@@ -196,10 +194,7 @@ verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
 _purge_event_covers = _audit_chain._purge_event_covers
 _purge_event_sets_min = _audit_chain._purge_event_sets_min
-_rechain_events = _audit_chain._rechain_events
-_rechain_hint = _audit_chain._rechain_hint
 audit_health = _audit_chain.audit_health
-_rechain_diagnostics = _audit_chain._rechain_diagnostics
 
 _AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
 _AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY
@@ -214,8 +209,6 @@ _ANCHOR_META_KEY = _audit_chain._ANCHOR_META_KEY
 _AUDIT_PURGE_TOTAL_KEY = _audit_chain._AUDIT_PURGE_TOTAL_KEY
 _AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
 _PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
-_RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
-_RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
@@ -296,7 +289,6 @@ _table_columns = _migrations._table_columns
 _ensure_column = _migrations._ensure_column
 _ensure_index = _migrations._ensure_index
 _create_tables = _migrations._create_tables
-_chain_head = _migrations._chain_head
 _MALFORMED_COL_RE = _migrations._MALFORMED_COL_RE
 _malformed_schema_tables = _migrations._malformed_schema_tables
 _create_verify_jobs_table = _migrations._create_verify_jobs_table
@@ -492,8 +484,8 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     调用方应显式传入，勿让密钥来源依赖 cwd）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
-    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
-    （v3 rechain）等，使"被校验对象在校验过程中被改动"。
+    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会回填审计链
+    （v3）等，使"被校验对象在校验过程中被改动"。
     create=False：**只读初始化**——只打开既有库（`connection.open_readonly(...,
     immutable=False)`，`mode=ro` 见得到并发写者与锁），**不建库、不建表、不迁移、不切
     WAL、不跑清理**，供取证类只读调用方（如 `scripts/audit_verify.py`）复用
