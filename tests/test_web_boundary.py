@@ -2907,16 +2907,8 @@ class WebSecuritySplitContractTest(unittest.TestCase):
 
 M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
 
-
-M_ROUTE_NAMES_TOTAL = 205  # +1：users_api 用 m._owner_display_of（用户列表展示，同一单源规则，已复核）
-# +1：accounts_api 用 m.yiban_status——暂停合成的"当日是否已有结论"判据走状态词汇表
-# 单源 `is_concluded_status`（排除法），不另写第二份状态集合（MF-54 反模式），已复核。
-
-
-M_ROUTE_COMPAT_NAMES = 204  # +2 同上（两个新名均不在 EXCLUDED 内，兼容面同步）
-
-
-M_ROUTE_NAME_EXCLUDED = frozenset({"__file__"})
+# （名字面计数钉已随流程门禁整族裁撤，缩减批 6a：名字面漂移的可见性由
+# test_every_m_route_name_reachable_on_app_module 的可达性断言承接。）
 
 
 SPLIT_MODULES = (
@@ -2991,19 +2983,6 @@ class AppNameSurfaceContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 1. 名字面总账
     # ------------------------------------------------------------------
-    def test_scan_counts_are_pinned(self):
-        """命中总数与兼容名面数硬钉：名字面增删必须被看见，不能静默漂移。"""
-        names = scan_m_route_names()
-        self.assertEqual(len(names), M_ROUTE_NAMES_TOTAL,
-                         f"routes 的 m.* 命中数变了（现 {len(names)}）；"
-                         "若确为新增兼容名，请同步更新本文件的钉死计数并复核 app 名字面")
-        compat = [n for n in names if n not in M_ROUTE_NAME_EXCLUDED]
-        self.assertEqual(len(compat), M_ROUTE_COMPAT_NAMES,
-                         f"兼容名面计数变了（现 {len(compat)}，含 {len(names) - len(compat)} 个排除名）")
-        excluded = sorted(set(names) & M_ROUTE_NAME_EXCLUDED)
-        self.assertEqual(set(names) & M_ROUTE_NAME_EXCLUDED, set(M_ROUTE_NAME_EXCLUDED),
-                         f"排除集与实测不符：命中 {excluded}，排除集 {sorted(M_ROUTE_NAME_EXCLUDED)}")
-
     def test_every_m_route_name_reachable_on_app_module(self):
         """routes 经 `m.*` 取用的每个名字都必须在 app 模块上可达（别名加载的那一份）。"""
         missing = [n for n in scan_m_route_names() if not hasattr(self.webapp, n)]
@@ -3047,8 +3026,6 @@ class AppNameSurfaceContractTest(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         self.assertIn("SPLIT_ONLY_OK", r.stdout, r.stderr[-800:])
         self.assertNotIn("APP_LOADED_BY_SPLIT", r.stdout, r.stderr[-800:])
-        self.assertIn(f"NAMES {M_ROUTE_NAMES_TOTAL}", r.stdout,
-                      f"独立进程改扫出的命中数与本文件钉死值不符：{r.stdout!r} {r.stderr[-400:]}")
         self.assertIn("MISSING NONE", r.stdout,
                       f"独立进程里 web.app 名字面缺名：{r.stdout!r} {r.stderr[-400:]}")
         self.assertEqual(r.returncode, 0, r.stderr[-800:])

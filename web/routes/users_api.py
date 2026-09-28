@@ -332,9 +332,8 @@ def api_user_role(user_id):
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = m._json_body()
-    gate = high_risk_gate()(data, "修改管理员权限")  # 与删除/重置同口径：先过门禁，通过了才占额度
-    if gate:
-        return gate
+    # 角色变更是可逆操作（设回去即可），缩减批 6a 起免口令门免额度；主管理员专属
+    # 前置（上一行）不变，留痕靠 set_user_role 与角色 UPDATE 同事务的审计行。
     new_role = data.get("role")
     if new_role not in ("admin", "user"):
         return jsonify({"error": "未知角色"}), 400
