@@ -159,7 +159,7 @@ class EnvWriteRefused(ValueError):
     基类刻意保持 `ValueError`：既有调用方（account_crypto / tracking / audit_chain）
     只 `except ValueError`，换更宽或更窄的类型会从它们的 except 缝里漏出去。
 
-    可选属性（409 可操作化，缩减批 6a A4-4）：`code` = 拒绝码、`line` = 问题行号
+    可选属性（409 可操作化：写拒绝定位）：`code` = 拒绝码、`line` = 问题行号
     （1-based，窄行模型，与 `_validate_env_lines` 的枚举同源）、`keys` = 涉事键名
     列表——只承载**定位信息**，绝不带值原文；web 的 409 响应据此组装"定位/清理"
     载荷，引擎侧调用方（只 except ValueError）不受影响。

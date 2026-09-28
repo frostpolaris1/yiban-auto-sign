@@ -4508,7 +4508,7 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   #set-exec-table { min-width: 700px; }
 }
 
-/* ---- .env 写拒绝的定位/清理模态（A4-4）：行条目 + 一键清理按钮 ---- */
+/* ---- .env 写拒绝的定位/清理模态：行条目 + 一键清理按钮 ---- */
 .env-refused-list { display: grid; gap: 10px; }
 .env-refused-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
 .env-refused-desc { font-size: 13px; line-height: 1.5; word-break: break-all; }

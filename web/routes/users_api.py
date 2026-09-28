@@ -208,7 +208,7 @@ def api_users_batch():
             if action == "delete" else "重置操作过于频繁，请稍后再试",
             # 只有 delete 不可逆；批量重置口令可再重置一次，不套倒计时确认
             irreversible=(action == "delete"),
-            # 删除占删除额度；重置他人密码属凭据改写类，占独立凭据额度（缩批 6a 分流）
+            # 删除占删除额度；重置他人密码属凭据改写类，占独立凭据额度（两族分开计数）
             quota="delete" if action == "delete" else "creds",
         )
         if gate:
@@ -334,7 +334,7 @@ def api_user_role(user_id):
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = m._json_body()
-    # 角色变更是可逆操作（设回去即可），缩减批 6a 起免口令门免额度；主管理员专属
+    # 角色变更是可逆操作（设回去即可），免口令门免额度；主管理员专属
     # 前置（上一行）不变，留痕靠 set_user_role 与角色 UPDATE 同事务的审计行。
     new_role = data.get("role")
     if new_role not in ("admin", "user"):

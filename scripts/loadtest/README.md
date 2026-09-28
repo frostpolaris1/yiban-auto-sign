@@ -1,6 +1,6 @@
 # 压测 / 容量自动化（仅限测试机；按需使用）
 
-> 2026-09-28 缩减批 6a：本套工具链（hosts/iptables 改写、netns 隔离、故障注入四旋钮完整演练）
+> 2026-09-28 ：本套工具链（hosts/iptables 改写、netns 隔离、故障注入四旋钮完整演练）
 > 为**按需使用**的演练工具，不再是每次发布的固定门槛；发布门槛见 `docs/dev/release-gate.md` §2④
 > （本地 smoke + 备份可恢复演练）。触碰规模/并发/调度/库写入/网络路径的改动才需要动用本套工具。
 
@@ -11,9 +11,9 @@
 > 安全红线
 > 1. 绝不把本套工具指向真实易班生产环境；运行前先跑通 `mock_env.py --check` 自检。
 > 2. 只能改测试机的 `/etc/hosts` / iptables / 自签证书目录；**结束后必须
->    `mock_env.py --restore`**（进程与监听一并停掉）。
+>  `mock_env.py --restore`**（进程与监听一并停掉）。
 > 3. 工具与 README 内不写任何真实凭据；运行产物（`results/`、证书、hosts 备份）
->    只留在测试机，不入库。
+>  只留在测试机，不入库。
 
 ## 快速开始（三步）
 
@@ -25,30 +25,30 @@ python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest
 
 # 2) 启动假易班（回环 127.0.0.1 / ::1 的 443；证书由上一步生成）
 python3 scripts/loadtest/mock_yiban.py \
-  --cert /opt/yiban-loadtest/ca/server.pem \
-  --key  /opt/yiban-loadtest/ca/server.key \
-  --log  /opt/yiban-loadtest/logs/mock.jsonl &
+ --cert /opt/yiban-loadtest/ca/server.pem \
+ --key /opt/yiban-loadtest/ca/server.key \
+ --log /opt/yiban-loadtest/logs/mock.jsonl &
 
 # 3) 造号 + 跑一轮（示例：60 账号 / 拟真 300ms / 窗口 420s）
 python3 scripts/loadtest/seed_accounts.py --n 60 \
-  --db  /opt/yiban-loadtest/data/yiban.db \
-  --env /opt/yiban-loadtest/test.env --gap 10
+ --db /opt/yiban-loadtest/data/yiban.db \
+ --env /opt/yiban-loadtest/test.env --gap 10
 
 python3 scripts/loadtest/scale_driver.py \
-  --repo /opt/repo --env /opt/yiban-loadtest/test.env \
-  --db   /opt/yiban-loadtest/data/yiban.db \
-  --n 60 --label net300 --config-name net300 \
-  --mock-config /opt/yiban-loadtest/mock_config.json --delay-ms 300 \
-  --ca   /opt/yiban-loadtest/ca/ca.pem \
-  --mock-log /opt/yiban-loadtest/logs/mock.jsonl \
-  --window-sec 420 --outdir /opt/yiban-loadtest/results
+ --repo /opt/repo --env /opt/yiban-loadtest/test.env \
+ --db  /opt/yiban-loadtest/data/yiban.db \
+ --n 60 --label net300 --config-name net300 \
+ --mock-config /opt/yiban-loadtest/mock_config.json --delay-ms 300 \
+ --ca  /opt/yiban-loadtest/ca/ca.pem \
+ --mock-log /opt/yiban-loadtest/logs/mock.jsonl \
+ --window-sec 420 --outdir /opt/yiban-loadtest/results
 ```
 
 结束后：
 
 ```bash
 python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --restore
-python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check  # 自检应全 FAIL
+python3 scripts/loadtest/mock_env.py --base-dir /opt/yiban-loadtest --check # 自检应全 FAIL
 ```
 
 周期 `S = 单账号耗时 t + 间隔 gap`；80 分钟生产窗口（有效窗口 4680s）容量 ≈ `4680 / S`。
@@ -172,40 +172,40 @@ openssl ≥ 1.1.1，更老的发行版会在 CA 生成处直接报错退出（�
 统一落 `<outdir>/`：
 
 - `run-<label>-n<N>.json`（驱动）：字段名稳定，跨版本可直接对比；键的权威清单是
-  `scale_driver.py` 里 `main()` 组装的那个 result 字典。关键字段：
-  - `cycle_stats`：`{n, avg, min, p50, p95, max}`，单位秒；周期 = 相邻两次
-    `GET /code/html` 起点差（= t + gap）。
-  - `request_time_stats`：同形状；样本是"单账号 6 次请求耗时之和"（纯网络 t）。
-  - `max_inflight_in_run` / `inflight_ge2_records`：运行窗口内 mock 侧观测的最大并发
-    与并发 ≥ 2 的记录数（单进程应恒为 1，是多 worker 串行/并行的直接证据）。
-  - `status_counts` / `state_entries` / `completed` / `success` / `failed` / `skipped`：结果口径。
-  - `requests_run` / `requests_per_acct`：请求总数与每账号请求数。
-  - `cpu_s` / `cpu_pct_1core` / `peak_rss_kb` / `peak_rss_mb` / `threads_max` / `db_delta_kb`。
-  - `window` / `window_eff_s` / `finish_window` / `rc` / `created_at`。
-  - `cap80_implied = int(4680 / cycle_min)`：换算到 80 分钟生产窗口的容量。
+ `scale_driver.py` 里 `main()` 组装的那个 result 字典。关键字段：
+ - `cycle_stats`：`{n, avg, min, p50, p95, max}`，单位秒；周期 = 相邻两次
+  `GET /code/html` 起点差（= t + gap）。
+ - `request_time_stats`：同形状；样本是"单账号 6 次请求耗时之和"（纯网络 t）。
+ - `max_inflight_in_run` / `inflight_ge2_records`：运行窗口内 mock 侧观测的最大并发
+  与并发 ≥ 2 的记录数（单进程应恒为 1，是多 worker 串行/并行的直接证据）。
+ - `status_counts` / `state_entries` / `completed` / `success` / `failed` / `skipped`：结果口径。
+ - `requests_run` / `requests_per_acct`：请求总数与每账号请求数。
+ - `cpu_s` / `cpu_pct_1core` / `peak_rss_kb` / `peak_rss_mb` / `threads_max` / `db_delta_kb`。
+ - `window` / `window_eff_s` / `finish_window` / `rc` / `created_at`。
+ - `cap80_implied = int(4680 / cycle_min)`：换算到 80 分钟生产窗口的容量。
 - `concurrency-<label>.json`（探测）：**与驱动不是同一套字段**，上面那批键里只有
-  `status_counts` / `completed` / `success` / `failed` 在此出现；`cycle_stats`、
-  `request_time_stats`、`max_inflight_in_run`、`cpu_s`、`cap80_implied` 本脚本一个都不产出。
-  顶层是 `{label, per_proc, gap, ncpu, mem_total_mb, mem_reserve_mb, rows, verdict, created_at}`，
-  每档实测放在 `rows[]`：`K` / `per_proc` / `accounts_total` / `wall_s` / `machine_cpu_pct` /
-  `engine_cpu_s` / `engine_cpu_onecore_pct` / `engine_cpu_machine_pct` / `mock_cpu_s` /
-  `mock_cpu_onecore_pct` / `peak_total_rss_mb` / `median_proc_rss_mb` / `min_available_mb` /
-  `db_delta_kb` / `lock_errors` / `lock_hits` / `oom_killed` / `mem_abort` / `proc_wall_avg_s` /
-  `proc_wall_max_s` / `per_acct_wall_s` / `degradation_x` / `throughput_acct_per_h` /
-  `max_inflight` / `mock_records` / `rcs`。
+ `status_counts` / `completed` / `success` / `failed` 在此出现；`cycle_stats`、
+ `request_time_stats`、`max_inflight_in_run`、`cpu_s`、`cap80_implied` 本脚本一个都不产出。
+ 顶层是 `{label, per_proc, gap, ncpu, mem_total_mb, mem_reserve_mb, rows, verdict, created_at}`，
+ 每档实测放在 `rows[]`：`K` / `per_proc` / `accounts_total` / `wall_s` / `machine_cpu_pct` /
+ `engine_cpu_s` / `engine_cpu_onecore_pct` / `engine_cpu_machine_pct` / `mock_cpu_s` /
+ `mock_cpu_onecore_pct` / `peak_total_rss_mb` / `median_proc_rss_mb` / `min_available_mb` /
+ `db_delta_kb` / `lock_errors` / `lock_hits` / `oom_killed` / `mem_abort` / `proc_wall_avg_s` /
+ `proc_wall_max_s` / `per_acct_wall_s` / `degradation_x` / `throughput_acct_per_h` /
+ `max_inflight` / `mock_records` / `rcs`。
 - `results.csv`（驱动，固定追加到 `<outdir>/results.csv`）/ `concurrency-<label>.csv`（探测）：
-  列名固定，见 `scale_driver.CSV_FIELDS` / `concurrency_probe.CSV_FIELDS`，分别按
-  `(label, config)` 与 `K` 定位。**这两份不是上面 JSON 的原样扁平化**：驱动的
-  `cycle_stats` 在 CSV 里叫 `cycle_avg_s` / `cycle_p50_s` / `cycle_p95_s` / `cycle_min_s` /
-  `cycle_max_s`，`request_time_stats` 只留下 `t_avg_s` / `t_p95_s` 两列；探测侧
-  `engine_cpu_s` / `mock_cpu_s` / `mock_records` / `lock_hits` / `rcs` / `mem_abort` 只进 JSON、
-  不进 CSV，而 `db_write_p50_ms` / `db_write_p95_ms` / `db_write_max_ms` / `db_write_errors`
-  仅在该档开了 `--db-microbench` 时有值（关档写 None）。
+ 列名固定，见 `scale_driver.CSV_FIELDS` / `concurrency_probe.CSV_FIELDS`，分别按
+ `(label, config)` 与 `K` 定位。**这两份不是上面 JSON 的原样扁平化**：驱动的
+ `cycle_stats` 在 CSV 里叫 `cycle_avg_s` / `cycle_p50_s` / `cycle_p95_s` / `cycle_min_s` /
+ `cycle_max_s`，`request_time_stats` 只留下 `t_avg_s` / `t_p95_s` 两列；探测侧
+ `engine_cpu_s` / `mock_cpu_s` / `mock_records` / `lock_hits` / `rcs` / `mem_abort` 只进 JSON、
+ 不进 CSV，而 `db_write_p50_ms` / `db_write_p95_ms` / `db_write_max_ms` / `db_write_errors`
+ 仅在该档开了 `--db-microbench` 时有值（关档写 None）。
 - 产出里**没有**下面这几项，它们是测量缺口、不是文档漏写：驱动不把写进 mock 的
-  `--delay-ms` / `--fail-rate` 档位回显到 JSON 或 CSV（只落在 `--mock-config` 那个文件里）；
-  探测侧没有 `requests_per_acct`；探测的每账号耗时只有 avg / max，没有账号级 p50 / p95。
+ `--delay-ms` / `--fail-rate` 档位回显到 JSON 或 CSV（只落在 `--mock-config` 那个文件里）；
+ 探测侧没有 `requests_per_acct`；探测的每账号耗时只有 avg / max，没有账号级 p50 / p95。
 - 每个 K 的运行目录 `krun-<label>-k<K>/`：各进程独立 `state_p<i>/` 与
-  `sign_p<i>.log`（失败现场）。
+ `sign_p<i>.log`（失败现场）。
 
 探测 JSON 另含 `verdict`：
 
@@ -227,14 +227,14 @@ openssl ≥ 1.1.1，更老的发行版会在 CA 生成处直接报错退出（�
 工具只做「实测 + 线性外推」，换算遵循：
 
 1. **单进程常量**（与机器无关的部分）：`t`（网络耗时，由 mock 延迟与真实链路决定）、
-   `cpu_s_per_acct`（每账号 CPU 秒，实测 `cpu_s / 完成账号数`）、`rss_mb_per_proc`。
+  `cpu_s_per_acct`（每账号 CPU 秒，实测 `cpu_s / 完成账号数`）、`rss_mb_per_proc`。
 2. **CPU 上限**：`K_cpu ≈ vCPU × 0.9 × 单进程 wall / cpu_s_per_acct`；
-   等价于 `K_cpu ≈ 0.9 × vCPU / (cpu_s_per_acct / wall)`。
+  等价于 `K_cpu ≈ 0.9 × vCPU / (cpu_s_per_acct / wall)`。
 3. **内存上限**：`K_mem ≈ 可用内存_MB / rss_mb_per_proc`（预留系统与 mock 占用）。
 4. **实际可并发 worker 数** `K = min(K_cpu, K_mem)`，再取 `×2/3` 保守。
 5. **单 worker 容量**（窗口 W 秒、间隔 gap）：
-   `C1 = (W − t) / (t + gap) + 1`（与 `web/app.py:_capacity_estimate` 同形，
-   注意其 `avg` 默认 8s 会系统性低估，压测应以实测 `t` 回填）。
+  `C1 = (W − t) / (t + gap) + 1`（与 `web/app.py:_capacity_estimate` 同形，
+  注意其 `avg` 默认 8s 会系统性低估，压测应以实测 `t` 回填）。
 6. **总可支持账号** `≈ K × C1`，保守上限 `≈ K × C1 × 2/3`。
 
 把第 2、3 步里的 `vCPU` / `可用内存` 换成目标机器实测值即可；`t` 与
@@ -244,7 +244,7 @@ openssl ≥ 1.1.1，更老的发行版会在 CA 生成处直接报错退出（�
 ## 自测
 
 ```bash
-python -m pytest tests/test_loadtest_tools.py -q     # 秒级，21 passed
+python -m pytest tests/test_loadtest_tools.py -q   # 秒级，21 passed
 ```
 
 端到端（真实 signin 进程 + TLS + hosts，仅测试机 root）默认跳过；

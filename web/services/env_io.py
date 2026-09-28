@@ -7,8 +7,8 @@
 `write_env_key` / `write_env_int` 与批量原子写 `write_env_batch`、首次启动的
 `YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`、写拒绝的统一
 409 响应 `env_write_refused_response`（附 `env_refused_problems` 定位载荷：问题行号/
-键名 + 脱敏片段，值一律隐去）与歧义行清理 `cleanup_env_ambiguous_line`（缩减批 6a
-A4-4；只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
+键名 + 脱敏片段，值一律隐去）与歧义行清理 `cleanup_env_ambiguous_line`（
+只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`。
@@ -251,7 +251,7 @@ ENV_WRITE_REFUSED_MESSAGE = (
 )
 
 
-# ---- 409 可操作化（缩减批 6a A4-4）----
+# ---- 409 可操作化（写拒绝定位）----
 # 问题片段的展示上限；片段经脱敏原语链，绝不回显值原文。
 _ENV_SNIPPET_MAX = 160
 
@@ -312,7 +312,7 @@ def env_write_refused_response(exc=None, env_path=None):
 
 
 def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
-    """移除 `.env` 中**含潜伏行分隔符**的那一行（A4-4 的一键清理）。
+    """移除 `.env` 中**含潜伏行分隔符**的那一行（一键清理）。
 
     安全面收窄：只允许移除经 `has_line_break` 判定确含行分隔符的物理行——
     那是行模型歧义的唯一现场；普通配置行/注释行一律拒绝（本端点不是 .env
