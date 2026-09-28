@@ -69,13 +69,13 @@ def _last_executors(day):
     """某个业务日每个账号的归属执行体（**已脱敏**）：`{phone: {role, index, label}}`。
 
     账号列表要显示"上次实领是谁签的"（day 由调用方给——口径是最近一次有记录的业务日，
-    见 `store.claims.latest_claims_day`）：一次取回当日全部 `phone -> owner`（见
-    `store.claims.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
+    见 `store.queue_store.latest_day`）：一次取回当日全部 `phone -> owner`（见
+    `store.queue_store.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
     身份串含主机名，属部署信息，故**只回角色/序号/label**，绝不回 owner 原串。
     库不存在/未初始化 → `{}`（新部署很正常），调用方据此回 `null` 而不是报错。
     """
     out = {}
-    for phone, owner in db.claim_owners_for_day(day).items():
+    for phone, owner in db.task_owners_for_day(day).items():
         parsed = yb_egress.parse_owner(owner)
         out[phone] = {"role": parsed["role"], "index": parsed["index"],
                       "label": parsed["label"]}
@@ -105,18 +105,18 @@ def _executor_row_payload(row):
 
 
 def _executor_activity(day):
-    """当日领取池归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
+    """当日任务队列归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
 
     角色解析的唯一口径在 `yiban.egress.parse_owner`；`unknown` 照实回（历史数据里
     兜底与单执行体同前缀，本来就无法追溯，不假装能还原）。
 
-    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `claims.stats` 同口径不抛。
+    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `queue_store.day_counts` 同口径不抛。
     """
     by_executor = []
     totals = {"claimed": 0, "failed": 0, "done": 0, "total": 0}
     # 用 1-based 槽位号替代 owner 原串：owner 形如 {主机名}:{进程号}:w{序号}，主机名与
     # 进程号是部署信息（对攻击者就是资产清单），绝不回原串；前端信息量不变
-    for slot, row in enumerate(db.claim_activity(day), start=1):
+    for slot, row in enumerate(db.task_activity(day), start=1):
         parsed = yb_egress.parse_owner(row.get("owner"))
         by_executor.append({
             "slot": slot,
@@ -253,11 +253,11 @@ def _next_executor_slot(rows):
     ——这一步失败会让设置页加不了执行体。
     """
     # 纯 next_slot 只给"清单最大值 + 1"：删掉当前最大行后它会把刚空出的号再发一次，而
-    # 那个号在领取池（sign_claims.owner）里已有历史，重建的执行体会被显示成前任的归属。
+    # 那个号在任务队列（sign_tasks.owner）里已有历史，重建的执行体会被显示成前任的归属。
     # 故再按领取历史抬一次下限（保留期 14 天，与展示口径同窗口；同库＝同部署，跨主机同理）
     floor = 0
     try:
-        for owner in db.claim_owners_since():
+        for owner in db.task_owners_since():
             parsed = yb_egress.parse_owner(owner)
             if parsed["role"] == yb_egress.ROLE_WORKER and isinstance(parsed["index"], int):
                 floor = max(floor, parsed["index"] + 1)

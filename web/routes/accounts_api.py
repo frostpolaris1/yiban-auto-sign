@@ -77,7 +77,7 @@ def api_accounts():
     # （按"昨天"取的话，周末停签后会让整列空白到下一个工作日）。
     # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
     # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
-    last_exec = m._last_executors(m.db.claim_latest_day())
+    last_exec = m._last_executors(m.db.task_latest_day())
     # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
     # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
     _win = m.sign_window_bounds()
