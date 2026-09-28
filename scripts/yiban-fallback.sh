@@ -72,12 +72,8 @@ if ! _is_truthy "${YIBAN_FALLBACK_ENABLE:-0}"; then
     exit 0
 fi
 
-# 状态/日志目录：与 run.sh 同口径，日志按天分文件（web 端按日期直接读取对应文件）
-STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
-mkdir -p "$STATE_DIR" 2>/dev/null || true
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
-
+# 状态/日志目录：与 run.sh 同口径，日志按天分文件（web 端按日期直接读取对应文件）；
+# 按天名取 business_day（业务日，与引擎同源），解释器先行解析供它取时用。
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
 elif command -v python3 >/dev/null 2>&1; then
@@ -89,6 +85,18 @@ else
     echo "找不到 python3，无法启动兜底执行体（实现见 yiban/engine/workers.py）" >&2
     exit 1
 fi
+
+business_day() {
+    if "$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null; then
+        return 0
+    fi
+    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    date +%F
+}
+STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
+LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
 
 # 窗口关闭时引擎自己退出，故无需额外 timeout；本行之后进程被 exec 替换
 exec "$PY" -m yiban.cli sign --fallback >> "$LOG_FILE" 2>&1
