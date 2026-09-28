@@ -162,14 +162,13 @@ def _verify(args):
     if health.get("anchor_status") == "none":
         _indeterminate(
             "从未记录过锚点（audit-anchor.log 不存在且无锚点留痕）——本次未做"
-            "锚点比对，'未查'不等于'通过'。请先让每日线程/见证 cron 写入锚点后重跑"
+            "锚点比对，'未查'不等于'通过'。请先让每日线程写入锚点后重跑"
         )
     print(f"锚点文件：{anchor_path}")
     print(f"链内自洽：{'通过' if health['chain_ok'] else '失败'}"
           f"（broken={health['broken']}）")
     print(f"锚点比对：{'通过' if health['anchor_ok'] else '失败'}"
           f"（{health['anchor_msg'] or '无提示'}）")
-    print(f"锚点独立见证：{health.get('anchor_witness') or '未知'}")
     print(f"写入欠账：{health['write_failures']} 次")
     print(f"全表重链留痕：{len(health['rechain_events'])} 条；"
           f"空 hash 行：{health['empty_hash_rows']} 条")

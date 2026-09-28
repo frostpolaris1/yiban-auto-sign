@@ -64,18 +64,6 @@ def _audit_actor():
     return (session.get("username") or "?")[:64]  # 无会话（后台线程/脚本）时是 "?"，不假装有主
 
 
-#: 独立见证形态 → 告警正文文本（缺失/不可读 = 降级：双写掩盖无独立证据）
-_WITNESS_TEXT = {
-    "separate": "跨权限独立文件已启用（属主与锚点不同）",
-    "same-owner": "在位但与锚点同属主（降级：同 uid 双写者仍可一起改）",
-    "unknown": "在位（属主未知）",
-    "anchor-missing": "锚点文件缺失/不可读（见证形态无法比对）",
-    "absent": "未启用（降级：同属主双写无独立证据）",
-    "unreadable": "存在但不可读（降级：本次无法比对）",
-    "corrupt": "存在但损坏（需人工核查）",
-}
-
-
 def _audit_alert_facts(health):
     """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
 
@@ -93,17 +81,10 @@ def _audit_alert_facts(health):
         anchor_text = "一致"
     else:
         anchor_text = "不一致"
-    # 独立见证的形态：跨权限存放是否生效。控制面不可用（生产形态下见证缺失/读不出/
-    # 损坏）必须显式点名"判定不健康"——它只写进 note 时，管理员收到的会是一条"各项
-    # 都正常"的告警，独立见证整体空转却无人看见（fail-open of control availability）。
-    witness_text = _WITNESS_TEXT.get(health.get("anchor_witness"), "（未知）")
-    if health.get("anchor_witness_unhealthy"):
-        witness_text += "——控制面不可用，本次判定不健康"
     return [
         ("链自洽", "是" if health["chain_ok"] else f"否（断点 {health['broken']} 处）"),
         ("库外锚点", anchor_text),
         ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
-        ("锚点独立见证", witness_text),
         ("审计写入失败次数", health["write_failures"]),
         # 总账单调（取证事实），但告警按"账目变化"触发：这一行给出自上次告警以来
         # 的新增数，管理员据此判断"是刚出的新问题还是旧账"——只看总账会把旧账

@@ -10,8 +10,8 @@
 
 本文件按"每道判据自带一条把输入改坏 ⇒ 工具必须响"的纪律逐条钉死修复后的行为：
 业务+审计间 kill 注入不产生"做了无留痕"、审计写失败回滚业务、锁库判码 ≠ 篡改判码、
-无锚点"未查" ≠ "通过"、删尾与整链重签必须可检出。e2e 三组（kill 注入 / 锁库实跑 /
-重签检出）都在真子进程里跑，不 mock 判据本体。
+无锚点"未查" ≠ "通过"、删尾必须可检出。e2e 两组（kill 注入 / 锁库实跑）都在真子进程
+里跑，不 mock 判据本体。
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`audit_unit` / `record_in_txn` 的同事务原子性、`audit_or_refuse` 的 fail-closed、
@@ -29,7 +29,7 @@
 `scripts/audit_verify.py`。
 关键断言：**"未查"与"通过"必须是两个不同返回值，"锁住"与"检出篡改"必须不同码**；
 业务效果可见 ⇒ 审计行必在（kill 注入后两者同在或同不在）；重链失败必须回滚到原链。
-依赖：临时库 + 临时 `.env` + 临时锚点/见证文件；CLI 与 kill 注入用例起真子进程，
+依赖：临时库 + 临时 `.env` + 临时锚点文件；CLI 与 kill 注入用例起真子进程，
 故依赖 `sys.executable` 并对子进程 stdout 按本地代码页解码；无网络、无 skip。
 """
 import contextlib
@@ -55,7 +55,7 @@ AUDIT_KEY = "b" * 64
 
 
 class _Fixture(unittest.TestCase):
-    """临时库 + 临时锚点/见证（互不干扰）；子进程用同一套 YIBAN_* 环境。"""
+    """临时库 + 临时锚点（互不干扰）；子进程用同一套 YIBAN_* 环境。"""
 
     @classmethod
     def setUpClass(cls):
@@ -90,8 +90,7 @@ class _Fixture(unittest.TestCase):
             with contextlib.suppress(OSError):
                 os.remove(self.db_file + suffix)
         self.anchor = os.path.join(self.tmp, "audit-anchor.log")
-        self.witness = os.path.join(self.tmp, "anchor-fingerprint.json")
-        for p in (self.anchor, self.witness, self.witness + ".tmp"):
+        for p in (self.anchor, self.anchor + ".tmp"):
             with contextlib.suppress(OSError):
                 os.remove(p)
         os.environ["YIBAN_DB_FILE"] = self.db_file
@@ -499,7 +498,7 @@ class ArrearsNotificationTest(_Fixture):
         self.assertEqual(db.audit_write_failures_unnotified(), 1, "新欠账重新计为未确认")
 
     def test_alert_needs_attention_only_on_content_change(self):
-        h = db.audit_health(path=self.anchor, fingerprint_path=self.witness)
+        h = db.audit_health(path=self.anchor)
         self.assertTrue(db.audit_alert_needs_attention(h), "首次结论必发")
         db.mark_audit_alert_sent(h)
         self.assertFalse(db.audit_alert_needs_attention(h), "同一故障态不得重发")
@@ -508,7 +507,7 @@ class ArrearsNotificationTest(_Fixture):
         self.assertTrue(db.audit_alert_needs_attention(changed), "结论变化必须重发")
 
     def test_health_exposes_new_arrears_field(self):
-        h = db.audit_health(path=self.anchor, fingerprint_path=self.witness)
+        h = db.audit_health(path=self.anchor)
         self.assertIn("write_failures_new", h)
 
 
@@ -541,23 +540,6 @@ class RechainAtomicTest(_Fixture):
         self._raw("UPDATE audit_logs SET hash='', prev_hash='' WHERE id<=2")
         db._rechain_audit_logs(db.get_conn())
         self.assertTrue(db.verify_audit_chain()[0], "重链成功后整条链必须自洽")
-
-
-class FullRechainDetectionTest(_Fixture):
-    """整链重签（改内容保链自洽）必须被独立见证的 head 比对抓出。"""
-
-    def test_content_change_plus_rechain_is_detected(self):
-        self._seed(6)
-        db.record_audit_anchor(self.anchor)
-        self.assertEqual(
-            db.record_audit_anchor_witness(self.anchor, self.witness)[0], "written")
-        # 改内容后重链：链仍自洽，但链尾行的哈希已变，与见证记下的 head 不符
-        self._raw("UPDATE audit_logs SET detail='tampered' WHERE id=6")
-        db._rechain_audit_logs(db.get_conn())
-        self.assertTrue(db.verify_audit_chain()[0], "夹具前提：重签后链本身自洽")
-        h = db.audit_health(self.anchor, self.witness)
-        self.assertFalse(h["healthy"], "整链重签（改内容保自洽）必须判红")
-        self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
 
 
 class CliExitCodeTest(_Fixture):
