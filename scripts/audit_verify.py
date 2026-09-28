@@ -170,8 +170,7 @@ def _verify(args):
     print(f"锚点比对：{'通过' if health['anchor_ok'] else '失败'}"
           f"（{health['anchor_msg'] or '无提示'}）")
     print(f"写入欠账：{health['write_failures']} 次")
-    print(f"全表重链留痕：{len(health['rechain_events'])} 条；"
-          f"空 hash 行：{health['empty_hash_rows']} 条")
+    print(f"空 hash 行：{health['empty_hash_rows']} 条")
     # 清理量必须随取证输出带出：本机时钟被渐进拨快时本机自校验不会报警（守卫参照点
     # 每次都推进），异机侧只能靠"累计删除条数 + 最近 cutoff"判断清理是否异常前移。
     # 无留痕记录时也照打——运维要看得出"从哪一天起开始有"。

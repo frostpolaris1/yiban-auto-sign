@@ -95,7 +95,7 @@ class MigrationCompatTest(unittest.TestCase):
              ("b@example.com", "h", "user", "2026-09-01 00:00:00")],
         )
         self.conn.execute(
-            # 带非空 hash：migrate_v3 对"空 hash 行"会全量重链（需要审计密钥），
+            # 带非空 hash：migrate_v3 对"空 hash 行"会全量回填（需要审计密钥），
             # 生产行本来就有 hash，空 hash 只是测试构造出来的伪前置状态。
             "INSERT INTO audit_logs (ts, username, action, prev_hash, hash) VALUES (?,?,?,?,?)",
             ("2026-09-20 06:31:00", "admin", "login", "", "0" * 64),

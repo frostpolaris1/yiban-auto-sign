@@ -17,9 +17,9 @@
 备份明文策略、以及一整套加密/迁移/鉴权 smoke。
 对应实现：`yiban/store/`（accounts / users / time_prefs / audit_chain / session_cache 各域）
 与 `db` 门面、`scripts/backup.sh`。
-关键断言：`test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper` 与
+关键断言：`test_audit_cleanup_keeps_chain_and_detects_tamper` 与
 `tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
-签一遍"，后者等于给篡改者提供重链工具。`test_db_source_has_no_executescript_call` 是**源码文本级**断言：它只保证那段文本还在原位。
+签一遍"，后者等于给篡改者提供重建链的工具。`test_db_source_has_no_executescript_call` 是**源码文本级**断言：它只保证那段文本还在原位。
 `BackupPlaintextP3Test` 原本是同类写法（登记在册的那条假绿），现已改为**行为测试**——真跑
 backup.sh（临时目录夹具，skipIf 无 bash），断言真实 stderr 告警、专用退出码 6、异机密文
 副本与哨兵判定；输出按字节手动 utf-8 解码以避开旧注释所说的 Windows GBK 误报问题。
@@ -294,7 +294,7 @@ class DbFixes021Test(unittest.TestCase):
         self.assertNotEqual(user_deleted_at, "")
 
     # ---- M4：审计清理不再重建链，verify 首行以自身 prev_hash 为锚 ----
-    def test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper(self):
+    def test_audit_cleanup_keeps_chain_and_detects_tamper(self):
         db.init_db(self.db_file, env_file=self.env_file)
         conn = db.get_conn()
         old_ts = (clock.now() - datetime.timedelta(days=200)).strftime(
