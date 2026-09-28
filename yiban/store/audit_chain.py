@@ -1137,10 +1137,12 @@ def _last_audit_anchor(path):
 
 
 def _anchor_file_state_ex(path=None, lines=None, meta=None):
-    """锚点文件自身完整性：行数三支 + 行间链 + 库内指纹。
+    """锚点文件自身完整性（两方判据）：库内指纹 + 锚点旁路文件自报。
 
-    返回 `(status, msg, witness_state, witness_data)`，status ∈ ok/tampered/indeterminate；
-    后两位是历史见证契约的占位（本版本已裁掉独立见证，恒为 `"absent", None`）。
+    两方 = 库内锚点指纹（app_meta `audit_anchor_meta` 的行数高水位与末行哈希）对照
+    锚点旁路文件自报（行数三支 + 行内 `prev_line_hash` 链 + 末行 `last_hash`）。
+
+    返回 `(status, msg)`，status ∈ ok/tampered/indeterminate。
 
     行数判据必须三支齐全。只判"变少"与"相等"会漏掉"变多"：**仅追加 1 条垃圾行**
     就让两道判据同时返回"无异常"——行数变多无人管、相等分支又因末行变了却只比
@@ -1155,7 +1157,7 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
         lines, status = _read_anchor_lines_ex(path)
         if status != "ok" or lines is None:
             # 缺失/读不出由调用方（_anchor_status）判定，这里不重复下结论
-            return "ok", "", "absent", None
+            return "ok", ""
     if meta is None:
         meta = _get_anchor_meta()
     recorded, meta_state = _anchor_meta_line_count(meta)
@@ -1164,7 +1166,6 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
             "indeterminate",
             "库内锚点指纹的行数字段无法解析为整数（app_meta 被手工损坏或改写）"
             "——校验无法定论（不等于无异常），请立即核查",
-            "absent", None,
         )
     if recorded:
         if len(lines) < recorded:
@@ -1172,7 +1173,6 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
                 "tampered",
                 f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
                 "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）",
-                "absent", None,
             )
         if len(lines) > recorded:
             return (
@@ -1180,7 +1180,6 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
                 f"锚点文件行数由库内指纹记录的 {recorded} 增至 {len(lines)}"
                 "——应用写入之外被追加了行（仅追加 1 条垃圾行即可同时骗过"
                 "「变少/相等」两支判据，故此处与减少同等判红）",
-                "absent", None,
             )
     for i, ln in enumerate(lines):
         if _parse_anchor_line(ln) is None:
@@ -1188,7 +1187,6 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
                 "indeterminate",
                 f"锚点文件第 {i + 1} 行不是合法锚点行（内容损坏或被人为写入）"
                 "——校验无法定论，不等于无异常，请人工核查该行",
-                "absent", None,
             )
     for i, ln in enumerate(lines):
         parsed = _parse_anchor_line(ln)
@@ -1201,11 +1199,10 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
                 "tampered",
                 f"锚点文件第 {i + 1} 行的行间哈希不符（期望前驱行 {where}）"
                 "——锚点历史被改写或删除过整行",
-                "absent", None,
             )
     if recorded == len(lines) and meta.get("last_hash") and _anchor_line_sha(lines[-1]) != meta["last_hash"]:
-        return "tampered", "锚点文件末行与库内指纹不符——末行内容被改写", "absent", None
-    return "ok", "", "absent", None
+        return "tampered", "锚点文件末行与库内指纹不符——末行内容被改写"
+    return "ok", ""
 
 
 def _anchor_file_state(path):
@@ -1256,7 +1253,7 @@ def _anchor_status(path=None):
             "indeterminate",
             "锚点文件存在但没有一行是合法锚点行——校验无法定论（不等于无异常）",
         )
-    file_status, file_msg, _w_state, _w_data = _anchor_file_state_ex(path, lines=lines)
+    file_status, file_msg = _anchor_file_state_ex(path, lines=lines)
     if file_status != "ok":
         # 锚点文件自身不可信时，后面所有"拿末行与库内比对"的判据都是拿伪造值
         # 在校验伪造值——必须先判失败。
