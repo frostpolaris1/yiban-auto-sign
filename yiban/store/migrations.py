@@ -802,7 +802,7 @@ def migrate_v17(conn):
 def migrate_v18(conn):
     """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）。
 
-    核心迁移（MF-40 改判，is_core=True）：执行体的批领/待办闸门全建在
+    核心迁移（is_core=True）：执行体的批领/待办闸门全建在
     `sign_tasks` 上，缺表等于当日没有队列 ⇒ 失败阻断启动。重跑（版本未提升的下次
     启动）必须幂等，故建表用 IF NOT EXISTS。
     **单池化后本迁移不再从 `sign_claims` 平移任何行**（旧表冻结保留，其存量行是当日

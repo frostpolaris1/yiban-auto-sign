@@ -244,7 +244,7 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
     `env`：`avg`/`enabled` 未显式给出时的取值配置层（口径见 `_env_int`）。调用方一旦
     传了 `env`，本次估算的 avg 与开关就从**同一份** `env` 读，不再跨"进程环境 + .env"
     两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
-    `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
+    `.env`）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
 
     `retry_reserve`（**只喂 v2 公式分支**）：把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
     重试同样吃墙钟——按零重试排满窗口正是 122–360 静默死带的根（计划/展示/闸门不传）。
