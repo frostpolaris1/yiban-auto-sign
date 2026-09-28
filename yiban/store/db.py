@@ -18,7 +18,10 @@
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
 - `verify_jobs`：在线校验任务表的创建/领取/结算/取消、超龄回收与保留期清理。
-- `claims`：签到领取池（多执行体协调）的领取/续租/结算/放弃与清理。
+- `claims`：旧签到领取池（`sign_claims`，单池化后冻结）的领取/续租/结算/放弃与清理；
+  生产读口径已收口到 `queue_store`（见下），本域仅供既有单测覆盖。
+- `queue_store`：任务队列 `sign_tasks`（台账单池化后的唯一生产台账）的批量领取/收尾/
+  重排/回收/重签/事件签名，以及出口桶状态 `egress_state` 的读写。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
 - `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
@@ -71,6 +74,7 @@ from yiban.store import clock_meta as _clock_meta  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
+from yiban.store import queue_store as _queue_store  # noqa: E402
 from yiban.store import session_cache as _session_cache  # noqa: E402
 from yiban.store import time_prefs as _time_prefs  # noqa: E402
 from yiban.store import tracking as _tracking  # noqa: E402
@@ -127,8 +131,15 @@ claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
 claim_latest_day = _claims.latest_claims_day
 claim_owners_since = _claims.owners_since
-claim_fallback_event = _claims.fallback_event  # 兜底常驻的"失败即入队"读取端：默认档未了结行的事件签名，短轮询变化即接手
 purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，展示口径不读它
+
+# 任务队列（sign_tasks）展示读口径：台账单池化后展示/补签闸门读的就是这张表（唯一台账）。
+# 上方 `claim_*` 是旧领取池（sign_claims，冻结）的读法，仅供既有单测覆盖，不再是生产读口。
+task_stats = _queue_store.day_counts  # 当日各 state 计数与派生（settled/open/total）
+task_owners_for_day = _queue_store.owners_for_day  # 当日 phone -> owner（一次取全）
+task_activity = _queue_store.activity  # 当日按执行体归属的 KPI 计数（已折 KPI 三键）
+task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日
+task_owners_since = _queue_store.owners_since  # 保留期内出现过的执行体身份串
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
 # `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。

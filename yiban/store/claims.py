@@ -44,11 +44,12 @@
 连接与进程内锁取自同包的 `yiban.store.db`；门面对本模块是**重命名**再导出（`claim_*`
 前缀），逐条别名见 `yiban.store.db` 领取池绑定处的行尾注释。
 
-**过渡说明（v18 起）**：v18 新增的 `sign_tasks`（访问层 `yiban/store/queue_store.py`）
-把本表的 state / result / attempts 语义整体并入，并把本表存量行一次性平移进新表
-（`vshard=-1`、`run_at=claimed_at`，历史行不会被新队列重复领取）。旧表**不删**：
-14 天过渡期内本模块行为不变（仍读写本表），新队列只读写 `sign_tasks`，两表暂不对写；
-双写对齐到一定版本后再由后续迁移冻结旧表。故展示与了结判据此刻仍以本表为准。
+**冻结说明（台账单池化后）**：本表（`sign_claims`）与其 `epoch` 列**不物理删除**——已发布
+的 v17/v19 迁移条目把它们登记为**核心产物**，删产物会让 `user_version >= 17` 的库在启动时
+被完整性校验拒启（现网已升至 v20）。故表与列原样保留、**零写入**：生产执行已恒定走
+`executor_v3` 的 `sign_tasks` 队列，本模块的函数无生产调用点（仅既有单测覆盖）。
+旧的行是当日临时的领取记录，切换后下一轮自然在 `sign_tasks` 重建，**不做任何数据迁移**。
+`sign_tasks` 的访问层是 `yiban/store/queue_store.py`，单池读法一律以它为准。
 """
 import datetime
 import logging
@@ -503,58 +504,6 @@ def in_flight_phones(day, lease_sec=LEASE_SECONDS):
     except Exception as e:
         logger.debug("读取在飞账号失败（按空处理）: %s", e)
         return []
-
-
-def fallback_event(day, exclude_owner=""):
-    """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新迁移标记)`
-    ——领取池（`sign_claims`）与任务队列（`sign_tasks`）**两池并集**，恒为四元组。
-
-    为什么这一行就是"失败即入队"：`give_up` 在同一事务里把行置 `failed` 并**立刻**
-    把租约置过期——补签链的兜底腿不必另建队列，池的这次行迁移就是它与全量轮（两个
-    进程）之间的交接：give_up 即入队，try_claim 即出队。兜底扫空后按短周期轮询本
-    签名，一变即接手，不必等满一个扫描间隔；签名不变则等满间隔为上限。
-
-    为什么 v3 侧必须并入：`YIBAN_SCHEDULER_V3` 下全量轮的弃权发生在 `sign_tasks`
-    队列（收尾带 `retry:`/`final:` 档位前缀，回炉口见 `queue_store.requeue_failed`），
-    领取池里不产生任何新事实——只读 `sign_claims` 会让唤醒恰好在最需要"失败即接手"
-    的分档灰度配置里退化回等满间隔的盲轮询。两池按"当日单一写者"的运维规则互斥，
-    但本函数不感知开关、恒并两侧：另一池的贡献是常量，不影响"一变即醒"。
-    `sign_tasks` 没有心跳列，其"最新迁移标记"取 `MAX(epoch)`——epoch 每次领取进一
-    且永不回退，弃权/接手两向迁移都会动它。
-
-    **两条收紧，防止唤醒被放大成重复真实登录**（两池同一套口径）：
-    - 只数 `retry:` 档：`final:` 档（预算耗尽/风控）在默认参数下兜底**接不动**
-      （领取池见 `try_claim` 的 failed 分支与 `RESULT_FINAL_PREFIX`；队列侧见
-      `requeue_failed` 的缺省档位门），为它醒来只会空转，
-      事件频率必须与"可接手频率"同集；
-    - 剔除 `exclude_owner`（兜底自己的稳定槽位名，含 `{稳定名}:{进程号}:{代次}`
-      运行时形态）弃权：它一轮扫完本就有紧接的再扫节律，自己的弃权再触发自己的
-      唤醒会把"扫→弃权→醒→再扫"接成紧循环。
-
-    匹配口径与 `reap_abandoned` 一致（等值 + `instr` 前缀，不用 LIKE——主机名里的
-    `_` 是通配符）。库不可用返回 None：调用方退回等满间隔——事件驱动是**延迟优化**，
-    不是正确性依赖，读不到时绝不据此做任何互斥判断。
-    """
-    from yiban.store import db
-    tail, ex = "", []
-    if exclude_owner:
-        tail = " AND owner<>? AND instr(owner, ?)<>1"
-        ex = [exclude_owner, exclude_owner]
-    probe = [day, STATE_FAILED, len(RESULT_RETRY_PREFIX), RESULT_RETRY_PREFIX, *ex]
-    sql = ("SELECT COUNT(*) AS n, MAX(heartbeat_at) AS h FROM sign_claims "
-           "WHERE day=? AND state=? AND substr(result, 1, ?)=?" + tail)
-    sql_tasks = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
-                 "WHERE day=? AND state=? AND substr(result, 1, ?)=?" + tail)
-    try:
-        with db._conn_lock:
-            conn = db.get_conn()
-            row = conn.execute(sql, tuple(probe)).fetchone()
-            row_t = conn.execute(sql_tasks, tuple(probe)).fetchone()
-        return (int(row["n"] or 0), row["h"] or "",
-                int(row_t["n"] or 0), int(row_t["h"] or 0))
-    except Exception as e:
-        logger.debug("读取领取池/任务队列兜底事件签名失败（按无事件处理）: %s", e)
-        return None
 
 
 def stats(day):

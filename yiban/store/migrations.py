@@ -800,17 +800,18 @@ def migrate_v17(conn):
 
 
 def migrate_v18(conn):
-    """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）；
-    sign_claims 数据平移进 sign_tasks。
+    """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）。
 
-    核心迁移（MF-40 改判，is_core=True）：executor_v3 的批领/待办闸门全建在
+    核心迁移（MF-40 改判，is_core=True）：执行体的批领/待办闸门全建在
     `sign_tasks` 上，缺表等于当日没有队列 ⇒ 失败阻断启动。重跑（版本未提升的下次
-    启动）必须幂等，故建表用 IF NOT EXISTS、平移用 INSERT OR IGNORE；平移行是
-    vshard=-1 的**显式标记行**——不进任何分片集、不被批领、不计入 `pending_count`，
-    真实计划到来时由 `planner.write_plan` 显式接管同键行（当日计划不因补账丢失）。
+    启动）必须幂等，故建表用 IF NOT EXISTS。
+    **单池化后本迁移不再从 `sign_claims` 平移任何行**（旧表冻结保留，其存量行是当日
+    临时的领取记录，切换后下一轮自然在 `sign_tasks` 重建；不做数据迁移）。
+    `vshard=-1` 仍是 `planner.write_plan` 显式接管的**历史标记行**形态（v20 补账/旧
+    平移遗留），它们不进任何分片集、不被批领、不计入 `pending_count`。
 
     `sign_tasks` 一行 = 一个账号在一个业务日的计划、当前状态与**跨执行体共享**的
-    尝试数（v17 `sign_claims` 的语义整体并入）。`state` 取值：
+    尝试数。`state` 取值：
 
     | state | 含义 |
     |-------|------|
@@ -820,12 +821,11 @@ def migrate_v18(conn):
     | `failed` / `stolen` | 未了结：可重排（`run_at` 后退）或按分片接管 |
 
     `vshard` 是把账号划分给执行体的确定性哈希分工所用的虚分片槽位（0..255，
-    256 个槽，故增加执行体时既有计划不必重排）；`sign_claims` 平移行落 **-1**，表示
-    "不参与该分工的历史行"（其 `run_at` 取 `claimed_at`，且 state 非 pending
-    时不会命中批领，故历史行不会被重新领取）。`owner` 一列同时承担"计划归属的执行体"
-    与"当前持有者"，`epoch` 是 fencing token（写入侧的单调序号，用于拒绝被接管者
-    迟到的写）——列在 v18 一次建齐（schema 变更此刻最便宜），其自增与终态写的
-    WHERE 守卫由领取/收尾路径实现。
+    256 个槽，故增加执行体时既有计划不必重排）；`vshard=-1` 表示"不参与该分工的
+    历史行"（其 state 非 pending 时不会命中批领，故历史行不会被重新领取）。
+    `owner` 一列同时承担"计划归属的执行体"与"当前持有者"，`epoch` 是 fencing token
+    （写入侧的单调序号，用于拒绝被接管者迟到的写）——列在 v18 一次建齐（schema
+    变更此刻最便宜），其自增与终态写的 WHERE 守卫由领取/收尾路径实现。
 
     **耐久性**：本表回答"当日是否已登录"，终态被回滚等于对同一账号再登录一次
     （上游风控红线），故连接必须是 FULL——WAL+NORMAL 会丢最近提交。
@@ -864,15 +864,10 @@ def migrate_v18(conn):
         "updated_at TEXT NOT NULL"
         ")"
     )
-    # result 逐字平移：`retry:`/`final:` 前缀协议是 sign_claims 层的约定，v3 目前不读
-    # sign_tasks.result——将来若加 v3 解析器，必须先按该前缀分档，否则会把两档混为一谈。
-    conn.execute(
-        "INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
-        "priority, state, attempts, lease_until, result, created_at) "
-        "SELECT phone, day, -1, owner, claimed_at, 5, state, attempts, heartbeat_at, "
-        "result, claimed_at FROM sign_claims"
-    )
-    # 提交建表与平移（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    # 提交建表（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    # **单池化后不再平移 `sign_claims`**：本表是唯一生产台账，旧表的存量行是当日临时的
+    # 领取记录，切换后下一轮自然在本表重建；旧表与其 `epoch` 列冻结保留（见 `claims`
+    # 模块头），不做数据迁移。
     conn.commit()
     # 耐久级必须在**事务外**改：SQLite 对事务内的 PRAGMA synchronous 直接报
     # "Safety level may not be changed inside a transaction"。放在末尾提交之后
