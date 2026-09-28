@@ -496,8 +496,8 @@ def api_account_update(idx):
                     m.logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
         # 改写他人凭据靠"事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员
         # 可追溯、可回滚（此前只通知当事人，管理员侧零信号）。抑制口径随门走：
-        # 本次若真被口令门拦过（门内动作 + full 档）就不重复发；识别码免门后
-        # ，full 档的识别码改动同样需要这封事后告警。
+        # 本次若真被口令门拦过（门内动作 + full 档）就不重复发；识别码免门后，
+        # full 档的识别码改动同样需要这封事后告警。
         gated_creds = (bool(str(data.get("password", "")).strip())
                        or clean["phone"] != old.get("phone"))
         if (creds_written and not (gated_creds and

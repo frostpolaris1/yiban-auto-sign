@@ -7,8 +7,8 @@
 `write_env_key` / `write_env_int` 与批量原子写 `write_env_batch`、首次启动的
 `YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`、写拒绝的统一
 409 响应 `env_write_refused_response`（附 `env_refused_problems` 定位载荷：问题行号/
-键名 + 脱敏片段，值一律隐去）与歧义行清理 `cleanup_env_ambiguous_line`（
-只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
+键名 + 脱敏片段，值一律隐去）与歧义行清理 `cleanup_env_ambiguous_line`
+（只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`。

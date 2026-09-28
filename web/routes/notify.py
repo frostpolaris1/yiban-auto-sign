@@ -181,7 +181,7 @@ def api_mail_config_save():
     id 非法形状或同请求内重复 → 400。落盘前 AES-GCM 加密为
     YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不接受也不写入（发送路径从不读该键）。
 
-    邮件通道是全部安全告警的最后一条送达路径。口令门收窄（，用户拍板
+    邮件通道是全部安全告警的最后一条送达路径。口令门收窄（用户拍板
     清单）后的口径：开关（enabled/admin_notify）与收件人（admin_to）都是**可逆
     改动**（设回即可）→ 免口令门免额度，留痕统一交给落盘后的审计行（谁、把哪路
     从哪改到哪）；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令（直连
@@ -510,7 +510,7 @@ def api_notify_config_save():
         updates["YIBAN_NOTIFY_URGENT_DAILY_MAX"] = "0" if udm == 0 else str(udm)
         numeric["urgent_daily_max"] = udm
     if need_reconfirm:
-        # 高危动作（含额度/节流参数调整）通过后才占用高危额度
+        # 高危动作（换钥/清钥/关闭通道）通过后才占用高危额度
         # 三类互斥且并集恰为 touches_channel（额度/节流键已在上面被排除），无第四种情形。
         label = (
             "关闭消息推送通道" if close_channel
