@@ -733,6 +733,8 @@ class MailConfigSmtpsApiTest(_Base_FAILOVER):
         self.assertEqual(entries[0]["user"], "a@x.com", "user 留空应保留旧发件账号")
 
     def test_put_smtps_requires_confirm_password(self):
+        """SMTP 传输条目留门：含中继口令且旧值不留存（改了读不回）= 事实不可逆；
+        它还是告警通道本身的传输层（安全网）。与已免门的"改收件人"（可逆）区别在此。"""
         self._reset_env_file()
         c, h = self._master()
         r = c.put("/api/mail-config", json={"smtps": self.smtps()}, headers=h)
