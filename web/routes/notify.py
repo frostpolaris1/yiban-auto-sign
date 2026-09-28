@@ -181,13 +181,15 @@ def api_mail_config_save():
     id 非法形状或同请求内重复 → 400。落盘前 AES-GCM 加密为
     YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不接受也不写入（发送路径从不读该键）。
 
-    邮件通道是全部安全告警的最后一条送达路径。口令门收窄（用户拍板
-    清单）后的口径：开关（enabled/admin_notify）与收件人（admin_to）都是**可逆
-    改动**（设回即可）→ 免口令门免额度，留痕统一交给落盘后的审计行（谁、把哪路
-    从哪改到哪）；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令（直连
-    _reconfirm_admin_password，不占高危限速额度）。曾把"关闭"纳入高危门禁的理由
-    （"先关通知再作案"）随威胁模型降级让位于"审计可回溯 + 操作可逆"——审计行
-    仍逐次落盘，告警通道自身无法可靠通报自己的变更（见下方落盘处注释）。
+    邮件通道是全部安全告警的最后一条送达路径，故**关闭它**不是普通可逆改动：
+    静默关掉后签到序列再出事就没有任何告警出口，与推送侧「关闭消息推送通道」同族，
+    走同一道高危门禁、占同一本凭据额度（用户拍板：把告警装回去免门，把它拆掉要
+    口令）。其余口径：admin_notify（个人接收偏好，不影响其他管理员）与 admin_to
+    （可逆路由改动）免门免额度；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令
+    （直连 _reconfirm_admin_password，不占高危额度）。开关的判据是「值真变化」——
+    已是关的重复提交、或只改 admin_to 的保存不再被这门连坐。留痕统一交给落盘后的
+    审计行（谁、把哪路从哪改到哪）；告警通道自身无法可靠通报自己的变更（见下方
+    落盘处注释）。
     smtps 与 admin_to 同请求提交时口令只按 smtps 需要（admin_to 免门，不拖累）。
     """
     m = _appmod()
@@ -205,6 +207,16 @@ def api_mail_config_save():
         if not isinstance(v, bool):
             return jsonify({"error": "取值无效"}), 400
         flags[env_key] = v
+    # 关闭邮件通道 = 拆掉全部安全告警的最后一条送达路径（与推送侧「关闭消息推送
+    # 通道」同族、同门、同额度）。判据取「值真变化」而非「键在场」：读盘取现值，
+    # 只有**开 → 关**那一次才过门；开关已是关的重复提交、或只改 admin_to 的保存
+    # 不该被这门连坐。开启方向也不设门（把告警装回去不是"关掉报警器"）。现值直读
+    # mail_config._get（不碰 smtp_list()——它会解密 SMTPS_ENC，被拒请求不该多一处
+    # 读取面）。
+    closing_mail_channel = False
+    if flags.get("YIBAN_MAIL_ENABLE") is False:
+        _cur_enable = str(m.mail_config._get("ENABLE") or "").strip().lower()
+        closing_mail_channel = _cur_enable in ("1", "true", "on", "yes")
     # ---- 告警收件人（admin_to）：校验通过后才做口令二次确认 ----
     # 键存在 = 本次以提交值为准（空串 = 显式清空）；键缺失 = 不改动。
     # 前端输入框留空按"不改动"处理（不回显完整地址，避免误清），清空走单独按钮。
@@ -338,9 +350,13 @@ def api_mail_config_save():
             return denied
     if not flags and smtps_list is None and admin_to_val is None:
         return jsonify({"error": "缺少有效配置项"}), 400
-    # 开关关闭曾走 _high_risk_gate（二次鉴权 + 高危额度）：改为免门
-    # 免额度——开关可逆（设回即可），留痕靠落盘后的审计行（见下方 db.audit），
-    # 高危额度只留给删除/清库/换钥/改凭据这类不可逆或凭据动作。
+    # 关闭邮件通道过统一高危门禁：先口令、通过后才占凭据额度（与 notify-config 的
+    # 「关闭消息推送通道」共用同一道门与同一本账）。开启方向、admin_notify（个人
+    # 接收偏好）与 admin_to（可逆路由改动）仍免门免额度，留痕靠落盘后的审计行。
+    if closing_mail_channel:
+        gate = _high_risk_gate()(data, "关闭邮件告警通道", quota="creds")
+        if gate:
+            return gate
     # 加密排在口令确认之后（同 notify-config：失败请求零写盘痕迹）
     smtps_enc = None
     if smtps_list is not None:

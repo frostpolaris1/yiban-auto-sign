@@ -2542,10 +2542,10 @@ def create_app(host=None):
         的语义两族一致。
 
         口令门收窄（用户拍板清单）：门内只剩**不可逆/凭据类**动作
-        ——删除账号、清库清理、换钥、改管理员口令、改他人凭据。改设备识别码、
-        备注、改角色、调推送额度/节流参数、邮件通道开关与收件人变更等**可逆操作一律免门
-        免额度**，但保留审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之
-        回退）。
+        ——删除账号、清库清理、换钥、改管理员口令、改他人凭据，以及**关闭邮件/推送
+        告警通道**（拆掉安全网本身）。改设备识别码、备注、改角色、调推送额度/节流
+        参数、**开启**邮件通道与邮件收件人变更等**可逆操作一律免门免额度**，但保留
+        审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之回退）。
 
         `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
         删用户）：非 `full` 档下它们还要求请求体带倒计时确认凭据，见
@@ -2564,9 +2564,12 @@ def create_app(host=None):
         - POST /api/users/<int:user_id>/password（改他人凭据）
         - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
         - PUT /api/notify-config（触碰推送密钥时——换钥/清钥；调额度/节流参数免门）
+        - PUT /api/mail-config（**关闭邮件通道**时——开 → 关；SMTP 凭据变更直连
+          _reconfirm_admin_password 要口令、不占额度，开启方向与收件人变更免门）
         免门（均保留审计）：POST /api/users/<int:user_id>/role（主管理员
-        专属 + 角色变更与审计同事务）、PUT /api/mail-config 的开关与收件人变更
-        （SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、不占额度）。
+        专属 + 角色变更与审计同事务）、PUT /api/mail-config 的**开启**与收件人变更
+        （关闭邮件通道过本门；SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、
+        不占额度）。
         可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的 B 档（排序风格与
         自选权）、/api/scheduler/executors* 的写操作；A 档（签到窗口与缓冲边距、周末开关、
         随机延迟、账号间隔、容量上限、探针、注册面）在设置路由走 A 档门禁、**不吃豁免**。
