@@ -1408,3 +1408,25 @@ L1 84 份报告覆盖划分表全部 86 个单元 ID（`R12ef`/`R13ij` 各合写
 **升级面（部署必读）**：现网实测 `user_version=17`，`sign_tasks`/`egress_state` 在现网**不存在** ⇒ 升级后**首次启动会在生产库上真跑 v18→v20**（建表 + v19 加 epoch 列 + v20 回填惰性历史行，均幂等且均为 `vshard=-1`/`owner=backfill` 的**不被领取**行）。与以往"无需迁移直接使用"不同，**升级前先做备份**。CHANGELOG v0.5.0 已写明。
 
 **门禁证据（控制器亲跑）**：全量 `3658 passed / 7 skipped / 0 failed`（默认 TZ，`-p no:randomly`）；`ruff check .` 0；四柱用例**一行未删**（`test_claims_fencing.py`/`test_claims_mutex.py`/`test_claims_reap_e2e.py` 原样通过）；独立审查两轮：**FAIL(1)** 已修并**复验 PASS**（`--only` 手动轮越界收尾别的账号 ⇒ 静默漏签；含 OBS-1 起跑回收收窄、OBS-3 E2E 同分片几何钉死，均带变异判别力证据）。
+
+## 批 6c-2 登记（2026-09-29 · B3/§5 可裁面 + 分片定档 + 窃取改写裁撤）
+
+**用户裁决**：ND-1 只裁 owner 改写、保留分片并入（生产实测 K=2）；ND-2 出口分片无可裁面；ND-3 定档 64、密度整形/槽宽压缩不动；ND-4 删 loadtest 族（mock_yiban 例外迁 `tests/fake_yiban_server.py`——它是两个生产 E2E 套件与发布门槛 §2④ smoke 的假上游，地貌表唯一一处误判已纠正）；ND-5 `ledger_check.py` 保留；ND-6 批 4 容量口径逐值不变。用户追加：C3 必须带恢复指引（已落 hrw docstring / README / scheduler-v3 §9 三处）；`YIBAN_VSHARDS` 覆盖键与 μσ/限速键 web 入口为后续批候选，本批不做。
+
+**本批销项**
+- **离线压测/容量工具族整族出仓**（8 脚本+README+cli `--measure`+家族测试 5 文件）；实测值改由部署者自行量取后录入 `YIBAN_CAPACITY_MEASURED`（语义不变）。删除前的容量基准实测留数：2000 用户/simulated 档，单执行体 4680 账号/窗口、建议 3120、硬件上限 K=12（证据归档 `D:\code\archive\m3-batch6c2-docs-20260929\capacity-benchmark-20260929\`）。**重要事实**：探针链在删除前已因 purge 护栏加固而不可运行（三次补丁才跑通）——死工具链，删除正当性充分。
+- **虚分片多档选择器**（64/128/256 按规模换挡）→ 定档 64；σ 包络按 64 重算（365 天逐日仿真，非照抄）。对 <500 账号部署零行为变化（原规则本就走 64）。恢复指引含旧口径、选档公式 √(K(1−1/K)/V) 与必补测试三类。
+- **`steal_shards` owner 改写** → 删；分片并入保留（K≥2 崩溃恢复的必要条件，`DeadShardMergeTakeoverTest` 直证「回收→并入→领到」）。生产行为变化仅：接管日志改报分片集（同日同执行体只播报一次）、接管窗口期（≤4 分钟）展示页归属列显示旧主。
+- **YIBAN_SCHEDULER_V3 死键残余叙述**（scheduler-v3 五处）清零；万级算法设计文档出库归档。
+
+**降级 / 残留（登记，非本批验收）**
+- **`test_mock_fault_injection_knobs.py`（783 行）随族删除**：注入旋钮契约（waf/nonjson/login-shallow 专设断言）与 `YIBAN_E2E_ENGINE_LOOP` 引擎档位 E2E 覆盖归零；真实判据侧（waf.py/security.py/protocol.py）仍由 `test_login_protocol_shape`/`test_login_e2e_mock` 钉住 → **6c-3 对表显式记账**。
+- **`capacity_of` 的 `enabled` 缺省陷阱**（沿 6c-1）：缺省恒 v3 口径，四处生产调用点已显式传参，缺省值本身是给未来调用者的坑。
+- **`v_for` 的 `n_accounts` 形式参数**：ruff 现无 ARG 规则不告警；启用 ARG001 时需改名或豁免。
+- **`test-inventory.md`** 为自述快照（2026-09-23），本批仅摘除已删文件行，全面刷新归 6c-3 对表。
+- **`_TAKEN_OVER_PEERS` 同日"死→复活→再死"不重播接管日志**：文档已声明的取舍（日志去重键 (peer,day)），无功能影响。
+- **`production-isolation-rehearsal-plan`（历史件）**引用的 mock 工具链已不存在，文首已加状态注记；真要执行该演练须先重建工具链或改写命令。
+
+**升级面（部署必读）**：本批**零 schema 变更、零数据迁移**（与 6c-1 的"首启跑 v18→v20"叠加后仍只需那一次备份）。定档与窃取改写对现网（99 账号、K=2）的可见变化：无（定档前后同走 64）；接管日志文案变化；接管窗口期归属列短暂显示旧主。
+
+**门禁证据（控制器亲跑/独立复跑）**：C2 全量 `3552 passed / 6 skipped / 0 failed`；C3 全量 `3552 / 6 / 0`（σ 首轮真红 1 例后修，具咬合力）；C4 全量 `3551 / 6 / 0`（净减 1 为用例合并）；审查修复后受影响面 127 passed + ruff 0；**收尾全量（含全部审查修复）`3551 passed / 6 skipped / 0 failed`（668s）**。**整批对抗审查**：FAIL(2)（均为"测试机基准"残留文案：实测 note、cli.md×2、README）已修（`d50fad6`）并复验；其余各面 PASS——热修改安全声明实证（`_plan_v` 落库值优先 + 三个安全网测试变异验证）、σ 包络 365 天逐日复现、四柱 SQL 未动、变异敏感性逐项咬红、geomap 无第二处同类误判。OBS-2（注入旋钮覆盖归零）转 6c-3 记账；OBS-3（整合报告缺失）已补 `task-6c2-report.md`。
