@@ -162,7 +162,16 @@
       return fetchMe().catch(function () { throw httpError(403, "请刷新页面后重试"); })
         .then(function () { return perform(req, true); });
     }
-    if (!resp.ok || data.ok === false) throw httpError(resp.status, data.error, data);
+    if (!resp.ok || data.ok === false) {
+      // .env 写拒绝（409 env_write_refused）附带定位载荷（问题行号/键名 + 脱敏片段，
+      // 值已隐去）：弹出"定位/清理"专用模态（写拒绝定位），错误仍照常上抛——
+      // 各写点自己的 catch 继续走既有文案，模态只是补充可操作入口，不改请求语义。
+      if (resp.status === 409 && data && data.reason === "env_write_refused"
+          && data.problems && data.problems.length) {
+        showEnvWriteRefusedModal(data.problems);
+      }
+      throw httpError(resp.status, data.error, data);
+    }
     return data;
   }
   function refreshThenRetry(req) {
@@ -1530,6 +1539,49 @@
     try { document.dispatchEvent(new CustomEvent("yiban:owner-email-pref", { detail: { visible: !!v } })); } catch (e) {}
   }
 
+  /* ---------- .env 写拒绝的定位/清理模态（写拒绝定位） ----------
+     409 的 problems 由后端组装（行号/键名 + 脱敏片段，值已隐去）。这里只做展示与
+     "一键清理"按钮：清理走 POST /api/settings/env-cleanup（服务端把可清理范围收窄为
+     确含行分隔符的物理行），成功后提示重试保存。错误照常上抛，本模态不改请求语义。 */
+  function showEnvWriteRefusedModal(problems) {
+    var list = el("div", { class: "env-refused-list" });
+    var lineProblems = [];
+    forEach(problems, function (pb) {
+      if (pb.kind === "line" && pb.line) {
+        lineProblems.push(pb);
+        var row = el("div", { class: "env-refused-row" });
+        row.appendChild(el("div", {
+          class: "env-refused-desc",
+          text: "第 " + pb.line + " 行含潜伏行分隔符" + (pb.snippet ? "：" + pb.snippet : "")
+        }));
+        var btn = el("button", { type: "button", class: "btn btn--primary", text: "一键清理该行" });
+        btn.addEventListener("click", function () {
+          btn.disabled = true;
+          api("POST", "/api/settings/env-cleanup", { line: pb.line })
+            .then(function (res) {
+              toast.success((res && res.message) || ("已清理第 " + pb.line + " 行，请重试保存"));
+              row.remove();
+            }, function (e) {
+              btn.disabled = false;
+              toast.error(e && e.message ? e.message : "清理失败，请人工检查 .env");
+            });
+        });
+        row.appendChild(btn);
+        list.appendChild(row);
+      } else if (pb.kind === "key" && pb.key) {
+        var krow = el("div", { class: "env-refused-desc", text: "涉事键：" + pb.key });
+        list.appendChild(krow);
+      }
+    });
+    if (!list.childNodes.length) return; // 无可展示的定位信息（旧形态响应）不强弹
+    openModal({
+      title: "配置写入被拒绝（.env 行模型歧义）",
+      subtitle: "写入已 fail-closed 拒绝，.env 未被改动；清理下面的问题行后可重试保存",
+      body: list,
+      actions: [{ label: "知道了", variant: "ghost" }]
+    });
+  }
+
   /* ---------- 公开面 ---------- */
   var YB = {
     __ready: true,
@@ -1545,6 +1597,7 @@
     maskEmail: maskEmail,
     openModal: openModal,
     closeModal: closeModal,
+    showEnvWriteRefusedModal: showEnvWriteRefusedModal,
     confirmDialog: confirmDialog,
     promptDialog: promptDialog,
     setTip: setTip,

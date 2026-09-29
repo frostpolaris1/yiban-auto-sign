@@ -21,6 +21,7 @@ import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 
@@ -43,7 +44,10 @@ def _email(i):
 
 
 def _ts(days_ago=0, hour=8, minute=0):
-    d = datetime.datetime.now() - datetime.timedelta(days=days_ago)
+    # 锚定业务钟（MF-109）：演示数据的"最近 N 天"与引擎/web 的业务日同源
+    # （yiban.clock 北京钟），宿主时区不再是数据日期的隐变量。
+    from yiban.clock import now as _clock_now
+    d = _clock_now() - datetime.timedelta(days=days_ago)
     return d.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
@@ -233,11 +237,6 @@ def main(argv=None):
     # 必须把"审计表被本工具清空过（原 N 条）"与链结果一起报出来。
     print(f"审计链：本库 audit_logs 已被清空（原 {counts.get('audit_logs', 0)} 条）并重建；"
           f"哈希链校验 ok={ok}, broken={broken}, first_broken_id={first}")
-    # 本脚本整表清空 audit_logs，连"刚被独立见证记下的行"也一并删掉。装了 root 侧独立
-    # 见证的部署要由 root 重置见证文件、让下一轮 cron 重新播种——否则 audit_health 会
-    # 正确地把"被见证行消失"报成篡改（那不是故障，是预期）。此处只提示，不设门禁。
-    print("提示：整表清空 audit_logs 会删掉被独立见证记下的行；若该部署装了 root 侧"
-          "独立见证，请在清空后重置见证文件，让下一轮 cron 重新播种")
     return 0
 
 

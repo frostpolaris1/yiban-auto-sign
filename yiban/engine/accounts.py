@@ -269,7 +269,7 @@ def load_accounts(migrate=True):
 
     migrate：False = **只读装载模式**（`config` 子命令 / `sign --check-config`）：
     经 `db.load_accounts_readonly` 用独立只读连接读账号——不建库、不建表、不迁移、
-    不切 WAL、不回写。迁移会重写审计链（v3 rechain）等，使"被校验对象在校验过程中
+    不切 WAL、不回写。迁移会回填审计链（v3）等，使"被校验对象在校验过程中
     被改动"（曾实测宣称只读的 config 把库迁到当时 schema 顶，并在空目录建出伪库）。
     """
     for loader in (

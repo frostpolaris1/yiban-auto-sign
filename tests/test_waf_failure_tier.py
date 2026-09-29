@@ -9,9 +9,11 @@
    WAF_BLOCKED_MESSAGE 维持风控档、网络类失败维持普通档、硬失败不计入凭据熔断。
 对应实现：yiban/security.py（档位判据唯一真值源）、yiban/engine/attempts.py（档位与清缓存联动）、
    yiban/engine/probe.py（硬失败判据同源构造）、yiban/fyiban/waf.py（raise 文案是判据的**输入**）。
-关键断言：waf.py 的全部 raise 文案经 AST 提取逐条过档位判据，不是手抄清单——数量对不上须同批
-   修订本文件；"把输入改坏 ⇒ 判据必须红"的活体反例形态是：任一解析失败消息被改回可重试档
-   （>=2）即红。探针正则与档位共用同一批词元，出现第三份手抄清单即红。
+关键断言：waf.py 的全部 raise 文案经 AST 提取逐条过档位判据，不是手抄清单——waf.py
+   新增/删减 raise 文案时本文件自动跟随（不数个数，只逐条过判据；计数钉随流程门禁
+   整族裁撤，2026-09 缩减批 6a）；"把输入改坏 ⇒ 判据必须红"的活体反例形态是：任一
+   解析失败消息被改回可重试档（>=2）即红。探针正则与档位共用同一批词元，出现第三份
+   手抄清单即红。
 依赖：纯标准库 + signin 兼容壳；不联网、不建库。整文件在本机执行，无 skip。
 """
 import ast
@@ -48,11 +50,6 @@ def _waf_raise_messages():
 
 class ChallengeParseTierTest(unittest.TestCase):
     """档位归一：任一挑战解析/白名单/非 JSON 失败 ⇒ 总尝试 1 + 清会话。"""
-
-    def test_waf_raise_messages_count_pinned(self):
-        # 登记口径：14 处"ydclearance 挑战解析失败:"前缀 + 1 处白名单（waf.py:146）
-        msgs = _waf_raise_messages()
-        self.assertEqual(len(msgs), 15, f"waf.py raise 文案应为 15 处，实得 {len(msgs)}：{msgs}")
 
     def test_every_waf_raise_message_lands_hard_tier(self):
         for msg in _waf_raise_messages():

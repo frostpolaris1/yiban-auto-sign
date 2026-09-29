@@ -3,9 +3,12 @@
 """凭据写入记账：`phone_code` 读侧计入 `creds_written`，`__clear__` 哨兵折算为清空语义。
 
 背景一：写侧（`yiban/store/accounts.py`）把 `phone_code` 与 `password` 同档加密、改绑
-时同档重加密；读侧的改写判定却只认 password+phone——"只改写设备识别码"既不过高危
-门禁、不标审计"改写凭据"位、也不给当事人/管理员发信，静默改写无感。本文件把三者钉成
-一体：只改 `phone_code` ⇒ 必标位必发信（`full` 档还要过门）；只改无关字段 ⇒ 零误报。
+时同档重加密；读侧的改写判定却只认 password+phone——"只改写设备识别码"既不标审计
+"改写凭据"位、也不给当事人/管理员发信，静默改写无感。本文件把三者钉成一体：只改
+`phone_code` ⇒ 必标位必发信；只改无关字段 ⇒ 零误报。口令门收窄（缩减批 6a）后，
+识别码改动在所有档位都**免门**（可逆操作），本文件钉的是"免门不等于免信号"——
+标位/当事人信/事后告警全保留，事后告警的抑制口径随门走（未过口令门的凭据族改动
+必须有事后告警，full 档豁免只适用于真被门拦过的密码/改绑动作）。
 
 背景二：`__clear__` 哨兵原在进 SET 前被 `pop` 掉 ⇒ "清除设备识别码"是静默空操作而接口
 回 200。现在 4 个消费点（管理端编辑 / 用户端编辑 / 两条添加路径）统一经
@@ -22,9 +25,9 @@
     `web/routes/my.py` 的 api_my_account_update/api_my_account_add、
     `web/services/logs.py` 的 clear_fuse_on_cred_change
 关键断言：`__clear__` ⇒ 库行 `phone_code` 变 `""` 且响应 `has_phone_code` 如实为假；
-    哨兵绝不作为字面量落库；只改识别码在 full 档无口令必 400 且库不动；risk/off 档
-    免口令但当次审计必含"改写凭据"、当事人信含识别码条目、非 full 档另发管理员紧急
-    告警；只改 name 一律不标位不发信不过门；告警只出 `138****0000` 不出完整号
+    哨兵绝不作为字面量落库；只改识别码在任何档位都 200 放行（门收窄）且当次审计
+    必含"改写凭据"、当事人信含识别码条目、管理员紧急告警必发（含 full 档）；只改
+    name 一律不标位不发信不过门；告警只出 `138****0000` 不出完整号
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需
     node。每个用例新建 app——高危额度与门禁计数是 create_app 工厂局部状态。
 用法（项目根目录）：
@@ -338,32 +341,41 @@ class UserSideClearTest(_CredsBase):
 
 
 class GateMatrixTest(_CredsBase):
-    """full 档：只改/只清识别码当次必须口令；无关字段一律免门零信号。"""
+    """full 档（缩减批 6a 收窄后）：门内只剩改密码/改绑手机号；只改/只清设备
+    识别码免门免额度，但审计标位、当事人信与事后告警一个不少（MF-86 的归类
+    回退为"只标位/只发信"）；无关字段一律零信号。"""
 
     TIER = "full"
 
-    def test_full档只改识别码无口令被拒且库不动(self):
+    def test_full档只改识别码无口令放行且全信号保留(self):
+        """门收窄（缩减批 6a）：识别码免门，full 档无口令也放行，但标位/当事人信/
+        事后告警一个不少——告警抑制口径随门走（本操作未过口令门，必须有事后信号）。"""
         self._seed_account()
         c, t = self._admin_client()
         r = c.put("/api/accounts/0",
                   json={"name": "A", "phone": PHONE, "phone_code": NEW_CODE},
                   headers={"X-CSRF-Token": t})
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["reason"], "password_required")
-        self.assertEqual(self._row()["phone_code"], CODE, "鉴权未通过不得改写")
-        self.assertEqual(self.alerts, [])
-        self.assertEqual(self.user_mails, [])
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self._row()["phone_code"], NEW_CODE, "免门不是免动作：库行真被改写")
+        self.assertIn("改写凭据", self._last_audit_detail("account_update"), "审计标位保留")
+        self.assertEqual(len(self.user_mails), 1, "当事人必须知情")
+        self.assertIn("设备识别码", self.user_mails[0][2])
+        self.assertIn("高危管理操作告警", [x[0] for x in self.alerts],
+                      "未过口令门的凭据族改动必须有事后告警（原 full 档豁免随门收窄取消）")
 
-    def test_full档清除哨兵同样过门(self):
+    def test_full档清除哨兵同样免门且真清空(self):
         self._seed_account()
         c, t = self._admin_client()
         r = c.put("/api/accounts/0",
                   json={"name": "A", "phone": PHONE, "phone_code": SENTINEL},
                   headers={"X-CSRF-Token": t})
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertEqual(self._row()["phone_code"], CODE)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self._row()["phone_code"], "", "哨兵折空语义随收窄不变：库行真被清空")
+        self.assertIn("改写凭据", self._last_audit_detail("account_update"))
 
-    def test_full档带口令放行且标位发当事人信(self):
+    def test_full档标位发当事人信且无事后告警冗余(self):
+        """识别码改动免门后，事后告警已在上一条钉住（必须有）；本条补钉当事人信
+        条目文案与标位在无 confirm_password 字段时同样成立（字段被忽略不留摩擦）。"""
         self._seed_account()
         c, t = self._admin_client()
         r = c.put("/api/accounts/0",
@@ -375,7 +387,6 @@ class GateMatrixTest(_CredsBase):
         self.assertIn("改写凭据", self._last_audit_detail("account_update"))
         self.assertEqual(len(self.user_mails), 1)
         self.assertIn("设备识别码", self.user_mails[0][2])
-        self.assertEqual(self.alerts, [], "full 档本就有当次口令，不重复发事后告警")
 
     def test_full档只改无关字段不进门禁零信号(self):
         self._seed_account()
@@ -394,7 +405,7 @@ class GateMatrixTest(_CredsBase):
 
 
 class RiskDefaultTierTest(_CredsBase):
-    """risk（现网缺省档）：只改识别码免口令（免门交互逐字不变），但必标位必发信。"""
+    """risk（现网缺省档）：只改识别码免口令，必标位必发信（收窄后与 full 档同形）。"""
 
     TIER = None
 

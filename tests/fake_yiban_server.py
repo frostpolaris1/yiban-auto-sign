@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """假易班 HTTPS 服务——只用于测试机的回环压测，绝不指向真实易班。
 
+共享假上游替身（2026-09 自 scripts/loadtest/ 迁入），供生产 E2E 套件与 CI 快车道使用。
+
 覆盖 ``scripts/signin.py`` 默认登录流程（login_killyiban）与签到流程实际调用的
 全部接口形状：
 
@@ -600,7 +602,7 @@ def create_servers(host="127.0.0.1", port=443, ipv6_host="::1",
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="mock_yiban.py",
+        prog="fake_yiban_server.py",
         description="假易班 HTTPS 服务（回环压测专用；绝不连接真实易班）",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

@@ -5,8 +5,8 @@
 - schema 落地：两张表、两个领取/回收索引、`sign_tasks` 逐列（名/类型/NOT NULL/主键）匹配；
   并守住执行体存活**不走表**——它由文件心跳 `yiban.engine.state_io.worker_presence`
   承担（四态，`/api/scheduler/executors` 与页面消费），建表会让判据多出一份；
-- `sign_claims` 存量数据平移进 `sign_tasks`（vshard 落 -1、run_at 取 claimed_at），
-  且幂等（连跑两次不重复插入）、旧表不删且原行原样保留；
+- `sign_claims` **不做数据平移**（单池化后旧表冻结、零写入）：v18 只建表且幂等（连跑两次
+  不插入任何行）、旧表不删且原行原样保留；
 - 耐久性：迁移后连接的 `PRAGMA synchronous` 为 FULL（2）——签到的"是否已登录"判据
   落在这张表上，断电丢终态等于重复真实登录；
 - 登记口径：v18 是**核心迁移**（迁移 fail-closed 修复改判：executor_v3 的领取/待办闸门全建在
@@ -15,7 +15,7 @@
 
 标签：C · 存储：迁移与库完整性
 覆盖：v18 的四个面——`sign_tasks` + `egress_state` 的 schema（含逐列名/类型/NOT NULL/主键
-与两个领取回收索引）、`sign_claims` 存量平移的逐字段映射与幂等、旧表保留原行、
+与两个领取回收索引）、`sign_claims` **不平移**（旧表原行保留、幂等零插入）、
 迁移后 `PRAGMA synchronous` 为 FULL、登记表可选档条目的通用失败语义（打桩条目，
 不阻断、不提版本）。
 对应实现：`yiban/store/` 的 v18 迁移函数与 `sign_tasks` 定义点、
@@ -174,7 +174,7 @@ class SchemaTest(_Base):
 
 
 class DataShiftTest(_Base):
-    """sign_claims 存量行平移进 sign_tasks（旧表保留只读过渡）。"""
+    """单池化后 v18 **不再平移** `sign_claims`：只建表，旧表原样保留（冻结、零写入）。"""
 
     ROWS: ClassVar[list] = [
         ("13800138000", DAY, "hostA:1:090000", "2026-09-22 07:00:01",
@@ -193,43 +193,30 @@ class DataShiftTest(_Base):
         db._run_migrations(conn)          # 框架路径：v18 在 BEGIN IMMEDIATE 内执行
         return conn, before
 
-    def test_rows_shift_field_by_field(self):
+    def test_new_table_created_without_shifting_old_rows(self):
         conn, _ = self._migrate_with_seed()
         self.assertGreaterEqual(conn.execute("PRAGMA user_version").fetchone()[0], 18)
-        shifted = {r["phone"]: dict(r) for r in conn.execute(
-            "SELECT * FROM sign_tasks").fetchall()}
-        self.assertEqual(set(shifted), {r[0] for r in self.ROWS})
-        for phone, _day, owner, claimed_at, heartbeat_at, state, result, attempts in self.ROWS:
-            row = shifted[phone]
-            self.assertEqual(row["day"], DAY)
-            self.assertEqual(row["vshard"], -1, "平移行不参与分片分工")
-            self.assertEqual(row["owner"], owner)
-            self.assertEqual(row["run_at"], claimed_at)
-            self.assertEqual(row["priority"], 5)
-            self.assertEqual(row["state"], state)
-            self.assertEqual(row["attempts"], attempts)
-            self.assertEqual(row["lease_until"], heartbeat_at)
-            self.assertEqual(row["result"], result)
-            self.assertEqual(row["created_at"], claimed_at)
-            self.assertEqual(row["epoch"], 0)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM sign_tasks").fetchone()[0], 0,
+            "单池化后 v18 不做数据迁移：存量领取行不得被平移进任务队列")
 
-    def test_shift_is_idempotent(self):
+    def test_migrate_v18_is_idempotent(self):
         conn, _ = self._migrate_with_seed()
         db.migrate_v18(conn)
         db.migrate_v18(conn)
         self.assertEqual(
-            conn.execute("SELECT COUNT(*) FROM sign_tasks").fetchone()[0],
-            len(self.ROWS), "重跑迁移不得重复插入")
+            conn.execute("SELECT COUNT(*) FROM sign_tasks").fetchone()[0], 0,
+            "重跑迁移不得插入任何行")
 
     def test_old_table_kept_and_rows_intact(self):
         conn, before = self._migrate_with_seed()
         self.assertTrue(conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='sign_claims'"
-        ).fetchone(), "sign_claims 只读过渡期内不得 DROP")
+        ).fetchone(), "sign_claims 是已发布迁移的核心产物，不得 DROP")
         after = [dict(r) for r in conn.execute(
             "SELECT * FROM sign_claims ORDER BY phone").fetchall()]
         # 后续迁移可能给本表补列（如 fencing 的 epoch，存量行取默认值），
-        # 故只比对平移那一刻已有的列：数据平移不得改动旧表的行。
+        # 故只比对那一刻已有的列：v18 不得改动旧表的行。
         keys = set(before[0])
         self.assertEqual([{k: r[k] for k in keys} for r in after], before)
 

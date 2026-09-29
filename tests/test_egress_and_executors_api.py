@@ -455,7 +455,7 @@ class ActivityEndpointTest(_WebBase):
     """
 
     def _seed(self):
-        """造三类身份 + 一条历史遗留串的领取记录。"""
+        """造三类身份 + 一条历史遗留串的当日队列行（直接写 sign_tasks，单池后唯一台账）。"""
         from yiban.store import db as store_db
         day = clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
@@ -468,12 +468,15 @@ class ActivityEndpointTest(_WebBase):
             ("13900000005", OWNER_SINGLE, "done"),
             ("13900000006", OWNER_LEGACY, "done"),
         )
-        for phone, owner, state in rows:
-            self.assertTrue(store_db.claim_sign_account(phone, day, owner)[0], phone)
-            if state == "done":
-                store_db.claim_settle(phone, day, owner, store_db.CLAIM_STATE_DONE, "ok")
-            elif state == "failed":
-                store_db.claim_give_up(phone, day, owner, "重试耗尽")
+        conn = store_db.get_conn()
+        with store_db._conn_lock:
+            for phone, owner, state in rows:
+                conn.execute(
+                    "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, "
+                    "priority, state, attempts, lease_until, result, epoch, created_at) "
+                    "VALUES (?, ?, 0, ?, ?, 5, ?, 0, '', '', 0, ?)",
+                    (phone, day, owner, clock.ts(), state, clock.ts()))
+            conn.commit()
         return day
 
     def test_activity_groups_and_masks_owner(self):
@@ -621,8 +624,9 @@ class FallbackSwitchOnlySaveTest(_WebBase):
     开关不归行接口管：`PUT …/executors/rows/<slot>` 缺 type/proxy/name 一律 400
     （「没有可更新的字段」）。前端只拨开关时必须**只**发整条接口那一个请求——否则行接口
     先 400、`Promise.all` 直接 reject：用户被告知失败，而 `.env` 里开关已经落盘，且重试
-    永远走同一条路。本类固定后端两侧的真实契约；前端"只拨开关时不带空请求体"由
-    `test_executors_kpi_scope.py` 的源级守卫钉住。
+    永远走同一条路。本类固定后端两侧的真实契约。
+    （批 6c3-A 注：前端"只拨开关时不带空请求体"原由 `test_executors_kpi_scope.py`
+    源级守卫钉住，该文件已按对表裁撤，前端半边现无静态守卫。）
     """
 
     def test_rows_endpoint_rejects_a_body_without_type_proxy_name(self):
@@ -1019,21 +1023,32 @@ class AccountsLastExecutorTest(_WebBase):
     def _prev_day(self):
         return (clock.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
+    def _seed_task(self, phone, day, owner):
+        """在任务队列（单池后的唯一台账）里造一条归属行。"""
+        from yiban.store import db as store_db
+        conn = store_db.get_conn()
+        with store_db._conn_lock:
+            conn.execute(
+                "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+                "state, attempts, lease_until, result, epoch, created_at) "
+                "VALUES (?,?,0,?,'2026-09-16 06:31:00.000',5,'done',0,'','',0,"
+                "'2026-09-16 06:31:00.000')", (phone, day, owner))
+            conn.commit()
+
     def _last_executor_of(self):
         """`/{脱敏手机号: last_executor}`——列表行里的手机号是打过码的。"""
         body = self._login().get("/api/accounts").get_json()
         return {a["phone"]: a["last_executor"] for a in body["accounts"]}
 
     def test_latest_day_owner_and_role_resolution(self):
-        from yiban.store import db as store_db
         self._seed_accounts(self.PHONES)
         prev, today = self._prev_day(), clock.today()
         # 前天（此处借 _prev_day 模拟更早的业务日）：1 号由并行执行体 #1 签
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], prev, OWNER_WORKER)[0])
+        self._seed_task(self.PHONES[0], prev, OWNER_WORKER)
         # 今天是最近一次有记录的业务日：2 号由兜底签、3 号由并行执行体 #1 签
         # ——口径是"最近一次"，故 2/3 号按今天的记录解析，1 号（只在更早日有记录）为 null
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[1], today, OWNER_FALLBACK)[0])
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[2], today, OWNER_WORKER)[0])
+        self._seed_task(self.PHONES[1], today, OWNER_FALLBACK)
+        self._seed_task(self.PHONES[2], today, OWNER_WORKER)
         got = self._last_executor_of()
         m = self.webapp._mask_phone
         self.assertEqual(got[m(self.PHONES[0])], None,
@@ -1048,10 +1063,9 @@ class AccountsLastExecutorTest(_WebBase):
 
     def test_weekend_gap_still_shows_last_round(self):
         """跨周末停签后仍显示上一轮：更早业务日的记录不被"昨天"口径清空。"""
-        from yiban.store import db as store_db
         self._seed_accounts(self.PHONES[:1])
         # 只有更早业务日有记录（模拟周六/周日无签到轮）
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], self._prev_day(), OWNER_FALLBACK)[0])
+        self._seed_task(self.PHONES[0], self._prev_day(), OWNER_FALLBACK)
         got = self._last_executor_of()
         self.assertEqual(got[self.webapp._mask_phone(self.PHONES[0])],
                          {"role": egress.ROLE_FALLBACK, "index": None,
@@ -1063,14 +1077,13 @@ class AccountsLastExecutorTest(_WebBase):
         self.assertIsNone(self._last_executor_of()[self.webapp._mask_phone(self.PHONES[0])])
         # 库不存在/未初始化：一次取全的查询必须按空表返回，而不是抛（新部署很正常）
         with mock.patch.object(store_db, "get_conn", side_effect=RuntimeError("库不可用")):
-            self.assertEqual(store_db.claim_owners_for_day("2026-09-16"), {})
-            self.assertIsNone(store_db.claim_latest_day())
+            self.assertEqual(store_db.task_owners_for_day("2026-09-16"), {})
+            self.assertIsNone(store_db.task_latest_day())
 
     def test_response_carries_no_owner_raw_string_nor_full_phone(self):
-        from yiban.store import db as store_db
         phone = self.PHONES[0]
         self._seed_accounts((phone,))
-        self.assertTrue(store_db.claim_sign_account(phone, self._prev_day(), OWNER_WORKER)[0])
+        self._seed_task(phone, self._prev_day(), OWNER_WORKER)
         raw = json.dumps(self._login().get("/api/accounts").get_json(), ensure_ascii=False)
         self.assertNotIn(OWNER_WORKER, raw, "不得回显执行体身份原串")
         self.assertNotIn(SECRET_HOST, raw, "主机名属部署信息")

@@ -2,8 +2,8 @@
 """`yiban.engine.hrw` 的契约用例：纯函数 HRW 分工（虚分片 + argmax 归属）。
 
 标签：A · 调度：计划与分片
-覆盖：虚分片层（vshard_of 确定性、值域、吃 day、blake2b 编码定值、v_for
-   阈值）与归属层（owner_of / shards_of / assignment
+覆盖：虚分片层（vshard_of 确定性、值域、吃 day、blake2b 编码定值、v_for 定档
+   64）与归属层（owner_of / shards_of / assignment
    三方一致、换天重排、增删执行体的迁移量、均衡度包络、平局字典序、空执行体）共十一条契约。
 对应实现：yiban/engine/hrw.py（vshard_of、v_for、owner_of、shards_of、assignment、V_DEFAULT）；取值写进
    yiban/store/queue_store 的 sign_tasks.vshard。
@@ -17,17 +17,20 @@
    120s）；其余为纯函数。不建库、不发网络请求。整文件在本机执行，无 skip。
 
 **两处容差比设计文档宽，依据是实测**（HRW 的归属是"每片独立均匀选主"，分片数与每片
-人数都服从多项分布）：
-- 256 片 / K=8 时执行体分片数的理论标准差 `√(V·(1/K)·(1−1/K)) ≈ 5.3` 片（32 片的
-  ≈16.5%），故"各执行体 32±5%"（±1.6 片）不是这套算法能有的精度：实测 365 天里没有
-  一天满足，最好的一天跨度也有 3 片；
-- 10000 人落 256 片时每片理论标准差 `√(n·p·(1−p)) ≈ 6.2` 人，而"±40%"（±2.5σ）在
-  256 个格子同时受检下等于要求最大偏差 ≤2.5σ（最大偏差期望已 ≈3.3σ）：实测 365 天
-  只有 10 天满足。
-两处都改判 `mean ± 4.5σ` 包络（σ 各按自己的多项分布算）：4σ 时人数包络全年有 13/365
-天不满足（日期一换就误报），4.5σ 降到 1/365；分片数包络 4σ 起就是 0/365。选定日
-2026-09-22 实测最差偏差：人数 19.9 / 上限 28.1、分片数 6 / 上限 23.8。包络仍能拦住
-哈希坏掉（分片塌缩、执行体吃独食、内置 hash 每进程随机化）。
+人数都服从多项分布）。分片数定档 64 后两处容差**按 64 重算**（口径：K=8 执行体、10000
+个账号、2026-09-22 起连续 365 天逐日实测，正态多项分布近似）：
+- 64 片 / K=8 时执行体分片数的理论标准差 `√(V·(1/K)·(1−1/K)) ≈ 2.65` 片（8 片的
+  ≈33%），故"各执行体 8±33%"不是这套算法能有的精度：365 天里最差的一天偏差 12 片
+  （4.54σ），4σ 包络有 2/365 天不满足、4.5σ 有 1/365 天不满足——每执行体只有 8 片，
+  整数粒度下"偏到 20/64 片"的一天就能顶穿 4.5σ；本文件钉定的这一天实测最差 4 片
+  （1.5σ），余量充足；
+- 10000 人落 64 片时每片理论标准差 `√(n·p·(1−p)) ≈ 12.4` 人（均值 156.25 的 ≈7.9%），
+  4σ 与 4.5σ 包络下 365 天均无一天超出（最差一天 46.8 人 = 3.77σ），本文件钉定的这一天
+  实测 35.8 人；相对容差（如"±40%"）不可跨档照搬：它在 256 片下是 2.5σ，落到 64 片上
+  就是 5.0σ、比 4.5σ 包络还宽，故容差只按当档的 σ 给。
+两处都取 `mean ± 4.5σ` 包络（σ 各按自己的多项分布算）：选定日 2026-09-22 实测最差偏差
+人数 35.8 / 上限 55.8、分片数 4 / 上限 11.9。包络仍能拦住哈希坏掉（分片塌缩、执行体吃
+独食、内置 hash 每进程随机化）。
 """
 import json
 import os
@@ -85,7 +88,8 @@ class HrwIdentityTest(unittest.TestCase):
             self.assertIsInstance(vs, int)
             self.assertTrue(0 <= vs < V, f"{phone} 的分片号越界: {vs}")
             self.assertEqual(vs, hrw.vshard_of(phone, DAY), "同输入两次结果不同")
-            self.assertTrue(0 <= hrw.vshard_of(phone, DAY, 64) < 64, "分片号未随 v 收缩")
+            # 显式传 v 必须真被取模（传一个与定档值不同的 v，否则这条与上面逐值重复）
+            self.assertTrue(0 <= hrw.vshard_of(phone, DAY, 8) < 8, "分片号未随 v 收窄")
 
     def test_vshard_is_stable_across_processes(self):
         """跨进程一致：两个全新解释器 + 哈希随机化开启，取值仍相同。
@@ -109,27 +113,38 @@ class HrwIdentityTest(unittest.TestCase):
         vshard 是要落库的（`sign_tasks.vshard`）——day 只在 owner 层生效不够：那等于每天
         把同一批账号压回同一个执行体，虚分片削峰在跨天维度上失效。owner 层的跨天重排
         （`test_day_change_reshuffles_owners`）判别不了这里，所以本层单独验。
-        末尾两个定值钉的是**编码本身**（`\\x1f` 连接 + blake2b 前 8 字节 + 大端）：当天
-        已落的计划与库里的 vshard 都按它算，改编码等于作废当天全站计划。
+        末尾四个定值钉的是**编码本身**（`\\x1f` 连接 + blake2b 前 8 字节 + 大端）：当天
+        已落的计划与库里的 vshard 都按它算，改编码等于作废当天全站计划。前两个钉 `_h`
+        的原始 64 位值——**与 V 无关**，重新分档不必动；后两个钉 `vshard_of` 的取值，
+        只对当前定档的 64 成立，换档时按 `_h(phone, day) % 新 V` 重算。
         """
         phones = [_phone(i) for i in range(512)]
         moved = sum(1 for p in phones if hrw.vshard_of(p, DAY) != hrw.vshard_of(p, NEXT_DAY))
         self.assertGreaterEqual(moved, len(phones) * 0.3,
                                 f"换天后只有 {moved}/{len(phones)} 个账号换片，vshard 没吃 day")
-        self.assertEqual(hrw.vshard_of(_phone(0), DAY), 203)
-        self.assertEqual(hrw.vshard_of(_phone(0), NEXT_DAY), 218)
+        self.assertEqual(hrw._h(_phone(0), DAY), 297201281968923083)
+        self.assertEqual(hrw._h(_phone(0), NEXT_DAY), 7290187886949637850)
+        self.assertEqual(hrw.vshard_of(_phone(0), DAY), 11)
+        self.assertEqual(hrw.vshard_of(_phone(0), NEXT_DAY), 26)
 
     def test_v_for_thresholds(self):
-        """分片数按规模选：n<500→64、n<3000→128、否则 256。"""
-        self.assertEqual(hrw.v_for(499), 64)
-        self.assertEqual(hrw.v_for(500), 128)
-        self.assertEqual(hrw.v_for(2999), 128)
-        self.assertEqual(hrw.v_for(3000), 256)
-        self.assertEqual(hrw.v_for(0), 64)
-        self.assertEqual(hrw.v_for(30000), 256)
+        """分片数已定档 64：任意规模都返回同一个值（旧分档的边界两侧也在内）。
+
+        旧口径是 n<500→64、n<3000→128、否则 256；定档后 500 / 3000 这些**旧边界值**
+        同样必须返回 64——它们是"分档选择器没被偷偷装回来"的探针。
+        """
+        for n in (0, 1, 499, 500, 2999, 3000, 30000):
+            with self.subTest(n=n):
+                self.assertEqual(hrw.v_for(n), 64)
+        self.assertEqual(hrw.V_DEFAULT, 64, "定档值与 v_for 的返回值必须同源")
+        self.assertEqual(hrw.v_for(1), hrw.V_DEFAULT)
 
     def test_shard_population_has_no_holes_and_stays_in_envelope(self):
-        """10000 个不同账号同一天落 256 片：无空洞（每片必有账号）、每片人数在 ±4.5σ 内。"""
+        """10000 个不同账号同一天落 64 片：无空洞（每片必有账号）、每片人数在 ±4.5σ 内。
+
+        σ = `√(n·(1/V)·(1−1/V))` ≈ 12.40 人（均值 156.25），包络 ±55.8；口径与实测见
+        模块 docstring。
+        """
         n = 10000
         counts = [0] * V
         for i in range(n):
@@ -169,7 +184,11 @@ class HrwAssignmentTest(unittest.TestCase):
                          f"迁移目标不是新执行体（HRW 不该在旧执行体之间搬）: {owners}")
 
     def test_balance_within_envelope(self):
-        """均衡度：K=8、256 片时各执行体的分片数落在 HRW 理论抖动的 4.5σ 包络内。"""
+        """均衡度：K=8、64 片时各执行体的分片数落在 HRW 理论抖动的 4.5σ 包络内。
+
+        σ = `√(V·(1/K)·(1−1/K))` ≈ 2.65 片（均值 8），包络 ±11.9；口径与实测见模块
+        docstring（含"4.5σ 在 365 天里有 1 天不满足"这一实测边界）。
+        """
         executors = [f"w{i}" for i in range(8)]
         board = hrw.assignment(executors, DAY)
         counts = [sum(1 for v in range(V) if board[v] == e) for e in executors]

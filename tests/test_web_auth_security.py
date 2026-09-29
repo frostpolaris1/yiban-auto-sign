@@ -909,23 +909,28 @@ class RoleHardeningTest(unittest.TestCase):
         self.assertEqual(u.get("role"), "user", "批量角色变更入口已移除，角色不得变更")
 
     # ---- 2. 角色变更须二次鉴权 ----
-    def test_role_without_reconfirm_rejected(self):
+    def test_role_without_reconfirm_ok_and_audited(self):
+        """角色变更可逆（缩减批 6a 免门）：主管理员无口令即可改，留痕靠同事务审计行。"""
         self._make_formal_user("u2@test.local", "13800138002")
         ac, at = self._admin_client()
         r = ac.post(user_path(db, "u2@test.local", "/role"), json={"role": "admin"},
                     headers={"X-CSRF-Token": at})
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertEqual(db.find_user("u2@test.local").get("role"), "user")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(db.find_user("u2@test.local").get("role"), "admin")
+        rows = db.audit_rows(50) if hasattr(db, "audit_rows") else []
+        if rows:
+            self.assertTrue(any(x.get("action") == "user_role" for x in rows),
+                            "免门不等于免痕：角色变更必须落审计行")
 
-    def test_role_wrong_reconfirm_rejected(self):
+    def test_role_wrong_reconfirm_still_ok_field_ignored(self):
+        """confirm_password 字段在免门后被忽略：错口令也不再拦（可逆操作不加摩擦）。"""
         self._make_formal_user("u3@test.local", "13800138003")
         ac, at = self._admin_client()
         r = ac.post(user_path(db, "u3@test.local", "/role"),
                     json={"role": "admin", "confirm_password": "WrongPass#999"},
                     headers={"X-CSRF-Token": at})
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("当前密码不正确", r.get_json()["error"])
-        self.assertEqual(db.find_user("u3@test.local").get("role"), "user")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(db.find_user("u3@test.local").get("role"), "admin")
 
     def test_role_with_reconfirm_ok_and_audited(self):
         self._make_formal_user("u4@test.local", "13800138004")
@@ -1416,8 +1421,8 @@ class ExemptionTest(_GateBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_exemption_never_granted_for_irreversible_or_alerting_actions(self):
-        """③不可逆清除 / 角色变更 / 重置他人口令 / 关闭告警通道 / 改主管理员口令
-        ——即便本会话刚复核过，也必须当次输口令。
+        """③不可逆清除 / 重置他人口令 / 清库清理 / 关闭推送（随钥清）
+        ——即便本会话刚复核过，也必须当次输口令（角色变更与邮件开关已免门，见 6a）。
 
         每例各建新 app：门禁冷却表是 per-app 的，共用一份会让第 4 例撞进冷却、
         把"豁免不该放行"这件事掩盖成 429。
@@ -1425,17 +1430,17 @@ class ExemptionTest(_GateBase):
         # 单条三个端点走 `<int:user_id>`：ghost 用**不存在的数字 id** 表达（2-9b）。
         # 断言的语义不变——门禁必须先于存在性拦下（400 password_required），
         # 而不是 id 不存在就绕过复核。
+        # （缩减批 6a：role 与 mail-config 开关为可逆动作已免门，不再入清单；
+        #   notify-config 保留 type 在场的例子 = 触碰密钥（关闭随钥清）仍受门。）
         cases = (
             ("POST", "/api/users/batch",
              {"action": "delete", "emails": ["ghost@test.local"]}),
-            ("POST", f"/api/users/{GHOST_ID}/role", {"role": "admin"}),
             ("POST", f"/api/users/{GHOST_ID}/password", {"password": ADMIN_PASS}),
             ("POST", f"/api/users/{GHOST_ID}/delete", {"mode": "full"}),
             ("POST", f"/api/users/{GHOST_ID}/delete", {"mode": "accounts_only"}),
             ("POST", "/api/users/deleted/purge", {"emails": ["ghost@test.local"]}),
             ("POST", "/api/accounts/batch",
              {"action": "purge", "ids": [1], "h_idx": 0, "h_phone": "138****0000"}),
-            ("PUT", "/api/mail-config", {"enabled": False}),
             ("PUT", "/api/notify-config", {"type": ""}),
         )
         for i, (method, path, body) in enumerate(cases):
