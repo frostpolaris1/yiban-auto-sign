@@ -15,7 +15,7 @@ python3 -m yiban.cli <子命令> [选项]
   sign      一轮签到（可 --workers N / --only 手机号 / --fallback / --second-run-check）
   probe     只读健康检查
   config    配置检查（脱敏打印，不联网）
-  capacity  容量基准与建议（默认只读建议；--measure 转发基准工具，需 root 隔离测试机）
+  capacity  容量基准与建议（只读展示与换算建议；实测值由部署者自行量取后录入设置页）
   state     状态文件清理（默认 dry-run，--yes 才动手）
   db        数据库维护（--status / --integrity / --backup [路径] / --restore [路径]）
   version   版本与库版本
@@ -94,7 +94,7 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance）�
 | `usage` | 用法错误（未知子命令、被 argparse 拦下的互斥开关） | 2 |
 | `usage_no_command` | 未给子命令 | 2 |
 | `usage_extra_args` | 维护子命令收到多余参数 | 2 |
-| `usage_conflict` | 互斥开关同时给出（`--yes --dry-run`、`--measure --json`） | 2 |
+| `usage_conflict` | 互斥开关同时给出（`--yes --dry-run`） | 2 |
 | `usage_engine` | sign/probe 透传的引擎 argparse 拒绝 | 2 |
 | `config_error` | 配置错误（配置加载失败 / 零账号 / 保留期非法） | 1 |
 | `runtime_error` | 运行期失败（库不可读或不存在、备份失败、目录不可用、审计不可写） | 1 |
