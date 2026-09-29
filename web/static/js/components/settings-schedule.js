@@ -241,7 +241,7 @@
   // 用户取消弹窗 = 本次不保存。
   function submit(body) {
     saving = true;
-    setTip("保存中…", false);
+    YB.setBusy("ss-save", true);
     setDisabled("ss-save", true);
     return YB.dangerousSubmit({
       method: "POST", path: "/api/settings", body: body,
@@ -258,6 +258,7 @@
       return false;
     }).then(function (ok) {
       saving = false;
+      YB.setBusy("ss-save", false);
       setDisabled("ss-save", false);
       applyPerm();
       return ok;

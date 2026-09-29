@@ -632,6 +632,9 @@ var ctx = { isMaster: true };
 var YB = {
   confirmDialog: function () { return Promise.resolve(true); },
   dangerousSubmit: function (opts) { submitted.push(opts); return Promise.resolve({}); },
+  // 按钮忙碌态：core.js setBusy 的替身。本组件保存期间会调它，
+  // 桩里缺这个键会在 Node 侧直接抛 "YB.setBusy is not a function"。
+  setBusy: function () {},
   toast: { info: function () {}, error: function () {} }
 };
 
