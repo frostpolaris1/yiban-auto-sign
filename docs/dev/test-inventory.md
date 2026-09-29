@@ -193,7 +193,6 @@ python -m pytest tests/ -q -k mine_or_planner_or_hrw               # 按关键�
 | `test_deploy_paths_and_restore_verdict.py` | 22 | 部署路径的解析口径与恢复件核验的结论分类。 |
 | `test_docker_image_contents.py` | 2 | Docker 镜像内容门禁：源码 COPY 必须覆盖运行时真正导入的本地顶级模块。 |
 | `test_engine_shell_forwarding.py` | 5 | 兼容壳的**打桩转发**有效性（引擎按"执行一轮"切分后的收口自证）。 |
-| `test_loadtest_tools.py` | 29 | loadtest 工具链轻量冒烟测试（秒级，不进常规重负载）。 |
 | `test_module_size_gate.py` | 7 | 模块化门禁：按类型设目标行数 + 超限必须写明工程理由。 |
 | `test_release_version_source.py` | 6 | 版本号单一来源 + 轮次横幅带版本号（发布门槛的自证前提）。 |
 | `test_runsh_env_parse.py` | 4 | shell 侧 .env 解析契约（2026-09-08 起；2026-09-15 扩到 run_probe.sh）。 |

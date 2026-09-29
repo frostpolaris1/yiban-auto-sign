@@ -602,7 +602,7 @@ def create_servers(host="127.0.0.1", port=443, ipv6_host="::1",
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="mock_yiban.py",
+        prog="fake_yiban_server.py",
         description="假易班 HTTPS 服务（回环压测专用；绝不连接真实易班）",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
