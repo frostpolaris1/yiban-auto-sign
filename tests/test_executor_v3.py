@@ -550,7 +550,8 @@ class VInvariantTest(_Base):
                                lambda acc: (True, "ok", False, "success")):
             self._run_v3(accounts, cfg=cfg)
         v = int(clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""))
-        self.assertEqual(v, hrw.v_for(3))
+        self.assertEqual(v, 64, "建计划落库的 V 应是定档值 64（= hrw.v_for(n)）")
+        self.assertEqual(v, hrw.v_for(len(accounts)))
         rows = [r["vshard"] for r in db.get_conn().execute(
             "SELECT vshard FROM sign_tasks WHERE day=?", (DAY,)).fetchall()]
         self.assertEqual(len(rows), 3)
@@ -562,7 +563,11 @@ class VInvariantTest(_Base):
         self.assertEqual(covered, set(range(v)), "每个分片都要有执行体认领，否则该行无人领")
 
     def test_stored_v_wins_over_recomputed_v(self):
-        """V 落库后只读：行索引在 `v_for(当日账号数)` 之外也必须仍被领取（反例）。"""
+        """V 落库后只读：行索引在 `v_for(当日账号数)` 之外也必须仍被领取（反例）。
+
+        V 定档 64 后"当日账号数"已不参与选档，但本用例的命题不变：只要重算/替换 V，
+        范围外的行就永远领不到。
+        """
         accounts = self._accounts(*[_phone(i) for i in range(3)])
         self.assertEqual(hrw.v_for(len(accounts)), 64)
         self._seed_v(128)
