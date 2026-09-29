@@ -13,10 +13,11 @@
      **不再** `email.split("@")[0]` 自算（号形态直出即泄漏）；
   ③ `work_users.js::fetchUsers`——state 记录携带 id（单条定位链路的起点）。
 
-静态兜底（与真跑配套、不是替代）：owner 展示面文件里禁止再现 `split("@")` 第二套。
-
 标签：F · 前端与界面守卫
-覆盖：上述 ①②③ 各前端口径一个真跑用例 + 一个静态防回潮断言
+覆盖：上述 ①②③ 各前端口径一个真跑用例
+（批 6c3-C C-2 注：旧 `StaticNoSecondSplitTest` 静态防回潮断言为「精确源码 grep」
+兜底，行为面由 `test_dropdown_uses_server_display` 真跑消费服务端 `display` 钉住，
+已按对表裁撤。）
 对应实现：`web/static/js/core.js`、`web/static/js/components/user-ops.js`、
 `web/static/js/components/account-form.js`、`web/static/js/pages/work_users.js`
 关键断言：断言打在 node 子进程的真实输出上（sessionStorage 影子对象、提交的 path/body
@@ -305,31 +306,6 @@ class WorkUsersStateCarriesIdTest(unittest.TestCase):
         self.assertEqual(ids, [1, 2], "state 记录必须带服务端 id——单条定位靠它，不靠邮箱")
         phone_rec = next(r for r in recs if r["email"] == "13800000000@qq.com")
         self.assertEqual(phone_rec["display"], "138****0000")
-
-
-class StaticNoSecondSplitTest(unittest.TestCase):
-    """静态防回潮兜底：owner 展示面的前端文件里禁止再现 `split("@")` 第二套定义。
-
-    真跑用例钉"当下行为"，这条钉"以后别加回来"——同一条规则只许住在
-    `accounts_data._owner_display_of` 一处（前端消费服务端下发字段）。
-    RED 可能性：任何人再写 `email.split("@")[0]` 即红。
-    """
-
-    FORBIDDEN = ('split("@")', "split('@')")
-
-    def _assert_clean(self, path):
-        src = _read(path)
-        code = "\n".join(ln for ln in src.splitlines()
-                         if not ln.lstrip().startswith(("//", "/*", "*")))
-        for needle in self.FORBIDDEN:
-            self.assertNotIn(needle, code,
-                             "%s 出现第二套邮箱本地部拆法（口径唯一住在服务端）" % path)
-
-    def test_components_and_pages_clean(self):
-        # login.js 的 `split("@")[0].length` 是**登录用户名长度校验**，不是归属展示
-        # 口径——不在本禁例（登记见 2-9b 报告）。
-        for p in (USER_OPS_JS, ACCOUNT_FORM_JS, WORK_USERS_JS, CORE_JS):
-            self._assert_clean(p)
 
 
 if __name__ == "__main__":
