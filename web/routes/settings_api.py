@@ -828,7 +828,7 @@ def api_executors():
             "totals": activity_totals,
         },
         "measured": ({"per_executor_capacity": measured,
-                      "source": "capacity_probe（部署者实测录入）",
+                      "source": "部署者实测录入（YIBAN_CAPACITY_MEASURED）",
                       "env_key": "YIBAN_CAPACITY_MEASURED"} if measured else None),
         "recommendation": None,
         "current_accounts": cur_accounts,
@@ -1146,8 +1146,9 @@ def api_scheduler_executors_measure():
     而真实签到还要往下走**定位计算 + 提交签到**（6 次请求 + 一段 CPU 计算）；
     又因为窗口内被拒（409），**它永远只测得到窗口外的最小链路**——服务端在窗口外
     本来就没有可提交的任务。所以这里量出的秒数**天然偏小、据此换算的容量偏乐观**。
-    本数与测试机基准（`scripts/loadtest/capacity_probe.py` 用假易班跑**完整链路**）
-    **不可混用、不可比**：页面要提示"现场量的是窗口外粗值，正式容量请以测试机基准为准"。
+    本数只作**现场粗值参考**，与部署者按完整链路量取后录入 `YIBAN_CAPACITY_MEASURED`
+    的正式容量**不可混用、不可比**：页面要提示"现场量的是窗口外粗值，正式容量请以部署者
+    自己量取的完整链路基准为准"。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():

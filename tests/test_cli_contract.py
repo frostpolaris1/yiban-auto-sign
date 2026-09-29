@@ -10,12 +10,10 @@
 关键断言：退出码、stdout/stderr 分流、"默认不动手"三条都是进程级契约——断的是真实
     子进程的行为，不是 `main()` 的返回值。
 依赖：起 `sys.executable -m yiban.cli` 子进程（纯 Python，不需 bash/docker/网络）；
-    全部用临时 STATE/LOG/DB/ENV，不碰本机真实 .env；`capacity --measure` 一条在
-    `CAPACITY_PROBE` 文件不存在时 skipTest。
+    全部用临时 STATE/LOG/DB/ENV，不碰本机真实 .env。
 
 口径（为什么全部起子进程）：退出码、stdout/stderr 分流、stdin 行为在测试进程里调
 `main()` 会被测成另一回事（尤其 stdin 与 stdout 编码）。
-**唯一例外**：`capacity --measure` 的转发用例改用打桩 `subprocess.run`，理由见该用例。
 """
 import json
 import os
@@ -390,27 +388,16 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(self._user_version(), SCHEMA_TOP,
                          "对照组失败：该库本可被迁移，上面的断言没测到东西")
 
-    def test_capacity_measure_forwards_extra_args(self):
-        """`--measure` 之后的多余参数属于工具自己的开关，不是 CLI 的用法错误。
+    def test_capacity_rejects_unknown_option(self):
+        """`capacity` 是纯只读子命令，不接受任何在线实测开关：多余的选项是用法错误（退 2）。
 
-        ⚠ 本用例**不起真进程**（与文件头"全部起子进程"的口径为例外，理由充分）：
-        转发目标是真的容量基准工具，在 Linux 上它会真做完整基准（分钟级），
-        那就是"单元测试里跑压测"。这里只验证**转发本身**——argv 拼对了、
-        参数没被 CLI 拦下——用打桩 `subprocess.run` 即可。
+        离线容量基准工具族已于 2026-09 移除，`capacity` 现在只消费部署者录入的
+        `YIBAN_CAPACITY_MEASURED`。此处钉住"不认得的开关不会被静默吞掉"。
         """
-        import unittest.mock as mock
-
-        import yiban.cli as cli  #本条是文件内少数进程内用例：只验 argv 拼装，不起真压测
-        if not os.path.isfile(cli.CAPACITY_PROBE):
-            self.skipTest("容量基准工具不在仓库里")
-        with mock.patch.object(cli.subprocess, "run") as m_run:
-            m_run.return_value = mock.Mock(returncode=0)
-            rc = cli.main(["capacity", "--measure", "--repo", "."])
-        self.assertEqual(rc, 0, "转发未发生（退出码不是子进程的）")
-        cmd = m_run.call_args.args[0]
-        self.assertEqual(cmd[0], sys.executable)
-        self.assertEqual(cmd[1], cli.CAPACITY_PROBE)
-        self.assertEqual(cmd[2:], ["--repo", "."], "工具自己的开关必须原样透传")
+        r = _run(["capacity", "--measure"], self.env)
+        self.assertEqual(r.returncode, 2, f"退 2 才对；stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertEqual(r.stdout, "", "用法错误不得写 stdout")
+        self.assertIn("无法识别的参数", r.stderr)
 
     # ---- ⑦ 不读 stdin：stdin 关掉/空管道都能跑完 ----
 

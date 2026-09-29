@@ -14,19 +14,19 @@
    路径（名字含 `env`/`ENV` 或字面量 `.env`）的写模式 open / os.open(WRONLY) /
    os.replace|rename 目标，其所在函数必须引用 `write_env_key`/`env_write_lock`；
    唯一豁免是 `env_io` 的两个底层原子写助手，它们只能被 `write_env_keys` 引用一次。
-3. **登记格**：原不持锁写入点（loadtest 建 .env 头文件的裸 `open(path,"w")` 截断）
-   现与读-改-写同处一把锁的临界区，且行为不变（建新文件仍带头注释）。
+3. **登记格**：**新建**（此前不存在）`.env` 的建档路径也锁内——不得用裸
+   `open(path,"w")` 先截断建头再读-改-写，`.env` 从无到有也必须整段在锁临界区内
+   （建头/建档与读-改-写共用一把锁的临界区，行为不变）。
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：write_env_keys 内部取锁（钩子计数、锁文件创建）、同线程嵌套放行、跨线程互斥
     等待、运行时目录 grep 级"无不持锁 .env 写入方"、`_atomic_replace_env`/
-    `_restore_env_bytes` 仅 write_env_keys 可达、seed_accounts 建头并入锁内。
+    `_restore_env_bytes` 仅 write_env_keys 可达、新建 .env 全程锁内。
 对应实现：`yiban/infra/env_io.py` 的 `write_env_keys`（内持 `env_lock.env_write_lock`）
     与 `_atomic_replace_env`/`_restore_env_bytes`；`yiban/infra/env_lock.py`、
     `yiban/infra/locks.py`（可重入与互斥语义）；`web/services/env_io.py` 的
     `write_env_batch`（外层锁去重）；`yiban/engine/probe.py` 的 `_env_update_probe`
-    （自写读-改-写并入单一写入口）；`scripts/loadtest/seed_accounts.py` 的
-    `upsert_env`/`_ensure_env_headed`（建文件头入锁）。
+    （自写读-改-写并入单一写入口）。
 关键断言：grep 断言必须**两向钉**——列出全部违例（新写点漏锁即红），同时钉"底层
     助手引用恰好 1 处且在 write_env_keys 内"（豁免面失守即红）；只断"锁函数被调用过"
     不够，还要断**持锁期间另一线程进不来**（互斥真实生效）。
@@ -35,10 +35,8 @@
 """
 import ast
 import contextlib
-import importlib
 import io
 import os
-import sys
 import tempfile
 import threading
 import time
@@ -47,10 +45,6 @@ import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 包导入引导先于任何 yiban 导入（test_deploy_entry_imports 按**出现位置**钉顺序，
-# 写在 setUpClass 里的后补引导过不了这条守卫）：scripts/ 入 path 供 loadtest 命名空间包
-if os.path.join(BASE, "scripts") not in sys.path:
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from yiban.infra import env_io, env_lock  # noqa: E402
 
@@ -258,15 +252,17 @@ class WriteEnvKeysInternalLockBehaviorTest(unittest.TestCase):
         self.assertIn("YIBAN_LATE=1", io.open(self.env, encoding="utf-8").read())
 
 
-class SeedAccountsHeadUnderLockTest(unittest.TestCase):
-    """原"不持锁写入点"（loadtest 裸 open(w) 截断建头）现在锁内，行为不变。"""
+class FreshEnvCreationUnderLockTest(unittest.TestCase):
+    """登记格：`.env` 从无到有（建档）同样整段在写锁临界区内。
 
-    @classmethod
-    def setUpClass(cls):
-        cls.seed = importlib.import_module("loadtest.seed_accounts")
+    此前这条守卫挂在某个已退役的造数工具的建头上；现改锚到**生产的唯一写入口**上：
+    对不存在的路径调用 `write_env_keys`，建档与首个键的落盘都必须在锁内完成——
+    任何"先裸 `open(path,"w")` 截断建头、再读-改-写"的写法都会在锁外留下窗口。
+    """
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-seed-head-")
+        self.tmp = tempfile.mkdtemp(prefix="yiban-fresh-env-")
+        self.fresh = os.path.join(self.tmp, "brand-new.env")
 
     def tearDown(self):
         for name in os.listdir(self.tmp):
@@ -274,21 +270,35 @@ class SeedAccountsHeadUnderLockTest(unittest.TestCase):
             os.unlink(p) if os.path.isfile(p) else None
         os.rmdir(self.tmp)
 
-    def test_upsert_creates_headered_file_and_writes_keys(self):
-        path = os.path.join(self.tmp, "fresh.env")
-        self.seed.upsert_env(path, {"YIBAN_SIGN_ORDER": "random"})
-        with io.open(path, encoding="utf-8") as f:
-            text = f.read()
-        self.assertTrue(text.startswith("#"), "新 .env 必须带头注释（与旧行为一致）")
-        self.assertIn("YIBAN_SIGN_ORDER=random", text)
+    def test_fresh_env_creation_holds_lock(self):
+        """建档路径取锁：锁钩子必须以**这个尚不存在**的路径被进入过一次。"""
+        calls = []
+        real = env_lock.env_write_lock
 
-    def test_upsert_head_creation_holds_lock(self):
-        """建头路径经函数级判据：`_ensure_env_headed` 只能在持锁临界区内被调用——
-        调用它的 `upsert_env` 与 `main` 都在 `env_write_lock` 里，由 grep 格整体钉住。"""
-        import inspect
-        src = inspect.getsource(self.seed.upsert_env)
-        self.assertIn("env_write_lock", src)
-        self.assertIn("_ensure_env_headed", src)
+        @contextlib.contextmanager
+        def spy(p):
+            calls.append(os.path.abspath(p))
+            with real(p):
+                yield
+
+        self.assertFalse(os.path.exists(self.fresh), "前置：目标 .env 尚不存在")
+        with mock.patch.object(env_io, "env_lock",
+                               types.SimpleNamespace(env_write_lock=spy)):
+            env_io.write_env_keys(self.fresh, {"YIBAN_SIGN_ORDER": "random"})
+        self.assertEqual(calls, [os.path.abspath(self.fresh)],
+                         "建档（不存在的 .env）也必须整段在写锁内")
+        self.assertTrue(os.path.exists(os.path.abspath(self.fresh) + ".lock"),
+                        "建档同样落下真锁文件（真锁原语在场，不是纸面互斥）")
+
+    def test_fresh_env_creation_writes_requested_keys(self):
+        """建档结果：文件被建出来，且内容就是本次请求的键（不被建头逻辑改写）。"""
+        env_io.write_env_keys(self.fresh, {"YIBAN_SIGN_ORDER": "random"})
+        with io.open(self.fresh, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("YIBAN_SIGN_ORDER=random", text)
+        self.assertEqual(env_io.env_key_values(text),
+                         {"YIBAN_SIGN_ORDER": "random"},
+                         "建档只写本次请求的键，不得顺手塞进别的行")
 
 
 if __name__ == "__main__":
