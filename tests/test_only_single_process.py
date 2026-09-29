@@ -286,9 +286,11 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
         # `_max_vshard+1` 兜底），故这里算的分片与执行体实际使用的分片**逐值一致**。
         clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + day, self.V)
         sh = hrw.vshard_of(PHONE, day, self.V)   # 与本轮账号同分片（最坏几何）
+        # 夹具前提：钉死的 V 必须就是代码会选的 V（定档 64），否则下面算的分片与真进程
+        # 用的分片不同源，"同分片最坏几何"不成立（E2E 会在变异下仍绿）。
         self.assertEqual(
-            hrw.vshard_of(PHONE, day, hrw.v_for(1)), sh,
-            "夹具前提：本轮账号在 v_for(1) 与本用例钉死的 V 下都落在同一分片")
+            self.V, hrw.v_for(1),
+            "夹具前提：本用例钉死的 V 与 hrw.v_for 的定档值必须一致")
         conn = store_db.get_conn()
         with store_db._conn_lock:
             for phone, state, result in (
