@@ -90,7 +90,7 @@ REQUIRED_IN_SHARED = (
 ADMINATOR_CALENDAR_CLASSES = ("cal-grid", "cal-cell", "cal-weekdays", "cal-main", "cal-toolbar")
 
 # 注释剥离：calendar.js 的说明性注释里会引用这些类名来解释"为什么不能撞车"，
-# 不剥会把解释本身判成违规（同 test_web_component_adoption 的做法）。
+# 不剥会把解释本身判成违规。
 _COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->|//[^\n]*", re.S)
 
 

@@ -2275,9 +2275,9 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         """类别正则的单一事实源：真实承载页（聚合 core.js）vs 后端常量（漂移即红）。
 
         换壳后前端只有一份定义，落在 static/js/core.js；页面 `PW_TEMPLATES` 只负责
-        `<script src>` 加载它，故直接读该文件即可 —— 「两页确实加载了 core.js」由
-        tests/test_web_js_modules.py 的装配守卫覆盖（引用存在 + core.js 在组件之前），
-        此处不再按页面数重复遍历同一份源码。
+        `<script src>` 加载它，故直接读该文件即可，此处不再按页面数重复遍历同一份源码。
+        （批 6c3-A 注：原「引用存在 + core.js 在组件之前」的 js_modules 装配守卫已
+        按对表裁撤，页面加载 core.js 的装载面现无静态守卫。）
         管理端改名/重置路径复用同一份共享 helper，其提交路径由
         test_admin_password_modal_validates_classes 覆盖。
         """
