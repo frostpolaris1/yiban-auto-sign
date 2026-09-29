@@ -279,8 +279,9 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
 
     结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
     只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。**与
-    `capacity_probe` 的建议数不是同一口径**：探针按"每进程各持一桶"实测，"20–22 个桶"
-    ≈要声明同数物理出口；未声明出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
+    部署者实测的建议数不是同一口径**：实测按"每进程各持一桶"量取（实测值由部署者自行
+    量取后录入 `YIBAN_CAPACITY_MEASURED`），"20–22 个桶" ≈要声明同数物理出口；未声明
+    出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
     「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate` 非正回退出厂速率（与
     `channel_count` 同口径）；窗口 <= 0 时回退 1。
     """

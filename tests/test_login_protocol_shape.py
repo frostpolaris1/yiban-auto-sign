@@ -180,7 +180,7 @@ def _run(recorder, fn):
 
 def _killyiban_happy_responses():
     """默认流四步的成功脚本。最终认证载荷带**签发回执**（`data` 存在，可为空容器）：
-    形状对照 `scripts/loadtest/mock_yiban.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
+    形状对照 `tests/fake_yiban_server.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
     return [
         _resp(text=_KILLYIBAN_PAGE % _pubkey_pem(),
               url="https://oauth.yiban.cn/code/html"),
