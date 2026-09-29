@@ -624,8 +624,9 @@ class FallbackSwitchOnlySaveTest(_WebBase):
     开关不归行接口管：`PUT …/executors/rows/<slot>` 缺 type/proxy/name 一律 400
     （「没有可更新的字段」）。前端只拨开关时必须**只**发整条接口那一个请求——否则行接口
     先 400、`Promise.all` 直接 reject：用户被告知失败，而 `.env` 里开关已经落盘，且重试
-    永远走同一条路。本类固定后端两侧的真实契约；前端"只拨开关时不带空请求体"由
-    `test_executors_kpi_scope.py` 的源级守卫钉住。
+    永远走同一条路。本类固定后端两侧的真实契约。
+    （批 6c3-A 注：前端"只拨开关时不带空请求体"原由 `test_executors_kpi_scope.py`
+    源级守卫钉住，该文件已按对表裁撤，前端半边现无静态守卫。）
     """
 
     def test_rows_endpoint_rejects_a_body_without_type_proxy_name(self):
