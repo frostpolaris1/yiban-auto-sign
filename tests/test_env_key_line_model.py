@@ -31,6 +31,11 @@ env 档与文件档分叉的两侧同钥断言（含大小写不误杀正例）�
 `except ValueError`，`TypeError` 会从缝里漏出去，这条是"抛什么类型"也是契约。
 依赖：临时目录与临时 `.env`，无网络、无 skip；断言里按 `splitlines()` 与物理行数两套口径
 分别核（潜伏分隔符正是这两套口径的差集）。
+
+> 批 6c3-D（D-1）：三处写键方（账号密钥 / 追踪盐 / 审计密钥）原各复制三条同构用例
+> （潜伏分隔符拒绝 / 空白影子行折叠 / 普通写保留他行），按机制并成三条参数化
+> （subTest 逐站点）；账号密钥独有的「被折叠丢弃的旧键行也须先过校验」失败模式不同，
+> 单留一条。断言与消息逐条保留。
 """
 import io
 import os
@@ -123,77 +128,6 @@ class KeyCacheSourceTest(unittest.TestCase):
 NEW_KEY = bytes(range(32))
 
 
-class CryptoLineModelTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-crypto-line-")
-        self.env_file = os.path.join(self.tmp, ".env")
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _write_env(self, text):
-        with open(self.env_file, "w", encoding="utf-8") as f:
-            f.write(text)
-
-    def _read_env(self):
-        with open(self.env_file, encoding="utf-8") as f:
-            return f.read()
-
-    def test_space_shadow_key_line_is_folded(self):
-        """带空格影子行被折掉，不追加出同键第二行；同前缀的其他键、其他行都保留。"""
-        self._write_env("YIBAN_ACCOUNTS_FILE=accounts.json\nYIBAN_ACCOUNTS_KEY = \n")
-
-        self.assertEqual(
-            account_crypto._write_key_to_env_file(self.env_file, NEW_KEY), NEW_KEY)
-
-        self.assertEqual(
-            env_io.count_key_lines(self.env_file, "YIBAN_ACCOUNTS_KEY"), 1,
-            "影子行残留 = 同键两行，解析取哪行由落盘顺序决定")
-        parsed = env_io.parse_env_file(self.env_file)
-        self.assertEqual(parsed["YIBAN_ACCOUNTS_KEY"], NEW_KEY.hex())
-        self.assertEqual(parsed["YIBAN_ACCOUNTS_FILE"], "accounts.json",
-                         "同前缀的其他键不得被折叠误伤")
-
-    def test_latent_separator_in_existing_line_refuses_write(self):
-        """既有行值藏 U+2028：写回会坐实其后的半截 → 抛错且 .env 未被改写。"""
-        self._write_env("OTHER=ok\nSECRET=a\u2028YIBAN_ADMIN_PASSWORD_HASH=evil\n")
-        before = self._read_env()
-
-        with self.assertRaises(ValueError) as ctx:
-            account_crypto._write_key_to_env_file(self.env_file, NEW_KEY)
-
-        msg = str(ctx.exception)
-        self.assertIn("行分隔符", msg)
-        # 定位线索是行号（1-based）而非行原文：行原文会带出值里的口令（实测如
-        # postgres://user:S3cretPw@…）与裸 U+2028，跟着异常消息落日志与 HTTP 500
-        self.assertIn("第 2 行", msg, "消息须给出问题行的行号线索")
-        self.assertNotIn("SECRET", msg, "消息不得回带行原文（键名也不行）")
-        self.assertNotIn("\u2028", msg, "消息里不得出现分隔符字符本身")
-        self.assertEqual(self._read_env(), before, "拒绝写入时不得改动 .env")
-        leftovers = [p for p in os.listdir(self.tmp) if ".tmp" in p]
-        self.assertEqual(leftovers, [], "拒绝写入时不得先落 tmp 文件")
-
-    def test_latent_separator_in_dropped_old_key_line_still_refuses(self):
-        """含 U+2028 的旧键行会被折叠丢弃——丢弃前同样要过校验，不得静默删掉。"""
-        self._write_env("YIBAN_ACCOUNTS_KEY=aa\u2028bb\nYIBAN_ACCOUNTS_KEY=\n")
-        before = self._read_env()
-        self.assertEqual(
-            env_io.parse_env_file(self.env_file)["YIBAN_ACCOUNTS_KEY"], "",
-            "前置条件：末行空值键让本函数走进写入分支（而非早退返回既有密钥）")
-
-        with self.assertRaises(ValueError) as ctx:
-            account_crypto._write_key_to_env_file(self.env_file, NEW_KEY)
-
-        self.assertIn("行分隔符", str(ctx.exception))
-        self.assertEqual(self._read_env(), before, "拒绝写入时不得改动 .env")
-
-
-AUDIT_KEY = bytes(range(32))
-
-
-LATENT = "notify\u2028YIBAN_ADMIN_PASSWORD_HASH=injected"
-
-
 class _EnvFileBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-store-env-key-")
@@ -217,81 +151,98 @@ class _EnvFileBase(unittest.TestCase):
         return [n for n in os.listdir(self.tmp) if ".tmp" in n]
 
 
-class TrackingSaltLineModelTest(_EnvFileBase):
-    def test_latent_separator_in_other_line_refuses_write(self):
-        """既有无关键行里藏 U+2028：写盐会坐实其后的注入行 → 拒绝且零改动。"""
-        self._write(f"YIBAN_OTHER=ok\nYIBAN_ANNOUNCEMENT={LATENT}\n")
+LATENT = "notify\u2028YIBAN_ADMIN_PASSWORD_HASH=injected"
+
+
+AUDIT_KEY = bytes(range(32))
+
+
+class WriteKeySitesLineModelTest(_EnvFileBase):
+    """三处写键方同一套行模型：账号密钥 / 追踪盐 / 审计密钥（6c3-D D-1 并参数化）。
+
+    每站点原各复制三条同构用例（潜伏分隔符拒绝 / 空白影子行折叠 / 普通写保留他行），
+    现按机制并成三条（subTest 逐站点），断言与消息逐条保留。
+    """
+
+    SITES = (
+        ("账号密钥", "YIBAN_ACCOUNTS_KEY", account_crypto._write_key_to_env_file,
+         NEW_KEY, NEW_KEY.hex()),
+        ("追踪盐", "YIBAN_TRACK_SALT", tracking._write_track_salt_to_env_file,
+         "salt123", "salt123"),
+        ("审计密钥", "YIBAN_AUDIT_KEY", audit_chain._write_audit_key_to_env_file,
+         AUDIT_KEY, AUDIT_KEY.hex()),
+    )
+
+    def test_sites_refuse_latent_separator_in_other_line(self):
+        """既有无关键行里藏 U+2028：写键会坐实其后的注入行 → 拒绝且零改动。"""
+        for label, key_name, write, value, _expect in self.SITES:
+            with self.subTest(site=label):
+                # 与账号密钥原用例同一载荷（行内藏键名 SECRET，供"消息不回带原文"一断言）
+                self._write("OTHER=ok\nSECRET=a\u2028YIBAN_ADMIN_PASSWORD_HASH=evil\n")
+                before = self._read()
+                before_lines = self._physical_lines()
+
+                with self.assertRaises(ValueError) as ctx:
+                    write(self.env_file, value)
+
+                msg = str(ctx.exception)
+                self.assertIn("行分隔符", msg)
+                if label == "账号密钥":
+                    # 账号密钥实现的消息契约另含行号线索且不回带原文（原用例逐条保留）
+                    self.assertIn("第 2 行", msg, "消息须给出问题行的行号线索")
+                    self.assertNotIn("SECRET", msg, "消息不得回带行原文（键名也不行）")
+                    self.assertNotIn("\u2028", msg, "消息里不得出现分隔符字符本身")
+                self.assertEqual(self._read(), before, "拒绝写入时不得改动 .env（一个字节都不改）")
+                self.assertEqual(self._physical_lines(), before_lines,
+                                 "物理行数 +1 = 潜伏分隔符被某次读-改-写实体化")
+                self.assertNotIn("YIBAN_ADMIN_PASSWORD_HASH",
+                                 env_io.parse_env_file(self.env_file),
+                                 "潜伏载荷一旦实体化，解析器就能看到注入键")
+                self.assertEqual(self._leftover_tmp(), [], "拒绝写入时不得先落 tmp 文件")
+                self.assertNotIn(key_name, env_io.parse_env_file(self.env_file),
+                                 "被拒绝的写入不得留下半写的新键行")
+
+    def test_sites_fold_space_shadow_line(self):
+        """`KEY = v`（= 前带空格）是同一条键的行，必须折掉，不积累出同键第二行。"""
+        for label, key_name, write, value, expect in self.SITES:
+            with self.subTest(site=label):
+                self._write(f"{key_name} = \nYIBAN_OTHER=1\n")
+                self.assertEqual(env_io.parse_env_file(self.env_file)[key_name], "",
+                                 "前置条件：空值键让写入方走进写入分支")
+
+                write(self.env_file, value)
+
+                self.assertEqual(
+                    env_io.count_key_lines(self.env_file, key_name), 1,
+                    "影子行残留 = 同键两行，解析取哪行由落盘顺序决定")
+                self.assertEqual(env_io.parse_env_file(self.env_file)[key_name], expect)
+                self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1",
+                                 "折叠不得丢掉无关配置")
+
+    def test_sites_plain_write_preserves_other_lines(self):
+        for label, _key_name, write, value, _expect in self.SITES:
+            with self.subTest(site=label):
+                self._write("YIBAN_OTHER=1\n")
+                write(self.env_file, value)
+                self.assertEqual(self._physical_lines(), 2)
+                self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1")
+
+    def test_dropped_old_key_line_is_validated_before_folding(self):
+        """含 U+2028 的旧键行会被折叠丢弃——丢弃前同样要过校验，不得静默删掉。
+
+        （账号密钥实现独有分支：前置的"末行空值键"使其走进写入而非早退。）
+        """
+        self._write("YIBAN_ACCOUNTS_KEY=aa\u2028bb\nYIBAN_ACCOUNTS_KEY=\n")
         before = self._read()
-        before_lines = self._physical_lines()
+        self.assertEqual(
+            env_io.parse_env_file(self.env_file)["YIBAN_ACCOUNTS_KEY"], "",
+            "前置条件：末行空值键让本函数走进写入分支（而非早退返回既有密钥）")
 
         with self.assertRaises(ValueError) as ctx:
-            tracking._write_track_salt_to_env_file(self.env_file, "salt123")
+            account_crypto._write_key_to_env_file(self.env_file, NEW_KEY)
 
         self.assertIn("行分隔符", str(ctx.exception))
-        self.assertEqual(self._read(), before, "拒绝写入时不得改动 .env（一个字节都不改）")
-        self.assertEqual(self._physical_lines(), before_lines,
-                         "物理行数 +1 = 潜伏分隔符被某次读-改-写实体化")
-        self.assertNotIn("YIBAN_ADMIN_PASSWORD_HASH",
-                         env_io.parse_env_file(self.env_file),
-                         "潜伏载荷一旦实体化，解析器就能看到注入键")
-        self.assertEqual(self._leftover_tmp(), [], "拒绝写入时不得先落 tmp 文件")
-
-    def test_space_shadow_line_is_folded(self):
-        """`YIBAN_TRACK_SALT = `（= 前带空格、值为空）是同一条键的行，必须折掉。"""
-        self._write("YIBAN_TRACK_SALT = \nYIBAN_OTHER=1\n")
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_TRACK_SALT"], "",
-                         "前置条件：空值键让写入方走进写入分支")
-
-        self.assertEqual(
-            tracking._write_track_salt_to_env_file(self.env_file, "salt123"), "salt123")
-
-        self.assertEqual(
-            env_io.count_key_lines(self.env_file, "YIBAN_TRACK_SALT"), 1,
-            "影子行残留 = 同键两行，解析取哪行由落盘顺序决定")
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_TRACK_SALT"], "salt123")
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1",
-                         "折叠不得丢掉无关配置")
-
-    def test_plain_write_preserves_other_lines(self):
-        self._write("YIBAN_OTHER=1\n")
-        tracking._write_track_salt_to_env_file(self.env_file, "salt123")
-        self.assertEqual(self._physical_lines(), 2)
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1")
-
-
-class AuditKeyLineModelTest(_EnvFileBase):
-    def test_latent_separator_in_other_line_refuses_write(self):
-        self._write(f"YIBAN_OTHER=ok\nYIBAN_ANNOUNCEMENT={LATENT}\n")
-        before = self._read()
-        before_lines = self._physical_lines()
-
-        with self.assertRaises(ValueError) as ctx:
-            audit_chain._write_audit_key_to_env_file(self.env_file, AUDIT_KEY)
-
-        self.assertIn("行分隔符", str(ctx.exception))
-        self.assertEqual(self._read(), before, "拒绝写入时不得改动 .env（一个字节都不改）")
-        self.assertEqual(self._physical_lines(), before_lines)
-        self.assertNotIn("YIBAN_ADMIN_PASSWORD_HASH",
-                         env_io.parse_env_file(self.env_file))
-        self.assertEqual(self._leftover_tmp(), [])
-
-    def test_space_shadow_line_is_folded(self):
-        self._write("YIBAN_AUDIT_KEY = \nYIBAN_OTHER=1\n")
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_AUDIT_KEY"], "")
-
-        self.assertEqual(
-            audit_chain._write_audit_key_to_env_file(self.env_file, AUDIT_KEY), AUDIT_KEY)
-
-        self.assertEqual(env_io.count_key_lines(self.env_file, "YIBAN_AUDIT_KEY"), 1)
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_AUDIT_KEY"],
-                         AUDIT_KEY.hex())
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1")
-
-    def test_plain_write_preserves_other_lines(self):
-        self._write("YIBAN_OTHER=1\n")
-        audit_chain._write_audit_key_to_env_file(self.env_file, AUDIT_KEY)
-        self.assertEqual(self._physical_lines(), 2)
-        self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1")
+        self.assertEqual(self._read(), before, "拒绝写入时不得改动 .env")
 
 
 class WriteEnvKeysTmpCleanupTest(_EnvFileBase):

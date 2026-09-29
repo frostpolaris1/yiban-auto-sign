@@ -25,6 +25,11 @@
 同等判红（正常写入每加一行都会抬高库内指纹高水位）。
 依赖：临时库 + 临时 `.env` + 临时锚点文件；CLI 用例起真子进程，故依赖
 `sys.executable` 并对子进程 stdout 按本地代码页解码；无网络、无 skip。
+
+> 批 6c3-D（D-2）：行数判据四支（变多/相等/变少/count 不符）并一条参数化
+> `test_anchor_judge_branches`；「读不出」两支（非法 UTF-8 / 无指纹的坏行）并一条
+> `test_corrupt_sources_are_indeterminate_not_healthy`；每支 subTest 保留原断言与消息。
+> 本类还承接 `test_audit_anchor.py` 下沉的健康往返与 `audit_health` 聚合断言。
 """
 import contextlib
 import importlib.util
@@ -75,6 +80,10 @@ class _Fixture(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
+        self._reset_state()
+
+    def _reset_state(self):
+        """重造夹具状态（6c3-D：并参数化后的同一用例内多支场景各需一次）。"""
         if db._conn is not None:
             with contextlib.suppress(Exception):
                 db._conn.close()
@@ -133,12 +142,23 @@ class HealthyBaselineTest(_Fixture):
         self.assertTrue(h["anchor_ok"])
         self.assertTrue(h["healthy"])
         self.assertNotIn("anchor_witness", h)
+        # 快乐基线还承接两处原 test_audit_anchor.py 的汇总断言（6c3-D D-2 下沉）：
+        # ① 记录/校验往返：verify_audit_anchor 通过且无话可说；② audit_health 聚合口径。
+        ok, msg = db.verify_audit_anchor(self.anchor)
+        self.assertTrue(ok, msg)
+        self.assertEqual(msg, "")
+        self.assertTrue(h["chain_ok"])
+        self.assertEqual(h["write_failures"], 0)
 
 
 class ThreeBranchJudgeTest(_Fixture):
-    """行数判据三支齐全：变少 / 相等 / **变多** 都必须响。"""
+    """行数判据与自报对账四支：变多 / 相等（正例）/ 变少 / count 不符（6c3-D D-2 并参数化）。
 
-    def test_garbage_line_append_goes_red_by_growth_branch(self):
+    四支原逐条同构（造一个锚点文件状态 → 断 anchor_status/anchor_ok/healthy 与消息
+    点名），每支的造局手法与断言逐条保留为 subTest。
+    """
+
+    def _scenario_growth(self):
         """只追加 1 条垃圾行——旧实现两道判据同时"无异常"，现在必须判红。"""
         self._seed(4)
         db.record_audit_anchor(self.anchor)
@@ -150,7 +170,7 @@ class ThreeBranchJudgeTest(_Fixture):
         self.assertFalse(h["healthy"])
         self.assertIn("增至", h["anchor_msg"], "必须点名「变多」这一支")
 
-    def test_valid_append_by_app_is_not_flagged(self):
+    def _scenario_valid_append(self):
         """正例对照：应用自己追加一行（库内高水位同步抬高）不得误报。"""
         self._seed(2)
         db.record_audit_anchor(self.anchor)
@@ -160,7 +180,7 @@ class ThreeBranchJudgeTest(_Fixture):
         self.assertEqual(h["anchor_status"], "ok", h["anchor_msg"])
         self.assertTrue(h["healthy"], h["anchor_msg"])
 
-    def test_truncation_still_goes_red(self):
+    def _scenario_truncation(self):
         self._seed(3)
         db.record_audit_anchor(self.anchor)
         self._seed(3)
@@ -170,7 +190,7 @@ class ThreeBranchJudgeTest(_Fixture):
         self.assertEqual(h["anchor_status"], "tampered")
         self.assertIn("减至", h["anchor_msg"])
 
-    def test_claimed_count_mismatch_goes_red(self):
+    def _scenario_count_mismatch(self):
         """锚点自报与库内真值不一致（声称 count=2，链内实有 6 行）必须判红。"""
         self._seed(6)
         db.record_audit_anchor(self.anchor)
@@ -185,11 +205,22 @@ class ThreeBranchJudgeTest(_Fixture):
         self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
         self.assertIn("不符", h["anchor_msg"])
 
+    def test_anchor_judge_branches(self):
+        for label, scenario in (
+            ("变多：垃圾行追加即红", self._scenario_growth),
+            ("相等：应用合法追加不误报", self._scenario_valid_append),
+            ("变少：截断即红", self._scenario_truncation),
+            ("自报 count 与库内不符即红", self._scenario_count_mismatch),
+        ):
+            with self.subTest(branch=label):
+                self._reset_state()
+                scenario()
+
 
 class IndeterminateStateTest(_Fixture):
     """解析失败 = "无法定论"：≠无异常、≠普通红，且 healthy=False。"""
 
-    def test_invalid_utf8_is_indeterminate_not_healthy(self):
+    def _scenario_invalid_utf8(self):
         self._seed(4)
         db.record_audit_anchor(self.anchor)
         with open(self.anchor, "ab") as f:
@@ -205,7 +236,7 @@ class IndeterminateStateTest(_Fixture):
         self.assertFalse(ok)
         self.assertTrue(msg.startswith("无法定论："), msg)
 
-    def test_unparseable_line_without_meta_is_indeterminate(self):
+    def _scenario_unparseable_without_meta(self):
         """无库内指纹可比时，结构坏行仍必须是"无法定论"而不是"无异常"。"""
         self._seed(2)
         with open(self.anchor, "w", encoding="utf-8") as f:
@@ -213,6 +244,19 @@ class IndeterminateStateTest(_Fixture):
         status, _msg = db._anchor_status(self.anchor)
         self.assertEqual(status, "indeterminate")
         self.assertFalse(self._health()["healthy"])
+
+    def test_corrupt_sources_are_indeterminate_not_healthy(self):
+        """「读不出」两类来源必须落同一结论：非法 UTF-8 与无指纹可比的结构坏行。
+
+        （两条原逐条同构，6c3-D D-2 并参数化；每支的断言与消费点原样保留。）
+        """
+        for label, scenario in (
+            ("非法 UTF-8 字节", self._scenario_invalid_utf8),
+            ("无指纹可比的结构坏行", self._scenario_unparseable_without_meta),
+        ):
+            with self.subTest(source=label):
+                self._reset_state()
+                scenario()
 
     def test_alert_facts_name_indeterminate(self):
         self._seed(4)
