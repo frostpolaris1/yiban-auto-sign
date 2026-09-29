@@ -577,6 +577,20 @@
     n.className = bad ? "set-tip set-bad" : "set-tip";
   }
 
+  /* ---------- 按钮忙碌态（全站唯一实现） ----------
+     原地转圈，**不改文案**：换文案会改变按钮宽度、把同行元素挤开，
+     而用户此刻的视线正落在这个按钮上，按钮一变形注视点就被挪走
+     （这正是"文字反馈在实践中不可靠"的机制）。这里按钮宽度与标签位置
+     都不动，只在标签左侧加一个转圈并把标签压暗。
+     元素缺失是常态（分区未渲染），静默返回。 */
+  function setBusy(btn, on) {
+    var b = typeof btn === "string" ? $(btn) : btn;
+    if (!b) return;
+    b.classList.toggle("is-busy", !!on);
+    if (on) b.setAttribute("aria-busy", "true");
+    else b.removeAttribute("aria-busy");
+  }
+
   /* ---------- 口令策略（管理端与后端 web/app.py 同一口径） ---------- */
   // 全站唯一一份口令判定：登录/注册页、用户自助改密、管理端重置/新增口令都从这里取，
   // 不再各自内联一份数组（历史上多份副本互相漂移过）。
@@ -1601,6 +1615,7 @@
     confirmDialog: confirmDialog,
     promptDialog: promptDialog,
     setTip: setTip,
+    setBusy: setBusy,
     PW_CLASS_PATTERNS: PW_CLASS_PATTERNS,
     PW_MIN_LEN: PW_MIN_LEN,
     PW_MIN_CLASSES: PW_MIN_CLASSES,

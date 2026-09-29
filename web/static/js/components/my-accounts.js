@@ -402,7 +402,17 @@
         account: editing ? accounts[index] : null,
         endpoints: { create: "/api/my-accounts", update: "/api/my-accounts/" },
         lockButton: false,   // 沿用原实现：仅用在途标志防连点，不改按钮
-        onSaved: function () { notifyChanged(); loadAccounts(); }
+        onSaved: function (data) {
+          notifyChanged();
+          loadAccounts();
+          // 新建且后端排上了异步在线校验时，把校验结果接出来（此前 job_id 被丢弃，
+          // 提交者无从得知校验成功与否）。编辑路径后端不回 job_id，故只在有值时起。
+          if (data && data.job_id && YB.verifyJob) {
+            YB.verifyJob.start(data.job_id);
+          } else if (editing) {
+            YB.verifyJob && YB.verifyJob.stop();
+          }
+        }
       });
     }
 

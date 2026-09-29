@@ -102,12 +102,6 @@
     box.appendChild(el("div", { class: "empty__msg", text: msg || "暂无数据" }));
     return box;
   }
-  function trendArrow(cls) {
-    var paths = { up: "M7 17l10-10M7 7h10v10", down: "M7 7l10 10M7 17h10V7", flat: "M5 12h14" };
-    var span = el("span", { class: "dash-trend" });
-    span.appendChild(svgIcon(cls, "2.5", [paths[cls]]));
-    return span;
-  }
 
   /* ---------------- 状态词表（sign_events.status 的真实取值） ----------------
      取值与 scripts/signin.py 的 STATUS_* 常量一一对应，新增状态必须同步本表。

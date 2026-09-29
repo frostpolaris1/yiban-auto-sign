@@ -15,8 +15,7 @@
 
    ## 容器约定
    · 月历挂在 `mount` 内（整个 mount 由本模块重建）；
-   · 日志面板（可选）由页面渲染，本模块按
-     `mount 内 [data-sc-log]` → `文档内 [data-sc-log]` 的顺序寻找，
+   · 日志面板（可选）由页面渲染，本模块按 `文档内 [data-sc-log]` 寻找，
      并在 `[data-sc-log-date]` 回显当前日期。没有日志面板时只渲染日历。 */
 (function () {
   "use strict";
@@ -45,10 +44,6 @@
     }
     return months[phone];
   }
-  function logPanel(mount) {
-    return mount.querySelector("[data-sc-log]") || document.querySelector("[data-sc-log]");
-  }
-
   // ==== 签到日历 · 日期格（唯一实现，勿在页面里再写一份）====
   // 视觉通道分配（颜色之外必须有冗余编码，不单靠颜色传达状态）：
   //   ① 底色 + 圆点 = 签到结果（✅ 成功 / ❌ 失败）；色值见 app.css 的 --cal-* 令牌，

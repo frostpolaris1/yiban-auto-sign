@@ -769,7 +769,11 @@ html {
 .dash-page [hidden] {
   display: none !important;
 }
-.dash-page .dash-skel {
+/* 骨架占位：尺寸规则**必须挂在裸类名上**，不能限定 .dash-page 祖先。
+   work_accounts.html / work_settings.html 也用 dash-skel 但没有 .dash-page 祖先，
+   限定作用域时 span 保持 display:inline、宽高全部失效（实测 rectW=0），
+   加载期该处没有任何占位——用户看到的是"页面空着"，容易重复点击。 */
+.dash-skel {
   display: inline-block;
   width: 4.5rem;
   max-width: 100%;
@@ -784,23 +788,6 @@ html {
 }
 /* 页级加载状态条（P61-B5 兜底）：形态与 .usr-status 一致 —— 失败才出现，成功即隐藏 */
 .dash-page .dash-status { margin: 0 0 16px; align-items: center; }
-.dash-page .dash-trend {
-  display: inline-flex;
-  vertical-align: -2px;
-}
-.dash-page .dash-trend svg {
-  width: 13px;
-  height: 13px;
-}
-.dash-page .dash-trend svg.up {
-  color: var(--success);
-}
-.dash-page .dash-trend svg.down {
-  color: var(--danger);
-}
-.dash-page .dash-trend svg.flat {
-  color: var(--t-muted);
-}
 
 /* 图表加载 / 空态 / 错误遮罩：覆盖在 canvas 上，避免空白画布 */
 .dash-page .chart-canvas-wrap {
@@ -1778,6 +1765,39 @@ body,
     color var(--theme-dur-text) var(--theme-ease),
     box-shadow var(--theme-dur-surface) var(--theme-ease);
 }
+/* ---- 按钮内联忙碌态 ----
+   为什么不用「把文案换成『保存中…』」：换文案会改变按钮宽度 → 同行元素重排，
+   而用户此刻的视线正落在这个按钮上，它一变形就把注视点从操作点挪开
+   （这正是"文字反馈在实践中不可靠"的机制）。改法是**原地**转圈：
+   按钮宽度不变、标签留在原位只是压暗，加载指示出现在标签旁边。
+   减动效偏好下转圈改为静态环 + 压暗，状态仍然可见。 */
+.btn.is-busy {
+  position: relative;
+  color: var(--t-sub);            /* 标签压暗：仍在读，但不再像可点的静态文案 */
+  pointer-events: none;           /* 兜底防连点（与 disabled 互为保险） */
+}
+.btn.is-busy::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 640ms linear infinite;
+}
+@keyframes btn-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn.is-busy::before {
+    animation: none;
+    border-top-color: currentColor;
+    opacity: .55;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   body,
   .auth-shell,
@@ -1851,6 +1871,10 @@ body,
   --slot-partial-bg: #FFFBEB;   /* 部分落入裁剪区（虚线框） */
   --slot-partial-border: #FCD34D;
   --slot-partial-fg: #92400E;   /* = 6.84:1 */
+  /* 开关「关」态轨道：WCAG 1.4.11 非文字对比度。vendor 的 .switch .track 用
+     --bg-muted(#F1F5F9) + --border，对白卡仅 1.10:1，而"开/关"这个状态完全由轨道
+     承载——关态几乎看不见等于开关不可读。3.26:1 同时覆盖"轨道对卡片"与"白滑块对轨道"。 */
+  --switch-off-bg: #868FA0;  /* 对白卡 3.26:1；白滑块 on 本值亦 3.26:1 */
 }
 html[data-theme="dark"] {
   --t-sub: #94A3B8;
@@ -1865,6 +1889,7 @@ html[data-theme="dark"] {
   --state-ok-fg: #34D399;
   --state-warn-fg: #FCD34D;
   --state-bad-fg: #FCA5A5;
+  --switch-off-bg: #64748B;  /* 对深卡(--bg-card #141B2D) 3.60:1 */
   --slot-full-bg: #2B1F08;
   --slot-full-border: #5C3D0A;
   --slot-full-fg: #FCD34D;
@@ -2565,6 +2590,13 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 
 /* 开关：按下时轨道轻微缩小（滑块位移由 Adminator 的 200ms transform 承担，不加 overshoot） */
 .switch:active .track { transform: scale(0.96); }
+/* 开关关态轨道改吃语义令牌（WCAG 1.4.11）：vendor 原值对卡片仅 1.10:1（浅）/1.08:1（深）。
+   只写未选中的基态——选中态由 vendor 的 `.switch input:checked+.track` 承担，
+   其特异性 (0,2,1) 高于本条 (0,2,0)，不会被这里压掉。 */
+.switch .track {
+  background: var(--switch-off-bg);
+  border-color: var(--switch-off-bg);
+}
 .switch .track { transition: background-color 200ms var(--theme-ease), border-color 200ms var(--theme-ease), transform 100ms var(--ease-out-strong); }
 
 /* 模态：进入 200ms 强 ease-out / 退出 160ms ease-in；位移收到 6px */
@@ -3366,12 +3398,13 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    一张卡里堆着多组多行说明文字时，只靠 16px 留白读不出分组边界（用户实拍反馈
    「多行式文本文案缺乏必要的分隔或间隔，难以看出功能分组」）。线与颜色走白名单
    （重复行分隔，1px solid --border-soft）。 */
-/* 窄屏开关行：文字与开关横排时说明列只剩 240px（实测 13 字/行）→ 文字用满整宽、开关另起一行 */
-@media (max-width: 560px) {
-  .set-row { flex-wrap: wrap; }
-  .set-row .set-help, .set-row .set-row-text { flex: 1 1 100%; }
-/* 文字块是 <label for=开关 id>（整行可点：982px 的间距不再需要走过去点） */
+/* 文字块是 <label for=开关 id>：整行可点，宽屏下不必走到最右侧点开关 */
 .set-row-text { display: block; cursor: pointer; }
+/* 窄屏曾在此强制 flex-wrap 把开关挤到下一行，起因是说明文案过长（横排只剩 240px、
+   13 字/行）。文案已按「细节进 info 浮层」收短，撤掉换行让开关回到同一行——
+   控件与说明分家会让扫读断裂，也违反近接原则。 */
+@media (max-width: 560px) {
+  .set-row { gap: 12px; }
   .set-row .switch, .set-row > .set-row-ctl { margin-left: auto; }
 }
 .set-row + .set-row {
@@ -4227,7 +4260,6 @@ body[data-page="work-users"] .tab-panel .usr-group-head { margin-bottom: 0; }
   .range-trigger-hint > svg,
   .time-trigger-hint > svg,
   .dd-menu-item > svg,
-  .dash-trend > svg,
   .sc-legend li > i,
   .dash-cal-key > i
 ) {
