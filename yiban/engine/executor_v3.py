@@ -576,22 +576,33 @@ async def _lane(queue, lane_id, ctx):
             ctx.busy -= 1
 
 
+#: 本进程内已打过接管日志的 `(peer, day)` 集合：判死后的分片每 `RECOVER_SEC` 都会再并
+#: 一次，逐次打会刷屏，故同日同一 peer 只播报首次。
+_TAKEN_OVER_PEERS: set = set()
+
+
 def _widen_with_dead_peers(ctx, shards):
-    """把心跳已过期的执行体的分片并入本轮领取范围，并把这些分片内的 `pending` 行改归本
-    执行体；返回并入后的分片集（升序去重）。
+    """把心跳已过期的执行体的分片并入本轮领取范围；返回并入后的分片集（升序去重）。
 
     判据是**既有文件心跳的四态**（`state_io.worker_presence`）：只有 `stale`（有开始记录、
     无收尾且心跳过期）才算死。监督进程未启动 / 单进程直跑时该槽位没有当日记录，四态回
     `idle`——**不是** `stale`，故不会误接管活着的执行体。`vshard=-1` 的历史行不属于任何
     分片集（`hrw.shards_of` 产出 `0..V-1`），天然不在接管范围内，不需要额外过滤。
 
-    **并入与"偷到多少行"解耦**：判死就并入分片，`steal_shards` 的返回值只用于日志。
-    若拿 `taken > 0` 当门，死主"把分片内的待办全领成 `claimed` 后崩"就漏了——
-    `reap_expired` 回收这些行时把 `owner` 清成 `''`，分片内已没有 `owner=<死主>` 的
-    `pending` 行，`steal_shards` 返回 0，分片不进领取集；随后回收出的 `pending` 行
-    无人可领 = "崩溃即卡死"（`claim_batch` 不筛 `owner`，并入即可领）。
-    归属修正仍要做：owner 与实际接管者一致，展示与后续判死才有意义。日志只在真改归了
-    行时打（判死后的分片每 `RECOVER_SEC` 都会再并一次，按"有行"打不会刷屏）。
+    **只并入分片集，不改任何行**：行归属改写已裁（原 `queue_store.steal_shards`，按
+    "分片内 `pending` 且 owner 指向死主"改写 owner）——`claim_batch` 不筛 `owner`
+    （领取动作本身 `SET owner=<领取者>`、`epoch+1`），`reap_expired` 回收时把 `owner`
+    清空，改写对"行能否被领到"、围栏与回收判定零贡献。代价只是接管窗口期（租约 60s +
+    回收宽限 120s + 回收间隔 60s，最坏约 4 分钟）展示页的归属列仍显示死主，可接受。
+
+    判死即并入是超时回收在多执行体下生效的必要条件：`reap_expired` 按当日全表回收、把
+    死主分片的行变回 `pending`，但 `claim_batch` 只领 `vshard IN (本执行体的分片集)`——
+    不并入，回收出的行无人能领 = "崩溃即卡死"。拿"改到几行"当门更不行：死主把待办全领成
+    `claimed` 后崩，回收出的行 `owner` 已清空，按 owner 匹配的改写返回 0。
+
+    日志报"接管了哪些分片"而非行数（行归属已不再被改写，没有行数可报），按"本进程内该
+    peer 首次判死并入"打一次（`_TAKEN_OVER_PEERS` 去重）；同日重并的分片集与首次相同，
+    重复播报无信息量。
     """
     v = getattr(ctx, "v", 0)
     if v <= 0:
@@ -606,13 +617,10 @@ def _widen_with_dead_peers(ctx, shards):
         peer_shards = hrw.shards_of(peer, ctx.cfg["executors"], ctx.day, v)
         if not peer_shards:
             continue
-        # `me` 用运行时身份（写库的持有者），`peer` 用稳定槽位名：死主的行有两类
-        # owner（计划 owner 是稳定名、被重排回来的行带着它的运行时身份），
-        # `steal_shards` 按前缀把两类都算进来。
-        taken = queue_store.steal_shards(ctx.runtime_id, peer, peer_shards, ctx.day)
-        if taken:
-            logger.warning("接管心跳过期的执行体 %s 的分片集，%d 条待办改归本执行体",
-                           peer, taken)
+        if (peer, ctx.day) not in _TAKEN_OVER_PEERS:
+            _TAKEN_OVER_PEERS.add((peer, ctx.day))
+            logger.warning("接管心跳过期的执行体 %s 的分片集 %s（仅并入本轮领取范围，不改行归属）",
+                           peer, sorted(peer_shards))
         extra.extend(peer_shards)
     if not extra:
         return tuple(shards)
@@ -638,8 +646,8 @@ async def _refiller(queue, shards, ctx):
       **只回收本业务日**（`day=ctx.day`）：不带 `day` 会连历史业务日的行一起回退成
       `pending`，而次日进程只按当日领取，那些行只会变成永不被领的空转行；跨午夜长轮次
       仍在飞的行也会被次日进程重置。
-    - 死主接管：对心跳过期的执行体，把其分片集内的 `pending` 行改归本执行体并把分片并入
-      领取范围——否则死主的行没有任何人领。
+    - 死主接管：对心跳过期的执行体，把其分片并入领取范围（只并入，不改行归属——归属在
+      领取时落到领取者名下）——否则死主分片里回收出来的行没有任何人领。
     另按 `WORKER_HEARTBEAT_SEC` 刷新本执行体心跳：一轮可能十几分钟，只在起跑/收尾写盘会
     让长轮次被执行体页判成 `stale`（异常），比"显示 idle"更糟。
 
