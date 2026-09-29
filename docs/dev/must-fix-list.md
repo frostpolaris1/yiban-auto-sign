@@ -568,6 +568,18 @@ id 随行不随位、漂移改口、额度三分支）。残余（非本任务�
 遗留（非阻塞）：`audit_anchor_meta.lines`（DB 侧、应用可写）相邻 `int()` 未加固——同"控制面损坏⇒
 崩溃"类，归 Task 7 开头收口。
 
+**降级裁决（2026-09-28 缩减批 6b，用户级）**：独立见证整族（`record_audit_anchor_witness` /
+见证指纹文件 / root 侧 cron 与部署件）与"三方指纹"一并裁掉，锚点判据收敛为**两方**
+（库内指纹 + 锚点旁路文件自报：行数三支 + 行内 `prev_line_hash` 链 + 末行 `last_hash`）；
+清洗事件豁免收窄为**锚点定点行不再享有清理留痕豁免**（`anchored is None` 无条件判 tampered）；
+全表重链只裁纵深、**保留 `migrate_v3` 的 hash 回填本体**（残缺旧库升级仍须把链回填自洽）。
+随之收窄的验收不变量：MF-52 的"跨权限独立见证对双写掩盖的检出"与 MF-53 的"整链重签由见证
+head 抓"两条**已失效**——链条在本机自洽时，有 root（或应用写权限）者可抹痕而不被发现，
+此为**已接受的威胁模型**。保留取证底线不变：只追加审计行 + HMAC 链 + 每日锚点哈希 +
+断链/缺行告警（`chain_ok`/`anchor_ok`/三态锚点/`purge_total`/`last_cleanup`/
+`write_failures` 与 `audit_verify.py` 判码 0/1/2）。已知降级：极长期空闲部署（链尾早于
+保留期窗口）的锚点定点行被合法清理后会由"静默 OK"变告警；本工具每天签到写审计行，实际不触发。
+
 ### MF-53 审计"写了但追不到人、丢了你不知道"
 合并 L05、L06、L22、L32、L64。链构造本身成立（`prev_hash` 与 INSERT 同事务、AUTOINCREMENT 保跨进程不分叉），但：**业务写与审计写永远两个事务** ⇒ 中间被杀则"做了无留痕、欠账仍为 0"（欠账检测结构性看不见这类丢法）；无会话/请求 id，来源列只有可伪造 IP 的哈希；`audit_head_hash` 读失败与空链同返回 `""`；欠账单调无归零口径 ⇒ urgent 邮件永久刷屏；`_rechain_audit_logs` 分批 commit 击穿原子承诺；`audit_verify.py` 无顶层异常兜底 ⇒ `database is locked` 以 exit 1 **冒充"检出篡改"**，而唯一下游"修复"是重跑 `migrate_v3`（其分批 commit 会把可恢复态变成永久断链），无锚点时把"没查"印成"通过"，删尾/整链重签两类都检不出；`state_cleanup.py` 的 `--dry-run` 见 MF-48。
 验收不变量：审计与业务同事务（或写审计失败即回滚业务）；"未查"与"通过"必须是两个不同返回值；校验器对"锁住了"和"检出篡改"给不同退出码。`[需确认]`
@@ -577,7 +589,7 @@ id 随行不随位、漂移改口、额度三分支）。残余（非本任务�
 auth 建号 / users_api 角色与重置与两型删除与批量（kill 注入 e2e：业务与审计同在或同不在）；
 1 处诚实例外 `user_deleted_purge`（purge 清单仅写后可知，保留写后审计——残余窗口可闭，归批尾清扫）。
 `audit_verify` 判码分离：0 通过 / 1 篡改 / 2 无法定论（含库锁）/ 2 未查——`migrate_v3` 不再作为
-"修复"出路；删尾由 max_id/行哈希抓、整链重签由见证 head 抓（与 Task 6 判据联动）。重链单事务化
+"修复"出路；删尾由 max_id/行哈希抓（独立见证与"整链重签由见证 head 抓"已于缩减批 6b 裁掉，见 MF-52 降级裁决）。重链单事务化
 （失败回滚保留原链）；`audit_head_hash` 读失败三态 ≠ 空链；请求作用域 id（web 请求级/CLI 进程级，
 用户侧 `[req=` 冒充已消毒）；欠账告警按"账目变化"触发（止 urgent 刷屏）+ 告警基线按送达推进
 （送达失败不推进，重试）。
@@ -1232,6 +1244,8 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 锚业务钟、跨午夜敏感的 e2e 以构造定结果）。残余：运维脚本宿主钟（state_cleanup/
 backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
 
+**处置（2026-09-28 缩减批 6a，repair/m3-shrink6a）**：**双 TZ 常态化收窄为"单遍全量 + 时区专项子集"**。CI 实况本就单遍（ci.yml 快车道无 TZ 步；nightly 全量默认 TZ 单遍），常态化的"全量默认 + TZ=UTC 各一遍"只存在于本地习惯口径。收窄后：nightly 全量保持单遍，新增"时区专项子集"步（-k "date or midnight or rollover or utc or tz or retention or saturday or weekend or cross_day"，133 条 ~10s，TZ=UTC）作金丝雀；子集词集同步写进 release-gate.md §2①，改时钟相关代码时本地照此双跑。子集实测 TZ=UTC 全绿。
+
 ### MF-109 运维脚本按天文件用宿主 `date` 命名/判定，与引擎业务钟（`yiban.clock` 北京钟）分叉（条件触发，现网不触发）
 - **现象**（2026-09-26 批 1 Task 0 全量审查时发现，tests-only 未改生产）：`run.sh`/`yiban-fallback.sh`/
   `backup.sh`/`pull-prod-backup.sh` 给按天键文件命名与判定（`sign-status-<date>.txt`、`sign-<date>.log`、
@@ -1248,6 +1262,22 @@ backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
 
 **处置（2026-09-27 批 3 分诊，repair 流）**：**不修**。现网宿主为北京时区 ⇒ **现网不触发**（登记原文即写"条件触发"）；触发条件是换宿主/改时区/容器化部署。按章程第 4 条（裁"压根遇不到"的情况）不修，改在运维文档补一句"宿主时区须为业务时区（北京）"。与 MF-108（CI 日期族，批 1 已修）同模式但对象是运维脚本，勿混。归缩减批二次确认。
 
+**处置（2026-09-28 缩减批 6a，repair/m3-shrink6a，用户拍板必修、撤销批 3 的降级）**：**修**。
+按天命名/判定统一取**单一业务日源**（`yiban.clock` 北京钟，与引擎/web 同一事实源）——
+四个 shell 入口（`run.sh` / `scripts/yiban-fallback.sh` / `scripts/backup.sh` /
+`scripts/pull-prod-backup.sh`）各立 `business_day()`：主路 `python -c "from yiban.clock
+import today"`，退化 `TZ=Asia/Shanghai date`（宿主缺 tzdata 时），再退化宿主 `date`
+（保持可运行的降级形态）；三个 python 入口（`state_cleanup.py` 的日志"截止"文案、
+`backup_sentinel.py` 的当日归档判定、`generate_demo_data.py` 的演示数据锚点）直接改走
+`yiban.clock`（backup_sentinel 的"两边同钟"注释随 backup.sh 口径翻转同步改写）。
+`run.sh` 的 0/1/2/3 判码与执行语义逐字未动（只换日期来源；`PY` 解析上移到按天命名
+之前属顺序搬移，判定块零改动）；`scripts/backup.sh` 自检退出码 6/7/8 未动。
+**验收对拍（本机真跑）**：TZ=UTC 与默认 TZ 各真跑一轮 `run.sh`（暂停门 rc=2 SKIPPED、
+零外联），状态/日志/触发标记文件名均 `2026-09-28` = `yiban.clock.today()`；`backup.sh`
+TZ=UTC 真跑归档名 `yiban-2026-09-28.tar.gz`；另以 stub 宿主 `date`（2026-09-27）模拟
+UTC 16:00-24:00 错位窗——三个脚本的 `business_day()` 仍返回引擎业务日 09-28（python
+主路压过宿主钟），python 缺失时才退化到宿主钟。README 部署章节补时区建议一行。
+
 ### MF-110 测试标签块/生成式索引的门约定失效：批0 新增测试无标签块、索引过期、CI 未接 `--check`（脚本自称已接）
 - **现象**（2026-09-26 批 1 期间翻查写作规范时发现）：`scripts/test_index.py` 约定 `tests/test_*.py`
   头部五字段标签块（标签/覆盖/对应实现/关键断言/依赖）并生成 `docs/dev/test-index.tsv`，
@@ -1262,6 +1292,8 @@ backup_sentinel/generate_demo_data）另登记 MF-109（批 2+）。
   批 1 后续任务派单要求"新建测试文件自带标签块"。
 
 **处置（2026-09-27 批 3 分诊，repair 流）**：**不为它接 CI 门**。本条的验收不变量原写"CI（nightly）真实执行 `--check`"，但缩减批 A1 明列**删"测试标签块/生成式索引门"**（docstring 的重复登记簿，典型织网件）⇒ 现在接上去等于先把要删的门修好。保留本仓既有的**本地习惯**（改测试后跑 `--write`/`--check` 保持索引同步，如批 2 各任务收尾所做），**不接入 CI**。索引门本体的去留归缩减批。
+
+**处置（2026-09-28 缩减批 6a，repair/m3-shrink6a）**：**销项（随门整族裁）**。索引门与生成器（`scripts/test_index.py` + `docs/dev/test-index.tsv`）整族删除，`--write`/`--check` 纪律随之作废；同族一起裁的还有模块体积门（`tests/test_module_size_gate.py`）与计数钉子。MF-110 不再有"--check 全绿"的验收不变量——门没了，验收随之作废。
 
 ### MF-111 引号 dict 键形态的凭据值不被兜底遮罩（低-中）
 `{"access_token": "a b"}` 这类 JSON 式引号键值原样穿过 `sanitize_text`——引号键规则
@@ -1345,9 +1377,77 @@ faulthandler 无法转储、`/proc/<pid>/wchan` 不可读）。已用 bisect 证
 | 8 | ~~手动签到这条腿到底该不该受急停/周末管？~~ | **已裁决（2026-09-25 用户拍板）**：**手动腿保持豁免，现状即意图**——UI 契约、`test_global_pause.py:59`、`runner.py:232-234` 注释全部维持；设计文档 L3-4 本就记载豁免、无需改。厘清：L4-2 的冲突实为**派发拓扑**（`--only` 应单进程）而非门豁免 ⇒ 归 MF-74 修法（收敛扇出 + 三条确定性危害，M3 同批改实现与测试）；MF-101 只剩 spawn 前过滤 `user_paused` 一半照修 | 门半条关闭；派发半条按 L4-2 修 |
 | 9 | ~~`waf.py` 分类的 `>2000` 短路是规格还是缺陷~~ | **已裁决（2026-09-25 采纳推荐）**：判据本身按**缺陷**处理——失效方向是 fail-open（真实拦截页被放行、按「网络抖动」打满重试），收益可忽略 ⇒ 修 MF-71 时连 `test_login_protocol_shape.py:617-622` 同批改钉新行为（显式挑战判定 + 不可重试档 + 活体反例），不是「只补分类表」 | 修法照 MF-71 验收不变量走 |
 | 10 | ~~semgrep v2 规则集与 gate manifest 方案要不要入库~~ | **已裁决（2026-09-25 采纳推荐）**：只入库「能当硬门」的 6 条规则 + `test_route_gate_manifest.py`（含数量地板，防元测试静默全绿）；其余 13 条留仓外作评审队列 ⇒ **落地归 M3 修复流首批** | 6 硬门 + 数量地板；ratchet 类不进门禁 |
+
+**追记（2026-09-28 缩减批 6a）**：该项的"落地"计划**正式撤销**（缩减批 A1：路由门禁 manifest 数量地板属元门禁/流程门，从未落地、不再落地；semgrep 硬门方案随之不入库）。相关登记仅存历史。
 | 11 | 桌面那份文档里的**明文备份口令** | 操作清单已给出（`DISPATCH-REMAINING.md` 末节 7 步，含"旧口令在保留期内不能丢"） | 涉及生产写操作，本流不代做，等你手动执行 |
 
 ## 覆盖面声明（别把这份当"查过了"）
 L1 84 份报告覆盖划分表全部 86 个单元 ID（`R12ef`/`R13ij` 各合写两单元）；`web/static/vendor/**` 31,331 行第三方与 `web/static/css/**` 4,508 行样式**未审**，`tests/**` 属注释流范围；V1–V8 只覆盖被点名的 8 条高危；L2 覆盖任务书点名的 5 条链；**L3 只有 4/20 格有真 HTTP 全链路证据**（余下卡在假上游无故障注入能力，见派发 1）；S 只覆盖清单内测试项目。
 **收尾轮（2026-09-25 下午）新增**：semgrep 11 规则 265 命中已逐条四类归类（`out/SEMGREP-TRIAGE.md`，闭合 265 = 真缺陷 20 / 已知面 63 / 误报 114 / 噪音 68），候选 61 条去重成 50 簇（`out/MF-CANDIDATES.md`），并派 **16 个独立裁决代理**逐条复现 ⇒ 新立 MF-68..103（36 条）。其中 **32 条经独立裁决**（裁决累计驳回 14 条主张，清单见该节末"本流否证追加"）、**4 条（MF-97/98/99/100）是单源取证未二次裁决**，另有 10 余簇未编号待复现（见上"未编号候选"）。
 **仍未做**：跨用户并发压测、真实浏览器端到端、v3 开态实测、旧服务器、以及任何依赖读 `.env` 内容/`/etc/nginx` 全文的判定；`/etc/yiban/*` 内容与备份口令文件**一律未读**。
+
+---
+
+## 批 6c-1 登记（2026-09-29 · 台账单池化，基座 = sign_tasks）
+
+**用户裁决**：选 A——单池基座改用 `sign_tasks`（四柱最全），删 `sign_claims` 代码路径；接受"生产从没跑过的流程切过来"的风险（放假窗口，漏签无后果）。双侧轨开关 `YIBAN_SCHEDULER_V3` 随之消失。
+
+**本条顺带销项（原登记项）**
+- **B 类分支错误（原 `--fallback` 硬编 v2/`sign_claims`）** → 已消：兜底常驻经 `workers.run_fallback_worker` 走**同一个** `executor_v3.run_executor_v3`（`claim_all=True` + `requeue_during_run=True`），`runner.py` 的 `--fallback` 早返回不再是一条独立的 v2 腿；v3 的 `sign_tasks.failed` 当日回炉口随之打通（原条目的两条前置已满足前一条）。
+- **"两池互斥 / 灰度开关不进生产"** → 概念消失：不再是两池，双轨与开关已删。
+- **C-19（v20 回填明文驻留无上界）** → 已消：新增 `queue_store.purge`（`day < cutoff`，复用与 `claims.purge` **同一**时钟跳变守卫）+ `db.purge_sign_tasks` + `cleanup.run_daily_cleanup` 调用；此前全仓唯一 `DELETE FROM sign_tasks` 是按 phone。
+
+**降级 / 残留（登记，非本批验收）**
+- **ND-6c1-1**：`sign_claims` 仍有 **3 处**触碰——监督收尸（空表恒 0 行）、账号级联 DELETE（本批前就已同时删 `sign_tasks`）、保留期清理 DELETE。均为**空表上的无害操作**，不产生新领取事实。严格"零写入"需连带删四柱（超时回收）的 v2 侧收尾用例，故按**最小安全侧**保留。
+- **`round.run_queue_retry` 冻结保留**：已无生产调用点（定时/手动/兜底/容器/web 手动全走 `executor_v3`），但**未物理删**——删它会连带失去约 20 条非 `sign_claims` 语义（窗口/熔断/脱敏/暂停）的唯一覆盖入口；`scripts/signin.py` 兼容壳仍可裸名调它（会静默写冻结表、绕开新台账），已在函数与壳的 docstring 标"外部集成不得调用"。
+- **`capacity_of` 的 `enabled` 缺省现恒为 v3 口径（323→3360）**：批 4 容量口径**逐值不变**的前提是四处生产调用点全部**显式传参**（`runner.py` / `web/services/capacity.py` / `web/routes/settings_api.py` / `yiban/cli.py`）；缺省值本身成了留给未来调用者的陷阱，建议后续去掉缺省（本批未做，避免改既有调用点语义）。
+- **`executor_count`** 现无生产调用点（仅测试）。
+- **`_attempt` 的 reclaim 保险**（`phone ∉ accounts` 绝不 `_finish`）是**冗余第二道防线**，无独立用例（变异证明：单独停它新用例仍绿；它被 `allowed_phones` 允许集兜住）。
+- **`SLOT_WIDTH_META_KEY`** 全仓无生产读者（grep 结论）。
+
+**升级面（部署必读）**：现网实测 `user_version=17`，`sign_tasks`/`egress_state` 在现网**不存在** ⇒ 升级后**首次启动会在生产库上真跑 v18→v20**（建表 + v19 加 epoch 列 + v20 回填惰性历史行，均幂等且均为 `vshard=-1`/`owner=backfill` 的**不被领取**行）。与以往"无需迁移直接使用"不同，**升级前先做备份**。CHANGELOG v0.5.0 已写明。
+
+**门禁证据（控制器亲跑）**：全量 `3658 passed / 7 skipped / 0 failed`（默认 TZ，`-p no:randomly`）；`ruff check .` 0；四柱用例**一行未删**（`test_claims_fencing.py`/`test_claims_mutex.py`/`test_claims_reap_e2e.py` 原样通过）；独立审查两轮：**FAIL(1)** 已修并**复验 PASS**（`--only` 手动轮越界收尾别的账号 ⇒ 静默漏签；含 OBS-1 起跑回收收窄、OBS-3 E2E 同分片几何钉死，均带变异判别力证据）。
+
+## 批 6c-2 登记（2026-09-29 · B3/§5 可裁面 + 分片定档 + 窃取改写裁撤）
+
+**用户裁决**：ND-1 只裁 owner 改写、保留分片并入（生产实测 K=2）；ND-2 出口分片无可裁面；ND-3 定档 64、密度整形/槽宽压缩不动；ND-4 删 loadtest 族（mock_yiban 例外迁 `tests/fake_yiban_server.py`——它是两个生产 E2E 套件与发布门槛 §2④ smoke 的假上游，地貌表唯一一处误判已纠正）；ND-5 `ledger_check.py` 保留；ND-6 批 4 容量口径逐值不变。用户追加：C3 必须带恢复指引（已落 hrw docstring / README / scheduler-v3 §9 三处）；`YIBAN_VSHARDS` 覆盖键与 μσ/限速键 web 入口为后续批候选，本批不做。
+
+**本批销项**
+- **离线压测/容量工具族整族出仓**（8 脚本+README+cli `--measure`+家族测试 5 文件）；实测值改由部署者自行量取后录入 `YIBAN_CAPACITY_MEASURED`（语义不变）。删除前的容量基准实测留数：2000 用户/simulated 档，单执行体 4680 账号/窗口、建议 3120、硬件上限 K=12（证据归档 `D:\code\archive\m3-batch6c2-docs-20260929\capacity-benchmark-20260929\`）。**重要事实**：探针链在删除前已因 purge 护栏加固而不可运行（三次补丁才跑通）——死工具链，删除正当性充分。
+- **虚分片多档选择器**（64/128/256 按规模换挡）→ 定档 64；σ 包络按 64 重算（365 天逐日仿真，非照抄）。对 <500 账号部署零行为变化（原规则本就走 64）。恢复指引含旧口径、选档公式 √(K(1−1/K)/V) 与必补测试三类。
+- **`steal_shards` owner 改写** → 删；分片并入保留（K≥2 崩溃恢复的必要条件，`DeadShardMergeTakeoverTest` 直证「回收→并入→领到」）。生产行为变化仅：接管日志改报分片集（同日同执行体只播报一次）、接管窗口期（≤4 分钟）展示页归属列显示旧主。
+- **YIBAN_SCHEDULER_V3 死键残余叙述**（scheduler-v3 五处）清零；万级算法设计文档出库归档。
+
+**降级 / 残留（登记，非本批验收）**
+- **`test_mock_fault_injection_knobs.py`（783 行）随族删除**：注入旋钮契约（waf/nonjson/login-shallow 专设断言）与 `YIBAN_E2E_ENGINE_LOOP` 引擎档位 E2E 覆盖归零；真实判据侧（waf.py/security.py/protocol.py）仍由 `test_login_protocol_shape`/`test_login_e2e_mock` 钉住 → **6c-3 对表显式记账**。
+- **`capacity_of` 的 `enabled` 缺省陷阱**（沿 6c-1）：缺省恒 v3 口径，四处生产调用点已显式传参，缺省值本身是给未来调用者的坑。
+- **`v_for` 的 `n_accounts` 形式参数**：ruff 现无 ARG 规则不告警；启用 ARG001 时需改名或豁免。
+- **`test-inventory.md`** 为自述快照（2026-09-23），本批仅摘除已删文件行，全面刷新归 6c-3 对表。
+- **`_TAKEN_OVER_PEERS` 同日"死→复活→再死"不重播接管日志**：文档已声明的取舍（日志去重键 (peer,day)），无功能影响。
+- **`production-isolation-rehearsal-plan`（历史件）**引用的 mock 工具链已不存在，文首已加状态注记；真要执行该演练须先重建工具链或改写命令。
+
+**升级面（部署必读）**：本批**零 schema 变更、零数据迁移**（与 6c-1 的"首启跑 v18→v20"叠加后仍只需那一次备份）。定档与窃取改写对现网（99 账号、K=2）的可见变化：无（定档前后同走 64）；接管日志文案变化；接管窗口期归属列短暂显示旧主。
+
+**门禁证据（控制器亲跑/独立复跑）**：C2 全量 `3552 passed / 6 skipped / 0 failed`；C3 全量 `3552 / 6 / 0`（σ 首轮真红 1 例后修，具咬合力）；C4 全量 `3551 / 6 / 0`（净减 1 为用例合并）；审查修复后受影响面 127 passed + ruff 0；**收尾全量（含全部审查修复）`3551 passed / 6 skipped / 0 failed`（668s）**。**整批对抗审查**：FAIL(2)（均为"测试机基准"残留文案：实测 note、cli.md×2、README）已修（`d50fad6`）并复验；其余各面 PASS——热修改安全声明实证（`_plan_v` 落库值优先 + 三个安全网测试变异验证）、σ 包络 365 天逐日复现、四柱 SQL 未动、变异敏感性逐项咬红、geomap 无第二处同类误判。OBS-2（注入旋钮覆盖归零）转 6c-3 记账；OBS-3（整合报告缺失）已补 `task-6c2-report.md`。
+
+## 批 6c-3 登记（2026-09-29 · 全仓测试对表精简）
+
+**用户裁决**：终态按对表证据执行（~3,385 目标带），不硬凑 1,800–2,000——差距全部落在用户自定的保留红线内（四柱/已修 bug 回归执行器/安全脱敏/迁移/发布契约），OpenClaw test-audit 的价值标准（"optimize for confidence, not deletion count"）同样不支持硬凑。十条 ND 按控制器处置执行（其中 ND-8 改判：run.sh 凭据插值静态 2 条保留——它是该安全契约的唯一覆盖）。
+
+**本批执行（4 提交，基线 7249635 → bdbf21c）**
+- A（`d7d5a69`）静态/文档/元测试裁 48：doc-gate/kpi 源级断言/前端纯装配守卫 10 条/公开钥自证元测试等；js_modules 的 4 条 XSS/泄漏面保留。
+- C（`1b03610`）附录 A 存活项：C-1 四出口同构扫并一条 subTest 参数化（底座统一为覆盖只增不减）、C-2 前端静态兜底删（node 真跑的 dropdown 留）；C-3/C-4 改判保留。
+- B（`cbc98a5`）边界桩机制复制 campaign 合并：store 45+web 38 复制组 → 机制总账 + 各域行为测试全留；**变异验证两轮**（执行人 + 控制器独立抽查：`add_account` 错域转发恰好咬红 2 条台账）。
+- D（`bdbf21c`）条件项合并 + 收尾：env 行模型/审计锚点重叠段（CRITICAL 主 owner 未动）、前端单一实现三处；test-inventory 全面刷新（口径改 pytest 收集并附复现命令）；review-fix-plan 21 条对账：**13 销账 / 8 立任务**（含 E2 附：`test_host_exit_semantics` 断 `_compute` 副本不经 `runner.main` 且与生产判定漂移）。
+
+**终态数字**：收集 **3,557 → 3,414**（−143）；passed **3,551 → 3,408**；skip 恒 6。每批全量独立绿：3503→3499→3432→3408，0 failed；ruff 全程 0。控制器收尾全量 **3408 passed / 6 skipped / 0 failed**（665s）+ 变异抽查独立通过。
+
+**残留 / 立任务（登记）**
+- **拆分兼容层退役**（后续批候选）：`signin` 壳有 3 处生产消费方（web/app.py:86、accounts_data.py:42、executor_env.py:32），store/db.py 读写转发在役——boundary 两文件 297 条钉的是在役兼容层非 test-only 缝；退役属生产重构（A4 性质），非测试裁剪。
+- `test_host_exit_semantics` 副本与生产判定漂移（E2 附任务）；`probe.py:189` 的 `YIBAN_ENV_FILE` 单点未走 `resolve_path`（E1+E7 收口点）；`test_gate_narrowing_e2e.py` 缺 `标签：` 行（inventory 兜底归类，待补）。
+- geomap 自身算术不一致（A 层表头 −63~66 vs 逐条 ≈72）：终态以实收集数为准，已在报告登记。
+- 两处前端覆盖缺口随源级守卫消失且无行为替身（rekey 依赖"页面加载 core.js"半边、egress 依赖"只拨开关不带空请求体"半边）——已在保留文件 docstring 注记，D-3 总账可顺路接住。
+- `review-fix-plan-20260921.md` 本批以已跟踪文件入库（含对账结论）——与 must-fix-list 同批在批 6 收尾时一并移出仓库归档。
+
+**门禁证据（执行人每批全量 + 控制器复跑）**：见上终态数字；B 批变异两轮独立咬红；ruff 全程 0；四柱四件套每批抽验全绿；skip 数 6 不变。

@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""容量口径按开关分派：`schedule.capacity_of` / `schedule.executor_count` 与四处调用点。
+"""容量口径：`schedule.capacity_of` / `schedule.executor_count` 与四处调用点。
 
 标签：I · 容量、熔断与账号有效性
-覆盖：容量口径按 v3 开关分派（`capacity_of` 与 `capacity_accounts` / `capacity_accounts_v3` 逐值相同）、K 的唯一口径 `executor_count` 的边界，以及四处调用点在开关缺省时数值不变
+覆盖：`capacity_of` 两套公式的逐值等价（`enabled=False` ↔ `capacity_accounts`、
+`enabled=True` ↔ `capacity_accounts_v3`）、K 的唯一口径 `executor_count` 的边界，以及
+四处调用点在单池化后的数值不变（展示/闸门/预检均显式固定 v2 口径）
 对应实现：`schedule.capacity_of` / `schedule.executor_count`、`web/services/capacity.py::_capacity_estimate`、`yiban/engine/runner.py` 的容量预检、CLI `capacity` 与现场实测换算、`scripts/signin.py` 的转发壳
-关键断言：`enabled=False` 时 k / bucket_rate / util 一律不参与（v2 侧逐字不变）；`executor_count` 夹在 `[1, 出口数]`、随 N 单调不减、`bucket_rate` 变小则 K 不变或变大；`enabled` 缺省取 `executor_v3.scheduler_v3_enabled()`（开关即回滚）；另两处调用点用「包住 `capacity_of` 看它收到什么」来断言 `k=1`——源码文本断言会被无关重构误伤
+关键断言：`enabled=False` 时 k / bucket_rate / util 一律不参与（v2 公式逐字不变）；`executor_count` 夹在 `[1, 出口数]`、随 N 单调不减、`bucket_rate` 变小则 K 不变或变大；双轨开关已随单池消失，`enabled` 缺省**恒为 v3 口径**（`scheduler_v3_enabled` 保留但恒真），生产调用点则显式传 `enabled=False` 以守住批 4 取值；另两处调用点用「包住 `capacity_of` 看它收到什么」来断言 `k=1`——源码文本断言会被无关重构误伤
 依赖：纯本地——假时钟与假配置快照（runner 预检不读真实 `.env`、不联网、不落库）。无需 node
 
-覆盖（对应简报 ⑤ 的容量部分）：
-1. `capacity_of(..., enabled=False)` 与 `capacity_accounts(...)` 多组逐值相同（v2 侧硬门）；
+覆盖：
+1. `capacity_of(..., enabled=False)` 与 `capacity_accounts(...)` 多组逐值相同（v2 硬门）；
 2. `capacity_of(..., enabled=True)` 与 `capacity_accounts_v3(...)` 多组逐值相同；
 3. `executor_count`（K 的唯一口径）的边界：夹到 `[1, 出口数]`、随 N 单调不减、
    `bucket_rate` 变小则 K 不变或变大；
-4. 四处调用点在开关缺省 0 时**数值不变**：`web/services/capacity.py` 与
+4. 四处调用点**数值不变**：`web/services/capacity.py` 与
    `yiban/engine/runner.py` 两处用显式期望值钉住；另两处（`settings_api` / `cli`）
    以"包住 `capacity_of` 看它收到什么"作行为断言，验证 `k=1`（单执行体语义）。
 
@@ -90,17 +92,15 @@ class CapacityOfDispatchTest(unittest.TestCase):
             schedule.capacity_of(4200, avg=3, bucket_rate=1.0, enabled=True),
             schedule.capacity_accounts_v3(4200, 1, 3, 1.0))
 
-    def test_enabled_defaults_to_the_switch_when_not_passed(self):
-        """enabled 缺省取 `executor_v3.scheduler_v3_enabled()`——开关即回滚。"""
-        for raw, expect_v3 in ((None, False), ("1", True), ("0", False)):
+    def test_enabled_defaults_to_true_after_single_pool(self):
+        """台账单池化后 `enabled` 缺省恒为 v3 口径（双轨开关已消失）。"""
+        for raw in (None, "0", "false", "1", "true"):
             env = {} if raw is None else {"YIBAN_SCHEDULER_V3": raw}
             with self.subTest(raw=raw), mock.patch.dict(os.environ, env, clear=False):
                 if raw is None:
                     os.environ.pop("YIBAN_SCHEDULER_V3", None)
                 got = schedule.capacity_of(4200, gap=10, avg=3)
-                want = (schedule.capacity_accounts_v3(4200, 1, 3, 1.0) if expect_v3
-                        else schedule.capacity_accounts(4200, 10, 3))
-                self.assertEqual(got, want)
+                self.assertEqual(got, schedule.capacity_accounts_v3(4200, 1, 3, 1.0))
 
 
 class ExecutorCountTest(unittest.TestCase):
@@ -160,7 +160,7 @@ class ExecutorCountTest(unittest.TestCase):
 
 
 class WebCapacityEstimateSwitchOffTest(unittest.TestCase):
-    """`web/services/capacity.py::_capacity_estimate` 在开关缺省 0 时逐值不变。"""
+    """`web/services/capacity.py::_capacity_estimate` 显式固定 v2 公式，逐值不变。"""
 
     def _estimate(self, gap):
         return cap_service._capacity_estimate(
@@ -211,7 +211,7 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
             os.environ.pop("YIBAN_SCHEDULER_V3", None)
             numbers = cli._capacity_numbers(view, 0)
         self.assertEqual(numbers["window_effective_sec"], 4680)
-        # 有效窗口 4680s、avg=8、gap=10：(4680-8)//18+1 = 260
+        # 有效窗口 4680s、avg=8、gap=10：(4680-8)//18+1 = 260（显式 v2 口径，逐值不变）
         self.assertEqual(numbers["capacity_per_executor"], 260)
         args, kw = seen[0]
         self.assertEqual(args, (4680,), "窗口用完整有效窗口（这套配置能容纳几个）")
@@ -278,8 +278,12 @@ class _FakeClock:
         return self.t
 
 
-class RunnerPrecheckSwitchOffTest(unittest.TestCase):
-    """`runner.main` 的容量预检：开关关时逐值不变且不多读环境键，开关开时才带 K。"""
+class RunnerPrecheckTest(unittest.TestCase):
+    """`runner.main` 的容量预检：单池后仍按「窗口 − 重试储备」的告警阈值实算。
+
+    预检与执行体实现解耦：执行恒定走 v3，但告警阈值保留批 4 的口径（`enabled=False` +
+    `retry_reserve`），登记验收不变量「122–360 不得静默」压在它上面。
+    """
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-capof-")
@@ -323,7 +327,7 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         cfg.update(over)
         return cfg
 
-    def _run(self, *, n=1, cfg=None, planner_config=None, v3=False):
+    def _run(self, *, n=1, cfg=None, planner_config=None):
         """跑一轮 `runner.main`，返回 `(退出码, capacity_of 的调用记录)`。"""
         cfg = self._cfg() if cfg is None else cfg
         accounts = [SimpleNamespace(phone=f"1380000{i:04d}", user_paused=False,
@@ -339,57 +343,46 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
 
         planner_config = planner_config or (lambda: cfg)
         self.last_notify = mock.Mock()
-        with mock.patch.dict(os.environ, {}, clear=False):
-            if v3:
-                os.environ["YIBAN_SCHEDULER_V3"] = "1"
-            else:
-                os.environ.pop("YIBAN_SCHEDULER_V3", None)
-            with mock.patch.object(runner_mod.accounts_mod, "load_accounts",
-                                   return_value=accounts), \
-                 mock.patch.object(runner_mod.schedule_mod, "build_schedule",
-                                   return_value=sched), \
-                 mock.patch.object(runner_mod.schedule_mod, "_schedule_config",
-                                   side_effect=lambda: cfg), \
-                 mock.patch.object(runner_mod.schedule_mod, "planner_config",
-                                   side_effect=planner_config), \
-                 mock.patch.object(runner_mod.schedule_mod, "capacity_of", spy), \
-                 mock.patch.object(runner_mod.executor_v3, "run_executor_v3",
-                                   return_value={a.phone: (True, "ok", False, "success")
-                                                 for a in accounts}), \
-                 mock.patch.object(runner_mod.round_mod, "run_queue_retry",
-                                   return_value={a.phone: (True, "ok", False, "success")
-                                                 for a in accounts}), \
-                 mock.patch.object(runner_mod.state_io, "_load_cred_state",
-                                   return_value={}), \
-                 mock.patch.object(runner_mod.state_io, "_save_cred_state"), \
-                 mock.patch.object(runner_mod.state_io, "_is_second_run",
-                                   return_value=False), \
-                 mock.patch.object(runner_mod.state_io, "_write_sched_done"), \
-                 mock.patch.object(runner_mod.state_io, "_write_sign_state"), \
-                 mock.patch.object(runner_mod.db, "add_sign_events_batch"), \
-                 mock.patch.object(runner_mod.db, "purge_expired_deleted_accounts"), \
-                 mock.patch.object(runner_mod.alerts, "_maybe_alert_zero_success"), \
-                 mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"), \
-                 mock.patch.object(runner_mod.alerts, "notify_admin_entry",
-                                   self.last_notify):
-                code = runner_mod.main([])
+        # 单池：预检不再读 planner_config、也不再有开关分支
+        with mock.patch.object(runner_mod.accounts_mod, "load_accounts",
+                               return_value=accounts), \
+             mock.patch.object(runner_mod.schedule_mod, "build_schedule",
+                               return_value=sched), \
+             mock.patch.object(runner_mod.schedule_mod, "_schedule_config",
+                               side_effect=lambda: cfg), \
+             mock.patch.object(runner_mod.schedule_mod, "planner_config",
+                               side_effect=planner_config), \
+             mock.patch.object(runner_mod.schedule_mod, "capacity_of", spy), \
+             mock.patch.object(runner_mod.executor_v3, "run_executor_v3",
+                               return_value={a.phone: (True, "ok", False, "success")
+                                             for a in accounts}), \
+             mock.patch.object(runner_mod.state_io, "_load_cred_state",
+                               return_value={}), \
+             mock.patch.object(runner_mod.state_io, "_save_cred_state"), \
+             mock.patch.object(runner_mod.state_io, "_is_second_run",
+                               return_value=False), \
+             mock.patch.object(runner_mod.state_io, "_write_sched_done"), \
+             mock.patch.object(runner_mod.state_io, "_write_sign_state"), \
+             mock.patch.object(runner_mod.db, "add_sign_events_batch"), \
+             mock.patch.object(runner_mod.db, "purge_expired_deleted_accounts"), \
+             mock.patch.object(runner_mod.alerts, "_maybe_alert_zero_success"), \
+             mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"), \
+             mock.patch.object(runner_mod.alerts, "notify_admin_entry",
+                               self.last_notify):
+            code = runner_mod.main([])
         return code, seen
 
-    def test_switch_off_does_not_read_planner_config(self):
-        """开关关时预检连 `planner_config` 都不该读。
-
-        它比调度配置多读 `YIBAN_EGRESS_RATE` / `YIBAN_EXECUTORS`，还会对非法值告警——
-        v2 路径"数值与行为完全不变"要求这些 v3 专属输入在关时根本不产生依赖。
-        """
-        boom = mock.Mock(side_effect=AssertionError("开关关时不得读 planner_config"))
+    def test_precheck_does_not_read_planner_config(self):
+        """预检不读 `planner_config`：告警阈值只用调度配置（不引入 v3 专属键依赖）。"""
+        boom = mock.Mock(side_effect=AssertionError("预检不得读 planner_config"))
         code, seen = self._run(planner_config=boom)
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
-        self.assertFalse(boom.called, "开关关时预检不得读 planner_config")
+        self.assertFalse(boom.called, "预检不得读 planner_config")
         # 告警阈值含重试储备（MF-56④）：avg=8、gap=10 → 每账号 3×18=54s → (4140-8)//54+1=77
-        self.assertEqual(seen[0][2], 77, "关时告警阈值按「窗口−重试储备」实算")
+        self.assertEqual(seen[0][2], 77, "告警阈值按「窗口−重试储备」实算")
 
-    def test_switch_off_value_is_explicit_and_unchanged(self):
+    def test_precheck_value_is_explicit_and_unchanged(self):
         code, seen = self._run()
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
@@ -399,30 +392,14 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         self.assertEqual(args, (4140.0,))
         self.assertEqual(kw["gap"], 10, "传进公式的是配置原值，储备在 capacity_of 内折算")
         self.assertEqual(kw["avg"], 8)
-        self.assertIs(kw["enabled"], False, "关时必须显式走 v2 分支，不靠默认值")
+        self.assertIs(kw["enabled"], False, "预检显式走 v2 公式分支（批 4 阈值口径）")
         self.assertTrue(kw["retry_reserve"],
                         "预检告警必须走「窗口 − 重试储备」阈值——122–360 静默死带的修复点")
-        self.assertNotIn("k", kw, "关时不得计算/传入 K")
-        self.assertNotIn("bucket_rate", kw, "关时不得读桶速率")
+        self.assertNotIn("k", kw, "预检不计算/传入 K")
+        self.assertNotIn("bucket_rate", kw, "预检不读桶速率")
         self.assertEqual(out, 77, "告警阈值 = 窗口−重试储备 的实算值")
         self.assertEqual(out, schedule.capacity_accounts(4140, 46, 8),
                          "储备折进 gap（10+2×18=46）后复用同一个 capacity_accounts 式子")
-
-    def test_switch_on_passes_k_from_executor_count(self):
-        """开关开时 K 真的参与计算：`executor_count` 的入参口径与结果都要落到调用上。"""
-        cfg = self._cfg(executors=["a@h", "b@h", "c@h", "d@h"])
-        code, seen = self._run(n=10000, cfg=cfg, v3=True)
-        self.assertEqual(code, 0)
-        self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
-        args, kw, out = seen[0]
-        k = schedule.executor_count(10000, 4140.0, bucket_rate=1.0, egress_count=4)
-        self.assertEqual(k, 4, "夹具前提：K 要大于 1 才看得出它真的参与计算")
-        self.assertEqual(args, (4140.0,))
-        self.assertIs(kw["enabled"], True)
-        self.assertEqual(kw["k"], k)
-        self.assertEqual(kw["bucket_rate"], 1.0)
-        self.assertEqual(out, schedule.capacity_accounts_v3(4140, k, 8, 1.0))
-        self.assertNotEqual(out, 230, "开时走的必须是 v3 公式，不是 v2 的 230")
 
     def test_dead_band_warns_and_current_load_stays_silent(self):
         """登记验收不变量（MF-56④）：122–360 账号不再是静默死带，现网 89 号不误报。

@@ -487,8 +487,8 @@ class CheckDeployTargetTest(_TmpBase):
 class DeployTextNewlineGateTest(unittest.TestCase):
     """deploy/prod 下每个文本文件必须以换行结尾（cron 表丢末行 = 缓解整体空转）。
 
-    现象原文：审计见证的 cron 表与脚本缺结尾 0x0a。Vixie cron 对无结尾换行的
-    /etc/cron.d 表可能丢掉最后一行 ⇒ 根侧见证从不运行，独立见证空转。门覆盖
+    现象原文：cron 表与脚本缺结尾 0x0a。Vixie cron 对无结尾换行的
+    /etc/cron.d 表可能丢掉最后一行 ⇒ 排期任务空转。门覆盖
     deploy/prod 全部文本件，并用现有 cron 表作为活体夹具。
     """
 
@@ -516,7 +516,7 @@ class DeployTextNewlineGateTest(unittest.TestCase):
         """活体反例：去掉 cron 表的结尾换行，同一检查器必须判脏。"""
         d = tempfile.mkdtemp(prefix="newline-gate-")
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        src = os.path.join(CRON_DIR, "yiban-audit-witness")
+        src = os.path.join(CRON_DIR, "yiban-cleanup")
         with open(src, "rb") as f:
             data = f.read()
         stripped = os.path.join(d, "stripped")

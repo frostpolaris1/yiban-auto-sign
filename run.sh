@@ -9,6 +9,31 @@ APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
 cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 ENV_PATH="$APP_DIR/.env"
 
+# Python 解释器：优先项目虚拟环境，缺失时回退系统 Python（须在按天文件名之前定好：
+# 业务日取时经它走 yiban.clock，与引擎同源）
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    PY="$APP_DIR/.venv/bin/python3"
+else
+    PY=/usr/bin/python3
+fi
+
+# 业务日唯一来源（MF-109）：yiban.clock 的北京钟，与引擎/web 同一事实源。宿主时区
+# ≠北京（UTC 16:00-24:00 窗口）时宿主 `date` 的"当天"与引擎业务日差一天——状态文件、
+# 日志、触发标记、收尾标记与库内"当日事实"查询一律取这里。取不到 yiban.clock
+# （python 缺失/损坏）时退化 `TZ=Asia/Shanghai date`（需宿主 tzdata），再退化宿主
+# `date`（保持可运行的降级形态，此时与引擎业务日可能差一天）。
+business_day() {
+    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
+    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
+    local _d
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    case "$_d" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
+    esac
+    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    date +%F
+}
+
 # 加载环境变量（逐行安全解析，显式 export；必须先于日志/状态路径计算：
 # YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供）
 # 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
@@ -82,7 +107,7 @@ fi
 # 日志按天分文件（2026-08-16）：sign-YYYY-MM-DD.log，web 端按日期直接读取对应文件；
 # 保留 YIBAN_LOG_FILE 配置的目录语义（默认 $STATE_DIR/sign.log）。
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
+LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
 
 # ---- 触发来源前缀与退出码留痕 ----
 # 排程（cron / systemd / 容器调度）与手工执行共用同一个 sign-YYYY-MM-DD.log，光看时间
@@ -140,7 +165,7 @@ trap 'exit 130' INT
 # 标记按日期命名，跨日自动失效。本块在 flock 之前执行、无锁保护，故创建改用
 # noclobber 原子测试创建：并发触发时仅一次创建成功，其余一律按补签轮处理
 # （fail-safe 侧：宁可多告警、不可漏告警；实际执行仍由 flock 串行化）。
-RUN_MARKER="$STATE_DIR/yiban-run-today-$(date +%Y-%m-%d).marker"
+RUN_MARKER="$STATE_DIR/yiban-run-today-$(business_day).marker"
 if ( set -o noclobber; : > "$RUN_MARKER" ) 2>/dev/null; then
     : # 今日首次触发：本轮按首签轮运行
 elif [ -f "$RUN_MARKER" ]; then
@@ -185,23 +210,16 @@ flock -n 9 || {
 }
 
 # 状态文件：记录今天的签到结果，避免重复执行
-STATUS_FILE="$STATE_DIR/sign-status-$(date +%Y-%m-%d).txt"
+STATUS_FILE="$STATE_DIR/sign-status-$(business_day).txt"
 # 当日收尾标记：本脚本（含进程内补签轮）已把当天该做的都做完（无论成败）。
 # 作用：让 07:12 的 cron（兜底）在后继场景下不再多跑第三轮——
 # 例如首轮 06:35 就结束、且已完成补签轮，此时 07:12 的 cron 会拿到锁，
 # 没有本标记它会因为状态非 SUCCESS 再跑一轮（幂等但多一轮真实登录请求）。
-SECOND_DONE_MARKER="$STATE_DIR/yiban-settled-$(date +%Y-%m-%d).marker"
+SECOND_DONE_MARKER="$STATE_DIR/yiban-settled-$(business_day).marker"
 # sign-status 采信的交叉核对源库（MF-82）：与引擎同一个键 YIBAN_DB_FILE、同一
 # 默认值口径（引擎 resolve_path = 进程环境 → .env → 默认 "yiban.db"；此处 .env
 # 已 export，cwd 即 APP_DIR，与引擎子进程的相对路径基准一致）。
 DB_FILE="${YIBAN_DB_FILE:-yiban.db}"
-
-# Python 解释器：优先项目虚拟环境，缺失时回退系统 Python
-if [ -x "$APP_DIR/.venv/bin/python3" ]; then
-    PY="$APP_DIR/.venv/bin/python3"
-else
-    PY=/usr/bin/python3
-fi
 
 # ---------------------------------------------------------------------------
 # 进程内补签轮（2026-09-10 批次20 B3，用户裁决方案一）
@@ -369,7 +387,7 @@ _write_status_from_exit() {
 # 与 SUCCESS 相称。查询失败（python 缺失/库不存在/库损坏）与计数为 0 同样按
 # "不一致"处理：拒绝采信 + 双声音告警 + 按未完成继续（fail-closed 的"不轻信"侧）。
 _db_settled_today() {
-    "$PY" - "$DB_FILE" "$(date +%Y-%m-%d)" 2>/dev/null <<'PYEOF'
+    "$PY" - "$DB_FILE" "$(business_day)" 2>/dev/null <<'PYEOF'
 import os
 import sqlite3
 import sys

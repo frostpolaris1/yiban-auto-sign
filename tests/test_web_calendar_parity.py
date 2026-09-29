@@ -2,9 +2,14 @@
 """回归守卫：签到日历只有**一份实现**（web/static/js/calendar.js）。
 
 标签：F · 前端与界面守卫
-覆盖：签到日历「全站唯一实现」守卫——`dayCell` 定义处唯一、模板零内联、加载关系成立、无障碍与状态类名契约仍在共享实现里、类名前缀不得与 Adminator 撞车
-对应实现：`web/static/js/calendar.js`（唯一实现）与 `pages/user_calendar.*`、`components/my-accounts.js`、`pages/my_account.js`
-关键断言：`web/static/js/` 下**恰好一个**文件定义 `function dayCell(` 且必须是 calendar.js，`web/templates/` 下零个内联实现；日历页必须引入共享模块并由共享视图组件调 `SignCalendar.render`；Adminator 类名按 **class token 边界**匹配（`mini-cal-grid` 这类前缀变体不误伤）
+覆盖：签到日历「全站唯一实现」守卫——单实现总账（`dayCell` 定义处唯一、模板零内联、
+加载顺序、账号页零内嵌、管理端链接、Adminator 类名不撞车、旧内联残留清零）+ 共享实现里的
+无障碍与状态类名契约
+对应实现：`web/static/js/calendar.js`（唯一实现）与 `pages/user_calendar.*`、
+`components/my-accounts.js`、`pages/my_account.js`
+关键断言：`web/static/js/` 下**恰好一个**文件定义日期格渲染契约（`data-sc-date="`，按契约
+而非函数名）且必须是 calendar.js，`web/templates/` 下零个内联实现，连加载顺序与账号页
+零内嵌一并钉住；Adminator 类名按 **class token 边界**匹配（`mini-cal-grid` 这类前缀变体不误伤）
 依赖：纯本地——读前端源码文本（判定前先剥注释），**不执行 JS、无需 node**、不联网
 
 ## 历史（为什么这条守卫存在）
@@ -27,7 +32,8 @@
 （`pages/my_account.html` 内联模式 + `components/my-accounts.js`）都调它。
 本测试钉住"只能有一份"：
 
-1. `web/static/js/` 下**恰好一个**文件定义 `function dayCell(`，且必须是 calendar.js；
+1. `web/static/js/` 下**恰好一个**文件定义日期格渲染契约（`data-sc-date="`），且必须是
+   calendar.js；重命名内部函数不误报（判据锚在渲染契约上）；
 2. `web/templates/` 下**零个**文件内联日历实现；
 3. 加载关系成立：日历页引入 calendar.js 并由页面脚本调 `SignCalendar.render`；
    管理端「我的账号」在 my-accounts.js 之前引入 calendar.js（classic script 共享作用域）；
@@ -39,6 +45,11 @@
    实测把日期格撑成 62×110 的竖长条（宽高比失控、数字悬在空盒中央）。
    故本测试钉住：自研源码里不得出现 `.cal-grid` / `.cal-cell` / `.cal-weekdays`
    这类 Adminator 月历类名（calendar.js 一律用 `sc-` 前缀）。
+
+> 批 6c3-D（D-3）：旧 `CalendarSingleSourceTest` 的 6 条静态单实现扫描逐条同构，收敛为
+> `test_single_implementation_rules` 一条参数化总账（每规则一个 subTest，断言与消息逐条保留）；
+> 规则 4 的契约片段断言（`test_shared_implementation_keeps_the_a11y_and_state_contract`）
+> 留独立一条——它是"共享实现仍在"的行为面 owner，不是扫描。
 """
 
 import os
@@ -90,7 +101,7 @@ REQUIRED_IN_SHARED = (
 ADMINATOR_CALENDAR_CLASSES = ("cal-grid", "cal-cell", "cal-weekdays", "cal-main", "cal-toolbar")
 
 # 注释剥离：calendar.js 的说明性注释里会引用这些类名来解释"为什么不能撞车"，
-# 不剥会把解释本身判成违规（同 test_web_component_adoption 的做法）。
+# 不剥会把解释本身判成违规。
 _COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->|//[^\n]*", re.S)
 
 
@@ -119,8 +130,8 @@ def _files_defining(mark, *roots):
 
 
 class CalendarSingleSourceTest(unittest.TestCase):
-    def test_exactly_one_js_file_defines_the_day_cell(self):
-        """日历日期格只能有一份实现，且必须是 calendar.js。"""
+    # ---------------- 单实现总账：7 条规则，每规则一个 subTest ----------------
+    def _rule_day_cell_defined_once(self):
         hits = _files_defining(DAY_CELL_MARK, JS_DIR)
         self.assertEqual(
             hits,
@@ -130,8 +141,7 @@ class CalendarSingleSourceTest(unittest.TestCase):
             + "\n".join(f"  含 `{DAY_CELL_MARK}` 的文件：{os.path.relpath(p, BASE)}" for p in hits),
         )
 
-    def test_no_template_inlines_the_calendar(self):
-        """模板里不得内联日历实现（只放挂载容器，逻辑全在共享模块）。"""
+    def _rule_no_template_inlines(self):
         hits = _files_defining(DAY_CELL_MARK, TEMPLATES_DIR)
         self.assertEqual(
             hits,
@@ -140,7 +150,7 @@ class CalendarSingleSourceTest(unittest.TestCase):
             + "\n".join(f"  {os.path.relpath(p, BASE)}" for p in hits),
         )
 
-    def test_calendar_pages_load_the_shared_module(self):
+    def _rule_pages_load_the_shared_module(self):
         """两端日历页都必须引入共享日历，并由共享视图组件调用渲染接口。
 
         2026-09-12：管理端新增管理员日历页（现为 /my/calendar），与 /user/calendar 共用
@@ -162,7 +172,7 @@ class CalendarSingleSourceTest(unittest.TestCase):
         self.assertIn("SignCalendar.render", view_src, "共享视图组件未调用共享渲染接口")
         self.assertNotIn("dayCell", view_src, "共享视图组件不应自带日期格实现")
 
-    def test_accounts_pages_do_not_embed_a_calendar(self):
+    def _rule_accounts_pages_do_not_embed(self):
         """两端「我的账号」页（含共享正文 partial）不得内嵌日历。
 
         日历已独立成页；账号页只放「签到日历」链接（calendar_href），
@@ -176,25 +186,11 @@ class CalendarSingleSourceTest(unittest.TestCase):
                     f"{os.path.relpath(path, BASE)} 不应出现日历相关标记：{mark}",
                 )
 
-    def test_admin_mine_page_links_to_the_admin_calendar(self):
-        """管理端账号页的日历链接必须指向 /my/calendar（而不是用户端路由）。"""
+    def _rule_admin_mine_links_to_admin_calendar(self):
         js = _read(os.path.join(JS_DIR, "pages", "my_account.js"))
         self.assertIn("/my/calendar", js, "pages/my_account.js 的日历链接未指向 /my/calendar")
 
-    def test_shared_implementation_keeps_the_a11y_and_state_contract(self):
-        """共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。"""
-        src = _read(CALENDAR_JS)
-        # 逐条按字面子串比对；同时比对"压掉空白"的版本，
-        # 避免只因换行/空格调整就判红（星期表头的数组字面量即此类）
-        compact = re.sub(r"\s+", "", src)
-        missing = [s for s in REQUIRED_IN_SHARED if s not in src and s not in compact]
-        if missing:
-            self.fail(
-                "共享日历实现缺少这些契约片段（被改动或删除？）：\n"
-                + "\n".join(f"  {s!r}" for s in missing)
-            )
-
-    def test_no_adminator_calendar_class_names_in_our_sources(self):
+    def _rule_no_adminator_class_names(self):
         """自研源码不得使用 Adminator 事件月历的类名（属性渗透会让日期格失控）。
 
         判据按 **class token 边界**匹配（前后不得是 `\\w`/`-`）：`mini-cal-grid` 这类
@@ -213,8 +209,7 @@ class CalendarSingleSourceTest(unittest.TestCase):
                 "自研日历一律用 sc- 前缀：\n" + "\n".join(offenders)
             )
 
-    def test_old_inline_cell_markup_is_gone(self):
-        """旧的内联拼日期格写法不得复活。"""
+    def _rule_old_inline_markup_gone(self):
         offenders = [
             os.path.relpath(p, BASE)
             for p in _iter_sources(JS_DIR, TEMPLATES_DIR)
@@ -226,6 +221,34 @@ class CalendarSingleSourceTest(unittest.TestCase):
             "仍有文件残留内联拼日期格的旧写法，应改为调用共享的 dayCell/render：\n"
             + "\n".join(f"  {p}" for p in offenders),
         )
+
+    def test_single_implementation_rules(self):
+        """单实现七规则总账（原七条静态扫描逐条同构，6c3-D D-3 并参数化）。"""
+        rules = (
+            ("日期格实现唯一（必须是 calendar.js）", self._rule_day_cell_defined_once),
+            ("模板零内联日历", self._rule_no_template_inlines),
+            ("两端日历页加载顺序与共享视图契约", self._rule_pages_load_the_shared_module),
+            ("账号页（含共享 partial）零内嵌日历", self._rule_accounts_pages_do_not_embed),
+            ("管理端账号页链接指向 /my/calendar", self._rule_admin_mine_links_to_admin_calendar),
+            ("自研源码零 Adminator 月历类名", self._rule_no_adminator_class_names),
+            ("旧内联日期格写法清零", self._rule_old_inline_markup_gone),
+        )
+        for label, rule in rules:
+            with self.subTest(rule=label):
+                rule()
+
+    def test_shared_implementation_keeps_the_a11y_and_state_contract(self):
+        """共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。"""
+        src = _read(CALENDAR_JS)
+        # 逐条按字面子串比对；同时比对"压掉空白"的版本，
+        # 避免只因换行/空格调整就判红（星期表头的数组字面量即此类）
+        compact = re.sub(r"\s+", "", src)
+        missing = [s for s in REQUIRED_IN_SHARED if s not in src and s not in compact]
+        if missing:
+            self.fail(
+                "共享日历实现缺少这些契约片段（被改动或删除？）：\n"
+                + "\n".join(f"  {s!r}" for s in missing)
+            )
 
 
 if __name__ == "__main__":

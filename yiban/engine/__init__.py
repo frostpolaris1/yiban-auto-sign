@@ -21,8 +21,9 @@
 命令行入口是 `yiban/cli.py`（`python -m yiban.cli sign [...]`），旧路径
 `scripts/signin.py` 只剩兼容壳（引导 + 全量转发 + `sys.exit`）。
 
-调度 v3 侧（`planner` / `hrw` / `token_bucket` / `executor_v3`）由 `YIBAN_SCHEDULER_V3` 分流、
-**缺省 0**：未开闸时轮次走 `round.run_queue_retry`，v3 模块只有 `scheduler_v3_enabled` 被读。
+台账单池化后 `executor_v3` 是唯一生产执行体，`planner` / `hrw` / `token_bucket` 都在
+这条恒定生效的路径上；旧领取池的实现（`round.run_queue_retry` / `store.claims`）保留但
+无生产调用点。
 
 两条依赖纪律（与 `yiban/` 其它包一致，且直接决定既有测试的打桩是否生效）：
 

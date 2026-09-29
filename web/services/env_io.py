@@ -6,7 +6,9 @@
 `.env` 的全部读写入口：宽松解析 `read_env`、整数配置 `load_env_int`、键值写入
 `write_env_key` / `write_env_int` 与批量原子写 `write_env_batch`、首次启动的
 `YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`、写拒绝的统一
-409 响应 `env_write_refused_response`；外加设置项展示族
+409 响应 `env_write_refused_response`（附 `env_refused_problems` 定位载荷：问题行号/
+键名 + 脱敏片段，值一律隐去）与歧义行清理 `cleanup_env_ambiguous_line`
+（只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`。
@@ -31,6 +33,7 @@
 
 import contextlib
 import logging
+import os
 import re
 import secrets
 from datetime import datetime
@@ -248,10 +251,103 @@ ENV_WRITE_REFUSED_MESSAGE = (
 )
 
 
-def env_write_refused_response():
-    """写拒绝的 409 响应（含清理指引）——web 各 .env 写点的唯一出口。"""
-    return jsonify({"error": ENV_WRITE_REFUSED_MESSAGE,
-                    "reason": "env_write_refused"}), 409
+# ---- 409 可操作化（写拒绝定位）----
+# 问题片段的展示上限；片段经脱敏原语链，绝不回显值原文。
+_ENV_SNIPPET_MAX = 160
+
+
+def _env_problem_snippet(env_path, line_no):
+    """取问题行的**脱敏片段**（绝不回显值原文）。
+
+    原语链与日志出口同一组（`escape_line_breaks` 让潜伏分隔符可见 → `sanitize_text`
+    → `mask_phones_in_text`），再对任何 `KEY=值` 形态做值隐去——行号与键名已足够
+    定位，值本身不需要也不应该出现在管理界面。读不到文件/行号越界返回 None
+    （409 的其余部分照常可用，定位载荷尽力而为）。
+    """
+    from yiban.masking import mask_phones_in_text, sanitize_text
+    try:
+        raw = _env_io._read_env_text(env_path)
+        lines = _env_io.split_env_lines(raw)
+        if not 1 <= line_no <= len(lines):
+            return None
+        snippet = _env_io.escape_line_breaks(lines[line_no - 1])
+        snippet = mask_phones_in_text(sanitize_text(snippet))
+        # 值隐去：任何 KEY=值 形态只留键名与等号（键名是定位信息，值不是）
+        snippet = re.sub(r"([A-Za-z_][A-Za-z0-9_]{1,}\s*=)\S*",
+                         r"\1***", snippet)
+        snippet = snippet[:_ENV_SNIPPET_MAX]
+        return snippet or None
+    except Exception:
+        # 定位载荷尽力而为：读失败/解码失败不改变"写入已被拒绝"这一事实
+        return None
+
+
+def env_refused_problems(exc, env_path):
+    """从 `EnvWriteRefused` 组装 409 的定位载荷（problems 列表）。
+
+    `line`（潜伏分隔符行）→ {"kind": "line", "line": N, "snippet": 脱敏片段}；
+    `keys`（未请求键变化）→ 每键一条 {"kind": "key", "key": 名}。两枚属性只在
+    新写入路径上有值；旧消息串不含定位信息时返回空列表（响应退化为纯指引）。
+    """
+    problems = []
+    line_no = getattr(exc, "line", None)
+    if line_no:
+        problems.append({"kind": "line", "line": line_no,
+                         "snippet": _env_problem_snippet(env_path, line_no)})
+    for key in (getattr(exc, "keys", None) or []):
+        problems.append({"kind": "key", "key": key})
+    return problems
+
+
+def env_write_refused_response(exc=None, env_path=None):
+    """写拒绝的 409 响应（含清理指引 + 定位载荷）——web 各 .env 写点的唯一出口。
+
+    `exc`/`env_path` 提供时附带 `problems`（问题行号/键名 + 脱敏片段，绝不回显
+    值原文）；缺省调用保持旧形态（纯指引），兼容不留痕的测试构造。
+    """
+    body = {"error": ENV_WRITE_REFUSED_MESSAGE, "reason": "env_write_refused"}
+    if exc is not None and env_path:
+        body["problems"] = env_refused_problems(exc, env_path)
+    return jsonify(body), 409
+
+
+def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
+    """移除 `.env` 中**含潜伏行分隔符**的那一行（一键清理）。
+
+    安全面收窄：只允许移除经 `has_line_break` 判定确含行分隔符的物理行——
+    那是行模型歧义的唯一现场；普通配置行/注释行一律拒绝（本端点不是 .env
+    编辑器，不存在借道删配置的口子）。写路径与写入口同一套纪律：跨进程写锁、
+    写前字节快照、失败按原字节回滚、审计留痕（片段走同一脱敏原语链）。
+    返回 (ok, message, remaining)：ok=False 时 message 说明为什么拒绝。
+    """
+    with env_lock.env_write_lock(env_path):
+        raw_bytes = _env_io._read_env_bytes(env_path)
+        lines = _env_io.split_env_lines(_env_io._read_env_text(env_path))
+        if not 1 <= line_no <= len(lines):
+            return False, f"行号越界（文件共 {len(lines)} 行）", None
+        target = lines[line_no - 1]
+        if not _env_io.has_line_break(target):
+            return False, "该行不含行分隔符，无需清理（本端点只处理行模型歧义行）", None
+        snippet = _env_problem_snippet(env_path, line_no) or "(片段不可得)"
+        remaining = lines[:line_no - 1] + lines[line_no:]
+        new_text = "\n".join(remaining) + ("\n" if remaining else "")
+        still_bad = [i + 1 for i, ln in enumerate(remaining)
+                     if _env_io.has_line_break(ln)]
+        try:
+            with open(env_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new_text)
+            os.chmod(env_path, 0o600)
+        except OSError as e:
+            # 写失败按写前原字节回滚（与 write_env_keys 的回滚同一立场）
+            if raw_bytes is not None:
+                with contextlib.suppress(OSError), open(env_path, "wb") as f:
+                    f.write(raw_bytes)
+            return False, f"清理写入失败（已回滚）：{e}", None
+        if audit is not None:
+            with contextlib.suppress(Exception):
+                audit("env_line_cleanup", f"移除第 {line_no} 行（含潜伏行分隔符），"
+                                          f"片段：{snippet}；剩余歧义行 {len(still_bad)}")
+        return True, f"已移除第 {line_no} 行；剩余含分隔符行 {len(still_bad)} 行", len(still_bad)
 
 
 def ensure_secret_key(env_path, atomic_write, audit=None):

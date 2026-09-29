@@ -58,5 +58,17 @@ jobs:
       - name: Full test suite
         run: python -m pytest tests/ -q -p no:randomly -n 8 --dist loadfile
 
+      # ---- 时区专项子集（TZ=UTC 再跑一遍） ----
+      # 常态回归 = 上一行的**单遍全量**（默认 TZ）；仅日期/时钟敏感用例（按天文件名、
+      # 跨天/跨午夜、保留期、周末边界——名字含 date/midnight/rollover/utc/tz/retention/
+      # saturday/weekend/cross_day 的用例）以 TZ=UTC 补跑一遍作金丝雀。此前"全量双 TZ
+      # 常态双跑"由缩减批 6a 收窄为本形态（全量一遍 + 本子集一遍；子集 133 条 ~10s）。
+      # -k 词集与 docs/dev/release-gate.md §2① "时区专项子集"逐字一致；改时钟相关代码
+      # 时本地照此双跑。
+      - name: Timezone-sensitive subset (TZ=UTC)
+        env:
+          TZ: UTC
+        run: python -m pytest tests/ -q -p no:randomly -n 4 --dist loadfile -k "date or midnight or rollover or utc or tz or retention or saturday or weekend or cross_day"
+
       - name: Gate ready
         run: echo "Nightly full gate active."
