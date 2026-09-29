@@ -6,22 +6,28 @@
 - 密钥来源与缓存：`_parse_env_file` / `_decode_audit_key` / `_resolve_key_env_file` /
   `_write_audit_key_to_env_file` / `_assert_key_source_certain` / `_audit_key`（含
   `_AUDIT_KEY_CACHE`、`_AUDIT_KEY_LOCK`）与签名计算 `_audit_hash`；
-- 写入链路：`audit()`、写入失败欠账计数（`_bump_audit_write_failure` 等）与只读口径
-  （`audit_head_hash` / `audit_row_count` / `verify_audit_chain`）；
-- 全表重链留痕：`_rechain_audit_logs` / `_record_rechain_event` / `audit_rechain_events`；
+- 写入链路：`audit()`、请求作用域（`set_request_scope` / `_scope_detail`，web 每请求一个
+  id、CLI 退化为进程级 id）、"业务+审计同事务"原语（`audit_unit` / `record_in_txn` /
+  失败即拒绝的 `audit_or_refuse`）、写入失败欠账计数（`_bump_audit_write_failure` 等）与
+  只读口径（`audit_head_hash` / `audit_head_hash_ex` / `audit_row_count` / `verify_audit_chain`）；
+- 欠账告警"按账目变化"触发：总账单调（取证事实）而通知基线随发信推进
+  （`audit_write_failures_unnotified` / `audit_alert_needs_attention` / `mark_audit_alert_sent`）；
+- 只追加审计行的哈希链：`audit()` 之外，升级回填 `_backfill_audit_hashes`（`migrate_v3`
+  对残缺旧库按 id 升序补齐 prev_hash/hash，单事务回滚）；
 - 库外锚点族与最近清理口径：`record_audit_anchor` / `verify_audit_anchor` / `audit_health` /
-  `_rechain_hint` / `audit_purge_total` / `audit_purge_events`。
+  `audit_purge_total` / `audit_purge_events`。
 
 **归属**
 审计可追溯性是 web 与 signin 两个进程共用的一条链：写入方是 `db.audit()` 的全体调用点，
 读出方是 web 每日线程与 `scripts/audit_verify.py`（都经 `audit_health()` 汇总）。建表与全部
 迁移函数在 `yiban/store/migrations.py`；写事务入口 `_begin_immediate`、留痕的**写入**侧
-（`_table_min_max` / `_record_purge_event`）、每日清理 `_audit_cleanup` 在 `yiban/store/db.py`，
+（`_table_min_max` / `_record_purge_event`）在 `yiban/store/db.py`，每日清理 `_audit_cleanup`
+的定义点已迁到 `yiban/store/cleanup.py`（门面按原名再导出），
 追踪盐与加盐匿名哈希 `hash_ip` / `hash_phone` / `_track_salt` 在 `yiban/store/tracking.py`
 （与审计密钥同住一个 .env、共用本模块的路径回落链）。
 
 **复用**
-`yiban.store.db` 把本模块的 40 个函数与 14 个常量按原样再导出，`db.audit()` /
+`yiban.store.db` 把本模块的函数与常量按原样再导出，`db.audit()` /
 `db.audit_health()` / `db._audit_hash(...)` 一类调用与身份断言不变；三个进程内可变状态
 （`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）由 db 侧模块类
 读写转发——`db._AUDIT_KEY_CACHE = None`（tests/test_rekey_key_source.py 清缓存）必须真的清到
@@ -48,7 +54,22 @@ import time
 
 from yiban import clock
 from yiban.infra import env_io, env_lock
+from yiban.masking import mask_email
 from yiban.store import connection as _connection
+
+
+def actor_tag(username):
+    """审计 `username`（actor）列的唯一遮罩口径：邮箱形态 → `mask_email`（幂等），
+    非邮箱标识（`admin`/`system`/`?`/进程作用域串）原样穿过（`mask_email` 的无 `@`
+    分支天然等价——显式命名只为语义可见，不另造第二套判据）。
+
+    收口动机（MF-49 审计侧）：注册管理员的会话用户名就是邮箱，现网 actor 列约六成
+    为明文邮箱；本列进备份包、进 `db --export`、进日志页渲染——磁盘面失守。遮罩后
+    仍保住两条硬性质：**同输入同输出**（可按 actor 聚人、与历史行可比对）与
+    **不可逆**（本地部只剩前 3 字符，反查不回完整地址）。遮罩是**线索层**非身份层：
+    碰撞时追人配合同事务业务行与 `_req` 作用域标记，不靠本列唯一。
+    """
+    return mask_email(username)
 
 logger = logging.getLogger("yiban.store.audit_chain")
 
@@ -100,10 +121,9 @@ def _resolve_key_env_file():
     """解析密钥来源 .env 路径：connection._env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
 
     密钥来源不能绑在 cwd 上（不能写成 `env_file = _env_file or ".env"`）：
-    取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
-    list_duplicate_owners）未传 env_file 时，在应用根之外运行会读不到旧钥，进而
-    就地生成新钥落盘，同时产出"游离在错误目录的 .env"和"用错密钥签的审计行"
-    （真实审计链随即判破，而这正是取证要用的工具）。
+    取证/清点类 CLI（audit_verify / list_duplicate_owners）未传 env_file 时，在应用根
+    之外运行会读不到旧钥，进而就地生成新钥落盘，同时产出"游离在错误目录的 .env"和
+    "用错密钥签的审计行"（真实审计链随即判破，而这正是取证要用的工具）。
 
     返回 (path, from_cwd_default)：from_cwd_default=True 表示该路径纯粹靠 cwd 默认
     ".env" 兜底（既无 init_db(env_file=...) 也无 YIBAN_ENV_FILE）——此时文件不存在
@@ -194,83 +214,43 @@ def _audit_hash(prev_hash, ts, username, action, target, detail):
     return hmac.new(_audit_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _rechain_audit_logs(conn):
-    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。
+def _backfill_audit_hashes(conn):
+    """按 id 升序为 audit_logs 回填 prev_hash/hash（从库内首行原 prev_hash 接续）。
 
-    改为按 id 游标分批重链——原 LIMIT 10000 一次性截断，审计量超限
-    时第 10001 行起的旧 hash 未重算且其 prev 指向的行刚被改写，链永久断裂，
-    每日告警"狼来了"掩盖真实篡改。
+    升级正确性路径：`migrate_v3` 在 `user_version < 3` 的旧库上补出两列后，历史行
+    的 hash 还是空串——本函数用**当前密钥**把整条链算出来，否则旧库升级后每次
+    `verify_audit_chain` 都会判断链。这不是"仪式"而是残缺库能升上来的必要条件。
+
+    单事务原子承诺：旧实现按 10000 行游标**分批 commit**，中途失败/被杀会留下
+    "前半段已回填、后半段还是空 hash"的半链——它是自洽链里最难发现的一种，且
+    再重跑一次还会因为 user_version 已推进而不再触发。改为全部 UPDATE 在一个事务内
+    完成后一次 commit；任何异常回滚到回填前状态（原库完好），不留半链。代价是把
+    全表读进内存（不再分批），换取"要么全链回填、要么原样不动"。
+
+    不要在这里 BEGIN IMMEDIATE：调用方（migrate_v3）此前可能已有未提交的
+    `ALTER TABLE ADD COLUMN`（SQLite DDL 也在事务内），显式 BEGIN 会撞
+    "within a transaction"、回滚式解除又会把刚补的列一起丢掉。首个 UPDATE 自带的
+    隐式事务已提供原子性。
     """
-    _BATCH = 10000
-    last_id = 0
-    prev = ""
-    # prev 必须接续库内首行之前的链（重链从全表语义出发时为空串）
-    first = conn.execute(
-        "SELECT prev_hash FROM audit_logs ORDER BY id LIMIT 1"
-    ).fetchone()
-    if first is not None:
-        prev = first["prev_hash"] or ""
-    while True:
-        rows = conn.execute(
-            "SELECT id, ts, username, action, target, detail FROM audit_logs "
-            "WHERE id > ? ORDER BY id LIMIT ?",
-            (last_id, _BATCH),
-        ).fetchall()
-        if not rows:
-            break
+    rows = conn.execute(
+        "SELECT id, ts, username, action, target, detail, prev_hash FROM audit_logs ORDER BY id"
+    ).fetchall()
+    prev = (rows[0]["prev_hash"] or "") if rows else ""
+    try:
         for r in rows:
-            h = _facade()._audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
+            h = _facade()._audit_hash(
+                prev, r["ts"], r["username"], r["action"], r["target"], r["detail"]
+            )
             conn.execute(
                 "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
                 (prev, h, r["id"]),
             )
             prev = h
-            last_id = r["id"]
-        conn.commit()  # 分批落盘：超大表迁移不因单事务超长而失败
-    conn.commit()
-
-
-def _record_rechain_event(conn, from_version, rows, empty_hash_rows, head_before, head_after):
-    """全表重链留痕（app_meta.audit_rechain_events，最新在末尾）。
-
-    重签整条链是"改完内容 → 清空 hash → 重启走正常启动路径 → 链重新自洽"这条路
-    的唯一落点，所以每一次重链都必须记账，供 audit_health 与锚点交叉判定。写失败
-    刻意上抛：宁可让迁移失败暴露出来，也不能悄悄重写链而不留痕。
-    """
-    # app_meta 原挂在 v8（后由 v12 幂等补建），v3 阶段可能还不存在——先补建，
-    # 否则"留痕"这件事本身会把启动带崩。DDL 与 v8/v12 逐字一致。
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_meta ("
-        "key   TEXT PRIMARY KEY, "
-        "value TEXT NOT NULL"
-        ")"
-    )
-    events = _rechain_events(conn)
-    events.append({
-        "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "from_version": int(from_version),
-        "rows": int(rows),
-        "empty_hash_rows": int(empty_hash_rows),
-        "head_before": head_before or "",
-        "head_after": head_after or "",
-    })
-    if len(events) > _RECHAIN_EVENTS_KEEP:
-        events = events[-_RECHAIN_EVENTS_KEEP:]
-    conn.execute(
-        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-        (_RECHAIN_EVENTS_KEY, json.dumps(events, ensure_ascii=False)),
-    )
-
-
-def audit_rechain_events():
-    """全表重链留痕（公开只读，最新在末尾；缺表/损坏 → []）。"""
-    try:
-        with _facade()._conn_lock:
-            conn = _facade().get_conn()
-            return _rechain_events(conn)
-    except Exception as e:
-        logger.warning("读取全表重链留痕失败: %s", e)
-        return []
+        conn.commit()
+    except BaseException:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -357,8 +337,143 @@ def audit_write_failures():
     return audit_persisted_write_failures() + _unflushed_audit_failures()
 
 
-def audit(username, action, target="", detail=""):
+# 欠账告警基线：总账单调累加（取证事实，不归零），但**告警按"账目变化"触发**。同一笔
+# 欠账若每天都发一封 urgent，紧急额度会被它吃光、真告警反而发不出去（永久刷屏）；故另
+# 存一条"已确认到的总账值"，只有总账高于它（有新欠账）才算新事件。归零口径：基线随发信
+# 推进，总账不动——"续计"以总账为准，"不再重发"以基线为准。
+_AUDIT_FAIL_NOTIFIED_KEY = "audit_write_fail_notified"
+# 体检级告警签名基线：链/锚点/欠账/空 hash 行任一变化才重发（同一故障态不刷屏）。
+_AUDIT_ALERT_STATE_KEY = "audit_alert_state"
+
+
+def audit_write_failures_unnotified():
+    """自上次确认以来**新增**的审计欠账条数（无新增 → 0，不重复告警）。"""
+    return max(0, audit_write_failures() - _meta_int(_AUDIT_FAIL_NOTIFIED_KEY))
+
+
+def mark_audit_write_failures_notified():
+    """把欠账告警基线推进到当前总账（告警发出后调用）；失败只告警不抛。"""
+    return _facade().set_meta(_AUDIT_FAIL_NOTIFIED_KEY, str(audit_write_failures()))
+
+
+def audit_alert_signature(health):
+    """体检结果的告警签名：只有**内容变化**才值得再发一封 urgent。
+
+    覆盖会独立改变结论的字段（链自洽/断点数、锚点三态、欠账总账、空 hash
+    行）。不含消息文本（文本随同一事实抖动会造成假"变化"）。
+    """
+    return "|".join(str(x) for x in (
+        health.get("chain_ok"), health.get("broken"), health.get("anchor_status"),
+        health.get("write_failures"), health.get("empty_hash_rows"),
+    ))
+
+
+def audit_alert_needs_attention(health):
+    """本次不健康结论是否与上次已告警的**不同**（纯读，无副作用）。"""
+    return _facade().get_meta(_AUDIT_ALERT_STATE_KEY, "") != audit_alert_signature(health)
+
+
+def mark_audit_alert_sent(health):
+    """告警发出后推进签名基线，使同一故障态不再逐日重发。"""
+    return _facade().set_meta(_AUDIT_ALERT_STATE_KEY, audit_alert_signature(health))
+
+
+# ---------------------------------------------------------------------------
+# 请求/会话作用域
+# ---------------------------------------------------------------------------
+# 审计的"来源"列只有加盐 IP 哈希，而其输入（X-Forwarded-For / remote_addr）是客户端
+# 可控的 —— 它回答不了"同上出口的哪一次操作是谁做的"。故审计行额外携带**请求作用域
+# id**：web 侧由 before_request 钩子为每个请求生成随机 id 写进线程局部，CLI/离线脚本
+# 退化为进程级 id（pid + 进程认领时刻）。id 编码进 detail（不新增列、不改链构造；
+# 链 HMAC 覆盖 detail，改不动），并以 `[req=...]` 标记自证。
+# 明确不承诺：IP 哈希仍可伪造，作用域 id 只解决"同一出口内区分请求"，不解决身份。
+_REQUEST_SCOPE = threading.local()
+_PROCESS_SCOPE_SEEN = {}
+_SCOPE_MARKER = " [req="
+# 入参 detail 里出现的标记字面量消毒成该形态：与真标记不再相撞，也不像另一枚真标记
+# （供下游按 `_SCOPE_MARKER in detail` 判定"是否已带作用域"时不会误判为已带）。
+_SCOPE_MARKER_SANITIZED = " [req_"
+
+
+def set_request_scope(rid):
+    """设置当前线程的请求作用域 id（web before_request 钩子调用；None 清除）。"""
+    _REQUEST_SCOPE.rid = rid or None
+
+
+def current_request_scope():
+    """当前线程的请求作用域 id；未设置返回 None（由 `_process_scope` 兜底）。"""
+    return getattr(_REQUEST_SCOPE, "rid", None)
+
+
+def new_request_scope_id(prefix="web"):
+    """生成 web 请求作用域 id（唯一真源；web before_request 钩子调用）。
+
+    形状 `web-<8hex>-<8hex>`：16 位十六进制若整串恰全为数字（约千分之一），会构成
+    ≥11 位数字连段——全部按裸手机号子串判据（`1[3-9]\\d{9}` 系）扫描审计/日志的
+    消费方会偶发误报（脱敏回归被自己的随机 id 咬）。中段补连字符把数字连段最长压到
+    8 位，判据物理上不可能命中；熵不变（仍 8 字节随机）。形状契约由测试钉死。
+    """
+    rid = secrets.token_hex(8)
+    return f"{prefix}-{rid[:8]}-{rid[8:]}"
+
+
+def _process_scope():
+    """进程级作用域 id（CLI/离线脚本）：pid + 该进程首次认领的时刻，重启可区分。
+
+    时刻串在日期与时间之间补连字符（%Y%m%d-%H%M%S）：14 位连续数字可掐出 11 位
+    "裸手机号"窗口（脱敏回归按子串判据扫描），切段后任一数字连段 ≤8 位，作用域
+    id 不再可能伪装成手机号（与 web 请求档的切段同理由）。
+    """
+    pid = os.getpid()
+    seen = _PROCESS_SCOPE_SEEN.get(pid)
+    if seen is None:
+        seen = clock.now().strftime("%Y%m%d-%H%M%S")
+        _PROCESS_SCOPE_SEEN[pid] = seen
+    return f"proc{pid}-{seen}"
+
+
+def _scope_detail(detail, request_id=None):
+    """把作用域 id 编码进 detail（重复调用只留一个真实标记）。
+
+    两形态：detail 是 JSON 对象时注入 `"_req"` 键（保住 JSON 可解析——配置变更类审计
+    的 detail 就是被下游 `json.loads` 还原"改了哪些键"的结构化记录，追加裸后缀会把它
+    弄成非法 JSON 而丢掉还原能力）；其余情况追加 `[req=...]` 后缀。标记被截掉就答不了
+    "哪个请求做的"，故先留足标记额度再截正文。
+
+    入参 detail 中出现的 `[req=` 字面量一律先**消毒**（用户可控字段带进来的标记会被
+    下方幂等判据误当成"已带作用域"，从而抑止真实 id 的附加——即让请求体伪造归属），
+    再统一附加真实标记。
+
+    **已知缺口**：JSON 对象序列化后超过 200 字符时，`"_req"` 键这条路径放不下，退化为
+    追加后缀并截断，产出的 detail 不再是合法 JSON（下游按 JSON 还原会失败）。这是
+    200 字符上限与"保住 JSON"两个目标在超长结构化 detail 下不可兼得时的取舍。
+    """
+    detail = detail or ""
+    # 先消毒再附加：不让任何入参内容冒充真实作用域标记（见 docstring）
+    detail = detail.replace(_SCOPE_MARKER, _SCOPE_MARKER_SANITIZED)
+    rid = request_id or current_request_scope() or _process_scope()
+    stripped = detail.strip()
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            # 真实作用域 id 覆盖入参里可能已被用户塞入的 `_req`（伪造归属），与
+            # 非 JSON 分支的标记消毒同口径：只认本函数追加的值。
+            obj["_req"] = rid
+            out = json.dumps(obj, ensure_ascii=False)
+            if len(out) <= 200:
+                return out
+    tag = f"{_SCOPE_MARKER}{rid}]"
+    return (detail[: max(0, 200 - len(tag))] + tag)[:200]
+
+
+def audit(username, action, target="", detail="", request_id=None):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
+
+    `request_id` 为请求作用域 id；缺省取当前线程的请求作用域，再退化为进程级 id，
+    最终以 `[req=...]` 标记附加在 detail 末尾（见上方作用域注释）。
 
     写入 HMAC 哈希链：prev_hash 取上一条 hash，hash 由 `_audit_hash` 对
     [prev_hash, ts, username, action, target, detail] 计算。**prev_hash 的读取必须与
@@ -376,7 +491,10 @@ def audit(username, action, target="", detail=""):
     """
     conn = None
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-    detail = detail[:200]
+    # actor 列在**写入口**收口（见 `actor_tag`）：哈希链对已写形态验真，遮罩先于哈希，
+    # 链与内容口径从此一致；不存在"库里明文、出口才遮"的第二份。
+    username = actor_tag(username)
+    detail = _scope_detail(detail[:200], request_id)
     last_err = None
     for attempt in range(_AUDIT_RETRIES):
         try:
@@ -427,12 +545,104 @@ def audit(username, action, target="", detail=""):
     return False
 
 
+class AuditWriteRefused(RuntimeError):
+    """审计写入失败且要求 fail-closed：调用方必须回滚/拒绝对应的业务操作。
+
+    只在 `audit_or_refuse` 抛出；`audit()` 的返回 False 口径不变（既有调用点不检查
+    返回值，由每日欠账判据兜住）。
+    """
+
+
+def record_in_txn(conn, username, action, target="", detail="", request_id=None):
+    """在**调用方已开启的写事务**内插入审计行（不 BEGIN、不 commit）。返回本条 hash。
+
+    给"业务写与审计写同事务"的调用方用：业务写与这一步同一 BEGIN IMMEDIATE，调用方
+    一次 commit 让两者同在、rollback 让两者同不在——中间被杀不会留下"做了无留痕、
+    欠账仍为 0"（欠账计数结构性看不见这种丢法）。要求调用方已持 `_conn_lock` 且事务
+    已开启：读链尾与 INSERT 之间若无跨进程互斥，会读到同一 prev_hash 造成链分叉。
+    """
+    ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    username = actor_tag(username)
+    detail = _scope_detail((detail or "")[:200], request_id)
+    row = conn.execute(
+        "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    prev_hash = row["hash"] if row else ""
+    h = _facade()._audit_hash(prev_hash, ts, username, action, target, detail)
+    conn.execute(
+        "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (ts, username, action, target, detail, prev_hash, h),
+    )
+    return h
+
+
+@contextlib.contextmanager
+def audit_unit(username, action, target="", detail="", request_id=None):
+    """把一段业务写与它的审计行放进**同一个 BEGIN IMMEDIATE 事务**。
+
+    用法：`with db.audit_unit(actor, "action", target, detail) as conn:` 体内用传入的
+    conn 做业务写；退出时业务写与审计行一次 commit，抛异常则整体 rollback（业务与审计
+    都不留）。业务写**必须用传入的 conn**——另开事务会撞 "within a transaction"，业务
+    写自成事务则又把窗口还回来。
+
+    **生产调用点不经本上下文**：现有同事务审计由 store 层各写函数内嵌 `record_in_txn`
+    完成（`accounts.py` / `users.py` 的 `audit_spec` 参数、`purge_guard.py` 的
+    `audit_or_refuse`），不新增一个"每个调用点各写一遍上下文"的面。本上下文是测试与
+    自定义组合写路径的入口——`tests/test_audit_transaction.py` 用它复现 kill 注入，
+    验证"未提交事务随进程退出被回滚"。
+
+    与"先业务后 audit()"的差别：那两个事务之间被杀会留下"业务已生效、审计表无此条、
+    欠账计数仍为 0"，本上下文消除该窗口（kill 注入下要么两者都在，要么都不在）。
+    """
+    with _facade()._conn_lock:
+        conn = _facade().get_conn()
+        _facade()._begin_immediate(conn)
+        try:
+            yield conn
+            record_in_txn(conn, username, action, target, detail, request_id)
+            conn.commit()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
+
+
+def audit_or_refuse(username, action, target="", detail="", request_id=None):
+    """fail-closed 审计：成功返回 True，失败抛 `AuditWriteRefused`。
+
+    给**无法与业务并事务**的调用点用（业务写跨另一存储、另开连接或异步，SQLite 事务
+    覆盖不到：.env 口令/清单写、跨库清库、后台任务）。这些路径必须"审计失败即拒绝
+    业务"，而不是"先做业务再补审计"。范例见 `yiban/store/purge_guard.py` 的
+    `write_purge_audit`（返回 False 时调用方放弃删除，本函数是同一口径的异常版）。
+    """
+    if _facade().audit(username, action, target, detail, request_id=request_id):
+        return True
+    raise AuditWriteRefused(
+        f"审计写入失败，拒绝业务操作（fail-closed）: action={action} target={target}"
+    )
+
+
 def audit_head_hash():
-    """返回审计链当前头哈希（空链返回空串）；供外部锚点导出（append-only 日志）。
+    """审计链当前头哈希；空链返回 ""，**读取失败返回 None**。
 
     锚点存在的理由：HMAC 链密钥与数据同盘时"整体重算"零成本，
     把链头哈希定期追加到独立文件（web 每日线程写 STATE_DIR/audit-anchor.log），
     使重写库内审计链还需同步篡改锚点文件，外部锚定抬高伪造成本。
+
+    读失败与空链**必须分开**：旧实现两者都返回 ""，"读不动"于是被当成"空链"，
+    锚点/日报据此省略判定——把"没查"印成"没有"。调用方需要三态时用
+    `audit_head_hash_ex`；本函数对读失败返回 None 作为兼容的显式降级信号。
+    """
+    state, head = audit_head_hash_ex()
+    return head if state == "ok" else ("" if state == "empty" else None)
+
+
+def audit_head_hash_ex():
+    """审计链头读取的三态：`(state, head)`，state ∈ ok（有记录）/ empty（空链）/ error。
+
+    空链是**查清了的结论**（head=""），读失败是**没查成**（head=None）；两者下游
+    处置相反（空链可正常写锚点/报"空链"，读失败必须省略判定并告警）。
     """
     try:
         with _facade()._conn_lock:
@@ -440,10 +650,12 @@ def audit_head_hash():
             row = conn.execute(
                 "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
             ).fetchone()
-            return row["hash"] if row else ""
+            if row is None or not (row["hash"] or ""):
+                return "empty", ""
+            return "ok", row["hash"]
     except Exception as e:
         logger.warning("读取审计链头失败: %s", e)
-        return ""
+        return "error", None
 
 
 def audit_row_count():
@@ -544,9 +756,6 @@ _AUDIT_PURGE_TOTAL_KEY = "audit_purge_total"
 _AUDIT_PURGE_EVENTS_KEY = "audit_purge_events"
 #: 留痕事件列表上限（app_meta 单值不宜无界增长；只保留最近 N 条足够追溯）
 _PURGE_EVENTS_KEEP = 200
-#: 全表重链留痕（migrate_v3 每次重签整条链都记一条：ts/来源版本/行数/重链前后 head）
-_RECHAIN_EVENTS_KEY = "audit_rechain_events"
-_RECHAIN_EVENTS_KEEP = 50
 #: 文件首行的"前驱哈希"哨兵。必须是非空定长串——写成空串会让行尾空格在 split()
 #: 后少一个 token，整行变得不可解析（曾导致每日误报"锚点文件被删除"）。
 _ANCHOR_GENESIS = "0" * 64
@@ -617,15 +826,46 @@ def _parse_anchor_line(ln):
 
 def _read_anchor_lines(path):
     """锚点文件的全部非空行（保持顺序）。文件不存在/不可读返回 None（区别于 []）。"""
+    lines, _status = _read_anchor_lines_ex(path)
+    return lines
+
+
+def _read_anchor_lines_ex(path):
+    """同 `_read_anchor_lines`，但把"为什么没读到"一并返回：`(lines, status)`。
+
+    status 取值：
+      "ok"            读到了（可能为空列表）；
+      "missing"       文件不存在；
+      "io-error"      文件存在但不可读（权限/IO 错误）；
+      "decode-error"  内容不是合法 UTF-8。
+
+    区分四态是必需的：若让 `UnicodeDecodeError` 抛出，调用方的兜底 except 会把它
+    吞成一条 WARNING ⇒ **当日整段校验不执行**（一条非法字节就能让审计自检静默）；
+    把 "decode-error"/"io-error" 与 "missing" 混为一谈又会把"读不出"印成"无异常"。
+    调用方对所有非 "ok" 一律按"无法定论"处理，绝不当无异常。
+    """
+    if not os.path.exists(path):
+        return None, "missing"
     try:
         with open(path, encoding="utf-8") as f:
-            return [ln.strip() for ln in f if ln.strip()]
+            return [ln.strip() for ln in f if ln.strip()], "ok"
+    except UnicodeDecodeError:
+        return None, "decode-error"
     except OSError:
-        return None
+        return None, "io-error"
 
 
 def _get_anchor_meta():
-    """读库内锚点指纹 {"lines","last_hash","ts"}；无记录/缺表/JSON 损坏 → {}。"""
+    """读库内锚点指纹，原样返回写入方存进 app_meta 的那份 dict
+    {"lines","last_hash","ts"}；无记录/缺表/JSON 损坏/非 dict → {}。
+
+    三个键并非都有读者：包内唯一的调用方 `_anchor_file_state_ex` 只读 `lines` 与
+    `last_hash`，`ts` **自写入后无人读取**——它与同一事务里写入的 `audit_anchor_last`
+    键逐字相同（见 `_record_anchor_trace`），"锚点曾存在"这条判据由那一键承担。
+    `db._get_anchor_meta` 是本函数的转发别名，全仓无人经它调用（含 tests/）。
+    删这个键会改变库内 JSON 的形状（属行为变更），故这里保持原样返回整份 dict，
+    既不补消费方，也不在读取侧改写它。
+    """
     raw = _facade().get_meta(_ANCHOR_META_KEY, "")
     if not raw:
         return {}
@@ -634,6 +874,26 @@ def _get_anchor_meta():
     except ValueError:
         return {}
     return val if isinstance(val, dict) else {}
+
+
+def _anchor_meta_line_count(meta):
+    """库内锚点指纹的 `lines` 字段 → `(计数, 状态)`，status ∈ ok/corrupt。
+
+    `lines` 住在**应用可写**的 app_meta（audit_anchor_meta），值可被应用身份改写或
+    手工损坏：非数字值（手工损坏/拼接/旧格式）时若直接 int() 会抛 ValueError。调用方
+    `_anchor_file_state_ex` 位于 `_anchor_status` 的 try 之外——一次手工损坏即让每日
+    体检整体抛异常、被 web 日线线程吞成 WARNING，当日校验静默不跑（正是"把查不动印成
+    无异常"的失败形态）。故就地降级为 corrupt，由调用方转成"无法定论 ⇒ 不健康"，绝不外抛。
+    """
+    if not meta:
+        return 0, "ok"
+    raw = meta.get("lines")
+    if raw is None:
+        return 0, "ok"
+    try:
+        return int(raw), "ok"
+    except (TypeError, ValueError):
+        return 0, "corrupt"
 
 
 def _audit_purge_total(conn):
@@ -659,9 +919,9 @@ def _audit_purge_total(conn):
 def _meta_json_list(conn, key):
     """读 app_meta 里 key 的 JSON 列表；缺表/缺键/JSON 损坏/非列表 → []。
 
-    `_audit_purge_events` 与 `_rechain_events` 是它的两个包装：读取口径只有这一处，
-    改动 sqlite3.Error 兜底或 isinstance 列表校验时，两个调用方的"损坏按空列表"承诺
-    一起变（缺一个都会让留痕判据把损坏误当"没有留痕"）。
+    读取口径只有这一处（`_audit_purge_events` 是它的包装）：改动 sqlite3.Error 兜底
+    或 isinstance 列表校验时，"损坏按空列表"的承诺一起变——把损坏误当"没有留痕"会
+    让删除追溯静默失效。
     """
     try:
         row = conn.execute(
@@ -748,7 +1008,14 @@ def record_audit_anchor(path=None):
         ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         # 行间链：prev_line_hash 取**前一行原文**的哈希，旧格式（v1）行同样参与
         # 链——否则攻击者只要删掉文件末尾的 v1 行，剩余行依然自洽，无从发现。
-        lines = _read_anchor_lines(path) or []
+        lines, read_state = _read_anchor_lines_ex(path)
+        if read_state not in ("ok", "missing"):
+            # 读不出（非法 UTF-8/权限）时**拒绝追加**：按空列表续写会把行间链接到
+            # 一个读不出来的前缀上（GENESIS 假前驱），既掩盖现场又让文件此后永远
+            # 解析失败。无法定论状态下宁缺毋滥，由每日告警催人修文件。
+            logger.error("锚点文件不可解析（%s），拒绝追加新锚点行以免破坏行间链", read_state)
+            return None
+        lines = lines or []
         prev_line_hash = _anchor_line_sha(lines[-1]) if lines else _ANCHOR_GENESIS
         line = f"{ts} {min_id} {max_id} {count} {purge_total} {head} {prev_line_hash}"
         d = os.path.dirname(path)
@@ -776,7 +1043,13 @@ def _record_anchor_trace(path, ts):
       必须有库内指纹交叉对照。行数只增不减——被截断后即使补写一行把长度凑回来，
       本次指纹仍停留在更高的历史值上（见 _anchor_file_state）。
     """
-    lines = _read_anchor_lines(path) or []
+    lines, read_state = _read_anchor_lines_ex(path)
+    if read_state not in ("ok", "missing"):
+        # 读不出时不能按空列表写指纹：那会把库内行数高水位冲成 0、末行哈希冲成空，
+        # 之后正常修复好的锚点反而因"行数变多"被判红。宁可本次不更新指纹。
+        logger.error("锚点文件不可解析（%s），本次不更新库内指纹（保持原高水位）", read_state)
+        return
+    lines = lines or []
     try:
         with _facade()._conn_lock:
             conn = _facade().get_conn()
@@ -809,6 +1082,44 @@ def _record_anchor_trace(path, ts):
         logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
 
 
+def _parse_anchor_lines(lines):
+    """把锚点行文本列表解析成已解析行列表（不可解析的行被丢弃，保序）。"""
+    out = []
+    for ln in lines:
+        parsed = _parse_anchor_line(ln)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def _last_anchor_of(lines):
+    """最后一条可解析的锚点行；没有返回 None。"""
+    parsed = _parse_anchor_lines(lines)
+    return parsed[-1] if parsed else None
+
+
+def _max_anchor_of(lines):
+    """`max_id` 最大的那条可解析锚点行（并列取靠后的）。
+
+    校验基准取"最大真行"而不是"最后一行"：追加一行**旧状态**的锚点（max_id 更小）
+    即可把基准换成一个与现状自洽的旧记录，让删尾判据对着错的锚点算。取最大 max_id
+    使基准只会被更强的记录替换；伪造一条更大的 max_id 也无用——那一行在库内不存在
+    或哈希对不上，定点判据随即为红。
+
+    并列必须取靠后（最新自报）而非靠前：清理后补锚、链尾重签后重锚都会追加
+    max_id 相同的新行，只有最新一行描述库内现状，取靠前会拿陈旧 head 定点、把
+    合法重锚误判成篡改。`max()` 并列返回首个，故这里显式 >= 扫描。
+    """
+    parsed = _parse_anchor_lines(lines)
+    if not parsed:
+        return None
+    best = parsed[0]
+    for p in parsed[1:]:
+        if p["max_id"] >= best["max_id"]:
+            best = p
+    return best
+
+
 def _last_audit_anchor(path):
     """读取最后一条有效锚点行；无锚点或格式不符返回 None。
 
@@ -822,64 +1133,105 @@ def _last_audit_anchor(path):
     lines = _read_anchor_lines(path)
     if not lines:
         return None
-    for ln in reversed(lines):
-        parsed = _parse_anchor_line(ln)
-        if parsed is not None:
-            return parsed
-    return None
+    return _last_anchor_of(lines)
 
 
-def _anchor_file_state(path):
-    """锚点文件**自身**完整性：行间链 + 库内指纹交叉校验。返回异常描述或 ''。
+def _anchor_file_state_ex(path=None, lines=None, meta=None):
+    """锚点文件自身完整性（两方判据）：库内指纹 + 锚点旁路文件自报。
 
-    审计链的哈希校验只覆盖库内行；锚点文件若被截断/改写，判据会整体失效
-    （verify_audit_anchor 只读末行）。本函数把"锚点文件不可信"从静默降级
-    变成显式失败。
+    两方 = 库内锚点指纹（app_meta `audit_anchor_meta` 的行数高水位与末行哈希）对照
+    锚点旁路文件自报（行数三支 + 行内 `prev_line_hash` 链 + 末行 `last_hash`）。
+
+    返回 `(status, msg)`，status ∈ ok/tampered/indeterminate。
+
+    行数判据必须三支齐全。只判"变少"与"相等"会漏掉"变多"：**仅追加 1 条垃圾行**
+    就让两道判据同时返回"无异常"——行数变多无人管、相等分支又因末行变了却只比
+    last_hash 时被跳过。此处"变多"与"变少"同等判红：正常写入路径每写一行都会把库内
+    指纹的行数高水位同步抬高，因此"锚点比库内指纹多行"本身就是应用写入之外的动作。
+
+    不可解析的行（合法 UTF-8 但不是锚点行格式）判"无法定论"而非"无异常"：它既可能
+    是磁盘损坏也可能是有人在试探判据，处置方向不同，不能压成同一结论；也**不**当
+    普通红——那会把一次编码事故误报成确证的篡改。
     """
-    lines = _read_anchor_lines(path)
     if lines is None:
-        return ""  # 文件缺失/不可读由 audit_anchor_last 那一支判定
+        lines, status = _read_anchor_lines_ex(path)
+        if status != "ok" or lines is None:
+            # 缺失/读不出由调用方（_anchor_status）判定，这里不重复下结论
+            return "ok", ""
+    if meta is None:
+        meta = _get_anchor_meta()
+    recorded, meta_state = _anchor_meta_line_count(meta)
+    if meta_state == "corrupt":
+        return (
+            "indeterminate",
+            "库内锚点指纹的行数字段无法解析为整数（app_meta 被手工损坏或改写）"
+            "——校验无法定论（不等于无异常），请立即核查",
+        )
+    if recorded:
+        if len(lines) < recorded:
+            return (
+                "tampered",
+                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
+                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）",
+            )
+        if len(lines) > recorded:
+            return (
+                "tampered",
+                f"锚点文件行数由库内指纹记录的 {recorded} 增至 {len(lines)}"
+                "——应用写入之外被追加了行（仅追加 1 条垃圾行即可同时骗过"
+                "「变少/相等」两支判据，故此处与减少同等判红）",
+            )
+    for i, ln in enumerate(lines):
+        if _parse_anchor_line(ln) is None:
+            return (
+                "indeterminate",
+                f"锚点文件第 {i + 1} 行不是合法锚点行（内容损坏或被人为写入）"
+                "——校验无法定论，不等于无异常，请人工核查该行",
+            )
     for i, ln in enumerate(lines):
         parsed = _parse_anchor_line(ln)
-        if parsed is None or parsed["prev_line_hash"] is None:
+        if parsed["prev_line_hash"] is None:
             continue  # 旧格式行没有行间链字段：作为前驱参与哈希，自身不做链校验
         expect = _anchor_line_sha(lines[i - 1]) if i > 0 else _ANCHOR_GENESIS
         if parsed["prev_line_hash"] != expect:
             where = _anchor_line_sha(lines[i - 1])[:12] if i > 0 else _ANCHOR_GENESIS[:12]
             return (
+                "tampered",
                 f"锚点文件第 {i + 1} 行的行间哈希不符（期望前驱行 {where}）"
-                "——锚点历史被改写或删除过整行"
+                "——锚点历史被改写或删除过整行",
             )
-    meta = _get_anchor_meta()
-    recorded = int(meta.get("lines") or 0) if meta else 0
-    if recorded:
-        if len(lines) < recorded:
-            return (
-                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
-                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）"
-            )
-        if (len(lines) == recorded and meta.get("last_hash")
-                and _anchor_line_sha(lines[-1]) != meta["last_hash"]):
-            return "锚点文件末行与库内指纹不符——末行内容被改写"
-    return ""
+    if recorded == len(lines) and meta.get("last_hash") and _anchor_line_sha(lines[-1]) != meta["last_hash"]:
+        return "tampered", "锚点文件末行与库内指纹不符——末行内容被改写"
+    return "ok", ""
 
 
-def verify_audit_anchor(path=None):
-    """与库外锚点比对，检出「删尾 / 清空整表 / 篡改链尾」。
+def _anchor_file_state(path):
+    """`_anchor_file_state_ex` 的兼容包装：返回异常描述或 ''（旧调用面）。"""
+    return _anchor_file_state_ex(path)[1]
 
-    返回 (ok: bool, message: str)：
-    - ok=False → 确证异常，调用方应告警；
-    - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
-    无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
-    app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
-    不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。
-    这项元数据交叉检查对**显式路径同样生效**：只查默认路径时，web 每日线程改传
-    显式路径就会把它整个跳过，锚点被删仍判通过（致盲换个形式复发）。
-    仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用。
+
+def _anchor_status(path=None):
+    """锚点自检结论：`(status, message)`，status ∈ ok/tampered/indeterminate/none。
+
+    "ok" 与 "none" 都不是异常（none = 从未写过锚点，首次运行不判定）；
+    "indeterminate"（无法定论）必须与两者都区分开——它既不是"无异常"，也不是
+    "确证篡改"，而是"这次没验成"：处置方向不同（修文件/查编码 vs 查攻击），
+    混进任一侧都会让告警或静默失效。`audit_health` 对它一律判不健康。
     """
     path = path or audit_anchor_path()
-    anchor = _last_audit_anchor(path)
-    if anchor is None:
+    lines, read_state = _read_anchor_lines_ex(path)
+    if read_state == "decode-error":
+        return (
+            "indeterminate",
+            "锚点文件含非法 UTF-8 字节，整份文件无法解析——校验无法定论（不等于"
+            "无异常），当日自检不执行；请人工核查该文件内容",
+        )
+    if read_state == "io-error":
+        return (
+            "indeterminate",
+            "锚点文件存在但不可读（权限或 IO 错误）——校验无法定论（不等于无异常）",
+        )
+    if read_state == "missing" or not lines:
         try:
             with _facade()._conn_lock:
                 conn = _facade().get_conn()
@@ -887,19 +1239,25 @@ def verify_audit_anchor(path=None):
                     "SELECT value FROM app_meta WHERE key='audit_anchor_last'"
                 ).fetchone()
             if r is not None and r["value"]:
-                return False, (
+                return "tampered", (
                     f"审计锚点文件缺失或不可读，但应用元数据记录曾于 "
                     f"{r['value']} 写入锚点——疑似锚点文件被删除，"
                     "删尾/清空检测已失效，请立即核查"
                 )
         except Exception:
             pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
-        return True, ""
-    file_err = _anchor_file_state(path)
-    if file_err:
+        return "none", ""
+    anchor = _max_anchor_of(lines)
+    if anchor is None:
+        return (
+            "indeterminate",
+            "锚点文件存在但没有一行是合法锚点行——校验无法定论（不等于无异常）",
+        )
+    file_status, file_msg = _anchor_file_state_ex(path, lines=lines)
+    if file_status != "ok":
         # 锚点文件自身不可信时，后面所有"拿末行与库内比对"的判据都是拿伪造值
         # 在校验伪造值——必须先判失败。
-        return False, file_err
+        return file_status, file_msg
     try:
         with _facade()._conn_lock:
             conn = _facade().get_conn()
@@ -922,7 +1280,7 @@ def verify_audit_anchor(path=None):
         # 留痕累计数只增不减：倒退意味着 app_meta 的删除留痕被人清过/改过，
         # 而这正是"批量删除后自证清白"唯一的通路，必须当场判失败。
         if anchor_pt is not None and purge_total < anchor_pt:
-            return False, (
+            return "tampered", (
                 f"物理删除留痕累计数由锚点记录的 {anchor_pt} 倒退为 {purge_total}"
                 "——app_meta 删除留痕被清除或改写，删除追溯已失效，请立即核查"
             )
@@ -931,39 +1289,42 @@ def verify_audit_anchor(path=None):
 
         if n == 0:
             if explained is not None and anchor_count and explained >= anchor_count:
-                return True, (
+                return "ok", (
                     f"审计链 {anchor_count} 条已按保留期全部清理完毕"
                     f"（有留痕，锚点以来累计删除 {explained} 条），非告警"
                 )
-            return False, (
+            return "tampered", (
                 f"审计表为空，但锚点（{anchor['ts']}）记录曾有 {anchor['max_id']} 条"
                 f"——疑似整表被清空（无任何清理留痕可解释，留痕累计={explained}）"
             )
 
-        # ---- 判据一：定点 ----
+        # ---- 判据一：定点（锚点定点行**无条件**必须还在）----
         # 锚点 max_id 那一行必须还在、哈希必须还对得上。原判据是
         # "cur_max == anchor.max_id 时才比 head"，于是"删掉链尾若干条 + 再写一条"
         # 就足以让整套比对静默（新行 id 更大，head 比对被跳过）。
-        if anchored is None and not _purge_event_covers(events, anchor_pt, anchor["max_id"]):
+        #
+        # 该定点行**不享有清理留痕豁免**（曾用 `_purge_event_covers` 放行）。留痕住在
+        # 应用可写的 app_meta 里：删掉这些行后再种一条"把该 id 删掉了"的假事件，判据就
+        # 被自己的解释开关静默——连 `audit_purge_total` 都不用动。而锚点定点行按构造
+        # 至多一个锚点间隔之旧；合法保留期清理只删月级窗口，永远够不到它。真要做整库/
+        # 手工清理属 root 级维护，其运行手册步骤是重置锚点文件、由下一轮每日线程重新
+        # 播种——所以一条声称覆盖锚点定点行的清理事件本身就是篡改证据，不能拿来放行。
+        if anchored is None:
             trend = (
                 f"当前 max_id={cur_max} 小于锚点 max_id={anchor['max_id']}（条数减少，"
                 f"疑似删掉最近 {anchor['max_id'] - cur_max} 条）"
                 if cur_max < anchor["max_id"]
                 else f"当前 max_id={cur_max} 反而更大——删尾后用新写入掩盖"
             )
-            return False, (
-                f"锚点记录的链尾行 id={anchor['max_id']} 已不存在，且无清理留痕可解释："
-                f"{trend}；锚点以来有留痕的删除累计={explained}"
+            return "tampered", (
+                f"锚点记录的链尾行 id={anchor['max_id']} 已不存在：{trend}；"
+                f"锚点以来有留痕的删除累计={explained}"
             )
-        if anchored is not None and anchored["hash"] != anchor["head"]:
-            return False, (
+        if anchored["hash"] != anchor["head"]:
+            return "tampered", (
                 f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
-                f"全表重签）{_rechain_hint(anchor)}"
+                "全表重签）"
             )
-        if anchored is None:
-            # 定点被留痕事件解释掉了（长期空闲后保留期清理删到了链尾）——
-            # 这条锚点已不再描述当前链尾，后续判据照常执行
-            logger.info("锚点链尾行 id=%s 已由清理留痕解释，跳过 head 比对", anchor["max_id"])
 
         # ---- 判据二：稠密（v1 锚点无 count，降级跳过）----
         if anchor_count is not None:
@@ -971,7 +1332,7 @@ def verify_audit_anchor(path=None):
             missing = anchor_count - era_rows     # 锚点以来消失的行数
             exp = explained if explained is not None else 0
             if missing > exp:
-                return False, (
+                return "tampered", (
                     f"审计记录条数减少且无清理留痕：锚点（{anchor['ts']}）记录 {anchor_count} 条，"
                     f"当前该批仅剩 {era_rows} 条（此后新增 {appended} 条），"
                     f"消失 {missing} 条而有留痕的物理删除仅 {exp} 条——"
@@ -979,7 +1340,7 @@ def verify_audit_anchor(path=None):
                     f"变为 {cur_min}，max_id 由 {anchor['max_id']} 变为 {cur_max}"
                 )
             if missing < exp:
-                return False, (
+                return "tampered", (
                     f"清理留痕与链实际状态不符：留痕声称锚点以来删除 {exp} 条，"
                     f"实际仅消失 {missing} 条——留痕被伪造/重复写入，判为异常"
                 )
@@ -988,29 +1349,53 @@ def verify_audit_anchor(path=None):
         if cur_min > anchor["min_id"]:
             if anchor_count is None:
                 # v1 锚点：没有 count 可核对，维持旧的"信息"定性（不因此判失败）
-                return True, (
+                return "ok", (
                     f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
                     "（旧版锚点无 count 字段，无法核对清理留痕，非告警；"
                     "本次已按新格式重写锚点，明日恢复完整判据）"
                 )
             if not _purge_event_sets_min(events, anchor_pt, cur_min):
-                return False, (
+                return "tampered", (
                     f"审计链 min_id 由 {anchor['min_id']} 跃迁至 {cur_min}（跃迁 "
                     f"{cur_min - anchor['min_id']} 条），但没有任何一条清理留痕事件的"
                     f"删除后 min_id 与之相符——前缀删除无留痕，判为非法删除"
                 )
-            return True, (
+            return "ok", (
                 f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
                 "（有清理留痕，保留期清理的正常现象，非告警）"
             )
         if cur_min < anchor["min_id"]:
-            return False, (
+            return "tampered", (
                 f"审计链 min_id 由 {anchor['min_id']} 倒退至 {cur_min}——"
                 "锚点之后不可能凭空出现更早的记录，判为异常（库被替换或 id 被重写）"
             )
-        return True, ""
+        return "ok", ""
     except Exception as e:
-        return False, f"锚点校验异常: {e}"
+        # 校验过程自身异常（库锁/连接等）也算"无法定论"：既不能印成通过，也不该
+        # 冒充一次成功的取证。调用方据 status 分开处置。
+        return "indeterminate", f"锚点校验异常: {e}"
+
+
+def verify_audit_anchor(path=None):
+    """与库外锚点比对，检出「删尾 / 清空整表 / 篡改链尾 / 锚点文件被改写」。
+
+    返回 (ok: bool, message: str)：
+    - ok=False → 非"通过"（确证异常或无法定论，message 里注明是哪一种）；
+    - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
+    无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
+
+    需要区分三态（无异常 / 无法定论 / 确证异常）的调用方改用 `_anchor_status`；
+    本函数保留二元返回是为了不破坏既有调用面，"无法定论"时 message 以
+    「无法定论」开头，且 ok=False（绝不显示成通过）。
+
+    app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/不可读 → 判定异常。
+    这项元数据交叉检查对**显式路径同样生效**：只查默认路径时，web 每日线程改传
+    显式路径就会把它整个跳过，锚点被删仍判通过（致盲换个形式复发）。
+    """
+    status, msg = _anchor_status(path)
+    if status == "indeterminate":
+        return False, "无法定论：" + msg
+    return status in ("ok", "none"), msg
 
 
 def _purge_events_after_anchor(events, anchor_pt):
@@ -1027,18 +1412,6 @@ def _purge_events_after_anchor(events, anchor_pt):
     return out
 
 
-def _purge_event_covers(events, anchor_pt, row_id):
-    """是否有一条锚点之后的留痕事件恰好把 id=row_id 这条删掉了。"""
-    for ev in _purge_events_after_anchor(events, anchor_pt):
-        before_max = ev.get("before_max")
-        after_max = ev.get("after_max")
-        if before_max is None or int(row_id) > int(before_max):
-            continue
-        if after_max is None or int(row_id) > int(after_max):
-            return True
-    return False
-
-
 def _purge_event_sets_min(events, anchor_pt, cur_min):
     """是否有一条锚点之后的留痕事件，其"删除后 min_id"恰好等于当前 min_id。"""
     for ev in _purge_events_after_anchor(events, anchor_pt):
@@ -1049,48 +1422,20 @@ def _purge_event_sets_min(events, anchor_pt, cur_min):
     return False
 
 
-def _rechain_events(conn):
-    """全表重链留痕列表（app_meta JSON）。缺表/损坏 → []。"""
-    return _meta_json_list(conn, _RECHAIN_EVENTS_KEY)
-
-
-def _rechain_hint(anchor):
-    """锚点之后若发生过全表重链，给出可诊断的留痕摘要（无则空串）。
-
-    链尾哈希与锚点不符有两个成因，处置完全不同：内容被篡改 vs 启动路径用当前密钥
-    重签了整条链（后者要求有人把 user_version 拨回 v3 之前，或换过 YIBAN_AUDIT_KEY）。
-    留痕让运维一眼看出是哪一种，而不是对着同一句"疑似篡改"猜。
-    """
-    try:
-        with _facade()._conn_lock:
-            conn = _facade().get_conn()
-            events = _rechain_events(conn)
-    except Exception:
-        return ""
-    ts = (anchor or {}).get("ts") or ""
-    recent = [e for e in events if str(e.get("ts") or "") > ts]
-    if not recent:
-        return "；锚点之后无全表重链留痕，按内容篡改处理"
-    e = recent[-1]
-    return (
-        f"；锚点之后有 {len(recent)} 次全表重链留痕"
-        f"（最近一次 {e.get('ts')} 来源版本 v{e.get('from_version')} "
-        f"行数 {e.get('rows')} 重链后 head={str(e.get('head_after'))[:12]}…）"
-        "——若非预期的 v3 升级/密钥轮换，即视同篡改"
-    )
-
-
 def audit_health(path=None):
     """审计可追溯性综合体检（供每日线程 / audit_verify.py 调用）。
 
     返回 dict：
       chain_ok      链内哈希自洽（False = 有记录被篡改/删除）
       broken        链内断链条数（-1 = 校验异常或密钥缺失）
-      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾 / 无痕删除）
+      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾 / 无痕删除 /
+                    无法定论；"无法定论"不是"无异常"，也不是确证篡改）
+      anchor_status 锚点自检的三态结论：ok/none/tampered/indeterminate
+                    （none = 从未写过锚点，首次运行不判定）
       anchor_msg    锚点判定的说明或提示信息
       write_failures 累计的审计写入失败次数（>0 = 有操作未留痕；落库不随重启归零）
-      rechain_events app_meta 里的全表重链留痕（诊断用，最新在末尾）
-      empty_hash_rows 链内 hash 为空的行数（>0 = 有人清空签名等着被重签）
+      empty_hash_rows 链内 hash 为空的行数（>0 = 有人清空了签名；正常写入路径从不
+                    产生空 hash 行，它是"断链/缺行"族的人为痕迹）
       purge_total   累计**有留痕的** audit_logs 物理删除条数（保留期清理口径）
       last_cleanup  最近一次 audit_logs 清理留痕事件（含 cutoff 与删除条数；无 → None）
       note          附加诊断文本（无异常时为空串）
@@ -1103,30 +1448,27 @@ def audit_health(path=None):
     """
     path = path or audit_anchor_path()
     chain_ok, broken, _first = verify_audit_chain()
-    anchor_ok, anchor_msg = verify_audit_anchor(path)
+    anchor_status, anchor_msg = _anchor_status(path)
+    # 三态压成二态：只有 ok/none 算"通过"。"无法定论"必须落到 anchor_ok=False，
+    # 否则一条非法字节就能让当日自检在"healthy=True"里静默消失。
+    anchor_ok = anchor_status in ("ok", "none")
     write_failures = audit_write_failures()
-    rechain_events, empty_hash_rows = _rechain_diagnostics()
-    notes = []
-    rechain_after_anchor = False
-    if rechain_events:
-        anchor = _last_audit_anchor(path)
-        anchor_ts = (anchor or {}).get("ts") or ""
-        # 合法的全表重链只会发生在"任何锚点存在之前"（升级那一次）。锚点之后
-        # 再出现重链，意味着启动路径在已锚定的链上动过手——即使链此刻自洽、
-        # head 也巧合同值，这个动作本身就是异常。
-        late = [e for e in rechain_events if anchor_ts and str(e.get("ts") or "") > anchor_ts]
-        if late:
-            rechain_after_anchor = True
-            e = late[-1]
-            notes.append(
-                f"锚点（{anchor_ts}）之后存在 {len(late)} 次全表重链留痕"
-                f"（最近 {e.get('ts')} 来源版本 v{e.get('from_version')}，"
-                f"行数 {e.get('rows')}）——非预期升级即视为链被重写"
+    try:
+        with _facade()._conn_lock:
+            conn = _facade().get_conn()
+            empty_hash_rows = int(
+                conn.execute("SELECT COUNT(*) FROM audit_logs WHERE hash=''").fetchone()[0] or 0
             )
+    except Exception as e:
+        logger.warning("读取空 hash 行数失败: %s", e)
+        empty_hash_rows = 0
+    notes = []
+    if anchor_status == "indeterminate":
+        notes.append("锚点自检无法定论（既非通过也非确证篡改）：" + anchor_msg)
     if empty_hash_rows:
         notes.append(
-            f"审计链存在 {empty_hash_rows} 条 hash 为空的记录——签名被清空后等待启动路径"
-            "重签整条链（migrate_v3 即此形态），请立即核查"
+            f"审计链存在 {empty_hash_rows} 条 hash 为空的记录——签名被清空（正常写入"
+            "路径从不产生空 hash 行），属断链/缺行，请立即核查"
         )
     # 清理量随体检结果出箱：本机自校验防不住本机时钟（参照点每天推进、容差内的小幅
     # 拨快即可合法清掉整段保留期审计），异机侧只能靠这两个数字判断"清理是否异常"。
@@ -1139,33 +1481,17 @@ def audit_health(path=None):
         "chain_ok": chain_ok,
         "broken": broken,
         "anchor_ok": anchor_ok,
+        "anchor_status": anchor_status,
         "anchor_msg": anchor_msg,
         "write_failures": write_failures,
-        "rechain_events": rechain_events,
+        # 自上次确认以来新增的欠账：告警按"账目变化"触发的输入（见
+        # audit_write_failures_unnotified 处的口径注释）。总账仍单调，不改取证事实。
+        "write_failures_new": audit_write_failures_unnotified(),
         "empty_hash_rows": empty_hash_rows,
         "purge_total": purge_total,
         "last_cleanup": last_cleanup,
         "note": "；".join(notes),
         "healthy": bool(
-            chain_ok and anchor_ok and write_failures == 0
-            and not rechain_after_anchor and not empty_hash_rows
+            chain_ok and anchor_ok and write_failures == 0 and not empty_hash_rows
         ),
     }
-
-
-def _rechain_diagnostics():
-    """(全表重链留痕, 链内空 hash 行数)——体检的附加信号，读失败按无异常处理。"""
-    try:
-        with _facade()._conn_lock:
-            conn = _facade().get_conn()
-            events = _rechain_events(conn)
-            try:
-                empty = conn.execute(
-                    "SELECT COUNT(*) FROM audit_logs WHERE hash=''"
-                ).fetchone()[0]
-            except sqlite3.Error:
-                empty = 0
-        return events, int(empty or 0)
-    except Exception as e:
-        logger.warning("读取重链/空 hash 诊断信息失败: %s", e)
-        return [], 0

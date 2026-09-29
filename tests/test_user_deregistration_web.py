@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""用户自助注销 Web/API 层测试（数据库 v5 软删除对接）。
+"""用户自助注销的 Web/API 层（对接 v5 软删除）。
 
-覆盖 docs/design/plan-frontend-user-deregistration.md 第 3 章 API 契约：
-- 登录要求 401 / CSRF 缺失 403
-- 密码确认：错误 400、连续失败达阈值锁定 429
-- 防批量冷却：用户维度 60s 1 次、IP 维度 60s 5 次 → 429（不暴露秒数）
-- 管理员保护：内置管理员 400、最后一个注册管理员 400
-- 成功路径：软删除标记 + 账号清除 + 会话失效 + 审计留痕 + 邮箱可重新注册
-
-全程 mock / 纯本地（Flask test client），无任何网络请求。
-用法（项目根目录）：
-    py -m pytest tests/test_user_deregistration_web.py -v
+标签：L · 注销与软删
+覆盖：`docs/design/plan-frontend-user-deregistration.md` 第 3 章 API 契约——登录要求
+    401、CSRF 缺失 403、密码错误 400、连续失败达阈值锁定 429、防批量冷却
+    （用户维度 60s 1 次 / IP 维度 60s 5 次 → 429 且不暴露秒数）、内置管理员与
+    最后一个注册管理员 400、成功路径的软删标记 + 账号清除 + 会话失效 + 审计留痕 +
+    邮箱可重新注册；以及超期 purge 对活跃用户的跳过。
+对应实现：`web/app.py` 的注销端点与冷却/口令校验，数据层落
+    `yiban/store/users.py`（`restore_user`、`purge_deleted_users`）。
+关键断言：429 的响应**不得回显剩余秒数**（那是给枚举者免费的探测器）；
+    "最后一个注册管理员"必须拒（否则自助注销能把管理面注销空）。
+依赖：Flask test client + 临时 sqlite/.env，冷却表与失败计数在进程内/临时目录；
+    不触网、不发真实邮件。
 """
 import contextlib
 import importlib.util
@@ -20,7 +22,9 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -38,6 +42,9 @@ class UserDeregistrationWebTest(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 手动物理清除用例钉的是"二次鉴权 + 连带清理 + 审计"，固定在 full——
+                # 默认档 risk 下 purge 还要先过倒计时确认，本类不测那一层
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -196,7 +203,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("expired@test.local", "hash")
         db.soft_delete_user_with_accounts("expired@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired@test.local"))
         conn.commit()
         r = c.get("/api/users/deleted")
@@ -212,7 +219,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("expired-boot@test.local", "hash")
         db.soft_delete_user_with_accounts("expired-boot@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired-boot@test.local"))
         conn.commit()
         # 模拟进程重启：关闭当前连接，让 create_app() 重新执行 init_db 启动清理
@@ -347,6 +354,41 @@ class UserDeregistrationWebTest(unittest.TestCase):
         r = c.post("/api/login", json={"username": "user1@test.local", "password": "bad-pass"})
         self.assertEqual(r.status_code, 401, "密码错误不返回 recoverable 标记")
 
+    def _recoverable_audit_rows(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db_file)
+        try:
+            return conn.execute(
+                "SELECT username, detail FROM audit_logs WHERE action='login_recoverable' ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def test_login_recoverable_writes_one_attributable_audit(self):
+        """冷静期 + 正确口令 = 一次既成的凭据验证事实，审计链上必须有一条可归因留痕。
+
+        修复前这条路径既不写 login_ok（`db.audit` 在 `if role:` 块内）也不计失败
+        ⇒ /api/login 在注销冷静期里是零留痕的凭据验证器（限速表是进程内 dict，
+        应用侧只剩 nginx 访问日志，不可归因）。同时钉住失败路径零回归：
+        口令错误不得产生该动作行。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        r = c.post("/api/login", json={"username": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json().get("recoverable"))
+        rows = self._recoverable_audit_rows()
+        self.assertEqual(len(rows), 1, "口令正确恰好落一条留痕")
+        # `db.audit` 落库时按 MF-49 口径遮罩邮箱（与 login_ok 同形态），
+        # 可归因 ≠ 明文：钉"指向的就是这个账号"即可
+        self.assertEqual(rows[0][0], "use***@test.local", "留痕必须可归因到被验证的账号")
+        # 失败路径行为不变：口令错误仍走 401 + 失败计数，不新增本动作行
+        bad = c.post("/api/login", json={"username": "user1@test.local", "password": "bad"})
+        self.assertEqual(bad.status_code, 401)
+        self.assertEqual(len(self._recoverable_audit_rows()), 1,
+                         "口令错误不得写 login_recoverable")
+
     def test_restore_success(self):
         # 直接 DB 构造冷却中账号（不经 /api/me/delete，避免注销冷却记录挡住恢复的 60s 窗口）
         db.soft_delete_user_with_accounts("user1@test.local")
@@ -384,7 +426,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("oldone@test.local", "hash")
         db.soft_delete_user_with_accounts("oldone@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
         conn.commit()
         c = self.webapp.create_app().test_client()
@@ -463,7 +505,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         db.create_user("oldone@test.local", "hash")
         db.soft_delete_user_with_accounts("oldone@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
         conn.commit()
         c = self.webapp.create_app().test_client()

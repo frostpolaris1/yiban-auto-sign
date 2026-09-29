@@ -78,10 +78,24 @@ ARTIFACTS = (
 # 按日文件的锁也按日生成，同样要清；先剥掉它再匹配前后缀，孤儿锁也能被扫到。
 _LOCK_SUFFIX = ".lock"
 
-# 半成品临时文件：写盘走 tmp + os.replace，进程被杀会留下 `<name>.tmp<pid>`。
-# 这类文件没有日期可判，按 mtime（超过 1 天必是孤儿）清理。
+# 半成品临时文件：写盘走私有写单通道（tmp + os.replace），进程被杀会留下
+# `<name>.tmp<pid>-<线程id>`。这类文件没有日期可判，按 mtime（超过 1 天必是孤儿）清理。
 _TMP_MARK = ".tmp"
 _TMP_MAX_AGE_SEC = 86400
+
+#: SQLite 库文件魔数（前 16 字节）。状态目录里可能有 `db --backup` 写进来的数据库
+#: 副本；副本由备份机制自行轮转，文件名又很容易正好落在按日模式里（复制时沿用原名），
+#: 故一律按**内容**识别并放过——"按文件名删"正是会把备份副本清掉的形态。
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def is_sqlite_file(path):
+    """→ 是否 SQLite 库文件（读前 16 字节魔数；读不了按"不是"，交给原有 OSError 兜底）。"""
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
 
 
 def retention_days(bucket, env=None):
@@ -237,7 +251,7 @@ def _iter_expired(state_dir, log_dir, cutoffs, now=None):
                 continue
             path = os.path.join(target_dir, name)
             try:
-                if os.path.isfile(path):
+                if os.path.isfile(path) and not is_sqlite_file(path):
                     yield path, f"{name}（{art.bucket} 过期）"
             except OSError:
                 continue
@@ -252,7 +266,8 @@ def _iter_expired(state_dir, log_dir, cutoffs, now=None):
             continue
         path = os.path.join(state_dir, name)
         try:
-            if os.path.isfile(path) and os.path.getmtime(path) < threshold:
+            if os.path.isfile(path) and os.path.getmtime(path) < threshold \
+                    and not is_sqlite_file(path):
                 yield path, f"{name}（中断的半成品）"
         except OSError:
             continue

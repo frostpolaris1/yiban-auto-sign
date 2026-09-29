@@ -6,17 +6,23 @@
 
    权限（与后端 PUT /api/mail-config 的高危门禁逐条对齐）：
      · 全局开关、告警收件人、SMTP 列表：仅主管理员；
-     · 关闭类开关、admin_to 与 smtps 变更需 confirm_password（后端一次请求只验一次）。
+     · 关闭类开关、admin_to 与 smtps 变更受门禁（后端一次请求只验一次）。
      · 「接收发给我自己的邮件提醒」是**个人域**，已迁到 /mine，本页不再有。
 
    保存语义（与全页统一）：全局开关、收件人、SMTP 列表合并为**一个**「保存邮件配置」，
-   只提交相对快照真正变化的键；纯"开启"不带口令（后端同口径：不给正常成功路径加摩擦），
-   关闭/改地址/改 SMTP 才收管理员口令。「清空收件人」是动作（不属表单值），单独确认。
+   只提交相对快照真正变化的键；纯"开启"不带门禁（后端同口径：不给正常成功路径加摩擦），
+   关闭/改地址/改 SMTP 走统一 helper——先不带凭据发，后端回 reason 才补口令。
+   「清空收件人」是动作（不属表单值），影响面单独确认。
    对外面：mount/load/apply(load 同义)、save() → Promise<boolean>、isDirty()。
 
    脱敏：GET /api/mail-config 的 admin_to 与 smtps[].user 已由后端打码；授权码绝不
    回显（pass 输入框恒为空，留空=沿用旧值；user 留空同理，打码值只作 placeholder）。
-   SMTP 列表用模板 .data-table 行内编辑。动态节点一律 YB.el。 */
+   SMTP 列表用模板 .data-table 行内编辑。动态节点一律 YB.el。
+
+   条目身份是**稳定 id**（data-smtp-id）：建行时自产、GET 带回的旧条目原样沿用，
+   删除/重排都不改它——"留空沿用"与"改 host 不带走旧授权码"两件事都靠 id 而不是
+   靠数组位置对齐（后端同口径按 id 取旧凭据，目标变了就不给沿用）。id 为 null 的
+   旧格式条目在本端现造一个，保存时由后端按 host:port 唯一匹配认领旧凭据。 */
 (function () {
   "use strict";
   var YB = window.YB;
@@ -64,6 +70,17 @@
     return (!s || s.indexOf("*") !== -1 || s.charAt(0) === "<") ? "" : s;
   }
 
+  // 稳定 id：形状与后端校验（^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$）同口径。
+  // 只用 Math.random 不引新依赖；页面里行数量级（≤10）+ 后端对重复 id 直接 400，
+  // 撞车会显式暴露成保存失败，而不是静默把凭据错配给别的条目。
+  function newSmtpId() {
+    var r = "";
+    while (r.length < 12) {
+      r += Math.random().toString(36).slice(2);
+    }
+    return "smtp-" + r.slice(0, 12).replace(/[^a-z0-9]/g, "0");
+  }
+
   // 非敏感字段（host / port）回填当前值，便于在原配置上修改
   function cellInput(name, type, placeholder, ariaLabel, value) {
     var input = YB.el("input", {
@@ -86,7 +103,19 @@
   }
 
   function smtpRow(entry, index) {
-    var tr = YB.el("tr", { class: "sm-row" });
+    // data-smtp-id：该行的稳定身份。删除/重排只动 DOM，不动 id——"留空沿用"
+    // 因此永远指回**这一条**旧目，不会再按数组位置错位到邻居的凭据上。
+    // data-host0/data-port0/data-haspass：建行时的目标快照，供 host 漂移提示用。
+    var tr = YB.el("tr", {
+      class: "sm-row",
+      dataset: {
+        smtpId: entry.id || newSmtpId(),
+        host0: String(entry.host || ""),
+        port0: String(entry.port || 465),
+        user0: String(entry.user || "留空沿用"),
+        haspass: entry.has_pass ? "1" : ""
+      }
+    });
     // data-label：≤720 该行纵向堆叠（表头隐藏），标签由 ::before 从属性取，
     // 保证堆叠后每个字段仍有可见名称（仅靠 aria-label 对读屏以外不可见）。
     var tdHost = YB.el("td", { "data-label": "服务器 host" });
@@ -114,6 +143,33 @@
     tr.appendChild(tdPass);
     tr.appendChild(tdOps);
     return tr;
+  }
+
+  // 目标漂移提示：改了 host/端口 = 换中继，后端对这种行**不会**沿用旧授权码
+  // （旧授权码绝不随新域名发出）。"留空沿用"的占位文案此刻就成了谎话，
+  // 必须当场改口，否则用户留空保存后才发现要重输。
+  function driftTargets() {
+    var body = tbody();
+    if (!body) return;
+    [].forEach.call(body.querySelectorAll("tr"), function (tr) {
+      var pass = tr.querySelector('[data-f="pass"]');
+      var user = tr.querySelector('[data-f="user"]');
+      var host = tr.querySelector('[data-f="host"]');
+      var port = tr.querySelector('[data-f="port"]');
+      if (!pass || !host) return;
+      var drifted = String(host.value || "").trim() !== (tr.dataset.host0 || "") ||
+        String(port ? port.value : "") !== (tr.dataset.port0 || "");
+      if (tr.dataset.haspass === "1" && drifted && !pass.value) {
+        pass.placeholder = "服务器已更换，旧授权码不再沿用，请重新输入";
+        if (user) user.placeholder = "服务器已更换，如需换发件账号请重填";
+      } else if (pass.placeholder.indexOf("服务器已更换") === 0) {
+        // 改回原目标：恢复默认文案（只在当前文案是自己改过的那句时恢复，不覆盖别态）
+        pass.placeholder = "已配置，留空沿用";
+        if (user && user.placeholder.indexOf("服务器已更换") === 0) {
+          user.placeholder = tr.dataset.user0 || "留空沿用";
+        }
+      }
+    });
   }
 
   // 删除后重排行内 aria-label（保持读屏序号与服务端顺序一致）
@@ -147,9 +203,12 @@
     if (!ctx.isMaster) return Promise.resolve();   // 非主管理员不拉（整卡已禁用，避免渲染出"看似可编辑"的行）
     return YB.api("GET", "/api/mail-config").then(function (data) {
       // admin_to 是后端打码后的展示串：未配置时给 "<未配置>" 哨兵，单地址形如 abc***@x.com。
-      // ⚠ 别把它当"已完全脱敏"：本分支 _mask_addr 按第一个 @ 切分，逗号分隔的多地址里
-      // 第二项起会原样回显（实测 `alp******@example.test,bravo-two@example.test`）。
-      // 因此只可整串上屏展示，不得拆分、再分发或拼进其它文案/请求。
+      // 打码口径见 yiban/mail/config.py 的 _mask_addr：逗号分隔的多地址是**逐项**打码的
+      // （先按逗号拆开再递归），不存在"第二项起原样回显"；该口径由
+      // tests/test_masking_ssrf_gaps.py 的 MailAddrMaskingTest 守着。
+      // 仍未消掉的两点：打码只削用户名、**域名整段保留**，而且这串是展示态、不是可用地址，
+      // 因此只可整串上屏展示，不得拆分、再分发或拼进其它文案/请求（把它写回配置就等于
+      // 用打码串覆盖真值）。
       // 故"是否已配置"只排除哨兵与空串 —— 用 clean() 会把打码真值也当成空（那是给输入框用的口径）。
       var toShown = String((data && data.admin_to) || "");
       snap = {
@@ -158,11 +217,15 @@
       };
       var status = $("sm-status");
       if (status) {
+        // 开关"已开启"不等于告警能送达：发信清单为空时这一路是哑的，
+        // 状态行必须自己说破（此前只剩表格占位行一句小字，开关读着"已开启"极易漏看）。
+        var smtpEmpty = !(data.smtps && data.smtps.length);
         status.textContent = data.enabled
-          ? "已开启 · 发件 " + (data.user || "未配置") + " · 告警收件 " + (data.admin_to || "未配置")
-          : (data.smtps && data.smtps.length
-            ? "未开启（已配置发件 SMTP，可由主管理员开启）"
-            : "未开启（未配置发件 SMTP）");
+          ? "已开启 · 发件 " + (data.user || "未配置") + " · 告警收件 " + (data.admin_to || "未配置") +
+            (smtpEmpty ? " · 注意：无发信 SMTP，告警邮件一封都发不出去" : "")
+          : (smtpEmpty
+            ? "未开启（未配置发件 SMTP）"
+            : "未开启（已配置发件 SMTP，可由主管理员开启）");
       }
       var g = $("sm-global"); if (g) g.checked = snap.enabled;
       var to = $("sm-to");
@@ -182,7 +245,10 @@
     return [].map.call(body.querySelectorAll("tr"), function (row) {
       var host = row.querySelector('[data-f="host"]');
       if (!host) return null;
+      // id 随行不随位：提交顺序变了，后端仍按 id 找回各自的旧凭据
+      var id = row.getAttribute("data-smtp-id") || "";
       return {
+        id: id,
         host: clean(host.value),
         port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
         user: clean(row.querySelector('[data-f="user"]').value),
@@ -203,35 +269,55 @@
     return body;
   }
 
-  function submit(body) {
-    var needPw = Object.prototype.hasOwnProperty.call(body, "admin_to") ||
-      Object.prototype.hasOwnProperty.call(body, "smtps") || body.enabled === false;
-    if (!needPw) return write(body);
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "保存邮件配置：关闭全局通知、修改告警收件人或更换 SMTP 通道属敏感操作。\n请输入当前管理员密码确认。",
-        function (pw) { write(body, pw).then(resolve); },
-        function () { resolve(false); });     // 取消口令 = 本次不保存
+  // 保存收尾：成功清空收件人输入并刷新，失败/取消只落提示行；按钮复位两种路径共用。
+  // 提示必须落在调用方 load() 之后——load() 末尾无条件 setTip("", false) 清屏，先提示后重载
+  // 会把刚落下的一句整条抹掉（"已保存"看起来从未出现过）。okText 让各动作有自己的成功文案。
+  function finish(ok, err, canceled, okText) {
+    if (ok) {
+      var to = $("sm-to"); if (to) to.value = "";
+      setTip(okText || "邮件配置已保存", false);
+    } else if (canceled) {
+      setTip("", false);                     // 取消弹窗 = 本次不保存，不留"保存中…"
+    } else {
+      setTip((err && err.message) || "保存失败，请稍后重试", true);
+    }
+    busy = false;
+    var btn = $("sm-save");
+    if (btn && ctx.isMaster) btn.disabled = false;
+    return ok;
+  }
+
+  // 受门禁的保存（关全局通知 / 改收件人 / 改 SMTP 通道）：**先不带凭据发**，由后端 reason
+  // 决定要不要口令（档位只存在于后端，本组件不判断）；用户取消弹窗 = 本次不保存。
+  function gatedWrite(body) {
+    busy = true;
+    var btn = $("sm-save"); if (btn) btn.disabled = true;
+    setTip("保存中…", false);
+    return YB.dangerousSubmit({
+      method: "PUT", path: "/api/mail-config", body: body,
+      desc: "保存邮件配置：关闭全局通知、修改告警收件人或更换 SMTP 通道属敏感操作。\n请输入当前管理员密码确认。"
+    }).then(function () {
+      return load().then(function () { return finish(true); });
+    }, function (e) {
+      return finish(false, e, !!(e && e.canceled));
     });
   }
 
-  function write(body, pw) {
-    if (pw) body.confirm_password = pw;
+  function write(body) {
     busy = true;
     var btn = $("sm-save"); if (btn) btn.disabled = true;
     setTip("保存中…", false);
     return YB.api("PUT", "/api/mail-config", body).then(function () {
-      var to = $("sm-to"); if (to) to.value = "";
-      setTip("邮件配置已保存", false);
-      return load().then(function () { return true; });
+      return load().then(function () { return finish(true); });
     }, function (e) {
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
-      return false;
-    }).then(function (ok) {
-      busy = false;
-      if (btn && ctx.isMaster) btn.disabled = false;
-      return ok;
+      return finish(false, e);
     });
+  }
+
+  function submit(body) {
+    var needPw = Object.prototype.hasOwnProperty.call(body, "admin_to") ||
+      Object.prototype.hasOwnProperty.call(body, "smtps") || body.enabled === false;
+    return needPw ? gatedWrite(body) : write(body);
   }
 
   // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 取消或失败。
@@ -253,6 +339,8 @@
     return submit(body);
   }
 
+  // 清空告警收件人：影响面由 confirmDialog 讲清，口令/确认交给统一 helper 按后端 reason 收。
+  // 收尾复用 finish：成功提示必须落在 load() 之后（load() 末尾会无条件清屏），与保存路径同口径。
   function clearAdminTo() {
     if (busy || !ctx.isMaster) return;
     YB.confirmDialog({
@@ -261,17 +349,17 @@
       confirmText: "清空", danger: true
     }).then(function (ok) {
       if (!ok) return;
-      YB.openConfirmPasswordModal(
-        "再次确认：清空告警收件人？请输入当前管理员密码确认。",
-        function (pw) {
-          busy = true;
-          YB.api("PUT", "/api/mail-config", { admin_to: "", confirm_password: pw }).then(function () {
-            setTip("已清空告警收件人", false);
-            return load();
-          }).catch(function (e) {
-            setTip((e && e.message) || "保存失败，请稍后重试", true);
-          }).then(function () { busy = false; });
+      busy = true;
+      return YB.dangerousSubmit({
+        method: "PUT", path: "/api/mail-config", body: { admin_to: "" },
+        desc: "再次确认：清空告警收件人？请输入当前管理员密码确认。"
+      }).then(function () {
+        return load().then(function () {
+          return finish(true, null, false, "已清空告警收件人");
         });
+      }, function (e) {
+        return finish(false, e, !!(e && e.canceled));
+      });
     });
   }
 
@@ -291,7 +379,11 @@
     var g = $("sm-global"); if (g) g.addEventListener("change", markDirty);
     var to = $("sm-to"); if (to) to.addEventListener("input", markDirty);
     var body = tbody();
-    if (body) body.addEventListener("input", function () { tableDirty = true; markDirty(); });
+    if (body) body.addEventListener("input", function () {
+      tableDirty = true;
+      markDirty();
+      driftTargets();   // host/端口一改口，授权码占位文案必须当场跟上（见函数注释）
+    });
     var saveBtn = $("sm-save"); if (saveBtn) saveBtn.addEventListener("click", function () { save(); });
     var toClear = $("sm-to-clear"); if (toClear) toClear.addEventListener("click", clearAdminTo);
     var add = $("sm-add-smtp"); if (add) add.addEventListener("click", addSmtp);

@@ -1,27 +1,30 @@
 # -*- coding: utf-8 -*-
 """修复回归测试（对抗性审查 2026-08-29）。
 
-覆盖：
-- B12-1  docker/backup-docker.sh 产出真实加密备份（herestring 截断管道的空备份
-         修复）+ 尺寸下限/解密自检（假 gpg 端到端，需本机 bash；无则跳过）
-- B12-2  调度闸门把 skipped_window/skipped_norange 计入未了结（补签不再被吞）；
-         零成功专项告警 _maybe_alert_zero_success
-- B12-3  容器子进程超时按窗口动态计算（_child_timeout，与 run.sh 同口径）
-- B12-4  锚点路径默认与 web STATE_DIR 对齐；verify_audit_anchor 显式路径同样
-         做 app_meta「锚点被删」交叉检查
-- B12-5  rekey：全量重加密端到端（--generate）、新钥暂存文件、--env-only 样本
-         校验拒绝错误密钥；--force 探活旁路参数存在
-- B12-7  最后管理员复核下沉 db 事务：delete_user_with_accounts / set_user_role /
-         batch_user_ops 命中抛 LastAdminError
-- B12-8  内置主管理员自助改密即时告警
-- B12-9  时钟守卫拦截留痕 app_meta（clock_guard_alert）+ clock_guard_alert() 读取
-- B12-10 db_export 漏传 migrate=False（捕参数断言）+ 导出审计留痕
-- B12-13 默认字面量/弱口令拒绝启动
-- B12-14 登录失败阈值留痕审计链；普通用户越权 403 留痕；sign_events 消费端
-         （/api/logs 当日事件、/api/admin/sign-events）
+标签：B · 调度：领取/队列/执行体
+覆盖：Docker 备份脚本的真实产物与自检（假 gpg
+   端到端、空产物拒绝、还原路径穿越拒绝）、调度闸门把窗口外跳过计入未了结、零成功专项告警、子进程超时按窗口动态计算与键优先级、锚点路径默认与
+   web STATE_DIR
+   对齐及显式路径的交叉检查、最后管理员复核下沉事务、内置主管理员改密即时告警、时钟守卫跳变处置、db_export
+   漏传 migrate=False
+   的参数断言、默认字面量/弱口令拒绝启动、登录失败与越权留痕、sign_events
+   消费端、--only 部分命中不静默吞号、YIBAN_SECOND_RUN
+   优先于标记、槽位标记跨重启不重触发。
+对应实现：docker/backup-docker.sh、docker/scheduler.py（_UNDONE_STATUSES、_has_undone_today、_child_timeout、main_loop
+   的槽位闩锁）、scripts/signin.py（_maybe_alert_zero_success、_only_filter、补签轮判定）、scripts/db.py（最后管理员事务、锚点校验、clock
+   guard）、web/app.py。
+关键断言：未了结集合必须把 skipped_window / skipped_norange
+   算进去——漏了它们，全员窗口外跳过的一轮会被判成「已收尾」，当天再无补签。补签轮判定以
+   YIBAN_SECOND_RUN 优先于 sched-run 标记（首签被 timeout
+   击杀时标记根本没写）。子进程动态超时恒大于「距窗口关闭的剩余时间」，否则晚到触发的重跑会被自己掐死。hm
+   >= FIRST 无上界 +
+   闩锁只存内存的组合会让容器重启追加必然重复的全站轮，故槽位标记按日落盘。最后管理员的删除/降级必须在事务内判定（并发降级会锁死后台）。
+依赖：备份脚本与还原用例带 skipIf(shutil.which('bash') is None)：本机无 bash
+   时这四条 skip（需要 bash + 假 gpg）。其余用临时库/临时状态目录 + Flask test
+   client，docker/scheduler.py 按文件路径加载且每次全新实例。不发网络请求。
 
 用法（项目根目录）：
-    py -m pytest tests/test_batch12_fixes_0829.py -v
+    py -m pytest tests/test_scheduler_gate.py -v
 """
 import contextlib
 import importlib.util
@@ -34,16 +37,18 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
+
+import signin
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
-import signin  # noqa: E402
-
-from yiban.infra import account_crypto  # noqa: E402
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
@@ -55,7 +60,7 @@ PHONE = "13800138001"
 def _load_webapp():
     spec = importlib.util.spec_from_file_location("webapp_b12", os.path.join(BASE, "web", "app.py"))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["webapp_b12"] = mod
+    sys.modules["webapp_b12"] = mod # 独立模块名配独立 .env：共用模块对象会读到别的用例的环境
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     return mod
@@ -71,7 +76,7 @@ class SchedulerGateTest(unittest.TestCase):
         # scheduler.STATEDIR 在模块导入时固化，测试需同步指到临时目录
         cls._old_statedir = scheduler.STATEDIR
         scheduler.STATEDIR = cls.tmp
-        cls._old_run_timeout = os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None)
+        cls._old_run_timeout = os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None) # 宿主带着这个键跑测时，动态超时会变成显式值，断言就失去意义
 
     @classmethod
     def tearDownClass(cls):
@@ -82,7 +87,8 @@ class SchedulerGateTest(unittest.TestCase):
             os.environ["YIBAN_RUN_TIMEOUT_SEC"] = cls._old_run_timeout
 
     def _write_state(self, payload):
-        path = os.path.join(self.tmp, f"sign-state-{scheduler.datetime.now():%Y-%m-%d}.json")
+        # 用 scheduler 自己那份业务钟：状态文件名取 clock.now，宿主 TZ 不同日会看不见
+        path = os.path.join(self.tmp, f"sign-state-{scheduler.clock.now():%Y-%m-%d}.json")
         with io.open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
 
@@ -91,7 +97,7 @@ class SchedulerGateTest(unittest.TestCase):
         self.assertIn("skipped_norange", scheduler._UNDONE_STATUSES)
         self.assertIn("failed", scheduler._UNDONE_STATUSES)
         # 有意状态不算未了结
-        self.assertNotIn("user_cancelled", scheduler._UNDONE_STATUSES)
+        self.assertNotIn("user_cancelled", scheduler._UNDONE_STATUSES) # 有意状态不进未了结集合：否则暂停过的账号会天天拖着补签轮重跑
         self.assertNotIn("paused", scheduler._UNDONE_STATUSES)
 
     def test_gate_reruns_on_all_window_skipped(self):
@@ -167,14 +173,19 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         self.assertFalse(signin._mail_summary)
 
     def test_alerts_on_mixed_second_run(self):
-        """补签轮（is_second_run=True）仍有窗口外未了结：当天无下一触发点，必须知情。"""
+        """补签轮（is_second_run=True）仍有窗口外未了结：当天无下一触发点，必须知情。
+
+        冻结到窗口关闭后（补签轮已过、无兜底）：抑制三条件不可能同时成立，
+        用例不再随运行时刻（北京午夜窗口未开）漂移。
+        """
         accounts = [SimpleNamespace(phone="13800000001"), SimpleNamespace(phone="13800000002")]
         results = {
             "13800000001": (True, "签到成功", False, "success"),
             "13800000002": (False, "签到时段已结束", True, "skipped_window"),
         }
-        self.assertTrue(signin._maybe_alert_zero_success(
-            accounts, results, ok_n=1, is_second_run=True))
+        with _frozen_clock_at(2026, 9, 8, 8, 30):
+            self.assertTrue(signin._maybe_alert_zero_success(
+                accounts, results, ok_n=1, is_second_run=True))
         self.assertTrue(any(s == "签到窗口异常告警" for s, _t in signin._mail_summary))
 
     def test_silent_when_any_success(self):
@@ -270,7 +281,15 @@ class DbLayerB12Test(unittest.TestCase):
             expected = os.path.join(".", "audit-anchor.log")
         else:
             expected = "/var/log/yiban/audit-anchor.log"
-        self.assertEqual(os.path.normpath(db.audit_anchor_path()), os.path.normpath(expected))
+        # "默认路径"判据要求进程环境里没有该键；conftest 现给会话级临时默认（见 ⑬），
+        # 故显式摘除后再断言真实的"未设态回落"、测毕还原——让本用例语义与是否设默认无关。
+        old = os.environ.pop("YIBAN_STATE_DIR", None)
+        try:
+            self.assertEqual(os.path.normpath(db.audit_anchor_path()),
+                             os.path.normpath(expected))
+        finally:
+            if old is not None:
+                os.environ["YIBAN_STATE_DIR"] = old
         old = os.environ.get("YIBAN_STATE_DIR")
         try:
             os.environ["YIBAN_STATE_DIR"] = "/data/state"
@@ -362,11 +381,12 @@ class DbLayerB12Test(unittest.TestCase):
         self.assertEqual(db.find_user(EMAIL).get("role"), "user")
 
     # ---- B12-9 时钟守卫 ----
-    def test_clock_guard_alert_recorded_and_readable(self):
+    def test_clock_guard_trip_skips_once_and_advances_reference(self):
+        """跳变判定为假 + 参照点推进到当前时间（下一轮自动恢复清理，无需人工重置）。"""
         ok, _note = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertTrue(ok)
-        # 模拟参照点为 100 小时前 → 守卫拦截并留痕
-        old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
+        # 模拟参照点为 100 小时前 → 守卫判定跳变
+        old = (db.clock.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
             conn = db.get_conn()
             conn.execute(
@@ -374,36 +394,17 @@ class DbLayerB12Test(unittest.TestCase):
                 ("purge_accounts_clock", old),
             )
             conn.commit()
-        ok2, _note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        ok2, note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertFalse(ok2)
-        alert = db.clock_guard_alert()
-        self.assertIsNotNone(alert)
-        self.assertIn("系统时间异常跳变", alert["note"])
-        # 参照点未被守卫自动更新（防洗白）——仍为旧值
+        self.assertIn("系统时间异常跳变", note2)
+        # 参照点已推进：越界路径同样提交，故调用方的 rollback 不会把它带走
         r = conn.execute(
             "SELECT value FROM app_meta WHERE key='purge_accounts_clock'"
         ).fetchone()
-        self.assertEqual(r["value"], old)
-
-    def test_clock_guard_reset_tool(self):
-        """B12-9：人工重置工具恢复参照点并清除告警。"""
-        import clock_guard_reset
-        with db._conn_lock:
-            conn = db.get_conn()
-            old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('purge_accounts_clock',?)",
-                (old,),
-            )
-            conn.commit()
-        db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
-        self.assertIsNotNone(db.clock_guard_alert())
-        clock_guard_reset.reset(self.db_file)
-        self.assertIsNone(db.clock_guard_alert())
-        r = db.get_conn().execute(
-            "SELECT value FROM app_meta WHERE key='purge_accounts_clock'"
-        ).fetchone()
-        self.assertNotEqual(r["value"], old, "重置后参照点应为当前时间")
+        self.assertNotEqual(r["value"], old, "越界路径必须推进参照点，否则冻结永不解除")
+        # 推进后同一参照点不再判跳变——这就是"只跳一轮"
+        ok3, _note3 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        self.assertTrue(ok3, "参照点推进后下一轮必须恢复清理")
 
     # ---- B12-10 db_export ----
     def test_db_export_passes_migrate_false(self):
@@ -428,152 +429,6 @@ class DbLayerB12Test(unittest.TestCase):
                 "SELECT COUNT(*) FROM audit_logs WHERE action='db_export'"
             ).fetchone()
         self.assertGreaterEqual(r[0], 1)
-
-
-class RekeyToolB12Test(unittest.TestCase):
-    """B12-5：rekey 工具端到端（--generate 全链路 + --env-only 样本校验）。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="b12-rekey-")
-        cls.env_file = os.path.join(cls.tmp, ".env")
-        cls.db_file = os.path.join(cls.tmp, "yiban.db")
-        with io.open(cls.env_file, "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n")
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
-        os.environ["YIBAN_DB_FILE"] = cls.db_file
-        os.environ["YIBAN_ENV_FILE"] = cls.env_file
-        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
-        os.environ["YIBAN_AUDIT_KEY"] = AUDIT_KEY
-        db.init_db(cls.db_file, env_file=cls.env_file)
-        # 用旧钥写入两个加密账号（经 replace_accounts 走正式加密口径）
-        db.replace_accounts([
-            {"phone": "13800000001", "password": "pw-甲", "phone_code": "code-1", "owner": EMAIL},
-            {"phone": "13800000002", "password": "pw-乙", "phone_code": "", "owner": ""},
-        ])
-
-    @classmethod
-    def tearDownClass(cls):
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
-        shutil.rmtree(cls.tmp, ignore_errors=True)
-        for k in ("YIBAN_DB_FILE", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_KEY", "YIBAN_AUDIT_KEY"):
-            os.environ.pop(k, None)
-
-    def setUp(self):
-        """每例重建规范状态（unittest 按方法名排序执行，用例不可依赖执行顺序）：
-        .env = TEST_KEY，库内两行账号均以 TEST_KEY 加密。"""
-        with io.open(self.env_file, "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n")
-        db.replace_accounts([
-            {"phone": "13800000001", "password": "pw-甲", "phone_code": "code-1", "owner": EMAIL},
-            {"phone": "13800000002", "password": "pw-乙", "phone_code": "", "owner": ""},
-        ])
-
-    def _run_tool(self, *cli):
-        env = dict(os.environ)
-        env["YIBAN_DB_FILE"] = self.db_file
-        env["YIBAN_ENV_FILE"] = self.env_file
-        env["YIBAN_ACCOUNTS_KEY"] = self._current_key()
-        env["YIBAN_AUDIT_KEY"] = AUDIT_KEY
-        # 带 --force：本组测的是轮换机制本身，不是停服探活。Linux 下 rekey 会扫
-        # /proc/*/cmdline，而 pytest -n 8 并行时其他用例正在跑的 run.sh → signin.py
-        # 子进程会命中 _PROCESS_HINTS → 守卫拒绝退出 2 → 本用例假红（跨用例干扰，
-        # 与轮换逻辑无关）。探活行为由本文件 :538 的 _yiban_processes_running 用例覆盖。
-        return subprocess.run(
-            [sys.executable, os.path.join(BASE, "scripts", "rekey_accounts.py"),
-             *cli, "--force"],
-            capture_output=True, text=True, env=env, cwd=BASE, timeout=120,
-            input="n\n",
-        )
-
-    def _current_key(self):
-        with io.open(self.env_file, encoding="utf-8-sig") as f:
-            for ln in f:
-                if ln.strip().startswith("YIBAN_ACCOUNTS_KEY="):
-                    return ln.split("=", 1)[1].strip()
-        return ""
-
-    def _raw_rows(self):
-        import sqlite3
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        try:
-            return conn.execute(
-                "SELECT id, phone, password, phone_code FROM accounts ORDER BY id"
-            ).fetchall()
-        finally:
-            conn.close()
-
-    def test_full_rotation_end_to_end(self):
-        r = self._run_tool("--generate")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        new_key_hex = self._current_key()
-        self.assertNotEqual(new_key_hex, TEST_KEY, ".env 必须已更新为新钥")
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".env.rekey-staging")),
-                         "暂存文件轮换完成后必须删除")
-        key = account_crypto._decode_key(new_key_hex)
-        for row in self._raw_rows():
-            obj = json.loads(row["password"])
-            self.assertEqual(account_crypto.decrypt_password(obj, key, row["phone"]), "pw-甲" if row["phone"] == "13800000001" else "pw-乙")
-        # 轮换动作留痕审计链（B12-14）
-        with db._conn_lock:
-            n = db.get_conn().execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='accounts_key_rekey'"
-            ).fetchone()[0]
-        self.assertGreaterEqual(n, 1)
-
-    def test_env_only_rejects_wrong_key(self):
-        """崩溃补完场景误传新随机钥 → 样本校验必须拒绝写 .env（B12-5）。"""
-        before = self._current_key()
-        wrong = "e" * 64
-        r = self._run_tool("--env-only", "--new-key", wrong)
-        self.assertNotEqual(r.returncode, 0, "错误密钥必须被样本校验拒绝")
-        self.assertIn("样本校验失败", r.stdout + r.stderr)
-        self.assertEqual(self._current_key(), before, ".env 必须保持原状")
-
-    def test_env_only_accepts_correct_key(self):
-        """崩溃补完正路：库内已是新钥密文、.env 仍旧钥 → --env-only 用新钥补写成功。"""
-        correct = self._current_key()
-        # 与 .env/库一致的钥会被"新=旧"防呆拦截（不写入）
-        r1 = self._run_tool("--env-only", "--new-key", correct)
-        self.assertNotEqual(r1.returncode, 0)
-        # 模拟崩溃场景：库内用 new_key 重加密（模拟已提交事务），.env 仍是旧钥
-        new_key = "f" * 64
-        import sqlite3
-        conn = sqlite3.connect(self.db_file)
-        try:
-            rows = conn.execute("SELECT id, phone, password FROM accounts").fetchall()
-            for rid, phone, _raw in rows:
-                enc = json.dumps(account_crypto.encrypt_password("pw-甲", account_crypto._decode_key(new_key), phone))
-                conn.execute("UPDATE accounts SET password=? WHERE id=?", (enc, rid))
-            conn.commit()
-        finally:
-            conn.close()
-        r2 = self._run_tool("--env-only", "--new-key", new_key)
-        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
-        self.assertEqual(self._current_key(), new_key, ".env 必须更新为库内实际使用的新钥")
-
-    def test_force_flag_and_staging_helper(self):
-        import rekey_accounts
-        self.assertTrue(hasattr(rekey_accounts, "_write_staging_key"))
-        self.assertTrue(hasattr(rekey_accounts, "sample_verify_key"))
-        self.assertTrue(hasattr(rekey_accounts, "_yiban_processes_running"))
-        supported, hits = rekey_accounts._yiban_processes_running()
-        self.assertIsInstance(supported, bool)
-        self.assertIsInstance(hits, list)
-        # 暂存文件 0600 + 内容为新钥 hex
-        staging = rekey_accounts._write_staging_key(self.env_file, account_crypto._decode_key("a" * 64))
-        try:
-            self.assertTrue(os.path.exists(staging))
-            self.assertEqual(io.open(staging, encoding="utf-8").read().strip(), "a" * 64)
-        finally:
-            os.remove(staging)
 
 
 class BackupDockerScriptTest(unittest.TestCase):
@@ -821,7 +676,8 @@ class WebB12Test(unittest.TestCase):
 
     # ---- B12-14 登录失败 / 越权审计 ----
     def test_login_failure_threshold_audited(self):
-        for _ in range(3):  # LOGIN_FAIL_NOTIFY = 3
+        # 阈值取 app 常量：另抄字面量会在阈值调整后"再也到不了阈值"而静默失测
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
             self.c.post("/api/login", json={"username": EMAIL, "password": "wrong-pass"})
         rows = self._audit_rows("login_failed")
         self.assertGreaterEqual(len(rows), 1, "达到失败阈值必须留痕审计链（B12-14）")
@@ -835,11 +691,12 @@ class WebB12Test(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         rows = self._audit_rows("forbidden_path")
         self.assertGreaterEqual(len(rows), 1, "越权访问管理面必须留痕（B12-14）")
-        self.assertEqual(rows[-1]["detail"], "/api/users")
+        # 审计行携带请求作用域后缀（` [req=...]`），故按前缀断言正文（同 test_logs_export_masking）
+        self.assertTrue(rows[-1]["detail"].startswith("/api/users"), rows[-1]["detail"])
 
     # ---- sign_events 消费端 ----
     def test_logs_api_exposes_sign_events(self):
-        ts = db.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = db.clock.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_events_batch([{
             "ts": ts, "phone": PHONE, "status": "failed", "message": "登录失败",
             "stage": "sign", "attempt": 2, "dur_sec": 1.5, "finished_at": ts,
@@ -853,7 +710,7 @@ class WebB12Test(unittest.TestCase):
         self.assertEqual(ev["attempt"], 2)
 
     def test_admin_sign_events_endpoint(self):
-        ts = db.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = db.clock.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_events_batch([{
             "ts": ts, "phone": PHONE, "status": "success", "message": "签到成功",
             "stage": "sign", "attempt": 1, "finished_at": ts,
@@ -868,6 +725,423 @@ class WebB12Test(unittest.TestCase):
         self.c.post("/api/login", json={"username": "evu@test.local", "password": "UserPass#123"})
         resp = self.c.get("/api/admin/sign-events")
         self.assertEqual(resp.status_code, 403)
+
+
+_SCHED_PATH = os.path.join(BASE, "docker", "scheduler.py")
+
+
+def _load_sched():
+    """按文件路径加载调度器（它位于 docker/ 而非包内，与 test_container_scheduler 同法）。"""
+    spec = importlib.util.spec_from_file_location("container_scheduler", _SCHED_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Acc(SimpleNamespace):
+    pass
+
+
+def _mk_acc(phone):
+    return _Acc(phone=phone, name="t", owner="admin", user_paused=False)
+
+
+class OnlyFilterTest(unittest.TestCase):
+    """P2-6：--only 部分命中不再静默吞号。"""
+
+    def test_partial_match_logs_missing_warning(self):
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        with self.assertLogs(signin.logger, level="WARNING") as cm:
+            filtered, missing = signin._apply_only_filter(
+                accounts, "13800000001,13899999999"
+            )
+        self.assertEqual([a.phone for a in filtered], ["13800000001"])
+        self.assertEqual(missing, ["13899999999"])
+        # 未命中号码落日志即脱敏（裸号不带 [] 定界符，web 展示层脱敏正则盖不住）
+        self.assertTrue(
+            any("138****9999" in line for line in cm.output),
+            f"warning 日志应包含未命中号码的脱敏形态，实际: {cm.output}",
+        )
+        self.assertFalse(
+            any("13899999999" in line for line in cm.output),
+            f"warning 日志不得包含未命中号码完整号，实际: {cm.output}",
+        )
+
+    def test_all_missing_returns_empty(self):
+        """全不命中 → 过滤结果为空（main() 据此报错退出，既有行为保持）。"""
+        accounts = [_mk_acc("13800000001")]
+        filtered, missing = signin._apply_only_filter(accounts, "13900000000")
+        self.assertEqual(filtered, [])
+        self.assertEqual(missing, ["13900000000"])
+
+    def test_all_match_no_warning(self):
+        """全部命中 → 无 warning。"""
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        with mock.patch.object(signin.logger, "warning") as m_warn:
+            filtered, missing = signin._apply_only_filter(
+                accounts, "13800000001, 13800000002"
+            )
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(missing, [])
+        m_warn.assert_not_called()
+
+    def test_whitespace_only_ignored(self):
+        """逗号间空白/空段不产生未命中告警。"""
+        accounts = [_mk_acc("13800000001")]
+        filtered, missing = signin._apply_only_filter(accounts, "13800000001,, ")
+        self.assertEqual([a.phone for a in filtered], ["13800000001"])
+        self.assertEqual(missing, [])
+
+
+class SecondRunEnvTest(unittest.TestCase):
+    """P2-4：YIBAN_SECOND_RUN=1 优先于 sched-run 标记判定补签轮。"""
+
+    def setUp(self):
+        self._old = os.environ.get("YIBAN_SECOND_RUN")
+        os.environ.pop("YIBAN_SECOND_RUN", None)
+
+    def tearDown(self):
+        os.environ.pop("YIBAN_SECOND_RUN", None)
+        if self._old is not None:
+            os.environ["YIBAN_SECOND_RUN"] = self._old
+
+    def test_env_overrides_missing_marker(self):
+        """核心场景：标记缺失（exit 124 首签被杀）+ YIBAN_SECOND_RUN=1 → 判为补签轮。"""
+        with mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": "1"}):
+            self.assertTrue(signin._is_second_run())
+
+    def test_marker_fallback_without_env(self):
+        """无环境变量时回退 sched-run 标记（容器首签正常收尾场景）。"""
+        with mock.patch.object(signin, "_sched_marker_exists", return_value=True):
+            self.assertTrue(signin._is_second_run())
+
+    def test_first_run_when_no_signal(self):
+        """既无环境变量也无标记 → 首签轮。"""
+        with mock.patch.object(signin, "_sched_marker_exists", return_value=False):
+            self.assertFalse(signin._is_second_run())
+
+    def test_alert_on_partial_success_window_skip_second_run(self):
+        """部分成功 + 窗口外：补签轮（YIBAN_SECOND_RUN=1，标记缺失）必须告警。
+
+        冻结到窗口关闭后（补签轮已过、无兜底）：不注入时钟时，北京午夜窗口未开
+        会让"还有下一轮"事实成立、告警被抑制，用例翻面。
+        """
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        results = {
+            "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
+            "13800000002": (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW),
+        }
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
+             mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             _frozen_clock_at(2026, 9, 8, 8, 30), \
+             mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": "1"}):
+            is_second = signin._is_second_run()
+            alerted = signin._maybe_alert_zero_success(
+                accounts, results, 1, is_second_run=is_second
+            )
+        self.assertTrue(is_second, "YIBAN_SECOND_RUN=1 时应判为补签轮")
+        self.assertTrue(alerted, "补签轮部分成功+窗口外必须告警")
+        m_mail.assert_called_once()
+
+    def test_no_alert_partial_success_first_run(self):
+        """部分成功 + 窗口外：补签触发点之前的首签轮不告警（避免误报噪音）。
+
+        抑制语义依赖「07:10 补签会重跑」：已越过补签触发点（07:10）的首签身份轮
+        是当天最后一轮（06:31 关机 07:10 起的场景），仍会告警——
+        见 test_sign_round_guards.LateFirstRunAlertTest。此处注入补签触发点
+        之前的固定时钟，用例不再随运行时刻漂移。
+        """
+        from datetime import datetime as _dt
+
+        class _EarlyDT(_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 8, 6, 50)
+
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        results = {
+            "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
+            "13800000002": (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW),
+        }
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
+             mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             mock.patch.object(signin.clock, "now", _EarlyDT.now):
+            is_second = signin._is_second_run()
+            alerted = signin._maybe_alert_zero_success(
+                accounts, results, 1, is_second_run=is_second
+            )
+        self.assertFalse(is_second)
+        self.assertFalse(alerted)
+        m_mail.assert_not_called()
+
+
+class ChildTimeoutPrecedenceTest(unittest.TestCase):
+    """P2-5：docker/scheduler.py `_child_timeout` 键优先级 .env 优先于进程环境。"""
+
+    def setUp(self):
+        self.sched = _load_sched()
+        self._old = os.environ.get("YIBAN_RUN_TIMEOUT_SEC")
+        os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None)
+
+    def tearDown(self):
+        os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None)
+        if self._old is not None:
+            os.environ["YIBAN_RUN_TIMEOUT_SEC"] = self._old
+
+    def test_env_file_wins_over_process_env(self):
+        """.env（env dict）900s 优先于进程环境 500s → 900。"""
+        os.environ["YIBAN_RUN_TIMEOUT_SEC"] = "500"
+        self.assertEqual(self.sched._child_timeout({"YIBAN_RUN_TIMEOUT_SEC": "900"}), 900)
+
+    def test_process_env_used_when_env_file_empty(self):
+        """.env 未设置时回退进程环境（500 低于下限 600 → 钳到 600）。"""
+        os.environ["YIBAN_RUN_TIMEOUT_SEC"] = "500"
+        self.assertEqual(self.sched._child_timeout({}), 600)
+
+    def test_process_env_value_above_floor(self):
+        """进程环境 800s 正常生效（>= 下限）。"""
+        os.environ["YIBAN_RUN_TIMEOUT_SEC"] = "800"
+        self.assertEqual(self.sched._child_timeout({}), 800)
+
+    def test_both_absent_dynamic(self):
+        """均未设置 → 按窗口动态计算（>= 下限 600）。"""
+        self.assertGreaterEqual(self.sched._child_timeout({}), 600)
+
+
+_SCHED_PATH = os.path.join(BASE, "docker", "scheduler.py")
+
+
+def _load_sched(unique_suffix=""):
+    """按文件路径加载容器调度器（docker/ 非包内），每次调用返回全新模块实例。"""
+    spec = importlib.util.spec_from_file_location(
+        f"container_scheduler_marks{unique_suffix}", _SCHED_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Stop(Exception):
+    """打断 main_loop 的无限循环。"""
+
+
+def _today():
+    # 当日状态/标记文件名一律走业务钟（signin/scheduler 同源），宿主 TZ 下须一致
+    return clock.today()
+
+
+class _FakeDT(datetime):
+    """时钟替身：now() 返回固定时刻（被 patch 到 `scheduler.clock.now`）。"""
+
+    _date = (2026, 9, 6)
+    _hm = (7, 12)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(*cls._date, *cls._hm)
+
+
+def _frozen_clock_at(y, mo, d, h, mi):
+    """把 `signin.clock.now` 固定到指定业务时刻（返回 patch 上下文）。
+
+    告警抑制判据含"窗口是否已关 / 是否还有下一轮"两个**时刻事实**，不注入就会随
+    运行时刻漂移：北京午夜（=UTC 16:00–24:00 窗口）窗口未开、又早于补签触发点，
+    抑制三条件成立 → 本应告警的用例翻面。
+    """
+    class _DT(datetime):
+        _at = (y, mo, d, h, mi)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls(*cls._at)
+
+    return mock.patch.object(signin.clock, "now", _DT.now)
+
+
+class _FakeProc:
+    def __init__(self):
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def _stub_module(**members):
+    return type("_Stub", (), {k: staticmethod(v) for k, v in members.items()})()
+
+
+class SlotMarkerRestartTest(unittest.TestCase):
+    """hm >= FIRST/SECOND 无上界 + 闩锁仅存内存：容器重启会追加必然
+    skipped_window 的全站负载。触发点落盘后，同一时段重启不再二次触发。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-slot-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _prepare(self, sched):
+        sched.STATEDIR = self.tmp
+        sched.ENV_FILE = os.path.join(self.tmp, ".env")
+        sched.FIRST = (0, 0)
+        sched.SECOND = (0, 0)
+        sched.LOGDIR = os.path.join(self.tmp, "logs")
+        sched.build_child_env = lambda env_file=None, base=None, **kw: {}
+        sched.subprocess = _stub_module(Popen=lambda cmd, **kw: _FakeProc())
+        sched.time = _stub_module(sleep=lambda s: (_ for _ in ()).throw(_Stop()))
+
+    def _tick(self, suffix):
+        sched = _load_sched(suffix)
+        self._prepare(sched)
+        spawns = []
+        sched._run_signin_child = lambda extra=None, env=None: spawns.append(extra)
+        with self.assertRaises(_Stop):
+            sched.main_loop(sleep_seconds=1)
+        return sched, spawns
+
+    def test_restart_does_not_retrigger_same_slot(self):
+        """首轮正常跑完后容器重启（新进程、当日已触发过）：不得再追加全站轮。"""
+        _, first = self._tick("_p1")
+        self.assertEqual(len(first), 2, "首签+补签各触发一次")
+        # 模拟运行结束后的当日状态：全量标记 + 一个 failed 账号（补签闸门恒真）
+        with io.open(os.path.join(self.tmp, f"sched-run-{_today()}.json"), "w") as f:
+            json.dump({"completed": True}, f)
+        with io.open(os.path.join(self.tmp, f"sign-state-{_today()}.json"), "w") as f:
+            json.dump({"13800000000": {"status": "failed"}}, f)
+        _, second = self._tick("_p2")
+        self.assertEqual(
+            second, [],
+            "同一时段重启后不得二次触发（追加轮=必然 skipped_window 的全站负载）",
+        )
+
+    def test_unfinished_first_run_not_respawned_after_restart(self):
+        """首签子进程被杀后重启：首签槽位当日已触发不重跑；
+        未了结账号仍由 07:10 补签闸门兜底（补签槽位未触发）。"""
+        _, first = self._tick("_q1")
+        self.assertEqual(len(first), 2)
+        # 不写 sched-run 标记（模拟首签被 timeout 击杀）
+        with io.open(os.path.join(self.tmp, f"sign-state-{_today()}.json"), "w") as f:
+            json.dump({"13800000000": {"status": "failed"}}, f)
+        sched2, second = self._tick("_q2")
+        self.assertEqual(second, [], "首签槽位当日已触发过，不得重跑")
+        # 补签闸门仍可判定为需要补签（谓词本身不受影响）
+        self.assertTrue(sched2._has_undone_today())
+
+    def test_next_day_slot_marker_expires(self):
+        """标记按日命名：跨日自动失效（次日仍可正常触发）。"""
+        self._tick("_r1")
+        files = [n for n in os.listdir(self.tmp) if n.startswith("sched-slot-")]
+        self.assertEqual(len(files), 2, "首签/补签各写一个当日槽位标记")
+        for n in files:
+            self.assertIn(_today(), n, "标记须按日命名，跨日失效")
+
+
+class ChildTimeoutBoundTest(unittest.TestCase):
+    """晚到触发的重跑进程：动态超时恒大于「距窗口关闭的剩余时间」，
+    子进程总能在窗口关闭时自了结（剩余账号 skipped_window 后退出），
+    600s 下限只在窗口已关闭时生效——彼时剩余合法工作≈0，截断无害。"""
+
+    def test_timeout_always_exceeds_time_to_window_close(self):
+        sched = _load_sched("_t")
+        env = {"YIBAN_SIGN_END": "07:50"}
+        for hm in ((6, 31), (7, 0), (7, 10), (7, 40), (7, 49), (8, 0)):
+            fake = type(f"_DT{hm[0]}{hm[1]}", (_FakeDT,), {"_hm": hm})
+            with mock.patch.object(sched.clock, "now", fake.now):
+                timeout = sched._child_timeout(env)
+            now = datetime(2026, 9, 6, hm[0], hm[1], 0)  # 与被 patch 的 _FakeDT._date 同日，构造固定时刻
+            end = now.replace(hour=7, minute=50)
+            remaining = max(0, (end - now).total_seconds())
+            self.assertGreater(
+                timeout, remaining,
+                f"{hm[0]:02d}:{hm[1]:02d} 触发的重跑必须能活到窗口关闭自行了结",
+            )
+
+    def test_late_trigger_floor_is_600(self):
+        """窗口已关闭的晚到触发：下限 600s，此时子进程即刻全员窗口外跳过退出。"""
+        sched = _load_sched("_u")
+        fake = type("_DTLate", (_FakeDT,), {"_hm": (9, 0)})
+        with mock.patch.object(sched.clock, "now", fake.now):
+            self.assertEqual(sched._child_timeout({"YIBAN_SIGN_END": "07:50"}), 600)
+
+
+RUN_SH = os.path.join(BASE, "run.sh")
+
+
+def _today():
+    # 当日状态/标记文件名一律走业务钟（signin/scheduler 同源），宿主 TZ 下须一致
+    return clock.today()
+
+
+FAKE_FLOCK = "#!/usr/bin/env bash\nexit ${FAKE_FLOCK_EXIT:-0}\n"
+
+
+FAKE_TIMEOUT = r"""#!/usr/bin/env bash
+{
+  echo "SECOND_RUN=${YIBAN_SECOND_RUN-UNSET}"
+  echo "TIMEOUT_ARG=$1"
+} >> "$FAKE_TIMEOUT_LOG"
+exit ${FAKE_TIMEOUT_EXIT:-0}
+"""
+
+
+class WindowDegradeMailTest(unittest.TestCase):
+    """缓冲过大（前后裁剪合计 >= 窗口宽度）→ 收缩缓冲 + 一次性管理员汇总邮件。"""
+
+    def setUp(self):
+        signin._window_clamped_notified = False
+        signin._window_fallback_notified = False
+        signin._mail_summary.clear()
+
+    def tearDown(self):
+        signin._window_clamped_notified = False
+        signin._window_fallback_notified = False
+        signin._mail_summary.clear()
+
+    @staticmethod
+    def _overflow_cfg():
+        # 06:30~06:40 共 10 分钟窗口，前后各裁 5 分钟 → 缓冲合计吃满窗口
+        return {
+            "sign_start": (6, 30),
+            "sign_end": (6, 40),
+            "edge_front_sec": 300,
+            "edge_back_sec": 300,
+        }
+
+    def test_overflow_edges_collects_admin_mail_once(self):
+        cfg = self._overflow_cfg()
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail:
+            blocks1, lo1, hi1 = signin._schedule_blocks(dict(cfg))
+            blocks2, lo2, hi2 = signin._schedule_blocks(dict(cfg))
+        m_mail.assert_called_once()  # 去重标记必须保证多轮调用只收集一次
+        title, text = m_mail.call_args[0]
+        self.assertEqual(title, "签到窗口缓冲已收缩")
+        self.assertIn("06:30~06:40", text)
+        self.assertIn("300", text)
+        self.assertIn("60", text)
+        # 窗口保留、缓冲收缩为各 60s：06:30+60s ~ 06:40-60s
+        self.assertEqual((lo1, hi1), (391.0, 399.0))
+        self.assertEqual((lo2, hi2), (391.0, 399.0))
+        self.assertTrue(blocks1, "收缩后必须产出非空块列表")
+        self.assertEqual(len(blocks1), len(blocks2))
+
+    def test_normal_window_no_mail(self):
+        cfg = {
+            "sign_start": (6, 30),
+            "sign_end": (7, 50),
+            "edge_front_sec": 60,
+            "edge_back_sec": 60,
+        }
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail:
+            blocks, lo, hi = signin._schedule_blocks(cfg)
+        m_mail.assert_not_called()
+        self.assertTrue(blocks)
+        self.assertEqual((lo, hi), (391.0, 469.0))
 
 
 if __name__ == "__main__":

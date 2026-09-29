@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""周六签到开关测试（2026-08-29；2026-09-07 v0.29.0 默认语义反转：默认关闭）。
+"""周六签到开关（默认关闭）。
 
-覆盖：
-- signin.main()：周六 + 缺省（默认关闭）→ exit 2（SKIPPED）；周六 + 显式开启 → 放行；
-  --only 手动签到不受限；周日语义回归（不变）
-- web sign_status：周六缺省 → 「今日无需打卡（周六）」；显式开启 → 走正常窗口逻辑
-- /api/settings：GET 返回 saturday_sign 默认 0；POST 显式写入 0/1；
-  部分更新不清空其他设置；普通管理员可改（非主管理员专属）
-
-用法（项目根目录）：
-    py -m pytest tests/test_saturday_sign.py -v
+标签：D · 状态词汇与账号生命周期
+覆盖：`signin.main()` 在周六 + 缺省 → exit 2（SKIPPED）、显式开启 → 放行、`--only`
+    手动不受限、周日语义不变；web `sign_status` 周六缺省的"今日无需打卡"文案；
+    `/api/settings` 的 GET 默认 0、POST 显式写 0/1、部分更新不清空其他延迟字段、
+    普通管理员可改（非主管理员专属）。
+对应实现：开关常量与分支在签到入口（`scripts/signin.py` →
+    `yiban/engine/runner.py`），文案在 `web/app.py` 的 `sign_status`，读写走
+    `/api/settings` 与 `.env`。
+关键断言：**默认语义是关闭**——反转前"周六默认也签"会让学校在无任务的周六白打一次；
+    部分更新不得把未提交的字段清空。
+依赖：时钟用 `_FakeDT` 替身注入（只替 `now()`），进程内 mock；web 部分走 Flask test
+    client + 临时 .env/DB；`YIBAN_PW_GATE=full` 固定档，不触网、不需子进程。
 """
 import contextlib
 import datetime as _dt
@@ -71,7 +74,7 @@ def _run_main(now_dt, const_override=None, argv=None):
             mock.patch.object(signin.clock, "now", _FakeDT.now),
             mock.patch.object(signin, "load_accounts",
                               return_value=[mock.Mock(phone="13800000000", user_paused=False)]),
-            mock.patch.object(signin, "run_queue_retry",
+            mock.patch.object(signin.executor_v3, "run_executor_v3",
                               return_value={"13800000000": (True, "ok", False, "success")}),
             mock.patch.object(signin, "_save_cred_state"),
         ]
@@ -167,6 +170,19 @@ class SaturdaySignStatusTest(unittest.TestCase):
         self.assertNotEqual(text, "今日无需打卡（周六）")
         self.assertIn("已结束", text)
 
+    def test_sign_status_saturday_true_same_as_on(self):
+        """周六 + `=true`（布尔值域）→ 与 `=1` 同判：引擎照签，面板不得标休。
+
+        原先面板侧各自用整数解析（`int("true")` 失败回退 0），`=true` 时引擎照签
+        而状态行/日历标休——同一开关两种结论（MF-54 的"两套值域"分叉点）。
+        现与引擎同一解析口径（`schedule.weekend_flags`）。
+        """
+        self._env("YIBAN_SATURDAY_SIGN=true\n")
+        with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
+            text, _ = self.webapp.sign_status(now=_weekday_dt(5))
+        self.assertNotEqual(text, "今日无需打卡（周六）")
+        self.assertIn("已结束", text)
+
 
 class SaturdaySettingsWebTest(unittest.TestCase):
     """/api/settings 周六开关读写（默认 0、POST 显式写 0/1、部分更新不串改、普通管理员可改）。"""
@@ -180,6 +196,9 @@ class SaturdaySettingsWebTest(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 周末开关是 A 档：本类钉的是"真变更当次要口令"，固定在 full
+                # （默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -248,6 +267,7 @@ class SaturdaySettingsWebTest(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 重置也保留门禁档位，见 setUpClass 的说明
             )
         c, t = self._master()
         r = c.get("/api/settings", headers=self._csrf(t))

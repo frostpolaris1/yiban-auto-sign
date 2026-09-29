@@ -1,6 +1,8 @@
-// 数据总览页脚本（classic script，非 module）。
-// 依赖外壳（layout_admin.html）先载入的 core.js（YB.api/el/toast/getServerNow）与本地 Chart.js 4.5.1。
-// 所有图表颜色从 CSS 自定义属性读取，主题切换（document 的 yiban:theme 事件）时重建。
+// 数据总览页脚本（管理端 /data/dashboard，classic script 非 module）：KPI、趋势、分布、时段自选、热力图、容量、运行状态
+// 七组卡片的渲染与重试；模板 templates/pages/data_dashboard.html 只出骨架 DOM，本文件按 id 填数。
+// 通信（全只读，除 ping）：GET /api/settings、/api/admin/sign-events?days=30&stage=sign、/api/time-prefs/stats、
+//   /api/accounts、/api/clock、/api/announcement；POST /api/ping（仅点「检测易班接口」时）。依赖外壳先载入的 core.js
+//   （YB.api/el/toast/getServerNow）与本地 Chart.js。颜色一律从 CSS 自定义属性取，主题切换时重建图表——本文件不写色值。
 (function () {
   "use strict";
   var YB = window.YB || {};
@@ -8,7 +10,7 @@
 
   var REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   var charts = {};
-  var state = { dailyMap: {}, dailyDays: [], byStatus: {}, calMonth: null, signLoaded: false, signFailed: false, slots: [] };
+  var state = { dailyMap: {}, dailyDays: [], accountsTotal: 0, statusAccounts: {}, dayFinal: {}, calMonth: null, signLoaded: false, signFailed: false, slots: [] };
 
   /* ---------------- 基础工具 ---------------- */
   function $(id) { return document.getElementById(id); }
@@ -108,11 +110,16 @@
   }
 
   /* ---------------- 状态词表（sign_events.status 的真实取值） ----------------
-     取值与 scripts/signin.py 的 STATUS_* 常量一一对应，新增状态必须同步本表，
-     否则分布图会把它当作「跳过」并显示英文原文。
-     success/already=成功；failed=失败；其余（no_task/retrying/skipped_* 等）=
-     跳过或未了结。探针 stage 同样写 success/failed，故本页请求显式带
-     stage=sign，只统计真实签到（见 loadSign）。 */
+     取值与 scripts/signin.py 的 STATUS_* 常量一一对应，新增状态必须同步本表。
+     本表是 yiban.status 之外的第二份状态清单（图表短名有意区别于日历图例，完整
+     单源接线属前后端协同任务）；其**键集合**已被 tests/test_yiban_status_single_source.py
+     钉到唯一事实源 ALL_STATUSES，漏一格即红。
+     success/already=成功；failed=失败；其余已知码（no_task/retrying/skipped_* 等）=
+     跳过或未了结；**词表之外的未知码归 unknown 档**——此前未知码静默落 skip、
+     不进成功率分母，枚举一膨胀"成功率"就只抬不降；现在未知码显式成桶并上屏
+     （KPI 副文案 / 趋势 / 日历 title），看得见才不会被算好看。
+     探针 stage 同样写 success/failed，故本页请求显式带 stage=sign，只统计真实
+     签到（见 loadSign；URL 里这 10 个字符是唯一防线，测试已钉死）。 */
   var SUCCESS_ST = { success: 1, already: 1 };
   var FAIL_ST = { failed: 1 };
   var STATUS_LABEL = {
@@ -127,7 +134,15 @@
     user_cancelled: "muted", skipped_window: "light", skipped_norange: "light",
     pending: "light", global_paused: "muted"
   };
-  function statusKind(st) { st = String(st || ""); return SUCCESS_ST[st] ? "success" : (FAIL_ST[st] ? "fail" : "skip"); }
+  // 词表**穷举**分类：成功 / 失败 / 已知跳过 / 未知（unknown）。未知码不落 skip——
+  // 混进跳过会让成功率只抬不降（跳过不进分母），独立成桶才能被看见。
+  function statusKind(st) {
+    st = String(st || "");
+    if (SUCCESS_ST[st]) return "success";
+    if (FAIL_ST[st]) return "fail";
+    if (Object.prototype.hasOwnProperty.call(STATUS_LABEL, st)) return "skip";
+    return "unknown";
+  }
   function statusLabel(st) { return STATUS_LABEL[st] || String(st || "未知"); }
   function statusColor(st, t) { return t[STATUS_TOKEN[st] || "light"] || t.light; }
 
@@ -284,6 +299,7 @@
   function loadSign() {
     return YB.api("GET", "/api/admin/sign-events?days=30&stage=sign").then(function (d) {
       normalizeDaily((d && d.daily_stats) || []);
+      acceptAccounts(d && d.accounts_stats);
       state.signLoaded = true;
       state.signFailed = false;
       var days = Number((d && d.days) || 30);
@@ -308,24 +324,50 @@
       throw err;   // 重抛给页级状态条计数
     });
   }
+  // 聚合分层：事件数（row_cnt，原始行数）在这里按天打桶——行数跨维相加仍是事实；
+  // 账号数**不在前端聚合**：`cnt` 按 (day,status) 各自去重、桶间不互斥，跨天或跨状态
+  // 直加必虚增（MF-55 的「953 vs 真值 94」正是这么来的）。前端拿不到 phone 明细、
+  // 无从去重，账号口径一律读后端终值（acceptAccounts），本函数不碰 `cnt`。
   function normalizeDaily(rows) {
-    var map = {}, byStatus = {};
+    var map = {};
     rows.forEach(function (r) {
       var day = String((r && r.day) || "");
       if (!day) return;
-      var cnt = Number(r.cnt) || 0, st = String(r.status || "");
-      var m = map[day] || (map[day] = { success: 0, fail: 0, skip: 0, total: 0 });
-      m.total += cnt; m[statusKind(st)] += cnt;
-      byStatus[st] = (byStatus[st] || 0) + cnt;
+      var m = map[day] || (map[day] = { success: 0, fail: 0, skip: 0, unknown: 0, total: 0 });
+      var ev = Number(r.row_cnt) || 0;
+      var kind = statusKind(String(r.status || ""));
+      m[kind] += ev; m.total += ev;
     });
     state.dailyMap = map;
     state.dailyDays = Object.keys(map).sort();
-    state.byStatus = byStatus;
   }
-  function rateOf(m) {
-    if (!m) return null;
-    var att = m.success + m.fail;
-    return att > 0 ? Math.round(m.success / att * 1000) / 10 : null;
+  // 后端账号终值（/api/admin/sign-events 的 accounts_stats）：
+  //   total         —— 窗口内 COUNT(DISTINCT phone)，「签到账号总数」的唯一来源；
+  //   by_status     —— 每状态窗口去重账号数（桶间可有交集，占比以桶合计为分母）；
+  //   dayFinal[day] —— 日 × **最终状态** 分桶：每账号当日最后一条事件恰落一桶，
+  //                    桶互斥 ⇒ 日内相加合法；日历按最终态染色（先败后成的日子不涂红）。
+  function acceptAccounts(a) {
+    a = a || {};
+    state.accountsTotal = Number(a.total) || 0;
+    state.statusAccounts = a.by_status || {};
+    var byDay = {};
+    (a.by_day || []).forEach(function (r) {
+      var day = String((r && r.day) || "");
+      if (!day) return;
+      var m = byDay[day] || (byDay[day] = { success: 0, fail: 0, skip: 0, unknown: 0, total: 0 });
+      var n = Number(r.accounts) || 0;
+      var kind = statusKind(String(r.status || ""));
+      m[kind] += n; m.total += n;
+    });
+    state.dayFinal = byDay;
+  }
+  // 成功率只看「已了结的尝试」：成功 ÷（成功 + 失败）。跳过不进分母（未定论），
+  // 未知码同样不进分母、也**不进分子**——它单列成桶并上屏，静默并入跳过会让
+  // 枚举膨胀时的成功率只抬不降（MF-55）。入参是 normalizeDaily 的日事件桶。
+  function rateOf(bucket) {
+    if (!bucket) return null;
+    var att = bucket.success + bucket.fail;
+    return att > 0 ? Math.round(bucket.success / att * 1000) / 10 : null;
   }
   // 无结果文案要区分「当天本来就不签到」与「还没产生结果」：
   // 周六/周日签到可在系统设置中关闭，此时显示「暂无结果」会误导管理员以为调度异常。
@@ -346,8 +388,10 @@
     // setValue，空态类会留在节点上，数字被染成 --t-muted 灰字（实测可复现的
     // 「成功率数字有时是灰的」）。空态只在数据已到、今日确实无记录时出现。
     if (!state.signLoaded) return;
-    var today = todayStr(), m = state.dailyMap[today], ry = rateOf(state.dailyMap[yesterdayStr()]);
-    var rt = rateOf(m), v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
+    var today = todayStr(), m = state.dailyMap[today], y = state.dailyMap[yesterdayStr()];
+    // 口径取事件（尝试）桶：成功率的分子/分母天然是尝试次数，重试本就各算一次。
+    var rt = rateOf(m), ry = rateOf(y);
+    var v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
     if (rt == null) {
       setEmptyValue(v, "—");
       v.title = "";
@@ -359,8 +403,11 @@
     setValue(v, rt.toFixed(1), "%");
     // 口径说明放 tooltip：写进副文案会把卡片挤成多行；「较昨日」已由右上角药丸表达，
     // 副文案只保留结果构成，避免同一信息在卡内出现两次。
-    v.title = "成功率 = 成功 ÷（成功 + 失败），跳过不计入";
-    setSub(sub, "成功 " + num(m.success) + " · 失败 " + num(m.fail) + (m.skip > 0 ? " · 跳过 " + num(m.skip) : ""));
+    v.title = "成功率 = 成功 ÷（成功 + 失败），跳过与未知不计入；按事件（尝试）计，重试各算一次";
+    var ev = m;
+    setSub(sub, "成功 " + num(ev.success) + " · 失败 " + num(ev.fail)
+      + (ev.skip > 0 ? " · 跳过 " + num(ev.skip) : "")
+      + (ev.unknown > 0 ? " · 未知状态 " + num(ev.unknown) : ""));
     if (ry != null) {
       var diff = Math.round((rt - ry) * 10) / 10;
       var cls = diff > 0 ? "up" : diff < 0 ? "down" : "flat";
@@ -374,12 +421,14 @@
   function renderTrend() {
     var days = state.dailyDays;
     if (!days.length) { overlay("trend", "empty", "最近 30 天无真实签到记录"); txt($("trend-coverage"), "无数据"); return; }
-    var labels = [], ok = [], fail = [], skip = [], sum = { ok: 0, fail: 0, skip: 0 };
+    // 趋势回答「发生多少次」：堆叠与汇总同取事件（行数）桶——行数相加仍是事实。
+    // 未知码单列一条「未知」序列（只有出现时才进图例），不静默混进跳过。
+    var labels = [], ok = [], fail = [], skip = [], unk = [], sum = { ok: 0, fail: 0, skip: 0, unk: 0 };
     days.forEach(function (day) {
-      var m = state.dailyMap[day];
+      var ev = state.dailyMap[day];
       labels.push(day.slice(5));
-      ok.push(m.success); fail.push(m.fail); skip.push(m.skip);
-      sum.ok += m.success; sum.fail += m.fail; sum.skip += m.skip;
+      ok.push(ev.success); fail.push(ev.fail); skip.push(ev.skip); unk.push(ev.unknown);
+      sum.ok += ev.success; sum.fail += ev.fail; sum.skip += ev.skip; sum.unk += ev.unknown;
     });
     var t = palette(), opt = baseOpts(t);
     opt.interaction = { mode: "index", intersect: false };
@@ -390,38 +439,45 @@
     opt.plugins.tooltip.callbacks = { label: function (c) { return c.dataset.label + "：" + num(c.parsed.y) + " 次"; } };
     opt.plugins.tooltip.mode = "index";
     opt.plugins.tooltip.intersect = false;
+    var datasets = [
+      { label: "成功", data: ok, backgroundColor: t.success, stack: "sign", borderRadius: 3, barPercentage: 0.72 },
+      { label: "失败", data: fail, backgroundColor: t.danger, stack: "sign", borderRadius: 3, barPercentage: 0.72 },
+      { label: "跳过", data: skip, backgroundColor: t.warning, stack: "sign", borderRadius: 3, barPercentage: 0.72 }
+    ];
+    // 未知序列只在真出现时入图——常驻零值会让图例多一条无信息的噪点
+    if (sum.unk > 0) datasets.push({ label: "未知", data: unk, backgroundColor: t.muted, stack: "sign", borderRadius: 3, barPercentage: 0.72 });
     var drawn = draw("trend", "chart-trend", {
       type: "bar",
-      data: {
-        labels: labels,
-        datasets: [
-          { label: "成功", data: ok, backgroundColor: t.success, stack: "sign", borderRadius: 3, barPercentage: 0.72 },
-          { label: "失败", data: fail, backgroundColor: t.danger, stack: "sign", borderRadius: 3, barPercentage: 0.72 },
-          { label: "跳过", data: skip, backgroundColor: t.warning, stack: "sign", borderRadius: 3, barPercentage: 0.72 }
-        ]
-      },
+      data: { labels: labels, datasets: datasets },
       options: opt
     });
     overlay("trend", drawn ? "none" : "error", "图表渲染失败");
-    var total = sum.ok + sum.fail + sum.skip;
-    renderMeta("trend", [
+    var total = sum.ok + sum.fail + sum.skip + sum.unk;
+    var cells = [
       ["近 30 天成功", num(sum.ok)],
       ["近 30 天失败", num(sum.fail)],
       ["近 30 天跳过", num(sum.skip)],
-      ["日均签到事件", num(days.length ? Math.round(total / days.length * 10) / 10 : 0)]
-    ]);
+      ["日均签到事件（次）", num(days.length ? Math.round(total / days.length * 10) / 10 : 0)]
+    ];
+    if (sum.unk > 0) cells.splice(3, 0, ["近 30 天未知", num(sum.unk)]);
+    renderMeta("trend", cells);
   }
   function renderDist() {
-    var by = state.byStatus, keys = Object.keys(by).filter(function (k) { return by[k] > 0; });
+    // 分布回答「涉及多少账号」：取值直接读**后端窗口去重终值**（accounts_stats.by_status，
+    // 每状态在窗口内按 phone 去重）。此前这里跨天累加 cnt——同一账号 30 天里天天成功
+    // 就被累成 30 个账号（现网「总数 953 vs 真值 94」的直接来源，MF-55）。
+    var by = state.statusAccounts, keys = Object.keys(by).filter(function (k) { return Number(by[k]) > 0; });
     keys.sort(function (a, b) { return by[b] - by[a]; });
     if (!keys.length) { overlay("dist", "empty", "暂无签到结果数据"); return; }
-    var t = palette(), total = keys.reduce(function (n, k) { return n + by[k]; }, 0);
+    // sliceSum 只是占比分母：桶间可有交集（同账号既进过失败桶又进过成功桶），
+    // 「签到账号总数」一律读后端窗口去重终值 state.accountsTotal，绝不拿桶合计冒充。
+    var t = palette(), sliceSum = keys.reduce(function (n, k) { return n + Number(by[k]); }, 0), total = sliceSum;
     var opt = baseOpts(t);
     opt.cutout = "68%";
     opt.plugins.tooltip.callbacks = {
       label: function (c) {
         var v = Number(c.parsed) || 0;
-        return c.label + "：" + num(v) + " 次（" + (total > 0 ? Math.round(v / total * 1000) / 10 : 0) + "%）";
+        return c.label + "：" + num(v) + " 账号（" + (total > 0 ? Math.round(v / total * 1000) / 10 : 0) + "%）";
       }
     };
     var drawn = draw("dist", "chart-dist", {
@@ -433,7 +489,8 @@
       options: opt
     });
     overlay("dist", drawn ? "none" : "error", "图表渲染失败");
-    renderMeta("dist", [["签到事件总数", num(total)], ["结果类型", num(keys.length)]]);
+    // 总数 = 后端窗口去重终值（不是桶合计——桶间有交集，合计必虚增）
+    renderMeta("dist", [["签到账号总数", num(state.accountsTotal)], ["结果类型", num(keys.length)]]);
   }
   function renderCalendar() {
     var grid = $("mini-cal");
@@ -452,16 +509,27 @@
     for (i = 0; i < lead; i++) grid.appendChild(el("div", { class: "mini-cal-day is-other", "aria-hidden": "true" }));
     for (i = 1; i <= daysIn; i++) {
       var ds = fmtDate(new Date(y, mo, i));
-      var m = state.dailyMap[ds];
+      // 展示桶 = 后端**日终态**分桶（每账号当日最后一条事件恰落一桶，桶互斥）；
+      // 存在性以事件行数为兜底——两个判据取或，防换口径把「有记录」的日期误判成空。
+      // 旧式跨状态直加 cnt + fail 优先染色：先失败后成功的账号双桶各计一次、
+      // 且当天被涂红——终值分桶从结构上消灭这种算法（MF-55）。
+      var fin = state.dayFinal[ds];
+      var ev = state.dailyMap[ds];
+      var hasData = !!(((fin && fin.total) || (ev && ev.total)) > 0);
       var cls = "mini-cal-day";
       if (ds > today) cls += " is-future";
-      else if (m && m.total > 0) cls += m.fail > 0 ? " is-fail" : (m.success > 0 ? " is-ok" : " is-none");
-      else cls += " is-none";
+      else if (hasData) {
+        var f = fin || { success: 0, fail: 0 };
+        cls += f.fail > 0 ? " is-fail" : (f.success > 0 ? " is-ok" : " is-none");
+      } else cls += " is-none";
       if (ds === today) cls += " is-today";
       var cell = el("div", { class: cls, text: String(i), role: "gridcell" });
-      cell.title = (m && m.total > 0)
-        ? "成功 " + m.success + " · 失败 " + m.fail + " · 跳过 " + m.skip
-        : (ds > today ? "未来日期（尚未签到）" : "当日无真实签到记录");
+      cell.title = !hasData
+        ? (ds > today ? "未来日期（尚未签到）" : "当日无真实签到记录")
+        : (fin && fin.total > 0
+          ? "成功 " + fin.success + " · 失败 " + fin.fail + " · 跳过 " + fin.skip
+            + (fin.unknown > 0 ? " · 未知 " + fin.unknown : "") + "（账号，当日最终态）"
+          : "有签到记录（账号未识别）");
       grid.appendChild(cell);
     }
     for (i = 0; i < trail; i++) grid.appendChild(el("div", { class: "mini-cal-day is-other", "aria-hidden": "true" }));

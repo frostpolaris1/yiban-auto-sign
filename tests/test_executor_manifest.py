@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
 """**执行体清单**（`YIBAN_EXECUTORS`）的模型、迁移等价与行接口断言。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：执行体清单的模型层（解析/序列化/槽位只增不复用/上限
+   63/兜底唯一/停用行语义）、旧三键各形态的迁移等价与只读回退、接口层的首次读迁移写回与以清单为准、删当前最大槽位后「真被用过」不复用、claims.owners_since
+   的保留期口径、行 CRUD
+   与权限脱敏、单行写入不影响他行、拉起列表与槽位号贯穿身份/锁/心跳、派发监督进程前的周末/暂停/补签轮闸门。
+对应实现：yiban/egress.py（manifest
+   读写、legacy_rows、apply_legacy_config、manifest_state、SLOT_MAX）、web/app.py
+   的执行体行接口、yiban/store/claims.py（owners_since）、yiban/engine/runner.py
+   与 workers.py（拉起列表、槽位透传、派发前的门）。
+关键断言：迁移必须逐字等价（顺序、空位=直连、兜底位置、worker
+   数量），旧键在写回后再留一个版本周期——不一致的表现是「升级后出口串了」。槽位只增不复用，且删掉的号若真出现在领取历史里就不得再发出去（否则新执行体顶用死执行体的身份，归属统计串人）；从没用过的号照旧复用。disabled
+   行保留出口、不进拉起列表、不计入建议值分母、不报存活。清单与旧键并存时以清单为准，但旧接口在清单模式下也必须同步维护清单。周末/暂停/补签判定必须排在派发监督进程之前。
+依赖：临时目录 + 独立模块名加载的 Flask test client + SimpleNamespace
+   替身；worker_presence / fallback_alive
+   读的是临时状态目录里的本地文件。全部离线，无 skip。
+
 旧口径是"一个数量（`YIBAN_WORKERS`）+ 一整条逗号列表（`YIBAN_PROXY_LIST`）+
 单独兜底出口（`YIBAN_PROXY_FALLBACK`）"，表达不了"停用某一行"与"删中间行不重排"。
 新清单是**单键 JSON 数组**，每个执行体一行：`{"slot", "type", "proxy"}`。
 
-本文件钉住五件事（缺一个就会在生产上表现为"升级后出口串了"或"停用行还在被拉起"）：
-
-1. **迁移等价**：旧三键各形态（空位=直连、userinfo 代理、列表不足循环取用、只配
-   `YIBAN_PROXY`、空白列表、64 行占满槽位）迁移成清单后，`resolve`/`assignments`
-   的结果**逐字一致**；迁移写回后清单键存在、**旧键保留**（一个版本周期）；
-2. **槽位只增不复用**：删中间行不重排，新行拿到 `max + 1`；上限 63；
-3. **停用语义**：`disabled` 行保留出口、不进拉起列表、不计入建议值分母、不报存活；
-4. **兜底唯一**：`fallback` 最多 1 行，第 2 行被明确拒绝（400）；
-5. **单行写入不影响别的行**：与既有"按序号写单段"同一纪律；接口只回脱敏描述串，
-   任何凭据原文都不出现在响应里。
-
-全部离线：接口层只用临时目录 + 临时库，不联网（`worker_presence`/`fallback_alive`
-读的是状态目录里的本地文件）。
 """
 import contextlib
 import importlib.util
@@ -49,14 +52,14 @@ WEEKDAY_06_40 = datetime(2026, 9, 2, 6, 40)
 
 def _manifest(*rows):
     """紧凑 JSON 串（与 `egress.dump_manifest` 同一写法，便于手写 .env 用例）。"""
-    return json.dumps(list(rows), ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(list(rows), ensure_ascii=False, separators=(",", ":")) # 紧凑写法与 dump_manifest 一致，手写的 .env 才能逐字比对
 
 
 # ---------------------------------------------------------------------------
 # 纯函数：迁移等价
 # ---------------------------------------------------------------------------
 #: 旧三键的各种形态（覆盖空位、userinfo、循环取用、只配单出口、空白列表、占满槽位）
-LEGACY_CASES = (
+LEGACY_CASES = ( # 这批形态就是升级路径的全部已知输入，少一种等于没测那条路
     {},
     {"YIBAN_WORKERS": "1"},
     {"YIBAN_WORKERS": "3", "YIBAN_PROXY_LIST": f"{SECRET_PROXY},,http://c.example:3128"},
@@ -79,9 +82,9 @@ class MigrationEquivalenceTest(unittest.TestCase):
     def test_worker_proxies_match_legacy_resolve(self):
         for env in LEGACY_CASES:
             with self.subTest(env=env):
-                n = egress.legacy_worker_count(env)
+                n = egress.legacy_worker_count(env) # 先拿旧口径的人数当基准，再逐个比迁移结果，而不是反过来
                 rows = egress.legacy_rows(env)
-                migrated = egress.worker_rows(rows)
+                migrated = egress.worker_rows(rows) # 只取 worker 行：兜底行不占 worker 序号，混进来会把槽位比歪
                 self.assertEqual([r["slot"] for r in migrated], list(range(n)),
                                  "槽位必须就是旧的 0..N-1（顺序不变）")
                 for r in migrated:
@@ -380,18 +383,29 @@ class MigrationWritebackTest(_WebBase):
     def test_all_rows_disabled_falls_back_to_single_executor_shape(self):
         """清单里一个 worker 行都没有（全停用/删除）→ 回退单执行体形态，出口读 YIBAN_PROXY。
 
-        `workers.configured` 按契约仍 ≥1；停用行的出口不参与分配，故显示的出口必须是
-        **实际运行**的单执行体用的 `YIBAN_PROXY`，不是某行停用行留下的出口。
+        `workers.configured` 如实为 **0**（不再 max(1,…) 包装成"并行 1"——两种世界
+        同形就没人在页面上能发现"并行早被清空了"）；单执行体形态改由
+        `workers.single_mode=true` 显式表达。停用行的出口不参与分配，故
+        assignments 显示的出口必须是**实际运行**的单执行体用的 `YIBAN_PROXY`。
         """
         rows = [{"slot": 0, "type": "disabled", "proxy": "http://disabled:1"},
                 {"slot": 1, "type": "fallback", "proxy": "http://fb:2"}]
         self._write_env("YIBAN_PROXY=http://solo:9",
                         f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
         body = self._get(self._login())
-        self.assertEqual(body["workers"]["configured"], 1)
+        self.assertEqual(body["workers"]["configured"], 0, "0 条并行行如实报 0")
+        self.assertIs(body["workers"]["single_mode"], True, "单执行体形态要能显式读出")
         self.assertEqual([(a["index"], a["egress"]) for a in body["workers"]["assignments"]],
                          [(0, "http://solo:9")])
         self.assertEqual([e["type"] for e in body["executors"]], ["disabled", "fallback"])
+
+    def test_single_mode_false_when_worker_rows_exist(self):
+        """有并行行时 single_mode 必须为 False——它不是"配置为空"的恒真旗。"""
+        rows = [{"slot": 0, "type": "worker", "proxy": ""}]
+        self._write_env(f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
+        body = self._get(self._login())
+        self.assertEqual(body["workers"]["configured"], 1)
+        self.assertIs(body["workers"]["single_mode"], False)
 
     def test_manifest_wins_over_stale_legacy_keys(self):
         """清单与旧键并存 → **以清单为准**（旧键只作回退读取）。"""
@@ -428,8 +442,9 @@ class SlotNeverReusedAfterDeleteTest(_WebBase):
         conn = db.get_conn()
         with db._conn_lock:
             conn.execute(
-                "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
-                "state, result, attempts) VALUES (?, ?, ?, ?, ?, 'done', '', 0)",
+                "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+                "state, attempts, lease_until, result, epoch, created_at) "
+                "VALUES (?, ?, 0, ?, ?, 5, 'done', 0, '', '', 0, ?)",
                 ("13800138000", clock.today(), egress.worker_owner(slot, "testhost"),
                  clock.ts(), clock.ts()))
             conn.commit()
@@ -465,15 +480,16 @@ class SlotNeverReusedAfterDeleteTest(_WebBase):
 
 
 class OwnersSinceTest(_WebBase):
-    """`claims.owners_since`：保留期内的身份串（去重、升序），保留期外的不算。"""
+    """`queue_store.owners_since`：保留期内的身份串（去重、升序），保留期外的不算。"""
 
     def _insert(self, phone, day, owner):
         import db
         conn = db.get_conn()
         with db._conn_lock:
             conn.execute(
-                "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
-                "state, result, attempts) VALUES (?, ?, ?, ?, ?, 'done', '', 0)",
+                "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+                "state, attempts, lease_until, result, epoch, created_at) "
+                "VALUES (?, ?, 0, ?, ?, 5, 'done', 0, '', '', 0, ?)",
                 (phone, day, owner, clock.ts(), clock.ts()))
             conn.commit()
 
@@ -484,7 +500,7 @@ class OwnersSinceTest(_WebBase):
                             ("13800138001", "worker-0@h"),
                             ("13800138002", "fallback@h")):
             self._insert(phone, today, owner)
-        self.assertEqual(db.claim_owners_since(), ["fallback@h", "worker-0@h"])
+        self.assertEqual(db.task_owners_since(), ["fallback@h", "worker-0@h"])
 
     def test_rows_outside_retention_are_ignored(self):
         import datetime as _dt
@@ -493,7 +509,7 @@ class OwnersSinceTest(_WebBase):
         old_day = (clock.now()
                    - _dt.timedelta(days=db.CLAIM_RETENTION_DAYS + 1)).strftime("%Y-%m-%d")
         self._insert("13800138000", old_day, "worker-7@h")
-        self.assertEqual(db.claim_owners_since(), [],
+        self.assertEqual(db.task_owners_since(), [],
                          "保留期外的记录不参与槽位下限（展示口径同样读不到它）")
 
 
@@ -842,24 +858,47 @@ class DispatchGateTest(unittest.TestCase):
         m_popen.assert_not_called()
         m_load.assert_not_called()
 
-    def test_manual_only_still_dispatches_on_day_off(self):
-        """`--only` 是用户主动触发（既有语义：不受周末/暂停门限制），多执行体下照旧派发。
+    def test_manual_only_converges_to_single_process_and_skips_day_off(self):
+        """`--only` 收敛为单进程，且仍不被周末/暂停门拦下。
 
-        被提前门拦下等于"用户点了手动签到却被静默跳过"——门只写在单执行体路径时
-        根本到不了这里（子进程各自按 `if not args.only` 放行），故豁免必须与之一致。
+        门豁免的既有语义（用户主动触发应放行）由下面 `if not args.only` 那道门承担；
+        派发侧不再为手动单号拉起 N 个执行体（同一单号被 N 个子进程各领一次，抢输的
+        一路 rc=2 会把成功的点击报成"未实际签到"）。故本用例断言：不派发监督进程、
+        走进程内单执行体路径、且**不返回 2**（没被门拦下）。
         """
         from yiban.engine import runner, workers
+        ok = (True, "签到成功", False, "success")
+        acc = SimpleNamespace(phone="13800000000", user_paused=False, owner="",
+                              password="p", account_id=0)
         for label, now, extra in (("周日", self.SUNDAY_06_31, {}),
                                   ("暂停", WEEKDAY_06_40, {"YIBAN_GLOBAL_PAUSE": "1"})):
             with self.subTest(label=label):
                 with mock.patch.dict(os.environ, self._manifest_env(**extra)), \
                         mock.patch.object(runner.clock, "now", lambda now=now: now), \
                         mock.patch.object(runner, "SUNDAY_SIGN", False), \
-                        mock.patch.object(workers, "run_worker_supervisor",
-                                          return_value=7) as m_sup:
+                        mock.patch.object(runner.accounts_mod, "load_accounts",
+                                          return_value=[acc]), \
+                        mock.patch.object(runner.db, "purge_expired_deleted_accounts",
+                                          lambda: None), \
+                        mock.patch.object(runner.cli_support, "_acquire_run_lock",
+                                          return_value=None), \
+                        mock.patch.object(runner.state_io, "_is_second_run",
+                                          return_value=False), \
+                        mock.patch.object(runner.state_io, "_load_cred_state",
+                                          return_value={}), \
+                        mock.patch.object(runner.state_io, "_save_cred_state",
+                                          lambda *a, **k: None), \
+                        mock.patch.object(runner.alerts, "_maybe_alert_zero_success",
+                                          lambda *a, **k: None), \
+                        mock.patch.object(runner.alerts, "_flush_admin_mail_summary",
+                                          lambda *a, **k: None), \
+                        mock.patch.object(runner.executor_v3, "run_executor_v3",
+                                          return_value={acc.phone: ok}) as m_run, \
+                        mock.patch.object(workers, "run_worker_supervisor") as m_sup:
                     rc = runner.main(["--only", "13800000000"])
-                self.assertEqual(rc, 7, "用户主动触发被门拦下 = 手动签到被静默跳过")
-                m_sup.assert_called_once()
+                self.assertEqual(rc, 0, "用户主动触发不得被门拦下（不是 SKIPPED 的 2）")
+                m_sup.assert_not_called()
+                self.assertEqual(m_run.call_count, 1, "手动单号走进程内单执行体路径")
 
     def test_check_config_and_probe_still_dispatch_on_day_off(self):
         """`--check-config`（部署验证，哪天都要能验）与 `--probe`（自带门、跳过语义是 0）同样不被拦。"""

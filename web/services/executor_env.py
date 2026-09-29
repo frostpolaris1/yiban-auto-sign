@@ -23,7 +23,7 @@
 模块）。凡写 `.env` 的入口都接收调用方传入的 `write_batch`（即 `web.app` 的
 `write_env_batch`）：它是既有测试观测每一次落盘的打桩点，本模块另持绑定会让打桩静默失效；
 同理 `_executors_window` 的 `.env` 路径与签到窗口解析器由调用方现取传入。读路径
-（`read_env` / `load_env_int` / `_env_write_lock` / `_is_http_proxy_url`）复用
+（`read_env` / `_env_write_lock` / `_is_http_proxy_url`）复用
 `web.services.env_io` 的同域实现，行分隔符判定取 `yiban.infra.env_io` 真源。
 """
 
@@ -34,7 +34,6 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 from web.services.env_io import (
     _env_write_lock,
     _is_http_proxy_url,
-    load_env_int,
     read_env,
 )
 from yiban import egress as yb_egress
@@ -53,16 +52,16 @@ logger = logging.getLogger("web")
 def _executors_window(env_file, sign_window):
     """执行体接口口径的**有效签到窗口**（`window.effective_sec` 即容量换算的分母）。
 
-    `edge_*` 未配置按 0 计（与 GET 的原实现逐字一致，故显示值零变化）；容量估算与
-    "窗口内不做实测"的拦截都用它，保证页面上显示的窗口与这两个判断同源。
-
-    `.env` 路径与窗口解析器由调用方传入：两者都是 `web.app` 上可被测试改写的模块级名字。
+    容量估算与"窗口内不做实测"的拦截都用这个窗口，保证页面显示与这两个判断同源。
+    参数注入口径见模块头「通信」。
     """
     start, end = sign_window()
+    # 缺省 60s 而不是 0（与引擎同一份缺省与旧键映射）：示例 .env 把这两个键注释掉了，
+    # 缺省 0 会让页面窗口、容量分母与拦截都比引擎宽 1 分钟
+    front, back = yb_window.parse_edges(read_env(env_file))
     return yb_window.bounds({
         "sign_start": start, "sign_end": end,
-        "edge_front_sec": load_env_int(env_file, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
-        "edge_back_sec": load_env_int(env_file, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
+        "edge_front_sec": front, "edge_back_sec": back,
     })
 
 
@@ -70,13 +69,13 @@ def _last_executors(day):
     """某个业务日每个账号的归属执行体（**已脱敏**）：`{phone: {role, index, label}}`。
 
     账号列表要显示"上次实领是谁签的"（day 由调用方给——口径是最近一次有记录的业务日，
-    见 `store.claims.latest_claims_day`）：一次取回当日全部 `phone -> owner`（见
-    `store.claims.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
+    见 `store.queue_store.latest_day`）：一次取回当日全部 `phone -> owner`（见
+    `store.queue_store.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
     身份串含主机名，属部署信息，故**只回角色/序号/label**，绝不回 owner 原串。
     库不存在/未初始化 → `{}`（新部署很正常），调用方据此回 `null` 而不是报错。
     """
     out = {}
-    for phone, owner in db.claim_owners_for_day(day).items():
+    for phone, owner in db.task_owners_for_day(day).items():
         parsed = yb_egress.parse_owner(owner)
         out[phone] = {"role": parsed["role"], "index": parsed["index"],
                       "label": parsed["label"]}
@@ -106,19 +105,18 @@ def _executor_row_payload(row):
 
 
 def _executor_activity(day):
-    """当日领取池归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
+    """当日任务队列归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
 
-    为什么必须脱敏：`owner` 形如 `{主机名}:{进程号}:w{序号}`，是部署信息（主机名与
-    进程号对攻击者是资产清单）。故**绝不回原串**——用 1-based 槽位号替代它，前端
-    拿到的信息量不变（"第 1 个并行执行体做了 10 个"），也看得懂。
     角色解析的唯一口径在 `yiban.egress.parse_owner`；`unknown` 照实回（历史数据里
     兜底与单执行体同前缀，本来就无法追溯，不假装能还原）。
 
-    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `claims.stats` 同口径不抛。
+    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `queue_store.day_counts` 同口径不抛。
     """
     by_executor = []
     totals = {"claimed": 0, "failed": 0, "done": 0, "total": 0}
-    for slot, row in enumerate(db.claim_activity(day), start=1):
+    # 用 1-based 槽位号替代 owner 原串：owner 形如 {主机名}:{进程号}:w{序号}，主机名与
+    # 进程号是部署信息（对攻击者就是资产清单），绝不回原串；前端信息量不变
+    for slot, row in enumerate(db.task_activity(day), start=1):
         parsed = yb_egress.parse_owner(row.get("owner"))
         by_executor.append({
             "slot": slot,
@@ -141,10 +139,10 @@ def _executor_activity(day):
 def _validated_proxy_value(raw):
     """行出口的校验 + 归一：返回 `(值, 错误信息)`；空/None = 直连（空串）。
 
-    换行在 strip **之前**拦（含尾随换行，与单段写接口同一纪律）；形状校验复用
-    `_is_http_proxy_url`（不写第二套）。错误回显先 `_mask_url_userinfo` 脱敏。
+    错误回显先 `_mask_url_userinfo` 脱敏（代理串按契约允许带 user:pass@）。
     """
     submitted = "" if raw is None else str(raw)
+    # strip **之前**就拦换行：尾随换行同样会把一行 .env 拆成两行（与单段写接口同一纪律）
     if _yiban_env_io.has_line_break(submitted):
         return None, "代理配置不能包含换行"
     value = submitted.strip()
@@ -156,11 +154,11 @@ def _validated_proxy_value(raw):
 def _validated_name(raw):
     """行自定义名的校验 + 归一：返回 `(值, 错误信息)`；空/None = 清除自定义名。
 
-    这条值要跟着 `slot/type/proxy` 一起挤进 `.env` 的**同一行**，故换行必须在 strip
-    之前拦住（与出口串同一纪律）；超长**明确拒绝**而不是静默截断（截断会让"我明明
-    起了这个名字"变成查不出来的困惑）。解析侧另走 `egress.clean_name`（宽容，见其说明）。
+    超长**明确拒绝**而不是静默截断：截断会让"我明明起了这个名字"变成查不出来的困惑。
+    解析侧另走 `egress.clean_name`（宽容，见其说明）。
     """
     submitted = "" if raw is None else str(raw)
+    # 同一个 strip 前拦截：这条值要跟着 slot/type/proxy 挤进 .env 的同一行
     if _yiban_env_io.has_line_break(submitted):
         return None, "名称不能包含换行"
     value = "".join(ch for ch in submitted.strip() if ch.isprintable()).strip()
@@ -198,6 +196,10 @@ def _save_slot_egress(env_path, key, index, value, write_batch):
             return "现有代理配置含换行符，请先手工清理该键", 400
         try:
             write_batch(env_path, {key: updated})
+        except _yiban_env_io.EnvWriteRefused:
+            # fail-closed 拒绝（脏 .env / 未请求键变化）：交 Flask 统一 409 + 清理指引，
+            # 不得在这里改报 400 把"需人工清理配置"说成"输入不合法"
+            raise
         except ValueError as e:
             return str(e), 400
     return None, None
@@ -247,20 +249,19 @@ def _mutate_executor_rows(mutator, env_path, write_batch):
 def _next_executor_slot(rows):
     """追加行的槽位号：清单最大 + 1，且**跳过保留期内真用过的号**（下标只增不复用）。
 
-    为什么需要这一步：纯函数 `next_slot` 只能给"清单最大值 + 1"，删掉当前最大行之后它会
-    把刚空出来的号再发一次，而那个号在领取池（`sign_claims.owner`）里已经有历史——重建的
-    执行体会被显示成前任的归属。故这里再按**领取历史**抬一次下限（保留期 14 天，与展示
-    口径同窗口）。历史里出现过的号一律不复用，跨主机也一样（同一个库＝同一个部署）。
-
-    库不可用/未初始化时退回"只按清单最大值 + 1"：编号可能重复，但**追加本身绝不能失败**。
+    库不可用/未初始化时退回"只按清单最大值 + 1"：编号可能重复，但**追加本身绝不能失败**
+    ——这一步失败会让设置页加不了执行体。
     """
+    # 纯 next_slot 只给"清单最大值 + 1"：删掉当前最大行后它会把刚空出的号再发一次，而
+    # 那个号在任务队列（sign_tasks.owner）里已有历史，重建的执行体会被显示成前任的归属。
+    # 故再按领取历史抬一次下限（保留期 14 天，与展示口径同窗口；同库＝同部署，跨主机同理）
     floor = 0
     try:
-        for owner in db.claim_owners_since():
+        for owner in db.task_owners_since():
             parsed = yb_egress.parse_owner(owner)
             if parsed["role"] == yb_egress.ROLE_WORKER and isinstance(parsed["index"], int):
                 floor = max(floor, parsed["index"] + 1)
-    except Exception as e:   # 库抖动不影响追加（与领取池的降级纪律一致）
+    except Exception as e:   # 读历史失败只退回清单口径，不让追加整件事失败
         logging.getLogger("yiban").debug("读取执行体历史失败（追加槽位退回清单口径）: %s", e)
     return max(yb_egress.next_slot(rows), floor)
 
@@ -276,6 +277,8 @@ def _save_row_egress(env_path, slot, value, write_batch):
 
     try:
         _mutate_executor_rows(_apply, env_path, write_batch)
+    except _yiban_env_io.EnvWriteRefused:
+        raise  # 统一 409：交 Flask errorhandler，不在这里改报 400
     except ValueError as e:
         return str(e), 400
     return None, None
@@ -291,6 +294,8 @@ def _save_fallback_egress(env_path, value, write_batch):
 
     try:
         _mutate_executor_rows(_apply, env_path, write_batch)
+    except _yiban_env_io.EnvWriteRefused:
+        raise  # 统一 409：交 Flask errorhandler，不在这里改报 400
     except ValueError as e:
         return str(e), 400
     return None, None

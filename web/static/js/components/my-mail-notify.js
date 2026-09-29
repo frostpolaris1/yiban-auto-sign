@@ -8,10 +8,10 @@
      initial    仅 variant === "user" 需要：来自 /api/me 的 mail_notify 布尔
 
    两条写入路径：
-     · user          → PUT /api/my-mail-notify {enabled}
+     · user          → PUT /api/my-mail-notify {enabled}（本人开关，不进门禁）
      · builtin-admin → GET /api/mail-config 读 admin_notify 初始化；
-                       PUT /api/mail-config {admin_notify}；关闭方向先经
-                       YB.openConfirmPasswordModal 取 confirm_password（高危门禁）。
+                       PUT /api/mail-config {admin_notify}；**关闭**方向受门禁，走
+                       YB.dangerousSubmit——先不带凭据发，后端回 reason 才补口令。
    提示文案一律不含手机号/邮箱等 PII。 */
 (function () {
   "use strict";
@@ -55,19 +55,25 @@
       }).then(function () { busy = false; });
     }
 
-    /* ---------------- 主管理员：/api/mail-config（关闭需口令） ---------------- */
-    function submitAdmin(next, pw) {
+    /* ---------------- 主管理员：/api/mail-config（关闭方向受门禁） ---------------- */
+    // next=true 是纯开启，不进门的直发；next=false 关闭通道受门禁——先不带凭据发，由后端
+    // reason 决定要不要口令（档位只存在于后端）。失败/取消一律回到最后一次服务端确认值。
+    function submitAdmin(next) {
       busy = true;
       var body = { admin_notify: next };
-      if (pw) body.confirm_password = pw;
       setTip("保存中…");
-      YB.api("PUT", "/api/mail-config", body).then(function () {
+      var req = next ? YB.api("PUT", "/api/mail-config", body) : YB.dangerousSubmit({
+        method: "PUT", path: "/api/mail-config", body: body,
+        desc: "关闭主管理员告警邮件接收？关闭后你不再收到任何告警邮件。请输入当前管理员密码确认。"
+      });
+      req.then(function () {
         on = next;
         sw.checked = next;
         setTipTtl(next ? "已开启接收邮件提醒" : "已关闭接收邮件提醒");
-      }).catch(function () {
-        sw.checked = on;          // 回到最后一次服务端确认值
-        setTip("保存失败，请稍后重试");
+      }).catch(function (e) {
+        sw.checked = on;                       // 回到最后一次服务端确认值
+        if (e && e.canceled) setTip("");       // 取消弹窗 = 未提交，不报失败
+        else setTip("保存失败，请稍后重试");
       }).then(function () { busy = false; });
     }
 
@@ -75,15 +81,13 @@
       if (busy) return;
       var next = sw.checked;
       if (!next) {
-        // 关闭通道属高危：先回滚 UI，口令确认成功后才落盘；取消则保持开启态
+        // 关闭通道属受门禁操作：先回滚 UI（关不成要保持开启态），口令/确认由 helper 按
+        // 后端 reason 收；取消弹窗时开关保持原样
         sw.checked = true;
-        YB.openConfirmPasswordModal(
-          "关闭主管理员告警邮件接收？关闭后你不再收到任何告警邮件。请输入当前管理员密码确认。",
-          function (pw) { submitAdmin(false, pw); }
-        );
+        submitAdmin(false);
         return;
       }
-      submitAdmin(true, null);
+      submitAdmin(true);
     }
 
     function loadAdmin() {

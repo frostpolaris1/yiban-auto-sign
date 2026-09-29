@@ -9,7 +9,7 @@
 - `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
 - `_db_file` / `_env_file`：最近一次 `init_db(...)` 的库路径 / .env 路径
 - `DB_DEFAULT`：库路径默认值（`YIBAN_DB_FILE` 或 `"yiban.db"`）
-- `get_conn()` / `is_initialized()`
+- `get_conn()` / `is_initialized()` / `current_db_file()` / `pool_db_declared()`
 
 **为什么 `init_db` 不在这里**：`tests/test_store_db_move.py` 钉住"真正的 `init_db` 定义
 只能在 `yiban/store/db.py`"（建连与建表/迁移同属启动序列，还要与冻结的历史迁移函数
@@ -23,6 +23,8 @@
 副本上、真连接关不掉——详见 db.py 里 `__getattr__` 与 `_StateForwardingModule` 的说明）。
 """
 import os
+import pathlib
+import sqlite3
 import threading
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
@@ -64,6 +66,24 @@ def is_initialized():
     return _conn is not None
 
 
+def current_db_file():
+    """当前单例连接**实际**指向的库文件（`PRAGMA database_list` 的 main）；取不到 → ""。
+
+    与 `_db_file` 的分工：`_db_file` 是"最近一次 `init_db` 声明的路径"，而 `init_db`
+    在单例连接已存在时会刷新 `_db_file` 却直接复用旧连接——此时两者不一致。凡"必须
+    写进目标库"的调用（如清库留痕）都要按**实际连接**判定，否则审计会落到另一个库。
+    """
+    if _conn is None:
+        return ""
+    try:
+        for row in _conn.execute("PRAGMA database_list"):
+            if row[1] == "main":
+                return row[2] or ""
+    except sqlite3.Error:
+        return ""
+    return ""
+
+
 def set_conn(conn):
     """登记单例连接（`db.init_db` 建连后立即调用，早于建表/迁移）。"""
     global _conn
@@ -86,3 +106,75 @@ def set_env_file(path):
     """刷新 .env 路径（`init_db` 入口**无条件**调用，即使连接已存在）。"""
     global _env_file
     _env_file = path
+
+
+def open_readonly(db_file, immutable=None):
+    """只读打开一个 SQLite 库（文件不存在 → None）；**不建库、不建表、不切 WAL**。
+
+    为什么需要独立于 `init_db` 的连接：`init_db` 会建库/建表/跑迁移/切 WAL——任何
+    自称"只读"的维护子命令（`config` / `db --status` / `db --integrity` / `version`）
+    都不该经它，否则"只读"承诺与代码行为相反（曾实测 `config` 在空目录当场建出
+    69632B 的伪库）。
+
+    URI 选择（同一份判定，调用方不再各写一套）：
+    - 库里没有 WAL 待读帧（无 `-shm`，且 `-wal` 不存在或为空）→ `mode=ro&immutable=1`：
+      SQLite 不会为只读打开创建 `-shm`/`-wal`，满足"只读命令跑完不留新文件"；
+    - 有 `-shm`（有进程正持有 WAL）或 `-wal` 非空（崩溃残留待恢复）→ `mode=ro`：
+      必须读 WAL 里的已提交帧，不能 immutable 跳过。
+
+    `immutable`：`None`（默认）按上面的静默判定自动选择；**传 `False` 强制 `mode=ro`**
+    ——取证类调用方（`scripts/audit_verify.py`）要的是"看得见并发写者与锁"：immutable
+    只读会绕过文件锁、忽略 WAL 里已提交但未合并的帧，把"库正被独占写"读成"一切正常"。
+    代价是 `mode=ro` 在 WAL 库上可能新建 `-shm`/`-wal`（SQLite 的读簿记，非数据改动）。
+    传 `True` 强制 immutable（调用方自担"读不到并发写"的责任）。
+
+    边界（**如实声明**）：`immutable=1` 只在库确实静默时才是安全快照。若库处于
+    rollback-journal 模式且有并发写者，immutable 只读可能读不到该写者已提交的改动，
+    也不会参与文件锁（锁库期间照旧读出旧快照）。本项目统一 WAL、只读运维面向静默库，
+    故自动档默认用它，风险低；取证类"必须见锁"的调用方显式传 `immutable=False`。
+
+    `mode=ro` 在个别平台/WAL 组合下仍可能打不开，此时退化为普通连接 + `PRAGMA
+    query_only=ON`（读得到、写不进），由 SQLite 自己拒绝任何写。
+    """
+    if not os.path.isfile(db_file):
+        return None
+    abs_path = os.path.abspath(db_file)
+    wal = abs_path + "-wal"
+    shm = abs_path + "-shm"
+    quiescent = not os.path.exists(shm) and not (os.path.exists(wal) and os.path.getsize(wal) > 0)
+    use_immutable = quiescent if immutable is None else bool(immutable)
+    uri = pathlib.Path(abs_path).as_uri() + ("?mode=ro&immutable=1" if use_immutable else "?mode=ro")
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        conn = sqlite3.connect(db_file)
+        conn.execute("PRAGMA query_only=ON")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+#: "部署是否声明了领取池库路径"的解析结果缓存：键 = 解析出的路径串（空串=未声明）。
+#: 为什么要缓存：`round._claim` 每个账号每次尝试都会问一次，而解析要读 .env；缓存使
+#: "同一条配置每次问一遍"变成一次。键取实际值，故 .env 改路径后下一次即重算。
+_pool_declared_cache = {}
+
+
+def pool_db_declared(env=None, env_file=None):
+    """部署是否**声明**了领取池库路径（`YIBAN_DB_FILE` 在进程环境或 .env 里非空）。
+
+    执行侧要区分"部署未配库（纯状态文件形态，照旧放行）"与"配了库但当前不可用
+    （必须拒跑——放行等于让两个执行体同时登录同一账号）"。两种形态的现场都是
+    `is_initialized()` 为假，能分开它们的只有**部署声明的路径**这一条事实。
+
+    为什么判据不是别的：
+    - "磁盘上有没有库文件"会被开发机/旧部署留在工作目录里的 `yiban.db` 误判成池部署
+      （默认路径恰是 `yiban.db`），把纯状态文件部署打成拒跑；
+    - "本进程曾连上过库"分不开"连接被人为关闭"与"库真的不可用"，而后者才需要拒跑。
+
+    只做一次只读解析（**不传 default**，故未声明时得到空串），不建连接、不建库、不建表。
+    """
+    from yiban.infra import env_io
+    path = env_io.resolve_path("YIBAN_DB_FILE", "", env=env, env_file=env_file)
+    if path not in _pool_declared_cache:
+        _pool_declared_cache[path] = bool(path)
+    return _pool_declared_cache[path]

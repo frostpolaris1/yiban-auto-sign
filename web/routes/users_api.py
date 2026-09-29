@@ -5,9 +5,11 @@
 **功能**
 `GET /api/users` 用户列表（含内置管理员信息与账号计数）；`GET /api/users/deleted`
 已注销用户与剩余宽限期；`POST /api/users/deleted/purge` 主管理员物理清除；
-`POST /api/users/batch` 批量重置密码/删除；`POST /api/users/<email>/role`
-设置/取消管理员；`POST /api/users/<email>/password` 重置密码；
-`POST /api/users/<email>/delete` 完全删除或仅清空其易班账号。
+`POST /api/users/batch` 批量重置密码/删除；`POST /api/users/<int:id>/role`
+设置/取消管理员；`POST /api/users/<int:id>/password` 重置密码；
+`POST /api/users/<int:id>/delete` 完全删除或仅清空其易班账号。
+单条视图按**不透明 id** 定位（服务端按 id 解析回邮箱再操作）：明文邮箱不编进
+URL path——path 进 nginx `combined` 的 `$request`、经同源 Referrer 外送（MF-49 出口字段）。
 
 **归属**
 `web.app.create_app` 的"用户管理"面（管理端）。工厂骨架、跨域中间件（前置限速、登录
@@ -61,7 +63,13 @@ def api_users():
             owner_review_count[owner] = owner_review_count.get(owner, 0) + 1
     result = [
         {
+            # id 是单条操作（角色/重置口令/删除）的**不透明定位符**：URL path 不再编
+            # 明文邮箱（MF-49 出口字段——path 进 nginx `$request` 与同源 Referrer）。
+            "id": u.get("id"),
             "email": u.get("email", ""),
+            # display：邮箱本地部的遮罩展示形态，口径唯一住在服务端
+            # `_owner_display_of`；前端下拉/列表按它渲染，不得再 `split("@")` 自算一份。
+            "display": m._owner_display_of(u.get("email", "")),
             "role": u.get("role", "user"),
             "created_at": u.get("created_at", ""),
             # 计数排除软删除账号（删除后不占账号数/待审核数）
@@ -132,34 +140,23 @@ def api_users_deleted_purge():
         return jsonify({"error": f"单次最多清除 {m.BATCH_OP_LIMIT} 个用户"}), 400
     if any(not isinstance(e, str) or len(e) > 64 for e in emails):
         return jsonify({"error": "邮箱格式不正确"}), 400
-    # 盗号滥用面加固：物理清除不可逆 → 二次鉴权 + 同管理员限速
-    # （顺序统一为"先鉴权、通过了才占额度"）
-    gate = high_risk_gate()(data, "彻底清除已注销用户")
+    # 物理清除不可逆 → 过口令门禁 + 同管理员限速（顺序恒为"先鉴权、通过了才占额度"）
+    gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)  # irreversible：非 full 档还要倒计时确认
     if gate:
         return gate
+    admin = session.get("username") or "admin"
     with m._file_lock:
-        purged = m.db.purge_deleted_users_hard(emails)
-        if purged:
-            admin = session.get("username") or "admin"
-            m.db.audit(
-                admin,
-                "user_deleted_purge",
-                ",".join(purged),
-                f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
-            )
+        # 审计与清除同事务：清单与计数由 store 在事务内按**实际清除**结果产出
+        # （非已注销行被跳过，按请求清单留痕会把没删的写成删过）——commit 之后
+        # 再补审计的窗口（进程被杀⇒删了无痕、欠账仍为 0）在此不存在。
+        purged = m.db.purge_deleted_users_hard(
+            emails,
+            audit_spec={"username": admin, "action": "user_deleted_purge"},
+        )
     skipped = [e for e in emails if e not in purged]
     m.logger.info("主管理员手动清除已注销用户: 成功 %d 个", len(purged))
-    if purged:
-        # 物理清除不可逆，与批量删除用户同级即时告警
-        m.send_notification(
-            "高危管理操作告警",
-            m._change_mail(
-                f"物理清除已注销用户 {len(purged)} 个。",
-                detail=[("目标", "、".join(m._mask_email(e) for e in purged[:20]))],
-                advice=["物理清除不可恢复"],
-            ),
-            urgent=True,
-        )
+    # 物理清除不再外发即时告警：留痕由上面的审计行承担（谁、清了哪些、数量），
+    # 管理操作逐条发信会把告警邮件刷成"操作日志"。
     return jsonify({
         "ok": True,
         "purged": purged,
@@ -173,8 +170,8 @@ def api_users_batch():
     """批量操作注册用户：reset_password/delete。
 
     body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
-    角色变更不支持批量：提权/降权仅保留
-    /api/users/<email>/role 单个路径，且须二次输入当前管理员密码确认。
+    角色变更不支持批量：提权/降权仅保留 /api/users/<email>/role 单个路径，
+    且须先过高危口令门禁（是否真要当次口令随 `YIBAN_PW_GATE` 档位）。
     Phase 1：整体事务，失败全部回滚；无效项软跳过。
     """
     m = _appmod()
@@ -200,17 +197,19 @@ def api_users_batch():
         # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
         reset_hash = m.generate_password_hash(password, method=m.SCRYPT_METHOD)
 
-    # 盗号滥用面加固：删除用户 = 高危不可逆操作 → 二次鉴权 +
-    # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）。
-    # 批量重置密码同为账号控制权转移操作（e2e 实锤：普通管理员
-    # 无口令即可批量接管用户登录），与 delete 同口径走高危门禁。
+    # 删除与批量重置口令都走高危门禁（口令 + 同管理员窗口内限速，防被盗会话快速反复删除
+    # 用户并刷告警邮件）。重置口令入门禁的理由：它同为账号控制权转移操作（e2e 实锤：普通
+    # 管理员无口令即可批量接管用户登录）——只把 delete 当高危是不够的。
     if action in ("delete", "reset_password"):
-        # 顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
-        gate = high_risk_gate()(
+        gate = high_risk_gate()(  # 顺序恒为"先鉴权、通过了才占额度"；429 文案各自保持原样
             data,
             "批量删除用户" if action == "delete" else "批量重置密码",
             limit_msg="删除操作过于频繁，请稍后再试"
             if action == "delete" else "重置操作过于频繁，请稍后再试",
+            # 只有 delete 不可逆；批量重置口令可再重置一次，不套倒计时确认
+            irreversible=(action == "delete"),
+            # 删除占删除额度；重置他人密码属凭据改写类，占独立凭据额度（两族分开计数）
+            quota="delete" if action == "delete" else "creds",
         )
         if gate:
             return gate
@@ -261,9 +260,24 @@ def api_users_batch():
                 ops.append(("delete_user_with_accounts", email, builtin_ok))
                 sim_users.pop(email, None)
         done = len(ops)
+        # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
+        # 重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
+        audit_detail = (f"处理 {done} 个: " + ",".join(
+            m._mask_email(e) for e in (emails or [])[:20]
+        ))[:200]
+        if action == "reset_password" and done < len(emails or []):
+            audit_detail += f"；跳过 {len(emails or []) - done} 个"
+        audit_spec = {
+            "username": session.get("username") or "?",
+            "action": "users_batch",
+            "target": action,
+            "detail": audit_detail,
+        }
         if ops:
             try:
-                m.db.batch_user_ops(ops)
+                # 审计与整批操作同事务：批量重置口令/删除是凭据路径，生效与留痕
+                # 必须同生共死（命中最后管理员/异常时整批回滚，另走下面的单独留痕）。
+                m.db.batch_user_ops(ops, audit_spec=audit_spec)
             except m.db.LastAdminError:
                 # db 事务内复核兜底（跨进程竞态时整体回滚转 400）
                 m.db.audit(
@@ -282,17 +296,8 @@ def api_users_batch():
                     "失败，已回滚",
                 )
                 return jsonify({"error": "批量操作失败，已全部回滚"}), 500
-            if action == "delete":
-                # 批量物理删除用户为不可逆高危操作，即时告警
-                m.send_notification(
-                    "高危管理操作告警",
-                    m._change_mail(
-                        f"批量删除用户 {done} 个。",
-                        detail=[("目标", "、".join(
-                            m._mask_email(e) for e in (emails or [])[:20]))],
-                    ),
-                    urgent=True,
-                )
+            # 批量删除/重置密码不再外发即时告警：留痕由上面的审计行承担
+            # （动作 + 目标清单），管理操作逐条发信会把告警邮件刷成"操作日志"。
             # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）。
             # 只轮换**真正重置了密码**的账号（processed）：若遍历请求里的 emails
             # 原文，被跳过的管理员（内置/非主管理员动其他管理员）密码没变、
@@ -301,29 +306,9 @@ def api_users_batch():
                 for e in processed:
                     with contextlib.suppress(Exception):
                         m.db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
-                # 批量重置密码即时告警
-                m.send_notification(
-                    "密码重置告警",
-                    m._change_mail(
-                        f"批量重置密码 {done} 个。",
-                        detail=[("目标", "、".join(
-                            m._mask_email(e) for e in (processed or [])[:20]))],
-                    ),
-                    urgent=True,
-                )
-        # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
-        # 重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
-        audit_detail = (f"处理 {done} 个: " + ",".join(
-            m._mask_email(e) for e in (emails or [])[:20]
-        ))[:200]
-        if action == "reset_password" and done < len(emails or []):
-            audit_detail += f"；跳过 {len(emails or []) - done} 个"
-        m.db.audit(
-            session.get("username") or "?",
-            "users_batch",
-            action,
-            audit_detail,
-        )
+        else:
+            # 无实际可操作项：无业务效果，仅留一条"处理 0 个"的痕迹（无同事务对象）
+            m.db.audit(session.get("username") or "?", "users_batch", action, audit_detail)
         m.logger.info("批量%s用户 %d 个", action, done)
         msg = {
             "reset_password": f"已重置密码 {done} 个用户",
@@ -332,13 +317,16 @@ def api_users_batch():
         return jsonify({"ok": True, "msg": msg})
 
 
-def api_user_role(email):
+def api_user_role(user_id):
     """设为管理员 / 取消管理员。仅主管理员（.env 内置管理员）可操作；
     只能将「正式用户」（有生效账号且无待审核）设为管理员；
     防呆：内置管理员不可改；至少保留 1 个管理员。
 
-    角色变更是权限面变更，接入高危门禁（二次输入当前
-    管理员密码 + 限速）；批量角色变更入口已移除，本端点是唯一变更路径。
+    角色变更是权限面变更，接入高危门禁（口令复核是否索要随 `YIBAN_PW_GATE` 档位 + 限速）；
+    批量角色变更入口已移除，本端点是唯一变更路径。
+
+    定位走**不透明 id**（`/api/users/<int:id>/role`）：明文邮箱不再编进 URL path
+    （path 会被 nginx `combined` 记进 `$request`、经同源 Referrer 外送，MF-49 出口字段）。
     """
     m = _appmod()
     # 权限：仅主管理员（普通管理员无管理员权限变更权）
@@ -346,13 +334,15 @@ def api_user_role(email):
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = m._json_body()
-    # 高危门禁：先二次鉴权（当前管理员密码），通过后才占限速额度（与删除/重置同口径）
-    gate = high_risk_gate()(data, "修改管理员权限")
-    if gate:
-        return gate
+    # 角色变更是可逆操作（设回去即可），免口令门免额度；主管理员专属
+    # 前置（上一行）不变，留痕靠 set_user_role 与角色 UPDATE 同事务的审计行。
     new_role = data.get("role")
     if new_role not in ("admin", "user"):
         return jsonify({"error": "未知角色"}), 400
+    row = m.db.find_user_by_id(user_id)
+    if not row:
+        return jsonify({"error": "用户不存在"}), 404
+    email = row["email"]
     # 内置管理员（.env）不可修改角色
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可修改角色"}), 400
@@ -388,31 +378,23 @@ def api_user_role(email):
         # 跨进程并发（多实例）同时把最后一个注册管理员降权
         try:
             changed = m.db.set_user_role(
-                email, new_role, allow_last_admin=m._builtin_admin_loginable()
+                email, new_role, allow_last_admin=m._builtin_admin_loginable(),
+                # 审计与角色 UPDATE 同事务：权限面变更必须与生效同事务落库，
+                # 中间被杀不留"权限改了却无痕"。
+                audit_spec={
+                    "username": username,
+                    "action": "user_role",
+                    "target": m._mask_email(email),
+                    "detail": f"角色 → {new_role}",
+                },
             )
         except m.db.LastAdminError:
             return jsonify({"error": "至少保留 1 个管理员"}), 400
         if changed == 0:
             # 0 行 = 目标已被并发删除，不得谎报成功
             return jsonify({"error": "用户不存在"}), 404
-        m.db.audit(
-            username,
-            "user_role",
-            m._mask_email(email),
-            f"角色 → {new_role}",
-        )
         m.logger.info("主管理员 %s 将用户 %s 角色 → %s", m._mask_email(username), m._mask_email(email), new_role)
-        # 提降权即时告警（权限面变更应可感知）
-        m.send_notification(
-            "权限变更告警",
-            m._change_mail(
-                f"用户 {m._mask_email(email)} 的权限已变更。",
-                detail=[("新角色",
-                         "管理员" if new_role == "admin" else "普通用户")],
-                operator=username,
-            ),
-            urgent=True,
-        )
+        # 提降权不再外发即时告警：留痕由上面的审计行承担（谁把谁改成了什么角色）。
         # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
         return jsonify(
             {
@@ -422,23 +404,29 @@ def api_user_role(email):
         )
 
 
-def api_user_password(email):
+def api_user_password(user_id):
     """重置用户密码（管理员无法查看原密码，只能设置新密码）。
-    目标为注册管理员时仅主管理员可操作（防普通管理员横向接管）。"""
+    目标为注册管理员时仅主管理员可操作（防普通管理员横向接管）。
+
+    定位走**不透明 id**（口径同 `api_user_role`，明文邮箱不进 URL path）。"""
     m = _appmod()
     data = m._json_body()
     password = str(data.get("password", ""))
     pw_err = m._password_policy_error(password)
     if pw_err:
         return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
-    # 管理员重置他人密码 = 账号控制权转移 → 高危二次鉴权 + 同管理员
-    # 限速（与批量重置同口径）。普通用户自改密码走 /api/me/password（需验当前
-    # 旧密码，且 require_login 已把普通用户挡在管理面之外），不落此门禁。
+    # 管理员重置他人密码 = 账号控制权转移 → 与批量重置同口径过高危门禁（口令 + 同管理员限速）；
+    # 普通用户自改密码走 /api/me/password（验当前旧密码），不落本门禁。
     if m._current_role() == "admin":
         gate = high_risk_gate()(
-            data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
+            data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试",
+            quota="creds")
         if gate:
             return gate
+    row = m.db.find_user_by_id(user_id)
+    if not row:
+        return jsonify({"error": "用户不存在"}), 404
+    email = row["email"]
     is_master = m._is_builtin_admin_session()
     with m._file_lock:
         target = m.db.find_user(email)
@@ -452,52 +440,57 @@ def api_user_password(email):
                 "password_hash": m.generate_password_hash(password, method=m.SCRYPT_METHOD),
                 "pw_version": target.get("pw_version", 1) + 1,  # 被重置用户的旧会话随之失效
             },
+            # 审计与口令 UPDATE 同事务：管理员重置他人密码是账号控制权转移，
+            # 生效与留痕必须同生共死。
+            audit_spec={
+                "username": session.get("username") or "?",
+                "action": "user_password_reset",
+                "target": m._mask_email(email),
+                "detail": "管理员重置密码",
+            },
         ) == 0:
             # 0 行 = 目标已被并发删除
             return jsonify({"error": "用户不存在"}), 404
         # 轮换目标 sid，被盗 cookie 即便未因 pw_version 失效（如
         # 旧版本客户端）也双重确保吊销
         m.db.set_user_sid(email.strip().lower(), secrets.token_hex(16))
-        m.db.audit(
-            session.get("username") or "?",
-            "user_password_reset",
-            m._mask_email(email),
-            "管理员重置密码",
-        )
         m.logger.info("已重置用户 %s 密码", m._mask_email(email))
-        # 重置他人密码即时告警（被盗号会话中的静默接管信号）
-        m.send_notification(
-            "密码重置告警",
-            m._change_mail(f"用户 {m._mask_email(email)} 的密码已被管理员重置。"),
-            urgent=True,
-        )
+        # 重置他人密码不再外发即时告警：留痕由上面的审计行承担（谁重置了谁），
+        # 目标用户的旧会话已随 sid 轮换失效，管理操作逐条发信只会把告警刷成操作日志。
         return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 密码已重置"})
 
 
-def api_user_delete(email):
+def api_user_delete(user_id):
     """删除用户：mode=accounts_only 仅清空其易班账号（保留用户可重新提交）；
     mode=full 完全删除用户及其账号。
-    目标为注册管理员时仅主管理员可操作（与 role/密码重置口径一致）。"""
+    目标为注册管理员时仅主管理员可操作（与 role/密码重置口径一致）。
+
+    定位走**不透明 id**（口径同 `api_user_role`，明文邮箱不进 URL path）。"""
     m = _appmod()
     data = m._json_body()
     mode = data.get("mode", "full")
     if mode not in ("accounts_only", "full"):
         return jsonify({"error": "未知操作"}), 400
-    if email.strip().lower() == m._builtin_admin_email().strip().lower():
+    row = m.db.find_user_by_id(user_id)
+    email = row["email"] if row else ""
+    # 「不存在」的 404 排在口令门禁**之后**（沿用邮箱时代既有次序）：存在性不是
+    # 免复核的理由——不存在的 id 同样先被门禁拦下，防探测枚举的行为与改路由前一致。
+    if email.strip().lower() and email.strip().lower() == m._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可删除"}), 400
     is_master = m._is_builtin_admin_session()
-    # 盗号滥用面加固：完全删除用户 = 高危不可逆 → 二次鉴权 +
-    # 同管理员限速。
-    # （accounts_only 门禁）：仅清空账号虽保留用户可重新
-    # 提交，但一次请求即把该用户**全部**易班凭据（不可逆）清零，滥用面与 full 同级；
-    # 两种模式统一接入 _high_risk_gate，响应语义与 full 模式对齐（口令错 400/未登录
-    # 401、冷却 429）。
-    gate = high_risk_gate()(
+    # accounts_only 也进门禁的理由：一次请求就把该用户**全部**易班凭据清零，滥用面与
+    # full 同级；两种模式的响应语义对齐（口令错 400 / 未登录 401 / 超限与冷却 429）。
+    gate = high_risk_gate()(  # 完全删除 = 高危不可逆：先过口令门禁（要口令随档位），通过了才占限速额度
         data,
         "完全删除用户" if mode == "full" else "清空用户账号",
-        limit_msg="删除操作过于频繁，请稍后再试")
+        limit_msg="删除操作过于频繁，请稍后再试",
+        # 两种模式都不可逆（full 连用户一起删，accounts_only 把其全部易班凭据清零）
+        irreversible=True,
+    )
     if gate:
         return gate
+    if not row:
+        return jsonify({"error": "用户不存在"}), 404
     with m._file_lock:
         target = m.db.find_user(email)
         if not target:
@@ -510,37 +503,43 @@ def api_user_delete(email):
             if len(admins) <= 1 and not m._builtin_admin_loginable():
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
         # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
+        # 审计随业务写同事务：删除不可逆，且一次请求即可清空该用户全部易班凭据，
+        # 中途被杀不得留下"删了却无痕、欠账仍为 0"。
+        delete_spec = {
+            "username": session.get("username") or "?",
+            "action": "user_delete",
+            "target": m._mask_email(email),
+            "detail": f"mode={mode}",
+        }
         if mode == "full":
             # 事务内复核最后一个注册管理员（allow 与原预检同语义：
             # 内置管理员确实进得来时允许删掉 users 表最后一个注册管理员）
             try:
                 m.db.delete_user_with_accounts(
-                    email, allow_last_admin=m._builtin_admin_loginable()
+                    email, allow_last_admin=m._builtin_admin_loginable(),
+                    audit_spec=delete_spec,
                 )
             except m.db.LastAdminError:
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
         else:
-            m.db.delete_accounts_by_owner(email)
-        m.db.audit(
-            session.get("username") or "?",
-            "user_delete",
-            m._mask_email(email),
-            f"mode={mode}",
-        )
+            m.db.delete_accounts_by_owner(email, audit_spec=delete_spec)
         if mode == "full":
             m.logger.info("完全删除用户 %s（含易班账号）", m._mask_email(email))
-            # 完全删除（物理、不可逆）为高危操作，即时告警
-            m.send_notification(
-                "高危管理操作告警",
-                m._change_mail(
-                    f"完全删除用户 {m._mask_email(email)}。",
-                    detail=[("连带", "其全部易班账号一并清除")],
-                    advice=["物理删除不可恢复"],
-                ),
-                urgent=True,
-            )
+            # 完全删除不再外发即时告警：留痕由上面的审计行承担（谁、删了谁、mode）。
             return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 已完全删除"})
         m.logger.info("清空用户 %s 的易班账号（保留用户）", m._mask_email(email))
+        # 清空账号保留事后告警：一次请求即把该用户的**全部**易班凭据不可逆清零，
+        # 而当事人未必立刻发现（不像完全删除那样连登录入口一起消失）。这条是
+        # 非 full 档下"无当次口令"的补偿信号，与 irreversible 的声明配套。
+        m.send_notification(
+            "高危管理操作告警",
+            m._change_mail(
+                f"清空用户 {m._mask_email(email)} 的全部易班账号。",
+                detail=[("连带", "其易班账号凭据被不可逆清除（用户保留，需重新提交）")],
+                advice=["凭据清空不可恢复；如非本人申请，请核实操作者身份"],
+            ),
+            urgent=True,
+        )
         return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 的易班账号已清空（用户保留，可重新提交）"})
 
 
@@ -551,8 +550,11 @@ def register(app):
     app.add_url_rule("/api/users/deleted/purge", view_func=api_users_deleted_purge,
                      methods=["POST"])
     app.add_url_rule("/api/users/batch", view_func=api_users_batch, methods=["POST"])
-    app.add_url_rule("/api/users/<email>/role", view_func=api_user_role, methods=["POST"])
-    app.add_url_rule("/api/users/<email>/password", view_func=api_user_password,
+    # `<int:...>` 转换器：只有纯数字段能路由进来——旧"邮箱编进 path"的形态在此
+    # 直接 404（不再被当作邮箱解析），从路由层杜绝明文邮箱回潮。
+    app.add_url_rule("/api/users/<int:user_id>/role", view_func=api_user_role,
                      methods=["POST"])
-    app.add_url_rule("/api/users/<email>/delete", view_func=api_user_delete,
+    app.add_url_rule("/api/users/<int:user_id>/password", view_func=api_user_password,
+                     methods=["POST"])
+    app.add_url_rule("/api/users/<int:user_id>/delete", view_func=api_user_delete,
                      methods=["POST"])

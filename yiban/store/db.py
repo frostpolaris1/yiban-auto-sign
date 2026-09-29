@@ -12,18 +12,22 @@
 
 本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`，以及 JSON → SQLite
+- `migrations`：建表/索引、`migrate_v1..v20`、版本编排 `_run_migrations` 与完整性校验
+  （`MigrationIntegrityError`：迁移记录/核心产物缺失 ⇒ 拒启），以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
 - `verify_jobs`：在线校验任务表的创建/领取/结算/取消、超龄回收与保留期清理。
-- `claims`：签到领取池（多执行体协调）的领取/续租/结算/放弃与清理。
+- `claims`：旧签到领取池（`sign_claims`，单池化后冻结）的领取/续租/结算/放弃与清理；
+  生产读口径已收口到 `queue_store`（见下），本域仅供既有单测覆盖。
+- `queue_store`：任务队列 `sign_tasks`（台账单池化后的唯一生产台账）的批量领取/收尾/
+  重排/回收/重签/事件签名，以及出口桶状态 `egress_state` 的读写。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
 - `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
 - `session_cache`：session_cache 表族的读写、有效期判定与凭据加密。
 - `time_prefs`：time_prefs 表的读写、拥挤度统计与保存冷却查询。
-- `clock_meta`：时钟守卫的告警留痕与读取、app_meta 通用单键读写。
+- `clock_meta`：app_meta 通用单键读写（供日报去重与审计锚点留痕）。
 - `tracking`：追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希。
 
 本模块自身仍持有：启动编排 `init_db`（与冻结的历史迁移函数共存）、密钥来源解析
@@ -50,9 +54,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
-# 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
-# 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
+# 表级数据访问按表拆在 yiban/store/*，本模块只做门面：多数域按原名再导出，`claims` 与
+# `verify_jobs` 两域是重命名别名（逐条见各自绑定处的行尾注释）。依赖方向单向 db → store
+# （store 只在函数内延迟取连接），旧调用方（web/app.py、测试）继续用 db.xxx。
 from yiban import clock  # noqa: E402
 
 # account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
@@ -70,6 +74,7 @@ from yiban.store import clock_meta as _clock_meta  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
+from yiban.store import queue_store as _queue_store  # noqa: E402
 from yiban.store import session_cache as _session_cache  # noqa: E402
 from yiban.store import time_prefs as _time_prefs  # noqa: E402
 from yiban.store import tracking as _tracking  # noqa: E402
@@ -91,7 +96,7 @@ VERIFY_JOB_CANCELLED = _verify_jobs.VERIFY_JOB_CANCELLED
 VERIFY_JOB_STALE_SECONDS = _verify_jobs.VERIFY_JOB_STALE_SECONDS
 VERIFY_JOB_STALE_MSG = _verify_jobs.VERIFY_JOB_STALE_MSG
 
-create_verify_job = _verify_jobs.create
+create_verify_job = _verify_jobs.create  # 域内是短动词名（create/get/claim/finish/cancel），门面上统一补 `_verify_job` 后缀
 get_verify_job = _verify_jobs.get
 claim_verify_job = _verify_jobs.claim
 finish_verify_job = _verify_jobs.finish
@@ -100,19 +105,25 @@ count_active_verify_jobs = _verify_jobs.count_active
 reclaim_stale_verify_jobs = _verify_jobs.reclaim_stale
 purge_verify_jobs = _verify_jobs.purge
 
-# 签到领取池（v17，多执行体协调）
-CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS
+# 签到领取池（v17，多执行体协调）：唯一定义点在 `yiban/store/claims.py`
+CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS  # 账号级租约（900s），与 queue_store 的 60s 任务级租约不是同一档
 CLAIM_RETENTION_DAYS = _claims.RETENTION_DAYS
 CLAIM_STATE_CLAIMED = _claims.STATE_CLAIMED
-CLAIM_STATE_DONE = _claims.STATE_DONE
+CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.status.CLAIM_DONE_STATUSES
 CLAIM_STATE_FAILED = _claims.STATE_FAILED
 CLAIM_SETTLED_STATES = _claims.SETTLED_STATES
 CLAIM_OPEN_STATES = _claims.OPEN_STATES
+# 弃权原因档的 result 前缀协议与"默认可再领"的状态集（领取层跨轮上限的判据口径）
+CLAIM_RESULT_RETRY_PREFIX = _claims.RESULT_RETRY_PREFIX
+CLAIM_RESULT_FINAL_PREFIX = _claims.RESULT_FINAL_PREFIX
+CLAIM_RETRYABLE_GIVE_UP_STATUSES = _claims.RETRYABLE_GIVE_UP_STATUSES
 claim_new_owner = _claims.new_owner
-claim_sign_account = _claims.try_claim
-claim_touch = _claims.touch
-claim_settle = _claims.settle
-claim_give_up = _claims.give_up
+claim_sign_account = _claims.try_claim  # 门面名与域内名不同：`db.try_claim` 不存在
+claim_touch = _claims.touch  # 续租只续自己持有的，返回 False = 已被接管
+claim_reap_unreported = _claims.reap_unreported  # 轮末收尸：本轮领到却无结论的行显式弃权
+claim_reap_abandoned = _claims.reap_abandoned  # 监督进程对已确认死亡的执行体名下在领行收尸
+claim_settle = _claims.settle  # 必须带 try_claim 返回的 epoch，否则迟到的写会覆盖接管者的结论
+claim_give_up = _claims.give_up  # 弃单不等于收工：置 failed（当日仍未了结），租约即刻放开
 claim_states_for_day = _claims.states_for_day
 claim_in_flight = _claims.in_flight_phones
 claim_stats = _claims.stats
@@ -120,7 +131,16 @@ claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
 claim_latest_day = _claims.latest_claims_day
 claim_owners_since = _claims.owners_since
-purge_sign_claims = _claims.purge
+purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，展示口径不读它
+
+# 任务队列（sign_tasks）展示读口径：台账单池化后展示/补签闸门读的就是这张表（唯一台账）。
+# 上方 `claim_*` 是旧领取池（sign_claims，冻结）的读法，仅供既有单测覆盖，不再是生产读口。
+task_stats = _queue_store.day_counts  # 当日各 state 计数与派生（settled/open/total）
+task_owners_for_day = _queue_store.owners_for_day  # 当日 phone -> owner（一次取全）
+task_activity = _queue_store.activity  # 当日按执行体归属的 KPI 计数（已折 KPI 三键）
+task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日
+task_owners_since = _queue_store.owners_since  # 保留期内出现过的执行体身份串
+purge_sign_tasks = _queue_store.purge  # 唯一台账（sign_tasks）的保留期清理（带时钟跳变守卫）
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
 # `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
@@ -134,9 +154,7 @@ _write_audit_key_to_env_file = _audit_chain._write_audit_key_to_env_file
 _assert_key_source_certain = _audit_chain._assert_key_source_certain
 _audit_key = _audit_chain._audit_key
 _audit_hash = _audit_chain._audit_hash
-_rechain_audit_logs = _audit_chain._rechain_audit_logs
-_record_rechain_event = _audit_chain._record_rechain_event
-audit_rechain_events = _audit_chain.audit_rechain_events
+_backfill_audit_hashes = _audit_chain._backfill_audit_hashes
 
 _bump_audit_write_failure = _audit_chain._bump_audit_write_failure
 _unflushed_audit_failures = _audit_chain._unflushed_audit_failures
@@ -144,15 +162,34 @@ _reset_audit_fail_memory = _audit_chain._reset_audit_fail_memory
 audit_persisted_write_failures = _audit_chain.audit_persisted_write_failures
 audit_write_failures = _audit_chain.audit_write_failures
 audit = _audit_chain.audit
+# 请求作用域（审计行携带"哪个请求做的"）与"业务+审计同事务"原语：
+# `audit_unit` 上下文管理器、`record_in_txn`（业务事务内插审计行）、
+# `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
+set_request_scope = _audit_chain.set_request_scope
+current_request_scope = _audit_chain.current_request_scope
+new_request_scope_id = _audit_chain.new_request_scope_id
+record_in_txn = _audit_chain.record_in_txn
+audit_unit = _audit_chain.audit_unit
+audit_or_refuse = _audit_chain.audit_or_refuse
+AuditWriteRefused = _audit_chain.AuditWriteRefused
 audit_head_hash = _audit_chain.audit_head_hash
+audit_head_hash_ex = _audit_chain.audit_head_hash_ex
 audit_row_count = _audit_chain.audit_row_count
 verify_audit_chain = _audit_chain.verify_audit_chain
+audit_write_failures_unnotified = _audit_chain.audit_write_failures_unnotified
+mark_audit_write_failures_notified = _audit_chain.mark_audit_write_failures_notified
+audit_alert_signature = _audit_chain.audit_alert_signature
+audit_alert_needs_attention = _audit_chain.audit_alert_needs_attention
+mark_audit_alert_sent = _audit_chain.mark_audit_alert_sent
 
 audit_anchor_path = _audit_chain.audit_anchor_path
 _anchor_line_sha = _audit_chain._anchor_line_sha
 _parse_anchor_line = _audit_chain._parse_anchor_line
 _read_anchor_lines = _audit_chain._read_anchor_lines
+_read_anchor_lines_ex = _audit_chain._read_anchor_lines_ex
+_parse_anchor_lines = _audit_chain._parse_anchor_lines
 _get_anchor_meta = _audit_chain._get_anchor_meta
+_anchor_meta_line_count = _audit_chain._anchor_meta_line_count
 _audit_purge_total = _audit_chain._audit_purge_total
 _audit_purge_events = _audit_chain._audit_purge_events
 audit_purge_total = _audit_chain.audit_purge_total
@@ -160,18 +197,20 @@ audit_purge_events = _audit_chain.audit_purge_events
 record_audit_anchor = _audit_chain.record_audit_anchor
 _record_anchor_trace = _audit_chain._record_anchor_trace
 _last_audit_anchor = _audit_chain._last_audit_anchor
+_last_anchor_of = _audit_chain._last_anchor_of
+_max_anchor_of = _audit_chain._max_anchor_of
 _anchor_file_state = _audit_chain._anchor_file_state
+_anchor_file_state_ex = _audit_chain._anchor_file_state_ex
+_anchor_status = _audit_chain._anchor_status
 verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
-_purge_event_covers = _audit_chain._purge_event_covers
 _purge_event_sets_min = _audit_chain._purge_event_sets_min
-_rechain_events = _audit_chain._rechain_events
-_rechain_hint = _audit_chain._rechain_hint
 audit_health = _audit_chain.audit_health
-_rechain_diagnostics = _audit_chain._rechain_diagnostics
 
 _AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
 _AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY
+_AUDIT_FAIL_NOTIFIED_KEY = _audit_chain._AUDIT_FAIL_NOTIFIED_KEY
+_AUDIT_ALERT_STATE_KEY = _audit_chain._AUDIT_ALERT_STATE_KEY
 _AUDIT_FAIL_LOCK = _audit_chain._AUDIT_FAIL_LOCK
 _AUDIT_RETRIES = _audit_chain._AUDIT_RETRIES
 _AUDIT_RETRY_BASE_DELAY = _audit_chain._AUDIT_RETRY_BASE_DELAY
@@ -181,8 +220,6 @@ _ANCHOR_META_KEY = _audit_chain._ANCHOR_META_KEY
 _AUDIT_PURGE_TOTAL_KEY = _audit_chain._AUDIT_PURGE_TOTAL_KEY
 _AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
 _PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
-_RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
-_RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
@@ -194,11 +231,13 @@ _normalize_limit = _events._normalize_limit
 add_sign_event = _events.add_sign_event
 add_sign_events_batch = _events.add_sign_events_batch
 sign_event_stats = _events.sign_event_stats
+sign_event_accounts_summary = _events.sign_event_accounts_summary
 sign_events_by_phone = _events.sign_events_by_phone
 sign_events_since = _events.sign_events_since
 probe_events_on = _events.probe_events_on
 sign_events_on = _events.sign_events_on
 sign_events_recent_date = _events.sign_events_recent_date
+attempt_dur_quantile = _events.attempt_dur_quantile  # 容量告警的实测输入（MF-56③）
 _event_cleanup = _events._event_cleanup
 
 # 会话缓存域（唯一定义点在 yiban/store/session_cache.py）：函数走下方读写转发（内部调用点
@@ -221,6 +260,7 @@ set_user_sid = _users.set_user_sid
 load_users = _users.load_users
 find_user = _users.find_user
 find_user_any = _users.find_user_any
+find_user_by_id = _users.find_user_by_id
 filter_mail_notify = _users.filter_mail_notify
 admin_mail_recipients = _users.admin_mail_recipients
 create_user = _users.create_user
@@ -247,19 +287,19 @@ _audit_cleanup = _cleanup._audit_cleanup
 _purge_expired_deleted = _cleanup._purge_expired_deleted
 purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
 
-# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v17、版本编排
+# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v20、版本编排
 # `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
 # / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
 # （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。JSON → SQLite 自动导入两名
 # （`_maybe_migrate` / `_rename_backup`）同样走读写转发：门面内的 `init_db` 按属性晚解析
 # 调用它们，快照式再导出会让 `db._maybe_migrate = 替身` 的打桩看不到。
 MigrationDeferred = _migrations.MigrationDeferred
+MigrationIntegrityError = _migrations.MigrationIntegrityError
 _ALLOWED_TABLES = _migrations._ALLOWED_TABLES
 _table_columns = _migrations._table_columns
 _ensure_column = _migrations._ensure_column
 _ensure_index = _migrations._ensure_index
 _create_tables = _migrations._create_tables
-_chain_head = _migrations._chain_head
 _MALFORMED_COL_RE = _migrations._MALFORMED_COL_RE
 _malformed_schema_tables = _migrations._malformed_schema_tables
 _create_verify_jobs_table = _migrations._create_verify_jobs_table
@@ -280,6 +320,9 @@ migrate_v14 = _migrations.migrate_v14
 migrate_v15 = _migrations.migrate_v15
 migrate_v16 = _migrations.migrate_v16
 migrate_v17 = _migrations.migrate_v17
+migrate_v18 = _migrations.migrate_v18
+migrate_v19 = _migrations.migrate_v19
+migrate_v20 = _migrations.migrate_v20
 _run_migrations = _migrations._run_migrations
 
 logger = logging.getLogger("yiban.db")
@@ -293,6 +336,9 @@ DB_DEFAULT = _connection.DB_DEFAULT
 # `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 打桩仍然生效。
 get_conn = _connection.get_conn
 is_initialized = _connection.is_initialized
+# "部署声明了领取池库路径"的只读判据：执行侧据此区分"未配库（放行）"与"配了库但
+# 当前不可用（拒跑）"——两种形态都从 `is_initialized()=False` 出发、结论相反。
+pool_db_declared = _connection.pool_db_declared
 _conn_lock = _connection._conn_lock
 
 # 需要**读写转发**的模块级状态与账号域迁出名：模块级赋值/删除默认直写 `__dict__`、不触发
@@ -311,8 +357,8 @@ _conn_lock = _connection._conn_lock
 #   事件域按表归属并入的暂停冷却两名 → events、用户自选时间片域七名 → time_prefs：
 #   调用方只经门面属性访问，读写转发让 `db.<名字> = 替身` / `del db.<名字>` 落到真定义点
 #   （`last_time_pref_set_at` 体内按属性取的 `db.hash_phone` 读到的正是 tracking 域真身）；
-#   时钟守卫告警与 app_meta 单键读写四名 → clock_meta：告警落库被留守的 `_clock_jump_guard`
-#   在本模块内按属性调用（见该函数的晚解析注释），快照式再导出会让这处内部调用看不到替身；
+#   app_meta 通用单键读写两名 → clock_meta：`db.get_meta = 替身` 要被各域（日报去重、
+#   审计锚点）看见，转发面是这些名字的唯一宿主；
 #   迁移域的 JSON 导入两名 → migrations：门面内 `init_db` 按属性晚解析调用 `_maybe_migrate`；
 #   追踪盐域四名与盐缓存的**可变状态** `_TRACK_SALT_CACHE` → tracking：
 #   `db._TRACK_SALT_CACHE = None`（tests/test_rekey_key_source.py 清盐缓存）必须真的清掉
@@ -340,6 +386,10 @@ _FORWARDED_STATE = {
     "decrypt_account_rows": _accounts,
     "read_accounts": _accounts,
     "load_accounts": _accounts,
+    # 只读装载（MF-60）：不经 init_db，不建库/不建表/不迁移，供"只读"维护路径用
+    "load_accounts_readonly": _accounts,
+    # 只读打开（MF-60）：与 init_db 分道，不切 WAL、不建 -shm/-wal（连接层定义点）
+    "open_readonly": _connection,
     "_next_sort_order": _accounts,
     "_convert_integrity_error": _accounts,
     "add_account": _accounts,
@@ -372,8 +422,6 @@ _FORWARDED_STATE = {
     "clear_time_pref": _time_prefs,
     "time_pref_stats": _time_prefs,
     # 时钟守卫告警与 app_meta 单键读写（唯一定义点在 yiban/store/clock_meta.py）
-    "_record_clock_guard_alert": _clock_meta,
-    "clock_guard_alert": _clock_meta,
     "get_meta": _clock_meta,
     "set_meta": _clock_meta,
     # JSON → SQLite 自动导入（唯一定义点在 yiban/store/migrations.py；门面内 init_db 晚解析调用）
@@ -438,7 +486,8 @@ class _StateForwardingModule(types.ModuleType):
 sys.modules[__name__].__class__ = _StateForwardingModule
 
 
-def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True):
+def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True,
+            create=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
@@ -446,8 +495,14 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     调用方应显式传入，勿让密钥来源依赖 cwd）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
-    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
-    （v3 rechain）等，使"被校验对象在校验过程中被改动"。
+    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会回填审计链
+    （v3）等，使"被校验对象在校验过程中被改动"。
+    create=False：**只读初始化**——只打开既有库（`connection.open_readonly(...,
+    immutable=False)`，`mode=ro` 见得到并发写者与锁），**不建库、不建表、不迁移、不切
+    WAL、不跑清理**，供取证类只读调用方（如 `scripts/audit_verify.py`）复用
+    `db.get_conn()` 体系而不改动目标库。库文件不存在时抛 FileNotFoundError（绝不
+    `sqlite3.connect` 出空库——空库会让只读校验在空集上误报"通过"）。默认 True =
+    既有行为逐字不变。
     """
     # 库路径 / .env 路径**无条件刷新**（即使连接已存在——它们是"最近一次 init_db 的
     # 来源"），经 connection 的显式 API 写入
@@ -460,6 +515,18 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     # 看到的根本不是同一个库（2026-09-21 测试机 47 E2E 实测）。
     db_path = db_file or env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)
     _connection.set_db_file(db_path)
+    if not create:
+        # 只读初始化：已初始化过就直接复用（只读入口只在进程首次打开库时有意义，
+        # 不能把既有连接静默换成另一条只读连接）。
+        existing = _connection.current()
+        if existing is not None:
+            return existing
+        conn = _connection.open_readonly(db_path, immutable=False)
+        if conn is None:
+            raise FileNotFoundError(f"数据库文件不存在: {db_path}（只读初始化不建库）")
+        _connection.set_conn(conn)
+        conn.execute("PRAGMA busy_timeout=15000")
+        return conn
     conn = _connection.current()
     if conn is not None:
         return conn
@@ -549,26 +616,30 @@ def _begin_immediate(conn):
 # 时钟跳变保护参数：
 # 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
 # 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
-# 服务不会超过；停机 >3 天后的首轮清理会被跳过并触发告警，需人工核实时钟后用
-# scripts/clock_guard_reset.py 显式重置（刻意不自动恢复——自动把参照点拨到当前
-# 时间等于给"拨快一次、下轮洗白"开通道）。
+# 服务不会超过；停机 >3 天后的首轮清理会被跳过一轮并告警，参照点随即推进到当前
+# 时间，下一次正常调用即恢复清理（不需要人工重置）。
 _CLOCK_ALLOW_FWD_HOURS = 72
 # 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
 _CLOCK_ALLOW_BACK_SECONDS = 3600
-# 守卫失败告警的留痕键（唯一定义点在 `yiban/store/clock_meta.py`）：本模块的守卫本体经
-# 晚解析调用那里的告警落库，这里按常量再导出，`db._CLOCK_GUARD_ALERT_KEY` 读取不变。
-_CLOCK_GUARD_ALERT_KEY = _clock_meta._CLOCK_GUARD_ALERT_KEY
 
 
 def _clock_jump_guard(conn, key):
     """以 app_meta 记录的最近一次 seen-now 为参照，检测系统时钟异常跳变。
 
-    返回 (ok, note)：ok=False 时调用方应跳过本次清理（防"拨快后刚软删的
-    数据被立即物理清除"）；note 为告警文本或空串。ok=False 时告警已由
-    _record_clock_guard_alert 落入 app_meta（web 每日线程发邮件），恢复清理
-    需人工确认时钟正确后运行 scripts/clock_guard_reset.py 显式重置参照点。
-    每次调用都会把当前时间 upsert 进 app_meta（ok 路径）——该 INSERT 同时充当
-    库级写锁（WAL 下 INSERT 即持 RESERVED 锁），调用方无需另开 BEGIN IMMEDIATE。
+    返回 (ok, note)：ok=False 时调用方应跳过本次清理（防"拨快后刚软删的数据被立即
+    物理清除"）；note 为告警文本或空串。告警出口只有 logger.error——守卫不承担
+    "冻结状态必须保持可见"的职责，故不留告警状态、不发邮件。
+
+    **两条路径都把参照点推进到当前时间**：跳变只跳一轮，靠下一次正常调用恢复。
+    留一个越界就不推进的参照点等于永久冻结（五处清理会每轮都再触发，直到有人手工
+    拨回），而守卫存在的理由是"防误删"不是"停摆"——参照点一旦推进，后续 cutoff
+    按真实当前时间算，误删窗口并未因此打开。
+
+    越界路径**在守卫内提交**：把推进留给调用方就等于让它被一起回滚，冻结会重新变成
+    永久。故调用方在 ok=False 分支上是否 rollback 都不影响这条推进——`users` 的两处
+    钩子就是直接 `return`（不 rollback），`cleanup` / `events` 才 rollback 解除写锁。
+    放行路径刻意不提交：那条 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作调用方
+    读-删-连带清理的事务边界，由调用方 commit。
     """
     now = clock.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -587,13 +658,11 @@ def _clock_jump_guard(conn, key):
         note = (
             f"系统时间异常跳变（上次记录 {row['value']}，当前 {ts}，"
             f"前进 {fwd / 3600:.1f}h / 回拨 {back / 3600:.1f}h），"
-            "已跳过本次物理清理以防误删；请核实系统时间，确认正确后运行 "
-            "scripts/clock_guard_reset.py 重置（清理将保持冻结直至重置）"
+            "已跳过本次物理清理以防误删；请核实系统时间与 NTP 同步状态"
         )
         logger.error("%s", note)
-        # 定义点在 yiban/store/clock_meta.py：按属性取，`db._record_clock_guard_alert = 替身`
-        # 一类打桩必须被本函数看见（晚解析）
-        _clock_meta._record_clock_guard_alert(note)
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
+        conn.commit()
         return False, note
     conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
     return True, ""
@@ -680,6 +749,7 @@ def _cascade_phone_owned(conn, phones):
     conn.executemany("DELETE FROM sign_events WHERE phone=?", rows)
     conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_claims WHERE phone=?", rows)
+    conn.executemany("DELETE FROM sign_tasks WHERE phone=?", rows)
 
 
 def _clear_session_cache_by_phones(conn, phones):

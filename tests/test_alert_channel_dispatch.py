@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""告警推送出口的判定与兜底（2026-09-08）。
+"""告警推送出口的判定与兜底。
 
-覆盖：
-- notify.is_configured()：推送通道是否「类型已设（含旧明文 URL 兼容）且密钥可解出」；
-- signin 的即时告警门控由已废弃的 YIBAN_NOTIFY_URL 死键改判 is_configured
-  （生产不配旧键 → 账号级失败/耗时推送此前永不发出）；源级断言不再出现
-  if notify_url: 门；
-- _flush_admin_mail_summary 收件人集为空时的整卷兜底：推送已配置 → 同一份汇总
-  改走推送恰好一次（urgent+force）；未配置 → 仅 warning 留痕。
-
-全程 mock，不发起网络请求。
-用法（项目根目录）：python -m pytest tests/test_alert_channel_dispatch.py -v
+标签：H · 通知：邮件与推送
+覆盖：`notify.is_configured()` 的判定口径（类型已设、含旧明文 URL 兼容，且密钥可解出）；
+    signin 即时告警门控从已废弃的 `YIBAN_NOTIFY_URL` 死键改判 `is_configured`；
+    `_flush_admin_mail_summary` 收件人集为空时的整卷兜底。
+对应实现：通道判定在 `yiban/notify/`（配置解析与 `is_configured`），门控调用点在
+    `yiban/engine/alerts.py`（壳 `scripts/signin.py` 转发），邮件汇总在 web 侧。
+关键断言：源级断言不再出现 `if notify_url:` 那类死键门（生产不配旧键 → 账号级失败与
+    耗时推送此前永不发出）；收件人为空时推送已配置 → 同一份汇总改走推送**恰好一次**
+    （urgent+force），未配置 → 仅 warning 留痕（不得静默丢弃整卷）。
+依赖：全程进程内 mock（`notify`/`signin`/`web.security`）+ 临时 STATE/DB/ENV；
+    复用同目录 `tests/test_rekey_key_source.py` 的 `_B14AlertGateBase` 基类，
+    故须在仓库根跑 pytest（同目录 import）；不连 SMTP、不发真实推送。
 """
 import json
 import os
@@ -19,8 +21,13 @@ import tempfile
 import unittest
 from unittest import mock
 
+import signin
+from test_rekey_key_source import _B14AlertGateBase
+
+import web.security as web_security
 from yiban import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.infra import account_crypto
+from yiban.masking import mask_email
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -124,19 +131,22 @@ class SigninAlertGateTest(unittest.TestCase):
     def tearDown(self):
         signin._mail_summary.clear()
 
-    def test_slow_sign_alert_fires_only_when_push_configured(self):
-        """_alert_slow_sign 的即时推送按 is_configured 门控（不再看死键 notify_url）。"""
-        for configured, want_calls in ((True, 1), (False, 0)):
+    def test_slow_sign_alert_is_summary_only_never_pushed(self):
+        """_alert_slow_sign 只并入收尾汇总，不做即时推送（推送额度留给即时故障）。
+
+        反面不再是"推送未配置时不发"——那样即使把推送门控写坏也照样绿：这里直接钉
+        "推送通道已配置也不发即时推送"，只有汇总收集器多一条。
+        """
+        for configured in (True, False):
             with self.subTest(configured=configured):
                 signin._mail_summary.clear()
                 with mock.patch.object(signin.notify, "is_configured",
                                        return_value=configured), \
                      mock.patch.object(signin.notify, "send") as m_send:
-                    signin._alert_slow_sign("13800138001", 30.0, 20, "ok", "有点慢", "")
-                self.assertEqual(m_send.call_count, want_calls)
-                if want_calls:
-                    self.assertEqual(m_send.call_args.args[0], "易班签到耗时告警")
+                    signin._alert_slow_sign("13800138001", 30.0, 20, "ok", "有点慢")
+                m_send.assert_not_called()
                 self.assertEqual(len(signin._mail_summary), 1, "汇总邮件收集不受推送门控影响")
+                self.assertEqual(signin._mail_summary[0][0], "易班签到耗时告警")
 
     def test_no_dead_notify_url_gate_remains_in_source(self):
         """源级断言：即时告警门不得再挂在 YIBAN_NOTIFY_URL 死键上。
@@ -190,6 +200,160 @@ class SigninAlertGateTest(unittest.TestCase):
         m_send.assert_not_called()
         self.assertTrue(any("无可用收件人" in msg for msg in logs.output))
         self.assertEqual(signin._mail_summary, [])
+
+
+PROD_STALE_MSG = "获取签到任务失败: 未登录或登录已经超时"
+
+
+class LoginAlertUrgencyTest(_B14AlertGateBase):
+    """R2：只有喷洒特征才升级紧急。"""
+
+    def setUp(self):
+        super().setUp()
+        # 2026-09-01 性能修复：登录失败用例每次都走 scrypt 时延拉平
+        # （_constant_time_dummy / check_password_hash，安全设计约 0.6s/次），
+        # spray 用例 10 次请求 ≈ 6.6s。本类被测对象是「告警分级与喷洒识别」，
+        # 与密码校验结果无关——统一 patch 掉 scrypt 为常数开销。
+        # 注：patch 对象是 self.webapp（模块名 "webapp"，非 "web.app"）。
+        p1 = mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None)
+        p1.start()
+        self.addCleanup(p1.stop)
+        # p2 覆盖**注册用户**路径（路由经 `m.check_password_hash` 取 app 侧绑定）。
+        p2 = mock.patch.object(self.webapp, "check_password_hash", lambda h, p: False)
+        p2.start()
+        self.addCleanup(p2.stop)
+        # p3 覆盖**内置管理员**路径：`web/security.py` 的 verify_admin 用的是该模块自己
+        # 从 werkzeug 导入的 check_password_hash，app 侧绑定到不了它。只打 p2 会让上面
+        # 那句"patch 掉 scrypt"对 admin 用户静默失效（本类用例打的全是 "admin" 与不存在
+        # 的邮箱，真实 scrypt 正是从 security 侧发出）。打桩目标须落在真正决定校验的那份
+        # 绑定上，否则用例看着绿、开销照付。
+        p3 = mock.patch.object(web_security, "check_password_hash", lambda h, p: False)
+        p3.start()
+        self.addCleanup(p3.stop)
+
+    def _alerts(self):
+        return [a for a in self.alerts if a[0] == "登录失败告警"]
+
+    def test_below_threshold_sends_nothing(self):
+        c = self._client()
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+            c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+        self.assertEqual(self._alerts(), [])
+
+    def test_same_user_repeated_mistake_is_not_urgent(self):
+        """本人忘密码：连续 3 次输错 → 仍告警（可追溯），但走非紧急账不占手机额度。"""
+        c = self._client()
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+            c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+        got = self._alerts()
+        self.assertEqual(len(got), 1, f"每轮应只告警一次：{got}")
+        self.assertFalse(got[0][2], "单账号反复输错不得占用紧急额度")
+
+    def test_spray_across_users_is_urgent(self):
+        """同一 IP 打多个用户名且某账号已到阈值 → 撞库特征，升级紧急。
+
+        阈值在用例内调小：告警阈值与每 IP 登录频率上限同量级（均 10 次/60 秒），按真实
+        阈值要凑出"一个用户名累计到阈值 + 另外两个用户名各失败过"至少 12 次请求，会被
+        频率上限先挡下。此处钉的是喷洒判据的逻辑本身。
+        """
+        c = self._client()
+        users = ["a1@beta.local", "a2@beta.local", "a3@beta.local"]
+        with mock.patch.object(self.webapp, "LOGIN_FAIL_NOTIFY", 3):
+            for u in users:
+                for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+                    c.post("/api/login", json={"username": u, "password": "WrongPass#111"})
+            # 第 3 个账号的第 3 次失败触发告警：此时该 IP 已试过 3 个不同用户名
+            c.post("/api/login", json={"username": users[-1], "password": "WrongPass#111"})
+        got = self._alerts()
+        self.assertEqual(len(got), 1, f"仅命中阈值那一次告警：{got}")
+        self.assertTrue(got[0][2], "跨账号喷洒必须升级紧急")
+        self.assertIn("不同用户名", got[0][1])
+        self.assertIn(f"{self.webapp.LOGIN_SPRAY_USERS} 个", got[0][1],
+                      "正文须交代升级依据，否则管理员无从判断是不是误报")
+
+    def test_alert_body_masks_the_bruteforced_account_email(self):
+        """爆破告警正文不得带出被爆破账号的明文邮箱。
+
+        注册用户即邮箱登录 ⇒ "尝试用户名"就是受害者的邮箱，而爆破告警进邮件、进推送、
+        进审计摘要，全是离开本机的出口（MF-49 的展示/告警面同一口径）。只遮 @ 之后或
+        只遮本地部都是半吊子形态，故本地部也单独钉一条。
+        """
+        c = self._client()
+        email = "victim01@qq.com"
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+            c.post("/api/login", json={"username": email, "password": "WrongPass#111"})
+        got = self._alerts()
+        self.assertEqual(len(got), 1, f"每轮应只告警一次：{got}")
+        body = got[0][1]
+        self.assertNotIn(email, body, "告警正文不得含明文邮箱")
+        self.assertNotIn(email.split("@")[0], body, "本地部同样不得原样带出")
+        self.assertIn(mask_email(email), body, "须以遮罩形态交代尝试的用户名")
+
+
+class LoginAlertRealChannelTest(_B14AlertGateBase):
+    """不替换 send_notification：钉住"降级"改的是账本归属，不是把通知整条跳过。"""
+
+    PATCH_NOTIFY = False
+
+    def test_login_failure_still_reaches_the_notification_layer(self):
+        """降级只降"推不推手机"的账本归属，不得在应用层就把通知整条跳过。"""
+        c = self._client()
+        with mock.patch.object(self.webapp.notify, "send") as send_mock:
+            for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+                c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+            self.assertEqual(send_mock.call_count, 1,
+                             "非紧急仍须调用 notify.send（是否推手机由通道侧决定）")
+            self.assertIs(send_mock.call_args.kwargs.get("urgent"), False,
+                          "传入的 urgent 必须与判据一致")
+
+
+class NewApplicationAlertTest(_B14AlertGateBase):
+    """R3：申请入库后管理员必须被通知到。"""
+
+    EMAIL = "beta.tester@qq.com"
+    PASSWORD = "BetaUser#2026x"
+
+    def _submit_account(self):
+        c = self._client()
+        r = c.post("/api/register",
+                   json={"email": self.EMAIL, "password": self.PASSWORD, "agree": True})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = self._login(c, self.EMAIL, self.PASSWORD)
+        return c.post(
+            "/api/my-accounts",
+            json={"name": "小李的手机", "phone": "13800001234", "password": "Yiban#pw123",
+                  "phone_model": "", "phone_code": ""},
+            headers=self._csrf(token),
+        )
+
+    def test_admin_gets_non_urgent_notice_on_new_application(self):
+        r = self._submit_account()
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        got = [a for a in self.alerts if a[0] == "新账号申请待审核"]
+        self.assertEqual(len(got), 1, f"新申请须且只须一条告警：{self.alerts}")
+        self.assertFalse(got[0][2], "新申请属日常事务，不得占用紧急额度")
+        self.assertIn("1234", got[0][1], "正文须含脱敏手机号尾号供管理员定位")
+        self.assertNotIn("13800001234", got[0][1], "告警正文不得外泄完整手机号")
+
+    def test_notice_failure_does_not_break_the_submission(self):
+        """通知通道炸掉时，已入库的申请仍须返回成功（不得退化成 500 让用户重交）。"""
+        c = self._client()
+        r = c.post("/api/register",
+                   json={"email": self.EMAIL, "password": self.PASSWORD, "agree": True})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = self._login(c, self.EMAIL, self.PASSWORD)
+        with mock.patch.object(self.webapp, "send_notification",
+                               side_effect=RuntimeError("通道炸了")):
+            r2 = c.post(
+                "/api/my-accounts",
+                json={"name": "", "phone": "13800005678", "password": "Yiban#pw123",
+                      "phone_model": "", "phone_code": ""},
+                headers=self._csrf(token),
+            )
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        accs = [a for a in self.webapp.load_accounts() if a.get("phone") == "13800005678"]
+        self.assertEqual(len(accs), 1, "申请须已入库且状态待审核")
+        self.assertEqual(accs[0].get("status"), self.webapp.ACCOUNT_STATUS_PENDING)
 
 
 if __name__ == "__main__":

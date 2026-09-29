@@ -1,6 +1,10 @@
-// 项目交互层（Adminator 4.3.0 外壳）— 全局 api/toast/modal/时钟/身份/导航行为。
-// 契约区间 L1-L245（tests/test_web_js_modules.py 钉住本文件与 pages/ 的加载顺序）。
-// classic script（非 module）：依赖 partials/theme_boot.html 先行定义的全局 BASE。
+// 全局外壳交互层（Adminator 4.3.0 外壳）：请求层（CSRF / 401 重试 / 超时中止 / 并发 GET 去重 / 外壳数据缓存）、
+// toast、模态、口令与倒计时门禁、时钟、身份、导航徽标、主题、tab 深链。classic script（非 module）。
+// 归属与复用：全站唯一一份外壳行为层，layout_admin / layout_user / layout_auth 三个外壳模板共用；页面与组件脚本一律
+//   经 window.YB.*（或本文件末尾为内联 onclick 保留的裸全局出口）复用，不再各自实现请求与弹窗。
+// 通信（入）：partials/theme_boot.html 先定义全局 BASE 作路径前缀；本文件必须排在 pages/*.js 之前载入（顺序契约见
+//   tests/test_web_js_modules.py）。通信（出）：外壳只读端点 GET /api/me、/api/clock、/api/announcement、
+//   /api/accounts、/api/users、/api/changelog 与会话端点 POST /api/logout，实现见 web/routes/ 下各 blueprint。
 (function () {
   "use strict";
   if (window.YB && window.YB.__ready) return; // 外壳与页面可能各引一次
@@ -36,9 +40,11 @@
     if (p.indexOf("*") !== -1) return p;
     return p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p;
   }
-  // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径）：保留最多 3 个字符 + 域名；
+  // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径，两份实现由
+  // tests/test_web_mask_email_parity.py 真跑对拍钉住）：保留最多 3 个字符 + 域名；
   // 已含 * 或非邮箱（无 @ / @ 在首位）原样返回。完整邮箱只允许存在于 JS 内存态与
-  // 请求体/URL path，禁止写入 DOM 文本或属性（用户管理页据此渲染，见 pages/work_users.js）。
+  // 请求体，禁止写入 DOM 文本或属性、禁止编进 URL path（单条操作走不透明 id）、
+  // 禁止进 sessionStorage 缓存（用户管理页据此渲染，见 pages/work_users.js）。
   function maskEmail(e) {
     e = String(e == null ? "" : e);
     if (e.indexOf("*") !== -1) return e;
@@ -91,7 +97,7 @@
   }
   // 请求超时上限：fetch 默认**没有超时**，网络静默掉线（手机切换网络、NAT 静默丢弃）或
   // 服务端线程占满时，Promise 会一直挂着 —— 页面上的骨架/加载条/在途禁用按钮就永不结束
-  // （用户反馈"总览页有概率一直加载、一直不完成"，即此形态）。给每个请求挂 AbortSignal，
+  // 即"总览页一直转圈、永不完成"这一形态。给每个请求挂 AbortSignal，
   // 超时按网络错误处理：既有失败态与「重试」入口随即接管，不再出现"永远转圈"。
   var API_TIMEOUT_MS = 20000;
   function genericMessage(status) {
@@ -156,13 +162,65 @@
       return fetchMe().catch(function () { throw httpError(403, "请刷新页面后重试"); })
         .then(function () { return perform(req, true); });
     }
-    if (!resp.ok || data.ok === false) throw httpError(resp.status, data.error, data);
+    if (!resp.ok || data.ok === false) {
+      // .env 写拒绝（409 env_write_refused）附带定位载荷（问题行号/键名 + 脱敏片段，
+      // 值已隐去）：弹出"定位/清理"专用模态（写拒绝定位），错误仍照常上抛——
+      // 各写点自己的 catch 继续走既有文案，模态只是补充可操作入口，不改请求语义。
+      if (resp.status === 409 && data && data.reason === "env_write_refused"
+          && data.problems && data.problems.length) {
+        showEnvWriteRefusedModal(data.problems);
+      }
+      throw httpError(resp.status, data.error, data);
+    }
     return data;
   }
   function refreshThenRetry(req) {
     csrfToken = "";
     return fetchMe().then(function () { return perform(req, true); });
   }
+  /* ---------- .env 行分隔符提交前校验 ----------
+     常量由后端渲染进页面（window.YB_ENV_LINE_BREAK_CODES，见
+     templates/pages/work_settings.html 与 web/routes/pages.py）——与后端
+     yiban.infra.env_io.ENV_LINE_BREAK_CHARS 是**同一份清单**，前端不得再写死第二份。
+     缺常量（未注入的页面）时不拦：真正的兜底在后端写入口，前端只做友好前置校验，
+     不能因为少一个常量就把所有表单变成死表单。 */
+  var ENV_LINE_BREAK_CODES = (window.YB_ENV_LINE_BREAK_CODES || []).slice();
+
+  function hasEnvLineBreak(s) {
+    var t = String(s == null ? "" : s), i;
+    for (i = 0; i < t.length; i++) {
+      if (ENV_LINE_BREAK_CODES.indexOf(t.charCodeAt(i)) !== -1) return true;
+    }
+    return false;
+  }
+
+  // 递归找第一个含行分隔符的字段（返回字段路径，找不到返回 null）；只用于错误提示。
+  function envBodyLineBreak(body) {
+    if (typeof body === "string") return hasEnvLineBreak(body) ? "(body)" : null;
+    if (!body || typeof body !== "object") return null;
+    var keys = Object.keys(body), i;
+    for (i = 0; i < keys.length; i++) {
+      var v = body[keys[i]];
+      if (typeof v === "string") {
+        if (hasEnvLineBreak(v)) return keys[i];
+      } else if (Array.isArray(v)) {
+        for (var j = 0; j < v.length; j++) {
+          var e = v[j];
+          if (typeof e === "string") {
+            if (hasEnvLineBreak(e)) return keys[i] + "[" + j + "]";
+          } else if (e && typeof e === "object") {
+            var subA = envBodyLineBreak(e);
+            if (subA) return keys[i] + "[" + j + "]." + subA;
+          }
+        }
+      } else if (v && typeof v === "object") {
+        var subO = envBodyLineBreak(v);
+        if (subO) return keys[i] + "." + subO;
+      }
+    }
+    return null;
+  }
+
   function normalizeRequest(method, path, body) {
     if (typeof method === "string" && method.charAt(0) === "/") { // 兼容 api(path, {method, body})
       var opts = (path && typeof path === "object") ? path : {};
@@ -174,12 +232,21 @@
      仅合并「尚未返回」的请求，一旦落地即从表中移除——不引入任何响应缓存，后续刷新或写操作
      后的重新拉取仍拿到最新数据，新鲜度语义不变；POST/PUT/DELETE/PATCH 一律不走此路径。
      动机：外壳 core.js 的导航徽标/时钟/公告与页面脚本会在首屏同时拉 /api/accounts、
-     /api/users、/api/clock、/api/announcement，此前每次加载都重复请求一遍（单 worker 生产
+     /api/users、/api/clock、/api/announcement，不去重的话每次切页都要把这些重问一遍（单 worker 生产
      环境下白占线程与带宽）。 */
   var inflightGets = {};
   function api(method, path, body) {
     var req = normalizeRequest(method, path, body);
-    if (req.method !== "GET") return perform(req, false);
+    if (req.method !== "GET") {
+      // 写请求提交前的行分隔符拦截：含换行族的字段会注入出新的 .env 配置行
+      // （后端写入口另有 fail-closed 兜底；这里只是把"提交后 500/409"提前成"提交前提示"）。
+      var badField = envBodyLineBreak(req.body);
+      if (badField) {
+        return Promise.reject(new Error(
+          "字段「" + badField + "」含换行或行分隔符，配置只能单行存储"));
+      }
+      return perform(req, false);
+    }
     var key = req.path + "\u0000" + (req.body == null ? "" : String(req.body))
       + "\u0000" + JSON.stringify(req.headers || {});
     if (inflightGets[key]) return inflightGets[key];
@@ -191,12 +258,15 @@
   }
 
   /* ---------- 外壳数据客户端缓存（sessionStorage） ----------
-     动机（用户要求「一次性加载完然后读缓存，需要实时加载的页面再按时刷新」）：
+     目标：外壳级低频数据一次加载后读缓存，需要实时的分区各自按 TTL 定时刷新。
      MPA 每个页面加载都重跑外壳初始化（/api/me、/api/announcement、导航徽标、时钟），
      快速切页时同一份外壳数据被反复拉取——既是单 worker 上的无谓请求，也是触发全局限速
      429 的主因。apiCached 按 key 缓存成功结果（带写入时间戳 + TTL），命中则不产生网络请求；
      任何写请求成功返回后整体失效（见 perform 的 cacheClearAll），会话边界（登录/退出）
-     因此天然清理，不会串会话。失败/空结果不写缓存，避免把错误态粘住。
+     因此天然清理，不会串会话；退出另有主动清理（doLogout 发请求前先清，
+     logout 请求失败的残留也带走）。失败/空结果不写缓存，避免把错误态粘住。
+     缓存准入：只允许**无敏感字段**的响应或标量投影（/api/me 与 /api/users 整表
+     含 csrf_token/明文邮箱，一律不进——见各自调用点注释，MF-49 出口面）。
      sessionStorage 按标签页隔离，键前缀统一便于整体清理与排查。 */
   var CACHE_PREFIX = "yiban-cache:";
   function cacheGet(key) {
@@ -277,7 +347,7 @@
     rec.timer = setTimeout(function () { dismissToast(rec); }, duration);
     return node;
   }
-  function toast(msg, isError) { return showToast(isError ? "error" : "info", msg); }
+  function toast(msg, isError) { return showToast(isError ? "error" : "info", msg); }      // 出口有两种并存形态（直呼 toast(msg, isError) 与取变体 toast.success/.error/.info），改签名要同时顾及这二者的调用方
   toast.success = function (m, o) { return showToast("success", m, o); };
   toast.error = function (m, o) { return showToast("error", m, o); };
   toast.warning = function (m, o) { return showToast("warning", m, o); };
@@ -533,25 +603,28 @@
     return s.length >= PW_ADMIN_MIN_LEN && passwordClasses(s) >= PW_ADMIN_MIN_CLASSES;
   }
 
-  /* ---------- 口令门禁失败的机器可读分类 ----------
+  /* ---------- 危险操作门禁失败的机器可读分类 ----------
      后端在门禁拒绝时下发 `reason`：password_required = 本次未提交口令（调用方应弹口令框
-     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试）。前端据此分支，
-     不再靠比对中文文案或状态码；旧后端未下发 reason 时回落为空串，按后端原文案显示，
-     语义与既有契约一致。 */
+     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试），
+     delay_ack_required = 不可逆操作缺少/伪造 confirm_delay_ack（应弹倒计时确认框）。
+     档位（YIBAN_PW_GATE）只存在于后端，前端不判断档位、只认 reason；旧后端未下发 reason
+     时回落为空串，按后端原文案显示，语义与既有契约一致。 */
   function pwGateReason(e) {
     var r = e && e.data && e.data.reason;
-    return (r === "password_required" || r === "password_incorrect") ? r : "";
+    return (r === "password_required" || r === "password_incorrect"
+      || r === "delay_ack_required") ? r : "";
   }
   function pwGateMessage(e) {
     var r = pwGateReason(e);
     if (r === "password_required") return "此操作需要输入当前口令，请重新输入后确认。";
     if (r === "password_incorrect") return "当前口令不正确，请重新输入。";
+    if (r === "delay_ack_required") return "此操作需要二次确认，请在倒计时结束后确认。";
     // 非口令门禁失败（冷却 429、无事可做 400、网络错误等）：原样显示后端文案
     return (e && e.message) || "操作失败，请稍后重试";
   }
 
   /* ---------- 密码模态（重置密码 / 高危操作二次确认共用） ---------- */
-  // 动态构建在 openModal 之上：P4 起旧栈 modal partial 已退役，新 MPA 外壳不再 include
+  // 动态构建在 openModal 之上：新 MPA 外壳不 include partials/modals/*，模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
   // partials/modals/*，故模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
   // set 模式走完整口令策略（长度 + 类别）；confirm 模式只验非空，当前口令由后端最终核对。
   // 动态文案（邮箱等）只经 el 的 text 选项写入 textContent，无 innerHTML 注入面。
@@ -596,7 +669,7 @@
       if (pending || submitted) return false;    // 在途或已提交：忽略重复提交（挡在调用回调之前）
       var fn = cb;
       // 回调**只调一次**：它的返回值决定后续走哪条路。
-      // （2026-09-17 Playwright 实测修掉的老缺陷：为判断"回不返回 Promise"，这里曾先调一次探测、
+      // （老实现为判断"回不返回 Promise"会先探测调一次、再对非 Promise 回调调第二次 —— 回调会真的跑两遍：
       //  再在下方为非 Promise 回调调第二次 —— 那些回调会真的执行两遍：两次写请求（含两次审计）、
       //  实测端点则变成两次真实联网，前端限速形同不存在。）
       // `submitted || pending` 那道护栏还必须留在调用**之前**：非 Promise 回调返回后该次提交虽然
@@ -635,6 +708,137 @@
       ]
     });
     return pwHandle;
+  }
+
+  /* ---------- 不可逆操作的倒计时确认框 ----------
+     软性摩擦的落地形态：把「输口令打断心流」换成「等几秒再确认」，靠时间成本挡手滑连点，
+     而不是要求现场回忆管理员口令。按钮在倒计时内禁用并显示剩余秒数（5s → 4s → …），
+     归零后启用；确认 resolve(true)，取消/关闭 resolve(false)。
+     倒计时秒数只在前端生效（后端不校验秒数，真正兜底是配额 + 事后告警 + 审计），
+     故这里的定时器必须在两条收尾路径（确认 / 取消关闭）上都清掉，否则弹窗关了还在空转。 */
+  var DELAY_ACK_SECONDS = 5;
+  function delayAckLabel(left) { return left > 0 ? "确认（" + left + "s）" : "确认执行"; }
+  function openDelayAckModal(desc, confirmText) {
+    return new Promise(function (resolve) {
+      var settled = false, timer = null;
+      function settle(v) {
+        if (settled) return;
+        settled = true;
+        if (timer) { clearInterval(timer); timer = null; }
+        resolve(v);
+      }
+      var handle = openModal({
+        title: "不可逆操作确认",
+        body: el("div", { class: "pm-confirm-text", text: desc || "此操作不可逆，请确认。" }),
+        onClose: function () { settle(false); },
+        actions: [
+          { label: "取消", variant: "ghost" },
+          { label: confirmText || "确认执行", variant: "danger", onClick: function () { settle(true); } }
+        ]
+      });
+      var foot = handle.panel.querySelector(".modal-foot");
+      var okBtn = foot ? foot.querySelector(".btn--danger") : null;
+      if (!okBtn) { settle(false); return; }
+      var left = DELAY_ACK_SECONDS;
+      okBtn.disabled = true;
+      okBtn.textContent = delayAckLabel(left);
+      timer = setInterval(function () {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(timer);
+          timer = null;
+          okBtn.disabled = false;
+          okBtn.textContent = delayAckLabel(0);
+          return;
+        }
+        okBtn.textContent = delayAckLabel(left);
+      }, 1000);
+    });
+  }
+
+  /* ---------- 受门禁操作的统一提交入口 ----------
+     档位（YIBAN_PW_GATE）只存在于后端，**受门禁操作一律先不带任何凭据发**：本处不判断
+     档位、也不预判"要不要口令"，只按响应体的 reason 分流——
+       · delay_ack_required → 弹倒计时确认框，确认后带 confirm_delay_ack: true 重发；
+       · password_required / password_incorrect → 弹既有口令框，口令随重发提交；
+       · 其余失败原样上抛，由调用方的失败处理接管。
+     这样每个调用点都不必自己拼口令框管道，也不必猜后端档位（猜错就是"用户白输一次
+     口令"或"请求被 403 打回"）。倒计时只对不可逆操作出现——后端只对它们下发
+     delay_ack_required，非不可逆操作带上该字段也不会被要求。
+     口令与倒计时凭据各只自动补一次：后端再次拒绝即上抛，绝不无限重发；口令错的那次
+     由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
+     canceled 标记的错误拒绝。取消与被后端打回都**不等于什么都没发生**：多段提交里
+     先成功的步骤已经落库，故两种失败都另带 `completed`（已成功提交的步数），调用方
+     据此刷新视图并说明已生效的部分不会回滚（见 components/settings-executors.js 的
+     canceledAfter / failedAfter）。 */
+  function dangerousSubmit(opts) {
+    // 一次点击要按序发**多个**受门禁请求时用 opts.requests（[{method, path, body}, …]），
+    // 否则用单个 path/body。凭据对整串共用，且**从失败那一步继续**、已成功的步骤不重发，
+    // 故一次点击最多问一次口令——否则"改出口 + 同时拨故障转移开关"这类保存会连弹两次框。
+    // requests 形式 resolve 各步响应组成的数组（调用方按步取 note），单请求形式 resolve 该响应。
+    var multi = !!(opts.requests && opts.requests.length);
+    var steps = multi ? opts.requests.slice() : [{ method: opts.method, path: opts.path, body: opts.body }];
+    var results = [];
+    var triedPw = false, triedAck = false;
+    function merged(base, extra) {
+      var out = {}, keys = Object.keys(base || {}), i;
+      for (i = 0; i < keys.length; i++) out[keys[i]] = base[keys[i]];
+      if (extra) { keys = Object.keys(extra); for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]]; }
+      return out;
+    }
+    function withExtra(extra, add) {
+      var out = {}, keys = Object.keys(extra || {}), i;
+      for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]];
+      keys = Object.keys(add);
+      for (i = 0; i < keys.length; i++) out[keys[i]] = add[keys[i]];
+      return out;
+    }
+    function canceled() {
+      // 已成功提交的步数随取消一起回传：多段提交的调用方要据此判断"库里是不是已经有
+      // 一半改动"，只给 canceled 布尔值会让那半次写入没有出口（用户看不见、也不提示）。
+      // results 由 step() 按步号写入，故其长度就是已落库的步数。
+      var e = new Error("");
+      e.canceled = true;
+      e.completed = results.length;
+      return e;
+    }
+    function step(i, extra) {
+      var s = steps[i];
+      return api(s.method || "POST", s.path, merged(s.body, extra)).then(function (data) {
+        results[i] = data;
+        if (i + 1 < steps.length) return step(i + 1, extra);
+        return multi ? results : data;
+      }, function (e) {
+        var r = pwGateReason(e);
+        if (r === "delay_ack_required") {
+          if (triedAck) throw e;
+          triedAck = true;
+          return openDelayAckModal(opts.delayDesc || opts.desc, opts.confirmText).then(function (ok) {
+            if (!ok) throw canceled();
+            return step(i, withExtra(extra, { confirm_delay_ack: true }));
+          });
+        }
+        if (r === "password_required" || r === "password_incorrect") {
+          if (triedPw) throw e;
+          triedPw = true;
+          return new Promise(function (resolve, reject) {
+            openConfirmPasswordModal(opts.desc, function (pw) {
+              // 回调返回 Promise：口令框保持打开直至请求落定；拒绝时在框内提示并可改口令重试
+              return step(i, withExtra(extra, { confirm_password: pw }))
+                .then(resolve, function (e2) { throw e2; });
+            }, function () { reject(canceled()); });
+          });
+        }
+        throw e;
+      });
+    }
+    // 非取消的失败也带上已落库的步数：多段提交在第 2 步被打回时第 1 步已经写进库，调用方
+    // 要据此重载视图并交代已提交的部分——与 canceled 同一口径，否则那半次写入没人提示
+    // （见 components/settings-executors.js 的 failedAfter）。
+    return step(0, null).catch(function (e) {
+      if (e && !e.canceled) e.completed = results.length;
+      throw e;
+    });
   }
 
   /* ---------- 主题 ---------- */
@@ -822,12 +1026,20 @@
 
   /* ---------- 退出 ---------- */
   function doLogout() {
+    // 清缓存放在**发请求之前**且无条件：POST /api/logout 成功时 perform 的写后清理
+    // 是第二道；但网络失败/5xx 的失败路径原来不清——会话已按用户意愿终止，
+    // 外壳缓存里可能躺着整表用户邮箱（MF-49 出口面），绝不能因"退出没退干净"
+    // 而滞留到标签页关闭。cacheClearAll 自身容错（隐私模式不抛）。
+    cacheClearAll();
     return api("POST", "/api/logout").catch(function () {}).then(function () {
       location.href = url("/login");
     });
   }
 
-  /* ---------- 身份 ---------- */
+  /* ---------- 身份（/api/me 不进 sessionStorage：响应含 csrf_token 与登录邮箱，
+     属敏感字段，缓存整包会把它们驻进标签页全生命周期的磁盘可见存储。页面内的
+     重复读由 identity() 的去重链与 api() 的并发 GET 合并兜住；跨页重取一次是
+     MPA 外壳的原语义。见 tests/test_users_exit_surface_frontend.py） ---------- */
   var me = null;
   var mePending = null;
   function roleLabel(m) {
@@ -836,9 +1048,9 @@
     return m.role === "admin" ? "管理员" : m.role === "user" ? "普通用户" : (m.role || "");
   }
   function hydrateIdentity() {
-    // 外壳身份走 30s 会话缓存：切页不再重复拉 /api/me（CSRF token 随会话稳定，
-    // 缓存内一并带回；写请求成功会清缓存，角色变更最多滞后 30s）。
-    return apiCached("me", 30000, function () { return api("GET", "/api/me"); }).then(function (data) {
+    // 直连取身份，不经 apiCached——见上方"身份"节注释（MF-49 出口面：
+    // csrf_token 与登录邮箱不进 sessionStorage）。
+    return api("GET", "/api/me").then(function (data) {
       me = data;
       if (data && data.csrf_token) csrfToken = data.csrf_token;
       var name = data.username || data.email || "";
@@ -868,7 +1080,7 @@
   // 等于服务器当地时间。Date.now() 是 UTC 时刻，加 offset 得到服务器真实时刻；再叠加
   // 「服务器时区 − 浏览器时区」才能让本地 getter 落在服务器墙上时间上。
   // 旧实现只加服务器时区：UTC+8 浏览器会再叠一次 +8h，16:00 后 getDate() 直接跳到次日，
-  // 造成数据总览「今日」KPI 与热力图取不到当天键（2026-09-14 修复）。
+  // 造成数据总览「今日」KPI 与热力图取不到当天键（两侧取日都必须用同一个时刻源）。
   // 未校准前退回浏览器本地时钟，避免把未加时区的 UTC 当成服务器墙上时间。
   function serverNow() {
     if (!clock.ready) return new Date();
@@ -938,11 +1150,17 @@
         return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
       }).length);
     }).catch(function () {});
-    apiCached("nav-users", 60000, function () { return api("GET", "/api/users"); }).then(function (data) {
-      var list = (data && data.users) || [];
-      // 待处理用户 = 名下有「待审核或已拒绝」账号的用户数。
-      // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
-      var review = list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
+    // 徽标只用到「有待处理的用户数」这一个计数，缓存**投影后的标量**而非整表：
+    // /api/users 全量含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
+    // 敏感字段不入磁盘可见存储）。apiCached 仍在 60s 窗口内把外壳请求收敛成一次，
+    // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变。
+    apiCached("nav-users", 60000, function () {
+      return api("GET", "/api/users").then(function (data) {
+        var list = (data && data.users) || [];
+        // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
+        return list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
+      });
+    }).then(function (review) {
       setNavBadge("work-users", review);
     }).catch(function () {});
   }
@@ -1139,7 +1357,7 @@
   }
 
   /* ---------- 回到顶部（共享） ----------
-     2026-09-14 用户裁决取消三个列表页的表格内滚上限后，长列表改为整页滚动，需要一步回顶。
+     列表页的表格没有内滚上限、长列表整页滚动，因此需要一步回顶的入口。
      按钮固定在右下、滚动超过阈值才出现；只动 opacity/transform（无布局动画），
      reduced-motion 去位移、点击直接回顶（不做平滑滚动）。键盘可达（原生 button + aria-label）。 */
   var TO_TOP_AT = 400;
@@ -1209,7 +1427,7 @@
 
   /* ---------- 顶部导航进度条（MPA 页面切换） ----------
      多页应用没有前端路由，点内部链接即整页跳转；浏览器自身不提供任何"正在导航"
-     反馈，弱网下会出现"点了一下没反应 → 突然白屏换页"的跳变感（用户实拍）。
+     反馈，弱网下会出现"点了一下没反应 → 突然白屏换页"的跳变感。
      本模块在捕获阶段监听合格的同源导航点击，立即显示细进度条并缓慢推进；
      新页面 core.js 载入时读 sessionStorage 里的起点时间，接续补到 100% 再淡出。
      不合格的链接一律放行：修饰键（新标签/下载）、target!=_self、download、
@@ -1309,7 +1527,7 @@
 
   /* ---------- 浏览器级显示偏好（localStorage） ----------
      仅影响本机显示密度，不涉及任何后端策略，故与 yiban-theme 同层使用 localStorage。
-     归属邮箱开关（P10）：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
+     归属邮箱开关：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
      默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在
      components/account-table.js 一处，改后下次渲染即生效（无需后端往返）。 */
   var PREF_OWNER_EMAIL = "yiban-owner-email";
@@ -1319,6 +1537,49 @@
   function setOwnerEmailVisible(v) {
     try { localStorage.setItem(PREF_OWNER_EMAIL, v ? "1" : "0"); } catch (e) {}
     try { document.dispatchEvent(new CustomEvent("yiban:owner-email-pref", { detail: { visible: !!v } })); } catch (e) {}
+  }
+
+  /* ---------- .env 写拒绝的定位/清理模态（写拒绝定位） ----------
+     409 的 problems 由后端组装（行号/键名 + 脱敏片段，值已隐去）。这里只做展示与
+     "一键清理"按钮：清理走 POST /api/settings/env-cleanup（服务端把可清理范围收窄为
+     确含行分隔符的物理行），成功后提示重试保存。错误照常上抛，本模态不改请求语义。 */
+  function showEnvWriteRefusedModal(problems) {
+    var list = el("div", { class: "env-refused-list" });
+    var lineProblems = [];
+    forEach(problems, function (pb) {
+      if (pb.kind === "line" && pb.line) {
+        lineProblems.push(pb);
+        var row = el("div", { class: "env-refused-row" });
+        row.appendChild(el("div", {
+          class: "env-refused-desc",
+          text: "第 " + pb.line + " 行含潜伏行分隔符" + (pb.snippet ? "：" + pb.snippet : "")
+        }));
+        var btn = el("button", { type: "button", class: "btn btn--primary", text: "一键清理该行" });
+        btn.addEventListener("click", function () {
+          btn.disabled = true;
+          api("POST", "/api/settings/env-cleanup", { line: pb.line })
+            .then(function (res) {
+              toast.success((res && res.message) || ("已清理第 " + pb.line + " 行，请重试保存"));
+              row.remove();
+            }, function (e) {
+              btn.disabled = false;
+              toast.error(e && e.message ? e.message : "清理失败，请人工检查 .env");
+            });
+        });
+        row.appendChild(btn);
+        list.appendChild(row);
+      } else if (pb.kind === "key" && pb.key) {
+        var krow = el("div", { class: "env-refused-desc", text: "涉事键：" + pb.key });
+        list.appendChild(krow);
+      }
+    });
+    if (!list.childNodes.length) return; // 无可展示的定位信息（旧形态响应）不强弹
+    openModal({
+      title: "配置写入被拒绝（.env 行模型歧义）",
+      subtitle: "写入已 fail-closed 拒绝，.env 未被改动；清理下面的问题行后可重试保存",
+      body: list,
+      actions: [{ label: "知道了", variant: "ghost" }]
+    });
   }
 
   /* ---------- 公开面 ---------- */
@@ -1336,6 +1597,7 @@
     maskEmail: maskEmail,
     openModal: openModal,
     closeModal: closeModal,
+    showEnvWriteRefusedModal: showEnvWriteRefusedModal,
     confirmDialog: confirmDialog,
     promptDialog: promptDialog,
     setTip: setTip,
@@ -1354,6 +1616,9 @@
     openPwModal: openPwModal,
     pwGateReason: pwGateReason,
     pwGateMessage: pwGateMessage,
+    openDelayAckModal: openDelayAckModal,
+    dangerousSubmit: dangerousSubmit,
+    hasEnvLineBreak: hasEnvLineBreak,
     applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
     toggleTheme: toggleTheme,
@@ -1411,6 +1676,8 @@
   window.openPasswordModal = openPasswordModal;
   window.openConfirmPasswordModal = openConfirmPasswordModal;
   window.openPwModal = openPwModal;
+  window.openDelayAckModal = openDelayAckModal;
+  window.dangerousSubmit = dangerousSubmit;
   window.toggleTheme = toggleTheme;
   window.toggleSidebar = toggleDrawer;
   window.switchTab = switchTab;
