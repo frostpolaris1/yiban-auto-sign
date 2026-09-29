@@ -179,46 +179,34 @@ class CliSubprocessExitTest(_CliExitHarness):
         self.assertNotIn(OWNER_EMAIL, combined)
         self.assertNotIn("plain-pw", combined)
 
-    def test_capacity_exit_has_no_raw_phone(self):
-        """capacity 读库（phone 列即裸号）但出口只有数字与路径：裸号必须全程缺席。"""
-        self._add_db_account()
-        r = _run_cli(["capacity", "--json"], self.env({"YIBAN_ACCOUNTS_KEY": self.key_a}))
-        self.assertEqual(r.returncode, 0, r.stderr[-400:])
-        json.loads(r.stdout)
-        combined = r.stdout + r.stderr
-        self.assertNotIn(PHONE_RAW, combined)
+    def test_maintenance_exits_have_no_raw_phone(self):
+        """capacity/state/db/version 四个维护出口的**同构**裸号缺席扫（6c3-C C-1 并参数化）。
 
-    def test_state_exit_has_no_raw_phone(self):
-        """state 明细是固定形态的按日文件名：裸号必须全程缺席（含 --yes 前的指纹行）。"""
+        四条旧用例逐条同构：底座相同（临时库里有一条 phone 列即裸号的账号行；
+        state 再铺一个按日明细文件）⇒ 每个出口都"有得可漏"；判据相同
+        （rc==0、`--json` 整行可解析、stdout+stderr 全程无裸号）。db 一翼保留它
+        独有的 `integrity_ok` 真读库断言。主 owner
+        `test_config_success_masks_every_field` 口径不变，本条只并四个重复扫描。
+        """
+        self._add_db_account()
         state_dir = os.path.join(self.root, "state")
         os.makedirs(state_dir, exist_ok=True)
         with open(os.path.join(state_dir, "sched-run-2020-01-01.json"), "w") as f:
             f.write("{}")
-        r = _run_cli(["state", "--json"], self.env())
-        self.assertEqual(r.returncode, 0, r.stderr[-400:])
-        json.loads(r.stdout)
-        combined = r.stdout + r.stderr
-        self.assertNotIn(PHONE_RAW, combined)
-
-    def test_db_exit_has_no_raw_phone(self):
-        """db --integrity 读的是含裸号行的库：出口（表清单/计数/detail）不得带出裸号。"""
-        self._add_db_account()
-        r = _run_cli(["db", "--integrity", "--json"],
-                     self.env({"YIBAN_ACCOUNTS_KEY": self.key_a}))
-        self.assertEqual(r.returncode, 0, r.stderr[-400:])
-        payload = json.loads(r.stdout)
-        self.assertTrue(payload["integrity_ok"])
-        combined = r.stdout + r.stderr
-        self.assertNotIn(PHONE_RAW, combined)
-
-    def test_version_exit_has_no_raw_phone(self):
-        """version 出口（版本号/Python/schema 版本）与账号数据无交集：裸号缺席的实证。"""
-        self._add_db_account()
-        r = _run_cli(["version", "--json"], self.env({"YIBAN_ACCOUNTS_KEY": self.key_a}))
-        self.assertEqual(r.returncode, 0, r.stderr[-400:])
-        json.loads(r.stdout)
-        combined = r.stdout + r.stderr
-        self.assertNotIn(PHONE_RAW, combined)
+        for name, argv in (
+            ("capacity", ["capacity", "--json"]),
+            ("state", ["state", "--json"]),
+            ("db", ["db", "--integrity", "--json"]),
+            ("version", ["version", "--json"]),
+        ):
+            with self.subTest(command=name):
+                r = _run_cli(argv, self.env({"YIBAN_ACCOUNTS_KEY": self.key_a}))
+                self.assertEqual(r.returncode, 0, r.stderr[-400:])
+                payload = json.loads(r.stdout)
+                combined = r.stdout + r.stderr
+                self.assertNotIn(PHONE_RAW, combined)
+                if name == "db":
+                    self.assertTrue(payload["integrity_ok"])
 
     def test_check_config_summary_masked_on_stderr(self):
         """`sign --check-config` 的摘要（`config_check.print_config_summary`）走 stderr：
