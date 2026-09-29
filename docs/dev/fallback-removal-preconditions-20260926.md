@@ -120,7 +120,7 @@
 | 3 | `_is_second_run` 的告警口径 | `alerts._maybe_alert_zero_success` 等按"是否补签轮"选措辞/是否告警 | 需要替代信号（例如"窗口内最后一次尝试之后"）——**没有替代信号就撤 = 当日零成功静默** | 是（告警语义变更） | 未开始 |
 | 4 | 发布门禁"有效轮次"定义 | `docs/dev/release-gate.md` §3（仓内唯一定义件；交接提示词 `PROMPT.md §6.10` 是它的同名引用，该件不在本仓）——定义**直接依赖 `run.sh` 完整执行 + 退出码 0**，生产每日两条 cron（首签 + 收尾/补签） | 若改成"一个窗口一个常驻进程"，"轮次"要重新定义 ⇒ 影响 `main` 分支推送门槛 | **是，且这条是治理性变更：必须用户点头才动** | 未开始 |
 
-四条的出处是 `docs/dev/reviewfix-scheduler-redesign-20260922.md`（"取消补签轮会牵动的四个契约"一节）与 `docs/dev/reviewfix-10k-algorithm-20260922.md` §4 的退场推论；登记表 `must-fix-list.md`（MF-43）把"四条契约迁移"列为撤除前置第 6 条。
+四条的出处是 `docs/dev/reviewfix-scheduler-redesign-20260922.md`（"取消补签轮会牵动的四个契约"一节）与 `docs/dev/reviewfix-10k-algorithm-20260922.md` §4 的退场推论（**该件已于 2026-09 裁撤归档**，原件在仓外 `D:/code/archive/m3-batch6c2-docs-20260929/`，仓内不再有该路径）；登记表 `must-fix-list.md`（MF-43）把"四条契约迁移"列为撤除前置第 6 条。
 
 ## 8. 撤除动作本身的执行前检查
 
