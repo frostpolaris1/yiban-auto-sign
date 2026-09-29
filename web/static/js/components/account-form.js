@@ -22,7 +22,7 @@
   var CODE_CLEAR = "__clear__";
   var busy = false;
 
-  // 用户端文案沿用已确认版本；管理端沿用旧弹窗（P4 已随旧栈退役）的既有口径。
+  // 文案按 variant 分两套（user / admin 各沿用各自既有口径），同一字段在两处提示不同，改一处别忘了另一处。
   var TEXTS = {
     user: {
       nameLabel: "名称 / 备注（可选）", namePlaceholder: "如：电力123庄方宜",
@@ -34,7 +34,7 @@
       phoneEditHelp: ""
     },
     admin: {
-      nameLabel: "名称（可选，不填显示为 账号N）", namePlaceholder: "如：武陵123庄方宜",
+      nameLabel: "名称（可选，不填显示为 账号N）", namePlaceholder: "如：电力123示例站",
       nameHelp: "不填显示为 账号N。",
       phoneLabel: "手机号", phonePlaceholder: "易班登录手机号",
       passwordLabel: "密码", passwordNewPlaceholder: "易班登录密码",
@@ -160,7 +160,8 @@
   }
 
   // 绑定用户下拉的固定条目 + 分组头；分组用户列表由 loadAvailableUsers 异步补齐。
-  // 可见文本仍是邮箱 local part（脱敏口径不变），完整邮箱只进 value（既有行为）。
+  // 可见文本是**服务端下发的遮罩 local part**（`display`，口径唯一住在
+  // accounts_data._owner_display_of），完整邮箱只进 value（既有提交契约，走请求体）。
   function emailBaseItems() {
     return [
       { v: "", t: "不绑定（管理员自有账号，直接生效）" },
@@ -179,8 +180,11 @@
         items.push({ empty: "（暂无）" });   // 不可选空态行，替代原 optgroup 里的凑数 option
       } else {
         list.forEach(function (u) {
-          var email = String(u.email || "");
-          items.push({ v: email, t: email.split("@")[0] });
+          // 旧形态 `email.split("@")[0]` 是同一条归属展示规则的**第二份定义**：本地部
+          // 直出下拉文本，号形态时等于把完整手机号外显（MF-49 出口面，现网约一成
+          // 账号如此）。收敛后前端不再自拆自显，一律消费服务端 `display`（已遮罩），
+          // 拆分与遮罩只在 accounts_data._owner_display_of 一处。
+          items.push({ v: String(u.email || ""), t: String(u.display || "") });
         });
       }
       YB.selectField.setOptions("af-email", items);
@@ -272,20 +276,28 @@
     if (editing && snapshot) payload._snapshot = snapshot;
 
     // 后端口令门口径（web/app.py 的 creds_written）：**非空 password** 或**改绑手机号**
-    // 才算"改写他人易班凭据"、要 confirm_password；只改名称/设备型号不多问口令。
+    // 才算"改写他人易班凭据"、是受门禁操作；只改名称/设备型号不进门禁。
     // 原号取快照里的 phone（快照缺失时判不出改绑，此时只按 password 判）。
     var origPhone = null;
     try { origPhone = JSON.parse(snapshot).phone; } catch (e) { origPhone = null; }
     var credsWritten = editing && (String(payload.password || "").trim() !== "" ||
       (origPhone != null && payload.phone !== origPhone));
 
-    function send(inPwModal) {
+    var endpoint = editing ? opts.endpoints.update + opts.index : opts.endpoints.create;
+    var method = editing ? "PUT" : "POST";
+    function send() {
       busy = true;
       if (opts.lockButton !== false) setBusy(handle, true);
-      return (editing
-        ? YB.api("PUT", opts.endpoints.update + opts.index, payload)
-        : YB.api("POST", opts.endpoints.create, payload)
-      ).then(function (data) {
+      // 改凭据是受门禁操作：先不带凭据发，由后端 reason 决定要不要口令（档位只存在于后端）；
+      // 其余改动直接提交。门禁弹窗由 helper 自己收尾——口令错的那次它把文案显示在框里、
+      // 允许改口令重试，故这里只管弹窗之外的结局。
+      var req = credsWritten
+        ? YB.dangerousSubmit({
+            method: method, path: endpoint, body: payload,
+            desc: "本次修改会改写该账号的易班凭据（换了密码或改绑手机号），请输入当前管理员密码确认。"
+          })
+        : YB.api(method, endpoint, payload);
+      return req.then(function (data) {
         busy = false;
         delete n.phone.dataset.full;   // 完整手机号不随已提交的表单节点继续驻留 DOM
         YB.closeModal(handle);
@@ -294,20 +306,14 @@
       }, function (e) {
         busy = false;
         if (opts.lockButton !== false) setBusy(handle, false);
-        // 从口令框发起：把错误抛回去，让它显示在框内并保留输入以便改口令重试
-        if (inPwModal) throw e;
+        // 取消弹窗不是失败：表单保持打开、不改动、不提示，用户可继续编辑
+        if (e && e.canceled) return;
         showError(view, (e && e.message) || "保存失败，请稍后再试");
       });
     }
 
-    if (!credsWritten) { send(false); return false; }   // 由请求结果决定是否关闭，失败时保持打开
-    YB.openConfirmPasswordModal(
-      "本次修改会改写该账号的易班凭据（换了密码或改绑手机号），请输入当前管理员密码确认。",
-      function (pw) {
-        payload.confirm_password = pw;
-        return send(true);           // 返回 Promise：口令框保持打开直到请求落定
-      });
-    return false;
+    send();
+    return false;   // 由请求结果决定是否关闭，失败时保持打开
   }
 
   function open(opts) {

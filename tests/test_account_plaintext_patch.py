@@ -1,9 +1,21 @@
 # -*- coding: utf-8 -*-
-"""2026-08-27 对抗性审查补丁测试：账号凭据明文驻留三缺口。
+"""账号凭据明文驻留三缺口的回归。
 
-- 缺口 1：_row_to_account 对明文行告警 + 幂等加密回写（对照 session_cache 的 M14 抛错清除）
-- 缺口 2：迁移 .bak 逃生门含明文时重写加密版，.bak 一律 0600
+- 缺口 1：`_row_to_account` 对明文行告警 + 幂等加密回写（读路径自愈）
+- 缺口 2：迁移 `.bak` 逃生门含明文时重写加密版，`.bak` 一律 0600
 - 缺口 3：legacy 环境变量明文凭据加载告警（告警内容不含明文）
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：三条明文驻留路径（DB 行 / 迁移 `.bak` / legacy 环境变量），另加一条
+"整批解密失败必须整批回滚、不残留半自愈状态"。
+对应实现：`signin.load_accounts` 与 `_row_to_account` 的自愈回写、`db.init_db` 的
+`migrate_from` 逃生门与 `.bak-*` 落盘、`db._is_encrypted_value`、
+`signin._load_accounts_from_legacy_env`。
+关键断言：`.bak` 文本里不得出现明文口令（不是只看"加密标志位为真"）；legacy 告警只断
+"有这句 WARNING"不够，还要断整段日志里不含那两个明文号；本文件守的是**明文落盘/出箱**，
+不覆盖"密文可被错误密钥解开"那类问题。
+依赖：全程本地临时库与临时 `.env`，无网络；`.bak` 的 0600 断言用 `if os.name != "nt"`
+包着——Windows 上这条不成立也不报（POSIX 才核），其余断言两端都跑。
 """
 import contextlib
 import glob
@@ -123,6 +135,7 @@ class PlaintextPatchTest(unittest.TestCase):
         baks = glob.glob(accounts_json + ".bak-*")
         self.assertEqual(len(baks), 1, baks)
         bak = baks[0]
+        # Windows 上 st_mode 不反映 0600（NTFS ACL 另一套），这条只核对 POSIX 部署形态
         if os.name != "nt":
             self.assertEqual(oct(os.stat(bak).st_mode & 0o777), oct(0o600), ".bak 应 0600")
         with open(bak, encoding="utf-8") as f:

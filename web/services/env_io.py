@@ -5,7 +5,10 @@
 **功能**
 `.env` 的全部读写入口：宽松解析 `read_env`、整数配置 `load_env_int`、键值写入
 `write_env_key` / `write_env_int` 与批量原子写 `write_env_batch`、首次启动的
-`YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`；外加设置项展示族
+`YIBAN_SECRET_KEY` 生成 `ensure_secret_key`、写互斥 `_env_write_lock`、写拒绝的统一
+409 响应 `env_write_refused_response`（附 `env_refused_problems` 定位载荷：问题行号/
+键名 + 脱敏片段，值一律隐去）与歧义行清理 `cleanup_env_ambiguous_line`
+（只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`。
@@ -34,6 +37,8 @@ import os
 import re
 import secrets
 from datetime import datetime
+
+from flask import jsonify
 
 from yiban import window as yb_window
 from yiban.infra import env_io as _env_io
@@ -213,89 +218,191 @@ def write_env_key(env_path, key, value, write_batch):
     write_batch(env_path, {key: value})
 
 
-def write_env_batch(env_path, updates, atomic_write):
+def write_env_batch(env_path, updates, atomic_write, audit=None):
     """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
     避免多次独立写入时进程崩溃导致配置不一致。
     updates: dict {key: value}，value 为空字符串则删除该键。
 
-    写锁（_env_write_lock）：并发保存设置/公告时读-改-写互斥，防跨 worker 丢更新。
-    安全约束：.env 为逐行键值格式，键或值含换行符会注入出新的配置行（如经公告文本写入
-    YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。此处为兜底硬校验（调用方应先自行
-    校验并返回友好错误），违规直接抛 ValueError。字符集口径：本函数自己用 splitlines()
-    读、用 "\\n".join() 写，故校验必须覆盖 splitlines 认定的**全部**行分隔符
-    （见 `yiban.infra.env_io.ENV_LINE_BREAK_CHARS`）——只挡 \\n \\r 会留下"潜伏分隔符 +
-    后续读改写实体化"这条同效路径。
+    行模型、键/值校验、写入前后"键集合 diff"、跨进程写锁**全部单源在**
+    `yiban.infra.env_io.write_env_keys`（web 与引擎共用一个实现，两侧拒绝文案同源）：
+    本函数只负责 web 侧特有的落盘注入（`atomic_write`）。外层锁已就此去重——写锁
+    下沉进 `write_env_keys` 后，这里再包一层是对同一路径的纯冗余嵌套；只在本函数
+    之外还有"判定读取"要与之同临界区的调用方（改密、保存设置、执行体读-改-写）才
+    需要继续自持 `_env_write_lock`。`audit` 由调用方（web.app 转发）注入 db 审计回调：
+    写入被拒（潜伏分隔符/未请求的键变化）时必须留痕，调用方不传也不影响拒绝本身。
 
-    `atomic_write` 由调用方（web.app 的转发）在调用时刻现取注入：它是测试观测落盘
-    （`web.app._atomic_write`）的打桩点，且 Windows 上的替换重试策略也在那里。
+    为什么不再自己用宽行模型读-改-写：宽行模型会把注释里潜伏的
+    U+0085/U+2028 等先拆成两行、再把后半截实体化成真配置行（一次无关保存即可注入
+    `YIBAN_GLOBAL_PAUSE=1`）。单一行模型同时是"校验行模型 = 写入行模型"的前提。
     """
-    with _env_write_lock(env_path):
-        for key, value in updates.items():
-            # 键名白名单：任何行分隔符都过不了这个字符集，故键侧不再单独查
-            # has_line_break；值仍要查——值本来就是自由文本
-            if not _env_io.is_valid_env_key(key):
-                raise ValueError(f"write_env_batch 拒绝非法键名: {str(key)[:40]!r}")
-            if _env_io.has_line_break(value):
-                raise ValueError(f"write_env_batch 拒绝包含行分隔符的键值: {key}")
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        # 保留注释行和非更新键；过滤被更新键的旧行后追加新值
-        # （折叠用 key_line_pattern，`KEY = v` 写法同样是该键的旧行）
-        pats = [_env_io.key_line_pattern(k) for k in updates]
-        out = [ln for ln in lines if not any(p.match(ln.strip()) for p in pats)]
-        for key, value in updates.items():
-            if value:
-                out.append(f"{key}={value}")
-        atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
+    _env_io.write_env_keys(
+        env_path, updates,
+        write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
+        audit=audit, delete_empty=True)
 
 
-def ensure_secret_key(env_path, atomic_write):
+# 写拒绝的统一响应文案（web 全部 .env 写点共用）。此前只有 `/api/settings` 把拒绝
+# 映射成 409+清理指引；公告 / 告警通道 / 改密 / 执行体等写点抛裸 `EnvWriteRefused`
+# 后被兜底成 500（无指引）。现由 `web.app.create_app` 注册的 Flask errorhandler 与
+# 各路由的显式 catch 共回这一份——写点不再各自编文案。
+ENV_WRITE_REFUSED_MESSAGE = (
+    "配置写入被拒绝：.env 存在行模型歧义（潜伏行分隔符或未请求的键变化），"
+    "请按启动告警提示人工清理该行后重试"
+)
+
+
+# ---- 409 可操作化（写拒绝定位）----
+# 问题片段的展示上限；片段经脱敏原语链，绝不回显值原文。
+_ENV_SNIPPET_MAX = 160
+
+
+def _env_problem_snippet(env_path, line_no):
+    """取问题行的**脱敏片段**（绝不回显值原文）。
+
+    原语链与日志出口同一组（`escape_line_breaks` 让潜伏分隔符可见 → `sanitize_text`
+    → `mask_phones_in_text`），再对任何 `KEY=值` 形态做值隐去——行号与键名已足够
+    定位，值本身不需要也不应该出现在管理界面。读不到文件/行号越界返回 None
+    （409 的其余部分照常可用，定位载荷尽力而为）。
+    """
+    from yiban.masking import mask_phones_in_text, sanitize_text
+    try:
+        raw = _env_io._read_env_text(env_path)
+        lines = _env_io.split_env_lines(raw)
+        if not 1 <= line_no <= len(lines):
+            return None
+        snippet = _env_io.escape_line_breaks(lines[line_no - 1])
+        snippet = mask_phones_in_text(sanitize_text(snippet))
+        # 值隐去：任何 KEY=值 形态只留键名与等号（键名是定位信息，值不是）
+        snippet = re.sub(r"([A-Za-z_][A-Za-z0-9_]{1,}\s*=)\S*",
+                         r"\1***", snippet)
+        snippet = snippet[:_ENV_SNIPPET_MAX]
+        return snippet or None
+    except Exception:
+        # 定位载荷尽力而为：读失败/解码失败不改变"写入已被拒绝"这一事实
+        return None
+
+
+def env_refused_problems(exc, env_path):
+    """从 `EnvWriteRefused` 组装 409 的定位载荷（problems 列表）。
+
+    `line`（潜伏分隔符行）→ {"kind": "line", "line": N, "snippet": 脱敏片段}；
+    `keys`（未请求键变化）→ 每键一条 {"kind": "key", "key": 名}。两枚属性只在
+    新写入路径上有值；旧消息串不含定位信息时返回空列表（响应退化为纯指引）。
+    """
+    problems = []
+    line_no = getattr(exc, "line", None)
+    if line_no:
+        problems.append({"kind": "line", "line": line_no,
+                         "snippet": _env_problem_snippet(env_path, line_no)})
+    for key in (getattr(exc, "keys", None) or []):
+        problems.append({"kind": "key", "key": key})
+    return problems
+
+
+def env_write_refused_response(exc=None, env_path=None):
+    """写拒绝的 409 响应（含清理指引 + 定位载荷）——web 各 .env 写点的唯一出口。
+
+    `exc`/`env_path` 提供时附带 `problems`（问题行号/键名 + 脱敏片段，绝不回显
+    值原文）；缺省调用保持旧形态（纯指引），兼容不留痕的测试构造。
+    """
+    body = {"error": ENV_WRITE_REFUSED_MESSAGE, "reason": "env_write_refused"}
+    if exc is not None and env_path:
+        body["problems"] = env_refused_problems(exc, env_path)
+    return jsonify(body), 409
+
+
+def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
+    """移除 `.env` 中**含潜伏行分隔符**的那一行（一键清理）。
+
+    安全面收窄：只允许移除经 `has_line_break` 判定确含行分隔符的物理行——
+    那是行模型歧义的唯一现场；普通配置行/注释行一律拒绝（本端点不是 .env
+    编辑器，不存在借道删配置的口子）。写路径与写入口同一套纪律：跨进程写锁、
+    写前字节快照、失败按原字节回滚、审计留痕（片段走同一脱敏原语链）。
+    返回 (ok, message, remaining)：ok=False 时 message 说明为什么拒绝。
+    """
+    with env_lock.env_write_lock(env_path):
+        raw_bytes = _env_io._read_env_bytes(env_path)
+        lines = _env_io.split_env_lines(_env_io._read_env_text(env_path))
+        if not 1 <= line_no <= len(lines):
+            return False, f"行号越界（文件共 {len(lines)} 行）", None
+        target = lines[line_no - 1]
+        if not _env_io.has_line_break(target):
+            return False, "该行不含行分隔符，无需清理（本端点只处理行模型歧义行）", None
+        snippet = _env_problem_snippet(env_path, line_no) or "(片段不可得)"
+        remaining = lines[:line_no - 1] + lines[line_no:]
+        new_text = "\n".join(remaining) + ("\n" if remaining else "")
+        still_bad = [i + 1 for i, ln in enumerate(remaining)
+                     if _env_io.has_line_break(ln)]
+        try:
+            with open(env_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new_text)
+            os.chmod(env_path, 0o600)
+        except OSError as e:
+            # 写失败按写前原字节回滚（与 write_env_keys 的回滚同一立场）
+            if raw_bytes is not None:
+                with contextlib.suppress(OSError), open(env_path, "wb") as f:
+                    f.write(raw_bytes)
+            return False, f"清理写入失败（已回滚）：{e}", None
+        if audit is not None:
+            with contextlib.suppress(Exception):
+                audit("env_line_cleanup", f"移除第 {line_no} 行（含潜伏行分隔符），"
+                                          f"片段：{snippet}；剩余歧义行 {len(still_bad)}")
+        return True, f"已移除第 {line_no} 行；剩余含分隔符行 {len(still_bad)} 行", len(still_bad)
+
+
+def ensure_secret_key(env_path, atomic_write, audit=None):
     """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
 
-    .env 不可写时降级为进程内随机密钥并告警（服务可用，重启后会话失效）——
-    与口令哈希迁移的降级策略一致：宁可告警后带病运行，也不让启动直接失败。
+    .env 不可写、或既有行含潜伏行分隔符（写入被 fail-closed 拒绝）时降级为进程内随机
+    密钥并告警（服务可用，重启后会话失效）——与口令哈希迁移的降级策略一致：宁可告警后
+    带病运行，也不让启动直接失败。行模型/校验单源在 `yiban.infra.env_io.write_env_keys`。
+
+    判定"已有密钥/全新部署"走**严格读**（`strict=True`，与 account_crypto 建钥支、
+    audit_chain 审计密钥支同口径）：宽松读把"文件存在但读不到"（权限/占用/upsert 截断
+    与编辑器 unlink-新建造成的空残缺窗口）吞成空 dict，误判未配置就生成新钥落盘——
+    旧钥被同键折叠悄悄顶掉、`REGISTRATION_PAUSE=1` 把注册静默关闭，正是"读失败误判
+    未配置会静默生成新钥覆盖旧钥，宁可启动失败"在本仓写侧的翻版。严格读到 OSError 时
+    **一次都不写**：无法确认旧钥是否存在就不能生成新钥，降级为进程内随机密钥并告警。
+    判定与取值**共用这一次读取**（不再 os.path.exists + 宽松读两次不同源——两次之间
+    文件可以换内容，判"全新"与写"新钥"就会各看一版）。
     """
     with _env_write_lock(env_path):
-        # 全新部署判定必须在读取前——.env 不存在 = 首次初始化，默认写入「暂停注册」；
-        # 既有部署（文件已存在，如升级安装）不写此键，注册行为保持不变
-        # （用户裁决：默认允许，新部署才默认暂停）。
-        # touch 空 .env / 复制 .env.example 后文件存在但无任何有效键
-        # 仍视为全新部署（此前判定仅看文件存在性，会把空配置误判为既有部署
-        # 而不写暂停键，新部署默认开放注册）。
-        env = read_env(env_path)
-        new_deployment = not os.path.exists(env_path) or not env
+        try:
+            env = _env_io.parse_env_file(env_path, strict=True)
+        except OSError as e:
+            logger.warning(
+                "无法读取 %s（%s）：无法确认既有 YIBAN_SECRET_KEY，拒绝生成新钥落盘"
+                "（换钥会静默顶掉旧钥并可能翻转注册开关）；仅本次进程使用随机密钥，"
+                "重启后会话将失效，请检查文件权限后重启",
+                env_path, e,
+            )
+            return secrets.token_hex(32)
+        # 全新部署判定与取值同源于上面这一次严格读——文件不存在/空/仅注释（无任何
+        # 有效键）= 首次初始化，默认写入「暂停注册」；既有部署不写此键，注册行为
+        # 保持不变（用户裁决：默认允许，新部署才默认暂停）。touch 空 .env / 复制
+        # .env.example 后无有效键仍视为全新部署。
+        new_deployment = not env
         key = env.get("YIBAN_SECRET_KEY", "").strip()
         if key:
             return key
         key = secrets.token_hex(32)
+        # 常量字面量写入（暂停键），无注入面；管理员完成初始配置后在设置页开启注册。
+        # 同键旧行折叠由 write_env_keys 的 key_line_pattern 承担（影子行判据：同名键
+        # 占多行时解析器按后写覆盖先写，生效值由落盘顺序决定）——`YIBAN_SECRET_KEY = `
+        # 带空白写法、以及万一残留的旧 `YIBAN_REGISTRATION_PAUSE=0` 行都会被折成唯一
+        # 一行，不会与本次新行并存成 =1/=0 双行。
+        updates = {"YIBAN_SECRET_KEY": key}
+        if new_deployment:
+            updates["YIBAN_REGISTRATION_PAUSE"] = "1"
         try:
-            lines = []
-            if os.path.exists(env_path):
-                # 读失败（文件存在但不可读/被占用）与 atomic_write 的 OSError 同走下面兜底：
-                # read_env 已按"读失败返回空"降级，这里若让 open 抛穿就会把启动炸掉，
-                # 违背"降级为进程内密钥、带病运行"的承诺。
-                with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                    lines = f.read().splitlines()
-            # 旧键折叠与 key_line_pattern 同源：`YIBAN_SECRET_KEY = `（= 号前带空格、
-            # 值为空）此前被 startswith("YIBAN_SECRET_KEY=") 漏判，函数继续生成并追加
-            # 第二行，留下重复键影子行。走到这里 = 解析侧该键值为空，滤掉该键全部
-            # 旧行再落新行是安全的，任何写法都不会追加出重复。
-            # 这是日后把主凭据"歧义拒绝"扩大到 YIBAN_SECRET_KEY 的前提（现在不扩：
-            # scripts/ 各写入方尚未收敛到同一写入实现，此处拒绝会把写入侧缺陷
-            # 变成活体锁死）。
-            _sk_pat = _env_io.key_line_pattern("YIBAN_SECRET_KEY")
-            lines = [ln for ln in lines if not _sk_pat.match(ln.strip())]
-            lines.append(f"YIBAN_SECRET_KEY={key}")
-            if new_deployment:
-                # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
-                lines.append("YIBAN_REGISTRATION_PAUSE=1")
-            atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
-        except OSError as e:
+            _env_io.write_env_keys(
+                env_path, updates,
+                write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
+                audit=audit, delete_empty=True)
+        except (OSError, ValueError) as e:
             logger.warning(
                 "无法写入 %s（%s）：YIBAN_SECRET_KEY 仅本次进程生效（重启后会话将失效），"
-                "请修复目录权限或手动配置密钥",
+                "请修复目录权限或清理潜伏行分隔符后重试",
                 env_path, e,
             )
             return key

@@ -143,12 +143,15 @@ def _mask_phone_display(phone):
     return phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
 
 
-def _decrypt_row(row):
+def _decrypt_row(row, env_file=None):
     """纯 CPU：把一行原始行转成账号 dict，并摘出需要明文自愈的字段。
 
     **不访问数据库、不加锁**。调用方负责在 `_conn_lock` **之外**调用它——逐行 AES-GCM
     解密若全程持锁，web 侧数十个调用点会把全站 DB 访问串行化——再把摘出的 pending
     交给 `_apply_plaintext_heal` 在锁内落库。
+
+    `env_file`：密钥来源 .env 路径；None 时取连接层最近一次 `init_db` 记录的路径。
+    只读装载路径不经 `init_db`，由调用方显式传入，免得密钥来源依赖 cwd。
 
     返回 `(account_dict, pending)`；pending 元素为
     `(字段名, 行 id, 明文原值, 手机号, 打码手机号)`。
@@ -156,6 +159,7 @@ def _decrypt_row(row):
     a = dict(row)
     a["deleted"] = bool(a["deleted"])
     a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
+    key_env_file = _connection._env_file if env_file is None else env_file
     pending = []
     # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
     for k in ("password", "phone_code"):
@@ -167,11 +171,11 @@ def _decrypt_row(row):
         except (TypeError, ValueError):
             obj = None
         if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(_connection._env_file):
+            if not account_crypto.has_key(key_env_file):
                 raise RuntimeError(
                     "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
                 )
-            key = account_crypto.load_key(_connection._env_file)
+            key = account_crypto.load_key(key_env_file)
             try:
                 a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
             except ValueError as e:
@@ -236,11 +240,18 @@ def _is_encrypted_value(v):
 
 
 def _encrypt_field(value, phone):
-    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone）→ JSON 串；空值原样。
+    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone，
+    新写 v2 带 kid）→ JSON 串。
 
-    无密钥时 load_key 自动生成并持久化（与 web 现状一致）；密钥非法则抛错（绝不静默降级明文）。
+    **空凭据显式语义**：空值（None/""/假值）按空串 "" 落库——空即空，既不产出
+    "看似密文的空串"，也不触 load_key（空值写入不依赖密钥存在与否）。此前这一支
+    完全静默，凭据真被清空时库内与"从来就空"不可分辨，现留 DEBUG 痕。
+    非空但密钥非法则抛错（绝不静默降级明文）；无密钥时 load_key 自动生成并持久化
+    （与 web 现状一致）。
     """
     if not value:
+        logger.debug("凭据字段为空（type=%s），按空值语义落空串（不加密）",
+                     type(value).__name__)
         return ""
     if isinstance(value, dict):
         return json.dumps(value)  # 已是密文对象
@@ -339,6 +350,39 @@ def load_accounts():
     return read_accounts(accounts_snapshot)
 
 
+def load_accounts_readonly(db_file, env_file=None):
+    """只读装载账号：返回与 `load_accounts()` 同形的 dict 列表，但**零写操作**。
+
+    与 `load_accounts()` 的差别正是它存在的理由：本函数用 `connection.open_readonly`
+    独立连库，**不建库、不建表、不迁移、不切 WAL、不做明文自愈回写**——自称"只读"
+    的维护路径（`config` / `sign --check-config`）不得因为"读账号"就把库造出来或改掉。
+    库文件或 accounts 表不存在 → `[]`（调用方据此回落 JSON/环境变量来源，而不是报错）。
+
+    解密沿用 `_decrypt_row`（同一份 AES-GCM 口径与手机号 AAD），`env_file` 显式传入
+    密钥来源；明文驻留行只告警不回写（回写是写操作，只读路径不做）。
+    """
+    conn = _connection.open_readonly(db_file)
+    if conn is None:
+        return []
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "accounts" not in names:
+            return []
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM accounts ORDER BY sort_order").fetchall()]
+    finally:
+        conn.close()
+    accts = []
+    for row in rows:
+        account, pending = _decrypt_row(row, env_file=env_file)
+        for field, _row_id, _plain, _phone, masked in pending:
+            logger.warning("只读装载：账号 %s 的 %s 为明文存储（只读路径不回写）",
+                           masked, field)
+        accts.append(account)
+    return accts
+
+
 # ---------------------------------------------------------------------------
 # 单行写路径（事务内）
 # ---------------------------------------------------------------------------
@@ -357,12 +401,16 @@ def _convert_integrity_error(e):
     raise e
 
 
-def add_account(fields):
+def add_account(fields, audit_spec=None):
     """新增账号（fields 为业务层明文 dict），返回新 id。
 
     敏感字段写库前加密（AAD=手机号）；手机号重复抛 sqlite3.IntegrityError（业务层捕获）。
     BEGIN IMMEDIATE：跨进程（多 worker）并发时提前获取写锁，
     保证 MAX(sort_order)+1 的读与 INSERT 原子（防并发重复排序号）。
+
+    audit_spec 非 None 时（dict：username/action/target/detail/request_id），审计行与本
+    INSERT **同事务**写入，`db.record_in_txn` 失败即整体回滚——消除"账号已建、审计表
+    却没有这条且欠账为 0"的静默丢失窗口（见 audit_chain.record_in_txn）。
     """
     db = _facade()
     conn = db.get_conn()
@@ -385,6 +433,8 @@ def add_account(fields):
                 ),
             )
             new_id = cur.lastrowid
+            if audit_spec:
+                db.record_in_txn(conn, **audit_spec)
             conn.commit()
             return new_id
         except sqlite3.IntegrityError as e:
@@ -395,7 +445,7 @@ def add_account(fields):
             raise
 
 
-def update_account(account_id, fields, expect_snapshot=None):
+def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
     """更新单行；expect_snapshot 为乐观锁指纹 dict（name/phone/phone_model/status/deleted），不匹配返回 False。
 
     手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
@@ -406,6 +456,10 @@ def update_account(account_id, fields, expect_snapshot=None):
     标签页并发编辑同一账号时，后提交者静默覆盖前者。危险的是 web 用户自编辑路径不传
     expect_snapshot、且总把 old["password"] 回填，覆盖时可能把用户刚改的密码静默回滚。
     持锁后读-改-写原子，即使调用方不传乐观锁指纹，并发也不会丢更新。
+
+    audit_spec 非 None 时，审计行与本次 UPDATE **同事务**写入（写入在 _body 内、由
+    外层统一 commit）；未发生实际更新（快照不匹配/行不存在/无字段变化）不写审计——
+    "没做的事不留痕"，也不会留下"留痕了却没做"的假记录。
     """
     db = _facade()
     conn = db.get_conn()
@@ -460,6 +514,10 @@ def update_account(account_id, fields, expect_snapshot=None):
         vals.append(account_id)
         try:
             conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+            if audit_spec:
+                # 与实际 UPDATE 同事务（外层 commit）：审计写失败即整体回滚，
+                # 不会出现"凭据已改、审计表无此条"的静默丢失。
+                db.record_in_txn(conn, **audit_spec)
         except sqlite3.IntegrityError as e:
             conn.rollback()
             # 主更新失败回滚会连带撤销 _row_to_account 的明文自愈；凭据不留明文优先，
@@ -487,10 +545,13 @@ def update_account(account_id, fields, expect_snapshot=None):
             raise
 
 
-def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
+def set_account_deleted(account_id, deleted, deleted_at="", deleted_by="", audit_spec=None):
     """软删除/恢复账号；deleted_by 留痕删除来源（用户邮箱 / 'admin' / ''=系统），v10。
 
     恢复（deleted=0）时 deleted_by 一并清空，避免残留旧来源被后续语义误读。
+    audit_spec（dict username/action/target/detail）非 None 时，审计行与本次 UPDATE
+    同事务写入（`with conn` 退出时统一提交）：软删除不可逆程度不高但同属"改了谁"的
+    追责点，同事务使"删了却无痕"不存在。
     """
     db = _facade()
     conn = db.get_conn()
@@ -499,6 +560,8 @@ def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
             "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
             (1 if deleted else 0, deleted_at, deleted_by if deleted else "", account_id),
         )
+        if audit_spec:
+            db.record_in_txn(conn, **audit_spec)
 
 
 def purge_account(account_id):
@@ -558,16 +621,27 @@ def move_account(account_id, direction):
             raise
 
 
-def delete_accounts_by_owner(owner):
-    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
+def delete_accounts_by_owner(owner, audit_spec=None):
+    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。
+
+    audit_spec 非 None 时，审计行与本次 DELETE **同事务**写入（口径见 add_account）：
+    一次请求清空该用户全部凭据属不可逆操作，同事务使"清了却无痕"不可能。留痕由本
+    函数追加**实际删除行数**——名下 0 个账号时"清空成功"与"真删了 N 个"不得写成
+    逐字相同的一条；操作发生了就如实留痕（含 0），与批量面"处理 0 个"同一族。
+    """
     db = _facade()
     conn = db.get_conn()
     with db._conn_lock, conn:
         rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
+        deleted = cur.rowcount or 0
         phones = [r["phone"] for r in rows]
         db._cascade_phone_owned(conn, phones)  # 自选/会话/事件/校验任务连带清理
-        return cur.rowcount
+        if audit_spec:
+            spec = dict(audit_spec)
+            spec["detail"] = f"{spec.get('detail', '')}；实际删除 {deleted} 个账号"
+            db.record_in_txn(conn, **spec)
+        return deleted
 
 
 def replace_accounts(accounts):
@@ -600,7 +674,12 @@ def replace_accounts(accounts):
                         a.get("phone_model", ""),
                         _encrypt_field(a.get("phone_code"), a.get("phone", "")),
                         a.get("owner", "admin"),
-                        a.get("status", "active"),
+                        # 缺省状态与 add_account 及建表 DDL 同一口径（pending）：
+                        # 缺 status 的行曾按 active 落库，使"整体替换/导入"成为绕开
+                        # 审核直进主链的第二入口（引擎只跳 pending/rejected，active
+                        # 会被真实签到外呼）。带 status 的整表回环（导出→导入）不受
+                        # 影响——显式状态原样保留。
+                        a.get("status", "pending"),
                         a.get("reject_reason", ""),
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),

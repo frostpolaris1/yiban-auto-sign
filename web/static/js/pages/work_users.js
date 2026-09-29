@@ -5,9 +5,11 @@
    折叠、行操作菜单与批量条；全部写操作委托 YB.userOps。
 
    安全（本页硬约束）：
-   1. /api/users 返回**完整邮箱**，本页只在 state 内按内部 uid 持有；渲染一律用
+   1. /api/users 返回**完整邮箱**与不透明 id，本页只在 state 内按内部 uid 持有；渲染一律用
       YB.maskEmail()，不把完整邮箱写入任何 DOM 文本或属性（不落 data-* 自定义属性、不落 title）。
-      写操作从 uid 回查 state 取完整邮箱，只出现在请求体或既有契约的 URL path 中。
+      单条写操作（role/password/delete）从 uid 回查 state 取**不透明 id** 编进 URL path
+      （/api/users/<int:id>/…），完整邮箱只在 batch/purge 的请求体里出现——URL 不再
+      含明文邮箱（MF-49：path 进 nginx `$request`、经同源 Referrer 外送）。
    2. 全页零 innerHTML 拼接后端数据：一律 YB.el / textContent / createTextNode。
    3. 不做轮询：用户列表变化低频（注册 / 注销 / 权限变更），旧页也不轮询；刷新只由
       写操作成功后就地重拉（GET /api/users + GET /api/users/deleted）触发。 */
@@ -90,7 +92,11 @@
       state.builtin = (data && data.builtin_admin) || "admin";
       state.users = ((data && data.users) || []).map(function (u) {
         var rec = {
-          email: u.email || "", role: u.role || "user", created_at: u.created_at || "",
+          // id：单条操作（role/password/delete）的不透明定位符，服务端按它解析回邮箱；
+          // 明文邮箱只留在内存 state 供批量请求体与遮罩展示用，绝不进 URL path（MF-49）。
+          id: u.id != null ? u.id : null,
+          email: u.email || "", display: u.display || "", role: u.role || "user",
+          created_at: u.created_at || "",
           account_count: Number(u.account_count) || 0, review_count: Number(u.review_count) || 0
         };
         rec.uid = uidFor(rec.email, "user");
@@ -202,11 +208,11 @@
   // （`web/app.py` 三个单条端点的 `role == "admin" and not is_master` 判定，以及
   // `/api/users/batch` 里对 reset_password/delete 的同口径软跳过；按端点名定位，不钉行号），
   // 故这些动作一律不给出。UI 隐藏不是安全边界：
-  // 请求仍带 confirm_password，后端照旧复核。
+  // 受门禁请求照旧由后端复核（凭据由 core.js 的受门禁提交 helper 按后端 reason 补）。
   function menuItems(u, group) {
     var uid = u.uid;
     var items = [];
-    var masterOnly = u.role === "admin" && !state.isMaster;
+    var masterOnly = u.role === "admin" && !state.isMaster;   // 显示判断：决定给不给这些菜单项，鉴权在后端
     if (state.isMaster && group === "normal") {
       var isAdmin = u.role === "admin";
       items.push({

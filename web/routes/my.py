@@ -17,7 +17,8 @@
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配；`verify_fails()` / `verify_limits()`
-取回账号验证冷却与配额（与管理员添加路径共用同一份账）。
+取回账号验证冷却与配额（与管理员添加路径共用同一份账）；`dupcheck_limits()` 取回
+个人提交判重预检的命中限速表，`read_audit_denied_trace()` 是超限拒绝的聚合留痕口。
 
 **通信**
 视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
@@ -36,19 +37,23 @@ from datetime import datetime, timedelta
 from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
-from web.routes import verify_fails, verify_limits
+from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from yiban.engine import schedule as yb_schedule
 
 
 def _my_account_indices_of(accounts):
     """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
 
-    管理员：**仅本人邮箱归属**的账号（一人一号）。无人认领的裸账号（owner='admin'）
-    属「代管」，只在账号管理页（/api/accounts）维护，不进「我的账号」视图 ——
-    否则内置管理员会把名下全部裸账号当成"我的账号"列出，与一人一号口径冲突。
+    管理员：归属邮箱等于会话用户名的账号。裸账号的 owner 是字面量 `admin`，因此当
+    YIBAN_ADMIN_USER 也取 `admin`（默认值）时，内置管理员的「我的账号」会把这批
+    裸账号一并列出——两义在存储上不可区分，属**已知默认配置取舍**（实现按 owner
+    精确匹配，不做特殊排除）。这不构成越权增量：能命中这批账号的会话只有内置管理员
+    本人（注册用户名必为邮箱，`admin` 非邮箱、注册口亦拒），而其对全表本就有
+    /api/accounts 的全量管理权；且 /mine 侧对这些号的写入并不比管理页更弱——暂停
+    直接 403、编辑强制回 pending、删除仅软删（7 天可撤，与管理页同档），物理 purge
+    在 /mine 无入口。代价是视图口径与"一人一号"展示混在一起，生产建议把
+    YIBAN_ADMIN_USER 设为管理员本人邮箱以分开两义。
     普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
-
-    注意：裸账号的 owner 是字面量 `admin`，当 YIBAN_ADMIN_USER 也取 `admin`（默认值）
-    时两者不可区分；生产建议把 YIBAN_ADMIN_USER 设为管理员本人邮箱。
     """
     m = _appmod()
     email = session.get("username", "").lower()
@@ -172,20 +177,21 @@ def _my_phone():
     return None
 
 
-def _pref_slots(sw):
+def _pref_slots(win):
     """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
 
+    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.app.sign_window_bounds` 现取
+    后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
+    会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口排期，网页却把片全置灰）。
     掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
     disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
     标记 edge_note 提示且仍可点选（调度在可用部分内安排）。返回全部片（含 disabled），
     前端据此渲染，保证"满 5 分钟才完全灰掉、不足时提示"的需求语义。
     """
-    m = _appmod()
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
+    start_min, end_min = win.start_min, win.end_min
     span = end_min - start_min
-    front_min = m.edge_config()[0] / 60.0
-    back_min = m.edge_config()[1] / 60.0
+    front_min = win.front_sec / 60.0
+    back_min = win.back_sec / 60.0
     slots = []
     for b in range(start_min, end_min, 5):
         off = b - start_min  # 片起点相对窗口起点的分钟偏移
@@ -248,15 +254,18 @@ def api_my_time_pref():
 
     拥挤度防调研：普通用户端只下发「已选百分比」（整数，四舍五入），
     不下发真实人数/块容量——不知道 K 无法反推人数；管理端 stats 接口保留精确计数。
+
+    `window` 回的是**有效窗口**（起止已按裁剪收敛、吃空时回退默认窗口）：片卡标签、
+    偏好标签与保存提示都以它为基准，直读原始配置会在回退时让同一页面出现两个钟点。
     """
     m = _appmod()
-    sw = m._sign_window()
+    win = m.sign_window_bounds()
     phone = _my_phone()
     pref = m.db.get_time_pref(phone) if phone else None
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
     cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
     slots = []
-    for s in _pref_slots(sw):
+    for s in _pref_slots(win):
         count = stats.get(s["slot_min"], 0)
         # 粗粒度 10% 档：精确百分比 + 已知默认 K 可反推人数；
         # 未满封顶 90、满员恰好 100——前端 pct>=100 判满精确（19/20=95% 不会再被
@@ -280,7 +289,8 @@ def api_my_time_pref():
         "pref_slot": pref["slot_min"] if pref else None,
         "slots": slots,
         "allowed": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
-        "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+        "window": (f"{win.start_min // 60:02d}:{win.start_min % 60:02d} ~ "
+                   f"{win.end_min // 60:02d}:{win.end_min % 60:02d}"),
         "edge_sec": front_sec,                    # 兼容旧前端（=前裁）
         "edge_front_sec": front_sec,              # 前后独立
         "edge_back_sec": back_sec,
@@ -324,10 +334,13 @@ def api_my_time_pref_save():
             slot = int(slot)
         except (TypeError, ValueError):
             return jsonify({"error": "时间片取值无效"}), 400
-        sw = m._sign_window()
-        span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-        front_min = m.edge_config()[0] / 60.0
-        back_min = m.edge_config()[1] / 60.0
+        # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
+        # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
+        # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
+        win = m.sign_window_bounds()
+        span = win.end_min - win.start_min
+        front_min = win.front_sec / 60.0
+        back_min = win.back_sec / 60.0
         # 前后独立裁剪：部分落入裁剪区的片（如首片剩 3 分钟）允许保存，
         # 调度会在可用部分内安排；完全落入裁剪区（前端已置灰）拒绝。
         if slot % 5 != 0 or not (0 <= slot < span) or not (
@@ -379,7 +392,7 @@ def api_my_time_pref_save():
         # 生效分界（卡点缓冲）：
         # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
         # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
-        # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
+        # 标记不存在（当日 cron 未运行/自选未激活）回退"有效窗口起点"兜底
         now = m.clock.now()
         boundary = None
         try:
@@ -396,11 +409,11 @@ def api_my_time_pref_save():
         except (OSError, ValueError, KeyError, TypeError):
             boundary = None
         if boundary is None:
-            try:
-                boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
-            except ValueError:
-                boundary = now
-            boundary += timedelta(minutes=1)
+            # 兜底取**有效**窗口起点（已扣前裁）：它就是引擎/cron 读取自选表的近似时刻，
+            # 与快照标记同一准绳。按原始窗口起点 + 1 分钟折算在前裁非默认值时会偏
+            # （前裁 300s 时偏 4 分钟）→ 改选提示的"今日/明日生效"与实际分叉。
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            boundary = midnight + timedelta(seconds=win.lo_min * 60)
         when = "今日生效" if now < boundary else "明日生效"
         return jsonify({"ok": True, "msg": f"已保存自选 {m._slot_to_label(slot)}，{when}{full_notice}"})
 
@@ -408,13 +421,12 @@ def api_my_time_pref_save():
 def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
-    sw = m._sign_window()
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
     cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
     return jsonify({
         "ok": True,
         "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
-                  for s in _pref_slots(sw)],
+                  for s in _pref_slots(m.sign_window_bounds())],
     })
 
 
@@ -428,6 +440,8 @@ def api_my_account_add():
     err, clean = m.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
+    # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
+    m.fold_phone_code(clean)
     # 预筛：资格校验全部前置到网络验证之前，杜绝「先向易班发起真实登录、再发现
     # 根本没资格」的凭据试探滥用面。权威校验仍保留在下方写入临界区
     # （预筛通过≠最终名额，双检以锁内为准）。
@@ -445,6 +459,25 @@ def api_my_account_add():
         if holds_live:
             return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
         if m.find_account_index(accounts_pre, clean["phone"]) is not None:
+            # 预检命中即向调用方确认"该号码在册"——这是个可定向确认的出口，按详情/
+            # 导出等同档面收口：命中才计会话额度（未重号的正常提交不占额、不留这行
+            # 审计），每次命中落一条审计（目标为遮罩号，不泄露归属口径不变），超限
+            # 改答 429 不再继续确认；被拒留痕每窗口至多一行，防拒绝面刷审计表。
+            m._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + m._IP_STORE_MAX_AGE)
+            _dup_cnt, _dup_start, dup_allowed = m._bump_window_count(
+                dupcheck_limits(), email_pre[:64], time.time(),
+                m.DUPCHECK_WINDOW, limit=m.DUPCHECK_MAX,
+            )
+            if not dup_allowed:
+                read_audit_denied_trace()("my_account_add_dup_denied")
+                # 文案不带阈值数字（信息分层，与其余 429 一致）
+                return jsonify({"error": "账号提交过于频繁，请稍后再试"}), 429
+            m.db.audit(
+                email_pre,
+                "my_account_add_dup_hit",
+                m._mask_phone(clean["phone"]),
+                f"窗口内第 {_dup_cnt} 次在册确认命中",
+            )
             err = m._duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
             if err:
                 return jsonify({"error": err}), 400
@@ -514,15 +547,16 @@ def api_my_account_add():
         # 即生效，并且这一步会单独留 account_review 审计（隐式置 ACTIVE 不留任何痕迹）。
         clean["status"] = m.ACCOUNT_STATUS_PENDING
         try:
-            new_id = m.db.add_account(clean)
+            # 审计与 INSERT 同事务：用户提交的是易班凭据，落库即"账号已建"这一事实
+            # 必须在同一事务留痕，中间被杀不会留下"凭据已存、审计表无此条"。
+            new_id = m.db.add_account(clean, audit_spec={
+                "username": clean["owner"],
+                "action": "my_account_add",
+                "target": m._mask_phone(clean["phone"]),
+                "detail": f"用户提交 状态 {clean['status']}",
+            })
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发提交兜底
-        m.db.audit(
-            clean["owner"],
-            "my_account_add",
-            m._mask_phone(clean["phone"]),
-            f"用户提交 状态 {clean['status']}",
-        )
         m.logger.info("用户 %s 提交账号 %s（待审核）", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
         # 申请入库后管理员侧零通知，只能靠主动打开后台发现，于是出现"用户说交了
         # 申请、管理员说没收到"。补一条非紧急告警：邮件必达，手机推送受「仅推送
@@ -550,8 +584,13 @@ def api_my_account_add():
                 resp["job_id"] = job_id
                 resp["status"] = "verifying"
             except m.VerifyGateBusy:
+                # 配额已扣而任务没建成本次真实提交的一部分事实：不能静默回
+                # "ok" 当无事发生（用户以为在验证、且尝试额度已消耗），如实报——
+                # status 明示"未排上在线校验"，msg 交代后续动作由用户重试触发。
                 m.logger.warning("校验任务队列已满，账号 %s 未建校验任务",
                                m._mask_phone(clean["phone"]))
+                resp["status"] = "verify_deferred"
+                resp["msg"] = "已提交，等待管理员审核后参与签到（校验队列繁忙，本次未排上在线校验，请稍后重试）"
         return jsonify(resp)
 
 
@@ -607,23 +646,41 @@ def api_my_calendar():
     prefix = f"sign-daily-{year:04d}-{mon:02d}-"
     try:
         for entry in os.scandir(m.STATE_DIR):
-            if entry.name.startswith(prefix):
-                date = entry.name[len("sign-daily-") : -len(".json")]
-                try:
-                    with open(entry.path, encoding="utf-8") as f:
-                        daily = json.load(f)
-                except Exception:
-                    daily = {}
-                # setdefault：异常文件名（非 YYYY-MM-DD）不落入本月键时自动补空，防 KeyError 500
-                result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
-    except OSError:
-        pass  # STATE_DIR 不存在等：按无记录返回
+            # 伴生文件按"后缀+形态"识别，不按截字符串：每日状态写入必带
+            # `<名>.lock`，崩溃残留还有 `<名>.tmp<pid>-<tid>`——它们同样命中月份
+            # 前缀，原先"截掉末尾 5 字符"会把伴生文件切成幻影日期
+            # （`X.json.lock` → `X.json`），日历平白多出一个不存在的天。
+            if not (entry.name.startswith(prefix) and entry.name.endswith(".json")):
+                continue
+            day = entry.name[len(prefix) : -len(".json")]
+            if len(day) != 2 or not day.isdigit():
+                continue
+            date = f"{year:04d}-{mon:02d}-{day}"
+            try:
+                with open(entry.path, encoding="utf-8") as f:
+                    daily = json.load(f)
+            except Exception:
+                daily = {}
+            # setdefault：异常文件名（非 YYYY-MM-DD）不落入本月键时自动补空，防 KeyError 500
+            result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
+    except OSError as e:
+        # 读不到 ≠ 没有记录：静默吞会把"状态目录不可读"渲染成全月空白的
+        # "这个月没签"假安心。出声——日志一条 + 响应显式失败（前端 YB.api 见
+        # ok:false 走卡内错误态+重试，不再展示空白月）。
+        m.logger.warning("读取签到状态目录失败（月历 %s）: %s: %s", month, m.STATE_DIR, e)
+        return jsonify({
+            "ok": False,
+            "error": "无法读取签到状态目录，请稍后重试或联系管理员",
+        }), 500
+    _sat_sign, _sun_sign = yb_schedule.weekend_flags(env=m.read_env(m.ENV_FILE))
     return jsonify({
         "ok": True,
         "month": month,
         "days": result,
-        "sunday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),  # 前端据此决定周日是否置灰/可查
-        "saturday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),  # 默认关闭；前端据此决定周六是否置灰/可查
+        # 周末开关与引擎同一解析口径（`schedule.weekend_flags`，1/true/on/yes 为真）：
+        # 原先这里走整数解析，`=true` 时引擎照签而日历把周末置灰——两套值域的分叉点。
+        "sunday_sign": int(_sun_sign),  # 前端据此决定周日是否置灰/可查
+        "saturday_sign": int(_sat_sign),  # 默认关闭；前端据此决定周六是否置灰/可查
     })
 
 
@@ -691,11 +748,9 @@ def api_my_account_update(idx):
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
-        if clean["phone_code"] == m.CLEAR_SENTINEL:
-            clean.pop("phone_code", None)
-        elif not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
+        # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变
+        # （与 /api/accounts/<idx> 及两条添加路径共用同一折算）
+        m.fold_phone_code(clean, old.get("phone_code", ""))
         clean["owner"] = old.get("owner", "")
         # 改绑手机号一律回待审核重审——否则 ACTIVE 号可被改绑成任意新号免审生效，
         # 历史审核结论不再可信。无论原状态（含 ACTIVE）；REJECTED 本就回 pending。
@@ -722,9 +777,10 @@ def api_my_account_update(idx):
             m._mask_phone(clean["phone"]),
             "用户编辑 改绑回审" if rebind else "用户编辑",
         )
-        # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
+        # 用户改密码/改绑手机号/改写识别码（凭据变更）才清除熔断暂停；
         # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
+        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
+                                    old.get("phone_code") or "")
         m.logger.info("用户 %s 编辑账号 %s", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
         if rebind or old.get("status") == m.ACCOUNT_STATUS_REJECTED:
             return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})

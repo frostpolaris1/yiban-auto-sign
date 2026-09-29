@@ -22,7 +22,8 @@
 输入：账号列表、探针配置（`YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` 等，经 .env 传入）。
 输出：`sign_events`（stage=probe）、管理员汇总（并入 A 线）与用户预警；退出码口径与
 `runner` 一致。
-调用谁：`client`（真实登录）、`alerts`、`state_io`、`cli_support`、`env_lock`、`db`。
+调用谁：`client`（真实登录）、`security`（硬失败词元单一来源）、`alerts`、`state_io`、
+`cli_support`、`env_io`（once 自动关闭写 `.env`）、`db`。
 谁调用：`runner`（`--probe`）、web 注册/改密路径（`web/services/accounts_data.py`）。
 前端调用点：注册与改密表单（`web/static/js/components/account-form.js`、
 `web/static/js/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
@@ -38,9 +39,9 @@ import re
 from datetime import datetime
 
 from yiban import client as yiban_client
-from yiban import clock
+from yiban import clock, security
 from yiban.engine import alerts, cli_support, state_io
-from yiban.infra import env_io, env_lock
+from yiban.infra import env_io
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
@@ -64,13 +65,15 @@ PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
 # 触发频率：正整数=每 N 天；once=下一次计划时间单次执行（执行后自动关闭）
 PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"
 
-# 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）
+# 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）。
+# WAF/风控/挑战解析/非 JSON/假成功家族**不得手抄**：词元来自 `yiban.security.hard_fail_pattern()`
+# （与重试档位同一真值源）——此前手抄的词表不含解析失败与非 JSON 文案，探针对该族零预警。
 PROBE_HARD_FAIL_RE = re.compile(
     r"图形验证|图片验证|滑块验证|人机验证|captcha"
     r"|校本化|未授权|授权失效|Auth Error|Get Night Attendance Sign Tasks Error"
     r"|登录失败|密码错误|账号或密码"
     r"|授权设备|获取登录入口失败|登录响应异常|最终认证失败"
-    r"|WAF|风控|拦截"
+    r"|(?:" + security.hard_fail_pattern() + r")"
 )
 
 
@@ -119,12 +122,7 @@ def _read_probe_state():
 
 def _write_probe_state(state):
     try:
-        path = _probe_state_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp" + str(os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        state_io._write_private_json(_probe_state_path(), state)
     except OSError:
         logger.warning("探针状态文件不可写（不影响本次探测）")
 
@@ -178,33 +176,19 @@ def _health_probe_due(now=None):
 
 
 def _env_update_probe(auto_disable=False):
-    """探针执行后更新 .env：once 模式自动关闭 YIBAN_PROBE_ENABLE（跨进程写锁）。
+    """探针执行后更新 .env：once 模式自动关闭 YIBAN_PROBE_ENABLE。
 
     仅在 once 单次执行后调用；失败只记日志，不影响本次探测结果。
+    落盘走 `env_io.write_env_key`：跨进程写锁、同键旧行折叠、逐行校验与原子 0600
+    替换单源在 `write_env_keys`。此前就地自写"宽 splitlines + 精确前缀滤行"的
+    读-改-写：不认 `KEY = v` 带空格旧行（折不掉、留影子行），还会把注释里潜伏的
+    换行族字符拆行实体化成新配置行。
     """
     if not auto_disable:
         return
     env_path = os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
     try:
-        with env_lock.env_write_lock(env_path):
-            lines = []
-            if os.path.exists(env_path):
-                with open(env_path, encoding="utf-8-sig") as f:
-                    lines = f.read().splitlines()
-            out = [ln for ln in lines if not ln.strip().startswith("YIBAN_PROBE_ENABLE=")]
-            out.append("YIBAN_PROBE_ENABLE=0")
-            tmp = env_path + ".tmp" + str(os.getpid())
-            # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace 之间
-            # （及崩溃残留时）整个 .env 对同机其他用户可读。原先只靠事后 chmod，
-            # 且默认 umask 未必是 077（交互 shell 手工跑 --probe 即可能命中）
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write("\n".join(out) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, env_path)
-            with contextlib.suppress(OSError):
-                os.chmod(env_path, 0o600)
+        env_io.write_env_key(env_path, "YIBAN_PROBE_ENABLE", "0")
     except Exception as e:
         # 升级为 ERROR（2026-08-27 审查）：once 自动关闭失败会让"单次探针"事实变成
         # 每晚全量探测（反复真实登录扩大风控面 + 每日重复告警）；选了 once 的运维
@@ -218,23 +202,28 @@ def _env_update_probe(auto_disable=False):
 def run_probe(accounts):
     """探针模式主流程：对全部账号做只读健康检查。
 
-    - 未到触发时间/频率（或未开启）则直接返回（零请求）。
+    - 未到触发时间/频率（或未开启）则直接返回（零请求）→ 返回 `None`，表示**这一轮
+      没做检查**（调用方据此返回"跳过"退出码 2，而不是 0）。
     - 结果写入 sign_events（stage=probe，复用 db 写锁 _conn_lock，天然并发安全），
       时间戳为当前时刻，追加在最近签到日志之后。
     - 无法自愈问题：管理员合并预警邮件（复用 A 线 _collect/_flush）+ 对应用户个人
       预警（复用 B 线 send_user_fail_mail，尊重用户开关）。
     - 执行后更新 last_run；once 模式自动关闭探针（.env 写锁）。
+
+    返回**未通过检查的账号数**（硬失败 + 网络类软失败；真跑且全绿为 0）或 `None`
+    （跳过）。退出码由调用方按它分族——外部监控原来看不出"探针跳过 / 撞锁 / 真跑
+    失败"的区别（一律 0），这是把三种结局分开的可判据。
     """
     if not PROBE_ENABLE:
         # 探针关闭：完全静默退出（不产生任何日志、不落库、不写状态）
-        return
+        return None
     if not _health_probe_due():
         # 周期轮询的常态路径（容器调度器每 600s / 宿主 cron */10 都会走到）：
         # "未到触发点"属预期行为而非异常，逐次 INFO 会刷屏（约 144 条/日）。
         # 降为 DEBUG——默认级别下日志只保留签到结果与探针实际执行结果；
         # 需排查轮询是否如期触发时，开 DEBUG 级别即可看到每次尝试轨迹。
         logger.debug("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
-        return
+        return None
     # last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
     # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
     _update_probe_state_run(clock.now().strftime("%Y-%m-%d"))
@@ -251,10 +240,14 @@ def run_probe(accounts):
     for acc in accounts:
         ok, message = verify_account(acc)
         hard = (not ok) and bool(PROBE_HARD_FAIL_RE.search(message or ""))
-        # 落库：stage=probe（复用 db.add_sign_event，内部 _conn_lock 并发保护）
+        # 落库：stage=probe（复用 db.add_sign_event，内部 _conn_lock 并发保护）。
+        # 记账口径 = 探测结论：未通过（含网络类软失败）一律记 failed——原式
+        # `"failed" if hard else "success"` 把软失败涂成 success，探针断网时台账上
+        # 仍是"全员可用"（现网 255 行全 success、0 failed）。硬/软的区分由告警分支
+        # 与 message 承载，探测行为与预警口径不变。
         try:
             db.add_sign_event(
-                ts, acc.phone, "failed" if hard else "success",
+                ts, acc.phone, "success" if ok else "failed",
                 _sanitize_text(message), stage="probe",
             )
         except Exception as e:
@@ -301,3 +294,4 @@ def run_probe(accounts):
     logger.info(
         f"==== 探针模式完成：健康 {healthy_n}，网络类失败 {soft_fail_n}，预警 {len(hard_fail)} ===="
     )
+    return len(hard_fail) + soft_fail_n

@@ -9,19 +9,30 @@
 的账号级租约：领不到即"别人正在做它"，本进程不碰（不写状态、不重试、不告警）。
 
 **归属**
-`yiban.engine` 的签到执行核心；`runner`（定时全量）、`workers`（并行/兜底执行体）与
-手动 `--only` 都落到 `run_queue_retry`。
+`yiban.engine` 的签到执行核心。**冻结（台账单池化后无生产调用点）**：生产执行已恒定走
+`executor_v3.run_executor_v3`（`sign_tasks` 队列），本模块的 `run_queue_retry` 是旧领取池
+（`sign_claims`）时代的执行路径，保留在仓内仅供既有单测覆盖其四柱语义（双章围栏 / 超时
+回收 / 到点领取 / 限速间隔在 v3 侧另有等价实现与用例），不再被 `runner` / `workers` 调用。
+
+**外部集成不得调用**：`run_queue_retry` 会**静默写冻结的 `sign_claims`**、绕开唯一台账
+`sign_tasks`（当日计划/了结事实都以新表为准），任何部署脚本、cron、容器调度或第三方集成
+都**不得**直接调用它（也不要经 `scripts/signin.py` 兼容壳的裸名转发调用）；对外入口只有
+`yiban.engine.runner.main`（`python -m yiban.cli sign` / `scripts/signin.py` 的 `main`）。
 
 **复用**
-`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）；
-`SIGN_MODE`、`_DEFAULT_SLOW_SIGN_SEC` 供告警与容量计算对齐。
+`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）。
+`SIGN_MODE` 与 `_DEFAULT_SLOW_SIGN_SEC` **不对齐任何外部口径**，只在本文件内自用（前者喂
+随机模式判定，后者喂慢签告警）：读 `YIBAN_SIGN_MODE` 的另外五处（`engine/schedule.py`、
+`web/routes/me.py`、`web/routes/settings_api.py`、`web/services/accounts_data.py`、
+`web/services/env_io.py`）各自现取环境变量、不经本常量，容量计算也不读这两个值。
+"同一件事六份读法"是既存口径，改模式语义时六处得一起改。
 
 **通信**
 输入：账号列表、时间表（schedule，空即手动队列）、`--only` 过滤后的子集。
 输出：按日状态（经 `state_io`）、`sign_events`、告警（`alerts`）；返回本轮统计供
 `runner` 汇总退出码。
-调用谁：`client`（单次尝试）、`attempts`、`state_io`、`alerts`、`schedule`、`db`。
-谁调用：`runner.run_once`、`workers` 的子进程。
+调用谁：`attempts`（单次尝试，`client` 由它调用）、`state_io`、`alerts`、`schedule`、`db`。
+谁调用：**无生产调用点**（冻结，见「归属」）；仅既有单测直接调用。
 前端调用点：账号页与我的账号页（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
 `/api/my-calendar`、`/api/my-logs`）与仪表盘 `/api/admin/sign-events` 读本模块写入的
@@ -35,13 +46,14 @@ import random
 import time
 from datetime import datetime, timedelta
 
-from yiban import clock, egress
+from yiban import clock, egress, window
 from yiban import status as yiban_status
 from yiban.engine import alerts, state_io
 from yiban.engine import attempts as attempts_mod
 from yiban.engine import schedule as schedule_mod
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
+from yiban.store import claims as claims_mod
 from yiban.store import db
 
 logger = logging.getLogger("yiban")
@@ -57,7 +69,6 @@ _DEFAULT_SLOW_SIGN_SEC = 30
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
-STATUS_PENDING = yiban_status.STATUS_PENDING
 STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
@@ -68,73 +79,129 @@ STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 # 状态码 → 日志/日历符号（同一对象，非副本）
 STATUS_SYMBOL = yiban_status.SYMBOL
 
-#: 领取池的"当日了结"口径（`state_io._second_run_drop_done` 的剔除集合与 `_settle_claims`
-#: 的记 `done` 判据都用它，改一处必须同改另一处）：
-#: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
-#: 由补签轮或兜底执行体接手。
-_CLAIM_DONE_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+#: 领取池的"当日了结"口径：`yiban.status.CLAIM_DONE_STATUSES` 的别名（**同一对象**，
+#: 非副本）。这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）
+#: 都仍开放，由补签轮或兜底执行体接手。补签轮定向剔除（`state_io`）判的是同一件事。
+_CLAIM_DONE_STATUSES = yiban_status.CLAIM_DONE_STATUSES
 
 
 def _next_retry_at(now_dt, sch_cfg, rng=None):
-    """重试落点：在剩余有效窗口的偏早段重新采样。
+    """重试落点：在剩余有效窗口的偏早段重新采样；窗口放不下下一次尝试时返回 None。
 
-    - 下界 now + retry_min_interval（防连击）；
-    - 上界 eff_hi = sign_end - edge_back（统一截止口径）；
-    - 只在前 60% 的剩余窗口里均匀采样：不尾端扎堆、无固定尾序，也不回队尾立即执行；
-    - 窗口放不下下一次尝试时返回 None，由调用方走放弃路径。
+    下界 `now + retry_min_interval`（防连击），上界 = 有效窗口结束，采样域只取剩余窗口
+    的前 60%。
+    **入参契约**：`sch_cfg` 必须是 `schedule._schedule_config()` 的返回形态，即含
+    `sign_start` / `sign_end` / `edge_front_sec` / `edge_back_sec` 四键（`window.bounds`
+    按这四键折有效窗口）外加 `retry_min_interval`。只给起止两键的旧形态会让 `bounds`
+    取不到裁剪键而抛 KeyError。
     """
     rng = rng or random.Random()
     base = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_min = sch_cfg["sign_end"][0] * 60 + sch_cfg["sign_end"][1]
-    eff_hi = base + timedelta(minutes=end_min - sch_cfg["edge_back_sec"] / 60.0)
+    # 上界必须与排计划/判关闭同源于 `window.bounds`：裁剪把窗口吃空时它回退默认窗口，而
+    # `sign_end - edge_back` 仍按原始配置算，上界会落到有效窗口起点之前——窗口明明还开着
+    # 却判成"放不下"而放弃，白丢一次机会。别换成直读 cfg 的第二套口径。
+    eff_hi = base + timedelta(minutes=window.bounds(sch_cfg).hi_min)
     lo = now_dt + timedelta(seconds=sch_cfg["retry_min_interval"])
     if lo >= eff_hi:
-        return None
-    window = (eff_hi - lo).total_seconds()
-    return lo + timedelta(seconds=rng.uniform(0, window * 0.6))
+        return None  # None = 放弃重试：调用方据此计失败并告警，不是静默跳过
+    span = (eff_hi - lo).total_seconds()
+    return lo + timedelta(seconds=rng.uniform(0, span * 0.6))  # 只采前 60%：落点不在窗尾扎堆，也不回队尾立即执行
+
+
+class _ClaimHeartbeat:
+    """在领账号的心跳：周期性续租，并把长等待切成段（段间续租）。
+
+    **为什么需要**：一轮里账号的尝试之间隔着间隔对齐（`gap_max` 可到 3600s）与重试等待，
+    那些等待期间账号已被领取却没有任何请求。领取池的租约判据是"心跳早于 now-900s 即
+    可被接管"，所以没有心跳时，一个正常在跑的慢轮次会把在领账号一个个"送给"别的执行体
+    —— 同一账号当天两次真实登录（第一红线）。
+
+    **周期与粒度**：续租间隔取 `claims.HEARTBEAT_SEC`（租约的 1/3），分段睡眠取它的一半
+    ——两段之间最多跨半个周期，即使某次 `beat()` 因抖动被判"未到点"，累计也不会超过一个
+    周期，离租约仍有 2 倍余量。
+
+    **周期用业务钟（`clock.now()`）量，不用单调钟**：租约判据（`heartbeat_at <= now-900s`）
+    与 `touch` 写入的时刻都在业务钟域，两者必须是同一把尺子——单调钟在墙钟前跳时仍说
+    "没到续租点"，而别人的租约判据已按墙钟判本行过期，接管于是发生在本进程毫无察觉时。
+
+    **失败降级**：续租失败（库抖动等）只记 debug——行若真被接管，收尾时的 `epoch` 校验
+    会拒绝本进程的迟到写（那才是硬保证）；在这里抛异常会把一次网络抖动放大成整轮中断。
+
+    `days` / `epochs` 与调用方的 `claimed_day` / `claimed_epoch` **共用同一对象**（不复制）：
+    领取会就地记进去，心跳每拍都从最新状态读，不需要额外的注册/注销调用。
+    """
+
+    def __init__(self, owner, days, epochs, period=None, touch=None, now=None, sleep=None):
+        self._owner = owner
+        self._days = days
+        self._epochs = epochs
+        self._period = claims_mod.HEARTBEAT_SEC if period is None else period
+        self._touch = touch or db.claim_touch
+        self._now = now or clock.now
+        self._sleep = sleep or time.sleep
+        self._last = None
+
+    def beat(self, force=False):
+        """对全部在领账号续租一次；返回成功条数。周期未到且非 force 时不做任何事。"""
+        now = self._now()
+        if not force and self._last is not None and (now - self._last).total_seconds() < self._period:
+            return 0
+        self._last = now
+        ok = 0
+        for phone, day in list(self._days.items()):
+            try:
+                if self._touch(phone, day, self._owner, epoch=self._epochs.get(phone)):
+                    ok += 1
+            except Exception as e:
+                logger.debug("[%s] 心跳失败（不影响签到，收尾仍受 epoch 校验保护）: %s",
+                             _mask_phone(phone), e)
+        return ok
+
+    def sleep(self, sec):
+        """等待 `sec` 秒，但切成不超过半个周期的段，段间续租（长等待不丢心跳）。"""
+        remaining = max(0.0, float(sec))
+        chunk = max(1.0, self._period / 2)
+        while remaining > 0:
+            piece = min(remaining, chunk)
+            self._sleep(piece)
+            remaining -= piece
+            self.beat()
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
-                    event_sink=None, reclaim=False, delegated=None, window_guard=False):
-    """轮询队列 + 分散重试执行全部账号签到。
+                    event_sink=None, reclaim=False, delegated=None, window_guard=False,
+                    retry_failed=False):
+    """轮询队列 + 分散重试执行全部账号签到（**冻结**：旧领取池时代的执行路径，无生产调用点）。
 
-    流程（schedule 为空=手动签到）：按签到模式（列表顺序 / 列表随机）
-    确定执行顺序逐个尝试；失败的账号不立即重试，放入队尾等待下一轮；
-    每账号总尝试次数受 `attempts._retry_budget` 分级控制（确定性认证失败 1 次、
-    风控类最多 2 次，其他最多 `attempts.MAX_ATTEMPTS` 次）；同一账号两次尝试间隔
-    不小于 `attempts.RETRY_MIN_INTERVAL` 秒，避免连击。相邻账号请求间隔对齐到不小于
-    gap_max（与自动调度、容量预估同一「最小间隔」语义）。
+    按 `schedule` 是否为空分成两条路径：空 = 手动，按 SIGN_MODE 定顺序逐个尝试、失败放回
+    队尾等下一轮；非空 = 自动错峰，按 {phone: datetime} 到点执行（已过点立即）、失败经
+    `_next_retry_at` 重采样后非阻塞重插，不再"回队尾 + 阻塞等待"。两条路径的相邻请求间隔
+    都以 `gap_max` 为下限，总尝试次数同受 `attempts._retry_budget` 分级控制（确定性认证失败
+    1 次、风控类最多 2 次、其余 `attempts.MAX_ATTEMPTS` 次），两次尝试间隔不小于
+    `attempts.RETRY_MIN_INTERVAL`（防连击）。
 
-    schedule 非空（自动错峰模式，时间驱动队列）：按 {phone: datetime} 时间点到点执行
-    （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新
-    采样到剩余有效窗口的偏早段后非阻塞重插（不再回队尾 + 阻塞等待），窗口不足时明确
-    放弃；相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护统一按
-    eff_hi（sign_end - edge_back）。
+    cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；**必须持有调用方
+    传入的同一引用**，理由见函数体内注释。
+    event_sink：每次尝试/状态迁移回调一行 dict（sign_events 表字段）；None 时不收集，回调
+    异常一律吞掉——留痕失败不得影响签到主流程。
+    reclaim：True 才允许重领"当日已了结"的账号，只有手动 `--only` 这么传（用户主动点的照
+    做）；补签轮与兜底 worker 不传——它们接手的是未了结账号，已了结的再登录纯属多余风控暴露。
+    retry_failed：True 才允许重领**预算耗尽/风控档**弃权的账号（"有界显式路径"）。只有
+    一次性轮次——补签轮、手动 `--only`——传 True（它们是"补签链接得上失败账号"这一设计的
+    受益者）；默认 False 时只有"窗口外/无点位"档可再领，预算耗尽的账号不会被后面每一轮
+    无上限地重领一遍（每次重领都是一次真实登录）。**兜底常驻取默认 False**：它是无界循环、
+    每轮重扫，传 True 会退回"窗口内每轮重登一次"的老毛病（第二次机会留给一次性补签轮与
+    手动）。**新增"会产生结论的有界轮次"时必须显式声明本参数**，漏一处就是该路径再也接不
+    到失败账号。
+    delegated：出参 set，收"领不到"（不在本执行体范围内）的账号；汇总与退出码必须据此把它
+    们从"失败"里摘出去，否则每个执行体都会把别人的活报成自己的失败。
+    多执行体分工（动态领取 + 账号级租约）见 `_claim` 与 `_settle_claims`；在领账号由
+    `_ClaimHeartbeat` 周期续租（周期见 `claims.HEARTBEAT_SEC`，长等待分段续），轮末由
+    `_settle_claims` 收尾并对"领到却无结论"的行显式收尸。
 
-    cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
-    执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
-
-    event_sink（可选）：签到事件落库回调——每次尝试/状态迁移调用一次，
-    传入 dict 行（sign_events 表字段）。None 时不收集；回调异常一律吞掉，
-    事件留痕绝不影响签到主流程。
-
-    reclaim（多执行体）：True 时允许重新领取"当日已了结"的账号——只有**手动指定账号**
-    才这么传（用户主动点的签到应当照做）。补签轮与兜底 worker 不传：它们接手的是
-    "未了结"账号，已了结的账号再登录一次纯属多余的风控暴露。
-
-    **多执行体分工（动态领取 + 账号级租约，见 yiban/store/claims.py）**：每次尝试前
-    领取该账号当日的领取记录，领不到即"别的执行体正在做它"→ 本进程不碰（不写状态、
-    不重试、不告警）；本轮结束后统一收尾：已了结（成功/已签到/今日无任务）落 `done`，
-    其余落 `failed` 并**放开租约**（补签轮/兜底执行体可立刻接手）。执行体进程崩溃时
-    领取记录停在 `claimed`，租约到期后由其他执行体接管——不需要人工介入。
-
-    `delegated`（可选出参）：把"不在本执行体范围内"的账号（领不到的那些）收集到
-    这个 set 里。汇总与退出码必须据此把它们从"失败"里摘出去——否则每个执行体都会把
-    别人的活报成自己的失败。
-
-    返回结果字典 {手机号: (success, message, skip, status)}。
+    返回 {手机号: (success, message, skip, status)}。
     """
-    schedule = schedule or {}
+    schedule = schedule or {}  # 空=手动分支（文件末尾 while queue），非空=时间点驱动分支（先跑先 return）
     # 必须保持传入 dict 的**同一引用**（不能 `or {}` 另起新对象）：调用方
     # （runner/workers）收尾时保存的是自己持有的那个 dict，若这里对空 dict
     # （全新系统：状态文件不存在 → read() 返回 {}）重新绑定，轮内账密失败计数
@@ -160,51 +227,103 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     first_round = True
 
     # ---- 领取池（多执行体协调；单执行体形态下永远领得到，行为与旧版一致）----
-    # 单执行体形态的身份是稳定槽位名 `single@{主机名}`：跨重启不变，故重启后立刻认领
-    # 自己上一轮的在飞账号；代价是同一槽位名不得两台机器同时跑（跨主机靠 @主机名 区分，
-    # 同机靠运行锁挡住——单执行体形态由调用方持锁，见 yiban/engine/cli_support.py）。
+    # 缺省身份是**运行时身份**：稳定槽位名 `single@{主机名}` 再拼上本进程的进程号与代次。
+    # 稳定名跨重启不变，界面与槽位号靠它；但同机上 cron 全量与网页手动是两个进程、会得到
+    # 同一个稳定名，而领取池按 owner 串认"自己人"——那样它们就能同时放行同一账号、
+    # 各登录一次（第一红线）。进程号+代次把同名消掉。`YIBAN_EXECUTOR_ID`（并行执行体/
+    # 兜底的槽位身份）由调用方给出、本身按槽位唯一，不再叠加；单执行体形态由调用方持
+    # 运行锁，见 `yiban/engine/cli_support.py`。
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
-                   or egress.single_owner())
+                   or egress.runtime_owner(egress.single_owner()))
     claimed_day = {}   # 本进程领到的账号 → 业务日（跨午夜时逐账号不同）
+    # 本进程领到的账号 → 领取时拿到的 fencing token。收尾写必须带上它：重试重插会再次
+    # 领取（同一持有者重入也会换一代，故这里记的是**最近一次**的 token，旧的已作废）。
+    claimed_epoch = {}
+    # 在领账号的心跳：领取之后周期性续租，长等待分段续（没有它，>900s 的在领账号会被
+    # 任何执行体按"租约过期"接管，同一账号当天两次真实登录）。失败只降级记录。
+    heartbeat = _ClaimHeartbeat(executor_id, claimed_day, claimed_epoch)
 
     def _claim(phone, day):
-        """领取该账号当日的工作权；领不到返回 False（别人在做）。
+        """领取该账号当日的工作权；领不到返回 False（别人在做 / 领取池不可用）。
 
-        **库未初始化时直接放行且不碰库**：领取池只是"多执行体协调"的手段，
-        而"不碰库"是有意的——否则纯状态文件部署（无 DB）会被这次调用顺手创建
-        一个默认库，纯属副作用。
+        领取池不可用时**拒跑**（fail-closed，与 `claims.try_claim` 同一纪律）：这里答
+        "可执行"等于允许两个执行体同时登录同一账号，踩上游风控红线；该账号本轮空转，
+        由补签轮 / 兜底执行体接手。
+
+        **"库未初始化"分两档**（两种形态的现场都是 `is_initialized()` 为假，结论相反）：
+        部署没声明库路径 = 纯状态文件部署，照旧放行且不碰库（不得顺手建一个库出来）；
+        声明了库路径 = 这个部署靠领取池做互斥，库读不到就必须拒跑——否则两台执行体会
+        各自以为"没有领取池要协调"而同时登录同一账号。
+
+        轮内重试会再次领取同一账号，此时必须带上第一次领到的 token：领取池对未了结行
+        的准入只有"租约已过期"或"出示当前代"两条，不带 token 的重入一律拒绝（同名进程
+        互相重入就是重复登录）。
+
+        `retry_failed`（有界显式路径）另开出"重领预算耗尽档失败账号"的口子：默认关，只有
+        一次性轮次（补签轮/手动）传 True；兜底常驻是无界循环、不传。窗口外/无点位档不靠它
+        ——那两档在领取池里默认可再领。
         """
         if not db.is_initialized():
-            return True
+            # 残余缺口：**从未声明** `YIBAN_DB_FILE` 的部署会落到默认库 `yiban.db`，这里
+            # 按"未声明"（`pool_db_declared()` 为假）放行——那个默认库即便不可用，也不会走到
+            # 下面的拒跑分支。生产不可达：`runner` 必经 `load_accounts` → `init_db`，故进到
+            # 这里时库已建、`is_initialized()` 为真；作为已知且可接受的边界记于此。
+            if db.pool_db_declared():
+                # 与 try_claim 的库异常同一口径：告警（含当日汇总，进程内一次）+ 拒跑。
+                claims_mod.notify_pool_down(
+                    f"部署已声明领取池库路径但库当前不可用（未初始化/连不上），"
+                    f"账号 {_mask_phone(phone)} 拒跑")
+                return False
+            return True  # 放行且**不碰库**：纯状态文件部署（无 DB）不该被这次签到顺手建出默认库
         try:
-            got = db.claim_sign_account(phone, day, executor_id, allow_settled=reclaim)
+            got, epoch = db.claim_sign_account(phone, day, executor_id,
+                                               allow_settled=reclaim,
+                                               allow_failed=retry_failed,
+                                               epoch=claimed_epoch.get(phone))
         except Exception as e:
-            # 协调层故障不得让签到停摆（单执行体形态这个池可有可无）
-            logger.debug(f"[{phone}] 领取失败（按可执行处理）: {e}")
-            got = True
+            logger.error(f"[{_mask_phone(phone)}] 领取签到账号异常（fail-closed 拒跑）: {e}")
+            got, epoch = False, 0
         if got:
             claimed_day[phone] = day
+            claimed_epoch[phone] = epoch
         return got
 
     def _settle_claims(res):
         """本轮结束后统一收尾本轮领到的账号（只认本轮领过的，避免误写他人在飞的记录）。
 
-        了结口径与展示口径刻意一致：`success/already/no_task` 记为 `done`（当日无需再签），
-        其余记为 `failed` 但**未了结**——补签轮与兜底执行体正是为接手它们而存在。
+        了结口径与展示口径刻意一致：`_CLAIM_DONE_STATUSES` 记 done（当日无需再签），其余记
+        failed 但**未了结**——补签轮（显式路径）与兜底执行体（仅默认档）正是为接手它们而存在。
+        failed 行按弃权原因分档：窗口外/无点位默认可再领；预算耗尽/风控只有显式路径（补签轮/手动）
+        可再领，兜底常驻是无界循环、不算显式路径。
+
+        收尾之后还要**轮末收尸**：本轮领到却没有结论的行（异常/提前离场留下的）显式弃权，
+        把租约立刻放开而不是等满 900s（见 `claims.reap_unreported`）。
         """
         if not claimed_day:
             return   # 本轮没领过任何账号（库未初始化 / 全被他人领取）
         for ph, (_ok, _msg, _skip, st) in res.items():
             day = claimed_day.get(ph)
             if not day:
-                continue
+                continue  # 本进程没领到它：别人在飞的记录不碰
+            epoch = claimed_epoch.get(ph)  # 领取时的 fencing token，重插后已是最近一次（旧的作废）
             try:
                 if st in _CLAIM_DONE_STATUSES:
-                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st))
+                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st),
+                                    epoch=epoch)  # 被接管过的账号写不进去：迟到结论不得覆盖接管者
                 else:
-                    db.claim_give_up(ph, day, executor_id, str(st))
+                    # 按原因分档：窗口外/无点位默认可再领（该重试），预算耗尽/风控默认不可
+                    # （需显式路径）——否则后者当日会被后面每一轮重领一遍。
+                    db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch,
+                                     retryable=st in claims_mod.RETRYABLE_GIVE_UP_STATUSES)
             except Exception as e:
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
+        try:
+            claims_mod.reap_unreported(executor_id,
+                                       {ph: (d, claimed_epoch.get(ph))
+                                        for ph, d in claimed_day.items()},
+                                       set(res))
+        except Exception as e:
+            logger.debug(f"轮末收尸失败（不影响签到结果，下一轮仍可接手）: {e}")
 
     def _emit_event(phone, status, message, dur=None, attempt_no=None):
         """签到事件留痕。
@@ -232,40 +351,25 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     def _mark_window_skip(rest_accs):
         """窗口关闭收尾：剩余账号一律进本轮 `results`；落盘只写**当日尚无结论**的账号。
 
-        不覆盖已有结论：本轮（或上一轮补签）已经得出的 failed / no_position 等真实
-        原因必须保留——原实现无条件改写，会把"重试没赶上窗口"记成"窗口外"，
-        日历上丢掉失败原因，`has_real_failure` 也一起变 False（失败告警被吞掉）。
-        补签轮起跑时窗口已关闭同理：整轮零请求却不该改写首轮结论。
-
-        **已有结论的账号按原结论透传进 `results`**：这类账号本轮不执行（窗口已关），
-        但汇总只认 `results`，缺席即按默认 `pending` 归入"未执行"失败（❌ N 失败、
-        退出码 1、失败邮件），而真相是"该账号当日已有结论、无需本轮处理"。透传后汇总
-        按真实结论分组：success/already 计入成功；no_task / skipped_window /
-        skipped_norange / paused / user_cancelled / no_position 计入跳过；其余
-        （failed 等）仍计失败——真失败必须继续可见。状态串 strip 后比较，
-        口径与 `state_io._has_conclusion` 相同。
-
-        **`pending` 不是结论**：排计划阶段给每个账号都写了"计划 HH:MM"（同一份状态
-        文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
-        ——汇总把它们算成失败（❌ N 失败、退出码 1、发失败邮件），而真相是"一个请求都
-        没发"（2026-09-17 测试机实测复现；该行在 `pending` 判定加入前对 base 提交同样）。
-
-        **快照只用于预筛，落盘再 CAS 一次**：`_daily_statuses()` 是无锁快照，从快照
-        判"无记录"到写入之间，另一执行体可能刚把真实结论落盘——写走
-        `only_if_absent`（锁内再判），CAS 被拒的账号不写、不改 results、不发事件。
+        透传与 CAS 两条口径缺一即错：塌掉任一条，都会把"一个请求都没发"的轮次汇总成
+        ❌ N 失败、退出码 1、发失败邮件。
         """
-        recorded = state_io._daily_statuses()
+        recorded = state_io._daily_statuses()  # 无锁快照只用于预筛；有无结论以落盘时锁内再判为准
         for _ra in rest_accs:
             _p = _ra.phone
             if _p in results:
-                continue
+                continue  # 本轮已得出结论的账号不被收尾改写
             _rec_status = str(recorded.get(_p, "")).strip()
-            if _rec_status not in ("", STATUS_PENDING):
+            if yiban_status.is_concluded_status(_rec_status):
+                # 已有当日结论就按原结论透传进 results：汇总只认 results，缺席即按 pending 归入
+                # "未执行"失败（窗口外起跑的全量轮会一个账号都进不了 results，真相却是没发过请求）。
+                # pending 不算结论——排计划给每个账号都写过"计划 HH:MM"，它是打算不是事实；
+                # 谓词与 `state_io._has_conclusion` 同源，别在这儿另写一份。
                 results[_p] = (False, "已有当日结论", False, _rec_status)
                 continue
             if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,
                                               "签到时段已结束", only_if_absent=True):
-                # 锁内发现当日已有结论（他执行体刚写入）：不覆盖，保持真实失败可见
+                # CAS 被拒：锁内发现他执行体刚写入真实失败——不写、不改 results、不发事件
                 logger.info(f"[{_p}] ⛔ 签到时段已结束，但当日已有结论，跳过写入")
                 continue
             results[_p] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
@@ -324,7 +428,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             # 到点执行（已过点立即）；重试落点已由 _next_retry_at 采样
             wait = (_at_dt - now_dt).total_seconds()
             if wait > 0:
-                time.sleep(wait)
+                heartbeat.sleep(wait)
             # 请求最小间隔兜底：min_exec_gap 与 exec_gap_min（过点账号）取较大值；
             # 账号间隔设置（gap_max）对自动调度同样生效，作为相邻请求间隔下限
             if last_done is not None:
@@ -336,7 +440,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 gap = min_gap - (time.monotonic() - last_done)
                 if gap > 0:
                     logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
-                    time.sleep(gap)
+                    heartbeat.sleep(gap)
             # 睡眠/间隔对齐之后**再判一次**窗口：等待期间可能已越过 eff_hi，此时
             # 仍发起请求就落到窗口外（学校侧会拒），且会挤占后面的账号
             if wait > 0 and schedule_mod._window_closed(sch_cfg, clock.now()):
@@ -349,18 +453,20 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 if delegated is not None:
                     delegated.add(phone)
                 continue
+            heartbeat.beat()  # 尝试前续租：本账号刚被领取，紧接的是一次可能很慢的真实登录
             attempts[phone] += 1
             logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
             t0 = time.monotonic()  # 单次尝试耗时起点（慢响应可判）
             success, message, skip, status = attempts_mod.attempt_signin(acc)
             last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
+            heartbeat.beat()  # 尝试后续租：把上一步的耗时从租约里"补"回来
             dur = last_done - t0
             state_io._write_sign_state(phone, status, message, dur=dur)
             _emit_event(phone, status, message, dur=dur)
-            # 单次尝试超阈值 → warning + 通知
+            # 单次尝试超阈值 → warning + 并入收尾汇总信（不即时推送）
             if dur > slow_sec and phone not in slow_notified:
                 slow_notified.add(phone)
-                alerts._alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
+                alerts._alert_slow_sign(phone, dur, slow_sec, status, message)
             # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
             attempts_mod._update_cred_state(cred_state, phone, success, message, today)
             # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
@@ -430,7 +536,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
             _push(acc, nxt)
             logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次，{nxt.strftime('%H:%M:%S')} 再试）: {_sanitize_text(message)}")
-        _settle_claims(results)
+        _settle_claims(results)  # 整轮跑完才一次收尾：轮内重试不把租约提前放开
         return results
 
     while queue:
@@ -462,9 +568,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             gap = gap_max - (time.monotonic() - last_done)
             if gap > 0:
                 logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {gap_max}s）")
-                time.sleep(gap)
+                heartbeat.sleep(gap)
 
-        # 手动链路的逐账号窗口钳制（M11 残留）：兜底常驻/补签轮走手动分支时
+        # 手动链路的逐账号窗口钳制：兜底常驻/补签轮走手动分支时
         # 每轮扫描前已判过窗口，但一轮扫描内部（可能跨窗口末端）没有逐账号判——
         # 07:49 起跑时末尾账号会在 07:50 之后仍发起真实登录。这里与计划分支
         # `_window_closed` 同一位置口径（间隔对齐之后再判一次）：已关则剩余
@@ -482,22 +588,24 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if delegated is not None:
                 delegated.add(phone)
             continue
+        heartbeat.beat()  # 尝试前续租（同计划分支：本条刚被领取）
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
         t0 = time.monotonic()  # 单次尝试耗时起点（慢响应可判）
         success, message, skip, status = attempts_mod.attempt_signin(acc)
         last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
+        heartbeat.beat()  # 尝试后续租（同计划分支）
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中；附耗时 dur）
         dur = last_done - t0
         state_io._write_sign_state(phone, status, message, dur=dur)
         _emit_event(phone, status, message, dur=dur)
-        # 单次尝试超阈值 → warning + 通知。节流：每账号每轮最多 1 次（重试连击不刷屏；
-        # 最终失败另有失败通知，此处主要覆盖"慢但成功"的接口劣化预警）；
-        # 通知失败不影响签到（内部已捕获）。
+        # 单次尝试超阈值 → warning + 并入收尾汇总信（不即时推送）。节流：每账号每轮
+        # 最多 1 次（重试连击不刷屏；最终失败另有失败通知，此处主要覆盖"慢但成功"的
+        # 接口劣化预警）；收集失败不影响签到（内部已捕获）。
         if dur > slow_sec and phone not in slow_notified:
             slow_notified.add(phone)
-            alerts._alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
+            alerts._alert_slow_sign(phone, dur, slow_sec, status, message)
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         attempts_mod._update_cred_state(cred_state, phone, success, message, today)
         # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
@@ -563,7 +671,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         retry_min_interval = attempts_mod.RETRY_MIN_INTERVAL
         wait = max(retry_min_interval, retry_min_interval - gap_max + random.uniform(0, attempts_mod.RETRY_GAP_MAX))
         logger.debug(f"[{phone}] 重试前等待 {wait:.1f}s（最小 {retry_min_interval}s）")
-        time.sleep(wait)
+        heartbeat.sleep(wait)
         queue.append(acc)
         logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）: {_sanitize_text(message)}")
 

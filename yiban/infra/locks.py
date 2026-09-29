@@ -41,7 +41,13 @@ def lock_kind():
     """当前平台的文件锁后端描述（诊断/测试用）。
 
     返回 "posix" 或 "win"；**返回 None 表示本平台无法做跨进程文件锁**（portalocker
-    在无 fcntl/msvcrt 的平台上锁会失败）。不返回 None 即表示跨进程互斥真实生效。
+    在无 fcntl/msvcrt 的平台上锁会失败）。
+
+    ⚠ 判据只到"平台有后端"这一层：**非 None 不等于每一次拿锁都互斥生效**——
+    `_acquire` 在重试超时、文件系统不支持加锁（网络盘等）时同样会失败并降级为
+    进程内锁（跨进程互斥失效，但会留"退化为进程内锁"WARNING）。要判定某一次
+    临界区是否真的跨进程互斥，看该路径有没有落那条告警，不能拿本函数的返回值
+    当担保。
     """
     try:
         import fcntl  # noqa: F401
@@ -71,12 +77,21 @@ def file_lock(key, timeout=None):
     lock = _get_rlock(path)
     with lock:
         held.add(path)
-        handle = _acquire(path, _LOCK_TIMEOUT if timeout is None else timeout)
         try:
-            yield
+            # `held` 的摘除放在**最外层** finally：原先 `_acquire` 夹在
+            # `held.add` 与内层 try 之间，它一旦抛非 Exception 级异常
+            # （30s 重试等待期间 Ctrl-C / MemoryError 这类 BaseException），
+            # 这条路径就永久留在本线程的 held 集里——此后该线程所有同名锁
+            # 全被当成"重入"直接放行，文件锁与进程内锁一起跳过，且零告警。
+            # 结构上封死泄漏窗口之外，"泄漏态可发现"由回归测试钉死：
+            # 注入失败后下一次同名锁必须真锁（见 tests/test_locks.py）。
+            handle = _acquire(path, _LOCK_TIMEOUT if timeout is None else timeout)
+            try:
+                yield
+            finally:
+                _release(handle)
         finally:
-            _release(handle)
-            held.remove(path)
+            held.discard(path)
 
 
 # ---- 内部实现 ----

@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""锚点行的字段同源与"篡改/重链"诊断的可达性。
-
-两条都是取证路径上的确定性缺陷，与并发/时序无关：
+"""锚点行的字段同源与"链尾哈希不符"诊断的可达性。
 
 1. 锚点行的 `head` 原先用"当前最后一行"另取一次。两次读之间落进一条审计写入时，
    锚点行的 `max_id` 与 `head` 指向不同行——此后每次校验都报"链尾内容被篡改"。
    修法是把 head **按 max_id 取值**，与 max_id 天然同源。
-2. 链尾哈希与锚点不符时的诊断摘要函数被用两个实参调用、定义只收一个，这条分支
-   必然抛 TypeError，被外层兜成"锚点校验异常"——检测结论还在，但"内容篡改 vs
-   全表重链"的区分整条丢掉。
+2. 链尾哈希与锚点不符时，诊断必须落成可读的"篡改"结论，而不是被异常文本吞掉。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：锚点行 `head` 与 `max_id` 的同源性（并发写入下不得指向不同行），以及
+"链尾哈希不符 → 判篡改"这条诊断分支真的可达。
+对应实现：`yiban/store/audit_chain.py` 的 `record_audit_anchor`（按 max_id 取 head）
+与链尾不符时的判据消息。
+关键断言：两条都是**取证可用性**断言而非"检出与否"断言——检出结论本来就对，坏的是
+诊断信息；第二条用例只要结论是"篡改"且不是"锚点校验异常"即算绿。
+依赖：临时库 + 临时锚点文件，无网络、无 skip；"两次读之间落进一条写入"是真造出来的——
+另开一条 sqlite 连接插已签名行，并用 `_inject` 包 `db._audit_purge_total` 卡进时机，
+不靠 sleep 猜时序（模块头说"与并发/时序无关"指的是缺陷本身确定性可复现，不是指不造并发）。
 """
 
 import contextlib
@@ -127,8 +134,8 @@ class AnchorFieldCoherenceTest(_Fixture):
         )
 
 
-class RechainDiagnosisReachableTest(_Fixture):
-    """链尾哈希与锚点不符时，必须给出"篡改 / 全表重链"的诊断，而不是异常文本。"""
+class TailHashMismatchDiagnosisTest(_Fixture):
+    """链尾哈希与锚点不符时，必须给出"篡改"诊断，而不是异常文本。"""
 
     def test_hash_mismatch_yields_diagnosis_not_exception(self):
         for i in range(3):
@@ -142,16 +149,7 @@ class RechainDiagnosisReachableTest(_Fixture):
         ok, msg = db.verify_audit_anchor(self.anchor)
         self.assertFalse(ok, "链尾内容被改过必须判失败")
         self.assertNotIn("锚点校验异常", msg, f"诊断不该被异常吞掉：{msg}")
-        self.assertTrue(
-            ("全表重链" in msg) or ("篡改" in msg),
-            f"应给出「内容篡改 / 全表重链」的区分：{msg}",
-        )
-
-    def test_rechain_hint_is_callable_with_anchor_only(self):
-        """签名固定为单参：多传一个实参会抛 TypeError，被外层兜成通用异常。"""
-        import inspect
-        self.assertEqual(len(inspect.signature(db._rechain_hint).parameters), 1)
-        self.assertIsInstance(db._rechain_hint({"ts": "2026-01-01 00:00:00"}), str)
+        self.assertIn("篡改", msg, f"应给出「内容被篡改」的结论：{msg}")
 
 
 if __name__ == "__main__":

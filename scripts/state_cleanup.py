@@ -20,16 +20,22 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 （既有调用方无需改动）；清理函数与 `ARTIFACTS` 登记表复用 `yiban.state_gc`，不另写规则。
 
 **通信**
-输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与可选 `argv`。
+输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与可选 `argv`
+（`--dry-run` 只报告不删；未知参数按用法错误退 2，不静默丢弃）。
 输出：被清理的文件、`<state_dir>/cleanup.log` 追加行；退出码 0 = 正常（无过期文件
 也是 0），1 = 保留期配置非法或目录不可用（响亮失败，不静默退化——静默退化会让磁盘
-慢慢涨满而没人发现）。
-调用谁：`yiban.state_gc`（策略）、`yiban.clock`。
+慢慢涨满而没人发现），2 = 未知/多余参数（用法错误，不静默丢弃）。
+调用谁：只有 `yiban.state_gc`（策略与实现；它是本文件唯一的项目内 import）。
+日志时间戳用 `datetime.datetime.now()`（宿主本地钟——它是**展示时刻**，跟随宿主
+时区属预期，见 README 部署章节的时区说明）；日志行里的"截止 X"自 MF-109 统一起
+与 `state_gc._cutoff`（删除判据，北京时间）**同钟**——此前"截止"用宿主本地钟，
+UTC 主机上会与实际生效的截止日差一天（只差文案，不差删除结果）。
 谁调用：宿主 `scripts/yiban-cleanup.sh`（cron）、容器调度器；`yiban/cli.py state`
 子命令与之同源。
 前端调用点：无直接调用点；容器调度器的清理结果与保留期设置经 `/api/settings`
 （`web/static/js/components/settings-quota.js` 等设置页）暴露给运维。
 """
+import argparse
 import datetime
 import os
 import sys
@@ -61,6 +67,24 @@ def _append_log(log_path, message):
 
 
 def main(argv=None):
+    """入口：`--dry-run` 只报告不删，默认（cron 形态）按策略真清理。
+
+    为什么默认真清理：宿主 cron 靠本脚本完成保留期轮转，加一道交互确认会把自动清理
+    整体停掉。`--dry-run` 是给"先看将删什么"用的，必须真不删——把 `argv` 当死参数
+    （忽略调用方传来的 `--dry-run`）会静默真删且返回 0，看着像演练成功。
+    未知/多余参数一律用法错误（退出码 2），不静默丢弃。
+    """
+    parser = argparse.ArgumentParser(
+        prog="state_cleanup.py",
+        description="按天状态文件清理（策略在 yiban/state_gc.py；默认真清理，--dry-run 只报告）",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="只报告将清理的条目，不删")
+    try:
+        args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    except SystemExit as e:  # argparse 的 --help(0)/用法错误(2) 转成返回值
+        code = getattr(e, "code", 2)
+        return code if isinstance(code, int) else 2
+
     os.umask(0o077)
     state_dir = state_dir_from_env()
     log_dir = log_dir_from_env(state_dir)
@@ -75,6 +99,11 @@ def main(argv=None):
     try:
         hold = state_gc.retention_days("log")
         snap = state_gc.retention_days("snapshot")
+        if args.dry_run:
+            removed, detail = state_gc.plan(state_dir, log_dir)
+            print(f"[dry-run] 将清理 {removed} 个过期文件: " + "、".join(detail[:20])
+                  + ("…" if len(detail) > 20 else ""))
+            return 0
         removed, detail = state_gc.sweep(state_dir, log_dir)
     except ValueError as e:
         # 与旧脚本"无法计算保留截止日期，跳过"同向：响亮失败，不静默不清理
@@ -85,7 +114,10 @@ def main(argv=None):
         removed += 1
         detail.append("cred-state.json（空内容）")
     if removed > 0:
-        cutoff = (datetime.date.today() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
+        # 日志"截止"与 state_gc._cutoff 的删除判据同钟（MF-109：单一业务日源）：
+        # 此前这里用宿主本地钟，UTC 主机上会与实际生效的截止日差一天（只差文案）。
+        from yiban.clock import now as _clock_now
+        cutoff = (_clock_now() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
         _append_log(
             log_path,
             f"[{stamp}] 已清理 {removed} 个过期文件"

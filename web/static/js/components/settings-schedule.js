@@ -8,8 +8,9 @@
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存调度设置」才
    提交；提交只发送相对服务器快照真正变化的字段，故非主管理员即便点保存也只送得出 B 档
-   字段。**有改动就一律过口令框**：A 档必须当次口令，B 档同样要口令（只是可被短时豁免），
-   多问一次不会错、少问必然 403。脏时离开页面由 settings.js 统一守卫（保存 / 放弃 / 取消）。
+   字段。**有改动就走统一 helper**：先不带凭据发，后端按档位与风控回 reason 才补口令——
+   本文件不判档、也不预判要不要口令（多问一次必然打断心流，少问一次必然 403）。
+   脏时离开页面由 settings.js 统一守卫（保存 / 放弃 / 取消）。
 
    对外面：apply(data) 回填、save() → Promise<boolean>（false = 取消或失败，页面据此
    决定不跳转）、isDirty()、markLeaving()、refreshWarn()。
@@ -27,6 +28,7 @@
   var dirty = false;
   var saving = false;
   var leaving = false;      // 页面已就"离开"征得用户同意（由 markLeaving() 置位）
+  var fallbackText = "";    // 窗口不可用（已回退默认）时服务端给的可见提示，正常为空串
 
   function $(id) { return document.getElementById(id); }
   function num(el, fallback) {
@@ -50,6 +52,14 @@
     var s = parseInt(a[0], 10) * 3600 + parseInt(a[1], 10) * 60;
     var e = parseInt(b[0], 10) * 3600 + parseInt(b[1], 10) * 60;
     return e > s ? e - s : 0;
+  }
+  // 缓冲单边上限（分钟）：与 `yiban.window.edge_cap_sec` 同一条式子（窗口宽度的 20%、
+  // 封顶 5 分钟、按 30s 粒度向下取整）。窗口不可用（宽度 <= 0）时上限为 0，**不退回最大
+  // 量程**——否则窗口倒置（起 >= 止）会把缓冲上限放到最大（fail-open），而服务端夹取
+  // 只会给出 0，前端宽服务端窄正是"保存后数字变小"的来源。
+  function edgeMaxMin(winSec) {
+    var cap = Math.floor(winSec * 0.2 / 30) * 30 / 60;
+    return Math.max(0, Math.min(5, cap));
   }
   function capacityCount() {
     var cap = ctx && ctx.capacity ? ctx.capacity() : null;
@@ -129,17 +139,33 @@
     setHidden($("ss-dirty"), true);
   }
 
-  // 窗口容量警示：掐头去尾为 0 时边缘账号可能超时；窗口扣除掐头去尾与
-  // 间隔×账号数后不足时，提示可能签不上。纯展示，不阻断保存。
+  // 滑块可用上限随当前窗口动态收窄：窗口变小后旧值可能超出上限，保存会被服务端夹小，
+  // 故先把量程改小（弹窗里的数字框/滑杆随即只能选到上限），再由 updateEdgeWarn 说明。
+  function updateEdgeLimits() {
+    var maxMin = edgeMaxMin(windowSec());
+    ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
+      var root = document.querySelector('[data-range-field="' + id + '"]');
+      if (root) root.setAttribute("data-max", String(maxMin));
+    });
+    return maxMin;
+  }
+
+  // 窗口容量警示：掐头去尾超过窗口的 20%（单边上限随窗口动态收窄，与服务端夹取同一
+  // 规则）时提示会被自动收缩；窗口扣除掐头去尾与间隔×账号数后不足时，提示可能签不上。
+  // 纯展示，不阻断保存。
   function updateEdgeWarn() {
     var warn = $("ss-edge-warn");
     if (!warn) return;
+    var maxMin = updateEdgeLimits();
     var f = edgeVal("ss-edge-front"), b = edgeVal("ss-edge-back");
     var gap = clampGap(num($("ss-gap"), snap ? snap.gap : 0));
     var win = windowSec();
     var n = capacityCount();
     var msgs = [];
-    if (f === 0 || b === 0) msgs.push("掐头或去尾为 0：对应边缘时段的账号可能超时");
+    if (fallbackText) msgs.push(fallbackText);
+    if (win > 0 && (f > maxMin * 60 + 1e-9 || b > maxMin * 60 + 1e-9)) {
+      msgs.push("缓冲超过窗口的 20%（单边上限 " + maxMin + " 分钟），保存时会被自动收缩");
+    }
     if (win > 0) {
       var need = f + b + Math.max(gap, 0) * Math.max(n, 1);
       if (need > win) {
@@ -211,19 +237,24 @@
     };
   }
 
-  function submit(body, pw) {
-    if (pw) body.confirm_password = pw;
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）；
+  // 用户取消弹窗 = 本次不保存。
+  function submit(body) {
     saving = true;
     setTip("保存中…", false);
     setDisabled("ss-save", true);
-    return YB.api("POST", "/api/settings", body).then(function (data) {
+    return YB.dangerousSubmit({
+      method: "POST", path: "/api/settings", body: body,
+      desc: "调度参数改动会影响全站何时签到（窗口、掐头去尾、账号间隔等），不合适的设置可能拉低成功率或被容量硬门拒绝。请输入当前管理员密码确认。"
+    }).then(function (data) {
       snap = snapshotFromDom();
       clearDirty();
       setTip((data && data.msg) || "调度设置已保存", false);
       if (ctx.onSaved) ctx.onSaved(data);
       return true;
     }, function (e) {
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
+      if (e && e.canceled) setTip("", false);
+      else setTip((e && e.message) || "保存失败，请稍后重试", true);
       return false;
     }).then(function (ok) {
       saving = false;
@@ -242,14 +273,7 @@
       YB.toast.info("没有需要保存的改动");
       return Promise.resolve(true);
     }
-    // A 档必须当次口令，B 档同样要口令（只是可被短时豁免）——本文件不判档，
-    // 一律先收口令再提交：多问一次不会错，少问必然 403。
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "调度参数改动会影响全站何时签到（窗口、掐头去尾、账号间隔等），不合适的设置可能拉低成功率或被容量硬门拒绝。请输入当前管理员密码确认。",
-        function (pw) { submit(body, pw).then(resolve); },
-        function () { resolve(false); });      // 取消口令 = 本次不保存
-    });
+    return submit(body);
   }
 
   function reset() {
@@ -314,6 +338,8 @@
 
   // 用服务器数据回填（首次加载与保存后重拉共用）。
   function apply(data) {
+    fallbackText = data && data.window_fallback_text
+      ? String(data.window_fallback_text) : "";
     snap = {
       order: data.sign_order || DEFAULTS.order,
       dist: data.sign_dist || DEFAULTS.dist,

@@ -24,6 +24,12 @@
 
 新代码请直接 `from yiban.engine import ...`，命令行请走 `python -m yiban.cli sign`；
 本壳只为部署面（run.sh / cron / 容器调度器直接执行本文件）与既有调用方保留。
+
+**外部集成不得调用 `run_queue_retry`**：它是旧领取池（`sign_claims`）时代的**冻结**执行
+路径（无生产调用点），裸名转发会让它看起来仍可用，但调用它会**静默写冻结的 `sign_claims`、
+绕开唯一台账 `sign_tasks`**（当日计划与了结事实都以新表为准 ⇒ 台账分裂、补签判定失真）。
+部署与第三方集成只应走 `main()`（内部经 `runner.main` → `executor_v3`）；`run_queue_retry`
+留在壳上仅供既有单测按裸名取用、覆盖四柱 v2 语义。
 """
 
 

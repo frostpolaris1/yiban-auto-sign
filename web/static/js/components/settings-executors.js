@@ -2,7 +2,7 @@
 
    挂载到 window.YB.settingsExecutors；classic script。
 
-   **数据模型＝清单**（后端 `docs/refactor/86` 交接稿；该目录未纳入版本控制，接口形态以
+   **数据模型＝清单**（接口形态与字段以 docs/dev/api-executors.md 的 `executors[]` 一节为准）：一行一个执行体，有稳定槽位号（只增不复用）、
    `docs/dev/api-executors.md` 的 `executors[]` 一节为准）：一行一个执行体，有稳定槽位号（只增不复用）、
    类型（worker / fallback / disabled）与自己的出口。故页面上**没有"数量"输入**——行数＝清单长度，
    增行用「添加执行体」、删行在行内弹窗里。渲染一律按接口的 `executors[]`（`slot` 升序），
@@ -26,7 +26,7 @@
    敏感信息（出口串可能含 user:pass@）：读接口只回**描述串**（scheme://host[:port]），
    故编辑框一律留空并提示「留空 = 不修改」，写成功后重新 GET 再渲染（读回的是脱敏串，
    不能拿提交值渲染）；完整串既不入 DOM 文本与属性，也不进 title、data-* 或控制台。
-   行内写入**绝不影响其他行**（后端按段写、其余行逐字保留）——见 78 号验收②。
+   行内写入**绝不影响其他行**（后端按段写、其余行逐字保留），故一次只改一行、不需要整页快照。
 
    对外面：mount(options) / load() / apply(data) / save() / isDirty()。 */
 (function () {
@@ -36,7 +36,7 @@
 
   var ctx = { isMaster: false };
   var lastData = null;          // 最近一次执行体接口响应（弹窗与实测换算按需读取，不重复请求）
-  var busy = false;
+  var busy = false;             // 全分区一把忙碌锁：任一写操作在途时其它写入口早退（防重入只看它，不看权限）
 
   function $(id) { return document.getElementById(id); }
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
@@ -44,8 +44,8 @@
     var n = $(id);
     if (n) n.textContent = text == null ? "" : String(text);
   }
-  // 操作反馈走横幅（用户 2026-09-17：「已删除 并行执行体 #8：已写入配置…」做成横幅形态）。
-  // 错误文案直接显示：后端已在源头抹掉 userinfo（yiban/masking.mask_url_userinfo，见 81/82 号
+  // 操作反馈走常驻横幅而不是瞬时 toast：结果要连同「下一轮才生效」这类后续说明一起留在页面上，不能被自动消失的提示带走。
+  // 错误文案直接显示：后端已在源头抹掉 userinfo（yiban/masking.mask_url_userinfo），
   // 文档），保证 400 的 error 不含凭据——前端不再自己脱敏，避免两处口径分叉。
   var BANNER_ICON = { success: "circle-check", danger: "circle-x", info: "info" };
   function setTip(text, bad) { banner(text, bad ? "danger" : "success"); }
@@ -73,7 +73,7 @@
   }
 
   /* ---------------- 文案映射（键都来自后端字段，前端只做中文） ---------------- */
-  // 兜底那一行的显示名由后端定（`yiban/egress.py::role_label`，2026-09-17 起是「故障转移」，
+  // 兜底那一行的显示名由后端定（`yiban/egress.py::role_label` 给的「故障转移」，
   // 同时作用于 executors[] 的 label、fallback.label 与账号页「上次实领」的角色列）。
   // 故**不再自己拼「兜底 / 故障转移」这种双写**——类型列用同一个词，行名一律用接口给的 label/name。
   // `type` 的取值仍是 fallback（契约未动），这里只映射中文。
@@ -83,12 +83,12 @@
     finished: "本轮已跑完",
     idle: "今天还没跑",
     // 徽标只写短名：完整口径（"有开始、无收尾记录"）写在卡头 ⓘ 里。
-    // 早先是「可能被中断（无收尾记录）」，实测 158×21.4，把状态列固有宽撑到 186px——
+  // 徽标文案的长度直接决定状态列的固有宽（列宽随最长内容走），
     // 叠加"状态/当日"拆列后整表固有宽 937px > 1024 档的卡片内容宽 842px，操作列被推出可视区。
     stale: "可能被中断"
   };
-  // 状态胶囊配色（用户 2026-09-17）：正在跑=绿、本轮已跑完=**蓝**、今天还没跑=灰、可能被中断=红；
-  // 停用行在状态栏给**灰底胶囊**（原来只有一行灰字）。
+  // 状态胶囊按语义分档（键序与 STATE_CLASS 一一对应）：正在跑=成功色、本轮已跑完=信息色、今天还没跑=中性色、可能被中断=危险色；
+  // 停用行在状态栏也给中性色胶囊，不停在只有一行灰字——同列都是胶囊才对齐，也不显得这一行没状态。
   var STATE_CLASS = {
     running: "badge--ok",
     finished: "badge--info",
@@ -143,7 +143,7 @@
   }
   function executors() { return (lastData && lastData.executors) || []; }
   // 行名：**用户自定义名优先**（后端 name 字段），否则用后端给的标签（label 口径仍以后端为准）。
-  // 故障转移行的名称由后端定、固定，不接受自定义名（用户 2026-09-17）。
+  // 故障转移行的名称由后端定、固定，不接受自定义名。
   function rowName(row) {
     if (attr(row.type) !== "fallback" && attr(row.name)) return attr(row.name);
     return attr(row.label) || TYPE_TEXT[attr(row.type)] || "执行体";
@@ -168,8 +168,8 @@
   }
 
   /* ---------------- 清单：规模 KPI + 一览表 ---------------- */
-  // 规模 KPI（口径 2026-09-18 用户裁决改版，2026-09-19 首卡换值）：
-  //   «今日进度» = 今日已了结的账号数 ÷ 计入容量的账号数——首卡原先是「清单行数」，而行数在
+  // 规模 KPI 三张卡的口径（首卡刻意不排行数，行数在下面的表里一眼可见）：
+  //   «今日进度» = 今日已了结的账号数 ÷ 计入容量的账号数——卡片位置该回答"今天跑得怎么样"。失败数不进这张卡：每行的「当日」
   //     下面的表里一眼可见，卡片位置更该回答"今天跑得怎么样"。失败数不进这张卡：每行的「当日」
   //     列已逐执行体列了领取/完成/失败，总量再报一遍属重复；
   //   «平均每执行体分到的人数» = **计入容量的账号数** ÷ **并行执行体数**（只数「并行」行：
@@ -214,11 +214,12 @@
     if (!loaded) kpiSet("set-exec-kpi-capacity", null, "人", "—");
     else if (amax === 0) kpiSet("set-exec-kpi-capacity", null, "人", "不限");
     else kpiSet("set-exec-kpi-capacity", amax, "人");
+    setHidden($("set-exec-solo"), !(loaded && lastData.workers && lastData.workers.single_mode));  // 文案在模板 #set-exec-solo
   }
 
-  // 状态与当日各占一栏（用户 2026-09-17：合在一格里两串字挤在一起，分不清哪串是状态）。
+  // 状态与当日各占一栏：两串字挤进同一格，读者分不清哪串是状态、哪串是当日计数。
   // 徽标那层用 **inline-flex 且挂在内层 span 上**：td 直接做 flex 容器会失去
-  // vertical-align:middle，内容相对同排其它列偏上（复核实测 −6.9px）
+  // vertical-align:middle，内容会相对同排其它列偏上——这条约束只能靠内层承担，别顺手把 flex 提到 td 上
   function stateCell(row) {
     var type = attr(row.type);
     var inner = YB.el("span", { class: "set-exec-state" });
@@ -243,11 +244,44 @@
     return YB.el("td", { class: "set-exec-daily", text: a ? dailyText(a) : "—" });
   }
 
-  // 行内「更多」：停用/启用 与 删除 从行弹窗搬到这里（用户 2026-09-17：设置里不再改状态/删行，
-  // 放表格操作列作为按钮，且要输主管理员密码）。复用 YB.rowMenu（portal 浮层 + 窄屏收纳）。
-  function askPassword(text, run) {
-    YB.openConfirmPasswordModal(text, run);      // 口令错误/后端 403 会在该弹窗内显示，可重试
+  // 受门禁写操作的统一入口：先不带凭据发，由 core.js 的 dangerousSubmit 按后端 reason 补
+  // 口令或倒计时确认（档位只存在于后端，本组件不判断、也不预判要不要口令）。调用方只给请求
+  // 与成功回调，不再各自拼口令框管道；失败落到横幅。
+  function gated(opts, onOk, failWord) {
+    return withBusy(function () {
+      banner("提交中…", "info");
+      return YB.dangerousSubmit(opts).then(function (d) {
+        return load().then(function () { return onOk(d); });
+      });
+    }).catch(function (e) {
+      if (e && e.canceled) return canceledAfter(e);
+      return failedAfter(e, failWord);
+    });
   }
+  // 取消弹窗与"打到一半被打回"都不是"什么都没发生"：多段保存（改出口 + 拨开关）里先成功的
+  // 步骤已经写进 `.env`，若照旧静默返回或只把错误留在横幅里，用户会以为整次保存没发生、
+  // 而配置已经变了。两条路径共用同一收尾——先重载视图（页面显示库里的真实状态），确有部分
+  // 写入时讲明不回滚；提示语按取消/失败取词，步数由 helper 回传（见 core.js 的 dangerousSubmit）。
+  function partialAfter(done, text) {
+    return load().then(function () {
+      // 顺序不能反：load() 走 apply() 会清掉横幅，所以提示必须落在重载之后
+      setTip(text ? text + "；本次保存的前 " + done + " 步已经写入配置（部分修改已提交、"
+        + "不会回滚），上面显示的是配置的当前状态。" : "", !!text);
+      return false;
+    });
+  }
+  function canceledAfter(e) {
+    var done = count(e && e.completed);
+    return partialAfter(done, done > 0 ? "已取消" : "");
+  }
+  // 一步都没提交的失败无需重载（库里没变），提示照旧就地落横幅
+  function failedAfter(e, failWord) {
+    var done = count(e && e.completed);
+    if (!done) { failTip(e, failWord); return false; }
+    return partialAfter(done, (e && e.message) || (failWord + "失败，请稍后重试"));
+  }
+  // 行内「更多」：停用/启用 与 删除 不放进行弹窗——低频且破坏性的动作收在操作列二级菜单里，
+  // 点下去仍要凭据（口令还是倒计时由后端 reason 定）。复用 YB.rowMenu（portal 浮层 + 窄屏收纳）。
   function rowMenuWrap(row) {
     var type = attr(row.type);
     if (type === "fallback") return null;        // 故障转移行：类型固定、不可删除，只留「设置」
@@ -264,37 +298,43 @@
     return cell.firstElementChild;               // 取 .dd-wrap（触发器 + 菜单）放进自己的操作格
   }
 
-  // 改状态（停用/启用）：要口令；成功/失败都走横幅
+  // 改状态（停用/启用）：受门禁写操作，口令/确认由 helper 按后端 reason 收；成功/失败都走横幅
   function changeType(row, nextType) {
     var slot = count(row.slot);
     var name = rowTitle(row);
     var word = nextType === "disabled" ? "停用" : "启用";
-    askPassword(word + " " + name + "？请输入当前管理员密码确认。", function (pw) {
-      focusAfterPaint = { slot: slot };
-      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot,
-        { type: nextType, confirm_password: pw }).then(function (d) {
-        return load().then(function () {
-          banner("已" + word + " " + name + "：" + note(d), "success");
-          return true;
-        });
-      });
-    });
+    focusAfterPaint = { slot: slot };
+    gated({
+      method: "PUT", path: "/api/scheduler/executors/rows/" + slot,
+      body: { type: nextType },
+      desc: word + " " + name + "？请输入当前管理员密码确认。"
+    }, function (d) {
+      banner("已" + word + " " + name + "：" + note(d), "success");
+      return true;
+    }, word);
   }
 
-  // 删行：要口令（确认与警告合并在口令弹窗的文案里，不叠两层弹窗）
+  // 删行：槽位号不复用、出口配置一并删除，是破坏性动作——影响面由 confirmDialog 讲清
+  // （这条说明原本挂在口令框上；口令改由 helper 按后端 reason 收，确认独立留在确认框里，
+  // 故一次点击不会既弹确认框又弹口令框——两者串行，且多数档位下只有确认框）。
   function removeRow(row) {
     var slot = count(row.slot);
     var name = rowTitle(row);
-    askPassword("删除 " + name + "（槽位 " + slot + "）？它的出口配置会一并删除、槽位号不保留；"
-      + "只是暂时不用请改用「停用」。请输入当前管理员密码确认。", function (pw) {
+    YB.confirmDialog({
+      title: "删除执行体",
+      body: "删除 " + name + "（槽位 " + slot + "）？它的出口配置会一并删除、槽位号不保留；"
+        + "只是暂时不用请改用「停用」。",
+      confirmText: "删除", danger: true
+    }).then(function (ok) {
+      if (!ok) return;
       focusAfterPaint = { slot: slot };
-      return YB.api("DELETE", "/api/scheduler/executors/rows/" + slot,
-        { confirm_password: pw }).then(function (d) {
-        return load().then(function () {
-          banner("已删除 " + name + "：" + note(d), "success");
-          return true;
-        });
-      });
+      gated({
+        method: "DELETE", path: "/api/scheduler/executors/rows/" + slot, body: {},
+        desc: "删除 " + name + "（槽位 " + slot + "）？请输入当前管理员密码确认。"
+      }, function (d) {
+        banner("已删除 " + name + "：" + note(d), "success");
+        return true;
+      }, "删除");
     });
   }
 
@@ -351,7 +391,7 @@
     var tbody = $("set-exec-assign");
     if (!tbody) return;
     tbody.textContent = "";                       // 清空容器（不用 innerHTML）
-    // 顺序：故障转移行**固定置顶**（用户 2026-09-17），其余按槽位号升序
+    // 顺序：故障转移行**固定置顶**，其余按槽位号升序
     var rows = executors().slice().sort(function (a, b) {
       var af = attr(a.type) === "fallback" ? 0 : 1, bf = attr(b.type) === "fallback" ? 0 : 1;
       return af !== bf ? af - bf : count(a.slot) - count(b.slot);
@@ -439,9 +479,9 @@
     if (b) b.disabled = !!on || !ctx.isMaster;
   }
 
-  // 失败时**不吞错误、也不还焦点**：本分区三个写动作都从口令框发起，回调返回的 Promise 一旦
-  // resolve，口令框就当作成功而关闭——后端 403「口令校验未通过，设置未生效」必须 reject 出去，
-  // 才会留在框里让操作者改口令重试；焦点同理该留在框内，不能被 restoreFocus 抢走。
+  // 失败时**不吞错误、也不还焦点**：本分区写动作经 gated 走受门禁提交，helper 收口令/倒计时
+  // 框期间焦点与错误都该留在框内（拒绝时它自己把后端文案显示在框里、允许改口令重试），
+  // 不能被 restoreFocus 抢走；成功分支才归还焦点。
   function withBusy(fn) {
     if (busy) return Promise.resolve(false);
     busy = true;
@@ -458,40 +498,20 @@
     });
   }
 
-  // 追加行：后端自 2026-09-17 起对 `POST …/rows` **一律要求** confirm_password（追加一定改配置），
-  // 故先收口令再提交；口令不对时错误留在口令框里、可改口令重试（回调返回 Promise 走那条路径）。
+  // 追加行：受门禁写操作（追加一定改配置），口令/确认由 helper 按后端 reason 收
   function addRow() {
     if (!ctx.isMaster || busy) return;          // busy 是防重入的唯一判据，入口再挡一道
-    askPassword("添加一行执行体（并行、默认直连）？追加行会改动执行体清单，请输入当前管理员密码确认。",
-      function (pw) {
-        return withBusy(function () {
-          banner("添加中…", "info");
-          return YB.api("POST", "/api/scheduler/executors/rows",
-            { type: "worker", confirm_password: pw }).then(function (d) {
-            return load().then(function () {
-              setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
-                + "。想给它单独出口，点那一行的「设置」；编号只增不复用，故障转移行也占一个编号"
-                + "（它固定置顶、行名不带数字），所以并行行跳号是正常的、不影响运行"
-                + "（没删过行却看到跳号，就是它在占号）。", false);
-              focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
-              return true;
-            });
-          }, function (e) { failTip(e, "添加"); throw e; });   // 抛出：错误留在口令框里
-        });
-      });
-  }
-
-  // PUT 单行 + 成功后 `load()` 重画（清除出口等行内写操作共用这一条「提交中→落盘→刷新→横幅」链路）
-  function putRow(slot, payload, okText) {
-    return withBusy(function () {
-      banner("提交中…", "info");
-      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
-        return load().then(function () {
-          setTip(okText + "：" + note(d), false);
-          return true;
-        });
-      }, function (e) { failTip(e, "保存"); throw e; });       // 抛出：错误留在口令框里
-    });
+    gated({
+      method: "POST", path: "/api/scheduler/executors/rows", body: { type: "worker" },
+      desc: "添加一行执行体（并行、默认直连）？追加行会改动执行体清单，请输入当前管理员密码确认。"
+    }, function (d) {
+      setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
+        + "。想给它单独出口，点那一行的「设置」；编号只增不复用，故障转移行也占一个编号"
+        + "（它固定置顶、行名不带数字），所以并行行跳号是正常的、不影响运行"
+        + "（没删过行却看到跳号，就是它在占号）。", false);
+      focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
+      return true;
+    }, "添加");
   }
 
   /* ---------------- 行内弹窗：类型 + 出口（低频与破坏性动作降到正文里） ---------------- */
@@ -529,7 +549,7 @@
   // 单并行行的出口提示：清单只有 1 个「并行」行时运行时走进程内路径（`single` 角色），
   // 出口读全局配置键（`workers.env_keys.single`，即 YIBAN_PROXY），本行这一格要到出现第二个
   // 并行行后才按行生效。不提示的话用户会以为行内出口已生效——而页面此时显示的正是行内值。
-  // 判据用后端 `workers.configured`（只数 worker 行，0 行时按契约仍为 1 = 单执行体形态），
+  // 判据用后端 `workers.configured`（只数 worker 行；0 行时本页无「并行」行，单执行体形态由表下 #set-exec-solo 提示说破），
   // 键名同样由接口下发，本文件不写死配置键名。
   function singleRowHint(type) {
     if (type !== "worker") return null;
@@ -571,7 +591,7 @@
         YB.el("p", { class: "field-help", id: swHelpId, text: "只写声明开关：窗口内补签还需部署侧以 --fallback 拉起进程才会真在跑。" })
       ]));
     }
-    // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
+  // 名称：后端每行都下发 name（未设 = null），故下面的能力探测恒真——保留探测只是为了
     // 字段将来消失时不会做出"点了会 400"的输入框。`label` 是后端口径、`name` 是用户输入，
     // 只拿 name 回填输入框（placeholder 用 label 提示默认名）。故障转移行的名称由后端定，不给改名。
     var nameId = "set-exec-modal-name";
@@ -589,7 +609,7 @@
         YB.el("p", { class: "field-help", text: "只影响本页显示（最长 32 个字符）。" })
       ]));
     }
-    // 类型：只读展示（用户 2026-09-17：设置里不再改类型，停用/启用移到操作列）；
+  // 类型：弹窗里只读展示——改类型只有一个入口（行内「更多」），别在同屏再放第二个；
     // 改法（怎么改类型、怎么删行）在旁边的 ⓘ 里，不在页面上重复一遍。
     wrap.appendChild(YB.el("div", { class: "field" }, [
       YB.el("span", { class: "field-label" }, [
@@ -599,7 +619,7 @@
       YB.el("p", { class: "set-summary", text: TYPE_TEXT[type] + (isFb ? "（固定：置顶、不可改类型、不可删除）" : "") })
     ]));
 
-    // 「当前出口」与「对应配置项」合并成一行（用户 2026-09-17：这两条本来在说同一件事）
+  // 「当前出口」与「对应配置项」合并成一行：两条说的是同一行的同一件事，拆开只是各占一行高度
     wrap.appendChild(YB.el("div", { class: "field" }, [
       YB.el("span", { class: "field-label", text: "当前出口（已脱敏）" }),
       YB.el("p", { class: "set-summary", text: egressText(row.egress) + "｜配置项 " + manifestKey(slot) })
@@ -624,15 +644,26 @@
         : "存活：" + (STATE_TEXT[row.state] || "—") + (row.last_seen_at ? "；最近活跃 " + attr(row.last_seen_at) : "") }));
     }
 
-    // 低频且破坏性的动作降级到正文里（用户 2026-09-17：「清除出口」与「保存」不是一个视觉层级）
+  // 低频且破坏性的动作降级到正文里：「清除出口」与主按钮「保存」不同层级，避免手滑误点
     wrap.appendChild(YB.el("p", { class: "set-exec-subactions" }, [
       linkBtn("清除出口（改为直连）", function () {
         if (handle && handle.close) handle.close();
         focusAfterPaint = { slot: slot };
-        // 清除出口 = 改 proxy，后端要口令（改直连也是改配置）；确认与警告并进口令文案，不叠两层弹窗
-        askPassword("清除 " + rowTitle(row) + " 的出口（改为直连）？原出口配置会从配置项里删掉，"
-          + "不可撤销。请输入当前管理员密码确认。", function (pw) {
-          return putRow(slot, { proxy: "", confirm_password: pw }, "已清除出口");
+        // 清除出口 = 改 proxy，是受门禁写操作；原出口配置会被删掉且不可撤销，
+        // 故影响面由 confirmDialog 讲清，口令/确认交给 helper 按后端 reason 收
+        YB.confirmDialog({
+          title: "清除出口",
+          body: "清除 " + rowTitle(row) + " 的出口（改为直连）？原出口配置会从配置项里删掉，不可撤销。",
+          confirmText: "清除", danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          gated({
+            method: "PUT", path: "/api/scheduler/executors/rows/" + slot, body: { proxy: "" },
+            desc: "清除 " + rowTitle(row) + " 的出口（改为直连）？请输入当前管理员密码确认。"
+          }, function (d) {
+            setTip("已清除出口：" + note(d), false);
+            return true;
+          }, "清除");
         });
       })
     ]));
@@ -641,9 +672,9 @@
       return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
     }
 
-    // 保存：后端 2026-09-17 落地了口令门——**改出口或开关要口令，只改名不要**
-    // （`PUT …/rows` 在 type/proxy 真的会变时才判，`PUT …/executors` 同理）。
-    // 口令不对时后端回 403「口令校验未通过，设置未生效」，由口令框就地显示、可重试。
+    // 保存：**改出口或开关进门禁，只改名不进**（`PUT …/rows` 在 type/proxy 真的会变时才判，
+    // `PUT …/executors` 同理）——名字不影响行为，按后端口径不打这道门，故只改名时直接发。
+    // 门禁请求先不带凭据发，由 helper 按后端 reason 收口令；两个端点一次点击最多问一次口令。
     function save() {
       if (busy) return false;
       var egress = (($(inputId) || {}).value || "").trim();   // 留空＝不改出口（空串语义是"直连"，故不发）
@@ -655,49 +686,47 @@
         banner("没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。", "info");
         return false;
       }
-      // 只有真的动出口/开关才要口令；改自定义名不动行为，按后端口径不打这道门。
-      // 取值必须**在这里取完**再关弹窗：关掉后输入框被摘出 DOM，submit() 再按 id 取就是 null
-      // （实测踩过：错口令那次请求只带了 confirm_password，后端回 400「没有可更新的字段」）。
-      var args = { proxy: egress, name: nameArg, enable: enableArg };
+      // 取值必须**在这里取完**再关弹窗：关掉后输入框被摘出 DOM，再按 id 取就是 null
+      // （实测踩过：请求只带了凭据、没带要改的字段，后端回 400「没有可更新的字段」）。
+      var rowBody = {};
+      if (egress) rowBody.proxy = egress;
+      if (nameArg != null) rowBody.name = nameArg;
+      var requests = [];
+      // 行接口缺 type/proxy/name 会回 400「没有可更新的字段」；只拨开关时不能发这个空体
+      if (egress || nameArg != null) {
+        requests.push({ method: "PUT", path: "/api/scheduler/executors/rows/" + slot, body: rowBody });
+      }
       var needsPw = !!egress || enableArg != null;
+      if (enableArg != null) {
+        requests.push({ method: "PUT", path: "/api/scheduler/executors", body: { fallback_enable: enableArg } });
+      }
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
-      if (!needsPw) { submit(null, args); return true; }
+      if (!needsPw) { direct(requests[0]); return true; }
       // 措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"
-      var pwAsk = egress
+      var desc = (egress
         ? "修改 " + rowTitle(row) + " 的出口配置" + (enableArg != null ? "与故障转移开关" : "")
-        : (enableArg ? "开启" : "关闭") + "故障转移";
-      // 回调**必须 return 这个 Promise**：口令框据此保持打开，把后端 403 文案显示在框内，
-      // 并允许改口令重试（不 return 就是"非 Promise 回调"，框会立刻关掉、错误只剩横幅）。
-      askPassword(pwAsk + "？请输入当前管理员密码确认。",
-        function (pw) { return submit(pw, args); });
+        : (enableArg ? "开启" : "关闭") + "故障转移") + "？请输入当前管理员密码确认。";
+      gated({ requests: requests, desc: desc }, function (res) {
+        banner("已保存 " + rowTitle(row) + "：" + note(res && res[0]), "success");
+        if (focusAfterPaint) restoreFocus();
+        return true;
+      }, "保存");
       return true;
     }
-    // pw = null：只改名，不带 confirm_password；args 来自关弹窗前取好的值
-    function submit(pw, args) {
+    // 只改名：不进门的直接提交，成功/失败都走横幅
+    function direct(req) {
       if (busy) return false;
-      var body = {};
-      if (pw != null) body.confirm_password = pw;
-      if (args.proxy) body.proxy = args.proxy;
-      if (args.name != null) body.name = args.name;
-      var steps = [];
-      // 行接口缺 type/proxy/name 会回 400「没有可更新的字段」；只拨开关时不能发这个空体
-      if (args.proxy || args.name != null) {
-        steps.push(YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body));
-      }
-      if (args.enable != null) {
-        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: args.enable, confirm_password: pw }));
-      }
       return withBusy(function () {
         banner("提交中…", "info");
-        return Promise.all(steps).then(function (res) {
+        return YB.api(req.method, req.path, req.body).then(function (d) {
           return load().then(function () {
-            banner("已保存 " + rowTitle(row) + "：" + note(res && res[0]), "success");
+            banner("已保存 " + rowTitle(row) + "：" + note(d), "success");
             if (focusAfterPaint) restoreFocus();
             return true;
           });
-        }, function (e) { failTip(e, "保存"); throw e; });     // 抛出：错误留在口令框里
-      });
+        });
+      }).catch(function (e) { failTip(e, "保存"); return false; });
     }
 
     var handle = YB.openModal({
@@ -712,11 +741,11 @@
     return handle;
   }
 
-  /* ---------------- 容量建议与耗时实测：已移到「容量配额」分区（2026-09-17） ----------------
-     这两件事与容量配额共用同一份容量数据（计入容量的账号数、有效窗口），用户要求同类功能
-     同屏，故连代码一起搬到 components/settings-quota.js（applyExecutors/measure），
-     本分区只把接口响应通过 onData 交给它。实测那两个风险（默认拿列表第一个账号、只覆盖
-     窗口外最小链路偏乐观）改挂在容量配额页那张卡的 ⓘ 里。 */
+  /* ---------------- 容量建议与耗时实测：本分区只交数据，卡片归「容量配额」分区 ----------------
+     这两件事与容量配额共用同一份容量数据（计入容量的账号数、有效窗口），同类功能
+     同屏，故卡片代码落在 components/settings-quota.js（applyExecutors/measure），
+     本分区只把接口响应通过 onData 交给它。实测自带两个偏差（默认拿列表第一个账号、只覆盖
+     窗口外最小链路因而偏乐观）的说明挂在容量配额页那张卡的 ⓘ 里。 */
 
   function apply(data) {
     lastData = data || null;

@@ -55,8 +55,13 @@ services:
       # - ./logo.png:/app/web/static/vendor/logo.png:ro
 
     healthcheck:
-      test: ["CMD", "python3", "-c",
-             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:17892/login', timeout=3)"]
+      # 双探活：web 端口 + sched 心跳。只 curl web 时 sched 崩溃/躺平（supervisord
+      # FATAL）容器照样"健康"，restart: unless-stopped 永不救。sched 侧调调度器自带
+      # 出口 --check-health：状态目录里心跳文件（守护线程周期落盘，签到子进程
+      # wait 期间不断流）mtime 在容忍窗内则 0，陈旧/缺失则 1。
+      # 容器内整链生效待生产演练（本机无 docker 运行时）。
+      test: ["CMD-SHELL",
+             "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:17892/login', timeout=3)\" && python3 scripts/container_scheduler.py --check-health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -72,7 +77,10 @@ services:
     network_mode: "service:yiban"
     depends_on:
       yiban:
-        condition: service_healthy
+        # healthcheck 留作可观测性/重启依据，不作为 nginx 启动门槛：双探活下
+        # sched 侧一次故障就让整容器"不健康"，若 nginx 等健康再起，web 会因
+        # sched 故障连坐全下线（旧单探 web 形态无此耦合）。
+        condition: service_started
     volumes:
       - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/yiban/certs:ro   # 需 ./certs/fullchain.pem 和 ./certs/key.pem

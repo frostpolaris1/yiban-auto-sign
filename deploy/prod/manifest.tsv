@@ -1,0 +1,15 @@
+# deploy/prod 安装清单 —— 一行 = 一个生产执行件（install.sh 与 cron 来源断言共读）
+# 列：mode<TAB>仓库源路径<TAB>生产绝对目标
+#
+# 漂移记录（MF-42，2026-09-25 审计）：现网 /usr/local/sbin/yiban-backup.sh 系手工拷贝，
+# 基线比对差 3 行，具体差异内容在仓内不可知。收编策略 = **仓库为准**：install.sh 对
+# 已存在目标先做 sha256 对账，不符即拒装并打印双侧校验和（现网手工漂移不得被静默
+# 覆盖，也不得反向静默入库）；确需以仓库版覆盖现网时加 --adopt-production——覆盖前
+# 把现网件归档为 <目标>.reconcile-<时间戳>，人工 diff 后回填 scripts/backup.sh，
+# 由持有人完成现网↔仓库的最终和解（报告：task-6-report.md）。
+0700	scripts/backup.sh	/usr/local/sbin/yiban-backup.sh
+0700	deploy/prod/yiban-backup-wrapper.sh	/usr/local/sbin/yiban-backup-wrapper.sh
+0700	scripts/yiban-backup-sentinel.sh	/usr/local/sbin/yiban-backup-sentinel.sh
+0644	deploy/prod/cron.d/yiban-cleanup	/etc/cron.d/yiban-cleanup
+0644	deploy/prod/cron.d/yiban-sign	/etc/cron.d/yiban-sign
+0644	deploy/prod/cron.d/yiban-probe	/etc/cron.d/yiban-probe

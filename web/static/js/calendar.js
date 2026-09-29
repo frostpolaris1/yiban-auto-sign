@@ -58,25 +58,43 @@
   //   ④ getSelected = 选中（主色实框 + 主色浅底，独立于上面三者）。
   // ⚠ 周末停签**不**把数字做很浅：该格仍可点（点了提示「周末无需签到」），属有信息的
   //   格子、不是 WCAG 1.4.3 豁免的非活动控件，故同样保证可读。
+  // 状态符号 → 显示档（语气档 + 图例名）。表由服务端渲染进页面
+  // （window.YB_CALENDAR_STATE.by_symbol，唯一事实源 yiban.status.DISPLAY）。
+  // 原先日期格按符号字面量比较 "✅"/"❌"，其余状态一律落成空白格——"这格什么都没发生"
+  // 与"这格发生了别的事（时段外/无点位/账密暂停）"看起来完全一样，是日历侧的假信号。
+  function stateEntry(symbol) {
+    var ctx = window.YB_CALENDAR_STATE || {};
+    return (ctx.by_symbol || {})[symbol] || null;
+  }
+
+  // 语气档 → 日期格类名：只有成功/失败两档有专属底色，其余档走中性底 + 符号角标
+  // （不单靠颜色传达状态；状态码→语气档的映射只有一份，见状态表）。
   function dayCell(o) {
+    var entry = stateEntry(o.state);
+    var tone = entry ? entry.tone : "";
     var cls = "sc-cell";
     if (o.off) cls += " sc-cell--off";
-    else if (o.state === "✅") cls += " sc-cell--ok";
-    else if (o.state === "❌") cls += " sc-cell--bad";
+    else if (tone === "ok") cls += " sc-cell--ok";
+    else if (tone === "bad") cls += " sc-cell--bad";
     else cls += " sc-cell--none";
     if (o.isToday) cls += " sc-cell--today";
     if (o.selected) cls += " is-selected";
     var off = o.offDay ? "（周" + o.offDay + "不签到）" : "";
+    var stateText = entry ? entry.label : "";
     var label = o.date + (o.isToday ? "，今天" : "")
-      + (o.state === "✅" ? "，已签到" : o.state === "❌" ? "，签到失败" : (off ? "" : "，查看签到记录"))
+      + (stateText ? "，" + stateText : (off ? "" : "，查看签到记录"))
       + off;
-    var dot = o.state === "✅" ? '<i class="sc-dot sc-dot--ok" aria-hidden="true"></i>'
-      : o.state === "❌" ? '<i class="sc-dot sc-dot--bad" aria-hidden="true"></i>' : "";
+    var dot = tone === "ok" ? '<i class="sc-dot sc-dot--ok" aria-hidden="true"></i>'
+      : tone === "bad" ? '<i class="sc-dot sc-dot--bad" aria-hidden="true"></i>' : "";
     var badge = o.offDay ? '<i class="sc-off" aria-hidden="true">休</i>' : "";
+    // 其余状态用状态符号做角标：有结论的日子必须看得出"不是没记录"。
+    // 周末停签格不叠（同角已有「休」角标，两个角标互挤不可读）。
+    var symBadge = (!o.off && o.state && tone !== "ok" && tone !== "bad")
+      ? '<i class="sc-sym" aria-hidden="true">' + esc(o.state) + "</i>" : "";
     return '<button type="button" class="' + cls + '" data-sc-date="' + esc(o.date) + '"'
       + ' title="' + esc(o.date) + '" aria-label="' + esc(label) + '"'
       + (o.selected ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>'
-      + '<span class="sc-num">' + o.d + "</span>" + dot + badge + "</button>";
+      + '<span class="sc-num">' + o.d + "</span>" + symBadge + dot + badge + "</button>";
   }
 
   function monthLabel(year, month) {

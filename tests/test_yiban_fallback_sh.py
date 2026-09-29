@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 """兜底常驻执行体外壳（`scripts/yiban-fallback.sh`）的行为断言。
 
-用户问"怎么把某个执行体设置成兜底型"——答案是一条 cron 跑这个脚本，而**开关在
-`.env` 里**（网页写进去的）。cron 环境里既没有那些变量、又不能安全地 source `.env`，
-所以"先读 .env 再判开关"这段样板必须由脚本自己承担，且必须钉住三件事：
-
-1. **开关关 = 静默**：退出码 0、**不调用 CLI**、不写日志、不建状态目录。
-   默认就是关，而 cron 每 5 分钟一次——任何输出都会变成周期性邮件噪声；
-2. **开关开 = 真的起到 CLI**：以 `--fallback` 调用（不是 `--workers`、不是空跑）；
-3. **环境变量优先于 `.env`**：cron 行里显式赋值可临时覆盖网页配置（与 run.sh 同口径）。
+标签：B · 调度：领取/队列/执行体
+覆盖：兜底常驻外壳的三条契约：开关关时静默（退出码 0、不起
+   CLI、不写日志、不建状态目录）、开关开时以 --fallback 真的起到
+   CLI、真值字面量集合、环境变量优先于 .env、含 BOM/CRLF/多余空白/杂键的 .env
+   仍能读到开关。
+对应实现：scripts/yiban-fallback.sh（.env 解析、开关判定、CLI 调用与锁）。
+关键断言：默认态是关，而 cron 每 5
+   分钟一次：任何输出都会变成周期性邮件噪声，故「静默」是被断言的行为（stdout
+   必须为空、状态目录必须仍为空），退出码 0
+   不足以证明没起进程。反过来「起了进程」必须由桩 PY 记录的完整参数证明是
+   --fallback 而不是空跑。环境变量优先于 .env，好让 cron
+   行临时覆盖网页配置而不必改配置。
+依赖：skipIf(shutil.which('bash') is None)：本机无 bash 时整类 skip；有 bash
+   时用临时「应用目录」+ .venv/bin/python3 桩真实执行脚本，并逐键清空 YIBAN_*
+   环境变量防并发串味。
 
 写法参照 `tests/test_run_sh_workers.py`：每条用例独立 state dir，用桩 PY 记录被调用
 的完整参数——"脚本退出码 0"不足以证明"确实起了兜底进程"（静默退出也是 0）。
@@ -19,13 +26,23 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
 
-#: 桩解释器：记录被调用的全部参数（`$*`），不真的跑签到
-STUB_PY = '#!/usr/bin/env bash\necho "$*" >> "$STUB_LOG"\nexit 0\n'
+#: 桩解释器：记录被调用的全部参数（`$*`），不真的跑签到。
+#: 按天命名取业务日（MF-109）后脚本会先问一次 `yiban.clock`——桩必须如实回应，
+#: 否则脚本退到 `date` 分支，测试就失去对主路（与引擎同源）的覆盖。
+STUB_PY = (
+    '#!/usr/bin/env bash\n'
+    'echo "$*" >> "$STUB_LOG"\n'
+    'case "$*" in\n'
+    '  *yiban.clock*) echo "${STUB_BUSINESS_DAY}"; exit 0;;\n'
+    'esac\n'
+    'exit 0\n'
+)  # 记参数而不是记退出码：「确实以 --fallback 起过 CLI」只能从它收到的东西证明
 
 
 def _to_bash_path(path):
@@ -42,7 +59,7 @@ class YibanFallbackShTest(unittest.TestCase):
         # 连 `.venv/bin/python3` 桩一起造好，就不必给脚本加测试专用的路径开关
         self.scripts = os.path.join(self.tmp, "scripts")
         os.makedirs(self.scripts)
-        shutil.copy(SRC_SH, os.path.join(self.scripts, "yiban-fallback.sh"))
+        shutil.copy(SRC_SH, os.path.join(self.scripts, "yiban-fallback.sh")) # 复制到临时「应用目录」而非给脚本加测试开关：APP_DIR 是由 dirname $0/.. 反推的
         self.venv_bin = os.path.join(self.tmp, ".venv", "bin")
         os.makedirs(self.venv_bin)
         self.state = os.path.join(self.tmp, "state")
@@ -54,13 +71,15 @@ class YibanFallbackShTest(unittest.TestCase):
             path = os.path.join(self.venv_bin, name)
             with io.open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(body)
-            os.chmod(path, 0o755)
+            os.chmod(path, 0o755) # Git Bash 同样要看执行位，否则桩解释器直接 126
         # 逐键清空 YIBAN_*：**不能**让别的测试留在 os.environ 里的配置渗进来
         # （全量 -n 8 并发时同一 worker 里别的用例会写这些键）
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
         self.env.update({
             "YIBAN_STATE_DIR": _to_bash_path(self.state),
             "STUB_LOG": _to_bash_path(self.calls),
+            # 桩解释器对业务日探针的回应：取仓库业务钟（与脚本/引擎同一事实源）
+            "STUB_BUSINESS_DAY": clock.today(),
         })
 
     def tearDown(self):
@@ -79,13 +98,20 @@ class YibanFallbackShTest(unittest.TestCase):
         return r
 
     def _calls(self):
+        """桩 PY 收到的**签到 CLI 调用**参数（取业务日的那次探针调用不计）。
+
+        按天命名取业务日（`yiban.clock`）后，脚本会先调一次 `python -c`，
+        再拉起 CLI；那一次是实现细节。本类断言的是「恰好以 --fallback 起过
+        一次签到 CLI」，所以只数含 `yiban.cli` 的调用。
+        """
         if not os.path.exists(self.calls):
             return []
         with io.open(self.calls, encoding="utf-8", errors="replace") as f:
-            return [ln for ln in f.read().splitlines() if ln]
+            return [ln for ln in f.read().splitlines() if "yiban.cli" in ln]
 
     def _sign_log(self):
-        path = os.path.join(self.state, f"sign-{datetime.now().strftime('%Y-%m-%d')}.log")
+        """按天日志文件：文件名取业务日（与脚本/引擎同源），宿主时区不参与。"""
+        path = os.path.join(self.state, f"sign-{clock.today()}.log")
         if not os.path.exists(path):
             return None
         with io.open(path, encoding="utf-8", errors="replace") as f:

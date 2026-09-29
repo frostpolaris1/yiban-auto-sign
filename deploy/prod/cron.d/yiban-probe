@@ -1,0 +1,9 @@
+# /etc/cron.d/yiban-probe —— 健康探针高频轮询（生产 cron 表原件，MF-42 收编）
+# 仓库来源：deploy/prod/cron.d/yiban-probe（install.sh 装到 /etc/cron.d/，0644 root:root）
+# 语义：必须是 */10 高频轮询——实际执行时刻由 .env 的 YIBAN_PROBE_TIME 决定，脚本内
+#       自判频率；写成低频固定时刻会把探针钉死在 cron 时刻、设置页时间失效（README
+#       「健康探针」一节）。默认探针关闭时该轮询为空转，无副作用。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+*/10 * * * * yiban /opt/yiban-auto-sign/run_probe.sh >> /var/log/yiban/probe.log 2>&1

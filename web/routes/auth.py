@@ -139,6 +139,10 @@ def api_login():
         session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
         # 会话绝对过期基准：自此刻起最多 SESSION_ABS_TTL_SECONDS
         session["login_ts"] = int(time.time())
+        # 登录时的出口 IP：risk 档"换环境"判据的基准之一——本会话还没有"已验证 IP"
+        # 时用它兜底。只在登录成功时记录，历史会话没有这个键 = 未知（不判异常，
+        # 见 _pw_gate_ip_changed）。
+        session["login_ip"] = ip
         # 服务端会话吊销：注册用户登录签发 sid 并落库——登出/被
         # 重置密码/被踢时轮换，被盗 cookie 重放即失效。内置主管理员没有
         # users 行可存，它的"那一行"就是 .env：同一条吊销面落在
@@ -151,12 +155,21 @@ def api_login():
             m.db.set_user_sid(username.lower(), sid)
         return jsonify({"ok": True, "role": role})
     if recoverable:
-        # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
+        # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）。
+        # 留痕：口令验对却走不到 login_ok 汇合点、也不计失败——不记这一条，
+        # /api/login 在注销冷静期里就是一台零留痕的凭据验证器（应用侧只剩
+        # nginx 访问日志，不可归因）。动作名与 login_ok 分开：这里没有建立
+        # 会话，只是"口令已被验证 + 恢复被引导过"的痕迹；三元组口径同
+        # login_ok（username 截 64、IP 经 hash_ip、detail 不落凭据）。
+        m.db.audit(
+            (username.lower() or "?")[:64], "login_recoverable", m.db.hash_ip(ip),
+            "注销冷静期内口令正确，未建会话（引导恢复）",
+        )
         return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
     fails = m._bump_login_failure(_login_fails(), fail_key, now)
     # 失败登录留痕审计链：失败原仅内存计数+日志，"被盗号溯源"
     # 场景无法从审计还原爆破片段。刻意不在每次失败都写（防爆破刷爆审计表），
-    # 与阈值邮件/锁定同节奏：达到告警阈值（3 次）与锁定阈值（5 次）各留痕一条，
+    # 与阈值邮件/锁定同节奏：告警阈值与锁定阈值各留痕一条（两值相等时只留一条），
     # IP 经 hash_ip 匿名化（与登录成功审计同口径）。用户名截断防长串刷审计。
     if fails in (m.LOGIN_FAIL_NOTIFY, m.LOGIN_MAX_FAILS):
         m.db.audit(
@@ -165,19 +178,19 @@ def api_login():
             m.db.hash_ip(ip),
             f"连续失败 {fails} 次（阈值留痕）",
         )
-    if fails >= m.LOGIN_MAX_FAILS:
+    lock_now = fails >= m.LOGIN_MAX_FAILS
+    if lock_now:
         with m._rate_lock:
             _login_fails()[fail_key] = (0, now + m.LOGIN_LOCK_SECONDS, now)
         m.logger.warning(
             "登录失败次数过多，IP %s 锁定 %s 秒", m.db.hash_ip(ip), m.LOGIN_LOCK_SECONDS
         )
-        return jsonify(
-            {"error": f"密码错误次数过多，已锁定 {m.LOGIN_LOCK_SECONDS // 60} 分钟"}
-        ), 429
-    # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
+    # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解。
+    # 告警排在锁定之前：两个阈值**同值**时这一刻既要告警也要锁定，若按"先锁定即 return"
+    # 的顺序，告警会在锁定分支之后永不执行——等于把唯一的登录失败信号静音。
     if fails == m.LOGIN_FAIL_NOTIFY:
-        # 告警级别判据：把"输错 3 次密码"一律标成紧急，而紧急额度默认只有 3 条/天——
-        # 一次常见的忘密码触发锁定，就会挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。
+        # 告警级别判据：把"本人输错口令"一律标成紧急，而紧急额度默认只有 3 条/天——
+        # 一次常见的忘密码就会挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。
         # 故只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
         # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
         with m._rate_lock:
@@ -187,7 +200,10 @@ def api_login():
             m.mail_layout.Mail(
                 summary=f"IP {m._nl_safe(ip)} 连续 {fails} 次登录失败。",
                 fields=[
-                    ("尝试用户名", m._nl_safe(username)),
+                    # 尝试用户名是受害者输入的邮箱（注册用户即邮箱登录）——爆破告警
+                    # 正文不得带出被爆破账号明文邮箱（MF-49 展示/告警面同一口径：
+                    # `mask_email` 非邮箱原样返回，内置 admin 用户名不受影响）。
+                    ("尝试用户名", m._nl_safe(m._mask_email(username))),
                     ("该 IP 试过的不同用户名", f"{distinct_users} 个"),
                 ],
                 advice=["如非本人操作，请检查是否有人尝试暴力破解"],
@@ -199,6 +215,10 @@ def api_login():
             # 喷洒类攻击烧光本账后审计链异常等真紧急告警仍可达手机
             ledger="login_fail",
         )
+    if lock_now:
+        return jsonify(
+            {"error": f"密码错误次数过多，已锁定 {m.LOGIN_LOCK_SECONDS // 60} 分钟"}
+        ), 429
     return jsonify({"error": "用户名或密码错误"}), 401
 
 
@@ -231,9 +251,12 @@ def api_register():
     pw_err = m._password_policy_error(password)
     if pw_err:
         return jsonify({"error": pw_err}), 400
-    # 内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用
+    # 内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用。
+    # 与"该邮箱已注册"同文案、同补一次 dummy scrypt：独有文案且排在口令散列之前
+    # 等于给匿名者一个零成本的超管邮箱探针（注册面 = 公开面）。
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
-        return jsonify({"error": "内置管理员邮箱不可注册"}), 400
+        m._constant_time_dummy(password)
+        return jsonify({"error": "该邮箱已注册"}), 400
     # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
     ip = m._client_ip()
     now = time.time()
@@ -281,12 +304,18 @@ def api_register():
                 role="user",
                 created_at=m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
+                # 审计与 INSERT 同事务：注册即建立账号凭据，中间被杀不留"建了却无痕"。
+                audit_spec={
+                    "username": email,
+                    "action": "user_register",
+                    "target": email,
+                    "detail": "开放注册",
+                },
             )
         except sqlite3.IntegrityError:
             return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
         if not created:
             return jsonify({"error": "该邮箱已注册"}), 400  # OR IGNORE 未实际创建
-        m.db.audit(email, "user_register", email, "开放注册")
     # 成功注册计数：原子重读后递增，避免并发注册丢失计数
     m._bump_window_count(_register_limits(), ip, now, m.REGISTER_WINDOW)
     m.logger.info("新用户注册: %s", m._mask_email(email))

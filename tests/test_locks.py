@@ -9,6 +9,24 @@
 1. 三处都用同一个原语（不再各写一份）；
 2. 本平台的锁后端**不是 None**（`fcntl` 或 `msvcrt` 至少有一个可用）——若哪天
    又一次"静默降级"，`lock_kind()` 会连同降级告警一起暴露出来。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：锁原语本身（后端存在性、锁文件 0600、同线程可重入、退出即释放、等待而非立即降级、
+    包装方确实传了重试超时、跨进程互斥、_acquire 失败/临界区异常后 held 记账复位），
+    以及三处历史各写一份的调用方现在都走同一原语。
+对应实现：`yiban/infra/locks.py` 的 `lock_kind` / `file_lock`、
+`yiban/infra/env_lock.py` 的 `env_write_lock`、
+`yiban/engine/cli_support._state_file_lock`（signin 侧经它）与
+`yiban/notify/ledger._state_file_lock`。
+关键断言：`lock_kind()` 非 None 这条守的是"静默退化成 no-op"这个具体失效面——
+Windows 上原先两份实现直接什么都不做，锁住了也判不出来；同理 `test_lock_file_created_0600`
+与"等待而非立即降级"各钉一格（权限泄漏、拿不到锁就并发写）。
+`test_open_failure_logs_warning_and_degrades_to_inprocess_lock` 一族是**如实记录现状**：
+打不开锁文件时确实退化为进程内锁，只是必须留 WARNING，不是"绝不降级"。
+依赖：三条用例带 `@unittest.skipUnless(os.name == "posix", ...)`，Windows 上直接 skip——
+`test_waits_for_holder_instead_of_degrading_immediately`、`test_cross_process_exclusion_posix`、
+`EnvLockTest.test_env_write_lock_cross_process_posix`；也就是"跨进程真互斥"这一格只在 POSIX
+被验过，Windows 侧只剩退化路径的断言。其余用例两端都跑，无网络。
 """
 import os
 import sys
@@ -17,14 +35,12 @@ import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 
-from yiban.infra import (  # noqa: E402
-    env_lock,
-    locks,
-)
+from yiban.infra import account_crypto, env_lock, locks  # noqa: E402
 from yiban.notify import ledger as notify  # noqa: E402  # 账本实现（旧壳已删除）
 
 
@@ -62,6 +78,47 @@ class LockPrimitiveTest(unittest.TestCase):
         with locks.file_lock(self.target):
             pass
         with locks.file_lock(self.target):  # 能再次进入 = 已释放
+            pass
+
+    def test_acquire_baseexception_does_not_leak_held_flag(self):
+        """`_acquire` 抛非 Exception 级异常（30s 重试等待被打断这类）后，本线程的
+        held 记账必须已复位：下一次同名锁**真的重新拿锁**，而不是被当成"重入"
+        静默放行。
+
+        修复前：`held.add(path)` 与内层 try 之间没有兜底，异常一漏该路径就永久
+        留在 held 集里——此后该线程所有同名锁全部零告警地跳过文件锁与进程内锁
+        （登记判"高"的失效面）。修复后由最外层 finally 结构封死，本用例钉住
+        "泄漏态可发现/可复位"。
+        """
+        path = os.path.abspath(self.target)
+        real_acquire = locks._acquire
+
+        def _interrupted(p, t):
+            raise KeyboardInterrupt("模拟等待期间的中断（BaseException 级）")
+
+        with mock.patch.object(locks, "_acquire", _interrupted), \
+                self.assertRaises(KeyboardInterrupt), locks.file_lock(self.target):
+            pass  # 不该到达
+        self.assertNotIn(path, locks._held_paths(), "held 记账不得残留")
+
+        # 下一次调用必须真正走到 _acquire（修复前：被 held 判重入，一次都不调）
+        seen = []
+
+        def _spy(p, t):
+            seen.append(p)
+            return real_acquire(p, t)
+
+        with mock.patch.object(locks, "_acquire", _spy), locks.file_lock(self.target):
+            pass
+        self.assertEqual(seen, [path], "泄漏后的同名锁不得静默跳过真实加锁")
+
+    def test_body_exception_also_resets_held_flag(self):
+        """临界区内抛普通异常同样不得让 held 残留（内层 finally 语义回归）。"""
+        path = os.path.abspath(self.target)
+        with self.assertRaises(ValueError), locks.file_lock(self.target):
+            raise ValueError("业务异常")
+        self.assertNotIn(path, locks._held_paths())
+        with locks.file_lock(self.target):  # 还能正常进 = 记账已复位
             pass
 
     @unittest.skipUnless(os.name == "posix", "跨进程 flock 断言仅 POSIX 可用")
@@ -103,21 +160,6 @@ class LockPrimitiveTest(unittest.TestCase):
             proc.join(5)
             if proc.is_alive():
                 proc.terminate()
-
-    def test_wrapper_passes_a_retry_timeout(self):
-        """守护配置：包装层必须把**正数**重试时长交给 portalocker。
-
-        若有人把它改回"零超时/不重试"，上面那条等待断言在快机器上可能侥幸通过，
-        这条会在配置层面直接拦下。
-        """
-        with mock.patch.object(locks.portalocker, "Lock",
-                              wraps=locks.portalocker.Lock) as spy, \
-                locks.file_lock(self.target):
-            pass
-        spy.assert_called_once()
-        self.assertGreater(spy.call_args.kwargs.get("timeout", 0), 0,
-                           "必须传入正数 timeout 以启用重试")
-        self.assertGreater(spy.call_args.kwargs.get("check_interval", 0), 0)
 
     @unittest.skipUnless(os.name == "posix", "跨进程 flock 断言仅 POSIX 可用")
     def test_cross_process_exclusion_posix(self):
@@ -182,13 +224,133 @@ class D4DivergentLocksRemovedTest(unittest.TestCase):
             "应真的建出锁文件（不再是 no-op）",
         )
 
-    def test_env_write_lock_delegates_to_primitive(self):
-        env_path = os.path.join(self.tmp, ".env")
-        with mock.patch.object(env_lock, "file_lock", wraps=locks.file_lock) as spy, \
-                env_lock.env_write_lock(env_path):
-            pass
-        spy.assert_called_once()
-        self.assertEqual(os.path.abspath(spy.call_args[0][0]), os.path.abspath(env_path))
+
+def _posix_lock_worker(env_file, ready, go, attempting, entered, release):
+    """POSIX 跨进程互斥测试子进程：等待 go 后尝试获取 env_write_lock。"""
+    from yiban.infra import env_lock
+
+    ready.set()
+    if not go.wait(5):
+        return
+    attempting.set()
+    with env_lock.env_write_lock(env_file):
+        entered.set()
+        release.wait(5)
+
+
+class EnvLockTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-env-lock-")
+        self.addCleanup(self.tmp.cleanup)
+        self.env_file = os.path.join(self.tmp.name, ".env")
+
+    def test_env_write_lock_reentrant_same_thread(self):
+        """同进程同线程重入不阻塞（Windows RLock / POSIX RLock + flock 均可重入）。"""
+        with env_lock.env_write_lock(self.env_file):  # noqa: SIM117 - 嵌套 with 正是重入场景
+            with env_lock.env_write_lock(self.env_file):
+                pass  # 能进入嵌套块即视为同线程重入不阻塞
+
+    # ---- 文件锁降级路径必须告警留痕（降级 = 跨进程互斥失效，静默降级会丢并发写入）----
+
+    def test_open_failure_logs_warning_and_degrades_to_inprocess_lock(self):
+        """锁文件打不开（目录不可写等）：warning 留痕，仍返回进程内锁，业务不阻断。"""
+        with mock.patch.object(env_lock.os, "open", side_effect=OSError(13, "Permission denied")), \
+                self.assertLogs("yiban.locks", level="WARNING") as logs, \
+                env_lock.env_write_lock(self.env_file):
+            pass  # 能进入临界区 = 降级为进程内锁后仍可用
+        self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
+
+    def test_lock_failure_logs_warning_and_degrades(self):
+        """加锁本身失败（抢锁超时/平台无锁后端/文件系统不支持）：必须告警留痕。
+
+        注入点在 portalocker 边界：底层平台分发已交给该库，**在导入时就确定了平台
+        后端**，所以再 patch `fcntl`/`msvcrt` 已打不到它（旧版那两条用例正是因此失效）。
+        要钉的契约没变——**任何加锁失败都要告警并降级，绝不静默**。
+        """
+        import portalocker
+
+        with mock.patch.object(
+                locks.portalocker.Lock, "acquire",
+                side_effect=portalocker.exceptions.LockException(
+                    portalocker.exceptions.LockException.LOCK_FAILED, "抢锁超时")), \
+                self.assertLogs("yiban.locks", level="WARNING") as logs, \
+                env_lock.env_write_lock(self.env_file):
+            pass  # 降级为进程内锁后临界区仍可用（业务不阻断）
+        self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
+
+    def test_lock_failure_still_excludes_within_process(self):
+        """降级后**进程内**互斥仍然生效（同线程重入不阻塞、跨线程会互斥）。"""
+        import threading
+
+        import portalocker
+
+        entered = threading.Event()
+
+        def _other_thread():
+            with locks.file_lock(self.env_file):
+                entered.set()
+
+        with mock.patch.object(
+                locks.portalocker.Lock, "acquire",
+                side_effect=portalocker.exceptions.LockException(
+                    portalocker.exceptions.LockException.LOCK_FAILED, "抢锁超时")), \
+                self.assertLogs("yiban.locks", level="WARNING"), \
+                env_lock.env_write_lock(self.env_file):
+            t = threading.Thread(target=_other_thread, daemon=True)
+            t.start()
+            self.assertFalse(entered.wait(0.2),
+                             "另一线程不得在持锁期间进入（进程内 RLock 生效）")
+        t.join(timeout=5)
+        self.assertTrue(entered.is_set(), "释放后另一线程应能进入")
+
+    @unittest.skipUnless(os.name == "posix", "跨进程 flock 仅 POSIX 可用；Windows 退化为进程内锁")
+    def test_env_write_lock_cross_process_posix(self):
+        """POSIX 跨进程互斥：父进程持锁时子进程不得进入，父进程释放后子进程进入。"""
+        import multiprocessing as mp
+        import time
+
+        ctx = mp.get_context("fork")
+        ready = ctx.Event()
+        go = ctx.Event()
+        attempting = ctx.Event()
+        entered = ctx.Event()
+        release = ctx.Event()
+        proc = ctx.Process(
+            target=_posix_lock_worker,
+            args=(self.env_file, ready, go, attempting, entered, release),
+        )
+        proc.start()
+        try:
+            self.assertTrue(ready.wait(5), "子进程未就绪")
+            with env_lock.env_write_lock(self.env_file):
+                go.set()
+                self.assertTrue(attempting.wait(5), "子进程未开始尝试获取锁")
+                time.sleep(0.2)
+                self.assertFalse(
+                    entered.is_set(),
+                    "父进程持锁期间子进程不应进入临界区（跨进程 flock 未生效）",
+                )
+            self.assertTrue(entered.wait(5), "父进程释放后子进程应能获取锁")
+        finally:
+            release.set()
+            proc.join(5)
+            self.assertFalse(proc.is_alive(), "子进程未在超时内退出")
+
+    def test_account_crypto_does_not_overwrite_existing_key(self):
+        """先写 key A，再调 _write_key_to_env_file(env, B) 返回 A 且文件仍为 A。"""
+        key_a = bytes(range(32))
+        key_b = bytes(range(32, 64))
+
+        self.assertEqual(
+            account_crypto._write_key_to_env_file(self.env_file, key_a), key_a
+        )
+        result = account_crypto._write_key_to_env_file(self.env_file, key_b)
+
+        self.assertEqual(result, key_a)
+        with open(self.env_file, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn(f"YIBAN_ACCOUNTS_KEY={key_a.hex()}", content)
+        self.assertNotIn(key_b.hex(), content)
 
 
 if __name__ == "__main__":

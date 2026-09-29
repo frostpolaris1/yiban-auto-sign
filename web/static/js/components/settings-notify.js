@@ -7,13 +7,13 @@
      · 读 GET /api/notify-config —— 任意管理员可读通道状态与规则配置字段；额度**余量**
        （daily_remaining / urgent_daily_remaining）仅主管理员，无权查看时后端置 null 并
        恒定下发 quota_visible=false（本组件先看 quota_visible 再决定显示口径，不按 null 判）。
-     · 写与测试 —— 仅主管理员，且关闭通道、更换/清空密钥、调整额度节流都要
-       confirm_password（后端 _high_risk_gate：值**真的变了**才要，同值提交不要求；
-       UI 不是安全边界）。
+     · 写与测试 —— 仅主管理员，且关闭通道、更换/清空密钥、调整额度节流受门禁
+       （后端 _high_risk_gate：值**真的变了**才判；UI 不是安全边界）。
    脱敏：密钥只读展示 secret_masked，输入框恒为空（留空=不改动），绝不回显。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存推送配置」
-   才提交，只发送相对快照真正变化的字段。
+   才提交，只发送相对快照真正变化的字段。门禁走统一 helper——先不带凭据发，后端回
+   reason 才补口令，档位只存在于后端。
    对外面：mount/load/apply(load 同义)、save() → Promise<boolean>、isDirty()。 */
 (function () {
   "use strict";
@@ -73,11 +73,22 @@
     if (data.quota_visible === false) {
       parts.push("今日额度：仅主管理员可见");
     } else {
-      var g = data.daily_remaining == null ? "不限" : data.daily_remaining + " 条";
-      var u = data.urgent_daily_remaining == null ? "不限" : data.urgent_daily_remaining + " 条";
-      parts.push("今日额度：非紧急剩余 " + g + " / 紧急剩余 " + u);
+      parts.push("今日额度：" + quotaPart("非紧急", data.daily_max, data.daily_remaining) +
+        " / " + quotaPart("紧急", data.urgent_daily_max, data.urgent_daily_remaining) +
+        "（已用按占用计数：占用先于发送，未必等于已送达）");
     }
     el.textContent = parts.join("；");
+  }
+
+  // 计数口径 = 「已用 X/上限 Y（剩 R）」，不再只显余额：额度是被一条条**占用**吃掉的，
+  // 占用发生在发送之前——发出失败会退还，但"从未发出却没退成"的占用（见告警链交付账）
+  // 只显余额时完全隐形。本函数只做显示换算，占用/退还的机制与回执口径在账本层。
+  function quotaPart(name, max, remaining) {
+    if (remaining == null) return name + " 不限";
+    var m = Number(max) || 0;
+    var r = Number(remaining) || 0;
+    if (m <= 0) return name + " 不限";
+    return name + " 已用 " + Math.max(0, m - r) + "/" + m + "（剩 " + r + "）";
   }
 
   // 读取失败就地提示 + 提供重试（不再静默吞掉：用户看不到"配置其实是旧的/空的"）
@@ -137,28 +148,26 @@
     return body;
   }
 
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）；
+  // 用户取消弹窗 = 本次不保存。
   function submit(body) {
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "保存消息推送配置属于高危操作。\n请输入当前管理员密码确认。",
-        function (pw) {
-          body.confirm_password = pw;
-          busy = true;
-          var btn = $("sn-save"); if (btn) btn.disabled = true;
-          setTip("保存中…", false);
-          YB.api("PUT", "/api/notify-config", body).then(function () {
-            var sec = $("sn-secret"); if (sec) sec.value = "";
-            resolve(true);
-            return load();
-          }, function (e) {
-            setTip((e && e.message) || "保存失败，请稍后重试", true);
-            resolve(false);
-          }).then(function () {
-            busy = false;
-            if (btn && isMaster) btn.disabled = false;
-          });
-        },
-        function () { resolve(false); });     // 取消口令 = 本次不保存
+    busy = true;
+    var btn = $("sn-save"); if (btn) btn.disabled = true;
+    setTip("保存中…", false);
+    return YB.dangerousSubmit({
+      method: "PUT", path: "/api/notify-config", body: body,
+      desc: "保存消息推送配置属于高危操作。\n请输入当前管理员密码确认。"
+    }).then(function () {
+      var sec = $("sn-secret"); if (sec) sec.value = "";
+      return load().then(function () { return true; });
+    }, function (e) {
+      if (e && e.canceled) setTip("", false);
+      else setTip((e && e.message) || "保存失败，请稍后重试", true);
+      return false;
+    }).then(function (ok) {
+      busy = false;
+      if (btn && isMaster) btn.disabled = false;
+      return ok;
     });
   }
 

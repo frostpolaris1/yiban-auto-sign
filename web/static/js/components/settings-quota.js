@@ -7,16 +7,17 @@
 
    两张卡：
      1) 容量配额（本文件的主职）：只保留上限编辑——只读用量三分类与容量估算已删除，
-        /accounts 的容量卡已给出同口径展示，设置页不再重复；
-     2) 容量建议与耗时实测（2026-09-17 从「执行体」分区搬来）：建议值与实测共用容量数据
+        同口径展示改由「数据总览」页承担（pages/data_dashboard.js 的 capacityText：账号/用户容量
+        + accounts_breakdown 三分类）；/accounts 页也不再展示容量，容量信息已整体并入总览；
+     2) 容量建议与耗时实测：建议值与实测共用容量数据
         （计入容量的账号数、有效窗口、实测容量），同类功能同屏；数据经 applyExecutors()
         由页面转交，本文件不重复请求。实测只判主管理员 + 后端全局冷却（429 + 倒计时），
-        **不带口令框**——后端 2026-09-17 判它与手动签到同档（不改配置），前端不放假门；
+        **不带口令框**——后端判它与手动签到同档（不改配置就不校验口令），前端不
         页面只保留一道诚实的二次确认。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存容量上限」
-   才提交；保存走 confirm_password 高危门禁（不合适的上限会影响新增注册/账号），
-   成功后回调页面刷新容量状态。
+   才提交；保存是受门禁操作，走统一 helper——先不带凭据发，后端回 reason 才补口令
+   （不合适的上限会影响新增注册/账号），成功后回调页面刷新容量状态。
    对外面：mount(options) / apply(data) / applyExecutors(data) / save() → Promise<boolean>。 */
 (function () {
   "use strict";
@@ -53,7 +54,7 @@
 
   // 容量上限按权限启用/禁用；禁用时把原因 #set-cap-perm 与控件做程序化关联（读屏可及）。
   function applyPerm() {
-    var disabled = !ctx.isMaster;
+    var disabled = !ctx.isMaster;   // 只是显示口径：非主管理员禁用控件并就地说明，拦得住的只有后端那一处
     ["set-max-users", "set-max-accounts"].forEach(function (id) {
       var n = $(id);
       if (!n) return;
@@ -77,29 +78,28 @@
     return body;
   }
 
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）；
+  // 用户取消弹窗 = 本次不保存。
   function submit(body) {
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "调整容量上限：不合适的设置可能影响新增注册/账号，是否继续？\n请输入当前管理员密码确认。",
-        function (pw) {
-          body.confirm_password = pw;
-          busy = true;
-          setTip("保存中…", false);
-          YB.api("POST", "/api/settings", body).then(function (data) {
-            snap = { users: value("set-max-users", snap.users), accounts: value("set-max-accounts", snap.accounts) };
-            clearDirty();
-            setTip((data && data.msg) || "容量上限已保存", false);
-            if (ctx.onSaved) ctx.onSaved(data);
-            resolve(true);
-          }, function (e) {
-            setTip((e && e.message) || "保存失败，请稍后重试", true);
-            resolve(false);
-          }).then(function () {
-            busy = false;
-            applyPerm();
-          });
-        },
-        function () { resolve(false); });     // 取消口令 = 本次不保存
+    busy = true;
+    setTip("保存中…", false);
+    return YB.dangerousSubmit({
+      method: "POST", path: "/api/settings", body: body,
+      desc: "调整容量上限：不合适的设置可能影响新增注册/账号，是否继续？\n请输入当前管理员密码确认。"
+    }).then(function (data) {
+      snap = { users: value("set-max-users", snap.users), accounts: value("set-max-accounts", snap.accounts) };
+      clearDirty();
+      setTip((data && data.msg) || "容量上限已保存", false);
+      if (ctx.onSaved) ctx.onSaved(data);
+      return true;
+    }, function (e) {
+      if (e && e.canceled) setTip("", false);
+      else setTip((e && e.message) || "保存失败，请稍后重试", true);
+      return false;
+    }).then(function (ok) {
+      busy = false;
+      applyPerm();
+      return ok;
     });
   }
 
@@ -127,7 +127,7 @@
   }
 
   /* ================= 容量建议与耗时实测 =================
-     从「执行体」分区搬来（用户 2026-09-17）：两件事共用同一份容量数据（计入容量的账号数、
+     与容量上限同分区的原因：两件事共用同一份容量数据（计入容量的账号数、
      有效窗口、实测容量），同类功能同屏对照，且**直接放页面上**、不再收进弹窗。
      数据来源仍是 GET /api/scheduler/executors（由页面在 settingsExecutors.load() 之后
      经 onData 转交，本文件不重复请求）；measured / recommendation 都由后端算好，前端不换算。
@@ -180,8 +180,8 @@
   }
 
   // 冷却/在途：按钮灰掉 + 剩余时间**追加**在结果行末尾（"点了没反应"变成"还要等多久"）。
-  // 追加而不是替换：实测结果本身是要看的内容，倒计时只是补充说明（早先替换过一次，
-  // 结果刚测出来就被倒计时顶掉、10 分钟内看不到数字——实机复现）。
+  // 追加而不是替换：实测结果本身就是要看的内容，倒计时只是补充说明——
+  // 把结果替换成倒计时会让数字刚出来就被顶掉，整个冷却窗口内都看不到（这是踩过的坑）。
   // 后端已按全局冷却拦（429 带 next_allowed_in），前端这份只是把状态显示出来。
   function paintButton() {
     var btn = $("set-cap-measure");
@@ -199,10 +199,10 @@
       + " 才能再测（后端全局冷却，连点只会产生一次真实登录）。" : ""), measureBad);
   }
   // 实测（POST /measure）：真的会用真实账号访问一次易班（只读、不签到）。
-  // **口令门**：后端 2026-09-17 的口径是"不改配置 → 不要求 confirm_password"（与手动签到同档，
+  // **口令门**：后端口径是"不改配置 → 不要求 confirm_password"（与手动签到同档，
   // 只判主管理员 + 冷却），故这里**不放口令框**——前端弹一个后端不校验的口令框就是"假门"
-  // （docs/refactor/88 §2.5 与安全复审 P1 都说清过；该目录未纳入版本控制，接口契约另见
-  // docs/dev/api-executors.md 的口令门一节）。要改成口令门需后端加一行校验，前端再跟上。
+  // （实测只判主管理员 + 全局冷却）。接口契约与口令门口径见
+  // docs/dev/api-executors.md。要改成口令门得后端先加校验、前端再跟上——单侧加就是假门。
   // 这里保留一道**诚实的二次确认**：一次实测会拿真实账号真登录一次，值得让操作者按一下。
   // pwOpen：确认框已在途时不再叠开第二个。
   var pwOpen = false;

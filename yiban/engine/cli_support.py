@@ -1,29 +1,38 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**功能**
-CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
+CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以及 CLI 的 stdout/stderr
+输出收口与退出码分族。
 
-三件事都属"进程外壳"而非签到逻辑：谁在跑（单实例锁，防 cron 全量与手动 `--only`
+前几件事属"进程外壳"而非签到逻辑：谁在跑（单实例锁，防 cron 全量与手动 `--only`
 并发登录同一账号）、日志写哪儿（按天文件 handler，装配延迟到入口、导入零副作用）、
-状态文件怎么安全读改写（跨进程文件锁）。引擎其余部分与入口都依赖它们，故独立成模块。
+状态文件怎么安全读改写（跨进程文件锁）。输出收口（`_emit_json` / `_say` / `_fail` /
+`_emit_json_error` / `_UsageError` / `_exit_code`）与退出码常量同属"命令行契约"这一
+独立变更轴：调用方（`yiban/cli.py`）按它们解析 stdout 与退出码，引擎侧不碰。
 
 **归属**
-`yiban.engine` 的进程外壳支撑层（`runner` / `workers` / `round` / `probe` / `alerts`
-与 web 服务层都依赖它）。
+`yiban.engine` 的进程外壳与命令行契约支撑层（`runner` / `workers` / `round` / `probe`
+/ `alerts` 与 web 服务层都依赖它）。
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
-`GLOBAL_RUN_LOCK_NAME` 与运行锁获取函数；锁原语来自 `yiban.infra.locks`。
+`GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。
+运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
+互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
+输出收口供 `yiban/cli.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
+一律 `_emit_json_error` 保证 `--json` 下 stdout 可解析）。
 
 **通信**
-输入：日志级别/路径等环境配置、状态文件路径与加锁范围。
-输出：配置好的 logger/handler、被加锁的读改写上下文。
+输入：日志级别/路径等环境配置、状态文件路径与加锁范围、结果对象。
+输出：配置好的 logger/handler、被加锁的读改写上下文、stdout 单行 JSON / stderr 人话。
 调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
-谁调用：`runner`、`workers`、`state_io`、`probe`、`alerts` 与 web 服务层。
+谁调用：`yiban/cli.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
+`workers`、`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
 页面的"正在跑/存活"判定依赖本模块的全局运行锁。
 本模块内部用裸名，跨模块一律走模块属性访问。
 """
+import json
 import logging
 import os
 import sys
@@ -32,7 +41,8 @@ from contextlib import contextmanager, suppress
 
 from yiban import clock
 from yiban.infra import env_io, locks
-from yiban.logging_ext import FlockFileHandler
+from yiban.logging_ext import FlockFileHandler, MaskingFormatter
+from yiban.masking import mask_phones_in_text, sanitize_text
 
 logger = logging.getLogger("yiban")
 
@@ -52,6 +62,14 @@ _RUN_LOCK_WAIT_DEFAULT = 600
 #: 多执行体形态下只有监督进程持它、各子进程用各自的 `signin-run.lock.w{i}`；
 #: 兜底常驻靠探测它决定是否让位（见 `_run_lock_held`）。
 GLOBAL_RUN_LOCK_NAME = "signin-run.lock"
+
+#: 迁移完整性拒启的专用退出码（MF-40）。`docs/dev/cli.md` §3 的 0/1/2/3/10 家族
+#: **只增不改**，4 未被占用。触发链：`init_db(migrate=True)` →
+#: `migrations._verify_migration_integrity` 抛 `db.MigrationIntegrityError`
+#: （版本声称已过某迁移、但该迁移的完成记录或核心产物缺失）→ `runner.main` /
+#: `workers.run_worker_supervisor` 捕获后以此码退出——调用方据此把"schema
+#: 半升级（下次启动重试/人工介入）"与"配置错误(1)"区分开。
+EXIT_SCHEMA_MIGRATION = 4
 
 # CLI 日志装配幂等标记（见 _setup_cli_logging）
 _cli_logging_ready = False
@@ -73,18 +91,38 @@ class _RunLockHeld(Exception):
     """签到锁被其他进程持有（--only 模式下由 _acquire_run_lock 抛出）。"""
 
 
+class _RunLockUnavailable(RuntimeError):
+    """运行锁**不可用**：本进程无法进入互斥保护区（锁文件不可写、平台无锁后端、等待超时）。
+
+    与 `_RunLockHeld`（"别人正在跑"）分开，是因为处置不同但都必须 **fail-closed**：
+    两者都不得"无锁继续"。无锁继续在多执行体下等于同一账号被两个进程并发真实登录
+    （本项目第一红线），故拿不到互斥一律拒绝运行；调用点按既有退出码族把这一事实透出
+    （见 `runner` / `workers` 各处 `except _RunLockUnavailable` 的注释）。
+    """
+
+
+#: `_run_lock_held` 的"探测不出"告警去重标记：兜底常驻每 `_YIELD_POLL_SEC` 探一次，
+#: 不去重会把同一条平台缺陷刷满日志。
+_PROBE_UNAVAILABLE_WARNED = False
+
+
 def _acquire_run_lock(only_mode, name=None):
     """进程级签到单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
 
     web 端的防抖/terminate 只覆盖 web 自己 spawn 的子进程，与 cron 全量队列之间没有
     任何互斥——同账号被两个进程并发登录易班会导致重复打卡/会话异常/风控画像。
     锁文件 <STATE_DIR>/signin-run.lock：
-    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），超时告警后
-      无锁继续——漏签一整天的代价高于极小概率的重叠；
-    - --only 模式：立即尝试一次，被持有则抛 _RunLockHeld（调用方退出并留痕，
+    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），等到就继续；
+      **超时即拒绝运行**（抛 `_RunLockUnavailable`）——旧行为是告警后"无锁继续"，
+      那等于把"另一轮全量正在签同一批账号"这个事实忽略掉，两边各登录一次；
+    - --only 模式：立即尝试一次，被持有则抛 `_RunLockHeld`（调用方退出并留痕，
       管理员稍后重试）——手动触发不应在 web 已返回的后台进程里排队阻塞。
-    返回持锁文件句柄（flock 随进程退出自动释放）；Windows 无 fcntl 或状态目录
-    不可写时返回 None（不互斥、不阻断，与 _state_file_lock 降级策略一致）。
+    返回持锁文件句柄（flock 随进程退出自动释放）。
+
+    **三条 fail-open 已全部收口**（拿不到互斥就拒绝，绝不交出未加锁的句柄）：
+    等待超时、状态目录不可写/锁文件打不开（旧为静默 `return None`）、平台无 fcntl
+    （旧为告警后返回未加锁句柄）。理由同第一红线：本锁是多执行体之外的**第二道**互斥
+    （同机多个执行体进程、兜底与全量之间），静默失效等于让它在最需要的时候不存在。
 
     `name`：锁文件名，缺省取 `YIBAN_RUN_LOCK_NAME`（多执行体子进程用它换成自己的锁）
     再退到 `GLOBAL_RUN_LOCK_NAME`。**显式传参可绕过环境变量**——探测全局锁必须显式
@@ -98,17 +136,20 @@ def _acquire_run_lock(only_mode, name=None):
     try:
         os.makedirs(state_dir, exist_ok=True)
         fh = open(os.path.join(state_dir, lock_name), "a+", encoding="utf-8")
-    except OSError:
-        return None
+    except OSError as e:
+        logger.error(
+            "签到运行锁不可用（状态目录不可写或锁文件打不开），本次拒绝运行: %s", e)
+        raise _RunLockUnavailable(str(e)) from e
     if fcntl is None:
         # 无 fcntl 时锁退化为无互斥：管理员在 Windows 上跑多进程（cron + 手动）会
-        # 静默出现同账号并发签到的可能（重复打卡/风控），必须明确告警一次
-        logger.warning(
-            "当前平台无 fcntl（Windows），签到单实例锁未生效："
-            "cron 全量队列与手动 --only 并发时可能对同一账号重复签到，"
-            "建议在 Linux/容器环境运行或避免同时触发手动与定时签到"
+        # 静默出现同账号并发签到的可能（重复打卡/风控）。交出未加锁句柄等于把
+        # "没有互斥"伪装成"持锁在跑"，故显式报不可用并拒绝运行。
+        fh.close()
+        logger.error(
+            "当前平台无 fcntl，签到单实例锁不可用：无法保证同一账号不被并发真实登录，"
+            "本次拒绝运行（请在 Linux/容器环境运行）"
         )
-        return fh
+        raise _RunLockUnavailable("平台无 fcntl，运行锁不可用")
     wait_sec = 0.0
     if not only_mode:
         try:
@@ -127,17 +168,20 @@ def _acquire_run_lock(only_mode, name=None):
             fh.close()
             raise _RunLockHeld()
         if wait_sec >= wait_limit:
-            logger.warning(
-                "等待签到锁超时（%ss），本次无锁继续执行（可能与另一签到进程并发，请检查）",
-                wait_limit,
+            fh.close()
+            logger.error(
+                "等待签到锁超时（%ss），无法取得互斥，本次拒绝运行（不再无锁继续："
+                "另一轮可能正在签同一批账号）", wait_limit,
             )
-            return fh
+            raise _RunLockUnavailable(f"等待签到锁超时（{wait_limit}s）")
         time.sleep(0.5)
         wait_sec += 0.5
 
 
 def _run_lock_held(name=None):
-    """此刻是否**有别的进程持着运行锁**（兜底常驻据此给全量轮让位）。
+    """此刻是否**有别的进程持着运行锁**（兜底常驻仅在**无领取池**的部署据此给全量轮
+    整段让位；有池时让位收窄到同一账号，由 `yiban/store/claims.py` 的领取仲裁，
+    见 `workers.run_fallback_worker`）。
 
     做法就是"拿一下立刻放"：flock 只能靠尝试获取来问，拿到说明没人跑、当场释放。
     **显式传 `name`** 才能拿到全局锁的答案（不传时取 `YIBAN_RUN_LOCK_NAME`，
@@ -146,14 +190,22 @@ def _run_lock_held(name=None):
     代价：持有期间（微秒级）另一进程的 `--only` 手动签到可能被判成"队列忙"重试一次，
     概率极低且只影响一次手动触发；相比"兜底冲掉全量轮的计划"这个代价是划算的。
 
-    无 fcntl（Windows）或状态目录不可写时返回 False——与 `_acquire_run_lock` 同一降级
-    策略：锁不生效就不该假装有人在跑（否则兜底永远不动）。
+    **探测不出锁状态时按"有人在跑"处置**（`_RunLockUnavailable`，进程内只告警一次）：
+    本函数只服务"该不该让位"这一个决策，而两种判错的代价不对称——错报"没人跑"会让
+    兜底与全量轮抢同一批账号、把它精心错峰的计划冲掉；错报"有人在跑"只是兜底这一轮
+    不捡漏（下一轮还会再看）。安全的判错方向是让位，故不再返回 False 假装锁不存在。
     """
-    if fcntl is None:
-        return False
+    global _PROBE_UNAVAILABLE_WARNED
     try:
         fh = _acquire_run_lock(True, name=name or GLOBAL_RUN_LOCK_NAME)
     except _RunLockHeld:
+        return True
+    except _RunLockUnavailable as e:
+        if not _PROBE_UNAVAILABLE_WARNED:
+            _PROBE_UNAVAILABLE_WARNED = True
+            logger.warning(
+                "运行锁不可用（%s），无法探测是否有全量轮在跑：按'有人在跑'处置，"
+                "兜底本轮让位（这条告警每进程只报一次）", e)
         return True
     if fh is not None:
         with suppress(OSError):
@@ -194,7 +246,7 @@ def _setup_cli_logging():
         return
     _cli_logging_ready = True
     handler = _make_log_handler()
-    handler.setFormatter(logging.Formatter(
+    handler.setFormatter(MaskingFormatter(
         "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
@@ -206,7 +258,7 @@ def _setup_cli_logging():
 
 #: 最近一次致命错误摘要（进程级，单线程 CLI 使用无需加锁）：`report_fatal_error`
 #: 写入，`last_fatal_error` 读取。存在的理由：`--json` 模式下调用方只拿到退出码，
-#: 需要一个机器可读的失败原因（F2，2026-09-21 测试机 47 E2E）。
+#: 需要一个机器可读的失败原因。
 _LAST_FATAL_ERROR = None
 
 
@@ -215,12 +267,18 @@ def report_fatal_error(summary):
 
     为什么不能只靠 `logger.error`：CLI 日志装配只挂**按天文件** handler，stderr 上
     什么都没有——agent/CI 直调 `python -m yiban.cli sign` 时退出码 1 而 stdout/stderr
-    全空，错误只进日志文件（2026-09-21 测试机 47 E2E 实测）。stdout 仍保持"只有结果"
+    全空，错误只进日志文件。stdout 仍保持"只有结果"
     （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
     （`yiban/cli.py`）经 `last_fatal_error()` 取用。
+
+    **脱敏必须在生成本处做，不能指望 formatter**：这条摘要的下游出口全都不经过
+    日志装配——stderr 会被 run.sh 的 `2>&1` 与 web 手动签到的 `stdout=log_fh`
+    原样落进当天日志文件，`last_fatal_error()` 又原样进 `--json` 的 error 字段。
+    口径与 `MaskingFormatter` 同一份原语（`sanitize_text` + `mask_phones_in_text`），
+    不另起第二套；摘要"一行"的契约靠 sanitize_text 的换行转义兜住。
     """
     global _LAST_FATAL_ERROR
-    _LAST_FATAL_ERROR = str(summary)
+    _LAST_FATAL_ERROR = mask_phones_in_text(sanitize_text(str(summary)))
     try:
         sys.stderr.write(f"错误: {_LAST_FATAL_ERROR}\n")
         sys.stderr.flush()
@@ -242,3 +300,129 @@ def clear_fatal_error():
     """
     global _LAST_FATAL_ERROR
     _LAST_FATAL_ERROR = None
+
+
+# ---------------------------------------------------------------------------
+# CLI 输出与错误对象（stdout 单行 JSON / stderr 人话；退出码族的分族字段）
+# ---------------------------------------------------------------------------
+def _masked_tree(node):
+    """递归遮罩 JSON 树里所有**字符串叶子**的手机号（口径 = `mask_phones_in_text`）。
+
+    只动 str 叶子、不动数字：对序列化后的整行打码会连 11 位整数字段值（如巨型库
+    的 `size_bytes`）一起改写，产出 `138****0000` 这种非法 JSON——遮罩必须在
+    "值还是字符串"的时候做。键名是调用方写死的字段名，不承载用户数据，不经过这里。
+    """
+    if isinstance(node, str):
+        return mask_phones_in_text(node)
+    if isinstance(node, dict):
+        return {k: _masked_tree(v) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_masked_tree(v) for v in node]
+    return node
+
+
+def _emit_json(payload):
+    """把结果对象打成**一整行** JSON 写 stdout（调用方直接 `json.loads`）。
+
+    维护类子命令不建引擎的日志装配，`errors`/`detail` 等字段夹带的异常原文可能内嵌
+    裸号——叶子遮罩（见 `_masked_tree`）是 stdout 面唯一的出口收口，序列化前做。
+    """
+    sys.stdout.write(json.dumps(_masked_tree(payload), ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _say(message):
+    """人类可读汇总：一律走 stderr（stdout 必须保持"只有结果"）。
+
+    与 `_emit_json` 同口径过遮罩（`mask_phones_in_text`）：这里是维护类子命令唯一的
+    "人话"出口，且 stderr 会被 run.sh 的 `2>&1` 原样落进当天日志文件——formatter
+    管不到直写。
+    """
+    sys.stderr.write(mask_phones_in_text(str(message)) + "\n")
+    sys.stderr.flush()
+
+
+def _emit_json_error(command, code, errors, error_kind="error", **extra):
+    """失败路径的 stdout 收口：一整行 `ok=false` 的对象，`exit_code` 与进程返回码一致。
+
+    凡带 `--json` 的调用，**任何**退出路径（含用法错误、未知子命令、多余参数、互斥
+    参数、引擎 argparse 拒绝）都必须留下这一行——否则调用方拿到非 0 退出码却解析不到
+    任何原因（`sign --bogus --json` 曾 rc=2 且 stdout 零字节）。
+
+    `error_kind`：**机读**的失败分族字段（值域见 `_EXIT_KINDS` 与 `docs/dev/cli.md`
+    §3）。退出码承担不了全部分族（rc=2 同时承载"用法错误"与"本轮全部跳过"），故失败
+    对象里再给一个稳定字段；新增取值只追加，不复用旧名。
+    """
+    payload = {"command": command, "ok": False, "exit_code": code,
+               "error_kind": error_kind, "errors": list(errors)}
+    payload.update(extra)
+    _emit_json(payload)
+
+
+def _fail(command, code, errors, json_mode, error_kind="error", **extra):
+    """失败路径：错误信息进 stderr；`--json` 时仍打一行 `ok=false` 的对象后返回退出码。
+
+    失败也保持"stdout 可解析"是刻意的：调用方不必先看退出码再决定怎么解析输出，
+    按 `ok` 分支即可（退出码仍按契约表返回）。
+    """
+    for line in errors:
+        _say(line)
+    if json_mode:
+        _emit_json_error(command, code, errors, error_kind=error_kind, **extra)
+    return code
+
+
+#: 退出码 → 机读分族（`docs/dev/cli.md` §3 的码表；**只增不改**既有码含义）。
+_EXIT_KINDS = {
+    0: "ok",
+    1: "failure",
+    2: "skipped",
+    3: "locked",
+    EXIT_SCHEMA_MIGRATION: "schema_migration",
+    10: "second_run_check",
+}
+
+
+def exit_kind(code):
+    """退出码 → 机读分族（sign/probe 这类"机器可读输出就是退出码"的子命令用）。
+
+    2 的语义是"全部跳过或窗口外未了结"、3 是"队列忙"、4 是迁移拒启、10 是需补跑；
+    未知码回退 `"unknown"`，绝不猜。
+    """
+    return _EXIT_KINDS.get(code, "unknown")
+
+
+class _UsageError(Exception):
+    """CLI 解析层的用法错误（多余参数 / 互斥开关）：不直接 `sys.exit`，交给入口统一处置。
+
+    带出 `parser` 与 `command`/`kind` 是为了让 stderr 保留 argparse 形态的 usage（"人类
+    可读的 usage 仍可走 stderr"），同时让 `--json` 路径能打出带 `command` 与 `error_kind`
+    的结构化错误对象——六种非法参数此前输出逐字节相同，不可区分。
+    """
+
+    def __init__(self, message, parser, command, kind="usage"):
+        super().__init__(message)
+        self.parser = parser
+        self.command = command
+        self.kind = kind
+
+
+def _exit_code(exc):
+    """SystemExit → 进程返回码（`--help` 为 0；用法错误为 2；非整数码按 2）。"""
+    code = getattr(exc, "code", 2)
+    return code if isinstance(code, int) else 2
+
+
+def _guess_command(argv, subs):
+    """从 argv 猜出子命令名（只为结构化错误对象里的 `command` 字段）。
+
+    正常解析走 `args.command`；本函数服务"解析都没过"的路径（未知子命令 / 缺子命令），
+    此时 `args` 取不到。命中已注册子命令即返回，遇到首个非选项 token 原样返回（未知
+    子命令也如实报出来），都没有则空串。
+    """
+    for token in argv:
+        if token in subs:
+            return token
+        if not token.startswith("-"):
+            return token
+    return ""

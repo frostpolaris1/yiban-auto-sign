@@ -48,6 +48,10 @@ RETRY_GAP_MAX = 30
 SESSION_STALE_MAX_ATTEMPTS = 2
 # 易班侧无签到点位（总尝试上限 1 次）：属数据/任务配置问题，重试拿不到就是拿不到
 NO_POSITION_MAX_ATTEMPTS = 1
+# 挑战解析/白名单/非 JSON/假成功（无签发方回执）硬失败（总尝试上限 1 次）：判据词元在 `yiban.security.HARD_FAIL_TOKENS`
+# （唯一真值源，档位与探针共用）。同一输入必然同一结果，重试只是把同一死页重发；会话停在
+# 未通过的挑战/拦截链上，一并清除（`_retry_budget` 联动 clear_cache=True）。
+HARD_FAIL_MAX_ATTEMPTS = 1
 
 # 确定性认证失败特征：账号密码本身错误或已被易班侧锁定（msgCN 原文）。重试只会把同一次
 # 错误登录再提交一遍，还会加速触发易班「错误尝试过多」的账号锁定——终态，不重试。
@@ -129,8 +133,8 @@ YIBAN_APP_VERSION = fyiban_headers.YIBAN_APP_VERSION
 HEADERS = fyiban_headers.HEADERS
 KILLYIBAN_HEADERS = fyiban_headers.KILLYIBAN_HEADERS
 
-# WAF 判定口径的唯一实现在 `yiban/security.py`（含"只在短响应里检测"的边界理由与
-# Unicode 转义解码）；调用方与既有测试继续用这里的名字。
+# WAF 判定口径的唯一实现在 `yiban/security.py`（形态判定不受长度限制、仅关键词匹配按
+# "短响应"设界的边界理由、Unicode 转义解码）；调用方与既有测试继续用这里的名字。
 WAF_KEYWORDS = security.WAF_KEYWORDS
 is_waf_blocked = security.is_waf_blocked
 
@@ -149,12 +153,16 @@ account_still_signable = accounts_store.account_still_signable
 # 公开入口
 # ---------------------------------------------------------------------------
 def classify_failure(message):
-    """对失败信息分级，返回最大重试次数。
+    """对失败信息分级，返回总尝试上限。
 
+    - 挑战解析/白名单/非 JSON/假成功（无签发方回执）硬失败（词元在 `yiban.security.HARD_FAIL_TOKENS`，唯一真值源）：
+      仅首试 1 次——同一输入必然同一结果，重试只会把同一死页重发
     - 风控/凭据类：最多重试 1 次（RISK_MAX_ATTEMPTS），避免加重账号标记
     - 其他失败（网络/未知）：最多重试 MAX_ATTEMPTS 次
     （确定性认证失败在 _retry_budget 处更早拦截，不会再走到这里）
     """
+    if security.is_hard_fail_message(message):
+        return HARD_FAIL_MAX_ATTEMPTS
     for kw in RISK_FAIL_KEYWORDS:
         if kw in message:
             return RISK_MAX_ATTEMPTS
@@ -223,10 +231,12 @@ def _is_session_stale_failure(message):
 def _retry_budget(message):
     """返回 (该失败下的最大尝试次数, 是否应清除该账号会话缓存)。
 
-    三条特例都优先于风控分级：
+    四条特例都优先于风控分级：
     - 确定性认证失败：密码错误/账号锁定，重试无意义且有害（多一次真实登录会加速
       易班侧锁定）；
     - 无签到点位：易班侧没有数据，重试拿不到就是拿不到；
+    - 挑战解析/白名单/非 JSON 硬失败：同一死页重发无益，且会话停在未通过的挑战/拦截
+      链上，留着复用等于带病续跑——清掉；
     - 会话陈旧：不清缓存重登，重试只是把同一份死缓存的失败原样复演。
     """
     if any(kw in message for kw in AUTH_FAIL_KEYWORDS):
@@ -234,6 +244,8 @@ def _retry_budget(message):
         return AUTH_FAIL_MAX_ATTEMPTS, True
     if any(kw in message for kw in NO_POSITION_FAIL_KEYWORDS):
         return NO_POSITION_MAX_ATTEMPTS, False
+    if security.is_hard_fail_message(message):
+        return HARD_FAIL_MAX_ATTEMPTS, True
     if _is_session_stale_failure(message):
         return SESSION_STALE_MAX_ATTEMPTS, True
     max_attempts = classify_failure(message)

@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""邮箱域名黑白名单审查测试（2026-08-28 注册预拦截机制）。
+"""邮箱域名黑白名单审查（注册预拦截）。
 
-覆盖：
-- email_policy 模块单元行为：内置保留域名 / 伪 TLD / 数据文件黑名单 / 子域名
-  匹配 / 白名单模式优先级 / 部署追加黑名单 / 数据文件缺失兜底 / mtime 缓存热更新
-- web 注册入口集成：开放注册与管理员自动注册路径命中即 400、用户不落库；
-  白名单 .env 配置经 email_domain_error 生效
-
-用法（项目根目录）：
-    py -m pytest tests/test_email_domain_review.py -v
+标签：H · 通知：邮件与推送
+覆盖：`email_policy` 单元行为——内置保留域名、伪 TLD、数据文件黑名单、子域名匹配、
+    白名单模式优先级、部署追加黑名单、数据文件缺失兜底、mtime 缓存热更新；
+    web 注册入口集成——开放注册与管理员自动注册命中即 400 且用户不落库，
+    白名单经 `.env` 配置由 `email_domain_error` 生效。
+对应实现：判定在 `scripts/email_policy.py`（`email_domain_error`），拦截点在
+    `web/app.py` 的注册路径。
+关键断言：命中必须**不落库**（只拦响应等于把脏数据留在库里）；数据文件缺失是兜底
+    放行而不是崩掉注册流程。
+依赖：importlib/sys.path 注入加载 `scripts/email_policy.py` + Flask test client +
+    临时 DB 与名单数据文件；纯本地，不触网、不发信。
 """
 import contextlib
 import importlib.util
@@ -274,6 +277,39 @@ class EmailDomainReviewWebTest(unittest.TestCase):
         }, headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("owner2@qq.com"))
+
+    def _register_audit_targets(self):
+        conn = db.get_conn()
+        return [row[0] for row in conn.execute(
+            "SELECT target FROM audit_logs WHERE action='user_register'").fetchall()]
+
+    def test_auto_register_leaves_user_register_audit(self):
+        """自动注册与开放注册同口径：用户行创建成功必有同事务的 user_register 留痕。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/accounts", json={
+            "name": "留痕邮箱",
+            "phone": "13800138002",
+            "password": "account-pass",
+            "email": "owner3@qq.com",
+            "initial_password": "UserPass123!",
+        }, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("owner3@qq.com", self._register_audit_targets(),
+                      "注册了却无痕不得存在（凭据路径的注册动作要能回答'谁建的号'）")
+
+    def test_auto_register_repeat_attempt_writes_no_second_audit(self):
+        """同邮箱重复添加（未实际建用户）不得再写一条 user_register——没做的事不留痕。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        body = {"name": "重复邮箱", "phone": "13800138003", "password": "account-pass",
+                "email": "owner4@qq.com", "initial_password": "UserPass123!"}
+        self.assertEqual(c.post("/api/accounts", json=body,
+                                headers=self._csrf(token)).status_code, 200)
+        body2 = dict(body, phone="13800138004", name="第二次")
+        r2 = c.post("/api/accounts", json=body2, headers=self._csrf(token))
+        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
+        self.assertEqual(self._register_audit_targets().count("owner4@qq.com"), 1)
 
 
 if __name__ == "__main__":

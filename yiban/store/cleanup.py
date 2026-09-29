@@ -23,7 +23,8 @@ sign_events 的保留期清理（同事务兼清超期 verify_jobs）留在 `yib
 连接、锁、时钟守卫、清理留痕（`get_conn` / `_conn_lock` / `_clock_jump_guard` /
 `_table_min_max` / `_record_purge_event` / `_audit_purge_total`）与各域清理函数
 （`_event_cleanup` / `purge_orphan_session_cache` / `purge_deleted_users` /
-`purge_old_delete_requests` / `purge_sign_claims` / `_cascade_phone_owned`，以及
+`purge_old_delete_requests` / `purge_sign_claims` / `purge_sign_tasks` /
+`_cascade_phone_owned`，以及
 `SOFT_DELETE_RETENTION_SECONDS` / `PURGE_SKIP_CANCELLED_OWNER`）一律经 `_facade()`
 按属性取——按属性取保证 `db.<名字> = 替身` 打桩可见。
 """
@@ -53,8 +54,9 @@ def _purge_expired_deleted(conn):
     """
     try:
         # 时钟异常跳变（拨快 / 回拨超限）时跳过清理，防"系统时间被拨快后刚软删 1 秒的
-        # 账号被立即物理清除、反悔窗口归零"。守卫的 INSERT upsert 在 WAL 下即持
-        # RESERVED 写锁，兼作下面的读-删-连带清理的事务边界。
+        # 账号被立即物理清除、反悔窗口归零"。只跳本轮：守卫在越界路径上也推进参照点，
+        # 下一轮（≤24h 后）即恢复。守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，
+        # 兼作下面的读-删-连带清理的事务边界。
         ok, note = _facade()._clock_jump_guard(conn, "purge_accounts_clock")
         if not ok:
             logger.error("%s", note)
@@ -128,7 +130,7 @@ def _audit_cleanup(conn):
 
     接入时钟跳变守卫：审计是篡改取证数据源，时钟被拨快（NTP 故障或拿到服务器权限者
     掩盖痕迹）会让 cutoff 前移、审计链被一次性清空，且该清理不动"最后一条"锚点，
-    库外锚点校验不会报警。与三个短保留期 purge 同口径。
+    库外锚点校验不会报警。与三个短保留期 purge 同口径（同样只跳一轮）。
     """
     try:
         ok, note = _facade()._clock_jump_guard(conn, "audit_cleanup_clock")
@@ -186,4 +188,5 @@ def run_daily_cleanup():
     _facade().purge_expired_deleted_accounts()
     _facade().purge_deleted_users()
     _facade().purge_old_delete_requests()
-    _facade().purge_sign_claims()
+    _facade().purge_sign_claims()   # 旧领取池（冻结）的存量清理：保留期外删除
+    _facade().purge_sign_tasks()    # 唯一台账（sign_tasks）的保留期清理：不跑会逐日无限增长

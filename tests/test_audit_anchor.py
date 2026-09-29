@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""审计可追溯性与并发安全回归测试（2026-08-28 审查）。
+"""审计可追溯性与并发安全回归（审查轮活体复现的三条）。
 
 用法（在项目根目录）：
-    py -m pytest tests/test_audit_anchor_0828.py -v
-    py tests/test_audit_anchor_0828.py               # 无 pytest 也可直接运行
+    py -m pytest tests/test_audit_anchor.py -v
+    py tests/test_audit_anchor.py               # 无 pytest 也可直接运行
 
 覆盖三个阻断级缺陷：
 
@@ -17,6 +17,27 @@
 - **B-5** `update_account` 的读-改-写原先跨进程无互斥，两个进程/两个标签页并发
   编辑同一账号会静默丢更新（且 web 自编辑路径不传乐观锁、总回填旧密码，可把用户
   刚改的密码回滚）。现整个读-改-写纳入 BEGIN IMMEDIATE 写锁。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：审计写入失败的可见性（返回值 + 失败计数 + 重试）、库外锚点对「删尾 / 清空整表 /
+无留痕删前缀 / 链尾内容篡改」四种破坏的检出、合法保留期清理不得误报、
+`update_account` 读-改-写的跨线程互斥与换绑重加密。
+对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
+`record_audit_anchor` / `verify_audit_anchor` / `audit_health` / `_audit_cleanup` /
+`_backfill_audit_hashes`）与 `yiban/store/accounts.py` 的 `update_account`。
+关键断言：锚点类用例都是"破坏后必须 False"**成对**配一条"合法清理必须 True"——只留一边
+就会把告警调成常亮或常灭而无人发现。锚点只比 min_id/max_id/head_hash 三元组，**内容篡改
+由 `verify_audit_chain` 的逐行哈希负责**（见 `test_anchor_detects_tail_tamper` 里为什么
+改用 chain 判据）；本文件守的是"只破坏数据库"这一类，锚点文件本身被改写由
+`tests/test_audit_chain.py` 的 `AnchorFileIntegrityTest`（截断/改中间行/删中间行）负责，
+跨库误比由 `tests/test_audit_cleanup_visibility.py` 的"外库拒绝"用例守。
+依赖：临时库 + 临时 `.env`（自带 `TEST_KEY`/`AUDIT_KEY`），无网络、无 skip；
+并发用例用线程而非子进程，故只验到进程内互斥语义。
+
+> 批 6c3-D（D-2）：三类库侧破坏（删尾/清空/无留痕删前缀）并一条参数化总账
+> `test_anchor_detects_db_destruction`（每支 subTest、断言与消息逐条保留，清空翼并入
+> 原 `test_audit_health_unhealthy_after_wipe` 的体检断言）；健康往返与 `audit_health`
+> 聚合两处断言下沉到 `test_audit_anchor_selfcheck.py::HealthyBaselineTest`（判官态 owner）。
 """
 import contextlib
 import os
@@ -118,55 +139,58 @@ class AuditTraceabilityTest(unittest.TestCase):
         for i in range(n):
             db.audit("tester", "seed", f"t{i}", f"d{i}")
 
-    def test_anchor_roundtrip_ok(self):
-        self._seed(6)
-        self.assertIsNotNone(db.record_audit_anchor())
-        ok, msg = db.verify_audit_anchor()
-        self.assertTrue(ok, msg)
-        self.assertEqual(msg, "")
-
-    def test_anchor_detects_suffix_deletion(self):
-        """删掉最近的审计记录（最有价值的攻击）必须被检出。"""
-        self._seed(6)
-        db.record_audit_anchor()
+    # 破坏手法（裸 SQL 而不是任何应用接口：要模拟的是"拿到库文件的人"，
+    # 应用侧根本不暴露 DELETE，用接口删等于把被测路径自己架空）。
+    def _attack_suffix_delete(self):
         with db._conn_lock:
             conn = db.get_conn()
             max_id = conn.execute("SELECT MAX(id) AS m FROM audit_logs").fetchone()["m"]
             conn.execute("DELETE FROM audit_logs WHERE id > ?", (max_id - 3,))
             conn.commit()
-        ok, msg = db.verify_audit_anchor()
-        self.assertFalse(ok, "删尾必须被检出（原实现下 verify_audit_chain 依然返回通过）")
-        self.assertIn("减少", msg)
 
-    def test_anchor_detects_full_wipe(self):
-        """整表清空必须被检出（原实现：空表直接 return True）。"""
-        self._seed(6)
-        db.record_audit_anchor()
+    def _attack_full_wipe(self):
         with db._conn_lock:
             conn = db.get_conn()
             conn.execute("DELETE FROM audit_logs")
             conn.commit()
-        ok, msg = db.verify_audit_anchor()
-        self.assertFalse(ok, "清空整表必须被检出")
-        self.assertIn("清空", msg)
 
-    def test_anchor_detects_unprovenanced_prefix_deletion(self):
-        """裸 SQL 删前缀且无清理留痕 → 必须判失败。
+    def _attack_prefix_delete(self):
+        """裸 SQL 删前缀且无清理留痕。
 
         原实现把"min_id 增大"一律定性为「保留期清理的正常现象，非告警」，于是
         删掉整段历史（min_id 1→53）也能自证清白。现在前缀回收必须有留痕事件精确
         对上（删除后 min_id == 当前 min_id），否则即非法删除。
         """
-        self._seed(6)
-        db.record_audit_anchor()
         with db._conn_lock:
             conn = db.get_conn()
             min_id = conn.execute("SELECT MIN(id) AS m FROM audit_logs").fetchone()["m"]
             conn.execute("DELETE FROM audit_logs WHERE id <= ?", (min_id + 2,))
             conn.commit()
-        ok, msg = db.verify_audit_anchor()
-        self.assertFalse(ok, f"无留痕的前缀删除必须被检出：{msg}")
-        self.assertFalse(db.audit_health()["healthy"])
+
+    def test_anchor_detects_db_destruction(self):
+        """库侧三类破坏一条参数化总账：删尾 / 清空整表 / 无留痕删前缀（6c3-D D-2）。
+
+        三支原本逐条同构（裸 SQL 改库 → `verify_audit_anchor` 必须 False + 结论消息
+        点名，清空/前缀翼再断 `audit_health` 不健康）；每支保留各自的破坏手法、
+        消息断言与独有附加断言。健康的往返基线断言由
+        `test_audit_anchor_selfcheck.py::HealthyBaselineTest` 承接（本轮 D-2 下沉）。
+        """
+        for label, attack, needle, health_flag in (
+            ("删尾", self._attack_suffix_delete, "减少", False),
+            ("清空整表", self._attack_full_wipe, "清空", True),
+            ("无留痕删前缀", self._attack_prefix_delete, None, True),
+        ):
+            with self.subTest(mode=label):
+                self._seed(6)
+                db.record_audit_anchor()
+                attack()
+                ok, msg = db.verify_audit_anchor()
+                self.assertFalse(
+                    ok, f"{label}必须被检出（原实现下 verify_audit_chain 依然返回通过）：{msg}")
+                if needle:
+                    self.assertIn(needle, msg)
+                if health_flag:
+                    self.assertFalse(db.audit_health()["healthy"], f"{label}后体检必须不健康")
 
     def test_anchor_tolerates_retention_cleanup(self):
         """有留痕的保留期清理：min_id 回收只给提示，不告警（否则天天误报淹没真告警）。"""
@@ -179,7 +203,7 @@ class AuditTraceabilityTest(unittest.TestCase):
                 (old_ts, "tester", "old", f"o{i}", f"d{i}"),
             )
             conn.commit()
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         self._seed(2)
         db.record_audit_anchor()
         db._audit_cleanup(conn)  # 走真实清理路径：删除与留痕同事务
@@ -210,23 +234,9 @@ class AuditTraceabilityTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(msg, "")
 
-    def test_audit_health_aggregates(self):
-        self._seed(4)
-        db.record_audit_anchor()
-        h = db.audit_health()
-        self.assertTrue(h["chain_ok"])
-        self.assertTrue(h["anchor_ok"])
-        self.assertEqual(h["write_failures"], 0)
-        self.assertTrue(h["healthy"])
-
-    def test_audit_health_unhealthy_after_wipe(self):
-        self._seed(4)
-        db.record_audit_anchor()
-        with db._conn_lock:
-            conn = db.get_conn()
-            conn.execute("DELETE FROM audit_logs")
-            conn.commit()
-        self.assertFalse(db.audit_health()["healthy"])
+    # audit_health 的健康汇总（chain_ok / anchor_ok / write_failures==0）与
+    # "清空后不健康"两处断言已分别并入
+    # `test_audit_anchor_selfcheck.py::HealthyBaselineTest` 与上面清空翼 subTest（D-2）。
 
 
 class UpdateAccountLockTest(unittest.TestCase):

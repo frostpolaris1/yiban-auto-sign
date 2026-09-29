@@ -9,7 +9,7 @@
 `_constant_time_dummy` / `reject_default_admin_password` / `check_admin_configured` /
 `_builtin_admin_loginable` / `verify_admin`、客户端出口 `_client_ip`、IP 计数表的
 回收与窗口计数 `_ip_store_trim` / `_bump_window_count` / `_bump_login_failure`、
-敏感口令门禁的旋钮与账号校验配额/冷却 `_sensitive_gate_params` /
+敏感口令门禁的档位与旋钮 `_pw_gate_tier` / `_sensitive_gate_params`、账号校验配额/冷却
 `_verify_attempt_allowed` / `_verify_fail_cooldown_remaining` / `_record_verify_failure`，
 以及原子落盘 `_atomic_write` / `_replace_with_retry`。
 
@@ -83,8 +83,10 @@ SCRYPT_METHOD = "scrypt:65536:8:1"
 #: 内置主管理员（.env 账号）的会话凭据键名。
 ADMIN_SID_ENV_KEY = "YIBAN_ADMIN_SID"
 
-# 登录失败限速：同一 IP 连续失败超过阈值后锁定
-LOGIN_LOCK_SECONDS = 300
+# 登录失败限速：同一 IP 连续失败超过阈值后锁定。
+# 锁定时长只作"打断自动化喷洒节奏"用，不指望它拦住暴力破解——那由边缘 nginx 限速
+# 与逐次 scrypt 的时延承担；锁太久只会把本人输错口令的恢复成本放大。
+LOGIN_LOCK_SECONDS = 60
 
 # 可信第一跳代理（nginx 反代）：仅当请求来自这些地址时才信任转发头。
 # 生产部署：yiban-web 只监听回环地址，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
@@ -96,12 +98,12 @@ TRUSTED_PROXIES = ("127.0.0.1", "::1")
 _IP_STORE_LIMIT = 10000
 _IP_STORE_MAX_AGE = 3600
 
-# 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
+# 账号验证尝试限频：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
 VERIFY_MAX = 6  # 每用户窗口内最大验证尝试次数（正常添加流程远用不到）
 VERIFY_WINDOW = 600  # 窗口（秒）= 10 分钟
 
-# 账号验证认证失败冷却（2026-09-04 生产复盘）：同一手机号窗口内认证失败达到
+# 账号验证认证失败冷却：同一手机号窗口内认证失败达到
 # 阈值后临时拒绝再验证。密码错误属确定性失败，重复验证每次都是一次真实易班
 # 登录，连续少量错误易班侧即返回「错误尝试过多」锁定账号（生产实测 6 次即锁），
 # 故按「被锁定对象 = 易班账号 = 手机号」设冷却；仅限 web 验证路径，探针与
@@ -120,6 +122,25 @@ VERIFY_FAIL_AUTH_KEYWORDS = ("账号或密码错误", "密码错误", "错误尝
 PW_CONFIRM_TTL_DEFAULT = 300
 PW_CONFIRM_TTL_MAX = 900
 PW_CONFIRM_COOLDOWN_DEFAULT = 300
+
+# 敏感口令门禁的档位（`.env` 键 `YIBAN_PW_GATE`，唯一解析处见 `_pw_gate_tier`）。
+# 这里是三档语义的准绳；执行侧在 web/app.py 的 `_sensitive_password_gate`，各分支处另有一行。
+# - `full`：三段判定（①冷却 ②豁免 ③口令比对）逐条执行，每个受保护操作都要当次口令
+#   （旧行为，逐字保留）；
+# - `risk`（缺省）：判据只有一个——出口 IP 变了才要口令（`_pw_gate_ip_changed`），没换就
+#   放行。也就是**危险操作默认不要口令**，只在换环境时要求一次，这按现状描述、不是漏口；
+# - `off`：永不要求口令，但并非全无阻力——不可逆操作的倒计时确认排在 off 早退**之前**，
+#   缺 `confirm_delay_ack` 照样拒；变更类事后告警反而只在本档与 risk 档发（见
+#   web/routes/settings_api.py 的 `_executor_change_alert`、web/routes/accounts_api.py
+#   改写他人凭据后的告警分支——full 档当次已要口令，刻意不重复发）。
+# 门禁之外、三档都照旧生效的：高危限速配额 `_admin_delete_limited` 与操作成功后的审计。
+# 非法值回退 `risk` 而不是 `off`：本键是安全件，一个 `.env` 笔误不得把门禁静默拆掉。
+PW_GATE_OFF = "off"
+PW_GATE_RISK = "risk"
+PW_GATE_FULL = "full"
+PW_GATE_TIERS = (PW_GATE_OFF, PW_GATE_RISK, PW_GATE_FULL)
+PW_GATE_ENV_KEY = "YIBAN_PW_GATE"
+PW_GATE_DEFAULT = PW_GATE_RISK
 
 # 仓库公开模板（.env.docker.example）自带的字面量默认口令。
 # 随仓库公开 = 众所周知字符串，忘改即后台口令为公开知识。
@@ -172,10 +193,15 @@ def _issue_admin_sid(env_path, write_env_key, read_env):
     sid = _new_admin_sid()
     try:
         write_env_key(env_path, ADMIN_SID_ENV_KEY, sid)
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # 两种失败同姿态降级：OSError = 文件不可写；ValueError = 写入口 fail-closed
+        # 拒绝（.env 既有行含潜伏行分隔符，见 yiban.infra.env_io）。后者尤其关键——
+        # 此刻正是"唯一能清理 .env 的运维"在登录，500 会把他锁在门外、而 login_ok
+        # 已审计（取证上误导）。返回 .env 旧值让本次登录照常可用，清理动作交告警。
         logger.error(
-            "内置主管理员会话凭据落盘失败（%s 不可写？）：%s；本次登录沿用旧值，"
-            "服务端吊销面暂时缺位，请修复权限", env_path, e,
+            "内置主管理员会话凭据落盘失败或被拒（%s 不可写或含潜伏行分隔符？）：%s；"
+            "本次登录沿用旧值，服务端吊销面暂时缺位，请修复权限/清理 .env 后重试",
+            env_path, e,
         )
         return read_env(env_path).get(ADMIN_SID_ENV_KEY, "").strip()
     return sid
@@ -345,6 +371,16 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
             e,
         )
         return
+    except ValueError as e:
+        # .env 既有行含潜伏行分隔符 ⇒ 写入口 fail-closed 拒绝（不实体化载荷）。
+        # 迁移失败只告警不阻断启动，明文回退比对仍可登录；清理动作交启动告警提示。
+        logger.warning(
+            "管理员口令明文迁移被拒绝（%s 行模型歧义）：%s；将暂时回退明文比对，"
+            "请按启动告警清理 .env 中的潜伏行分隔符",
+            env_path,
+            e,
+        )
+        return
     if rotated:
         logger.warning(
             "检测到管理员口令被外部更改（%s，明文与现存哈希不一致）：已重迁移哈希"
@@ -409,7 +445,7 @@ def _replace_with_retry(tmp, path):
 
     为什么要重试：Windows 上"目标文件正被别的句柄打开"时替换会被拒（`WinError 5`
     拒绝访问 → Python 抛 `PermissionError`），而 `.env` 是**高频读取**的文件——同一
-    进程其他线程的 `read_env`、引擎子进程、预览工具都可能正打开着它。2026-09-17 实测
+    进程其他线程的 `read_env`、引擎子进程、预览工具都可能正打开着它。实测
     复现：一边持续读 `.env`、一边连续原子写，400 次写入**全部** WinError 5 失败（同期
     读 3.7 万次），表现为设置页/执行体页偶发 500。Windows 的 `open()` 不带
     `FILE_SHARE_DELETE`，读句柄会让替换失败；Linux 的 `rename` 不受读者影响，故生产
@@ -537,8 +573,28 @@ def _sensitive_gate_params(env_path, load_env_int):
     return ttl, cooldown
 
 
+def _pw_gate_tier(env_path, read_env):
+    """敏感口令门禁的档位（`YIBAN_PW_GATE`）唯一解析处，返回 off/risk/full 之一。
+
+    缺省与非法值都回退 `PW_GATE_DEFAULT`（risk）——本键是安全件，把拼错的档位当成
+    `off` 等于一次 `.env` 笔误就静默拆掉全部门禁；反过来误判成 `full` 只是多要几次
+    口令，是可接受的失败方向。非法值告警一次，让运维在日志里看见自己的笔误。
+    枚举键没有通用读取工具（`load_env_int` 只处理整数），故按 sign_mode / sign_order
+    的做法现读现校验。
+    """
+    raw = str(read_env(env_path).get(PW_GATE_ENV_KEY, "") or "").strip().lower()
+    if raw in PW_GATE_TIERS:
+        return raw
+    if raw:
+        logger.warning(
+            "%s 的 %s=%r 非法（可选 %s），按 %s 档执行",
+            env_path, PW_GATE_ENV_KEY, raw, "/".join(PW_GATE_TIERS), PW_GATE_DEFAULT,
+        )
+    return PW_GATE_DEFAULT
+
+
 def _verify_attempt_allowed(store, username):
-    """账号验证尝试配额（2026-08-27 对抗性审查 P1-2）。
+    """账号验证尝试配额。
 
     「注册/添加账号即时验证」会让服务器代用户向易班发起真实登录，必须防止
     被当作凭据试探的免费代理：在真正发起网络验证前按「会话用户名」扣减配额，
@@ -653,7 +709,7 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
     """
     env = read_env(env_path)
     admin_user = env.get("YIBAN_ADMIN_USER", "").strip()
-    # 2026-08-20 对抗性审查修复（P1）：凭据未配置完整时直接拒绝——
+    # 凭据未配置完整时直接拒绝——
     # 原实现 admin_user/admin_pass 均为空串时 compare_digest(b"", b"") 恒真，
     # "只配了用户名没配密码"（或完全未配置）的部署可用空口令登录管理员。
     # 该状态 check_admin_configured() 明确判定为"未配置"，此处口径对齐。
@@ -663,7 +719,7 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
     ):
         constant_time_dummy(password)  # 时延拉平：与真实比对等开销
         return False
-    # 用户名比较统一小写——登录成功后 session 存小写（历史修复），
+    # 用户名比较统一小写——登录成功后 session 存小写，
     # 而此处大小写敏感比对导致混合大小写 YIBAN_ADMIN_USER 永远无法自助改密，
     # 且会被失败计数锁定（管理员被自己的改密界面锁死）
     if not secrets.compare_digest(
@@ -719,7 +775,7 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
         )
         constant_time_dummy(password)
         return False
-    # 2026-08-27 审查 P3：此处两种既有分支均已返回——
+    # 此处两种既有分支均已返回——
     # 哈希存在 → 已比对返回；明文存在 → M1 fail-closed 返回 False。
     # 能走到这 = 哈希与明文都为空（配置在两次 read_env 之间被清空的极端竞态），
     # 原 compare_digest 行在该态对空密码恒真，属理论上的失效盲区，显式拒绝。

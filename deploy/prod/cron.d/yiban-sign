@@ -1,0 +1,12 @@
+# /etc/cron.d/yiban-sign —— 签到：06:31 首签 + 07:12 兜底（生产 cron 表原件，MF-42 收编）
+# 仓库来源：deploy/prod/cron.d/yiban-sign（install.sh 装到 /etc/cron.d/，0644 root:root）
+# 语义：run.sh 自带单实例锁与"当日已触发"标记，07:12 兜底仅覆盖"06:31 进程被宿主
+#       杀死"的场景；补签时刻须与 .env 的 YIBAN_SECOND_RUN_TIME 一致（只改 cron
+#       不改该键会提前告警或漏报）。口径见 README「6. crontab」。
+# 属主：yiban 用户——绝不能用 root（root 预创建当日签到日志会让 run.sh 重定向失败、
+#       signin 静默不执行，2026-08-17 事故）。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+31 6 * * * yiban /opt/yiban-auto-sign/run.sh >> /var/log/yiban/cron-sign.log 2>&1
+12 7 * * * yiban /opt/yiban-auto-sign/run.sh >> /var/log/yiban/cron-sign.log 2>&1

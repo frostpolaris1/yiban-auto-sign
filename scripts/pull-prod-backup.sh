@@ -42,7 +42,8 @@
 #   STALE_DAYS           新鲜度阈值（天），默认 2；远端最新副本超过它、或本地落后于
 #                        远端，均视为异常并非 0 退出
 #
-# 退出码：0=成功且新鲜；1=失败/校验不过/不新鲜；2=用法错误
+# 退出码：0=成功且新鲜；1=失败/校验不过/不新鲜；2=用法错误；
+#         3=环境变量非法（MF-78 注入白名单拒绝，发生在构建任何远端命令之前）
 umask 077
 set -u
 
@@ -69,8 +70,54 @@ case "${1:-}" in
     *)         echo "未知参数: $1（支持 --check / --verify / --status）" >&2; exit 2 ;;
 esac
 
+# ---- MF-78 注入护栏（必须在构建任何远端命令之前）----
+# 下面三个值会原样进入 _remote_ls / _remote_latest_date / _remote_sha256 的远端命令串，
+# 一个环境变量就能在生产机上执行任意命令（REMOTE_BACKUP_DIR='x; id #' 一步成立）。
+# 一律白名单校验，不过就拒绝（rc=3，不与 0/1/2 冲突）：stderr 点名是哪个变量，
+# 任何 ssh/scp 都不会被调起来。校验通过前连本地镜像目录都不创建。
+case "$SSH_HOST" in
+    *[!A-Za-z0-9._-]*|"")
+        printf '配置非法：YIBAN_SSH_HOST 只允许字母/数字/._-（拒绝空白、引号、- 前缀等 ssh 参数注入面）%s\n' \
+            "$(printf '，收到 %q' "$SSH_HOST")" >&2
+        exit 3 ;;
+    -*)
+        printf '配置非法：YIBAN_SSH_HOST 不得以 - 开头（会被 ssh 当选项解析，如 -oProxyCommand= 即本机 RCE）%s\n' \
+            "$(printf '，收到 %q' "$SSH_HOST")" >&2
+        exit 3 ;;
+esac
+if [[ ! "$REMOTE_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || [[ "$REMOTE_DIR" == *".."* ]]; then
+    printf '配置非法：REMOTE_BACKUP_DIR 必须是仅含字母/数字/._-/ 且不含 .. 的绝对路径（该值会进远端命令串）%s\n' \
+        "$(printf '，收到 %q' "$REMOTE_DIR")" >&2
+    exit 3
+fi
+if [[ ! "$MAX_FETCH" =~ ^[0-9]+$ ]]; then
+    printf '配置非法：PULL_MAX_FETCH 必须是纯整数（该值会进远端命令串）%s\n' \
+        "$(printf '，收到 %q' "$MAX_FETCH")" >&2
+    exit 3
+fi
+
 mkdir -p "$LOCAL_MIRROR_DIR" || { echo "无法创建本地镜像目录 $LOCAL_MIRROR_DIR" >&2; exit 1; }
 LOG="$LOCAL_MIRROR_DIR/pull.log"
+# 项目根（脚本在 <repo>/scripts/ 下）：业务日取时经 yiban.clock 与引擎同源
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    PY="$APP_DIR/.venv/bin/python3"
+else
+    PY="$(command -v python3 || echo /usr/bin/python3)"
+fi
+# 业务日唯一来源（MF-109）：yiban.clock 的北京钟；退化链与 backup.sh 同口径
+business_day() {
+    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
+    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
+    local _d
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    case "$_d" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
+    esac
+    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    date +%F
+}
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG" >&2; }
 
 # 防呆：别在生产机自己身上"做异机副本"
@@ -90,7 +137,19 @@ _sha256_of() {
     sha256sum "$1" 2>/dev/null | awk '{print $1}'
 }
 
+_valid_remote_path() {
+    # 远端 ls 回流行的白名单：必须是 $REMOTE_DIR 直接下级、形如 yiban-*…*.tar.gz.gpg、
+    # 且全路径仅含字母/数字/._-/（空格与单引号正是闭合 _remote_sha256 拼接的字符）。
+    # 未通过的行绝不进入本地变量、绝不再进任何远端命令或 scp 目标。
+    case "$1" in
+        "$REMOTE_DIR"/yiban-*.tar.gz.gpg) ;;
+        *) return 1 ;;
+    esac
+    [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$1" != *".."* ]]
+}
+
 _remote_sha256() {
+    # 入参必须先过 _valid_remote_path——这里的单引号拼接对含 ' 的路径不设防（MF-78）。
     ssh -o BatchMode=yes -o ConnectTimeout=15 "$SSH_HOST" \
         "sha256sum '$1' 2>/dev/null | awk '{print \$1}'"
 }
@@ -136,7 +195,11 @@ freshness_check() {
         log "新鲜度：本地镜像为空（尚未成功拉取过）"
         return 1
     fi
-    today_epoch="$(date +%s)"
+    # 新鲜度锚定业务日（MF-109）：备份包名由 backup.sh 按业务日（yiban.clock 北京钟）
+    # 生成，宿主时区≠北京时"今天"与包名差一天，会把新鲜副本误判成陈旧。取不到
+    # yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
+    _biz_today="$(business_day)"
+    today_epoch="$(date -d "$_biz_today" +%s 2>/dev/null || date +%s)"
     r_epoch="$(date -d "$rdate" +%s 2>/dev/null || echo "")"
     if [ -n "$r_epoch" ]; then
         age_days=$(( (today_epoch - r_epoch) / 86400 ))
@@ -200,11 +263,23 @@ fi
 # 输入流吃掉，导致只处理第一项（首版实测只拉到 1/6 份）。
 # 同时循环体内所有 ssh/scp 都显式 </dev/null，杜绝再次偷吃输入流。
 REMOTE_ARR=()
+rejected=0
 while IFS= read -r _line; do
-    [ -n "$_line" ] && REMOTE_ARR+=("$_line")
+    [ -n "$_line" ] || continue
+    if _valid_remote_path "$_line"; then
+        REMOTE_ARR+=("$_line")
+    else
+        rejected=$((rejected + 1))
+        log "隔离非法远端回流行（白名单校验失败，未进入任何远端命令/本地路径）: $(printf '%q' "$_line")"
+    fi
 done <<< "$REMOTE_FILES"
+if [ "${#REMOTE_ARR[@]}" -eq 0 ]; then
+    log "远端回流行全部未通过白名单校验（隔离 $rejected 行）——拒绝继续"
+    exit 1
+fi
 
-fetched=0 skipped=0 failed=0
+fetched=0 skipped=0
+failed=$rejected  # 隔离的非法回流行计入失败：让整轮非 0（fail-closed，告警可见）
 for rpath in "${REMOTE_ARR[@]}"; do
     name="$(basename "$rpath")"
     local_file="$LOCAL_MIRROR_DIR/$name"
@@ -242,8 +317,9 @@ for rpath in "${REMOTE_ARR[@]}"; do
 done
 
 if [ "$MODE" = "check" ]; then
-    log "=== 检查完成：待拉取 $fetched 份，已同步 $skipped 份 ==="
+    log "=== 检查完成：待拉取 $fetched 份，已同步 $skipped 份，隔离 $failed 份 ==="
     freshness_check
+    [ "$failed" -eq 0 ] || exit 1
     exit 0
 fi
 

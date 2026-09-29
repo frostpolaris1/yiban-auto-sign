@@ -1,33 +1,46 @@
 # -*- coding: utf-8 -*-
-"""状态文件写盘的原子性（DAT-7）与"标记损坏"的失效方向。
+"""状态文件写盘的原子性与"标记损坏"的失效方向。
 
-缺陷背景：容器调度的时段标记 `sched-slot-<kind>-<date>.json` 原先用
-`open(path, "w")` 直写。容器在写入中途被杀会留下**半截 JSON**，
-`_slot_done` 的 `json.load` 恒失败 → 判定为"本时段没跑过"，而 `hm >= FIRST/SECOND`
-是无上界判定 → 再触发一轮全站登录（幂等但多一轮真实请求，且覆盖当日已 success 的
-状态文件）。signin 侧所有状态文件写入早已是 tmp + `os.replace`，只有容器调度这一处
-漏了。
+标签：D · 状态词汇与账号生命周期
+覆盖：容器调度时段标记 `_mark_slot` 经 `os.replace` 原子落盘、替换失败时标记路径
+    不得存在半截文件、被杀残留的半成品由 `state_gc.sweep` 按 mtime 清走、坏文件退化为
+    "未跑过"而不抛异常；signin 侧四个状态写入函数的原子性与"实现只有一份"；
+    **私有写单通道**——全部 14 个状态写入站点在 `umask(0o000)` 下拉宽测试环境后终文件
+    仍 0600 且无 `.tmp` 残留。"新写盘点必须走单通道"是约定而非门禁（源码形状门随
+    流程门禁整族裁撤，2026-09 缩减批 6a）；0600 行为面仍由下方站点矩阵全量钉住——
+    任何绕过单通道的 `open(tmp, "w")` 会因模式押回 umask 在此现形。
+对应实现：容器侧在 `docker/scheduler.py`（`_mark_slot`/`_slot_done`/`_slot_marker`/
+    `_touch_heartbeat`），引擎侧写入按 `yiban/engine/state_io.py`、`yiban/engine/probe.py`、
+    `yiban/engine/alerts.py`、`yiban/engine/runner.py`、`yiban/cred_state.py`、
+    `yiban/notify/ledger.py` 落点，单通道实现唯一在 `yiban/infra/private_json.py`
+    （`state_io._write_private_json` 为其既有锚点），兼容壳 `scripts/signin.py` 只剩转发。
+关键断言：**失效方向必须是"标记缺失"而不是"文件损坏"**——半截 JSON 会让 `_slot_done`
+    的 `json.load` 恒失败而判定成"本时段没跑过"，配合无-upper-bound 的 `hm >= FIRST`
+    判定，会再触发一轮全站真实登录并覆盖当日已 success 的状态。
+    **模式判据必须先把外层 umask 拉到 0o000 再断 0600**——测试进程默认继承 077 时，
+    内置 `open()` 也能写出 0600，断言恒绿（这正是当年 14 处漏网的原因）。
+依赖：进程内打桩 `os.replace`（包住真函数再计数）+ 临时 STATEDIR；`umask`/`environ`
+    成对打桩（POSIX 判定，Windows 上模式位非 POSIX 语义，跳过）；importlib 加载
+    `docker/scheduler.py`；不跑子进程、不需 bash/docker CLI、不触网。
 
-判据（本文件锁住）：
-1. 标记写入必须经过 `os.replace`（原子替换），且落盘内容可解析；
-2. 替换失败（被杀/磁盘满）时**标记路径不得存在半截文件**——失效方向必须是
-   "标记缺失 → 退化为既有闩锁语义"，而不是"文件损坏 → 每次 json.load 都失败"；
-3. 半成品临时文件不残留（失败路径自行清理；被杀残留的由 state_gc 按 mtime 清）。
+原先只有容器调度这一处漏了 tmp + `os.replace`，signin 侧早已是全项目约定。
 """
 import json
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 import unittest.mock as mock
-from typing import ClassVar
+from types import SimpleNamespace
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import scheduler  # noqa: E402  （docker/scheduler.py）
 
-from yiban import state_gc  # noqa: E402
-from yiban.engine import state_io  # noqa: E402
+from yiban import cred_state, state_gc  # noqa: E402
+from yiban.engine import alerts, probe, runner, state_io  # noqa: E402
+from yiban.notify import ledger  # noqa: E402
 
 
 class SlotMarkerAtomicWriteTest(unittest.TestCase):
@@ -42,7 +55,7 @@ class SlotMarkerAtomicWriteTest(unittest.TestCase):
         return scheduler._slot_marker(kind)
 
     def test_mark_slot_replaces_atomically(self):
-        real_replace = os.replace
+        real_replace = os.replace  #包住真 replace 再计数：既要证明走过 os.replace，又不能真把它替掉
         calls = []
 
         def _spy(src, dst):
@@ -76,7 +89,7 @@ class SlotMarkerAtomicWriteTest(unittest.TestCase):
         with open(tmp_file, "w", encoding="utf-8") as f:
             f.write('{"triggered')          # 半截 JSON
         os.utime(tmp_file, (1, 1))         # 1 = 1970，远早于 1 天阈值
-        removed, detail = state_gc.sweep(self.tmp)
+        removed, detail = state_gc.sweep(self.tmp)  #半成品清不掉就等清理兜底：这条把 _mark_slot 与 state_gc.sweep 绑成一对
         self.assertEqual(removed, 1, detail)
         self.assertFalse(os.path.exists(tmp_file))
 
@@ -97,39 +110,13 @@ class SigninWritesAreAtomicTest(unittest.TestCase):
     "实现只有一份"——壳里再出现同名定义就是两份实现，改一份另一份照旧跑。
     """
 
-    #: 状态文件写入函数 → 实现所在文件（相对仓库根）
-    WRITERS: ClassVar[dict] = {
-        "_write_sign_state": "yiban/engine/state_io.py",
-        "_write_sched_done": "yiban/engine/state_io.py",
-        "_write_probe_state": "yiban/engine/probe.py",
-        "_user_fail_mail_reserve": "yiban/engine/alerts.py",
-    }
-
     def _read(self, rel):
         with open(os.path.join(BASE, *rel.split("/")), encoding="utf-8") as f:
             return f.read()
 
-    def test_signin_state_writers_use_replace(self):
-        for func, rel in self.WRITERS.items():
-            with self.subTest(func=func):
-                src = self._read(rel)
-                body = src.split(f"def {func}(")[-1][:2500] if f"def {func}(" in src else ""
-                self.assertTrue(body, f"{func} 不在 {rel}（断言会恒真，需同步改名）")
-                self.assertIn("os.replace", body, f"{func} 未用临时名原子替换")
-
-    def test_writers_have_single_implementation(self):
-        """同上四处不得在兼容壳里留下第二份定义。"""
-        shell = self._read("scripts/signin.py")
-        for func in self.WRITERS:
-            with self.subTest(func=func):
-                self.assertNotIn(
-                    f"def {func}(", shell,
-                    f"scripts/signin.py 又出现了一份 {func}（应为转发到 yiban/engine/）",
-                )
-
     def test_cred_state_write_is_delegated(self):
         """熔断状态文件的原子写归 `yiban/cred_state.py`（唯一读写入库）；
-        引擎不得自己再写一份（原子性与并发由 tests/test_cred_state_concurrency.py 钉住）。"""
+        引擎不得自己再写一份（原子性与并发由 tests/test_breaker.py 钉住）。"""
         src = self._read("yiban/engine/state_io.py")
         # 只取本函数体（到下一个顶层 def 为止）——按字符数截取会把相邻函数一起断言
         body = src.split("def _save_cred_state(", 1)[1].split("\ndef ", 1)[0]
@@ -167,6 +154,144 @@ class SignStateBomReadTest(unittest.TestCase):
         self.assertEqual(data["13800000001"]["status"], "success",
                          "带 BOM 的既有条目被当损坏清空重建 = 整日数据丢失")
         self.assertEqual(data["13800000002"]["status"], "failed")
+
+
+_PHONE = "13800000001"
+
+
+@unittest.skipUnless(os.name == "posix", "umask 与 POSIX 模式位在 Windows 上不生效")
+class StateWritesArePrivateUnderWideUmaskTest(unittest.TestCase):
+    """私有写单通道的验收不变量：外层 `umask(0o000)` 下每个写站点终文件仍 0600、无 .tmp 残留。
+
+    为什么判据必须拉宽 umask：测试进程默认继承 077 时，内置 `open()` 建的 tmp 经
+    `os.replace` 后也是 0600——不拉宽就恒绿，这正是当年 14 处状态写入站点（含 6 处
+    明手机号）漏网的机制。改造后模式只由 `os.open(..., 0o600)` 钉死，与外层 umask、
+    systemd `UMask=`、入口 `os.umask(0o077)` 都无关（后两者降为纵深，不再是任何
+    站点模式的唯一来源）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-umask-")
+        old = os.umask(0o000)
+        self.addCleanup(os.umask, old)
+        env = mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": self.tmp})
+        env.start()
+        self.addCleanup(env.stop)
+        statedir = mock.patch.object(scheduler, "STATEDIR", self.tmp)
+        statedir.start()
+        self.addCleanup(statedir.stop)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.day = state_io.clock.now().strftime("%Y-%m-%d")
+
+    def _assert_private(self, path, site):
+        self.assertTrue(os.path.exists(path), f"{site}：终文件必须落盘")
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        self.assertEqual(mode, 0o600,
+                         f"{site}：umask(0o000) 下终文件仍须 0600，实际 {oct(mode)}"
+                         f"——宽模式说明写盘又押回了 umask")
+        residues = [n for n in os.listdir(self.tmp) if ".tmp" in n]
+        self.assertEqual(residues, [], f"{site}：成功写盘后不得留半成品 tmp")
+
+    # ---- 各站点的驱动（返回终文件路径）----
+    def _drive_sign_state(self):
+        state_io._write_sign_state(_PHONE, state_io.STATUS_SUCCESS, "签到成功")
+        return os.path.join(self.tmp, f"sign-state-{self.day}.json")
+
+    def _drive_sign_state_hold(self):
+        # 先落一条终态，再用 pending 计划触达"计划态不覆盖已有结果"的保留分支
+        state_io._write_sign_state(_PHONE, state_io.STATUS_SUCCESS, "签到成功")
+        state_io._write_sign_state(_PHONE, state_io.STATUS_PENDING,
+                                   "计划 07:00", scheduled="07:00:00")
+        return os.path.join(self.tmp, f"sign-state-{self.day}.json")
+
+    def _drive_sched_done(self):
+        state_io._write_sched_done({"ok_n": 1})
+        return os.path.join(self.tmp, f"sched-run-{self.day}.json")
+
+    def _drive_fallback_alive(self):
+        state_io._write_fallback_alive()
+        return os.path.join(self.tmp, state_io.FALLBACK_ALIVE_FILE)
+
+    def _drive_fail_mail_reserve(self):
+        self.assertTrue(alerts._user_fail_mail_reserve(_PHONE, self.day))
+        return os.path.join(self.tmp, f"mail-user-fail-{self.day}.json")
+
+    def _drive_fail_mail_release(self):
+        alerts._user_fail_mail_reserve(_PHONE, self.day)
+        alerts._user_fail_mail_release(_PHONE, self.day)
+        return os.path.join(self.tmp, f"mail-user-fail-{self.day}.json")
+
+    def _drive_sched_snapshot(self):
+        runner._write_sched_snapshot(self.tmp, self.day)
+        return os.path.join(self.tmp, f"sched-snapshot-{self.day}.json")
+
+    def _drive_sign_daily(self):
+        accounts = [SimpleNamespace(phone=_PHONE)]
+        results = {_PHONE: (True, "ok", False, runner.STATUS_SUCCESS)}
+        runner._write_sign_daily(self.tmp, accounts, results)
+        return os.path.join(self.tmp, f"sign-daily-{self.day}.json")
+
+    def _drive_cred_state(self):
+        cred_state.merge([_PHONE], {_PHONE: {"fail_days": 1, "last_fail": self.day}})
+        return os.path.join(self.tmp, "cred-state.json")
+
+    def _drive_notify_ledger(self):
+        ledger._save_ledger_file({"urgent": {"date": self.day, "count": 1,
+                                             "pending": False, "notified": False,
+                                             "warned": False}})
+        return os.path.join(self.tmp, "notify-ledger.json")
+
+    def _drive_notify_throttle(self):
+        ledger._save_throttle_file({"某标题": 1.0})
+        return os.path.join(self.tmp, "notify-throttle.json")
+
+    def _drive_probe_state(self):
+        probe._write_probe_state({"last_run": self.day})
+        return os.path.join(self.tmp, "probe-state.json")
+
+    def _drive_sched_slot(self):
+        scheduler._mark_slot("first")
+        return scheduler._slot_marker("first")
+
+    def _drive_sched_heartbeat(self):
+        scheduler._touch_heartbeat(self.tmp)
+        return scheduler._heartbeat_path(self.tmp)
+
+    def _drive_channel_direct(self):
+        path = os.path.join(self.tmp, "direct.json")
+        state_io._write_private_json(path, {"a": 1})
+        return path
+
+    def test_every_state_site_is_0600_under_umask_0000(self):
+        """14 站点逐条：umask(0o000) 反例矩阵（含 6 处明手机号站点优先覆盖）。"""
+        sites = [
+            ("按日状态主写", self._drive_sign_state),
+            ("按日状态计划保留分支", self._drive_sign_state_hold),
+            ("用户失败提醒额度预占", self._drive_fail_mail_reserve),
+            ("用户失败提醒额度归还", self._drive_fail_mail_release),
+            ("按日汇总 sign-daily", self._drive_sign_daily),
+            ("账密熔断 cred-state", self._drive_cred_state),
+            ("全量收尾 sched-run", self._drive_sched_done),
+            ("兜底心跳 fallback-alive", self._drive_fallback_alive),
+            ("调度快照 sched-snapshot", self._drive_sched_snapshot),
+            ("推送额度账本", self._drive_notify_ledger),
+            ("推送节流表", self._drive_notify_throttle),
+            ("探针状态 probe-state", self._drive_probe_state),
+            ("容器时段标记 sched-slot", self._drive_sched_slot),
+            ("容器调度心跳", self._drive_sched_heartbeat),
+            ("单通道直写", self._drive_channel_direct),
+        ]
+        self.assertGreaterEqual(len(sites), 14, "站点矩阵本身不得缩于登记数")
+        for site, drive in sites:
+            with self.subTest(site=site):
+                shutil.rmtree(self.tmp, ignore_errors=True)
+                os.makedirs(self.tmp, exist_ok=True)
+                self._assert_private(drive(), site)
+
+    def test_worker_alive_heartbeat_also_private(self):
+        """既有用法（并行执行体心跳）同口径回归：它是最早走单通道的一处。"""
+        state_io.mark_worker_started(1)
+        self._assert_private(state_io.worker_alive_path(1), "并行执行体心跳")
 
 
 if __name__ == "__main__":

@@ -37,13 +37,41 @@ from flask import (
 )
 
 from web.routes import appmod as _appmod
+from web.services import signstatus as _signstatus
+from yiban import status as _yiban_status
+from yiban.infra import env_io as _env_io
 
 
-def _render_admin_page(template, nav_key, crumbs):
+# `.env` 行分隔符码点：前端"提交前拒含换行族的输入"必须与后端**同一份清单**
+# （`yiban.infra.env_io.ENV_LINE_BREAK_CHARS`），故由后端渲染进页面而不是前端另抄一份。
+# 只渲染页面（不引入构建步骤）；核心符号换取时值仍与写入口字符集同源。
+def _env_line_break_codes():
+    return sorted(ord(ch) for ch in _env_io.ENV_LINE_BREAK_CHARS)
+
+
+def _calendar_page_context():
+    """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染，无构建步骤）。
+
+    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。图例由
+    `legend_items()` 渲染成 `<li>`；同一份表经 `display_payload()` 序列化进页面的内联
+    脚本（`window.YB_CALENDAR_STATE`），供账号卡状态行与日期格消费。日历渲染与图例因此
+    消费同一份表——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移。
+
+    `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
+    在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
+    """
+    m = _appmod()
+    payload = _yiban_status.display_payload()
+    payload["day_off"] = _signstatus.day_off_payload(m._day_off_reason())
+    return {"status_legend": _yiban_status.legend_items(), "calendar_state": payload}
+
+
+def _render_admin_page(template, nav_key, crumbs, extra=None):
     """管理端页面统一上下文：版本 / 备案 / 导航高亮 / 面包屑 / 当前身份。
 
     身份显式下发（而非模板内读 session），便于侧栏常驻显示当前账号——
     这是防误操作设计：登录错账号后误删数据的代价高。
+    `extra` 供单页追加自己的上下文（如日历页的状态表与图例）。
     """
     m = _appmod()
     return render_template(
@@ -57,6 +85,7 @@ def _render_admin_page(template, nav_key, crumbs):
         crumbs=crumbs,
         current_username=session.get("username", ""),
         current_role=m._current_role() or "",
+        env_line_break_codes=_env_line_break_codes(),
     )
 
 
@@ -180,11 +209,12 @@ def _user_page_redirect():
     return None
 
 
-def _render_user_page(template, nav_key, crumbs):
+def _render_user_page(template, nav_key, crumbs, extra=None):
     """用户端页面统一上下文（与管理端同构：版本 / 备案 / 导航高亮 / 面包屑）。
 
     身份不在此下发：用户端外壳由 core.js 的 /api/me 填充账号区，
     避免服务端再走一次会话取值（管理员页下发的理由见 _render_admin_page）。
+    `extra` 的意义同 `_render_admin_page`（日历页的状态表与图例）。
     """
     m = _appmod()
     return render_template(
@@ -196,6 +226,7 @@ def _render_user_page(template, nav_key, crumbs):
         police_link=m.police_link(),
         nav_active=nav_key,
         crumbs=crumbs,
+        **(extra or {}),
     )
 
 
@@ -210,7 +241,8 @@ def user_calendar_page():
     blocked = _user_page_redirect()
     if blocked:
         return blocked
-    return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"])
+    return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"],
+                             extra=_calendar_page_context())
 
 
 # 登录页循环检测计数 {ip: (count, first_ts)}：浏览器缓存旧 JS 时可能无限 302 循环，
@@ -315,7 +347,8 @@ def my_calendar_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"])
+    return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"],
+                              extra=_calendar_page_context())
 
 
 # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----

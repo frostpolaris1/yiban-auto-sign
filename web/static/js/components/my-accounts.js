@@ -153,7 +153,10 @@
         class: "account-meta",
         text: String(a.phone || "") + (a.phone_model ? " · " + a.phone_model : "")
       }));
-      // 今日状态：仅管理端要求（旧 /mine 在卡片内展示排队数/完成态）；用户端由日历页承担
+      // 今日状态：仅管理端要求（旧 /mine 在卡片内展示排队数/完成态）；用户端由日历页承担。
+      // 下面"今日已完成签到"是 yiban.status.DISPLAY 成功态文案之外的第二处副本（不含急停/
+      // 周末门判定，完整单源接线属前后端协同任务）；其字面量已被
+      // tests/test_yiban_status_single_source.py 钉到 DISPLAY，改文案漏改这里即红。
       if (showState && !a.deleted && a.status === "active" && a.state_status !== "paused") {
         var done = a.state_status === "success" || a.state_status === "already";
         var stateText = done ? "今日已完成签到"

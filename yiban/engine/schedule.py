@@ -6,9 +6,10 @@
 自选时间片优先、正态钟形锚点、σ 自适应封顶、超容量压缩模式。窗口（起止 + 掐头去尾 +
 是否已关闭）的唯一口径在 `yiban.window`，本模块只做调用与告警，不另存一份判断。
 
-**告警去重**：窗口配置非法 / 有效窗口被裁剪吃空各只并入当日汇总邮件一次（
-`_invalid_window_notified`、`_edge_empty_window_notified`）——这两个函数每天被多账号
-多轮调用，不去重会把同一配置错误刷成几十条。
+**告警去重**：窗口配置非法 / 缓冲过大被收缩 / 窗口不可用被回退各只并入当日汇总邮件
+一次（`_invalid_window_notified`、`_window_clamped_notified`、
+`_window_fallback_notified`）——这些函数每天被多账号多轮调用，不去重会把同一配置错误
+刷成几十条。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
 """
@@ -42,19 +43,64 @@ _DEFAULT_AVG_ATTEMPT_SEC = 3
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
+# V3 全局容量口径：出口令牌桶速率（次尝试/s）、通道数上限、重试与尾延迟降额系数。
+# 桶速率键供引擎与 web 侧容量预估共用（web 侧尚未接入）。
+_DEFAULT_BUCKET_RATE = 1.0
+_DEFAULT_CHANNELS_MAX = 16
+_DEFAULT_UTIL = 0.8
+# K 的自动公式里"重试占比" r 的缺省（总尝试量 T = N×(1+r)）：依据既有分级重试预算
+# （`attempts.MAX_ATTEMPTS`=3、风控/会话陈旧 2 次、无点位/凭据错误 1 次）——多数失败类
+# 最多多试 2 次，而失败本身不是常态；取 0.2（约每 5 个账号多 1 次尝试）把重试算进容量，
+# 宁可略高估出口需求，也不按"零重试"把出口排满。
+_DEFAULT_RETRY_RATIO = 0.2
 
 # 签到窗口配置非法的一次性告警标记：_schedule_config 每次调度都会调用，
 # 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
 _invalid_window_notified = False
 
-# 有效签到窗口为空的一次性告警标记：_schedule_blocks 每次调度都会调用（多账号/多轮），
-# 前后裁剪吃满窗口而回退默认窗口的告警同样只收集一次（模式同 _invalid_window_notified）
-_edge_empty_window_notified = False
+# 窗口退化的一次性告警标记（缓冲过大被收缩 / 窗口不可用被回退）：_schedule_blocks
+# 每次调度都会调用（多账号/多轮），同一配置错误的告警只收集一次
+_window_clamped_notified = False
+_window_fallback_notified = False
+
+#: 上面三个告警标记所属的**业务日**（"YYYY-MM-DD"）；空串=尚未复位过。
+#: 复位点唯一：`reset_daily_alerts`（由 `_schedule_config` 每日首调触发）。
+_alert_mark_day = ""
 
 
-def _env_int(name, default, lo=None, hi=None):
-    """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。"""
-    raw = os.environ.get(name, "").strip()
+def reset_daily_alerts(now=None):
+    """业务日翻页时复位三个窗口告警去重标记；返回本次是否真的复位了。
+
+    为什么必须有复位点：这三个标记是"同一配置错误当日只并入一次汇总邮件"的去重位，
+    但它们原先**只在模块导入时为假、全仓没有任何生产复位点**。兜底常驻进程每 60 秒扫
+    一轮且从不重启，于是同一配置错误在第一天报过之后，第二天起彻底无声——管理员看到的
+    是"一切正常"，而配置依旧是错的（窗口非法/缓冲吃满/窗口回退三类都如此）。
+
+    复位时机取**业务日翻页**：复位必须发生在三个标记的产生分支之前，而翻页必然早于当日
+    窗口开启，故它等价于"新窗口开启时复位"，但只有一个可判时点（每次调用比日期）。
+    同一业务日内的重复调用不复位——否则退化成"每轮一次"，去重失效、告警刷屏。
+    """
+    global _alert_mark_day, _invalid_window_notified
+    global _window_clamped_notified, _window_fallback_notified
+    day = (now or clock.now()).strftime("%Y-%m-%d")
+    if day == _alert_mark_day:
+        return False
+    _alert_mark_day = day
+    _invalid_window_notified = False
+    _window_clamped_notified = False
+    _window_fallback_notified = False
+    return True
+
+
+def _env_int(name, default, lo=None, hi=None, env=None):
+    """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。
+
+    `env` 给出时只读它、不回落进程环境——口径与 `_env_flag` 一致。容量预估这类
+    "一次估算多个键"的调用方必须用它：web 进程的环境里没有 `.env` 的键（run.sh
+    才逐行 export），gap 从 `.env` 读而 avg 落进程环境就是跨两个配置层取值（MF-93）。
+    """
+    src = os.environ if env is None else env
+    raw = str(src.get(name, "")).strip()
     if not raw:
         return default
     try:
@@ -68,12 +114,48 @@ def _env_int(name, default, lo=None, hi=None):
     return v
 
 
-def avg_attempt_sec():
-    """单账号签到耗时估算（秒）：YIBAN_AVG_ATTEMPT_SEC 显式配置优先，缺省 3s。"""
-    return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300)
+def avg_attempt_sec(env=None):
+    """单账号签到耗时估算（秒）：YIBAN_AVG_ATTEMPT_SEC 显式配置优先，缺省 3s。
+
+    `env` 口径见 `_env_int`：web 侧容量预估必须把生效配置层传进来，与 gap 同源。
+    """
+    return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300, env=env)
 
 
-def capacity_accounts(window_sec, gap=0, avg=None):
+def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
+    """容量**告警阈值**的 avg 输入：显式配置（管理员钉住）> 实测 p95（近 `days` 天
+    `sign_events.dur_sec`）> 配置缺省档；读不到实测就回退缺省档，绝不把预检拖崩。
+    只喂预检告警——保存闸门/展示按计划口径，"能不能保存"不该跟着昨天的网络抖。
+    """
+    if os.environ.get("YIBAN_AVG_ATTEMPT_SEC", "").strip():
+        return cfg_avg if cfg_avg is not None else avg_attempt_sec()
+    if cfg_avg is None:
+        cfg_avg = avg_attempt_sec()
+    try:
+        p95 = db.attempt_dur_quantile(days=days, min_samples=min_samples)
+    except Exception as e:  # 防御：db 替身缺属性（测试打桩面）也不炸预检
+        logger.warning("读取实测尝试耗时失败（告警回退配置值）: %s", e)
+        p95 = None
+    return max(1, math.ceil(p95)) if p95 else max(1, int(cfg_avg))
+
+
+def _env_float(name, default, lo=None, hi=None):
+    """读浮点环境变量；缺失/非法回退默认（与 `_env_int` 同一套回退 + 告警口径）。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning("配置 %s=%r 非法，回退默认 %s", name, raw, default)
+        return default
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        logger.warning("配置 %s=%s 超出范围 [%s, %s]，回退默认 %s", name, v, lo, hi, default)
+        return default
+    return v
+
+
+def capacity_accounts(window_sec, gap=0, avg=None, env=None):
     """有效窗口内可容纳的账号数（容量口径唯一源：引擎预检与 web 容量预估共用）。
 
     模型：首个账号立刻占用 avg 秒，此后每个账号按「上一次完成 + 间隔下限」推进，
@@ -82,10 +164,11 @@ def capacity_accounts(window_sec, gap=0, avg=None):
 
     window_sec：有效窗口秒数（已扣掐头去尾）
     gap：账号间隔下限秒（YIBAN_ACCOUNT_GAP_MAX）
-    avg：单账号耗时秒；缺省取 avg_attempt_sec()
+    avg：单账号耗时秒；缺省取 avg_attempt_sec(env)
+    env：avg 的取值层（口径见 `_env_int`）；同一次估算的所有键必须同一来源（MF-93）
     """
     if avg is None:
-        avg = avg_attempt_sec()
+        avg = avg_attempt_sec(env)
     avg = max(1, int(avg))
     gap = max(0, int(gap or 0))
     slack = int(window_sec) - avg
@@ -94,14 +177,141 @@ def capacity_accounts(window_sec, gap=0, avg=None):
     return slack // (avg + gap) + 1
 
 
-def _schedule_config():
+def channel_count(bucket_rate, avg=None):
+    """每执行体的并发通道数 `M = min(_DEFAULT_CHANNELS_MAX, ceil(bucket_rate × avg × 2))`。
+
+    通道能力 `M/avg` 只需略高于出口令牌桶上限（系数 2 是余量），瓶颈因此始终是两者中
+    的较小者。**M 的唯一口径**：容量公式、令牌桶的突发额度与执行体的通道数/线程池上限
+    都调本函数——三处各写一份式子，改一处必漏另两处。
+
+    `bucket_rate` 非正 → 回退 `_DEFAULT_BUCKET_RATE` 并告警（与 `capacity_accounts_v3`
+    同口径）：非法配置不能让通道数恒为 0，否则容量预估恒 0、执行体一条通道都不起。
+    """
+    if avg is None:
+        avg = avg_attempt_sec()
+    avg = max(1, int(avg))
+    bucket_rate = float(bucket_rate)
+    if bucket_rate <= 0:
+        # 非法配置不能让容量恒 0：web 保存闸门会因此误拒一切设置
+        logger.warning("出口桶速率 %s 非法，回退默认 %s", bucket_rate, _DEFAULT_BUCKET_RATE)
+        bucket_rate = _DEFAULT_BUCKET_RATE
+    return min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
+
+
+def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8,
+                         env=None):
+    """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
+
+    `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数（唯一口径见
+    `channel_count`）：通道能力 `M/avg` 只需略高于出口令牌桶上限，**瓶颈是两者中的
+    较小者**。只按通道吞吐算容量、忽略桶封顶，会把容量高估 2.3 倍（桶 1/s、avg 3s 时
+    2.67 次/s 并非有效速率）。
+
+    `util` 缺省 0.8（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
+    单位是**账号尝试数**（单账号 ≈6 次 HTTP 请求），不是请求数。
+    `avg`/`env` 口径同 `capacity_accounts`（同一次估算同一配置层）。
+    """
+    if avg is None:
+        avg = avg_attempt_sec(env)
+    avg = max(1, int(avg))
+    k = max(1, int(k))
+    util = min(max(float(util), 0.0), 1.0)
+    channels = channel_count(bucket_rate, avg)
+    bucket_rate = float(bucket_rate)
+    if bucket_rate <= 0:
+        bucket_rate = _DEFAULT_BUCKET_RATE
+    rate_eff = min(channels / avg, bucket_rate)
+    return math.floor(k * rate_eff * max(0, int(window_sec)) * util + 1e-9)
+
+
+def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
+                util=0.8, enabled=None, env=None, retry_reserve=False):
+    """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
+
+    为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
+    "引擎预检"两处按不同口径算出不同容量，出现"保存被拒、计划却排得下"的分裂。收口到
+    一处后，`enabled=False` **逐字**走 `capacity_accounts`（v2 公式，保留给既有的
+    "按旧口径展示/测试"的调用方），`enabled=True` 走 `capacity_accounts_v3`。
+
+    `enabled` 缺省取 `executor_v3.scheduler_v3_enabled(env)`——**台账单池化后该判定恒真**
+    （v3 是唯一生产执行路径，开关已随单池消失），故缺省即 v3 口径；`enabled=False` 只为
+    测试与"要按 v2 公式取值"的调用方显式传入。`env` 仍传给 `scheduler_v3_enabled` 只为
+    保持签名形状（其实现已不读环境）。
+    `k` 是执行体数，缺省 1（单执行体零额外配置，与 `capacity_accounts_v3` 的缺省一致）——
+    需要按账号量自动定尺的调用方先用 `executor_count` 算出 K 再传入。`bucket_rate`/`util`
+    只在 v3 侧参与。
+
+    `env`：`avg`/`enabled` 未显式给出时的取值配置层（口径见 `_env_int`）。调用方一旦
+    传了 `env`，本次估算的 avg 与开关就从**同一份** `env` 读，不再跨"进程环境 + .env"
+    两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
+    `.env`）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
+
+    `retry_reserve`（**只喂 v2 公式分支**）：把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
+    重试同样吃墙钟——按零重试排满窗口正是 122–360 静默死带的根（计划/展示/闸门不传）。
+    v3 不参与：`util` 缺省 0.8 本身就是重试降额，再扣一次是双重计算。
+    """
+    if enabled is None:
+        # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
+        # 本函数只被保存闸门/引擎预检/CLI 调用，频率低，局部导入的开销可忽略。
+        # 单池后该判定恒真（v3 是唯一生产执行路径）。
+        from yiban.engine import executor_v3
+        enabled = executor_v3.scheduler_v3_enabled(env)
+    if not enabled:
+        if retry_reserve:
+            # 储备 = (MAX_ATTEMPTS−1) 份单账号周期/账号，折进 gap 复用同一个式子
+            from yiban.engine import attempts  # 局部导入：attempts 带整条客户端链
+            avg_eff = max(1, int(avg if avg is not None else avg_attempt_sec(env)))
+            gap_eff = max(0, int(gap or 0))
+            gap = gap_eff + (attempts.MAX_ATTEMPTS - 1) * (avg_eff + gap_eff)
+        return capacity_accounts(window_sec, gap, avg, env=env)
+    return capacity_accounts_v3(window_sec, 1 if k is None else k, avg,
+                                bucket_rate, util, env=env)
+
+
+def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
+                   egress_count=1):
+    """满足当日账号量的执行体数 `K = clamp(ceil(N×(1+r)/(W×bucket×0.8)), 1, 出口数)`。
+
+    **K 的唯一口径**：容量公式、预检告警与"该开几个执行体"的建议都调本函数——三处各写
+    一份式子，改一处必漏另两处。分子 `T = N×(1+r)` 是**总尝试量**：重试同样占出口额度，
+    按零重试算会把 K 低估（`r` 缺省 0.2，依据见 `_DEFAULT_RETRY_RATIO`）。分母是单执行体
+    的有效速率 `W×bucket×0.8`（`util` 与容量公式同口径：重试与尾延迟降额）。
+
+    结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
+    只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。**与
+    部署者实测的建议数不是同一口径**：实测按"每进程各持一桶"量取（实测值由部署者自行
+    量取后录入 `YIBAN_CAPACITY_MEASURED`），"20–22 个桶" ≈要声明同数物理出口；未声明
+    出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
+    「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate` 非正回退出厂速率（与
+    `channel_count` 同口径）；窗口 <= 0 时回退 1。
+    """
+    r = _DEFAULT_RETRY_RATIO if retry_ratio is None else max(0.0, float(retry_ratio))
+    n = max(0, int(n_accounts))
+    egress = max(1, int(egress_count))
+    w = max(0, int(window_sec))
+    rate = float(bucket_rate)
+    if rate <= 0:
+        rate = _DEFAULT_BUCKET_RATE
+    if w <= 0:
+        return 1
+    need = math.ceil(n * (1.0 + r) / (w * rate * _DEFAULT_UTIL))
+    return min(max(1, need), egress)
+
+
+def _schedule_config(now=None):
     """读取调度 v2 配置（每次调用读取，便于测试与热改）。
 
     兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
     新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
     返回 dict：order/dist/edge_front_sec/edge_back_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
+
+    `now` 只用于把"业务日"交给 `reset_daily_alerts`（见其文档）：常驻兜底这类每轮都
+    已经取过当前时刻的调用方顺手传进来，省掉一次多余的 `clock.now()`。
     """
+    # 业务日翻页先把三个告警去重标记复位（唯一复位点，理由见 reset_daily_alerts）：
+    # 本函数是每一轮调度的入口，复位挂在这里，调用方不必记得手动清理。
+    reset_daily_alerts(now)
     # 局部导入：alerts 反向依赖本模块的窗口判定（告警要判"窗口是否还开着"），
     # 模块级互引会成环；本函数每天只调用几次，局部导入的开销可忽略。
     from yiban.engine import alerts
@@ -165,6 +375,44 @@ def _schedule_config():
     }
 
 
+def _executor_ids(env=None):
+    """执行体身份串列表（HRW 分工的候选集）：清单里的并行执行体行；无清单 → 单执行体。
+
+    身份串的唯一构造处是 `yiban.egress`（跨重启稳定、含主机名），这里只按清单行取
+    ——计划里的 `owner` 必须与执行体自己算出的名字逐字一致，否则分片归属会对不上。
+    """
+    from yiban import egress
+    src = os.environ if env is None else env
+    rows = egress.parse_manifest(src.get(egress.ENV_MANIFEST))
+    if rows:
+        workers = egress.worker_rows(rows)
+        if workers:
+            return [egress.worker_owner(r["slot"]) for r in workers]
+    return [egress.single_owner()]
+
+
+def planner_config():
+    """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 三模式 + μσ + 桶速率 + 执行体。
+
+    读法与 `_schedule_config` **同源**（直接复用它的结果），只补两项 Planner 独有的：
+    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省 1.0）与 `executors`（HRW 候选集）。
+    不另存一份窗口/模式口径——两份口径迟早会分叉。
+    """
+    cfg = _schedule_config()
+    cfg["bucket_rate"] = _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+    cfg["executors"] = _executor_ids()
+    return cfg
+
+
+def egress_rate_explicit():
+    """`YIBAN_EGRESS_RATE` 是否被显式写入（供限速器判「人工接管」）。
+
+    值本身仍由 `planner_config` 读（本键的唯一取值点），这里只回答"有没有配"：
+    配了就不再让 AIMD 改写速率——管理员手写的值不该自己漂移。
+    """
+    return bool(os.environ.get("YIBAN_EGRESS_RATE", "").strip())
+
+
 def _anchor_z(phone):
     """账号锚点分位（顺序×正态）：hash(phone) 派生标准正态值，零持久化、每天稳定。"""
     return random.Random(str(phone)).gauss(0, 1)
@@ -182,34 +430,49 @@ def _schedule_blocks(cfg):
 
     blocks: [(lo_min, hi_min), ...]（浮点分钟，支持 0.5 分钟=30s 的裁剪粒度）；
     eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00），由前后裁剪分别决定。
-    有效窗口为空（前裁+后裁 >= 窗口宽度）时回退默认窗口，保证调用方永不拿到空块列表。
+    缓冲过大时 `window.bounds` 只收缩缓冲、保留窗口（`edges_clamped`）；窗口本身不可用
+    （宽度 <= 0）才回退默认窗口（`fell_back`）——两种退化各告警一次，块列表永不空。
     """
     from yiban.engine import alerts  # 局部导入的理由同 _schedule_config
 
     win = window.bounds(cfg)
     start_min, end_min = win.start_min, win.end_min
     eff_lo, eff_hi = win.lo_min, win.hi_min
-    if win.fell_back:
+    _win_txt = (f"{cfg['sign_start'][0]:02d}:{cfg['sign_start'][1]:02d}"
+                f"~{cfg['sign_end'][0]:02d}:{cfg['sign_end'][1]:02d}")
+    if win.edges_clamped:
         logger.warning(
-            "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
-            cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
+            "签到窗口 %s 的缓冲过大（前 %ss 后 %ss，合计已达窗口宽度），"
+            "已收缩为 前 %ss 后 %ss，窗口本身未改动",
+            _win_txt, cfg["edge_front_sec"], cfg["edge_back_sec"],
+            win.front_sec, win.back_sec,
         )
-        # 同 _schedule_config：窗口/裁剪配置错误会让"Web 界面看到的设置"与实际签到
-        # 时刻不符而无人知情，故并入当日汇总邮件（A 线）一次——多账号/多轮调用只发一次
-        global _edge_empty_window_notified
-        if not _edge_empty_window_notified:
-            _edge_empty_window_notified = True
+        # 窗口没变、只是精修被牺牲，管理员仍需知道"保存的值与实际生效的值不同"
+        global _window_clamped_notified
+        if not _window_clamped_notified:
+            _window_clamped_notified = True
+            alerts._collect_admin_mail(
+                "签到窗口缓冲已收缩",
+                (
+                    f"签到窗口 {_win_txt} 的缓冲过大（前 {cfg['edge_front_sec']}s / 后 "
+                    f"{cfg['edge_back_sec']}s，合计已达窗口宽度），已等比收缩为 前 "
+                    f"{win.front_sec}s / 后 {win.back_sec}s，窗口本身未改动（有效窗口 = "
+                    "窗口宽度的 80%）。请调小 YIBAN_WINDOW_EDGE_FRONT_SEC / "
+                    "YIBAN_WINDOW_EDGE_BACK_SEC（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
+                ),
+            )
+    if win.fell_back:
+        logger.warning("签到窗口 %s 不可用（宽度 <= 0），回退默认窗口 06:30~07:50", _win_txt)
+        # 同 _schedule_config：窗口不可用会让"界面看到的设置"与实际签到时刻不符
+        global _window_fallback_notified
+        if not _window_fallback_notified:
+            _window_fallback_notified = True
             alerts._collect_admin_mail(
                 "签到窗口配置异常",
                 (
-                    f"有效签到窗口为空：窗口 "
-                    f"{cfg['sign_start'][0]:02d}:{cfg['sign_start'][1]:02d}"
-                    f"~{cfg['sign_end'][0]:02d}:{cfg['sign_end'][1]:02d}"
-                    f" 被前后裁剪吃满（前 {cfg['edge_front_sec']}s / 后 "
-                    f"{cfg['edge_back_sec']}s），已回退默认窗口 06:30~07:50，"
-                    "实际签到时间将与配置不符！请调小 "
-                    "YIBAN_WINDOW_EDGE_FRONT_SEC / YIBAN_WINDOW_EDGE_BACK_SEC"
-                    "（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
+                    f"签到窗口 {_win_txt} 不可用（宽度 <= 0），已回退默认窗口 "
+                    "06:30~07:50，实际签到时间将与配置不符！请检查 "
+                    "YIBAN_SIGN_START / YIBAN_SIGN_END"
                 ),
             )
     blocks = []
@@ -258,20 +521,29 @@ DAY_OFF_SATURDAY = "saturday"
 DAY_OFF_PAUSED = "paused"
 
 
+def weekend_flags(env=None):
+    """周末签到开关（周六, 周日）的**唯一解析口径**（`_env_flag`：1/true/on/yes 为真）。
+
+    `day_off` 与 web 展示（面板状态行、我的日历置灰）都只读这里——原先 web 侧各自
+    用整数解析，`=true` 时引擎照签而面板标休（两套值域分叉）。
+    """
+    return (_env_flag("YIBAN_SATURDAY_SIGN", env), _env_flag("YIBAN_SUNDAY_SIGN", env))
+
+
 def day_off(now=None, sat=None, sun=None, env=None):
     """今天这一刻是否**有意不签到** → 原因串；空串=照常。
 
     周末门与一键暂停门的**唯一实现**（顺序与历史行为一致：周日 → 周六 → 暂停）。
     为什么必须唯一：这三道门原先只写在 `runner.main` 里，而 `--fallback` 在它们之前
     就 `return` 了（见 `runner.main` 的分支顺序），于是**兜底常驻把门全部绕过**——
-    管理员在网页关掉周末签到、或点了一键暂停，兜底照样把账号签掉（2026-09-17 实测）。
+    管理员在网页关掉周末签到、或点了一键暂停，兜底照样把账号签掉。
 
     `sat`/`sun` 可显式传入（定时轮传导入期快照常量，便于既有测试注入）；不给则读环境。
     """
-    if sat is None:
-        sat = _env_flag("YIBAN_SATURDAY_SIGN", env)
-    if sun is None:
-        sun = _env_flag("YIBAN_SUNDAY_SIGN", env)
+    if sat is None or sun is None:
+        def_sat, def_sun = weekend_flags(env)
+        sat = def_sat if sat is None else sat
+        sun = def_sun if sun is None else sun
     weekday = (now or clock.now()).weekday()
     if weekday == 6 and not sun:
         return DAY_OFF_SUNDAY
@@ -305,13 +577,16 @@ def _next_available(bi, filled, blocks, cap):
 def _slot_to_bi(cfg):
     """自选片分钟偏移（相对窗口起点）→ 块索引。
 
-    口径与 web/app.py `_pref_slots` 完全一致：块起点 = 窗口起点 + 5k 对齐，
-    key = 块起点 - 窗口起点（窗口起点非 5 分钟倍数时同样成立）。
+    窗口起止与前后裁剪一律取 `window.bounds(cfg)`，与 `_schedule_blocks` 同准绳：有效
+    窗口被裁剪吃空时两者都按回退后的默认窗口算——各自直读 `cfg` 的话，块照常在回退窗口
+    里切，自选片却因 `hi <= lo` 恒不成立而整片落空，用户所选片被静默放弃。
+    key = 块起点 - 窗口起点（窗口起点非 5 分钟倍数时同样成立），与
+    `web.routes.my._pref_slots` 的 `slot_min` 同号。
     """
-    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
-    end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
-    front = cfg["edge_front_sec"] / 60.0
-    back = cfg["edge_back_sec"] / 60.0
+    win = window.bounds(cfg)
+    start_min, end_min = win.start_min, win.end_min
+    front = win.front_sec / 60.0
+    back = win.back_sec / 60.0
     m = {}
     bi = 0
     for b in range(start_min, end_min, 5):

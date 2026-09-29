@@ -87,7 +87,8 @@ Tailwind Play CDN（`tailwind.js`）、daisyUI 子集（`daisyui/daisyui-subset.
 （`static/css/legacy.css`）与旧单页壳（`templates/base.html` / `index.html` / `tabs/*` /
 `partials/modals/*` / `partials/head_boot.html`）已整体退役：全站页面统一走 Adminator
 （`adminator/adminator.css`）+ 项目样式（`static/css/app.css`），不再有第二套样式层。
-现存模板仅在 `templates/partials/{tailwind_config,component_layer}.html` 保留旧组件层
-规格文件，供设计令牌 / 组件层回归测试读取，运行时不加载。
+旧组件层规格文件（`templates/partials/tailwind_config.html`、`templates/partials/component_layer.html`）
+及占位宏 `templates/pages/_stub_macro.html` 运行时不加载、也无引用面，已一并删除；
+设计令牌与组件类的事实源收敛到 `static/css/app.css` + Adminator。
 `fonts/misans/`（4.6 MB，许可不实：MiSans 官方条款不允许再分发）已整体删除，
 自托管中文字体只有 `fonts/{inter,jetbrains-mono,notosanssc}/`。

@@ -7,8 +7,17 @@
 `transport` 负责发送与失败退还。
 
 设计原则：不配置 = 不启用；发送异常只记日志、绝不抛出（不拖累签到主流程）；每日额度
-按 general / urgent / login_fail 三本独立账互不挤占；额度只在发送成功后才最终扣减，
+按 general / urgent / login_fail / admin_change 四本独立账互不挤占；额度只在发送成功后才最终扣减，
 失败凭占用凭证退还；自定义 URL 走 SSRF 白名单。
+
+**通信**
+谁调用本组件：`yiban/engine/alerts.py`（告警与失败提醒，判 `is_configured` 后 `send`）、
+`web/services/notify_mail.py`（邮件正文的捎带推送）、`web/services/channel_health.py`
+（`pop_exhaustion_notice` 把额度耗尽写进通道健康报告）、`web/app.py`（只读耗尽判据）、
+`web/routes/notify.py`（`get_config` 概览 + `send_test`）。
+它调用：`config`（读 .env / 解密密钥 / SSRF 白名单）、`ledger`（额度与节流）、
+`transport`（`requests` 出网）。日志一律走 logger `"notify"`；落盘那一层遮手机号的是
+`yiban.logging_ext.MaskingFormatter`，本组件内不含第二套脱敏实现。
 """
 
 # 公共 API 显式转发（依赖方向 config ← ledger ← transport；转发的是同一对象）。
@@ -24,7 +33,13 @@ from .config import (  # noqa: F401
     is_safe_url,
     logger,
 )
-from .ledger import BudgetTicket, budget_exhausted_today, pop_exhaustion_notice  # noqa: F401
+from .ledger import (  # noqa: F401
+    BudgetTicket,
+    budget_exhausted_today,
+    has_pending_exhaustion_notice,
+    pop_exhaustion_notice,
+    restore_exhaustion_notice,
+)
 from .transport import (  # noqa: F401
     DEFAULT_URL_TIMEOUT,
     MAX_TITLE_CHARS,

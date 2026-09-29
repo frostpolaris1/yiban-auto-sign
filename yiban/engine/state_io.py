@@ -48,7 +48,7 @@ from datetime import datetime
 from yiban import clock, cred_state
 from yiban import status as yiban_status
 from yiban.engine import cli_support, schedule
-from yiban.infra import env_io
+from yiban.infra import env_io, private_json
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import db
 
@@ -85,25 +85,26 @@ _TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _has_conclusion(entry):
-    """该账号当日是否已有"结论"（非空且非 pending）。
+    """该账号当日是否已有"结论"：`status` 非空且非 `pending`（未知状态串也算有结论）。
 
     `pending` 只是计划（"打算什么时候签"），success/failed 等才是事实；"空/缺失"
-    等价于无记录。`_write_sign_state` 的 only_if_absent CAS 与窗口收尾快照共用
-    这一口径。
+    等价于无记录。判据取自 `yiban.status.is_concluded_status`（唯一定义处）：
+    `_write_sign_state` 的 only_if_absent CAS 与窗口收尾预筛共用这一口径。
     """
     if not isinstance(entry, dict):
         return False
-    return str(entry.get("status", "")).strip() not in ("", STATUS_PENDING)
+    return yiban_status.is_concluded_status(entry.get("status", ""))
 
 
 def _sched_marker_exists():
     """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
-    告警函数用它区分「首签轮」与「补签轮」——
-    标记在首签轮收尾写入（_write_sched_done），因此：
-      - 首签轮调用本函数时标记尚不存在 → 本轮是首签；
-      - 补签轮（07:10）调用时标记已存在 → 本轮是补签。
-    与容器 scheduler.py 的 _full_run_done_today() 语义一致（同一事实源）。
+    真实消费者只有 `_is_second_run()`：它把"标记已存在"当作补签轮的兜底判据（环境变量优先），
+    决定补签轮要不要剔除已了结账号。**告警函数已经不拿它分轮次**——
+    `alerts._maybe_alert_zero_success` 在 `is_second_run=None` 时仍会来取一次值，但抑制判据换成了
+    两个事实（窗口还开着、后面还有没有人接着跑），取到的值无人读取；所以别按"首签轮/补签轮"
+    去理解这条告警。标记本身在首签轮收尾写入（_write_sched_done），与容器 scheduler.py 的
+    _full_run_done_today() 是同一事实源。
     """
     state_dir = _state_dir()
     path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
@@ -111,13 +112,11 @@ def _sched_marker_exists():
 
 
 def _is_second_run():
-    """本轮是否为补签轮（07:10）：run.sh 补签轮 / 容器 scheduler SECOND 时段注入的
-    YIBAN_SECOND_RUN=1 优先，sched-run 标记兜底。
+    """本轮是否为补签轮（07:10）：环境变量优先，sched-run 标记兜底。
 
-    首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run
-    标记不写，07:10 补签轮仅靠标记会误判为首签轮 → 部分成功+窗口外零告警（B12-2
-    分支复发）。环境变量由 run.sh 补签轮分支 / 容器 scheduler SECOND 时段显式注入，
-    不依赖首签收尾，天然免疫 exit 124。
+    标记不能单独作数：首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run 不
+    写，只看标记会把它误判为首签轮 → 部分成功 + 窗口外零告警。`YIBAN_SECOND_RUN=1` 由 run.sh
+    补签轮分支 / 容器 scheduler SECOND 时段显式注入，不依赖首签收尾，故优先看它。
     """
     return os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()
 
@@ -156,12 +155,12 @@ def _second_run_drop_done(accounts):
     recorded = _daily_statuses()
     if not recorded:
         return accounts
-    # 已了结 = success/already/**no_task**（按 main 自身的"已执行"口径：no_task 指
-    # "今天没任务"，同样无需重跑）。原实现漏了 no_task，补签轮会对这些账号再走一遍
-    # 完整登录——多一轮全站真实登录，且与 UNDONE_STATUSES 口径矛盾。
+    # 已了结 = `yiban.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
+    # 指"今天没任务"，同样无需重跑）。与领取池记 `done` 的判据是**同一对象**——两处
+    # 各写一份会漂移，让补签轮对这些账号再走一遍完整登录。
     done = {
         p for p, st in recorded.items()
-        if st in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+        if st in yiban_status.CLAIM_DONE_STATUSES
     }
     if not done:
         return accounts
@@ -180,20 +179,17 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
-    dur：单次签到尝试耗时秒数（P6，2026-08-16：慢响应可据此判断网络/接口问题）。
-    only_if_absent：仅当该账号**当日无结论**时才写入（return True），否则不覆盖
-    并返回 False。窗口关闭收尾（`_mark_window_skip`）用它做 CAS：快照判"无记录"
-    与落盘之间，另一执行体可能刚写入真实结论（failed 等）——锁内再判一次，
-    绝不让"窗口外跳过"覆盖掉真实失败（否则 `has_real_failure` 变 False、失败告警
-    被吞）。
+    dur：单次签到尝试耗时秒数（慢响应可据此判断网络/接口问题）。
+    only_if_absent：仅当该账号**当日无结论**时才写入（return True），否则不覆盖返回
+    False。窗口收尾（`round._mark_window_skip`）拿它做 CAS：锁内再判一次，绝不让"窗口外
+    跳过"覆盖掉真实失败（`has_real_failure` 随之变 False、失败告警被吞）。
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = _state_dir()
     path = _sign_state_path()
     try:
         os.makedirs(state_dir, exist_ok=True)
-        # M12：读-改-写整体持有状态文件锁，避免并发覆盖丢失条目
-        with cli_support._state_file_lock(path):
+        with cli_support._state_file_lock(path):  # 读改写整体持锁，否则并发覆盖丢条目
             data = {}
             if os.path.exists(path):
                 try:
@@ -206,17 +202,14 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
                 logger.warning("状态文件 %s 非 dict，按空数据重建", path)
                 data = {}
             now = clock.now()
-            # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
-            existing = data.get(phone)
+            existing = data.get(phone)  # 计划时间是当日事实：未显式传 scheduled 时保留既有值
             if not scheduled and isinstance(existing, dict):
                 scheduled = existing.get("scheduled")
             if only_if_absent and _has_conclusion(existing):
                 return False
-            # **计划态不覆盖已有结果**：`pending` 是"打算什么时候签"的预测，success/failed
-            # 等是"已经发生"的事实——事实优先。单执行体形态下计划写在前、结果写在后，看不出
-            # 差别；多执行体下每个执行体启动都会写一遍全量计划，晚启动者的计划会把先启动者
-            # 已写完的结果抹回 pending（实测：4 执行体 40 账号，2 个账号被抹成 pending），
-            # 既让日历显示"待签"，又让补签闸门把已签账号当未了结重跑一遍。
+            # 计划态不覆盖已有结果：pending 是"打算签"，success/failed 是"已发生"，事实优先。
+            # 多执行体下每个执行体启动都写一遍全量计划，晚启动者的计划会把先启动者已写
+            # 的结果抹回 pending（实测 4 执行体/40 账号抹掉 2 个），日历显示待签、补签重跑。
             if (
                 status == STATUS_PENDING
                 and isinstance(existing, dict)
@@ -225,10 +218,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
                 if scheduled:
                     existing["scheduled"] = scheduled
                 data[phone] = existing
-                tmp = f"{path}.tmp{os.getpid()}"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False)
-                os.replace(tmp, path)
+                _write_private_json(path, data)
                 return True
             entry = {
                 "status": status,
@@ -237,19 +227,16 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
                 "task": "default",
             }
             if dur is not None:
-                entry["dur"] = round(float(dur), 2)  # 单次尝试耗时秒数（P6）
+                entry["dur"] = round(float(dur), 2)  # 两位秒足够判慢响应，不必留微秒
             if scheduled:
                 entry["scheduled"] = scheduled
             data[phone] = entry
-            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖（对抗性审查发现）
-            tmp = f"{path}.tmp{os.getpid()}"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, path)
+            # 唯一临时名与 0600 创建由单通道保证（防跨进程固定 .tmp 名互相覆盖）
+            _write_private_json(path, data)
             return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）；
-        # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值，C-SIGN-02）
+        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（不影响签到执行）；
+        # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值）
         logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
         return False
 
@@ -275,20 +262,17 @@ def _write_sched_done(counts=None):
         }
         if isinstance(counts, dict):
             payload.update(counts)
-        tmp = path + ".tmp" + str(os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        _write_private_json(path, payload)
     except OSError as e:
         logger.warning("写入全量完成标记失败（调度器可能重复触发当日签到）: %s", e)
 
 # ---------------------------------------------------------------------------
 # 补签轮判定（宿主 run.sh 与容器 docker/scheduler.py 共用的单一实现）
 # ---------------------------------------------------------------------------
-# 背景（2026-09-10 批次20 B3）：宿主原先靠**第二个独立 cron**（07:12）做补签，
+# 背景：宿主原先靠**第二个独立 cron**（07:12）做补签，
 # 但首签进程要 sleep 到最晚自选时间片（生产实测 07:25）才结束，flock 由脚本持有至
 # 退出 → 07:12 的 cron 每天撞锁 `exit 0`，补签轮从未真正执行（生产日志 12/12 天实证）。
-# 修法（用户裁决方案一）：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
+# 修法：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
 # 一次"是否需要补跑"，判定口径收敛到此处，两侧不再各写一份。
 #
 # 判定 = 「当日全量未收尾」或「当日存在未了结账号」：
@@ -327,17 +311,20 @@ def full_run_done_today(state_dir=None, day=None):
 def has_undone_accounts_today(state_dir=None, day=None):
     """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。
 
-    **多执行体形态优先看领取池**：那里是账号级了结的事实源（`done`=当日了结，
-    `claimed`/`failed`=未了结），而状态文件只能说"这个账号最后写成什么状态"。
-    当池里当日有记录时以池为准；没有记录（无库/池未启用/当日还没人领过）再回退到
-    状态文件——两条口径都可用时，池更准。
+    **两个事实源取并集，任一"有活"即未了结**：任务队列回答"领到的那些了结没有"
+    （`done`/`skipped`=当日了结，`pending`/`claimed`/`failed`/`stolen`=未了结），状态文件
+    回答"每个账号最后写成什么状态"。旧实现池里有行就只看池——一个执行体半途被杀/漏领时，
+    已收尾的行全 `done`、没领过的账号在池里根本没有行，池判"无未了结"，而这批账号在状态
+    文件里仍是 pending（计划从未被执行）——"整批没领被判没活"的跨轮翻版。故池判干净后
+    仍要过一遍状态文件；池里没有行（无库/池未启用/当日还没人领过）时状态文件是唯一
+    事实源，行为不变。台账单池化后读的是**任务队列**（唯一生产台账），不是旧领取池。
     """
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
         if db.is_initialized():
-            stats = db.claim_stats(today)
-            if stats.get("total"):
-                return stats.get("open", 0) > 0
+            stats = db.task_stats(today)
+            if stats.get("total") and stats.get("open", 0) > 0:
+                return True
     except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
         logger.debug("读取领取池失败（回退状态文件口径）: %s", e)
     d = state_dir or _state_dir()
@@ -406,15 +393,9 @@ def _fallback_alive_path():
 def _write_fallback_alive(at=None):
     """刷新兜底执行体心跳（每轮扫描写一次）。失败静默——心跳不该影响签到。"""
     path = _fallback_alive_path()
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp = f"{path}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"at": (at or clock.now()).strftime(_TS_FMT),
-                       "pid": os.getpid()}, f)
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        _write_private_json(path, {"at": (at or clock.now()).strftime(_TS_FMT),
+                                   "pid": os.getpid()})
 
 
 def _clear_fallback_alive():
@@ -482,6 +463,10 @@ def mark_worker_finished(index, exit_code=None, now=None):
 
     被信号杀掉（退出码为负）时调用方**不调本函数**：留"有开始、无收尾"，心跳过期后
     由 `worker_presence` 判成 `stale`——那正是"疑似被强杀/超时杀掉"需要用户注意的状态。
+
+    **退出码 >= 0 一律算正常退出**，含子进程"本轮失败"（如 v3 返回空结果、runner 汇总成
+    退出码 1）：那也会写收尾判 `finished`，失败信息靠退出码与告警体现，不由四态承担。
+    只有**单进程直跑**（没有监督进程替它写收尾）时内部未预期异常才留"有开始、无收尾"。
     """
     at = now or clock.now()
     path = worker_alive_path(index)
@@ -505,7 +490,7 @@ def worker_presence(index, now=None):
     | `running` | 有心跳且新鲜（`now - ts <= 2 × WORKER_HEARTBEAT_SEC`） | 在线（正在跑本轮） |
     | `finished` | 有本轮收尾标记（`ended_at`，正常退出） | 已跑完（灰） |
     | `idle` | 本业务日无该槽位记录（今天还没跑） | 未运行（灰） |
-    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉） |
+    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉；单进程直跑时内部未预期异常也不写收尾） |
 
     `last_seen_at` 是"最后一次见到它活着"的时间串（收尾态给 `ended_at`；无记录给
     None）。**为什么不回 alive 布尔**：短命进程"没在跑"多数时候是正常的，只有
@@ -543,13 +528,13 @@ def _read_worker_alive(index):
 
 
 def _write_private_json(path, payload):
-    """原子写 JSON、**创建即 0600**：心跳含本机部署节律，不该对同机其他用户可读。"""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    """原子写 JSON、**创建即 0600**——状态文件私有写的唯一通道。
+
+    实现在 `yiban.infra.private_json`（infra 层，熔断/账本/调度器等不能反向依赖
+    engine 的模块也共用同一条通道）；此处保留名字作为既有锚点，不再自带一份
+    实现——"补 chmod"劣于"所有站点只走一个通道"。
+    """
+    private_json.write_private_json(path, payload)
 
 
 def _alive_record(index, at):
