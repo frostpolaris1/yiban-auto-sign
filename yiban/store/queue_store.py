@@ -18,8 +18,6 @@
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
 - `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
   `pending`——证据强于"租约过期"，故不等宽限期；
-- `steal_shards`：死主分片接管——把心跳过期执行体分片集内 `owner` 为**该死主**的
-  `pending` 行改归本执行体（只动 `pending`，CAS 精确到死主 + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
   闸门，见该函数说明）；
 - `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
@@ -146,7 +144,7 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
     单事务 `UPDATE ... WHERE (phone, day) IN (SELECT ...) RETURNING`：返回的行即被本
     执行体占住的行（`state='claimed'` + 写入 owner）。`SET owner` 是必需的——`owner`
     一列同时是"计划 owner"与"当前持有者"，收尾路径按 owner 做作用域校验，
-    不写它则接管/窃取换不了手。
+    不写它则接管换不了手。
 
     `epoch` 是本次领取的 fencing token（**每次领取自增**，单调）：调用方收尾时必须把它
     原样传回 `settle_tasks` / `requeue_task`。没有它，被接管者迟到的写会覆盖接管者的结论。
@@ -477,51 +475,6 @@ def reap_abandoned(owner, day=None):
             return cur.rowcount
     except Exception as e:
         logger.warning("轮末收尸签到任务失败（按未收尸处理）: %s", e)
-        return 0
-
-
-def steal_shards(me, dead_owner, shards, day, now=None):
-    """接管死主分片集内的待办：把「分片集内 + `state='pending'` + owner 是**死主**」的行
-    改为 `owner=<me>`（运行时身份）、`epoch = epoch + 1`。返回受影响行数。
-
-    **两个身份分开传**：`me` 是接管者（本执行体，写库用它的运行时身份）；`dead_owner`
-    是心跳已被判过期的那具死主的**稳定槽位名**。单参数表达不了"从谁手里接管"，CAS 只能
-    退化成 `owner != me`——那会连**活着的**第三个执行体先接管的行一起改写，把别人的在飞
-    任务抢过来。故 CAS 精确指向死主。
-
-    **死主的行有两种 owner，必须都算进来**（这是本函数与"精确等于一个串"的差别）：
-    计划行由 `planner.write_plan` 写**稳定槽位名**（HRW 归属），而被 `requeue_task` 重排
-    回 `pending` 的行仍带着原持有者的**运行时身份**（`{稳定名}:{进程号}:{代次}`，见
-    `yiban.egress.runtime_owner`）。只匹配前者会让"死主失败重排过的活"无人接管。
-    匹配写成 `owner = ? OR instr(owner, ?) = 1`（`?` 为稳定名与 `稳定名:`），**不用
-    `LIKE`**：主机名里可能出现 `_`，那是 LIKE 的通配符，会误伤别的槽位。
-
-    `shards` 由调用方保证**只含死主的分片集**（判据是文件心跳四态，不落库）；本层不校验
-    归属，只按"这些分片里还是 `pending` 且 owner 指向死主"来写。
-
-    **只动 `pending`**：`claimed` 是他人仍在飞的行（租约未到不该抢，租约到了由
-    `reap_expired` 回收），终态行更不该动。`vshard = -1` 的历史行不属于任何分片集，
-    调用方给出的分片集里天然不含它——`shards` 若被误传含 `-1`，这里再显式挡一道。
-
-    `now` 只为与 `reap_expired` 同签名（本函数不按时间过滤，取哪些分片由调用方决定）。
-    `shards=()` → 0（本轮不接管，不算故障）；库异常 → 0 + warning。
-    """
-    shard_set = tuple(shards or ())
-    if not shard_set:
-        return 0
-    placeholders = ",".join("?" for _ in shard_set)
-    sql = ("UPDATE sign_tasks SET owner=?, epoch=epoch + 1 "
-           f"WHERE day=? AND vshard >= 0 AND vshard IN ({placeholders}) "
-           "AND state=? AND (owner = ? OR instr(owner, ?) = 1)")
-    params = (me, day, *shard_set, STATE_PENDING, dead_owner, dead_owner + ":")
-    try:
-        conn, lock = _queue_conn()
-        with lock:
-            cur = conn.execute(sql, params)
-            conn.commit()
-            return cur.rowcount
-    except Exception as e:
-        logger.warning("接管死主分片失败（按未接管处理）: %s", e)
         return 0
 
 
