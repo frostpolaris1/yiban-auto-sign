@@ -146,7 +146,29 @@ SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sig
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
 
-DATE="$(date +%Y-%m-%d)"
+# 业务日唯一来源（MF-109）：yiban.clock 的北京钟，与引擎/web 同一事实源——备份包名
+# 与保留期"当天件"判定必须落在引擎业务日上（宿主时区≠北京时差一天，会把"当天归档
+# 失踪"误报或漏报）。取不到 yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
+business_day() {
+    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
+    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
+    local _d
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    case "$_d" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
+    esac
+    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    date +%F
+}
+
+# Python 解释器：备份本体零第三方依赖，系统 python3 即可（venv 缺失不拦备份）。
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    PY="$APP_DIR/.venv/bin/python3"
+else
+    PY="$(command -v python3 || echo /usr/bin/python3)"
+fi
+
+DATE="$(business_day)"
 ARCHIVE="${BACKUP_DIR}/yiban-${DATE}.tar.gz"
 TMPDIR_BAK="$(mktemp -d "${TMPDIR:-/tmp}/yiban-bak.XXXXXX")"
 trap 'rm -rf "${TMPDIR_BAK}"' EXIT

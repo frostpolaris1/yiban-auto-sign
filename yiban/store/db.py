@@ -18,7 +18,10 @@
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
 - `verify_jobs`：在线校验任务表的创建/领取/结算/取消、超龄回收与保留期清理。
-- `claims`：签到领取池（多执行体协调）的领取/续租/结算/放弃与清理。
+- `claims`：旧签到领取池（`sign_claims`，单池化后冻结）的领取/续租/结算/放弃与清理；
+  生产读口径已收口到 `queue_store`（见下），本域仅供既有单测覆盖。
+- `queue_store`：任务队列 `sign_tasks`（台账单池化后的唯一生产台账）的批量领取/收尾/
+  重排/回收/重签/事件签名，以及出口桶状态 `egress_state` 的读写。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
 - `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
@@ -71,6 +74,7 @@ from yiban.store import clock_meta as _clock_meta  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
+from yiban.store import queue_store as _queue_store  # noqa: E402
 from yiban.store import session_cache as _session_cache  # noqa: E402
 from yiban.store import time_prefs as _time_prefs  # noqa: E402
 from yiban.store import tracking as _tracking  # noqa: E402
@@ -127,8 +131,16 @@ claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
 claim_latest_day = _claims.latest_claims_day
 claim_owners_since = _claims.owners_since
-claim_fallback_event = _claims.fallback_event  # 兜底常驻的"失败即入队"读取端：默认档未了结行的事件签名，短轮询变化即接手
 purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，展示口径不读它
+
+# 任务队列（sign_tasks）展示读口径：台账单池化后展示/补签闸门读的就是这张表（唯一台账）。
+# 上方 `claim_*` 是旧领取池（sign_claims，冻结）的读法，仅供既有单测覆盖，不再是生产读口。
+task_stats = _queue_store.day_counts  # 当日各 state 计数与派生（settled/open/total）
+task_owners_for_day = _queue_store.owners_for_day  # 当日 phone -> owner（一次取全）
+task_activity = _queue_store.activity  # 当日按执行体归属的 KPI 计数（已折 KPI 三键）
+task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日
+task_owners_since = _queue_store.owners_since  # 保留期内出现过的执行体身份串
+purge_sign_tasks = _queue_store.purge  # 唯一台账（sign_tasks）的保留期清理（带时钟跳变守卫）
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
 # `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
@@ -142,9 +154,7 @@ _write_audit_key_to_env_file = _audit_chain._write_audit_key_to_env_file
 _assert_key_source_certain = _audit_chain._assert_key_source_certain
 _audit_key = _audit_chain._audit_key
 _audit_hash = _audit_chain._audit_hash
-_rechain_audit_logs = _audit_chain._rechain_audit_logs
-_record_rechain_event = _audit_chain._record_rechain_event
-audit_rechain_events = _audit_chain.audit_rechain_events
+_backfill_audit_hashes = _audit_chain._backfill_audit_hashes
 
 _bump_audit_write_failure = _audit_chain._bump_audit_write_failure
 _unflushed_audit_failures = _audit_chain._unflushed_audit_failures
@@ -173,7 +183,6 @@ audit_alert_needs_attention = _audit_chain.audit_alert_needs_attention
 mark_audit_alert_sent = _audit_chain.mark_audit_alert_sent
 
 audit_anchor_path = _audit_chain.audit_anchor_path
-audit_anchor_fingerprint_path = _audit_chain.audit_anchor_fingerprint_path
 _anchor_line_sha = _audit_chain._anchor_line_sha
 _parse_anchor_line = _audit_chain._parse_anchor_line
 _read_anchor_lines = _audit_chain._read_anchor_lines
@@ -186,23 +195,17 @@ _audit_purge_events = _audit_chain._audit_purge_events
 audit_purge_total = _audit_chain.audit_purge_total
 audit_purge_events = _audit_chain.audit_purge_events
 record_audit_anchor = _audit_chain.record_audit_anchor
-record_audit_anchor_witness = _audit_chain.record_audit_anchor_witness
 _record_anchor_trace = _audit_chain._record_anchor_trace
 _last_audit_anchor = _audit_chain._last_audit_anchor
 _last_anchor_of = _audit_chain._last_anchor_of
 _max_anchor_of = _audit_chain._max_anchor_of
 _anchor_file_state = _audit_chain._anchor_file_state
 _anchor_file_state_ex = _audit_chain._anchor_file_state_ex
-_anchor_witness_state = _audit_chain._anchor_witness_state
 _anchor_status = _audit_chain._anchor_status
 verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
-_purge_event_covers = _audit_chain._purge_event_covers
 _purge_event_sets_min = _audit_chain._purge_event_sets_min
-_rechain_events = _audit_chain._rechain_events
-_rechain_hint = _audit_chain._rechain_hint
 audit_health = _audit_chain.audit_health
-_rechain_diagnostics = _audit_chain._rechain_diagnostics
 
 _AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
 _AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY
@@ -217,11 +220,7 @@ _ANCHOR_META_KEY = _audit_chain._ANCHOR_META_KEY
 _AUDIT_PURGE_TOTAL_KEY = _audit_chain._AUDIT_PURGE_TOTAL_KEY
 _AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
 _PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
-_RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
-_RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
-_ANCHOR_FP_DEFAULT_DIR_POSIX = _audit_chain._ANCHOR_FP_DEFAULT_DIR_POSIX
-_ANCHOR_FP_FILENAME = _audit_chain._ANCHOR_FP_FILENAME
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
 # 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
@@ -301,7 +300,6 @@ _table_columns = _migrations._table_columns
 _ensure_column = _migrations._ensure_column
 _ensure_index = _migrations._ensure_index
 _create_tables = _migrations._create_tables
-_chain_head = _migrations._chain_head
 _MALFORMED_COL_RE = _migrations._MALFORMED_COL_RE
 _malformed_schema_tables = _migrations._malformed_schema_tables
 _create_verify_jobs_table = _migrations._create_verify_jobs_table
@@ -497,8 +495,8 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     调用方应显式传入，勿让密钥来源依赖 cwd）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
-    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
-    （v3 rechain）等，使"被校验对象在校验过程中被改动"。
+    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会回填审计链
+    （v3）等，使"被校验对象在校验过程中被改动"。
     create=False：**只读初始化**——只打开既有库（`connection.open_readonly(...,
     immutable=False)`，`mode=ro` 见得到并发写者与锁），**不建库、不建表、不迁移、不切
     WAL、不跑清理**，供取证类只读调用方（如 `scripts/audit_verify.py`）复用

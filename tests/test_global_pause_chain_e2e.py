@@ -17,14 +17,14 @@
     yiban/engine/schedule.py（`day_off`
     三道门的唯一实现）、web/app.py（`_day_off_reason` 现读注入）、
     web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/status.py
-    （`DISPLAY`/`legend_items`/`display_payload`）、scripts/loadtest/mock_yiban.py（假上游记账）
+    （`DISPLAY`/`legend_items`/`display_payload`）、tests/fake_yiban_server.py（假上游记账）
 关键断言：rc 契约本单**只钉不改**：暂停命中 ⇒ 引擎 rc=2 且 run.sh 状态文件为
     GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）；同源判据 = 引擎侧
     `day_off(同一份 .env)` 与 web 侧 `_day_off_reason` 相等，且页面内联 day_off 载荷
     的文案/语气档逐字段取自 `DAY_OFF_TEXT`/表派生——伪造任一侧后该等式必须不成立，
     用例里以显式 assertNotEqual 钉住"判据会咬人"，不是恒真比较
 依赖：bash（缺则整类 skip，Git Bash 即可）；run.sh 用 fakebin 假 flock/真透传 timeout；
-    引擎子进程的 https 由**测试侧**传输层适配器改写到 127.0.0.1 上的 mock_yiban 独立进程
+    引擎子进程的 https 由**测试侧**传输层适配器改写到 127.0.0.1 上的假上游独立进程
     （回环劫持守卫失败即 rc=9 拒绝跑链）；Flask test client 真渲染日历页；
     不联网、零真实凭据（假号 13800000001 / 假密码 / 64 位假钥）
 
@@ -57,7 +57,8 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
-MOCK_YIBAN = os.path.join(BASE, "scripts", "loadtest", "mock_yiban.py")
+#: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）
+MOCK_YIBAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_yiban_server.py")
 _HAS_BASH = shutil.which("bash") is not None
 # 运行锁争抢的构造件（忙态反例要真的"持住"锁）。注意判据必须落在 fcntl **模块本身**
 # （与引擎同源，见 yiban/engine/cli_support.py 的 try-import）：旧版在此写

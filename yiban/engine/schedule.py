@@ -230,26 +230,30 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
 
     为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
     "引擎预检"两处按不同口径算出不同容量，出现"保存被拒、计划却排得下"的分裂。收口到
-    一处后，v2 侧（开关缺省关）**逐字**走 `capacity_accounts`（行为不变），v3 侧走
-    `capacity_accounts_v3`，随开关切换自动生效（开关即回滚）。
+    一处后，`enabled=False` **逐字**走 `capacity_accounts`（v2 公式，保留给既有的
+    "按旧口径展示/测试"的调用方），`enabled=True` 走 `capacity_accounts_v3`。
 
-    `enabled` 缺省取 `executor_v3.scheduler_v3_enabled(env)`（`YIBAN_SCHEDULER_V3`，缺省 0）；
-    显式传入只为测试与"不读环境"的调用方。`k` 是执行体数，缺省 1（单执行体零额外配置，
-    与 `capacity_accounts_v3` 的缺省一致）——需要按账号量自动定尺的调用方先用
-    `executor_count` 算出 K 再传入。`bucket_rate`/`util` 只在 v3 侧参与。
+    `enabled` 缺省取 `executor_v3.scheduler_v3_enabled(env)`——**台账单池化后该判定恒真**
+    （v3 是唯一生产执行路径，开关已随单池消失），故缺省即 v3 口径；`enabled=False` 只为
+    测试与"要按 v2 公式取值"的调用方显式传入。`env` 仍传给 `scheduler_v3_enabled` 只为
+    保持签名形状（其实现已不读环境）。
+    `k` 是执行体数，缺省 1（单执行体零额外配置，与 `capacity_accounts_v3` 的缺省一致）——
+    需要按账号量自动定尺的调用方先用 `executor_count` 算出 K 再传入。`bucket_rate`/`util`
+    只在 v3 侧参与。
 
     `env`：`avg`/`enabled` 未显式给出时的取值配置层（口径见 `_env_int`）。调用方一旦
     传了 `env`，本次估算的 avg 与开关就从**同一份** `env` 读，不再跨"进程环境 + .env"
     两层各取一半——那是容量高估 69% 的根（web 进程环境不含 `.env`，而 gap 又来自
-    `.env`，见 MF-93）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
+    `.env`）。缺省 None 走 `os.environ`，引擎侧行为逐字不变。
 
-    `retry_reserve`（**只喂告警阈值**）：v2 侧把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
+    `retry_reserve`（**只喂 v2 公式分支**）：把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
     重试同样吃墙钟——按零重试排满窗口正是 122–360 静默死带的根（计划/展示/闸门不传）。
     v3 不参与：`util` 缺省 0.8 本身就是重试降额，再扣一次是双重计算。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
         # 本函数只被保存闸门/引擎预检/CLI 调用，频率低，局部导入的开销可忽略。
+        # 单池后该判定恒真（v3 是唯一生产执行路径）。
         from yiban.engine import executor_v3
         enabled = executor_v3.scheduler_v3_enabled(env)
     if not enabled:
@@ -275,8 +279,9 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
 
     结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
     只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。**与
-    `capacity_probe` 的建议数不是同一口径**：探针按"每进程各持一桶"实测，"20–22 个桶"
-    ≈要声明同数物理出口；未声明出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
+    部署者实测的建议数不是同一口径**：实测按"每进程各持一桶"量取（实测值由部署者自行
+    量取后录入 `YIBAN_CAPACITY_MEASURED`），"20–22 个桶" ≈要声明同数物理出口；未声明
+    出口清单时 K≡1 是设计语义而非被夹死的缺陷（README
     「多执行体」同款说明）。`egress_count` 缺省 1；`bucket_rate` 非正回退出厂速率（与
     `channel_count` 同口径）；窗口 <= 0 时回退 1。
     """

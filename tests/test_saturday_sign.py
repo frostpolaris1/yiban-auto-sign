@@ -74,7 +74,7 @@ def _run_main(now_dt, const_override=None, argv=None):
             mock.patch.object(signin.clock, "now", _FakeDT.now),
             mock.patch.object(signin, "load_accounts",
                               return_value=[mock.Mock(phone="13800000000", user_paused=False)]),
-            mock.patch.object(signin, "run_queue_retry",
+            mock.patch.object(signin.executor_v3, "run_executor_v3",
                               return_value={"13800000000": (True, "ok", False, "success")}),
             mock.patch.object(signin, "_save_cred_state"),
         ]

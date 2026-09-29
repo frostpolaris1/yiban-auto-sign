@@ -433,12 +433,13 @@ class AdminToWriteTest(_Base):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._env_admin_to(), "a@test.local,b@test.local")
 
-    def test_put_requires_confirm_password(self):
+    def test_put_admin_to_without_password_ok(self):
+        """收件人变更是可逆路由改动（缩减批 6a 免门）：无口令直达落盘，留痕在审计行。"""
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
         c, h = self._master()
         r = c.put("/api/mail-config", json={"admin_to": "new@test.local"}, headers=h)
-        self.assertEqual(r.status_code, 400, "改收件人属高危动作，必须二次鉴权")
-        self.assertEqual(self._env_admin_to(), "old@test.local", "未通过鉴权不得落盘")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self._env_admin_to(), "new@test.local")
 
     def test_put_requires_master_admin(self):
         """普通注册管理员不得改收件人（403，不落盘）。"""
@@ -732,6 +733,8 @@ class MailConfigSmtpsApiTest(_Base_FAILOVER):
         self.assertEqual(entries[0]["user"], "a@x.com", "user 留空应保留旧发件账号")
 
     def test_put_smtps_requires_confirm_password(self):
+        """SMTP 传输条目留门：含中继口令且旧值不留存（改了读不回）= 事实不可逆；
+        它还是告警通道本身的传输层（安全网）。与已免门的"改收件人"（可逆）区别在此。"""
         self._reset_env_file()
         c, h = self._master()
         r = c.put("/api/mail-config", json={"smtps": self.smtps()}, headers=h)

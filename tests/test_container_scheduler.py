@@ -779,16 +779,16 @@ class Batch9WebTest(unittest.TestCase):
         row = next(a for a in db.load_accounts() if a["id"] == acc_id)
         self.assertEqual(row["deleted"], 1, "正常业务写入不受遗留事务影响")
 
-    # ---- P3-4 rechain 分批 ----
-    def test_rechain_keeps_long_chain_consistent(self):
+    # ---- P3-4 审计链回填 ----
+    def test_backfill_keeps_long_chain_consistent(self):
         for i in range(30):
             db.audit("admin", f"op{i}", "t", "d")
         conn = db.get_conn()
         with db._conn_lock, conn:
             conn.execute("UPDATE audit_logs SET hash='', prev_hash=''")
-        db._rechain_audit_logs(conn)
+        db._backfill_audit_hashes(conn)
         ok, broken, _ = db.verify_audit_chain()
-        self.assertTrue(ok, f"分批重链后链必须自洽（broken={broken}）")
+        self.assertTrue(ok, f"回填后链必须自洽（broken={broken}）")
         self.assertEqual(broken, 0)
 
     # ---- P3-5 会话吊销 ----

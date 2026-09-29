@@ -30,7 +30,7 @@
 | `db` | 数据库维护（状态/完整性/备份/恢复） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `restore_from` `fingerprint` `backup_user_version` `backup_size_bytes` `pre_restore_copy` `dry_run` | 0 / 1 / 2 |
 | `version` | 打印版本 | `command` `version` `python` `user_version` | 0 |
 
-`capacity --measure` 与 `db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
+`db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
 见各自函数的文档字符串。
 
 **归属**
@@ -57,7 +57,6 @@
 import argparse
 import os
 import sqlite3
-import subprocess
 import sys
 
 from yiban import __version__ as RELEASE_VERSION
@@ -93,14 +92,6 @@ _PATHS_HELP = (
     "路径相关环境变量：YIBAN_ENV_FILE（.env 密钥来源）/ YIBAN_DB_FILE（库文件）/ "
     "YIBAN_STATE_DIR（状态目录）/ YIBAN_LOG_FILE（日志文件）；相对路径一律按当前工作目录解析。"
 )
-
-#: 仓库根（`yiban/cli.py` 上溯两层）。**只用来定位转发给子进程的工具脚本**，
-#: 不是包导入引导：本模块是包内模块，入口一律 `python -m yiban.cli`（以文件路径
-#: 直接执行既不支持、也不需要），故这里没有也不需要 sys.path 操作。
-_REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-#: 容量基准工具（需 root 的隔离测试机；CLI 只负责转发，不重复实现测量逻辑）
-CAPACITY_PROBE = os.path.join(_REPO_DIR, "scripts", "loadtest", "capacity_probe.py")
 
 #: 参数原样透传给引擎、CLI 只接 `--json` 的子命令
 _PASSTHROUGH = ("sign", "probe")
@@ -274,12 +265,12 @@ def _cmd_config(args, view):
 def _capacity_numbers(view, signable):
     """容量三数（**与网页 `/api/scheduler/executors` 同一口径**，不另写公式）。
 
-    - `capacity_per_executor`：有效窗口能容纳的账号数 = `schedule.capacity_of`（按开关
-      分派，缺省关时即 `capacity_accounts`；窗口用 `yiban.window.bounds(...).full_sec()`
+    - `capacity_per_executor`：有效窗口能容纳的账号数 = `schedule.capacity_of`（本口径
+      显式固定 v2 公式 `enabled=False`，逐值不变；窗口用 `yiban.window.bounds(...).full_sec()`
       ——网页侧同样是"完整有效窗口"，即"这套配置能容纳几个"，不是"今天还剩几个"）；
-      `k=1` 钉住"每执行体"的字面语义（v3 下总容量 ≈ 该值 × 出口数）；
-    - `recommended_per_executor`：部署者实测值（`YIBAN_CAPACITY_MEASURED`，由容量基准
-      工具写入）× 2/3（与网页建议值、基准工具的 `--ratio` 同一余量口径）；未实测为 None；
+      `k=1` 钉住"每执行体"的字面语义；
+    - `recommended_per_executor`：部署者实测值（`YIBAN_CAPACITY_MEASURED`，由部署者
+      在本机量取后录入）× 2/3（与网页建议值同一余量口径）；未实测为 None；
     - `executors_needed`：⌈账号数 ÷ 建议每执行体账号数⌉（与网页同一算法）。
     """
     start, end, _invalid = window.parse_window(view)
@@ -301,28 +292,19 @@ def _capacity_numbers(view, signable):
         "avg_attempt_sec": avg,
         "gap_sec": gap,
         "capacity_per_executor": schedule_mod.capacity_of(
-            bounds.full_sec(), gap=gap, avg=avg, k=1),
+            bounds.full_sec(), gap=gap, avg=avg, k=1, enabled=False),
         "measured_per_executor": measured,
         "recommended_per_executor": recommended,
         "executors_needed": needed,
     }
 
 
-def _cmd_capacity(args, view, extra):
-    """容量建议：默认**只读**（读 .env 实测值 + 账号数 → 建议执行体数），不联网、不写盘。
+def _cmd_capacity(args, view):
+    """容量建议：**只读**（读 .env 实测值 + 账号数 → 建议执行体数），不联网、不写盘。
 
-    `--measure` 转发 `scripts/loadtest/capacity_probe.py`（需 root 的隔离测试机）：
-    输出与退出码原样透传，故与 `--json` 互斥（转发工具的 stdout 自成一路，不该被
-    再包一层 JSON）。
+    `YIBAN_CAPACITY_MEASURED` 是部署者在自己的机器上量取后手工录入的值——本命令只
+    消费它、不生产它（2026-09 前的离线容量基准工具族已移除）。
     """
-    if args.measure:
-        if not os.path.isfile(CAPACITY_PROBE):
-            return _fail("capacity", 1, [f"容量基准工具不存在: {CAPACITY_PROBE}"], False,
-                         error_kind="runtime_error")
-        cmd = [sys.executable, CAPACITY_PROBE, *extra]
-        _say("转发容量基准工具（需 root / 隔离测试机；输出与退出码原样透传）: "
-             + " ".join(cmd[1:]))
-        return subprocess.run(cmd).returncode
     paths = _paths(view)
     # 账号数口径与网页 `_capacity_account_count` 同源；库不存在按 0（新部署没有库很正常）
     try:
@@ -355,8 +337,7 @@ def _cmd_capacity(args, view, extra):
         _say(f"建议执行体数: {numbers['executors_needed']}（建议，不是程序上限）")
     else:
         _say("尚无本机实测容量（YIBAN_CAPACITY_MEASURED 未配置）："
-             "请在隔离测试机跑 `python -m yiban.cli capacity --measure`，"
-             "把实测的「单执行体容量」写入 .env 后本命令会给出建议执行体数")
+             "请在本机量取单执行体容量后写入 .env，本命令会给出建议执行体数")
     if args.json:
         _emit_json(payload)
     return 0
@@ -552,9 +533,6 @@ def _build_parser():
                      " /api/scheduler/executors 一致，未实测就不编数字。"),
     )
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
-    p.add_argument("--measure", action="store_true",
-                   help=("转发 scripts/loadtest/capacity_probe.py 现场实测（需 root 的"
-                         "隔离测试机；输出与退出码原样透传，故与 --json 互斥）"))
 
     p = _sub(
         "state", help="状态文件清理（默认 dry-run）",
@@ -608,18 +586,15 @@ def _dispatch(args, extra, subs):
     if cmd in _PASSTHROUGH:
         handler = _cmd_sign if cmd == "sign" else _cmd_probe
         return handler(args.json, extra)
-    if extra and not (cmd == "capacity" and args.measure):
-        # 多余参数只在两处合法：sign/probe（原样透传给引擎，见上）与
-        # `capacity --measure`（透传给容量基准工具）。其余是用法错误 → stderr 用法 + 退出码 2
+    if extra:
+        # 多余参数只在 sign/probe 合法（原样透传给引擎，见上）。其余是用法错误 →
+        # stderr 用法 + 退出码 2
         raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd,
                           kind="usage_extra_args")
     # `--dry-run` / `--yes` 只有 state 与 db 定义（其余子命令没有这两个开关）
     if getattr(args, "dry_run", False) and getattr(args, "yes", False):
         raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd,
                           kind="usage_conflict")
-    if cmd == "capacity" and args.measure and args.json:
-        raise _UsageError("--measure 与 --json 不能同时使用（转发的工具自成一路输出）",
-                          subs[cmd], cmd, kind="usage_conflict")
     view = _env_view()
     if cmd == "db":
         # db 维护族（快照 / 备份）实现在 yiban/engine/db_maintenance.py：入口模块只做
@@ -631,10 +606,7 @@ def _dispatch(args, extra, subs):
         "state": _cmd_state,
         "version": _cmd_version,
     }
-    handler = handlers[cmd]
-    if cmd == "capacity":
-        return handler(args, view, extra)
-    return handler(args, view)
+    return handlers[cmd](args, view)
 
 
 def _fail_usage(exc, json_mode):

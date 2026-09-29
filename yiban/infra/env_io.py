@@ -20,7 +20,7 @@
 `parse_env_file`（含 `env_path`）与 `write_env_key` / `write_env_keys` 由
 `yiban.infra.account_crypto`、`yiban.store.audit_chain`、`yiban.store.tracking`、
 `yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
-`web/routes/settings_api.py`、`scripts/loadtest/seed_accounts.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
+`web/routes/settings_api.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
 `env_key_values` / `validate_env_key` / `validate_env_value` / `validate_env_updates` /
 `render_env_write`，`write_env_keys` 是唯一写入口（内部自持 `env_lock.env_write_lock`
 跨进程写锁、做写入前后"键集合 diff"、越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
@@ -158,7 +158,26 @@ class EnvWriteRefused(ValueError):
 
     基类刻意保持 `ValueError`：既有调用方（account_crypto / tracking / audit_chain）
     只 `except ValueError`，换更宽或更窄的类型会从它们的 except 缝里漏出去。
+
+    可选属性（409 可操作化：写拒绝定位）：`code` = 拒绝码、`line` = 问题行号
+    （1-based，窄行模型，与 `_validate_env_lines` 的枚举同源）、`keys` = 涉事键名
+    列表——只承载**定位信息**，绝不带值原文；web 的 409 响应据此组装"定位/清理"
+    载荷，引擎侧调用方（只 except ValueError）不受影响。
     """
+
+    def __init__(self, message, *, code=None, line=None, keys=None):
+        super().__init__(message)
+        self.code = code
+        self.line = line
+        self.keys = list(keys) if keys else None
+
+
+class _LineBreakError(ValueError):
+    """既有行含潜伏行分隔符（文件态歧义）。携带 1-based 行号供 409 可操作化。"""
+
+    def __init__(self, message, line):
+        super().__init__(message)
+        self.line = line
 
 
 def has_line_break(s):
@@ -286,13 +305,15 @@ def _validate_env_lines(lines, env_file):
     为什么连注释行也要过：潜伏载荷最常藏在注释尾部（`# 备注<U+0085>YIBAN_GLOBAL_PAUSE=1`），
     宽模型读到它时会先把后半截拆成"第二行"，任何一次读-改-写都把载荷坐实成真配置行。
     错误消息只给行号（1-based），绝不回带行原文——行原文可能带口令等敏感内容。
+    行号同时以 `_LineBreakError.line` 结构化承载（409 的定位载荷用，不再解析消息串）。
     """
     for ln_no, ln in enumerate(lines, start=1):
         if has_line_break(ln):
-            raise ValueError(
+            raise _LineBreakError(
                 f"{env_file} 第 {ln_no} 行（1-based）含潜伏行分隔符（U+2028 等），"
                 f"写回会把它后面的内容实体化成新配置行，故拒绝写入；"
-                f"请人工清理该行后重试"
+                f"请人工清理该行后重试",
+                ln_no,
             )
 
 
@@ -468,16 +489,17 @@ def _unrequested_key_changes(before, after, requested):
     return changed
 
 
-def _refuse(audit, code, detail):
+def _refuse(audit, code, detail, *, line=None, keys=None):
     """拒绝写入的统一出口：先落一条 fail-closed 审计，再抛 `EnvWriteRefused`。
 
     审计失败**不得**把拒绝变成放行：本函数在审计异常时吞掉（记日志）后仍拒绝，
-    立场是"写入被拒"而非"审计成功才拒"。detail 只许放键名/行号，绝不带值原文。
+    立场是"写入被拒"而非"审计成功才拒"。detail 只许放键名/行号，绝不带值原文；
+    `line`/`keys` 同为定位信息（结构化给 409 的可操作化载荷），同样不带值。
     """
     if audit is not None:
         with contextlib.suppress(Exception):
             audit(code, detail)
-    raise EnvWriteRefused(f"拒绝写入 {code}：{detail}")
+    raise EnvWriteRefused(f"拒绝写入 {code}：{detail}", code=code, line=line, keys=keys)
 
 
 def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_empty=False):
@@ -523,15 +545,20 @@ def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_emp
         try:
             new_text = render_env_write(raw, updates, env_file=env_file,
                                         delete_empty=delete_empty)
-        except ValueError as e:
+        except _LineBreakError as e:
             # 走到这里 = 既有文件行含潜伏分隔符（render 的入参校验已在上一步做过，此处
             # 必为文件态）：这是"一次无关保存会实体化载荷"的现场，必须留痕。
+            # 行号结构化随异常走（409 的定位载荷用），不解析消息串。
+            _refuse(audit, "env_write_rejected", str(e), line=e.line)
+        except ValueError as e:
+            # render 的其余 ValueError（理论不可达：入参校验已先做）：仍按文件态留痕。
             _refuse(audit, "env_write_rejected", str(e))
         requested = set(updates)
         changed = _unrequested_key_changes(before, env_key_values(new_text), requested)
         if changed:
             _refuse(audit, "unrequested_key_change",
-                    "未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
+                    "未请求的键发生变化: " + ", ".join(sorted(changed))[:160],
+                    keys=sorted(changed))
         commit = write_text or _atomic_replace_env
         commit(env_file, new_text)
         after = env_key_values(_read_env_text(env_file))
@@ -543,7 +570,8 @@ def write_env_keys(env_file, updates, *, write_text=None, audit=None, delete_emp
             with contextlib.suppress(OSError):
                 _restore_env_bytes(env_file, raw_bytes)
             _refuse(audit, "unrequested_key_change_after_write",
-                    "落盘后未请求的键发生变化: " + ", ".join(sorted(changed))[:160])
+                    "落盘后未请求的键发生变化: " + ", ".join(sorted(changed))[:160],
+                    keys=sorted(changed))
 
 
 def write_env_key(env_file, key, value):

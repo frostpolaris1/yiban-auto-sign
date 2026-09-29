@@ -6,7 +6,9 @@
     不得存在半截文件、被杀残留的半成品由 `state_gc.sweep` 按 mtime 清走、坏文件退化为
     "未跑过"而不抛异常；signin 侧四个状态写入函数的原子性与"实现只有一份"；
     **私有写单通道**——全部 14 个状态写入站点在 `umask(0o000)` 下拉宽测试环境后终文件
-    仍 0600 且无 `.tmp` 残留，生产写盘模块不得再用内置 `open()` 建 tmp。
+    仍 0600 且无 `.tmp` 残留。"新写盘点必须走单通道"是约定而非门禁（源码形状门随
+    流程门禁整族裁撤，2026-09 缩减批 6a）；0600 行为面仍由下方站点矩阵全量钉住——
+    任何绕过单通道的 `open(tmp, "w")` 会因模式押回 umask 在此现形。
 对应实现：容器侧在 `docker/scheduler.py`（`_mark_slot`/`_slot_done`/`_slot_marker`/
     `_touch_heartbeat`），引擎侧写入按 `yiban/engine/state_io.py`、`yiban/engine/probe.py`、
     `yiban/engine/alerts.py`、`yiban/engine/runner.py`、`yiban/cred_state.py`、
@@ -25,7 +27,6 @@
 """
 import json
 import os
-import re
 import shutil
 import stat
 import tempfile
@@ -291,46 +292,6 @@ class StateWritesArePrivateUnderWideUmaskTest(unittest.TestCase):
         """既有用法（并行执行体心跳）同口径回归：它是最早走单通道的一处。"""
         state_io.mark_worker_started(1)
         self._assert_private(state_io.worker_alive_path(1), "并行执行体心跳")
-
-
-class StateWriteChannelSourceGuardTest(unittest.TestCase):
-    """单通道源码守卫：生产状态写盘模块不得再用内置 `open()` 建 tmp。
-
-    判据是"只走一个通道"而非"补 chmod"——出现 `open(tmp, "w")` 形态即模式重新
-    押回 umask；允许只读 `open(path, encoding=...)` 与合规的 `os.open(...0o600)`。
-    """
-
-    _FILES = (
-        "yiban/engine/state_io.py",
-        "yiban/engine/alerts.py",
-        "yiban/engine/runner.py",
-        "yiban/engine/probe.py",
-        "yiban/cred_state.py",
-        "yiban/notify/ledger.py",
-        "yiban/infra/private_json.py",
-        "docker/scheduler.py",
-    )
-    _BAD = re.compile(r'\bopen\([^)]*[tT]mp[^)]*,\s*["\']w')
-
-    def _read(self, rel):
-        with open(os.path.join(BASE, *rel.split("/")), encoding="utf-8") as f:
-            return f.read()
-
-    def test_no_builtin_open_tmp_write(self):
-        for rel in self._FILES:
-            src = self._read(rel)
-            for lineno, line in enumerate(src.splitlines(), 1):
-                if "os.open" in line:      # 合规通道自己的创建行
-                    continue
-                if self._BAD.search(line):
-                    self.fail(f"{rel}:{lineno} 用内置 open() 写 tmp——模式会继承 umask，"
-                              f"必须走状态文件私有写单通道：{line.strip()}")
-
-    def test_guard_fires_on_the_shape_it_must_reject(self):
-        """活体反例（N 簇元判据）：把守卫喂给它该拒的旧形态，必须命中。"""
-        self.assertTrue(self._BAD.search('with open(tmp, "w", encoding="utf-8") as f:'),
-                        "守卫正则失效 = 这条门禁形同虚设")
-        self.assertTrue(self._BAD.search('with open(daily_tmp, "w") as f:'))
 
 
 if __name__ == "__main__":

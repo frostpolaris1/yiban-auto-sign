@@ -1,5 +1,14 @@
 # 双版本数据适配与迁移设计（sign_ledger 统一台账层，2026-09-23）
 
+> **已归档（2026-09-29）· 缩减批 6c-1**：本设计的前提是"v2/v3 双轨共存期 + 四阶段数据迁移"。
+> 台账已**单池化**：`sign_tasks` 是唯一生产台账，`sign_claims` 冻结（表与 `epoch` 列保留但零写入），
+> `YIBAN_SCHEDULER_V3` 双轨开关已删除。故本设计中**未落地的迁移规划全部作废**——`ledger_days`
+> 从未引入（全仓零代码），`v21`（`sign_claims` 改名 legacy）/ `v22`（DROP legacy + 删 v2 代码路径）
+> 不再执行；v18 的"`sign_claims` → `sign_tasks` 平移"也已删除（单池后不做数据迁移）。
+> **重启条件**：仅当将来重新引入第二台账 / 多版本共存时，先重开本设计、重新评审"迁移四阶段 +
+> 日写者模型 + 对账门（`ledger_check`）"，并按**新**的迁移编号顺延（不得占用 v18–v20）。
+> 下文保留原文，仅作历史依据。
+
 > **是什么**：v2/v3 两个调度版本共存期的数据适配层设计 + 全周期数据迁移算法（backfill / 切换 / 回滚 / 退役）。
 > **状态**：定稿（2026-09-23）
 > **范围**：状态词汇表、统一台账门面、日写者模型、迁移四阶段算法、容量口径收口；不覆盖 §12 自适应体系、三库分离、asyncio 执行体内部结构（各归其批次）。
@@ -180,7 +189,7 @@ v18 里的平移 SQL（migrations.py:777-781）即 forward 的特例；实施时
 
 ### 3.2 Phase 1 — schema（v20 迁移，可选迁移口径与 v18 同）
 
-**v20 = `ledger_days` 建表 + backfill 补 JSON 终态**，合并为同一步可选迁移（两者都幂等，backfill 见 3.3）。不 ALTER 既有表；幂等（IF NOT EXISTS + OR IGNORE）。**v21 = `sign_claims` 改名 `sign_claims_legacy`**、**v22 = DROP legacy + 删 v2 代码路径**（见 3.6）。
+**v20 = `ledger_days` 建表 + backfill 补 JSON 终态**，合并为同一步可选迁移（两者都幂等，backfill 见 3.3）。不 ALTER 既有表；幂等（IF NOT EXISTS + OR IGNORE）。**v21 = `sign_claims` 改名 `sign_claims_legacy`**、**v22 = DROP legacy + 删 v2 代码路径**（见 3.6）。**【已作废】** v21/v22 与 `ledger_days` 建表随台账单池化作废（见文首归档说明）；已落地的 v20 只保留 JSON→`sign_tasks` 补账。
 
 v18 另建 `egress_state` 一表（`executor_heartbeats` 已按 R-T5 裁决**从 v18 删除**：它无访问层，执行体存活由 `state_io.mark_worker_beat`/`worker_presence` 的文件心跳承担）；`egress_state` **有访问层**——`queue_store.load_egress_state`(:194) / `save_egress_state`(:215)，消费者是 `yiban/engine/token_bucket.py` 的 `EgressLimiter.persist/restore_from_store`（token_bucket.py:222/234）。现状：`EgressLimiter` 目前无生产调用点（仅模块内与测试）。
 
@@ -222,7 +231,7 @@ I-4 的保证链：fold_back 把 v3 的 DONE 落进 claims（claims 的 DONE 即
 
 ### 3.6 Phase 5 — 退役
 
-观察期 ≥ 1 个 claims 保留周期（14 天，全 v3 日无回滚）→ **v21**：`ALTER TABLE sign_claims RENAME TO sign_claims_legacy`（只改名不 DROP，读旧报表可查）→ JSON 读端固化走 `materialize` → 30 天后 **v22**：DROP legacy + 删 v2 代码路径（届时把**待新建**的版本开关固定为 1；该开关默认 0、需显式开启）。退役后 `sign_tasks` 是唯一事实源，门面保留（消费者零再改）。
+观察期 ≥ 1 个 claims 保留周期（14 天，全 v3 日无回滚）→ **v21**：`ALTER TABLE sign_claims RENAME TO sign_claims_legacy`（只改名不 DROP，读旧报表可查）→ JSON 读端固化走 `materialize` → 30 天后 **v22**：DROP legacy + 删 v2 代码路径（届时把**待新建**的版本开关固定为 1；该开关默认 0、需显式开启）。退役后 `sign_tasks` 是唯一事实源，门面保留（消费者零再改）。**【已作废】** v21/v22 不再执行：单池化后 `sign_claims` 已冻结（表与 `epoch` 列保留、零写入），`sign_tasks` 已是唯一事实源，无需改名/DROP（见文首归档说明）。
 
 ## 4. 并发与边界情形
 

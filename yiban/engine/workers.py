@@ -3,7 +3,7 @@
 """**功能**
 多执行体：`--workers N` 的监督进程与 `--fallback` 兜底常驻执行体。
 
-两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `round.run_queue_retry`，
+两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `executor_v3.run_executor_v3`，
 它们只负责：谁持哪把锁（监督进程持全局锁、子进程各持自己的锁文件）、谁用哪个出口
 代理（执行体清单 `YIBAN_EXECUTORS` 每行一个出口；清单缺失时回退旧三键
 `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`，见 `egress.resolve`）、每个并行执行体的
@@ -24,9 +24,8 @@
 **通信**
 输入：执行体清单（环境变量 `YIBAN_EXECUTORS`）、槽位数与 `argv`（`--workers` 及其后随值
 不透传给子进程）。输出：子进程退出码、心跳与日志。
-调用谁：执行路径按 `YIBAN_SCHEDULER_V3` 分流——关时 `round.run_queue_retry`（真正干活），
-开时 `executor_v3.run_executor_v3`（兜底身份用 `claim_all` 扫全分片、`requeue_during_run`
-会话内回炉默认档）；`state_io`（心跳）、`cli_support`、`egress`。
+调用谁：执行路径恒定走 `executor_v3.run_executor_v3`——兜底身份用 `claim_all` 扫全分片、
+`requeue_during_run` 会话内回炉默认档；`state_io`（心跳）、`cli_support`、`egress`。
 谁调用：`runner` 的多执行体分支。
 前端调用点：执行体存活四态由 `/api/scheduler/executors*` 族读写
 （`web/static/js/components/settings-executors.js`、`settings-quota.js`），清单由系统设置页
@@ -43,7 +42,6 @@ from yiban import clock, egress
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, executor_v3, schedule, state_io
-from yiban.engine import round as round_mod
 from yiban.store import db, queue_store
 
 logger = logging.getLogger("yiban")
@@ -264,17 +262,17 @@ def _settled_child_code(rc):
 
 
 def _reap_dead_worker(slot):
-    """轮末收尸：显式了结某个**已确认死亡**的执行体槽位名下的在领记录。
+    """轮末收尸：显式了结某个**已确认死亡**的执行体槽位名下的在领任务。
 
     判据不是心跳而是"监督进程看到它异常退出（返回码为负）"：这与"租约过期 ⇒ 可能死了"
-    是两个强度不同的证据——此处是**已知死亡**，故不必等满 900s。只按槽位身份前缀匹配
-    （`claims.reap_abandoned`），已被别人接管的行 owner 已换、不会被误动；代次同时自增，
-    任何迟到的旧代写仍被 fence。
+    是两个强度不同的证据——此处是**已知死亡**，故不必等满租约。只按槽位身份前缀匹配
+    （`queue_store.reap_abandoned`），已被别人接管的行 owner 已换、不会被误动；代次同时
+    自增，任何迟到的旧代写仍被 fence。
 
-    **两套持有记录都要收**：旧领取表 `sign_claims`（`claims.reap_abandoned`）与 v3 任务
-    队列 `sign_tasks`（`queue_store.reap_abandoned`）各自记着自己的在领行，只收一侧会让
-    另一侧的行干等到 `reap_expired` 的租约 + 宽限期。两者身份前缀同源（都取本槽位的稳定
-    槽位名），故同一个 `owner` 传两处。
+    **仍同时收旧领取表 `sign_claims`**：台账单池化后该表零写入，生产上这里恒为 0 行，
+    但它依然是"旧领取池时代的监督收尸"这条正确性路径（四柱之一），且既有 E2E 用例覆盖
+    它——故保留，不改写成只收一侧。旧表收尸走 `claims.reap_abandoned`，身份前缀同源
+    （都取本槽位的稳定槽位名）。
 
     收尸失败只留日志：它不影响本轮的退出码汇总，下一轮起跑仍会走"租约过期接管"兜住。
     """
@@ -289,7 +287,7 @@ def _reap_dead_worker(slot):
     try:
         m = queue_store.reap_abandoned(stable)
     except Exception as e:
-        logger.debug("轮末收尸 v3 任务失败（不影响退出码，下一轮仍可接手）: %s", e)
+        logger.debug("轮末收尸任务队列失败（不影响退出码，下一轮仍可接手）: %s", e)
         return
     if m:
         logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
@@ -301,9 +299,9 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     为什么需要它：学校晚放号、窗口内新审核通过的账号、被慢账号拖住的、失败待重试的
     ——都能被**随手接手**，而不是等下一轮定时任务。
 
-    做法刻意简单可靠：每一轮重新加载账号并调用同一条执行路径（v2 为 `run_queue_retry`，
-    schedule 为空=立即执行；`YIBAN_SCHEDULER_V3` 开闸时分流到 `run_executor_v3`——
-    只换执行体实现，档位纪律不变，见分流处注释）。**分工由领取池/任务队列承担**：
+    做法刻意简单可靠：每一轮重新加载账号并调用同一条执行路径
+    （`executor_v3.run_executor_v3`，`claim_all` + `requeue_during_run`——只换执行体
+    实现，档位纪律不变）。**分工由任务队列承担**：
     已了结的账号领不到、别的执行体正在做的领不到，所以"全量账号列表"作为输入也不会
     重复签——不需要在这里再写一套筛选。
 
@@ -361,20 +359,21 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         if not schedule._window_open(sch_cfg, now):
             # 提前拉起（cron 模板 06:05、窗口 06:30）时**必须等**，不能照走：
             # 窗口外每次尝试都是一次真实登录（易班侧照实计数），而且可能把账号签在
-            # 管理员配置的窗口之外——`run_queue_retry` 的手动链路本身不判本项目的窗口。
+            # 管理员配置的窗口之外——队列执行体的补货循环虽按窗口关闭收干，提前起跑
+            # 仍会先把到点的行领掉并真实登录。故窗口未开先等。
             opens_in = int(schedule._window_opens_in(sch_cfg, now))
             wait = min(interval, max(1, opens_in))
             logger.info("兜底执行体：签到时段尚未开始（%d 秒后开始），%d 秒后再看", opens_in, wait)
             time.sleep(wait)
             continue
         if not db.pool_db_declared() and cli_support._run_lock_held():
-            # **让位的颗粒度是"全量轮正在做的那一个账号"，仲裁者是领取池不是这把锁**：
-            # 有池在场时这里不让位、照常扫——轮在飞的行 `try_claim` 拒领（在飞未过期
-            # =领不到，done=领不到，retry: 档弃权行=默认可接手），兜底只接"该轮没碰的
-            # / 该轮中途弃权的"账号。旧形态"全局锁被持有=整段停摆"让兜底恰好在失败
-            # 高峰（全量轮正在批量弃权）时段完全不可用——那正是它该捡漏的时刻。
-            # 例外是**没有池可仲裁**的纯状态文件部署：账号级互斥不存在，并发跑等于
-            # 同一账号两次真实登录（第一红线），所以只有那里保留整段停摆。
+            # **让位的颗粒度是"全量轮正在做的那一个账号"，仲裁者是任务队列不是这把锁**：
+            # 有队列在场时这里不让位、照常扫——轮在飞的行 `claim_batch` 拒领（`claimed`
+            # 未过期=领不到，`done`/`skipped`=领不到，`retry:` 档弃权行=回炉后默认可接手），
+            # 兜底只接"该轮没碰的 / 该轮中途弃权的"账号。旧形态"全局锁被持有=整段停摆"
+            # 让兜底恰好在失败高峰（全量轮正在批量弃权）时段完全不可用——那正是它该捡漏
+            # 的时刻。例外是**没有队列可仲裁**的纯状态文件部署：账号级互斥不存在，并发跑
+            # 等于同一账号两次真实登录（第一红线），所以只有那里保留整段停摆。
             # 让位期间的轮询比常规扫描密：全量轮一结束就接手，而这次探测只是一次 flock。
             logger.info("兜底执行体：全量轮正在运行且无领取池，整段让位（%d 秒后再看）",
                         _YIELD_POLL_SEC)
@@ -403,38 +402,20 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         # 本轮熔断状态快照：`read()` 每轮返回新 dict，执行路径就地改它，
         # 故必须持有引用以便轮末写回（不能像过去那样现取现传、写回时已无对象）。
         cred_state = state_io._load_cred_state()
-        if executor_v3.scheduler_v3_enabled():
-            # v3 分流（开关每轮重读，与窗口/三道门的重判同节拍）：兜底腿只换执行体
-            # 实现，档位纪律不变。
-            # - `claim_all`：兜底身份不是执行体清单成员，HRW 分片集对它为空——不放宽
-            #   领取范围就是"看着在跑、零领取"的静默空转；互斥仍由 state+epoch 门兜住。
-            # - `requeue_during_run`：本轮会话刚弃权的 retry: 档由恢复周期就地回炉，
-            #   这是兜底"失败当日接手"的 v3 等价物，不等下一场会话。
-            # - **不传 `requeue_final`**：兜底是常驻无界循环，不是"有界的一次性显式
-            #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
-            #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
-            #   第二次机会只留给一次性补签轮与手动。
-            results = executor_v3.run_executor_v3(
-                accounts, day=now.strftime("%Y-%m-%d"),
-                notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
-                cred_state=cred_state, delegated=delegated,
-                claim_all=True, requeue_during_run=True)
-        else:
-            results = round_mod.run_queue_retry(accounts, os.environ.get("YIBAN_NOTIFY_URL", ""), 0,
-                                                schedule._env_int("YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600),
-                                                schedule=None, cred_state=cred_state,
-                                                delegated=delegated,
-                                                # 兜底是"替全量轮捡漏"：窗口已关就该停手，
-                                                # 一轮扫描内部不再对剩余账号发起真实登录
-                                                window_guard=True,
-                                                # **不给 retry_failed**（取默认 False）：它要求调用方
-                                                # 是"有界的一次性显式路径"（补签轮/手动 `--only`），
-                                                # 而兜底是常驻无界循环、每 ~60s 就重扫一遍——传 True
-                                                # 会让预算耗尽/风控档账号在窗口内每轮都被重领重登一次
-                                                # （一轮扫描一次真实登录，四小时窗口下以百计）。
-                                                # 这类账号的第二次机会只留给一次性补签轮与手动。
-                                                # v3 分支的 `requeue_final` 缺省同为纪律另一面。
-                                                )
+        # 生产执行恒定走 v3 队列执行体（台账单池化后 `sign_tasks` 是唯一台账）。
+        # - `claim_all`：兜底身份不是执行体清单成员，HRW 分片集对它为空——不放宽
+        #   领取范围就是"看着在跑、零领取"的静默空转；互斥仍由 state+epoch 门兜住。
+        # - `requeue_during_run`：本轮会话刚弃权的 retry: 档由恢复周期就地回炉，
+        #   这是兜底"失败当日接手"的 v3 等价物，不等下一场会话。
+        # - **不传 `requeue_final`**：兜底是常驻无界循环，不是"有界的一次性显式
+        #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
+        #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
+        #   第二次机会只留给一次性补签轮与手动。
+        results = executor_v3.run_executor_v3(
+            accounts, day=now.strftime("%Y-%m-%d"),
+            notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
+            cred_state=cred_state, delegated=delegated,
+            claim_all=True, requeue_during_run=True)
         # 轮末写回熔断计数（口径与 runner 全量轮一致：按本轮账号增量合并）。不写回则
         # "连续凭据失败达阈值 → 暂停"只在磁盘上不存在：下一轮 read() 又从零开始，
         # 错密码账号被无限次真实登录（易班侧照实计数，加重风控）。
@@ -469,18 +450,18 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
 
 
 def _await_pool_event(day, budget_sec):
-    """扫空后的等待：短轮询领取池事件签名，变化即返回，安静则等满 `budget_sec`。
+    """扫空后的等待：短轮询任务队列事件签名，变化即返回，安静则等满 `budget_sec`。
 
-    取舍（对"失败即入队"字面另建一条队列）：全量轮与兜底是**两个进程**，`give_up`
+    取舍（对"失败即入队"字面另建一条队列）：全量轮与兜底是**两个进程**，执行体弃权
     在同一事务里把行置 failed 并即刻放开租约——这一行迁移本身就是入队动作，队列就是
-    领取池，`try_claim` 就是出队。再造一条独立队列必然与领取层漂移成"谁持有谁"的两套
-    事实；因此这里的事件源是池的签名，不是新管道。签名只数兜底默认档接得动的行
-    （`fallback_event`：`retry:` 档、剔除自己的弃权），唤醒频率与可接手频率同集。
-    读不到签名（库抖动）按"无事件"处理——事件驱动是延迟优化、不是正确性依赖，
+    `sign_tasks`。再造一条独立队列必然与领取层漂移成"谁持有谁"的两套事实；因此这里的
+    事件源是队列的签名，不是新管道。签名只数兜底默认档接得动的行
+    （`queue_store.fallback_event`：`retry:` 档、剔除自己的弃权），唤醒频率与可接手
+    频率同集。读不到签名（库抖动）按"无事件"处理——事件驱动是延迟优化、不是正确性依赖，
     最坏仍由扫描间隔这个上限兜住。
     """
     owner = os.environ.get("YIBAN_EXECUTOR_ID", "").strip() or egress.fallback_owner()
-    last = db.claim_fallback_event(day, owner)
+    last = queue_store.fallback_event(day, owner)
     # 按剩余预算切分睡眠：节拍取 `min(间隔, 剩余)`——节拍数向上取整会睡超预算，
     # 预算短于节拍时更不该被迫睡满一整拍才到点。
     remaining = float(budget_sec)
@@ -488,11 +469,11 @@ def _await_pool_event(day, budget_sec):
         step = min(_POOL_WATCH_SEC, remaining)
         time.sleep(step)
         remaining -= step
-        sig = db.claim_fallback_event(day, owner)
+        sig = queue_store.fallback_event(day, owner)
         if sig is None:
             continue
         if sig != last:
-            logger.info("兜底执行体：领取池事件签名变化 %s（业务日 %s），立即接手", sig, day)
+            logger.info("兜底执行体：任务队列事件签名变化 %s（业务日 %s），立即接手", sig, day)
             return
         last = sig
 

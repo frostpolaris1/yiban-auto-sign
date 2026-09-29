@@ -34,6 +34,7 @@ from flask import jsonify, session
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
+from web.services.env_io import cleanup_env_ambiguous_line
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
@@ -599,7 +600,7 @@ def api_settings_save():
         # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
         # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
         m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
-        return _env_write_refused_response()
+        return _env_write_refused_response(e, m.ENV_FILE)
     except ValueError as e:
         # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
         # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
@@ -827,7 +828,7 @@ def api_executors():
             "totals": activity_totals,
         },
         "measured": ({"per_executor_capacity": measured,
-                      "source": "capacity_probe（部署者实测录入）",
+                      "source": "部署者实测录入（YIBAN_CAPACITY_MEASURED）",
                       "env_key": "YIBAN_CAPACITY_MEASURED"} if measured else None),
         "recommendation": None,
         "current_accounts": cur_accounts,
@@ -1145,8 +1146,9 @@ def api_scheduler_executors_measure():
     而真实签到还要往下走**定位计算 + 提交签到**（6 次请求 + 一段 CPU 计算）；
     又因为窗口内被拒（409），**它永远只测得到窗口外的最小链路**——服务端在窗口外
     本来就没有可提交的任务。所以这里量出的秒数**天然偏小、据此换算的容量偏乐观**。
-    本数与测试机基准（`scripts/loadtest/capacity_probe.py` 用假易班跑**完整链路**）
-    **不可混用、不可比**：页面要提示"现场量的是窗口外粗值，正式容量请以测试机基准为准"。
+    本数只作**现场粗值参考**，与部署者按完整链路量取后录入 `YIBAN_CAPACITY_MEASURED`
+    的正式容量**不可混用、不可比**：页面要提示"现场量的是窗口外粗值，正式容量请以部署者
+    自己量取的完整链路基准为准"。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
@@ -1192,11 +1194,11 @@ def api_scheduler_executors_measure():
     # 容量**复用既有口径**：有效窗口用 _executors_window（= 页面显示的 window.effective_sec
     # 的那一份），单账号周期用实测秒数，间隔用 YIBAN_ACCOUNT_GAP_MAX。
     # k=1 钉住"实测**单执行体**容量"的字面语义：本接口量的是"这台机器一个执行体能签几个"，
-    # 不是全站总容量（v3 下总容量 ≈ 该值 × 出口数）。公式按开关分派（缺省关时逐字同旧值）。
+    # 不是全站总容量。公式走 `capacity_of` 并显式固定 v2 口径（`enabled=False`，逐值不变）。
     per_exec = m.signin.capacity_of(
         bounds.full_sec(),
         gap=m.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX),
-        avg=seconds, k=1)
+        avg=seconds, k=1, enabled=False)
     # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
     # "换机器/换网络都要重新量"的现实。
     recommended = max(1, int(per_exec * 2 / 3))
@@ -1216,7 +1218,7 @@ def api_scheduler_executors_measure():
         "note": ("实测单账号耗时 × 有效窗口的容量估算；建议值含余量（×2/3）。"
                  "注意：本次只覆盖「窗口外的最小链路」（登录 + 拉任务，5 次请求），"
                  "真实签到还要加定位计算与提交（6 次请求），所以这里的秒数偏小、据此换算的"
-                 "容量偏乐观；正式定档请以测试机基准为准，两种数字不要混用。"),
+                 "容量偏乐观；正式定档请以部署者自行量取的完整链路基准为准，两种数字不要混用。"),
     })
 
 
@@ -1403,9 +1405,38 @@ def api_announcement_publish():
     return jsonify({"ok": True, "msg": "公告已发布", "text": draft})
 
 
+def api_env_cleanup():
+    """主管理员：一键清理 `.env` 中含潜伏行分隔符的那一行（写拒绝可操作化）。
+
+    body: {"line": <1-based 行号>}——行号来自写入被拒时 409 响应的 problems 定位
+    载荷（行片段只含键名与脱敏形状，值已隐去）。服务端把"可清理"收窄为
+    **确含行分隔符的物理行**（行模型歧义的唯一现场），普通配置行一律拒绝——
+    本端点是歧义行的清理入口，不是 .env 编辑器。写路径与写入口同一套纪律
+    （跨进程写锁、失败按原字节回滚、审计留痕），成功后前端提示重试保存。
+    """
+    m = _appmod()
+    if not m._is_builtin_admin_session():
+        return jsonify({"error": "仅主管理员可操作"}), 403
+    data = m._json_body()
+    try:
+        line_no = int(data.get("line"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "line 参数无效（须为 1-based 行号）"}), 400
+    if line_no < 1:
+        return jsonify({"error": "line 参数无效（须为 1-based 行号）"}), 400
+    ok, message, _remaining = cleanup_env_ambiguous_line(
+        m.ENV_FILE, line_no, audit=lambda code, detail: m.db.audit(
+            session.get("username") or "?", code, ".env", detail))
+    if not ok:
+        # 400：调用方拿着过期的定位信息来清理（行已被人工处理/行号越界/行本身干净）
+        return jsonify({"error": message}), 400
+    return jsonify({"ok": True, "removed_line": line_no, "message": message})
+
+
 def register(app):
-    """在本域注册十五条设置/执行体/公告路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册十六条设置/执行体/公告路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/settings", view_func=api_settings)
+    app.add_url_rule("/api/settings/env-cleanup", view_func=api_env_cleanup, methods=["POST"])
     app.add_url_rule("/api/settings", view_func=api_settings_save, methods=["POST"])
     app.add_url_rule("/api/changelog", view_func=api_changelog)
     app.add_url_rule("/api/scheduler/executors", view_func=api_executors)

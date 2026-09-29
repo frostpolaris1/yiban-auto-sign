@@ -417,14 +417,16 @@ class ExitKindFamilyTest(unittest.TestCase):
         self.env = _cli_env(self.tmp.name)
 
     def test_illegal_args_carry_distinguishable_error_kind(self):
-        """六种非法参数 + 缺子命令：`error_kind` 覆盖用法族，且每种的取值可区分。"""
+        """非法参数 + 缺子命令：`error_kind` 覆盖用法族，且每种的取值可区分。"""
         expected = {
             ("nope",): "usage",
             (): "usage_no_command",
             ("version", "--bogus"): "usage_extra_args",
             ("db", "--status", "--integrity"): "usage",
             ("state", "--yes", "--dry-run"): "usage_conflict",
-            ("capacity", "--measure"): "usage_conflict",
+            # `capacity` 已无在线实测开关，`--measure` 是不认得的选项（未知参数族），
+            # 不再是当初的「与 --json 互斥」冲突族；退出码仍是 2。
+            ("capacity", "--measure"): "usage_extra_args",
             ("sign", "--bogus"): "usage_engine",
         }
         for argv, kind in expected.items():

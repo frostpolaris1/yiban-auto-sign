@@ -90,13 +90,14 @@ def _env(name, default):
 
 
 def _now():
-    """当日日期串（`YYYY-MM-DD`）。
+    """当日日期串（`YYYY-MM-DD`）——业务日（`yiban.clock` 北京钟）。
 
-    用**本机时区**而不是 `yiban.clock` 的北京时间：包名由 `backup.sh` 的
-    `date +%Y-%m-%d` 生成，那是系统本地时间；两边取不同时钟会在时区非 +08 的服务器上
-    按天错位，天天误报"备份缺失"。
+    与 backup.sh 的包名时钟**同源**（MF-109 统一后 backup.sh 的包名也走
+    `yiban.clock.today()`）：两边取不同时钟才会在时区非 +08 的服务器上按天错位、
+    天天误报"备份缺失"。宿主时区本就是北京时它与 `datetime.now()` 逐日相等。
     """
-    return datetime.now().strftime("%Y-%m-%d")
+    from yiban.clock import today
+    return today()
 
 
 def _archive_candidates(backup_dir, day):

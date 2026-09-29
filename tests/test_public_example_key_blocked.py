@@ -17,8 +17,11 @@ Web 侧不管理这把钥、没有写侧校验点可挂，"读侧启动即崩"�
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：公开串精确比对在环境变量档与 .env 档两条 load_key 路径上均抛 ValueError（消息
     点名公开模板与更换指引）；大小写十六进制写法同拦；200 把随机钥零误杀；三条弱钥
-    模式仍只 WARNING 不阻断；"三条判据抓不住模板"的实算反向钉；.env.example 不再含
+    模式仍只 WARNING 不阻断；.env.example 不再含
     可用示例钥（占位形态 + 全文件无该公开串）。
+    （批 6c3-A 注：旧"三条判据抓不住模板"的实算反向钉属判据自证元测试——它自我比较
+    弱判据算术，真契约由 test_exact_public_string_blocked 与 load_key 端到端格钉住，
+    已按对表裁撤。）
 对应实现：`yiban/infra/account_crypto.py` 的 `_PUBLISHED_EXAMPLE_KEY` 与
     `_decode_key` 精确比对分支、`load_key` 两档取值路径；`.env.example` 密钥段占位。
 关键断言：阻断格必须断**抛 ValueError 且消息含"公开示例模板"指引**（只断 raise 会把
@@ -52,17 +55,6 @@ class PublishedExampleKeyDecodeBlockedTest(unittest.TestCase):
                 self.assertIn("公开示例模板", msg, "错误文案必须点名命中原因，便于运维定位")
                 self.assertIn("拒绝", msg)
                 self.assertNotIn(PUBLISHED_HEX.lower(), msg, "文案不回带钥值原文")
-
-    def test_three_weak_criteria_cannot_catch_the_template(self):
-        """实算反向钉（登记数字的来源）：模板解出的字节既非全零、非单字节重复、
-        也非字节值顺序/逆序——三条 WARNING 判据抓不住它，故必须有精确比对这一条。"""
-        key = bytes.fromhex(PUBLISHED_HEX)
-        self.assertNotEqual(key, b"\x00" * 32)
-        self.assertNotEqual(len(set(key)), 1)
-        self.assertNotIn(key, (bytes(range(32)), bytes(range(31, -1, -1))))
-        # 而新分支确实拦：
-        with self.assertRaises(ValueError):
-            account_crypto._decode_key(PUBLISHED_HEX)
 
     def test_random_keys_never_false_blocked(self):
         """零误杀：200 把 `token_hex(32)` 随机钥全部正常解出（随机命中公开串的

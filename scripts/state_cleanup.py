@@ -26,12 +26,10 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 也是 0），1 = 保留期配置非法或目录不可用（响亮失败，不静默退化——静默退化会让磁盘
 慢慢涨满而没人发现），2 = 未知/多余参数（用法错误，不静默丢弃）。
 调用谁：只有 `yiban.state_gc`（策略与实现；它是本文件唯一的项目内 import）。
-本文件**不 import** `yiban.clock`，两处取时都直接用 stdlib：日志时间戳用
-`datetime.datetime.now()`、日志行里的"截止 X"用 `datetime.date.today()` 现算，
-两者都是**宿主本地时区**；而真正决定删哪些文件的截止日在 `state_gc._cutoff`，
-它走 `clock.now()`（北京时间）。宿主时区不是 UTC+8 时（UTC 主机上北京 06:40
-＝宿主前一日 22:40），`cleanup.log` 记下的截止日与本轮实际生效的截止日会差一天
-——差在日志文案，不差在删除结果。
+日志时间戳用 `datetime.datetime.now()`（宿主本地钟——它是**展示时刻**，跟随宿主
+时区属预期，见 README 部署章节的时区说明）；日志行里的"截止 X"自 MF-109 统一起
+与 `state_gc._cutoff`（删除判据，北京时间）**同钟**——此前"截止"用宿主本地钟，
+UTC 主机上会与实际生效的截止日差一天（只差文案，不差删除结果）。
 谁调用：宿主 `scripts/yiban-cleanup.sh`（cron）、容器调度器；`yiban/cli.py state`
 子命令与之同源。
 前端调用点：无直接调用点；容器调度器的清理结果与保留期设置经 `/api/settings`
@@ -116,7 +114,10 @@ def main(argv=None):
         removed += 1
         detail.append("cred-state.json（空内容）")
     if removed > 0:
-        cutoff = (datetime.date.today() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
+        # 日志"截止"与 state_gc._cutoff 的删除判据同钟（MF-109：单一业务日源）：
+        # 此前这里用宿主本地钟，UTC 主机上会与实际生效的截止日差一天（只差文案）。
+        from yiban.clock import now as _clock_now
+        cutoff = (_clock_now() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
         _append_log(
             log_path,
             f"[{stamp}] 已清理 {removed} 个过期文件"

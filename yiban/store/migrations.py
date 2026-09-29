@@ -46,8 +46,8 @@
 
 **通信**
 迁移函数一律接收调用方传入的 `conn`（事务由 `_run_migrations` 经写事务入口开启），本模块
-从不自取连接。跨域调用——写事务入口 `_begin_immediate`、审计链重签 `_rechain_audit_logs`
-与重链留痕 `_record_rechain_event`、JSON 导入的进程内写锁 `_conn_lock`——经 `_facade()`
+从不自取连接。跨域调用——写事务入口 `_begin_immediate`、审计链升级回填
+`_backfill_audit_hashes`、JSON 导入的进程内写锁 `_conn_lock`——经 `_facade()`
 按属性延迟取 `yiban.store.db`：函数内导入避免导入环，按属性取保证 `db.<名字> = 替身`
 一类打桩可见。库与密钥来源路径直接读连接模块（`_connection._env_file`；`db._env_file =
 path` 的写入由 db 门面转发落到那里），账号域的加密值判定按父提交同形直取
@@ -58,7 +58,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 from datetime import timedelta
 
 from yiban import clock
@@ -300,47 +299,18 @@ def migrate_v2(conn):
 def migrate_v3(conn):
     """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。
 
-    重链守卫：_rechain_audit_logs 用**当前密钥**重签全表，等于给"改掉内容 →
-    清空 hash → 重启（正常启动路径）→ 链重新自洽"留了一条路。迁移器只在
-    PRAGMA user_version < 3 时调用本函数，所以"低版本升级"是它唯一的合法触发
-    场景；这里显式读出 from_version 并把它连同重链前后链头一并留痕到 app_meta，
-    使 audit_health 能把"锚点之后发生的重链"指认为异常。
+    升级正确性：旧库（`user_version < 3`）的历史审计行在补出两列后 hash 仍为空，
+    必须用**当前密钥**把整条链算出来，否则升级后 `verify_audit_chain` 每次都判断链。
+    回填本体（单事务、失败整段回滚）见 `_backfill_audit_hashes`；本函数只负责
+    "有缺口才补"。
     """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
     _ensure_column(conn, "audit_logs", "prev_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "audit_logs", "hash", "TEXT NOT NULL DEFAULT ''")
-    # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
     empty = conn.execute(
         "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
     ).fetchone()["n"]
     if empty:
-        if version >= 3:
-            # 不该发生：>=3 的库迁移器不会再跑本迁移。真发生了说明有人绕过了
-            # 版本门控（或直接调 _rechain_audit_logs），留痕照记，由 audit_health 判失败。
-            logger.error(
-                "migrate_v3 在 user_version=%s 的库上被调用且发现 %s 条空 hash 审计行——"
-                "迁移版本门控被绕过，已记录重链留痕", version, empty
-            )
-        head_before = _chain_head(conn)
-        rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        # 重链留痕在同一事务内写（head_after 在重链完成后才取）——链重签与它的留痕
-        # 要么都在要么都不在，不留"重签却无痕"。
-        _facade()._rechain_audit_logs(
-            conn,
-            lambda: _facade()._record_rechain_event(
-                conn, version, rows, empty, head_before, _chain_head(conn)
-            ),
-        )
-        conn.commit()
-
-
-def _chain_head(conn):
-    """当前链头哈希（空链/缺列 → 空串）。迁移内部用，不取锁（调用方已持有连接）。"""
-    try:
-        row = conn.execute("SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1").fetchone()
-    except sqlite3.Error:
-        return ""
-    return (row["hash"] or "") if row else ""
+        _facade()._backfill_audit_hashes(conn)
 
 
 def migrate_v4(conn):
@@ -830,17 +800,18 @@ def migrate_v17(conn):
 
 
 def migrate_v18(conn):
-    """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）；
-    sign_claims 数据平移进 sign_tasks。
+    """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）。
 
-    核心迁移（MF-40 改判，is_core=True）：executor_v3 的批领/待办闸门全建在
+    核心迁移（is_core=True）：执行体的批领/待办闸门全建在
     `sign_tasks` 上，缺表等于当日没有队列 ⇒ 失败阻断启动。重跑（版本未提升的下次
-    启动）必须幂等，故建表用 IF NOT EXISTS、平移用 INSERT OR IGNORE；平移行是
-    vshard=-1 的**显式标记行**——不进任何分片集、不被批领、不计入 `pending_count`，
-    真实计划到来时由 `planner.write_plan` 显式接管同键行（当日计划不因补账丢失）。
+    启动）必须幂等，故建表用 IF NOT EXISTS。
+    **单池化后本迁移不再从 `sign_claims` 平移任何行**（旧表冻结保留，其存量行是当日
+    临时的领取记录，切换后下一轮自然在 `sign_tasks` 重建；不做数据迁移）。
+    `vshard=-1` 仍是 `planner.write_plan` 显式接管的**历史标记行**形态（v20 补账/旧
+    平移遗留），它们不进任何分片集、不被批领、不计入 `pending_count`。
 
     `sign_tasks` 一行 = 一个账号在一个业务日的计划、当前状态与**跨执行体共享**的
-    尝试数（v17 `sign_claims` 的语义整体并入）。`state` 取值：
+    尝试数。`state` 取值：
 
     | state | 含义 |
     |-------|------|
@@ -850,12 +821,11 @@ def migrate_v18(conn):
     | `failed` / `stolen` | 未了结：可重排（`run_at` 后退）或按分片接管 |
 
     `vshard` 是把账号划分给执行体的确定性哈希分工所用的虚分片槽位（0..255，
-    256 个槽，故增加执行体时既有计划不必重排）；`sign_claims` 平移行落 **-1**，表示
-    "不参与该分工的历史行"（其 `run_at` 取 `claimed_at`，且 state 非 pending
-    时不会命中批领，故历史行不会被重新领取）。`owner` 一列同时承担"计划归属的执行体"
-    与"当前持有者"，`epoch` 是 fencing token（写入侧的单调序号，用于拒绝被接管者
-    迟到的写）——列在 v18 一次建齐（schema 变更此刻最便宜），其自增与终态写的
-    WHERE 守卫由领取/收尾路径实现。
+    256 个槽，故增加执行体时既有计划不必重排）；`vshard=-1` 表示"不参与该分工的
+    历史行"（其 state 非 pending 时不会命中批领，故历史行不会被重新领取）。
+    `owner` 一列同时承担"计划归属的执行体"与"当前持有者"，`epoch` 是 fencing token
+    （写入侧的单调序号，用于拒绝被接管者迟到的写）——列在 v18 一次建齐（schema
+    变更此刻最便宜），其自增与终态写的 WHERE 守卫由领取/收尾路径实现。
 
     **耐久性**：本表回答"当日是否已登录"，终态被回滚等于对同一账号再登录一次
     （上游风控红线），故连接必须是 FULL——WAL+NORMAL 会丢最近提交。
@@ -894,15 +864,10 @@ def migrate_v18(conn):
         "updated_at TEXT NOT NULL"
         ")"
     )
-    # result 逐字平移：`retry:`/`final:` 前缀协议是 sign_claims 层的约定，v3 目前不读
-    # sign_tasks.result——将来若加 v3 解析器，必须先按该前缀分档，否则会把两档混为一谈。
-    conn.execute(
-        "INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
-        "priority, state, attempts, lease_until, result, created_at) "
-        "SELECT phone, day, -1, owner, claimed_at, 5, state, attempts, heartbeat_at, "
-        "result, claimed_at FROM sign_claims"
-    )
-    # 提交建表与平移（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    # 提交建表（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    # **单池化后不再平移 `sign_claims`**：本表是唯一生产台账，旧表的存量行是当日临时的
+    # 领取记录，切换后下一轮自然在本表重建；旧表与其 `epoch` 列冻结保留（见 `claims`
+    # 模块头），不做数据迁移。
     conn.commit()
     # 耐久级必须在**事务外**改：SQLite 对事务内的 PRAGMA synchronous 直接报
     # "Safety level may not be changed inside a transaction"。放在末尾提交之后
@@ -1043,9 +1008,9 @@ def _ensure_state_dir_readable(state_dir):
 def migrate_v20(conn):
     """v20：把 `sign-state-*.json` 里的终态补进 `sign_tasks`（可选迁移，失败只告警不阻断）。
 
-    为什么需要：v18 的平移源是 `sign_claims`，而它只记**真实领取过**的账号（唯一写入点
-    `claims.try_claim`）——JSON 里的跳过类终态（`paused`/`skipped_window`/…）从未进入
-    领取池，只做 v18 的话台账对"已跳过"的账号仍是空白。
+    为什么需要：v18 已**不再平移** `sign_claims`（单池化后旧表冻结），而 JSON 里的跳过类
+    终态（`paused`/`skipped_window`/…）从来只在状态文件里、不在任务队列——只做 v18 的话
+    台账对"已跳过"的账号仍是空白，故由本迁移从状态文件补回。
 
     只读 `sign-state-<day>.json`（按日结构化状态文件）；最近 `_BACKFILL_DAYS` 天里
     文件缺失或损坏的日**跳过**（台账以两张表为准），不报错也不阻断。但**状态目录
@@ -1053,7 +1018,7 @@ def migrate_v20(conn):
     下次启动整段重试——旧实现让它"空跑成功"，台账窗口从此永久空白。
 
     `owner='backfill'` + `vshard=-1` 是与 v18 平移行同形的**惰性历史行**：`-1` 与任何
-    执行体的分片集合不相交，既不参与批领也不被分片级窃取。`INSERT OR IGNORE` 让本
+    执行体的分片集合不相交，既不参与批领也不进入任何接管并入范围。`INSERT OR IGNORE` 让本
     迁移幂等——已有行（平移行、执行体真写的行）一概不覆盖，故失败/延后后下次启动
     整段重跑也能收敛。每 `_BACKFILL_COMMIT_ROWS` 行提交一次，避免长事务占住写锁。
 

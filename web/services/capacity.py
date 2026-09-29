@@ -19,8 +19,9 @@
 **复用**
 `_capacity_account_count` 与 `_capacity_audit_count` 互斥互补（两者之和 = 全部非删除
 账号），判定口径唯一来源是 `yiban.store.accounts.signs_in`；`_capacity_estimate` 的公式
-与引擎共用 `yiban.engine.schedule.capacity_of`（按开关分派：v2 侧即
-`capacity_accounts`），有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
+与引擎共用 `yiban.engine.schedule.capacity_of`（**显式固定 v2 公式**，即
+`capacity_accounts` 那一支：双轨开关已随单池消失，展示/闸门口径保持批 4 的取值不变），
+有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
 不另写一套容量模型。`_accounts_at_capacity` 复用 `_capacity_account_count`，
 `_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。
 
@@ -77,12 +78,14 @@ def _capacity_audit_count():
 def _capacity_estimate(gap=0, *, sign_window, edge_config, env=None):
     """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
 
-    公式与引擎共用 `yiban.engine.schedule.capacity_of`（按 `YIBAN_SCHEDULER_V3` 分派：
-    缺省关时逐字走 `capacity_accounts`，与改造前同值），有效窗口取
+    公式与引擎共用 `yiban.engine.schedule.capacity_of`；本展示/闸门口径**显式固定 v2
+    公式**（`enabled=False`，逐值不变）：`capacity_of` 的缺省已随台账单池化变为 v3，
+    但容量口径（批 4）要求展示与"预估 < 当前账号数就拒绝保存"的闸门逐值不动。
+    有效窗口取
     `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
     出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
 
-    `env`：avg / v3 开关的取值配置层，由 `web.app` 转发时传入**生效配置层**
+    `env`：avg 的取值配置层，由 `web.app` 转发时传入**生效配置层**
     （进程环境为底、`.env` 覆盖——与 run.sh 起引擎子进程前的 export 同一优先级）。
     不传的话 avg 会落 web 进程环境：web 进程从不把 `.env` 装进环境，而 gap 偏读
     `.env`，一次估算跨两层、按偏小的默认 avg 高估容量（MF-93）。展示面与判定面
@@ -97,7 +100,7 @@ def _capacity_estimate(gap=0, *, sign_window, edge_config, env=None):
     # full_sec() 而不是 remaining_sec()：本函数服务设置页展示与"预估 < 当前账号数就
     # 拒绝保存"的闸门，问的是"这套配置能容纳几个"。按时段扣减的话，管理员在窗口末尾
     # 永远存不下设置。引擎侧预检问"今天还能签几个"，那里才用 remaining_sec()
-    return capacity_of(win.full_sec(), gap=gap, env=env)
+    return capacity_of(win.full_sec(), gap=gap, enabled=False, env=env)
 
 
 def _accounts_at_capacity(extra_accounts=0, *, env_file, load_env_int, max_accounts_default):

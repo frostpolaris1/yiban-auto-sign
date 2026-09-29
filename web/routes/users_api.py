@@ -208,6 +208,8 @@ def api_users_batch():
             if action == "delete" else "重置操作过于频繁，请稍后再试",
             # 只有 delete 不可逆；批量重置口令可再重置一次，不套倒计时确认
             irreversible=(action == "delete"),
+            # 删除占删除额度；重置他人密码属凭据改写类，占独立凭据额度（两族分开计数）
+            quota="delete" if action == "delete" else "creds",
         )
         if gate:
             return gate
@@ -332,9 +334,8 @@ def api_user_role(user_id):
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = m._json_body()
-    gate = high_risk_gate()(data, "修改管理员权限")  # 与删除/重置同口径：先过门禁，通过了才占额度
-    if gate:
-        return gate
+    # 角色变更是可逆操作（设回去即可），免口令门免额度；主管理员专属
+    # 前置（上一行）不变，留痕靠 set_user_role 与角色 UPDATE 同事务的审计行。
     new_role = data.get("role")
     if new_role not in ("admin", "user"):
         return jsonify({"error": "未知角色"}), 400
@@ -418,7 +419,8 @@ def api_user_password(user_id):
     # 普通用户自改密码走 /api/me/password（验当前旧密码），不落本门禁。
     if m._current_role() == "admin":
         gate = high_risk_gate()(
-            data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
+            data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试",
+            quota="creds")
         if gate:
             return gate
     row = m.db.find_user_by_id(user_id)

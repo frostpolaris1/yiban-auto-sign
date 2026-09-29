@@ -742,14 +742,19 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
             "角色变更必须留在审计链上",
         )
 
-    def test_role_change_without_reconfirm_rejected(self):
+    def test_role_change_without_reconfirm_ok_and_audited(self):
+        """角色变更可逆（缩减批 6a 免门）：无口令直达变更，留痕靠同事务审计行。"""
         self._user_with_account(EMAIL, "13800138007")
         ac, at = self._admin_client()
         r = ac.post(user_path(db, EMAIL, "/role"), json={"role": "admin"},
                     headers=self._csrf(at))
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         u = db.find_user(EMAIL)
-        self.assertEqual(u.get("role"), "user", "未过二次鉴权，角色不得变更")
+        self.assertEqual(u.get("role"), "admin")
+        rows = db.audit_rows(50) if hasattr(db, "audit_rows") else []
+        if rows:
+            self.assertTrue(any(x.get("action") == "user_role" for x in rows),
+                            "免门不等于免痕：角色变更必须落审计行")
 
     def test_announcement_change_alerts(self):
         ac, at = self._admin_client()

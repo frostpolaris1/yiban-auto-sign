@@ -957,21 +957,24 @@ class Batch18FixesTest(unittest.TestCase):
     # =====================================================================
     # 2. H-2 告警致盲：额度/节流参数收口 + 先告警后落盘
     # =====================================================================
-    def test_notify_cooldown_without_password_400_no_write_no_alert(self):
-        """验收用例：无 confirm_password 调 PUT notify-config {"cooldown":90000} → 400，
-        零写入、零告警。"""
+    def test_notify_cooldown_without_password_200_and_audited(self):
+        """收窄（缩减批 6a）：无 confirm_password 调 PUT notify-config
+        {"cooldown":90000} → 200 落盘（可逆参数免门免额度）、零告警、留审计。"""
         ac, at = self._admin_client()
-        before = self.webapp.read_env(self.env_file)
         with mock.patch.object(self.webapp, "send_notification") as sn:
             r = ac.put("/api/notify-config", json={"cooldown": 90000},
                        headers={"X-CSRF-Token": at})
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["reason"], "password_required")
-        self.assertEqual(self.webapp.read_env(self.env_file), before, "鉴权失败必须零写入")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = self.webapp.read_env(self.env_file)
+        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "90000")
         sn.assert_not_called()
+        detail = json.loads(self._last_audit_detail("notify_config"))
+        detail.pop("_req", None)
+        self.assertEqual(detail.get("cooldown"), 90000, "免门不等于免痕")
 
     def test_notify_cooldown_with_password_200_and_audited(self):
-        """带正确口令 → 200、落盘、留痕，并按新参数记审计。"""
+        """带 confirm_password 字段 → 200、落盘、留痕（字段免门后被忽略，仅为
+        兼容既有前端载荷；审计口径与免门路径一致）。"""
         ac, at = self._admin_client()
         r = ac.put("/api/notify-config", json={"cooldown": 90000, "confirm_password": ADMIN_PASS_B18F},
                    headers={"X-CSRF-Token": at})
@@ -1040,15 +1043,17 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertEqual(order, ["write"], f"只应有落盘，实际 {order}")
         self.assertEqual(json.loads(self._last_audit_detail("mail_config"))["enabled"], 0)
 
-    def test_mail_config_close_without_password_400_no_alert(self):
-        """mail-config 关闭动作未带口令 → 400、零写入、零告警（先验口令才发告警）。"""
+    def test_mail_config_close_without_password_200_and_audited(self):
+        """收窄（缩减批 6a）：mail-config 开关关闭（可逆）未带口令 → 200 落盘、
+        零告警（通道变更只留审计）。"""
         ac, at = self._admin_client()
         with mock.patch.object(self.webapp, "send_notification") as sn:
             r = ac.put("/api/mail-config", json={"enabled": False},
                        headers={"X-CSRF-Token": at})
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         sn.assert_not_called()
-        self.assertNotIn("YIBAN_MAIL_ENABLE=0", self.webapp.read_env(self.env_file))
+        self.assertEqual(self.webapp.read_env(self.env_file).get("YIBAN_MAIL_ENABLE"), "0")
+        self.assertTrue(self._last_audit_detail("mail_config"), "免门不等于免痕")
 
     def test_notify_params_saved_and_no_alert(self):
         """额度/节流参数照旧可保存并落盘；这些保存不再外发告警。"""

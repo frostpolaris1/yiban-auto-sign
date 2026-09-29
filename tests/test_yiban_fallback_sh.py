@@ -26,13 +26,23 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
 
-#: 桩解释器：记录被调用的全部参数（`$*`），不真的跑签到
-STUB_PY = '#!/usr/bin/env bash\necho "$*" >> "$STUB_LOG"\nexit 0\n' # 记参数而不是记退出码：「确实以 --fallback 起过 CLI」只能从它收到的东西证明
+#: 桩解释器：记录被调用的全部参数（`$*`），不真的跑签到。
+#: 按天命名取业务日（MF-109）后脚本会先问一次 `yiban.clock`——桩必须如实回应，
+#: 否则脚本退到 `date` 分支，测试就失去对主路（与引擎同源）的覆盖。
+STUB_PY = (
+    '#!/usr/bin/env bash\n'
+    'echo "$*" >> "$STUB_LOG"\n'
+    'case "$*" in\n'
+    '  *yiban.clock*) echo "${STUB_BUSINESS_DAY}"; exit 0;;\n'
+    'esac\n'
+    'exit 0\n'
+)  # 记参数而不是记退出码：「确实以 --fallback 起过 CLI」只能从它收到的东西证明
 
 
 def _to_bash_path(path):
@@ -68,6 +78,8 @@ class YibanFallbackShTest(unittest.TestCase):
         self.env.update({
             "YIBAN_STATE_DIR": _to_bash_path(self.state),
             "STUB_LOG": _to_bash_path(self.calls),
+            # 桩解释器对业务日探针的回应：取仓库业务钟（与脚本/引擎同一事实源）
+            "STUB_BUSINESS_DAY": clock.today(),
         })
 
     def tearDown(self):
@@ -86,13 +98,20 @@ class YibanFallbackShTest(unittest.TestCase):
         return r
 
     def _calls(self):
+        """桩 PY 收到的**签到 CLI 调用**参数（取业务日的那次探针调用不计）。
+
+        按天命名取业务日（`yiban.clock`）后，脚本会先调一次 `python -c`，
+        再拉起 CLI；那一次是实现细节。本类断言的是「恰好以 --fallback 起过
+        一次签到 CLI」，所以只数含 `yiban.cli` 的调用。
+        """
         if not os.path.exists(self.calls):
             return []
         with io.open(self.calls, encoding="utf-8", errors="replace") as f:
-            return [ln for ln in f.read().splitlines() if ln]
+            return [ln for ln in f.read().splitlines() if "yiban.cli" in ln]
 
     def _sign_log(self):
-        path = os.path.join(self.state, f"sign-{datetime.now().strftime('%Y-%m-%d')}.log")
+        """按天日志文件：文件名取业务日（与脚本/引擎同源），宿主时区不参与。"""
+        path = os.path.join(self.state, f"sign-{clock.today()}.log")
         if not os.path.exists(path):
             return None
         with io.open(path, encoding="utf-8", errors="replace") as f:

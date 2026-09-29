@@ -187,16 +187,10 @@ class SweepPolicyTest(unittest.TestCase):
 
 # 扫描会命中、但不属于"状态目录里的按日文件"的前缀（逐条理由）
 ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀必须逐条写清为什么不是状态文件
-    "concurrency-": "loadtest 工具的输出 JSON/CSV（outdir，由压测者自行管理）",
     "i-": "build_lucide_sprite 生成的图标 id（构建期产物，不是文件）",
-    "krun-": "loadtest 的每轮临时目录",
-    "mock-pass-": "loadtest 假账号口令字面量（不是文件名）",
     "pass-": "generate_demo_data 的演示口令字面量",
-    "run-": "loadtest 的输出 JSON（outdir）",
-    "cap-": "容量基准的每档标签（用于 concurrency-<label> 输出名，不是文件）",
-    "probe-": "容量基准每档的探针日志（outdir，由测量者自行管理）",
-    "scratch-": "loadtest 的临时 SQLite 文件（outdir）",
-    "signin-": "loadtest 的每轮日志文件（logdir）",
+    "signin-": "多执行体子进程各自的运行锁文件名（workers.py 的 signin-run.lock.w<slot>，"
+              "由 YIBAN_RUN_LOCK_NAME 指到状态目录，不是按日状态文件）",
     "verify-job-": "校验任务的线程名（不是文件）",
     "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups）——不在状态目录里，"
               "由 backup.sh 自己的 30 天保留策略轮转；backup_sentinel.py 只是读它的名字",
@@ -216,7 +210,7 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     做法是**扫描**而不是列举：正则找出所有形如 `"<前缀>-{日期表达式}…"` 的字面量，
     每个前缀必须落在下列三者之一：
     1. 策略表 `state_gc.ARTIFACTS`（会被清理）；
-    2. 非状态目录的允许清单（压测工具输出、构建产物、线程名等，逐条给理由）；
+    2. 非状态目录的允许清单（构建产物、线程名等，逐条给理由）；
     3. 都不在 → 失败，提示"新按日文件未登记，会无界增长"。
     """
 

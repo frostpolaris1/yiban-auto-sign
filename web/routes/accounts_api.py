@@ -77,7 +77,7 @@ def api_accounts():
     # （按"昨天"取的话，周末停签后会让整列空白到下一个工作日）。
     # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
     # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
-    last_exec = m._last_executors(m.db.claim_latest_day())
+    last_exec = m._last_executors(m.db.task_latest_day())
     # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
     # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
     _win = m.sign_window_bounds()
@@ -396,17 +396,21 @@ def api_account_update(idx):
         # fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
         old_code = old.get("phone_code") or ""
         code_written = m.fold_phone_code(clean, old_code) != old_code
-        # 改写他人易班凭据（填了新密码 / 改绑手机号 / 改写或清除设备识别码）与
-        # "不可逆清除"同档：拿到被窃管理员会话的人一次 PUT 就能把某用户的账号换成
-        # 自己的凭据——此后签到在攻击者侧完成、真用户被静默挤出，界面上看不出任何
-        # 异常；设备识别码是学校开"设备绑定"时的登录要素，静默改写它同样能把签到
-        # 打成失败（可用性轴）。只改备注/设备型号/名称不算。
-        # 走 _high_risk_gate：先二次鉴权、通过后才占高危额度（顺序即该函数的立身之本）。
+        # 凭据改写分两档（按用户拍板清单收窄）：
+        # - **过门**：改易班密码 / 改绑手机号（改他人凭据类）——拿到被窃管理员会话的人
+        #   一次 PUT 就能把某用户的账号换成自己的凭据，此后签到在攻击者侧完成、真用户
+        #   被静默挤出，界面上看不出异常。走 _high_risk_gate：先二次鉴权、通过后才占
+        #   高危额度（顺序即该函数的立身之本）。
+        # - **免门**：只改/只清设备识别码（MF-86 的归类回退为"只标位/只发信"）——
+        #   识别码是学校开设备绑定时的登录要素，属完整性/可用性轴，可逆（改回即可），
+        #   不再要口令、不占额度；但**保留全部信号**：creds_written（下方审计"改写凭据"
+        #   位 + 当事人信 + 非 full 档管理员紧急告警）仍把 code_written 算在内。
+        # 只改备注/设备型号/名称不算任何一档（零误报不变）。
         creds_written = (bool(str(data.get("password", "")).strip())
                          or clean["phone"] != old.get("phone")
                          or code_written)
-        if creds_written:
-            denied = _high_risk_gate()(data, "改写他人易班凭据")
+        if bool(str(data.get("password", "")).strip()) or clean["phone"] != old.get("phone"):
+            denied = _high_risk_gate()(data, "改写他人易班凭据", quota="creds")
             if denied is not None:
                 return denied
         # 密码留空 = 保持不变（密码明文永不下发前端）
@@ -490,10 +494,14 @@ def api_account_update(idx):
                     )
                 except Exception as e:
                     m.logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
-        # 非 full 档不再当场要口令 ⇒ 改写他人凭据靠"事后告警 + 审计链"兜底：
-        # 一封"刚才执行了 XX 操作"让管理员可追溯、可回滚（此前只通知当事人，
-        # 管理员侧零信号）。full 档本就有当次口令，不重复发——该档行为逐字不变。
-        if creds_written and m._pw_gate_tier(m.ENV_FILE) != m.PW_GATE_FULL:
+        # 改写他人凭据靠"事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员
+        # 可追溯、可回滚（此前只通知当事人，管理员侧零信号）。抑制口径随门走：
+        # 本次若真被口令门拦过（门内动作 + full 档）就不重复发；识别码免门后，
+        # full 档的识别码改动同样需要这封事后告警。
+        gated_creds = (bool(str(data.get("password", "")).strip())
+                       or clean["phone"] != old.get("phone"))
+        if (creds_written and not (gated_creds and
+                                   m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL)):
             m.send_notification(
                 "高危管理操作告警",
                 m._change_mail(

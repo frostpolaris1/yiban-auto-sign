@@ -60,5 +60,5 @@
 - 若上游算法被替换或升级，先改 `algo.py`/`headers.py`/`waf.py`/`protocol.py` 并让
   `tests/test_fyiban_isolation.py`（隔离边界）与 `tests/test_login_protocol_shape.py`
   （旧流 6 次请求的形状、WAF 分支、白名单拒绝边界）先红后绿；
-- 登录路径是**钱路**：改动后除全量测试外，还要用 `scripts/loadtest/mock_yiban.py`
-  做一次端到端假服务端演练。
+- 登录路径是**钱路**：改动后除全量测试外，还要用 `tests/fake_yiban_server.py`
+  做一次端到端假服务端演练（原 `scripts/loadtest/mock_yiban.py` 已于 2026-09 迁入 tests/）。
