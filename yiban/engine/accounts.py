@@ -9,18 +9,20 @@
 登录两次会让重试预算错乱）。
 
 **归属**
-`yiban.engine` 的账号装载层（引擎入口的第一道门）；`runner` / `probe` / 多执行体子进程
+`yiban.engine` 的账号装载层（引擎入口的第一道门）；`runner` / `workers` / CLI 侧
 都从这里取账号。
 
 **复用**
-`Account` 数据模型与 `load_accounts` 是唯一来源；设备回退与审核态过滤口径被
-`config_check`、web 服务层与 rekey 工具复用。
+`Account` 数据模型与 `load_accounts` 是引擎侧唯一装载入口；`config_check` 只消费它
+产出的 `Account` 列表（脱敏打印、`--only` 过滤），web 侧账号读走 `web.services.
+accounts_data`，不复用本模块。
 
 **通信**
 输入：`db`（accounts 表，密文经 `account_crypto` 解密）、`YIBAN_ACCOUNTS_JSON` /
 旧格式环境变量。输出：`Account` 列表（含 owner / account_id 等运行期字段）。
 调用谁：`db`、`account_crypto`、`config_check`。
-谁调用：`runner`、`probe`、`workers` 的子进程。
+谁调用：`runner.main`、`workers`（监督进程与其子进程）与 `yiban/cli.py`（`config` /
+`--check-config` 传 `migrate=False`）。探针 `probe` 直取 `yiban.store.accounts`，不经本模块。
 前端调用点：`/api/accounts`（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/account-ops.js`）与 `/api/my-accounts`（`web/static/js/components/my-accounts.js`）
 的增删改由本模块在下一轮装载生效——优先级/去重/审核态口径变化会改变这些页面看到的
@@ -33,7 +35,8 @@ import os
 from dataclasses import dataclass
 
 from yiban.engine import config_check
-from yiban.infra import account_crypto
+from yiban.infra import account_crypto, env_io
+from yiban.mail.config import _mask_addr
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import db
@@ -44,12 +47,15 @@ logger = logging.getLogger("yiban")
 # ---------------------------------------------------------------------------
 # 账号数据模型
 # ---------------------------------------------------------------------------
-@dataclass
+@dataclass(repr=False)
 class Account:
     """单个易班账号配置。
 
     通过 Web 管理后台添加（存于 SQLite 数据库），
     一次输入一个账号的完整信息，无需用符号分隔。
+
+    repr 被显式替换为脱敏版（见 `__repr__`）：默认 dataclass repr 会把明文口令、
+    设备识别码、裸号、归属邮箱写进任何带该对象的文本。
     """
 
     phone: str
@@ -68,6 +74,22 @@ class Account:
     @property
     def has_device_info(self):
         return bool(self.phone_model and self.phone_code)
+
+    def __repr__(self):
+        """脱敏 repr：对象出现在任何文本里都不带凭据与裸号。
+
+        为什么不能只在调用点防：`repr(account)` 会经异常消息、未捕获 traceback 的
+        调试串、`%s account` 直出到 formatter **管不到的出口**（stderr 被 run.sh 的
+        `2>&1` 与 web 手动签到的 `stdout=log_fh` 原样落进当天日志文件）。口径复用
+        既有单一原语：号码 `mask_phone`（幂等、与 `MaskingFormatter` 同规则）、
+        邮箱 `_mask_addr`（与告警收件人同一份，不另造第二套）；口令与设备识别码
+        只留"配没配"——定位到"哪个账号"仍然够用，可读性不牺牲。
+        """
+        return (f"Account(phone={_mask_phone(self.phone)!r}, "
+                f"password={'***' if self.password else ''!r}, "
+                f"has_device_info={self.has_device_info!r}, "
+                f"name={self.name!r}, owner={_mask_addr(self.owner)!r}, "
+                f"user_paused={self.user_paused!r}, account_id={self.account_id!r})")
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +146,20 @@ def _load_accounts_from_file(migrate=True):
 
     db 层返回已解密明文；此处只做审核状态过滤。
 
-    migrate=False 时**不跑 schema 迁移**（只读校验模式，见 `load_accounts`）。
+    migrate=False 是**只读装载**（`config` / `sign --check-config`）：走
+    `db.load_accounts_readonly`——独立只读连接，不建库/不建表/不迁移/不切
+    WAL/不回写，库文件或表不存在即返回空（随后由 `load_accounts` 回落 JSON/
+    环境变量来源）。此前的实现仍经 `init_db(migrate=False)`，会在空目录当场建出
+    一个 69632B 的伪库：宣称"只读"的 config 反而写盘。
     """
-    db.init_db(env_file=config_check._key_env_file(), cleanup=False, migrate=migrate)
-    all_accounts = db.load_accounts()
+    if migrate:
+        db.init_db(env_file=config_check._key_env_file(), cleanup=False, migrate=True)
+        all_accounts = db.load_accounts()
+    else:
+        all_accounts = db.load_accounts_readonly(
+            env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT),
+            env_file=config_check._key_env_file(),
+        )
     # 跳过待审核（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝（status=rejected：管理员审核不通过，不得签到）与待删除账号
     # （deleted：网页端软删除，保留期内可恢复，不参与签到）。
@@ -235,11 +267,10 @@ def _dedupe_by_phone(accounts):
 def load_accounts(migrate=True):
     """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量（按手机号去重）。
 
-    migrate：False = **只读校验模式**（`config` 子命令 / `sign --check-config`）：
-    不跑 schema 迁移。迁移会重写审计链（v3 rechain）等，使"被校验对象在校验过程
-    中被改动"——`db.init_db` 的文档自述"校验类工具应传 False"（2026-09-21 测试机
-    47 E2E：宣称只读的配置检查实际把目标库迁到 v17）。账号表由 `init_db` 的基线
-    建表保证存在（`CREATE TABLE IF NOT EXISTS`），故只读模式下取账号不依赖迁移。
+    migrate：False = **只读装载模式**（`config` 子命令 / `sign --check-config`）：
+    经 `db.load_accounts_readonly` 用独立只读连接读账号——不建库、不建表、不迁移、
+    不切 WAL、不回写。迁移会回填审计链（v3）等，使"被校验对象在校验过程中
+    被改动"（曾实测宣称只读的 config 把库迁到当时 schema 顶，并在空目录建出伪库）。
     """
     for loader in (
         # 文件来源是唯一碰库的加载器：migrate 只对它有意义

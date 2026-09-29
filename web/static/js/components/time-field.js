@@ -36,9 +36,14 @@
   function timeFields() { return [].slice.call(document.querySelectorAll("[data-time-field]")); }
   function pairs() { return [].slice.call(document.querySelectorAll("[data-time-pair]")); }
   function read(id) { var n = document.getElementById(id); return n ? n.value : ""; }
+  // 形状与范围在同一处校验：只查 "HH:MM" 形状会让 "25:00" 当作合法值一路通过——
+  // 触发器文案显示 25:00、隐藏 input 落盘 25:00，而滚轮与服务端各自夹到 23:00，
+  // 显示值/落盘值/生效值三段不等。超 24 小时制上限（23:59）一律回退。
   function norm(v, fallback) {
     var s = String(v == null ? "" : v).trim().slice(0, 5);
-    return /^\d{2}:\d{2}$/.test(s) ? s : fallback;
+    var m = /^(\d{2}):(\d{2})$/.exec(s);
+    if (!m || parseInt(m[1], 10) > 23 || parseInt(m[2], 10) > 59) return fallback;
+    return s;
   }
 
   // 触发器要能被读屏关联到字段标签：优先用显式 aria-labelledby，否则就近取 .field-label

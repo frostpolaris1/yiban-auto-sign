@@ -50,12 +50,8 @@ scripts/                      运维 CLI（含过渡期的兼容壳）
 ├── db.py                     兼容壳 → yiban.store.db（旧 `import db` 仍可用）
 ├── state_cleanup.py          状态文件清理 CLI
 ├── yiban-fallback.sh         兜底常驻执行体的 cron 薄包装（读 .env 判开关，关则静默退出）
-└── loadtest/                 压测与容量基准（仅限隔离测试机，零真实外联）
-    ├── mock_yiban.py         假易班（真 TLS，覆盖两条登录流程 + 签到）
-    ├── mock_env.py           自签证书 + hosts 回环 + 出站兜底（一键搭建/还原）
-    ├── capacity_probe.py     **容量基准**：一条命令给出建议执行体数与每执行体账号数
-    ├── concurrency_probe.py  K 阶梯并发探针
-    └── scale_driver.py       单进程规模驱动
+├── generate_demo_data.py     演示数据生成（含清库，调用方须回显目标指纹）
+└── ledger_check.py           台账对账（与 v20 补账同生，在役）
 
 docker/                       容器：Dockerfile / entrypoint / supervisord / scheduler
 ```
@@ -76,7 +72,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 
 | 能力 | 状态 |
 |------|------|
-| 领取池与账号级租约（一个账号一天只被一个执行体做） | 已实现（表 `sign_claims`，v17） |
+| 领取池与账号级租约（一个账号一天只被一个执行体做） | 已实现（唯一台账表 `sign_tasks`，v18；旧表 `sign_claims` 已冻结） |
 | 并行执行体 | 已实现：`signin sign --workers N`（父进程监督 + 子进程领活） |
 | 兜底常驻执行体 | 已实现：`signin sign --fallback`（窗口内反复扫"未了结"账号，时段结束退出） |
 | 容器形态的兜底常驻 | 已实现：容器调度器在**有效签到窗口内**按开关自动拉起、窗口结束由进程自行退出（与宿主同一个 `YIBAN_FALLBACK_ENABLE`、同一把独立锁、同一份心跳） |
@@ -111,4 +107,5 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | `YIBAN_MEASURE_COOLDOWN` | 现场实测端点的**全局冷却秒数**（默认 600，`0`=关闭限频） | `600` |
 
 规则细节（按序取用、不足循环、空位语义）与脱敏口径见 `yiban/egress.py` 的模块文档；
-容量基准由 `scripts/loadtest/capacity_probe.py` 实测得到，**建议值 = 实测 × 2/3，只是建议**。
+容量基准由部署者在自己的机器上量取后写入 `YIBAN_CAPACITY_MEASURED`（离线基准工具族已于
+2026-09 移除），**建议值 = 实测 × 2/3，只是建议**。

@@ -21,9 +21,9 @@ time_prefs 表以 phone 为键，服务调度 v2 的「用户自选时间片」
 
 **复用**
 `web/routes/my.py`（自选读写、拥挤度与保存冷却）、`web/routes/accounts_api.py`（改绑手机号
-时清旧号自选）、`yiban/engine/schedule.py`（`build_schedule` 每次启动读一次全量）经 db 门面
-调用；`scripts/generate_demo_data.py` 写演示自选。换号/注销路径是否保留自选由
-`yiban/store/users.py` 与账号软删路径决定，本模块不做取舍。
+时清旧号自选）、`yiban/engine/schedule.py` 与 `yiban/engine/planner.py`（调度每次启动/重排时
+读一次全量，只读不写）经 db 门面调用；`scripts/generate_demo_data.py` 写演示自选。
+换号/注销路径是否保留自选由 `yiban/store/users.py` 与账号软删路径决定，本模块不做取舍。
 
 **通信**
 连接与进程内锁（`_conn_lock` / `get_conn`）一律经 `_facade()` 按属性取——必须按属性取而非
@@ -120,7 +120,7 @@ def get_time_pref(phone):
 
 
 def set_time_pref(phone, slot_min, updated_at):
-    """保存/更新自选（UPSERT）。slot_min 为窗口内分钟数（06:30 → 390，5 对齐）。"""
+    """保存/更新自选（UPSERT）。slot_min 是**相对窗口起点**的分钟偏移（5 对齐）。"""
     db = _facade()
     conn = db.get_conn()
     with db._conn_lock, conn:

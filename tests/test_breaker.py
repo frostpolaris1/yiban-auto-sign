@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 """账密熔断器（circuit breaker）测试：v0.18.4 核心行为防回归。
 
+标签：I · 容量、熔断与账号有效性
+覆盖：账密熔断（连续 3 天失败→暂停 + 试探日、成功清除、网络类失败不计数）、`run_queue_retry` 的绕过与解冻、cred-state 的增量合并与跨进程锁、慢签到的耗时留痕与告警收敛
+对应实现：`scripts/signin.py` 的 `attempt_signin` / `_load_cred_state` / `_save_cred_state` / `_write_sign_state` 与 cred-state 存储的 `update` / `clear`；web 侧编辑账号的清熔断路径
+关键断言：同一天多次失败只计 1 天；试探日「登录已成功但窗口外 / 无 Range 被跳过」要解冻而非再冻 7 天，凭据类失败仍保持暂停并顺延试探日；调用方持有的空 dict 必须**就地**收到 `fail_days`（runner 收尾保存的正是同一个 dict，否则计数永不落盘）；旧快照不得复活被 Web 清掉的暂停；Web 清除与签到保存共用同一把文件锁，因而不可能交错
+依赖：纯本地——临时目录与文件、`attempt_signin` 打桩（不联网）。既可 `pytest` 收集，也可 `python tests/test_breaker.py` 直接运行。无需 node
+
 用法（在项目根目录）：
     py -m pytest tests/test_breaker.py -v        # 需要 pytest
     py tests/test_breaker.py                     # 无 pytest 也可直接运行
 
-覆盖：
+逐项明细：
 - 凭据失败计数：连续 3 天 → 暂停 + 试探日；同一天多次失败只计 1 天
 - 成功清除计数；网络类失败不计数
 - run_queue_retry：暂停中零请求；--only 手动签到绕过；半开试探日执行并恢复
@@ -22,10 +28,13 @@ import unittest
 import unittest.mock as mock
 from datetime import datetime
 
+import signin
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 推送/邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
-from _mail_body import render_body  # noqa: E402
+sys.path.insert(0, os.path.join(BASE, "scripts"))
+
+from yiban import cred_state  # noqa: E402
 
 
 class BreakerTest(unittest.TestCase):
@@ -124,6 +133,7 @@ class BreakerTest(unittest.TestCase):
             self._saved_cred_state = stack.enter_context(
                 mock.patch.object(signin, "_save_cred_state"))
             stack.enter_context(mock.patch.object(sys, "argv", argv))
+            # main() 可能以 SystemExit 收尾：吞掉它，本类断言的是调用序列与保存下来的 dict
             stack.enter_context(contextlib.suppress(SystemExit))
             signin.main()
 
@@ -142,6 +152,8 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(self._calls, [], "暂停中不应发起任何请求")
 
     def test_only_bypasses_pause(self):
+        """标签：命令行 `--only <手机号>` 的手动签到路径——它不受熔断暂停约束，
+        名字里的 only 指的是这个参数，不是「只有一个账号」。"""
         cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
                                  "paused_since": self.D3, "probe_date": "2026-08-26"}}
         self._run_main(datetime(2026, 8, 19, 6, 40), dict(cred), only=True)
@@ -286,19 +298,21 @@ class BreakerTest(unittest.TestCase):
 
     def test_write_sign_state_records_dur(self):
         signin._write_sign_state("13800138000", "success", "签到成功", dur=3.45)
-        with open(os.path.join(self.tmp, "sign-state-" + datetime.now().strftime("%Y-%m-%d") + ".json"),
+        # 状态文件名取业务钟（与被测 _write_sign_state 同源），裸 host now() 会在 UTC 主机上错日
+        with open(os.path.join(self.tmp, "sign-state-" + signin.clock.today() + ".json"),
                   encoding="utf-8") as f:
             data = json.load(f)
         entry = data["13800138000"]
         self.assertEqual(entry["dur"], 3.45, "应记录单次尝试耗时（P6）")
         self.assertEqual(entry["status"], "success")
 
-    # ---- 6. P6 耗时告警（2026-08-16）：超阈值 → warning + 通知；每账号每轮最多 1 次 ----
-    def test_slow_sign_warns_and_notifies(self):
-        """单次尝试耗时超阈值（31s > 30s）→ 发送耗时告警通知（含耗时与脱敏账号）。"""
+    # ---- 6. P6 耗时告警（2026-08-16）：超阈值 → warning + 并入汇总；每账号每轮最多 1 次 ----
+    def test_slow_sign_warns_and_collects(self):
+        """单次尝试耗时超阈值（31s > 30s）→ warning + 一条汇总条目，不发即时推送。"""
         import unittest.mock as mock
 
         accs = [signin.Account(phone="13800138001", password="p")]
+        signin._mail_summary.clear()
         with mock.patch.object(signin, "time") as tm, \
              mock.patch.object(signin, "attempt_signin") as attempt, \
              mock.patch.object(signin, "_write_sign_state"), \
@@ -309,18 +323,21 @@ class BreakerTest(unittest.TestCase):
             tm.sleep = lambda *a, **k: None
             attempt.return_value = (True, "签到成功", False, signin.STATUS_SUCCESS)
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
-        sn.assert_called_once()
-        title, content = sn.call_args[0][0], render_body(sn.call_args[0][1], "markdown")
-        self.assertIn("耗时", title)
-        self.assertIn("31.0", content, "通知应含实际耗时")
-        self.assertIn("138****8001", content, "通知应含脱敏账号")
-        self.assertIn("签到成功", content, "通知应含结果说明")
+        sn.assert_not_called()  # 耗时属"事后可读"的慢信号：只进汇总，不即时推送
+        self.assertEqual(len(signin._mail_summary), 1, f"实际 {signin._mail_summary}")
+        subject, fields = signin._mail_summary[0]
+        self.assertIn("耗时", subject)
+        by_label = dict(fields)
+        self.assertIn("31.0", by_label["耗时"], "汇总条目应含实际耗时")
+        self.assertEqual(by_label["账号"], "138****8001", "汇总条目应含脱敏账号")
+        self.assertIn("签到成功", by_label["结果"], "汇总条目应含结果说明")
 
     def test_slow_sign_throttled_per_round(self):
-        """同一账号两次慢尝试（失败重试）→ 耗时告警只发 1 次（防重试连击刷屏）。"""
+        """同一账号两次慢尝试（失败重试）→ 耗时条目只收 1 条（防重试连击刷屏）。"""
         import unittest.mock as mock
 
         accs = [signin.Account(phone="13800138001", password="p")]
+        signin._mail_summary.clear()
         # 两次尝试：31s / 32s 均超阈值；第 3 个采样点是重试回队时的间隔对齐探测
         # （gap_max=0 → 对齐差值必 ≤0，不产生等待，仅消耗一个时间点）
         seq = iter([100.0, 131.0, 150.0, 200.0, 232.0])
@@ -336,11 +353,163 @@ class BreakerTest(unittest.TestCase):
             attempt.return_value = (False, "登录失败", False, signin.STATUS_FAILED)
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
         cf.assert_called()  # 失败确实走了分级
-        # 2 次尝试 → 慢告警 1 次 + 最终放弃失败通知 1 次（慢告警未连发）
-        self.assertEqual(sn.call_count, 2, "慢告警 1 次 + 失败通知 1 次")
-        self.assertEqual(sn.call_args_list[0].args[0], "易班签到耗时告警", "第一次应为耗时告警")
-        self.assertIn("31.0", render_body(sn.call_args_list[0].args[1], "markdown"))
-        self.assertEqual(sn.call_args_list[1].args[0], "易班签到失败", "第二次应为最终失败通知")
+        # 2 次尝试 → 只有最终放弃那一条即时通知（耗时条目未连收）
+        self.assertEqual(sn.call_count, 1, "只有最终放弃的失败通知一条即时推送")
+        self.assertEqual(sn.call_args_list[0].args[0], "易班签到失败")
+        self.assertEqual([s for s, _ in signin._mail_summary].count("易班签到耗时告警"), 1,
+                         f"两次慢尝试只收一条耗时条目，实际 {signin._mail_summary}")
+        self.assertIn("31.0", dict(signin._mail_summary[0][1])["耗时"])
+
+
+
+
+P1, P2 = "13800138000", "13800138001"
+
+
+class _Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-cred-")
+        self.env = dict(os.environ)
+        os.environ["YIBAN_STATE_DIR"] = self.tmp
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, mapping):
+        with open(cred_state.path(), "w", encoding="utf-8") as f:
+            json.dump(mapping, f)
+
+    def _disk(self):
+        return cred_state.read()
+
+
+class IncrementalMergeTest(_Base):
+    """签到侧：内存快照不得整体覆盖磁盘（否则抹掉并发写入）。"""
+
+    def test_merge_keeps_untouched_accounts(self):
+        self._write({P1: {"fail_days": 9, "paused_since": "2026-09-01"}})
+        # 签到进程跑完后只声明 P2 的变化（P1 是别人并发写的，必须原样保留）
+        signin._save_cred_state(
+            {P2: {"fail_days": 1, "last_fail": "2026-09-15"}}, touched={P2})
+        disk = self._disk()
+        self.assertEqual(disk[P1]["fail_days"], 9, "未处理账号的记录不得被覆盖")
+        self.assertEqual(disk[P2]["fail_days"], 1)
+
+    def test_merge_deletes_only_touched(self):
+        """本次处理账号成功 → 删除其记录；其他账号不受影响。"""
+        self._write({P1: {"fail_days": 9, "paused_since": "2026-09-01"},
+                     P2: {"fail_days": 2}})
+        signin._save_cred_state({P2: {"fail_days": 2}}, touched={P1})
+        disk = self._disk()
+        self.assertNotIn(P1, disk, "本次处理且已成功的账号应清除记录")
+        self.assertEqual(disk[P2]["fail_days"], 2)
+
+    def test_stale_snapshot_cannot_resurrect_pause(self):
+        """主场景：Web 端清掉暂停后，签到收尾的旧快照不得把它写回来。"""
+        self._write({P1: {"fail_days": 3, "paused_since": "2026-09-01"}})
+        stale_snapshot = {P1: {"fail_days": 3, "paused_since": "2026-09-01"}}  # 启动时读到的
+        cred_state.clear(P1)  # 用户改密 → Web 端清除
+        # 签到进程收尾：它**没有处理** P1（不在 touched 里），旧快照不得写回
+        signin._save_cred_state(stale_snapshot, touched=set())
+        self.assertNotIn(P1, self._disk(), "运行期间清除的暂停被旧快照复活了")
+
+    def test_legacy_full_replace_still_works(self):
+        """兼容入口（touched=None）保持整体覆盖语义；空数据删除文件。"""
+        self._write({P1: {"fail_days": 1}})
+        signin._save_cred_state({P2: {"fail_days": 5}})
+        disk = self._disk()
+        self.assertNotIn(P1, disk)
+        self.assertEqual(disk[P2]["fail_days"], 5)
+        signin._save_cred_state({})
+        self.assertFalse(os.path.exists(cred_state.path()),
+                         "无记录 = 文件不存在（既有语义）")
+
+
+class WebConcurrentEditTest(_Base):
+    """Web 侧：清除熔断不得抹掉并发写入的其他账号记录。"""
+
+    def _clear_via_web(self, phone):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "webapp", os.path.join(BASE, "web", "app.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("webapp", mod)
+        with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": self.tmp}):
+            spec.loader.exec_module(mod)
+        mod.clear_fuse_pause(phone)
+
+    def test_web_clear_blocks_on_same_lock_as_signin(self):
+        """Web 的清除与签到的保存共用同一把锁 → 两者不可能交错（根治手段）。
+
+        验证方式：先在主线程持有该文件锁（等价于"签到进程正在保存"），再从另一线程
+        调 Web 的清除——它必须**等锁**而不是直接读改写；释放后清除完成，
+        且等待期间别的进程写进来的记录仍然在。
+        """
+        import threading
+
+        from yiban.infra import locks
+        self._write({P1: {"fail_days": 3, "paused_since": "2026-09-01"}})
+        done = threading.Event()
+
+        def _clear():
+            self._clear_via_web(P1)
+            done.set()
+
+        with locks.file_lock(cred_state.path()):
+            # 锁持有期间（签到在保存）：写入 P2 模拟其落盘结果
+            disk = cred_state.read()
+            disk[P2] = {"fail_days": 4, "paused_since": "2026-09-15"}
+            with open(cred_state.path(), "w", encoding="utf-8") as f:
+                json.dump(disk, f)
+            t = threading.Thread(target=_clear, daemon=True)
+            t.start()
+            self.assertFalse(done.wait(0.3), "Web 清除必须在同一把锁上等待，不得绕过")
+        self.assertTrue(done.wait(5), "释放锁后 Web 清除应完成")
+        t.join(timeout=5)
+        final = self._disk()
+        self.assertNotIn(P1, final, "目标账号的暂停应被清除")
+        self.assertIn(P2, final, "锁外写入的其他账号记录不得被 Web 覆盖")
+
+    def test_clear_missing_entry_is_noop(self):
+        """文件不存在/无该账号：静默无操作（用户每次编辑账号都会走这里）。"""
+        self.assertFalse(cred_state.clear(P1))
+        self._write({P1: {"fail_days": 1}})
+        self.assertFalse(cred_state.clear(P2))
+        self.assertIn(P1, self._disk())
+
+
+class LockIsUsedTest(_Base):
+    """整段读-改-写必须在同一把跨进程锁内完成。"""
+
+    def test_update_holds_file_lock(self):
+        from yiban.infra import locks
+        self._write({P1: {"fail_days": 1}})
+        seen = []
+        real_lock = locks.file_lock
+
+        def spy(path, *a, **kw):
+            seen.append(os.path.basename(path))
+            return real_lock(path, *a, **kw)
+
+        with mock.patch.object(cred_state.locks if hasattr(cred_state, "locks") else locks,
+                               "file_lock", side_effect=spy):
+            cred_state.clear(P1)
+        self.assertIn("cred-state.json", seen, "读-改-写须经统一文件锁原语")
+
+    def test_signin_save_path_also_locks(self):
+        from yiban.infra import locks
+        seen = []
+        real_lock = locks.file_lock
+
+        def spy(path, *a, **kw):
+            seen.append(os.path.basename(path))
+            return real_lock(path, *a, **kw)
+
+        with mock.patch.object(locks, "file_lock", side_effect=spy):
+            signin._save_cred_state({P1: {"fail_days": 1}}, touched={P1})
+        self.assertIn("cred-state.json", seen)
 
 
 if __name__ == "__main__":

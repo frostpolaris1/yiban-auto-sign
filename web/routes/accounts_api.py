@@ -54,23 +54,34 @@ def api_accounts():
     # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
     # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
     states = m.load_sign_state()
-    # 用户自暂停账号：状态直接呈现"已取消"（⏹️）——无需等下次签到执行写状态文件，
-    # 管理员面板立即反映
+    # 用户自暂停账号：当日还没有结论时直接呈现"已取消"（⏹️）——无需等下次签到执行
+    # 写状态文件，管理员面板立即反映。**只在无结论时合成**：无条件覆写会把"先签
+    # 成功、再自暂停"的已了结事实涂成"已取消"，面板与 sign_events 台账给出相反信号。
     for acc in accounts:
         if acc.get("user_paused"):
+            _prev = states.get(acc.get("phone", ""))
+            # 无记录 = 空串（`is_concluded_status` 的"无结论"档），不能传 None——
+            # str(None)="None" 会被排除法误判成"已有结论"，把该合成的"已取消"也吞掉
+            _prev_status = _prev.get("status", "") if isinstance(_prev, dict) else ""
+            # is_concluded_status 是排除法：看不懂的状态串按"已有结论"处理（宁可不
+            # 覆盖，也不把真实失败从面板上抹掉）
+            if m.yiban_status.is_concluded_status(_prev_status):
+                continue
             states[acc.get("phone", "")] = {
                 "status": m.STATUS_USER_CANCELLED,
                 "message": "用户已取消签到",
             }
     # 自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
     prefs = {p: v["slot_min"] for p, v in m.db.get_time_prefs().items()}
-    # "上次实领是谁签的"：口径是**最近一次有记录的业务日**（用户 2026-09-21 定，
-    # "上次"的字面意即最近一次——周末停签后按"昨天"取会让整列空白到下一个工作日）。
+    # "上次实领是谁签的"：口径是**最近一次有记录的业务日**——"上次"的字面意即最近一次
+    # （按"昨天"取的话，周末停签后会让整列空白到下一个工作日）。
     # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
     # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
-    last_exec = m._last_executors(m.db.claim_latest_day())
-    sw = m._sign_window()
-    _span_min = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
+    last_exec = m._last_executors(m.db.task_latest_day())
+    # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
+    # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
+    _win = m.sign_window_bounds()
+    _span_min = _win.end_min - _win.start_min
 
     def _edge_mark(slot):
         if slot is None:
@@ -155,6 +166,8 @@ def api_account_add():
     err, clean = m.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
+    # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
+    m.fold_phone_code(clean)
     # 预筛（同 api_my_account_add）：容量/手机号占用/内置邮箱先拦，注定失败的
     # 添加不再消耗易班网络验证。权威校验仍在下方写锁内。
     with m._file_lock:
@@ -265,6 +278,14 @@ def api_account_add():
                     created = m.db.create_user(
                         email, initial_hash, "user",
                         m.clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
+                        # 与开放注册同口径的注册留痕，且与 INSERT 同事务：注册即建立
+                        # 账号凭据，中间被杀不留"建了却无痕"。
+                        audit_spec={
+                            "username": session.get("username") or "?",
+                            "action": "user_register",
+                            "target": email,
+                            "detail": "管理员添加账号自动注册",
+                        },
                     )
                 except sqlite3.IntegrityError:
                     return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
@@ -277,19 +298,20 @@ def api_account_add():
             clean["owner"] = "admin"
             clean["status"] = m.ACCOUNT_STATUS_ACTIVE
         try:
-            new_id = m.db.add_account(clean)
+            # 审计与 INSERT 同事务（audit_spec）：账号建了却没有审计行这件事不可能
+            # 发生——中间被杀也不会留下"做了无留痕、欠账仍为 0"。
+            new_id = m.db.add_account(clean, audit_spec={
+                "username": session.get("username") or "?",
+                "action": "account_add",
+                "target": m._mask_phone(clean["phone"]),
+                "detail": f"归属 {m._mask_email(clean['owner'])} 状态 {clean['status']}",
+            })
         except m.db.DuplicatePhoneError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
         except m.db.DuplicateOwnerError:
             return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发重复兜底
-        m.db.audit(
-            session.get("username") or "?",
-            "account_add",
-            m._mask_phone(clean["phone"]),
-            f"归属 {m._mask_email(clean['owner'])} 状态 {clean['status']}",
-        )
         accounts = m.load_accounts()  # 重读（含新行，返回前端列表）
     m.logger.info(
         "添加账号 %s（归属 %s，状态 %s）",
@@ -367,24 +389,33 @@ def api_account_update(idx):
             and m.find_account_index(accounts, clean["phone"]) is not None
         ):
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-        # 改写他人易班凭据（填了新密码 / 改绑手机号）与"不可逆清除"同档：拿到被窃
-        # 管理员会话的人一次 PUT 就能把某用户的账号换成自己的凭据——此后签到在攻击
-        # 者侧完成、真用户被静默挤出，界面上看不出任何异常。只改备注/设备型号不算。
-        # 走 _high_risk_gate：先二次鉴权、通过后才占高危额度（顺序即该函数的立身之本）。
-        creds_written = bool(str(data.get("password", "")).strip()) or (
-            clean["phone"] != old.get("phone"))
-        if creds_written:
-            denied = _high_risk_gate()(data, "改写他人易班凭据")
+        # 设备识别码先折算成将进 SET 的最终值，再进下面的"改写凭据"判定——写侧
+        # （store/accounts.py）把 phone_code 与 password 同档加密/重加密，读侧若少认
+        # 这一项，"只改写设备识别码"就会既不过门、不标位、也不发信：写侧干了凭据
+        # 的活，读侧记账口径却是零。哨兵/留空的语义与 /my-accounts 及添加路径共用
+        # fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
+        old_code = old.get("phone_code") or ""
+        code_written = m.fold_phone_code(clean, old_code) != old_code
+        # 凭据改写分两档（按用户拍板清单收窄）：
+        # - **过门**：改易班密码 / 改绑手机号（改他人凭据类）——拿到被窃管理员会话的人
+        #   一次 PUT 就能把某用户的账号换成自己的凭据，此后签到在攻击者侧完成、真用户
+        #   被静默挤出，界面上看不出异常。走 _high_risk_gate：先二次鉴权、通过后才占
+        #   高危额度（顺序即该函数的立身之本）。
+        # - **免门**：只改/只清设备识别码（MF-86 的归类回退为"只标位/只发信"）——
+        #   识别码是学校开设备绑定时的登录要素，属完整性/可用性轴，可逆（改回即可），
+        #   不再要口令、不占额度；但**保留全部信号**：creds_written（下方审计"改写凭据"
+        #   位 + 当事人信 + 非 full 档管理员紧急告警）仍把 code_written 算在内。
+        # 只改备注/设备型号/名称不算任何一档（零误报不变）。
+        creds_written = (bool(str(data.get("password", "")).strip())
+                         or clean["phone"] != old.get("phone")
+                         or code_written)
+        if bool(str(data.get("password", "")).strip()) or clean["phone"] != old.get("phone"):
+            denied = _high_risk_gate()(data, "改写他人易班凭据", quota="creds")
             if denied is not None:
                 return denied
         # 密码留空 = 保持不变（密码明文永不下发前端）
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变（表单不预填防误清空）
-        if clean["phone_code"] == m.CLEAR_SENTINEL:
-            clean.pop("phone_code", None)
-        elif not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
         # 归属保持不变（管理员编辑不改变提交者）
         clean["owner"] = old.get("owner", "admin")
         # 改绑手机号一律回待审核重审——
@@ -399,10 +430,19 @@ def api_account_update(idx):
         else:
             clean["status"] = old.get("status", m.ACCOUNT_STATUS_ACTIVE)
         try:
+            # 审计与本次 UPDATE 同事务：改写他人易班凭据必须与留痕共存亡——凭据已改而
+            # 审计表无此条，正是"改了凭据但追不到谁改的"的核心症状。
             result = m.db.update_account(
                 old["id"],
                 clean,
                 expect_snapshot=snapshot if isinstance(snapshot, dict) else None,
+                audit_spec={
+                    "username": session.get("username") or "?",
+                    "action": "account_update",
+                    "target": m._mask_phone(clean["phone"]),
+                    "detail": ("编辑账号" + (" 改绑回审" if rebind else "")
+                               + (" 改写凭据" if creds_written else "")),
+                },
             )
         except m.db.DuplicatePhoneError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
@@ -418,16 +458,11 @@ def api_account_update(idx):
         # 避免更新失败时误删旧号自选（防孤儿 pref 占容量）
         if clean["phone"] != old.get("phone"):
             m.db.clear_time_pref(old.get("phone", ""))
-        # 凭据变更（改密码/改绑手机号）才清除熔断暂停，立即恢复签到；
+        # 凭据变更（改密码/改绑手机号/改写识别码）才清除熔断暂停，立即恢复签到；
         # 仅改备注/状态等不动熔断计数（防任意编辑把 fail_days 清零、熔断永不跳闸）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
-        m.db.audit(
-            session.get("username") or "?",
-            "account_update",
-            m._mask_phone(clean["phone"]),
-            ("编辑账号" + (" 改绑回审" if rebind else "")
-             + (" 改写凭据" if creds_written else "")),
-        )
+        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
+                                    old_code)
+        # 审计行已随 update_account 同事务写入（见上面 audit_spec）
         # 当事人必须知情（管理员改写他人易班凭据除二次鉴权外，还要绕过
         # 其通知开关发变更信）。send_user 直收地址、不读 mail_notify——攻击者把本人
         # 的接收开关关掉也照样收得到，与自助改密、审核拒绝同一口径。未启用邮件/无
@@ -441,6 +476,9 @@ def api_account_update(idx):
                         _what.append("重设了易班登录密码")
                     if rebind:
                         _what.append("改绑了手机号（需管理员重新审核后才参与签到）")
+                    if code_written:
+                        _what.append("改写或清除了设备识别码"
+                                     "（开启设备绑定的学校，签到时提交给易班的验证码随之改变）")
                     m.mailer.send_user(
                         _owner,
                         "【易班签到】您的易班账号信息被管理员修改",
@@ -456,6 +494,25 @@ def api_account_update(idx):
                     )
                 except Exception as e:
                     m.logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
+        # 改写他人凭据靠"事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员
+        # 可追溯、可回滚（此前只通知当事人，管理员侧零信号）。抑制口径随门走：
+        # 本次若真被口令门拦过（门内动作 + full 档）就不重复发；识别码免门后，
+        # full 档的识别码改动同样需要这封事后告警。
+        gated_creds = (bool(str(data.get("password", "")).strip())
+                       or clean["phone"] != old.get("phone"))
+        if (creds_written and not (gated_creds and
+                                   m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL)):
+            m.send_notification(
+                "高危管理操作告警",
+                m._change_mail(
+                    "改写他人易班凭据。",
+                    detail=[("目标", m._mask_phone(clean["phone"])),
+                            ("归属用户",
+                             m._mask_email(str(clean.get("owner") or "admin")))],
+                    advice=["如非本人申请，请立即核实并回滚该账号凭据"],
+                ),
+                urgent=True,
+            )
         accounts = m.load_accounts()
         m.logger.info("编辑账号 %s", m._mask_phone(clean["phone"]))
         return jsonify(
@@ -473,7 +530,7 @@ def api_accounts_batch():
     "不可逆清除"：一个请求最多 BATCH_OP_LIMIT 条，漏了门禁即为数十秒内把全部
     易班凭据不可逆清零且无人知晓。故 purge 要求二次鉴权 + 同管理员窗口限速
     （429）。delete（软删）虽可逆（7 天宽限 + 409 防错位），但它立即停止该用户
-    代签且受害者无法自助恢复，同样接入该高危限速并逐次告警、但**不要求二次
+    代签且受害者无法自助恢复，同样接入该高危限速、但**不要求二次
     口令**（可逆操作加口令只增误伤）。approve/reject/restore 可逆且有防错位兜底，
     维持无门禁。
     """
@@ -501,15 +558,15 @@ def api_accounts_batch():
         # 统一走 _high_risk_gate（先验口令，通过了才占高危额度）；
         # 429 文案与用户侧批量删除一致，运维只需记一句话
         gate = _high_risk_gate()(
-            data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+            data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
+            irreversible=True)
         if gate:
             return gate
     # 软删也占用同一份高危额度：它虽可逆（7 天内可恢复），但立即让该用户当天起
     # 停止代签，且**受害者无法自助恢复**（/api/my-accounts/<idx>/restore 对管理员
     # 删除的行返回 403），因此被盗的注册管理员会话可用几十次调用在数秒内静默让
     # 全站停签——与"删数据 / 拆报警器是同一条链" 同风险。这里**仍然不要求二次
-    # 口令**（可逆不加口令，加了口令只增误伤），只限制速率并逐次告警（告警在
-    # ops 落库与审计之后发送，见下方）。
+    # 口令**（可逆不加口令，加了口令只增误伤），只限制速率（留痕在审计行）。
     if action == "delete" and _admin_delete_limited()():
         return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
     with m._file_lock:
@@ -538,9 +595,7 @@ def api_accounts_batch():
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
 
         ops = []
-        batch_targets = []  # 审计留目标清单（脱敏截断）
-        purge_targets = []  # 高危操作（物理删除）即时告警汇总
-        soft_delete_targets = []  # 软删即时告警汇总
+        batch_targets = []  # 审计留目标清单（脱敏截断）：只收真正产出了操作的行
         reject_notify_owners = {}  # 批量拒绝每户一封
         # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
         live_owners = {
@@ -550,6 +605,7 @@ def api_accounts_batch():
         }
         for i in valid:
             acc = accounts[i]
+            _ops_before = len(ops)  # 本行是否真的产出了操作（目标清单与 ops 同口径的判据）
             if action == "approve":
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
                 if not acc.get("deleted") and acc.get("status") in (
@@ -568,7 +624,6 @@ def api_accounts_batch():
                 # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
                 if acc.get("deleted"):
                     ops.append(("purge", acc["id"]))
-                    purge_targets.append(m._mask_phone(str(acc.get("phone", ""))))
             elif action == "restore":
                 if acc.get("deleted"):
                     owner = acc.get("owner", "")
@@ -586,23 +641,15 @@ def api_accounts_batch():
                 ops.append(
                     ("set_deleted", acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"))
                 )
-                soft_delete_targets.append(m._mask_phone(str(acc.get("phone", ""))))
-            batch_targets.append(acc.get("phone", ""))
+            # 目标清单与 ops 同源：不满足前置（本行没生成操作）的行不进审计——
+            # 此前 `done=len(ops)` 数操作、`batch_targets` 数全部合法下标，
+            # 同一条审计行里"处理 N 个"与其后清单是两套口径。
+            if len(ops) > _ops_before:
+                batch_targets.append(acc.get("phone", ""))
         done = len(ops)
         if ops:
             try:
                 m.db.batch_account_ops(ops)
-                if purge_targets:
-                    # 高危操作即时告警（不等每日审计体检）
-                    m.send_notification(
-                        "高危管理操作告警",
-                        m._change_mail(
-                            f"批量彻底删除账号 {len(purge_targets)} 个。",
-                            detail=[("目标", "、".join(purge_targets[:20]))],
-                            advice=["物理删除不可恢复；操作前应有当日备份"],
-                        ),
-                        urgent=True,
-                    )
             except m.db.DuplicateOwnerError:
                 m.db.audit(
                     session.get("username") or "?",
@@ -639,23 +686,8 @@ def api_accounts_batch():
                 m._mask_phone(str(p)) for p in (batch_targets or [])[:20]
             ))[:200],
         )
-        if action == "delete" and soft_delete_targets:
-            # 软删即时告警刻意排在 db.audit 之后、
-            # 返回之前——先把证据落进审计链（HMAC 链 + 库外锚点），再尝试外发，
-            # 外发失败不影响留痕（与 api_account_purge 同顺序、同理由）。
-            # 标题沿用「高危管理操作告警」：send_notification 的邮件节流按**标题**
-            # 计窗（见 _mail_alert_due），因此被盗会话快速连删不会刷爆 SMTP 额度、
-            # 合法运维的批量清理也只留一封邮件；webhook 仍逐条实时推送（告警实时性
-            # 由 webhook 保证），两头的语义都保住。
-            m.send_notification(
-                "高危管理操作告警",
-                m._change_mail(
-                    f"批量删除账号（软删）{len(soft_delete_targets)} 个。",
-                    detail=[("目标", "、".join(soft_delete_targets[:20]))],
-                    advice=[f"{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复"],
-                ),
-                urgent=True,
-            )
+        # 软删与彻底删除不再外发即时告警：留痕由上面的审计行承担（动作 + 目标清单），
+        # 软删本身可逆（保留期内可恢复），把它当"事故"逐条发信会让真故障淹没。
         accounts = m.load_accounts()
         m.logger.info("批量%s账号 %d 个", action, done)
         msg = {
@@ -677,9 +709,9 @@ def api_accounts_batch():
 def api_account_delete(idx):
     """删除账号（软删除）：进入待删除状态，保留期内可恢复，超期自动彻底清除。
 
-    软删占用高危额度并即时告警——理由见 /api/accounts/batch 的 action=="delete"
-    分支注释（软删可逆但立即停签、受害者无法自助恢复，被盗注册管理员会话可
-    借此静默让全站停签），但不要求二次口令（可逆操作不加口令）。
+    软删占用高危额度（软删可逆但立即停签、受害者无法自助恢复，被盗注册管理员
+    会话可借此静默让全站停签），但不要求二次口令（可逆操作不加口令），也不再
+    外发即时告警——留痕由审计行承担，见函数体内的注释。
     """
     m = _appmod()
     # 门禁刻意留在 _file_lock 之外：_admin_delete_limited 只做内存计数与判速，
@@ -696,24 +728,15 @@ def api_account_delete(idx):
         m.db.set_account_deleted(
             acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             deleted_by="admin",
+            audit_spec={
+                "username": session.get("username") or "?",
+                "action": "account_delete",
+                "target": m._mask_phone(acc.get("phone", "")),
+                "detail": "软删除",
+            },
         )
-        m.db.audit(
-            session.get("username") or "?",
-            "account_delete",
-            m._mask_phone(acc.get("phone", "")),
-            "软删除",
-        )
-        # 先落审计再外发：外发失败不影响留痕（与 api_account_purge 同顺序）。
-        # 标题沿用「高危管理操作告警」以共享邮件节流窗口（见批量分支注释）。
-        m.send_notification(
-            "高危管理操作告警",
-            m._change_mail(
-                "删除账号（软删）。",
-                detail=[("目标", m._mask_phone(str(acc.get("phone", ""))))],
-                advice=[f"{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复"],
-            ),
-            urgent=True,
-        )
+        # 软删不再外发即时告警：留痕由上面的审计行承担，且软删可逆
+        # （DELETED_RETENTION_DAYS 天内可在待删除列表恢复）。
         accounts = m.load_accounts()
         m.logger.info(
             "软删除账号 %s（%s 天内可恢复）", m._mask_phone(acc.get("phone", "")), m.DELETED_RETENTION_DAYS
@@ -744,13 +767,12 @@ def api_account_restore(idx):
             return jsonify(
                 {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
-        m.db.set_account_deleted(acc["id"], 0)
-        m.db.audit(
-            session.get("username") or "?",
-            "account_restore",
-            m._mask_phone(acc.get("phone", "")),
-            "撤销软删除",
-        )
+        m.db.set_account_deleted(acc["id"], 0, audit_spec={
+            "username": session.get("username") or "?",
+            "action": "account_restore",
+            "target": m._mask_phone(acc.get("phone", "")),
+            "detail": "撤销软删除",
+        })
         accounts = m.load_accounts()
         m.logger.info("恢复账号 %s", m._mask_phone(acc.get("phone", "")))
         return jsonify(
@@ -765,16 +787,17 @@ def api_account_restore(idx):
 def api_account_purge(idx):
     """彻底删除待删除账号：立即物理清除，不可恢复。
 
-    单条物理清除与批量 purge 同口径：二次鉴权 + 同管理员窗口限速（429），
-    成功后发一条 urgent 告警；缺任一项都等于给被盗管理员会话留一条安静的
-    清库通道（不要求确认口令、不受删除冷却约束、成功零外发）。
+    单条物理清除与批量 purge 同口径：二次鉴权 + 同管理员窗口限速（429）。
+    缺任一项都等于给被盗管理员会话留一条安静的清库通道（不要求确认口令、
+    不受删除冷却约束）；动作本身经审计行留痕。
     """
     m = _appmod()
     # 门禁放在 _file_lock 之外（同 api_accounts_batch 与三处高危删除）：
     # 口令校验耗时数百毫秒，放进全局锁里会凭一次尝试卡住全进程账号读写
     data = m._json_body()
     gate = _high_risk_gate()(
-        data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+        data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
+        irreversible=True)
     if gate:
         return gate
     with m._file_lock:
@@ -793,20 +816,7 @@ def api_account_purge(idx):
             m._mask_phone(acc.get("phone", "")),
             "彻底删除",
         )
-        # 即时告警刻意排在 db.audit 之后、返回之前——先把证据落进
-        # 审计链（HMAC 哈希链 + 库外锚点），再尝试外发，外发失败不影响留痕。
-        # 标题与批量 purge / 用户侧清除完全相同：send_notification 的邮件节流
-        # 按标题计窗（_mail_alert_due），同标题才共享窗口——被盗会话快速连删
-        # 不会被刷爆 SMTP 额度，合法运维的批量清理也只留一封，两头的语义都保住。
-        m.send_notification(
-            "高危管理操作告警",
-            m._change_mail(
-                "彻底删除账号。",
-                detail=[("目标", m._mask_phone(str(acc.get("phone", ""))))],
-                advice=["物理删除不可恢复"],
-            ),
-            urgent=True,
-        )
+        # 彻底删除不再外发即时告警：留痕由上面的审计行承担（谁、删了哪个号）。
         accounts = m.load_accounts()
         m.logger.info("彻底删除账号 %s", m._mask_phone(acc.get("phone", "")))
         return jsonify(

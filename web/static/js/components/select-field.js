@@ -88,18 +88,28 @@
     return hit;
   }
 
-  // 可见文案 = 选中项文本；无匹配值时退回首项（避免出现"空白控件"）
-  function paint(root, v) {
-    var input = hiddenOf(root);
-    var hit = optionByValue(root, v);
-    if (input && !hit) {
-      var first = optionsOf(root)[0];
-      if (first) { v = first.getAttribute("data-v"); input.value = v; hit = first; }
+  // 值 → 可见态的**纯解析**：命中返回对应项，未命中**原样返回该值**（渲染为未知态）。
+  // 刻意不做"未知值退回首项"：那会静默把服务器上的未知枚举换成首项并回写隐藏 input，
+  // 于是下一次无关保存把首项当成"用户改动"写进 .env（配置被静默改写）。
+  function resolvePaintValue(opts, v) {
+    var i;
+    for (i = 0; i < opts.length; i++) {
+      if (opts[i].v === v) return { value: v, hit: opts[i] };
     }
+    return { value: v, hit: null };
+  }
+
+  // 可见文案 = 命中项文本；未命中时原样显示该值（未知态，不是空白、也不是首项）。
+  // 不回写隐藏 input：值保持原样，保存侧按"未请求的键变化"防线拦截未知枚举。
+  function paint(root, v) {
+    var opts = optionsOf(root).map(function (o) {
+      return { v: o.getAttribute("data-v"), node: o };
+    });
+    var r = resolvePaintValue(opts, v);
     var text = triggerOf(root) && triggerOf(root).querySelector(".select-trigger-text");
-    if (text) text.textContent = hit ? hit.textContent.trim() : "";
+    if (text) text.textContent = r.hit ? r.hit.node.textContent.trim() : String(v == null ? "" : v);
     optionsOf(root).forEach(function (o) {
-      var on = o.getAttribute("data-v") === v;
+      var on = o.getAttribute("data-v") === r.value;
       o.classList.toggle("is-sel", on);
       o.setAttribute("aria-selected", on ? "true" : "false");
     });

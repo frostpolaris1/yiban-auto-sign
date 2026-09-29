@@ -15,6 +15,18 @@ tmp 文件。机制：Windows 的 `open()` 不带 `FILE_SHARE_DELETE`，**读者
 
 用法（项目根目录）：
     py -m pytest tests/test_env_write_transient_failure.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：`.env` 原子写的瞬态失败面——重试后成功、一直失败时原样抛出且必须清掉 tmp、
+尝试预算有限（不得无限重试）、真并发（读线程 + 连续写）不再失败。
+对应实现：`yiban/infra/env_io.py` 的原子写（`write_env_keys` 的 tmp + `os.replace` 路径）
+与其重试包装。
+关键断言：失败分支必须**成对**断"抛出"与"tmp 已清"——留下的是含密钥与管理员口令哈希的
+完整 `.env` 副本，只断抛出等于把泄露留在原地；`test_attempt_budget_is_finite` 守的是
+"重试不许变成死循环"，与上一条方向相反，两条都在才算闭环。
+依赖：重试与预算两条在任意平台跑（用注入的失败模拟）；`ConcurrentReadWriteTest` 那条
+真并发只在 Windows 上构成负例（Linux `rename` 不受读者影响，模块头已写明），
+非 Windows 上它只会通过、不会失败。子进程/线程用 `time_mod` 注入控制节奏。
 """
 import contextlib
 import importlib.util

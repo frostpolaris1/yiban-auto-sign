@@ -4,6 +4,18 @@
 只做"读配置 + 判定通道可用性"，不发送也不记账。唯一例外是 `get_config` 要展示每日
 剩余额度，故在函数内延迟导入 `ledger`——否则 config ↔ ledger 会形成模块级导入环
 （ledger 反向依赖本层的 `_env_int` / `_env_str`）。
+
+**通信**
+输入：进程环境 `YIBAN_NOTIFY_*`（+ 无 `NOTIFY_` 前缀的 `YIBAN_LOGINFAIL_DAILY_MAX`），
+环境变量优先、回退 `.env`（口径来自 `env_io.env_path` / `parse_env_file`）。
+它调用：`account_crypto.load_key` / `decrypt_text`（解 `SECRET_ENC` 密文）、
+`ledger._daily_limit` / `_daily_remaining`、`ipaddress`。
+谁调用：`transport.send` / `send_test`（类型、密钥、白名单）、
+`web/routes/notify.py` 的 `api_notify_config` / `api_notify_config_save`（设置页读概览
+与保存前判定）、`yiban/engine/alerts.py`（`is_configured` 决定要不要走手机通道）。
+输出给前端的凭据只有一种形态：`get_config()` 里的 `secret_masked`（`_mask_secret` 的
+前 3 后 2 短指纹）。`get_secret()` 返回的是明文，只被 `transport` 拿去发请求；本层
+`logger` 的三处调用记的是解密/解析异常与 `url_desc(host)`，都不写出密钥本身。
 """
 import ipaddress
 import json
@@ -27,10 +39,20 @@ DEFAULT_COOLDOWN = 60
 DEFAULT_DAILY_MAX = 5
 # 紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
 DEFAULT_URGENT_DAILY_MAX = 3
+# 「仅推送重要告警」默认开：推送日额度有限（Server酱免费版 5 条/天），默认就该留给
+# 安全与系统级告警，日常改密、签到结果类只走邮件。`.env` 写 YIBAN_NOTIFY_URGENT_ONLY=0
+# 即显式关闭，恢复"全部告警都推手机"。
+# 发送期判定（yiban/notify/transport.py）与上报值（本模块 get_config 的 urgent_only
+# 字段）必须取同一个默认常量——两处各写一个字面量，设置页显示与实际行为就会分叉。
+DEFAULT_URGENT_ONLY = 1
 # 登录失败告警独立账本的日额度默认值；该键无 NOTIFY_ 前缀（独立命名），但读取口径
 # （环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
 LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
+# "管理员本人操作的回执"类告警（执行体清单变更）的独立日额。刻意只有代码内缺省、
+# 不配 env 键：本账的意义是把这类高频可达的管理侧告警从紧急账里摘出来（喷洒者烧光
+# 紧急账的守卫不能被一条"改清单回执"顶掉），给管理员再加一个可拨开关不扩大问题面。
+DEFAULT_ADMIN_CHANGE_DAILY_MAX = 3
 # CGNAT（RFC 6598）：`ipaddress.is_private` 不覆盖，而云厂商元数据服务常落在此段
 _CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
 
@@ -60,12 +82,55 @@ def _env_str(key, envs=None):
     return envs.get(_PREFIX + key, "").strip()
 
 
+# 非法值告警的一次性旗标（键名集合）：同一键在进程生命周期内只喊一次，不刷屏
+_bad_value_warned = set()
+# 布尔开关键的取值口径（与 `YIBAN_MAIL_ENABLE` 等既有开关的 truthy 表同源词汇）
+_FLAG_TRUE = ("1", "true", "on", "yes")
+_FLAG_FALSE = ("0", "false", "off", "no")
+
+
 def _env_int(key, default, envs=None):
-    """读整数键：非法值回退 default，负值钳到 0（额度类键不接受负上限）。"""
+    """读整数键：非法值回退 default；负值同样非法——回退 default 并出声一次。
+
+    旧实现把负值 `max(0, ·)` 钳成 0，可 0 在额度类键上是**有含义的合法值**（"不限额"）、
+    在 COOLDOWN 上是"不节流"——`YIBAN_NOTIFY_DAILY_MAX=-1` 就此静默变成"放开上限"
+    （MF-44 登记项）。想要哪种放开形态就显式写 0；写负数是笔误，笔误应当出声，
+    不该被折叠成最危险的那一档。
+    """
+    raw = _env_str(key, envs)
     try:
-        return max(0, int(_env_str(key, envs)))
+        value = int(raw)
     except (TypeError, ValueError):
         return default
+    if value < 0:
+        if key not in _bad_value_warned:
+            _bad_value_warned.add(key)
+            logger.warning("YIBAN_NOTIFY_%s=%r 为负值（非法键值），本次按缺省 %d 处理；"
+                           "需要放开上限/关闭节流请显式写 0", key, raw, default)
+        return default
+    return value
+
+
+def _env_flag(key, default, envs=None):
+    """读布尔开关键：1/true/on/yes 开、0/false/off/no 关；其余回退缺省并出声一次。
+
+    治的是「仅推送重要告警」的口径分叉（MF-44）：旧实现在这条开关上走 `_env_int`，
+    而 `_env_int` 只认整数——管理员照直觉写 `YIBAN_NOTIFY_URGENT_ONLY=false`，
+    ValueError 回退缺省 1 = **想关却静默保持开启**，非紧急告警从此不再推手机。
+    开关语义按开关的词汇读，不再按整数读；认不出的写法不猜意图：保持缺省 + 喊一次。
+    """
+    raw = _env_str(key, envs).strip().lower()
+    if raw in _FLAG_TRUE:
+        return 1
+    if raw in _FLAG_FALSE:
+        return 0
+    if not raw:
+        return default
+    if key not in _bad_value_warned:
+        _bad_value_warned.add(key)
+        logger.warning("YIBAN_NOTIFY_%s=%r 不是可辨认的开关写法，本次按缺省 %d 处理；"
+                       "可写 1/true/on/yes 或 0/false/off/no", key, raw, default)
+    return default
 
 
 def _mask_secret(secret):
@@ -111,7 +176,7 @@ def is_safe_url(url):
     防 http 明文外泄与拿推送地址当 SSRF 跳板。域名目标放行（DNS rebinding 由发送
     超时兜底）。本函数是该口径的唯一实现，web 设置页与发送层共用。
 
-    **白名单外写法收严（Low-1）**：`localhost.`（尾点）、纯数字/十六进制/前导零
+    **白名单外写法收严**：`localhost.`（尾点）、纯数字/十六进制/前导零
     IPv4 字面量（`2130706433` = 127.0.0.1）、短式回环（`127.1`）等非 `ipaddress`
     可解析的 host 一律拒掉——否则 `https://2130706433/hook` 这类地址会直通。
     `[::ffff:127.0.0.1]` 等 IPv6 形式已由 `ipaddress` 拦下。
@@ -240,7 +305,9 @@ def get_config():
         "secret_masked": _mask_secret(secret) if enabled else "",
         "configured": bool(ntype or secret),
         "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN, envs),
-        "urgent_only": bool(_env_int("URGENT_ONLY", 0, envs)),
+        # 开关判据与 transport.send 门②同一份 `_env_flag`：发送判定与上报值若各自
+        # 解析，设置页显示与实际行为就会分叉（本文件头注释写明的口径）
+        "urgent_only": bool(_env_flag("URGENT_ONLY", DEFAULT_URGENT_ONLY, envs)),
         # daily_* 两字段语义是「非紧急账」（字段名不变，前端与既有调用方无需改），
         # 紧急账并列暴露为 urgent_daily_*
         "daily_max": general_max,
@@ -250,13 +317,36 @@ def get_config():
     }
 
 
-def is_configured():
-    """推送通道是否已配置可用：类型已设（或回退旧明文 URL）且密钥可解出。
+#: send() 只会走的出口类型；具名之外的 TYPE 值 send() 拒发（"未知通知类型"），
+#: 判据必须与那条 else 同源，否则"出口是否存在"两处各说各话。
+_KNOWN_PUSH_TYPES = ("serverchan", "custom")
 
-    与 send() 自身的未配置短路同一口径——未配置时 send 必然返回 False，先判定可省一次
-    发送尝试；调用方据此在发送前判断「推送出口是否存在」。
+
+def channel_usable(ntype, secret):
+    """「推送出口真实存在」的唯一判据：有密钥 + 类型已知 +（custom 时）过白名单。
+
+    这是 MF-44 登记的口径分叉的收口：`is_configured()` 曾只看"类型已设且密钥解得出"，
+    不看 TYPE 白名单也不看 custom 白名单，而 `send()` 的门①/门⑤遇到未知类型或
+    白名单外地址**必然拒发**——引擎侧（`yiban/engine/alerts.py`）据此判"有推送出口"
+    就会少发一封本该走的邮件，告警在两个判定都"正常"的地方静默消失。
+    判据从 send() 的行为机械导出：未知类型不猜出口、不安全 URL 不放行。
+    """
+    if not secret:
+        return False
+    t = str(ntype or "").strip().lower() or "custom"  # 旧明文 URL 兼容口径与 send() 一致
+    if t not in _KNOWN_PUSH_TYPES:
+        return False
+    if t == "custom":
+        return bool(is_safe_url(secret))  # 只有 custom 的 URL 本身就是投递目标，须过白名单
+    return True
+
+
+def is_configured():
+    """推送通道是否已配置可用：与 send() 的门①+门⑤同一判据（见 `channel_usable`）。
+
+    未配置时 send 必然返回 False，先判定可省一次发送尝试；调用方据此在发送前判断
+    「推送出口是否存在」。此前该函数漏了 TYPE 白名单与 custom 白名单两档，与 send()
+    分叉——修复动机与判据来源见 `channel_usable` 的文档。
     """
     envs = _read_env_file()
-    secret = get_secret(envs)
-    ntype = _env_str("TYPE", envs).strip().lower() or ("custom" if secret else "")
-    return bool(ntype and secret)
+    return channel_usable(_env_str("TYPE", envs), get_secret(envs))

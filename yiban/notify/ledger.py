@@ -5,6 +5,9 @@
 磁盘是唯一事实源：`locks.file_lock`（POSIX flock / Windows msvcrt）串行化 web（常驻）
 与 signin（cron 新进程）的读-改-写，进程内锁只承担同进程互斥。
 依赖方向：config ← 本层 ← transport。
+谁调用：`transport`（占额度 / 失败退还 / 节流表与跳过日志去重表）、`config.get_config`
+（读余额）、`web/services/channel_health.py`（`pop_exhaustion_notice` 取耗尽清单）、
+`web/app.py`（只读判据 `has_pending_exhaustion_notice` / `budget_exhausted_today`）。
 """
 import json
 import logging
@@ -14,7 +17,7 @@ import time
 from contextlib import contextmanager, suppress
 
 from yiban import clock
-from yiban.infra import locks
+from yiban.infra import locks, private_json
 
 from . import config
 
@@ -23,14 +26,14 @@ logger = logging.getLogger("notify")
 # 节流状态的进程内快速路径：本进程刚放行过的标题在窗口内直接跳过，省一次磁盘 IO；
 # 跨进程一致性由磁盘表 + 文件锁保证（见 _throttle_path / transport._throttle_due）。
 # 测试按这两个名字复位内存态（`_throttle_ts.clear()`），不要改名。
-_throttle_ts = {}
+_throttle_ts = {}  # 键=告警标题原文：标题里带了什么（账号标识等）就原样落盘，本层不脱敏
 _throttle_lock = threading.Lock()
 
 # 跳过原因日志去重表：{原因: 上次记录时间}（仅防日志刷屏，跨进程不共享）
 _skip_logged = {}
 _skip_log_lock = threading.Lock()
 
-# 每日推送预算：拆成 general / urgent / login_fail 三本账，各自按日归零、各自持锁。
+# 每日推送预算：拆成 general / urgent / login_fail / admin_change 四本账，各自按日归零、各自持锁。
 # 进程内计数是缓存，磁盘账本（$YIBAN_STATE_DIR/notify-ledger.json）才是事实源——web
 # （常驻）与 signin（每次 cron 新进程）共享同一份额度，Server酱免费版 5 条/天是第三方
 # **全局**约束；跨日由 _roll_locked_inner 归零。
@@ -64,8 +67,18 @@ _loginfail_daily = {
     "notice": {"pending": False, "notified": False, "warned": False},
     "lock": threading.Lock(),
 }
-_LEDGER_IDS = ("general", "urgent", "login_fail")
-_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily, "login_fail": _loginfail_daily}
+# 管理侧"本人操作回执"类告警（执行体清单变更）的独立账本。此前它以 urgent=True 挤占
+# 紧急账（默认 3 条/天）：管理员改一次清单就吃掉一格，真紧急信号被回执类挤光——而
+# 若改用 force=True 免额度，"喷洒烧光紧急账"的守卫又会被这条同样可达的写路径绕开。
+# 具名账本机制（与 login_fail 同款）两头都不占：回执类烧的是自己的账，紧急账完整。
+_adminchange_daily = {
+    "state": {"date": "", "count": 0},
+    "notice": {"pending": False, "notified": False, "warned": False},
+    "lock": threading.Lock(),
+}
+_LEDGER_IDS = ("general", "urgent", "login_fail", "admin_change")
+_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily,
+            "login_fail": _loginfail_daily, "admin_change": _adminchange_daily}
 
 
 # ---------------------------------------------------------------------------
@@ -162,19 +175,15 @@ def _archive_corrupt_state_file(path):
 
 
 def _save_ledger_file(data):
-    """原子写磁盘账本（tmp + os.replace），失败仅告警不影响发送主流程。"""
+    """原子写磁盘账本（单通道私有写，tmp 名含 pid+线程 id），失败仅告警不影响发送主流程。"""
     try:
-        os.makedirs(os.path.dirname(_ledger_path()) or ".", exist_ok=True)
-        tmp = _ledger_path() + ".tmp" + str(os.getpid()) + "-" + str(threading.get_ident())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, _ledger_path())
+        private_json.write_private_json(_ledger_path(), data)
     except OSError as e:
         logger.warning("写入推送额度账本失败（额度仍按内存计数）: %s", e)
 
 
 def _ensure_ledger_structure(disk):
-    """校验盘上账本结构完整（含三本账），缺失键补默认值（不覆盖已有值）。"""
+    """校验盘上账本结构完整（含全部账本），缺失键补默认值（不覆盖已有值）。"""
     for ledger_id in _LEDGER_IDS:
         cur = disk.get(ledger_id)
         if not isinstance(cur, dict):
@@ -207,7 +216,7 @@ def _load_throttle_file():
             raise ValueError("节流表顶层不是 JSON 对象")
         return data
     except FileNotFoundError:
-        return {}
+        return {}  # 缺文件 = 没有历史放行记录，与下面的"损坏"区别对待
     except (OSError, ValueError, TypeError) as e:
         _archive_corrupt_state_file(path)
         logger.warning("推送节流状态损坏或不可读，已归档并按空表处理: %s", e)
@@ -215,13 +224,9 @@ def _load_throttle_file():
 
 
 def _save_throttle_file(data):
-    """原子写磁盘节流表（tmp + os.replace），失败仅告警不影响发送主流程。"""
+    """原子写磁盘节流表（单通道私有写，tmp 名含 pid+线程 id），失败仅告警不影响发送主流程。"""
     try:
-        os.makedirs(os.path.dirname(_throttle_path()) or ".", exist_ok=True)
-        tmp = _throttle_path() + ".tmp" + str(os.getpid()) + "-" + str(threading.get_ident())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, _throttle_path())
+        private_json.write_private_json(_throttle_path(), data)
     except OSError as e:
         logger.warning("写入推送节流状态失败（节流按内存态执行）: %s", e)
 
@@ -233,7 +238,7 @@ def _prune_throttle_entries(data, now, cooldown):
     （窗口内必为 ``now - ts < cooldown``）。仅删过期条目，仍生效窗口不受影响。
     """
     expire_before = now - cooldown
-    for title in [t for t, ts in data.items() if ts < expire_before]:
+    for title in [t for t, ts in data.items() if ts < expire_before]:  # 先物化键列表，迭代中 del 会报错
         del data[title]
 
 
@@ -253,7 +258,7 @@ def _daily_today():
 
 
 def _ledger(ledger_id):
-    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent / login_fail。
+    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent / login_fail / admin_change。
 
     threading.Lock 不可重入：调用方持有返回值的 lock 时只能直接读写 state / notice
     （跨日与告知标记重置由 _with_ledger_locked 统一在文件锁内完成），不得再进入
@@ -274,21 +279,36 @@ def _loginfail_daily_limit(envs=None):
             envs = config._read_env_file()
         value = envs.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
     try:
-        return max(0, int(value))
+        parsed = int(value)
     except (TypeError, ValueError):
         return config.DEFAULT_LOGINFAIL_DAILY_MAX
+    if parsed < 0:
+        # 负值非法：回退缺省并出声一次。旧实现 `max(0, ·)` 把 -1 钳成 0，而 0 在额度
+        # 键上是有含义的"不限额"——误写负数等于静默放开上限（MF-44 登记项；本函数
+        # docstring 一直写着"负值回退默认"，代码与注释相矛盾，以改代码对齐判据）。
+        # 需要不限额就显式写 0。
+        if "LOGINFAIL_DAILY_MAX" not in config._bad_value_warned:
+            config._bad_value_warned.add("LOGINFAIL_DAILY_MAX")
+            logger.warning("%s=%r 为负值（非法键值），本次按缺省 %d 处理；需要不限额请显式写 0",
+                           config.LOGINFAIL_DAILY_MAX_KEY, value,
+                           config.DEFAULT_LOGINFAIL_DAILY_MAX)
+        return config.DEFAULT_LOGINFAIL_DAILY_MAX
+    return parsed
 
 
 def _daily_limit(ledger_id, envs=None):
     """该本账的每日上限（0 = 不限）。
 
     urgent → YIBAN_NOTIFY_URGENT_DAILY_MAX；login_fail → YIBAN_LOGINFAIL_DAILY_MAX
-    （独立账本）；其余（general）→ YIBAN_NOTIFY_DAILY_MAX。
+    （独立账本）；admin_change → 代码内缺省额（不新增 env 键，判据见 ledger 头部该账
+    本注释）；其余（general 与兜底：未知 id 也算 general 账）→ YIBAN_NOTIFY_DAILY_MAX。
     """
     if ledger_id == "urgent":
         return config._env_int("URGENT_DAILY_MAX", config.DEFAULT_URGENT_DAILY_MAX, envs)
     if ledger_id == "login_fail":
         return _loginfail_daily_limit(envs)
+    if ledger_id == "admin_change":
+        return config.DEFAULT_ADMIN_CHANGE_DAILY_MAX
     return config._env_int("DAILY_MAX", config.DEFAULT_DAILY_MAX, envs)
 
 
@@ -300,7 +320,7 @@ def _daily_remaining(ledger_id, limit=None):
     if limit is None:
         limit = _daily_limit(ledger_id)
     if limit <= 0:
-        return None
+        return None  # None=不设上限，调用方不得当成"剩 0 条"（0 与 None 语义相反）
     led = _ledger(ledger_id)
     with led["lock"]:
         # 单次文件锁临界区：读盘 → 跨日对齐 → 读剩余，纯读不写盘
@@ -339,7 +359,7 @@ def _roll_locked_inner(ledger_id, disk, today):
 def _merge_ledger_into_disk(disk, ledger_id, led):
     """把某本账内存态合并进磁盘 dict（调用方必须已持有文件锁）。
 
-    仅更新本账本，其余键原样保留；写回前补齐三本账的缺失结构。本函数由
+    仅更新本账本，其余键原样保留；写回前补齐全部账本的缺失结构。本函数由
     `_with_ledger_locked`（单次锁临界区，读-改-写一致）使用，故直接覆盖本账本五个
     字段即可——锁内读到的盘值就是最新值，不存在陈旧内存回退问题。
     """
@@ -508,10 +528,47 @@ def _mark_exhausted_locked(ledger_id):
 def _unmark_exhausted_locked(ledger_id):
     """额度因失败退还而回到未耗尽：撤回还没被取走的告知（调用方必须已持有该账本 lock）。
 
-    只撤 pending：notified（调用方已取走、邮件已发出）无法撤销，warned 也不撤销，
-    以免通道长期失败时"占满→退还→再占满"把 warning 刷成日志风暴。
+    只撤 pending：notified（调用方已取走）在这里无法判定"带走它的那封信是否送达"，
+    撤销由 `restore_exhaustion_notice` 在**交付失败的确证时刻**做（同源退还）；
+    warned 也不撤销，以免通道长期失败时"占满→退还→再占满"把 warning 刷成日志风暴。
     """
     _LEDGERS[ledger_id]["notice"]["pending"] = False
+
+
+def _restore_notice_locked(led, ledger_id, limit_now):
+    """锁内：日报**未送达**时把取走的耗尽告知退还（调用方必须已持有该账本 lock 与文件锁）。
+
+    只退还**仍然处于耗尽态**的账：取走告知后、送达失败前，额度可能已被同轮的失败
+    退还恢复到未耗尽——那时"额度已用尽"这句话不再成立，退还 pending 等于制造一条
+    必到的虚警行，与 `_unmark_exhausted_locked` 的虚警撤回同一判据。
+    """
+    notice = led["notice"]
+    if not notice["notified"]:
+        return
+    if limit_now <= 0 or led["state"]["count"] < limit_now:
+        return  # 已不再耗尽（或本账不限额）：告知不再成立，不退还
+    notice["notified"] = False
+    notice["pending"] = True
+
+
+def restore_exhaustion_notice(kinds):
+    """交付失败退还：把 `pop_exhaustion_notice` 取走、而搭载它的那封信**没有送达**的
+    告知标记放回去（pending 重挂、notified 复位），当日稍后重试仍会带上"哪本账用尽"。
+
+    MF-44 验收不变量"任何占用必须有对应送达回执或退还"在告知标记上的落点：旧语义是
+    "取走即置位、无退还"——日报被一次 SMTP 瞬断吞掉后，告知随 pop 一起静默消失，
+    恰好是最不该安静的失败。账本结构不新增键（pending/notified 均为既有字段），
+    跨进程与跨日口径与 pop 完全同源：逐本账各持一次锁，绝不两把同持。
+    """
+    for ledger_id in kinds:
+        if ledger_id not in _LEDGERS:
+            continue  # 只可能来自本模块自己的 pop 结果；防御未知名，不新增状态
+        led = _ledger(ledger_id)
+        limit_now = _daily_limit(ledger_id)  # 锁外解析，别持锁做文件 I/O
+        with led["lock"]:
+            _with_ledger_locked(
+                ledger_id, lambda led_, disk_, lid=ledger_id, lim=limit_now:
+                _restore_notice_locked(led_, lid, lim))
 
 
 def _log_exhaustion_warning(ledger_id):
@@ -520,6 +577,8 @@ def _log_exhaustion_warning(ledger_id):
         label, env_key = "紧急", "YIBAN_NOTIFY_URGENT_DAILY_MAX"
     elif ledger_id == "login_fail":
         label, env_key = "登录失败告警", config.LOGINFAIL_DAILY_MAX_KEY
+    elif ledger_id == "admin_change":
+        label, env_key = "管理变更回执", "（代码内缺省额，无 env 键）"
     else:
         label, env_key = "非紧急", "YIBAN_NOTIFY_DAILY_MAX"
     logger.warning(
@@ -529,7 +588,11 @@ def _log_exhaustion_warning(ledger_id):
 
 
 def budget_exhausted_today(urgent=None):
-    """该本账今日额度是否已用尽；urgent=None 表示"任一账用尽"。无上限恒 False。"""
+    """该本账今日额度是否已用尽；urgent=None 表示"任一账用尽"。无上限恒 False。
+
+    只覆盖 general / urgent 两本推送账：登录失败账（login_fail）的耗尽由
+    `has_pending_exhaustion_notice()` 回答——两者都是"今天要不要发通道健康报告"的判据。
+    """
     if urgent is None:
         return budget_exhausted_today(True) or budget_exhausted_today(False)
     remaining = _daily_remaining("urgent" if urgent else "general")
@@ -539,6 +602,23 @@ def budget_exhausted_today(urgent=None):
 # ---------------------------------------------------------------------------
 # 耗尽告知（阈值由调用方 pop 后自行发信）
 # ---------------------------------------------------------------------------
+
+def has_pending_exhaustion_notice():
+    """当日是否有账本挂着"额度耗尽待告知"标记；**只读**，不取走。
+
+    与 `pop_exhaustion_notice` 的唯一差别就是取不取走：调用方只想回答"今天该不该把
+    耗尽告知捎出去"时，取走会让真正发信那一刻少了那几行"哪本账用尽"——标记按日重置，
+    漏一次就再也补不回来。逐本账都查（含 login_fail）：该账的告知同样只有"通道健康
+    报告"一个取走方，只看 general / urgent 会让它在换日归零时静默消失。
+    """
+    for ledger_id in _LEDGER_IDS:
+        led = _ledger(ledger_id)
+        with led["lock"]:
+            # 经文件锁读盘刷新内存（与 _daily_remaining 同路径）：进程重启后内存态是空的
+            if _with_ledger_locked(
+                    ledger_id, lambda led_, disk_: bool(led_["notice"]["pending"])):
+                return True
+    return False
 
 def _pop_notice_locked(led, disk=None):
     """锁内：取走本账待告知标记并置已交付（调用方必须已持有账本 lock 与文件锁）。

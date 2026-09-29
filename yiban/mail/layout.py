@@ -15,12 +15,20 @@
    中间，读者一眼扫不完。
 2. **不做等宽列对齐**：手机上的纯文本查看器多用比例字体，`标签↥↥↥值` 这种列对齐必然
    散架。字段一律 `· 标签：值`，续行只靠缩进表示从属，不依赖字符对齐。
+
+3. **出站即脱敏（在构造点，不在各发送点）**：`Mail` 是邮件与推送正文共同的生成点
+   （收件人邮箱走 `_mask_addr`/`_mask_email` 口径已定——MF-51；正文里夹带的手机号
+   此前只靠调用点自觉）。正文一出站就不再受控（转发、抄送、截图），故构造时对字符串
+   叶子统一过 `mask_phones_in_text`——与 `MaskingFormatter` 同一份号码口径，不新造
+   第二套。口令/邮箱类字面量仍归调用点的 `sanitize_text`（本层不越位改语义）。
 """
 import html as _html
 import re
 import unicodedata
 
 from yiban import clock
+from yiban.infra.env_io import escape_line_breaks
+from yiban.masking import mask_phones_in_text
 
 # 正文行宽（显示列，全角算 2）。72 列是保守值：主流客户端按 76~80 列折行，留出缩进
 # 与引号后仍在安全区；再宽会让手机端的被动折行重新出现。
@@ -82,7 +90,11 @@ def _fold(text, width=_PLAIN_WIDTH, first="", cont=""):
     """
     limit = max(8, width - max(_dwidth(first), _dwidth(cont)))
     out = []
-    for raw in str(text).split("\n"):
+    # 折行之前先收口换行族：只 split("\\n") 时，其余 9 个被 str.splitlines 视为行边界
+    # 的字符（U+0085 / U+2028 …）会原样穿进正文，邮件客户端却在它们处断行——正文里
+    # 就多出伪造行（MF-44 登记项）。净化走全项目唯一的单行安全原语（与 `.env` 写侧
+    # 同一字符集），`\\n` 保留为内容自身的换行语义。
+    for raw in escape_line_breaks(text, keep_newline=True).split("\n"):
         raw = raw.rstrip()
         if not raw:
             out.append("")
@@ -102,6 +114,21 @@ def _fold(text, width=_PLAIN_WIDTH, first="", cont=""):
         for idx, seg in enumerate(segs):
             out.append((first if idx == 0 else cont) + seg)
     return [ln.rstrip() for ln in out]
+
+
+def _masked_tree(node):
+    """对内容树的所有**字符串叶子**过 `mask_phones_in_text`，其余原样。
+
+    只认 str 叶子（list/tuple 递归、其它类型原样返回）——本层只负责号码，
+    口令/键值类字面量仍由调用点的 `sanitize_text` 负责，两层各守各的口径。
+    """
+    if isinstance(node, str):
+        return mask_phones_in_text(node)
+    if isinstance(node, tuple):
+        return tuple(_masked_tree(x) for x in node)
+    if isinstance(node, list):
+        return [_masked_tree(x) for x in node]
+    return node
 
 
 class Mail:
@@ -127,14 +154,20 @@ class Mail:
 
     def __init__(self, summary="", title=None, fields=None, items=None, notes=None,
                  advice=None, footer=None, groups=None, level="info", time=None):
-        self.summary = summary
-        self.title = title
-        self.fields = list(fields or [])
-        self.items = list(items or [])
-        self.notes = list(notes or [])
-        self.advice = list(advice or [])
-        self.footer = [footer] if isinstance(footer, str) else list(footer or [])
-        self.groups = list(groups or [])
+        # 出站脱敏收口在**构造点**（正文一出站就不再受控：转发/抄送/截图；调用点
+        # 手工遮号漏一处漏一处，与日志面同一治理）。口径 = `mask_phones_in_text`
+        # ——与 `MaskingFormatter` 同一份号码规则（幂等：已遮形态不会二次变形，
+        # 调用点已 `_mask_phone` 过的文本原样通过）。`time`/`level` 不承载账号
+        # 文本，不经这里。
+        self.summary = _masked_tree(summary)
+        self.title = _masked_tree(title)
+        self.fields = [_masked_tree(f) for f in (fields or [])]
+        self.items = [_masked_tree(i) for i in (items or [])]
+        self.notes = [_masked_tree(n) for n in (notes or [])]
+        self.advice = [_masked_tree(a) for a in (advice or [])]
+        raw_footer = [footer] if isinstance(footer, str) else list(footer or [])
+        self.footer = [_masked_tree(f) for f in raw_footer]
+        self.groups = [_masked_tree(g) for g in (groups or [])]
         self.level = level if level in _LEVEL_LABELS else "info"
         self.time = clock.ts() if time is None else time
 

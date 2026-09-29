@@ -6,15 +6,16 @@
 账号与用户的读取 `load_accounts` / `load_accounts_raw` / `load_users`、出站展示序列化
 `mask_account`（含邮箱脱敏 `_mask_email` 与归属展示名 `_owner_display_of`）、按手机号
 定位 `find_account_index`、字段清洗与重提冲突文案 `validate_account` /
-`_duplicate_phone_error` / `_owner_has_other_live`、按 idx 寻址的错位守卫 `_stale_idx_guard`、
+`_duplicate_phone_error` / `_owner_has_other_live`、设备识别码表单协议折算
+`fold_phone_code`（`CLEAR_SENTINEL` 唯一真源）、按 idx 寻址的错位守卫 `_stale_idx_guard`、
 注销冷却剩余 `_delete_grace_remaining`、口令策略 `_password_policy_error` /
 `_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`，
 以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`。
 
 **归属**
 原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——签到窗口 `_sign_window`、`.env` 路径与
-读取器、整数配置读取器、掐头去尾口径 `edge_config`、账号读入口 `load_accounts`——在调用
+转发，把它自己持有、而本模块需要的模块级名字——有效窗口视图 `sign_window_bounds`、
+`.env` 路径与读取器、整数配置读取器、账号读入口 `load_accounts`——在调用
 时刻现取后注入。账号审核态词表、口令策略常量、手机号正则与注销宽限期随本族搬入本模块，
 `web/app.py` 再导出以免 `m.*` 名字面损失。
 
@@ -26,11 +27,12 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。签到窗口、`.env` 路径与读取器、掐头去尾口径、账号读入口都作为显式参数接收：
-它们在 `web.app` 上是会被测试打桩或赋值改写的模块级名字（既有测试在 `web.app` 上打桩
-`_sign_window` / `edge_config` / `read_env` / `load_accounts`，又直接赋值 `ENV_FILE`），
-本模块另持一份绑定会让这些改写静默失效。只读验证复用 `scripts/signin.py` 的
-`signin.verify_account` 真源（登录 + 拉任务，不提交签到），不自建第二套探针。
+模块）。有效窗口视图、`.env` 路径与读取器、账号读入口都作为显式参数接收：它们在
+`web.app` 上是会被测试打桩或赋值改写的模块级名字（`_sign_window` / `edge_config` /
+`read_env` / `load_accounts` 在既有测试里被打桩，`ENV_FILE` 被直接赋值；窗口打桩经
+`sign_window_bounds` 现取后穿透到本模块），本模块另持一份绑定会让这些改写静默失效。
+只读验证复用 `scripts/signin.py` 的 `signin.verify_account` 真源（登录 + 拉任务，
+不提交签到），不自建第二套探针。
 """
 
 import random
@@ -41,6 +43,7 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 
 from web.services.locks import _file_lock
 from yiban import clock
+from yiban.masking import mask_email, mask_email_local
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
@@ -54,12 +57,17 @@ ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑�
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
 PHONE_RE = re.compile(r"^1\d{10}$")
 
-# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐；与 db.purge_deleted_users
-# 默认一致；已注销用户视图按此计算剩余天数。原实现另有硬编码的 7，与
-# db.SOFT_DELETE_RETENTION_DAYS（账号保留期唯一事实源）及 db.purge_deleted_users 默认值
-# 形成三份互不相干的"7"——运维按注释去调 SOFT_DELETE_RETENTION_DAYS 时，账号会被提前
-# 物理清除而恢复宽限期仍按 7 天，用户点恢复会看到"成功"实际账号已消失（静默数据丢失）。
-# 现统一取同一常量（**唯一事实源**，不要再写字面量），使两处口径无法各自漂移。
+# 账号编辑表单里"清除设备识别码"的哨兵值（收到 = 显式清空该字段）。唯一真源在本模块，
+# `web/app.py` 经导入区再导出以保 m.CLEAR_SENTINEL 名字面；前端 account-form.js 内联
+# 同一字面量（跨语言无法 import，靠本常量与折算函数单点在 Python 侧收敛语义）。
+CLEAR_SENTINEL = "__clear__"
+
+# 注销宽限期（天）：**必须**取 db.SOFT_DELETE_RETENTION_DAYS（账号保留期唯一事实源），
+# 不要再写字面量。漂移不是假想：常量之外全仓还散着 48 处「7 天」字面量（含注释，其中
+# 24 处落在 `web/templates/` 与 `web/static/js/`，另有 1 处是不相干的「每 7 天」排期选项；
+# 复点：`grep -ro "7 天\|7天" web yiban --include=*.py --include=*.js --include=*.html`），
+# 保留期一改，账号会被提前物理清除，而页面/邮件/接口提示仍按旧天数承诺——用户点
+# "恢复"会看到成功、实际账号已经没了（静默数据丢失）。把这些处收敛到同一来源归 M3。
 DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
 # ---------------------------------------------------------------------------
@@ -75,10 +83,12 @@ _PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
 _PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
 # 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
 _PASSWORD_MIN_CLASSES = 2
-# 统一口径文案（前后端同句）：旧写法一处把下限写成易被读成"三类起"的中文比较词、另一处
-# 简写得像"数量恰好等于下限"。此后统一用"…中的至少两类"这一无歧义说法。
-# 大小写合并显示（文案精简）；判定仍按上方四类（大写/小写/数字/符号各自独立），
-# 故 _PASSWORD_CLASS_LABELS 保持四元组——管理员"至少三类"消息必须完整列举四类。
+# 统一口径文案（前后端同句）：数量下限一律写成"…中的至少 + 本常量值 + 类别"那种形式。
+# 少了限定词就会被读成恰好值，换用别的比较词又会被读成再多一档；这两种歧义写法由
+# tests/test_rekey_key_source.py::PasswordPolicyParityB14Test 按字面量拦——它连注释一起扫，
+# 所以此处只描述规则，不复述被禁写法。
+# 大小写在文案里合并（精简），判定仍按四类各自计数，所以 _PASSWORD_CLASS_LABELS 保持
+# 四元组：主管理员"至少三类"的消息必须把四类列全。
 _PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
 _PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
 # 主管理员（内置 .env 管理员）口令单独提档：至少 12 位且命中至少三类，与启动期的
@@ -93,10 +103,9 @@ ADMIN_PASSWORD_MIN_CLASSES = 3
 def load_accounts():
     """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。
 
-    `_file_lock` 只护住「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——
-    否则 8 个 web 线程的账号读写仍会被解密串行化。
-    `_file_lock` 与写操作同锁，避免读到同一连接上未提交事务的部分结果
-    （RLock 可重入，写操作内调用无死锁）。
+    `_file_lock` 与写操作同锁（RLock 可重入，写操作内调用无死锁），但只护住
+    「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——否则多路 web 线程的账号
+    读写会被解密串行化。
     """
     def _snap():
         with _file_lock:
@@ -108,10 +117,9 @@ def load_accounts():
 def load_accounts_raw():
     """全部账号原始行（不解密 password/phone_code），供仅需明文列的统计/归类路径。
 
-    只 SELECT + 组行，无 AES-GCM 解密、无明文自愈回写：计数、取 owner 集合、
-    容量三分类等只用得到 phone（本就是明文列，兼作 AAD）/status/user_paused/
-    deleted/owner，调用方拿不到也无需明文凭据。
-    _file_lock 与 load_accounts 同锁：同连接上未提交事务的部分结果不可见。
+    只 SELECT + 组行：无 AES-GCM 解密、无明文自愈回写。计数、取 owner 集合、容量
+    三分类只用明文列（phone 本就是明文、兼作 AAD）与 status/user_paused/deleted/owner，
+    调用方拿不到也无需明文凭据。锁口径与 `load_accounts` 一致。
     """
     with _file_lock:
         return db.accounts_snapshot()
@@ -127,21 +135,27 @@ def load_users():
 # 展示序列化
 # ---------------------------------------------------------------------------
 def _mask_email(e):
-    """日志/列表脱敏：邮箱 → abc***@example.com（保留域名）；已脱敏或非邮箱原样返回（幂等）。"""
-    e = str(e)
-    if "*" in e:
-        return e
-    i = e.find("@")
-    if i <= 0:
-        return e
-    return e[: min(3, i)] + "***" + e[i:]
+    """日志/列表脱敏：邮箱 → abc***@example.com（幂等）。
+
+    真源在 `yiban.masking.mask_email`——展示面与审计 `actor` 列共用同一份口径，
+    这里只是 web 侧的名字转发（前端 `maskEmail` 由对拍测试钉住同口径）。
+    """
+    return mask_email(e)
 
 
 def _owner_display_of(owner_email):
-    """把账号归属邮箱映射为展示名（后台归属列用）：普通用户显示邮箱前缀（@ 前）。"""
+    """账号归属展示名（后台归属列与用户下拉共用唯一口径，服务端算好再下发）。
+
+    普通用户显示**遮罩后的**邮箱本地部（`mask_email_local`：号形态→`138****0000`，
+    其余→前 3 字符 + `***`）。旧实现整段本地部外发——现网约一成账号的本地部
+    **就是手机号**（MF-49 出口字段），且 `account-form.js` 的 `email.split("@")[0]`
+    曾按同一规则在前端另算一份。收敛后拆分与遮罩只在这一处，前端一律消费
+    服务端下发的结果字段，不得本地再拆。
+    """
     if owner_email in ("admin", ""):
         return "管理员"
-    return owner_email.split("@")[0] if "@" in owner_email else owner_email
+    local = owner_email.split("@")[0] if "@" in owner_email else owner_email
+    return mask_email_local(local)
 
 
 def mask_account(acc, index, masked=True):
@@ -239,23 +253,42 @@ def validate_account(data, require_password):
     }
 
 
+def fold_phone_code(clean, old_code=None):
+    """把清洗字段里的设备识别码折算成**将写入库的最终值**，就地更新 clean，返回该值。
+
+    表单协议（全部消费点共用同一折算，防各路由自行解读漂移）：
+    - 空串 = 保持不变：回填 `old_code`（编辑表单不预填本字段，防误清空）。
+    - `__clear__` 哨兵 = 显式清空：**折算成 ""** 留在字段里随 UPDATE 进 SET。
+      哨兵是协议令牌而非用户数据，既不能原样落库，也不能在进 SET 前被摘掉——
+      摘掉就是"用户点清除、看到已保存、库里值原封不动"的静默空操作。
+    - 其余值原样保留。
+
+    `old_code=None` 表示添加路径（没有旧值可保），空串原样留空。返回值供调用方
+    与旧值比对，判定"本次是否改写了设备识别码"。
+    """
+    raw = clean.get("phone_code", "")
+    if raw == CLEAR_SENTINEL:
+        clean["phone_code"] = ""
+    elif not raw and old_code is not None:
+        clean["phone_code"] = old_code or ""
+    return clean.get("phone_code", "")
+
+
 def _stale_idx_guard(acc, data, *, fail_closed=False):
     """防错位校验：mutation 按 idx 寻址时，客户端携带的 phone 与服务端 idx 解析结果
     不一致 → 账号列表在视图快照后已漂移（并发删除/移动等），放行会静默操作错误对象。
     返回 True 表示错位，调用方应返回 409 引导刷新。未携带 phone 的请求（旧客户端/
     测试）默认保持兼容不校验。
 
-    比对前双侧 _mask_phone 归一：/api/accounts 出站即脱敏（mask_account），
-    浏览器回传的是 138****8000 形态；_mask_phone 幂等（含 * 原样返回），直连
-    API 发全号的旧客户端/测试同样归一可比；伪造他人号码仍因不等被拦。
-
-    `fail_closed=True` 给"改写凭据"这类写路径：拿不出任何可核对的标识就等于
-    没人证明 idx 仍指向视图里那一行。放行的代价（静默改掉别人的易班凭据、还回
-    200）远大于拒绝的代价（调用方刷新一次页面），故此时按错位处理。
     """
     phone = data.get("phone") if isinstance(data, dict) else None
     if phone is None:
+        # 没带 phone 就等于没人证明"idx 还指向视图里那一行"：改写凭据这类写路径按错位
+        # 处理。放行=静默改掉别人的易班凭据还回 200，代价远大于让用户刷新一次页面
         return fail_closed
+    # 双侧先过 _mask_phone 再比：/api/accounts 出站即脱敏，浏览器回传的是 138****0000
+    # 形态；_mask_phone 幂等（含 * 原样返回），所以直连 API 发全号的旧客户端同样可比。
+    # 伪造别人的号码仍因不等被拦。
     return _mask_phone(str(phone).strip()) != _mask_phone(str(acc.get("phone", "")))
 
 
@@ -313,32 +346,38 @@ def _admin_password_policy_error(password):
 # ---------------------------------------------------------------------------
 # 自选时间片展示与预计时段
 # ---------------------------------------------------------------------------
-def _slot_to_label(slot_min, sign_window):
-    """自选片窗口内分钟数 → "HH:MM"（调度 v2，与 signin 的 slot 口径一致：06:30 → 390）。
+def _slot_to_label(slot_min, sign_window_bounds):
+    """自选片相对**有效窗口起点**的分钟偏移 → "HH:MM"（偏移 0 = 窗口起点，与调度侧同号）。
 
-    窗口解析器由调用方传入（`web.app` 的 `_sign_window`）：它是会被测试打桩的模块级名字。
+    基准必须是有效窗口起点：片号是相对窗口起点的偏移，而裁剪把有效窗口吃空时
+    `window.bounds` 回退默认窗口——直读原始窗口起点会让片卡（按有效窗口）显示 06:30、
+    而偏好标签与保存提示（按原始窗口）说 07:00，同一页面出现两个钟点。
+
+    参数注入口径见模块头「通信」（`sign_window_bounds` 是既有打桩点）。
     """
     if slot_min is None:
-        return None
-    sw = sign_window()
-    base = sw[0][0] * 60 + sw[0][1]
-    m = base + int(slot_min)
+        return None  # 没选片就没有偏移：不出"07:00"这种假默认值
+    win = sign_window_bounds()
+    m = win.start_min + int(slot_min)
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int, sign_window,
-                   edge_config):
+def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
+                   sign_window_bounds):
     """预计签到时段（调度 v2）：
     顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
     随机排序 = 每天重排，返回 None + 提示文案。
     返回 (estimated_str|None, note_str)。
 
-    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口解析器、掐头去尾口径都由
-    调用方传入（`web.app` 的同名模块级名字）：它们会被测试打桩或赋值改写，
-    本模块另持绑定会让这些改写静默失效。
+    几何一律取自**有效窗口视图**（`window.bounds`，含裁剪吃空时的回退）：自己按原始
+    窗口与原始裁剪拼 `eff_lo/eff_hi` 会在回退时得到空区间（span=0），预计时段静默变空。
+    找不到可用片时仍返回 `(None, "")`（fail-closed，不回退成某个默认片）。
+
+    参数注入口径见模块头「通信」（`load_accounts` / `read_env` / `ENV_FILE` /
+    `load_env_int` / `sign_window_bounds` 都可被打桩或赋值改写）。
     """
     env = read_env(env_file)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
+    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()  # 旧的模式键，下面两个新键缺省时用它
     order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
         "random" if mode == "random" else "sequence")
     dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
@@ -351,12 +390,9 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int, sign_
     idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
     if idx is None or not live:
         return None, ""
-    sw = sign_window()
-    front_min, back_min = edge_config()[0] / 60.0, edge_config()[1] / 60.0
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
-    eff_lo = start_min + front_min
-    eff_hi = end_min - back_min
+    win = sign_window_bounds()
+    start_min, end_min = win.start_min, win.end_min
+    eff_lo, eff_hi = win.lo_min, win.hi_min
     span = eff_hi - eff_lo
 
     def fmt(m):

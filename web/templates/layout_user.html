@@ -27,7 +27,10 @@
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
 </head>
-{# data-page="user"：core.js 据此执行身份/时钟初始化（"auth" 会提前返回） #}
+{# data-page="user"：core.js 里与 data-page 有关的判据只有一条 —— 值等于 "auth" 时提前
+   返回、跳过 /api/me 与 /api/clock；它对 "user" 这个字面量本身不做任何事，本页走的是
+   "不命中跳过条件"那条通用路径，而不是"据此执行初始化"。
+   真正按字面量消费 "user" 的是样式层：app.css 有 14 条 body[data-page="user"] 作用域规则。 #}
 <body data-page="user">
 {{ sprite() }}
 <div class="shell">

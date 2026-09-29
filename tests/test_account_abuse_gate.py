@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """被盗号滥用面加固回归测试（2026-08-29）。
 
+标签：E · Web：认证/权限/API
+覆盖：被盗号滥用面三层加固的回归——高危告警邮件按标题节流（webhook 保持实时）、高危删除的冷却额度、删除类操作的当次口令二次鉴权；另覆盖 notify-config 写接口（加密落盘、权限、清除、测试端点前置校验）
+对应实现：`web/app.py` 的 `_mail_alert_due`、批量删除与 purge 路由、notify-config 读写路由；口令复核的统一入口见 `_sensitive_password_gate`
+关键断言：三条告警（两条同标题）只发 2 封邮件而 webhook 收满 3 条；缺/错口令返回 400 且 `db.find_user` 仍在（鉴权未过不得删除）；超 `YIBAN_ADMIN_DELETE_MAX` 的删除返回 429 且账号未被删；`YIBAN_NOTIFY_URGENT_ONLY` 关闭态必须显式落 `0` 而不是删键——该键默认为「开」，写空值等于回落
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；`mailer.send_admin_alert`、`notify.transport._send_custom`、`send_notification` 按需打桩。`setUpClass` 把 `YIBAN_PW_GATE` 钉成 `full`：默认档 `risk` 下这些动作不再当次要口令，档位矩阵由 `tests/test_pw_gate_tiers.py` 负责
+
 针对「盗号 → 反复批量删除用户 → 耗尽告警邮件额度」攻击链的三层加固：
 
 - 加固1 高危告警邮件节流：同类标题在窗口内只发一封邮件（YIBAN_MAIL_ALERT_COOLDOWN，
@@ -8,7 +14,7 @@
 - 加固2 高危删除操作冷却：同一管理员窗口内批量删除/彻底清除/完全删除超限返回 429
   （YIBAN_ADMIN_DELETE_MAX 次 / YIBAN_ADMIN_DELETE_COOLDOWN_SEC 秒，0=关闭）。
 - 加固3 高危操作二次鉴权：删除类操作须重新输入当前管理员密码，失败与登录/改密共用
-  失败计数，达阈值（LOGIN_FAIL_NOTIFY=3）告警、锁定（LOGIN_MAX_FAILS=5）。
+  失败计数，达阈值（LOGIN_FAIL_NOTIFY）告警、锁定（LOGIN_MAX_FAILS）。
 
 用法（项目根目录）：
     py -m pytest tests/test_account_abuse_gate.py -v
@@ -22,6 +28,8 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -44,6 +52,10 @@ class _B13WebBase(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
                 f"YIBAN_MAIL_ADMIN_TO=admin@test.local\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、失败告警、高危额度
+                # 顺序），故把档位固定在 full——默认档 risk 下这些动作不再当次要
+                # 口令。默认档与 off 档由 tests/test_pw_gate_tiers.py 钉。
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -130,6 +142,9 @@ class MailAlertThrottleTest(_B13WebBase):
         # 隔离验证；webhook 组件（yiban/notify）自身节流测试见 test_notify_webhook.py
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_NOTIFY_COOLDOWN=0\n")
+            # 「仅推送重要告警」默认开：这里推的是任意标题（非 urgent），不显式关掉
+            # 会被档位短路在通道之前，测不到 webhook 的节流语义
+            f.write("YIBAN_NOTIFY_URGENT_ONLY=0\n")
         with mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda t, c, to=None: mails.append((t, c))), \
              mock.patch.object(self.webapp.notify.transport, "_send_custom",
@@ -179,7 +194,9 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("u2@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        for _i in range(3):
+        # 门禁失败告警按**门禁侧**阈值触发：循环次数取 app 的常量，不另抄字面量；
+        # 该常量与登录失败告警阈值是两个数（登录侧调它是为了少发误报）
+        for _i in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):
             r = c.post("/api/users/batch",
                        json={"action": "delete", "emails": ["u2@test.local"],
                              "confirm_password": "wrong-pass"},
@@ -187,7 +204,7 @@ class HighRiskDeleteTest(_B13WebBase):
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("u2@test.local"), "未通过鉴权不得删除")
         self.assertTrue(any(x == "高危操作二次鉴权失败告警" for x, _ in self.alerts),
-                        f"第 3 次失败应告警，实际 {self.alerts}")
+                        f"达阈值应告警，实际 {self.alerts}")
 
     def test_batch_delete_correct_password_200(self):
         self._make_user("u3@test.local")
@@ -234,21 +251,23 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("s1@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        r = c.post("/api/users/s1@test.local/delete",
+        # 单条操作按不透明 id 定位（`/api/users/<int:id>/…`，MF-49 出口面 2-9b）
+        delpath = user_path(db, "s1@test.local", "/delete")
+        r = c.post(delpath,
                    json={"mode": "full"},
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("s1@test.local"))
         # （accounts_only 门禁）：仅清空账号同样接入二次鉴权——
         # 无口令 400；带正确口令放行
-        r2 = c.post("/api/users/s1@test.local/delete",
+        r2 = c.post(delpath,
                     json={"mode": "accounts_only"},
                     headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
+        self.assertEqual(r2.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("s1@test.local"))
         db.add_account({"name": "A", "phone": "13700137001", "password": "pw",
                         "status": "active", "owner": "s1@test.local"})
-        r3 = c.post("/api/users/s1@test.local/delete",
+        r3 = c.post(delpath,
                     json={"mode": "accounts_only", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(t))
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
@@ -390,6 +409,26 @@ class NotifyConfigApiTest(_B13WebBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["urgent_only"])
 
+    def test_put_urgent_only_off_lands_zero_in_env(self):
+        """关闭态必须显式落 `YIBAN_NOTIFY_URGENT_ONLY=0`，不能写空值/删键。
+
+        该键的默认值是「开」：写空值等于删键、随即回落默认，设置页的「关闭」会变成
+        「打开」——与开关本身的意思相反。只断言响应 JSON 抓不住这个洞：那个值来自
+        请求体，删键回落默认时响应照样是 false，必须看盘上落了什么。
+        """
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        c.put("/api/notify-config",
+              json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        r = c.put("/api/notify-config",
+                  json={"urgent_only": False, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_NOTIFY_URGENT_ONLY=0", env,
+                      "关闭态必须在 .env 里显式落 0（写空/删键会回落默认「开」）")
+        self.assertFalse(self.webapp.notify.get_config()["urgent_only"],
+                         "落盘后的生效值必须是关")
+
     def test_put_urgent_only_requires_master(self):
         self._make_user("u@test.local")
         c = self.webapp.create_app().test_client()
@@ -402,6 +441,35 @@ class NotifyConfigApiTest(_B13WebBase):
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.post("/api/notify-test", headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
+    def test_notify_test_each_call_leaves_attributable_audit(self):
+        """MF-96（只落审计半条）：每次外呼恰好一条含操作者的审计，不外加配额。
+
+        成功与失败都记——send(force=True) 的失败往往发生在请求已发出之后
+        （对端拒收/异常），只记成功会漏掉真外呼。刻意钉"连点两次不被限流"：
+        这是管理员自用排障按钮，按用户章程不对其加会话配额/429。
+        """
+        import sqlite3
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        with mock.patch.object(self.webapp.notify, "send_test", return_value=True):
+            r_ok = c.post("/api/notify-test", headers=self._csrf(t))
+        with mock.patch.object(self.webapp.notify, "send_test", return_value=False):
+            r_ng = c.post("/api/notify-test", headers=self._csrf(t))
+        self.assertEqual(r_ok.status_code, 200, r_ok.get_data(as_text=True))
+        self.assertEqual(r_ng.status_code, 400, "失败仍报 400，行为不变")
+        conn = sqlite3.connect(self.db_file)
+        try:
+            rows = conn.execute(
+                "SELECT username, detail FROM audit_logs "
+                "WHERE action='notify_test' ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(rows), 2, "两次外呼尝试各落一条，不多不少（含被拒的）")
+        self.assertEqual({r[0] for r in rows}, {"admin"}, "每条必须含操作者")
+        self.assertIn("已发送", rows[0][1])
+        self.assertIn("未送达", rows[1][1])
 
 
 if __name__ == "__main__":
