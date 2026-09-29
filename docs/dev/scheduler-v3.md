@@ -19,9 +19,8 @@
 
 ## 1. 开关与灰度
 
-调度 v3 由 `YIBAN_SCHEDULER_V3` 单键分派，**缺省 0**（未设 / `0` / `false` / 手写错值
-一律走旧的 v2 路径）。**开关即回滚**：出问题把键改回 `0`，下一轮就是旧路径，无需改库、
-无需回退版本。
+调度 v3 是**唯一生产执行路径**（2026-09 台账单池化：原 `YIBAN_SCHEDULER_V3` 双轨开关已删，
+代码不再读任何开关）。**回滚 = 回退代码版本并重启**；库结构迁移只进不退，回滚前先备份。
 
 | 键 | 含义 | 缺省 | 何时改 | 回滚 |
 |----|------|------|--------|------|
@@ -54,8 +53,8 @@
 8. `attempts.RISK_FAIL_KEYWORDS` 与 `security.WAF_KEYWORDS` 是两份独立维护的同义列表，
    靠注释对齐；合并归后续注释批。
 
-**灰度步骤建议**：先 `dry_run` 影子期 3 天对账落点分布 → 在**非平移/补账日**、
-**当日无 v2 写入**的前提下把 `YIBAN_SCHEDULER_V3=1` → 当日盯 §6 的观测项与 §8 的排障项。
+**上线步骤建议**：先 `dry_run` 影子期 3 天对账落点分布 → 升级部署后的第一个当日盯
+§6 的观测项与 §8 的排障项（无开关，部署即生效）。
 
 ---
 
@@ -107,13 +106,13 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 单账号 = 登录链 4 + 定位 + 签到 = **6 次 HTTP 请求**，故 1 attempt/s ≈ 6 请求/s。
 报数字时必须带这个单位，否则会把"尝试"读成"请求"。
 
-**两套容量口径**（`schedule.capacity_of` 按 `YIBAN_SCHEDULER_V3` 分派，四处调用点统一
-走它：web 保存闸门、现场实测换算、引擎预检、CLI `capacity`）：
+**两套容量公式**（`schedule.capacity_of` 恒走 v3；原按 `YIBAN_SCHEDULER_V3` 分派，该分派
+随单池化删除。四处调用点统一走它：web 保存闸门、现场实测换算、引擎预检、CLI `capacity`）：
 
-- **v2（开关关，逐字不变）**：`capacity_accounts(W, gap, avg) = (W−avg)//(avg+gap)+1`。
+- **v2（已无生产路径，公式存档；仅显式传 `enabled=False` 的测试引用）**：`capacity_accounts(W, gap, avg) = (W−avg)//(avg+gap)+1`。
   单账号周期 = `avg + gap`（gap 是「上一次完成 → 下一次开始」的下限）。这是**串行**口径，
   容量随窗口线性、与出口数无关。
-- **v3（开关开）**：`capacity_accounts_v3(W, k, avg, bucket, util) = k × min(M/avg, bucket) × W × util`。
+- **v3（现行）**：`capacity_accounts_v3(W, k, avg, bucket, util) = k × min(M/avg, bucket) × W × util`。
 
 **M（通道数）**：`M = min(16, ceil(bucket_rate × avg × 2))`（`schedule.channel_count`，
 唯一口径）。通道能力 `M/avg` 只需略高于出口桶上限，**瓶颈是 `M/avg` 与 `bucket_rate` 的
@@ -178,9 +177,7 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 ## 5. 运维操作
 
 ```bash
-# 开闸 / 回滚（.env；改完下一轮生效）
-YIBAN_SCHEDULER_V3=1     # 开
-YIBAN_SCHEDULER_V3=0     # 回滚（无需改库）
+# 开闸 / 回滚：无开关（调度 v3 恒为唯一路径）；回滚 = 回退代码版本并重启（先备份）
 
 # 对账（迁移与双跑的验收门；exit 0=平、1=有差异、2=无法定论）
 python scripts/ledger_check.py --day 2026-09-23 [--all-days 7]
@@ -247,7 +244,7 @@ bash scripts/backup.sh
 |------|------|------|
 | 某些账号当天一直不签，库里是 `claimed` 且 `lease_until` 已过 | 崩溃/被杀的通道留下的行，未被回收 | 正常应在 `租约 60s + 宽限 120s + 回收间隔 60s`（最坏约 4 分钟）内回收；宽限期存在是因为**租约到期 ≠ 持有者已死**（慢尝试可能比租约还长，立即回收会让同一账号被重领、重复真实登录）。若仍卡住，查 `reap_expired` 是否报 warning（库异常），必要时手工跑一轮或重启执行体 |
 | 页面执行体行显示 `stale` | 有开始、无收尾（心跳过期）：被强杀 / 超时；**单进程直跑**时内部未预期异常也不写收尾（受监督路径下子进程正常退出、含失败，会写收尾判 `finished`，不在此列） | 查进程与宿主 `timeout`、日志里的"v3 执行体未预期异常"；长轮次若仍 `stale` 说明心跳刷新没走（补货循环未运行） |
-| 页面执行体行一直 `idle` | 当日无该槽位心跳：v3 未起跑或心跳写失败 | 确认 `YIBAN_SCHEDULER_V3=1` 且本轮真的起跑；看日志有无心跳写失败 debug |
+| 页面执行体行一直 `idle` | 当日无该槽位心跳：v3 未起跑或心跳写失败 | 确认本轮真的起跑（无开关：cron 是否触发 `run.sh`、执行体清单是否解析出 worker 行）；看日志有无心跳写失败 debug |
 | 某日闸门永不了结、补签轮反复空跑 | 用 `day_counts` 的 `open` 当闸门，把 `vshard=-1` 历史行算进去了 | 改用 `pending_count(day, 分片集)`；历史行按设计保持原样 |
 | 网页日历空窗（当天没记录） | 尝试未物化状态 | v3 每次尝试结束即写 `sign-state`；若空窗查状态目录权限与库 |
 | V 不一致 / 有行没被领取 | 落库 V 与已写行最大分片号不符 | 日志会有"虚分片数不可用"error，按最大分片号放宽；核对 `app_meta` 的 `scheduler_v3_v_<day>` 与队列库 |
