@@ -9,7 +9,7 @@
    对齐的放弃通知/日志、令牌桶三件接线、产品契约（每次尝试写
    sign-state、dry_run
    零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
-对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、steal_shards、reclaim_tasks）、yiban/engine/runner.py
+对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、reclaim_tasks）、yiban/engine/runner.py
    的执行调用点、yiban/engine/hrw.py 与 token_bucket.py。
 关键断言：单池后 `runner` 恒定转调 `run_executor_v3`（`--only` 走显式路径：reclaim +
    claim_all + requeue_final），`round.run_queue_retry` 无生产调用点。写进
@@ -17,7 +17,8 @@
    落库后只读，行索引落在当日 v_for()
    之外也仍要被领取，否则当天计划与领取集错位就永久漏领。vshard=-1
    的历史行永不计入待办（算进去会让该日永远不了结）。崩溃回收必须排在领取循环里且带
-   day。死主接管的判据是「stale」四态而非「偷到几行」，且不得误伤
+   day。死主接管的判据是「stale」四态、只并入死主分片不改行归属（owner
+   改写已裁，行由领取落到领取者名下），且不得误伤
    running/finished/idle
    的活执行体。收尾标记只在正常返回路径写，异常与中断都必须让心跳过期后判
    stale。
@@ -1788,9 +1789,9 @@ class WorkerFinishMarkTest(_Base):
 
 
 class DeadPeerTakeoverTest(_Base):
-    """死主分片接管的接线：`steal_shards` 要**两个身份**（接管者 + 死主），别传错。"""
+    """死主分片接管的接线：判死按死主的**稳定槽位名**查心跳，并入的是它的分片集。"""
 
-    def test_dead_peer_pending_rows_are_taken_over_and_shards_widened(self):
+    def test_dead_peer_shards_are_merged_and_rows_untouched(self):
         peer = "worker-2@testhost"
         v = 8
         self._seed_v(v)
@@ -1809,19 +1810,22 @@ class DeadPeerTakeoverTest(_Base):
 
         out = executor_v3._widen_with_dead_peers(ctx, ())
 
-        self.assertEqual(self._row(_phone(1))["owner"], RUNTIME_OWNER,
-                         "死主的 pending 行必须改归本执行体（dead_owner 要传死主）")
+        self.assertEqual(out, tuple(sorted(peer_shards)), "死主分片并入本轮领取范围")
+        # 只并入分片集、不改任何行：行归属改写已裁，行保持原样（归属在领取时落）。
+        self.assertEqual(self._row(_phone(1))["state"], "pending", "死主的行保持原状")
+        self.assertEqual(self._row(_phone(1))["owner"], peer, "死主的行不得被改写归属")
+        self.assertEqual(self._row(_phone(1))["epoch"], 1, "不改行则不得自增 epoch")
         self.assertEqual(self._row(_phone(2))["owner"], OWNER, "本执行体自己的行不动")
         self.assertEqual(self._row(_phone(2))["epoch"], 1, "自己的行不得被自增 epoch")
-        self.assertEqual(out, tuple(sorted(peer_shards)), "死主分片并入本轮领取范围")
 
 
 class DeadPeerTakeoverChainTest(_Base):
-    """接管链路要一路走到"本轮真的领到"：判死 → 改归 → 并入领取集 → `claim_batch` 领出。
+    """接管链路要一路走到"本轮真的领到"：判死 → 并入领取集 → `claim_batch` 领出。
 
-    `steal_shards` 的单测只证明行被改归本执行体。只改归属、不把死主分片并入领取集，
-    本执行体不会去扫那些分片，行就成了"改了却领不到"——单测看不出的那一跳。故本用例跑
-    **真实补货**（不注入假条目），断言死主的行在本轮被领取并执行。
+    行归属改写已裁（原 `steal_shards`），接管只剩并入一跳——但只把死主分片并入领取集
+    之外的地方（比如行改写）都救不了"行能不能被领到"：本执行体不去扫那些分片，行就
+    无人领。故本用例跑**真实补货**（不注入假条目），断言死主的行在本轮被领取并执行，
+    领取后 owner=领取者（行归属在领取时落）。
 
     `RECOVER_SEC` 置 0 保留：起跑那次接管（`DeadPeerTakeoverOnStartTest`）会在本用例的
     死主上先命中，但补货循环里的那次接管仍是**长轮次中途死主**的唯一出路，置 0 让它在
@@ -1859,8 +1863,8 @@ class DeadPeerTakeoverChainTest(_Base):
         for phone in phones:
             row = self._row(phone)
             self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "接管后 owner 是本执行体（运行时身份）")
-            self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
+                             "领取后 owner 是本执行体（运行时身份）——归属在领取时落")
+            self.assertGreater(row["epoch"], 1, "领取自增 epoch（fencing）")
             self.assertEqual(row["state"], "done")
             self.assertIn(phone, results)
 
@@ -1904,20 +1908,19 @@ class DeadPeerTakeoverOnStartTest(_Base):
         for phone in phones:
             row = self._row(phone)
             self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "接管后 owner 是本执行体（运行时身份）")
-            self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
+                             "领取后 owner 是本执行体（运行时身份）——归属在领取时落")
+            self.assertGreater(row["epoch"], 1, "领取自增 epoch（fencing）")
             self.assertEqual(row["state"], "done")
             self.assertIn(phone, results)
 
 
 class DeadPeerClaimedOnlyTakeoverTest(_Base):
-    """死主把分片内的待办**全领成 `claimed` 后崩**：判死即并入，不能以"偷到几行"为门。
+    """死主把分片内的待办**全领成 `claimed` 后崩**：判死即并入，与"改到几行"无关。
 
-    `reap_expired` 把过期 `claimed` 行回退成 `pending` 时**清空 `owner`**，此时该分片
-    内已没有 `owner=<死主>` 的 `pending` 行，`steal_shards` 返回 0。若把"并入死主分片"
-    挂在 `taken > 0` 上，分片就不进本轮领取集 ⇒ 刚被回收成 `pending` 的行无人可领 =
-    "崩溃即卡死"复现（补货循环那次接管判的是同一个 peer，同样 `taken=0`，救不回来）。
-    故并入与"偷到多少行"解耦：`steal_shards` 的返回值只用于日志与归属修正。
+    `reap_expired` 把过期 `claimed` 行回退成 `pending` 时**清空 `owner`**。行归属改写
+    已裁（原 `steal_shards`），接管只剩并入分片集——本用例钉的正是这条等价链：若把并入
+    挂在任何"改到行"的门上，这些 owner 已清空的行照样救不回来 ⇒ "崩溃即卡死"复现。
+    故并入只看判死（`stale` 四态），行由 `claim_batch` 领取时落到本执行体名下。
     """
 
     def test_claimed_only_dead_peer_shards_are_reclaimed_and_executed(self):
@@ -1930,7 +1933,7 @@ class DeadPeerClaimedOnlyTakeoverTest(_Base):
         phones = [_phone(1), _phone(2)]
         for i, phone in enumerate(phones):
             # 死主把分片内的行**全领成 `claimed`**（分片内没有 pending），随后崩溃：
-            # 租约早已过回收宽限期，但 owner 仍是死主（回收前 `steal_shards` 偷不到）。
+            # 租约早已过回收宽限期，起跑回收会把它们变回 `pending` 并清空 owner。
             self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
                            state="claimed", owner=peer, epoch=1,
                            lease_until=_ts(seconds=-180), run_at=_ts(seconds=-60))
@@ -1954,7 +1957,7 @@ class DeadPeerClaimedOnlyTakeoverTest(_Base):
             row = self._row(phone)
             self.assertEqual(row["state"], "done", "回收 + 并入后必须跑完，不能留 pending")
             self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "回收后由本执行体持有（运行时身份）")
+                             "领取后由本执行体持有（运行时身份）")
             self.assertIn(phone, results)
 
 
