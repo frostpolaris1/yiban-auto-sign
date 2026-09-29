@@ -28,6 +28,11 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 对应实现：`yiban/infra/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`、`web/routes/notify.py`（`EnvWriteRefused` 放行次序）、`yiban/infra/account_crypto.py:load_key`
 关键断言：拒绝必须**同时**断"抛错 + .env 字节不变 + 不实体化出未请求的键 + 有审计记录"；只断抛错会漏掉"先实体化再报错"的半生效；两侧同一句拒绝要断言**消息字符串相等**而不是各自含关键词，否则两份校验器可以各写一句都过
 依赖：临时 `.env` + Flask test client + 临时 DB，无网络、无 skip；分隔符按码位逐个枚举
+
+> 批 6c3-D（D-1）：本文件与 `test_env_key_line_model.py` 的同口径重叠段合并——
+> 10 分隔符实测清单三条并一条；V2 潜伏注释两目标键并一条；引擎值内分隔符全循环与
+> 「两侧同句」两条并一条（宽分隔符支逐字符保留两侧文案相等断言）。
+> 主 owner `test_env_line_break_injection.py`（CRITICAL 活体回归执行器）一字未动。
 """
 import contextlib
 import importlib.util
@@ -84,7 +89,11 @@ def _physical_lines(path):
 # 1. 行模型清单纯代码断言（无需 webapp）
 # ---------------------------------------------------------------------------
 class SeparatorLineModelTest(unittest.TestCase):
-    """行分隔符清单必须与 `str.splitlines()` 的真行为逐字符一致。"""
+    """行分隔符清单必须与 `str.splitlines()` 的真行为逐字符一致。
+
+    （6c3-D D-1：原三条——实测清单 / 差集八字符 / 谓词逐字符——同口径，并成一条，
+    各项断言与失败消息原样保留。）
+    """
 
     def test_splitlines_boundary_set_is_exactly_ten(self):
         derived = [chr(c) for c in range(0x110000)
@@ -94,14 +103,11 @@ class SeparatorLineModelTest(unittest.TestCase):
                          "本文件写死的清单与 str.splitlines() 实测不一致")
         self.assertEqual(env_io.ENV_LINE_BREAK_CHARS, frozenset(ALL_BREAKS),
                          "实现常量的字符集与实测清单不同步（漏一个字符 = 留一条注入链）")
-
-    def test_extra_breaks_are_the_eight_beyond_crlf(self):
         self.assertEqual(len(EXTRA_BREAKS), 8)
         self.assertEqual(
             set(hex(ord(c)) for c in EXTRA_BREAKS),
-            {"0xb", "0xc", "0x1c", "0x1d", "0x1e", "0x85", "0x2028", "0x2029"})
-
-    def test_line_model_predicate_matches_splitlines(self):
+            {"0xb", "0xc", "0x1c", "0x1d", "0x1e", "0x85", "0x2028", "0x2029"},
+            "相对 \\n\\r 的差集应恰为这 8 个字符")
         for ch in ALL_BREAKS:
             with self.subTest(ch=hex(ord(ch))):
                 self.assertTrue(env_io.has_line_break(f"A{ch}B"))
@@ -248,11 +254,11 @@ class V2LatentCommentTest(_WebBase):
         for detail in self._audit_details():
             self.assertNotIn(marker, detail, "审计明细不得回带载荷原文")
 
-    def test_u0085_latent_comment_cannot_materialize_global_pause(self):
-        self._attack("YIBAN_GLOBAL_PAUSE", "YIBAN_GLOBAL_PAUSE")
-
-    def test_u0085_latent_comment_cannot_materialize_admin_hash(self):
-        self._attack("YIBAN_ADMIN_PASSWORD_HASH", "YIBAN_ADMIN_PASSWORD_HASH")
+    def test_u0085_latent_comment_cannot_materialize_hidden_config(self):
+        """两处攻击者想实体化的目标键（急停 / 口令哈希）同口径，并一条参数化（D-1）。"""
+        for expect_key in ("YIBAN_GLOBAL_PAUSE", "YIBAN_ADMIN_PASSWORD_HASH"):
+            with self.subTest(key=expect_key):
+                self._attack(expect_key, expect_key)
 
     def test_route_level_unrelated_save_is_refused(self):
         """路由级同型：一次"只改签到模式"的 POST /api/settings 也必须被拒。"""
@@ -421,17 +427,26 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
 class BothSidesSameSentenceTest(_WebBase):
     """同一含宽分隔符入参：web 写入口与引擎 write_env_keys 被**同一句**拒绝。"""
 
-    def test_each_extra_break_refused_with_identical_message(self):
-        for ch in EXTRA_BREAKS:
+    def test_every_break_refused_identically_on_both_sides(self):
+        """全 10 分隔符逐一：引擎侧必拒且零写盘；宽分隔符（差集 8 个）两侧同一句拒绝。
+
+        （6c3-D D-1：原「引擎侧全 10 拒绝」与「两侧同句（8 个）」两条同口径并一条，
+        每字符断言保留。）
+        """
+        for ch in ALL_BREAKS:
             with self.subTest(ch=hex(ord(ch))):
                 self._write_fixture(self.PRISTINE)
+                before = _read_bytes(self.env_file)
                 payload = f"x{ch}y"
-                with self.assertRaises(ValueError) as cw:
-                    self.webapp.write_env_batch(self.env_file,
-                                                {"YIBAN_SIGN_ORDER": payload})
                 with self.assertRaises(ValueError) as ce:
                     env_io.write_env_keys(self.env_file,
                                           {"YIBAN_SIGN_ORDER": payload})
+                self.assertEqual(_read_bytes(self.env_file), before, "拒绝后磁盘不得改动")
+                if ch not in EXTRA_BREAKS:
+                    continue
+                with self.assertRaises(ValueError) as cw:
+                    self.webapp.write_env_batch(self.env_file,
+                                                {"YIBAN_SIGN_ORDER": payload})
                 self.assertEqual(str(cw.exception), str(ce.exception),
                                  "两侧拒绝文案必须同源（同一校验器同一句）")
                 self.assertIn("YIBAN_SIGN_ORDER", str(cw.exception))
@@ -472,17 +487,11 @@ class _EngineBase(unittest.TestCase):
 
 
 class EngineIncomingValidationTest(_EngineBase):
-    """引擎写入口对传入 value/key 一格都不放过（旧实现一字不校验）。"""
+    """引擎写入口对传入 value/key 一格都不放过（旧实现一字不校验）。
 
-    def test_every_break_in_value_is_refused_and_disk_untouched(self):
-        for ch in ALL_BREAKS:
-            with self.subTest(ch=hex(ord(ch))):
-                self._write("YIBAN_OTHER=1\n")
-                before = self._bytes()
-                with self.assertRaises(ValueError):
-                    env_io.write_env_keys(self.env_file,
-                                          {"YIBAN_SECRET_KEY": f"a{ch}b"})
-                self.assertEqual(self._bytes(), before, "拒绝后磁盘不得改动")
+    值里含分隔符的全 10 字符循环与"两侧同一句"断言并到
+    `BothSidesSameSentenceTest::test_every_break_refused_identically_on_both_sides`（D-1）。
+    """
 
     def test_illegal_key_is_refused(self):
         self._write("YIBAN_OTHER=1\n")
