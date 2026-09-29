@@ -376,22 +376,6 @@
     }
   }
 
-  function read(id) {
-    var root = rootOf(id);
-    var input = root ? inputOf(root) : null;
-    return input ? input.value : "";
-  }
-
-  function setDisabled(id, on) {
-    var root = rootOf(id);
-    if (!root) return;
-    var trigger = triggerOf(root), input = inputOf(root);
-    if (trigger) trigger.disabled = !!on;
-    if (input) input.disabled = !!on;
-    root.classList.toggle("is-disabled", !!on);
-    if (on) close(root, false);
-  }
-
   function mount() {
     roots().forEach(build);
     if (globalBound) return;
@@ -410,5 +394,5 @@
     });
   }
 
-  YB.dateField = { mount: mount, set: set, read: read, setDisabled: setDisabled };
+  YB.dateField = { mount: mount, set: set };
 })();

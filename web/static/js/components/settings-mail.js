@@ -282,6 +282,7 @@
       setTip((err && err.message) || "保存失败，请稍后重试", true);
     }
     busy = false;
+    YB.setBusy("sm-save", false);
     var btn = $("sm-save");
     if (btn && ctx.isMaster) btn.disabled = false;
     return ok;
@@ -292,7 +293,7 @@
   function gatedWrite(body) {
     busy = true;
     var btn = $("sm-save"); if (btn) btn.disabled = true;
-    setTip("保存中…", false);
+    YB.setBusy("sm-save", true);
     return YB.dangerousSubmit({
       method: "PUT", path: "/api/mail-config", body: body,
       desc: "保存邮件配置：关闭全局通知、修改告警收件人或更换 SMTP 通道属敏感操作。\n请输入当前管理员密码确认。"
@@ -306,7 +307,7 @@
   function write(body) {
     busy = true;
     var btn = $("sm-save"); if (btn) btn.disabled = true;
-    setTip("保存中…", false);
+    YB.setBusy("sm-save", true);
     return YB.api("PUT", "/api/mail-config", body).then(function () {
       return load().then(function () { return finish(true); });
     }, function (e) {

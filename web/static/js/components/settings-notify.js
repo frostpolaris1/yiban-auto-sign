@@ -153,7 +153,7 @@
   function submit(body) {
     busy = true;
     var btn = $("sn-save"); if (btn) btn.disabled = true;
-    setTip("保存中…", false);
+    YB.setBusy("sn-save", true);
     return YB.dangerousSubmit({
       method: "PUT", path: "/api/notify-config", body: body,
       desc: "保存消息推送配置属于高危操作。\n请输入当前管理员密码确认。"
@@ -166,6 +166,7 @@
       return false;
     }).then(function (ok) {
       busy = false;
+      YB.setBusy("sn-save", false);
       if (btn && isMaster) btn.disabled = false;
       return ok;
     });

@@ -222,14 +222,11 @@
   function setBusy(handle, on) {
     var btn = handle.panel.querySelector(".modal-foot .btn--primary");
     if (!btn) return;
-    if (on) {
-      btn.dataset.label = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = "提交中…";
-    } else {
-      btn.disabled = false;
-      if (btn.dataset.label) btn.textContent = btn.dataset.label;
-    }
+    // 标签留在原处只压暗、旁边转圈：换文案会让按钮宽度变形，把用户此刻的
+    // 视线从操作点上挪开（见 core.js setBusy 的说明）。disabled 仍要设——
+    // 弹窗主键是真正的写操作，提交期间必须挡住重复提交。
+    btn.disabled = !!on;
+    YB.setBusy(btn, !!on);
   }
 
   function submit(opts, view, state, snapshot, handle) {
