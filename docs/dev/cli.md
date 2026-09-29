@@ -119,7 +119,6 @@ python3 -m yiban.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # �
 python3 -m yiban.cli state                    # 默认 dry-run，只报告
 python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
 python3 -m yiban.cli capacity --json          # 读实测值给建议
-python3 -m yiban.cli capacity --measure --repo <repo> --users 5000   # 转发基准工具（需 root）
 python3 -m yiban.cli sign --workers 4
 python3 -m yiban.cli sign --fallback
 python3 -m yiban.cli sign --second-run-check  # 退出码 10 = 需要补跑
@@ -137,8 +136,9 @@ python3 scripts/state_cleanup.py              # = state --yes（宿主 cron 用�
 bash run.sh                                   # 宿主入口：读 .env（含 YIBAN_WORKERS）后执行一轮
 ```
 
-> `capacity --measure` 转发的是 `scripts/loadtest/capacity_probe.py`（自建假易班、零真实外联、
-> 跑完自动还原），**只在隔离测试机上跑**；与 `--json` 互斥（转发工具的 stdout 自成一路）。
+> `capacity` 只消费 `YIBAN_CAPACITY_MEASURED`（部署者自行量取后录入），自己不联网、
+> 不转发任何工具。原先的 `capacity --measure` 转发开关随离线容量基准工具族于 2026-09
+> 一并移除，传入即按"无法识别的参数"退 2。
 
 `db --backup` 的目标已存在时**不得静默覆盖**上一份副本：不带 `--force` 的 `--yes` 直接
 拒绝（退出码 1、零写入），dry-run 只报告"需 `--force`"。这与 §2 第 5 条"幂等"的边界是：

@@ -81,7 +81,7 @@
   },
   "measured": {
     "per_executor_capacity": 354,
-    "source": "capacity_probe（部署者实测录入）",
+    "source": "部署者实测录入（YIBAN_CAPACITY_MEASURED）",
     "env_key": "YIBAN_CAPACITY_MEASURED"
   },
   "recommendation": {
@@ -437,9 +437,9 @@
    真实签到还要往下走**定位计算 + 提交签到**（6 次请求 + CPU 计算）；又因**窗口内被拒（409）**，
    它**永远只测得到窗口外的最小链路**（窗口外服务端本就没有可提交的任务）。
    故 `seconds` 天然偏小、`per_executor_capacity` / `recommended_per_executor` 偏大。
-   **它与测试机基准（`scripts/loadtest/capacity_probe.py`，假易班跑完整链路、延迟可控）
-   不可混用、不可比**：现场量的是"窗口外粗值"，正式容量定档请以测试机基准为准，
-   别把两种数当同一回事填进 `YIBAN_CAPACITY_MEASURED`。
+   **它与部署者按完整链路自行量取的基准不可混用、不可比**：现场量的是"窗口外粗值"，
+   正式容量定档请以部署者自己量取的完整链路基准为准，别把两种数当同一回事填进
+   `YIBAN_CAPACITY_MEASURED`。
 
 > 另：成功判据是"登录成功 + `signPosition` 返回 `code == 0`"。窗口外若服务端对某账号
 > 返回非 0（未开启签到/无任务），实测会**直接失败**而不是给出偏小的数——两种情形

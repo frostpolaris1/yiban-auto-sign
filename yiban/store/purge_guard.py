@@ -13,8 +13,8 @@
 
 **归属**
 `yiban/store/` 数据层：指纹要直读 SQLite，留痕要走审计链（`_conn` 单例与 `audit`
-都属本层）。部署面脚本（demo 数据生成、压测造数、`state` 子命令）与 loadtest
-工具链都经本模块，不各自再写一份指纹/确认逻辑。
+都属本层）。部署面脚本（demo 数据生成、`state` 子命令）都经本模块，不各自再写一份
+指纹/确认逻辑。
 
 **复用**
 `db_content_fingerprint`（库内容指纹 + 摘要行）、`content_fingerprint`（任意目录/清单
@@ -25,8 +25,7 @@
 输入：SQLite 路径、任意目标部件序列、操作者回显的指纹、审计三要素。
 输出：指纹字符串（`PURGE-<hex>`）、摘要行列表、确认是否成立、审计是否落库。
 调用谁：`sqlite3`（只读计数）与 `yiban.store.db`（审计写入；局部导入避免与门面成环）。
-谁调用：`scripts/generate_demo_data.py`、`scripts/loadtest/seed_accounts.py`、
-`yiban/cli.py` 的 `state` 子命令。
+谁调用：`scripts/generate_demo_data.py`、`yiban/cli.py` 的 `state` 子命令。
 """
 import hashlib
 import os

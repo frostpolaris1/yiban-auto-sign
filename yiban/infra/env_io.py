@@ -20,7 +20,7 @@
 `parse_env_file`（含 `env_path`）与 `write_env_key` / `write_env_keys` 由
 `yiban.infra.account_crypto`、`yiban.store.audit_chain`、`yiban.store.tracking`、
 `yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
-`web/routes/settings_api.py`、`scripts/loadtest/seed_accounts.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
+`web/routes/settings_api.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
 `env_key_values` / `validate_env_key` / `validate_env_value` / `validate_env_updates` /
 `render_env_write`，`write_env_keys` 是唯一写入口（内部自持 `env_lock.env_write_lock`
 跨进程写锁、做写入前后"键集合 diff"、越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
