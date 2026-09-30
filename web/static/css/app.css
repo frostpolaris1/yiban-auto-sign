@@ -3212,11 +3212,13 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 .ev-scroll .empty { margin: 16px 0 0; }
 
 @media (max-width: 720px) {
-  /* 卡头工具行独占第二行、搜索框用满整行（三块卡同一规则） */
-  body[data-page="data-logs"] .log-card .panel-head-row { flex-wrap: wrap; }
-  .log-tools { width: 100%; }
-  .log-search { flex: 1 1 100%; }
-  .log-search .input { width: 100%; min-width: 0; }
+  /* 主卡（检索框 + 三个按钮 + 标题）≤720 确实放不下：工具行独占第二行、搜索框满行。
+     事件/探针两卡头只有「共 N 条 + 刷新」（~150px），与标题同行放得下——不参与换行
+     （用户 2026-09-30：空间是够的，没必要换行）。 */
+  body[data-page="data-logs"] .log-main-card .panel-head-row { flex-wrap: wrap; }
+  .log-main-card .log-tools { width: 100%; }
+  .log-main-card .log-search { flex: 1 1 100%; }
+  .log-main-card .log-search .input { width: 100%; min-width: 0; }
   /* 窄屏事件行会折行，固定列宽与列头失去对齐意义 → 还原自适应并隐藏列头 */
   .ev-head { display: none; }
   .ev-time, .ev-phone, .ev-badge { flex: 0 0 auto; }
