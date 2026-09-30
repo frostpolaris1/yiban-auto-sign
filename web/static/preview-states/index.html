@@ -543,6 +543,38 @@
       </div>
 
       <div class="ps-state">
+        <span class="ps-state-label">内联变体 <span class="ps-hint">data-ms-inline：选项平铺，双选态（线上真实用法）</span></span>
+        <div class="multiselect-field" data-multiselect-field="ps-ms-inline" data-ms-inline
+             role="group" aria-labelledby="ps-ms-inline-label">
+          <input type="hidden" id="ps-ms-inline-sat" value="1">
+          <input type="hidden" id="ps-ms-inline-sun" value="1">
+          <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ps-ms-inline-sat">
+            <span class="ms-option-text">周六</span>
+          </button>
+          <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ps-ms-inline-sun">
+            <span class="ms-option-text">周日</span>
+          </button>
+        </div>
+        <p class="sr-only" id="ps-ms-inline-label">周末签到（内联）</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">内联·空态 <span class="ps-hint">全不选：无文字占位，靠边框+空勾表达</span></span>
+        <div class="multiselect-field" data-multiselect-field="ps-ms-inline-empty" data-ms-inline
+             role="group" aria-labelledby="ps-ms-inline-empty-label">
+          <input type="hidden" id="ps-ms-inline-empty-sat" value="0">
+          <input type="hidden" id="ps-ms-inline-empty-sun" value="0">
+          <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ps-ms-inline-empty-sat">
+            <span class="ms-option-text">周六</span>
+          </button>
+          <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ps-ms-inline-empty-sun">
+            <span class="ms-option-text">周日</span>
+          </button>
+        </div>
+        <p class="sr-only" id="ps-ms-inline-empty-label">周末签到（内联空态）</p>
+      </div>
+
+      <div class="ps-state">
         <span class="ps-state-label">单选 <span class="ps-hint">仅周六</span></span>
         <div class="select-field multiselect-field" data-multiselect-field="ps-ms-single" aria-labelledby="ps-ms-single-label">
           <input type="hidden" id="ps-ms-single-sat" value="1">
