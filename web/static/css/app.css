@@ -3861,6 +3861,10 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .set-row + .field, .field + .set-row,
 .set-row + .form-grid, .form-grid + .set-row, .set-warn + .set-row,
 .set-row + .data-toolbar { margin-top: 16px; }
+/* 健康卡特例：探针开关行是「标题 + 两行说明」的特高行，其下 form-grid 是该模式的
+   调度参数组——16px 组间距在这里小于组内 field-label 与上一行说明的间隔，两个语义组
+   读成了一组（用户 2026-09-30 实拍反馈"垂直间距偏短"）。此接缝拉开到 28px。 */
+#set-health .set-row + .form-grid { margin-top: 28px; }
 /* 三列标量网格（额度与节流）：三项本会落在「两列 + 一个孤格」上，窄屏退回单列 */
 .form-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 720px) { .form-grid--3 { grid-template-columns: 1fr; } }
