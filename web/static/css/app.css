@@ -4921,3 +4921,47 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   /* 窄屏弹窗按钮已是整宽；这里只补高度，不重排 */
   .pm-panel .modal-foot .btn { min-height: 44px; }
 }
+
+/* ==========================================================================
+   39. 正态分布调参组件（设置页 · 签到调度卡，峰尖拖拽）
+   ==========================================================================
+   可见编辑器与画布由 settings-dist-viz.js 构建；四枚隐藏 input（ss-mu-min 等，
+   id 沿用旧数字框）是唯一状态源，本节只定义组件自身的视觉件。画布颜色在 JS 里
+   经探针解析 CSS 变量（canvas 读不了 var()），此处不管配色，只管盒模型与装饰。 */
+.dist-viz-canvas {
+  display: block;
+  width: 100%;
+  height: 210px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--cal-off-bg);
+  touch-action: none;                  /* 纵向拖拽就是调散布，不能让页面抢走触摸手势 */
+  cursor: grab;
+}
+.dist-viz-canvas:focus-visible {
+  outline: 2px solid rgb(var(--c-blue-500));
+  outline-offset: 2px;
+}
+.dist-viz-canvas.is-readonly {
+  opacity: 0.55;
+  cursor: default;
+}
+.dist-viz-editors {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.dist-viz-editors .field-label { font-size: 12.5px; }
+.dist-viz-editors .input { width: 64px; }
+.dist-viz-editors .input[type="time"] { width: 88px; }
+/* 原生时钟图标会压住 88px 输入框里 HH:MM 的尾字（选型页实测）；此处时间入口只做
+   快速键入，落地版完整的"选时间"体验走自研 time-field 一族，图标无存在必要 */
+.dist-viz-editors .input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+.dist-viz-legend {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--t-muted);
+}

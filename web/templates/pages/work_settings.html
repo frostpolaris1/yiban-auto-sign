@@ -177,34 +177,22 @@
             <input type="hidden" id="ss-edge-back" value="1">
           </div>
         </div>
-        {# 正态 μ/σ：区间成对（min/max），步进 5、单位 %、范围 0-100。定义的是**区间**，
-           实际每天在区间内取一次值（`schedule.day_mu_sigma_pct`）。
+        {# 正态 μ/σ：可见编辑器由 settings-dist-viz.js 构建（峰尖拖拽画布 + 「顶点钟点 ±
+           半径」/「散布 ±分钟」），四枚隐藏 input（id 沿用旧数字框）仍是唯一状态源——
+           collect()/snapshotFromDom() 的提交口径、档位对拍字面量、A 档禁用清单原样不动。
+           组件按签到窗口/掐头去尾实时换算钟点与分钟（含 20% 缓冲钳位，与 edgeMaxMin 同
+           口径）；分布方式为均匀时图上置灰提示（参数保留，切回正态即生效）。
            服务端对 lo>=hi 沿用"告警 + 回退默认（μ 40~60 / σ 15~25）"语义，不拒绝写入；
            前端就地预警但不硬拦（与掐头去尾的"预警不阻断保存"同一处置）。 #}
         <div class="field span-2">
-          <span class="field-label" id="ss-mu-label">峰值时刻 μ 区间</span>
-          <div class="input-group">
-            <input class="input" id="ss-mu-min" type="number" min="0" max="100" step="5"
-                   inputmode="numeric" placeholder="40" aria-labelledby="ss-mu-label">
-            <span class="addon">至</span>
-            <input class="input" id="ss-mu-max" type="number" min="0" max="100" step="5"
-                   inputmode="numeric" placeholder="60" aria-labelledby="ss-mu-label">
-            <span class="addon">%</span>
+          <span class="field-label" id="ss-mu-label">正态分布（峰值中心与散布）</span>
+          <div class="dist-viz" data-dist-viz aria-labelledby="ss-mu-label">
+            <input type="hidden" id="ss-mu-min" value="40">
+            <input type="hidden" id="ss-mu-max" value="60">
+            <input type="hidden" id="ss-sigma-min" value="15">
+            <input type="hidden" id="ss-sigma-max" value="25">
           </div>
-          {# 「每天在区间内取一次值」帮助已删（μ/σ 两行逐字重复，且"区间"字段名自明；用户 2026-09-30） #}
           <p class="set-warn" id="ss-mu-warn" hidden></p>
-        </div>
-        <div class="field span-2">
-          <span class="field-label" id="ss-sigma-label">分布宽度 σ 区间</span>
-          <div class="input-group">
-            <input class="input" id="ss-sigma-min" type="number" min="0" max="100" step="5"
-                   inputmode="numeric" placeholder="15" aria-labelledby="ss-sigma-label">
-            <span class="addon">至</span>
-            <input class="input" id="ss-sigma-max" type="number" min="0" max="100" step="5"
-                   inputmode="numeric" placeholder="25" aria-labelledby="ss-sigma-label">
-            <span class="addon">%</span>
-          </div>
-          {# 「每天在区间内取一次值」帮助已删（μ/σ 两行逐字重复，且"区间"字段名自明；用户 2026-09-30） #}
           <p class="set-warn" id="ss-sigma-warn" hidden></p>
         </div>
         {# 短标量字段收窄（原与整列同宽，一个 1~4 位数字占 550px） #}
@@ -713,6 +701,7 @@
 <script defer src="{{ request.script_root }}/static/js/components/multiselect-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/range-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/time-field.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/settings-dist-viz.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-schedule.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-health.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-notify.js?v={{ web_version }}"></script>

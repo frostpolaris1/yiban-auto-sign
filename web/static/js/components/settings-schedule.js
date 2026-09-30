@@ -224,14 +224,17 @@
     }
   }
 
-  // 逐字段权限：主管理员专属控件在非主管理员下禁用（周六/周日始终可用）。
-  function applyPerm() {
-    var master = isMaster();
-    ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
-     "ss-window-start", "ss-window-end", "ss-time-pref",
-     "ss-mu-min", "ss-mu-max", "ss-sigma-min", "ss-sigma-max"].forEach(function (id) {
-      setDisabled(id, !master, "ss-perm");
-    });
+    // 逐字段权限：主管理员专属控件在非主管理员下禁用（周六/周日始终可用）。
+    function applyPerm() {
+      var master = isMaster();
+      ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
+       "ss-window-start", "ss-window-end", "ss-time-pref",
+       "ss-mu-min", "ss-mu-max", "ss-sigma-min", "ss-sigma-max"].forEach(function (id) {
+        setDisabled(id, !master, "ss-perm");
+      });
+      // 正态分布组件的可见编辑器（顶点/半径/散布）随 A 档一起只读；
+      // 隐藏 input 已在上面的清单里禁用（A 档四键）
+      if (YB.settingsDistViz) YB.settingsDistViz.setReadonly(!master);
     setDisabled("ss-reset", !master, "ss-perm");
     setHidden($("ss-perm"), master);
     setHidden($("ss-save"), !dirty);
@@ -357,6 +360,9 @@
       YB.rangeField.set("ss-edge-back", 1);
       YB.timeField.set("ss-window-start", DEFAULTS.start);
       YB.timeField.set("ss-window-end", DEFAULTS.end);
+      // 组件 set() 不派发 change（防回填被误判为用户改动），故此处显式刷新正态分布图：
+      // 分布方式回到"均匀"、窗口/掐头去尾回到默认，图与读数必须同步
+      if (YB.settingsDistViz) YB.settingsDistViz.refresh();
       updateEdgeWarn();
       markDirty();
     });
@@ -367,12 +373,18 @@
       var el = $(id);
       if (el) el.addEventListener("change", function () {
         updateEdgeWarn(); markDirty();
+        // 分布方式/窗口变化要实时反映到正态分布图（有效窗口与"是否生效"都变了）
+        if (id !== "ss-order" && YB.settingsDistViz) YB.settingsDistViz.refresh();
       });
     });
     // 滑块值由 range-field 在弹窗确认后回写并派发 change（取消不留痕，不标脏）
     ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
       var el = $(id);
-      if (el) el.addEventListener("change", function () { updateEdgeWarn(); markDirty(); });
+      if (el) el.addEventListener("change", function () {
+        updateEdgeWarn(); markDirty();
+        // 掐头去尾改变有效窗口，正态分布图的钟点换算与染色位置实时重算
+        if (YB.settingsDistViz) YB.settingsDistViz.refresh();
+      });
     });
     var gap = $("ss-gap");
     if (gap) {
@@ -385,13 +397,8 @@
     }
     var pref = $("ss-time-pref");
     if (pref) pref.addEventListener("change", markDirty);
-    // μ/σ 四个数值框：change 标脏（提交时只发真正变化的键），input 就刷新 lo>=hi 预警
-    ["ss-mu-min", "ss-mu-max", "ss-sigma-min", "ss-sigma-max"].forEach(function (id) {
-      var el = $(id);
-      if (!el) return;
-      el.addEventListener("change", function () { updateDistWarn(); markDirty(); });
-      el.addEventListener("input", updateDistWarn);
-    });
+    // μ/σ 四个数值框已由正态分布组件的可见编辑器取代（隐藏 input 的 id 不变）：
+    // 组件写入后经 onChange() 回调走到这里的 updateDistWarn + markDirty，不再各自挂监听
     // 周六/周日/自选：改动只标脏，随「保存调度设置」一并提交（非主管理员只有前两个可改）。
     // 周六/周日是同一多选组的两枚隐藏 input——组件在勾选时对该 input 派发 change，
     // 故这里照旧监听即可，不必改成监听面板。
@@ -463,16 +470,50 @@
     applyPerm();
     updateEdgeWarn();
     updateDistWarn();
+    // 正态分布图从隐藏 input 与窗口/边缘的当前值重算（保存回填/重拉设置后同步）
+    if (YB.settingsDistViz) YB.settingsDistViz.refresh();
     setTip("", false);
     clearDirty();
   }
 
   // 账号容量变化（保存容量上限/间隔后）时重算警示。
-  function refreshWarn() { updateEdgeWarn(); updateDistWarn(); }
+  function refreshWarn() {
+    updateEdgeWarn();
+    updateDistWarn();
+    // 账号数变化会改 σ_eff 放大曲线与高峰速率，正态分布图一并重算
+    if (YB.settingsDistViz) YB.settingsDistViz.refresh();
+  }
 
   function mount(options) {
     ctx = options || {};
     bind();
+    // 正态分布组件（方案 E）：画布与「顶点 ± 半径 / 散布 ±分钟」可见编辑器由它构建；
+    // 隐藏 input 仍是唯一状态源，collect()/snapshotFromDom() 读写口径不变。
+    // context() 每次重读窗口/掐头去尾（含 edgeMaxMin 的 20% 钳位，与服务端同口径）、
+    // 分布方式与账号数——这些设置在别的控件里改动时，图要实时跟着变。
+    if (YB.settingsDistViz) {
+      YB.settingsDistViz.mount({
+        ids: { muLo: "ss-mu-min", muHi: "ss-mu-max", sgLo: "ss-sigma-min", sgHi: "ss-sigma-max" },
+        context: function () {
+          var sec = windowSec();
+          var capMin = edgeMaxMin(sec);                     // 缓冲单边上限（分钟，20% 钳位）
+          var frontMin = Math.min(edgeVal("ss-edge-front") / 60, capMin);
+          var backMin = Math.min(edgeVal("ss-edge-back") / 60, capMin);
+          var p = windowParts();
+          var sm = p[0].split(":"), em = p[1].split(":");
+          var startMin = parseInt(sm[0], 10) * 60 + parseInt(sm[1], 10);
+          var endMin = parseInt(em[0], 10) * 60 + parseInt(em[1], 10);
+          return {
+            effLo: startMin + frontMin, effHi: endMin - backMin,
+            span: (sec - (frontMin + backMin) * 60) / 60,
+            frontMin: frontMin, backMin: backMin,
+            dist: ($("ss-dist") || {}).value || "uniform",
+            n: capacityCount()
+          };
+        },
+        onChange: function () { updateDistWarn(); markDirty(); }
+      });
+    }
     applyPerm();
   }
 
