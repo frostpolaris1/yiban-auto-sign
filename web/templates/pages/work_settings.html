@@ -163,7 +163,7 @@
           <span class="field-label" id="ss-edge-front-label">掐头</span>
           <div class="range-field" data-range-field="ss-edge-front" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="掐头"
-               data-hint="裁掉签到窗口开头段，避开整点边界超时；0 = 不裁切。上限随窗口收窄，不超过窗口的 20%。"
+               data-hint="裁掉签到窗口开头段，避免卡在整点前后（整点易被限流）；0 = 不裁切。"
                aria-labelledby="ss-edge-front-label">
             <input type="hidden" id="ss-edge-front" value="1">
           </div>
@@ -172,7 +172,7 @@
           <span class="field-label" id="ss-edge-back-label">去尾</span>
           <div class="range-field" data-range-field="ss-edge-back" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="去尾"
-               data-hint="裁掉签到窗口末尾段；不影响「掐头」。上限随窗口收窄，不超过窗口的 20%。"
+               data-hint="裁掉签到窗口末尾段；与「掐头」互不影响。"
                aria-labelledby="ss-edge-back-label">
             <input type="hidden" id="ss-edge-back" value="1">
           </div>
@@ -219,9 +219,9 @@
         </div>
         {# 窗口起止是同一个逻辑对：共用一个触发器与一个弹窗（弹窗里滚轮选时并校验先后） #}
         <div class="field">
-          <span class="field-label" id="ss-window-label">签到窗口（开始早于结束）</span>
+          <span class="field-label" id="ss-window-label">签到窗口</span>
           <div class="time-pair" data-time-pair data-title="签到窗口"
-               data-hint="滚动选择；开始必须早于结束，保存后下次生效。"
+               data-hint="滚动选择；开始必须早于结束。"
                aria-labelledby="ss-window-label">
             <div class="time-field" data-time-field="ss-window-start">
               <input type="hidden" id="ss-window-start" value="06:30">
@@ -230,6 +230,7 @@
               <input type="hidden" id="ss-window-end" value="07:50">
             </div>
           </div>
+          <p class="field-help">开始必须早于结束；保存后下次自动签到生效。</p>
         </div>
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
@@ -576,17 +577,18 @@
         <div class="field">
           <span class="field-label" id="sh-probe-time-label">触发时间（最早时刻）</span>
           <div class="time-field" data-time-field="sh-probe-time" data-title="触发时间"
-               data-hint="到达设定时间将在最近的调度周期执行（约 10 分钟内），每天最多一次。"
+               data-hint="滚动选择时间。"
                aria-labelledby="sh-probe-time-label">
             <input type="hidden" id="sh-probe-time" value="20:00">
           </div>
+          {# 生效时机只在一处说：放在它真正描述的「触发时间」字段下，不再挂在「触发频率」下重复一遍 #}
+          <p class="field-help">到达设定时间后，将在最近的调度周期执行（约 10 分钟内）；每天最多一次。</p>
         </div>
         <div class="field">
           <span class="field-label" id="sh-probe-interval-label">触发频率</span>
           {{ select_field('sh-probe-interval', '1',
              [('1', '每天'), ('2', '每 2 天'), ('3', '每 3 天'), ('7', '每 7 天'),
               ('once', '下次计划时间单次执行（执行后自动关闭）')], 'sh-probe-interval-label') }}
-          <p class="field-help">设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。</p>
         </div>
       </div>
       <p class="set-tip" id="sh-tip" role="status"></p>
@@ -672,7 +674,7 @@
           <h2 class="panel-title">系统开关</h2>
           <div class="set-head-actions">
             {# 危险说明整段（113 字）收进 ⓘ：实测 1440 占卡高 22%、360 占 35%（审查 P2） #}
-            {% call info('暂停签到的后果', 'set-pop-switches') %}暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到；两者都要点「保存系统开关」才生效。{% endcall %}
+            {% call info('暂停签到与暂停注册的后果', 'set-pop-switches') %}暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到。{% endcall %}
           </div>
         </div>
       </div>

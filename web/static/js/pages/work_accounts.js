@@ -120,7 +120,7 @@
   function emptyDefault(group) {
     if (group === "pending") return "已全部审核 · 今日签到见『正常账号』";
     if (group === "deleted") return "暂无待删除账号";
-    return "暂无账号，点右上角「添加账号」配置";
+    return "暂无账号，添加后即可开始自动签到";
   }
 
   function renderGroup(group, all, filtered) {

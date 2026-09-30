@@ -86,7 +86,7 @@ textarea {
   flex-shrink: 0;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: var(--icon-stroke);
 }
 .sidebar-clock [data-clock-text] {
   font-family: var(--font-mono);
@@ -219,7 +219,7 @@ textarea {
   height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: var(--icon-stroke);
 }
 .toast__msg {
   flex: 1;
@@ -248,7 +248,7 @@ textarea {
   height: 12px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: var(--icon-stroke);
 }
 /* 语义色一律走"画在卡片上"的 token：原先直接用 --success/--warning/--info，
    3px 边在明色对卡片只有 2.56 / 2.13 / 2.77，不达非文本部件的 3:1。
@@ -363,7 +363,7 @@ textarea {
   height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: var(--icon-stroke);
 }
 .pm-backdrop--stacked {
   z-index: 1000;
@@ -461,7 +461,7 @@ textarea {
   height: 12px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: var(--icon-stroke);
 }
 
 /* ==========================================================================
@@ -664,7 +664,7 @@ html {
   height: 100%;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.6;
+  stroke-width: var(--icon-stroke);
 }
 .empty__msg {
   max-width: 42ch;
@@ -1052,7 +1052,7 @@ html {
   height: 14px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: var(--icon-stroke);
 }
 .dash-health-value {
   display: inline-flex;
@@ -1093,7 +1093,7 @@ html {
 /* 面包屑分隔符：Adminator 只给了 .crumbs .sep 容器样式，未给其中的 svg 设尺寸。
    项目图标宏输出的是不带 width/height 的 <svg>，缺省尺寸会被拉伸至整屏，故显式收口。 */
 .crumbs .sep { display: inline-flex; align-items: center; }
-.crumbs .sep svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 2; fill: none; }
+.crumbs .sep svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 
 /* 页头：标题在上、说明在下的块级默认版式（管理端与用户端共用）。
    历史遗留的 flex 行版式会把 <p class="page-sub"> 推到标题右侧同一行，故统一为块级。 */
@@ -1330,7 +1330,7 @@ body {
   width: 15px;
   height: 15px;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: var(--icon-stroke);
   fill: none;
 }
 
@@ -1369,7 +1369,7 @@ body {
   flex-shrink: 0;
   margin-top: 1px;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: var(--icon-stroke);
   fill: none;
 }
 
@@ -1384,7 +1384,7 @@ body {
   display: grid;
   place-items: center;
 }
-.auth-mobile-brand .logo svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.9; fill: none; }
+.auth-mobile-brand .logo svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 @media (min-width: 901px) { .auth-mobile-brand { display: none; } }
 
 /* 公告条：单列提示条，不需要 Adminator 的图标列 */
@@ -1627,7 +1627,8 @@ html[data-theme="dark"] .auth-card {
   --seg-fg: #475569;
   top: 0;
   border: 0;
-  border-radius: 8px;
+  /* 同心圆角：轨道 11px − 轨道内距 4px = 7px。选中胶囊贴轨道内弧，同心后不再错角。 */
+  border-radius: 7px;
   padding: 9px 12px;
   font-size: 13px;
   font-weight: 600;
@@ -1726,7 +1727,7 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
   width: 16px;
   height: 16px;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: var(--icon-stroke);
   fill: none;
 }
 .alert.auth-announce .body { flex: 1 1 auto; min-width: 0; }
@@ -1752,7 +1753,7 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
   width: 14px;
   height: 14px;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: var(--icon-stroke);
   fill: none;
 }
 
@@ -1769,6 +1770,10 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
      中途出现过比例错位的中间态；并成一个值后三者始终同相位。 */
   --theme-dur: 220ms;
   --theme-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* 图标描边统一档（只统一 stroke-width，不动各图标的 width/height 尺寸档）：
+     此前 app.css 里散着 1.6/1.8/1.9/2 四档共 21 条规则，同一公告条内左右两枚图标
+     都能差 0.1px。收敛到单一令牌后并排图标的视觉重量一致。 */
+  --icon-stroke: 1.8;
 }
 body,
 .auth-shell,
@@ -1919,6 +1924,12 @@ body,
      --bg-muted(#F1F5F9) + --border，对白卡仅 1.10:1，而"开/关"这个状态完全由轨道
      承载——关态几乎看不见等于开关不可读。3.26:1 同时覆盖"轨道对卡片"与"白滑块对轨道"。 */
   --switch-off-bg: #868FA0;  /* 对白卡 3.26:1；白滑块 on 本值亦 3.26:1 */
+  /* 控件描边（同一条 WCAG 1.4.11 自订基线）：vendor 的 --border(#E4E8EF) 对白卡仅
+     1.23:1，而输入框/自研触发器的边框是"这里能点、能填"的唯一线索，必须 ≥3:1。
+     --control-border 供 .input/.select/.textarea/.input-group 与四类自研触发器共用；
+     --danger-border 供 .btn--danger-ghost 的危险描边（保留红色语义，同样 ≥3:1）。 */
+  --control-border: #8A94A6;  /* 对白卡(--bg-card #FFFFFF) 3.06:1 */
+  --danger-border: #D97070;   /* 危险描边：对白卡 3.23:1 */
 }
 html[data-theme="dark"] {
   --t-sub: #94A3B8;
@@ -1934,6 +1945,8 @@ html[data-theme="dark"] {
   --state-warn-fg: #FCD34D;
   --state-bad-fg: #FCA5A5;
   --switch-off-bg: #64748B;  /* 对深卡(--bg-card #141B2D) 3.60:1 */
+  --control-border: #66748C;  /* 对深卡 3.63:1 */
+  --danger-border: #C46A6A;   /* 危险描边：对深卡 4.59:1 */
   --slot-full-bg: #2B1F08;
   --slot-full-border: #5C3D0A;
   --slot-full-fg: #FCD34D;
@@ -2140,7 +2153,7 @@ html[data-theme="dark"] {
 /* 名称 + 审核徽章同一行（徽章从操作行移出，竖屏才放得下按钮） */
 .account-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .account-icon { display: inline-flex; flex-shrink: 0; color: var(--t-muted); }
-.account-icon svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.8; fill: none; }
+.account-icon svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 .account-name { font-size: 13px; font-weight: 600; color: var(--t-base); }
 /* 账号卡三处次级文字统一到 --t-sub：--t-muted 在白卡上实测 3.1–3.62:1，未到正文 AA；
    .account-note 又是整张卡唯一回答「今天签没成」的那一行，读不清代价最大。 */
@@ -2284,12 +2297,12 @@ html[data-theme="dark"] {
 .user-danger .panel-title { color: var(--danger); }
 
 /* 危险操作的"文字按钮"：Adminator 的 .btn--outline-danger 用 --danger 作文字色，
-   在浅色卡片上只有 3.76:1（正文需 ≥4.5:1）。此处改用更深的红，深浅两套各自达标。 */
-.btn--danger-ghost { color: #B91C1C; border-color: rgba(185, 28, 28, 0.35); }
+   在浅色卡片上只有 3.76:1（正文需 ≥4.5:1）。文字与描边都走语义令牌（浅/深各一套），
+   描边同时满足 WCAG 1.4.11 的 3:1（原 rgba(...,.35) 对白卡仅 1.87:1）。 */
+.btn--danger-ghost { color: var(--state-bad-fg); border-color: var(--danger-border); }
 @media (hover: hover) and (pointer: fine) {
   .btn--danger-ghost:hover { background: var(--danger-soft); }
 }
-html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(252, 165, 165, 0.35); }
 
 /* ---- 19.7 折叠区（签到时间 / 修改密码）----
    统一用「button[aria-expanded] + .collapse-body.is-open」而不是原生 <details>：
@@ -2300,7 +2313,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 /* 双曲线：本条（收起=退出）用 ease-in-strong，展开态在下方覆盖为 ease-out-strong（进入）。
    一条 transition 写死的曲线会两个方向都用，不符合 22 节「进入/退出分别用曲线」。 */
 .collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 200ms var(--ease-in-strong); transform: rotate(-90deg); }
-.collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; }
+.collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 [aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); transition-timing-function: var(--ease-out-strong); }
 .collapse-body {
   display: grid;
@@ -2397,7 +2410,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-nav { display: flex; gap: 8px; }
 .sc-nav-btn { width: 36px; height: 36px; padding: 0; justify-content: center; }
 .sc-nav-btn svg { width: 17px; height: 17px; }
-.sc-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: 2; fill: none; }
+.sc-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 
 /* 星期表头：等宽小字 + 中性色（Adminator 的 .cal-weekdays 用 --t-light，仅 2.56:1） */
 .sc-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 4px; }
@@ -2527,7 +2540,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
 /* 空态图标是装饰（aria-hidden），不承载信息，故可用 --t-light */
 .sc-empty-icon { display: inline-flex; color: var(--t-light); }
-.sc-empty-icon svg { width: 22px; height: 22px; stroke: currentColor; stroke-width: 1.6; fill: none; }
+.sc-empty-icon svg { width: 22px; height: 22px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 .sc-empty-note { font-size: 11.5px; color: var(--t-sub); }
 /* margin:auto 让空态/加载态在整块面板里居中（相对面板外框，而不是自身小盒）；
    日志正文是普通 flex 子项，仍从顶部开始。 */
@@ -2738,12 +2751,19 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
    ========================================================================== */
 .notif-menu { max-width: 360px; }
 .notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border-soft);
   font-size: 13px;
   font-weight: 700;
   color: var(--t-base);
 }
+/* 未读的第二载体（色相之外另有文字）：面板头右侧的数字徽标，与铃铛圆点同源
+   （都由 core.js 的 applyAnnouncementText 切换），读屏另有 aria-label。 */
+.notif-count { flex-shrink: 0; }
 .notif-list { max-height: 60vh; overflow-y: auto; }
 .notif-section { padding: 12px 16px; border-bottom: 1px solid var(--border-soft); }
 .notif-section:last-child { border-bottom: 0; }
@@ -2758,7 +2778,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   letter-spacing: 0;
   color: var(--t-muted);
 }
-.notif-label svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 2; fill: none; }
+.notif-label svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 .notif-body { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-base); white-space: pre-wrap; word-break: break-word; }
 .notif-note {
   margin: 0;
@@ -2901,7 +2921,7 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 /* 状态图例：图标 + 文本，颜色语义与表格状态列一致 */
 .acct-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0 0 12px; }
 .acct-state { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; }
-.acct-state svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 2; fill: none; }
+.acct-state svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 .acct-state--ok { color: var(--state-ok-fg); }
 .acct-state--bad { color: var(--state-bad-fg); }
 .acct-state--warn { color: var(--state-warn-fg); }
@@ -3829,6 +3849,10 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    E) 空表体不留底边线：空态行 + .form-actions 上边线会形成「双线夹空带」。
    ========================================================================== */
 .input, .select, .textarea, .input-group { min-height: 40px; }
+/* 输入类控件描边统一吃 --control-border：vendor 的 --border(#E4E8EF) 对白卡只有
+   1.10–1.23:1，输入框看起来像一段浅灰文字而不是可输入处（WCAG 1.4.11 需 ≥3:1）。
+   :focus / .is-invalid 等状态规则特异性更高，覆盖不受影响（见 vendor 同名规则）。 */
+.input, .select, .textarea, .input-group { border-color: var(--control-border); }
 /* 短标量字段（账号间隔等）收窄：原来与整列同宽，一个 1~4 位数字占 550px（用户判"框太大"）。
    其余字段仍铺满列宽 —— 这样各卡的左右缘与其它页面一致（撤销此前的 680px 全局限宽）。 */
 .field--narrow .input-group, .field--narrow .input { max-width: 176px; }
@@ -4026,7 +4050,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   width: 100%;
   min-height: 40px;
   padding: 9px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: var(--bg-card);
   color: var(--t-base);
@@ -4087,7 +4111,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   overscroll-behavior: contain;
   padding: 4px;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  /* 与外层触发器同半径（8px）：面板是触发器的兄弟浮层，两者读起来要像"同一个控件打开了"。
+     内层 .select-option 取 8 − 4(padding) = 4px 才与面板同心（见下）。 */
+  border-radius: 8px;
   background: var(--bg-card);
   box-shadow: 0 12px 28px -10px rgba(0, 0, 0, .28);
   animation: select-menu-in 140ms var(--ease-out-strong) both;
@@ -4107,7 +4133,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   width: 100%;
   padding: 8px 10px;
   border: 0;
-  border-radius: 7px;
+  /* 同心圆角：面板 8px − 面板内距 4px = 4px。选项行本身无底色，仅 hover/focus 时
+     铺底，取同心值后圆角不再"顶"出面板的内弧。 */
+  border-radius: 4px;
   background: none;
   color: var(--t-base);
   font: inherit;
@@ -4168,7 +4196,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   width: 100%;
   min-height: 40px;
   padding: 9px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: var(--bg-card);
   color: var(--t-base);
@@ -4314,7 +4342,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  /* 同心圆角：弹层 12px − 弹层内距 10px = 2px。角格（首/末列）紧贴 .date-pop 的
+     内弧，取同心值后 hover/选中底色不再顶出弹层圆角。 */
+  border-radius: 2px;
   background: none;
   color: var(--t-base);
   font: inherit;
@@ -4410,6 +4440,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   color: #FFF;                        /* 白色对勾图形压实心主色（与 .check/.switch 同一处置） */
 }
 .multiselect-field.is-disabled { opacity: .6; }
+/* 单选下拉根的禁用观感与多选一致：select-field.js 的 setDisabled() 同时给根挂
+   is-disabled 并把触发器置 disabled；此前单选根没有样式，只有触发器自己变色。 */
+.select-field.is-disabled { opacity: .6; }
 .multiselect-field .select-trigger:disabled { cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .ms-tick { transition: none; }      /* 只剩变色，去掉也无妨；显式关掉以免后续加位移时漏网 */
@@ -4571,7 +4604,7 @@ html[data-theme="dark"] {
   .to-top:hover { background: var(--bg-hover); }
 }
 .to-top:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; }
+.to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: var(--icon-stroke); }
 /* Toast 堆叠也在右下（bottom:16）；按钮出现时把 Toast 整体抬到按钮上方，避免互相覆盖 */
 body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 @media (max-width: 720px) {

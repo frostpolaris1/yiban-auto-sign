@@ -1242,6 +1242,15 @@
   function announceIsDismissed(text) {
     try { return sessionStorage.getItem(ANNOUNCE_DISMISS_KEY) === text; } catch (e) { return false; }
   }
+  // 「已读」与「已关闭」分开记：关闭是明确拒绝（不再显示横幅），已读只是"点开看过"。
+  // 按文本区分，同一公告不重复点亮；换了内容会重新变未读（避免永久静音）。
+  var ANNOUNCE_READ_KEY = "yiban-announce-read";
+  function announceIsRead(text) {
+    try { return sessionStorage.getItem(ANNOUNCE_READ_KEY) === text; } catch (e) { return false; }
+  }
+  function markAnnouncementRead(text) {
+    try { sessionStorage.setItem(ANNOUNCE_READ_KEY, text); } catch (e) {}
+  }
   function dismissAnnouncement(text) {
     try { sessionStorage.setItem(ANNOUNCE_DISMISS_KEY, text); } catch (e) {}
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
@@ -1274,8 +1283,29 @@
       }
     }
     showBell();
+    var unread = !!text && !announceIsRead(text);
+    // 未读的三载体：圆点（图形）+ 面板头数字徽标（文字）+ 铃铛 aria-label（读屏）。
+    // 点开铃铛即记「已读」（sessionStorage，按文本区分），同一公告不再点亮。
     var dot = document.querySelector("[data-announcement-dot]");
-    if (dot) dot.hidden = !text;
+    if (dot) dot.hidden = !unread;
+    forEach(document.querySelectorAll("[data-announcement-count]"), function (n) {
+      n.textContent = unread ? "1 条未读" : "";
+      n.hidden = !unread;
+    });
+    if (btn) btn.setAttribute("aria-label", unread ? "通知（1 条未读公告）" : "通知");
+    if (btn && btn.closest(".dd-wrap") && btn.getAttribute("data-announce-read-bound") !== "1") {
+      btn.setAttribute("data-announce-read-bound", "1");
+      btn.addEventListener("click", function () {
+        var tn = document.querySelector("[data-announcement-text]");
+        var t = tn ? String(tn.textContent || "").trim() : "";
+        if (!t || announceIsRead(t)) return;
+        markAnnouncementRead(t);
+        var d = document.querySelector("[data-announcement-dot]");
+        if (d) d.hidden = true;
+        forEach(document.querySelectorAll("[data-announcement-count]"), function (n) { n.hidden = true; });
+        btn.setAttribute("aria-label", "通知");
+      });
+    }
     forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
     forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = !text; });
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {

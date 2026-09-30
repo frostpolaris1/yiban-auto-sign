@@ -614,5 +614,131 @@ class TouchAndMotionRegressionTest(unittest.TestCase):
         )
 
 
+def _px(css, selector, prop):
+    """取匹配选择器第一条声明块里的 `<prop>: Npx` 数值（用于同心圆角算术）。"""
+    for body in _rule_bodies(css, selector):
+        m = re.search(r"(?<![\w-])" + prop + r"\s*:\s*([0-9.]+)px", body)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+class BatchDControlOutlineTest(unittest.TestCase):
+    """批次 D（视觉一致性）：控件描边令牌、同心圆角链、图标线宽收口。
+
+    实拍与源码复核：vendor 的 --border(#E4E8EF / #222C42) 对白/深卡仅 1.10–1.28:1，
+    而输入框与四类自研触发器的边框是"这里能点、能填"的唯一线索（WCAG 1.4.11 需 ≥3:1），
+    .btn--danger-ghost 的半透明红描边更低（1.87:1）。这里把"令牌存在且达标"与
+    "有人真的消费它"都钉住 —— 只定义令牌、或把覆盖删回 vendor 都会报红。
+    """
+
+    def test_control_border_tokens_meet_non_text_aa(self):
+        colors = load_theme_colors()
+        problems = []
+        for mode, label in (("light", "浅色"), ("dark", "暗色")):
+            t = colors[mode]
+            for tok in ("control-border", "danger-border"):
+                if tok not in t:
+                    problems.append(f"  {label}：缺令牌 --{tok}")
+                    continue
+                if "bg-card" not in t:
+                    problems.append(f"  {label}：缺底色令牌 --bg-card")
+                    continue
+                cr = contrast(t[tok], t["bg-card"])
+                if round(cr, 2) < AA_NON_TEXT:
+                    problems.append(
+                        f"  {label}：--{tok} on --bg-card = {cr:.2f}:1 < {AA_NON_TEXT}:1"
+                        f"（{t[tok]} vs {t['bg-card']}）"
+                    )
+        if problems:
+            self.fail("控件描边令牌不达标（WCAG 1.4.11）：\n" + "\n".join(problems))
+
+    def test_control_outline_consumers_use_token(self):
+        css = _strip_comments(_read(APP_CSS))
+        for sel in (".select-trigger", ".range-trigger", ".time-trigger", ".date-trigger",
+                    ".input", ".select", ".textarea", ".input-group"):
+            decls = _decls(css, sel, "border-color") + _decls(css, sel, "border")
+            self.assertIn(
+                "var(--control-border)", "".join(decls),
+                f"{sel} 未吃 --control-border —— 描边退回 vendor 的 --border（约 1.1–1.3:1）",
+            )
+
+    def test_danger_ghost_border_uses_semantic_token(self):
+        css = _strip_comments(_read(APP_CSS))
+        bodies = "".join(_rule_bodies(css, ".btn--danger-ghost"))
+        self.assertIn("var(--danger-border)", bodies,
+                      ".btn--danger-ghost 描边未走 --danger-border（旧 rgba 红对白卡仅 1.87:1）")
+        self.assertIn("var(--state-bad-fg)", bodies,
+                      ".btn--danger-ghost 文字未走 --state-bad-fg（旧字面量 #B91C1C 绕开了令牌）")
+        self.assertNotIn("#B91C1C", bodies, ".btn--danger-ghost 仍有字面量 #B91C1C")
+
+    def test_select_disabled_root_has_style(self):
+        css = _strip_comments(_read(APP_CSS))
+        self.assertTrue(
+            _rule_bodies(css, ".select-field.is-disabled"),
+            "单选下拉的 .is-disabled 根没有任何样式（多选有 opacity:.6，单选是空操作）",
+        )
+        self.assertTrue(_rule_bodies(css, ".multiselect-field.is-disabled"),
+                        "多选下拉的禁用样式被删了")
+
+    def test_concentric_radius_chains(self):
+        """内层圆角必须 = 外层圆角 − 外层 padding（否则内层"顶"出外弧、读作两个盒子）。"""
+        css = _strip_comments(_read(APP_CSS))
+        chains = (
+            (".select-menu", ".select-option"),
+            (".date-pop", ".date-day"),
+            (".auth-tabs.auth-seg", ".auth-tabs.auth-seg .tab"),
+        )
+        problems = []
+        for outer, inner in chains:
+            ro = _px(css, outer, "border-radius")
+            pi = _px(css, outer, "padding")
+            ri = _px(css, inner, "border-radius")
+            if None in (ro, pi, ri):
+                problems.append(f"  {outer} / {inner}：取不到值 radius/padding = {ro}/{pi}，内层 {ri}")
+                continue
+            if abs(ri - (ro - pi)) > 0.01:
+                problems.append(
+                    f"  {outer} {ro}px − padding {pi}px = {ro - pi}px ≠ {inner} {ri}px"
+                )
+        self.assertFalse(
+            problems,
+            "同心圆角链不符（内层应 = 外层 − padding）：\n" + "\n".join(problems),
+        )
+
+    def test_icon_stroke_is_tokenized(self):
+        css = _strip_comments(_read(APP_CSS))
+        self.assertIn("--icon-stroke:", css, "缺图标描边统一令牌 --icon-stroke")
+        literals = re.findall(r"stroke-width\s*:\s*(?!var\()([0-9.]+)", css)
+        self.assertFalse(
+            literals,
+            f"仍有字面量 stroke-width（应统一走 var(--icon-stroke)）：{sorted(set(literals))}",
+        )
+        producers = re.findall(r"stroke-width\s*:\s*var\(\s*--icon-stroke\s*\)", css)
+        self.assertGreaterEqual(
+            len(producers), 15,
+            f"消费 --icon-stroke 的规则只有 {len(producers)} 条 —— 收口被部分回退？",
+        )
+
+
+class AnnouncementUnreadStateTest(unittest.TestCase):
+    """G05#8 余项：公告未读的「已读态 + 第二载体（数字徽标/aria-label）」。
+
+    实拍：蓝点随公告文本有无切换（core.js 只写 dot.hidden = !text），点开读完后圆点
+    仍挂着，读屏也拿不到任何未读信息。这里钉住三重载体与已读记录的存在。
+    """
+
+    def test_read_state_and_second_carriers(self):
+        js = _read(CORE_JS)
+        self.assertIn("yiban-announce-read", js, "core.js 缺公告已读记录键")
+        self.assertIn("markAnnouncementRead", js, "core.js 缺标记已读的函数")
+        self.assertIn("data-announcement-count", js, "core.js 未回填数字徽标 second carrier")
+        self.assertIn("1 条未读", js, "铃铛 aria-label 未写入未读数")
+        for rel in ("partials/topbar.html", "partials/topbar_user.html"):
+            html = _read(os.path.join(TEMPLATES_DIR, rel))
+            self.assertIn("data-announcement-count", html,
+                          f"{rel} 缺数字徽标挂点（未读只有颜色一个载体）")
+
+
 if __name__ == "__main__":
     unittest.main()
