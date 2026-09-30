@@ -109,7 +109,10 @@
     }));
     li.appendChild(badgeCell);
     var msg = String(ev.message || "");
-    if (isSign && Number(ev.attempt) > 1) {
+    // 尝试号标注只给消息里没有它的行：retrying 的消息由引擎写成
+    // 「待重试（已 N 次）: …」（round.py），再追加就出现"已 2 次…（第 2 次）"双份；
+    // 最终态（failed 等）消息不带尝试号，这里的追加是唯一出处
+    if (isSign && ev.status !== "retrying" && Number(ev.attempt) > 1) {
       msg = msg ? msg + "（第 " + ev.attempt + " 次）" : "（第 " + ev.attempt + " 次）";
     }
     if (msg) li.appendChild(YB.el("span", { class: "ev-msg", text: msg }));
