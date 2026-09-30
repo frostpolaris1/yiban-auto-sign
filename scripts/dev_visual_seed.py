@@ -201,7 +201,9 @@ def seed(tmp: str, reset: bool = False) -> dict:
                     "message": {
                         "success": "签到成功", "already": "今日已签到",
                         "no_task": "今日无任务", "failed": "登录态失效",
-                        "retrying": "重试中（第 2 次）", "skipped_window": "已过签到窗口",
+                        # 消息格式对齐引擎真实口径（round.py：待重试（已 N 次）: 原因）——
+                        # 此前写"重试中（第 2 次）"，与前端 attempt 标注叠加成双份
+                        "retrying": "待重试（已 2 次）: 登录态失效", "skipped_window": "已过签到窗口",
                         "skipped_norange": "不在时间偏好内",
                     }[status],
                     "stage": rng.choice(["", "probe", "sign"]),
