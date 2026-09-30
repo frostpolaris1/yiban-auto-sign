@@ -709,6 +709,24 @@ class WebB12Test(unittest.TestCase):
         self.assertIn("*", ev["phone"])
         self.assertEqual(ev["attempt"], 2)
 
+    def test_sign_events_batch_survives_null_attempt(self):
+        """attempt=None 的事件行必须落库为 0，且不拖垮同批其他行。
+
+        批量写入是单事务：一行约束失败整批回滚 = 本轮事件全丢（统计页因此空白）。
+        """
+        ts = db.clock.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.add_sign_events_batch([
+            {"ts": ts, "phone": PHONE, "status": "success", "message": "收尾",
+             "stage": "sign", "attempt": None, "finished_at": ts},
+            {"ts": ts, "phone": PHONE, "status": "failed", "message": "登录失败",
+             "stage": "sign", "attempt": 1, "finished_at": ts},
+        ])
+        rows = db.sign_events_by_phone(PHONE, days=1)
+        self.assertEqual(len(rows), 2, "None 行不得拖垮整批")
+        by_attempt = {r["attempt"] for r in rows}
+        self.assertIn(0, by_attempt, "None 必须归 0 落库")
+        self.assertIn(1, by_attempt)
+
     def test_admin_sign_events_endpoint(self):
         ts = db.clock.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_events_batch([{

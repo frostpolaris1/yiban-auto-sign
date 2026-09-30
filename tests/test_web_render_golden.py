@@ -305,6 +305,22 @@ class WebRenderGoldenTest(unittest.TestCase):
         """`/user/calendar` 的结构指纹（用户端第二页，与 /user 同一外壳）。"""
         self._assert_golden("user_calendar.rendered.html", normalize(self._render("user_calendar")))
 
+    def test_admin_calendar_renders_calendar_state(self):
+        """/my/calendar 必须把管理端渲染器的 extra 上下文真正渲染进页面。
+
+        管理端与用户端渲染器同签名但实现分叉：用户端合并 `extra`、管理端漏合，
+        模板 `{{ calendar_state | tojson }}` 遇 Undefined 直接 500。金标准只渲染
+        用户端日历（管理端日历当时未纳快照），拦不住这条——故单独立此用例。
+        """
+        c = self._admin_client()
+        r = c.get("/my/calendar")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:400])
+        body = r.get_data(as_text=True)
+        # tojson 产出必须是真对象：漏合 extra 时 Jinja Undefined 序列化即抛
+        self.assertIn("window.YB_CALENDAR_STATE = {", body)
+        # 图例由 status_legend 渲染：同样来自 extra
+        self.assertIn("sc-legend", body)
+
     def test_asset_manifest_golden(self):
         """静态资源引用清单（顺序敏感）+ 清单与磁盘一致。
 
