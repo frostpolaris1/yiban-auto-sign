@@ -36,6 +36,8 @@ from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
 from web.services.env_io import cleanup_env_ambiguous_line
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
+from web.services.env_io import (SCHEDULE_DIST_DEFAULTS, SCHEDULE_DIST_ENV_KEYS,
+                                 SCHEDULE_DIST_KEYS)
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 
@@ -234,6 +236,11 @@ def api_settings():
             "window_edge_sec": m.edge_config()[0],
             "edge_front_sec": m.edge_config()[0],
             "edge_back_sec": m.edge_config()[1],
+            # 正态 μ/σ 区间四键（%，定义的是区间、每天在区间内取一次值）。A 档：
+            # 仅主管理员可改。回显与"生效值"同源（`load_env_int` + 引擎缺省），
+            # 否则提交一个等于回显的值会被判成"没改"、A 档口令门禁被绕过。
+            **{_k: m.load_env_int(m.ENV_FILE, _env_key, SCHEDULE_DIST_DEFAULTS[_k])
+               for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items()},
             "allow_time_pref": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
             "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
             # 窗口不可用（已回退默认）的可见提示；正常窗口时 false + 空串
@@ -280,6 +287,10 @@ def api_settings_save():
     m = _appmod()
     data = m._json_body()
     is_master = m._is_builtin_admin_session()
+    # 本次请求的 A 档键集：`web/app.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
+    # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 + 当次口令）
+    # 复刻在这里；键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
+    master_only = set(m.MASTER_ONLY_KEYS) | SCHEDULE_DIST_KEYS
     # 档位判定读单源常量（见 MASTER_ONLY_KEYS 的定义处）：只看"键是否出现"、不看值，
     # 与普通管理员即便提交同值也无从改动这些键的既有 403 语义一致。
     # global_pause 是唯一例外——0→1「急停」任意管理员都能做，1→0「恢复签到」仍仅
@@ -289,7 +300,7 @@ def api_settings_save():
         gp_req = 1 if m._env_flag(data.get(m.GLOBAL_PAUSE_KEY, "")) else 0
     wanted_a = set()
     if not is_master:
-        wanted_a = set(m.MASTER_ONLY_KEYS.intersection(data))
+        wanted_a = master_only.intersection(data)
         if gp_req == 0:
             wanted_a.add(m.GLOBAL_PAUSE_KEY)
     if wanted_a:
@@ -443,6 +454,21 @@ def api_settings_save():
             max_users_val = v
         else:
             max_accounts_val = v
+    # 正态 μ/σ 区间四键（A 档：仅主管理员）：整数百分比，逐键独立校验 0~100。
+    # `lo >= hi` 在此**不拒绝**——引擎 `_schedule_config` 已有"告警 + 回退默认
+    # （μ 40~60 / σ 15~25）"语义，后端保持同一回退行为；拒绝只会让存量非法配置
+    # 连别的字段都存不了，前端就地预警即可（`ss-mu-warn` / `ss-sigma-warn`）。
+    dist_params = {}
+    for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
+        if _k not in data:
+            continue
+        try:
+            _v = int(data[_k])
+        except (TypeError, ValueError):
+            return jsonify({"error": f"{m._settings_label(_k)}必须是整数（%）"}), 400
+        if not (0 <= _v <= 100):
+            return jsonify({"error": f"{m._settings_label(_k)}应为 0~100（%）"}), 400
+        dist_params[_k] = _v
     # ---- 档位门禁：A/B 档的口令复核只在这一处判（档位表见 MASTER_ONLY_KEYS）----
     # 只带其中一个边缘键时另一侧保持现值——先按写侧同一口径补齐，否则"改了前裁、
     # 后裁跟着变"这件事在变更判定里是隐形的
@@ -493,15 +519,18 @@ def api_settings_save():
         "max_users": None if max_users_val is None else str(max_users_val),
         "max_accounts": None if max_accounts_val is None else str(max_accounts_val),
     }
+    # 正态 μ/σ 区间四键：与 GET 回显同形（整数字符串），未携带的键不进变更判定
+    for _k in SCHEDULE_DIST_KEYS:
+        proposed[_k] = None if _k not in dist_params else str(dist_params[_k])
     cur_vals = m._settings_effective_values(m.ENV_FILE)
     # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
     changes = []
     for _k in sorted(set(data).intersection(
-            m.MASTER_ONLY_KEYS | m.GATED_KEYS | {m.GLOBAL_PAUSE_KEY})):
+            master_only | m.GATED_KEYS | {m.GLOBAL_PAUSE_KEY})):
         _new, _old = proposed.get(_k), cur_vals.get(_k)
         if _new is not None and _new != _old:
             changes.append((_k, _old or "-", _new))
-    a_changes = [c for c in changes if c[0] in m.MASTER_ONLY_KEYS]
+    a_changes = [c for c in changes if c[0] in master_only]
     b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
     pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
 
@@ -593,6 +622,10 @@ def api_settings_save():
         updates["YIBAN_MAX_USERS"] = str(max_users_val)
     if max_accounts_val is not None:
         updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
+    # 正态 μ/σ 区间四键：携带才写（缺失不重置），环境键名取自 env_io 的映射表
+    for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
+        if _k in dist_params:
+            updates[_env_key] = str(dist_params[_k])
     try:
         m.write_env_batch(m.ENV_FILE, updates)
     except _EnvWriteRefused as e:

@@ -43,6 +43,15 @@ def _h(*parts):
     return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big")
 
 
+def u01(*parts):
+    """`[0,1)` 均匀量：`_h` 取高 53 位（低 11 位丢弃，换来 2^53 个可精确表示的分点）。
+
+    归一化只在这一处：分位、槽内相位、每日参数都从它派生，同一串输入在任何进程、
+    任何时刻都得同一值——"计划是纯函数、崩溃可重放"的底座就在这里。
+    """
+    return (_h(*parts) >> 11) / float(1 << 53)
+
+
 def vshard_of(phone, day, v=V_DEFAULT):
     """账号所属虚分片 `H(phone ‖ day) mod v`，返回 0..v-1。
 

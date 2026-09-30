@@ -447,6 +447,7 @@
 
       // 自研控件必须先建出可见体：各组件随后要按权限禁用它们（隐藏 input 上置 disabled 不可见）
       if (YB.selectField) YB.selectField.mount();
+      if (YB.multiselectField) YB.multiselectField.mount();
       if (YB.rangeField) YB.rangeField.mount();
       if (YB.timeField) YB.timeField.mount();
       YB.settingsSchedule.mount({
