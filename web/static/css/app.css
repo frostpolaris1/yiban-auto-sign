@@ -4466,7 +4466,10 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 44px;
+  /* 高度跟触发器家族走（桌面 40 基准、触屏 44——见统一触屏块）：内联块在页面上
+     的角色就是触发器，须与相邻的 .time-trigger 同高（实测 43 vs 39 不齐，用户指出）；
+     弹层选项的 44 是面板内行距规格，不适用于内联形态 */
+  min-height: 40px;
   padding: 0 16px;
   border: 1px solid var(--control-border);
   border-radius: 8px;
@@ -4871,11 +4874,13 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   .auth-links a { display: inline-flex; align-items: center; }
   .auth-switch-hint button,
   .auth-agree-text button { display: inline-flex; align-items: center; padding: 0 6px; }
-  /* 四个自研触发器共用 40px 基准，触屏下不够点（含多选形态）；选项行 30.5 已无条件抬到 44px */
+  /* 四个自研触发器共用 40px 基准，触屏下不够点（含多选形态）；选项行 30.5 已无条件抬到 44px。
+     多选的**内联形态**选项跟触发器同基准（页面上与触发器并排，见 30.5.1） */
   .select-trigger,
   .range-trigger,
   .time-trigger,
-  .date-trigger { min-height: 44px; }
+  .date-trigger,
+  .multiselect-field[data-ms-inline] .select-option { min-height: 44px; }
   /* 日期弹层：翻月键与日格与页面日历（.sc-nav-btn / .sc-grid 行高）取齐，弹层加宽到能容纳 */
   .date-day { height: 44px; }
   .date-pop { width: 100%; max-width: 320px; }
