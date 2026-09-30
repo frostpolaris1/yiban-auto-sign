@@ -702,8 +702,12 @@ def api_my_logs():
     # 日志仅回显已生效账号的历史（pending/rejected/软删除不回显）
     phones = _my_active_phones(accounts, indices)
     out = []
+    # 行内手机号有两种纪元：加固前文件落完整号 `[完整号]`，加固后文件本身脱敏、
+    # 落 `[遮罩号]`。过滤必须两种形态同时认，只认完整号会让加固纪元的日志
+    # 在日历"我的日志"面板恒为空（历史日期照常可读）。
+    needles = [(f"[{p}]", f"[{m.signin._mask_phone(p)}]") for p in phones]
     for line in m._log_lines_for(date):
-        if any(f"[{p}]" in line for p in phones):
+        if any(full in line or masked in line for full, masked in needles):
             out.append(line.strip())
     # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）
     return jsonify({"ok": True, "date": date, "logs": [m._mask_log_phones(ln) for ln in out[-50:]]})
