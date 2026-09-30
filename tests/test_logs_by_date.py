@@ -250,6 +250,23 @@ class LogsByDateTest(unittest.TestCase):
         data = c.get("/api/my-logs?date=2026-08-01").get_json()
         self.assertEqual(data["logs"], [])
 
+    def test_my_logs_matches_masked_era_lines(self):
+        """文件自身脱敏纪元：行内是 `[遮罩号]`，过滤必须照样认得。
+
+        日志文件自 v0.5 起整体脱敏（行内不再落完整号）——过滤器若只认
+        `[完整号]`，日历"我的日志"面板在该纪元恒为空。历史完整号纪元的
+        行也必须继续可读（同一天两种纪元混排时各自命中一次）。
+        """
+        self._write_date_log(HIST_DATE, [
+            _log_line(HIST_DATE, "INFO", "yiban", "[138****8001] ✅ 签到成功"),  # 自己的（遮罩纪元）
+            _log_line(HIST_DATE, "INFO", "yiban", "[13800138001] ✅ 签到成功"),  # 自己的（历史完整号纪元）
+            _log_line(HIST_DATE, "INFO", "yiban", "[139****9002] ✅ 签到成功"),  # 管理员的（遮罩纪元）
+        ])
+        c = self._user_client()
+        data = c.get(f"/api/my-logs?date={HIST_DATE}").get_json()
+        self.assertEqual(len(data["logs"]), 2, "遮罩行与完整号行都必须命中自己的账号")
+        self.assertNotIn("139****9002", "\n".join(data["logs"]), "他人的遮罩行不得命中")
+
     def test_my_logs_bad_date_400(self):
         c = self._user_client()
         self.assertEqual(c.get("/api/my-logs?date=bad").status_code, 400)

@@ -99,7 +99,8 @@ def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
             conn = _facade().get_conn()
             conn.execute(
                 _INSERT_SIGN_EVENT_SQL,
-                (ts, phone, status, message, stage, attempt,
+                # attempt 列 NOT NULL：调用方显式传 None（无尝试号的事件）在此归 0。
+                (ts, phone, status, message, stage, int(attempt or 0),
                  account_id, dur_sec, finished_at),
             )
             conn.commit()
@@ -127,7 +128,8 @@ def add_sign_events_batch(rows):
                         r.get("status", ""),
                         r.get("message", ""),
                         r.get("stage", ""),
-                        r.get("attempt", 0),
+                        # `.get("attempt", 0)` 挡不住显式 None；列 NOT NULL，归 0 兜底
+                        int(r.get("attempt") or 0),
                         r.get("account_id"),
                         r.get("dur_sec"),
                         r.get("finished_at"),
