@@ -86,6 +86,7 @@ def _render_admin_page(template, nav_key, crumbs, extra=None):
         current_username=session.get("username", ""),
         current_role=m._current_role() or "",
         env_line_break_codes=_env_line_break_codes(),
+        **(extra or {}),
     )
 
 
