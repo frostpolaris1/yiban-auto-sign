@@ -177,7 +177,7 @@
   }
 
   // 固定 42 格：前置空位 + 当月日期 + 尾部补齐 → 每个月都是 6 行，卡片高度恒定
-  function gridHtml(data, phone, year, month, monthStr, selected) {
+  function gridHtml(data, phone, year, month, monthStr, selected, used) {
     var firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     var days = new Date(year, month, 0).getDate();
     var today = todayStr();
@@ -191,6 +191,7 @@
       var sunOff = wd === 0 && !flags.sunday;
       var satOff = wd === 6 && !flags.saturday;
       var off = sunOff || satOff;
+      if (stt && !off) used.push(stt);   // 图例收敛：只统计真正显示出来的状态（休日显示"休"，不算）
       cells.push(dayCell({
         d: d, date: date, state: stt, off: off, selected: date === selected,
         offDay: off ? (sunOff ? "日" : "六") : "", isToday: date === today,
@@ -198,6 +199,22 @@
     }
     while (cells.length < CELLS) cells.push('<span class="sc-blank"></span>');
     return cells.join("");
+  }
+
+  // 图例动态收敛：图例的职责是解释当前看得见的格子，状态词汇表全量陈列是服务端
+  // （legend_items）的事——没出现的状态条目是纯噪音，且五个近似的"受限"符号
+  // （⛔🚫⏸️⏹️⏸）恰恰最依赖图例，留一堆用不上的条目反而稀释查询价值。
+  // 按账号卡维护各自的出现集合（切月只重算该卡），并集驱动显隐；休/今天两条
+  // 是结构性常驻（无 data-symbol），不参与收敛。
+  var legendUsed = {};
+  function trimLegend() {
+    var used = {};
+    Object.keys(legendUsed).forEach(function (k) {
+      (legendUsed[k] || []).forEach(function (s) { used[s] = true; });
+    });
+    [].slice.call(document.querySelectorAll(".sc-legend li[data-symbol]")).forEach(function (li) {
+      li.hidden = !used[li.getAttribute("data-symbol")];
+    });
   }
 
   function render(mount, phone, selectDate) {
@@ -237,7 +254,10 @@
         var picked = mount.getAttribute("data-sc-selected");
         if (autoToday && picked) { selected = picked; autoToday = false; }
         if (label) label.textContent = monthLabel(year, month);
-        grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected);
+        var used = [];
+        grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected, used);
+        legendUsed[phone] = used;
+        trimLegend();
         grid.removeAttribute("aria-busy");
         if (selectDate) {
           mount.setAttribute("data-sc-selected", selectDate);
