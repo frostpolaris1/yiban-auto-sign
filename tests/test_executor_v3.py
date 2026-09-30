@@ -2091,5 +2091,24 @@ class EmitEventAttemptNotNullTest(unittest.TestCase):
         self.assertEqual(collected[0]["attempt"], 2)
 
 
+class PerAccountLogLineTest(_Base):
+    """每账号结果行：日志按 `[遮罩号]` 落行，`/api/my-logs` 的日历面板靠它回显。
+
+    日志文件本身已整体脱敏（行内不落完整号），但每账号仍须至少一行结果——
+    只在重试/放弃时落行的话，成功/跳过账号在面板里查无记录。
+    """
+
+    def test_success_attempt_logs_masked_result_line(self):
+        phone = _phone(0)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "签到成功", False, "success")), \
+                self.assertLogs("yiban", level="INFO") as cm:
+            self._run_v3(self._accounts(phone))
+        joined = "\n".join(cm.output)
+        self.assertIn(executor_v3._mask_phone(phone), joined, "结果行必须含遮罩号")
+        self.assertNotIn(phone, joined, "结果行不得落完整号（文件纪元=遮罩）")
+        self.assertIn("签到成功", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
