@@ -2943,8 +2943,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 /* 命中区 24→32：视觉上勾选框仍 20px，多出的 4px 用等量负外边距收回，
    行高与列位不动（与 .switch 抬高热区的手法同源）。 */
 .acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; margin: -4px; }
-/* 表头「全选」框没有 .acct-check 包裹层，单独给同一命中区（负外边距抵消视觉位移） */
-.acct-table thead th input[type="checkbox"] { min-width: 32px; min-height: 32px; margin: -4px 0; }
+/* 表头「全选」框与行内同用 .acct-check 包裹层（模板已包）：命中区 32、视觉仍是原生
+   小勾。此前把 min-width/height 直接压在裸 input 上，原生勾选框被整体放大到 32px，
+   比行内大一倍（用户 2026-09-30 实拍指出）；包裹层同时解决了表头与行内的左轴对齐。 */
 .acct-cell-state { width: 44px; }
 /* 数值列同样左对齐（用户 2026-09-16 定：全站表格统一左对齐）。
    此前这里是 text-align:right：表头因 Adminator 的 .data-table thead th（0,1,2）
@@ -3286,8 +3287,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .usr-cell-check { width: 44px; }
 /* 与 .acct-check 同口径：命中区 24→32，负外边距收回视觉差，行高不变。 */
 .usr-check { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; margin: -4px; }
-/* 表头「全选」框没有 .usr-check 包裹层，单独给同一命中区（同样用负外边距抵消视觉位移） */
-.usr-table thead th input[type="checkbox"] { min-width: 32px; min-height: 32px; margin: -4px 0; }
+/* 表头「全选」框与行内同用 .usr-check 包裹层（模板已包），理由同 .acct-table 侧：
+   裸 input 压 32px 会把原生勾选框整体放大，与行内视觉尺寸脱节 */
 .usr-cell-mail {
   font-family: var(--font-mono);
   font-size: 12px;
