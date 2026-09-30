@@ -237,9 +237,11 @@ textarea {
   color: var(--t-light);
   transition: background 150ms, color 150ms;
 }
-.toast__close:hover {
-  background: var(--bg-hover);
-  color: var(--t-base);
+@media (hover: hover) and (pointer: fine) {
+  .toast__close:hover {
+    background: var(--bg-hover);
+    color: var(--t-base);
+  }
 }
 .toast__close svg {
   width: 12px;
@@ -343,20 +345,22 @@ textarea {
 .pm-panel .pm-panel-close {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;              /* 26→32：桌面指针 32px 下限；图标仍 16px，只有热区变大 */
+  height: 32px;
   flex-shrink: 0;
-  border-radius: 6px;
-  color: var(--t-light);
+  border-radius: 8px;
+  color: var(--t-muted);   /* 承载「关闭」动作的图标，--t-light 仅 2.56:1 < 1.4.11 的 3:1 */
   transition: background 150ms, color 150ms;
 }
-.pm-panel .pm-panel-close:hover {
-  background: var(--bg-hover);
-  color: var(--t-base);
+@media (hover: hover) and (pointer: fine) {
+  .pm-panel .pm-panel-close:hover {
+    background: var(--bg-hover);
+    color: var(--t-base);
+  }
 }
 .pm-panel .pm-panel-close svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -438,9 +442,11 @@ textarea {
   font-weight: 600;
   transition: background 160ms, color 160ms;
 }
-.pager__btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--t-base);
+@media (hover: hover) and (pointer: fine) {
+  .pager__btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--t-base);
+  }
 }
 .pager__btn.is-active {
   background: var(--primary-solid);   /* 白字压主色实心面：dark 下 --primary 是浅蓝，白字仅 2.54:1（见 §33） */
@@ -560,8 +566,10 @@ textarea {
   font: inherit;
   cursor: pointer;
 }
-.linklike:hover {
-  text-decoration: underline;
+@media (hover: hover) and (pointer: fine) {
+  .linklike:hover {
+    text-decoration: underline;
+  }
 }
 
 /* ==========================================================================
@@ -573,6 +581,7 @@ textarea {
   .btn,
   .nav-link,
   .icon-btn,
+  .avatar,
   .tab,
   .dd-menu-item,
   .slot,
@@ -583,12 +592,20 @@ textarea {
   .hamburger,
   .info-tip,
   a.kpi-card,
+  .input,
+  .input-affix .affix-btn,
+  .alert .close,
+  .auth-switch-hint button,
+  .auth-agree-text button,
+  .auth-links a,
   .pm-panel .pm-panel-close
 ):focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
-:where(.mini-cal-day, .slot, .nav-link):focus-visible {
+/* .input 的 1px 边框会被 offset 2px 的环离出一道缝，压到边框上更稳；
+   .avatar 与 .icon-btn 相邻（顶栏），同 1px 内收与视觉重量一致。 */
+:where(.mini-cal-day, .slot, .nav-link, .input, .avatar):focus-visible {
   outline-offset: 1px;
 }
 :focus:not(:focus-visible) {
@@ -1292,21 +1309,23 @@ body {
 
 /* 密码可见性切换：Adminator 只提供左侧图标的 .input-icon，右侧按钮为项目新增 */
 .input-affix { position: relative; }
-.input-affix .input { padding-right: 38px; }
+.input-affix .input { padding-right: 44px; }
 .input-affix .affix-btn {
   position: absolute;
-  right: 4px;
+  right: 1px;               /* 30×30/right:4 → 36×36/right:1：按钮中心仍在原处，只把热区撑大 */
   top: 50%;
   transform: translateY(-50%);
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   border-radius: 6px;
-  color: var(--t-light);
+  color: var(--t-muted);   /* 承载「显示/隐藏密码」动作的图标，--t-light 仅 2.31:1 < 1.4.11 的 3:1 */
   transition: background 160ms, color 160ms;
 }
-.input-affix .affix-btn:hover { background: var(--bg-hover); color: var(--t-base); }
+@media (hover: hover) and (pointer: fine) {
+  .input-affix .affix-btn:hover { background: var(--bg-hover); color: var(--t-base); }
+}
 .input-affix .affix-btn svg {
   width: 15px;
   height: 15px;
@@ -1330,7 +1349,9 @@ body {
 .auth-agree-text { font-size: 11.5px; color: var(--t-muted); line-height: 1.6; }
 /* 《用户协议》按钮是全角标点的中文串，600 无字面（实渲 700），写 700 */
 .auth-agree-text button { color: var(--primary); font-weight: 700; font-size: inherit; }
-.auth-agree-text button:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) {
+  .auth-agree-text button:hover { text-decoration: underline; }
+}
 
 /* 左栏功能清单 */
 .auth-points { display: flex; flex-direction: column; gap: 12px; }
@@ -1453,7 +1474,9 @@ body {
 /* 文档正文里的强调用 700：自托管 Noto Sans SC 只有 400/700 两档，600 对中文实渲 700，
    写 700 才是字面存在的档位（写 600 只是让浏览器去模拟、且注释层面误导）。 */
 .md-body a { color: var(--primary); font-weight: 700; }
-.md-body a:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) {
+  .md-body a:hover { text-decoration: underline; }
+}
 .md-body strong { color: var(--t-base); font-weight: 700; }
 
 /* ==========================================================================
@@ -1503,7 +1526,8 @@ body {
     radial-gradient(58% 54% at 76% 90%, rgba(13, 148, 136, 0.18), transparent 64%),
     radial-gradient(46% 42% at 6% 86%, rgba(219, 39, 119, 0.12), transparent 62%);
   opacity: 0;
-  transition: opacity 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* 深色覆盖层与整页表面/文字同用 --theme-dur/--theme-ease，换肤时三者同相位。 */
+  transition: opacity var(--theme-dur) var(--theme-ease);
 }
 html[data-theme="dark"] .auth-aside::before { opacity: 1; }
 
@@ -1532,11 +1556,14 @@ html[data-theme="dark"] .auth-aside::after {
 /* 极光层是绝对定位的伪元素，子内容需抬到其上（Adminator 只给部分子元素设了 z-index） */
 .auth-aside > * { position: relative; z-index: 1; }
 
-/* 主题自适应文字：覆盖 Adminator 的 rgba(255,255,255,*) 硬编码 */
-.auth-aside p { color: var(--t-muted); }
+/* 主题自适应文字：覆盖 Adminator 的 rgba(255,255,255,*) 硬编码。
+   全部用 --t-sub 而非 --t-muted/--t-light：极光底上 --t-light 实测仅 1.93–2.01:1、
+   --t-muted 也只有约 4.3:1，都低于正文 AA 4.5:1（--t-light 更是不到阈值一半，
+   「YIBAN AUTO SIGN-IN」「AGPL-3.0 · SELF-HOSTED」几乎读不出）。 */
+.auth-aside p { color: var(--t-sub); }
 .auth-aside-eyebrow,
-.auth-aside-footer { color: var(--t-light); }
-.auth-points li { color: var(--t-muted); }
+.auth-aside-footer { color: var(--t-sub); }
+.auth-points li { color: var(--t-sub); }
 .auth-brand .logo {
   background: var(--aside-chip-bg);
   border: 1px solid var(--aside-chip-border);
@@ -1612,9 +1639,11 @@ html[data-theme="dark"] .auth-card {
     box-shadow 160ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
-.auth-tabs.auth-seg .tab:hover:not(.is-active):not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--t-base);
+@media (hover: hover) and (pointer: fine) {
+  .auth-tabs.auth-seg .tab:hover:not(.is-active):not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--t-base);
+  }
 }
 .auth-tabs.auth-seg .tab.is-active {
   background: var(--primary);
@@ -1641,15 +1670,16 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
 .auth-submit { margin-top: 6px; }
 
 /* 登录页近邻字号收敛：vendor 的 .sub(13.5) 与表单主字号(13) 比值 1.038，读者分不出，
-   统一到 13，去掉一个伪层级（同一页的 12.5 也一并归到 12，见 .auth-switch-hint）。 */
-.auth-card .sub { font-size: 13px; }
+   统一到 13，去掉一个伪层级（同一页的 12.5 也一并归到 12，见 .auth-switch-hint）。
+   颜色随字号一起收口：vendor 给的是 --t-muted，实测 4.48:1 差一点到 AA，换 --t-sub。 */
+.auth-card .sub { font-size: 13px; color: var(--t-sub); }
 
 .auth-switch-hint {
   margin: 14px 0 0;
   text-align: center;
   font-size: 12px;   /* 原 12.5，与 .field-label/.field-help 的 12 同档（比值 1.04 不可辨） */
   line-height: 1.5;
-  color: var(--t-muted);
+  color: var(--t-sub);   /* 原 --t-muted 实测 4.29:1，差一点到 AA 4.5:1 */
 }
 .auth-switch-hint button {
   padding: 0 2px;
@@ -1660,7 +1690,9 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
   border: 0;
   cursor: pointer;
 }
-.auth-switch-hint button:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) {
+  .auth-switch-hint button:hover { text-decoration: underline; }
+}
 
 /* ---- 18.5 公告横幅 ----
    Adminator 没有 .banner/.notice，最接近的是 .alert（已带 .ico/.body/.close 骨架），
@@ -1699,19 +1731,23 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
 }
 .alert.auth-announce .body { flex: 1 1 auto; min-width: 0; }
 .alert.auth-announce .close {
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
+  /* 22×22 低于 WCAG 2.2 SC 2.5.8 的 24×24 下限；抬到 28（再大就会把公告文字挤窄），
+     触屏档另在 @media (hover: none) 抬到 44。 */
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   display: grid;
   place-items: center;
   border: 0;
   border-radius: 6px;
-  color: var(--t-light);
+  color: var(--t-muted);   /* 承载「关闭」动作的图标，--t-light 仅 2.22:1 < 1.4.11 的 3:1 */
   background: none;
   cursor: pointer;
   transition: background-color 150ms, color 150ms;
 }
-.alert.auth-announce .close:hover { background: var(--bg-hover); color: var(--t-base); }
+@media (hover: hover) and (pointer: fine) {
+  .alert.auth-announce .close:hover { background: var(--bg-hover); color: var(--t-base); }
+}
 .alert.auth-announce .close svg {
   width: 14px;
   height: 14px;
@@ -1728,8 +1764,10 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
    不做错峰 stagger——主题切换是全局单次动作，错峰会有"组件分批变色"的拼贴感。
    分段控件的 .tab 不列入此白名单：它有自己更快的 160ms 交互过渡（见 18.3）。 */
 :root {
-  --theme-dur-surface: 220ms;
-  --theme-dur-text: 170ms;
+  /* 整页换肤的单一长度令牌：表面、文字与深色极光覆盖层必须同步过渡。
+     三者曾各用 220/170/200ms，换肤过程中表面与文字按不同速率收敛，
+     中途出现过比例错位的中间态；并成一个值后三者始终同相位。 */
+  --theme-dur: 220ms;
   --theme-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 body,
@@ -1752,44 +1790,50 @@ body,
 .auth-brand .name,
 .auth-mobile-brand {
   transition:
-    background-color var(--theme-dur-surface) var(--theme-ease),
-    border-color var(--theme-dur-surface) var(--theme-ease),
-    color var(--theme-dur-text) var(--theme-ease),
-    box-shadow var(--theme-dur-surface) var(--theme-ease);
+    background-color var(--theme-dur) var(--theme-ease),
+    border-color var(--theme-dur) var(--theme-ease),
+    color var(--theme-dur) var(--theme-ease),
+    box-shadow var(--theme-dur) var(--theme-ease);
 }
-/* Adminator 的 .btn 是 transition:all 180ms ease，会与分属性过渡冲突，显式覆盖 */
+/* Adminator 的 .btn 是 transition:all 180ms ease，会与分属性过渡冲突，显式覆盖。
+   .btn 同时服务换肤与悬停/按下反馈——悬停档位由各组件自己的更快过渡覆盖（如
+   .btn-group 的 140ms），此处保留换肤档。 */
 .btn {
   transition:
-    background-color var(--theme-dur-surface) var(--theme-ease),
-    border-color var(--theme-dur-surface) var(--theme-ease),
-    color var(--theme-dur-text) var(--theme-ease),
-    box-shadow var(--theme-dur-surface) var(--theme-ease);
+    background-color var(--theme-dur) var(--theme-ease),
+    border-color var(--theme-dur) var(--theme-ease),
+    color var(--theme-dur) var(--theme-ease),
+    box-shadow var(--theme-dur) var(--theme-ease);
 }
 /* ---- 按钮内联忙碌态 ----
    为什么不用「把文案换成『保存中…』」：换文案会改变按钮宽度 → 同行元素重排，
    而用户此刻的视线正落在这个按钮上，它一变形就把注视点从操作点挪开
    （这正是"文字反馈在实践中不可靠"的机制）。改法是**原地**转圈：
-   按钮宽度不变、标签留在原位只是压暗，加载指示出现在标签旁边。
-   减动效偏好下转圈改为静态环 + 压暗，状态仍然可见。 */
+   标签就地淡出（占位仍在，按钮宽度与整行布局零变化），加载环落到按钮正中心。
+   环必须绝对定位、**不能参与 flex 排版**：作为首个弹性项时，它连同 6px 间距会把
+   整组重新居中，标签右移约 9px —— 正是本条要防的"注视点被挪走"。
+   减动效偏好下转圈改为静态环，标签仍淡出，状态可见性不回退。 */
 .btn.is-busy {
   position: relative;
-  color: var(--t-sub);            /* 标签压暗：仍在读，但不再像可点的静态文案 */
+  color: transparent;             /* 标签淡出：仍占原位，只是不可读 */
   pointer-events: none;           /* 兜底防连点（与 disabled 互为保险） */
 }
 .btn.is-busy::before {
   content: "";
-  display: inline-block;
+  position: absolute;
+  top: 50%;
+  left: 50%;
   width: 12px;
   height: 12px;
-  margin-right: 6px;
-  vertical-align: -1px;
   border: 2px solid currentColor;
   border-top-color: transparent;
   border-radius: 50%;
+  color: var(--t-sub);            /* 环自带颜色：父级 color 已透明，不能靠它继承 */
+  transform: translate(-50%, -50%);
   animation: btn-spin 640ms linear infinite;
 }
 @keyframes btn-spin {
-  to { transform: rotate(360deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
 }
 @media (prefers-reduced-motion: reduce) {
   .btn.is-busy::before {
@@ -1946,8 +1990,9 @@ html[data-theme="dark"] {
 /* 卡头标题只有一个层级：vendor 的 .card-title 原为 16px，与 .panel-title 15px 只差 1px
    （比值 1.067，读者分不出却并存两套卡头口径）。统一到 15px，与 .modal-title 同档。 */
 .card-title { font-size: 16px; letter-spacing: 0; }
-/* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零 */
-.panel-sub { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
+/* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零。
+   色用 --t-sub：与 .page-sub 同决策——--t-muted 在白卡上实测 3.98:1，未到正文 AA。 */
+.panel-sub { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
 .panel-stack { display: flex; flex-direction: column; }
 .panel-head:last-child { margin-bottom: 0; }
 /* 折叠卡收起时，summary 之后无内容，不该留 16px ；展开时由 collapse-body 自带间距 */
@@ -2097,14 +2142,18 @@ html[data-theme="dark"] {
 .account-icon { display: inline-flex; flex-shrink: 0; color: var(--t-muted); }
 .account-icon svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.8; fill: none; }
 .account-name { font-size: 13px; font-weight: 600; color: var(--t-base); }
-.account-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-muted); word-break: normal; overflow-wrap: anywhere; }
+/* 账号卡三处次级文字统一到 --t-sub：--t-muted 在白卡上实测 3.1–3.62:1，未到正文 AA；
+   .account-note 又是整张卡唯一回答「今天签没成」的那一行，读不清代价最大。 */
+.account-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-sub); word-break: normal; overflow-wrap: anywhere; }
 .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.account-note { margin-top: 2px; font-size: 12px; color: var(--t-muted); }
+.account-note { margin-top: 2px; font-size: 12px; color: var(--t-sub); }
 .account-reject { margin-top: 10px; }
 .account-pending-hint { margin-top: 12px; font-size: 12px; color: var(--t-muted); }
 .account-details { margin-top: 10px; }
 .account-details > summary { font-size: 12px; color: var(--t-muted); cursor: pointer; transition: color 150ms; }
-.account-details > summary:hover { color: var(--t-base); }
+@media (hover: hover) and (pointer: fine) {
+  .account-details > summary:hover { color: var(--t-base); }
+}
 
 /* 状态行：语义三档 + 中性（色值见 19.0） */
 .state-line { margin-top: 2px; font-size: 12px; }
@@ -2205,6 +2254,15 @@ html[data-theme="dark"] {
 /* vendor 的 .field-error 以前景 --danger(#EF4444) 落在白卡上，实测仅 3.76:1 不达 AA；
    它是正文级错误文字，改用达标的 --state-bad-fg（浅 6.47 / 深 12.0 档）。 */
 .field-error { color: var(--state-bad-fg); }
+/* 必填星号同理：vendor 的 .field-label .req 用 --danger，同一 3.76:1；它是「必填」的唯一
+   视觉载体，换 AA 档前景（星号是 aria-hidden 装饰，必填语义由 input.required 承担，不动）。 */
+.field-label .req { color: var(--state-bad-fg); }
+/* placeholder 全站收口：vendor 的 .input/.textarea::placeholder 是 --t-light（白底 2.44–2.56:1，
+   不到正文 AA），此前只有三个列表页搜索框各自覆盖一遍，弹窗表单等落回浅档，全站两套口径。
+   在此声明一次；opacity:1 必须写，否则浏览器的半透明会把颜色再压暗一档。 */
+.input::placeholder,
+.select::placeholder,
+.textarea::placeholder { color: var(--t-muted); opacity: 1; }
 /* 表单正文 → 操作行：全站唯一保留的「提交边界」分隔线（Adminator 原生有，属模板线语言）。
    线要看起来居中，上下留白必须相等：margin-top（线以上）与 padding-top（线以下）同为 16px。
    此前被 body 作用域压成 8/18，正是「分隔线不垂直居中、按钮与线不居中」的根因。 */
@@ -2228,7 +2286,9 @@ html[data-theme="dark"] {
 /* 危险操作的"文字按钮"：Adminator 的 .btn--outline-danger 用 --danger 作文字色，
    在浅色卡片上只有 3.76:1（正文需 ≥4.5:1）。此处改用更深的红，深浅两套各自达标。 */
 .btn--danger-ghost { color: #B91C1C; border-color: rgba(185, 28, 28, 0.35); }
-.btn--danger-ghost:hover { background: var(--danger-soft); }
+@media (hover: hover) and (pointer: fine) {
+  .btn--danger-ghost:hover { background: var(--danger-soft); }
+}
 html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(252, 165, 165, 0.35); }
 
 /* ---- 19.7 折叠区（签到时间 / 修改密码）----
@@ -2288,7 +2348,9 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   cursor: pointer;
   /* 动效见 §22 覆盖（颜色 140ms + 按压 scale，避免同一属性两处时长漂移） */
 }
-.slot:hover:not(:disabled) { border-color: var(--primary); }
+@media (hover: hover) and (pointer: fine) {
+  .slot:hover:not(:disabled) { border-color: var(--primary); }
+}
 .slot--on { border-color: var(--primary); background: var(--primary); color: var(--t-inverse); font-weight: 600; }
 .slot--full { border-color: var(--slot-full-border); background: var(--slot-full-bg); color: var(--slot-full-fg); }
 .slot--partial { border: 1px dashed var(--slot-partial-border); background: var(--slot-partial-bg); color: var(--slot-partial-fg); }
@@ -2330,9 +2392,11 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   color: var(--t-base);
   white-space: nowrap;
 }
-.sc-nav { display: flex; gap: 2px; }
-.sc-nav-btn { width: 30px; height: 30px; padding: 0; justify-content: center; }
-.sc-nav-btn svg { width: 15px; height: 15px; }
+/* 换月键 30×30 且只隔 2px：低于桌面指针 32px 下限，两键又紧挨着，点错只静默跳月、
+   无法撤销。抬到 36px 并把键距拉到 8px（触屏档另在 @media (hover: none) 抬到 44px）。 */
+.sc-nav { display: flex; gap: 8px; }
+.sc-nav-btn { width: 36px; height: 36px; padding: 0; justify-content: center; }
+.sc-nav-btn svg { width: 17px; height: 17px; }
 .sc-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: 2; fill: none; }
 
 /* 星期表头：等宽小字 + 中性色（Adminator 的 .cal-weekdays 用 --t-light，仅 2.56:1） */
@@ -2519,16 +2583,9 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-cell:active { transform: scale(0.96); }
 .sc-cell.is-selected { box-shadow: 0 0 0 3px var(--primary-ring); }
 .sc-cell--today.is-selected { box-shadow: inset 0 0 0 2px var(--primary), 0 0 0 3px var(--primary-ring); }
-/* hover 只在真有指针的设备生效，避免触屏点按出现"假 hover" */
-/* 触屏命中区：登录页的「创建账号」「关闭公告」「显示密码」实测 52×18 / 22×22 / 30×30，
-   低于 44px 触屏最小值。只在粗指针设备放大内距，桌面观感不变。 */
-@media (hover: none) {
-  .auth-links a,
-  .auth-agree-label,
-  .announce-close,
-  .input-affix .affix-btn { min-height: 44px; }
-  .auth-links a { display: inline-flex; align-items: center; }
-}
+/* hover 只在真有指针的设备生效，避免触屏点按出现"假 hover"。 */
+/* 触屏 44px 命中区集中在文末第 38 节：min-* 与组件基础规则同特异度，必须排在所有
+   组件规则之后才能赢下级联（放这里会被后面 .range-tick/.date-day 等的 base 值盖掉）。 */
 
 @media (hover: hover) and (pointer: fine) {
   .sc-cell:hover { border-color: var(--primary); }
@@ -2711,8 +2768,21 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   line-height: 1.55;
   color: var(--t-muted);
 }
-/* 未读圆点：无文字时收成小圆点（Adminator 的 .count 是给数字徽标用的） */
-.icon-btn .count[data-announcement-dot] { min-width: 8px; width: 8px; height: 8px; padding: 0; top: 7px; right: 7px; border-width: 1px; }
+/* 未读圆点：无文字时收成小圆点（Adminator 的 .count 是给数字徽标用的）。
+   9px 圆点、top/right 4px 让它跨出铃铛包围盒并与图形分离；2px 的 --bg-body 描边把
+   圆点从铃身笔画里"切"出来（原来 1px 环 + #0EA5E9 对顶栏底仅 2.51:1，低于 WCAG 1.4.11
+   的 3:1，且整颗落在铃铛包围盒内像贴纸）；底色改 --primary-solid，白底 4.68:1。 */
+.icon-btn .count[data-announcement-dot] {
+  min-width: 9px;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  top: 4px;
+  right: 4px;
+  border: 2px solid var(--bg-body);
+  background: var(--primary-solid);
+  box-shadow: none;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .sc-cell,
@@ -2810,7 +2880,6 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   font-size: 12.5px;
 }
 .acct-tools .btn { min-height: 34px; }
-.acct-search .input::placeholder { color: var(--t-muted); }
 
 /* 批量条：选中 >0 才显示；用 inset 底色表达「作用于以上选中项」，不画分隔线。
    文字用 --t-sub（--t-muted on --bg-muted 仅 4.34:1，不达 AA）。 */
@@ -2850,8 +2919,12 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   color: var(--t-muted);
 }
 .acct-table tbody td { vertical-align: middle; }
-.acct-cell-check { width: 40px; }
-.acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
+.acct-cell-check { width: 44px; }
+/* 命中区 24→32：视觉上勾选框仍 20px，多出的 4px 用等量负外边距收回，
+   行高与列位不动（与 .switch 抬高热区的手法同源）。 */
+.acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; margin: -4px; }
+/* 表头「全选」框没有 .acct-check 包裹层，单独给同一命中区（负外边距抵消视觉位移） */
+.acct-table thead th input[type="checkbox"] { min-width: 32px; min-height: 32px; margin: -4px 0; }
 .acct-cell-state { width: 44px; }
 /* 数值列同样左对齐（用户 2026-09-16 定：全站表格统一左对齐）。
    此前这里是 text-align:right：表头因 Adminator 的 .data-table thead th（0,1,2）
@@ -3024,7 +3097,6 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 .log-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
 .log-search { display: block; }
 .log-search .input { height: 34px; min-height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
-.log-search .input::placeholder { color: var(--t-muted); }
 /* 同排控件统一 34px：桌面 .btn--sm 约 31.2px，与 34px 搜索框并排会参差 */
 .log-tools .btn { min-height: 34px; }
 /* 行数信息降为工具行内的次要文本（原为独占一行的 .panel-sub，把工具行与日期行隔开）。
@@ -3159,7 +3231,6 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
    .btn--sm 31.2px（min-height 只在 ≤720 才抬到 34）。三者靠 .panel-head-row / 
    .usr-batch-actions 的 align-items:center 居中，不为凑同高去覆写全站的 .icon-btn。 */
 .usr-search .input { height: 34px; min-height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
-.usr-search .input::placeholder { color: var(--t-muted); }
 /* 与搜索框同排的按钮同高（账号页 .acct-tools .btn 已是 34） */
 body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 
@@ -3192,8 +3263,11 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   color: var(--t-muted);
 }
 .usr-table tbody td { vertical-align: middle; }
-.usr-cell-check { width: 40px; }
-.usr-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
+.usr-cell-check { width: 44px; }
+/* 与 .acct-check 同口径：命中区 24→32，负外边距收回视觉差，行高不变。 */
+.usr-check { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; margin: -4px; }
+/* 表头「全选」框没有 .usr-check 包裹层，单独给同一命中区（同样用负外边距抵消视觉位移） */
+.usr-table thead th input[type="checkbox"] { min-width: 32px; min-height: 32px; margin: -4px 0; }
 .usr-cell-mail {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -3293,7 +3367,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    本节只保留**确无模板对应**的项目类：
      · .info-tip/.info-pop       详细信息浮层（模板无此概念，hover + focus 双触发）
      · .set-row*                 「说明 + 开关」行布局（模板 .switch 只管开关本体，无整行布局）
-     · .set-tip/.set-bad         就地状态文字（中性/失败上色；模板 .alert 是带图标的块级提示，
+     · .set-tip/.set-ok/.set-bad 就地状态文字（中性/成功/失败上色；模板 .alert 是带图标的块级提示，
                                  一行小字用它过重）
      · .set-warn                 软警示底。模板 .alert.warning 亦可表达同类语义，但带图标与
                                  左语义边、体积更大；此处只用于「一行容量/暂停提示」，故保留
@@ -3312,8 +3386,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;             /* 26→32：桌面指针 32px 下限；图标仍 16px，只有热区变大 */
+  height: 32px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -3321,7 +3395,10 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   color: var(--t-muted);
   cursor: help;
 }
-.info-tip:hover { color: var(--t-base); }
+/* 触发器自身的悬停变色只在精确指针设备生效；浮层由 :focus 提供不依赖悬停的等价路径。 */
+@media (hover: hover) and (pointer: fine) {
+  .info-tip:hover { color: var(--t-base); }
+}
 .info-tip svg { width: 16px; height: 16px; }.info-pop {
   position: absolute;
   top: calc(100% + 6px);
@@ -3400,6 +3477,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    （重复行分隔，1px solid --border-soft）。 */
 /* 文字块是 <label for=开关 id>：整行可点，宽屏下不必走到最右侧点开关 */
 .set-row-text { display: block; cursor: pointer; }
+/* 复选组行（30.5 多选）没有单一的 label for 目标——多行文字整块不再可点，
+   保留 pointer 手型会谎报热区，故换成 static 变体压回默认光标 */
+.set-row-text--static { cursor: default; }
 /* 窄屏曾在此强制 flex-wrap 把开关挤到下一行，起因是说明文案过长（横排只剩 240px、
    13 字/行）。文案已按「细节进 info 浮层」收短，撤掉换行让开关回到同一行——
    控件与说明分家会让扫读断裂，也违反近接原则。 */
@@ -3430,6 +3510,12 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   z-index: 4;
   background: var(--bg-card);
   padding-bottom: 12px;
+}
+/* 窄屏取消吸底：不透明底衬会把上一整块 .set-row 齐边切断，被盖住的内容/焦点读不到
+   （WCAG 2.4.11 Focus Not Obscured）。调度卡 360 竖屏约 600px 高，「少滑一段」的收益
+   远小于遮挡代价；保存行回到卡内自然位置，JS 只依赖元素存在、不受影响。 */
+@media (max-width: 720px) {
+  .form-actions.is-sticky { position: static; }
 }
 .set-row-text { min-width: 0; }
 .set-row-label { display: block; font-size: 13px; color: var(--t-base); }
@@ -3542,6 +3628,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   line-height: 1.55;
 }
 .set-bad { color: var(--state-bad-fg); }
+.set-ok { color: var(--state-ok-fg); }
 
 /* ---- 27.4 卡内子段标题 / 窄屏 tab 横滑 / 输入组尾缀 ---- */
 /* 低频项收进 <details>：模板无折叠小件。项目其它折叠区（button + .collapse-body）需 JS 绑定，
@@ -3572,11 +3659,15 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 /* 窄屏宽表：与 tab 条同款右缘渐隐，提示"还能往右滑"（本文件 .tabs-scroll 的注释同源） */
 @media (max-width: 720px) {
   .table-scroll { mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+}
+/* 自绘横向滚动条只在精确指针设备绘制：触屏上它只是页签/表格下沿多出的一条 4px 灰带，
+   既不是可点目标、也不提示"可滑"（可滑性由上面的右缘渐隐遮罩承担，触屏同样可见）。 */
+@media (hover: hover) and (pointer: fine) {
   .table-scroll::-webkit-scrollbar { height: 4px; }
   .table-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .tabs-scroll::-webkit-scrollbar { height: 4px; }
+  .tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 }
-.tabs-scroll::-webkit-scrollbar { height: 4px; }
-.tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .tabs-scroll .tabs { margin-bottom: 18px; }
 .tabs-scroll .tab { white-space: nowrap; }
 /* 脏分区标记：脏徽标只在卡内，切到别的分区就看不见；分区标签右上角补一个警示点，
@@ -3695,6 +3786,16 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .dash-page .kpi-top { flex-wrap: wrap; }
 .dash-page .kpi-identity { flex: 1 1 auto; min-width: 0; }
 .dash-page .kpi-pill { flex: 0 0 auto; }
+/* pill 接进 19.6 的 AA 徽标档：vendor 的 .kpi-pill.info 用 --info on --info-soft，实测
+   仅 2.01:1（.up/.down/.flat 同族也不达 AA）—— pill 是这张卡唯一的附加信息（容量占用率），
+   读不到等于没有。四类即 data_dashboard.js setPill 的全部 cls 取值；令牌已在 :root，零新增。 */
+.dash-page .kpi-pill.info { background: var(--badge-info-bg); color: var(--badge-info-fg); }
+.dash-page .kpi-pill.up { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
+.dash-page .kpi-pill.down { background: var(--badge-bad-bg); color: var(--badge-bad-fg); }
+.dash-page .kpi-pill.flat { background: var(--badge-muted-bg); color: var(--badge-muted-fg); }
+/* 卡右上角口径说明是不可点的 <span>，vendor 的 .card-action 却给它链接蓝 + 600（在本项目里
+   蓝=可点到处成立），点了三张卡都没反应，像页面坏了。降回辅助文字档，与 .panel-sub 同构。 */
+.dash-page .card-action { color: var(--t-muted); font-weight: 400; font-size: 12px; }
 
 /* P61 说明行数统一：四张 KPI 卡的副文案由 JS 包进 .kpi-compare-text（见 data_dashboard.js
    的 setSub），收敛为单行 —— 1212 档 4 列每卡内容宽仅 ≈148px，「正常/用户暂停/账密故障」
@@ -3705,7 +3806,11 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  /* 副文案与图内 meta 标签此前停在 --t-light 族（白卡实测 2.56–2.79:1，低于 AA 4.5:1）。
+     --t-muted 对白卡 4.76:1 达标（别再往更浅的页面底上用：那里只有 4.31:1）。 */
+  color: var(--t-muted);
 }
+.dash-page .chart-meta-label { color: var(--t-muted); }
 /* 行高锁 20px：错误态的 dash-error-text 是 12.5px（正常副文案 12px），不锁会差出约 1px，
    「说明盒高度一致」在部分卡加载失败的混合态也会破功。 */
 .dash-page .kpi-compare > span { line-height: 20px; }
@@ -3823,19 +3928,28 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   padding: 0 1px;
 }
 .range-tick {
-  min-width: 26px;
+  /* 11px 字号 + 2px 内距只有约 26×17，是弹窗里最矮的可点目标；抬到 32×32（桌面指针下限）
+     而字号不变。垂直空间由 .range-modal .range-scale 的 6px 上距提供，不挤滑块。 */
+  display: inline-grid;
+  place-items: center;
+  min-width: 32px;
+  min-height: 32px;
   padding: 2px 4px;
   border: 0;
   border-radius: 5px;
   background: none;
-  color: var(--t-muted);
+  /* 刻度是可点按钮（range-field.js 绑 click）且是弹窗里最浅的一档：--t-muted 实测 2.86–3.46:1，
+     低于项目自订「文字 on 底色 ≥4.5:1」；--t-sub 对白卡 7.58:1。 */
+  color: var(--t-sub);
   font: inherit;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: color 140ms, background-color 140ms;
 }
-.range-tick:hover { color: var(--t-base); background: var(--bg-muted); }
+@media (hover: hover) and (pointer: fine) {
+  .range-tick:hover { color: var(--t-base); background: var(--bg-muted); }
+}
 .range-tick.is-active { color: var(--primary); font-weight: 600; }
 .range-tick:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
@@ -3920,9 +4034,20 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   font-size: 13px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 180ms, box-shadow 180ms, background-color 180ms;
+  /* transform 走快档：按压 scale 是高频触觉确认，与 .sc-cell/.slot 同族（140ms）。 */
+  transition: border-color 180ms, box-shadow 180ms, background-color 180ms,
+    transform 140ms var(--theme-ease);
 }
-.select-trigger:hover, .range-trigger:hover, .time-trigger:hover, .date-trigger:hover { border-color: var(--t-light); }
+/* 按压反馈：整条触发器是一颗大按钮，幅度比 .sc-cell 的 .96 更克制（面积越大位移越显眼）。 */
+.select-trigger:active,
+.range-trigger:active,
+.time-trigger:active,
+.date-trigger:active {
+  transform: scale(0.98);
+}
+@media (hover: hover) and (pointer: fine) {
+  .select-trigger:hover, .range-trigger:hover, .time-trigger:hover, .date-trigger:hover { border-color: var(--t-light); }
+}
 .select-trigger:focus-visible,
 .range-trigger:focus-visible,
 .time-trigger:focus-visible,
@@ -3970,6 +4095,13 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 @keyframes select-menu-in {
   from { opacity: 0; transform: translateY(-4px); }
 }
+/* 退场：与进场同参数反向（140ms / ease-in-strong，位移取反）。JS 在 close() 里先加
+   .is-closing、等动画结束（或同长兜底定时器）再置 hidden；reduce 下 JS 直接收起、
+   这里也关停，两道保险都不留"隐形但可聚焦"的空窗。 */
+.select-menu.is-closing { animation: select-menu-out 140ms var(--ease-in-strong) both; }
+@keyframes select-menu-out {
+  to { opacity: 0; transform: translateY(-4px); }
+}
 .select-option {
   display: block;
   width: 100%;
@@ -3984,8 +4116,11 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   text-align: left;
   cursor: pointer;
 }
-.select-option:hover,
+/* 焦点态无条件保留（键盘用户的等价路径）；hover 只在精确指针设备生效。 */
 .select-option:focus-visible { background: var(--bg-hover); outline: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .select-option:hover { background: var(--bg-hover); }
+}
 .select-option.is-sel { color: var(--primary); font-weight: 600; }
 .select-search { margin-bottom: 4px; min-height: 34px; }
 .select-empty { padding: 8px 10px; font-size: 12px; color: var(--t-muted); }
@@ -4014,10 +4149,14 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   left: auto;
   z-index: 1010;
 }
-/* 向上展开时进入动画反向（向下 4px 淡入），与展开方向一致 */
+/* 向上展开时进入动画反向（向下 4px 淡入），与展开方向一致；退场同向取反。 */
 .select-menu--floating.is-up { animation-name: select-menu-in-up; }
 @keyframes select-menu-in-up {
   from { opacity: 0; transform: translateY(4px); }
+}
+.select-menu--floating.is-up.is-closing { animation-name: select-menu-out-up; }
+@keyframes select-menu-out-up {
+  to { opacity: 0; transform: translateY(4px); }
 }
 
 /* ---- 30.2 数值滑块字段（触发器 + 弹窗） ---- */
@@ -4037,9 +4176,14 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   font-size: 13px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 180ms, box-shadow 180ms, background-color 180ms;
+  /* 与 30.1 的共享触发器同口径：transform 走快档，供 :active 的按压 scale 使用。 */
+  transition: border-color 180ms, box-shadow 180ms, background-color 180ms,
+    transform 140ms var(--theme-ease);
 }
-.range-trigger:hover { border-color: var(--t-light); }
+.range-trigger:active { transform: scale(0.98); }
+@media (hover: hover) and (pointer: fine) {
+  .range-trigger:hover { border-color: var(--t-light); }
+}
 .range-trigger:focus-visible {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-soft);
@@ -4063,7 +4207,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  color: var(--t-muted);
+  color: var(--t-sub);   /* 白卡上 --t-muted 仅约 4.2–4.3:1，未到项目自订的正文 AA */
   font-size: 12px;
 }
 .range-trigger-hint svg, .time-trigger-hint svg { width: 13px; height: 13px; }
@@ -4072,14 +4216,19 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .range-modal-group .input { text-align: left; }
 .range-modal-tip {
   font-size: 12.5px;
-  color: var(--t-muted);
+  color: var(--t-sub);   /* 实测 --t-muted 仅 4.26:1，未到正文 AA 4.5:1 */
   font-variant-numeric: tabular-nums;
 }
 .range-modal .range { margin-top: 18px; }
 .range-modal .range-scale { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) {
-  .select-menu, .select-menu--floating { animation: none; }
+  .select-menu, .select-menu--floating,
+  .select-menu.is-closing, .select-menu--floating.is-up.is-closing { animation: none; }
   .select-caret { transition: none; }
+  /* 触发器按压位移：reduce 下不动，状态仍由边框/底色变化承担（不退化为"按了没反应"）。 */
+  .select-trigger, .range-trigger, .time-trigger, .date-trigger { transition: none; }
+  .select-trigger:active, .range-trigger:active,
+  .time-trigger:active, .date-trigger:active { transform: none; }
 }
 
 /* ---- 30.4 日期字段（触发器 + 月历弹层，取代原生 input[type=date] 的 UA 面板） ----
@@ -4116,6 +4265,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   box-shadow: 0 12px 28px -10px rgba(0, 0, 0, .28);
   animation: select-menu-in 140ms var(--ease-out-strong) both;
 }
+/* 退场与 .select-menu 同口径（同参数反向）；JS 在 close() 里加 .is-closing 后延迟隐藏。 */
+.date-pop.is-closing { animation: select-menu-out 140ms var(--ease-in-strong) both; }
 /* 触发器贴右缘时翻转对齐（钳制在 date-field.js 的 clampPop）：防止弹层右缘越界 */
 .date-pop-head {
   display: flex;
@@ -4131,7 +4282,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   font-variant-numeric: tabular-nums;
   transition: opacity 120ms var(--ease-out-strong);
 }
-.date-nav { width: 28px; height: 28px; }
+.date-nav { width: 32px; height: 32px; }   /* 28→32：桌面指针下限；触屏档另抬到 44 */
 .date-nav svg { width: 15px; height: 15px; }
 .date-week {
   display: grid;
@@ -4170,9 +4321,13 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background-color 140ms, color 140ms;
+  transition: background-color 140ms, color 140ms, transform 140ms var(--theme-ease);
 }
-.date-day:hover { background: var(--bg-hover); }
+/* 按压反馈：页面日历格（.sc-cell）有、弹层日格此前没有，同角色控件补齐。 */
+.date-day:active { background: var(--bg-hover); transform: scale(0.96); }
+@media (hover: hover) and (pointer: fine) {
+  .date-day:hover { background: var(--bg-hover); }
+}
 .date-day:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
 /* 今天：inset 描边（不占布局、不与选中态争夺底色） */
 .date-day.is-today { box-shadow: inset 0 0 0 1px var(--primary); }
@@ -4181,7 +4336,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   color: var(--t-inverse);
   font-weight: 600;
 }
-.date-day.is-sel:hover { background: var(--primary-dark); }
+@media (hover: hover) and (pointer: fine) {
+  .date-day.is-sel:hover { background: var(--primary-dark); }
+}
 .date-pop-foot {
   display: flex;
   justify-content: flex-end;
@@ -4190,10 +4347,12 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   border-top: 1px solid var(--border-soft);
 }
 @media (prefers-reduced-motion: reduce) {
-  .date-pop { animation: none; }
+  .date-pop, .date-pop.is-closing { animation: none; }
   /* 切月方向：JS 在 reduce 下不加类，这里兜底清零，并关掉新建的过渡 */
   .date-grid,
+  .date-day,
   .date-month { transition: none; }
+  .date-day:active { transform: none; }
   .date-grid.is-swapping,
   .date-grid.is-shifting-in,
   .date-grid.is-shift-next,
@@ -4204,6 +4363,56 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   .date-grid.is-shift-prev.is-shifting-in,
   .date-month.is-swapping,
   .date-month.is-shifting-in { opacity: 1; transform: none; transition: none; }
+}
+
+/* ---- 30.5 多选下拉（一组可多选的"选项"，如"周末签到：周六 / 周日"） ----
+   皮肤直接沿用 30.1 的 .select-field/.select-trigger/.select-menu/.select-option，
+   不另起一套：差别只有多选特有的三处，故全部作用域收在 .multiselect-field 下——
+   单选下拉的既有观感与行为零变化。
+   为什么需要它：一组并排的独立开关读起来是"两项各自的功能"，看不出它们同属一项选择，
+   且"都不开"没有一句话可说清。合进一个触发器后，触发器文案直接写明当前选中项
+   （"周六 · 周日" / "周六" / "周日" / "都不选"），四种组合一眼可分。 */
+.multiselect-field { min-width: 190px; }
+.multiselect-field .select-trigger { min-width: 190px; }
+/* 空态与选中态不能只差颜色：空态走弱化字色 **且** 文案本身是"都不选"（非空白），
+   选中态带勾选记号 —— 色相之外另有文字与记号（footer 白名单的同一条硬规矩） */
+.multiselect-field .select-trigger-text.is-empty { color: var(--t-muted); }
+/* 命中区：.select-option 的默认高约 35px（内距 8px + 行盒 18.75px），低于触屏最小
+   点按尺寸。多选只有两三个选项，不受密度约束，直接抬到 44px（不只在触屏抬）。 */
+.multiselect-field .select-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+/* 勾选记号：与 .check .box 同尺寸（16px）、同边框令牌、同圆角，故与全站复选框是一套。
+   这里用 <span> 而非 <input type=checkbox>+ .box——选项本体是 <button>，交互元素不可嵌套。
+   未选时记号**只隐去勾、不隐去方框**：勾与不勾共用一个占位，切换时行高与文字位置都不动
+   （展开/收起、勾选/取消都不得推动下方的行：ux-guidelines #19 Content Jumping）。 */
+.ms-tick {
+  display: inline-flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--t-light);
+  border-radius: 5px;
+  background: var(--bg-card);
+  color: transparent;                 /* 未选：勾不可见但方框占位 */
+  transition: background-color 160ms var(--theme-ease), border-color 160ms var(--theme-ease),
+    color 160ms var(--theme-ease);
+}
+.ms-tick svg { width: 12px; height: 12px; }
+.multiselect-field .select-option.is-sel .ms-tick {
+  background: var(--primary-solid);
+  border-color: var(--primary-solid);
+  color: #FFF;                        /* 白色对勾图形压实心主色（与 .check/.switch 同一处置） */
+}
+.multiselect-field.is-disabled { opacity: .6; }
+.multiselect-field .select-trigger:disabled { cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .ms-tick { transition: none; }      /* 只剩变色，去掉也无妨；显式关掉以免后续加位移时漏网 */
 }
 
 /* ==========================================================================
@@ -4310,10 +4519,13 @@ html[data-theme="dark"] {
 }
 /* vendor 规则的同名覆盖（app.css 后加载，同特异度后者胜） */
 .btn--primary { background: var(--primary-solid); }
-.btn--primary:hover { background: var(--primary-solid-hover); }
+@media (hover: hover) and (pointer: fine) {
+  .btn--primary:hover { background: var(--primary-solid-hover); }
+}
 ::selection { background: var(--primary-solid); }          /* 选区是白字压主色 */
 .check input:checked + .box { background: var(--primary-solid); border-color: var(--primary-solid); }          /* 白色对勾图形 */
 .switch input:checked + .track { background: var(--primary-solid); border-color: var(--primary-solid); }       /* 白色滑块图形 */
+/* 30.5 的多选勾选记号不在此重复：.ms-tick 无 vendor 同名规则，无需"后加载覆盖" */
 /* 品牌区图片态：容器透明、无光晕，图片占满并随容器圆角裁切（图标直接替换蓝底框） */
 .brand-logo { background: transparent; box-shadow: none; overflow: hidden; }
 .brand-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -4355,7 +4567,9 @@ html[data-theme="dark"] {
   transform: none;
   pointer-events: auto;
 }
-.to-top:hover { background: var(--bg-hover); }
+@media (hover: hover) and (pointer: fine) {
+  .to-top:hover { background: var(--bg-hover); }
+}
 .to-top:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; }
 /* Toast 堆叠也在右下（bottom:16）；按钮出现时把 Toast 整体抬到按钮上方，避免互相覆盖 */
@@ -4544,3 +4758,45 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .env-refused-list { display: grid; gap: 10px; }
 .env-refused-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
 .env-refused-desc { font-size: 13px; line-height: 1.5; word-break: break-all; }
+
+/* ==========================================================================
+   38. 触屏 44px 命中区（集中收口）
+   --------------------------------------------------------------------------
+   低于 44×44 的常点目标在**粗指针设备**上抬到 44px；桌面（hover:hover 且 pointer:fine）
+   保持原视觉与内距——不为移动端把桌面也一起放大。
+   为什么独立成节而不散落在各组件旁：这些覆盖全是 `min-width/min-height`，与组件基础规则
+   **同特异度**，只有排在所有组件规则之后才能赢下级联；散写会被后面 .range-tick/.date-day
+   等的 base 值静静盖掉（旧版的 .auth-agree-label / .announce-close 两个类名在全库 0 次
+   出现，注释点名要修的「创建账号」「关闭公告」反而没被覆盖，就是这类"看着在管事"的失守）。
+   加宽/加高会改变触屏上的排布，这是移动端换来的可点性，不属于"改布局档位"。
+   ========================================================================== */
+@media (hover: none) {
+  /* 行内文字按钮与图标按钮：min-* 撑开热区 */
+  .auth-links a,
+  .auth-switch-hint button,
+  .auth-agree-text button,
+  .alert.auth-announce .close,
+  .input-affix .affix-btn,
+  .toast__close,
+  .pm-panel .pm-panel-close,
+  .info-tip,
+  .sc-nav-btn,
+  .date-nav,
+  .range-tick,
+  .to-top,
+  .d-topbar .icon-btn,
+  .d-topbar .avatar { min-width: 44px; min-height: 44px; }
+  .auth-links a { display: inline-flex; align-items: center; }
+  .auth-switch-hint button,
+  .auth-agree-text button { display: inline-flex; align-items: center; padding: 0 6px; }
+  /* 四个自研触发器共用 40px 基准，触屏下不够点（含多选形态）；选项行 30.5 已无条件抬到 44px */
+  .select-trigger,
+  .range-trigger,
+  .time-trigger,
+  .date-trigger { min-height: 44px; }
+  /* 日期弹层：翻月键与日格与页面日历（.sc-nav-btn / .sc-grid 行高）取齐，弹层加宽到能容纳 */
+  .date-day { height: 44px; }
+  .date-pop { width: 100%; max-width: 320px; }
+  /* 窄屏弹窗按钮已是整宽；这里只补高度，不重排 */
+  .pm-panel .modal-foot .btn { min-height: 44px; }
+}
