@@ -84,8 +84,15 @@ hardening/
 # 注意用的是 `docs/*` 而不是 `docs/`：目录整体被排除时，任何负向规则都**无法**再放行其中
 # 的文件（git 的"父目录已排除则子文件不可重新包含"）。下一行的负向规则依赖这一点。
 docs/*
-# 例外：开发文档（模块地图 / API 契约）可入库，内容已脱敏
+# 例外：开发文档按白名单入库（2026-10-01 裁定：内部工作文档——计划/审查/修复台账/
+# 演练预案/过程记录——一律不入库，仅本地留存；历史不追溯清理）。白名单=指南与契约：
 !docs/dev/
+docs/dev/*
+!docs/dev/README.md
+!docs/dev/api-executors.md
+!docs/dev/cli.md
+!docs/dev/release-gate.md
+!docs/dev/scheduler-v3.md
 .superpowers/
 
 # ZCode 工具目录
@@ -147,10 +154,8 @@ web/static/vendor/fonts/fangyuan/
 dsh-routing-suite/
 v4-flash-godmode-opencode-go/
 
-# 开发文档（模块地图 / API 契约）例外放行：docs/ 整体仍本地留存，只用**负向规则**
-# 单独放行 docs/dev/（内容已脱敏：不含真实域名/IP/邮箱/手机号/密钥、备案信息、测试机信息）
-!docs/dev/
-!docs/dev/**
+# 开发文档白名单规则见上方 docs/ 块（2026-10-01：内部工作文档不入库，本地留存；
+# 此处不再重复放行规则，防止两处漂移）
 
 # 设计/调研文稿与 AI 记忆文件：一律本地留存，不入版本控制
 # （docs/ 已有同类规则，此处显式覆盖根目录记忆锚点与后续可能新增的文稿目录）
