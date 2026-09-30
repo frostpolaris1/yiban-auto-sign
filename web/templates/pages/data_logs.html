@@ -57,8 +57,8 @@
               <span class="sr-only">检索日志</span>
               <input type="search" class="input" id="log-search" placeholder="检索日志关键字">
             </label>
-            <button type="button" class="btn btn--ghost btn--sm" id="log-all-btn" aria-pressed="false">显示全部</button>
-            <button type="button" class="btn btn--ghost btn--sm" id="export-btn">导出</button>
+            <button type="button" class="btn btn--ghost btn--sm" id="log-all-btn" aria-pressed="false">显示全部日志</button>
+            <button type="button" class="btn btn--ghost btn--sm" id="export-btn">导出日志</button>
             <span class="log-info" id="log-info" role="status">正在加载日志…</span>
           </div>
         </div>
@@ -77,13 +77,13 @@
                data-placeholder="选择日期">
             <input type="date" id="log-date" class="input log-datebar__date">
           </div>
-          <button type="button" class="btn btn--ghost btn--sm" id="log-view-btn">查看</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="log-view-btn">查看该日日志</button>
           <button type="button" class="btn btn--ghost btn--sm" id="log-today-btn" hidden>回到今天</button>
         </div>
         <label class="switch log-auto" title="自动刷新日志">
           <input id="log-auto-refresh" type="checkbox" checked>
           <span class="track" aria-hidden="true"></span>
-          <span class="log-auto__text">自动刷新</span>
+          <span class="log-auto__text">自动刷新（10 秒）</span>
         </label>
       </div>
       <p class="log-date-tip" id="log-date-tip"></p>

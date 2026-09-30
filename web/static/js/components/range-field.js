@@ -157,7 +157,7 @@
       actions: [
         { label: "取消", variant: "ghost" },
         {
-          label: "确定", variant: "primary",
+          label: "保存调整", variant: "primary",
           onClick: function () {
             var v = clamp(num(number.value, current), cfg);
             var input = hiddenOf(root);

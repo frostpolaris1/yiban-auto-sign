@@ -34,13 +34,13 @@
       phoneEditHelp: ""
     },
     admin: {
-      nameLabel: "名称（可选，不填显示为 账号N）", namePlaceholder: "如：电力123示例站",
-      nameHelp: "不填显示为 账号N。",
+      nameLabel: "名称（选填）", namePlaceholder: "如：电力123示例站",
+      nameHelp: "留空时在列表里按顺序显示为「账号1」「账号2」，便于区分。",
       phoneLabel: "手机号", phonePlaceholder: "易班登录手机号",
       passwordLabel: "密码", passwordNewPlaceholder: "易班登录密码",
-      modelLabel: "设备型号（学校开启设备绑定时建议填写）", modelHelp: "",
-      codeLabel: "设备识别码（学校开启设备绑定时建议填写）", codeHelp: "",
-      phoneEditHelp: "为保护隐私，手机号已打码显示；如需修改请填写完整新号码"
+      modelLabel: "设备型号（选填）", modelHelp: "学校开启设备绑定时建议填写；不确定就留空。",
+      codeLabel: "设备识别码（选填）", codeHelp: "64 位十六进制串；学校开启设备绑定时建议填写。",
+      phoneEditHelp: "为保护隐私，手机号已打码显示；如需修改请填写完整新号码。若这条账号在你编辑期间被别人改过，保存时会先提示你确认。"
     }
   };
 
@@ -101,7 +101,7 @@
       var emailRoot = YB.el("div", { class: "select-field", "data-select-field": "af-email" });
       emailRoot.appendChild(email);
       emailRoot.appendChild(YB.el("div", { class: "select-menu", role: "listbox", hidden: true }));
-      stack.appendChild(field("绑定用户（可选，绑定后进入待审核）", emailRoot, false, null));
+      stack.appendChild(field("绑定用户（选填）", emailRoot, false, null));
 
       manual = textInput("af-email-manual", {
         type: "email", maxlength: 64, placeholder: "输入未注册邮箱（自动注册并进入待审核）"
@@ -164,8 +164,8 @@
   // accounts_data._owner_display_of），完整邮箱只进 value（既有提交契约，走请求体）。
   function emailBaseItems() {
     return [
-      { v: "", t: "不绑定（管理员自有账号，直接生效）" },
-      { v: "__manual__", t: "手填邮箱（未注册用户自动注册）" },
+      { v: "", t: "不绑定（管理员自有账号）" },
+      { v: "__manual__", t: "手填邮箱（未注册）" },
       { group: "已注册用户（无账号）" }
     ];
   }
@@ -325,14 +325,14 @@
 
     function mount() {
       bindCodeClear(view.nodes, state);
-      var submitLabel = opts.submitLabel || (editing ? "保存修改" : (isUser ? "提交账号" : "保存"));
+      var submitLabel = opts.submitLabel || (editing ? "保存修改" : (isUser ? "提交账号" : "添加账号"));
       var handle = YB.openModal({
         title: opts.title || (editing
           ? (isUser ? "编辑我的易班账号" : "编辑账号 #" + (opts.index + 1))
           : (isUser ? "提交我的易班账号" : "添加账号")),
         subtitle: opts.subtitle || (editing
-          ? (isUser ? "修改后需重新提交审核。" : "手机号已脱敏，未改动则按原号提交；保存带乐观锁防并发覆盖。")
-          : (isUser ? "提交后等待管理员审核，通过即自动签到。" : "不绑定用户则为管理员自有账号（直接生效）；绑定用户需审核。")),
+          ? (isUser ? "修改后需重新提交审核。" : "手机号已打码显示；不改动则按原号提交。")
+          : (isUser ? "提交后等待管理员审核，通过即自动签到。" : "不绑定用户＝管理员自有账号，保存后立即生效；绑定用户＝进入待审核队列。")),
         body: view.body,
         actions: [
           { label: "取消", variant: "ghost" },
