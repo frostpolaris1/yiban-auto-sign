@@ -56,7 +56,9 @@
      留下 6 列死区（实测：空卡 472px，图例 x=776 且同 y）。 #}
   <ul class="col-12 sc-legend" aria-label="签到状态图例">
     {% for item in status_legend %}
-    <li><i class="sc-swatch" aria-hidden="true">{{ item.symbol }}</i>{{ item.label }}</li>
+    {# data-symbol 供 calendar.js 动态收敛：图例只显示当前日历里出现过的状态
+       （词汇表全量陈列是服务端职责，页面只解释看得见的） #}
+    <li data-symbol="{{ item.symbol }}"><i class="sc-swatch" aria-hidden="true">{{ item.symbol }}</i>{{ item.label }}</li>
     {% endfor %}
     <li><i class="sc-swatch sc-swatch--off" aria-hidden="true">休</i>周末停签</li>
     <li><i class="sc-swatch sc-swatch--today" aria-hidden="true"></i>今天</li>
