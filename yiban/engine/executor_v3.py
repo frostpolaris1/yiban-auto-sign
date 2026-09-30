@@ -356,7 +356,9 @@ def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
             "status": status,
             "message": _sanitize_text(str(message or ""))[:200],
             "stage": "sign",
-            "attempt": attempt_no,
+            # attempt 列 NOT NULL 且批量落库是单事务：状态迁移/收尾事件没有尝试号，
+            # None 原样上报会把本轮整批事件一起回滚掉——非尝试事件落 0。
+            "attempt": attempt_no if attempt_no is not None else 0,
             "dur_sec": dur,
             "finished_at": ts,
         })
@@ -503,6 +505,7 @@ async def _attempt(ctx, item):
         # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）
         _finish(ctx, phone, epoch, (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED),
                 "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_FAILED)
+        logger.info("[%s] ⏸️ 账密异常已暂停，请修改密码", _mask_phone(phone))
         return
     ctx.gap_gate.commit(phone, _mono())  # 走到这才是"真要发请求"：gap 的推进点必须与尝试一一对应
     ctx.inflight += 1
@@ -516,6 +519,12 @@ async def _attempt(ctx, item):
     # 每次尝试结束即物化状态：v2 是逐账号增量写，v3 只在收尾物化会让当天网页日历空窗
     state_io._write_sign_state(phone, status, message, dur=dur)
     _emit_event(ctx, phone, status, message, dur=dur, attempt_no=attempts_n + 1)
+    # 每账号结果行：行内手机号为遮罩形态（日志文件本身脱敏，展示层统一再脱敏）。
+    # 日历"我的日志"面板与日志页靠该行向账号归属用户回显每次尝试结果——只在
+    # 重试/放弃时落行的话，成功/跳过账号在面板里查无记录。
+    _sym = (yiban_status.DISPLAY.get(status) or {}).get("symbol") or ""
+    logger.info("[%s] %s", _mask_phone(phone),
+                (_sym + " " if _sym else "") + _sanitize_text(message))
     attempts._update_cred_state(ctx.cred_state, phone, success, message, today)
     if status in yiban_status.CLAIM_DONE_STATUSES:
         ctx.limiter.on_success(ctx.egress)
@@ -774,6 +783,7 @@ def _mark_window_skips(ctx, accounts):
             continue
         ctx.results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
         _emit_event(ctx, phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+        logger.info("[%s] ⛔ 签到时段已结束，跳过执行", _mask_phone(phone))
 
 
 # ---------------------------------------------------------------------------
