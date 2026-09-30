@@ -2070,5 +2070,26 @@ class HolderIdentitySplitTest(_Base):
         self.assertEqual(row["state"], "done")
 
 
+class EmitEventAttemptNotNullTest(unittest.TestCase):
+    """事件留痕的 attempt 列约束：sign_events.attempt NOT NULL，批量落库单事务。
+
+    状态迁移/收尾事件没有尝试号（attempt_no=None）——None 原样进批量事务会把
+    本轮**全部**事件一起回滚（整批一个约束失败即全弃）。非尝试事件必须落 0。
+    """
+
+    def test_missing_attempt_number_lands_as_zero(self):
+        collected = []
+        ctx = SimpleNamespace(event_sink=collected.append)
+        executor_v3._emit_event(ctx, "13800000000", "success", "收尾事件")
+        self.assertEqual(len(collected), 1)
+        self.assertEqual(collected[0]["attempt"], 0)
+
+    def test_real_attempt_number_passes_through(self):
+        collected = []
+        ctx = SimpleNamespace(event_sink=collected.append)
+        executor_v3._emit_event(ctx, "13800000000", "failed", "登录失败", attempt_no=2)
+        self.assertEqual(collected[0]["attempt"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
