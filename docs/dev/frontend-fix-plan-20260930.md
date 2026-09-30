@@ -109,8 +109,10 @@
   归 0）；`yiban-web.service` 进程启动 2026-09-30 14:08:50，晚于修复提交（14:02:02）⇒ **两个热修
   （d4bfd6d 一轮 + acd2e76 二轮）均已在生产运行**。
 - develop（本地 66cebb8 / 远端 aa012c4）不含这两笔 ⇒ 审查基线上「M-calendar 500」为真实缺陷。
-- 待办：merge `hotfix/calendar-and-events`（75187f7/ea76e9a，与生产已部署内容等价的 cherry-pick）
-  → develop，无文件冲突；等用户点头执行。
+- **已回流（2026-09-30 深夜，用户批准）**：merge `hotfix/calendar-and-events` → develop =
+  `0247579`（10 文件 +132/−4，零冲突）。热修自带回归全绿（180 passed + 282 subtests，含
+  `/my/calendar` 真渲染 200 断言）；5 例 RunnerSplitTest 挂为 Windows 无 `fcntl` 的既有环境性
+  失败（日志明写单实例锁拒绝，与合并无关）。
 
 ### 5.2 审计链锚点文件首行校验异常 —— 升级窗口竞态，不立项
 
