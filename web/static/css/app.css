@@ -2515,6 +2515,7 @@ html[data-theme="dark"] {
   color: var(--t-sub);
 }
 .sc-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.sc-legend li[hidden] { display: none; }   /* 图例动态收敛：上面的 display 会盖过 hidden 的 UA 规则，显式落位 */
 /* 色块底在页面底上几乎同色（#DCFCE7 on #F0F4F8 = 1.01:1），故必须留形状边界 */
 .sc-swatch {
   display: inline-grid;
