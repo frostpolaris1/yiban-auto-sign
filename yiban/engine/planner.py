@@ -55,12 +55,13 @@ STATE_PENDING = queue_store.STATE_PENDING
 
 
 def _u(*parts):
-    """`[0,1)` 均匀量：`hrw._h` 取高 53 位（同一 blake2b 口径，禁内置 `hash`）。
+    """`[0,1)` 均匀量：委托 `hrw.u01`（同一 blake2b 口径，禁内置 `hash`）。
 
     相位、正态分位、随机排序键都从它派生——全部只吃 `(phone, day, 用途串)`，
-    故同一 `(phone, day)` 的落点在任何进程、任何时刻都可重放。
+    故同一 `(phone, day)` 的落点在任何进程、任何时刻都可重放。归一化实现单源在
+    `hrw.u01`：本模块与 `schedule.day_mu_sigma_pct` 共用它，两侧才可能取到同一点。
     """
-    return (hrw._h(*parts) >> 11) / float(1 << 53)
+    return hrw.u01(*parts)
 
 
 def _day_str(day):
@@ -179,10 +180,13 @@ def _density(n, cfg, day, span_sec):
 
     φ 是**归一化**密度（∫φ = 1），峰值到达速率 = `N × φ_max`，受出口令牌桶 Λ 封顶：只封 σ
     不封峰值速率时，中段会形成相对突发。
+
+    μ/σ 的当日取值走 `schedule.day_mu_sigma_pct`（与执行层 `build_schedule` 同一口径）：
+    计划层与执行层必须取到同一个点，否则计划里排出的时刻与实际签到的时刻对不上，
+    按 μ/σ 算出的峰值速率整形也作用在错值上。
     """
     span_min = span_sec / 60.0
-    mu_pct = cfg["mu_min_pct"] + _u(day, "mu") * (cfg["mu_max_pct"] - cfg["mu_min_pct"])
-    sg_pct = cfg["sigma_min_pct"] + _u(day, "sigma") * (cfg["sigma_max_pct"] - cfg["sigma_min_pct"])
+    mu_pct, sg_pct = schedule.day_mu_sigma_pct(cfg, day)
     mu_min = span_min * mu_pct / 100.0
     sigma_min = schedule._sigma_eff(span_min * sg_pct / 100.0, n, span_min)
     phi_norm = 1.0 / (max(sigma_min, 1e-6) * 60.0 * math.sqrt(2 * math.pi))

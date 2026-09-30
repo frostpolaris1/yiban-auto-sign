@@ -16,10 +16,12 @@
    链接离开，由 settings.js 统一弹「保存并继续 / 放弃修改 / 取消」。
 
    字段级权限（后端 POST /api/settings 内联判定，必须逐字段复刻）：
-     · 任意管理员可改：saturday_sign / sunday_sign / account_verify / probe_*
+     · 任意管理员可改：saturday_sign / sunday_sign（页面上是同一个「周末签到」多选组）/
+       account_verify / probe_*
      · 仅主管理员可改：sign_order / sign_dist / edge_* / allow_time_pref / sign_window /
-       gap_max / max_users / max_accounts / 推送配置 / 邮件全局与 SMTP / 全局开关
-   非主管理员：调度/公告/健康正常（调度卡里只有周六/周日可改，其余控件禁用且保存按钮
+       gap_max / max_users / max_accounts / 正态 μ/σ 区间（mu_min_pct / mu_max_pct /
+       sigma_min_pct / sigma_max_pct，A 档）/ 推送配置 / 邮件全局与 SMTP / 全局开关
+   非主管理员：调度/公告/健康正常（调度卡里只有「周末签到」可改，其余控件禁用且保存按钮
    只提交自己改得动的字段）；通知通道与容量配额**可见但控件禁用**（面板顶部 .alert.info
    说明原因）；系统开关整 tab 隐藏。禁用不是安全边界，后端仍 403 兜底。
 
@@ -28,7 +30,7 @@
    .textarea / .input-group(.addon) / .btn-group / .switch / .data-table(.table-scroll) /
    .alert / .badge / .form-actions / .spinner。仅保留确无模板对应的项目类：
    .set-tip/.set-ok/.set-bad 就地状态文字、.set-row* 开关行、.set-danger* 危险区语义、
-   自研选择控件（.select-field / .range-field，见 app.css 第 30 节）。
+   自研选择控件（.select-field / .range-field / .multiselect-field，见 app.css 第 30 节）。
 
    安全：零 innerHTML 拼后端数据；密钥/授权码只读脱敏、绝不回填输入框；写请求一律
    走 YB.api（自带 CSRF）；一页内 id 不得重复（有元测试守卫）。 #}
@@ -175,6 +177,36 @@
             <input type="hidden" id="ss-edge-back" value="1">
           </div>
         </div>
+        {# 正态 μ/σ：区间成对（min/max），步进 5、单位 %、范围 0-100。定义的是**区间**，
+           实际每天在区间内取一次值（`schedule.day_mu_sigma_pct`）。
+           服务端对 lo>=hi 沿用"告警 + 回退默认（μ 40~60 / σ 15~25）"语义，不拒绝写入；
+           前端就地预警但不硬拦（与掐头去尾的"预警不阻断保存"同一处置）。 #}
+        <div class="field span-2">
+          <span class="field-label" id="ss-mu-label">峰值时刻 μ 区间</span>
+          <div class="input-group">
+            <input class="input" id="ss-mu-min" type="number" min="0" max="100" step="5"
+                   inputmode="numeric" placeholder="40" aria-labelledby="ss-mu-label">
+            <span class="addon">至</span>
+            <input class="input" id="ss-mu-max" type="number" min="0" max="100" step="5"
+                   inputmode="numeric" placeholder="60" aria-labelledby="ss-mu-label">
+            <span class="addon">%</span>
+          </div>
+          <p class="field-help">每天在区间内取一次值。</p>
+          <p class="set-warn" id="ss-mu-warn" hidden></p>
+        </div>
+        <div class="field span-2">
+          <span class="field-label" id="ss-sigma-label">分布宽度 σ 区间</span>
+          <div class="input-group">
+            <input class="input" id="ss-sigma-min" type="number" min="0" max="100" step="5"
+                   inputmode="numeric" placeholder="15" aria-labelledby="ss-sigma-label">
+            <span class="addon">至</span>
+            <input class="input" id="ss-sigma-max" type="number" min="0" max="100" step="5"
+                   inputmode="numeric" placeholder="25" aria-labelledby="ss-sigma-label">
+            <span class="addon">%</span>
+          </div>
+          <p class="field-help">每天在区间内取一次值。</p>
+          <p class="set-warn" id="ss-sigma-warn" hidden></p>
+        </div>
         {# 短标量字段收窄（原与整列同宽，一个 1~4 位数字占 550px） #}
         <div class="field field--narrow">
           <span class="field-label" id="ss-gap-label">账号间隔</span>
@@ -202,28 +234,33 @@
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
+      {# 周六/周日合并为一个多选组：两者独立可开（只周六 / 只周日 / 都开 / 都不开），
+         单选分段会丢状态，故用自研多选 listbox（components/multiselect-field.js，
+         皮肤沿用 app.css 30.1 的 .select-field 那套，见 30.5 节）。值契约 = 两个隐藏
+         input（id 与原字段一致、值 "1"/"0"），由 settings-schedule.js 的
+         collect()/snapshotFromDom()/apply() 读写，故后端与保存路径零改动。
+         权限粒度不变：任意管理员可改（不在 applyPerm 的禁用清单里）。 #}
       <div class="set-row">
-        <label class="set-row-text" for="ss-sat">
-          <span class="set-row-label">周六签到</span>
-          {# 只说默认值（开关当前态已可见，不需再解释开关做什么） #}
-          <p class="set-help">默认关闭。</p>
-        </label>
-        <label class="switch" title="周六签到">
-          <input id="ss-sat" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">周六签到</span>
-        </label>
-      </div>
-      <div class="set-row">
-        <label class="set-row-text" for="ss-sun">
-          <span class="set-row-label">周日签到</span>
-          <p class="set-help">默认关闭。</p>
-        </label>
-        <label class="switch" title="周日签到">
-          <input id="ss-sun" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">周日签到</span>
-        </label>
+        <span class="set-row-text set-row-text--static">
+          <span class="set-row-label" id="ss-weekend-label">周末签到</span>
+          <p class="set-help">默认都不签；可只签周六或只签周日。</p>
+        </span>
+        <div class="set-row-ctl">
+          <div class="select-field multiselect-field" data-multiselect-field="ss-weekend"
+               aria-labelledby="ss-weekend-label">
+            {# 触发器由 JS 构建（同 select_field 宏）；面板 aria-multiselectable 是"可多选"的语义根 #}
+            <input type="hidden" id="ss-sat" value="0">
+            <input type="hidden" id="ss-sun" value="0">
+            <div class="select-menu" role="listbox" aria-multiselectable="true" hidden>
+              <button type="button" class="select-option" role="option" aria-selected="false" data-v="ss-sat">
+                <span class="ms-option-text">周六</span>
+              </button>
+              <button type="button" class="select-option" role="option" aria-selected="false" data-v="ss-sun">
+                <span class="ms-option-text">周日</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="set-row">
         <label class="set-row-text" for="ss-time-pref">
@@ -672,6 +709,7 @@
 
 {% block scripts %}
 <script defer src="{{ request.script_root }}/static/js/components/select-field.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/multiselect-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/range-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/time-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-schedule.js?v={{ web_version }}"></script>
