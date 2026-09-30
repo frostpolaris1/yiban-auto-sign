@@ -104,21 +104,27 @@ CLAIM_DONE_STATUSES = frozenset((STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
 # `no_position`，于是**急停被渲染成"待签到 · 前方排队 N 人"**（面板给的是安心假信号）。
 # 两侧改为消费同一份表后，"渲染认得、图例不认得"的双单元漂移不可能再发生：往
 # `ALL_STATUSES` 加一格就必须在这里补一行（测试钉住键集合相等），图例与状态行同时认它。
-# 语气档 tone 是前端类名的唯一来源（`state-line--<tone>`、日期格 `sc-cell--<tone>`）。
+# 语气档 tone 是前端类名的唯一来源（`state-line--<tone>`、日期格圆点 `sc-dot--<tone>`），
+# 也是**色彩语义**的唯一来源（产品定版：界面一律不用 emoji，状态用颜色表达）：
+#   ok   = 绿  成功
+#   bad  = 红  失败
+#   muted= 灰  "有意不签"族（无需 / 时段外跳过 / 主动取消）——不是异常，不报警
+#   warn = 黄  其余非正常（待签 / 无点位 / 账密暂停 / 急停）
+#   busy = 蓝  正在签到（蓝白呼吸动画，见 app.css 的 sc-breathe）
 _DISPLAY_ROWS = (
     (STATUS_SUCCESS, "今日已完成签到", "已签到", "ok"),
     (STATUS_ALREADY, "今日已完成签到", "已签到", "ok"),
     (STATUS_NO_TASK, "今日无需签到", "无需签到", "muted"),
     (STATUS_FAILED, "今日签到失败", "签到失败", "bad"),
-    (STATUS_RETRYING, "签到重试中", "重试中", "warn"),
-    (STATUS_SKIPPED_WINDOW, "未在签到时段", "未在签到时段", "warn"),
-    (STATUS_SKIPPED_NORANGE, "未在签到时段", "未在签到时段", "warn"),
+    (STATUS_RETRYING, "签到重试中", "正在签到", "busy"),
+    (STATUS_SKIPPED_WINDOW, "未在签到时段", "时段外跳过", "muted"),
+    (STATUS_SKIPPED_NORANGE, "未在签到时段", "窗口缺失跳过", "muted"),
     # 无点位：登录成功但没有签到点位（任务未配置/当日已关闭），与"失败"语义不同，
     # 更不是"排队待签"——它是一个有结论的独立结果。
     (STATUS_NO_POSITION, "未找到签到点位，无法签到", "无点位", "warn"),
-    (STATUS_PAUSED, "账号密码异常，签到已暂停，请到「我的账号」修改密码", "账密暂停", "bad"),
-    (STATUS_USER_CANCELLED, "已取消签到（可在「我的账号」恢复）", "已取消", "bad"),
-    (STATUS_PENDING, "待签到", "待签", "muted"),
+    (STATUS_PAUSED, "账号密码异常，签到已暂停，请到「我的账号」修改密码", "账密暂停", "warn"),
+    (STATUS_USER_CANCELLED, "已取消签到（可在「我的账号」恢复）", "已取消", "muted"),
+    (STATUS_PENDING, "待签到", "待签", "warn"),
     # 全局暂停（急停）：签到进程不产此状态码（暂停时 main() exit(2)，由 run.sh 写日状态
     # 文件），故它**不来自状态文件**——日历侧由"当日无记录 + `.env` 门真值"合成显示。
     (STATUS_GLOBAL_PAUSED, "全局暂停（急停）：自动签到已停止", "全局暂停（急停）", "warn"),
@@ -126,7 +132,11 @@ _DISPLAY_ROWS = (
 
 
 def _build_display():
-    """把 `_DISPLAY_ROWS` 展成 {状态码: {symbol,text,legend,tone}}；符号沿用 SYMBOL/ICON。"""
+    """把 `_DISPLAY_ROWS` 展成 {状态码: {symbol,text,legend,tone}}。
+
+    symbol 沿用 SYMBOL/ICON——它只是按日状态文件（sign-daily-*.json）的**存储/传输
+    口径**，前端拿它反查语气档后即弃，emoji 本身一律不上界面（产品定版）。
+    """
     out = {}
     for code, text, legend, tone in _DISPLAY_ROWS:
         out[code] = {
@@ -140,44 +150,46 @@ def _build_display():
 DISPLAY = _build_display()
 
 
-def legend_items():
-    """日历图例项：由 `DISPLAY` 生成，同一符号合并为一条（新增状态码自动进图例）。
+#: 图例按**语气档**归组的定版条目：图例解码的是颜色，不是逐码符号——同档状态共用
+#: 一条、共用一个色点。顺序即页面渲染顺序（按用户定的色彩方案枚举序）。
+_LEGEND_TONES = (
+    ("ok", "已签到"),
+    ("bad", "签到失败"),
+    ("muted", "无需 / 跳过 / 已取消"),
+    ("warn", "待签或异常"),
+    ("busy", "正在签到"),
+)
 
-    图例与状态行消费同一份表——表里多一格，图例就多一条、状态行也认得它。返回
-    `[{"symbol", "label"}, ...]`，顺序即表的顺序（日历图例按它渲染）。
+
+def legend_items():
+    """日历图例项：按语气档归组，返回 `[{"tone", "label"}, ...]`。
+
+    图例与状态行消费同一份表——往 `_DISPLAY_ROWS` 加行只要落到既有语气档，图例
+    自动覆盖、无需改动；**新增语气档**则必须同步 `_LEGEND_TONES` 补中文短名，否则
+    图例会原样露出档位名（故意难看，逼着补——绝不允许静默漏条）。
     """
-    items, index, labels = [], {}, {}
-    for entry in DISPLAY.values():
-        sym = entry["symbol"]
-        if sym not in index:
-            labels[sym] = [entry["legend"]]
-            index[sym] = len(items)
-            items.append({"symbol": sym, "label": entry["legend"]})
-        elif entry["legend"] not in labels[sym]:
-            # 同一符号的不同状态各有短名（如 ⛔ 的"窗口缺失"）：合并而不是丢掉一格
-            labels[sym].append(entry["legend"])
-            items[index[sym]]["label"] = " / ".join(labels[sym])
+    tones = {e["tone"] for e in DISPLAY.values()}
+    items = [{"tone": tone, "label": label}
+             for tone, label in _LEGEND_TONES if tone in tones]
+    known = {item["tone"] for item in items}
+    items.extend({"tone": tone, "label": tone} for tone in tones - known)
     return items
 
 
 def display_payload():
     """日历页内联的显示载荷（服务端渲染进页面，前端状态行与日期格消费同一份表）。
 
-    `by_code` 供账号卡状态行按状态码取文案与语气档；`by_symbol` 供日期格按**符号**取
-    语气档与读屏名（日历数据源是按日状态文件的符号串）。两者都从 `DISPLAY` 派生，
-    前端因此不需要第二份状态清单。
+    `by_code` 供账号卡状态行按状态码取文案与语气档；`by_symbol` 供日期格按**符号**
+    反查语气档与读屏短名（日历数据源是按日状态文件的符号串，符号到此即弃）。
+    两者都从 `DISPLAY` 派生，前端因此不需要第二份状态清单。
     """
     by_code = {
         code: {"symbol": e["symbol"], "text": e["text"], "tone": e["tone"]}
         for code, e in DISPLAY.items()
     }
-    tones = {}
-    for entry in DISPLAY.values():
-        tones.setdefault(entry["symbol"], entry["tone"])  # 同符号的语气档必须一致（测试钉住）
-    by_symbol = {
-        item["symbol"]: {"label": item["label"], "tone": tones.get(item["symbol"], "muted")}
-        for item in legend_items()
-    }
+    by_symbol = {}
+    for e in DISPLAY.values():
+        by_symbol.setdefault(e["symbol"], {"label": e["legend"], "tone": e["tone"]})
     return {"by_code": by_code, "by_symbol": by_symbol}
 
 #: 「已有结论」的 JSON 状态集：非空且非 pending（`state_io._has_conclusion` 的口径）。
