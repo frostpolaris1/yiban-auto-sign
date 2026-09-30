@@ -43,8 +43,8 @@
 </div>
 {# 移动端抽屉遮罩：点击关闭；Adminator 靠 body.has-drawer-open 控制显隐 #}
 <div class="drawer-backdrop" data-drawer-close></div>
-{# 全局提示与模态挂载点（core.js 填充） #}
-<div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>
+{# 全局提示与模态挂载点（core.js 填充）；toast-host 是全站唯一的 polite 播报区 #}
+<div id="toast-host" class="toast-host" role="status" aria-live="polite" aria-atomic="false"></div>
 <div id="modal-host"></div>
 {# 首屏加载指示：120ms 内就绪则完全不出现（快加载不闪）；core.js 就绪或 window.load 后淡出。
    服务端已渲染正文，故不遮内容，只在顶部提示"样式/脚本仍在就绪"。样式见 app.css「首屏加载指示」。 #}

@@ -143,16 +143,32 @@
     return pop.querySelector('.date-day[data-date="' + want + '"]') || pop.querySelector(".date-day");
   }
 
+  // 退场动效：与进场同参数反向（140ms / ease-in-strong，见 app.css 的 .is-closing）。
+  // 动效结束（或同长兜底定时器）才 hidden=true；reduce 下直接收（与 reduceMotion() 同源）。
+  var EXIT_MS = 140;
+  function isClosing(pop) { return pop.classList.contains("is-closing"); }
+  function cancelClose(pop) {
+    if (pop.__exitT) { clearTimeout(pop.__exitT); pop.__exitT = null; }
+    pop.classList.remove("is-closing");
+  }
+  function finishClose(pop) {
+    if (pop.__exitT) { clearTimeout(pop.__exitT); pop.__exitT = null; }
+    pop.classList.remove("is-closing");
+    pop.hidden = true;
+  }
+
   function close(root, back) {
     var pop = popOf(root), trigger = triggerOf(root);
-    if (!pop || pop.hidden) return;
-    pop.hidden = true;
+    if (!pop || pop.hidden || isClosing(pop)) return;
     resetShift(root);                       // 收起时清掉可能停在半途的切月过渡类
     root.classList.remove("is-open");
     if (trigger) {
       trigger.setAttribute("aria-expanded", "false");
       if (back) trigger.focus();
     }
+    if (reduceMotion()) { finishClose(pop); return; }
+    pop.classList.add("is-closing");
+    pop.__exitT = setTimeout(function () { finishClose(pop); }, EXIT_MS);
   }
 
   // 弹层钳制到视口内。算法要"目标位置 − 锚点位置"一次算准：
@@ -223,6 +239,7 @@
     var pop = popOf(root), trigger = triggerOf(root);
     if (!pop || !trigger || trigger.disabled) return;
     roots().forEach(function (r) { if (r !== root) close(r, false); });
+    cancelClose(pop);                     // 若刚在退场，取消收起、原样重开
     setView(root, viewOf(root).y, viewOf(root).m);
     resetShift(root);
     renderPop(root);
@@ -354,7 +371,7 @@
     labelFor(root, input);
 
     trigger.addEventListener("click", function () {
-      if (pop.hidden) open(root); else close(root, true);
+      if (pop.hidden || isClosing(pop)) open(root); else close(root, true);
     });
     trigger.addEventListener("keydown", function (e) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(root); }
