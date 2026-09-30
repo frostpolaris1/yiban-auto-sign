@@ -12,6 +12,13 @@
    收进一个触发器，**触发器文案直接写明当前选中项**（"周六 · 周日" / "周六" / "周日" /
    "都不签"），四种组合一眼可分，且不靠色相区分。
 
+   内联变体（根带 data-ms-inline）：选项直接平铺、无触发器无面板，语义从 listbox 改为
+   role=group + 每项 role=checkbox（aria-checked）。为什么要有它：面板的价值是"收起不占
+   地方"，可选项只有两三个时状态一眼看得完，开合纯属间接——平铺让"当前选了什么"零
+   成本可读，空态（全不选）由行内帮助文案承担，触发器文案与"都不签"一并退场。值契约
+   与事件派发和弹层形态完全一致（隐藏 input "1"/"0" + 勾选时派发 change），读取方与
+   collect()/apply() 零分叉。
+
    皮肤：沿用 30.1 的 .select-field / .select-trigger / .select-menu / .select-option
    （与 select-field.js 同一套，不另起）；只有多选特有的部分另加——勾选记号 .ms-tick、
    面板 aria-multiselectable、命中区抬到 44px。
@@ -52,8 +59,8 @@
   function menuOf(root) { return root.querySelector(".select-menu"); }
   function triggerOf(root) { return root.querySelector(".select-trigger"); }
   function optionsOf(root) {
-    var menu = menuOf(root);
-    return menu ? [].slice.call(menu.querySelectorAll(".select-option")) : [];
+    // 弹层形态选项在 .select-menu 里；内联形态直接是根的子元素——根级查询两者通吃
+    return [].slice.call(root.querySelectorAll(".select-option"));
   }
   function visibleOptions(root) {
     return optionsOf(root).filter(function (o) { return !o.hidden; });
@@ -89,11 +96,12 @@
   // 纯解析：触发器文案 = 命中项文本按**选项顺序**拼接（不按勾选先后，否则勾两遍顺序
   // 会变、文案抖动）。空态用 EMPTY_TEXT：留空会被读成"没加载出来"，不是"没选"。
   function paint(root) {
+    var inline = root.hasAttribute("data-ms-inline");
     var picked = [];
     optionsOf(root).forEach(function (o) {
       var on = isOn(o.getAttribute("data-v"));
       o.classList.toggle("is-sel", on);
-      o.setAttribute("aria-selected", on ? "true" : "false");
+      o.setAttribute(inline ? "aria-checked" : "aria-selected", on ? "true" : "false");
       if (on) picked.push(optionText(o));
     });
     var trigger = triggerOf(root);
@@ -231,8 +239,40 @@
     return YB.el("span", { class: "ms-tick", "aria-hidden": "true", html: svg("check") });
   }
 
+  // 内联形态：没有面板，选项本体就是常驻按钮——点击走事件冒泡，Enter/Space 是
+  // <button> 的原生行为；方向键在选项间移焦（两三个选项各自身份独立，不搞
+  // roving tabindex，Tab 逐个到达也成立，方向键只是顺手）
+  function bindInline(root) {
+    root.addEventListener("click", function (e) {
+      var opt = e.target.closest ? e.target.closest(".select-option") : null;
+      if (opt) toggle(root, opt);
+    });
+    root.addEventListener("keydown", function (e) {
+      var opts = optionsOf(root);
+      var i = opts.indexOf(document.activeElement);
+      if (i < 0) return;
+      var to = null;
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") to = Math.min(i + 1, opts.length - 1);
+      else if (e.key === "ArrowUp" || e.key === "ArrowLeft") to = Math.max(i - 1, 0);
+      if (to == null) return;
+      e.preventDefault();
+      focusNoScroll(opts[to]);
+    });
+  }
+
   function mount() {
     roots().forEach(function (root) {
+      if (root.hasAttribute("data-ms-inline")) {
+        if (root.getAttribute("data-ms-ready")) { paint(root); return; }   // 已初始化
+        optionsOf(root).forEach(function (o) {
+          if (!o.querySelector(".ms-tick")) o.insertBefore(tickNode(), o.firstChild);
+          o.setAttribute("tabindex", "0");
+        });
+        root.setAttribute("data-ms-ready", "1");
+        bindInline(root);
+        paint(root);
+        return;
+      }
       var menu = menuOf(root);
       if (triggerOf(root)) { labelFor(root); paint(root); return; }   // 已初始化
       var trigger = YB.el("button", {
@@ -281,10 +321,16 @@
 
   function get(id) { return isOn(id); }
 
-  // 禁用按整组落：同组选项共用一个触发器，禁用其中一项等于整组不可改（调用方按组传任一 id）
+  // 禁用按整组落：弹层形态禁用触发器；内联形态逐项禁用（没有触发器可落）。
+  // 调用方按组传任一选项 id，两种形态一致
   function setDisabled(id, on) {
     var root = rootByOption(id);
     if (!root) return;
+    if (root.hasAttribute("data-ms-inline")) {
+      optionsOf(root).forEach(function (o) { o.disabled = !!on; });
+      root.classList.toggle("is-disabled", !!on);
+      return;
+    }
     var trigger = triggerOf(root);
     if (trigger) trigger.disabled = !!on;
     root.classList.toggle("is-disabled", !!on);

@@ -235,31 +235,30 @@
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
-      {# 周六/周日合并为一个多选组：两者独立可开（只周六 / 只周日 / 都开 / 都不开），
-         单选分段会丢状态，故用自研多选 listbox（components/multiselect-field.js，
-         皮肤沿用 app.css 30.1 的 .select-field 那套，见 30.5 节）。值契约 = 两个隐藏
-         input（id 与原字段一致、值 "1"/"0"），由 settings-schedule.js 的
-         collect()/snapshotFromDom()/apply() 读写，故后端与保存路径零改动。
-         权限粒度不变：任意管理员可改（不在 applyPerm 的禁用清单里）。 #}
+      {# 周六/周日合并为一个多选组：两者独立可开（只周六 / 只周日 / 都开 / 都不开）。
+         只有两个选项，用**内联变体**（data-ms-inline，app.css 30.5.1）：选项平铺在行内
+         直接点选，"当前签哪几天"零成本可读，不需要"开面板"这层间接；空态语义由左侧
+         帮助文案（默认都不签）承担。值契约 = 两个隐藏 input（id 与原字段一致、
+         值 "1"/"0"），由 settings-schedule.js 的 collect()/snapshotFromDom()/apply()
+         读写，故后端与保存路径零改动。权限粒度不变：任意管理员可改（不在 applyPerm
+         的禁用清单里）。 #}
       <div class="set-row">
         <span class="set-row-text set-row-text--static">
           <span class="set-row-label" id="ss-weekend-label">周末签到</span>
-          <p class="set-help">默认都不签；可只签周六或只签周日。</p>
+          <p class="set-help">默认关闭，可单独开关。</p>
         </span>
         <div class="set-row-ctl">
-          <div class="select-field multiselect-field" data-multiselect-field="ss-weekend"
-               aria-labelledby="ss-weekend-label">
-            {# 触发器由 JS 构建（同 select_field 宏）；面板 aria-multiselectable 是"可多选"的语义根 #}
+          <div class="multiselect-field" data-multiselect-field="ss-weekend" data-ms-inline
+               role="group" aria-labelledby="ss-weekend-label">
+            {# 每项是常驻 checkbox：role/勾选态由组件 paint 同步，勾选记号由 JS 注入 #}
             <input type="hidden" id="ss-sat" value="0">
             <input type="hidden" id="ss-sun" value="0">
-            <div class="select-menu" role="listbox" aria-multiselectable="true" hidden>
-              <button type="button" class="select-option" role="option" aria-selected="false" data-v="ss-sat">
-                <span class="ms-option-text">周六</span>
-              </button>
-              <button type="button" class="select-option" role="option" aria-selected="false" data-v="ss-sun">
-                <span class="ms-option-text">周日</span>
-              </button>
-            </div>
+            <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ss-sat">
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ss-sun">
+              <span class="ms-option-text">周日</span>
+            </button>
           </div>
         </div>
       </div>

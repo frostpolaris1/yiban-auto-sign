@@ -4448,6 +4448,47 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   .ms-tick { transition: none; }      /* 只剩变色，去掉也无妨；显式关掉以免后续加位移时漏网 */
 }
 
+/* ---- 30.5.1 内联变体（根带 data-ms-inline）：选项平铺在行内，无触发器无面板 ----
+   两个选项的"开合面板"是纯间接：状态本来就一眼看得完，直接可见让"当前签哪几天"
+   零成本可读；空态（全不选）由行内帮助文案承担，触发器文案与"都不签"一并退场。
+   语义跟着变：根 role=group，每项 role=checkbox + aria-checked（不再是 listbox）。
+   选中信号 = 实心勾 + 主色边 + 字重，三项叠合，不靠色相单撑（页脚硬规矩）。 */
+.multiselect-field[data-ms-inline] { display: flex; gap: 10px; min-width: 0; }
+.multiselect-field[data-ms-inline] .select-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-sub);
+  font-weight: 400;
+  transition: border-color 140ms var(--ease-in-strong), transform 140ms var(--ease-in-strong);
+}
+.multiselect-field[data-ms-inline] .select-option.is-sel {
+  border-color: var(--primary-solid);
+  color: inherit;                     /* 选中项回到正文色：与未选的 --t-sub 拉开层级 */
+  font-weight: 600;
+}
+.multiselect-field[data-ms-inline] .select-option:active { transform: scale(.97); }
+/* 上面弹层选项的 :focus-visible 用背景高亮代替焦点环（选项在面板里，有面板边框兜着）；
+   内联选项是常驻页面按钮，必须回到全站焦点环，压掉那条 background/outline:0 */
+.multiselect-field[data-ms-inline] .select-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  background: var(--bg-card);
+}
+.multiselect-field[data-ms-inline].is-disabled .select-option { cursor: not-allowed; }
+@media (hover: hover) and (pointer: fine) {
+  .multiselect-field[data-ms-inline] .select-option:hover { border-color: var(--primary-solid); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .multiselect-field[data-ms-inline] .select-option { transition: none; }
+  .multiselect-field[data-ms-inline] .select-option:active { transform: none; }
+}
+
 /* ==========================================================================
    31. 标签页式列表页（账号管理 / 用户管理 / 签到日志）
    --------------------------------------------------------------------------
