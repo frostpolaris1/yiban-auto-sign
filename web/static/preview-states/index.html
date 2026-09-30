@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>组件全状态铺开页 · 易班自动签到（开发自查）</title>
+
+<!-- 主题引导：与 partials/theme_boot.html 同一机制（<html data-theme> + localStorage 'yiban-theme'）。
+     必须写在样式表之前，先落 data-theme 再看色，避免暗色首屏闪白。 -->
+<script>
+  (function () {
+    try {
+      document.documentElement.setAttribute(
+        'data-theme',
+        localStorage.getItem('yiban-theme') === 'dark' ? 'dark' : 'light'
+      );
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+
+<!-- 真实皮肤：与 layout_admin.html 完全同一条 CSS 链（字体 → Adminator → app.css）。
+     本页只新增页面自身排版样式，app.css 一行未改。相对路径按 preview-states/ 修正。 -->
+<link rel="stylesheet" href="../vendor/fonts/inter/inter.css">
+<link rel="stylesheet" href="../vendor/fonts/jetbrains-mono/jetbrains-mono.css">
+<link rel="stylesheet" href="../vendor/fonts/notosanssc/notosanssc.css">
+<link rel="stylesheet" href="../vendor/adminator/adminator.css">
+<link rel="stylesheet" href="../css/app.css">
+
+<!-- 页面自身排版样式（唯一允许在本任务里新增的样式，全部前缀 .ps-，不碰 app.css）。
+     这里只做：页头 / 栅格 / 每节卡片 / 状态格 / 说明文字 / 「悬停占位」虚线框 /
+     两个「聚焦态示意」复刻（真机为 :focus-visible 触发，静态页无法冻结 hover，故用复刻类）。 -->
+<style>
+  .ps-body {
+    background: var(--bg-body);
+    color: var(--t-base);
+    font-family: var(--font-sans);
+  }
+  .ps-wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 24px 16px 80px;
+  }
+  /* 吸顶工具条：主题切换 + 说明跳转 */
+  .ps-bar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: -24px -16px 24px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-body) 88%, transparent);
+    backdrop-filter: blur(6px);
+  }
+  .ps-bar .ps-bar-title { font-weight: 700; font-size: 14px; }
+  .ps-bar .ps-bar-spacer { margin-left: auto; }
+  .ps-title { margin: 0 0 6px; font-size: 22px; line-height: 1.25; }
+  .ps-sub { margin: 0 0 4px; color: var(--t-muted); font-size: 13px; line-height: 1.6; }
+  .ps-note {
+    margin: 16px 0 0;
+    padding: 12px 14px;
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--primary);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--t-sub);
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  .ps-note b { color: var(--t-base); }
+  .ps-note code {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--bg-muted);
+    color: var(--t-base);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+  .ps-toc { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  /* 每节卡片 */
+  .ps-card { margin-top: 20px; }
+  .ps-card .panel-head { margin-bottom: 12px; }
+  .ps-card .ps-sec-id {
+    margin-left: 8px;
+    color: var(--t-light);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+  }
+  /* 状态栅格：每格 = 状态名 + 控件 */
+  .ps-states {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+  .ps-state {
+    min-width: 0;
+    padding: 12px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: var(--bg-card);
+  }
+  .ps-state--wide { grid-column: 1 / -1; }
+  .ps-state-label {
+    display: block;
+    margin-bottom: 10px;
+    color: var(--t-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .ps-state-label .ps-hint { font-weight: 400; letter-spacing: 0; text-transform: none; }
+  /* 「悬停态占位」：静态页无法冻结 hover，用虚线框 + 文案占位；真机悬停查看真实反馈 */
+  .ps-hover-ph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 8px;
+    border: 1px dashed var(--primary);
+    border-radius: 8px;
+    color: var(--t-muted);
+    font-size: 12px;
+    text-align: center;
+  }
+  .ps-stack { display: flex; flex-direction: column; gap: 10px; }
+  .ps-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  /* 聚焦态复刻：与 app.css/.vendor 的真实声明逐条一致，仅供静态页展示该状态长什么样。
+     真机上由 :focus-visible / :focus 自动触发，不需要这些类。 */
+  .ps-focus-demo { outline: 2px solid var(--primary); outline-offset: 2px; }
+  .ps-switch-focus .track { outline: 2px solid var(--primary); outline-offset: 2px; }
+  .ps-input-focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+  /* 说明性小结（每节底部） */
+  .ps-foot {
+    margin: 12px 0 0;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    color: var(--t-muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  /* Toast 静态展示：.toast 本体在文档流里（.toast-host 才负责 fixed 定位），
+     这里加 .is-shown 让它为可见终态，无需 JS。 */
+  .ps-toast-demo { position: relative; }
+  .ps-toast-demo .toast { opacity: 1; transform: none; }
+  .ps-swatch {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 8px 8px 0;
+    font-size: 11px;
+    color: var(--t-muted);
+  }
+  .ps-swatch i {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .ps-mono { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-muted); }
+</style>
+</head>
+<!-- data-page="auth"：借用 core.js 的既定跳过开关——它对 data-page="auth" 的页面跳过
+     identity()/calibrateClock()（见 core.js onReady）。本页是纯静态铺开页、不需要外壳身份与
+     服务器时钟；若照常拉 /api/me 与 /api/clock，未登录打开时会各抛一次 401 未处理拒绝、控制台报错。
+     app.css 里 body[data-page="auth"] 无任何样式规则，故不影响本页观感。 -->
+<body class="ps-body" data-page="auth">
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+<!--
+  Lucide icon sprite (subset, 70 icons) - generated, do not edit by hand.
+  Source: lucide-icons/lucide
+  Version: 1.45.0  Commit: b998e2892b90b88004d62da2d0b64dab9959a520
+  License: ISC (see LICENSE in this directory; some icons are Feather-derived, MIT).
+  Build: python scripts/build_lucide_sprite.py <lucide-repo-dir> <output>
+  Usage: call ui.sprite() once after <body>, then ui.icon('trash', 'w-4 h-4').
+  Symbols inherit stroke=currentColor from the use context, so icons follow text color (dark mode safe).
+-->
+<symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></symbol>
+<symbol id="i-layout-dashboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1" /><rect width="7" height="5" x="14" y="3" rx="1" /><rect width="7" height="9" x="14" y="12" rx="1" /><rect width="7" height="5" x="3" y="16" rx="1" /></symbol>
+<symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><path d="M16 3.128a4 4 0 0 1 0 7.744" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" /></symbol>
+<symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></symbol>
+<symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h.01" /><path d="M3 12h.01" /><path d="M3 19h.01" /><path d="M8 5h13" /><path d="M8 12h13" /><path d="M8 19h13" /></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /><circle cx="12" cy="12" r="3" /></symbol>
+<symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" /></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></symbol>
+<symbol id="i-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" /></symbol>
+<symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2" /><rect width="20" height="8" x="2" y="14" rx="2" ry="2" /><line x1="6" x2="6.01" y1="6" y2="6" /><line x1="6" x2="6.01" y1="18" y2="18" /></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></symbol>
+<symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v3" /><path d="M16 2v3" /><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /></symbol>
+<symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" /><rect x="2" y="4" width="20" height="16" rx="2" /></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0" /><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></symbol>
+<symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /><path d="m15 5 4 4" /></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
+<symbol id="i-rotate-cw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></symbol>
+<symbol id="i-refresh-cw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></symbol>
+<symbol id="i-rotate-ccw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></symbol>
+<symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12" /><path d="m17 8-5-5-5 5" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /></symbol>
+<symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></symbol>
+<symbol id="i-funnel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z" /></symbol>
+<symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="3" width="5" height="18" rx="1" /><rect x="5" y="3" width="5" height="18" rx="1" /></symbol>
+<symbol id="i-circle-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="10" x2="10" y1="15" y2="9" /><line x1="14" x2="14" y1="15" y2="9" /></symbol>
+<symbol id="i-circle-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><rect x="9" y="9" width="6" height="6" rx="1" /></symbol>
+<symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10" /><path d="M18.4 6.6a9 9 0 1 1-12.77.04" /></symbol>
+<symbol id="i-log-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol>
+<symbol id="i-external-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol>
+<symbol id="i-ellipsis-vertical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></symbol>
+<symbol id="i-ellipsis" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></symbol>
+<symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol>
+<symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
+<symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></symbol>
+<symbol id="i-arrow-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></symbol>
+<symbol id="i-chevron-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6" /></symbol>
+<symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+<symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></symbol>
+<symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" /></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /><path d="m2 2 20 20" /></symbol>
+<symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 21 9.6-9.6" /><path d="m7.5 15.5 2.3 2.3a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0L4 19" /><circle cx="15.5" cy="7.5" r="5.5" /></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol>
+<symbol id="i-lock-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></symbol>
+<symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></symbol>
+<symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /><path d="m21.854 2.147-10.94 10.939" /></symbol>
+<symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /><path d="M7 3v4a1 1 0 0 0 1 1h7" /></symbol>
+<symbol id="i-ban" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M4.929 4.929 19.07 19.071" /></symbol>
+<symbol id="i-circle-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M8 12h8" /></symbol>
+<symbol id="i-circle-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="m16 9-5.5 5.5L8 12" /></symbol>
+<symbol id="i-circle-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></symbol>
+<symbol id="i-triangle-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></symbol>
+<symbol id="i-circle-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></symbol>
+<symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol>
+<symbol id="i-circle-question-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></symbol>
+<symbol id="i-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4" /><path d="m16.2 7.8 2.9-2.9" /><path d="M18 12h4" /><path d="m16.2 16.2 2.9 2.9" /><path d="M12 18v4" /><path d="m4.9 19.1 2.9-2.9" /><path d="M2 12h4" /><path d="m4.9 4.9 2.9 2.9" /></symbol>
+<symbol id="i-circle-slash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="9" x2="15" y1="15" y2="9" /></symbol>
+<symbol id="i-chart-bar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M7 16h8" /><path d="M7 11h12" /><path d="M7 6h3" /></symbol>
+<symbol id="i-chart-pie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12c.552 0 1.005-.449.95-.998a10 10 0 0 0-8.953-8.951c-.55-.055-.998.398-.998.95v8a1 1 0 0 0 1 1z" /><path d="M21.21 15.89A10 10 0 1 1 8 2.83" /></symbol>
+<symbol id="i-trending-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h6v6" /><path d="m22 7-8.5 8.5-5-5L2 17" /></symbol>
+<symbol id="i-trending-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 17h6v-6" /><path d="m22 17-8.5-8.5-5 5L2 7" /></symbol>
+<symbol id="i-chart-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="m19 9-5 5-4-4-3 3" /></symbol>
+<symbol id="i-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18" /><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /></symbol>
+<symbol id="i-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /><path d="M14 2v5a1 1 0 0 0 1 1h5" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" /></symbol>
+</svg>
+
+<div class="ps-wrap">
+
+  <!-- 吸顶工具条：主题切换（与全站同一 localStorage 键，切换后与本页其余状态同屏对比） -->
+  <div class="ps-bar">
+    <span class="ps-bar-title">组件全状态铺开页</span>
+    <span class="ps-mono">/static/preview-states/index.html</span>
+    <span class="ps-bar-spacer"></span>
+    <button type="button" class="btn btn--ghost btn--sm" id="ps-theme-toggle" aria-pressed="false">
+      <svg aria-hidden="true"><use href="#i-moon"/></svg><span id="ps-theme-label">切换深色</span>
+    </button>
+  </div>
+
+  <header>
+    <h1 class="ps-title">组件全状态铺开页</h1>
+    <p class="ps-sub">把项目自研组件与 Adminator 皮肤组件的<strong>全部状态</strong>并排铺开，开发时一眼检查控件的默认 / 悬停 / 聚焦 / 禁用 / 加载 / 错误观感。</p>
+    <div class="ps-note">
+      <b>这是什么页：</b>开发期自查用的静态铺开页，不是线上功能页；它只由本目录下的一个 <code>index.html</code> 构成，
+      额外引用的全部是线上真实资源（<code>../css/app.css</code> 与 Adminator 皮肤、<code>../js/core.js</code> 与组件脚本），
+      因此这里看到的观感就是线上真实观感。<br>
+      <b>怎么用：</b>用浏览器打开 <code>/static/preview-states/index.html</code>（登录后由应用直接静态托管），
+      点右上角「切换深色」即可对照同一批状态在暗色下的表现。<br>
+      <b>维护约定：</b>新增一个组件或新增一个状态时，<strong>同步把状态铺到本页对应小节</strong>；
+      改动组件样式后先来这里扫一遍所有状态，再进线上页面。<br>
+      <b>说明：</b>静态页冻结不了 <code>:hover</code>，凡「悬停态」一律给虚线占位框并标注「悬停态请真机悬停」；
+      「聚焦态」用页面内复刻类（<code>.ps-*-focus</code>）展示该状态的外观，真机由 <code>:focus-visible</code> / <code>:focus</code> 自动触发。
+    </div>
+    <nav class="ps-toc" aria-label="小节跳转">
+      <a class="btn btn--ghost btn--sm" href="#sec-switch">开关</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-btn">按钮</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-select">下拉选择</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-multiselect">多选下拉</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-range">数值滑块</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-time">时间选择</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-native">原生输入件</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-feedback">提示与徽标</a>
+      <a class="btn btn--ghost btn--sm" href="#sec-table">数据表</a>
+    </nav>
+  </header>
+
+  <!-- ============================ 1. 开关 .switch ============================ -->
+  <section class="card ps-card" id="sec-switch">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">开关<span class="ps-sec-id">.switch &gt; input + .track</span></h2>
+      </div>
+    </div>
+    <div class="ps-states">
+      <div class="ps-state">
+        <span class="ps-state-label">开 <span class="ps-hint">input:checked</span></span>
+        <label class="switch" title="开">
+          <input type="checkbox" checked>
+          <span class="track" aria-hidden="true"></span>
+          <span class="sr-only">开</span>
+        </label>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">关 <span class="ps-hint">未选中</span></span>
+        <label class="switch" title="关">
+          <input type="checkbox">
+          <span class="track" aria-hidden="true"></span>
+          <span class="sr-only">关</span>
+        </label>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">禁用（开）</span>
+        <label class="switch" title="禁用（开）">
+          <input type="checkbox" checked disabled>
+          <span class="track" aria-hidden="true"></span>
+          <span class="sr-only">禁用（开）</span>
+        </label>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">禁用（关）</span>
+        <label class="switch" title="禁用（关）">
+          <input type="checkbox" disabled>
+          <span class="track" aria-hidden="true"></span>
+          <span class="sr-only">禁用（关）</span>
+        </label>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">聚焦 <span class="ps-hint">样式复刻</span></span>
+        <label class="switch ps-switch-focus" title="聚焦示意">
+          <input type="checkbox" checked>
+          <span class="track" aria-hidden="true"></span>
+          <span class="sr-only">聚焦示意</span>
+        </label>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">按下 <span class="ps-hint">:active scale(.96)</span></span>
+        <div class="ps-hover-ph">按下态请真机按住查看（轨道轻微缩小）</div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      开 / 关的轨道色都会出现：开态取 Adminator 的 <code>.switch input:checked + .track</code>（主色），
+      关态取 app.css 的 <code>--switch-off-bg</code>（§19.0 语义令牌，为满足 WCAG 1.4.11 非文字对比度）。
+      禁用态由 app.css <code>.switch input:disabled + .track { opacity:.5 }</code> 承担。
+    </p>
+  </section>
+
+  <!-- ============================ 2. 按钮 .btn ============================ -->
+  <section class="card ps-card" id="sec-btn">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">按钮<span class="ps-sec-id">.btn 全变体</span></h2>
+      </div>
+    </div>
+    <div class="ps-stack">
+      <div>
+        <span class="ps-state-label">实心 / 次要 / 幽灵 / 危险</span>
+        <div class="ps-row">
+          <button type="button" class="btn btn--primary">主操作</button>
+          <button type="button" class="btn btn--secondary">次要</button>
+          <button type="button" class="btn btn--ghost">幽灵</button>
+          <button type="button" class="btn btn--danger">危险</button>
+          <button type="button" class="btn btn--danger-ghost">危险幽灵</button>
+        </div>
+      </div>
+      <div>
+        <span class="ps-state-label">描边 / 语义色 / 软色</span>
+        <div class="ps-row">
+          <button type="button" class="btn btn--outline-primary">描边主色</button>
+          <button type="button" class="btn btn--outline-danger">描边危险</button>
+          <button type="button" class="btn btn--info">信息</button>
+          <button type="button" class="btn btn--success">成功</button>
+          <button type="button" class="btn btn--warning">警示</button>
+        </div>
+        <div class="ps-row" style="margin-top:10px">
+          <button type="button" class="btn btn--soft-primary">软主色</button>
+          <button type="button" class="btn btn--soft-success">软成功</button>
+          <button type="button" class="btn btn--soft-warning">软警示</button>
+          <button type="button" class="btn btn--soft-danger">软危险</button>
+          <button type="button" class="btn btn--soft-info">软信息</button>
+        </div>
+      </div>
+      <div>
+        <span class="ps-state-label">尺寸 / 图标 / 组</span>
+        <div class="ps-row">
+          <button type="button" class="btn btn--primary btn--lg">大号</button>
+          <button type="button" class="btn btn--primary">默认</button>
+          <button type="button" class="btn btn--primary btn--sm">小号</button>
+          <button type="button" class="btn btn--ghost btn--icon" aria-label="图标按钮" title="图标按钮"><svg aria-hidden="true"><use href="#i-ellipsis"/></svg></button>
+          <span class="btn-group">
+            <button type="button" class="btn btn--ghost btn--sm">左</button>
+            <button type="button" class="btn btn--ghost btn--sm">中</button>
+            <button type="button" class="btn btn--ghost btn--sm">右</button>
+          </span>
+        </div>
+      </div>
+      <div>
+        <span class="ps-state-label">加载 / 禁用 / 聚焦</span>
+        <div class="ps-row">
+          <button type="button" class="btn btn--primary is-busy">保存中（is-busy）</button>
+          <button type="button" class="btn btn--primary" disabled>禁用</button>
+          <button type="button" class="btn btn--ghost" disabled>禁用幽灵</button>
+          <button type="button" class="btn btn--primary ps-focus-demo">聚焦（样式复刻）</button>
+        </div>
+      </div>
+      <div>
+        <span class="ps-state-label">悬停态</span>
+        <div class="ps-row">
+          <div class="ps-hover-ph" style="min-width:160px">主色按钮：悬停态请真机悬停（底色转 --primary-dark）</div>
+          <div class="ps-hover-ph" style="min-width:160px">幽灵按钮：悬停态请真机悬停</div>
+        </div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      加载态 <code>.btn.is-busy</code> 为「原地转圈、宽度不变、标签压暗」（app.css §19.0 附近），
+      不与 <code>disabled</code> 混用；禁用态取 Adminator <code>.btn:disabled</code>。
+      聚焦环来自 app.css §11 <code>:where(.btn …):focus-visible</code>。
+    </p>
+  </section>
+
+  <!-- ==================== 3. 自研下拉 .select-field ==================== -->
+  <section class="card ps-card" id="sec-select">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">下拉选择<span class="ps-sec-id">.select-field（自研 listbox）</span></h2>
+      </div>
+    </div>
+    <div class="ps-states">
+      <div class="ps-state">
+        <span class="ps-state-label">收起 <span class="ps-hint">可点击展开</span></span>
+        <!-- 真实结构：根 .select-field + 隐藏 input（值契约）+ .select-menu，触发器由 select-field.js 构建 -->
+        <div class="select-field" data-select-field="ps-sel-order" aria-labelledby="ps-sel-order-label">
+          <input type="hidden" id="ps-sel-order" value="sequence">
+          <div class="select-menu" role="listbox" hidden>
+            <button type="button" class="select-option" role="option" data-v="sequence">列表顺序（固定作息）</button>
+            <button type="button" class="select-option" role="option" data-v="random">列表随机（每天重排）</button>
+          </div>
+        </div>
+        <p class="sr-only" id="ps-sel-order-label">排序方式</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">展开（静态复刻）</span>
+        <!-- 仅展示展开后面板外观：无 data-select-field，故 JS 不接管、始终保持展开 -->
+        <div class="select-field is-open">
+          <button type="button" class="select-trigger" role="combobox" aria-expanded="true">
+            <span class="select-trigger-text">列表顺序（固定作息）</span>
+            <span class="select-caret" aria-hidden="true"><svg><use href="#i-chevron-down"/></svg></span>
+          </button>
+          <div class="select-menu" role="listbox">
+            <button type="button" class="select-option is-sel" role="option" aria-selected="true" data-v="sequence">列表顺序（固定作息）</button>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="random">列表随机（每天重排）</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">禁用 <span class="ps-hint">触发器 disabled</span></span>
+        <div class="select-field" data-select-field="ps-sel-disabled" aria-labelledby="ps-sel-disabled-label">
+          <input type="hidden" id="ps-sel-disabled" value="uniform">
+          <div class="select-menu" role="listbox" hidden>
+            <button type="button" class="select-option" role="option" data-v="uniform">均匀分布</button>
+            <button type="button" class="select-option" role="option" data-v="normal">正态分布（钟形拟人）</button>
+          </div>
+        </div>
+        <p class="sr-only" id="ps-sel-disabled-label">分布方式</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">空态文案 <span class="ps-hint">.select-empty</span></span>
+        <div class="select-field is-open">
+          <button type="button" class="select-trigger" role="combobox" aria-expanded="true">
+            <span class="select-trigger-text">（暂无）</span>
+            <span class="select-caret" aria-hidden="true"><svg><use href="#i-chevron-down"/></svg></span>
+          </button>
+          <div class="select-menu" role="listbox">
+            <div class="select-empty">（暂无）</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">分组头 / 筛选框</span>
+        <div class="select-field is-open">
+          <button type="button" class="select-trigger" role="combobox" aria-expanded="true">
+            <span class="select-trigger-text">选择时间片</span>
+            <span class="select-caret" aria-hidden="true"><svg><use href="#i-chevron-down"/></svg></span>
+          </button>
+          <div class="select-menu" role="listbox">
+            <input class="input select-search" type="text" placeholder="筛选…" aria-label="筛选">
+            <div class="select-group" role="presentation">上午</div>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="am">08:00</button>
+            <div class="select-group" role="presentation">下午</div>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="pm">14:00</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">悬停态</span>
+        <div class="ps-hover-ph">触发器 / 选项的悬停态请真机悬停（触发器边框转 --t-light，选项底色转 --bg-hover）</div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      皮肤见 app.css §30.1；触发器由 <code>select-field.js</code> 构建，但静态复刻列直接写出同一套类名，
+      与线上构建结果一致。禁用走 <code>setDisabled()</code>（置触发器 <code>disabled</code> 并加 <code>.is-disabled</code>）。
+    </p>
+  </section>
+
+  <!-- ==================== 4. 多选下拉 .multiselect-field ==================== -->
+  <section class="card ps-card" id="sec-multiselect">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">多选下拉<span class="ps-sec-id">.select-field.multiselect-field</span></h2>
+      </div>
+    </div>
+    <div class="ps-states">
+      <div class="ps-state">
+        <span class="ps-state-label">都不选 <span class="ps-hint">空态文案</span></span>
+        <div class="select-field multiselect-field" data-multiselect-field="ps-ms-weekend" aria-labelledby="ps-ms-weekend-label">
+          <input type="hidden" id="ps-ms-sat" value="0">
+          <input type="hidden" id="ps-ms-sun" value="0">
+          <div class="select-menu" role="listbox" aria-multiselectable="true" hidden>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-sat">
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-sun">
+              <span class="ms-option-text">周日</span>
+            </button>
+          </div>
+        </div>
+        <p class="sr-only" id="ps-ms-weekend-label">周末签到</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">单选 <span class="ps-hint">仅周六</span></span>
+        <div class="select-field multiselect-field" data-multiselect-field="ps-ms-single" aria-labelledby="ps-ms-single-label">
+          <input type="hidden" id="ps-ms-single-sat" value="1">
+          <input type="hidden" id="ps-ms-single-sun" value="0">
+          <div class="select-menu" role="listbox" aria-multiselectable="true" hidden>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-single-sat">
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-single-sun">
+              <span class="ms-option-text">周日</span>
+            </button>
+          </div>
+        </div>
+        <p class="sr-only" id="ps-ms-single-label">周末签到</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">双选 <span class="ps-hint">周六 · 周日</span></span>
+        <div class="select-field multiselect-field" data-multiselect-field="ps-ms-both" aria-labelledby="ps-ms-both-label">
+          <input type="hidden" id="ps-ms-both-sat" value="1">
+          <input type="hidden" id="ps-ms-both-sun" value="1">
+          <div class="select-menu" role="listbox" aria-multiselectable="true" hidden>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-both-sat">
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-both-sun">
+              <span class="ms-option-text">周日</span>
+            </button>
+          </div>
+        </div>
+        <p class="sr-only" id="ps-ms-both-label">周末签到</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">展开（静态复刻，含勾选记号）</span>
+        <div class="select-field multiselect-field is-open" style="min-width:190px">
+          <button type="button" class="select-trigger" role="combobox" aria-haspopup="listbox" aria-expanded="true">
+            <span class="select-trigger-text">周六 · 周日</span>
+            <span class="select-caret" aria-hidden="true"><svg><use href="#i-chevron-down"/></svg></span>
+          </button>
+          <div class="select-menu" role="listbox" aria-multiselectable="true">
+            <button type="button" class="select-option is-sel" role="option" aria-selected="true" data-v="sat">
+              <span class="ms-tick" aria-hidden="true"><svg><use href="#i-check"/></svg></span>
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option is-sel" role="option" aria-selected="true" data-v="sun">
+              <span class="ms-tick" aria-hidden="true"><svg><use href="#i-check"/></svg></span>
+              <span class="ms-option-text">周日</span>
+            </button>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="mon">
+              <span class="ms-tick" aria-hidden="true"><svg><use href="#i-check"/></svg></span>
+              <span class="ms-option-text">周一（未选示例）</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">禁用</span>
+        <div class="select-field multiselect-field" data-multiselect-field="ps-ms-disabled" aria-labelledby="ps-ms-disabled-label">
+          <input type="hidden" id="ps-ms-d-sat" value="1">
+          <input type="hidden" id="ps-ms-d-sun" value="0">
+          <div class="select-menu" role="listbox" aria-multiselectable="true" hidden>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-d-sat">
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option" role="option" aria-selected="false" data-v="ps-ms-d-sun">
+              <span class="ms-option-text">周日</span>
+            </button>
+          </div>
+        </div>
+        <p class="sr-only" id="ps-ms-disabled-label">周末签到</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">悬停态</span>
+        <div class="ps-hover-ph">触发器 / 选项悬停态请真机悬停</div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      皮肤沿用 §30.1，多选特有部分见 app.css §30.5（<code>.ms-tick</code> 勾选记号、面板
+      <code>aria-multiselectable</code>、44px 命中区）。触发器文案直接写明当前选中项（「周六 · 周日」/「周六」/「都不选」）。
+    </p>
+  </section>
+
+  <!-- ==================== 5. 数值滑块 .range-field ==================== -->
+  <section class="card ps-card" id="sec-range">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">数值滑块<span class="ps-sec-id">.range-field（点击开弹窗调整）</span></h2>
+      </div>
+    </div>
+    <div class="ps-states">
+      <div class="ps-state">
+        <span class="ps-state-label">默认 <span class="ps-hint">可点击开弹窗</span></span>
+        <div class="range-field" data-range-field="ps-range-edge" data-min="0" data-max="5"
+             data-step="0.5" data-unit="分钟" data-title="掐头"
+             data-hint="裁掉签到窗口开头段，避开整点边界超时；0 = 不裁切。">
+          <input type="hidden" id="ps-range-edge" value="1">
+        </div>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">禁用</span>
+        <div class="range-field" data-range-field="ps-range-disabled" data-min="0" data-max="5"
+             data-step="0.5" data-unit="分钟" data-title="去尾"
+             data-hint="裁掉签到窗口末尾段。">
+          <input type="hidden" id="ps-range-disabled" value="0.5">
+        </div>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">最大 / 最小边界</span>
+        <div class="ps-stack">
+          <div class="range-field" data-range-field="ps-range-max" data-min="0" data-max="5"
+               data-step="0.5" data-unit="分钟" data-title="上限" data-hint="已达上限值。">
+            <input type="hidden" id="ps-range-max" value="5">
+          </div>
+          <div class="range-field" data-range-field="ps-range-min" data-min="0" data-max="5"
+               data-step="0.5" data-unit="分钟" data-title="下限" data-hint="已达下限值。">
+            <input type="hidden" id="ps-range-min" value="0">
+          </div>
+        </div>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">悬停 / 聚焦</span>
+        <div class="ps-hover-ph">触发器悬停态请真机悬停；<br>聚焦态由 :focus-visible 触发</div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      皮肤见 app.css §30.2（触发器与下拉共用同一份控件外观）。弹窗内的原生滑杆 <code>.range</code>、
+      刻度按钮 <code>.range-scale</code> 由 <code>range-field.js</code> 构建——点「默认」那格的触发器即可看到弹窗。
+    </p>
+  </section>
+
+  <!-- ==================== 6. 时间选择 .time-field ==================== -->
+  <section class="card ps-card" id="sec-time">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">时间选择<span class="ps-sec-id">.time-field / .time-pair（结构照 work_settings.html）</span></h2>
+      </div>
+    </div>
+    <div class="ps-states">
+      <div class="ps-state">
+        <span class="ps-state-label">单个时间 <span class="ps-hint">可点击开弹窗</span></span>
+        <div class="time-field" data-time-field="ps-time-probe" data-title="触发时间"
+             data-hint="到达设定时间将在最近的调度周期执行，每天最多一次。">
+          <input type="hidden" id="ps-time-probe" value="20:00">
+        </div>
+      </div>
+      <div class="ps-state ps-state--wide">
+        <span class="ps-state-label">起止区间 <span class="ps-hint">.time-pair，共用一个触发器与弹窗</span></span>
+        <div class="time-pair" data-time-pair data-title="签到窗口"
+             data-hint="滚动选择；开始必须早于结束，保存后下次生效。">
+          <div class="time-field" data-time-field="ps-window-start">
+            <input type="hidden" id="ps-window-start" value="06:30">
+          </div>
+          <div class="time-field" data-time-field="ps-window-end">
+            <input type="hidden" id="ps-window-end" value="07:50">
+          </div>
+        </div>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">禁用</span>
+        <div class="time-field" data-time-field="ps-time-disabled" data-title="触发时间" data-hint="受限不可改。">
+          <input type="hidden" id="ps-time-disabled" value="21:30">
+        </div>
+      </div>
+      <div class="ps-state">
+        <span class="ps-state-label">悬停 / 聚焦</span>
+        <div class="ps-hover-ph">触发器悬停 / 聚焦态请真机查看</div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      app.css §30.3：页面只放一个触发器显示当前时间，滚轮收进弹窗。标记即契约
+      （<code>data-time-field</code> 单个、<code>data-time-pair</code> 区间），隐藏 input 保留原 id 与 <code>HH:MM</code>。
+    </p>
+  </section>
+
+  <!-- ==================== 7. 原生输入件 ==================== -->
+  <section class="card ps-card" id="sec-native">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">原生输入件<span class="ps-sec-id">.input / .textarea / .input-group / .check</span></h2>
+      </div>
+    </div>
+    <div class="ps-states">
+      <div class="ps-state ps-state--wide">
+        <span class="ps-state-label">文本 / 数字 输入框</span>
+        <div class="ps-stack">
+          <label class="field-label" for="ps-input-text">默认 + 占位</label>
+          <input class="input" id="ps-input-text" type="text" placeholder="请输入内容">
+          <input class="input ps-input-focus" type="text" value="聚焦（样式复刻）" aria-label="聚焦示意">
+          <input class="input" type="text" value="禁用" disabled aria-label="禁用示意">
+          <input class="input is-invalid" type="text" value="错误（.is-invalid）" aria-label="错误示意">
+          <p class="field-error">错误：请填写有效的值</p>
+          <input class="input" type="text" value="只读" readonly aria-label="只读示意">
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">数字 + 步进</span>
+        <div class="ps-stack">
+          <input class="input" type="number" min="0" max="3600" placeholder="10" aria-label="数字输入">
+          <input class="input" type="number" value="5" min="0" max="100" step="5" aria-label="带步进数字输入">
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">多行文本 .textarea</span>
+        <textarea class="textarea" rows="2" maxlength="200" placeholder="例如：今晚 22:00–23:00 例行维护" aria-label="多行文本"></textarea>
+        <p class="field-help">限 200 字、禁止换行。</p>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">输入组 .input-group + .addon</span>
+        <div class="ps-stack">
+          <div class="input-group">
+            <input class="input" type="number" placeholder="10" aria-label="账号间隔（秒）">
+            <span class="addon">秒</span>
+          </div>
+          <div class="input-group">
+            <input class="input" type="text" placeholder="admin@example.com" aria-label="收件人邮箱">
+            <span class="addon">邮箱</span>
+          </div>
+          <div class="input-group">
+            <input class="input" type="text" value="禁用输入组" disabled aria-label="禁用输入组">
+            <span class="addon">个</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">复选框 .check</span>
+        <div class="ps-stack">
+          <label class="check">
+            <input type="checkbox" checked aria-label="已选">
+            <span class="box"></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" aria-label="未选">
+            <span class="box"></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" checked disabled aria-label="禁用已选">
+            <span class="box"></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" disabled aria-label="禁用未选">
+            <span class="box"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="ps-state">
+        <span class="ps-state-label">悬停态</span>
+        <div class="ps-hover-ph">输入框边框 / 复选框方框的悬停态请真机悬停</div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      Adminator 的输入类名是 <code>.input</code>/<code>.textarea</code>（不是 <code>.form-control</code>——该名在本项目零定义、零调用）。
+      错误态用 <code>.input.is-invalid</code> + <code>.field-error</code>（app.css 把 <code>.field-error</code> 前景改成 <code>--state-bad-fg</code> 以满足 AA）。
+    </p>
+  </section>
+
+  <!-- ==================== 8. 提示与徽标 ==================== -->
+  <section class="card ps-card" id="sec-feedback">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">提示与徽标<span class="ps-sec-id">.alert / .badge / .set-* / .dash-skel / .toast</span></h2>
+      </div>
+    </div>
+    <div class="ps-stack">
+      <div>
+        <span class="ps-state-label">.alert（info / success / warning / danger）</span>
+        <div class="ps-stack">
+          <p class="alert info">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-info"/></svg></span>
+            <span class="body">信息提示：仅主管理员可修改核心配置。</span>
+          </p>
+          <p class="alert success">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-circle-check"/></svg></span>
+            <span class="body">成功：设置已保存。</span>
+          </p>
+          <p class="alert warning">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-triangle-alert"/></svg></span>
+            <span class="body">警示：当前账号处于冷却期。</span>
+          </p>
+          <p class="alert danger">
+            <span class="ico"><svg aria-hidden="true"><use href="#i-circle-alert"/></svg></span>
+            <span class="body">错误：部分数据加载失败。</span>
+            <button type="button" class="btn btn--ghost btn--sm">重试</button>
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <span class="ps-state-label">.badge（项目语义档 + Adminator 原始档）</span>
+        <div class="ps-row">
+          <span class="badge badge--ok">正常</span>
+          <span class="badge badge--bad">失败</span>
+          <span class="badge badge--warn">警示</span>
+          <span class="badge badge--info">信息</span>
+          <span class="badge badge--muted">已停用</span>
+          <span class="badge success">success</span>
+          <span class="badge danger">danger</span>
+          <span class="badge purple">purple</span>
+          <span class="badge solid">solid</span>
+        </div>
+      </div>
+
+      <div>
+        <span class="ps-state-label">就地状态文字 .set-tip / .set-ok / .set-bad / .set-warn</span>
+        <p class="set-tip">中性状态：已加载 12 个账号。</p>
+        <p class="set-ok">成功状态（.set-ok）：设置已保存。</p>
+        <p class="set-bad">失败状态（.set-bad）：保存失败，请重试。</p>
+        <p class="set-warn">软警示（.set-warn）：容量接近上限，建议提高账号间隔。</p>
+      </div>
+
+      <div>
+        <span class="ps-state-label">骨架屏 .dash-skel（含 .kpi-value 加载态）</span>
+        <div class="ps-row">
+          <span class="skeleton skeleton--title dash-skel" aria-hidden="true" style="width:72px"></span>
+          <span class="skeleton skeleton--text dash-skel" aria-hidden="true" style="width:120px"></span>
+          <span class="skeleton dash-skel" aria-hidden="true" style="width:48px;height:28px"></span>
+          <span class="spinner" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <div>
+        <span class="ps-state-label">Toast .toast（info / success / warning / error）</span>
+        <div class="ps-toast-demo ps-stack">
+          <div class="toast toast--info is-shown" role="status">
+            <span class="toast__icon" aria-hidden="true"><svg><use href="#i-info"/></svg></span>
+            <span class="toast__msg">信息：已复制到剪贴板。</span>
+            <button type="button" class="toast__close" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+          </div>
+          <div class="toast toast--success is-shown" role="status">
+            <span class="toast__icon" aria-hidden="true"><svg><use href="#i-circle-check"/></svg></span>
+            <span class="toast__msg">成功：设置已保存。</span>
+            <button type="button" class="toast__close" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+          </div>
+          <div class="toast toast--warning is-shown" role="status">
+            <span class="toast__icon" aria-hidden="true"><svg><use href="#i-triangle-alert"/></svg></span>
+            <span class="toast__msg">警示：请确认后再继续。</span>
+            <button type="button" class="toast__close" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+          </div>
+          <div class="toast toast--error is-shown" role="status">
+            <span class="toast__icon" aria-hidden="true"><svg><use href="#i-circle-x"/></svg></span>
+            <span class="toast__msg">错误：请求失败，请稍后重试。</span>
+            <button type="button" class="toast__close" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <span class="ps-state-label">空状态 .empty</span>
+        <div class="empty">
+          <span class="empty__icon" aria-hidden="true"><svg><use href="#i-file-text"/></svg></span>
+          <p class="empty__msg">还没有任何数据。</p>
+          <button type="button" class="btn btn--primary btn--sm empty__action">立即添加</button>
+        </div>
+      </div>
+    </div>
+    <p class="ps-foot">
+      <code>.set-ok</code> 在本项目 app.css 中<strong>没有任何规则</strong>（只定义了 <code>.set-bad</code> / <code>.set-warn</code> / <code>.set-tip</code>）——
+      故上面那行「成功状态」实际渲染为普通正文，属待补缺陷，见页尾自查清单。
+    </p>
+  </section>
+
+  <!-- ==================== 9. 数据表 .data-table ==================== -->
+  <section class="card ps-card" id="sec-table">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">数据表<span class="ps-sec-id">.data-table 行态 + 行菜单</span></h2>
+      </div>
+    </div>
+
+    <div class="data-toolbar">
+      <div class="data-toolbar-left"><span class="field-label">执行体清单（表头 / 行态 / 行内菜单）</span></div>
+      <div class="data-toolbar-right"><button type="button" class="btn btn--ghost btn--sm">右侧操作</button></div>
+    </div>
+
+    <div class="table-scroll">
+      <table class="data-table" id="set-exec-table">
+        <thead>
+          <tr>
+            <th scope="col">执行体</th>
+            <th scope="col">类型</th>
+            <th scope="col">状态</th>
+            <th scope="col">当日</th>
+            <th scope="col">出口</th>
+            <th scope="col">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- 默认行 -->
+          <tr>
+            <td>并行执行体 #1</td>
+            <td>并行</td>
+            <td><span class="set-exec-state"><span class="badge badge--ok">运行中</span></span></td>
+            <td class="set-exec-daily">领 8 / 完成 7 / 失败 1</td>
+            <td>direct://203.0.113.10:8080</td>
+            <td>
+              <span class="set-exec-ops">
+                <button type="button" class="btn btn--ghost btn--sm">设置</button>
+                <span class="dd-wrap acct-row-menu">
+                  <button type="button" class="btn btn--ghost btn--icon" data-dropdown aria-haspopup="menu" aria-label="更多操作" title="更多操作"><svg aria-hidden="true"><use href="#i-ellipsis"/></svg></button>
+                  <div class="dd-menu" role="menu">
+                    <button type="button" class="dd-menu-item" role="menuitem"><svg aria-hidden="true"><use href="#i-pencil"/></svg><span>重命名</span></button>
+                    <button type="button" class="dd-menu-item" role="menuitem"><svg aria-hidden="true"><use href="#i-link"/></svg><span>设置出口</span></button>
+                    <div class="dd-divider"></div>
+                    <button type="button" class="dd-menu-item danger" role="menuitem"><svg aria-hidden="true"><use href="#i-ban"/></svg><span>停用</span></button>
+                  </div>
+                </span>
+              </span>
+            </td>
+          </tr>
+
+          <!-- 选中行 .is-selected -->
+          <tr class="is-selected">
+            <td>并行执行体 #3</td>
+            <td>并行</td>
+            <td><span class="set-exec-state"><span class="badge badge--warn">可能被中断</span></span></td>
+            <td class="set-exec-daily">领 5 / 完成 0 / 失败 0</td>
+            <td>—（直连）</td>
+            <td>
+              <span class="set-exec-ops">
+                <button type="button" class="btn btn--ghost btn--sm">设置</button>
+                <span class="dd-wrap acct-row-menu">
+                  <button type="button" class="btn btn--ghost btn--icon" data-dropdown aria-haspopup="menu" aria-label="更多操作" title="更多操作"><svg aria-hidden="true"><use href="#i-ellipsis"/></svg></button>
+                  <div class="dd-menu" role="menu">
+                    <button type="button" class="dd-menu-item" role="menuitem"><svg aria-hidden="true"><use href="#i-pencil"/></svg><span>重命名</span></button>
+                    <div class="dd-divider"></div>
+                    <button type="button" class="dd-menu-item danger" role="menuitem"><svg aria-hidden="true"><use href="#i-ban"/></svg><span>停用</span></button>
+                  </div>
+                </span>
+              </span>
+            </td>
+          </tr>
+
+          <!-- 菜单展开行（.dd-wrap.is-open） -->
+          <tr>
+            <td>并行执行体 #4</td>
+            <td>并行</td>
+            <td><span class="set-exec-state"><span class="badge badge--muted">未运行</span></span></td>
+            <td class="set-exec-daily">—</td>
+            <td>socks5://198.51.100.7:1080</td>
+            <td>
+              <span class="set-exec-ops">
+                <button type="button" class="btn btn--ghost btn--sm">设置</button>
+                <span class="dd-wrap acct-row-menu is-open">
+                  <button type="button" class="btn btn--ghost btn--icon" data-dropdown aria-haspopup="menu" aria-label="更多操作" title="更多操作"><svg aria-hidden="true"><use href="#i-ellipsis"/></svg></button>
+                  <div class="dd-menu" role="menu">
+                    <button type="button" class="dd-menu-item" role="menuitem"><svg aria-hidden="true"><use href="#i-pencil"/></svg><span>重命名</span></button>
+                    <button type="button" class="dd-menu-item" role="menuitem" disabled><svg aria-hidden="true"><use href="#i-link"/></svg><span>设置出口（禁用项）</span></button>
+                    <div class="dd-divider"></div>
+                    <button type="button" class="dd-menu-item danger" role="menuitem"><svg aria-hidden="true"><use href="#i-ban"/></svg><span>停用</span></button>
+                  </div>
+                </span>
+              </span>
+            </td>
+          </tr>
+
+          <!-- 禁用 / 降级行（.set-exec-row-off，真实类名，作用域在 #set-exec-table） -->
+          <tr class="set-exec-row-off">
+            <td>并行执行体 #2<span class="set-exec-slot">（槽位 2，已停用）</span></td>
+            <td>并行</td>
+            <td><span class="set-exec-state"><span class="badge badge--muted">已停用</span></span></td>
+            <td class="set-exec-daily">—</td>
+            <td>—（停用行不报存活）</td>
+            <td>
+              <span class="set-exec-ops">
+                <button type="button" class="btn btn--ghost btn--sm" disabled>设置</button>
+                <span class="dd-wrap acct-row-menu">
+                  <button type="button" class="btn btn--ghost btn--icon" data-dropdown aria-haspopup="menu" aria-label="更多操作" title="更多操作" disabled><svg aria-hidden="true"><use href="#i-ellipsis"/></svg></button>
+                  <div class="dd-menu" role="menu">
+                    <button type="button" class="dd-menu-item" role="menuitem" disabled><span>行已禁用</span></button>
+                  </div>
+                </span>
+              </span>
+            </td>
+          </tr>
+
+          <!-- 悬停占位行 -->
+          <tr>
+            <td colspan="6">
+              <div class="ps-hover-ph">悬停态请真机悬停：整行底色转 <code>--bg-hover</code>（Adminator <code>.data-table tbody tr:hover td</code>）</div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="ps-foot">
+      行态：默认 / <code>.is-selected</code> / <code>.set-exec-row-off</code>（整行降级为 <code>--t-muted</code>）/ 悬停占位。
+      行菜单按钮 = <code>.dd-wrap.acct-row-menu</code> + <code>.btn--icon[data-dropdown]</code> + <code>.dd-menu</code>（含 <code>.dd-divider</code> 与 <code>disabled</code> 项）。
+      点击「更多操作」由 <code>core.js</code> 切换 <code>.is-open</code>；线上还叠加 <code>row-menu.js</code> 的 portal 浮动定位。
+    </p>
+  </section>
+
+  <!-- ============================ 页尾自查清单 ============================ -->
+  <div class="ps-note">
+    <b>本页的验证与已知 app.css 缺陷（只记录、不修）：</b><br>
+    · 全部引用的类名已对 <code>app.css</code> + <code>adminator.css</code> 真实存在性核对（抽检结论见任务汇报）。<br>
+    · 页面内 id 无重复；<code>&lt;link&gt;</code>/<code>&lt;script&gt;</code> 相对路径指向的文件真实存在。<br>
+    · <code>.set-ok</code>：app.css 无此规则（只有 <code>.set-bad</code>）→ 该状态无样式。<br>
+    · <code>.select-field.is-disabled</code>：app.css 只为 <code>.multiselect-field.is-disabled</code> 写了 <code>opacity:.6</code>，
+      单选下拉的根 <code>.is-disabled</code> 无样式（仅靠触发器 <code>:disabled</code> 表现）。<br>
+    · Adminator 的 <code>.badge.success/.danger/.purple</code> 对比度不足（app.css 注释自述 2.07–3.44:1），
+      项目内已改用 <code>.badge--ok/--bad/…</code>；上表保留原始档仅供对照。
+  </div>
+
+</div><!-- /.ps-wrap -->
+
+<!-- 主题切换：优先复用 core.js 的 YB.toggleTheme（同一 localStorage 键 yiban-theme，并派发 yiban:theme 事件）；
+     同时把「切换深色/浅色」文案与 aria-pressed 同步。core.js 的 updateThemeIcons 只认 #themeToggle / [data-theme-btn]，
+     本页按钮不用这两个 id/属性，故不会被它的 innerHTML 覆盖。 -->
+<script>
+  (function () {
+    var btn = document.getElementById("ps-theme-toggle");
+    var label = document.getElementById("ps-theme-label");
+    if (!btn) return;
+    function isDark() { return document.documentElement.getAttribute("data-theme") === "dark"; }
+    function syncLabel() {
+      if (label) label.textContent = isDark() ? "切换浅色" : "切换深色";
+      btn.setAttribute("aria-pressed", isDark() ? "true" : "false");
+    }
+    function setTheme(dark) {
+      if (window.YB && window.YB.applyTheme) {
+        window.YB.applyTheme(dark ? "dark" : "light");
+      } else {
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        try { localStorage.setItem("yiban-theme", dark ? "dark" : "light"); } catch (e) {}
+      }
+      syncLabel();
+    }
+    btn.addEventListener("click", function () { setTheme(!isDark()); });
+    document.addEventListener("yiban:theme", syncLabel);
+    syncLabel();
+  })();
+</script>
+
+<!-- 交互脚本：顺序与 layout_admin.html 一致（core.js 先，组件后，均 defer 保序）。 -->
+<script defer src="../js/core.js"></script>
+<script defer src="../js/components/select-field.js"></script>
+<script defer src="../js/components/multiselect-field.js"></script>
+<script defer src="../js/components/range-field.js"></script>
+<script defer src="../js/components/time-field.js"></script>
+<script>
+  // 组件 mount：defer 脚本已在 DOMContentLoaded 之前执行完毕，故此时 window.YB 与其组件均已就绪。
+  document.addEventListener("DOMContentLoaded", function () {
+    var YB = window.YB;
+    if (!YB) return;
+    if (YB.selectField) YB.selectField.mount();
+    if (YB.multiselectField) YB.multiselectField.mount();
+    if (YB.rangeField) YB.rangeField.mount();
+    if (YB.timeField) YB.timeField.mount();
+    // 禁用态：mount 之后按 id 落禁用（与线上 work_settings.js 的调用口径一致）
+    if (YB.selectField) YB.selectField.setDisabled("ps-sel-disabled", true);
+    if (YB.multiselectField) YB.multiselectField.setDisabled("ps-ms-d-sat", true);
+    if (YB.rangeField) YB.rangeField.setDisabled("ps-range-disabled", true);
+    if (YB.timeField) YB.timeField.setDisabled("ps-time-disabled", true);
+  });
+</script>
+
+</body>
+</html>

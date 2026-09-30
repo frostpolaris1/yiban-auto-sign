@@ -169,3 +169,6 @@ agent/
 skills-lock.json
 # 某工具未展开波浪号误生成的字面量 ~ 目录（内含 .cache；2026-09-19 已清理，规则防复发）
 ~/
+
+# 会话临时产物（pytest tmp_path / 截图 / visual-seed 演示数据），纪律见 .tmp/README.md；2026-09-30 起 C 盘禁写
+.tmp/
