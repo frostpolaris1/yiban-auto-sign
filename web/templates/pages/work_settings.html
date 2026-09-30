@@ -156,7 +156,7 @@
           <span class="field-label" id="ss-dist-label">分布方式</span>
           {{ select_field('ss-dist', 'uniform',
              [('uniform', '均匀分布'), ('normal', '正态分布（钟形拟人）')], 'ss-dist-label') }}
-          <p class="field-help">「顺序 × 均匀」集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
+          {# 组合效果的教学句已删（与 ⓘ「调度说明」逐字重复；用户 2026-09-30"删除冗余文案"） #}
         </div>
         {# 掐头/去尾：页面只显示数值，点击在弹窗里用数字框或滑杆调整（见 range-field.js） #}
         <div class="field">
@@ -191,7 +191,7 @@
                    inputmode="numeric" placeholder="60" aria-labelledby="ss-mu-label">
             <span class="addon">%</span>
           </div>
-          <p class="field-help">每天在区间内取一次值。</p>
+          {# 「每天在区间内取一次值」帮助已删（μ/σ 两行逐字重复，且"区间"字段名自明；用户 2026-09-30） #}
           <p class="set-warn" id="ss-mu-warn" hidden></p>
         </div>
         <div class="field span-2">
@@ -204,7 +204,7 @@
                    inputmode="numeric" placeholder="25" aria-labelledby="ss-sigma-label">
             <span class="addon">%</span>
           </div>
-          <p class="field-help">每天在区间内取一次值。</p>
+          {# 「每天在区间内取一次值」帮助已删（μ/σ 两行逐字重复，且"区间"字段名自明；用户 2026-09-30） #}
           <p class="set-warn" id="ss-sigma-warn" hidden></p>
         </div>
         {# 短标量字段收窄（原与整列同宽，一个 1~4 位数字占 550px） #}
