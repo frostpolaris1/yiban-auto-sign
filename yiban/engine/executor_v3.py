@@ -356,7 +356,9 @@ def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
             "status": status,
             "message": _sanitize_text(str(message or ""))[:200],
             "stage": "sign",
-            "attempt": attempt_no,
+            # attempt 列 NOT NULL 且批量落库是单事务：状态迁移/收尾事件没有尝试号，
+            # None 原样上报会把本轮整批事件一起回滚掉——非尝试事件落 0。
+            "attempt": attempt_no if attempt_no is not None else 0,
             "dur_sec": dur,
             "finished_at": ts,
         })
