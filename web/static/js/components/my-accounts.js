@@ -321,7 +321,7 @@
           YB.toast.success(data.msg || (next ? "已暂停" : "已恢复"));
           a.user_paused = (data && typeof data.paused === "boolean") ? data.paused : next;
           // 就地反馈与删除同款：本卡内追加状态行，按卡替换而非整表重排
-          a._flash = a.user_paused ? "✓ 已暂停签到" : "✓ 已恢复签到";
+          a._flash = a.user_paused ? "已暂停签到" : "已恢复签到";
           notifyChanged();
           replaceCard(i);
         }).catch(function (e) {
@@ -350,7 +350,7 @@
             : "已删除，可在账号管理页恢复");
           a.deleted = true;
           a.deleted_by_me = true;
-          a._flash = "✓ 已删除，7 天内可撤销";
+          a._flash = "已删除，7 天内可撤销";
           notifyChanged();
           if (keepDeleted) replaceCard(i);
           else removeCard(i);
@@ -383,7 +383,7 @@
             a.deleted = false;
             a.deleted_by_me = false;
           }
-          a._flash = "✓ 已恢复账号";
+          a._flash = "已恢复账号";
           notifyChanged();
           replaceCard(i);
         }).catch(function (e) {

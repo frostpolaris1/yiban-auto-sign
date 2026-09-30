@@ -234,13 +234,20 @@ def seed(tmp: str, reset: bool = False) -> dict:
     # 按日状态文件（sign-daily-YYYY-MM-DD.json，{phone: 状态符号}）——/api/my-calendar
     # 直接读的就是这一族（结构化 sign-state 是 /api/accounts 状态行的另一条事实源，
     # 两者别混，符号统一取自 yiban.status.DISPLAY 不另抄字面量）。此前种子根本没写
-    # 这族文件、日历格一直空白，图例动态收敛（2026-09-30）后只剩休/今天。
-    # 郑十一/王十二（idx 8/9）近 4 天不写（对应"无记录"分支）；周末不写（日历格只显示
-    # "休"）；赵六（用户暂停）近 10 天记 paused，图例 ⏸️ 有出处。
+    # 这族文件、日历格一直空白。
+    # 覆盖策略（色彩语义定版后图例按语气档收敛）：
+    # - **全状态轮转** DAILY_CYCLE：账号 idx 在第 day 天取 (day + idx*7) % len——
+    #   纯随机会漏掉低频码（无点位/已取消/待签），轮转保证近 35 天内 12 个状态码
+    #   在日历上都有出处，"今天"一行也能同时看到七八种色点；
+    # - 郑十一/王十二（idx 8/9）近 4 天不写（"无记录"分支）；周末不写（格子显示"休"）；
+    # - 赵六（用户暂停）近 10 天记 paused（账密暂停·黄色点有出处）。
     from yiban.status import DISPLAY as _DISPLAY
 
     _sym = {code: e["symbol"] for code, e in _DISPLAY.items()}
-    for day in range(30):
+    DAILY_CYCLE = ["success", "already", "no_task", "failed", "retrying",
+                   "skipped_window", "skipped_norange", "no_position",
+                   "user_cancelled", "pending"]
+    for day in range(35):
         base_day = now - timedelta(days=day)
         if base_day.weekday() >= 5:
             continue
@@ -249,7 +256,10 @@ def seed(tmp: str, reset: bool = False) -> dict:
         for idx, (name, phone, _model, _status, user_paused, _del) in enumerate(ACCOUNTS):
             if idx in (8, 9) and day < 4:
                 continue
-            code = "paused" if (user_paused and day < 10) else rng.choice(EVENT_STATUSES)
+            if user_paused and day < 10:
+                code = "paused"
+            else:
+                code = DAILY_CYCLE[(day + idx * 7) % len(DAILY_CYCLE)]
             sym = _sym.get(code)
             if sym:
                 day_data[phone] = sym

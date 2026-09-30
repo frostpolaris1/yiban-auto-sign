@@ -1899,16 +1899,27 @@ body,
 
 /* ---- 19.0 语义色令牌 ----
    全部为"文字 on 底色"配对，必须达 WCAG AA（正文 ≥4.5:1）；浅/深两套独立取值，
-   由 tests/test_web_text_contrast.py 从本文件实测。改色值前先跑该测试。
-   --cal-cell-bg / --cal-cell-fg 是"无底色格 + 卡片正文"的参照面（= --bg-card）。 */
+   由 tests/test_web_css_contrast.py 从本文件实测。改色值前先跑该测试。
+   --cal-cell-bg / --cal-cell-fg 是"无底色格 + 卡片正文"的参照面（= --bg-card）。
+
+   日历五档底色**等明度**（浅色 L*≈91.8、深色 L*≈17.3，由 scripts 侧的明度脚本算定）：
+   语义只由色相承担，任何一档都不因为更亮/更重被误读成更严重或更优先。周末停签（off）
+   刻意留在同一带之外（更亮/更暗）——它不是状态，应当退向页面底、不与状态抢注意力。 */
 :root {
   --t-sub: #475569;         /* 页面底(--bg-body #F0F4F8)上的辅助文字 = 6.9:1（--t-muted 仅 4.31:1） */
-  --cal-ok-bg: #DCFCE7;     /* 日历·成功：绿 100（50 档对白卡仅 1.05:1，色块几乎不可见） */
-  --cal-ok-fg: #166534;     /* on ok-bg = 6.49:1 */
-  --cal-bad-bg: #FEE2E2;    /* 日历·失败：红 100（再深一档 #FECACA 会让文字降到 4.47:1） */
-  --cal-bad-fg: #B91C1C;    /* on bad-bg = 5.30:1 */
-  --cal-off-bg: #F1F5F9;    /* 周末停签：中性 */
+  --cal-ok-bg: #D0EFDB;     /* 日历·成功：L*=91.80 */
+  --cal-ok-fg: #166534;     /* on ok-bg = 5.79:1 */
+  --cal-bad-bg: #FDE1E1;    /* 日历·失败：L*=91.76 */
+  --cal-bad-fg: #B91C1C;    /* on bad-bg = 5.25:1 */
+  --cal-off-bg: #F1F5F9;    /* 周末停签：中性，L*=96.35（刻意更浅，退向白卡） */
   --cal-off-fg: #475569;    /* on off-bg = 6.92:1（--t-muted 在此底上只有 4.34:1，不可用） */
+  --cal-muted-bg: #E2E8F0;  /* 日历·有意不签（无需/跳过/已取消）：L*=91.76 */
+  --cal-muted-fg: #334155;  /* on muted-bg = 8.40:1 */
+  --cal-warn-bg: #F7EA86;   /* 日历·异常：明黄（产品定版要明黄，不是深琥珀）；L*=91.84 */
+  --cal-warn-fg: #713F12;   /* on warn-bg = 7.05:1 */
+  --cal-busy-bg: #DAE9FD;   /* 日历·正在签到：L*=91.81，呼吸到 --cal-busy-hi */
+  --cal-busy-hi: #FFFFFF;   /* "蓝白呼吸"的白端 */
+  --cal-busy-fg: #1D4ED8;   /* on busy-bg 5.44:1、on busy-hi 6.64:1——呼吸全程可读 */
   --cal-cell-bg: #FFFFFF;   /* = --bg-card */
   --cal-cell-fg: #334155;   /* on 卡片 = 10.35:1 */
   --state-ok-fg: #047857;   /* 状态行·成功 on 卡片 = 5.48:1 */
@@ -1933,12 +1944,19 @@ body,
 }
 html[data-theme="dark"] {
   --t-sub: #94A3B8;
-  --cal-ok-bg: #14342A;
-  --cal-ok-fg: #6EE7B7;     /* 8.86:1 */
-  --cal-bad-bg: #3A1A1A;
-  --cal-bad-fg: #FCA5A5;    /* 8.24:1 */
-  --cal-off-bg: #1A2237;
+  --cal-ok-bg: #123026;     /* L*=17.38 */
+  --cal-ok-fg: #6EE7B7;     /* 9.33:1 */
+  --cal-bad-bg: #442020;    /* L*=17.30 */
+  --cal-bad-fg: #FCA5A5;    /* 7.51:1 */
+  --cal-off-bg: #1A2237;    /* 周末停签：L*=13.47（刻意更暗，退向深卡） */
   --cal-off-fg: #94A3B8;    /* 6.17:1 */
+  --cal-muted-bg: #202B3F;  /* L*=17.43 */
+  --cal-muted-fg: #CBD5E1;  /* 9.57:1 */
+  --cal-warn-bg: #352906;   /* L*=17.25 */
+  --cal-warn-fg: #FDE68A;   /* 11.46:1 */
+  --cal-busy-bg: #172A4C;   /* L*=17.27 */
+  --cal-busy-hi: #1D3A6E;   /* 深色下白闪会频闪，呼吸改为同族两档蓝 */
+  --cal-busy-fg: #93C5FD;   /* 7.91:1 */
   --cal-cell-bg: #141B2D;   /* = --bg-card */
   --cal-cell-fg: #E2E8F0;   /* 13.91:1 */
   --state-ok-fg: #34D399;
@@ -2168,11 +2186,12 @@ html[data-theme="dark"] {
   .account-details > summary:hover { color: var(--t-base); }
 }
 
-/* 状态行：语义三档 + 中性（色值见 19.0） */
+/* 状态行：语义四档 + 中性（异常三色见 19.0；正在签到 busy 用品牌蓝） */
 .state-line { margin-top: 2px; font-size: 12px; }
 .state-line--ok { color: var(--state-ok-fg); }
 .state-line--warn { color: var(--state-warn-fg); }
 .state-line--bad { color: var(--state-bad-fg); }
+.state-line--busy { color: var(--cal-busy-fg); }
 .state-line--muted { color: var(--t-muted); }
 /* 卡片内就地结果行（如删除后的「✓ 已删除」）：与卡头拉开一点，不贴线 */
 .account-card > .state-line { margin-top: 10px; }
@@ -2425,7 +2444,7 @@ html[data-theme="dark"] {
 }
 
 /* 日期格：**固定行高**（不再用 aspect-ratio——行高由容器决定，宽高比会失控），
-   7 列等分随容器自适应；状态由底色 + 圆点双重编码，今天用 inset ring 不占布局。 */
+   7 列等分随容器自适应；状态由**底色**承载（五档色相即语义），今天用 inset ring 不占布局。 */
 .sc-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -2460,14 +2479,30 @@ html[data-theme="dark"] {
 .switch input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }
 .sc-cell--ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); border-color: transparent; }
 .sc-cell--bad { background: var(--cal-bad-bg); color: var(--cal-bad-fg); border-color: transparent; }
+.sc-cell--muted { background: var(--cal-muted-bg); color: var(--cal-muted-fg); border-color: transparent; }
+.sc-cell--warn { background: var(--cal-warn-bg); color: var(--cal-warn-fg); border-color: transparent; }
 .sc-cell--off { background: var(--cal-off-bg); color: var(--cal-off-fg); border-color: transparent; }
+/* 正在签到：蓝白呼吸（浅蓝 ↔ 白；深色主题为同族两档蓝，避免白闪频闪）。
+   选中/今天都不打断呼吸——它们只加描边与环，不改底色。 */
+.sc-cell--busy {
+  background: var(--cal-busy-bg);
+  color: var(--cal-busy-fg);
+  border-color: transparent;
+  animation: sc-breathe 2.2s ease-in-out infinite;
+}
+@keyframes sc-breathe {
+  0%, 100% { background: var(--cal-busy-bg); }
+  50% { background: var(--cal-busy-hi); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sc-cell--busy, .sc-swatch--busy { animation: none; }
+}
 .sc-cell--today { box-shadow: inset 0 0 0 2px var(--primary); }
-/* 选中：主色实框 + 主色浅底，与"今天"的 ring 可叠加（不同通道） */
-.sc-cell.is-selected { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+/* 选中：主色实框 + 外扩主色环——**不改底色**。原先用主色浅底，会把状态底色（含
+   正在签到的呼吸）整个吞掉；今天默认选中，等于最该看的那一格看不到状态。
+   与「今天」的 inset ring 可叠加（两条不同通道）。 */
+.sc-cell.is-selected { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-ring); }
 .sc-num { line-height: 1; }
-.sc-dot { position: absolute; right: 5px; bottom: 5px; width: 5px; height: 5px; border-radius: 50%; }
-.sc-dot--ok { background: var(--success); }
-.sc-dot--bad { background: var(--danger); }
 .sc-off {
   position: absolute;
   top: 3px;
@@ -2476,16 +2511,6 @@ html[data-theme="dark"] {
   font-style: normal;
   line-height: 1;
   color: var(--cal-off-fg);
-}
-/* 状态符号角标（时段外/无点位/账密暂停等非成功失败态）：与 .sc-off 同一个位置约定，
-   两者互斥渲染（周末停签格不叠状态符号）。符号本身即冗余编码，不依赖颜色。 */
-.sc-sym {
-  position: absolute;
-  top: 2px;
-  right: 4px;
-  font-size: 11px;
-  font-style: normal;
-  line-height: 1;
 }
 /* 错误态（P61-B5）：文案 + 重试按钮纵向居中排布；grid-column 让它占满 42 格区 */
 .sc-error {
@@ -2528,9 +2553,15 @@ html[data-theme="dark"] {
   font-style: normal;
   line-height: 1;
 }
-/* 图例色块：状态项由状态表渲染（符号 + 名称），成功/失败不再是两个写死的色块——
-   同源后图例覆盖全部 12 个状态码，颜色只作辅助编码。下面两个非状态通道（周末停签/
-   今天）保留原有色块：它们不是状态码，符号走「休」角标与 today ring。 */
+/* 图例色块：状态项由状态表按语气档渲染（色块 = 日期格底色 + 档位名），色彩即语义——
+   绿成功/红失败/灰有意不签/明黄异常/蓝呼吸=正在签到。描边用各档前景色，避免色块
+   在页面底上糊成一片（浅绿 on #F0F4F8 仅 1.01:1，必须留边界）。下面两个非状态通道
+   （周末停签/今天）保留原有色块：它们不是状态码，走「休」文字与 today ring。 */
+.sc-swatch--ok { background: var(--cal-ok-bg); border-color: var(--cal-ok-fg); }
+.sc-swatch--bad { background: var(--cal-bad-bg); border-color: var(--cal-bad-fg); }
+.sc-swatch--muted { background: var(--cal-muted-bg); border-color: var(--cal-muted-fg); }
+.sc-swatch--warn { background: var(--cal-warn-bg); border-color: var(--cal-warn-fg); }
+.sc-swatch--busy { background: var(--cal-busy-bg); border-color: var(--cal-busy-fg); animation: sc-breathe 2.2s ease-in-out infinite; }
 .sc-swatch--off { background: var(--cal-off-bg); color: var(--cal-off-fg); }
 .sc-swatch--today { background: transparent; box-shadow: inset 0 0 0 2px var(--primary); }
 
