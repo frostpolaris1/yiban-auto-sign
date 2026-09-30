@@ -231,6 +231,33 @@ def seed(tmp: str, reset: bool = False) -> dict:
         with open(today_path, "w", encoding="utf-8") as f:
             f.write(_log_line(now, 0, "演示账号", ACCOUNTS[0][1], "success") + "\n")
 
+    # 按日状态文件（sign-daily-YYYY-MM-DD.json，{phone: 状态符号}）——/api/my-calendar
+    # 直接读的就是这一族（结构化 sign-state 是 /api/accounts 状态行的另一条事实源，
+    # 两者别混，符号统一取自 yiban.status.DISPLAY 不另抄字面量）。此前种子根本没写
+    # 这族文件、日历格一直空白，图例动态收敛（2026-09-30）后只剩休/今天。
+    # 郑十一/王十二（idx 8/9）近 4 天不写（对应"无记录"分支）；周末不写（日历格只显示
+    # "休"）；赵六（用户暂停）近 10 天记 paused，图例 ⏸️ 有出处。
+    from yiban.status import DISPLAY as _DISPLAY
+
+    _sym = {code: e["symbol"] for code, e in _DISPLAY.items()}
+    for day in range(30):
+        base_day = now - timedelta(days=day)
+        if base_day.weekday() >= 5:
+            continue
+        date = base_day.strftime("%Y-%m-%d")
+        day_data = {}
+        for idx, (name, phone, _model, _status, user_paused, _del) in enumerate(ACCOUNTS):
+            if idx in (8, 9) and day < 4:
+                continue
+            code = "paused" if (user_paused and day < 10) else rng.choice(EVENT_STATUSES)
+            sym = _sym.get(code)
+            if sym:
+                day_data[phone] = sym
+        if not day_data:
+            continue
+        with open(os.path.join(state_dir, f"sign-daily-{date}.json"), "w", encoding="utf-8") as f:
+            json.dump(day_data, f, ensure_ascii=False)
+
     return {
         "tmp": tmp, "env_file": env_file, "db_file": db_file,
         "state_dir": state_dir, "log_dir": log_dir,
