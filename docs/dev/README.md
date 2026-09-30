@@ -80,7 +80,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | 每个执行体的存活四态（`running`/`finished`/`idle`/`stale`） | 已实现：并行执行体写固定名心跳文件，接口按心跳新鲜度判定（详见 `api-executors.md`） |
 | 账号列表的"上一个业务日是谁签的" | 已实现：`GET /api/accounts` 的 `last_executor` |
 | 现场实测单账号耗时 | 已实现：`POST /api/scheduler/executors/measure`（仅主管理员 + 全局冷却 + 窗口内拒绝；**会真实访问易班一次**） |
-| 前端页面（执行体与出口配置） | **未实现**（接口已就绪，见 `api-executors.md`） |
+| 前端页面（执行体与出口配置） | 已实现（系统设置·执行体分区，A1~A4 已落地；契约见 `api-executors.md`） |
 
 ### 运行期状态文件（固定名，条数不随时间增长）
 
