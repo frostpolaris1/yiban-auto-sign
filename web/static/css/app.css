@@ -3892,14 +3892,17 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    其余字段仍铺满列宽 —— 这样各卡的左右缘与其它页面一致（撤销此前的 680px 全局限宽）。 */
 .field--narrow .input-group, .field--narrow .input { max-width: 176px; }
 /* 组间距：开关行与「字段组」之间 —— 结构可能是 .field、整个 .form-grid，也可能中间
-   夹着一条软警示（#ss-edge-warn），故把相邻选择器写全（隐藏元素同样参与相邻选择器匹配）。 */
-.set-row + .field, .field + .set-row,
-.set-row + .form-grid, .form-grid + .set-row, .set-warn + .set-row,
-.set-row + .data-toolbar { margin-top: 16px; }
+   夹着一条软警示（#ss-edge-warn / 各卡的 *-perm 权限提示；hidden 的元素同样占位）。
+   故一律用**通用兄弟选择器**（~）而非相邻（+）：`+` 一旦被夹进来的元素静默失配——
+   健康卡的 `.set-row` 与 `.form-grid` 之间就夹着 `#sh-perm`，于是说明文字与下一组的
+   field-label 直接连成一行（用户 2026-10-01 实拍反馈"字连在一起"）。 */
+.set-row ~ .field, .field ~ .set-row,
+.set-row ~ .form-grid, .form-grid ~ .set-row, .set-warn ~ .set-row,
+.set-row ~ .data-toolbar { margin-top: 16px; }
 /* 健康卡特例：探针开关行是「标题 + 两行说明」的特高行，其下 form-grid 是该模式的
    调度参数组——16px 组间距在这里小于组内 field-label 与上一行说明的间隔，两个语义组
    读成了一组（用户 2026-09-30 实拍反馈"垂直间距偏短"）。此接缝拉开到 28px。 */
-#set-health .set-row + .form-grid { margin-top: 28px; }
+#set-health .set-row ~ .form-grid { margin-top: 28px; }
 /* 三列标量网格（额度与节流）：三项本会落在「两列 + 一个孤格」上，窄屏退回单列 */
 .form-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 720px) { .form-grid--3 { grid-template-columns: 1fr; } }
