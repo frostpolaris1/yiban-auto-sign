@@ -368,6 +368,14 @@ class BatchAContrastTokenTest(unittest.TestCase):
                 ("badge-muted-fg", "badge-muted-bg"): 4.5,
                 ("state-ok-fg", "bg-card"): 4.5,
                 ("state-bad-fg", "bg-card"): 4.5,
+                # 日历格：底色即状态（五档），日期数字必须压得住每一档底
+                ("cal-ok-fg", "cal-ok-bg"): 4.5,
+                ("cal-bad-fg", "cal-bad-bg"): 4.5,
+                ("cal-off-fg", "cal-off-bg"): 4.5,
+                ("cal-muted-fg", "cal-muted-bg"): 4.5,
+                ("cal-warn-fg", "cal-warn-bg"): 4.5,
+                ("cal-busy-fg", "cal-busy-bg"): 4.5,
+                ("cal-busy-fg", "cal-busy-hi"): 4.5,   # 呼吸全程（含白端）都可读
             }
             for (fg, bg), floor in need.items():
                 if fg not in t or bg not in t:
