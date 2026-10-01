@@ -38,6 +38,7 @@ from flask import (
 
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
+from web.services import vue_assets as _vue_assets
 from yiban import status as _yiban_status
 from yiban.infra import env_io as _env_io
 
@@ -357,13 +358,36 @@ def my_calendar_page():
                               extra=_calendar_page_context())
 
 
+# ---- 前端翻新试点页（docs/refactor/29-frontend-vue-refactor-plan.md §3.4）----
+# Vue 3 + Element Plus 挂载进现有外壳的管线验证页：服务端只出挂载点与哈希资产
+# （清单由 web.services.vue_assets 解析 manifest），数据客户端只读拉取。
+# 不进侧栏（避免动 sidebar.html 波及全部金标准快照），URL 直达；dist 缺失时 404。
+def vue_pilot_page():
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    assets = _vue_assets.vue_assets(_vue_assets.PILOT_ENTRY)
+    if not assets["js"]:
+        abort(404)
+    return _render_admin_page(
+        "pages/work_vue_pilot.html",
+        "",  # 不进侧栏 → 无导航高亮
+        ["工作台", "Vue 翻新试点"],
+        extra={
+            "vue_js": assets["js"][0],
+            "vue_preloads": assets["preloads"],
+            "vue_css": assets["css"],
+        },
+    )
+
+
 # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
 # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）。
 # web.app 的 no_cache 中间件消费本清单（页面路径的唯一登记点在此）。
 NO_STORE_PAGES = frozenset(_MOVED_PAGES) | {
     "/", "/login", "/terms", "/privacy",
     "/data/dashboard", "/data/logs",
-    "/work/accounts", "/work/users", "/work/settings",
+    "/work/accounts", "/work/users", "/work/settings", "/work/pilot",
     "/my/account", "/my/calendar",
     "/user/account", "/user/calendar",
 }
@@ -396,5 +420,6 @@ def register(app):
     app.add_url_rule("/data/logs", view_func=logs_page)
     app.add_url_rule("/work/users", view_func=users_page)
     app.add_url_rule("/work/settings", view_func=settings_page)
+    app.add_url_rule("/work/pilot", view_func=vue_pilot_page)
     app.add_url_rule("/my/account", view_func=my_account_page)
     app.add_url_rule("/my/calendar", view_func=my_calendar_page)
