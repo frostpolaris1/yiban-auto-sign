@@ -165,7 +165,6 @@ from web.services import logs as _logs_svc  # noqa: E402
 from web.services import manual_sign as _manual_sign  # noqa: E402
 from web.services import measure as _measure  # noqa: E402
 from web.services import notify_mail as _notify_mail  # noqa: E402
-from web.services import round_request as _round_request  # noqa: E402
 from web.services import signstatus as _signstatus  # noqa: E402
 from web.services import verify_queue as _verify_queue  # noqa: E402
 
@@ -301,14 +300,6 @@ from web.services.notify_mail import (  # noqa: E402
     _last_cleanup_text,  # noqa: F401
     _nl_safe,
     _review_reject_mail,  # noqa: F401
-)
-from web.services.round_request import (  # noqa: E402
-    # 名字面零损失：「立即执行一轮」请求记录的状态文件与防抖判定住在
-    # web/services/round_request.py；`_round_request_path` / `_write_round_request`
-    # 另由本模块的转发包装注入本模块现持的 STATE_DIR 与 _atomic_write
-    ROUND_REQUEST_FILE,  # noqa: F401
-    _read_round_request,  # noqa: F401
-    _round_request_cooldown_remaining,  # noqa: F401
 )
 from web.services.signstatus import (  # noqa: E402
     # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
@@ -487,21 +478,6 @@ def _write_measure_state(path, payload):
     """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
     return _measure._write_measure_state(path, payload, _atomic_write)
 
-
-# 「立即执行一轮」请求记录（A5）的同名转发：与实测族逐字同形，区别只在那一份状态文件。
-# 防抖时长 `ROUND_REQUEST_COOLDOWN_SEC` 与端点的其余判据（仅主管理员、运行锁并发闸）
-# 留在路由：前者是路由经 m.* 取用的配置常量，后两者是请求上下文里的权限与顺序约束。
-ROUND_REQUEST_COOLDOWN_SEC = 60
-
-
-def _round_request_path():
-    """执行一轮请求记录的状态文件路径（实现见 web/services/round_request.py）。"""
-    return _round_request._round_request_path(STATE_DIR)
-
-
-def _write_round_request(path, payload):
-    """原子写执行一轮请求记录；落盘经本模块的 `_atomic_write`。"""
-    return _round_request._write_round_request(path, payload, _atomic_write)
 
 # 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
 # web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、

@@ -34,7 +34,6 @@ from flask import jsonify, session
 
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
-from web.routes.signin_api import _signin_run_lock_busy
 from web.services import signstatus as _signstatus
 from web.services.env_io import cleanup_env_ambiguous_line
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
@@ -1272,67 +1271,6 @@ def api_scheduler_executors_measure():
     })
 
 
-def api_scheduler_executors_run_now():
-    """登记一次「立即执行一轮」（**仅主管理员**；CSRF 由 before_request 统一校验）。
-
-    **本端点只登记请求，绝不在 web 进程内拉起签到、不发起任何网络请求。** 真正跑一轮
-    属引擎面（`yiban/engine/**`）的职责，本批不动引擎，故这里落一份请求记录 + 一条审计，
-    由部署侧调度器/运维读取该记录后拉起。页面文案必须如实这么写，不要写成"点了已经在跑"。
-
-    三道闸（与 `/api/scheduler/executors/measure` 同一纪律：它也真访问易班，故同口径）：
-
-    1. **全局并发闸**（`409`）：签到运行锁正被某个进程持有时拒——这一轮已经在跑了，
-       再登记一次只会让同一批账号被重复排一轮。探测复用 `signin_api._signin_run_lock_busy`
-       （与手动签到同一把锁、同一判据，不另立第二套）。
-    2. **全局防抖**（`429` + `next_allowed_in`）：落状态目录的单条文件，**不按会话/IP**
-       ——多管理员叠加点击共用一个窗口，否则一次连点就把登记刷成一串。**先占位再返回**，
-       故连点只会产生一条记录。默认 60s，`.env` 的 `YIBAN_ROUND_REQUEST_COOLDOWN` 可调，
-       `0` = 关闭。
-    3. **仅主管理员**（`403`，与执行体其余端点同判据）：全站可见的配置面不开放给
-       普通管理员。
-
-    刻意**不要求当次口令**：本端点不改配置、不碰凭据、不删除任何东西，登记一条可审计、
-    有防抖、碰不到真实签到动作的请求；真要口令就是给一个按钮凭空加摩擦。
-    """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
-        return jsonify({"error": "仅主管理员可请求执行一轮"}), 403
-    if _signin_run_lock_busy(m):
-        return jsonify({"error": "签到队列忙（已有一轮在执行）",
-                        "reason": "round_busy"}), 409
-    cooldown_sec = m.load_env_int(m.ENV_FILE, "YIBAN_ROUND_REQUEST_COOLDOWN",
-                                  m.ROUND_REQUEST_COOLDOWN_SEC)
-    state_path = m._round_request_path()
-    # 防抖**先占位再返回**：判定与写入在同一把锁内完成（跨进程串行），连点只留一条记录。
-    # 代价是"登记了但拉起失败"也占掉一次窗口——与实测同取舍：宁可少登记一次，
-    # 也不让"点了没反应"的连点变成一串重复触发。
-    with m.signin._state_file_lock(state_path):
-        remaining = m._round_request_cooldown_remaining(
-            m._read_round_request(state_path), cooldown_sec)
-        if remaining > 0:
-            return jsonify({"error": "刚刚已请求过一轮，请稍后再试",
-                            "reason": "cooldown",
-                            "next_allowed_in": remaining}), 429
-        requested_at = m.clock.now().strftime("%Y-%m-%d %H:%M:%S")
-        m._write_round_request(state_path, {
-            "at": requested_at,
-            "by": m._audit_actor(),
-        })
-    m.db.audit(m._audit_actor(), "executors_run_now", "executors",
-               f"请求执行一轮（防抖窗口 {cooldown_sec}s；本端点只登记不拉起）")
-    m.logger.info("主管理员请求执行一轮（仅登记，未拉起）")
-    return jsonify({
-        "ok": True,
-        "requested_at": requested_at,
-        "cooldown_sec": cooldown_sec,
-        "next_allowed_in": 0,
-        "launched": False,
-        "note": ("请求已登记（防抖窗口 %ds）。本端点**不在 web 进程内拉起签到**："
-                 "真正执行一轮由部署侧的调度器/运维读取该请求后拉起，页面不要显示成"
-                 "「已在执行」。" % cooldown_sec),
-    })
-
-
 def api_scheduler_executors_progress():
     """当日签到进度（**仅主管理员**）：**只给聚合计数，绝不给逐账号列表**。
 
@@ -1694,8 +1632,6 @@ def register(app):
                      view_func=api_scheduler_executors_measure, methods=["POST"])
     # A5/A6/A7：执行一轮的请求登记、当日进度（聚合计数）、归属与迁移分布（聚合计数）。
     # 三者都不落在 `_high_risk_gate` 的清单里——前两者不改配置/不碰凭据，后者纯只读。
-    app.add_url_rule("/api/scheduler/executors/run-now",
-                     view_func=api_scheduler_executors_run_now, methods=["POST"])
     app.add_url_rule("/api/scheduler/executors/progress",
                      view_func=api_scheduler_executors_progress, methods=["GET"])
     app.add_url_rule("/api/scheduler/executors/ownership",
