@@ -273,13 +273,25 @@ class PlaintextGuardTest(_BackupRunBase):
             "YIBAN_BACKUP_INSTALLED": os.path.join(self.tmp, "sbin", "absent.sh"),
             "YIBAN_STATE_DIR": self.state,
             "YIBAN_ENV_FILE": os.path.join(self.tmp, "no.env"),
+            # 锚点外发（M28）要读审计链：把库路径钉到临时区，且**直接打桩掉
+            # `_anchor_snapshot`**——它会走 `db.init_db()`，那是**进程级单例连接**的
+            # 初始化，在测试进程里做会把同 worker 后续所有用例的库指走
+            # （同文件跑时 test_scheduler_gate 的 SignEventWriteTest 即因此读到空表）。
+            # 锚点读库路径另有专测：tests/test_backup_sentinel.py::AuditAnchorBroadcastTest。
+            "YIBAN_DB_FILE": os.path.join(self.tmp, "sentinel-readonly.db"),
         }), mock.patch.object(mod, "_send_admin_alert",
-                              side_effect=lambda title, mail: mails.append((title, mail)) or True):
+                              side_effect=lambda title, mail: mails.append((title, mail)) or True), \
+                mock.patch.object(mod, "_anchor_snapshot",
+                                  return_value={"state": "ok", "head": "e" * 64, "count": 0}):
             rc = mod.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(len(mails), 1,
+        # 按标题分账（M28 起哨兵每天还会**另外**外发一封锚点外发，见
+        # tests/test_backup_sentinel.py::AuditAnchorBroadcastTest）：本用例的判据是
+        # "明文包判不健康并发**一封失败告警**"，不是"总共只发一封邮件"。
+        failures = [m for m in mails if m[0] == mod.ALERT_TITLE]
+        self.assertEqual(len(failures), 1,
                          f"真实产出的明文归档被哨兵计为健康/或漏报：{mails}")
-        self.assertIn("明文", mails[0][1].to_plain())
+        self.assertIn("明文", failures[0][1].to_plain())
 
 
 class EncryptRoundtripTest(_BackupRunBase):
