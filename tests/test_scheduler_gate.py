@@ -1145,6 +1145,11 @@ class SlotMarkerRestartTest(unittest.TestCase):
         sched.build_child_env = lambda env_file=None, base=None, **kw: {}
         sched.subprocess = _stub_module(Popen=lambda cmd, **kw: _FakeProc())
         sched.time = _stub_module(sleep=lambda s: (_ for _ in ()).throw(_Stop()))
+        # M44 的备份挂点在本类里**打桩掉**：本类断言的是「首签/补签的槽位标记」，而
+        # 备份挂点是按**真实北京钟**判的（02:00 之后才触发），不隔离的话槽位文件数
+        # 会随「这条用例几点跑」在 2 与 3 之间摆——那是时间依赖的偶发红，不是产品缺陷。
+        # 备份挂点本身由 tests/test_container_scheduler.py 的 ContainerBackupHookTest 钉。
+        sched._tick_backup = lambda now, state: None
 
     def _tick(self, suffix):
         sched = _load_sched(suffix)
