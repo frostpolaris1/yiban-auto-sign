@@ -39,8 +39,7 @@ from yiban import status as yiban_status
 from yiban.engine import round as round_mod
 from yiban.engine import state_io
 from yiban.store import claims as claims_mod
-from yiban.store import db
-from yiban.store import queue_store
+from yiban.store import db, queue_store
 
 #: 用例里的固定手机号（本文件不碰库，仅作状态文件的键）
 PHONE = "13800000001"
