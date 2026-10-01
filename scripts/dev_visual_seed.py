@@ -23,7 +23,6 @@ import os
 import random
 import shutil
 import sys
-import time
 from datetime import datetime, timedelta
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -150,7 +149,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")
 
     sys.path.insert(0, os.path.join(BASE, "scripts"))
-    import db  # noqa: E402  裸模块名，pyproject pythonpath 已含 scripts
+    import db
 
     spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
     webapp = importlib.util.module_from_spec(spec)
@@ -205,7 +204,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     rows = []
     for day in range(LOG_DAYS):
         base_day = now - timedelta(days=day)
-        for idx, (name, phone, _model, _status, _up, _del) in enumerate(ACCOUNTS):
+        for idx, (_name, phone, _model, _status, _up, _del) in enumerate(ACCOUNTS):
             # 让「郑十一/王十二」两人最近几天没有记录，形成「无数据」分支
             if idx in (8, 9) and day < 4:
                 continue
@@ -243,7 +242,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
         txt_by_day.setdefault(day, []).append(
             _log_line(datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"), i, "演示账号", r["phone"], r["status"])
         )
-    for i, day in enumerate(sorted(txt_by_day)):
+    for _i, day in enumerate(sorted(txt_by_day)):
         path = os.path.join(log_dir, f"sign-{day}.log")
         _atomic_write(path, "\n".join(txt_by_day[day]) + "\n")
     # 今天必须有日志文件，否则日志页空态
@@ -273,7 +272,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
             continue
         date = base_day.strftime("%Y-%m-%d")
         day_data = {}
-        for idx, (name, phone, _model, _status, user_paused, _del) in enumerate(ACCOUNTS):
+        for idx, (_name, phone, _model, _status, user_paused, _del) in enumerate(ACCOUNTS):
             if idx in (8, 9) and day < 4:
                 continue
             if user_paused and day < 10:
@@ -318,11 +317,12 @@ def main() -> int:
     # 的加载占位可以被真实看到与截图。**只存在于本演示脚本**，不碰 web/app.py。
     if args.slow_ms > 0:
         import time as _time
+
         from flask import request as _req
         _delay = args.slow_ms / 1000.0
 
         @app.before_request
-        def _visual_slow():  # noqa: D401
+        def _visual_slow():
             if _req.path.startswith("/api/"):
                 _time.sleep(_delay)
         print(f"[serve] 慢速模式：每个 /api/ 请求 +{args.slow_ms}ms")
