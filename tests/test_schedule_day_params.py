@@ -161,7 +161,6 @@ class PlanExecuteSameSourceTest(_EnvIsolated):
         旧实现里 μ/σ 每次调用都被 `rng.uniform` 重采样，同一 (day) 不同进程取到不同
         中心；现在换 seed 也走同一 `day_mu_sigma_pct`，故两次调度取到的 σ 相同。
         """
-        cfg = _cfg((40, 60), (15, 25))
         seen = []
         orig = schedule.day_mu_sigma_pct
 

@@ -23,12 +23,30 @@ import os
 import random
 import shutil
 import sys
-import time
 from datetime import datetime, timedelta
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 直接执行本脚本时 sys.path[0] 是 scripts/，仓库根不在路径上——先补上才能 `from yiban...`。
+if BASE not in sys.path:
+    sys.path.insert(0, BASE)
 
-TEST_KEY = "7f3a9c1e5b2d8046af17c3e9b5d2084c6ea93f7b1d5c8042a6e93f1b7d5c2084"
+# 演示环境的落盘一律走既有的锁 + 原子写路径，不再裸 `open(path, "w")`：
+#   · `.env` → `env_io.write_env_keys`：内部自持 `env_lock.env_write_lock` 跨进程写锁
+#     并做原子 0600 替换。裸 open 既无锁又可被并发写方读到半截内容；更重要的是它是
+#     生产上**唯一**的 .env 写入口（`tests/test_env_writers_take_lock.py` 的 grep 格
+#     就按这条断言扫全仓运行时代码），演示脚本另开一条裸写路径会让那条守卫永远红。
+#   · 账号 JSON / 日志 / 按日状态 → `web.security._atomic_write`：tmp + fsync +
+#     os.replace，与 web/引擎侧落盘同一份实现，读者（web 端按天读日志、按日读日历）
+#     永远读不到半写状态。
+from web.security import _atomic_write  # noqa: E402
+from yiban.infra import env_io  # noqa: E402
+from yiban.infra.account_crypto import (  # noqa: E402
+    PUBLISHED_DEMO_ACCOUNTS_KEY as TEST_KEY,
+)
+
+# 演示钥与 `account_crypto` 的公开钥黑名单是**同一个常量**（单一事实源）：避免两处各写
+# 一份、下次换钥只改一处导致黑名单漂移。它随仓库公开，照抄进真实 .env 会被启动拒绝。
+
 ADMIN_USER = "admin"
 ADMIN_PASS = "VisualPass1234!"
 USER_PASS = "VisualUser123!"
@@ -64,25 +82,29 @@ LOG_DAYS = 12
 
 
 def _write_env(env_file: str) -> None:
-    with open(env_file, "w", encoding="utf-8") as f:
-        f.write(
-            f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
-            f"YIBAN_ADMIN_USER={ADMIN_USER}\n"
-            f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
-            f"YIBAN_SIGN_START=06:30\n"
-            f"YIBAN_SIGN_END=07:50\n"
-            f"YIBAN_MAX_USERS=50\n"
-            f"YIBAN_MAX_ACCOUNTS=200\n"
-            f"YIBAN_WORKERS=2\n"
-            f"YIBAN_ANNOUNCEMENT=实拍演示环境：本实例仅用于前端视觉核对，数据为随机生成。\n"
-            f"YIBAN_GLOBAL_PAUSE=\n"
-            f"YIBAN_REGISTRATION_PAUSE=\n"
-            f"YIBAN_ACCOUNT_VERIFY=1\n"
-            f"YIBAN_ALLOW_TIME_PREF=1\n"
-            f"YIBAN_PROBE_ENABLE=1\n"
-            f"YIBAN_PROBE_TIME=08:00\n"
-            f"YIBAN_PROBE_INTERVAL_DAYS=3\n"
-        )
+    """建演示实例的 .env——走生产唯一写入口（内持跨进程写锁 + 原子 0600 替换）。
+
+    空值键（`YIBAN_GLOBAL_PAUSE=` / `YIBAN_REGISTRATION_PAUSE=`）保持"键在、值为空"
+    的形态：它们是设置页的开关位，留空即"未暂停"，删掉整行会让回显面失准。
+    """
+    env_io.write_env_keys(env_file, {
+        "YIBAN_ACCOUNTS_KEY": TEST_KEY,
+        "YIBAN_ADMIN_USER": ADMIN_USER,
+        "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
+        "YIBAN_SIGN_START": "06:30",
+        "YIBAN_SIGN_END": "07:50",
+        "YIBAN_MAX_USERS": "50",
+        "YIBAN_MAX_ACCOUNTS": "200",
+        "YIBAN_WORKERS": "2",
+        "YIBAN_ANNOUNCEMENT": "实拍演示环境：本实例仅用于前端视觉核对，数据为随机生成。",
+        "YIBAN_GLOBAL_PAUSE": "",
+        "YIBAN_REGISTRATION_PAUSE": "",
+        "YIBAN_ACCOUNT_VERIFY": "1",
+        "YIBAN_ALLOW_TIME_PREF": "1",
+        "YIBAN_PROBE_ENABLE": "1",
+        "YIBAN_PROBE_TIME": "08:00",
+        "YIBAN_PROBE_INTERVAL_DAYS": "3",
+    })
 
 
 def _log_line(ts: datetime, idx: int, name: str, phone: str, status: str) -> str:
@@ -113,8 +135,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     os.makedirs(log_dir, exist_ok=True)
 
     _write_env(env_file)
-    with open(accounts_file, "w", encoding="utf-8") as f:
-        json.dump([], f)
+    _atomic_write(accounts_file, "[]")
 
     os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
     os.environ["YIBAN_ENV_FILE"] = env_file
@@ -128,7 +149,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")
 
     sys.path.insert(0, os.path.join(BASE, "scripts"))
-    import db  # noqa: E402  裸模块名，pyproject pythonpath 已含 scripts
+    import db
 
     spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
     webapp = importlib.util.module_from_spec(spec)
@@ -183,7 +204,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     rows = []
     for day in range(LOG_DAYS):
         base_day = now - timedelta(days=day)
-        for idx, (name, phone, _model, _status, _up, _del) in enumerate(ACCOUNTS):
+        for idx, (_name, phone, _model, _status, _up, _del) in enumerate(ACCOUNTS):
             # 让「郑十一/王十二」两人最近几天没有记录，形成「无数据」分支
             if idx in (8, 9) and day < 4:
                 continue
@@ -221,15 +242,13 @@ def seed(tmp: str, reset: bool = False) -> dict:
         txt_by_day.setdefault(day, []).append(
             _log_line(datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"), i, "演示账号", r["phone"], r["status"])
         )
-    for i, day in enumerate(sorted(txt_by_day)):
+    for _i, day in enumerate(sorted(txt_by_day)):
         path = os.path.join(log_dir, f"sign-{day}.log")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(txt_by_day[day]) + "\n")
+        _atomic_write(path, "\n".join(txt_by_day[day]) + "\n")
     # 今天必须有日志文件，否则日志页空态
     today_path = os.path.join(log_dir, f"sign-{now.strftime('%Y-%m-%d')}.log")
     if not os.path.exists(today_path):
-        with open(today_path, "w", encoding="utf-8") as f:
-            f.write(_log_line(now, 0, "演示账号", ACCOUNTS[0][1], "success") + "\n")
+        _atomic_write(today_path, _log_line(now, 0, "演示账号", ACCOUNTS[0][1], "success") + "\n")
 
     # 按日状态文件（sign-daily-YYYY-MM-DD.json，{phone: 状态符号}）——/api/my-calendar
     # 直接读的就是这一族（结构化 sign-state 是 /api/accounts 状态行的另一条事实源，
@@ -253,7 +272,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
             continue
         date = base_day.strftime("%Y-%m-%d")
         day_data = {}
-        for idx, (name, phone, _model, _status, user_paused, _del) in enumerate(ACCOUNTS):
+        for idx, (_name, phone, _model, _status, user_paused, _del) in enumerate(ACCOUNTS):
             if idx in (8, 9) and day < 4:
                 continue
             if user_paused and day < 10:
@@ -265,8 +284,8 @@ def seed(tmp: str, reset: bool = False) -> dict:
                 day_data[phone] = sym
         if not day_data:
             continue
-        with open(os.path.join(state_dir, f"sign-daily-{date}.json"), "w", encoding="utf-8") as f:
-            json.dump(day_data, f, ensure_ascii=False)
+        _atomic_write(os.path.join(state_dir, f"sign-daily-{date}.json"),
+                      json.dumps(day_data, ensure_ascii=False))
 
     return {
         "tmp": tmp, "env_file": env_file, "db_file": db_file,
@@ -298,11 +317,12 @@ def main() -> int:
     # 的加载占位可以被真实看到与截图。**只存在于本演示脚本**，不碰 web/app.py。
     if args.slow_ms > 0:
         import time as _time
+
         from flask import request as _req
         _delay = args.slow_ms / 1000.0
 
         @app.before_request
-        def _visual_slow():  # noqa: D401
+        def _visual_slow():
             if _req.path.startswith("/api/"):
                 _time.sleep(_delay)
         print(f"[serve] 慢速模式：每个 /api/ 请求 +{args.slow_ms}ms")

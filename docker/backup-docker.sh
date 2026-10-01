@@ -6,11 +6,15 @@
 # 无 backup.sh（宿主 systemd 部署）的默认加密能力，备份明文落盘。
 #
 # 用法（在 docker-compose.yml 所在目录执行）：
-#   备份：YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh
-#   恢复：YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh \
+#   备份：YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase bash docker/backup-docker.sh
+#   恢复：YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
+#             bash docker/backup-docker.sh \
 #             --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
+# 口令来源：优先 YIBAN_BACKUP_PASSPHRASE_FILE（0600 文件，读入非导出 shell 变量，不进
+#   子进程 environ）；YIBAN_BACKUP_PASSPHRASE / BACKUP_GPG_PASSPHRASE 环境变量形态保留
+#   兼容，但会打印一行提示——该形态把口令带进 tar/gpg/find/sha256sum 整棵子进程树。
 # 可选环境变量：DATA_DIR（默认 ./data）、BACKUP_DIR（默认 ./backups）、
-#   RETAIN_DAYS（默认 30，超期自动删除）
+#   RETAIN_DAYS（默认 30，正整数；0 会被拒绝——等价于删光历史备份）
 #
 # 依赖：宿主机 tar 与 gpg（备份经管道流式处理，不在磁盘留任何明文副本）。
 # 口令丢失 = 备份不可解密；请与 ./data 分开存放口令（同 README 密钥分离承诺）。
@@ -19,14 +23,38 @@
 # 更强的口径见 scripts/backup.sh 的 BACKUP_GPG_RECIPIENT 公钥模式（服务器无私钥）。
 # ============================================================
 set -euo pipefail
+# M97：产物（密文/校验清单）与中途临时件一律 0600/0700——旧实现无 umask，自检全程
+# 密文以 0644 存在（同机其他用户可读走备份）。
+umask 077
 
 DATA_DIR="${DATA_DIR:-./data}"
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 RETAIN_DAYS="${RETAIN_DAYS:-30}"
+# M29：RETAIN_DAYS 零校验（对齐 scripts/backup.sh MF-77 口径）——0 会让下面的
+# `-mtime +0` 删掉除当天外全部历史备份，一次误配置就清空素材。
+case "$RETAIN_DAYS" in
+    '' | *[!0-9]*)
+        echo "错误：RETAIN_DAYS 必须是正整数（收到：'$RETAIN_DAYS'），拒绝执行以免误删历史备份" >&2
+        exit 2
+        ;;
+esac
+if [ "$RETAIN_DAYS" -lt 1 ]; then
+    echo "错误：RETAIN_DAYS=0 等于删掉除当天外全部历史备份，拒绝执行（要更短保留请显式设为 >=1 的合理值）" >&2
+    exit 2
+fi
 PASSPHRASE="${YIBAN_BACKUP_PASSPHRASE:-${BACKUP_GPG_PASSPHRASE:-}}"
+if [ -z "$PASSPHRASE" ] && [ -n "${YIBAN_BACKUP_PASSPHRASE_FILE:-}" ]; then
+    if [ ! -r "${YIBAN_BACKUP_PASSPHRASE_FILE}" ]; then
+        echo "错误：YIBAN_BACKUP_PASSPHRASE_FILE 不可读: ${YIBAN_BACKUP_PASSPHRASE_FILE}" >&2
+        exit 2
+    fi
+    PASSPHRASE="$(cat "${YIBAN_BACKUP_PASSPHRASE_FILE}")"
+elif [ -n "$PASSPHRASE" ]; then
+    echo "警告：口令经环境变量注入，会暴露给 tar/gpg/find/sha256sum 全部子进程；建议改用 YIBAN_BACKUP_PASSPHRASE_FILE（0600 文件）" >&2
+fi
 
 if [ -z "$PASSPHRASE" ]; then
-    echo "错误：未设置 YIBAN_BACKUP_PASSPHRASE（或兼容名 BACKUP_GPG_PASSPHRASE）。" >&2
+    echo "错误：未设置 YIBAN_BACKUP_PASSPHRASE_FILE（或兼容的 YIBAN_BACKUP_PASSPHRASE）。" >&2
     echo "本脚本拒绝生成明文备份——若确需明文请自行手动 tar，后果自负。" >&2
     exit 2
 fi
@@ -58,16 +86,26 @@ if [ "${1:-}" = "--restore" ]; then
     printf '%s\n' "$PASSPHRASE" | gpg --batch --yes --decrypt --passphrase-fd 0 \
         -o "$_TMP_PLAIN" "$ARCHIVE" 2>/dev/null \
         || { echo "错误：解密失败（口令错误或备份包损坏）" >&2; exit 1; }
-    # 三重校验（与 scripts/backup.sh:165-179 同口径）
-    if tar -tzf "$_TMP_PLAIN" 2>/dev/null | grep -E '(^|/)\.\.(/|$)|^/' | grep -q .; then
+    # 三重校验（与 scripts/backup.sh 同口径）。M70：先取列表再 here-string 判——
+    # 原 `tar | grep -q` 在 set -o pipefail 下，tar 非 0 或列表超管道缓冲时整条管道
+    # 短路，三条护栏被静默跳过（fail-open 放行到解包）。
+    _TAR_LIST="$(tar -tzf "$_TMP_PLAIN" 2>/dev/null)" || {
+        echo "错误：读包列表失败（包损坏或 tar 不可用），拒绝解包" >&2
+        exit 1
+    }
+    if grep -qE '(^|/)\.\.(/|$)|^/' <<< "$_TAR_LIST"; then
         echo "错误：备份包含不安全条目（路径穿越/绝对路径），已拒绝解包" >&2
         exit 1
     fi
-    if tar -tvzf "$_TMP_PLAIN" 2>/dev/null | grep -qE '^l'; then
+    _TAR_VLIST="$(tar -tvzf "$_TMP_PLAIN" 2>/dev/null)" || {
+        echo "错误：读包列表失败（长列表 tar 非零退出），拒绝解包" >&2
+        exit 1
+    }
+    if grep -qE '^l' <<< "$_TAR_VLIST"; then
         echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
         exit 1
     fi
-    if tar -tvzf "$_TMP_PLAIN" 2>/dev/null | grep -qE '^[bcp]'; then
+    if grep -qE '^[bcp]' <<< "$_TAR_VLIST"; then
         echo "错误：备份包含设备/FIFO 特殊条目，已拒绝解包" >&2
         exit 1
     fi
@@ -137,9 +175,18 @@ fi
 chmod 600 "$OUT"
 sha256sum "$OUT" | awk '{print $1}' > "$OUT.sha256"
 
-# 超期清理（按文件名日期粗筛即可）
-find "$BACKUP_DIR" -name 'yiban-data-*.tar.gz.gpg' -mtime "+$RETAIN_DAYS" -delete 2>/dev/null || true
-find "$BACKUP_DIR" -name '*.sha256' -mtime "+$RETAIN_DAYS" -delete 2>/dev/null || true
+# 超期清理（按文件名日期粗筛即可）。M29：先列后删同一份列表 + 逐条留痕——
+# 原 `find … -delete` 命中即删不留一行日志，删错了无从追溯。
+while IFS= read -r _old; do
+    [ -n "$_old" ] || continue
+    echo "removing: $_old"
+    rm -f -- "$_old"
+done <<< "$(find "$BACKUP_DIR" -name 'yiban-data-*.tar.gz.gpg' -mtime "+$RETAIN_DAYS" 2>/dev/null || true)"
+while IFS= read -r _old; do
+    [ -n "$_old" ] || continue
+    echo "removing: $_old"
+    rm -f -- "$_old"
+done <<< "$(find "$BACKUP_DIR" -name '*.sha256' -mtime "+$RETAIN_DAYS" 2>/dev/null || true)"
 
 echo "备份完成: $OUT"
 echo "校验值 : $(cat "$OUT.sha256")"

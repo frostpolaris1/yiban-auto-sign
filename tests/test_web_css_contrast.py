@@ -426,12 +426,12 @@ class BatchCFocusAndLiveTest(unittest.TestCase):
         host_body = js[js.index("function toastHost"):js.index("function dismissToast")]
         self.assertIn('role: "status"', host_body, "toast-host 不是单一 role=status 播报区")
         # 单颗 toast 不得再自带 live 语义
-        node_line = [l for l in js.splitlines() if "toast toast--" in l][0]
+        node_line = next(ln for ln in js.splitlines() if "toast toast--" in ln)
         self.assertNotIn('role: "status"', node_line,
                          "单颗 toast 仍带 role=status —— 与容器叠成两层 live region")
         for path in LAYOUTS:
             html = _read(path)
-            line = [l for l in html.splitlines() if 'id="toast-host"' in l]
+            line = [ln for ln in html.splitlines() if 'id="toast-host"' in ln]
             self.assertTrue(line, f"{os.path.basename(path)} 缺 toast-host 挂载点")
             self.assertIn('role="status"', line[0], f"{os.path.basename(path)} 的 toast-host 缺 role=status")
             self.assertIn('aria-atomic="false"', line[0],

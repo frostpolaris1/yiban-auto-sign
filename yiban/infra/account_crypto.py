@@ -422,7 +422,15 @@ def _parse_env_file(env_file):
 # （load_key 抛 ValueError，调用方按启动失败处理）。刻意**不做**通用熵/KDF 检测：
 # Web 侧不管理这把钥（没有写侧校验点可挂），把判定做成"读侧启动即崩"的通用判据会
 # 把外泄风险换成全站不可用，且撞存量密钥不可轮换的现实约束。
-_PUBLISHED_EXAMPLE_KEY = bytes.fromhex("0123456789abcdef" * 4)
+#: `scripts/dev_visual_seed.py` 内置的演示钥（hex）：同样随仓库公开、任何人可读，
+#: 照抄进真实 `.env` 会让存量密文等同明文，且三条弱钥判据全不命中（非全零/非单字节/
+#: 非字节值连续），故与模板钥一起精确拉黑。演示脚本改为从本常量取用（单一事实源）。
+PUBLISHED_DEMO_ACCOUNTS_KEY = (
+    "7f3a9c1e5b2d8046af17c3e9b5d2084c6ea93f7b1d5c8042a6e93f1b7d5c2084")
+_PUBLISHED_EXAMPLE_KEYS = frozenset({
+    bytes.fromhex("0123456789abcdef" * 4),          # 仓库历史模板内置示例钥
+    bytes.fromhex(PUBLISHED_DEMO_ACCOUNTS_KEY),     # dev_visual_seed 演示钥
+})
 
 
 def _decode_key(raw):
@@ -433,9 +441,9 @@ def _decode_key(raw):
         raise ValueError("YIBAN_ACCOUNTS_KEY 格式非法：应为 64 位十六进制字符串") from e
     if len(key) != 32:
         raise ValueError("YIBAN_ACCOUNTS_KEY 长度非法：应为 32 字节（64 位十六进制）")
-    # 精确比对公开模板内置串 ⇒ 阻断（判据与理由见 _PUBLISHED_EXAMPLE_KEY 注释）。
+    # 精确比对公开模板内置串 ⇒ 阻断（判据与理由见 _PUBLISHED_EXAMPLE_KEYS 注释）。
     # 大小写十六进制写法都命中：bytes.fromhex 不分大小写，比对的是解出的字节。
-    if key == _PUBLISHED_EXAMPLE_KEY:
+    if key in _PUBLISHED_EXAMPLE_KEYS:
         raise ValueError(
             "YIBAN_ACCOUNTS_KEY 命中仓库公开示例模板内置的示例钥——任何读过本仓库的人"
             "都能解密存量密文，拒绝使用。请生成随机密钥替换（python3 -c "
