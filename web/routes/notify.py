@@ -384,8 +384,19 @@ def api_mail_config_save():
         updates["YIBAN_MAIL_SMTPS_ENC"] = smtps_enc
     if admin_to_val is not None:
         updates["YIBAN_MAIL_ADMIN_TO"] = admin_to_val
-    if admin_to_val is not None and admin_to_val != (admin_to_old or ""):
-        # 收件人改道预警（用户 2026-10-02 裁决：免门保留，但必须加告警）。
+    admin_to_gated = (admin_to_val is not None
+                      and admin_to_val != (admin_to_old or ""))
+    if admin_to_gated and not closing_mail_channel:
+        # 收件人改道纳入「关闭/改道告警通道」同一门（用户 2026-10-02 裁决，覆盖
+        # 0.5.0「可逆路由改动免门」）：把全部告警改发别处正是静音手法，而 SMTP 中继
+        # 未动、通道仍活，属最该要口令的一类。与 mail_close 同账（creds）；同一请求
+        # 同时关通道时上面那道门已过，不再重复占一格额度。
+        gate = _high_risk_gate()(data, "改道告警收件人", quota="creds",
+                                 risk_always=True)
+        if gate:
+            return gate
+    if admin_to_gated:
+        # 收件人改道预警（用户 2026-10-02 裁决：加告警）。
         # 必须在落盘**之前**发：此刻 send_notification 读到的 ADMIN_TO 还是旧值，
         # 告警才能到**原收件人**手里——落盘后再发只能进新收件人，改道若出于恶意
         # 恰好等于报给攻击者。SMTP 中继本请求未动，通道此刻是活的，送达可靠。
