@@ -120,14 +120,15 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(acc["status"], "pending")
         idx = acc["index"]
         # 通过
-        r = _c.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = _c.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         _c2, data2 = self._admin_accounts()
         acc2 = next(a for a in data2["accounts"] if a["phone"] == "138****8001")
         self.assertEqual(acc2["status"], "active")
         # 重复通过 → 400（无需审核）
-        r = _c2.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = _c2.post(f"/api/accounts/{idx}/review",
+                     json={"action": "approve", "phone": acc2["phone"]},
                      headers=self._csrf(self._login(_c2, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 400)
 
@@ -139,7 +140,7 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8002")
         r = _c.post(f"/api/accounts/{acc['index']}/review",
-                    json={"action": "reject", "reason": "设备信息不符"},
+                    json={"action": "reject", "reason": "设备信息不符", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 管理员视角：rejected + 理由
@@ -166,7 +167,8 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8012")
         r = _c.post(f"/api/accounts/{acc['index']}/review",
-                    json={"action": "reject", "reason": "理由\u2028伪造行\u0085再一行"},
+                    json={"action": "reject", "reason": "理由\u2028伪造行\u0085再一行",
+                          "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         _c2, data2 = self._admin_accounts()
@@ -204,7 +206,7 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8003")
         r = _c.post(f"/api/accounts/{acc['index']}/review",
-                    json={"action": "reject", "reason": "资料不全"},
+                    json={"action": "reject", "reason": "资料不全", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200)
         # 用户编辑（改密码）→ 自动回 pending
@@ -249,10 +251,12 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8006")
         # 管理员删除（软删除）
         r = _c.delete(f"/api/accounts/{acc['index']}",
+                      json={"phone": acc["phone"]},
                       headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 审核通过 → 400（deleted 账号不参与审核流转）
-        r = _c.post(f"/api/accounts/{acc['index']}/review", json={"action": "approve"},
+        r = _c.post(f"/api/accounts/{acc['index']}/review",
+                    json={"action": "approve", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 400)
 
@@ -283,7 +287,7 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8011")
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post(f"/api/accounts/{acc['index']}/review",
-                        json={"action": "reject", "reason": "班级信息缺失"},
+                        json={"action": "reject", "reason": "班级信息缺失", "phone": acc["phone"]},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1, "拒绝应给提交者恰好发一封邮件")
@@ -302,7 +306,7 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8012")
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post(f"/api/accounts/{acc['index']}/review",
-                        json={"action": "reject"},
+                        json={"action": "reject", "phone": acc["phone"]},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1)
@@ -318,7 +322,7 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8013")
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post(f"/api/accounts/{acc['index']}/review",
-                        json={"action": "approve"},
+                        json={"action": "approve", "phone": acc["phone"]},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         m.assert_not_called()

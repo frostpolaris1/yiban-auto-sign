@@ -798,6 +798,8 @@ class SlotEgressEndpointTest(_WebBase):
             with self.subTest(payload=payload):
                 self._setup_env(proxy_list="http://u1:p1@a.example:1,http://b.example:2,"
                                            "http://c.example:3", workers="3")
+                # M09：重写明文口令会重迁移并递增 PW_VERSION → 旧会话失效，须重新登录
+                c = self._login()
                 r = self._put(c, "/api/scheduler/executors/workers/1", payload)
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
                 self.assertEqual(r.get_json()["egress"], "直连（本机出口）")
@@ -806,6 +808,7 @@ class SlotEgressEndpointTest(_WebBase):
                                  "只清目标段，别的段一字不动")
         # 兜底段清空 = 删掉该键（既有的"未单独配置就退回 YIBAN_PROXY"语义不变）
         self._setup_env(proxy_list="http://a.example:1", fallback="http://fb.example:9")
+        c = self._login()  # 同上：重写明文口令会中止旧会话
         r = self._put(c, "/api/scheduler/executors/fallback", {"egress": None})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json(), {"ok": True, "index": "fallback",
@@ -869,8 +872,11 @@ class SlotEgressEndpointTest(_WebBase):
                               {"egress": "http://x:1"})
                 self.assertEqual(r.status_code, 400)
                 self.assertIn("未被使用", r.get_json()["error"])
-        # 下标上限 63（`YIBAN_WORKERS` 最大 64）：就算执行体数写满也不收 64
+        # 下标上限 63（`YIBAN_WORKERS` 最大 64）：就算执行体数写满也不收 64。
+        # M09 起 `_setup_env` 重写明文口令会（重）迁移哈希并递增 PW_VERSION，
+        # 旧会话随之中止——重写 .env 后必须重新登录。
         self._setup_env(proxy_list="http://a.example:1", workers="64")
+        c = self._login()
         r = self._put(c, "/api/scheduler/executors/workers/64", {"egress": "http://x:1"})
         self.assertEqual(r.status_code, 400)
         # 合法槽位在同一份配置下必须能写（反证 400 不是"一律拒绝"）

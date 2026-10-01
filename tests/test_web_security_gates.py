@@ -895,7 +895,7 @@ class Batch18FixesTest(unittest.TestCase):
         ac, at = self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
@@ -1227,7 +1227,7 @@ class Batch18FixesTest(unittest.TestCase):
         # 管理员审核通过 → 历史日志恢复可见
         ac, at = self._admin_client()
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": PHONE},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         data = c.get(f"/api/my-logs?date={CAL_DATE}").get_json()
