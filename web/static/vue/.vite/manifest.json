@@ -1,0 +1,25 @@
+{
+  "_vendor-element-plus-DSSLGg2N.js": {
+    "file": "assets/vendor-element-plus-DSSLGg2N.js",
+    "name": "vendor-element-plus",
+    "css": [
+      "assets/vendor-element-plus-D_wiczDZ.css"
+    ]
+  },
+  "_vendor-element-plus-D_wiczDZ.css": {
+    "file": "assets/vendor-element-plus-D_wiczDZ.css",
+    "src": "_vendor-element-plus-D_wiczDZ.css"
+  },
+  "index.html": {
+    "file": "assets/index-Bvin5_K8.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "imports": [
+      "_vendor-element-plus-DSSLGg2N.js"
+    ],
+    "css": [
+      "assets/index-TpFERhN2.css"
+    ]
+  }
+}
