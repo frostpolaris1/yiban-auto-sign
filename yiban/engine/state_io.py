@@ -329,9 +329,8 @@ def has_undone_accounts_today(state_dir=None, day=None):
     """
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
-        if db.is_initialized():
-            if db.task_open_count(today) > 0:
-                return True
+        if db.is_initialized() and db.task_open_count(today) > 0:
+            return True
     except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
         logger.debug("读取领取池失败（回退状态文件口径）: %s", e)
     d = state_dir or _state_dir()
