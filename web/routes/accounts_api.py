@@ -410,7 +410,10 @@ def api_account_update(idx):
                          or clean["phone"] != old.get("phone")
                          or code_written)
         if bool(str(data.get("password", "")).strip()) or clean["phone"] != old.get("phone"):
-            denied = _high_risk_gate()(data, "改写他人易班凭据", quota="creds")
+            # risk_always=True（用户 2026-10-01 拍板）：「改写他人易班凭据」整类摘出
+            # risk 档"同出口免口令"——同出口也必须当次口令。full/off 两档逐字不变。
+            denied = _high_risk_gate()(data, "改写他人易班凭据", quota="creds",
+                                       risk_always=True)
             if denied is not None:
                 return denied
         # 密码留空 = 保持不变（密码明文永不下发前端）

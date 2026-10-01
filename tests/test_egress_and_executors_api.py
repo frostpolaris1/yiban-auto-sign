@@ -1417,3 +1417,277 @@ class EgressErrorMustNotLeakCredentialsTest(_WebBase):
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 400)
         self._assert_no_credentials(r.get_data(as_text=True))
+
+
+# ---------------------------------------------------------------------------
+# A5/A6/A7：执行一轮请求登记 / 当日进度（聚合）/ 归属与迁移分布（聚合）
+# ---------------------------------------------------------------------------
+class _TaskRowMixin:
+    """往 `sign_tasks` 直接写当日行（聚合端点的取数源，单池后唯一台账）。
+
+    `state` 用队列的真实词汇（与 `yiban.status` 同一套），聚合端点的"已签/待签/失败"
+    就是它们各自的计数——展示层不另造一套状态名，否则两套词表必然漂。
+    """
+
+    def _insert_tasks(self, rows, day=None):
+        """`rows` = `((phone, owner, state), …)`；返回写入的业务日。"""
+        from yiban.store import db as store_db
+        day = day or clock.today()
+        store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
+                         cleanup=False)
+        conn = store_db.get_conn()
+        with store_db._conn_lock:
+            for phone, owner, state in rows:
+                conn.execute(
+                    "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, "
+                    "priority, state, attempts, lease_until, result, epoch, created_at) "
+                    "VALUES (?, ?, 0, ?, ?, 5, ?, 0, '', '', 0, ?)",
+                    (phone, day, owner, clock.ts(), state, clock.ts()))
+            conn.commit()
+        return day
+
+
+class RunNowEndpointTest(_WebBase):
+    """A5「立即执行一轮」：**只登记请求，绝不在 web 进程内拉起签到**。
+
+    三道闸逐条钉：仅主管理员（403）、运行锁被占即 409、全局防抖 429 + 剩余秒数。
+    另钉一条硬约束：响应自己声明"没有拉起"——否则页面会把它显示成"已在执行"。
+    """
+
+    def _regular_admin_client(self):
+        """注册一个**普通**（非内置主）管理员会话——执行体面全部端点对它 403。"""
+        import db
+        db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
+        db.create_user("reg@test.local",
+                       self.webapp.generate_password_hash("RegPass1234!"))
+        c = self.webapp.create_app().test_client()
+        lr = c.post("/api/login", json={"username": "reg@test.local",
+                                        "password": "RegPass1234!"})
+        self.assertEqual(lr.status_code, 200, lr.get_data(as_text=True))
+        return c, c.get("/api/me").get_json()["csrf_token"]
+
+    def setUp(self):
+        """本类必须逐例清掉请求记录：防抖**故意**落在状态目录且跨进程/跨会话生效，
+        而 `_WebBase` 只删库文件、不清状态目录——不清就会让"第一次请求"拿到上一例
+        占下的窗口，退化成恒 429（防抖用例反而测不出东西）。"""
+        super().setUp()
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(os.environ["YIBAN_STATE_DIR"], "round-request.json"))
+
+    def test_未登录401且普通管理员403(self):
+        anon = self.webapp.create_app().test_client()
+        r = anon.post("/api/scheduler/executors/run-now", json={})
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.is_json, "未登录也必须是 JSON 契约，不得落 HTML")
+        c, csrf = self._regular_admin_client()
+        r2 = c.post("/api/scheduler/executors/run-now", json={},
+                    headers={"X-CSRF-Token": csrf})
+        self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
+        self.assertTrue(r2.is_json)
+
+    def test_成功登记且明确不拉起(self):
+        c = self._login()
+        r = c.post("/api/scheduler/executors/run-now", json={},
+                   headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertTrue(body["ok"])
+        # 硬约束：本端点不拉起签到（拉起属引擎面），响应必须自己说清，页面才不会
+        # 把"已登记"画成"已在执行"
+        self.assertFalse(body["launched"], "本端点不拉起签到，launched 必须为 false")
+        self.assertIn("不在 web 进程内拉起", body["note"])
+        self.assertTrue(body["requested_at"])
+        self.assertEqual(body["next_allowed_in"], 0)
+
+    def test_防抖窗口内第二次被拒并给剩余秒数(self):
+        c = self._login()
+        r1 = c.post("/api/scheduler/executors/run-now", json={},
+                    headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r1.status_code, 200)
+        r2 = c.post("/api/scheduler/executors/run-now", json={},
+                    headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+        body = r2.get_json()
+        self.assertEqual(body["reason"], "cooldown")
+        self.assertGreater(body["next_allowed_in"], 0,
+                           "防抖拒绝必须给剩余秒数，否则按钮无法倒计时")
+
+    def test_防抖跨会话共享且落状态目录(self):
+        """防抖**不按会话**：两个管理员会话连点也只留一条记录。
+
+        记录落状态目录而非进程内存——web 重启一次就把进程内防抖清零的做法会让防抖形同虚设。
+        """
+        c1 = self._login()
+        self.assertEqual(c1.post("/api/scheduler/executors/run-now", json={},
+                                 headers={"X-CSRF-Token": c1.csrf}).status_code, 200)
+        c2 = self._login()
+        r2 = c2.post("/api/scheduler/executors/run-now", json={},
+                     headers={"X-CSRF-Token": c2.csrf})
+        self.assertEqual(r2.status_code, 429,
+                         "换会话不得绕开防抖，否则多管理员叠加点击就绕开了")
+        state_path = os.path.join(os.environ["YIBAN_STATE_DIR"], "round-request.json")
+        self.assertTrue(os.path.exists(state_path),
+                        "请求记录必须落状态目录（重启后防抖仍有效）")
+
+    @unittest.skipUnless(os.name == "posix", "运行锁探测用 POSIX flock（Windows 无 fcntl）")
+    def test_签到运行锁被占时拒(self):
+        """全局并发闸：已有一轮在跑时不得再登记（否则同一批账号被重复排一轮）。"""
+        import fcntl
+        c = self._login()
+        lock_path = os.path.join(os.environ["YIBAN_STATE_DIR"], "signin-run.lock")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            r = c.post("/api/scheduler/executors/run-now", json={},
+                       headers={"X-CSRF-Token": c.csrf})
+            self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+            self.assertEqual(r.get_json()["reason"], "round_busy")
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def test_登记落审计行(self):
+        c = self._login()
+        c.post("/api/scheduler/executors/run-now", json={},
+               headers={"X-CSRF-Token": c.csrf})
+        import db
+        rows = db.get_conn().execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='executors_run_now'"
+        ).fetchone()[0]
+        self.assertEqual(rows, 1, "登记动作必须恰好落一条审计行")
+
+
+class ProgressEndpointTest(_WebBase, _TaskRowMixin):
+    """A6「实时进度」：**只给聚合计数**，逐账号列表一律不给。"""
+
+    def _seed(self):
+        w0 = egress.worker_owner(0, SECRET_HOST)
+        w1 = egress.worker_owner(1, SECRET_HOST)
+        return self._insert_tasks((
+            ("13900000001", w0, "done"),
+            ("13900000002", w0, "done"),
+            ("13900000003", w0, "failed"),
+            ("13900000004", w1, "done"),
+            ("13900000005", w1, "claimed"),
+        ))
+
+    def test_聚合计数逐格对上(self):
+        day = self._seed()
+        c = self._login()
+        r = c.get("/api/scheduler/executors/progress")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["day"], day)
+        self.assertTrue(body["is_today"], "刚写入当日记录，is_today 应为 true")
+        totals = body["totals"]
+        # 5 行：3 done / 1 failed / 1 claimed；settled=3、open=2、total=5
+        self.assertEqual(totals["done"], 3)
+        self.assertEqual(totals["failed"], 1)
+        self.assertEqual(totals["claimed"], 1)
+        self.assertEqual(totals["pending"], 0)
+        self.assertEqual(totals["settled"], 3)
+        self.assertEqual(totals["open"], 2)
+        self.assertEqual(totals["total"], 5)
+        # 分执行体：worker0 = 3（2 done + 1 failed）、worker1 = 2（1 done + 1 claimed）
+        got = {e["label"]: e for e in body["by_executor"]}
+        self.assertEqual(got["并行执行体 #1"]["done"], 2)
+        self.assertEqual(got["并行执行体 #1"]["failed"], 1)
+        self.assertEqual(got["并行执行体 #2"]["done"], 1)
+        self.assertEqual(got["并行执行体 #2"]["claimed"], 1)
+
+    def test_响应绝不含逐账号明细与身份原串(self):
+        """A6 明确要求聚合计数、不要逐账号列表：号码与主机名一律不得出现。"""
+        self._seed()
+        c = self._login()
+        raw = c.get("/api/scheduler/executors/progress").get_data(as_text=True)
+        for phone in ("13900000001", "13900000002", "13900000003",
+                      "13900000004", "13900000005"):
+            self.assertNotIn(phone, raw, "进度端点不得下发逐账号明细")
+        self.assertNotIn(SECRET_HOST, raw, "身份原串（含主机名）不得进响应")
+
+    def test_空态全零而不是报错(self):
+        """库未初始化 / 当日无记录：全 0 空态（前端画空条），不得 500。"""
+        c = self._login()
+        r = c.get("/api/scheduler/executors/progress")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["by_executor"], [])
+        self.assertEqual(body["totals"]["total"], 0)
+
+    def test_未登录401且JSON契约(self):
+        anon = self.webapp.create_app().test_client()
+        r = anon.get("/api/scheduler/executors/progress")
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.is_json)
+
+
+class OwnershipEndpointTest(_WebBase, _TaskRowMixin):
+    """A7「各执行体负载/归属分布」：归属分布 + 相邻两日之间的迁移，均为聚合计数。"""
+
+    def _seed_today_and_prev(self):
+        """今天 3 行（worker0×2 + worker1×1），前一日 3 行（worker0×3）。
+
+        于是 `13900000003` 是唯一"换了执行体"的账号（另两行归属未变），
+        迁移聚合应当**恰好**一条、accounts=1——多一条或少一条都说明聚合写错了。
+        """
+        w0 = egress.worker_owner(0, SECRET_HOST)
+        w1 = egress.worker_owner(1, SECRET_HOST)
+        prev = (clock.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self._insert_tasks((
+            ("13900000001", w0, "done"),
+            ("13900000002", w0, "done"),
+            ("13900000003", w0, "done"),
+        ), day=prev)
+        return self._insert_tasks((
+            ("13900000001", w0, "done"),
+            ("13900000002", w0, "done"),
+            ("13900000003", w1, "failed"),
+        )), prev
+
+    def test_归属分布逐格对上且不回身份原串(self):
+        day, _prev = self._seed_today_and_prev()
+        c = self._login()
+        r = c.get("/api/scheduler/executors/ownership")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        raw = r.get_data(as_text=True)
+        self.assertNotIn(SECRET_HOST, raw, "owner 原串含主机名，绝不得进响应")
+        body = r.get_json()
+        self.assertEqual(body["day"], day)
+        got = {e["label"]: e["accounts"] for e in body["by_executor"]}
+        self.assertEqual(got["并行执行体 #1"], 2)
+        self.assertEqual(got["并行执行体 #2"], 1)
+        self.assertEqual(body["tracked"], 3)
+
+    def test_迁移按从到聚合恰好一条(self):
+        _day, prev = self._seed_today_and_prev()
+        c = self._login()
+        body = c.get("/api/scheduler/executors/ownership").get_json()
+        self.assertTrue(body["compared"], "前一日有记录时 compared 应为 true")
+        self.assertEqual(body["prev_day"], prev)
+        moves = {(m["from_label"], m["to_label"]): m["accounts"]
+                 for m in body["migration"]}
+        self.assertEqual(moves, {("并行执行体 #1", "并行执行体 #2"): 1},
+                         f"迁移聚合与预期不符：{body['migration']}")
+
+    def test_前一日无记录时不做比较(self):
+        """没有基准日就不猜：`compared: false` + 空迁移（不拿更早的日子凑）。"""
+        self._insert_tasks((("13900000001", egress.worker_owner(0, SECRET_HOST), "done"),))
+        c = self._login()
+        body = c.get("/api/scheduler/executors/ownership").get_json()
+        self.assertFalse(body["compared"])
+        self.assertEqual(body["migration"], [])
+        self.assertIn("前一日无记录", body["note"])
+
+    def test_响应绝不含逐账号明细(self):
+        self._seed_today_and_prev()
+        c = self._login()
+        raw = c.get("/api/scheduler/executors/ownership").get_data(as_text=True)
+        for phone in ("13900000001", "13900000002", "13900000003"):
+            self.assertNotIn(phone, raw, "归属分布端点不得下发逐账号明细")
+
+    def test_未登录401且JSON契约(self):
+        anon = self.webapp.create_app().test_client()
+        r = anon.get("/api/scheduler/executors/ownership")
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.is_json)
