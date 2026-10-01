@@ -180,10 +180,19 @@ def is_safe_url(url):
     IPv4 字面量（`2130706433` = 127.0.0.1）、短式回环（`127.1`）等非 `ipaddress`
     可解析的 host 一律拒掉——否则 `https://2130706433/hook` 这类地址会直通。
     `[::ffff:127.0.0.1]` 等 IPv6 形式已由 `ipaddress` 拦下。
+
+    **反斜杠收严**：`urlparse` 的 `_hostinfo` 把反斜杠当 userinfo 边界，于是
+    `https://127.0.0.1:443\\@example.com/hook` 的 `hostname` 是 `example.com`（放行），
+    而 requests/urllib3 的解析不这样切分、实际连的是 `127.0.0.1:443`。故带反斜杠的
+    URL 一律拒掉（正常 URL 不含反斜杠，零误杀）。带 userinfo 的地址不在此收严之列：
+    `https://evil.com@127.0.0.1/hook` 的 hostname 就是 `127.0.0.1`，已被下面的内网
+    判定拦下；`user:pass@host` 形态本身不构成绕过，且是合法的 webhook basic-auth 写法。
     """
     try:
         o = urlparse(url)
     except ValueError:
+        return False
+    if "\\" in url:
         return False
     if o.scheme != "https" or not o.hostname:
         return False

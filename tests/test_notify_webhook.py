@@ -324,6 +324,27 @@ def test_is_safe_url_rejects_loopback_variants():
     assert notify.is_safe_url("https://example.com/hook") is True
 
 
+def test_is_safe_url_rejects_backslash_bypass():
+    """反斜杠不得绕过白名单（白名单判 example.com、requests 实际连 127.0.0.1）。
+
+    `urlparse` 的 `_hostinfo` 把反斜杠当 userinfo 边界，故
+    `https://127.0.0.1:443\\@example.com/hook` 的 `hostname` 是 `example.com`；
+    而 requests/urllib3 不这样切分，实际连的是 `127.0.0.1:443`。带反斜杠的地址一律
+    拒掉；无 userinfo/反斜杠的普通地址与合法 basic-auth 写法不受影响。
+    """
+    bad = [
+        "https://127.0.0.1:443\\@example.com/hook",   # 反斜杠把内网塞进 userinfo
+        "https://a\\@127.0.0.1/hook",                 # 反斜杠 + userinfo
+    ]
+    for url in bad:
+        assert notify.is_safe_url(url) is False, url
+    # 已有的内网判定仍覆盖普通 userinfo 形态（无反斜杠）
+    assert notify.is_safe_url("https://evil.com@127.0.0.1/hook") is False
+    # 正常地址与合法 basic-auth 写法不受影响
+    assert notify.is_safe_url("https://hook.example.com/hook") is True
+    assert notify.is_safe_url("https://user:pass@hook.example.com/hook") is True
+
+
 # ---- 节流 ----
 
 def test_throttle_same_title_skipped_force_bypasses(monkeypatch):

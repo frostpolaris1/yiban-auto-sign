@@ -258,6 +258,32 @@ def _plan_v(day, cfg, accounts, top):
     return v
 
 
+def _plan_covers(day, accounts):
+    """当日已有计划行是否**覆盖本轮全部账号**（每条账号都有一条 `vshard >= 0` 的行）。
+
+    为什么不能只看"当日有行"：手动 `--only`（`force=True`）只给目标账号补了计划行，
+    随后同日的定时全量轮若只看"有行"就整段跳过 `write_plan`，其余账号当天在队列里
+    根本没有行 ⇒ 全天零签到。`write_plan` 是 `INSERT OR IGNORE`，补建不会覆盖 manual
+    行（也不会复活 `vshard = -1` 的历史惰性行——本函数只对 `vshard >= 0` 计数，与
+    `_max_vshard` 同界）。
+    """
+    phones = planner._phones(accounts)
+    if not phones:
+        return True
+    try:
+        conn, lock = queue_store._queue_conn()
+        with lock:
+            placeholders = ",".join("?" for _ in phones)
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT phone) FROM sign_tasks "
+                f"WHERE day=? AND vshard >= 0 AND phone IN ({placeholders})",
+                (day, *phones)).fetchone()
+    except Exception as e:
+        logger.warning("读取当日计划覆盖面失败（按未覆盖处理）: %s", e)
+        return False
+    return int(row[0] or 0) == len(phones)
+
+
 def _ensure_plan(accounts, day, cfg, force=False):
     """保证当日有**可用**计划行（v3 的队列就是计划），返回当日 V。
 
@@ -271,12 +297,16 @@ def _ensure_plan(accounts, day, cfg, force=False):
     （`INSERT OR IGNORE` 不覆盖既有行），使当日中途新增/此前未进过计划的账号也能被
     手动签到领到。普通轮不传，行为逐字不变。
 
+    判据除"当日有真实计划行"外，还要求**覆盖本轮账号集**（`_plan_covers`）：手动
+    `--only` 先跑一轮只写目标号的行，随后同日的定时全量轮必须给其余账号补建计划，
+    否则它们当天在队列里没有行、全天零签到。
+
     `write_plan` 失败会抛，由调用方捕获后放弃本轮——没有计划行就没有队列，发不出任何
     请求，裸抛只会把 traceback 交给调用方。
     """
     top = _max_vshard(day)
     v = _plan_v(day, cfg, accounts, top)
-    if top is None or force:
+    if top is None or force or not _plan_covers(day, accounts):
         if top is None and planner.has_plan(day):
             logger.error(
                 "当日只有历史惰性行（无 vshard >= 0 的计划行），视为无可用计划："
