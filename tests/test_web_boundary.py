@@ -1826,8 +1826,9 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
             self.assertTrue(self.webapp._mail_alert_due("标题"))
             self.assertTrue(self.webapp._mail_alert_due("标题"), "0=关闭节流")
         # 直接写在 app 侧节流表上的时刻必须被真源看见（同一对象，非副本）。
-        # M33 后节流键是 (title, level, target) 三元组，注入也按三元组。
-        self.webapp._mail_alert_ts[("注入标题", None, None)] = time.time()
+        # 节流键是 (title, level) 二元组（曾有第三维 target，全仓无实参调用点、
+        # 恒为 None 的死维度，已随 M33 残留清理删除），注入也按二元组。
+        self.webapp._mail_alert_ts[("注入标题", None)] = time.time()
         with mock.patch.object(self.webapp, "load_env_int", return_value=60):
             self.assertFalse(self.webapp._mail_alert_due("注入标题"))
 

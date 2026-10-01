@@ -263,7 +263,12 @@ class MailChannelCloseGateE2ETest(_GateNarrowBase):
 
     def test_closing_channel_needs_password_then_bills_creds_quota(self):
         """通道当前是开的：无口令关闭 → 400 password_required；带口令 → 200 且落审计；
-        关闭占凭据额度（MAX=1）→ 第二次关闭 429 且不落盘。"""
+        关闭占凭据额度（MAX=1）→ 第二次**真正的**关闭 429 且不落盘。
+
+        第二次关闭前必须先把它打开：门与额度只挂在"值真变化"的关闭上（已是关的重复
+        提交不被这门连坐），而 `.env` 优先之后，落盘的 `ENABLE=0` 不会再被进程环境里的
+        `YIBAN_MAIL_ENABLE=1` 顶开——靠环境变量制造"仍开着"的假象已经不成立。
+        """
         self._env(("YIBAN_ADMIN_CREDS_MAX=1\n",))
         self._set_mail_enable("1")
         c, t = self._admin_client()
@@ -276,11 +281,26 @@ class MailChannelCloseGateE2ETest(_GateNarrowBase):
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertEqual(len(self._audit_rows("mail_config")), 1,
                          "关闭邮件通道必须恰好落一行审计")
-        # 凭据额度那一格已被关闭动作占用：再关一次 → 429，且被拒动作不落盘
+        # 重新打开：开启方向免门免额度（把告警装回去不是"拆报警器"），
+        # 好让下一次关闭成为真正的**开 → 关**，从而真的走到门与额度上。
+        r_open = c.put("/api/mail-config", json={"enabled": True}, headers=hdr)
+        self.assertEqual(r_open.status_code, 200, r_open.get_data(as_text=True))
+        audit_before = len(self._audit_rows("mail_config"))
+        # 凭据额度那一格已被第一次关闭占用：再关一次 → 429，且被拒动作不落盘
         r3 = c.put("/api/mail-config",
                    json={"enabled": False, "confirm_password": ADMIN_PASS}, headers=hdr)
         self.assertEqual(r3.status_code, 429, r3.get_data(as_text=True))
-        self.assertEqual(len(self._audit_rows("mail_config")), 1, "429 被拒的动作不得落审计")
+        self.assertEqual(len(self._audit_rows("mail_config")), audit_before,
+                         "429 被拒的动作不得落审计")
+        # 还原现场：上面把通道留在"开着"（r_open 生效、r3 被额度拒），而 `.env` 优先
+        # 之后落盘的 ENABLE=1 不会再被下一个用例的进程环境顶开——不还原就会把"开着"
+        # 漏给它。高危额度表是 create_app 的工厂局部状态，换一个实例即得一张空表，
+        # 正好用它把通道真正关回去（同一实例下额度已用尽，关不动）。
+        c2, t2 = self._admin_client()
+        r_close = c2.put("/api/mail-config",
+                         json={"enabled": False, "confirm_password": ADMIN_PASS},
+                         headers={"X-CSRF-Token": t2})
+        self.assertEqual(r_close.status_code, 200, r_close.get_data(as_text=True))
 
     def test_opening_and_already_off_close_are_gate_free(self):
         """通道当前是关的：关闭方向"值真变化"不成立 → 不设门；开启方向从不设门。"""
