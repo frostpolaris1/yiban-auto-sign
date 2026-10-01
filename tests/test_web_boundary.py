@@ -3270,3 +3270,96 @@ class StaleIdxGuardE2ETest(unittest.TestCase):
         self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
         self.assertIn("账号列表已变化", r.get_json()["error"])
         self.assertEqual(self._snapshot(), before)
+
+    def test_batch_without_phones_is_fail_closed(self):
+        """M91：完全不带 phones（None）也 409，不得静默按 idx 作用。
+
+        此前只判 `len(phones) != len(ids)`；phones 缺失（None）时两个内联分支都不进，
+        请求按 idx 直接落到不可逆的 purge → 静默清除。fail-closed 后缺令牌即 409。
+
+        purge 的二次鉴权门在 phones 校验**之前**（刻意留在 _file_lock 之外），故本条
+        必须带 confirm_password/confirm_delay_ack 才能把请求送到 phones 校验；不带
+        口令的 purge 仍是 400 password_required（另一条既有用例）。
+        """
+        before = self._snapshot()
+        c, h = self._admin()
+        # 1) 不可逆 purge：带口令但不带 phones → 409，已删行仍在
+        r = c.post("/api/accounts/batch", json={
+            "action": "purge",
+            "ids": [self.idx["已删"]],
+            "confirm_password": self.ADMIN_PASS,
+            "confirm_delay_ack": True,
+        }, headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+        # 2) 非门禁动作 delete：不带 phones 同样 409，无行被软删
+        r2 = c.post("/api/accounts/batch", json={
+            "action": "delete",
+            "ids": [self.idx["在效"]],
+        }, headers=h)
+        self.assertEqual(r2.status_code, 409, r2.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r2.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+
+    def test_ip_store_trim_runs_inside_rate_lock(self):
+        """N3：my.py / pages.py 两处 _ip_store_trim 必须在 _rate_lock 内调用。
+
+        `_ip_store_trim` 在超限时会 `store.items()` 遍历；锁外调用时并发插入会让
+        迭代中的 dict 变尺寸 → RuntimeError → 500（locks.py:37 的不变量是"调用方持锁、
+        trim 自身不取锁"）。这里用确定性替身 `_TrimProbeStore` 复现：未持锁即视为
+        "并发写者正在插入"（边迭代边插入，必抛 RuntimeError）；持锁则正常迭代并记
+        saw_locked。把 `_IP_STORE_LIMIT` 临时钳到 0 强制进入清理分支（不依赖 len>10000）。
+        """
+        import web.security as _sec
+        app = self.webapp.create_app()
+        c = app.test_client()
+        self.db.create_user("trim@test.local",
+                            self.webapp.generate_password_hash("secret1"))
+        r = c.post("/api/login", json={"username": "trim@test.local", "password": "secret1"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = c.get("/api/me").get_json()["csrf_token"]
+        with mock.patch.object(_sec, "_IP_STORE_LIMIT", 0):
+            # 1) my.py 的判重预检 trim：提交一个在册手机号即命中该分支
+            dup_store = _TrimProbeStore({"seed": (0, time.time())})
+            app.extensions["yiban_dupcheck_limits"] = dup_store
+            r = c.post("/api/my-accounts", json={
+                "name": "dup", "phone": "13800138102", "password": "pw"},
+                headers={"X-CSRF-Token": token})
+            self.assertNotEqual(r.status_code, 500, r.get_data(as_text=True))
+            self.assertTrue(dup_store.saw_locked, "my.py 的 trim 未在 _rate_lock 内调用")
+            self.assertFalse(dup_store.saw_unlocked)
+            # 2) pages.py 的登录页循环检测 trim：已登录 GET /login 触发
+            loop_store = _TrimProbeStore({"1.2.3.4": (1, time.time())})
+            app.extensions["yiban_login_loop"] = loop_store
+            r2 = c.get("/login")
+            self.assertNotEqual(r2.status_code, 500, r2.get_data(as_text=True))
+            self.assertTrue(loop_store.saw_locked, "pages.py 的 trim 未在 _rate_lock 内调用")
+            self.assertFalse(loop_store.saw_unlocked)
+
+
+class _TrimProbeStore(dict):
+    """`_ip_store_trim` 计数表替身：确定性暴露"trim 是否在 _rate_lock 内调用"。
+
+    真实竞态 = trim 锁外遍历 `items()` 时另一线程插入键。这里把"未持锁"等价为
+    "写者正在插入"：未持锁时边迭代边插入（dict 尺寸变化 → RuntimeError）；持锁时
+    写者已被锁排除，正常迭代。saw_locked/saw_unlocked 供断言进入过临界区。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.saw_locked = False
+        self.saw_unlocked = False
+
+    def items(self):
+        from web.services import locks as _locks
+        if _locks._rate_lock.locked():
+            self.saw_locked = True
+            return dict.items(self)
+        self.saw_unlocked = True
+        return self._racing()
+
+    def _racing(self):
+        for k, v in dict.items(self):
+            dict.__setitem__(self, "__racing__", (1, 0.0))
+            yield k, v

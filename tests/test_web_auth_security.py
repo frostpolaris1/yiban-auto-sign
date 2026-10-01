@@ -334,6 +334,26 @@ class SecurityFixes021Test(unittest.TestCase):
         finally:
             self._restore_admin_env()
 
+    def test_bump_login_failure_preserves_armed_lock(self):
+        """N2：bump 必须保留已 armed 的 lock_until，不得重置计数/解除锁定。
+
+        调用方把"检查是否锁定"与"递增失败计数"放在两个 _rate_lock 临界区，并发时
+        后到的一次 bump 若写回 (fails, 0, now)，就会抹掉另一线程刚建立的锁定——
+        10 次/60 秒的逐账号锁定即可被并发击穿。这里直接驱动真实实现。
+        """
+        store = {}
+        key = ("1.2.3.4", "victim@test.local")
+        now = time.time()
+        lock_until = now + self.webapp.LOGIN_LOCK_SECONDS
+        store[key] = (0, lock_until, now)  # 另一线程刚建立锁定（count 归零 + lock_until）
+        fails = self.webapp._bump_login_failure(store, key, now + 1)
+        self.assertEqual(fails, 1, "失败计数应递增")
+        kept_fails, kept_lock, last_ts = store[key]
+        self.assertEqual(kept_fails, 1)
+        self.assertEqual(kept_lock, lock_until, "已 armed 的 lock_until 被 bump 抹掉")
+        self.assertGreater(kept_lock, now + 1, "锁定应仍在生效")
+        self.assertEqual(last_ts, now + 1, "last_ts 应刷新供超限清理")
+
     def test_builtin_admin_password_change_updates_env_atomically(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
