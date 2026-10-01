@@ -1,0 +1,37 @@
+{# 前端翻新试点页（docs/refactor/29-frontend-vue-refactor-plan.md §3.4）。
+   目的：验证「Vue 3 + Element Plus 挂载进现有外壳 + 设计语言经 token 映射延续」
+   这条管线，而非承载业务功能；不进侧栏（URL 直达 /work/pilot）。
+
+   服务端只提供挂载点与哈希资产（清单由 web.services.vue_assets 解析
+   web/static/vue/.vite/manifest.json 得来，缺 dist 时视图层直接 404）；
+   数据由客户端只读拉取（GET /api/clock、GET /api/users），页面 HTML 不含业务数据。
+
+   与既有页面的差异点：脚本是 **module**（Vite 产物，chunk 间相对引用，子路径安全），
+   资产 URL 无 ?v=（文件名已含内容哈希，长缓存由 /static 既有策略承担）。 #}
+{% extends "layout_admin.html" %}
+
+{% block title %}Vue 翻新试点 · 易班自动签到{% endblock %}
+
+{% block head_styles %}
+{% for css in vue_css %}
+<link rel="stylesheet" href="{{ request.script_root }}{{ css }}">
+{% endfor %}
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div class="page-head-text">
+    <h1 class="panel-title">Vue 翻新试点</h1>
+    <p class="panel-sub">前端翻新管线验证页（docs/refactor/29）：Vue 组件挂载进现有外壳，Element Plus 经 Adminator token 映射继承设计语言；数据只读。</p>
+  </div>
+</div>
+<div id="vue-pilot-app"></div>
+<noscript><p class="panel-sub">本页动态内容需要 JavaScript。</p></noscript>
+{% endblock %}
+
+{% block scripts %}
+{% for preload in vue_preloads %}
+<link rel="modulepreload" href="{{ request.script_root }}{{ preload }}">
+{% endfor %}
+<script type="module" src="{{ request.script_root }}{{ vue_js }}"></script>
+{% endblock %}
