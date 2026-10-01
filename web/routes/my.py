@@ -463,7 +463,12 @@ def api_my_account_add():
             # 导出等同档面收口：命中才计会话额度（未重号的正常提交不占额、不留这行
             # 审计），每次命中落一条审计（目标为遮罩号，不泄露归属口径不变），超限
             # 改答 429 不再继续确认；被拒留痕每窗口至多一行，防拒绝面刷审计表。
-            m._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + m._IP_STORE_MAX_AGE)
+            # trim 必须在 _rate_lock 内（同 accounts_api.api_account_detail）：
+            # `_ip_store_trim` 会 store.items() 遍历（本表超 _IP_STORE_LIMIT 才进入
+            # 清理分支），锁外并发插入会让迭代中的 dict 变尺寸 → RuntimeError → 500。
+            # locks.py 不变量：调用方持锁、trim 自身不取锁。
+            with m._rate_lock:
+                m._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + m._IP_STORE_MAX_AGE)
             _dup_cnt, _dup_start, dup_allowed = m._bump_window_count(
                 dupcheck_limits(), email_pre[:64], time.time(),
                 m.DUPCHECK_WINDOW, limit=m.DUPCHECK_MAX,

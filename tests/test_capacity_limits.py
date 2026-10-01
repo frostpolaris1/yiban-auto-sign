@@ -851,12 +851,71 @@ class BatchApproveCapacityTest(_Base):
             self.assertEqual(len(accs), 3)
             c, h = self._master()
             # 占用 0 + 本次将翻 ACTIVE 3 个 = 3 > 上限 2 → 403，且一行都不翻
-            r = c.post("/api/accounts/batch", json={"action": "approve", "ids": [0, 1, 2]}, headers=h)
+            r = c.post("/api/accounts/batch",
+                       json={"action": "approve", "ids": [0, 1, 2],
+                             "phones": [f"1380013900{i}" for i in range(3)]},
+                       headers=h)
             self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
             self.assertIn("上限", r.get_json()["error"])
             self.assertTrue(all(a["status"] == "pending" for a in self.db.load_accounts()))
         finally:
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
+
+
+class RestoreCapacityGateTest(_Base):
+    """M05：恢复（单条 + 批量）与 approve 同一容量门。
+
+    攻击链：软删 k 个腾空容量 → 批通过 k 个 pending（腾空后不越界）→ 恢复 k 个，
+    把占用推过 YIBAN_MAX_ACCOUNTS。缺门时恢复无任何把关。
+    """
+
+    def _setup_over_capacity_by_restore(self):
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "2")
+        for name, phone, owner, status in (
+            ("A", "13800139001", "a@test.local", "active"),
+            ("B", "13800139002", "b@test.local", "active"),
+            ("C", "13800139003", "c@test.local", "pending"),
+            ("D", "13800139004", "d@test.local", "pending"),
+        ):
+            self.db.add_account({"name": name, "phone": phone, "password": "pw",
+                                 "status": status, "owner": owner})
+        rows = {a["name"]: a for a in self.db.load_accounts()}
+        self.db.set_account_deleted(rows["A"]["id"], 1, "2026-09-10 06:00:00")
+        self.db.set_account_deleted(rows["B"]["id"], 1, "2026-09-10 06:00:00")
+        c, h = self._master()
+        # 腾空后 count=0，批过 C/D：0+2=2 不越界（严格 >）→ 放行，占用回到上限
+        r = c.post("/api/accounts/batch", json={
+            "action": "approve",
+            "ids": [self._idx("C"), self._idx("D")],
+            "phones": ["13800139003", "13800139004"],
+        }, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        return c, h
+
+    def _idx(self, name):
+        return next(i for i, a in enumerate(self.db.load_accounts()) if a["name"] == name)
+
+    def test_single_restore_over_capacity_is_403(self):
+        c, h = self._setup_over_capacity_by_restore()
+        r = c.post(f"/api/accounts/{self._idx('A')}/restore",
+                   json={"phone": "13800139001"}, headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertIn("上限", r.get_json()["error"])
+        self.assertTrue(self.db.load_accounts()[self._idx("A")]["deleted"],
+                        "403 后不得恢复任何行")
+
+    def test_batch_restore_over_capacity_is_403(self):
+        c, h = self._setup_over_capacity_by_restore()
+        r = c.post("/api/accounts/batch", json={
+            "action": "restore",
+            "ids": [self._idx("A"), self._idx("B")],
+            "phones": ["13800139001", "13800139002"],
+        }, headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertIn("上限", r.get_json()["error"])
+        rows = self.db.load_accounts()
+        self.assertTrue(rows[self._idx("A")]["deleted"], "403 后不得恢复任何行")
+        self.assertTrue(rows[self._idx("B")]["deleted"], "403 后不得恢复任何行")
 
 
 if __name__ == "__main__":

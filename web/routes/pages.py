@@ -263,17 +263,22 @@ def login_page():
         ip = m._client_ip()
         now = time.time()
         loop = _login_loop()
-        m._ip_store_trim(loop, 60)
-        # 条目上限防护：超出时清理最老的 20%
-        if len(loop) > _LOGIN_LOOP_LIMIT:
-            sorted_ips = sorted(loop, key=lambda k: loop[k][1])
-            for old_ip in sorted_ips[:_LOGIN_LOOP_LIMIT // 5]:
-                loop.pop(old_ip, None)
-        cnt, first = loop.get(ip, (0, now))
-        if now - first > 10:
-            cnt, first = 0, now
-        cnt += 1
-        loop[ip] = (cnt, first)
+        # trim 与随后的读改写必须在同一把 _rate_lock 内：`_ip_store_trim` 会
+        # `store.items()` 遍历（本表 > _LOGIN_LOOP_LIMIT=1000 才进入清理分支），
+        # 锁外并发插入 `loop[ip]=...` 会让迭代中的 dict 变尺寸 → RuntimeError → 500。
+        # 不变量见 locks.py：调用方持锁、trim 自身不取锁。
+        with m._rate_lock:
+            m._ip_store_trim(loop, 60)
+            # 条目上限防护：超出时清理最老的 20%
+            if len(loop) > _LOGIN_LOOP_LIMIT:
+                sorted_ips = sorted(loop, key=lambda k: loop[k][1])
+                for old_ip in sorted_ips[:_LOGIN_LOOP_LIMIT // 5]:
+                    loop.pop(old_ip, None)
+            cnt, first = loop.get(ip, (0, now))
+            if now - first > 10:
+                cnt, first = 0, now
+            cnt += 1
+            loop[ip] = (cnt, first)
         if cnt < 4:
             return redirect(url_for("dashboard_page") if m._current_role() == "admin" else url_for("user_calendar_page"))
         m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", m.db.hash_ip(ip))

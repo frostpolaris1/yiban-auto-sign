@@ -1617,6 +1617,11 @@ class BasePathMiddleware:
     _ROOT_MARKERS = (
         "/login", "/user", "/terms", "/privacy",
         "/favicon.png", "/gongan-beian.png", "/robots.txt",
+        # 裸 /api 前缀：自身即 API 命名空间（404 handler 按它返回 JSON）。不登记时
+        # `/tool/demo/api` 这段「其余部分」两头不命中（既非 /api/ 前缀也非已知路由），
+        # 自动探测切不出前缀 → 回落到 HTML 404；登记后 rest == "/api" 即命中，
+        # SCRIPT_NAME 回填 /tool/demo、PATH_INFO 落回 /api，交给 404 handler 出 JSON。
+        "/api",
         # 改版前的旧路径（历史书签兼容，302 到 /组/页面）
         "/logs", "/accounts", "/users", "/settings", "/mine", "/mine/calendar",
     )
@@ -2206,6 +2211,42 @@ def create_app(host=None):
             return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
         return _render_error_page(
             500, "服务器内部错误", "请求处理失败，请稍后重试；若持续出现，请联系管理员。"
+        )
+
+    # ---- 请求态错误（400/405/413）：/api/* 一律 JSON ----
+    # `_json_body()` 用 `abort(400, description=...)` 拒绝非法/非对象 JSON，werkzeug 对
+    # 错方法（405）与超 MAX_CONTENT_LENGTH（413，见上方 app.config）也抛 HTTPException。
+    # 缺这三个 handler 时它们全落 werkzeug 默认 text/html 错误页，前端 `res.json()` 直接
+    # 抛解析异常、拿不到 `error` 文案——与 404/500 的 /api/* JSON 口径必须一致。
+    # 判据同 404/500：只认 path 自身（werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME）。
+    def _is_api_path():
+        p = request.path
+        return p == "/api" or p.startswith("/api/")
+
+    @app.errorhandler(400)
+    def _handle_400(e):
+        if _is_api_path():
+            # description 只来自本仓 `abort(400, description=...)`（当前仅 _json_body 两处），
+            # 是给前端看的用户文案；缺失时回退通用文案，绝不回显内部异常细节。
+            return jsonify({"error": getattr(e, "description", "") or "请求无效"}), 400
+        return _render_error_page(
+            400, "请求无效", "请求格式不正确，请检查后重试。"
+        )
+
+    @app.errorhandler(405)
+    def _handle_405(e):
+        if _is_api_path():
+            return jsonify({"error": "方法不允许"}), 405
+        return _render_error_page(
+            405, "方法不允许", "该地址不支持当前请求方法。"
+        )
+
+    @app.errorhandler(413)
+    def _handle_413(e):
+        if _is_api_path():
+            return jsonify({"error": "请求体过大"}), 413
+        return _render_error_page(
+            413, "请求体过大", "提交的内容超过大小限制，请精简后重试。"
         )
 
     @app.after_request

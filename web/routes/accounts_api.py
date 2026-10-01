@@ -580,22 +580,23 @@ def api_accounts_batch():
         if not valid:
             return jsonify({"error": "所选账号不存在"}), 404
         phones_in = data.get("phones")
-        if isinstance(phones_in, list) and len(phones_in) == len(ids):
-            expect = {
-                i: str(phones_in[k]).strip()
-                for k, i in enumerate(ids)
-                if type(i) is int
-            }
-            # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
-            if any(
-                i in expect
-                and m._mask_phone(expect[i]) != m._mask_phone(str(accounts[i].get("phone", "")))
-                for i in valid
-            ):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-        elif isinstance(phones_in, list) and len(phones_in) != len(ids):
-            # M91：phones 与 ids 长度不等 = 客户端对齐令牌残缺；静默跳过比对正是按 idx
-            # 错位改写的口子，fail-closed 让前端刷新重取对齐快照。
+        # 对齐令牌必须完整：缺 phones / 非数组 / 与 ids 长度不等 —— 三者任一都
+        # fail-closed 409，前端重取对齐快照。此前只判「长度不等」，完全不带 phones
+        # （None）时两个分支都不进、静默按 idx 作用；purge 不可逆，一次错位即不可恢复。
+        # 前端 account-ops.js 总带对齐 phones；脚本/第三方不带会被一并 409（契约收紧）。
+        if not isinstance(phones_in, list) or len(phones_in) != len(ids):
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        expect = {
+            i: str(phones_in[k]).strip()
+            for k, i in enumerate(ids)
+            if type(i) is int
+        }
+        # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
+        if any(
+            i in expect
+            and m._mask_phone(expect[i]) != m._mask_phone(str(accounts[i].get("phone", "")))
+            for i in valid
+        ):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
 
         # 容量闸门（approve 专属）：与单条审核口（api_account_review 的 approve 分支）
@@ -614,6 +615,26 @@ def api_accounts_batch():
             if become and m._accounts_at_capacity(become):
                 return jsonify({
                     "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
+                }), 403
+
+        # 容量闸门（restore 专属）：恢复 = 让这一行重新计入容量（软删期间不计入，见
+        # _capacity_account_count）。缺这道门时「软删 k 个腾空 → 批通过 k 个 pending →
+        # 恢复 k 个」可把占用推过 YIBAN_MAX_ACCOUNTS：软删不计容量，故腾空后 approve
+        # 能过，恢复时却无人把关。与 approve 同一门、同一 precompute 口径；pending/
+        # rejected 的软删行恢复后仍不签到（不计容量），不纳入 become，避免误伤。
+        if action == "restore":
+            become = sum(
+                1
+                for i in valid
+                if accounts[i].get("deleted")
+                and accounts[i].get("status") not in (
+                    m.ACCOUNT_STATUS_PENDING,
+                    m.ACCOUNT_STATUS_REJECTED,
+                )
+            )
+            if become and m._accounts_at_capacity(become):
+                return jsonify({
+                    "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
 
         ops = []
@@ -789,6 +810,16 @@ def api_account_restore(idx):
             return jsonify(
                 {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
+        # 容量闸门：恢复 = 让这一行重新计入容量（软删期间不计入）。软删腾空后批过
+        # pending 再逐条恢复同样能越界，故单条与批量同一门；仅对会真正计入容量的行
+        # （status 已通过审核）判定，pending/rejected 行恢复后仍不签到，不误伤。
+        if (
+            acc.get("status") not in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED)
+            and m._accounts_at_capacity(1)
+        ):
+            return jsonify({
+                "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
+            }), 403
         m.db.set_account_deleted(acc["id"], 0, audit_spec={
             "username": session.get("username") or "?",
             "action": "account_restore",

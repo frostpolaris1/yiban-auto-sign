@@ -12,6 +12,7 @@
 依赖：进程内加载 `web/app.py`（importlib 隔离）+ Flask test client；临时 `.env`/SQLite，
     不联网、不访问真实易班接口。
 """
+import ast
 import contextlib
 import importlib.util
 import os
@@ -170,6 +171,51 @@ class AuditReadApiTest(unittest.TestCase):
         rows = r.get_json()["rows"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["target"], "t-bob")
+
+    # ---- M90-page：page 上界（防 int64 溢出被 except 兜成 500） ----
+
+    def test_page_upper_bound_is_400_not_500(self):
+        # 10**30 量级的 page：(page-1)*page_size 溢出 SQLite int64，绑定异常此前被
+        # except 兜成 500；上界校验应先返 400。
+        r = self._admin().get("/api/audit-logs?page=" + "1" + "0" * 30)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    # ---- M90-trace：docstring 信封 + 只读端点访问留痕 ----
+
+    def test_docstring_names_pagination_envelope(self):
+        path = os.path.join(BASE, "web", "routes", "audit_api.py")
+        with open(path, encoding="utf-8") as f:
+            doc = ast.get_docstring(ast.parse(f.read()))
+        self.assertIsNotNone(doc, "audit_api.py 缺模块 docstring")
+        for token in ("rows", "page", "page_size", "total", "has_more"):
+            self.assertIn(token, doc, f"docstring 未点名信封字段 {token}")
+
+    def test_read_audit_trace_recorded_on_read(self):
+        app = self.webapp.create_app()
+        c = app.test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        seen = []
+        orig = app.extensions["yiban_read_audit_trace"]
+
+        def spy(action, target=""):
+            seen.append((action, target))
+            return orig(action, target)
+
+        app.extensions["yiban_read_audit_trace"] = spy
+        r = c.get("/api/audit-logs")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn(
+            "audit_logs_read", [a for a, _ in seen],
+            "只读审计端点未接 read_audit_trace 访问留痕",
+        )
+        # 留痕行确实落库（窗口内首读必落一行，见 _read_audit_row_due）
+        from yiban.store import audit_chain
+        rows, total = audit_chain.read_audit_rows(
+            action="audit_logs_read", limit=10, offset=0)
+        self.assertGreaterEqual(total, 1, "read_audit_trace 未生成留痕行")
 
 
 if __name__ == "__main__":

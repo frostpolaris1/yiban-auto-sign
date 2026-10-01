@@ -549,11 +549,17 @@ def _bump_login_failure(store, key, now):
     """锁内递增失败计数，返回递增后的次数。
 
     H7：登录/改密/注销/恢复共用失败计数的读改写统一走这里。
+
+    值三元组 (count, lock_until, last_ts)：**必须保留原 lock_until**。调用方把
+    "检查是否已锁定"（读）与"失败计数递增"（写）分成两个 `_rate_lock` 临界区，
+    并发时后到的一次 bump 若把 lock_until 重置为 0，就会抹掉另一线程刚建立的锁定
+    并重置计数——10 次/60 秒的逐账号锁定即可被并发击穿。last_ts 刷新为 now 供
+    超限清理（_ip_store_trim 只认末位时间戳）。
     """
     with _rate_lock:
-        fails, _, _ = store.get(key, (0, 0, 0))
+        fails, lock_until, _ = store.get(key, (0, 0, 0))
         fails += 1
-        store[key] = (fails, 0, now)
+        store[key] = (fails, lock_until, now)
         return fails
 
 

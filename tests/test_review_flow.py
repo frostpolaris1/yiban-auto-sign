@@ -188,7 +188,9 @@ class ReviewFlowTest(unittest.TestCase):
         _c3, data3 = self._admin_accounts()
         ids = [a["index"] for a in data3["accounts"]]
         r = _c3.post("/api/accounts/batch",
-                     json={"action": "reject", "ids": ids, "reason": "批量\u2028伪造行"},
+                     json={"action": "reject", "ids": ids,
+                           "phones": [a["phone"] for a in data3["accounts"]],
+                           "reason": "批量\u2028伪造行"},
                      headers=self._csrf(self._login(_c3, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         _c4, data4 = self._admin_accounts()
@@ -232,13 +234,17 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         ids = [a["index"] for a in data["accounts"]]
         self.assertEqual(len(ids), 2)
-        r = _c.post("/api/accounts/batch", json={"action": "approve", "ids": ids},
+        r = _c.post("/api/accounts/batch",
+                    json={"action": "approve", "ids": ids,
+                          "phones": [a["phone"] for a in data["accounts"]]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         _c2, data2 = self._admin_accounts()
         self.assertTrue(all(a["status"] == "active" for a in data2["accounts"]))
         # 再次批量通过 → 0 个（全部已 active）
-        r = _c2.post("/api/accounts/batch", json={"action": "approve", "ids": ids},
+        r = _c2.post("/api/accounts/batch",
+                     json={"action": "approve", "ids": ids,
+                           "phones": [a["phone"] for a in data["accounts"]]},
                      headers=self._csrf(self._login(_c2, "admin", ADMIN_PASS)))
         self.assertIn("0 个", r.get_json()["msg"])
 
@@ -338,7 +344,9 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(len(ids), 2)
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post("/api/accounts/batch",
-                        json={"action": "reject", "ids": ids, "reason": "批量复核不符"},
+                        json={"action": "reject", "ids": ids,
+                              "phones": [a["phone"] for a in data["accounts"]],
+                              "reason": "批量复核不符"},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 2, "批量拒绝应每户恰好一封")
