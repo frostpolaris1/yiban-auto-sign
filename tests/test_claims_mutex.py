@@ -40,7 +40,7 @@ from yiban import clock, egress  # noqa: E402
 from yiban.store import queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
-DAY = "2026-09-16"
+DAY = time.strftime("%Y-%m-%d")  # 运行日：硬编日期会随时间漂出 14 天保留窗（基线红组A/B 根因）
 PHONE = "13800138000"
 PHONE_B = "13800138001"
 #: 竞位者身份串（合成值，非真实旧格式——真实旧格式含 `:workers:` 中缀，本串按解析
