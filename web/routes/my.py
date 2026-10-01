@@ -812,8 +812,8 @@ def api_my_account_delete(idx):
         removed = accounts[indices[idx]]
         if removed.get("deleted"):
             return jsonify({"error": "该账号已在待删除状态，可在本页撤销恢复"}), 400
-        # 防错位（同 /api/accounts/*）：删除是不可逆前置动作，视图漂移时宁可让
-        # 用户刷新，也不能删到本人另一行
+        # 防错位（同 /api/accounts/*）：软删虽可逆（7 天宽限 + 本页可自助恢复），
+        # 但视图漂移时删错本人另一行的代价远大于让用户刷新一次
         if m._stale_idx_guard(removed, m._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         m.db.set_account_deleted(

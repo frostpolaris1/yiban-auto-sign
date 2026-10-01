@@ -186,9 +186,10 @@ def api_mail_config_save():
     走同一道高危门禁、占同一本凭据额度（用户拍板：把告警装回去免门，把它拆掉要
     口令）。其余口径：admin_notify（个人接收偏好，不影响其他管理员）与 admin_to
     （可逆路由改动）免门免额度；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令
-    （直连 _reconfirm_admin_password，不占高危额度）。开关的判据是「值真变化」——
-    已是关的重复提交、或只改 admin_to 的保存不再被这门连坐。留痕统一交给落盘后的
-    审计行（谁、把哪路从哪改到哪）；告警通道自身无法可靠通报自己的变更（见下方
+    （直连 _reconfirm_admin_password，不占高危额度；用户 2026-10-01 拍板后
+    `risk_always=True`，即缺省 `risk` 档下同出口也不吃"同出口免口令"）。开关的判据是
+    「值真变化」——已是关的重复提交、或只改 admin_to 的保存不再被这门连坐。留痕统一交给
+    落盘后的审计行（谁、把哪路从哪改到哪）；告警通道自身无法可靠通报自己的变更（见下方
     落盘处注释）。
     smtps 与 admin_to 同请求提交时口令只按 smtps 需要（admin_to 免门，不拖累）。
     """
@@ -345,7 +346,8 @@ def api_mail_config_save():
     if smtps_list is not None:
         # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组；
         # 第一个参数是整个请求体（门禁还要看 confirm_delay_ack 之类的同请求字段）
-        denied = _reconfirm_admin_password()(data, "修改邮件 SMTP 配置")
+        denied = _reconfirm_admin_password()(data, "修改邮件 SMTP 配置",
+                                             risk_always=True)
         if denied is not None:
             return denied
     if not flags and smtps_list is None and admin_to_val is None:
@@ -354,7 +356,8 @@ def api_mail_config_save():
     # 「关闭消息推送通道」共用同一道门与同一本账）。开启方向、admin_notify（个人
     # 接收偏好）与 admin_to（可逆路由改动）仍免门免额度，留痕靠落盘后的审计行。
     if closing_mail_channel:
-        gate = _high_risk_gate()(data, "关闭邮件告警通道", quota="creds")
+        gate = _high_risk_gate()(data, "关闭邮件告警通道", quota="creds",
+                                  risk_always=True)
         if gate:
             return gate
     # 加密排在口令确认之后（同 notify-config：失败请求零写盘痕迹）
@@ -448,7 +451,9 @@ def api_notify_config_save():
     "关闭推送 / 清空密钥 / 换密钥"触碰**密钥本身**（判定 = type 或 secret 在场），
     仍过高危门禁（换钥/清钥属用户拍板门清单的"换钥"类），与高危删除同口径共用
     限速计数；调额度与节流参数（cooldown/urgent_only/daily_max/urgent_daily_max）
-    是可逆改动，免门免额度（留痕靠审计行）。
+    是可逆改动，免门免额度（留痕靠审计行）。用户 2026-10-01 拍板：本门
+    `risk_always=True`，即缺省 `risk` 档下**自定义推送地址变更/关闭通道同出口也要
+    当次口令**（此前"risk 档同出口免口令"被本次口径覆盖）。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
@@ -535,7 +540,7 @@ def api_notify_config_save():
         )
         # 统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）；
         # 换钥/清钥属凭据改写类，占独立的凭据额度（与删除类分开计数，不互撞）
-        gate = _high_risk_gate()(data, label, quota="creds")
+        gate = _high_risk_gate()(data, label, quota="creds", risk_always=True)
         if gate:
             return gate
     # 密钥加密刻意排在闸门**之后**：account_crypto.load_key 在既无
