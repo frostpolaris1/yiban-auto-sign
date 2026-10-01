@@ -100,7 +100,10 @@ def _executor_row_payload(row):
             "name": row.get("name") or None,
             "state": None, "last_seen_at": None}
     if row["type"] == yb_egress.TYPE_WORKER:
-        item["state"], item["last_seen_at"] = signin.worker_presence(row["slot"])
+        # 心跳身份键 = 角色 + 槽位号（见 `state_io.worker_alive_key`）：worker 行必须按
+        # worker 角色读，否则 `single`/`fallback` 的心跳会与 worker-0 混在一起。
+        item["state"], item["last_seen_at"] = signin.worker_presence(
+            row["slot"], role=yb_egress.ROLE_WORKER)
     return item
 
 

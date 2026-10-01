@@ -23,8 +23,10 @@
 - `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
   事件签名 `(条数, 最新迁移标记)`，短轮询变化即接手；
 - `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/store/cleanup.py` 编排）；
-- `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
-  "当日是否了结"、给进度展示取数；
+- `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此给
+  进度展示取数；`open` **不过滤 `vshard`，不得当"当日是否了结"的闸门**（那会把永不
+  被领取的 `vshard=-1` 惰性行算进去），闸门用 `pending_count`（有分片上下文）或
+  `open_count`（无分片上下文）；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
   的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
@@ -627,6 +629,35 @@ def pending_count(day, vshards, phones=None):
             row = conn.execute(sql, (day, STATE_PENDING, *shards, *phone_params)).fetchone()
     except Exception as e:
         logger.warning("读取当日待办任务计数失败（按无待办处理）: %s", e)
+        return 0
+    return int(row[0]) if row else 0
+
+
+def open_count(day):
+    """当日仍**未了结**（`OPEN_STATES`）且**可被领取**（`vshard >= 0`）的行数。
+
+    这是「当日是否了结」的库内事实源，供**没有分片上下文**的调用方使用
+    （`state_io.has_undone_accounts_today` 由宿主 run.sh / 容器调度器调用，只拿得到
+    状态目录与业务日，拿不到本执行体的分片集，故不能走 `pending_count(day, vshards)`）。
+
+    **`vshard >= 0` 过滤不是可选优化，是判据的一部分**：历史平移 / v20 补账写入的
+    `vshard=-1` 行永不被 `claim_batch` 领取（`vshard IN (分片集)` 挡着），把它们的
+    `failed`（属 `OPEN_STATES`）算作"未了结"，该日就**永远不了结**、补签轮反复空跑
+    ——与 `pending_count` 的核心口径一致，理由详见其文档。
+
+    只数 `OPEN_STATES`（`pending`/`claimed`/`failed`/`stolen`），与 `day_counts(day)["open"]`
+    的差别仅在这个 `vshard` 过滤（后者不过滤，故不能当闸门用）。库不可用 → 0 +
+    warning（调用方据此回退状态文件，而不是把"读不到"当"已了结"）。
+    """
+    placeholders = ",".join("?" for _ in OPEN_STATES)
+    sql = ("SELECT COUNT(*) FROM sign_tasks WHERE day=? AND vshard >= 0 "
+           f"AND state IN ({placeholders})")
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            row = conn.execute(sql, (day, *OPEN_STATES)).fetchone()
+    except Exception as e:
+        logger.warning("读取当日未了结任务计数失败（按 0 处理）: %s", e)
         return 0
     return int(row[0]) if row else 0
 

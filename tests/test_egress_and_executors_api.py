@@ -1006,6 +1006,70 @@ class WorkerPresenceTest(_WebBase):
         self.assertNotIn(socket.gethostname(), json.dumps(body, ensure_ascii=False),
                          "主机名属部署信息")
 
+    def test_single_and_fallback_do_not_share_worker0_heartbeat(self):
+        """心跳身份键带角色：`single` / `fallback` 不再与 `worker-0` 共用同一文件。
+
+        三者身份串里只有 worker 带槽位号（`worker-{i}@host`），single/fallback 都解析出
+        槽位 0；旧实现据此撞同一个 `worker-alive-0.json`，兜底每轮收尾会把 worker-0 的
+        心跳洗成 finished/running，执行体存活四态被别的身份的退出污染。
+        """
+        s = self.webapp.signin
+        p_worker = s.worker_alive_path(0, role=egress.ROLE_WORKER)
+        p_single = s.worker_alive_path(0, role=egress.ROLE_SINGLE)
+        p_fallback = s.worker_alive_path(0, role=egress.ROLE_FALLBACK)
+        self.assertNotEqual(p_worker, p_single, "single 与 worker-0 不得共用心跳文件")
+        self.assertNotEqual(p_worker, p_fallback, "fallback 与 worker-0 不得共用心跳文件")
+        self.assertNotEqual(p_single, p_fallback, "single 与 fallback 不得共用心跳文件")
+        # worker 行的心跳文件名与旧实现逐字相同（不传 role 即 worker 口径）
+        self.assertEqual(s.worker_alive_path(0), p_worker)
+
+        now = self.FIXED_NOW
+        s.mark_worker_started(0, now=now - timedelta(seconds=5))
+        s.mark_worker_started(0, now=now - timedelta(minutes=5),
+                              role=egress.ROLE_FALLBACK)
+        s.mark_worker_finished(0, exit_code=0, now=now - timedelta(minutes=3),
+                               role=egress.ROLE_FALLBACK)
+        self.assertEqual(s.worker_presence(0, now=now)[0], s.WORKER_STATE_RUNNING,
+                         "兜底收尾把 worker-0 洗成 finished = 四态失真")
+        self.assertEqual(
+            s.worker_presence(0, now=now, role=egress.ROLE_FALLBACK)[0],
+            s.WORKER_STATE_FINISHED, "兜底自己的收尾仍要如实反映")
+        self.assertEqual(
+            s.worker_presence(0, now=now, role=egress.ROLE_SINGLE)[0],
+            s.WORKER_STATE_IDLE, "single 没跑过就该是 idle")
+
+    def test_single_mode_assignment_reads_single_heartbeat(self):
+        """`workers.single_mode` 行（index 恒 0）读的是**单执行体**心跳，不是 worker-0 的。"""
+        with open(self.env_file, encoding="utf-8") as f:
+            original = f.read()
+        self.addCleanup(self._restore_env_file, original)
+        manifest = egress.dump_manifest([{"slot": 0, "type": "fallback", "proxy": ""}])
+        lines = [ln for ln in original.splitlines()
+                 if not ln.startswith(egress.ENV_MANIFEST + "=")]
+        lines.append(egress.ENV_MANIFEST + "=" + manifest)
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        now = clock.now().replace(microsecond=0)
+        s = self.webapp.signin
+        s.mark_worker_started(0, now=now)   # worker-0 在跑（并行执行体的心跳）
+        body = self._login().get("/api/scheduler/executors").get_json()
+        self.assertTrue(body["workers"]["single_mode"],
+                        "夹具前提：清单里没有 worker 行 ⇒ single_mode")
+        item = body["workers"]["assignments"][0]
+        self.assertEqual(item["index"], 0)
+        self.assertEqual(item["state"], "idle",
+                         "single_mode 行读了 worker-0 心跳（让它假装在跑）")
+        # 单执行体真的起跑后，同一行才显示 running
+        s.mark_worker_started(0, now=now, role=egress.ROLE_SINGLE)
+        body = self._login().get("/api/scheduler/executors").get_json()
+        self.assertEqual(body["workers"]["assignments"][0]["state"], "running",
+                         "单执行体起跑后该行必须显示 running")
+
+    def _restore_env_file(self, text):
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(text)
+
 
 class AccountsLastExecutorTest(_WebBase):
     """/api/accounts 的 `last_executor`：**最近一次有记录的业务日**是谁签的。

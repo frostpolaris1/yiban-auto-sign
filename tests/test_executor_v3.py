@@ -1717,7 +1717,7 @@ class RecoveryWiringTest(_Base):
         real = executor_v3._run_async
 
         async def spy(ctx):
-            seen.append(state_io.worker_presence(0))
+            seen.append(state_io.worker_presence(0, role=egress.ROLE_SINGLE))
             return await real(ctx)
 
         with mock.patch.object(executor_v3, "_run_async", spy), \
@@ -1726,7 +1726,7 @@ class RecoveryWiringTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
                          "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
-        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
                          "收尾正常路径写心跳：判 finished")
 
 
@@ -1744,7 +1744,7 @@ class WorkerFinishMarkTest(_Base):
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
                          "正常跑完必须写收尾标记")
 
     def test_interrupt_does_not_write_finish_mark(self):
@@ -1760,7 +1760,7 @@ class WorkerFinishMarkTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         later = self.fc.now() + datetime.timedelta(
             seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
-        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+        self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "中断不得写收尾：心跳过期后要判 stale，而不是 finished")
 
@@ -1783,7 +1783,7 @@ class WorkerFinishMarkTest(_Base):
         self.assertEqual(out, {}, "未预期异常按无结果收尾（不外逃）")
         later = self.fc.now() + datetime.timedelta(
             seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
-        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+        self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "未预期异常不得写收尾：心跳过期后判 stale，而不是 finished")
 

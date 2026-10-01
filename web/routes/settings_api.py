@@ -777,6 +777,8 @@ def api_executors():
              "label": m.yb_egress.executor_label(m.yb_egress.TYPE_WORKER, r["slot"])}
             for r in active
         ]
+        # 存活四态的心跳角色档：有并行行时读 worker 心跳（身份键 = 角色 + 槽位号）
+        presence_role = m.yb_egress.ROLE_WORKER
     else:
         # 清单里没有并行执行体行（全被停用/删除）→ 运行时按旧口径的单执行体形态跑：
         # 出口走 `single` 角色（= `YIBAN_PROXY`）——这正是这种情况下**实际运行**的
@@ -786,10 +788,15 @@ def api_executors():
         assignments = [{"index": 0, "egress": m.yb_egress.describe(fallback_single),
                         "role": m.yb_egress.ROLE_WORKER,
                         "label": m.yb_egress.role_label(m.yb_egress.ROLE_WORKER, 0)}]
+        # 这条 index 恒为 0 的行**跑的是单执行体身份**（`single@{主机}`），心跳也写在
+        # single 的身份键上：若仍按 worker-0 读，会与并行执行体的 worker-0 撞 key
+        # （兜底/单执行体收尾会把 worker-0 的心跳洗成 finished）。
+        presence_role = m.yb_egress.ROLE_SINGLE
     # 每个并行执行体的存活四态：后端算好，前端不必自己拼（也不用知道心跳周期）。
     # `last_seen_at` 是最后一次见到它活着的时间串；**不含 pid/主机名**。
     for item in assignments:
-        item["state"], item["last_seen_at"] = m.signin.worker_presence(item["index"])
+        item["state"], item["last_seen_at"] = m.signin.worker_presence(
+            item["index"], role=presence_role)
     # 兜底出口：清单里有兜底行就用它（值在迁移时已按旧口径落定）；没有该行
     # （被删除/停用）则继续按旧键解析，接口字段与旧口径保持一致。
     fb_row = m.yb_egress.fallback_row(rows)
