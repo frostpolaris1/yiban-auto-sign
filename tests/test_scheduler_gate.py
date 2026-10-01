@@ -32,10 +32,12 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
@@ -552,6 +554,136 @@ fi
             r = self._run_script(tmp, ["--restore", "good.tar.gz", "restored"])
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue(os.path.exists(os.path.join(tmp, "restored", "data", "f.txt")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---- M29：RETAIN_DAYS 零校验 / 删除无日志 ----
+
+    def _seed_old_archive(self, tmp, days=5):
+        data = os.path.join(tmp, "data")
+        os.makedirs(data, exist_ok=True)
+        # 不可压缩内容：避免 gzip 把真实产物压到尺寸下限以下
+        with open(os.path.join(data, "yiban.db"), "wb") as f:
+            f.write(os.urandom(4096))
+        backups = os.path.join(tmp, "backups")
+        os.makedirs(backups, exist_ok=True)
+        old = os.path.join(backups, "yiban-data-2026-01-01.tar.gz.gpg")
+        with open(old, "wb") as f:
+            f.write(os.urandom(300))
+        os.utime(old, (time.time() - days * 86400,) * 2)
+        return old
+
+    @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
+    def test_retain_days_zero_refused_without_deleting(self):
+        """M29：RETAIN_DAYS=0 会让 `-mtime +0` 删光历史 ⇒ 解析后就拒绝（rc=2）。"""
+        tmp = tempfile.mkdtemp(prefix="b12-retain-zero-")
+        try:
+            old = self._seed_old_archive(tmp)
+            r = self._run_script(tmp, [], extra_env={"RETAIN_DAYS": "0"})
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("RETAIN_DAYS", r.stderr + r.stdout)
+            self.assertTrue(os.path.exists(old), "拒绝执行时不得删任何文件")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
+    def test_retain_days_nonnumeric_refused(self):
+        tmp = tempfile.mkdtemp(prefix="b12-retain-nan-")
+        try:
+            os.makedirs(os.path.join(tmp, "data"))
+            r = self._run_script(tmp, [], extra_env={"RETAIN_DAYS": "30d"})
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
+    def test_expired_archive_removed_with_log_line(self):
+        """M29：过期清理必须逐条留痕（旧 `find -delete` 删了不写一行日志）。"""
+        tmp = tempfile.mkdtemp(prefix="b12-retain-del-")
+        try:
+            os.makedirs(os.path.join(tmp, "data"))
+            old = self._seed_old_archive(tmp)
+            r = self._run_script(tmp, [], extra_env={"RETAIN_DAYS": "2"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(os.path.exists(old), "超过 RETAIN_DAYS 的历史包必须被删")
+            out = (r.stdout + r.stderr).replace("\\", "/")
+            self.assertIn("removing: ", out, "删除动作必须逐条留痕：%s" % out)
+            self.assertIn(os.path.basename(old), out, "留痕必须点名被删的文件：%s" % out)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # ---- M97：umask 077 + 口令文件来源 ----
+
+    def _fs_preserves_modes(self):
+        probe = subprocess.run(
+            [self.BASH, "-c", 'f=$(mktemp); chmod 600 "$f"; stat -c %a "$f"; rm -f "$f"'],
+            capture_output=True, text=True, timeout=60)
+        return probe.stdout.strip() == "600"
+
+    def _fake_gpg_env(self, tmp, extra=None):
+        fakebin = os.path.join(tmp, "fakebin")
+        os.makedirs(fakebin, exist_ok=True)
+        gpg = os.path.join(fakebin, "gpg")
+        with io.open(gpg, "w", encoding="utf-8", newline="\n") as f:
+            f.write(self.FAKE_GPG)
+        os.chmod(gpg, 0o755)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("YIBAN_", "BACKUP_"))}
+        env.update({"DATA_DIR": "data", "BACKUP_DIR": "backups", "FAKEBIN": fakebin})
+        env.update(extra or {})
+        env["PATH"] = fakebin + os.pathsep + env.get("PATH", "")
+        return env
+
+    @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
+    def test_umask_keeps_products_private(self):
+        """M97：脚本必须自带 umask 077——产物（密文/清单）不得以 0644 存在。"""
+        if not self._fs_preserves_modes():
+            self.skipTest("宿主文件系统不保留 POSIX mode（Windows 开发机）")
+        tmp = tempfile.mkdtemp(prefix="b12-umask-")
+        try:
+            os.makedirs(os.path.join(tmp, "data"))
+            with open(os.path.join(tmp, "data", "yiban.db"), "wb") as f:
+                f.write(os.urandom(4096))
+            env = self._fake_gpg_env(tmp, {"YIBAN_BACKUP_PASSPHRASE": "test-pass-123"})
+            script = os.path.join(BASE, "docker", "backup-docker.sh")
+            # 父 shell 显式放宽 umask：判据是"脚本自己设了 077"，不是继承来的
+            r = subprocess.run([self.BASH, "-c", 'umask 022; exec "$1" "$2"',
+                                "_", self.BASH, script],
+                               capture_output=True, text=True, env=env, cwd=tmp, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            out_dir = os.path.join(tmp, "backups")
+            products = [n for n in os.listdir(out_dir) if n.endswith((".gpg", ".sha256"))]
+            self.assertTrue(products, r.stdout + r.stderr)
+            for n in products:
+                mode = stat.S_IMODE(os.stat(os.path.join(out_dir, n)).st_mode)
+                self.assertEqual(mode, 0o600, "%s 权限 %o ≠ 0600（未设 umask？）" % (n, mode))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
+    def test_passphrase_file_source_and_missing_refused(self):
+        """M97：口令来源优先 0600 文件；两种来源都缺 ⇒ rc=2。"""
+        tmp = tempfile.mkdtemp(prefix="b12-ppfile-")
+        try:
+            data = os.path.join(tmp, "data")
+            os.makedirs(data)
+            with open(os.path.join(data, "yiban.db"), "wb") as f:
+                f.write(os.urandom(4096))
+            pp = os.path.join(tmp, "pp")
+            with io.open(pp, "w", encoding="utf-8", newline="\n") as f:
+                f.write("test-pass-123\n")
+            os.chmod(pp, 0o600)
+            env = self._fake_gpg_env(tmp, {"YIBAN_BACKUP_PASSPHRASE_FILE": pp})
+            script = os.path.join(BASE, "docker", "backup-docker.sh")
+            r = subprocess.run([self.BASH, script], capture_output=True, text=True,
+                               env=env, cwd=tmp, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue([n for n in os.listdir(os.path.join(tmp, "backups"))
+                             if n.endswith(".gpg")], r.stdout + r.stderr)
+            env.pop("YIBAN_BACKUP_PASSPHRASE_FILE", None)
+            r2 = subprocess.run([self.BASH, script], capture_output=True, text=True,
+                                env=env, cwd=tmp, timeout=120)
+            self.assertEqual(r2.returncode, 2, r2.stdout + r2.stderr)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

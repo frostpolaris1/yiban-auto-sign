@@ -178,6 +178,13 @@ chmod +x /opt/yiban-auto-sign/run.sh
 mkdir -p /var/log/yiban
 ```
 
+> 🔒 状态目录与锁目录（默认 `/var/log/yiban`、`/var/lock/yiban`）必须**属主为本用户且
+> `chmod 700`**：目录**已存在**时 `run.sh` / `run_probe.sh` / 兜底执行体同样校验（M07），
+> 非本用户属主或收紧失败即拒绝运行（不静默降级）。升级后若日志报
+> 「状态目录/锁目录不安全」，执行
+> `sudo chown yiban: /var/log/yiban /var/lock/yiban && sudo chmod 700 /var/log/yiban /var/lock/yiban`
+> 后重跑。
+
 > ⚠️ 不要用"导出 .env 再跑 signin.py"的简化版覆盖它：那会丢掉锁、防重复与超时保护，两次 cron 并发登录同一批账号会触发易班风控。
 
 #### 6. crontab
@@ -202,6 +209,15 @@ mkdir -p /var/log/yiban
 > 形态会把口令带进整棵子进程树）。"cron 引用的路径必须能在仓库找到原件"由
 > `scripts/check-cron-provenance.sh` 机器断言（安装时强制跑；`tests/test_deploy_prod_artifacts.py`
 > 用活体反例钉死这道门）。
+>
+> 🔒 **以 root 安装的前置门（M01，2026-10-01）**：`install.sh` 以 root 执行检出内的脚本
+> 并把检出件 root:root 安装，故**以 root 安装（未设 `DESTDIR`）时检出必须属 root 且组/
+> 其他不可写**，否则拒装（`以 root 安装时检出必须属 root 且非组/其他可写`，exit 1）。
+> 若部署目录对服务账号 `yiban` 组可写（旧 README 为让 web 写 `.env`/`yiban.db` 而放开），
+> 安装前先 `sudo chown -R root:root /opt/yiban-auto-sign && sudo chmod -R go-w /opt/yiban-auto-sign`，
+> 并把运行期可写数据（`.env`/`yiban.db`/状态目录）移出检出（如放到 `/var/lib/yiban` 后
+> 在 `.env` 里指 `YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。测试/暂存安装用 `DESTDIR=` 前缀
+> 不受此门影响。
 >
 > 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
 > `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
@@ -297,17 +313,23 @@ git pull && docker compose up -d --build   # 更新代码后重建
 数据（SQLite / 账号密文 / 加密密钥 / 日志）全部位于宿主 `./data`，**备份该目录即可**：
 
 ```bash
-# 推荐：加密备份（口令经环境变量传入，磁盘不留明文；RETAIN_DAYS 自动轮转，默认 30 天）
-YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh
+# 推荐：加密备份（口令经 0600 文件读入，不进子进程环境；RETAIN_DAYS 自动轮转，默认 30 天）
+printf '%s\n' '你的备份口令' > /etc/yiban/backup-passphrase && chmod 600 /etc/yiban/backup-passphrase
+YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase bash docker/backup-docker.sh
 
 # 也可手动裸 tar（明文落盘，请自行妥善保管）
 tar czf yiban-backup-$(date +%F).tar.gz data/
 ```
 
-恢复（校验与解包一体；口令经环境变量注入，不出现在命令行/ps/shell history；解包前做路径穿越、符号链接、设备节点三重校验）：
+> 兼容写法：`YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh` 仍可用，
+> 但口令会进入该 shell 与 tar/gpg/find 整棵子进程的环境变量（`/proc/<pid>/environ` 可读），
+> 脚本会打印一行提示；建议改用上面的 `_FILE` 形式。
+
+恢复（校验与解包一体；口令经 `_FILE`（或环境变量）注入，不出现在命令行/ps/shell history；解包前做路径穿越、符号链接、设备节点三重校验）：
 
 ```bash
-YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
+YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
+    bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
 ```
 
 > ⚠️ 与 systemd 部署一致：加密密钥（`data/.env`）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
