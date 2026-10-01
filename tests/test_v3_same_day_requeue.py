@@ -573,10 +573,13 @@ class SessionRequeueTest(_Base):
                 if (await queue.get())[0] >= executor_v3.SENTINEL_PRIORITY:
                     return
 
+        # `held` 是补货循环登记"在途"的集合（M17）：周期回收按它豁免，防止仍躺在
+        # 通道队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
+        # 替身必须带真字段——getattr 兜底会让豁免在缺字段时静默失效。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
                               runtime_id=RUNTIME_OWNER, m=1, inflight=0, busy=0,
                               slot=0, shards=tuple(range(8)), v=8,
-                              requeue_during_run=True)
+                              requeue_during_run=True, held=set())
         queue = asyncio.PriorityQueue()
         with mock.patch.object(executor_v3.queue_store, "requeue_failed", spy), \
              mock.patch.object(executor_v3, "_lane", fake_lane), \

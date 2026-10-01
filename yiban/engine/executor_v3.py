@@ -187,6 +187,19 @@ def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None):
     重试越过窗口**，放不下就返回 `None`。窗口几何一律走 `window.bounds`（排计划、判
     关闭、容量预估的同一准绳）。`last_delay` 是上一次的 delay（进程内记账、无持久化）：
     换执行体接手或首次重试时未知，调用方传 `base` 即可——保守且收敛。
+
+    **落点用绝对时刻夹取，不拿「当天第几分钟」配零点**（M16）：`win.hi_min` 是不含
+    日期的分钟数，用 `to_dt(now 的零点, hi_min)` 当上界，在长轮次跨过午夜后算的是
+    **次日**的窗口结束；而 `remaining_sec` 同样只看分钟数，00:10 被算成"今天还剩一整
+    窗"，于是 `now + delay` 小于上界而原样胜出——落点变成 00:1x，**窗口之前**。
+    通道只判"窗口没关"（`_window_closed` 对 00:10 为假），那条行遂在窗口外被真实登录，
+    还会被记成 `skipped_window`。故：
+
+    - 已经进窗口（正常路径）：`min(now + delay, hi_dt)`，与旧实现逐字同值；
+    - 还没进窗口（跨零点的长轮次、或提前拉起的执行体）：落点钉进**同一时间窗**内的
+      绝对时刻（`min(lo_dt + delay, hi_dt)`），而不是窗口外的 `now + delay`。
+
+    窗口已过（`remaining <= 0`）仍返回 `None`：当天不再重试。
     """
     rng = rng or random.Random()
     base = max(1, int(sch_cfg["retry_min_interval"]))
@@ -196,9 +209,11 @@ def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None):
         return None
     cap = min(RETRY_CAP_SEC, remaining * 0.3)
     delay = min(cap, rng.uniform(base, max(base, float(last_delay) * 3)))
-    base_day = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    target = min(now_dt + datetime.timedelta(seconds=delay),
-                 window.to_dt(base_day, win.hi_min))
+    lo_dt, hi_dt = win.bounds_dt(now_dt)
+    if now_dt < lo_dt:
+        target = min(lo_dt + datetime.timedelta(seconds=delay), hi_dt)
+    else:
+        target = min(now_dt + datetime.timedelta(seconds=delay), hi_dt)
     return target if target > now_dt else None
 
 
@@ -390,6 +405,18 @@ class _Ctx:
         # ——那些行会走 `_attempt` 的 `acc is None` 分支被误当"了结"（静默漏签）。
         self.allowed_phones = (None if allowed_phones is None
                                else frozenset(allowed_phones))
+        # **在途**账号集合（M17）：已领回 `claimed`、还没处理完的条目——正躺在本进程的
+        # 通道队列里等通道/等限速/等 gap/等计划时刻，或正在线程池里跑那一次尝试。
+        # 只在事件循环线程里改写（领取处加、通道收尾处删，与本类其余计数同一纪律）。
+        #
+        # 为什么必须有：等待时间不受租约约束，而这些行在库里已是 `claimed`、租约 60s 起步。
+        # 队列一积压（限速/逐账号 gap/慢签到），条目能等过「租约 60s + 宽限 120s」，
+        # 回收器便把它们判死、回退 `pending`，**下一次 `claim_batch` 又原地领回来**——
+        # 同一账号当天两次真实登录（`epoch+1` 只挡迟到的结论写回，挡不住第二次登录，
+        # 易班侧会锁号）。回收器按本集合豁免（`queue_store.reap_expired(held=...)`），
+        # 这是"按持有者身份判活"而不是"把租约加长"：集合随处理完成而收缩，本进程真正
+        # 泄漏的行（已领却没进集合）仍会被回收自愈。
+        self.held = set()
 
 
 def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
@@ -619,6 +646,12 @@ async def _lane(queue, lane_id, ctx):
 
     每条通道对应线程池里的一个线程（默认执行器上限 = M，`asyncio.to_thread` 是唯一进
     线程的调用），故 M 条通道与 M 个线程一一对应，无嵌套提交造成的自我死锁。
+
+    `finally` 里从 `ctx.held` 摘除该条目（M17）：摘除点是"通道不再持有这条"而不是
+    "库里已收尾"——`_attempt` 的手动轮 `acc is None` 分支会**故意不收尾**（把行留给下一
+    轮/别的执行体），那一行一旦留在 `held` 里就再也回收不到，当天该账号无人再签。
+    正常路径下 `_settle` / `requeue_task` 已先把行挪出 `claimed`，此处只是把进程内的
+    在途登记与之一致；异常上抛（整轮中止）时同样摘除，进程内不留悬空的"在途"。
     """
     while True:
         item = await queue.get()
@@ -631,11 +664,42 @@ async def _lane(queue, lane_id, ctx):
             await _attempt(ctx, item)
         finally:
             ctx.busy -= 1
+            ctx.held.discard(item[2])
 
 
 #: 本进程内已打过接管日志的 `(peer, day)` 集合：判死后的分片每 `RECOVER_SEC` 都会再并
 #: 一次，逐次打会刷屏，故同日同一 peer 只播报首次。
 _TAKEN_OVER_PEERS: set = set()
+
+
+def _live_peer_owners(cfg, executor_id):
+    """**心跳仍存活**的兄弟执行体稳定槽位名（回收器的持有者豁免用，M17）。
+
+    与 `_widen_with_dead_peers` 共用同一份判活事实（`state_io.worker_presence` 的
+    四态），只是取**补集**并换个用法：那边是"`stale` 才并入它的分片"，这边是
+    "非 `stale` 的持有者手上的行不回收"。两处若各判一次就会漂移——并入了死主分片却
+    又回收活主手上的行，同一个账号两种结局。
+
+    判活口径：只有 `stale`（有开始记录、无收尾且心跳过期）算死。监督进程未启动 /
+    单进程直跑时槽位没有当日记录，四态回 `idle`——不是 `stale`，即视为活着。
+    `idle` 的槽位当日没有 `claimed` 行，豁免与否都不改变回收结果，判成"活"是保守侧
+    （少回收 = 不会造成重复登录）。
+
+    取 `(cfg, executor_id)` 而非 `ctx`：轮首那次回收发生在 `_Ctx` 构造之前，两处调用
+    点才能共用同一份判活。**不含本执行体自己**：本进程的行由更精确的 `ctx.held`
+    （在途集合）逐行豁免。若把自己的身份也塞进来，本进程"已领却没进 held"的泄漏行就
+    永远回收不到（当天该账号无人再签）；交给 `held` 既精确又保留自愈。轮首那次本进程
+    尚未领任何行（`held` 是空集），故不传 `held` 与传空集等价。
+    """
+    live = []
+    for peer in (cfg or {}).get("executors", ()):
+        if peer == executor_id:
+            continue
+        state, _seen = state_io.worker_presence(_worker_slot(peer), now=_now(),
+                                                role=_worker_role(peer))
+        if state != state_io.WORKER_STATE_STALE:
+            live.append(peer)
+    return live
 
 
 def _widen_with_dead_peers(ctx, shards):
@@ -699,8 +763,12 @@ async def _refiller(queue, shards, ctx):
 
     同一循环按间隔驱动两件恢复动作（**函数内不持时间状态**，间隔常量在模块级）：
     - `reap_expired`：回收本业务日内租约**超出宽限期**的 `claimed` 行——不回收的话崩溃
-      通道留下的行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"；宽限期
-      挡住"还在飞但租约已到"的慢尝试被误回收（详见 `queue_store.REAP_GRACE_SEC`）。
+      通道留下的行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"。**判活按
+      持有者身份**：本进程通道队列里在途的行（`held=ctx.held`）与心跳仍存活的兄弟执行体
+      （`live_owners=`）都豁免。少了这道豁免，队列里排队的条目会等过「租约 60s + 宽限
+      120s」被回收成 `pending`、再被本循环下一次 `claim_batch` 原地领回 ⇒ 同一账号当天
+      两次真实登录（M17，详见 `queue_store.reap_expired` 与 `_Ctx.held`）。
+      宽限期挡住的是"单次尝试比租约慢"，挡不住"在队列里排队"——两者的等待都没有上界。
       **只回收本业务日**（`day=ctx.day`）：不带 `day` 会连历史业务日的行一起回退成
       `pending`，而次日进程只按当日领取，那些行只会变成永不被领的空转行；跨午夜长轮次
       仍在飞的行也会被次日进程重置。
@@ -717,6 +785,7 @@ async def _refiller(queue, shards, ctx):
     last_beat = _mono()
     last_recover = _mono()
     allowed = getattr(ctx, "allowed_phones", None)
+    held = ctx.held
     while True:
         # 手动 `--only` 豁免窗口判定：用户主动触发应当放行（与旧领取池的手动链路同语义）。
         if not getattr(ctx, "reclaim", False) and schedule._window_closed(ctx.cfg, _now()):
@@ -727,7 +796,10 @@ async def _refiller(queue, shards, ctx):
             last_beat = _mono()
         if (not getattr(ctx, "reclaim", False)
                 and _mono() - last_recover >= RECOVER_SEC):
-            queue_store.reap_expired(now=_stamp_ms(_now()), day=ctx.day)
+            queue_store.reap_expired(now=_stamp_ms(_now()), day=ctx.day,
+                                     held=held,
+                                     live_owners=_live_peer_owners(ctx.cfg,
+                                                                    ctx.executor_id))
             shards = _widen_with_dead_peers(ctx, shards)
             if getattr(ctx, "requeue_during_run", False):
                 # 会话内回炉（默认档）：本轮刚弃权的 `retry:` 档行立刻翻回
@@ -742,6 +814,9 @@ async def _refiller(queue, shards, ctx):
             limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS,
             phones=allowed)
         for r in rows:
+            # 领取与登记在途之间**没有 await**：同一轮事件循环里同步完成，回收器不可能
+            # 在"行已 claimed、还没进 held"的缝里把它判死（那正是本条要堵的重复登录）。
+            held.add(r["phone"])
             queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
                               r["attempts"], r["epoch"]))
         if (not rows and ctx.inflight == 0 and ctx.busy == 0
@@ -925,7 +1000,12 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # fence 掉一个仍存活但慢的持有者的迟到收尾）。**不整段跳过回收**——手动账号自身若是
     # 陈旧 `claimed`，正需要这条路径把它拉回来（`reclaim_tasks` 只翻 `done`/`skipped`）。
     allowed_phones = frozenset(a.phone for a in accounts) if reclaim else None
-    queue_store.reap_expired(now=_stamp_ms(_now()), day=day, phones=allowed_phones)
+    # 轮首回收同样要带**存活持有者豁免**（M17）：此刻本进程还没领任何行（`held` 是空
+    # 集），但兄弟执行体可能正在跑上一段会话、在飞的行租约刚过期。不豁免就会把活着的
+    # 持有者手上的行回收成 `pending`，本轮 `claim_batch` 领走它，而对方通道队列里还躺着
+    # 同一行 ⇒ 同一账号两次真实登录。判活与补货循环内那次同一份（`_live_peer_owners`）。
+    queue_store.reap_expired(now=_stamp_ms(_now()), day=day, phones=allowed_phones,
+                             live_owners=_live_peer_owners(cfg, executor_id))
     try:
         ctx = _Ctx(
             accounts={a.phone: a for a in accounts},

@@ -271,13 +271,14 @@ def _loginfail_daily_limit(envs=None):
     """登录失败告警独立账本的每日上限；0 = 不限。
 
     键 YIBAN_LOGINFAIL_DAILY_MAX 无 NOTIFY_ 前缀（独立命名），读取口径与其他 notify
-    env 键一致：环境变量优先、回退 .env、非法/负值回退默认。
+    env 键一致：**.env 文件优先、进程环境只补缺**、非法/负值回退默认（M27，与
+    `config._env_str` 同一口径，不得各判一次）。
     """
-    value = os.environ.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
+    if envs is None:
+        envs = config._read_env_file()
+    value = envs.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
     if not value:
-        if envs is None:
-            envs = config._read_env_file()
-        value = envs.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
+        value = os.environ.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
     try:
         parsed = int(value)
     except (TypeError, ValueError):
