@@ -165,6 +165,7 @@ from web.services import logs as _logs_svc  # noqa: E402
 from web.services import manual_sign as _manual_sign  # noqa: E402
 from web.services import measure as _measure  # noqa: E402
 from web.services import notify_mail as _notify_mail  # noqa: E402
+from web.services import round_request as _round_request  # noqa: E402
 from web.services import signstatus as _signstatus  # noqa: E402
 from web.services import verify_queue as _verify_queue  # noqa: E402
 
@@ -300,6 +301,14 @@ from web.services.notify_mail import (  # noqa: E402
     _last_cleanup_text,  # noqa: F401
     _nl_safe,
     _review_reject_mail,  # noqa: F401
+)
+from web.services.round_request import (  # noqa: E402
+    # 名字面零损失：「立即执行一轮」请求记录的状态文件与防抖判定住在
+    # web/services/round_request.py；`_round_request_path` / `_write_round_request`
+    # 另由本模块的转发包装注入本模块现持的 STATE_DIR 与 _atomic_write
+    ROUND_REQUEST_FILE,  # noqa: F401
+    _read_round_request,  # noqa: F401
+    _round_request_cooldown_remaining,  # noqa: F401
 )
 from web.services.signstatus import (  # noqa: E402
     # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
@@ -477,6 +486,22 @@ def _measure_state_path():
 def _write_measure_state(path, payload):
     """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
     return _measure._write_measure_state(path, payload, _atomic_write)
+
+
+# 「立即执行一轮」请求记录（A5）的同名转发：与实测族逐字同形，区别只在那一份状态文件。
+# 防抖时长 `ROUND_REQUEST_COOLDOWN_SEC` 与端点的其余判据（仅主管理员、运行锁并发闸）
+# 留在路由：前者是路由经 m.* 取用的配置常量，后两者是请求上下文里的权限与顺序约束。
+ROUND_REQUEST_COOLDOWN_SEC = 60
+
+
+def _round_request_path():
+    """执行一轮请求记录的状态文件路径（实现见 web/services/round_request.py）。"""
+    return _round_request._round_request_path(STATE_DIR)
+
+
+def _write_round_request(path, payload):
+    """原子写执行一轮请求记录；落盘经本模块的 `_atomic_write`。"""
+    return _round_request._write_round_request(path, payload, _atomic_write)
 
 # 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
 # web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、
@@ -1537,15 +1562,15 @@ def _users_at_capacity():
         env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
 
 
-def _mail_alert_due(title, level=None, target=None):
+def _mail_alert_due(title, level=None):
     """同类型告警邮件节流判断（实现见 web/services/capacity.py）。
 
     `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
-    `read_env`），故转发必须现取后传入。`level`/`target` 缺省 None：既有单参调用
+    `read_env`），故转发必须现取后传入。`level` 缺省 None：既有单参调用
     （含 `mock.patch.object(webapp, "_mail_alert_due")` 打桩点）行为不变。
     """
     return _capacity._mail_alert_due(
-        title, ENV_FILE, load_env_int, level=level, target=target)
+        title, ENV_FILE, load_env_int, level=level)
 
 
 def _notify_capacity_once(kind, limit, label):
@@ -2484,7 +2509,8 @@ def create_app(host=None):
         return bool(trusted) and trusted != _client_ip()
 
     def _sensitive_password_gate(data, action, *, always_required=False,
-                                 deny_status=403, irreversible=False):
+                                 deny_status=403, irreversible=False,
+                                 risk_always=False):
         """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
 
         为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）各写各的
@@ -2500,6 +2526,13 @@ def create_app(host=None):
         `deny_status` 只换响应码、不换判定（保持各落点原有的客户端契约）。
         `irreversible=True` 只标"删了就回不来"的落点（物理清除、彻底删除、删用户）；
         可逆动作别传，否则把可回滚的操作也套上不可撤销的确认负担。
+
+        `risk_always=True` = **缺省 `risk` 档下也不吃"同出口免口令"**（用户 2026-10-01
+        拍板的口径变更，覆盖此前"risk 档同出口免口令"的拍板）：缺省档里
+        `_pw_gate_ip_changed()` 为假就早退放行，本参数把那一处早退跳过，让判定落到口令
+        比对上。**只作用于 `risk` 档**——`full` 档本就逐条走完三段（不变），`off` 档在
+        本参数之前就早退、永不要求口令（不变）。四类操作逐个标注：`risk_always=True`
+        即"拆掉同出口免口令"的落点清单，四类之外**一律不传**（risk 档其余操作仍免口令）。
 
         失败会怎样：错口令由 `_sensitive_pw_denied` 记**独立**计数，达阈值起本
         (出口 IP, 会话账号) 进冷却；这条链绝不碰登录失败表，所以门禁判错也不会把管理员
@@ -2525,7 +2558,10 @@ def create_app(host=None):
                                 "reason": PW_DELAY_ACK_REASON}), deny_status
             if tier == PW_GATE_OFF:
                 return None  # off：永不要求口令——下面口令比对、失败计数与冷却整段不执行
-            if not _pw_gate_ip_changed():
+            # 缺省档唯一的放行口就是这一句：出口 IP 没换 → 不要口令。`risk_always=True`
+            # 的四类操作（拆告警通道 / 改角色与提权 / 重置他人口令 / 改写他人易班凭据）
+            # 跳过它，同出口也必须当次输口令（用户 2026-10-01 拍板）；其余操作逐字不变。
+            if not risk_always and not _pw_gate_ip_changed():
                 return None  # risk（缺省档）：出口 IP 没换就不要口令，危险操作默认免输、换环境才要一次
             # 换环境命中 = 当次必须输口令。豁免判的是"本出口刚复核过"，而这里恰恰是
             # 本出口还没复核过，故显式置位：日后豁免口径若有变动，也不至于把命中的
@@ -2561,7 +2597,7 @@ def create_app(host=None):
         return _sensitive_pw_denied(key, action, deny_status, cooldown, now)
 
     def _reconfirm_admin_password(data, action_label, *, always_required=True,
-                                  irreversible=False):
+                                  irreversible=False, risk_always=False):
         """高危操作二次鉴权：要求当前会话管理员重新输入口令。
 
         薄封装：返回约定（None = 通过，否则 `(响应, 状态码)` 元组）与失败处置
@@ -2570,15 +2606,17 @@ def create_app(host=None):
         清除 / 重置他人口令"（必须当次输口令）；设置页里两个纯配置项（签到随机
         延迟、容量上限）显式传 False 走豁免。另一直连调用点是 /api/mail-config 的
         SMTP 凭据变更（换中继/授权码 = 换钥类，要口令但不占高危额度）。
+        `risk_always` 原样透传（缺省 `risk` 档是否吃"同出口免口令"，语义见
+        `_sensitive_password_gate`）；**不传即逐字保持旧行为**。
         """
         return _sensitive_password_gate(
             # 第一个参数收**整个请求体**而不是单独的口令串：非 `full` 档还要看同一请求里
             # 的倒计时确认凭据 confirm_delay_ack，只传口令串会把那字段截掉，门禁永远判它缺失
             data, action_label, always_required=always_required, deny_status=400,
-            irreversible=irreversible)
+            irreversible=irreversible, risk_always=risk_always)
 
     def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试",
-                        irreversible=False, quota="delete"):
+                        irreversible=False, quota="delete", risk_always=False):
         """高危动作统一门禁：先过口令二次鉴权，**通过之后**才占用对应类别的额度。
 
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
@@ -2586,6 +2624,8 @@ def create_app(host=None):
         清库清理）；`"creds"` = 凭据改写类（YIBAN_ADMIN_CREDS_*，改写他人易班凭据、
         重置他人口令、换推送密钥）——两族分开计数，"超限即 429"
         的语义两族一致。
+        `risk_always=True` 原样透传给统一门禁（缺省 `risk` 档是否吃"同出口免口令"），
+        四类落点逐个标注；**不传即逐字保持旧行为**。
 
         口令门收窄（用户拍板清单）：门内只剩**不可逆/凭据类**动作
         ——删除账号、清库清理、换钥、改管理员口令、改他人凭据，以及**关闭邮件/推送
@@ -2607,15 +2647,17 @@ def create_app(host=None):
           只改设备识别码不过本门，仅标审计位 + 发信）
         - POST /api/users/batch（delete / reset_password 分支）
         - POST /api/users/deleted/purge
+        - POST /api/users/<int:user_id>/role（角色变更与提权；**主管理员专属**，
+          占凭据额度——提权是控制权转移，与"重置他人口令"同一族）
         - POST /api/users/<int:user_id>/password（改他人凭据）
         - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
-        - PUT /api/notify-config（触碰推送密钥时——换钥/清钥；调额度/节流参数免门）
+        - PUT /api/notify-config（触碰推送密钥时——换钥/清钥/改道；调额度/节流参数免门）
         - PUT /api/mail-config（**关闭邮件通道**时——开 → 关；SMTP 凭据变更直连
           _reconfirm_admin_password 要口令、不占额度，开启方向与收件人变更免门）
-        免门（均保留审计）：POST /api/users/<int:user_id>/role（主管理员
-        专属 + 角色变更与审计同事务）、PUT /api/mail-config 的**开启**与收件人变更
+        免门（均保留审计）：PUT /api/mail-config 的**开启**与收件人变更
         （关闭邮件通道过本门；SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、
-        不占额度）。
+        不占额度）。`/api/announcement/publish` 与 `/api/settings` 的 A/B 档另走
+        `sensitive_password_gate()`（不占额度），不在本清单内。
         可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的 B 档（排序风格与
         自选权）、/api/scheduler/executors* 的写操作；A 档（签到窗口与缓冲边距、周末开关、
         随机延迟、账号间隔、容量上限、探针、注册面）在设置路由走 A 档门禁、**不吃豁免**。
@@ -2631,7 +2673,8 @@ def create_app(host=None):
         # _sensitive_password_gate 的独立计数与门禁级冷却承担（第 3 次告警并暂停敏感操作），
         # 额度只该被**真实执行过**的高危动作消耗。
         pw_err = _reconfirm_admin_password(
-            data, action_label, always_required=True, irreversible=irreversible)
+            data, action_label, always_required=True, irreversible=irreversible,
+            risk_always=risk_always)
         if pw_err:
             return pw_err  # 口令没过：一分额度都没被占用
         limited = _admin_creds_limited() if quota == "creds" else _admin_delete_limited()

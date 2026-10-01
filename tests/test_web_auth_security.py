@@ -962,28 +962,43 @@ class RoleHardeningTest(unittest.TestCase):
         self.assertEqual(u.get("role"), "user", "批量角色变更入口已移除，角色不得变更")
 
     # ---- 2. 角色变更须二次鉴权 ----
-    def test_role_without_reconfirm_ok_and_audited(self):
-        """角色变更可逆（缩减批 6a 免门）：主管理员无口令即可改，留痕靠同事务审计行。"""
+    def test_role_without_reconfirm_rejected_and_audited(self):
+        """角色变更要**当次口令**（用户 2026-10-01 拍板：「角色变更与提权」整类摘出免门）。
+
+        本类固定在 `full` 档（见 setUpClass 的 `.env`），故与档位无关地要求口令；
+        缺口令 → 400 `password_required` 且**角色逐字未变**。"要口令"不等于"不要留痕"：
+        随后那次带对口令的放行仍必须落同事务审计行。
+        """
         self._make_formal_user("u2@test.local", "13800138002")
         ac, at = self._admin_client()
         r = ac.post(user_path(db, "u2@test.local", "/role"), json={"role": "admin"},
                     headers={"X-CSRF-Token": at})
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["reason"], "password_required")
+        self.assertEqual(db.find_user("u2@test.local").get("role"), "user",
+                         "被拒的提权不得生效")
+        # 补一条带对口令的：证明"是门禁在拦"而不是端点坏了
+        r2 = ac.post(user_path(db, "u2@test.local", "/role"),
+                     json={"role": "admin", "confirm_password": ADMIN_PASS_ROLE},
+                     headers={"X-CSRF-Token": at})
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertEqual(db.find_user("u2@test.local").get("role"), "admin")
         rows = db.audit_rows(50) if hasattr(db, "audit_rows") else []
         if rows:
             self.assertTrue(any(x.get("action") == "user_role" for x in rows),
-                            "免门不等于免痕：角色变更必须落审计行")
+                            "角色变更必须落审计行")
 
-    def test_role_wrong_reconfirm_still_ok_field_ignored(self):
-        """confirm_password 字段在免门后被忽略：错口令也不再拦（可逆操作不加摩擦）。"""
+    def test_role_wrong_reconfirm_rejected(self):
+        """错口令照拒：提权不再吃「可逆操作免摩擦」那套旧口径。"""
         self._make_formal_user("u3@test.local", "13800138003")
         ac, at = self._admin_client()
         r = ac.post(user_path(db, "u3@test.local", "/role"),
                     json={"role": "admin", "confirm_password": "WrongPass#999"},
                     headers={"X-CSRF-Token": at})
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(db.find_user("u3@test.local").get("role"), "admin")
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["reason"], "password_incorrect")
+        self.assertEqual(db.find_user("u3@test.local").get("role"), "user",
+                         "错口令不得完成提权")
 
     def test_role_with_reconfirm_ok_and_audited(self):
         self._make_formal_user("u4@test.local", "13800138004")
