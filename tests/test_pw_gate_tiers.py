@@ -4,8 +4,17 @@
 标签：E · Web：认证/权限/API
 覆盖：`YIBAN_PW_GATE` 三档（`full` / `risk` / `off`）的档位矩阵——十类受门禁操作逐格验证「要不要当次口令、要不要倒计时确认」，加上风控判据、档位解析与事后告警
 对应实现：`web/app.py` 的 `_pw_gate_tier`、统一口令门、`confirm_delay_ack` 校验与事后告警出口（凭据改写 / 执行体写 / 删用户）
-关键断言：`full` 档逐格无口令必拒、且带了口令就**不再**要求倒计时字段（旧前端不认识它）；`risk` 档可逆操作首击免口令、不可逆操作缺 `confirm_delay_ack` 即拒且操作未发生；`off` 档连换出口 IP 也不要口令，但绝不凭空发出门禁失败告警；风控唯一判据是「换环境」——密度不是判据，两级 IP 都无记录的历史会话不触发；档位缺省与非法值都落 `risk`（非法值另告警一次）
+关键断言：`full` 档逐格无口令必拒、且带了口令就**不再**要求倒计时字段（旧前端不认识它）；`risk` 档可逆操作首击免口令、**2026-10-01 用户拍板的四类操作**（关闭/改道告警通道、角色变更与提权、重置他人口令、改写他人易班凭据）**同出口也要当次口令**、不可逆操作缺 `confirm_delay_ack` 即拒且操作未发生；`off` 档连换出口 IP 也不要口令，但绝不凭空发出门禁失败告警；风控唯一判据是「换环境」——密度不是判据，两级 IP 都无记录的历史会话不触发；档位缺省与非法值都落 `risk`（非法值另告警一次）
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node。每格都新建 app + 新登录：高危额度与风控计数是 `create_app` 的工厂局部状态，换 app 才是干净的一份
+
+**2026-10-01 口径变更（用户拍板，覆盖此前「risk 档同出口免口令」的拍板）**：
+`web/app.py::_sensitive_password_gate` 新增关键字 `risk_always`——只作用于 `risk` 档，
+把「出口 IP 没换就免口令」那一处早退跳过，让判定落到口令比对。`full` 档（三段判定
+逐条走完）与 `off` 档（永不要求口令）**逐字不变**；四类之外的操作**仍免口令**。
+本文件的 `RiskTierTest` / `DelayAckTest` / `PostHocAlertTest` 里原先把「首击免口令」
+钉成契约的用例已按新口径重写（`_RISK_ALWAYS` 列即四类清单本身——**它被钉进档位矩阵**，
+新增/删除四类落点会红）；`RiskTriggerTest` 的判据载体从 `creds` 换成 `a_setting`
+（`creds` 已转入四类，不再是「同出口免口令」的样本），"换环境"这条判据本身仍逐字回归。
 
 背景：危险操作此前**一律**要求当次输入管理员口令，摩擦成本超过威胁收益。现按
 `.env` 的 `YIBAN_PW_GATE` 分三档：
@@ -60,7 +69,38 @@ OPS = {
     "estop": {"irreversible": True, "deny": 403},
     "exec_write": {"irreversible": False, "deny": 403},
     "announce": {"irreversible": False, "deny": 403},
+    # 2026-10-01 拍板新增的六个落点（四类操作）：full 档矩阵也逐格回归，避免"新挂的
+    # 门禁点只测了 risk 档、full 档行为没人盯"。
+    "notify_close": {"irreversible": False, "deny": 400},
+    "mail_close": {"irreversible": False, "deny": 400},
+    "smtp_change": {"irreversible": False, "deny": 400},
+    "role_change": {"irreversible": False, "deny": 400},
+    "reset_password": {"irreversible": False, "deny": 400},
+    "batch_reset": {"irreversible": False, "deny": 400},
 }
+
+# 2026-10-01 用户拍板的四类：`risk` 档下**同出口也要当次口令**（覆盖「risk 档同出口
+# 免口令」的旧拍板）。键 = 本文件的 `_op_<键>`，值是"这一类该走哪个写口"与预期拒因。
+# 四类与写口一一对应，逐条钉住：漏改一个写口（或误把别的操作挪进来）都会红。
+#   ① 关闭/改道告警通道：notify_close=关推送通道、mail_close=关邮件通道、
+#      smtp_change=改 SMTP 中继/授权码（含自定义推送地址变更那一路）
+#   ② 角色变更与提权：role_change（"注册用户审核通过后提权"的唯一落点）
+#   ③ 重置他人口令：reset_password（单条）；batch_reset（批量同一类）
+#   ④ 改写他人易班凭据：creds（单条 PUT /api/accounts/<idx>）
+RISK_ALWAYS = {
+    "notify_close": 400,
+    "mail_close": 400,
+    "smtp_change": 400,
+    "role_change": 400,
+    "reset_password": 400,
+    "batch_reset": 400,
+    "creds": 400,
+}
+# `risk` 档**仍然**同出口免口令的操作（`off` 档同样免）。这张表与 RISK_ALWAYS 合起来
+# 就是"缺省档的完整矩阵"，两张表加起来必须恰好等于 OPS 的键集——否则新增一个受门禁
+# 操作时忘了在两张表之一登记，`test_两张表合起来恰好覆盖全部受门禁操作` 即红。
+RISK_EXEMPT = ("a_setting", "b_setting", "exec_write", "announce",
+               "purge", "user_delete", "estop")
 
 
 def _load_webapp():
@@ -226,6 +266,60 @@ class _TierBase(unittest.TestCase):
         return c.post(user_path(db, "u1@test.local", "/delete"),
                       json={"mode": "full", **extra}, headers=hdr)
 
+    # ---- 2026-10-01 拍板的四类操作（risk 档同出口也要当次口令）----
+    def _ensure_formal_user(self):
+        """造一个"正式用户"（有已生效账号、无待审核）——提权前置条件的必要夹具。
+
+        顺序不可颠倒：账号的 owner 是用户邮箱，用户不存在时账号仍能建出来，但
+        `api_user_role` 读的是 users 表，故先建账号再确保用户存在。
+        """
+        self._ensure_account()
+        return self._ensure_user("u1@test.local")
+
+    def _op_notify_close(self, c, hdr, **extra):
+        """① 关闭消息推送通道（`type` 置空 = 关闭推送）。"""
+        return c.put("/api/notify-config", json={"type": "", **extra}, headers=hdr)
+
+    def _op_mail_close(self, c, hdr, **extra):
+        """① 关闭邮件告警通道。
+
+        必须先把"现值为开"造出来，否则请求会因"没真的在关"而免门、断言假绿。
+        造法不能写 `.env`：`yiban.mail.config._get` **先读 `os.environ`**（进程环境
+        优先于 .env，与 web.app 的读侧一致），而 `tests/conftest.py` 为让邮件默认静默
+        钉了 `YIBAN_MAIL_ENABLE=0`，故这里直接临时改进程环境（`patch.dict` 出栈即还原，
+        不污染同进程后续用例）。
+        """
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ENABLE": "1"}):
+            return c.put("/api/mail-config", json={"enabled": False, **extra},
+                         headers=hdr)
+
+    def _op_smtp_change(self, c, hdr, **extra):
+        """① 改 SMTP 中继/授权码（换中继 = 改道告警去向）。"""
+        return c.put("/api/mail-config",
+                     json={"smtps": [{"host": "smtp.example.com", "port": 465,
+                                      "user": "svc", "pass": "AuthCode123"}],
+                           **extra},
+                     headers=hdr)
+
+    def _op_role_change(self, c, hdr, **extra):
+        """② 角色变更与提权（"注册用户审核通过后提权"的唯一落点）。"""
+        email = self._ensure_formal_user()
+        return c.post(user_path(db, email, "/role"),
+                      json={"role": "admin", **extra}, headers=hdr)
+
+    def _op_reset_password(self, c, hdr, **extra):
+        """③ 重置他人口令（单条）。"""
+        email = self._ensure_user("u1@test.local")
+        return c.post(user_path(db, email, "/password"),
+                      json={"password": USER_PASS, **extra}, headers=hdr)
+
+    def _op_batch_reset(self, c, hdr, **extra):
+        """③ 重置他人口令（批量）——与单条同一类，口令门口径必须一致。"""
+        email = self._ensure_user("u1@test.local")
+        return c.post("/api/users/batch",
+                      json={"action": "reset_password", "emails": [email],
+                            "password": USER_PASS, **extra}, headers=hdr)
+
     def _call(self, op, c, hdr, **extra):
         """按操作名分发；`_xff=` 走 X-Forwarded-For（换出口 IP 用，其余进请求体）。"""
         xff = extra.pop("_xff", None)
@@ -262,9 +356,29 @@ class FullTierTest(_TierBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.webapp.load_accounts(), [], "口令对了就该真的清除")
 
+    def test_full_档下四类操作逐字不变(self):
+        """`risk_always` 只作用于 `risk` 档：`full` 档本就每条都要当次口令，行为不变。
+
+        `role_change` 是本批**新挂**的门禁点（此前整条不过门禁），故这里证明的是
+        "新挂的门在 `full` 档同样要口令"，而不是"full 档旧行为不变"——后者由上面两条
+        （OPS 全矩阵无口令必拒 / 带口令放行）覆盖。
+        """
+        for op in RISK_ALWAYS:
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, RISK_ALWAYS[op],
+                                 r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["reason"], "password_required")
+
 
 class RiskTierTest(_TierBase):
-    """`risk`（默认）档：首击不要口令；不可逆操作改要倒计时确认。"""
+    """`risk`（默认）档：多数操作首击不要口令；**四类操作当次就要口令**。
+
+    2026-10-01 用户拍板覆盖了此前"risk 档同出口免口令"的拍板：① 关闭/改道告警通道、
+    ② 角色变更与提权、③ 重置他人口令、④ 改写他人易班凭据 —— 缺省档下同出口也必须当次
+    输口令（实现见 `_sensitive_password_gate` 的 `risk_always`）。
+    """
 
     TIER = "risk"
 
@@ -273,6 +387,61 @@ class RiskTierTest(_TierBase):
             with self.subTest(op=op):
                 c, hdr = self._fresh()
                 r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_四类操作同出口首击也要口令(self):
+        """缺省档的收紧面：同出口（无换 IP）首次即拒，reason 必须是 password_required。"""
+        for op in RISK_ALWAYS:
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, RISK_ALWAYS[op],
+                                 f"{op} 在 risk 档同出口不该免口令: {r.get_data(as_text=True)}")
+                self.assertEqual(r.get_json()["reason"], "password_required")
+
+    def test_四类操作带对口令即放行(self):
+        for op in RISK_ALWAYS:
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr, confirm_password=ADMIN_PASS)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_四类操作错口令被拒且留审计(self):
+        """错口令走独立计数/审计链；**审计一律保留**（口径变更只动口令，不动留痕）。
+
+        逐格取**增量**而不是累计：每格都 `_fresh()`（重置 DB 文件），跨格累计只会数到
+        最后一格那一条，读数与格子数无关、等于没断言。
+        """
+        import db as _db
+
+        def _denied_rows():
+            return _db.get_conn().execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='sensitive_pw_denied'"
+            ).fetchone()[0]
+
+        for op in RISK_ALWAYS:
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                before = _denied_rows()
+                r = self._call(op, c, hdr, confirm_password="WrongPass999!")
+                self.assertEqual(r.status_code, RISK_ALWAYS[op],
+                                 r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["reason"], "password_incorrect")
+                self.assertGreater(
+                    _denied_rows(), before,
+                    f"{op} 错口令必须留一条门禁失败审计，不得因口径变更丢审计")
+
+    def test_四类之外的risk档操作仍然同出口免口令(self):
+        """收紧面必须**只**落在四类上：RISK_EXEMPT 里的首击仍 200（不是"全部都要口令"）。"""
+        for op in RISK_EXEMPT:
+            if OPS[op]["irreversible"]:
+                # 不可逆操作在非 full 档另要 confirm_delay_ack，带上再判口令那一层
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr, confirm_delay_ack=True)
+            else:
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+            with self.subTest(op=op):
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_不可逆操作缺倒计时确认被拒且操作未发生(self):
@@ -295,9 +464,17 @@ class RiskTierTest(_TierBase):
                 r = self._call(op, c, hdr, confirm_delay_ack=True)
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
-    def test_改他人凭据首击不要口令(self):
+    def test_两张表合起来恰好覆盖全部受门禁操作(self):
+        """新增一个受门禁操作时，必须在 RISK_ALWAYS / RISK_EXEMPT 之一显式登记。
+        否则"这一格到底要不要口令"没有断言覆盖，口径就会随实现漂。"""
+        self.assertEqual(set(RISK_ALWAYS) | set(RISK_EXEMPT), set(OPS))
+        self.assertEqual(set(RISK_ALWAYS) & set(RISK_EXEMPT), set(),
+                         "同一操作不得同时登记成「要口令」与「免口令」")
+
+    def test_改他人凭据带口令才真的生效(self):
+        """④ 收紧后仍要证明"带对口令 = 真的写入"（否则收紧可能把操作一并堵死）。"""
         c, hdr = self._fresh()
-        r = self._call("creds", c, hdr)
+        r = self._call("creds", c, hdr, confirm_password=ADMIN_PASS)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.webapp.load_accounts()[0]["password"], "new-pw-1")
 
@@ -343,17 +520,24 @@ class OffTierTest(_TierBase):
 
 
 class RiskTriggerTest(_TierBase):
-    """`risk` 档的唯一判据"换环境"，以及"无已验证/登录 IP 记录不触发"。"""
+    """`risk` 档的唯一判据"换环境"，以及"无已验证/登录 IP 记录不触发"。
+
+    **载体换成 `exec_write`**（2026-10-01 口径变更后）：`creds` 已转入"同出口也要当次
+    口令"的四类，拿它当判据载体会在**每一次**调用上都要口令，"换没换环境"这个变量就被
+    淹没了（首击与命中两条路径长得一模一样，判据失去分辨力）。载体还必须**每次调用都
+    真改配置**（否则门禁压根不被调用）：`a_setting`/`b_setting` 走"值真变化才进门禁"，
+    第二次起就同值不改、不再过门；追加执行体行每调必改，故用它。
+    """
 
     TIER = "risk"
 
     def test_换IP后首次危险操作要口令(self):
         c, hdr = self._fresh()
-        r = self._call("creds", c, hdr, _xff="203.0.113.7")
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        r = self._call("exec_write", c, hdr, _xff="203.0.113.7")
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["reason"], "password_required")
         # 命中后的路径与 full 档同路：带对口令即放行
-        r2 = self._call("creds", c, hdr, confirm_password=ADMIN_PASS,
+        r2 = self._call("exec_write", c, hdr, confirm_password=ADMIN_PASS,
                         _xff="203.0.113.7")
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
 
@@ -361,23 +545,24 @@ class RiskTriggerTest(_TierBase):
         """同一出口的危险操作不因"次数多"而被要求口令：密度不是判据。"""
         c, hdr = self._fresh()
         for i in range(3):
-            r = self._call("creds", c, hdr)
+            r = self._call("exec_write", c, hdr)
             self.assertEqual(r.status_code, 200,
                              f"第 {i + 1} 次同出口操作不该要口令：{r.get_data(as_text=True)}")
 
     def test_换IP后口令正确则该IP被记住且后续不再要口令(self):
         c, hdr = self._fresh()
-        r = self._call("creds", c, hdr, _xff="203.0.113.7")
+        r = self._call("exec_write", c, hdr, _xff="203.0.113.7")
         self.assertEqual(r.get_json()["reason"], "password_required")
-        r2 = self._call("creds", c, hdr, confirm_password=ADMIN_PASS, _xff="203.0.113.7")
+        r2 = self._call("exec_write", c, hdr, confirm_password=ADMIN_PASS,
+                        _xff="203.0.113.7")
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         # 同一出口后续危险操作不再重复要求（验证通过即记住该 IP）
-        r3 = self._call("creds", c, hdr, _xff="203.0.113.7")
+        r3 = self._call("exec_write", c, hdr, _xff="203.0.113.7")
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         # 记住的是**最近一次验证过的出口**，不是把登录出口永久放行：换回登录出口
         # 仍要一次口令（否则"记住"就退化成"见过即信任"的白名单）
-        r4 = self._call("creds", c, hdr)
-        self.assertEqual(r4.status_code, 400, r4.get_data(as_text=True))
+        r4 = self._call("exec_write", c, hdr)
+        self.assertEqual(r4.status_code, 403, r4.get_data(as_text=True))
         self.assertEqual(r4.get_json()["reason"], "password_required")
 
     def test_无登录IP记录不触发(self):
@@ -385,8 +570,24 @@ class RiskTriggerTest(_TierBase):
         c, hdr = self._fresh()
         with c.session_transaction() as sess:
             sess.pop("login_ip", None)
-        r = self._call("creds", c, hdr, _xff="203.0.113.7")
+        r = self._call("exec_write", c, hdr, _xff="203.0.113.7")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_四类操作不吃换环境豁免(self):
+        """口径变更的反面对照：`creds` 无论换没换出口都要口令（与上一条同出口对照）。
+
+        两次调用刻意用**不同出口**：第一次就换到陌生 IP，若实现漏传 `risk_always`，
+        它会走"换环境 → 还是要口令"这条**同样返回 400** 的路径而假绿；故另配一条
+        同出口调用（同出口下只有 `risk_always=True` 才会要口令），两条合起来才判得清。
+        """
+        c, hdr = self._fresh()
+        r_same = self._call("creds", c, hdr)
+        self.assertEqual(r_same.status_code, 400, r_same.get_data(as_text=True))
+        self.assertEqual(r_same.get_json()["reason"], "password_required")
+        c, hdr = self._fresh()
+        r_xff = self._call("creds", c, hdr, _xff="203.0.113.7")
+        self.assertEqual(r_xff.status_code, 400, r_xff.get_data(as_text=True))
+        self.assertEqual(r_xff.get_json()["reason"], "password_required")
 
     def test_恢复即登录的会话换IP后要口令(self):
         """恢复即登录建立的会话必须与登录路径记同一份登录出口。
@@ -432,9 +633,9 @@ class RiskTriggerTest(_TierBase):
         # 门禁侧这个数同时是"每窗口可做的 scrypt 尝试次数"上界，两者不得互相牵连。
         th = self.webapp.SENSITIVE_PW_FAIL_NOTIFY
         for _ in range(th):
-            r = self._call("creds", c, hdr, confirm_password="WrongPass999!",
+            r = self._call("exec_write", c, hdr, confirm_password="WrongPass999!",
                            _xff="203.0.113.7")
-            self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+            self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
             self.assertEqual(r.get_json()["reason"], "password_incorrect")
         self.assertIn("高危操作二次鉴权失败告警", [t for t, _b, _u in self.alerts])
 
@@ -486,8 +687,11 @@ class DelayAckTest(_TierBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_可逆操作不要该字段(self):
+        # 载体用 a_setting 而非 creds：`creds` 已转入 2026-10-01 拍板的四类（risk 档
+        # 同出口也要当次口令），拿它测"可逆操作不要求 confirm_delay_ack"会先被口令门
+        # 拦下、根本走不到倒计时那一层。
         c, hdr = self._fresh()
-        r = self._call("creds", c, hdr)
+        r = self._call("a_setting", c, hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
 
@@ -498,7 +702,9 @@ class PostHocAlertTest(_TierBase):
 
     def test_risk_档改写凭据成功后有告警(self):
         c, hdr = self._fresh()
-        r = self._call("creds", c, hdr)
+        # risk 档下改写他人凭据已转入四类（同出口也要当次口令，见 RISK_ALWAYS），
+        # 故这里必须带对口令；告警断言本身（事后补偿信号）口径不变。
+        r = self._call("creds", c, hdr, confirm_password=ADMIN_PASS)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         titles = [t for t, _b, _u in self.alerts]
         self.assertIn("高危管理操作告警", titles, f"实际告警 {titles}")
