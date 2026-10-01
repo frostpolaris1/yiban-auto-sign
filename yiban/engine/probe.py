@@ -39,7 +39,7 @@ import re
 from datetime import datetime
 
 from yiban import client as yiban_client
-from yiban import clock, security
+from yiban import clock, egress, security  # egress：与执行体同一套出口模型（M35）
 from yiban.engine import alerts, cli_support, state_io
 from yiban.infra import env_io
 from yiban.masking import mask_phone as _mask_phone
@@ -77,11 +77,66 @@ PROBE_HARD_FAIL_RE = re.compile(
 )
 
 
+def _egress_env():
+    """取出口用的环境映射：进程环境打底，`.env` **只补缺**（不覆盖进程环境）。
+
+    为什么两个源都要（处境同 `env_io.resolve_path`，但优先级相反）：执行体由监督进程
+    拉起，出口是**按进程注入**的（`yiban/engine/workers.py` 把该槽位的出口写进子进程
+    的 `YIBAN_PROXY`）——进程环境必须压过 `.env`，否则每槽位的出口会被 `.env` 里那一个
+    值抹平；而 **web 进程不是被 `run.sh` 带着 export 起来的**，进程环境里往往没有这个
+    键，只读 `os.environ` 就等于"这条出网不受 `YIBAN_PROXY` 管控"。`.env` 补缺正好
+    补上后一种情形。
+
+    走既有读取（`env_io.parse_env_file` / `env_io.env_path`），不新造一套解析。
+    """
+    try:
+        # 注意合并方向：先铺 `.env`、**再让进程环境覆盖它**。反过来写（先 environ 后
+        # update）就成了「`.env` 优先」，会把监督进程按槽位注入的出口抹平成 `.env` 里
+        # 那一个值——每槽位的出口管控当场失效。
+        merged = dict(env_io.parse_env_file(env_io.env_path()))
+    except OSError:
+        merged = {}
+    merged.update(os.environ)
+    return merged
+
+
+def _apply_egress_proxy(client):
+    """把 `YIBAN_PROXY` 解析出的出口套到客户端 session 上（读侧出口管控，M35）。
+
+    **为什么这里要再套一次**：`YibanClient.__init__` 只读 `os.environ["YIBAN_PROXY"]`。
+    注册/添加账号的在线校验跑在 **web 进程**里，而该进程的环境通常没有这个键（出口是
+    给执行体子进程注入的），于是这一次"服务器代用户向易班发起真实登录"就**直连出网**
+    ——恰恰是风控暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径，却绕过了管控。
+    经 `egress.resolve(ROLE_SINGLE, ...)` 走与执行体**同一套**出口模型（`ROLE_SINGLE`
+    即"读 `YIBAN_PROXY`"那一档），不另造第二套解析。
+
+    解析为空（未配代理）时**不动** session：此时客户端构造期也没配上，保持直连的既有
+    行为，不把"没配"变成"显式清空"。
+
+    日志只记 `egress.describe()`（`scheme://host[:port]`，去 userinfo），不落凭据。
+    """
+    try:
+        proxy = egress.resolve(egress.ROLE_SINGLE, env=_egress_env())
+    except Exception as e:  # 出口解析不该把注册/改密的主流程带崩
+        logger.debug("解析账号校验出口失败（按直连处理）: %s", e)
+        return ""
+    if not proxy:
+        return ""
+    client.session.proxies = {"http": proxy, "https": proxy}
+    logger.debug("[%s] 账号校验走配置出口: %s", client.account.phone,
+                 egress.describe(proxy))
+    return proxy
+
+
 def verify_account(account):
     """只读健康检查（登录 + 拉取任务，不提交签到）。
 
     供注册时预处理验证（web 端）与探针模式（--probe）复用。
     返回 (ok, message)：ok=False 表示存在无法自愈的问题；message 已脱敏。
+
+    出口：登录前先按 `_apply_egress_proxy` 套上 `YIBAN_PROXY`——本函数是**唯一**一条
+    在 web 进程里代用户向易班发起的真实登录（探针轮则由执行体注入的出口兜着），
+    两处必须同源，见该函数说明（M35）。
     """
     phone = account.phone
     if not account_still_signable(account):
@@ -90,6 +145,7 @@ def verify_account(account):
     try:
         client = YibanClient(account)
         try:
+            _apply_egress_proxy(client)
             if client.use_killyiban:
                 client.login_killyiban()
             else:
