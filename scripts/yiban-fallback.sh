@@ -99,6 +99,12 @@ business_day() {
 }
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
+# M07：状态目录属主 + 700 硬检查（与 run.sh 同一判据）——已存在目录同样校验：
+# 非本用户属主时可被同机其他用户预占/伪造签到日志与审计锚点。收紧失败即拒绝启动。
+if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
+    echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝启动兜底执行体" >&2
+    exit 1
+fi
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
 

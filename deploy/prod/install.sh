@@ -52,6 +52,20 @@ for row in "${ROWS[@]}"; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# 前置门（M01，fail-closed）：以 root 安装时，本脚本会 root 执行检出内的
+# scripts/check-cron-provenance.sh 并把检出件 root:root 落到生产路径。若检出本身对
+# 服务账号可写（典型：/opt/yiban-auto-sign 被 ReadWritePaths 放开给 yiban 写 .env/
+# yiban.db，见 web/deploy/yiban-web.service），服务账号被拿下后等一次 sudo 安装即提权
+# root。故以 root 安装时检出必须属 root 且组/其他不可写；DESTDIR/非 root 路径不变。
+if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
+    repo_owner="$(stat -c %u "$REPO_ROOT")"
+    repo_mode="$(stat -c %a "$REPO_ROOT")"
+    if [ "$repo_owner" -ne 0 ] || [ "$(( 8#$repo_mode & 8#022 ))" -ne 0 ]; then
+        echo "yiban-install: 以 root 安装时检出必须属 root 且非组/其他可写；请把检出移到 root 只读路径或用 DESTDIR（当前 owner=$repo_owner mode=$repo_mode: $REPO_ROOT）" >&2
+        exit 1
+    fi
+fi
+
 # 预检 2：cron 路径来源断言（装前必过；装后同门复查一道，双保险）
 bash "$REPO_ROOT/scripts/check-cron-provenance.sh"
 

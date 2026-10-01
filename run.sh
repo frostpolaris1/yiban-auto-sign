@@ -93,13 +93,15 @@ if [ ! -d "$STATE_DIR" ]; then
         echo "致命: 无法创建状态目录 $STATE_DIR，无法完成跑/不跑判定，拒绝运行" >&2
         exit 1
     fi
-    # 新建目录：属主必须是本用户且收紧 700（与锁目录同一判据），否则判定件可被
-    # 同机其他用户预占/伪造
-    if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
-        echo "致命: 状态目录 $STATE_DIR 不安全（新建后非本用户属主或权限收紧失败），拒绝运行" >&2
-        exit 1
-    fi
-elif [ ! -w "$STATE_DIR" ]; then
+fi
+# M07：属主 + 700 硬检查对【已存在】目录同样执行——旧实现把它放在 `if [ ! -d ]` 的
+# 新建分支内，同机其他用户预建的目录（或早期版本留下的非本用户属主目录）完全不查，
+# 可长期压住签到或伪造状态锚点。
+if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
+    echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    exit 1
+fi
+if [ ! -w "$STATE_DIR" ]; then
     echo "致命: 状态目录 $STATE_DIR 不可写，无法完成跑/不跑判定，拒绝运行" >&2
     exit 1
 fi
@@ -196,12 +198,12 @@ if [ ! -d "$LOCK_DIR" ]; then
         _log "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行"
         exit 1
     fi
-    # 2026-08-21 对抗性审查加固：新建锁目录必须属主为本用户且 chmod 700 成功——
-    # 否则同机其他用户可预建目录/符号链接截断文件或抢占锁使签到静默跳过
-    if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
-        echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
-        exit 1
-    fi
+fi
+# M07：属主 + 700 硬检查对【已存在】锁目录同样执行——旧实现只在新建分支执行，
+# 同机其他用户预建锁目录（或符号链接）即可抢占锁使签到长期静默跳过。
+if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
+    echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    exit 1
 fi
 exec 9>"$LOCK_DIR/sign.lock"
 flock -n 9 || {
@@ -256,7 +258,7 @@ _wait_until_hhmm() {
     th="${target%%:*}"
     tm="${target##*:}"
     now_s="$(date +%s)"
-    tgt_s="$(date -d "today $th:$tm" +%s 2>/dev/null)" || return 0
+    tgt_s="$(TZ=Asia/Shanghai date -d "today $th:$tm" +%s 2>/dev/null)" || return 0
     [ -n "$tgt_s" ] || return 0
     if [ "$now_s" -lt "$tgt_s" ]; then
         _log "补签轮：等待至 $target 再执行（约 $(( (tgt_s - now_s) / 60 )) 分钟）"
@@ -291,7 +293,10 @@ _run_signin_round() {
         _log "警告: YIBAN_SIGN_END=$end_hhmm 非法，回退默认 07:50"
         end_hhmm="07:50"
     fi
-    end_ts=$(date -d "today $end_hhmm" +%s)
+    # M25：窗口/时刻判定用北京钟（business_day 与引擎同口径），动态超时与补签等待
+    # 也必须用北京钟——两处 `date -d "today HH:MM"` 若按宿主本地时区算，宿主非 UTC+8 时
+    # end_ts - now_ts 可为负，被下面的下限夹到 600s，把窗口内的整轮腰斩成静默漏签。
+    end_ts=$(TZ=Asia/Shanghai date -d "today $end_hhmm" +%s)
     now_ts=$(date +%s)
     run_timeout=$(( end_ts - now_ts + 300 ))
     [ "$run_timeout" -lt 600 ] && run_timeout=600
