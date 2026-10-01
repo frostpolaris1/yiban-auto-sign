@@ -338,7 +338,30 @@ class RefillerWiringTest(unittest.TestCase):
             notify_url="", event_sink=None, rng=None, slot=0)
 
     def test_refill_reap_passes_held_and_live_owners(self):
-        """补货循环内那次回收必须带 `held` 与 `live_owners` 两个实参。"""
+        """补货循环内那次回收必须带 `held` 与 `live_owners` 两个实参，且名单**非空**。
+
+        只断言关键字存在是不够的：把实参换成空元组，`"live_owners" in kw` 照样为真
+        ——对抗复审的突变验证实测 16 条用例全绿，跨进程那一半的豁免就静默失效了。
+        故 cfg 里放一个兄弟执行体并写入新鲜心跳，断言名单里真有它的稳定名。
+        """
+        peer = "worker-1@testhost"
+        self.cfg["executors"] = [OWNER, peer]
+        tmp = tempfile.mkdtemp(prefix="yiban-refill-peers-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        prev_state = os.environ.get("YIBAN_STATE_DIR")
+        os.environ["YIBAN_STATE_DIR"] = tmp
+
+        def _restore_state():
+            if prev_state is None:
+                os.environ.pop("YIBAN_STATE_DIR", None)
+            else:
+                os.environ["YIBAN_STATE_DIR"] = prev_state
+
+        self.addCleanup(_restore_state)
+        # 兄弟执行体的新鲜心跳：判活事实与 `_widen_with_dead_peers` 同一来源，
+        # 用真实时刻写入，`_now()` 读到的就是 running（不是"未配置槽位算活"的保守侧）。
+        state_io.mark_worker_started(1, now=datetime.datetime.now(),
+                                     role=egress.ROLE_WORKER)
         self.ctx.held.add("13800000001")
         seen = []
         real = queue_store.reap_expired
@@ -364,8 +387,13 @@ class RefillerWiringTest(unittest.TestCase):
         self.assertTrue(seen, "补货循环必须调用回收")
         self.assertTrue(any(kw.get("held") for kw in seen),
                         "回收必须收到在途集合（held），否则队列里的行会被判死重领")
-        self.assertTrue(any("live_owners" in kw for kw in seen),
-                        "回收必须收到存活持有者名单（live_owners）")
+        live_seen = [tuple(kw["live_owners"]) for kw in seen if kw.get("live_owners")]
+        self.assertTrue(live_seen,
+                        "回收必须收到**非空**的存活持有者名单（live_owners）——"
+                        "只断言键存在的话，把实参换成空元组也照样通过")
+        self.assertIn(peer, live_seen[0],
+                      "存活兄弟执行体的稳定名必须真的进豁免名单，"
+                      "否则它手上的行仍会被判死重领（同账号两次真实登录）")
 
 
 class NoDoubleLoginE2ETest(unittest.TestCase):

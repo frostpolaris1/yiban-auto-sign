@@ -83,7 +83,8 @@ OPS = {
 # 免口令」的旧拍板）。键 = 本文件的 `_op_<键>`，值是"这一类该走哪个写口"与预期拒因。
 # 四类与写口一一对应，逐条钉住：漏改一个写口（或误把别的操作挪进来）都会红。
 #   ① 关闭/改道告警通道：notify_close=关推送通道、mail_close=关邮件通道、
-#      smtp_change=改 SMTP 中继/授权码（含自定义推送地址变更那一路）
+#      smtp_change=改邮件 SMTP 中继/授权码。推送侧的自定义地址/换密钥那一路
+#      不在本表（无 _op 夹具），由 test_gate_narrowing_e2e 的 serverchan 格独立钉住。
 #   ② 角色变更与提权：role_change（"注册用户审核通过后提权"的唯一落点）
 #   ③ 重置他人口令：reset_password（单条）；batch_reset（批量同一类）
 #   ④ 改写他人易班凭据：creds（单条 PUT /api/accounts/<idx>）

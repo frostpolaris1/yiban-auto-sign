@@ -318,17 +318,19 @@ def _reap_dead_worker(slot):
 
 #: 每轮从 .env 并回 `os.environ` 时**只放行**的键——门 / 窗口 / 间隔三类，即
 #: `schedule.day_off`（周末两键 + 暂停）、`schedule.weekend_flags` 与
-#: `schedule._schedule_config` 的窗口部分（起止、模式、排序/分布、前后裁剪）实际
-#: 读取的键，外加兜底自己的扫描间隔。旧实现"除身份/出口键外**全部**覆盖"，爆炸
-#: 半径远大于自述：运行期会被 .env 改写进程的库路径 / 状态目录等，把"重判门"
-#: 变成"重载整份配置"。白名单必须与上述函数的窗口/门键**逐个对齐**——遗漏任何
-#: 一个都会让"每轮重判门"名不副实（窗口内点一键暂停照签）。
+#: `schedule._schedule_config` 实际读取的键（起止、模式、排序/分布、前后裁剪、
+#: **账号间隔与重试间隔**），外加兜底自己的扫描间隔。旧实现"除身份/出口键外**全部**
+#: 覆盖"，爆炸半径远大于自述：运行期会被 .env 改写进程的库路径 / 状态目录等，把
+#: "重判门"变成"重载整份配置"。白名单必须与上述函数实际读取的键**逐个对齐**——
+#: 遗漏任何一个都会让"每轮重判门"名不副实（窗口内点一键暂停照签；改账号间隔不生效）。
 _ENV_RELOAD_KEYS = frozenset({
     "YIBAN_SIGN_START", "YIBAN_SIGN_END",
     "YIBAN_SIGN_MODE", "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST",
     "YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC",
     "YIBAN_WINDOW_EDGE_BACK_SEC",
     "YIBAN_SATURDAY_SIGN", "YIBAN_SUNDAY_SIGN", "YIBAN_GLOBAL_PAUSE",
+    "YIBAN_EXEC_GAP_MIN", "YIBAN_MIN_EXEC_GAP",
+    "YIBAN_AVG_ATTEMPT_SEC", "YIBAN_RETRY_MIN_INTERVAL",
     "YIBAN_FALLBACK_INTERVAL",
 })
 
