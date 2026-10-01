@@ -438,6 +438,46 @@ class SupervisorExitCodeAggregationTest(unittest.TestCase):
             with self.subTest(codes=codes):
                 self.assertEqual(self._supervise(codes), want)
 
+    def test_spawn_oserror_is_caught_siblings_still_waited(self):
+        """任一槽位 `Popen` 抛 `OSError` ⇒ 不穿透、留痕、返回非 0，兄弟仍被 wait()。
+
+        未接住时异常穿透 `runner.main` 与 `yiban.cli`（只兜 `SystemExit`），以未捕获
+        traceback 收场；此时已拉起的兄弟子进程失去 `wait()`、进程内全局运行锁随栈展开
+        提前释放（散落的另一轮全量就能与幸存的执行体并发）。照 `docker/scheduler.py`
+        的 spawn 失败先例：接住、留痕、跳出循环后照常收尾，整轮按真失败 1 透出。
+        """
+        from yiban.engine import workers
+        calls = {"n": 0}
+        finished = []
+
+        class _FakeProc:
+            def __init__(self, cmd, env=None, cwd=None):
+                calls["n"] += 1
+                if calls["n"] == 2:      # 第二个槽位拉起失败
+                    raise OSError(24, "Too many open files")
+
+            def poll(self):
+                return 0                  # 已拉起的兄弟正常退出
+
+        acc = SimpleNamespace(phone="13800000000", user_paused=False)
+        with mock.patch.object(workers.cli_support, "_acquire_run_lock", return_value=None), \
+                mock.patch.object(workers.accounts_mod, "load_accounts", return_value=[acc]), \
+                mock.patch.object(workers.subprocess, "Popen", _FakeProc), \
+                mock.patch.object(workers.time, "sleep"), \
+                mock.patch.object(workers.state_io, "mark_worker_started",
+                                  lambda *a, **k: None), \
+                mock.patch.object(workers.state_io, "mark_worker_finished",
+                                  lambda *a, **k: finished.append(a)), \
+                mock.patch.object(workers.state_io, "_write_sched_done") as done, \
+                mock.patch.object(workers.logger, "error") as log_err:
+            rc = workers.run_worker_supervisor(2, ["--workers", "2"])
+        self.assertEqual(rc, 1, "拉起失败必须返回真失败 1（不得异常穿透、不得归 0）")
+        log_err.assert_called()
+        self.assertEqual(len(finished), 1,
+                         "已拉起的兄弟子进程仍须被 wait() 并补收尾标记")
+        done.assert_not_called()
+        self.assertEqual(calls["n"], 2, "第二个槽位尝试拉起即失败，其后不再拉起")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

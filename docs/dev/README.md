@@ -86,7 +86,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 
 | 文件（在 `YIBAN_STATE_DIR`） | 写入方 | 读方 |
 |------------------------------|--------|------|
-| `worker-alive-<槽位序号>.json` | 并行执行体监督进程（开始 / 存活期刷新 / 正常退出各写一次，创建即 0600） | `GET /api/scheduler/executors` 的存活四态 |
+| `worker-alive-<身份键>.json` | 并行执行体监督进程与 v3 执行体（开始 / 存活期刷新 / 正常退出各写一次，创建即 0600）。身份键由角色决定：`worker` 用槽位号（`worker-alive-0.json`），`single`/`fallback` 无槽位号故用角色名（`worker-alive-single.json` / `worker-alive-fallback.json`）——三者都解析出槽位 0，不带角色就会共用一个文件、互相污染四态 | `GET /api/scheduler/executors` 的存活四态 |
 | `capacity-measure.json` | `POST /api/scheduler/executors/measure`（冷却占位 + 实测结果） | 同端点（跨进程限频） |
 | `fallback-alive.json` | 兜底常驻执行体（每轮扫描刷新，退出时删除） | 告警抑制与 `fallback.alive` |
 

@@ -39,6 +39,7 @@ from yiban import status as yiban_status
 from yiban.engine import round as round_mod
 from yiban.engine import state_io
 from yiban.store import claims as claims_mod
+from yiban.store import db
 from yiban.store import queue_store
 
 #: 用例里的固定手机号（本文件不碰库，仅作状态文件的键）
@@ -315,11 +316,11 @@ class HasUndoneAccountsTest(unittest.TestCase):
             json.dump(payload, f, ensure_ascii=False)
 
     @contextlib.contextmanager
-    def _pool(self, total, open_=0):
-        """打桩领取池当日计数：`total` 为 0 表示池里当日无行（回退状态文件）。"""
+    def _pool(self, open_=0):
+        """打桩领取池当日**未了结**计数（`db.task_open_count`，已带 `vshard >= 0` 过滤）：
+        0 表示池里当日无未了结行（回退状态文件）。"""
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_stats",
-                                  return_value={"total": total, "open": open_}):
+                mock.patch.object(state_io.db, "task_open_count", return_value=open_):
             yield
 
     def _undone(self):
@@ -328,12 +329,12 @@ class HasUndoneAccountsTest(unittest.TestCase):
     def test_pool_clean_state_file_open_still_counts_undone(self):
         """池干净不豁免状态文件：账号最后是 failed（未了结词表）⇒ 仍判未了结。"""
         self._write_state({PHONE: {"status": yiban_status.STATUS_FAILED}})
-        with self._pool(1, 0):
+        with self._pool(0):
             self.assertTrue(self._undone())
-        with self._pool(1, 1):
+        with self._pool(1):
             self.assertTrue(self._undone())
         self._write_state({PHONE: {"status": yiban_status.STATUS_SUCCESS}})
-        with self._pool(1, 0):
+        with self._pool(0):
             self.assertFalse(self._undone())
 
     def test_falls_back_to_state_file_without_claims_rows(self):
@@ -354,9 +355,92 @@ class HasUndoneAccountsTest(unittest.TestCase):
         """池读取异常同样回退状态文件，绝不把「读不到」当「已了结」。"""
         self._write_state({PHONE: {"status": yiban_status.STATUS_SUCCESS}})
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_stats",
+                mock.patch.object(state_io.db, "task_open_count",
                                   side_effect=RuntimeError("库抖动")):
             self.assertFalse(self._undone())
+
+
+class LazyVshardRowTest(unittest.TestCase):
+    """库里只有一条 `vshard=-1` / `state=failed` 的当日行 ⇒ **不算未了结**（N4）。
+
+    历史平移 / v20 补账写入的 `vshard=-1` 行永不被 `claim_batch` 领取（分片集是
+    `0..V-1` 的子集），把它们算作"未了结"该日就永远不了结、补签轮反复空跑。
+    这是**真库**用例：`has_undone_accounts_today` 走的 `db.task_open_count` 真去查表，
+    才能钉住 `vshard >= 0` 过滤确实生效（打桩 helper 只能证明接线，证不了过滤）。
+    """
+
+    DAY = "2026-09-16"
+    VSHARD_ROW = PHONE
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-status-sets-lazy-")
+        self._saved = {k: os.environ.get(k) for k in
+                       ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
+                        "YIBAN_STATE_DIR")}
+        self.env_file = os.path.join(self.tmp, ".env")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\n")
+        os.environ.update({
+            "YIBAN_ACCOUNTS_KEY": "a" * 64,
+            "YIBAN_ENV_FILE": self.env_file,
+            "YIBAN_DB_FILE": os.path.join(self.tmp, "yiban.db"),
+            "YIBAN_STATE_DIR": self.tmp,
+        })
+        self._close_conn()
+        db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
+
+    def tearDown(self):
+        self._close_conn()
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _close_conn():
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+
+    def _add_task(self, phone, vshard, state):
+        conn = db.get_conn()
+        conn.execute(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+            "state, attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (phone, self.DAY, vshard, "", f"{self.DAY} 06:00:00", 5, state, 0, "",
+             "", 0, f"{self.DAY} 05:50:00"))
+        conn.commit()
+
+    def _write_clean_state(self):
+        with open(os.path.join(self.tmp, f"sign-state-{self.DAY}.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({PHONE: {"status": yiban_status.STATUS_SUCCESS}}, f,
+                      ensure_ascii=False)
+
+    def test_negative_vshard_failed_row_does_not_block_settlement(self):
+        self._add_task(self.VSHARD_ROW, vshard=-1, state="failed")
+        self._write_clean_state()
+        # 对照：day_counts 不做分片过滤，`open` 会把这条惰性行算进去——旧口径据此
+        # 永远判"未了结"（补签轮反复空跑），正是本用例钉住的缺陷。
+        self.assertGreaterEqual(queue_store.day_counts(self.DAY)["open"], 1,
+                                "夹具前提：惰性行确实落在 day_counts 的 open 里")
+        self.assertEqual(queue_store.open_count(self.DAY), 0,
+                         "带 vshard >= 0 过滤的未了结计数不得数到惰性行")
+        self.assertFalse(
+            state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY),
+            "库里只有 vshard=-1 的 failed 行 ⇒ 当日应判「无未了结」，否则永不封存")
+
+    def test_claimable_open_row_still_counts_undone(self):
+        """反向控制：`vshard >= 0` 的未了结行仍必须算「有未了结」（别把过滤做成漏判）。"""
+        self._add_task(self.VSHARD_ROW, vshard=0, state="pending")
+        self._write_clean_state()
+        self.assertEqual(queue_store.open_count(self.DAY), 1)
+        self.assertTrue(
+            state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY))
 
 
 if __name__ == "__main__":

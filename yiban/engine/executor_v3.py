@@ -121,13 +121,29 @@ def _make_gap_gate():
 
 
 def _worker_slot(executor_id):
-    """执行体槽位序号（文件心跳按槽位命名）：从身份串取，取不到用 0。
+    """执行体槽位序号（文件心跳按**身份键**命名，见 `state_io.worker_alive_key`）：从身份串取，取不到用 0。
 
     `worker-{i}@{host}` → i；`single@` / `fallback@`（无序号）与解析不出的身份串 → 0。
     心跳只是可观测性，取不到序号不该让签到失败，故回退 0 而不是抛。
+
+    `single` / `fallback` 与 `worker-0` 的槽位号都是 0 —— 光靠槽位号分不开三者，故
+    写/读心跳必须同时带上 `_worker_role` 的角色档（否则三者共用同一心跳文件）。
     """
     idx = egress.parse_owner(executor_id).get("index")
     return 0 if idx is None else int(idx)
+
+
+def _worker_role(executor_id):
+    """执行体心跳的**角色档**（心跳身份键的另一半）：`worker` / `single` / `fallback`。
+
+    `single@` / `fallback@` 解析出的槽位都是 0（`_worker_slot`），只有角色能把它们与
+    `worker-0` 分开。解析不出角色（空串、历史遗留格式）按 `worker`——与旧行为一致，
+    且这种情况的槽位号同样来自 `_worker_slot`，键形状不变。
+    """
+    role = egress.parse_owner(executor_id).get("role")
+    if role in (egress.ROLE_WORKER, egress.ROLE_SINGLE, egress.ROLE_FALLBACK):
+        return role
+    return egress.ROLE_WORKER
 
 
 def _parse_run_at(run_at):
@@ -330,7 +346,7 @@ class _Ctx:
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
                  cred_state, delegated, notify_url, event_sink, rng, slot=0,
                  runtime_id=None, requeue_during_run=False, reclaim=False,
-                 allowed_phones=None):
+                 allowed_phones=None, alive_role=None):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
@@ -343,8 +359,10 @@ class _Ctx:
         # 与稳定名分开是必需的——同名进程（同槽位重启、同机两个进程）在 owner 上必须
         # 可分辨，否则收尾/重排/接管的 CAS 分不出"是不是同一个人"。
         self.runtime_id = runtime_id or executor_id
-        # 文件心跳的槽位序号（`worker_presence` 按槽位读）：执行体页据此判存活四态
+        # 文件心跳的槽位序号 + 角色档（`worker_presence` 按**身份键**读）：执行体页据此
+        # 判存活四态。两者一起才分得开 `worker-0` 与无槽位号的 `single` / `fallback`。
         self.slot = slot
+        self.alive_role = alive_role or egress.ROLE_WORKER
         # 桶键 = 执行体身份串（每进程一个出口，与 egress.resolve 的代理一一对应）；
         # 用稳定名：跨重启同名才能续上自适应速率
         self.egress = executor_id
@@ -650,7 +668,8 @@ def _widen_with_dead_peers(ctx, shards):
     for peer in ctx.cfg.get("executors", ()):
         if peer == ctx.executor_id:
             continue
-        state, _seen = state_io.worker_presence(_worker_slot(peer), now=_now())
+        state, _seen = state_io.worker_presence(_worker_slot(peer), now=_now(),
+                                                role=_worker_role(peer))
         if state != state_io.WORKER_STATE_STALE:
             continue
         peer_shards = hrw.shards_of(peer, ctx.cfg["executors"], ctx.day, v)
@@ -703,7 +722,8 @@ async def _refiller(queue, shards, ctx):
         if not getattr(ctx, "reclaim", False) and schedule._window_closed(ctx.cfg, _now()):
             break
         if _mono() - last_beat >= state_io.WORKER_HEARTBEAT_SEC:
-            state_io.mark_worker_beat(getattr(ctx, "slot", 0), now=_now())
+            state_io.mark_worker_beat(getattr(ctx, "slot", 0), now=_now(),
+                                      role=getattr(ctx, "alive_role", None))
             last_beat = _mono()
         if (not getattr(ctx, "reclaim", False)
                 and _mono() - last_recover >= RECOVER_SEC):
@@ -886,6 +906,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
                    or egress.single_owner())
     runtime_id = egress.runtime_owner(executor_id)
     slot = _worker_slot(executor_id)
+    alive_role = _worker_role(executor_id)
     # 起跑写文件心跳：执行体页读的是监督进程写的**文件心跳**，单进程 v3 路径不写就只会
     # 显示 idle。回收必须在领取之前——崩溃通道留下的 `claimed` 行只有先回到 `pending`
     # 才会被 `claim_batch` 重新领取（不回收就是"崩溃即卡死"）。回收只碰本业务日
@@ -898,7 +919,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 的活就收干退出（90 账号的小站是常态），等不到那一刻。死主分片的 `pending` 行于是
     # 整轮无人领取，补签轮沿用同一套分片划分仍无人领 ⇒ **静默漏签**。判死口径与补货循环
     # 共用 `_widen_with_dead_peers`（不另起第二份），只有 `stale` 才算死，活着的执行体不受影响。
-    state_io.mark_worker_started(slot, now=_now())
+    state_io.mark_worker_started(slot, now=_now(), role=alive_role)
     # 允许集在**回收之前**就要定下来（回收也要按它收窄）：手动 `--only` 轮只回收本轮
     # 账号自己的陈旧 `claimed` 行，不碰别人的行（回收别人的行是跨账号写，`epoch+1` 还会
     # fence 掉一个仍存活但慢的持有者的迟到收尾）。**不整段跳过回收**——手动账号自身若是
@@ -919,7 +940,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
             executor_id=executor_id, runtime_id=runtime_id, results={},
             cred_state=cred_state,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
-            rng=rng or random.Random(), slot=slot,
+            rng=rng or random.Random(), slot=slot, alive_role=alive_role,
             requeue_during_run=requeue_during_run, reclaim=reclaim,
             allowed_phones=allowed_phones)
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
@@ -961,5 +982,5 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 异常/中断路径不写——`KeyboardInterrupt` / `SystemExit` 是 BaseException、会直接
     # 外逃，写进去就把"被信号杀掉"记成"正常跑完"；留"有开始、无收尾"让心跳过期后判
     # `stale`（疑似被强杀，要用户注意），与监督进程不写收尾的口径一致。
-    state_io.mark_worker_finished(slot, now=_now())
+    state_io.mark_worker_finished(slot, now=_now(), role=alive_role)
     return ctx.results
