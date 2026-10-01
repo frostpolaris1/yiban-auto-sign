@@ -109,3 +109,26 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 规则细节（按序取用、不足循环、空位语义）与脱敏口径见 `yiban/egress.py` 的模块文档；
 容量基准由部署者在自己的机器上量取后写入 `YIBAN_CAPACITY_MEASURED`（离线基准工具族已于
 2026-09 移除），**建议值 = 实测 × 2/3，只是建议**。
+
+## 数据层调用约定
+
+### 校验/取证类读库必须显式 `init_db(cleanup=False, migrate=False)`（M36 · 定档保留）
+
+`yiban.store.db.init_db(...)` 的缺省是 `cleanup=True, migrate=True`，而
+`yiban/store/connection.py` 的 `get_conn()` 在单例连接不存在时会**隐式**调一次
+`init_db()` 的**全套缺省**。这对业务进程是对的（启动时该做的清理与迁移就该做），
+对**校验/取证类工具**是错的：`scripts/audit_verify.py`、哨兵、`db_export.py` 这类调用方
+只是想**读**——
+
+- `cleanup=True` 会在校验过程中物理删除超保留期的审计行/事件（**改动了被校验对象**，
+  "检出删除"会变成"我自己删的"）；
+- `migrate=True` 会回填审计链等结构（同样改动被校验对象）。
+
+**约定（`yiban/store/db.py` 的 `init_db` docstring 已写明）**：只读取证类调用方在第一次
+触库前**显式** `db.init_db(cleanup=False, migrate=False)`。仓库内的既有样例：
+`scripts/backup_sentinel.py` 的 `_anchor_snapshot()`（M28 的锚点外发读链头）。
+
+**为什么不改 `get_conn()` 的缺省**：它被所有 CLI / 工具 / REPL 调用方共用，改缺省会同时
+改变它们"跑一条命令顺手做一次启动清理"的既有行为，属初始化契约裁决，不是本批能顺手改的。
+**怎么判断一个调用方算不算"校验类"**：它是否会因为多删了几行/多写了几个字段而改变结论。
+会，就显式传 `False`。
