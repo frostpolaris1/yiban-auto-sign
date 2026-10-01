@@ -146,7 +146,7 @@ class _GateNarrowBase(unittest.TestCase):
         ac, at = admin if admin else self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.alerts.clear()

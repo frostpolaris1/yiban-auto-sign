@@ -1537,13 +1537,15 @@ def _users_at_capacity():
         env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
 
 
-def _mail_alert_due(title):
+def _mail_alert_due(title, level=None, target=None):
     """同类型告警邮件节流判断（实现见 web/services/capacity.py）。
 
     `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
-    `read_env`），故转发必须现取后传入。
+    `read_env`），故转发必须现取后传入。`level`/`target` 缺省 None：既有单参调用
+    （含 `mock.patch.object(webapp, "_mail_alert_due")` 打桩点）行为不变。
     """
-    return _capacity._mail_alert_due(title, ENV_FILE, load_env_int)
+    return _capacity._mail_alert_due(
+        title, ENV_FILE, load_env_int, level=level, target=target)
 
 
 def _notify_capacity_once(kind, limit, label):
@@ -2187,8 +2189,10 @@ def create_app(host=None):
     @app.errorhandler(404)
     def _handle_404(e):
         path = request.path
-        if path.startswith((request.script_root or "") + "/api/"):
-            return jsonify({"error": "接口不存在"}), 404
+        # 判据只认 path 自身：werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME（子路径下
+        # path='/api/nope'、script_root='/tool/demo'），再拼 script_root 前缀会永不命中而落 HTML 错误页。
+        if path == "/api" or path.startswith("/api/"):
+            return jsonify({"error": "未知接口"}), 404
         if path.lower().endswith(_404_OPAQUE_EXT):
             return app.response_class("", status=404, mimetype="text/plain")
         return _render_error_page(
@@ -2197,7 +2201,8 @@ def create_app(host=None):
 
     @app.errorhandler(500)
     def _handle_500(e):
-        if request.path.startswith((request.script_root or "") + "/api/"):
+        path = request.path
+        if path == "/api" or path.startswith("/api/"):
             return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
         return _render_error_page(
             500, "服务器内部错误", "请求处理失败，请稍后重试；若持续出现，请联系管理员。"

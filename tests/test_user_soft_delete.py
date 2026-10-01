@@ -125,7 +125,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
         ac, atoken = self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers=self._csrf(atoken))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         return next(a for a in db.load_accounts() if a["phone"] == phone)
@@ -175,7 +175,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
         self._submit_and_approve(c, token)
         ac, atoken = self._admin_client()
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
-        r = ac.delete(f"/api/accounts/{idx}", headers=self._csrf(atoken))
+        r = ac.delete(f"/api/accounts/{idx}", json={"phone": PHONE}, headers=self._csrf(atoken))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         row = self._row()
         self.assertEqual(row["deleted_by"], "admin")
@@ -187,7 +187,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
         # 管理员恢复不受影响，且恢复后清空 deleted_by
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
-        r = ac.post(f"/api/accounts/{idx}/restore", json={}, headers=self._csrf(atoken))
+        r = ac.post(f"/api/accounts/{idx}/restore", json={"phone": PHONE}, headers=self._csrf(atoken))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         row = self._row()
         self.assertEqual(row["deleted"], 0)
@@ -207,7 +207,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
         ac, atoken = self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == "13800138002")
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": "13800138002"},
                     headers=self._csrf(atoken))
         self.assertEqual(r.status_code, 200)
         # 撤销第一个（已软删）账号 → 每人限 1 拦截
@@ -383,7 +383,7 @@ class SoftDeleteNoAlertTest(_Base):
         self._mk_registered_admin()
         self._mk_user_with_account()
         c, h = self._login(REG_ADMIN, REG_ADMIN_PASS)
-        r = c.delete("/api/accounts/0", json={}, headers=h)
+        r = c.delete("/api/accounts/0", json={"phone": "13900000001"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self._assert_no_alert()
         self.assertEqual(self._audit_count("account_delete"), 1, "软删必须留审计")
@@ -426,9 +426,9 @@ class SoftDeleteNoAlertTest(_Base):
         self.webapp.write_env_key(self.env_file, "YIBAN_ADMIN_DELETE_MAX", "1")
         self.webapp.write_env_key(self.env_file, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", "600")
         c, h = self._login(REG_ADMIN, REG_ADMIN_PASS)
-        r1 = c.delete("/api/accounts/0", json={}, headers=h)
+        r1 = c.delete("/api/accounts/0", json={"phone": "13900000001"}, headers=h)
         self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
-        r2 = c.delete("/api/accounts/1", json={}, headers=h)
+        r2 = c.delete("/api/accounts/1", json={"phone": "13900000002"}, headers=h)
         self.assertEqual(r2.status_code, 429, f"第二次软删应被限速，实际 {r2.status_code}")
         self.assertIn("频繁", r2.get_json()["error"])
 
@@ -445,7 +445,8 @@ class SoftDeleteNoAlertTest(_Base):
         self.webapp.write_env_key(self.env_file, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", "600")
         # 管理员先消耗掉额度（删 index=1 的裸账号，避免碰掉学生自己的账号）
         ca, ha = self._login(REG_ADMIN, REG_ADMIN_PASS)
-        self.assertEqual(ca.delete("/api/accounts/1", json={}, headers=ha).status_code, 200)
+        self.assertEqual(ca.delete("/api/accounts/1", json={"phone": "13900000002"},
+                                   headers=ha).status_code, 200)
         # 用户删自己（my-accounts 下标 0 = 本人唯一账号）→ 必须仍然 200
         cu, hu = self._login(USER, USER_PASS_SOFTDEL)
         ru = cu.delete("/api/my-accounts/0", json={}, headers=hu)

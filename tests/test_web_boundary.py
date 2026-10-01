@@ -1825,8 +1825,9 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "load_env_int", return_value=0):
             self.assertTrue(self.webapp._mail_alert_due("标题"))
             self.assertTrue(self.webapp._mail_alert_due("标题"), "0=关闭节流")
-        # 直接写在 app 侧节流表上的时刻必须被真源看见（同一对象，非副本）
-        self.webapp._mail_alert_ts["注入标题"] = time.time()
+        # 直接写在 app 侧节流表上的时刻必须被真源看见（同一对象，非副本）。
+        # M33 后节流键是 (title, level, target) 三元组，注入也按三元组。
+        self.webapp._mail_alert_ts[("注入标题", None, None)] = time.time()
         with mock.patch.object(self.webapp, "load_env_int", return_value=60):
             self.assertFalse(self.webapp._mail_alert_due("注入标题"))
 
@@ -3147,3 +3148,125 @@ class BoundaryMechanismLedgerTest(unittest.TestCase):
                                    capture_output=True, text=True, timeout=120)
                 self.assertIn("SERVICES_ONLY_OK", r.stdout, r.stderr[-600:])
                 self.assertEqual(r.returncode, 0, r.stderr[-600:])
+
+
+class StaleIdxGuardE2ETest(unittest.TestCase):
+    """M91/F60：位置寻址的管理面写口在请求不带 phone 时 fail-closed（409）。
+
+    旧行为（`_stale_idx_guard` 默认 fail_open）会在视图漂移后静默作用到漂移后的
+    另一行。这里从 HTTP 层钉住 review/delete/purge 三条出口必须 409，且目标行未变；
+    另钉批量口 phones 与 ids 长度不等时同样 409（不得静默跳过比对）。
+    """
+
+    ADMIN_PASS = "TestPass1234!"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-staleidx-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        cls._old_env = {k: os.environ.get(k) for k in (
+            "YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_ACCOUNTS_FILE",
+            "YIBAN_ACCOUNTS_KEY", "YIBAN_USERS_FILE", "YIBAN_LOG_FILE")}
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                    "YIBAN_ADMIN_USER=admin\n"
+                    f"YIBAN_ADMIN_PASSWORD={cls.ADMIN_PASS}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_USERS_FILE"] = os.path.join(cls.tmp, "users.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        import db as _db
+        cls.db = _db
+        spec = importlib.util.spec_from_file_location(
+            "webapp_staleidx", os.path.join(BASE, "web", "app.py"))
+        cls.webapp = importlib.util.module_from_spec(spec)
+        sys.modules["webapp_staleidx"] = cls.webapp
+        spec.loader.exec_module(cls.webapp)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k, v in cls._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        with io.open(self.accounts_file, "w", encoding="utf-8") as f:
+            f.write("[]")
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+        for name, phone, owner in (("待审核", "13800138101", "u1@test.local"),
+                                   ("在效", "13800138102", "u2@test.local"),
+                                   ("已删", "13800138103", "u3@test.local")):
+            self.db.add_account({"name": name, "phone": phone, "password": "pw",
+                                 "status": "pending", "owner": owner})
+        rows = self.db.load_accounts()
+        self.idx = {a.get("name"): i for i, a in enumerate(rows)}
+        self.db.set_account_deleted(
+            rows[self.idx["已删"]]["id"], 1, "2026-09-01 00:00:00", deleted_by="admin")
+
+    def _admin(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin", "password": self.ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": t}
+
+    def _snapshot(self):
+        return {a.get("name"): (a.get("status"), bool(a.get("deleted")))
+                for a in self.db.load_accounts()}
+
+    def test_review_without_phone_is_409_and_row_unchanged(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.post(f"/api/accounts/{self.idx['待审核']}/review",
+                   json={"action": "approve"}, headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+
+    def test_delete_without_phone_is_409_and_row_unchanged(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.delete(f"/api/accounts/{self.idx['在效']}", headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertEqual(self._snapshot(), before)
+
+    def test_purge_without_phone_is_409_and_row_unchanged(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.post(f"/api/accounts/{self.idx['已删']}/purge",
+                   json={"confirm_password": self.ADMIN_PASS, "confirm_delay_ack": True},
+                   headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertEqual(self._snapshot(), before)
+
+    def test_batch_phones_ids_length_mismatch_is_409(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.post("/api/accounts/batch", json={
+            "action": "approve",
+            "ids": [self.idx["待审核"]],
+            "phones": ["138****8101", "139****9999"],
+        }, headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)

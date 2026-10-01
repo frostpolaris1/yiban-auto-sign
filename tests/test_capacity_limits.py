@@ -836,5 +836,28 @@ class CapacityBreakdownTest(_Base_CAP):
             self.assertFalse(self.webapp._accounts_at_capacity(0))
 
 
+class BatchApproveCapacityTest(_Base):
+    """批量审核『通过』与单条同一容量闸门（M05/F19）。"""
+
+    def test_batch_approve_over_capacity_rejected_atomically(self):
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "2")
+        try:
+            for i in range(3):
+                self.db.add_account({
+                    "name": "P", "phone": f"1380013900{i}", "password": "pw",
+                    "status": "pending", "owner": f"u{i}@test.local",
+                })
+            accs = self.db.load_accounts()
+            self.assertEqual(len(accs), 3)
+            c, h = self._master()
+            # 占用 0 + 本次将翻 ACTIVE 3 个 = 3 > 上限 2 → 403，且一行都不翻
+            r = c.post("/api/accounts/batch", json={"action": "approve", "ids": [0, 1, 2]}, headers=h)
+            self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+            self.assertIn("上限", r.get_json()["error"])
+            self.assertTrue(all(a["status"] == "pending" for a in self.db.load_accounts()))
+        finally:
+            self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

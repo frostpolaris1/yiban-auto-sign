@@ -308,6 +308,32 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", content)
         self.assertNotIn("YIBAN_ADMIN_PASSWORD=", content)
 
+    def test_delete_hash_row_then_migrate_revokes_old_session(self):
+        """M09/F86：README 追回手册的『删/清空 HASH 行』写法也必须吊销旧会话。
+
+        删除 HASH 行落进"无现存哈希"分支；原实现只写新哈希、不递增 PW_VERSION、
+        不换发 sid，旧 cookie 依旧 admin——与保留旧 HASH 行相比等于没吊销。
+        """
+        c = self.webapp.create_app().test_client()
+        self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
+        self.assertEqual(c.get("/api/me").status_code, 200)
+        # 运维照 README：删 HASH 行 + 清 PW_VERSION + 写新明文
+        self.webapp.write_env_batch(self.env_file, {
+            "YIBAN_ADMIN_PASSWORD_HASH": "",
+            "YIBAN_ADMIN_PW_VERSION": "",
+            "YIBAN_ADMIN_PASSWORD": "RecoveredPass#2026",
+        })
+        self.webapp.migrate_admin_password_to_hash(self.env_file)  # 重启迁移
+        try:
+            self.assertEqual(c.get("/api/me").status_code, 401, "旧会话必须失效")
+            c2 = self.webapp.create_app().test_client()
+            r = c2.post("/api/login", json={
+                "username": BUILTIN_EMAIL, "password": "RecoveredPass#2026"})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(c2.get("/api/me").status_code, 200)
+        finally:
+            self._restore_admin_env()
+
     def test_builtin_admin_password_change_updates_env_atomically(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
@@ -323,7 +349,9 @@ class SecurityFixes021Test(unittest.TestCase):
                 content = f.read()
             self.assertNotIn("YIBAN_ADMIN_PASSWORD=", content)
             self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", content)
-            self.assertIn("YIBAN_ADMIN_PW_VERSION=2", content)
+            # M09：create_app 的首启迁移（明文→哈希）现在也递增 PW_VERSION（1→2），
+            # 本次改密再 +1 ⇒ 3；改密必须始终把版本推高。
+            self.assertIn("YIBAN_ADMIN_PW_VERSION=3", content)
         finally:
             self.webapp.write_env_batch(self.env_file, {
                 "YIBAN_ADMIN_PASSWORD_HASH": "",
@@ -386,7 +414,11 @@ class SecurityFixes021Test(unittest.TestCase):
             self._restore_admin_env()
 
     def test_sequential_password_changes_each_bump_pw_version(self):
-        """两个先后会话各改一次密：版本 1→2→3 每次落盘都递增，不留丢档。"""
+        """两个先后会话各改一次密：每次落盘都递增，不留丢档。
+
+        M09 后版本基线不再是 1：首启迁移（明文→哈希）已把版本抬到 2，故本次两次改密
+        落到 3→4。断言只钉"每次 +1 且不丢档"，不钉绝对起点。
+        """
         p2, p3 = "SecondPass#2026", "ThirdPass#2026"
         try:
             c1 = self.webapp.create_app().test_client()
@@ -396,7 +428,7 @@ class SecurityFixes021Test(unittest.TestCase):
             }, headers=self._csrf(t1))
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             with open(self.env_file, encoding="utf-8") as f:
-                self.assertIn("YIBAN_ADMIN_PW_VERSION=2", f.read())
+                self.assertIn("YIBAN_ADMIN_PW_VERSION=3", f.read())
             c2 = self.webapp.create_app().test_client()
             t2 = self._login(c2, BUILTIN_EMAIL, p2)
             r = c2.post("/api/me/password", json={
@@ -405,9 +437,9 @@ class SecurityFixes021Test(unittest.TestCase):
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             with open(self.env_file, encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("YIBAN_ADMIN_PW_VERSION=3", content,
-                          "第二次改密必须把版本推到 3（递增丢失=应失效的会话存活）")
-            self.assertNotIn("YIBAN_ADMIN_PW_VERSION=2\n", content)
+            self.assertIn("YIBAN_ADMIN_PW_VERSION=4", content,
+                          "第二次改密必须把版本推高（递增丢失=应失效的会话存活）")
+            self.assertNotIn("YIBAN_ADMIN_PW_VERSION=3\n", content)
         finally:
             self._restore_admin_env()
 
@@ -549,7 +581,8 @@ class SecurityFixes021Test(unittest.TestCase):
         })
         admin = self.webapp.create_app().test_client()
         admin_token = self._login(admin, BUILTIN_EMAIL, ADMIN_PASS)
-        r = admin.delete("/api/accounts/0", headers=self._csrf(admin_token))
+        r = admin.delete("/api/accounts/0", json={"phone": "13800138000"},
+                         headers=self._csrf(admin_token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(db.load_accounts()[0]["deleted"])
 
@@ -893,7 +926,7 @@ class RoleHardeningTest(unittest.TestCase):
         ac, at = self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 

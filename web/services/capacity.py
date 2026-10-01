@@ -154,20 +154,27 @@ _mail_alert_ts = {}
 _mail_alert_lock = threading.Lock()
 
 
-def _mail_alert_due(title, env_file, load_env_int):
+def _mail_alert_due(title, env_file, load_env_int, level=None, target=None):
     """同类型告警邮件节流判断：窗口内已发过返回 False（本次跳过邮件，仅走 webhook）。
+
+    节流键是 **`(title, level, target)` 三元组**而非标题原文：同一标题下不同级别
+    （如注册用户非紧急改密 vs 内置主管理员 urgent 改密）或不同目标的告警各自独立
+    计时。此前只按标题去重，最低档注册用户即可反复触发非紧急同类告警，把管理员的
+    紧急同类告警一并静音（跨权限告警压制）。`level`/`target` 缺省 None，单参调用
+    退化为 `(title, None, None)`，与既有调用点/打桩点兼容。
 
     参数注入口径见模块头「通信」（`ENV_FILE` / `load_env_int`）。
     """
     window = load_env_int(env_file, "YIBAN_MAIL_ALERT_COOLDOWN", DEFAULT_MAIL_ALERT_COOLDOWN)
     if window <= 0:
         return True  # 0 = 关闭节流
+    key = (title, level, target)
     now = time.time()
     with _mail_alert_lock:
-        last = _mail_alert_ts.get(title, 0.0)
+        last = _mail_alert_ts.get(key, 0.0)
         if now - last < window:
             return False  # 窗口内已发过：本次只走 webhook，邮件额度留着
-        _mail_alert_ts[title] = now  # 判定与计时在同一把锁内：分开写会让两路同时放行
+        _mail_alert_ts[key] = now  # 判定与计时在同一把锁内：分开写会让两路同时放行
         return True
 
 

@@ -208,8 +208,9 @@ class CapacityExcludesAuditTest(_Base):
 class ApproveGateTest(_Base):
     """审核通过 = 开始产生负载 → 必须过容量闸门（否则提交时受限、审批时无门）。"""
 
-    def _approve(self, c, token, idx):
-        return c.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+    def _approve(self, c, token, idx, phone):
+        # M91 起位置寻址写口不带 phone 即 409；按真实前端携带脱敏/全号均可（守卫双侧归一）。
+        return c.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                       headers={"X-CSRF-Token": token})
 
     def test_approve_refused_at_capacity(self):
@@ -220,7 +221,7 @@ class ApproveGateTest(_Base):
         self._add("13950000003", status="pending")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13950000003")
-        r = self._approve(c, token, idx)
+        r = self._approve(c, token, idx, "13950000003")
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertIn("已达上限", r.get_json()["error"])
         self.assertEqual(self._row(
@@ -238,7 +239,7 @@ class ApproveGateTest(_Base):
                                     deleted_by="admin")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13960000003")
-        r = self._approve(c, token, idx)
+        r = self._approve(c, token, idx, "13960000003")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._row(
             next(a["id"] for a in self.db.load_accounts() if a["phone"] == "13960000003")
@@ -252,7 +253,8 @@ class ApproveGateTest(_Base):
         self._add("13970000002", status="pending")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13970000002")
-        r = c.post(f"/api/accounts/{idx}/review", json={"action": "reject", "reason": "照片不清"},
+        r = c.post(f"/api/accounts/{idx}/review",
+                   json={"action": "reject", "reason": "照片不清", "phone": "13970000002"},
                    headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
@@ -262,7 +264,7 @@ class ApproveGateTest(_Base):
         self._add("13980000002", status="pending")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13980000002")
-        self.assertEqual(self._approve(c, token, idx).status_code, 200)
+        self.assertEqual(self._approve(c, token, idx, "13980000002").status_code, 200)
 
 
 class FrontendConsumesAuditFieldTest(_Base):

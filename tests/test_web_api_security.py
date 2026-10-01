@@ -215,6 +215,30 @@ class AdversarialTest(unittest.TestCase):
         r = c.get("/api/logs?date=../../etc/passwd", headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
 
+    # ---- 子路径部署下的 404 契约（M38/F23） ----
+
+    def test_subpath_unknown_api_returns_json_404(self):
+        # 子路径部署（生产形态）下未知 /api/* 必须是 JSON 404：werkzeug 3.1 的
+        # request.path 已不含 SCRIPT_NAME（path='/api/nope'、script_root='/tool/demo'），
+        # 不能再拼 script_root 前缀判 API——否则落 HTML 错误页，前端 res.json() 解析炸。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/tool/demo/api/nope")
+        self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("未知接口", r.get_json()["error"])
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    def test_subpath_unknown_page_still_html(self):
+        # 另一面：非 API 的未知页面仍走 HTML 兜底（前端兜底不得覆盖 /api/*）。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/tool/demo/no-such-page")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("text/html", r.headers.get("Content-Type", ""))
+        self.assertIn("页面不存在", r.get_data(as_text=True))
+        self.assertNotIn('"未知接口"', r.get_data(as_text=True))
+
 
 if __name__ == "__main__":
     unittest.main()

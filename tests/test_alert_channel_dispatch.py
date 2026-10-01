@@ -356,5 +356,59 @@ class NewApplicationAlertTest(_B14AlertGateBase):
         self.assertEqual(accs[0].get("status"), self.webapp.ACCOUNT_STATUS_PENDING)
 
 
+class MailAlertThrottleKeyTest(_B14AlertGateBase):
+    """M33/F13：邮件告警节流键是 `(title, level, target)`，不是标题原文。
+
+    同一标题有两个发送方且权限不对等（注册用户自助改密=非紧急 vs 内置主管理员改密
+    =urgent）。若只按标题去重，最低档用户即可反复触发非紧急同类告警，把管理员的
+    紧急告警一并静音。本用例走真实 `send_notification`（PATCH_NOTIFY=False），只把
+    运输层打桩。
+    """
+
+    PATCH_NOTIFY = False
+
+    def _mail_recorder(self):
+        mails = []
+
+        def _send(title, content, to=None):
+            mails.append(title)
+            return True
+
+        return mails, _send
+
+    def test_same_title_different_level_both_sent(self):
+        mails, send = self._mail_recorder()
+        with mock.patch.object(self.webapp.mailer, "admin_recipients",
+                               return_value=["admin@test.local"]), \
+             mock.patch.object(self.webapp.mailer, "admin_notify_enabled",
+                               return_value=True), \
+             mock.patch.object(self.webapp.mailer, "send_admin_alert", side_effect=send), \
+             mock.patch.object(self.webapp.notify, "send", return_value=False), \
+             mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
+                               return_value=None):
+            self.webapp._mail_alert_ts.clear()
+            self.webapp.send_notification("账号安全事件告警", "用户自助改密")
+            self.webapp.send_notification("账号安全事件告警", "内置主管理员改密", urgent=True)
+        self.assertEqual(
+            mails, ["账号安全事件告警", "账号安全事件告警"],
+            "同标题、不同级别必须各发一封（否则低档用户可跨权限静音管理员的紧急告警）",
+        )
+
+    def test_same_title_same_level_still_throttled(self):
+        mails, send = self._mail_recorder()
+        with mock.patch.object(self.webapp.mailer, "admin_recipients",
+                               return_value=["admin@test.local"]), \
+             mock.patch.object(self.webapp.mailer, "admin_notify_enabled",
+                               return_value=True), \
+             mock.patch.object(self.webapp.mailer, "send_admin_alert", side_effect=send), \
+             mock.patch.object(self.webapp.notify, "send", return_value=False), \
+             mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
+                               return_value=None):
+            self.webapp._mail_alert_ts.clear()
+            self.webapp.send_notification("高危管理操作告警", "第一次")
+            self.webapp.send_notification("高危管理操作告警", "第二次")
+        self.assertEqual(len(mails), 1, "同标题同级别仍在窗口内节流（SMTP 额度保护不回归）")
+
+
 if __name__ == "__main__":
     unittest.main()
