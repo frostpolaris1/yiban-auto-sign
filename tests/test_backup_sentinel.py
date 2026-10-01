@@ -5,11 +5,15 @@
 覆盖：当日归档与 .sha256 清单齐不齐（只有密文形态 gpg/age 计入健康——M3 批次0
     明文模式护栏：明文包不再算数，且单独触发告警）、昨日包不算今日备份、
     运行拷贝与仓库版的漂移比对、跨进程节流真的接上、发不出去要能看见、
-    wrapper 切工作目录与导出 .env、wrapper 头部文档与"只转发"契约。
+    wrapper 切工作目录与导出 .env、wrapper 头部文档与"只转发"契约、
+    **审计链头哈希随备份离机外发**（M28：每天必发、与备份成败无关、分标题分节流、
+    链头完整且独占一行、只读不写库、读失败与发不出都不吞结论）。
 对应实现：`scripts/backup_sentinel.py`（判定与外发）、`scripts/yiban-backup-sentinel.sh`
     （cron 入口）；节流复用 `yiban.notify.ledger`。
 关键断言：① 缺包/缺清单/漂移 → 恰好一封管理员告警且正文带排查路径；② 正常路径
-    （都在且一致）**零输出零外发**——哨兵自己不许变成噪音源；③ 未安装
+    （都在且一致）**零失败告警**——哨兵自己不许变成噪音源（M28 起这条只约束"失败
+    告警"；当天仍会**另外**外发一封锚点外发，断言在 `self.anchor_mails` 分账里）；
+③ 未安装
     `YIBAN_BACKUP_INSTALLED` → 不报漂移，由缺包那一项兜底；④ 收件人为空/发送失败/
     发送抛异常 → 返回 1（这条"看不见"的兜底能走多远，见 `scripts/backup_sentinel.py`
     头部对 `>> backup.log 2>&1` 的提醒）；⑤ 第二次运行落在窗口内不再外发。
@@ -78,10 +82,16 @@ class _Base(unittest.TestCase):
             "YIBAN_STATE_DIR": self.state_dir,
             "YIBAN_ENV_FILE": os.path.join(self.tmp, ".env"),
             "YIBAN_NOTIFY_COOLDOWN": "60",
+            # 锚点外发要读审计链：把库路径钉到临时区，绝不让哨兵在进程里隐式
+            # init_db 到 cwd（= 仓库根）建一份野 yiban.db。
+            "YIBAN_DB_FILE": os.path.join(self.tmp, "yiban.db"),
         })
         self._env_patch.start()
         self.addCleanup(self._env_patch.stop)
         self.mails = []
+        # 锚点外发（M28）与失败告警**分账**：它每天必发，若混进 self.mails 会让
+        # 「失败时恰好一封」的既有用例全部读成两封。标题不同、节流键也不同。
+        self.anchor_mails = []
 
     # ---- 脚手架 ----
     def _write_archive(self, suffix=".tar.gz.gpg", sidecar=True, day=None):
@@ -99,10 +109,28 @@ class _Base(unittest.TestCase):
             f.write(content)
         return self.installed
 
-    def _run(self, *, due=None, send=None):
-        """跑一次 main()：发送出口默认打桩为记录调用（不碰 SMTP）。"""
-        sender = send or (lambda title, mail: self.mails.append((title, mail)) or True)
-        with mock.patch.object(self.mod, "_send_admin_alert", side_effect=sender):
+    def _default_snapshot(self):
+        """锚点快照的桩（不进真库）：`_anchor_snapshot` 的读库路径另有专测。"""
+        return {"state": "ok", "head": "a" * 64, "count": 42}
+
+    def _send(self, title, mail):
+        bucket = (self.anchor_mails if title == self.mod.ANCHOR_TITLE else self.mails)
+        bucket.append((title, mail))
+        return True
+
+    def _run(self, *, due=None, send=None, snapshot=None):
+        """跑一次 main()：发送出口默认打桩为记录调用（不碰 SMTP）。
+
+        `snapshot` 默认给一份桩快照：`_anchor_snapshot()` 会走 `db.init_db()`，
+        那是对**进程级单例连接**的真实初始化——在测试里做会把同一 worker 后续所有
+        用例的库指到临时区（-n 8 并发下污染面更大）。锚点读库路径的断言放在
+        `AuditAnchorBroadcastTest`，那里直接打桩 `yiban.store.db` 的三个读函数。
+        """
+        sender = send or self._send
+        with mock.patch.object(self.mod, "_send_admin_alert", side_effect=sender), \
+                mock.patch.object(
+                    self.mod, "_anchor_snapshot",
+                    side_effect=snapshot if snapshot is not None else self._default_snapshot):
             if due is None:
                 return self.mod.main([])
             with mock.patch.object(self.mod, "_alert_due", side_effect=due):  #只打桩"该不该发"，发送出口仍是记录器：节流路径不许被桩绕过
@@ -110,7 +138,7 @@ class _Base(unittest.TestCase):
 
 
 class SentryVerdictTest(_Base):
-    """缺什么喊什么；什么都不缺就安静。"""
+    """缺什么喊什么；什么都不缺就安静（安静指的是**不喊失败**，见 M28 的锚点外发）。"""
 
     def test_archive_and_sidecar_present_is_silent(self):
         self._write_archive()
@@ -247,6 +275,138 @@ class DeliveryFailureTest(_Base):
         """收件人为空 → _send_admin_alert 真实实现返回 False → 退出码 1。"""
         with mock.patch("web.services.notify_mail._alert_mail_recipients", return_value=[]):
             self.assertEqual(self.mod.main([]), 1)
+
+
+class AuditAnchorBroadcastTest(_Base):
+    """M28：当日审计链头哈希**随备份外发**——备份与锚点同包同盘时无法证明没被回滚。
+
+    验收不变量（逐条都能判错）：
+    1. **每天必发**，与备份成败无关（只在该喊的时候发 = 把"安静那天正好被回滚"
+       继续留在盲区里）；
+    2. 走**既有**告警出口（`_send_admin_alert`），不新建通道/凭据；
+    3. 与失败告警**分标题分节流**：一天既喊"备份没成"又发"链头离机"是常态，
+       两封都要发，互相不得挡；
+    4. 正文带**完整**链头哈希（通道健康日报只带前 12 位，那是给人看的，这里是
+       比对用的）+ 记录数 + 锚点末行 + 对应的备份包名；
+    5. 读库/读锚点失败或发不出去时**不得抛**、不得把"没发成"说成成功。
+    """
+
+    def test_anchor_broadcast_happens_on_a_healthy_day(self):
+        """活体反例：备份齐全（不喊失败）的那天，锚点**照样**外发一封。"""
+        self._write_archive()
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(self.mails, [], "健康日不得发失败告警")
+        self.assertEqual(len(self.anchor_mails), 1,
+                         f"健康日也必须外发当日链头（离机基线），实际 {self.anchor_mails}")
+        title, mail = self.anchor_mails[0]
+        self.assertEqual(title, self.mod.ANCHOR_TITLE)
+        self.assertNotEqual(title, self.mod.ALERT_TITLE, "两件事必须分标题分节流键")
+        body = mail.to_plain()
+        self.assertIn("a" * 64, body, "正文必须带**完整**链头哈希（恢复后靠它比对）")
+        self.assertNotIn("a" * 12 + "…", body, "不得截断——截断后无法用于比对")
+        # 独占一整行：渲染器 72 列硬切，折行后的哈希抄下来对不上，正好毁掉这封的用途
+        lines = [ln.strip() for ln in body.splitlines()]
+        self.assertIn("a" * 64, lines,
+                      "链头哈希必须独占一整行（被折行就等于没有）")
+        self.assertIn("42", body, "记录数要一起出箱")
+        self.assertIn(self.mod._now(), body,
+                      "业务日是「这份基线属于哪一天」的唯一线索")
+
+    def test_anchor_broadcast_also_happens_when_backup_is_missing(self):
+        """备份没成的那天**同样**要外发：链头是库的现状，与包在不在无关。"""
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, "缺包仍发失败告警")
+        self.assertEqual(len(self.anchor_mails), 1,
+                         "失败告警不得把当天的离机基线挤掉（分标题分节流）")
+
+    def test_anchor_mail_names_the_backup_package_it_belongs_to(self):
+        """锚点必须与「那天该用哪个备份包」绑定：恢复现场才知道拿哪份哈希比对。"""
+        archive = self._write_archive()
+        self._run()
+        body = self.anchor_mails[0][1].to_plain()
+        self.assertIn(os.path.basename(archive), body)
+
+    def test_empty_chain_is_reported_as_empty_not_as_a_blank_hash(self):
+        """空链是**查清了的结论**，不能印成一个空字段让人误以为"值丢了"。"""
+        self._write_archive()
+        snap = {"state": "empty", "head": "", "count": 0}
+        self._run(snapshot=lambda: snap)
+        body = self.anchor_mails[0][1].to_plain()
+        self.assertIn("空链", body)
+
+    def test_anchor_read_failure_is_swallowed_and_logged_not_raised(self):
+        """读不到链头：不得把整个哨兵带崩（cron 会天天红），也不得假装成功。"""
+        self._write_archive()
+
+        def _boom():
+            raise RuntimeError("库读不了")
+
+        rc = self._run(snapshot=_boom)
+        self.assertEqual(rc, 0, "读锚点失败是旁路观测件的事，不该改哨兵退出码")
+        self.assertEqual(self.anchor_mails, [], "读不到就没有基线可发，不得编一个")
+
+    def test_anchor_send_failure_does_not_break_the_health_verdict(self):
+        """外发失败时哨兵的**备份判定**结论不变（退出码仍是 0，检查确实做完了）。"""
+        self._write_archive()
+
+        def _send(title, mail):
+            if title == self.mod.ANCHOR_TITLE:
+                return False
+            self.mails.append((title, mail))
+            return True
+
+        self.assertEqual(self._run(send=_send), 0)
+        self.assertEqual(self.mails, [], "锚点发不出去不该反过来造出一条失败告警")
+
+    def test_anchor_snapshot_reads_chain_head_without_initializing_with_defaults(self):
+        """读链头必须显式 `init_db(cleanup=False, migrate=False)`。
+
+        `connection.get_conn()` 的隐式 `init_db()` 是**全套缺省**
+        （cleanup=True / migrate=True）：让这个 cron 进程顺手做一次启动清理/迁移，
+        等于把只读取证变成一次计划外的写库动作。这里直接断言那两个参数。
+        """
+        seen = {}
+
+        def _fake_init(*args, **kwargs):
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+
+        class _FakeDb:
+            init_db = staticmethod(_fake_init)
+
+            @staticmethod
+            def audit_head_hash_ex():
+                return "ok", "d" * 64
+
+            @staticmethod
+            def audit_row_count():
+                return 7
+
+        with (mock.patch.dict("sys.modules", {"yiban.store.db": _FakeDb}),
+              mock.patch("yiban.store.db", _FakeDb)):
+            snap = self.mod._anchor_snapshot()
+        self.assertEqual(seen["kwargs"].get("cleanup"), False,
+                         "只读取证不得触发启动清理")
+        self.assertEqual(seen["kwargs"].get("migrate"), False,
+                         "只读取证不得触发迁移（迁移会回填审计链）")
+        self.assertEqual(snap["head"], "d" * 64)
+        self.assertEqual(snap["count"], 7)
+
+    def test_anchor_snapshot_returns_none_when_chain_head_unreadable(self):
+        """`audit_head_hash_ex` 的 error 态（读失败）必须与 empty（空链）分开。
+
+        把读失败当空链，会把"没查成"印成"没有"——而那正是最该看见的时刻。
+        """
+        class _FakeDb:
+            init_db = staticmethod(lambda *a, **k: None)
+
+            @staticmethod
+            def audit_head_hash_ex():
+                return "error", None
+
+        with (mock.patch.dict("sys.modules", {"yiban.store.db": _FakeDb}),
+              mock.patch("yiban.store.db", _FakeDb)):
+            self.assertIsNone(self.mod._anchor_snapshot())
 
 
 class WrapperWorkingDirTest(unittest.TestCase):
