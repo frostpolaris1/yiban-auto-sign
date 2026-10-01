@@ -824,9 +824,12 @@ class RefillerTest(_Base):
         self._add_task(_phone(1), vshard=-1, state="failed")
         self._add_task(_phone(2), vshard=-1, state="pending")
         self._seed_v(8)
+        # `held` 是补货循环登记"在途"的集合（M17）：回收按它豁免，防止仍躺在通道
+        # 队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
+        # 替身必须带上真字段——用 getattr 兜底会让豁免在缺字段时静默失效。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
                               runtime_id=RUNTIME_OWNER, m=2, inflight=0, busy=0,
-                              slot=0)
+                              slot=0, held=set())
         queue = asyncio.PriorityQueue()
         asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
         self.assertEqual(self.fc.sleeps, [], "首轮即应判收干，不进入轮询等待")
