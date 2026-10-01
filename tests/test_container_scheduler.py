@@ -732,7 +732,7 @@ class Batch9WebTest(unittest.TestCase):
         ac = self.webapp.create_app().test_client()
         at = self._login(ac, "admin@test.local", ADMIN_PASS)
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": PHONE},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200)
         return c, t

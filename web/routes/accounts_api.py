@@ -593,6 +593,28 @@ def api_accounts_batch():
                 for i in valid
             ):
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        elif isinstance(phones_in, list) and len(phones_in) != len(ids):
+            # M91：phones 与 ids 长度不等 = 客户端对齐令牌残缺；静默跳过比对正是按 idx
+            # 错位改写的口子，fail-closed 让前端刷新重取对齐快照。
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+
+        # 容量闸门（approve 专属）：与单条审核口（api_account_review 的 approve 分支）
+        # 同一语义——通过审核 = 让这一行开始产生签到负载，未通过的行不计入容量，
+        # 故这里是本口径下唯一的把关点。缺这道门时批量口一次请求即可整道绕过上限。
+        if action == "approve":
+            become = sum(
+                1
+                for i in valid
+                if not accounts[i].get("deleted")
+                and accounts[i].get("status") in (
+                    m.ACCOUNT_STATUS_PENDING,
+                    m.ACCOUNT_STATUS_REJECTED,
+                )
+            )
+            if become and m._accounts_at_capacity(become):
+                return jsonify({
+                    "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
+                }), 403
 
         ops = []
         batch_targets = []  # 审计留目标清单（脱敏截断）：只收真正产出了操作的行
@@ -723,7 +745,7 @@ def api_account_delete(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, m._json_body()):
+        if m._stale_idx_guard(acc, m._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         m.db.set_account_deleted(
             acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -758,7 +780,7 @@ def api_account_restore(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, m._json_body()):
+        if m._stale_idx_guard(acc, m._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
@@ -805,7 +827,7 @@ def api_account_purge(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data):
+        if m._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
@@ -840,7 +862,7 @@ def api_account_review(idx):
         data = m._json_body()
         action = data.get("action")
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data):
+        if m._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if action == "approve":
             # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
@@ -909,7 +931,7 @@ def api_account_move(idx):
             return jsonify({"error": "账号不存在"}), 404
         data = m._json_body()
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data):
+        if m._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         try:
             direction = int(data.get("dir", 0))

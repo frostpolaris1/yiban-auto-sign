@@ -324,7 +324,7 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 **场景 A：密码被攻击者改掉/泄露**
 
 1. SSH 登录服务器，编辑 `.env`（Docker：`/data/.env`；systemd：`/opt/yiban-auto-sign/.env`）：
-   - **删除/清空 `YIBAN_ADMIN_PASSWORD_HASH` 行**（不删则旧哈希仍优先生效，等于没改）；
+   - **删除/清空 `YIBAN_ADMIN_PASSWORD_HASH` 行**（不删则旧哈希仍优先生效，等于没改；**删 HASH 行与保留旧 HASH 行现在等价，都会吊销会话**——重启迁移一改哈希就递增 PW_VERSION 并换发内置会话凭据）；
    - 写入新密码（至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类，弱口令会拒绝启动）：`YIBAN_ADMIN_PASSWORD=新强密码`；
    - `YIBAN_ADMIN_PW_VERSION` 若已存在则 +1（不存在则忽略，重启迁移会自动处理）；
 2. 重启服务：`systemctl restart yiban-web` 或 `docker compose restart yiban`（启动迁移会把新明文转 scrypt 哈希并清空明文，同时递增 PW_VERSION）；
