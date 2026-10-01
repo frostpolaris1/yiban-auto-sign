@@ -52,6 +52,62 @@ for row in "${ROWS[@]}"; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# 前置门（M01，fail-closed）：以 root 安装时，本脚本会 root 执行检出内的
+# scripts/check-cron-provenance.sh 并把检出件 root:root 落到生产路径。若检出本身对
+# 服务账号可写（典型：/opt/yiban-auto-sign 被 ReadWritePaths 放开给 yiban 写 .env/
+# yiban.db，见 web/deploy/yiban-web.service），服务账号被拿下后等一次 sudo 安装即提权
+# root。故以 root 安装时检出必须属 root 且组/其他不可写；DESTDIR/非 root 路径不变。
+#
+# M01 复审补全（2026-10-01）：原实现只 stat 检出**顶层**一个目录，挡不住
+# 「顶层 root:755、子目录/文件对服务账号可写」——那正是提权路径本身（scripts/ 可写
+# ⇒ 改掉将被 root 执行的 check-cron-provenance.sh）。现改为**逐级**校验 root 真正
+# 会读取或执行的那几条路径（清单本身、cron 断言脚本、manifest 里的每个源件），
+# 沿途每一个目录分量都要 root 属主且非组/其他可写。
+# 为什么不是全树 find -perm：生产检出下面还有 .env / yiban.db / 日志这些**本来就归
+# 服务账号**的运行数据，把它们纳入门会把一次正常升级变成拒装。门只管"root 会拿它做
+# 决定"的那几条路径。
+if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
+    # 逐级 stat 一个检出内路径；不在检出内 / 读不到 stat ⇒ 同样拒（fail-closed）
+    gate_path() {
+        local target="$1" cur rel owner mode
+        case "$target" in
+            "$REPO_ROOT"/*) rel="${target#"$REPO_ROOT"/}" ;;
+            *) echo "yiban-install: 待校验路径不在检出内（请查清单）：$target" >&2; return 1 ;;
+        esac
+        cur="$REPO_ROOT"
+        local -a comps=()
+        IFS='/' read -r -a comps <<< "$rel"
+        for comp in "${comps[@]}"; do
+            [ -n "$comp" ] || continue
+            cur="$cur/$comp"
+            owner="$(stat -c %u "$cur" 2>/dev/null)" || {
+                echo "yiban-install: 无法 stat 检出内路径：$cur" >&2; return 1; }
+            mode="$(stat -c %a "$cur" 2>/dev/null)" || {
+                echo "yiban-install: 无法读取权限位：$cur" >&2; return 1; }
+            if [ "$owner" -ne 0 ] || [ "$(( 8#$mode & 8#022 ))" -ne 0 ]; then
+                echo "yiban-install: 以 root 安装时检出内每个被 root 读取/执行的路径都必须属 root 且非组/其他可写" >&2
+                echo "                违规路径：$cur（owner=$owner mode=$mode）" >&2
+                echo "                处置：把整个检出 chown -R root:root 并去掉组/其他写位，或用 DESTDIR 安装。" >&2
+                return 1
+            fi
+        done
+        return 0
+    }
+
+    repo_owner="$(stat -c %u "$REPO_ROOT")"
+    repo_mode="$(stat -c %a "$REPO_ROOT")"
+    if [ "$repo_owner" -ne 0 ] || [ "$(( 8#$repo_mode & 8#022 ))" -ne 0 ]; then
+        echo "yiban-install: 以 root 安装时检出必须属 root 且非组/其他可写；请把检出移到 root 只读路径或用 DESTDIR（当前 owner=$repo_owner mode=$repo_mode: $REPO_ROOT）" >&2
+        exit 1
+    fi
+    for row in "${ROWS[@]}"; do
+        IFS=$'\t' read -r _mode src _dest <<< "$row"
+        gate_path "$REPO_ROOT/$src" || exit 1
+    done
+    gate_path "$MANIFEST" || exit 1
+    gate_path "$REPO_ROOT/scripts/check-cron-provenance.sh" || exit 1
+fi
+
 # 预检 2：cron 路径来源断言（装前必过；装后同门复查一道，双保险）
 bash "$REPO_ROOT/scripts/check-cron-provenance.sh"
 

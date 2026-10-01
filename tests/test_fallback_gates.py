@@ -128,7 +128,7 @@ class _FallbackHarness(_WeekdayGuard):
     """主循环测试骨架：把循环跑起来并记录"睡过几次、扫了几次、写没写心跳"。"""
 
     def _run(self, times, env=None, accounts=None, results=None, lock_held=None,
-             mutate_cred=None, pool=False, events=None):
+             mutate_cred=None, pool=False, events=None, on_scan=None):
         """跑一次兜底常驻主循环，返回 (退出码, 睡过的秒数, 心跳时刻, 扫描次数)。
 
         `lock_held`：全局锁探测的返回序列（缺省全 False = 没有全量轮在跑）。
@@ -138,6 +138,8 @@ class _FallbackHarness(_WeekdayGuard):
         `pool`：领取池在场判定（`pool_db_declared` 与 `is_initialized` 一起给）——
         有池才走"同一账号让位 + 事件唤醒"，无池退回整段停摆 + 盲间隔。
         `events`：池事件签名的返回序列（用尽后重复末值；缺省一个恒定签名 = 无新事件）。
+        `on_scan`：每次扫描（`run_queue_retry` 被调用）时回调，供用例在**运行中**改
+        `.env`（模拟管理员从网页写配置）后断言下一轮的门看到新值。
         """
         sleeps, beats, scans, saves = [], [], [], [] # 四本流水账分别对应睡过/心跳/扫过/写回，主循环的每个副作用都留痕
         self.saves = saves
@@ -157,6 +159,8 @@ class _FallbackHarness(_WeekdayGuard):
             self.retry_kwargs = dict(k)
             if mutate_cred is not None:
                 mutate_cred(k.get("cred_state"))
+            if on_scan is not None:
+                on_scan()
             return results if results is not None else {}
 
         with mock.patch.dict(os.environ, {**BASE_ENV, **(env or {})}, clear=False), \
@@ -222,6 +226,117 @@ class FallbackGateTest(_FallbackHarness):
     def test_window_closed_exits(self):
         rc, _, _, scans = self._run([_at(WED, (8, 30))])
         self.assertEqual(scans, [], "窗口已关仍扫描")
+        self.assertEqual(rc, 0)
+
+
+class FallbackEnvReloadTest(_FallbackHarness):
+    """运行期只写 `.env` 的开关必须被**下一轮**看到（否则「每轮重判门」名不副实）。
+
+    门/窗口判定最终读 `os.environ`，而网页只写 `.env`、不 export 也不重启兜底进程；
+    不重读 `.env` 就会一直用启动快照——窗口内点一键暂停照签。
+    """
+
+    def test_pause_written_to_env_mid_run_stops_next_round(self):
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-env-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        env_file = os.path.join(tmp, ".env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_GLOBAL_PAUSE=0\n")
+
+        def _pause():
+            # 模拟管理员在窗口内从网页点一键暂停：只写 .env，不碰进程环境
+            with open(env_file, "w", encoding="utf-8") as f:
+                f.write("YIBAN_GLOBAL_PAUSE=1\n")
+
+        rc, _sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (6, 40))],
+            env={"YIBAN_GLOBAL_PAUSE": "0", "YIBAN_ENV_FILE": env_file},
+            on_scan=_pause)
+        self.assertEqual(len(scans), 1, "暂停写入 .env 后下一轮仍在扫账号——门读的是启动快照")
+        self.assertEqual(rc, 0)
+
+
+class FallbackEnvReloadWhitelistTest(_FallbackHarness):
+    """每轮重读只放行**门/窗口/间隔白名单**：既让「每轮重判门」成立，又不越权改别的配置。
+
+    旧实现"除身份/出口键外全部覆盖"，运行期 .env 能把库路径/状态目录等非门判据配置
+    一起改掉；收成白名单后只认 `schedule.day_off` / `weekend_flags` /
+    `_schedule_config` 的窗口键与兜底间隔键。
+    """
+
+    def _env_file(self, text):
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-whitelist-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        env_file = os.path.join(tmp, ".env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write(text)
+        return env_file
+
+    def test_whitelisted_keys_reloaded_non_whitelisted_untouched(self):
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-keep-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        env_file = self._env_file(
+            "YIBAN_GLOBAL_PAUSE=1\n"
+            "YIBAN_SIGN_START=07:10\n"
+            "YIBAN_FALLBACK_INTERVAL=15\n"
+            "YIBAN_DB_FILE=Z:/evil/other.db\n"
+            "YIBAN_STATE_DIR=Z:/evil/state\n")
+        keep = {"YIBAN_DB_FILE": os.path.join(tmp, "keep.db"),
+                "YIBAN_STATE_DIR": os.path.join(tmp, "keep-state")}
+        with mock.patch.dict(os.environ, {
+                "YIBAN_ENV_FILE": env_file,
+                "YIBAN_GLOBAL_PAUSE": "0", "YIBAN_SIGN_START": "06:30",
+                "YIBAN_FALLBACK_INTERVAL": "60", **keep}, clear=False):
+            workers._reload_env_into_environ()
+            self.assertEqual(os.environ["YIBAN_GLOBAL_PAUSE"], "1",
+                             "暂停键必须在白名单内（否则窗口内暂停对兜底失效）")
+            self.assertEqual(os.environ["YIBAN_SIGN_START"], "07:10",
+                             "窗口起点必须在白名单内")
+            self.assertEqual(os.environ["YIBAN_FALLBACK_INTERVAL"], "15",
+                             "兜底间隔必须在白名单内")
+            for key, want in keep.items():
+                with self.subTest(key=key):
+                    self.assertEqual(os.environ[key], want,
+                                     f"{key} 不属门/窗口/间隔判据，不得被 .env 运行期覆盖")
+
+    def test_interval_written_to_env_mid_run_applies_next_round(self):
+        """间隔在循环内每轮重取：运行期把 .env 改成 15s，下一轮睡步就该是 15。"""
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-interval-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        env_file = os.path.join(tmp, ".env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_FALLBACK_INTERVAL=60\n")
+
+        def _shorten():
+            with open(env_file, "w", encoding="utf-8") as f:
+                f.write("YIBAN_FALLBACK_INTERVAL=15\n")
+
+        rc, sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (6, 40)), _at(WED, (8, 30))],
+            env={"YIBAN_ENV_FILE": env_file}, on_scan=_shorten)
+        self.assertEqual(len(scans), 2, "窗口内应扫两轮（间隔改动不影响扫描本身）")
+        self.assertEqual(sleeps, [60, 15],
+                         "扫描间隔必须每轮从 .env 重取——进循环前取一次的实现会恒 60")
+        self.assertEqual(rc, 0)
+
+    def test_sign_start_written_to_env_mid_run_applies_next_round(self):
+        """窗口键在循环内每轮重取：起点改到 07:00 后，06:40 那一轮必须判「未开窗」。"""
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-start-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        env_file = os.path.join(tmp, ".env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_SIGN_START=06:30\n")
+
+        def _later():
+            with open(env_file, "w", encoding="utf-8") as f:
+                f.write("YIBAN_SIGN_START=07:00\n")
+
+        rc, _sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (6, 40)), _at(WED, (8, 10))],
+            env={"YIBAN_ENV_FILE": env_file, "YIBAN_SIGN_START": "06:30"},
+            on_scan=_later)
+        self.assertEqual(len(scans), 1,
+                         "起点改到 07:00 后 06:40 应判窗口未开、不得再扫")
         self.assertEqual(rc, 0)
 
 

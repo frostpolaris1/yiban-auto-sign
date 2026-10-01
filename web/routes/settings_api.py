@@ -28,18 +28,30 @@ write_env_batch / read_env / ENV_FILE / _in_sign_window / edge_config 等）必�
 """
 import os
 import time
+from datetime import datetime, timedelta
 
 from flask import jsonify, session
 
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
-from web.services.env_io import cleanup_env_ambiguous_line
+from web.services.env_io import (
+    SCHEDULE_DIST_DEFAULTS,
+    SCHEDULE_DIST_ENV_KEYS,
+    SCHEDULE_DIST_KEYS,
+    cleanup_env_ambiguous_line,
+)
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
-from web.services.env_io import (SCHEDULE_DIST_DEFAULTS, SCHEDULE_DIST_ENV_KEYS,
-                                 SCHEDULE_DIST_KEYS)
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
+
+#: 进度端点回给前端的**全站 state 分布**键（顺序即页面画条的顺序）。
+#: 取自 `queue_store.day_counts` 的口径：7 个原始 state + 3 个派生键，派生口径见该函数
+#: 的表（settled = done + skipped；open = pending + claimed + failed + stolen；
+#: total = settled + open）。写死成白名单而不是直接把 dict 摊进响应：库不可用时
+#: `day_counts` 仍回全 0 的完整键集，白名单还能挡住"哪天多折一个键就悄悄改了契约"。
+_PROGRESS_STATE_KEYS = ("total", "settled", "open", "done", "skipped",
+                        "pending", "claimed", "failed", "stolen")
 
 
 def _executor_write_guard(data, action, changed):
@@ -777,6 +789,8 @@ def api_executors():
              "label": m.yb_egress.executor_label(m.yb_egress.TYPE_WORKER, r["slot"])}
             for r in active
         ]
+        # 存活四态的心跳角色档：有并行行时读 worker 心跳（身份键 = 角色 + 槽位号）
+        presence_role = m.yb_egress.ROLE_WORKER
     else:
         # 清单里没有并行执行体行（全被停用/删除）→ 运行时按旧口径的单执行体形态跑：
         # 出口走 `single` 角色（= `YIBAN_PROXY`）——这正是这种情况下**实际运行**的
@@ -786,10 +800,15 @@ def api_executors():
         assignments = [{"index": 0, "egress": m.yb_egress.describe(fallback_single),
                         "role": m.yb_egress.ROLE_WORKER,
                         "label": m.yb_egress.role_label(m.yb_egress.ROLE_WORKER, 0)}]
+        # 这条 index 恒为 0 的行**跑的是单执行体身份**（`single@{主机}`），心跳也写在
+        # single 的身份键上：若仍按 worker-0 读，会与并行执行体的 worker-0 撞 key
+        # （兜底/单执行体收尾会把 worker-0 的心跳洗成 finished）。
+        presence_role = m.yb_egress.ROLE_SINGLE
     # 每个并行执行体的存活四态：后端算好，前端不必自己拼（也不用知道心跳周期）。
     # `last_seen_at` 是最后一次见到它活着的时间串；**不含 pid/主机名**。
     for item in assignments:
-        item["state"], item["last_seen_at"] = m.signin.worker_presence(item["index"])
+        item["state"], item["last_seen_at"] = m.signin.worker_presence(
+            item["index"], role=presence_role)
     # 兜底出口：清单里有兜底行就用它（值在迁移时已按旧口径落定）；没有该行
     # （被删除/停用）则继续按旧键解析，接口字段与旧口径保持一致。
     fb_row = m.yb_egress.fallback_row(rows)
@@ -1255,6 +1274,133 @@ def api_scheduler_executors_measure():
     })
 
 
+def api_scheduler_executors_progress():
+    """当日签到进度（**仅主管理员**）：**只给聚合计数，绝不给逐账号列表**。
+
+    A6 的原话是「实时进度（各执行体签了多少）」并明确"建议聚合计数口径，不要逐账号列表"
+    ——理由与账号列表一致：逐账号进度等于把全站账号清单换个出口再发一遍。本端点因此
+    只回「每个执行体各签了多少」与「全站合计」，分页/翻页一概没有（聚合后天然无分页）。
+
+    口径与 `GET /api/scheduler/executors` 的 `activity` **同一实现**
+    （`_executor_activity`），差别只有两点：① 这里额外给出**全站按 state 的分布**
+    （`db.task_stats(day)`，即 `queue_store.day_counts`）以便页面画"已签/待签/失败"的
+    总量条；② 这里的 `day` 取**最近一次有记录的业务日**（`db.task_latest_day`）而不是
+    "今天"——周末停签后取"今天"会让整页归零，页面无法区分"没跑"与"今天不跑"。
+    """
+    m = _appmod()
+    if not m._is_builtin_admin_session():
+        return jsonify({"error": "仅主管理员可查看签到进度"}), 403
+    day = m.db.task_latest_day() or m.clock.today()
+    by_executor, activity_totals = m._executor_activity(day)
+    # 全站按 state 的分布（day_counts 同口径不抛：库不可用时全 0）
+    counts = m.db.task_stats(day)
+    bounds = m._executors_window()
+    return jsonify({
+        "ok": True,
+        "day": day,
+        # 今天没跑过记录时 day 是历史日；页面据此提示"下面是最近一次记录"，别当成实时
+        "is_today": day == m.clock.today(),
+        "in_window": m._in_run_period(bounds),
+        # 全站分布：state 计数 + 派生的 settled/open/total（派生口径见 queue_store.day_counts）
+        "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS},
+        "by_executor": by_executor,
+        "executor_totals": activity_totals,
+        "note": ("聚合计数口径，不含逐账号明细（逐账号明细看账号列表页）。"
+                 "库未初始化或当日无记录时各计数全 0，属正常空态而非故障。"),
+    })
+
+
+def api_scheduler_executors_ownership():
+    """各执行体的归属与迁移分布（**仅主管理员**）：**只给聚合计数**。
+
+    A7 的原话是「各执行体负载/归属分布视图」，`45` §12.1 进一步写作"归属与迁移视图"。
+    本端点给两段聚合：
+
+    - `by_executor[]`：当日每个执行体**名下有多少账号**（归属分布 = 负载视图）。取自
+      `sign_tasks.owner` 的当日快照（`db.task_owners_for_day`），经 `parse_owner` 折成
+      角色 + 槽位——**owner 原串含主机名与进程号，绝不回响应**（与既有执行体面同一纪律）。
+    - `migration[]`：**相邻两个业务日之间换了执行体的账号数**，按「从哪个 → 到哪个」
+      聚合成若干条（归属迁移视图）。执行体清单增删行或账号数变动都会让当日归属重算，
+      这正是"迁移"的来源；一条都没动则 `migration: []`。
+
+    比较基准是**当日的前一个自然日**（`prev_day`，随响应回显）。该日没有记录时
+    `compared: false` 且 `migration: []`——不猜、不拿更早的日子凑，前端据 `compared`
+    决定要不要显示这一段。
+    """
+    m = _appmod()
+    if not m._is_builtin_admin_session():
+        return jsonify({"error": "仅主管理员可查看归属分布"}), 403
+    day = m.db.task_latest_day() or m.clock.today()
+    owners_now = m.db.task_owners_for_day(day)
+    prev_day = _prev_business_day(day)
+    owners_prev = m.db.task_owners_for_day(prev_day) if prev_day else {}
+
+    def _fold(owner):
+        """owner 原串 → 折成聚合键（角色 + 槽位序号 + 后端标签），不回原串。"""
+        parsed = m.yb_egress.parse_owner(owner)
+        return parsed["role"], parsed["index"], parsed["label"]
+
+    by_exec = {}
+    for owner in owners_now.values():
+        key = _fold(owner)
+        by_exec[key] = by_exec.get(key, 0) + 1
+    # 聚合行按"槽位号升序、同号按角色"排序，与 `GET …/executors` 的 activity 展示顺序
+    # 同族，前端两处排序行为才一致（否则同一份数据在两页顺序不同会被当成两个口径）。
+    by_executor = [
+        {"role": role, "index": index, "label": label,
+         "slot": (index + 1) if isinstance(index, int) and role == m.yb_egress.ROLE_WORKER else None,
+         "accounts": count}
+        for (role, index, label), count in sorted(
+            by_exec.items(),
+            key=lambda kv: (kv[0][1] if isinstance(kv[0][1], int) else 1 << 30,
+                            kv[0][0], kv[0][2]))
+    ]
+
+    migration = []
+    compared = bool(owners_prev)
+    if compared:
+        moved = {}
+        for phone, owner in owners_now.items():
+            before = owners_prev.get(phone)
+            # 前一日没有这一行 = 新出现的账号，不是"迁移"（无处可迁），跳过
+            if before is None or before == owner:
+                continue
+            moved[(_fold(before), _fold(owner))] = \
+                moved.get((_fold(before), _fold(owner)), 0) + 1
+        migration = [
+            {"from_role": src[0], "from_index": src[1], "from_label": src[2],
+             "to_role": dst[0], "to_index": dst[1], "to_label": dst[2],
+             "accounts": count}
+            for (src, dst), count in sorted(
+                moved.items(), key=lambda kv: (-kv[1], kv[0][1] or 0, kv[0][0]))
+        ]
+    return jsonify({
+        "ok": True,
+        "day": day,
+        "prev_day": prev_day,
+        "compared": compared,
+        "tracked": len(owners_now),
+        "by_executor": by_executor,
+        "migration": migration,
+        "note": ("聚合计数口径，不含逐账号明细（逐账号明细看账号列表页的「上次实领」列）。"
+                 + ("前一日无记录，未做迁移比较。" if not compared else
+                    "迁移=当日与前一日之间换了执行体的账号数，按「从→到」聚合。")),
+    })
+
+
+def _prev_business_day(day):
+    """`day` 的前一个自然日（`YYYY-MM-DD` 字符串）；解析不了返回 None（不猜）。
+
+    只做字符串日期回退一天，不做"跳过周末"——业务日在窗口外也可能继续（补签轮、
+    手动轮），跳周末会让"迁移"两端的日期间隔变得不固定，前端无法解释。
+    """
+    try:
+        return (datetime.strptime(str(day), "%Y-%m-%d")
+                - timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+
 def api_announcement():
     """公告读取：对外只给**已发布**文本；管理员会话额外看到待发布草稿三键。
 
@@ -1487,6 +1633,12 @@ def register(app):
                      view_func=api_scheduler_executor_row_delete, methods=["DELETE"])
     app.add_url_rule("/api/scheduler/executors/measure",
                      view_func=api_scheduler_executors_measure, methods=["POST"])
+    # A5/A6/A7：执行一轮的请求登记、当日进度（聚合计数）、归属与迁移分布（聚合计数）。
+    # 三者都不落在 `_high_risk_gate` 的清单里——前两者不改配置/不碰凭据，后者纯只读。
+    app.add_url_rule("/api/scheduler/executors/progress",
+                     view_func=api_scheduler_executors_progress, methods=["GET"])
+    app.add_url_rule("/api/scheduler/executors/ownership",
+                     view_func=api_scheduler_executors_ownership, methods=["GET"])
     app.add_url_rule("/api/announcement", view_func=api_announcement)
     app.add_url_rule("/api/registration_paused", view_func=api_registration_paused)
     app.add_url_rule("/api/announcement", view_func=api_announcement_save, methods=["PUT"])

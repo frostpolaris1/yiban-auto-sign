@@ -228,6 +228,24 @@ class Window:
         """距窗口开始还有多少秒（已开始则为 0 或负；调用方自行 `max(0, …)` 收敛）。"""
         return (self.lo_min - _minute_of_day(now_dt)) * 60.0
 
+    def bounds_dt(self, when):
+        """有效窗口两端在 `when` **那一天**的**绝对时刻** → `(lo_dt, hi_dt)`。
+
+        为什么需要这一面（M16）：`lo_min` / `hi_min` 是「当天第几分钟」，**不含日期**。
+        拿它们和具体时刻比较**落点**时，跨零点后就会把"次日的同一时刻"当成"今天"：
+        长轮次跨过午夜后，`next_retry_at_v3` 用「零点 + hi_min」构造上界，得到的落点
+        落在次日窗口**开始之前**——而通道只判"窗口没关"（`is_closed`），于是那条行
+        在窗口外被真实登录（`_mark_window_skips` 还会记成 `skipped_window`）。
+        凡是**算落点**的地方一律用本方法取绝对时刻，按绝对时间比较；`is_closed` /
+        `is_open` / `remaining_sec` 仍是"今天进行到第几分钟"的配对谓词，不经本方法。
+
+        `when` 传 datetime（取其日期部分）或 date 均可。
+        """
+        if not isinstance(when, datetime.datetime):
+            when = datetime.datetime.combine(when, datetime.time())
+        base = when.replace(hour=0, minute=0, second=0, microsecond=0)
+        return to_dt(base, self.lo_min), to_dt(base, self.hi_min)
+
 
 def from_env(env):
     """从环境/`.env` 映射直接构造 `Window`（Web 侧与独立工具用）。"""

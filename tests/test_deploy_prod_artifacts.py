@@ -14,7 +14,10 @@
       正例加深：真 backup.sh + 真 gpg（有则跑）闭环，产出 .gpg 可用该口令解开。
     ③ install.sh：DESTDIR 无特权安装到 fixture 前缀；安装前后校验和输出；
       已存在文件校验和不符 ⇒ 拒装（现网 3 行手工漂移不得被静默覆盖），
-      --adopt-production 归档现网件后以仓库为准；`.bak-*` 残留清理并记录。
+      --adopt-production 归档现网件后以仓库为准；`.bak-*` 残留清理并记录；
+      以 root（未设 DESTDIR）安装时检出必须属 root 且非组/其他可写，否则在执行
+      检出内脚本之前拒装（M01）；该门**逐级**校验被 root 读取/执行的每一条路径
+      （顶层合规而 `scripts/` 可写同样拒装——复审点名的绕过）。
     ④ check-deploy-target.sh：本地裸仓 fixture 远端（无网络）——目标提交在远端
       分支 ⇒ 0；不在 ⇒ 非 0 且输出人类可读结论。不做任何 push。
     ⑤ 真名示例门（合法的字面量门——字符串本身就是缺陷）：真实姓名（此处仅以转义
@@ -428,6 +431,123 @@ class InstallScriptTest(_TmpBase):
             self.assertEqual([], [n for n in os.listdir(os.path.dirname(d))
                                   if ".reconcile-" in n],
                              "无漂移的第二轮不应产生归档")
+
+
+# -------------------------------------------- install.sh 以 root 安装的前置门（M01）
+@unittest.skipIf(BASH is None, "需要 bash")
+class InstallRootCheckoutGateTest(_TmpBase):
+    """M01：以 root（未设 DESTDIR）安装时，检出必须属 root 且组/其他不可写。
+
+    威胁：install.sh 以 root 执行检出内的 `scripts/check-cron-provenance.sh` 并把检出件
+    root:root 安装；生产里 `/opt/yiban-auto-sign` 对服务账号 yiban 可写
+    （web/deploy/yiban-web.service 的 ReadWritePaths），服务账号被拿下后等一次 sudo
+    安装即提权 root。门必须**先于**任何检出内脚本的执行（用 stub + marker 证明）。
+    清单目标指向 /tmp 下的合成路径（万一门失效也只碰临时区，不碰生产路径）。
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 最小检出：install.sh 只看 manifest 的源是否存在 + 跑 cron 来源断言
+        self.checkout = os.path.join(self.tmp, "checkout")
+        os.makedirs(os.path.join(self.checkout, "scripts"))
+        os.makedirs(os.path.join(self.checkout, "deploy", "prod"))
+        shutil.copy2(INSTALL, os.path.join(self.checkout, "deploy", "prod", "install.sh"))
+        self.dest = "/tmp/yiban-m01-gate-%s/payload.sh" % os.path.basename(self.tmp)
+        _write(os.path.join(self.checkout, "deploy", "prod", "manifest.tsv"),
+               "0700\tscripts/payload.sh\t%s\n" % self.dest)
+        _write(os.path.join(self.checkout, "scripts", "payload.sh"), "#!/bin/bash\ntrue\n")
+        # cron 来源断言桩：被 root 执行即留痕（marker 就是"检出内脚本被执行过"的证据）
+        self.marker = os.path.join(self.checkout, "provenance-ran")
+        _write(os.path.join(self.checkout, "scripts", "check-cron-provenance.sh"),
+               '#!/usr/bin/env bash\necho ran >> "%s"\nexit 0\n' % self.marker)
+
+    def _install_from_checkout(self, destroot=None, extra_env=None):
+        env = {}
+        if destroot is not None:
+            env["DESTDIR"] = destroot
+        env.update(extra_env or {})
+        return self._run_bash(os.path.join(self.checkout, "deploy", "prod", "install.sh"),
+                              (), env=env, cwd=self.checkout)
+
+    def _running_as_root(self):
+        r = subprocess.run([BASH, "-c", "id -u"], capture_output=True, timeout=60)
+        return r.stdout.decode().strip() == "0"
+
+    def _fs_preserves_modes(self):
+        r = subprocess.run(
+            [BASH, "-c", 'f=$(mktemp); chmod 775 "$f"; stat -c %a "$f"; rm -f "$f"'],
+            capture_output=True, text=True, timeout=60)
+        return r.stdout.strip() == "775"
+
+    def test_group_writable_checkout_under_root_is_refused_before_any_script(self):
+        """活体反例：chmod g+w 的检出上以 root 跑 ⇒ rc=1，且未执行检出内脚本。"""
+        if not self._running_as_root():
+            self.skipTest("需要以 root 运行（WSL）才能触发 M01 前置门")
+        if not self._fs_preserves_modes():
+            self.skipTest("宿主文件系统不保留 POSIX mode（Windows 开发机）")
+        os.chmod(self.checkout, 0o775)  # 服务账号组可写 = 生产旧形态
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"组可写检出以 root 安装必须拒装：{out}")
+        self.assertIn("检出必须属 root", out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下（check-cron-provenance 不得被 root 跑）")
+
+    def test_root_readonly_checkout_with_destdir_installs_normally(self):
+        """对照：root 属主、非组/其他可写的检出 + DESTDIR ⇒ 照常装进暂存前缀。"""
+        if not self._running_as_root() or not self._fs_preserves_modes():
+            self.skipTest("需要 root（WSL）+ 保留 POSIX mode 的文件系统")
+        os.chmod(self.checkout, 0o755)
+        destroot = os.path.join(self.tmp, "destdir")
+        os.makedirs(destroot, exist_ok=True)
+        r = self._install_from_checkout(destroot=destroot)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, out)
+        self.assertTrue(os.path.isfile(
+            destroot + self.dest.replace("/", os.sep)), out)
+        self.assertTrue(os.path.exists(self.marker), "DESTDIR 路径必须照旧跑 cron 来源断言")
+
+
+class InstallRootCheckoutSubPathGateTest(InstallRootCheckoutGateTest):
+    """M01 复审补全：门必须**逐级**校验，不止看检出顶层一个目录。
+
+    活体反例形态（就是复审点名的绕过）：顶层 `root:755` 完全合规，但 `scripts/`
+    组可写 —— 而 `scripts/check-cron-provenance.sh` 正是被 root 执行的那一份。
+    只 stat 顶层的旧门在这里会放行，提权路径照旧。
+    继承父类夹具：同样的最小检出、同样的 marker 语义（marker 存在 = 检出内脚本
+    已被 root 跑过）。注意父类的两条既有用例在本子类里会**原样重跑**一遍——那是
+    有意的对照：逐级门不得把"顶层合规 + DESTDIR"的正常路径也拒掉。
+    """
+
+    def _require_root_and_modes(self):
+        if not self._running_as_root():
+            self.skipTest("需要以 root 运行（WSL）才能触发 M01 前置门")
+        if not self._fs_preserves_modes():
+            self.skipTest("宿主文件系统不保留 POSIX mode（Windows 开发机）")
+
+    def test_group_writable_subdirectory_is_refused_even_when_toplevel_is_clean(self):
+        """顶层 root:755 + scripts/ 组可写 ⇒ 必须在执行检出内脚本之前拒装。"""
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)          # 顶层完全合规（旧门在这里就放行）
+        os.chmod(os.path.join(self.checkout, "scripts"), 0o775)
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"scripts/ 组可写必须拒装：{out}")
+        self.assertIn("每个被 root 读取/执行的路径", out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下（check-cron-provenance 不得被 root 跑）")
+
+    def test_group_writable_manifest_source_file_is_refused(self):
+        """清单里的**源件**本身可写同样拒装（install 以 root 读它并落位）。"""
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(os.path.join(self.checkout, "scripts", "payload.sh"), 0o666)
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"清单源件组/其他可写必须拒装：{out}")
+        self.assertIn("payload.sh", out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下")
 
 
 # ----------------------------------------------------------④ check-deploy-target.sh

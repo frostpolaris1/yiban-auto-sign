@@ -653,7 +653,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         ac, at = self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         return c, t
@@ -742,19 +742,28 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
             "角色变更必须留在审计链上",
         )
 
-    def test_role_change_without_reconfirm_ok_and_audited(self):
-        """角色变更可逆（缩减批 6a 免门）：无口令直达变更，留痕靠同事务审计行。"""
+    def test_role_change_without_reconfirm_rejected_and_audited(self):
+        """角色变更要当次口令（用户 2026-10-01 拍板：「角色变更与提权」整类摘出免门）。
+
+        缺口令 → 400 `password_required` 且角色逐字未变；带对口令才放行，且放行那次
+        仍落同事务审计行（"要口令"不等于"不要留痕"）。
+        """
         self._user_with_account(EMAIL, "13800138007")
         ac, at = self._admin_client()
         r = ac.post(user_path(db, EMAIL, "/role"), json={"role": "admin"},
                     headers=self._csrf(at))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        u = db.find_user(EMAIL)
-        self.assertEqual(u.get("role"), "admin")
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["reason"], "password_required")
+        self.assertEqual(db.find_user(EMAIL).get("role"), "user", "被拒的提权不得生效")
+        r2 = ac.post(user_path(db, EMAIL, "/role"),
+                     json={"role": "admin", "confirm_password": ADMIN_PASS},
+                     headers=self._csrf(at))
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        self.assertEqual(db.find_user(EMAIL).get("role"), "admin")
         rows = db.audit_rows(50) if hasattr(db, "audit_rows") else []
         if rows:
             self.assertTrue(any(x.get("action") == "user_role" for x in rows),
-                            "免门不等于免痕：角色变更必须落审计行")
+                            "角色变更必须落审计行")
 
     def test_announcement_change_alerts(self):
         ac, at = self._admin_client()

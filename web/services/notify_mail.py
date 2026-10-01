@@ -195,9 +195,12 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
     # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
     # recipients 排在最前是有意的：and 短路让"收件人为空"这一路不去调
-    # mail_alert_due，于是不登记时间戳、不白占一个节流窗口
+    # mail_alert_due，于是不登记时间戳、不白占一个节流窗口。
+    # 第二参 level=urgent：节流键是 (title, level)，不是标题原文——否则注册
+    # 用户的非紧急同类告警会把内置主管理员的 urgent 同类告警一并静音（跨权限压制）。
+    # 本函数是邮件节流的唯一调用点，级别已足够拆开被压制的那一对发送方。
     mail_sent = False
-    if recipients and (force or mail_alert_due(title)):
+    if recipients and (force or mail_alert_due(title, urgent)):
         # 送达 bool 必须上抛：运输层失败只记日志不抛出，丢掉它就会把"没发出去"
         # 当成"已送达"推进告警基线，一次发送失败被放大成此后永久静默。
         mail_sent = bool(mailer.send_admin_alert(title, content, to=",".join(recipients)))

@@ -478,6 +478,7 @@ def _write_measure_state(path, payload):
     """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
     return _measure._write_measure_state(path, payload, _atomic_write)
 
+
 # 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
 # web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、
 # 注册等路径经 m.* 取用；本模块的 verify_admin 转发包装在服务层内部按同一函数取用）。
@@ -1537,13 +1538,15 @@ def _users_at_capacity():
         env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
 
 
-def _mail_alert_due(title):
+def _mail_alert_due(title, level=None):
     """同类型告警邮件节流判断（实现见 web/services/capacity.py）。
 
     `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
-    `read_env`），故转发必须现取后传入。
+    `read_env`），故转发必须现取后传入。`level` 缺省 None：既有单参调用
+    （含 `mock.patch.object(webapp, "_mail_alert_due")` 打桩点）行为不变。
     """
-    return _capacity._mail_alert_due(title, ENV_FILE, load_env_int)
+    return _capacity._mail_alert_due(
+        title, ENV_FILE, load_env_int, level=level)
 
 
 def _notify_capacity_once(kind, limit, label):
@@ -1615,6 +1618,11 @@ class BasePathMiddleware:
     _ROOT_MARKERS = (
         "/login", "/user", "/terms", "/privacy",
         "/favicon.png", "/gongan-beian.png", "/robots.txt",
+        # 裸 /api 前缀：自身即 API 命名空间（404 handler 按它返回 JSON）。不登记时
+        # `/tool/demo/api` 这段「其余部分」两头不命中（既非 /api/ 前缀也非已知路由），
+        # 自动探测切不出前缀 → 回落到 HTML 404；登记后 rest == "/api" 即命中，
+        # SCRIPT_NAME 回填 /tool/demo、PATH_INFO 落回 /api，交给 404 handler 出 JSON。
+        "/api",
         # 改版前的旧路径（历史书签兼容，302 到 /组/页面）
         "/logs", "/accounts", "/users", "/settings", "/mine", "/mine/calendar",
     )
@@ -2187,8 +2195,10 @@ def create_app(host=None):
     @app.errorhandler(404)
     def _handle_404(e):
         path = request.path
-        if path.startswith((request.script_root or "") + "/api/"):
-            return jsonify({"error": "接口不存在"}), 404
+        # 判据只认 path 自身：werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME（子路径下
+        # path='/api/nope'、script_root='/tool/demo'），再拼 script_root 前缀会永不命中而落 HTML 错误页。
+        if path == "/api" or path.startswith("/api/"):
+            return jsonify({"error": "未知接口"}), 404
         if path.lower().endswith(_404_OPAQUE_EXT):
             return app.response_class("", status=404, mimetype="text/plain")
         return _render_error_page(
@@ -2197,10 +2207,47 @@ def create_app(host=None):
 
     @app.errorhandler(500)
     def _handle_500(e):
-        if request.path.startswith((request.script_root or "") + "/api/"):
+        path = request.path
+        if path == "/api" or path.startswith("/api/"):
             return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
         return _render_error_page(
             500, "服务器内部错误", "请求处理失败，请稍后重试；若持续出现，请联系管理员。"
+        )
+
+    # ---- 请求态错误（400/405/413）：/api/* 一律 JSON ----
+    # `_json_body()` 用 `abort(400, description=...)` 拒绝非法/非对象 JSON，werkzeug 对
+    # 错方法（405）与超 MAX_CONTENT_LENGTH（413，见上方 app.config）也抛 HTTPException。
+    # 缺这三个 handler 时它们全落 werkzeug 默认 text/html 错误页，前端 `res.json()` 直接
+    # 抛解析异常、拿不到 `error` 文案——与 404/500 的 /api/* JSON 口径必须一致。
+    # 判据同 404/500：只认 path 自身（werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME）。
+    def _is_api_path():
+        p = request.path
+        return p == "/api" or p.startswith("/api/")
+
+    @app.errorhandler(400)
+    def _handle_400(e):
+        if _is_api_path():
+            # description 只来自本仓 `abort(400, description=...)`（当前仅 _json_body 两处），
+            # 是给前端看的用户文案；缺失时回退通用文案，绝不回显内部异常细节。
+            return jsonify({"error": getattr(e, "description", "") or "请求无效"}), 400
+        return _render_error_page(
+            400, "请求无效", "请求格式不正确，请检查后重试。"
+        )
+
+    @app.errorhandler(405)
+    def _handle_405(e):
+        if _is_api_path():
+            return jsonify({"error": "方法不允许"}), 405
+        return _render_error_page(
+            405, "方法不允许", "该地址不支持当前请求方法。"
+        )
+
+    @app.errorhandler(413)
+    def _handle_413(e):
+        if _is_api_path():
+            return jsonify({"error": "请求体过大"}), 413
+        return _render_error_page(
+            413, "请求体过大", "提交的内容超过大小限制，请精简后重试。"
         )
 
     @app.after_request
@@ -2438,7 +2485,8 @@ def create_app(host=None):
         return bool(trusted) and trusted != _client_ip()
 
     def _sensitive_password_gate(data, action, *, always_required=False,
-                                 deny_status=403, irreversible=False):
+                                 deny_status=403, irreversible=False,
+                                 risk_always=False):
         """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
 
         为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）各写各的
@@ -2454,6 +2502,13 @@ def create_app(host=None):
         `deny_status` 只换响应码、不换判定（保持各落点原有的客户端契约）。
         `irreversible=True` 只标"删了就回不来"的落点（物理清除、彻底删除、删用户）；
         可逆动作别传，否则把可回滚的操作也套上不可撤销的确认负担。
+
+        `risk_always=True` = **缺省 `risk` 档下也不吃"同出口免口令"**（用户 2026-10-01
+        拍板的口径变更，覆盖此前"risk 档同出口免口令"的拍板）：缺省档里
+        `_pw_gate_ip_changed()` 为假就早退放行，本参数把那一处早退跳过，让判定落到口令
+        比对上。**只作用于 `risk` 档**——`full` 档本就逐条走完三段（不变），`off` 档在
+        本参数之前就早退、永不要求口令（不变）。四类操作逐个标注：`risk_always=True`
+        即"拆掉同出口免口令"的落点清单，四类之外**一律不传**（risk 档其余操作仍免口令）。
 
         失败会怎样：错口令由 `_sensitive_pw_denied` 记**独立**计数，达阈值起本
         (出口 IP, 会话账号) 进冷却；这条链绝不碰登录失败表，所以门禁判错也不会把管理员
@@ -2479,7 +2534,10 @@ def create_app(host=None):
                                 "reason": PW_DELAY_ACK_REASON}), deny_status
             if tier == PW_GATE_OFF:
                 return None  # off：永不要求口令——下面口令比对、失败计数与冷却整段不执行
-            if not _pw_gate_ip_changed():
+            # 缺省档唯一的放行口就是这一句：出口 IP 没换 → 不要口令。`risk_always=True`
+            # 的四类操作（拆告警通道 / 改角色与提权 / 重置他人口令 / 改写他人易班凭据）
+            # 跳过它，同出口也必须当次输口令（用户 2026-10-01 拍板）；其余操作逐字不变。
+            if not risk_always and not _pw_gate_ip_changed():
                 return None  # risk（缺省档）：出口 IP 没换就不要口令，危险操作默认免输、换环境才要一次
             # 换环境命中 = 当次必须输口令。豁免判的是"本出口刚复核过"，而这里恰恰是
             # 本出口还没复核过，故显式置位：日后豁免口径若有变动，也不至于把命中的
@@ -2515,7 +2573,7 @@ def create_app(host=None):
         return _sensitive_pw_denied(key, action, deny_status, cooldown, now)
 
     def _reconfirm_admin_password(data, action_label, *, always_required=True,
-                                  irreversible=False):
+                                  irreversible=False, risk_always=False):
         """高危操作二次鉴权：要求当前会话管理员重新输入口令。
 
         薄封装：返回约定（None = 通过，否则 `(响应, 状态码)` 元组）与失败处置
@@ -2524,15 +2582,17 @@ def create_app(host=None):
         清除 / 重置他人口令"（必须当次输口令）；设置页里两个纯配置项（签到随机
         延迟、容量上限）显式传 False 走豁免。另一直连调用点是 /api/mail-config 的
         SMTP 凭据变更（换中继/授权码 = 换钥类，要口令但不占高危额度）。
+        `risk_always` 原样透传（缺省 `risk` 档是否吃"同出口免口令"，语义见
+        `_sensitive_password_gate`）；**不传即逐字保持旧行为**。
         """
         return _sensitive_password_gate(
             # 第一个参数收**整个请求体**而不是单独的口令串：非 `full` 档还要看同一请求里
             # 的倒计时确认凭据 confirm_delay_ack，只传口令串会把那字段截掉，门禁永远判它缺失
             data, action_label, always_required=always_required, deny_status=400,
-            irreversible=irreversible)
+            irreversible=irreversible, risk_always=risk_always)
 
     def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试",
-                        irreversible=False, quota="delete"):
+                        irreversible=False, quota="delete", risk_always=False):
         """高危动作统一门禁：先过口令二次鉴权，**通过之后**才占用对应类别的额度。
 
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
@@ -2540,6 +2600,8 @@ def create_app(host=None):
         清库清理）；`"creds"` = 凭据改写类（YIBAN_ADMIN_CREDS_*，改写他人易班凭据、
         重置他人口令、换推送密钥）——两族分开计数，"超限即 429"
         的语义两族一致。
+        `risk_always=True` 原样透传给统一门禁（缺省 `risk` 档是否吃"同出口免口令"），
+        四类落点逐个标注；**不传即逐字保持旧行为**。
 
         口令门收窄（用户拍板清单）：门内只剩**不可逆/凭据类**动作
         ——删除账号、清库清理、换钥、改管理员口令、改他人凭据，以及**关闭邮件/推送
@@ -2561,15 +2623,17 @@ def create_app(host=None):
           只改设备识别码不过本门，仅标审计位 + 发信）
         - POST /api/users/batch（delete / reset_password 分支）
         - POST /api/users/deleted/purge
+        - POST /api/users/<int:user_id>/role（角色变更与提权；**主管理员专属**，
+          占凭据额度——提权是控制权转移，与"重置他人口令"同一族）
         - POST /api/users/<int:user_id>/password（改他人凭据）
         - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
-        - PUT /api/notify-config（触碰推送密钥时——换钥/清钥；调额度/节流参数免门）
+        - PUT /api/notify-config（触碰推送密钥时——换钥/清钥/改道；调额度/节流参数免门）
         - PUT /api/mail-config（**关闭邮件通道**时——开 → 关；SMTP 凭据变更直连
           _reconfirm_admin_password 要口令、不占额度，开启方向与收件人变更免门）
-        免门（均保留审计）：POST /api/users/<int:user_id>/role（主管理员
-        专属 + 角色变更与审计同事务）、PUT /api/mail-config 的**开启**与收件人变更
+        免门（均保留审计）：PUT /api/mail-config 的**开启**与收件人变更
         （关闭邮件通道过本门；SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、
-        不占额度）。
+        不占额度）。`/api/announcement/publish` 与 `/api/settings` 的 A/B 档另走
+        `sensitive_password_gate()`（不占额度），不在本清单内。
         可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的 B 档（排序风格与
         自选权）、/api/scheduler/executors* 的写操作；A 档（签到窗口与缓冲边距、周末开关、
         随机延迟、账号间隔、容量上限、探针、注册面）在设置路由走 A 档门禁、**不吃豁免**。
@@ -2585,7 +2649,8 @@ def create_app(host=None):
         # _sensitive_password_gate 的独立计数与门禁级冷却承担（第 3 次告警并暂停敏感操作），
         # 额度只该被**真实执行过**的高危动作消耗。
         pw_err = _reconfirm_admin_password(
-            data, action_label, always_required=True, irreversible=irreversible)
+            data, action_label, always_required=True, irreversible=irreversible,
+            risk_always=risk_always)
         if pw_err:
             return pw_err  # 口令没过：一分额度都没被占用
         limited = _admin_creds_limited() if quota == "creds" else _admin_delete_limited()

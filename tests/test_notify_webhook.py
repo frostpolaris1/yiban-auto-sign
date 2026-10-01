@@ -324,6 +324,27 @@ def test_is_safe_url_rejects_loopback_variants():
     assert notify.is_safe_url("https://example.com/hook") is True
 
 
+def test_is_safe_url_rejects_backslash_bypass():
+    """反斜杠不得绕过白名单（白名单判 example.com、requests 实际连 127.0.0.1）。
+
+    `urlparse` 的 `_hostinfo` 把反斜杠当 userinfo 边界，故
+    `https://127.0.0.1:443\\@example.com/hook` 的 `hostname` 是 `example.com`；
+    而 requests/urllib3 不这样切分，实际连的是 `127.0.0.1:443`。带反斜杠的地址一律
+    拒掉；无 userinfo/反斜杠的普通地址与合法 basic-auth 写法不受影响。
+    """
+    bad = [
+        "https://127.0.0.1:443\\@example.com/hook",   # 反斜杠把内网塞进 userinfo
+        "https://a\\@127.0.0.1/hook",                 # 反斜杠 + userinfo
+    ]
+    for url in bad:
+        assert notify.is_safe_url(url) is False, url
+    # 已有的内网判定仍覆盖普通 userinfo 形态（无反斜杠）
+    assert notify.is_safe_url("https://evil.com@127.0.0.1/hook") is False
+    # 正常地址与合法 basic-auth 写法不受影响
+    assert notify.is_safe_url("https://hook.example.com/hook") is True
+    assert notify.is_safe_url("https://user:pass@hook.example.com/hook") is True
+
+
 # ---- 节流 ----
 
 def test_throttle_same_title_skipped_force_bypasses(monkeypatch):
@@ -1623,31 +1644,47 @@ class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
                             "login_fail 打满后 general 账仍可发")
         self.assertEqual(send.call_count, 3)
 
+    def _write_loginfail_limit(self, text):
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(text)
+
     def test_m8_loginfail_limit_reading_env_var_and_dotenv(self):
-        """读取口径：环境变量优先于 .env；0=不限；非法值回退默认 3。"""
+        """读取口径：**`.env` 优先、进程环境只补缺**（M27）；0=不限；非法值回退默认 3。
+
+        优先级在 M27 之前是反的（环境变量优先），本用例随之改钉新口径：写侧（设置页
+        落盘）与 web 读侧都以 `.env` 为事实源，读侧若"环境变量优先"，键一旦进了 web
+        进程环境，设置页的写入就静默失效、GET 回显与磁盘状态长期不一致。第 2 个子用例
+        正是这条分歧的判据——两处都设了同一个键时取哪一个。
+        """
         with mock.patch.object(_notify_K2, "_send_serverchan", return_value=True):
             # 1) .env 键（无环境变量）：上限 2
-            with open(self.env_file, "w", encoding="utf-8") as f:
-                f.write("YIBAN_LOGINFAIL_DAILY_MAX=2\n")
+            self._write_loginfail_limit("YIBAN_LOGINFAIL_DAILY_MAX=2\n")
             for i in range(2):
                 self.assertTrue(_notify_K2.send(f"lf-a{i}", "x", ledger="login_fail"))
             self.assertFalse(_notify_K2.send("lf-a2", "x", ledger="login_fail"))
             self._reset_ledgers()
-            # 2) 环境变量优先：env=3 覆盖 .env=1
+            # 2) .env 优先：.env=1 压过进程环境的 3（与写侧同口径）
             os.environ["YIBAN_LOGINFAIL_DAILY_MAX"] = "3"
-            with open(self.env_file, "w", encoding="utf-8") as f:
-                f.write("YIBAN_LOGINFAIL_DAILY_MAX=1\n")
-            for i in range(3):
-                self.assertTrue(_notify_K2.send(f"lf-b{i}", "x", ledger="login_fail"))
-            self.assertFalse(_notify_K2.send("lf-b3", "x", ledger="login_fail"))
+            self._write_loginfail_limit("YIBAN_LOGINFAIL_DAILY_MAX=1\n")
+            self.assertTrue(_notify_K2.send("lf-b0", "x", ledger="login_fail"))
+            self.assertFalse(_notify_K2.send("lf-b1", "x", ledger="login_fail"),
+                             ".env 优先：上限取 1，而不是进程环境里的 3")
+            self._reset_ledgers()
+            # 2b) 进程环境只补缺：.env 没有该键时仍取得到值（compose 只注入环境变量的形态）
+            os.environ["YIBAN_LOGINFAIL_DAILY_MAX"] = "2"
+            self._write_loginfail_limit("YIBAN_OTHER=1\n")
+            for i in range(2):
+                self.assertTrue(_notify_K2.send(f"lf-e{i}", "x", ledger="login_fail"))
+            self.assertFalse(_notify_K2.send("lf-e2", "x", ledger="login_fail"))
             self._reset_ledgers()
             # 3) 0 = 不限
-            os.environ["YIBAN_LOGINFAIL_DAILY_MAX"] = "0"
+            os.environ["YIBAN_LOGINFAIL_DAILY_MAX"] = "9"
+            self._write_loginfail_limit("YIBAN_LOGINFAIL_DAILY_MAX=0\n")
             for i in range(5):
                 self.assertTrue(_notify_K2.send(f"lf-c{i}", "x", ledger="login_fail"))
             self._reset_ledgers()
             # 4) 非法值回退默认 3
-            os.environ["YIBAN_LOGINFAIL_DAILY_MAX"] = "abc"
+            self._write_loginfail_limit("YIBAN_LOGINFAIL_DAILY_MAX=abc\n")
             for i in range(3):
                 self.assertTrue(_notify_K2.send(f"lf-d{i}", "x", ledger="login_fail"))
             self.assertFalse(_notify_K2.send("lf-d3", "x", ledger="login_fail"))

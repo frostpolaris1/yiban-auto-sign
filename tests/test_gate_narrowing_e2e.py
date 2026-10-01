@@ -9,11 +9,11 @@
 通信：Flask test client 走真 HTTP 语义（json + CSRF 头）；.env/SQLite 全部落
     本文件临时目录；零真实外联（mailer/notify 的告警由测试内打桩记录）。
 
-覆盖：A4-1 门收窄面——可逆操作（改角色 / 开启邮件通道 / 推送数值参数）full 档
+覆盖：A4-1 门收窄面——可逆操作（**开启**邮件通道 / 推送数值参数）full 档
     主管理员无口令直达成功且各自落审计行；反例——删除类（accounts/batch purge、
-    users/<id>/delete）、换钥类（notify 换钥）与**关闭邮件通道**（拆掉告警最后一条
-    送达路径）无口令仍 400 password_required，带口令成功后仍消耗对应额度
-    （MAX=1 时第二次 429）。
+    users/<id>/delete）、换钥类（notify 换钥）、**关闭邮件通道**（拆掉告警最后一条
+    送达路径）与**角色变更**（用户 2026-10-01 拍板整类摘出免口令）无口令仍 400
+    password_required，带口令成功后仍消耗对应额度（MAX=1 时第二次 429）。
 对应实现：`web/app.py::_high_risk_gate`（docstring 即清单，`test_gate_manifest_sync`
     钉清单↔路由同源）、`web/routes/users_api.py`、`web/routes/notify.py`、
     `web/routes/accounts_api.py`。
@@ -146,7 +146,7 @@ class _GateNarrowBase(unittest.TestCase):
         ac, at = admin if admin else self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.alerts.clear()
@@ -156,23 +156,20 @@ class GateNarrowingE2ETest(_GateNarrowBase):
     """A4-1：可逆操作免门直达 + 不可逆操作仍受门与删除额度（管理员视角一条链）。"""
 
     def test_reversible_ops_reach_success_without_password_and_leave_audit(self):
-        """主管理员一次会话内：改角色 / 开启邮件通道 / 调推送数值，全程零口令、
-        零 429，且每个动作各落一行审计（免门不等于免痕）。"""
-        self._seed_formal_user("narrowee@test.local", "13800000001")
+        """主管理员一次会话内：开启邮件通道 / 调推送数值，全程零口令、零 429，
+        且每个动作各落一行审计（免门不等于免痕）。
+
+        **角色变更已移出这条链**（用户 2026-10-01 拍板：「角色变更与提权」整类摘出免口令），
+        它现在是受门动作，由下一例逐字回归。
+        """
         c, t = self._admin_client()
         hdr = {"X-CSRF-Token": t}
-        # ① 角色变更（曾要口令 + 占额度）
-        uid = db.find_user("narrowee@test.local")["id"]
-        r = c.post(f"/api/users/{uid}/role", json={"role": "admin"}, headers=hdr)
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(db.find_user("narrowee@test.local").get("role"), "admin")
-        self.assertTrue(self._audit_rows("user_role"), "角色变更必须落审计行")
-        # ② 邮件通道**开启**（关闭方向受门——它是告警最后一条送达路径，见下方专门用例；
+        # ① 邮件通道**开启**（关闭方向受门——它是告警最后一条送达路径，见下方专门用例；
         #    把告警装回去不是"拆报警器"，故开启免门免额度）
         r2 = c.put("/api/mail-config", json={"enabled": True}, headers=hdr)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertTrue(self._audit_rows("mail_config"), "邮件通道开启必须落审计行")
-        # ③ 推送数值参数（曾要口令 + 占删除额度）
+        # ② 推送数值参数（曾要口令 + 占删除额度）
         r3 = c.put("/api/notify-config", json={"cooldown": 45, "daily_max": 9}, headers=hdr)
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         rows = self._audit_rows("notify_config")
@@ -182,6 +179,27 @@ class GateNarrowingE2ETest(_GateNarrowBase):
         self.assertEqual(detail.get("cooldown"), 45)
         # 全程零告警（通道变更只留审计的既有语义；事后告警只挂凭据族）
         self.assertEqual(self.alerts, [], f"免门面不应有变更告警：{self.alerts}")
+
+    def test_role_change_left_the_password_exempt_set(self):
+        """角色变更移出免门集合的钉（2026-10-01 拍板）。
+
+        此前本文件把"改角色"列为免门可逆操作的代表；新口径下它必须与删除类同档：
+        无口令 400 `password_required` 且角色逐字未变，带对口令才放行并落审计。
+        """
+        self._seed_formal_user("narrowrole@test.local", "13800000009")
+        c, t = self._admin_client()
+        hdr = {"X-CSRF-Token": t}
+        uid = db.find_user("narrowrole@test.local")["id"]
+        r = c.post(f"/api/users/{uid}/role", json={"role": "admin"}, headers=hdr)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["reason"], "password_required")
+        self.assertEqual(db.find_user("narrowrole@test.local").get("role"), "user",
+                         "被拒的提权不得生效")
+        r2 = c.post(f"/api/users/{uid}/role",
+                    json={"role": "admin", "confirm_password": ADMIN_PASS}, headers=hdr)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        self.assertEqual(db.find_user("narrowrole@test.local").get("role"), "admin")
+        self.assertTrue(self._audit_rows("user_role"), "角色变更必须落审计行")
 
     def test_irreversible_ops_still_gated_and_delete_quota_still_billed(self):
         """反例（A4-1）：删除类与换钥类无口令仍 400；口令通过后才占删除额度
@@ -245,7 +263,12 @@ class MailChannelCloseGateE2ETest(_GateNarrowBase):
 
     def test_closing_channel_needs_password_then_bills_creds_quota(self):
         """通道当前是开的：无口令关闭 → 400 password_required；带口令 → 200 且落审计；
-        关闭占凭据额度（MAX=1）→ 第二次关闭 429 且不落盘。"""
+        关闭占凭据额度（MAX=1）→ 第二次**真正的**关闭 429 且不落盘。
+
+        第二次关闭前必须先把它打开：门与额度只挂在"值真变化"的关闭上（已是关的重复
+        提交不被这门连坐），而 `.env` 优先之后，落盘的 `ENABLE=0` 不会再被进程环境里的
+        `YIBAN_MAIL_ENABLE=1` 顶开——靠环境变量制造"仍开着"的假象已经不成立。
+        """
         self._env(("YIBAN_ADMIN_CREDS_MAX=1\n",))
         self._set_mail_enable("1")
         c, t = self._admin_client()
@@ -258,11 +281,26 @@ class MailChannelCloseGateE2ETest(_GateNarrowBase):
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertEqual(len(self._audit_rows("mail_config")), 1,
                          "关闭邮件通道必须恰好落一行审计")
-        # 凭据额度那一格已被关闭动作占用：再关一次 → 429，且被拒动作不落盘
+        # 重新打开：开启方向免门免额度（把告警装回去不是"拆报警器"），
+        # 好让下一次关闭成为真正的**开 → 关**，从而真的走到门与额度上。
+        r_open = c.put("/api/mail-config", json={"enabled": True}, headers=hdr)
+        self.assertEqual(r_open.status_code, 200, r_open.get_data(as_text=True))
+        audit_before = len(self._audit_rows("mail_config"))
+        # 凭据额度那一格已被第一次关闭占用：再关一次 → 429，且被拒动作不落盘
         r3 = c.put("/api/mail-config",
                    json={"enabled": False, "confirm_password": ADMIN_PASS}, headers=hdr)
         self.assertEqual(r3.status_code, 429, r3.get_data(as_text=True))
-        self.assertEqual(len(self._audit_rows("mail_config")), 1, "429 被拒的动作不得落审计")
+        self.assertEqual(len(self._audit_rows("mail_config")), audit_before,
+                         "429 被拒的动作不得落审计")
+        # 还原现场：上面把通道留在"开着"（r_open 生效、r3 被额度拒），而 `.env` 优先
+        # 之后落盘的 ENABLE=1 不会再被下一个用例的进程环境顶开——不还原就会把"开着"
+        # 漏给它。高危额度表是 create_app 的工厂局部状态，换一个实例即得一张空表，
+        # 正好用它把通道真正关回去（同一实例下额度已用尽，关不动）。
+        c2, t2 = self._admin_client()
+        r_close = c2.put("/api/mail-config",
+                         json={"enabled": False, "confirm_password": ADMIN_PASS},
+                         headers={"X-CSRF-Token": t2})
+        self.assertEqual(r_close.status_code, 200, r_close.get_data(as_text=True))
 
     def test_opening_and_already_off_close_are_gate_free(self):
         """通道当前是关的：关闭方向"值真变化"不成立 → 不设门；开启方向从不设门。"""

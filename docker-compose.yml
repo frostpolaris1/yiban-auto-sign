@@ -3,11 +3,18 @@
 # 用法：docker compose up -d --build
 # ------------------------------------------------------------
 # 服务组成：
-#   yiban        应用容器（supervisor 常驻：gunicorn Web + 签到调度）
+#   yiban        应用容器（supervisor 常驻：gunicorn Web + 签到调度 + 每日备份）
 #   yiban-nginx  反代容器（共享 yiban 网络栈，对外 80/443 HTTPS）
 # 数据：./data 目录 bind mount 到 /data（SQLite/.env/日志/加密密钥）
+# 备份：命名卷 yiban-backups 挂到 /backups（**不在 /data 内**——否则每轮 tar 会把上一轮
+#       备份再打进去，体积逐轮翻倍）
 # ============================================================
 name: yiban-auto-sign
+
+volumes:
+  # 容器内 02:00 定时备份的落点（docker/scheduler.py 的 M44 挂点 → docker/backup-docker.sh）。
+  # 命名卷随 `docker compose down` 保留（`down -v` 才会删）——备份不该被一次停机带走。
+  yiban-backups:
 
 services:
   yiban:
@@ -38,6 +45,10 @@ services:
       - "80:80"
       - "443:443"
 
+    # ⚠️ **下面这些值会被 /data/.env 的同名 YIBAN_* 键覆盖**（M27，全仓口径：
+    # `.env` 优先、进程环境只补缺）。它们在这里的作用是"**默认兜底**"——`.env` 里
+    # 没写这些键时才生效。容器里 /data 是唯一可写卷，把这些路径写进 .env 也没问题；
+    # 真要换路径，改 .env 而不是改这里（改这里会在 .env 有同名键时静默不生效）。
     environment:
       - TZ=Asia/Shanghai          # 参与签到窗口计算，缺省会错 8 小时
       - YIBAN_ENV_FILE=/data/.env
@@ -47,9 +58,27 @@ services:
       - YIBAN_LOG_FILE=/data/logs/sign.log
       # 经容器内 nginx HTTPS 反代，强制会话 Cookie 仅经 HTTPS 发送
       - YIBAN_COOKIE_SECURE=1
+      # ---- 每日 02:00 定时备份（M44）----
+      # 路径类参数由调度器在子进程 env 里给 backup-docker.sh；**口令不入环境**，
+      # 只给口令文件路径（脚本读它，不把它带进 tar/gpg 的子进程树）。
+      # ⚠ 下面 volumes 里那行口令文件挂载**默认是注释掉的**：compose 对缺失的
+      # bind 源会**自动在宿主建一个同名目录**，口令文件没准备好就挂上去会得到一个
+      # 读不了的目录、并让容器起不来。要启用容器备份，见 README「容器形态现在自带
+      # 定时备份」的两步（建文件 + chown 10001 + 取消注释）。
+      # 调度器判"是否启用"的口径是**口令文件真的可读**，不是这个键非空——所以
+      # 保留这行环境变量而没挂文件，等价于"未启用"，每天只在日志里留一行。
+      - YIBAN_BACKUP_DATA_DIR=/data
+      - YIBAN_BACKUP_DIR=/backups
+      - YIBAN_BACKUP_RETAIN_DAYS=30
+      - YIBAN_BACKUP_PASSPHRASE_FILE=/run/yiban-secrets/backup-passphrase
 
     volumes:
       - ./data:/data
+      # 备份落点（命名卷，与 /data 分开，见文件头说明）
+      - yiban-backups:/backups
+      # 备份口令（**默认注释**：文件没建好时 compose 会替你在宿主建同名目录，
+      # 挂上去就成了读不了的目录、容器起不来）。启用步骤见 README。
+      # - ./backup-passphrase:/run/yiban-secrets/backup-passphrase:ro
       # 可选：自定义 Web 图标（没有则显示占位符，不影响任何功能）
       # 你自己的图标放 ./logo.png 后取消此行注释即可
       # - ./logo.png:/app/web/static/vendor/logo.png:ro

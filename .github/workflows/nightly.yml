@@ -9,6 +9,12 @@ name: Nightly
 # **禁止挪到 UTC 16:00–24:00（北京 00:00–08:00）**：该窗口 runner 的 UTC 日期与业务
 # 北京钟日期错位，是 MF-108 全量大面积红（36 failed/3011 passed）的窗口。批 1 Task 0
 # 已把测试族锚到业务钟（TZ=UTC 下全量绿），排程仍避开此窗口以防族级回归复发。
+#
+# ⚠️ M24（未修，需 main 分支治理）：GitHub 的 `schedule` 触发**只在默认分支上生效**，
+# 本仓库默认分支是 `main`，而 `nightly.yml` 只存在于 develop ⇒ **这条排程永远不会跑**，
+# `workflow_dispatch` 手动触发不受影响。修法不是在本文件里想办法（`schedule` 是
+# workflow 级触发，加 `if:` 也救不了），而是把本文件落到默认分支上（main 合并 develop，
+# 或把仓库默认分支改成 develop）。处置清单见 out/backend-review 修复报告。
 on:
   schedule:
     - cron: '0 6 * * *'

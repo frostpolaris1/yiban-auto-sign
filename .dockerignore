@@ -27,6 +27,9 @@ config.local.py
 # 数据文件（SQLite / 账号 / 用户，严禁进镜像）
 accounts.json
 users.json
+# 迁移产出的按日备份（含账号密码的旧格式快照；M39）
+accounts.json.bak-*
+users.json.bak-*
 yiban.db
 yiban.db-wal
 yiban.db-shm

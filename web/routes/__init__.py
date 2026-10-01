@@ -147,6 +147,7 @@ def register_all(app):
     """装配全部路由域。各域注册顺序不参与路由判定（无同路径同方法重叠）。"""
     from web.routes import (
         accounts_api,
+        audit_api,
         auth,
         data,
         me,
@@ -165,5 +166,6 @@ def register_all(app):
     my.register(app)
     data.register(app)
     users_api.register(app)
+    audit_api.register(app)
     settings_api.register(app)
     signin_api.register(app)

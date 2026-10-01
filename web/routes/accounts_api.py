@@ -410,7 +410,10 @@ def api_account_update(idx):
                          or clean["phone"] != old.get("phone")
                          or code_written)
         if bool(str(data.get("password", "")).strip()) or clean["phone"] != old.get("phone"):
-            denied = _high_risk_gate()(data, "改写他人易班凭据", quota="creds")
+            # risk_always=True（用户 2026-10-01 拍板）：「改写他人易班凭据」整类摘出
+            # risk 档"同出口免口令"——同出口也必须当次口令。full/off 两档逐字不变。
+            denied = _high_risk_gate()(data, "改写他人易班凭据", quota="creds",
+                                       risk_always=True)
             if denied is not None:
                 return denied
         # 密码留空 = 保持不变（密码明文永不下发前端）
@@ -580,19 +583,62 @@ def api_accounts_batch():
         if not valid:
             return jsonify({"error": "所选账号不存在"}), 404
         phones_in = data.get("phones")
-        if isinstance(phones_in, list) and len(phones_in) == len(ids):
-            expect = {
-                i: str(phones_in[k]).strip()
-                for k, i in enumerate(ids)
-                if type(i) is int
-            }
-            # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
-            if any(
-                i in expect
-                and m._mask_phone(expect[i]) != m._mask_phone(str(accounts[i].get("phone", "")))
+        # 对齐令牌必须完整：缺 phones / 非数组 / 与 ids 长度不等 —— 三者任一都
+        # fail-closed 409，前端重取对齐快照。此前只判「长度不等」，完全不带 phones
+        # （None）时两个分支都不进、静默按 idx 作用；purge 不可逆，一次错位即不可恢复。
+        # 前端 account-ops.js 总带对齐 phones；脚本/第三方不带会被一并 409（契约收紧）。
+        if not isinstance(phones_in, list) or len(phones_in) != len(ids):
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        expect = {
+            i: str(phones_in[k]).strip()
+            for k, i in enumerate(ids)
+            if type(i) is int
+        }
+        # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
+        if any(
+            i in expect
+            and m._mask_phone(expect[i]) != m._mask_phone(str(accounts[i].get("phone", "")))
+            for i in valid
+        ):
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+
+        # 容量闸门（approve 专属）：与单条审核口（api_account_review 的 approve 分支）
+        # 同一语义——通过审核 = 让这一行开始产生签到负载，未通过的行不计入容量，
+        # 故这里是本口径下唯一的把关点。缺这道门时批量口一次请求即可整道绕过上限。
+        if action == "approve":
+            become = sum(
+                1
                 for i in valid
-            ):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+                if not accounts[i].get("deleted")
+                and accounts[i].get("status") in (
+                    m.ACCOUNT_STATUS_PENDING,
+                    m.ACCOUNT_STATUS_REJECTED,
+                )
+            )
+            if become and m._accounts_at_capacity(become):
+                return jsonify({
+                    "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
+                }), 403
+
+        # 容量闸门（restore 专属）：恢复 = 让这一行重新计入容量（软删期间不计入，见
+        # _capacity_account_count）。缺这道门时「软删 k 个腾空 → 批通过 k 个 pending →
+        # 恢复 k 个」可把占用推过 YIBAN_MAX_ACCOUNTS：软删不计容量，故腾空后 approve
+        # 能过，恢复时却无人把关。与 approve 同一门、同一 precompute 口径；pending/
+        # rejected 的软删行恢复后仍不签到（不计容量），不纳入 become，避免误伤。
+        if action == "restore":
+            become = sum(
+                1
+                for i in valid
+                if accounts[i].get("deleted")
+                and accounts[i].get("status") not in (
+                    m.ACCOUNT_STATUS_PENDING,
+                    m.ACCOUNT_STATUS_REJECTED,
+                )
+            )
+            if become and m._accounts_at_capacity(become):
+                return jsonify({
+                    "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
+                }), 403
 
         ops = []
         batch_targets = []  # 审计留目标清单（脱敏截断）：只收真正产出了操作的行
@@ -723,7 +769,7 @@ def api_account_delete(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, m._json_body()):
+        if m._stale_idx_guard(acc, m._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         m.db.set_account_deleted(
             acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -758,7 +804,7 @@ def api_account_restore(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, m._json_body()):
+        if m._stale_idx_guard(acc, m._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
@@ -767,6 +813,16 @@ def api_account_restore(idx):
             return jsonify(
                 {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
+        # 容量闸门：恢复 = 让这一行重新计入容量（软删期间不计入）。软删腾空后批过
+        # pending 再逐条恢复同样能越界，故单条与批量同一门；仅对会真正计入容量的行
+        # （status 已通过审核）判定，pending/rejected 行恢复后仍不签到，不误伤。
+        if (
+            acc.get("status") not in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED)
+            and m._accounts_at_capacity(1)
+        ):
+            return jsonify({
+                "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
+            }), 403
         m.db.set_account_deleted(acc["id"], 0, audit_spec={
             "username": session.get("username") or "?",
             "action": "account_restore",
@@ -805,7 +861,7 @@ def api_account_purge(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data):
+        if m._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
@@ -840,7 +896,7 @@ def api_account_review(idx):
         data = m._json_body()
         action = data.get("action")
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data):
+        if m._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if action == "approve":
             # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
@@ -909,7 +965,7 @@ def api_account_move(idx):
             return jsonify({"error": "账号不存在"}), 404
         data = m._json_body()
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data):
+        if m._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         try:
             direction = int(data.get("dir", 0))

@@ -277,9 +277,14 @@ def fold_phone_code(clean, old_code=None):
 def _stale_idx_guard(acc, data, *, fail_closed=False):
     """防错位校验：mutation 按 idx 寻址时，客户端携带的 phone 与服务端 idx 解析结果
     不一致 → 账号列表在视图快照后已漂移（并发删除/移动等），放行会静默操作错误对象。
-    返回 True 表示错位，调用方应返回 409 引导刷新。未携带 phone 的请求（旧客户端/
-    测试）默认保持兼容不校验。
+    返回 True 表示错位，调用方应返回 409 引导刷新。
 
+    **默认 `fail_closed=False`**（不携带 phone 就放行）只对**用户端**四个写口成立：
+    `web/static/js/components/my-accounts.js` 的 pause/delete/restore 请求体确实不带
+    phone，翻转默认值会造成生产用户删除/暂停/恢复 409 回归。**六个管理面写口一律显式
+    传 `fail_closed=True`**（`web/routes/accounts_api.py` 的 update/delete/restore/
+    purge/review/move），批量口另有"缺 phones 即 409"的对齐令牌闸——不可逆写口一律
+    fail-closed，这条纪律就是为此。加新写口时**先看自己在哪一侧**，别照抄默认值。
     """
     phone = data.get("phone") if isinstance(data, dict) else None
     if phone is None:
