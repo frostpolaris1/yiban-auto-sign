@@ -72,20 +72,36 @@ exit 2
 """
 
 # 公钥模式桩 gpg（M23）：能按接收者"加密"（把输入原样写出），但拒绝解密——模拟
-# README 推荐口径下服务器只存公钥、无私钥；`--list-secret-keys` 无输出。
+# README 推荐口径下服务器只存公钥；收件人对应的私钥在本机不存在。
+# FAKE_GPG_UNRELATED=1 时模拟另一种真实形态：密钥环里**另有一把与收件人无关的私钥**
+# （轮换后旧私钥残留/该主机另有 GPG 私钥）——`--list-secret-keys`（不带收件人）有输出，
+# 但 `--list-secret-keys <收件人>` 仍无输出（无对应私钥）。判据必须钉在后者上。
 FAKE_GPG_PUBKEY = """#!/usr/bin/env bash
-out="" in="" mode="" drain=0
+out="" in="" mode="" drain=0 do_list=0 list_arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2;;
     --passphrase-fd) drain=1; shift 2;;
     --cipher-algo|--recipient) shift 2;;
+    --list-secret-keys) do_list=1; shift;;
     --symmetric|--encrypt) mode=enc; shift;;
     --decrypt) mode=dec; shift;;
-    *) if [ -f "$1" ]; then in="$1"; fi; shift;;
+    -*) shift;;
+    *) if [ "$do_list" -eq 1 ]; then list_arg="$1"; elif [ -f "$1" ]; then in="$1"; fi; shift;;
   esac
 done
 if [ "$drain" -eq 1 ]; then cat > /dev/null; fi
+if [ "$do_list" -eq 1 ]; then
+  if [ -n "$list_arg" ] && [ "${FAKE_GPG_HAS_SECRET:-0}" = "1" ]; then
+    echo "sec   rsa3072 2026-01-01 [SC] owner-local-key"
+    exit 0
+  fi
+  if [ "${FAKE_GPG_UNRELATED:-0}" = "1" ] && [ -z "$list_arg" ]; then
+    echo "sec   rsa3072 2026-01-01 [SC] unrelated-local-key"
+    exit 0
+  fi
+  exit 2
+fi
 if [ "$mode" = enc ]; then cp -- "$in" "$out"; exit 0; fi
 if [ "$mode" = dec ]; then exit 2; fi
 exit 0
@@ -513,6 +529,42 @@ class PublicKeyRecipientModeTest(_BackupRunBase):
                         f"校验清单必须出（旧实现整段跳过）：{out}")
         self.assertIn("本地清理完成", out, "保留期轮转必须执行（旧实现一轮都不跑）")
         self.assertIn("公钥模式", out, "必须说清'本机无法自检'的边界与演练要求")
+
+    def test_recipient_mode_with_unrelated_local_secret_key_still_degrades(self):
+        """判据必须是"解不开**这一份**"，而不是"本机没有别的私钥"。
+
+        真实形态：密钥环里另有一把与收件人无关的私钥（轮换后旧私钥残留、或该主机另有
+        GPG 私钥）。此时 `gpg --list-secret-keys` 有输出，但收件人对应的私钥并不存在——
+        只按"有没有私钥"判会落回 `gpg --decrypt` → 失败 → 删掉唯一密文、跳过清单/异机/
+        轮转、rc=7，正是 M23 要消灭的那条链路。
+        """
+        self._fake("gpg", FAKE_GPG_PUBKEY)
+        r = self._run((), {"BACKUP_GPG_RECIPIENT": "e2e-no-such-key@example.invalid",
+                           "FAKE_GPG_UNRELATED": "1"})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0,
+                         f"密钥环有无关私钥不应改变判定（旧判据下 rc=7 并删密文）：{out}")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg")),
+                        f"密文不得被误删（唯一可恢复副本）：{out}")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg.sha256")), out)
+        self.assertIn("公钥模式", out)
+
+    def test_recipient_mode_local_key_unusable_keeps_ciphertext(self):
+        """收件人模式：本机确持有对应私钥却解不开（口令保护/无 gpg-agent/密钥环异常）。
+
+        此时"解不开"不证明密文坏——删掉它就是删掉唯一可恢复副本（与 M23 主诉同源）。
+        契约：明文照留、密文一并保留、不出清单、rc=7 交人工核查。
+        """
+        self._fake("gpg", FAKE_GPG_PUBKEY)
+        r = self._run((), {"BACKUP_GPG_RECIPIENT": "e2e-no-such-key@example.invalid",
+                           "FAKE_GPG_HAS_SECRET": "1"})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 7, f"自检未过仍须 rc=7（不得谎报成功）：{out}")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg")),
+                        f"解密失败≠密文坏：收件人模式下密文必须保留：{out}")
+        self.assertTrue(os.path.isfile(self._archive_name()), "明文照旧保留")
+        self.assertEqual([], glob.glob(os.path.join(self.backups, "*.sha256")),
+                         "自检未过不得出任何清单")
 
 
 class RequireEncryptRemoteFailureTest(_BackupRunBase):

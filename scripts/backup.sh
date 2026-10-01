@@ -248,9 +248,14 @@ try_encrypt() {
 # 解密产物只落在 TMPDIR_BAK（0700，trap 统一清理），不新增第二处明文驻留。
 # ------------------------------------------------------------
 MIN_ENC_BYTES=200
+# M23②：收件人模式下"解不开"不等于"密文坏"——密钥受口令保护、gpg-agent 不可用、
+# 密钥环临时不可读都会让 `--decrypt` 失败，此时删掉密文＝删掉唯一可恢复副本（与主诉
+# 同源）。置位后调用方保留密文、不出清单、仍以 rc=7 交人工核查。
+VERIFY_KEEP_ENC=""
 verify_encrypted_archive() {
     local enc="$1" vdir="${TMPDIR_BAK}/roundtrip" plain="${TMPDIR_BAK}/roundtrip.tar.gz"
     local bytes ic
+    VERIFY_KEEP_ENC=""
     rm -rf "${vdir}" "${plain}"
     mkdir -p "${vdir}"
     bytes="$(wc -c < "${enc}" 2>/dev/null || echo 0)"
@@ -267,16 +272,30 @@ verify_encrypted_archive() {
                     log "回环自检：密文解密失败（口令/密钥环异常或包损坏）" >&2
                     return 1
                 fi
-            elif [ -n "${GPG_RECIPIENT}" ] && [ -z "$(gpg --list-secret-keys 2>/dev/null)" ]; then
-                # M23：公钥模式（README 推荐的 BACKUP_GPG_RECIPIENT，服务器只存公钥、
-                # 无私钥）本机永远解不开——回环自检不可能通过，旧实现在此判 rc=7 并删掉
-                # 唯一的好密文、连带跳过整段异机副本/校验清单/保留期轮转。按同函数
-                # *.age 分支的既有先例降级：只做尺寸下限核查（上面已过）即返回 0，
-                # 密文完好性由异机副本与备份哨兵兜底。
+            elif [ -n "${GPG_RECIPIENT}" ] && \
+                 [ -z "$(gpg --batch --list-secret-keys "${GPG_RECIPIENT}" 2>/dev/null)" ]; then
+                # M23：公钥模式（README 推荐的 BACKUP_GPG_RECIPIENT，服务器只存公钥）本机
+                # 永远解不开——回环自检不可能通过，旧实现在此判 rc=7 并删掉唯一的好密文、
+                # 连带跳过整段异机副本/校验清单/保留期轮转。按同函数 *.age 分支的既有先例
+                # 降级：只做尺寸下限核查（上面已过）即返回 0，密文完好性由异机副本与备份
+                # 哨兵兜底。
+                # 判据必须是"解不开**这一份**"，不能是"本机没有别的私钥"：密钥环里只要
+                # 另有一把与收件人无关的私钥（轮换后旧私钥残留、该主机另有 GPG 私钥），
+                # `gpg --list-secret-keys` 就有输出，按"有没有私钥"判会落回下面的
+                # `gpg --decrypt` → 失败 → 删掉唯一密文（正是本项要消灭的链路）。故用
+                # **带收件人**的 `--list-secret-keys <收件人>`：无对应私钥时无输出
+                # （gpg 的诊断走 stderr，且与语言环境无关地表现为"空"）。
                 log "回环自检：公钥模式（收件人 ${GPG_RECIPIENT}）本机无私钥、无法自检——" \
                     "本轮仅做尺寸下限核查，请按计划手工跑一次 --restore 演练（${enc}）" >&2
                 return 0
             elif ! gpg --batch --yes --decrypt -o "${plain}" "${enc}"; then
+                # 收件人模式：本机持有对应私钥却解不开（口令保护/无 gpg-agent/密钥环异常）
+                # ——可能是好包，删不得。置位交由调用方保留密文（见 VERIFY_KEEP_ENC 说明）。
+                if [ -n "${GPG_RECIPIENT}" ]; then
+                    log "回环自检：公钥密文解密失败（私钥不可用或包损坏）——密文保留待人工核查" >&2
+                    VERIFY_KEEP_ENC=1
+                    return 1
+                fi
                 log "回环自检：公钥密文解密失败（gpg 密钥环不可用？）" >&2
                 return 1
             fi
@@ -781,6 +800,7 @@ elif try_encrypt; then
     # 但"加密退出码 0"与"密文可解"之间从未有任何一步真实回环（--restore 才是
     # 唯一能证明可解的路径，而它没有任何自动调用点）。现在先解密→解包→integrity
     # 回环一次，通过才删明文；失败则保留明文、删除坏密文、不出清单、rc=7 结束。
+    # M23②：收件人模式例外——本机解不开不证明密文坏，密文一并保留（见 VERIFY_KEEP_ENC）。
     if verify_encrypted_archive "${ENC_FILE}"; then
         rm -f "${ARCHIVE}"
         log "已启用本地默认加密：回环自检通过，明文归档已移除，本轮密文为 ${ENC_FILE}"
@@ -788,9 +808,15 @@ elif try_encrypt; then
         log "════════════════════════════════════════════════════════════" >&2
         log "⚠⚠⚠ 密文回环自检失败：无法证明 ${ENC_FILE} 可解且完好        ⚠⚠⚠" >&2
         log "⚠⚠⚠ 契约（MF-76）：可解才删明文——本轮【保留】明文归档 ${ARCHIVE}" >&2
-        log "⚠⚠⚠ 不出校验清单；半成品密文已删除；退出码 7。请立即人工核查  ⚠⚠⚠" >&2
+        if [ -n "${VERIFY_KEEP_ENC}" ]; then
+            # M23②：收件人模式解不开≠密文坏，密文一并保留（删了就只剩明文这份更危险的）。
+            log "⚠⚠⚠ 收件人模式：密文一并保留（解密失败≠密文坏）待人工核查      ⚠⚠⚠" >&2
+            log "⚠⚠⚠ 不出校验清单；退出码 7。请立即人工核查（含 --restore 演练）  ⚠⚠⚠" >&2
+        else
+            log "⚠⚠⚠ 不出校验清单；半成品密文已删除；退出码 7。请立即人工核查  ⚠⚠⚠" >&2
+        fi
         log "════════════════════════════════════════════════════════════" >&2
-        rm -f "${ENC_FILE}"
+        [ -n "${VERIFY_KEEP_ENC}" ] || rm -f "${ENC_FILE}"
         exit 7
     fi
 else
