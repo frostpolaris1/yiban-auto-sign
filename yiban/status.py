@@ -187,9 +187,15 @@ def display_payload():
         code: {"symbol": e["symbol"], "text": e["text"], "tone": e["tone"]}
         for code, e in DISPLAY.items()
     }
+    #: 共享符号按**最严重档**取代表（⛔ 同时被 skipped_window/norange 与急停使用）：
+    #: 先到先得会让「急停」被排在前面的日常态吞掉——日历上急停日显示成
+    #: 「未在签到时段」的灰档，恰恰是最不能看错的状态。
+    severity = {"ok": 0, "muted": 1, "busy": 2, "warn": 3, "bad": 4}
     by_symbol = {}
     for e in DISPLAY.values():
-        by_symbol.setdefault(e["symbol"], {"label": e["legend"], "tone": e["tone"]})
+        cur = by_symbol.get(e["symbol"])
+        if cur is None or severity.get(e["tone"], 0) > severity.get(cur["tone"], 0):
+            by_symbol[e["symbol"]] = {"label": e["legend"], "tone": e["tone"]}
     return {"by_code": by_code, "by_symbol": by_symbol}
 
 #: 「已有结论」的 JSON 状态集：非空且非 pending（`state_io._has_conclusion` 的口径）。
