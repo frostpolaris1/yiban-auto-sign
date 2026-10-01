@@ -62,6 +62,7 @@ from datetime import timedelta
 
 from yiban import clock
 from yiban.infra import account_crypto, env_io
+from yiban.masking import mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import accounts as _accounts
 from yiban.store import connection as _connection
@@ -1263,11 +1264,84 @@ def _run_migrations(conn):
 # ---------------------------------------------------------------------------
 # JSON → SQLite 自动导入（幂等）
 # ---------------------------------------------------------------------------
+def _in_chunks(items, size=500):
+    """把序列切成不超过 `size` 的定长块（绑定变量上限远小于源文件可能的行数）。"""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _dropped_source_keys(conn, table, column, keys):
+    """哪些源键**至少丢了一行** —— 即被 `INSERT OR IGNORE` 静默丢弃的那些行的标识。
+
+    为什么要在**事务内**反查而不是只比计数：`INSERT OR IGNORE` 不报错、不留任何痕迹，
+    唯一能拿回"丢的是谁"的办法就是拿源键回库比对。分批 `IN` 是为了避开 SQLite 的
+    绑定变量上限（老版本 999），源文件几百上千行是常态。
+
+    两类丢行都要盖住——**只比"库里有没有"会漏掉最常见的那一半**：
+
+    - **键在源里重复**（`accounts.phone` UNIQUE、`idx_users_email_live`）：第一条插进去
+      了，同键的后续行被丢，于是该键**在库里查得到**，纯差集查出空列表、告警里只会写
+      "无法定位"。必须靠源内重复计数识别。
+    - **整行被别的唯一索引挡下**（`idx_accounts_owner_live` 的 owner 部分唯一）：行没
+      插进去，该键在库里查不到。
+    """
+    keys = [str(k or "") for k in keys]
+    seen, duplicated = set(), set()
+    for k in keys:
+        if k in seen:
+            duplicated.add(k)
+        seen.add(k)
+    present = set()
+    for chunk in _in_chunks(sorted(seen)):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT {column} FROM {table} WHERE {column} IN ({placeholders})",
+            tuple(chunk)).fetchall()
+        present.update(r[0] for r in rows)
+    lost = duplicated | (seen - present)
+    return [k for k in keys if k in lost]
+
+
+def _audit_json_import_loss(conn, losses):
+    """把"导入丢行"写进审计链（**同事务**）。失败只告警，绝不拖累迁移本身。
+
+    与业务写同事务的理由同 `audit_chain.record_in_txn` 的模块说明：中间被杀不会留下
+    "丢了行却无留痕"。`detail` 截断在 200 字符（审计表列宽），手机号按掩码形态写入。
+    审计表尚未落地（极早期的库）时只记日志，不抛——留痕是增益，不能反过来把迁移搞挂。
+    """
+    detail = "；".join(
+        f"{table} 丢 {len(keys)} 行（{_mask_key_sample(keys)}）" for table, keys in losses)
+    try:
+        _facade().record_in_txn(conn, "system", "json_import_row_loss",
+                                target=_connection._env_file or "", detail=detail)
+    except Exception as e:
+        logger.error("写入「JSON 导入丢行」审计失败（迁移本身继续）: %s", e)
+
+
+def _mask_key_sample(keys, limit=5):
+    """冲突键的日志/审计用摘要：逐个掩码 + 截断（手机号/邮箱不整体外泄）。"""
+    masked = [mask_phone(k) if k.isdigit() else _sanitize_text(k)[:24] for k in keys[:limit]]
+    more = f" 等 {len(keys)} 项" if len(keys) > limit else ""
+    return "、".join(masked) + more
+
+
 def _maybe_migrate(conn, json_base):
     """json_base 形如 /path/accounts.json（users.json 同目录推断）。
 
-    读取 accounts/users 两个 JSON 后在一个事务内导入，两个都成功后一起改名 .bak；
-    某个 JSON 读取失败/不存在时跳过该文件，不阻断另一个成功导入。
+    读取 accounts/users 两个 JSON 后在**一个事务**内导入，逐文件核对"实际插入数 vs
+    源行数"：**少一行即 fail-closed —— 该源文件不改名**，并把冲突行写进审计链。
+
+    **为什么不一致就改名 .bak**（M22）：`INSERT OR IGNORE` 撞唯一约束时不报错、不留痕
+    （`accounts.phone` UNIQUE、`idx_accounts_owner_live` 的 owner 部分唯一、
+    `idx_users_email_live` 的 email 部分唯一都会触发），行被静默丢掉；随后仍把源文件
+    改名 `.bak` 就成了**丢数据不留痕**——管理员看到"迁移完成"，源文件已不在原路径，
+    丢掉的账号再也找不回来。故丢行时保留源文件原样，让它继续是那条"数据还在"的证据。
+
+    丢行时**已成功插入的行照常提交**（它们本身合法，唯一性冲突的是另一批行），审计行
+    与之同事务落库。代价要说清：下一轮 `init_db` 的 `has_db_rows` 会为真而整段跳过自动
+    导入，剩余行需管理员按审计里的键手工处理——这正是"保留源文件"要留给人的入口。
+
+    某个 JSON 读取失败/不存在时跳过该文件，不阻断另一个成功导入（与既有行为一致）。
     """
     accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
         os.path.dirname(json_base), "accounts.json"
@@ -1315,7 +1389,8 @@ def _maybe_migrate(conn, json_base):
         else:
             logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
         return
-    imported = 0
+    imported_accounts = 0   # 逐文件计数：合并成一个数就分不出"是哪个文件丢的行"
+    imported_users = 0
     key = account_crypto.load_key(_connection._env_file) if accounts else None
     had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版
     with _facade()._conn_lock, conn:
@@ -1356,7 +1431,7 @@ def _maybe_migrate(conn, json_base):
                         a.get("deleted_at", ""),
                     ),
                 )
-                imported += cur.rowcount
+                imported_accounts += cur.rowcount
         if users:
             for u in users:
                 cur = conn.execute(
@@ -1369,13 +1444,45 @@ def _maybe_migrate(conn, json_base):
                         u.get("pw_version", 1),
                     ),
                 )
-                imported += cur.rowcount
-    # 事务提交成功后统一改名，避免单个 JSON 导入失败时已把另一个改名
-    if accounts:
+                imported_users += cur.rowcount
+        # ---- 同一事务内逐文件核对：实际插入数 vs 源行数（M22 fail-closed）----
+        # `INSERT OR IGNORE` 撞唯一约束时 rowcount 为 0 且不留任何痕迹。少一行就是
+        # 静默丢数据，此时**不改名源文件**（它仍是"数据还在"的证据）并写审计告警。
+        losses = []
+        if accounts and imported_accounts < len(accounts):
+            lost = _dropped_source_keys(conn, "accounts", "phone",
+                                        [a.get("phone", "") for a in accounts])
+            losses.append(("accounts", lost))
+        if users and imported_users < len(users):
+            lost = _dropped_source_keys(conn, "users", "email",
+                                        [u.get("email", "") for u in users])
+            losses.append(("users", lost))
+        if losses:
+            _audit_json_import_loss(conn, losses)
+    # 事务已提交（含审计行）。只有"逐文件零丢行"才改名：`.bak` 是逃生门，源文件一旦
+    # 离开原路径，丢掉的行就再也找不回来——所以丢行时必须把它留在原处。
+    if losses:
+        for table, keys in losses:
+            logger.error(
+                "SQLite 自动迁移在 %s 上丢行：源 %d 行 / 实际插入 %d 行，"
+                "冲突键 %s。**该源 JSON 未改名**（保留原路径作为数据仍在的证据）；"
+                "已成功插入的行与本次审计行已提交。请按上述键手工处理源文件后重新导入"
+                "（注意：库已有行，后续启动不会再自动导入）",
+                table,
+                len(accounts) if table == "accounts" else len(users),
+                imported_accounts if table == "accounts" else imported_users,
+                _mask_key_sample(keys) or "（无法定位，疑似空键）",
+            )
+    # 改名**逐文件**判定：只有自己零丢行的那个文件才走 .bak 逃生门。合并成"任一文件
+    # 丢行就都不改名"会让一个账号文件的重复手机号把用户文件也钉在原路径（凭空多出一份
+    # 没人认领的副本），反过来同理。
+    lost_tables = {table for table, _ in losses}
+    if accounts and "accounts" not in lost_tables:
         _rename_backup(accounts_json, reencrypt=had_plaintext, key=key)
-    if users:
+    if users and "users" not in lost_tables:
         _rename_backup(users_json)
-    logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
+    logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）",
+                imported_accounts + imported_users)
 
 
 def _rename_backup(path, reencrypt=False, key=None):

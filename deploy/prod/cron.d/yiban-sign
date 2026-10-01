@@ -3,6 +3,9 @@
 # 语义：run.sh 自带单实例锁与"当日已触发"标记，07:12 兜底仅覆盖"06:31 进程被宿主
 #       杀死"的场景；补签时刻须与 .env 的 YIBAN_SECOND_RUN_TIME 一致（只改 cron
 #       不改该键会提前告警或漏报）。口径见 README「6. crontab」。
+# 宿主时区无关（M25）：这里的时刻是宿主本地钟，但 run.sh 内部的窗口判定、动态超时与
+#       补签等待一律按北京钟（TZ=Asia/Shanghai）计算——宿主非 UTC+8 也按北京时间签到。
+#       宿主需装有 tzdata（无它时 `TZ=Asia/Shanghai date` 回落宿主钟，行为不劣于旧版）。
 # 属主：yiban 用户——绝不能用 root（root 预创建当日签到日志会让 run.sh 重定向失败、
 #       signin 静默不执行，2026-08-17 事故）。
 SHELL=/bin/sh

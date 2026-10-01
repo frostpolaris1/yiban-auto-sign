@@ -1825,8 +1825,10 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "load_env_int", return_value=0):
             self.assertTrue(self.webapp._mail_alert_due("标题"))
             self.assertTrue(self.webapp._mail_alert_due("标题"), "0=关闭节流")
-        # 直接写在 app 侧节流表上的时刻必须被真源看见（同一对象，非副本）
-        self.webapp._mail_alert_ts["注入标题"] = time.time()
+        # 直接写在 app 侧节流表上的时刻必须被真源看见（同一对象，非副本）。
+        # 节流键是 (title, level) 二元组（曾有第三维 target，全仓无实参调用点、
+        # 恒为 None 的死维度，已随 M33 残留清理删除），注入也按二元组。
+        self.webapp._mail_alert_ts[("注入标题", None)] = time.time()
         with mock.patch.object(self.webapp, "load_env_int", return_value=60):
             self.assertFalse(self.webapp._mail_alert_due("注入标题"))
 
@@ -3147,3 +3149,218 @@ class BoundaryMechanismLedgerTest(unittest.TestCase):
                                    capture_output=True, text=True, timeout=120)
                 self.assertIn("SERVICES_ONLY_OK", r.stdout, r.stderr[-600:])
                 self.assertEqual(r.returncode, 0, r.stderr[-600:])
+
+
+class StaleIdxGuardE2ETest(unittest.TestCase):
+    """M91/F60：位置寻址的管理面写口在请求不带 phone 时 fail-closed（409）。
+
+    旧行为（`_stale_idx_guard` 默认 fail_open）会在视图漂移后静默作用到漂移后的
+    另一行。这里从 HTTP 层钉住 review/delete/purge 三条出口必须 409，且目标行未变；
+    另钉批量口 phones 与 ids 长度不等时同样 409（不得静默跳过比对）。
+    """
+
+    ADMIN_PASS = "TestPass1234!"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-staleidx-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        cls._old_env = {k: os.environ.get(k) for k in (
+            "YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_ACCOUNTS_FILE",
+            "YIBAN_ACCOUNTS_KEY", "YIBAN_USERS_FILE", "YIBAN_LOG_FILE")}
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                    "YIBAN_ADMIN_USER=admin\n"
+                    f"YIBAN_ADMIN_PASSWORD={cls.ADMIN_PASS}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_USERS_FILE"] = os.path.join(cls.tmp, "users.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        import db as _db
+        cls.db = _db
+        spec = importlib.util.spec_from_file_location(
+            "webapp_staleidx", os.path.join(BASE, "web", "app.py"))
+        cls.webapp = importlib.util.module_from_spec(spec)
+        sys.modules["webapp_staleidx"] = cls.webapp
+        spec.loader.exec_module(cls.webapp)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k, v in cls._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        with io.open(self.accounts_file, "w", encoding="utf-8") as f:
+            f.write("[]")
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+        for name, phone, owner in (("待审核", "13800138101", "u1@test.local"),
+                                   ("在效", "13800138102", "u2@test.local"),
+                                   ("已删", "13800138103", "u3@test.local")):
+            self.db.add_account({"name": name, "phone": phone, "password": "pw",
+                                 "status": "pending", "owner": owner})
+        rows = self.db.load_accounts()
+        self.idx = {a.get("name"): i for i, a in enumerate(rows)}
+        self.db.set_account_deleted(
+            rows[self.idx["已删"]]["id"], 1, "2026-09-01 00:00:00", deleted_by="admin")
+
+    def _admin(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin", "password": self.ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": t}
+
+    def _snapshot(self):
+        return {a.get("name"): (a.get("status"), bool(a.get("deleted")))
+                for a in self.db.load_accounts()}
+
+    def test_review_without_phone_is_409_and_row_unchanged(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.post(f"/api/accounts/{self.idx['待审核']}/review",
+                   json={"action": "approve"}, headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+
+    def test_delete_without_phone_is_409_and_row_unchanged(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.delete(f"/api/accounts/{self.idx['在效']}", headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertEqual(self._snapshot(), before)
+
+    def test_purge_without_phone_is_409_and_row_unchanged(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.post(f"/api/accounts/{self.idx['已删']}/purge",
+                   json={"confirm_password": self.ADMIN_PASS, "confirm_delay_ack": True},
+                   headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertEqual(self._snapshot(), before)
+
+    def test_batch_phones_ids_length_mismatch_is_409(self):
+        before = self._snapshot()
+        c, h = self._admin()
+        r = c.post("/api/accounts/batch", json={
+            "action": "approve",
+            "ids": [self.idx["待审核"]],
+            "phones": ["138****8101", "139****9999"],
+        }, headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+
+    def test_batch_without_phones_is_fail_closed(self):
+        """M91：完全不带 phones（None）也 409，不得静默按 idx 作用。
+
+        此前只判 `len(phones) != len(ids)`；phones 缺失（None）时两个内联分支都不进，
+        请求按 idx 直接落到不可逆的 purge → 静默清除。fail-closed 后缺令牌即 409。
+
+        purge 的二次鉴权门在 phones 校验**之前**（刻意留在 _file_lock 之外），故本条
+        必须带 confirm_password/confirm_delay_ack 才能把请求送到 phones 校验；不带
+        口令的 purge 仍是 400 password_required（另一条既有用例）。
+        """
+        before = self._snapshot()
+        c, h = self._admin()
+        # 1) 不可逆 purge：带口令但不带 phones → 409，已删行仍在
+        r = c.post("/api/accounts/batch", json={
+            "action": "purge",
+            "ids": [self.idx["已删"]],
+            "confirm_password": self.ADMIN_PASS,
+            "confirm_delay_ack": True,
+        }, headers=h)
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+        # 2) 非门禁动作 delete：不带 phones 同样 409，无行被软删
+        r2 = c.post("/api/accounts/batch", json={
+            "action": "delete",
+            "ids": [self.idx["在效"]],
+        }, headers=h)
+        self.assertEqual(r2.status_code, 409, r2.get_data(as_text=True))
+        self.assertIn("账号列表已变化", r2.get_json()["error"])
+        self.assertEqual(self._snapshot(), before)
+
+    def test_ip_store_trim_runs_inside_rate_lock(self):
+        """N3：my.py / pages.py 两处 _ip_store_trim 必须在 _rate_lock 内调用。
+
+        `_ip_store_trim` 在超限时会 `store.items()` 遍历；锁外调用时并发插入会让
+        迭代中的 dict 变尺寸 → RuntimeError → 500（locks.py:37 的不变量是"调用方持锁、
+        trim 自身不取锁"）。这里用确定性替身 `_TrimProbeStore` 复现：未持锁即视为
+        "并发写者正在插入"（边迭代边插入，必抛 RuntimeError）；持锁则正常迭代并记
+        saw_locked。把 `_IP_STORE_LIMIT` 临时钳到 0 强制进入清理分支（不依赖 len>10000）。
+        """
+        import web.security as _sec
+        app = self.webapp.create_app()
+        c = app.test_client()
+        self.db.create_user("trim@test.local",
+                            self.webapp.generate_password_hash("secret1"))
+        r = c.post("/api/login", json={"username": "trim@test.local", "password": "secret1"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = c.get("/api/me").get_json()["csrf_token"]
+        with mock.patch.object(_sec, "_IP_STORE_LIMIT", 0):
+            # 1) my.py 的判重预检 trim：提交一个在册手机号即命中该分支
+            dup_store = _TrimProbeStore({"seed": (0, time.time())})
+            app.extensions["yiban_dupcheck_limits"] = dup_store
+            r = c.post("/api/my-accounts", json={
+                "name": "dup", "phone": "13800138102", "password": "pw"},
+                headers={"X-CSRF-Token": token})
+            self.assertNotEqual(r.status_code, 500, r.get_data(as_text=True))
+            self.assertTrue(dup_store.saw_locked, "my.py 的 trim 未在 _rate_lock 内调用")
+            self.assertFalse(dup_store.saw_unlocked)
+            # 2) pages.py 的登录页循环检测 trim：已登录 GET /login 触发
+            loop_store = _TrimProbeStore({"1.2.3.4": (1, time.time())})
+            app.extensions["yiban_login_loop"] = loop_store
+            r2 = c.get("/login")
+            self.assertNotEqual(r2.status_code, 500, r2.get_data(as_text=True))
+            self.assertTrue(loop_store.saw_locked, "pages.py 的 trim 未在 _rate_lock 内调用")
+            self.assertFalse(loop_store.saw_unlocked)
+
+
+class _TrimProbeStore(dict):
+    """`_ip_store_trim` 计数表替身：确定性暴露"trim 是否在 _rate_lock 内调用"。
+
+    真实竞态 = trim 锁外遍历 `items()` 时另一线程插入键。这里把"未持锁"等价为
+    "写者正在插入"：未持锁时边迭代边插入（dict 尺寸变化 → RuntimeError）；持锁时
+    写者已被锁排除，正常迭代。saw_locked/saw_unlocked 供断言进入过临界区。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.saw_locked = False
+        self.saw_unlocked = False
+
+    def items(self):
+        from web.services import locks as _locks
+        if _locks._rate_lock.locked():
+            self.saw_locked = True
+            return dict.items(self)
+        self.saw_unlocked = True
+        return self._racing()
+
+    def _racing(self):
+        for k, v in dict.items(self):
+            dict.__setitem__(self, "__racing__", (1, 0.0))
+            yield k, v

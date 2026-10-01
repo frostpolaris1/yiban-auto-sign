@@ -175,6 +175,30 @@ class MailAlertThrottleTest(_B13WebBase):
         self.assertTrue(self.webapp._mail_alert_due("高危管理操作告警"))
         self.assertTrue(self.webapp._mail_alert_due("高危管理操作告警"), "0=关闭节流")
 
+    def test_节流键只按标题与级别拆不按目标(self):
+        """M33 跨权限压制的落点是 `level` 维；已删除的死 `target` 维不得复活。
+
+        同标题不同级别各自独立计时（这条是修复的本体）；同标题**同级别**仍被节流。
+        再钉签名与键元组长度：光测级别的话，有人把 `target` 加回来当"再拆一维"
+        本条不会红，而那正是本次清掉的残留。
+        """
+        import inspect as _inspect
+
+        from web.services import capacity as _capacity
+        self.assertNotIn(
+            "target", _inspect.signature(_capacity._mail_alert_due).parameters,
+            "target 维从未生效（send_notification 没有目标参数），不得以任何形式复活")
+        self.webapp._mail_alert_ts.clear()
+        due = self.webapp._mail_alert_due
+        self.assertTrue(due("高危管理操作告警", level=True), "紧急首次应发")
+        self.assertTrue(due("高危管理操作告警", level=False),
+                        "同标题不同级别必须各自独立计时（跨权限压制不得发生）")
+        self.assertFalse(due("高危管理操作告警", level=True),
+                         "同标题同级别窗口内应被节流")
+        self.assertTrue(all(len(k) == 2 for k in self.webapp._mail_alert_ts),
+                        f"节流键必须恰为 (title, level) 二元组，实际 "
+                        f"{list(self.webapp._mail_alert_ts)}")
+
 
 class HighRiskDeleteTest(_B13WebBase):
     """加固2+3：高危删除冷却 + 二次鉴权。"""

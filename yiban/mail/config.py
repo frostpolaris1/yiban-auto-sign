@@ -46,8 +46,9 @@ def _allow_private_host(env=None):
     """
     if env is not None:
         return str(env.get(_ALLOW_PRIVATE_KEY, "")).strip().lower() in _TRUTHY_LITERALS
-    value = (os.environ.get(_ALLOW_PRIVATE_KEY, "").strip()
-             or _read_env_file().get(_ALLOW_PRIVATE_KEY, "").strip())
+    # 与 `_get` 同一口径：.env 优先、进程环境补缺（M27）
+    value = (_read_env_file().get(_ALLOW_PRIVATE_KEY, "").strip()
+             or os.environ.get(_ALLOW_PRIVATE_KEY, "").strip())
     return value.lower() in _TRUTHY_LITERALS
 
 
@@ -119,8 +120,15 @@ def _read_env_file():
 
 
 def _get(key):
-    """读取配置：环境变量优先，回退 .env 文件（与 web/app.py send_notification 惯例一致）。"""
-    return os.environ.get(_PREFIX + key, "").strip() or _read_env_file().get(_PREFIX + key, "").strip()
+    """读取配置：**.env 文件优先**，进程环境只补缺（M27）。
+
+    与 `yiban/notify/config._env_str` 同一口径、同一理由：本组件的写侧（设置页落盘）
+    与 web 读侧都是「`.env` 优先」，读侧若反过来，键一旦进了 web 进程环境，设置页的
+    写入就静默失效、GET 回显与磁盘状态长期不一致。进程环境保留为兜底（`.env` 没有该键
+    的部署形态仍取得到值）。
+    """
+    return (_read_env_file().get(_PREFIX + key, "").strip()
+            or os.environ.get(_PREFIX + key, "").strip())
 
 
 def _mask_addr(addr):

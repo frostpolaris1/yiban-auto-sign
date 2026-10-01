@@ -251,14 +251,18 @@ class AdminPasswordRotationTest(unittest.TestCase):
         webapp.migrate_admin_password_to_hash(env_path)
         self.assertIn("YIBAN_ADMIN_PW_VERSION=3", self._read(env_path), "口令未变更不得递增")
 
-    def test_first_migration_no_bump(self):
+    def test_first_migration_bumps_pw_version(self):
+        # M09/F86：README 追回手册推荐「删/清空 HASH 行」，落进"无现存哈希"分支。
+        # 该分支也必须递增 PW_VERSION 并换发 sid，否则旧 cookie 仍以 admin 可用
+        # （与保留旧 HASH 行相比等于没吊销）。首次迁移根本不是"追回"也一律递增：
+        # 新装无存量会话，不受影响。
         env_path = self._env_with(
             "YIBAN_ADMIN_PASSWORD=FirstPass#1\n"
             "YIBAN_ADMIN_USER=admin\n"
         )
         webapp.migrate_admin_password_to_hash(env_path)
         env = self._read(env_path)
-        self.assertNotIn("YIBAN_ADMIN_PW_VERSION", env, "首次明文迁移不递增（会话 pw_version 保持有效）")
+        self.assertIn("YIBAN_ADMIN_PW_VERSION=2", env, "无现存哈希的迁移同样递增（删 HASH 行追回等价）")
         self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", env)
 
 

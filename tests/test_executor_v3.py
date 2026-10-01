@@ -824,9 +824,12 @@ class RefillerTest(_Base):
         self._add_task(_phone(1), vshard=-1, state="failed")
         self._add_task(_phone(2), vshard=-1, state="pending")
         self._seed_v(8)
+        # `held` 是补货循环登记"在途"的集合（M17）：回收按它豁免，防止仍躺在通道
+        # 队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
+        # 替身必须带上真字段——用 getattr 兜底会让豁免在缺字段时静默失效。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
                               runtime_id=RUNTIME_OWNER, m=2, inflight=0, busy=0,
-                              slot=0)
+                              slot=0, held=set())
         queue = asyncio.PriorityQueue()
         asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
         self.assertEqual(self.fc.sleeps, [], "首轮即应判收干，不进入轮询等待")
@@ -1717,7 +1720,7 @@ class RecoveryWiringTest(_Base):
         real = executor_v3._run_async
 
         async def spy(ctx):
-            seen.append(state_io.worker_presence(0))
+            seen.append(state_io.worker_presence(0, role=egress.ROLE_SINGLE))
             return await real(ctx)
 
         with mock.patch.object(executor_v3, "_run_async", spy), \
@@ -1726,7 +1729,7 @@ class RecoveryWiringTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
                          "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
-        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
                          "收尾正常路径写心跳：判 finished")
 
 
@@ -1744,7 +1747,7 @@ class WorkerFinishMarkTest(_Base):
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
                          "正常跑完必须写收尾标记")
 
     def test_interrupt_does_not_write_finish_mark(self):
@@ -1760,7 +1763,7 @@ class WorkerFinishMarkTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         later = self.fc.now() + datetime.timedelta(
             seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
-        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+        self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "中断不得写收尾：心跳过期后要判 stale，而不是 finished")
 
@@ -1783,7 +1786,7 @@ class WorkerFinishMarkTest(_Base):
         self.assertEqual(out, {}, "未预期异常按无结果收尾（不外逃）")
         later = self.fc.now() + datetime.timedelta(
             seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
-        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+        self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "未预期异常不得写收尾：心跳过期后判 stale，而不是 finished")
 

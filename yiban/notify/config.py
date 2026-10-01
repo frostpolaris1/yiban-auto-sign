@@ -6,8 +6,10 @@
 （ledger 反向依赖本层的 `_env_int` / `_env_str`）。
 
 **通信**
-输入：进程环境 `YIBAN_NOTIFY_*`（+ 无 `NOTIFY_` 前缀的 `YIBAN_LOGINFAIL_DAILY_MAX`），
-环境变量优先、回退 `.env`（口径来自 `env_io.env_path` / `parse_env_file`）。
+输入：`.env` 里的 `YIBAN_NOTIFY_*`（+ 无 `NOTIFY_` 前缀的
+`YIBAN_LOGINFAIL_DAILY_MAX`），**.env 优先、进程环境只补缺**（M27：与写侧同一口径，
+否则设置页写入被 web 进程环境静默盖住；解析来自 `env_io.env_path` /
+`parse_env_file`）。
 它调用：`account_crypto.load_key` / `decrypt_text`（解 `SECRET_ENC` 密文）、
 `ledger._daily_limit` / `_daily_remaining`、`ipaddress`。
 谁调用：`transport.send` / `send_test`（类型、密钥、白名单）、
@@ -46,7 +48,7 @@ DEFAULT_URGENT_DAILY_MAX = 3
 # 字段）必须取同一个默认常量——两处各写一个字面量，设置页显示与实际行为就会分叉。
 DEFAULT_URGENT_ONLY = 1
 # 登录失败告警独立账本的日额度默认值；该键无 NOTIFY_ 前缀（独立命名），但读取口径
-# （环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
+# （.env 优先、进程环境补缺、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
 LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
 # "管理员本人操作的回执"类告警（执行体清单变更）的独立日额。刻意只有代码内缺省、
@@ -68,18 +70,26 @@ def _read_env_file():
 
 
 def _env_str(key, envs=None):
-    """环境变量优先，回退 .env（与 web/signin 惯例一致）。
+    """读取一个 `YIBAN_NOTIFY_*` 键：**.env 文件优先**，进程环境只补缺（M27）。
+
+    **为什么不是"环境变量优先"**：本组件的**写侧**（设置页 `web/routes/notify.py`
+    落盘）与 **web 读侧**都是「`.env` 文件优先」。读侧若反过来，键一旦进了 web 进程的
+    环境变量，设置页的写入就**静默失效**——管理员在页面上改了配置，读侧仍返回旧值，
+    `get_config` 的 GET 回显与磁盘状态长期不一致。口径必须与写侧一致。
+
+    进程环境保留为**兜底**：`.env` 里没有该键时（compose 只注入环境变量的部署形态）
+    仍取得到值，不会因为翻优先级把这类部署读成"未配置"。
 
     envs：调用方本轮已解析好的 .env 快照（`_read_env_file()` 的返回值）。不传则本函数
     自己读文件——一次调用读一遍全文件，故一次取多个键的路径（如 get_config）会把同一
     轮快照传进来复用。
     """
-    value = os.environ.get(_PREFIX + key, "").strip()
-    if value:
-        return value
     if envs is None:
         envs = _read_env_file()
-    return envs.get(_PREFIX + key, "").strip()
+    value = envs.get(_PREFIX + key, "").strip()
+    if value:
+        return value
+    return os.environ.get(_PREFIX + key, "").strip()
 
 
 # 非法值告警的一次性旗标（键名集合）：同一键在进程生命周期内只喊一次，不刷屏
@@ -180,10 +190,19 @@ def is_safe_url(url):
     IPv4 字面量（`2130706433` = 127.0.0.1）、短式回环（`127.1`）等非 `ipaddress`
     可解析的 host 一律拒掉——否则 `https://2130706433/hook` 这类地址会直通。
     `[::ffff:127.0.0.1]` 等 IPv6 形式已由 `ipaddress` 拦下。
+
+    **反斜杠收严**：`urlparse` 的 `_hostinfo` 把反斜杠当 userinfo 边界，于是
+    `https://127.0.0.1:443\\@example.com/hook` 的 `hostname` 是 `example.com`（放行），
+    而 requests/urllib3 的解析不这样切分、实际连的是 `127.0.0.1:443`。故带反斜杠的
+    URL 一律拒掉（正常 URL 不含反斜杠，零误杀）。带 userinfo 的地址不在此收严之列：
+    `https://evil.com@127.0.0.1/hook` 的 hostname 就是 `127.0.0.1`，已被下面的内网
+    判定拦下；`user:pass@host` 形态本身不构成绕过，且是合法的 webhook basic-auth 写法。
     """
     try:
         o = urlparse(url)
     except ValueError:
+        return False
+    if "\\" in url:
         return False
     if o.scheme != "https" or not o.hostname:
         return False
