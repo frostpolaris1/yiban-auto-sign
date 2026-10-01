@@ -35,10 +35,13 @@ from flask import jsonify, session
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
-from web.services.env_io import cleanup_env_ambiguous_line
+from web.services.env_io import (
+    SCHEDULE_DIST_DEFAULTS,
+    SCHEDULE_DIST_ENV_KEYS,
+    SCHEDULE_DIST_KEYS,
+    cleanup_env_ambiguous_line,
+)
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
-from web.services.env_io import (SCHEDULE_DIST_DEFAULTS, SCHEDULE_DIST_ENV_KEYS,
-                                 SCHEDULE_DIST_KEYS)
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 
