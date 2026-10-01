@@ -116,6 +116,9 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     - 全局锁拿不到时**不拉起任何子进程**，直接以 3（锁忙族）返回（fail-closed，
       理由见函数体内注释）；被信号杀死的子进程（返回码为负）在轮末由
       `_reap_dead_worker` 显式了结它在领的行。
+    - 任一槽位 `Popen` 抛 `OSError`（解释器丢失 / fork 资源耗尽）时**不让异常穿透**：
+      留痕、不再拉起其余槽位，已拉起的兄弟照常 `wait()`，整轮以 1 收场且不写完成标记
+      （理由见函数体内注释；先例见 `docker/scheduler.py` 的 spawn 失败处置）。
     """
     slot_list = list(range(n)) if slots is None else list(slots)
     n = len(slot_list)
@@ -155,6 +158,7 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     logger.info("多执行体：共 %d 个账号待签，拉起 %d 个执行体（槽位 %s）",
                 len(loaded_accounts), n, slot_list)
     children = []
+    spawn_failed = False
     for i, slot in enumerate(slot_list):
         env = os.environ.copy()
         # 身份串的唯一构造处在 egress（写入与解析同一份口径）：这里传的稳定槽位名
@@ -190,9 +194,21 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
         cmd = [sys.executable, "-m", "yiban.cli", "sign", *child_argv]
         logger.info("执行体 %d/%d 启动（槽位 %d，出口: %s）",
                     i + 1, n, slot, egress.describe(proxy))
-        children.append(subprocess.Popen(
-            cmd, env=_child_env_with_repo_root(env), cwd=_REPO_DIR,
-        ))
+        try:
+            child = subprocess.Popen(
+                cmd, env=_child_env_with_repo_root(env), cwd=_REPO_DIR,
+            )
+        except OSError as e:
+            # 解释器丢失 / fork 资源耗尽等：**不得穿透**——runner.main 与 yiban.cli 只兜
+            # SystemExit，穿透就是未捕获 traceback 收场；而本进程此时可能已拉起兄弟
+            # 执行体，异常展开会让它们失去 `wait()`、进程内全局运行锁随之提前释放
+            # （散落的另一轮全量就能与本轮幸存执行体并发）。与 docker/scheduler.py 的
+            # spawn 失败先例同判法：接住、留痕、不再拉起其余执行体，跳出后已拉起的
+            # 兄弟照常 `_await_workers` 收尾，整轮按真失败(1) 透出。
+            logger.error("执行体槽位 %d 拉起失败，本轮不再拉起其余执行体: %s", slot, e)
+            spawn_failed = True
+            break
+        children.append(child)
         # 开始心跳：本槽位"本轮已启动"的事实。放在 Popen 之后，故页面上"在跑"的
         # 槽位必然真有子进程（不是拿"文件在不在"猜）。
         state_io.mark_worker_started(slot)
@@ -200,7 +216,7 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
         if i + 1 < n:
             time.sleep(0.5)
 
-    codes = _await_workers(children, slot_list)
+    codes = _await_workers(children, slot_list[:len(children)])
     for i, rc in enumerate(codes):
         logger.info("执行体 %d/%d（槽位 %d）结束，退出码 %s", i + 1, n, slot_list[i], rc)
     # 轮末收尸：被信号杀死的执行体（rc < 0）来不及自己收尾，它在领的账号会一直挂着
@@ -238,6 +254,12 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     else:
         _round_settled = all(_settled_child_code(c) for c in codes)
         _final = 0
+    if spawn_failed:
+        # 有槽位根本没起来 ⇒ 本轮不是"全员跑到收尾"：退出码升真失败(1)、且不得写全量
+        # 完成标记。否则缺了执行体的一轮会被读成成功并封存，当日恢复腿被弹开。已拉起
+        # 的兄弟在上面照常 wait() 过，消息靠 error 日志与退出码体现。
+        _final = 1
+        _round_settled = False
     # 全量完成标记（sched-run-<日期>.json）**单点写在本函数**：旧实现由每个子执行体
     # 在 `runner.main` 末尾各写一份——先收尾的那份会把"还有执行体被杀/没跑完"的
     # 事实盖掉，"当日全量已收尾"从此不可信。现在只有监督进程在全员正常退出后写一次；
@@ -294,21 +316,34 @@ def _reap_dead_worker(slot):
         logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
 
 
-#: 每轮从 .env 并回 `os.environ` 时**不得覆盖**的键：本进程自行注入/解析的身份与出口。
-#: `.env` 里若出现同名值（如旧配置同时留了 `YIBAN_PROXY` 与兜底出口），覆盖会在运行中
-#: 换掉身份或出口——与"重读门开关"是两回事。
-_ENV_RELOAD_PRESERVE = frozenset({
-    "YIBAN_EXECUTOR_ID", "YIBAN_RUN_LOCK_NAME", "YIBAN_PROXY",
+#: 每轮从 .env 并回 `os.environ` 时**只放行**的键——门 / 窗口 / 间隔三类，即
+#: `schedule.day_off`（周末两键 + 暂停）、`schedule.weekend_flags` 与
+#: `schedule._schedule_config` 的窗口部分（起止、模式、排序/分布、前后裁剪）实际
+#: 读取的键，外加兜底自己的扫描间隔。旧实现"除身份/出口键外**全部**覆盖"，爆炸
+#: 半径远大于自述：运行期会被 .env 改写进程的库路径 / 状态目录等，把"重判门"
+#: 变成"重载整份配置"。白名单必须与上述函数的窗口/门键**逐个对齐**——遗漏任何
+#: 一个都会让"每轮重判门"名不副实（窗口内点一键暂停照签）。
+_ENV_RELOAD_KEYS = frozenset({
+    "YIBAN_SIGN_START", "YIBAN_SIGN_END",
+    "YIBAN_SIGN_MODE", "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST",
+    "YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC",
+    "YIBAN_WINDOW_EDGE_BACK_SEC",
+    "YIBAN_SATURDAY_SIGN", "YIBAN_SUNDAY_SIGN", "YIBAN_GLOBAL_PAUSE",
+    "YIBAN_FALLBACK_INTERVAL",
 })
 
 
 def _reload_env_into_environ():
-    """把 `.env` 的最新键值并回 `os.environ`（只覆盖 .env 里出现的键，身份/出口键除外）。
+    """把 `.env` 里**白名单内**的最新键值并回 `os.environ`（见 `_ENV_RELOAD_KEYS`）。
 
     兜底常驻声称"每轮重判门"，但 `schedule.day_off` / `_schedule_config` 最终读的是
     `os.environ`；运行期 Web 只写 `.env`、既不 export 也不重启本进程，于是进程启动
     快照会把管理员中途写入的暂停/周末/窗口/间隔全部盖住（一键暂停在窗口内对它失效）。
-    每轮开头重读一次 `.env`，让本轮判据看到最新配置，与循环内注释的承诺一致。
+    每轮开头重读一次 `.env` 的白名单键，让本轮判据看到最新配置，与循环内注释的承诺一致。
+
+    为什么收成白名单而不是"排除身份/出口键后全量覆盖"：兜底只需要"门/窗口/间隔"随
+    `.env` 走；全量覆盖会把库路径、状态目录这类**不属于门判据**的配置在运行期改掉，
+    与"每轮重判门"的自述不符，爆炸半径也大得多。
     """
     try:
         values = env_io.parse_env_file(env_io.env_path())
@@ -316,7 +351,7 @@ def _reload_env_into_environ():
         logger.debug("兜底执行体：重读 .env 失败，本轮沿用进程环境: %s", e)
         return
     for key, value in values.items():
-        if key not in _ENV_RELOAD_PRESERVE:
+        if key in _ENV_RELOAD_KEYS:
             os.environ[key] = value
 
 
@@ -349,6 +384,9 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     退出：窗口关闭 / 三道门命中 / 到达 `deadline` / 账号列表为空且已过窗口。
     返回退出码语义与单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
     """
+    # 显式传入的 `interval`（测试/调用方）优先且不随 .env 漂移；未传时**每轮在循环内**
+    # 从（已重读的）.env 取——运行期改 `YIBAN_FALLBACK_INTERVAL` 下一轮即生效。
+    fixed_interval = interval
     interval = interval or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
     os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
     # 身份串：兜底常驻与单执行体/并行执行体各用**稳定的槽位名**（`fallback@{主机名}`），
@@ -368,6 +406,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         # 而运行期 Web 只写 .env（见 `_reload_env_into_environ` 的说明）——不重读就是
         # "每轮重判"名不副实（窗口内点一键暂停照签）。
         _reload_env_into_environ()
+        if fixed_interval is None:
+            # 间隔每轮重取：运行期改了 YIBAN_FALLBACK_INTERVAL，下一轮就该按新间隔走
+            # （旧实现在进循环前取一次，注释却声称读 os.environ——承诺与实现不符）。
+            interval = schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
         now = clock.now()
         # 配置每轮重读，并把本轮时刻交给 `_schedule_config`（与下面 `day_off` 的每轮重判
         # 同口径：管理员中途改窗口/开关，下一轮即生效）；顺手传时刻是为了让它的告警复位点

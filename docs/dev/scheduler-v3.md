@@ -209,7 +209,10 @@ bash scripts/backup.sh
   任务结束后单事务批量落库。
 - **状态文件**：`sign-state-<day>.json` 是网页日历的事实源（每次尝试与重试入队即写，
   故不会空窗）；`sched-run-<day>.json` 是全量收尾标记。
-- **文件心跳与执行体页**：`worker-alive-<slot>.json`（v3 与监督进程都写）。四态：
+- **文件心跳与执行体页**：`worker-alive-<身份键>.json`（v3 与监督进程都写；身份键 = 角色：
+  `worker` 用槽位号 `worker-alive-<slot>.json`，`single`/`fallback` 用角色名
+  `worker-alive-single.json` / `worker-alive-fallback.json`——它们没有槽位号，不带角色会与
+  `worker-0` 撞同一个文件、把四态洗成别的身份的退出）。四态：
   `running`（心跳新鲜，`now-ts <= 2×30s`）/ `finished`（有收尾标记）/ `idle`（当日无记录）
   / `stale`（有开始、无收尾且心跳过期 ⇒ 异常）。v3 起跑/存活期/正常收尾都写，长轮次
   不会因心跳不刷新被判成 `stale`。**`stale` 的成因按路径分**：**单进程直跑**（`run.sh`
