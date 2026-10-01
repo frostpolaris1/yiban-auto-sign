@@ -595,6 +595,43 @@ class SessionRequeueTest(_Base):
                       "回炉=当日接手：不得停留在 failed")
 
 
+class OnlyThenFullRoundPlanCoverageTest(_Base):
+    """手动 `--only` 先签一个号后，同日定时全量轮必须给其余账号补建计划行。
+
+    `--only` 轮（`reclaim=True` → `_ensure_plan(force=True)`）只写目标号的行；若全量轮
+    只看"当日有行"就跳过 `write_plan`，其余账号当天在队列里根本没有行 ⇒ 全天零签到。
+    """
+
+    def _attempts(self, calls):
+        return mock.patch.object(
+            executor_v3.attempts, "attempt_signin",
+            lambda acc: (calls.append(acc.phone), (True, "ok", False, "success"))[1])
+
+    def test_full_round_backfills_accounts_after_manual_only(self):
+        phones = [_phone(i) for i in range(3)]
+        # 第一轮：手动 --only 只签 _phone(0)（reclaim=True 即 force），只落它一行
+        calls = []
+        with self._attempts(calls):
+            self._run_v3(self._accounts(phones[0]), reclaim=True)
+        self.assertEqual(calls, [phones[0]], "手动轮只签目标号")
+        self.assertIsNotNone(self._row(phones[0]), "手动轮必须给自己建计划行")
+        self.assertIsNone(self._row(phones[1]), "手动轮不该碰别人的行")
+        self.assertIsNone(self._row(phones[2]))
+
+        # 第二轮：同日定时全量轮必须给其余账号补建计划行（否则它们当天零签到）
+        calls = []
+        with self._attempts(calls):
+            self._run_v3(self._accounts(*phones))
+        for p in phones:
+            row = self._row(p)
+            self.assertIsNotNone(row, f"{p} 当日没有计划行——全量轮跳过了建计划")
+            self.assertGreaterEqual(row["vshard"], 0)
+        self.assertEqual(sorted(calls), sorted(phones[1:]),
+                         "全量轮必须领取并执行此前无计划行的账号")
+        # 手动轮已收尾的行不被覆盖：补建走 INSERT OR IGNORE，结论保持
+        self.assertEqual(self._row(phones[0])["state"], "done")
+
+
 # ---------------------------------------------------------------------------
 # B：runner 透传 requeue_final；兜底腿按开关分流
 # ---------------------------------------------------------------------------

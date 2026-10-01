@@ -42,6 +42,7 @@ from yiban import clock, egress
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, executor_v3, schedule, state_io
+from yiban.infra import env_io
 from yiban.store import db, queue_store
 
 logger = logging.getLogger("yiban")
@@ -293,6 +294,32 @@ def _reap_dead_worker(slot):
         logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
 
 
+#: 每轮从 .env 并回 `os.environ` 时**不得覆盖**的键：本进程自行注入/解析的身份与出口。
+#: `.env` 里若出现同名值（如旧配置同时留了 `YIBAN_PROXY` 与兜底出口），覆盖会在运行中
+#: 换掉身份或出口——与"重读门开关"是两回事。
+_ENV_RELOAD_PRESERVE = frozenset({
+    "YIBAN_EXECUTOR_ID", "YIBAN_RUN_LOCK_NAME", "YIBAN_PROXY",
+})
+
+
+def _reload_env_into_environ():
+    """把 `.env` 的最新键值并回 `os.environ`（只覆盖 .env 里出现的键，身份/出口键除外）。
+
+    兜底常驻声称"每轮重判门"，但 `schedule.day_off` / `_schedule_config` 最终读的是
+    `os.environ`；运行期 Web 只写 `.env`、既不 export 也不重启本进程，于是进程启动
+    快照会把管理员中途写入的暂停/周末/窗口/间隔全部盖住（一键暂停在窗口内对它失效）。
+    每轮开头重读一次 `.env`，让本轮判据看到最新配置，与循环内注释的承诺一致。
+    """
+    try:
+        values = env_io.parse_env_file(env_io.env_path())
+    except Exception as e:   # 读侧已吞 OSError；这里只兜住意外异常，不因配置读失败停摆
+        logger.debug("兜底执行体：重读 .env 失败，本轮沿用进程环境: %s", e)
+        return
+    for key, value in values.items():
+        if key not in _ENV_RELOAD_PRESERVE:
+            os.environ[key] = value
+
+
 def run_fallback_worker(argv_rest, interval=None, deadline=None):
     """兜底常驻执行体：窗口内反复扫"还没了结"的账号并接手，窗口关闭即退出。
 
@@ -337,6 +364,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     sch_cfg = None   # 每轮在循环内重读（见下）
     last_code = 0
     while True:
+        # 每轮先把 .env 的最新配置并回进程环境：门/窗口/间隔的判据读的是 `os.environ`，
+        # 而运行期 Web 只写 .env（见 `_reload_env_into_environ` 的说明）——不重读就是
+        # "每轮重判"名不副实（窗口内点一键暂停照签）。
+        _reload_env_into_environ()
         now = clock.now()
         # 配置每轮重读，并把本轮时刻交给 `_schedule_config`（与下面 `day_off` 的每轮重判
         # 同口径：管理员中途改窗口/开关，下一轮即生效）；顺手传时刻是为了让它的告警复位点

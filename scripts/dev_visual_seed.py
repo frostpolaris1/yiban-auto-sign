@@ -27,8 +27,16 @@ import time
 from datetime import datetime, timedelta
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 直接执行本脚本时 sys.path[0] 是 scripts/，仓库根不在路径上——先补上才能 `from yiban...`。
+if BASE not in sys.path:
+    sys.path.insert(0, BASE)
 
-TEST_KEY = "7f3a9c1e5b2d8046af17c3e9b5d2084c6ea93f7b1d5c8042a6e93f1b7d5c2084"
+# 演示钥与 `account_crypto` 的公开钥黑名单是**同一个常量**（单一事实源）：避免两处各写
+# 一份、下次换钥只改一处导致黑名单漂移。它随仓库公开，照抄进真实 .env 会被启动拒绝。
+from yiban.infra.account_crypto import (  # noqa: E402
+    PUBLISHED_DEMO_ACCOUNTS_KEY as TEST_KEY,
+)
+
 ADMIN_USER = "admin"
 ADMIN_PASS = "VisualPass1234!"
 USER_PASS = "VisualUser123!"
