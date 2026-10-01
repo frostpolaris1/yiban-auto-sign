@@ -15,7 +15,9 @@
 - `reclaim_tasks`：显式重签——把指定账号当日的**终态**行（`done`/`skipped`）翻回
   `pending`，只服务手动 `--only`（终态复活默认是红线，故无缺省调用者）；
 - `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
-  宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
+  宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；**判活按持有者身份**——调用方本进程
+  通道队列里在途的行（`held`）与心跳仍存活的持有者（`live_owners`）一律豁免，否则同一账号
+  会被原地重领、当天两次真实登录；
 - `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
   `pending`——证据强于"租约过期"，故不等宽限期；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
@@ -72,6 +74,13 @@ REAP_GRACE_SEC = 120
 
 #: 批领缺省行数 = 通道数 × 预取系数。
 CLAIM_BATCH_LIMIT = 32
+
+#: 单条 SQL 的绑定变量分块大小。SQLite 的 `SQLITE_MAX_VARIABLE_NUMBER` 老版本是 999
+#: （新版本 32766），而 `reap_expired` 的在途豁免要把整个通道队列的手机号逐个展开成
+#: `NOT IN` 占位符——大站一个补货循环就能攒出上千条。整段拼一条会在变量数超限时直接
+#: 抛 `sqlite3.ProgrammingError`，而回收失败只告警 ⇒ 回收静默退化成"什么都不回收"，
+#: 崩溃即卡死。取 900：连同 day/允许集/持有者豁免也稳在 999 以内。
+SQL_VAR_CHUNK = 900
 
 #: 一个 result 字段最多保留的字符数（与 `claims.settle` 同口径）。
 RESULT_MAX = 200
@@ -136,6 +145,18 @@ def _shift_stamp(stamp, sec):
     else:
         raise ValueError(f"不可解析的时间串: {text!r}")
     return (t + datetime.timedelta(seconds=sec)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _chunks(items, size=SQL_VAR_CHUNK):
+    """把可迭代对象切成不超过 `size` 的定长块（生成器，空输入不产出）。"""
+    chunk = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 
 def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
@@ -379,7 +400,8 @@ def reclaim_tasks(day, phones):
         return 0
 
 
-def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None):
+def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None,
+                 held=(), live_owners=()):
     """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
     `lease_until < now - grace_sec` 的行回退为 `pending`（清 `owner`/`lease_until`、
     `epoch = epoch + 1`）。返回受影响行数。
@@ -387,11 +409,32 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None):
     **为什么必须做**：`claim_batch` 只取 `state='pending'` 的行，崩溃/被杀的通道留下的
     `claimed` 行**永远不会被重新领取**——不做回收就是"崩溃即卡死"，该账号当天不再有人签。
 
-    **为什么要宽限期（`REAP_GRACE_SEC`）**：租约到期只说明持有者"可能已死"，不等于真死。
-    单次尝试可能比租约还慢（慢签到告警阈值 30s 而租约 60s），此时若按"过期即回收"，该行
-    会回退 `pending` 并**可能被同一执行体重新领到** ⇒ 同一账号两条通道并发登录。`epoch+1`
-    只保证旧结论写不回，挡不住这次重复真实登录，故必须靠宽限期把"在飞被回收"的窗口压到
-    可忽略；真正的旋钮是 `LEASE_SECONDS`（宽限期取 ≥ 2× 租约留余量）。
+    **判活按持有者身份，不只看 `lease_until`（M17）**：租约到期只说明持有者"**可能**已死"，
+    不等于真死。宽限期（`REAP_GRACE_SEC`）是这道闸的第一层，但它**兜不住"在途等待"**——
+    执行体把行领回 `pending` 之前的排队时间不受租约约束：条目躺在本进程的通道队列里等
+    通道、等限速额度、等逐账号 gap、等计划时刻，都可能把 `lease_until` 拖过
+    「租约 + 宽限」（60s + 120s）。此刻本进程明明还在正常干活，行却被回收器判死、回退
+    `pending`，**下一次 `claim_batch` 又把它原地领回来**——同一账号当天两次真实登录
+    （`epoch+1` 只挡迟到的结论写回，挡不住第二次登录；易班侧会因此锁号）。
+    故本函数有两道**持有者身份**豁免，两者都是"判活"而不是"改租约"：
+
+    - `held`：**调用方本进程通道队列里在途的 phone 集合**（已领、尚未收尾/重排的条目）。
+      这些行一律跳过——它们的持有者就是调用方自己，且正在被处理。
+      集合随领取增、随条目处理完减（见 `executor_v3._Ctx.held`），所以本进程真正泄漏的
+      行（已领却没进集合）仍会被回收自愈，不会永久卡死。
+    - `live_owners`：调用方判定**仍存活**的持有者稳定名（跨进程用；心跳未过期）。持有者
+      身份存的是运行时串 `{稳定名}:{进程号}:{代次}`（`yiban.egress.runtime_owner`），故
+      与 `reap_abandoned` 同口径按「等值 + `instr` 前缀」匹配，不用 `LIKE`
+      （主机名里可能有 `_`，那是 LIKE 的通配符）。心跳过期的死主不在此集合里 → 仍按租约
+      + 宽限回收，崩溃恢复链不受影响。
+
+    **为什么不用"把 `lease_until` 加长"糊过去**：续租只是把同一道判据的阈值调大，等待
+    时间没有上界（积压时队列里的条目能等任意久），阈值迟早被跨过；而且续租会让"崩溃即
+    卡死"的行一直续下去。豁免按"谁持有、是否在途"判定才是根因口径。
+
+    `held` 逐行展开成 `NOT IN` 子句并按 `SQL_VAR_CHUNK` 分块：SQLite 的绑定变量上限
+    （老版本 999）远小于一个大队列可能的手机号数，整段拼一条会在大站上直接报错、
+    回收静默退化成"什么都不回收"。
 
     **`epoch + 1` 是 fencing 红线**：回退后原持有者可能迟到提交 `settle_tasks`，自增
     token 让它的旧 epoch 写被拒（`settle_tasks(..., epochs=...)` 已支持），否则迟到的旧
@@ -428,6 +471,18 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None):
                 return 0
             sql += f" AND phone IN ({','.join('?' for _ in allowed)})"
             params.extend(allowed)
+        # 在途豁免（M17）：本进程通道队列里还在的条目不回收。与上面 `phones` 允许集
+        # 取**与**关系——允许集管"能碰哪些账号"，在途集管"哪些行持有者还活着"。
+        for chunk in _chunks(tuple(held or ())):
+            sql += f" AND phone NOT IN ({','.join('?' for _ in chunk)})"
+            params.extend(chunk)
+        # 存活持有者豁免（M17）：心跳未过期的执行体手上的行不回收（跨进程同一类重复登录）。
+        for owner in tuple(live_owners or ()):
+            owner = str(owner or "").strip()
+            if not owner:
+                continue
+            sql += " AND owner <> ? AND instr(owner, ?) <> 1"
+            params.extend((owner, owner + ":"))
         conn, lock = _queue_conn()
         with lock:
             cur = conn.execute(sql, tuple(params))
