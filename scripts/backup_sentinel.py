@@ -336,10 +336,13 @@ def _broadcast_anchor(day, archive, sidecar_ok):
         print("备份哨兵：读不到审计链头，今日锚点未离机（邮件通道正常也会缺这一条基线）",
               file=sys.stderr)
         return False
-    if not _alert_due(ANCHOR_TITLE):
-        print(f"备份哨兵：锚点外发在节流窗口内已发过，本次不外发（{ANCHOR_TITLE}）")
-        return False
     try:
+        # 节流判定也在 try 里：`_alert_due` → ledger 的状态文件锁 `open()` 在
+        # **状态目录不可写**时会抛 OSError（makedirs 被吞、锁的 open 没兜底）。
+        # 那正是哨兵该出声的场景，绝不能让它把下游的失败告警一起带走。
+        if not _alert_due(ANCHOR_TITLE):
+            print(f"备份哨兵：锚点外发在节流窗口内已发过，本次不外发（{ANCHOR_TITLE}）")
+            return False
         sent = _send_admin_alert(ANCHOR_TITLE, _anchor_mail(day, snap, archive, sidecar_ok))
     except Exception as e:
         logger.warning("审计链锚点外发异常: %r", e)
@@ -365,7 +368,10 @@ def main(argv=None):
 
     if archive is not None and sidecar_ok and drift is None:
         print(f"备份哨兵：{day} 的归档与清单都在（{archive}），运行脚本与仓库版一致")
-        _broadcast_anchor(day, archive, sidecar_ok)
+        try:
+            _broadcast_anchor(day, archive, sidecar_ok)
+        except Exception as e:  # 锚点外发绝不改变本函数的结论与退出码
+            logger.warning("审计链锚点外发流程异常（已忽略）: %r", e)
         return 0
 
     if archive is not None and sidecar_ok:
@@ -388,7 +394,12 @@ def main(argv=None):
     # M28：链头外发与上面这次告警**互相独立**——当天既喊了"备份没成"又喊了
     # "链头离机"是常态（前者说数据没存下来，后者说基线存下来了），两封都要发。
     # 放在告警发送之前：即便告警那封发不出去，基线那封也已经在路上。
-    _broadcast_anchor(day, archive, sidecar_ok)
+    # 整段兜底：锚点链路里任何一步（含节流锁的 OSError）都不得让下面的
+    # 失败告警发不出去、也不得改变退出码——状态目录坏掉时它恰好最容易炸。
+    try:
+        _broadcast_anchor(day, archive, sidecar_ok)
+    except Exception as e:
+        logger.warning("审计链锚点外发流程异常（已忽略，不影响告警与退出码）: %r", e)
 
     if not _alert_due(ALERT_TITLE):
         # stdout 结论在上面已经打过了：节流只挡邮件，cron 日志里每次都留一行

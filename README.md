@@ -712,7 +712,7 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 
 > ⚠️ `YIBAN_MAIL_PASS` 是**授权码**而非邮箱登录密码；属敏感凭据，只写入服务器本地 `.env`（已被 `.gitignore` 排除）。不配置邮箱通知时，Webhook 通知不受任何影响。
 
-> ❄️ 「保存即时生效」的前提：`YIBAN_MAIL_*` 这些键**不同时存在于 web 进程的环境变量里**（读取序为 env 档优先、`.env` 文件档兜底）。systemd 部署若把整份 `.env` 拷成 `EnvironmentFile`（历史装法），保存的新值会一直被启动快照压住、`systemctl restart` 也修不好——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行；已整份拷贝的部署把该文件收窄后 daemon-reload + restart 即恢复。
+> ❄️ 「保存即时生效」的前提（0.5.1 起的统一口径）：**配置文件（`.env`）优先，进程环境只补缺**——网页里保存的新值总会赢，环境变量里同名旧键被 `.env` 覆盖。唯一的例外是 `YIBAN_ACCOUNTS_KEY`（账号密钥历来环境变量档优先，且与 `.env` 同键分叉时拒绝启动）。因此 systemd 部署把整份 `.env` 拷成 `EnvironmentFile`（历史装法）虽不再压住新值，但仍属多余且易漂移——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行即可。
 
 </details>
 
@@ -795,10 +795,10 @@ python3 -m web
 #   grep '^YIBAN_ACCOUNTS_KEY=' .env >/tmp/yiban-accounts-key && \
 #     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
 #     && rm -f /tmp/yiban-accounts-key                         # 模板的 EnvironmentFile：只放启动密钥这一行
-#   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：邮件等配置的读序是 env 档优先、.env 兜底，
-#   整份拷贝会把「系统设置」页写入 .env 的新值压进启动快照，保存后连 systemctl restart
-#   都不生效（要生效得每次重新生成该文件）。旧部署若已整份拷贝，收窄成只含上面这一行
-#   并 daemon-reload + restart，即恢复"保存即时生效"。
+#   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：0.5.1 起配置读序统一为 .env 优先、
+#   进程环境只补缺（唯一例外 YIBAN_ACCOUNTS_KEY 仍是环境变量档优先），整份拷贝
+#   虽不再压住「系统设置」页的新值，但会把启动时刻的旧值留成第二份来源、随 .env
+#   漂移。模板只放上面这一行；旧部署若已整份拷贝，收窄成只含这一行即可。
 # 若部署目录不是 /opt/yiban-auto-sign，必须同步改单元里的 WorkingDirectory / ExecStart /
 # ReadWritePaths（模板是写死的绝对路径）。
 #

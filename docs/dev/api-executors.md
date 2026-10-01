@@ -437,7 +437,7 @@
 |------|------|------|
 | `day` / `prev_day` | string | 比较的两端业务日。`prev_day` 是 `day` 的**前一个自然日** |
 | `compared` | bool | `prev_day` 确实有记录。`false` 时 `migration` 恒为 `[]`，页面据此**隐藏**迁移段 |
-| `tracked` | int | 当日有归属记录（`sign_tasks.owner` 非空）的账号数 |
+| `tracked` | int | 当日在 `sign_tasks` 里有归属行的账号数（按实现口径：不按 `owner` 是否为空过滤） |
 | `by_executor[]` | list | **归属分布 = 负载视图**：每个执行体名下有多少账号。`{role, index, label, slot, accounts}`；`slot` 同上（1-based，worker 才有值，其余角色为 `null`） |
 | `migration[]` | list | **迁移视图**：当日与前一日之间**换了执行体**的账号数，按「从哪个 → 到哪个」聚合成若干条。`{from_role, from_index, from_label, to_role, to_index, to_label, accounts}`。按 `accounts` 降序排 |
 | `note` | string | 直接引用即可 |

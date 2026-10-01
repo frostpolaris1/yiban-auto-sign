@@ -37,7 +37,8 @@ WORKDIR /app
 # （.github/workflows/ci.yml，跑 `pip-audit -r requirements.lock`）审计的就是它，
 # 浮动下限会让镜像依赖偏离审计结论且构建不可复现。
 # requirements.lock 是手工维护的精确锁定、全程不含 `--hash=`，没有哈希锁可复核，
-# 因此 **pip-audit 是这里唯一能挡住依赖漂移的机制**——改 lock 必须同时看那个 job 的结论。
+# 因此 **pip-audit 是这里唯一的自动依赖审计**——改 lock 必须同时看那个 job 的结论；
+# 它能否**阻塞合并**取决于分支保护是否把 `dependency-audit` 列为必需检查（所有者动作）。
 # 国内主机直连 pypi.org 常不可达（构建会以 "No matching distribution" 失败），
 # 故支持构建期指定索引：docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple ...
 ARG PIP_INDEX_URL
