@@ -9,7 +9,9 @@
    supervisord 对 sched 的存活参数（startsecs/startretries 显式写死，崩溃重启不进
    FATAL 躺平）、compose healthcheck 同时覆盖 web 与 sched、宿主 run.sh 与
    run_probe.sh 锁目录 mkdir 失败时拒绝运行（不再静默回退 /tmp，与 08-21 加固
-   注释同一威胁模型；探针并采信显式 YIBAN_LOCK_DIR）。
+   注释同一威胁模型；探针并采信显式 YIBAN_LOCK_DIR）；已存在锁目录同样过
+   "属主为本用户 + chmod 700"（M07）；run.sh 动态超时与补签等待按北京钟取点、
+   与宿主时区无关（M25，宿主设为 UTC 活体反证）。
 对应实现：docker/scheduler.py（_run_signin_child、main_loop、_touch_heartbeat、
    healthcheck_main、__main__ 出口）、docker/supervisord.conf（[program:sched]）、
    docker-compose.yml（healthcheck）、run.sh（LOCK_DIR 块）、run_probe.sh（LOCK_DIR 块）。
@@ -453,6 +455,176 @@ class RunShLockDirTest(unittest.TestCase):
         combined = (r.stderr.decode("utf-8", "replace")
                     + r.stdout.decode("utf-8", "replace"))
         self.assertNotIn("回退 /tmp", combined)
+
+    # ---- M07：已存在目录同样要过属主 + 700 硬检查 ----
+
+    def _fs_preserves_modes(self):
+        r = _sp.run([BASH, "-c",
+                     'f=$(mktemp); chmod 700 "$f"; stat -c %a "$f"; rm -f "$f"'],
+                    capture_output=True, text=True, timeout=60)
+        return r.stdout.strip() == "700"
+
+    def _make_foreign_owned(self, path):
+        """把目录属主改成 uid 1（daemon）；仅 root 能成功且仅 root 能观测 -O 为假。"""
+        os.makedirs(path, exist_ok=True)
+        r = _sp.run([BASH, "-c",
+                     'chown 1:1 "$1" 2>/dev/null && [ ! -O "$1" ] && echo yes || echo no',
+                     "_", path], capture_output=True, text=True, timeout=60)
+        return r.stdout.strip() == "yes"
+
+    def test_preexisting_foreign_lock_dir_refused_before_flock(self):
+        """M07 活体反例：已存在锁目录属主非本用户 ⇒ 拒绝运行且在 flock 之前退出。
+
+        旧实现把这些硬检查放在 `if [ ! -d "$DIR" ]` 的新建分支内，已存在目录完全不查：
+        同机其他用户预建 /var/lock/yiban 即可长期压住全站签到。
+        """
+        lock = os.path.join(self.tmp, "foreign-lock")
+        if not self._fs_preserves_modes():
+            self.skipTest("宿主不保留 POSIX 属主/权限（Windows 开发机）")
+        if not self._make_foreign_owned(lock):
+            self.skipTest("需要 root（WSL）才能构造属主为他人的目录")
+        r = self._run(lock)
+        err = r.stderr.decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 1,
+                         "已存在的他人属主锁目录必须拒绝运行（rc=%d, err=%s）"
+                         % (r.returncode, err))
+        self.assertIn("不安全", err)
+        self.assertFalse(os.path.exists(os.path.join(lock, "sign.lock")),
+                         "必须在 exec 9>/flock 之前退出（未尝试取锁）")
+        self.assertIsNone(self._rounds(), "拒绝运行时不得到达签到轮")
+
+    def test_preexisting_own_loose_lock_dir_tightened_and_runs(self):
+        """M07 对照（不误伤）：已存在但属主为本用户的目录，收紧 700 后照常跑。"""
+        if not self._fs_preserves_modes():
+            self.skipTest("宿主不保留 POSIX mode（Windows 开发机）")
+        lock = os.path.join(self.tmp, "loose-lock")
+        os.makedirs(lock, exist_ok=True)
+        os.chmod(lock, 0o755)
+        r = self._run(lock)
+        err = r.stderr.decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 0, "属主为本用户的已有目录不得被拒（err=%s）" % err)
+        mode = stat.S_IMODE(os.stat(lock).st_mode)
+        self.assertEqual(mode, 0o700, "已存在目录也必须收紧到 700（实际 %o）" % mode)
+        self.assertTrue(os.path.exists(os.path.join(lock, "sign.lock")))
+        self.assertIsNotNone(self._rounds(), "锁目录正常时应走到签到轮")
+
+
+# ---------------------------------------------------------------------------
+# run.sh 动态超时 / 补签等待：宿主时区无关（北京钟，M25）
+# ---------------------------------------------------------------------------
+
+_STUB_SIGNIN_SECOND = '''# -*- coding: utf-8 -*-
+"""桩：--second-run-check 要求补跑（rc=10），其余记一轮并成功退出。"""
+import os
+import sys
+
+state = os.environ.get("YIBAN_STATE_DIR", ".")
+if "--second-run-check" in sys.argv:
+    raise SystemExit(10)
+with open(os.path.join(state, "rounds.log"), "a", encoding="utf-8") as f:
+    f.write("round\\n")
+raise SystemExit(0)
+'''
+
+# 假 date：记录调用时的 TZ，并按固定"现在"给值——宿主钟与北京钟给不同的窗口终点。
+# 固定值：现在 = 1000000；北京 07:50 = 1004740（超时 = 4740+300 = 5040）；
+# 宿主（TZ≠Asia/Shanghai）的 "today 07:50" = 0（超时被下限夹到 600）；
+# 07:12 一律取"已过点"（= 现在），补签等待不真 sleep。
+_FAKE_DATE = r'''#!/bin/sh
+printf 'TZ=%s ARGS=%s\n' "${TZ:-unset}" "$*" >> "$FAKE_DATE_LOG"
+case "$*" in
+  "+%F") echo "${FAKE_DAY}" ;;
+  *"-d today 07:50 +%s"*)
+      if [ "${TZ:-}" = "Asia/Shanghai" ]; then echo "${FAKE_END_BJ}"; else echo "${FAKE_END_HOST}"; fi ;;
+  *"-d today 07:12 +%s"*)
+      if [ "${TZ:-}" = "Asia/Shanghai" ]; then echo "${FAKE_NOW_S}"; else echo "${FAKE_END_HOST}"; fi ;;
+  *) echo "${FAKE_NOW_S}" ;;
+esac
+'''
+
+
+class RunShHostTimezoneTest(unittest.TestCase):
+    """M25：宿主时区 ≠ UTC+8 时，动态超时与补签等待仍按北京钟算。
+
+    旧实现两处 `date -d "today HH:MM"` 取宿主本地时区，而窗口判定与业务日已统一北京钟：
+    宿主 UTC 上北京 06:31 触发时 end_ts - now_ts 为负，被夹到 600s，窗口内的整轮腰斩。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not BASH:
+            raise unittest.SkipTest("无 bash 环境")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tz-beijing-")
+        self.app = os.path.join(self.tmp, "app")
+        self.state = os.path.join(self.tmp, "state")
+        for d in (os.path.join(self.app, "scripts"),
+                  os.path.join(self.app, ".venv", "bin"), self.state):
+            os.makedirs(d, exist_ok=True)
+        self._write(os.path.join(self.app, "scripts", "signin.py"), _STUB_SIGNIN_SECOND)
+        self._write(os.path.join(self.app, ".env"), "YIBAN_SIGN_END=07:50\n")
+        py = os.path.join(self.app, ".venv", "bin", "python3")
+        self._write(py, '#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"), 0o755)
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin, exist_ok=True)
+        self.date_log = os.path.join(self.tmp, "date.log")
+        self._write(os.path.join(self.bin, "flock"), "#!/bin/sh\nexit 0\n", 0o755)
+        self._write(os.path.join(self.bin, "timeout"), '#!/bin/sh\nshift\nexec "$@"\n', 0o755)
+        self._write(os.path.join(self.bin, "date"), _FAKE_DATE, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, path, text, mode=None):
+        with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        if mode is not None:
+            os.chmod(path, mode)
+
+    def _run(self):
+        env = dict(os.environ)
+        env.update({
+            "PATH": self.bin + os.pathsep + env.get("PATH", ""),
+            "YIBAN_APP_DIR": self.app,
+            "YIBAN_STATE_DIR": self.state,
+            "YIBAN_LOG_FILE": os.path.join(self.state, "sign.log"),
+            "YIBAN_LOCK_DIR": os.path.join(self.tmp, "lock"),
+            "YIBAN_SECOND_RUN_TIME": "07:12",
+            "TZ": "UTC",                      # 宿主时区故意设成 UTC（北京 = UTC+8）
+            "FAKE_DATE_LOG": self.date_log,
+            "FAKE_NOW_S": "1000000",
+            "FAKE_END_BJ": "1004740",
+            "FAKE_END_HOST": "0",
+            "FAKE_DAY": "2026-10-01",
+        })
+        env.pop("YIBAN_SECOND_RUN", None)
+        return _sp.run([BASH, RUN_SH], capture_output=True, env=env, cwd=self.app,
+                       timeout=300)
+
+    def _date_calls(self):
+        if not os.path.exists(self.date_log):
+            return ""
+        with io.open(self.date_log, encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def test_timeout_and_wait_follow_beijing_clock_on_utc_host(self):
+        r = self._run()
+        log_path = os.path.join(self.state, "sign-2026-10-01.log")
+        self.assertTrue(os.path.isfile(log_path),
+                        "run.sh 未跑到签到轮（stderr=%s）"
+                        % r.stderr.decode("utf-8", "replace"))
+        with io.open(log_path, encoding="utf-8", errors="replace") as f:
+            log = f.read()
+        self.assertIn("签到超时: 5040s", log,
+                      "动态超时未按北京钟算（宿主 UTC 下被夹到 600s 即旧缺陷）：%s" % log)
+        self.assertNotIn("签到超时: 600s", log,
+                         "宿主钟算出的负剩余被夹到 600s ⇒ 窗口内的整轮被腰斩")
+        calls = self._date_calls()
+        self.assertIn("TZ=Asia/Shanghai ARGS=-d today 07:50 +%s", calls,
+                      "窗口终点必须经 TZ=Asia/Shanghai date 取点：%s" % calls)
+        self.assertIn("TZ=Asia/Shanghai ARGS=-d today 07:12 +%s", calls,
+                      "补签等待到点也必须经 TZ=Asia/Shanghai date 取点：%s" % calls)
 
 
 # ---------------------------------------------------------------------------

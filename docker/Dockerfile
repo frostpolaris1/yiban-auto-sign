@@ -45,7 +45,14 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirem
 COPY web/ ./web/
 COPY scripts/ ./scripts/
 COPY yiban/ ./yiban/
-COPY ./*.md ./
+# 合规文档 / 更新日志 / 自述显式白名单（M84）：原 `COPY ./*.md ./` 是根级通配，
+# 哪些 .md 进镜像取决于 .dockerignore 与 .gitignore 两份清单的差集——一旦本地存在
+# AGENTS.md / PROMPT*.md / HANDOFF*.md / MEMORY.md / MAINTENANCE.md 这类含服务器 IP
+# 与部署细节的运维文档，就会被一并烤进镜像。改为只拷运行时真正读取的这几份：
+#   USER_AGREEMENT.md / PRIVACY_POLICY.md（web/render.py 渲染合规页）
+#   CHANGELOG.md（web/routes/settings_api.py 的更新日志接口）
+#   README.md（公开自述）
+COPY USER_AGREEMENT.md PRIVACY_POLICY.md CHANGELOG.md README.md ./
 
 # 容器内进程管理 / 调度 / 入口
 COPY docker/supervisord.conf /etc/supervisord.conf

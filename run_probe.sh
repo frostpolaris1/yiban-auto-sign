@@ -66,10 +66,12 @@ if [ ! -d "$LOCK_DIR" ]; then
         echo "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）" >&2
         exit 1
     fi
-    if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
-        echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
-        exit 1
-    fi
+fi
+# M07：属主 + 700 硬检查对【已存在】锁目录同样执行——旧实现只在新建分支执行，
+# 同机其他用户预建锁目录即可抢占锁使探针与签到长期静默跳过。
+if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
+    echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    exit 1
 fi
 exec 9>"$LOCK_DIR/sign.lock"
 flock -n 9 || {

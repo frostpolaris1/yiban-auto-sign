@@ -71,6 +71,53 @@ echo "fake tar: simulated read failure" >&2
 exit 2
 """
 
+# 公钥模式桩 gpg（M23）：能按接收者"加密"（把输入原样写出），但拒绝解密——模拟
+# README 推荐口径下服务器只存公钥、无私钥；`--list-secret-keys` 无输出。
+FAKE_GPG_PUBKEY = """#!/usr/bin/env bash
+out="" in="" mode="" drain=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2;;
+    --passphrase-fd) drain=1; shift 2;;
+    --cipher-algo|--recipient) shift 2;;
+    --symmetric|--encrypt) mode=enc; shift;;
+    --decrypt) mode=dec; shift;;
+    *) if [ -f "$1" ]; then in="$1"; fi; shift;;
+  esac
+done
+if [ "$drain" -eq 1 ]; then cat > /dev/null; fi
+if [ "$mode" = enc ]; then cp -- "$in" "$out"; exit 0; fi
+if [ "$mode" = dec ]; then exit 2; fi
+exit 0
+"""
+
+# 对称模式桩 gpg：加解密都能过（用于 M31 的"密文已通过回环自检"前置）。
+FAKE_GPG_ROUNDTRIP = """#!/usr/bin/env bash
+out="" in="" mode="" drain=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2;;
+    --passphrase-fd) drain=1; shift 2;;
+    --cipher-algo|--recipient) shift 2;;
+    --symmetric|--encrypt) mode=enc; shift;;
+    --decrypt) mode=dec; shift;;
+    *) if [ -f "$1" ]; then in="$1"; fi; shift;;
+  esac
+done
+if [ "$drain" -eq 1 ]; then cat > /dev/null; fi
+case "$mode" in
+  enc) cp -- "$in" "$out" ;;
+  dec) if [ "$out" = "-" ] || [ -z "$out" ]; then cat -- "$in"; else cp -- "$in" "$out"; fi ;;
+  *) exit 0 ;;
+esac
+"""
+
+# rsync 桩：模拟一次网络抖动（非 0 退出）。
+FAKE_RSYNC_FAIL = """#!/usr/bin/env bash
+echo "rsync: simulated network failure" >&2
+exit 12
+"""
+
 # find 桩：透传给真 find；第一次带 -mtime 的调用（= 轮转开始）后把"当日归档"删掉，
 # 模拟"轮转把当天件也删了"的事故，钉 rc=8 自检。
 FAKE_FIND_KILL_TODAY = """#!/usr/bin/env bash
@@ -333,6 +380,25 @@ class RestoreGuardTest(_BackupRunBase):
         self.assertIn("路径穿越", out)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "escape.txt")))
 
+    def test_oversized_list_traversal_still_guarded(self):
+        """M70：列表超过 64KB 管道缓冲时护栏仍必须生效（旧 pipefail 短路会整体跳过）。
+
+        `printf '%s\\n' "$list" | grep -qE …` 在列表大于管道缓冲时：grep 命中即退出，
+        printf 写管道失败 ⇒ 管道 141 ⇒ `if` 判假，护栏 fail-open 放行到解包（活体
+        复现：460KB 列表上 SKIPPED）。改成 here-string 后同一输入必须 FIRED。
+        """
+        members = [("../escape.txt", None, "boom\n")]
+        members += [("data/" + ("x" * 60) + str(i), None, "") for i in range(3000)]
+        pkg = self._pkg(members)
+        r = self._restore(pkg)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 1,
+                         "超大列表下的穿越条目必须被拦下（实际 rc=%d）：%s"
+                         % (r.returncode, out[:400]))
+        self.assertIn("路径穿越", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "escape.txt")),
+                         "护栏失效时 tar 会把条目写到目标目录之外")
+
     def test_char_device_entry_rejected(self):
         pkg = self._pkg([("data/nullcopy", "c", None)])
         r = self._restore(pkg)
@@ -425,6 +491,48 @@ class RotationGuardTest(_BackupRunBase):
         out = self._out(r)
         self.assertEqual(r.returncode, 8, f"轮转后当日包失踪必须非 0：{out}")
         self.assertIn("当日", out)
+
+
+class PublicKeyRecipientModeTest(_BackupRunBase):
+    """M23：README 推荐的公钥模式（服务器只存公钥）本机永远解不开，不得因此 rc=7。
+
+    旧实现在回环自检里对 `*.gpg` 无条件走 `gpg --decrypt`：公钥模式必失败 ⇒ rc=7、
+    删掉唯一的好密文，且后面的校验清单/异机副本/保留期轮转一轮都不跑，只剩明文堆积。
+    """
+
+    def test_recipient_mode_keeps_ciphertext_and_runs_rest_of_pipeline(self):
+        self._fake("gpg", FAKE_GPG_PUBKEY)
+        r = self._run((), {"BACKUP_GPG_RECIPIENT": "e2e-no-such-key@example.invalid"})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, f"公钥模式健康轮应为 0（旧实现 rc=7）：{out}")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg")),
+                        f"已过尺寸核查的密文不得被自检误删：{out}")
+        self.assertFalse(os.path.exists(self._archive_name()),
+                         "尺寸核查通过后明文应被移除（默认加密轮）")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg.sha256")),
+                        f"校验清单必须出（旧实现整段跳过）：{out}")
+        self.assertIn("本地清理完成", out, "保留期轮转必须执行（旧实现一轮都不跑）")
+        self.assertIn("公钥模式", out, "必须说清'本机无法自检'的边界与演练要求")
+
+
+class RequireEncryptRemoteFailureTest(_BackupRunBase):
+    """M31：异机同步一次抖动不得删掉本地唯一可恢复的密文。"""
+
+    def test_rsync_failure_keeps_verified_local_ciphertext(self):
+        self._fake("gpg", FAKE_GPG_ROUNDTRIP)
+        self._fake("rsync", FAKE_RSYNC_FAIL)
+        r = self._run(("--require-encrypt",), {
+            "BACKUP_GPG_PASSPHRASE": FAKE_PASSPHRASE,
+            "REMOTE_BACKUP": "e2e-host:/backup/yiban",
+        })
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"异机同步失败必须非 0：{out}")
+        self.assertFalse(os.path.exists(self._archive_name()),
+                         "--require-encrypt 的『不留明文』契约不变：明文必须已删")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg")),
+                        f"异机一次抖动不得删掉本地唯一可恢复密文：{out}")
+        self.assertTrue(os.path.isfile(self._archive_name(".gpg.sha256")),
+                        f"已出的校验清单必须与保留的密文同在：{out}")
 
 
 if __name__ == "__main__":
