@@ -275,12 +275,40 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
     #: 作 V ⇒ 与本用例算出的 V 不等，"同分片最坏几何"实际不成立（E2E 会在变异下仍绿）。
     V = 64
 
+    def _bind_test_db(self):
+        """把**进程级单例连接**切到本轮自己的库再取连接（用例自身隔离）。
+
+        为什么必须显式切：`store_db.init_db(path)` 在进程已有连接时是**空操作**——
+        `yiban/store/db.py` 的 `if conn is not None: return conn` 直接返回旧连接
+        （只刷新路径元数据，句柄没换）。同一 pytest 进程里前一个用例/文件留下的连接
+        会让本用例的种子行与 V 元数据写进**别人的库**，随后 `_read_other` 打开自己的
+        空库读回 `None` ⇒ `tuple(None)` 抛 `TypeError`（实测复现）。`-n auto
+        --dist loadfile` 按 worker 分文件，谁与谁同 worker 随运行而变 ⇒ 本用例间歇红。
+
+        故先关掉旧连接再 `init_db`，并断言连接确实落在本轮的库文件上：将来若又漂回
+        "复用别人的库"，这里会**指名报错**，而不是以 NoneType 的形式哑火。
+        """
+        from yiban.store import connection
+        from yiban.store import db as store_db
+        stale = connection.current()
+        if stale is not None:
+            with contextlib.suppress(Exception):
+                stale.close()
+        connection.reset_conn()
+        store_db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        conn = store_db.get_conn()
+        bound = conn.execute("PRAGMA database_list").fetchone()[2]
+        self.assertEqual(
+            os.path.realpath(bound), os.path.realpath(self.db_file),
+            "种子/读取必须落在本轮自己的库上（进程连接单例不得复用别人的库）")
+        return conn
+
     def _seed_other_rows(self):
         """把当日 V 钉死，并在**实际会采用的 V** 下的同一分片里种别人的行。"""
         from yiban.engine import executor_v3, hrw, state_io
         from yiban.store import clock_meta, connection
         from yiban.store import db as store_db
-        store_db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        conn = self._bind_test_db()
         day = self._today()
         # 钉死当日 V：落进 app_meta 的 V 元数据键 ⇒ 真进程 `_plan_v` 只读它（不再按
         # `_max_vshard+1` 兜底），故这里算的分片与执行体实际使用的分片**逐值一致**。
@@ -291,7 +319,6 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
         self.assertEqual(
             self.V, hrw.v_for(1),
             "夹具前提：本用例钉死的 V 与 hrw.v_for 的定档值必须一致")
-        conn = store_db.get_conn()
         with store_db._conn_lock:
             for phone, state, result in (
                     (self.OTHER_PENDING, "pending", ""),
@@ -317,8 +344,7 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
 
         from yiban.store import connection
         from yiban.store import db as store_db
-        store_db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        conn = store_db.get_conn()
+        conn = self._bind_test_db()
         with store_db._conn_lock:
             rows = {p: tuple(conn.execute(
                 "SELECT state, owner, result, epoch FROM sign_tasks WHERE phone=? AND day=?",
