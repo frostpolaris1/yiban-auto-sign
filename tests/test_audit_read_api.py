@@ -213,7 +213,7 @@ class AuditReadApiTest(unittest.TestCase):
         )
         # 留痕行确实落库（窗口内首读必落一行，见 _read_audit_row_due）
         from yiban.store import audit_chain
-        rows, total = audit_chain.read_audit_rows(
+        _rows, total = audit_chain.read_audit_rows(
             action="audit_logs_read", limit=10, offset=0)
         self.assertGreaterEqual(total, 1, "read_audit_trace 未生成留痕行")
 
