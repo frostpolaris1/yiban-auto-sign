@@ -22,6 +22,12 @@ function pythonCommand(): string {
 
 export default defineConfig({
   testDir: "./e2e",
+  // **串行**：整套 e2e 共用一个 Flask 实例，而登录限速与「登录页访问循环」守卫都是
+  // 按客户端 IP 计的（同一个 127.0.0.1），并行 worker 会互相撞限速——2026-10-03 实测：
+  // 两个 spec 并行时审计页出现「未登录」告警（会话未建立），单跑必绿。
+  // 这与本仓 CI 对 pytest 的 `--dist loadfile` 约束同源：共享状态的套件不能拆并行。
+  workers: 1,
+  fullyParallel: false,
   reporter: [["list"]],
   timeout: 30_000,
   expect: { timeout: 10_000 },
