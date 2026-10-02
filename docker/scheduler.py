@@ -10,6 +10,11 @@
   实现，见 `_fallback_should_run`；与宿主 cron 的 `scripts/yiban-fallback.sh` 同语义）
 - 每日 03:00 清理 /data/logs 与 /data/state 下过期的按天日志/状态文件
   （策略唯一在 yiban/state_gc.py，与宿主 cron 共用一张表）
+- 每日 02:00 定时备份（2026-10-01 · M44）：容器形态过去**没有任何备份**——宿主形态有
+  cron 那条 02:00 行，而容器部署的用户根本没有宿主 cron，容器调度器也漏了这个挂点，
+  等于"看着在跑、其实从没备份过"。这里补上：复用 `docker/backup-docker.sh`（上一批刚
+  做过加固：umask 077 / 口令走 _FILE / RETAIN_DAYS 校验 / 解包护栏），备份落 compose
+  声明的独立卷（不在 /data 内，避免下一轮 tar 把上一轮备份再打进去）。
 
 数据/配置路径由 compose 注入的 YIBAN_* 环境变量决定；同时把 YIBAN_ENV_FILE
 指向的 .env（Web 设置页写入）解析后注入子进程环境——否则 Web 后台改的
@@ -292,6 +297,153 @@ def _cleanup_state():
         logger.warning("状态清理失败（不影响调度）: %s", e)
 
 
+# ---------------------------------------------------------------------------
+# 每日 02:00 定时备份（M44：容器形态过去完全没有备份）
+# ---------------------------------------------------------------------------
+# 为什么是"调度器内的挂点"而不是"让部署者自己加宿主 cron"：容器部署的用户往往只有
+# `docker compose up`，没有宿主 root、也不该给他们装 cron。备份是最后一道恢复底座，
+# 漏装一次就等于静默丢失——所以它必须**跟着容器一起来**，而不是跟着一份可漏抄的
+# 部署文档走。挂点复用与首签/补签同一套"分钟级闩锁 + 按日落盘槽位"语义。
+#
+#: 备份脚本候选路径。仓库里它在 `docker/`，镜像里 Dockerfile 把它 COPY 到
+#: `scripts/`（与 scheduler.py 同处，两处都靠候选列表而不是单一硬编码路径解析）。
+BACKUP_SCRIPT_CANDIDATES = ("docker/backup-docker.sh", "scripts/backup-docker.sh")
+
+#: 失败重试：一次失败不等于"今天没有备份"（磁盘抖动/gpg 短暂不可用都是可重试的）。
+#: 重试间隔与最大次数都刻意保守，且**到点就收手**（见 _backup_due 的截止时刻）——
+#: 备份子进程最长 BACKUP_TIMEOUT 秒，密集重试会把整点前的调度循环占死。
+BACKUP_RETRY_SECONDS = 600
+BACKUP_MAX_TRIES = 3
+BACKUP_TIMEOUT = 1800
+
+
+def _backup_script_path():
+    """定位容器内可执行的备份脚本；一个都不存在时返回 None。"""
+    for rel in BACKUP_SCRIPT_CANDIDATES:
+        path = os.path.join(_REPO_ROOT, rel)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _backup_env():
+    """备份子进程的环境。
+
+    口径与全仓一致（**`.env` 优先、进程环境只补缺**，见 M27）：容器调度器的兜底门
+    已经这么判（`_fallback_gate_env` 的注释），备份的路径类参数必须同口径，否则
+    compose 里显式注入的 `YIBAN_BACKUP_*` 会被 Web 设置页/`.env` 里的同名键悄悄顶掉。
+    口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
+    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。
+    """
+    src = dict(os.environ)
+    src.update(parse_env_file(ENV_FILE))   # `.env` 优先；它只认 YIBAN_ 前缀的键
+    env = dict(src)
+    # 调度器的 YIBAN_BACKUP_* → backup-docker.sh 自己的参数名（后者才是脚本认的）。
+    # 显式设了 YIBAN_BACKUP_* 就**压住**同名的进程环境变量（否则 compose 注入的
+    # BACKUP_DIR 会反过来盖掉 .env —— 正是 M27 要消灭的那种"两处打架"）。
+    for script_key, sched_key, default in (
+            ("DATA_DIR", "YIBAN_BACKUP_DATA_DIR", "/data"),
+            ("BACKUP_DIR", "YIBAN_BACKUP_DIR", "/backups"),
+            ("RETAIN_DAYS", "YIBAN_BACKUP_RETAIN_DAYS", "30")):
+        if sched_key in src:
+            env[script_key] = src[sched_key]
+        else:
+            env.setdefault(script_key, default)
+    # gpg 需要一个可写的家目录（即使对称加密不建密钥环，也会拿它放临时文件）；
+    # 容器里 HOME 可能不可写，固定指向状态目录下的私有子目录。
+    env.setdefault("GNUPGHOME", os.path.join(STATEDIR, "gnupg"))
+    return env
+
+
+def _backup_configured(env=None):
+    """备份是否可用：口令文件**配了且真的可读**才算可用。
+
+    为什么不用"键非空"当判据：`backup-docker.sh` 拒绝产出明文包，所以没口令就等于
+    没备份；而 compose 里那行 `YIBAN_BACKUP_PASSPHRASE_FILE` 是常驻的（默认部署没挂
+    那个文件，见 compose 注释），若按"键非空"判，**默认部署会天天三次重试后报
+    ERROR**——把一条"没启用"说成"失败了"。判可读，缺的只是那一次挂载。
+    """
+    env = env if env is not None else _backup_env()
+    path = str(env.get("YIBAN_BACKUP_PASSPHRASE_FILE", "")).strip()
+    return bool(path) and os.path.isfile(path) and os.access(path, os.R_OK)
+
+
+def _run_backup():
+    """跑一次 `docker/backup-docker.sh`；返回 (是否成功, 可读的原因)。
+
+    失败不抛：主循环的单 tick 兜底不该被一次备份异常带崩（那等于备份故障顺带停掉
+    全天签到）。子进程 spawn 失败同样接住——同 `_run_signin_child` 的判法。
+    """
+    script = _backup_script_path()
+    if script is None:
+        return False, "镜像里找不到 backup-docker.sh（Dockerfile 未 COPY？）"
+    env = _backup_env()
+    # 建不出来就由脚本/gpg 自己去失败，不在这里替它判（contextlib 已在本文件导入）
+    with contextlib.suppress(OSError):
+        os.makedirs(env.get("GNUPGHOME") or os.path.join(STATEDIR, "gnupg"), exist_ok=True)
+    try:
+        proc = subprocess.run(["bash", script], cwd=_REPO_ROOT, env=env,
+                              timeout=BACKUP_TIMEOUT, capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        logger.warning("容器备份超时（>%ds）被终止", BACKUP_TIMEOUT)
+        return False, f"备份超时（>{BACKUP_TIMEOUT}s）"
+    except OSError as e:
+        logger.warning("备份脚本拉起失败: %s", e)
+        return False, f"备份脚本拉起失败：{e}"
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        logger.warning("容器备份失败（rc=%s）: %s", proc.returncode, " / ".join(tail))
+        return False, f"rc={proc.returncode} " + " / ".join(tail)
+    logger.info("容器备份完成（目录 %s）", env.get("BACKUP_DIR"))
+    return True, env.get("BACKUP_DIR", "")
+
+
+def _backup_due(now, last_backup_try, tries):
+    """此刻是否该跑备份 → bool。
+
+    与首签/补签同一套闩锁语义：`now.hour >= BACKUP_AT` 且当日槽位标记没落过。**为什么
+    用无上界比较而不是 `hm == (2, 0)`**：容器 02:00 时可能在打镜像升级或刚重启，
+    整分命中会整天丢掉这一天的备份（这正是本条要补的洞，不能自己再挖一个）。
+    """
+    if tries >= BACKUP_MAX_TRIES:
+        return False
+    if last_backup_try is not None and (now - last_backup_try).total_seconds() < BACKUP_RETRY_SECONDS:
+        return False
+    return now.hour >= BACKUP_AT[0] and not _slot_done("backup")
+
+
+def _tick_backup(now, state):
+    """02:00 备份挂点的一次 tick。`state` 是跨 tick 记账的 dict（重试次数 + 上次尝试）。
+
+    记账刻意放在函数外的 dict 里：main_loop 里已经有一堆 `done_*` 局部变量，再塞两个
+    局部量会让那个 `try` 块更长，而 `_cleanup_state` 那条路径证明记账不必是局部量。
+    """
+    if not _backup_configured():
+        # 未配置口令文件 = 部署者没启用备份。静默跳过（每天只在首次记一行），
+        # 且**不消耗重试预算**——没配就是没配，重试 3 次也还是没配。
+        # 落槽位标记的代价要认：当天后来才补挂口令文件的话，要等次日 02:00 才生效
+        # （标记跨重启也认，避免每分钟重判一次）。这是"未启用"这一稳态的合理代价。
+        if not state.get("warned"):
+            state["warned"] = True
+            _mark_slot("backup")
+            logger.info("容器备份未启用（未挂载可读的 YIBAN_BACKUP_PASSPHRASE_FILE），跳过")
+        return False
+    state["tries"] = state.get("tries", 0) + 1
+    state["last"] = now
+    ok, detail = _run_backup()
+    if ok:
+        _mark_slot("backup")
+        state["tries"] = 0
+        return True
+    if state["tries"] >= BACKUP_MAX_TRIES:
+        # 收手：继续重试只会把签到前的调度循环占死。放弃当天并在下一分钟落槽位，
+        # 让"今天没备份"这件事安静下来（备份缺失由宿主形态的哨兵/本页日志承担；
+        # 容器形态没有哨兵，故这里必须留一行 ERROR 级日志）。
+        _mark_slot("backup")
+        logger.error("容器备份连续 %d 次失败，当天放弃：%s", BACKUP_MAX_TRIES, detail)
+    return False
+
+
 # 首签 / 补签 时间点（分钟级），用「已进入该分钟且当天未执行过」的闩锁语义，
 # 见 main_loop。
 # 探针为「周期尝试」而非固定时刻（2026-08-31 修复）：原 PROBE_AT=(23,55) 与
@@ -300,6 +452,13 @@ def _cleanup_state():
 # spawn），signin.py 内部按 PROBE_TIME / 频率 / 当日防重裁决是否真正探测，
 # 与宿主 cron */10 轮询语义对齐。
 FIRST, SECOND = (6, 31), (7, 10)
+#: 每日定时备份时刻（M44），与宿主 cron 的 `0 2 * * *` 同点。取 02:00 而非更晚：
+#: 赶在首签（06:31）与状态清理（03:00）之前，把"昨天一天的数据"完整封存，也给
+#: 备份子进程留出足够时间在早上之前跑完。
+#: **只用 `[0]`（小时），分钟位是意图标注不是判据**：`_backup_due` 走
+#: `now.hour >= BACKUP_AT[0]` 的无上界判定（容器 02:00 恰逢重启/打镜像时不能整天
+#: 丢掉备份）。把它"修正"成整分命中即重犯 M44。
+BACKUP_AT = (2, 0)
 PROBE_TRY_SECONDS = 600
 
 # 兜底常驻执行体的检查周期（秒）：窗口开始时最多晚这么久拉起，窗口结束后最多晚
@@ -482,6 +641,7 @@ def main_loop(sleep_seconds=1):
     last_probe_try = None    # datetime | None：上次尝试探针的时刻（周期尝试）
     last_fallback_try = None  # datetime | None：上次检查兜底常驻的时刻（周期检查）
     last_clean = None
+    backup_state = {}         # 备份重试记账（M44，见 _tick_backup）
     _start_heartbeat()
     while True:
         try:
@@ -533,6 +693,10 @@ def main_loop(sleep_seconds=1):
                 # 任何副作用（不 spawn、不打日志）。
                 last_fallback_try = now
                 _tick_fallback(now)
+            # M44：每日定时备份（02:00）。放在清理之前判，是为了让"备份成功"这件事
+            # 早于任何一次可能耗时的清理落定；两者都失败也各自兜底，不互相牵连。
+            if _backup_due(now, backup_state.get("last"), backup_state.get("tries", 0)):
+                _tick_backup(now, backup_state)
             if now.hour >= 3 and last_clean != today:
                 _cleanup_state()
                 last_clean = today

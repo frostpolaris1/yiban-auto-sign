@@ -82,7 +82,7 @@
   // 用户取消弹窗 = 本次不保存。
   function submit(body) {
     busy = true;
-    setTip("保存中…", false);
+    YB.setBusy("set-cap-save", true);
     return YB.dangerousSubmit({
       method: "POST", path: "/api/settings", body: body,
       desc: "调整容量上限：不合适的设置可能影响新增注册/账号，是否继续？\n请输入当前管理员密码确认。"
@@ -98,6 +98,7 @@
       return false;
     }).then(function (ok) {
       busy = false;
+      YB.setBusy("set-cap-save", false);
       applyPerm();
       return ok;
     });

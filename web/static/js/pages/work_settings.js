@@ -137,7 +137,7 @@
       return Promise.resolve(true);
     }
     annBusy = true;
-    annTip("保存中…", false);
+    YB.setBusy("set-ann-save", true);   // 中间态交给按钮转圈，别在卡片状态条上另起一句
     return YB.api("PUT", "/api/announcement", { text: text }).then(function (data) {
       ann.draft = text;
       // 重拉一次拿后端回写的草稿作者/时刻（不在前端猜作者）
@@ -148,8 +148,8 @@
     }, function (e) {
       annTip((e && e.message) || "保存失败，请稍后重试", true);
       return false;
-    }).then(function (ok) { annBusy = false; return ok; },
-            function (e) { annBusy = false; throw e; });
+    }).then(function (ok) { annBusy = false; YB.setBusy("set-ann-save", false); return ok; },
+            function (e) { annBusy = false; YB.setBusy("set-ann-save", false); throw e; });
   }
   // 发布/下线：先确认影响面（发布后立刻对所有访问者可见/消失，是强确认）→ 提交。
   // 门禁凭据交给统一 helper：先不带凭据发，后端回 reason 才补口令（档位只存在于后端）。
@@ -447,6 +447,7 @@
 
       // 自研控件必须先建出可见体：各组件随后要按权限禁用它们（隐藏 input 上置 disabled 不可见）
       if (YB.selectField) YB.selectField.mount();
+      if (YB.multiselectField) YB.multiselectField.mount();
       if (YB.rangeField) YB.rangeField.mount();
       if (YB.timeField) YB.timeField.mount();
       YB.settingsSchedule.mount({

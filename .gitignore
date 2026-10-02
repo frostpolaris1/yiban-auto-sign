@@ -8,12 +8,21 @@ venv/
 env/
 .venv/
 .env
+# .env 键名变体与原子写临时件（env_io 写侧/并发锁产生；M39）
+.env.*
+# 例外：模板文件必须入库（负向规则须紧跟在排除规则之后）
+!.env.example
+!.env.docker.example
+.env.tmp*
 
 # 本地配置（避免泄露账号密码）
 config.local.py
 *.local
 # 账号配置文件（含密码，严禁入库）
 accounts.json
+# 迁移/升级产出的按日备份（yiban/store/migrations.py 的 _rename_backup；M39）
+accounts.json.bak-*
+users.json.bak-*
 # 通知额度/限速运行时状态（web 进程按 cwd 生成，严禁入库）
 notify-ledger.json
 notify-throttle.json

@@ -101,7 +101,7 @@
     function remove(a) {
       YB.confirmDialog({
         title: "删除账号",
-        body: "确定删除「" + a.display_name + "」(" + a.phone + ") 吗？将进入待删除列表，保留期内可恢复。",
+        body: "确定删除「" + a.display_name + "」（" + a.phone + "）吗？\n移入『待删除账号』，7 天内可恢复。",
         confirmText: "删除", danger: true
       }).then(function (ok) {
         if (!ok) return;
@@ -122,8 +122,8 @@
         return YB.dangerousSubmit({
           path: "/api/accounts/" + a.index + "/purge",
           body: { phone: a.phone },
-          desc: "彻底删除「" + a.display_name + "」(" + a.phone + ")？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
-          delayDesc: "彻底删除「" + a.display_name + "」(" + a.phone + ") 会物理清除其凭据，不可恢复。确认继续？"
+          desc: "彻底删除「" + a.display_name + "」（" + a.phone + "）？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
+          delayDesc: "彻底删除「" + a.display_name + "」（" + a.phone + "）会物理清除其凭据，不可恢复。确认继续？"
         });
       }, "已彻底删除");
     }

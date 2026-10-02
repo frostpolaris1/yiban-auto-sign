@@ -764,6 +764,43 @@ class LaunchWiringTest(unittest.TestCase):
         self.assertEqual(args[0], 3)
         self.assertIsNone(kwargs.get("slots"), "旧口径：槽位就是 0..N-1")
 
+    def test_runner_dispatches_manifest_with_single_worker_row(self):
+        """清单只剩 1 个 worker 行也必须派发：落回单执行体路径会拿到 `single@host`，
+        而 HRW 候选集只含 `worker-0@host` ⇒ 分片集恒空、全天零领取（静默零签到）。"""
+        from yiban.engine import hrw, runner, schedule, workers
+        one_row = ({"slot": 0, "type": "worker", "proxy": ""},)
+        env = {egress.ENV_MANIFEST: egress.dump_manifest(one_row),
+               "YIBAN_EXECUTOR_ID": "", "YIBAN_GLOBAL_PAUSE": "0"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
+                mock.patch.object(workers, "run_worker_supervisor",
+                                  return_value=0) as m:
+            rc = runner.main([])
+        self.assertEqual(rc, 0)
+        args, kwargs = m.call_args
+        self.assertEqual(args[0], 1, "1 个 worker 行也要派发（旧实现落回单进程、零领取）")
+        self.assertEqual(kwargs.get("slots"), [0])
+        # 子进程身份落在 HRW 候选集内：它认领的分片集必须非空（领得到行）
+        execs = schedule._executor_ids(env)
+        self.assertEqual(execs, [egress.worker_owner(0)])
+        self.assertTrue(hrw.shards_of(egress.worker_owner(0), execs, "2026-09-02"),
+                        "worker-0@host 必须分到片")
+        self.assertEqual(hrw.shards_of(egress.single_owner(), execs, "2026-09-02"), (),
+                         "单执行体身份不在候选集——这正是旧实现零领取的根因")
+
+    def test_runner_does_not_dispatch_when_manifest_has_no_worker_rows(self):
+        """反向控制：清单在场但没有 worker 行（全停用/仅兜底）→ 照旧走单执行体路径。"""
+        from yiban.engine import runner, workers
+        rows = ({"slot": 0, "type": "disabled", "proxy": ""},
+                {"slot": 1, "type": "fallback", "proxy": ""})
+        env = {egress.ENV_MANIFEST: egress.dump_manifest(rows),
+               "YIBAN_EXECUTOR_ID": "", "YIBAN_GLOBAL_PAUSE": "0"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
+                mock.patch.object(workers, "run_worker_supervisor") as m:
+            runner.main([])
+        m.assert_not_called()
+
     def test_supervisor_binds_identity_lock_and_heartbeat_to_slots(self):
         from yiban.engine import workers
         tmp = tempfile.mkdtemp(prefix="yiban-manifest-launch-")

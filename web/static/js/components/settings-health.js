@@ -83,7 +83,7 @@
   // 故这里只管弹窗之外的结局（成功提示 / 失败提示 / 取消复位）。
   function submit(body) {
     saving = true;
-    tip("保存中…", false);
+    YB.setBusy("sh-save", true);
     setHidden($("sh-save"), true);
     return YB.dangerousSubmit({
       method: "POST", path: "/api/settings", body: body,
@@ -98,7 +98,8 @@
       tip((e && e.message) || "保存失败，请稍后重试", true);
       return false;
     }).then(function (ok) {
-      saving = false;                    // 两条结局都要复位，否则保存按钮永久卡住
+      saving = false;
+      YB.setBusy("sh-save", false);                    // 两条结局都要复位，否则保存按钮永久卡住
       setHidden($("sh-save"), !dirty);
       return ok;
     });

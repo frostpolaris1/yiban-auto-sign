@@ -17,9 +17,11 @@ FROM python:3.11-slim
 ENV TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1
 
-# supervisor：容器内常驻拉起 gunicorn(web) 与调度(sched)；tzdata：时区数据
+# supervisor：容器内常驻拉起 gunicorn(web) 与调度(sched)；tzdata：时区数据；
+# gnupg + tar + coreutils：M44 的容器内定时备份（调度器 02:00 调 backup-docker.sh，
+# 它按 tar|gpg 流式加解密）。这三样过去容器里没有，于是"容器形态自带备份"根本没装。
 RUN apt-get update \
- && apt-get install -y --no-install-recommends supervisor tzdata \
+ && apt-get install -y --no-install-recommends supervisor tzdata gnupg tar coreutils \
  && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
  && rm -rf /var/lib/apt/lists/*
 
@@ -31,8 +33,12 @@ RUN groupadd -r -g 10001 yiban \
 WORKDIR /app
 
 # 依赖（flask/gunicorn/requests/pycryptodome 等）
-# 镜像安装改用精确锁定的 requirements.lock——CI pip-audit 审计的
-# 就是它，浮动下限会让镜像依赖偏离审计结论且构建不可复现。
+# 镜像安装改用精确锁定的 requirements.lock——CI 的 `dependency-audit` job
+# （.github/workflows/ci.yml，跑 `pip-audit -r requirements.lock`）审计的就是它，
+# 浮动下限会让镜像依赖偏离审计结论且构建不可复现。
+# requirements.lock 是手工维护的精确锁定、全程不含 `--hash=`，没有哈希锁可复核，
+# 因此 **pip-audit 是这里唯一的自动依赖审计**——改 lock 必须同时看那个 job 的结论；
+# 它能否**阻塞合并**取决于分支保护是否把 `dependency-audit` 列为必需检查（所有者动作）。
 # 国内主机直连 pypi.org 常不可达（构建会以 "No matching distribution" 失败），
 # 故支持构建期指定索引：docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple ...
 ARG PIP_INDEX_URL
@@ -45,14 +51,24 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirem
 COPY web/ ./web/
 COPY scripts/ ./scripts/
 COPY yiban/ ./yiban/
-COPY ./*.md ./
+# 合规文档 / 更新日志 / 自述显式白名单（M84）：原 `COPY ./*.md ./` 是根级通配，
+# 哪些 .md 进镜像取决于 .dockerignore 与 .gitignore 两份清单的差集——一旦本地存在
+# AGENTS.md / PROMPT*.md / HANDOFF*.md / MEMORY.md / MAINTENANCE.md 这类含服务器 IP
+# 与部署细节的运维文档，就会被一并烤进镜像。改为只拷运行时真正读取的这几份：
+#   USER_AGREEMENT.md / PRIVACY_POLICY.md（web/render.py 渲染合规页）
+#   CHANGELOG.md（web/routes/settings_api.py 的更新日志接口）
+#   README.md（公开自述）
+COPY USER_AGREEMENT.md PRIVACY_POLICY.md CHANGELOG.md README.md ./
 
 # 容器内进程管理 / 调度 / 入口
 COPY docker/supervisord.conf /etc/supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scheduler.py ./scripts/container_scheduler.py
+# M44：容器内定时备份脚本。它在仓库里位于 docker/，镜像里与调度器同处 scripts/
+# （调度器的 _backup_script_path 按候选列表解析，两处位置都成立）。
+COPY docker/backup-docker.sh ./scripts/backup-docker.sh
 
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh ./scripts/backup-docker.sh
 # 数据目录（SQLite / .env / 日志 / 加密密钥 / 状态文件），由 compose 挂载
 VOLUME ["/data"]
 
