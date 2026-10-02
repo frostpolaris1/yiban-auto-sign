@@ -88,15 +88,16 @@ class JsAssemblyGuardTest(unittest.TestCase):
             "本组件只允许 batch/purge 的计数型 msg 上屏",
         )
 
-    # 唯一的裸 fetch 例外：日志导出是**文件下载**（blob），YB.api 只处理 JSON 响应，
-    # 无法替代。登记在此并在判据里说明原因，避免把"绕过 CSRF"的写法混进来。
-    _BARE_FETCH_ALLOW = frozenset({"data_logs.js"})
+    # 裸 fetch 例外表：**当前为空**。曾经的唯一例外是日志导出的 blob 下载
+    # （data_logs.js）；该页已于前端翻新 P1 迁到 Vue，导出改 `<a download>`（GET，
+    # 无需 CSRF），故例外消失——这张表继续留白以备将来真需要时显式登记。
+    _BARE_FETCH_ALLOW = frozenset()
 
     def test_pages_and_components_do_not_use_bare_fetch(self):
         """`pages/*.js` 与 `components/*.js` 不得裸用 `fetch` —— 必须走 `YB.api`。
 
         `YB.api` 承担 CSRF 头、统一错误与 401 跳转；裸 fetch 会静默绕过这几层
-        （写请求尤其危险）。日志导出的 blob 下载是唯一例外，见 `_BARE_FETCH_ALLOW`。
+        （写请求尤其危险）。例外须登记在 `_BARE_FETCH_ALLOW` 并写明原因。
         """
         offenders = []
         for sub in ("pages", "components"):
@@ -148,8 +149,10 @@ _TAB_DEEPLINK_PRIVATE_MARKERS = (
     'URLSearchParams(location.search).get("tab")',
     'searchParams.set("tab"',
 )
-# 三个"无页面级 tab 管理"的分区页：深链启用只许这一行（settings 自管深链走 YB.selectTab）
-_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js", "pages/work_users.js", "pages/data_logs.js")
+# "无页面级 tab 管理"的 legacy 分区页：深链启用只许这一行（settings 自管深链走 YB.selectTab）。
+# 2026-10-03：`pages/data_logs.js` 已退役（该页迁到 Vue，分区深链由 `?tab=` 在 Vue 内自管，
+# 本守卫只扫 `web/static/js/**`，对新栈不适用——新栈侧由 e2e/logs.spec 覆盖）。
+_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js", "pages/work_users.js")
 
 
 class TabDeepLinkGuardTest(unittest.TestCase):

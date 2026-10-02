@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,26 @@ SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
 ADMIN_USER = "admin"
 ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
 TEST_KEY = "a" * 64
+
+
+def _seed_log_file(webapp):
+    """写当天的假日志（日志页要有一个可渲染的正文）。
+
+    **故意写入完整手机号**：e2e 据此断言"端到端拿不到未脱敏号码"（展示层必须只见
+    138****8001）。行格式与 `tests/test_logs_by_date.py::_log_line` 一致
+    （`[date time] [LEVEL] logger: msg`，yiban 组件全级别入列）。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_path = Path(webapp.log_path_for(today))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "\n".join([
+            f"[{today} 06:31:01] [INFO] yiban: [13800138001] ✅ 签到成功",
+            f"[{today} 06:31:02] [INFO] yiban.client: [13800138001] 生成定位: (118.8, 31.9)",
+            f"[{today} 06:31:03] [WARNING] yiban: [13800138001] 单次尝试耗时偏长",
+        ]) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main():
@@ -53,12 +74,20 @@ def main():
         "YIBAN_USERS_FILE": str(tmp / "users.json"),
         "YIBAN_DB_FILE": str(tmp / "yiban.db"),
         "YIBAN_STATE_DIR": str(tmp / "state"),
+        "YIBAN_LOG_FILE": str(tmp / "sign.log"),
+        "YIBAN_DISABLE_PURGE_LOOP": "1",
     })
+
+    # 当天的假日志文件必须在**应用模块加载之后**写：路径要经应用自己的派生规则
+    # （log_path_for 由 YIBAN_LOG_FILE 推出按天文件名），直接写 sign.log 读不到——
+    # 那样页面只会渲染应用自己写的少量告警行。见下方 _seed_log_file()。
 
     spec = importlib.util.spec_from_file_location("webapp_e2e", str(ROOT / "web" / "app.py"))
     webapp = importlib.util.module_from_spec(spec)
     sys.modules["webapp_e2e"] = webapp
     spec.loader.exec_module(webapp)
+
+    _seed_log_file(webapp)
 
     import db  # 裸模块名：sys.path 已含 scripts
 
