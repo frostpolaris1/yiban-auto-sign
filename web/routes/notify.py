@@ -384,8 +384,38 @@ def api_mail_config_save():
         updates["YIBAN_MAIL_SMTPS_ENC"] = smtps_enc
     if admin_to_val is not None:
         updates["YIBAN_MAIL_ADMIN_TO"] = admin_to_val
+    admin_to_gated = (admin_to_val is not None
+                      and admin_to_val != (admin_to_old or ""))
+    if admin_to_gated and not closing_mail_channel:
+        # 收件人改道纳入「关闭/改道告警通道」同一门（用户 2026-10-02 裁决，覆盖
+        # 0.5.0「可逆路由改动免门」）：把全部告警改发别处正是静音手法，而 SMTP 中继
+        # 未动、通道仍活，属最该要口令的一类。与 mail_close 同账（creds）；同一请求
+        # 同时关通道时上面那道门已过，不再重复占一格额度。
+        gate = _high_risk_gate()(data, "改道告警收件人", quota="creds",
+                                 risk_always=True)
+        if gate:
+            return gate
+    if admin_to_gated:
+        # 收件人改道预警（用户 2026-10-02 裁决：加告警）。
+        # 必须在落盘**之前**发：此刻 send_notification 读到的 ADMIN_TO 还是旧值，
+        # 告警才能到**原收件人**手里——落盘后再发只能进新收件人，改道若出于恶意
+        # 恰好等于报给攻击者。SMTP 中继本请求未动，通道此刻是活的，送达可靠。
+        m.send_notification(
+            "告警收件人被改道",
+            m.mail_layout.Mail(
+                summary="邮件告警收件人即将变更；本告警发给原收件人，非本人操作请立即核查。",
+                fields=[("原收件人", m._mask_email(admin_to_old) if admin_to_old else "（未配置）"),
+                        ("新收件人", m._mask_email(admin_to_val))],
+                notes=["本告警在落盘前发出；落盘后的审计行记打码后的「从哪 → 到哪」。",
+                       "若本次保存最终失败，以审计与设置页当前值为准。"],
+                advice=["非本人操作：立即核查近期会话与管理员账号，并按追回手册处理。"],
+                level="urgent",
+            ),
+            urgent=True,
+        )
     m.write_env_batch(m.ENV_FILE, updates)
-    # 通道变更不再外发告警（开关 / SMTP 条目 / 收件人三处都是）：改告警通道本身就
+    # 通道变更不再外发告警（开关 / SMTP 条目两处；收件人改道自 2026-10-02 起在
+    # 落盘前向**原**收件人发预警，见上）：改告警通道本身就
     # 是"把报警器拆掉"的动作，用它自己那条通道去通报"通道被改了"只在通道还活着时
     # 成立；留痕统一交给下面的审计行（开关新值 + 收件人/中继的打码"从哪→到哪"），
     # 运维按审计页即可回答"谁在什么时候把告警从哪一路改到了哪一路"。
