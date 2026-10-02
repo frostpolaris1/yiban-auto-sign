@@ -2392,7 +2392,7 @@ html[data-theme="dark"] {
 .slot-pct { font-size: 11px; opacity: 0.75; white-space: nowrap; }
 
 /* ==========================================================================
-   20. 签到日历（static/js/calendar.js 的样式）
+   20. 签到日历（frontend/src/calendar/ 的样式：SignCalendar.vue + CalendarPage.vue）
    --------------------------------------------------------------------------
    类名一律用 sc- 前缀：Adminator 自带一套事件月历（.cal-grid 有
    grid-auto-rows:minmax(110px,1fr)，.cal-cell 带 border-right/bottom 与
@@ -2409,7 +2409,7 @@ html[data-theme="dark"] {
 .cal-placeholder { min-height: 440px; display: flex; align-items: center; justify-content: center; }
 /* 无生效账号时日志面板隐藏，左列独占整行 —— 否则空卡片只占 6 列、右侧留 6 列死区
    （实测 1280 下空卡 472px 而图例被排到 x=776 的同一行）。is-solo 由
-   components/sign-calendar-view.js 在隐藏日志面板时打上。 */
+   frontend/src/calendar/CalendarPage.vue 在隐藏日志面板时打上。 */
 .user-grid.is-solo > .cal-column { grid-column: 1 / -1; }
 
 /* 工具条：月份 + 上/下月 + 今天 */

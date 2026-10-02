@@ -51,12 +51,14 @@ def _env_line_break_codes():
 
 
 def _calendar_page_context():
-    """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染，无构建步骤）。
+    """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染进页面的内联载荷）。
 
-    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。图例由
-    `legend_items()` 渲染成 `<li>`；同一份表经 `display_payload()` 序列化进页面的内联
-    脚本（`window.YB_CALENDAR_STATE`），供账号卡状态行与日期格消费。日历渲染与图例因此
-    消费同一份表——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移。
+    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。`display_payload()`
+    把它序列化进页面的内联脚本（`window.YB_CALENDAR_STATE`）；**图例档位清单同车下发**
+    （`payload["legend"] = legend_items()`），故图例与日期格/账号卡状态行消费的是同一份表
+    ——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移（急停曾渲染成
+    "排队待签"）。图例的 markup 由 Vue 渲染（前端只负责"只解释看得见的颜色"这一层收敛），
+    档位与中文短名一律不落前端。
 
     `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
     在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
@@ -64,7 +66,8 @@ def _calendar_page_context():
     m = _appmod()
     payload = _yiban_status.display_payload()
     payload["day_off"] = _signstatus.day_off_payload(m._day_off_reason())
-    return {"status_legend": _yiban_status.legend_items(), "calendar_state": payload}
+    payload["legend"] = _yiban_status.legend_items()
+    return {"calendar_state": payload}
 
 
 def _render_admin_page(template, nav_key, crumbs, extra=None):
@@ -245,8 +248,9 @@ def user_calendar_page():
     blocked = _user_page_redirect()
     if blocked:
         return blocked
-    return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"],
-                             extra=_calendar_page_context())
+    return _render_vue_page("calendar.html", "pages/user_calendar.html", "user-calendar",
+                            ["用户中心", "签到日历"], user=True,
+                            extra=_calendar_page_context())
 
 
 # 登录页循环检测计数 {ip: (count, first_ts)}：浏览器缓存旧 JS 时可能无限 302 循环，
@@ -356,16 +360,20 @@ def my_calendar_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"],
-                              extra=_calendar_page_context())
+    return _render_vue_page("calendar.html", "pages/my_calendar.html", "my-calendar",
+                            ["我的", "我的日历"], extra=_calendar_page_context())
 
 
 # ---- Vue 页统一渲染（前端翻新；计划 docs/refactor/29）----
 # 三处共用同一套管道：解析 manifest 资产 → 下发模板（模板只出挂载点与模块脚本）。
 # 资产路径**不含 script_root**（模板层自行拼，子路径部署唯一收口点）；dist 缺失时 404
 # 而不是渲染一个空壳——缺资产是构建/入库错误，应显式可见。
-def _render_vue_page(entry, template, nav_key, crumbs, user=False):
-    """Vue 页统一渲染。`user=True` 走用户端外壳（/user/*），否则管理端外壳。"""
+def _render_vue_page(entry, template, nav_key, crumbs, user=False, extra=None):
+    """Vue 页统一渲染。`user=True` 走用户端外壳（/user/*），否则管理端外壳。
+
+    `extra` 供单页追加自己的上下文（日历页的状态载荷与图例），与 manifest 资产一并发给
+    模板——服务端渲染的页头与内联载荷因此和挂载点同车到达，模板层不必二次取数。
+    """
     assets = _vue_assets.vue_assets(entry)
     if not assets["js"]:
         abort(404)
@@ -378,6 +386,7 @@ def _render_vue_page(entry, template, nav_key, crumbs, user=False):
             "vue_js": assets["js"][0],
             "vue_preloads": assets["preloads"],
             "vue_css": assets["css"],
+            **(extra or {}),
         },
     )
 

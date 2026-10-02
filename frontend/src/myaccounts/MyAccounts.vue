@@ -13,6 +13,7 @@ import {
   passwordHint,
   passwordPolicyOk,
   setOwnerEmailVisible,
+  shellBase,
   toast,
 } from "../lib/shell";
 import { buildAccountPayload, CODE_CLEAR, CODE_CLEAR_BTN, CODE_CLEAR_CANCEL_BTN, CODE_CLEARED_PLACEHOLDER, CODE_PLACEHOLDER, CODE_UNCHANGED_PLACEHOLDER, CREDS_GATE_DESC, PASSWORD_UNCHANGED_PLACEHOLDER, availableUserItems, credsWritten, formSubtitle, formTexts, formTitle, makeSnapshot, submitLabel, type AccountPayload, type SelectItem } from "./accountform";
@@ -433,7 +434,9 @@ function finishLogout(): void {
   } catch {
     /* 受限环境忽略 */
   }
-  location.href = "/login";
+  // 子路径部署：绝对路径跳转必须带 BASE 前缀（legacy 走 YB.BASE，core.js 的 url() 同理）。
+  // 裸 "/login" 在 /tools/yiban/... 这类挂载点下会跳到域名根，落到别的应用或 404。
+  location.href = shellBase() + "/login";
 }
 
 async function deleteSelf(): Promise<void> {
@@ -496,14 +499,15 @@ onMounted(async () => {
     me.value = identity;
     const expected = isAdmin.value ? "admin" : "user";
     if (identity.role !== expected) {
-      location.href = isAdmin.value ? "/user/account" : "/data/dashboard";
+      // 同 finishLogout：绝对路径跳转必须带子路径前缀
+      location.href = shellBase() + (isAdmin.value ? "/user/account" : "/data/dashboard");
       return;
     }
     renderSidebarEmail(identity);
     ownerEmailOn.value = ownerEmailVisible();
     await Promise.all([loadAccounts(), loadTimePref(), initMail()]);
   } catch {
-    location.href = "/login";
+    location.href = shellBase() + "/login";
   }
 });
 </script>
