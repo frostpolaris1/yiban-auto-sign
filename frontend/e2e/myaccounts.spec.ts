@@ -91,3 +91,30 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   await expect(page.locator(".modal-foot .btn:not(.btn--ghost)")).toHaveText("继续注销");
   await page.keyboard.press("Escape");
 });
+
+test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号行与改密入口在位", async ({ page }) => {
+  const resp = await page.request.post("/api/login", { data: { username: "admin", password: "TestPass1234!" } });
+  expect(resp.ok()).toBeTruthy();
+  await page.goto("/my/account");
+
+  await expect(page.locator("h1.page-title")).toHaveText("我的账号");
+  await expect(page.locator(".account-card").first().locator(".account-name")).toHaveText("e2e-admin-acct");
+  await expect(page.getByRole("button", { name: /修改密码/ })).toBeVisible();
+  await expect(page.locator(".card", { hasText: "邮件提醒" }).first()).toBeVisible();
+
+  // 管理端专有：显示偏好在位且可切换（本机偏好，落 localStorage，不写服务端）
+  const prefCard = page.locator(".card", { hasText: "显示偏好" }).first();
+  await expect(prefCard).toBeVisible();
+  const sw = prefCard.locator("input[type=checkbox]");
+  const label = prefCard.locator("label.switch");
+  await expect(sw).toBeChecked(); // 默认开（键缺失=开）
+  // 点 label 而不是 input：legacy 的 .switch 用 .track 覆盖真实 checkbox，直接点 input 会被拦截
+  await label.click();
+  await expect(prefCard.locator(".set-tip")).toHaveText("已关闭");
+  expect(await page.evaluate(() => localStorage.getItem("yiban-owner-email"))).toBe("0");
+  await label.click();
+  expect(await page.evaluate(() => localStorage.getItem("yiban-owner-email"))).toBe("1");
+
+  // 用户端专有：注销账号卡**不得出现**
+  await expect(page.getByRole("button", { name: /注销账号/ })).toHaveCount(0);
+});

@@ -112,7 +112,9 @@ class StatusSingleSourceTest(unittest.TestCase):
     # （键集合 / 完成文案）钉成测试，杜绝"加状态码 / 改文案而漏改前端"的无声漂移。
 
     DASH_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_dashboard.js")
-    MYACC_JS = os.path.join(BASE, "web", "static", "js", "components", "my-accounts.js")
+    # 2026-10-03：账号页迁到 Vue 后，状态表副本随之搬走（frontend/src/myaccounts/model.ts
+    # 的 todayStateText）。本测试钉的「同一事实多份定义」台账跟着换路径，判据与字面量不变。
+    MYACC_JS = os.path.join(BASE, "frontend", "src", "myaccounts", "model.ts")
 
     def test_dashboard_label_keys_cover_the_status_enum(self):
         """仪表盘 STATUS_LABEL 的**键集合**必须等于 `ALL_STATUSES`。

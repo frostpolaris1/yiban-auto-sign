@@ -347,7 +347,7 @@ def my_account_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/my_account.html", "my-account", ["我的", "我的账号"])
+    return _render_vue_page("myaccounts.html", "pages/my_account.html", "my-account", ["我的", "我的账号"])
 
 
 # 管理员本人的签到日历（与用户端 /user/calendar 同源）；个人域的一部分，
