@@ -1,5 +1,15 @@
+{# 登录页（`/login`，唯一在登录态之外渲染的页面）——前端翻新 P2：整页迁移到 Vue。
+   原静态模板 + `static/js/pages/login.js` 已退役；行为在 frontend/src/login/Login.vue。
+
+   **契约 id 一律沿用 legacy**（#username / #password / #login-btn / #error-box / #reg-*）：
+   e2e 的真表单登录与错误路径断言按它们取值，改名等于让守卫静默失守。
+
+   服务端仍负责三件事（客户端不重复）：
+     ① 分享/搜索摘要（og/twitter meta，文案可用 YIBAN_SITE_DESCRIPTION 覆盖）；
+     ② 两份**协议/隐私正文**——渲染成惰性 `<template id="doc-*">`，由组件 cloneNode 进
+        core.js 的模态（故 Vue 侧零 v-html；正文来自 _read_doc_html 的服务端渲染）；
+     ③ 挂载点与 manifest 解析出的哈希资产（缺 dist 时视图层 404）。 #}
 {% extends "layout_auth.html" %}
-{% from "macros/ui.html" import icon with context %}
 
 {% block title %}登录 · 易班自动签到{% endblock %}
 
@@ -17,127 +27,25 @@
 <meta name="twitter:description" content="{{ site_description }}">
 {% endblock %}
 
+{% block head_styles %}
+{% for css in vue_css %}
+<link rel="stylesheet" href="{{ request.script_root }}{{ css }}">
+{% endfor %}
+{% endblock %}
+
 {% block content %}
-{# 页内标题随 tab 切换（登录/注册），交由 login.js 更新，避免出现"标题说登录、表单是注册" #}
-<h2 id="auth-title">登录</h2>
-<p class="sub" id="auth-sub">使用注册邮箱进入签到管理面板。</p>
-
-<div class="tabs pills auth-tabs auth-seg" role="tablist" aria-label="登录 / 注册切换">
-  <button type="button" class="tab is-active" id="tab-login" role="tab"
-          aria-selected="true" aria-controls="login-form" data-auth-tab="login">登录</button>
-  <button type="button" class="tab" id="tab-register" role="tab"
-          aria-selected="false" aria-controls="register-form" data-auth-tab="register">注册</button>
-</div>
-
-{# 注册暂停提示：管理端暂停注册时显形并禁用注册 tab。
-   仅按公开布尔渲染 UI，真正拦截在后端 /api/register（403）。 #}
-<p id="register-paused-hint" class="alert warning" role="status" hidden>
-  <span class="ico">{{ icon('triangle-alert') }}</span>
-  <span class="body">注册已暂停，请联系管理员添加账号。已注册用户可直接登录。</span>
-</p>
-
-<div class="auth-pane" id="login-pane">
-<!-- 登录表单 -->
-<form id="login-form" class="auth-form" novalidate>
-  <div class="field">
-    <label class="field-label" for="username">登录邮箱</label>
-    <input id="username" name="username" type="text" class="input" required
-           autocomplete="username" inputmode="email" placeholder="注册时填写的邮箱">
-  </div>
-  <div class="field">
-    <label class="field-label" for="password">密码</label>
-    <div class="input-affix">
-      <input id="password" name="password" type="password" class="input" required
-             autocomplete="current-password" placeholder="输入密码">
-      <button type="button" class="affix-btn" data-pw-toggle="password"
-              aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码">{{ icon('eye') }}</button>
-    </div>
-  </div>
-  {# 提交失败提示：整块由 hidden 控制显隐；文案走 textContent（防 XSS），
-     tabindex="-1" 让 showError 能聚焦并触发读屏播报。 #}
-  <div id="error-box" class="alert danger" role="alert" tabindex="-1" hidden>
-    <span class="ico">{{ icon('circle-alert') }}</span>
-    <span class="body" id="login-error-text"></span>
-  </div>
-  {# 冷静期恢复入口：仅当登录响应携带 recoverable 时显形（账号已注销且 7 天内） #}
-  <button type="button" id="restore-btn" class="btn btn--warning btn--block" hidden>
-    恢复我的账号（7 天内可撤销）
-  </button>
-  <button type="submit" id="login-btn" class="btn btn--primary btn--block auth-submit">
-    <span id="login-btn-text">登录</span>
-  </button>
-</form>
-{# 切换提示放在表单之外：它是"去哪"的导航提示，不是字段帮助；
-   放在字段之间会切断字段分组（初版即此问题）。
-   提示与表单同处一个 .auth-pane：切页签时整组显隐，避免出现"表单已隐藏、提示还在"的双提示。 #}
-<p class="auth-switch-hint">还没有账号？
-  <button type="button" data-auth-switch="register">创建账号</button>
-</p>
-</div>
-
-<div class="auth-pane" id="register-pane" hidden>
-<!-- 注册表单 -->
-<form id="register-form" class="auth-form" novalidate>
-  <div class="field">
-    <label class="field-label" for="reg-email">邮箱 <span class="req" aria-hidden="true">*</span></label>
-    <input id="reg-email" type="email" class="input" required autocomplete="email"
-           maxlength="64" aria-describedby="reg-email-error" placeholder="输入邮箱地址">
-    <p id="reg-email-error" class="field-error" hidden>邮箱格式不正确（示例：name@example.com）</p>
-    <p class="field-help">请使用常用邮箱注册，尤其注意 QQ 邮箱格式。</p>
-  </div>
-  <div class="field">
-    <label class="field-label" for="reg-password">密码 <span class="req" aria-hidden="true">*</span></label>
-    <div class="input-affix">
-      <input id="reg-password" type="password" class="input" required
-             autocomplete="new-password" aria-describedby="reg-password-error"
-             placeholder="设置密码（至少 10 位）">
-      <button type="button" class="affix-btn" data-pw-toggle="reg-password"
-              aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码">{{ icon('eye') }}</button>
-    </div>
-    <p id="reg-password-error" class="field-error" hidden>密码至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
-    <p class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
-  </div>
-  <div class="field">
-    <label class="field-label" for="reg-password2">确认密码 <span class="req" aria-hidden="true">*</span></label>
-    <div class="input-affix">
-      <input id="reg-password2" type="password" class="input" required
-             autocomplete="new-password" aria-describedby="reg-password2-error"
-             placeholder="再次输入密码">
-      <button type="button" class="affix-btn" data-pw-toggle="reg-password2"
-              aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码">{{ icon('eye') }}</button>
-    </div>
-    <p id="reg-password2-error" class="field-error" hidden>两次输入的密码不一致</p>
-  </div>
-  {# 协议勾选：说明文字里的两个 <button> 不能包在 label 内，否则点按钮会连带切换勾选 #}
-  <div class="auth-agree">
-    <label class="check">
-      <input id="reg-agree" type="checkbox"
-             aria-label="我已阅读并同意《用户协议》与《隐私政策》">
-      <span class="box"></span>
-    </label>
-    {# 书名号与汉字之间不留空格：模板换行会被折叠成一个半角空格，在《》两侧造成肉眼
-       可见的空隙（也与 aria-label 的无空格口径不一致），故把三个节点写成同一行。 #}
-    <span class="auth-agree-text">我已阅读并同意<button type="button" data-doc="agreement">《用户协议》</button>与<button type="button" data-doc="privacy">《隐私政策》</button></span>
-  </div>
-  <div id="reg-error-box" class="alert danger" role="alert" tabindex="-1" hidden>
-    <span class="ico">{{ icon('circle-alert') }}</span>
-    <span class="body" id="reg-error-text"></span>
-  </div>
-  <button type="submit" id="register-btn" class="btn btn--primary btn--block auth-submit">
-    <span id="register-btn-text">注册并登录</span>
-  </button>
-</form>
-<p class="auth-switch-hint">已有账号？
-  <button type="button" data-auth-switch="login">直接登录</button>
-</p>
-</div>
-
-{# 协议/隐私正文：<template> 内容惰性、不参与渲染，由 login.js 克隆进模态。
-   服务端已渲染为 HTML（_read_doc_html），此处原样注入，.md-body 排版类在 JS 侧套上。 #}
-<template id="doc-agreement">{{ agreement_html | safe }}</template>
-<template id="doc-privacy">{{ privacy_html | safe }}</template>
+<div id="vue-login-app"></div>
+<noscript><p class="panel-sub">本页需要 JavaScript 才能登录。</p></noscript>
 {% endblock %}
 
 {% block scripts %}
-<script defer src="{{ request.script_root }}/static/js/pages/login.js?v={{ web_version }}"></script>
+{% for preload in vue_preloads %}
+<link rel="modulepreload" href="{{ request.script_root }}{{ preload }}">
+{% endfor %}
+<script type="module" src="{{ request.script_root }}{{ vue_js }}"></script>
+
+{# 协议/隐私正文：<template> 内容惰性、不参与渲染，由组件克隆进模态。
+   服务端已渲染为 HTML（_read_doc_html），此处原样注入，.md-body 排版类在客户端套上。 #}
+<template id="doc-agreement">{{ agreement_html | safe }}</template>
+<template id="doc-privacy">{{ privacy_html | safe }}</template>
 {% endblock %}
