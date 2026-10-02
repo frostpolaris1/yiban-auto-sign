@@ -20,9 +20,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(BASE, "web", "templates")
 
 # 新管理端页面模板（换壳后路由实际渲染的载体）——分区 tab 只出现在这些正文里。
+# 2026-10-03：`pages/data_logs.html` 移出本清单——该页已迁到 Vue（分区改由 el-tabs
+# 渲染），服务端不再出 tab 标记，故本文件的「服务端初始 ARIA 结构」守卫对它不再适用；
+# 其分区行为由 Vitest（format.spec）+ Playwright（e2e/logs.spec）覆盖。
 ADMIN_PAGES = (
     "pages/data_dashboard.html",
-    "pages/data_logs.html",
     "pages/work_accounts.html",
     "pages/work_users.html",
     "pages/work_settings.html",

@@ -9,12 +9,11 @@ const ADMIN_USER = "admin";
 const ADMIN_PASS = "TestPass1234!";
 
 test("登录 → 审计页：首屏一页、加载更多补齐、动作过滤收窄", async ({ page }) => {
-  // 1) 真实登录表单（服务端渲染页 + core.js 驱动提交）
-  await page.goto("/login");
-  await page.fill("#username", ADMIN_USER);
-  await page.fill("#password", ADMIN_PASS);
-  await page.click("#login-btn");
-  await expect(page).toHaveURL(/\/(data\/dashboard)?$/);
+  // 1) 会话建立走 API 登录：真实登录**表单**由 e2e/logs.spec.ts 覆盖一处即可——
+  //    同 IP 10 秒内第 4 次访问 /login 会被服务端的「登录页访问循环」守卫打断
+  //    （那是给真实用户的保护，测试不该反复撞），故整个 e2e 套件只保留一次表单登录。
+  const resp = await page.request.post("/api/login", { data: { username: ADMIN_USER, password: ADMIN_PASS } });
+  expect(resp.ok()).toBeTruthy();
 
   // 2) 进入审计页：客户端渲染首批（默认 page_size=50）
   //    注意：**读取本身也留痕**（audit_api 契约第 6 条：每次成功读取写一条 audit_logs_read），

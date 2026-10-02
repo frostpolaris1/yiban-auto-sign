@@ -36,6 +36,7 @@ export default defineConfig({
       input: {
         index: fileURLToPath(new URL("./index.html", import.meta.url)),
         audit: fileURLToPath(new URL("./audit.html", import.meta.url)),
+        logs: fileURLToPath(new URL("./logs.html", import.meta.url)),
       },
       output: {
         // vendor 独立成 chunk：多页入口共享同一份 vue / element-plus 按需集合，
