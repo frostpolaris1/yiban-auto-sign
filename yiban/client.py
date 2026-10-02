@@ -136,6 +136,9 @@ class YibanClient:
         self.session.headers = dict(
             fyiban_headers.KILLYIBAN_HEADERS if self.use_killyiban else fyiban_headers.HEADERS
         )
+        # 协议核验诊断（默认关闭）：YIBAN_WIRE_DUMP 指向可写目录时挂载线路落盘
+        from yiban.infra import wire_dump
+        wire_dump.maybe_mount(self.session, account.phone)
         # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截
         proxy = os.environ.get("YIBAN_PROXY", "").strip()
         if proxy:
