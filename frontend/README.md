@@ -11,7 +11,15 @@ npm install        # 首次 / 依赖变更后
 npm run dev        # 本地开发：需要同时跑着 Flask（默认代理到 127.0.0.1:8000，
                    # 可用 YB_DEV_PROXY_TARGET 覆盖）；开发壳是本目录 index.html
 npm run build      # 产物 + manifest 落 ../web/static/vue/（提交入库）
+npm run test       # Vitest 单测（纯函数/组件，happy-dom）
+npm run test:e2e   # Playwright 端到端：自动拉起 e2e/server.py 的临时 Flask 实例
+                   # （临时 .env/SQLite + 预置审计行，不碰真实数据、不联外网）
 ```
+
+**e2e 的解释器**：`playwright.config.ts` 依次尝试 `YB_E2E_PYTHON` →
+`../.venv`（worktree 自带）→ `../../yiban-auto-sign/.venv`（主检出）→ `python`。
+其他机器/CI 上显式给 `YB_E2E_PYTHON=/path/to/python`（需装好 `requirements.lock`）。
+浏览器一次性安装：`npx playwright install chromium`。
 
 ## 与 Flask 的集成契约（勿在两侧各自变更）
 
