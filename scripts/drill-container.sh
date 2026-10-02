@@ -91,7 +91,7 @@ STEP="init"
 CLEANED=0
 EV=""
 
-usage() { sed -n '2,62p' "$SELF"; }
+usage() { sed -n '2,65p' "$SELF"; }
 
 die()  { printf '\n[FAIL] 步骤「%s」失败：%s\n' "$STEP" "$*" >&2; exit 1; }
 pre()  { printf '\n[FAIL] 前提不满足：%s\n' "$*" >&2; exit 2; }
