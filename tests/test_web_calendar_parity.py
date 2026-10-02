@@ -67,7 +67,9 @@ USER_ACCOUNTS_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_account.html")
 MINE_PAGE = os.path.join(TEMPLATES_DIR, "pages", "my_account.html")
 MINE_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "my_calendar.html")
 # 两端「我的账号」共用的正文 partial：日历不得出现在这里
-ACCOUNTS_BODY_PARTIAL = os.path.join(TEMPLATES_DIR, "partials", "page_my_accounts.html")
+# 2026-10-03：账号页迁到 Vue 后，共享正文 partial 已退役；日历「不内嵌」与「链接指向」两条
+# 规则改锚到这里——Vue 组件才是账号页正文的事实源（模板只剩挂载点）。
+ACCOUNTS_VUE = os.path.join(BASE, "frontend", "src", "myaccounts", "MyAccounts.vue")
 # 两端日历页共用的视图组件：调用共享渲染接口的唯一载体
 SIGN_CAL_VIEW = os.path.join(JS_DIR, "components", "sign-calendar-view.js")
 
@@ -179,7 +181,7 @@ class CalendarSingleSourceTest(unittest.TestCase):
         日历已独立成页；账号页只放「签到日历」链接（calendar_href），
         避免同一组件两处维护（历史缺陷见模块 docstring）。
         """
-        for path in (USER_ACCOUNTS_PAGE, MINE_PAGE, ACCOUNTS_BODY_PARTIAL):
+        for path in (USER_ACCOUNTS_PAGE, MINE_PAGE, ACCOUNTS_VUE):
             text = _read(path)
             for mark in ("data-sc-mount", "data-sc-log", "calendar.js"):
                 self.assertNotIn(
@@ -188,8 +190,12 @@ class CalendarSingleSourceTest(unittest.TestCase):
                 )
 
     def _rule_admin_mine_links_to_admin_calendar(self):
-        js = _read(os.path.join(JS_DIR, "pages", "my_account.js"))
-        self.assertIn("/my/calendar", js, "pages/my_account.js 的日历链接未指向 /my/calendar")
+        # 管理端账号页的「签到日历」链接由挂载点的 data-calendar-href 注入（Vue 不写死路径）
+        html = _read(MINE_PAGE)
+        self.assertIn("/my/calendar", html, "管理端账号页的日历链接未指向 /my/calendar")
+        self.assertIn("data-calendar-href", html, "日历链接须经 data-calendar-href 注入")
+        vue = _read(ACCOUNTS_VUE)
+        self.assertIn("calendarHref", vue, "Vue 账号页须消费注入的日历链接")
 
     def _rule_no_adminator_class_names(self):
         """自研源码不得使用 Adminator 事件月历的类名（属性渗透会让日期格失控）。
