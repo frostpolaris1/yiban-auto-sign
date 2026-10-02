@@ -2,7 +2,7 @@
 """签到日历状态可见性：状态表单一源（日期格渲染 + 图例）与急停/周末门真值显示。
 
 标签：F · 前端与界面守卫
-覆盖：状态显示表 `yiban.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对非成功/失败状态显示状态符号；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
+覆盖：状态显示表 `yiban.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对有结论的日子渲染语气档色点（色彩即语义，emoji 不上界面）；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
 对应实现：`yiban/status.py`（`DISPLAY` / `legend_items` / `display_payload`）、`web/templates/partials/page_sign_calendar.html`、`web/static/js/components/sign-calendar-view.js`（`statusLine`）、`web/static/js/calendar.js`（`dayCell`）、`web/services/signstatus.py`（`_day_off_reason` / `day_off_text`）、`web/routes/pages.py`
 关键断言：状态枚举与图例同源——图例项由 `DISPLAY` 生成，往表里加一个新状态码即自动进图例（用例直接改表断言，不靠"人记得改两处"）；`statusLine` 对 `global_paused`/未知码绝不再回落成"排队待签"；web 侧门判定与引擎 `schedule.day_off` 读同一份 `.env` 真值（置位急停 ⇒ 两侧同时为"暂停"，复位 ⇒ 同时恢复）
 依赖：⚠ **需要 node 真跑**——`statusLine` / `dayCell` / `stateEntry` 按花括号配对从源码抽出后交给 node 执行，`shutil.which("node")` 取不到时这两个类整类 `skipUnless`。其余为纯本地 Flask test client + 临时 `.env`/SQLite；不联网、不访问真实易班接口
@@ -99,8 +99,8 @@ class StatusDisplayTableTest(unittest.TestCase):
                 self.assertEqual(yiban_status.DISPLAY[code]["symbol"], expected)
 
     def test_table_entries_are_complete(self):
-        """每格都要有符号 / 文案 / 图例名 / 语气档；语气档必须落在状态行既有的四个类里。"""
-        tones = {"ok", "warn", "bad", "muted"}
+        """每格都要有符号 / 文案 / 图例名 / 语气档；语气档必须落在状态行既有的五个类里。"""
+        tones = {"ok", "warn", "bad", "muted", "busy"}
         for code in yiban_status.ALL_STATUSES:
             entry = yiban_status.DISPLAY[code]
             with self.subTest(code=code):
@@ -109,28 +109,56 @@ class StatusDisplayTableTest(unittest.TestCase):
                 self.assertTrue(entry["legend"])
                 self.assertIn(entry["tone"], tones)
 
-    def test_legend_covers_every_symbol_in_the_table(self):
-        """图例项覆盖表里出现的**每一个**符号——"渲染认得、图例不认得"正是本条要杜绝的。"""
-        table_symbols = {yiban_status.DISPLAY[c]["symbol"] for c in yiban_status.ALL_STATUSES}
-        legend_symbols = {item["symbol"] for item in yiban_status.legend_items()}
-        self.assertEqual(legend_symbols, table_symbols)
-        self.assertEqual(len(yiban_status.legend_items()), len(table_symbols),
-                         "同一符号只应出现一条图例（重复条会让图例变成噪声）")
+    def test_tone_taxonomy_follows_the_color_scheme(self):
+        """色彩语义定版（emoji 不上界面）：绿=成功、红=失败、灰=有意不签、黄=其余异常、
+        蓝呼吸=正在签到。语气档一旦漂移，这里的逐码钉住会先红。"""
+        taxonomy = {
+            yiban_status.STATUS_SUCCESS: "ok",
+            yiban_status.STATUS_ALREADY: "ok",
+            yiban_status.STATUS_FAILED: "bad",
+            yiban_status.STATUS_NO_TASK: "muted",
+            yiban_status.STATUS_SKIPPED_WINDOW: "muted",
+            yiban_status.STATUS_SKIPPED_NORANGE: "muted",
+            yiban_status.STATUS_USER_CANCELLED: "muted",
+            yiban_status.STATUS_PENDING: "warn",
+            yiban_status.STATUS_NO_POSITION: "warn",
+            yiban_status.STATUS_PAUSED: "warn",
+            yiban_status.STATUS_GLOBAL_PAUSED: "warn",
+            yiban_status.STATUS_RETRYING: "busy",
+        }
+        for code, tone in taxonomy.items():
+            with self.subTest(code=code):
+                self.assertEqual(yiban_status.DISPLAY[code]["tone"], tone)
 
-    def test_new_status_code_enters_the_legend_automatically(self):
-        """新增状态码 ⇒ 图例自动含：直接往表里塞一格，图例与前端载荷两侧都要出现。"""
+    def test_legend_covers_every_tone_in_the_table(self):
+        """图例按语气档归组（色彩即语义）：表里出现的**每一个**档位都必须有一条图例，
+        且同档只一条——"渲染认得、图例不认得"正是本条要杜绝的。"""
+        table_tones = {yiban_status.DISPLAY[c]["tone"] for c in yiban_status.ALL_STATUSES}
+        items = yiban_status.legend_items()
+        legend_tones = {item["tone"] for item in items}
+        self.assertEqual(legend_tones, table_tones)
+        self.assertEqual(len(items), len(table_tones),
+                         "同一档位只应出现一条图例（重复条会让图例变成噪声）")
+        for item in items:
+            with self.subTest(tone=item["tone"]):
+                self.assertTrue(item["label"], "图例条目缺中文短名")
+
+    def test_new_status_code_enters_the_payload_automatically(self):
+        """新增状态码 ⇒ 前端载荷与图例自动跟上：直接往表里塞一格，两侧都要出现。
+        图例按档归组后，落进既有档位的新码不添新条（颜色已覆盖）；**新语气档**则
+        必须冒出一条（实现用档位名兜底，故意难看，逼着去 `_LEGEND_TONES` 补短名）。"""
         fake = "brand_new_state"
         patched = dict(yiban_status.DISPLAY)
         patched[fake] = {"symbol": "🆕", "text": "出厂新状态", "legend": "新状态",
-                         "tone": "warn"}
+                         "tone": "magic"}
         try:
             yiban_status.DISPLAY = patched
-            labels = [it["label"] for it in yiban_status.legend_items()]
-            self.assertIn("新状态", labels, "图例未随表变化——说明它不是从表生成的")
-            self.assertIn("🆕", [it["symbol"] for it in yiban_status.legend_items()])
+            tones = [it["tone"] for it in yiban_status.legend_items()]
+            self.assertIn("magic", tones, "新语气档未进图例——说明它不是从表生成的")
             payload = yiban_status.display_payload()
             self.assertIn(fake, payload["by_code"])
             self.assertIn("🆕", payload["by_symbol"])
+            self.assertEqual(payload["by_symbol"]["🆕"]["tone"], "magic")
         finally:
             yiban_status.DISPLAY = {k: v for k, v in patched.items() if k != fake}
 
@@ -145,11 +173,17 @@ class StatusDisplayTableTest(unittest.TestCase):
             self.assertNotIn("排队", yiban_status.DISPLAY[code]["text"])
 
     def test_symbol_lookup_has_no_tone_conflict(self):
-        """同一符号的不同状态码必须共享同一语气档（否则日期格按符号取档会随状态抖动）。"""
+        """同一符号的不同状态码必须共享同一语气档（日期格按符号反查档位，会随状态抖动）。"""
+        codes_by_symbol = {}
+        for code in yiban_status.ALL_STATUSES:
+            entry = yiban_status.DISPLAY[code]
+            codes_by_symbol.setdefault(entry["symbol"], []).append(code)
         by_symbol = yiban_status.display_payload()["by_symbol"]
-        for item in yiban_status.legend_items():
-            with self.subTest(symbol=item["symbol"]):
-                self.assertIn(item["symbol"], by_symbol)
+        for sym, codes in codes_by_symbol.items():
+            with self.subTest(symbol=sym):
+                tones = {yiban_status.DISPLAY[c]["tone"] for c in codes}
+                self.assertEqual(len(tones), 1, f"符号 {sym} 跨语气档")
+                self.assertEqual(by_symbol[sym]["tone"], tones.pop())
 
 
 @unittest.skipUnless(NODE, "node 不可用：跳过前端状态行/日期格的 JS 行为用例")
@@ -225,7 +259,7 @@ class StatusLineJsTest(unittest.TestCase):
 
 @unittest.skipUnless(NODE, "node 不可用：跳过前端状态行/日期格的 JS 行为用例")
 class CalendarCellJsTest(unittest.TestCase):
-    """日期格：语气档与标签取自注入的状态表；非成功/失败状态要留下符号角标。"""
+    """日期格：语气档与标签取自注入的状态表；有结论的日子都要有色点（emoji 不上界面）。"""
 
     @classmethod
     def setUpClass(cls):
@@ -251,39 +285,41 @@ class CalendarCellJsTest(unittest.TestCase):
         base.update(over)
         return base
 
-    def test_ok_and_bad_cells_keep_their_dots(self):
+    def test_ok_and_bad_cells_get_their_tone_background(self):
         payload = yiban_status.display_payload()
         ok, bad = self._run(
             [self._cell(state="✅"), self._cell(state="❌")], payload)
         self.assertIn("sc-cell--ok", ok)
-        self.assertIn("sc-dot--ok", ok)
         self.assertIn("sc-cell--bad", bad)
-        self.assertIn("sc-dot--bad", bad)
+        self.assertNotIn("sc-dot", ok + bad)
 
-    def test_other_states_show_a_symbol_badge(self):
-        """时段外/无点位等不再渲染成空白格——那是日历侧的另一半"看起来没发生任何事"。"""
+    def test_other_states_get_a_tone_background(self):
+        """时段外/无点位/正在签到不再渲染成空白格——底色即状态（emoji 与色点都不上界面）。"""
         payload = yiban_status.display_payload()
-        no_pos, skipped = self._run(
-            [self._cell(state="🚫"), self._cell(state="⛔")], payload)
-        self.assertIn("sc-sym", no_pos)
-        self.assertIn("🚫", no_pos)
-        self.assertNotIn("sc-cell--ok", no_pos)
-        self.assertNotIn("sc-cell--bad", no_pos)
+        no_pos, skipped, retrying = self._run(
+            [self._cell(state="🚫"), self._cell(state="⛔"), self._cell(state="🔄")], payload)
+        self.assertIn("sc-cell--warn", no_pos)
+        self.assertIn("sc-cell--muted", skipped)
+        self.assertIn("sc-cell--busy", retrying)
+        for cell in (no_pos, skipped, retrying):
+            self.assertNotIn("sc-sym", cell)
+            self.assertNotIn("sc-dot", cell)
         self.assertIn("点位", no_pos, "读屏名必须说明这一格发生了什么")
-        self.assertIn("sc-sym", skipped)
 
-    def test_empty_day_has_no_badge(self):
+    def test_empty_day_has_no_state_color(self):
         payload = yiban_status.display_payload()
         empty = self._run([self._cell()], payload)[0]
-        self.assertNotIn("sc-sym", empty)
+        self.assertIn("sc-cell--none", empty)
+        self.assertNotIn("sc-dot", empty)
         self.assertIn("查看签到记录", empty)
 
-    def test_off_day_does_not_overlay_a_state_badge(self):
-        """周末停签格已有「休」角标，状态符号不得叠在同一角（角标互挤不可读）。"""
+    def test_off_day_keeps_the_neutral_background(self):
+        """周末停签格：中性底 + 「休」角标，不叠状态底色（该格本就无当日结论）。"""
         payload = yiban_status.display_payload()
         off = self._run([self._cell(state="🚫", off=True, offDay="六")], payload)[0]
-        self.assertIn("sc-off", off)
-        self.assertNotIn("sc-sym", off)
+        self.assertIn("sc-cell--off", off)
+        self.assertNotIn("sc-cell--warn", off)
+        self.assertNotIn("sc-cell--none", off)
 
 
 class _WebAppMixin:
@@ -369,19 +405,23 @@ class CalendarPageRendersTableTest(_WebAppMixin, unittest.TestCase):
     def test_legend_renders_every_item_of_the_table(self):
         html = self._calendar_html()
         for item in yiban_status.legend_items():
-            with self.subTest(item=item["symbol"]):
+            with self.subTest(tone=item["tone"]):
                 self.assertIn(item["label"], html, "图例缺了表里的一条")
-                self.assertIn(item["symbol"], html)
+                self.assertIn('data-tone="%s"' % item["tone"], html)
+                self.assertIn("sc-swatch--%s" % item["tone"], html)
         self.assertIn("周末停签", html)   # 非状态通道（周末停签/今天）仍在
         self.assertIn("今天", html)
 
     def test_legend_is_generated_not_hand_written(self):
-        """模板不得再手写图例项：表里没有的符号不会凭空出现在图例里，反之亦然。"""
+        """模板不得再手写图例项：色块与档名都必须由表生成的循环驱动。"""
         src = _read(CAL_PARTIAL)
         self.assertIn("status_legend", src, "图例必须由表生成的列表驱动")
+        self.assertIn('data-tone="{{ item.tone }}"', src,
+                      "图例档位键必须由循环变量驱动，不得写死")
+        self.assertIn('sc-swatch--{{ item.tone }}', src,
+                      "图例色块必须由循环变量驱动，不得写死")
         html = self._calendar_html()
-        for stale in ("sc-swatch--ok", "sc-swatch--bad"):
-            self.assertNotIn(stale, html, "图例仍在用写死的成功/失败色块")
+        self.assertNotIn("data-symbol", html, "图例仍按符号陈列（应按语气档归组）")
 
     def test_inline_context_carries_the_same_table(self):
         html = self._calendar_html()

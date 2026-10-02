@@ -41,6 +41,13 @@
         {{ icon('plus') }}提交我的易班账号
       </button>
     </div>
+    {# 提交后的在线校验状态（components/verify-job.js 写入）。
+       aria-live=polite：校验是后端异步做的，结果变化要念给屏幕阅读器听。
+       账号在提交那一刻已落库待审核，此处只交代校验结果，不承担提交状态。 #}
+    <p class="set-tip" id="my-verify-job" aria-live="polite" hidden>
+      <span data-verify-text></span>
+      <button type="button" class="btn btn--ghost btn--sm" data-verify-cancel hidden>取消校验</button>
+    </p>
     {# 签到状态图例/状态行在「签到日历」页：本页只管账号本身 #}
     <p id="accounts-empty" class="empty" hidden>
       <span class="empty__icon">{{ icon('user') }}</span>

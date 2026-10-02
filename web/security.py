@@ -336,8 +336,13 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
     同时递增 YIBAN_ADMIN_PW_VERSION，使全部被盗旧会话立即失效。原实现哈希存在
     即跳过，导致重设的明文被忽略（verify_admin 哈希优先）、攻击者旧密码 + 旧
     cookie 双通道继续掌控。
+
+    （删 HASH 行同样吊销）：README 追回手册推荐的是「删除/清空 HASH 行」写法，
+    落进"无现存哈希"分支。原实现只在 `existing_hash` 分支递增版本，于是该写法
+    只写新哈希、不递增、不换 sid，旧 cookie 依旧 admin——与"保留旧 HASH 行"相比
+    等于没吊销。现改为：只要本次写入改动了口令哈希（含无现存哈希的新建），
+    一律递增版本并换发内置会话凭据，两种写法等价。
     """
-    rotated = False
     try:
         env = read_env(env_path)
         existing_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
@@ -355,13 +360,14 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
                 same = False
             if same:
                 return  # 明文与哈希一致（重复启动），无需任何写入
-            cur_pwv = load_env_int(env_path, "YIBAN_ADMIN_PW_VERSION", 1)
-            updates["YIBAN_ADMIN_PW_VERSION"] = str(cur_pwv + 1)
-            # 追回 = 假定会话已失窃：与版本号一并在这一次批量写里换发内置会话凭据
-            # （共用 write_env_batch = 单次原子写，既不多写一遍 .env，也不留下
-            # "版本已递增、sid 还是旧的"的半成品状态）
-            updates[ADMIN_SID_ENV_KEY] = _new_admin_sid()
-            rotated = True
+        # 只要本次写入改了口令哈希（含"无现存哈希"的新建——README 的『删/清空 HASH 行』
+        # 写法），一律走吊销路径：递增版本 + 换发内置会话凭据。
+        cur_pwv = load_env_int(env_path, "YIBAN_ADMIN_PW_VERSION", 1)
+        updates["YIBAN_ADMIN_PW_VERSION"] = str(cur_pwv + 1)
+        # 追回 = 假定会话已失窃：与版本号一并在这一次批量写里换发内置会话凭据
+        # （共用 write_env_batch = 单次原子写，既不多写一遍 .env，也不留下
+        # "版本已递增、sid 还是旧的"的半成品状态）
+        updates[ADMIN_SID_ENV_KEY] = _new_admin_sid()
         write_env_batch(env_path, updates)
     except OSError as e:
         logger.warning(
@@ -381,18 +387,11 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
             e,
         )
         return
-    if rotated:
-        logger.warning(
-            "检测到管理员口令被外部更改（%s，明文与现存哈希不一致）：已重迁移哈希"
-            "并递增 YIBAN_ADMIN_PW_VERSION，全部旧会话已失效（SSH 追回场景）",
-            env_path,
-        )
-    else:
-        logger.warning(
-            "检测到管理员口令明文存储（%s），已自动迁移为 scrypt 哈希并清空明文；"
-            "口令本身未变更，请确认其强度足够（弱口令仍可被猜测）",
-            env_path,
-        )
+    logger.warning(
+        "管理员口令已（重）迁移为 scrypt 哈希（%s）：同时递增 YIBAN_ADMIN_PW_VERSION "
+        "并换发内置会话凭据，全部旧会话已失效（含『删/清空 HASH 行』追回路径）",
+        env_path,
+    )
 
 
 def _constant_time_dummy(password):
@@ -550,11 +549,17 @@ def _bump_login_failure(store, key, now):
     """锁内递增失败计数，返回递增后的次数。
 
     H7：登录/改密/注销/恢复共用失败计数的读改写统一走这里。
+
+    值三元组 (count, lock_until, last_ts)：**必须保留原 lock_until**。调用方把
+    "检查是否已锁定"（读）与"失败计数递增"（写）分成两个 `_rate_lock` 临界区，
+    并发时后到的一次 bump 若把 lock_until 重置为 0，就会抹掉另一线程刚建立的锁定
+    并重置计数——10 次/60 秒的逐账号锁定即可被并发击穿。last_ts 刷新为 now 供
+    超限清理（_ip_store_trim 只认末位时间戳）。
     """
     with _rate_lock:
-        fails, _, _ = store.get(key, (0, 0, 0))
+        fails, lock_until, _ = store.get(key, (0, 0, 0))
         fails += 1
-        store[key] = (fails, 0, now)
+        store[key] = (fails, lock_until, now)
         return fails
 
 

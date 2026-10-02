@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**功能**
-备份失败哨兵：当日备份包缺失时发一封管理员告警，并核对"运行脚本 = 仓库脚本"。
+备份失败哨兵：当日备份包缺失时发一封管理员告警，核对"运行脚本 = 仓库脚本"，
+并把**当日审计链头哈希随备份外发**（离机锚点，见下）。
 
 备份是**唯一**没有自愈路径的环节：`scripts/backup.sh` 在加密配置失效时 fail-closed
 （不产出任何归档），cron 侧仍是正常退出，于是"连续几天没有备份"这件事在任何页面上都
@@ -9,7 +10,7 @@
 目前**唯一**的自动发现途径，覆盖面止于"当日包与清单在不在、运行脚本是否漂移"：包内容
 坏掉、备份脚本自身逻辑错都不在它视野内；它自己没被 cron 调起时同样没人知道。
 
-两项检查：
+三项检查：
 1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups}/yiban-<今天>.tar.gz.gpg` 与它的
    `.sha256` 旁挂件都在（age 密文形态也认，见 `_archive_candidates`）。
    **明文包（裸 `.tar.gz`）不计入健康**（M3 批次0 · MF-79）：backup.sh 只在加密配置
@@ -20,6 +21,16 @@
    （默认 `/usr/local/sbin/yiban-backup.sh`，cron 实际调的那个）内容一致——"运行脚本
    是仓库脚本的拷贝"是部署约定，判据与它挡的是什么见 `_drift_report`。安静路径上
    两者一致（或安装版不存在）时不输出任何东西。
+3. **审计链头哈希随备份外发**（M28，每轮都发，与前两项的成败无关）：见 `_broadcast_anchor`。
+
+**为什么第 3 项与备份"同包同盘"的问题必须另解**：备份把 `audit-anchor.log` 一起打进去，
+恢复时锚点与库**同时**回到那个批次——于是"这份库/这个锚点有没有被整体回滚到更早的批次"
+在本机是**不可证**的：两者一起旧，链自洽、锚点自洽，什么都查不出来。本机任何自检都
+活在同一个权限域里，攻下 `.env` 的 `YIBAN_AUDIT_KEY` 就能在新密钥下把链与锚点一起重写
+自洽（M74）。唯一能跨出这个域的既有通道是**告警邮件本身**：外发消息天然在别的机器上、
+天然带可信时间戳（收件方的），拿它当"这一天库应该长什么样"的离机基线，恢复后比对即知
+是否回滚。因此本项**每天必发**——只在该喊的时候发，等于把"安静的那天正好被回滚"这一格
+继续留在盲区里。发信走既有的 `send_admin_alert` 出口（不新造通道、不新建凭据）。
 
 **归属**
 运维侧脚本（`scripts/`）。判据所需的路径与命名口径取自 `scripts/backup.sh`（包名、
@@ -30,21 +41,28 @@
 邮件同一份：ADMIN_TO 按个人开关过滤 + 开启接收的管理员），发送出口复用
 `yiban.mail.send_admin_alert`；节流复用 `yiban/notify/transport.py` 的 `_throttle_due`
 （`$YIBAN_STATE_DIR/notify-throttle.json`，跨进程磁盘表——cron 每次新进程，进程内节流表
-在这里等于没有节流，故不新造）。
+在这里等于没有节流，故不新造）；链头与记录数读 `yiban.store.db` 的
+`audit_head_hash_ex` / `audit_row_count`（只读；不读、不改锚点文件）。
 
 **通信**
 用法：`python3 scripts/backup_sentinel.py`（无参数）。
 安装与排期见仓库 `scripts/yiban-backup-sentinel.sh` 的头部（安装到
 `/usr/local/sbin/yiban-backup-sentinel.sh`，cron 每日 **08:05**，即 02:00 备份之后）。
 输入：环境变量 `BACKUP_DIR` / `APP_DIR` / `YIBAN_BACKUP_INSTALLED` / `YIBAN_ENV_FILE` /
-`YIBAN_STATE_DIR`（与 `backup.sh`、`run.sh` 同口径）。
-输出：结论与原因到 stdout（cron 重定向到日志）；异常时一封管理员告警邮件。
-退出码：`0`=检查完成（含"缺失但告警已发出"）；`1`=检查本身失败或告警发不出去。
+`YIBAN_STATE_DIR` / `YIBAN_DB_FILE`（与 `backup.sh`、`run.sh` 同口径）。
+输出：结论与原因到 stdout（cron 重定向到日志）；审计链头哈希外发一封邮件（每日一封）；
+异常时一封管理员告警邮件。
+退出码：`0`=检查完成（含"缺失但告警已发出"，以及**锚点外发失败**——见下）；
+`1`=检查本身失败或告警发不出去。
+⚠ 外发失败**不**改退出码：哨兵的退出码语义是"检查是否做完"，把"邮件通道当时抖动"
+升格成 cron 非 0 只会让每日备份链在日志里天天红，反而淹没真故障。外发失败照样
+`print` 到 stderr 并记 `logger.warning`，与本模块头部"没人看得见 cron 退出码"那段
+提醒是同一个诚实边界。
 ⚠ 但别把退出码当成"最后一道声音"：仓库给出的三条排期行（`README.md`、`scripts/backup.sh`、
 本脚本头部）都带 `>> /var/log/yiban/backup.log 2>&1`，stderr 被并进日志文件、cron 不发
 报错邮件（全仓也没有任何 `MAILTO` 设置）⇒ 退出码 1 实际只在有人翻 backup.log 时才看得见。
 真要让"发不出去"这件事自己响，得去掉 `2>&1` 并配 `MAILTO`，或把退出码接进监控。
-调用谁：`yiban.mail`、`web.services.notify_mail`、`yiban.notify.transport`。
+调用谁：`yiban.mail`、`web.services.notify_mail`、`yiban.notify.transport`、`yiban.store.db`。
 谁调用：cron（每日一次）；无其它调用点。
 """
 import logging
@@ -72,6 +90,9 @@ DEFAULT_INSTALLED = "/usr/local/sbin/yiban-backup.sh"
 #: 告警标题：单类型节流的键，也是邮件主题；两处告警共用一条标题——它们是同一件事
 #: （"今天的备份没成"）的两个原因，分标题会让节流窗口各算一份。
 ALERT_TITLE = "备份失败哨兵告警"
+#: 审计锚点外发的标题：**刻意与失败告警分开记账**。共用一条会让"今天备份没成"那封
+#: 把当天的离机基线挤掉（节流键即标题），反向亦然——两件事每天都要送达，不能互相挡。
+ANCHOR_TITLE = "审计链锚点随备份外发"
 #: **健康**归档后缀（只认密文形态），按"部署契约优先"排序：`--require-encrypt` 下的
 #: 产物是 `.tar.gz.gpg`（README 的部署命令就带这个标志）；age 同为密文也认——认不出
 #: 会在合法部署上误报"没有备份"，那正是本脚本要消灭的那种噪音。
@@ -245,6 +266,93 @@ def _drift_mail(repo_copy, installed, drift):
     )
 
 
+# ---------------------------------------------------------------------------
+# M28：审计链头哈希随备份离机（M74 的化解前提是这一层锚点真的在别处）
+# ---------------------------------------------------------------------------
+def _anchor_snapshot():
+    """当日审计链的离机基线快照 dict；读不到链头时返回 None。
+
+    只带两个读数：`head`（链头哈希，**完整 64 hex**——比对就比它，截断了就没法比）
+    与 `count`（记录数）。刻意**不**带锚点文件末行：那行有 160+ 字符，纯文本渲染器
+    会在 72 列硬切，折行后的哈希/行文给人对不上；而逐行比对锚点文件是
+    `scripts/audit_verify.py --anchor` 的职责（它读文件，不走邮件宽度）。
+    链头走 `audit_head_hash_ex` 的**三态**读取：空链（`state="empty"`）与读失败
+    （`state="error"`）处置相反，绝不压成同一个"无锚点"。
+    """
+    from yiban.store import db
+    # 只读取证类调用：`get_conn()` 的隐式 `init_db()` 是**全套缺省**
+    # （cleanup=True / migrate=True），cron 这个进程不是业务进程，让它顺手做一次
+    # 启动清理/迁移会让"哨兵"变成一次计划外的写库动作。这里显式传 False 关掉
+    # （与 `yiban/store/db.py` 里"校验类应显式传 False"的既有约定同源）。
+    db.init_db(cleanup=False, migrate=False)
+    state, head = db.audit_head_hash_ex()
+    if state == "error":
+        logger.warning("审计链头读取失败（读不到就别发锚点外发：宁缺毋滥）")
+        return None
+    return {"state": state, "head": head, "count": db.audit_row_count()}
+
+
+def _anchor_mail(day, snap, archive, sidecar_ok):
+    """当日审计链头的离机外发正文（每日一封，非告警，level=info）。
+
+    链头哈希**独占一行**（64 字符 < 渲染器的 72 列）：挂在字段值里会被硬折成两行，
+    折行后的哈希抄下来对不上——那正好毁掉这封邮件唯一的用途。
+    """
+    notes = ["当日审计链头哈希（完整 64 位；恢复该批备份后与恢复件的链头逐字符比对）："]
+    if snap["state"] == "empty":
+        notes.append("（空链——当日尚无审计记录，无链头可比）")
+    else:
+        notes.append(snap["head"] or "")
+    fields = [
+        ("业务日", day),
+        ("审计记录数", str(snap["count"])),
+    ]
+    if archive is not None and sidecar_ok:
+        fields.append(("对应备份包", os.path.basename(archive)))
+    else:
+        fields.append(("对应备份包", "当日备份包缺失或清单不全——本封只锚链头，不锚备份"))
+    return mail_layout.Mail(
+        summary=f"{day} 的审计链头哈希已离机留存。本机自检与备份包同在一个权限域内，"
+                "无法证明「没被回滚到更早的旧批次」——这封邮件才是那个外部参照。",
+        fields=fields,
+        notes=notes,
+        advice=["恢复任意备份包后，比对该包日期当天的这一条链头哈希："
+                "不一致即说明那份包/那个库不是它自称的批次（回滚或被换过）",
+                "不必每天人工看——留档即可；真出事时这串哈希就是离线基线",
+                "本机锚点 audit-anchor.log 与备份包同盘，单独存在不构成离机证据；"
+                "以本封（及同形态的通道健康日报）为准"],
+        level="info",
+    )
+
+
+def _broadcast_anchor(day, archive, sidecar_ok):
+    """把当日审计链头哈希发出去；返回是否送达（失败不抛，只记日志）。"""
+    try:
+        snap = _anchor_snapshot()
+    except Exception as e:  # 读库/读锚点失败不该让整个哨兵挂掉
+        logger.warning("读取审计链头失败，跳过本日锚点外发: %r", e)
+        snap = None
+    if snap is None:
+        print("备份哨兵：读不到审计链头，今日锚点未离机（邮件通道正常也会缺这一条基线）",
+              file=sys.stderr)
+        return False
+    try:
+        # 节流判定也在 try 里：`_alert_due` → ledger 的状态文件锁 `open()` 在
+        # **状态目录不可写**时会抛 OSError（makedirs 被吞、锁的 open 没兜底）。
+        # 那正是哨兵该出声的场景，绝不能让它把下游的失败告警一起带走。
+        if not _alert_due(ANCHOR_TITLE):
+            print(f"备份哨兵：锚点外发在节流窗口内已发过，本次不外发（{ANCHOR_TITLE}）")
+            return False
+        sent = _send_admin_alert(ANCHOR_TITLE, _anchor_mail(day, snap, archive, sidecar_ok))
+    except Exception as e:
+        logger.warning("审计链锚点外发异常: %r", e)
+        sent = False
+    if not sent:
+        print("备份哨兵：审计链锚点未能外发（无可用收件人或邮件组件失败）——"
+              "今天的离机基线缺失，回滚检测这一天起是盲区", file=sys.stderr)
+    return bool(sent)
+
+
 def main(argv=None):
     """跑一次哨兵；返回进程退出码（0=检查完成，1=检查或告警失败）。"""
     backup_dir = _env("BACKUP_DIR", DEFAULT_BACKUP_DIR)
@@ -260,6 +368,10 @@ def main(argv=None):
 
     if archive is not None and sidecar_ok and drift is None:
         print(f"备份哨兵：{day} 的归档与清单都在（{archive}），运行脚本与仓库版一致")
+        try:
+            _broadcast_anchor(day, archive, sidecar_ok)
+        except Exception as e:  # 锚点外发绝不改变本函数的结论与退出码
+            logger.warning("审计链锚点外发流程异常（已忽略）: %r", e)
         return 0
 
     if archive is not None and sidecar_ok:
@@ -278,6 +390,16 @@ def main(argv=None):
     else:
         print(f"备份哨兵：运行脚本已漂移：{drift['reason']}")
         mail = _drift_mail(os.path.join(app_dir, "scripts", "backup.sh"), installed, drift)
+
+    # M28：链头外发与上面这次告警**互相独立**——当天既喊了"备份没成"又喊了
+    # "链头离机"是常态（前者说数据没存下来，后者说基线存下来了），两封都要发。
+    # 放在告警发送之前：即便告警那封发不出去，基线那封也已经在路上。
+    # 整段兜底：锚点链路里任何一步（含节流锁的 OSError）都不得让下面的
+    # 失败告警发不出去、也不得改变退出码——状态目录坏掉时它恰好最容易炸。
+    try:
+        _broadcast_anchor(day, archive, sidecar_ok)
+    except Exception as e:
+        logger.warning("审计链锚点外发流程异常（已忽略，不影响告警与退出码）: %r", e)
 
     if not _alert_due(ALERT_TITLE):
         # stdout 结论在上面已经打过了：节流只挡邮件，cron 日志里每次都留一行

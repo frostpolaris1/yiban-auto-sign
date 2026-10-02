@@ -11,7 +11,8 @@
 （只吃确含行分隔符的物理行，不是 .env 编辑器）；外加设置项展示族
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
-解析 `_parse_announcement_meta`。
+解析 `_parse_announcement_meta`；正态 μ/σ 区间四键的映射表 `SCHEDULE_DIST_ENV_KEYS` /
+`SCHEDULE_DIST_DEFAULTS` / `SCHEDULE_DIST_KEYS`（A 档键名单源，读写两侧与前端对拍共用）。
 
 **归属**
 原 `web/app.py` 的模块级 env 辅助，唯一真源在本模块；`web/app.py` 只保留名字面与转发，
@@ -22,6 +23,8 @@
 批量写是单键写与整数写的底层（`write_env_key` / `write_env_int` 都折成
 `write_env_batch({key: value})`），行分隔符注入校验、旧行折叠与原子替换因此只有一份；
 公告草稿与线上公告共用同一份元数据形态，故解析器与它的两个格式常量同在一处。
+正态 μ/σ 四键的缺省值直接取 `yiban.engine.schedule` 的 `_DEFAULT_*`（引擎是唯一真源，
+本模块不另抄数字——抄一份迟早分叉，缺省一变设置页回显就骗人）。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以 `spec_from_file_location` 别名加载 `app.py`，
@@ -41,6 +44,7 @@ from datetime import datetime
 from flask import jsonify
 
 from yiban import window as yb_window
+from yiban.engine import schedule as _schedule
 from yiban.infra import env_io as _env_io
 from yiban.infra import env_lock
 from yiban.mail import layout as mail_layout
@@ -95,7 +99,30 @@ _SETTINGS_KEY_LABELS = {
     "sign_dist": "签到分布",
     "sign_mode": "签到模式",
     "allow_time_pref": "自选时间片",
+    "mu_min_pct": "正态峰值下限",
+    "mu_max_pct": "正态峰值上限",
+    "sigma_min_pct": "正态宽度下限",
+    "sigma_max_pct": "正态宽度上限",
 }
+
+# 正态 μ/σ 区间四键（A 档：仅主管理员可改）：API/前端字段名 → `.env` 键名。
+# 字段名刻意取引擎 cfg 里的短名（`mu_min_pct` 等），读写两侧与 `_schedule_config`
+# 的键一一对得上，不必另立一套命名。缺省值单源在 `yiban.engine.schedule` 的
+# `_DEFAULT_*`（本模块不另抄一份数字：抄一份迟早与引擎分叉，缺省一变前端回显就骗人）。
+SCHEDULE_DIST_ENV_KEYS = {
+    "mu_min_pct": "YIBAN_SCHEDULE_MU_MIN_PCT",
+    "mu_max_pct": "YIBAN_SCHEDULE_MU_MAX_PCT",
+    "sigma_min_pct": "YIBAN_SCHEDULE_SIGMA_MIN_PCT",
+    "sigma_max_pct": "YIBAN_SCHEDULE_SIGMA_MAX_PCT",
+}
+SCHEDULE_DIST_DEFAULTS = {
+    "mu_min_pct": _schedule._DEFAULT_MU_MIN_PCT,
+    "mu_max_pct": _schedule._DEFAULT_MU_MAX_PCT,
+    "sigma_min_pct": _schedule._DEFAULT_SIGMA_MIN_PCT,
+    "sigma_max_pct": _schedule._DEFAULT_SIGMA_MAX_PCT,
+}
+#: 四键的字段名集合（A 档清单；`settings_api` 的 403/口令门禁与前端对拍测试共用一份）。
+SCHEDULE_DIST_KEYS = frozenset(SCHEDULE_DIST_ENV_KEYS)
 
 # 这些键的生效值是 0/1 开关：写进审计与告警正文时翻成中文，免得运维盯着 "0"→"1" 心算
 _BOOL_SETTINGS_KEYS = frozenset({
@@ -135,7 +162,7 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
     def _flag(key):
         return "1" if env_flag(env.get(key, "")) else "0"
 
-    return {
+    vals = {
         "start_delay_max": str(load_env_int(env_file, "YIBAN_START_DELAY_MAX", 0)),
         "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX", gap_max_default)),
         "sign_window": (f"{w_start[0]:02d}:{w_start[1]:02d}"
@@ -168,6 +195,11 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         "max_accounts": str(load_env_int(env_file, "YIBAN_MAX_ACCOUNTS",
                                          max_accounts_default)),
     }
+    # 正态 μ/σ 区间四键：取值口径（现读 + 引擎缺省）与 `GET /api/settings` 的回显
+    # 必须逐字一致——否则提交一个等于回显的值会被判成"没改"，A 档口令门禁被绕过。
+    for _field, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
+        vals[_field] = str(load_env_int(env_file, _env_key, SCHEDULE_DIST_DEFAULTS[_field]))
+    return vals
 
 
 def _is_http_proxy_url(value):

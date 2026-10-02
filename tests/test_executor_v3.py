@@ -824,9 +824,12 @@ class RefillerTest(_Base):
         self._add_task(_phone(1), vshard=-1, state="failed")
         self._add_task(_phone(2), vshard=-1, state="pending")
         self._seed_v(8)
+        # `held` 是补货循环登记"在途"的集合（M17）：回收按它豁免，防止仍躺在通道
+        # 队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
+        # 替身必须带上真字段——用 getattr 兜底会让豁免在缺字段时静默失效。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
                               runtime_id=RUNTIME_OWNER, m=2, inflight=0, busy=0,
-                              slot=0)
+                              slot=0, held=set())
         queue = asyncio.PriorityQueue()
         asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
         self.assertEqual(self.fc.sleeps, [], "首轮即应判收干，不进入轮询等待")
@@ -949,6 +952,46 @@ class TerminalStateTest(_Base):
         expect = {p for p in phones if hrw.vshard_of(p, DAY, 64) not in mine}
         self.assertEqual(delegated, expect, "不在本执行体分片集内的账号归 delegated")
         self.assertTrue(expect, "本用例需要至少一个属于别的执行体的账号")
+
+    def test_user_paused_owned_by_peer_is_delegated_not_registered(self):
+        """暂停号只由**归属执行体**登记一次（_prescan 归属判定先于暂停登记）。
+
+        多执行体下若每个执行体都登记自暂停号：结果/状态/事件 ×N、每份汇总各计一遍
+        "跳过"——生产事件表 2026-10-01/02 实测每个暂停号每天 2 行 user_cancelled、
+        两份汇总各报 "➖ 3 跳过"（实际 3 个暂停号）。
+        """
+        other = "worker-1@testhost"
+        cfg = _cfg(executors=[OWNER, other])
+        self._seed_v(64)
+        mine = set(hrw.shards_of(OWNER, cfg["executors"], DAY, 64))
+        peer = set(hrw.shards_of(other, cfg["executors"], DAY, 64))
+        own_phone = peer_phone = None
+        for i in range(400):
+            p = _phone(i)
+            shard = hrw.vshard_of(p, DAY, 64)
+            if own_phone is None and shard in mine:
+                own_phone = p
+            elif peer_phone is None and shard in peer and shard not in mine:
+                peer_phone = p
+            if own_phone is not None and peer_phone is not None:
+                break
+        self.assertTrue(own_phone and peer_phone, "夹具需要两个分片各落一个号")
+        accounts = [SimpleNamespace(phone=own_phone, user_paused=True),
+                    SimpleNamespace(phone=peer_phone, user_paused=True)]
+        events = []
+        delegated = set()
+        results = self._run_v3(accounts, [], cfg=cfg, delegated=delegated,
+                               event_sink=events.append)
+        self.assertEqual(
+            results,
+            {own_phone: (False, "用户已取消签到", True, "user_cancelled")},
+            "只登记归属自己的暂停号，别人的归 delegated 不进 results")
+        self.assertEqual(delegated, {peer_phone},
+                         "别人的暂停号必须归 delegated（汇总计为'由其他执行体负责'）")
+        self.assertEqual([e["phone"] for e in events], [own_phone],
+                         "user_cancelled 事件只由归属执行体发一次")
+        self.assertNotIn(peer_phone, self._read_state(),
+                         "归属执行体之外不得写对方账号的签到状态")
 
 
 # ---------------------------------------------------------------------------
@@ -1717,7 +1760,7 @@ class RecoveryWiringTest(_Base):
         real = executor_v3._run_async
 
         async def spy(ctx):
-            seen.append(state_io.worker_presence(0))
+            seen.append(state_io.worker_presence(0, role=egress.ROLE_SINGLE))
             return await real(ctx)
 
         with mock.patch.object(executor_v3, "_run_async", spy), \
@@ -1726,7 +1769,7 @@ class RecoveryWiringTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
                          "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
-        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
                          "收尾正常路径写心跳：判 finished")
 
 
@@ -1744,7 +1787,7 @@ class WorkerFinishMarkTest(_Base):
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
                          "正常跑完必须写收尾标记")
 
     def test_interrupt_does_not_write_finish_mark(self):
@@ -1760,7 +1803,7 @@ class WorkerFinishMarkTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         later = self.fc.now() + datetime.timedelta(
             seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
-        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+        self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "中断不得写收尾：心跳过期后要判 stale，而不是 finished")
 
@@ -1783,7 +1826,7 @@ class WorkerFinishMarkTest(_Base):
         self.assertEqual(out, {}, "未预期异常按无结果收尾（不外逃）")
         later = self.fc.now() + datetime.timedelta(
             seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
-        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+        self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "未预期异常不得写收尾：心跳过期后判 stale，而不是 finished")
 

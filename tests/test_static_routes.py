@@ -390,7 +390,7 @@ class OpsPagesTest(unittest.TestCase):
         r = c.get("/api/no-such-endpoint")
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.mimetype, "application/json")
-        self.assertIn("接口不存在", r.get_json()["error"])
+        self.assertIn("未知接口", r.get_json()["error"])
 
     def test_404_static_like_path_is_opaque(self):
         # 静态资源 404 不渲染整页 HTML：浏览器/爬虫只需空响应

@@ -433,13 +433,9 @@ class AdminToWriteTest(_Base):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._env_admin_to(), "a@test.local,b@test.local")
 
-    def test_put_admin_to_without_password_ok(self):
-        """收件人变更是可逆路由改动（缩减批 6a 免门）：无口令直达落盘，留痕在审计行。"""
-        self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
-        c, h = self._master()
-        r = c.put("/api/mail-config", json={"admin_to": "new@test.local"}, headers=h)
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(self._env_admin_to(), "new@test.local")
+    # 旧用例 test_put_admin_to_without_password_ok（缩减批 6a「可逆路由改动免门」）
+    # 已被 2026-10-02 裁决覆盖：改收件人纳入「关闭/改道告警通道」同一门，
+    # 无口令 400 + 落盘前向旧地址发 urgent 预警，见 test_old_recipient_notified_and_gate_on_change。
 
     def test_put_requires_master_admin(self):
         """普通注册管理员不得改收件人（403，不落盘）。"""
@@ -502,21 +498,32 @@ class AdminToWriteTest(_Base):
         self.assertTrue(rows, "应写入 mail_config 审计")
         self.assertNotIn("audited@test.local", rows[0][0], "审计只记打码值")
 
-    def test_old_recipient_not_notified_on_change(self):
-        """改收件人不再单独通知旧地址，也不发变更告警：只在审计里留痕。
+    def test_old_recipient_notified_and_gate_on_change(self):
+        """改收件人（2026-10-02 裁决）：要当次口令，且在落盘前向旧地址发 urgent 预警。
 
-        旧实现用"发给旧收件人"防致盲，但那一封走的正是被改动的通道本身（拆报警器的
-        动作由报警器来通报）——只有通道还活着时才有意义；留痕改由 mail_config 审计承担。
+        预警必须赶在 ADMIN_TO 落盘之前发——落盘后 send_notification 读到的已是新值，
+        改道若出于恶意恰好等于报给攻击者；SMTP 中继本请求未动，旧通道此刻是活的，
+        这是唯一可靠的送达窗口。开关/SMTP 单独变更仍零告警（通道本体变更不可靠，
+        留痕归审计）。地址进正文一律打码。
         """
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
                 mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
+            r0 = c.put("/api/mail-config", json={"admin_to": "new@test.local"}, headers=h)
+            self.assertEqual(r0.status_code, 400, r0.get_data(as_text=True))
+            self.assertEqual(r0.get_json().get("reason"), "password_required")
+            sn.assert_not_called()
             r = c.put("/api/mail-config",
                       json={"admin_to": "new@test.local", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(m.call_args_list, [], "旧收件人通知已下线")
-        sn.assert_not_called()
+        self.assertEqual(sn.call_count, 1, "改道预警恰好一封（落盘前、urgent）")
+        self.assertTrue(sn.call_args.kwargs.get("urgent"), "改道预警必须 urgent")
+        mail = sn.call_args.args[1]
+        flat = " | ".join(str(getattr(mail, a, "")) for a in ("summary", "fields", "notes", "advice"))
+        self.assertIn(self.webapp._mask_email("old@test.local"), flat,
+                      "预警正文必须带上旧收件人（打码形态）口径")
+        self.assertEqual(m.call_args_list, [], "send_notification 已打桩，mailer 不应被直接触达")
         self.assertEqual(self._env_admin_to(), "new@test.local", "改收件人本身必须照旧生效")
 
     def test_recipient_unchanged_writes_no_alert(self):

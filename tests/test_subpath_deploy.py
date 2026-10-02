@@ -161,6 +161,27 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("Location"), P + "/user/account")
 
+    def test_auto_detect_bare_api_returns_json_404(self):
+        """零配置自动探测下，**裸** /tool/demo/api 必须是 JSON 404（M38 缺口）。
+
+        裸 `rest == "/api"` 既不在 _ROOT_MARKERS、也不以 "/api/" 开头，前缀探测两头
+        不命中 → 不回填 SCRIPT_NAME → PATH_INFO 仍是 `/tool/demo/api` → 落 HTML 404。
+        登记 "/api" 到 _ROOT_MARKERS 后，rest=="/api" 命中，PATH_INFO 落回 "/api"，
+        交给 /api/* 的 404 handler 出 JSON。带子路径的未知接口现状已是 JSON（非回归）。
+        """
+        r = self.c.post(P + "/api/login",
+                        json={"username": "admin", "password": "TestPass12345"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:120])
+        bare = self.c.get(P + "/api")
+        self.assertEqual(bare.status_code, 404, bare.get_data(as_text=True))
+        self.assertEqual(bare.mimetype, "application/json")
+        self.assertIn("未知接口", bare.get_json()["error"])
+        self.assertNotIn("<!DOCTYPE", bare.get_data(as_text=True))
+        # 非回归：/tool/demo/api/nope 现状已命中 "/api/" 前缀并返 JSON
+        deeper = self.c.get(P + "/api/nope")
+        self.assertEqual(deeper.status_code, 404)
+        self.assertEqual(deeper.mimetype, "application/json")
+
     def test_subpath_page_static_api_prefixed(self):
         r = self.c.get(P + "/login")
         self.assertEqual(r.status_code, 200)

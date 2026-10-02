@@ -45,7 +45,7 @@ import logging
 import os
 from datetime import datetime
 
-from yiban import clock, cred_state
+from yiban import clock, cred_state, egress
 from yiban import status as yiban_status
 from yiban.engine import cli_support, schedule
 from yiban.infra import env_io, private_json
@@ -70,7 +70,9 @@ FALLBACK_ALIVE_FILE = "fallback-alive.json"
 # "有开始、无收尾且心跳过期"才判成异常，详见 `worker_presence`。
 # 心跳文件用**固定名、每轮覆盖**（不按日命名）：文件数 = 执行体数，不随时间增长，
 # 因此不需要清理策略。
-#: 心跳文件名前缀：`worker-alive-<槽位序号>.json`。
+#: 心跳文件名前缀：`worker-alive-<身份键>.json`。身份键 = **角色 + 槽位号**：
+#: `worker` 角色用槽位号（`worker-alive-0.json`），`single` / `fallback` 用角色名
+#: （`worker-alive-single.json` / `worker-alive-fallback.json`）——见 `worker_alive_path`。
 WORKER_ALIVE_FILE_PREFIX = "worker-alive-"
 #: 心跳周期（秒）。写侧按它节流刷新心跳，读侧按 2 × 它判"新鲜"。
 WORKER_HEARTBEAT_SEC = 30
@@ -318,13 +320,17 @@ def has_undone_accounts_today(state_dir=None, day=None):
     文件里仍是 pending（计划从未被执行）——"整批没领被判没活"的跨轮翻版。故池判干净后
     仍要过一遍状态文件；池里没有行（无库/池未启用/当日还没人领过）时状态文件是唯一
     事实源，行为不变。台账单池化后读的是**任务队列**（唯一生产台账），不是旧领取池。
+
+    **队列侧必须走 `db.task_open_count`（带 `vshard >= 0` 过滤），不能用
+    `day_counts(day)["open"]`**：本函数没有分片上下文（宿主 run.sh / 容器调度器只给
+    状态目录与业务日），不能调 `pending_count(day, vshards)`；而 `day_counts` 不过滤
+    分片，历史平移/补账写入的 `vshard=-1`/`failed` 行永不被领取却属未了结态，把它算进来
+    该日就**永远不了结**、补签轮反复空跑（与 `queue_store.open_count` 的核心口径一致）。
     """
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
-        if db.is_initialized():
-            stats = db.task_stats(today)
-            if stats.get("total") and stats.get("open", 0) > 0:
-                return True
+        if db.is_initialized() and db.task_open_count(today) > 0:
+            return True
     except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
         logger.debug("读取领取池失败（回退状态文件口径）: %s", e)
     d = state_dir or _state_dir()
@@ -425,19 +431,41 @@ def fallback_alive(interval_sec=None, now=None):
 # ---------------------------------------------------------------------------
 # 并行执行体心跳：写侧（监督进程调用）与读侧（执行体接口调用）
 # ---------------------------------------------------------------------------
-def worker_alive_path(index):
-    """并行执行体心跳文件路径（`<状态目录>/worker-alive-<槽位序号>.json`）。"""
-    return os.path.join(_state_dir(), f"{WORKER_ALIVE_FILE_PREFIX}{int(index)}.json")
+def worker_alive_key(index, role=None):
+    """心跳身份键：角色的唯一口径在 `yiban.egress`（`worker` / `single` / `fallback`）。
+
+    `worker` 用槽位号（身份串 `worker-{i}@host` 里带得出），`single` / `fallback` 用
+    角色名——后两者的身份串都没有槽位号，`executor_v3._worker_slot` 会把它们都折成 0，
+    若仍按纯槽位号命名，三者会共用 `worker-alive-0.json`：兜底每轮收尾把 worker-0 的
+    心跳洗成 finished/running，四态被**别的身份**的退出污染。`role=None` 按 `worker`
+    （既有纯槽位调用点的行为逐字不变）。
+    """
+    if role is None or role == egress.ROLE_WORKER:
+        return int(index)
+    return str(role)
 
 
-def mark_worker_started(index, now=None):
+def worker_alive_path(index, role=None):
+    """并行执行体心跳文件路径（`<状态目录>/worker-alive-<身份键>.json`）。
+
+    `index` / `role` 是**写侧与读侧共享的同一份身份口径**（见 `worker_alive_key`）：
+    调用方必须把同一个 `(index, role)` 同时用在 `mark_worker_*` 与 `worker_presence`
+    上，否则读到的是别的槽位/角色的心跳。worker 的心跳文件名与旧实现逐字相同
+    （`worker-alive-<槽位>.json`），已有部署的存量文件不受影响。
+    """
+    key = worker_alive_key(index, role)
+    return os.path.join(_state_dir(), f"{WORKER_ALIVE_FILE_PREFIX}{key}.json")
+
+
+def mark_worker_started(index, now=None, role=None):
     """记录"该槽位本轮已启动"（覆盖写，旧记录连同收尾标记一起被替换）。
 
     由监督进程在拉起子进程时调用——子进程是短命进程，且写心跳需要槽位序号，
-    而序号只有监督进程有。失败只留 debug 痕迹：心跳不该影响签到主流程。
+    而序号只有监督进程有。`role` 见 `worker_alive_key`（单执行体 / 兜底传各自角色，
+    免得与 worker-0 撞同一文件）。失败只留 debug 痕迹：心跳不该影响签到主流程。
     """
     at = now or clock.now()
-    path = worker_alive_path(index)
+    path = worker_alive_path(index, role)
     try:
         with cli_support._state_file_lock(path):
             _write_private_json(path, _alive_record(index, at))
@@ -445,21 +473,21 @@ def mark_worker_started(index, now=None):
         logger.debug("写入执行体心跳失败（不影响签到）: %s", _sanitize_text(e))
 
 
-def mark_worker_beat(index, now=None):
-    """刷新该槽位心跳的 `ts`（保留 `started_at`）——存活期间的周期写盘。"""
+def mark_worker_beat(index, now=None, role=None):
+    """刷新该槽位心跳的 `ts`（保留 `started_at`）——存活期间的周期写盘（`role` 同上）。"""
     at = now or clock.now()
-    path = worker_alive_path(index)
+    path = worker_alive_path(index, role)
     try:
         with cli_support._state_file_lock(path):
-            data = _read_worker_alive(index) or _alive_record(index, at)
+            data = _read_worker_alive(index, role) or _alive_record(index, at)
             data["ts"] = at.strftime(_TS_FMT)
             _write_private_json(path, data)
     except OSError as e:
         logger.debug("刷新执行体心跳失败（不影响签到）: %s", _sanitize_text(e))
 
 
-def mark_worker_finished(index, exit_code=None, now=None):
-    """记录"该槽位本轮已正常退出"：在同一文件上补收尾标记（`ended_at`）。
+def mark_worker_finished(index, exit_code=None, now=None, role=None):
+    """记录"该槽位本轮已正常退出"：在同一文件上补收尾标记（`ended_at`）（`role` 同上）。
 
     被信号杀掉（退出码为负）时调用方**不调本函数**：留"有开始、无收尾"，心跳过期后
     由 `worker_presence` 判成 `stale`——那正是"疑似被强杀/超时杀掉"需要用户注意的状态。
@@ -469,10 +497,10 @@ def mark_worker_finished(index, exit_code=None, now=None):
     只有**单进程直跑**（没有监督进程替它写收尾）时内部未预期异常才留"有开始、无收尾"。
     """
     at = now or clock.now()
-    path = worker_alive_path(index)
+    path = worker_alive_path(index, role)
     try:
         with cli_support._state_file_lock(path):
-            data = _read_worker_alive(index) or _alive_record(index, at)
+            data = _read_worker_alive(index, role) or _alive_record(index, at)
             data["ended_at"] = at.strftime(_TS_FMT)
             data["ts"] = at.strftime(_TS_FMT)
             if exit_code is not None:
@@ -482,8 +510,8 @@ def mark_worker_finished(index, exit_code=None, now=None):
         logger.debug("写入执行体收尾标记失败（不影响签到）: %s", _sanitize_text(e))
 
 
-def worker_presence(index, now=None):
-    """该并行执行体槽位此刻的存活四态 → `(state, last_seen_at)`。
+def worker_presence(index, now=None, role=None):
+    """该并行执行体槽位此刻的存活四态 → `(state, last_seen_at)`（`role` 见 `worker_alive_key`）。
 
     | state | 判据 | 页面该做什么 |
     |-------|------|--------------|
@@ -498,7 +526,7 @@ def worker_presence(index, now=None):
     心跳周期这种部署细节）。本函数只回与身份串无关的槽位事实，不含 pid/主机名。
     """
     now = now or clock.now()
-    data = _read_worker_alive(index)
+    data = _read_worker_alive(index, role)
     # 无记录，或记录属于**别的业务日**（昨天的"已跑完"不等于今天已跑）→ 今天还没跑
     if not data or str(data.get("day") or "") != now.strftime("%Y-%m-%d"):
         return WORKER_STATE_IDLE, None
@@ -516,11 +544,11 @@ def worker_presence(index, now=None):
     return WORKER_STATE_STALE, last_seen
 
 
-def _read_worker_alive(index):
-    """读该槽位的心跳（缺失/损坏/非 dict → `{}`，与其余状态文件同口径不抛）。"""
+def _read_worker_alive(index, role=None):
+    """读该槽位/角色的心跳（缺失/损坏/非 dict → `{}`，与其余状态文件同口径不抛）。"""
     try:
         # utf-8-sig 容错 Windows 记事本/工具写入的 BOM（与 cred_state 同口径）
-        with open(worker_alive_path(index), encoding="utf-8-sig") as f:
+        with open(worker_alive_path(index, role), encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError, TypeError):
         return {}

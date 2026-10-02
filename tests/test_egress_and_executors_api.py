@@ -798,6 +798,8 @@ class SlotEgressEndpointTest(_WebBase):
             with self.subTest(payload=payload):
                 self._setup_env(proxy_list="http://u1:p1@a.example:1,http://b.example:2,"
                                            "http://c.example:3", workers="3")
+                # M09：重写明文口令会重迁移并递增 PW_VERSION → 旧会话失效，须重新登录
+                c = self._login()
                 r = self._put(c, "/api/scheduler/executors/workers/1", payload)
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
                 self.assertEqual(r.get_json()["egress"], "直连（本机出口）")
@@ -806,6 +808,7 @@ class SlotEgressEndpointTest(_WebBase):
                                  "只清目标段，别的段一字不动")
         # 兜底段清空 = 删掉该键（既有的"未单独配置就退回 YIBAN_PROXY"语义不变）
         self._setup_env(proxy_list="http://a.example:1", fallback="http://fb.example:9")
+        c = self._login()  # 同上：重写明文口令会中止旧会话
         r = self._put(c, "/api/scheduler/executors/fallback", {"egress": None})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json(), {"ok": True, "index": "fallback",
@@ -869,8 +872,11 @@ class SlotEgressEndpointTest(_WebBase):
                               {"egress": "http://x:1"})
                 self.assertEqual(r.status_code, 400)
                 self.assertIn("未被使用", r.get_json()["error"])
-        # 下标上限 63（`YIBAN_WORKERS` 最大 64）：就算执行体数写满也不收 64
+        # 下标上限 63（`YIBAN_WORKERS` 最大 64）：就算执行体数写满也不收 64。
+        # M09 起 `_setup_env` 重写明文口令会（重）迁移哈希并递增 PW_VERSION，
+        # 旧会话随之中止——重写 .env 后必须重新登录。
         self._setup_env(proxy_list="http://a.example:1", workers="64")
+        c = self._login()
         r = self._put(c, "/api/scheduler/executors/workers/64", {"egress": "http://x:1"})
         self.assertEqual(r.status_code, 400)
         # 合法槽位在同一份配置下必须能写（反证 400 不是"一律拒绝"）
@@ -999,6 +1005,70 @@ class WorkerPresenceTest(_WebBase):
             self.assertNotIn(key, got[1], "存活字段不得携带 pid/主机名")
         self.assertNotIn(socket.gethostname(), json.dumps(body, ensure_ascii=False),
                          "主机名属部署信息")
+
+    def test_single_and_fallback_do_not_share_worker0_heartbeat(self):
+        """心跳身份键带角色：`single` / `fallback` 不再与 `worker-0` 共用同一文件。
+
+        三者身份串里只有 worker 带槽位号（`worker-{i}@host`），single/fallback 都解析出
+        槽位 0；旧实现据此撞同一个 `worker-alive-0.json`，兜底每轮收尾会把 worker-0 的
+        心跳洗成 finished/running，执行体存活四态被别的身份的退出污染。
+        """
+        s = self.webapp.signin
+        p_worker = s.worker_alive_path(0, role=egress.ROLE_WORKER)
+        p_single = s.worker_alive_path(0, role=egress.ROLE_SINGLE)
+        p_fallback = s.worker_alive_path(0, role=egress.ROLE_FALLBACK)
+        self.assertNotEqual(p_worker, p_single, "single 与 worker-0 不得共用心跳文件")
+        self.assertNotEqual(p_worker, p_fallback, "fallback 与 worker-0 不得共用心跳文件")
+        self.assertNotEqual(p_single, p_fallback, "single 与 fallback 不得共用心跳文件")
+        # worker 行的心跳文件名与旧实现逐字相同（不传 role 即 worker 口径）
+        self.assertEqual(s.worker_alive_path(0), p_worker)
+
+        now = self.FIXED_NOW
+        s.mark_worker_started(0, now=now - timedelta(seconds=5))
+        s.mark_worker_started(0, now=now - timedelta(minutes=5),
+                              role=egress.ROLE_FALLBACK)
+        s.mark_worker_finished(0, exit_code=0, now=now - timedelta(minutes=3),
+                               role=egress.ROLE_FALLBACK)
+        self.assertEqual(s.worker_presence(0, now=now)[0], s.WORKER_STATE_RUNNING,
+                         "兜底收尾把 worker-0 洗成 finished = 四态失真")
+        self.assertEqual(
+            s.worker_presence(0, now=now, role=egress.ROLE_FALLBACK)[0],
+            s.WORKER_STATE_FINISHED, "兜底自己的收尾仍要如实反映")
+        self.assertEqual(
+            s.worker_presence(0, now=now, role=egress.ROLE_SINGLE)[0],
+            s.WORKER_STATE_IDLE, "single 没跑过就该是 idle")
+
+    def test_single_mode_assignment_reads_single_heartbeat(self):
+        """`workers.single_mode` 行（index 恒 0）读的是**单执行体**心跳，不是 worker-0 的。"""
+        with open(self.env_file, encoding="utf-8") as f:
+            original = f.read()
+        self.addCleanup(self._restore_env_file, original)
+        manifest = egress.dump_manifest([{"slot": 0, "type": "fallback", "proxy": ""}])
+        lines = [ln for ln in original.splitlines()
+                 if not ln.startswith(egress.ENV_MANIFEST + "=")]
+        lines.append(egress.ENV_MANIFEST + "=" + manifest)
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        now = clock.now().replace(microsecond=0)
+        s = self.webapp.signin
+        s.mark_worker_started(0, now=now)   # worker-0 在跑（并行执行体的心跳）
+        body = self._login().get("/api/scheduler/executors").get_json()
+        self.assertTrue(body["workers"]["single_mode"],
+                        "夹具前提：清单里没有 worker 行 ⇒ single_mode")
+        item = body["workers"]["assignments"][0]
+        self.assertEqual(item["index"], 0)
+        self.assertEqual(item["state"], "idle",
+                         "single_mode 行读了 worker-0 心跳（让它假装在跑）")
+        # 单执行体真的起跑后，同一行才显示 running
+        s.mark_worker_started(0, now=now, role=egress.ROLE_SINGLE)
+        body = self._login().get("/api/scheduler/executors").get_json()
+        self.assertEqual(body["workers"]["assignments"][0]["state"], "running",
+                         "单执行体起跑后该行必须显示 running")
+
+    def _restore_env_file(self, text):
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(text)
 
 
 class AccountsLastExecutorTest(_WebBase):
@@ -1347,3 +1417,166 @@ class EgressErrorMustNotLeakCredentialsTest(_WebBase):
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 400)
         self._assert_no_credentials(r.get_data(as_text=True))
+
+
+# ---------------------------------------------------------------------------
+# A5/A6/A7：执行一轮请求登记 / 当日进度（聚合）/ 归属与迁移分布（聚合）
+# ---------------------------------------------------------------------------
+class _TaskRowMixin:
+    """往 `sign_tasks` 直接写当日行（聚合端点的取数源，单池后唯一台账）。
+
+    `state` 用队列的真实词汇（与 `yiban.status` 同一套），聚合端点的"已签/待签/失败"
+    就是它们各自的计数——展示层不另造一套状态名，否则两套词表必然漂。
+    """
+
+    def _insert_tasks(self, rows, day=None):
+        """`rows` = `((phone, owner, state), …)`；返回写入的业务日。"""
+        from yiban.store import db as store_db
+        day = day or clock.today()
+        store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
+                         cleanup=False)
+        conn = store_db.get_conn()
+        with store_db._conn_lock:
+            for phone, owner, state in rows:
+                conn.execute(
+                    "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, "
+                    "priority, state, attempts, lease_until, result, epoch, created_at) "
+                    "VALUES (?, ?, 0, ?, ?, 5, ?, 0, '', '', 0, ?)",
+                    (phone, day, owner, clock.ts(), state, clock.ts()))
+            conn.commit()
+        return day
+
+
+class ProgressEndpointTest(_WebBase, _TaskRowMixin):
+    """A6「实时进度」：**只给聚合计数**，逐账号列表一律不给。"""
+
+    def _seed(self):
+        w0 = egress.worker_owner(0, SECRET_HOST)
+        w1 = egress.worker_owner(1, SECRET_HOST)
+        return self._insert_tasks((
+            ("13900000001", w0, "done"),
+            ("13900000002", w0, "done"),
+            ("13900000003", w0, "failed"),
+            ("13900000004", w1, "done"),
+            ("13900000005", w1, "claimed"),
+        ))
+
+    def test_聚合计数逐格对上(self):
+        day = self._seed()
+        c = self._login()
+        r = c.get("/api/scheduler/executors/progress")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["day"], day)
+        self.assertTrue(body["is_today"], "刚写入当日记录，is_today 应为 true")
+        totals = body["totals"]
+        # 5 行：3 done / 1 failed / 1 claimed；settled=3、open=2、total=5
+        self.assertEqual(totals["done"], 3)
+        self.assertEqual(totals["failed"], 1)
+        self.assertEqual(totals["claimed"], 1)
+        self.assertEqual(totals["pending"], 0)
+        self.assertEqual(totals["settled"], 3)
+        self.assertEqual(totals["open"], 2)
+        self.assertEqual(totals["total"], 5)
+        # 分执行体：worker0 = 3（2 done + 1 failed）、worker1 = 2（1 done + 1 claimed）
+        got = {e["label"]: e for e in body["by_executor"]}
+        self.assertEqual(got["并行执行体 #1"]["done"], 2)
+        self.assertEqual(got["并行执行体 #1"]["failed"], 1)
+        self.assertEqual(got["并行执行体 #2"]["done"], 1)
+        self.assertEqual(got["并行执行体 #2"]["claimed"], 1)
+
+    def test_响应绝不含逐账号明细与身份原串(self):
+        """A6 明确要求聚合计数、不要逐账号列表：号码与主机名一律不得出现。"""
+        self._seed()
+        c = self._login()
+        raw = c.get("/api/scheduler/executors/progress").get_data(as_text=True)
+        for phone in ("13900000001", "13900000002", "13900000003",
+                      "13900000004", "13900000005"):
+            self.assertNotIn(phone, raw, "进度端点不得下发逐账号明细")
+        self.assertNotIn(SECRET_HOST, raw, "身份原串（含主机名）不得进响应")
+
+    def test_空态全零而不是报错(self):
+        """库未初始化 / 当日无记录：全 0 空态（前端画空条），不得 500。"""
+        c = self._login()
+        r = c.get("/api/scheduler/executors/progress")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["by_executor"], [])
+        self.assertEqual(body["totals"]["total"], 0)
+
+    def test_未登录401且JSON契约(self):
+        anon = self.webapp.create_app().test_client()
+        r = anon.get("/api/scheduler/executors/progress")
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.is_json)
+
+
+class OwnershipEndpointTest(_WebBase, _TaskRowMixin):
+    """A7「各执行体负载/归属分布」：归属分布 + 相邻两日之间的迁移，均为聚合计数。"""
+
+    def _seed_today_and_prev(self):
+        """今天 3 行（worker0×2 + worker1×1），前一日 3 行（worker0×3）。
+
+        于是 `13900000003` 是唯一"换了执行体"的账号（另两行归属未变），
+        迁移聚合应当**恰好**一条、accounts=1——多一条或少一条都说明聚合写错了。
+        """
+        w0 = egress.worker_owner(0, SECRET_HOST)
+        w1 = egress.worker_owner(1, SECRET_HOST)
+        prev = (clock.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self._insert_tasks((
+            ("13900000001", w0, "done"),
+            ("13900000002", w0, "done"),
+            ("13900000003", w0, "done"),
+        ), day=prev)
+        return self._insert_tasks((
+            ("13900000001", w0, "done"),
+            ("13900000002", w0, "done"),
+            ("13900000003", w1, "failed"),
+        )), prev
+
+    def test_归属分布逐格对上且不回身份原串(self):
+        day, _prev = self._seed_today_and_prev()
+        c = self._login()
+        r = c.get("/api/scheduler/executors/ownership")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        raw = r.get_data(as_text=True)
+        self.assertNotIn(SECRET_HOST, raw, "owner 原串含主机名，绝不得进响应")
+        body = r.get_json()
+        self.assertEqual(body["day"], day)
+        got = {e["label"]: e["accounts"] for e in body["by_executor"]}
+        self.assertEqual(got["并行执行体 #1"], 2)
+        self.assertEqual(got["并行执行体 #2"], 1)
+        self.assertEqual(body["tracked"], 3)
+
+    def test_迁移按从到聚合恰好一条(self):
+        _day, prev = self._seed_today_and_prev()
+        c = self._login()
+        body = c.get("/api/scheduler/executors/ownership").get_json()
+        self.assertTrue(body["compared"], "前一日有记录时 compared 应为 true")
+        self.assertEqual(body["prev_day"], prev)
+        moves = {(m["from_label"], m["to_label"]): m["accounts"]
+                 for m in body["migration"]}
+        self.assertEqual(moves, {("并行执行体 #1", "并行执行体 #2"): 1},
+                         f"迁移聚合与预期不符：{body['migration']}")
+
+    def test_前一日无记录时不做比较(self):
+        """没有基准日就不猜：`compared: false` + 空迁移（不拿更早的日子凑）。"""
+        self._insert_tasks((("13900000001", egress.worker_owner(0, SECRET_HOST), "done"),))
+        c = self._login()
+        body = c.get("/api/scheduler/executors/ownership").get_json()
+        self.assertFalse(body["compared"])
+        self.assertEqual(body["migration"], [])
+        self.assertIn("前一日无记录", body["note"])
+
+    def test_响应绝不含逐账号明细(self):
+        self._seed_today_and_prev()
+        c = self._login()
+        raw = c.get("/api/scheduler/executors/ownership").get_data(as_text=True)
+        for phone in ("13900000001", "13900000002", "13900000003"):
+            self.assertNotIn(phone, raw, "归属分布端点不得下发逐账号明细")
+
+    def test_未登录401且JSON契约(self):
+        anon = self.webapp.create_app().test_client()
+        r = anon.get("/api/scheduler/executors/ownership")
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.is_json)

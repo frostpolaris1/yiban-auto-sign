@@ -91,7 +91,7 @@
     // 不写"前/后"：带搜索时是过滤后前 N 行，缺省视图是**尾部** N 行（truncated 现在照实为
     // True），同一句要同时成立，故只报"显示 N / 共 M"
     if (data.truncated) return "已截断：显示 " + data.returned + " / 共 " + data.total_lines + " 行";
-    // 只报总数：截断口径已由上一行覆盖，「显示全部 / 导出」按钮就在同一行，无需再用文字解释
+    // 只报总数：截断口径已由上一行覆盖，「显示全部日志 / 导出日志」按钮就在同一行
     return "共 " + data.total_lines + " 行";
   }
 
@@ -109,7 +109,10 @@
     }));
     li.appendChild(badgeCell);
     var msg = String(ev.message || "");
-    if (isSign && Number(ev.attempt) > 1) {
+    // 尝试号标注只给消息里没有它的行：retrying 的消息由引擎写成
+    // 「待重试（已 N 次）: …」（round.py），再追加就出现"已 2 次…（第 2 次）"双份；
+    // 最终态（failed 等）消息不带尝试号，这里的追加是唯一出处
+    if (isSign && ev.status !== "retrying" && Number(ev.attempt) > 1) {
       msg = msg ? msg + "（第 " + ev.attempt + " 次）" : "（第 " + ev.attempt + " 次）";
     }
     if (msg) li.appendChild(YB.el("span", { class: "ev-msg", text: msg }));
@@ -279,7 +282,7 @@
     on("log-all-btn", "click", function () {
       state.all = !state.all;
       var b = $("log-all-btn");
-      b.textContent = state.all ? "回到最近" : "显示全部";
+      b.textContent = state.all ? "回到最近日志" : "显示全部日志";
       b.setAttribute("aria-pressed", String(state.all));
       resetSnap(); loadLogs();
     });

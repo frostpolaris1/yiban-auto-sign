@@ -80,13 +80,13 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | 每个执行体的存活四态（`running`/`finished`/`idle`/`stale`） | 已实现：并行执行体写固定名心跳文件，接口按心跳新鲜度判定（详见 `api-executors.md`） |
 | 账号列表的"上一个业务日是谁签的" | 已实现：`GET /api/accounts` 的 `last_executor` |
 | 现场实测单账号耗时 | 已实现：`POST /api/scheduler/executors/measure`（仅主管理员 + 全局冷却 + 窗口内拒绝；**会真实访问易班一次**） |
-| 前端页面（执行体与出口配置） | **未实现**（接口已就绪，见 `api-executors.md`） |
+| 前端页面（执行体与出口配置） | 已实现（系统设置·执行体分区，A1~A4 已落地；契约见 `api-executors.md`） |
 
 ### 运行期状态文件（固定名，条数不随时间增长）
 
 | 文件（在 `YIBAN_STATE_DIR`） | 写入方 | 读方 |
 |------------------------------|--------|------|
-| `worker-alive-<槽位序号>.json` | 并行执行体监督进程（开始 / 存活期刷新 / 正常退出各写一次，创建即 0600） | `GET /api/scheduler/executors` 的存活四态 |
+| `worker-alive-<身份键>.json` | 并行执行体监督进程与 v3 执行体（开始 / 存活期刷新 / 正常退出各写一次，创建即 0600）。身份键由角色决定：`worker` 用槽位号（`worker-alive-0.json`），`single`/`fallback` 无槽位号故用角色名（`worker-alive-single.json` / `worker-alive-fallback.json`）——三者都解析出槽位 0，不带角色就会共用一个文件、互相污染四态 | `GET /api/scheduler/executors` 的存活四态 |
 | `capacity-measure.json` | `POST /api/scheduler/executors/measure`（冷却占位 + 实测结果） | 同端点（跨进程限频） |
 | `fallback-alive.json` | 兜底常驻执行体（每轮扫描刷新，退出时删除） | 告警抑制与 `fallback.alive` |
 
@@ -109,3 +109,26 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 规则细节（按序取用、不足循环、空位语义）与脱敏口径见 `yiban/egress.py` 的模块文档；
 容量基准由部署者在自己的机器上量取后写入 `YIBAN_CAPACITY_MEASURED`（离线基准工具族已于
 2026-09 移除），**建议值 = 实测 × 2/3，只是建议**。
+
+## 数据层调用约定
+
+### 校验/取证类读库必须显式 `init_db(cleanup=False, migrate=False)`（M36 · 定档保留）
+
+`yiban.store.db.init_db(...)` 的缺省是 `cleanup=True, migrate=True`，而
+`yiban/store/connection.py` 的 `get_conn()` 在单例连接不存在时会**隐式**调一次
+`init_db()` 的**全套缺省**。这对业务进程是对的（启动时该做的清理与迁移就该做），
+对**校验/取证类工具**是错的：`scripts/audit_verify.py`、哨兵、`db_export.py` 这类调用方
+只是想**读**——
+
+- `cleanup=True` 会在校验过程中物理删除超保留期的审计行/事件（**改动了被校验对象**，
+  "检出删除"会变成"我自己删的"）；
+- `migrate=True` 会回填审计链等结构（同样改动被校验对象）。
+
+**约定（`yiban/store/db.py` 的 `init_db` docstring 已写明）**：只读取证类调用方在第一次
+触库前**显式** `db.init_db(cleanup=False, migrate=False)`。仓库内的既有样例：
+`scripts/backup_sentinel.py` 的 `_anchor_snapshot()`（M28 的锚点外发读链头）。
+
+**为什么不改 `get_conn()` 的缺省**：它被所有 CLI / 工具 / REPL 调用方共用，改缺省会同时
+改变它们"跑一条命令顺手做一次启动清理"的既有行为，属初始化契约裁决，不是本批能顺手改的。
+**怎么判断一个调用方算不算"校验类"**：它是否会因为多删了几行/多写了几个字段而改变结论。
+会，就显式传 `False`。

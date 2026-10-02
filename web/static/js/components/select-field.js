@@ -130,11 +130,21 @@
     }
   }
 
-  function close(root, back) {
-    var menu = menuOf(root), trigger = triggerOf(root);
-    if (!menu || menu.hidden) return;
+  // 退场动效：与进场同参数反向（140ms / ease-in-strong，见 app.css 的 .is-closing）。
+  // 动效结束（或同长兜底定时器）才 hidden=true；reduce 下直接收，不留"隐形但可聚焦"的空窗。
+  var EXIT_MS = 140;
+  function motionReduced() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  function isClosing(menu) { return menu.classList.contains("is-closing"); }
+  function cancelClose(menu) {
+    if (menu.__exitT) { clearTimeout(menu.__exitT); menu.__exitT = null; }
+    menu.classList.remove("is-closing");
+  }
+  function finishClose(root, menu) {
+    if (menu.__exitT) { clearTimeout(menu.__exitT); menu.__exitT = null; }
+    menu.classList.remove("is-closing");
     menu.hidden = true;
-    root.classList.remove("is-open");
     // 浮动态收场：面板搬回 root 原位、清掉内联定位，供下次打开重新测量
     if (menu.classList.contains(FLOAT_CLASS)) {
       menu.classList.remove(FLOAT_CLASS, UP_CLASS);
@@ -143,12 +153,21 @@
       root.__floatMenu = null;
       disarmFloatGuard();
     }
+  }
+
+  function close(root, back) {
+    var menu = menuOf(root), trigger = triggerOf(root);
+    if (!menu || menu.hidden || isClosing(menu)) return;
+    root.classList.remove("is-open");
     if (trigger) {
       trigger.setAttribute("aria-expanded", "false");
       if (back) trigger.focus();
     }
     var search = menu.querySelector(".select-search");
     if (search && search.value) { search.value = ""; applyFilter(root, ""); }
+    if (motionReduced()) { finishClose(root, menu); return; }
+    menu.classList.add("is-closing");
+    menu.__exitT = setTimeout(function () { finishClose(root, menu); }, EXIT_MS);
   }
 
   function focusSel(root) {
@@ -199,6 +218,7 @@
     var menu = menuOf(root), trigger = triggerOf(root);
     if (!menu || !trigger || trigger.disabled) return;
     roots().forEach(function (r) { if (r !== root) close(r, false); });
+    cancelClose(menu);                    // 若刚在退场，取消收起、原样重开
     menu.hidden = false;
     root.classList.add("is-open");
     trigger.setAttribute("aria-expanded", "true");
@@ -284,7 +304,7 @@
     var trigger = triggerOf(root), menu = menuOf(root);
     if (!trigger) return;
     trigger.addEventListener("click", function () {
-      if (menu && menu.hidden) open(root); else close(root, true);
+      if (!menu || menu.hidden || isClosing(menu)) open(root); else close(root, true);
     });
     trigger.addEventListener("keydown", function (e) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(root); }

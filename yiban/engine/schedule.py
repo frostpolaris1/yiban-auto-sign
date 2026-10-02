@@ -20,6 +20,7 @@ import random
 from datetime import timedelta
 
 from yiban import clock, window
+from yiban.engine import hrw
 from yiban.store import db
 
 logger = logging.getLogger("yiban")
@@ -425,6 +426,30 @@ def _sigma_eff(sigma, n, span_minutes):
     return min(sigma, span_minutes / 3)
 
 
+def day_mu_sigma_pct(cfg, day):
+    """正态 μ/σ 的**当日取值**（占有效窗口的 %）：返回 `(mu_pct, sigma_pct)`。
+
+    μ/σ 定义的是一个区间（`YIBAN_SCHEDULE_MU_MIN_PCT`~`_MAX_PCT` 等），落在区间的
+    哪一点由 `day` 唯一决定（`hrw.u01`，blake2b 确定性推导），故同一天内任意进程、
+    任意时刻重放都是同一组值：每日只取一次、全体账号共享。
+
+    计划层（`planner._density`）与执行层（`build_schedule`）**必须共用本函数**：
+    两侧各抽一次（哪怕抽法看起来相同、甚至同样确定性）会让计划里展示的时刻与实际
+    签到时刻错开，而按 μ/σ 算的峰值速率整形也随之失去意义；执行层若用 `rng.uniform`
+    重采样，更直接破坏"计划是纯函数、崩溃可重放"的既有不变量。
+
+    `day` 接受 `date`/`datetime`/字符串，统一归一化为 `YYYY-MM-DD` 再进哈希——两侧
+    一个传业务日字符串、一个传 `datetime` 时不会因此错日。返回 % 而非分钟：两侧的
+    有效窗口边界与 σ 人数封顶各自已有口径，这里只交付"区间里的那个点"。
+    区间非法（lo >= hi）已在 `_schedule_config` 回退默认值，本函数不再重判。
+    """
+    day = day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else str(day).strip()
+    mu_pct = cfg["mu_min_pct"] + hrw.u01(day, "mu") * (cfg["mu_max_pct"] - cfg["mu_min_pct"])
+    sg_pct = (cfg["sigma_min_pct"] + hrw.u01(day, "sigma")
+              * (cfg["sigma_max_pct"] - cfg["sigma_min_pct"]))
+    return mu_pct, sg_pct
+
+
 def _schedule_blocks(cfg):
     """按时钟 5 分钟对齐切块（首尾块各 4 分钟），返回 (blocks, eff_lo, eff_hi)。
 
@@ -719,12 +744,13 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             zmap = {acc.phone: zs[i] for i, acc in enumerate(ordered)}
         else:
             zmap = {acc.phone: _anchor_z(acc.phone) for acc in ordered}
-        # μ/σ 每天采样一次、全体共享：在循环内每账号重采样会导致分布趋平、作息漂移放大
-        mu = eff_lo + span * rng.uniform(cfg["mu_min_pct"], cfg["mu_max_pct"]) / 100.0
-        sigma = _sigma_eff(
-            span * rng.uniform(cfg["sigma_min_pct"], cfg["sigma_max_pct"]) / 100.0,
-            n, span,
-        )
+        # μ/σ 每天取一次、全体共享，**取法与计划层同一口径**（`day_mu_sigma_pct`）：
+        # 计划（06:31 生成）与执行必须落在同一个点上，否则计划里排出的时刻与实际签到
+        # 时刻对不上，planner 按 μ/σ 做的峰值速率整形也作用在错值上。此前这里用
+        # `rng.uniform` 重采样，与 planner 的确定性推导分叉，正是"两口径"的现场。
+        mu_pct, sg_pct = day_mu_sigma_pct(cfg, now)
+        mu = eff_lo + span * mu_pct / 100.0
+        sigma = _sigma_eff(span * sg_pct / 100.0, n, span)
 
     # 阶段 1：分配块归属（容量满向后顺延；自选已占位）
     assign = dict(chosen)

@@ -40,7 +40,7 @@ import db  # noqa: E402
 from yiban import egress  # noqa: E402  # 身份串口径的唯一来源（activity 的消费侧）
 
 TEST_KEY = "a" * 64
-DAY = "2026-09-16"
+DAY = time.strftime("%Y-%m-%d")  # 运行日：硬编日期会随时间漂出 14 天保留窗（基线红组A/B 根因）
 PHONE = "13800138000"
 PHONE_B = "13800138001"
 OWNER_A = "hostA:100:090000"

@@ -895,7 +895,7 @@ class Batch18FixesTest(unittest.TestCase):
         ac, at = self._admin_client()
         accounts = db.load_accounts()
         idx = next(i for i, a in enumerate(accounts) if a["phone"] == phone)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
@@ -1227,7 +1227,7 @@ class Batch18FixesTest(unittest.TestCase):
         # 管理员审核通过 → 历史日志恢复可见
         ac, at = self._admin_client()
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": PHONE},
                     headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         data = c.get(f"/api/my-logs?date={CAL_DATE}").get_json()
@@ -1576,8 +1576,13 @@ class TierTableMetaTest(_TierBase):
         "新增设置键时必须改档位表"要防的正是这件事，这里把它变成会报红的检查。
         """
         cur = self.webapp._settings_effective_values(self.env_file)
+        # 正态 μ/σ 区间四键的 A 档判定复刻在 `settings_api`（键名单源 `env_io`，本轮
+        # 不在 app.py 档位表里），故反方向对拍的档位全集要把它们并入——否则新键会被
+        # 判成"没档位、任意管理员免口令可写"，而这四键实测是 403。
+        from web.services.env_io import SCHEDULE_DIST_KEYS
         unclassified = set(cur) - (set(self.webapp.MASTER_ONLY_KEYS)
                                    | set(self.webapp.GATED_KEYS)
+                                   | set(SCHEDULE_DIST_KEYS)
                                    | {self.webapp.GLOBAL_PAUSE_KEY})
         self.assertEqual(unclassified, set(),
                          f"这些设置键没有档位归属（等于任意管理员免口令可写）："

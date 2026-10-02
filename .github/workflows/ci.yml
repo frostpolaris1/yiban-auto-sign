@@ -1,11 +1,15 @@
 name: CI
 
-# fast 轨（push/PR）：Lint + 安全子集 + e2e smoke，目标 ≤3min 含 setup。
+# fast 轨（push/PR）：Lint + 安全子集 + e2e smoke + **依赖漏洞审计（pip-audit）**，
+# 前三项目标 ≤3min 含 setup（审计为并行独立 job，不在关键路径上）。
 # 全量轨独立为 nightly.yml（schedule 06:00 UTC / 14:00 北京）——拆成两文件而非同文件两 job，
 # 理由：schedule 是 workflow 级触发，若与 fast job 同文件则必须给 fast job 加
 # `if: github.event_name != 'schedule'` 的事件守卫，语义更脆；两文件让每个 workflow 的
 # 触发条件各自诚实，且 nightly 可用独立的 timeout/并行度。（取舍全文见
 # .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
+# ⚠️ GitHub 的 `schedule` **只在默认分支上触发**（本仓库默认分支 = main）——nightly.yml
+# 只存在于 develop，因此**排程永远不会跑**（M24）。这条是 main 分支治理问题，
+# 处置清单见 out/backend-review 修复报告；不要靠往 develop 上加 workflow 来"绕过"。
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
 # （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
@@ -83,3 +87,40 @@ jobs:
 
       - name: Gate ready
         run: 'echo "Fast gate active: lint + security subset + e2e smoke."'
+
+  # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
+  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
+  # 因此没有哈希锁可复核——"镜像实际装的版本 = 被审计过的版本"这件事**只由 pip-audit
+  # 兜住**（0.5.1 评审批已把 urllib3 抬到 2.8.0、Werkzeug 抬到 3.1.9 关掉 4 个 CVE，
+  # 该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
+  # ⚠️ 它要真的"拦得住"，必须把它加进分支保护的 required checks（所有者在仓库设置里
+  # 勾选 `dependency-audit`）——本文件无法替你做这件事；没勾之前它只是**报告式**审计。
+  # 独立 job 而非 verify 里的一步：审计要解算整棵依赖树并访问漏洞库，与 verify 的
+  # 测试子集无关联，并行跑不占 fast 轨关键路径（两个 job 共用一次 checkout + setup）。
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      # 审计**锁定清单**（requirements.lock）而不是下限清单（requirements.txt）：
+      # 锁定版本才是镜像实际安装、也是现网实际跑的那个版本。
+      # pip-audit 2.10.0 钉版（与本 job 的 ruff/pytest 钉版同一纪律：门禁工具必须可
+      # 复现，否则"昨天绿今天红"分不清是漏洞库更新还是工具行为变化）。
+      # 退出码：0=无已知漏洞；1=检出漏洞（门禁失败）；>1=审计本身跑不起来。
+      - name: pip-audit (locked dependencies)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit==2.10.0
+          pip-audit -r requirements.lock
+
+      - name: Audit ready
+        run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'

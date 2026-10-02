@@ -171,7 +171,7 @@ def api_users_batch():
 
     body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
     角色变更不支持批量：提权/降权仅保留 /api/users/<email>/role 单个路径，
-    且须先过高危口令门禁（是否真要当次口令随 `YIBAN_PW_GATE` 档位）。
+    且须先过高危口令门禁（用户 2026-10-01 拍板：重置他人口令在 `risk` 档**当次**索要）。
     Phase 1：整体事务，失败全部回滚；无效项软跳过。
     """
     m = _appmod()
@@ -200,6 +200,9 @@ def api_users_batch():
     # 删除与批量重置口令都走高危门禁（口令 + 同管理员窗口内限速，防被盗会话快速反复删除
     # 用户并刷告警邮件）。重置口令入门禁的理由：它同为账号控制权转移操作（e2e 实锤：普通
     # 管理员无口令即可批量接管用户登录）——只把 delete 当高危是不够的。
+    # `risk_always` **只给 reset_password**（用户 2026-10-01 拍板：「重置他人口令」整类摘出
+    # risk 档同出口免口令）；批量 delete 属删除类、不在本拍板清单内，逐字保持旧口径
+    # （非 full 档只认 confirm_delay_ack 倒计时确认）。
     if action in ("delete", "reset_password"):
         gate = high_risk_gate()(  # 顺序恒为"先鉴权、通过了才占额度"；429 文案各自保持原样
             data,
@@ -210,6 +213,7 @@ def api_users_batch():
             irreversible=(action == "delete"),
             # 删除占删除额度；重置他人密码属凭据改写类，占独立凭据额度（两族分开计数）
             quota="delete" if action == "delete" else "creds",
+            risk_always=(action == "reset_password"),
         )
         if gate:
             return gate
@@ -322,7 +326,9 @@ def api_user_role(user_id):
     只能将「正式用户」（有生效账号且无待审核）设为管理员；
     防呆：内置管理员不可改；至少保留 1 个管理员。
 
-    角色变更是权限面变更，接入高危门禁（口令复核是否索要随 `YIBAN_PW_GATE` 档位 + 限速）；
+    角色变更接入高危门禁（**当次口令** + 凭据类限速）。用户 2026-10-01 拍板：`risk`
+    档下角色变更与提权**不吃"同出口免口令"**（`risk_always=True`），即"注册用户审核通过
+    后提权"这条路径同出口也必须当次输口令——它与重置他人口令是同一族控制权转移。
     批量角色变更入口已移除，本端点是唯一变更路径。
 
     定位走**不透明 id**（`/api/users/<int:id>/role`）：明文邮箱不再编进 URL path
@@ -334,8 +340,8 @@ def api_user_role(user_id):
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = m._json_body()
-    # 角色变更是可逆操作（设回去即可），免口令门免额度；主管理员专属
-    # 前置（上一行）不变，留痕靠 set_user_role 与角色 UPDATE 同事务的审计行。
+    # 主管理员专属前置（上方）不变；角色取值校验也不受门禁影响（400 与 403/400 门禁
+    # 分属"请求不合法"与"未授权"，先判前者省一次 scrypt）。
     new_role = data.get("role")
     if new_role not in ("admin", "user"):
         return jsonify({"error": "未知角色"}), 400
@@ -346,6 +352,20 @@ def api_user_role(user_id):
     # 内置管理员（.env）不可修改角色
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可修改角色"}), 400
+    # 口令门禁放在 _file_lock 之外（与同域其它高危写口同口径）：scrypt 校验单次数百毫秒，
+    # 放进全局锁会让一次鉴权阻塞全进程的用户读写。
+    #
+    # 提权是控制权转移，与「重置他人口令」同一族，故接统一高危门禁（先口令、通过后才占
+    # 凭据额度）。此前本端点**整条不过门禁**（角色可逆故免门的旧口径），于是 risk 档同出口
+    # 的被盗主管理员会话能零口令给自己造一个永久管理员——用户 2026-10-01 拍板把"角色变更
+    # 与提权"整类摘出免口令，故 risk_always=True：缺省档下同出口也要当次口令。
+    # 降权方向同样过门（同一端点、同一判据，不按方向分叉：取证面必须是"谁动过权限"）。
+    gate = high_risk_gate()(
+        data, "变更用户角色（提权/降权）",
+        limit_msg="角色变更过于频繁，请稍后再试", quota="creds",
+        risk_always=True)
+    if gate:
+        return gate
     with m._file_lock:
         target = m.db.find_user(email)
         if not target:
@@ -420,7 +440,7 @@ def api_user_password(user_id):
     if m._current_role() == "admin":
         gate = high_risk_gate()(
             data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试",
-            quota="creds")
+            quota="creds", risk_always=True)
         if gate:
             return gate
     row = m.db.find_user_by_id(user_id)

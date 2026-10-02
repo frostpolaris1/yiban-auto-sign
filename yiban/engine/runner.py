@@ -268,8 +268,8 @@ def main(argv=None):
     # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
     # 拉起列表：优先执行体清单（`YIBAN_EXECUTORS` 里 type=worker 的行，**停用行不拉起**、
     # 删中间行不影响其余槽位）；清单缺失/非法 → 旧口径 `--workers N`（行为逐字不变）。
-    # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
-    # `YIBAN_PROXY`）——与迁移前的 `YIBAN_WORKERS=1` 完全一致。
+    # 清单里只有 1 个并行执行体时也照样派发（身份 `worker-0@host` 才对得上 HRW 候选集）；
+    # 拉起列表为空（清单在场但全停用/仅兜底）才走进程内单执行体路径。
     #
     # **子进程不得再当监督进程**：清单是从**环境变量**读的，
     # 监督进程拉起的子进程会原样继承它，于是"父按清单拉 N 个 → 子也按清单拉 N 个"会递归
@@ -291,7 +291,11 @@ def main(argv=None):
             _dispatch = (args.workers, None) if (
                 not _already_child and args.workers and args.workers > 1) else None
         else:
-            _dispatch = (len(slots), slots) if len(slots) > 1 else None
+            # 清单里有 worker 行就派发，**恰好 1 行也派发**：落回进程内单执行体路径时身份
+            # 退成 `single@{主机名}`，而 HRW 候选集只含清单里的 `worker-0@{主机名}`
+            # （schedule._executor_ids）⇒ 分片集恒空、全天零领取。1 个子进程的开销远小于
+            # 全天零签到的静默故障。只有清单在场且拉起列表为空（全停用/仅兜底）才不派发。
+            _dispatch = (len(slots), slots) if slots else None
     # 只有"真跑计划任务"的派发才在 spawn 之前过门：`--check-config` 是部署验证（哪天都要
     # 能验）、`--probe` 自带一道门且跳过语义是 `return 0` 而非 2——两者照旧派发，由子进程
     # 各自按既有语义处理，与门只写在下面时逐字一致。`--only` 不在派发之列（见上），故也

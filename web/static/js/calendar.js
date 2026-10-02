@@ -15,8 +15,7 @@
 
    ## 容器约定
    · 月历挂在 `mount` 内（整个 mount 由本模块重建）；
-   · 日志面板（可选）由页面渲染，本模块按
-     `mount 内 [data-sc-log]` → `文档内 [data-sc-log]` 的顺序寻找，
+   · 日志面板（可选）由页面渲染，本模块按 `文档内 [data-sc-log]` 寻找，
      并在 `[data-sc-log-date]` 回显当前日期。没有日志面板时只渲染日历。 */
 (function () {
   "use strict";
@@ -45,37 +44,32 @@
     }
     return months[phone];
   }
-  function logPanel(mount) {
-    return mount.querySelector("[data-sc-log]") || document.querySelector("[data-sc-log]");
-  }
-
   // ==== 签到日历 · 日期格（唯一实现，勿在页面里再写一份）====
-  // 视觉通道分配（颜色之外必须有冗余编码，不单靠颜色传达状态）：
-  //   ① 底色 + 圆点 = 签到结果（✅ 成功 / ❌ 失败）；色值见 app.css 的 --cal-* 令牌，
-  //      由 tests/test_web_text_contrast.py 按"文字 on 格底"实测 AA；
+  // 视觉通道分配（产品定版：状态一律用颜色表达，emoji 不上界面）：
+  //   ① 底色 = 状态本身（五档色相即语义：绿成功/红失败/灰有意不签/明黄异常/
+  //      蓝白呼吸=正在签到），色值见 app.css 的 --cal-* 令牌与 sc-breathe 关键帧，
+  //      由 tests/test_web_css_contrast.py 按"文字 on 格底"实测 AA，五档底色等明度
+  //      （浅色 L*≈91.8 / 深色 L*≈17.3），语义只由色相承担；
   //   ② inset ring  = 今天（不占布局，与底色、选中框互不争夺）；
-  //   ③ 角标「休」 = 周末停签（底色中性 + 文字角标，双重编码）；
+  //   ③ 角标「休」 = 周末停签（中性底 + 文字角标）；
   //   ④ getSelected = 选中（主色实框 + 主色浅底，独立于上面三者）。
   // ⚠ 周末停签**不**把数字做很浅：该格仍可点（点了提示「周末无需签到」），属有信息的
   //   格子、不是 WCAG 1.4.3 豁免的非活动控件，故同样保证可读。
-  // 状态符号 → 显示档（语气档 + 图例名）。表由服务端渲染进页面
+  // 状态符号 → 显示档（语气档 + 读屏短名）。表由服务端渲染进页面
   // （window.YB_CALENDAR_STATE.by_symbol，唯一事实源 yiban.status.DISPLAY）。
-  // 原先日期格按符号字面量比较 "✅"/"❌"，其余状态一律落成空白格——"这格什么都没发生"
-  // 与"这格发生了别的事（时段外/无点位/账密暂停）"看起来完全一样，是日历侧的假信号。
+  // 符号只是按日状态文件的存储口径，反查完语气档即弃——符号本身不渲染。
   function stateEntry(symbol) {
     var ctx = window.YB_CALENDAR_STATE || {};
     return (ctx.by_symbol || {})[symbol] || null;
   }
 
-  // 语气档 → 日期格类名：只有成功/失败两档有专属底色，其余档走中性底 + 符号角标
-  // （不单靠颜色传达状态；状态码→语气档的映射只有一份，见状态表）。
+  // 语气档 → 日期格类名（sc-cell--<tone>，每档一套底色；sc-breathe 只挂 busy）
   function dayCell(o) {
     var entry = stateEntry(o.state);
     var tone = entry ? entry.tone : "";
     var cls = "sc-cell";
     if (o.off) cls += " sc-cell--off";
-    else if (tone === "ok") cls += " sc-cell--ok";
-    else if (tone === "bad") cls += " sc-cell--bad";
+    else if (tone) cls += " sc-cell--" + esc(tone);
     else cls += " sc-cell--none";
     if (o.isToday) cls += " sc-cell--today";
     if (o.selected) cls += " is-selected";
@@ -84,17 +78,11 @@
     var label = o.date + (o.isToday ? "，今天" : "")
       + (stateText ? "，" + stateText : (off ? "" : "，查看签到记录"))
       + off;
-    var dot = tone === "ok" ? '<i class="sc-dot sc-dot--ok" aria-hidden="true"></i>'
-      : tone === "bad" ? '<i class="sc-dot sc-dot--bad" aria-hidden="true"></i>' : "";
     var badge = o.offDay ? '<i class="sc-off" aria-hidden="true">休</i>' : "";
-    // 其余状态用状态符号做角标：有结论的日子必须看得出"不是没记录"。
-    // 周末停签格不叠（同角已有「休」角标，两个角标互挤不可读）。
-    var symBadge = (!o.off && o.state && tone !== "ok" && tone !== "bad")
-      ? '<i class="sc-sym" aria-hidden="true">' + esc(o.state) + "</i>" : "";
     return '<button type="button" class="' + cls + '" data-sc-date="' + esc(o.date) + '"'
       + ' title="' + esc(o.date) + '" aria-label="' + esc(label) + '"'
       + (o.selected ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>'
-      + '<span class="sc-num">' + o.d + "</span>" + symBadge + dot + badge + "</button>";
+      + '<span class="sc-num">' + o.d + "</span>" + badge + "</button>";
   }
 
   function monthLabel(year, month) {
@@ -182,7 +170,7 @@
   }
 
   // 固定 42 格：前置空位 + 当月日期 + 尾部补齐 → 每个月都是 6 行，卡片高度恒定
-  function gridHtml(data, phone, year, month, monthStr, selected) {
+  function gridHtml(data, phone, year, month, monthStr, selected, used) {
     var firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     var days = new Date(year, month, 0).getDate();
     var today = todayStr();
@@ -196,6 +184,8 @@
       var sunOff = wd === 0 && !flags.sunday;
       var satOff = wd === 6 && !flags.saturday;
       var off = sunOff || satOff;
+      var entry = stateEntry(stt);
+      if (entry && !off) used.push(entry.tone);   // 图例收敛：只统计真正显示出来的语气档（休日显示"休"，不算）
       cells.push(dayCell({
         d: d, date: date, state: stt, off: off, selected: date === selected,
         offDay: off ? (sunOff ? "日" : "六") : "", isToday: date === today,
@@ -203,6 +193,21 @@
     }
     while (cells.length < CELLS) cells.push('<span class="sc-blank"></span>');
     return cells.join("");
+  }
+
+  // 图例动态收敛：图例的职责是解释当前看得见的颜色，语气档全量陈列是服务端
+  // （legend_items）的事——没出现的档位条目是纯噪音。图例按语气档归组（色彩即语义），
+  // 收敛键也用语气档：按账号卡维护各自的出现集合（切月只重算该卡），并集驱动显隐；
+  // 休/今天两条是结构性常驻（无 data-tone），不参与收敛。
+  var legendUsed = {};
+  function trimLegend() {
+    var used = {};
+    Object.keys(legendUsed).forEach(function (k) {
+      (legendUsed[k] || []).forEach(function (s) { used[s] = true; });
+    });
+    [].slice.call(document.querySelectorAll(".sc-legend li[data-tone]")).forEach(function (li) {
+      li.hidden = !used[li.getAttribute("data-tone")];
+    });
   }
 
   function render(mount, phone, selectDate) {
@@ -242,7 +247,10 @@
         var picked = mount.getAttribute("data-sc-selected");
         if (autoToday && picked) { selected = picked; autoToday = false; }
         if (label) label.textContent = monthLabel(year, month);
-        grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected);
+        var used = [];
+        grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected, used);
+        legendUsed[phone] = used;
+        trimLegend();
         grid.removeAttribute("aria-busy");
         if (selectDate) {
           mount.setAttribute("data-sc-selected", selectDate);

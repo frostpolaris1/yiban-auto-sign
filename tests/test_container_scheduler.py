@@ -41,7 +41,7 @@ import subprocess as _sp
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
@@ -732,7 +732,7 @@ class Batch9WebTest(unittest.TestCase):
         ac = self.webapp.create_app().test_client()
         at = self._login(ac, "admin@test.local", ADMIN_PASS)
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
-        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = ac.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": PHONE},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200)
         return c, t
@@ -940,6 +940,177 @@ class SchedulerTimeoutTest(unittest.TestCase):
             "_Stub", (), {"Popen": staticmethod(lambda cmd, **kw: _HangProc()),
                           "TimeoutExpired": sp.TimeoutExpired})()
         sched._run_signin_child()  # 不应抛异常（TimeoutExpired 被捕获留痕）
+
+
+class ContainerBackupHookTest(unittest.TestCase):
+    """M44：容器形态过去**没有任何备份**——这里钉 02:00 挂点的行为契约。
+
+    容器部署的用户没有宿主 cron，容器调度器又漏了 02:00，等于"看着在跑、其实
+    从没备份过"。逐条钉（都能判错）：
+
+    1. 到点必跑（`hour >= 2` 的无上界判定，**不是** `hm == (2, 0)` 整分命中——
+       整分命中在容器恰逢重启/打镜像时会整天丢掉备份）；
+    2. 当日只跑一次（落 `sched-slot-backup-<date>.json`，与首签/补签同一套闩锁）；
+    3. 失败有限重试、到次数就收手当天（否则备份子进程会把签到前的循环占死）；
+    4. 未配置口令文件 = 未启用：安静跳过、**不消耗重试预算**、不报 ERROR；
+    5. 启用判据是"口令文件真的可读"，不是"键非空"——compose 默认注入那个键，
+       按键非空判会让默认部署天天三次重试后报 ERROR；
+    6. 备份目录**不在 /data 内**（否则每轮 tar 把上一轮备份再打进去）；
+    7. 口令**绝不下发**到子进程环境（M97 口径延续）；
+    8. 路径类参数同 M27 口径：`.env` 优先、进程环境只补缺。
+    """
+
+    def setUp(self):
+        self.sched = _load_sched()
+        self.tmp = tempfile.mkdtemp(prefix="sched-backup-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.sched.STATEDIR = self.tmp
+        self.sched.ENV_FILE = os.path.join(self.tmp, ".env")
+        self.passphrase = os.path.join(self.tmp, "passphrase")
+        with io.open(self.passphrase, "w", encoding="utf-8") as f:
+            f.write("pw\n")
+        self.runs = []
+
+    def _patch_run_backup(self):
+        def _fake_run():
+            self.runs.append(1)
+            return True, "/backups"
+        self.sched._run_backup = _fake_run
+
+    @staticmethod
+    def _now(hour, minute=0):
+        return datetime(2026, 10, 1, hour, minute, 0)
+
+    # ---- 1) 到点必跑 ----
+    def test_backup_not_due_before_two_am(self):
+        self.assertFalse(self.sched._backup_due(self._now(1, 30), None, 0),
+                         "02:00 之前不该跑备份")
+
+    def test_backup_due_after_two_am_and_when_the_exact_minute_was_missed(self):
+        """容器 02:00 恰逢重启 ⇒ 整分命中会整天丢掉；无上界判定必须补触发。"""
+        for hm in ((2, 0), (2, 1), (3, 30), (6, 31)):
+            with self.subTest(hm=hm):
+                self.assertTrue(self.sched._backup_due(self._now(*hm), None, 0),
+                                f"{hm} 应当补触发（错过整分也要跑）")
+
+    def test_backup_not_due_again_within_the_retry_window(self):
+        last = self._now(2, 0)
+        self.assertTrue(self.sched._backup_due(last, None, 0))
+        self.assertFalse(self.sched._backup_due(last + timedelta(seconds=60), last, 1),
+                         "失败后 10 分钟内不得立刻重试")
+
+    def test_backup_stops_after_max_tries(self):
+        last = self._now(2, 0)
+        self.assertFalse(
+            self.sched._backup_due(last + timedelta(seconds=3600), last,
+                                   self.sched.BACKUP_MAX_TRIES),
+            "重试到上限必须收手当天（否则备份把签到前的循环占死）")
+
+    # ---- 2) 当日只跑一次（跨重启靠盘上标记） ----
+    def test_success_marks_the_day_and_blocks_a_second_run(self):
+        state = {}
+        self._patch_run_backup()
+        os.environ["YIBAN_BACKUP_PASSPHRASE_FILE"] = self.passphrase
+        try:
+            self.assertTrue(self.sched._tick_backup(self._now(2, 0), state))
+            self.assertEqual(len(self.runs), 1)
+            marker = os.path.join(self.tmp, f"sched-slot-backup-{clock.today()}.json")
+            self.assertTrue(os.path.isfile(marker), "成功必须落按日槽位标记")
+            # 模拟容器重启：内存记账归零，只剩盘上标记
+            self.assertFalse(self.sched._backup_due(self._now(2, 30), None, 0),
+                             "跨重启不得重复跑（同日槽位标记）")
+        finally:
+            os.environ.pop("YIBAN_BACKUP_PASSPHRASE_FILE", None)
+
+    # ---- 3) 有限重试 + 收手 ----
+    def test_failure_retries_then_gives_up_and_marks_the_day(self):
+        state = {}
+        os.environ["YIBAN_BACKUP_PASSPHRASE_FILE"] = self.passphrase
+        self.sched._run_backup = lambda: (self.runs.append(1), (False, "boom"))[1]
+        try:
+            for _ in range(self.sched.BACKUP_MAX_TRIES):
+                self.sched._tick_backup(self._now(2, 0), state)
+            self.assertEqual(len(self.runs), self.sched.BACKUP_MAX_TRIES)
+            marker = os.path.join(self.tmp, f"sched-slot-backup-{clock.today()}.json")
+            self.assertTrue(os.path.isfile(marker),
+                            "重试到上限必须落标记收手，否则每分钟都会再试一次")
+        finally:
+            os.environ.pop("YIBAN_BACKUP_PASSPHRASE_FILE", None)
+
+    # ---- 4)(5) 未启用 vs 已启用 ----
+    def test_unconfigured_passphrase_is_a_quiet_skip_without_retry_budget(self):
+        """默认部署（compose 注了键但没挂文件）：安静跳过，**不**消耗重试预算。"""
+        state = {}
+        os.environ["YIBAN_BACKUP_PASSPHRASE_FILE"] = os.path.join(self.tmp, "nope.txt")
+        try:
+            self.assertFalse(self.sched._backup_configured())
+            self._patch_run_backup()
+            self.assertFalse(self.sched._tick_backup(self._now(2, 0), state))
+            self.assertEqual(self.runs, [], "未启用时不得 spawn 备份子进程")
+            self.assertEqual(state.get("tries", 0), 0,
+                             "未启用不该消耗重试预算（否则默认部署天天三次重试后报 ERROR）")
+        finally:
+            os.environ.pop("YIBAN_BACKUP_PASSPHRASE_FILE", None)
+
+    def test_readable_passphrase_file_counts_as_configured(self):
+        os.environ["YIBAN_BACKUP_PASSPHRASE_FILE"] = self.passphrase
+        try:
+            self.assertTrue(self.sched._backup_configured())
+        finally:
+            os.environ.pop("YIBAN_BACKUP_PASSPHRASE_FILE", None)
+
+    # ---- 6) 备份目录不在数据目录内 ----
+    def test_default_backup_dir_is_outside_the_data_dir(self):
+        """备份落点默认必须在 /data 之外——否则每轮 tar 把上一轮备份再打进去。"""
+        env = self.sched._backup_env()
+        data = os.path.abspath(env.get("DATA_DIR", "/data"))
+        backup = os.path.abspath(env.get("BACKUP_DIR", "/backups"))
+        self.assertFalse(backup.startswith(data.rstrip("/") + "/"),
+                         "备份目录落在数据目录内会自我嵌套（体积逐轮翻倍）")
+
+    # ---- 7) 口令不下发 ----
+    def test_passphrase_never_travels_in_the_child_environment(self):
+        """M97 口径延续：口令只经 0600 文件，**绝不下发给 tar/gpg 的整棵子进程树**。"""
+        env = self.sched._backup_env()
+        for key in ("YIBAN_BACKUP_PASSPHRASE", "BACKUP_GPG_PASSPHRASE",
+                    "BACKUP_AGE_PASSPHRASE"):
+            self.assertEqual(env.get(key), None, f"{key} 不得出现在备份子进程环境里")
+
+    # ---- 8) M27 口径 ----
+    def test_dotenv_overrides_process_env_for_backup_paths(self):
+        env_file = os.path.join(self.tmp, ".env")
+        with io.open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_BACKUP_DIR=/from-dotenv\n")
+        saved_file, saved_dir = self.sched.ENV_FILE, os.environ.get("YIBAN_BACKUP_DIR")
+        self.sched.ENV_FILE = env_file
+        os.environ["YIBAN_BACKUP_DIR"] = "/from-process-env"
+        try:
+            env = self.sched._backup_env()
+            self.assertEqual(env.get("BACKUP_DIR"), "/from-dotenv",
+                             "`.env` 必须压住进程环境（全仓统一口径）")
+        finally:
+            self.sched.ENV_FILE = saved_file
+            if saved_dir is None:
+                os.environ.pop("YIBAN_BACKUP_DIR", None)
+            else:
+                os.environ["YIBAN_BACKUP_DIR"] = saved_dir
+
+    # ---- 主循环接线 ----
+    def test_main_loop_ticks_backup(self):
+        self.sched.FIRST = self.sched.SECOND = (0, 0)
+        self.sched.build_child_env = lambda env_file=None, base=None, **kw: {}
+        ticks = []
+        self.sched._tick_backup = lambda now, state: ticks.append(now)
+        self.sched.subprocess = _stub_subprocess()
+        self.sched._backup_due = lambda now, last, tries: True
+
+        def _stop(_seconds):
+            raise _Stop()
+
+        self.sched.time = type("_Stub", (), {"sleep": staticmethod(_stop)})()
+        with self.assertRaises(_Stop):
+            self.sched.main_loop(sleep_seconds=1)
+        self.assertTrue(ticks, "main_loop 没有接线备份挂点（M44：容器形态等于没备份）")
 
 
 if __name__ == "__main__":

@@ -4,15 +4,18 @@
 标签：B · 调度：领取/队列/执行体
 覆盖：兜底常驻外壳的三条契约：开关关时静默（退出码 0、不起
    CLI、不写日志、不建状态目录）、开关开时以 --fallback 真的起到
-   CLI、真值字面量集合、环境变量优先于 .env、含 BOM/CRLF/多余空白/杂键的 .env
+   CLI、真值字面量集合、**`.env` 优先于进程环境**（M27）、含 BOM/CRLF/多余空白/杂键的 .env
    仍能读到开关。
 对应实现：scripts/yiban-fallback.sh（.env 解析、开关判定、CLI 调用与锁）。
 关键断言：默认态是关，而 cron 每 5
    分钟一次：任何输出都会变成周期性邮件噪声，故「静默」是被断言的行为（stdout
    必须为空、状态目录必须仍为空），退出码 0
    不足以证明没起进程。反过来「起了进程」必须由桩 PY 记录的完整参数证明是
-   --fallback 而不是空跑。环境变量优先于 .env，好让 cron
-   行临时覆盖网页配置而不必改配置。
+   --fallback 而不是空跑。
+   **`.env` 优先于进程环境**（M27，2026-10-01）：开关的事实源必须是网页写进 `.env`
+   的那一份，否则会出现「页面显示关闭、cron 行却天天拉起」这种两处同时为真的
+   状态。本断言 2026-10-01 之前是**反的**（当时口径为「环境变量优先」），
+   已随口径统一一并反转——反转的是契约，不是放宽：两个方向都逐条钉住。
 依赖：skipIf(shutil.which('bash') is None)：本机无 bash 时整类 skip；有 bash
    时用临时「应用目录」+ .venv/bin/python3 桩真实执行脚本，并逐键清空 YIBAN_*
    环境变量防并发串味。
@@ -152,19 +155,36 @@ class YibanFallbackShTest(unittest.TestCase):
                 self.assertEqual(r.returncode, 0)
                 self.assertEqual(len(self._calls()), 1, f"{value} 应被视为真值")
 
-    def test_environment_overrides_dotenv(self):
-        """环境变量优先：cron 行里 `YIBAN_FALLBACK_ENABLE=0 …` 可临时关掉网页配置。"""
+    def test_dotenv_overrides_process_env(self):
+        """M27：`.env` 优先，进程环境只补缺——**两个方向**都钉。
+
+        这是本文件唯一一条在 2026-10-01 被反转的断言（原口径为「环境变量优先」，
+        连同脚本头注释一起改成 `.env` 优先）。之所以要两个方向都断：只断一个方向
+        的话，"实现根本没读 .env" 或 "实现无条件让 .env 赢" 这两种回退都能混过去。
+        """
+        # 方向一：.env 说开、cron 行说关 → 以 .env 为准，起兜底
         self._write_env("YIBAN_FALLBACK_ENABLE=1\n")
         r = self._run(YIBAN_FALLBACK_ENABLE="0")
-        self.assertEqual(r.returncode, 0)
-        self.assertEqual(self._calls(), [], "环境变量的 0 不能被 .env 的 1 覆盖")
-        # 反向：.env 说关、cron 行说开 → 以 cron 行为准
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(len(self._calls()), 1,
+                         "进程环境的 0 不该压住 .env 的 1（.env 是唯一事实源）")
+        # 方向二：.env 说关、cron 行说开 → 以 .env 为准，静默不起
         self._write_env("YIBAN_FALLBACK_ENABLE=0\n")
         if os.path.exists(self.calls):
             os.remove(self.calls)
         r = self._run(YIBAN_FALLBACK_ENABLE="1")
         self.assertEqual(r.returncode, 0)
-        self.assertEqual(len(self._calls()), 1, "环境变量的 1 不能被 .env 的 0 覆盖")
+        self.assertEqual(self._calls(), [],
+                         "进程环境的 1 不该顶开 .env 的 0（页面显示关闭时排程必须跟着关）")
+
+    def test_process_env_fills_keys_absent_from_dotenv(self):
+        """.env 里没有的键，由进程环境补缺（"优先"不等于"屏蔽进程环境"）。"""
+        self._write_env("YIBAN_FALLBACK_ENABLE=1\n")
+        # .env 不含 YIBAN_STATE_DIR：进程环境给的那份必须生效（日志落进它指定的目录）
+        r = self._run(YIBAN_STATE_DIR=_to_bash_path(self.state))
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(len(self._calls()), 1)
+        self.assertIsNotNone(self._sign_log(), "补缺路径下日志仍应落在进程环境给的目录")
 
     def test_dotenv_is_parsed_safely(self):
         """`.env` 里带 BOM/CRLF/多余空白/杂键时仍能读到开关（与 run.sh 同源解析）。"""

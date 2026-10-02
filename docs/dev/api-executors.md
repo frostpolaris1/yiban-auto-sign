@@ -3,6 +3,13 @@
 给前端做「执行体配置」页用。**后端已就绪，页面未实现**——本文档是唯一契约来源，
 字段与语义变了要同步改这里（并与 `tests/test_egress_and_executors_api.py` 的断言对齐）。
 
+本轮（2026-10-01）新增两条，均**已提供**，前端可直接照下面两节实现：
+
+| 端点 | 方法 | 用途 | 一句话注意 |
+|------|------|------|---------|
+| `/api/scheduler/executors/progress` | GET | A6「实时进度」 | **只有聚合计数，无逐账号列表**，无分页 |
+| `/api/scheduler/executors/ownership` | GET | A7「负载/归属分布」 | 归属分布 + 相邻两日迁移，**聚合**，无分页 |
+
 ## 权限与脱敏（先读这两条）
 
 - **仅主管理员**（`.env` 里的内置管理员）可访问；其他身份一律 `401`/`403`。
@@ -364,6 +371,89 @@
 **只回角色/槽位/标签**：`sign_tasks.owner` 原串含主机名（旧格式还含进程号），属部署
 信息，任何情况下都不进响应。列表接口的手机号本就打码，与该字段无关。
 
+## `GET /api/scheduler/executors/progress` —— 当日签到进度（聚合计数）**（已提供）**
+
+**仅主管理员**；只读、无副作用；错误一律 JSON（未登录 `401`、非主管理员 `403`）。
+**只有聚合计数，没有任何逐账号列表**——这是硬约束（A6 原话："建议聚合计数口径，
+不要逐账号列表"）：逐账号进度等于把全站账号清单换个出口再发一遍。**聚合后天然无分页**，
+故本端点**没有 `page` / `page_size` 参数**。
+
+口径与 `GET /api/scheduler/executors` 的 `activity` **同一实现**
+（`web/services/executor_env.py::_executor_activity`），差别只有两点：
+
+1. 多给一段**全站按 state 的分布**（`totals`，取 `queue_store.day_counts`）；
+2. `day` 取**最近一次有记录的业务日**（`db.task_latest_day`）而不是"今天"——周末停签后
+   取"今天"会让整页归零，页面无法区分"没跑"与"今天不跑"。`is_today` 字段说明这一点。
+
+```json
+{"ok": true,
+ "day": "2026-10-01", "is_today": true, "in_window": true,
+ "totals": {"total": 5, "settled": 3, "open": 2,
+            "done": 3, "skipped": 0, "pending": 0, "claimed": 1, "failed": 1, "stolen": 0},
+ "by_executor": [{"slot": 1, "role": "worker", "index": 0, "label": "并行执行体 #1",
+                  "done": 2, "failed": 1, "claimed": 0, "total": 3}],
+ "executor_totals": {"claimed": 1, "failed": 1, "done": 3, "total": 5},
+ "note": "聚合计数口径，不含逐账号明细（逐账号明细看账号列表页）。…"}
+```
+
+| 字段 | 类型 | 语义 |
+|------|------|------|
+| `day` | string | 统计的业务日 |
+| `is_today` | bool | `day == 今天`。`false` 时页面要提示"下面是最近一次记录"，别当实时 |
+| `in_window` | bool | 与 `fallback.in_window` 同口径（**本应运行**的时段内：窗口内 且 今天未被周末门/暂停门挡下） |
+| `totals` | object | **全站**按 state 的分布。`settled = done + skipped`（当日不必再签）；`open = pending + claimed + failed + stolen`（仍可能被重排/接手）；`total = settled + open`。派生口径唯一处在 `yiban/store/queue_store.py::day_counts` |
+| `by_executor[]` | list | 各执行体的 KPI，字段与 `activity.by_executor[]` **逐字相同**（`slot`/`role`/`index`/`label`/`claimed`/`failed`/`done`/`total`）。`slot` 是 1-based 槽位号，**替代 owner 原串**（脱敏硬要求） |
+| `executor_totals` | object | 各执行体之和（与 `activity.totals` 同键） |
+| `note` | string | 直接引用即可 |
+
+要点：
+
+- **`claimed` 折 `stolen`**（在飞口径），`pending` 行在本执行体视角下算 `claimed`——
+  折叠规则唯一处在 `queue_store.activity`，页面不要自己再折一遍；
+- **库未初始化 / 当日无记录**：`by_executor: []`、各计数全 `0`，属正常空态，**不是故障**；
+- **脱敏**：响应里没有手机号、没有主机名/进程号（`owner` 原串绝不出现在任何字段）。
+
+## `GET /api/scheduler/executors/ownership` —— 归属与迁移分布（聚合计数）**（已提供）**
+
+**仅主管理员**；只读；错误一律 JSON。**同样只有聚合计数**，不下发任何手机号
+（逐账号明细看账号列表页的 `last_executor` 列）。无分页参数。
+
+`45` §12.1 的原话是"归属与迁移视图"，故给两段聚合：
+
+```json
+{"ok": true,
+ "day": "2026-10-01", "prev_day": "2026-09-30", "compared": true, "tracked": 3,
+ "by_executor": [{"role": "worker", "index": 0, "label": "并行执行体 #1",
+                  "slot": 1, "accounts": 2},
+                 {"role": "worker", "index": 1, "label": "并行执行体 #2",
+                  "slot": 2, "accounts": 1}],
+ "migration": [{"from_role": "worker", "from_index": 0, "from_label": "并行执行体 #1",
+                "to_role": "worker", "to_index": 1, "to_label": "并行执行体 #2",
+                "accounts": 1}],
+ "note": "聚合计数口径，不含逐账号明细…迁移=当日与前一日之间换了执行体的账号数…"}
+```
+
+| 字段 | 类型 | 语义 |
+|------|------|------|
+| `day` / `prev_day` | string | 比较的两端业务日。`prev_day` 是 `day` 的**前一个自然日** |
+| `compared` | bool | `prev_day` 确实有记录。`false` 时 `migration` 恒为 `[]`，页面据此**隐藏**迁移段 |
+| `tracked` | int | 当日在 `sign_tasks` 里有归属行的账号数（按实现口径：不按 `owner` 是否为空过滤） |
+| `by_executor[]` | list | **归属分布 = 负载视图**：每个执行体名下有多少账号。`{role, index, label, slot, accounts}`；`slot` 同上（1-based，worker 才有值，其余角色为 `null`） |
+| `migration[]` | list | **迁移视图**：当日与前一日之间**换了执行体**的账号数，按「从哪个 → 到哪个」聚合成若干条。`{from_role, from_index, from_label, to_role, to_index, to_label, accounts}`。按 `accounts` 降序排 |
+| `note` | string | 直接引用即可 |
+
+要点：
+
+- **"新出现的账号"不算迁移**：前一日没有这一行就无处可迁，不计入；
+- **`compared: false` 不猜**：前一日无记录时就是 `[]`，**不拿更早的日子凑**——
+  间隔不固定的前端无法解释；
+- **迁移的来源**：执行体清单增删行、账号数变动都会让当日归属重算（归属按日哈希分配），
+  这正是"迁移"的来源，一条都没动就是 `[]`；
+- **排序**：`by_executor` 按槽位号升序（与 `activity` 同族），`migration` 按
+  `accounts` 降序——两处顺序稳定，页面不要自己再排；
+- **脱敏**：`owner` 原串含主机名与进程号（对攻击者就是资产清单），**绝不出现在任何字段**；
+  角色口径来自 `yiban.egress.parse_owner`，判不出即 `unknown` + 「未标注（旧数据）」，照实回。
+
 ## `POST /api/scheduler/executors/measure`
 
 **口令门：不需要**（2026-09-17 定）。它**不改配置**，只是"真访问易班一次并占全局冷却"——
@@ -449,9 +539,10 @@
 
 | 需求 | 现状 |
 |------|------|
-| 触发一轮并行签到（按钮） | **不提供该端点**（用户 2026-09-17 裁决：与账号列表的多选批量手动签到重复，需求撤回）。需要立刻补签时用账号列表的**多选批量手动签到**（`POST /api/signin/batch`）；定时轮仍由宿主 cron / 容器调度器拉起 |
+| 触发一轮并行签到（按钮） | **不提供该端点**（用户 2026-09-17 裁决：与账号列表的多选批量手动签到重复，需求撤回；2026-10-01 复核维持）。需要立刻补签时用账号列表的**多选批量手动签到**（`POST /api/signin/batch`）；定时轮仍由宿主 cron / 容器调度器拉起 |
 | 修改后自动重启执行体 | 未提供。改配置后由下一次定时/容器重启生效（与既有设置项一致的语义） |
-| 逐账号的执行体分工明细 | **部分已定**：账号列表已加"**上一个业务日**是谁签的"一列（`GET /api/accounts` 的 `last_executor`）；"把账号转移到指定执行体"用户裁决**暂缓**。全量分工明细仍不提供（避免接口变成"整表导出"） |
+| 逐账号的执行体分工明细 | **部分已定**：账号列表已加"**上一个业务日**是谁签的"一列（`GET /api/accounts` 的 `last_executor`）；"把账号转移到指定执行体"用户裁决**暂缓**。全量分工明细仍不提供（避免接口变成"整表导出"）；归属与迁移的**聚合**视图已提供（`GET /api/scheduler/executors/ownership`） |
 | 每个并行执行体的在线状态 | 已提供：`workers.assignments[].state` 四态（`running`/`finished`/`idle`/`stale`），判定在后端 |
+| 当日进度（各执行体签了多少） | 已提供：`GET /api/scheduler/executors/progress`，仅主管理员；**聚合计数口径，不含逐账号列表**（按 A6 原话要求） |
 | 现场实测单账号耗时（按钮） | 已提供：`POST /api/scheduler/executors/measure`，仅主管理员 + 全局冷却 + 窗口内拒绝；**它真的会用真实账号访问易班一次** |
 | 容器形态下起兜底常驻执行体 | 已提供：`docker/scheduler.py` 每 60 秒检查一次，开关开着且**在有效签到窗口内、今天没被周末门/暂停门挡下**时拉起 `sign --fallback`；窗口结束由进程自行退出。与宿主形态同一个开关、同一把独立锁（`signin-run.lock.fallback`）、同一份心跳，故 `fallback.*` 在容器下语义不变 |

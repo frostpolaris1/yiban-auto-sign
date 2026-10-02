@@ -3,8 +3,15 @@
    挂载到 window.YB.settingsSchedule；classic script。**本文件不抄键名档位清单**——档位由
    后端 `web/app.py` 的 `MASTER_ONLY_KEYS`（A 档：仅主管理员 + 当次口令）/ `GATED_KEYS`
    （B 档：任意管理员 + 口令，可短时豁免）单源决定，另有按方向分权的 `GLOBAL_PAUSE_KEY`；
-   对拍测试会读这里的字面量与那两个常量比对，所以字段名保持 `body.<键> = …` 的直写形态。
-   非主管理员：A 档控件禁用并就地说明（可见而不改），B 档可改。
+   正态 μ/σ 区间四键（mu_min_pct / mu_max_pct / sigma_min_pct / sigma_max_pct）同为 A 档，
+   键名单源在 `web/services/env_io.py` 的 `SCHEDULE_DIST_KEYS`（本轮 app.py 档位表不可改，
+   A 档判定复刻在 `web/routes/settings_api.py`）；对拍测试读这里的字面量与后端的档位集
+   比对，所以字段名保持 `body.<键> = …` 的直写形态。非主管理员：A 档控件禁用并就地说明
+   （可见而不改），B 档可改。
+
+   周末签到是周六/周日合并成的**多选**（`components/multiselect-field.js`，自研 listbox
+   的多选形态）：两枚隐藏 input 仍各持 "1"/"0"、id 不变，读取与提交口径与合并前的两个
+   开关完全一致，故 collect()/submit() 无需按档位或键名做任何分叉。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存调度设置」才
    提交；提交只发送相对服务器快照真正变化的字段，故非主管理员即便点保存也只送得出 B 档
@@ -21,7 +28,11 @@
   var YB = window.YB;
   if (!YB) return;
 
-  var DEFAULTS = { order: "sequence", dist: "uniform", edge: 60, start: "06:30", end: "07:50" };
+  var DEFAULTS = {
+    order: "sequence", dist: "uniform", edge: 60, start: "06:30", end: "07:50",
+    // 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显
+    muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25
+  };
 
   var ctx = null;
   var snap = null;          // 服务器快照（用于只提交改动字段）
@@ -40,6 +51,13 @@
     if (isNaN(v)) return 0;
     v = Math.min(5, Math.max(0, v));
     return Math.round(v * 2) / 2 * 60; // 0.5 分钟对齐后转秒
+  }
+  // μ/σ 百分比输入：整数 0~100（与服务端校验同一范围）。步进 5 只是输入提示，不强制
+  // 取到 5 的倍数——服务端同样只校验整数范围，前端夹到 5 的倍数会让"保存后数字变小"。
+  function pctVal(id, fallback) {
+    var v = parseInt($(id) && $(id).value, 10);
+    if (isNaN(v)) return fallback;
+    return Math.min(100, Math.max(0, v));
   }
   function windowParts() {
     var s = ($("ss-window-start") || {}).value || DEFAULTS.start;
@@ -81,11 +99,22 @@
   // 禁用要落到"可见控件"上：自研控件与原生控件分离出可聚焦代理（下拉/滑块触发器、
   // 时间区间的 pair 触发器；原生控件是它自己），隐藏 input 上置 disabled 既不可见
   // 也不阻断交互。descId（权限说明）关联到该代理，读屏才能听到"为什么禁用"。
+  // 自研控件的根有两种找法：单值控件（下列拉 / 数值滑块）把 id 写在根的属性值上；
+  // 多选组的根不带 id（同组多个隐藏 input 共用一个触发器），只能按"拥有该 input 的组"找。
+  function rootByValueId(id, attr) {
+    return document.querySelector("[" + attr + '="' + id + '"]');
+  }
+  function rootByOwner(id, attr) {
+    var el = $(id);
+    return el && el.closest ? el.closest("[" + attr + "]") : null;
+  }
   function proxyOf(id) {
-    var root = document.querySelector('[data-select-field="' + id + '"]');
-    if (root) return root.querySelector(".select-trigger");
-    root = document.querySelector('[data-range-field="' + id + '"]');
-    if (root) return root.querySelector(".range-trigger");
+    var sel = rootByValueId(id, "data-select-field");
+    if (sel) return sel.querySelector(".select-trigger");
+    var ms = rootByOwner(id, "data-multiselect-field");
+    if (ms) return ms.querySelector(".select-trigger");
+    var range = rootByValueId(id, "data-range-field");
+    if (range) return range.querySelector(".range-trigger");
     var tf = document.querySelector('[data-time-field="' + id + '"]');
     if (tf) {
       var host = tf.closest ? (tf.closest("[data-time-pair]") || tf) : tf;
@@ -97,24 +126,23 @@
   function setDisabled(id, v, descId) {
     var el = $(id);
     if (!el) return;
-    var kind = document.querySelector('[data-select-field="' + id + '"]');
-    if (kind && YB.selectField) {
+    var sel = rootByValueId(id, "data-select-field");
+    var ms = rootByOwner(id, "data-multiselect-field");
+    var range = rootByValueId(id, "data-range-field");
+    var tf = document.querySelector('[data-time-field="' + id + '"]');
+    if (sel && YB.selectField) {
       YB.selectField.setDisabled(id, v);
+    } else if (ms && YB.multiselectField) {
+      YB.multiselectField.setDisabled(id, v);     // 多选：同组共用一个触发器，按整组置灰
+    } else if (range && YB.rangeField) {
+      YB.rangeField.setDisabled(id, v);
+    } else if (tf && YB.timeField && YB.timeField.setDisabled) {
+      // 时间字段：禁用交给组件落到触发器上（区间两个 id 共用一个触发器）
+      YB.timeField.setDisabled(id, v);
     } else {
-      var range = document.querySelector('[data-range-field="' + id + '"]');
-      if (range && YB.rangeField) {
-        YB.rangeField.setDisabled(id, v);
-      } else {
-        var tf = document.querySelector('[data-time-field="' + id + '"]');
-        if (tf && YB.timeField && YB.timeField.setDisabled) {
-          // 时间字段：禁用交给组件落到触发器上（区间两个 id 共用一个触发器）
-          YB.timeField.setDisabled(id, v);
-        } else {
-          var proxy = proxyOf(id);
-          if (proxy && proxy !== el) proxy.disabled = !!v;   // 兜底：触发器挂在其隐藏 input 之外
-          el.disabled = !!v;
-        }
-      }
+      var proxy = proxyOf(id);
+      if (proxy && proxy !== el) proxy.disabled = !!v;   // 兜底：触发器挂在其隐藏 input 之外
+      el.disabled = !!v;
     }
     if (descId) associate(proxyOf(id), descId, v);
   }
@@ -177,13 +205,36 @@
     warn.hidden = msgs.length === 0;
   }
 
-  // 逐字段权限：主管理员专属控件在非主管理员下禁用（周六/周日始终可用）。
-  function applyPerm() {
-    var master = isMaster();
-    ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
-     "ss-window-start", "ss-window-end", "ss-time-pref"].forEach(function (id) {
-      setDisabled(id, !master, "ss-perm");
-    });
+  // 正态 μ/σ 区间：下限不小于上限时服务端按"告警 + 回退默认"处理（μ 40~60 / σ 15~25），
+  // 就地提示但**不阻断保存**——与 ss-edge-warn 的"纯展示"处置一致（提交照常，回退在后端算）。
+  function updateDistWarn() {
+    var mu = $("ss-mu-warn");
+    if (mu) {
+      var mlo = pctVal("ss-mu-min", DEFAULTS.muMin);
+      var mhi = pctVal("ss-mu-max", DEFAULTS.muMax);
+      mu.textContent = mlo >= mhi ? "下限不小于上限，将按默认 40~60 生效" : "";
+      mu.hidden = mlo < mhi;
+    }
+    var sg = $("ss-sigma-warn");
+    if (sg) {
+      var slo = pctVal("ss-sigma-min", DEFAULTS.sigmaMin);
+      var shi = pctVal("ss-sigma-max", DEFAULTS.sigmaMax);
+      sg.textContent = slo >= shi ? "下限不小于上限，将按默认 15~25 生效" : "";
+      sg.hidden = slo < shi;
+    }
+  }
+
+    // 逐字段权限：主管理员专属控件在非主管理员下禁用（周六/周日始终可用）。
+    function applyPerm() {
+      var master = isMaster();
+      ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
+       "ss-window-start", "ss-window-end", "ss-time-pref",
+       "ss-mu-min", "ss-mu-max", "ss-sigma-min", "ss-sigma-max"].forEach(function (id) {
+        setDisabled(id, !master, "ss-perm");
+      });
+      // 正态分布组件的可见编辑器（顶点/半径/散布）随 A 档一起只读；
+      // 隐藏 input 已在上面的清单里禁用（A 档四键）
+      if (YB.settingsDistViz) YB.settingsDistViz.setReadonly(!master);
     setDisabled("ss-reset", !master, "ss-perm");
     setHidden($("ss-perm"), master);
     setHidden($("ss-save"), !dirty);
@@ -200,6 +251,11 @@
     }
   }
 
+  // 周末签到（周六/周日合并成的多选组）：两个隐藏 input 各持一个 "1"/"0"，
+  // 读取方与开关时期同一条 `value === "1"`——故未选任一项 = 都不签（= 两个都关）。
+  // 写入方必须走 YB.multiselectField.set()（直写隐藏 input 不会更新触发器文案）。
+  function weekendOn(id) { return (($(id) || {}).value === "1") ? 1 : 0; }
+
   function collect() {
     var body = {};
     var order = ($("ss-order") || {}).value || DEFAULTS.order;
@@ -207,8 +263,12 @@
     var f = edgeVal("ss-edge-front"), b = edgeVal("ss-edge-back");
     var gap = clampGap(num($("ss-gap"), snap ? snap.gap : 0));
     var pref = $("ss-time-pref") && $("ss-time-pref").checked ? 1 : 0;
-    var sat = $("ss-sat") && $("ss-sat").checked ? 1 : 0;
-    var sun = $("ss-sun") && $("ss-sun").checked ? 1 : 0;
+    var sat = weekendOn("ss-sat");
+    var sun = weekendOn("ss-sun");
+    var muMin = pctVal("ss-mu-min", DEFAULTS.muMin);
+    var muMax = pctVal("ss-mu-max", DEFAULTS.muMax);
+    var sgMin = pctVal("ss-sigma-min", DEFAULTS.sigmaMin);
+    var sgMax = pctVal("ss-sigma-max", DEFAULTS.sigmaMax);
     var win = windowParts();
     var winStr = win[0] + " ~ " + win[1];
     if (order !== snap.order) body.sign_order = order;
@@ -220,6 +280,11 @@
     if (sun !== snap.sun) body.sunday_sign = sun;
     if (winStr !== snap.window) body.sign_window = winStr;
     if (gap !== snap.gap) body.gap_max = gap;
+    // μ/σ 区间：lo>=hi 也照发（服务端回退语义见 updateDistWarn），只是就地预警
+    if (muMin !== snap.muMin) body.mu_min_pct = muMin;
+    if (muMax !== snap.muMax) body.mu_max_pct = muMax;
+    if (sgMin !== snap.sigmaMin) body.sigma_min_pct = sgMin;
+    if (sgMax !== snap.sigmaMax) body.sigma_max_pct = sgMax;
     return body;
   }
 
@@ -231,9 +296,13 @@
       edgeBack: edgeVal("ss-edge-back"),
       gap: clampGap(num($("ss-gap"), 0)),
       pref: $("ss-time-pref") && $("ss-time-pref").checked ? 1 : 0,
-      sat: $("ss-sat") && $("ss-sat").checked ? 1 : 0,
-      sun: $("ss-sun") && $("ss-sun").checked ? 1 : 0,
-      window: windowParts().join(" ~ ")
+      sat: weekendOn("ss-sat"),
+      sun: weekendOn("ss-sun"),
+      window: windowParts().join(" ~ "),
+      muMin: pctVal("ss-mu-min", DEFAULTS.muMin),
+      muMax: pctVal("ss-mu-max", DEFAULTS.muMax),
+      sigmaMin: pctVal("ss-sigma-min", DEFAULTS.sigmaMin),
+      sigmaMax: pctVal("ss-sigma-max", DEFAULTS.sigmaMax)
     };
   }
 
@@ -241,7 +310,7 @@
   // 用户取消弹窗 = 本次不保存。
   function submit(body) {
     saving = true;
-    setTip("保存中…", false);
+    YB.setBusy("ss-save", true);
     setDisabled("ss-save", true);
     return YB.dangerousSubmit({
       method: "POST", path: "/api/settings", body: body,
@@ -258,6 +327,7 @@
       return false;
     }).then(function (ok) {
       saving = false;
+      YB.setBusy("ss-save", false);
       setDisabled("ss-save", false);
       applyPerm();
       return ok;
@@ -290,6 +360,9 @@
       YB.rangeField.set("ss-edge-back", 1);
       YB.timeField.set("ss-window-start", DEFAULTS.start);
       YB.timeField.set("ss-window-end", DEFAULTS.end);
+      // 组件 set() 不派发 change（防回填被误判为用户改动），故此处显式刷新正态分布图：
+      // 分布方式回到"均匀"、窗口/掐头去尾回到默认，图与读数必须同步
+      if (YB.settingsDistViz) YB.settingsDistViz.refresh();
       updateEdgeWarn();
       markDirty();
     });
@@ -300,12 +373,18 @@
       var el = $(id);
       if (el) el.addEventListener("change", function () {
         updateEdgeWarn(); markDirty();
+        // 分布方式/窗口变化要实时反映到正态分布图（有效窗口与"是否生效"都变了）
+        if (id !== "ss-order" && YB.settingsDistViz) YB.settingsDistViz.refresh();
       });
     });
     // 滑块值由 range-field 在弹窗确认后回写并派发 change（取消不留痕，不标脏）
     ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
       var el = $(id);
-      if (el) el.addEventListener("change", function () { updateEdgeWarn(); markDirty(); });
+      if (el) el.addEventListener("change", function () {
+        updateEdgeWarn(); markDirty();
+        // 掐头去尾改变有效窗口，正态分布图的钟点换算与染色位置实时重算
+        if (YB.settingsDistViz) YB.settingsDistViz.refresh();
+      });
     });
     var gap = $("ss-gap");
     if (gap) {
@@ -318,7 +397,11 @@
     }
     var pref = $("ss-time-pref");
     if (pref) pref.addEventListener("change", markDirty);
-    // 周六/周日/自选：改动只标脏，随「保存调度设置」一并提交（非主管理员只有前两个可改）
+    // μ/σ 四个数值框已由正态分布组件的可见编辑器取代（隐藏 input 的 id 不变）：
+    // 组件写入后经 onChange() 回调走到这里的 updateDistWarn + markDirty，不再各自挂监听
+    // 周六/周日/自选：改动只标脏，随「保存调度设置」一并提交（非主管理员只有前两个可改）。
+    // 周六/周日是同一多选组的两枚隐藏 input——组件在勾选时对该 input 派发 change，
+    // 故这里照旧监听即可，不必改成监听面板。
     ["ss-sat", "ss-sun", "ss-time-pref"].forEach(function (id) {
       var cb = $(id);
       if (cb) cb.addEventListener("change", markDirty);
@@ -351,7 +434,11 @@
       pref: data.allow_time_pref ? 1 : 0,
       sat: data.saturday_sign ? 1 : 0,
       sun: data.sunday_sign ? 1 : 0,
-      window: data.sign_window || (DEFAULTS.start + " ~ " + DEFAULTS.end)
+      window: data.sign_window || (DEFAULTS.start + " ~ " + DEFAULTS.end),
+      muMin: Number(data.mu_min_pct != null ? data.mu_min_pct : DEFAULTS.muMin),
+      muMax: Number(data.mu_max_pct != null ? data.mu_max_pct : DEFAULTS.muMax),
+      sigmaMin: Number(data.sigma_min_pct != null ? data.sigma_min_pct : DEFAULTS.sigmaMin),
+      sigmaMax: Number(data.sigma_max_pct != null ? data.sigma_max_pct : DEFAULTS.sigmaMax)
     };
     YB.selectField.set("ss-order", snap.order);
     YB.selectField.set("ss-dist", snap.dist);
@@ -359,26 +446,74 @@
     YB.rangeField.set("ss-edge-back", snap.edgeBack / 60);
     var gap = $("ss-gap");
     if (gap) gap.value = String(snap.gap);
+    // μ/σ 四个数值框：直接回填（原生 input 无需组件 set），随后刷新区间预警
+    [["ss-mu-min", snap.muMin], ["ss-mu-max", snap.muMax],
+     ["ss-sigma-min", snap.sigmaMin], ["ss-sigma-max", snap.sigmaMax]].forEach(function (pair) {
+      var el = $(pair[0]);
+      if (el) el.value = String(pair[1]);
+    });
     var pref = $("ss-time-pref");
     if (pref) pref.checked = !!snap.pref;
-    var sat = $("ss-sat"), sun = $("ss-sun");
-    if (sat) sat.checked = !!snap.sat;
-    if (sun) sun.checked = !!snap.sun;
+    // 走组件 set()：它同时回写隐藏 input、刷新触发器文案与勾选记号（不派发 change，
+    // 故回填不会被 bind() 的 markDirty 误当成用户改动）
+    if (YB.multiselectField) {
+      YB.multiselectField.set("ss-sat", !!snap.sat);
+      YB.multiselectField.set("ss-sun", !!snap.sun);
+    } else {
+      var sat0 = $("ss-sat"), sun0 = $("ss-sun");
+      if (sat0) sat0.value = snap.sat ? "1" : "0";
+      if (sun0) sun0.value = snap.sun ? "1" : "0";
+    }
     var parts = String(snap.window).split("~");
     YB.timeField.set("ss-window-start", (parts[0] || DEFAULTS.start).trim().slice(0, 5) || DEFAULTS.start);
     YB.timeField.set("ss-window-end", (parts[1] || DEFAULTS.end).trim().slice(0, 5) || DEFAULTS.end);
     applyPerm();
     updateEdgeWarn();
+    updateDistWarn();
+    // 正态分布图从隐藏 input 与窗口/边缘的当前值重算（保存回填/重拉设置后同步）
+    if (YB.settingsDistViz) YB.settingsDistViz.refresh();
     setTip("", false);
     clearDirty();
   }
 
   // 账号容量变化（保存容量上限/间隔后）时重算警示。
-  function refreshWarn() { updateEdgeWarn(); }
+  function refreshWarn() {
+    updateEdgeWarn();
+    updateDistWarn();
+    // 账号数变化会改 σ_eff 放大曲线与高峰速率，正态分布图一并重算
+    if (YB.settingsDistViz) YB.settingsDistViz.refresh();
+  }
 
   function mount(options) {
     ctx = options || {};
     bind();
+    // 正态分布组件（方案 E）：画布与「顶点 ± 半径 / 散布 ±分钟」可见编辑器由它构建；
+    // 隐藏 input 仍是唯一状态源，collect()/snapshotFromDom() 读写口径不变。
+    // context() 每次重读窗口/掐头去尾（含 edgeMaxMin 的 20% 钳位，与服务端同口径）、
+    // 分布方式与账号数——这些设置在别的控件里改动时，图要实时跟着变。
+    if (YB.settingsDistViz) {
+      YB.settingsDistViz.mount({
+        ids: { muLo: "ss-mu-min", muHi: "ss-mu-max", sgLo: "ss-sigma-min", sgHi: "ss-sigma-max" },
+        context: function () {
+          var sec = windowSec();
+          var capMin = edgeMaxMin(sec);                     // 缓冲单边上限（分钟，20% 钳位）
+          var frontMin = Math.min(edgeVal("ss-edge-front") / 60, capMin);
+          var backMin = Math.min(edgeVal("ss-edge-back") / 60, capMin);
+          var p = windowParts();
+          var sm = p[0].split(":"), em = p[1].split(":");
+          var startMin = parseInt(sm[0], 10) * 60 + parseInt(sm[1], 10);
+          var endMin = parseInt(em[0], 10) * 60 + parseInt(em[1], 10);
+          return {
+            effLo: startMin + frontMin, effHi: endMin - backMin,
+            span: (sec - (frontMin + backMin) * 60) / 60,
+            frontMin: frontMin, backMin: backMin,
+            dist: ($("ss-dist") || {}).value || "uniform",
+            n: capacityCount()
+          };
+        },
+        onChange: function () { updateDistWarn(); markDirty(); }
+      });
+    }
     applyPerm();
   }
 

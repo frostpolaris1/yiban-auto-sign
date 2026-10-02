@@ -155,6 +155,31 @@ class AdversarialTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", data="{bad json", content_type="application/json")
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        # N1：/api/* 的请求态错误必须是 JSON（此前落 werkzeug text/html，前端 res.json() 炸）
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    # ---- /api/* 请求态错误（400/405/413）一律 JSON 契约（N1） ----
+
+    def test_api_wrong_method_returns_json_405(self):
+        # 对已有 /api/audit-logs（仅 GET）用错方法：此前落 HTML 405，前端读不到 error。
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/audit-logs", headers=self._csrf(token))
+        self.assertEqual(r.status_code, 405, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    def test_api_oversized_body_returns_json_413(self):
+        # MAX_CONTENT_LENGTH=64KB（web/app.py）超限 → werkzeug 413；此前 HTML。
+        c = self.webapp.create_app().test_client()
+        payload = json.dumps({"username": "admin", "password": "x" * (70 * 1024)})
+        r = c.post("/api/login", data=payload, content_type="application/json")
+        self.assertEqual(r.status_code, 413, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
 
     def test_negative_and_oversized_account_indices_rejected(self):
         c = self.webapp.create_app().test_client()
@@ -179,6 +204,10 @@ class AdversarialTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", data="[1,2,3]", content_type="application/json")
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        # N1：非对象 JSON 同样必须是 JSON 错误体（含 error 键、非 HTML）
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
 
     def test_api_me_requires_login(self):
         c = self.webapp.create_app().test_client()
@@ -214,6 +243,30 @@ class AdversarialTest(unittest.TestCase):
         token = self._login(c, "admin", ADMIN_PASS)
         r = c.get("/api/logs?date=../../etc/passwd", headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
+    # ---- 子路径部署下的 404 契约（M38/F23） ----
+
+    def test_subpath_unknown_api_returns_json_404(self):
+        # 子路径部署（生产形态）下未知 /api/* 必须是 JSON 404：werkzeug 3.1 的
+        # request.path 已不含 SCRIPT_NAME（path='/api/nope'、script_root='/tool/demo'），
+        # 不能再拼 script_root 前缀判 API——否则落 HTML 错误页，前端 res.json() 解析炸。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/tool/demo/api/nope")
+        self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("未知接口", r.get_json()["error"])
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    def test_subpath_unknown_page_still_html(self):
+        # 另一面：非 API 的未知页面仍走 HTML 兜底（前端兜底不得覆盖 /api/*）。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/tool/demo/no-such-page")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("text/html", r.headers.get("Content-Type", ""))
+        self.assertIn("页面不存在", r.get_data(as_text=True))
+        self.assertNotIn('"未知接口"', r.get_data(as_text=True))
 
 
 if __name__ == "__main__":

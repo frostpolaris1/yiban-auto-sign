@@ -308,7 +308,10 @@
   var toastNodes = [];
   function toastHost() {
     var h = $("toast-host");
-    if (!h) { h = el("div", { id: "toast-host", class: "toast-host", "aria-live": "polite", "aria-atomic": "true" }); document.body.appendChild(h); }
+    // 全站唯一的 polite 播报区：容器本身带 role=status（+ aria-live 兜底老读屏），
+    // 单独一颗 toast 不再带 role —— 此前是容器 aria-live 叠每颗 role=status，两层 live region
+    // 会让同一句播报重复/乱序。aria-atomic:false 让同屏多颗只播各自新增的那条，不整块重念。
+    if (!h) { h = el("div", { id: "toast-host", class: "toast-host", role: "status", "aria-live": "polite", "aria-atomic": "false" }); document.body.appendChild(h); }
     return h;
   }
   function dismissToast(rec) {
@@ -333,7 +336,7 @@
         return old.node;
       }
     }
-    var node = el("div", { class: "toast toast--" + type, role: "status" });
+    var node = el("div", { class: "toast toast--" + type });   // live 语义由 toast-host 单点承担，见 toastHost()
     var close = el("button", { type: "button", class: "toast__close", "aria-label": "关闭", html: svgUse("x") });
     var rec = { node: node, type: type, msg: msg, at: Date.now(), timer: null, dead: false };
     close.addEventListener("click", function () { dismissToast(rec); });
@@ -446,7 +449,14 @@
     backdrop.hidden = false;
     if (reducedMotion()) backdrop.classList.add("is-open");
     else requestAnimationFrame(function () { backdrop.classList.add("is-open"); });
-    var first = focusables(panel)[0];
+    // 初始焦点：优先正文里第一个可操作控件，而不是面板里文档序第一颗（= 右上角 ✕）。
+    // 表单弹窗落到首字段；纯信息弹窗（公告/协议正文无 input）才回落到 ✕，与旧行为一致；
+    // .pm-panel-close 是「怎么出去」而非「来做什么」，不该抢第一个 Tab 停点。
+    var scope = panel.querySelector(".modal-body") || panel;
+    var first = (typeof cfg.initialFocus === "string" ? panel.querySelector(cfg.initialFocus) : null)
+      || scope.querySelector("[data-autofocus]")
+      || focusables(scope)[0]
+      || focusables(panel)[0];
     if (first) first.focus(); else panel.focus();
     if (typeof cfg.onOpen === "function") cfg.onOpen(handle);
     return handle;
@@ -514,6 +524,9 @@
         title: opts.title || "请确认",
         body: el("div", { class: "pm-confirm-text", text: opts.body || "" }),
         dismissible: opts.dismissible !== false,
+        // 焦点落到「取消」侧：确认框里按回车不该直接执行破坏性动作（旧行为落在右上角 ✕，
+        // 眼睛没读完就已经关掉）。取消按钮视觉与语义都是安全侧。
+        initialFocus: ".modal-foot .btn--ghost",
         onClose: function () { done(false); },
         actions: [
           { label: opts.cancelText || "取消", variant: "ghost", onClick: function () { done(false); } },
@@ -575,6 +588,20 @@
     if (!n) return;
     n.textContent = text || "";
     n.className = bad ? "set-tip set-bad" : "set-tip";
+  }
+
+  /* ---------- 按钮忙碌态（全站唯一实现） ----------
+     原地转圈，**不改文案**：换文案会改变按钮宽度、把同行元素挤开，
+     而用户此刻的视线正落在这个按钮上，按钮一变形注视点就被挪走
+     （这正是"文字反馈在实践中不可靠"的机制）。这里按钮宽度与标签占位
+     都不动：标签就地淡出，转圈落在按钮中心（见 app.css 的 .btn.is-busy）。
+     元素缺失是常态（分区未渲染），静默返回。 */
+  function setBusy(btn, on) {
+    var b = typeof btn === "string" ? $(btn) : btn;
+    if (!b) return;
+    b.classList.toggle("is-busy", !!on);
+    if (on) b.setAttribute("aria-busy", "true");
+    else b.removeAttribute("aria-busy");
   }
 
   /* ---------- 口令策略（管理端与后端 web/app.py 同一口径） ---------- */
@@ -863,8 +890,28 @@
   }
 
   /* ---------- 下拉菜单 ---------- */
+  function rowMenuFor(wrap) {
+    // 行内菜单（YB.rowMenu）portal 到 body 后不再是 wrap 的后代，querySelector 找不到；
+    // 组件在菜单节点上记了 __ybHome 指回 wrap（见 row-menu.js）。按此反查用于焦点判断。
+    var found = null;
+    forEach(document.querySelectorAll(".dd-menu"), function (m) { if (m.__ybHome === wrap) found = m; });
+    return found;
+  }
   function closeDropdowns(except) {
-    forEach(document.querySelectorAll(".dd-wrap.is-open"), function (w) { if (w !== except) w.classList.remove("is-open"); });
+    forEach(document.querySelectorAll(".dd-wrap.is-open"), function (w) {
+      if (w === except) return;
+      // 焦点若在菜单里（键盘打开后聚焦了菜单项/面板），关闭必须归还给触发器，
+      // 否则行内菜单还原成 display:none 后焦点落回 <body>，键盘用户要重新 Tab 一遍。
+      // 焦点在触发器或页面别处时不动 —— 外部点击关闭不该抢走用户刚点的元素。
+      var a = document.activeElement;
+      var floating = rowMenuFor(w);
+      var hadFocus = w.contains(a) || (!!floating && floating.contains(a));
+      w.classList.remove("is-open");
+      if (hadFocus) {
+        var t = w.querySelector("[data-dropdown]");
+        if (t && document.contains(t) && typeof t.focus === "function") t.focus();
+      }
+    });
   }
   function focusItem(items, index) {
     if (!items.length) return;
@@ -907,7 +954,27 @@
     var willOpen = !wrap.classList.contains("is-open");
     closeDropdowns(wrap);
     wrap.classList.toggle("is-open", willOpen);
-    if (willOpen) clampDropdown(wrap);
+    if (!willOpen) {
+      // 再次点触发器关闭：打开时焦点已移入菜单，这里的 preventDefault 又拦掉了浏览器
+      // 把焦点给触发器的默认动作，需显式归还，否则焦点留在即将隐藏的菜单项上、回落 <body>。
+      var a = document.activeElement;
+      var fm = rowMenuFor(wrap);
+      if (wrap.contains(a) || (!!fm && fm.contains(a))) {
+        var trg = wrap.querySelector("[data-dropdown]");
+        if (trg && typeof trg.focus === "function") trg.focus();
+      }
+      return;
+    }
+    clampDropdown(wrap);
+    // 打开即把焦点移入菜单（WAI-ARIA menu-button 约定）。铃铛/头像等 <button> 触发器
+    // 由点击路径进入，此前焦点始终留在触发器上，面板里的方向键/Home/End 全落空；
+    // 通知面板零个 .dd-menu-item，则把面板本身设为可聚焦容器，Esc 才有可归还的焦点。
+    var menu = wrap.querySelector(".dd-menu");
+    if (!menu) return;
+    var item = menu.querySelector(".dd-menu-item");
+    if (item) { item.focus(); return; }
+    if (!menu.hasAttribute("tabindex")) menu.setAttribute("tabindex", "-1");
+    menu.focus();
   }
 
   /* ---------- 导航分组（桌面手风琴 + 721–1100px rail 浮层定位） ---------- */
@@ -1175,6 +1242,15 @@
   function announceIsDismissed(text) {
     try { return sessionStorage.getItem(ANNOUNCE_DISMISS_KEY) === text; } catch (e) { return false; }
   }
+  // 「已读」与「已关闭」分开记：关闭是明确拒绝（不再显示横幅），已读只是"点开看过"。
+  // 按文本区分，同一公告不重复点亮；换了内容会重新变未读（避免永久静音）。
+  var ANNOUNCE_READ_KEY = "yiban-announce-read";
+  function announceIsRead(text) {
+    try { return sessionStorage.getItem(ANNOUNCE_READ_KEY) === text; } catch (e) { return false; }
+  }
+  function markAnnouncementRead(text) {
+    try { sessionStorage.setItem(ANNOUNCE_READ_KEY, text); } catch (e) {}
+  }
   function dismissAnnouncement(text) {
     try { sessionStorage.setItem(ANNOUNCE_DISMISS_KEY, text); } catch (e) {}
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
@@ -1207,8 +1283,29 @@
       }
     }
     showBell();
+    var unread = !!text && !announceIsRead(text);
+    // 未读的三载体：圆点（图形）+ 面板头数字徽标（文字）+ 铃铛 aria-label（读屏）。
+    // 点开铃铛即记「已读」（sessionStorage，按文本区分），同一公告不再点亮。
     var dot = document.querySelector("[data-announcement-dot]");
-    if (dot) dot.hidden = !text;
+    if (dot) dot.hidden = !unread;
+    forEach(document.querySelectorAll("[data-announcement-count]"), function (n) {
+      n.textContent = unread ? "1 条未读" : "";
+      n.hidden = !unread;
+    });
+    if (btn) btn.setAttribute("aria-label", unread ? "通知（1 条未读公告）" : "通知");
+    if (btn && btn.closest(".dd-wrap") && btn.getAttribute("data-announce-read-bound") !== "1") {
+      btn.setAttribute("data-announce-read-bound", "1");
+      btn.addEventListener("click", function () {
+        var tn = document.querySelector("[data-announcement-text]");
+        var t = tn ? String(tn.textContent || "").trim() : "";
+        if (!t || announceIsRead(t)) return;
+        markAnnouncementRead(t);
+        var d = document.querySelector("[data-announcement-dot]");
+        if (d) d.hidden = true;
+        forEach(document.querySelectorAll("[data-announcement-count]"), function (n) { n.hidden = true; });
+        btn.setAttribute("aria-label", "通知");
+      });
+    }
     forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
     forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = !text; });
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
@@ -1601,6 +1698,7 @@
     confirmDialog: confirmDialog,
     promptDialog: promptDialog,
     setTip: setTip,
+    setBusy: setBusy,
     PW_CLASS_PATTERNS: PW_CLASS_PATTERNS,
     PW_MIN_LEN: PW_MIN_LEN,
     PW_MIN_CLASSES: PW_MIN_CLASSES,
