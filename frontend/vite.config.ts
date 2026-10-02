@@ -31,6 +31,12 @@ export default defineConfig({
     emptyOutDir: true,
     manifest: true,
     rollupOptions: {
+      // 每页一个 HTML 入口（与「每页只加载自己的脚本」的既有纪律一致）；
+      // manifest 键 = 入口 HTML 相对本目录的路径，Flask 侧按同一字符串取资产。
+      input: {
+        index: fileURLToPath(new URL("./index.html", import.meta.url)),
+        audit: fileURLToPath(new URL("./audit.html", import.meta.url)),
+      },
       output: {
         // vendor 独立成 chunk：多页入口共享同一份 vue / element-plus 按需集合，
         // 跨页命中浏览器长缓存（hash 文件名 + /static 长缓存策略）。
