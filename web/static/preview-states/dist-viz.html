@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>正态分布调参 · 组件方案选型页 · 易班自动签到（开发原型）</title>
+
+<!-- 主题引导：与 preview-states/index.html 同一机制（<html data-theme> + localStorage 'yiban-theme'）。
+     写在样式表之前，先落 data-theme 再看色，避免暗色首屏闪白。 -->
+<script>
+  (function () {
+    try {
+      document.documentElement.setAttribute(
+        'data-theme',
+        localStorage.getItem('yiban-theme') === 'dark' ? 'dark' : 'light'
+      );
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+
+<!-- 真实皮肤：与 preview-states/index.html 完全同一条 CSS 链（字体 → Adminator → app.css）。
+     本页只新增 .dv- 前缀的页面自身排版样式，app.css 一行未改。 -->
+<link rel="stylesheet" href="../vendor/fonts/inter/inter.css">
+<link rel="stylesheet" href="../vendor/fonts/jetbrains-mono/jetbrains-mono.css">
+<link rel="stylesheet" href="../vendor/fonts/notosanssc/notosanssc.css">
+<link rel="stylesheet" href="../vendor/adminator/adminator.css">
+<link rel="stylesheet" href="../css/app.css">
+
+<style>
+  /* ---- 页面自身排版（全部 .dv- 前缀，不碰 app.css）----
+     组件观感全部来自 app.css 既有令牌与类（.card/.panel-head/.btn/.input/.alert…），
+     这里只写"四个方案组件"所需的容器与拖拽件样式。颜色一律走 var()，明暗主题自动跟随；
+     canvas 无法直接吃 CSS 变量，由脚本用探针元素解析（见页脚脚本 readColors）。 */
+  .dv-body {
+    background: var(--bg-body);
+    color: var(--t-base);
+    font-family: var(--font-sans);
+  }
+  .dv-wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 80px; }
+  /* 吸顶工具条：方案名 + 账号数（喂 σ_eff 注记）+ 主题切换 */
+  .dv-bar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin: -24px -16px 20px; padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-body) 88%, transparent);
+    backdrop-filter: blur(6px);
+  }
+  .dv-bar-title { font-weight: 700; font-size: 14px; }
+  .dv-bar-note { font-size: 12px; color: var(--t-muted); }
+  .dv-bar-spacer { flex: 1; }
+  .dv-bar .input-group .input { width: 72px; }
+  .dv-cards { display: grid; gap: 20px; }
+  .dv-chip {
+    font-size: 11px; font-weight: 700; line-height: 1;
+    padding: 4px 8px; border-radius: 999px;
+    color: var(--t-muted);
+    border: 1px solid var(--border-soft);
+  }
+  .dv-chip--rec {
+    color: rgb(var(--c-blue-700));
+    background: color-mix(in srgb, rgb(var(--c-blue-500)) 10%, transparent);
+    border-color: color-mix(in srgb, rgb(var(--c-blue-500)) 35%, transparent);
+  }
+  .dv-note { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
+  .dv-note b { color: var(--t-sub); font-weight: 700; }
+  /* 优点 / 代价：语义色来自 --state-*-fg（"文字 on 卡片"配对，已过 AA） */
+  .dv-pc { display: flex; gap: 18px; flex-wrap: wrap; margin: 10px 0 14px; }
+  .dv-pc span { font-size: 12.5px; line-height: 1.6; color: var(--t-muted); max-width: 46em; }
+  .dv-pros-t { color: var(--state-ok-fg); font-weight: 700; }
+  .dv-cons-t { color: var(--state-warn-fg); font-weight: 700; }
+  .dv-viz { display: flex; flex-direction: column; gap: 10px; }
+  .dv-curve {
+    display: block; width: 100%;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: var(--cal-off-bg);
+    touch-action: pan-y; /* 纵向滚动留给页面，横向拖拽归组件 */
+  }
+  #dv-a-curve { height: 170px; }
+  #dv-b-canvas { height: 205px; }
+  #dv-d-canvas { height: 150px; }
+  /* E 的纵向拖拽就是 σ 控制，必须独占触摸手势（pan-y 会让浏览器抢走纵向滑动） */
+  #dv-e-canvas { height: 205px; touch-action: none; cursor: grab; }
+  #dv-e-canvas:focus-visible { outline: 2px solid rgb(var(--c-blue-500)); outline-offset: 2px; }
+  .dv-readout {
+    margin: 0; padding: 8px 10px; border-radius: 8px;
+    font-size: 12.5px; line-height: 1.6; color: var(--t-sub);
+    font-variant-numeric: tabular-nums;
+    background: color-mix(in srgb, rgb(var(--c-blue-500)) 6%, transparent);
+  }
+  .dv-legend { margin: 0; font-size: 11.5px; color: var(--t-muted); }
+
+  /* ---- 通道（方案 A / 弹窗内复用）----
+     手柄是 button：既给 44px 级触控热区留了余地（本体 18px + ::after 扩热区），
+     也让键盘（方向键）有一条与拖拽平权的路径——canvas 不进焦点环，精确输入由手柄
+     与数字框共同兜底，这与"触发器弹窗"家族的分工一致。 */
+  .dv-lane-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12.5px; margin-bottom: 2px;
+  }
+  .dv-lane-label { font-weight: 700; color: var(--t-sub); }
+  .dv-lane-val { color: var(--t-muted); font-variant-numeric: tabular-nums; }
+  .dv-lane { position: relative; height: 40px; touch-action: none; }
+  .dv-track {
+    position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+    transform: translateY(-50%); border-radius: 1px;
+    background: var(--control-border); /* 与 .input 描边同一 3:1 基线 */
+  }
+  .dv-band {
+    position: absolute; top: 50%; height: 14px; transform: translateY(-50%);
+    border-radius: 999px;
+    background: color-mix(in srgb, rgb(var(--c-blue-500)) 22%, transparent);
+    border: 1px solid color-mix(in srgb, rgb(var(--c-blue-500)) 45%, transparent);
+  }
+  .dv-band--drag { cursor: grab; }
+  .dv-band--drag:active { cursor: grabbing; }
+  .dv-band-text {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 10.5px; color: var(--t-base); user-select: none;
+    font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden;
+  }
+  .dv-handle {
+    position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+    padding: 0; border-radius: 50%;
+    background: rgb(var(--c-blue-600));
+    border: 2px solid var(--bg-card);
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.3);
+    cursor: ew-resize;
+  }
+  /* 扩大触控热区到 ~36px：可视 18px 对指尖太小（触屏 44px 行距规格的同款考虑） */
+  .dv-handle::after {
+    content: ""; position: absolute; inset: -9px; border-radius: 50%;
+  }
+  .dv-handle:hover { background: rgb(var(--c-blue-500)); }
+  .dv-handle:focus-visible { outline: 2px solid rgb(var(--c-blue-500)); outline-offset: 2px; }
+
+  /* ---- 时间轴条带（方案 C，纯 DOM 无 canvas）---- */
+  .dv-gantt {
+    position: relative; height: 62px;
+    border: 1px solid var(--border-soft); border-radius: 10px;
+    background: var(--cal-off-bg);
+    touch-action: pan-y; overflow: hidden;
+  }
+  .dv-g-clip {
+    position: absolute; top: 0; bottom: 0;
+    background: repeating-linear-gradient(135deg,
+      color-mix(in srgb, var(--t-muted) 12%, transparent) 0 5px, transparent 5px 10px);
+  }
+  .dv-g-halo {
+    position: absolute; top: 9px; bottom: 9px; border-radius: 8px;
+    background: color-mix(in srgb, rgb(var(--c-blue-500)) 13%, transparent);
+    border: 1px dashed color-mix(in srgb, rgb(var(--c-blue-600)) 45%, transparent);
+  }
+  .dv-g-block {
+    position: absolute; top: 22px; bottom: 22px; border-radius: 8px;
+    background: color-mix(in srgb, rgb(var(--c-blue-500)) 30%, transparent);
+    border: 1px solid color-mix(in srgb, rgb(var(--c-blue-600)) 55%, transparent);
+    cursor: grab;
+  }
+  .dv-g-block:active { cursor: grabbing; }
+  .dv-g-handle { width: 14px; height: 14px; margin: -7px 0 0 -7px; }
+  .dv-g-halo .dv-g-handle { top: 50%; }
+  .dv-g-block .dv-g-handle { top: 50%; }
+  .dv-g-ticks { position: relative; height: 16px; margin-top: 4px; }
+  .dv-g-ticks span {
+    position: absolute; transform: translateX(-50%);
+    font-size: 10.5px; color: var(--t-muted); font-variant-numeric: tabular-nums;
+  }
+  .dv-g-ticks span:first-child { transform: none; }
+  .dv-g-ticks span:last-child { transform: translateX(-100%); }
+  .dv-inputs { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+  .dv-inputs .field-label { font-size: 12.5px; }
+  .dv-inputs .input { width: 64px; }
+  .dv-inputs .input[type="time"] { width: 88px; }
+  /* 原生时钟图标在 88px 里会压住 HH:MM 尾部的数字（用户实测"阻挡文字"）；
+     原型直接键入即可，落地版用项目自研 time-field 触发器，本就没有这个图标 */
+  .dv-inputs .input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+  .dv-input-row { display: flex; align-items: center; gap: 8px; }
+
+  /* ---- 触发器（方案 D）----
+     直接复用 .select-field/.select-trigger 的真实样式（只包一层限宽），与
+     「掐头/去尾」range-trigger 同一家族观感；弹窗复用 .pm-backdrop/.pm-panel 全套。 */
+  .dv-trigger-wrap { max-width: 380px; }
+  .dv-trigger-wrap .select-trigger { justify-content: flex-start; }
+
+  .dv-foot { text-align: center; font-size: 12px; color: var(--t-muted); margin-top: 8px; }
+</style>
+</head>
+
+<!-- data-page="auth"：与 index.html 同款——借用 core.js 的既定跳过开关的语义位，
+     本页不加载 core.js，也不拉任何接口，纯静态。 -->
+<body class="dv-body" data-page="auth">
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <!-- 本页只需 5 个图标，从 vendor/lucide 的生成 sprite 里摘录（同版本 1.45.0） -->
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" /></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol>
+</svg>
+
+<div class="dv-wrap">
+
+  <div class="dv-bar">
+    <span class="dv-bar-title">正态分布调参 · 组件方案选型页</span>
+    <span class="dv-bar-note">拖一拖再挑 · 四方案同参同源</span>
+    <span class="dv-bar-spacer"></span>
+    <span class="dv-input-row dv-bar-note">账号数（喂 σ 放大注记）
+      <span class="input-group">
+        <input class="input" id="dv-n" type="number" min="1" max="2000" step="1" value="86" aria-label="当前账号数">
+        <span class="addon">个</span>
+      </span>
+    </span>
+    <button type="button" class="btn btn--ghost btn--icon" id="dv-theme" aria-label="切换深色">
+      <svg aria-hidden="true"><use href="#i-moon"/></svg>
+    </button>
+  </div>
+
+  <div class="alert info" style="margin-bottom:20px">
+    <span class="ico"><svg aria-hidden="true"><use href="#i-info"/></svg></span>
+    <span class="body">四个方案编辑的是<b>同一组参数</b>：μ 峰值中心区间（占有效窗口位置 %，默认 40~60）与 σ 散布宽度区间（占窗口宽度 %，默认 15~25），每天在区间内各取一点、全体账号共享。原型窗口固定 06:30~07:50、掐头去尾各 <b>3 分钟</b>（放大裁剪区便于观察；实际默认 1 分钟）；账号数只影响 σ 放大注记（n&gt;20 时 σ×(1+log₂(n/20))，封顶窗口/3）。每张卡可独立试拖、可重置。<b>方案 E 是单点派</b>：抓住峰尖一个点，左右移峰值、上下改散布。</span>
+  </div>
+
+  <div class="dv-cards">
+
+    <!-- ============ 方案 A：双通道编辑器 ============ -->
+    <section class="card" id="dv-card-a">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">方案 A · 双通道编辑器（曲线 + 两条拖拽通道）</h2>
+          <div class="set-head-actions">
+            <span class="dv-chip dv-chip--rec">推荐</span>
+            <button type="button" class="btn btn--ghost btn--sm" data-reset="a">重置参数</button>
+          </div>
+        </div>
+        <p class="dv-note">曲线区只负责"看"（包络 + 中位钟形 + μ 竖虚线），"调"全部发生在下方两条通道上：<b>μ 通道</b>刻度与曲线时间轴对齐（拖手柄改边界、拖带体整体平移），<b>σ 通道</b>是宽度标尺（只拖手柄）。</p>
+      </div>
+      <p class="dv-pc">
+        <span><b class="dv-pros-t">优点</b>　位置与宽度语义各自成行不混淆；手柄大、触屏友好；通道是 DOM 元件，键盘（Tab + 方向键）与读屏有平权路径。</span>
+        <span><b class="dv-cons-t">代价</b>　卡内常驻一块高度；通道与曲线分离，视线要在两者间往返。</span>
+      </p>
+      <div class="dv-viz">
+        <canvas id="dv-a-curve" class="dv-curve" role="img" aria-label="正态分布预览：包络带与中位钟形"></canvas>
+        <div id="dv-a-lanes"></div>
+        <p class="dv-legend">浅带 = 区间内所有可能的钟形（包络）· 实线 = 区间中点的名义钟形 · 虚线 = 按账号数放大后的实际钟形（n&gt;20 才出现）</p>
+        <p class="dv-readout" id="dv-a-readout"></p>
+      </div>
+    </section>
+
+    <!-- ============ 方案 B：一体画布 ============ -->
+    <section class="card" id="dv-card-b">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">方案 B · 一体画布（全部手柄在图内）</h2>
+          <div class="set-head-actions">
+            <button type="button" class="btn btn--ghost btn--sm" data-reset="b">重置参数</button>
+          </div>
+        </div>
+        <p class="dv-note">没有独立通道：μ 区间是时间轴上的<b>胶囊带</b>（拖柄改边界、拖带体平移）；σ 画成峰值下方的<b>宽度括号</b>（拖左右柄等比缩放整个 σ 区间）。</p>
+      </div>
+      <p class="dv-pc">
+        <span><b class="dv-pros-t">优点</b>　最直接的操纵感，拖动即见钟形变形；整卡高度最省。</span>
+        <span><b class="dv-cons-t">代价</b>　σ 只能整体等比缩放（无法单独改 min/max，精调仍要数字框）；手柄小、触屏命中难；无障碍完全依赖旁路数字框。</span>
+      </p>
+      <div class="dv-viz">
+        <canvas id="dv-b-canvas" class="dv-curve" role="img" aria-label="正态分布一体编辑画布：拖动胶囊带与宽度括号调整参数"></canvas>
+        <p class="dv-readout" id="dv-b-readout"></p>
+      </div>
+    </section>
+
+    <!-- ============ 方案 C：时间轴条带 ============ -->
+    <section class="card" id="dv-card-c">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">方案 C · 时间轴条带（无曲线、表单优先）</h2>
+          <div class="set-head-actions">
+            <button type="button" class="btn btn--ghost btn--sm" data-reset="c">重置参数</button>
+          </div>
+        </div>
+        <p class="dv-note">一根时间轴讲完所有事：斜纹 = 掐头/去尾裁剪区，<b>深带 = μ 区间</b>（拖柄/拖带体），外围<b>虚线晕 = σ 宽度</b>（拖晕边等比缩放），下方数字框做精调、双向同步。</p>
+      </div>
+      <p class="dv-pc">
+        <span><b class="dv-pros-t">优点</b>　与「签到窗口」心智同构（都是一天里的时间轴）；最紧凑，掐头去尾与峰值的相对关系一眼可见。</span>
+        <span><b class="dv-cons-t">代价</b>　没有钟形直觉，「正态拟人」的形状感丢失；μ 块与 σ 晕同轴叠放，靠命中优先级防误拖。</span>
+      </p>
+      <div class="dv-viz">
+        <div class="dv-gantt" id="dv-c-gantt">
+          <div class="dv-g-clip" id="dv-c-clip-head"></div>
+          <div class="dv-g-clip" id="dv-c-clip-tail"></div>
+          <div class="dv-g-halo" id="dv-c-halo">
+            <button type="button" class="dv-handle dv-g-handle" data-h="sgLo" aria-label="σ 宽度左柄"></button>
+            <button type="button" class="dv-handle dv-g-handle" data-h="sgHi" aria-label="σ 宽度右柄"></button>
+          </div>
+          <div class="dv-g-block" id="dv-c-block">
+            <button type="button" class="dv-handle dv-g-handle" data-h="muLo" aria-label="μ 区间左界"></button>
+            <button type="button" class="dv-handle dv-g-handle" data-h="muHi" aria-label="μ 区间右界"></button>
+          </div>
+        </div>
+        <div class="dv-g-ticks" id="dv-c-ticks"></div>
+        <div class="dv-inputs">
+          <div class="dv-input-row">
+            <span class="field-label" id="dv-c-mu-label">峰值 μ</span>
+            <span class="input-group">
+              <input class="input" id="dv-c-mu-lo" type="number" min="0" max="100" step="1" aria-labelledby="dv-c-mu-label">
+              <span class="addon">至</span>
+              <input class="input" id="dv-c-mu-hi" type="number" min="0" max="100" step="1" aria-labelledby="dv-c-mu-label">
+              <span class="addon">%</span>
+            </span>
+          </div>
+          <div class="dv-input-row">
+            <span class="field-label" id="dv-c-sg-label">宽度 σ</span>
+            <span class="input-group">
+              <input class="input" id="dv-c-sg-lo" type="number" min="0" max="100" step="1" aria-labelledby="dv-c-sg-label">
+              <span class="addon">至</span>
+              <input class="input" id="dv-c-sg-hi" type="number" min="0" max="100" step="1" aria-labelledby="dv-c-sg-label">
+              <span class="addon">%</span>
+            </span>
+          </div>
+        </div>
+        <p class="dv-readout" id="dv-c-readout"></p>
+      </div>
+    </section>
+
+    <!-- ============ 方案 D：触发器 + 弹窗 ============ -->
+    <section class="card" id="dv-card-d">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">方案 D · 触发器 + 弹窗（掐头/去尾同款家族交互）</h2>
+          <div class="set-head-actions">
+            <button type="button" class="btn btn--ghost btn--sm" data-reset="d">重置参数</button>
+          </div>
+        </div>
+        <p class="dv-note">卡内零占位：触发器只显示当前值，点击弹窗编辑（小曲线 + 两条通道 + 数字框）。<b>确定才生效、取消不留痕</b>——与「掐头/去尾」弹窗家族同一契约。</p>
+      </div>
+      <p class="dv-pc">
+        <span><b class="dv-pros-t">优点</b>　卡片保持现在的密度；改动有明确的确定/回退边界；弹窗内可复用方案 A 的通道元件。</span>
+        <span><b class="dv-cons-t">代价</b>　默认看不见曲线与当前值的位置含义，调参前多一层点击；弹窗空间有限。</span>
+      </p>
+      <div class="dv-viz">
+        <div class="dv-trigger-wrap select-field">
+          <button type="button" class="select-trigger" id="dv-d-trigger" aria-haspopup="dialog">
+            <span class="select-trigger-text" id="dv-d-trigger-text">μ 40 ~ 60 % · σ 15 ~ 25 %</span>
+            <span class="select-caret" aria-hidden="true"><svg><use href="#i-chevron-down"/></svg></span>
+          </button>
+        </div>
+        <p class="dv-note">当前生效值如上；点触发器打开编辑弹窗。</p>
+      </div>
+    </section>
+
+    <!-- ============ 方案 E：峰尖拖拽（单点 XY）============ -->
+    <section class="card" id="dv-card-e">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">方案 E · 峰尖拖拽（单点 XY：上下 = 散布，左右 = 峰值）</h2>
+          <div class="set-head-actions">
+            <span class="dv-chip dv-chip--rec">新增</span>
+            <button type="button" class="btn btn--ghost btn--sm" data-reset="e">重置参数</button>
+          </div>
+        </div>
+        <p class="dv-note">整块画布就是一个手柄：<b>抓住峰尖圆点拖</b>——左右移峰值时刻，上下改散布（上尖下扁）；拖轴上<b>底座</b>的两端同样调散布；空白处按下等于整体推移。纵轴有刻度：<b>人/分钟</b>，高峰一分会过几个人一眼可读。下方按「<b>顶点钟点 ± 半径</b>」设置峰值区间——半径一值定宽、顶点不动；散布按 ±分钟。前端换算成整数 % 提交——API 四键（mu/sigma_min/max_pct）不动。</p>
+      </div>
+      <p class="dv-pc">
+        <span><b class="dv-pros-t">优点</b>　一个点同时驱动两个参数，手不用在通道间换位；「抓着钟形变形」与直觉完全同构；宽度不再是抽象 %，染色与底座对着时间刻度直接可读；峰值区间「顶点 ± 半径」一值定宽。</span>
+        <span><b class="dv-cons-t">代价</b>　区间恒以峰尖为中点、半径一值定宽（不能单独偏移单边）；单点读不出区间四键；σ 上限贴着窗口/3 封顶（再大也会被 σ_eff 吃掉）。</span>
+      </p>
+      <div class="dv-viz">
+        <canvas id="dv-e-canvas" class="dv-curve" tabindex="0" aria-label="正态分布峰尖拖拽画布：方向键可微调"></canvas>
+        <p class="dv-legend">纵轴 = 预计每分钟签到人数（随峰形自动缩放）· 实线 = 名义钟形 · 深色核心 = ±1σ（约 68% 账号）· 轴上底座 = 散布宽度（短须 = σ 区间两端）· 虚线 = 按账号数放大后的实际钟形</p>
+        <div class="dv-inputs">
+          <div class="dv-input-row">
+            <span class="field-label" id="dv-e-mu-label">峰值中心</span>
+            <span class="input-group">
+              <input class="input" id="dv-e-mu-mid" type="time" step="60" aria-labelledby="dv-e-mu-label">
+              <span class="addon">±</span>
+              <input class="input" id="dv-e-mu-r" type="number" min="1" step="1" aria-labelledby="dv-e-mu-label">
+              <span class="addon">分钟</span>
+            </span>
+          </div>
+          <div class="dv-input-row">
+            <span class="field-label" id="dv-e-sg-label">散布</span>
+            <span class="input-group">
+              <span class="addon">±</span>
+              <input class="input" id="dv-e-sg-lo" type="number" min="1" step="1" aria-labelledby="dv-e-sg-label">
+              <span class="addon">至 ±</span>
+              <input class="input" id="dv-e-sg-hi" type="number" min="2" step="1" aria-labelledby="dv-e-sg-label">
+              <span class="addon">分钟</span>
+            </span>
+          </div>
+        </div>
+        <p class="dv-readout" id="dv-e-readout"></p>
+      </div>
+    </section>
+
+  </div>
+
+  <p class="dv-foot">选型后按「方案 A ~ E」回复即可。落地版：新增 components/settings-dist-viz.js，替换 work_settings.html 的 μ/σ 两行输入组（数字框保留作精确输入），settings-schedule.js 只加调用点、保存链路不变。</p>
+</div>
+
+<!-- 颜色探针：canvas 读不了 CSS 变量，脚本把 var() 表达式逐个塞进本元素的 background
+     再读计算值，得到随主题解析好的 rgb/rgba 串（含 color-mix 的结果）。 -->
+<div id="dv-probe" style="position:absolute;visibility:hidden;pointer-events:none" aria-hidden="true"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ================= 常量：窗口与参数语义 =================
+     原型固定窗口 06:30~07:50（390~470 分），掐头去尾各 3 分钟（演示用，实际默认 1 分钟）
+     → 有效窗口 06:33~07:47（393~467），SPAN = 74 分钟。
+     μ/σ 百分比一律相对有效窗口（与 schedule.day_mu_sigma_pct / build_schedule 同口径）。 */
+  var WIN_START = 390, WIN_END = 470;
+  var EDGE = 3;                       // 原型演示用的掐头去尾（分钟）
+  var EFF_LO = WIN_START + EDGE;      // 393
+  var EFF_HI = WIN_END - EDGE;        // 467
+  var SPAN = EFF_HI - EFF_LO;         // 74
+  var WIN_SPAN = WIN_END - WIN_START; // 80
+
+  function mkState() {
+    // 与后端 _DEFAULT_MU/SIGMA_*_PCT 同值
+    return { muLo: 40, muHi: 60, sgLo: 15, sgHi: 25 };
+  }
+
+  var accountN = 86;
+
+  function sigmaFactor(n) {
+    // σ 人数自适应：n>20 时 σ×(1+log2(n/20))（schedule._sigma_eff 前半段）
+    n = Math.max(1, Math.floor(n) || 1);
+    return n > 20 ? 1 + Math.log2(n / 20) : 1;
+  }
+  function sigmaCap() { return Math.floor(SPAN / 3); } // schedule._sigma_eff 的封顶：有效窗口/3
+
+  function clampPct(v) { return Math.min(100, Math.max(0, Math.round(v))); }
+
+  function fmtT(min) {
+    min = Math.round(min);
+    var h = Math.floor(min / 60), m = min % 60;
+    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
+  }
+
+  /* ================= 数学：钟形与包络 ================= */
+  function pdf(x, mu, sigma) {
+    var s = Math.max(sigma, 0.5);
+    return Math.exp(-((x - mu) * (x - mu)) / (2 * s * s)) / (s * Math.sqrt(2 * Math.PI));
+  }
+  // 区间盒 [muLo,muHi]×[sgLo,sgHi] 的上包络。固定 x、μ 时对 σ 求导的最优 σ=|x−μ|，
+  // 夹到区间即闭式解；μ 只需按 25 点网格离散——拖动时实时算也毫无压力。
+  function envAt(xMin, st) {
+    var muL = EFF_LO + SPAN * st.muLo / 100, muH = EFF_LO + SPAN * st.muHi / 100;
+    var sL = SPAN * st.sgLo / 100, sH = SPAN * st.sgHi / 100;
+    var best = 0;
+    for (var i = 0; i <= 25; i++) {
+      var mu = muL + (muH - muL) * i / 25;
+      var s = Math.min(Math.max(Math.abs(xMin - mu), sL), sH);
+      var v = pdf(xMin, mu, s);
+      if (v > best) best = v;
+    }
+    return best;
+  }
+  function muMidPct(st) { return (st.muLo + st.muHi) / 2; }
+  function sgMidPct(st) { return (st.sgLo + st.sgHi) / 2; }
+
+  /* ================= 颜色：CSS 变量 → canvas 可用串 ================= */
+  var probe = document.getElementById("dv-probe");
+  var C = {};
+  function resolve(expr) {
+    probe.style.background = "";
+    probe.style.background = expr;
+    var v = getComputedStyle(probe).backgroundColor;
+    probe.style.background = "";
+    return v;
+  }
+  function readColors() {
+    C.curve = resolve("rgb(var(--c-blue-600))");
+    C.curveSoft = resolve("color-mix(in srgb, rgb(var(--c-blue-600)) 65%, transparent)");
+    C.envFill = resolve("color-mix(in srgb, rgb(var(--c-blue-500)) 10%, transparent)");
+    C.bandFill = resolve("color-mix(in srgb, rgb(var(--c-blue-500)) 22%, transparent)");
+    C.guide = resolve("color-mix(in srgb, rgb(var(--c-blue-600)) 55%, transparent)");
+    C.grid = resolve("color-mix(in srgb, var(--control-border) 30%, transparent)");
+    C.hairline = resolve("color-mix(in srgb, rgb(var(--c-blue-600)) 20%, transparent)");
+    C.axis = resolve("color-mix(in srgb, var(--control-border) 75%, transparent)");
+    C.hatch = resolve("color-mix(in srgb, var(--t-muted) 10%, transparent)");
+    C.hatchLine = resolve("color-mix(in srgb, var(--t-muted) 24%, transparent)");
+    C.text = resolve("var(--t-sub)");
+    C.muted = resolve("var(--t-muted)");
+  }
+
+  var FONT_SMALL = '10.5px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  var FONT_TEXT = '12px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif';
+
+  /* ================= 曲线绘制（A / B / D 共用）=================
+     x 域 = 完整窗口（掐头/去尾的裁剪区要可见），曲线只画在有效窗口内。
+     返回布局（B 的命中测试要用）：px↔分钟/百分比 的映射与关键 y。 */
+  function sizeCanvas(cv) {
+    var r = cv.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    var w = Math.max(120, Math.round(r.width)), h = Math.max(80, Math.round(r.height));
+    var pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx: ctx, w: w, h: h };
+  }
+
+  // 画布公共骨架（A/B/E 共用）：DPR 尺寸 + 裁剪区斜纹 + 时间轴与刻度
+  // padXOverride：E 要给纵轴数字留左侧读数位（A/B 不传，用 12）
+  function plotFrame(cv, padXOverride) {
+    var s = sizeCanvas(cv);
+    var ctx = s.ctx, w = s.w, h = s.h;
+    var padX = padXOverride || 12, topY = 14, axisY = h - 24;
+    var ppm = (w - 2 * padX) / WIN_SPAN;                 // px / 分钟
+    function xOf(min) { return padX + (min - WIN_START) * ppm; }
+    function pctX(p) { return xOf(EFF_LO + SPAN * p / 100); }
+
+    ctx.clearRect(0, 0, w, h);
+
+    // 掐头/去尾裁剪区：斜纹（区间外的时间"不存在"）
+    function hatch(x0, x1) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(x0, topY, x1 - x0, axisY - topY); ctx.clip();
+      ctx.fillStyle = C.hatch; ctx.fillRect(x0, topY, x1 - x0, axisY - topY);
+      ctx.strokeStyle = C.hatchLine; ctx.lineWidth = 1; ctx.beginPath();
+      for (var x = x0 - (axisY - topY); x < x1; x += 6) {
+        ctx.moveTo(x, axisY); ctx.lineTo(x + (axisY - topY), topY);
+      }
+      ctx.stroke(); ctx.restore();
+    }
+    hatch(xOf(WIN_START), xOf(EFF_LO));
+    hatch(xOf(EFF_HI), xOf(WIN_END));
+
+    // 时间轴与刻度（每 20 分钟）
+    ctx.strokeStyle = C.axis; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(xOf(WIN_START), axisY + 0.5); ctx.lineTo(xOf(WIN_END), axisY + 0.5); ctx.stroke();
+    ctx.fillStyle = C.muted; ctx.font = FONT_SMALL; ctx.textBaseline = "top"; ctx.textAlign = "center";
+    for (var t = WIN_START; t <= WIN_END; t += 20) {
+      var tx = xOf(t);
+      ctx.beginPath(); ctx.moveTo(tx, axisY); ctx.lineTo(tx, axisY + 4); ctx.stroke();
+      // 首尾刻度改单侧对齐，避免贴边半个字符被画布裁掉
+      if (t === WIN_START) { ctx.textAlign = "left"; ctx.fillText(fmtT(t), 2, axisY + 7); ctx.textAlign = "center"; }
+      else if (t === WIN_END) { ctx.textAlign = "right"; ctx.fillText(fmtT(t), w - 2, axisY + 7); ctx.textAlign = "center"; }
+      else ctx.fillText(fmtT(t), tx, axisY + 7);
+    }
+
+    return { ctx: ctx, w: w, h: h, padX: padX, topY: topY, axisY: axisY, ppm: ppm, xOf: xOf, pctX: pctX };
+  }
+
+  function drawCurve(cv, st, mode) {
+    var L = plotFrame(cv);
+    var ctx = L.ctx, w = L.w, h = L.h;
+    var padX = L.padX, topY = L.topY, axisY = L.axisY, ppm = L.ppm;
+    function xOf(min) { return L.xOf(min); }
+    function pctX(p) { return L.pctX(p); }
+
+    // μ 竖虚线：峰值中心可到达的范围（画在包络下层）
+    ctx.save();
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = C.guide; ctx.lineWidth = 1;
+    [st.muLo, st.muHi].forEach(function (p) {
+      var gx = pctX(p);
+      ctx.beginPath(); ctx.moveTo(gx, topY); ctx.lineTo(gx, axisY); ctx.stroke();
+    });
+    ctx.restore();
+
+    // 包络带 + 中位曲线（归一化：包络峰顶贴 topY）
+    var yMax = 0, xs = [];
+    for (var px = xOf(EFF_LO); px <= xOf(EFF_HI); px += 2) {
+      var xm = WIN_START + (px - padX) / ppm;
+      xs.push([px, envAt(xm, st)]);
+      if (envAt(xm, st) > yMax) yMax = envAt(xm, st);
+    }
+    var scale = (axisY - topY) / (yMax || 1);
+    ctx.beginPath();
+    ctx.moveTo(xOf(EFF_LO), axisY);
+    xs.forEach(function (pt) { ctx.lineTo(pt[0], axisY - pt[1] * scale); });
+    ctx.lineTo(xOf(EFF_HI), axisY);
+    ctx.closePath();
+    ctx.fillStyle = C.envFill; ctx.fill();
+
+    // 中位钟形（实线，区间中点）
+    var muMid = EFF_LO + SPAN * muMidPct(st) / 100;
+    var sgMid = SPAN * sgMidPct(st) / 100;
+    function strokeBell(sigma, style, width, dash) {
+      ctx.save();
+      if (dash) ctx.setLineDash(dash);
+      ctx.strokeStyle = style; ctx.lineWidth = width;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.beginPath();
+      for (var px2 = xOf(EFF_LO); px2 <= xOf(EFF_HI); px2 += 2) {
+        var xm2 = WIN_START + (px2 - padX) / ppm;
+        var y = axisY - pdf(xm2, muMid, sigma) * scale;
+        if (px2 === xOf(EFF_LO)) ctx.moveTo(px2, y); else ctx.lineTo(px2, y);
+      }
+      ctx.stroke(); ctx.restore();
+    }
+    strokeBell(sgMid, C.curve, 2);
+    // σ 放大后的实际钟形（虚线，仅 n>20 且未被完全顶替时有意义）
+    var f = sigmaFactor(accountN);
+    if (f > 1) strokeBell(Math.min(sgMid * f, sigmaCap()), C.curveSoft, 1.5, [6, 4]);
+
+    // 方案 B：μ 胶囊带 + σ 宽度括号（其余方案的手柄在 DOM 通道上）
+    var layout = null;
+    if (mode === "B") {
+      var bandY = axisY - 20, bandH = 12;
+      var bx1 = pctX(st.muLo), bx2 = pctX(st.muHi);
+      ctx.save();
+      // μ 胶囊带
+      ctx.fillStyle = C.bandFill;
+      ctx.strokeStyle = C.guide; ctx.lineWidth = 1;
+      roundRect(ctx, bx1, bandY, Math.max(2, bx2 - bx1), bandH, 6);
+      ctx.fill(); ctx.stroke();
+      // σ 括号：主线 = 中点 ± σMid；淡刻度 = ±σMin / ±σMax
+      var sy = axisY - 44;
+      var half = sgMid * ppm;
+      ctx.strokeStyle = C.curve; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(xOf(muMid) - half, sy); ctx.lineTo(xOf(muMid) + half, sy);
+      ctx.moveTo(xOf(muMid) - half, sy - 5); ctx.lineTo(xOf(muMid) - half, sy + 5);
+      ctx.moveTo(xOf(muMid) + half, sy - 5); ctx.lineTo(xOf(muMid) + half, sy + 5);
+      ctx.stroke();
+      ctx.strokeStyle = C.guide; ctx.lineWidth = 1;
+      [SPAN * st.sgLo / 100, SPAN * st.sgHi / 100].forEach(function (sm) {
+        var d = sm * ppm;
+        ctx.beginPath();
+        ctx.moveTo(xOf(muMid) - d, sy - 3); ctx.lineTo(xOf(muMid) - d, sy + 3);
+        ctx.moveTo(xOf(muMid) + d, sy - 3); ctx.lineTo(xOf(muMid) + d, sy + 3);
+        ctx.stroke();
+      });
+      ctx.fillStyle = C.muted; ctx.font = FONT_SMALL; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      ctx.fillText("σ", xOf(muMid) - half - 8, sy);
+      ctx.restore();
+      // 手柄画在最后（最上层）
+      handle(bx1, bandY + bandH / 2);
+      handle(bx2, bandY + bandH / 2);
+      handle(xOf(muMid) - half, sy, 6);
+      handle(xOf(muMid) + half, sy, 6);
+      layout = {
+        padX: padX, ppm: ppm, axisY: axisY, bandY: bandY, bandH: bandH,
+        bx1: bx1, bx2: bx2, sy: sy, half: half, midX: xOf(muMid),
+        xOf: xOf, pctX: pctX
+      };
+    }
+    function handle(x, y, r) {
+      r = r || 7;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = C.curve; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke();
+    }
+    return layout;
+
+    function roundRect(c, x, y, wd, ht, r) {
+      c.beginPath();
+      c.moveTo(x + r, y);
+      c.arcTo(x + wd, y, x + wd, y + ht, r);
+      c.arcTo(x + wd, y + ht, x, y + ht, r);
+      c.arcTo(x, y + ht, x, y, r);
+      c.arcTo(x, y, x + wd, y, r);
+      c.closePath();
+    }
+  }
+
+  /* ================= 读数行（三方案共用文案）================= */
+  function readoutText(st) {
+    var muA = EFF_LO + SPAN * st.muLo / 100, muB = EFF_LO + SPAN * st.muHi / 100;
+    var nomLo = Math.round(SPAN * st.sgLo / 100), nomHi = Math.round(SPAN * st.sgHi / 100);
+    var parts = ["峰值中心 " + fmtT(muA) + " ~ " + fmtT(muB),
+                 "散布 ±" + nomLo + " ~ " + nomHi + " 分钟"];
+    var f = sigmaFactor(accountN);
+    if (f > 1) {
+      var cap = sigmaCap();
+      var eLo = Math.min(Math.round(nomLo * f), cap), eHi = Math.min(Math.round(nomHi * f), cap);
+      var seg = accountN + " 账号 → σ×" + f.toFixed(1) + "，实际 ±" +
+        (eLo === eHi ? String(eLo) : eLo + " ~ " + eHi) + " 分钟";
+      if (eHi >= cap) seg += "（达窗口/3 封顶）";
+      parts.push(seg);
+    }
+    return parts.join(" · ");
+  }
+
+  /* ================= 通道元件（方案 A 与弹窗 D 复用）=================
+     纯 DOM：轨道 + 区间带 + 两枚 button 手柄。拖拽走 Pointer Events；
+     手柄可聚焦，方向键 ±1（Shift ±5）——与拖拽平权的键盘路径。 */
+  function buildLane(host, opts) {
+    // opts: {state, keyLo, keyHi, label, valueText(st), bandDrag, onChange}
+    var row = document.createElement("div");
+    row.innerHTML =
+      '<div class="dv-lane-head"><span class="dv-lane-label"></span>' +
+      '<span class="dv-lane-val"></span></div>' +
+      '<div class="dv-lane"><div class="dv-track"></div>' +
+      '<div class="dv-band' + (opts.bandDrag ? " dv-band--drag" : "") + '">' +
+      '<span class="dv-band-text"></span></div>' +
+      '<button type="button" class="dv-handle" data-h="lo"></button>' +
+      '<button type="button" class="dv-handle" data-h="hi"></button></div>';
+    row.querySelector(".dv-lane-label").textContent = opts.label;
+    var lane = row.querySelector(".dv-lane");
+    var band = row.querySelector(".dv-band");
+    var bandText = row.querySelector(".dv-band-text");
+    var valEl = row.querySelector(".dv-lane-val");
+    var hLo = row.querySelector('[data-h="lo"]');
+    var hHi = row.querySelector('[data-h="hi"]');
+    host.appendChild(row);
+
+    function st() { return opts.state; }
+
+    function render() {
+      var s = st(), lo = s[opts.keyLo], hi = s[opts.keyHi];
+      band.style.left = lo + "%";
+      band.style.width = (hi - lo) + "%";
+      hLo.style.left = lo + "%";
+      hHi.style.left = hi + "%";
+      bandText.textContent = (hi - lo) >= 14 ? lo + "% ~ " + hi + "%" : "";
+      valEl.textContent = opts.valueText(s);
+      hLo.setAttribute("aria-label", opts.label + "下界，当前 " + lo + "%");
+      hHi.setAttribute("aria-label", opts.label + "上界，当前 " + hi + "%");
+    }
+
+    function lanePct(clientX) {
+      var r = lane.getBoundingClientRect();
+      return clampPct((clientX - r.left) / r.width * 100);
+    }
+
+    lane.addEventListener("pointerdown", function (e) {
+      var t = e.target;
+      var mode = t.getAttribute && t.getAttribute("data-h");
+      var isBand = !mode && t.classList && t.classList.contains("dv-band") && opts.bandDrag;
+      if (!mode && !isBand) return;
+      e.preventDefault();
+      try { lane.setPointerCapture(e.pointerId); } catch (err) {}
+      var s = st();
+      var startX = e.clientX, startLo = s[opts.keyLo], startHi = s[opts.keyHi], startP = lanePct(startX);
+      function onMove(ev) {
+        var p = lanePct(ev.clientX);
+        var s2 = st();
+        if (mode === "lo") s2[opts.keyLo] = Math.min(p, s2[opts.keyHi] - 1);
+        else if (mode === "hi") s2[opts.keyHi] = Math.max(p, s2[opts.keyLo] + 1);
+        else {
+          var d = p - startP, wd = startHi - startLo;
+          var lo = Math.min(Math.max(startLo + d, 0), 100 - wd);
+          s2[opts.keyLo] = Math.round(lo);
+          s2[opts.keyHi] = Math.round(lo + wd);
+        }
+        opts.onChange();
+      }
+      function onUp(ev) {
+        lane.removeEventListener("pointermove", onMove);
+        lane.removeEventListener("pointerup", onUp);
+        lane.removeEventListener("pointercancel", onUp);
+      }
+      lane.addEventListener("pointermove", onMove);
+      lane.addEventListener("pointerup", onUp);
+      lane.addEventListener("pointercancel", onUp);
+    });
+
+    [hLo, hHi].forEach(function (btn) {
+      btn.addEventListener("keydown", function (e) {
+        var d = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+        if (!d) return;
+        e.preventDefault();
+        var step = e.shiftKey ? 5 : 1;
+        var s = st();
+        if (btn === hLo) s[opts.keyLo] = Math.min(Math.max(s[opts.keyLo] + d * step, 0), s[opts.keyHi] - 1);
+        else s[opts.keyHi] = Math.min(Math.max(s[opts.keyHi] + d * step, s[opts.keyLo] + 1), 100);
+        opts.onChange();
+      });
+    });
+
+    return { render: render };
+  }
+
+  /* ================= 方案 A ================= */
+  var stA = mkState();
+  var laneMuA = null, laneSigA = null;
+  function renderA() {
+    drawCurve(document.getElementById("dv-a-curve"), stA, "plain");
+    laneMuA.render(); laneSigA.render();
+    document.getElementById("dv-a-readout").textContent = readoutText(stA);
+  }
+  laneMuA = buildLane(document.getElementById("dv-a-lanes"), {
+    state: stA, keyLo: "muLo", keyHi: "muHi", label: "μ 峰值中心", bandDrag: true,
+    valueText: function (s) {
+      return fmtT(EFF_LO + SPAN * s.muLo / 100) + " ~ " + fmtT(EFF_LO + SPAN * s.muHi / 100);
+    },
+    onChange: renderA
+  });
+  laneSigA = buildLane(document.getElementById("dv-a-lanes"), {
+    state: stA, keyLo: "sgLo", keyHi: "sgHi", label: "σ 散布宽度", bandDrag: false,
+    valueText: function (s) {
+      return Math.round(SPAN * s.sgLo / 100) + " ~ " + Math.round(SPAN * s.sgHi / 100) + " 分钟";
+    },
+    onChange: renderA
+  });
+
+  /* ================= 方案 B ================= */
+  var stB = mkState();
+  var bLayout = null;
+  var cvB = document.getElementById("dv-b-canvas");
+  function renderB() { bLayout = drawCurve(cvB, stB, "B"); document.getElementById("dv-b-readout").textContent = readoutText(stB); }
+
+  cvB.addEventListener("pointerdown", function (e) {
+    if (!bLayout) return;
+    var r = cvB.getBoundingClientRect();
+    var px = e.clientX - r.left, py = e.clientY - r.top;
+    var L = bLayout;
+    var cands = [
+      ["muLo", L.bx1, L.bandY + L.bandH / 2],
+      ["muHi", L.bx2, L.bandY + L.bandH / 2],
+      ["sgLo", L.midX - L.half, L.sy],
+      ["sgHi", L.midX + L.half, L.sy]
+    ];
+    var hit = null, bestD = 22;
+    cands.forEach(function (c) {
+      var d = Math.hypot(px - c[1], py - c[2]);
+      if (d < bestD) { bestD = d; hit = c[0]; }
+    });
+    var isBody = !hit && px >= L.bx1 && px <= L.bx2 && py >= L.bandY - 4 && py <= L.bandY + L.bandH + 4;
+    if (!hit && !isBody) return;
+    e.preventDefault();
+    try { cvB.setPointerCapture(e.pointerId); } catch (err) {}
+    var startX = px, startLo = stB.muLo, startHi = stB.muHi;
+    var startPct = pctOfX(px);
+    function onMove(ev) {
+      var cx = ev.clientX - r.left, cy = ev.clientY - r.top;
+      if (hit === "muLo") {
+        var p = pctOfX(cx);
+        stB.muLo = Math.min(clampPct(p), stB.muHi - 1);
+      } else if (hit === "muHi") {
+        var p2 = pctOfX(cx);
+        stB.muHi = Math.max(clampPct(p2), stB.muLo + 1);
+      } else if (isBody) {
+        var dp = pctOfX(cx) - startPct, wd = startHi - startLo;
+        var lo = Math.min(Math.max(startLo + dp, 0), 100 - wd);
+        stB.muLo = Math.round(lo); stB.muHi = Math.round(lo + wd);
+      } else {
+        // σ 手柄：等比缩放整个区间（中点不变）。px → 分钟：每 px 对应 (xOf(EFF_HI)-xOf(EFF_LO))/SPAN px。
+        var newHalf = Math.abs(cx - L.midX) / ((L.xOf(EFF_HI) - L.xOf(EFF_LO)) / SPAN);
+        var midPct = sgMidPct(stB);
+        var k = midPct > 0 ? (newHalf / SPAN * 100) / midPct : 1;
+        var nLo = clampPct(stB.sgLo * k), nHi = clampPct(stB.sgHi * k);
+        if (nHi <= nLo) nHi = nLo + 1;
+        if (nHi > 100) { nLo = Math.max(1, Math.round(nLo * 100 / nHi)); nHi = 100; }
+        if (nLo < 1) nLo = 1;
+        stB.sgLo = Math.min(nLo, nHi - 1);
+        stB.sgHi = Math.max(nHi, nLo + 1);
+      }
+      renderB();
+    }
+    function pctOfX(cx) {
+      return (cx - L.xOf(EFF_LO)) / (L.xOf(EFF_HI) - L.xOf(EFF_LO)) * 100;
+    }
+    function onUp() {
+      cvB.removeEventListener("pointermove", onMove);
+      cvB.removeEventListener("pointerup", onUp);
+      cvB.removeEventListener("pointercancel", onUp);
+    }
+    cvB.addEventListener("pointermove", onMove);
+    cvB.addEventListener("pointerup", onUp);
+    cvB.addEventListener("pointercancel", onUp);
+  });
+
+  /* ================= 方案 C ================= */
+  var stC = mkState();
+  var gantt = document.getElementById("dv-c-gantt");
+  var cEls = {
+    head: document.getElementById("dv-c-clip-head"),
+    tail: document.getElementById("dv-c-clip-tail"),
+    halo: document.getElementById("dv-c-halo"),
+    block: document.getElementById("dv-c-block")
+  };
+  // 时间刻度：整窗每 20 分钟一枚（与曲线同刻度）
+  (function () {
+    var ticks = document.getElementById("dv-c-ticks");
+    for (var t = WIN_START; t <= WIN_END; t += 20) {
+      var sp = document.createElement("span");
+      sp.textContent = fmtT(t);
+      sp.style.left = ((t - WIN_START) / WIN_SPAN * 100) + "%";
+      ticks.appendChild(sp);
+    }
+  })();
+
+  function gPct(clientX) {
+    var r = gantt.getBoundingClientRect();
+    var min = WIN_START + (clientX - r.left) / r.width * WIN_SPAN;
+    return clampPct((min - EFF_LO) / SPAN * 100);
+  }
+  function renderC() {
+    cEls.head.style.left = "0";
+    cEls.head.style.width = ((EFF_LO - WIN_START) / WIN_SPAN * 100) + "%";
+    cEls.tail.style.right = "0";
+    cEls.tail.style.width = ((WIN_END - EFF_HI) / WIN_SPAN * 100) + "%";
+    var mid = muMidPct(stC), halfMin = SPAN * sgMidPct(stC) / 100;
+    var halfPct = halfMin / SPAN * 100;
+    cEls.halo.style.left = (mid - halfPct) + "%";
+    cEls.halo.style.width = halfPct * 2 + "%";
+    cEls.block.style.left = stC.muLo + "%";
+    cEls.block.style.width = (stC.muHi - stC.muLo) + "%";
+    cEls.halo.querySelector('[data-h="sgLo"]').style.left = "0%";
+    cEls.halo.querySelector('[data-h="sgHi"]').style.left = "100%";
+    cEls.block.querySelector('[data-h="muLo"]').style.left = "0%";
+    cEls.block.querySelector('[data-h="muHi"]').style.left = "100%";
+    setInputsC();
+    document.getElementById("dv-c-readout").textContent = readoutText(stC);
+  }
+  function setInputsC() {
+    document.getElementById("dv-c-mu-lo").value = stC.muLo;
+    document.getElementById("dv-c-mu-hi").value = stC.muHi;
+    document.getElementById("dv-c-sg-lo").value = stC.sgLo;
+    document.getElementById("dv-c-sg-hi").value = stC.sgHi;
+  }
+  gantt.addEventListener("pointerdown", function (e) {
+    var t = e.target;
+    var h = t.getAttribute && t.getAttribute("data-h");
+    var isBlockBody = !h && (t === cEls.block);
+    var isHaloEdge = h === "sgLo" || h === "sgHi";
+    if (!h && !isBlockBody) return;
+    e.preventDefault();
+    try { gantt.setPointerCapture(e.pointerId); } catch (err) {}
+    var startP = gPct(e.clientX), startLo = stC.muLo, startHi = stC.muHi;
+    var midPx = (function () {
+      var r = gantt.getBoundingClientRect();
+      return r.left + (EFF_LO + SPAN * muMidPct(stC) / 100 - WIN_START) / WIN_SPAN * r.width;
+    })();
+    function onMove(ev) {
+      var p = gPct(ev.clientX);
+      if (h === "muLo") stC.muLo = Math.min(p, stC.muHi - 1);
+      else if (h === "muHi") stC.muHi = Math.max(p, stC.muLo + 1);
+      else if (isBlockBody) {
+        var d = p - startP, wd = startHi - startLo;
+        var lo = Math.min(Math.max(startLo + d, 0), 100 - wd);
+        stC.muLo = Math.round(lo); stC.muHi = Math.round(lo + wd);
+      } else {
+        var r2 = gantt.getBoundingClientRect();
+        var halfMinPx = Math.abs(ev.clientX - midPx) / r2.width * WIN_SPAN; // 分钟
+        var k = sgMidPct(stC) > 0 ? (halfMinPx / SPAN * 100) / sgMidPct(stC) : 1;
+        var nLo = clampPct(stC.sgLo * k), nHi = clampPct(stC.sgHi * k);
+        if (nHi <= nLo) nHi = nLo + 1;
+        if (nHi > 100) { nLo = Math.max(1, Math.round(nLo * 100 / nHi)); nHi = 100; }
+        if (nLo < 1) nLo = 1;
+        stC.sgLo = Math.min(nLo, nHi - 1);
+        stC.sgHi = Math.max(nHi, nLo + 1);
+      }
+      renderC();
+    }
+    function onUp() {
+      gantt.removeEventListener("pointermove", onMove);
+      gantt.removeEventListener("pointerup", onUp);
+      gantt.removeEventListener("pointercancel", onUp);
+    }
+    gantt.addEventListener("pointermove", onMove);
+    gantt.addEventListener("pointerup", onUp);
+    gantt.addEventListener("pointercancel", onUp);
+  });
+  // 数字框：input 即时预览、change 钳位回写（与设置页"input 刷新预警 / change 落值"同款）
+  [["dv-c-mu-lo", "muLo"], ["dv-c-mu-hi", "muHi"], ["dv-c-sg-lo", "sgLo"], ["dv-c-sg-hi", "sgHi"]]
+    .forEach(function (pair) {
+      var el = document.getElementById(pair[0]);
+      el.addEventListener("input", function () {
+        var v = parseInt(el.value, 10);
+        if (isNaN(v)) return;
+        stC[pair[1]] = Math.min(100, Math.max(0, v));
+        fixPairsC();
+        renderC();
+      });
+      el.addEventListener("change", function () { fixPairsC(); renderC(); });
+    });
+  function fixPairsC() {
+    stC.muHi = Math.max(stC.muHi, stC.muLo + 1);
+    stC.muLo = Math.min(stC.muLo, stC.muHi - 1);
+    stC.sgHi = Math.max(stC.sgHi, stC.sgLo + 1);
+    stC.sgLo = Math.max(1, Math.min(stC.sgLo, stC.sgHi - 1));
+  }
+
+  /* ================= 方案 D：触发器 + 弹窗 =================
+     弹窗复用 .pm-backdrop/.pm-panel 全套真实样式；通道元件与方案 A 同一个 buildLane。
+     确定 = staged 落到生效态；取消/✕/背板/Esc = 丢弃（"取消不留痕"家族契约）。 */
+  var stD = mkState();
+  var stagedD = mkState();
+  var laneMuD = null, laneSigD = null;
+  var dCanvas = null;
+  var dBackdrop = null;
+  var dTrigger = document.getElementById("dv-d-trigger");
+
+  function triggerText(st) {
+    return "μ " + st.muLo + " ~ " + st.muHi + " % · σ " + st.sgLo + " ~ " + st.sgHi + " %";
+  }
+  function renderDStaged() {
+    if (dCanvas) drawCurve(dCanvas, stagedD, "plain");
+    if (laneMuD) { laneMuD.render(); laneSigD.render(); }
+  }
+  dTrigger.addEventListener("click", function () {
+    Object.assign(stagedD, stD);
+    if (!dBackdrop) buildDialogD();
+    document.body.appendChild(dBackdrop);
+    // 先入 DOM 再绘制：canvas 必须拿到真实布局尺寸，否则位图取最小值后被 CSS
+    // 拉伸，刻度文字会放大成糊字（弹窗首次打开时的实际教训）
+    renderDStaged();
+    requestAnimationFrame(function () { dBackdrop.classList.add("is-open"); });
+    var cancelBtn = dBackdrop.querySelector(".modal-foot .btn--ghost");
+    if (cancelBtn) cancelBtn.focus();
+  });
+  function buildDialogD() {
+    dBackdrop = document.createElement("div");
+    dBackdrop.className = "pm-backdrop";
+    dBackdrop.setAttribute("data-modal-backdrop", "");
+    var panel = document.createElement("div");
+    panel.className = "pm-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-labelledby", "dv-d-title");
+    panel.innerHTML =
+      '<div class="modal-head"><div class="modal-head-text">' +
+      '<div class="modal-title" id="dv-d-title">编辑正态参数</div>' +
+      '<div class="modal-sub">μ 相对有效窗口位置 · σ 相对窗口宽度；每天各在区间内取一点</div>' +
+      '</div>' +
+      '<button type="button" class="pm-panel-close" aria-label="关闭" data-act="close">' +
+      '<svg aria-hidden="true"><use href="#i-x"/></svg></button></div>' +
+      '<div class="modal-body">' +
+      '<canvas id="dv-d-canvas" class="dv-curve" role="img" aria-label="正态分布预览"></canvas>' +
+      '<div id="dv-d-lanes" style="margin-top:12px"></div>' +
+      '<p class="dv-readout" id="dv-d-readout" style="margin-top:12px"></p>' +
+      '</div>' +
+      '<div class="modal-foot">' +
+      '<button type="button" class="btn btn--ghost" data-act="cancel">取消</button>' +
+      '<button type="button" class="btn btn--primary" data-act="ok">确定</button>' +
+      '</div>';
+    dBackdrop.appendChild(panel);
+    dCanvas = panel.querySelector("#dv-d-canvas");
+    var lanes = panel.querySelector("#dv-d-lanes");
+    laneMuD = buildLane(lanes, {
+      state: stagedD, keyLo: "muLo", keyHi: "muHi", label: "μ 峰值中心", bandDrag: true,
+      valueText: function (s) {
+        return fmtT(EFF_LO + SPAN * s.muLo / 100) + " ~ " + fmtT(EFF_LO + SPAN * s.muHi / 100);
+      },
+      onChange: function () { renderDStaged(); panel.querySelector("#dv-d-readout").textContent = readoutText(stagedD); }
+    });
+    laneSigD = buildLane(lanes, {
+      state: stagedD, keyLo: "sgLo", keyHi: "sgHi", label: "σ 散布宽度", bandDrag: false,
+      valueText: function (s) {
+        return Math.round(SPAN * s.sgLo / 100) + " ~ " + Math.round(SPAN * s.sgHi / 100) + " 分钟";
+      },
+      onChange: function () { renderDStaged(); panel.querySelector("#dv-d-readout").textContent = readoutText(stagedD); }
+    });
+    function close(commit) {
+      dBackdrop.classList.remove("is-open");
+      setTimeout(function () {
+        if (dBackdrop.parentNode) dBackdrop.parentNode.removeChild(dBackdrop);
+      }, 170);
+      document.removeEventListener("keydown", onKey);
+      if (commit) {
+        Object.assign(stD, stagedD);
+        document.getElementById("dv-d-trigger-text").textContent = triggerText(stD);
+      }
+      dTrigger.focus();
+    }
+    function onKey(e) { if (e.key === "Escape") close(false); }
+    panel.addEventListener("click", function (e) {
+      var act = e.target.getAttribute && e.target.getAttribute("data-act");
+      if (act === "ok") close(true);
+      else if (act === "cancel" || act === "close") close(false);
+    });
+    dBackdrop.addEventListener("click", function (e) { if (e.target === dBackdrop) close(false); });
+    document.addEventListener("keydown", onKey);
+  }
+
+  /* ================= 方案 E：峰尖拖拽（单点 XY）=================
+     一个点同时驱动两个参数：x → μMid（保宽平移 μ 区间），y → σMid（保宽缩放 σ 区间）。
+     钟形画真实 PDF 形状与宽度，但峰高锚定在圆点上——y 轴本就没有刻度，高度只承担
+     "上尖下扁"的方向语义；包络带省略（单点表达不了区间盒），宽度交给 μ 竖虚线与
+     σ 括号的淡刻度。 */
+  var stE = mkState();
+  var cvE = document.getElementById("dv-e-canvas");
+  var eLayout = null;
+  // 拖拽映射的 σ 显示域（%）：上限贴着 σ_eff 的"窗口/3"封顶——再大也会被封顶吃掉，调了白调
+  var E_SIGMA_MIN = 4, E_SIGMA_MAX = 33;
+
+  function eApply(midMu, midSg) {
+    var muW = stE.muHi - stE.muLo, sgW = stE.sgHi - stE.sgLo;
+    var mm = Math.min(Math.max(midMu, muW / 2), 100 - muW / 2);
+    var sm = Math.min(Math.max(midSg, sgW / 2 + 1), Math.min(E_SIGMA_MAX, 100 - sgW / 2));
+    // 吸附到整分钟：钟点/时长是主单位，% 只是 API 的存储网格（1% ≈ 45s，随窗口宽度变化）
+    var midMin = Math.round(EFF_LO + SPAN * mm / 100);
+    mm = (midMin - EFF_LO) / SPAN * 100;
+    var sgMidMin = Math.round(SPAN * sm / 100);
+    sm = sgMidMin / SPAN * 100;
+    // 分钟吸附有 ±0.5 分钟（≈0.7%）的回推，钳位必须在吸附之后重做一遍，
+    // 否则 mu_min_pct 会提交出负数（用户实测拖到左缘时 muLo = -1 的根因）
+    mm = Math.min(Math.max(mm, muW / 2), 100 - muW / 2);
+    sm = Math.min(Math.max(sm, sgW / 2 + 1), Math.min(E_SIGMA_MAX, 100 - sgW / 2));
+    var mlo = Math.round(mm - muW / 2);
+    stE.muLo = mlo; stE.muHi = mlo + muW;
+    stE.sgLo = Math.max(1, Math.round(sm - sgW / 2));
+    stE.sgHi = Math.min(100, stE.sgLo + sgW);
+  }
+
+  function drawE(cv, st) {
+    var L = plotFrame(cv, 46);                           // 左侧留纵轴数字位
+    var ctx = L.ctx;
+    var eTop = L.topY + 10, eBot = L.axisY - 26;         // 圆点可行域（留出峰上/轴下余量）
+    var muMid = muMidPct(st), sgMid = sgMidPct(st);
+    var muMidMin = EFF_LO + SPAN * muMid / 100;
+    var sgMidMin = SPAN * sgMid / 100;
+    // 圆点 y 与 σMid 线性（上 = 更尖）
+    var t = 1 - (sgMid - E_SIGMA_MIN) / (E_SIGMA_MAX - E_SIGMA_MIN);
+    var dotX = L.xOf(muMidMin);
+    var dotY = eBot - (eBot - eTop) * t;
+    var bellH = L.axisY - dotY;
+    var peak = pdf(muMidMin, muMidMin, sgMidMin);        // 峰值密度（高度归一化锚点）
+    function bellY(xm, sigma) { return L.axisY - pdf(xm, muMidMin, sigma) / peak * bellH; }
+
+    // 纵轴刻度：预计每分钟签到人数（人/分钟）。峰高虽锚定圆点，但整张图共用同一个
+    // "密度→像素"线性映射，网格线数值对实线/虚线/染色同时成立；拖动时标尺随峰形
+    // 自动缩放（同图表自动放大），数字始终落在 3~6 条的舒适区间。
+    var peoplePerMin = accountN * peak;                  // 名义钟形峰值处的人/分钟
+    var dTop = peoplePerMin * (L.axisY - L.topY) / bellH;
+    var step = 5000, cands = [0.25, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
+    for (var ci = 0; ci < cands.length; ci++) {
+      if (dTop / cands[ci] <= 6) { step = cands[ci]; break; }
+    }
+    ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+    ctx.fillStyle = C.muted; ctx.font = FONT_SMALL;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (var gi = 1; ; gi++) {
+      var dVal = gi * step;
+      if (dVal > dTop + 1e-9) break;
+      var gy = L.axisY - dVal / peoplePerMin * bellH;
+      if (gy < L.topY - 0.5) break;
+      ctx.beginPath();
+      ctx.moveTo(L.padX, gy); ctx.lineTo(L.w - L.padX, gy);
+      ctx.stroke();
+      ctx.fillText(String(dVal), L.padX - 6, gy);
+    }
+    // 轴单位沿轴竖排
+    ctx.save();
+    ctx.translate(10, (L.topY + L.axisY) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("人 / 分钟", 0, 0);
+    ctx.restore();
+
+    // 曲线、染色、底座全部钳在有效窗口内绘制：引擎对越界尾部做反射折回（窗口外没有
+    // 真实签到密度），拖到边缘时画出斜纹区/画布外属于渲染失误（用户实测反馈）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(L.xOf(EFF_LO), L.topY, L.xOf(EFF_HI) - L.xOf(EFF_LO), L.axisY - L.topY);
+    ctx.clip();
+
+    // μ 竖虚线（区间两端）
+    ctx.save();
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = C.guide; ctx.lineWidth = 1;
+    [st.muLo, st.muHi].forEach(function (p) {
+      var gx = L.pctX(p);
+      ctx.beginPath(); ctx.moveTo(gx, L.topY); ctx.lineTo(gx, L.axisY); ctx.stroke();
+    });
+    ctx.restore();
+
+    // 中位钟形（实线：形状与宽度真实、峰高锚定圆点）
+    ctx.strokeStyle = C.curve; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath();
+    for (var px = L.xOf(EFF_LO); px <= L.xOf(EFF_HI); px += 2) {
+      var xm = WIN_START + (px - L.padX) / L.ppm;
+      if (px === L.xOf(EFF_LO)) ctx.moveTo(px, bellY(xm, sgMidMin));
+      else ctx.lineTo(px, bellY(xm, sgMidMin));
+    }
+    ctx.stroke();
+
+    // σ 放大后的实际钟形（虚线，同一锚点；n>20 才有意义）
+    var f = sigmaFactor(accountN);
+    if (f > 1) {
+      ctx.save();
+      ctx.setLineDash([6, 4]); ctx.strokeStyle = C.curveSoft; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (var px2 = L.xOf(EFF_LO); px2 <= L.xOf(EFF_HI); px2 += 2) {
+        var xm2 = WIN_START + (px2 - L.padX) / L.ppm;
+        var yy = bellY(xm2, Math.min(sgMidMin * f, sigmaCap()));
+        if (px2 === L.xOf(EFF_LO)) ctx.moveTo(px2, yy);
+        else ctx.lineTo(px2, yy);
+      }
+      ctx.stroke(); ctx.restore();
+    }
+
+    // ±1σ 核心染色：把"散布多宽"直接画进钟形里（约 68% 的账号落在这一段）
+    var coreL = L.xOf(muMidMin - sgMidMin), coreR = L.xOf(muMidMin + sgMidMin);
+    ctx.beginPath();
+    ctx.moveTo(coreL, L.axisY);
+    for (var pc = coreL; pc <= coreR; pc += 2) {
+      var xm3 = WIN_START + (pc - L.padX) / L.ppm;
+      ctx.lineTo(pc, bellY(xm3, sgMidMin));
+    }
+    ctx.lineTo(coreR, L.axisY);
+    ctx.closePath();
+    ctx.fillStyle = C.bandFill; ctx.fill();
+
+    // 散布底座：±1σ 投影到时间轴，对着刻度直接读出"散在几点到几点"；
+    // 两枚短须 = σ 区间两端（±σLo / ±σHi 分钟），端部可横向拖拽
+    var half = sgMidMin * L.ppm;
+    var baseY = L.axisY - 10;
+    ctx.fillStyle = C.bandFill;
+    ctx.beginPath();
+    ctx.moveTo(dotX - Math.max(2, half) + 4, baseY);
+    ctx.arcTo(dotX + Math.max(2, half), baseY, dotX + Math.max(2, half), baseY + 8, 4);
+    ctx.arcTo(dotX + Math.max(2, half), baseY + 8, dotX - Math.max(2, half), baseY + 8, 4);
+    ctx.arcTo(dotX - Math.max(2, half), baseY + 8, dotX - Math.max(2, half), baseY, 4);
+    ctx.arcTo(dotX - Math.max(2, half), baseY, dotX + Math.max(2, half), baseY, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = C.guide; ctx.lineWidth = 1;
+    ctx.stroke();
+    [SPAN * st.sgLo / 100, SPAN * st.sgHi / 100].forEach(function (sm2) {
+      var d = sm2 * L.ppm;
+      ctx.beginPath();
+      ctx.moveTo(dotX - d, baseY - 3); ctx.lineTo(dotX - d, baseY + 11);
+      ctx.moveTo(dotX + d, baseY - 3); ctx.lineTo(dotX + d, baseY + 11);
+      ctx.stroke();
+    });
+
+    ctx.restore(); // 解除有效窗口裁剪
+
+    // 竖准线：只保留"峰值位置"一条方向暗示（宽度语义交给轴上底座）
+    ctx.strokeStyle = C.hairline; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(dotX, L.topY); ctx.lineTo(dotX, L.axisY);
+    ctx.stroke();
+
+    // 峰尖圆点（手柄本体）
+    ctx.beginPath(); ctx.arc(dotX, dotY, 7.5, 0, Math.PI * 2);
+    ctx.fillStyle = C.curve; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke();
+
+    return {
+      dotX: dotX, dotY: dotY, half: half, baseY: baseY, axisY: L.axisY, ppm: L.ppm,
+      pctOfX: function (cx) {
+        return (cx - L.xOf(EFF_LO)) / (L.xOf(EFF_HI) - L.xOf(EFF_LO)) * 100;
+      },
+      sgOfY: function (cy) {
+        var tt = 1 - Math.min(Math.max((eBot - cy) / (eBot - eTop), 0), 1);
+        return E_SIGMA_MIN + tt * (E_SIGMA_MAX - E_SIGMA_MIN);
+      }
+    };
+  }
+
+  function setIfIdle(id, v) {
+    var el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = v;
+  }
+
+  function renderE() {
+    eLayout = drawE(cvE, stE);
+    // 输入框显示"钟点 / 时长"：API 仍是四个整数 %，单位换算全部在前端
+    setIfIdle("dv-e-mu-mid", fmtT(EFF_LO + SPAN * muMidPct(stE) / 100));
+    setIfIdle("dv-e-mu-r", String(Math.max(1, Math.round(SPAN * (stE.muHi - stE.muLo) / 200))));
+    setIfIdle("dv-e-sg-lo", String(Math.round(SPAN * stE.sgLo / 100)));
+    setIfIdle("dv-e-sg-hi", String(Math.round(SPAN * stE.sgHi / 100)));
+    var parts = ["高峰约 " + (function () {
+      // 实际高峰速率按 σ_eff（人数放大 + 封顶）计，对应虚线钟形的峰顶
+      var sigmaEffMin = Math.min(SPAN * sgMidPct(stE) / 100 * sigmaFactor(accountN), sigmaCap());
+      var rate = accountN / (sigmaEffMin * Math.sqrt(2 * Math.PI));
+      return rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
+    })() + " 人/分钟",
+      "API 原始单位：μ " + stE.muLo + "~" + stE.muHi + "% · σ " +
+      stE.sgLo + "~" + stE.sgHi + "%"];
+    var f = sigmaFactor(accountN);
+    if (f > 1) {
+      var cap = sigmaCap();
+      var eLo = Math.min(Math.round(SPAN * stE.sgLo / 100 * f), cap);
+      var eHi = Math.min(Math.round(SPAN * stE.sgHi / 100 * f), cap);
+      parts.push(accountN + " 账号 → σ×" + f.toFixed(1) + "，实际 ±" +
+        (eLo === eHi ? String(eLo) : eLo + " ~ " + eHi) + " 分钟" +
+        (eHi >= cap ? "（达窗口/3 封顶）" : ""));
+    }
+    // 名义钟形尾部伸出窗外时提示反射语义（图中已裁去，与引擎执行一致）
+    var muMidMin = EFF_LO + SPAN * muMidPct(stE) / 100;
+    var sgMidMin = SPAN * sgMidPct(stE) / 100;
+    if (muMidMin - sgMidMin < EFF_LO || muMidMin + sgMidMin > EFF_HI) {
+      parts.push("尾部超出窗口的部分执行时按反射折回（图中裁去）");
+    }
+    document.getElementById("dv-e-readout").textContent = parts.join(" · ");
+    cvE.setAttribute("aria-label",
+      "峰尖拖拽画布：峰值中心 " + fmtT(EFF_LO + SPAN * muMidPct(stE) / 100) +
+      "，散布 ±" + Math.round(SPAN * stE.sgLo / 100) + " ~ " +
+      Math.round(SPAN * stE.sgHi / 100) + " 分钟；方向键可微调");
+  }
+
+  // 峰值区间 = 顶点 ± 半径：钟点只改顶点（宽度不变），半径只改宽度（顶点不动）。
+  // 提交口径仍是 mu_min_pct / mu_max_pct 两个整数 %，API 不动；
+  // 钟点超出有效窗口（掐头去尾之后）会被钳到边界，半径超出可容纳范围时对称收窄。
+  function applyMu(mid, rPct) {
+    rPct = Math.min(rPct, mid, 100 - mid);              // 对称区间不出窗
+    var fullW = Math.max(2, Math.round(2 * rPct));      // 区间全宽（%），≥2 保证 hi > lo
+    var lo = clampPct(mid - fullW / 2);
+    if (lo + fullW > 100) lo = 100 - fullW;
+    stE.muLo = lo;
+    stE.muHi = lo + fullW;
+  }
+  function onMuMid() {
+    var v = document.getElementById("dv-e-mu-mid").value;
+    if (!/^\d{1,2}:\d{2}$/.test(v)) return;             // 分段打字的半截钟点不应用
+    var p = v.split(":");
+    var min = (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
+    applyMu(clampPct((min - EFF_LO) / SPAN * 100), eRadiusPct());
+    renderE();
+  }
+  function eRadiusPct() { return (stE.muHi - stE.muLo) / 2; }
+  function onMuR() {
+    var v = parseInt(document.getElementById("dv-e-mu-r").value, 10);
+    if (isNaN(v)) return;                               // 空值回落现值，无副作用
+    var rMin = Math.min(Math.floor(SPAN / 2), Math.max(1, v)); // 半径 ≤ 半窗
+    applyMu(muMidPct(stE), rMin / SPAN * 100);
+    renderE();
+  }
+  ["change", "input"].forEach(function (evt) {
+    document.getElementById("dv-e-mu-mid").addEventListener(evt, onMuMid);
+    document.getElementById("dv-e-mu-r").addEventListener(evt, onMuR);
+  });
+  function onSgChange() {
+    var capMin = Math.floor(SPAN / 3);
+    var a = parseInt(document.getElementById("dv-e-sg-lo").value, 10);
+    var b = parseInt(document.getElementById("dv-e-sg-hi").value, 10);
+    if (isNaN(a)) a = Math.round(SPAN * stE.sgLo / 100);
+    if (isNaN(b)) b = Math.round(SPAN * stE.sgHi / 100);
+    a = Math.min(capMin, Math.max(1, a));
+    b = Math.min(capMin, Math.max(1, b));
+    if (b <= a) b = Math.min(capMin, a + 1);
+    stE.sgLo = clampPct(a / SPAN * 100);
+    stE.sgHi = Math.min(100, Math.max(stE.sgLo + 1, clampPct(b / SPAN * 100)));
+    renderE();
+  }
+  ["dv-e-sg-lo", "dv-e-sg-hi"].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener("change", onSgChange);
+    el.addEventListener("input", onSgChange); // 数字框逐键实时预览（空值回落现值，无副作用）
+  });
+
+  // 拖拽统一走"相对抓取"：按下时记住指针与圆点的偏移并全程保持，在圆点上按下即
+  // 1:1，在空白处按下等于整体推移——两种手感一条代码路径，且起点不跳变。
+  // 底座端部命中时改为横向调 σ（与纵向拖圆点同语义，都改 σMid、保区间宽）。
+  cvE.addEventListener("pointerdown", function (e) {
+    if (!eLayout) return;
+    var r = cvE.getBoundingClientRect();
+    var px = e.clientX - r.left, py = e.clientY - r.top;
+    var L0 = eLayout;
+    var baseDrag = py > L0.axisY - 18 && py < L0.axisY + 6 &&
+      Math.abs(Math.abs(px - L0.dotX) - L0.half) <= 14;
+    e.preventDefault();
+    try { cvE.setPointerCapture(e.pointerId); } catch (err) {}
+    cvE.style.cursor = baseDrag ? "ew-resize" : "grabbing";
+    var grabDX = L0.dotX - px, grabDY = L0.dotY - py;
+    function onMove(ev) {
+      var cx = ev.clientX - r.left, cy = ev.clientY - r.top;
+      if (baseDrag) {
+        var halfMin = Math.abs(cx - L0.dotX) / L0.ppm;
+        eApply(muMidPct(stE), halfMin / SPAN * 100);
+      } else {
+        eApply(L0.pctOfX(cx + grabDX), L0.sgOfY(cy + grabDY));
+      }
+      renderE();
+    }
+    function onUp() {
+      cvE.style.cursor = "";
+      cvE.removeEventListener("pointermove", onMove);
+      cvE.removeEventListener("pointerup", onUp);
+      cvE.removeEventListener("pointercancel", onUp);
+    }
+    cvE.addEventListener("pointermove", onMove);
+    cvE.addEventListener("pointerup", onUp);
+    cvE.addEventListener("pointercancel", onUp);
+  });
+
+  // 键盘：方向键 ±1（Shift ±5）；上 = 更尖（σ 变小），与"上尖下扁"同向
+  cvE.addEventListener("keydown", function (e) {
+    var dMu = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+    var dSg = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+    if (!dMu && !dSg) return;
+    e.preventDefault();
+    var step = e.shiftKey ? 5 : 1;
+    eApply(muMidPct(stE) + dMu * step, sgMidPct(stE) + dSg * step);
+    renderE();
+  });
+
+  /* ================= 全局：重置 / 账号数 / 主题 / 尺寸 ================= */
+  document.querySelectorAll("[data-reset]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var target = { a: stA, b: stB, c: stC, d: stD, e: stE }[btn.getAttribute("data-reset")];
+      Object.assign(target, mkState());
+      if (btn.getAttribute("data-reset") === "d") {
+        Object.assign(stagedD, stD);
+        document.getElementById("dv-d-trigger-text").textContent = triggerText(stD);
+      }
+      renderAll();
+    });
+  });
+
+  document.getElementById("dv-n").addEventListener("change", function () {
+    var v = parseInt(this.value, 10);
+    accountN = isNaN(v) ? 86 : Math.min(2000, Math.max(1, v));
+    this.value = String(accountN);
+    renderAll();
+  });
+
+  var themeBtn = document.getElementById("dv-theme");
+  function themeIcon() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    themeBtn.querySelector("use").setAttribute("href", dark ? "#i-sun" : "#i-moon");
+    themeBtn.setAttribute("aria-label", dark ? "切换浅色" : "切换深色");
+  }
+  themeBtn.addEventListener("click", function () {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    var next = dark ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("yiban-theme", next); } catch (e) {}
+    themeIcon();
+    readColors();
+    renderAll();
+  });
+
+  var rafPending = false;
+  function renderAll() {
+    if (rafPending) return;
+    rafPending = true;
+    var done = false;
+    function run() {
+      if (done) return;
+      done = true; rafPending = false;
+      renderA(); renderB(); renderC(); renderDStaged(); renderE();
+    }
+    requestAnimationFrame(run);
+    // 兜底：隐藏页（tab 未激活/后台窗格）的 rAF 会被浏览器暂停，重绘会永远排队；
+    // 计时器兜底让这类场景退化成同步执行（后台页定时器最少 1s，够用）。
+    setTimeout(run, 1200);
+  }
+  window.addEventListener("resize", renderAll);
+
+  readColors();
+  themeIcon();
+  // 首屏同步渲染，不排 rAF：浏览器对隐藏页（tab 面板未激活/后台窗格）会暂停 rAF，
+  // 首次绘制若排进 rAF 会一直不执行；交互后的重绘走 renderAll 的 rAF 节流即可。
+  renderA(); renderB(); renderC(); renderE();
+})();
+</script>
+</body>
+</html>

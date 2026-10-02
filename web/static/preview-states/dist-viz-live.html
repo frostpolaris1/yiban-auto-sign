@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>正态分布组件 · 实况挂载验证页 · 易班自动签到（开发原型）</title>
+
+<!-- 用途：在没有 Flask 会话的环境里，单独驱动**生产版组件**
+     settings-dist-viz.js（真实文件，非复制），核对它在真实皮肤（app.css）下的
+     渲染与编辑行为。context 桩与 settings-schedule.mount 提供的同口径：
+     { effLo, effHi, span, frontMin, backMin, dist, n }；隐藏 input 为唯一状态源。
+     组件写入后 onChange 里同步镜像到只读回显，供肉眼核对提交值。 -->
+<script>
+  (function () {
+    try {
+      document.documentElement.setAttribute(
+        'data-theme',
+        localStorage.getItem('yiban-theme') === 'dark' ? 'dark' : 'light'
+      );
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+
+<link rel="stylesheet" href="../vendor/fonts/inter/inter.css">
+<link rel="stylesheet" href="../vendor/fonts/jetbrains-mono/jetbrains-mono.css">
+<link rel="stylesheet" href="../vendor/fonts/notosanssc/notosanssc.css">
+<link rel="stylesheet" href="../vendor/adminator/adminator.css">
+<link rel="stylesheet" href="../css/app.css">
+
+<style>
+  .dl-body { background: var(--bg-body); color: var(--t-base); font-family: var(--font-sans); }
+  .dl-wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 60px; }
+  .dl-note { font-size: 12.5px; color: var(--t-muted); margin: 0 0 12px; }
+  .dl-echo { font-size: 12px; color: var(--t-sub); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+
+<body class="dl-body" data-page="auth">
+<div class="dl-wrap">
+  <div class="alert info" style="margin-bottom:16px">
+    <span class="ico"><svg aria-hidden="true"><use href="#i-info"/></svg></span>
+    <span class="body">生产组件实况验证页：加载的是 <b>components/settings-dist-viz.js</b> 本体与真实 app.css；
+      窗口/掐头去尾/账号数为桩值（06:30~07:50，掐头去尾各 3 分钟，86 账号）。</span>
+  </div>
+
+  <section class="card">
+    <div class="panel-head">
+      <div class="panel-head-row">
+        <h2 class="panel-title">签到调度（组件容器形态与设置页一致）</h2>
+        <div class="set-head-actions">
+          <button type="button" class="btn btn--ghost btn--sm" id="dl-uniform">切到均匀分布</button>
+        </div>
+      </div>
+    </div>
+    <div class="field span-2">
+      <span class="field-label" id="ss-mu-label">正态分布（峰值中心与散布）</span>
+      <div class="dist-viz" data-dist-viz aria-labelledby="ss-mu-label">
+        <input type="hidden" id="ss-mu-min" value="40">
+        <input type="hidden" id="ss-mu-max" value="60">
+        <input type="hidden" id="ss-sigma-min" value="15">
+        <input type="hidden" id="ss-sigma-max" value="25">
+      </div>
+      <p class="dl-echo" id="dl-echo" style="margin-top:8px"></p>
+    </div>
+  </section>
+</div>
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol>
+</svg>
+
+<script>
+  window.__errs = [];
+  window.addEventListener("error", function (e) {
+    window.__errs.push((e && e.message) + " @ " + ((e && e.filename || "").split("/").pop()) + ":" + (e && e.lineno));
+  });
+</script>
+<script>window.YB = window.YB || {};</script> <!-- 真实页面由 core.js 提供，此处补桩 -->
+<script defer src="../js/components/settings-dist-viz.js?v=4"></script>
+<script>
+  window.addEventListener("load", function () {
+    var echo = document.getElementById("dl-echo");
+    function reflect() {
+      var v = function (id) { return document.getElementById(id).value; };
+      echo.textContent = "隐藏 input（提交口径）= μ " + v("ss-mu-min") + "~" + v("ss-mu-max") +
+        "% · σ " + v("ss-sigma-min") + "~" + v("ss-sigma-max") + "%";
+    }
+    var dist = "normal";
+    var uniformBtn = document.getElementById("dl-uniform");
+    if (YB.settingsDistViz) {
+      YB.settingsDistViz.mount({
+        ids: { muLo: "ss-mu-min", muHi: "ss-mu-max", sgLo: "ss-sigma-min", sgHi: "ss-sigma-max" },
+        context: function () {
+          return { effLo: 393, effHi: 467, span: 74, frontMin: 3, backMin: 3,
+                   dist: dist, n: 86 };
+        },
+        onChange: reflect
+      });
+    }
+    reflect();
+    uniformBtn.addEventListener("click", function () {
+      dist = dist === "normal" ? "uniform" : "normal";
+      uniformBtn.textContent = dist === "normal" ? "切到均匀分布" : "切回正态分布";
+      // 与 settings-schedule 的 ss-dist change → refresh 同口径
+      if (YB.settingsDistViz) YB.settingsDistViz.refresh();
+    });
+    setInterval(reflect, 500);
+  });
+</script>
+</body>
+</html>

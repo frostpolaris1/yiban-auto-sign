@@ -65,6 +65,22 @@ class PublishedExampleKeyDecodeBlockedTest(unittest.TestCase):
         # 形状合法的普通钥同样放行：
         self.assertEqual(account_crypto._decode_key(TEST_KEY), bytes.fromhex(TEST_KEY))
 
+    def test_demo_seed_public_key_also_blocked(self):
+        """`scripts/dev_visual_seed.py` 内置演示钥同样随仓库公开：与模板钥一起精确拉黑。
+
+        它逃过全零/单字节/顺序三条弱判据（与模板钥同因），照抄进真实 `.env` 会让存量
+        密文等同明文。演示脚本已改为导入同一常量，本格钉住"换钥只改一处也会被拦"。
+        """
+        for raw in (account_crypto.PUBLISHED_DEMO_ACCOUNTS_KEY,
+                    account_crypto.PUBLISHED_DEMO_ACCOUNTS_KEY.upper()):
+            with self.subTest(raw=raw[:8]):
+                with self.assertRaises(ValueError) as cm:
+                    account_crypto._decode_key(raw)
+                msg = str(cm.exception)
+                self.assertIn("公开示例模板", msg)
+                self.assertNotIn(account_crypto.PUBLISHED_DEMO_ACCOUNTS_KEY, msg,
+                                 "文案不回带钥值原文")
+
     def test_weak_patterns_still_warn_only(self):
         """三条弱钥判据维持 WARNING 不阻断（存量部署语义不变，登记口径不动）。"""
         for raw in ("00" * 32, "7f" * 32, bytes(range(32)).hex()):
@@ -95,6 +111,14 @@ class LoadKeyBlockedEndToEndTest(unittest.TestCase):
 
     def test_env_var_source_blocked(self):
         with mock.patch.dict(os.environ, {"YIBAN_ACCOUNTS_KEY": PUBLISHED_HEX}):
+            with self.assertRaises(ValueError) as cm:
+                account_crypto.load_key()
+            self.assertIn("公开示例模板", str(cm.exception))
+
+    def test_demo_seed_key_env_var_blocked(self):
+        """两把公开钥（模板钥 + dev_visual_seed 演示钥）作 YIBAN_ACCOUNTS_KEY 均启动失败。"""
+        with mock.patch.dict(os.environ, {
+                "YIBAN_ACCOUNTS_KEY": account_crypto.PUBLISHED_DEMO_ACCOUNTS_KEY}):
             with self.assertRaises(ValueError) as cm:
                 account_crypto.load_key()
             self.assertIn("公开示例模板", str(cm.exception))

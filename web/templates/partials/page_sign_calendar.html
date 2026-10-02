@@ -46,17 +46,20 @@
   </section>
 
   {# 状态图例与账号卡状态行消费**同一份状态表**（`yiban.status.DISPLAY`，服务端渲染进页面）。
-     两侧同源的方式：图例项由 `legend_items()` 渲染成 <li>，同一份表由 `display_payload()`
-     经 tojson 下发到内联脚本供状态行与日期格消费——新增状态码只会同时出现在两侧，
-     "渲染认得、图例不认得"的双单元漂移因此不可能再发生（急停曾渲染成"排队待签"）。
-     内联脚本必须留在正文里（非 defer）：它先于组件脚本执行，组件读 window.YB_CALENDAR_STATE。 #}
+     两侧同源的方式：图例项由 `legend_items()` 按语气档归组渲染成 <li>，同一份表由
+     `display_payload()` 经 tojson 下发到内联脚本供状态行与日期格消费——新增状态码只会
+     同时出现在两侧，"渲染认得、图例不认得"的双单元漂移因此不可能再发生（急停曾渲染成
+     "排队待签"）。内联脚本必须留在正文里（非 defer）：它先于组件脚本执行，组件读
+     window.YB_CALENDAR_STATE。 #}
   <script>window.YB_CALENDAR_STATE = {{ calendar_state | tojson }};</script>
-  {# 图例：整行独占（col-12），与日历状态一一对应（颜色之外另有形状/角标冗余）。
-     不能写成 col-6：日志面板隐藏时（无生效账号）它会被自动排到空卡片右侧同一行，
-     留下 6 列死区（实测：空卡 472px，图例 x=776 且同 y）。 #}
+  {# 图例：整行独占（col-12），与日历状态一一对应（色彩即语义：绿成功/红失败/灰有意
+     不签/黄异常/蓝呼吸=正在签）。不能写成 col-6：日志面板隐藏时（无生效账号）它会被
+     自动排到空卡片右侧同一行，留下 6 列死区（实测：空卡 472px，图例 x=776 且同 y）。 #}
   <ul class="col-12 sc-legend" aria-label="签到状态图例">
     {% for item in status_legend %}
-    <li><i class="sc-swatch" aria-hidden="true">{{ item.symbol }}</i>{{ item.label }}</li>
+    {# data-tone 供 calendar.js 动态收敛：图例只显示当前日历里出现过的颜色档
+       （语气档全量陈列是服务端职责，页面只解释看得见的） #}
+    <li data-tone="{{ item.tone }}"><i class="sc-swatch sc-swatch--{{ item.tone }}" aria-hidden="true"></i>{{ item.label }}</li>
     {% endfor %}
     <li><i class="sc-swatch sc-swatch--off" aria-hidden="true">休</i>周末停签</li>
     <li><i class="sc-swatch sc-swatch--today" aria-hidden="true"></i>今天</li>

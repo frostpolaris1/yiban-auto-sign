@@ -476,7 +476,9 @@ class BatchTransactionTest(unittest.TestCase):
         data = c.get("/api/accounts").get_json()
         ids = [self._account_index_by_phone(data, "138****8003"),
                self._account_index_by_phone(data, "139****9004")]
-        r = c.post("/api/accounts/batch", json={"action": "approve", "ids": ids},
+        r = c.post("/api/accounts/batch",
+                   json={"action": "approve", "ids": ids,
+                         "phones": [data["accounts"][i]["phone"] for i in ids]},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("已通过 1 个账号", r.get_json()["msg"])
@@ -497,7 +499,9 @@ class BatchTransactionTest(unittest.TestCase):
         data = c.get("/api/accounts").get_json()
         ids = [self._account_index_by_phone(data, "138****8005"),
                self._account_index_by_phone(data, "139****9006")]
-        r = c.post("/api/accounts/batch", json={"action": "restore", "ids": ids},
+        r = c.post("/api/accounts/batch",
+                   json={"action": "restore", "ids": ids,
+                         "phones": [data["accounts"][i]["phone"] for i in ids]},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         accounts = db.load_accounts()
@@ -511,7 +515,9 @@ class BatchTransactionTest(unittest.TestCase):
         data = c.get("/api/accounts").get_json()
         idx = self._account_index_by_phone(data, "138****8007")
         with mock.patch("db.batch_account_ops", side_effect=RuntimeError("boom")):
-            r = c.post("/api/accounts/batch", json={"action": "approve", "ids": [idx]},
+            r = c.post("/api/accounts/batch",
+                       json={"action": "approve", "ids": [idx],
+                             "phones": [data["accounts"][idx]["phone"]]},
                        headers=self._csrf(token))
         self.assertEqual(r.status_code, 500, r.get_data(as_text=True))
         self.assertIn("已全部回滚", r.get_json()["error"])

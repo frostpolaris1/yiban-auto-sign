@@ -16,10 +16,12 @@
    链接离开，由 settings.js 统一弹「保存并继续 / 放弃修改 / 取消」。
 
    字段级权限（后端 POST /api/settings 内联判定，必须逐字段复刻）：
-     · 任意管理员可改：saturday_sign / sunday_sign / account_verify / probe_*
+     · 任意管理员可改：saturday_sign / sunday_sign（页面上是同一个「周末签到」多选组）/
+       account_verify / probe_*
      · 仅主管理员可改：sign_order / sign_dist / edge_* / allow_time_pref / sign_window /
-       gap_max / max_users / max_accounts / 推送配置 / 邮件全局与 SMTP / 全局开关
-   非主管理员：调度/公告/健康正常（调度卡里只有周六/周日可改，其余控件禁用且保存按钮
+       gap_max / max_users / max_accounts / 正态 μ/σ 区间（mu_min_pct / mu_max_pct /
+       sigma_min_pct / sigma_max_pct，A 档）/ 推送配置 / 邮件全局与 SMTP / 全局开关
+   非主管理员：调度/公告/健康正常（调度卡里只有「周末签到」可改，其余控件禁用且保存按钮
    只提交自己改得动的字段）；通知通道与容量配额**可见但控件禁用**（面板顶部 .alert.info
    说明原因）；系统开关整 tab 隐藏。禁用不是安全边界，后端仍 403 兜底。
 
@@ -28,7 +30,7 @@
    .textarea / .input-group(.addon) / .btn-group / .switch / .data-table(.table-scroll) /
    .alert / .badge / .form-actions / .spinner。仅保留确无模板对应的项目类：
    .set-tip/.set-ok/.set-bad 就地状态文字、.set-row* 开关行、.set-danger* 危险区语义、
-   自研选择控件（.select-field / .range-field，见 app.css 第 30 节）。
+   自研选择控件（.select-field / .range-field / .multiselect-field，见 app.css 第 30 节）。
 
    安全：零 innerHTML 拼后端数据；密钥/授权码只读脱敏、绝不回填输入框；写请求一律
    走 YB.api（自带 CSRF）；一页内 id 不得重复（有元测试守卫）。 #}
@@ -154,28 +156,44 @@
           <span class="field-label" id="ss-dist-label">分布方式</span>
           {{ select_field('ss-dist', 'uniform',
              [('uniform', '均匀分布'), ('normal', '正态分布（钟形拟人）')], 'ss-dist-label') }}
-          <p class="field-help">「顺序 × 均匀」集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
+          {# 组合效果的教学句已删（与 ⓘ「调度说明」逐字重复；用户 2026-09-30"删除冗余文案"） #}
         </div>
         {# 掐头/去尾：页面只显示数值，点击在弹窗里用数字框或滑杆调整（见 range-field.js） #}
         <div class="field">
           <span class="field-label" id="ss-edge-front-label">掐头</span>
           <div class="range-field" data-range-field="ss-edge-front" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="掐头"
-               data-hint="裁掉签到窗口开头段，避开整点边界超时；0 = 不裁切。上限随窗口收窄，不超过窗口的 20%。"
+               data-hint="裁掉签到窗口开头段，避免卡在整点前后（整点易被限流）；0 = 不裁切。"
                aria-labelledby="ss-edge-front-label">
             <input type="hidden" id="ss-edge-front" value="1">
           </div>
-          <p class="field-help">裁掉窗口开头的 n 分钟以避开边界超时；0 = 不裁切；上限随窗口收窄。</p>
         </div>
         <div class="field">
           <span class="field-label" id="ss-edge-back-label">去尾</span>
           <div class="range-field" data-range-field="ss-edge-back" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="去尾"
-               data-hint="裁掉签到窗口末尾段；不影响「掐头」。上限随窗口收窄，不超过窗口的 20%。"
+               data-hint="裁掉签到窗口末尾段；与「掐头」互不影响。"
                aria-labelledby="ss-edge-back-label">
             <input type="hidden" id="ss-edge-back" value="1">
           </div>
-          <p class="field-help">裁掉窗口末尾的 n 分钟，前后独立设置；上限随窗口收窄。</p>
+        </div>
+        {# 正态 μ/σ：可见编辑器由 settings-dist-viz.js 构建（峰尖拖拽画布 + 「顶点钟点 ±
+           半径」/「散布 ±分钟」），四枚隐藏 input（id 沿用旧数字框）仍是唯一状态源——
+           collect()/snapshotFromDom() 的提交口径、档位对拍字面量、A 档禁用清单原样不动。
+           组件按签到窗口/掐头去尾实时换算钟点与分钟（含 20% 缓冲钳位，与 edgeMaxMin 同
+           口径）；分布方式为均匀时图上置灰提示（参数保留，切回正态即生效）。
+           服务端对 lo>=hi 沿用"告警 + 回退默认（μ 40~60 / σ 15~25）"语义，不拒绝写入；
+           前端就地预警但不硬拦（与掐头去尾的"预警不阻断保存"同一处置）。 #}
+        <div class="field span-2">
+          <span class="field-label" id="ss-mu-label">正态分布（峰值中心与散布）</span>
+          <div class="dist-viz" data-dist-viz aria-labelledby="ss-mu-label">
+            <input type="hidden" id="ss-mu-min" value="40">
+            <input type="hidden" id="ss-mu-max" value="60">
+            <input type="hidden" id="ss-sigma-min" value="15">
+            <input type="hidden" id="ss-sigma-max" value="25">
+          </div>
+          <p class="set-warn" id="ss-mu-warn" hidden></p>
+          <p class="set-warn" id="ss-sigma-warn" hidden></p>
         </div>
         {# 短标量字段收窄（原与整列同宽，一个 1~4 位数字占 550px） #}
         <div class="field field--narrow">
@@ -189,9 +207,9 @@
         </div>
         {# 窗口起止是同一个逻辑对：共用一个触发器与一个弹窗（弹窗里滚轮选时并校验先后） #}
         <div class="field">
-          <span class="field-label" id="ss-window-label">签到窗口（开始早于结束）</span>
+          <span class="field-label" id="ss-window-label">签到窗口</span>
           <div class="time-pair" data-time-pair data-title="签到窗口"
-               data-hint="滚动选择；开始必须早于结束，保存后下次生效。"
+               data-hint="滚动选择；开始必须早于结束。"
                aria-labelledby="ss-window-label">
             <div class="time-field" data-time-field="ss-window-start">
               <input type="hidden" id="ss-window-start" value="06:30">
@@ -200,37 +218,42 @@
               <input type="hidden" id="ss-window-end" value="07:50">
             </div>
           </div>
+          <p class="field-help">开始必须早于结束；保存后下次自动签到生效。</p>
         </div>
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
+      {# 周六/周日合并为一个多选组：两者独立可开（只周六 / 只周日 / 都开 / 都不开）。
+         只有两个选项，用**内联变体**（data-ms-inline，app.css 30.5.1）：选项平铺在行内
+         直接点选，"当前签哪几天"零成本可读，不需要"开面板"这层间接；空态语义由左侧
+         帮助文案（默认都不签）承担。值契约 = 两个隐藏 input（id 与原字段一致、
+         值 "1"/"0"），由 settings-schedule.js 的 collect()/snapshotFromDom()/apply()
+         读写，故后端与保存路径零改动。权限粒度不变：任意管理员可改（不在 applyPerm
+         的禁用清单里）。 #}
       <div class="set-row">
-        <label class="set-row-text" for="ss-sat">
-          <span class="set-row-label">周六签到</span>
-          {# 只说默认值（开关当前态已可见，不需再解释开关做什么） #}
-          <p class="set-help">默认关闭。</p>
-        </label>
-        <label class="switch" title="周六签到">
-          <input id="ss-sat" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">周六签到</span>
-        </label>
-      </div>
-      <div class="set-row">
-        <label class="set-row-text" for="ss-sun">
-          <span class="set-row-label">周日签到</span>
-          <p class="set-help">默认关闭。</p>
-        </label>
-        <label class="switch" title="周日签到">
-          <input id="ss-sun" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">周日签到</span>
-        </label>
+        <span class="set-row-text set-row-text--static">
+          <span class="set-row-label" id="ss-weekend-label">周末签到</span>
+          <p class="set-help">默认关闭，可单独开关。</p>
+        </span>
+        <div class="set-row-ctl">
+          <div class="multiselect-field" data-multiselect-field="ss-weekend" data-ms-inline
+               role="group" aria-labelledby="ss-weekend-label">
+            {# 每项是常驻 checkbox：role/勾选态由组件 paint 同步，勾选记号由 JS 注入 #}
+            <input type="hidden" id="ss-sat" value="0">
+            <input type="hidden" id="ss-sun" value="0">
+            <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ss-sat">
+              <span class="ms-option-text">周六</span>
+            </button>
+            <button type="button" class="select-option" role="checkbox" aria-checked="false" data-v="ss-sun">
+              <span class="ms-option-text">周日</span>
+            </button>
+          </div>
+        </div>
       </div>
       <div class="set-row">
         <label class="set-row-text" for="ss-time-pref">
           <span class="set-row-label">允许用户自选签到时间</span>
-          <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改。</p>
+          <p class="set-help">开启后用户可选 5 分钟时间片；关闭时选择可存但不生效。</p>
         </label>
         <label class="switch" title="允许用户自选签到时间">
           <input id="ss-time-pref" type="checkbox">
@@ -243,7 +266,6 @@
 
       {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」）。
          「恢复默认调度」是维护动作，退到同一行的右下角，不再单独占一张卡。 #}
-      <p class="field-help">改动需点「保存调度设置」后生效。</p>
       <div class="form-actions is-sticky">
         <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
         <span class="spacer"></span>
@@ -331,7 +353,7 @@
         <div class="set-row">
           <label class="set-row-text" for="sn-urgent">
             <span class="set-row-label">仅推送重要告警</span>
-            <p class="set-help">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度。</p>
+            <p class="set-help">只推安全与系统级告警；日常类仅走邮件。</p>
           </label>
           <label class="switch" title="仅推送重要告警">
             <input id="sn-urgent" type="checkbox">
@@ -367,7 +389,6 @@
         </details>
         <p class="field-help" id="sn-status"></p>
         <p class="set-tip" id="sn-tip" role="status"></p>
-        <p class="field-help">改动需点「保存推送配置」后生效。</p>
         <div class="form-actions">
           <button type="button" class="btn btn--primary btn--sm" id="sn-save" hidden>保存推送配置</button>
           <button type="button" class="btn btn--ghost btn--sm" id="sn-test">发送测试消息</button>
@@ -426,7 +447,6 @@
           </table>
         </div>
         <p class="set-tip" id="sm-tip" role="status"></p>
-        <p class="field-help">改动需点「保存邮件配置」后生效。</p>
         <div class="form-actions">
           <button type="button" class="btn btn--primary btn--sm" id="sm-save" hidden>保存邮件配置</button>
           <span class="spacer"></span>
@@ -474,7 +494,6 @@
         </div>
       </div>
       <p class="set-tip" id="set-cap-tip" role="status"></p>
-      <p class="field-help">改动需点「保存容量上限」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" hidden>保存容量上限</button>
       </div>
@@ -545,21 +564,21 @@
         <div class="field">
           <span class="field-label" id="sh-probe-time-label">触发时间（最早时刻）</span>
           <div class="time-field" data-time-field="sh-probe-time" data-title="触发时间"
-               data-hint="到达设定时间将在最近的调度周期执行（约 10 分钟内），每天最多一次。"
+               data-hint="滚动选择时间。"
                aria-labelledby="sh-probe-time-label">
             <input type="hidden" id="sh-probe-time" value="20:00">
           </div>
+          {# 生效时机只在一处说：放在它真正描述的「触发时间」字段下，不再挂在「触发频率」下重复一遍 #}
+          <p class="field-help">到达设定时间后，将在最近的调度周期执行（约 10 分钟内）；每天最多一次。</p>
         </div>
         <div class="field">
           <span class="field-label" id="sh-probe-interval-label">触发频率</span>
           {{ select_field('sh-probe-interval', '1',
              [('1', '每天'), ('2', '每 2 天'), ('3', '每 3 天'), ('7', '每 7 天'),
               ('once', '下次计划时间单次执行（执行后自动关闭）')], 'sh-probe-interval-label') }}
-          <p class="field-help">设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。</p>
         </div>
       </div>
       <p class="set-tip" id="sh-tip" role="status"></p>
-      <p class="field-help">改动需点「保存探针设置」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="sh-save" hidden>保存探针设置</button>
       </div>
@@ -642,7 +661,7 @@
           <h2 class="panel-title">系统开关</h2>
           <div class="set-head-actions">
             {# 危险说明整段（113 字）收进 ⓘ：实测 1440 占卡高 22%、360 占 35%（审查 P2） #}
-            {% call info('暂停签到的后果', 'set-pop-switches') %}暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到；两者都要点「保存系统开关」才生效。{% endcall %}
+            {% call info('暂停签到与暂停注册的后果', 'set-pop-switches') %}暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到。{% endcall %}
           </div>
         </div>
       </div>
@@ -679,8 +698,10 @@
 
 {% block scripts %}
 <script defer src="{{ request.script_root }}/static/js/components/select-field.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/multiselect-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/range-field.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/time-field.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/settings-dist-viz.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-schedule.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-health.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-notify.js?v={{ web_version }}"></script>

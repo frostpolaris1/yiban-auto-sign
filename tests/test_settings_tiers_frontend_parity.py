@@ -4,13 +4,14 @@
 
 标签：F · 前端与界面守卫
 覆盖：后端档位表与设置页前端控件的双向对拍——前端直写的键必须是档位键；每个档位键要么有前端落点、要么在带理由的豁免表里；新增写 `/api/settings` 的组件必须进对拍清单
-对应实现：`web/app.py` 的 `MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY` 与登记的四个设置写组件
+对应实现：`web/app.py` 的 `MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`、`web/services/env_io.py` 的 `SCHEDULE_DIST_ENV_KEYS`（正态 μ/σ 区间四键：A 档，键名单源在此）与登记的四个设置写组件
 关键断言：判定只认**剥掉注释之后**的代码形态（`body.<键> = …` 直写与注入表达式），注释或文案里写一串键名不算证据（本文件自带这条判别力自检）；豁免表不得空挂——键有了 UI 就必须删豁免，登记的非设置字段若连 helper 也不再注入则豁免本身作废
 依赖：纯本地——只读后端常量与前端源码文本，**不执行 JS、无需 node**、不联网
 
 背景：`POST /api/settings` 的口令门禁、403 判定与变更告警全部由
-`MASTER_ONLY_KEYS | GATED_KEYS | {GLOBAL_PAUSE_KEY}` 驱动，前端则按自己的控件清单决定
-"要不要先问口令"。两边各写一遍就必然漂移，而漂移的后果是双向的：
+`MASTER_ONLY_KEYS | GATED_KEYS | {GLOBAL_PAUSE_KEY}`（外加 `SCHEDULE_DIST_ENV_KEYS`
+的四键，其 A 档判定复刻在 `settings_api`）驱动，前端则按自己的控件清单决定"要不要先问
+口令"。两边各写一遍就必然漂移，而漂移的后果是双向的：
 
 - 前端多写一个键（拼错、或自造）→ 那个键永远不进 403 名单、不要口令、不发变更告警；
 - 后端新增一个档位键而前端不知道 → 前端不带口令提交，用户看到 403 或"没反应"。
@@ -27,6 +28,7 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(BASE, "web", "static", "js")
 COMPONENTS = os.path.join(JS_DIR, "components")
+ENV_IO = os.path.join(BASE, "web", "services", "env_io.py")
 
 # 会写 /api/settings 的前端组件。少登记一个，对拍就漏一个文件——由
 # `test_settings_writers_are_all_covered` 反向守住。
@@ -116,15 +118,33 @@ def _injected_fields(src):
 
 
 def _tier_keys(webapp):
-    """后端两张表 + 急停键（与门禁判定同源，不另抄一份）。"""
+    """后端档位键全集的判定来源（与门禁判定同源，不另抄一份）。
+
+    两张 app.py 表 + 急停键，再加正态 μ/σ 区间四键：四键因本轮 file-scope 限制不能进
+    app.py 的档位表，其 A 档判定复刻在 `settings_api`，键名单源是 `env_io` 的
+    `SCHEDULE_DIST_ENV_KEYS`（静态取字面量，不导入模块、不执行任何副作用）。
+    """
     return (set(webapp.MASTER_ONLY_KEYS) | set(webapp.GATED_KEYS)
-            | {webapp.GLOBAL_PAUSE_KEY})
+            | {webapp.GLOBAL_PAUSE_KEY} | _schedule_dist_keys())
+
+
+def _schedule_dist_keys():
+    """`env_io.SCHEDULE_DIST_ENV_KEYS` 的键集合（API/前端字段名），ast 静态取。"""
+    import ast
+    for node in ast.parse(_read(ENV_IO)).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "SCHEDULE_DIST_ENV_KEYS" for t in node.targets):
+            return set(ast.literal_eval(node.value))
+    raise AssertionError(
+        "未在 web/services/env_io.py 找到 SCHEDULE_DIST_ENV_KEYS——正态 μ/σ 四键的"
+        "档位来源变了，请同步本对拍测试的档位键取法")
 
 
 class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # 只读 web/app.py 拿常量：不建 app、不碰 .env/DB（对拍是静态契约）
+        # 只读 web/app.py 拿常量（外加 env_io 的正态四键字面量）：不建 app、不碰 .env/DB
+        # （对拍是静态契约）
         import contextlib
         import importlib.util
         import sys

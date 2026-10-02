@@ -128,11 +128,17 @@ DB_FILE="${DB_FILE:-yiban.db}"
 # cron / systemd 直接跑本脚本时进程环境里没有这些键（它们不读 .env），只按环境变量取会
 # 让备份**抓错目录**：自定义状态或日志目录的部署会去抓 /var/log/yiban——同一台机器上
 # 第二份部署的日志与状态就此混进别人的归档。故 .env 是第二来源，键名与 .env.example 一致。
-env_get() {  # $1=键名；进程环境优先，回退 ${APP_DIR}/.env（只认行首 键=值，跳过注释行）
+env_get() {  # $1=键名；进程环境优先，回退 ${APP_DIR}/.env（剥 BOM + 两侧 strip，与 run.sh/env_io 同口径）
     local v
     v="$(printenv "$1" 2>/dev/null || true)"
     if [ -z "${v}" ] && [ -f "${APP_DIR}/.env" ]; then
-        v="$(sed -n "s/^$1=//p" "${APP_DIR}/.env" | head -1 | tr -d '\r')"
+        v="$(sed -n "s/^\xEF\xBB\xBF//;s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${APP_DIR}/.env" \
+            | head -1 | tr -d '\r')"
+        # 两侧 strip：与 run.sh 的 key/value strip 及 env_io.parse_env_file 同口径。
+        # 旧实现只认行首 `KEY=`（不剥 BOM、不认键名前导空格、不 strip），带 BOM 或
+        # `KEY = v` 写法时与 run.sh 读出不同配置——备份会静默抓错状态/日志目录。
+        v="${v#"${v%%[![:space:]]*}"}"
+        v="${v%"${v##*[![:space:]]}"}"
     fi
     printf '%s' "${v}"
 }
@@ -177,13 +183,16 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 # 加密/同步失败时的处置。M24 后语义调整：密文由 try_encrypt 产出并自清理
 # 半成品，能走到这里的失败只剩 rsync/scp 同步失败——本地已完成的归档
-# （明文或密文）必须保留，网络抖动不得摧毁唯一本地副本；
-# 仅 --require-encrypt 模式维持原严格策略（失败即清场）。
+# （明文或密文）必须保留，网络抖动不得摧毁唯一本地副本。
+# M31：--require-encrypt 模式也收敛到同一处置——只删【明文】与未通过自检的加密
+# 中间件，保留已自检的本地密文 $ENC_FILE（网络一次抖动不得删掉本地唯一可恢复副本）；
+# 「不留明文」契约不受影响（删的仍是明文）。
 remote_fail() {
     local msg="$1"
     if [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
-        echo "错误：$msg；--require-encrypt 模式：已删除本轮归档与未完成加密文件" >&2
-        rm -f "$ARCHIVE" "$ARCHIVE.gpg" "$ARCHIVE.age"
+        echo "错误：$msg；--require-encrypt 模式：已删除本轮明文归档；本地已通过自检的密文保留（${ENC_FILE:-无}），异机副本本轮缺失，请重试同步" >&2
+        rm -f "$ARCHIVE"
+        [ -n "${ENC_FILE}" ] || rm -f "$ARCHIVE.gpg" "$ARCHIVE.age"
         exit 1
     fi
     echo "错误：$msg；本地归档（${FINAL_LOCAL:-$ARCHIVE}）已保留，请排查后重试同步" >&2
@@ -239,9 +248,14 @@ try_encrypt() {
 # 解密产物只落在 TMPDIR_BAK（0700，trap 统一清理），不新增第二处明文驻留。
 # ------------------------------------------------------------
 MIN_ENC_BYTES=200
+# M23②：收件人模式下"解不开"不等于"密文坏"——密钥受口令保护、gpg-agent 不可用、
+# 密钥环临时不可读都会让 `--decrypt` 失败，此时删掉密文＝删掉唯一可恢复副本（与主诉
+# 同源）。置位后调用方保留密文、不出清单、仍以 rc=7 交人工核查。
+VERIFY_KEEP_ENC=""
 verify_encrypted_archive() {
     local enc="$1" vdir="${TMPDIR_BAK}/roundtrip" plain="${TMPDIR_BAK}/roundtrip.tar.gz"
     local bytes ic
+    VERIFY_KEEP_ENC=""
     rm -rf "${vdir}" "${plain}"
     mkdir -p "${vdir}"
     bytes="$(wc -c < "${enc}" 2>/dev/null || echo 0)"
@@ -258,7 +272,36 @@ verify_encrypted_archive() {
                     log "回环自检：密文解密失败（口令/密钥环异常或包损坏）" >&2
                     return 1
                 fi
+            elif [ -n "${GPG_RECIPIENT}" ] && \
+                 [ -z "$(gpg --batch --list-secret-keys "${GPG_RECIPIENT}" 2>/dev/null)" ]; then
+                # M23：公钥模式（README 推荐的 BACKUP_GPG_RECIPIENT，服务器只存公钥）本机
+                # 永远解不开——回环自检不可能通过，旧实现在此判 rc=7 并删掉唯一的好密文、
+                # 连带跳过整段异机副本/校验清单/保留期轮转。按同函数 *.age 分支的既有先例
+                # 降级：只做尺寸下限核查（上面已过）即返回 0，密文完好性由异机副本与备份
+                # 哨兵兜底。
+                # 判据必须是"解不开**这一份**"，不能是"本机没有别的私钥"：密钥环里只要
+                # 另有一把与收件人无关的私钥（轮换后旧私钥残留、该主机另有 GPG 私钥），
+                # `gpg --list-secret-keys` 就有输出，按"有没有私钥"判会落回下面的
+                # `gpg --decrypt` → 失败 → 删掉唯一密文（正是本项要消灭的链路）。故用
+                # **带收件人**的 `--list-secret-keys <收件人>`：无对应私钥时无输出
+                # （gpg 的诊断走 stderr，且与语言环境无关地表现为"空"）。
+                log "回环自检：公钥模式（收件人 ${GPG_RECIPIENT}）本机无私钥、无法自检——" \
+                    "本轮仅做尺寸下限核查，请按计划手工跑一次 --restore 演练（${enc}）" >&2
+                # ⚠ 已知且**无法在本机消解**的边界（M23 复审登记，仅此说明不改行为）：
+                # 本分支只过了 `MIN_ENC_BYTES=200` 的尺寸下限，**一把 >200 字节的【损坏】
+                # 密文**会被判为合格 → 删明文 → 写 .sha256 清单 → 跑异机同步与保留期轮转，
+                # 本地只剩坏密文；哨兵要求"归档 + .sha256 旁挂件同在"，此时会判它健康。
+                # 消解只有两条路且都得离开本机：(a) 计划内 `--restore` 演练（唯一的真判据），
+                # (b) 异机侧真解一次。两者都做不了就别用公钥模式——口令模式可回环自检。
+                return 0
             elif ! gpg --batch --yes --decrypt -o "${plain}" "${enc}"; then
+                # 收件人模式：本机持有对应私钥却解不开（口令保护/无 gpg-agent/密钥环异常）
+                # ——可能是好包，删不得。置位交由调用方保留密文（见 VERIFY_KEEP_ENC 说明）。
+                if [ -n "${GPG_RECIPIENT}" ]; then
+                    log "回环自检：公钥密文解密失败（私钥不可用或包损坏）——密文保留待人工核查" >&2
+                    VERIFY_KEEP_ENC=1
+                    return 1
+                fi
                 log "回环自检：公钥密文解密失败（gpg 密钥环不可用？）" >&2
                 return 1
             fi
@@ -323,18 +366,20 @@ restore() {
             age -d -o "$plain" "$archive" 2>/dev/null || { echo "错误：.age 解密失败（需交互输入口令或身份文件）" >&2; exit 1; }
             ;;
     esac
-    # 安全校验（M3 批次0 · MF-80 重写）：三条护栏改为显式判码执行。
+    # 安全校验（M3 批次0 · MF-80 重写，M70 加固）：三条护栏改为显式判码执行 + here-string。
     # 旧写法 `if tar -tzf … 2>/dev/null | grep …` 在 set -eo pipefail 下，tar 一旦非 0
     # （包损坏/被替换/读错误）整条管道短路为假 ⇒ 三条护栏【全部跳过】（活体复现
-    # GUARD_SKIPPED），失败被拖到解包那一步撞运气。现在"列目录读不了"本身就是
-    # 拒绝解包的理由；tar 的诊断也不再被 2>/dev/null 吞掉。
+    # GUARD_SKIPPED）。改成 `printf | grep -q` 后仍有同形缺口：列表超过 64KB 管道缓冲时
+    # grep -q 命中即退出，printf 写管道失败 ⇒ 管道 141 ⇒ `if` 判假、护栏静默失效。
+    # 现在"列目录读不了"本身就是拒绝解包的理由（显式判码），三条 grep 一律走 here-string
+    # 不经管道（bash 3.2+ 支持）；tar 的诊断也不再被 2>/dev/null 吞掉。
     local list vlist
     if ! list="$(tar -tzf "$plain" 2>&1)"; then
         echo "错误：读包列表失败（tar 非零退出：包损坏或 tar 不可用），拒绝解包" >&2
         printf '%s\n' "${list}" >&2
         exit 1
     fi
-    if printf '%s\n' "${list}" | grep -qE '(^|/)\.\.(/|$)|^/'; then
+    if grep -qE '(^|/)\.\.(/|$)|^/' <<<"${list}"; then
         echo "错误：备份包含不安全条目（路径穿越/绝对路径），已拒绝解包" >&2
         exit 1
     fi
@@ -343,13 +388,13 @@ restore() {
         printf '%s\n' "${vlist}" >&2
         exit 1
     fi
-    if printf '%s\n' "${vlist}" | grep -qE '^l'; then
+    if grep -qE '^l' <<<"${vlist}"; then
         echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
         exit 1
     fi
     # 2026-08-21 对抗性审查加固：同时拒绝设备/字符设备/FIFO 条目——root 恢复时
     # 恶意包可在目标目录创建设备节点（前提苛刻，属纵深防御）
-    if printf '%s\n' "${vlist}" | grep -qE '^[bcp]'; then
+    if grep -qE '^[bcp]' <<<"${vlist}"; then
         echo "错误：备份包含设备/FIFO 特殊条目，已拒绝解包" >&2
         exit 1
     fi
@@ -761,6 +806,7 @@ elif try_encrypt; then
     # 但"加密退出码 0"与"密文可解"之间从未有任何一步真实回环（--restore 才是
     # 唯一能证明可解的路径，而它没有任何自动调用点）。现在先解密→解包→integrity
     # 回环一次，通过才删明文；失败则保留明文、删除坏密文、不出清单、rc=7 结束。
+    # M23②：收件人模式例外——本机解不开不证明密文坏，密文一并保留（见 VERIFY_KEEP_ENC）。
     if verify_encrypted_archive "${ENC_FILE}"; then
         rm -f "${ARCHIVE}"
         log "已启用本地默认加密：回环自检通过，明文归档已移除，本轮密文为 ${ENC_FILE}"
@@ -768,9 +814,15 @@ elif try_encrypt; then
         log "════════════════════════════════════════════════════════════" >&2
         log "⚠⚠⚠ 密文回环自检失败：无法证明 ${ENC_FILE} 可解且完好        ⚠⚠⚠" >&2
         log "⚠⚠⚠ 契约（MF-76）：可解才删明文——本轮【保留】明文归档 ${ARCHIVE}" >&2
-        log "⚠⚠⚠ 不出校验清单；半成品密文已删除；退出码 7。请立即人工核查  ⚠⚠⚠" >&2
+        if [ -n "${VERIFY_KEEP_ENC}" ]; then
+            # M23②：收件人模式解不开≠密文坏，密文一并保留（删了就只剩明文这份更危险的）。
+            log "⚠⚠⚠ 收件人模式：密文一并保留（解密失败≠密文坏）待人工核查      ⚠⚠⚠" >&2
+            log "⚠⚠⚠ 不出校验清单；退出码 7。请立即人工核查（含 --restore 演练）  ⚠⚠⚠" >&2
+        else
+            log "⚠⚠⚠ 不出校验清单；半成品密文已删除；退出码 7。请立即人工核查  ⚠⚠⚠" >&2
+        fi
         log "════════════════════════════════════════════════════════════" >&2
-        rm -f "${ENC_FILE}"
+        [ -n "${VERIFY_KEEP_ENC}" ] || rm -f "${ENC_FILE}"
         exit 7
     fi
 else

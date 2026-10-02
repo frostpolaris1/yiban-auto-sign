@@ -178,6 +178,13 @@ chmod +x /opt/yiban-auto-sign/run.sh
 mkdir -p /var/log/yiban
 ```
 
+> 🔒 状态目录与锁目录（默认 `/var/log/yiban`、`/var/lock/yiban`）必须**属主为本用户且
+> `chmod 700`**：目录**已存在**时 `run.sh` / `run_probe.sh` / 兜底执行体同样校验（M07），
+> 非本用户属主或收紧失败即拒绝运行（不静默降级）。升级后若日志报
+> 「状态目录/锁目录不安全」，执行
+> `sudo chown yiban: /var/log/yiban /var/lock/yiban && sudo chmod 700 /var/log/yiban /var/lock/yiban`
+> 后重跑。
+
 > ⚠️ 不要用"导出 .env 再跑 signin.py"的简化版覆盖它：那会丢掉锁、防重复与超时保护，两次 cron 并发登录同一批账号会触发易班风控。
 
 #### 6. crontab
@@ -202,6 +209,15 @@ mkdir -p /var/log/yiban
 > 形态会把口令带进整棵子进程树）。"cron 引用的路径必须能在仓库找到原件"由
 > `scripts/check-cron-provenance.sh` 机器断言（安装时强制跑；`tests/test_deploy_prod_artifacts.py`
 > 用活体反例钉死这道门）。
+>
+> 🔒 **以 root 安装的前置门（M01，2026-10-01）**：`install.sh` 以 root 执行检出内的脚本
+> 并把检出件 root:root 安装，故**以 root 安装（未设 `DESTDIR`）时检出必须属 root 且组/
+> 其他不可写**，否则拒装（`以 root 安装时检出必须属 root 且非组/其他可写`，exit 1）。
+> 若部署目录对服务账号 `yiban` 组可写（旧 README 为让 web 写 `.env`/`yiban.db` 而放开），
+> 安装前先 `sudo chown -R root:root /opt/yiban-auto-sign && sudo chmod -R go-w /opt/yiban-auto-sign`，
+> 并把运行期可写数据（`.env`/`yiban.db`/状态目录）移出检出（如放到 `/var/lib/yiban` 后
+> 在 `.env` 里指 `YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。测试/暂存安装用 `DESTDIR=` 前缀
+> 不受此门影响。
 >
 > 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
 > `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
@@ -275,18 +291,42 @@ git pull && docker compose up -d --build   # 更新代码后重建
 
 - **定时签到**：不依赖宿主 cron，由容器内 `supervisor` 常驻的 `docker/scheduler.py` 承担（首签 + 补签 + 每日清理）。
 - **时区**：容器固定 `Asia/Shanghai`；同时窗口与日期判定本身按北京时间计算（`yiban/clock.py`），宿主是 UTC 也不会算错。
-- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量；`X-Forwarded-For` 语义不变（限速/登录锁定按真实 IP 生效）。
+- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量。**信任模型（M12）**：应用只在 `remote_addr` 是回环地址（`127.0.0.1` / `::1`）时才采信 `X-Forwarded-For`，非回环来源的 XFF 一律丢弃、退回 `remote_addr`——直连 `17892` 能用，但直连方自己带来的 XFF 不会影响限速/锁定的 IP 桶。要伪造 XFF 得先能在回环上发连接，那时已经拿下本机了；这条边界**不要**用配置项放开（改 `web/security.py` 的 `TRUSTED_PROXIES` 引入开关，等于把这个纵深拆掉）。
+- **定时备份（M44，2026-10-01 补）**：容器形态现在**自带每日 02:00 的定时备份**，不再需要宿主 cron——容器部署的用户本来就没有宿主 cron，容器调度器此前又漏了这个挂点，等于"看着在跑、其实从没备份过"。挂点由 `docker/scheduler.py` 的 `BACKUP_AT=(2, 0)` 承担，**复用 `docker/backup-docker.sh`**（加密落盘、自检、保留期轮转）。落点是 compose 声明的命名卷 `yiban-backups` → 容器 `/backups`，**刻意不在 `/data` 里**（否则每轮 tar 会把上一轮备份再打进去，体积逐轮翻倍）。启用只需两步，见下方「容器形态现在自带定时备份」。
 - **自定义 Web 图标**：取消 `docker-compose.yml` 中 `yiban` 服务里那行被注释的挂载（宿主 `./logo.png` → 容器 `web/static/vendor/logo.png`），把图标放到仓库根 `logo.png`。
+
+#### 容器形态现在自带定时备份（启用两步）
+
+备份脚本拒绝产出明文包（明文包内含全部密钥与管理员工令哈希），所以要启用得先给一份口令文件。
+
+```bash
+# ① 建口令文件（内容只有一行备份口令）。必须对容器内的 yiban 用户（uid 10001）可读：
+printf '你的备份口令\n' > backup-passphrase
+sudo chown 10001:10001 backup-passphrase && sudo chmod 600 backup-passphrase
+# ② 取消 docker-compose.yml 里那行注释：
+#    - ./backup-passphrase:/run/yiban-secrets/backup-passphrase:ro
+docker compose up -d
+```
+
+之后：备份包落在命名卷 `/backups`（`docker volume inspect yiban-auto-sign_yiban-backups` 可查其宿主落点），文件名 `yiban-data-<日期>.tar.gz.gpg`，保留 30 天（`YIBAN_BACKUP_RETAIN_DAYS`）。**口令丢失 = 备份不可解密**，请另行离机存一份。查看结果：`docker compose logs yiban | grep 备份`。
+
+两条必须知道的边界：
+
+- **不启用就没有备份。** 默认部署（没做上面两步）时调度器每天只在日志里留一行「容器备份未启用」后跳过——它判的是**口令文件真的可读**，不是那个环境变量非空，所以不会天天重试报错。
+- **口令文件挂载默认是注释掉的**，这是有意的：compose 对缺失的 bind 源会**自动在宿主建一个同名目录**，文件没准备好就挂上去会得到一个读不了的目录、并让容器起不来。
+
+> 容器内的备份脚本是 `docker/backup-docker.sh` 直接 tar `/data`（WAL 模式下的活库快照，不是 `sqlite3 .backup` 的一致性快照）。想要与宿主形态同级的快照一致性，走宿主形态的 `scripts/backup.sh`；这是两种形态的既有差异，本次不合并。
 
 ### 5. 目录/文件说明
 
 | 文件 | 作用 |
 |---|---|
 | `docker/Dockerfile` | 应用镜像（x86_64） |
-| `docker-compose.yml` | 编排 `yiban`（应用）+ `yiban-nginx`（反代）双容器 |
-| `docker/nginx.conf` | 容器内 HTTPS 反代配置 |
+| `docker-compose.yml` | 编排 `yiban`（应用）+ `yiban-nginx`（反代）双容器，声明备份命名卷 |
+| `docker/nginx.conf` | 容器内 HTTPS 反代配置（覆盖式 XFF，见上文信任模型） |
 | `docker/supervisord.conf` | 容器内进程管理（Web + 调度） |
-| `docker/scheduler.py` | 容器内签到调度 |
+| `docker/scheduler.py` | 容器内签到调度 + 每日 02:00 备份挂点 |
+| `docker/backup-docker.sh` | 容器形态的加密备份/恢复脚本（调度器每日调它；也可手工调） |
 | `docker/entrypoint.sh` | 容器入口：准备数据卷后拉起 supervisor |
 | `.env.docker.example` | Docker 部署配置模板 |
 | `.dockerignore` | 阻止账号/密钥/数据库/日志进镜像 |
@@ -297,17 +337,23 @@ git pull && docker compose up -d --build   # 更新代码后重建
 数据（SQLite / 账号密文 / 加密密钥 / 日志）全部位于宿主 `./data`，**备份该目录即可**：
 
 ```bash
-# 推荐：加密备份（口令经环境变量传入，磁盘不留明文；RETAIN_DAYS 自动轮转，默认 30 天）
-YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh
+# 推荐：加密备份（口令经 0600 文件读入，不进子进程环境；RETAIN_DAYS 自动轮转，默认 30 天）
+printf '%s\n' '你的备份口令' > /etc/yiban/backup-passphrase && chmod 600 /etc/yiban/backup-passphrase
+YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase bash docker/backup-docker.sh
 
 # 也可手动裸 tar（明文落盘，请自行妥善保管）
 tar czf yiban-backup-$(date +%F).tar.gz data/
 ```
 
-恢复（校验与解包一体；口令经环境变量注入，不出现在命令行/ps/shell history；解包前做路径穿越、符号链接、设备节点三重校验）：
+> 兼容写法：`YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh` 仍可用，
+> 但口令会进入该 shell 与 tar/gpg/find 整棵子进程的环境变量（`/proc/<pid>/environ` 可读），
+> 脚本会打印一行提示；建议改用上面的 `_FILE` 形式。
+
+恢复（校验与解包一体；口令经 `_FILE`（或环境变量）注入，不出现在命令行/ps/shell history；解包前做路径穿越、符号链接、设备节点三重校验）：
 
 ```bash
-YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
+YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
+    bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
 ```
 
 > ⚠️ 与 systemd 部署一致：加密密钥（`data/.env`）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
@@ -324,7 +370,7 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 **场景 A：密码被攻击者改掉/泄露**
 
 1. SSH 登录服务器，编辑 `.env`（Docker：`/data/.env`；systemd：`/opt/yiban-auto-sign/.env`）：
-   - **删除/清空 `YIBAN_ADMIN_PASSWORD_HASH` 行**（不删则旧哈希仍优先生效，等于没改）；
+   - **删除/清空 `YIBAN_ADMIN_PASSWORD_HASH` 行**（不删则旧哈希仍优先生效，等于没改；**删 HASH 行与保留旧 HASH 行现在等价，都会吊销会话**——重启迁移一改哈希就递增 PW_VERSION 并换发内置会话凭据）；
    - 写入新密码（至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类，弱口令会拒绝启动）：`YIBAN_ADMIN_PASSWORD=新强密码`；
    - `YIBAN_ADMIN_PW_VERSION` 若已存在则 +1（不存在则忽略，重启迁移会自动处理）；
 2. 重启服务：`systemctl restart yiban-web` 或 `docker compose restart yiban`（启动迁移会把新明文转 scrypt 哈希并清空明文，同时递增 PW_VERSION）；
@@ -405,11 +451,21 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 审计（登录失败阈值/越权 403/数据导出同样留痕）。
 
 > 诚实边界：以上判据都在**同一台机器**上。拿到 root 者可改 `.env` 里的审计密钥并重启服务，让链在新密钥下重签自洽——
-> 链、锚点与库内指纹同属可写面，本机自洽时抹痕可以不被发现（本版本已接受该威胁模型）。要真正排除，靠的是
-> **离开本机的两份留痕**：告警通道健康邮件里的链头哈希与记录数（常规每周一发，通道降级当天就发）、以及异机备份副本（`REMOTE_BACKUP`，其中已含审计锚点文件）。
-> 怀疑失陷时先取这两处比对，再决定是否按密钥泄露处理。
+> 链、锚点与库内指纹同属可写面，本机自洽时抹痕可以不被发现。要真正排除，靠的是**离开本机的留痕**：
 >
-> **独立见证纵深已移除**：随之失去的是"锚点之后新增的行被删除"这一窗口的本机检出能力（锚点看不见它之后写入的行，删掉它们无需双写即可不被本机发现）。要覆盖它，只能比对上面那两份离机留痕里的链头哈希与记录数。
+> 1. **每日随备份外发的审计链头哈希**（`scripts/backup_sentinel.py` 的锚点外发，cron 08:05 在 02:00 备份之后跑，**每天一封**）——
+>    正文给出完整 64 位链头哈希 + 记录数 + 当天该用的备份包名。这是 M28 的落点：备份把锚点与库**同包同盘**恢复，
+>    两者一起回到旧批次时链自洽、锚点自洽，本机什么都查不出来；外发邮件天然在别的机器上、天然带可信时间戳，
+>    是唯一能跨出本机权限域的参照。**恢复任意备份包后，比对该包日期当天那一封里的链头哈希**：不一致即说明
+>    那份包/那个库不是它自称的批次（被回滚或被换过）。**为什么整体重写审计链必然暴露（M74）**：能在本机重写链与锚点的人
+>    改不掉**已经发出去的那封邮件**——重写后的链头哈希与离机留痕必然对不上，这就是"锚点离机"化解 M74 的那一层。
+> 2. **告警通道健康邮件里的链头哈希与记录数**（常规每周一发，通道降级当天就发）——频率低，只作旁证。
+> 3. **异机备份副本**（`REMOTE_BACKUP`，其中已含审计锚点文件）。
+>
+> 怀疑失陷时先取这三处比对，再决定是否按密钥泄露处理。锚点外发依赖邮件通道可达：通道全断的那天不会有基线，
+> `backup.log` 里会留一行「审计链锚点未能外发」，看到就别把那天当有离机基线。
+>
+> **独立见证纵深已移除**：随之失去的是"锚点之后新增的行被删除"这一窗口的本机检出能力（锚点看不见它之后写入的行，删掉它们无需双写即可不被本机发现）。要覆盖它，只能比对上面那几份离机留痕里的链头哈希与记录数。
 
 **时钟守卫**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，守卫会**记 ERROR 日志并跳过本轮物理清理**（不删任何数据），同时把参照点推进到当前时间 ⇒ **只跳一轮**，下一轮自动恢复。之所以"只跳一轮"而不是一直冻结：冻结需要人工重置，而重置工具本身就是运维负担。诚实边界：正向拨快被拦后参照点落在被拨后的时间，若此后被 NTP 校正回真实时间，会再触发一次回拨跳变 ⇒ 最多连跳两轮。核实系统时间后无需任何操作，等下一轮即可。
 
@@ -516,6 +572,20 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 
 ## 配置说明
 
+> **优先级口径（M27，2026-10-01 起全仓统一）**：**`.env` 优先，进程环境只补缺**。
+> `run.sh` / `run_probe.sh` / `scripts/yiban-fallback.sh` / 容器调度器 / 引擎
+> `build_child_env` 一律按这一条判。于是：
+> - **docker-compose 的 `environment:` 注入会被 `/data/.env` 的同名 `YIBAN_*` 键覆盖**——
+>   compose 里那几行只是"`.env` 没写这些键时的兜底默认值"（路径类变量尤其如此）。
+> - **cron / systemd 行上的 `YIBAN_XXX=v` 前缀同样会被 `.env` 同名键覆盖**。
+> - `.env` 里**没有**的键才由进程环境补缺；想让某项走环境变量，正确做法是**别在 `.env` 里写它**。
+> - 要临时改一项，改 `.env`（网页设置页写的也是 `.env`），别指望命令行或 compose 覆盖——
+>   口径分叉时会出现"页面显示关闭、排程却照跑"这种两处同时为真的状态，排查时没人说得清算哪个生效。
+>
+> **唯一例外**：`YIBAN_ACCOUNTS_KEY` 的取钥判据在 `yiban/infra/account_crypto.py`，
+> 历来是**环境变量档优先**且与 `.env` 同键做分叉断言，不一致**拒绝启动**（fail-closed），
+> 本次不改（改它会打穿 systemd EnvironmentFile 形态的现网换钥流程）。
+
 <details>
 <summary>⚙️ 展开：环境变量一览 / 账号间隔与容量 / 账号 JSON / 消息通知 / 代理 / 设备绑定 / 探针</summary>
 
@@ -617,6 +687,8 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 
 **告警面**：管理操作（改设置 / 删用户 / 重置他人口令 / 改角色 / 软删 / 彻底删账号 / 通道变更与收件人摘除）**不再逐条外发**，只留审计行（「日志」页可查，链式防篡改）；签到失败、审核拒绝信、以及非 `full` 档下改他人凭据 / 清空用户账号 / 执行体写三类事后告警照发；单账号耗时与容量超载只进收尾汇总信正文（不即时推送），登录失败告警达 10 次与锁定同时发生。
 
+**审计行里的「操作者」是遮罩，不是身份（M32）**：`actor` 列存的是邮箱遮罩（如 `z***@example.com`）或非邮箱标识（`admin` / `system`）。**遮罩是线索层、不是身份层**——同一域同前缀的多个用户/管理员（例如 `zhangsan@` 与 `zhangsan01@`）在遮罩后可能长得一样，**单看这一列不能断定是谁做的**。需要定性时配合同一行里的业务行（同事务写入的目标对象/手机号）与作用域标记（行内带请求作用域的记号，用来把一次操作里的一批行归到同一请求）一起看。这条口径是刻意保留的：改成不遮罩会让审计表本身变成一份可枚举的用户目录，而历史行与新行混排会让按操作者聚合彻底失效。
+
 **「仅推送重要告警」开启时（默认）只走邮件的告警**（它们未标 `urgent`，邮件通道不受影响）：改密 / 注销 / 恢复三处的密码校验失败告警、注册用户自助改密的账号安全事件告警、新账号申请待审核告警、公告草稿变更告警。需要这些也推手机时，把「仅推送重要告警」关掉（`YIBAN_NOTIFY_URGENT_ONLY=0`）。
 
 <details>
@@ -640,7 +712,7 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 
 > ⚠️ `YIBAN_MAIL_PASS` 是**授权码**而非邮箱登录密码；属敏感凭据，只写入服务器本地 `.env`（已被 `.gitignore` 排除）。不配置邮箱通知时，Webhook 通知不受任何影响。
 
-> ❄️ 「保存即时生效」的前提：`YIBAN_MAIL_*` 这些键**不同时存在于 web 进程的环境变量里**（读取序为 env 档优先、`.env` 文件档兜底）。systemd 部署若把整份 `.env` 拷成 `EnvironmentFile`（历史装法），保存的新值会一直被启动快照压住、`systemctl restart` 也修不好——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行；已整份拷贝的部署把该文件收窄后 daemon-reload + restart 即恢复。
+> ❄️ 「保存即时生效」的前提（0.5.1 起的统一口径）：**配置文件（`.env`）优先，进程环境只补缺**——网页里保存的新值总会赢，环境变量里同名旧键被 `.env` 覆盖。唯一的例外是 `YIBAN_ACCOUNTS_KEY`（账号密钥历来环境变量档优先，且与 `.env` 同键分叉时拒绝启动）。因此 systemd 部署把整份 `.env` 拷成 `EnvironmentFile`（历史装法）虽不再压住新值，但仍属多余且易漂移——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行即可。
 
 </details>
 
@@ -723,10 +795,10 @@ python3 -m web
 #   grep '^YIBAN_ACCOUNTS_KEY=' .env >/tmp/yiban-accounts-key && \
 #     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
 #     && rm -f /tmp/yiban-accounts-key                         # 模板的 EnvironmentFile：只放启动密钥这一行
-#   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：邮件等配置的读序是 env 档优先、.env 兜底，
-#   整份拷贝会把「系统设置」页写入 .env 的新值压进启动快照，保存后连 systemctl restart
-#   都不生效（要生效得每次重新生成该文件）。旧部署若已整份拷贝，收窄成只含上面这一行
-#   并 daemon-reload + restart，即恢复"保存即时生效"。
+#   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：0.5.1 起配置读序统一为 .env 优先、
+#   进程环境只补缺（唯一例外 YIBAN_ACCOUNTS_KEY 仍是环境变量档优先），整份拷贝
+#   虽不再压住「系统设置」页的新值，但会把启动时刻的旧值留成第二份来源、随 .env
+#   漂移。模板只放上面这一行；旧部署若已整份拷贝，收窄成只含这一行即可。
 # 若部署目录不是 /opt/yiban-auto-sign，必须同步改单元里的 WorkingDirectory / ExecStart /
 # ReadWritePaths（模板是写死的绝对路径）。
 #
@@ -764,6 +836,8 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 | 主站子路径 | `https://example.com/tools/yiban-auto-sign/` |
 
 **部署契约（务必遵守）**：反向代理把完整 URI【原样透传】给后端——nginx 的 `proxy_pass` 后**不要**加 `/`（加 `/` 会剥掉前缀，自动识别失效）。应用会从请求路径自动识别挂载前缀，登录后的跳转、静态资源、API 请求都会带上正确前缀；不依赖 nginx/Caddy/Apache 的特定配置，直连 17892 也能用。
+
+> 顺带把 IP 口径说清（同一节的"直连也能用"经常被误读成"直连时 XFF 也算数"）：**只有当请求的 `remote_addr` 是回环地址时，应用才采信 `X-Forwarded-For`**；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。直连 `17892` 时 `remote_addr` 就是那台客户端自己的地址、直连方自带的 XFF 不影响 IP 桶——限速/登录锁定照常按真实 IP 生效。反代场景下 nginx 到应用恒为回环且它会覆盖式重写 XFF，那一跳读到的就是真实客户端 IP。不要为了"方便调试"把应用监听到非回环，那时 XFF 才会变成可伪造的输入。
 
 - 子路径首页请**带尾斜杠访问**；不带尾斜杠的裸路径按 404 处理（避免误伤根路径部署）。
 - 若挂载前缀本身包含 `/api`、`/static` 或页面名等会与应用路由撞车的段（极少见），自动识别可能切错，请在 `.env` 显式设置 `YIBAN_BASE_PATH=/你的/前缀` 兜底。
@@ -852,6 +926,8 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
 
 > ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
 >
+> ⚠️ **公钥模式（`BACKUP_GPG_RECIPIENT`）没有回环自检，这是它的代价**：服务器只存公钥、没有对应私钥，所以每轮备份的「解密 → 解包 → `integrity_check`」这一步**在本机根本做不到**，脚本只能降级成「密文 ≥200 字节」这一句尺寸检查。后果要说清：**一把 >200 字节的损坏密文会被判为合格**——脚本照常删明文、写 `.sha256` 清单、跑异机同步与保留期轮转，本地只剩一把解不开的密文；而哨兵（只要求归档与 `.sha256` 旁挂件同在）会判它健康。这个边界**在本机无法消解**（本机没有私钥），只有两条路能盖住：① **按计划跑 `--restore` 演练**（唯一的真判据）；② 异机侧真解一次。两条都做不了就用口令模式（能回环自检），别用公钥模式。
+>
 > ℹ️ 恢复路径的审计核验按结论分档：**通过**（退出码 0）/ **检出异常**（1，链被改写或库与锚点不同批次）/ **无法定论**（2，缺解释器、缺 `YIBAN_AUDIT_KEY` 或包内 `.env`）。给到 2 时别按"备份完好"处理，也别按"被篡改"处理——先补齐解释器与密钥来源再重跑。恢复件用的解释器优先取部署自己的 `.venv/bin/python`（系统 `python3` 往往没有 `pycryptodome` 等依赖）。
 
 
@@ -936,7 +1012,9 @@ YIBAN_FALLBACK_ENABLE=1
 
 包装脚本 `scripts/yiban-fallback.sh` 自己读 `.env`（开关关掉时**静默退出**，不会每 5 分钟发一封 cron 邮件），并把日志并到当天的 `sign-YYYY-MM-DD.log`。它是常驻的，**不需要** timeout 包裹；与 `run.sh` 并存是安全的（各自持独立锁文件，分工交给领取池）。cron 模板与细节见该脚本头部注释。
 
-> 上面说的是**服务器（裸机/systemd）部署**。容器部署目前**还没有**对应的常驻方式（容器调度器未改动）——容器用户暂时只能手工在容器内跑 `python -m yiban.cli sign --fallback`。
+> **cron 行上不要再写 `YIBAN_FALLBACK_ENABLE=1` 前缀（M27 口径变更，2026-10-01）**：现在全仓统一为「**`.env` 优先，进程环境只补缺**」——`.env` 里写了 `YIBAN_FALLBACK_ENABLE=0` 时，cron 行上的 `=1` 不再能把它顶开（过去可以）。受影响的是"靠 cron 前缀临时绕过开关"的部署：**开关的真值源只有 `.env`**（网页设置页写的也是它）。想临时改开关就改 `.env`；确实需要在命令行临时覆盖的场景，`env -u` 去掉这个键即可让 `.env` 补进来。同步受影响的还有 `run.sh`：cron/systemd 行上的 `YIBAN_XXX=v` 前缀同样会被 `.env` 同名键覆盖（`run.sh` 本来就是这个行为，本次只是把它写成明文口径）。
+
+> 上面说的是**服务器（裸机/systemd）部署**。容器部署**不需要**加这条 cron——容器调度器自己在**有效签到窗口内**按同一个 `YIBAN_FALLBACK_ENABLE` 拉起兜底执行体、窗口结束由进程自行退出（判据与口径同一份，见 `docs/dev/scheduler-v3.md` 与 `docs/dev/README.md`）。
 
 **怎么确认在跑**（三条，任选）：
 

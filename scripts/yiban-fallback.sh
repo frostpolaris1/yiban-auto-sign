@@ -17,7 +17,13 @@
 #   YIBAN_STATE_DIR（默认 /var/log/yiban）、YIBAN_LOG_FILE（默认 <state>/sign.log）
 #   YIBAN_FALLBACK_ENABLE —— 真值（1/true/on/yes，大小写不敏感）才起进程；
 #     未设/0/false —— 静默 exit 0（不写日志、不取锁、不启进程）
-#   **环境变量优先于 .env**：cron 行里显式写 `YIBAN_FALLBACK_ENABLE=1` 可临时绕过 .env
+#   **`.env` 优先，进程环境只补缺**（M27，与 run.sh / docker-compose / 引擎
+#   `build_child_env` 同一口径）：`.env` 里写了 `YIBAN_FALLBACK_ENABLE=0`，即便 cron
+#   行上写 `YIBAN_FALLBACK_ENABLE=1` 也不起进程。想临时绕过开关，去网页设置页改
+#   `.env`（或临时把 `.env` 那行挪掉），**不要**指望 cron 行里的前缀。
+#   口径反转过一次（过去的头注释写「环境变量优先于 .env」，实现却也确实是那样），
+#   现已统一成 `.env` 优先：开关的事实源必须是网页写进 `.env` 的那份，否则会出现
+#   「页面显示关闭、cron 却天天拉起兜底」这种两处同时为真的状态。
 #
 # cron 模板（放在签到窗口**开始时**；窗口 06:30 开始则 06:05 起挂上就够）：
 #   5 6 * * * yiban /bin/bash /opt/yiban-auto-sign/scripts/yiban-fallback.sh
@@ -33,10 +39,15 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 ENV_PATH="${YIBAN_ENV_FILE:-$APP_DIR/.env}"
 
-# 加载 `.env`：**只在变量未被设置时取用**，绝不覆盖已有环境变量。
+# 加载 `.env`：**`.env` 覆盖进程环境**，进程环境只补 `.env` 里没有的键（M27）。
 # 安全说明与 run.sh 同源：绝不能使用 `source`/`.` 加载 .env——网页可写公告等文本，
 # 若含 `; $(...)` 等 shell 元字符，source 会把文本当命令执行（命令注入）。
 # 这里只做 key=value 赋值导出，值不会再次被 shell 求值；且只导出 YIBAN_* 键。
+# 行为变更（2026-10-01，M27）：过去这里是「已在环境里设过的键不改」（环境变量优先），
+# 现与 run.sh / 容器调度器 / 引擎 `build_child_env` 统一为 `.env` 优先。
+# 谁受影响：cron 行上带 `YIBAN_FALLBACK_ENABLE=1` 前缀、而 `.env` 里是 0（或没写）的
+# 部署——改后这些部署**不再**起兜底进程。怎么回退：把 `.env` 里那一行删掉（键不存在
+# ⇒ 进程环境补缺 ⇒ 前缀重新生效），或在 cron 行上显式 `env -u YIBAN_FALLBACK_ENABLE`。
 # 不打印任何告警：本脚本默认（开关关闭）每 5 分钟跑一次，向 stderr 输出会在 cron 下
 # 变成周期性邮件噪声；非 YIBAN_ 键或非法键名一律**静默跳过**。
 if [ -r "$ENV_PATH" ]; then
@@ -53,8 +64,7 @@ if [ -r "$ENV_PATH" ]; then
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         [[ "$key" =~ ^YIBAN_ && "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        # 已在环境里设过的键不改（环境变量优先；cron 行里的显式赋值即由此生效）
-        [ -n "${!key+x}" ] && continue
+        # `.env` 优先：无条件覆盖。进程环境只在 `.env` **没有这个键**时补缺。
         export "$key=$value"
     done < "$ENV_PATH"
 fi
@@ -99,6 +109,12 @@ business_day() {
 }
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
+# M07：状态目录属主 + 700 硬检查（与 run.sh 同一判据）——已存在目录同样校验：
+# 非本用户属主时可被同机其他用户预占/伪造签到日志与审计锚点。收紧失败即拒绝启动。
+if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
+    echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝启动兜底执行体" >&2
+    exit 1
+fi
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
 

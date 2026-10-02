@@ -88,9 +88,10 @@ REQUIRED_IN_SHARED = (
     # 不再是单一整句；钉住前缀与重试按钮，防失败态退化成静默空表）
     "日历加载失败：",
     "data-sc-retry",
-    # 状态类名（颜色由 app.css 的 --cal-* 令牌给出）
-    "sc-cell--ok",
-    "sc-cell--bad",
+    # 状态类名（颜色由 app.css 的 --cal-* 令牌给出）：底色类名按语气档拼，
+    # 五档（ok/bad/muted/warn/busy）都在样式表里；无状态格走 --none
+    'sc-cell--" + esc(tone)',
+    "sc-cell--none",
     "sc-cell--off",
     "sc-cell--today",
     # 选中态：日期格与日志面板的联动标记

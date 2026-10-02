@@ -671,6 +671,57 @@ def audit_row_count():
         return row[0] if row else 0
 
 
+def public_row_id(row_id):
+    """审计行的对外定位符（不透明）：`HMAC-SHA256(YIBAN_AUDIT_KEY, 'audit_row:'+id)` 前 16 hex。
+
+    不直接暴露自增 id（可被用来枚举行数/写入时序，且内部主键的形态本身无对外语义）。
+    同一 id 在同一密钥下稳定，故行定位与分页游标共用本函数。
+    """
+    key = _audit_key(create=False)
+    if key is None:
+        raise RuntimeError("YIBAN_AUDIT_KEY 未配置，无法生成审计行定位符")
+    msg = b"audit_row:" + str(int(row_id)).encode("ascii")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()[:16]
+
+
+def read_audit_rows(action=None, actor=None, target=None, from_ts=None, to_ts=None,
+                    limit=50, offset=0):
+    """只读审计行（仅 SELECT，**不调用** `verify_audit_chain` 的全表哈希校验）。
+
+    返回 `(rows, total)`：rows 按 id 倒序（新→旧），字段 id/ts/username/action/target/detail；
+    total 为同过滤条件下的总行数。过滤为等值匹配（`actor` 由调用方先经 `actor_tag()` 遮罩），
+    `ts` 取 `[from_ts, to_ts]` 闭区间。读取失败原样上抛，由调用方决定降级。
+    """
+    where, params = [], []
+    if action:
+        where.append("action = ?")
+        params.append(action)
+    if actor:
+        where.append("username = ?")
+        params.append(actor)
+    if target:
+        where.append("target = ?")
+        params.append(target)
+    if from_ts:
+        where.append("ts >= ?")
+        params.append(from_ts)
+    if to_ts:
+        where.append("ts <= ?")
+        params.append(to_ts)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with _facade()._conn_lock:
+        conn = _facade().get_conn()
+        total = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs" + clause, params
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT id, ts, username, action, target, detail FROM audit_logs"
+            + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
+        ).fetchall()
+    return rows, total
+
+
 def verify_audit_chain():
     """校验审计哈希链。
 
