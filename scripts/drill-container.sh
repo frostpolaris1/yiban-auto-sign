@@ -152,7 +152,7 @@ if [ "$SPAN_SEC" -gt 600 ]; then
   pre "--window-span-sec 不得超过 600s（预案 §5 E4：窗口 ≤10 分钟）"
 fi
 if [ -z "$TAG" ]; then
-  VERSION="$("$HOST_PYTHON" -c "import sys;sys.path.insert(0,'.');from yiban import __version__" \
+  VERSION="$("$HOST_PYTHON" -c "import sys;sys.path.insert(0,'.');from yiban import __version__;print(__version__)" \
              2>/dev/null || sed -n 's/^__version__ = "\(.*\)"/\1/p' yiban/__init__.py | head -1)"
   [ -n "$VERSION" ] || pre "读不到版本号"
   TAG="yiban-rehearsal:$VERSION"
