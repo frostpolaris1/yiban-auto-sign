@@ -34,6 +34,8 @@ PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
 ADMIN_USER = "admin"
 ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
+E2E_USER_EMAIL = "e2e-user@example.com"
+USER_PASS = "UserPass123!"
 TEST_KEY = "a" * 64
 
 
@@ -96,6 +98,13 @@ def main():
         migrate_from=os.environ["YIBAN_ACCOUNTS_FILE"],
         env_file=os.environ["YIBAN_ENV_FILE"],
     )
+    # 一个普通用户 + 两个生效账号：用户侧页面（/user/account、/user/calendar）与
+    # 账号列表的"有数据"形态需要它；主管理员名下也放一个，便于对照 /my/account。
+    db.create_user(E2E_USER_EMAIL, webapp.generate_password_hash(USER_PASS))
+    db.add_account({"name": "e2e-user-acct", "phone": "13800138001", "password": "p1",
+                    "status": "active", "owner": E2E_USER_EMAIL})
+    db.add_account({"name": "e2e-admin-acct", "phone": "13900139002", "password": "p2",
+                    "status": "active", "owner": ADMIN_USER})
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
             db.record_in_txn(conn, ADMIN_USER, f"e2e_seed_{i}", target=f"acct-{i}", detail=f"seed detail {i}")
