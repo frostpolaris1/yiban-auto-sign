@@ -55,8 +55,12 @@ export interface Shell {
   changePassword: { open(options: PasswordModalOptions): unknown };
   passwordPolicyOk(password: string): boolean;
   passwordPolicyOkAdmin(password: string): boolean;
+  passwordClasses?: (v: string) => number;
+  PW_MIN_LEN?: number;
+  PW_MIN_CLASSES?: number;
   PW_POLICY_HINT: string;
   PW_ADMIN_HINT: string;
+  openModal?: (o: ModalOptions) => unknown;
   prefs: { ownerEmailVisible(): boolean; setOwnerEmailVisible(v: boolean): void };
   BASE?: string;
 }
@@ -69,8 +73,12 @@ interface RawShell {
   changePassword?: Shell["changePassword"];
   passwordPolicyOk?: Shell["passwordPolicyOk"];
   passwordPolicyOkAdmin?: Shell["passwordPolicyOkAdmin"];
+  passwordClasses?: (v: string) => number;
+  PW_MIN_LEN?: number;
+  PW_MIN_CLASSES?: number;
   PW_POLICY_HINT?: string;
   PW_ADMIN_HINT?: string;
+  openModal?: (o: ModalOptions) => unknown;
   prefs?: Shell["prefs"];
   BASE?: string;
 }
@@ -131,6 +139,56 @@ export function passwordPolicyOk(password: string): boolean {
 export function passwordPolicyOkAdmin(password: string): boolean {
   const fn = raw().passwordPolicyOkAdmin;
   return fn ? fn(password) : false;
+}
+
+/**
+ * 口令「满足了几类字符」（core.js 唯一实现，判据 `PW_CLASS_PATTERNS`）。
+ *
+ * 为什么必须借外壳而不是在 TS 里数一遍：`tests/test_rekey_key_source.py` 是跨层对拍元测试，
+ * 它要求 `const PW_CLASS_PATTERNS = [...]` 在**全站聚合前端源码里恰好出现一处**、且与后端
+ * `_PASSWORD_CLASS_PATTERNS` 同序同串。在 TS 里再写一份正则数组就是制造第二个源。
+ * 注册页的即时校验要显示"当前 N 位、M 类"，所以需要**类数**本身（不只布尔判定）。
+ */
+export function passwordClasses(password: string): number {
+  const fn = (raw() as { passwordClasses?: (v: string) => number }).passwordClasses;
+  return fn ? fn(password) : 0;
+}
+
+/** 口令长度下限（core.js 的 `PW_MIN_LEN`，与后端 `PASSWORD_MIN_LEN` 对拍）。 */
+export function pwMinLen(): number {
+  const v = (raw() as { PW_MIN_LEN?: number }).PW_MIN_LEN;
+  return typeof v === "number" ? v : 10;
+}
+
+/** 口令类别下限（core.js 的 `PW_MIN_CLASSES`，与后端 `_PASSWORD_MIN_CLASSES` 对拍）。 */
+export function pwMinClasses(): number {
+  const v = (raw() as { PW_MIN_CLASSES?: number }).PW_MIN_CLASSES;
+  return typeof v === "number" ? v : 2;
+}
+
+export interface ModalAction {
+  label: string;
+  variant?: string;
+}
+
+export interface ModalOptions {
+  title?: string;
+  size?: string;
+  body?: Node;
+  actions?: ModalAction[];
+}
+
+/**
+ * 通用模态（**委托 `YB.openModal`**，core.js 的唯一实现）。
+ *
+ * 为什么不在 Vue 里另起一个模态：Esc 关闭、Tab 焦点圈定、滚动锁、关闭后焦点归还、
+ * 与 toast 的层级关系——这些都在 core.js 的模态栈里，重写必然漂移；而登录页要弹的
+ * 是**服务端渲染好的**协议正文（`<template id="doc-*">` 的惰性内容），它只能以 DOM
+ * 节点形式交给模态（Vue 侧零 `v-html`，见该页组件说明）。
+ */
+export function openModal(options: ModalOptions): void {
+  const fn = (raw() as { openModal?: (o: ModalOptions) => unknown }).openModal;
+  if (fn) fn(options);
 }
 
 export function passwordHint(admin: boolean): string {

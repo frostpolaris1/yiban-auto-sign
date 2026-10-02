@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>账号与设置（开发壳）</title>
-    <script type="module" crossorigin src="./assets/myaccounts-CZTWNokj.js"></script>
+    <title>登录（开发壳）</title>
+    <script type="module" crossorigin src="./assets/login-BlmBU24l.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/theme-wOTF8cAQ.js">
     <link rel="modulepreload" crossorigin href="./assets/vendor-element-plus-ByfWyHbz.js">
     <link rel="modulepreload" crossorigin href="./assets/shell-9_NVtCC7.js">
@@ -12,9 +12,10 @@
     <link rel="stylesheet" crossorigin href="./assets/vendor-element-plus-DSsn4F1A.css">
   </head>
   <body>
-    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由
-         web/templates/pages/{user_account,my_account}.html 提供（经 manifest 解析）。
-         两页共用本入口，变体由 data-variant 区分。 -->
-    <div id="vue-myaccounts-app" data-variant="user" data-calendar-href="/user/calendar"></div>
+    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由 web/templates/login.html 提供
+         （经 manifest 解析）。挂载点 id 与模板一致：#vue-login-app。
+         生产模板另会渲染两份惰性 <template id="doc-agreement|privacy">（协议正文），
+         本壳不提供——开发时点协议链接只会静默不开模态，不影响其它交互。 -->
+    <div id="vue-login-app"></div>
   </body>
 </html>
