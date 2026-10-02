@@ -232,6 +232,18 @@ import db  # noqa: E402  scripts/db.py 兼容壳
 from yiban.infra import env_io  # noqa: E402
 
 db.init_db(DB, env_file=ENV, cleanup=False, migrate=True)
+
+# 幂等（关键）：当日任务台账 sign_tasks 按 (phone, day) 主键去重，计划落库走
+# INSERT OR IGNORE（yiban/engine/planner.py:write_plan），所以**上一轮留下的 done 行
+# 会让本轮的 INSERT 全部被忽略** —— pending_count 归零 → 执行体一个任务都领不到 →
+# "✅ 0 成功，❌ 3 失败" 且一次请求都不发。清空当日台账行，本轮才是真正的一轮。
+# 账号/用户/密钥不动（.env 与账号密文继续复用，密钥仍自造）。
+_day = datetime.date.today().isoformat()
+_conn = db.get_conn()
+with db._conn_lock:
+    _conn.execute("DELETE FROM sign_tasks WHERE day=?", (_day,))
+    _conn.commit()
+
 for i in range(N):
     email = "drill%05d@mock.invalid" % i
     with contextlib.suppress(Exception):
@@ -268,10 +280,12 @@ env_io.write_env_keys(ENV, {
     "YIBAN_ACCOUNTS_FILE": "/data/accounts.json",
 })
 print("WINDOW", start.strftime("%H:%M:%S"), "-", end.strftime("%H:%M:%S"))
+print("LEDGER_PURGED", _day)
 print("ACCOUNTS", len(db.load_accounts()))
 PY
 grep -qx "ACCOUNTS $ACCOUNTS" "$EV/c2-seed.log" \
   || { cat "$EV/c2-seed.log" >&2; die "造数账号数不是 $ACCOUNTS（见 c2-seed.log）"; }
+grep -q "^LEDGER_PURGED " "$EV/c2-seed.log" || die "当日任务台账未清理（见 c2-seed.log）"
 [ "$(stat -c '%a' data/.env)" = "600" ]     || die "data/.env 权限不是 0600"
 [ "$(stat -c '%a' data/yiban.db)" = "600" ] || die "data/yiban.db 权限不是 0600"
 note "账号 $ACCOUNTS 个 @mock.invalid；.env / yiban.db 均 0600"
