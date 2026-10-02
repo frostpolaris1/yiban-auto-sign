@@ -273,7 +273,8 @@ class LogsByDateTest(unittest.TestCase):
 
     # ---- 5b. /api/my-calendar：周末开关载荷形状（MF-54：=true 与 =1 同判）----
     def test_my_calendar_weekend_flags_are_int_01(self):
-        """`sunday_sign`/`saturday_sign` 必须是整数 0/1——`calendar.js` 用 `=== 1` 判定置灰。
+        """`sunday_sign`/`saturday_sign` 必须是整数 0/1——前端日历用 `=== 1` 判定置灰
+        （现为 `frontend/src/calendar/model.js` 的 `offDayOf`；迁移前是 `calendar.js`）。
 
         两字段原先在 web 侧各走整数解析（`=true` 解析不出），于是引擎照签而日历把周末
         置灰（两套值域的分叉点）。现改走与引擎同一的 `schedule.weekend_flags`

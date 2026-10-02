@@ -39,18 +39,40 @@ USER_PASS = "UserPass123!"
 TEST_KEY = "a" * 64
 
 
-def _seed_log_file(webapp):
-    """写**两天**的假日志。
+def _probe_day():
+    """当月一个「非今天、非三天前」的**工作日**：日历底色/图例与「点日期→拉日志」的取样日。
 
-    为什么是两天：日期导航（查看该日 / 回到今天 / ?date= 深链）只有在存在"另一天"时才
+    为什么必须是工作日：周末停签格走中性底 + 「休」角标，会把状态底色整个盖掉，且点击只提示
+    「周末无需签到」而不查日志——挑周末就测不到日历页最重要的那条链（点日期 → 该日日志）。
+    为什么排除今天与三天前：按日状态/日志会被 `/api/my-accounts`（今日状态行）与既有日志断言
+    消费，落在那两天上会让别的用例随"今天是周几"漂移。
+    """
+    from calendar import monthrange
+    from datetime import date as _date
+
+    today = _date.today()
+    older = today - timedelta(days=3)
+    for d in range(1, monthrange(today.year, today.month)[1] + 1):
+        cand = _date(today.year, today.month, d)
+        if cand.weekday() < 5 and cand not in (today, older):
+            return cand
+    return None  # 理论上不可达（一个月必有多个工作日）
+
+
+def _seed_log_file(webapp):
+    """写**三天**的假日志（今天 / 三天前 / 取样工作日）。
+
+    为什么不止一天：日期导航（查看该日 / 回到今天 / ?date= 深链）只有在存在"另一天"时才
     可观测——2026-10-03 的 blocking 回归（load 用服务端回显日期覆盖用户选择，导致日期栏整体
-    失效）就是因为只种了一天、e2e 从未切换过日期。日志行含完整手机号，用于断言端到端脱敏。
+    失效）就是因为只种了一天、e2e 从未切换过日期。取样工作日（见 _probe_day）让日历页也能
+    断言"点某个非今天的格子 → 面板拉到那天的日志"。日志行含完整手机号，用于断言端到端脱敏。
 
     行格式与 `tests/test_logs_by_date.py::_log_line` 一致（yiban 组件全级别入列）。
     事件由 `_seed_events()` 另种（须在 db.init_db 之后）。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    probe = _probe_day()
 
     def write_day(date_str: str, marker: str) -> None:
         path = Path(webapp.log_path_for(date_str))
@@ -66,6 +88,8 @@ def _seed_log_file(webapp):
 
     write_day(today, "today")
     write_day(older, "older")
+    if probe is not None:
+        write_day(probe.isoformat(), "probe")
 
 
 
@@ -84,6 +108,23 @@ def _seed_events() -> None:
     db.add_sign_event(f"{older} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
     db.add_sign_event(f"{today} 06:35:00", "13800138001", "ok", "探测正常", stage="probe", attempt=1)
     db.add_sign_event(f"{today} 06:40:00", "13800138001", "failed", "探测异常", stage="probe", attempt=1)
+
+
+def _seed_state_files() -> None:
+    """取样工作日（见 `_probe_day`）的假签到状态：让日历底色与图例端到端可见。
+
+    文件形态与 web/routes/my.py 的月历读取一致（`sign-daily-YYYY-MM-DD.json`，值 =
+    账号键 → 状态符号）。只种这一个账号的状态：管理端日历用另一张卡，正好顺带验证
+    "状态按账号过滤"。
+    """
+    day = _probe_day()
+    if day is None:
+        return
+    state_dir = Path(os.environ["YIBAN_STATE_DIR"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / f"sign-daily-{day.isoformat()}.json").write_text(
+        json.dumps({"13800138001": "✅"}), encoding="utf-8"
+    )
 
 
 def main():
@@ -133,6 +174,7 @@ def main():
     db.add_account({"name": "e2e-admin-acct", "phone": "13900139002", "password": "p2",
                     "status": "active", "owner": ADMIN_USER})
     _seed_events()
+    _seed_state_files()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
             db.record_in_txn(conn, ADMIN_USER, f"e2e_seed_{i}", target=f"acct-{i}", detail=f"seed detail {i}")

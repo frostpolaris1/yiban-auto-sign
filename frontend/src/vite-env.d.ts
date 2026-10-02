@@ -10,6 +10,11 @@ declare global {
       applyTheme?: (theme: string, persist?: boolean) => void;
       currentTheme?: () => string;
     };
+    /**
+     * 日历页的状态显示载荷，由服务端内联渲染进正文（**非 defer**，先于模块脚本执行）。
+     * 形状见 src/calendar/types.ts 的 CalendarCtx；唯一事实源是 yiban.status.DISPLAY。
+     */
+    YB_CALENDAR_STATE?: unknown;
   }
 }
 

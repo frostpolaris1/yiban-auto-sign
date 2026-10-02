@@ -38,9 +38,9 @@
     "script src=/static/js/core.js?v=*",
     "script src=/static/js/components/change-password.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-wOTF8cAQ.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-iSbOhALl.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-BWj_-362.js",
-    "script src=/static/vue/assets/myaccounts-kaX7wzln.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-D3STY5HU.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-BE3xH6yR.js",
+    "script src=/static/vue/assets/myaccounts-PIaG-_qQ.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
@@ -50,10 +50,13 @@
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
+    "link rel=stylesheet href=/static/vue/assets/theme-DUyV08c0.css",
+    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-DSsn4F1A.css",
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
-    "script src=/static/js/calendar.js?v=*",
-    "script src=/static/js/components/sign-calendar-view.js?v=*",
-    "script src=/static/js/pages/user_calendar.js?v=*"
+    "link rel=modulepreload href=/static/vue/assets/theme-wOTF8cAQ.js",
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-D3STY5HU.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-BE3xH6yR.js",
+    "script src=/static/vue/assets/calendar-Cl7ZKK0I.js"
   ]
 }

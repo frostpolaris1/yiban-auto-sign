@@ -163,6 +163,29 @@ export function setOwnerEmailVisible(v: boolean): void {
   if (fn) fn(v);
 }
 
+/**
+ * 慢请求的内容替换：加 `is-swapping` → 等退出过渡跑完（主元素 transitionend 或 SWAP_MS
+ * 兜底，先到者）→ 回调换内容 → 摘类走进入过渡。
+ *
+ * **委托 `YB.swapOut`**（core.js 的唯一实现）："慢请求才淡出再换"这一口径在日历页与
+ * legacy 各处共用，各写一份必然在时长与兜底上分叉。外壳缺失时直接执行回调（不做动画），
+ * 保证组件单测与降级路径都能拿到内容。
+ */
+export function swapOut(nodes: Element | Element[] | null, cb: () => void): void {
+  const fn = (raw() as { swapOut?: (n: unknown, cb: () => void) => void }).swapOut;
+  if (fn) {
+    fn(nodes, cb);
+    return;
+  }
+  cb();
+}
+
+/** 交换窗口时长（毫秒），与 core.js 的 `SWAP_MS` 同口径；无外壳时取同一默认值。 */
+export function swapMs(): number {
+  const v = (raw() as { SWAP_MS?: number }).SWAP_MS;
+  return typeof v === "number" ? v : 160;
+}
+
 export interface ShellApiError extends Error {
   status?: number;
   data?: unknown;
