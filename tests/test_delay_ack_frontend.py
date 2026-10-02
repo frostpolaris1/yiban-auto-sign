@@ -47,7 +47,6 @@ PW_INPUT = "MasterPass#2026"
 
 # 受门禁写操作所在组件：每个都必须经统一 helper，不得再自带无条件口令框管道
 _GATED_COMPONENTS = (
-    "user-ops.js",
     "account-ops.js",
     "account-form.js",
     "settings-executors.js",
@@ -60,7 +59,13 @@ _GATED_COMPONENTS = (
 )
 # Vue 栈的受门禁落点（写凭据门禁、主管理员邮件关门禁）：判据是 `dangerousSubmit(`——
 # Vue 侧 import 后直呼，不带 `YB.` 前缀。
-_GATED_VUE = ("frontend/src/myaccounts/MyAccounts.vue",)
+_GATED_VUE = (
+    "frontend/src/myaccounts/MyAccounts.vue",
+    # 用户管理页的写操作链路迁到新栈（P3）：**刻意保持纯 JS + 直读 window.YB**
+    # （tests/test_users_exit_surface_frontend.py 把本文件整段放进 node 真跑，钉 MF-49
+    # 出口面），故这里判据用 `dangerousSubmit(`（`YB.` 前缀仍在，两种写法都命中）。
+    "frontend/src/users/ops.js",
+)
 
 # 唯一允许在 core.js 之外直接弹口令框的文件：自助域收的是**本人账号口令**
 # （`/api/me/delete`、`/api/me/restore` 的 `password` 字段），不经敏感口令门、后端也不下发
@@ -737,7 +742,7 @@ class GatedCallSitesTest(unittest.TestCase):
 
         计数是**下界**：每个不可逆落点至少一次，多出来的正是同一 helper 承接的普通受门禁操作。
         """
-        user_ops = _read(os.path.join(COMPONENTS, "user-ops.js"))
+        user_ops = _read(os.path.join(BASE, "frontend", "src", "users", "ops.js"))
         self.assertGreaterEqual(user_ops.count("YB.dangerousSubmit("), 4,
                                 "user-ops 的 deleteUser / purge / batchDelete / batchPurge 都应改走 helper")
         account_ops = _read(os.path.join(COMPONENTS, "account-ops.js"))

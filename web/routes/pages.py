@@ -354,7 +354,7 @@ def users_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/work_users.html", "work-users", ["工作台", "用户管理"])
+    return _render_vue_page("users.html", "pages/work_users.html", "work-users", ["工作台", "用户管理"])
 
 
 def settings_page():

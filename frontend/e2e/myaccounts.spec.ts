@@ -129,4 +129,56 @@ test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号�
 
   // 用户端专有：注销账号卡**不得出现**
   await expect(page.getByRole("button", { name: /注销账号/ })).toHaveCount(0);
+
+  // ---- 用户管理页（/work/users，P3 迁移后）----
+  // 断言搭在本条用例里而不是新开 spec：登录限速是 **60 秒窗口 10 次/IP**，整套 e2e 已经
+  // 贴着上限（多一次登录就把后面撞成 429）。这里复用 admin 会话，不额外登录。
+  await page.goto("/work/users");
+  await expect(page.locator("h1.page-title")).toHaveText("用户管理");
+
+  // 页签与计数：四组里「已注销」无数据时连标签一起收掉
+  await expect(page.locator('[data-usr-tab="pending"]')).toBeVisible();
+  await expect(page.locator('[data-usr-tab="normal"]')).toContainText("2 人");
+  await expect(page.locator('[data-usr-tab="deleted"]')).toHaveCount(0);
+
+  // 默认分区是「待处理」（本环境为空）→ 空态给「下一步」而不是死路
+  await expect(page.locator('[data-usr-panel="pending"] .empty__msg')).toHaveText("暂无待处理用户");
+  await page.locator('[data-usr-panel="pending"] [data-empty-tab="normal"]').click();
+  // 分区深链：切分区即写 ?tab=（本页自管，不走 core.js 的 data-tab-group 契约）
+  await expect(page).toHaveURL(/[?&]tab=normal/);
+
+  // 正式用户：内置主管理员行不可改；普通用户行只显示**遮罩**邮箱
+  const normal = page.locator('[data-usr-panel="normal"]');
+  await expect(normal.locator(".usr-row-master .usr-cell-mail")).toContainText("（主管理员）");
+  await expect(normal.locator(".usr-row-master .usr-cell-actions")).toContainText("不可改");
+  const row = normal.locator("tbody tr:not(.skel-row):not(.usr-row-master)").first();
+  await expect(row.locator(".usr-cell-mail")).toContainText("e2e***@example.com");
+  await expect(row.locator(".usr-cell-count")).toHaveText("1");
+  // 完整邮箱绝不进 DOM（服务端下发完整值，客户端只在内存态持有）
+  expect(await page.content()).not.toContain("e2e-user@example.com");
+
+  // 行操作菜单：主管理员可切管理员身份 + 重置密码 / 清空账号 / 删除用户
+  await row.getByRole("button", { name: /更多操作/ }).click();
+  const menu = page.locator(".el-dropdown-menu:visible");
+  await expect(menu).toContainText("设为管理员");
+  await expect(menu).toContainText("重置密码");
+  await expect(menu).toContainText("清空账号");
+  await expect(menu).toContainText("删除用户");
+  await page.keyboard.press("Escape");
+
+  // 勾选一行 → 批量条显形（计数 + 动作集）
+  await row.locator('input[type="checkbox"]').check();
+  const bar = page.locator("#usr-batch-normal");
+  await expect(bar).toBeVisible();
+  await expect(bar).toContainText("已选 1 个");
+  await expect(bar.getByRole("button", { name: "重置密码" })).toBeVisible();
+  await expect(bar.getByRole("button", { name: "删除" })).toBeVisible();
+  await bar.getByRole("button", { name: "取消选择" }).click();
+  await expect(bar).toBeHidden();
+
+  // 检索：无匹配 → 「无匹配结果」+「清除筛选」（而不是把按钮藏掉）
+  await page.fill("#usr-normal-search", "no-such-user-zzz");
+  await expect(normal.locator(".empty__msg")).toHaveText("无匹配结果");
+  await normal.locator("[data-empty-clear]").click();
+  await expect(row.locator(".usr-cell-mail")).toContainText("e2e***@example.com");
 });

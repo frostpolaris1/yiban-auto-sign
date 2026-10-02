@@ -79,6 +79,8 @@ interface RawShell {
   PW_POLICY_HINT?: string;
   PW_ADMIN_HINT?: string;
   openModal?: (o: ModalOptions) => unknown;
+  openPasswordModal?: (d: string, cb: (p: string) => void) => void;
+  maskEmail?: (e: string) => string;
   prefs?: Shell["prefs"];
   BASE?: string;
 }
@@ -164,6 +166,35 @@ export function pwMinLen(): number {
 export function pwMinClasses(): number {
   const v = (raw() as { PW_MIN_CLASSES?: number }).PW_MIN_CLASSES;
   return typeof v === "number" ? v : 2;
+}
+
+/**
+ * 邮箱展示脱敏（core.js 唯一实现，幂等）。
+ *
+ * 与 `maskPhone` 同理：`tests/test_web_mask_email_parity.py` 把 core.js 的实现与后端
+ * `yiban.masking.mask_email` **真跑对拍**，故展示面一律消费它，不在 TS 里重写第二份
+ * （用户管理页只渲染遮罩串，完整邮箱不进任何 DOM 文本或属性）。
+ */
+export function maskEmail(email: string): string {
+  const fn = (raw() as { maskEmail?: (e: string) => string }).maskEmail;
+  if (fn) return fn(email);
+  // 无外壳时的保守兜底：本地部留前 3 字符（与后端口径同形）
+  const e = String(email ?? "");
+  const at = e.indexOf("@");
+  if (at <= 0) return e;
+  return `${e.slice(0, Math.min(3, at))}***${e.slice(at)}`;
+}
+
+/**
+ * 设置新密码的模态（**委托 `YB.openPasswordModal`**，core.js 的唯一实现）。
+ *
+ * 长度 + 类别判定都在模态内完成（与后端 `_password_policy_error` 同口径），调用方只负责
+ * 把「统一口径提示」拼进说明文字——用户管理页的重置密码入口因此不会自带第二份策略判定。
+ */
+export function openPasswordModal(desc: string, onSubmit: (password: string) => void): void {
+  const fn = (raw() as { openPasswordModal?: (d: string, cb: (p: string) => void) => void })
+    .openPasswordModal;
+  if (fn) fn(desc, onSubmit);
 }
 
 export interface ModalAction {

@@ -26,7 +26,9 @@ TEMPLATES = os.path.join(BASE, "web", "templates")
 ADMIN_PAGES = (
     "pages/data_dashboard.html",
     "pages/work_accounts.html",
-    "pages/work_users.html",
+    # 2026-10-03：`pages/work_users.html` 移出本清单——该页已迁到 Vue，分区改由组件渲染
+    # （且刻意不再使用 core.js 的 data-tab-target 契约，以免两套机制争抢同一批 DOM），
+    # 故「服务端初始 ARIA 结构」这条判据对它不再适用（同 data_logs 的处置）。
     "pages/work_settings.html",
     "pages/my_account.html",
     "pages/my_calendar.html",
