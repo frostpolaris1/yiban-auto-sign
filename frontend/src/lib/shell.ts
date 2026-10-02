@@ -149,8 +149,76 @@ export function setOwnerEmailVisible(v: boolean): void {
   if (fn) fn(v);
 }
 
+export interface ShellApiError extends Error {
+  status?: number;
+  data?: unknown;
+  isHttp?: boolean;
+  isNetwork?: boolean;
+}
+
 /** 子路径部署前缀（theme_boot 写入）。 */
 export function shellBase(): string {
   const b = raw().BASE;
   return typeof b === "string" ? b : "";
+}
+
+/**
+ * 统一请求层：**委托 `YB.api`**（core.js 的唯一实现）——它承担 CSRF 头、401 清 token 重读
+ * `/api/me` 再重试一次、并发 GET 去重、写请求的行分隔符前置拦截、以及错误归一化
+ * （`Error` 携带 `.status` / `.data` / `.isHttp` / `.isNetwork`）。
+ *
+ * 为什么不在 TS 里另写一套：这些语义各自都有对应的后端契约与测试（例如行分隔符拦截与
+ * 后端 `env_io.ENV_LINE_BREAK_CHARS` 同源），复制必然漂移。
+ *
+ * 外壳缺失（组件单测 / 将来独立运行）时退回 `fetch`：同源凭据 + JSON 解析 + 同样的错误
+ * 形状。**不含 CSRF**，故仅适用于只读请求——写请求在外壳缺失时直接拒绝，避免"看起来成功
+ * 实际上被后端 CSRF 拒绝"。
+ */
+export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  const shellApi = (raw() as { api?: (m: string, p: string, b?: unknown) => Promise<unknown> }).api;
+  if (shellApi) return (await shellApi(method, path, body)) as T;
+
+  if (method !== "GET") {
+    throw new Error("外壳未就绪：写请求缺少 CSRF 保护，已拒绝执行");
+  }
+  const resp = await fetch(shellBase() + path, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  const text = await resp.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!resp.ok) {
+    const message =
+      data !== null && typeof data === "object" && "error" in (data as Record<string, unknown>)
+        ? String((data as { error: unknown }).error)
+        : `请求失败（${resp.status}）`;
+    const err = new Error(message) as ShellApiError;
+    err.status = resp.status;
+    err.data = data;
+    err.isHttp = true;
+    throw err;
+  }
+  return data as T;
+}
+
+/** 判断错误是否为"用户取消了受门禁弹窗"（不是失败，调用方不应提示错误）。 */
+export function isCanceled(e: unknown): boolean {
+  return !!e && typeof e === "object" && (e as { canceled?: boolean }).canceled === true;
+}
+
+/** 取错误的状态码（core.js 归一化后的 `.status`）。 */
+export function errorStatus(e: unknown): number | undefined {
+  const s = (e as { status?: unknown })?.status;
+  return typeof s === "number" ? s : undefined;
+}
+
+/** 取用户可见错误文案（core.js 已归一化 `.message`）。 */
+export function errorMessage(e: unknown, fallback: string): string {
+  const m = (e as { message?: unknown })?.message;
+  return typeof m === "string" && m ? m : fallback;
 }
