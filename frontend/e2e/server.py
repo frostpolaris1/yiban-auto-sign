@@ -23,7 +23,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,23 +40,50 @@ TEST_KEY = "a" * 64
 
 
 def _seed_log_file(webapp):
-    """写当天的假日志（日志页要有一个可渲染的正文）。
+    """写**两天**的假日志。
 
-    **故意写入完整手机号**：e2e 据此断言"端到端拿不到未脱敏号码"（展示层必须只见
-    138****8001）。行格式与 `tests/test_logs_by_date.py::_log_line` 一致
-    （`[date time] [LEVEL] logger: msg`，yiban 组件全级别入列）。
+    为什么是两天：日期导航（查看该日 / 回到今天 / ?date= 深链）只有在存在"另一天"时才
+    可观测——2026-10-03 的 blocking 回归（load 用服务端回显日期覆盖用户选择，导致日期栏整体
+    失效）就是因为只种了一天、e2e 从未切换过日期。日志行含完整手机号，用于断言端到端脱敏。
+
+    行格式与 `tests/test_logs_by_date.py::_log_line` 一致（yiban 组件全级别入列）。
+    事件由 `_seed_events()` 另种（须在 db.init_db 之后）。
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    log_path = Path(webapp.log_path_for(today))
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(
-        "\n".join([
-            f"[{today} 06:31:01] [INFO] yiban: [13800138001] ✅ 签到成功",
-            f"[{today} 06:31:02] [INFO] yiban.client: [13800138001] 生成定位: (118.8, 31.9)",
-            f"[{today} 06:31:03] [WARNING] yiban: [13800138001] 单次尝试耗时偏长",
-        ]) + "\n",
-        encoding="utf-8",
-    )
+    older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+
+    def write_day(date_str: str, marker: str) -> None:
+        path = Path(webapp.log_path_for(date_str))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join([
+                f"[{date_str} 06:31:01] [INFO] yiban: [13800138001] ✅ 签到成功（{marker}）",
+                f"[{date_str} 06:31:02] [INFO] yiban.client: [13800138001] 生成定位: (118.8, 31.9)",
+                f"[{date_str} 06:31:03] [WARNING] yiban: [13800138001] 单次尝试耗时偏长",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+    write_day(today, "today")
+    write_day(older, "older")
+
+
+
+def _seed_events() -> None:
+    """当日/历史事件（**须在 `db.init_db()` 之后**调用）。
+
+    今天 2 条签到（含一条 attempt>1 的失败）+ 2 条探针；三天前 1 条签到。
+    读取端 `sign_events_on` 按 `stage='sign'` 且 `ts` 落在当日筛选；探针同口径 stage='probe'。
+    """
+    import db  # 裸模块名：sys.path 已含 scripts
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    db.add_sign_event(f"{today} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
+    db.add_sign_event(f"{today} 06:31:05", "13800138001", "failed", "密码错误", stage="sign", attempt=3)
+    db.add_sign_event(f"{older} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
+    db.add_sign_event(f"{today} 06:35:00", "13800138001", "ok", "探测正常", stage="probe", attempt=1)
+    db.add_sign_event(f"{today} 06:40:00", "13800138001", "failed", "探测异常", stage="probe", attempt=1)
 
 
 def main():
@@ -105,6 +132,7 @@ def main():
                     "status": "active", "owner": E2E_USER_EMAIL})
     db.add_account({"name": "e2e-admin-acct", "phone": "13900139002", "password": "p2",
                     "status": "active", "owner": ADMIN_USER})
+    _seed_events()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
             db.record_in_txn(conn, ADMIN_USER, f"e2e_seed_{i}", target=f"acct-{i}", detail=f"seed detail {i}")

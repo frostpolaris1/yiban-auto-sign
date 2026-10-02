@@ -144,6 +144,20 @@ export function ownerEmailVisible(): boolean {
   return fn ? fn() : false;
 }
 
+/**
+ * 手机号展示脱敏（core.js 唯一实现，幂等）。
+ * 服务端已是脱敏出口；页面对已脱敏值再走一遍是**防御性**的（与 legacy 事件行同做法），
+ * 万一日后某条数据路径漏了服务端脱敏，这里仍不会把完整号渲染出去。
+ */
+export function maskPhone(phone: string): string {
+  const fn = (raw() as { maskPhone?: (p: string) => string }).maskPhone;
+  if (fn) return fn(phone);
+  // 无外壳时的保守兜底：长度够就按"前 3 后 4"遮罩（与后端口径同形）
+  const p = String(phone ?? "");
+  if (p.indexOf("*") !== -1) return p;
+  return p.length >= 7 ? `${p.slice(0, 3)}****${p.slice(-4)}` : p;
+}
+
 export function setOwnerEmailVisible(v: boolean): void {
   const fn = raw().prefs?.setOwnerEmailVisible;
   if (fn) fn(v);

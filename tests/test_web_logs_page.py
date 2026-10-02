@@ -88,6 +88,19 @@ class LogsPageTest(unittest.TestCase):
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
         db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
 
+        # 当天的日志文件与事件：**必须种**——否则 /api/logs 的三元组与事件列表都为空，
+        # 契约断言会退化成"对合成字面量校验"（永远为真，既抓不到字段改名也抓不到搬漏）。
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        with open(cls.webapp.log_path_for(today), "w", encoding="utf-8") as fh:
+            fh.write(chr(10).join([
+                f"[{today} 06:31:01] [INFO] yiban: [13800138001] 签到成功",
+                f"[{today} 06:31:02] [WARNING] yiban: [13800138001] 单次尝试耗时偏长",
+            ]) + chr(10))
+        db.add_sign_event(f"{today} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
+        db.add_sign_event(f"{today} 06:35:00", "13800138001", "ok", "探测正常", stage="probe", attempt=1)
+
     @classmethod
     def tearDownClass(cls):
         if db._conn is not None:
@@ -207,10 +220,16 @@ class LogsPageTest(unittest.TestCase):
             self.assertIn(key, body, f"/api/logs 缺少前端消费的键：{key}")
         self.assertIsInstance(body["probe_events"], list)
         self.assertIsInstance(body["sign_events"], list)
-        # 事件行字段（el-table 的列 prop 直接绑定这些名字）
-        for ev_key in ("time", "phone", "status", "message"):
-            self.assertIn(ev_key, body["probe_events"][0] if body["probe_events"] else {"time": "", "phone": "", "status": "", "message": ""},
-                          f"事件行字段契约缺 {ev_key}")
+        # 事件行字段（el-table 的列 prop 直接绑定这些名字）——对**真实行**校验，不用合成字面量
+        self.assertTrue(body["sign_events"], "夹具应已种入一条签到事件")
+        self.assertTrue(body["probe_events"], "夹具应已种入一条探针事件")
+        for kind in ("sign_events", "probe_events"):
+            row = body[kind][0]
+            for ev_key in ("time", "phone", "status", "message"):
+                self.assertIn(ev_key, row, f"{kind} 事件行契约缺 {ev_key}")
+            # 脱敏：手机号不得是完整号（服务端 _mask_phone 出口）
+            self.assertNotEqual(row["phone"], "13800138001", f"{kind} 事件手机号未脱敏")
+            self.assertIn("*", row["phone"])
 
     def test_logs_date_filter_rejects_bad_format(self):
         c = self._admin_client()

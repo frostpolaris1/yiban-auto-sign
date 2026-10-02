@@ -124,3 +124,28 @@ jobs:
 
       - name: Audit ready
         run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'
+
+  # ---- 前端单测（Vue + Vitest）----
+  # 为什么必须有：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
+  # 恰好落在无门禁区——2026-10-03 独立审查实测到一个 blocking 回归（日志页日期栏整体失效）
+  # 正是这样漏掉的。前端测试与后端测试同门槛。
+  # 只跑 Vitest：Playwright e2e 需要 Python 侧临时实例与浏览器二进制，留给 nightly。
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies (locked)
+        run: npm ci
+      - name: Unit tests (Vitest)
+        run: npm run test
