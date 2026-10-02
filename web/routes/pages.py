@@ -236,7 +236,9 @@ def user_account_page():
     blocked = _user_page_redirect()
     if blocked:
         return blocked
-    return _render_user_page("pages/user_account.html", "user-account", ["用户中心", "账号与设置"])
+    return _render_vue_page(
+        "myaccounts.html", "pages/user_account.html", "user-account", ["用户中心", "账号与设置"], user=True
+    )
 
 
 def user_calendar_page():
@@ -362,11 +364,13 @@ def my_calendar_page():
 # 三处共用同一套管道：解析 manifest 资产 → 下发模板（模板只出挂载点与模块脚本）。
 # 资产路径**不含 script_root**（模板层自行拼，子路径部署唯一收口点）；dist 缺失时 404
 # 而不是渲染一个空壳——缺资产是构建/入库错误，应显式可见。
-def _render_vue_page(entry, template, nav_key, crumbs):
+def _render_vue_page(entry, template, nav_key, crumbs, user=False):
+    """Vue 页统一渲染。`user=True` 走用户端外壳（/user/*），否则管理端外壳。"""
     assets = _vue_assets.vue_assets(entry)
     if not assets["js"]:
         abort(404)
-    return _render_admin_page(
+    render = _render_user_page if user else _render_admin_page
+    return render(
         template,
         nav_key,
         crumbs,

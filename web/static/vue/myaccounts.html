@@ -3,19 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>签到日志（开发壳）</title>
-    <script type="module" crossorigin src="./assets/logs-DqIdNm18.js"></script>
+    <title>账号与设置（开发壳）</title>
+    <script type="module" crossorigin src="./assets/myaccounts-kaX7wzln.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/theme-wOTF8cAQ.js">
     <link rel="modulepreload" crossorigin href="./assets/vendor-element-plus-iSbOhALl.js">
-    <link rel="modulepreload" crossorigin href="./assets/_plugin-vue_export-helper-BDNMzG2s.js">
     <link rel="modulepreload" crossorigin href="./assets/shell-BWj_-362.js">
     <link rel="stylesheet" crossorigin href="./assets/theme-DUyV08c0.css">
     <link rel="stylesheet" crossorigin href="./assets/vendor-element-plus-DSsn4F1A.css">
-    <link rel="stylesheet" crossorigin href="./assets/logs-BoUlecZk.css">
   </head>
   <body>
-    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由 web/templates/pages/data_logs.html
-         提供（经 manifest 解析）。挂载点 id 与模板一致：#vue-logs-app。 -->
-    <div id="vue-logs-app"></div>
+    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由
+         web/templates/pages/{user_account,my_account}.html 提供（经 manifest 解析）。
+         两页共用本入口，变体由 data-variant 区分。 -->
+    <div id="vue-myaccounts-app" data-variant="user" data-calendar-href="/user/calendar"></div>
   </body>
 </html>
