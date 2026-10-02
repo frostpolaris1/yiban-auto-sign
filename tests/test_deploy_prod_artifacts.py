@@ -146,18 +146,26 @@ def _ls_tracked():
     return listing.stdout
 
 
+# 2026-10-02 用户裁定：该串为游戏角色名（虚构人物，现实中无人使用），作为
+# account-form.js 的占位示例保留在仓库内；门禁对其余文件继续生效。
+_AUTHORIZED_NAME_PATHS = frozenset({"web/static/js/components/account-form.js"})
+
+
 def _tracked_hit_scan():
-    """扫描全部 git 跟踪文件，返回含真名的路径列表。"""
+    """扫描全部 git 跟踪文件，返回含真名的路径列表（授权豁免路径除外）。"""
     hits = []
     for raw in _ls_tracked().split(b"\0"):
         if not raw:
             continue
-        p = os.path.join(BASE, os.fsdecode(raw))
+        rel = os.fsdecode(raw)
+        if rel in _AUTHORIZED_NAME_PATHS:
+            continue
+        p = os.path.join(BASE, rel)
         try:
             if not os.path.isfile(p) or os.path.getsize(p) > 8 * 1024 * 1024:
                 continue
             if _scan_file_for_name(p):
-                hits.append(os.fsdecode(raw))
+                hits.append(rel)
         except OSError:
             continue
     return hits
