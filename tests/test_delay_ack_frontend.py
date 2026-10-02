@@ -38,6 +38,9 @@ CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
 COMPONENTS = os.path.join(BASE, "web", "static", "js", "components")
 PAGES = os.path.join(BASE, "web", "static", "js", "pages")
 JS_DIR = os.path.join(BASE, "web", "static", "js")
+# 前端翻新后受门禁操作迁到 Vue（frontend/src/**）；守卫必须一并覆盖新栈，
+# 否则「别再长出第二条无条件口令框」这类不变量在 Vue 侧静默失守。
+VUE_SRC = os.path.join(BASE, "frontend", "src")
 NODE = shutil.which("node")
 
 PW_INPUT = "MasterPass#2026"
@@ -54,14 +57,17 @@ _GATED_COMPONENTS = (
     "settings-quota.js",
     "settings-schedule.js",
     "settings-switches.js",
-    "my-mail-notify.js",
 )
+# Vue 栈的受门禁落点（写凭据门禁、主管理员邮件关门禁）：判据是 `dangerousSubmit(`——
+# Vue 侧 import 后直呼，不带 `YB.` 前缀。
+_GATED_VUE = ("frontend/src/myaccounts/MyAccounts.vue",)
 
 # 唯一允许在 core.js 之外直接弹口令框的文件：自助域收的是**本人账号口令**
 # （`/api/me/delete`、`/api/me/restore` 的 `password` 字段），不经敏感口令门、后端也不下发
 # reason，故没有"先发后补"的余地。新增任何一条都要先问后端有没有 reason 协议。
 _PW_MODAL_ALLOWED = {
-    "my-accounts-page.js": "自助注销/撤销注销收本人账号口令，不经敏感口令门",
+    "frontend/src/myaccounts/MyAccounts.vue": "自助注销/撤销注销收本人账号口令，不经敏感口令门",
+    "frontend/src/lib/shell.ts": "core.js 的桥接层：只转发 YB.openConfirmPasswordModal，不新开管道",
 }
 
 # 直接开出口令框的写法：`openConfirmPasswordModal(` 直呼，或 `openPwModal(..., "confirm")`
@@ -722,7 +728,9 @@ class GatedCallSitesTest(unittest.TestCase):
         """受门禁写操作所在组件都必须出现 `YB.dangerousSubmit(`，不得只有无条件口令框。"""
         missing = [name for name in _GATED_COMPONENTS
                    if "YB.dangerousSubmit(" not in _read(os.path.join(COMPONENTS, name))]
-        self.assertEqual(missing, [], "这些组件仍有受门禁操作没走统一 helper：%s" % missing)
+        missing += [rel for rel in _GATED_VUE
+                    if "dangerousSubmit(" not in _read(os.path.join(BASE, *rel.split("/")))]
+        self.assertEqual(missing, [], "这些文件仍有受门禁操作没走统一 helper：%s" % missing)
 
     def test_irreversible_ops_use_helper(self):
         """不可逆操作（删用户 / 清空账号 / 批量删除清除 / purge / 急停）走 dangerousSubmit。
@@ -748,18 +756,20 @@ class GatedCallSitesTest(unittest.TestCase):
         `openConfirmPasswordModal(` 会留下一条等效旁路（helper 与它都已导出）。
         """
         offenders = {}
-        for dirpath, _dirs, files in os.walk(JS_DIR):
-            if os.sep + "vendor" + os.sep in dirpath + os.sep:
-                continue
-            for name in sorted(files):
-                if not name.endswith(".js"):
+        for root in (JS_DIR, VUE_SRC):
+            for dirpath, _dirs, files in os.walk(root):
+                if os.sep + "vendor" + os.sep in dirpath + os.sep or os.sep + "node_modules" + os.sep in dirpath + os.sep:
                     continue
-                path = os.path.join(dirpath, name)
-                if os.path.abspath(path) == os.path.abspath(CORE_JS):
-                    continue
-                hits = _pw_modal_calls(_read(path))
-                if hits:
-                    offenders[name] = (os.path.relpath(path, BASE), hits)
+                for name in sorted(files):
+                    if not name.endswith((".js", ".vue", ".ts")):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    if os.path.abspath(path) == os.path.abspath(CORE_JS):
+                        continue
+                    hits = _pw_modal_calls(_read(path))
+                    if hits:
+                        rel = os.path.relpath(path, BASE).replace(os.sep, "/")
+                        offenders[rel] = hits
         self.assertEqual(sorted(offenders), sorted(_PW_MODAL_ALLOWED),
                          "口令框管道只剩登记的自助域；其余受门禁操作请改走 helper：%s" % offenders)
 
@@ -776,7 +786,7 @@ class GatedCallSitesTest(unittest.TestCase):
         """豁免不能空挂：登记的每个文件都要真的在（文件改名/删除时豁免必须一起处置）。"""
         for name, reason in _PW_MODAL_ALLOWED.items():
             self.assertTrue(reason.strip(), "%s 的豁免必须写理由" % name)
-            self.assertTrue(os.path.exists(os.path.join(COMPONENTS, name)),
+            self.assertTrue(os.path.exists(os.path.join(BASE, *name.split("/"))),
                             "%s 已不存在，请从豁免表里删掉" % name)
 
 
