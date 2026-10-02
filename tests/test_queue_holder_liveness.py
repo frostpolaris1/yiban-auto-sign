@@ -358,10 +358,9 @@ class RefillerWiringTest(unittest.TestCase):
                 os.environ["YIBAN_STATE_DIR"] = prev_state
 
         self.addCleanup(_restore_state)
-        # 兄弟执行体的新鲜心跳：判活事实与 `_widen_with_dead_peers` 同一来源，
-        # 用真实时刻写入，`_now()` 读到的就是 running（不是"未配置槽位算活"的保守侧）。
-        state_io.mark_worker_started(1, now=datetime.datetime.now(),
-                                     role=egress.ROLE_WORKER)
+        # 兄弟执行体的心跳：与 `_now` 的 mock 同一时刻（START 在 cfg 窗口 06:30–07:50 内），
+        # presence 判 running 而非"未配置槽位算活"的保守侧。
+        state_io.mark_worker_started(1, now=START, role=egress.ROLE_WORKER)
         self.ctx.held.add("13800000001")
         seen = []
         real = queue_store.reap_expired
@@ -373,8 +372,12 @@ class RefillerWiringTest(unittest.TestCase):
         import asyncio
 
         async def drive():
+            # `_now` 必须钉在窗口内（START=06:40）：_refiller 每拍先判
+            # `schedule._window_closed`，壁钟跑到 07:50 之后整条循环直接 break，
+            # 回收根本不会发生——用例不能赌它运行的时刻。
             with mock.patch.object(queue_store, "reap_expired", spy), \
                  mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
+                 mock.patch.object(executor_v3, "_now", lambda: START), \
                  mock.patch.object(queue_store, "pending_count", lambda *a, **k: 1):
                 task = asyncio.ensure_future(executor_v3._refiller(
                     asyncio.PriorityQueue(), (0,), self.ctx))
