@@ -50,6 +50,18 @@ test("用户端账号页：账号行/调度提示/自选时段/邮件开关/改�
   // 用户端专有：注销账号；管理端专有：显示偏好（**不应出现**）
   await expect(page.getByRole("button", { name: /注销账号/ })).toBeVisible();
   await expect(page.locator("h2.panel-title", { hasText: "显示偏好" })).toHaveCount(0);
+
+  // 侧栏「退出登录」可用（回归守卫，2026-10-03 实测踩过）：该按钮原先靠**各页自己绑**
+  // `[data-user-logout]`，账号页迁到 Vue 后没人再绑 → 退出成了死键。现改与管理端
+  // sidebar/topbar 同一写法（onclick 调全局 doLogout），不再需要任何页面级绑定。
+  // 断言放在本条用例末尾（而非独立用例）：e2e 的登录限速按客户端 IP 计，多一次 API 登录
+  // 就会把整套顶到 429——共享实例的套件里，登录次数本身是要省着用的资源。
+  await page.getByRole("button", { name: "退出登录" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.locator("#login-form")).toBeVisible();
+  // 会话确已清除：再访问用户端页面会被守卫弹回登录页
+  await page.goto("/user/account");
+  await expect(page).toHaveURL(/\/login$/);
 });
 
 test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、注销确认（取消）", async ({ page }) => {

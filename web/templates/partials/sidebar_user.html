@@ -44,7 +44,13 @@
       </div>
     </div>
     <div class="sidebar-actions">
-      <button type="button" class="btn btn--ghost btn--sm" data-user-logout>
+      {# 退出与管理端 sidebar.html / topbar.html **同一写法**：onclick 调全局 doLogout()。
+         原先这里是 data-user-logout + 各页自己绑事件，于是"迁移一页就漏绑一次"——
+         /user/account 迁到 Vue 后退出按钮成了死键（Vue 页不再有人绑它）。core.js 无条件
+         挂 window.doLogout，用 onclick 后这个钩子不再需要任何页面级绑定。
+         onclick 里没有插值，不存在用户可控值进 JS 解析器的问题（内联属性禁令见
+         test_webui_inline_context，其判据针对的是拼接用户可控值）。 #}
+      <button type="button" class="btn btn--ghost btn--sm" onclick="doLogout()">
         {{ icon('log-out') }}<span>退出登录</span>
       </button>
     </div>
