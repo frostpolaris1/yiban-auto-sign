@@ -289,8 +289,22 @@ def login_page():
         if cnt < 4:
             return redirect(url_for("dashboard_page") if m._current_role() == "admin" else url_for("user_calendar_page"))
         m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", m.db.hash_ip(ip))
+    return _render_auth_vue_page("login.html", "login.html")
+
+
+def _render_auth_vue_page(entry, template):
+    """认证页（登录）的 Vue 渲染：外壳是 `layout_auth`，上下文与两套后台外壳都不同。
+
+    单独一个助手而不是给 `_render_vue_page` 加分支：登录页**不需要**导航高亮/面包屑/当前
+    身份（它渲染在登录态之外），却独有分享摘要、站点简介与两份协议正文——两套上下文没有
+    交集，硬塞进一个函数只会让"哪些键对哪页有意义"变得不可读。
+    """
+    assets = _vue_assets.vue_assets(entry)
+    if not assets["js"]:
+        abort(404)
+    m = _appmod()
     return render_template(
-        "login.html",
+        template,
         web_version=m.WEB_VERSION,
         app_version=m.APP_VERSION,
         icp_info=m.icp_info(),
@@ -300,6 +314,9 @@ def login_page():
         site_image=m.site_image(),
         agreement_html=m._read_doc_html("USER_AGREEMENT.md"),
         privacy_html=m._read_doc_html("PRIVACY_POLICY.md"),
+        vue_js=assets["js"][0],
+        vue_preloads=assets["preloads"],
+        vue_css=assets["css"],
     )
 
 
