@@ -864,21 +864,25 @@ async def _run_async(ctx):
 def _prescan(ctx, accounts):
     """起跑前登记两类不经过队列的账号。
 
-    - **用户自暂停**：计划里本就没有它的行（`planner._phones` 剔除自暂停账号），不登记
-      就会在汇总里变成"未执行"（按失败计），与 v2 的"跳过"口径不符；
     - **不在本执行体分片集**：多执行体分工下由别的执行体负责，登记进 `delegated` 让
-      汇总不把别人的活报成自己的失败（与 `round.run_queue_retry` 同口径）。
+      汇总不把别人的活报成自己的失败（与 `round.run_queue_retry` 同口径）。**归属判定
+      必须排在自暂停登记之前**：自暂停号没有计划行、每个执行体的账号列表里都有它，
+      若先登记结果再判归属，N 个执行体会各登记一遍——状态/事件 ×N、每份汇总各计一遍
+      "跳过"，看起来就是 N 倍暂停（2026-10 生产事件表实测每号每天 2 行 user_cancelled）；
+    - **用户自暂停**：计划里本就没有它的行（`planner._phones` 剔除自暂停账号），不登记
+      就会在汇总里变成"未执行"（按失败计），与 v2 的"跳过"口径不符。由**归属执行体**
+      登记一次。
     """
     for acc in accounts:
         phone = acc.phone
+        if (ctx.delegated is not None
+                and hrw.vshard_of(phone, ctx.day, ctx.v) not in ctx.shards):
+            ctx.delegated.add(phone)
+            continue
         if getattr(acc, "user_paused", False):
             ctx.results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
             state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
             _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
-            continue
-        if (ctx.delegated is not None
-                and hrw.vshard_of(phone, ctx.day, ctx.v) not in ctx.shards):
-            ctx.delegated.add(phone)
 
 
 def _mark_window_skips(ctx, accounts):
