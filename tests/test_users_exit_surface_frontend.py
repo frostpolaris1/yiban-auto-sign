@@ -35,9 +35,9 @@ from test_web_mask_email_parity import _extract_js_function
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
-USER_OPS_JS = os.path.join(BASE, "web", "static", "js", "components", "user-ops.js")
+USER_OPS_JS = os.path.join(BASE, "frontend", "src", "users", "ops.js")
 ACCOUNT_FORM_JS = os.path.join(BASE, "web", "static", "js", "components", "account-form.js")
-WORK_USERS_JS = os.path.join(BASE, "web", "static", "js", "pages", "work_users.js")
+USERS_MODEL_TS = os.path.join(BASE, "frontend", "src", "users", "model.ts")
 NODE = shutil.which("node")
 
 
@@ -283,29 +283,33 @@ class AccountFormOwnerDisplayTest(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node 不可用：跳过 Task 2-9b 前端出口真跑")
-class WorkUsersStateCarriesIdTest(unittest.TestCase):
-    """③ 页面 state 记录必须携带 id（不透明定位链路的起点）。"""
+class UsersRecordCarriesIdTest(unittest.TestCase):
+    """③ 记录必须携带服务端 id（不透明定位链路的起点）。
 
-    @classmethod
-    def setUpClass(cls):
-        src = _read(WORK_USERS_JS)
-        cls.body = "\n".join(_extract_js_function(src, name)
-                             for name in ("uidFor", "fetchUsers"))
+    **2026-10-03 换锚（用户管理页迁到 Vue）**：本条原先是"把 work_users.js 的
+    `uidFor`/`fetchUsers` 抽出来在 node 里真跑"。迁移后映射逻辑进了
+    `frontend/src/users/model.ts::mapUsers`（TS，带类型注解，抽出来在 node 里跑不起来）。
+    故判据拆成两半，**行为面不丢**：
 
-    def test_fetch_users_maps_id_and_display(self):
-        script = (
-            _HARNESS + "\n"
-            "var state = {builtin: '', users: [], byUid: {}, uidSeq: 0, uidOf: {}};\n"
-            "var YB = {api: api};\n"
-            + self.body + "\nfetchUsers();\n"
-            + _flush("{recs: Object.keys(state.byUid).map(function (k) { return state.byUid[k]; })}"))
-        out = _run_node(script, "work_users")
-        recs = out["recs"]
-        self.assertEqual(len(recs), 2)
-        ids = sorted(r["id"] for r in recs)
-        self.assertEqual(ids, [1, 2], "state 记录必须带服务端 id——单条定位靠它，不靠邮箱")
-        phone_rec = next(r for r in recs if r["email"] == "13800000000@qq.com")
-        self.assertEqual(phone_rec["display"], "138****0000")
+    · 行为面仍在本文件：`UserOpsOpaqueIdTest` 真跑 `ops.js`——传带 id 的记录得到
+      `/api/users/<id>/…`，传**没有 id** 的记录则拒绝发请求。这正是"记录必须带 id"这条
+      不变量在出口侧的落点（id 丢了就发不出请求，而不是回落成邮箱编 path）。
+    · 结构面留在这里：`mapUsers` 必须保留服务端下发的 id 字段（丢掉它上面那条就恒不成立），
+      以及页面不得从 DOM 取值来定位目标。
+    · 该映射的逐字段行为由 Vitest 真跑覆盖：`frontend/src/users/model.spec.ts`
+      的「载荷映射 › 记录必须携带 id（单条定位链路的起点）与遮罩 display」。
+    """
+
+    def test_map_users_keeps_server_id(self):
+        src = _read(USERS_MODEL_TS)
+        self.assertIn("id: u.id != null ? Number(u.id) : null", src,
+                      "mapUsers 丢了服务端 id —— 单条定位（/api/users/<id>/…）会整条失效")
+        self.assertIn("mapUsers", src)
+        # 组件侧：目标一律来自记录（ops 的 ctx.resolve 由组件按邮箱回查内存态记录），
+        # 不得从 DOM 属性/文本反解——DOM 里只有遮罩串，反解必然错。
+        comp = _read(os.path.join(BASE, "frontend", "src", "users", "Users.vue"))
+        self.assertNotIn("dataset.email", comp)
+        self.assertNotIn("innerText", comp)
 
 
 if __name__ == "__main__":

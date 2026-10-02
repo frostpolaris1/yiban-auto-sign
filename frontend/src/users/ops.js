@@ -1,5 +1,19 @@
-/* 用户管理页（管理端 /users）全部写操作的统一入口。
-   挂载到 window.YB.userOps；classic script，YB.userOps.create(ctx) 返回方法集。
+/* 用户管理页（管理端 /work/users）全部写操作的统一入口。
+   挂载到 window.YB.userOps；**刻意保持 classic script 形态**（不是 ESM），公开面
+   YB.userOps.create(ctx) 与迁移前逐字一致。
+
+   ## 为什么这个文件是纯 JS 而不是 TS
+   `tests/test_users_exit_surface_frontend.py::UserOpsOpaqueIdTest` 会把**本文件整段源码**
+   放进 node 里执行（只桩一个 `window.YB`），然后真调 create(ctx) 并断言提交出去的
+   path / body / 弹窗文案——它钉的是 MF-49 出口面这条**安全**性质：
+     · 单条端点（role/password/delete）一律按**不透明 id** 编 path，邮箱绝不进 URL；
+     · 邮箱只出现在 batch / purge 的**请求体**里；
+     · id 缺失时**拒绝发请求**，不回落"邮箱编 path"的旧形态；
+     · 弹窗与成功提示里只出现遮罩邮箱。
+   用 TS 写（`import` 桥接外壳）会让那段真跑失效——抽出来的源码在 node 里跑不起来。
+   故与 `src/calendar/model.js`、`src/logs/date-guard.js` 同一处置：口径留在纯 JS，
+   由 Python 侧真跑钉住；Vue 侧只 `import "./ops.js"` 触发注册，再经 `lib/shell.ts` 取用。
+   改动本文件前先读那个测试。
 
    把「确认 → 口令二次鉴权 → 调接口 → 成功提示 → 刷新」这条固定链路收在一处。
    页面只提供 ctx：

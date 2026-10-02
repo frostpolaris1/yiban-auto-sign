@@ -81,7 +81,9 @@ class JsAssemblyGuardTest(unittest.TestCase):
         文案，不依赖服务端脱敏口径，故不得出现 `data.msg`。batch/purge 的计数型 msg
         经 `successMsg(..., true)` 走 `data["msg"]`，不在本禁例内。
         """
-        src = _read(os.path.join(JS_DIR, "components", "user-ops.js"))
+        # 2026-10-03：用户管理页迁到 Vue，写操作链路搬到 frontend/src/users/ops.js
+        # （纯 JS、整段被 test_users_exit_surface_frontend.py 真跑）；禁例与理由不变。
+        src = _read(os.path.join(BASE, "frontend", "src", "users", "ops.js"))
         self.assertNotIn(
             "data.msg", src,
             "user-ops.js 出现 data.msg —— 单目标成功提示会把完整邮箱经 toast 写入 DOM；"
@@ -152,7 +154,10 @@ _TAB_DEEPLINK_PRIVATE_MARKERS = (
 # "无页面级 tab 管理"的 legacy 分区页：深链启用只许这一行（settings 自管深链走 YB.selectTab）。
 # 2026-10-03：`pages/data_logs.js` 已退役（该页迁到 Vue，分区深链由 `?tab=` 在 Vue 内自管，
 # 本守卫只扫 `web/static/js/**`，对新栈不适用——新栈侧由 e2e/logs.spec 覆盖）。
-_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js", "pages/work_users.js")
+# 2026-10-03：`pages/work_users.js` 亦退役（该页迁到 Vue，分区深链由组件内自管 `?tab=`，
+# 且刻意不再使用 core.js 的 data-tab-group 契约以免两套机制争抢 DOM；本守卫只扫
+# `web/static/js/**`，对新栈不适用——新栈侧由 e2e（myaccounts.spec 的 `?tab=` 断言）覆盖）。
+_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js",)
 
 
 class TabDeepLinkGuardTest(unittest.TestCase):

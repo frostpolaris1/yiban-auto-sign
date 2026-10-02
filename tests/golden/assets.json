@@ -21,13 +21,13 @@
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "link rel=stylesheet href=/static/vue/assets/theme-DUyV08c0.css",
-    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-DSsn4F1A.css",
+    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-By15DzKp.css",
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-wOTF8cAQ.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-ByfWyHbz.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-9_NVtCC7.js",
-    "script src=/static/vue/assets/login-BlmBU24l.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DpGVRdYC.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-pFIieQQQ.js",
+    "script src=/static/vue/assets/login-z4Bd4FAT.js"
   ],
   "user": [
     "link rel=icon href=/favicon.png?v=*",
@@ -38,14 +38,14 @@
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "link rel=stylesheet href=/static/vue/assets/theme-DUyV08c0.css",
-    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-DSsn4F1A.css",
+    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-By15DzKp.css",
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
     "script src=/static/js/components/change-password.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-wOTF8cAQ.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-ByfWyHbz.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-9_NVtCC7.js",
-    "script src=/static/vue/assets/myaccounts-CZTWNokj.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DpGVRdYC.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-pFIieQQQ.js",
+    "script src=/static/vue/assets/myaccounts-CAW-t7fU.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
@@ -56,12 +56,12 @@
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "link rel=stylesheet href=/static/vue/assets/theme-DUyV08c0.css",
-    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-DSsn4F1A.css",
+    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-By15DzKp.css",
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-wOTF8cAQ.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-ByfWyHbz.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-9_NVtCC7.js",
-    "script src=/static/vue/assets/calendar-DgxMMHVN.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DpGVRdYC.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-pFIieQQQ.js",
+    "script src=/static/vue/assets/calendar-BhNKYHu3.js"
   ]
 }
