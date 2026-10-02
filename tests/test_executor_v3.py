@@ -953,6 +953,46 @@ class TerminalStateTest(_Base):
         self.assertEqual(delegated, expect, "不在本执行体分片集内的账号归 delegated")
         self.assertTrue(expect, "本用例需要至少一个属于别的执行体的账号")
 
+    def test_user_paused_owned_by_peer_is_delegated_not_registered(self):
+        """暂停号只由**归属执行体**登记一次（_prescan 归属判定先于暂停登记）。
+
+        多执行体下若每个执行体都登记自暂停号：结果/状态/事件 ×N、每份汇总各计一遍
+        "跳过"——生产事件表 2026-10-01/02 实测每个暂停号每天 2 行 user_cancelled、
+        两份汇总各报 "➖ 3 跳过"（实际 3 个暂停号）。
+        """
+        other = "worker-1@testhost"
+        cfg = _cfg(executors=[OWNER, other])
+        self._seed_v(64)
+        mine = set(hrw.shards_of(OWNER, cfg["executors"], DAY, 64))
+        peer = set(hrw.shards_of(other, cfg["executors"], DAY, 64))
+        own_phone = peer_phone = None
+        for i in range(400):
+            p = _phone(i)
+            shard = hrw.vshard_of(p, DAY, 64)
+            if own_phone is None and shard in mine:
+                own_phone = p
+            elif peer_phone is None and shard in peer and shard not in mine:
+                peer_phone = p
+            if own_phone is not None and peer_phone is not None:
+                break
+        self.assertTrue(own_phone and peer_phone, "夹具需要两个分片各落一个号")
+        accounts = [SimpleNamespace(phone=own_phone, user_paused=True),
+                    SimpleNamespace(phone=peer_phone, user_paused=True)]
+        events = []
+        delegated = set()
+        results = self._run_v3(accounts, [], cfg=cfg, delegated=delegated,
+                               event_sink=events.append)
+        self.assertEqual(
+            results,
+            {own_phone: (False, "用户已取消签到", True, "user_cancelled")},
+            "只登记归属自己的暂停号，别人的归 delegated 不进 results")
+        self.assertEqual(delegated, {peer_phone},
+                         "别人的暂停号必须归 delegated（汇总计为'由其他执行体负责'）")
+        self.assertEqual([e["phone"] for e in events], [own_phone],
+                         "user_cancelled 事件只由归属执行体发一次")
+        self.assertNotIn(peer_phone, self._read_state(),
+                         "归属执行体之外不得写对方账号的签到状态")
+
 
 # ---------------------------------------------------------------------------
 # 重试与退避
