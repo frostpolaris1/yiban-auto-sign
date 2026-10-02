@@ -324,7 +324,7 @@ def logs_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/data_logs.html", "data-logs", ["数据", "签到日志"])
+    return _render_vue_page("logs.html", "pages/data_logs.html", "data-logs", ["数据", "签到日志"])
 
 
 def users_page():
@@ -358,50 +358,40 @@ def my_calendar_page():
                               extra=_calendar_page_context())
 
 
-# ---- 前端翻新试点页（docs/refactor/29-frontend-vue-refactor-plan.md §3.4）----
-# Vue 3 + Element Plus 挂载进现有外壳的管线验证页：服务端只出挂载点与哈希资产
-# （清单由 web.services.vue_assets 解析 manifest），数据客户端只读拉取。
-# 不进侧栏（避免动 sidebar.html 波及全部金标准快照），URL 直达；dist 缺失时 404。
+# ---- Vue 页统一渲染（前端翻新；计划 docs/refactor/29）----
+# 三处共用同一套管道：解析 manifest 资产 → 下发模板（模板只出挂载点与模块脚本）。
+# 资产路径**不含 script_root**（模板层自行拼，子路径部署唯一收口点）；dist 缺失时 404
+# 而不是渲染一个空壳——缺资产是构建/入库错误，应显式可见。
+def _render_vue_page(entry, template, nav_key, crumbs):
+    assets = _vue_assets.vue_assets(entry)
+    if not assets["js"]:
+        abort(404)
+    return _render_admin_page(
+        template,
+        nav_key,
+        crumbs,
+        extra={
+            "vue_js": assets["js"][0],
+            "vue_preloads": assets["preloads"],
+            "vue_css": assets["css"],
+        },
+    )
+
+
+# 管线验证页：不进侧栏（避免动 sidebar.html 波及全部金标准快照），URL 直达。
 def vue_pilot_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    assets = _vue_assets.vue_assets(_vue_assets.PILOT_ENTRY)
-    if not assets["js"]:
-        abort(404)
-    return _render_admin_page(
-        "pages/work_vue_pilot.html",
-        "",  # 不进侧栏 → 无导航高亮
-        ["工作台", "Vue 翻新试点"],
-        extra={
-            "vue_js": assets["js"][0],
-            "vue_preloads": assets["preloads"],
-            "vue_css": assets["css"],
-        },
-    )
+    return _render_vue_page("index.html", "pages/work_vue_pilot.html", "", ["工作台", "Vue 翻新试点"])
 
 
-# ---- 审计日志页（前端翻新 P1 的第一个原生新页面；API 契约见 web/routes/audit_api.py）----
-# 与试点页同一管道：服务端只出挂载点与 manifest 资产，数据客户端只读拉取
-# （GET /api/audit-logs，七约束由后端模块 docstring 钉死，前端只消费不加工）。
-# 与试点页的差别：本页是真实功能，进侧栏（数据组）——故 index 金标准快照随本页变更。
+# 审计日志页（P1 第一个原生新页面；API 契约见 web/routes/audit_api.py 的七约束）。
 def audit_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    assets = _vue_assets.vue_assets("audit.html")
-    if not assets["js"]:
-        abort(404)
-    return _render_admin_page(
-        "pages/data_audit.html",
-        "data-audit",
-        ["数据", "审计日志"],
-        extra={
-            "vue_js": assets["js"][0],
-            "vue_preloads": assets["preloads"],
-            "vue_css": assets["css"],
-        },
-    )
+    return _render_vue_page("audit.html", "pages/data_audit.html", "data-audit", ["数据", "审计日志"])
 
 
 # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
