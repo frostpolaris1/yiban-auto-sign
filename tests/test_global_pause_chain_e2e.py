@@ -459,7 +459,8 @@ class GlobalPauseChainTest(_ChainBase):
                          entry["text"], "页面状态行载荷与 DISPLAY 表已分叉")
         self.assertEqual(ctx["by_code"][yiban_status.STATUS_GLOBAL_PAUSED]["tone"],
                          entry["tone"])
-        self.assertIn(entry["legend"], html, "图例缺急停条目（应与 DISPLAY 同源生成）")
+        self.assertEqual(ctx["by_symbol"][entry["symbol"]]["label"], entry["legend"],
+                         "图例载荷缺急停条目（应与 DISPLAY 同源生成，共享符号取最严重档）")
 
     def test_release_flips_status_and_display_on_the_same_chain(self):
         """只翻暂停键 ⇒ 同一链路上 GLOBAL_PAUSED 判码与页面急停显示一起消失。
