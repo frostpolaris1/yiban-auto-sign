@@ -378,7 +378,13 @@ class RefillerWiringTest(unittest.TestCase):
                  mock.patch.object(queue_store, "pending_count", lambda *a, **k: 1):
                 task = asyncio.ensure_future(executor_v3._refiller(
                     asyncio.PriorityQueue(), (0,), self.ctx))
-                await asyncio.sleep(0)
+                # 有界等待直到捕到回收调用：只 sleep(0) 一拍就取消是时序赌注——
+                # WSL 的事件循环一拍内没走到 reap 就会白跑（实测）。取消点在捕到
+                # 之后或 50 拍上限，二者取先。
+                for _ in range(50):
+                    await asyncio.sleep(0)
+                    if seen:
+                        break
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
