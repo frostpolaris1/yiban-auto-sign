@@ -381,12 +381,35 @@ def vue_pilot_page():
     )
 
 
+# ---- 审计日志页（前端翻新 P1 的第一个原生新页面；API 契约见 web/routes/audit_api.py）----
+# 与试点页同一管道：服务端只出挂载点与 manifest 资产，数据客户端只读拉取
+# （GET /api/audit-logs，七约束由后端模块 docstring 钉死，前端只消费不加工）。
+# 与试点页的差别：本页是真实功能，进侧栏（数据组）——故 index 金标准快照随本页变更。
+def audit_page():
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    assets = _vue_assets.vue_assets("audit.html")
+    if not assets["js"]:
+        abort(404)
+    return _render_admin_page(
+        "pages/data_audit.html",
+        "data-audit",
+        ["数据", "审计日志"],
+        extra={
+            "vue_js": assets["js"][0],
+            "vue_preloads": assets["preloads"],
+            "vue_css": assets["css"],
+        },
+    )
+
+
 # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
 # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）。
 # web.app 的 no_cache 中间件消费本清单（页面路径的唯一登记点在此）。
 NO_STORE_PAGES = frozenset(_MOVED_PAGES) | {
     "/", "/login", "/terms", "/privacy",
-    "/data/dashboard", "/data/logs",
+    "/data/dashboard", "/data/logs", "/data/audit",
     "/work/accounts", "/work/users", "/work/settings", "/work/pilot",
     "/my/account", "/my/calendar",
     "/user/account", "/user/calendar",
@@ -418,6 +441,7 @@ def register(app):
 
     app.add_url_rule("/work/accounts", view_func=accounts_page)
     app.add_url_rule("/data/logs", view_func=logs_page)
+    app.add_url_rule("/data/audit", view_func=audit_page)
     app.add_url_rule("/work/users", view_func=users_page)
     app.add_url_rule("/work/settings", view_func=settings_page)
     app.add_url_rule("/work/pilot", view_func=vue_pilot_page)
