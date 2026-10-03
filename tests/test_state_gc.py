@@ -208,8 +208,6 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "verify-job-": "校验任务的线程名（不是文件）",
     "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups）——不在状态目录里，"
               "由 backup.sh 自己的 30 天保留策略轮转；backup_sentinel.py 只是读它的名字",
-    "sign-status-": "run.sh 的按日状态文件（sign-status-<日期>.txt，bash 写入、run.sh 自己"
-                    "读写做库内事实交叉核对）；属宿主脚本自有台账，本批未纳入 state_gc 清理策略",
     # 邮件排版层的 HTML 内联样式：扫描正则只看"引号 + 小写 token + '-' + 后接 {表达式}"，
     # 而 style="border-top:1px solid {_RULE}" 正好是这个形状——CSS 属性名，不是文件名。
     "border-": "layout.py 的 HTML 内联样式属性名（style=\"border-…: {常量}\"）",
@@ -246,9 +244,11 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
                 for name in files:
                     if name.endswith((".py", ".sh")):
                         paths.append(os.path.join(dirpath, name))
-        # run.sh（仓库根）不在上面的目录树里：bash 侧的按日文件名同样要核对
-        # （`$STATE_DIR/yiban-run-today-$(business_day).marker` 等）
-        paths.append(os.path.join(BASE, "run.sh"))
+        # 仓库根的 bash 脚本（run.sh / run_probe.sh 等）不在上面的目录树里：
+        # bash 侧的按日文件名同样要核对（`$STATE_DIR/yiban-run-today-…` 等）
+        for name in sorted(os.listdir(BASE)):
+            if name.endswith(".sh"):
+                paths.append(os.path.join(BASE, name))
         for path in paths:
             with io.open(path, encoding="utf-8", errors="ignore") as f:
                 src = f.read()
