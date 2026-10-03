@@ -1,5 +1,15 @@
-/* 管理端账号写操作（单条 + 批量）的统一入口。
-   挂载到 window.YB.accountOps；classic script，YB.accountOps.create(ctx) 返回操作方法集。
+/* 账号管理页（管理端 /work/accounts）全部写操作的统一入口。
+   挂载到 window.YB.accountOps；**刻意保持 classic script 形态**（不是 ESM），公开面
+   YB.accountOps.create(ctx) 与迁移前逐字一致。
+
+   ## 为什么这个文件是纯 JS 而不是 TS
+   `tests/test_account_ops_reentry.py` 会把**本文件整段源码**放进 node 里执行（只桩一个
+   `window.YB` 与 ctx），真调 create(ctx) 并断言：在途中的第二次触发（单条 restore/move 与
+   批量 batch）不得再发请求、在途结束后必须放行。`tests/test_delay_ack_frontend.py` 另钉
+   「单条 purge 与批量 purge 都走 dangerousSubmit」。用 TS（import 桥接外壳）会让那段真跑
+   失效——抽出来的源码在 node 里跑不起来。故与 `src/users/ops.js` 同一处置：写操作链路留在
+   纯 JS，由 Python 侧真跑钉住；Vue 侧只 `import "./ops.js"` 触发注册，再经 window.YB 取用。
+   改动本文件前先读那两个测试。
 
    把「确认/口令鉴权 → 调接口 → 成功提示 → 刷新」这条固定链路收在一处，避免单条与批量
    各写一遍；页面只提供 ctx（状态与刷新回调），不关心网络细节。
@@ -45,26 +55,16 @@
       }).catch(fail).then(function () { inflight = false; ctx.busy(false); });
     }
 
-    // 列表刷新会整表重建：按行上的 data-acct-idx 找回新行，做一次短暂高亮。
-    function flashRow(index) {
-      if (index == null) return;
-      var tr = document.querySelector('[data-acct-idx="' + index + '"]');
-      if (!tr) return;
-      tr.classList.add("acct-row-flash");
-      setTimeout(function () { tr.classList.remove("acct-row-flash"); }, 320);
+    // 就地反馈（移动后行高亮 / 手动签到的「待签中」）**只回调组件、不碰 DOM**：
+    // 架构原则是口径/写操作层只管网络与状态，渲染归 Vue 响应式状态。ctx.onFlash /
+    // ctx.onSigning 可选，缺失即降级为无反馈（如 node 真跑测试的桩 ctx）。
+    function notifyFlash(index) {
+      if (index == null || !ctx.onFlash) return;
+      ctx.onFlash(index);
     }
-
-    // 就地乐观标记「待签中」：改状态列图标/文案，等随后刷新用后端真实状态覆盖。
-    function markSigning(index) {
-      if (index == null) return;
-      var tr = document.querySelector('[data-acct-idx="' + index + '"]');
-      var box = tr && tr.querySelector(".acct-state");
-      if (!box) return;
-      box.className = "acct-state acct-state--muted";
-      var use = box.querySelector("use");
-      if (use) use.setAttribute("href", "#i-clock");
-      box.title = "待签中";
-      box.setAttribute("aria-label", "待签中");
+    function notifySigning(index) {
+      if (index == null || !ctx.onSigning) return;
+      ctx.onSigning(index);
     }
 
     function review(a, action) {
@@ -132,7 +132,7 @@
       // 行重排后位置可能落在视口外：成功提示 + 新行短暂高亮，避免用户重复点击
       run(function () {
         return YB.api("POST", "/api/accounts/" + a.index + "/move", { dir: dir, phone: a.phone });
-      }, dir === -1 ? "已上移" : "已下移", function () { flashRow(a.index); });
+      }, dir === -1 ? "已上移" : "已下移", function () { notifyFlash(a.index); });
     }
 
     function signin(a) {
@@ -147,7 +147,7 @@
       }).then(function (data) {
         YB.toast.success((data && data.msg) || "已触发手动签到");
         // 先就地显示「待签中」，随后重拉真实状态，不等 10s 轮询
-        markSigning(a.index);
+        notifySigning(a.index);
         setTimeout(function () { ctx.refresh(); }, 1000);
       }).catch(fail).then(function () { inflight = false; ctx.busy(false); });
     }

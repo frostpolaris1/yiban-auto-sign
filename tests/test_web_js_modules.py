@@ -157,7 +157,11 @@ _TAB_DEEPLINK_PRIVATE_MARKERS = (
 # 2026-10-03：`pages/work_users.js` 亦退役（该页迁到 Vue，分区深链由组件内自管 `?tab=`，
 # 且刻意不再使用 core.js 的 data-tab-group 契约以免两套机制争抢 DOM；本守卫只扫
 # `web/static/js/**`，对新栈不适用——新栈侧由 e2e（myaccounts.spec 的 `?tab=` 断言）覆盖）。
-_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js",)
+# 2026-10-03：`pages/work_accounts.js` 最后退役（账号管理页整页迁到 Vue，分区深链同样由
+# 组件内自管 `?tab=`；本守卫只扫 legacy `web/static/js/**`，新栈侧由 e2e/logs.spec 的账号
+# 管理段钉住——点页签写 URL（写方向）与带 `?tab=` 加载落到该分区（读方向）成对）。
+# legacy 分区页已全部迁完，本清单为空。
+_TAB_DEEPLINK_PAGES = ()
 
 
 class TabDeepLinkGuardTest(unittest.TestCase):

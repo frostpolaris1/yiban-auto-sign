@@ -354,7 +354,7 @@ def accounts_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
+    return _render_vue_page("accounts.html", "pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
 
 
 def logs_page():

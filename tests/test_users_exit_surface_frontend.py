@@ -9,8 +9,9 @@
      也带走 `yiban-cache:*`，非缓存键不误伤；
   ③ `user-ops.js` 单条 role/password/delete——path 只含不透明 id（不含 `@`），
      邮箱只出现在 batch/purge 的请求体；id 缺失拒绝发请求（不回落邮箱编 path）；
-  ① `account-form.js::loadAvailableUsers`——下拉文本消费服务端 `display`，
-     **不再** `email.split("@")[0]` 自算（号形态直出即泄漏）；
+  ① `myaccounts/accountform.ts::availableUserItems`——下拉文本消费服务端 `display`，
+     **不再** `email.split("@")[0]` 自算（号形态直出即泄漏）；行为由 Vitest 真跑
+     （`accountform.spec.ts`），Python 侧只钉结构面；
   ③ `work_users.js::fetchUsers`——state 记录携带 id（单条定位链路的起点）。
 
 标签：F · 前端与界面守卫
@@ -18,8 +19,8 @@
 （批 6c3-C C-2 注：旧 `StaticNoSecondSplitTest` 静态防回潮断言为「精确源码 grep」
 兜底，行为面由 `test_dropdown_uses_server_display` 真跑消费服务端 `display` 钉住，
 已按对表裁撤。）
-对应实现：`web/static/js/core.js`、`web/static/js/components/user-ops.js`、
-`web/static/js/components/account-form.js`、`web/static/js/pages/work_users.js`
+对应实现：`web/static/js/core.js`、`frontend/src/users/ops.js`、
+`frontend/src/myaccounts/accountform.ts`、`frontend/src/users/model.ts`
 关键断言：断言打在 node 子进程的真实输出上（sessionStorage 影子对象、提交的 path/body
 捕获），"函数存在"不算过；遮罩形态与明文反例成对钉。
 依赖：**需要 node**（取不到整类 skip）；无网络、无浏览器。
@@ -27,6 +28,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -36,7 +38,7 @@ from test_web_mask_email_parity import _extract_js_function
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
 USER_OPS_JS = os.path.join(BASE, "frontend", "src", "users", "ops.js")
-ACCOUNT_FORM_JS = os.path.join(BASE, "web", "static", "js", "components", "account-form.js")
+ACCOUNT_FORM_TS = os.path.join(BASE, "frontend", "src", "myaccounts", "accountform.ts")
 USERS_MODEL_TS = os.path.join(BASE, "frontend", "src", "users", "model.ts")
 NODE = shutil.which("node")
 
@@ -247,39 +249,35 @@ class UserOpsOpaqueIdTest(unittest.TestCase):
                          "成功提示不得出现完整邮箱")
 
 
-@unittest.skipUnless(NODE, "node 不可用：跳过 Task 2-9b 前端出口真跑")
 class AccountFormOwnerDisplayTest(unittest.TestCase):
-    """① 归属下拉消费服务端 display，禁第二套 split("@")[0]。"""
+    """① 归属下拉消费服务端 display，禁第二套 split("@")[0]。
 
-    @classmethod
-    def setUpClass(cls):
-        src = _read(ACCOUNT_FORM_JS)
-        cls.body = "\n".join(_extract_js_function(src, name)
-                             for name in ("emailBaseItems", "loadAvailableUsers"))
+    **2026-10-03 换锚（账号管理页迁到 Vue）**：本条原先是"把 account-form.js 的
+    `emailBaseItems` / `loadAvailableUsers` 抽出来在 node 里真跑"。迁移后归属下拉项由
+    `frontend/src/myaccounts/accountform.ts::availableUserItems` 给出（用户端自提交与管理端
+    添加账号共用同一实现），该函数是 TS（带类型注解），抽出来在 node 里跑不起来。故判据
+    拆成两半，**行为面不丢**：
+      · 行为面在 Vitest：`frontend/src/myaccounts/accountform.spec.ts` 的
+        「绑定用户下拉项」真跑 `availableUserItems`——只列无账号用户、文本用服务端遮罩
+        `display`、完整邮箱只进 value。
+      · 结构面留在这里：实现必须消费 `display` 且不得出现第二套 `split("@")[0]` 本地直出
+        （号形态时等于把完整手机号外显），组件必须用它渲染下拉、不得自拆。
+    """
 
     def test_dropdown_uses_server_display(self):
-        script = (
-            "var options = null;\n"
-            "var window = {YB: {"
-            "  api: function () { return Promise.resolve({users: ["
-            "    {email: '13800000000@qq.com', display: '138****0000', account_count: 0},"
-            "    {email: 'alice@qq.com', display: 'ali***', account_count: 0},"
-            "    {email: 'occupied@qq.com', display: 'occ***', account_count: 5}"
-            "  ]}); },"
-            "  selectField: {setOptions: function (id, items) { options = items; }}"
-            "}};\n"
-            "var YB = window.YB;\n"
-            + self.body + "\nloadAvailableUsers();\n"
-            + _flush("{options: options}"))
-        out = _run_node(script, "account-form")
-        texts = [i.get("t", "") for i in out["options"] if "t" in i]
-        self.assertIn("138****0000", texts, "号形态本地部必须以遮罩态出现在下拉文本")
-        self.assertIn("ali***", texts)
-        # 文本面（下拉可见项）不得含完整本地部/手机号；`v` 里的完整邮箱是既有提交契约
-        self.assertNotIn("13800000000", json.dumps(texts, ensure_ascii=False),
-                         "下拉文本里不得出现完整本地部/手机号")
-        self.assertNotIn("occupied@qq.com", json.dumps(texts, ensure_ascii=False),
-                         "已有账号的用户不进下拉")
+        src = _read(ACCOUNT_FORM_TS)
+        self.assertIn("availableUserItems", src, "归属下拉项实现缺失或被改名")
+        self.assertIn("display", src, "归属下拉文本必须消费服务端脱敏 display")
+        self.assertIn("(u.account_count || 0) === 0", src, "已有账号的用户不进下拉")
+        # 只看**代码**：注释里可能为了说明"不再这么做"而引用旧写法，不算违规
+        code = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+        code = re.sub(r"//[^\n]*", "", code)
+        self.assertNotIn('split("@")[0]', code,
+                         "出现第二套本地部直出（号形态会把完整手机号外显）——归属展示只在服务端")
+        # 账号管理页必须复用同一实现（单一口径），而不是各写一份下拉项
+        accounts_vue = _read(os.path.join(BASE, "frontend", "src", "accounts", "Accounts.vue"))
+        self.assertIn("availableUserItems", accounts_vue,
+                      "账号管理页必须复用 accountform 的归属下拉项（单一口径）")
 
 
 @unittest.skipUnless(NODE, "node 不可用：跳过 Task 2-9b 前端出口真跑")

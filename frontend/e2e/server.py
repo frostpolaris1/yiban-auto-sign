@@ -173,6 +173,17 @@ def main():
                     "status": "active", "owner": E2E_USER_EMAIL})
     db.add_account({"name": "e2e-admin-acct", "phone": "13900139002", "password": "p2",
                     "status": "active", "owner": ADMIN_USER})
+    # 账号管理页（/work/accounts）e2e 种子：待审 / 已拒绝 / 软删除三态，供三组表格与
+    # 批量、行操作链路断言。一律归属 admin（裸账号归属）：既不影响 /work/users 的
+    # 「按注册用户分组计数」（admin 不在用户表），也不占用 e2e-user 名下账号。
+    # 追加在既有两条之后 ⇒ 管理端 /my/account 首行仍是 e2e-admin-acct。
+    db.add_account({"name": "e2e-pending-acct", "phone": "13700137003", "password": "p3",
+                    "status": "pending", "owner": ADMIN_USER})
+    db.add_account({"name": "e2e-rejected-acct", "phone": "13600136004", "password": "p4",
+                    "status": "rejected", "reject_reason": "e2e 驳回示例", "owner": ADMIN_USER})
+    _deleted_id = db.add_account({"name": "e2e-deleted-acct", "phone": "13500135005",
+                                  "password": "p5", "status": "active", "owner": ADMIN_USER})
+    db.set_account_deleted(_deleted_id, 1, deleted_at="2026-09-30 10:00:00", deleted_by="admin")
     _seed_events()
     _seed_state_files()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:

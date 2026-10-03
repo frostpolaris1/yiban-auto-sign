@@ -42,6 +42,7 @@ export default defineConfig({
         calendar: fileURLToPath(new URL("./calendar.html", import.meta.url)),
         login: fileURLToPath(new URL("./login.html", import.meta.url)),
         users: fileURLToPath(new URL("./users.html", import.meta.url)),
+        accounts: fileURLToPath(new URL("./accounts.html", import.meta.url)),
       },
       output: {
         // vendor 独立成 chunk：多页入口共享同一份 vue / element-plus 按需集合，
