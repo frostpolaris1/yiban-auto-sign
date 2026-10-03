@@ -23,8 +23,11 @@ TEMPLATES = os.path.join(BASE, "web", "templates")
 # 2026-10-03：`pages/data_logs.html` 移出本清单——该页已迁到 Vue（分区改由 el-tabs
 # 渲染），服务端不再出 tab 标记，故本文件的「服务端初始 ARIA 结构」守卫对它不再适用；
 # 其分区行为由 Vitest（format.spec）+ Playwright（e2e/logs.spec）覆盖。
+# 2026-10-03：`pages/data_dashboard.html` 移出本清单——数据看板页整页迁到 Vue，
+# 正文改由组件渲染（本页服务端只出挂载点与内联载荷），故「服务端初始 ARIA 结构」
+# 这条判据对它不再适用（同 data_logs / work_users 的处置）；页面行为由
+# frontend/src/dashboard/model.spec.ts 与 tests/test_web_dashboard_page.py 覆盖。
 ADMIN_PAGES = (
-    "pages/data_dashboard.html",
     "pages/work_accounts.html",
     # 2026-10-03：`pages/work_users.html` 移出本清单——该页已迁到 Vue，分区改由组件渲染
     # （且刻意不再使用 core.js 的 data-tab-target 契约，以免两套机制争抢同一批 DOM），

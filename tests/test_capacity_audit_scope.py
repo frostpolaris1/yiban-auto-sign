@@ -268,12 +268,16 @@ class ApproveGateTest(_Base):
 
 
 class FrontendConsumesAuditFieldTest(_Base):
-    """前端必须消费 accounts_audit（否则"账号管理里有很多行、容量只算 N 个"无法解释）。"""
+    """前端必须消费 accounts_audit（否则"账号管理里有很多行、容量只算 N 个"无法解释）。
+
+    2026-10-03：数据看板页迁到 Vue，容量口径搬到 `frontend/src/dashboard/model.js`
+    （纯 JS）；判据与"两处展示点"的意图不变，只是换了源文件路径。
+    """
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        with open(os.path.join(BASE, "web", "static", "js", "pages", "data_dashboard.js"),
+        with open(os.path.join(BASE, "frontend", "src", "dashboard", "model.js"),
                   encoding="utf-8") as f:
             cls.js = f.read()
 

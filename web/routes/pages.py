@@ -107,13 +107,27 @@ def _admin_page_redirect():
     return None
 
 
+def _dashboard_page_context():
+    """数据看板的服务端载荷：热力图脚注基线文案。
+
+    本页数据**全部客户端拉取**（settings / sign-events / time-prefs / accounts / clock /
+    announcement / ping），服务端不新增查询上下文；唯一内联项是这条描述统计口径的文案
+    ——「真实数据（不含探针）」是后端语义，且 JS 在签到事件加载失败后会改写它、成功后按此
+    基线还原，故基线必须与挂载点同车下发，而不是在组件里硬编码第二份。
+    """
+    return {"dashboard_state": {"cal_note": "真实数据（不含探针），覆盖近 30 天"}}
+
+
 # ---- 页面路径：`组/页面`（数据 / 工作台 / 我的 + 用户端）----
 # 分组标题与首段一致，页面与第二段一致，便于按 URL 反推归属。
 def dashboard_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/data_dashboard.html", "data-dashboard", ["数据", "数据总览"])
+    return _render_vue_page(
+        "dashboard.html", "pages/data_dashboard.html", "data-dashboard",
+        ["数据", "数据总览"], extra=_dashboard_page_context(),
+    )
 
 
 # 旧路径 → 新路径：书签/分享链接不失效。用 302 而非 308：本项目仍在演进，

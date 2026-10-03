@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>数据总览（开发壳）</title>
+    <script type="module" crossorigin src="./assets/dashboard-CH8kNB7S.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/theme-wOTF8cAQ.js">
+    <link rel="modulepreload" crossorigin href="./assets/vendor-element-plus-6McjBBcA.js">
+    <link rel="modulepreload" crossorigin href="./assets/shell-DTEQHjJ3.js">
+    <link rel="stylesheet" crossorigin href="./assets/theme-DUyV08c0.css">
+    <link rel="stylesheet" crossorigin href="./assets/vendor-element-plus-By15DzKp.css">
+  </head>
+  <body>
+    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由 web/templates/pages/data_dashboard.html
+         提供（经 manifest 解析）。挂载点 id 与模板一致：#vue-dashboard-app。
+         Chart.js 与生产模板同源（同一份内置 vendor UMD）：本地 dev 经 vite.config 的
+         /static 代理取 Flask 静态目录，否则组件执行时 window.Chart 缺失、三张图落
+         「图表库未加载」。defer 与 module 脚本同属"解析完成后按文档顺序执行"的队列，
+         故必须排在模块入口之前。 -->
+    <div id="vue-dashboard-app"></div>
+    <script defer src="/static/vendor/chartjs/chart.min.js"></script>
+  </body>
+</html>

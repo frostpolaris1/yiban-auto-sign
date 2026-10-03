@@ -36,6 +36,7 @@ export default defineConfig({
       input: {
         index: fileURLToPath(new URL("./index.html", import.meta.url)),
         audit: fileURLToPath(new URL("./audit.html", import.meta.url)),
+        dashboard: fileURLToPath(new URL("./dashboard.html", import.meta.url)),
         logs: fileURLToPath(new URL("./logs.html", import.meta.url)),
         myaccounts: fileURLToPath(new URL("./myaccounts.html", import.meta.url)),
         calendar: fileURLToPath(new URL("./calendar.html", import.meta.url)),

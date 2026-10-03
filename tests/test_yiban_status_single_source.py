@@ -111,7 +111,10 @@ class StatusSingleSourceTest(unittest.TestCase):
     # 强推渲染改造；但把它们与唯一事实源 `yiban.status` 之间**可静默分叉**的两处
     # （键集合 / 完成文案）钉成测试，杜绝"加状态码 / 改文案而漏改前端"的无声漂移。
 
-    DASH_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_dashboard.js")
+    # 2026-10-03：数据看板页迁到 Vue 后，状态表副本随之搬到
+    # frontend/src/dashboard/model.js（纯 JS）。本测试钉的「同一事实多份定义」台账
+    # 跟着换路径，判据与字面量不变。
+    DASH_JS = os.path.join(BASE, "frontend", "src", "dashboard", "model.js")
     # 2026-10-03：账号页迁到 Vue 后，状态表副本随之搬走（frontend/src/myaccounts/model.ts
     # 的 todayStateText）。本测试钉的「同一事实多份定义」台账跟着换路径，判据与字面量不变。
     MYACC_JS = os.path.join(BASE, "frontend", "src", "myaccounts", "model.ts")
@@ -126,7 +129,7 @@ class StatusSingleSourceTest(unittest.TestCase):
         with open(self.DASH_JS, encoding="utf-8") as fh:
             src = fh.read()
         block = re.search(r"STATUS_LABEL\s*=\s*\{(.*?)\};", src, re.S)
-        self.assertIsNotNone(block, "data_dashboard.js 未找到 STATUS_LABEL 表")
+        self.assertIsNotNone(block, "frontend/src/dashboard/model.js 未找到 STATUS_LABEL 表")
         keys = set(re.findall(r"([A-Za-z_]\w*)\s*:", block.group(1)))
         self.assertEqual(keys, set(yiban_status.ALL_STATUSES),
                          "仪表盘状态标签表与唯一事实源的状态码集合已分叉")
