@@ -142,11 +142,12 @@ _KILLYIBAN_PAGE = (
 
 
 def _legacy_page(pubkey):
-    # 旧流程的正则：`page_use ?= ?['|"]…` 与 `id="key"\s+value="…"`
+    # 旧流程与 KillYiBan 共用库 `parse_authorize_page` 的页面契约：
+    # `var page_use = '…'` + `id="key"` 的 PEM 公钥输入。
     return (
         "<html><body>"
         '<input type="hidden" id="key" value="%s">'
-        "<script>page_use = 'pageuse12345';</script>"
+        "<script>var page_use = 'pageuse12345';</script>"
         "</body></html>"
     ) % pubkey
 
@@ -258,9 +259,11 @@ class LegacyLoginShapeTest(unittest.TestCase):
         self.assertEqual(form["oauth_uname"], "13800138000")
         self.assertEqual(form["client_id"], "95626fa3080300ea")
         self.assertEqual(form["redirect_uri"], "https://f.yiban.cn/iapp7463")
-        self.assertEqual(form["state"], "")
         self.assertEqual(form["scope"], "1,2,3,4,")  # 旧流程的实值
         self.assertEqual(form["display"], "html")
+        # 换核后表单由库构造：字段集为 oauth_uname/oauth_upwd/client_id/redirect_uri/
+        # display(+scope)，不再含旧的 `state` 空字段（与 TASK-C §2[2] 实拍一致）
+        self.assertNotIn("state", form)
         self.assertEqual(rec.header(2, "Origin"), "https://oauth.yiban.cn")
         self.assertEqual(rec.header(2, "Referer"), oauth_page_url)
         # 密码必须是 RSA-1024 + PKCS1_v1_5 的 base64（128 字节密文）
@@ -349,7 +352,7 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         self.assertEqual(form["oauth_uname"], "13800138000")
         self.assertEqual(form["scope"], "")           # App 实值为空
         self.assertEqual(form["display"], "authorize")
-        self.assertEqual(form["state"], "")
+        self.assertNotIn("state", form)               # 库构造表单不含旧 `state` 空字段
         self.assertEqual(form["client_id"], "95626fa3080300ea")
         self.assertEqual(form["redirect_uri"], "https://f.yiban.cn/iapp7463")
         # 关键：usersure **不得**带 Origin/Referer（实测带 Origin → e001）
@@ -628,10 +631,15 @@ def _sign_position_data(*, msg="", positions=None, rng=None):
         "code": 0,
         "data": {
             "Msg": msg,
+            "IsNeedPhoto": 2,
             "Position": positions if positions is not None else [{
+                "Id": "pos-1",
+                "Type": "campus",
+                "Title": "任务A",
                 "Name": "任务A",
                 "Points": ["118.0,31.0", "118.1,31.0", "118.1,31.1", "118.0,31.1"],
                 "Address": "点A",
+                "LngLat": "118.05,31.05",
             }],
             "Range": rng if rng is not None else {"StartTime": now - 3600, "EndTime": now + 3600},
         },
@@ -720,6 +728,19 @@ class SigninShapeTest(unittest.TestCase):
         self.assertFalse(skip)
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("WAF", msg)
+
+    def test_session_expired_999_maps_to_relogin_path(self):
+        """信封 code==999 → 库 SessionExpired → 翻成"会话失效"，并入既有重登档（清缓存重登）。
+
+        这是 TASK-A/C 的会话过期语义：不新造异常面，靠消息里的"会话失效"词元落
+        `SESSION_STALE_FAIL_KEYWORDS`（attempts 清缓存后强制真重登）。
+        """
+        client, rec = self._client([_resp({"code": 999, "msg": "登录已超时"})])
+        with self.assertRaisesRegex(RuntimeError, "会话失效") as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertEqual(signin._retry_budget(msg),
+                         (signin.SESSION_STALE_MAX_ATTEMPTS, True))
 
 
 # ---------------------------------------------------------------------------

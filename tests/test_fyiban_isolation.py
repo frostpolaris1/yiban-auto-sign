@@ -28,7 +28,6 @@ import io
 import os
 import re
 import unittest
-from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -107,41 +106,38 @@ class HeadersBehaviorTest(unittest.TestCase):
 
 
 class WafBehaviorTest(unittest.TestCase):
-    def test_unrecognized_text_fails_loudly(self):
-        """无法识别的挑战页必须抛错：静默返回空 cookie 会让登录少走一步且难排查。"""
-        with self.assertRaises(RuntimeError):
-            fyiban_waf.solve_ydclearance("<html>not a challenge</html>",
-                                         allow_url=lambda u: True) # 白名单在这里恒真：本用例只看「认不出挑战页」，不想被 URL 判定干扰
+    def test_challenge_detection_delegates_to_vendored_library(self):
+        """检测本体委托 vendored 库：已知挑战标记命中、正常 JSON 不误报。"""
+        self.assertTrue(fyiban_waf.looks_like_challenge("<html>ydclearance</html>"))
+        self.assertTrue(fyiban_waf.looks_like_challenge(
+            "Set-Cookie: https_ydclearance=abc", "https_ydclearance=abc"))
+        self.assertTrue(fyiban_waf.looks_like_challenge(
+            '<script>window.onload=setTimeout("yy(1)",200);eval("qo=eval;qo(po);");</script>'))
+        self.assertFalse(fyiban_waf.looks_like_challenge('{"code":0,"msg":""}'))
 
-    def test_whitelist_policy_is_injected_not_inlined(self):
-        """白名单由调用方注入：signin 的包装必须传它自己的 `_is_fyiban_url`。"""
-        seen = {}
-
-        def _fake(text, allow_url):
-            seen["text"] = text
-            seen["allow_url"] = allow_url
-            return ("cookie", "https://f.yiban.cn/x")
-
-        with mock.patch.object(fyiban_waf, "solve_ydclearance", _fake):
-            out = signin.YibanClient._solve_ydclearance(object(), "CHALLENGE")
-        self.assertEqual(seen["text"], "CHALLENGE")
-        self.assertIs(seen["allow_url"], signin._is_fyiban_url)
-        self.assertEqual(out, ("cookie", "https://f.yiban.cn/x"))
+    def test_solver_is_gone_and_detection_hit_fails_loudly(self):
+        """求解器已按既定裁决删除（生产全历史零触发）；检测命中由协议层响亮失败。"""
+        self.assertFalse(hasattr(fyiban_waf, "solve_ydclearance"),
+                         "生产零触发的挑战求解器必须删除，不得以第二份实现复活")
+        self.assertIn("ydclearance", fyiban_waf.CHALLENGE_DETECTED_MESSAGE)
+        self.assertTrue(fyiban_security.is_hard_fail_message(
+            fyiban_waf.CHALLENGE_DETECTED_MESSAGE),
+            "检测命中必须落不可重试硬失败档（同一挑战重发无益）")
 
     def test_waf_module_has_no_security_policy_of_its_own(self):
-        """第三方层不得自带 URL 白名单实现（安全策略属本项目，须注入）。
+        """第三方层不得自带 URL 白名单或求解实现（安全策略属本项目，须注入）。
 
-        判据是"有没有自己的域名校验"，不是"调没调 allow_url"——调用注入的策略正是契约。
-        本项目的策略实现用 `urlsplit` 做精确主机比对，故这里以"不得出现该实现"为准。
+        判据是"有没有自己的域名校验/求解运算"，不是"调没调 allow_url"——求解器删除后
+        `allow_url` 注入面随之消失，本模块只剩"检测"与委托。
         """
         src = io.open(os.path.join(BASE, "yiban", "fyiban", "waf.py"),
                       encoding="utf-8").read()
         self.assertNotIn("_is_fyiban_url", src)
         self.assertNotIn("urlsplit", src)
         self.assertNotIn("urlparse", src)
-        # 注入契约在位：allow_url 参与判定且判定失败必须响亮失败
-        self.assertRegex(src, r"if not allow_url\(target\):")
-        self.assertRegex(src, r"raise RuntimeError\(\"ydclearance 跳转目标不在白名单")
+        self.assertNotIn("allow_url", src)
+        # 检测本体委托 vendored 洁净室库（本层不再内联求解/挑战模板正则）
+        self.assertIn("yiban._vendor.yiban_protocol", src)
 
 
 class IsolationStructureTest(unittest.TestCase):
@@ -163,7 +159,7 @@ class IsolationStructureTest(unittest.TestCase):
         self.assertRegex(self._fyiban_src("algo.py"), r"(?m)^def point_in_polygon\(")
         self.assertRegex(self._fyiban_src("algo.py"), r"(?m)^def generate_position_in_polygon\(")
         self.assertRegex(self._fyiban_src("headers.py"), r"(?m)^YIBAN_APP_VERSION = \"")
-        self.assertRegex(self._fyiban_src("waf.py"), r"(?m)^def solve_ydclearance\(")
+        self.assertRegex(self._fyiban_src("waf.py"), r"(?m)^def looks_like_challenge\(")
 
     def test_license_and_provenance_travel_with_code(self):
         """AGPL §5 要求修改声明与许可随代码分发——两件必须在目录里。"""
@@ -177,6 +173,29 @@ class IsolationStructureTest(unittest.TestCase):
         for f in ("algo.py", "headers.py", "waf.py", "protocol.py"):
             with self.subTest(file=f):
                 self.assertIn(f, prov)
+
+    def test_vendored_protocol_library_is_located_and_imported(self):
+        """洁净室协议库的定位：vendored 代码只在 `yiban/_vendor/`，隔离层只引用不复制。
+
+        B' 换核后，登录/签到链的纯解析/构造由 `yiban/_vendor/yiban_protocol`（MIT）承担；
+        本仓对该目录**只同步覆盖、不改**，故它的许可文本与来源说明必须随代码在位，
+        且隔离层经 `from yiban._vendor.yiban_protocol import …` 引用而非重写实现。
+        """
+        vendor = os.path.join(BASE, "yiban", "_vendor")
+        for rel in ("VENDORED.md", "yiban_protocol/__init__.py",
+                    "yiban_protocol/LICENSE", "yiban_protocol/position.py"):
+            with self.subTest(rel=rel):
+                self.assertTrue(os.path.isfile(os.path.join(vendor, rel)),
+                                f"vendored 库缺文件: {rel}")
+        vendored_doc = io.open(os.path.join(vendor, "VENDORED.md"), encoding="utf-8").read()
+        self.assertIn("c20ad68", vendored_doc, "需记录来源 commit")
+        self.assertIn("MIT", vendored_doc)
+        lic = io.open(os.path.join(vendor, "yiban_protocol", "LICENSE"), encoding="utf-8").read()
+        self.assertIn("MIT License", lic)
+        # 隔离层只引用 vendored 库，不把纯函数再抄回来
+        for name in ("protocol.py", "waf.py"):
+            with self.subTest(file=name):
+                self.assertIn("yiban._vendor.yiban_protocol", self._fyiban_src(name))
 
     def test_layer_does_not_import_business_modules(self):
         bad = []
@@ -238,10 +257,11 @@ class ProtocolLayerTest(unittest.TestCase):
                                  "协议层出现了安全判定（应由 policy 注入）")
         # 注入契约在位：白名单与 WAF 判定都经 policy 调用
         self.assertRegex(src, r"policy\.require_trusted\(")
-        self.assertRegex(src, r"policy\.require_fyiban\(")
         self.assertRegex(src, r"policy\.require_not_blocked\(")
         self.assertRegex(src, r"policy\.is_blocked\(")
-        self.assertRegex(src, r"allow_url=policy\.allow_fyiban_url")
+        # 挑战：检测委托 vendored 库，命中即用常量响亮失败（不再求解、不再注入白名单）
+        self.assertRegex(src, r"fyiban_waf\.looks_like_challenge\(")
+        self.assertRegex(src, r"raise RuntimeError\(fyiban_waf\.CHALLENGE_DETECTED_MESSAGE\)")
 
     def test_protocol_layer_has_no_own_session_persistence(self):
         """会话缓存只能经 session_store 注入：协议层不得自己碰库或状态文件。"""
