@@ -71,6 +71,20 @@ class SweepPolicyTest(unittest.TestCase):
         self.assertEqual(removed, len(expired), detail)
         self.assertEqual(sorted(os.listdir(self.tmp)), [])
 
+    def test_run_sh_markers_follow_snapshot_retention(self):
+        """run.sh 的两个按日标记（触发/收尾，bash 写入）按 snapshot 档清理、保留期内不动。"""
+        self._touch("yiban-run-today-%s.marker" % _day(-30))
+        self._touch("yiban-settled-%s.marker" % _day(-30))
+        removed, detail = state_gc.sweep(self.tmp)
+        self.assertEqual(removed, 2, detail)
+        self.assertEqual(sorted(os.listdir(self.tmp)), [])
+        # 保留期内（默认 snapshot 7 天）不得动
+        self._touch("yiban-run-today-%s.marker" % _day(-1))
+        self._touch("yiban-settled-%s.marker" % _day(0))
+        removed, detail = state_gc.sweep(self.tmp)
+        self.assertEqual(removed, 0, detail)
+        self.assertEqual(len(os.listdir(self.tmp)), 2)
+
     def test_recent_artifacts_are_kept(self):
         keep = [
             "sign-%s.log" % _day(0),
@@ -194,6 +208,8 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "verify-job-": "校验任务的线程名（不是文件）",
     "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups）——不在状态目录里，"
               "由 backup.sh 自己的 30 天保留策略轮转；backup_sentinel.py 只是读它的名字",
+    "sign-status-": "run.sh 的按日状态文件（sign-status-<日期>.txt，bash 写入、run.sh 自己"
+                    "读写做库内事实交叉核对）；属宿主脚本自有台账，本批未纳入 state_gc 清理策略",
     # 邮件排版层的 HTML 内联样式：扫描正则只看"引号 + 小写 token + '-' + 后接 {表达式}"，
     # 而 style="border-top:1px solid {_RULE}" 正好是这个形状——CSS 属性名，不是文件名。
     "border-": "layout.py 的 HTML 内联样式属性名（style=\"border-…: {常量}\"）",
@@ -215,23 +231,30 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     """
 
 
-    _NAME_RE = re.compile(r'["\']([a-z][a-z0-9-]*)-[^"\']*(?:\{[^}]*\}|%Y|YYYY)')
+    _NAME_RE = re.compile(
+        r'["\'](?:\$[A-Za-z_{][^"\'\n]*/)?([a-z][a-z0-9-]*)-[^"\'\n]*'
+        r'(?:\{[^}]*\}|\$\([^)]*\)|%Y|YYYY)'
+    )
 
     def _scan(self):
         found = {}
+        paths = []
         for root in ("scripts", "docker", "web", "yiban"):
             for dirpath, _dirs, files in os.walk(os.path.join(BASE, root)):
                 if "__pycache__" in dirpath:
                     continue
                 for name in files:
-                    if not name.endswith((".py", ".sh")):
-                        continue
-                    path = os.path.join(dirpath, name)
-                    with io.open(path, encoding="utf-8", errors="ignore") as f:
-                        src = f.read()
-                    for m in self._NAME_RE.finditer(src):
-                        found.setdefault(m.group(1) + "-", set()).add(
-                            os.path.relpath(path, BASE).replace("\\", "/"))
+                    if name.endswith((".py", ".sh")):
+                        paths.append(os.path.join(dirpath, name))
+        # run.sh（仓库根）不在上面的目录树里：bash 侧的按日文件名同样要核对
+        # （`$STATE_DIR/yiban-run-today-$(business_day).marker` 等）
+        paths.append(os.path.join(BASE, "run.sh"))
+        for path in paths:
+            with io.open(path, encoding="utf-8", errors="ignore") as f:
+                src = f.read()
+            for m in self._NAME_RE.finditer(src):
+                found.setdefault(m.group(1) + "-", set()).add(
+                    os.path.relpath(path, BASE).replace("\\", "/"))
         return found
 
     def test_new_daily_file_must_be_registered(self):
