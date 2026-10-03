@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { api, errorMessage, toast } from "../lib/shell";
 import {
+  adminToPlaceholder,
   collectSmtps,
   driftPlaceholder,
   mailBody,
@@ -269,7 +270,7 @@ defineExpose({
       <p class="field-help" id="sn-status">{{ isMaster ? pushStatus : "仅主管理员可配置消息推送" }}</p>
       <p class="set-tip" :class="{ 'set-bad': pushTip.bad }" id="sn-tip" role="status">{{ pushTip.text }}</p>
       <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="sn-save" :hidden="!pushDirty" @click="savePush()">保存推送配置</button>
+        <button type="button" class="btn btn--primary btn--sm" id="sn-save" :disabled="!pushDirty || !isMaster" @click="savePush()">保存推送配置</button>
         <button type="button" class="btn btn--ghost btn--sm" id="sn-test" :disabled="!isMaster" @click="testPush">发送测试消息</button>
       </div>
     </section>
@@ -293,7 +294,7 @@ defineExpose({
       <div class="field">
         <label class="field-label" for="sm-to">告警收件人</label>
         <div class="input-group">
-          <input id="sm-to" v-model="mailForm.adminTo" class="input" type="text" maxlength="320" autocomplete="off" :placeholder="String(mailData.admin_to || 'admin@example.com')" :disabled="!isMaster" @input="onMailChange" />
+          <input id="sm-to" v-model="mailForm.adminTo" class="input" type="text" maxlength="320" autocomplete="off" :placeholder="adminToPlaceholder(mailData)" :disabled="!isMaster" @input="onMailChange" />
           <span class="addon">邮箱</span>
         </div>
         <p class="field-help">多个用英文逗号分隔；留空 = 不改动，清空走下方「清空收件人」。</p>
@@ -345,7 +346,7 @@ defineExpose({
       </div>
       <p class="set-tip" :class="{ 'set-bad': mailTip.bad }" id="sm-tip" role="status">{{ mailTip.text }}</p>
       <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="sm-save" :hidden="!mailDirty" @click="saveMail()">保存邮件配置</button>
+        <button type="button" class="btn btn--primary btn--sm" id="sm-save" :disabled="!mailDirty || !isMaster" @click="saveMail()">保存邮件配置</button>
         <span class="spacer" />
         <button type="button" class="btn btn--ghost btn--sm" id="sm-to-clear" :hidden="!hasTo || !isMaster" @click="clearMail">清空收件人</button>
       </div>

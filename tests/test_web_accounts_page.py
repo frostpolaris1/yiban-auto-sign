@@ -181,6 +181,22 @@ class AccountsPageTest(unittest.TestCase):
 
     # ---- PII 出口面（展示侧） ----
 
+    def test_row_menu_returns_focus_to_trigger_on_close(self):
+        """行菜单关闭时若焦点在菜单内，必须交还触发器（ARIA APG menu button 模式）。
+
+        行菜单 portal 到 body，关闭时被移回 display:none 的 .dd-wrap；仍持焦点的菜单项
+        随之隐藏 → 焦点跌回 <body>，键盘用户失去位置。修法：restoreMenu 在摘类/搬家**之前**
+        判断 activeElement 是否在菜单内，是则把焦点交还 [data-dropdown] 触发器。
+        """
+        js = _read(ROW_MENU_JS)
+        start = js.index("function restoreMenu()")
+        body = js[start:js.index("\n    }", start)]
+        self.assertIn("activeElement", body, "restoreMenu 不看焦点位置，关闭后焦点跌回 body")
+        self.assertIn('querySelector("[data-dropdown]")', body, "restoreMenu 未取回触发器")
+        self.assertIn(".focus()", body, "restoreMenu 未把焦点交还触发器")
+
+    # ---- PII 出口面（展示侧） ----
+
     def test_component_never_binds_full_phone_into_dom(self):
         """完整手机号只存内存 fullPhone、只进请求体；模板不得把它绑进 DOM。"""
         src = _read(ACCOUNTS_VUE)

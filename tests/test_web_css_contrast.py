@@ -784,5 +784,50 @@ class AnnouncementUnreadStateTest(unittest.TestCase):
                           f"{rel} 缺数字徽标挂点（未读只有颜色一个载体）")
 
 
+class Phase3PortGuardTest(unittest.TestCase):
+    """phase3 实装批四条组件卫生守卫在 Vue 线的等价物（A21）。
+
+    目标源改成**现役** app.css（Vue 线未做三层拆分）与 frontend/src。四条里两条
+    已有等价守卫、不重复：危险按钮消费令牌见 BatchDControlOutlineTest
+    （`.btn--danger-ghost` 走 --danger-border / --state-bad-fg、无裸十六进制），
+    骨架不得挂回页祖先见 SkeletonScopeTest。此处补另两条：
+
+    · toast 变体名一致：core.js 的 `toast.error()` 产出的是 `.toast--error`
+      （32 个调用点），CSS 必须给它危险色并与历史 `.toast--danger` 并列；
+      缺了它错误提示渲染成基类的灰边 + 近黑图标（A4 的回退守卫）。
+    · `.state-line--flash` 的 300ms 淡出必须被 prefers-reduced-motion 关断 ——
+      它是 transition 不是 animation，第 14 节的动画关断块收不到（B9/A21）。
+    """
+
+    def test_toast_error_variant_exists(self):
+        css = _strip_comments(_read(APP_CSS))
+        for cls in (".toast--error", ".toast--danger"):
+            self.assertTrue(
+                _rule_bodies(css, cls),
+                f"找不到 {cls} 规则 —— core.js 生成的是 .toast--error，"
+                "缺了它会掉回基类的灰边 + 近黑图标",
+            )
+        self.assertTrue(
+            re.search(r"\.toast--error[^{]*\{[^}]*border-left-color", css),
+            ".toast--error 缺 border-left-color 覆盖（危险色会掉成基类的灰边）",
+        )
+        self.assertTrue(
+            re.search(r"\.toast--error \.toast__icon[^{]*\{[^}]*color", css),
+            ".toast--error .toast__icon 缺 color 覆盖（图标会掉成基类的近黑色）",
+        )
+
+    def test_state_line_flash_disabled_under_reduced_motion(self):
+        css = _strip_comments(_read(APP_CSS))
+        blocks = _media_bodies(
+            css, r"@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{")
+        hit = [b for b in blocks
+               if re.search(r"\.state-line--flash\s*\{[^}]*transition\s*:\s*none", b)]
+        if not hit:
+            self.fail(
+                "`.state-line--flash` 未在任何 prefers-reduced-motion 块里关断为 "
+                "transition: none；就地结果行的淡出会无视用户的减动效偏好。"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,7 @@
     "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DF6IrRRi.js",
     "link rel=modulepreload href=/static/vue/assets/rolldown-runtime-CbXtAM7H.js",
     "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
-    "script src=/static/vue/assets/dashboard-DRHWN1h0.js"
+    "script src=/static/vue/assets/dashboard-DUVvq3_r.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
@@ -54,7 +54,7 @@
     "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DF6IrRRi.js",
     "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
     "link rel=modulepreload href=/static/vue/assets/accountform-FKUA5_zG.js",
-    "script src=/static/vue/assets/myaccounts-B7m0Y9E2.js"
+    "script src=/static/vue/assets/myaccounts-C4lSsnRc.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
@@ -72,6 +72,6 @@
     "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DF6IrRRi.js",
     "link rel=modulepreload href=/static/vue/assets/rolldown-runtime-CbXtAM7H.js",
     "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
-    "script src=/static/vue/assets/calendar-KX_NqVn1.js"
+    "script src=/static/vue/assets/calendar-DZAxhSmT.js"
   ]
 }

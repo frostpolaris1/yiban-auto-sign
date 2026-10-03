@@ -132,8 +132,11 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.goto("/data/dashboard");
   await expect(page.locator("#dashboard-root")).toBeVisible();
 
-  await expect(page.locator("#kpi-accounts-value")).toContainText("2");
-  await expect(page.locator("#kpi-users-sub")).toContainText("剩余注册名额 499");
+  // 种子：今天 13800138001 先 success 后 failed → 当日终态为失败、账号数 1（账号口径）。
+  // 两张 KPI 已从「活跃账号 / 注册用户」（与下方容量卡同源同数）换成今日成功/失败账号。
+  await expect(page.locator("#kpi-accounts-value")).toHaveText("0"); // 今日成功账号
+  await expect(page.locator("#kpi-users-value")).toHaveText("1"); // 今日失败账号
+  await expect(page.locator("#kpi-users-sub")).toContainText("按账号统计");
   await expect(page.locator("#kpi-rate-value")).toContainText("50.0");
   await expect(page.locator("#kpi-rate-sub")).toContainText("成功 1 · 失败 1");
   await expect(page.locator("#kpi-rate-pill")).toContainText("无昨日对比");
@@ -319,13 +322,14 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.locator("#ss-gap")).toHaveValue("10");
   await expect(page.locator(".time-pair")).toContainText("06:30 至 07:50");
 
-  // ③ 显式保存语义：改动只标脏 + 出现保存按钮，未点保存**不落盘**
+  // ③ 显式保存语义：改动只标脏 + 保存按钮**常驻**（无改动时禁用，不再隐藏），未点保存**不落盘**
   await expect(page.locator("#ss-dirty")).toBeHidden();
-  await expect(page.locator("#ss-save")).toBeHidden();
+  await expect(page.locator("#ss-save")).toBeVisible();
+  await expect(page.locator("#ss-save")).toBeDisabled();
   await page.fill("#ss-gap", "11");
   await page.locator("#ss-gap").blur(); // 数字框改动在 blur(change) 才标脏——模拟真实用户离开字段
   await expect(page.locator("#ss-dirty")).toBeVisible();
-  await expect(page.locator("#ss-save")).toBeVisible();
+  await expect(page.locator("#ss-save")).toBeEnabled();
   // 脏状态下切换分区 → 未保存改动守卫（保存并继续 / 放弃修改 / 取消）；取消后留在原分区
   await page.getByRole("tab", { name: "公告", exact: true }).click();
   const dirtyGuard = page.locator(".pm-backdrop").first();

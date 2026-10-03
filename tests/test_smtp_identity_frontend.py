@@ -55,8 +55,10 @@ def _extract_function(src, name):
     raise AssertionError("花括号未配对：" + name)
 
 
-# 纯函数依赖链：smtpRowsFrom → smtpRowId → newSmtpId；collectSmtps → clean；driftPlaceholder 独立。
-_MAIL_FUNCS = ("clean", "newSmtpId", "smtpRowId", "smtpRowsFrom", "collectSmtps", "driftPlaceholder")
+# 纯函数依赖链：smtpRowsFrom → smtpRowId → newSmtpId + sentinelText（哨兵归一）；
+# collectSmtps → clean；driftPlaceholder 独立。
+_MAIL_FUNCS = ("clean", "sentinelText", "newSmtpId", "smtpRowId", "smtpRowsFrom",
+               "collectSmtps", "driftPlaceholder")
 
 _MAIL_HARNESS = r"""
 var OUT = {};

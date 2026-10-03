@@ -151,7 +151,7 @@ defineExpose({ isDirty: () => dirty.value, save });
     </div>
     <p class="set-tip" :class="{ 'set-bad': tip.bad }" id="set-cap-tip" role="status">{{ tip.text }}</p>
     <div class="form-actions">
-      <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" :hidden="!dirty || !isMaster" @click="save()">保存容量上限</button>
+      <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" :disabled="!dirty || !isMaster" @click="save()">保存容量上限</button>
     </div>
   </section>
 

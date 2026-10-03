@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  adminToPlaceholder,
   applyMu,
   applySgBounds,
   applySgScale,
@@ -31,6 +32,7 @@ import {
   scheduleFormSnapshot,
   scheduleSnapshot,
   scheduleWarnText,
+  sentinelText,
   sigmaFactor,
   smtpRowsFrom,
   switchesBody,
@@ -263,6 +265,26 @@ describe("邮件 / SMTP", () => {
   it("mailStatusText：发信清单为空时必须说破", () => {
     expect(mailStatusText({ enabled: true, user: "u", admin_to: "a***@x", smtps: [] }))
       .toContain("无发信 SMTP，告警邮件一封都发不出去");
+  });
+
+  it("哨兵 <未配置> 不上屏：状态行与收件人 placeholder 都归一（A9）", () => {
+    // sentinelText 只剥前导 "<"；打码串是要展示的，不碰
+    expect(sentinelText("<未配置>")).toBe("");
+    expect(sentinelText("a***@x")).toBe("a***@x");
+    // 状态行：admin_to / user 为哨兵时写「未配置」，而不是把 <未配置> 当文案
+    const st = mailStatusText({ enabled: true, user: "<未配置>", admin_to: "<未配置>", smtps: [{ host: "a.io" }] });
+    expect(st).toContain("告警收件 未配置");
+    expect(st).toContain("发件 未配置");
+    expect(st).not.toContain("<");
+    // placeholder：已配置给打码真值，未配置给可读引导
+    expect(adminToPlaceholder({ admin_to: "a***@x.com" })).toBe("a***@x.com");
+    expect(adminToPlaceholder({ admin_to: "<未配置>" })).toBe("尚未配置，填写管理员邮箱");
+    expect(adminToPlaceholder({})).toBe("尚未配置，填写管理员邮箱");
+  });
+
+  it("driftPlaceholder：SMTP 发件账号的哨兵也不上屏", () => {
+    const row = { host: "a.io", port: 465, user0: "", has_pass: false, pass: "" };
+    expect(driftPlaceholder(row, "a.io", 465).user).toBe("留空沿用");
   });
 
   it("mailBody 只在 tableDirty 时提交 smtps", () => {

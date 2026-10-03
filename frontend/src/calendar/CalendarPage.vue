@@ -261,11 +261,12 @@ onMounted(async () => {
       </template>
     </div>
 
-    <!-- 右侧：签到记录面板（常驻，保证"日志显示区"始终可见；宽屏两栏等高） -->
+    <!-- 右侧：记录面板（常驻，保证"日志显示区"始终可见；宽屏两栏等高）。
+         空态用全站统一 .empty 构件（§12 空状态），不再自造 .sc-empty（图标/字号与别页不一致）。 -->
     <section v-if="showLog" ref="logCard" class="card col-6 sc-log-card" data-sc-log-card>
       <div class="panel-head">
         <div class="panel-head-row">
-          <h2 class="panel-title">签到记录</h2>
+          <h2 class="panel-title">记录</h2>
         </div>
         <p class="panel-sub" data-sc-log-date>{{ logDate }}</p>
       </div>
@@ -277,11 +278,11 @@ onMounted(async () => {
         :class="{ 'is-loading': logLoading, 'is-fresh': logFresh }"
       >
         <pre v-if="logKind === 'text'" class="log-view sc-log-text">{{ logText }}</pre>
-        <p v-else class="sc-empty">
-          <span class="sc-empty-icon" aria-hidden="true"><svg><use href="#i-calendar" /></svg></span>
-          <span>{{ logEmptyMessage }}</span>
-          <span v-if="logKind === 'placeholder'" class="sc-empty-note">签到结果在每天调度后写入</span>
-        </p>
+        <div v-else class="empty">
+          <span class="empty__icon"><svg aria-hidden="true"><use href="#i-calendar" /></svg></span>
+          <span class="empty__msg">{{ logEmptyMessage }}</span>
+          <span v-if="logKind === 'placeholder'" class="empty__msg">签到结果在每天调度后写入</span>
+        </div>
       </div>
     </section>
 

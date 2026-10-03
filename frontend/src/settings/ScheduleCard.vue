@@ -309,7 +309,7 @@ defineExpose({ isDirty: () => dirty.value, save });
     <p class="set-tip" :class="{ 'set-bad': tip.bad }" id="ss-tip" role="status">{{ tip.text }}</p>
 
     <div class="form-actions is-sticky">
-      <button type="button" class="btn btn--primary btn--sm" id="ss-save" :hidden="!dirty" :disabled="saving" @click="save()">保存调度设置</button>
+      <button type="button" class="btn btn--primary btn--sm" id="ss-save" :disabled="!dirty || saving" @click="save()">保存调度设置</button>
       <span class="spacer" />
       <button type="button" class="btn btn--ghost btn--sm" id="ss-reset" :disabled="!isMaster || saving" @click="reset">恢复默认调度</button>
     </div>
