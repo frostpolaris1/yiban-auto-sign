@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """**功能**
-易班**协议步骤**：登录握手与签到两接口的请求构造与响应解析。
+易班**协议步骤**：登录握手与签到两接口的请求**编排**（端点、顺序、请求形态与会话簿记）。
 
-**衍生声明**：本文件中的端点、参数名与取值、页面正则、RSA 编码方式与握手顺序
-来自上游 `onefeifan/fyiban`（AGPL-3.0）及其同源实现 KillYiBan，逐块对照见同目录
-`PROVENANCE.md`。
+**核心换核（B'）**：授权页解析、usersure 表单构造、verify_request 提取、签到体构造这些
+**纯解析/构造**已下沉到 vendored 洁净室库 `yiban/_vendor/yiban_protocol`（MIT；来源、
+版本与同步纪律见 `yiban/_vendor/VENDORED.md`）。本文件只保留**编排层**——请求顺序、端点、
+注入策略与重试/会话语义——即 TASK-C《六跳链路实拍契约》的实现：
+`oauth.yiban.cn/code/html` → `/code/usersure` → `f.yiban.cn/iframe/index` →
+`api.uyiban.com/base/c/auth/yiban` → `.../signPosition` → `.../signIn`。
 
 **归属**
 `yiban/fyiban/` 第三方隔离层的协议模块（"平台要求怎么做"的知识），**不含**本项目
@@ -15,30 +18,36 @@
 - 会话缓存（我们减少登录频率的手段，非上游概念）经 `session_store` 注入，
   未注入时即"不缓存"，本层不反向依赖 `yiban.store` / `yiban.client`。
 
-第三方层因此可以独立核对、替换或升级：换平台时实现本文件的端点与形状即可，
-安全策略与会话策略不必跟着重写。
-
 **复用**
 端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、`RequestPolicy` / `SessionStore`
-协议与登录/签到函数是隔离层的对外接口；`headers` / `waf` 两个同层子模块被本模块复用。
+协议与登录/签到函数是隔离层的对外接口；解析与构造一律委托
+`yiban._vendor.yiban_protocol`，本文件不得再内联一份正则或表单字段表。
 
 **通信**
 输入：`requests.Session`、注入的 `policy` 与 `session_store`、账号/密码与点位参数。
 输出：签到结果与会话；每一步跳转都过 `policy.require_*` 校验，本层不自算裁决。
-调用谁：`requests`、同层 `headers` / `waf`、注入的 `policy` / `session_store`。
+调用谁：`requests`、vendored `yiban_protocol`、同层 `waf`、注入的 `policy` / `session_store`。
 谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
 前端调用点：无直接调用点（隔离层）。
 """
-import json
 import logging
-import re
-from base64 import b64decode, b64encode
-from typing import Callable, NamedTuple, Protocol
-from urllib.parse import urlencode, urljoin
+from typing import NamedTuple, Protocol
+from urllib.parse import urljoin
 
-from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
+
+from yiban._vendor.yiban_protocol import (
+    ParseError,
+    SessionExpired,
+    build_sign_in_body,
+    build_usersure_form,
+    extract_verify_request,
+    parse_api_envelope,
+    parse_authorize_page,
+    parse_sign_position,
+)
+from yiban._vendor.yiban_protocol import crypto as _lib_crypto
 
 from . import headers as fyiban_headers
 from . import waf as fyiban_waf
@@ -64,30 +73,18 @@ REQUEST_TIMEOUT = 15
 #: 超过即视为重定向环，响亮失败而不是无限跟下去
 MAX_FINAL_AUTH_REDIRECTS = 5
 
-# 旧流程（Auto-Test 继承）的页面正则
-LEGACY_PAGE_USE_RE = re.compile(r"page_use ?= ?['|\"]([a-zA-Z0-9-_]+)['|\"]")
-LEGACY_KEY_RE = re.compile(r'id="key"\s+value="([^"]+)"')
-# KillYiBan（jsoup 等价）的页面正则
-KILLYIBAN_KEY_RE = re.compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"')
-KILLYIBAN_PAGE_USE_RE = re.compile(r"var page_use = '([^']+)'")
-# verify_request 取值：必须宽容——令牌可能位于 query 末位，若正则要求其后必跟 `&`
-# 就会取不到，导致全站性登录失败
-VERIFY_REQUEST_RE = re.compile(r"verify_request=([^&]+)&?")
-# KillYiBan 判断"已登录"的方式：OAuth 探针 302 落到 redirect_uri
+#: KillYiBan 判断"已登录"的方式：OAuth 探针 302 落到 redirect_uri
 LOGGED_IN_MARKER = "iapp7463"
+
+#: RSA-1024 公钥单次可加密的明文字节上限（PKCS#1 v1.5 填充开销 11 字节）
+_RSA1024_MAX_BYTES = 117
 
 
 class RequestPolicy(Protocol):
     """协议层需要的安全策略（实现见 `yiban/security.py::ProtocolPolicy`）。"""
 
-    #: 严格白名单判定函数，注入给挑战解析器（`fyiban.waf.solve_ydclearance`）
-    allow_fyiban_url: Callable[[str], bool]
-
     def require_trusted(self, url, site):
         """宽松白名单；不合格抛 RuntimeError（site 用于定位到具体协议步骤）。"""
-
-    def require_fyiban(self, url, site="ydclearance"):
-        """严格白名单（挑战页跳转目标）。"""
 
     def is_blocked(self, resp):
         """该响应是否被 WAF 风控拦截（返回布尔，不抛错）。"""
@@ -150,78 +147,43 @@ class SignResponse(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# 请求构造：把平台要求的字段拼成可发送的形状
+# 纯解析/构造：薄委托 vendored 洁净室库（本层不再内联正则与字段表）
 # ---------------------------------------------------------------------------
-def encrypt_password(password, public_key):
-    """RSA-1024 + PKCS1_v1_5 加密密码，返回 base64 密文（bytes，与 urlencode 兼容）。
+def encrypt_password(password, public_key_pem):
+    """RSA-1024 + PKCS1_v1_5 加密密码，返回 base64 密文（str，与 urlencode 兼容）。
 
-    上游直接 `cipher.encrypt(密码)`；本项目在**发送前**加了一道长度守卫：RSA-1024
-    公钥单次最多 117 字节，超长时 pycryptodome 会抛难以理解的底层异常，这里换成
-    可执行的处置建议（见 `PROVENANCE.md` 的"本地差异"）。
+    委托 `yiban_protocol.crypto.encrypt_password`（输入 PEM 文本）。本项目保留发送前的
+    长度守卫：RSA-1024 单次最多 117 字节，超长时库底层的 pycryptodome 异常难以理解，
+    这里换成可执行的处置建议（`PROVENANCE.md` 的"本地差异"）。
     """
-    if len(password) > 117:
+    if isinstance(password, (bytes, bytearray)):
+        # 客户端以 bytearray 持有密码（可原位清零），库接口要求 str：此处产生一份
+        # 短暂不可变副本，尝试结束后由 YibanClient._wipe_credentials 覆写 bytearray 本体。
+        password = bytes(password).decode("utf-8")
+    if len(password) > _RSA1024_MAX_BYTES:
         raise ValueError(
             "密码过长: RSA-1024 公钥单次最多加密 117 字节（约 39 个中文字符），"
             "当前密码无法加密提交，请缩短密码或联系管理员处理"
         )
-    # bytes(...) 产生一个短暂不可变副本（pycryptodome 接口要求），交由 GC 回收；
-    # 可清零的 bytearray 本体在尝试结束后由 YibanClient._wipe_credentials 原位覆写
-    return b64encode(PKCS1_v1_5.new(public_key).encrypt(bytes(password)))
+    return _lib_crypto.encrypt_password(password, public_key_pem)
 
 
 def parse_login_page(text, *, flow):
-    """解析登录页，返回 `(page_use, 公钥)`；缺失任一即返回 `(None, None)`。
+    """解析授权页，返回 `(page_use, RSA 公钥对象)`；缺失/损坏一律 `(None, None)`。
 
-    两条流程的页面结构不同（旧流程用 `page_use = '…'` + `id="key" value="…"`；
-    KillYiBan 用 `var page_use = '…'` + `<input … id="key" …>`），密钥的装载方式
-    也不同——KillYiBan 的 key 带 PEM 头尾，需剥掉后按 X509 解码。
-
-    key 命中但损坏（base64/DER 解析失败）与"没命中"同价：一并返回 `(None, None)`，
-    由调用方已有的 `page_use is None` 分支落诊断日志——底层异常（binascii.Error
-    是 ValueError 子类）不得越过本函数的返回契约。
+    委托 vendored `parse_authorize_page`（严格靠 `id="key"` 定位公钥、`var page_use = …`
+    取一次性令牌）。`flow` 仅为兼容既有调用签名保留：两条登录流程共用同一页面解析
+    契约，不再各持一份正则。key 命中但损坏（缺 PEM 头尾/非法 DER）与"没命中"同价返回
+    `(None, None)`——底层 `ParseError` 不得越过本函数的返回契约。
     """
-    if flow == "killyiban":
-        key_match = KILLYIBAN_KEY_RE.findall(text)
-        page_use_match = KILLYIBAN_PAGE_USE_RE.findall(text)
-        if not key_match or not page_use_match:
-            return None, None
-        try:
-            key = RSA.import_key(b64decode(
-                re.sub(r"\s+", "", key_match[0]
-                       .replace("-----BEGIN PUBLIC KEY-----", "")
-                       .replace("-----END PUBLIC KEY-----", ""))
-            ))
-        except (ValueError, TypeError):  # 损坏 key：解码/导入抛底层异常
-            return None, None
-        return page_use_match[0], key
-    key_match = LEGACY_KEY_RE.findall(text)
-    page_use_match = LEGACY_PAGE_USE_RE.findall(text)
-    if not page_use_match or not key_match:
+    try:
+        page = parse_authorize_page(text)
+    except ParseError:
         return None, None
     try:
-        key = RSA.importKey(key_match[0])
-    except (ValueError, TypeError):  # 损坏 key：导入抛底层异常
+        return page.page_use, RSA.import_key(page.public_key_pem)
+    except (ValueError, TypeError, IndexError):  # 损坏 key：导入抛底层异常
         return None, None
-    return page_use_match[0], key
-
-
-def usersure_form(phone, encrypted_password, *, scope, display):
-    """usersure 提交体（`scope`/`display` 是两条流程的唯一差异）。"""
-    return urlencode({
-        "oauth_uname": phone,
-        "oauth_upwd": encrypted_password,
-        "client_id": OAUTH_CLIENT_ID,
-        "redirect_uri": OAUTH_REDIRECT_URI,
-        "state": "",
-        "scope": scope,
-        "display": display,
-    })
-
-
-def extract_verify_request(location):
-    """从 302 的 Location 里取 verify_request 令牌（取不到返回 None）。"""
-    matched = VERIFY_REQUEST_RE.findall(location or "")
-    return matched[0] if matched else None
 
 
 def build_sign_info(lng, lat, address):
@@ -234,14 +196,61 @@ def build_sign_info(lng, lat, address):
     }
 
 
-def sign_in_form(phone_code, phone_model, sign_info, *, out_state):
-    """signIn 提交体（`out_state` 是两条流程的唯一差异：MINI_VERSION "1" vs "1.0"）。"""
-    return {
-        "Code": phone_code,
-        "PhoneModel": phone_model,
-        "SignInfo": json.dumps(sign_info, ensure_ascii=False),
-        "OutState": out_state,
-    }
+def _sign_in_body(phone_code, phone_model, sign_info, out_state):
+    """把 `sign_info` 字典还原为库 `build_sign_in_body` 的入参并构造提交体。
+
+    与观测流量逐字节同构的保证在库侧（键序 Reason/AttachmentFileName/LngLat/Address、
+    JSON 默认分隔符、整串 urlencode）。
+    """
+    lng_text, _, lat_text = str(sign_info.get("LngLat", "")).partition(",")
+    return build_sign_in_body(
+        lnglat=(float(lng_text), float(lat_text)),
+        address=str(sign_info.get("Address", "")),
+        out_state=out_state,
+        reason=str(sign_info.get("Reason", "")),
+        attachment_file_name=str(sign_info.get("AttachmentFileName", "")),
+        code=phone_code,
+        phone_model=phone_model,
+    )
+
+
+def _parse_api_body(resp):
+    """解析 uyiban API 信封；`code == 999` 翻译为"会话失效→重登"。
+
+    库 `parse_api_envelope` 的 `SessionExpired` 是本层唯一会引入的"会话已失效"信号，
+    适配层把它翻成既有引擎能识别的消息（含 `会话失效` 词元，落
+    `yiban.engine.attempts.SESSION_STALE_FAIL_KEYWORDS` 的会话陈旧档：清缓存后强制
+    真重登），不新造异常面。非 JSON 响应沿用 requests `.json()` 的既有报错口径
+    （"Expecting value…" 是 `security.HARD_FAIL_TOKENS` 的硬失败词元）。
+    """
+    try:
+        envelope = parse_api_envelope(resp.text)
+    except SessionExpired as exc:
+        raise RuntimeError("会话失效（上游 code=999），需重新登录") from exc
+    except ParseError:
+        return resp.json()
+    return envelope.raw
+
+
+def _validate_sign_position(data):
+    """成功信封里的签到配置过一次库解析（TASK-C §2[5] 契约）——结构不合即抛 ParseError。
+
+    只在"形状已足以进入客户端点位分支"时才解析：`code == 0`、`Position` 为非空数组、
+    顶层 `Range` 带 `StartTime/EndTime`。这样既不改变既有"缺 Range / 空 Position"的
+    容错分支，又让完整响应真实走库解析路径（含 `Range` 时间窗对象与 `IsNeedPhoto`）。
+    """
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return
+    data_obj = data.get("data")
+    if not isinstance(data_obj, dict):
+        return
+    positions = data_obj.get("Position")
+    if not isinstance(positions, list) or not positions:
+        return
+    rng = data_obj.get("Range")
+    if not isinstance(rng, dict) or "StartTime" not in rng or "EndTime" not in rng:
+        return
+    parse_sign_position(data_obj)
 
 
 # ---------------------------------------------------------------------------
@@ -276,12 +285,8 @@ def login_legacy(session, *, phone, password, csrf, policy):
 
     page_use, key = parse_login_page(resp.text, flow="legacy")
     if page_use is None:
-        # 诊断要看形状：最终 URL（query 已打码）、状态码、长度、前 300 字符、正则命中数
-        policy.log_response_diagnostics(
-            phone, resp, stage="OAuth 页解析失败",
-            hits={"page_use": len(LEGACY_PAGE_USE_RE.findall(resp.text)),
-                  "key": len(LEGACY_KEY_RE.findall(resp.text))},
-        )
+        # 诊断要看形状：最终 URL（query 已打码）、状态码、长度、前 300 字符
+        policy.log_response_diagnostics(phone, resp, stage="OAuth 页解析失败")
         raise RuntimeError("登录页面解析失败（page_use / RSA key 未找到），详见上方诊断日志")
     session.headers.update(Referer=resp.url, Origin="https://oauth.yiban.cn")
 
@@ -289,8 +294,10 @@ def login_legacy(session, *, phone, password, csrf, policy):
     resp = session.post(
         OAUTH_USERSURE_URL,
         params={"ajax_sign": page_use},
-        data=usersure_form(phone, encrypt_password(password, key),
-                           scope="1,2,3,4,", display="html"),
+        data=build_usersure_form(
+            phone, encrypt_password(password, key.export_key().decode("utf-8")),
+            OAUTH_CLIENT_ID, OAUTH_REDIRECT_URI, scope="1,2,3,4,", display="html",
+        ),
         allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )
@@ -313,19 +320,10 @@ def login_legacy(session, *, phone, password, csrf, policy):
     resp = session.get(reurl, allow_redirects=False, timeout=REQUEST_TIMEOUT)
 
     if fyiban_waf.looks_like_challenge(resp.text, resp.headers.get("Set-Cookie", "")):
-        # 纯 Python 解析挑战（不执行任何远程 JS），得出 cookie 与跳转路径。
-        # 白名单是**本项目**的安全策略，以参数注入解析器。
-        clearance = fyiban_waf.solve_ydclearance(
-            resp.text, allow_url=policy.allow_fyiban_url)
-        cookies = dict_from_cookiejar(session.cookies)
-        cookies["https_ydclearance"] = clearance[0]
-        session.cookies = cookiejar_from_dict(cookies)
-        session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
-        policy.require_fyiban(clearance[1])
-        resp = session.get(clearance[1], allow_redirects=False, timeout=REQUEST_TIMEOUT)
-        session.headers.update(Referer=resp.url)
-    else:
-        session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
+        # 既定裁决：不再尝试求解挑战（生产全历史零触发的求解器已删除）。命中即响亮失败；
+        # 文案含 "ydclearance" 词元 → 落不可重试硬失败档并联动清会话缓存。
+        raise RuntimeError(fyiban_waf.CHALLENGE_DETECTED_MESSAGE)
+    session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
 
     # 5. 获取 verify_request
     location = resp.headers.get("Location", "")
@@ -369,8 +367,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     - 入口直接打 `oauth.yiban.cn/code/html`（不先打 api.uyiban.com）；
     - usersure **不带 Referer/Origin**（原 App 传空 headers；带 Origin 会得 e001）；
     - `scope` 传空、`display` 传 "authorize"；
-    - 成功标志是 `code == "s200"`；
-    - 页面解析用 jsoup 等价正则，key 去掉 BEGIN/END 后按 X509 解码。
+    - 成功标志是 `code == "s200"`。
 
     `session_store` 提供时会先探活复用会话（少登录 = 少风控暴露面），未提供即不缓存。
     """
@@ -409,12 +406,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     # 2. 解析 RSA 公钥与 page_use
     page_use, key = parse_login_page(resp.text, flow="killyiban")
     if page_use is None:
-        policy.log_response_diagnostics(
-            phone, resp, stage="登录 OAuth 页解析失败",
-            hits={"key": len(KILLYIBAN_KEY_RE.findall(resp.text)),
-                  "page_use": len(KILLYIBAN_PAGE_USE_RE.findall(resp.text))},
-            advice=False,
-        )
+        policy.log_response_diagnostics(phone, resp, stage="登录 OAuth 页解析失败", advice=False)
         raise RuntimeError("登录: OAuth 页解析失败")
 
     # 3. 提交账号密码。usersure 必须不带 Origin/Referer 才返回 s200（带 Origin 会得
@@ -430,8 +422,10 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
             "X-Requested-With": None,
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         },
-        data=usersure_form(phone, encrypt_password(password, key),
-                           scope="", display="authorize"),
+        data=build_usersure_form(
+            phone, encrypt_password(password, key.export_key().decode("utf-8")),
+            OAUTH_CLIENT_ID, OAUTH_REDIRECT_URI, scope="", display="authorize",
+        ),
         allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )
@@ -504,14 +498,20 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
 # 签到链
 # ---------------------------------------------------------------------------
 def fetch_sign_position(session, csrf, policy):
-    """拉取签到任务（点位 + 时间窗）。返回 `SignResponse`。"""
+    """拉取签到任务（点位 + 时间窗）。返回 `SignResponse`。
+
+    信封 `code == 999` 经库 `SessionExpired` 翻译为会话失效（清缓存重登）；
+    成功信封里的配置过一次库解析（结构契约）。
+    """
     resp = session.get(
         SIGN_POSITION_URL, params={"CSRF": csrf},
         allow_redirects=False, timeout=REQUEST_TIMEOUT,
     )
     if policy.is_blocked(resp):
         return SignResponse(data=None, blocked=True)
-    return SignResponse(data=resp.json())
+    data = _parse_api_body(resp)
+    _validate_sign_position(data)
+    return SignResponse(data=data)
 
 
 def submit_sign_in(session, csrf, *, phone_code, phone_model, sign_info, out_state, policy):
@@ -519,10 +519,10 @@ def submit_sign_in(session, csrf, *, phone_code, phone_model, sign_info, out_sta
     resp = session.post(
         SIGN_IN_URL,
         params={"CSRF": csrf},
-        data=sign_in_form(phone_code, phone_model, sign_info, out_state=out_state),
+        data=_sign_in_body(phone_code, phone_model, sign_info, out_state),
         allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )
     if policy.is_blocked(resp):
         return SignResponse(data=None, blocked=True)
-    return SignResponse(data=resp.json())
+    return SignResponse(data=_parse_api_body(resp))
