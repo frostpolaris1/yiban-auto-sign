@@ -2952,6 +2952,8 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 
 /* 状态图例：图标 + 文本，颜色语义与表格状态列一致 */
 .acct-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0 0 12px; }
+/* 账号页 KPI 口径说明（.panel-sub 全局 margin:0，这里补下边距与前一块分开）。 */
+.acct-kpi-note { margin: 0 0 12px; }
 .acct-state { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; }
 .acct-state svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 .acct-state--ok { color: var(--state-ok-fg); }

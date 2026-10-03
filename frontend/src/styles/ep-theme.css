@@ -60,3 +60,16 @@
   --el-font-family: var(--font-sans);
   --el-font-size-base: 14px;
 }
+
+/* ---------- 开关「关」态轨道（WCAG 1.4.11 非文字 3:1） ----------
+ * EP 把 --el-switch-off-color 声明在 .el-switch **自身**（不是 :root），故上面那批
+ * :root 作用域的令牌映射够不到它：EP 默认值吃 --el-border-color（= --border，
+ * 浅 #E4E8EF 对白卡 1.23:1 / 深 #222C42 对深卡 1.23:1），关态轨道几乎看不见。
+ * 这里直接落到 .el-switch 上并复用 app.css §A3 的语义令牌 --switch-off-bg
+ * （浅 #868FA0 3.26:1、深 #64748B 3.60:1，且白滑块对其亦 ≥3:1），
+ * 主题切换由 :root 上的令牌值翻转。选择器带 :root[data-theme] 提升特异性，
+ * 防 EP 组件样式在打包序里排到本文件之后把覆盖反超。 */
+:root[data-theme="light"] .el-switch,
+:root[data-theme="dark"] .el-switch {
+  --el-switch-off-color: var(--switch-off-bg);
+}

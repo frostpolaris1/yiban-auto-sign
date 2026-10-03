@@ -26,6 +26,8 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_CSS = os.path.join(BASE, "web", "static", "css", "app.css")
 VENDOR_CSS = os.path.join(BASE, "web", "static", "vendor", "adminator", "adminator.css")
+#: Vue 线的 EP 主题映射（Element Plus 组件的观感入口）。
+EP_THEME_CSS = os.path.join(BASE, "frontend", "src", "styles", "ep-theme.css")
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 
 AA_NON_TEXT = 3.0  # WCAG 2.1 AA 非文字（图形/界面组件）阈值
@@ -185,6 +187,36 @@ class SwitchNonTextContrastTest(unittest.TestCase):
                 + "\n修法：`.switch .track { background: var(--switch-off-bg);"
                 " border-color: var(--switch-off-bg); }`"
             )
+
+
+class EpSwitchNonTextContrastTest(unittest.TestCase):
+    """Vue 线开关（Element Plus `el-switch`）关态轨道：WCAG 1.4.11。
+
+    上面 SwitchNonTextContrastTest 钉的是 legacy 自研 `.switch .track`；Vue 各页
+    （设置/通知/健康/Pilot）改用 EP `el-switch`，它的关态底色来自
+    `--el-switch-off-color`，而该变量在 EP 里声明在 `.el-switch` **自身**（非 :root），
+    `:root[data-theme]` 作用域的令牌映射够不到它 → 会回落 EP 默认的
+    `--el-border-color`（≈1.23:1，关态轨道看不见）。
+    故 ep-theme.css 必须把 `.el-switch` 的该变量落到语义令牌 --switch-off-bg。
+    """
+
+    def test_ep_switch_off_color_consumes_token(self):
+        self.assertTrue(os.path.exists(EP_THEME_CSS), f"缺 Vue 主题文件 {EP_THEME_CSS}")
+        css = _strip_comments(_read(EP_THEME_CSS))
+        hits = []
+        for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+            sels = [s.strip() for s in m.group(1).split(",")]
+            if not any(re.search(r"\.el-switch\b", s) for s in sels):
+                continue
+            if re.search(r"--el-switch-off-color\s*:\s*var\(\s*--switch-off-bg\s*\)", m.group(2)):
+                hits.append(m.group(1).strip())
+        self.assertTrue(
+            hits,
+            "ep-theme.css 未把 `.el-switch` 的 --el-switch-off-color 落到 --switch-off-bg —— "
+            "EP 会回落到 --el-border-color（对卡片约 1.23:1），Vue 线开关关态轨道不达 3:1。\n"
+            "修法：`:root[data-theme=\"light\"] .el-switch, :root[data-theme=\"dark\"] .el-switch "
+            "{ --el-switch-off-color: var(--switch-off-bg); }`",
+        )
 
 
 class SkeletonScopeTest(unittest.TestCase):
