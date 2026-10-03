@@ -294,6 +294,24 @@ describe("自选时间片视图 slotsView", () => {
     expect(v.meta[1]).toEqual(["最热门时段", "07:00（5 人）"]);
     expect(slotsView([])).toBeNull();
   });
+
+  it("全部 0 人时「最热门」无定义，回落破折号", () => {
+    const v = slotsView([
+      { label: "06:30", count: 0, cap: 10 },
+      { label: "07:00", count: 0, cap: 8 },
+    ]);
+    // 非空列表首片恒为 top；若不按 count>0 门控，会给出「06:30（0 人）」的假结论。
+    expect(v.meta[1]).toEqual(["最热门时段", "—"]);
+  });
+
+  it("存在正数片时仍取人数最多的那片", () => {
+    const v = slotsView([
+      { label: "06:30", count: 0, cap: 10 },
+      { label: "06:45", count: 2, cap: 8 },
+      { label: "07:00", count: 1, cap: 8 },
+    ]);
+    expect(v.meta[1]).toEqual(["最热门时段", "06:45（2 人）"]);
+  });
 });
 
 describe("签到热力图 calendarView", () => {

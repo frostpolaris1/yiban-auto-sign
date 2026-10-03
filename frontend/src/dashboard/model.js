@@ -392,7 +392,11 @@ export function slotsView(slots) {
     coverage: "共 " + slots.length + " 个可选时段",
     meta: [
       ["自选人数合计", num(total)],
-      ["最热门时段", top ? String(top.label || "") + "（" + num(top.count) + " 人）" : "—"],
+      // 「最热门」只在有人自选时成立：非空列表首片恒为 top（即使 count 全 0），
+      // 旧写法会给出「07:00（0 人）」这种没有定义的结论；count<=0 一律回落 "—"。
+      ["最热门时段", top && Number(top.count) > 0
+        ? String(top.label || "") + "（" + num(top.count) + " 人）"
+        : "—"],
     ],
   };
 }

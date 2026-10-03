@@ -173,7 +173,7 @@ async function save(): Promise<boolean> {
   return ok;
 }
 function reset(): void {
-  if (!props.isMaster) return;
+  if (!props.isMaster || saving.value) return;
   void confirmDialog({
     title: "恢复默认调度",
     body: "恢复为：窗口 06:30 ~ 07:50 · 掐头去尾各 1 分钟 · 排序顺序 · 分布均匀。\n（账号间隔与自选开关不在恢复范围，可点保存生效）",
@@ -186,6 +186,11 @@ function reset(): void {
     form.value.edgeBack = 1;
     form.value.windowStart = SCHEDULE_DEFAULTS.start;
     form.value.windowEnd = SCHEDULE_DEFAULTS.end;
+    // 恢复本身不落盘（与全站「改动需点保存」一致），但没有可见反馈会读成"点了没反应"，
+    // 故给就地文案；与保存成功共用 set-tip 载体，可区分"刚发生的事"。
+    tip.value = dirty.value
+      ? { text: "已恢复默认值，点「保存调度设置」后生效", bad: false }
+      : { text: "当前已是默认值", bad: false };
   });
 }
 
@@ -306,7 +311,7 @@ defineExpose({ isDirty: () => dirty.value, save });
     <div class="form-actions is-sticky">
       <button type="button" class="btn btn--primary btn--sm" id="ss-save" :hidden="!dirty" :disabled="saving" @click="save()">保存调度设置</button>
       <span class="spacer" />
-      <button type="button" class="btn btn--ghost btn--sm" id="ss-reset" :disabled="!isMaster" @click="reset">恢复默认调度</button>
+      <button type="button" class="btn btn--ghost btn--sm" id="ss-reset" :disabled="!isMaster || saving" @click="reset">恢复默认调度</button>
     </div>
   </section>
 </template>

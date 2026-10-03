@@ -330,7 +330,9 @@ async function pickSlot(slotMin: number): Promise<void> {
 }
 
 async function clearSlot(): Promise<void> {
-  if (prefBusy.value) return;
+  // 未选中任何时段时不清除：后端会无条件写一条 time_pref_clear 审计，旧写法还会弹
+  // 「已清除」= 假成功 + 无意义审计。按钮也在模板里同步 disabled。
+  if (prefBusy.value || timePref.value?.pref_slot == null) return;
   prefBusy.value = true;
   try {
     const data = await api<{ msg?: string }>("PUT", "/api/my-time-pref", { slot_min: null });
@@ -665,7 +667,7 @@ onMounted(async () => {
               </button>
             </div>
             <div class="form-actions pref-foot">
-              <button type="button" class="btn btn--ghost btn--sm" :disabled="prefBusy" @click="clearSlot">清除选择（恢复自动分配）</button>
+              <button type="button" class="btn btn--ghost btn--sm" :disabled="prefBusy || timePref.pref_slot == null" @click="clearSlot">清除选择（恢复自动分配）</button>
               <span class="panel-sub" aria-live="polite">{{ edgeTip(timePref, timePref.slots.findIndex((s) => s.slot_min === timePref.pref_slot), timePref.slots.length) }}</span>
             </div>
             <p v-if="!timePref.allowed" class="alert warning pref-hint">
