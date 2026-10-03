@@ -98,10 +98,9 @@ WAF_CHALLENGE_SET_COOKIE = "https_ydclearance=mock01clearance02; Path=/; Domain=
 def waf_challenge_body():
     """`waf` 旋钮的响应体：ydclearance 挑战页形态。
 
-    逐字对照 `yiban/fyiban/waf.py:looks_like_challenge` 的文本特征对；刻意
-    **不含**可被 `solve_ydclearance` 提取的挑战函数模板——真实改版/半页场景
-    最常触发的就是"识别成挑战但解析失败"，故障注入要喂给分类判据的正是这个
-    最难看的形状。
+    逐字对照 `yiban/fyiban/waf.py:looks_like_challenge` 的文本特征；刻意**不含**完整
+    可解挑战模板——真实改版/半页场景最常触发的就是"识别成挑战但无从求解"。求解器已按
+    既定裁决删除，检测命中即响亮失败，故故障注入喂的正是这个形状。
     """
     return (
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
@@ -512,21 +511,40 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
             super().send_response(code, message)
 
         def _send_position(self):
-            """签到链第 1 步：返回点位与宽松时间窗口（保证测试期永远在窗口内）。"""
+            """签到链第 1 步：返回点位与宽松时间窗口（保证测试期永远在窗口内）。
+
+            形状对齐 TASK-C §2[5] 的实拍契约（含 `Position[].Id/Type/Title/LngLat`、
+            顶层 `Range` 时间窗对象与数值 `IsNeedPhoto`），使换核后的库解析路径
+            （`parse_sign_position`）在 e2e 里被真实走到。
+            """
             now = int(time.time())
             self._send_json({
                 "code": 0,
                 "msg": "",
                 "data": {
                     "Msg": "",
+                    "AcsState": "off",
+                    "State": 0,
+                    "OutState": "on",
+                    "Remark": "",
+                    "FileUrl": "",
+                    "Type": "campus",
+                    "IsNeedPhoto": 2,
                     "Position": [{
+                        "Id": "mockpos0001",
+                        "Type": "campus",
+                        "Title": "MockTask",
                         "Name": "MockTask",
                         "Address": "MockAddr",
+                        "LngLat": "121.45,31.25",
+                        "Range": 70,
+                        "MapType": 2,
                         "Points": ["121.40,31.20", "121.50,31.20",
                                    "121.50,31.30", "121.40,31.30"],
                     }],
                     # 前后各留 1 小时，短窗口压测也不会因跨秒被判窗口外
-                    "Range": {"StartTime": now - 3600, "EndTime": now + 3600},
+                    "Range": {"StartTime": now - 3600, "EndTime": now + 3600,
+                              "SignDay": 0, "RelatType": 0, "RelatTimeType": 0},
                 },
             })
 

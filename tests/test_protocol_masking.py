@@ -76,7 +76,7 @@ class _ScriptedSession:
 def _legacy_page(key_value):
     return (
         '<input type="hidden" id="key" value="%s">'
-        "<script>page_use = 'pageuse12345';</script>"
+        "<script>var page_use = 'pageuse12345';</script>"
     ) % key_value
 
 
