@@ -107,6 +107,10 @@ const accounts = ref<AccountRecord[]>([]);
 const states = ref<Record<string, string>>({});
 const stateMsgs = ref<Record<string, string>>({});
 const stateDurs = ref<Record<string, number | null>>({});
+// 「自选」列按后端能力探测隐藏：YIBAN_ALLOW_TIME_PREF 默认 0 时整列恒「—」，
+// 留着只会让用户以为功能坏了。口径与用户端横幅同一来源（/api/me 的 time_pref_allowed）。
+const me = ref<{ time_pref_allowed?: boolean } | null>(null);
+const timePrefOn = computed(() => me.value?.time_pref_allowed === true);
 const tab = ref("pending");
 const search = ref<Record<string, string>>({ pending: "", active: "", deleted: "" });
 const sel = ref<Record<string, Record<string, boolean>>>({ pending: {}, active: {}, deleted: {} });
@@ -473,7 +477,7 @@ onMounted(async () => {
     mq.addEventListener("change", onBreak);
   }
   try {
-    await api("GET", "/api/me");
+    me.value = await api<{ time_pref_allowed?: boolean }>("GET", "/api/me");
   } catch {
     window.location.href = shellBase() + "/login";
     return;
@@ -583,6 +587,12 @@ const M = {
             </article>
           </section>
 
+          <!-- 口径说明：账号页 KPI 与数据看板「今日成功/失败/跳过」同名但分母不同
+               （此处=账号数、当日终态每账号计一次；看板=事件/尝试数，重试各算一次）。 -->
+          <p v-if="g === 'pending'" class="panel-sub acct-kpi-note" id="acct-kpi-note">
+            口径：按<strong>账号</strong>统计（当日最终状态，每账号计一次）；与数据看板的「事件」口径不同。
+          </p>
+
           <p
             v-if="g === 'pending'"
             class="alert warning acct-pending-tip"
@@ -610,12 +620,18 @@ const M = {
 
             <div :id="g + '-body'" class="collapse-body is-open">
               <div class="collapse-inner">
-                <p v-if="g === 'active'" class="acct-legend" aria-hidden="true">
+                <!-- 状态图例：与 model.js 的 STATE_ICON 真实图标集**一比一**（8 项），
+                     不再合成「重试/跳过」「无需/已取消」而漏掉 ban/circle-pause/circle-stop。
+                     原实现带 aria-hidden="true"，读屏拿不到状态含义，故去掉。 -->
+                <p v-if="g === 'active'" class="acct-legend">
                   <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-clock" /></svg>待签</span>
                   <span class="acct-state acct-state--ok"><svg aria-hidden="true"><use href="#i-circle-check" /></svg>成功</span>
                   <span class="acct-state acct-state--bad"><svg aria-hidden="true"><use href="#i-circle-x" /></svg>失败</span>
-                  <span class="acct-state acct-state--warn"><svg aria-hidden="true"><use href="#i-refresh-cw" /></svg>重试/跳过</span>
-                  <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-circle-minus" /></svg>无需/已取消</span>
+                  <span class="acct-state acct-state--warn"><svg aria-hidden="true"><use href="#i-refresh-cw" /></svg>重试中</span>
+                  <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-circle-minus" /></svg>无需签到</span>
+                  <span class="acct-state acct-state--warn"><svg aria-hidden="true"><use href="#i-ban" /></svg>跳过</span>
+                  <span class="acct-state acct-state--bad"><svg aria-hidden="true"><use href="#i-circle-pause" /></svg>账密暂停</span>
+                  <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-circle-stop" /></svg>用户取消</span>
                 </p>
 
                 <div class="acct-batch" :id="GROUPS[g].bar" role="status" aria-live="polite" :hidden="selCount(g) === 0">
@@ -665,7 +681,7 @@ const M = {
                         <th scope="col" class="acct-cell-name">名称</th>
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
-                        <th scope="col" class="acct-col-lg">设备型号</th><th scope="col" class="acct-col-xl">自选</th>
+                        <th scope="col" class="acct-col-lg">设备型号</th><th v-if="timePrefOn" scope="col" class="acct-col-xl">自选</th>
                         <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
                         <th scope="col">审核</th><th scope="col" class="acct-cell-actions">操作</th>
                       </tr>
@@ -737,7 +753,7 @@ const M = {
                           <td class="acct-cell-phone">{{ row.phone }}</td>
                           <td class="acct-cell-lastexec acct-col-lg">{{ M.lastExecText(row) }}</td>
                           <td class="acct-cell-model acct-col-lg">{{ row.phone_model || "—" }}</td>
-                          <td class="acct-cell-pref acct-col-xl">{{ M.prefText(row) }}</td>
+                          <td v-if="timePrefOn" class="acct-cell-pref acct-col-xl">{{ M.prefText(row) }}</td>
                           <td class="acct-cell-owner acct-col-md">{{ M.ownerText(row) }}</td>
                           <td class="acct-cell-audit"><span class="badge" :class="'badge--' + M.badgeOf(row.status).tone">{{ M.badgeOf(row.status).label }}</span></td>
                         </template>
