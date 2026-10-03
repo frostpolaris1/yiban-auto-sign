@@ -375,7 +375,7 @@ def settings_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
+    return _render_vue_page("settings.html", "pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
 
 
 def my_account_page():

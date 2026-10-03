@@ -132,7 +132,12 @@ def main():
     (tmp / "state").mkdir()
     (tmp / ".env").write_text(
         f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
-        f"YIBAN_ADMIN_USER={ADMIN_USER}\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n",
+        f"YIBAN_ADMIN_USER={ADMIN_USER}\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+        # 敏感口令门禁固定为 full：默认 risk 档下"同出口免口令"会把 A 档保存的口令门整段
+        # 跳过（登录已写 login_ip=127.0.0.1，判为"没换环境"），e2e 就测不到"保存弹口令"这条
+        # 页面行为。full 档让每次受门禁写都确定性要求当次口令——只有设置页 e2e 段做受门禁
+        # 写操作，故对其它用例无副作用。
+        f"YIBAN_PW_GATE=full\n",
         encoding="utf-8",
     )
     (tmp / "accounts.json").write_text(json.dumps([]), encoding="utf-8")

@@ -45,19 +45,16 @@ NODE = shutil.which("node")
 
 PW_INPUT = "MasterPass#2026"
 
-# 受门禁写操作所在组件：每个都必须经统一 helper，不得再自带无条件口令框管道
-_GATED_COMPONENTS = (
-    "settings-executors.js",
-    "settings-mail.js",
-    "settings-notify.js",
-    "settings-health.js",
-    "settings-quota.js",
-    "settings-schedule.js",
-    "settings-switches.js",
-)
+# 受门禁写操作所在组件：每个都必须经统一 helper，不得再自带无条件口令框管道。
+# 2026-10-03：设置页整页迁到 Vue 后，七个 settings-*.js 全部退役，写链收进
+# frontend/src/settings/ops.js（见下方 _GATED_VUE），故本清单清空。
+_GATED_COMPONENTS = ()
 # Vue 栈的受门禁落点（写凭据门禁、主管理员邮件关门禁）：判据是 `dangerousSubmit(`——
 # Vue 侧 import 后直呼，不带 `YB.` 前缀。
 _GATED_VUE = (
+    # 设置页写链（调度/容量/健康/推送/邮件/公告/开关/执行体）全在 ops.js：纯 JS + window.YB，
+    # 由本文件的 ExecutorSaveCancelTest / MailClearAdminToTipTest 抽出函数真跑 / 钉点。
+    "frontend/src/settings/ops.js",
     "frontend/src/myaccounts/MyAccounts.vue",
     # 用户管理页的写操作链路迁到新栈（P3）：**刻意保持纯 JS + 直读 window.YB**
     # （tests/test_users_exit_surface_frontend.py 把本文件整段放进 node 真跑，钉 MF-49
@@ -603,7 +600,8 @@ class ExecutorSaveCancelTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.src = _read(os.path.join(COMPONENTS, "settings-executors.js"))
+        # 设置页迁到 Vue 后，执行体的多段提交收尾住在 frontend/src/settings/ops.js
+        self.src = _read(os.path.join(BASE, "frontend", "src", "settings", "ops.js"))
 
     def test_cancel_branch_routes_to_dedicated_handler(self):
         self.assertIn("if (e && e.canceled) return canceledAfter(e);", self.src,
@@ -666,7 +664,7 @@ __FUNC__
 
 
 def _run_mail_clear():
-    src = _read(os.path.join(COMPONENTS, "settings-mail.js"))
+    src = _read(os.path.join(BASE, "frontend", "src", "settings", "ops.js"))
     # finish 一并抽出来：清空路径复用它收尾，只抽 clearAdminTo 会测不到"提示落在重载之后"
     funcs = "\n\n".join(
         _extract_function(src, name) for name in ("finish", "clearAdminTo"))
@@ -750,8 +748,9 @@ class GatedCallSitesTest(unittest.TestCase):
         account_ops = _read(os.path.join(BASE, "frontend", "src", "accounts", "ops.js"))
         self.assertGreaterEqual(account_ops.count("YB.dangerousSubmit("), 2,
                                 "账号页单条 purge 与批量 purge 都应改走 helper")
-        switches = _read(os.path.join(COMPONENTS, "settings-switches.js"))
-        self.assertGreaterEqual(switches.count("YB.dangerousSubmit("), 1,
+        # 设置页整页迁 Vue 后，急停（global_pause 0→1）落在 settings/ops.js 的 switchesPause
+        settings_ops = _read(os.path.join(BASE, "frontend", "src", "settings", "ops.js"))
+        self.assertGreaterEqual(settings_ops.count("YB.dangerousSubmit("), 1,
                                 "急停（global_pause 0→1）应改走 helper")
 
     def test_password_modal_pipeline_only_remains_for_self_service(self):

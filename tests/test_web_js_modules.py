@@ -121,23 +121,21 @@ class JsAssemblyGuardTest(unittest.TestCase):
 
         后端 GET /api/mail-config 下发的 smtps[].user / has_pass 是打码或占位串；
         一旦作为 `value` 回填，保存时会按字面落盘并损坏配置（或把打码串当授权码）。
-        判据落在**脱敏字段专用构造器**上：`maskedCellInput` 体内不得出现 `.value`，
-        且 user / pass 两列必须走它（host / port 是非敏感字段，允许回填）。
+        2026-10-03 设置页迁 Vue 后自研控件退役：判据换锚到口径层 model.js 的
+        `smtpRowsFrom` —— 它构造可编辑行时 user / pass 恒为空串（脱敏值只留在 user0
+        供 placeholder），host / port 才回填。
         """
-        src = _read(os.path.join(JS_DIR, "components", "settings-mail.js"))
-        m = re.search(r"function maskedCellInput\(.*?\n  \}", src, re.S)
+        src = _read(os.path.join(BASE, "frontend", "src", "settings", "model.js"))
+        self.assertIn("function clean(", src, "model.js 缺少打码值清洗函数 clean()")
+        m = re.search(r"function smtpRowsFrom\(.*?\n\}", src, re.S)
         self.assertIsNotNone(
-            m, "settings-mail.js 未找到 maskedCellInput（脱敏字段专用构造器，写法变了？请同步本测试）"
+            m, "model.js 未找到 smtpRowsFrom（脱敏字段专用构造器，写法变了？请同步本测试）"
         )
-        self.assertNotIn(
-            ".value", m.group(0),
-            "maskedCellInput 回填了 value —— 脱敏值只允许作 placeholder，不得写进输入框",
-        )
-        self.assertIn('maskedCellInput("user"', src,
-                      "发件账号列必须走 maskedCellInput（后端已打码，不得回填）")
-        self.assertIn('maskedCellInput("pass"', src,
-                      "授权码列必须走 maskedCellInput（绝不回显）")
-        self.assertIn("function clean(", src, "settings-mail.js 缺少打码值清洗函数 clean()")
+        body = m.group(0)
+        self.assertIn('user: ""', body, "发件账号不得回填脱敏值（只作 placeholder）")
+        self.assertIn('pass: ""', body, "授权码绝不回显（只作 placeholder）")
+        self.assertNotIn("user: e.user", body, "发件账号回填了后端打码值 —— 落盘会损坏配置")
+        self.assertNotIn("pass: e.pass", body, "授权码回填了后端打码值")
 
 
 # 分区（tab）机制的共享面：深链助手 + roving tabindex 必须只住在 core.js，

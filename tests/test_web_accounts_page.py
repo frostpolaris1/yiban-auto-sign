@@ -4,8 +4,8 @@
 标签：F · 前端与界面守卫（Vue 线新增）
 覆盖：/work/accounts 渲染契约（挂载点、manifest 资产真实在盘、module 脚本、admin 守卫、
       no-store）、**legacy 资产已彻底退役**（模板不再引用 work_accounts.js /
-      account-{form,ops,table}.js，且文件已从磁盘删除；select-field.js 与 row-menu.js
-      仍被设置页消费，必须保留）、**PII 出口面**（列表手机号/归属邮箱是服务端脱敏值；
+      account-{form,ops,table}.js，且文件已从磁盘删除；2026-10-03 设置页迁 Vue 后
+      select-field.js 亦退役，row-menu.js 仍被用户管理页桥接必须保留）、**PII 出口面**（列表手机号/归属邮箱是服务端脱敏值；
       完整手机号只存组件内存 fullPhone、绝不进模板 DOM）、e2e 依赖的 data-* 钩子仍在。
 对应实现：`web/routes/pages.py` 的 `accounts_page` / `_render_vue_page`、
       `web/templates/pages/work_accounts.html`、`frontend/src/accounts/**`
@@ -164,12 +164,12 @@ class AccountsPageTest(unittest.TestCase):
         self.assertFalse(os.path.exists(LEGACY_PAGE_JS), "work_accounts.js 仍留在库里")
         for path in LEGACY_COMPONENTS:
             self.assertFalse(os.path.exists(path), f"{os.path.basename(path)} 仍留在库里")
-        # select-field.js / row-menu.js **必须保留**：设置页（work_settings）仍在用
-        # （select-field 是自研下拉、row-menu 是执行体行菜单），账号页退完不等它们退。
-        self.assertTrue(os.path.exists(SELECT_FIELD_JS),
-                        "select-field.js 被误删——设置页仍在用（settings-health/notify/schedule）")
+        # 2026-10-03：设置页也整页迁到 Vue，自研四件套控件随之退役——select-field.js
+        # 不再有消费者，必须已删除（row-menu.js 仍被用户管理页桥接，保留）。
+        self.assertFalse(os.path.exists(SELECT_FIELD_JS),
+                         "select-field.js 仍留在库里——设置页迁 Vue 后已无消费者")
         self.assertTrue(os.path.exists(ROW_MENU_JS),
-                        "row-menu.js 被误删——设置页执行体行菜单仍在用")
+                         "row-menu.js 被误删——用户管理页（frontend/src/users）仍在桥接它")
 
     def test_contract_hooks_survive_in_the_component(self):
         # 钩子可能在组件模板（字面量 id）或口径层（组定义表里的 tbody/bar 等 id）中

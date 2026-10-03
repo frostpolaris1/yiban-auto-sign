@@ -295,4 +295,142 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(acctForm.locator(".alert.danger, .el-alert--error").first()).toBeVisible();
   await acctForm.getByRole("button", { name: /取消/ }).first().click();
   await expect(acctForm).toBeHidden();
+
+  // ======== 系统设置页（P3 整页迁 Vue）——同样并入本用例、复用同一管理员会话 ========
+  // 为什么并入：与看板/账号页同理，登录限速是全套 e2e 的稀缺资源。选择器取**两栈共通**
+  // 的稳定锚点（role=tab、保留的服务端 id、可见文案）——迁移后（Vue）必须继续满足同一批
+  // 选择器。本页特有口径按"通用语义"钉：显式保存（改动只标脏、不自动落盘）、保存走口令门
+  // （A 档键需当次口令）、保存后回读一致、换行注入被拦、非法值不落盘。
+  // e2e/server.py 把 YIBAN_PW_GATE 设为 full，使口令门在 e2e 下**确定性出现**（默认 risk
+  // 档同出口免口令，口令门会被"IP 没换"整段跳过，测不到）。
+  await page.goto("/work/settings");
+  await expect(page.locator("h1.page-title")).toHaveText("系统设置");
+
+  // ① 分区页签：主管理员可见全部七个分区
+  for (const name of ["签到调度", "公告", "通知通道", "容量配额", "健康与探针", "执行体", "系统开关"]) {
+    await expect(page.getByRole("tab", { name, exact: true })).toBeVisible();
+  }
+
+  // ② 调度卡回填：服务端值渲染成可见文案/输入值（不看隐藏 input）。
+  // 下拉取两栈共通的 data-select-field 锚点（legacy 自研控件根 / Vue 包裹层都用它），
+  // 不用 getByText——选项文本与触发器文本会同时命中（strict mode 冲突）。
+  await expect(page.locator('[data-select-field="ss-order"]')).toContainText("列表顺序");
+  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("均匀分布");
+  await expect(page.locator("#ss-gap")).toHaveValue("10");
+  await expect(page.locator(".time-pair")).toContainText("06:30 至 07:50");
+
+  // ③ 显式保存语义：改动只标脏 + 出现保存按钮，未点保存**不落盘**
+  await expect(page.locator("#ss-dirty")).toBeHidden();
+  await expect(page.locator("#ss-save")).toBeHidden();
+  await page.fill("#ss-gap", "11");
+  await page.locator("#ss-gap").blur(); // 数字框改动在 blur(change) 才标脏——模拟真实用户离开字段
+  await expect(page.locator("#ss-dirty")).toBeVisible();
+  await expect(page.locator("#ss-save")).toBeVisible();
+  // 脏状态下切换分区 → 未保存改动守卫（保存并继续 / 放弃修改 / 取消）；取消后留在原分区
+  await page.getByRole("tab", { name: "公告", exact: true }).click();
+  const dirtyGuard = page.locator(".pm-backdrop").first();
+  await expect(dirtyGuard).toBeVisible();
+  await expect(dirtyGuard).toContainText("有未保存的修改");
+  await dirtyGuard.getByRole("button", { name: /取消/ }).first().click();
+  // 通用语义：取消守卫必须**留在原分区**（改动既未保存也未丢弃）。
+  // 用 expect.soft：legacy 此处有一个已知缺陷（core.js 的 document 级 tab 委托先于页面脏
+  // 守卫切换了分区，取消后停在「公告」），soft 断言让本次运行继续跑完、把其余偏差一并列出；
+  // 迁移后（Vue 自管页签）必须转绿。
+  await expect.soft(page.locator("#set-panel-schedule")).toBeVisible();
+  // 刷新丢弃未保存改动、回到默认分区（两栈一致）；尚未保存 → 仍是旧值 10
+  await page.reload();
+  await expect(page.locator("#ss-gap")).toHaveValue("10");
+
+  // ④ 保存走口令门（gap_max 属 A 档，full 档下当次必须输口令）：
+  //    取消口令框 → 不落盘、脏保留；输入正确口令 → 落盘、脏清除、回读一致
+  await page.fill("#ss-gap", "11");
+  await page.locator("#ss-gap").blur(); // 数字框改动在 blur(change) 才标脏——模拟真实用户离开字段
+  await page.locator("#ss-save").click();
+  const pwModal = page.locator(".pm-backdrop").first();
+  await expect(pwModal).toBeVisible();
+  await expect(pwModal.locator('input[type="password"]')).toBeVisible();
+  await pwModal.getByRole("button", { name: /取消/ }).first().click();
+  await expect(page.locator("#ss-dirty")).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#ss-gap")).toHaveValue("10"); // 取消口令 = 未落盘
+
+  await page.fill("#ss-gap", "11");
+  await page.locator("#ss-gap").blur(); // 数字框改动在 blur(change) 才标脏——模拟真实用户离开字段
+  await page.locator("#ss-save").click();
+  const pwModal2 = page.locator(".pm-backdrop").first();
+  await expect(pwModal2).toBeVisible();
+  await pwModal2.locator('input[type="password"]').fill(ADMIN_PASS);
+  await pwModal2.getByRole("button", { name: "确认操作" }).click();
+  await expect(page.locator("#ss-dirty")).toBeHidden();
+  await page.reload();
+  await expect(page.locator("#ss-gap")).toHaveValue("11"); // 保存后回读一致
+
+  // ⑤ 非法值不落盘：容量上限超过后端范围（0~100000）→ 报错且回读仍旧值
+  await page.getByRole("tab", { name: "容量配额", exact: true }).click();
+  await expect(page.locator("#set-max-users")).toHaveValue("500");
+  await expect(page.locator("#set-max-accounts")).toHaveValue("200");
+  await page.fill("#set-max-users", "200000");
+  await page.locator("#set-max-users").blur();
+  await page.locator("#set-cap-save").click();
+  // 非法值在后端**校验阶段**就被 400 打回（早于口令门，故不弹口令框），错误就地落在卡内提示
+  await expect(page.locator("#set-cap-tip")).toContainText("100000");
+  await page.reload();
+  await expect(page.locator("#set-max-users")).toHaveValue("500");
+
+  // ⑥ 公告：换行注入被拦（后端禁换行，前端在输入阶段就把换行族换成空格，提交前拦住）
+  await page.getByRole("tab", { name: "公告", exact: true }).click();
+  await expect(page.locator("#set-announcement")).toBeVisible();
+  await page.fill("#set-announcement", "第一行\n第二行");
+  await expect(page.locator("#set-announcement")).toHaveValue("第一行 第二行");
+  await expect(page.locator("#set-ann-dirty")).toBeVisible();
+  // 草稿保存不走口令门（PUT /api/announcement 只写草稿），保存后脏清除
+  await page.locator("#set-ann-save").click();
+  await expect(page.locator("#set-ann-dirty")).toBeHidden();
+
+  // ⑦ 其余分区渲染（主管理员专属卡也要在）
+  await page.getByRole("tab", { name: "通知通道", exact: true }).click();
+  // 推送渠道下拉：两栈共通的 data-select-field 锚点（legacy 自研控件根 / Vue 包裹层）
+  await expect(page.locator('[data-select-field="sn-type"]')).toBeVisible();
+  await expect(page.locator("#sm-to")).toBeVisible();
+  await page.getByRole("tab", { name: "健康与探针", exact: true }).click();
+  // EP el-switch 的真实 input 是视觉隐藏的（可见件是 .el-switch__core），故用 toBeAttached
+  // 而不是 toBeVisible——两栈都满足"该开关控件在位"这条语义。
+  await expect(page.locator("#sh-verify")).toBeAttached();
+  await expect(page.locator("#sh-probe-enable")).toBeAttached();
+  await page.getByRole("tab", { name: "执行体", exact: true }).click();
+  await expect(page.locator("#set-exec-table")).toBeVisible();
+  await expect(page.locator("#set-exec-kpi-progress")).not.toBeEmpty();
+  await page.getByRole("tab", { name: "系统开关", exact: true }).click();
+  await expect(page.locator("#set-gp-pause")).toBeVisible();
+  await expect(page.locator("#set-rp-pause")).toBeVisible();
+
+  // ⑧ 峰尖拖拽行为钉：在 dist-viz canvas 上做一次真指针拖拽（横向 = 峰时 μ、纵向 = 散布 σ），
+  //    断言拖动后 μ 读数（峰值中心）与 σ 读数**同时**变化。
+  //    为什么必须真拖：这条交互纯指针驱动，单元测试覆盖不到；而 DistViz 早期实现一次手势步里
+  //    先 emit μ 再 emit σ，第二次展开的是父组件尚未更新的 props，μ 被旧值静默还原（每次拖动
+  //    只有 σ 生效）——CI 全绿也照样是坏的。断言 μ 必须变化正是防止该回归的空转钉。
+  await page.getByRole("tab", { name: "签到调度", exact: true }).click();
+  await expect(page.locator("#set-panel-schedule")).toBeVisible();
+  // 峰尖拖拽只在正态分布下武装（均匀分布时 draw() 早退、命中几何 layout 为空，两栈一致），
+  // 故先把分布切到「正态分布」再拖——这也顺带钉住分布下拉切换即时生效。
+  await page.locator('[data-select-field="ss-dist"] .el-select__wrapper').click();
+  await page.getByRole("option", { name: "正态分布（钟形拟人）" }).click();
+  const canvas = page.locator("[data-dist-viz] canvas");
+  await expect(canvas).toBeVisible();
+  await canvas.scrollIntoViewIfNeeded();
+  const muInput = page.locator('[data-ed="muMid"]');
+  const sgLoInput = page.locator('[data-ed="sgLo"]');
+  const muBefore = await muInput.inputValue();
+  const sgBefore = await sgLoInput.inputValue();
+  const canvasBox = await canvas.boundingBox();
+  if (!canvasBox) throw new Error("dist-viz canvas 没有可拖拽的边界框");
+  // 从画布中部按下（远离时间轴底座 → 走峰尖相对抓取路径），向右下拖动：右移调 μ、下移调 σ。
+  const startX = canvasBox.x + canvasBox.width / 2;
+  const startY = canvasBox.y + canvasBox.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 70, startY + 40, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => muInput.inputValue()).not.toBe(muBefore);
+  await expect.poll(async () => sgLoInput.inputValue()).not.toBe(sgBefore);
 });
