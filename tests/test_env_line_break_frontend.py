@@ -5,7 +5,7 @@
 **背景**（与后端 `.env` 行模型同族的另一半）：
 - 前端表单对行分隔符**零校验**——含 U+2028/U+0085 的输入可以一路提交到后端；
   后端兜底虽在，但"提交前友好拦截"这一层是空的。
-- `components/select-field.js` 的 `paint()` 把**未知枚举值静默换成首项**并回写隐藏
+- legacy `components/select-field.js` 的 `paint()` 把**未知枚举值静默换成首项**并回写隐藏
   input：服务器上出现未知 `sign_order` 时，`settings-schedule.js` 的快照 `snap` 记的是
   未知值、而 DOM 被改成首项 ⇒ 下一次**无关保存**会把首项当成"用户改动"写进 `.env`。
 
@@ -17,7 +17,7 @@
 
 标签：F · 前端与界面守卫
 覆盖：前端行分隔符常量与后端同源（模板渲染 + core.js 消费）、写方法体拒换行族（10 字符逐个）、下拉未知枚举不静默换值（纯函数 + paint 不回写隐藏 input）
-对应实现：`web/static/js/core.js` 的 `ENV_LINE_BREAK_CODES` / `hasEnvLineBreak` / `envBodyLineBreak` / `api`，`web/static/js/components/select-field.js` 的 `resolvePaintValue` / `paint`，`web/templates/pages/work_settings.html` 的常量渲染
+对应实现：`web/static/js/core.js` 的 `ENV_LINE_BREAK_CODES` / `hasEnvLineBreak` / `envBodyLineBreak` / `api`，`frontend/src/settings/model.js` 的 `resolvePaintValue`（Vue 下拉直接绑定原始值），`web/templates/pages/work_settings.html` 的常量渲染
 关键断言：常量清单必须由后端渲染（模板出现 `env_line_break_codes`），前端不得再写死第二份码点数组；`hasEnvLineBreak` 对 10 个分隔符逐字符为真、对普通文本为假；`paint` 函数体内不得出现 `input.value`（静默换值的唯一形态）
 依赖：⚠ **需要 node 真跑**——`hasEnvLineBreak` / `resolvePaintValue` 抽出后交给 node 执行，`shutil.which("node")` 取不到时整类 `skipUnless`；另读模板与 JS 源码文本
 """
@@ -29,7 +29,9 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
-SELECT_JS = os.path.join(BASE, "web", "static", "js", "components", "select-field.js")
+# 设置页迁到 Vue 后，自研 select-field.js 退役；"未知枚举不静默换值"的口径函数搬到
+# frontend/src/settings/model.js 的 resolvePaintValue（Vue 下拉直接绑定原始值，不经映射层）。
+SELECT_JS = os.path.join(BASE, "frontend", "src", "settings", "model.js")
 SETTINGS_TPL = os.path.join(BASE, "web", "templates", "pages", "work_settings.html")
 NODE = shutil.which("node")
 
@@ -135,14 +137,31 @@ class PaintUnknownEnumTest(unittest.TestCase):
         self.assertEqual(got, '["weird_mode",true,"random","random"]',
                          "未知枚举必须原样返回（不得换成首项）")
 
-    def test_paint_never_rewrites_hidden_input(self):
-        paint = _extract_function(_read(SELECT_JS), "paint")
-        self.assertNotIn(
-            "input.value", paint,
-            "paint 回写了隐藏 input —— 未知枚举会被静默换成首项，"
-            "下一次无关保存会把它写进 .env")
-        self.assertNotIn("optionsOf(root)[0]", paint,
-                         "paint 仍取首项做回退 —— 未知枚举的静默换值未根除")
+    def test_enum_select_binds_raw_snapshot_value(self):
+        """未知枚举的静默换值必须根除：下拉直接绑定由**服务端原值回填**的表单字段。
+
+        legacy 的 `paint()` 会把未知值换成首项并**回写隐藏 input**；迁移到 Vue 后自研控件
+        退役、改用 EP el-select，口径变成一条**正向**的可证伪判据：
+          · `<el-select>` 的 `v-model` 直接绑定表单字段（排序/分布/推送渠道）；
+          · 该表单字段由快照以**原值**回填（`order: s.order` / `dist: s.dist` /
+            `type: pushSnap.value.type`），中间没有任何映射层/回退层能把它换成首项。
+        若有人重新引入"未知值→首项"的解析，回填处或绑定处必然出现映射调用而在这里失败。
+        """
+        schedule = _read(os.path.join(os.path.dirname(SELECT_JS), "ScheduleCard.vue"))
+        notify = _read(os.path.join(os.path.dirname(SELECT_JS), "NotifyCard.vue"))
+        fn = _extract_function(_read(SELECT_JS), "resolvePaintValue")
+        self.assertNotIn("opts[0]", fn, "resolvePaintValue 仍取首项做回退 —— 未知枚举的静默换值未根除")
+        self.assertNotIn(".value =", fn, "resolvePaintValue 回写了值 —— 未知枚举会被静默换值")
+        self.assertNotIn("input.value", fn)
+        self.assertIn('v-model="form.order"', schedule, "排序下拉必须直绑表单原值")
+        self.assertIn('v-model="form.dist"', schedule, "分布下拉必须直绑表单原值")
+        self.assertIn("order: s.order", schedule, "排序须由快照原值回填（无映射层）")
+        self.assertIn("dist: s.dist", schedule, "分布须由快照原值回填（无映射层）")
+        self.assertIn('v-model="pushForm.type"', notify, "推送渠道下拉必须直绑表单原值")
+        self.assertIn("type: pushSnap.value.type", notify, "推送渠道须由快照原值回填（无映射层）")
+        for rel, src in (("ScheduleCard.vue", schedule), ("NotifyCard.vue", notify)):
+            self.assertNotIn("resolvePaintValue", src,
+                             f"{rel} 经映射层改写下拉值 —— 未知枚举会被静默换成首项")
 
 
 if __name__ == "__main__":

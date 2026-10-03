@@ -2,8 +2,8 @@
 """页面级一致性守卫：含分区页面的 WAI-ARIA tabs 与 roving tabindex 初始态。
 
 标签：F · 前端与界面守卫
-覆盖：分区 tab 的服务端渲染初始结构——role/aria 齐全（tab/tabpanel 互指）且 roving 初始值正确（未隐藏 tab 里 tabindex="0" 恰好 1 个、其余含 hidden 全 -1）、data-tab-url-own（深链自管标记）只允许 settings 的分组带
-对应实现：`web/templates/pages/*.html` 的 `.tabs` 分区 markup
+覆盖：分区 tab 的服务端渲染初始结构——role/aria 齐全（tab/tabpanel 互指）且 roving 初始值正确（未隐藏 tab 里 tabindex="0" 恰好 1 个、其余含 hidden 全 -1）；并反查「深链自管」页不再借 legacy 标记（设置页整页迁 Vue，自管页签在 SettingsPage.vue 里）
+对应实现：`web/templates/pages/*.html` 的 `.tabs` 分区 markup、`frontend/src/settings/SettingsPage.vue` 的自管页签
 关键断言：core.js 只负责切换后的 aria/tabindex 同步，**初始结构**必须由模板给出——缺失会让键盘用户在 JS 生效前（或 JS 失败时）面对一串都在 Tab 键序里的分区标签，读屏也拿不到 tab/tabpanel 语义
 依赖：纯本地——读模板源码文本，**不执行 JS、无需 node**、不联网
 
@@ -35,7 +35,10 @@ ADMIN_PAGES = (
     # 2026-10-03：`pages/work_users.html` 移出本清单——该页已迁到 Vue，分区改由组件渲染
     # （且刻意不再使用 core.js 的 data-tab-target 契约，以免两套机制争抢同一批 DOM），
     # 故「服务端初始 ARIA 结构」这条判据对它不再适用（同 data_logs 的处置）。
-    "pages/work_settings.html",
+    # 2026-10-03：`pages/work_settings.html` 最后移出——设置页整页迁到 Vue，分区由
+    # SettingsPage.vue 自管（同样**刻意不用** core.js 的 data-tab-target 契约：那套的
+    # document 级点击委托会先于本页的未保存改动守卫切换分区，legacy 的守卫因此形同虚设）。
+    # 分区行为由 frontend/src/settings/model.spec.ts 与 e2e（logs.spec 的设置段）覆盖。
     "pages/my_account.html",
     "pages/my_calendar.html",
 )
@@ -52,8 +55,10 @@ def _read(path):
 # 面对一串都进 Tab 键序的分区标签（每页 N 个停止点），读屏也拿不到 tab/tabpanel 语义。
 _TAB_TAG_RE = re.compile(r"<a\b[^>]*\bdata-tab-target=\"([^\"]+)\"[^>]*>", re.S)
 _TAB_PANEL_RE = re.compile(r"<div\b[^>]*\bdata-tab-id=\"([^\"]+)\"[^>]*>", re.S)
-# 自管深链的分组标记（settings：切换要过脏守卫，写 ?tab= 的时机由页面控制）
-_TAB_URL_OWN_PAGE = "pages/work_settings.html"
+# 设置页整页迁 Vue 后，「深链自管」由 SettingsPage.vue 自己实现（syncTabUrl +
+# history.replaceState），不再有服务端模板承接该 legacy 标记（data-tab-url-own）。
+SETTINGS_PAGE_VUE = os.path.join(
+    BASE, "frontend", "src", "settings", "SettingsPage.vue")
 
 
 class TabAriaRovingTest(unittest.TestCase):
@@ -64,8 +69,8 @@ class TabAriaRovingTest(unittest.TestCase):
           ① 每个 .tab 有 role="tab" 与 aria-controls，指向的 id 真实存在、
              是 role="tabpanel" 且 aria-labelledby 回指该 tab；
           ② roving 初始：未隐藏的 tab 里 tabindex="0" 恰好 1 个，其余（含 hidden）全 -1；
-          ③ data-tab-url-own（深链自管标记）只允许 settings 的分组带 —— 其它页面
-             深链走 core.js 委托路径，带上它会让 ?tab= 不再随切换同步。
+          ③ 这些模板不得带 data-tab-url-own —— 深链自管的设置页已移出本清单（其自管逻辑
+             在 SettingsPage.vue，由 test_settings_page_self_manages_deep_link 反查）。
         """
         problems = []
         for name in ADMIN_PAGES:
@@ -120,9 +125,7 @@ class TabAriaRovingTest(unittest.TestCase):
                     f"  {name}: 未隐藏 tab 里 tabindex=0 应恰好 1 个（roving 唯一停止点），"
                     f"实际 {len(zero)}"
                 )
-            if name == _TAB_URL_OWN_PAGE and "data-tab-url-own" not in text:
-                problems.append(f"  {name}: 分区组缺 data-tab-url-own（脏守卫页必须自管深链写 URL 时机）")
-            if name != _TAB_URL_OWN_PAGE and "data-tab-url-own" in text:
+            if "data-tab-url-own" in text:
                 problems.append(f"  {name}: 不应带 data-tab-url-own（带上后 ?tab= 不随切换同步）")
         if problems:
             self.fail(
@@ -131,6 +134,21 @@ class TabAriaRovingTest(unittest.TestCase):
                 "活动 0、其余 -1（core.js 只负责切换后的同步，初始结构缺失会在 JS 生效前"
                 "让 Tab 键序里出现多个分区停止点）：\n" + "\n".join(problems)
             )
+
+    def test_settings_page_self_manages_deep_link(self):
+        """设置页深链自管的反查锚：自管逻辑必须在 SettingsPage.vue 里，而非 legacy 标记。
+
+        设置页整页迁到 Vue 且**刻意不用** core.js 的 `data-tab-target` 契约（那套有
+        document 级点击委托，会先于页面的未保存改动守卫切换分区）。故"自管深链"这条不变量
+        改指向组件：切分区时自行写 `?tab=`（history.replaceState），且不引用 legacy 的
+        `data-tab-url-own` / `data-tab-target` 标记。
+        """
+        src = _read(SETTINGS_PAGE_VUE)
+        self.assertIn("syncTabUrl(", src, "设置页缺少自管深链写入函数")
+        self.assertIn("history.replaceState(", src, "自管深链必须自己写 ?tab= 的 URL")
+        self.assertIn("data-settings-tab", src, "设置页应使用自管页签标记")
+        self.assertNotIn("data-tab-url-own", src, "自管页签不再借 legacy 的 data-tab-url-own 标记")
+        self.assertNotIn("data-tab-target=", src, "自管页签刻意不用 core.js 的 data-tab-target 契约")
 
 
 if __name__ == "__main__":

@@ -200,15 +200,19 @@ class SkeletonScopeTest(unittest.TestCase):
 
     def _users_of(self, cls):
         out = []
-        for dirpath, _dirs, files in os.walk(TEMPLATES_DIR):
-            for fn in files:
-                if not fn.endswith(".html"):
-                    continue
-                path = os.path.join(dirpath, fn)
-                with open(path, encoding="utf-8") as fh:
-                    text = fh.read()
-                if cls in text:
-                    out.append((path, "dash-page" in text))
+        # 2026-10-03：页面迁 Vue 后骨架类改由组件渲染（设置页执行体 KPI 加载期用
+        # `.dash-skel`），扫描面同时覆盖服务端模板与 frontend/src 的 Vue 组件。
+        roots = (TEMPLATES_DIR, os.path.join(BASE, "frontend", "src"))
+        for root in roots:
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    if not fn.endswith((".html", ".vue")):
+                        continue
+                    path = os.path.join(dirpath, fn)
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    if cls in text:
+                        out.append((path, "dash-page" in text))
         return out
 
     def test_skeleton_size_rule_not_scoped_to_page_ancestor(self):
