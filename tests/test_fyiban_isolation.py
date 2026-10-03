@@ -188,7 +188,7 @@ class IsolationStructureTest(unittest.TestCase):
                 self.assertTrue(os.path.isfile(os.path.join(vendor, rel)),
                                 f"vendored 库缺文件: {rel}")
         vendored_doc = io.open(os.path.join(vendor, "VENDORED.md"), encoding="utf-8").read()
-        self.assertIn("c20ad68", vendored_doc, "需记录来源 commit")
+        self.assertIn("aab17fb", vendored_doc, "需记录来源 commit")
         self.assertIn("MIT", vendored_doc)
         lic = io.open(os.path.join(vendor, "yiban_protocol", "LICENSE"), encoding="utf-8").read()
         self.assertIn("MIT License", lic)

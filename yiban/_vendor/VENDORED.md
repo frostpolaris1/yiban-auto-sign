@@ -7,7 +7,7 @@
 | 项 | 值 |
 |----|-----|
 | 来源仓库 | `D:\code\yiban-protocol`（远端 `yiban-protocol`） |
-| 来源 commit | `c20ad688b00219cb1feadec7fce1cb044ca38d02`（2026-10-03） |
+| 来源 commit | `aab17fb`（2026-10-03） |
 | 版本 | `0.1.0` |
 | 许可证 | **MIT**（全文副本见同目录 `yiban_protocol/LICENSE`） |
 | 同步方式 | **只从上游库同步覆盖本目录，禁止在本仓直接修改；需改动请去 yiban-protocol 仓库** |

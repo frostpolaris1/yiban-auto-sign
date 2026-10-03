@@ -821,3 +821,28 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LegacyPageFallbackTest(unittest.TestCase):
+    """legacy 页宽容回退（评审 #5）：令牌赋值无 `var` 关键字时仅 legacy 流程可解析。
+
+    主路径（killyiban 契约）严格要求 `var page_use`；legacy 是兜底流程，其页面
+    解析路径必须与主路径不同源——主路径失效时不致双双失效。
+    """
+
+    def test_legacy_page_without_var_keyword_parses_only_for_legacy_flow(self):
+        from Crypto.PublicKey import RSA
+        from yiban.fyiban import protocol as fyiban_protocol
+
+        pem = RSA.generate(1024).publickey().export_key().decode()
+        html = (
+            "<script>page_use = '" + "a" * 40 + "';</script>"
+            '<input type="test" id="key" value="' + pem + '">'
+        )
+        page_use, key = fyiban_protocol.parse_login_page(html, flow="legacy")
+        self.assertEqual(page_use, "a" * 40)
+        self.assertIsNotNone(key)
+        # killyiban 契约仍严格要求 var 关键字：同一页面对默认流程解析失败
+        self.assertEqual(
+            fyiban_protocol.parse_login_page(html, flow="killyiban"), (None, None)
+        )

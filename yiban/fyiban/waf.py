@@ -4,10 +4,10 @@
 
 **裁决（B' 换核）**：`solve_ydclearance`（纯 Python 求解 `https_ydclearance` 挑战的
 三段字节变换）为生产全历史零触发的死代码，已删除——检测命中不再尝试求解，改由协议层
-响亮失败（`CHALLENGE_DETECTED_MESSAGE`，落不可重试硬失败档）。检测本体改为委托
-vendored 洁净室库 `yiban._vendor.yiban_protocol.looks_like_challenge`，并在适配层
-补齐本项目既有特征（`Set-Cookie` 携带 `https_ydclearance`、挑战 JS 双特征），
-即"现实现特征集 ∪ 库特征集"——只加不减，不得弱化检测。
+响亮失败（`CHALLENGE_DETECTED_MESSAGE`，落不可重试硬失败档）。检测本体委托 vendored 库
+`looks_like_challenge`（其弱信号 `captcha` 已在上游加 HTML 上下文门槛，aab17fb——
+评审 #2 的误报面在库侧修复后回灌），并在适配层补齐本项目既有特征：`Set-Cookie`
+携带 `https_ydclearance`、挑战 JS 双特征。
 
 **归属**
 `yiban/fyiban/` 第三方隔离层的 WAF 子模块。"是不是挑战页"属平台特征识别（本层）；
@@ -36,13 +36,15 @@ CHALLENGE_DETECTED_MESSAGE = (
 def looks_like_challenge(text, set_cookie=""):
     """判断响应是否触发易班风控挑战——只检测，不求解。
 
-    判据为"现实现特征集 ∪ 库特征集"的并集（只加不减）：
-    - 本项目既有特征：`Set-Cookie` 已下发 `https_ydclearance`；或页面含挑战 JS 双特征
-      （`window.onload=setTimeout` + `eval("qo=eval;qo(po);")`）；
-    - 库特征：`ydclearance` / `fengkongcloud` / `captcha` 标记，或 `acw_sc` + HTML 标记。
+    判据 = 适配层既有特征（`Set-Cookie` 下发 `https_ydclearance`、挑战 JS 双特征）
+    ∪ vendored 库特征（`ydclearance`/`fengkongcloud` 令牌；`acw_sc`/`captcha` 弱信号
+    须 HTML 上下文）。
 
     误报（把正常页当挑战）不可接受，漏报可接受；所有已知正常夹具都必须返回 `False`。
     """
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    text = text or ""
     if "https_ydclearance" in (set_cookie or ""):
         return True
     if "window.onload=setTimeout" in text and 'eval("qo=eval;qo(po);")' in text:

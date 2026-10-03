@@ -72,6 +72,8 @@ ARTIFACTS = (
     Artifact("sched-run-", ".json", "snapshot", "state", "当日全量签到收尾标记（闸门用）"),
     Artifact("sched-slot-", ".json", "snapshot", "state", "容器调度时段闩锁标记（按日失效）"),
     Artifact("sched-snapshot-", ".json", "snapshot", "state", "调度快照（仅近期有意义）"),
+    Artifact("sign-status-", ".txt", "snapshot", "state",
+             "run.sh 的按日状态文件（bash 写入，当日库内事实交叉核对用，跨日无意义）"),
     Artifact("yiban-run-today-", ".marker", "snapshot", "state",
              "run.sh 当日触发标记（bash 写入；判定首签/补签轮，跨日自动失效）"),
     Artifact("yiban-settled-", ".marker", "snapshot", "state",

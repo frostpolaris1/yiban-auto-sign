@@ -3,7 +3,7 @@ line-length = 100
 target-version = "py310"
 # yiban/_vendor 为 vendored 第三方库（逐字节同步自上游 yiban-protocol，禁止本仓修改），
 # 不参与本仓 lint 口径；发现问题应回上游修。
-exclude = [".git", "__pycache__", "yiban/_vendor"]
+exclude = [".git", "__pycache__", "yiban/_vendor/yiban_protocol"]
 
 [tool.pytest.ini_options]
 # 只收集 tests/ 下的用例；scripts/ 下的一次性运维脚本不作为测试收集目标
