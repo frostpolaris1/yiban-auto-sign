@@ -47,8 +47,6 @@ PW_INPUT = "MasterPass#2026"
 
 # 受门禁写操作所在组件：每个都必须经统一 helper，不得再自带无条件口令框管道
 _GATED_COMPONENTS = (
-    "account-ops.js",
-    "account-form.js",
     "settings-executors.js",
     "settings-mail.js",
     "settings-notify.js",
@@ -65,6 +63,10 @@ _GATED_VUE = (
     # （tests/test_users_exit_surface_frontend.py 把本文件整段放进 node 真跑，钉 MF-49
     # 出口面），故这里判据用 `dangerousSubmit(`（`YB.` 前缀仍在，两种写法都命中）。
     "frontend/src/users/ops.js",
+    # 账号管理页迁移（P3）：写操作链路 ops.js 同样是纯 JS + window.YB；单条/编辑表单的
+    # 受门禁提交（改凭据）落在 Accounts.vue（import shell 后直呼 dangerousSubmit）。
+    "frontend/src/accounts/ops.js",
+    "frontend/src/accounts/Accounts.vue",
 )
 
 # 唯一允许在 core.js 之外直接弹口令框的文件：自助域收的是**本人账号口令**
@@ -745,9 +747,9 @@ class GatedCallSitesTest(unittest.TestCase):
         user_ops = _read(os.path.join(BASE, "frontend", "src", "users", "ops.js"))
         self.assertGreaterEqual(user_ops.count("YB.dangerousSubmit("), 4,
                                 "user-ops 的 deleteUser / purge / batchDelete / batchPurge 都应改走 helper")
-        account_ops = _read(os.path.join(COMPONENTS, "account-ops.js"))
+        account_ops = _read(os.path.join(BASE, "frontend", "src", "accounts", "ops.js"))
         self.assertGreaterEqual(account_ops.count("YB.dangerousSubmit("), 2,
-                                "account-ops 的单条 purge 与批量 purge 都应改走 helper")
+                                "账号页单条 purge 与批量 purge 都应改走 helper")
         switches = _read(os.path.join(COMPONENTS, "settings-switches.js"))
         self.assertGreaterEqual(switches.count("YB.dangerousSubmit("), 1,
                                 "急停（global_pause 0→1）应改走 helper")
