@@ -70,7 +70,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await expect(logPane.locator(".logs-empty")).toContainText("查看"); // 「最近有数据日期」跳转出口
 });
 
-test("管理端数据面：日志页日期导航/事件表 + 数据看板（复用同一管理员会话）", async ({ page }) => {
+test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账号管理（复用同一管理员会话）", async ({ page }) => {
   // 会话走 API 登录（表单登录已在上一条覆盖）
   const resp = await page.request.post("/api/login", { data: { username: ADMIN_USER, password: ADMIN_PASS } });
   expect(resp.ok()).toBeTruthy();
@@ -123,9 +123,12 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板（复�
 
   // ======== 数据看板（P3 整页迁 Vue）——**并进本用例复用同一次管理员登录** ========
   // 为什么合并在日志用例里：/api/login 有 60 秒窗口 10 次/IP 的独立限速，整套 e2e 共用
-  // 同一 Flask 实例与 127.0.0.1，单开一条看板用例会多一次登录、把后面的用例顶到 429。
-  // 种子数据与本文件同源（今天 2 条签到：success + failed；两个 active 账号；一个用户），
-  // 故看板口径可精确断言：成功率 50.0%、趋势 成功 2 · 失败 1 · 跳过 0、分布总数 1。
+  // 同一 Flask 实例与 127.0.0.1，单开一条看板/账号用例会多一次登录、把后面的用例顶到 429
+  // （2026-10-03 实测：账号管理页单开 spec 时 myaccounts 的管理员登录被顶到 429）。
+  // 种子数据与本文件同源（今天 2 条签到：success + failed；两个 active 账号；一个用户；
+  // 另有三条账号管理页种子：待审核 1 + 已拒绝 1 + 软删除 1，供下方账号管理页断言用），
+  // 故看板口径可精确断言：成功率 50.0%、趋势 成功 2 · 失败 1 · 跳过 0、分布总数 1、
+  // 待处理账号 = 待审核 1 + 已拒绝 1 = 2。
   await page.goto("/data/dashboard");
   await expect(page.locator("#dashboard-root")).toBeVisible();
 
@@ -134,7 +137,8 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板（复�
   await expect(page.locator("#kpi-rate-value")).toContainText("50.0");
   await expect(page.locator("#kpi-rate-sub")).toContainText("成功 1 · 失败 1");
   await expect(page.locator("#kpi-rate-pill")).toContainText("无昨日对比");
-  await expect(page.locator("#kpi-pending-value")).toContainText("0");
+  await expect(page.locator("#kpi-pending-value")).toContainText("2");
+  await expect(page.locator("#kpi-pending-sub")).toContainText("待审核 1 · 已拒绝 1");
 
   // 三张图：Canvas 真实绘制（Chart.js 由 vendor defer 先行加载）+ 元数据行
   await expect(page.locator("#trend-coverage")).toHaveText("最近 30 天 · 仅真实签到");
@@ -197,4 +201,98 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板（复�
   await expect(page.locator("#kpi-rate-sub")).toContainText("签到事件加载失败");
   await expect(page.locator("#cal-note")).toContainText("签到事件加载失败");
   await expect(page.locator("[data-overlay='trend']")).toContainText("签到事件加载失败");
+
+  // ======== 账号管理页（P3 整页迁 Vue）——同样并入本用例、复用同一管理员会话 ========
+  // 为什么并入（而不是单开 accounts.spec）：与上面看板同理，登录限速是全套 e2e 的稀缺
+  // 资源；账号页单开一条用例会多一次 /api/login，把 myaccounts 的管理员登录顶到 429
+  // （2026-10-03 实测）。选择器取**两栈共通**的稳定锚点（role=tab、保留的服务端 id、
+  // 可见文案、placeholder）——迁移后（Vue）必须继续满足同一批选择器。
+  // 放在最后：上面的失败降级块会把本页置为 degraded，账号页需在干净会话上断言。
+  // 先钉**读方向**的分区深链：带 ?tab= 加载要直接落到该分区（写方向在下面点页签时钉）。
+  await page.goto("/work/accounts?tab=deleted");
+  await expect(page.locator("#acct-panel-deleted")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /待删除账号/ })).toHaveAttribute("aria-selected", "true");
+  await page.goto("/work/accounts");
+
+  // ① 页面骨架：标题、三组页签与计数、KPI、待处理提醒
+  await expect(page.locator("h1.page-title")).toHaveText("账号管理");
+  await expect(page.getByRole("tab", { name: /待处理账号/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /正常账号/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /待删除账号/ })).toBeVisible();
+  // 计数放在页签上：待处理=2（待审核 1 + 已拒绝 1），正常=2，待删除=1。
+  await expect(page.getByRole("tab", { name: /待处理账号/ })).toContainText("2");
+  await expect(page.getByRole("tab", { name: /正常账号/ })).toContainText("2");
+  await expect(page.getByRole("tab", { name: /待删除账号/ })).toContainText("1");
+  // KPI 卡（今日签到统计）：成功/失败/待签/跳过。
+  await expect(page.locator("#stat-success")).toHaveText("0");
+  await expect(page.locator("#stat-failed")).toHaveText("0");
+  await expect(page.locator("#stat-waiting")).toHaveText("2");
+  await expect(page.locator("#stat-skipped")).toHaveText("0");
+  await expect(page.locator("#pending-tip")).toBeVisible();
+  await expect(page.locator("#pending-count")).toHaveText("2");
+
+  // ② 待处理表：状态徽标 + 脱敏手机号（完整号绝不进 DOM）
+  const pendingRows = page.locator("#accounts-pending-tbody tr");
+  await expect(pendingRows).toHaveCount(2);
+  await expect(pendingRows.first()).toContainText("e2e-pending-acct");
+  await expect(pendingRows.first()).toContainText("待审核");
+  await expect(pendingRows.last()).toContainText("已拒绝");
+  await expect(pendingRows.first().locator(".acct-cell-phone")).toContainText("137****7003");
+  const accountsHtml = await page.content();
+  expect(accountsHtml).not.toContain("13700137003");
+  expect(accountsHtml).not.toContain("13900139002");
+
+  // ③ 页签切换 + ?tab= 深链
+  await page.getByRole("tab", { name: /正常账号/ }).click();
+  await expect(page).toHaveURL(/[?&]tab=active/);
+  await expect(page.locator("#acct-panel-active")).toBeVisible();
+  const activeRows = page.locator("#accounts-tbody tr");
+  await expect(activeRows).toHaveCount(2);
+  await expect(activeRows.first()).toContainText("e2e-user-acct");
+  // 待删除组：软删账号带「待删除」徽标与恢复/彻底删除动作
+  await page.getByRole("tab", { name: /待删除账号/ }).click();
+  await expect(page).toHaveURL(/[?&]tab=deleted/);
+  const deletedRows = page.locator("#accounts-deleted-tbody tr");
+  await expect(deletedRows).toHaveCount(1);
+  await expect(deletedRows.first()).toContainText("e2e-deleted-acct");
+  await expect(deletedRows.first()).toContainText("待删除");
+  await expect(deletedRows.first().getByRole("button", { name: "恢复" })).toBeVisible();
+  await expect(deletedRows.first().getByRole("button", { name: "彻底删除" })).toBeVisible();
+
+  // ④ 检索：无匹配 → 「无匹配结果」+ 清除筛选出口（不是死路）
+  await page.getByRole("tab", { name: /正常账号/ }).click();
+  await page.fill("#active-search", "no-such-account-zzz");
+  await expect(activeRows).toHaveCount(0);
+  await expect(page.locator("#accounts-empty .empty__msg")).toHaveText("无匹配结果");
+  await page.locator("#accounts-empty [data-empty-clear]").click();
+  await expect(activeRows).toHaveCount(2);
+
+  // ⑤ 全选 → 批量条显形（计数 + 取消选择）
+  await page.locator("#select-all-active").check();
+  await expect(page.locator("#batch-bar-active")).toBeVisible();
+  await expect(page.locator("#batch-count-active")).toHaveText("2");
+  await page.locator("#batch-bar-active [data-batch-clear]").click();
+  await expect(page.locator("#batch-bar-active")).toBeHidden();
+
+  // ⑥ 审核「通过」先弹确认，取消则不改动（受控动作不裸奔）
+  await page.getByRole("tab", { name: /待处理账号/ }).click();
+  const firstPending = pendingRows.first();
+  await firstPending.getByRole("button", { name: "通过" }).click();
+  const acctModal = page.locator(".pm-backdrop, .el-message-box, .el-dialog").first();
+  await expect(acctModal).toBeVisible();
+  await expect(acctModal).toContainText("e2e-pending-acct");
+  await acctModal.getByRole("button", { name: /取消/ }).first().click();
+  // 取消后仍是待处理，计数不变
+  await expect(page.getByRole("tab", { name: /待处理账号/ })).toContainText("2");
+
+  // ⑦ 添加账号表单：打开 → 必填校验 → 取消
+  await page.locator("[data-add-account]").first().click();
+  const acctForm = page.locator(".pm-backdrop, .el-dialog").first();
+  await expect(acctForm).toBeVisible();
+  await expect(acctForm.getByText("添加账号").first()).toBeVisible();
+  await acctForm.getByPlaceholder(/易班登录手机号/).fill("");
+  await acctForm.getByRole("button", { name: "添加账号" }).last().click();
+  await expect(acctForm.locator(".alert.danger, .el-alert--error").first()).toBeVisible();
+  await acctForm.getByRole("button", { name: /取消/ }).first().click();
+  await expect(acctForm).toBeHidden();
 });

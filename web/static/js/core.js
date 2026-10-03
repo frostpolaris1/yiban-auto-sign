@@ -1625,8 +1625,9 @@
   /* ---------- 浏览器级显示偏好（localStorage） ----------
      仅影响本机显示密度，不涉及任何后端策略，故与 yiban-theme 同层使用 localStorage。
      归属邮箱开关：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
-     默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在
-     components/account-table.js 一处，改后下次渲染即生效（无需后端往返）。 */
+     默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在账号管理页的
+     frontend/src/accounts/Accounts.vue 一处（经本函数的 YB.prefs.ownerEmailVisible
+     桥接），改后下次渲染即生效（无需后端往返）。 */
   var PREF_OWNER_EMAIL = "yiban-owner-email";
   function ownerEmailVisible() {
     try { return localStorage.getItem(PREF_OWNER_EMAIL) !== "0"; } catch (e) { return true; }
