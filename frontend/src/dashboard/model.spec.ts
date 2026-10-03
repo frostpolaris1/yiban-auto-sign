@@ -3,7 +3,6 @@ import {
   DEFAULT_CAL_NOTE,
   SIGN_EVENTS_PATH,
   acceptAccounts,
-  accountsKpiView,
   announcementView,
   calendarView,
   capacityRows,
@@ -21,8 +20,8 @@ import {
   slotsView,
   statusKind,
   statusLabel,
+  todayAccountKpiViews,
   trendView,
-  usersKpiView,
 } from "./model.js";
 
 /* 数据看板口径单测。
@@ -176,7 +175,39 @@ describe("今日成功率 KPI rateKpiView", () => {
   });
 });
 
-describe("容量 KPI", () => {
+describe("今日成功/失败账号 KPI（账号口径，替代与容量卡重复的活跃账号/注册用户）", () => {
+  const now = new Date("2026-09-21T10:00:00");
+
+  it("未回数据保持骨架（null）；sign 失败给错误视图，两卡同形", () => {
+    expect(todayAccountKpiViews(stateWith({ signLoaded: false }), now)).toBeNull();
+    const v = todayAccountKpiViews(stateWith({ signLoaded: false, signFailed: true }), now);
+    expect(v.success.failed).toBe(true);
+    expect(v.fail.failed).toBe(true);
+    expect(v.success.sub).toBe("签到事件加载失败");
+  });
+
+  it("读日终态 dayFinal[today]：每账号恰计一次，重试不进这两张卡", () => {
+    const v = todayAccountKpiViews(
+      stateWith({
+        signLoaded: true,
+        dayFinal: { "2026-09-21": { success: 7, fail: 2, skip: 3, unknown: 1, total: 13 } },
+      }),
+      now,
+    );
+    expect(v.success.value).toBe("7");
+    expect(v.fail.value).toBe("2");
+    expect(v.success.valueTitle).toContain("每账号恰计一次");
+    expect(v.success.valueTitle).toContain("事件口径");
+  });
+
+  it("当日无终态分桶时给 0（不是 —）", () => {
+    const v = todayAccountKpiViews(stateWith({ signLoaded: true, dayFinal: {} }), now);
+    expect(v.success.value).toBe("0");
+    expect(v.fail.value).toBe("0");
+  });
+});
+
+describe("容量行（capacityRows / capacityText）", () => {
   const d = {
     capacity: {
       accounts: 2, accounts_max: 200,
@@ -186,33 +217,6 @@ describe("容量 KPI", () => {
     },
     capacity_estimate: { accounts_cap: 360, current_accounts: 2, potential_load: "—" },
   };
-
-  it("账号卡消费 accounts_audit：副文案三分类不进审核数，审核数进 title 口径", () => {
-    const v = accountsKpiView(d.capacity);
-    expect(v.value).toBe("2");
-    expect(v.sup).toBe("/200");
-    expect(v.sub).toBe("正常 2 · 用户暂停 0 · 账密暂停 0");
-    expect(v.subTitle).toContain("未通过审核");
-    expect(v.pill.text).toBe("1%");
-  });
-
-  it("审计数为 0 时不提审核", () => {
-    const cap = { ...d.capacity, accounts_audit: 0 };
-    expect(accountsKpiView(cap).subTitle).toBe("均不含已删除账号");
-  });
-
-  it("上限 0 = 不限：pill 显示「未设上限」", () => {
-    const v = usersKpiView({ users: 5, users_max: 0 });
-    expect(v.pill.text).toBe("未设上限");
-    expect(v.sub).toBe("未设上限");
-  });
-
-  it("失败时给出错误行且 pill 清空", () => {
-    const v = accountsKpiView(null);
-    expect(v.failed).toBe(true);
-    expect(v.value).toBe("—");
-    expect(v.pill).toBeNull();
-  });
 
   it("容量行与估算行文案", () => {
     const rows = capacityRows(d);

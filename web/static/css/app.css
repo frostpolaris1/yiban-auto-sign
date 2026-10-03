@@ -2196,9 +2196,13 @@ html[data-theme="dark"] {
 /* 卡片内就地结果行（如删除后的「✓ 已删除」）：与卡头拉开一点，不贴线 */
 .account-card > .state-line { margin-top: 10px; }
 /* 暂停/恢复/删除等就地反馈：数秒后淡出（JS 定时加 .is-fading）。
-   只过渡 opacity；reduced-motion 由第 14 节统一取消过渡，JS 仍会移除节点。 */
+   只过渡 opacity。此前注释声称"reduced-motion 由第 14 节统一取消过渡"，但那是**动画**关断块，
+   收不到这条 transition；故就地补一条 reduce 关断（同特异性、在同一媒体块内晚于基态即生效）。 */
 .state-line--flash { transition: opacity 300ms var(--ease-in-strong); }
 .state-line--flash.is-fading { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .state-line--flash { transition: none; }
+}
 
 /* 日志块：嵌面板 + 等宽（账号卡内与日历页共用） */
 .log-view {
@@ -2569,14 +2573,10 @@ html[data-theme="dark"] {
 /* 与日历卡等高：不加 sticky/align-self（那会按内容高度收缩，横屏下两卡不齐） */
 .sc-log-card { display: flex; flex-direction: column; min-width: 0; }
 .sc-log { flex: 1; min-height: 240px; display: flex; flex-direction: column; min-width: 0; overflow: clip; }
-.sc-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
-/* 空态图标是装饰（aria-hidden），不承载信息，故可用 --t-light */
-.sc-empty-icon { display: inline-flex; color: var(--t-light); }
-.sc-empty-icon svg { width: 22px; height: 22px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
-.sc-empty-note { font-size: 11.5px; color: var(--t-sub); }
 /* margin:auto 让空态/加载态在整块面板里居中（相对面板外框，而不是自身小盒）；
-   日志正文是普通 flex 子项，仍从顶部开始。 */
-.sc-log > .sc-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 30ch; margin: auto; text-align: center; }
+   日志正文是普通 flex 子项，仍从顶部开始。空态用全站统一 .empty 构件（§12），
+   不再自造 .sc-empty 第三套形状（图标 22px / 文案 12.5px 与别页不同）。 */
+.sc-log > .empty { margin: auto; }
 
 /* 日志正文的换行/钳制：.sc-log 是 flex 列、.sc-log-text 是 <pre>，flex 子项默认 min-width:auto
    会把长坐标/URL 的 min-content 撑成整行，越过卡片右边界并让整页横向滚动（实测裸 .sc-log-text

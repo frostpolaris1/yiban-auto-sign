@@ -8,7 +8,6 @@ import {
   SIGN_EVENTS_PATH,
   WEEK,
   acceptAccounts,
-  accountsKpiView,
   announcementView,
   calendarView,
   capacityRows,
@@ -23,8 +22,8 @@ import {
   pingView,
   rateKpiView,
   slotsView,
+  todayAccountKpiViews,
   trendView,
-  usersKpiView,
 } from "./model.js";
 
 /* 数据看板（管理端首页 /data/dashboard）。
@@ -82,9 +81,8 @@ const distMeta = ref<[string, string][]>([]);
 const slotsMeta = ref<[string, string][]>([]);
 
 /* ---------------- 视图（读口径层） ---------------- */
-const capacity = computed(() => (settingsState.value === "ok" ? settingsData.value?.capacity ?? null : null));
-const accountsKpi = computed(() => (settingsState.value === "loading" ? null : accountsKpiView(capacity.value)));
-const usersKpi = computed(() => (settingsState.value === "loading" ? null : usersKpiView(capacity.value)));
+// 今日成功/失败账号：账号口径，与容量卡脱钩（原先此处放活跃账号/注册用户，与容量卡同源同数）。
+const todayKpis = computed(() => todayAccountKpiViews(state, getServerNow()));
 const capRows = computed(() => (settingsState.value === "ok" ? capacityRows(settingsData.value) : null));
 const pause = computed(() => (settingsState.value === "ok" ? pauseView(settingsData.value) : null));
 const pendingKpi = computed(() =>
@@ -556,8 +554,8 @@ onBeforeUnmount(() => {
     </p>
 
     <section class="kpi-grid" aria-label="关键指标">
-      <KpiCard k="accounts" color="primary" icon="list" label="活跃账号" :href="BASE + '/work/accounts?tab=active'" :view="accountsKpi" />
-      <KpiCard k="users" color="purple" icon="users" label="注册用户" :href="BASE + '/work/users'" :view="usersKpi" />
+      <KpiCard k="accounts" color="success" icon="circle-check" label="今日成功账号" :href="BASE + '/work/accounts?tab=active'" :view="todayKpis && todayKpis.success" />
+      <KpiCard k="users" color="danger" icon="circle-x" label="今日失败账号" :href="BASE + '/work/accounts?tab=active'" :view="todayKpis && todayKpis.fail" />
       <KpiCard k="rate" color="success" icon="circle-check" label="今日成功率" :href="BASE + '/data/logs'" :view="rateKpi" />
       <KpiCard k="pending" color="danger" icon="triangle-alert" label="待处理账号" :href="BASE + '/work/accounts?tab=pending'" :view="pendingKpi" :show-pill="false" />
     </section>

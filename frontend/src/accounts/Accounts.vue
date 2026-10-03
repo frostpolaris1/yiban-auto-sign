@@ -677,13 +677,13 @@ const M = {
                     <thead v-else-if="g === 'active'">
                       <tr>
                         <th scope="col" class="acct-cell-check"><label class="acct-check"><input type="checkbox" :id="GROUPS.active.all" aria-label="全选正常账号" :checked="allState('active').checked" :indeterminate="allState('active').indeterminate" @change="onSelectAll('active', ($event.target as HTMLInputElement).checked)" /></label></th>
-                        <th scope="col">状态</th><th scope="col">#</th>
+                        <th scope="col">状态</th><th scope="col" title="账号在账号列表中的位置（含待处理与待删除项），非行号">序号</th>
                         <th scope="col" class="acct-cell-name">名称</th>
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
                         <th scope="col" class="acct-col-lg">设备型号</th><th v-if="timePrefOn" scope="col" class="acct-col-xl">自选</th>
                         <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
-                        <th scope="col">审核</th><th scope="col" class="acct-cell-actions">操作</th>
+                        <th scope="col" class="acct-cell-actions">操作</th>
                       </tr>
                     </thead>
                     <!-- 待删除表头 -->
@@ -755,7 +755,6 @@ const M = {
                           <td class="acct-cell-model acct-col-lg">{{ row.phone_model || "—" }}</td>
                           <td v-if="timePrefOn" class="acct-cell-pref acct-col-xl">{{ M.prefText(row) }}</td>
                           <td class="acct-cell-owner acct-col-md">{{ M.ownerText(row) }}</td>
-                          <td class="acct-cell-audit"><span class="badge" :class="'badge--' + M.badgeOf(row.status).tone">{{ M.badgeOf(row.status).label }}</span></td>
                         </template>
 
                         <!-- 操作列：宽屏并列按钮 / 窄屏收进下拉（与 legacy 断点一致） -->
@@ -860,7 +859,9 @@ const M = {
 
         <label v-if="!formEditing" class="field">
           <span class="field-label">绑定用户（选填）</span>
-          <el-select v-model="formEmail" style="width: 100%">
+          <!-- filterable：可绑定用户最多 50 个（后端上限），不给筛选就只能滚。
+               legacy 自研下拉的筛选框因无人设置 data-search 而成死代码，EP 需显式开。 -->
+          <el-select v-model="formEmail" filterable style="width: 100%">
             <!-- 分组头/空态是纯展示行（legacy select-field 里不可选），禁用并给唯一占位值，
                  避免与「不绑定」的空值选项撞成同一个可选项。 -->
             <el-option

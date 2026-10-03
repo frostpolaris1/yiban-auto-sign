@@ -45,7 +45,7 @@
     ]
   },
   "accounts.html": {
-    "file": "assets/accounts--RrwhkNl.js",
+    "file": "assets/accounts-M_9OHGJO.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -74,7 +74,7 @@
     ]
   },
   "calendar.html": {
-    "file": "assets/calendar-KX_NqVn1.js",
+    "file": "assets/calendar-DZAxhSmT.js",
     "name": "calendar",
     "src": "calendar.html",
     "isEntry": true,
@@ -85,7 +85,7 @@
     ]
   },
   "dashboard.html": {
-    "file": "assets/dashboard-DRHWN1h0.js",
+    "file": "assets/dashboard-DUVvq3_r.js",
     "name": "dashboard",
     "src": "dashboard.html",
     "isEntry": true,
@@ -139,7 +139,7 @@
     ]
   },
   "myaccounts.html": {
-    "file": "assets/myaccounts-B7m0Y9E2.js",
+    "file": "assets/myaccounts-C4lSsnRc.js",
     "name": "myaccounts",
     "src": "myaccounts.html",
     "isEntry": true,
@@ -152,7 +152,7 @@
     ]
   },
   "settings.html": {
-    "file": "assets/settings-DYCWxCnT.js",
+    "file": "assets/settings-QcWEYhMt.js",
     "name": "settings",
     "src": "settings.html",
     "isEntry": true,

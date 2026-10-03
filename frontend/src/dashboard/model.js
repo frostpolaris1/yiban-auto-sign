@@ -98,11 +98,6 @@ export function num(n) {
   return isFinite(n) ? n.toLocaleString("zh-CN") : "0";
 }
 
-/** 百分比（保留 1 位，四舍五入）；分母 <=0 时返回 0。 */
-export function pctOf(a, b) {
-  return b > 0 ? Math.round(a / b * 1000) / 10 : 0;
-}
-
 /* ---------------- 状态词表 ---------------- */
 
 export function statusKind(st) {
@@ -220,47 +215,39 @@ export function capacityRows(d) {
   };
 }
 
-/** 活跃账号 KPI 的完整视图（含 pill 档位与 title 兜底口径）。 */
-export function accountsKpiView(cap) {
-  if (!cap) {
-    return { failed: true, value: "—", sup: null, sub: "容量读取失败", subTitle: "", valueTitle: "", pill: null, alert: false };
+/**
+ * 今日成功 / 失败账号 KPI（账号口径）。
+ *
+ * 与「今日成功率」的事件口径不同：这里读账号口径的日终态分桶 `dayFinal[today]`
+ * —— 每账号当日最终状态恰落一桶、桶互斥，故「成功账号数」不会因同一账号重试多次而虚增。
+ * 之所以不用「活跃账号 / 注册用户」占这两张卡：那两个数来自 /api/settings 的容量区块，
+ * 与下方「账号与用户容量」卡同源同数，一屏内各出现一遍，纯重复（容量数字只在容量卡出现）。
+ * 返回 `{ success, fail }` 两个 KPI 视图；数据未回返 null（保持骨架），sign 失败给错误视图。
+ */
+export function todayAccountKpiViews(state, now) {
+  var CALIBER = "账号口径：当日最终状态，每账号恰计一次（重试不重复计数）；"
+    + "与「今日成功率」的签到事件口径（重试多次分别计数）不同";
+  if (state.signFailed) {
+    var err = {
+      failed: true, value: "—", sup: null, sub: "签到事件加载失败",
+      subTitle: "", valueTitle: "", pill: null, alert: false,
+    };
+    return { success: err, fail: err };
   }
-  var acc = Number(cap.accounts) || 0;
-  var amax = Number(cap.accounts_max) || 0;
-  var bd = cap.accounts_breakdown || {};
-  var audit = Number(cap.accounts_audit) || 0;
-  var note = "均不含已删除账号";
-  if (audit > 0) note += "；另有 " + num(audit) + " 个未通过审核的账号未计入容量";
-  var pct = pctOf(acc, amax);
+  if (!state.signLoaded) return null;
+  var today = fmtDate(now);
+  var fin = state.dayFinal[today] || { success: 0, fail: 0, skip: 0, unknown: 0, total: 0 };
   return {
-    failed: false,
-    value: num(acc),
-    sup: amax > 0 ? "/" + num(amax) : null,
-    sub: "正常 " + num(bd.normal) + " · 用户暂停 " + num(bd.user_paused) + " · 账密暂停 " + num(bd.cred_paused),
-    subTitle: note,
-    valueTitle: "",
-    pill: { text: amax > 0 ? pct + "%" : "未设上限", cls: pct >= 90 ? "down" : "info", title: "" },
-    alert: false,
-  };
-}
-
-/** 注册用户 KPI 的完整视图。 */
-export function usersKpiView(cap) {
-  if (!cap) {
-    return { failed: true, value: "—", sup: null, sub: "容量读取失败", subTitle: "", valueTitle: "", pill: null, alert: false };
-  }
-  var users = Number(cap.users) || 0;
-  var umax = Number(cap.users_max) || 0;
-  var pct = pctOf(users, umax);
-  return {
-    failed: false,
-    value: num(users),
-    sup: umax > 0 ? "/" + num(umax) : null,
-    sub: umax > 0 ? "剩余注册名额 " + num(Math.max(0, umax - users)) : "未设上限",
-    subTitle: umax > 0 ? "按含未提交账号的空用户计" : "",
-    valueTitle: "",
-    pill: { text: umax > 0 ? pct + "%" : "未设上限", cls: pct >= 90 ? "down" : "info", title: "" },
-    alert: false,
+    success: {
+      failed: false, value: num(fin.success), sup: null,
+      sub: "按账号统计 · 重试不重复计数", subTitle: CALIBER, valueTitle: CALIBER,
+      pill: null, alert: false,
+    },
+    fail: {
+      failed: false, value: num(fin.fail), sup: null,
+      sub: "按账号统计 · 重试不重复计数", subTitle: CALIBER, valueTitle: CALIBER,
+      pill: null, alert: false,
+    },
   };
 }
 

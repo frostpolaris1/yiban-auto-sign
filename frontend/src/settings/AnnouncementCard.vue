@@ -108,7 +108,7 @@ defineExpose({ isDirty: () => dirty.value, save, applyRemote });
     </div>
     <p class="set-tip" :class="{ 'set-bad': tip.bad }" id="set-ann-tip" role="status">{{ tip.text }}</p>
     <div class="form-actions">
-      <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" :hidden="!dirty" @click="save()">保存草稿</button>
+      <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" :disabled="!dirty" @click="save()">保存草稿</button>
       <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear" @click="clear">清除草稿</button>
       <span class="spacer" />
       <button

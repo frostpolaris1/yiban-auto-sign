@@ -198,6 +198,45 @@ class SettingsPageTest(unittest.TestCase):
         self.assertNotIn("secret_masked", _read(os.path.join(SETTINGS_SRC, "NotifyCard.vue")).split("<template>")[-1],
                          "模板里出现 secret_masked —— 脱敏密钥不得进 DOM")
 
+    # ---- A16 / A10 / A9（phase3 语义对照批） ----
+
+    def test_save_buttons_are_persistent_not_hidden(self):
+        """六个分区的保存按钮常驻：无改动 / 无权限时用 disabled，不再 hidden（A16）。
+
+        原实现 `:hidden="!dirty"` 让按钮随脏状态出现/消失——提示「改动需点保存」时屏幕上
+        可能根本没有那个按钮，按钮位置也会跳动。改为常驻 + 无改动时 disabled。
+        """
+        blob = _settings_source_blob()
+        for btn in ("ss-save", "set-ann-save", "sn-save", "sm-save", "set-cap-save", "sh-save"):
+            line = next((ln for ln in blob.splitlines() if f'id="{btn}"' in ln), None)
+            self.assertIsNotNone(line, f"找不到保存按钮 {btn}")
+            self.assertNotIn(":hidden", line, f"{btn} 仍在无改动时隐藏（应常驻 + disabled）")
+            self.assertIn(":disabled", line, f"{btn} 常驻后缺 disabled（无改动/无权限时应禁用）")
+
+    def test_notify_save_success_tip_lands_after_reload(self):
+        """推送保存成功文案必须写在回读 load() **之后**（A10）。
+
+        load() 末尾 applyNotify() 无条件清空 sn-tip；先提示后重载会把「推送配置已保存」
+        整条抹掉、看起来从未保存过。与邮件 finish 同一顺序陷阱。
+        """
+        src = _read(os.path.join(SETTINGS_SRC, "ops.js"))
+        start = src.index("function notifySave(")
+        body = src[start:src.index("\n  }", start)]
+        self.assertIn("推送配置已保存", body, "notifySave 成功路径没有成功文案")
+        self.assertIn("load().then(function () {", body, "notifySave 成功路径未在 load() 回读后收尾")
+        self.assertGreater(
+            body.index("推送配置已保存"), body.index("load().then(function () {"),
+            "notifySave 的成功文案写在回读之前 —— 会被 applyNotify 的清屏抹掉",
+        )
+
+    def test_mail_sentinel_is_not_rendered_as_literal(self):
+        """后端哨兵 `<未配置>` 不得原样上屏（A9）：状态行与 placeholder 都要归一。"""
+        model = _read(os.path.join(SETTINGS_SRC, "model.js"))
+        notify = _read(os.path.join(SETTINGS_SRC, "NotifyCard.vue"))
+        self.assertIn("sentinelText", model, "settings/model.js 缺哨兵归一 helper")
+        self.assertIn("adminToPlaceholder", notify,
+                      "NotifyCard 的收件人 placeholder 未走哨兵归一（会渲染 <未配置>）")
+
 
 if __name__ == "__main__":
     unittest.main()

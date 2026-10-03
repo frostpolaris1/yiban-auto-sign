@@ -271,7 +271,12 @@ class FrontendConsumesAuditFieldTest(_Base):
     """前端必须消费 accounts_audit（否则"账号管理里有很多行、容量只算 N 个"无法解释）。
 
     2026-10-03：数据看板页迁到 Vue，容量口径搬到 `frontend/src/dashboard/model.js`
-    （纯 JS）；判据与"两处展示点"的意图不变，只是换了源文件路径。
+    （纯 JS）；判据与"展示点"的意图不变，只是换了源文件路径。
+
+    2026-10-04（A17）：总览 KPI 去重——原「活跃账号 / 注册用户」与下方容量卡同源同数，
+    已换成今日成功/失败账号（账号口径），容量数字只在「账号与用户容量」卡出现一次。
+    故 accounts_audit 的展示点从两处收敛为一处（capacityText 的"未通过审核 N 个未计入"）；
+    仍要求被消费，防止这个解释性字段被整体删掉。
     """
 
     @classmethod
@@ -283,8 +288,8 @@ class FrontendConsumesAuditFieldTest(_Base):
 
     def test_dashboard_reads_audit_count(self):
         self.assertIn("accounts_audit", self.js)
-        # 账号容量行与 KPI 副文案都要带上（两处展示点，只改一处会让口径自相矛盾）
-        self.assertGreaterEqual(self.js.count("accounts_audit"), 2, self.js.count("accounts_audit"))
+        # 容量行必须带上未过审数（唯一展示点；KPI 去重后不再重复消费同一字段）
+        self.assertGreaterEqual(self.js.count("accounts_audit"), 1, self.js.count("accounts_audit"))
 
 
 if __name__ == "__main__":

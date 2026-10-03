@@ -368,6 +368,14 @@ export function clean(v) {
   return (!s || s.indexOf("*") !== -1 || s.charAt(0) === "<") ? "" : s;
 }
 
+/* 后端未配置哨兵（如 "<未配置>"）以 "<" 开头：那是机器标记、不是给用户看的文案，
+   直出会像 HTML 标签。展示路径统一经此归一；与 clean 不同，打码串（a***@x.com）
+   是**要展示**的，故只剥前导 "<"，不碰 "*"。 */
+export function sentinelText(v) {
+  var s = String(v == null ? "" : v).trim();
+  return s && s.charAt(0) !== "<" ? s : "";
+}
+
 /* 稳定 id：形状与后端校验（^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$）同口径。
    条目身份是 id 而不是数组位置——"留空沿用"与"改 host 不带走旧授权码"都靠它。 */
 export function newSmtpId() {
@@ -390,7 +398,7 @@ export function smtpRowsFrom(list) {
       id: smtpRowId(e),
       host: String(e.host || ""),
       port: Number(e.port || 465),
-      user0: String(e.user || "留空沿用"),
+      user0: sentinelText(e.user) || "留空沿用",
       has_pass: !!e.has_pass,
       // 可编辑值：host/port 回填；user/pass 恒空（脱敏值只作 placeholder）
       user: "",
@@ -436,10 +444,17 @@ export function mailStatusText(data) {
   data = data || {};
   var smtpEmpty = !(data.smtps && data.smtps.length);
   if (data.enabled) {
-    return "已开启 · 发件 " + (data.user || "未配置") + " · 告警收件 " + (data.admin_to || "未配置") +
+    return "已开启 · 发件 " + (sentinelText(data.user) || "未配置") + " · 告警收件 "
+      + (sentinelText(data.admin_to) || "未配置") +
       (smtpEmpty ? " · 注意：无发信 SMTP，告警邮件一封都发不出去" : "");
   }
   return smtpEmpty ? "未开启（未配置发件 SMTP）" : "未开启（已配置发件 SMTP，可由主管理员开启）";
+}
+
+/* admin_to 的 placeholder：已配置时给打码真值（绝不回填 value），未配置（含后端哨兵
+   "<未配置>"）时给可读引导——哨兵直出会被当成 HTML 标签。 */
+export function adminToPlaceholder(data) {
+  return sentinelText((data || {}).admin_to) || "尚未配置，填写管理员邮箱";
 }
 
 export function mailSnapshot(data) {
