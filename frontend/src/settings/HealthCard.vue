@@ -107,7 +107,7 @@ defineExpose({ isDirty: () => dirty.value, save });
     </div>
     <p class="set-tip" :class="{ 'set-bad': tip.bad }" id="sh-tip" role="status">{{ tip.text }}</p>
     <div class="form-actions">
-      <button type="button" class="btn btn--primary btn--sm" id="sh-save" :hidden="!dirty || !isMaster" @click="save()">保存探针设置</button>
+      <button type="button" class="btn btn--primary btn--sm" id="sh-save" :disabled="!dirty || !isMaster" @click="save()">保存探针设置</button>
     </div>
   </section>
 </template>

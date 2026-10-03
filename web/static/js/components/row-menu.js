@@ -86,6 +86,13 @@
     // closeAll() 走 detachNow 的立即拆除路径，两者分工不同、不可互替。
     function restoreMenu() {
       if (!menu.classList.contains(FLOAT_CLASS)) return;
+      // 菜单 portal 到 body，关闭后会被移回 display:none 的 .dd-wrap：仍持焦点的菜单项
+      // 随之隐藏 → 焦点跌回 body。ARIA APG 的 menu button 模式要求把焦点交还触发器，
+      // 且必须在摘类/搬家**之前**判断（搬回 display:none 后已不可聚焦）。
+      if (menu.contains(document.activeElement)) {
+        var back = home ? home.querySelector("[data-dropdown]") : null;
+        if (back) back.focus();
+      }
       menu.classList.remove("is-shown");
       var my = ++closeTick;
       function done() {

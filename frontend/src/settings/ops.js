@@ -332,7 +332,9 @@
     }).then(function () {
       ctx = c;
       if (typeof c.onSaved === "function") c.onSaved();
-      return load().then(function () { return true; });
+      // 成功文案必须等回读完成后再写：load() 末尾 applyNotify() 无条件清空 sn-tip，
+      // 先提示后重载会把刚落下的一句整条抹掉、看起来从未保存过。与邮件 finish 同顺序。
+      return load().then(function () { ctx = c; setTip("推送配置已保存", false); return true; });
     }, function (e) {
       ctx = c;
       if (e && e.canceled) setTip("", false);

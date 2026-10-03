@@ -763,7 +763,8 @@ onMounted(async () => {
 
         <label v-if="isAdmin && !formEditing" class="field">
           <span class="field-label">绑定用户（选填）</span>
-          <el-select v-model="formEmail" style="width: 100%">
+          <!-- filterable：可绑定用户最多 50 个（后端上限），不给筛选就只能滚。 -->
+          <el-select v-model="formEmail" filterable style="width: 100%">
             <el-option v-for="(it, idx) in emailItems" :key="idx" :value="it.v ?? ''" :label="it.t ?? it.group ?? it.empty ?? ''" />
           </el-select>
         </label>
