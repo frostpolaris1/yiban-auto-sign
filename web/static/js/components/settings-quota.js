@@ -7,7 +7,7 @@
 
    两张卡：
      1) 容量配额（本文件的主职）：只保留上限编辑——只读用量三分类与容量估算已删除，
-        同口径展示改由「数据总览」页承担（pages/data_dashboard.js 的 capacityText：账号/用户容量
+        同口径展示改由「数据总览」页承担（frontend/src/dashboard/model.js 的 capacityText：账号/用户容量
         + accounts_breakdown 三分类）；/accounts 页也不再展示容量，容量信息已整体并入总览；
      2) 容量建议与耗时实测：建议值与实测共用容量数据
         （计入容量的账号数、有效窗口、实测容量），同类功能同屏；数据经 applyExecutors()
