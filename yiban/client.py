@@ -28,7 +28,6 @@ from yiban import masking, security
 from yiban import status as yiban_status
 from yiban.fyiban import headers as fyiban_headers
 from yiban.fyiban import protocol as fyiban_protocol
-from yiban.fyiban import waf as fyiban_waf
 from yiban.fyiban.algo import generate_position_in_polygon
 from yiban.store.accounts import account_still_signable
 
@@ -210,19 +209,6 @@ class YibanClient:
 
     def _clear_session_cache(self):
         self._session_store.clear()
-
-    # ---- 反爬挑战（实现见 yiban/fyiban/waf.py）----
-    def _is_ydclearance_challenge(self, resp):
-        return fyiban_waf.looks_like_challenge(
-            resp.text, resp.headers.get("Set-Cookie", "")
-        )
-
-    def _solve_ydclearance(self, text):
-        """纯 Python 解析易盾 WAF 挑战（实现与来源见 yiban/fyiban/waf.py）。
-
-        白名单是**本项目的安全策略**，以参数注入解析器——第三方层不内联安全校验。
-        """
-        return fyiban_waf.solve_ydclearance(text, allow_url=security.is_fyiban_url)
 
     # ---- 签到 ----
     def signin(self):

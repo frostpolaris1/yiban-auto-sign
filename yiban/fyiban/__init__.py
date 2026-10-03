@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """**功能**
-**第三方隔离层**：收录沿用自上游的算法与协议特征（逐块归属见 `PROVENANCE.md`）——
-`algo.py` / `protocol.py` 沿用 `onefeifan/fyiban`（AGPL-3.0）；`waf.py` 的挑战形状正则
-沿用 `sdk250/Auto-Test`（无 LICENSE）；其"三段字节变换"为本项目重写的纯 Python 运算。
+**第三方隔离层**：收录沿用自上游的算法与平台特征（逐块归属见 `PROVENANCE.md`）——
+`algo.py` / `protocol.py` 沿用 `onefeifan/fyiban`（AGPL-3.0）；`headers.py` 的请求头
+特征同源；`waf.py` 只做挑战**检测**（求解器已按裁决删除）。
 
 成员与来源：
 - `algo.py`     多边形内随机定位点（剪耳三角剖分 + 三角形内均匀采样，退化时回退缩放质心）
 - `headers.py`  易班 App 请求头与版本特征（`HEADERS` / `KILLYIBAN_HEADERS`）
-- `waf.py`      易盾 WAF（`https_ydclearance`）挑战的纯 Python 解析
-- `protocol.py` 登录握手与签到接口的端点、请求形状与响应解析
+- `waf.py`      风控挑战**检测**（委托 vendored 库，不再求解）
+- `protocol.py` 登录握手与签到接口的**编排**（解析/构造委托 vendored 库）
+
+**洁净室协议库**：登录/签到链路的纯解析与构造已换核到 `yiban/_vendor/yiban_protocol`
+（MIT，来源与同步纪律见 `yiban/_vendor/VENDORED.md`）；本层只保留编排与平台特征。
 
 **归属**
 本项目唯一的**非原创代码圈**：把第三方部分圈在一处，使它可以独立核对、替换或升级。
@@ -27,7 +30,7 @@
 
 **两条纪律（改本层前先读）**：
 1. **安全策略靠注入，不内联**：URL 白名单、脱敏、日志口径等本项目自有的安全校验
-   一律由调用方以参数传入（如 `waf.solve_ydclearance(text, allow_url=...)`）。
+   一律由调用方以参数传入（协议层每步跳转经注入的 `policy.require_trusted`）。
    第三方层不得反向依赖 `yiban.store` / `yiban.security` / web 层。
 2. **许可与来源随代码走**：`LICENSE`（AGPL-3.0 全文副本）与 `PROVENANCE.md`
    必须留在本目录——它声明了衍生来源，也是 AGPL §5 要求的"修改声明"。
