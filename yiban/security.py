@@ -14,8 +14,8 @@
 - `is_yiban_trusted_url` —— **宽松**白名单：登录链路要跟随服务端下发的跳转，
   只放行 `yiban.cn` / `uyiban.com` 体系的 https 链接，防服务端被劫持时把登录态导流；
 - `is_fyiban_url` —— **严格**白名单：ydclearance 挑战页吐出的跳转目标，主机必须精确
-  等于 `f.yiban.cn`；
-- `is_waf_blocked` —— **挑战形态**（`yiban/fyiban/waf.looks_like_challenge` 的特征对）不受
+  等于 `f.yiban.cn`（求解器删除后仅作为白名单边界测试与历史契约保留）；
+- `is_waf_blocked` —— **挑战形态**（`yiban/fyiban/waf.looks_like_challenge` 的特征并集）不受
   长度限制一律判拦；**仅关键词**命中才按**短响应**设界，避免把含"风控""拦截"字样的
   正常法律文本误判成拦截页。
 - `HARD_FAIL_TOKENS` / `is_hard_fail_message` / `hard_fail_pattern` —— 失败分类的**唯一
@@ -62,9 +62,10 @@ WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 WAF_BLOCKED_MESSAGE = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
 
 # 硬失败词元（失败分类的**唯一真值源**，重试档位与探针判据都从这里取）：
-# - "ydclearance"：挑战解析失败（`yiban/fyiban/waf.solve_ydclearance` 的全部 raise 文案
-#   前缀）与挑战跳转白名单拒绝——同一输入必然得出同一结果，重试只会把同一死页重发；
-#   会话残片停在未通过的挑战链上，没有复用价值（attempts 据此联动清缓存）。
+# - "ydclearance"：挑战检测命中的响亮失败文案（`yiban/fyiban/waf.CHALLENGE_DETECTED_MESSAGE`
+#   的前缀词元；求解器已按既定裁决删除，检测命中即失败）与挑战跳转白名单拒绝——同一输入
+#   必然得出同一结果，重试只会把同一死页重发；会话残片停在未通过的挑战链上，没有复用价值
+#   （attempts 据此联动清缓存）。
 # - "Expecting value"：requests 对非 JSON 响应调 .json() 的固定报错开头——JSON 期望
 #   端点返回了整页 HTML（典型为漏过关键词检测的长拦截页），属响应形状问题，与凭据和
 #   网络瞬断都无关，同样重试无用。
@@ -95,7 +96,6 @@ _WHITELIST_MESSAGES = {
     "login_reurl": "登录 reUrl 不在白名单",
     "verify_request": "verify_request 跳转不在白名单",
     "final_auth": "最终认证跳转不在白名单",
-    "ydclearance": "ydclearance 跳转目标不在白名单",
 }
 
 
@@ -200,9 +200,6 @@ class ProtocolPolicy:
     只有 URL、响应对象与文本，不自己做域名比对，也不自己拼日志文案。
     """
 
-    #: 严格白名单判定函数，供挑战解析器（`fyiban.waf`）注入使用
-    allow_fyiban_url = staticmethod(is_fyiban_url)
-
     # ---- 白名单 ----
     def require_trusted(self, url, site):
         """宽松白名单校验；不合格则抛错并指明步骤。"""
@@ -213,11 +210,6 @@ class ProtocolPolicy:
             # 入口 URL 只落 scheme://host[:port]：它的 query 可能带 OAuth 参数
             message = f"{message}: {url_desc(str(url))}"
         raise RuntimeError(message)
-
-    def require_fyiban(self, url, site="ydclearance"):
-        """严格白名单校验（挑战页跳转目标）。"""
-        if not is_fyiban_url(url):
-            raise RuntimeError(_WHITELIST_MESSAGES.get(site, "跳转 URL 不在白名单"))
 
     def is_logged_in_redirect(self, location):
         """302 Location 是否指向"已登录"标识页（`f.yiban.cn/iapp7463`，允许 query）。
