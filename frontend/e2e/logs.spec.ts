@@ -15,6 +15,17 @@ function dates(): { today: string; older: string } {
   return { today: fmt(now), older: fmt(new Date(now.getTime() - 3 * 86400000)) };
 }
 
+/** 看板热力图月份标签（`YYYY 年 M 月`）按 delta 月平移后的期望串（行为钉用）。 */
+function shiftLabel(label: string, delta: number): string {
+  const m = label.match(/(\d{4})\s*年\s*(\d{1,2})\s*月/);
+  if (!m) throw new Error("无法解析月份标签：" + label);
+  let year = Number(m[1]);
+  let month = Number(m[2]) + delta;
+  year += Math.floor((month - 1) / 12);
+  month = ((((month - 1) % 12) + 12) % 12) + 1;
+  return `${year} 年 ${month} 月`;
+}
+
 test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、三分区、无数据日期的空态", async ({ page }) => {
   // 整个套件只在这里走一次真实登录表单（同 IP 10 秒内第 4 次访问 /login 会被
   // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）
@@ -59,7 +70,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await expect(logPane.locator(".logs-empty")).toContainText("查看"); // 「最近有数据日期」跳转出口
 });
 
-test("日志页：日期导航与事件表（blocking 回归守卫 + 事件真实渲染）", async ({ page }) => {
+test("管理端数据面：日志页日期导航/事件表 + 数据看板（复用同一管理员会话）", async ({ page }) => {
   // 会话走 API 登录（表单登录已在上一条覆盖）
   const resp = await page.request.post("/api/login", { data: { username: ADMIN_USER, password: ADMIN_PASS } });
   expect(resp.ok()).toBeTruthy();
@@ -109,4 +120,81 @@ test("日志页：日期导航与事件表（blocking 回归守卫 + 事件真�
   await expect(probePane.locator(".badge").nth(0)).toHaveAttribute("title", "failed");
   await expect(probePane.locator(".badge").nth(1)).toHaveText("正常");
   await expect(probePane.locator(".badge").nth(1)).toHaveAttribute("title", "ok");
+
+  // ======== 数据看板（P3 整页迁 Vue）——**并进本用例复用同一次管理员登录** ========
+  // 为什么合并在日志用例里：/api/login 有 60 秒窗口 10 次/IP 的独立限速，整套 e2e 共用
+  // 同一 Flask 实例与 127.0.0.1，单开一条看板用例会多一次登录、把后面的用例顶到 429。
+  // 种子数据与本文件同源（今天 2 条签到：success + failed；两个 active 账号；一个用户），
+  // 故看板口径可精确断言：成功率 50.0%、趋势 成功 2 · 失败 1 · 跳过 0、分布总数 1。
+  await page.goto("/data/dashboard");
+  await expect(page.locator("#dashboard-root")).toBeVisible();
+
+  await expect(page.locator("#kpi-accounts-value")).toContainText("2");
+  await expect(page.locator("#kpi-users-sub")).toContainText("剩余注册名额 499");
+  await expect(page.locator("#kpi-rate-value")).toContainText("50.0");
+  await expect(page.locator("#kpi-rate-sub")).toContainText("成功 1 · 失败 1");
+  await expect(page.locator("#kpi-rate-pill")).toContainText("无昨日对比");
+  await expect(page.locator("#kpi-pending-value")).toContainText("0");
+
+  // 三张图：Canvas 真实绘制（Chart.js 由 vendor defer 先行加载）+ 元数据行
+  await expect(page.locator("#trend-coverage")).toHaveText("最近 30 天 · 仅真实签到");
+  const trendBox = await page.locator("#chart-trend").boundingBox();
+  expect(trendBox && trendBox.width > 100 && trendBox.height > 50).toBeTruthy();
+  await expect(page.locator("#trend-meta")).toContainText("日均签到事件（次）");
+  await expect(page.locator("#dist-meta .chart-meta-cell").first()).toContainText("1");
+  await expect(page.locator("#slots-meta")).toContainText("最热门时段");
+
+  // 热力图：今天格唯一、换月标签变化、脚注口径文案
+  await expect(page.locator("#mini-cal .mini-cal-wd")).toHaveCount(7);
+  await expect(page.locator("#mini-cal .mini-cal-day.is-today")).toHaveCount(1);
+  await expect(page.locator("#cal-note")).toContainText("不含探针");
+  const calBefore = await page.locator("#cal-label").innerText();
+  await page.locator("#cal-prev").click();
+  await expect(page.locator("#cal-label")).not.toHaveText(calBefore);
+
+  // 换月状态机行为钉（code-review 必修）：动效只是视觉，月份状态必须**同步**推进，且任何
+  // 一次切换都要取消在途切换。用同一 JS 任务内派发合成 click（detail=1 = 鼠标 / detail=0 =
+  // 键盘）确保两次事件都落在 160ms 动效窗口内、可复现。
+  // ① 连点两次「下一月」→ 净进 2 个月：若把 calMonth 赋值推迟到 enter()，两次都从旧月算
+  //    next，seq=2 覆盖 seq=1，只会进 1 个月。
+  const m0 = await page.locator("#cal-label").innerText();
+  await page.evaluate(() => {
+    const b = document.querySelector("#cal-next") as HTMLElement;
+    for (let i = 0; i < 2; i++) b.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+  });
+  await expect(page.locator("#cal-label")).toHaveText(shiftLabel(m0, 2));
+  // ② 鼠标「上一月」动效在途时按键盘（即时分支）→ 以键盘目标为准（-1 后 +1 回到原月）。
+  //    若即时分支不自增 seq，在途 enter() 会把月份改回 -1，键盘操作被静默丢弃。
+  const m1 = await page.locator("#cal-label").innerText();
+  await page.evaluate(() => {
+    const prev = document.querySelector("#cal-prev") as HTMLElement;
+    const next = document.querySelector("#cal-next") as HTMLElement;
+    prev.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    next.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+  });
+  await expect(page.locator("#cal-label")).toHaveText(m1);
+
+  // 容量卡与运行状态
+  await expect(page.locator("#capacity-accounts")).toContainText("2 / 200");
+  await expect(page.locator("#capacity-users")).toContainText("1 / 500");
+  await expect(page.locator("#health-clock")).toContainText("时钟已同步");
+  await expect(page.locator("#health-global-pause")).toContainText("正常运行");
+  await expect(page.locator("#health-announcement")).toContainText("暂无公告");
+  await expect(page.locator("#health-ping")).toContainText("尚未检测");
+  await page.locator("#ping-btn").click();
+  await expect(page.locator("#health-ping .badge")).toBeVisible();
+
+  // 失败降级（同一会话）：拦截签到事件接口 → 页级状态条 + 卡内错误行
+  await page.route("**/api/admin/sign-events**", (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "boom" }),
+  }));
+  await page.reload();
+  await expect(page.locator("#dash-status")).toBeVisible();
+  await expect(page.locator("#dash-status-text")).toContainText("部分数据加载失败");
+  await expect(page.locator("#dash-retry-btn")).toBeVisible();
+  await expect(page.locator("#kpi-rate-sub")).toContainText("签到事件加载失败");
+  await expect(page.locator("#cal-note")).toContainText("签到事件加载失败");
+  await expect(page.locator("[data-overlay='trend']")).toContainText("签到事件加载失败");
 });

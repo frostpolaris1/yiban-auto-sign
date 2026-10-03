@@ -81,6 +81,7 @@ interface RawShell {
   openModal?: (o: ModalOptions) => unknown;
   openPasswordModal?: (d: string, cb: (p: string) => void) => void;
   maskEmail?: (e: string) => string;
+  getServerNow?: () => Date;
   prefs?: Shell["prefs"];
   BASE?: string;
 }
@@ -250,6 +251,19 @@ export function maskPhone(phone: string): string {
 export function setOwnerEmailVisible(v: boolean): void {
   const fn = raw().prefs?.setOwnerEmailVisible;
   if (fn) fn(v);
+}
+
+/**
+ * 服务器校准后的"当前时刻"（**委托 `YB.getServerNow`**，core.js 的唯一实现：它按
+ * `/api/clock` 下发的偏移量平移客户端时钟）。
+ *
+ * 为什么必须借外壳：数据看板的"今日成功率 / 昨日对比 / 日历今天格"都按服务器日期判定，
+ * 直接用 `new Date()` 会在客户端时钟漂移时把"今天"算错（与后端结算日错位）。
+ * 外壳缺失时退回本地时间（组件单测场景）。
+ */
+export function getServerNow(): Date {
+  const fn = (raw() as { getServerNow?: () => Date }).getServerNow;
+  return fn ? fn() : new Date();
 }
 
 /**
