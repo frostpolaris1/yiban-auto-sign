@@ -30,7 +30,9 @@
 谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
 前端调用点：无直接调用点（隔离层）。
 """
+import contextlib
 import logging
+import re
 from typing import NamedTuple, Protocol
 from urllib.parse import urljoin
 
@@ -160,7 +162,7 @@ def encrypt_password(password, public_key_pem):
         # 客户端以 bytearray 持有密码（可原位清零），库接口要求 str：此处产生一份
         # 短暂不可变副本，尝试结束后由 YibanClient._wipe_credentials 覆写 bytearray 本体。
         password = bytes(password).decode("utf-8")
-    if len(password) > _RSA1024_MAX_BYTES:
+    if len(password.encode("utf-8")) > _RSA1024_MAX_BYTES:
         raise ValueError(
             "密码过长: RSA-1024 公钥单次最多加密 117 字节（约 39 个中文字符），"
             "当前密码无法加密提交，请缩短密码或联系管理员处理"
@@ -171,15 +173,26 @@ def encrypt_password(password, public_key_pem):
 def parse_login_page(text, *, flow):
     """解析授权页，返回 `(page_use, RSA 公钥对象)`；缺失/损坏一律 `(None, None)`。
 
-    委托 vendored `parse_authorize_page`（严格靠 `id="key"` 定位公钥、`var page_use = …`
-    取一次性令牌）。`flow` 仅为兼容既有调用签名保留：两条登录流程共用同一页面解析
-    契约，不再各持一份正则。key 命中但损坏（缺 PEM 头尾/非法 DER）与"没命中"同价返回
-    `(None, None)`——底层 `ParseError` 不得越过本函数的返回契约。
+    主路径委托 vendored `parse_authorize_page`（killyiban 页契约，TASK-C 实拍：
+    `var page_use = …` + `id="key"` 隐藏 input 内多行 PEM）。`flow=="legacy"` 允许一次
+    **宽容重试**：旧 legacy 页的令牌赋值不要求 `var` 关键字；回退的令牌定位与主路径
+    **不同源**（库失败后独立找 `page_use = …` 并补 `var ` 重试同一条库路径），默认流程
+    页面结构变化、主路径失效时不致两路同时失效。key 命中但损坏（缺 PEM 头尾/非法 DER）
+    与"没命中"同价返回 `(None, None)`——底层 `ParseError` 不得越过本函数的返回契约。
     """
     try:
         page = parse_authorize_page(text)
-    except ParseError:
-        return None, None
+    except ParseError as exc:
+        page = None
+        if flow != "legacy" or getattr(exc, "field", "") != "page_use":
+            return None, None
+        m = re.search(r"page_use\s*=\s*['\"]", text or "")
+        if m is None:
+            return None, None
+        try:
+            page = parse_authorize_page(text[: m.start()] + "var " + text[m.start():])
+        except ParseError:
+            return None, None
     try:
         return page.page_use, RSA.import_key(page.public_key_pem)
     except (ValueError, TypeError, IndexError):  # 损坏 key：导入抛底层异常
@@ -250,7 +263,11 @@ def _validate_sign_position(data):
     rng = data_obj.get("Range")
     if not isinstance(rng, dict) or "StartTime" not in rng or "EndTime" not in rng:
         return
-    parse_sign_position(data_obj)
+    # 解析是**观察性**的：库契约逐点强制 Id/Type/Title/LngLat，而客户端只消费
+    # Name/Points/Address；畸形候选点不得把（可能幂等成功的）拉取翻成失败，
+    # 也不得落普通重试档——回退原始 data，由既有容错分支处置。
+    with contextlib.suppress(ParseError):
+        parse_sign_position(data_obj)
 
 
 # ---------------------------------------------------------------------------

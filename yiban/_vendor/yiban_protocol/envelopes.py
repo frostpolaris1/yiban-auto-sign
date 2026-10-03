@@ -14,7 +14,10 @@ from typing import Any
 from .errors import ParseError, SessionExpired
 
 # 命中任一即判定为疑似挑战页。
-_CHALLENGE_MARKERS = ("ydclearance", "fengkongcloud", "captcha")
+_CHALLENGE_MARKERS = ("ydclearance", "fengkongcloud")
+# "captcha" 是弱信号：正常页面引用 captcha.js 之类也会命中子串——只在 HTML 上下文
+# 里才算（与 acw_sc 同门槛），否则违背本函数"误报不可接受"的自我约束。
+_WEAK_HTML_MARKERS = ("captcha",)
 # 用于判定“响应体是 HTML”的标记。
 _HTML_MARKERS = ("<html", "<!doctype", "<script")
 
@@ -115,5 +118,7 @@ def looks_like_challenge(body: str | bytes) -> bool:
     if any(marker in lowered for marker in _CHALLENGE_MARKERS):
         return True
     if "acw_sc" in lowered and any(marker in lowered for marker in _HTML_MARKERS):
+        return True
+    if "captcha" in lowered and any(marker in lowered for marker in _HTML_MARKERS):
         return True
     return False
