@@ -2253,9 +2253,14 @@ def create_app(host=None):
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
-        # 注意：不使用 CSP nonce——模板含大量内联 onclick 处理器（无法加 nonce），
-        # nonce 存在时 'unsafe-inline' 会被浏览器忽略导致全部处理器失效。
-        # 后续可将内联事件迁移到 addEventListener 后再启用 nonce 防护。
+        # 注意：不使用 CSP nonce——模板含内联 <script> 块（无 src；theme_boot 为主要载体，
+        # 另有若干其它模板），nonce 存在时 'unsafe-inline' 会被浏览器忽略，
+        # 这些内联块会全部失效（theme_boot 静默失效）。真因是内联 <script> 块（主载体）；
+        # 此外内联事件属性（onclick / onerror 共 6 处）也是 nonce 的阻碍——nonce/hash
+        # 不适用于事件处理器属性，撤掉 'unsafe-inline' 后这 6 处同样失效。将来要上 nonce：
+        # 上述两者都得先处理——先把这些内联 <script> 块外移为带 src 的静态文件（或逐块
+        # nonce 化），同时把内联事件属性迁到 addEventListener（或按需改用 'unsafe-hashes'）；
+        # 仅把内联事件迁移到 addEventListener 并不够——内联 <script> 块仍会被 nonce 拦掉。
         resp.headers["X-Content-Type-Options"] = "nosniff"
         # 与边缘 nginx 保持一致（SAMEORIGIN）：防止子路径(经 nginx 反代)下出现
         # "应用 DENY / nginx SAMEORIGIN" 双头取值不一致。SAMEORIGIN 仍防点击劫持，
