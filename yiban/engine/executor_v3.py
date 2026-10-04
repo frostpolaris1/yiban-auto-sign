@@ -672,33 +672,40 @@ async def _lane(queue, lane_id, ctx):
 _TAKEN_OVER_PEERS: set = set()
 
 
-def _live_peer_owners(cfg, executor_id):
-    """**心跳仍存活**的兄弟执行体稳定槽位名（回收器的持有者豁免用，M17）。
+def _live_row_owners(day, executor_id):
+    """**在途 `claimed` 行**持有者中，心跳证明仍存活者的**稳定槽位名**（回收豁免名册，M17）。
 
-    与 `_widen_with_dead_peers` 共用同一份判活事实（`state_io.worker_presence` 的
-    四态），只是取**补集**并换个用法：那边是"`stale` 才并入它的分片"，这边是
-    "非 `stale` 的持有者手上的行不回收"。两处若各判一次就会漂移——并入了死主分片却
-    又回收活主手上的行，同一个账号两种结局。
+    名册**取自队列本身**（`queue_store.claimed_owners(day)`：当日所有 `claimed` 行的
+    `owner` 去重），不再枚举 `cfg["executors"]`——清单只是 HRW 分片候选集，兜底常驻身份
+    （`egress.fallback_owner()`）从不在其中；按清单枚举会让兜底手上的行整段落在豁免之外
+    （ba-p03-01：兜底与定时轮并发 ⇒ 同一账号当天两次真实登录，易班侧锁号）。
 
-    判活口径：只有 `stale`（有开始记录、无收尾且心跳过期）算死。监督进程未启动 /
-    单进程直跑时槽位没有当日记录，四态回 `idle`——不是 `stale`，即视为活着。
-    `idle` 的槽位当日没有 `claimed` 行，豁免与否都不改变回收结果，判成"活"是保守侧
-    （少回收 = 不会造成重复登录）。
+    判活走**同一份四态事实**（`state_io.worker_presence`），只把"有当日心跳且没判死"当活：
+    `running`（心跳新鲜）与 `finished`（当轮正常收尾）算活；`stale`（有开始记录、无收尾、
+    心跳过期）与 `idle`（当日无该身份记录）都算死。持有者握着当日 `claimed` 行却写不出
+    当日心跳，只能按"无人认领"回收——否则"兜底被强杀且心跳缺失"会变成当日漏签。
+    这与 `_widen_with_dead_peers` 同源：两处都只把 `stale`/无当日记录这类"没有活着的证据"
+    当死，差别只在遍历对象——那边遍历清单里**可能尚未起跑**的兄弟（`idle` 是常态，必须算
+    活），这边只遍历**确实领过活**的身份（写不出心跳即矛盾，必须算死）。
 
-    取 `(cfg, executor_id)` 而非 `ctx`：轮首那次回收发生在 `_Ctx` 构造之前，两处调用
-    点才能共用同一份判活。**不含本执行体自己**：本进程的行由更精确的 `ctx.held`
-    （在途集合）逐行豁免。若把自己的身份也塞进来，本进程"已领却没进 held"的泄漏行就
-    永远回收不到（当天该账号无人再签）；交给 `held` 既精确又保留自愈。轮首那次本进程
-    尚未领任何行（`held` 是空集），故不传 `held` 与传空集等价。
+    取 `(day, executor_id)` 而非 `ctx`：轮首那次回收发生在 `_Ctx` 构造之前，两处调用点
+    才能共用同一份判活。**按稳定槽位名排除本执行体自己**（`egress.stable_owner` 把历史代次
+    的运行时串也折回同一个稳定名）：本进程的在飞行由更精确的 `ctx.held` 逐行豁免；若把自己
+    的稳定名也塞进名单，本进程重启前遗留的旧代次行就永远回收不到（当天该账号无人再签）。
     """
     live = []
-    for peer in (cfg or {}).get("executors", ()):
-        if peer == executor_id:
+    seen = set()
+    for owner in queue_store.claimed_owners(day):
+        stable = egress.stable_owner(owner)
+        if not stable or stable == executor_id:
             continue
-        state, _seen = state_io.worker_presence(_worker_slot(peer), now=_now(),
-                                                role=_worker_role(peer))
-        if state != state_io.WORKER_STATE_STALE:
-            live.append(peer)
+        state, _seen = state_io.worker_presence(_worker_slot(owner), now=_now(),
+                                                role=_worker_role(owner))
+        if state in (state_io.WORKER_STATE_STALE, state_io.WORKER_STATE_IDLE):
+            continue
+        if stable not in seen:
+            seen.add(stable)
+            live.append(stable)
     return live
 
 
@@ -764,10 +771,11 @@ async def _refiller(queue, shards, ctx):
     同一循环按间隔驱动两件恢复动作（**函数内不持时间状态**，间隔常量在模块级）：
     - `reap_expired`：回收本业务日内租约**超出宽限期**的 `claimed` 行——不回收的话崩溃
       通道留下的行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"。**判活按
-      持有者身份**：本进程通道队列里在途的行（`held=ctx.held`）与心跳仍存活的兄弟执行体
-      （`live_owners=`）都豁免。少了这道豁免，队列里排队的条目会等过「租约 60s + 宽限
-      120s」被回收成 `pending`、再被本循环下一次 `claim_batch` 原地领回 ⇒ 同一账号当天
-      两次真实登录（M17，详见 `queue_store.reap_expired` 与 `_Ctx.held`）。
+      持有者身份**：本进程通道队列里在途的行（`held=ctx.held`）与队列里**每个仍在途持有者**
+      中判为活着者（`live_owners=`，见 `_live_row_owners`）都豁免。少了这道豁免，队列里排队
+      的条目会等过「租约 60s + 宽限 120s」被回收成 `pending`、再被本循环下一次
+      `claim_batch` 原地领回 ⇒ 同一账号当天两次真实登录（M17，详见
+      `queue_store.reap_expired` 与 `_Ctx.held`）。
       宽限期挡住的是"单次尝试比租约慢"，挡不住"在队列里排队"——两者的等待都没有上界。
       **只回收本业务日**（`day=ctx.day`）：不带 `day` 会连历史业务日的行一起回退成
       `pending`，而次日进程只按当日领取，那些行只会变成永不被领的空转行；跨午夜长轮次
@@ -798,8 +806,8 @@ async def _refiller(queue, shards, ctx):
                 and _mono() - last_recover >= RECOVER_SEC):
             queue_store.reap_expired(now=_stamp_ms(_now()), day=ctx.day,
                                      held=held,
-                                     live_owners=_live_peer_owners(ctx.cfg,
-                                                                    ctx.executor_id))
+                                     live_owners=_live_row_owners(ctx.day,
+                                                                  ctx.executor_id))
             shards = _widen_with_dead_peers(ctx, shards)
             if getattr(ctx, "requeue_during_run", False):
                 # 会话内回炉（默认档）：本轮刚弃权的 `retry:` 档行立刻翻回
@@ -1007,9 +1015,10 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 轮首回收同样要带**存活持有者豁免**（M17）：此刻本进程还没领任何行（`held` 是空
     # 集），但兄弟执行体可能正在跑上一段会话、在飞的行租约刚过期。不豁免就会把活着的
     # 持有者手上的行回收成 `pending`，本轮 `claim_batch` 领走它，而对方通道队列里还躺着
-    # 同一行 ⇒ 同一账号两次真实登录。判活与补货循环内那次同一份（`_live_peer_owners`）。
+    # 同一行 ⇒ 同一账号两次真实登录。判活与补货循环内那次同一份（`_live_row_owners`，
+    # 按**队列里在途持有者**判，兜底常驻身份也在这份名册里）。
     queue_store.reap_expired(now=_stamp_ms(_now()), day=day, phones=allowed_phones,
-                             live_owners=_live_peer_owners(cfg, executor_id))
+                             live_owners=_live_row_owners(day, executor_id))
     try:
         ctx = _Ctx(
             accounts={a.phone: a for a in accounts},

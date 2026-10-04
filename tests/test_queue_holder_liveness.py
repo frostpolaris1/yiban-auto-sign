@@ -7,9 +7,9 @@
      `live_owners`）、大在途集的分块绑定、以及"豁免只压住重复登录、不吃掉崩溃恢复"；
    - 引擎层 `_Ctx.held` 的登记与摘除时点、补货循环把两道豁免真正传下去。
 
-对应实现：yiban/store/queue_store.py（reap_expired、SQL_VAR_CHUNK、_chunks）、
-   yiban/engine/executor_v3.py（_Ctx.held、_lane 的 finally 摘除、_refiller 的接线、
-   _live_peer_owners）。
+对应实现：yiban/store/queue_store.py（reap_expired、claimed_owners、SQL_VAR_CHUNK、
+   _chunks）、yiban/engine/executor_v3.py（_Ctx.held、_lane 的 finally 摘除、_refiller
+   的接线、_live_row_owners）。
 
 关键断言：**同一账号当天只能被领一次**。判据不是"跑通了"，而是数"同一个手机号被
    `attempt_signin` 打了多少次"——回收器把仍躺在本进程通道队列里的行判死、回退
@@ -18,8 +18,8 @@
    排队等待时间不受租约约束（等通道/等限速/等逐账号 gap/等计划时刻都能等过
    租约 60s + 宽限 120s），因此"把 lease_until 加长"也不是答案——只有按持有者判活。
 
-依赖：临时 sqlite（sign_tasks 由 db.init_db 的迁移建表）+ 假时钟 + 打桩
-   attempt_signin；不发网络请求。整文件在本机执行，无 skip。
+   **名册来源的验收在 `tests/test_fallback_exempt_e2e.py`**：本文件钉存储层两道豁免与
+   通道内不重复登录；"名册取自队列（含兜底身份）而非执行体清单"由那份文件负责。
 """
 import asyncio
 import contextlib
@@ -34,10 +34,7 @@ from unittest import mock
 import db
 
 from yiban import clock, egress
-from yiban.engine import (
-    executor_v3,
-    state_io,
-)
+from yiban.engine import executor_v3
 from yiban.store import clock_meta, queue_store
 
 TEST_KEY = "a" * 64
@@ -251,158 +248,6 @@ class LiveOwnerExemptionTest(_StoreBase):
         self.assertEqual(queue_store.reap_expired(now=NOW, live_owners=["", "   ", None]),
                          1)
         self.assertEqual(self._row(phone)["state"], "pending")
-
-
-class LivePeerOwnerTest(unittest.TestCase):
-    """`_live_peer_owners` 与 `_widen_with_dead_peers` 共用同一份判活事实。"""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-peers-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        prev = os.environ.get("YIBAN_STATE_DIR")
-        os.environ["YIBAN_STATE_DIR"] = self.tmp
-
-        def _restore():
-            if prev is None:
-                os.environ.pop("YIBAN_STATE_DIR", None)
-            else:
-                os.environ["YIBAN_STATE_DIR"] = prev
-
-        self.addCleanup(_restore)
-
-    def _ctx(self, executors):
-        return SimpleNamespace(cfg={"executors": list(executors)}, executor_id=OWNER)
-
-    def test_running_peer_is_live_and_stale_peer_is_not(self):
-        with mock.patch.object(executor_v3, "_now", lambda: START):
-            for peer in ("worker-0@testhost", "worker-1@testhost"):
-                state_io.mark_worker_started(int(peer.split("-")[1].split("@")[0]),
-                                             now=START, role=egress.ROLE_WORKER)
-            for peer, slot in (("worker-0@testhost", 0), ("worker-1@testhost", 1)):
-                self.assertEqual(state_io.worker_presence(slot, now=START,
-                                                         role=egress.ROLE_WORKER)[0],
-                                 state_io.WORKER_STATE_RUNNING,
-                                 f"{peer} 的心跳刚写，必须是 running（否则下面的断言在测空气）")
-            self.assertEqual(
-                sorted(executor_v3._live_peer_owners(self._ctx(
-                    ["worker-0@testhost", "worker-1@testhost"]).cfg, OWNER)),
-                ["worker-0@testhost", "worker-1@testhost"],
-                "心跳新鲜的兄弟执行体都算存活 ⇒ 它的行不被回收")
-        # 越过 `2 × WORKER_HEARTBEAT_SEC` 的新鲜度门但仍在**同一业务日** ⇒ `stale`
-        # （判死，与 `_widen_with_dead_peers` 同一口径）。跨日会被 `worker_presence`
-        # 判成 `idle`（保守侧算"活"），所以这里必须只推进秒数、不能推进年份。
-        later = START + datetime.timedelta(
-            seconds=2 * state_io.WORKER_HEARTBEAT_SEC + 5)
-        self.assertEqual(later.strftime("%Y-%m-%d"), DAY, "推进不得跨业务日")
-        with mock.patch.object(executor_v3, "_now", lambda: later):
-            self.assertEqual(
-                state_io.worker_presence(0, now=later, role=egress.ROLE_WORKER)[0],
-                state_io.WORKER_STATE_STALE, "心跳过期必须判死，否则下面的断言在测空气")
-            self.assertEqual(
-                executor_v3._live_peer_owners(self._ctx(
-                    ["worker-0@testhost", "worker-1@testhost"]).cfg, OWNER),
-                [], "心跳过期的执行体判死 ⇒ 其行回到租约+宽限的回收路径")
-
-    def test_own_identity_is_never_listed(self):
-        """自己的身份不进名单：本进程的行由更精确的 `ctx.held` 逐行豁免。
-
-        把自己塞进豁免名单会让"已领却没登记在途"的泄漏行永远回收不到。
-        """
-        with mock.patch.object(state_io, "mark_worker_started", lambda *a, **k: None), \
-             mock.patch.object(state_io, "mark_worker_beat", lambda *a, **k: None), \
-             mock.patch.object(executor_v3, "_now", lambda: START):
-            self.assertNotIn(OWNER, executor_v3._live_peer_owners(
-                self._ctx([OWNER, "worker-0@testhost"]).cfg, OWNER))
-
-    def test_unconfigured_slot_is_treated_as_live(self):
-        """当日没有记录的槽位四态是 `idle`，按保守侧算"活"（少回收，不会重复登录）。"""
-        with mock.patch.object(executor_v3, "_now", lambda: START):
-            self.assertEqual(
-                executor_v3._live_peer_owners(
-                    self._ctx(["worker-7@testhost"]).cfg, OWNER),
-                ["worker-7@testhost"])
-
-
-class RefillerWiringTest(unittest.TestCase):
-    """补货循环把两道豁免真正传下去（钉接线，不靠读代码）。"""
-
-    def setUp(self):
-        self.cfg = {"executors": [OWNER], "bucket_rate": 100.0,
-                    "avg_attempt_sec": 1, "retry_min_interval": 60,
-                    "sign_start": (6, 30), "sign_end": (7, 50),
-                    "edge_front_sec": 60, "edge_back_sec": 60,
-                    "min_exec_gap": 1, "exec_gap_min": 1}
-        self.ctx = executor_v3._Ctx(
-            accounts={}, day=DAY, cfg=self.cfg, v=1, shards=(0,),
-            executor_id=OWNER, results={}, cred_state={}, delegated=None,
-            notify_url="", event_sink=None, rng=None, slot=0)
-
-    def test_refill_reap_passes_held_and_live_owners(self):
-        """补货循环内那次回收必须带 `held` 与 `live_owners` 两个实参，且名单**非空**。
-
-        只断言关键字存在是不够的：把实参换成空元组，`"live_owners" in kw` 照样为真
-        ——对抗复审的突变验证实测 16 条用例全绿，跨进程那一半的豁免就静默失效了。
-        故 cfg 里放一个兄弟执行体并写入新鲜心跳，断言名单里真有它的稳定名。
-        """
-        peer = "worker-1@testhost"
-        self.cfg["executors"] = [OWNER, peer]
-        tmp = tempfile.mkdtemp(prefix="yiban-refill-peers-")
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        prev_state = os.environ.get("YIBAN_STATE_DIR")
-        os.environ["YIBAN_STATE_DIR"] = tmp
-
-        def _restore_state():
-            if prev_state is None:
-                os.environ.pop("YIBAN_STATE_DIR", None)
-            else:
-                os.environ["YIBAN_STATE_DIR"] = prev_state
-
-        self.addCleanup(_restore_state)
-        # 兄弟执行体的心跳：与 `_now` 的 mock 同一时刻（START 在 cfg 窗口 06:30–07:50 内），
-        # presence 判 running 而非"未配置槽位算活"的保守侧。
-        state_io.mark_worker_started(1, now=START, role=egress.ROLE_WORKER)
-        self.ctx.held.add("13800000001")
-        seen = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            seen.append(kw)
-            return real(*a, **kw)
-
-        import asyncio
-
-        async def drive():
-            # `_now` 必须钉在窗口内（START=06:40）：_refiller 每拍先判
-            # `schedule._window_closed`，壁钟跑到 07:50 之后整条循环直接 break，
-            # 回收根本不会发生——用例不能赌它运行的时刻。
-            with mock.patch.object(queue_store, "reap_expired", spy), \
-                 mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
-                 mock.patch.object(executor_v3, "_now", lambda: START), \
-                 mock.patch.object(queue_store, "pending_count", lambda *a, **k: 1):
-                task = asyncio.ensure_future(executor_v3._refiller(
-                    asyncio.PriorityQueue(), (0,), self.ctx))
-                # 有界等待直到捕到回收调用：只 sleep(0) 一拍就取消是时序赌注——
-                # WSL 的事件循环一拍内没走到 reap 就会白跑（实测）。取消点在捕到
-                # 之后或 50 拍上限，二者取先。
-                for _ in range(50):
-                    await asyncio.sleep(0)
-                    if seen:
-                        break
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-
-        asyncio.run(drive())
-        self.assertTrue(seen, "补货循环必须调用回收")
-        self.assertTrue(any(kw.get("held") for kw in seen),
-                        "回收必须收到在途集合（held），否则队列里的行会被判死重领")
-        live_seen = [tuple(kw["live_owners"]) for kw in seen if kw.get("live_owners")]
-        self.assertTrue(live_seen,
-                        "回收必须收到**非空**的存活持有者名单（live_owners）——"
-                        "只断言键存在的话，把实参换成空元组也照样通过")
-        self.assertIn(peer, live_seen[0],
-                      "存活兄弟执行体的稳定名必须真的进豁免名单，"
-                      "否则它手上的行仍会被判死重领（同账号两次真实登录）")
 
 
 class NoDoubleLoginE2ETest(unittest.TestCase):
