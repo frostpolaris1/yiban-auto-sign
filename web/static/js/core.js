@@ -890,22 +890,14 @@
   }
 
   /* ---------- 下拉菜单 ---------- */
-  function rowMenuFor(wrap) {
-    // 行内菜单（YB.rowMenu）portal 到 body 后不再是 wrap 的后代，querySelector 找不到；
-    // 组件在菜单节点上记了 __ybHome 指回 wrap（见 row-menu.js）。按此反查用于焦点判断。
-    var found = null;
-    forEach(document.querySelectorAll(".dd-menu"), function (m) { if (m.__ybHome === wrap) found = m; });
-    return found;
-  }
   function closeDropdowns(except) {
     forEach(document.querySelectorAll(".dd-wrap.is-open"), function (w) {
       if (w === except) return;
       // 焦点若在菜单里（键盘打开后聚焦了菜单项/面板），关闭必须归还给触发器，
-      // 否则行内菜单还原成 display:none 后焦点落回 <body>，键盘用户要重新 Tab 一遍。
+      // 否则菜单隐藏后焦点落回 <body>，键盘用户要重新 Tab 一遍。
       // 焦点在触发器或页面别处时不动 —— 外部点击关闭不该抢走用户刚点的元素。
       var a = document.activeElement;
-      var floating = rowMenuFor(w);
-      var hadFocus = w.contains(a) || (!!floating && floating.contains(a));
+      var hadFocus = w.contains(a);
       w.classList.remove("is-open");
       if (hadFocus) {
         var t = w.querySelector("[data-dropdown]");
@@ -927,8 +919,6 @@
   function clampDropdown(wrap) {
     var menu = wrap.querySelector(".dd-menu");
     if (!menu) return;
-    // 行内操作下拉由 YB.rowMenu 用 fixed 自己钳制（portal 到 body），不在此处理
-    if (wrap.classList.contains("acct-row-menu") || wrap.classList.contains("usr-row-menu")) return;
     menu.style.left = "";
     menu.style.right = "";
     var vw = document.documentElement.clientWidth || window.innerWidth || 0;
@@ -958,8 +948,7 @@
       // 再次点触发器关闭：打开时焦点已移入菜单，这里的 preventDefault 又拦掉了浏览器
       // 把焦点给触发器的默认动作，需显式归还，否则焦点留在即将隐藏的菜单项上、回落 <body>。
       var a = document.activeElement;
-      var fm = rowMenuFor(wrap);
-      if (wrap.contains(a) || (!!fm && fm.contains(a))) {
+      if (wrap.contains(a)) {
         var trg = wrap.querySelector("[data-dropdown]");
         if (trg && typeof trg.focus === "function") trg.focus();
       }
