@@ -129,10 +129,13 @@ describe("statusLabel（中文标签 + 色调；原始码保留）", () => {
     expect(statusLabel("sign", "failed")).toEqual({ label: "失败", tone: "bad", raw: "failed" });
     expect(statusLabel("sign", "retrying")).toEqual({ label: "重试中", tone: "warn", raw: "retrying" });
     expect(statusLabel("sign", "pending")).toEqual({ label: "待签", tone: "info", raw: "pending" });
-    expect(statusLabel("sign", "skipped_window")).toEqual({ label: "超出时段", tone: "warn", raw: "skipped_window" });
-    expect(statusLabel("sign", "skipped_norange")).toEqual({ label: "不在范围", tone: "warn", raw: "skipped_norange" });
-    expect(statusLabel("sign", "paused")).toEqual({ label: "已暂停", tone: "muted", raw: "paused" });
-    expect(statusLabel("sign", "user_cancelled")).toEqual({ label: "已取消", tone: "muted", raw: "user_cancelled" });
+    expect(statusLabel("sign", "skipped_window")).toEqual({ label: "时段外跳过", tone: "warn", raw: "skipped_window" });
+    expect(statusLabel("sign", "skipped_norange")).toEqual({ label: "窗口缺失", tone: "warn", raw: "skipped_norange" });
+    expect(statusLabel("sign", "paused")).toEqual({ label: "账密暂停", tone: "bad", raw: "paused" });
+    expect(statusLabel("sign", "user_cancelled")).toEqual({ label: "用户取消", tone: "muted", raw: "user_cancelled" });
+    // 收敛单源后补齐的两码（此前 logs 表缺它们，徽标露出英文原始码）
+    expect(statusLabel("sign", "no_position")).toEqual({ label: "无点位", tone: "warn", raw: "no_position" });
+    expect(statusLabel("sign", "global_paused")).toEqual({ label: "全局暂停", tone: "warn", raw: "global_paused" });
   });
 
   it("未知签到码回落**原始码** + muted（信息不丢，不假装认识）", () => {

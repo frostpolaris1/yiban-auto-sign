@@ -29,9 +29,12 @@
  * ## 词表
  * `statusKind` 对状态码做**穷举**分类：成功 / 失败 / 已知跳过 / 未知（unknown）。词表外的
  * 未知码显式成 `unknown` 桶并上屏（KPI 副文案 / 趋势 / 日历 title），不静默落 skip——
- * 落 skip 会让枚举膨胀时的成功率只抬不降。本表的**键集合**由
+ * 落 skip 会让枚举膨胀时的成功率只抬不降。图表短名取自前端唯一事实源
+ * `lib/status-vocab.js`（`STATUS_VOCAB[*].short`）；本表的**键集合**由
  * `tests/test_yiban_status_single_source.py` 钉到唯一事实源 `yiban.status.ALL_STATUSES`。
  */
+
+import { STATUS_VOCAB } from "../lib/status-vocab.js";
 
 /** 签到事件请求路径（唯一定义处）。`stage=sign` 是把探针事件排除在统计外的**唯一防线**
  *  （探针同样写 success/failed），故整体作为字面量常量，被守卫钉死。 */
@@ -49,13 +52,15 @@ export var WEEK = ["一", "二", "三", "四", "五", "六", "日"];
 export var SUCCESS_ST = { success: 1, already: 1 };
 export var FAIL_ST = { failed: 1 };
 
-/** 状态码 → 图表短名（有意区别于日历图例的完整语气档；键集合被守卫钉死）。 */
-export var STATUS_LABEL = {
-  success: "成功", already: "已签到", no_task: "无需签到", failed: "失败",
-  retrying: "重试中", skipped_window: "时段外跳过", skipped_norange: "窗口缺失",
-  no_position: "无点位", paused: "账密暂停", user_cancelled: "用户取消",
-  pending: "待签", global_paused: "全局暂停",
-};
+/** 状态码 → 图表短名（取自 lib/status-vocab.js 的 `short`，来源唯一；
+ *  键集合被守卫钉死）。 */
+export var STATUS_LABEL = pluckShort(STATUS_VOCAB);
+
+function pluckShort(vocab) {
+  var out = {};
+  for (var k in vocab) out[k] = vocab[k].short;
+  return out;
+}
 
 /** 状态码 → 主题令牌名（颜色值一律从 CSS 自定义属性取，主题切换时重取）。 */
 export var STATUS_TOKEN = {
