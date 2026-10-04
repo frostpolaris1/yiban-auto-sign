@@ -5,7 +5,7 @@
 覆盖：/work/accounts 渲染契约（挂载点、manifest 资产真实在盘、module 脚本、admin 守卫、
       no-store）、**legacy 资产已彻底退役**（模板不再引用 work_accounts.js /
       account-{form,ops,table}.js，且文件已从磁盘删除；2026-10-03 设置页迁 Vue 后
-      select-field.js 亦退役，row-menu.js 仍被用户管理页桥接必须保留）、**PII 出口面**（列表手机号/归属邮箱是服务端脱敏值；
+      select-field.js 亦退役；2026-10-04 row-menu.js 也退役）、**PII 出口面**（列表手机号/归属邮箱是服务端脱敏值；
       完整手机号只存组件内存 fullPhone、绝不进模板 DOM）、e2e 依赖的 data-* 钩子仍在。
 对应实现：`web/routes/pages.py` 的 `accounts_page` / `_render_vue_page`、
       `web/templates/pages/work_accounts.html`、`frontend/src/accounts/**`
@@ -165,11 +165,13 @@ class AccountsPageTest(unittest.TestCase):
         for path in LEGACY_COMPONENTS:
             self.assertFalse(os.path.exists(path), f"{os.path.basename(path)} 仍留在库里")
         # 2026-10-03：设置页也整页迁到 Vue，自研四件套控件随之退役——select-field.js
-        # 不再有消费者，必须已删除（row-menu.js 仍被用户管理页桥接，保留）。
+        # 不再有消费者，必须已删除。
         self.assertFalse(os.path.exists(SELECT_FIELD_JS),
                          "select-field.js 仍留在库里——设置页迁 Vue 后已无消费者")
-        self.assertTrue(os.path.exists(ROW_MENU_JS),
-                         "row-menu.js 被误删——用户管理页（frontend/src/users）仍在桥接它")
+        # 2026-10-04 清扫：row-menu.js 也无现役消费者（accounts/users/settings 三页迁
+        # Vue 后都改用 el-dropdown），整体退役——守卫改为「必须已退役」。
+        self.assertFalse(os.path.exists(ROW_MENU_JS),
+                         "row-menu.js 仍留在库里——三页迁 Vue 后已无消费者")
 
     def test_contract_hooks_survive_in_the_component(self):
         # 钩子可能在组件模板（字面量 id）或口径层（组定义表里的 tbody/bar 等 id）中
@@ -181,19 +183,9 @@ class AccountsPageTest(unittest.TestCase):
 
     # ---- PII 出口面（展示侧） ----
 
-    def test_row_menu_returns_focus_to_trigger_on_close(self):
-        """行菜单关闭时若焦点在菜单内，必须交还触发器（ARIA APG menu button 模式）。
-
-        行菜单 portal 到 body，关闭时被移回 display:none 的 .dd-wrap；仍持焦点的菜单项
-        随之隐藏 → 焦点跌回 <body>，键盘用户失去位置。修法：restoreMenu 在摘类/搬家**之前**
-        判断 activeElement 是否在菜单内，是则把焦点交还 [data-dropdown] 触发器。
-        """
-        js = _read(ROW_MENU_JS)
-        start = js.index("function restoreMenu()")
-        body = js[start:js.index("\n    }", start)]
-        self.assertIn("activeElement", body, "restoreMenu 不看焦点位置，关闭后焦点跌回 body")
-        self.assertIn('querySelector("[data-dropdown]")', body, "restoreMenu 未取回触发器")
-        self.assertIn(".focus()", body, "restoreMenu 未把焦点交还触发器")
+    # 2026-10-04 清扫：原 `test_row_menu_returns_focus_to_trigger_on_close` 随 row-menu.js
+    # 退役一并销账——行菜单现由 EP el-dropdown 提供，焦点归还由 EP 组件负责，不再是本仓
+    # 需要钉的自研行为（见 test_legacy_accounts_assets_are_fully_retired 的退役断言）。
 
     # ---- PII 出口面（展示侧） ----
 

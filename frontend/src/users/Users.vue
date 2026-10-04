@@ -41,7 +41,8 @@ import {
    · 四组共用一个 `v-for` + 列定义表（legacy 是四份近重复模板 + 四份近乎同构的 JS），差异
      （列、计数表头、内置行、批量动作、空态出口）全部落在 `model.ts::GROUPS`；
    · 行菜单用 `el-dropdown`（legacy 借共享的 `row-menu.js` + 手工 portal + closeAll）——
-     那套是给多页复用的，本页迁完不必再借；`row-menu.js` 仍留给账号页与设置页；
+     那套是给多页复用的，本页迁完不必再借；账号页/设置页也先后迁完，`row-menu.js`
+     已无任何现役消费者，随本轮清扫整体退役（2026-10-04）；
    · **不再使用 core.js 的页签契约**（`data-tab-group`/`data-tab-target`/`data-tab-id`）：
      那套会与本组件的 `is-active` 双向争抢 DOM（core.js 有 document 级点击委托）。
      故页签由本组件自管（含 `?tab=` 深链与 roving tabindex），并因此从
