@@ -25,6 +25,7 @@ import {
   emptyText,
   groupAll,
   lastExecText,
+  legendEntries,
   menuItems,
   menuItemsWithout,
   ownerMailText,
@@ -102,6 +103,9 @@ interface AccountOps {
 
 const ANIM_MIN_MS = 80;
 const TAB_KEYS = GROUP_KEYS;
+// 状态图例（静态）：由单源 status-vocab.js 经 model.legendEntries() 派生，覆盖账号表可
+// 渲染的全部状态码；模板不再手写 chip。详情见 model.js 该函数与单源总账测试。
+const LEGEND = legendEntries();
 
 const accounts = ref<AccountRecord[]>([]);
 const states = ref<Record<string, string>>({});
@@ -620,18 +624,19 @@ const M = {
 
             <div :id="g + '-body'" class="collapse-body is-open">
               <div class="collapse-inner">
-                <!-- 状态图例：与 model.js 的 STATE_ICON 真实图标集**一比一**（8 项），
-                     不再合成「重试/跳过」「无需/已取消」而漏掉 ban/circle-pause/circle-stop。
-                     原实现带 aria-hidden="true"，读屏拿不到状态含义，故去掉。 -->
+                <!-- 状态图例：由单源 `lib/status-vocab.js` 经 `model.legendEntries()` 派生，
+                     覆盖账号表**可渲染的全部**状态码（新增 no_position/global_paused 后曾只列 8 项）。
+                     同 symbol 同色（icon + 账号页语气档）的状态合并为一格、标签列出全部 full 名；
+                     本处不再手写 chip 表，改词表即改图例。 -->
                 <p v-if="g === 'active'" class="acct-legend">
-                  <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-clock" /></svg>待签</span>
-                  <span class="acct-state acct-state--ok"><svg aria-hidden="true"><use href="#i-circle-check" /></svg>成功</span>
-                  <span class="acct-state acct-state--bad"><svg aria-hidden="true"><use href="#i-circle-x" /></svg>失败</span>
-                  <span class="acct-state acct-state--warn"><svg aria-hidden="true"><use href="#i-refresh-cw" /></svg>重试中</span>
-                  <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-circle-minus" /></svg>无需签到</span>
-                  <span class="acct-state acct-state--warn"><svg aria-hidden="true"><use href="#i-ban" /></svg>跳过</span>
-                  <span class="acct-state acct-state--bad"><svg aria-hidden="true"><use href="#i-circle-pause" /></svg>账密暂停</span>
-                  <span class="acct-state acct-state--muted"><svg aria-hidden="true"><use href="#i-circle-stop" /></svg>用户取消</span>
+                  <span
+                    v-for="it in LEGEND"
+                    :key="it.icon + '|' + it.tone"
+                    class="acct-state"
+                    :class="'acct-state--' + it.tone"
+                  >
+                    <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.text }}
+                  </span>
                 </p>
 
                 <div class="acct-batch" :id="GROUPS[g].bar" role="status" aria-live="polite" :hidden="selCount(g) === 0">

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { STATUS_VOCAB, statusField } from "./status-vocab.js";
 import { STATUS_LABEL, statusLabel as chartLabel } from "../dashboard/model.js";
-import { STATE_ICON, STATE_TEXT, STATE_TONE } from "../accounts/model.js";
+import { legendEntries, STATE_ICON, STATE_TEXT, STATE_TONE } from "../accounts/model.js";
 import { statusLabel } from "../logs/format";
 
 /* 状态词表单源守卫：三页（仪表盘图表 / 账号表 / 日志徽标）必须从
@@ -70,5 +70,25 @@ describe("三页消费同源（图表 short / 账号表 full+icon / 日志徽标
     expect(chartLabel("")).toBe("未知");
     expect(statusLabel("sign", "nope")).toEqual({ label: "nope", tone: "muted", raw: "nope" });
     expect(statusLabel("sign", "")).toEqual({ label: "未知", tone: "muted", raw: "" });
+  });
+});
+
+describe("账号表状态图例（派生自单源，覆盖表格全部可渲染码）", () => {
+  it("每个可渲染状态码都有图例解释，且逐码同源（icon+tone 取单源、full 入标签）", () => {
+    const entries = legendEntries();
+    // 图例按「icon + 账号页语气档」归并，故用同一键反查：任一可渲染码的键必须命中一格。
+    const byGlyph = new Map(entries.map((e) => [e.icon + "|" + e.tone, e]));
+    for (const code of CODES) {
+      const e = byGlyph.get(STATE_ICON[code] + "|" + STATE_TONE[code]);
+      expect(e, code).toBeTruthy();
+      expect(e!.text.split(" / "), code).toContain(STATUS_VOCAB[code].full);
+    }
+  });
+
+  it("语气档落在账号页四档内；条目数 == 单源 (icon,tone) 唯一组合数（无独立副本）", () => {
+    const entries = legendEntries();
+    for (const e of entries) expect(["ok", "bad", "warn", "muted"], e.text).toContain(e.tone);
+    const uniq = new Set(CODES.map((k) => STATE_ICON[k] + "|" + STATE_TONE[k]));
+    expect(entries.length).toBe(uniq.size);
   });
 });
