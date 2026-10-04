@@ -13,8 +13,22 @@ import pytest
 
 os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
 
-# 测试默认禁用邮件通知：mailer._get 环境变量优先于 .env 文件，此处设为 0
-# 可防止 signin/web 测试（如 send_notification("t","c",...)）意外真实发信。
+# 测试默认禁用邮件通知。真值口径是「.env 文件优先、进程环境只补缺」
+# （mail.config._get，M27 全仓口径）——只在本进程环境里设 YIBAN_MAIL_ENABLE=0 挡不住
+# 工程 .env：yiban/infra/env_io.env_path() 在 YIBAN_ENV_FILE 未设时回落到 cwd 的 .env
+# （裸机 cron / 开发机上就是生产 .env）。该文件若写了 YIBAN_MAIL_ENABLE=1 且有可用
+# SMTP 条目，is_enabled() 仍为真，signin/web 测试的 send_notification("t","c",...)
+# 会真发信到真实收件人。故先把 YIBAN_ENV_FILE 指向测试专用 fixture（会话级临时目录里的
+# 空 .env），使 _read_env_file() / env_path() 在测试期读不到工程 .env；再把
+# YIBAN_MAIL_ENABLE 钉成 0 兜底。各测试类仍可显式覆盖 YIBAN_ENV_FILE 实现自己的隔离
+# （先例同下方 YIBAN_LOG_FILE / YIBAN_STATE_DIR）。
+if not os.environ.get("YIBAN_ENV_FILE", "").strip():
+    import tempfile
+    os.environ["YIBAN_ENV_FILE"] = os.path.join(
+        tempfile.mkdtemp(prefix="yiban-test-env-"), ".env"
+    )
+
+# 进程环境兜底：即便某用例把 fixture 之外的路径也曝了光，仍默认关闭。
 # test_mailer.py 自带 _isolate_env 清理 YIBAN_MAIL_* 后按用例显式设置，不受影响。
 os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")
 
