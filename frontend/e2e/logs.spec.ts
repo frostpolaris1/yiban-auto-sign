@@ -468,27 +468,85 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   const gapH = await page.locator("#ss-gap").evaluate((e) => e.getBoundingClientRect().height);
   expect(Math.abs(selH - gapH), `el-select ${selH}px 与 .input ${gapH}px 不同高`).toBeLessThanOrEqual(1);
 
-  // ⑪ 响应式收口：720 / 375 窄屏下页签条不横向溢出、七个分区全部落在视口内（可达），
-  //     且调度卡本身无横向溢出。重设计前 360 溢出 229px、480 溢出 109px，末两个分区不可达。
+  // ⑪ 响应式（用户裁决 2026-10-04）：≤720 页签回归**单行下划线横滚**，靠"下一个页签被视口
+  //     裁掉一部分"（半露）引导右滑 —— 半露是期望形态，不是缺陷。断言：① 页面级无横向溢出；
+  //     ② 页签条有意可横向滚动；③ 调度卡正文无横向溢出；④ 360/375 下确实存在被裁的半露页签；
+  //     ⑤ 深链/切换后活动页签完整滚入可视区。
   for (const vw of [720, 375]) {
     await page.setViewportSize({ width: vw, height: vw === 375 ? 792 : 900 });
-    await page.waitForTimeout(120);
-    const tabsOverflow = await page.locator("[data-settings-tabs] .tabs-scroll").evaluate((el) => el.scrollWidth - el.clientWidth);
-    expect(tabsOverflow, `${vw}px 页签条仍有横向溢出`).toBeLessThanOrEqual(1);
-    for (const name of ["签到调度", "公告", "通知通道", "容量配额", "健康与探针", "执行体", "系统开关"]) {
-      const box = await page.getByRole("tab", { name, exact: true }).boundingBox();
-      if (!box) throw new Error(`${vw}px 下页签「${name}」不可见（溢出/被裁）`);
-      expect(box.x, `${vw}px 下页签「${name}」超出左缘`).toBeGreaterThanOrEqual(-1);
-      expect(box.x + box.width, `${vw}px 下页签「${name}」超出右缘`).toBeLessThanOrEqual(vw + 1);
-    }
+    await page.waitForTimeout(150);
+    // ① 页面级无横向溢出（横滚只发生在页签条内部）
+    const pageOver = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(pageOver, `${vw}px 整页横向溢出`).toBeLessThanOrEqual(1);
+    // ② 页签条有意可横向滚动
+    const overflowX = await page.locator("[data-settings-tabs] .tabs-scroll").evaluate((el) => getComputedStyle(el).overflowX);
+    expect(["auto", "scroll"], `${vw}px 页签条不是可横滚容器`).toContain(overflowX);
+    // ③ 调度卡正文无横向溢出
     const cardOverflow = await page.locator("#set-schedule").evaluate((el) => el.scrollWidth - el.clientWidth);
     expect(cardOverflow, `${vw}px 调度卡横向溢出`).toBeLessThanOrEqual(1);
   }
+
+  // ④ 半露：360/375 下必有一个页签右缘被视口裁掉、左缘仍在视口内（右滑引导）。
+  for (const vw of [375, 360]) {
+    await page.setViewportSize({ width: vw, height: 792 });
+    await page.waitForTimeout(150);
+    await page.locator("[data-settings-tabs] .tabs-scroll").evaluate((el) => { el.scrollLeft = 0; });
+    await page.waitForTimeout(100);
+    const boxes = await page.locator("[data-settings-tabs] .tab").evaluateAll(
+      (els) => els.map((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right }; }),
+    );
+    const halfRevealed = boxes.some((b) => b.left < vw - 1 && b.right > vw + 1);
+    expect(halfRevealed, `${vw}px 未出现被视口裁切的"半露"页签（右滑引导缺失）`).toBe(true);
+  }
+
+  // ⑤ 深链 ?tab=switches 后活动页签完整可见（只横滚页签条本身）。360 下「系统开关」在末尾，
+  //    必须被 scrollTabIntoView（只横滚页签条自身，改 scrollLeft）带进可视区，否则深链进来
+  //    的用户看不到自己所在分区。
+  await page.setViewportSize({ width: 360, height: 792 });
+  await page.goto("/work/settings?tab=switches");
+  await expect(page.locator("#set-panel-switches")).toBeVisible();
+  await expect.poll(async () => {
+    const r = await page.locator("#set-tab-switches").boundingBox();
+    return !!r && r.x >= -1 && r.x + r.width <= 361;
+  }, { message: "360px 深链到「系统开关」后活动页签未完整滚入视口" }).toBe(true);
+
+  // ⑥ snap 恢复幂等（回归钉）：连续快速切分区（键盘自重复 / 连点，间隔 < smooth 滚动时长）
+  //    会让多次 scrollTabIntoView 在途，而同一段滚动只派发一次 scrollend → 两次 restore 顺次
+  //    触发。早期实现把"捕获到的内联值"写回，第二次调用捕获到的正是第一次写入的 "none"，
+  //    末次写回把内联 none 永久留下（覆盖样式表的 x proximity，吸附增强静默失效且不自愈）。
+  //    构造：每次先把页签条停在末尾（此时左侧的「通知通道 / 公告」都在视口外），随后快速
+  //    连点它们——两次调用都非"已完整可见"的早退，滚动互相重叠。断言：
+  //    内联 scroll-snap-type 清空、计算值仍为样式表的 x 轴吸附。
+  //    非空转：把实现退回"写回捕获值"后，该钉在 computed === "none" 处变红（已实测）。
+  const tabsBox = page.locator("[data-settings-tabs] .tabs-scroll");
+  for (let i = 0; i < 3; i++) {
+    await tabsBox.evaluate((el) => { const b = el as HTMLElement; b.scrollLeft = b.scrollWidth; });
+    await page.evaluate(() => (document.getElementById("set-tab-notify") as HTMLElement).click());
+    await page.evaluate(() => (document.getElementById("set-tab-announcement") as HTMLElement).click());
+  }
+  await expect(page.locator("#set-panel-announcement")).toBeVisible();
+  await expect.poll(async () =>
+    tabsBox.evaluate((el) => (el as HTMLElement).style.scrollSnapType),
+  { message: "连续切分区后内联 scroll-snap-type 未清空（snap 恢复不是幂等的）" }).toBe("");
+  await expect.poll(async () =>
+    tabsBox.evaluate((el) => getComputedStyle(el).scrollSnapType),
+  { message: "连续切分区后计算值不是 x 轴吸附（内联 none 残留，吸附增强失效）" }).toMatch(/^\s*x(\s+proximity)?$/);
+  // 半露在 snap 恢复后仍稳定存在（proximity 下静止态不得被吸附收拢）
+  await tabsBox.evaluate((el) => { (el as HTMLElement).scrollLeft = 0; });
+  const boxes2 = await page.locator("[data-settings-tabs] .tab").evaluateAll(
+    (els) => els.map((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right }; }),
+  );
+  expect(boxes2.some((b) => b.left < 359 && b.right > 361), "snap 恢复后半露消失").toBe(true);
+
   await page.setViewportSize({ width: 1280, height: 720 });
 
   // ⑫ 大视口密度分级（1439/1440 边界）：≥1440 调度卡表单升三列（密度随视口放大、不留
   //     大片空白），1439 仍是双列；两档都无横向溢出。三列断言按计算样式的列数取，
   //     直接钉住"密度分级"这条设计裁决。
+  //     注意：⑤ 的深链把活动分区留在了「系统开关」，此处必须先切回「签到调度」——隐藏
+  //     （display:none）面板没有布局，getComputedStyle 的列数不可信。
+  await page.getByRole("tab", { name: "签到调度", exact: true }).click();
+  await expect(page.locator("#set-panel-schedule")).toBeVisible();
   const cols3 = async (): Promise<number> =>
     page.locator("#set-schedule .form-grid").evaluate(
       (el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length,
