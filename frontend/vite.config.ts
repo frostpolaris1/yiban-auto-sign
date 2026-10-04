@@ -48,13 +48,33 @@ export default defineConfig({
       output: {
         // vendor 独立成 chunk：多页入口共享同一份 vue / element-plus 按需集合，
         // 跨页命中浏览器长缓存（hash 文件名 + /static 长缓存策略）。
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          if (/[\\/]node_modules[\\/](vue|@vue)[\\/]/.test(id)) return "vendor-vue";
-          if (/[\\/]node_modules[\\/](element-plus|@element-plus)[\\/]/.test(id)) {
-            return "vendor-element-plus";
-          }
-          return "vendor-misc";
+        //
+        // ⚠️ 这里**必须**用 rolldown 原生的 `codeSplitting.groups`，不能用 Vite 兼容层的
+        // `manualChunks`（2026-10-04 实证的失效根因）：
+        //   Vite 8 底层是 rolldown，它把 `manualChunks(id)` 这个函数式 API **迁移成单个
+        //   code-splitting group**（`{ groups: [{ name(moduleId, ctx) {…} }] }`，见
+        //   rolldown/dist/shared/create-bundler-option-*.mjs 的 bindingifyCodeSplitting）。
+        //   该 group 没有 `test`（匹配全部模块）、只靠 `name()` 按模块返回不同 chunk 名。
+        //   单入口构建下这能正确产出 vendor-vue；但**多入口 + 任一入口引入成规模 EP 图**
+        //   （如 settings）时，rolldown 会把同一 group 里不同 name 的结果合并成一个 chunk，
+        //   vendor-vue 被并进 vendor-element-plus。后果：vue 运行时（每页都要）和 EP
+        //   （只有部分页要）挤在同一个 450KB chunk 里，于是**每个 Vue 页都白载整份 EP**。
+        //   `codeSplitting.groups` 每个 group 用独立 `test` 正则 + 静态 `name`，group 之间
+        //   互不合并，拆分真正生效。
+        //   回归护栏：改这里后必须核对 `.vite/manifest.json`——无 EP 用量的入口（calendar /
+        //   dashboard / login）的 imports 闭包不得再出现 vendor-element-plus。
+        codeSplitting: {
+          groups: [
+            // 顺序即优先级：vue 运行时先于 EP（EP 内部也会 import vue，须先被 vue 组截获）。
+            // 注意 `@vueuse` 不在 `@vue` 组内（正则要求 `@vue/` 后紧跟斜杠，`@vueuse` 不匹配）。
+            { name: "vendor-vue", test: /[\\/]node_modules[\\/](vue|@vue)[\\/]/ },
+            {
+              name: "vendor-element-plus",
+              test: /[\\/]node_modules[\\/](element-plus|@element-plus)[\\/]/,
+            },
+            // 兜底：其余 node_modules 依赖（当前无消费者，保留以便日后新增第三方库时不误入业务 chunk）。
+            { name: "vendor-misc", test: /[\\/]node_modules[\\/]/ },
+          ],
         },
       },
     },
