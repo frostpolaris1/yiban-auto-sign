@@ -155,6 +155,109 @@ class StatusSingleSourceTest(unittest.TestCase):
             acct = fh.read()
         self.assertNotRegex(acct, r"STATE_TEXT\s*=\s*\{",
                             "账号表不得再留第二份字面量状态表（须派生自单源）")
+        # 2026-10-04（收尾小件）：日志页的 SIGN_STATUS_MAP 同样须派生自单源（此前是
+        # 逐码手写表），补反向断言防其复活。
+        with open(self.LOGS_TS, encoding="utf-8") as fh:
+            logs = fh.read()
+        self.assertNotRegex(logs, r"SIGN_STATUS_MAP\s*=\s*\{",
+                            "日志页不得再留第二份字面量状态表（SIGN_STATUS_MAP 须派生自单源）")
+
+    # 2026-10-04（收尾小件）：反查面从「三个具名文件」扩到 frontend/src 全域——任何文件
+    # 只要重新写出一张「状态码 → 引号字符串」的字面量映射，即在此拦下（不限于已知三页）。
+    FRONTEND_SRC = os.path.join(BASE, "frontend", "src")
+    #: 非展示的页面级映射，整块剥离后再扫（它们不是"第二份展示词表"）：
+    #: dashboard 的 STATUS_TOKEN 是「状态码 → 主题色彩令牌」，随枚举走但语义是颜色配置，
+    #: 非 full/short/icon/tone 中任何一项；其展示短名 STATUS_LABEL 另有专项断言钉死。
+    SANCTIONED_MAPS = (r"STATUS_TOKEN\s*=\s*\{",)
+
+    @staticmethod
+    def _strip_braced_block(src, marker):
+        """按花括号配对整块移除一个 `NAME = { ... }` 字面量，返回剩余文本。
+
+        只为让扫描忽略已登记的非展示映射；不解析字符串/注释（这些对象的键值都是简单
+        字面量，够用）。
+        """
+        pat = re.compile(marker)
+        while True:
+            m = pat.search(src)
+            if not m:
+                return src
+            start = src.index("{", m.start())
+            depth = 0
+            for i in range(start, len(src)):
+                if src[i] == "{":
+                    depth += 1
+                elif src[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        src = src[:m.start()] + src[i + 1:]
+                        break
+            else:  # 括号不配对（源码语法错误）：保持原样，交给别的测试去报
+                return src
+
+    #: 字面量状态映射扫描器：键可为裸键或 JSON/单引号引号键（`"success":` / `'success':`），
+    #: 值首字符为引号或反引号（`"…"` / `'…'` / 模板串）。词边界防止 `global_paused` 内命中
+    #: `paused`。
+    @classmethod
+    def _status_map_key_re(cls):
+        codes = sorted(yiban_status.ALL_STATUSES, key=len, reverse=True)
+        return re.compile(
+            r"(?<![A-Za-z0-9_$])[\"']?("
+            + "|".join(re.escape(c) for c in codes)
+            + r")[\"']?\s*:\s*[\"'`]")
+
+    @staticmethod
+    def _literal_status_codes(src, key_re):
+        return sorted({m.group(1) for m in key_re.finditer(src)})
+
+    def test_literal_map_scanner_catches_quote_variants(self):
+        """扫描器自证：JSON 双引号键 / 单引号键 / 反引号值都须命中（防漏检回归）。"""
+        key_re = self._status_map_key_re()
+        for sample in (
+            '{ "success": "成功", "failed": "失败" }',      # JSON 风格：双引号键
+            "{ 'success': '成功', 'failed': '失败' }",       # 单引号键
+            "{ success: `成功`, failed: `失败` }",           # 模板串值
+            '{"global_paused":"全局暂停","no_position":"无点位"}',
+        ):
+            codes = self._literal_status_codes(sample, key_re)
+            self.assertGreaterEqual(len(codes), 2, "漏检：%r → %r" % (sample, codes))
+        # 单键不算"表"（≥2 判据），普通空串值仍只是单键
+        self.assertEqual(self._literal_status_codes('{ pending: "" }', key_re), ["pending"])
+
+    def test_no_literal_status_map_across_frontend_src(self):
+        """frontend/src 全域：不得再出现「状态码 → 引号字符串」的字面量映射表。
+
+        判据（三道误报控制）：
+          ① 键用 `ALL_STATUSES` 的精确名匹配（带词边界、容 JSON/单引号引号键），值容
+             引号与反引号；不用宽泛的 `\\w+`；
+          ② 同一文件须出现 **≥2 个不同状态码** 作引号键才算"表"——单键命中是
+             分组搜索态（`pending: ""`）、横幅图标（`success:`）之类，不是状态表；
+          ③ 已登记的非展示页面级映射（见 `SANCTIONED_MAPS`）先整块剥离再扫。
+        排除唯一事实源 `lib/status-vocab.js` 本身；测试夹具（*.spec.*）不在展示面，亦排除。
+        """
+        key_re = self._status_map_key_re()
+        offenders = {}
+        for root, _dirs, files in os.walk(self.FRONTEND_SRC):
+            for name in files:
+                ext = os.path.splitext(name)[1]
+                if ext not in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".mts", ".cjs", ".vue"):
+                    continue
+                if name.endswith((".spec.js", ".spec.ts", ".test.js", ".test.ts")):
+                    continue
+                path = os.path.join(root, name)
+                if os.path.abspath(path) == os.path.abspath(self.VOCAB_JS):
+                    continue  # 唯一事实源本身
+                with open(path, encoding="utf-8") as fh:
+                    src = fh.read()
+                for marker in self.SANCTIONED_MAPS:
+                    src = self._strip_braced_block(src, marker)
+                found = self._literal_status_codes(src, key_re)
+                if len(found) >= 2:
+                    offenders[os.path.relpath(path, BASE)] = found
+        self.assertEqual(
+            offenders, {},
+            "frontend/src 出现新的字面量状态映射表（须改用 lib/status-vocab.js 单源）："
+            + repr(offenders))
 
     def test_my_accounts_done_text_mirrors_display(self):
         """my-accounts 账号卡「今日状态」完成行的字面量必须等于 DISPLAY 成功态文案。

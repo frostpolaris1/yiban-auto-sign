@@ -195,6 +195,29 @@ function pluckTone(vocab) {
   return out;
 }
 
+/* 状态图例：由唯一事实源 STATUS_VOCAB 派生（每码 full + icon + 账号页语气档），
+   保证账号表**能渲染的每个状态码**都有图例解释；不再手写 chip 表。
+   合并口径：表格里同 symbol 同色的状态视觉上无从区分，故按「icon + ACCT_TONE 档」
+   去重为一格、标签列出全部 full 名（顺序随 STATUS_VOCAB 插入序，稳定可测）。 */
+export function legendEntries() {
+  var order = [];
+  var byGlyph = {};
+  for (var code in STATUS_VOCAB) {
+    var e = STATUS_VOCAB[code];
+    var tone = ACCT_TONE[e.tone] || "muted";
+    var glyph = e.icon + "|" + tone;
+    if (!byGlyph[glyph]) {
+      byGlyph[glyph] = { icon: e.icon, tone: tone, labels: [] };
+      order.push(glyph);
+    }
+    byGlyph[glyph].labels.push(e.full);
+  }
+  return order.map(function (g) {
+    var it = byGlyph[g];
+    return { icon: it.icon, tone: it.tone, text: it.labels.join(" / ") };
+  });
+}
+
 // 状态列：图标 + title（状态名 · 原因 · 耗时）。原因仅在不同于状态名时拼接，避免重复。
 export function stateCell(phone, states, msgs, durs) {
   var code = (states && states[phone]) || "pending";

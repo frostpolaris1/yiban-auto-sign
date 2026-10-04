@@ -3010,71 +3010,6 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-row-actions .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
 .acct-row-actions .btn--sm { min-height: 30px; }
 
-/* 窄屏行操作收纳为图标下拉：复用 core.js 的 .dd-wrap/.dd-menu 机制
-   （触发器 data-dropdown、菜单项 .dd-menu-item、Esc/点外部/点菜单项关闭都由 core.js 处理）。 */
-.acct-row-menu { display: inline-block; }
-.acct-row-menu .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
-.acct-row-menu .dd-menu { min-width: 168px; width: auto; right: 0; }
-/* 收纳态不参与布局：.dd-menu 是 absolute，但 visibility:hidden 的元素高度仍会记入
-   .table-scroll 的 scrollHeight —— 取消表格内滚上限后，末行菜单会在表格底部造出一段
-   可滚动的幽灵空白（实测 /work/users 末行菜单 125px，且 .table-scroll 的 overflow-x:auto
-   已把 overflow-y 变成 auto，于是真能滚）。打开时 YB.rowMenu 会把菜单 portal 到 body 并挂
-   .acct-menu--floating，选择器不再命中、display 恢复默认，展开与定位不受影响。 */
-.acct-row-menu > .dd-menu:not(.acct-menu--floating),
-.usr-row-menu > .dd-menu:not(.acct-menu--floating) { display: none; }
-/* 浮动态：菜单打开时被 portal 到 document.body（脱离 .dd-wrap 与所有裁剪祖先：
-   .table-scroll 的 overflow-x:auto 会让 overflow-y 也变 auto、.collapse-inner 是 overflow:clip，
-   且祖先的 transform 会污染 fixed 包含块——故挂到无 transform 的 body 上），用 fixed 定位。
-   z-index 50 介于吸顶表头(3)与模态(1000)/Toast(1200)之间；显隐由 .is-shown 自控
-   （移出 .dd-wrap 后 `.dd-wrap.is-open .dd-menu` 不再命中）。 */
-.acct-menu--floating {
-  position: fixed;
-  z-index: 50;
-  top: auto;
-  right: auto;
-  bottom: auto;
-  left: auto;
-  min-width: 168px;
-  width: auto;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-4px);
-  transition: opacity 140ms var(--ease-in-strong), transform 140ms var(--ease-in-strong), visibility 140ms;
-}
-.acct-menu--floating.is-shown {
-  opacity: 1;
-  visibility: visible;
-  transform: none;
-  /* 与 .dd-menu 的进入时长对齐（同为下拉浮层，进入一律 180ms） */
-  transition: opacity 180ms var(--ease-out-strong), transform 180ms var(--ease-out-strong), visibility 180ms;
-}
-@media (prefers-reduced-motion: reduce) {
-  .acct-menu--floating,
-  .acct-menu--floating.is-shown { transition: none; }
-}
-/* 浮动态下的菜单项：`.acct-row-menu .dd-menu-item` / `.usr-row-menu .dd-menu-item` 都是**后代选择器**，
-   菜单 portal 到 body 后就不再命中（实测：菜单宽 168px、菜单项却只有内容宽 128px —— hover 底色与
-   点击区都短一截，`text-align:left` 也一起失效）。故按浮动态类补齐。
-   行高按项目自己的下拉基准收紧（自研 `.select-option`：内距 8px + 行盒 18.75px = 34.8px）——
-   Adminator 的 10px 内距叠上本站 13px 字与 1.55 行高会得到 40.1px 一行，
-   同一页里两种下拉的行高不一致（用户 2026-09-17 指出的「垂直间距」）。 */
-.acct-menu--floating .dd-menu-item {
-  width: 100%;
-  text-align: left;
-  padding: 8px 14px;
-  line-height: 1.45;
-}
-/* 危险项前的分隔线：线两侧间距要与其它菜单项一致，故不带外边距。 */
-.acct-menu--floating .dd-divider { margin: 0; }
-.acct-row-menu .dd-menu-item {
-  width: 100%;
-  border: 0;
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
 /* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变）。
    is-swapping 是退出方向 → ease-in-strong；基类 ease-out-strong 留给进入。 */
 #accounts-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
@@ -3258,8 +3193,8 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
    组头用 .panel-head 两段式（标题行 + 整宽说明，不画线），行分隔由 .data-table 承担，
    批量条用 --bg-muted inset 底色区分。角色/状态徽标复用全站 `.badge--info/muted/warn/bad`
    （令牌定义见 19.6），本页不新造徽标色。
-   行操作统一为「更多操作」图标 + 下拉（复用 YB.rowMenu 的 portal 浮层），
-   浮动态样式沿用 .acct-menu--floating，故不再重复定义一份。
+   行操作统一为「更多操作」图标 + 下拉（用户管理页用 Element Plus `el-dropdown`，
+   浮层与定位由组件自带），本页不另定义下拉样式。
    安全：邮箱一律以 YB.maskEmail() 结果渲染（等宽字体），完整邮箱不进入 DOM。
    本页次要文字色对（表头/计数/时间 --t-muted on --bg-card、批量条 --t-sub on --bg-muted）
    已纳入 test_web_text_contrast.py 的 CONTRAST_PAIRS 实测 AA，改色值会直接报红。
@@ -3343,20 +3278,6 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .usr-muted { font-size: 12px; color: var(--t-sub); }
 .usr-row-master .usr-cell-count,
 .usr-row-master .usr-cell-time { color: var(--t-sub); }
-
-/* 行操作下拉：复用 core.js 的 .dd-wrap/.dd-menu 机制；浮动态类由 YB.rowMenu 挂载
-   （.acct-menu--floating，见 24 节），此处只定尺寸与按钮形态。 */
-.usr-row-menu { display: inline-block; }
-.usr-row-menu .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
-.usr-row-menu .dd-menu { min-width: 168px; width: auto; right: 0; }
-.usr-row-menu .dd-menu-item {
-  width: 100%;
-  border: 0;
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
 
 /* 写操作后的列表刷新：慢请求整体淡出 → 换内容 → 淡入，与 /accounts（24 节）同口径。
    is-swapping 是退出方向 → ease-in-strong；基类 ease-out-strong 留给移除类后的进入。
