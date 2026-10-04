@@ -673,35 +673,58 @@ _TAKEN_OVER_PEERS: set = set()
 
 
 def _live_row_owners(day, executor_id):
-    """**在途 `claimed` 行**持有者中，心跳证明仍存活者的**稳定槽位名**（回收豁免名册，M17）。
+    """**在途 `claimed` 行**持有者中，心跳未判死者（含无心跳）的**稳定槽位名**（回收豁免名册，M17）。
 
     名册**取自队列本身**（`queue_store.claimed_owners(day)`：当日所有 `claimed` 行的
     `owner` 去重），不再枚举 `cfg["executors"]`——清单只是 HRW 分片候选集，兜底常驻身份
     （`egress.fallback_owner()`）从不在其中；按清单枚举会让兜底手上的行整段落在豁免之外
     （ba-p03-01：兜底与定时轮并发 ⇒ 同一账号当天两次真实登录，易班侧锁号）。
 
-    判活走**同一份四态事实**（`state_io.worker_presence`），只把"有当日心跳且没判死"当活：
-    `running`（心跳新鲜）与 `finished`（当轮正常收尾）算活；`stale`（有开始记录、无收尾、
-    心跳过期）与 `idle`（当日无该身份记录）都算死。持有者握着当日 `claimed` 行却写不出
-    当日心跳，只能按"无人认领"回收——否则"兜底被强杀且心跳缺失"会变成当日漏签。
-    这与 `_widen_with_dead_peers` 同源：两处都只把 `stale`/无当日记录这类"没有活着的证据"
-    当死，差别只在遍历对象——那边遍历清单里**可能尚未起跑**的兄弟（`idle` 是常态，必须算
-    活），这边只遍历**确实领过活**的身份（写不出心跳即矛盾，必须算死）。
+    判活口径**「非 `stale` 即活」**：`state_io.worker_presence` 的四态里，`running`
+    （心跳新鲜）、`finished`（当轮正常收尾）、`idle`（当日无该身份心跳记录）都算活；
+    只有 `stale`（有开始记录、无收尾、心跳过期）算死。这与 `_widen_with_dead_peers` 同源：
+    两处共用同一份四态事实，都只把 `stale` 当死。
+
+    **`idle` 必须算活（第一红线）**：`idle` 有三条真实来源，三条都落在"持有者其实活着"上——
+    - 心跳写失败：`mark_worker_started` / `mark_worker_beat` 把写盘 `OSError` 只记 debug
+      （`state_io` 明文容忍该失败），活持有者写不出心跳文件；
+    - 跨午夜长轮次：`mark_worker_beat` 只刷 `ts`、不刷 `day`，跨过午夜后心跳记录仍写着
+      前一业务日，`worker_presence` 见"记录属别的业务日"即回 `idle`；
+    - 多主机共库（见下）。
+    把 `idle` 判死，这三类活持有者的行都会被回收 ⇒ 同一账号当天二次真实登录。
+
+    遗留（如实登记）：持有者真死且心跳文件缺失（`idle`）时，其行**当日不回收**，该账号
+    当日漏签（只有 `stale` 才回收）。这是**既有行为**，本刀不改——红线（二次登录）严于
+    漏签，故取保守侧；当日漏签由后续轮次处置。
+
+    **多主机共库局限（如实登记）**：判活只看**本机**状态目录的心跳。多主机共库时，别的
+    主机的活持有者在本机读不到心跳文件 ⇒ `worker_presence` 回 `idle`。「非 `stale` 即活」
+    把 `idle` 算活，故别机持有者在本机算**活**、其行不回收——方向**恰好与第一红线一致**
+    （不误杀、不重复登录）。既有实现（遍历本机执行体清单）有同一局限；判活口径改回
+    `idle` 算活后，这条局限不造成跨主机误杀。项目未见共库多主机的支持声明（`egress` 只
+    声明"同一槽位名不得有两台机器同时跑"）。
 
     取 `(day, executor_id)` 而非 `ctx`：轮首那次回收发生在 `_Ctx` 构造之前，两处调用点
     才能共用同一份判活。**按稳定槽位名排除本执行体自己**（`egress.stable_owner` 把历史代次
     的运行时串也折回同一个稳定名）：本进程的在飞行由更精确的 `ctx.held` 逐行豁免；若把自己
     的稳定名也塞进名单，本进程重启前遗留的旧代次行就永远回收不到（当天该账号无人再签）。
+
+    名册读失败（`claimed_owners` 回 `None`）时返回 `None`——**不得**当成空名册：调用方把
+    它直接传给 `reap_expired`，后者见到 `None` 即**跳过本轮回收**（fail-closed），否则空
+    名册会放宽回收面、把活持有者的行判死（同账号二次登录）。
     """
+    owners = queue_store.claimed_owners(day)
+    if owners is None:
+        return None
     live = []
     seen = set()
-    for owner in queue_store.claimed_owners(day):
+    for owner in owners:
         stable = egress.stable_owner(owner)
         if not stable or stable == executor_id:
             continue
         state, _seen = state_io.worker_presence(_worker_slot(owner), now=_now(),
                                                 role=_worker_role(owner))
-        if state in (state_io.WORKER_STATE_STALE, state_io.WORKER_STATE_IDLE):
+        if state == state_io.WORKER_STATE_STALE:
             continue
         if stable not in seen:
             seen.add(stable)

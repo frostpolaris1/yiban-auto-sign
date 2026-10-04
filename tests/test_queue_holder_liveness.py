@@ -249,6 +249,19 @@ class LiveOwnerExemptionTest(_StoreBase):
                          1)
         self.assertEqual(self._row(phone)["state"], "pending")
 
+    def test_none_live_owners_skips_reap(self):
+        """`live_owners=None`（名册来源读失败哨兵）⇒ 本轮**跳过回收**，不是空名册。
+
+        空名册（`[]`）意味着"所有超期行都不豁免" ⇒ 活持有者的行被判死回收。名册读不到
+        时必须 fail-closed：宁可这一轮不回收，也不放宽回收面（否则同账号二次登录）。
+        """
+        phone = _phone(17)
+        self._add_claimed(phone, owner=DEAD_RUNTIME)
+        self.assertEqual(queue_store.reap_expired(now=NOW, live_owners=None), 0,
+                         "名册不可用 ⇒ 跳过本轮回收")
+        self.assertEqual(self._row(phone)["state"], "claimed",
+                         "跳过回收 ⇒ 行保持原样（不得退化成空名册把行回收掉）")
+
 
 class NoDoubleLoginE2ETest(unittest.TestCase):
     """**验收直证：同一账号当天只被真实登录一次**。
