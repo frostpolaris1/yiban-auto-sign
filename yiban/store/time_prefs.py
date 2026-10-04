@@ -5,8 +5,10 @@
 **功能**
 - 读写：`get_time_prefs`（全量）、`get_time_pref`（单账号，无则 None）、
   `set_time_pref`（UPSERT，updated_at 由调用方给出）、`clear_time_pref`（回退自动错峰）；
-- 统计：`time_pref_stats` 按 slot_min 聚合**未删除账号**的已选人数（拥挤度），
-  已注销/已软删账号的残留 pref 不参与，否则会虚高拥挤度；
+- 统计：`time_pref_stats` 按 slot_min 聚合**参与调度账号**的已选人数（拥挤度）：未删除、
+  未自暂停、审核态非 pending/rejected（旧数据缺 status 视为已过审）。已注销/已软删账号的
+  残留 pref 会虚高拥挤度；自暂停账号零占位、不占引擎块容量；待审/已拒账号不参与调度，
+  计入会让拥挤度（分子）与 `block_capacity` 的活跃数（分母）不同源；
 - 保存冷却：`last_time_pref_set_at`（最近一次保存时间）与 `time_pref_set_count_since`
   （窗口内保存次数）读 audit_logs 里 action='time_pref_set' 的行。
 
@@ -142,7 +144,10 @@ def clear_time_pref(phone):
 def time_pref_stats():
     """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。
 
-    只统计未删除账号的自选，避免已注销/已软删账号的残留 pref 虚高拥挤度。
+    只统计**参与调度的账号**（与引擎装载器 + `block_capacity` 分母同源）：未删除、
+    未自暂停、审核态非 pending/rejected；旧数据缺/空 status 视为已过审，COALESCE 兼容。
+    已注销/已软删账号的残留 pref 会虚高拥挤度；自暂停账号零占位、不占引擎块容量；
+    待审/已拒账号不参与调度——计入会让分子与分母不同源。
     """
     try:
         db = _facade()
@@ -152,6 +157,8 @@ def time_pref_stats():
                 "SELECT t.slot_min, COUNT(*) AS count "
                 "FROM time_prefs t "
                 "JOIN accounts a ON a.phone = t.phone AND a.deleted = 0 "
+                "AND COALESCE(a.user_paused, 0) = 0 "
+                "AND COALESCE(a.status, '') NOT IN ('pending', 'rejected') "
                 "GROUP BY t.slot_min ORDER BY t.slot_min"
             ).fetchall()
             return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
