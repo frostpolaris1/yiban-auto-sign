@@ -34,7 +34,7 @@
 调用谁：`attempts`（单次尝试，`client` 由它调用）、`state_io`、`alerts`、`schedule`、`db`。
 谁调用：**无生产调用点**（冻结，见「归属」）；仅既有单测直接调用。
 前端调用点：账号页与我的账号页（`web/static/js/pages/work_accounts.js`、
-`web/static/js/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
+`frontend/src/myaccounts/`）、日历/日志（`frontend/src/calendar/` 拉
 `/api/my-calendar`、`/api/my-logs`）与仪表盘 `/api/admin/sign-events` 读本模块写入的
 按日状态与事件——状态码或收尾口径变化会直接改变这些页面的日历着色与日志列表。
 跨模块一律走模块属性访问。

@@ -796,7 +796,7 @@
      由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
      canceled 标记的错误拒绝。取消与被后端打回都**不等于什么都没发生**：多段提交里
      先成功的步骤已经落库，故两种失败都另带 `completed`（已成功提交的步数），调用方
-     据此刷新视图并说明已生效的部分不会回滚（见 components/settings-executors.js 的
+     据此刷新视图并说明已生效的部分不会回滚（见 frontend/src/settings/ops.js 的
      canceledAfter / failedAfter）。 */
   function dangerousSubmit(opts) {
     // 一次点击要按序发**多个**受门禁请求时用 opts.requests（[{method, path, body}, …]），
@@ -861,7 +861,7 @@
     }
     // 非取消的失败也带上已落库的步数：多段提交在第 2 步被打回时第 1 步已经写进库，调用方
     // 要据此重载视图并交代已提交的部分——与 canceled 同一口径，否则那半次写入没人提示
-    // （见 components/settings-executors.js 的 failedAfter）。
+    // （见 frontend/src/settings/ops.js 的 failedAfter）。
     return step(0, null).catch(function (e) {
       if (e && !e.canceled) e.completed = results.length;
       throw e;
@@ -890,22 +890,14 @@
   }
 
   /* ---------- 下拉菜单 ---------- */
-  function rowMenuFor(wrap) {
-    // 行内菜单（YB.rowMenu）portal 到 body 后不再是 wrap 的后代，querySelector 找不到；
-    // 组件在菜单节点上记了 __ybHome 指回 wrap（见 row-menu.js）。按此反查用于焦点判断。
-    var found = null;
-    forEach(document.querySelectorAll(".dd-menu"), function (m) { if (m.__ybHome === wrap) found = m; });
-    return found;
-  }
   function closeDropdowns(except) {
     forEach(document.querySelectorAll(".dd-wrap.is-open"), function (w) {
       if (w === except) return;
       // 焦点若在菜单里（键盘打开后聚焦了菜单项/面板），关闭必须归还给触发器，
-      // 否则行内菜单还原成 display:none 后焦点落回 <body>，键盘用户要重新 Tab 一遍。
+      // 否则菜单隐藏后焦点落回 <body>，键盘用户要重新 Tab 一遍。
       // 焦点在触发器或页面别处时不动 —— 外部点击关闭不该抢走用户刚点的元素。
       var a = document.activeElement;
-      var floating = rowMenuFor(w);
-      var hadFocus = w.contains(a) || (!!floating && floating.contains(a));
+      var hadFocus = w.contains(a);
       w.classList.remove("is-open");
       if (hadFocus) {
         var t = w.querySelector("[data-dropdown]");
@@ -927,8 +919,6 @@
   function clampDropdown(wrap) {
     var menu = wrap.querySelector(".dd-menu");
     if (!menu) return;
-    // 行内操作下拉由 YB.rowMenu 用 fixed 自己钳制（portal 到 body），不在此处理
-    if (wrap.classList.contains("acct-row-menu") || wrap.classList.contains("usr-row-menu")) return;
     menu.style.left = "";
     menu.style.right = "";
     var vw = document.documentElement.clientWidth || window.innerWidth || 0;
@@ -958,8 +948,7 @@
       // 再次点触发器关闭：打开时焦点已移入菜单，这里的 preventDefault 又拦掉了浏览器
       // 把焦点给触发器的默认动作，需显式归还，否则焦点留在即将隐藏的菜单项上、回落 <body>。
       var a = document.activeElement;
-      var fm = rowMenuFor(wrap);
-      if (wrap.contains(a) || (!!fm && fm.contains(a))) {
+      if (wrap.contains(a)) {
         var trg = wrap.querySelector("[data-dropdown]");
         if (trg && typeof trg.focus === "function") trg.focus();
       }
@@ -1625,8 +1614,9 @@
   /* ---------- 浏览器级显示偏好（localStorage） ----------
      仅影响本机显示密度，不涉及任何后端策略，故与 yiban-theme 同层使用 localStorage。
      归属邮箱开关：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
-     默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在
-     components/account-table.js 一处，改后下次渲染即生效（无需后端往返）。 */
+     默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在账号管理页的
+     frontend/src/accounts/Accounts.vue 一处（经本函数的 YB.prefs.ownerEmailVisible
+     桥接），改后下次渲染即生效（无需后端往返）。 */
   var PREF_OWNER_EMAIL = "yiban-owner-email";
   function ownerEmailVisible() {
     try { return localStorage.getItem(PREF_OWNER_EMAIL) !== "0"; } catch (e) { return true; }

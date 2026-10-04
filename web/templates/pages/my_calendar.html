@@ -1,18 +1,27 @@
 {# 管理端：签到日历（在册路径 /my/calendar；`/mine/calendar` 只是 pages.py 旧路径映射里
    的一条 302，不是端点）。
-   正文与用户端 /user/calendar **同一份实现** —— partials/page_sign_calendar.html；
-   行为编排在共享组件 components/sign-calendar-view.js（含日志面板 [data-sc-log]）。
+   正文与用户端 /user/calendar **同一份实现**（partials/page_sign_calendar.html +
+   frontend/src/calendar/CalendarPage.vue，见该组件头部说明）。
    管理员看的是本人邮箱归属账号（与 /my/account 同口径，一人一号）。 #}
 {% extends "layout_admin.html" %}
 {% from "partials/page_sign_calendar.html" import body with context %}
 
 {% block title %}签到日历 · 易班自动签到{% endblock %}
 
-{% block content %}{# 同上：点击提示由日志面板空态承担 #}
-{{ body('我的日历', '按日查看本人账号的签到结果。') }}{% endblock %}
+{% block head_styles %}
+{% for css in vue_css %}
+<link rel="stylesheet" href="{{ request.script_root }}{{ css }}">
+{% endfor %}
+{% endblock %}
+
+{% block content %}
+{{ body('我的日历', '按日查看本人账号的签到结果。', 'admin',
+        request.script_root + '/user/account', request.script_root + '/my/account') }}
+{% endblock %}
 
 {% block scripts %}
-<script defer src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/sign-calendar-view.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/pages/my_calendar.js?v={{ web_version }}"></script>
+{% for preload in vue_preloads %}
+<link rel="modulepreload" href="{{ request.script_root }}{{ preload }}">
+{% endfor %}
+<script type="module" src="{{ request.script_root }}{{ vue_js }}"></script>
 {% endblock %}

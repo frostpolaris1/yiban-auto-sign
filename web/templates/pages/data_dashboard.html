@@ -1,259 +1,36 @@
-{# 数据总览（管理端首页 /data/dashboard；根路径 / 只是按登录态一步转发的入口）。
-   设计目标：把「账号/用户/签到结果/待处理/系统状态」在一屏内汇总，填补旧管理端
-   「无统计、无法一眼看数据」的缺口。
+{# 数据总览（管理端首页 /data/dashboard）——前端翻新 P3：整页迁移到 Vue。
+   原静态模板 + `pages/data_dashboard.js` 已退役；口径（双口径聚合、各视图数据变换、词表与
+   文案）在 frontend/src/dashboard/model.js（纯 JS，被 tests/test_dashboard_stats_caliber_js.py
+   抽真函数跑），编排与绘制在 frontend/src/dashboard/DashboardPage.vue。
 
-   数据全部客户端拉取（服务端不新增查询上下文）：
-     GET /api/settings               → 账号/用户容量与拆解、全局/注册暂停
-     GET /api/admin/sign-events      → daily_stats.row_cnt（趋势、成功率按事件行数）与
-        accounts_stats（账号数终值：窗口去重总数/按状态去重/按日最终态 → 分布卡、日历格）
-     GET /api/time-prefs/stats       → 自选时间片人数
-     GET /api/accounts               → 待处理账号（待审核 + 已拒绝）
-     GET /api/clock /api/announcement、POST /api/ping → 系统状态
-   每个请求独立 try/catch：单个接口失败只降级对应卡片（骨架 → 错误说明），不整页报错。
+   服务端只出三样：挂载点、manifest 解析出的哈希资产（缺 dist 时视图层 404）、以及一条
+   内联载荷 window.YB_DASHBOARD_STATE（热力图脚注基线文案——「不含探针」是后端统计语义，
+   由 JS 在签到事件失败后改写、成功后还原，故基线随模板同车下发）。
 
-   手机号一律脱敏展示：本页不请求、不渲染完整号码；事件样本里的 phone 是
-   `138****8000` 形态，仅作为文本写入，绝不通过 innerHTML 注入。 #}
+   Chart.js 仍是仓库内置 vendor（v4.5.1 按需构建，仅本页加载）；defer 与 module 脚本同属
+   「解析完成后按文档顺序执行」的队列，故它必须排在模块入口之前，否则组件取不到 window.Chart。
+
+   手机号脱敏是服务端单出口，本页只插值渲染文本、零 v-html。 #}
 {% extends "layout_admin.html" %}
-{% from "macros/ui.html" import icon with context %}
 
 {% block title %}数据总览 · 易班自动签到{% endblock %}
 
-{# KPI 卡（整卡可点）：真链接语义，Enter 直达、中键/Cmd+点可新开；
-   卡内不再放「去账号管理 →」文字链。vendor 全局 a 已去下划线并继承色，
-   卡面色仍由 .kpi-card.c-* 提供（喂 ::before 径向渐变），焦点环走 app.css
-   第 11 节统一令牌（:where 列表里的 a.kpi-card）。href 一律拼 request.script_root：子路径部署下写死根路径会 404。 #}
-{% macro kpi(card) %}
-<a class="kpi-card c-{{ card.color }}" href="{{ request.script_root }}{{ card.href }}">
-  <div class="kpi-top">
-    <div class="kpi-identity">
-      <div class="kpi-icon {{ card.icon_color }}">{{ icon(card.icon) }}</div>
-      <div class="kpi-label">{{ card.label }}</div>
-    </div>
-    {% if card.pill_id %}<span class="kpi-pill {{ card.pill_class }}" id="{{ card.pill_id }}" hidden></span>{% endif %}
-  </div>
-  <div class="kpi-value" id="{{ card.value_id }}">
-    <span class="skeleton skeleton--title dash-skel" aria-hidden="true"></span>
-  </div>
-  <div class="kpi-compare" id="{{ card.sub_id }}">
-    <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
-  </div>
-</a>
-{% endmacro %}
-
-{# 图表卡卡头：与全站统一用项目 .panel-head 两段式（标题行 + 整宽说明，不画分隔线）。
-   右侧 .card-action 覆盖率文本由 data_dashboard.js 填充（如「最近 30 天 · 仅真实签到」），
-   .panel-head-row > :last-child 的弹性规则保证它不被标题压缩。 #}
-{% macro chart_card(id, title, height, extra_class='col-12') %}
-<section class="{{ extra_class }} card">
-  <div class="panel-head">
-    <div class="panel-head-row">
-      <h2 class="panel-title">{{ title }}</h2>
-      <span class="card-action" id="{{ id }}-coverage"></span>
-    </div>
-  </div>
-  {# 高度走类名而不是内联 style：大视口的信息密度档位由 app.css §35 的令牌统一放大，
-     内联 px 会盖掉媒体查询。--h{{ height }} 与宏参数一一对应。 #}
-  <div class="chart-canvas-wrap chart-canvas-wrap--h{{ height }}">
-    <canvas id="chart-{{ id }}" role="img" aria-label="{{ title }}"></canvas>
-    <div class="dash-chart-overlay" data-overlay="{{ id }}">
-      <span class="spinner" aria-hidden="true"></span>
-    </div>
-  </div>
-  <div class="chart-meta-row" id="{{ id }}-meta" hidden></div>
-</section>
-{% endmacro %}
+{% block head_styles %}
+{% for css in vue_css %}
+<link rel="stylesheet" href="{{ request.script_root }}{{ css }}">
+{% endfor %}
+{% endblock %}
 
 {% block content %}
-<div class="dash-page" id="dashboard-root">
-
-  <div class="page-head">
-    <h1 class="page-title">数据总览</h1>
-    <p class="page-sub">账号、用户与签到结果的一屏汇总；待处理账号与异常排查入口就在对应卡片上。</p>
-  </div>
-
-  {# 页级状态条：总览 8 个数据点分属 6 张卡，卡内已有轻量错误行（dash-error-text /
-     图表 overlay），逐卡再放重试按钮会喧宾夺主 —— 这里只给一条汇总 + 一个重试入口
-     （重跑全部加载点）。首屏不显示（骨架已表达加载中），任一加载点失败才出现。 #}
-  <p class="alert danger dash-status" id="dash-status" role="status" hidden>
-    <span class="ico">{{ icon('triangle-alert') }}</span>
-    <span class="body" id="dash-status-text">部分数据加载失败</span>
-    <button type="button" class="btn btn--ghost btn--sm" id="dash-retry-btn" hidden>重试</button>
-  </p>
-
-  {# 深链 ?tab= 由 core.js 共享助手支持；tab id 已核对 work_accounts.html
-     的 data-tab-target：pending / active / deleted（没有 review）。 #}
-  <section class="kpi-grid" aria-label="关键指标">
-    {{ kpi({
-      'color': 'primary', 'icon_color': 'primary', 'icon': 'list',
-      'label': '活跃账号', 'pill_id': 'kpi-accounts-pill', 'pill_class': 'info',
-      'value_id': 'kpi-accounts-value', 'sub_id': 'kpi-accounts-sub',
-      'href': '/work/accounts?tab=active',
-    }) }}
-    {{ kpi({
-      'color': 'purple', 'icon_color': 'purple', 'icon': 'users',
-      'label': '注册用户', 'pill_id': 'kpi-users-pill', 'pill_class': 'info',
-      'value_id': 'kpi-users-value', 'sub_id': 'kpi-users-sub',
-      'href': '/work/users',
-    }) }}
-    {{ kpi({
-      'color': 'success', 'icon_color': 'success', 'icon': 'circle-check',
-      'label': '今日成功率', 'pill_id': 'kpi-rate-pill', 'pill_class': 'flat',
-      'value_id': 'kpi-rate-value', 'sub_id': 'kpi-rate-sub',
-      'href': '/data/logs',
-    }) }}
-    {{ kpi({
-      'color': 'danger', 'icon_color': 'danger', 'icon': 'triangle-alert',
-      'label': '待处理账号', 'pill_id': '', 'pill_class': '',
-      'value_id': 'kpi-pending-value', 'sub_id': 'kpi-pending-sub',
-      'href': '/work/accounts?tab=pending',
-    }) }}
-  </section>
-
-  <div class="grid">
-    {# 各卡原 eyebrow 均删：趋势/分布的「近 30 天」与右侧 JS 填充的覆盖率文本重复，
-       其余（自选时间片/签到日历/容量/系统状态）与卡标题同义，无独立信息。 #}
-    {{ chart_card('trend', '每日签到结果', 300) }}
-
-    <section class="col-6 card">
-      <div class="panel-head">
-        <div class="panel-head-row">
-          <h2 class="panel-title">签到账号分布</h2>
-          <span class="card-action" id="dist-coverage"></span>
-        </div>
-      </div>
-      <div class="chart-canvas-wrap chart-canvas-wrap--h280">
-        <canvas id="chart-dist" role="img" aria-label="签到账号分布"></canvas>
-        <div class="dash-chart-overlay" data-overlay="dist">
-          <span class="spinner" aria-hidden="true"></span>
-        </div>
-      </div>
-      <div class="chart-meta-row" id="dist-meta" hidden></div>
-    </section>
-
-    <section class="col-6 card">
-      <div class="panel-head">
-        <div class="panel-head-row">
-          <h2 class="panel-title">各时段自选人数</h2>
-          <span class="card-action" id="slots-coverage"></span>
-        </div>
-      </div>
-      <div class="chart-canvas-wrap chart-canvas-wrap--h280">
-        <canvas id="chart-slots" role="img" aria-label="自选时间片已选人数"></canvas>
-        <div class="dash-chart-overlay" data-overlay="slots">
-          <span class="spinner" aria-hidden="true"></span>
-        </div>
-      </div>
-      <div class="chart-meta-row" id="slots-meta" hidden></div>
-    </section>
-
-    <section class="col-6 card">
-      <div class="panel-head">
-        <div class="panel-head-row">
-          <h2 class="panel-title">签到热力图</h2>
-          <div class="btn-group" role="group" aria-label="切换月份">
-            <button type="button" class="btn btn--ghost btn--sm" id="cal-prev" aria-label="上一月">{{ icon('chevron-left') }}</button>
-            <span class="btn btn--ghost btn--sm is-active" id="cal-label" aria-live="polite">—</span>
-            <button type="button" class="btn btn--ghost btn--sm" id="cal-next" aria-label="下一月">{{ icon('chevron-right') }}</button>
-          </div>
-        </div>
-      </div>
-      <div class="dash-cal-scroll">
-        <div class="mini-cal-grid" id="mini-cal" role="grid" aria-label="签到结果日历"></div>
-      </div>
-      {# 图例置热力图正下方居中，不贴卡头右侧——那里紧挨月份切换按钮，会抢视觉重点。
-         只列三种真实可辨的格面——「未来」是空白格，没有可标注的内容，故不进图例。 #}
-      <div class="dash-cal-legend" id="cal-legend">
-        <span class="dash-cal-key"><i class="is-ok"></i>全部成功</span>
-        <span class="dash-cal-key"><i class="is-fail"></i>有失败</span>
-        <span class="dash-cal-key"><i class="is-none"></i>仅跳过或无记录</span>
-      </div>
-      <div class="dash-cal-foot">
-        <span class="dash-cal-note" id="cal-note">真实数据（不含探针），覆盖近 30 天</span>
-      </div>
-    </section>
-    <!-- 账号与用户容量：原在账号管理页（那里只作展示），并入总览后管理端只此一处；
-         名额上限的修改仍在「系统设置 → 容量配额」。 -->
-    {# dash-card--fit：本卡内容比同排的热力图矮，不贴合内容会被网格拉成等高、卡内留一大片空白 #}
-    <section class="col-6 card dash-card--fit">
-      <div class="panel-head">
-        <div class="panel-head-row">
-          <h2 class="panel-title">账号与用户容量</h2>
-        </div>
-        {# 副标题补两件看不见的事：上限在哪个分区改、估算数字怎么来的 #}
-        <p class="panel-sub">改动上限在「系统设置 → 容量配额」；容量估算按当前签到窗口与账号间隔计算。</p>
-      </div>
-      <div class="dash-health" id="capacity-rows">
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('list') }}<span>账号容量</span></div>
-          <div class="dash-health-value" id="capacity-accounts"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('user') }}<span>用户容量</span></div>
-          <div class="dash-health-value" id="capacity-users"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('chart-bar') }}<span>容量估算</span></div>
-          <div class="dash-health-value" id="capacity-estimate"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
-        </div>
-      </div>
-      <p class="dash-cap-links">
-        <a class="linklike" href="{{ request.script_root }}/work/accounts">排查账号异常 →</a>
-        <a class="linklike" href="{{ request.script_root }}/data/logs">排查签到日志 →</a>
-      </p>
-    </section>
-
-    <section class="col-12 card">
-      <div class="panel-head">
-        <div class="panel-head-row">
-          <h2 class="panel-title">运行状态与公告</h2>
-          <button type="button" class="btn btn--ghost btn--sm" id="ping-btn">
-            {{ icon('activity') }}<span>检测易班接口</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="dash-health">
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('clock') }}<span>服务器时钟</span></div>
-          <div class="dash-health-value" id="health-clock">
-            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
-          </div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('server') }}<span>易班接口连通性</span></div>
-          <div class="dash-health-value" id="health-ping">
-            {# 指路句删除（用户 2026-09-30"只保留尚未检查四个字"）：「检测易班接口」按钮就在本卡头 #}
-            <span class="dash-muted">尚未检测</span>
-          </div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('pause') }}<span>全局签到暂停</span></div>
-          <div class="dash-health-value" id="health-global-pause">
-            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
-          </div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('user') }}<span>新用户注册暂停</span></div>
-          <div class="dash-health-value" id="health-reg-pause">
-            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
-          </div>
-        </div>
-        <div class="dash-health-row dash-health-row--wrap">
-          <div class="dash-health-label">{{ icon('bell') }}<span>站点公告</span></div>
-          <div class="dash-health-value" id="health-announcement">
-            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-  </div>
-</div>
+<div id="vue-dashboard-app"></div>
+<noscript><p class="panel-sub">本页动态内容需要 JavaScript。</p></noscript>
+<script>window.YB_DASHBOARD_STATE = {{ dashboard_state | tojson }};</script>
 {% endblock %}
 
 {% block scripts %}
-{# vendor 与页面脚本都带 ?v= 查询参数（值由后端注入的构建号）：改静态资源后换号即可让缓存失效。
-   defer 按文档顺序执行，故 Chart.js 必须排在 data_dashboard.js 之前，否则页面脚本取不到 window.Chart。 #}
 <script defer src="{{ request.script_root }}/static/vendor/chartjs/chart.min.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/pages/data_dashboard.js?v={{ web_version }}"></script>
+{% for preload in vue_preloads %}
+<link rel="modulepreload" href="{{ request.script_root }}{{ preload }}">
+{% endfor %}
+<script type="module" src="{{ request.script_root }}{{ vue_js }}"></script>
 {% endblock %}

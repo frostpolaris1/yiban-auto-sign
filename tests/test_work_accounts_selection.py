@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """账号页选中集的身份键：手机号，而非列表 index。
 
-标签：F · 前端与界面守卫
-覆盖：`pages/work_accounts.js` 的选中解析在 node 里真跑——列表重排后仍指向同一账号
-对应实现：`byPhone` / `selectedAccounts` / `selectedIds` / `selectedPhones`（`state.sel` 以手机号为键）
+标签：F · 前端与界面守卫（Vue 线）
+覆盖：`frontend/src/accounts/model.js` 的选中解析在 node 里真跑——列表重排后仍指向同一账号
+对应实现：`byPhone(accounts, phone)` / `selectedAccounts(accounts, sel, group)` /
+      `selectedIds` / `selectedPhones`（选中集以手机号为键）
 关键断言：`move` 改变持久化顺序（index 全变）后，选中仍解析到同一手机号（及其新 index）
-依赖：⚠ **需要 node 真跑**——四个纯函数抽出后在 node 中执行，`shutil.which("node")` 取不到时整类 skip
+依赖：⚠ **需要 node 真跑**——四个纯函数（纯 JS 模块，非 TS）抽出后在 node 中执行，
+      `shutil.which("node")` 取不到时整类 skip
 
 **为什么需要**：index 是列表位置，不是账号身份。`move` 改持久化顺序后同一 index 指向
 另一个账号——按 index 记选中会让"上移一个账号"把勾选粘到邻居身上，随后批量删除/清除
@@ -18,7 +20,7 @@ import subprocess
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORK_ACCOUNTS_JS = os.path.join(BASE, "web", "static", "js", "pages", "work_accounts.js")
+ACCOUNTS_MODEL_JS = os.path.join(BASE, "frontend", "src", "accounts", "model.js")
 NODE = shutil.which("node")
 
 _FUNCS = ("byPhone", "selectedAccounts", "selectedIds", "selectedPhones")
@@ -39,13 +41,14 @@ def _extract_function(src, name):
 
 
 def _run(accounts, sel):
-    with open(WORK_ACCOUNTS_JS, encoding="utf-8") as fh:
+    with open(ACCOUNTS_MODEL_JS, encoding="utf-8") as fh:
         src = fh.read()
     fns = "\n".join(_extract_function(src, n) for n in _FUNCS)
     script = (
-        "var state = { accounts: %s, sel: %s };\n" % (json.dumps(accounts), json.dumps(sel))
+        "var accounts = %s, sel = %s;\n" % (json.dumps(accounts), json.dumps(sel))
         + fns + "\n"
-        + "console.log(JSON.stringify({ids: selectedIds('active'), phones: selectedPhones('active')}));\n"
+        + "console.log(JSON.stringify({ids: selectedIds(accounts, sel, 'active'), "
+          "phones: selectedPhones(accounts, sel, 'active')}));\n"
     )
     proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30,
                           encoding="utf-8")

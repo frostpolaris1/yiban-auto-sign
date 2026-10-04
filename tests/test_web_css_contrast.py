@@ -26,6 +26,8 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_CSS = os.path.join(BASE, "web", "static", "css", "app.css")
 VENDOR_CSS = os.path.join(BASE, "web", "static", "vendor", "adminator", "adminator.css")
+#: Vue 线的 EP 主题映射（Element Plus 组件的观感入口）。
+EP_THEME_CSS = os.path.join(BASE, "frontend", "src", "styles", "ep-theme.css")
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 
 AA_NON_TEXT = 3.0  # WCAG 2.1 AA 非文字（图形/界面组件）阈值
@@ -187,6 +189,36 @@ class SwitchNonTextContrastTest(unittest.TestCase):
             )
 
 
+class EpSwitchNonTextContrastTest(unittest.TestCase):
+    """Vue 线开关（Element Plus `el-switch`）关态轨道：WCAG 1.4.11。
+
+    上面 SwitchNonTextContrastTest 钉的是 legacy 自研 `.switch .track`；Vue 各页
+    （设置/通知/健康/Pilot）改用 EP `el-switch`，它的关态底色来自
+    `--el-switch-off-color`，而该变量在 EP 里声明在 `.el-switch` **自身**（非 :root），
+    `:root[data-theme]` 作用域的令牌映射够不到它 → 会回落 EP 默认的
+    `--el-border-color`（≈1.23:1，关态轨道看不见）。
+    故 ep-theme.css 必须把 `.el-switch` 的该变量落到语义令牌 --switch-off-bg。
+    """
+
+    def test_ep_switch_off_color_consumes_token(self):
+        self.assertTrue(os.path.exists(EP_THEME_CSS), f"缺 Vue 主题文件 {EP_THEME_CSS}")
+        css = _strip_comments(_read(EP_THEME_CSS))
+        hits = []
+        for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+            sels = [s.strip() for s in m.group(1).split(",")]
+            if not any(re.search(r"\.el-switch\b", s) for s in sels):
+                continue
+            if re.search(r"--el-switch-off-color\s*:\s*var\(\s*--switch-off-bg\s*\)", m.group(2)):
+                hits.append(m.group(1).strip())
+        self.assertTrue(
+            hits,
+            "ep-theme.css 未把 `.el-switch` 的 --el-switch-off-color 落到 --switch-off-bg —— "
+            "EP 会回落到 --el-border-color（对卡片约 1.23:1），Vue 线开关关态轨道不达 3:1。\n"
+            "修法：`:root[data-theme=\"light\"] .el-switch, :root[data-theme=\"dark\"] .el-switch "
+            "{ --el-switch-off-color: var(--switch-off-bg); }`",
+        )
+
+
 class SkeletonScopeTest(unittest.TestCase):
     """组件尺寸规则不得挂在页级祖先下（加载态可见性）。
 
@@ -200,15 +232,19 @@ class SkeletonScopeTest(unittest.TestCase):
 
     def _users_of(self, cls):
         out = []
-        for dirpath, _dirs, files in os.walk(TEMPLATES_DIR):
-            for fn in files:
-                if not fn.endswith(".html"):
-                    continue
-                path = os.path.join(dirpath, fn)
-                with open(path, encoding="utf-8") as fh:
-                    text = fh.read()
-                if cls in text:
-                    out.append((path, "dash-page" in text))
+        # 2026-10-03：页面迁 Vue 后骨架类改由组件渲染（设置页执行体 KPI 加载期用
+        # `.dash-skel`），扫描面同时覆盖服务端模板与 frontend/src 的 Vue 组件。
+        roots = (TEMPLATES_DIR, os.path.join(BASE, "frontend", "src"))
+        for root in roots:
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    if not fn.endswith((".html", ".vue")):
+                        continue
+                    path = os.path.join(dirpath, fn)
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    if cls in text:
+                        out.append((path, "dash-page" in text))
         return out
 
     def test_skeleton_size_rule_not_scoped_to_page_ancestor(self):
@@ -282,7 +318,6 @@ class BatchAContrastTokenTest(unittest.TestCase):
         ".panel-sub",
         ".account-meta",
         ".account-note",
-        ".range-tick",
     )
 
     def test_sub_text_rules_use_t_sub(self):
@@ -552,41 +587,6 @@ class TouchAndMotionRegressionTest(unittest.TestCase):
                      ".alert.auth-announce .close", ".info-tip", ".sc-nav-btn"):
             self.assertIn(real, joined, f"触屏命中区漏了真实目标 {real}")
 
-    def test_self_made_triggers_have_transform_transition_and_pressed_state(self):
-        """四类自研触发器的 transition 必须含 transform，并有一条 :active 按压态。"""
-        css = _strip_comments(_read(APP_CSS))
-        for sel in (".select-trigger", ".range-trigger", ".time-trigger", ".date-trigger"):
-            bodies = _rule_bodies(css, sel)
-            self.assertTrue(any("transform" in b for b in bodies),
-                            f"{sel} 的 transition 未含 transform（按压态无法过渡）")
-            active = _rule_bodies(css, sel + ":active")
-            self.assertTrue(any("scale(" in b for b in active),
-                            f"{sel}:active 缺按压位移（scale）")
-
-    def test_declaration_popups_have_exit_animation(self):
-        """`.select-menu` / `.date-pop` 的退场必须与进场同参数反向，且被 reduce 关停。"""
-        css = _strip_comments(_read(APP_CSS))
-        for sel in (".select-menu.is-closing", ".date-pop.is-closing"):
-            bodies = _rule_bodies(css, sel)
-            self.assertTrue(bodies, f"{sel} 缺失 —— 展开是淡入、收起仍是硬跳")
-            self.assertIn("animation", "".join(bodies), f"{sel} 未声明退场 animation")
-        # 退场关键帧必须存在
-        self.assertIn("@keyframes select-menu-out", css)
-        # reduce 下必须关停退场（与进场同处一块；.select-menu 与 .date-pop 各在自己的 reduce 块）
-        reduce_blocks = _media_bodies(
-            css, r"@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{")
-        self.assertTrue(
-            any(".select-menu.is-closing" in b for b in reduce_blocks)
-            and any(".date-pop.is-closing" in b for b in reduce_blocks),
-            "prefers-reduced-motion 分支未同时关停 .select-menu/.date-pop 的退场动画",
-        )
-        # 触发器按压位移也要在 reduce 里归零
-        self.assertTrue(
-            any(".select-trigger:active" in b and "transform:none" in b.replace(" ", "")
-                for b in reduce_blocks),
-            "prefers-reduced-motion 分支未归零触发器按压位移",
-        )
-
     def test_theme_crossfade_single_duration_token(self):
         """整页换肤的表面/文字/深色极光必须共用同一个时长令牌（三种时长曾不同步）。"""
         css = _strip_comments(_read(APP_CSS))
@@ -663,8 +663,7 @@ class BatchDControlOutlineTest(unittest.TestCase):
 
     def test_control_outline_consumers_use_token(self):
         css = _strip_comments(_read(APP_CSS))
-        for sel in (".select-trigger", ".range-trigger", ".time-trigger", ".date-trigger",
-                    ".input", ".select", ".textarea", ".input-group"):
+        for sel in (".input", ".select", ".textarea", ".input-group"):
             decls = _decls(css, sel, "border-color") + _decls(css, sel, "border")
             self.assertIn(
                 "var(--control-border)", "".join(decls),
@@ -680,21 +679,10 @@ class BatchDControlOutlineTest(unittest.TestCase):
                       ".btn--danger-ghost 文字未走 --state-bad-fg（旧字面量 #B91C1C 绕开了令牌）")
         self.assertNotIn("#B91C1C", bodies, ".btn--danger-ghost 仍有字面量 #B91C1C")
 
-    def test_select_disabled_root_has_style(self):
-        css = _strip_comments(_read(APP_CSS))
-        self.assertTrue(
-            _rule_bodies(css, ".select-field.is-disabled"),
-            "单选下拉的 .is-disabled 根没有任何样式（多选有 opacity:.6，单选是空操作）",
-        )
-        self.assertTrue(_rule_bodies(css, ".multiselect-field.is-disabled"),
-                        "多选下拉的禁用样式被删了")
-
     def test_concentric_radius_chains(self):
         """内层圆角必须 = 外层圆角 − 外层 padding（否则内层"顶"出外弧、读作两个盒子）。"""
         css = _strip_comments(_read(APP_CSS))
         chains = (
-            (".select-menu", ".select-option"),
-            (".date-pop", ".date-day"),
             (".auth-tabs.auth-seg", ".auth-tabs.auth-seg .tab"),
         )
         problems = []
@@ -746,6 +734,51 @@ class AnnouncementUnreadStateTest(unittest.TestCase):
             html = _read(os.path.join(TEMPLATES_DIR, rel))
             self.assertIn("data-announcement-count", html,
                           f"{rel} 缺数字徽标挂点（未读只有颜色一个载体）")
+
+
+class Phase3PortGuardTest(unittest.TestCase):
+    """phase3 实装批四条组件卫生守卫在 Vue 线的等价物（A21）。
+
+    目标源改成**现役** app.css（Vue 线未做三层拆分）与 frontend/src。四条里两条
+    已有等价守卫、不重复：危险按钮消费令牌见 BatchDControlOutlineTest
+    （`.btn--danger-ghost` 走 --danger-border / --state-bad-fg、无裸十六进制），
+    骨架不得挂回页祖先见 SkeletonScopeTest。此处补另两条：
+
+    · toast 变体名一致：core.js 的 `toast.error()` 产出的是 `.toast--error`
+      （32 个调用点），CSS 必须给它危险色并与历史 `.toast--danger` 并列；
+      缺了它错误提示渲染成基类的灰边 + 近黑图标（A4 的回退守卫）。
+    · `.state-line--flash` 的 300ms 淡出必须被 prefers-reduced-motion 关断 ——
+      它是 transition 不是 animation，第 14 节的动画关断块收不到（B9/A21）。
+    """
+
+    def test_toast_error_variant_exists(self):
+        css = _strip_comments(_read(APP_CSS))
+        for cls in (".toast--error", ".toast--danger"):
+            self.assertTrue(
+                _rule_bodies(css, cls),
+                f"找不到 {cls} 规则 —— core.js 生成的是 .toast--error，"
+                "缺了它会掉回基类的灰边 + 近黑图标",
+            )
+        self.assertTrue(
+            re.search(r"\.toast--error[^{]*\{[^}]*border-left-color", css),
+            ".toast--error 缺 border-left-color 覆盖（危险色会掉成基类的灰边）",
+        )
+        self.assertTrue(
+            re.search(r"\.toast--error \.toast__icon[^{]*\{[^}]*color", css),
+            ".toast--error .toast__icon 缺 color 覆盖（图标会掉成基类的近黑色）",
+        )
+
+    def test_state_line_flash_disabled_under_reduced_motion(self):
+        css = _strip_comments(_read(APP_CSS))
+        blocks = _media_bodies(
+            css, r"@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{")
+        hit = [b for b in blocks
+               if re.search(r"\.state-line--flash\s*\{[^}]*transition\s*:\s*none", b)]
+        if not hit:
+            self.fail(
+                "`.state-line--flash` 未在任何 prefers-reduced-motion 块里关断为 "
+                "transition: none；就地结果行的淡出会无视用户的减动效偏好。"
+            )
 
 
 if __name__ == "__main__":

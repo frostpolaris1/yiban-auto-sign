@@ -295,31 +295,31 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         self.assertEqual(full[0], "06:30~06:35")
         self.assertEqual(shifted[0], "07:00~07:05", "窗口打桩必须换掉预计时段")
 
-    def test_estimate_slot_block_cap_zero_means_unlimited(self):
-        """`YIBAN_BLOCK_CAP=0`（不限容量，与 my.py 拥挤度同口径）时预计时段照常返回。
+    def test_estimate_slot_block_cap_zero_falls_back_to_default(self):
+        """`YIBAN_BLOCK_CAP=0`（非法）按引擎口径回退默认 15，与显式 15 逐字一致。
 
-        不能拿块容量当除数——否则用户端自选片接口对全员 500。分块线下全员落首块：
-        第 20 人（idx=19）默认块容量 15 时应落第 2 块，不限容量时必须回到第 1 块。
+        旧实现把 0 当"不限容量"（全员落首块）——那是网页侧自造口径；引擎
+        `_env_int(..., 1, 200)` 本就把 0 判非法回退 15。对齐后 0 与 15 必须同结果。
         """
         accounts = [{"phone": f"1380013{i:04d}", "status": "active", "deleted": False}
                     for i in range(20)]
         target = accounts[-1]["phone"]
-        self._write_raw("YIBAN_BLOCK_CAP=0\n")
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(target)
-        self.assertEqual(got, ("06:30~06:35", "（每日固定时段，块内时刻每天略有抖动）"),
-                         "不限容量时全员落首块，且不得除零")
-        # 反证：默认块容量 15 下同一目标落第 2 块，说明上面的断言真的钉住了口径
-        self._write_raw("YIBAN_BLOCK_CAP=15\n")
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            capped = self.webapp._estimate_slot(target)
-        self.assertEqual(capped[0], "06:35~06:40")
+
+        def run(raw):
+            self._write_raw(raw)
+            with mock.patch.object(self.webapp, "_sign_window",
+                                   return_value=((6, 30), (7, 50))), \
+                    mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                    mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
+                return self.webapp._estimate_slot(target)
+
+        zero = run("YIBAN_BLOCK_CAP=0\n")
+        fifteen = run("YIBAN_BLOCK_CAP=15\n")
+        self.assertEqual(zero, fifteen, "0 必须与 15 同口径（非法回退默认，不再是不限容量）")
+        self.assertEqual(zero[0], "06:35~06:40", "第 20 人（idx=19）在 K=15 时落第 2 块")
+        # 反证：改大 K=25 → 第 20 人回到首块（证明上面钉住的确是块容口径，而非恰好如此）
+        big = run("YIBAN_BLOCK_CAP=25\n")
+        self.assertEqual(big[0], "06:30~06:35")
 
     def test_estimate_slot_nonempty_on_clamped_window(self):
         """缓冲过大被收缩：预计签到时段按收缩后的有效窗口算，不得静默变空。

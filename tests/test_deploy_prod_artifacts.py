@@ -146,9 +146,12 @@ def _ls_tracked():
     return listing.stdout
 
 
-# 2026-10-02 用户裁定：该串为游戏角色名（虚构人物，现实中无人使用），作为
-# account-form.js 的占位示例保留在仓库内；门禁对其余文件继续生效。
-_AUTHORIZED_NAME_PATHS = frozenset({"web/static/js/components/account-form.js"})
+# 2026-10-02 用户裁定：门禁真名串（见上方 REAL_NAME）为游戏角色名，曾作为
+# account-form.js 的示例保留在仓库内（该文件因此被列入豁免）。2026-10-03 账号管理页迁到
+# Vue，该 legacy 文件退役；实测全仓已无该真名字面命中——故豁免清单清空，门禁继续对全部
+# 跟踪文件生效。（注：accountform.ts 的占位文案「电力123示例站」与门禁真名串无关，不构成
+# 命中，勿据此恢复豁免。）
+_AUTHORIZED_NAME_PATHS = frozenset()
 
 
 def _tracked_hit_scan():

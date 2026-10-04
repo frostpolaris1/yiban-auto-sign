@@ -1,32 +1,32 @@
-{# 管理端：我的账号（/mine）。
-   正文与用户端「账号与设置」（/user）**同一份实现** —— partials/page_my_accounts.html：
-   账号增删改恢复、自选签到时间、邮件提醒、修改密码、显示偏好都渲染同一段模板，
-   两端只在「是否可注销」「归属邮箱偏好」「日历链接目标」上分叉。
+{# 我的账号（管理端 /my/account）——前端翻新 P2：整页迁移到 Vue。
+   正文与行为**与用户端 /user/account 同一实现**（frontend/src/myaccounts/MyAccounts.vue），
+   差异只在挂载点的 data-variant（admin/user）与日历链接；管理端另有「竖屏归属邮箱」显示偏好、
+   并可补今日状态行——对齐 legacy 共享 partial + components/my-accounts-page.js。
 
-   个人域落点（系统设置页不再承载）：修改密码、接收发给我的邮件提醒、竖屏归属邮箱偏好。
-   签到日志走独立的 /my/calendar 页（复用用户端日历页结构与日志面板；
-   /mine/calendar 是它的 302 旧路径，不是在册端点）。
-
-   安全：全页零 innerHTML；动态文本走 YB.el；写请求一律 YB.api（自带 CSRF）。 #}
+   数据客户端拉取：GET /api/me、/api/my-accounts、/api/my-time-pref、/api/verify-jobs/<id>；
+   管理端编辑还会 GET /api/accounts/<idx>/detail（完整号 + 乐观锁快照，仅内存、不回显）。 #}
 {% extends "layout_admin.html" %}
-{% from "partials/page_my_accounts.html" import body with context %}
 
 {% block title %}我的账号 · 易班自动签到{% endblock %}
 
+{% block head_styles %}
+{% for css in vue_css %}
+<link rel="stylesheet" href="{{ request.script_root }}{{ css }}">
+{% endfor %}
+{% endblock %}
+
 {% block content %}
-{# 副标题描述本页覆盖面（账号 / 自选时间 / 登录凭据），不复述下方卡片名逐个列举 #}
-{{ body('我的账号', '管理本人的易班账号、自选签到时间与登录凭据。',
-        request.script_root + '/my/calendar', false, true) }}
+<div id="vue-myaccounts-app"
+     data-variant="admin"
+     data-calendar-href="{{ request.script_root }}/my/calendar"></div>
+<noscript><p class="panel-sub">本页动态内容需要 JavaScript。</p></noscript>
 {% endblock %}
 
 {% block scripts %}
-<script defer src="{{ request.script_root }}/static/js/components/select-field.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/account-form.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/time-pref.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/my-accounts.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/verify-job.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/my-mail-notify.js?v={{ web_version }}"></script>
+{# 改密弹窗复用 core.js 的共享实现（页面级注册，故本页必须显式带上；见 §14.8/m9） #}
 <script defer src="{{ request.script_root }}/static/js/components/change-password.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/components/my-accounts-page.js?v={{ web_version }}"></script>
-<script defer src="{{ request.script_root }}/static/js/pages/my_account.js?v={{ web_version }}"></script>
+{% for preload in vue_preloads %}
+<link rel="modulepreload" href="{{ request.script_root }}{{ preload }}">
+{% endfor %}
+<script type="module" src="{{ request.script_root }}{{ vue_js }}"></script>
 {% endblock %}
