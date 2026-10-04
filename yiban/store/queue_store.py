@@ -18,6 +18,10 @@
   宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；**判活按持有者身份**——调用方本进程
   通道队列里在途的行（`held`）与心跳仍存活的持有者（`live_owners`）一律豁免，否则同一账号
   会被原地重领、当天两次真实登录；
+- `claimed_owners`：当日**在途 `claimed` 行**的持有者全集——豁免名册的**唯一来源**。
+  调用方据此逐持有者判活，再把存活者的稳定槽位名交给 `reap_expired(live_owners=...)`；
+  兜底常驻身份从不在执行体清单里，只有这条来源才包得住它（ba-p03-01）。读失败回 `None`
+  （哨兵，与"确实无在途持有者"的空集区分）⇒ 调用方跳过本轮回收（fail-closed）；
 - `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
   `pending`——证据强于"租约过期"，故不等宽限期；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
@@ -403,6 +407,40 @@ def reclaim_tasks(day, phones):
         return 0
 
 
+def claimed_owners(day=None):
+    """当日**在途 `claimed` 行**的持有者全集（去重、非空、升序）——回收豁免名册的输入。
+
+    豁免的**唯一来源是队列本身**：谁真的握着 `claimed` 行，谁才需要判活。按执行体清单
+    （`cfg["executors"]`）枚举会漏掉清单外的身份——兜底常驻的运行时串（`fallback@host`）
+    从不在清单里，它手上的行于是整段落在豁免之外（ba-p03-01：兜底与定时轮并发可致同一
+    账号当天两次真实登录）。调用方对每个持有者判活后，把仍存活者的稳定槽位名传给
+    `reap_expired(live_owners=...)`。
+
+    `vshard < 0` 的历史行不属于任何分片集（`reap_expired` 同界不回收），不计入；`owner`
+    为空的行无法判活，也不计入（它们本来就不被任何豁免盖住）。`day` 给了就只取该业务日
+    ——回收只碰当日，名册同样只该看当日。
+
+    **库异常 → `None`（不是空集）**：`None` 是"读不到"的哨兵，"确实没有在途持有者"回
+    `[]`。两者必须区分——空集意味着"所有超期行都不豁免"，拿它去回收会把活持有者的行
+    判死（同账号二次登录）。调用方把 `None` 直接传给 `reap_expired`，后者据此**跳过本轮
+    回收**（fail-closed）；宁可这一轮不回收，也不放宽回收面。
+    """
+    sql = ("SELECT DISTINCT owner FROM sign_tasks "
+           "WHERE state=? AND owner != '' AND vshard >= 0")
+    params = [STATE_CLAIMED]
+    if day is not None:
+        sql += " AND day=?"
+        params.append(day)
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+    except Exception as e:
+        logger.warning("读取在途持有者名单失败（本轮跳过回收）: %s", e)
+        return None
+    return sorted({str(r[0]) for r in rows if r[0]})
+
+
 def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None,
                  held=(), live_owners=()):
     """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
@@ -429,7 +467,9 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None,
       身份存的是运行时串 `{稳定名}:{进程号}:{代次}`（`yiban.egress.runtime_owner`），故
       与 `reap_abandoned` 同口径按「等值 + `instr` 前缀」匹配，不用 `LIKE`
       （主机名里可能有 `_`，那是 LIKE 的通配符）。心跳过期的死主不在此集合里 → 仍按租约
-      + 宽限回收，崩溃恢复链不受影响。
+      + 宽限回收，崩溃恢复链不受影响。**传 `None` 表示名册来源读失败**（`claimed_owners`
+      的哨兵）⇒ 本函数**跳过本轮回收**（fail-closed）：空名册会放宽回收面、把活持有者的
+      行判死，故读不到时不回收。
 
     **为什么不用"把 `lease_until` 加长"糊过去**：续租只是把同一道判据的阈值调大，等待
     时间没有上界（积压时队列里的条目能等任意久），阈值迟早被跨过；而且续租会让"崩溃即
@@ -454,8 +494,13 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None,
 
     幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常 → 0 + warning（回收是补偿动作，
     失败不该打断签到；下一轮会再试）；`now` 不可解析是**调用方入参问题**，单独一条
-    warning（不与库异常共用文案，免得把排查方向带到存储层）。
+    warning（不与库异常共用文案，免得把排查方向带到存储层）。`live_owners=None`（名册
+    来源读失败哨兵）→ 0 + warning，**不做任何回收**（fail-closed）。
     """
+    if live_owners is None:
+        # 名册来源读失败（`claimed_owners` 的哨兵）：跳过本轮回收，不放宽回收面。
+        logger.warning("豁免名册不可用（来源读取失败），跳过本轮回收（fail-closed）")
+        return 0
     sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
            "WHERE state=? AND lease_until != '' AND lease_until < ? AND vshard >= 0")
     try:
