@@ -13,7 +13,8 @@
     "link rel=modulepreload href=/static/vue/assets/theme-CIzwvb-s.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-GZUw20XP.js",
     "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
-    "script src=/static/vue/assets/dashboard-i2-YtULJ.js"
+    "link rel=modulepreload href=/static/vue/assets/status-vocab-C0wP_145.js",
+    "script src=/static/vue/assets/dashboard-ogqCSUGY.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",

@@ -36,6 +36,10 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DASH_JS = os.path.join(BASE, "frontend", "src", "dashboard", "model.js")
+#: 状态词表的唯一事实源（2026-10-04 收敛）：dashboard 的 STATUS_LABEL 由它的
+#: `STATUS_VOCAB[*].short` 派生。本守卫随之重锚——从该对象在 node 里重建
+#: STATUS_LABEL（与运行时同一派生式），口径钉点不变。
+VOCAB_JS = os.path.join(BASE, "frontend", "src", "lib", "status-vocab.js")
 NODE = shutil.which("node")
 
 DAY = "2026-09-20"
@@ -111,13 +115,20 @@ def _extract_object(src, name):
     raise AssertionError("对象 %s 未找到匹配的右花括号" % name)
 
 
-#: statusKind 的依赖词表——**从模块源码抽**，测试不再自带重写（旧版 `already`→skip
+#: statusKind 的依赖词表——**从唯一事实源抽**，测试不再自带重写（旧版 `already`→skip
 #: 的不等价重写正是登记点名的缺口之一）。
+#: 2026-10-04 状态词表收敛后，STATUS_LABEL 不再是 dashboard 内的字面量表，而是
+#: `lib/status-vocab.js` 的 STATUS_VOCAB 派生量；harness 从该对象按**与运行时相同的
+#: 派生式**重建 STATUS_LABEL，SUCCESS_ST / FAIL_ST / statusKind 仍从 dashboard 抽。
 def _status_vocab_js(src):
+    with open(VOCAB_JS, encoding="utf-8") as fh:
+        vocab_src = fh.read()
     return (
+        "var STATUS_VOCAB = " + _extract_object(vocab_src, "STATUS_VOCAB") + ";\n"
+        "var STATUS_LABEL = {};\n"
+        "for (var _vk in STATUS_VOCAB) STATUS_LABEL[_vk] = STATUS_VOCAB[_vk].short;\n"
         "var SUCCESS_ST = " + _extract_object(src, "SUCCESS_ST") + ";\n"
         "var FAIL_ST = " + _extract_object(src, "FAIL_ST") + ";\n"
-        "var STATUS_LABEL = " + _extract_object(src, "STATUS_LABEL") + ";\n"
         + _extract_function(src, "statusKind") + "\n"
     )
 
