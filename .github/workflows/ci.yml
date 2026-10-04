@@ -85,8 +85,23 @@ jobs:
       - name: E2E smoke (full chain)
         run: python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 
+      # ---- B0.5 §14 共享事实名册门禁 ----
+      # 是什么：scripts/gate/shared-facts.tsv 把 census 里最脏的三族（路径配置 /
+      #   状态件 / 语义常量）的"每枚共享事实允许有几个**非注释**定义点"冻成数据，
+      #   bash 门禁逐键 grep 计数，超出即红并点名 文件:行。注释（#、//、<!-- -->、
+      #   {# #}）里的命中不算；docstring 与字符串字面量算（刻意的，见名册文件头）。
+      # 为什么要它：B1–B3 要一边删旧定义点、一边很容易顺手长出新定义点，而那正好
+      #   是"同一个事实在多处各自定义"这个病的复发路径。有了它，新增一枚定义点
+      #   必须同时改名册那一行并写理由——治理成本 O(1)，复发成本看得见。
+      # 元测试同一步跑：它钉"名册是唯一事实源（脚本不内嵌第二份）+ 门真在 CI +
+      #   真脚本对合成树判红/判绿"（活体反例），防这条门变成废断言。
+      - name: Shared facts gate (B0.5 §14)
+        run: |
+          bash scripts/check-shared-facts.sh
+          python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
+
       - name: Gate ready
-        run: 'echo "Fast gate active: lint + security subset + e2e smoke."'
+        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster."'
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
   # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
