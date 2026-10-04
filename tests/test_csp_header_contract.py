@@ -10,17 +10,19 @@
        零校验者的链"——tests/ 里 nosniff / Content-Security / X-Frame 命中 0，本测试即
        补上这枚校验者。
     ② **归因面**（本刀重点）：`web/app.py::no_cache` 里那段解释"为何不使用 CSP nonce"
-       的注释，必须把原因归给**内联 `<script>` 块**（并点名 `theme_boot`），**不得**把
-       原因归给内联 `onclick` 事件处理器。census 实测：模板内联 `<script>` 块 10 处
-       （theme_boot 独占 4），内联事件属性仅 3 处（全是 onclick）——注释旧文把真因写成
-       "模板含大量内联 onclick 处理器"，照它建议只迁 addEventListener 再上 nonce 会
-       直接致坏（内联 `<script>` 块仍被 nonce 拦掉，theme_boot 的 4 块静默失效）。
+       的注释，必须把真因归给**内联 `<script>` 块**（并点名 `theme_boot`），**不得**把
+       原因归给内联 `onclick` 事件处理器；同时必须点明**内联事件属性**（onclick /
+       onerror）**同样是** nonce 的阻碍，不得写成"不是原因"。实测：模板内联 `<script>`
+       块 10 处（theme_boot 独占 4），内联事件属性 6 处（3 onclick + 3 onerror）——注释
+       旧文把真因写成"模板含大量内联 onclick 处理器"，照它建议只迁 addEventListener 再
+       上 nonce 会直接致坏（内联 `<script>` 块仍被 nonce 拦掉，theme_boot 的 4 块静默
+       失效）；把事件属性一概写成"不是原因"同样误导（会漏掉 3 处 onerror 等）。
 
 对应实现：`web/app.py::no_cache`（`Content-Security-Policy` 头 + 其上方注释段）。
-关键断言：行为面断言头取值；归因面断言"注释宣称的原因 == 实测的主要载体"——注释改回
-    旧归因（归给 onclick、不点名内联 `<script>`）必须红。变异验证：把注释临时改回旧
-    文案，`test_comment_attributes_blocker_to_inline_script_blocks` 与
-    `test_comment_does_not_blame_inline_onclick` 双双变红（见 out/b0/02-csp-report.md）。
+关键断言：行为面断言头取值；归因面断言"注释宣称的原因 == 实测"——主载体是内联
+    `<script>` 块且不遗漏地把内联事件属性列为第二类阻碍。注释改回旧归因（不点名内联
+    `<script>`、或把事件属性写成"不是原因"/漏掉 onerror）必须红。变异验证见
+    out/b0/02-csp-fix-report.md。
 依赖：纯本地 Flask test client + 临时 .env/SQLite + 文件读取；不触网、无 skip、无新依赖。
 """
 import contextlib
@@ -36,8 +38,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_PY = os.path.join(BASE, "web", "app.py")
 TEMPLATES = os.path.join(BASE, "web", "templates")
 
-#: 一段内联事件属性（onclick/onchange/...）；HTML 里作为属性名出现。
-_INLINE_EVENT = re.compile(r"\son(?:click|change|submit|input|load)\s*=", re.I)
+#: 一段内联事件处理器属性（on<word>=，如 onclick / onerror / onchange / onsubmit /
+#: oninput / onload / onfocus / onblur / onkeydown / onkeyup …）。HTML 里作为**属性名**
+#: 出现（前导空白界定属性位）；刻意用通用 `on[a-z]+` 覆盖全族而非硬编白名单，避免将来
+#: 新增事件形态漏计。要求前导空白，以免把 JS 里 `obj.onerror=` 这类属性赋值误算成属性。
+_INLINE_EVENT = re.compile(r"\son[a-z]+\s*=", re.I)
 #: 任意 <script ...> 开标签；无 src 者即"内联脚本块"。
 _SCRIPT_TAG = re.compile(r"<script\b[^>]*>", re.I)
 
@@ -80,7 +85,7 @@ def _count_inline_scripts(root):
 
 
 def _count_inline_events(root):
-    """数 root 下所有 html 里的内联事件属性（onclick= 等）。"""
+    """数 root 下所有 html 里的内联事件处理器属性（onclick= / onerror= 等，全 on* 族）。"""
     n = 0
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
@@ -153,11 +158,12 @@ class CspCommentAttributionTest(unittest.TestCase):
     """② 归因面：注释真因 == 实测主要载体（内联 `<script>` 块），不得归给 onclick。"""
 
     def test_measured_main_carrier_is_inline_script_not_onclick(self):
-        """先钉住实测事实：内联 `<script>` 块是主要载体，onclick 只是少数。"""
+        """先钉住实测事实：内联 `<script>` 块是主要载体，内联事件属性只是少数。"""
         scripts = _count_inline_scripts(TEMPLATES)
         events = _count_inline_events(TEMPLATES)
         self.assertGreater(scripts, events,
-                           "实测主要载体应是内联 <script> 块（census：10 处 vs onclick 3 处）；"
+                           "实测主要载体应是内联 <script> 块（实测：内联 <script> 10 处 vs "
+                           "内联事件属性 6 处 = 3 onclick + 3 onerror）；"
                            f"当前实测 scripts={scripts} events={events}")
 
     def test_comment_attributes_blocker_to_inline_script_blocks(self):
@@ -175,7 +181,31 @@ class CspCommentAttributionTest(unittest.TestCase):
         comment = _extract_nonce_comment()
         self.assertNotRegex(comment, r"内联\s*onclick",
                             "注释不得把非 nonce 的原因归给『内联 onclick』——真因是内联 "
-                            f"<script> 块（onclick 全站仅 3 处）——当前: {comment!r}")
+                            "<script> 块（onclick 只是 6 处内联事件属性中的 3 处）"
+                            f"——当前: {comment!r}")
+
+    def test_comment_flags_inline_event_attributes_as_blocker(self):
+        """注释必须点明内联事件属性（onclick / onerror）同样是 nonce 的阻碍。
+
+        旧文把这句写成"真因是内联 <script> 块，**不是**内联事件属性（onclick 仅 3 处）"，
+        与实测不符：内联事件属性共 6 处（3 onclick + 3 onerror），且 nonce/hash 对
+        事件处理器属性一律不适用——撤掉 'unsafe-inline' 后这 6 处同样失效。写成"不是
+        原因"会误导后人以为"只迁 onclick 就能上 nonce"。
+        """
+        comment = _extract_nonce_comment()
+        self.assertRegex(comment, r"内联事件属性",
+                         "注释必须点出『内联事件属性』这一类同样是 nonce 的阻碍"
+                         f"——当前: {comment!r}")
+        self.assertRegex(comment, r"onerror",
+                         "注释必须点名 onerror（此前被漏的一类，真树 3 处），否则会误导"
+                         f"后人以为只有 onclick 需处理——当前: {comment!r}")
+
+    def test_inline_event_regex_covers_onerror(self):
+        """事件计数正则必须覆盖 onerror（真树 3 处），否则测量面漏掉一整类阻碍。"""
+        self.assertTrue(_INLINE_EVENT.search(' onerror="x"'),
+                        "事件正则未覆盖 onerror——真树 3 处 onerror 会被漏计，测量面变窄")
+        self.assertTrue(_INLINE_EVENT.search(' onclick="x"'),
+                        "事件正则必须仍覆盖 onclick（真树 3 处）")
 
 
 if __name__ == "__main__":
