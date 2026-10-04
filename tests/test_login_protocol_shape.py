@@ -832,6 +832,7 @@ class LegacyPageFallbackTest(unittest.TestCase):
 
     def test_legacy_page_without_var_keyword_parses_only_for_legacy_flow(self):
         from Crypto.PublicKey import RSA
+
         from yiban.fyiban import protocol as fyiban_protocol
 
         pem = RSA.generate(1024).publickey().export_key().decode()
