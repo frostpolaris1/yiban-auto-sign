@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { api, errorMessage } from "../lib/shell";
 
 /* 执行体与出口分区（整 tab 仅主管理员）。
@@ -152,6 +152,21 @@ const dlgName = ref("");
 const dlgEgress = ref("");
 const dlgFbEnable = ref(false);
 const dlgBusy = ref(false);
+/* 窄屏（≤720）：固定 520px 的 el-dialog 在 360/480 会横溢出视口，且 EP 不限高时内容
+   实测 1711px、footer（保存）落在视口外——改整屏 sheet（配 app.css 的 .set-exec-dialog）。 */
+const narrow = ref(false);
+let narrowMq: MediaQueryList | null = null;
+function onNarrowChange(e: MediaQueryListEvent | MediaQueryList): void { narrow.value = e.matches; }
+onMounted(() => {
+  if (typeof window.matchMedia !== "function") return;
+  narrowMq = window.matchMedia("(max-width: 720px)");
+  onNarrowChange(narrowMq);
+  narrowMq.addEventListener("change", onNarrowChange);
+});
+onUnmounted(() => {
+  narrowMq?.removeEventListener("change", onNarrowChange);
+  narrowMq = null;
+});
 function openRow(row: Record<string, unknown>): void {
   dlgRow.value = row;
   dlgName.value = attr(row.name);
@@ -315,7 +330,7 @@ defineExpose({ load, refreshKpis });
     <p class="set-warn" id="set-exec-fb-warn" :hidden="!fbAlarm">{{ fbAlarm ? "故障转移行声明已开启但当前没有在跑（且正在签到时段内）：窗口内的漏签不会被补，请检查宿主 cron（或容器调度器）是否以 --fallback 拉起。" : "" }}</p>
   </section>
 
-  <el-dialog v-model="dialogOpen" :title="dlgRow ? (attr(dlgRow.label) || '执行体') : '执行体'" width="520px" append-to-body>
+  <el-dialog v-model="dialogOpen" :title="dlgRow ? (attr(dlgRow.label) || '执行体') : '执行体'" :width="narrow ? '100%' : '520px'" modal-class="set-exec-overlay" class="set-exec-dialog" append-to-body>
     <div class="set-exec-form">
       <p v-if="singleHint" class="alert info set-exec-hint" role="status">{{ singleHint }}</p>
       <div v-if="dlgRow && attr(dlgRow.type) === 'fallback'" class="field">

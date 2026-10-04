@@ -3793,43 +3793,21 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   }
 }
 
-/* 设置页页签：≤720 不再横向滚动，改换行胶囊云。
-   实测 360 溢出 229px、480 溢出 109px，末尾「执行体 / 系统开关」被裁在视口外、且右缘
-   渐隐不足以让触屏用户发现"还能滑"——等于不可达。换行后七个分区全部留在视口内，
-   roving 键盘导航（SettingsPage.onTabKeydown）与脏点标记都不变。
-   作用域限定 [data-settings-tabs]：不动 Adminator 的全局 .tabs / .tabs.pills（别处仍在用）。 */
+/* 设置页页签（用户裁决 2026-10-04）：回归单行下划线横滚，**靠"下一个页签被视口裁掉一部分"
+   （半露）引导右滑——这是期望形态，不是缺陷**。此前的换行胶囊云已废弃（撤掉全部样式）。
+   作用域限定 [data-settings-tabs]：不动 Adminator 的全局 .tabs（accounts 页仍在用）。
+   · 单行横滚：.tabs-scroll 全局已有 overflow-x:auto + 触屏惯性；取消右缘渐隐遮罩——
+     渐隐会把"半露"那个页签压暗，与"半露即引导"的判读打架（这是本轮选的唯一增强之外的
+     取舍：不叠 fade）。
+   · 唯一增强 = scroll-snap proximity：静止时半露照旧可见，滑动落位时对齐到页签边界，
+     手感更稳。 */
+[data-settings-tabs] .tabs-scroll {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
 @media (max-width: 720px) {
-  [data-settings-tabs] .tabs-scroll {
-    overflow: visible;
-    mask-image: none;
-    -webkit-mask-image: none;
-  }
-  [data-settings-tabs] .tabs {
-    flex-wrap: wrap;
-    gap: 6px;
-    border-bottom: 0;
-    margin-bottom: 14px;
-  }
-  [data-settings-tabs] .tab {
-    top: 0;
-    padding: 7px 12px;
-    border: 1px solid var(--border-soft);
-    border-radius: 7px;
-    background: var(--bg-card);
-    color: var(--t-muted);
-  }
-  /* 选中态两主题统一"主色族高亮 + 主色描边"方向：
-       非选中 = 卡片面 + 软描边（贴 --bg-body 上靠底色差与描边可见；
-       原来用 --bg-muted 在浅色下与 --bg-body 只差 ~1.00:1，胶囊云其实只在暗色成立）；
-       选中 = --primary-soft 填充 + --primary 描边与文字（暗色下 --bg-card 反而比未选中更暗，
-       若沿用"选中填 --bg-card"会与未选中方向相反，故改走主色族）。 */
-  [data-settings-tabs] .tab.is-active {
-    background: var(--primary-soft);
-    border-color: var(--primary);
-    color: var(--primary);
-    font-weight: 600;
-  }
-  [data-settings-tabs] .tab.is-dirty::after { top: 5px; right: 3px; }
+  [data-settings-tabs] .tabs-scroll { scroll-snap-type: x proximity; }
+  [data-settings-tabs] .tab { scroll-snap-align: start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4329,6 +4307,57 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   #set-exec-table { min-width: 700px; }
 }
 
+/* `.set-exec-hint` 两处（弹窗顶部「只有一个并行执行体」提示、页内 `#set-exec-solo`）都是
+   **纯文字**告警，没有 Adminator `.alert` 期望的 `.ico`/`.body`/`.close` 子节点，不需要网格
+   对齐。`#set-exec-solo` 的正文还夹着行内 `<b>`（连续文本与元素子节点各自成匿名网格项），
+   单列 grid 会把一句拆成若干行。
+   故这里改 `display:block`：整段按普通段落回流（行内 `<b>` 与文字自然接排）。左侧语义边与
+   底色不变；`.alert` 的 `gap/padding` 对块级无影响。 */
+.alert.set-exec-hint { display: block; }
+
+/* 执行体行内弹窗（el-dialog）：EP 默认不限高 —— 内容高（单执行体提示 + 5 组字段）实测
+   1711px，900px 视口下 footer（保存/取消）落在视口外（主控件够不到，违窄屏口径）。
+   改为「遮罩 flex 居中 + 弹窗限高 + body 内滚 + footer 常驻」；≤720 收成整屏 sheet
+   （固定 520px 在 360/480 会横溢出视口，宽度由组件按 matchMedia 绑成 100%）。
+   ⚠ 选择器必须带 `.set-exec-overlay` 祖先（0,2,0）：EP 的 `.el-dialog{margin/padding}`
+   与本文件同为 (0,1,0) 且 EP CSS 在本文件之后加载，裸类名会被反超（实测 margin 仍是
+   15vh、padding 仍是 16px）。 */
+.set-exec-overlay .el-overlay-dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.set-exec-overlay .set-exec-dialog {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  max-height: 100%;
+}
+.set-exec-overlay .set-exec-dialog .el-dialog__header { padding: 16px 16px 8px; }
+.set-exec-overlay .set-exec-dialog .el-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 4px;
+}
+.set-exec-overlay .set-exec-dialog .el-dialog__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft);
+}
+@media (max-width: 720px) {
+  .set-exec-overlay .el-overlay-dialog { padding: 0; }
+  .set-exec-overlay .set-exec-dialog {
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+  .set-exec-overlay .set-exec-dialog .el-dialog__footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+}
+
 /* ---- .env 写拒绝的定位/清理模态：行条目 + 一键清理按钮 ---- */
 .env-refused-list { display: grid; gap: 10px; }
 .env-refused-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
@@ -4457,6 +4486,9 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 /* 窄屏（≤480）：每个编辑器单元独占整行，标签与控制不再互相挤。 */
 @media (max-width: 480px) {
   .dist-viz-editor { flex: 1 1 100%; }
+  /* 360 实测：散布编辑器 min-content 比行宽多 5px（三个 addon 各 12px 左右内距撑出来的）。
+     收窄 addon 内距让控件组能真正收缩到位、消掉 5px 内横溢（输入框反而拿回宽度）。 */
+  .dist-viz-editors .input-group .addon { padding: 0 8px; }
 }
 /* 均匀态降级提示：替代 210px 画布的紧凑说明（虚线框 = 非控件、纯说明）。 */
 .dist-viz-flat {
