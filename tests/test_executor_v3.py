@@ -319,6 +319,18 @@ class _Base(unittest.TestCase):
         """预置当日虚分片数（等价于上一轮已建过计划并落库）。"""
         clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + day, v)
 
+    def _stale_heartbeat(self, index, role=egress.ROLE_WORKER):
+        """写一个已过新鲜度门的心跳（`stale`：有开始、无收尾、心跳过期）。
+
+        这是"崩溃执行体"的忠实表示：进程起跑时写过心跳、随后被杀，文件留下且时间戳变旧。
+        它与"当日完全没有心跳记录"（`idle`）必须区分——`idle` 是保守侧、算活、当日不回收
+        （心跳写失败 / 跨午夜 / 进程没跑都会落到 `idle`，见 `_live_row_owners`）；只有
+        `stale` 才判死、才回收。
+        """
+        state_io.mark_worker_started(
+            index, now=self.fc.t - datetime.timedelta(
+                seconds=2 * state_io.WORKER_HEARTBEAT_SEC + 5), role=role)
+
     def _run_v3(self, accounts, items=None, *, cfg=None, rng=None, limiter=None,
                 gate=None, delegated=None, cred_state=None, event_sink=None,
                 dry_run=False, notify_url="", requeue_final=False, claim_all=False,
@@ -1669,6 +1681,9 @@ class RecoveryWiringTest(_Base):
                        lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60),
                        day="2026-09-21")
         self._seed_v(8)
+        # worker-9 已崩溃（心跳过期 = stale，判死）；"当日无心跳"是 idle、保守侧算活，
+        # 那种行当日不回收，不能用来代表崩溃执行体。
+        self._stale_heartbeat(9)
         calls = []
         real = queue_store.reap_expired
 
@@ -1722,6 +1737,9 @@ class RecoveryWiringTest(_Base):
         self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
                        lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
         self._seed_v(8)
+        # worker-9 已崩溃：心跳过期（stale）⇒ 判死 ⇒ 其行可被回收。缺了这条心跳就落到
+        # `idle`（保守侧算活、当日不回收），那是"当日无心跳"而非"崩溃"。
+        self._stale_heartbeat(9)
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (True, "ok", False, "success")):
             results = self._run_v3(self._accounts(phone))
