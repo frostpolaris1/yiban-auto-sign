@@ -4,7 +4,7 @@
 标签：F · 前端与界面守卫（Vue 线新增）
 覆盖：/work/users 渲染契约（挂载点、manifest 资产真实在盘、module 脚本、admin 守卫、
       no-store）、**legacy 资产已彻底退役**（模板不再引用 work_users.js / user-ops.js，
-      且文件已从磁盘删除；row-menu.js 仍留给账号页与设置页）、**PII 出口面**（组件只渲染
+      且文件已从磁盘删除；row-menu.js 亦已于 2026-10-04 整体退役）、**PII 出口面**（组件只渲染
       遮罩邮箱，完整邮箱不进 DOM 文本/属性）、e2e 依赖的 data-* 钩子仍在
 对应实现：`web/routes/pages.py` 的 `users_page` / `_render_vue_page`、
       `web/templates/pages/work_users.html`、`frontend/src/users/**`
@@ -141,9 +141,10 @@ class UsersPageTest(unittest.TestCase):
             self.assertNotIn(legacy, html, f"模板仍引用 legacy {legacy}")
         self.assertFalse(os.path.exists(LEGACY_USERS_JS), "work_users.js 仍留在库里")
         self.assertFalse(os.path.exists(LEGACY_OPS_JS), "user-ops.js 仍留在库里")
-        # row-menu.js **必须保留**：账号页与设置页仍在用（三页都迁完才可删）
-        self.assertTrue(os.path.exists(ROW_MENU_JS),
-                        "row-menu.js 被误删——账号页/设置页仍在用它")
+        # 2026-10-04 清扫：row-menu.js 已无任何现役消费者（账号页/设置页迁 Vue 后改用
+        # el-dropdown），整体退役——本守卫从「必须保留」改为「必须已退役」。
+        self.assertFalse(os.path.exists(ROW_MENU_JS),
+                         "row-menu.js 仍留在库里——三页迁 Vue 后已无消费者")
 
     def test_contract_hooks_survive_in_the_component(self):
         src = _read(USERS_VUE)

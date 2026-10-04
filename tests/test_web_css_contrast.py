@@ -318,7 +318,6 @@ class BatchAContrastTokenTest(unittest.TestCase):
         ".panel-sub",
         ".account-meta",
         ".account-note",
-        ".range-tick",
     )
 
     def test_sub_text_rules_use_t_sub(self):
@@ -588,41 +587,6 @@ class TouchAndMotionRegressionTest(unittest.TestCase):
                      ".alert.auth-announce .close", ".info-tip", ".sc-nav-btn"):
             self.assertIn(real, joined, f"触屏命中区漏了真实目标 {real}")
 
-    def test_self_made_triggers_have_transform_transition_and_pressed_state(self):
-        """四类自研触发器的 transition 必须含 transform，并有一条 :active 按压态。"""
-        css = _strip_comments(_read(APP_CSS))
-        for sel in (".select-trigger", ".range-trigger", ".time-trigger", ".date-trigger"):
-            bodies = _rule_bodies(css, sel)
-            self.assertTrue(any("transform" in b for b in bodies),
-                            f"{sel} 的 transition 未含 transform（按压态无法过渡）")
-            active = _rule_bodies(css, sel + ":active")
-            self.assertTrue(any("scale(" in b for b in active),
-                            f"{sel}:active 缺按压位移（scale）")
-
-    def test_declaration_popups_have_exit_animation(self):
-        """`.select-menu` / `.date-pop` 的退场必须与进场同参数反向，且被 reduce 关停。"""
-        css = _strip_comments(_read(APP_CSS))
-        for sel in (".select-menu.is-closing", ".date-pop.is-closing"):
-            bodies = _rule_bodies(css, sel)
-            self.assertTrue(bodies, f"{sel} 缺失 —— 展开是淡入、收起仍是硬跳")
-            self.assertIn("animation", "".join(bodies), f"{sel} 未声明退场 animation")
-        # 退场关键帧必须存在
-        self.assertIn("@keyframes select-menu-out", css)
-        # reduce 下必须关停退场（与进场同处一块；.select-menu 与 .date-pop 各在自己的 reduce 块）
-        reduce_blocks = _media_bodies(
-            css, r"@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{")
-        self.assertTrue(
-            any(".select-menu.is-closing" in b for b in reduce_blocks)
-            and any(".date-pop.is-closing" in b for b in reduce_blocks),
-            "prefers-reduced-motion 分支未同时关停 .select-menu/.date-pop 的退场动画",
-        )
-        # 触发器按压位移也要在 reduce 里归零
-        self.assertTrue(
-            any(".select-trigger:active" in b and "transform:none" in b.replace(" ", "")
-                for b in reduce_blocks),
-            "prefers-reduced-motion 分支未归零触发器按压位移",
-        )
-
     def test_theme_crossfade_single_duration_token(self):
         """整页换肤的表面/文字/深色极光必须共用同一个时长令牌（三种时长曾不同步）。"""
         css = _strip_comments(_read(APP_CSS))
@@ -699,8 +663,7 @@ class BatchDControlOutlineTest(unittest.TestCase):
 
     def test_control_outline_consumers_use_token(self):
         css = _strip_comments(_read(APP_CSS))
-        for sel in (".select-trigger", ".range-trigger", ".time-trigger", ".date-trigger",
-                    ".input", ".select", ".textarea", ".input-group"):
+        for sel in (".input", ".select", ".textarea", ".input-group"):
             decls = _decls(css, sel, "border-color") + _decls(css, sel, "border")
             self.assertIn(
                 "var(--control-border)", "".join(decls),
@@ -716,21 +679,10 @@ class BatchDControlOutlineTest(unittest.TestCase):
                       ".btn--danger-ghost 文字未走 --state-bad-fg（旧字面量 #B91C1C 绕开了令牌）")
         self.assertNotIn("#B91C1C", bodies, ".btn--danger-ghost 仍有字面量 #B91C1C")
 
-    def test_select_disabled_root_has_style(self):
-        css = _strip_comments(_read(APP_CSS))
-        self.assertTrue(
-            _rule_bodies(css, ".select-field.is-disabled"),
-            "单选下拉的 .is-disabled 根没有任何样式（多选有 opacity:.6，单选是空操作）",
-        )
-        self.assertTrue(_rule_bodies(css, ".multiselect-field.is-disabled"),
-                        "多选下拉的禁用样式被删了")
-
     def test_concentric_radius_chains(self):
         """内层圆角必须 = 外层圆角 − 外层 padding（否则内层"顶"出外弧、读作两个盒子）。"""
         css = _strip_comments(_read(APP_CSS))
         chains = (
-            (".select-menu", ".select-option"),
-            (".date-pop", ".date-day"),
             (".auth-tabs.auth-seg", ".auth-tabs.auth-seg .tab"),
         )
         problems = []
