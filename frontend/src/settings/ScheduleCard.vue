@@ -19,8 +19,15 @@ import DistViz from "./DistViz.vue";
 
 /* 签到调度卡（设置页第一分区）。legacy = components/settings-schedule.js + settings-dist-viz.js。
    自研控件四件套按既定方向换 EP 基础件：排序/分布 → el-select；掐头去尾 → el-slider；
-   签到窗口 → el-time-picker(is-range)；周末签到 → el-checkbox；自选开关 → el-switch。
+   签到窗口 → el-time-picker(is-range)；周末签到与自选开关 → el-switch（A15 统一为开关）。
    正态 μ/σ 的可见编辑器仍由 DistViz 构建（原生 input，legacy 同款，不在四件套内）。
+
+   2026-10-04 P3 收官重设计（本文件）：
+   · 布局——字段按语义重排，≤720 单列 / 721–1439 双列 / ≥1440 三列（密度随视口放大）；
+   · A15——周六/周日/自选三个布尔开关合并进同一列并各自带标注（原来两段散点、布尔控件
+     混用 checkbox 与 switch 两套外观）；
+   · EP 精修——el-select / el-time-picker 与 .input 同高（经 .settings-page 单点规则）。
+   交互与口径层（保存语义/档位/脏守卫/警示）一字未动。
 
    权限（单源是后端档位表）：A 档（窗口/裁剪/周末/间隔/μσ）仅主管理员；B 档（排序/分布/自选）
    任意管理员可改。禁用只是界面口径，后端仍逐字段 403 + 口令门。
@@ -216,7 +223,10 @@ defineExpose({ isDirty: () => dirty.value, save });
       <span class="body">仅主管理员可改核心配置：签到窗口、掐头去尾、账号间隔、周末开关与正态分布。排序方式、分布方式与「允许用户自选签到时间」任意管理员可改，保存时仍需口令确认。</span>
     </p>
     <div class="form-grid">
-      <div class="field">
+      <!-- 字段顺序按语义重排（方式 → 窗口 → 正态参数 → 开关），并挂密度类名：≤720 单列 /
+           721–1439 双列 / ≥1440 三列。大视口升列是为了不让控件被拉成 780px 空框
+           （旧观感：一个短下拉铺满半张卡），密度随视口放大而不是锁 max-width。 -->
+      <div class="field sched-f-order">
         <span class="field-label" id="ss-order-label">排序方式</span>
         <!-- data-select-field 是两栈共通的 e2e/契约锚点（legacy 自研控件的根也用它） -->
         <div class="select-field" data-select-field="ss-order">
@@ -225,7 +235,7 @@ defineExpose({ isDirty: () => dirty.value, save });
           </el-select>
         </div>
       </div>
-      <div class="field">
+      <div class="field sched-f-dist">
         <span class="field-label" id="ss-dist-label">分布方式</span>
         <div class="select-field" data-select-field="ss-dist">
           <el-select id="ss-dist" v-model="form.dist" aria-label="分布方式" style="width: 100%">
@@ -233,35 +243,7 @@ defineExpose({ isDirty: () => dirty.value, save });
           </el-select>
         </div>
       </div>
-      <div class="field">
-        <span class="field-label" id="ss-edge-front-label">掐头</span>
-        <div class="range-field" data-range-field="ss-edge-front">
-          <el-slider v-model="form.edgeFront" :min="0" :max="edgeSliderMax" :step="0.5" :disabled="edgeSliderDisabled" />
-        </div>
-        <p class="field-help">{{ form.edgeFront }} 分钟（单边上限 {{ edgeMax }} 分钟）</p>
-      </div>
-      <div class="field">
-        <span class="field-label" id="ss-edge-back-label">去尾</span>
-        <div class="range-field" data-range-field="ss-edge-back">
-          <el-slider v-model="form.edgeBack" :min="0" :max="edgeSliderMax" :step="0.5" :disabled="edgeSliderDisabled" />
-        </div>
-        <p class="field-help">{{ form.edgeBack }} 分钟（单边上限 {{ edgeMax }} 分钟）</p>
-      </div>
-      <div class="field span-2">
-        <span class="field-label" id="ss-mu-label">正态分布（峰值中心与散布）</span>
-        <DistViz :model-value="muModel" :ctx-data="distCtx" :readonly="!isMaster" @update:model-value="setMu" />
-        <p class="set-warn" id="ss-mu-warn" :hidden="!muWarn">{{ muWarn }}</p>
-        <p class="set-warn" id="ss-sigma-warn" :hidden="!sigmaWarn">{{ sigmaWarn }}</p>
-      </div>
-      <div class="field field--narrow">
-        <span class="field-label" id="ss-gap-label">账号间隔</span>
-        <div class="input-group">
-          <input id="ss-gap" v-model.number="form.gap" class="input" type="number" min="0" max="3600" placeholder="10" aria-labelledby="ss-gap-label" :disabled="!isMaster" @change="onGapChange" />
-          <span class="addon">秒</span>
-        </div>
-        <p class="field-help">自动手动均生效，0 = 关闭；修改需当前管理员密码确认。</p>
-      </div>
-      <div class="field">
+      <div class="field sched-f-window">
         <span class="field-label" id="ss-window-label">签到窗口</span>
         <div class="time-pair" data-time-pair>
           <!-- 当前值文本（读屏可及 + 两栈共通锚点）：legacy 触发器本身是文本按钮，
@@ -283,28 +265,63 @@ defineExpose({ isDirty: () => dirty.value, save });
         </div>
         <p class="field-help">开始必须早于结束；保存后下次自动签到生效。</p>
       </div>
-    </div>
-    <p class="set-warn" id="ss-edge-warn" :hidden="!edgeWarn">{{ edgeWarn }}</p>
-
-    <div class="set-row">
-      <span class="set-row-text set-row-text--static">
-        <span class="set-row-label" id="ss-weekend-label">周末签到</span>
-        <p class="set-help">默认关闭，可单独开关。</p>
-      </span>
-      <div class="set-row-ctl">
-        <div class="multiselect-field" role="group" aria-labelledby="ss-weekend-label">
-          <el-checkbox id="ss-sat" v-model="form.sat" :disabled="!isMaster">周六</el-checkbox>
-          <el-checkbox id="ss-sun" v-model="form.sun" :disabled="!isMaster">周日</el-checkbox>
+      <div class="field field--narrow sched-f-gap">
+        <span class="field-label" id="ss-gap-label">账号间隔</span>
+        <div class="input-group">
+          <input id="ss-gap" v-model.number="form.gap" class="input" type="number" min="0" max="3600" placeholder="10" aria-labelledby="ss-gap-label" :disabled="!isMaster" @change="onGapChange" />
+          <span class="addon">秒</span>
         </div>
+        <p class="field-help">自动手动均生效，0 = 关闭；修改需当前管理员密码确认。</p>
+      </div>
+      <div class="field sched-f-front">
+        <span class="field-label" id="ss-edge-front-label">掐头</span>
+        <div class="sched-range" data-range-field="ss-edge-front">
+          <el-slider v-model="form.edgeFront" :min="0" :max="edgeSliderMax" :step="0.5" :disabled="edgeSliderDisabled" />
+        </div>
+        <p class="field-help">{{ form.edgeFront }} 分钟（单边上限 {{ edgeMax }} 分钟）</p>
+      </div>
+      <div class="field sched-f-back">
+        <span class="field-label" id="ss-edge-back-label">去尾</span>
+        <div class="sched-range" data-range-field="ss-edge-back">
+          <el-slider v-model="form.edgeBack" :min="0" :max="edgeSliderMax" :step="0.5" :disabled="edgeSliderDisabled" />
+        </div>
+        <p class="field-help">{{ form.edgeBack }} 分钟（单边上限 {{ edgeMax }} 分钟）</p>
+      </div>
+      <div class="field span-2">
+        <span class="field-label" id="ss-mu-label">正态分布（峰值中心与散布）</span>
+        <DistViz :model-value="muModel" :ctx-data="distCtx" :readonly="!isMaster" @update:model-value="setMu" />
+        <p class="set-warn" id="ss-mu-warn" :hidden="!muWarn">{{ muWarn }}</p>
+        <p class="set-warn" id="ss-sigma-warn" :hidden="!sigmaWarn">{{ sigmaWarn }}</p>
+      </div>
+      <!-- A15：三个布尔开关（周六 / 周日 / 自选）合并进同一列并各自带标注。
+           原先「周六/周日复选框行 + 自选开关行」两段散点：布尔控件混用 checkbox 与 switch
+           两套外观（类同原则的过度项），且行的左右缘与字段列不齐。 -->
+      <div class="field sched-f-switches">
+        <span class="field-label" id="ss-weekend-label">周末与自选</span>
+        <div class="sched-switches">
+          <div class="set-row">
+            <label class="set-row-text" for="ss-sat">
+              <span class="set-row-label">周六签到</span>
+            </label>
+            <el-switch id="ss-sat" v-model="form.sat" :disabled="!isMaster" aria-label="周六签到" />
+          </div>
+          <div class="set-row">
+            <label class="set-row-text" for="ss-sun">
+              <span class="set-row-label">周日签到</span>
+            </label>
+            <el-switch id="ss-sun" v-model="form.sun" :disabled="!isMaster" aria-label="周日签到" />
+          </div>
+          <div class="set-row">
+            <label class="set-row-text" for="ss-time-pref">
+              <span class="set-row-label">允许用户自选签到时间</span>
+            </label>
+            <el-switch id="ss-time-pref" v-model="form.pref" aria-label="允许用户自选签到时间" />
+          </div>
+        </div>
+        <p class="field-help">周末签到默认关闭；自选开启后用户可选 5 分钟时间片，关闭时选择可存但不生效。</p>
       </div>
     </div>
-    <div class="set-row">
-      <label class="set-row-text" for="ss-time-pref">
-        <span class="set-row-label">允许用户自选签到时间</span>
-        <p class="set-help">开启后用户可选 5 分钟时间片；关闭时选择可存但不生效。</p>
-      </label>
-      <el-switch id="ss-time-pref" v-model="form.pref" aria-label="允许用户自选签到时间" />
-    </div>
+    <p class="set-warn" id="ss-edge-warn" :hidden="!edgeWarn">{{ edgeWarn }}</p>
 
     <p class="set-tip" :class="{ 'set-bad': tip.bad }" id="ss-tip" role="status">{{ tip.text }}</p>
 

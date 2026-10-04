@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  PILL_H,
+  PILL_PAD_X,
   adminToPlaceholder,
   applyMu,
   applySgBounds,
@@ -9,6 +11,7 @@ import {
   clean,
   clampGap,
   collectSmtps,
+  distHitKind,
   distWarnText,
   driftPlaceholder,
   edgeMaxMin,
@@ -25,6 +28,7 @@ import {
   notifyStatusText,
   pauseHintText,
   pdf,
+  pillRect,
   quotaPart,
   resolvePaintValue,
   sanitizeAnnouncement,
@@ -166,20 +170,76 @@ describe("正态分布数学", () => {
     expect(edge.muHi).toBeLessThanOrEqual(100);
   });
 
-  it("applySgScale 保持 hi > lo 且钳在 [0,100]（忠实搬运 legacy 的收缩边界）", () => {
+  it("applySgScale 保持 hi > lo ≥ 1 且钳在 [1,100]（P3 收官修掉单边落 0）", () => {
     const grown = applySgScale(15, 25, 4);
     expect(grown.sgHi).toBeLessThanOrEqual(100);
-    expect(grown.sgLo).toBeGreaterThanOrEqual(0);
+    expect(grown.sgLo).toBeGreaterThanOrEqual(1);
     expect(grown.sgHi).toBeGreaterThan(grown.sgLo);
-    // 极小缩放：legacy 的 `Math.min(nLo, nHi-1)` 会落到 0（保留原行为，不在迁移里"改进"）
+    // 极小缩放：legacy 的 `Math.min(nLo, nHi-1)` 会落到 0（σ 下限 0 = 散布为 0，与
+    // 文档承诺的 [1,100] 相悖，且 pdf() 会把 sigma 兜底成 0.5，画形与读数不一致）。
+    // P3 收官改为下限恒 ≥1 —— 这是**有意偏差**，已写进 docs/refactor/29 §15j 的偏差清单。
     const shrunk = applySgScale(2, 3, 0.1);
-    expect(shrunk.sgLo).toBeGreaterThanOrEqual(0);
+    expect(shrunk.sgLo).toBeGreaterThanOrEqual(1);
     expect(shrunk.sgHi).toBeGreaterThan(shrunk.sgLo);
+    // 上界收缩：hi 撞 100 时整体下压，lo 仍 ≥1
+    const capped = applySgScale(40, 60, 10);
+    expect(capped.sgHi).toBe(100);
+    expect(capped.sgLo).toBeGreaterThanOrEqual(1);
+    expect(capped.sgHi).toBeGreaterThan(capped.sgLo);
   });
 
   it("applySgBounds 保证 hi > lo ≥ 1", () => {
     expect(applySgBounds(0, 0)).toEqual({ sgLo: 1, sgHi: 2 });
     expect(applySgBounds(30, 10)).toEqual({ sgLo: 30, sgHi: 31 });
+  });
+});
+
+describe("峰尖手势几何（distHitKind / pillRect，P3 收官抽出）", () => {
+  const DOT_X = 400, DOT_Y = 100, HALF = 60, AXIS_Y = 186;
+
+  it("distHitKind：峰尖 ±22px 圆内为 peak，圆外为 none", () => {
+    expect(distHitKind(DOT_X, DOT_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("peak");
+    expect(distHitKind(DOT_X + 21, DOT_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("peak");
+    expect(distHitKind(DOT_X + 23, DOT_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("none");
+    expect(distHitKind(DOT_X, DOT_Y + 23, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("none");
+  });
+
+  it("distHitKind：底座端部命中带 ±18px / 上 20px 下 10px，越界即离带", () => {
+    expect(distHitKind(DOT_X + HALF, AXIS_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("base");
+    expect(distHitKind(DOT_X + HALF + 17, AXIS_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("base");
+    expect(distHitKind(DOT_X + HALF + 19, AXIS_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("none");
+    expect(distHitKind(DOT_X + HALF, AXIS_Y - 19, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("base");
+    expect(distHitKind(DOT_X + HALF, AXIS_Y - 21, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("none");
+    expect(distHitKind(DOT_X + HALF, AXIS_Y + 9, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("base");
+    expect(distHitKind(DOT_X + HALF, AXIS_Y + 11, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("none");
+    // 左侧端点对称成立
+    expect(distHitKind(DOT_X - HALF, AXIS_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("base");
+  });
+
+  it("distHitKind：底座优先于峰尖（半宽为 0、两点重合时仍判 base）", () => {
+    expect(distHitKind(DOT_X, AXIS_Y, DOT_X, DOT_Y, 0, AXIS_Y)).toBe("base");
+  });
+
+  it("pillRect：水平夹进绘图区、宽度超出时贴左缘", () => {
+    const a = pillRect(400, 100, 80, 46, 900, 14);
+    expect(a.w).toBe(80 + PILL_PAD_X * 2);
+    expect(a.h).toBe(PILL_H);
+    expect(a.x).toBe(400 - a.w / 2);
+    expect(a.y).toBe(100 - 14 - PILL_H);
+    expect(pillRect(50, 100, 80, 46, 900, 14).x).toBe(46);
+    expect(pillRect(892, 100, 80, 46, 900, 14).x).toBe(900 - a.w);
+    // 药丸比整段绘图区还宽 → 贴左缘（不出现反向/负向夹取）
+    expect(pillRect(400, 100, 900, 46, 900, 14).x).toBe(46);
+  });
+
+  it("pillRect：峰尖贴顶（σ 很小、峰很高）时不遮峰尖、改放峰尖下方", () => {
+    const topY = 14;
+    const a = pillRect(400, 20, 80, 46, 900, topY); // 上方放不下
+    expect(a.y).toBe(20 + 14);
+    expect(a.y).toBeGreaterThan(20); // 不遮峰尖
+    // 上下都挤（极矮绘图区）→ 顶到绘图区上缘兜底
+    const b = pillRect(400, 5, 80, 46, 900, topY);
+    expect(b.y).toBeGreaterThanOrEqual(topY + 1);
   });
 });
 

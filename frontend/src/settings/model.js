@@ -243,13 +243,17 @@ export function applyMu(mid, rPct) {
   return { muLo: lo, muHi: lo + fullW };
 }
 
-/* 底座端部/纵向拖拽：等比缩放 σ 区间（中点不变），钳 [1,100] 且保持间隙。 */
+/* 底座端部/纵向拖拽：等比缩放 σ 区间（中点不变），钳 [1,100] 且保持间隙。
+   2026-10-04（P3 收官）修掉 legacy 遗留的单边收缩落 0：极小缩放（k 很小）时
+   `clampPct(sgLo*k)` 得 0，旧写法 `Math.min(nLo, nHi - 1)` 会把 sgLo 输出成 0
+   ——σ 下限 0 等于"散布为 0"，与文档承诺的 [1,100] 相悖，且 pdf() 里 sigma 会被
+   兜底成 0.5，画出的峰形与读数不一致。改为下限恒 ≥1（hi > lo ≥ 1）。 */
 export function applySgScale(sgLo, sgHi, k) {
-  var nLo = clampPct(sgLo * k), nHi = clampPct(sgHi * k);
-  if (nHi <= nLo) nHi = nLo + 1;
-  if (nHi > 100) { nLo = Math.max(1, Math.round(nLo * 100 / nHi)); nHi = 100; }
-  if (nLo < 1) nLo = 1;
-  return { sgLo: Math.min(nLo, nHi - 1), sgHi: Math.max(nHi, Math.min(nLo, nHi - 1) + 1) };
+  var outLo = Math.max(1, clampPct(sgLo * k));
+  var outHi = clampPct(sgHi * k);
+  if (outHi <= outLo) outHi = outLo + 1;
+  if (outHi > 100) { outHi = 100; outLo = Math.min(outLo, 99); }
+  return { sgLo: Math.min(outLo, outHi - 1), sgHi: outHi };
 }
 
 /* 散布编辑器：±分钟独立设置，钳 [0,100] 并保持 hi > lo ≥ 1。 */
@@ -258,6 +262,45 @@ export function applySgBounds(loPct, hiPct) {
   a = Math.max(1, a);
   b = Math.max(a + 1, b);
   return { sgLo: a, sgHi: b };
+}
+
+/* ---------- 峰尖手势的命中几何与药丸定位（纯函数，抽出来给 Vitest 直测） ----------
+   DistViz 的 pointer 交互只管取坐标，判定交给这里：命中区尺寸/优先级与药丸夹取规则
+   有明确边界，放在组件里只能靠真指针 e2e 覆盖，抽纯函数后可逐值单测。 */
+
+/* 峰尖圆命中半径（px）：略大于视觉半径 7.5，触屏/鼠标都好抓。 */
+export var HIT_PEAK_R = 22;
+/* 底座端部命中带：横向允许偏离 σ 端点 ±18px，纵向覆盖轴线上方 20px、下方 10px。 */
+export var HIT_BASE_DX = 18;
+export var HIT_BASE_UP = 20;
+export var HIT_BASE_DOWN = 10;
+/* 药丸（拖动数值读数）盒高、左右内距、与峰尖的垂直净距。 */
+export var PILL_H = 19;
+export var PILL_PAD_X = 7;
+export var PILL_GAP = 14;
+
+/* 命中判定：底座端优先于峰尖（两者可能同时命中，底座语义更专一）。非二者返回 "none"
+   ——"none" 仍走峰尖拖拽（调用方把整面当可拖），本函数只回答"要不要给端点缩放光标"。 */
+export function distHitKind(px, py, dotX, dotY, half, axisY) {
+  var onBase = py > axisY - HIT_BASE_UP && py < axisY + HIT_BASE_DOWN &&
+    Math.abs(Math.abs(px - dotX) - half) <= HIT_BASE_DX;
+  if (onBase) return "base";
+  var dx = px - dotX, dy = py - dotY;
+  if (dx * dx + dy * dy <= HIT_PEAK_R * HIT_PEAK_R) return "peak";
+  return "none";
+}
+
+/* 药丸盒定位：默认贴在峰尖上方 PILL_GAP 处；水平夹进 [minX, maxX]，宽度超出整段时贴左缘。
+   峰尖贴近顶缘（σ 很小、峰很高 → dotY 小）时上方放不下，改放峰尖下方，保证药丸**始终
+   不遮住峰尖**（"σ 收缩自遮挡"）；下方也越界才顶到绘图区上缘兜底。 */
+export function pillRect(anchorX, anchorY, labelW, minX, maxX, topY) {
+  var w = Math.max(0, labelW) + PILL_PAD_X * 2;
+  var maxLeft = Math.max(minX, maxX - w);
+  var x = Math.min(Math.max(anchorX - w / 2, minX), maxLeft);
+  var y = anchorY - PILL_GAP - PILL_H;
+  if (y < topY + 1) y = anchorY + PILL_GAP;
+  if (y < topY + 1) y = topY + 1;
+  return { x: x, y: y, w: w, h: PILL_H };
 }
 
 /* =========================================================================
