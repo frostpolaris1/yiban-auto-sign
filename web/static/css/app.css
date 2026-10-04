@@ -3802,6 +3802,45 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   }
 }
 
+/* 设置页页签：≤720 不再横向滚动，改换行胶囊云。
+   实测 360 溢出 229px、480 溢出 109px，末尾「执行体 / 系统开关」被裁在视口外、且右缘
+   渐隐不足以让触屏用户发现"还能滑"——等于不可达。换行后七个分区全部留在视口内，
+   roving 键盘导航（SettingsPage.onTabKeydown）与脏点标记都不变。
+   作用域限定 [data-settings-tabs]：不动 Adminator 的全局 .tabs / .tabs.pills（别处仍在用）。 */
+@media (max-width: 720px) {
+  [data-settings-tabs] .tabs-scroll {
+    overflow: visible;
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+  [data-settings-tabs] .tabs {
+    flex-wrap: wrap;
+    gap: 6px;
+    border-bottom: 0;
+    margin-bottom: 14px;
+  }
+  [data-settings-tabs] .tab {
+    top: 0;
+    padding: 7px 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 7px;
+    background: var(--bg-card);
+    color: var(--t-muted);
+  }
+  /* 选中态两主题统一"主色族高亮 + 主色描边"方向：
+       非选中 = 卡片面 + 软描边（贴 --bg-body 上靠底色差与描边可见；
+       原来用 --bg-muted 在浅色下与 --bg-body 只差 ~1.00:1，胶囊云其实只在暗色成立）；
+       选中 = --primary-soft 填充 + --primary 描边与文字（暗色下 --bg-card 反而比未选中更暗，
+       若沿用"选中填 --bg-card"会与未选中方向相反，故改走主色族）。 */
+  [data-settings-tabs] .tab.is-active {
+    background: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+    font-weight: 600;
+  }
+  [data-settings-tabs] .tab.is-dirty::after { top: 5px; right: 3px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .info-pop { transition: none; }
   [data-tab-group] .tab-panel.is-active { animation: none; }
@@ -4901,6 +4940,7 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   .toast__close,
   .pm-panel .pm-panel-close,
   .info-tip,
+  [data-settings-tabs] .tab,
   .sc-nav-btn,
   .date-nav,
   .range-tick,
@@ -4967,3 +5007,64 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   line-height: 1.6;
   color: var(--t-muted);
 }
+
+/* ==========================================================================
+   40. 调度卡重设计（P3 收官，2026-10-04）：密度分级 / A15 开关列 / EP 同高 / 编辑器单元
+   --------------------------------------------------------------------------
+   本节的类名全部自研（sched-* / dist-viz-*），不与 Adminator 撞名；颜色一律吃既有令牌。 */
+
+/* 密度分级：721–1439 沿用 vendor 双列；≥1440 升三列 —— 大视口不让短控件被拉成 780px 空框
+   （旧观感"一个短下拉铺满半张卡"）。列跨度只在本卡内声明，不动全站 .form-grid。
+   正态参数列用 vendor 既有的 `.span-2`（双列跨满、≤720 自动退回 span 1），此处不再复写；
+   只有开关列需要自己的跨度（它没有 .span-2）。 */
+.sched-f-switches { grid-column: span 2; }
+@media (min-width: 1440px) {
+  #set-schedule .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sched-f-switches { grid-column: span 1; }
+}
+@media (max-width: 720px) {
+  .sched-f-switches { grid-column: span 1; }
+}
+
+/* A15 开关列：三个布尔开关竖排成一列、各自带标注；行与行用 1px 分隔线（与卡内其它
+   相邻分组同款）。窄屏「label + 开关」仍同排不换行（开关靠右，见 .set-row 既有规则）。
+   宽度上限 360px：`.sched-switches` 是整列容器，比逐行 max-width 更稳；≥1440 三列档里
+   它所在的列约 500px，若不设限行内 space-between 会把开关推到 ~470px 外（label 与控件
+   分家）。360px 是"label + 开关 + 一个短距"的可读刻度。 */
+.sched-switches { display: flex; flex-direction: column; max-width: 360px; }
+.sched-switches .set-row + .set-row { margin-top: 10px; padding-top: 10px; }
+
+/* EP 控件与原生 .input 同高（40px）：EP 默认 32px，同排 select / 时间框比数字框矮 8px
+   （实测）。仅限设置页，避免波及账号页等其它 EP 消费面；颜色仍全部走 ep-theme.css 令牌。 */
+.settings-page .el-select__wrapper { min-height: 40px; }
+.settings-page .el-range-editor.el-input__wrapper { min-height: 40px; }
+/* 滑杆字段与同排输入同高：el-slider 盒高 32px，容器撑到 40px 使其与 .input 基线一致。
+   类名自研（`.sched-range`）：不复用已退役控件 range-field.js 的旧类名，避免"看着在管事"的
+   死样式回潮（旧全局 `.range-field` 规则已随之删除）。 */
+.sched-range { display: flex; align-items: center; min-height: 40px; }
+
+/* dist-viz 编辑器单元：label 与它的控件组不可拆分 —— 换行只在单元之间发生，
+   标签永远不会与控件分家（旧平铺布局窄屏折行后「散布」标签孤行）。
+   标签 nowrap：中文标签在空间紧张时会被逐字折成竖排（360 实测「峰值中心」断成两行），
+   让控件组先收缩（其 .input 有 min-width:0）比让标签拆字更可读。 */
+.dist-viz-editors { gap: 14px 22px; }
+.dist-viz-editor { display: inline-flex; align-items: center; gap: 8px; }
+.dist-viz-editor .field-label { flex: 0 0 auto; white-space: nowrap; }
+.dist-viz-editor .input-group { flex: 1 1 auto; min-width: 0; }
+/* 窄屏（≤480）：每个编辑器单元独占整行，标签与控制不再互相挤。 */
+@media (max-width: 480px) {
+  .dist-viz-editor { flex: 1 1 100%; }
+}
+/* 均匀态降级提示：替代 210px 画布的紧凑说明（虚线框 = 非控件、纯说明）。 */
+.dist-viz-flat {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--t-muted);
+}
+/* 交互提示行：与图例同档，补齐"怎么操作"这条看不见的事实。 */
+.dist-viz-hint { margin: 4px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--t-muted); }
+

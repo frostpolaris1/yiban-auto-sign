@@ -408,17 +408,30 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.locator("#set-gp-pause")).toBeVisible();
   await expect(page.locator("#set-rp-pause")).toBeVisible();
 
-  // ⑧ 峰尖拖拽行为钉：在 dist-viz canvas 上做一次真指针拖拽（横向 = 峰时 μ、纵向 = 散布 σ），
-  //    断言拖动后 μ 读数（峰值中心）与 σ 读数**同时**变化。
-  //    为什么必须真拖：这条交互纯指针驱动，单元测试覆盖不到；而 DistViz 早期实现一次手势步里
-  //    先 emit μ 再 emit σ，第二次展开的是父组件尚未更新的 props，μ 被旧值静默还原（每次拖动
-  //    只有 σ 生效）——CI 全绿也照样是坏的。断言 μ 必须变化正是防止该回归的空转钉。
+  // ======== P3 收官重设计：调度卡（响应式收口 / 画布降级 / A15 / EP 精修） ========
+  // 这些断言表达"重设计后应当如何"。迁移前（未重设计）为红：均匀态仍渲染 210px 画布、
+  // 页签条在 ≤720 横向溢出、el-select 比 .input 矮 8px。e2e 先行即为了把这些缺口钉成可验收项。
+
   await page.getByRole("tab", { name: "签到调度", exact: true }).click();
   await expect(page.locator("#set-panel-schedule")).toBeVisible();
-  // 峰尖拖拽只在正态分布下武装（均匀分布时 draw() 早退、命中几何 layout 为空，两栈一致），
-  // 故先把分布切到「正态分布」再拖——这也顺带钉住分布下拉切换即时生效。
+
+  // ⑧a 画布按分布态降级：默认「均匀分布」下不渲染 210px 钟形画布（均匀态没有钟形可画，
+  //     画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
+  //     data-dist-state 是重设计新增的稳定锚点。
+  const distViz = page.locator("[data-dist-viz]");
+  await expect(distViz).toHaveAttribute("data-dist-state", "uniform");
+  await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
+  await expect(distViz).toContainText("均匀分布");
+
+  // ⑧b 峰尖拖拽行为钉（既有功能钉，一条不许丢）：在 dist-viz canvas 上做一次真指针拖拽
+  //     （横向 = 峰时 μ、纵向 = 散布 σ），断言拖动后 μ 读数（峰值中心）与 σ 读数**同时**变化。
+  //     为什么必须真拖：这条交互纯指针驱动，单元测试覆盖不到；而 DistViz 早期实现一次手势步里
+  //     先 emit μ 再 emit σ，第二次展开的是父组件尚未更新的 props，μ 被旧值静默还原（每次拖动
+  //     只有 σ 生效）——CI 全绿也照样是坏的。断言 μ 必须变化正是防止该回归的空转钉。
+  //     峰尖拖拽只在正态分布下武装，故先把分布切到「正态分布」再拖（顺带钉住切换即时生效）。
   await page.locator('[data-select-field="ss-dist"] .el-select__wrapper').click();
   await page.getByRole("option", { name: "正态分布（钟形拟人）" }).click();
+  await expect(distViz).toHaveAttribute("data-dist-state", "normal");
   const canvas = page.locator("[data-dist-viz] canvas");
   await expect(canvas).toBeVisible();
   await canvas.scrollIntoViewIfNeeded();
@@ -437,4 +450,56 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.mouse.up();
   await expect.poll(async () => muInput.inputValue()).not.toBe(muBefore);
   await expect.poll(async () => sgLoInput.inputValue()).not.toBe(sgBefore);
+
+  // ⑧c 键盘可达性（重设计新增提示的对应行为钉）：画布聚焦后方向键微调峰值时刻。
+  await canvas.focus();
+  const muBeforeKey = await muInput.inputValue();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(async () => muInput.inputValue()).not.toBe(muBeforeKey);
+
+  // ⑨ A15：三个布尔开关（周六 / 周日 / 自选）合并进同一列并各自带标注。
+  await expect(page.locator("#ss-sat")).toBeAttached();
+  await expect(page.locator("#ss-sun")).toBeAttached();
+  await expect(page.locator("#ss-time-pref")).toBeAttached();
+  await expect(page.locator("#set-schedule")).toContainText("周末与自选");
+
+  // ⑩ EP 控件精修：同排 el-select 与原生 .input 同高（重设计前 32 vs 40，差 8px）。
+  const selH = await page.locator('[data-select-field="ss-order"] .el-select__wrapper').evaluate((e) => e.getBoundingClientRect().height);
+  const gapH = await page.locator("#ss-gap").evaluate((e) => e.getBoundingClientRect().height);
+  expect(Math.abs(selH - gapH), `el-select ${selH}px 与 .input ${gapH}px 不同高`).toBeLessThanOrEqual(1);
+
+  // ⑪ 响应式收口：720 / 375 窄屏下页签条不横向溢出、七个分区全部落在视口内（可达），
+  //     且调度卡本身无横向溢出。重设计前 360 溢出 229px、480 溢出 109px，末两个分区不可达。
+  for (const vw of [720, 375]) {
+    await page.setViewportSize({ width: vw, height: vw === 375 ? 792 : 900 });
+    await page.waitForTimeout(120);
+    const tabsOverflow = await page.locator("[data-settings-tabs] .tabs-scroll").evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(tabsOverflow, `${vw}px 页签条仍有横向溢出`).toBeLessThanOrEqual(1);
+    for (const name of ["签到调度", "公告", "通知通道", "容量配额", "健康与探针", "执行体", "系统开关"]) {
+      const box = await page.getByRole("tab", { name, exact: true }).boundingBox();
+      if (!box) throw new Error(`${vw}px 下页签「${name}」不可见（溢出/被裁）`);
+      expect(box.x, `${vw}px 下页签「${name}」超出左缘`).toBeGreaterThanOrEqual(-1);
+      expect(box.x + box.width, `${vw}px 下页签「${name}」超出右缘`).toBeLessThanOrEqual(vw + 1);
+    }
+    const cardOverflow = await page.locator("#set-schedule").evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(cardOverflow, `${vw}px 调度卡横向溢出`).toBeLessThanOrEqual(1);
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  // ⑫ 大视口密度分级（1439/1440 边界）：≥1440 调度卡表单升三列（密度随视口放大、不留
+  //     大片空白），1439 仍是双列；两档都无横向溢出。三列断言按计算样式的列数取，
+  //     直接钉住"密度分级"这条设计裁决。
+  const cols3 = async (): Promise<number> =>
+    page.locator("#set-schedule .form-grid").evaluate(
+      (el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length,
+    );
+  await page.setViewportSize({ width: 1439, height: 900 });
+  await page.waitForTimeout(120);
+  expect(await cols3(), "1439px 应为双列").toBe(2);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(120);
+  expect(await cols3(), "1440px 应升为三列").toBe(3);
+  const wideOverflow = await page.locator("#set-schedule").evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(wideOverflow, "1440px 调度卡横向溢出").toBeLessThanOrEqual(1);
+  await page.setViewportSize({ width: 1280, height: 720 });
 });
