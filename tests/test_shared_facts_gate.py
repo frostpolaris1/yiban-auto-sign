@@ -17,8 +17,9 @@
        名册/根目录不存在 ⇒ 退出码 2（门禁自身的环境错误，不是判红）。
        另钉四条易失效的判据：D1 某行 scope 指向不存在的路径/贡献 0 个文件 ⇒ 该键
        静默变废键，必须 exit 2 并点名键与 scope；D2 未引号 `${#x}`/`${x#y}` 里的
-       `#` 不是注释；D3 `.css` 只认 `/* */`、HTML 的 `<script>` 段按 JS 规则剥；
-       D5 `--root`/`--roster`/`--min-files` 后缺值 ⇒ 参数错 exit 2（不是 1）。
+       `#` 不是注释；D3 `.css` 只认 `/* */`、HTML 的 `<script>` 段按 JS 规则剥
+       （且**注释里写的** `<script` 不是脚本段起始——N1）；D5 `--root`/`--roster`/
+       `--min-files` 后缺值 ⇒ 参数错 exit 2（不是 1）。
     另加一条**当前合规树跑绿**（真树真跑，不是 mock）：门禁必须对今天的仓库判
        绿，否则它是"出生即红"的摆设；且每条 active 键的命中数必须 > 0（某键静默
        变废键时必须红）。再加一条**真名册活体反例**（D6）：临时小树 + 真名册 +
@@ -324,6 +325,35 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0,
                          f"<script> 内 `//` 是注释、HTML 注释整段不算：\n{r.stdout}\n{r.stderr}")
         self.assertIn("命中 2/2", r.stdout)
+
+    def test_script_open_tag_inside_html_comment_is_not_a_script_block(self):
+        """N1：HTML 注释里的 `<script` 是注释文本，不是脚本段起始。
+
+        若先认 `<script` 再判注释态，被注释掉的 `<script` 会被当成脚本开标签：
+        该行既走 JS（`//`）规则，又把 HTML 注释态/脚本态留置成未闭合，污染后续行。
+        常见方向是**假阳性**（注释行被计成命中 ⇒ 门噪），特定条件下是**假阴性**
+        （泄漏后的 `//` 把紧跟的真定义点吞掉 ⇒ 门变松）。四个面都钉：
+        a 单行注释内、b 整段被注释掉的 script、c 注释态泄漏到下一行、d 假阴性面。
+        """
+        cases = {
+            "a": ('<!-- <script> %s -->\n<p>%s</p>\n', 2),
+            "b": ('<!-- <script>\nvar x="%s";\n</script> -->\n<p>%s</p>\n', 2),
+            "c": ('<!-- <script> -->\n<!-- %s -->\n<p>%s</p>\n', 2),
+            "d": ('<!-- <script> -->\n<a href=//cdn/%s>\n', 1),
+        }
+        for name, (body, ntok) in cases.items():
+            with self.subTest(case=name):
+                rel = "src/n1-%s.html" % name
+                with io.open(os.path.join(self.root, rel), "w",
+                             encoding="utf-8", newline="\n") as f:
+                    f.write(body % ((SYNTH_TOKEN,) * ntok))
+                self._write_roster(1, scope=rel)  # 每个面只扫自己那个文件
+                r = self._gate()
+                self.assertEqual(r.returncode, 0,
+                                 f"[{name}] HTML 注释里的 `<script` 不是脚本段，"
+                                 f"真定义点只有正文那 1 处：\n{r.stdout}\n{r.stderr}")
+                self.assertIn("命中 1/1", r.stdout,
+                              f"[{name}] 必须恰好命中正文那 1 处（注释一律不算）")
 
     # -- D6：真名册 + 一处真定义点 ⇒ 必红并点名（元测试原本只用合成 token）------
     def test_real_roster_one_extra_real_definition_point_turns_red(self):
