@@ -214,6 +214,40 @@ def _pref_slots(win):
     return slots
 
 
+def _engine_active_count(accounts):
+    """引擎口径的**活跃账号数**（= `build_schedule` 实际参与调度的账号数）。
+
+    三重过滤与引擎同源：剔除软删（`deleted`）、未过审（`status` 为 pending/rejected；
+    旧数据缺 `status` 字段=视为已过审，必须放行，同引擎装载器）与用户自暂停
+    （`user_paused`，零占位，`build_schedule` 开头再剔一次）。拥挤度分母必须按此数，
+    否则待审/已拒/软删/自暂停行会虚增容量档、让百分比偏低。
+    """
+    n = 0
+    for a in accounts:
+        if a.get("deleted") or a.get("status") in ("pending", "rejected"):
+            continue
+        if a.get("user_paused"):
+            continue
+        n += 1
+    return n
+
+
+def _engine_block_cap(m, accounts, slots):
+    """引擎对齐的单块容量 K：人数用三重过滤后的活跃数，块数用**非 disabled** 片数。
+
+    只读 `deleted/status/user_paused` 三个明文列 → 调用方传 `m.load_accounts_raw()`
+    （不解密，避免为算分母触发全表逐行 AES-GCM；raw 行与解密行在这三列上同构，
+    旧数据缺 status 时二者都判"已过审"）。
+
+    env 必须取 `.env` 层（`m.read_env(m.ENV_FILE)`，与 `weekend_flags(env=...)` 同一
+    模式）——web 进程环境里没有 `.env` 的键，不传会落到默认 15（MF-93）。片数以
+    `_pref_slots` 的 `disabled` 标记计（裁剪吃空的片不占块，直接循环总次数会多算）。
+    """
+    n_blocks = sum(1 for s in slots if not s["disabled"])
+    return yb_schedule.block_capacity(
+        _engine_active_count(accounts), n_blocks, env=m.read_env(m.ENV_FILE))
+
+
 def _verify_job_visible(job, username):
     """归属校验：任务只有**本人**读得见、取消得了；管理面仅内置主管理员放行。
 
@@ -263,17 +297,17 @@ def api_my_time_pref():
     phone = _my_phone()
     pref = m.db.get_time_pref(phone) if phone else None
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
-    cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+    slots_src = _pref_slots(win)
+    # 分母与引擎实际容量同源（块容 `block_capacity`）：人数=三重过滤活跃数，块数=非 disabled 片数
+    k = _engine_block_cap(m, m.load_accounts_raw(), slots_src)
     slots = []
-    for s in _pref_slots(win):
+    for s in slots_src:
         count = stats.get(s["slot_min"], 0)
         # 粗粒度 10% 档：精确百分比 + 已知默认 K 可反推人数；
         # 未满封顶 90、满员恰好 100——前端 pct>=100 判满精确（19/20=95% 不会再被
-        # 四舍五入成 100 误报"已选满"，与后端 count>=cap 口径一致）
-        if cap > 0:
-            pct = 100 if count >= cap else min(90, round(count * 100 / cap / 10) * 10)
-        else:
-            pct = 0
+        # 四舍五入成 100 误报"已选满"，与后端 count>=k 口径一致）
+        pct = 100 if count >= k else min(
+            90, max(10 if count else 0, round(count * 100 / k / 10) * 10))
         slots.append({
             "slot_min": s["slot_min"],
             "label": s["label"],
@@ -377,14 +411,18 @@ def api_my_time_pref_save():
         # 满员提示（可继续选+提示会顺延）：
         # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
         # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
-        cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+        accounts_raw = m.load_accounts_raw()
+        k = _engine_block_cap(m, accounts_raw, _pref_slots(win))
         stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
         count = stats.get(slot, 0)
         cur = m.db.get_time_pref(phone)
-        if cur and cur.get("slot_min") == slot:
-            count = max(0, count - 1)  # 排除自己已占的位（换片/保留不误报）
-        # cap=0（不限容量）时不应提示“已选满”
-        full_notice = "，该时段已选满，将就近安排到附近时段" if (cap > 0 and count >= cap) else ""
+        # 排除自己已占的位（换片/保留不误报）；但 stats 已排除 user_paused 账号，
+        # 自暂停者自身占位本就不在 count 里，再减会漏报满员——非暂停才扣。
+        self_paused = any(a.get("phone") == phone and a.get("user_paused")
+                          for a in accounts_raw)
+        if cur and cur.get("slot_min") == slot and not self_paused:
+            count = max(0, count - 1)
+        full_notice = "，该时段已选满，将就近安排到附近时段" if count >= k else ""
         # updated_at 带微秒：同秒保存的"先到先得"可区分先后，
         # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
         m.db.set_time_pref(phone, slot, m.clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
@@ -422,11 +460,12 @@ def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
-    cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+    slots = _pref_slots(m.sign_window_bounds())
+    cap = _engine_block_cap(m, m.load_accounts_raw(), slots)
     return jsonify({
         "ok": True,
         "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
-                  for s in _pref_slots(m.sign_window_bounds())],
+                  for s in slots],
     })
 
 

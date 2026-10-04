@@ -15,7 +15,7 @@
 **归属**
 原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
 转发，把它自己持有、而本模块需要的模块级名字——有效窗口视图 `sign_window_bounds`、
-`.env` 路径与读取器、整数配置读取器、账号读入口 `load_accounts`——在调用
+`.env` 路径与读取器、账号读入口 `load_accounts`——在调用
 时刻现取后注入。账号审核态词表、口令策略常量、手机号正则与注销宽限期随本族搬入本模块，
 `web/app.py` 再导出以免 `m.*` 名字面损失。
 
@@ -43,6 +43,7 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 
 from web.services.locks import _file_lock
 from yiban import clock
+from yiban.engine import schedule as yb_schedule
 from yiban.masking import mask_email, mask_email_local
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
@@ -367,8 +368,7 @@ def _slot_to_label(slot_min, sign_window_bounds):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
-                   sign_window_bounds):
+def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds):
     """预计签到时段（调度 v2）：
     顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
     随机排序 = 每天重排，返回 None + 提示文案。
@@ -378,8 +378,11 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
     窗口与原始裁剪拼 `eff_lo/eff_hi` 会在回退时得到空区间（span=0），预计时段静默变空。
     找不到可用片时仍返回 `(None, "")`（fail-closed，不回退成某个默认片）。
 
+    块容量取引擎唯一源 `schedule.block_capacity`，env 用本函数已读的 `.env` 结果传入
+    （MF-93：不能读 web 进程环境，那里没有 `.env` 的键）。
+
     参数注入口径见模块头「通信」（`load_accounts` / `read_env` / `ENV_FILE` /
-    `load_env_int` / `sign_window_bounds` 都可被打桩或赋值改写）。
+    `sign_window_bounds` 都可被打桩或赋值改写）。
     """
     env = read_env(env_file)
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()  # 旧的模式键，下面两个新键缺省时用它
@@ -390,8 +393,14 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
     if order != "sequence":
         return None, "随机模式每日重排，签到时间当天 06:31 后可见"
     accounts = load_accounts()
-    # 与 build_schedule 一致：user_paused 账号不参与调度（零占位），预计时段按实际参与人计算
-    live = [a for a in accounts if not a.get("user_paused")]
+    # 与引擎同源的三重过滤：软删 / 待审 / 已拒（工程装载器）+ 自暂停（build_schedule 开头），
+    # 均不参与调度；旧数据缺 status 字段=视为已过审，必须放行。预计时段按实际参与人计算。
+    live = [
+        a for a in accounts
+        if not a.get("deleted")
+        and a.get("status") not in ("pending", "rejected")
+        and not a.get("user_paused")
+    ]
     idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
     if idx is None or not live:
         return None, ""
@@ -405,9 +414,8 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
         return f"{m // 60:02d}:{m % 60:02d}"
 
     if dist == "uniform":
-        # 线性填块（与 signin._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
+        # 线性填块（与 schedule._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
         # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）
-        k = load_env_int(env_file, "YIBAN_BLOCK_CAP", 15)
         valid = []
         b = start_min
         while b < end_min:
@@ -418,11 +426,11 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
             b += 5
         if not valid:
             return None, ""
-        # k<=0（`.env` 显式写 YIBAN_BLOCK_CAP=0）= 不限容量，与 my.py 拥挤度口径
-        # （`cap > 0` 才算百分比与满员提示）一致：无块内人数上限，全员落在首块，
-        # 不能拿 k 当除数（否则用户端自选片接口整个 500）。引擎侧配置校验把 0 判非法
-        # 并回退默认块容量，故这里只是展示/估算口径，不改真实排片。
-        bi = 0 if k <= 0 else min(idx // k, len(valid) - 1)
+        # 块容与引擎同源：`block_capacity` 内部对 YIBAN_BLOCK_CAP 做 [1,200] 夹取、
+        # 非法/越界回退 15（含显式 0），压缩模式放大为 ceil(n/块数)。网页侧不再有
+        # "k<=0=不限容量" 特判——该口径在引擎侧本就不存在，对齐后此分支不可达。
+        k = yb_schedule.block_capacity(len(live), len(valid), env=env)
+        bi = min(idx // k, len(valid) - 1)
         lo, hi = valid[bi]
         return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
     # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
