@@ -154,7 +154,12 @@ function strip_html(line,   pos, out) {
 
 # HTML：`<script>…</script>` 段内是 JS，按 slash 规则剥（`//` 与 `/* */` 都算注释）；
 # 段外按 HTML 规则（`<!-- -->` / `{# #}`）。`<script>`/`</script>` 可跨行。
-function strip_mixed(line,   out, low, pos, gt) {
+# 顺序要紧：**先剥注释、再在"已剥注释"的残余里定位 `<script`**。注释里写的
+# `<script`（含 `<!-- <script> … -->` 这种被整段注释掉的脚本）只是注释文本，不是
+# 脚本开标签；反过来若先认 `<script`，被注释掉的脚本段既会走 JS 规则、又把
+# 注释态/脚本态留置成未闭合，污染后续行（常见⇒把注释行计成命中，门噪；
+# 特定条件下⇒泄漏的 `//` 吞掉紧跟的真定义点，门变松）。
+function strip_mixed(line,   out, low, pos, gt, sp, hp, jp, best, kind) {
     out = ""
     while (line != "") {
         low = tolower(line)
@@ -166,10 +171,33 @@ function strip_mixed(line,   out, low, pos, gt) {
             line = substr(line, pos)
             continue
         }
-        pos = index(low, "<script")
-        if (pos == 0) return out strip_html(line)
-        out = out strip_html(substr(line, 1, pos - 1))
-        line = substr(line, pos)
+        if (hstate[FILENAME]) {          # 上一行留下的 `<!--`：整段注释，直到 `-->`
+            pos = index(line, "-->")
+            if (pos == 0) return out
+            hstate[FILENAME] = 0
+            line = substr(line, pos + 3)
+            continue
+        }
+        if (jstate[FILENAME]) {          # 上一行留下的 `{#`：整段注释，直到 `#}`
+            pos = index(line, "#}")
+            if (pos == 0) return out
+            jstate[FILENAME] = 0
+            line = substr(line, pos + 2)
+            continue
+        }
+        sp = index(low, "<script")
+        if (sp == 0) return out strip_html(line)
+        # 本行同时可能有注释开标记：取最早者——注释开在 `<script` 之前时，
+        # 该 `<script` 在注释里（注释可能本行就闭合），必须先把注释剥掉再看。
+        hp = index(line, "<!--")
+        jp = index(line, "{#")
+        best = sp; kind = "s"
+        if (hp > 0 && hp < best) { best = hp; kind = "h" }
+        if (jp > 0 && jp < best) { best = jp; kind = "j" }
+        out = out substr(line, 1, best - 1)
+        line = substr(line, best)
+        if (kind == "h") { hstate[FILENAME] = 1; line = substr(line, 5); continue }
+        if (kind == "j") { jstate[FILENAME] = 1; line = substr(line, 3); continue }
         gt = index(line, ">")
         if (gt == 0) { sstate[FILENAME] = 1; return out }
         line = substr(line, gt + 1)
