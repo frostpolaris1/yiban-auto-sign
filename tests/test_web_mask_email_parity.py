@@ -349,9 +349,10 @@ class PlaceholderFontParityTest(_Base):
 
     def test_no_placeholder_font_shrink(self):
         # 载体换锚：user.html 已随用户端拆页退役、index.html 已无路由渲染；
-        # 判据（有输入框的页面不得对 placeholder 缩字号）不变，改扫现役含输入框的页面。
+        # 2026-10-03 再换锚：work_accounts.html 已整页迁到 Vue，正文改由组件渲染、模板不再
+        # 含输入框（表单样式仍来自聚合读取的 app.css，由 work_settings.html 一并覆盖），
+        # 故移出清单；判据（有输入框的页面不得对 placeholder 缩字号）不变。
         pages = ("login.html", os.path.join("pages", "work_settings.html"),
-                 os.path.join("pages", "work_accounts.html"),
                  os.path.join("pages", "user_account.html"))
         for name in pages:
             src = self._read(name)

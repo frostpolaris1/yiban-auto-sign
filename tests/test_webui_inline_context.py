@@ -137,29 +137,20 @@ class TemplateInlineContextTest(unittest.TestCase):
 
     def test_delegated_data_attribute_form_present(self):
         # 正确形态：data-* 属性（普通 HTML 转义即安全）+ 事件委托读 dataset，属性值不进
-        # JS 解析器。旧载体（index.html 的用户 tab 内联切片）已随前端的用户管理页重写退役，
-        # 判据意图不变、换锚到当前真实产物：管理端账号页与用户管理页。
-        accounts_tpl = _read("web", "templates", "pages", "work_accounts.html")
-        accounts_js = _read("web", "static", "js", "pages", "work_accounts.js")
-        users_tpl = _read("web", "templates", "pages", "work_users.html")
-        users_js = _read("web", "static", "js", "pages", "work_users.js")
-        # 模板侧：动作以 data-* 承载（非内联 onclick 拼接）。
-        # 账号页把批量动作收进了 batch_bar 宏（三组共用一处定义），故锚点从渲染后的字面量
-        # `data-batch="pending:approve"` 换成"宏里的属性形态 + 三组确实都调用了该宏"——
-        # 判据意图不变（动作经 data-* 传递、值不进 JS 解析器），覆盖面反而更全。
-        self.assertIn('data-batch="{{ group }}:{{ key }}"', accounts_tpl)
-        for group in ("pending", "active", "deleted"):
-            self.assertIn(f"batch_bar('{group}'", accounts_tpl)
-        self.assertIn("data-add-account", accounts_tpl)
-        self.assertIn('data-usr-batch="{{ group }}:', users_tpl)
-        self.assertIn("data-usr-batch-clear", users_tpl)
-        # 脚本侧：事件委托读 data-*（不经 JS 解析器解析用户可控值）
-        self.assertIn('t.closest("[data-batch]")', accounts_js)
-        self.assertIn('t.closest("[data-usr-batch]")', users_js)
-        self.assertIn('t.closest("[data-usr-batch-clear]")', users_js)
+        # JS 解析器。
+        # 2026-10-03：账号管理页与用户管理页先后整页迁到 Vue，动作改由**数据驱动**渲染
+        # （`:data-acct-batch` / `:data-usr-batch` 由组定义表拼出），不再是服务端宏；
+        # 判据意图不变（动作经 data-* 传递、值不进 JS 解析器），换锚到当前真实产物。
+        accounts_vue = _read("frontend", "src", "accounts", "Accounts.vue")
+        self.assertIn(':data-batch="g + \':\' + a.key"', accounts_vue)
+        self.assertIn(":data-batch-clear=\"g\"", accounts_vue)
+        self.assertIn("data-add-account", accounts_vue)
+        users_vue = _read("frontend", "src", "users", "Users.vue")
+        self.assertIn(':data-usr-batch="g.key', users_vue)
+        self.assertIn(":data-usr-batch-clear", users_vue)
 
     def test_no_inline_event_handlers_in_reviewed_page_templates(self):
-        """负例：账号页与用户管理页不得回退到内联事件处理器属性。
+        """负例：账号页与用户管理页（模板与 Vue 组件）不得回退到内联事件处理器属性。
 
         上一轮"换锚"只补了 data-* 的正向存在性断言，一旦有人把 data-* 改回
         onclick/onchange，正向断言仍可因别处存在而通过 —— 这里补回负例，按属性形态直接
@@ -171,6 +162,13 @@ class TemplateInlineContextTest(unittest.TestCase):
             self.assertNotRegex(
                 src, pattern,
                 f"{name} 出现内联事件处理器属性 —— 动作须走 data-* + 事件委托",
+            )
+        for rel in (("frontend", "src", "accounts", "Accounts.vue"),
+                    ("frontend", "src", "users", "Users.vue")):
+            src = _read(*rel)
+            self.assertNotRegex(
+                src, pattern,
+                f"{rel[-1]} 出现内联事件处理器属性 —— Vue 组件须用 @event 绑定",
             )
 
 
