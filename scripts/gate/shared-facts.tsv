@@ -1,0 +1,102 @@
+# B0.5 §14 共享事实名册 —— 每枚"共享事实"允许有几个**定义点**（非注释命中数）。
+#
+# 列（tab 分隔，7 列，本文件用 .tsv 扩展名故不会被门禁自身扫描）：
+#   族        本刀只钉三族：路径配置 / 状态件 / 语义常量
+#   键        事实名（取自 census ROSTER.csv 的"键"列；一枚 census 键若横跨多个
+#             文件（如三张名册），拆成多行登记，口径备注里写明拆分关系）
+#   状态      active = 参与判定；pending = 今天无可计数载体，不判定（见备注）
+#   判定模式  用于计数的 ERE（awk ~ 语义），大小写敏感
+#   扫描范围  相对 --root 的路径列表（空格分隔）；写 `default` = 生产树全扫
+#   允许上限  非注释命中数超过它即判红（= 冻结当天的**实测值**，不是估算）
+#   口径备注  该键的判定口径、上限出处、已知弱化点
+#
+# 上限怎么来的、与 census 的关系（重要，别误读）：
+#   census（D:/code/_census/out/ROSTER.csv，仓外只读）给出每枚事实的 def 点数，
+#   那是**人工判读的"定义点"**（且含 docs、含注释、含仓外件）；本门的 允许上限
+#   是**机械实测**的"生产树非注释命中数"，两者刻意不是同一个数。备注里的
+#   "census def=N" 只作口径参考，判据永远是本行第 6 列。
+#   因此本门是**上限冻结/漂移警报**，不是语义定义点普查：命中数从 46 变 47 即红、
+#   从 46 变 30 仍绿（门只管"长"不管"删"）。修复若确实需要新增或改名命中，就改
+#   本文件那一行并写清理由——那一行 diff 就是留痕点（B1–B3 的治理成本 O(1)）。
+#
+# 什么叫"非注释"（决定计数口径的那条线）：
+#   排除的是**注释语法**本身——Python/bash 的 `#`（含行尾）、JS/CSS 的 `//` 与
+#   `/* */`、HTML 的 `<!-- -->`、Jinja 的 `{# #}`。**不排除**的是字符串字面量与
+#   docstring：Python 的 `"""..."""` 里的命中照算。这是刻意的——"把共享事实的具体
+#   数字抄进散文"正是 census 判名册 B 点名的病（改代码不会改散文），把它算进来
+#   比不算更严：例如 yiban/egress.py:41 的模块 docstring 里抄了 `signin-run.lock`，
+#   它计入"锁名规则"键。若哪天要把 docstring 也排除，属于放水，须在报告里说明。
+#
+# 覆盖边界（诚实登记）：census 共 84 键 5 族，本刀只覆盖三族 59 键（路径配置 20 /
+# 状态件 20 / 语义常量 19）——信任权限 11 键与线格式身份 15 键不在本刀范围。
+# 三族里 61 行登记（状态件的"state_gc 清理名册"一枚 census 键横跨三张名册文件，
+# 拆成 3 行），其中 active 47 行、pending 14 行。
+#
+# 族	键	状态	判定模式	扫描范围	允许上限	口径备注
+
+# ==== 路径配置（census 20 键）================================================
+路径配置	YIBAN_STATE_DIR 默认状态目录	active	/var/log/yiban|/data/state	default	46	census def=17：12 处 Python 调用 + 4 处 bash + audit_chain 平台分叉分支 + 容器侧 /data/state（本模式同时覆盖宿主默认与容器默认）
+路径配置	YIBAN_DB_FILE / DB_DEFAULT 默认库名	active	yiban\.db	default	39	census def=7："yiban.db" 字面量在引擎/web/bash/compose 各写一遍（含 /data/yiban.db 变体）
+路径配置	YIBAN_LOG_FILE 默认日志路径	active	sign\.log	default	20	census def=8：sign.log 基名与目录拼接在 Python/bash/容器各一套，无共享常量
+路径配置	YIBAN_ENV_FILE 指针默认值	active	YIBAN_ENV_FILE	default	43	census def=7：三套默认基（cwd/.、APP_DIR/.env、/data/.env）；本模式数键名出现全集（读/写/绕过）
+路径配置	YIBAN_LOCK_DIR 与锁名规则	active	YIBAN_LOCK_DIR|/var/lock/yiban|signin-run\.lock|_LOCK_SUFFIX|GLOBAL_RUN_LOCK_NAME|FALLBACK_LOCK_NAME	yiban scripts web run.sh run_probe.sh	22	census def=8：锁目录 bash 与引擎两套互不引用；<path>.lock 与自名 *.lock 两套规则；范围限定代码目录以避开 requirements.lock 噪音
+路径配置	仓库根解析（APP_DIR/REPO_ROOT/脚本相对）	active	/opt/yiban-auto-sign|YIBAN_APP_DIR|YIBAN_APP_ROOT|_REPO_DIR	default	19	census def=12：三种算法（run.sh 常量 / cleanup.sh 脚本相对 / Python 文件相对）+ 三个 env 名（YIBAN_APP_DIR、APP_DIR、YIBAN_APP_ROOT）
+路径配置	YIBAN_WORKERS 默认值与上下限	active	YIBAN_WORKERS|WORKER_COUNT_MAX|SLOT_MAX	default	21	census def=8：默认 1、下限 bash=2/Python=1、上限 64 三处各写；本模式钉键名与上限常量
+路径配置	YIBAN_PROXY 与 per-egress 代理读取点	active	YIBAN_PROXY	default	36	census def=4：单键/清单/兜底三键 + 清单段分隔符；client.py 绕过 egress.resolve 直读
+路径配置	时区/业务日时钟（硬编码时区字面量）	active	Asia/Shanghai|hours=8	default	14	census def=12：clock.py 固定 +8、bash date 退化、compose env、Dockerfile ENV+symlink 各一份；cron 表字面时刻不在本模式内
+路径配置	容器/系统道路径口径（/data 系）	active	/data/(logs|state|\.env|yiban\.db)	default	39	census def=11：compose 挂载 / entrypoint.sh / supervisord.conf / Dockerfile / scheduler 各写各的 /data 路径
+路径配置	.env 解析实现的套数	pending	-	-	-	8 套实现（Python 3 + bash 5）无共享字面量，grep 分不出"实现"与"调用"；B2 先收口成单一解析器再登记
+路径配置	export KEY=value 行语义	pending	-	-	-	三读者机制差异是语义而非字面量（"export 行永不生效"已由专门契约测试钉住）；B2
+路径配置	拆分符不变式（str.splitlines 禁令）	pending	-	-	-	禁令只活在 env_io.py 的注释里，无可计数载体；B2 先引入可执行断言
+路径配置	env_io.resolve_path 唯一入口与绕过点	pending	-	-	-	判定对象是负空间（绕过点）：grep 数不出"没走 resolve_path 的地方"；B1 用 AST 或白名单门才可计
+路径配置	.env 写入口清单	pending	-	-	-	两套平行原子落盘实现（env_io._atomic_replace_env 与 web.security._atomic_write）无唯一 token；B2
+路径配置	requirements.txt vs requirements.lock	pending	-	-	-	"lock 满足 txt 安全下限"是关系而非字面量，唯一表达在 lock 的注释里；B1 先建定义点
+路径配置	项目版本号（5 个"版本"事实）	pending	-	-	-	semver / DB schema / 密文格式 / web 时间戳 / 易班协议五个独立事实，单模式会互相混计；B3 拆键后登记
+路径配置	deploy/prod/manifest.tsv 列语义	pending	-	-	-	列序由 install.sh 与 check-cron-provenance.sh 两处 IFS read 各自独立解释，无字面量；B2
+路径配置	cron.d 绝对路径↔仓库原件对应	pending	-	-	-	已由 scripts/check-cron-provenance.sh 逐路径 fail-closed 守住（含活体反例），本刀不重复建门
+路径配置	docker/Dockerfile 依赖集 vs requirements.lock	pending	-	-	-	apt 系统依赖与 lock 同源这件事只有 Dockerfile 注释表达，无可计数 token；B2
+
+# ==== 状态件（census 20 键；"state_gc 清理名册"横跨三张名册文件，拆成 3 行）====
+状态件	sign-state-<day>.json	active	sign-state-	default	14	census def=8：同一条"当日状态事实源"的路径形状 Python 手写 5 次 + 清理名册 1 + 备份名册 1
+状态件	sign-daily-<day>.json	active	sign-daily-	default	10	census def=7：符号→状态码双向表分写两模块且已实测漂移（🚫/⏸ 缺回解）
+状态件	sched-run-<day>.json	active	sched-run-	default	13	census def=5：同一模块内三次手写，且两处判读口径不同（存在性 vs completed 真值）
+状态件	sched-slot-<kind>-<day>.json / sched-snapshot-<day>.json	active	sched-slot-|sched-snapshot-	default	10	census def=8：kind 段无定义点/校验点，清理靠"末 10 字符是日期"的隐式约定匹配
+状态件	worker-alive-<身份键>.json	active	worker-alive-	default	4	census def=5：state_io 把记录体 role 写死 "worker"，与文件名用的真实 role 分叉
+状态件	cred-state.json	active	cred-state\.json	default	12	census def=4：自称唯一入口的模块之外还有 3 处独立拼名
+状态件	fallback-alive.json	active	fallback-alive\.json	default	1	census def=2：名与格式同源；README 把绝对路径写死成默认（文档不在本门扫描面内）
+状态件	mail-user-fail-<day>.json	active	mail-user-fail-	default	3	census def=3：已登记进清理名册却不在备份收录名册（恢复后当日邮件额度归零）
+状态件	notify-throttle.json / notify-ledger.json	active	notify-(throttle|ledger)\.json	default	12	census def=6：notify 家族自持一套状态目录解析，绕开全仓 resolve_path
+状态件	sign-status-<day>.txt	active	sign-status-	default	3	census def=7：两个清理者保留期冲突（state_gc 7 天 vs logrotate 30 天），权限位也分叉
+状态件	yiban-run-today-<day>.marker	active	yiban-run-today-	default	2	census def=3：标记文件与导出环境变量两个载体之间无校验
+状态件	yiban-settled-<day>.marker	active	yiban-settled-	default	2	census def=3：第三种落盘写法（裸 :> 直接覆盖，非 noclobber、非 tmp+mv）
+状态件	audit-anchor.log	active	audit-anchor\.log	default	22	census def=5：路径事实源与实际写者分家，默认值还按平台分叉（nt 上 "." vs POSIX /var/log/yiban）
+状态件	probe-state.json	active	probe-state\.json	default	1	census def=2：因非按日命名而天然逃过 state_gc 元测试的扫描
+状态件	sign-<day>.log（按天签到日志本体）	active	sign-[^"']*\.log	default	23	census def=11（本身）/13（日期来源）：7 处拼名 + 4 个写者；模式不覆盖无日期的裸 sign.log（已由"YIBAN_LOG_FILE 默认日志路径"键登记）
+状态件	<path>.lock 伴生锁文件命名规则	active	(^|[^s])\.lock	yiban scripts web run.sh run_probe.sh	21	census def=9（状态件族口径）：伴生 <path>.lock 与自名 *.lock 两套规则、2 个语言、3 个目录；模式用 (^|[^s]) 前缀避开 requirements.lock 的子串噪音，范围限定代码目录同样为此
+状态件	备份产物命名与目录	active	yiban-data-|BACKUP_DIR|/var/backups	default	23	census def=13：4 种名字写法（yiban-<day> / yiban-data-<day> / yiban-backup-<day> / 哨兵重建）+ 3 个目录默认值 + 4 份 business_day
+状态件	fake_yiban_server 的 JSONL 落盘件（测试侧）	active	wire-%s|wire-\{|YIBAN_WIRE_DUMP|wire_dump	yiban scripts tests	21	census def=5：测试 JSONL 无固定名；生产 wire-<day>.jsonl 用 %s 拼日期，逃过 state_gc 元测试的正则
+状态件	state_gc 清理名册 ARTIFACTS 登记条数	active	Artifact\(	yiban/state_gc.py	10	census def=8（三张名册之一）："新增状态文件必须登记"只能靠正则元测试兜，且 %s/常量拼接/月粒度/.corrupt- 四种写法实测漏检
+状态件	备份收录名册（scripts/backup.sh 状态件列表）	active	SIGN_STATE_DIR\}"/	scripts/backup.sh	9	census def=8（三张名册之二）：与清理名册互不引用、无交叉校验（mail-user-fail / probe-state 已确认漏收）
+状态件	测试侧豁免名册 ALLOWED_NON_STATE	active	ALLOWED_NON_STATE	tests/test_state_gc.py	3	census def=8（三张名册之三）：第二张名册住在测试文件里，与 ARTIFACTS 一起才构成完整判定
+状态件	文件名里的日期来源（bash business_day 副本）	active	^business_day\(\)	run.sh run_probe.sh scripts	4	census def=13：business_day() 在 4 个 bash 文件里逐字复制；run_probe.sh 改用宿主日，口径分叉
+
+# ==== 语义常量（census 19 键）================================================
+语义常量	status.py 状态集合与跨语言副本	active	ALL_STATUSES|UNDONE_STATUSES|CLAIM_DONE_STATUSES|CONCLUDED_JSON_STATUSES|TASKS_OPEN_STATES|TASKS_SETTLED_STATES|STATE_ICON|STATE_TEXT|STATE_TONE|SIGN_MAP|STATUS_LABEL|STATUS_TOKEN	default	41	census def=14（证书 19）：Python 侧收口好，但同一枚举跨语言有 5 处无守卫副本（bash 大写词表 / 4 张 JS 表 / emoji 反查表）
+语义常量	签到窗口 06:30-07:50 与 FIRST/SECOND 时刻	active	06:30|07:50|07:12|06:31|6, *30\)|7, *50\)|7, *12\)|7, *10\)	default	48	census def=12：schedule.py 与 window.py 各一份 Python 定义，加 bash 2 处、JS 2 处、crontab 2 行、容器元组 1 处；容器 SECOND=07:10 与宿主 07:12 已经不同值
+语义常量	业务日切换时刻与"日界"逻辑（Python 侧）	active	_norm_day|_prev_business_day|clock\.today|TZ_NAME	default	12	census def=8：clock.py 是唯一好定义点，但 _norm_day 独立归一化、web 侧 _prev_business_day 另起炉灶
+语义常量	重试分级关键词表与分级常量	active	AUTH_FAIL_KEYWORDS|RISK_FAIL_KEYWORDS|SESSION_STALE_FAIL_KEYWORDS|NO_POSITION_FAIL_KEYWORDS|CRED_FAIL_KEYWORDS|WAF_KEYWORDS|HARD_FAIL_TOKENS|MAX_ATTEMPTS|RISK_MAX_ATTEMPTS	default	44	census def=12：WAF 族词元在 attempts 与 security 各一份（文档认可）；RISK/CRED 前 5 条逐字重叠
+语义常量	租约常量 LEASE_SECONDS / REAP_GRACE_SEC / CLAIM_BATCH_LIMIT	active	LEASE_SECONDS|REAP_GRACE_SEC|CLAIM_BATCH_LIMIT|CLAIM_LEASE_SECONDS|RECOVER_SEC	default	20	census def=6：同名 LEASE_SECONDS 在 queue_store(60) 与 claims(900) 不同义；RECOVER_SEC=60 与租约只靠注释绑定
+语义常量	HRW 的 V=64 与 shard 哨兵	active	V_DEFAULT|_TRANSLATED_SHARD|_BACKFILL_OWNER|shards_of	default	21	census def=3：改 V 的后果只活在 docstring，无启动期断言；哨兵 -1 在两处各写
+语义常量	token_bucket 速率/间隔默认值	active	RATE_MIN|RATE_MAX|RATE_DEFAULT|_DEFAULT_BUCKET_RATE|_DEFAULT_UTIL|DEFAULT_ACCOUNT_GAP_SEC|DEFAULT_MIN_EXEC_GAP_SEC|_DEFAULT_MIN_EXEC_GAP|_DEFAULT_AVG_ATTEMPT_SEC|ENV_GLOBAL_RATE	default	42	census def=13：速率默认 3 份、gap 默认 2 份；"单账号耗时 3s"与"账号间隔 10s"常被混读
+语义常量	每账号 HTTP 请求数 6	pending	-	-	-	**零定义点**：该数字今天只活在 7 处散文里，没有任何可计数的定义点；不许硬编上限凑数。B3 先把它建成具名常量，再由本门登记
+语义常量	容量上限族（BATCH_OP_LIMIT/_LOG_VIEW_CAP/…）	active	BATCH_OP_LIMIT|_LOG_VIEW_CAP|VERIFY_CONCURRENCY_MAX|DEFAULT_MAX_USERS|DEFAULT_MAX_ACCOUNTS|_DETAIL_MAX|DETAIL_MAX|EXECUTOR_INDEX_MAX|MEASURE_COOLDOWN_SEC|_IP_STORE_LIMIT|_IP_STORE_MAX_AGE|_DEFAULT_BLOCK_CAP|_DEFAULT_CHANNELS_MAX	default	71	census def=13：13 枚上限各写各的，无 SIZE_CEILINGS 集中名册；DETAIL_MAX 同名不同义（60s 窗口 vs detail 截断）
+语义常量	退出码族 0/1/2/3/4/10 与 error_kind	active	EXIT_SCHEMA_MIGRATION|_EXIT_KINDS|SECOND_RUN_CHECK_NEED|_SIGNIN_EXIT_REASONS	default	21	census def=12：0/1/2/3 三枚最核心的码无命名常量；三套码族共用同一数值空间却无作用域声明
+语义常量	--workers 汇总序 4>10>1>3>2>0	pending	-	-	-	优先序由 workers.py 的 if/elif 分支顺序隐式承载，无可导出序列表；B3 先建序列表再登记
+语义常量	权限档位（MASTER_ONLY_KEYS/GATED_KEYS/急停分权）	active	MASTER_ONLY_KEYS|GATED_KEYS|GLOBAL_PAUSE_KEY|SCHEDULE_DIST_KEYS|SCHEDULE_DIST_ENV_KEYS|PW_GATE_TIERS	default	25	census def=8：有效名册在 settings_api 组装，四个 SCHEDULE_DIST 键的 A 档判定被复刻；parity 测试不覆盖 README/注释名册
+语义常量	限速表（命名常量族）	active	RATE_WINDOW|RATE_MAX|RATE_MAX_AUTH_GET|REGISTER_WINDOW|REGISTER_MAX|EXPORT_WINDOW|EXPORT_MAX|DETAIL_WINDOW|DUPCHECK_WINDOW|DUPCHECK_MAX|READ_AUDIT_WINDOW|TIME_PREF_COOLDOWN_SEC|PAUSE_COOLDOWN_SEC|LOGIN_MAX_FAILS	default	54	census def=17：12 张表有名字、共享原语收口成功；第 13 张（登录口 10/60s）只有裸字面量 + README 散文
+语义常量	邮件配额/通知节流阈值	active	DEFAULT_COOLDOWN|DEFAULT_DAILY_MAX|DEFAULT_URGENT_DAILY_MAX|DEFAULT_LOGINFAIL_DAILY_MAX|DEFAULT_ADMIN_CHANGE_DAILY_MAX|USER_FAIL_MAIL_DAILY_CAP	default	21	census def=11：通知与邮件是两套独立配额机制，邮件侧那套未出现在任何文档里
+语义常量	请求超时 15s 与各层 timeout	active	REQUEST_TIMEOUT|_LOCK_TIMEOUT|OUTBOUND_TIMEOUT|busy_timeout|API_TIMEOUT_MS	default	25	census def=14：本族多数是各自独立的事实（不该一律算重复）；真重复只有 db.py 的 busy_timeout 两处字面量
+语义常量	BATCH/队列开关默认值	active	requeue_final=|claim_all=|requeue_during_run=|reclaim=|include_final=|allow_settled=	default	20	census def=8：四个执行身份开关以裸 bool 形参在 3 处各写一遍默认值；"兜底腿只给这两个 True"的红线只在注释
+语义常量	账号密文对象版本 {v:2}	active	SCHEMA_VERSION|SUPPORTED_SCHEMA_VERSIONS|KID_CONTEXT	default	10	census def=5："当前值"与"允许值集合"分写两行需人工同步；KID_CONTEXT 里还有第二个互不相关的 v1
+语义常量	判名册 A：跨语言枚举副本	pending	-	-	-	跨语言枚举（bash 大写词表 / 4 张 JS 状态表 / SQL 池状态词表）无统一 token，单模式会与本族"status 集合"行互相混计；B3 拆键登记
+语义常量	判名册 B：被抄进注释/文档的数字	pending	-	-	-	判定对象是**注释内容**，而本门明令排除注释（排除注释是刻意设计，避免把叙述当定义点）；B3 改由"注释↔代码数字对拍"门处理
