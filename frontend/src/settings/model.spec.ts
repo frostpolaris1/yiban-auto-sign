@@ -216,8 +216,20 @@ describe("峰尖手势几何（distHitKind / pillRect，P3 收官抽出）", () 
     expect(distHitKind(DOT_X - HALF, AXIS_Y, DOT_X, DOT_Y, HALF, AXIS_Y)).toBe("base");
   });
 
-  it("distHitKind：底座优先于峰尖（半宽为 0、两点重合时仍判 base）", () => {
-    expect(distHitKind(DOT_X, AXIS_Y, DOT_X, DOT_Y, 0, AXIS_Y)).toBe("base");
+  it("distHitKind：底座优先于峰尖（真正 base∧peak 重叠点仍判 base）", () => {
+    // 构造一个**同时**落在底座命中带与峰尖 ±22 圆内的坐标：峰尖距轴 10px、半宽 10px，
+    // 取端点右偏 10px、与峰尖同高。该点到峰尖圆心仅 10px（<22，在圆内），横向偏离端点
+    // 0px（≤18）、纵向在轴上方 10px（<20）——两判定同时为真，正是优先级分支的输入。
+    // 旧用例的几何是「峰尖距轴 86px」，那个点根本不在峰尖圆内，并未真正覆盖优先级。
+    const dotY = AXIS_Y - 10;
+    const px = DOT_X + 10;
+    const py = AXIS_Y - 10;
+    const half = 10;
+    const inPeak = (px - DOT_X) * (px - DOT_X) + (py - dotY) * (py - dotY) <= 22 * 22;
+    const inBase = py > AXIS_Y - 20 && py < AXIS_Y + 10 &&
+      Math.abs(Math.abs(px - DOT_X) - half) <= 18;
+    expect(inPeak && inBase).toBe(true); // 前提：确为重叠点（否则本用例形同虚设）
+    expect(distHitKind(px, py, DOT_X, dotY, half, AXIS_Y)).toBe("base");
   });
 
   it("pillRect：水平夹进绘图区、宽度超出时贴左缘", () => {
