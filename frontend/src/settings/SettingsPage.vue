@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { api, errorMessage, openModal, shellBase, toast } from "../lib/shell";
 import "./ops.js"; // 注册 window.YB.settingsOps（纯 JS，写链被 Python 守卫真跑/钉点）
 import ScheduleCard from "./ScheduleCard.vue";
@@ -131,10 +131,61 @@ function syncTabUrl(next: string): void {
     /* 无 history 环境静默降级 */
   }
 }
+/* 活动页签滚进页签条可视区：只横滚页签条本身，不碰页面纵向滚动。
+   深链 ?tab= 落在靠后的分区、或键盘切到视口外的页签时，活动项必须完整可见——
+   这是"单行横滚 + 半露引导"形态下的可达性兜底（半露是引导，不是让活动项留在视口外）。
+
+   程序化滚动期间临时关掉 `scroll-snap-type`：页签条在 ≤720 是 `x proximity`，若不禁用，
+   Chromium 会把"居中落点"再吸附到 `scroll-snap-align:start` 的起点对齐位，居中意图被抵消
+   并产生二次位移抖动。snap 只服务用户滑动，程序化定位不该受它影响。
+   （不改 `scroll-snap-align` 为 nearest/center：那会让静止态的"半露"在滚动后被吸附收拢，
+   破坏"半露即引导"的期望形态。）
+
+   并发安全：键盘自重复/连点页签的间隔（30–50ms）小于一次 smooth 滚动时长，会有多次调用在途，
+   而同一段滚动只派发一次 `scrollend`——两次 restore 会顺次触发。若像早期实现那样"把捕获到的
+   内联值写回"，第二次调用捕获到的正是第一次写入的 `"none"`，于是末次写回把内联 `none` 永久
+   留下（覆盖样式表的 `x proximity`，吸附增强静默失效且不自愈）。故这里：
+     · 用**在途计数** snapHold，仅计数归零的那次才恢复（避免先结束的那次让后一次滚动中途被吸附）；
+     · 恢复用**幂等** `removeProperty("scroll-snap-type")`（样式表恒提供 x proximity，清内联即正确），
+       不回写任何捕获值。 */
+let snapHold = 0;
+function scrollTabIntoView(key: string): void {
+  const box = document.querySelector("[data-settings-tabs] .tabs-scroll") as HTMLElement | null;
+  const tabEl = document.getElementById("set-tab-" + key);
+  if (!box || !tabEl) return;
+  const b = box.getBoundingClientRect();
+  const t = tabEl.getBoundingClientRect();
+  if (t.left >= b.left && t.right <= b.right) return;
+  const delta = t.left - b.left - (b.width - t.width) / 2;
+  const reduce = typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  snapHold += 1;
+  box.style.scrollSnapType = "none";
+  let done = false;
+  let timer: number | null = null;
+  const restore = (): void => {
+    if (done) return;
+    done = true;
+    box.removeEventListener("scrollend", restore);
+    if (timer != null) window.clearTimeout(timer);
+    snapHold = Math.max(0, snapHold - 1);
+    if (snapHold === 0) box.style.removeProperty("scroll-snap-type");
+  };
+  if (!("onscrollend" in box)) {
+    // 无 scrollend 事件：用超时兜底恢复（与下分支同一时长，行为一致）。
+    timer = window.setTimeout(restore, 800);
+  } else {
+    box.addEventListener("scrollend", restore, { once: true });
+    // 兜底：scrollend 在个别情形不派发（无滚动/被打断），超时也恢复 snap。
+    timer = window.setTimeout(restore, 800);
+  }
+  box.scrollBy({ left: delta, behavior: reduce ? "auto" : "smooth" });
+}
 function applyTab(next: string, writeUrl: boolean): void {
   if (!visibleTabs.value.some((t) => t.key === next)) return;
   tab.value = next;
   if (writeUrl) syncTabUrl(next);
+  void nextTick(() => scrollTabIntoView(next));
 }
 function selectTab(next: string): void {
   guardThen(() => applyTab(next, true), true);
