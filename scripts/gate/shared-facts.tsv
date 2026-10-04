@@ -4,7 +4,9 @@
 #   族        本刀只钉三族：路径配置 / 状态件 / 语义常量
 #   键        事实名（取自 census ROSTER.csv 的"键"列；一枚 census 键若横跨多个
 #             文件（如三张名册），拆成多行登记，口径备注里写明拆分关系）
-#   状态      active = 参与判定；pending = 今天无可计数载体，不判定（见备注）
+#   状态      active = 参与判定；pending = 今天**不可机械单模式计数**，不判定
+#             （零载体 / 多事实混计 / 判据在注释里 / 负空间 / 无共享 token，
+#              逐条理由见该行的"口径备注"）
 #   判定模式  用于计数的 ERE（awk ~ 语义），大小写敏感
 #   扫描范围  相对 --root 的路径列表（空格分隔）；写 `default` = 生产树全扫
 #   允许上限  非注释命中数超过它即判红（= 冻结当天的**实测值**，不是估算）
@@ -20,15 +22,23 @@
 #   本文件那一行并写清理由——那一行 diff 就是留痕点（B1–B3 的治理成本 O(1)）。
 #
 # 什么叫"非注释"（决定计数口径的那条线）：
-#   排除的是**注释语法**本身——Python/bash 的 `#`（含行尾）、JS/CSS 的 `//` 与
-#   `/* */`、HTML 的 `<!-- -->`、Jinja 的 `{# #}`。**不排除**的是字符串字面量与
+#   排除的是**注释语法**本身——Python/bash 的 `#`（含行尾，但 `${#arr[@]}` /
+#   `${x#y}` 这类参数展开里的 `#` 不是注释）、JS 的 `//` 与 `/* */`、CSS 的
+#   `/* */`（CSS 里 `//` 不是注释）、HTML 的 `<!-- -->`、Jinja 的 `{# #}`
+#   （HTML 内 `<script>…</script>` 段按 JS 规则剥）。**不排除**的是字符串字面量与
 #   docstring：Python 的 `"""..."""` 里的命中照算。这是刻意的——"把共享事实的具体
 #   数字抄进散文"正是 census 判名册 B 点名的病（改代码不会改散文），把它算进来
 #   比不算更严：例如 yiban/egress.py:41 的模块 docstring 里抄了 `signin-run.lock`，
 #   它计入"锁名规则"键。若哪天要把 docstring 也排除，属于放水，须在报告里说明。
 #
-# 覆盖边界（诚实登记）：census 共 84 键 5 族，本刀只覆盖三族 59 键（路径配置 20 /
-# 状态件 20 / 语义常量 19）——信任权限 11 键与线格式身份 15 键不在本刀范围。
+# 已知残余盲点（今日仓内无实例；登记在此，别把它当"已完全覆盖"）：
+#   ① 跨行的 `${…}`（`$` 与 `{` 分行）与 here-doc 正文里的 `#` 仍会被当注释起始；
+#   ② `EXT_RE` 白名单外的文件（如无扩展名的 scripts/git-hooks/commit-msg）不扫。
+#
+# 覆盖边界（诚实登记）：census（ROSTER.csv）共 86 数据行 5 族，其中 2 行是
+# `(交付状态)` 非键行（路径配置 1、信任权限 1）⇒ 真键 84 枚。本刀只覆盖三族
+# 59 键（路径配置 20 / 状态件 20 / 语义常量 19）——信任权限 10 键与线格式身份
+# 15 键不在本刀范围（59 + 10 + 15 = 84）。
 # 三族里 61 行登记（状态件的"state_gc 清理名册"一枚 census 键横跨三张名册文件，
 # 拆成 3 行），其中 active 47 行、pending 14 行。
 #
@@ -82,7 +92,7 @@
 
 # ==== 语义常量（census 19 键）================================================
 语义常量	status.py 状态集合与跨语言副本	active	ALL_STATUSES|UNDONE_STATUSES|CLAIM_DONE_STATUSES|CONCLUDED_JSON_STATUSES|TASKS_OPEN_STATES|TASKS_SETTLED_STATES|STATE_ICON|STATE_TEXT|STATE_TONE|SIGN_MAP|STATUS_LABEL|STATUS_TOKEN	default	41	census def=14（证书 19）：Python 侧收口好，但同一枚举跨语言有 5 处无守卫副本（bash 大写词表 / 4 张 JS 表 / emoji 反查表）
-语义常量	签到窗口 06:30-07:50 与 FIRST/SECOND 时刻	active	06:30|07:50|07:12|06:31|6, *30\)|7, *50\)|7, *12\)|7, *10\)	default	48	census def=12：schedule.py 与 window.py 各一份 Python 定义，加 bash 2 处、JS 2 处、crontab 2 行、容器元组 1 处；容器 SECOND=07:10 与宿主 07:12 已经不同值
+语义常量	签到窗口 06:30-07:50 与 FIRST/SECOND 时刻	active	06:30|07:50|07:12|06:31|6, *30\)|7, *50\)|7, *12\)|7, *10\)	default	47	census def=12：schedule.py 与 window.py 各一份 Python 定义，加 bash 2 处、JS 2 处、crontab 2 行、容器元组 1 处；容器 SECOND=07:10 与宿主 07:12 已经不同值。上限 48→47（修 D3：原 48 含 web/static/preview-states/dist-viz.html:413 一处**JS 块注释**内的命中——该行在 `<script>` 里，旧版 HTML 分档不认 JS 注释，属假阳性；按"注释不计"的判据排除后实测 47）
 语义常量	业务日切换时刻与"日界"逻辑（Python 侧）	active	_norm_day|_prev_business_day|clock\.today|TZ_NAME	default	12	census def=8：clock.py 是唯一好定义点，但 _norm_day 独立归一化、web 侧 _prev_business_day 另起炉灶
 语义常量	重试分级关键词表与分级常量	active	AUTH_FAIL_KEYWORDS|RISK_FAIL_KEYWORDS|SESSION_STALE_FAIL_KEYWORDS|NO_POSITION_FAIL_KEYWORDS|CRED_FAIL_KEYWORDS|WAF_KEYWORDS|HARD_FAIL_TOKENS|MAX_ATTEMPTS|RISK_MAX_ATTEMPTS	default	44	census def=12：WAF 族词元在 attempts 与 security 各一份（文档认可）；RISK/CRED 前 5 条逐字重叠
 语义常量	租约常量 LEASE_SECONDS / REAP_GRACE_SEC / CLAIM_BATCH_LIMIT	active	LEASE_SECONDS|REAP_GRACE_SEC|CLAIM_BATCH_LIMIT|CLAIM_LEASE_SECONDS|RECOVER_SEC	default	20	census def=6：同名 LEASE_SECONDS 在 queue_store(60) 与 claims(900) 不同义；RECOVER_SEC=60 与租约只靠注释绑定
