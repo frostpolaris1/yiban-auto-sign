@@ -8,6 +8,8 @@
  * 不得用行数自行推断（否则两侧口径必然漂移）。
  */
 
+import { STATUS_VOCAB } from "../lib/status-vocab.js";
+
 export interface LogEvent {
   time: string;
   phone: string;
@@ -57,22 +59,22 @@ export function infoText(
 /* ---------------- 事件状态口径（终态码 → 中文标签 + 色调） ----------------
    legacy 用色调徽标 + `title=原始码` 呈现；未知码回落**原始码 + muted**（信息不丢）。
    探针只有 failed/其它 两态（非 failed 一律"正常"，与旧版 ✅/❌ 口径一致），
-   `__default` 兜住将来新增的非失败状态。 */
+   `__default` 兜住将来新增的非失败状态。
+   签到徽标收敛到唯一事实源 lib/status-vocab.js：文案取 `short`（紧凑面），
+   色调取 `tone`。故 skipped_window / skipped_norange / paused / user_cancelled
+   四处徽标文案与 paused 色调随单源口径统一（详见该模块与单源总账测试）。 */
 
 export type StatusTone = "ok" | "bad" | "warn" | "info" | "muted";
 
-export const SIGN_STATUS_MAP: Record<string, [string, StatusTone]> = {
-  success: ["成功", "ok"],
-  already: ["已签到", "ok"],
-  no_task: ["无需签到", "muted"],
-  failed: ["失败", "bad"],
-  retrying: ["重试中", "warn"],
-  pending: ["待签", "info"],
-  skipped_window: ["超出时段", "warn"],
-  skipped_norange: ["不在范围", "warn"],
-  paused: ["已暂停", "muted"],
-  user_cancelled: ["已取消", "muted"],
-};
+export const SIGN_STATUS_MAP: Record<string, [string, StatusTone]> = buildSignMap(STATUS_VOCAB);
+
+function buildSignMap(
+  vocab: Record<string, { short: string; tone: string }>,
+): Record<string, [string, StatusTone]> {
+  const out: Record<string, [string, StatusTone]> = {};
+  for (const k of Object.keys(vocab)) out[k] = [vocab[k].short, vocab[k].tone as StatusTone];
+  return out;
+}
 
 export const PROBE_STATUS_MAP: Record<string, [string, StatusTone]> = {
   failed: ["异常", "bad"],

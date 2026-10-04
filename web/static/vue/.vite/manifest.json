@@ -26,6 +26,10 @@
     "file": "assets/shell-DTEQHjJ3.js",
     "name": "shell"
   },
+  "_status-vocab-C0wP_145.js": {
+    "file": "assets/status-vocab-C0wP_145.js",
+    "name": "status-vocab"
+  },
   "_theme-CIzwvb-s.js": {
     "file": "assets/theme-CIzwvb-s.js",
     "name": "theme"
@@ -50,7 +54,7 @@
     "name": "vendor-vue"
   },
   "accounts.html": {
-    "file": "assets/accounts-BroiS7Ek.js",
+    "file": "assets/accounts-qUeGdcNM.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -60,6 +64,7 @@
       "_vendor-vue-GZUw20XP.js",
       "_vendor-element-plus-D086PjSO.js",
       "_shell-DTEQHjJ3.js",
+      "_status-vocab-C0wP_145.js",
       "_accountform-FKUA5_zG.js"
     ]
   },
@@ -92,14 +97,15 @@
     ]
   },
   "dashboard.html": {
-    "file": "assets/dashboard-i2-YtULJ.js",
+    "file": "assets/dashboard-ogqCSUGY.js",
     "name": "dashboard",
     "src": "dashboard.html",
     "isEntry": true,
     "imports": [
       "_theme-CIzwvb-s.js",
       "_vendor-vue-GZUw20XP.js",
-      "_shell-DTEQHjJ3.js"
+      "_shell-DTEQHjJ3.js",
+      "_status-vocab-C0wP_145.js"
     ]
   },
   "index.html": {
@@ -131,7 +137,7 @@
     ]
   },
   "logs.html": {
-    "file": "assets/logs-CTazbZ6_.js",
+    "file": "assets/logs-DSvxDli6.js",
     "name": "logs",
     "src": "logs.html",
     "isEntry": true,
@@ -141,7 +147,8 @@
       "_vendor-vue-GZUw20XP.js",
       "_vendor-element-plus-D086PjSO.js",
       "__plugin-vue_export-helper-BDNMzG2s.js",
-      "_shell-DTEQHjJ3.js"
+      "_shell-DTEQHjJ3.js",
+      "_status-vocab-C0wP_145.js"
     ],
     "css": [
       "assets/logs-BoUlecZk.css"

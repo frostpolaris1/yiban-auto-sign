@@ -4,9 +4,11 @@
 标签：D · 状态词汇与账号生命周期
 覆盖：12 个状态码常量在 `signin` 侧与 `yiban.status` 等值、`STATUS_SYMBOL`/
     `UNDONE_STATUSES` 是**同一对象**；web 侧常量与 `STATUS_ICON`/`STATUS_TEXT` 同为
-    别名；未了结集合的成员口径；两张展示映射刻意不合并。
+    别名；未了结集合的成员口径；两张展示映射刻意不合并；**前端三页的状态中文已收敛为
+    唯一事实源 `frontend/src/lib/status-vocab.js`**（键集合 == ALL_STATUSES，三页 import 它）。
 对应实现：权威定义 = `yiban/status.py`（`STATUS_*`、`SYMBOL`、`ICON`、`TEXT`、
-    `UNDONE_STATUSES`）；`scripts/signin.py` 与 `web/app.py` 里的同名符号是引用别名。
+    `UNDONE_STATUSES`）；`scripts/signin.py` 与 `web/app.py` 里的同名符号是引用别名；
+    前端词表 = `frontend/src/lib/status-vocab.js` 的 `STATUS_VOCAB`。
 关键断言：用 `assertIs` 而不是 `assertEqual`——值相等也可能是各复制一份，那正是曾经
     的病灶（web 侧缺 `no_position`/`global_paused`，signin 符号表缺 `pending`）。
     未了结集合里不得出现成功类状态，否则会无限触发补签轮。
@@ -107,32 +109,52 @@ class StatusSingleSourceTest(unittest.TestCase):
         self.assertNotIn(yiban_status.STATUS_PENDING, yiban_status.SYMBOL)
 
     # ---- 前端"第二份表"的漂移门（清扫单⑪：急停可见性整改明列不属其范围、"同一事实 N 份定义"同族）----
-    # 仪表盘与 my-accounts 各留一份状态表，完整单源接线属前后端协同的"同一事实 N 份定义"总账，本批不
-    # 强推渲染改造；但把它们与唯一事实源 `yiban.status` 之间**可静默分叉**的两处
-    # （键集合 / 完成文案）钉成测试，杜绝"加状态码 / 改文案而漏改前端"的无声漂移。
-
-    # 2026-10-03：数据看板页迁到 Vue 后，状态表副本随之搬到
-    # frontend/src/dashboard/model.js（纯 JS）。本测试钉的「同一事实多份定义」台账
-    # 跟着换路径，判据与字面量不变。
+    # 2026-10-04（收账）：仪表盘图表短名 / 日志徽标 / 账号表状态列三份中文原各写一份、
+    # 已互相漂移（paused 三处为「账密暂停 / 已暂停 / 账号暂停」）。本轮把它们收敛为
+    # **前端唯一事实源** `frontend/src/lib/status-vocab.js` 的 `STATUS_VOCAB`
+    # （每码一条 {full, short, icon, tone}，三页从它取词）。原「dashboard STATUS_LABEL
+    # 独立副本」的台账销账，改为钉：①键集合 == 唯一事实源 ALL_STATUSES；②三页都 import
+    # 该模块、不再各留字面量表。可见文案随收敛的逐条变化见提交说明。
+    VOCAB_JS = os.path.join(BASE, "frontend", "src", "lib", "status-vocab.js")
     DASH_JS = os.path.join(BASE, "frontend", "src", "dashboard", "model.js")
+    LOGS_TS = os.path.join(BASE, "frontend", "src", "logs", "format.ts")
+    ACCOUNTS_JS = os.path.join(BASE, "frontend", "src", "accounts", "model.js")
     # 2026-10-03：账号页迁到 Vue 后，状态表副本随之搬走（frontend/src/myaccounts/model.ts
     # 的 todayStateText）。本测试钉的「同一事实多份定义」台账跟着换路径，判据与字面量不变。
     MYACC_JS = os.path.join(BASE, "frontend", "src", "myaccounts", "model.ts")
 
-    def test_dashboard_label_keys_cover_the_status_enum(self):
-        """仪表盘 STATUS_LABEL 的**键集合**必须等于 `ALL_STATUSES`。
+    def test_status_vocab_keys_cover_the_status_enum(self):
+        """前端唯一事实源 STATUS_VOCAB 的**键集合**必须等于 `ALL_STATUSES`。
 
-        分布图把表里没有的状态码静默归成「跳过」并显示英文原文——新增状态码若漏进
-        本表即假绿。这里不校验各值的中文短名（图表短名与日历图例短名有意不同），
-        只钉"每条状态码都在表里有一格"，把第二份定义的键集合绑到唯一事实源。
+        三页（图表短名 / 日志徽标 / 账号表）都从它取词；新增状态码若漏进本表即假绿
+        （分布图会把没有的状态码静默归「跳过」并显示英文原文）。每条词条须四字段齐备。
         """
-        with open(self.DASH_JS, encoding="utf-8") as fh:
+        with open(self.VOCAB_JS, encoding="utf-8") as fh:
             src = fh.read()
-        block = re.search(r"STATUS_LABEL\s*=\s*\{(.*?)\};", src, re.S)
-        self.assertIsNotNone(block, "frontend/src/dashboard/model.js 未找到 STATUS_LABEL 表")
-        keys = set(re.findall(r"([A-Za-z_]\w*)\s*:", block.group(1)))
+        block = re.search(r"STATUS_VOCAB\s*=\s*\{(.*)\};", src, re.S)
+        self.assertIsNotNone(block, "frontend/src/lib/status-vocab.js 未找到 STATUS_VOCAB 表")
+        body = block.group(1)
+        keys = set(re.findall(r"([A-Za-z_]\w*)\s*:\s*\{", body))
         self.assertEqual(keys, set(yiban_status.ALL_STATUSES),
-                         "仪表盘状态标签表与唯一事实源的状态码集合已分叉")
+                         "前端状态词表与唯一事实源的状态码集合已分叉")
+        for field in ("full", "short", "icon", "tone"):
+            self.assertIn(field + ":", body, "STATUS_VOCAB 词条缺 %s 字段" % field)
+
+    def test_frontend_pages_import_the_single_source(self):
+        """三页必须从 status-vocab 取词，且不得再各留一份字面量表。"""
+        for path in (self.DASH_JS, self.LOGS_TS, self.ACCOUNTS_JS):
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            self.assertIn('"../lib/status-vocab.js"', src,
+                          "%s 未 import 状态词表唯一事实源" % os.path.basename(path))
+        with open(self.DASH_JS, encoding="utf-8") as fh:
+            dash = fh.read()
+        self.assertNotRegex(dash, r"STATUS_LABEL\s*=\s*\{",
+                            "dashboard 不得再留第二份字面量状态表（STATUS_LABEL 须派生自单源）")
+        with open(self.ACCOUNTS_JS, encoding="utf-8") as fh:
+            acct = fh.read()
+        self.assertNotRegex(acct, r"STATE_TEXT\s*=\s*\{",
+                            "账号表不得再留第二份字面量状态表（须派生自单源）")
 
     def test_my_accounts_done_text_mirrors_display(self):
         """my-accounts 账号卡「今日状态」完成行的字面量必须等于 DISPLAY 成功态文案。

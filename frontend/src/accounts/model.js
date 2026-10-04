@@ -2,13 +2,16 @@
    刻意用纯 JS（不是 TS）：`tests/test_work_accounts_selection.py` 会把 byPhone /
    selectedAccounts / selectedIds / selectedPhones 这组函数从本文件按花括号配对抽出、
    放进 node 真跑，钉「选中集以手机号为身份键、列表重排后不粘到邻居」这条不变量。
-   用 TS（类型注解 / import）会让那段真跑抽不出来。改动本文件前先读那个测试。
+   该抽取只取**函数体本身**，故本文件顶部的 `import` 不影响它；但受抽取的函数体内
+   不得出现 TS 注解 / 解构默认值（会让抽出的文本在 node 里跑不起来）。改动前先读那个测试。
 
    与 legacy `pages/work_accounts.js` + `components/account-table.js` 的关系：
    · 分组归类、检索匹配、选中解析、状态映射、展示文案、行菜单/批量动作集全部收到这里；
    · 组件 Accounts.vue 只负责渲染与把动作派发给 ops.js（写操作链路，同样纯 JS）。
 
    安全口径：列表项 phone / owner 已是服务端脱敏值；本层只消费脱敏串，完整号不经此处。 */
+
+import { STATUS_VOCAB } from "../lib/status-vocab.js";
 
 export var GROUP_KEYS = ["pending", "active", "deleted"];
 
@@ -169,22 +172,28 @@ export function statsOf(activeAccounts, states) {
   return { success: success, failed: failed, waiting: waiting, skipped: skipped };
 }
 
-export var STATE_ICON = {
-  success: "circle-check", already: "circle-check", failed: "circle-x",
-  retrying: "refresh-cw", no_task: "circle-minus",
-  skipped_window: "ban", skipped_norange: "ban",
-  paused: "circle-pause", user_cancelled: "circle-stop", pending: "clock",
-};
-export var STATE_TEXT = {
-  success: "签到成功", already: "已签到", failed: "签到失败", retrying: "重试中",
-  no_task: "无需签到", skipped_window: "时段外跳过", skipped_norange: "窗口缺失",
-  paused: "账号暂停", user_cancelled: "用户已取消", pending: "待签",
-};
-export var STATE_TONE = {
-  success: "ok", already: "ok", failed: "bad", retrying: "warn", no_task: "muted",
-  skipped_window: "warn", skipped_norange: "warn", paused: "bad",
-  user_cancelled: "muted", pending: "muted",
-};
+/* 状态词表收敛：文案 / 图标 / 语气档一律取自唯一事实源 lib/status-vocab.js，
+   本页只保留到 CSS 类名的映射。
+   账号表用 full（全称，信息量优先）；图标用规范化 icon。
+   语气档再过一层 ACCT_TONE——账号页 CSS 只有 ok/bad/warn/muted 四档
+   （app.css 的 .acct-state--*），语义档 info（如待签）在此收成 muted。 */
+var ACCT_TONE = { ok: "ok", bad: "bad", warn: "warn", muted: "muted", info: "muted" };
+
+export var STATE_ICON = pluckField(STATUS_VOCAB, "icon");
+export var STATE_TEXT = pluckField(STATUS_VOCAB, "full");
+export var STATE_TONE = pluckTone(STATUS_VOCAB);
+
+function pluckField(vocab, field) {
+  var out = {};
+  for (var k in vocab) out[k] = vocab[k][field];
+  return out;
+}
+
+function pluckTone(vocab) {
+  var out = {};
+  for (var k in vocab) out[k] = ACCT_TONE[vocab[k].tone] || "muted";
+  return out;
+}
 
 // 状态列：图标 + title（状态名 · 原因 · 耗时）。原因仅在不同于状态名时拼接，避免重复。
 export function stateCell(phone, states, msgs, durs) {
