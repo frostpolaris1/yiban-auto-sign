@@ -15,8 +15,15 @@
        允许上限 = 实际命中数 ⇒ 绿；多一个定义点 ⇒ 红并点名 文件:行；
        把多出来的那处改成注释 ⇒ 又绿（注释不计）；删掉定义点 ⇒ 仍绿；
        名册/根目录不存在 ⇒ 退出码 2（门禁自身的环境错误，不是判红）。
+       另钉四条易失效的判据：D1 某行 scope 指向不存在的路径/贡献 0 个文件 ⇒ 该键
+       静默变废键，必须 exit 2 并点名键与 scope；D2 未引号 `${#x}`/`${x#y}` 里的
+       `#` 不是注释；D3 `.css` 只认 `/* */`、HTML 的 `<script>` 段按 JS 规则剥；
+       D5 `--root`/`--roster`/`--min-files` 后缺值 ⇒ 参数错 exit 2（不是 1）。
     另加一条**当前合规树跑绿**（真树真跑，不是 mock）：门禁必须对今天的仓库判
-       绿，否则它是"出生即红"的摆设。
+       绿，否则它是"出生即红"的摆设；且每条 active 键的命中数必须 > 0（某键静默
+       变废键时必须红）。再加一条**真名册活体反例**（D6）：临时小树 + 真名册 +
+       往某 active 键覆盖的真文件里加一处真定义点 ⇒ 必红并点名——合成 token 的
+       反例钉不到"真模式/真上限在真文件上还开火"这条。
     另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数，且"每账号
     请求数 6"这枚**零定义点**键必须以 pending 显式登记。
 
@@ -51,6 +58,10 @@ ZERO_DEF_KEY = "每账号 HTTP 请求数 6"
 #: 合成反例用的假模式（绝不出现在真名册里）
 SYNTH_TOKEN = "synth-shared-fact-token"
 SYNTH_KEY = "synth-key"
+#: D6 活体反例：真名册里 scope 收窄到单文件的那条键，以及它的文件与"同形的真定义点"
+REAL_KEY = "备份收录名册"
+REAL_SCOPE_FILE = "scripts/backup.sh"
+REAL_EXTRA_POINT = '        "${SIGN_STATE_DIR}"/zz-meta-test-extra.json\n'
 
 
 def _read(path):
@@ -170,13 +181,18 @@ class SharedFactsGateLiveTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    # -- 合成名册：一个 active 行，模式/上限由调用方给 -------------------------
-    def _write_roster(self, allowed):
+    # -- 合成名册：一个 active 行，模式/上限/扫描范围由调用方给 ----------------
+    def _write_roster_rows(self, rows):
+        """rows = [(键, 扫描范围, 允许上限)]，全部 active、模式固定为 SYNTH_TOKEN。"""
         with io.open(self.roster, "w", encoding="utf-8", newline="\n") as f:
             f.write("# 合成名册（元测试用）\n")
             f.write("\t".join(COLUMNS) + "\n")
-            f.write("\t".join(("路径配置", SYNTH_KEY, "active", SYNTH_TOKEN,
-                               "src", str(allowed), "合成")) + "\n")
+            for key, scope, allowed in rows:
+                f.write("\t".join(("路径配置", key, "active", SYNTH_TOKEN,
+                                   scope, str(allowed), "合成")) + "\n")
+
+    def _write_roster(self, allowed, scope="src"):
+        self._write_roster_rows([(SYNTH_KEY, scope, allowed)])
 
     def _write_tree(self, body):
         with io.open(self.file, "w", encoding="utf-8", newline="\n") as f:
@@ -261,6 +277,86 @@ class SharedFactsGateLiveTest(unittest.TestCase):
                          f"删到不足上限仍绿（门只在超过时红）：\n{r.stdout}\n{r.stderr}")
         self.assertIn("命中 1/2", r.stdout)
 
+    # -- D2：未引号 shell 展开里的 `#` 不是注释起始 ------------------------------
+    def test_hash_inside_unquoted_shell_expansion_is_not_a_comment(self):
+        """D2：`${#arr[@]}` / `${x#y}` 里的 `#` 不是注释——同行其后的真定义必须计到。
+
+        否则 `if [ ${#arr[@]} -gt 0 ]; then D="/var/log/yiban"; fi` 这类行会被截断，
+        同行真定义点漏检（假阴性）。
+        """
+        with io.open(os.path.join(self.root, "src", "b.sh"), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write('arr=(a b)\n'
+                    'if [ ${#arr[@]} -gt 0 ]; then D="%s"; fi\n'
+                    'case ${y#%s} in *) :;; esac\n' % (SYNTH_TOKEN, SYNTH_TOKEN))
+        self._write_roster(2)  # 两行各一处非注释定义点
+        r = self._gate()
+        self.assertEqual(r.returncode, 0,
+                         "`${#…}`/`${x#…}` 不是注释，行内定义点必须计到：\n%s\n%s"
+                         % (r.stdout, r.stderr))
+        self.assertIn("命中 2/2", r.stdout)
+
+    # -- D3：注释语言分档（CSS 的 `//` 不是注释；HTML 的 <script> 按 JS 规则）----
+    def test_css_double_slash_is_not_a_comment(self):
+        """D3：CSS 里 `//` 不是注释起始（只有 `/* */` 是）——不得截断整行。"""
+        with io.open(os.path.join(self.root, "src", "s.css"), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write("body{background:url(//cdn.example/%s)}\n" % SYNTH_TOKEN)
+        self._write_roster(1)
+        r = self._gate()
+        self.assertEqual(r.returncode, 0,
+                         f"CSS 的 `//` 不是注释，不得当注释截断：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("命中 1/1", r.stdout)
+
+    def test_html_script_block_uses_slash_comment_rules(self):
+        """D3：`<script>` 段里 `//` 是注释（假阳性必须消失），段内代码与 HTML 正文照算。"""
+        with io.open(os.path.join(self.root, "src", "s.html"), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write('<script>\n'
+                    '// %s\n'
+                    'var real = "%s";\n'
+                    '</script>\n'
+                    '<!-- %s -->\n'
+                    '<p>%s</p>\n'
+                    % ((SYNTH_TOKEN,) * 4))
+        self._write_roster(2)  # 只有 script 内的代码行 + HTML 正文算
+        r = self._gate()
+        self.assertEqual(r.returncode, 0,
+                         f"<script> 内 `//` 是注释、HTML 注释整段不算：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("命中 2/2", r.stdout)
+
+    # -- D6：真名册 + 一处真定义点 ⇒ 必红并点名（元测试原本只用合成 token）------
+    def test_real_roster_one_extra_real_definition_point_turns_red(self):
+        """D6：用**真名册**（--roster 指向仓内 tsv）+ 真树子集，往某 active 键覆盖的
+        真文件里加一处真定义点 ⇒ 必红并点名 文件:行（合成 token 的活体反例钉不到这条）。
+        """
+        tmp = tempfile.mkdtemp(prefix="yiban-sharedfacts-real-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = os.path.join(tmp, "tree")
+        for d in ("yiban", "scripts", "tests"):
+            os.makedirs(os.path.join(root, d))
+        # 每个 scope 组至少要有一个可扫文件，否则会先撞上 D1 的"贡献 0 个文件"
+        for stub in ("yiban/state_gc.py", "tests/test_state_gc.py"):
+            with io.open(os.path.join(root, stub), "w",
+                         encoding="utf-8", newline="\n") as f:
+                f.write("# meta-test stub：只为占住 scope 面，不含任何判定模式\n")
+        with io.open(os.path.join(root, REAL_SCOPE_FILE), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write(_read(os.path.join(BASE, REAL_SCOPE_FILE)))
+        pristine = _run(SCRIPT, "--root", root, "--roster", ROSTER, "--min-files", "1")
+        self.assertEqual(pristine.returncode, 0,
+                         f"未加定义点的真树子集必须绿（否则下面的红不成对照）：\n"
+                         f"{pristine.stdout}\n{pristine.stderr}")
+        with io.open(os.path.join(root, REAL_SCOPE_FILE), "a",
+                     encoding="utf-8", newline="\n") as f:
+            f.write(REAL_EXTRA_POINT)  # 第 10 处 > 名册冻结的 9
+        r = _run(SCRIPT, "--root", root, "--roster", ROSTER, "--min-files", "1")
+        self.assertEqual(r.returncode, 1,
+                         f"真名册下多一处真定义点必须判红：\n{r.stdout}\n{r.stderr}")
+        self.assertIn(REAL_KEY, r.stdout, "判红必须点名真名册里的那条键")
+        self.assertRegex(r.stdout, re.escape(REAL_SCOPE_FILE) + r":\d+",
+                         "判红必须点名真文件的 文件:行")
+
     def test_missing_roster_is_an_env_error_exit_2(self):
         self._write_tree('A = "%s"\n' % SYNTH_TOKEN)
         r = _run(SCRIPT, "--root", self.root,
@@ -273,18 +369,96 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, "--nope 应报未知参数并返回 2")
 
     def test_empty_tree_does_not_pass_silently(self):
-        """不许因为"一个文件都没扫到"而零命中即通过。"""
+        """不许因为"一个文件都没扫到"而零命中即通过（今日由 D1 的 0 文件检查兜住）。"""
         self._write_roster(2)
         r = self._gate()  # 树里除 roster 外无任何 .py/.sh/... 文件
         self.assertEqual(r.returncode, 2,
                          f"扫不到文件必须当环境错误（防空转）：\n{r.stdout}\n{r.stderr}")
 
+    # -- D1：scope 指向不存在的路径 / 贡献 0 个文件 ⇒ 该键静默变废键 -------------
+    def test_scope_pointing_at_missing_path_is_an_env_error_exit_2(self):
+        """D1：某行声明了非空 scope 但该路径在 --root 下不存在 ⇒ exit 2 并点名键与 scope。
+
+        树里另有一条**命中正常**的键，所以旧行为是整体 rc=0（死键被静默略过）——
+        "看着有门其实是废门"正是本门最该防的失效模式，不许只在 stdout 提示一句。
+        """
+        self._write_tree('X = "%s"\n' % SYNTH_TOKEN)
+        self._write_roster_rows([("synth-ok", "src", 1),
+                                 ("synth-typo", "scritps", 1)])  # 打错：树里只有 src/
+        r = self._gate()
+        self.assertEqual(r.returncode, 2,
+                         f"scope 指向不存在的路径属门禁配置错误，退出码必须是 2：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        msg = r.stdout + r.stderr
+        self.assertIn("synth-typo", msg, "必须点名是哪个键死了")
+        self.assertIn("scritps", msg, "必须点名是哪个 scope")
+
+    def test_scope_contributing_zero_files_is_an_env_error_exit_2(self):
+        """D1 同一条：scope 路径存在但贡献 0 个可扫文件，同样必须硬失败并点名。"""
+        self._write_tree('X = "%s"\n' % SYNTH_TOKEN)
+        os.makedirs(os.path.join(self.root, "assets"))
+        with io.open(os.path.join(self.root, "assets", "notes.txt"), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write('X = "%s"\n' % SYNTH_TOKEN)  # 非白名单扩展名 ⇒ 扫不到
+        self._write_roster_rows([("synth-ok", "src", 1),
+                                 ("synth-empty", "assets", 1)])
+        r = self._gate()
+        self.assertEqual(r.returncode, 2,
+                         f"scope 贡献 0 个可扫文件属门禁配置错误，退出码必须是 2：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        msg = r.stdout + r.stderr
+        self.assertIn("synth-empty", msg, "必须点名是哪个键死了")
+        self.assertIn("assets", msg, "必须点名是哪个 scope")
+
+    def test_space_in_path_keeps_the_named_location_intact(self):
+        """D4：**文件名**含空格时，判红点名的 文件:行 不许被拆成多个伪位置。"""
+        with io.open(os.path.join(self.root, "src", "a b.py"), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write('A = "%s"\nB = "%s"\n' % (SYNTH_TOKEN, SYNTH_TOKEN))
+        self._write_roster(1)  # scope=src
+        r = self._gate()
+        self.assertEqual(r.returncode, 1,
+                         f"两处定义点 > 上限 1 必须判红：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("src/a b.py:2", r.stdout,
+                      "含空格路径的 文件:行 必须整条点名（不得被空格拆散）")
+        self.assertIn("命中 2/1", r.stdout)
+
+    def test_too_few_files_is_an_env_error_exit_2(self):
+        """--min-files 仍是防线：扫到的文件太少 ⇒ exit 2（防空转，独立于 D1 的 0 文件）。"""
+        self._write_tree('A = "%s"\n' % SYNTH_TOKEN)
+        self._write_roster(1)
+        r = _run(SCRIPT, "--root", self.root, "--roster", self.roster,
+                 "--min-files", "1000")
+        self.assertEqual(r.returncode, 2,
+                         f"文件数不足 --min-files 必须当环境错误：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("只扫到 1 个文件", r.stdout + r.stderr)
+
+    def test_bare_trailing_option_is_an_env_error_exit_2(self):
+        """D5：`--root`/`--roster`/`--min-files` 后不带值 ⇒ 参数错 ⇒ exit 2（不是 1）。"""
+        for opt in ("--root", "--roster", "--min-files"):
+            with self.subTest(opt=opt):
+                r = _run(SCRIPT, opt)
+                self.assertEqual(r.returncode, 2,
+                                 f"{opt} 后缺值属参数错误，退出码必须是 2"
+                                 f"（rc=1 会被误读成有键超标）：\n{r.stdout}\n{r.stderr}")
+                self.assertIn(opt, r.stdout + r.stderr, "报错要点名是哪个选项")
+
     def test_current_repo_tree_is_green(self):
-        """真树真跑：门禁对今天的仓库必须判绿（不是 mock、不是 skip）。"""
+        """真树真跑：门禁对今天的仓库必须判绿（不是 mock、不是 skip），
+        且每条 active 键都还在开火（命中数 > 0）——某键静默变废键时这里要红。"""
         r = _run(SCRIPT)
         self.assertEqual(r.returncode, 0,
                          f"当前合规树必须绿（否则门出生即红）：\n{r.stdout}\n{r.stderr}")
         self.assertRegex(r.stdout, r"扫描 \d+ 个文件")
+        self.assertNotIn("提示:", r.stdout,
+                         "有 active 键命中 0——该键已静默失效（门形同虚设）")
+        active = [row["键"] for row in _rows() if row["状态"] == "active"]
+        counted = re.findall(r"^ok: (?:%s) / (.+?) —— 命中 (\d+)/\d+$"
+                             % "|".join(FAMILIES), r.stdout, re.M)
+        self.assertEqual([k for k, _ in counted], active,
+                         "逐键计数行必须与名册 active 键一一对应（不许多、不许少、不许换序）")
+        self.assertTrue(all(int(hits) > 0 for _, hits in counted),
+                        "每条 active 键的命中数必须 > 0——否则该键已静默变废键")
 
 
 if __name__ == "__main__":
