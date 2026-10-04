@@ -1,0 +1,74 @@
+name: E2E Nightly
+
+# 前端 Playwright e2e 夜间轨。**不改 ci.yml 主链路**：fast 轨只跑 Vitest（见 ci.yml 的
+# frontend job 注释——“Playwright e2e 需要 Python 侧临时实例与浏览器二进制，留给 nightly”），
+# 本文件兑现那句承诺。夜间失败不阻塞 PR（不挂在 PR/required checks 上）。
+#
+# 为什么独立文件而非并进 ci.yml：`schedule` 是 workflow 级触发，同文件会让 fast job 也被
+# 排程触发，必须再加事件守卫；两文件让各自触发条件诚实、参数互不干扰（与 nightly.yml 同理由）。
+#
+# 排程时区（cron 一律 UTC，别按本地钟改）：'0 8 * * *' = 08:00 UTC = 北京 16:00。
+# **禁止挪到 UTC 16:00–24:00（北京 00:00–08:00）**：该窗口 runner 的 UTC 日期与业务北京钟
+# 错位，是 MF-108 全量大面积红的窗口（与 nightly.yml 同一条纪律；e2e 的日历用例也按业务钟取
+# 取样工作日，同样不宜落该窗口）。
+#
+# ⚠️ M24：GitHub 的 `schedule` 只在**默认分支**（main）上生效。本文件若只存在于 develop /
+# feature 分支，排程不会跑；合入 main 后生效，`workflow_dispatch` 可先手动验证。
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+# 最小权限：仅读取代码
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # 本机整套 10 条 28s；CI 4 vCPU + 浏览器安装，留足余量
+    timeout-minutes: 30
+    # 所有命令默认在 frontend/ 下（playwright.config.ts / package-lock 都在这里）；
+    # 需要仓库根的步骤单独覆盖 working-directory。
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      # e2e 的 webServer 用系统 `python` 起临时 Flask 实例（frontend/e2e/server.py）：
+      # 装运行依赖即可，不需要 pytest/ruff 那套门禁工具。
+      - name: Install Python dependencies (locked)
+        working-directory: .
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies (locked)
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # workers:1（playwright.config.ts 已定）+ 登录限流按 IP 计的既有口径：整套共用一个
+      # Flask 实例，串行是硬约束，不要在此加 --workers。
+      # YB_E2E_PYTHON=python：CI 无 venv，config 的解释器探测回落系统 python。
+      - name: Run e2e (serial)
+        env:
+          YB_E2E_PYTHON: python
+        run: npx playwright test

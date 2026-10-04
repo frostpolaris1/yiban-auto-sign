@@ -28,15 +28,17 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(BASE, "web", "static", "js")
 COMPONENTS = os.path.join(JS_DIR, "components")
+# 设置页迁到 Vue 后的新栈源码目录（口径层 + 写链）。对拍同时扫这里。
+SETTINGS_SRC = os.path.join(BASE, "frontend", "src", "settings")
 ENV_IO = os.path.join(BASE, "web", "services", "env_io.py")
 
-# 会写 /api/settings 的前端组件。少登记一个，对拍就漏一个文件——由
+# 会写 /api/settings 的前端文件（仓库相对路径）。少登记一个，对拍就漏一个文件——由
 # `test_settings_writers_are_all_covered` 反向守住。
+#   2026-10-03：设置页整页迁 Vue，四个 settings-*.js 退役；设置写键的 `body.<键> = …`
+#   直写形态收进 model.js，受门禁 POST 落点收进 ops.js（`path: "/api/settings"`）。
 _SETTINGS_WRITERS = (
-    "settings-schedule.js",
-    "settings-quota.js",
-    "settings-health.js",
-    "settings-switches.js",
+    "frontend/src/settings/model.js",
+    "frontend/src/settings/ops.js",
 )
 
 # 写请求体里**不是**设置项的字段（协议字段，与档位无关）。这些字段由受门禁提交 helper
@@ -60,8 +62,14 @@ _ASSIGN_RE = re.compile(r"\bbody\.([a-z_][a-z0-9_]*)\s*=")
 # `body[field] = …` 的键从调用参数/比较式进来，只能这样认）。
 # 与档位键取交集是关键：裸扫小写标识符会把 "click"/"change" 这类事件名当成键。
 _LITERAL_RE = re.compile(r"[\"']([a-z_][a-z0-9_]*)[\"']")
-# 真正写设置的调用形态（只认 YB.api("POST", "/api/settings"，不认注释与 GET 回填）
-_POST_SETTINGS_RE = re.compile(r"YB\.api\(\s*[\"']POST[\"']\s*,\s*[\"']/api/settings[\"']")
+# 真正写设置的调用形态（不认注释与 GET 回填）：
+#   · legacy 裸调用：YB.api("POST", "/api/settings", …)；
+#   · Vue 栈受门禁提交：dangerousSubmit({ …, path: "/api/settings" })/api("POST","/api/settings")。
+_POST_SETTINGS_RE = re.compile(
+    r"(?:YB\.api\(\s*[\"']POST[\"']\s*,\s*[\"']/api/settings[\"']"
+    r"|(?:path|url)\s*:\s*[\"']/api/settings[\"']"
+    r"|\bapi\(\s*[\"']POST[\"']\s*,\s*[\"']/api/settings[\"'])"
+)
 # 注入表达式：`confirm_password: pw` / `confirm_password = pw` 这类**真的把值传下去**的
 # 形态（右侧必须有内容）。只认"整份源码里出现过该键"会把注释、文案里的键名也算成证据。
 _INJECTION_RE = r"\b%s\s*[:=]\s*\S"
@@ -157,7 +165,7 @@ class _Base(unittest.TestCase):
             spec.loader.exec_module(mod)
         cls.webapp = mod
         cls.keys = _tier_keys(mod)
-        cls.sources = {name: _read(os.path.join(COMPONENTS, name))
+        cls.sources = {name: _read(os.path.join(BASE, *name.split("/")))
                        for name in _SETTINGS_WRITERS}
 
     def _assigned_keys(self):
@@ -179,18 +187,28 @@ class WriterCoverageTest(_Base):
     """新增一个写 /api/settings 的组件，必须同时登记进对拍清单。"""
 
     def test_settings_writers_are_all_covered(self):
+        """任何写 /api/settings 的前端文件都必须在 _SETTINGS_WRITERS 里。
+
+        扫描面同时覆盖 legacy（web/static/js）与新栈（frontend/src/settings）——两份源码
+        都以仓库相对路径登记，避免"路径基准不同"漏判。
+        """
         offenders = []
-        for root, _dirs, files in os.walk(JS_DIR):
-            for name in files:
-                if not name.endswith(".js"):
-                    continue
-                text = _read(os.path.join(root, name))
-                if _POST_SETTINGS_RE.search(text):
-                    rel = os.path.relpath(os.path.join(root, name), COMPONENTS)
-                    if rel.replace(os.sep, "/") not in _SETTINGS_WRITERS:
-                        offenders.append(rel)
-        self.assertEqual(offenders, [],
-                         f"这些前端文件也写 /api/settings，但没进对拍清单：{offenders}")
+        scan = (
+            (JS_DIR, lambda p: os.path.relpath(p, BASE)),
+            (SETTINGS_SRC, lambda p: os.path.relpath(p, BASE)),
+        )
+        for root, relfn in scan:
+            for dirpath, _dirs, files in os.walk(root):
+                for name in files:
+                    if not name.endswith((".js", ".ts", ".vue")):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    if _POST_SETTINGS_RE.search(_read(path)):
+                        rel = relfn(path).replace(os.sep, "/")
+                        if rel not in _SETTINGS_WRITERS:
+                            offenders.append(rel)
+        self.assertEqual(sorted(set(offenders)), [],
+                         f"这些前端文件也写 /api/settings，但没进对拍清单：{sorted(set(offenders))}")
 
 
 class FrontendToTierTest(_Base):

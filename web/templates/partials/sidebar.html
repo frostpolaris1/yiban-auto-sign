@@ -19,11 +19,15 @@
 
   {# 导航分三组（用户 2026-09-12 指定）：数据 / 工作台 / 我的（个人域，与用户端同源的两页）。
      路径与分组同构：`/<组>/<页面>`，组的英文与标题一一对应（data / work / my），
-     因此从 URL 就能反推页面归属。 #}
+     因此从 URL 就能反推页面归属。
+     2026-10-02：数据组新增「审计日志」——前端翻新 P1 的第一个原生新页面（Vue 实现，
+     见 docs/refactor/29）；图标取现有 sprite 中语义最近的 shield（审计/安全留痕）。
+     注意：不要在下面的 `{% set %}` 表达式内部写 Jinja 注释标记，语句标签内不认注释。 #}
   {% set nav_groups = [
     ('数据', [
       ('data-dashboard', '/data/dashboard', 'layout-dashboard', '数据总览'),
       ('data-logs',      '/data/logs',      'file-text',        '签到日志'),
+      ('data-audit',     '/data/audit',     'shield',           '审计日志'),
     ]),
     ('工作台', [
       ('work-accounts', '/work/accounts', 'list',     '账号管理'),

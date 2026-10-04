@@ -81,22 +81,25 @@ class JsAssemblyGuardTest(unittest.TestCase):
         文案，不依赖服务端脱敏口径，故不得出现 `data.msg`。batch/purge 的计数型 msg
         经 `successMsg(..., true)` 走 `data["msg"]`，不在本禁例内。
         """
-        src = _read(os.path.join(JS_DIR, "components", "user-ops.js"))
+        # 2026-10-03：用户管理页迁到 Vue，写操作链路搬到 frontend/src/users/ops.js
+        # （纯 JS、整段被 test_users_exit_surface_frontend.py 真跑）；禁例与理由不变。
+        src = _read(os.path.join(BASE, "frontend", "src", "users", "ops.js"))
         self.assertNotIn(
             "data.msg", src,
             "user-ops.js 出现 data.msg —— 单目标成功提示会把完整邮箱经 toast 写入 DOM；"
             "本组件只允许 batch/purge 的计数型 msg 上屏",
         )
 
-    # 唯一的裸 fetch 例外：日志导出是**文件下载**（blob），YB.api 只处理 JSON 响应，
-    # 无法替代。登记在此并在判据里说明原因，避免把"绕过 CSRF"的写法混进来。
-    _BARE_FETCH_ALLOW = frozenset({"data_logs.js"})
+    # 裸 fetch 例外表：**当前为空**。曾经的唯一例外是日志导出的 blob 下载
+    # （data_logs.js）；该页已于前端翻新 P1 迁到 Vue，导出改 `<a download>`（GET，
+    # 无需 CSRF），故例外消失——这张表继续留白以备将来真需要时显式登记。
+    _BARE_FETCH_ALLOW = frozenset()
 
     def test_pages_and_components_do_not_use_bare_fetch(self):
         """`pages/*.js` 与 `components/*.js` 不得裸用 `fetch` —— 必须走 `YB.api`。
 
         `YB.api` 承担 CSRF 头、统一错误与 401 跳转；裸 fetch 会静默绕过这几层
-        （写请求尤其危险）。日志导出的 blob 下载是唯一例外，见 `_BARE_FETCH_ALLOW`。
+        （写请求尤其危险）。例外须登记在 `_BARE_FETCH_ALLOW` 并写明原因。
         """
         offenders = []
         for sub in ("pages", "components"):
@@ -118,23 +121,21 @@ class JsAssemblyGuardTest(unittest.TestCase):
 
         后端 GET /api/mail-config 下发的 smtps[].user / has_pass 是打码或占位串；
         一旦作为 `value` 回填，保存时会按字面落盘并损坏配置（或把打码串当授权码）。
-        判据落在**脱敏字段专用构造器**上：`maskedCellInput` 体内不得出现 `.value`，
-        且 user / pass 两列必须走它（host / port 是非敏感字段，允许回填）。
+        2026-10-03 设置页迁 Vue 后自研控件退役：判据换锚到口径层 model.js 的
+        `smtpRowsFrom` —— 它构造可编辑行时 user / pass 恒为空串（脱敏值只留在 user0
+        供 placeholder），host / port 才回填。
         """
-        src = _read(os.path.join(JS_DIR, "components", "settings-mail.js"))
-        m = re.search(r"function maskedCellInput\(.*?\n  \}", src, re.S)
+        src = _read(os.path.join(BASE, "frontend", "src", "settings", "model.js"))
+        self.assertIn("function clean(", src, "model.js 缺少打码值清洗函数 clean()")
+        m = re.search(r"function smtpRowsFrom\(.*?\n\}", src, re.S)
         self.assertIsNotNone(
-            m, "settings-mail.js 未找到 maskedCellInput（脱敏字段专用构造器，写法变了？请同步本测试）"
+            m, "model.js 未找到 smtpRowsFrom（脱敏字段专用构造器，写法变了？请同步本测试）"
         )
-        self.assertNotIn(
-            ".value", m.group(0),
-            "maskedCellInput 回填了 value —— 脱敏值只允许作 placeholder，不得写进输入框",
-        )
-        self.assertIn('maskedCellInput("user"', src,
-                      "发件账号列必须走 maskedCellInput（后端已打码，不得回填）")
-        self.assertIn('maskedCellInput("pass"', src,
-                      "授权码列必须走 maskedCellInput（绝不回显）")
-        self.assertIn("function clean(", src, "settings-mail.js 缺少打码值清洗函数 clean()")
+        body = m.group(0)
+        self.assertIn('user: ""', body, "发件账号不得回填脱敏值（只作 placeholder）")
+        self.assertIn('pass: ""', body, "授权码绝不回显（只作 placeholder）")
+        self.assertNotIn("user: e.user", body, "发件账号回填了后端打码值 —— 落盘会损坏配置")
+        self.assertNotIn("pass: e.pass", body, "授权码回填了后端打码值")
 
 
 # 分区（tab）机制的共享面：深链助手 + roving tabindex 必须只住在 core.js，
@@ -148,8 +149,17 @@ _TAB_DEEPLINK_PRIVATE_MARKERS = (
     'URLSearchParams(location.search).get("tab")',
     'searchParams.set("tab"',
 )
-# 三个"无页面级 tab 管理"的分区页：深链启用只许这一行（settings 自管深链走 YB.selectTab）
-_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js", "pages/work_users.js", "pages/data_logs.js")
+# "无页面级 tab 管理"的 legacy 分区页：深链启用只许这一行（settings 自管深链走 YB.selectTab）。
+# 2026-10-03：`pages/data_logs.js` 已退役（该页迁到 Vue，分区深链由 `?tab=` 在 Vue 内自管，
+# 本守卫只扫 `web/static/js/**`，对新栈不适用——新栈侧由 e2e/logs.spec 覆盖）。
+# 2026-10-03：`pages/work_users.js` 亦退役（该页迁到 Vue，分区深链由组件内自管 `?tab=`，
+# 且刻意不再使用 core.js 的 data-tab-group 契约以免两套机制争抢 DOM；本守卫只扫
+# `web/static/js/**`，对新栈不适用——新栈侧由 e2e（myaccounts.spec 的 `?tab=` 断言）覆盖）。
+# 2026-10-03：`pages/work_accounts.js` 最后退役（账号管理页整页迁到 Vue，分区深链同样由
+# 组件内自管 `?tab=`；本守卫只扫 legacy `web/static/js/**`，新栈侧由 e2e/logs.spec 的账号
+# 管理段钉住——点页签写 URL（写方向）与带 `?tab=` 加载落到该分区（读方向）成对）。
+# legacy 分区页已全部迁完，本清单为空。
+_TAB_DEEPLINK_PAGES = ()
 
 
 class TabDeepLinkGuardTest(unittest.TestCase):
