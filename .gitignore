@@ -157,7 +157,10 @@ AGENTS.md
 # 协作备用文件（未启用；等协作场景再决定入库，2026-08-16 补忽略）
 WORKFLOW.md
 CONTRIBUTING.md
-.github/pull_request_template.md
+# 2026-10-05 n4c 第一刀：.github/pull_request_template.md **移出**忽略清单。
+# 理由：模板必须入库才生效（GitHub 从仓库里的模板文件生成 PR 正文），而 develop
+# 分支保护要求所有变更经 PR——自检清单（e2e 先行 / 门禁 / changelog）靠它承载。
+# 守卫见 tests/test_pr_template_gate.py（被忽略 / 未入库 / 缺项都会红）。
 # 2026-08-22 M10：ci.yml / mirror.yml 解除忽略入库（文件内只有 secrets 名引用无值，
 # 入库安全），并全量 SHA 固定第三方 action（防可变 tag 被篡改）
 # signin.yml 必须入库：README「GitHub Actions 使用教程（备选）」的部署通道，
