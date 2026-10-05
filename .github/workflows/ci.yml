@@ -76,13 +76,16 @@ jobs:
       #   -p no:randomly / e2e smoke 目标 / shared-facts 门与元测试），命令原文与理由写在
       #   scripts/dev-verify.sh 的 run_ci 与 docs/dev/dev-verify.md；本条不复制命令文本，
       #   免得同一个事实出现第二个定义点（漂移由 tests/test_dev_verify_entry.py 冻结）。
-      # 任一环节非 0 即本步非 0——与改前"步级失败即停"等价。未加 e2e 或其他新步：
-      #   CI 结果必须与改前等价。
+      # 任一环节非 0 即本步非 0——与改前"步级失败即停"等价。
+      # 2026-10-06 起多了一步：B1 的在册部署键裸读门（scripts/check-path-env-reads.py）
+      #   与它的元测试。加步是工单要求的（"门禁要真进 CI，不许只当仓里的摆设"），
+      #   除这两步之外 CI 结果与改前等价；命令原文仍只住 run_ci 一份，漂移由
+      #   tests/test_dev_verify_entry.py 的冻结清单钉住。
       - name: Gate subset (scripts/dev-verify.sh --ci)
         run: bash scripts/dev-verify.sh --ci
 
       - name: Gate ready
-        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster."'
+        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster + path-env bare reads."'
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
   # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，

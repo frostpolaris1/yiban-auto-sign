@@ -171,6 +171,17 @@ def env_path(default=".env"):
     """解析 .env 路径的统一口径：环境变量 YIBAN_ENV_FILE 优先（去空白），回退默认值。
 
     与 web/signin 子进程约定一致（web/app.py 写入 YIBAN_ENV_FILE 传给子进程）。
+
+    本函数是全仓读这枚指针的唯一位置：过去 6 处各自重抄一遍，本批连根收进这里。
+    它刻意只读进程环境、不读 `.env`：指针还没定位时，任何 `.env` 都读不到，
+    回落到哪份文件只能由 `default` 参数决定，不能靠 `.env` 自己说自己在哪。
+    `yiban/notify/ledger.py` 的 `_state_dir()` 第三档回落 `dirname(env_path)`，
+    与本函数的第三档（回落 `default`）不同形，收口它须单独裁决。
+
+    `default=None` 是给"密钥来源"那一族的：调用方要靠 None 区分"操作员没指定"与
+    "指定了某个路径"（`config_check._key_env_file`、`db.resolve_env_file`、
+    `audit_chain._resolve_key_env_file` 三处），那三处的 fail-closed 判定读的就是这个
+    None；传字符串默认值会把"来源未定"伪装成"来源已定"。
     """
     return os.environ.get("YIBAN_ENV_FILE", "").strip() or default
 
