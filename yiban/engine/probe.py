@@ -245,7 +245,7 @@ def _env_update_probe(auto_disable=False):
     """
     if not auto_disable:
         return
-    env_path = os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
+    env_path = env_io.env_path()
     try:
         env_io.write_env_key(env_path, "YIBAN_PROBE_ENABLE", "0")
     except Exception as e:

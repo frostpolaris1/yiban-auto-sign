@@ -36,11 +36,13 @@
 不在本文件范围内：`YIBAN_LOG_FILE` / `YIBAN_ACCOUNTS_FILE` 在 bash 侧的读法。
    `run.sh` / `run_probe.sh` / `scripts/yiban-fallback.sh` 先 export `.env` 再算路径，
    `scripts/backup.sh` 走 `env_get` 回落——四处本已认 `.env`。
-   登记路径键另有 3 处裸 `os.environ.get`，但各自带 `.env` 回落，不是本刀的病发点：
-   `yiban/notify/ledger.py` 的 `_state_dir()` 一处、`scripts/audit_verify.py` 的库路径
-   取值两处。后一半立 AST 门禁当天要先裁决这 3 处，以及 `YIBAN_ENV_FILE` 的指针读法
-   （基线实现 `env_io.env_path` 自己就是裸读）。
-   AST 形态的"登记键不得用裸 `os.environ.get` 读"门禁属第二刀的后一半，另派。
+   登记路径键里那些仍带 `.env` 回落的裸 `os.environ.get`（`yiban/notify/ledger.py` 的
+   `_state_dir()`、`scripts/audit_verify.py` 的库路径取值）不是本刀的病发点：它们读得到
+   `.env`，只是读法二手。哪些处仍未收、为什么允许，一律以名册
+   `env_io.resolve_path 唯一入口与绕过点` 那一行的白名单为准（AST 门禁
+   `scripts/check-path-env-reads.py` 按那一行计数），本文件不复制那份处数。
+   `YIBAN_ENV_FILE` 的指针读法已连根收进 `env_io.env_path`——那里是全仓唯一一处对
+   该键的裸读，即唯一解析器的定义点。
 依赖：临时目录里的 `.env` 与真实 SQLite 库文件；不发网络请求。整文件在本机执行，无 skip。
 """
 import io
