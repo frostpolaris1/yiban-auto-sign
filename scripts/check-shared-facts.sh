@@ -23,6 +23,15 @@
 #   pending 行不参与判定——今天不可机械单模式计数（见名册"口径备注"），不许硬编
 #   上限凑数。
 #
+# 引擎路由（2026-10-06 起）：判定模式以 `ast:` 开头的 active 行由 AST 引擎计数，
+#   本脚本见该前缀**让开**，两者共用同一行的扫描范围与允许上限。为什么必须让开：
+#   这类判据分得开"读"与"写"（`environ[K] = v` 不算绕过），awk 的单条 ERE 分不开——
+#   两个引擎各数一遍会把同一枚键的上限重复扣。让开以后由
+#   scripts/check-path-env-reads.py 数，执行器在 run_ci 里紧跟本脚本；那一行的
+#   扫描范围校验（0 个可扫文件即退 2）也随路由交给它，本脚本不再校验它。
+#   分工的守卫：tests/test_path_env_read_gate.py 断言"每枚 active 键恰好被一个引擎
+#   计数"——少一个=静默废键，多一个=重复扣档，都要红。
+#
 # 退出码：0 全部在册内；1 有键超标；2 门禁自身参数/环境错误（名册或根目录不存在、
 #   --min-files 非整数、选项后缺值、名册落在扫描白名单里、扫到的文件数不足
 #   --min-files、**某行声明的扫描范围在 --root 下贡献 0 个文件**）。
@@ -43,6 +52,8 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ROOT="$REPO_ROOT"
 ROSTER="$REPO_ROOT/scripts/gate/shared-facts.tsv"
 MIN_FILES=50
+# 引擎路由标记：名册"判定模式"列以此开头的行交给 AST 门计数（约定见文件头与名册文件头）
+ENGINE_PREFIX="ast:"
 
 # 生产树默认扫描面（相对于 --root）。文档、锁定清单、名册自身不在内：
 # 它们不是"定义点"，把它们算进来只会让上限虚高。
@@ -235,11 +246,16 @@ declare -a GROUP_RAW=()
 declare -A GROUP_KEYS=()
 n_groups=0
 pending=0
+ast_routed=0
 
 while IFS=$'\t' read -r fam key status pat scope max note; do
     case "$fam" in ''|'#'*) continue ;; esac
     if [ -z "${key:-}" ]; then continue; fi
     if [ "$status" != "active" ]; then pending=$((pending + 1)); continue; fi
+    # 引擎路由：`ast:` 行交给 AST 门计数，本脚本既不误数也不校验它（详见文件头）
+    case "$pat" in
+        "$ENGINE_PREFIX"*) ast_routed=$((ast_routed + 1)); continue ;;
+    esac
     raw_scope="$scope"
     if [ "$scope" = "default" ]; then scope="$DEFAULT_SCOPE"; fi
     g="${GROUP_N[$scope]:-}"
@@ -316,6 +332,9 @@ while IFS=$'\t' read -r fam key status pat scope max note; do
     case "$fam" in ''|'#'*) continue ;; esac
     if [ -z "${key:-}" ] || [ "$status" != "active" ]; then continue; fi
     active=$((active + 1))
+    case "$pat" in
+        "$ENGINE_PREFIX"*) continue ;;
+    esac
     h="${HITS[$key]:-0}"
     if [ "$h" -gt "$max" ]; then
         viol=1
@@ -336,6 +355,9 @@ while IFS=$'\t' read -r fam key status pat scope max note; do
 done < "$ROSTER"
 
 echo "扫描 $NFILES 个文件；登记 $active 枚 active 键 + $pending 枚 pending（pending 不判定）"
+if [ "$ast_routed" -gt 0 ]; then
+    echo "其中 $ast_routed 枚 active 键走 $ENGINE_PREFIX 引擎路由，由 scripts/check-path-env-reads.py 计数"
+fi
 if [ "$viol" -eq 0 ]; then
     echo "shared-facts ok: 全部登记键的非注释定义点数都在允许上限内"
     exit 0
