@@ -11,6 +11,7 @@
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -18,6 +19,7 @@ from unittest import mock
 import requests
 
 from yiban import state_gc
+from yiban._vendor import yiban_protocol
 from yiban.infra import wire_dump
 
 #: 真实登录体形态里的手机号与密码密文（本文件的红线对象）
@@ -187,6 +189,70 @@ class WireDumpTest(unittest.TestCase):
         row = self._read_lines()[0]
         self.assertNotIn("SECRETCODE", json.dumps(row))
         self.assertNotIn("sess0", json.dumps(row))
+
+    # ---- D1：承载 URL 的响应头不得原样落盘 ----
+
+    def test_url_bearing_response_headers_are_sanitized(self):
+        """响应头里承载的 URL 走 `masking.sanitize_url`，令牌不得原样落盘。
+
+        真 OAuth 第 4 步用 `allow_redirects=False`，令牌在 `Location` 头
+        （`verify_request` / `code` / `#access_token=`）；`Content-Location`、
+        `Link`、`Refresh` 同族。头名须保留，核验要看得见形状。
+        """
+        cases = [
+            ("Location",
+             "https://c.uyiban.com/cb?verify_request=VERIFYTOK&code=CODETOK",
+             ["VERIFYTOK", "CODETOK"]),
+            ("Location", "https://c.uyiban.com/cb#access_token=FRAGTOK", ["FRAGTOK"]),
+            ("Content-Location", "https://c.uyiban.com/cb?code=CODETOK2", ["CODETOK2"]),
+            ("Link", '<https://c.uyiban.com/n?code=CODETOK3>; rel="next"', ["CODETOK3"]),
+            ("Refresh", "0; url=https://c.uyiban.com/n?code=CODETOK4", ["CODETOK4"]),
+        ]
+        for name, value, secrets in cases:
+            with self.subTest(header=name, value=value):
+                self.dir = tempfile.mkdtemp(prefix="yiban-wire-")
+                adapter = wire_dump.WireDumpAdapter(_Inner(), self.dir, LOGIN_PHONE)
+                resp = _response(headers={"Content-Type": "text/html", name: value})
+                adapter._dump(self._req(body="a=1"), resp, 0.001)
+                raw = self._read_raw()
+                for secret in secrets:
+                    self.assertNotIn(secret, raw, "%s 头内令牌不得落盘" % name)
+                self.assertIn(name, raw, "头名须保留")
+
+    # ---- D2：签到体 `Code`（=`phone_code` 设备绑定码）不得原样落盘 ----
+
+    def test_sign_in_body_code_field_is_masked(self):
+        """签到体 `Code` 字段值来自 `phone_code`（设备绑定码），须按键名脱敏。
+
+        `Code` 不在 `_CRED_KEY`；宽表 `masking._QKEYED_CRED` 覆盖 `phone_code`
+        但不覆盖裸 `Code`，故 wire 侧显式补 `code` 字段名口径。
+        """
+        device_code = "DEVICEBINDTOKEN9"
+        body = yiban_protocol.build_sign_in_body(
+            lnglat=(1.2, 3.4), address="A栋",
+            code=device_code, phone_model="MockPhone",
+        )
+        adapter = wire_dump.WireDumpAdapter(_Inner(), self.dir, LOGIN_PHONE)
+        adapter._dump(self._req(body=body), _response(), 0.001)
+        raw = self._read_raw()
+        self.assertNotIn(device_code, raw, "设备绑定码不得落盘")
+        self.assertIn("Code", raw, "字段名须保留")
+        self.assertIn("PhoneModel=MockPhone", raw, "非敏感字段值须保留")
+        self.assertIn("OutState=1", raw)
+        # 宽表口径覆盖 `phone_code` 字段名（与 masking 唯一事实源对齐）
+        self.assertIsNotNone(re.fullmatch(r"(?i)" + wire_dump._CRED_NAME, "phone_code"))
+        self.assertIsNotNone(re.fullmatch(r"(?i)" + wire_dump._CRED_NAME, "Code"))
+
+    # ---- D3：`_redact_body` 幂等 ----
+
+    def test_redact_body_is_idempotent(self):
+        """`_redact_body` 幂等：占位串再次进入不被二次计量。"""
+        form = "oauth_uname=%s&oauth_upwd=%s" % (LOGIN_PHONE, LOGIN_CIPHER)
+        once = wire_dump._redact_body(form)
+        self.assertEqual(wire_dump._redact_body(once), once)
+        js = '{"oauth_upwd": "%s"}' % LOGIN_CIPHER
+        once_j = wire_dump._redact_body(js)
+        self.assertEqual(wire_dump._redact_body(once_j), once_j)
 
     def test_dump_appends_each_time(self):
         """落盘是追加写：两次落盘两行。"""
