@@ -175,10 +175,11 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         "edge_back_sec": str(back),
         "sunday_sign": _flag("YIBAN_SUNDAY_SIGN"),
         "saturday_sign": _flag("YIBAN_SATURDAY_SIGN"),
-        # 两个暂停位沿用 `load_env_int(...) == 1` 的既有判据（写侧只落 "1" 或删键），
-        # 与 GET /api/settings 及系统开关门读的现值逐字一致
-        "global_pause": "1" if load_env_int(env_file, "YIBAN_GLOBAL_PAUSE", 0) == 1 else "0",
-        "registration_pause": "1" if load_env_int(env_file, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else "0",
+        # 两个暂停位与周末位同口径（`_env_flag` = 引擎/run.sh 同一套真值判定）：原先用
+        # `load_env_int(...) == 1`，`=true/on/yes` 会被读成 0，与 GET /api/settings 及引擎
+        # 分叉（census P0-1）。整改后两处读者与引擎同源，`_flag` 认 1/true/on/yes。
+        "global_pause": _flag("YIBAN_GLOBAL_PAUSE"),
+        "registration_pause": _flag("YIBAN_REGISTRATION_PAUSE"),
         "allow_time_pref": str(load_env_int(env_file, "YIBAN_ALLOW_TIME_PREF", 0)),
         "sign_mode": mode,
         # 排序/分布的生效值由旧模式派生（与 GET 同一式子）：只存 YIBAN_SIGN_MODE 的
