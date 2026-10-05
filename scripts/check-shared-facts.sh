@@ -51,7 +51,7 @@ DEFAULT_SCOPE="yiban scripts web docker deploy .github run.sh run_probe.sh docke
 # 只扫代码/配置类文件（名册是 .tsv，天然落在这张白名单外——否则名册自己会把
 # 每条判定模式都命中一遍，门禁当场自杀）。
 EXT_RE='\.(py|sh|bash|js|html|htm|j2|css|conf|cfg|ini|service|yml|yaml|toml|example)$|(^|/)(Dockerfile|cron\.d/[^/]+)$'
-EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|_vendor|vendor|\.pytest_cache|\.ruff_cache)(/|$)'
+EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|_vendor|vendor|\.pytest_cache|\.ruff_cache|web/static/vue/assets)(/|$)'
 
 while [ $# -gt 0 ]; do
     case "$1" in
