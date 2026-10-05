@@ -200,7 +200,14 @@ def _alert_due(title):
 
 
 def _send_admin_alert(title, mail):
-    """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。"""
+    """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。
+
+    已知残余（ba-p11-02 盘查所获，本批不改）：库文件不存在时，`_alert_mail_recipients()`
+    里的 `db.admin_mail_recipients()` 会经 `connection.get_conn()` 的隐式 `init_db()`
+    （缺省 `create=True`）把库就地建出来——与本函数上方 `_anchor_snapshot` 刚收口的
+    那条路同形，但收件人读法不是取证类调用，收口它要动引擎侧或让收件人算法分叉。
+    故本批只把哨兵的**链头读取**收成只读；哨兵整进程"绝不建库"尚不成立。
+    """
     from web.services.notify_mail import _alert_mail_recipients
     recipients = _alert_mail_recipients()
     if not recipients:
