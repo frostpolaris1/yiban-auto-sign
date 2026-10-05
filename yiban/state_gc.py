@@ -78,6 +78,9 @@ ARTIFACTS = (
              "run.sh 当日触发标记（bash 写入；判定首签/补签轮，跨日自动失效）"),
     Artifact("yiban-settled-", ".marker", "snapshot", "state",
              "run.sh 当日收尾标记（bash 写入；阻止 07:12 cron 多跑第三轮，跨日自动失效）"),
+    Artifact("wire-", ".jsonl", "snapshot", "state",
+             "线路落盘诊断样本（默认关闭；仅当 YIBAN_WIRE_DUMP 指向状态目录时才会被本表扫到，"
+             "指向别处时由运维自行清理。按 snapshot 档只留 7 天，缩小敏感面）"),
 )
 
 # 与文件同名的 flock 伴生文件后缀（`locks.file_lock` 创建 `<path>.lock`）：
