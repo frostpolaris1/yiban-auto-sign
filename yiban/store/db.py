@@ -577,7 +577,7 @@ def resolve_env_file(cli_value=None):
     v = (cli_value or "").strip()
     if v:
         return v
-    return (os.environ.get("YIBAN_ENV_FILE") or "").strip() or None
+    return env_io.env_path(default=None)
 
 
 def require_existing_env_file(cli_value=None):
