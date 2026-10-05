@@ -7,9 +7,14 @@ name: CI
 # `if: github.event_name != 'schedule'` 的事件守卫，语义更脆；两文件让每个 workflow 的
 # 触发条件各自诚实，且 nightly 可用独立的 timeout/并行度。（取舍全文见
 # .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
-# ⚠️ GitHub 的 `schedule` **只在默认分支上触发**（本仓库默认分支 = main）——nightly.yml
-# 只存在于 develop，因此**排程永远不会跑**（M24）。这条是 main 分支治理问题，
-# 处置清单见 out/backend-review 修复报告；不要靠往 develop 上加 workflow 来"绕过"。
+# ⚠️ 排程定义点（M24 已修，2026-10-05）：GitHub 的 `schedule` **只在默认分支上生效**
+# （本仓库默认分支 = main）——所以 `nightly.yml` 与 `e2e-nightly.yml` 的**唯一定义点在
+# 默认分支 main**，**本分支（develop）不持有这两个文件**（此前在本分支 = 同一事实两个
+# 定义点，必然漂移）。两文件的 `actions/checkout` 显式 `ref: develop`：被测对象是活跃线
+# develop——main 是"对外默认可见的已验证分支"、天然落后且不含 `frontend/`，e2e 拿不到。
+# 两条不许破：① 不许把这两个文件加回本分支；② 不许把 checkout 的 `ref` 改成 main
+# （nightly 变成跑旧线、e2e 直接失败）。回潮守卫见
+# tests/test_ci_dependency_audit_gate.py::ScheduledWorkflowDefinitionPointTest。
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
 # （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
@@ -119,7 +124,8 @@ jobs:
   # 为什么必须有：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
   # 恰好落在无门禁区——2026-10-03 独立审查实测到一个 blocking 回归（日志页日期栏整体失效）
   # 正是这样漏掉的。前端测试与后端测试同门槛。
-  # 只跑 Vitest：Playwright e2e 需要 Python 侧临时实例与浏览器二进制，留给 nightly。
+  # 只跑 Vitest：Playwright e2e 需要 Python 侧临时实例与浏览器二进制，留给
+  # e2e-nightly.yml（定义点在默认分支 main，见文件头的"排程定义点"一段）。
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
