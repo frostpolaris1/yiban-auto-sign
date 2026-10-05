@@ -38,19 +38,24 @@ from yiban import clock
 from yiban import window as yb_window
 from yiban.engine import schedule as yb_schedule
 from yiban.fyiban.protocol import API_AUTH_URL
+from yiban.infra import env_io as _env_io
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
 
-#: 开关类 .env 值的真值字面量（与 run.sh 的 `_is_truthy` 同一套写法）
-_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+#: 开关类 .env 值的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
+#: （与 run.sh 的 `_is_truthy` 同一套口径）；此处只留别名供 `web.app._TRUTHY_LITERALS` 再导出。
+_TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 
 
 def _env_flag(value):
-    """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。"""
-    # 只认 _TRUTHY_LITERALS 那四个字面量，其余（0/false/空/未设/写错的词）一律按**关**：
-    # 兜底常驻要占一份出口和一个常驻进程，"开"必须是明确表达出来的意图
-    return str(value if value is not None else "").strip().lower() in _TRUTHY_LITERALS
+    """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。
+
+    判定单源在 `yiban.infra.env_io.parse_env_flag`（与引擎、run.sh 同一口径）：
+    只有 `_TRUTHY_LITERALS` 那四个字面量按**开**，其余（0/false/空/未设/写错的词）
+    一律按**关**——兜底常驻要占一份出口和一个常驻进程，"开"必须是明确表达出来的意图。
+    """
+    return _env_io.parse_env_flag(value, default=False)
 
 
 def _sign_window(env_file, read_env):

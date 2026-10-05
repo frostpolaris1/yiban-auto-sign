@@ -31,7 +31,8 @@ web 服务层复用。
 故格式与键名是跨进程契约。
 调用谁：`cred_state`、`cli_support._state_file_lock`、`schedule`、`db`、`env_io`。
 谁调用：`runner`、`workers`、`round`、`probe`、`alerts` 与 web 的日历/执行体接口。
-**依赖方向**：本模块只额外依赖 `schedule` 的 `_env_int`（兜底心跳的扫描间隔下限），
+**依赖方向**：本模块只额外依赖 `schedule` 的 `_env_int`（兜底心跳的扫描间隔下限）与
+`_env_flag`（`YIBAN_SECOND_RUN` 的真值判定，与 run.sh 同口径），
 而 `schedule` 不依赖本模块，故模块级导入安全；`alerts` 反向依赖本模块（告警要读
 sched-run 标记与心跳）与 `schedule`（判窗口是否还开着），那条环路由 alerts 侧断开。
 前端调用点：`/api/scheduler/executors*`（执行体存活四态）、`/api/my-calendar`、
@@ -117,10 +118,14 @@ def _is_second_run():
     """本轮是否为补签轮（07:10）：环境变量优先，sched-run 标记兜底。
 
     标记不能单独作数：首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run 不
-    写，只看标记会把它误判为首签轮 → 部分成功 + 窗口外零告警。`YIBAN_SECOND_RUN=1` 由 run.sh
+    写，只看标记会把它误判为首签轮 → 部分成功 + 窗口外零告警。`YIBAN_SECOND_RUN` 由 run.sh
     补签轮分支 / 容器 scheduler SECOND 时段显式注入，不依赖首签收尾，故优先看它。
+
+    取值域统一走 `schedule._env_flag`（1/true/on/yes，大小写与两侧空白不敏感）——与
+    `run.sh` 的 `_is_truthy` 同一口径；旧实现 `== "1"` 只认一个字面量，同一键在
+    bash 侧判补签轮、在此处判首签轮（census P0-1 的同键分歧形状）。
     """
-    return os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()
+    return schedule._env_flag("YIBAN_SECOND_RUN") or _sched_marker_exists()
 
 
 def _sign_state_path():
