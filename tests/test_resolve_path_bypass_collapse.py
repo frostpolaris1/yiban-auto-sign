@@ -36,11 +36,13 @@
 不在本文件范围内：`YIBAN_LOG_FILE` / `YIBAN_ACCOUNTS_FILE` 在 bash 侧的读法。
    `run.sh` / `run_probe.sh` / `scripts/yiban-fallback.sh` 先 export `.env` 再算路径，
    `scripts/backup.sh` 走 `env_get` 回落——四处本已认 `.env`。
-   登记路径键另有 3 处裸 `os.environ.get`，但各自带 `.env` 回落，不是本刀的病发点：
-   `yiban/notify/ledger.py` 的 `_state_dir()` 一处、`scripts/audit_verify.py` 的库路径
-   取值两处。后一半立 AST 门禁当天要先裁决这 3 处，以及 `YIBAN_ENV_FILE` 的指针读法
-   （基线实现 `env_io.env_path` 自己就是裸读）。
-   AST 形态的"登记键不得用裸 `os.environ.get` 读"门禁属第二刀的后一半，另派。
+   登记路径键里那些仍带 `.env` 回落的裸 `os.environ.get`（`yiban/notify/ledger.py` 的
+   `_state_dir()`、`scripts/audit_verify.py` 的库路径取值）不是本刀的病发点：它们读得到
+   `.env`，只是读法二手。哪些处仍未收、为什么允许，一律以名册
+   `env_io.resolve_path 唯一入口与绕过点` 那一行的白名单为准（AST 门禁
+   `scripts/check-path-env-reads.py` 按那一行计数），本文件不复制那份处数。
+   `YIBAN_ENV_FILE` 的指针读法已连根收进 `env_io.env_path`——那里是全仓唯一一处对
+   该键的裸读，即唯一解析器的定义点。
 依赖：临时目录里的 `.env` 与真实 SQLite 库文件；不发网络请求。整文件在本机执行，无 skip。
 """
 import io
@@ -354,6 +356,71 @@ class DefaultsDoNotDriftTest(_ProbeBase):
             drifted, {},
             "默认值漂动（实测, 期望）：" + "; ".join(
                 f"{k}: {a!r} != {b!r}" for k, (a, b) in drifted.items()))
+
+
+class PointerReadersTakeValuesFromProcessEnvOnlyTest(unittest.TestCase):
+    """B1 第二刀 A 组：六个指针收口点的**取值三档**必须仍是"进程环境 → 各自的 default"。
+
+    为什么门禁不够：`scripts/check-path-env-reads.py` 钉的是形状——不许再抄裸读。
+    把 `env_io.env_path` 换成 `env_io.resolve_path` 形状照样绿，而 `.env` 档会从
+    "读不到"变成"读得到"：密钥来源与审计链落点就此搬家，且 `from_cwd` 那一格会
+    把"操作员显式指定"与"cwd 兜底"混成一个值。本类钉的是**取值**，不是形状。
+
+    与 `EnvFilePointerFromEnvFileTest` 刻意不同形：那一族是 import 期的模块级默认值
+    （`web.ENV_DEFAULT` / `scheduler.ENV_FILE`），本刀没碰，它认 `.env`；本族是调用期
+    读的密钥来源，它不认 `.env`。两族各自的三档都由自己的用例钉住，谁也不许顺手
+    "统一"成对方的形态。
+    """
+
+    def setUp(self):
+        from yiban.store import audit_chain
+
+        self.tmp = tempfile.mkdtemp(prefix="yiban-pointer-readers-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        saved_cwd = os.getcwd()
+        saved_pointer = os.environ.get("YIBAN_ENV_FILE")
+        saved_explicit = audit_chain._connection._env_file
+        audit_chain._connection._env_file = None
+
+        def _restore():
+            os.chdir(saved_cwd)
+            audit_chain._connection._env_file = saved_explicit
+            if saved_pointer is None:
+                os.environ.pop("YIBAN_ENV_FILE", None)
+            else:
+                os.environ["YIBAN_ENV_FILE"] = saved_pointer
+
+        self.addCleanup(_restore)
+        os.chdir(self.tmp)
+        # 基线 .env 就在 cwd，且里面写了另一枚指针：收口点若开始读 .env，本类立刻红。
+        with io.open(os.path.join(self.tmp, ".env"), "w", encoding="utf-8", newline="\n") as f:
+            f.write("YIBAN_ENV_FILE=%s\n" % os.path.join(self.tmp, "elsewhere.env"))
+
+    def _readers(self):
+        from yiban.engine import config_check
+        from yiban.store import audit_chain, db
+
+        return (config_check._key_env_file(), db.resolve_env_file(),
+                audit_chain._resolve_key_env_file())
+
+    def test_dotenv_pointer_and_blank_process_value_both_count_as_unset(self):
+        """`.env` 里写的指针、以及进程环境的空白值：三处一律算"来源未指定"。"""
+        os.environ.pop("YIBAN_ENV_FILE", None)
+        self.assertEqual(self._readers(),
+                         (None, None, (".env", True)),
+                         "密钥来源三处不再等于（未指定, 未指定, cwd 兜底且 from_cwd=True）"
+                         "——落点或 fail-closed 判定被改动")
+        os.environ["YIBAN_ENV_FILE"] = "   "
+        self.assertEqual(self._readers(), (None, None, (".env", True)),
+                         "进程环境写了空白值必须算未设（与改前的 strip 语义逐格相同）")
+
+    def test_process_env_pointer_is_taken_verbatim_after_strip(self):
+        """进程环境有值：三处都取那份值，且首尾空白被剥掉——第三档与 from_cwd 不参与。"""
+        elsewhere = os.path.join(self.tmp, "elsewhere.env")
+        os.environ["YIBAN_ENV_FILE"] = "  %s  " % elsewhere
+        self.assertEqual(self._readers(), (elsewhere, elsewhere, (elsewhere, False)),
+                         "指针值原样透传（去空白）；from_cwd 必须为 False，否则"
+                         "`_assert_key_source_certain` 会在操作员已指定时拒绝建钥")
 
 
 if __name__ == "__main__":

@@ -56,6 +56,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 
+# 路径键的唯一解析器；repo root 由 scripts/db.py 壳放上 sys.path
+from yiban.infra import env_io
+
 
 def _indeterminate(msg):
     """按"无法定论"中止（exit 2）：既不是通过，也不是确证篡改。"""
@@ -121,7 +124,9 @@ def _verify(args):
         env_file = db.require_existing_env_file(args.env)
     except ValueError as e:
         _indeterminate(str(e))
-    db_path = args.db or os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
+    # 直接调唯一解析器：过去写 `os.environ.get(K, db.DB_DEFAULT)`，`.env` 那一档是靠
+    # import 期常量二手生效的——解析口径、空白取值都不在本调用点掌控。
+    db_path = args.db or env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT)
     # 库必须已存在：sqlite3.connect 缺库即建空库，空链 verify"通过"对真实库有没有被
     # 篡改什么都没说（路径写错时静默误报通过）
     if not os.path.exists(db_path):
@@ -132,7 +137,7 @@ def _verify(args):
         # 与 --db 无关。指向别的库（取证副本、备份恢复出来的库）却沿用本部署的锚点，
         # 比出来的差异说明不了任何事，还会给出"审计记录被删除"这种**假篡改结论**。
         # 这种情况按"无法定论"中止，并要求显式 --anchor（取证时把锚点一并拷来）。
-        deployed_db = os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
+        deployed_db = env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT)
         if not _same_path(db_path, deployed_db):
             _indeterminate(
                 "--db 指向的不是本部署的库，无法推断它对应的锚点文件"
