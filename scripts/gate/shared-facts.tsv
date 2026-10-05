@@ -84,8 +84,8 @@
 状态件	sign-<day>.log（按天签到日志本体）	active	sign-[^"']*\.log	default	23	census def=11（本身）/13（日期来源）：7 处拼名 + 4 个写者；模式不覆盖无日期的裸 sign.log（已由"YIBAN_LOG_FILE 默认日志路径"键登记）
 状态件	<path>.lock 伴生锁文件命名规则	active	(^|[^s])\.lock	yiban scripts web run.sh run_probe.sh	21	census def=9（状态件族口径）：伴生 <path>.lock 与自名 *.lock 两套规则、2 个语言、3 个目录；模式用 (^|[^s]) 前缀避开 requirements.lock 的子串噪音，范围限定代码目录同样为此
 状态件	备份产物命名与目录	active	yiban-data-|BACKUP_DIR|/var/backups	default	23	census def=13：4 种名字写法（yiban-<day> / yiban-data-<day> / yiban-backup-<day> / 哨兵重建）+ 3 个目录默认值 + 4 份 business_day
-状态件	fake_yiban_server 的 JSONL 落盘件（测试侧）	active	wire-%s|wire-\{|YIBAN_WIRE_DUMP|wire_dump	yiban scripts tests	21	census def=5：测试 JSONL 无固定名；生产 wire-<day>.jsonl 用 %s 拼日期，逃过 state_gc 元测试的正则
-状态件	state_gc 清理名册 ARTIFACTS 登记条数	active	Artifact\(	yiban/state_gc.py	10	census def=8（三张名册之一）："新增状态文件必须登记"只能靠正则元测试兜，且 %s/常量拼接/月粒度/.corrupt- 四种写法实测漏检
+状态件	fake_yiban_server 的 JSONL 落盘件（测试侧）	active	wire-%s|wire-\{|YIBAN_WIRE_DUMP|wire_dump	yiban scripts tests	33	census def=5：测试 JSONL 无固定名；上游上限 21→33（2026-10-05，止血批 B0 刀7 ba-p08-03）：本行计的是**标识符字面量出现数**不是定义点数，新增 12 处来自 wire_dump 模块 docstring 的脱敏口径订正、`_dump` 新增 f-string 文件名（不再用 %s 拼日期，writer 因此能被 state_gc 元测试正则扫到）与新 e2e 用例引用；实质定义点未增
+状态件	state_gc 清理名册 ARTIFACTS 登记条数	active	Artifact\(	yiban/state_gc.py	11	census def=8（三张名册之一）："新增状态文件必须登记"只能靠正则元测试兜，且 %s/常量拼接/月粒度/.corrupt- 四种写法实测漏检；上限 10→11（2026-10-05，止血批 B0 刀7 ba-p08-03）：新增 Artifact("wire-", ".jsonl", "snapshot", "state")，wire- 按日诊断样本此前无人清理
 状态件	备份收录名册（scripts/backup.sh 状态件列表）	active	SIGN_STATE_DIR\}"/	scripts/backup.sh	9	census def=8（三张名册之二）：与清理名册互不引用、无交叉校验（mail-user-fail / probe-state 已确认漏收）
 状态件	测试侧豁免名册 ALLOWED_NON_STATE	active	ALLOWED_NON_STATE	tests/test_state_gc.py	3	census def=8（三张名册之三）：第二张名册住在测试文件里，与 ARTIFACTS 一起才构成完整判定
 状态件	文件名里的日期来源（bash business_day 副本）	active	^business_day\(\)	run.sh run_probe.sh scripts	4	census def=13：business_day() 在 4 个 bash 文件里逐字复制；run_probe.sh 改用宿主日，口径分叉
