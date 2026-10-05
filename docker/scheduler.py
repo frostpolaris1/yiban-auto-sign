@@ -113,7 +113,9 @@ from yiban.engine import schedule, workers  # noqa: E402
 from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
 
-LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
+LOGDIR = os.path.dirname(env_io.resolve_path("YIBAN_LOG_FILE", "/data/logs/sign.log"))
+# LOGDIR 不借 state_gc.log_dir_from_env()：它未设键时回落到 state_dir，会把容器
+# 缺省从 /data/logs 挪到 /data/state。缺省值是部署形态，本批只统一读法。
 # 与 web / 引擎同一读法：`.env` 里的指针也要认得（基线见 env_io.env_path——进程环境
 # 未给指针时按 cwd 的 .env 定位，容器里 cwd 是 /app）。
 ENV_FILE = env_io.resolve_path("YIBAN_ENV_FILE", "/data/.env")
