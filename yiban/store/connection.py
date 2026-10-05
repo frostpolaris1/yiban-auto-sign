@@ -8,7 +8,8 @@
 - `_conn`：模块级单例连接（`db.init_db` 建、调用方自行关闭后置空）
 - `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
 - `_db_file` / `_env_file`：最近一次 `init_db(...)` 的库路径 / .env 路径
-- `DB_DEFAULT`：库路径默认值（`YIBAN_DB_FILE` 或 `"yiban.db"`）
+- `DB_DEFAULT`：库路径默认值（按 `env_io.resolve_path` 解析：进程环境 → `.env` →
+  `"yiban.db"`）
 - `get_conn()` / `is_initialized()` / `current_db_file()` / `pool_db_declared()`
 
 **为什么 `init_db` 不在这里**：`tests/test_store_db_move.py` 钉住"真正的 `init_db` 定义
@@ -27,8 +28,10 @@ import pathlib
 import sqlite3
 import threading
 
+from yiban.infra import env_io
+
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
-DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
+DB_DEFAULT = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
 
 _conn = None
 # RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
@@ -173,7 +176,6 @@ def pool_db_declared(env=None, env_file=None):
 
     只做一次只读解析（**不传 default**，故未声明时得到空串），不建连接、不建库、不建表。
     """
-    from yiban.infra import env_io
     path = env_io.resolve_path("YIBAN_DB_FILE", "", env=env, env_file=env_file)
     if path not in _pool_declared_cache:
         _pool_declared_cache[path] = bool(path)

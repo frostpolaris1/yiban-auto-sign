@@ -16,9 +16,10 @@
   做过加固：umask 077 / 口令走 _FILE / RETAIN_DAYS 校验 / 解包护栏），备份落 compose
   声明的独立卷（不在 /data 内，避免下一轮 tar 把上一轮备份再打进去）。
 
-数据/配置路径由 compose 注入的 YIBAN_* 环境变量决定；同时把 YIBAN_ENV_FILE
-指向的 .env（Web 设置页写入）解析后注入子进程环境——否则 Web 后台改的
-探针/周日/暂停等开关对 signin 子进程不可见（2026-08-27 对抗性审查 P1-1：
+数据/配置路径按 `env_io.resolve_path` 解析（进程环境 → `.env` → 容器默认值）：
+compose 注入的 `YIBAN_*` 仍然优先，只写进 `.env` 的部署也不再被静默忽略。
+同时把 `YIBAN_ENV_FILE` 指向的 .env（Web 设置页写入）解析后注入子进程环境——否则
+Web 后台改的探针/周日/暂停等开关对 signin 子进程不可见（2026-08-27 对抗性审查 P1-1：
 原实现只继承 compose 环境变量，Docker 部署下这些设置静默失效）。
 
 tick 采用「分钟级到点闩锁」而非「秒==0 命中」：调度循环被签到子进程阻塞、
@@ -37,6 +38,26 @@ import time
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
+# 包导入引导（探活快路也要用它，故排在业务导入图之前）
+# ---------------------------------------------------------------------------
+# 本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
+# `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
+# （signin/child_env/env_io）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径
+# 都补上，两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
+# ModuleNotFoundError → supervisord 反复重启 → FATAL）。过渡机制，随 M1③ 清 sys.path 注入移除。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# 路径键的唯一解析口径在这里。快路只多导这一个模块。`yiban.infra` 不导入业务模块。
+# signin 等重导入链仍在 `--check-health` 之后。这笔开销必须付：状态目录可以只写在
+# `.env` 里。写心跳的一方与探活读的一方要算出同一个目录。读方若只认进程环境，它会去
+# 别的目录找心跳。健康检查于是恒判不健康，容器被反复重启。
+from yiban.infra import env_io  # noqa: E402
+
+# ---------------------------------------------------------------------------
 # 活体心跳与探活快路（必须位于业务导入图之前）
 # ---------------------------------------------------------------------------
 # compose 的 healthcheck 原本只 curl web 端口——sched 崩溃/躺平（supervisord
@@ -44,11 +65,11 @@ from datetime import datetime
 # 守护线程周期性落一个心跳文件（首签/补签子进程 wait 期间主循环合法阻塞数分钟
 # ~数小时，tick-only 心跳会在正常工作状态下"陈旧"误报；线程随进程死——进程
 # 没了心跳断流，正是探活要抓的形态），探活只读一个事实：心跳 mtime。
-# `--check-health` 在 import signin/yiban 之前退出：30s 一次的探测不该拖着
+# `--check-health` 在 import signin 与 yiban 业务模块之前退出：30s 一次的探测不该拖着
 # 整条业务导入链（耗时，且任何第三方依赖抖动都会把健康的 sched 误杀成
 # "不健康"——观测件的判据必须比被观测对象更简单）。
 # 容器内整链生效待生产演练。
-STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
+STATEDIR = env_io.resolve_path("YIBAN_STATE_DIR", "/data/state")
 HEARTBEAT_FILE = "sched-heartbeat.json"
 HEARTBEAT_INTERVAL = 10          # 守护线程落盘周期（秒）
 HEARTBEAT_MAX_AGE_SECONDS = 60   # 容忍窗 = 6 个落盘周期；陈旧/缺失一律不健康
@@ -68,17 +89,6 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 
 # ---------------------------------------------------------------------------
 
-# 包导入引导：本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
-# `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
-# （signin/child_env/env_io）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径
-# 都补上，两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
-# ModuleNotFoundError → supervisord 反复重启 → FATAL）。过渡机制，随 M1③ 清 sys.path 注入移除。
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.dirname(_HERE)
-for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
 # .env 解析与子进程环境构建与 run.sh / web 共用口径（共享模块）；
 # signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
 # 复用同一套函数，两侧不再各写一份判定）。
@@ -91,7 +101,9 @@ from yiban.infra import private_json  # noqa: E402  （状态文件私有写单�
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
 
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
-ENV_FILE = os.environ.get("YIBAN_ENV_FILE", "/data/.env")
+# 与 web / 引擎同一读法：`.env` 里的指针也要认得（基线见 env_io.env_path——进程环境
+# 未给指针时按 cwd 的 .env 定位，容器里 cwd 是 /app）。
+ENV_FILE = env_io.resolve_path("YIBAN_ENV_FILE", "/data/.env")
 
 logger = logging.getLogger("scheduler")
 
