@@ -15,7 +15,8 @@
 #   bash scripts/dev-verify.sh --ci
 #
 # 选项：
-#   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts），
+#   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts
+#                    + path-env-reads 两道门禁，各带自己的元测试），
 #                    就地跑：不建副本、不归一化、不落日志
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
@@ -201,7 +202,7 @@ guard_worktree_crlf() { # --ci 就地跑不做归一化：工作树真有 CRLF �
         die "跟踪文件含 CRLF 行尾：$(printf '%s' "$hits" | tr '\n' ' ')——--ci 就地跑不做归一化（CI runner 的新检出按 .gitattributes 是 LF）；本地请用默认全量模式（它会先归一化），或先把工作树修成 LF"
 }
 
-run_ci() { # CI 关键子集：就地跑，不建副本；命令与 ci.yml 改前逐字一致
+run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 tests/test_dev_verify_entry.py，加一步必须同批改那份清单
     local py
     trap 'rc=$?; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
     py=${DEV_VERIFY_PY:-python}
@@ -220,6 +221,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令与 ci.yml 改�
     echo "DEV-VERIFY(ci) shared facts gate"
     bash scripts/check-shared-facts.sh
     "$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) path env bare-read gate"
+    "$py" scripts/check-path-env-reads.py
+    "$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
     echo "DEV-VERIFY(ci) done"
 }
 
