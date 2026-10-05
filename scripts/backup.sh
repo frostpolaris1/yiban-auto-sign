@@ -117,8 +117,7 @@ fi
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
 DATA_FILES=(.env)
-# SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
-DB_FILE="${DB_FILE:-yiban.db}"
+# SQLite 数据库的取值在下面的 env_get 之后（同一套双源口径，见 DB_FILE 段）
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
 # 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、yiban/store/db.py、
@@ -148,6 +147,30 @@ SIGN_STATE_DIR="${YIBAN_STATE_DIR:-${SIGN_STATE_DIR:-/var/log/yiban}}"
 # 可选：按天签到日志目录（sign-YYYY-MM-DD.log；过期清理由 yiban-cleanup.sh 负责，此处仅备份现存量）
 # 跟随 YIBAN_LOG_FILE 所在目录（两者都没配，才回落到与状态目录同级的默认值）
 SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sign.log}")}"
+# ------------------------------------------------------------
+# SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
+# 键名与引擎同一枚：YIBAN_DB_FILE。
+# 取值口径三档：进程环境 → ${APP_DIR}/.env → 默认值。
+# 上面的 env_get 就是这三档的本文件实现。
+# 本文件不再另写第二套 `.env` 读法。
+# 引擎侧的同一口径在 `yiban/store/db.py` 的 `init_db`，它经
+# `env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)`。
+# 过去的写法是 `${DB_FILE:-yiban.db}`：键名没有前缀，也从不查 `.env`。
+# 部署把库放在自定义路径时，备份抓的是 `${APP_DIR}/yiban.db`。
+# 归档里没有现役库，脚本照旧收工——静默丢数据。
+# 无前缀的 `DB_FILE` 留作旧部署回退，与 SIGN_STATE_DIR 同一处置。
+# 值可为绝对路径：绝对值原样用，相对值按 APP_DIR 拼接。
+# 引擎侧相对值按 cwd 拼接；cron 的形态是先 cd 到 APP_DIR，两者同形。
+YIBAN_DB_FILE="${YIBAN_DB_FILE:-$(env_get YIBAN_DB_FILE)}"
+DB_PATH="${YIBAN_DB_FILE:-${DB_FILE:-yiban.db}}"
+case "${DB_PATH}" in
+    /*) DB_SRC="${DB_PATH}" ;;
+    *)  DB_SRC="${APP_DIR}/${DB_PATH}" ;;
+esac
+# DB_FILE 只是归档内的文件名：取基名。
+# 绝对路径直接拼进 data/ 会造出指向备份树外的落点。
+DB_FILE="${DB_PATH##*/}"
+# ------------------------------------------------------------
 
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
@@ -426,7 +449,7 @@ restore() {
     log "恢复内容清单："
     find "$dest" -type f -exec ls -l {} \;
     log "落位说明（生产路径按 APP_DIR / YIBAN_STATE_DIR 调整）："
-    log "  - data/${DB_FILE} → ${APP_DIR}/${DB_FILE}"
+    log "  - data/${DB_FILE} → ${DB_SRC}"
     log "  - data/.env       → ${APP_DIR}/.env"
     log "  - keys/           → ${KEY_FILE}（或与 .env 合并）"
     log "  - state/          → \${YIBAN_STATE_DIR}（含 sched-run-*/sched-slot-*/sched-snapshot-*/"
@@ -625,9 +648,9 @@ verify_db_snapshot() {
     return 0
 }
 
-if [ -f "${APP_DIR}/${DB_FILE}" ]; then
+if [ -f "${DB_SRC}" ]; then
     if command -v sqlite3 > /dev/null 2>&1; then
-        if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup ${TMPDIR_BAK}/data/${DB_FILE}" 2>/dev/null; then
+        if sqlite3 "${DB_SRC}" ".backup ${TMPDIR_BAK}/data/${DB_FILE}" 2>/dev/null; then
             if verify_db_snapshot "${TMPDIR_BAK}/data/${DB_FILE}"; then
                 DB_SNAPSHOT_VERIFIED=1
                 log "数据库已备份（一致性快照，integrity_check=ok）：${DB_FILE}"
@@ -641,7 +664,7 @@ if [ -f "${APP_DIR}/${DB_FILE}" ]; then
             fi
         else
             log "警告：sqlite3 .backup 失败（${DB_FILE} 可能被占用），回退为文件复制"
-            cp -p "${APP_DIR}/${DB_FILE}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
+            cp -p "${DB_SRC}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
                 { log "警告：无法复制 ${DB_FILE}，已跳过"; rm -f "${TMPDIR_BAK}/data/${DB_FILE}"; }
             if [ -f "${TMPDIR_BAK}/data/${DB_FILE}" ]; then
                 if verify_db_snapshot "${TMPDIR_BAK}/data/${DB_FILE}"; then
@@ -660,11 +683,11 @@ if [ -f "${APP_DIR}/${DB_FILE}" ]; then
         log "警告：未安装 sqlite3，回退为文件复制且【无法】做 integrity_check" >&2
         log "警告：WAL 未合并时快照可能不完整——请尽快安装 sqlite3 重新备份   " >&2
         log "════════════════════════════════════════════════════════════" >&2
-        cp -p "${APP_DIR}/${DB_FILE}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
+        cp -p "${DB_SRC}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
             { log "警告：无法复制 ${DB_FILE}，已跳过"; rm -f "${TMPDIR_BAK}/data/${DB_FILE}"; }
     fi
 else
-    log "跳过（不存在）：${APP_DIR}/${DB_FILE}"
+    log "跳过（不存在）：${DB_SRC}"
 fi
 # 收尾退出码判据用（set -u：必须先初始化再引用）
 CORRUPT_SOURCE="${CORRUPT_SOURCE:-0}"

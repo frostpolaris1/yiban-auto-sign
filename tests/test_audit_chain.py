@@ -813,7 +813,7 @@ class BackupScriptContractTest(unittest.TestCase):
         self.assertIn("rm -f \"${TMPDIR_BAK}/data/${DB_FILE}\"", block,
                       "校验不过必须删掉坏快照（不落该归档）")
         self.assertIn("exit 1", block, "校验不过必须以非 0 退出")
-        self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${APP_DIR}/${DB_FILE}\" ]"))
+        self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${DB_SRC}\" ]"))
 
     def test_corrupt_source_keeps_archive_but_exits_nonzero(self):
         """.backup 成功但 integrity 不过 = 源库损坏：归档照留（最后一份素材），退出码非 0。"""
