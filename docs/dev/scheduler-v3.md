@@ -50,8 +50,11 @@
 6. 影子期无影子行（`dry_run` 有意不落库）：只能靠 `planner.plan_stats` 的 `hist` /
    `peak_per_sec` 与现网落点对账（见 §6）。
 7. `planner.py` 头部注释里"无计划则降级"的旧说法已过时（实际是补建计划），属注释流。
-8. `attempts.RISK_FAIL_KEYWORDS` 与 `security.WAF_KEYWORDS` 是两份独立维护的同义列表，
-   靠注释对齐；合并归后续注释批。
+8. `attempts.RISK_FAIL_KEYWORDS` 的 WAF 族已不再自抄名单（2026-10-08，工单
+   `yiban-auto-sign-u21x`）：本表只留本层自有的凭据/协议措辞；WAF 族的名单与匹配口径都在
+   `yiban.security`（`WAF_KEYWORDS` + `matches_waf_keywords`）。风控命中判定统一走
+   `attempts.matches_risk_keywords`——ASCII 词元按非字母数字边界匹配，中文词元按子串。
+   `executor_v3._is_risk_signal` 是这条判据的第二个读者。
 
 **上线步骤建议**：先 `dry_run` 影子期 3 天对账落点分布 → 升级部署后的第一个当日盯
 §6 的观测项与 §8 的排障项（无开关，部署即生效）。

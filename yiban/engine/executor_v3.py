@@ -468,15 +468,16 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
 
 def _is_risk_signal(message):
-    """风控信号判定：WAF 拦截或命中风控关键词（与失败分级同一批关键词）。
+    """风控信号判定：WAF 拦截或命中风控关键词（与失败分级同一判据、同一批词元）。
 
     `is_waf_blocked` 的入参契约是**响应体**（它按"短响应"设界，见 `yiban.security`），
-    这里传的是失败 `message`：两者共享同一批关键词，且 `message` 可能内嵌服务端返回的
-    `\\uXXXX` 转义 JSON——保留这一路解码。要按契约传响应体，得把响应对象一路带到这里
+    这里传的是失败 `message`：`message` 可能内嵌服务端返回的 `\\uXXXX` 转义 JSON——保留
+    这一路解码。词元的命中口径不再由本处逐条 `in` 比对（那会把 ASCII 词元退回裸子串，
+    base64 片段即可误报），而是复用 `attempts.matches_risk_keywords`——它与重试档位共用
+    `yiban.security` 那一份名单与边界规则。要按契约传响应体，得把响应对象一路带到这里
     （新数据源）；在那之前本判定以 `message` 为准。
     """
-    return attempts.is_waf_blocked(message) or any(
-        kw in message for kw in attempts.RISK_FAIL_KEYWORDS)
+    return attempts.is_waf_blocked(message) or attempts.matches_risk_keywords(message)
 
 
 def _tier_prefix(status):
