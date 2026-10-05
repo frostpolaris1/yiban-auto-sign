@@ -8,9 +8,11 @@
     ① **名册与脚本同源**：脚本只从名册数据文件读"模式/上限"，自己不得内嵌第二
        份名册。判据：脚本文本里不得出现名册中任何一枚判定模式（内嵌即现形），且
        必须真的指向名册文件路径。
-    ② **门在 CI**：`.github/workflows/ci.yml` 的 `verify` job 里必须有一步调用
+    ② **门在 CI**：`.github/workflows/ci.yml` 的 `verify` job 里必须调用仓内入口脚本
+       `scripts/dev-verify.sh`，且该脚本 `run_ci` 的关键子集里必须真跑
        `scripts/check-shared-facts.sh`（且元测试自身也被跑）——否则门只是仓里的
-       一个摆设，PR 上永不执行。
+       一个摆设，PR 上永不执行。**两跳都审**：只审 ci.yml 文本会被注释满足
+       （注释里写个脚本名就能骗过），那是废断言。
     ③ **活体反例**（防"废断言"，本文件的重心）：把合成树喂给真脚本——
        允许上限 = 实际命中数 ⇒ 绿；多一个定义点 ⇒ 红并点名 文件:行；
        把多出来的那处改成注释 ⇒ 又绿（注释不计）；删掉定义点 ⇒ 仍绿；
@@ -48,6 +50,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "check-shared-facts.sh")
 ROSTER = os.path.join(BASE, "scripts", "gate", "shared-facts.tsv")
 CI_YML = os.path.join(BASE, ".github", "workflows", "ci.yml")
+#: 仓内统一跑测入口（`--ci` 是关键子集；门禁命令原文住在它的 run_ci 里）
+ENTRY_SCRIPT = os.path.join(BASE, "scripts", "dev-verify.sh")
 BASH = shutil.which("bash")
 
 #: 名册列序（与 shared-facts.tsv 的表头逐字一致）
@@ -90,6 +94,21 @@ def _job_body(text, job):
     rest = text[m.end():]
     nxt = re.search(r"^  [A-Za-z0-9_-]+:\s*$", rest, re.M)
     return rest[:nxt.start()] if nxt else rest
+
+
+def _func_body(text, func):
+    """从 bash 脚本文本里切出某个函数的正文（列 1 的 `func() {` 起、到列 1 的 `}`）。
+
+    签名行允许带行尾注释（`run_ci() { # …` 是本仓 bash 的常规写法）——不认注释会
+    把正文抽成空串，断言随之失败（不是静默通过，但两跳审就永远红）。
+    返回空串表示没抽到——调用方必须把它判成失败，否则"结构改了"会静默让断言恒真。
+    """
+    m = re.search(r"^%s\(\) \{\s*(?:#.*)?$" % re.escape(func), text, re.M)
+    if m is None:
+        return ""
+    rest = text[m.end():]
+    end = re.search(r"^\}$", rest, re.M)
+    return rest[:end.start()] if end else ""
 
 
 def _run(script, *args):
@@ -147,20 +166,34 @@ class SharedFactsRosterShapeTest(unittest.TestCase):
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
 class SharedFactsCiWiringTest(unittest.TestCase):
-    """② 门在 CI 里，且在 `verify` job 内、审的是真脚本名。"""
+    """② 门在 CI 里，且在 `verify` job 内、审的是真脚本名。
+
+    2026-10-05 起接线多了一跳：`verify` job 只调仓内入口脚本 `scripts/dev-verify.sh --ci`，
+    真命令在它的 `run_ci` 函数体里（跑法统一到唯一入口，见 docs/dev/dev-verify.md）。
+    因此"门在 CI"这条不变量必须**两跳都审**：job 真调入口脚本 + 入口脚本的 run_ci 真调门。
+    只审 ci.yml 文本会被注释满足（注释里写个脚本名就能骗过），那是废断言。
+    """
 
     def setUp(self):
         self.ci = _read(CI_YML)
         self.verify = _job_body(self.ci, "verify")
+        self.entry = _read(ENTRY_SCRIPT)
+        self.entry_ci = _func_body(self.entry, "run_ci")
 
-    def test_verify_job_runs_the_gate_script(self):
-        self.assertIn("scripts/check-shared-facts.sh", self.ci,
-                      "ci.yml 没有调用门禁脚本——门在仓里但 PR 上永不执行")
-        self.assertIn("scripts/check-shared-facts.sh", self.verify,
-                      "门禁脚本必须在 verify job 内（job 名 verify 是分支保护引用的名字）")
+    def test_verify_job_calls_the_entry_script(self):
+        self.assertIn("bash scripts/dev-verify.sh --ci", self.verify,
+                      "verify job 必须调仓内入口脚本的关键子集模式 scripts/dev-verify.sh --ci"
+                      "（否则跑法又有第二个入口）")
 
-    def test_verify_job_runs_this_meta_test(self):
-        self.assertIn("tests/test_shared_facts_gate.py", self.verify,
+    def test_entry_script_run_ci_really_runs_the_gate_script(self):
+        self.assertGreater(len(self.entry_ci), 100,
+                           "从入口脚本里抽不出 run_ci 函数体——结构改了？本条会因此变废断言")
+        self.assertIn("bash scripts/check-shared-facts.sh", self.entry_ci,
+                      "入口脚本的关键子集必须真跑门禁脚本（写在注释里不算：门要被执行）")
+
+    def test_entry_script_run_ci_really_runs_this_meta_test(self):
+        self.assertGreater(len(self.entry_ci), 100, "抽不出 run_ci 函数体")
+        self.assertIn("tests/test_shared_facts_gate.py", self.entry_ci,
                       "元测试必须与门禁同一步跑——否则名册/脚本漂移无人发现")
 
     def test_job_name_is_still_verify(self):
