@@ -21,6 +21,7 @@ from datetime import timedelta
 
 from yiban import clock, window
 from yiban.engine import hrw
+from yiban.infra import env_io as _env_io
 from yiban.store import db
 
 logger = logging.getLogger("yiban")
@@ -551,14 +552,20 @@ def _window_opens_in(sch_cfg, now_dt):
     return window.bounds(sch_cfg).opens_in_sec(now_dt)
 
 
-#: 开关类环境变量的真值字面量（与 `run.sh` 的 `_is_truthy`、web 写入侧同一套写法）
-_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+#: 开关类环境变量的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
+#: （引擎 / web / 通知 / 容器调度 / bash 共用一套口径）；此处只保留别名供既有再导出
+#: （`web/app.py` 的 `_TRUTHY_LITERALS`）与测试引用，勿在此另抄一份字面量。
+_TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 
 
 def _env_flag(name, env=None):
-    """开关类环境变量真值（1/true/on/yes，大小写不敏感）；未设/其它值一律为假。"""
+    """开关类环境变量真值（1/true/on/yes，大小写不敏感、两侧空白忽略）。
+
+    判定单源在 `yiban.infra.env_io.parse_env_flag`：非预期取值按缺省（假）处理并出声一次，
+    不再静默吞掉。未设/空/其它假值字面量一律为假。
+    """
     src = os.environ if env is None else env
-    return str(src.get(name, "")).strip().lower() in _TRUTHY_LITERALS
+    return _env_io.parse_env_flag(src.get(name, ""), default=False, key=name, log=logger)
 
 
 #: `day_off()` 的返回原因（空串表示照常签到）
