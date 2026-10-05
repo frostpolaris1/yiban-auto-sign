@@ -386,13 +386,13 @@ from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已�
 EXECUTOR_INDEX_MAX = yb_egress.SLOT_MAX
 
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
-ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
+ACCOUNTS_DEFAULT = env_io.resolve_path("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
 # 路径必须读 .env（环境变量优先）——只认 os.environ 时"写进 .env"对 web 进程无效，
 # 会静默落到 /var/log/yiban；同机第二份部署因此与第一份共用状态目录与磁盘外锚点。
 STATE_DIR_DEFAULT = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
 LOG_DEFAULT = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
-# 这两个键也走 resolve_path。只认 os.environ 时，`.env` 里写的值对 web 进程无效。
+# ENV_DEFAULT / DB_DEFAULT 也走 resolve_path。只认 os.environ 时，`.env` 里写的值对 web 进程无效。
 # 库路径一侧的后果最直白：引擎开到 `.env` 声明的库，web 开到默认库。同一部署会出现两个库。
 ENV_DEFAULT = env_io.resolve_path("YIBAN_ENV_FILE", ".env")
 DB_DEFAULT = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
