@@ -9,9 +9,15 @@
 
 解析口径：utf-8-sig 兼容 BOM（Windows 记事本等工具保存常见，否则首个键名带
 \\ufeff 前缀导致读不到）；忽略空行与 # 注释行；按首个 = 切分，键值两侧 strip；
-无 = 的行跳过。布尔开关键的**唯一真值判定**是 `parse_env_flag`（字面量表
+无 = 的行跳过。**布尔开关键**的**唯一真值判定**是 `parse_env_flag`（字面量表
 `ENV_TRUTHY_LITERALS` / `ENV_FALSY_LITERALS`）：引擎 / web / 通知 / 容器调度共用，
-bash 侧逐字复制同一份字面量并有跨语言 parity 测试钉住结论一致。
+bash 三份副本（`run.sh` / `run_probe.sh` / `scripts/yiban-fallback.sh`）逐字复制同一份
+字面量，并由 `tests/test_pause_flag_truthiness_e2e.py` 真跑两侧、逐值比对结论。
+本批收口的键 = 急停/暂停类（`YIBAN_GLOBAL_PAUSE` / `YIBAN_REGISTRATION_PAUSE` /
+`YIBAN_*_SIGN` / `YIBAN_ACCOUNT_VERIFY` / `YIBAN_PROBE_ENABLE`）加两枚同键曾在
+bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_FALLBACK_ENABLE`）。
+其余开关键的收口归后续批次，**残留清单见 `parse_env_flag` 的 docstring**——本模块
+不声称"全仓唯一"。
 
 **归属**
 `yiban.infra` 的基础设施层（唯一项目内依赖是同包 `env_lock`——`write_env_keys` 的
@@ -64,18 +70,23 @@ logger = logging.getLogger("yiban")
 
 
 # ---------------------------------------------------------------------------
-# 布尔开关键的真值判定：**全仓唯一**的口径（census P0-1 止血）
+# 布尔开关键的真值判定：**本批收口的开关单一判定源**（census P0-1 止血）
 # ---------------------------------------------------------------------------
 # 开关类配置（YIBAN_GLOBAL_PAUSE / YIBAN_REGISTRATION_PAUSE / YIBAN_*_SIGN /
-# YIBAN_ACCOUNT_VERIFY / YIBAN_PROBE_ENABLE …）过去有四处互相不一致的解析：引擎
-# `schedule._env_flag`（1/true/on/yes）、web `signstatus._env_flag`（同一套但另写一份）、
-# 面板 `load_env_int`（只认整数，把 `true` 读成 0）、bash `run.sh` 的 `_is_truthy`。
-# 后果是"引擎真停、面板显示未暂停"的反向假安心。此处收口成单一事实源：
+# YIBAN_ACCOUNT_VERIFY / YIBAN_PROBE_ENABLE / YIBAN_SECOND_RUN …）过去有四处互相
+# 不一致的解析：引擎 `schedule._env_flag`（1/true/on/yes）、web `signstatus._env_flag`
+# （同一套但另写一份）、面板 `load_env_int`（只认整数，把 `true` 读成 0）、bash
+# `run.sh` 的 `_is_truthy`。后果是"引擎真停、面板显示未暂停"的反向假安心。
+# 此处收口成单一事实源：
 #   · Python 侧一律调 `parse_env_flag`（引擎 / web / 通知 / 容器调度共用）；
 #   · bash 侧无法 import 本模块，只能逐字复制同一份字面量，故在 `run.sh` /
-#     `run_probe.sh` 各留一处指向本名的注释，并由 `tests/test_pause_flag_truthiness_e2e.py`
-#     真跑两边、逐值比对结论（`test_run_sh_is_truthy_matches_python_parse_env_flag`）。
-# 真值字面量只在下面定义一次——改这里就改了全仓口径，勿在任何调用点另抄一份。
+#     `run_probe.sh` / `scripts/yiban-fallback.sh` 各留一处指向本名的注释，并由
+#     `tests/test_pause_flag_truthiness_e2e.py` 真跑三份副本、逐值比对结论
+#     （`test_is_truthy_copies_match_python_parse_env_flag` /
+#     `RunProbeShTruthinessTest.test_gate_matches_python_parse_env_flag`）。
+# 真值字面量只在下面定义一次——改这里就改了本族口径，勿在任何调用点另抄一份。
+# **边界（勿读成"全仓唯一"）**：本模块只收口本批登记的开关（急停/暂停类 + 两枚同键
+# 分叉的开关）。残留副本见 `parse_env_flag` 的 docstring 末段，归后续批次。
 ENV_TRUTHY_LITERALS = ("1", "true", "on", "yes")
 ENV_FALSY_LITERALS = ("0", "false", "off", "no")
 #: 非法开关值"只喊一次"的进程内闩（键名集合）：面板逐请求读时同一键不至于刷屏。
@@ -83,7 +94,7 @@ _env_flag_warned = set()
 
 
 def parse_env_flag(value, *, default=False, key=None, log=None):
-    """把布尔开关值解析成布尔——**全仓唯一**的开关真值判定。
+    """把布尔开关值解析成布尔——**本批收口的开关单一判定源**。
 
     真值字面量（`ENV_TRUTHY_LITERALS`）→ True；假值字面量（`ENV_FALSY_LITERALS`）
     → False；空串/未设 → `default`；其余不可辨认的写法 → `default` 并**出声一次**
@@ -92,6 +103,22 @@ def parse_env_flag(value, *, default=False, key=None, log=None):
     `key` 只用于告警定位（值本身不进日志以防误带敏感串）；`log` 缺省取本模块的
     `yiban` 通道，web 侧可传自己的 `web` 通道。缺省值语义：写侧把"关"落成删键或 `"0"`，
     故开关类键的 `default` 通常是 False；缺省即为"开"的偏好键（如通知紧急开关）传 True。
+
+    **作用域（本函数不是"全仓唯一"）**：它收口本批登记的开关（急停/暂停类 + 两枚同键曾
+    在 bash 与 Python 两侧分叉的开关）。以下同形态副本今日未收口，逐条登记归属
+    （改这些键的人必须知道这里不是唯一入口）：
+    - `yiban/mail/config.py`（`_TRUTHY_LITERALS`：`YIBAN_MAIL_ALLOW_PRIVATE_HOST` /
+      邮件 `ENABLE` / `ADMIN_NOTIFY`）与读同一份邮件配置的
+      `web/services/channel_health.py:88`、`web/routes/notify.py:138,220`：邮件族自持
+      一张表、四个读者今日口径一致、无分歧；归 B2 合并。
+    - `web/services/verify_queue.py:157`（`YIBAN_VERIFY_ASYNC`）与
+      `web/app.py:1796`（`YIBAN_COOKIE_SECURE`）：各自**只有一个读者**，不可能出现
+      "同键两侧结论相反"（本族缺陷形状），归后续统一。
+    - `yiban/engine/token_bucket.py:85`（`_FALSY_LITERALS`）：是"显式关闭"的**互补**
+      判据（另一个轴），非本函数的替代。
+    请求体（`web/routes/my.py:914`、`web/routes/settings_api.py:411`）与数据库列
+    （`yiban/engine/alerts.py:372`、`yiban/store/users.py` 的 `mail_notify`）不由
+    `.env` 契约定值域，**不该**走本函数。
     """
     s = str("" if value is None else value).strip().lower()
     if s in ENV_TRUTHY_LITERALS:
