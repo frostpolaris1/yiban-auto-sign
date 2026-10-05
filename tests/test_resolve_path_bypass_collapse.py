@@ -358,5 +358,70 @@ class DefaultsDoNotDriftTest(_ProbeBase):
                 f"{k}: {a!r} != {b!r}" for k, (a, b) in drifted.items()))
 
 
+class PointerReadersTakeValuesFromProcessEnvOnlyTest(unittest.TestCase):
+    """B1 第二刀 A 组：六个指针收口点的**取值三档**必须仍是"进程环境 → 各自的 default"。
+
+    为什么门禁不够：`scripts/check-path-env-reads.py` 钉的是形状——不许再抄裸读。
+    把 `env_io.env_path` 换成 `env_io.resolve_path` 形状照样绿，而 `.env` 档会从
+    "读不到"变成"读得到"：密钥来源与审计链落点就此搬家，且 `from_cwd` 那一格会
+    把"操作员显式指定"与"cwd 兜底"混成一个值。本类钉的是**取值**，不是形状。
+
+    与 `EnvFilePointerFromEnvFileTest` 刻意不同形：那一族是 import 期的模块级默认值
+    （`web.ENV_DEFAULT` / `scheduler.ENV_FILE`），本刀没碰，它认 `.env`；本族是调用期
+    读的密钥来源，它不认 `.env`。两族各自的三档都由自己的用例钉住，谁也不许顺手
+    "统一"成对方的形态。
+    """
+
+    def setUp(self):
+        from yiban.store import audit_chain
+
+        self.tmp = tempfile.mkdtemp(prefix="yiban-pointer-readers-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        saved_cwd = os.getcwd()
+        saved_pointer = os.environ.get("YIBAN_ENV_FILE")
+        saved_explicit = audit_chain._connection._env_file
+        audit_chain._connection._env_file = None
+
+        def _restore():
+            os.chdir(saved_cwd)
+            audit_chain._connection._env_file = saved_explicit
+            if saved_pointer is None:
+                os.environ.pop("YIBAN_ENV_FILE", None)
+            else:
+                os.environ["YIBAN_ENV_FILE"] = saved_pointer
+
+        self.addCleanup(_restore)
+        os.chdir(self.tmp)
+        # 基线 .env 就在 cwd，且里面写了另一枚指针：收口点若开始读 .env，本类立刻红。
+        with io.open(os.path.join(self.tmp, ".env"), "w", encoding="utf-8", newline="\n") as f:
+            f.write("YIBAN_ENV_FILE=%s\n" % os.path.join(self.tmp, "elsewhere.env"))
+
+    def _readers(self):
+        from yiban.engine import config_check
+        from yiban.store import audit_chain, db
+
+        return (config_check._key_env_file(), db.resolve_env_file(),
+                audit_chain._resolve_key_env_file())
+
+    def test_dotenv_pointer_and_blank_process_value_both_count_as_unset(self):
+        """`.env` 里写的指针、以及进程环境的空白值：三处一律算"来源未指定"。"""
+        os.environ.pop("YIBAN_ENV_FILE", None)
+        self.assertEqual(self._readers(),
+                         (None, None, (".env", True)),
+                         "密钥来源三处不再等于（未指定, 未指定, cwd 兜底且 from_cwd=True）"
+                         "——落点或 fail-closed 判定被改动")
+        os.environ["YIBAN_ENV_FILE"] = "   "
+        self.assertEqual(self._readers(), (None, None, (".env", True)),
+                         "进程环境写了空白值必须算未设（与改前的 strip 语义逐格相同）")
+
+    def test_process_env_pointer_is_taken_verbatim_after_strip(self):
+        """进程环境有值：三处都取那份值，且首尾空白被剥掉——第三档与 from_cwd 不参与。"""
+        elsewhere = os.path.join(self.tmp, "elsewhere.env")
+        os.environ["YIBAN_ENV_FILE"] = "  %s  " % elsewhere
+        self.assertEqual(self._readers(), (elsewhere, elsewhere, (elsewhere, False)),
+                         "指针值原样透传（去空白）；from_cwd 必须为 False，否则"
+                         "`_assert_key_source_certain` 会在操作员已指定时拒绝建钥")
+
+
 if __name__ == "__main__":
     unittest.main()
