@@ -68,12 +68,13 @@ from yiban.store import db
 logger = logging.getLogger("yiban")
 
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
-# 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
-SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+# 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入。
+# 真值口径与 `schedule._env_flag` 同源（1/true/on/yes，大小写与两侧空白不敏感）。
+SUNDAY_SIGN = schedule_mod._env_flag("YIBAN_SUNDAY_SIGN")
 # 周六签到开关：默认同样关闭，与周日同语义——缺省/空/非法一律视为关闭，
 # 仅显式 1/true/on/yes 开启（缺省即开启的 fail-open 解析已废止）。
 # 需要在周六签到的部署要在网页「系统设置 → 周末签到」开启，或 .env 写 YIBAN_SATURDAY_SIGN=1。
-SATURDAY_SIGN = os.environ.get("YIBAN_SATURDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+SATURDAY_SIGN = schedule_mod._env_flag("YIBAN_SATURDAY_SIGN")
 
 # 签到状态码与日志/日历符号：**定义在 yiban.status（唯一事实源）**，此处为别名
 # （此前 web/app.py 另有一份同名常量，两份会各自漂移，收口后只有一处定义）。

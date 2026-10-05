@@ -69,9 +69,20 @@ if [ -r "$ENV_PATH" ]; then
     done < "$ENV_PATH"
 fi
 
-# 真值判定（与 run.sh 的 `_is_truthy` 同一套字面量）
+# 真值判定。字面量口径的**单一事实源**在 yiban/infra/env_io.py 的
+# ENV_TRUTHY_LITERALS（Python 侧 parse_env_flag 用它）；bash 无法 import，此处逐字
+# 复刻同一份（1/true/yes/on，大小写不敏感、两侧空白忽略）。两边结论一致性由
+# tests/test_pause_flag_truthiness_e2e.py 真跑本函数与 Python 逐值比对钉住。
+# 勿在此另加/删字面量——改了它就必须同步改 env_io 的名册；本副本与 run.sh 的
+# `_is_truthy` 必须逐字同口径，否则同一个 YIBAN_FALLBACK_ENABLE 在两个 bash 读者
+# 下会得出相反结论（本脚本判关静默退出、run.sh 判开每轮告警并尝试拉起）。
 _is_truthy() {
-    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    local v="${1:-}"
+    # 去首尾空白（与 Python .strip() 同口径；本脚本加载 .env 时已剥一次，这里兜住
+    # "直接经进程环境传入且带空白"的调用方，与 run.sh 同一口径）
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on) return 0 ;;
         *) return 1 ;;
     esac

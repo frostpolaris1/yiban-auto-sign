@@ -94,9 +94,13 @@ def _env_str(key, envs=None):
 
 # 非法值告警的一次性旗标（键名集合）：同一键在进程生命周期内只喊一次，不刷屏
 _bad_value_warned = set()
-# 布尔开关键的取值口径（与 `YIBAN_MAIL_ENABLE` 等既有开关的 truthy 表同源词汇）
-_FLAG_TRUE = ("1", "true", "on", "yes")
-_FLAG_FALSE = ("0", "false", "off", "no")
+# 布尔开关键的取值口径。**单一事实源**在 `yiban.infra.env_io` 的
+# `ENV_TRUTHY_LITERALS` / `ENV_FALSY_LITERALS`（与引擎 `schedule._env_flag`、面板读侧、
+# bash `run.sh._is_truthy` 同一套字面量）；本处只引用不再另抄一份。
+# 本模块的 `_env_flag` 因契约不同（读 `YIBAN_NOTIFY_*` 键 + 带缺省值 + 与 `_env_int`
+# 共用"只喊一次"闩）未并入 `env_io.parse_env_flag`，但**口径同源**——字面量表来自它。
+_FLAG_TRUE = env_io.ENV_TRUTHY_LITERALS
+_FLAG_FALSE = env_io.ENV_FALSY_LITERALS
 
 
 def _env_int(key, default, envs=None):
