@@ -1,0 +1,29 @@
+{# 审计日志（管理端 /data/audit）——前端翻新 P1 的第一个原生新页面。
+   数据客户端拉取：GET /api/audit-logs（按页 + 过滤；契约见 web/routes/audit_api.py 的
+   模块 docstring 七约束，前端只消费：脱敏单出口已由后端完成，本页不做二次加工）。
+   服务端只提供挂载点与 manifest 解析出的哈希资产（web.services.vue_assets），
+   缺 dist 时视图层直接 404。资产无 ?v=（文件名已含内容哈希）。 #}
+{% extends "layout_admin.html" %}
+
+{% block title %}审计日志 · 易班自动签到{% endblock %}
+
+{% block head_styles %}
+{% for css in vue_css %}
+<link rel="stylesheet" href="{{ request.script_root }}{{ css }}">
+{% endfor %}
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">审计日志</h1>
+</div>
+<div id="vue-audit-app"></div>
+<noscript><p class="panel-sub">本页动态内容需要 JavaScript。</p></noscript>
+{% endblock %}
+
+{% block scripts %}
+{% for preload in vue_preloads %}
+<link rel="modulepreload" href="{{ request.script_root }}{{ preload }}">
+{% endfor %}
+<script type="module" src="{{ request.script_root }}{{ vue_js }}"></script>
+{% endblock %}

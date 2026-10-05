@@ -15,6 +15,14 @@ env/
 !.env.docker.example
 .env.tmp*
 
+# Node / 前端（frontend/ 只入库源码与构建配置；产物在 web/static/vue/，提交入库）
+node_modules/
+frontend/.vite/
+*.tsbuildinfo
+# Playwright 运行产物（失败时的 error context / trace / 报告），属本地产物不入库
+frontend/test-results/
+frontend/playwright-report/
+
 # 本地配置（避免泄露账号密码）
 config.local.py
 *.local
@@ -42,6 +50,11 @@ yiban.db-shm
 # 日志与数据
 *.log
 logs/
+# 例外：Vue 源码目录名恰为 logs（与上面的「日志目录」规则同名）——必须显式放行。
+# 2026-10-03 实测踩过：frontend/src/logs/** 被静默忽略，git add -A 跳过，导致分支上
+# 只有构建产物、没有源码（新检出无法 npm run build，test_logs_by_date 引用的
+# date-guard.js 也不存在）。负向规则必须紧跟在排除规则之后。
+!frontend/src/logs/
 data/
 
 # Docker 部署本地目录（含加密密钥/数据库/证书私钥，严禁入库）

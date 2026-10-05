@@ -2177,9 +2177,12 @@ PW_SHARED_JS = os.path.join("static", "js", "core.js")
 # 判据意图不变。settings.js 不再持有改密逻辑（个人域已迁到 /mine）。
 # 账号管理页原切片曾夹带「用户批量重置密码」（batchUsers），重写为独立页面后该能力
 # 归用户管理页（users.js），账号页不再有设置口令的入口，故不再列入本清单。
+# 重置口令入口的载体。2026-10-03：用户管理页迁到 Vue 后，`pages/work_users.js` 退役，
+# 载体换成 `frontend/src/users/Users.vue`（它把统一口径提示交给 core.js 的共享密码模态）。
+# 第二个元素起是"页面级重置入口"，判据见下方 `test_*`：必须用共享模态 + 统一口径文案。
 ADMIN_PW_JS = (
     os.path.join("static", "js", "components", "change-password.js"),
-    os.path.join("static", "js", "pages", "work_users.js"),
+    os.path.join("frontend", "src", "users", "Users.vue"),
 )
 # 共享密码模态的实现载体：P4 起旧栈 modal partial 已退役，模态改由 core.js 的
 # openPwModal 在运行时构造（type=password 遮蔽输入 + 完整口令策略校验）。
@@ -2448,10 +2451,14 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
             "管理端改密路径出现裸长度比较——类别判定被绕过，回到‘提交后才 400’的老问题")
 
         for rel in ADMIN_PW_JS[1:]:
-            src = _static(rel)
+            # 载体既可能在 web/static（legacy）也可能在 frontend/src（Vue）：按 BASE 相对路径读
+            src = _read_text(os.path.join(BASE, rel))
             self.assertIn("openPasswordModal(", src, f"{rel} 未使用共享密码模态")
-            self.assertIn(
-                "PW_POLICY_HINT", src,
+            # 统一口径文案：legacy 直接引全局 `PW_POLICY_HINT`，Vue 侧经 lib/shell.ts 的
+            # `passwordHint()` 桥接同一个常量（唯一实现仍是 core.js）——两者都必须出现，
+            # 否则页面会各自写一份文案，随版本漂移。
+            self.assertTrue(
+                "PW_POLICY_HINT" in src or "passwordHint(" in src,
                 f"{rel} 的重置口令入口未把统一口径文案交给模态（文案会随页面各自漂移）")
 
     # ---- 端点半边：判定语义与报错前缀不变，只有措辞随统一口径更新 ----
