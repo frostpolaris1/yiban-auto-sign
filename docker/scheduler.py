@@ -66,8 +66,21 @@ from yiban.infra import env_io  # noqa: E402
 # ~数小时，tick-only 心跳会在正常工作状态下"陈旧"误报；线程随进程死——进程
 # 没了心跳断流，正是探活要抓的形态），探活只读一个事实：心跳 mtime。
 # `--check-health` 在 import signin 与 yiban 业务模块之前退出：30s 一次的探测不该拖着
-# 整条业务导入链（耗时，且任何第三方依赖抖动都会把健康的 sched 误杀成
-# "不健康"——观测件的判据必须比被观测对象更简单）。
+# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.infra.env_io`，
+# 连带 `env_lock → yiban.infra.locks → portalocker`。"观测件的判据必须比被观测对象更
+# 简单"从此只在业务模块图上成立，依赖图上快路与 sched 本体共用 portalocker。
+# 这笔导入必须付：状态目录可以只写在 `.env` 里。写心跳的一方与探活读的一方必须算出同
+# 一个目录——读方只认进程环境时它会去缺省目录找心跳，健康检查恒判不健康，容器被反复重启。
+# 残余暴露（2026-10-05 容器演练实测；风险没消除，这里只写什么条件会亮）：
+# - 摘掉 portalocker → `--check-health` rc=1（同机同目录，改动前的版本 rc=0）。只装载
+#   调度器模块同样 IMPORT_FAILED，新起的 sched 进程起不来；已在跑的 sched 因包已载入
+#   继续落心跳，所以"sched 健康 + 探活红"只存在于运行中被摘包的那一段，不是稳态。
+# - 读方读不到 `.env` → resolve_path 回落缺省目录 → 假不健康。两半同时成立才亮：部署把
+#   `YIBAN_STATE_DIR` 只写进 `.env`，且探活降权。现形态两半都不成立——healthcheck 以 root
+#   跑（镜像无 USER 指令，supervisord 以 root 起），compose 又把 `YIBAN_STATE_DIR` 注入
+#   进程环境让读方停在解析第一层。实测：无特权 uid + 键在进程环境 rc=0；无特权 uid +
+#   键只在 `.env` 时读方算出 /data/state、rc=1。给镜像加 USER 或给 healthcheck 降权前
+#   先读本段。
 # 容器内整链生效待生产演练。
 STATEDIR = env_io.resolve_path("YIBAN_STATE_DIR", "/data/state")
 HEARTBEAT_FILE = "sched-heartbeat.json"
