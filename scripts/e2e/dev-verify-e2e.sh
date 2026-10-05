@@ -27,6 +27,26 @@
 # ============================================================
 set -uo pipefail
 
+# ------------------------------------------------------------
+# 前置环境守卫：本脚本必须在 WSL 内跑，故先探命令、再建临时树。
+# Git Bash（MSYS）里没有 rsync 与 flock：样本仓建不出来、dev-verify.sh 的全量模式也
+# 拒绝跑，后面的断言于是成串崩成"伪红"（实测 25 项失败 / 退出码 1，看不出是跑法错）。
+# 缺哪个命令就一条消息说清"缺什么 + 正确跑法"，在任何断言之前退出。
+# rsync/git/mktemp 本脚本直接调用；flock 是其驱动的 dev-verify.sh 全量模式强制要求
+# （缺它时 dev-verify.sh 退出 2，本脚本只会报"退出码=2，期望 0"的伪 FAIL）。
+# 退出码 2 = 环境错误，与 dev-verify.sh 的 die() 同口径。
+# ------------------------------------------------------------
+REQUIRED_CMDS="rsync git mktemp flock"
+MISSING_CMDS=""
+for _cmd in $REQUIRED_CMDS; do
+    command -v "$_cmd" >/dev/null 2>&1 || MISSING_CMDS="${MISSING_CMDS:+$MISSING_CMDS }$_cmd"
+done
+if [ -n "$MISSING_CMDS" ]; then
+    printf '错误：本 e2e 必须在 WSL 内跑，当前环境缺少命令：%s\n' "$MISSING_CMDS" >&2
+    printf '      正确跑法（WSL 内、仓库根目录）：bash scripts/e2e/dev-verify-e2e.sh\n' >&2
+    exit 2
+fi
+
 SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$SELF_DIR/../.." && pwd)
 SCRIPT="$REPO/scripts/dev-verify.sh"
