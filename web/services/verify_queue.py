@@ -34,6 +34,7 @@ import os
 
 from web.services.accounts_data import ACCOUNT_STATUS_REJECTED
 from yiban.attempt import jobs as attempt_jobs
+from yiban.infra.env_io import parse_env_flag
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
@@ -162,6 +163,10 @@ def _account_verify_enabled(read_env, env_file):
 
     `.env` 路径与读取器由调用方传入（`web.app` 的 `ENV_FILE` / `read_env`）：
     两者都是会被测试改写、也会随 `--config` 变化的模块级名字。
+
+    真值口径单源在 `yiban.infra.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白
+    不敏感），与面板 `GET /api/settings` 的 account_verify 同口径。
     """
     env = read_env(env_file)
-    return env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes")
+    return parse_env_flag(env.get("YIBAN_ACCOUNT_VERIFY", ""), default=False,
+                          key="YIBAN_ACCOUNT_VERIFY", log=logger)

@@ -9,7 +9,9 @@
 
 解析口径：utf-8-sig 兼容 BOM（Windows 记事本等工具保存常见，否则首个键名带
 \\ufeff 前缀导致读不到）；忽略空行与 # 注释行；按首个 = 切分，键值两侧 strip；
-无 = 的行跳过。
+无 = 的行跳过。布尔开关键的**唯一真值判定**是 `parse_env_flag`（字面量表
+`ENV_TRUTHY_LITERALS` / `ENV_FALSY_LITERALS`）：引擎 / web / 通知 / 容器调度共用，
+bash 侧逐字复制同一份字面量并有跨语言 parity 测试钉住结论一致。
 
 **归属**
 `yiban.infra` 的基础设施层（唯一项目内依赖是同包 `env_lock`——`write_env_keys` 的
@@ -51,11 +53,59 @@ web 服务层走本模块——行模型或 `strict` 口径变化会影响设置
 合法的行，供子进程环境注入，防 .env 被写入特殊键后污染子进程），保持独立实现。
 """
 import contextlib
+import logging
 import os
 import re
 import secrets
 
 from yiban.infra import env_lock
+
+logger = logging.getLogger("yiban")
+
+
+# ---------------------------------------------------------------------------
+# 布尔开关键的真值判定：**全仓唯一**的口径（census P0-1 止血）
+# ---------------------------------------------------------------------------
+# 开关类配置（YIBAN_GLOBAL_PAUSE / YIBAN_REGISTRATION_PAUSE / YIBAN_*_SIGN /
+# YIBAN_ACCOUNT_VERIFY / YIBAN_PROBE_ENABLE …）过去有四处互相不一致的解析：引擎
+# `schedule._env_flag`（1/true/on/yes）、web `signstatus._env_flag`（同一套但另写一份）、
+# 面板 `load_env_int`（只认整数，把 `true` 读成 0）、bash `run.sh` 的 `_is_truthy`。
+# 后果是"引擎真停、面板显示未暂停"的反向假安心。此处收口成单一事实源：
+#   · Python 侧一律调 `parse_env_flag`（引擎 / web / 通知 / 容器调度共用）；
+#   · bash 侧无法 import 本模块，只能逐字复制同一份字面量，故在 `run.sh` /
+#     `run_probe.sh` 各留一处指向本名的注释，并由 `tests/test_pause_flag_truthiness_e2e.py`
+#     真跑两边、逐值比对结论（`test_run_sh_is_truthy_matches_python_parse_env_flag`）。
+# 真值字面量只在下面定义一次——改这里就改了全仓口径，勿在任何调用点另抄一份。
+ENV_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+ENV_FALSY_LITERALS = ("0", "false", "off", "no")
+#: 非法开关值"只喊一次"的进程内闩（键名集合）：面板逐请求读时同一键不至于刷屏。
+_env_flag_warned = set()
+
+
+def parse_env_flag(value, *, default=False, key=None, log=None):
+    """把布尔开关值解析成布尔——**全仓唯一**的开关真值判定。
+
+    真值字面量（`ENV_TRUTHY_LITERALS`）→ True；假值字面量（`ENV_FALSY_LITERALS`）
+    → False；空串/未设 → `default`；其余不可辨认的写法 → `default` 并**出声一次**
+    （`key` 给定时，同一键进程内只喊一次）。
+
+    `key` 只用于告警定位（值本身不进日志以防误带敏感串）；`log` 缺省取本模块的
+    `yiban` 通道，web 侧可传自己的 `web` 通道。缺省值语义：写侧把"关"落成删键或 `"0"`，
+    故开关类键的 `default` 通常是 False；缺省即为"开"的偏好键（如通知紧急开关）传 True。
+    """
+    s = str("" if value is None else value).strip().lower()
+    if s in ENV_TRUTHY_LITERALS:
+        return True
+    if s in ENV_FALSY_LITERALS:
+        return False
+    if s == "":
+        return default
+    if key is not None and key not in _env_flag_warned:
+        _env_flag_warned.add(key)
+        (log or logger).warning(
+            "开关配置 %s=%r 不是可辨认的写法，本次按缺省 %s 处理；可写 %s 或 %s",
+            key, s, default, "/".join(ENV_TRUTHY_LITERALS), "/".join(ENV_FALSY_LITERALS))
+    return default
 
 
 def parse_env_file(path, *, strict=False):
