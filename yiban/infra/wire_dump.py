@@ -7,17 +7,29 @@
 
 **默认关闭**：仅当环境变量 `YIBAN_WIRE_DUMP` 指向一个可写目录时才挂载。落盘文件含
 会话级 Cookie 名与响应体片段，属敏感面——目录按 0700/0600 收权，用完即清。
+落盘目录由 `YIBAN_WIRE_DUMP` 指定，**默认不是状态目录**；只有把该变量指向状态目录时，
+`state_gc` 的清理（`wire-` 已登记进 `ARTIFACTS`）才会扫到这些件，其余情况由运维自行清理。
 
-**脱敏口径**（硬约束，供协议核验也绝不外泄凭据）：
+**脱敏口径**（供协议核验也绝不外泄凭据）：
 - 请求头 `Cookie`/`Authorization` 只记 **名字 + 值长度**，不记值；
-- 请求体的 `password` 字段（表单或 JSON）值替换为固定占位；
+- 请求体的**凭据字段**（键名表 = `masking._CRED_KEY`，"表单 k=v" 与 "JSON" 两形态）
+  值替换为固定占位 `_REDACTED`——真实登录字段 `oauth_upwd` 由 `pwd` 片段覆盖；
+- 请求体里的手机号值走 `masking.mask_phones_in_text` 打码——字段名 `oauth_uname`
+  承载手机号，键名不含凭据片段，只有按值打码才遮得住；
+- URL 面（`url` 与 `final_url`）走 `masking.sanitize_url`，query/fragment 的凭据参数打码；
 - 响应头只记名字 + Set-Cookie 的 cookie 名，不记值；
-- 其余头（UA/Referer/CSRF 等静态特征）原样保留——它们正是核验对象。
+- 其余头（UA/Referer 等静态特征）原样保留——它们正是核验对象。
+
+**未脱敏面（如实记录，判据是"该面是否为核验对象本体"）**：
+- `resp_body` 原样落盘——WAF 挑战页/协议返回体是核验对象本体，打码即失去核验价值；
+- 除 `Cookie`/`Authorization` 外的自定义凭据头（如 `X-CSRF-Token`）未按键名脱敏，
+  当前 UA 集合里不带这类头，换核引入后必须一并收口。
 """
 
 import json
 import logging
 import os
+import re
 import threading
 import time
 
@@ -68,18 +80,20 @@ class WireDumpAdapter(requests.adapters.HTTPAdapter):
             "ts": now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             "phone": self._phone,
             "method": request.method,
-            "url": request.url,
+            "url": masking.sanitize_url(request.url),
             "req_headers": _redact_headers(request.headers),
             "req_body": _redact_body(request.body),
             "status": resp.status_code,
             "resp_headers": _redact_headers(resp.headers, cookie_names_only=True),
             "resp_body": _clip_body(resp),
             "redirects": len(getattr(resp, "history", []) or []),
-            "final_url": resp.url,
+            "final_url": masking.sanitize_url(resp.url) if resp.url else resp.url,
             "elapsed_ms": round(elapsed * 1000, 1),
         }
         line = json.dumps(record, ensure_ascii=False)
-        path = os.path.join(self._dir, "wire-%s.jsonl" % now().strftime("%Y-%m-%d"))
+        # 文件名里的日期用 f-string 而非 % 模板：state_gc 的"按日文件必须登记"元测试
+        # 只认 `"<前缀>-…{表达式}"` 形态的字面量，%s 模板会逃过扫描（census 已点名）。
+        path = os.path.join(self._dir, f"wire-{now().strftime('%Y-%m-%d')}.jsonl")
         with _lock:
             existed = os.path.exists(path)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -109,8 +123,33 @@ def _redact_headers(headers, cookie_names_only=False):
     return out
 
 
+#: 凭据键名口径只有一张表：`masking._CRED_KEY`（与日志/通知出口面同一张）。
+#: 键名两侧允许 `_`/`-` 前后缀，故 `oauth_upwd`（真实登录字段）由其中的 `pwd` 片段覆盖。
+_CRED_NAME = r"[a-z0-9_\-]*(?:" + masking._CRED_KEY + r")[a-z0-9_\-]*"
+#: 表单形态 `k=v&k2=v2`：值只取到下一个 `&`，不跨字段吞并（核验要看得见字段名）。
+_FORM_PAIR = re.compile(r"(?i)(^|[&?])(" + _CRED_NAME + r")=([^&]*)")
+#: JSON 形态 `"k": "v"`：值取配对的双引号串（含反斜杠转义），单引号 repr 不在 HTTP 体里。
+_JSON_PAIR = re.compile(r'(?i)("' + _CRED_NAME + r'")(\s*:\s*)("[^"\\]*(?:\\.[^"\\]*)*")')
+
+
+def _mask_form_pair(m):
+    """表单字段替换体：保留 `分隔符 + 键名 + =`，值换成带长度的固定占位。"""
+    return "%s%s=%s" % (m.group(1), m.group(2), _REDACTED % len(m.group(3)))
+
+
+def _mask_json_pair(m):
+    """JSON 字段替换体：保留键名与冒号，值换成带长度的固定占位（引号成对保住 JSON 形状）。"""
+    return '%s%s"%s"' % (m.group(1), m.group(2), _REDACTED % len(m.group(3)[1:-1]))
+
+
 def _redact_body(body):
-    """请求体脱敏：password 字段（表单 k=v 或 JSON）值替换为占位。"""
+    """请求体脱敏：凭据字段值换占位、手机号值打码；不做"有无凭据"的前置判定。
+
+    键名表与手机号口径都取自 `yiban.masking`（唯一事实源）：凭据字段由 `_CRED_KEY`
+    识别（`oauth_upwd` 命中 `pwd` 片段），`oauth_uname` 这类承载手机号但键名不含
+    凭据片段的字段由 `mask_phones_in_text` 按值打码。全量走同一条链、脱敏幂等，
+    所以**不再**有"不含 password 就原样落盘"的分支——那条分支正是明文落盘的成因。
+    """
     if body is None:
         return None
     if isinstance(body, bytes):
@@ -118,21 +157,9 @@ def _redact_body(body):
             body = body.decode("utf-8")
         except UnicodeDecodeError:
             return "<binary:%d>" % len(body)
-    text = str(body)
-    if "password" in text.lower():
-        # 表单形态逐字段替换；JSON 形态按 key 替换（两种都覆盖，容忍混合）
-        parts = []
-        for chunk in text.split("&"):
-            k, _, v = chunk.partition("=")
-            if "password" in k.lower():
-                parts.append("%s=%s" % (k, _REDACTED % len(v)))
-            else:
-                parts.append(chunk)
-        text = "&".join(parts) if "&" in str(body) else text
-        if '"password"' in text:
-            import re
-            text = re.sub(r'("password"\s*:\s*)"[^"]*"', r'\1"%s"' % (_REDACTED % 8), text)
-    return text[:_BODY_CAP]
+    text = _FORM_PAIR.sub(_mask_form_pair, str(body))
+    text = _JSON_PAIR.sub(_mask_json_pair, text)
+    return masking.mask_phones_in_text(text)[:_BODY_CAP]
 
 
 def _clip_body(resp):
