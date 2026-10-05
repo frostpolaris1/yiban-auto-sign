@@ -30,8 +30,11 @@
 #
 # 前提：
 #   1. 在**测试机**的演练树根目录执行。脚本断言 docker/Dockerfile 与
-#      yiban/__init__.py 在位，并断言树根**没有** .env / yiban.db —— 演练树必须
-#      来自 `git archive HEAD | ssh <host> 'tar -x -C <tree>'`，严禁携带生产凭据。
+#      yiban/__init__.py 在位，并在**任何写操作之前**断言树里**没有**生产凭据：
+#      检出根的 .env / yiban.db / accounts.json，以及 <tree>/data/ 下的同三件
+#      （容器形态的凭据与库都落在 data/ 下——compose 把 ./data bind 到 /data）。
+#      演练树必须来自 `git archive HEAD | ssh <host> 'tar -x -C <tree>'`，严禁携带
+#      生产凭据；C2 写的 data/.env 首行带自造头（见下），复跑因此不被误拦。
 #   2. 本机时钟必须已过 06:31（见下方"为什么窗口起点只留 60s 余量"）。
 #   3. 宿主可用 docker；证书由 openssl 直产（CA 一张 + 服务器证书，SAN 含五域名）。
 #   4. 宿主 python 需能 import db（脚本走仓库内 scripts/db.py 兼容壳，复用宿主 venv）。
@@ -55,13 +58,20 @@
 #   * 五域名 --add-host ...:127.0.0.1，mock 监听容器内 443 回环；
 #   * 不发布任何宿主端口（-p 一个都没有），全部检查走 docker exec；
 #   * 全部凭据自造（@mock.invalid 账号、密钥运行期自动生成），不读不写生产凭据；
+#   * 演练树红线（P0 最先判，先于环境前提）：检出根或 <tree>/data/ 出现 .env /
+#     yiban.db / accounts.json 即拒（exit 2 并点名）。漏了 data/ 面时，一次在活的
+#     容器部署树上的误跑会静默解除急停：它把 data/state、data/logs 整体 mv 走、
+#     DELETE 当日 sign_tasks 台账、并把合成窗口（含 YIBAN_GLOBAL_PAUSE=0）写进
+#     data/.env，而脚本全程报 PASS。区分生产容器树与演练靠 **data/.env 首行的自造头**
+#     （C2 造 .env 时写的，手造的旧演练树同前缀同理；判据是内容而非树内标记文件，
+#     残留或被拷来的标记不得豁免生产凭据），见头即放行 ⇒ 复跑不被误拦；
 #   * 结束自动删容器与网络（镜像保留供复跑）并对账无残留；
 #   * 演练轮**不是**有效轮次，证据只进 evidence/。
 #
 # 退出码：
 #   0  演练轮 PASS（全部判据通过，已清理）
 #   1  某一步判据失败（stderr 打印失败步与原因；证据在 evidence/drill-<时间戳>/）
-#   2  前提不满足（缺 docker、树不对、时钟未过 06:31、凭据文件意外在场等）
+#   2  前提不满足（树携带生产凭据、缺 docker、时钟未过 06:31、参数越界等）
 # ============================================================
 set -Eeuo pipefail
 
@@ -87,16 +97,49 @@ PIP_INDEX_URL_DEFAULT="https://pypi.tuna.tsinghua.edu.cn/simple"
 # 容器调度器首签闩锁的触发时刻（docker/scheduler.py:FIRST）
 FIRST_LATCH="06:31"
 
+# 红线（P0 最先判）：演练树里不得出现的生产凭据名。检出根一份（宿主形态），
+# <tree>/data/ 下一份（容器形态，compose 把 ./data bind 到 /data）——两处共用
+# 同一份名册，避免只补一处。
+LEAK_NAMES=(.env yiban.db accounts.json)
+# <tree>/data/ 面里**永不是本脚本产物**的一枚：账号文件（造数落库，`.env` 只记它的
+# 路径）。它没有"复跑豁免"可言 ⇒ 无条件拒。名字必须与上面 LEAK_NAMES 里的账号文件
+# 同名（两条规则的名册：根面三件全查，data 面这枚无豁免）。
+DRILL_FOREIGN="accounts.json"
+# 红线据以区分「生产容器树」与「演练树」的凭据：C2 造 data/.env 时写在**首行**的自造头。
+# 判据是内容（不是树内标记文件）——标记只证明"某次 C2 在这棵树里跑过"，残留/被拷来的
+# 标记不得豁免生产凭据。
+DRILL_DATA="data"
+DRILL_ENV="$DRILL_DATA/.env"
+DRILL_ENV_HEAD="# 容器演练专用 .env"
+
 STEP="init"
 CLEANED=0
 EV=""
 
-usage() { sed -n '2,65p' "$SELF"; }
+usage() { sed -n '2,74p' "$SELF"; }
 
 die()  { printf '\n[FAIL] 步骤「%s」失败：%s\n' "$STEP" "$*" >&2; exit 1; }
 pre()  { printf '\n[FAIL] 前提不满足：%s\n' "$*" >&2; exit 2; }
 step() { STEP="$1"; printf '\n──── [%s] %s ────\n' "$(date +%H:%M:%S)" "$1"; }
 note() { printf '       · %s\n' "$*"; }
+
+# 在树里"在场"的判定：`-e` 对**悬空符号链接**为假。只看 -e，一个指向树外的悬空链接
+# 就能溜过红线，而 C2 的 os.path.exists 同样为假、随后顺着链接把文件写到链接目标处
+# ——那正是这条红线要挡的"写到演练树之外"。符号链接一并算在场。
+path_present() { [ -e "$1" ] || [ -L "$1" ]; }
+
+# 演练树红线（P0 最先判）用的判据：`data/` 里的 .env 与库是否为本脚本所造（复跑不得
+# 被自己的红线拦下）。唯一信号是 data/.env 的**首行自造头**：C2 造 .env 时写它，此后
+# env_io.write_env_keys 只折叠同名键、保留其余行，故复跑仍在；手造的旧演练树（2026-10-02
+# 那一轮）同前缀同理。
+# 读不到、没有该文件、或首行不是自造头 ⇒ 判"非本脚本所造"（fail-closed）。
+drill_owned_data() {
+  [ -f "$ROOT/$DRILL_ENV" ] || return 1
+  local first=""
+  IFS= read -r first < "$ROOT/$DRILL_ENV" || true
+  case "$first" in "$DRILL_ENV_HEAD"*) return 0 ;; esac
+  return 1
+}
 
 cleanup() {
   rc=$?
@@ -127,6 +170,32 @@ done
 
 # ---- P0 前提 ---------------------------------------------------------------
 step "P0 前提检查"
+
+# 红线最先判，先于 docker / openssl / 宿主解释器这些环境前提：本脚本 C2 起的写操作
+# 目标恰是 $ROOT/data/*（建卷、mv 走上一轮日志与状态、DELETE 当日 sign_tasks、
+# 覆写 .env）。若在活的容器部署树上跑，这些写操作会静默解除急停并搬走生产状态与
+# 日志。故凭据面必须**在任何写操作之前**拦下；排在环境前提之前，是为了让"含生产
+# 凭据的树"必定先撞红线——否则演练机上缺其中之一时，验收就分不清是谁拦的（两处
+# 同是 exit 2）。
+for leak in "${LEAK_NAMES[@]}"; do
+  if path_present "$ROOT/$leak"; then
+    pre "演练树根出现 $leak —— 疑似携带生产凭据，请用 git archive 重新同步"
+  fi
+done
+# data/ 面：逐个名字判，同一棵树上先命中的先拒（不设"先查某枚"的隐含次序）。
+#   accounts.json —— 本脚本从不产出（造数落库，.env 只记它的路径）⇒ 无条件拒；
+#   .env / yiban.db —— 恰是本脚本 C2 的产物 ⇒ 仅在"非本脚本产物"时拒（否则复跑
+#   会被自己造的合成凭据拦下）。
+for leak in "${LEAK_NAMES[@]}"; do
+  if path_present "$ROOT/$DRILL_DATA/$leak"; then
+    if [ "$leak" = "$DRILL_FOREIGN" ]; then
+      pre "演练树 data/$leak 出现 —— 疑似携带生产凭据/库（本脚本从不产出该文件：账号落库，.env 只记它的路径）。请换一棵干净的演练树"
+    elif ! drill_owned_data; then
+      pre "演练树 data/$leak 出现 —— 疑似携带生产凭据/库（容器形态的凭据与库都在 <tree>/data/ 下，compose 把 ./data bind 到 /data；本脚本造的演练树会在 data/.env 首行写自造头，这棵树没有）。若这确是演练树，请清掉 data/ 让本脚本重造后重跑；否则请换一棵干净的演练树"
+    fi
+  fi
+done
+
 [ -f "$ROOT/docker/Dockerfile" ]  || pre "不在演练树根目录（缺 docker/Dockerfile）"
 [ -f "$ROOT/yiban/__init__.py" ] || pre "缺 yiban/__init__.py"
 [ -f "$ROOT/docker/scheduler.py" ] || pre "缺 docker/scheduler.py"
@@ -134,12 +203,6 @@ step "P0 前提检查"
 command -v docker >/dev/null || pre "docker 不可用"
 [ -x "$HOST_PYTHON" ] || pre "宿主解释器不可用：$HOST_PYTHON"
 command -v openssl >/dev/null || pre "openssl 不可用"
-# 红线：演练树里绝不允许出现生产凭据
-for leak in .env yiban.db accounts.json; do
-  if [ -e "$ROOT/$leak" ]; then
-    pre "演练树根出现 $leak —— 疑似携带生产凭据，请用 git archive 重新同步"
-  fi
-done
 # 调度器首签闩锁是无上界判定，本机时钟未过 06:31 则整轮永不触发
 NOW_HM="$(date +%H:%M)"
 if [ "$NOW_HM" \< "$FIRST_LATCH" ]; then
