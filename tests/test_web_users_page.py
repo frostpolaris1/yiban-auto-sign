@@ -24,7 +24,6 @@ import re
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
