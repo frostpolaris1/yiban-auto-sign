@@ -12,7 +12,8 @@
 **归属**
 原 `web/app.py` 的模块级容量与触顶告警辅助，唯一真源在本模块；`web/app.py` 只保留
 名字面与转发，把它自己持有、而本模块需要的模块级名字——`.env` 路径 `ENV_FILE`、整数
-配置读取器 `load_env_int`、两个缺省上限 `DEFAULT_MAX_ACCOUNTS` / `DEFAULT_MAX_USERS`、
+配置读取器 `load_env_int`、`.env` 宽松读取器 `read_env`（注册暂停开关的布尔判定用）、
+两个缺省上限 `DEFAULT_MAX_ACCOUNTS` / `DEFAULT_MAX_USERS`、
 窗口解析器 `_sign_window`、掐头去尾口径 `edge_config`、告警出口
 `send_notification`——在调用时刻现取后注入。
 
@@ -41,6 +42,7 @@ import time
 from web.services.accounts_data import load_accounts_raw
 from yiban import window as yb_window
 from yiban.engine.schedule import capacity_of
+from yiban.infra.env_io import parse_env_flag
 from yiban.mail import layout as mail_layout
 from yiban.store import db
 
@@ -120,16 +122,21 @@ def _accounts_at_capacity(extra_accounts=0, *, env_file, load_env_int, max_accou
     return _capacity_account_count() + extra_accounts > max_accounts
 
 
-def _registration_paused(env_file, load_env_int):
+def _registration_paused(env_file, read_env):
     """注册是否处于暂停状态。
 
     默认允许注册（升级后 .env 无此键时行为不变）；新部署由 ensure_secret_key 首次创建
     .env 时写入 1，管理员完成初始配置后在设置页危险区（仅主管理员）开启。与
     YIBAN_GLOBAL_PAUSE 同款读写口径。注册接口（web/routes/auth.py）与
     api_registration_paused 共用这一份实现。参数注入口径见模块头「通信」。
+
+    判定与引擎的开关真值**同一口径**（`yiban.infra.env_io.parse_env_flag`：1/true/on/yes=开）。
+    原实现 `load_env_int(...) == 1` 只认整数，`=true` 会让引擎真停注册、此门（及登录页
+    探测端点）却判"开放"——与面板显示的同一处假安心（census P0-1）。
     """
-    # 只认整数 1：写 true/on/yes 会读成默认 0、注册照旧开放（与 _env_flag 那套字面量不同）
-    return load_env_int(env_file, "YIBAN_REGISTRATION_PAUSE", 0) == 1
+    raw = read_env(env_file).get("YIBAN_REGISTRATION_PAUSE", "")
+    return parse_env_flag(raw, default=False,
+                          key="YIBAN_REGISTRATION_PAUSE", log=logger)
 
 
 def _users_at_capacity(*, env_file, load_env_int, max_users_default):

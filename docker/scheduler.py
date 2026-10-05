@@ -684,7 +684,9 @@ def main_loop(sleep_seconds=1):
                 # Web 后台改探针开关 / 时间即时生效，无需重启容器。
                 last_probe_try = now
                 env = build_child_env(ENV_FILE)
-                if str(env.get("YIBAN_PROBE_ENABLE", "0")).strip().lower() in ("1", "true", "on", "yes"):
+                # 开关真值口径单源在 schedule._env_flag（= env_io.parse_env_flag：
+                # 1/true/on/yes，大小写与两侧空白不敏感），与裸机 run_probe.sh 同口径
+                if schedule._env_flag("YIBAN_PROBE_ENABLE", env):
                     _run_signin_child(extra=["--probe"], env=env)
             if (last_fallback_try is None
                     or (now - last_fallback_try).total_seconds() >= FALLBACK_TRY_SECONDS):
