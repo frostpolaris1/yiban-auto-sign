@@ -44,7 +44,7 @@ bash scripts/dev-verify.sh --ci
 ## 3. CI 侧（`--ci`）
 
 `--ci` 在**当前检出上就地跑**关键子集，不建副本、不进 WSL、默认不落日志。
-命令与 `.github/workflows/ci.yml` 改前逐字一致：
+命令原文只住在入口脚本的 `run_ci` 一份，逐字冻结在 `tests/test_dev_verify_entry.py`：
 
 ```bash
 python -m ruff check yiban/ tests/ scripts/ web/ --quiet
@@ -52,7 +52,12 @@ python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 bash scripts/check-shared-facts.sh
 python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
+python scripts/check-path-env-reads.py
+python -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
 ```
+
+两道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
+`check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数）。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
 可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。

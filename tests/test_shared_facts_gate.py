@@ -30,6 +30,11 @@
     另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数，且"每账号
     请求数 6"这枚**零定义点**键必须以 pending 显式登记。
 
+    2026-10-06 起名册有**引擎路由**：判定模式以 `ast:` 开头的 active 行由
+    `scripts/check-path-env-reads.py` 计数，本 awk 引擎让开并点名让开。"每枚
+    active 键都要被计数"这条不变量因此只看本引擎的读数，两引擎的并集判据在
+    `tests/test_path_env_read_gate.py`。
+
 对应实现：`scripts/check-shared-facts.sh`、`scripts/gate/shared-facts.tsv`、
     名册事实源 `D:/code/_census/out/{ROSTER,POINTS}.csv`（仓外、只读，一次性
     裁剪进仓；运行期不依赖它）。
@@ -53,6 +58,11 @@ CI_YML = os.path.join(BASE, ".github", "workflows", "ci.yml")
 #: 仓内统一跑测入口（`--ci` 是关键子集；门禁命令原文住在它的 run_ci 里）
 ENTRY_SCRIPT = os.path.join(BASE, "scripts", "dev-verify.sh")
 BASH = shutil.which("bash")
+
+#: 引擎路由标记：名册"判定模式"以此开头者由 scripts/check-path-env-reads.py 计数，
+#: 不由本文件的 awk 引擎计数。并集判据（谁都得数、只许数一遍）见
+#: tests/test_path_env_read_gate.py 的 GateNoDoubleCountTest。
+AST_ENGINE_PREFIX = "ast:"
 
 #: 名册列序（与 shared-facts.tsv 的表头逐字一致）
 COLUMNS = ("族", "键", "状态", "判定模式", "扫描范围", "允许上限", "口径备注")
@@ -515,13 +525,25 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         self.assertRegex(r.stdout, r"扫描 \d+ 个文件")
         self.assertNotIn("提示:", r.stdout,
                          "有 active 键命中 0——该键已静默失效（门形同虚设）")
-        active = [row["键"] for row in _rows() if row["状态"] == "active"]
+        active = [row["键"] for row in _rows()
+                  if row["状态"] == "active"
+                  and not row["判定模式"].startswith(AST_ENGINE_PREFIX)]
         counted = re.findall(r"^ok: (?:%s) / (.+?) —— 命中 (\d+)/\d+$"
                              % "|".join(FAMILIES), r.stdout, re.M)
         self.assertEqual([k for k, _ in counted], active,
-                         "逐键计数行必须与名册 active 键一一对应（不许多、不许少、不许换序）")
+                         "逐键计数行必须与本引擎计数的 active 键一一对应（不许多、不许少、不许换序）")
         self.assertTrue(all(int(hits) > 0 for _, hits in counted),
                         "每条 active 键的命中数必须 > 0——否则该键已静默变废键")
+        routed = [row["键"] for row in _rows()
+                  if row["状态"] == "active"
+                  and row["判定模式"].startswith(AST_ENGINE_PREFIX)]
+        for key in routed:
+            self.assertNotRegex(r.stdout,
+                                r"^(?:ok|提示|超标): \S+ / %s —— " % re.escape(key),
+                                "路由键不许被本引擎计数（两个引擎各扣一次上限会互相掩盖）")
+        if routed:
+            self.assertIn("引擎路由", r.stdout,
+                          "有键走 ast: 路由时脚本必须点名让开——静默让开=没人发现键没人计数")
 
 
 if __name__ == "__main__":
