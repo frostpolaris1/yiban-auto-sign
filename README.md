@@ -1319,6 +1319,17 @@ GitHub 官方政策：**仓库连续 60 天无活动，定时工作流会被自�
 
 ### 运行测试
 
+本地门禁与全量跑测统一走仓内入口（脚本自己建带 `.git` 的 WSL 副本、归一化 LF、用固定 venv、
+整份落盘日志；配方见 [`docs/dev/dev-verify.md`](docs/dev/dev-verify.md)）：
+
+```bash
+bash scripts/dev-verify.sh          # 本地全量（Windows Git Bash 或 WSL 内同一条命令）
+bash scripts/dev-verify.sh --ci     # CI 的关键子集（就地跑，不建副本）
+```
+
+下面的是**裸 pytest**，只适合单文件/分组调试，不是门禁口径（缺固定解释器与 LF 归一化，
+Windows 工作树上会踩 CRLF 伪红）。
+
 ```bash
 python -m pytest tests/ -q                 # 全量（串行）
 python -m pytest tests/ -q -n auto         # 并发（需 pytest-xdist）
