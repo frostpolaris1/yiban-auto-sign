@@ -4,6 +4,17 @@
 
 ## 运行方式
 
+**门禁与全量跑测统一走仓内入口**（建带 `.git` 的 WSL 副本、归一化 LF、固定 venv、整份落盘日志；
+配方见 [`docs/dev/dev-verify.md`](../docs/dev/dev-verify.md)）：
+
+```bash
+bash scripts/dev-verify.sh          # 本地全量（Windows Git Bash 或 WSL 内同一条命令）
+bash scripts/dev-verify.sh --ci     # CI 的关键子集（就地跑）
+```
+
+下面的裸 pytest 只适合**单文件/分组调试**，不是门禁口径：它不固定解释器、不归一化 CRLF
+（Windows 工作树上会踩伪红），也不带 `--dist loadfile`（套内有文件内先后依赖与进程级单例）。
+
 ```bash
 # 全量（串行，约 8 分钟）
 python -m pytest tests/ -q

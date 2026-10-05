@@ -62,43 +62,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- Lint ----
-      # 与本地 WSL 门禁命令逐字一致（`python -m ruff` + 含 web/：旧命令漏 web/ 曾藏
-      # 2 处 RUF100，MF-39；`python -m` 形式不依赖 PATH）
-      - name: Lint (ruff)
-        run: python -m ruff check yiban/ tests/ scripts/ web/ --quiet
-
-      # ---- 安全子集（发布门 §2① 同口径） ----
-      # -k 词集与 docs/dev/release-gate.md §2① 逐字一致；仅并行度按 CI runner 4 vCPU 定为 -n 4
-      # （本机 24 核实测 -n 4 与 -n 8 同为 ~50s——子集按文件分发时关键路径是最大文件单文件
-      #   时长，加宽 xdist 无增益；故取 4，避免 4 vCPU 上过度订阅）。
-      # --dist loadfile：**不得去掉**。默认按单条测试分发会拆散同文件用例，而测试套存在
-      #   文件内先后依赖（MF-107：test_web_security_gates 的 cookie path 用例单跑必红、
-      #   同文件按序跑绿）与进程级 DB 单例，去掉即误红。
-      - name: Security subset (release-gate §2①)
-        run: python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
-
-      # ---- e2e smoke ----
-      # 真 HTTP 回环全链演练（假易班服务端，绝不外联）。保留**串行**作为额外保险；
-      # 曾致其"并发下偶发红"的落盘乱序根因（线程化假服务端按完成序写 JSONL）已由
-      # threaded=False 串行假服务端根治（落盘序=到达序），Security subset 并发下同样稳定。
-      - name: E2E smoke (full chain)
-        run: python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
-
-      # ---- B0.5 §14 共享事实名册门禁 ----
-      # 是什么：scripts/gate/shared-facts.tsv 把 census 里最脏的三族（路径配置 /
-      #   状态件 / 语义常量）的"每枚共享事实允许有几个**非注释**定义点"冻成数据，
-      #   bash 门禁逐键 grep 计数，超出即红并点名 文件:行。注释（#、//、<!-- -->、
-      #   {# #}）里的命中不算；docstring 与字符串字面量算（刻意的，见名册文件头）。
-      # 为什么要它：B1–B3 要一边删旧定义点、一边很容易顺手长出新定义点，而那正好
-      #   是"同一个事实在多处各自定义"这个病的复发路径。有了它，新增一枚定义点
-      #   必须同时改名册那一行并写理由——治理成本 O(1)，复发成本看得见。
-      # 元测试同一步跑：它钉"名册是唯一事实源（脚本不内嵌第二份）+ 门真在 CI +
-      #   真脚本对合成树判红/判绿"（活体反例），防这条门变成废断言。
-      - name: Shared facts gate (B0.5 §14)
-        run: |
-          bash scripts/check-shared-facts.sh
-          python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
+      # ---- 关键子集：本地与 CI 同源（scripts/dev-verify.sh --ci） ----
+      # 为什么收成一步：跑法此前有两个入口（CI 内联一份、本地各人一套），两位负责人
+      #   分组跑法不同会产出伪红。现在命令原文只存在仓内入口脚本里一份，CI 只调它的
+      #   子集模式；本地全量（`bash scripts/dev-verify.sh`）与这条子集共用同一个脚本。
+      # 子集内容与参数**与改前逐字相同**（ruff 扫描面 / -k 词集 / -n 4 / --dist loadfile /
+      #   -p no:randomly / e2e smoke 目标 / shared-facts 门与元测试），命令原文与理由写在
+      #   scripts/dev-verify.sh 的 run_ci 与 docs/dev/dev-verify.md；本条不复制命令文本，
+      #   免得同一个事实出现第二个定义点（漂移由 tests/test_dev_verify_entry.py 冻结）。
+      # 任一环节非 0 即本步非 0——与改前"步级失败即停"等价。未加 e2e 或其他新步：
+      #   CI 结果必须与改前等价。
+      - name: Gate subset (scripts/dev-verify.sh --ci)
+        run: bash scripts/dev-verify.sh --ci
 
       - name: Gate ready
         run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster."'
