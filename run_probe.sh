@@ -46,10 +46,13 @@ LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
 # 探针未开启时完全静默退出：不产生任何日志、不获取锁、不调用签到程序。
 # 开关真值判定与 run.sh 的 _is_truthy 同口径（字面量单一事实源在 yiban/infra/env_io.py
-# 的 ENV_TRUTHY_LITERALS）：先转小写再比对，**大小写不敏感**（旧实现 `=~(1|true|on|yes)`
-# 大写敏感，`.env` 写 `YIBAN_PROBE_ENABLE=True`/`ON`/`TRUE` 时容器与引擎认为已开启、
-# 裸机这里却判未开启）。
-_probe_flag="$(printf '%s' "${YIBAN_PROBE_ENABLE:-0}" | tr '[:upper:]' '[:lower:]')"
+# 的 ENV_TRUTHY_LITERALS）：去首尾空白 + 转小写后再比对，**大小写与两侧空白都不敏感**
+# （旧实现 `=~(1|true|on|yes)` 大写敏感，`.env` 写 `YIBAN_PROBE_ENABLE=True`/`ON`/`TRUE`
+# 时容器与引擎认为已开启、裸机这里却判未开启）。
+_probe_flag="${YIBAN_PROBE_ENABLE:-0}"
+_probe_flag="${_probe_flag#"${_probe_flag%%[![:space:]]*}"}"
+_probe_flag="${_probe_flag%"${_probe_flag##*[![:space:]]}"}"
+_probe_flag="$(printf '%s' "$_probe_flag" | tr '[:upper:]' '[:lower:]')"
 case "$_probe_flag" in
     1|true|yes|on) ;;
     *) exit 0 ;;
