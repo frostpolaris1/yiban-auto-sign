@@ -1,26 +1,26 @@
 # -*- coding: utf-8 -*-
-"""审计链金样例:跨语言复现的定点契约。
+"""审计链金样例：跨语言复现的定点契约。
 
 **为什么需要**
 - 既有两处校验用生产函数算期望值。
-- 那是往返自证。Python 与 Go 各写一份,两侧各自绿,互验必断。
+- 那是往返自证。Python 与 Go 各写一份，两侧各自绿，互验必断。
 - 本文件把载荷口径固化成字面量 hex64。
-- 字段序、分隔符、转义口径任何一处变动,金样例立刻变红。
+- 字段序、分隔符、转义口径任何一处变动，金样例立刻变红。
 
 **hex64 的来源**
-- 一次性脚本独立算出: `work/gen_audit_golden.py`。
+- 一次性脚本独立算出：`work/gen_audit_golden.py`。
 - 该脚本不导入本仓模块。它用 hashlib / hmac / json 直接拼载荷。
 - 固定密钥经环境变量 `YIBAN_AUDIT_KEY` 注入。
-- `_audit_key()` 先读环境变量,再回落 .env 与进程缓存。注入必定生效。
+- `_audit_key()` 先读环境变量，再回落 .env 与进程缓存。注入必定生效。
 
 **覆盖**
-- `GOLDEN_HASHES` 五条: 纯 ASCII 基线 / 中文 detail / 恰好 200 字符 detail /
+- `GOLDEN_HASHES` 五条：纯 ASCII 基线 / 中文 detail / 恰好 200 字符 detail /
   转义字符与星平面字符 / JSON 结构 detail。
-- `GOLDEN_ANCHOR_LINE` 一条: v2 锚点行原文 + 它的 sha256 + 字段解析结果。
+- `GOLDEN_ANCHOR_LINE` 一条：v2 锚点行原文 + 它的 sha256 + 字段解析结果。
 
 **边界**
 - 本文件不改生产行为。它只读生产代码。
-- 它不改既有往返自证用例(test_db_integrity / test_audit_anchor_field_source)。
+- 它不改既有往返自证用例（test_db_integrity / test_audit_anchor_field_source）。
 - 它只覆盖 `_TS_FMT`。别处的同名格式串属于别的工单。
 """
 import contextlib
