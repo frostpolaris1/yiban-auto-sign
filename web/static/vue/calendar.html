@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>签到日历（开发壳）</title>
+    <script type="module" crossorigin src="./assets/calendar-BLtt2TPQ.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/theme-CIzwvb-s.js">
+    <link rel="modulepreload" crossorigin href="./assets/vendor-vue-GZUw20XP.js">
+    <link rel="modulepreload" crossorigin href="./assets/shell-DTEQHjJ3.js">
+  </head>
+  <body>
+    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由 web/templates/pages/{user,my}_calendar.html
+         提供（经 manifest 解析），两页共用本入口，变体由 data-role 区分。
+         挂载点 id 与模板一致：#vue-calendar-app。
+         EP 样式由 main.ts 引入（本页当前零 EP 组件，但仍与其它页保持一致——理由见该文件）。 -->
+    <div
+      id="vue-calendar-app"
+      data-role="user"
+      data-deny-href="/data/dashboard"
+      data-empty-href="/user/account"
+    ></div>
+    <script>
+      // 开发壳专用：生产由服务端内联渲染（见 partials/page_sign_calendar.html）。
+      window.YB_CALENDAR_STATE = {
+        by_code: {},
+        by_symbol: { "✅": { label: "已签到", tone: "ok" } },
+        day_off: null,
+        legend: [
+          { tone: "ok", label: "已签到" },
+          { tone: "bad", label: "签到失败" },
+          { tone: "muted", label: "无需 / 跳过 / 已取消" },
+          { tone: "warn", label: "待签或异常" },
+          { tone: "busy", label: "正在签到" },
+        ],
+      };
+    </script>
+  </body>
+</html>

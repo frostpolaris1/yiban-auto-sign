@@ -179,6 +179,27 @@ def capacity_accounts(window_sec, gap=0, avg=None, env=None):
     return slack // (avg + gap) + 1
 
 
+def block_capacity(n_accounts, n_blocks, env=None):
+    """单块容量 K（调度 v2）：块的**唯一事实源**，计划/执行/Web 拥挤度三方共用。
+
+    与 `build_schedule` 内联式同构：偏好/自动分配都以"每块最多 K 人"填块，超出
+    `n_blocks × K` 进入压缩模式（K 放大到 `ceil(n / n_blocks)`）。返回：
+    - `n_blocks <= 0`（无有效块）→ 0（调用方按"无容量"处理，不得拿它当除数）；
+    - `n_accounts <= n_blocks × block_cap` → `block_cap`（不压缩）；
+    - 否则 → `ceil(n_accounts / n_blocks)`。
+
+    `block_cap` 经 `_env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200, env=env)`
+    读取：缺失/非法/越界一律回退 15（与 `_schedule_config` 同一夹取口径）。
+    **MF-93**：web 进程环境里没有 `.env` 的键，调用方必须传 `env=read_env(ENV_FILE)`，
+    否则会读到默认 15、与引擎实际生效容量分叉（拥挤度百分比虚高/虚低）。
+    """
+    block_cap = _env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200, env=env)
+    if n_blocks <= 0:
+        return 0
+    cap = n_blocks * block_cap
+    return block_cap if n_accounts <= cap else math.ceil(n_accounts / n_blocks)
+
+
 def channel_count(bucket_rate, avg=None):
     """每执行体的并发通道数 `M = min(_DEFAULT_CHANNELS_MAX, ceil(bucket_rate × avg × 2))`。
 
@@ -675,7 +696,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     # 顺序×均匀 = 线性填块（n=2 → 两人同块等分）；随机×均匀 = 循环填块；正态 = 采样落块
     # 容量：块数 × K；超出 → 压缩模式（K 放大到能容纳所有人，间隔下限告警）
     cap = len(blocks) * cfg["block_cap"]
-    k = cfg["block_cap"] if n <= cap else math.ceil(n / len(blocks))
+    k = block_capacity(n, len(blocks), env=os.environ)
     if n > cap:
         logger.warning(
             "压缩模式: %d 个账号超出块容量 %d，块容量放大至 %d（间隔 ≈ %.1fs）",
