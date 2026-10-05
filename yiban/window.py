@@ -83,7 +83,13 @@ def parse_window(env):
 
 
 def parse_edges(env):
-    """→ (front_sec, back_sec)。旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）优先映射。"""
+    """→ (front_sec, back_sec)：窗口两端各让出的秒数。
+
+    同一边的新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先。
+    旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补对应新键缺席的那一边。
+    新键缺失、无法解析或越界（0~300 之外），都算缺席。
+    两边都取不到键时，该边取 DEFAULT_EDGE_SEC。
+    """
     front = _int_or_none(env, "YIBAN_WINDOW_EDGE_FRONT_SEC")
     back = _int_or_none(env, "YIBAN_WINDOW_EDGE_BACK_SEC")
     legacy = _int_or_none(env, "YIBAN_WINDOW_EDGE_SEC", 0, 600)
