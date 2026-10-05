@@ -10,6 +10,9 @@
        `-p no:randomly`、ruff 扫描面、e2e smoke 目标）都必须同时改这里并在 PR 里
        写理由。这不是"第二份事实源"，是**冻结的期望**——本批硬约束是"CI 结果与
        改前等价"，此断言让漂移必须显式发生。
+    ①′ 抽出"执行行"的口径认三种调用形态：`"$py" -m 模块`、`bash 脚本`、
+       `"$py" 脚本路径`（B1 的 AST 门用第三种）。认少一种，那一步就不进冻结清单，
+       命令原文就此多出第二份事实源。
     ② **全量参数固定**：默认模式 `-n auto --dist loadfile`。`--dist loadfile`
        不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红。
     ③ **固定 venv**：全量模式只认 `/root/.venv-yiban-wsl/bin/python`，不可用就
@@ -39,6 +42,8 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
     "bash scripts/check-shared-facts.sh",
     '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
+    '"$py" scripts/check-path-env-reads.py',
+    '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly',
 )
 
 
@@ -70,9 +75,10 @@ class DevVerifyEntryTest(unittest.TestCase):
     def test_ci_subset_commands_are_frozen_byte_for_byte(self):
         self.assertGreater(len(self.ci_body), 100,
                            "抽不出 run_ci 函数体——结构改了？本条会因此变废断言")
+        # 抽"执行行"的口径必须盖住全部三种调用形态：`-m 模块`、`bash 脚本`、
+        # `"$py" 脚本路径`（B1 的 AST 门是第三种）。漏一种 = 那一步不进冻结清单。
         got = [line.strip() for line in self.ci_body.splitlines()
-               if line.strip().startswith('"$py" -m ')
-               or line.strip().startswith("bash scripts/")]
+               if line.strip().startswith(('"$py" ', "bash scripts/"))]
         self.assertEqual(
             got, list(EXPECTED_CI_COMMANDS),
             "CI 关键子集命令漂了：命令原文只应存在 scripts/dev-verify.sh 一份。"
