@@ -469,6 +469,12 @@ def _scope_detail(detail, request_id=None):
     return (detail[: max(0, 200 - len(tag))] + tag)[:200]
 
 
+# 审计行时间戳的线上格式。写入方三处共用本常量：
+# `audit` / `record_in_txn` / `record_audit_anchor`。
+# 下游按同一形态解析（`ts` 列、锚点行首字段）。改本值即改线上格式。
+_TS_FMT = "%Y-%m-%d %H:%M:%S"
+
+
 def audit(username, action, target="", detail="", request_id=None):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
 
@@ -490,7 +496,7 @@ def audit(username, action, target="", detail="", request_id=None):
     阻断业务）。既有调用点不检查返回值也不会出错，失败会由每日校验兜住。
     """
     conn = None
-    ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = clock.now().strftime(_TS_FMT)
     # actor 列在**写入口**收口（见 `actor_tag`）：哈希链对已写形态验真，遮罩先于哈希，
     # 链与内容口径从此一致；不存在"库里明文、出口才遮"的第二份。
     username = actor_tag(username)
@@ -561,7 +567,7 @@ def record_in_txn(conn, username, action, target="", detail="", request_id=None)
     欠账仍为 0"（欠账计数结构性看不见这种丢法）。要求调用方已持 `_conn_lock` 且事务
     已开启：读链尾与 INSERT 之间若无跨进程互斥，会读到同一 prev_hash 造成链分叉。
     """
-    ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = clock.now().strftime(_TS_FMT)
     username = actor_tag(username)
     detail = _scope_detail((detail or "")[:200], request_id)
     row = conn.execute(
@@ -1056,7 +1062,7 @@ def record_audit_anchor(path=None):
         if not head:
             logger.warning("审计链头读取失败（空值），本次不写锚点行")
             return None
-        ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = clock.now().strftime(_TS_FMT)
         # 行间链：prev_line_hash 取**前一行原文**的哈希，旧格式（v1）行同样参与
         # 链——否则攻击者只要删掉文件末尾的 v1 行，剩余行依然自洽，无从发现。
         lines, read_state = _read_anchor_lines_ex(path)
