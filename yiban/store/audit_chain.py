@@ -132,7 +132,9 @@ def _resolve_key_env_file():
     explicit = (_connection._env_file or "").strip()
     if explicit:
         return explicit, False
-    env_var = (os.environ.get("YIBAN_ENV_FILE") or "").strip()
+    # env_path(default=None)：未设指针时返回 None，下面那句真值判定就是 from_cwd 的唯一依据
+    # ——把这段判定收进 env_path 会让"操作员显式设成 .env"与"cwd 兜底"两个来源混成一格。
+    env_var = env_io.env_path(default=None)
     if env_var:
         return env_var, False
     return ".env", True

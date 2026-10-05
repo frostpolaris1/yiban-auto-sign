@@ -4,7 +4,7 @@
 
 覆盖对象是一对产物：`scripts/check-path-env-reads.py`（AST 执行器）与
 `scripts/gate/shared-facts.tsv` 里 `ast:` 路由行的数据（键集/扫描范围/上限）。
-本文件钉十二条不变量：
+本文件钉十三条不变量：
 ① 执行器不内嵌第二份名册。键集只从 tsv 读。
 ② 路由行形状合法。状态 active、上限是非负整数、扫描范围非空。
 ③ 上限等于实测命中数。修掉一处必须同批降一档。
@@ -221,8 +221,21 @@ class GateRatchetTest(unittest.TestCase):
         self.assertEqual(per_file, listed,
                          "违规点搬家了（一处没少、但文件分布与名册白名单不符）——"
                          "必须同批改名册那一行的白名单并写明新落点为什么允许")
-        self.assertGreaterEqual(len(listed), 5,
-                                "白名单少于 5 个文件——本刀点名了 9 个文件，不许静默缩面")
+
+    def test_every_whitelisted_site_carries_a_reason(self):
+        """每一处放行都必须自带"为什么允许"：只写 `文件=处数` 不给理由 ⇒ 红。
+
+        这一条取代早先的"白名单不少于 5 个文件"那条——那是**处数**下限，收口每降一档
+        它就过期一次，而它拦的其实不是缩面：真缩面由 ③（命中数必须 > 0）与 ④（白名单
+        必须逐文件等于真树）两侧夹住。改成判**形态**，收口收到只剩一处也不会放水。
+        """
+        note = _routed_rows()[0]["口径备注"]
+        bare = []
+        for m in RE_SITE_TOKEN.finditer(note):
+            tail = note[m.end():]
+            if not (tail.startswith("(") and not tail[1:].startswith(")")):
+                bare.append(m.group())
+        self.assertEqual(bare, [], "白名单里有光秃秃的放行条目（没写为什么允许）")
 
     def test_scanned_file_count_matches_an_independent_count(self):
         """反空转：门自己报的扫描文件数必须等于本文件独立数出来的 .py 数。"""
