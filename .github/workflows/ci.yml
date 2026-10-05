@@ -9,10 +9,11 @@ name: CI
 # .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
 # ⚠️ 排程定义点（M24 已修，2026-10-05）：GitHub 的 `schedule` **只在默认分支上生效**
 # （本仓库默认分支 = main）——所以 `nightly.yml` 与 `e2e-nightly.yml` 的**唯一定义点在
-# 默认分支 main**，**本分支（develop）不持有这两个文件**（此前在本分支 = 同一事实两个
-# 定义点，必然漂移）。两文件的 `actions/checkout` 显式 `ref: develop`：被测对象是活跃线
-# develop——main 是"对外默认可见的已验证分支"、天然落后且不含 `frontend/`，e2e 拿不到。
-# 两条不许破：① 不许把这两个文件加回本分支；② 不许把 checkout 的 `ref` 改成 main
+# 默认分支 main**，**develop 分支不持有这两个文件**（此前在 develop = 同一事实两个定义
+# 点，必然漂移）。两文件的 `actions/checkout` 显式 `ref: develop`：被测对象是活跃线
+# develop——main 是"对外默认可见的已验证分支"、天然落后（见 docs/dev/release-gate.md
+# §1）；e2e-nightly 还依赖当前只在 develop 上的 `frontend/`。
+# 两条不许破：① 不许把这两个文件加回 develop；② 不许把 checkout 的 `ref` 改成 main
 # （nightly 变成跑旧线、e2e 直接失败）。回潮守卫见
 # tests/test_ci_dependency_audit_gate.py::ScheduledWorkflowDefinitionPointTest。
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
