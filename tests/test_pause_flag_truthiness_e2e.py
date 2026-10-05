@@ -8,10 +8,12 @@
 对应实现：`yiban.infra.env_io.parse_env_flag`（唯一真值判定）、
     `yiban.engine.schedule._env_flag`、`web/routes/settings_api.py` 面板读、
     `web/services/env_io._settings_effective_values`、`web/services/capacity._registration_paused`、
-    `run.sh` 的 `_is_truthy`、`run_probe.sh` 的探针开关门。
+    `yiban/engine/state_io._is_second_run`、`run.sh` 的 `_is_truthy`、
+    `scripts/yiban-fallback.sh` 的 `_is_truthy`、`run_probe.sh` 的探针开关门。
 关键断言：同一个 `.env` 值在引擎（`schedule.day_off`）、面板（`GET /api/settings`）、
     `run.sh`（状态文件写 GLOBAL_PAUSED）三处给出同一结论；`true`（及大小写变体、
-    首尾空白）一律判为"开"，`0/false/off/no/空` 判为"关"。
+    首尾空白）一律判为"开"，`0/false/off/no/空` 判为"关"；三份 bash 副本
+    （run.sh / yiban-fallback.sh / run_probe.sh）与 Python 逐值同结论。
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite；run.sh/run_probe.sh 用 fakebin
     桩（无网络）；bash 缺失时整类 skip。
 用法（项目根目录）：
@@ -27,10 +29,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 RUN_PROBE_SH = os.path.join(BASE, "run_probe.sh")
+FALLBACK_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
+
+#: 全部 bash 副本（真值字面量的复制体，共三处）：两份 `_is_truthy` 函数 + run_probe.sh
+#: 内联门。少钉任何一份都会重现 census P0-1 的"同键两 bash 读者结论相反"。
+BASH_FUNC_CARRIERS = (("run.sh", RUN_SH), ("scripts/yiban-fallback.sh", FALLBACK_SH))
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -41,6 +49,8 @@ TRUTHY_MATRIX = ["1", "true", "TRUE", "True", "on", "ON", "yes", "YES", " true "
 FALSY_MATRIX = ["0", "false", "FALSE", "off", "Off", "no", "NO", "", "   ", "0 "]
 #: 非预期取值：既非真值字面量也非假值字面量 → 按缺省（关）+ 出声
 BOGUS = "maybe"
+#: parity 用例的取值矩阵：与 `parse_env_flag` 逐值比对（含大小写、两侧空白与错值）
+PARITY_VALUES = TRUTHY_MATRIX + FALSY_MATRIX + [BOGUS, "2"]
 
 
 def _load_webapp(module_name):
@@ -76,24 +86,25 @@ def _write_python_wrapper(app_dir):
 
 
 class EnvFlagParityTest(unittest.TestCase):
-    """Python（`parse_env_flag`）与 bash（`run.sh._is_truthy`）真跑同一矩阵，逐值同结论。"""
+    """Python（`parse_env_flag`）与**每一份** `_is_truthy` bash 副本（run.sh 与
+    scripts/yiban-fallback.sh）真跑同一矩阵，逐值同结论（census P0-1 / D1 / D5）。"""
 
     @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
-    def test_run_sh_is_truthy_matches_python_parse_env_flag(self):
+    def test_is_truthy_copies_match_python_parse_env_flag(self):
         from yiban.infra import env_io
-        func = _extract_bash_func(RUN_SH, "_is_truthy")
-        values = TRUTHY_MATRIX + FALSY_MATRIX + [BOGUS, "2"]
-        script = func + '\nfor v in "$@"; do _is_truthy "$v" && echo 1 || echo 0; done\n'
-        r = subprocess.run([shutil.which("bash"), "-c", script, "_", *values],
-                           capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        bash_bits = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
-        self.assertEqual(len(bash_bits), len(values), r.stdout)
-        for v, bit in zip(values, bash_bits, strict=True):
-            with self.subTest(value=v):
-                py = env_io.parse_env_flag(v, default=False)
-                self.assertEqual(bit, "1" if py else "0",
-                                 "bash 与 Python 对 %r 结论必须一致" % v)
+        for label, path in BASH_FUNC_CARRIERS:
+            func = _extract_bash_func(path, "_is_truthy")
+            script = func + '\nfor v in "$@"; do _is_truthy "$v" && echo 1 || echo 0; done\n'
+            r = subprocess.run([shutil.which("bash"), "-c", script, "_", *PARITY_VALUES],
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, (label, r.stderr))
+            bash_bits = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+            self.assertEqual(len(bash_bits), len(PARITY_VALUES), (label, r.stdout))
+            for v, bit in zip(PARITY_VALUES, bash_bits, strict=True):
+                with self.subTest(carrier=label, value=v):
+                    py = env_io.parse_env_flag(v, default=False)
+                    self.assertEqual(bit, "1" if py else "0",
+                                     "%s 与 Python 对 %r 结论必须一致" % (label, v))
 
 
 class RunProbeShTruthinessTest(unittest.TestCase):
@@ -133,19 +144,46 @@ class RunProbeShTruthinessTest(unittest.TestCase):
         # 门通过后才会创建 LOCK_DIR（脚本在开关门之后 mkdir）——它是"是否已开启"的物证
         return r, os.path.isdir(lock)
 
-    def test_enabled_variants_pass_the_gate(self):
-        for i, v in enumerate(["1", "true", "True", "TRUE", "on", "ON", "yes"]):
+    def test_gate_matches_python_parse_env_flag(self):
+        """run_probe.sh 是第三份 bash 副本（内联门，非函数）：真跑脚本，以"锁目录是否
+        创建"为门的物证，逐值与 Python `parse_env_flag` 比对结论。"""
+        from yiban.infra import env_io
+        for i, v in enumerate(PARITY_VALUES):
             with self.subTest(YIBAN_PROBE_ENABLE=v):
-                r, passed = self._run(v, "on%d" % i)
+                r, passed = self._run(v, "m%d" % i)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertTrue(passed, "%r 必须被判为已开启（通过开关门）" % v)
+                self.assertEqual(passed, env_io.parse_env_flag(v, default=False),
+                                 "run_probe.sh 与 Python 对 %r 的门结论必须一致" % v)
 
-    def test_disabled_variants_skip_before_gate(self):
-        for i, v in enumerate(["0", "false", "off", "no", "nope", ""]):
-            with self.subTest(YIBAN_PROBE_ENABLE=v):
-                r, passed = self._run(v, "off%d" % i)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertFalse(passed, "%r 必须被判为未开启（门在先，不建锁目录）" % v)
+
+class SecondRunFlagParityTest(unittest.TestCase):
+    """同键 `YIBAN_SECOND_RUN` 在引擎（`state_io._is_second_run`）与 run.sh（`_is_truthy`）
+    两侧必须同结论：`1/true/on/yes`（含大小写与两侧空白）都算补签轮，旧实现只认 `"1"`（D2）。"""
+
+    def _is_second_run(self, value):
+        from yiban.engine import state_io
+        with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": value}), \
+                mock.patch.object(state_io, "_sched_marker_exists", return_value=False):
+            return state_io._is_second_run()
+
+    def test_engine_side_matches_parse_env_flag_domain(self):
+        from yiban.infra import env_io
+        for v in PARITY_VALUES:
+            with self.subTest(YIBAN_SECOND_RUN=v):
+                self.assertEqual(self._is_second_run(v),
+                                 env_io.parse_env_flag(v, default=False),
+                                 "引擎侧与 Python 真值域对 %r 结论必须一致" % v)
+
+    def test_engine_side_agrees_with_run_sh_current_run_detection(self):
+        """run.sh 用 `_is_truthy` 判"本轮本身就是补签轮"（决定不再评估）；引擎侧必须同判。"""
+        for v in TRUTHY_MATRIX:
+            with self.subTest(YIBAN_SECOND_RUN=v):
+                self.assertTrue(self._is_second_run(v),
+                                "run.sh 认为 %r 是补签轮，引擎侧不得判成首签轮" % v)
+        for v in [*FALSY_MATRIX, BOGUS]:
+            with self.subTest(YIBAN_SECOND_RUN=v):
+                self.assertFalse(self._is_second_run(v),
+                                 "run.sh 认为 %r 不是补签轮，引擎侧不得判成补签轮" % v)
 
 
 FAKE_FLOCK = "#!/usr/bin/env bash\nexit 0\n"
