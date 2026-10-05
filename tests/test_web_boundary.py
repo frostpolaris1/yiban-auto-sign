@@ -1803,10 +1803,15 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
                          "缺省上限必须现取本模块的常量")
         with mock.patch.object(self.webapp, "load_env_int", return_value=0):
             self.assertFalse(self.webapp._accounts_at_capacity(999), "0 = 不限")
-        with mock.patch.object(self.webapp, "load_env_int",
-                               side_effect=lambda f, k, d: 1 if k == "YIBAN_REGISTRATION_PAUSE"
-                               else d):
+        # 注册暂停开关的判定是**布尔真值口径**（`read_env` + env_io.parse_env_flag，
+        # 认 1/true/on/yes），故按 test 打桩的注入口径现取的是 `read_env`
+        # （census P0-1 收口：原 `load_env_int(...) == 1` 会把 `=true` 读成未暂停）。
+        with mock.patch.object(self.webapp, "read_env",
+                               return_value={"YIBAN_REGISTRATION_PAUSE": "true"}):
             self.assertTrue(self.webapp._registration_paused())
+        with mock.patch.object(self.webapp, "read_env",
+                               return_value={"YIBAN_REGISTRATION_PAUSE": "0"}):
+            self.assertFalse(self.webapp._registration_paused())
         with mock.patch.object(self.webapp, "load_env_int", return_value=1) as spy:
             self.webapp._users_at_capacity()
         self.assertEqual(spy.call_args.args[1], "YIBAN_MAX_USERS")

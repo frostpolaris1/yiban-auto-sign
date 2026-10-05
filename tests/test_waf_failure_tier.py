@@ -1,22 +1,19 @@
 # -*- coding: utf-8 -*-
-"""WAF/挑战解析失败必须落**显式不可重试档**（总尝试 1 + 清会话），判据单一真值源。
+"""WAF/挑战失败必须落**显式不可重试档**（总尝试 1 + 清会话），判据单一真值源。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：classify_failure/_retry_budget 的显式不可重试档（ydclearance 挑战解析失败全部 raise 文案、
-   白名单文案、requests 的 "Expecting value:" 非 JSON 文案、protocol 的"无签发方回执"假成功
-   拒绝文案——词元真值源同步改钉）、该档总尝试=1 且联动清会话缓存、
+覆盖：classify_failure/_retry_budget 的显式不可重试档（挑战检测命中文案、requests 的
+   "Expecting value:" 非 JSON 文案、protocol 的"无签发方回执"假成功拒绝文案——词元真值源
+   同步改钉）、该档总尝试=1 且联动清会话缓存、
    PROBE_HARD_FAIL_RE 从 security 同一来源构造（WAF_KEYWORDS+HARD_FAIL_TOKENS 逐词元在场）、
    WAF_BLOCKED_MESSAGE 维持风控档、网络类失败维持普通档、硬失败不计入凭据熔断。
 对应实现：yiban/security.py（档位判据唯一真值源）、yiban/engine/attempts.py（档位与清缓存联动）、
-   yiban/engine/probe.py（硬失败判据同源构造）、yiban/fyiban/waf.py（raise 文案是判据的**输入**）。
-关键断言：waf.py 的全部 raise 文案经 AST 提取逐条过档位判据，不是手抄清单——waf.py
-   新增/删减 raise 文案时本文件自动跟随（不数个数，只逐条过判据；计数钉随流程门禁
-   整族裁撤，2026-09 缩减批 6a）；"把输入改坏 ⇒ 判据必须红"的活体反例形态是：任一
-   解析失败消息被改回可重试档（>=2）即红。探针正则与档位共用同一批词元，出现第三份
-   手抄清单即红。
+   yiban/engine/probe.py（硬失败判据同源构造）、yiban/fyiban/waf.py（挑战失败文案的来源）与
+   yiban/fyiban/protocol.py（检测命中即用该文案 raise）。
+关键断言：waf 的挑战失败文案（`CHALLENGE_DETECTED_MESSAGE`）逐条过档位判据，且协议层
+   真的会 raise 它——求解器删除后，"检测命中→响亮失败"是唯一入口，改坏词元即红。
 依赖：纯标准库 + signin 兼容壳；不联网、不建库。整文件在本机执行，无 skip。
 """
-import ast
 import io
 import os
 import re
@@ -26,36 +23,27 @@ import signin
 
 from yiban import security
 from yiban.engine import probe
+from yiban.fyiban import waf as fyiban_waf
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 腿②现网真实文案：>2000 拦截页过了按短响应设计的 is_waf_blocked 后 requests .json() 抛
 LEG2_NON_JSON_MESSAGE = "Expecting value: line 1 column 1 (char 0)"
 
-CHALLENGE_PARSE_SAMPLE = "ydclearance 挑战解析失败: 未找到挑战函数"
 
-
-def _waf_raise_messages():
-    """AST 取 `yiban/fyiban/waf.py` 全部 RuntimeError raise 文案（文案是输入，不是副本）。"""
-    src = io.open(os.path.join(BASE, "yiban", "fyiban", "waf.py"), encoding="utf-8").read()
-    msgs = []
-    for node in ast.walk(ast.parse(src)):
-        if (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
-                and isinstance(node.exc.func, ast.Name) and node.exc.func.id == "RuntimeError"
-                and node.exc.args and isinstance(node.exc.args[0], ast.Constant)
-                and isinstance(node.exc.args[0].value, str)):
-            msgs.append(node.exc.args[0].value)
-    return msgs
+def _waf_fail_messages():
+    """waf.py 的挑战失败文案（检测命中由协议层 raise 该常量；求解器已删除）。"""
+    return [fyiban_waf.CHALLENGE_DETECTED_MESSAGE]
 
 
 class ChallengeParseTierTest(unittest.TestCase):
-    """档位归一：任一挑战解析/白名单/非 JSON 失败 ⇒ 总尝试 1 + 清会话。"""
+    """档位归一：任一挑战/非 JSON 失败 ⇒ 总尝试 1 + 清会话。"""
 
-    def test_every_waf_raise_message_lands_hard_tier(self):
-        for msg in _waf_raise_messages():
+    def test_every_waf_fail_message_lands_hard_tier(self):
+        for msg in _waf_fail_messages():
             with self.subTest(msg=msg):
                 self.assertTrue(security.is_hard_fail_message(msg),
-                                "硬失败判据必须以真值源命中每条 raise 文案")
+                                "硬失败判据必须以真值源命中挑战失败文案")
                 self.assertEqual(signin.classify_failure(msg), signin.HARD_FAIL_MAX_ATTEMPTS)
                 budget, clear_cache = signin._retry_budget(msg)
                 self.assertEqual(budget, 1, "显式不可重试档：总尝试必须=1，不得落普通档 3 次")
@@ -63,11 +51,12 @@ class ChallengeParseTierTest(unittest.TestCase):
                 self.assertFalse(signin._is_credential_failure(msg),
                                  "WAF/挑战是环境问题不是凭据问题，不得计入熔断")
 
-    def test_whitelist_message_from_security_table_lands_hard_tier(self):
-        # 与 waf.py:146 的 raise 文案同源：_WHITELIST_MESSAGES["ydclearance"] 经 require_fyiban 抛出
-        msg = security._WHITELIST_MESSAGES["ydclearance"]
-        self.assertEqual(signin.classify_failure(msg), signin.HARD_FAIL_MAX_ATTEMPTS)
-        self.assertEqual(signin._retry_budget(msg), (1, True))
+    def test_protocol_raises_challenge_message(self):
+        """协议层必须真的用该文案 raise（检测命中→响亮失败是求解器删除后的唯一入口）。"""
+        src = io.open(os.path.join(BASE, "yiban", "fyiban", "protocol.py"),
+                      encoding="utf-8").read()
+        self.assertIn("fyiban_waf.CHALLENGE_DETECTED_MESSAGE", src)
+        self.assertRegex(src, r"raise RuntimeError\(fyiban_waf\.CHALLENGE_DETECTED_MESSAGE\)")
 
     def test_leg2_non_json_message_lands_hard_tier(self):
         self.assertTrue(security.is_hard_fail_message(LEG2_NON_JSON_MESSAGE))
@@ -100,8 +89,8 @@ class ChallengeParseTierTest(unittest.TestCase):
 class ProbeHardFailSameSourceTest(unittest.TestCase):
     """口径④归一：探针硬失败判据与档位共用同一来源，对解析失败/非 JSON 不再零预警。"""
 
-    def test_probe_regex_hits_every_waf_raise_message(self):
-        for msg in _waf_raise_messages():
+    def test_probe_regex_hits_every_waf_fail_message(self):
+        for msg in _waf_fail_messages():
             with self.subTest(msg=msg):
                 self.assertIsNotNone(probe.PROBE_HARD_FAIL_RE.search(msg),
                                      "探针对挑战解析失败必须预警（旧口径零命中是登记缺陷）")

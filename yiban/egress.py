@@ -162,6 +162,27 @@ def runtime_owner(stable, pid=None, gen=None):
             f":{gen or _RUNTIME_GEN}")
 
 
+def stable_owner(owner):
+    """把持有者串折回**稳定槽位名**（`worker-3@host` / `fallback@host` / `single@host`）。
+
+    持有者列存的是运行时身份 `{稳定名}:{进程号}:{代次}`（`runtime_owner`），也可能只是
+    计划行写的裸稳定名。本函数是 `runtime_owner` 的**反向**：去掉尾部的运行时段，只留
+    `名字@主机`。主机名不含 `:`，故按首个 `:` 切断主机段即可（`worker-3@host:1:2` →
+    `worker-3@host`；裸 `worker-3@host` 原样返回）。判不出稳定名（空串、旧格式
+    `:workers:` / `fallback-` / `exec-`、缺主机段的历史串）返回 `None`——调用方据此
+    **不做豁免**，与库内既有"旧格式不进名册"的口径一致。
+
+    为什么需要它：租约回收的豁免名册要能判断"某个持有者是不是**本执行体自己的稳定槽位**"
+    （含其历史代次的运行时串）。只比运行时串会比不出自己的旧代次，于是本进程重启前遗留的
+    行永远回收不到（"重启即卡死"）。
+    """
+    text = (owner or "").strip()
+    if _parse_stable_owner(text) is None:
+        return None
+    name, _sep, host = text.rpartition(OWNER_HOST_SEP)
+    return f"{name}{OWNER_HOST_SEP}{host.split(':', 1)[0]}"
+
+
 def parse_owner(owner):
     """把身份串解析成 `{"role", "index", "label"}`（判不出即 `unknown`）。
 
