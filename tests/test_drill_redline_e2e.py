@@ -307,6 +307,19 @@ class HelpTextTest(_TmpBase):
         self.assertEqual(0, r.returncode, o)
         self.assertIn("退出码", o)            # 脚本头最后一段
         self.assertNotIn("set -Eeuo pipefail", o)   # 头之后的正文不得进帮助
+        # 头**末行**必须进帮助且仍在末位：头末的分割线与头首（第 2 行）同形，
+        # 只查"出现在输出里"会被头首顶替（无牙）。头与正文分界都从脚本自身读，
+        # 不硬编行号与那串等号；谁再给头加行却不改 usage 的 sed 区间，这里就红。
+        head_lines = []
+        with io.open(SCRIPT, encoding="utf-8") as f:
+            for ln in f:
+                if ln.strip() == "set -Eeuo pipefail":   # 正文首行，头到此为止
+                    break
+                head_lines.append(ln.rstrip("\n"))
+        head_last = head_lines[-1]
+        self.assertTrue(head_last.strip(), "脚本头末行为空，无法钉边界")
+        self.assertEqual(head_last, o.strip("\n").splitlines()[-1],
+                         "usage 的 sed 区间未恰好覆盖到脚本头末行")
 
 
 @unittest.skipIf(BASH is None, "需要 bash（Git Bash/WSL）")
