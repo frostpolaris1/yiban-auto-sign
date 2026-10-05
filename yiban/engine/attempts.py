@@ -62,7 +62,12 @@ AUTH_FAIL_KEYWORDS = [
 # 确定性认证失败的总尝试上限：仅首试 1 次
 AUTH_FAIL_MAX_ATTEMPTS = 1
 
-# 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记
+# 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记。
+#
+# WAF 族**不写进本表**：名单与匹配口径都只有一份，在 `yiban.security`
+# （`WAF_KEYWORDS` + `matches_waf_keywords`）——同一事实两个定义点必然各自演化
+# （工单 `yiban-auto-sign-u21x` 的根因形状）。想加风控词元请改 security 的名册，
+# 本表只列本层自有的凭据/协议措辞（都是服务端文案原文，按子串匹配）。
 RISK_FAIL_KEYWORDS = [
     "账号或密码错误",
     "e003",
@@ -72,12 +77,6 @@ RISK_FAIL_KEYWORDS = [
     "登录失败",
     "登录响应异常",
     "OAuth 页解析失败",
-    # WAF 风控拦截：重试只会浪费请求并加重 IP/账号标记（与 WAF_KEYWORDS 对应）
-    "风险访问",
-    "风控",
-    "访问服务禁用",
-    "WAF",
-    "拦截",
 ]
 
 # 会话陈旧类失败特征：缓存会话已被服务端作废（夜间自然过期、或本人用手机端易班登录
@@ -134,7 +133,8 @@ HEADERS = fyiban_headers.HEADERS
 KILLYIBAN_HEADERS = fyiban_headers.KILLYIBAN_HEADERS
 
 # WAF 判定口径的唯一实现在 `yiban/security.py`（形态判定不受长度限制、仅关键词匹配按
-# "短响应"设界的边界理由、Unicode 转义解码）；调用方与既有测试继续用这里的名字。
+# "短响应"设界的边界理由、词元的非字母数字边界口径、Unicode 转义解码）；调用方与既有测试
+# 继续用这里的名字。
 WAF_KEYWORDS = security.WAF_KEYWORDS
 is_waf_blocked = security.is_waf_blocked
 
@@ -152,6 +152,18 @@ account_still_signable = accounts_store.account_still_signable
 # ---------------------------------------------------------------------------
 # 公开入口
 # ---------------------------------------------------------------------------
+def matches_risk_keywords(message):
+    """失败消息是否命中风控族——档位与执行体风控信号的同一判据。
+
+    本层自有词元按子串（都是服务端文案原文，无误报面）；WAF 族走
+    `security.matches_waf_keywords`——ASCII 词元要求两侧非字母数字，否则失败消息里嵌的
+    base64（异常消息会带上响应片段或请求 URL）会把普通失败判成风控档：少一次重试、
+    还白清一次会话缓存。这里**不设**`is_waf_blocked` 的"短响应"上界：入参是消息不是响应体。
+    """
+    return (any(kw in message for kw in RISK_FAIL_KEYWORDS)
+            or security.matches_waf_keywords(message))
+
+
 def classify_failure(message):
     """对失败信息分级，返回总尝试上限。
 
@@ -163,9 +175,8 @@ def classify_failure(message):
     """
     if security.is_hard_fail_message(message):
         return HARD_FAIL_MAX_ATTEMPTS
-    for kw in RISK_FAIL_KEYWORDS:
-        if kw in message:
-            return RISK_MAX_ATTEMPTS
+    if matches_risk_keywords(message):
+        return RISK_MAX_ATTEMPTS
     return MAX_ATTEMPTS
 
 

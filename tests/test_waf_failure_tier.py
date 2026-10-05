@@ -6,9 +6,12 @@
    "Expecting value:" 非 JSON 文案、protocol 的"无签发方回执"假成功拒绝文案——词元真值源
    同步改钉）、该档总尝试=1 且联动清会话缓存、
    PROBE_HARD_FAIL_RE 从 security 同一来源构造（WAF_KEYWORDS+HARD_FAIL_TOKENS 逐词元在场）、
-   WAF_BLOCKED_MESSAGE 维持风控档、网络类失败维持普通档、硬失败不计入凭据熔断。
+   WAF_BLOCKED_MESSAGE 维持风控档、网络类失败维持普通档、硬失败不计入凭据熔断、
+   ASCII 词元收紧后三条消费腿（响应体判定/重试档位/探针判据）同判据、WAF 族在 attempts.py
+   只有一个名单来源。
 对应实现：yiban/security.py（档位判据唯一真值源）、yiban/engine/attempts.py（档位与清缓存联动）、
-   yiban/engine/probe.py（硬失败判据同源构造）、yiban/fyiban/waf.py（挑战失败文案的来源）与
+   yiban/engine/probe.py（硬失败判据同源构造）、yiban/engine/executor_v3.py（风控信号的第二个
+   读者）、yiban/fyiban/waf.py（挑战失败文案的来源）与
    yiban/fyiban/protocol.py（检测命中即用该文案 raise）。
 关键断言：waf 的挑战失败文案（`CHALLENGE_DETECTED_MESSAGE`）逐条过档位判据，且协议层
    真的会 raise 它——求解器删除后，"检测命中→响亮失败"是唯一入口，改坏词元即红。
@@ -112,6 +115,70 @@ class ProbeHardFailSameSourceTest(unittest.TestCase):
                     "获取登录入口失败", "最终认证失败", "授权设备"):
             with self.subTest(msg=msg):
                 self.assertIsNotNone(probe.PROBE_HARD_FAIL_RE.search(msg))
+
+
+class WafTokenBoundaryTierTest(unittest.TestCase):
+    """词元收紧后的档位联动：真 WAF 文案照旧入档，base64 撞出的 aWAFb 一律不入档。
+
+    同一批词元有三条消费腿（工单 `yiban-auto-sign-u21x` 的盘查结论）：响应体判定
+    `is_waf_blocked`、重试档位 `classify_failure`/`_is_risk_signal`、探针硬失败判据
+    `PROBE_HARD_FAIL_RE`。收紧必须三条腿同时生效——只改一条就是"同批改一半"。
+    """
+
+    #: 纯 base64 形态的失败消息：含 aWAFb，不含任何中文词元，也不含硬失败词元。
+    BASE64_MESSAGE = ("MIHbMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDBC7aWAFbrWLsOSBrj57z0KDgq"
+                      "I2dvq7iKq6CZgXp2GvS5RufTg2d3L4A2fvWEMeH5y2LRkfPxBheozagMaKWfgd")
+
+    def test_probe_regex_does_not_hit_base64_message(self):
+        self.assertIsNone(probe.PROBE_HARD_FAIL_RE.search(self.BASE64_MESSAGE),
+                          "探针对 base64 里的 aWAFb 不得报硬失败（假预警）")
+
+    def test_probe_regex_still_hits_real_waf_messages(self):
+        for msg in (*_waf_fail_messages(), security.WAF_BLOCKED_MESSAGE,
+                    LEG2_NON_JSON_MESSAGE, "上游返回 Request blocked by WAF. ID=7f3a"):
+            with self.subTest(msg=msg[:40]):
+                self.assertIsNotNone(probe.PROBE_HARD_FAIL_RE.search(msg),
+                                     "收紧后真 WAF 文案必须照常预警")
+
+    def test_is_hard_fail_message_applies_the_same_boundary_rule(self):
+        """硬失败词元与 WAF 词元同一条匹配规则：两侧字母数字的粘连形态不算命中。"""
+        self.assertTrue(security.is_hard_fail_message(fyiban_waf.CHALLENGE_DETECTED_MESSAGE))
+        self.assertTrue(security.is_hard_fail_message(LEG2_NON_JSON_MESSAGE))
+        self.assertTrue(security.is_hard_fail_message("Set-Cookie: https_ydclearance=abc"))
+        self.assertFalse(security.is_hard_fail_message("abcydclearanceX"))
+
+    def test_base64_message_is_not_a_risk_tier(self):
+        self.assertEqual(signin.classify_failure(self.BASE64_MESSAGE), signin.MAX_ATTEMPTS,
+                         "裸子串把 aWAFb 判成风控类 = 少一次重试并清会话缓存")
+        budget, clear_cache = signin._retry_budget(self.BASE64_MESSAGE)
+        self.assertEqual((budget, clear_cache), (signin.MAX_ATTEMPTS, False))
+
+    def test_real_risk_messages_stay_in_risk_tier(self):
+        for msg in (security.WAF_BLOCKED_MESSAGE, "请求被 WAF 风控拦截",
+                    "访问服务禁用", "风险访问，已被拦截"):
+            with self.subTest(msg=msg[:30]):
+                self.assertEqual(signin.classify_failure(msg), signin.RISK_MAX_ATTEMPTS)
+
+    def test_executor_risk_signal_shares_the_tightened_rule(self):
+        """`executor_v3._is_risk_signal` 是 WAF 族的第二个读者，必须与档位同判据。"""
+        from yiban.engine import executor_v3
+
+        self.assertFalse(executor_v3._is_risk_signal(self.BASE64_MESSAGE),
+                         "执行体不得把 aWAFb 当风控信号")
+        self.assertTrue(executor_v3._is_risk_signal(security.WAF_BLOCKED_MESSAGE))
+        # 中文词元的"长消息"腿不得被收紧削掉（is_waf_blocked 有 2000 上界，这条没有）
+        self.assertTrue(executor_v3._is_risk_signal("上游长文" + "正" * 3000 + "风控"))
+
+    def test_waf_family_has_one_definition_point(self):
+        """WAF 族在 `attempts.py` 只允许引用 security 的名册，不得再写字面量。"""
+        src = io.open(os.path.join(BASE, "yiban", "engine", "attempts.py"),
+                      encoding="utf-8").read()
+        self.assertIn("security.WAF_KEYWORDS", src,
+                      "attempts 必须引用 yiban.security 的名册（转发或判据），不得自抄名单")
+        for token in security.WAF_KEYWORDS:
+            with self.subTest(token=token):
+                self.assertNotIn(f'"{token}"', src,
+                                 "同一事实两个定义点必然各自演化（工单 u21x 的根因形状）")
 
 
 if __name__ == "__main__":
