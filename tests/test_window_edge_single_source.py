@@ -12,8 +12,8 @@
     web/render.py（edge_config）、yiban/engine/schedule.py（_schedule_config）。
 关键断言：窗口边界只有一个 env 解析入口。第二份解析接进任何读者 ⇒ 取值表当场对不上；
     第二份解析只是被复制出来、还没接线 ⇒ AST 位置判据当场点名。
-    注释与 docstring 里的键名不进判定（AST 只认代码），本文件用三个带注释的模块
-    自证这一点。
+    注释与 docstring 里的键名不进判定（AST 只认代码），本文件用两个量具自证：
+    合成夹具里五处键名写法只点名两处真取值；次序分类器抓得住订正前那句假话。
 依赖：纯本地：打桩 os.environ，不建库、不发网络请求、不读 .env 文件。
 """
 import ast
@@ -109,8 +109,15 @@ def _callee_name(func):
 class _SiteFinder(ast.NodeVisitor):
     """记录「按键名从 env 取值」的位置：`.get(KEY)`、`obj[KEY]`（读）、`_int_or_none(_, KEY)`。
 
-    写侧（`updates[KEY] = ...`）与纯键名清单（转发白名单的元组字面量）都不算取值，
-    故不进判定；注释与 docstring 由 AST 天然排除。
+    三条口径（都是刻意的，勿"顺手放宽"）：
+
+    1. 写侧（`updates[KEY] = ...`）与纯键名清单（`_ENV_RELOAD_KEYS` 那类 frozenset
+       字面量）不算取值，故不进判定；注释与 docstring 由 AST 天然排除。
+    2. 宁误报不漏报：任何以这三个键名调 `.get` 的位置都点名，哪怕只是取值展示——
+       那已经是绕过唯一入口取边界值，修法就是改调 `parse_edges`。
+    3. 已知盲点：键名经变量传入（`for k in KEYS: env.get(k)`）不进本判定。这种入口
+       若被接进任一读者，由 `EdgeValueSingleSourceTest` 的取值表兜住；未接线的副本
+       属死码，如实登记，不假称全覆盖。
     """
 
     def __init__(self, rel):
@@ -142,6 +149,13 @@ class _SiteFinder(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _sites_in_source(source, rel):
+    """一段源码里的取值位置。位置判据与合成夹具走同一个函数，不搞两套量具。"""
+    finder = _SiteFinder(rel)
+    finder.visit(ast.parse(source))
+    return finder.sites
+
+
 def _scan_production_tree():
     """扫生产树的 .py，返回（命中位置列表, 扫过的相对路径集合）。"""
     sites, scanned = [], set()
@@ -157,10 +171,7 @@ def _scan_production_tree():
                 path = os.path.join(dirpath, name)
                 rel = os.path.relpath(path, BASE).replace(os.sep, "/")
                 with open(path, encoding="utf-8") as fh:
-                    tree = ast.parse(fh.read(), filename=rel)
-                finder = _SiteFinder(rel)
-                finder.visit(tree)
-                sites.extend(finder.sites)
+                    sites.extend(_sites_in_source(fh.read(), rel))
                 scanned.add(rel)
     return sites, scanned
 
@@ -175,6 +186,24 @@ class EdgeValueSingleSourceTest(unittest.TestCase):
                                      "读者 %s 在「%s」下应得 %s" % (name, note, expected))
 
 
+#: 合成夹具：一份「第二入口」的五种写法。判据必须只点名两处真取值。
+SECOND_ENTRY_FIXTURE = '''
+# 注释里写 YIBAN_WINDOW_EDGE_SEC，不算取值。
+YIBAN_EDGE_ROSTER = frozenset({"YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC"})
+
+
+def edge_from_env(env):
+    """docstring 里写 YIBAN_WINDOW_EDGE_BACK_SEC，也不算取值。"""
+    updates = {}
+    updates["YIBAN_WINDOW_EDGE_SEC"] = "60"
+    return env.get("YIBAN_WINDOW_EDGE_SEC")
+
+
+def edge_from_env_again(env):
+    return _int_or_none(env, "YIBAN_WINDOW_EDGE_FRONT_SEC")
+'''
+
+
 class SingleParseEntryTest(unittest.TestCase):
     def test_only_parse_edges_reads_the_edge_keys(self):
         """第二份解析入口（接线与否都算）必须被点名。"""
@@ -187,11 +216,26 @@ class SingleParseEntryTest(unittest.TestCase):
             "窗口边界的 env 键只准在 yiban/window.py::parse_edges 里读；"
             "以下位置各算各的：" + detail)
 
+    def test_the_fixture_second_entry_gets_named(self):
+        """量具自证：合成夹具里的两处真取值必须被点名，三处假形状一处不许点。"""
+        sites = _sites_in_source(SECOND_ENTRY_FIXTURE, "fixture.py")
+        self.assertEqual(2, len(sites),
+                         "夹具该点两处（env.get 与 _int_or_none），实点：%s" % sites)
+        self.assertEqual({"YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC"},
+                         {s[3] for s in sites})
+        self.assertEqual(2, len([s for s in sites if (s[0], s[1]) != SINGLE_ENTRY]),
+                         "夹具里的第二处解析不该落进许可入口")
+
     def test_the_gate_is_not_an_empty_gate(self):
-        """防废门：入口仍在读三个键，且带注释的模块确实被扫到且零命中。"""
+        """防废门：扫描面不许缩水，且许可入口确实仍在读这三个键。"""
+        for root in SCAN_DIRS:
+            self.assertTrue(os.path.isdir(os.path.join(BASE, root)),
+                            "%s 不在了，位置判据的扫描面已缩水" % root)
         sites, scanned = _scan_production_tree()
-        inside = sorted(k for r, fn, _ln, k in sites if (r, fn) == SINGLE_ENTRY)
-        self.assertEqual(sorted(EDGE_KEYS), inside,
+        self.assertGreaterEqual(len(scanned), 50,
+                                "只扫到 %d 个文件，位置判据不可信" % len(scanned))
+        inside = {s[3] for s in sites if (s[0], s[1]) == SINGLE_ENTRY}
+        self.assertEqual(set(EDGE_KEYS), inside,
                          "parse_edges 必须仍在读这三个 env 键，否则本门恒绿")
         for rel in COMMENT_ONLY_MODULES:
             self.assertIn(rel, scanned, "%s 没进扫描面，判据不可信" % rel)
@@ -203,24 +247,42 @@ class SingleParseEntryTest(unittest.TestCase):
 PRECEDENCE_WORDS = ("优先", "覆盖", "取代", "胜过", "压过")
 
 
+def _precedence_claims(doc):
+    """逐句判出 docstring 的次序主张，返回被点名的那一族键名（"新键"或"旧键"）。
+
+    一句里两族都点名、或都没点名时判不出主张，跳过该句。
+    """
+    claims = []
+    for sentence in re.split(r"[。；;\n]", doc):
+        if not any(word in sentence for word in PRECEDENCE_WORDS):
+            continue
+        names_new = ("EDGE_FRONT_SEC" in sentence) or ("EDGE_BACK_SEC" in sentence)
+        names_legacy = "YIBAN_WINDOW_EDGE_SEC" in sentence
+        if names_new == names_legacy:
+            continue
+        claims.append("新键" if names_new else "旧键")
+    return claims
+
+
 class DocstringTruthTest(unittest.TestCase):
     def test_docstring_precedence_matches_behavior(self):
         """docstring 主张哪一族键赢，实测就必须是哪一族键赢。"""
         env, expected, _note = BOTH_KEYS_CASE
-        new_wins = window.parse_edges(env) == expected
-        doc = window.parse_edges.__doc__ or ""
-        for sentence in re.split(r"[。；;\n]", doc):
-            if not any(word in sentence for word in PRECEDENCE_WORDS):
-                continue
-            names_new = ("EDGE_FRONT_SEC" in sentence) or ("EDGE_BACK_SEC" in sentence)
-            names_legacy = "YIBAN_WINDOW_EDGE_SEC" in sentence
-            if names_new == names_legacy:
-                continue  # 同一句里两族都点名或都没点名：判不出它主张谁，跳过
-            claimed = "新键" if names_new else "旧键"
-            self.assertEqual(
-                claimed == "新键", new_wins,
-                "docstring 主张「%s优先」，实测却是「%s」生效：%s"
-                % (claimed, "新键" if new_wins else "旧键", sentence.strip()))
+        winner = "新键" if window.parse_edges(env) == expected else "旧键"
+        claims = _precedence_claims(window.parse_edges.__doc__ or "")
+        self.assertTrue(claims, "docstring 写不出可判定的次序主张，本条会恒绿")
+        for claimed in claims:
+            self.assertEqual(winner, claimed,
+                             "docstring 主张「%s优先」，实测是「%s」生效" % (claimed, winner))
+
+    def test_the_classifier_has_teeth(self):
+        """反空转：判据要抓得住订正前那句假话，也不许给无主张的句子编出主张。"""
+        self.assertEqual(["旧键"], _precedence_claims(
+            "→ (front_sec, back_sec)。旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）优先映射。"))
+        self.assertEqual(["新键"], _precedence_claims(
+            "同一边的新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先。"))
+        self.assertEqual([], _precedence_claims(
+            "旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补对应新键缺席的那一边。"))
 
 
 if __name__ == "__main__":
