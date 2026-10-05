@@ -1604,7 +1604,9 @@ def _report_env_key_collisions(env_path):
 #   · url_for() 自动带上前缀（服务端 redirect 改用 url_for 即可，见页面路由）；
 #   · 应用内部 request.path 仍是干净路径（现有 /static/、/api/ 判断无需改动）；
 #   · Flask 的 strict_slashes 补斜杠跳转自动带前缀。
-# 前缀判定优先级：代理已传 SCRIPT_NAME（WSGI 契约，直接放行）> 环境变量 YIBAN_BASE_PATH > 自动探测。
+# 前缀判定优先级：代理已传 SCRIPT_NAME（WSGI 契约，直接放行）> 进程环境 YIBAN_BASE_PATH
+# > .env 里的同名键 > 自动探测。第二、三档由 env_io.resolve_path 给出，与启动期 Cookie
+# 作用域那一支（read_env(ENV_FILE)）同源——同一份配置的两个消费方必须给同一个答案。
 # 自动探测采用【最短（首个）命中】前缀：优先把 /api/、/static/、页面路由等应用自身路由留在
 # 剩余路径里（如 /tools/yiban-auto-sign/demo/api/login 应切成前缀 + /api/login，而非 .../api + /login）。
 # 若挂载前缀本身恰好含 /api、/static 或页面名等会与应用路由撞车的段，自动探测可能切错，
@@ -1649,8 +1651,8 @@ class BasePathMiddleware:
         return self.wsgi_app(environ, start_response)
 
     def _resolve_prefix(self, environ, path):
-        # 显式配置（构造参数 > 环境变量 YIBAN_BASE_PATH）；仅当路径确实以该前缀开头才生效
-        configured = (self.base_path or os.environ.get("YIBAN_BASE_PATH", "") or "").strip().strip("/")
+        # 显式配置（构造参数 > 进程环境 > `.env`，走唯一解析器）；仅当路径确实以该前缀开头才生效
+        configured = (self.base_path or env_io.resolve_path("YIBAN_BASE_PATH", "")).strip().strip("/")
         if configured:
             configured = "/" + configured
             if path == configured or path.startswith(configured + "/"):

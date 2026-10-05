@@ -134,6 +134,45 @@ class SubpathDeployTest(unittest.TestCase):
         finally:
             os.environ.pop("YIBAN_BASE_PATH", None)
 
+    # ---- 1b. 显式前缀必须认 `.env` 那一档，且环境变量赢 ----
+    def test_base_path_from_env_file_and_precedence(self):
+        """中间件的显式前缀走唯一解析器：进程环境 → `.env` → 无。
+
+        改前中间件只读进程环境。同一枚 `YIBAN_BASE_PATH`，启动期的 Cookie 作用域
+        （`web/app.py` 的 `read_env(ENV_FILE)` 那一支）认 `.env`，逐请求的前缀改写
+        不认——一份配置两个消费方，一半生效一半不生效。
+        探针前缀刻意取 `/my`：它在 `_ROOT_PREFIXES` 清单里，自动探测对它一律给空串，
+        所以"配置生效"与"自动探测兜住"在这条路径上分得开。
+        """
+        with open(self.env_file, encoding="utf-8") as f:
+            original = f.read()
+        captured = {}
+
+        def stub(environ, start_response):
+            captured["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "")
+            captured["PATH_INFO"] = environ.get("PATH_INFO", "")
+            start_response("200 OK", [])
+            return [b""]
+
+        try:
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original + "YIBAN_BASE_PATH=/my\n")
+            os.environ.pop("YIBAN_BASE_PATH", None)
+            mw = self.webapp.BasePathMiddleware(stub)
+            mw({"PATH_INFO": "/my/login"}, lambda *a, **k: None)
+            self.assertEqual(captured["SCRIPT_NAME"], "/my",
+                             "`.env` 里的前缀对中间件无效（Cookie 那一支却认它）")
+            os.environ["YIBAN_BASE_PATH"] = "/env-wins"
+            mw({"PATH_INFO": "/my/login"}, lambda *a, **k: None)
+            self.assertEqual(captured["SCRIPT_NAME"], "",
+                             "环境变量与 `.env` 都有值时必须环境变量赢")
+            mw({"PATH_INFO": "/env-wins/login"}, lambda *a, **k: None)
+            self.assertEqual(captured["SCRIPT_NAME"], "/env-wins")
+        finally:
+            os.environ.pop("YIBAN_BASE_PATH", None)
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original)
+
     # ---- 2. 根路径部署不回归 ----
     def test_root_behavior_unchanged(self):
         r = self.c.get("/")
