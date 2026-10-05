@@ -1522,10 +1522,10 @@ def _accounts_at_capacity(extra_accounts=0):
 def _registration_paused():
     """注册是否处于暂停状态（实现见 web/services/capacity.py）。
 
-    `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
+    `.env` 路径与宽松读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
     `read_env`），故转发必须现取后传入。
     """
-    return _capacity._registration_paused(ENV_FILE, load_env_int)
+    return _capacity._registration_paused(ENV_FILE, read_env)
 
 
 def _users_at_capacity():

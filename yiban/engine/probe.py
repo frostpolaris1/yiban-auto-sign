@@ -60,7 +60,10 @@ account_still_signable = accounts_store.account_still_signable
 # 「图形验证墙 / 校本化失效 / 密码错误」等无法自愈问题；注册提交账号时亦可即时验证打回。
 # 配置经 web 系统设置写入 .env（YIBAN_PROBE_ENABLE / YIBAN_PROBE_TIME / YIBAN_PROBE_INTERVAL_DAYS /
 # YIBAN_ACCOUNT_VERIFY），run.sh / run_probe.sh 加载后经环境变量传入。
-PROBE_ENABLE = os.environ.get("YIBAN_PROBE_ENABLE", "").strip().lower() in ("1", "true", "on", "yes")
+# 真值口径单源在 `yiban.infra.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白不敏感），
+# 与面板 read 侧、run_probe.sh 同口径。
+PROBE_ENABLE = env_io.parse_env_flag(os.environ.get("YIBAN_PROBE_ENABLE", ""),
+                                     default=False, key="YIBAN_PROBE_ENABLE", log=logger)
 PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
 # 触发频率：正整数=每 N 天；once=下一次计划时间单次执行（执行后自动关闭）
 PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"

@@ -26,6 +26,7 @@
 write_env_batch / read_env / ENV_FILE / _in_sign_window / edge_config 等）必须继续生效。
 `.env` 写入一律经 `write_env_batch` 原子批写；被 `web.app` 的 `register_all(app)` 一次接入。
 """
+import logging
 import os
 import time
 from datetime import datetime, timedelta
@@ -44,6 +45,10 @@ from web.services.env_io import (
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
+from yiban.infra.env_io import parse_env_flag as _parse_env_flag
+
+# 与 web 日志同通道：面板读到的非预期开关取值落回既有通道，便于运维沿用同一处过滤
+logger = logging.getLogger("web")
 
 #: 进度端点回给前端的**全站 state 分布**键（顺序即页面画条的顺序）。
 #: 取自 `queue_store.day_counts` 的口径：7 个原始 state + 3 个派生键，派生口径见该函数
@@ -177,6 +182,16 @@ def _reply_slot_egress(env_key, index):
 def api_settings():
     m = _appmod()
     env = m.read_env(m.ENV_FILE)
+
+    def _bool_field(key):
+        """面板布尔键的**唯一**读法：与引擎/run.sh 同一真值口径（1/true/on/yes=开）。
+
+        刻意不用 `load_env_int`——它只认整数，把 `true` 读成 0，于是引擎真停、面板显示
+        "未暂停"（census P0-1 的反向假安心）。非预期取值按缺省（关）处理并出声一次。
+        """
+        return 1 if _parse_env_flag(env.get(key, ""), default=False,
+                                    key=key, log=logger) else 0
+
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
     sw = m._sign_window()
     # 窗口不可用（已回退默认）时把"配置异常、已按 X~Y 运行"暴露给设置页：那才是管理员
@@ -277,18 +292,19 @@ def api_settings():
                 "accounts_audit": _bd_audit,
             },
             # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
-            "sunday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
+            "sunday_sign": _bool_field("YIBAN_SUNDAY_SIGN"),
             # 周六签到：1=开启（周六照常签到），0=关闭（默认，周六暂停）
-            "saturday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),
-            # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
-            "global_pause": m.load_env_int(m.ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
+            "saturday_sign": _bool_field("YIBAN_SATURDAY_SIGN"),
+            # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常。
+            # 读法与引擎 `schedule.day_off` 同源（`_parse_env_flag`），`=true` 也判暂停。
+            "global_pause": _bool_field("YIBAN_GLOBAL_PAUSE"),
             # 暂停注册：1=暂停（登录页关闭注册入口），0/未配置=允许
-            "registration_pause": m.load_env_int(m.ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0),
+            "registration_pause": _bool_field("YIBAN_REGISTRATION_PAUSE"),
             # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
             "batch_mode": False,
             # 注册账号验证 + 探针模式（任意管理员可改）
-            "account_verify": 1 if env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes") else 0,
-            "probe_enable": 1 if env.get("YIBAN_PROBE_ENABLE", "").strip().lower() in ("1", "true", "on", "yes") else 0,
+            "account_verify": _bool_field("YIBAN_ACCOUNT_VERIFY"),
+            "probe_enable": _bool_field("YIBAN_PROBE_ENABLE"),
             "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
             "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
         }
@@ -308,8 +324,10 @@ def api_settings_save():
     # global_pause 是唯一例外——0→1「急停」任意管理员都能做，1→0「恢复签到」仍仅
     # 主管理员：能把全站停下去是止损，能放开来是权力。
     gp_req = None
-    if m.GLOBAL_PAUSE_KEY in data:
-        gp_req = 1 if m._env_flag(data.get(m.GLOBAL_PAUSE_KEY, "")) else 0
+    gp_key = m.GLOBAL_PAUSE_KEY
+    if gp_key in data:
+        gp_req = 1 if _parse_env_flag(data.get(gp_key, ""), default=False,
+                                      key=gp_key, log=logger) else 0
     wanted_a = set()
     if not is_master:
         wanted_a = master_only.intersection(data)
@@ -408,25 +426,30 @@ def api_settings_save():
     # 周日签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
     sunday_sign = None
     if "sunday_sign" in data:
-        sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        sunday_sign = 1 if _parse_env_flag(data.get("sunday_sign", ""), default=False,
+                                           key="YIBAN_SUNDAY_SIGN", log=logger) else 0
     # 周六签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
     saturday_sign = None
     if "saturday_sign" in data:
-        saturday_sign = 1 if str(data.get("saturday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        saturday_sign = 1 if _parse_env_flag(data.get("saturday_sign", ""), default=False,
+                                             key="YIBAN_SATURDAY_SIGN", log=logger) else 0
     # 全局暂停（一键暂停签到）：0→1 急停任意管理员可做、1→0 恢复仅主管理员
     # （方向判定在档位门禁块里），下一轮 cron 生效。
     global_pause = gp_req
     # 暂停注册：A 档，仅主管理员可写（与签到窗口同权限口径）
     registration_pause = None
     if "registration_pause" in data:
-        registration_pause = 1 if str(data.get("registration_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        registration_pause = 1 if _parse_env_flag(data.get("registration_pause", ""), default=False,
+                                                  key="YIBAN_REGISTRATION_PAUSE", log=logger) else 0
     # ---- 注册账号验证 + 探针模式（A 档：仅主管理员可改）----
     account_verify = None
     if "account_verify" in data:
-        account_verify = 1 if str(data.get("account_verify", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        account_verify = 1 if _parse_env_flag(data.get("account_verify", ""), default=False,
+                                              key="YIBAN_ACCOUNT_VERIFY", log=logger) else 0
     probe_enable = None
     if "probe_enable" in data:
-        probe_enable = 1 if str(data.get("probe_enable", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        probe_enable = 1 if _parse_env_flag(data.get("probe_enable", ""), default=False,
+                                            key="YIBAN_PROBE_ENABLE", log=logger) else 0
     probe_time = None
     if "probe_time" in data:
         pt = str(data.get("probe_time", "")).strip()
