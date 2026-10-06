@@ -551,7 +551,9 @@ def api_user_delete(user_id):
         # 清空账号保留事后告警：一次请求即把该用户的**全部**易班凭据不可逆清零，
         # 而当事人未必立刻发现（不像完全删除那样连登录入口一起消失）。这条是
         # 非 full 档下"无当次口令"的补偿信号，与 irreversible 的声明配套。
-        m.send_notification(
+        # 锁内登记、出锁后发（工单 ba-p05-01）。
+        m.run_after_file_lock(
+            m.send_notification,
             "高危管理操作告警",
             m._change_mail(
                 f"清空用户 {m._mask_email(email)} 的全部易班账号。",
