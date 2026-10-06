@@ -16,7 +16,7 @@
 #
 # 选项：
 #   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts
-#                    + path-env-reads 两道门禁，各带自己的元测试），
+#                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
 #                    就地跑：不建副本、不归一化、不落日志
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
@@ -224,6 +224,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     echo "DEV-VERIFY(ci) path env bare-read gate"
     "$py" scripts/check-path-env-reads.py
     "$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) config registry gate"
+    "$py" scripts/check-config-registry.py
+    "$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly
     echo "DEV-VERIFY(ci) done"
 }
 

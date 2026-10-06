@@ -44,7 +44,7 @@ import sys
 from datetime import datetime
 
 from yiban import __version__ as RELEASE_VERSION
-from yiban import clock, egress, window
+from yiban import clock, config_loader, egress, window
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 
@@ -407,9 +407,10 @@ def main(argv=None):
         return 0
 
     # 启动延迟已废弃：旧领取池的实现仍收该形参，但生产执行已不读取它
-    # 账号间隔：缺省 10 与 web 设置页「默认开启 10 秒」口径一致（web 端
-    # DEFAULT_ACCOUNT_GAP_MAX）：纯 signin 部署（.env 未配置该键）升级后自动获得 10s 账号间隔
-    gap_max = config_check.parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 10)
+    # 账号间隔：缺省与 web 设置页「默认开启」口径同源（web 端 DEFAULT_ACCOUNT_GAP_MAX
+    # 与本行都取自名册）：纯 signin 部署（.env 未配置该键）升级后自动获得账号间隔。
+    gap_max = config_check.parse_env_int(
+        "YIBAN_ACCOUNT_GAP_MAX", config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX"))
 
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
     # 周六同语义；一键暂停（管理员 Web UI）同理。
