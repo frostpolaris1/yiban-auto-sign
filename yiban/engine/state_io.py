@@ -331,13 +331,25 @@ def has_undone_accounts_today(state_dir=None, day=None):
     状态目录与业务日），不能调 `pending_count(day, vshards)`；而 `day_counts` 不过滤
     分片，历史平移/补账写入的 `vshard=-1`/`failed` 行永不被领取却属未了结态，把它算进来
     该日就**永远不了结**、补签轮反复空跑（与 `queue_store.open_count` 的核心口径一致）。
+
+    **库读不通按"未了结"处理并出声（ba-p01-01）**：`db.task_open_count` 读不通回 `None`
+    哨兵，读取抛异常同理。两者都说明"数不出未了结行"不等于"没有未了结行"。此时只回退
+    状态文件，会让"状态文件干净 + 库读不通"判成了结。补签轮于是不跑 = 漏签。
+    故这两条路径一律答"仍有未了结"，并各记一条 WARNING（不抛，补签轮照常起）。
+    `is_initialized()` 为假不算读失败：那是"本部署没配库"的形态，照旧只读状态文件。
     """
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
-        if db.is_initialized() and db.task_open_count(today) > 0:
-            return True
-    except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
-        logger.debug("读取领取池失败（回退状态文件口径）: %s", e)
+        if db.is_initialized():
+            open_rows = db.task_open_count(today)
+            if open_rows is None:
+                logger.warning("任务队列读不通，数不出未了结行，按未了结处理: day=%s", today)
+                return True
+            if open_rows > 0:
+                return True
+    except Exception as e:
+        logger.warning("读取任务队列失败，数不出未了结行，按未了结处理: %s", e)
+        return True
     d = state_dir or _state_dir()
     try:
         with open(os.path.join(d, f"sign-state-{today}.json"), encoding="utf-8-sig") as f:
