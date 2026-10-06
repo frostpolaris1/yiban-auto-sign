@@ -250,9 +250,11 @@ from web.services.executor_env import (  # noqa: E402
 )
 from web.services.locks import (  # noqa: E402
     # 进程内锁真源：`_file_lock`（账号/用户读改写）与 `_rate_lock`（限速/失败计数表）
-    # 都与 m.<名字> 是同一把，供路由取用
+    # 都与 m.<名字> 是同一把，供路由取用；`run_after_file_lock` 是"锁内不得有网络
+    # I/O"这条纪律的唯一汇合点，路由在锁内登记发信、出锁后执行
     _file_lock,  # noqa: F401
     _rate_lock,
+    run_after_file_lock,  # noqa: F401
 )
 from web.services.logs import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）

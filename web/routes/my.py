@@ -607,7 +607,8 @@ def api_my_account_add():
         # 重要告警」与当日非紧急额度约束（不挤占紧急账）。整段兜异常——账号已入库，
         # 通知失败不得把提交结果带崩成 500。
         try:
-            m.send_notification(
+            m.run_after_file_lock(
+                m.send_notification,
                 "新账号申请待审核",
                 m.mail_layout.Mail(
                     summary="有新提交的易班账号待审核。",
@@ -872,8 +873,9 @@ def api_my_account_delete(idx):
             session.get("username", ""),
             m._mask_phone(removed.get("phone", "")),
         )
-        # 删号（软删）给本人留痕邮件（绕过 mail_notify 开关）
-        m.mailer.send_user(
+        # 删号（软删）给本人留痕邮件（绕过 mail_notify 开关）；锁内登记、出锁后发
+        m.run_after_file_lock(
+            m.mailer.send_user,
             session.get("username", ""),
             "【易班签到】您的易班账号已删除（7 天内可撤销）",
             m.mail_layout.Mail(
