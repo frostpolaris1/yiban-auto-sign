@@ -362,7 +362,9 @@ def _schedule_config(now=None):
             logger.error("%s", _msg)
             # 只写日志不够：管理员在 Web 界面看到的窗口设置"看起来生效"、实际签到
             # 时刻完全不同且无人知情。故并入当日汇总邮件（A 线）。
-            alerts._collect_admin_mail("签到窗口配置异常", _msg)
+            # 高级别：实际签到时刻与配置不符 = 当天可能全量漏签，运维须当机改 .env。
+            alerts._collect_admin_mail("签到窗口配置异常", _msg,
+                                       level=alerts.ALERT_LEVEL_CRITICAL)
         start, end = _DEFAULT_SIGN_START, _DEFAULT_SIGN_END
     mu_lo = _env_int("YIBAN_SCHEDULE_MU_MIN_PCT", _DEFAULT_MU_MIN_PCT, 0, 100)
     mu_hi = _env_int("YIBAN_SCHEDULE_MU_MAX_PCT", _DEFAULT_MU_MAX_PCT, 0, 100)
@@ -498,6 +500,9 @@ def _schedule_blocks(cfg):
         global _window_clamped_notified
         if not _window_clamped_notified:
             _window_clamped_notified = True
+            # 高级别：与下面 fell_back 那支"签到窗口配置异常"同属"窗口退化 ⇒ 配置与
+            # 实际生效不符"一族（有效窗口被压到窗口宽度的 80%，重试空间随之减少）。
+            # 判级只看语义、不看它在列表里的位置。
             alerts._collect_admin_mail(
                 "签到窗口缓冲已收缩",
                 (
@@ -507,6 +512,7 @@ def _schedule_blocks(cfg):
                     "窗口宽度的 80%）。请调小 YIBAN_WINDOW_EDGE_FRONT_SEC / "
                     "YIBAN_WINDOW_EDGE_BACK_SEC（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
                 ),
+                level=alerts.ALERT_LEVEL_CRITICAL,
             )
     if win.fell_back:
         logger.warning("签到窗口 %s 不可用（宽度 <= 0），回退默认窗口 06:30~07:50", _win_txt)
@@ -514,6 +520,8 @@ def _schedule_blocks(cfg):
         global _window_fallback_notified
         if not _window_fallback_notified:
             _window_fallback_notified = True
+            # 高级别：窗口不可用而回退默认窗口，实际签到时刻与配置不符
+            # （同 `_schedule_config` 那支"签到窗口配置异常"口径）。
             alerts._collect_admin_mail(
                 "签到窗口配置异常",
                 (
@@ -521,6 +529,7 @@ def _schedule_blocks(cfg):
                     "06:30~07:50，实际签到时间将与配置不符！请检查 "
                     "YIBAN_SIGN_START / YIBAN_SIGN_END"
                 ),
+                level=alerts.ALERT_LEVEL_CRITICAL,
             )
     blocks = []
     b = start_min

@@ -805,6 +805,9 @@ def _alert_queue_unreadable(ctx, rounds):
     为什么必须响亮：降级口径是 fail-closed 后，领取面与待办面读不通就不判收干。
     库一直坏时本轮会走到上界再停止领取。现场若只有 `queue_store` 那几条 WARNING，
     运维看到的就是"今天没活"——那正是 ba-p01-01 要消灭的形状。
+
+    本条一轮至多一条，且运维须当机处理，故定级 CRITICAL。
+    逐账号明细挤满 200 条时，本条仍先占额度，不被挤出邮件正文。
     """
     logger.error("队列连续 %d 轮读不通（上界 %s），本轮停止领取；当天可能零签到",
                  rounds, QUEUE_UNREADABLE_MAX_ROUNDS)
@@ -812,7 +815,7 @@ def _alert_queue_unreadable(ctx, rounds):
         ("日期", ctx.day),
         ("连续读不通轮数", "%d（上界 %s）" % (rounds, QUEUE_UNREADABLE_MAX_ROUNDS)),
         ("处置", "查库锁与磁盘空间；库恢复后跑补签轮"),
-    ])
+    ], level=alerts.ALERT_LEVEL_CRITICAL)
 
 
 async def _refiller(queue, shards, ctx):

@@ -325,7 +325,7 @@ class BreakerTest(unittest.TestCase):
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
         sn.assert_not_called()  # 耗时属"事后可读"的慢信号：只进汇总，不即时推送
         self.assertEqual(len(signin._mail_summary), 1, f"实际 {signin._mail_summary}")
-        subject, fields = signin._mail_summary[0]
+        subject, fields, _level = signin._mail_summary[0]
         self.assertIn("耗时", subject)
         by_label = dict(fields)
         self.assertIn("31.0", by_label["耗时"], "汇总条目应含实际耗时")
@@ -356,7 +356,7 @@ class BreakerTest(unittest.TestCase):
         # 2 次尝试 → 只有最终放弃那一条即时通知（耗时条目未连收）
         self.assertEqual(sn.call_count, 1, "只有最终放弃的失败通知一条即时推送")
         self.assertEqual(sn.call_args_list[0].args[0], "易班签到失败")
-        self.assertEqual([s for s, _ in signin._mail_summary].count("易班签到耗时告警"), 1,
+        self.assertEqual([s for s, _t, _lv in signin._mail_summary].count("易班签到耗时告警"), 1,
                          f"两次慢尝试只收一条耗时条目，实际 {signin._mail_summary}")
         self.assertIn("31.0", dict(signin._mail_summary[0][1])["耗时"])
 
