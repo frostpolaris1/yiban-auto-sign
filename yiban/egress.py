@@ -66,10 +66,15 @@
 """
 import datetime
 import json
+import logging
 import os
 import socket
 
 from yiban.security import url_desc
+
+#: 告警通道：与 `scripts/child_env.py`、`yiban/engine/*` 同一条 "yiban"（root 之下），
+#: 故容器 stdout 与 web 按天日志面都能收到这里越界配置的那一行 WARNING。
+logger = logging.getLogger("yiban")
 
 DIRECT = ""
 
@@ -92,10 +97,17 @@ TYPE_FALLBACK = "fallback"
 TYPE_DISABLED = "disabled"
 TYPES = (TYPE_WORKER, TYPE_FALLBACK, TYPE_DISABLED)
 
-#: 槽位下标上限：`YIBAN_WORKERS` 旧口径允许 1~64 → 下标 0~63。
+#: 槽位下标上限：`YIBAN_WORKERS` 合法域 1~64 → 下标 0~63。
 SLOT_MAX = 63
-#: 旧口径执行体数的上限（与 SLOT_MAX 对应）
-WORKER_COUNT_MAX = SLOT_MAX + 1
+#: `YIBAN_WORKERS` 的合法域：**这两个常量是全仓唯一的一份数**（census P1-3）。
+#: `WORKERS_MAX` 与 `SLOT_MAX` 对应（1 个执行体占槽位 0，64 个占满 0~63）；
+#: `WORKERS_MIN` 同时是"未设/非法/越界"时的回退值（= 单执行体）。
+#: 宿主 `run.sh` 不再自己抄一份上下限，而是经 `"$PY" -c` 从这里取（取不到 ⇒ 响亮告警 +
+#: 按单执行体，绝不静默换成第二份数）；Web 写入校验（`web/routes/settings_api.py`）与
+#: 本模块的读取（`legacy_worker_count`）也引用同两个常量。
+#: 旧名 `WORKER_COUNT_MAX` 已并入 `WORKERS_MAX`：一枚事实一个名字。
+WORKERS_MIN = 1
+WORKERS_MAX = SLOT_MAX + 1
 
 ROLE_SINGLE = "single"
 ROLE_WORKER = "worker"
@@ -449,12 +461,30 @@ def executor_label(rtype, slot=None):
 
 
 def legacy_worker_count(env):
-    """旧 `YIBAN_WORKERS` 的执行体数：未设/非整数=1，按旧口径钳在 1~64。"""
-    try:
-        n = int(str((env or {}).get(ENV_WORKER_COUNT, "")).strip())
-    except (TypeError, ValueError):
-        return 1
-    return min(WORKER_COUNT_MAX, max(1, n))
+    """`YIBAN_WORKERS` 的执行体数：合法域 `WORKERS_MIN~WORKERS_MAX`，越界回退下限。
+
+    越界与非整数**告警后回退 `WORKERS_MIN`（单执行体），不再静默钳到上限**：钳位会把
+    65 读成 64，而宿主 `run.sh` 对同一个值降级单执行体——同一份配置两种结果。选"回退下限"
+    不选"钳到上限"：越界的数不是管理员确认过的意图，而每多一个执行体就多一路真实登录
+    （风控面）；少开有告警看得见，多开看不见。口径与 `schedule._env_int` 一致
+    （超范围 ⇒ 回退默认 + WARNING）。
+    整数判据取 ASCII 十进制（`raw.isascii() and raw.isdigit()`）：`int("1_0")`、`int("+5")`
+    这类 Python 侧宽容写法会让 bash 的正则与本函数再次分叉，故这里不宽容。
+    未设/空白是默认形态（单执行体），按 `WORKERS_MIN` 静默返回。
+    """
+    raw = str((env or {}).get(ENV_WORKER_COUNT, "")).strip()
+    if not raw:
+        return WORKERS_MIN
+    if not (raw.isascii() and raw.isdigit()):
+        logger.warning("配置 %s=%r 非法（须为 %d~%d 的整数），按单执行体执行",
+                       ENV_WORKER_COUNT, raw, WORKERS_MIN, WORKERS_MAX)
+        return WORKERS_MIN
+    n = int(raw)
+    if not WORKERS_MIN <= n <= WORKERS_MAX:
+        logger.warning("配置 %s=%s 超出范围 [%d, %d]，按单执行体执行",
+                       ENV_WORKER_COUNT, n, WORKERS_MIN, WORKERS_MAX)
+        return WORKERS_MIN
+    return n
 
 
 def legacy_worker_proxies(env):
