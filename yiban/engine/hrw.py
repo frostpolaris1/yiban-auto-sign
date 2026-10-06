@@ -2,6 +2,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """HRW（Rendezvous Hashing）确定性分工：账号 → 虚分片 → 执行体，纯函数、无中心。
 
+**算法溯源**
+- Rendezvous Hashing（又称 HRW / Highest Random Weight Hashing）：
+  David Thaler、Chinya Ravishankar，密歇根大学 CSE-TR-316-96（1996），
+  正式论文 IEEE/ACM ToN 6(1) 1998。本模块即该算法：`vshard_of` 是账号→虚分片的取模步，
+  `owner_of` 的 `argmax_e H(vshard‖day‖executor)` 是归属步。二者论文给出了**最小扰动界**
+  ——增删一个执行体时仅归属被超过的约 1/K 分片重映射，这是 `owner_of` 取代"按取余轮流分"
+  的全部依据（ketama 一致性哈希环的搬移比例同为 ~1/K，差别在本算法的查找是无中心的，
+  不依赖任何协调状态）。
+
 **功能**：把账号划分给执行体，全程不需要任何协调。两步：`vshard_of` 按 `(phone, day)`
 把账号钉进 v 个虚分片之一，`owner_of` 再对每个分片用 argmax 选出归属执行体。
 

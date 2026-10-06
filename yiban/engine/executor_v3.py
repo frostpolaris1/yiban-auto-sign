@@ -1,6 +1,28 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""**功能**
+"""**算法溯源**
+- Work Stealing / Self-Scheduling（自调度与工作窃取）：Richard D. Blumofe、Charles E.
+  Leiserson，*Scheduling Multithreaded Computations by Work Stealing*（FOCS 1994 /
+  JACM 1999）。本模块取其**分布式形态**——共享任务池 + 执行体轮询领取（Temporal 的
+  Task Queue、Celery 的队列模型属同类），而非内存内的"偷队列"：跨进程没有共享内存可偷，
+  仲裁者只能是数据库。
+- Exponential Backoff with Jitter（指数退避加抖动）：`next_retry_at_v3` 用**Decorrelated
+  Jitter** 变体，出自 Marc Brooker（AWS）抖动一文的三变体比较（Full / Equal /
+  Decorrelated）。无抖动的指数退避会让同一批失败任务每轮同步重试（惊群）；Equal Jitter
+  保留固定下界，次生尖峰最重；本模块取 Decorrelated 是因其上界随上次抖动放大，在风控
+  场景下比 Full Jitter 更保守。
+- Adaptive Concurrency Limits（自适应并发上限）：通道数 M 由限速配置推导而非写死，思路
+  出自 Netflix *Rethinking Concurrency Control for Microservices*（Mahadut 等），同项
+  溯源见 `token_bucket.py`。
+- Fencing Token（栅栏令牌）：Martin Kleppmann。领取自增 `epoch`、结算按 epoch 比对，同项
+  溯源见 `yiban/store/queue_store.py`；`queue_store.reap_expired` 的豁免名册（本模块的
+  `_live_row_owners`）与 `_widen_with_dead_peers` 按心跳四态把"持锁者其实还活着"从误判里
+  豁免出来——这正对应 Consul 的 lock-delay 一类设计。
+- Priority Queue + Delayed Requeue（优先级队列与延迟重投）：任务按 `(priority, run_at)`
+  进 `asyncio.PriorityQueue`；重试未成的行退回 `pending`、`run_at` 推到未来，下一拍重新
+  可领，是 SQS 延迟队列一类的"定时再投"形态。
+
+**功能**
 调度 v3 的执行体核心：单进程 asyncio **M 条通道**从 `sign_tasks` 批量领取自己分片集内
 到点的任务，按计划时刻并发执行（`attempts.attempt_signin` 整体经 `asyncio.to_thread`
 提交，线程池上限 = M），出口令牌桶限速、每账号 gap 门、装订式抖动退避、终态批量收尾。

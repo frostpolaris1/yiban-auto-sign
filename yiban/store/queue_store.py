@@ -2,6 +2,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """任务队列访问层：`sign_tasks` 的批量领取 / 批量收尾 / 重排 / 当日计数（v18）。
 
+**算法溯源**
+本表是数据库做任务队列的标准形态，各机制对应如下：
+- Fencing Token（栅栏令牌）：Martin Kleppmann。每次领取 `epoch=epoch+1`，收尾时以
+  `WHERE owner=? AND epoch=?` 双条件结算。它是**租约的必需补充**：租约只保证"不会有两个
+  持有者同时以为自己拥有"，无法保证"旧持有者暂停后复活时写不进去"——进程可在任意点被
+  暂停，醒来时租约可能早已过期。本表靠结算侧的 epoch 比对拒掉迟到写（"拒绝 token 回退的
+  写入"正是 Kleppmann 给存储层的要求）。**改动 claim_batch / settle_tasks 时不得去掉
+  epoch**。
+- Visibility Timeout（可见性超时 / 消息级租约）：Amazon SQS。`lease_until` 到期未结算的
+  行重新可被领取，语义与 SQS「收下但没删则超时重新可见」一致。与 Fencing Token 的分工：
+  前者管"死透了怎么回收"，后者管"没死透的不许写"。
+- SKIP LOCKED（PostgreSQL 9.5 引入）的等价形态：单条 `UPDATE ... WHERE (phone,day) IN
+  (SELECT ...) RETURNING` 在本仓 SQLite 的写者串行语义下天然原子，无需显式 `SKIP LOCKED`
+  语法；若迁到 PG/MySQL 这是等价替换点（MySQL 8 无 `UPDATE...RETURNING`，须另写
+  `UPDATE...LIMIT` + 回查）。
+- 分片领取围栏：Rendezvous Hashing（Thaler & Ravishankar，见 `yiban/engine/hrw.py`）。
+  `vshard IN (...)` 让执行体只碰自己名下分片，是「领取零竞争」的来源。
+
 **功能**
 - `claim_batch`：按虚分片批量领取到期任务——单条 `UPDATE ... RETURNING`，在
   SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）；

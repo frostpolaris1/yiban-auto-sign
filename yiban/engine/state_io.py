@@ -1,6 +1,18 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""**功能**
+"""**算法溯源**
+- Heartbeat Failure Detector（心跳失效检测器）：分布式系统判活的标准手段，HashiCorp
+  Consul 的 session TTL 文档即以此措辞定义。`worker_presence` 的四态（running / finished /
+  idle / stale）是它在本仓的落地：写侧按 `WORKER_HEARTBEAT_SEC` 节流刷新，读侧按 2 倍周期
+  判"新鲜"，超时即 `stale`。ZooKeeper 的 ephemeral node（会话结束即删除）与 etcd 的 lease
+  （TTL 到期撤销）是同族机制。
+- Lock Delay（锁延迟）：Consul 对应设计——旧持有者失效后**不允许立刻重夺**，须等一个延迟
+  窗口。本仓的等价形态在执行层：`reap_expired` 必须豁免"心跳仍存活的持有者"，否则会把
+  活着但慢的持有者手上的行回收成 `pending`、被本轮重领，造成同一账号两次真实登录。
+- File Lock（文件锁）：跨进程互斥的常用原语，POSIX `fcntl.flock`；本仓用于状态文件的
+  读—改—写临界区（见 `yiban/infra/locks.py`）。
+
+**功能**
 状态文件读写与判定：按日状态、全量收尾标记、账密熔断状态、执行体心跳。
 
 两类执行体心跳都在这里：兜底常驻的执行体心跳（写侧 `_write_fallback_alive`、读侧
