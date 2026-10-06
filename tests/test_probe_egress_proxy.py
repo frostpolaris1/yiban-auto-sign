@@ -5,8 +5,9 @@
 覆盖：`probe._egress_env` 的两源合并口径、`probe._apply_egress_proxy` 的套用与
    "未配则不动"、`verify_account` 在登录前确实套上了出口。
 
-对应实现：yiban/engine/probe.py（`_egress_env`、`_apply_egress_proxy`、
-   `verify_account`）、yiban/egress.py（`resolve(ROLE_SINGLE)`）。
+对应实现：yiban/engine/probe.py（`_egress_env`、`_executor_identity`、`_resolve_egress`、
+   `_apply_egress_proxy`、`verify_account`）、yiban/egress.py（`resolve`——按身份解析出的
+   角色取值；web 进程无 `YIBAN_EXECUTOR_ID` ⇒ 单执行体角色 ⇒ 读 `YIBAN_PROXY`，逐字同旧）。
 
 关键断言：这条路径是**服务器代用户向易班发起的真实登录**，风控暴露面与签到同一级，
    却是唯一跑在 web 进程里的一条——出口是给执行体子进程注入的，web 进程的环境里通常
