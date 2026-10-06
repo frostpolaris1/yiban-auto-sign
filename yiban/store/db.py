@@ -13,7 +13,7 @@
 本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
 - `migrations`：建表/索引、`migrate_v1..v20`、版本编排 `_run_migrations` 与完整性校验
-  （`MigrationIntegrityError`：迁移记录/核心产物缺失 ⇒ 拒启），以及 JSON → SQLite
+  （`MigrationIntegrityError`：迁移记录/登记产物缺失 ⇒ 拒启），以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。

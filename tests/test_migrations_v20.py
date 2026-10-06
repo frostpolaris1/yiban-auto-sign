@@ -71,15 +71,20 @@ class MigrateV20Test(unittest.TestCase):
 
     # ---- 夹具 ----
     def _open_at_v19(self):
+        """把库**真的**升到 v19（跑 v1..v19 整链），得到"停在 v19"的现网形态。
+
+        v19 真的跑：user_version=19 的库必须有 sign_claims.epoch——迁移完整性校验会拒
+        "版本声称已过 v19 但产物缺失"的漂移库，夹具不得是那种漂移库。同理，链尾产物门
+        也要求 v4/v6/v8/v12/v15/v16 的产物齐（sign_events、verify_jobs、app_meta……），
+        所以不能再手工只调三枚迁移来搭库。
+        """
         conn = sqlite3.connect(os.path.join(self.root, "yiban.db"))
         conn.row_factory = sqlite3.Row
-        migrations.migrate_v17(conn)
-        migrations.migrate_v18(conn)
-        # v19 真的跑：user_version=19 的库必须有 sign_claims.epoch——迁移完整性校验
-        # 会拒"版本声称已过 v19 但产物缺失"的漂移库，夹具不得是那种漂移库。
-        migrations.migrate_v19(conn)
-        conn.execute("PRAGMA user_version = 19")
-        conn.commit()
+        migrations._create_tables(conn)
+        with mock.patch.object(migrations, "_MIGRATIONS",
+                               [m for m in migrations._MIGRATIONS if m[0] <= 19]):
+            migrations._run_migrations(conn)
+        self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 19)
         return conn
 
     def _write_state(self, day, payload, name="sign-state", raw=None):
