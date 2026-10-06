@@ -201,7 +201,7 @@ mkdir -p /var/log/yiban
 
 > 📦 **生产执行件已入库（M3 批次0，MF-42）**：上面的 crontab 行与清理/探针排期在
 > `deploy/prod/cron.d/` 有原件（`yiban-sign`/`yiban-cleanup`/`yiban-probe`），配合
-> `deploy/prod/manifest.tsv` + `deploy/prod/install.sh` 一键落位（支持 `DESTDIR` 无特权
+> `deploy/prod/manifest.tsv` + `deploy/prod/install.sh` 一键落位（支持 `DESTDIR` 暂存
 > 安装；对已存在文件先做 sha256 对账，**校验和不符即拒装**——现网手工漂移必须先 diff
 > 回填仓库，或确认以仓库为准后加 `--adopt-production` 归档覆写）。备份的 cron 入口改为
 > wrapper：`deploy/prod/yiban-backup-wrapper.sh` 从 0600 口令文件读出口令后经 **stdin
@@ -210,14 +210,17 @@ mkdir -p /var/log/yiban
 > `scripts/check-cron-provenance.sh` 机器断言（安装时强制跑；`tests/test_deploy_prod_artifacts.py`
 > 用活体反例钉死这道门）。
 >
-> 🔒 **以 root 安装的前置门（M01，2026-10-01）**：`install.sh` 以 root 执行检出内的脚本
-> 并把检出件 root:root 安装，故**以 root 安装（未设 `DESTDIR`）时检出必须属 root 且组/
-> 其他不可写**，否则拒装（`以 root 安装时检出必须属 root 且非组/其他可写`，exit 1）。
-> 若部署目录对服务账号 `yiban` 组可写（旧 README 为让 web 写 `.env`/`yiban.db` 而放开），
-> 安装前先 `sudo chown -R root:root /opt/yiban-auto-sign && sudo chmod -R go-w /opt/yiban-auto-sign`，
+> 🔒 **以 root 安装的前置门（M01，2026-10-01；作用域修正 2026-10-06）**：`install.sh`
+> 以 root 执行检出内的脚本，故**只要以 root 跑（带不带 `DESTDIR` 都一样）检出必须属
+> root 且组/其他不可写**，否则拒装（`以 root 安装时检出必须属 root 且非组/其他可写`，
+> exit 1）。`DESTDIR` 只改写入目标，不改 root 读取与执行的来源，所以它不豁免这道门；
+> 想彻底绕开它只能用**非 root** 跑（无特权暂存安装）。若部署目录对服务账号 `yiban`
+> 组可写（旧 README 为让 web 写 `.env`/`yiban.db` 而放开），安装前先
+> `sudo chown -R root:root /opt/yiban-auto-sign && sudo chmod -R go-w /opt/yiban-auto-sign`，
 > 并把运行期可写数据（`.env`/`yiban.db`/状态目录）移出检出（如放到 `/var/lib/yiban` 后
-> 在 `.env` 里指 `YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。测试/暂存安装用 `DESTDIR=` 前缀
-> 不受此门影响。
+> 在 `.env` 里指 `YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。
+> 另注：是否把产物设成 `root:root` 属主，看的仍是「root 且未设 `DESTDIR`」——那是写入
+> 侧的不变量，与上面那条判据不同，两条门不许"统一"。
 >
 > 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
 > `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
