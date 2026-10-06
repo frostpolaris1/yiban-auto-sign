@@ -30,6 +30,18 @@
     另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数，且"每账号
     请求数 6"这枚**零定义点**键必须以 pending 显式登记。
 
+    gxf4（B0.5 名册补齐，2026-10-06）补登记 census 余下两族的 25 枚真键。
+    信任权限 10 枚，线格式身份 15 枚。线格式身份有 1 枚零定义点键，只能 pending。
+    本刀同批立四类守卫。
+    ① 两族的在册行数等于 census 真键数。摘掉一枚键，本守卫即红。门自身对摘键无感，
+    实证见 `test_gate_is_silent_when_a_registered_key_is_dropped`。
+    ② 两族的上限等于登记当天的门实测值。上限与实测的差值就是门被放水的量。
+    ③ 一行只许一个口径。生产定义点与测试引用不许混行。
+    ④ 文件头的「覆盖边界」段必须与真行相符。散文漂移即读者按假话办事。
+
+    另有一类钉住「docstring 计入定义点」这条口径决定。剥掉 docstring 是放水。
+    它会让本册全部上限同时作废。下一个想剥的人必须显式重定全部上限。
+
     2026-10-06 起名册有**引擎路由**：判定模式以 `ast:` 开头的 active 行由
     `scripts/check-path-env-reads.py` 计数，本 awk 引擎让开并点名让开。"每枚
     active 键都要被计数"这条不变量因此只看本引擎的读数，两引擎的并集判据在
@@ -66,8 +78,34 @@ AST_ENGINE_PREFIX = "ast:"
 
 #: 名册列序（与 shared-facts.tsv 的表头逐字一致）
 COLUMNS = ("族", "键", "状态", "判定模式", "扫描范围", "允许上限", "口径备注")
-#: 本刀钉的三族（§14 原文：路径配置 / 状态件 / 语义常量）
-FAMILIES = ("路径配置", "状态件", "语义常量")
+#: gxf4（B0.5 名册补齐）后本册覆盖的族。census `ROSTER.csv` 共 5 族 86 数据行，
+#: 其中 2 行是 `(交付状态)` 元行 ⇒ 84 枚真键；B0.5（§14）只裁了三族 59 枚，
+#: 余下 25 枚由 gxf4 补齐——FAMILIES 必须与 census 的族集等势（见
+#: `SharedFactsCoverageClaimTest`），漏一族=那族的键没有门。
+FAMILIES = ("路径配置", "状态件", "语义常量", "信任权限", "线格式身份")
+#: gxf4 新增的两族（下面是它们在 census 里的族名原文）
+TRUST_FAMILY = "信任权限"
+WIRE_FAMILY = "线格式身份"
+#: census 各族的**真键**行数（族名 → 枚数）。数字来处：`ROSTER.csv` 的 86 数据行
+#: 减去 2 行 `(交付状态)` 元行（路径配置 1、信任权限 1）⇒ 84 枚；信任权限 11-1=10、
+#: 线格式身份 15 枚全为真键。写死是牙——摘掉任意一枚键，本文件
+#: `SharedFactsNewFamilyCoverageTest` 即红（门自身对摘键无感，见该测试自证）。
+CENSUS_REAL_KEY_COUNTS = {"路径配置": 20, "状态件": 20, "语义常量": 19,
+                          TRUST_FAMILY: 10, WIRE_FAMILY: 15}
+#: 两族新登记的真键枚数（gxf4 交付面），供逐族断言直接引用
+NEW_FAMILY_KEY_COUNTS = {TRUST_FAMILY: CENSUS_REAL_KEY_COUNTS[TRUST_FAMILY],
+                         WIRE_FAMILY: CENSUS_REAL_KEY_COUNTS[WIRE_FAMILY]}
+#: 线格式身份里唯一一枚**零定义点**键（census def=0）：只能 pending，不许硬编上限。
+#: 它是两族 25 枚里唯一允许非 active 的行——`SharedFactsNewFamilyCoverageTest`
+#: 把这条例外写死，多出一枚 pending 即红。
+WIRE_ZERO_DEF_KEY = "JS 侧状态字符串硬编码比较（17 处消费、零定义点）"
+#: census 的族汇总/交付状态元行不是一枚共享事实，不许被登记成键
+CENSUS_META_MARKERS = ("(交付状态)", "__STATUS__")
+#: 生产扫描路径名（`check-shared-facts.sh` 的 DEFAULT_SCOPE 里的条目）
+PRODUCTION_PATHS = ("yiban", "scripts", "web", "docker", "deploy", ".github",
+                    "run.sh", "run_probe.sh")
+#: 测试路径名——与生产口径混在一行就是 gxf4 要消灭的 `tsv:92` 形状
+TEST_PATHS = ("tests",)
 #: 显式登记为 pending 的"零定义点"键：今天无可计数载体，不许硬编上限
 ZERO_DEF_KEY = "每账号 HTTP 请求数 6"
 #: 合成反例用的假模式（绝不出现在真名册里）
@@ -124,6 +162,31 @@ def _func_body(text, func):
 def _run(script, *args):
     return subprocess.run([BASH, script, *args], capture_output=True, text=True,
                           cwd=BASE, timeout=120)
+
+
+def _gate_counts(stdout):
+    """从门禁 stdout 解析 {键: (实测命中数, 允许上限)}。
+
+    门对每枚在册 active 键都打印一行 `ok|提示|超标: 族 / 键 —— 命中 h/max`。
+    本函数是"上限=实测"这条断言唯一的读数来源——直接取门禁自己的产出，
+    守卫不另建第二个计数入口（否则两处口径会各自漂移）。
+    """
+    pat = re.compile(r"^(?:ok|提示|超标): \S+ / (.+?) —— 命中 (\d+)/(\d+)$", re.M)
+    return {m.group(1): (int(m.group(2)), int(m.group(3))) for m in pat.finditer(stdout)}
+
+
+def _rows_of(family):
+    return [r for r in _rows() if r["族"] == family]
+
+
+def _scope_classes(scope):
+    """将一行的扫描范围拆成 (含生产路径, 含测试路径) 两个布尔。`default` 两个都 False。"""
+    if scope.strip() == "default":
+        return False, False
+    toks = scope.split()
+    prod = any(tok == p or tok.startswith(p + "/") for tok in toks for p in PRODUCTION_PATHS)
+    test = any(tok == t or tok.startswith(t + "/") for tok in toks for t in TEST_PATHS)
+    return prod, test
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -544,6 +607,230 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         if routed:
             self.assertIn("引擎路由", r.stdout,
                           "有键走 ast: 路由时脚本必须点名让开——静默让开=没人发现键没人计数")
+
+
+@unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
+class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
+    """gxf4 ①：census 余下两族 25 枚真键必须全部在册，且上限=门禁当日实测值。
+
+    为什么上限必须**等于**实测（比既有三族的"上限冻结"更严）：门只管"不许长出新
+    定义点"，`h < max` 也绿。登记当天就把上限写成估算值或往大取整，门出生就带着
+    一段静默余量——新增的定义点会落进那段余量里不被发现。两族是首次登记，没有
+    历史冻结值要保护，所以按实测钉死。既有三族不纳入本条断言（实测有 5 枚 max
+    高于 h，见 gate-baseline 记录；改它们会撞上 B1 其他簇正在修的行）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.gate = _run(SCRIPT)
+
+    def test_two_new_families_registered_with_census_key_counts(self):
+        for fam, want in NEW_FAMILY_KEY_COUNTS.items():
+            got = _rows_of(fam)
+            self.assertEqual(len(got), want,
+                             f"族 {fam} 在册 {len(got)} 行，census 真键 {want} 枚——"
+                             f"少一行=那枚共享事实没有门（摘键的红就在这条）")
+        # 两族 25 枚里只许那一枚零定义点键是 pending：多出一枚就是"登记了但不判定"，
+        # 等于既没门又占着行数（行数断言会被它喂饱）。
+        not_active = [r["键"] for r in _rows_of(TRUST_FAMILY) + _rows_of(WIRE_FAMILY)
+                      if r["状态"] != "active"]
+        self.assertEqual(not_active, [WIRE_ZERO_DEF_KEY],
+                         f"两族的非 active 行只许那一枚零定义点键: {not_active}")
+
+    def test_wire_zero_definition_point_key_is_registered_pending(self):
+        """census def=0 的那枚键必须显式 pending 且不许带假上限（与『每账号请求数 6』同规）。"""
+        hit = [r for r in _rows_of(WIRE_FAMILY) if r["键"] == WIRE_ZERO_DEF_KEY]
+        self.assertEqual(len(hit), 1, f"{WIRE_ZERO_DEF_KEY} 必须以 pending 显式登记")
+        self.assertEqual(hit[0]["状态"], "pending")
+        self.assertEqual(hit[0]["允许上限"].strip(), "-",
+                         "零定义点键不许硬编上限凑数")
+        self.assertIn("B3", hit[0]["口径备注"],
+                      "零定义点键必须写明由谁先建定义点（B3），否则无人接手")
+
+    def test_census_meta_rows_are_not_registered_as_keys(self):
+        """census 的 `(交付状态)`/`__STATUS__` 元行不是一枚共享事实，不许混进名册凑数。"""
+        for r in _rows():
+            for marker in CENSUS_META_MARKERS:
+                self.assertNotIn(marker, r["键"],
+                                 f"census 元行被当成键登记了: {r['键']!r}")
+
+    def test_cap_equals_measured_hit_count_for_both_new_families(self):
+        self.assertEqual(self.gate.returncode, 0,
+                         f"真树必须绿：\n{self.gate.stdout}\n{self.gate.stderr}")
+        counts = _gate_counts(self.gate.stdout)
+        for fam, want in NEW_FAMILY_KEY_COUNTS.items():
+            self.assertEqual(len(_rows_of(fam)), want)
+            for r in _rows_of(fam):
+                if r["状态"] != "active":
+                    self.assertNotIn(r["键"], counts,
+                                     f"键 {r['键']} 是 pending 行，不该有计数行"
+                                     f"（pending 不判定、不占上限）")
+                    continue
+                self.assertIn(r["键"], counts,
+                              f"键 {r['键']} 在册但门没给它计数行——它没被任何引擎数")
+                hits, cap = counts[r["键"]]
+                self.assertEqual(hits, cap,
+                                 f"键 {r['键']} 的上限 {cap} 不等于实测 {hits}——"
+                                 f"差值就是门被放水的量（放宽上限凑绿禁止）")
+
+    def test_gate_is_silent_when_a_registered_key_is_dropped(self):
+        """实证门的语义边界：摘掉一行**不会**让门红（少判一枚键没有超标可报）。
+
+        这条不是缺陷断言，是把"为什么必须由本守卫钉住 25 枚齐"写进可执行文档：
+        若有人删掉一行并指望门兜住，这里证明兜不住——摘键的红只来自上面那条行数断言。
+        """
+        victims = _rows_of(TRUST_FAMILY) + _rows_of(WIRE_FAMILY)
+        self.assertTrue(victims, "两族还没登记，本条无从取证")
+        victim = victims[0]
+        tmp = tempfile.mkdtemp(prefix="yiban-sfdrop-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        dropped = os.path.join(tmp, "roster-without-one-key.tsv")
+        kept = [ln for ln in _read(ROSTER).splitlines()
+                if ln.strip() and not ln.startswith("\t".join(
+                    (victim["族"], victim["键"], victim["状态"])) + "\t")]
+        with io.open(dropped, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(kept) + "\n")
+        r = _run(SCRIPT, "--roster", dropped)
+        self.assertEqual(r.returncode, 0,
+                         f"预期门对摘键无感（若这条红=门的语义变了，要重读本测试）：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        self.assertNotIn(victim["键"], _gate_counts(r.stdout),
+                         "被摘掉的键不该还有计数行——它已经不在册了")
+
+
+@unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
+class SharedFactsDocstringSurfaceTest(unittest.TestCase):
+    """gxf4 ②：口径决定「docstring 计入定义点」必须由活体反例钉住。
+
+    门只剥注释语法，不剥字符串字面量（`check-shared-facts.sh` 文件头与名册文件头
+    同一条线）。理由：把共享事实的数字抄进散文正是 census 判名册 B 点名的病——
+    改代码不会改散文，所以这类命中**需要被数**。本类钉住这个方向：如果有人把
+    docstring 也剥掉（全局口径改动），第二个测试会由红转绿而失败——那正是要求
+    "必须显式重定全部上限"的信号。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-docstring-")
+        self.root = os.path.join(self.tmp, "tree")
+        os.makedirs(os.path.join(self.root, "src"))
+        self.roster = os.path.join(self.tmp, "roster.tsv")
+        # 第 1 行是 docstring 内的命中，第 4、5 行是代码里的真定义点
+        with io.open(os.path.join(self.root, "src", "d.py"), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write('"""模块 docstring：散文里抄了一遍 %s。"""\n'
+                    'import os\n'
+                    '\n'
+                    'A = "%s"\n'
+                    'B = "%s"\n' % ((SYNTH_TOKEN,) * 3))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _gate(self, allowed):
+        with io.open(self.roster, "w", encoding="utf-8", newline="\n") as f:
+            f.write("# 合成名册（docstring 口径反例）\n")
+            f.write("\t".join(COLUMNS) + "\n")
+            f.write("\t".join(("路径配置", SYNTH_KEY, "active", SYNTH_TOKEN,
+                               "src", str(allowed), "合成")) + "\n")
+        return _run(SCRIPT, "--root", self.root, "--roster", self.roster,
+                    "--min-files", "1")
+
+    def test_docstring_hit_is_counted_alongside_code(self):
+        """上限 3 = 2 处代码 + 1 处 docstring ⇒ 绿，且必须报出 3。"""
+        r = self._gate(3)
+        self.assertEqual(r.returncode, 0,
+                         f"docstring 里的命中必须计入（3 处全算才够上限）：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        self.assertIn("命中 3/3", r.stdout, "报告里就得看见 docstring 被数进来了")
+
+    def test_docstring_hit_is_named_as_an_overflow_point(self):
+        """上限 2（只允许那 2 处代码）⇒ 必须红，并点名 docstring 所在的第 1 行。
+
+        反向证据：光说"docstring 计入"不算，得让它在超出时**被点名到具体行**。
+        有人把剥取逻辑扩到字符串字面量后，这条会转绿 ⇒ 本断言红 ⇒ 全局口径
+        改动必须连带重定全部上限，正是工单要的效果。
+        """
+        r = self._gate(2)
+        self.assertEqual(r.returncode, 1,
+                         f"docstring 命中若不计入，此处会误绿：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("src/d.py:1", r.stdout,
+                      "判红必须点名 docstring 那一行（第 1 行）作为超出的一击")
+        self.assertIn("命中 3/2", r.stdout)
+
+
+@unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
+class SharedFactsScopePurityTest(unittest.TestCase):
+    """gxf4 ③：一行只许一个口径——生产定义点与测试引用不许混在同一行。
+
+    `tsv:92`（scope=`yiban scripts tests`，上限 41）的备注自述两次上调：21→33
+    （docstring + 新 f-string）、33→41（tests 新增测试引用）。两种口径混在一枚键
+    上，测试引用的增长会把生产定义点的余量吃掉——新增一处生产绕过点会落进那段
+    虚高余量里不被发现。拆成两行后，各自的上限只能各自动，diff 就是留痕点。
+    """
+
+    def test_no_active_row_mixes_production_and_test_scope(self):
+        mixed = []
+        for r in _rows():
+            if r["状态"] != "active":
+                continue
+            prod, test = _scope_classes(r["扫描范围"])
+            if prod and test:
+                mixed.append("%s（扫描范围=%s）" % (r["键"], r["扫描范围"]))
+        self.assertEqual(mixed, [],
+                         "以下 active 行把生产定义点与测试引用混进同一口径，"
+                         f"上限无法分别归因: {mixed}")
+
+
+@unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
+class SharedFactsCoverageClaimTest(unittest.TestCase):
+    """gxf4 ④：名册文件头的「覆盖边界」段必须与真行的族集/枚数/状态数逐项相符。
+
+    为什么单立一类：本册唯一告诉后人"哪几族已登记、还差哪几族"的地方就是那段散文，
+    而门与上面三条断言都看不见它（门只数上限、断言只数行）。gxf4 之前那段写着
+    "信任权限 10 键与线格式身份 15 键不在本刀范围"——补登记当天它就成了假话。
+    散文漂移=读者按假话办事（下一轮会重复登记或漏登记）⇒ 必须红。
+    """
+
+    def setUp(self):
+        self.header = "\n".join(ln for ln in _read(ROSTER).splitlines()
+                                if ln.lstrip().startswith("#"))
+        self.rows = _rows()
+
+    def test_header_declares_every_census_family_with_correct_key_counts(self):
+        m = re.search(r"路径配置 (\d+) / 状态件 (\d+) / 语义常量 (\d+) / "
+                      r"信任权限 (\d+) / 线格式身份 (\d+)", self.header)
+        self.assertIsNotNone(m, "文件头「覆盖边界」段必须逐族写出真键数"
+                                "（不写=读者无从核对本册缺了哪一族）")
+        declared = {"路径配置": int(m.group(1)), "状态件": int(m.group(2)),
+                    "语义常量": int(m.group(3)), TRUST_FAMILY: int(m.group(4)),
+                    WIRE_FAMILY: int(m.group(5))}
+        self.assertEqual(declared, CENSUS_REAL_KEY_COUNTS,
+                         "文件头声明的逐族真键数与 census 不符")
+        self.assertEqual(set(FAMILIES), set(CENSUS_REAL_KEY_COUNTS),
+                         "FAMILIES 必须与 census 的族集等势（本文件两处硬编码不许各说各话）")
+
+    def test_header_declared_counts_match_the_actual_rows(self):
+        active = [r for r in self.rows if r["状态"] == "active"]
+        pending = [r for r in self.rows if r["状态"] == "pending"]
+        keys = sum(CENSUS_REAL_KEY_COUNTS.values())
+        m = re.search(r"真键 (\d+) 枚", self.header)
+        self.assertIsNotNone(m, "文件头必须写出 census 真键总数")
+        self.assertEqual(int(m.group(1)), keys, "文件头声明的真键总数与逐族数之和不等")
+        m = re.search(r"\+ (\d+) 行拆分", self.header)
+        self.assertIsNotNone(m, "文件头必须写出拆分行数（一枚 census 键登记成多行时读者才对得上账）")
+        extra = int(m.group(1))
+        self.assertEqual(len(self.rows), keys + extra,
+                         f"实有 {len(self.rows)} 行 ≠ 真键 {keys} + 拆分 {extra} 行——"
+                         f"行数漂了就得同批改文件头「覆盖边界」段")
+        m = re.search(r"合计登记 (\d+) 行", self.header)
+        self.assertIsNotNone(m, "文件头必须写出登记总行数")
+        self.assertEqual(int(m.group(1)), len(self.rows),
+                         f"文件头声明合计 {m.group(1)} 行，实有 {len(self.rows)} 行")
+        m = re.search(r"active (\d+) 行、pending (\d+) 行", self.header)
+        self.assertIsNotNone(m, "文件头必须写出 active/pending 行数")
+        self.assertEqual((int(m.group(1)), int(m.group(2))),
+                         (len(active), len(pending)),
+                         "文件头声明的 active/pending 行数与实有行数不符")
 
 
 if __name__ == "__main__":
