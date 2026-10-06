@@ -9,9 +9,9 @@
    递增、day_counts 与直接 SQL 的一致口径及派生键。
 对应实现：yiban/store/queue_store.py（claim_batch、settle_tasks、requeue_task、day_counts）、scripts/db.py
    的建表迁移、yiban/store/claims.py 的 stats 键口径。
-关键断言：「表未落地」与「表在但无到期行」必须是两件事：前者要空返回并告警，调用方据此退回动态领取；后者静默，不能天天喊库坏了。limit
+关键断言：「表未落地」与「表在但无到期行」必须是两件事：前者要回 `None` 哨兵并告警（调用方据此计入有界放弃闸门），后者静默，不能天天喊库坏了。limit
    截断时的取舍必须显式排序（priority 小者、同优先级 run_at 早者），因为 UPDATE
-   ... RETURNING 的行序不保证。空 day（含库不可用路径）也要给出与 claims.stats
+   ... RETURNING 的行序不保证。空 day（表在、当日无行）也要给出与 claims.stats
    同口径的键，调用方不得 KeyError。
 依赖：临时 sqlite（每用例重建）+
    假时间戳助手；无网络请求、不起应用。整文件在本机执行，无 skip。
@@ -185,13 +185,17 @@ class ClaimBatchTest(_Base):
         self._add_task(_phone(1))
         self.assertEqual(queue_store.claim_batch(OWNER, DAY, (), now=_ts()), [])
 
-    def test_missing_table_returns_empty_with_warning(self):
-        """表未落地 = 队列能力不可用：空返回**并告警**，调用方据此退回动态领取路径。"""
+    def test_missing_table_returns_sentinel_with_warning(self):
+        """表未落地 = 队列读不通：回 `None` 哨兵**并告警**，调用方据此计入有界放弃闸门。
+
+        `[]` 只回答"表在、但没有到期行"；用 `[]` 回答"读不通"会让执行体把库坏了
+        当成"今天没活了"（全天零签到而现场只有两条 WARNING，ba-p01-01）。
+        """
         conn = db.get_conn()
         conn.execute("DROP TABLE sign_tasks")
         conn.commit()
         with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertEqual(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()), [])
+            self.assertIsNone(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()))
         self.assertIn("批量领取签到任务失败", "\n".join(cm.output))
 
     def test_no_due_rows_is_silent(self):
@@ -383,7 +387,10 @@ class DayCountsTest(_Base):
         self.assertEqual(got["total"], 7)
 
     def test_stats_style_keys_present_when_day_is_empty(self):
-        """空 day（含库不可用路径）也要给出 claims.stats 口径的键，调用方不得 KeyError。"""
+        """空 day（表在、但没有当日行）也要给出 claims.stats 口径的键，调用方不得 KeyError。
+
+        "读不通"不走这里：那条路径回 `None` 哨兵（见 `test_missing_table_returns_sentinel_with_warning`）。
+        """
         got = queue_store.day_counts("2026-01-01")
         for key in ("claimed", "done", "failed", "settled", "open", "total"):
             self.assertIn(key, got)
