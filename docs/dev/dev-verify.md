@@ -54,10 +54,15 @@ bash scripts/check-shared-facts.sh
 python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
 python scripts/check-path-env-reads.py
 python -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
+python scripts/check-config-registry.py
+python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
 ```
 
-两道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
-`check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数）。
+三道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
+`check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
+`check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
+缺省值字面量在代码内清零、未登记键不得出现在生产代码）。名册门禁的元测试是**突变
+验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
 可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
@@ -66,7 +71,7 @@ python -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
 若工作树的**跟踪文件**里真有 CRLF，脚本响亮拒绝（退出码 2）并点名文件，而不是
 把 CRLF 造成的伪红当红交出去；本地要跑就地子集时用默认全量模式（它会先归一化）。
 
-命令漂移由 `tests/test_dev_verify_entry.py` 冻结（逐字比对上述五条命令、含顺序）；
+命令漂移由 `tests/test_dev_verify_entry.py` 冻结（逐字比对上面的命令与顺序，条数以该测试文件的冻结清单 `EXPECTED_CI_COMMANDS` 为准——不在这里另写一个数字，免得两处漂移）；
 CI 接线由 `tests/test_shared_facts_gate.py::SharedFactsCiWiringTest` 两跳审
 （verify job 调入口脚本 + 入口脚本的 `run_ci` 真调门禁脚本）。
 
