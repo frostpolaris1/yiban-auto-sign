@@ -149,6 +149,8 @@ def notify_pool_down(reason):
     alerts._collect_admin_mail(
         "签到领取池不可用",
         f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{reason}",
+        # 高级别：模块级去重使它一轮至多一条，且它意味着本执行体整轮拒跑（须当机处理）。
+        level=alerts.ALERT_LEVEL_CRITICAL,
     )
 
 
