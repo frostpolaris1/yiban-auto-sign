@@ -28,7 +28,8 @@
 `_bump_window_count` 一份实现，登录频率、配额与门禁计数共用同一"先判后增"语义；
 `_atomic_write` 是"每一次 .env 落盘"的唯一实现（`web/services/env_io.py` 与
 `web/services/measure.py` 都以参数接收它）；`verify_admin` 是三处"内置管理员口令比对"
-（登录、改密、敏感门禁复核）的单一来源。
+（登录、改密、敏感门禁复核）的单一来源；`_is_loopback_addr` 是"地址是否回环"的唯一实现，
+入站信任门与监听地址告警共用它。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
@@ -41,10 +42,12 @@
 """
 
 import contextlib
+import ipaddress
 import logging
 import os
 import re
 import secrets
+import socket
 import sys
 import time
 
@@ -62,7 +65,7 @@ for _p in (_SCRIPTS_DIR, _PACKAGE_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from flask import request, session  # noqa: E402
+from flask import current_app, request, session  # noqa: E402
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
 from web.services.accounts_data import (  # noqa: E402
@@ -88,11 +91,15 @@ ADMIN_SID_ENV_KEY = "YIBAN_ADMIN_SID"
 # 与逐次 scrypt 的时延承担；锁太久只会把本人输错口令的恢复成本放大。
 LOGIN_LOCK_SECONDS = 60
 
-# 可信第一跳代理（nginx 反代）：仅当请求来自这些地址时才信任转发头。
-# 生产部署：yiban-web 只监听回环地址，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
-# 覆盖设置，故此处读取的 XFF 即真实客户端 IP；客户端伪造的 XFF 会被丢弃。
-# 仅回环地址：若改为非回环地址，XFF 可被伪造绕过速率限制——**不要**引入配置项放开这里。
-TRUSTED_PROXIES = ("127.0.0.1", "::1")
+# 转发头信任开关（`YIBAN_TRUST_FORWARDED_HEADERS`）：
+#   显式开（1/true/on/yes）= 采信转发头；显式关（0/false/off/no）= 一律丢弃；
+#   未设或非法值 = 按"信任"执行。唯一解析处是 `create_app`，唯一读点是
+#   `_forwarded_trust_enabled`。
+# 缺省保持信任的理由：现网升级若忘设开关，翻转默认会让全站客户端塌进同一个
+# 回环桶、限速与登录锁定互相打死——那是生产事故。翻转留给下一版。
+FORWARDED_TRUST_ENV_KEY = "YIBAN_TRUST_FORWARDED_HEADERS"
+_TRUSTY_LITERALS = ("1", "true", "on", "yes")
+_FALSEY_LITERALS = ("0", "false", "off", "no")
 
 # IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留：防公网扫描器多 IP 打爆内存
 _IP_STORE_LIMIT = 10000
@@ -494,15 +501,82 @@ def _atomic_write(path, content, chmod_priv=False):
 # ---------------------------------------------------------------------------
 # 客户端出口与 IP 计数表
 # ---------------------------------------------------------------------------
+def _is_loopback_addr(host):
+    """地址串是否指向回环——入站信任门与监听地址告警的**唯一**判据。
+
+    取值域取 `ipaddress` 的段语义（127.0.0.0/8 整段与 ::1），并显式判
+    `ipv4_mapped`：双栈 socket 上的 v4 客户端其 `remote_addr` 形如
+    `::ffff:127.0.0.1`，v6 对象自身的 `is_loopback` 为假，必须按映射的 v4 判。
+    裸名 `localhost` 只出现在监听地址那一侧（`--host localhost`），保留放行。
+
+    `ipaddress` 不认 glibc 的缩写 IPv4（`127.1` / `0x7f000001` / `2130706433`），
+    故解析失败时再过 `socket.inet_aton` 归一；两处都解析不出来即判否。
+    本函数只答"是否回环"这一件事：可路由性、私网、组播、保留段归出站 SSRF
+    判据（`yiban/notify/config.py` 与 `yiban/mail/config.py`），不在此处。
+    """
+    h = str(host or "").strip().lower()
+    if not h:
+        return False
+    if h == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        try:
+            ip = ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(h)))
+        except (OSError, ValueError):
+            return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return ip.is_loopback
+
+
+def _forwarded_trust_enabled():
+    """本次请求是否采信转发头（XFF 与转发协议头）——唯一读点。
+
+    值由 `create_app` 按 `.env` 的 `FORWARDED_TRUST_ENV_KEY` 解析后写进
+    `app.config`。读不到该键时按信任执行：裸 Flask 应用（测试的
+    `test_request_context` 靶子）与未走 `create_app` 的调用都走这条，与缺省口径一致。
+    """
+    return bool(current_app.config.get(FORWARDED_TRUST_ENV_KEY, True))
+
+
+def _resolve_forwarded_trust(env_path, read_env):
+    """解析转发头信任开关，返回 `(是否信任, 是否显式配置)`——唯一解析处。
+
+    口径与 `yiban/mail/config.py` 的 `_allow_private_host` 同源：`.env` 优先、
+    进程环境补缺（M27）。三态：显式开 → 信任；显式关 → 不信任；未设或非法值 →
+    信任（向后兼容）。非法值另发一条可 grep 的告警，让运维看见自己的笔误。
+    缺省与非法值都回退"信任"：本键翻转默认会让全站客户端塌进同一个回环桶、
+    限速与登录锁定互相打死，那是比"多信一个转发头"更重的生产事故。
+    """
+    raw = (read_env(env_path).get(FORWARDED_TRUST_ENV_KEY, "").strip()
+           or os.environ.get(FORWARDED_TRUST_ENV_KEY, "").strip()).lower()
+    if raw in _FALSEY_LITERALS:
+        return False, True
+    if raw in _TRUSTY_LITERALS:
+        return True, True
+    if raw:
+        logger.warning(
+            "%s 的 %s=%r 非法（开：%s；关：%s），按缺省「信任」执行",
+            env_path, FORWARDED_TRUST_ENV_KEY, raw,
+            "/".join(_TRUSTY_LITERALS), "/".join(_FALSEY_LITERALS),
+        )
+    return True, False
+
+
 def _client_ip():
     """真实客户端 IP（限速/锁定/审计按真实 IP 隔离，防反代后全站共享同一桶）。
 
-    - 反代场景：remote_addr 为代理地址且第一跳可信 → 取 X-Forwarded-For 首个值（nginx 已覆盖，不可伪造）；
-    - 直连场景（无转发头/首跳不可信）：回退 remote_addr。
+    - 反代场景：remote_addr 为回环且转发头信任已开 → 取 X-Forwarded-For 首个值（nginx 已覆盖，不可伪造）；
+    - 直连/隧道/信任已关：回退 remote_addr。
     注意：本函数假设应用不直接暴露公网（17892 仅监听回环 + 防火墙放行 22/443）。
+    回环直连与 `ssh -L` 隧道下"首跳是回环"恒真、客户端可自报 XFF，故这两种
+    形态必须显式关闭信任开关（见 `YIBAN_TRUST_FORWARDED_HEADERS`）。
     """
     r = request.remote_addr or "?"
-    if r in TRUSTED_PROXIES:
+    if _is_loopback_addr(r) and _forwarded_trust_enabled():
         xff = request.headers.get("X-Forwarded-For", "")
         first = xff.split(",")[0].strip() if xff else ""
         if first and first != r:
