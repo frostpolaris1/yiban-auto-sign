@@ -191,6 +191,19 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.locator("#ping-btn").click();
   await expect(page.locator("#health-ping .badge")).toBeVisible();
 
+  // 急停档：把 /api/settings 的 global_pause 改写成 1（**只改响应、不触共享实例的 .env**），
+  // 重载后运行状态徽标必须报"暂停"且语气档为 bad。census P1-5：急停生效时前端暂停标签
+  // 必须与后端 state 一致（文案 + tone），不得显示"正常运行"（假安心）。
+  await page.route("**/api/settings**", async (route) => {
+    const body = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...body, global_pause: 1 } });
+  });
+  await page.reload();
+  await expect(page.locator("#health-global-pause")).toContainText("全局暂停中");
+  await expect(page.locator("#health-global-pause .badge")).toHaveClass(/badge--bad/);
+  await page.unroute("**/api/settings**");
+  await page.reload();
+
   // 失败降级（同一会话）：拦截签到事件接口 → 页级状态条 + 卡内错误行
   await page.route("**/api/admin/sign-events**", (route) => route.fulfill({
     status: 500,
