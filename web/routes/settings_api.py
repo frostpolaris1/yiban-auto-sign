@@ -939,8 +939,9 @@ def api_scheduler_executors_save():
             workers = int(data["workers"])
         except (TypeError, ValueError):
             return jsonify({"error": "执行体数量必须是整数"}), 400
-        if not (1 <= workers <= 64):
-            return jsonify({"error": "执行体数量应为 1~64"}), 400
+        if not (m.yb_egress.WORKERS_MIN <= workers <= m.yb_egress.WORKERS_MAX):
+            return jsonify({"error": f"执行体数量应为 {m.yb_egress.WORKERS_MIN}"
+                                     f"~{m.yb_egress.WORKERS_MAX}"}), 400
         updates["YIBAN_WORKERS"] = str(workers)
     for field, env_key in (("proxy_list", m.yb_egress.ENV_WORKER_LIST),
                            ("proxy_fallback", m.yb_egress.ENV_FALLBACK)):
@@ -1026,10 +1027,13 @@ def api_scheduler_executor_worker_egress(index):
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    manifest_rows = m.yb_egress.parse_manifest(
-        m.read_env(m.ENV_FILE).get(m.yb_egress.ENV_MANIFEST))
+    env_now = m.read_env(m.ENV_FILE)
+    manifest_rows = m.yb_egress.parse_manifest(env_now.get(m.yb_egress.ENV_MANIFEST))
     if manifest_rows is None:
-        configured = max(1, m.load_env_int(m.ENV_FILE, "YIBAN_WORKERS", 1))
+        # 执行体数只有 `egress.legacy_worker_count` 一个口径：含合法域判定与"越界 ⇒
+        # 单执行体"的回退。此前这里另读一次原始值，于是 .env 写 65 时界面按 65 个槽位
+        # 放行、引擎只起 1 个执行体（census P1-3 的同一处分叉）。
+        configured = m.yb_egress.legacy_worker_count(env_now)
         if not (0 <= index <= m.EXECUTOR_INDEX_MAX) or index >= configured:
             return jsonify({"error": f"槽位 {index} 未被使用（当前执行体数 {configured}）"}), 400
     elif not (0 <= index <= m.EXECUTOR_INDEX_MAX) or \
