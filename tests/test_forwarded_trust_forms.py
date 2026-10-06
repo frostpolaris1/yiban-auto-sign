@@ -368,6 +368,33 @@ class PwGateTierBucketSwitchIsRealTest(_AppBase):
                          "两个不同 XFF 必须给出两个不同的桶（否则那批用例在自证）")
 
 
+class NginxOverwriteFormGuardTest(unittest.TestCase):
+    """反代形态的期望桶**完全依赖** nginx 的覆盖式写法。
+
+    `proxy_set_header X-Forwarded-For $remote_addr;` 丢弃客户端自报值，应用读到链首
+    才是真实客户端 IP。改成追加式（`$proxy_add_x_forwarded_for`）会让客户端自报值
+    留在链首，限速/登录锁定的 IP 桶当场失效——本类钉住这条耦合。
+    """
+
+    TEMPLATES = ("docker/nginx.conf", "web/deploy/nginx.conf.example")
+
+    @staticmethod
+    def _effective(text):
+        return [ln for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+
+    def test_模板必须覆盖式写XFF(self):
+        for rel in self.TEMPLATES:
+            eff = self._effective(_read(rel))
+            with self.subTest(rel=rel):
+                self.assertTrue(
+                    any("proxy_set_header X-Forwarded-For $remote_addr;" in ln for ln in eff),
+                    f"{rel} 缺少生效的覆盖式 XFF 写法")
+                self.assertFalse(
+                    any("$proxy_add_x_forwarded_for" in ln for ln in eff),
+                    f"{rel} 出现生效的追加式 XFF：客户端自报值会留在链首，信任判据失效")
+
+
 class TrustPredicateSingleSourceGuardTest(unittest.TestCase):
     """结构守卫：回环谓词只有一个定义点，信任门必须过开关。
 
