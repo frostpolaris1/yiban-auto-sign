@@ -6,7 +6,6 @@ import {
   dangerousSubmit,
   errorMessage,
   isCanceled,
-  maskPhone,
   openChangePassword,
   openConfirmPasswordModal,
   ownerEmailVisible,

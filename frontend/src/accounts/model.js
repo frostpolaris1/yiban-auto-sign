@@ -93,21 +93,43 @@ export function groupAll(accounts, group) {
 }
 
 /* ---------------- 检索 ---------------- */
-// 列表已脱敏：输入完整号时同样 mask 后匹配，保证搜索可用（脱敏口径由调用方注入
-// maskPhone——唯一实现在 core.js，本层不重写第二份）。
-export function accountMatch(a, kw, maskPhone) {
-  if (!kw) return true;
-  var q = String(kw).toLowerCase();
-  var masked = maskPhone ? maskPhone(q) : q;
-  return [a.name, a.phone, a.owner_display, a.owner].some(function (v) {
-    var s = String(v || "").toLowerCase();
-    return s.indexOf(q) !== -1 || s.indexOf(masked) !== -1;
-  });
+// 列表里的 phone 是**服务端已遮值**（`138****8000`）。前端不重写遮罩公式（唯一实现是
+// `yiban/masking.py::mask_phone`）：把服务端下发的遮罩串当**通配模式**用——`*` 段匹配
+// 任意数字段，故 `138****8000` 能命中用户输入的完整号 `13800138000`。这样"按手机号搜索"
+// 仍然可用，而前端一行遮罩规则都没有（census P0-3 契约：前端不再自行遮罩）。
+export function phoneMaskHit(masked, kw) {
+  var pattern = String(masked || "");
+  if (pattern.indexOf("*") === -1) return false;
+  var digits = String(kw == null ? "" : kw).replace(/\D/g, "");
+  // 与后端 `yiban.masking._phone_digits_of` 同归一：13 位即 `+86`/`86` 前缀 + 11 位国内号，
+  // 用户粘贴 `+8613800138000` 时按国内号比对（否则前缀把整串顶掉、搜不到该账号）。
+  if (digits.length === 13 && digits.slice(0, 2) === "86") digits = digits.slice(2);
+  if (digits.length < 7) return false; // 短于 7 位不按号码比（子串匹配已覆盖）
+  // 中间段用 `\d*` 而非 `\d+`：把界面上**看得见的数字直接拼起来**（`1388000`）也必须命中，
+  // 否则用户照着遮罩串敲数字会得到「无匹配结果」——删掉的自遮路径当年接受这种输入。
+  // 与 ≥7 位的判长同界（更短的输入已被上面挡掉，`\d*` 不会放宽真实号码的匹配）。
+  var rx = "^" + pattern.split(/\*+/).map(function (part) {
+    return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }).join("\\d*") + "$";
+  try {
+    return new RegExp(rx).test(digits);
+  } catch (e) {
+    return false; // 遮罩串形态意外时退化为不按号码匹配，绝不抛
+  }
 }
 
-export function filterGroup(accounts, group, kw, maskPhone) {
+export function accountMatch(a, kw) {
+  if (!kw) return true;
+  var q = String(kw).toLowerCase();
+  var hit = [a.name, a.phone, a.owner_display, a.owner].some(function (v) {
+    return String(v || "").toLowerCase().indexOf(q) !== -1;
+  });
+  return hit || phoneMaskHit(a.phone, kw);
+}
+
+export function filterGroup(accounts, group, kw) {
   return groupAll(accounts, group).filter(function (a) {
-    return accountMatch(a, kw, maskPhone);
+    return accountMatch(a, kw);
   });
 }
 
@@ -144,8 +166,8 @@ export function pruneSelection(accounts, sel) {
   return next;
 }
 
-export function selectAllState(accounts, sel, group, kw, maskPhone) {
-  var rows = filterGroup(accounts, group, kw, maskPhone);
+export function selectAllState(accounts, sel, group, kw) {
+  var rows = filterGroup(accounts, group, kw);
   var picked = rows.filter(function (a) { return sel[group] && sel[group][a.phone]; }).length;
   return {
     checked: rows.length > 0 && picked === rows.length,
