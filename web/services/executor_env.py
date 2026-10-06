@@ -113,7 +113,9 @@ def _executor_activity(day):
     角色解析的唯一口径在 `yiban.egress.parse_owner`；`unknown` 照实回（历史数据里
     兜底与单执行体同前缀，本来就无法追溯，不假装能还原）。
 
-    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `queue_store.day_counts` 同口径不抛。
+    库不存在/未初始化/读不通（新部署很正常）→ `([], 全 0)`：本函数只喂展示，不参与退出与
+    了结判定，故按空处理。`queue_store.day_counts` 回 `None` 哨兵是给判据读者看的，
+    本函数读的是 `task_activity`，与那条口径无关（见 `queue_store` 模块头降级口径）。
     """
     by_executor = []
     totals = {"claimed": 0, "failed": 0, "done": 0, "total": 0}

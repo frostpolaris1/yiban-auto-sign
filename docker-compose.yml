@@ -7,7 +7,8 @@
 #   yiban-nginx  反代容器（共享 yiban 网络栈，对外 80/443 HTTPS）
 # 数据：./data 目录 bind mount 到 /data（SQLite/.env/日志/加密密钥）
 # 备份：命名卷 yiban-backups 挂到 /backups（**不在 /data 内**——否则每轮 tar 会把上一轮
-#       备份再打进去，体积逐轮翻倍）
+#       备份再打进去，体积逐轮翻倍）。挂点属主由 docker/entrypoint.sh 在 root 阶段准备，
+#       部署者不需要手动 chown（验证方法见 README「容器形态现在自带定时备份」）
 # ============================================================
 name: yiban-auto-sign
 
@@ -31,7 +32,7 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - CHOWN        # 入口脚本调整 /data 卷属主
+      - CHOWN        # 入口脚本调整 /data 与命名卷 /backups 的属主（只到 root 阶段为止）
       - DAC_OVERRIDE # 宿主卷属主受限时兜底读写
       - FOWNER       # 应用 0600 敏感文件写入语义
       - SETGID
@@ -64,7 +65,8 @@ services:
       # ⚠ 下面 volumes 里那行口令文件挂载**默认是注释掉的**：compose 对缺失的
       # bind 源会**自动在宿主建一个同名目录**，口令文件没准备好就挂上去会得到一个
       # 读不了的目录、并让容器起不来。要启用容器备份，见 README「容器形态现在自带
-      # 定时备份」的两步（建文件 + chown 10001 + 取消注释）。
+      # 定时备份」的两步（① 建口令文件、② 取消这行注释）；备份卷的属主由入口脚本
+      # 准备，不是第三步。
       # 调度器判"是否启用"的口径是**口令文件真的可读**，不是这个键非空——所以
       # 保留这行环境变量而没挂文件，等价于"未启用"，每天只在日志里留一行。
       - YIBAN_BACKUP_DATA_DIR=/data
