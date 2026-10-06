@@ -295,10 +295,10 @@ git pull && docker compose up -d --build   # 更新代码后重建
 - **定时签到**：不依赖宿主 cron，由容器内 `supervisor` 常驻的 `docker/scheduler.py` 承担（首签 + 补签 + 每日清理）。
 - **时区**：容器固定 `Asia/Shanghai`；同时窗口与日期判定本身按北京时间计算（`yiban/clock.py`），宿主是 UTC 也不会算错。
 - **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量。**信任模型（M12）**：应用只在 `remote_addr` 是回环地址（`127.0.0.1` / `::1`）时才采信 `X-Forwarded-For`，非回环来源的 XFF 一律丢弃、退回 `remote_addr`——直连 `17892` 能用，但直连方自己带来的 XFF 不会影响限速/锁定的 IP 桶。要伪造 XFF 得先能在回环上发连接，那时已经拿下本机了；这条边界**不要**用配置项放开（改 `web/security.py` 的 `TRUSTED_PROXIES` 引入开关，等于把这个纵深拆掉）。
-- **定时备份（M44，2026-10-01 补）**：容器形态现在**自带每日 02:00 的定时备份**，不再需要宿主 cron——容器部署的用户本来就没有宿主 cron，容器调度器此前又漏了这个挂点，等于"看着在跑、其实从没备份过"。挂点由 `docker/scheduler.py` 的 `BACKUP_AT=(2, 0)` 承担，**复用 `docker/backup-docker.sh`**（加密落盘、自检、保留期轮转）。落点是 compose 声明的命名卷 `yiban-backups` → 容器 `/backups`，**刻意不在 `/data` 里**（否则每轮 tar 会把上一轮备份再打进去，体积逐轮翻倍）。启用只需两步，见下方「容器形态现在自带定时备份」。
+- **定时备份（M44，2026-10-01 补）**：容器形态现在**自带每日 02:00 的定时备份**，不再需要宿主 cron——容器部署的用户本来就没有宿主 cron，容器调度器此前又漏了这个挂点，等于"看着在跑、其实从没备份过"。挂点由 `docker/scheduler.py` 的 `BACKUP_AT=(2, 0)` 承担，**复用 `docker/backup-docker.sh`**（加密落盘、自检、保留期轮转）。落点是 compose 声明的命名卷 `yiban-backups` → 容器 `/backups`，**刻意不在 `/data` 里**（否则每轮 tar 会把上一轮备份再打进去，体积逐轮翻倍）。启用只需两步，验证另有三步，见下方「容器形态现在自带定时备份」。
 - **自定义 Web 图标**：取消 `docker-compose.yml` 中 `yiban` 服务里那行被注释的挂载（宿主 `./logo.png` → 容器 `web/static/vendor/logo.png`），把图标放到仓库根 `logo.png`。
 
-#### 容器形态现在自带定时备份（启用两步）
+#### 容器形态现在自带定时备份（启用两步 + 验证三步）
 
 备份脚本拒绝产出明文包（明文包内含全部密钥与管理员工令哈希），所以要启用得先给一份口令文件。
 
@@ -311,7 +311,18 @@ sudo chown 10001:10001 backup-passphrase && sudo chmod 600 backup-passphrase
 docker compose up -d
 ```
 
-之后：备份包落在命名卷 `/backups`（`docker volume inspect yiban-auto-sign_yiban-backups` 可查其宿主落点），文件名 `yiban-data-<日期>.tar.gz.gpg`，保留 30 天（`YIBAN_BACKUP_RETAIN_DAYS`）。**口令丢失 = 备份不可解密**，请另行离机存一份。查看结果：`docker compose logs yiban | grep 备份`。
+之后：备份包落在命名卷 `/backups`（`docker volume inspect yiban-auto-sign_yiban-backups` 可查其宿主落点），文件名 `yiban-data-<日期>.tar.gz.gpg`，保留 30 天（`YIBAN_BACKUP_RETAIN_DAYS`）。**口令丢失 = 备份不可解密**，请另行离机存一份。
+
+备份卷的**属主不用你手动准备**。容器入口 `docker/entrypoint.sh` 在 root 阶段对 `/backups` 做 `mkdir` + `chown yiban:yiban` + `chmod 0700`，与它准备 `/data` 同一处、同一形态。Docker 首次创建命名卷时挂点是 `root:root 0755`，而写备份的是 supervisord 按 `user=yiban` 降级后的 uid 10001；漏了这一步，每天 02:00 的备份就是 EACCES，日志里只留三行 WARNING。`docker compose up -d` 之后按下面三步自查：
+
+```bash
+# 验证①：挂点属主与权限位应是 yiban:yiban 且组/其他无权限（drwx------）
+docker compose exec yiban ls -ld /backups
+# 验证②：业务账号（uid 10001）真的写得进去（写完即删，不污染备份目录）
+docker compose exec -u 10001 yiban sh -c 'touch /backups/.write-probe && echo 可写 && rm -f /backups/.write-probe'
+# 验证③：当天 02:00 过后确认产物真的落在卷里（那一轮的结果看 docker compose logs yiban | grep 备份）
+docker compose exec yiban ls -l /backups
+```
 
 两条必须知道的边界：
 
