@@ -271,8 +271,11 @@ class RefillerFailClosedTest(_DbBase):
             mock.patch.object(executor_v3, "_mono", lambda: guard.mono),
             mock.patch.object(clock, "now", lambda: START),
             mock.patch.object(queue_store.logger, "warning"),
+            # 替身的形参必须跟真函数同步：`alerts` 分级单（ba-p04-02）给
+            # `_collect_admin_mail` 新增了 `level=`。窄签名会把「真函数增参」
+            # 报成测试红，掩盖本用例要验的收干判据。
             mock.patch.object(alerts, "_collect_admin_mail",
-                              side_effect=lambda s, e: self.collected.append(s)),
+                              side_effect=lambda s, e, level=None: self.collected.append(s)),
             mock.patch.object(executor_v3.logger, "error",
                               side_effect=lambda *a: self.errors.append(
                                   " ".join(str(x) for x in a))),
