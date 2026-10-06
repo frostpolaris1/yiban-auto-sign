@@ -1,6 +1,21 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""**功能**
+"""**算法溯源**
+- GCRA（Generic Cell Rate Algorithm，通用单元速率算法）：Jim Kurose、Don Towsley 的
+  速率整形理论。`EgressBucket` 的理论到达时间 `tat = max(now, tat) + T` 与放行判据
+  `now >= tat − τ` 即该算法的整形点；`max(now, ...)` 使其**不累积额度**（长期空闲只放行
+  burst 条，而不是攒够一次放行上千条）。
+- AIMD（Additive Increase / Multiplicative Decrease，加性增乘性减）：Tahoe 算法与其后
+  RFC 5681 的 TCP 拥塞控制。`GROWTH_FACTOR` / `SHRINK_FACTOR` 是它的两个动作。
+- Adaptive Concurrency Limits（自适应并发上限）：Netflix 的并发限制方法论，见
+  *Rethinking Concurrency Control for Microservices*（Mahadut 等）。核心主张是把速率当成
+  TCP 拥塞窗口、按响应反馈自调，而不是人工设一个会随部署规模过期的固定值。
+- EWMA（Exponentially Weighted Moving Average，指数加权移动平均）：`apply_ewma` 的外环
+  速率平滑。
+- Token Bucket（令牌桶）：ATM 网络整形的经典方法。本模块刻意**不**直接用容量型令牌桶——
+  它会累积空闲额度，改用 GCRA（见 `EgressBucket` 说明）。
+
+**功能**
 出口限速件：按出口整形的令牌桶（GCRA/TAT，不累积额度）+ AIMD 自适应 + 全局聚合
 速率上界 Λ + 每账号间隔安全件 + EWMA 外环微调。
 
