@@ -67,7 +67,10 @@ export var STATUS_TOKEN = {
   success: "success", already: "success", failed: "danger", retrying: "warning",
   no_task: "info", no_position: "purple", paused: "warning",
   user_cancelled: "muted", skipped_window: "light", skipped_norange: "light",
-  pending: "light", global_paused: "muted",
+  // 急停取异常档（= paused 的 warning），不得落 muted/light：`yiban.status.DISPLAY`
+  // 把急停与账密暂停同列为 warn（非正常）。落 muted 会让分布图把"管理员急停"涂得
+  // 与"用户自己取消"同色 = 无异常档（census P1-5 的暂停假安心形态）。
+  pending: "light", global_paused: "warning",
 };
 
 /** 空看板状态工厂（Vitest 与组件共用同一形状）。 */
