@@ -25,7 +25,9 @@
 #   BACKUP_DIR（默认 /var/backups）、APP_DIR（默认 /opt/yiban-auto-sign）、
 #   YIBAN_BACKUP_INSTALLED（默认 /usr/local/sbin/yiban-backup.sh，防漂移比对对象）、
 #   YIBAN_ENV_FILE（默认 <APP_DIR>/.env，由本脚本导出）、
-#   YIBAN_DB_FILE（默认 <APP_DIR>/yiban.db——锚点外发要读审计链头，漏设会按 cwd 找库）、
+#   YIBAN_DB_FILE（本脚本**不设**这枚键。库路径由 store 侧 `resolve_path` 三档解析：
+#     进程环境 → .env → 默认 "yiban.db"。默认值按 cwd 解析，而本脚本已 cd 到
+#     APP_DIR，所以缺省档就是 <APP_DIR>/yiban.db。本脚本插一手就会顶掉 .env 的声明）、
 #   YIBAN_STATE_DIR（默认 .env 所在目录，即 <APP_DIR>：节流表落
 #   <APP_DIR>/notify-throttle.json）——后两个给收件人算法与节流表定位；
 #   未配置推送/邮件时告警只落日志（退出码 1），锚点外发同样落 stderr。
@@ -49,11 +51,15 @@ cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1;
 # .env 路径显式导出：哨兵的收件人算法与节流表都按 YIBAN_ENV_FILE 定位 .env（缺省
 # 回落 cwd 相对 ".env"，那正是上面 cd 要治的病症）；已由部署方给出时沿用其值。
 export YIBAN_ENV_FILE="${YIBAN_ENV_FILE:-$APP_DIR/.env}"
-# 库路径同样显式（M28 新增）：锚点外发要读审计链头，此前没人读库，库路径一直靠
-# `yiban/store/connection.py` 的 cwd 回落。现在把它与 .env 一起固化成显式导出，
-# 免得哪天有人改了这一层的 cd 语义，锚点就悄悄读到一个空库并把"空链"外发出去。
-# 已由部署方给出时沿用其值。
-export YIBAN_DB_FILE="${YIBAN_DB_FILE:-$APP_DIR/yiban.db}"
+# 库路径**不在这里给值**（工单 ba-p02-02 订正）。库路径的唯一解析器在 Python 侧。
+# `env_io.resolve_path` 的三档是：进程环境 → .env → 默认值。第一档压过第二档。
+# 这里原先写的是 `export YIBAN_DB_FILE="${YIBAN_DB_FILE:-$APP_DIR/yiban.db}"`。
+# 部署方没设进程环境时，它会造出一个值，并把该值放进第一档。
+# 于是 `.env` 里声明的自定义库路径被顶掉——哨兵读到另一份（通常不存在的）库。
+# 头注释当时写的理由是"免得锚点悄悄读到一个空库"。这与代码的实际行为相反，
+# 属假担保，同批订正。
+# 不设这行之后，缺省档仍落在 <APP_DIR>/yiban.db：本脚本已 cd 到 APP_DIR，
+# 默认值 "yiban.db" 按 cwd 解析就是它（与上面 cd 段的口径同一条）。
 
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
