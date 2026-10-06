@@ -33,10 +33,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import child_env  # noqa: E402  # scripts/ 在 pytest 的 pythonpath 里
+import child_env  # scripts/ 在 pytest 的 pythonpath 里
 
-from yiban import egress  # noqa: E402
-from yiban.engine import workers  # noqa: E402
+from yiban import egress
+from yiban.engine import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
