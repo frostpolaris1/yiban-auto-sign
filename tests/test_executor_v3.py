@@ -530,12 +530,17 @@ class PendingCountTest(_Base):
         self._add_task(_phone(1), vshard=1, state="pending")
         self.assertEqual(queue_store.pending_count(DAY, ()), 0)
 
-    def test_missing_table_returns_zero_with_warning(self):
+    def test_missing_table_returns_sentinel_with_warning(self):
+        """表未落地 = 待办面读不通：回 `None` 哨兵**并告警**，不再回 0。
+
+        0 只回答"分片集内确实没有 pending 行"。回 0 会让收干判据直接 break——
+        库坏了被当成"活已了结"就是全天零签到（ba-p01-01）。
+        """
         conn = db.get_conn()
         conn.execute("DROP TABLE sign_tasks")
         conn.commit()
         with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertEqual(queue_store.pending_count(DAY, MY_SHARDS), 0)
+            self.assertIsNone(queue_store.pending_count(DAY, MY_SHARDS))
         self.assertIn("读取当日待办任务计数失败", "\n".join(cm.output))
 
     def test_historical_rows_are_never_counted(self):
