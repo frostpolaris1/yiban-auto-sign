@@ -1,0 +1,1787 @@
+{
+  "_meta": {
+    "version": 1,
+    "doc": "104 §5.3 配置名册：每个键的类型/域/缺省/分组/敏感级别/网页可编辑面/生效方式唯一定义点。域只在代码里上下界明确时登记；缺省为 null = 本键无缺省；web_editable 按网页写入面实测赋值（路径/代理类键强制 false，见 §5.4）。"
+  },
+  "YIBAN_ENV_FILE": {
+    "type": "path",
+    "default": ".env",
+    "group": [
+      "路径"
+    ],
+    "doc": "配置文件名（指针键：只读进程环境与路径解析）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_DB_FILE": {
+    "type": "path",
+    "default": "yiban.db",
+    "group": [
+      "路径"
+    ],
+    "doc": "SQLite 数据库文件",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_STATE_DIR": {
+    "type": "path",
+    "default": "/var/log/yiban",
+    "group": [
+      "路径"
+    ],
+    "doc": "按日状态文件目录",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_LOG_FILE": {
+    "type": "path",
+    "default": "/var/log/yiban/sign.log",
+    "group": [
+      "路径"
+    ],
+    "doc": "签到日志文件（按天分文件）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_LOCK_DIR": {
+    "type": "path",
+    "default": "/var/lock/yiban",
+    "group": [
+      "路径"
+    ],
+    "doc": "锁文件目录",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ACCOUNTS_FILE": {
+    "type": "path",
+    "default": "accounts.json",
+    "group": [
+      "路径"
+    ],
+    "doc": "旧账号文件（仅首次迁移读取）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_USERS_FILE": {
+    "type": "path",
+    "default": null,
+    "group": [
+      "路径"
+    ],
+    "doc": "旧用户文件（由 accounts.json 同目录推断）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_APP_DIR": {
+    "type": "path",
+    "default": "/opt/yiban-auto-sign",
+    "group": [
+      "路径"
+    ],
+    "doc": "应用检出目录（bash 入口用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_APP_ROOT": {
+    "type": "path",
+    "default": "/opt/yiban-auto-sign",
+    "group": [
+      "路径"
+    ],
+    "doc": "生产检出根（cron 来源断言用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BASE_PATH": {
+    "type": "path",
+    "default": "",
+    "group": [
+      "路径"
+    ],
+    "doc": "子路径部署前缀（空=根路径）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_DIR": {
+    "type": "path",
+    "default": "/var/backups",
+    "group": [
+      "部署"
+    ],
+    "doc": "备份目录",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_DATA_DIR": {
+    "type": "path",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "容器备份的数据目录",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_SCRIPT": {
+    "type": "path",
+    "default": "/usr/local/sbin/yiban-backup.sh",
+    "group": [
+      "部署"
+    ],
+    "doc": "备份脚本路径",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_PASSPHRASE_FILE": {
+    "type": "path",
+    "default": "/etc/yiban/backup-passphrase",
+    "group": [
+      "部署"
+    ],
+    "doc": "备份口令文件（比明文口令优先）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_WIRE_DUMP": {
+    "type": "path",
+    "default": "",
+    "group": [
+      "部署"
+    ],
+    "doc": "抓包落盘目录（空=不落盘）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_WORKERS": {
+    "type": "int",
+    "domain": [
+      1,
+      64
+    ],
+    "default": 1,
+    "group": [
+      "执行体"
+    ],
+    "doc": "并行执行体数上限（1=单执行体）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_EXECUTORS": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "执行体"
+    ],
+    "doc": "HRW 候选执行体清单（身份串清单）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_EXECUTOR_ID": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "执行体"
+    ],
+    "doc": "本进程执行体身份（由父进程注入）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PROXY": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "执行体"
+    ],
+    "doc": "全局出口代理 URL（空=直连）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PROXY_LIST": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "执行体"
+    ],
+    "doc": "每执行体出口清单（逗号分隔，空位=直连）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PROXY_FALLBACK": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "执行体"
+    ],
+    "doc": "兜底常驻执行体专用出口",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_FALLBACK_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "执行体"
+    ],
+    "doc": "兜底常驻执行体开关（只设本键不拉进程）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_FALLBACK_INTERVAL": {
+    "type": "seconds",
+    "domain": [
+      5,
+      3600
+    ],
+    "default": 60,
+    "group": [
+      "执行体"
+    ],
+    "doc": "兜底执行体扫描间隔",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_EGRESS_RATE": {
+    "type": "float",
+    "domain": [
+      0.01,
+      100.0
+    ],
+    "default": 1.0,
+    "group": [
+      "执行体"
+    ],
+    "doc": "每出口目标速率（次尝试/s；人工接管后 AIMD 不再改写）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round",
+    "default_literal_gate": true,
+    "default_symbols": [
+      "RATE_DEFAULT",
+      "_DEFAULT_BUCKET_RATE",
+      "bucket_rate"
+    ]
+  },
+  "YIBAN_GLOBAL_RATE": {
+    "type": "float",
+    "domain": [
+      0.01,
+      100.0
+    ],
+    "default": null,
+    "group": [
+      "执行体"
+    ],
+    "doc": "全局聚合速率上界（空=不设上界）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_AVG_ATTEMPT_SEC": {
+    "type": "seconds",
+    "domain": [
+      1,
+      300
+    ],
+    "default": 3,
+    "group": [
+      "执行体"
+    ],
+    "doc": "单账号平均耗时估算（容量公式用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_MIN_EXEC_GAP": {
+    "type": "seconds",
+    "domain": [
+      1,
+      60
+    ],
+    "default": 5,
+    "group": [
+      "执行体"
+    ],
+    "doc": "相邻两次尝试的最小间隔（突发额度收口）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round",
+    "default_literal_gate": true,
+    "default_symbols": [
+      "DEFAULT_MIN_EXEC_GAP_SEC",
+      "_DEFAULT_MIN_EXEC_GAP"
+    ]
+  },
+  "YIBAN_ACCOUNT_GAP_MAX": {
+    "type": "seconds",
+    "domain": [
+      0,
+      3600
+    ],
+    "default": 10,
+    "group": [
+      "节流"
+    ],
+    "doc": "相邻两次签到请求的最小间隔（0=关闭）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round",
+    "default_literal_gate": true,
+    "default_symbols": [
+      "DEFAULT_ACCOUNT_GAP_SEC",
+      "DEFAULT_ACCOUNT_GAP_MAX"
+    ]
+  },
+  "YIBAN_ACCOUNT_GAP_ENFORCE": {
+    "type": "bool",
+    "default": true,
+    "group": [
+      "节流"
+    ],
+    "doc": "账号间隔安全件开关（缺省开）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RETRY_MIN_INTERVAL": {
+    "type": "seconds",
+    "domain": [
+      1,
+      600
+    ],
+    "default": 60,
+    "group": [
+      "节流"
+    ],
+    "doc": "同一账号两次尝试最短间隔",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SLOW_SIGN_SEC": {
+    "type": "seconds",
+    "domain": [
+      1,
+      600
+    ],
+    "default": 30,
+    "group": [
+      "节流"
+    ],
+    "doc": "慢签到告警阈值",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_EXEC_GAP_MIN": {
+    "type": "seconds",
+    "domain": [
+      0,
+      300
+    ],
+    "default": 10,
+    "group": [
+      "节流"
+    ],
+    "doc": "启动对齐：已过点账号相邻最小间隔",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_RUN_LOCK_NAME": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "执行体"
+    ],
+    "doc": "运行锁名（多执行体分工用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RUN_LOCK_WAIT": {
+    "type": "seconds",
+    "default": 600,
+    "group": [
+      "执行体"
+    ],
+    "doc": "取运行锁的等待秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RUN_TIMEOUT_SEC": {
+    "type": "seconds",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "单次签到总超时（空=按窗口动态算）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HOST_SECOND_ROUND": {
+    "type": "bool",
+    "default": true,
+    "group": [
+      "调度"
+    ],
+    "doc": "宿主侧补签轮开关",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SIGN_ORDER": {
+    "type": "enum",
+    "domain": [
+      "sequence",
+      "random"
+    ],
+    "default": "sequence",
+    "group": [
+      "调度"
+    ],
+    "doc": "排序模式",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SIGN_DIST": {
+    "type": "enum",
+    "domain": [
+      "uniform",
+      "normal"
+    ],
+    "default": "uniform",
+    "group": [
+      "调度"
+    ],
+    "doc": "分布模式",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SIGN_MODE": {
+    "type": "enum",
+    "domain": [
+      "sequence",
+      "random",
+      "normal"
+    ],
+    "default": null,
+    "group": [
+      "调度"
+    ],
+    "doc": "旧模式键（映射为 order×dist，新键优先）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SIGN_START": {
+    "type": "hhmm",
+    "default": "06:30",
+    "group": [
+      "调度"
+    ],
+    "doc": "签到窗口开始时刻",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SIGN_END": {
+    "type": "hhmm",
+    "default": "07:50",
+    "group": [
+      "调度"
+    ],
+    "doc": "签到窗口结束时刻",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SECOND_RUN_TIME": {
+    "type": "hhmm",
+    "default": "07:12",
+    "group": [
+      "调度"
+    ],
+    "doc": "补签轮触发时刻（须与 cron 一致）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_WINDOW_EDGE_FRONT_SEC": {
+    "type": "seconds",
+    "domain": [
+      0,
+      300
+    ],
+    "default": 60,
+    "group": [
+      "调度"
+    ],
+    "doc": "窗口前裁秒数（30 的倍数）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_WINDOW_EDGE_BACK_SEC": {
+    "type": "seconds",
+    "domain": [
+      0,
+      300
+    ],
+    "default": 60,
+    "group": [
+      "调度"
+    ],
+    "doc": "窗口后裁秒数（30 的倍数）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_WINDOW_EDGE_SEC": {
+    "type": "seconds",
+    "domain": [
+      0,
+      600
+    ],
+    "default": 60,
+    "group": [
+      "调度"
+    ],
+    "doc": "旧裁剪键（前后对称，上界更宽）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_BLOCK_CAP": {
+    "type": "int",
+    "domain": [
+      1,
+      200
+    ],
+    "default": 15,
+    "group": [
+      "调度"
+    ],
+    "doc": "每 5 分钟块最多账号数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SCHEDULE_MU_MIN_PCT": {
+    "type": "int",
+    "domain": [
+      0,
+      100
+    ],
+    "default": 40,
+    "group": [
+      "调度"
+    ],
+    "doc": "正态高峰中心范围下界（%）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SCHEDULE_MU_MAX_PCT": {
+    "type": "int",
+    "domain": [
+      0,
+      100
+    ],
+    "default": 60,
+    "group": [
+      "调度"
+    ],
+    "doc": "正态高峰中心范围上界（%）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SCHEDULE_SIGMA_MIN_PCT": {
+    "type": "int",
+    "domain": [
+      0,
+      100
+    ],
+    "default": 15,
+    "group": [
+      "调度"
+    ],
+    "doc": "正态分散程度下界（%）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SCHEDULE_SIGMA_MAX_PCT": {
+    "type": "int",
+    "domain": [
+      0,
+      100
+    ],
+    "default": 25,
+    "group": [
+      "调度"
+    ],
+    "doc": "正态分散程度上界（%）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SUNDAY_SIGN": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "调度"
+    ],
+    "doc": "周日签到开关",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_SATURDAY_SIGN": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "调度"
+    ],
+    "doc": "周六签到开关",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_ALLOW_TIME_PREF": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "调度"
+    ],
+    "doc": "用户自选时间片总开关",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_TIME_PREF_COOLDOWN_SEC": {
+    "type": "seconds",
+    "default": 30,
+    "group": [
+      "节流"
+    ],
+    "doc": "自选时间片切换冷却（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_PAUSE_COOLDOWN_SEC": {
+    "type": "seconds",
+    "default": 30,
+    "group": [
+      "节流"
+    ],
+    "doc": "用户自暂停冷却（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_BATCH_SIGN_COOLDOWN_SEC": {
+    "type": "seconds",
+    "default": 60,
+    "group": [
+      "节流"
+    ],
+    "doc": "手动签到全局冷却（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_SIGNIN_RATE_WINDOW_SEC": {
+    "type": "seconds",
+    "default": 600,
+    "group": [
+      "节流"
+    ],
+    "doc": "手动签到速率窗口秒数（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_SIGNIN_RATE_MAX": {
+    "type": "int",
+    "default": 10,
+    "group": [
+      "节流"
+    ],
+    "doc": "窗口内手动签到次数上限（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_CAPACITY_MEASURED": {
+    "type": "int",
+    "default": 0,
+    "group": [
+      "调度"
+    ],
+    "doc": "实测单执行体容量（0=未实测）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_START_DELAY_MAX": {
+    "type": "seconds",
+    "default": 0,
+    "group": [
+      "调度"
+    ],
+    "doc": "已废弃启动延迟（读取后不生效）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_ACCOUNTS": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "旧格式账号清单（多账号串）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ACCOUNTS_JSON": {
+    "type": "json",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "结构化账号清单 JSON",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ACCOUNTS_KEY": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "账号密码加密密钥（64 位十六进制）",
+    "sensitive": true,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PHONE": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "单账号模式手机号",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PASSWORD": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "单账号模式密码",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PHONE_MODEL": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "设备型号（授权设备校验时必填）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PHONE_CODE": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "账号"
+    ],
+    "doc": "设备唯一识别码",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ACCOUNT_VERIFY": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "账号"
+    ],
+    "doc": "添加账号时即时验证",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_VERIFY_ASYNC": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "账号"
+    ],
+    "doc": "在线校验改异步（前台轮询取结果）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_PROBE_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "账号"
+    ],
+    "doc": "探针模式开关",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_PROBE_TIME": {
+    "type": "hhmm",
+    "default": "20:00",
+    "group": [
+      "账号"
+    ],
+    "doc": "探针触发时刻",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_PROBE_INTERVAL_DAYS": {
+    "type": "string",
+    "default": "1",
+    "group": [
+      "账号"
+    ],
+    "doc": "探针触发频率（正整数天数或 once）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_AUDIT_KEY": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "安全"
+    ],
+    "doc": "审计链哈希盐（自动生成）",
+    "sensitive": true,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_TRACK_SALT": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "安全"
+    ],
+    "doc": "追踪盐（自动生成）",
+    "sensitive": true,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_LEGACY_LOGIN": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "账号"
+    ],
+    "doc": "旧 iOS 伪造 UA 登录流程",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_MAX_USERS": {
+    "type": "int",
+    "default": 500,
+    "group": [
+      "Web"
+    ],
+    "doc": "注册用户数上限（0=不限）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAX_ACCOUNTS": {
+    "type": "int",
+    "default": 200,
+    "group": [
+      "Web"
+    ],
+    "doc": "活跃账号数上限（0=不限）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MEASURE_COOLDOWN": {
+    "type": "seconds",
+    "default": 600,
+    "group": [
+      "节流"
+    ],
+    "doc": "容量实测冷却秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ADMIN_DELETE_MAX": {
+    "type": "int",
+    "default": 20,
+    "group": [
+      "安全"
+    ],
+    "doc": "删除类高危操作窗口内次数上限（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ADMIN_DELETE_COOLDOWN_SEC": {
+    "type": "seconds",
+    "default": 60,
+    "group": [
+      "安全"
+    ],
+    "doc": "删除类高危操作窗口秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ADMIN_CREDS_MAX": {
+    "type": "int",
+    "default": 20,
+    "group": [
+      "安全"
+    ],
+    "doc": "凭据改写类操作次数上限（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ADMIN_CREDS_COOLDOWN_SEC": {
+    "type": "seconds",
+    "default": 60,
+    "group": [
+      "安全"
+    ],
+    "doc": "凭据改写类操作窗口秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_ALERT_COOLDOWN": {
+    "type": "seconds",
+    "default": 300,
+    "group": [
+      "通知"
+    ],
+    "doc": "容量告警邮件节流秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ADMIN_USER": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "Web"
+    ],
+    "doc": "主管理员用户名",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ADMIN_PASSWORD": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "Web"
+    ],
+    "doc": "主管理员口令（改密后可清除明文）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ADMIN_PASSWORD_HASH": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "Web"
+    ],
+    "doc": "主管理员口令哈希（自动维护）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ADMIN_PW_VERSION": {
+    "type": "int",
+    "default": 1,
+    "group": [
+      "Web"
+    ],
+    "doc": "口令版本号（改密即换发）",
+    "sensitive": true,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ADMIN_SID": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "Web"
+    ],
+    "doc": "主管理员会话吊销标识（自动维护）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SECRET_KEY": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "Web"
+    ],
+    "doc": "会话签名密钥（首次启动自动生成）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_COOKIE_SECURE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "安全"
+    ],
+    "doc": "会话 Cookie Secure 标志（显式设置即完全交给它）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SESSION_ABS_DAYS": {
+    "type": "int",
+    "domain": [
+      1,
+      30
+    ],
+    "default": 7,
+    "group": [
+      "安全"
+    ],
+    "doc": "Web 会话绝对过期天数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_SESSION_TTL_HOURS": {
+    "type": "int",
+    "default": 6,
+    "group": [
+      "安全"
+    ],
+    "doc": "签到会话缓存 TTL 小时数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PW_CONFIRM_TTL": {
+    "type": "seconds",
+    "domain": [
+      0,
+      900
+    ],
+    "default": 300,
+    "group": [
+      "安全"
+    ],
+    "doc": "敏感操作口令复核豁免窗口秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_PW_CONFIRM_COOLDOWN_SEC": {
+    "type": "seconds",
+    "default": 300,
+    "group": [
+      "安全"
+    ],
+    "doc": "口令复核失败冷却秒数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_PW_GATE": {
+    "type": "enum",
+    "domain": [
+      "risk",
+      "full",
+      "off"
+    ],
+    "default": "risk",
+    "group": [
+      "安全"
+    ],
+    "doc": "危险操作口令档位",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_TRUST_FORWARDED_HEADERS": {
+    "type": "bool",
+    "default": true,
+    "group": [
+      "安全"
+    ],
+    "doc": "转发头信任开关（未设或非法值按信任执行）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_REGISTRATION_PAUSE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "安全"
+    ],
+    "doc": "注册暂停（急停）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_GLOBAL_PAUSE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "安全"
+    ],
+    "doc": "全局急停（停一切签到）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ANNOUNCEMENT": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "全站公告（发布态，空=下线）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ANNOUNCEMENT_DRAFT": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "公告草稿（仅管理员可见）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ANNOUNCEMENT_DRAFT_META": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "公告草稿作者与时刻",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_ANNOUNCEMENT_PUBLISHED_META": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "线上公告发布人与时刻",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_EMAIL_DOMAIN_ALLOWLIST": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "邮箱域名白名单（逗号分隔）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "邮箱域名额外黑名单（逗号分隔）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_DISABLE_PURGE_LOOP": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "Web"
+    ],
+    "doc": "禁用每日清理后台线程（测试用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_ICP_INFO": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "ICP 备案号（空=页脚不显示）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_POLICE_INFO": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "公安备案号（空=不显示）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_POLICE_LINK": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "公安备案查询链接",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_SITE_DESCRIPTION": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "站点分享简介（空=内置文案）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_SITE_IMAGE": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "Web"
+    ],
+    "doc": "分享卡片配图（https 绝对地址）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_TYPE": {
+    "type": "enum",
+    "domain": [
+      "",
+      "serverchan",
+      "custom"
+    ],
+    "default": "",
+    "group": [
+      "通知"
+    ],
+    "doc": "推送类型（空=关闭）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_URL": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "通知"
+    ],
+    "doc": "完整 webhook URL（旧写法，按 custom 处理）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_SECRET_ENC": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "通知"
+    ],
+    "doc": "加密后的推送密钥（网页写入）",
+    "sensitive": true,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_COOLDOWN": {
+    "type": "seconds",
+    "default": 60,
+    "group": [
+      "通知"
+    ],
+    "doc": "同类型告警节流秒数（0=关闭）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_URGENT_ONLY": {
+    "type": "bool",
+    "default": true,
+    "group": [
+      "通知"
+    ],
+    "doc": "只推重要告警",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_DAILY_MAX": {
+    "type": "int",
+    "default": 5,
+    "group": [
+      "通知"
+    ],
+    "doc": "非紧急告警每日上限（0=不限）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_NOTIFY_URGENT_DAILY_MAX": {
+    "type": "int",
+    "default": 3,
+    "group": [
+      "通知"
+    ],
+    "doc": "紧急告警每日上限（0=不限）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_LOGINFAIL_DAILY_MAX": {
+    "type": "int",
+    "default": 3,
+    "group": [
+      "通知"
+    ],
+    "doc": "登录失败告警独立日额度（0=不限）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "通知"
+    ],
+    "doc": "邮件通知开关",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_SMTP_HOST": {
+    "type": "string",
+    "default": "smtp.qq.com",
+    "group": [
+      "通知"
+    ],
+    "doc": "SMTP 服务器",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_SMTP_PORT": {
+    "type": "int",
+    "default": 465,
+    "group": [
+      "通知"
+    ],
+    "doc": "SMTP 端口（465 走 SSL，其余 STARTTLS）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_ALLOW_PRIVATE_HOST": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "通知"
+    ],
+    "doc": "允许 SMTP 目标为内网/回环地址（默认拒）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_USER": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "通知"
+    ],
+    "doc": "发件邮箱",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_PASS": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "通知"
+    ],
+    "doc": "发件邮箱授权码",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_ADMIN_TO": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "通知"
+    ],
+    "doc": "管理员告警收件人（逗号分隔）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_SMTPS_ENC": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "通知"
+    ],
+    "doc": "加密的 SMTP 条目列表（网页写入）",
+    "sensitive": true,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_ADMIN_NOTIFY": {
+    "type": "bool",
+    "default": true,
+    "group": [
+      "通知"
+    ],
+    "doc": "主管理员个人收件开关",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_USER_FAIL_DAILY_CAP": {
+    "type": "int",
+    "default": 1,
+    "group": [
+      "通知"
+    ],
+    "doc": "用户签到失败提醒每账号每日上限（0 或负数=不限）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_LOG_LEVEL": {
+    "type": "enum",
+    "domain": [
+      "DEBUG",
+      "INFO",
+      "WARNING",
+      "ERROR"
+    ],
+    "default": "INFO",
+    "group": [
+      "部署"
+    ],
+    "doc": "日志级别（非法值回退 INFO）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RETENTION_DAYS": {
+    "type": "int",
+    "default": 365,
+    "group": [
+      "数据"
+    ],
+    "doc": "日志与可回看状态文件保留天数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SNAPSHOT_RETENTION_DAYS": {
+    "type": "int",
+    "default": 7,
+    "group": [
+      "数据"
+    ],
+    "doc": "标记/账本类快照保留天数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SECOND_RUN": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "调度"
+    ],
+    "doc": "本轮即补签轮（由宿主脚本注入）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_TRIGGER": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "触发来源标签（人在终端执行时非空）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_INSTALLED": {
+    "type": "path",
+    "default": "/usr/local/sbin/yiban-backup.sh",
+    "group": [
+      "部署"
+    ],
+    "doc": "备份脚本的安装路径（备份哨兵用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_RETAIN_DAYS": {
+    "type": "int",
+    "default": 30,
+    "group": [
+      "部署"
+    ],
+    "doc": "备份保留天数（正整数，0 被拒）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_BACKUP_PASSPHRASE": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "备份加密口令（建议改用口令文件）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_READ_PASSPHRASE_STDIN": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "部署"
+    ],
+    "doc": "从标准输入读备份口令",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSH_HOST": {
+    "type": "string",
+    "default": "yiban",
+    "group": [
+      "部署"
+    ],
+    "doc": "拉取生产备份的远端主机别名",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  }
+}
