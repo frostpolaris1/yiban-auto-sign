@@ -215,32 +215,61 @@ class UnparseableValueTest(unittest.TestCase):
         self.assertEqual(cfg.source("YIBAN_WORKERS"), "registry_default")
         self.assertIn("YIBAN_WORKERS", cap.text)
 
-    def test_hhmm_value_is_validated_like_the_engine(self):
-        """`hhmm` 的值按 `window.parse_hhmm` 的口径校验（合法不告警，非法回退缺省）。
+    def test_hhmm_accept_set_is_exactly_the_engines(self):
+        """`hhmm` 的接受集必须与引擎 `window.parse_hhmm` **逐样本一致**。
 
-        两处口径必须一致：引擎收 `H:MM`，名册也要收 `H:MM`；否则"引擎认、名册不认"
-        会悄悄长成一个新的分叉。
+        期望值从引擎现算，不在测试里另写一套"更严/更松"的判据——这正是补审
+        medium 指出的形状：加载器曾自带一条更严的正则，于是 `.env` 里手写的
+        `006:30`、`6 :30` 这类写法**引擎认、名册不认**，加载器回落缺省而引擎按原值跑。
+        样本 13 个：7 个分叉输入（`006:30` / `021:00` / `+6:30` / `6 :30` / `6: 30` /
+        `1_0:30` / `6:0030`，引擎都收）+ 4 个两边都拒（`99:99` / `abc` / `12:` / `60`）
+        + 2 个两边都收（`7:05` / `23:59`）。
         """
-        for raw in ("7:05", "23:59"):
+        from yiban import window
+        sentinel = object()
+        samples = ("7:05", "23:59", "006:30", "021:00", "+6:30", "6 :30",
+                   "6: 30", "1_0:30", "6:0030", "99:99", "abc", "12:", "60")
+        for raw in samples:
+            engine_ok = window.parse_hhmm(raw, sentinel) is not sentinel
             path = _dotenv("YIBAN_SIGN_START=%s\n" % raw)
             try:
                 with _WarningCapture() as cap:
                     val = CL.resolve("YIBAN_SIGN_START", env={}, env_file=path,
                                      registry=REGISTRY)
-                self.assertEqual(val, raw, "引擎收的写法名册也要收：%s" % raw)
-                self.assertEqual(cap.records, [], "合法时刻不该出声：%s" % raw)
             finally:
                 os.unlink(path)
-        for raw in ("99:99", "abc", "12:", "60"):
-            path = _dotenv("YIBAN_SIGN_START=%s\n" % raw)
-            try:
-                with _WarningCapture() as cap:
-                    val = CL.resolve("YIBAN_SIGN_START", env={}, env_file=path,
-                                     registry=REGISTRY)
-                self.assertEqual(val, "06:30", "非法时刻 ⇒ 视为未设 ⇒ 回落缺省：%s" % raw)
+            if engine_ok:
+                self.assertEqual(val, raw, "引擎收的写法加载器也要收：%r" % raw)
+                self.assertEqual(cap.records, [], "引擎收的写法加载器不许出声：%r" % raw)
+            else:
+                self.assertEqual(val, "06:30", "引擎不收的写法也不收（回落缺省）：%r" % raw)
                 self.assertIn("YIBAN_SIGN_START", cap.text)
-            finally:
-                os.unlink(path)
+
+    def test_hhmm_registry_end_uses_the_same_accept_set(self):
+        """名册缺省端与取值端同判：两侧都走同一个接受集（名册端换判据必红）。
+
+        补审 M4：把 `_check_default` 的 hhmm 校验换成一条更严的**非委托**判据，当时
+        全部用例仍绿——名册端没有守卫。本用例的期望值同样从引擎现算，13 个样本逐条
+        构造名册条目：引擎收的缺省必须通过名册自校验，引擎不收的必须抛 `RegistryError`。
+        """
+        from yiban import window
+        sentinel = object()
+        samples = ("7:05", "23:59", "006:30", "021:00", "+6:30", "6 :30",
+                   "6: 30", "1_0:30", "6:0030", "99:99", "abc", "12:", "60")
+        for raw in samples:
+            engine_ok = window.parse_hhmm(raw, sentinel) is not sentinel
+            spec = {
+                "type": "hhmm", "default": raw, "group": ["调度"],
+                "doc": "签到窗口开始时刻", "sensitive": False,
+                "web_editable": True, "tier": "master", "reload": "next-round",
+            }
+            if engine_ok:
+                CL.validate_registry({"_meta": {"version": 1},
+                                      "YIBAN_SIGN_START": spec})
+            else:
+                with self.assertRaises(CL.RegistryError):
+                    CL.validate_registry({"_meta": {"version": 1},
+                                          "YIBAN_SIGN_START": spec})
 
     def test_hhmm_default_is_validated_in_the_registry(self):
         """名册里 `hhmm` 键的缺省同样按该口径校验（`99:99` 不是合法缺省）。"""
