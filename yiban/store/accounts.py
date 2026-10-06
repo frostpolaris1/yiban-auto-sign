@@ -39,6 +39,7 @@ import logging
 import sqlite3
 
 from yiban.infra import account_crypto
+from yiban.masking import mask_phone as _mask_phone
 from yiban.store import connection as _connection
 
 logger = logging.getLogger("yiban.store.accounts")
@@ -139,8 +140,12 @@ def purge_orphan_session_cache(conn):
 # 行加解密与明文自愈
 # ---------------------------------------------------------------------------
 def _mask_phone_display(phone):
-    """展示用打码（仅用于日志文案，与 web 层同口径）。"""
-    return phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
+    """展示用打码（仅用于日志文案）：**转发** `yiban.masking.mask_phone`，不另立公式。
+
+    本层曾有与 `masking.mask_phone` 平行的一份切片公式；两份必然分叉（改一边漏一边），
+    故收敛为转发（2026-10-06 census P0-3 契约化）。
+    """
+    return _mask_phone(phone)
 
 
 def _decrypt_row(row, env_file=None):
