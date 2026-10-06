@@ -294,7 +294,7 @@ git pull && docker compose up -d --build   # 更新代码后重建
 
 - **定时签到**：不依赖宿主 cron，由容器内 `supervisor` 常驻的 `docker/scheduler.py` 承担（首签 + 补签 + 每日清理）。
 - **时区**：容器固定 `Asia/Shanghai`；同时窗口与日期判定本身按北京时间计算（`yiban/clock.py`），宿主是 UTC 也不会算错。
-- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量。**信任模型（M12）**：应用只在**请求来源是回环地址**（`127.0.0.0/8` 整段、`::1`、双栈下的 `::ffff:127.0.0.1`）**且转发头信任开关为开**时才采信 `X-Forwarded-For`；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。开关是 `YIBAN_TRUST_FORWARDED_HEADERS`（见 `.env.example`）：**本版不设该键即按"信任"执行**（与旧版行为一致），下一版把缺省翻转为"不信任"。要伪造 XFF 得先能在回环上发连接——**但 `ssh -L` 隧道与"回环直连"两种形态下这条不成立**：隧道客户端没有本机权限，却拿到回环身份。这两种形态请显式设 `YIBAN_TRUST_FORWARDED_HEADERS=0`。
+- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量。**信任模型（M12）**：应用只在**请求来源是回环地址**（`127.0.0.0/8` 整段、`::1`、双栈下的 `::ffff:127.0.0.1`）**且转发头信任开关为开**时才采信 `X-Forwarded-For`；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。开关是 `YIBAN_TRUST_FORWARDED_HEADERS`（见 `.env.example`）：**本版不设该键即按"信任"执行**（与旧版行为一致），下一版把缺省翻转为"不信任"。要伪造 XFF 得先能在回环上发连接——**但 `ssh -L` 隧道与"回环直连"两种形态下这条不成立**：隧道客户端没有本机权限，却拿到回环身份。这两种形态请显式设 `YIBAN_TRUST_FORWARDED_HEADERS=0`（关闭会同时停用 `X-Forwarded-Proto` 的 Cookie Secure 自动判定；这两种形态不经反代，本来也不该采信该头）。
 - **定时备份（M44，2026-10-01 补）**：容器形态现在**自带每日 02:00 的定时备份**，不再需要宿主 cron——容器部署的用户本来就没有宿主 cron，容器调度器此前又漏了这个挂点，等于"看着在跑、其实从没备份过"。挂点由 `docker/scheduler.py` 的 `BACKUP_AT=(2, 0)` 承担，**复用 `docker/backup-docker.sh`**（加密落盘、自检、保留期轮转）。落点是 compose 声明的命名卷 `yiban-backups` → 容器 `/backups`，**刻意不在 `/data` 里**（否则每轮 tar 会把上一轮备份再打进去，体积逐轮翻倍）。启用只需两步，验证另有三步，见下方「容器形态现在自带定时备份」。
 - **自定义 Web 图标**：取消 `docker-compose.yml` 中 `yiban` 服务里那行被注释的挂载（宿主 `./logo.png` → 容器 `web/static/vendor/logo.png`），把图标放到仓库根 `logo.png`。
 
