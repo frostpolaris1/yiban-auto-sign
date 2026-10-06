@@ -51,9 +51,11 @@ load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路
 （突发额度收口，见 `burst_from_env`）、`YIBAN_ACCOUNT_GAP_MAX` /
 `YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
 调用谁：`yiban.store.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
-`on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）。
-唯一生产入口是 `executor_v3`——台账单池化后它是唯一执行体，本模块因此在产线恒被调用，
-出口桶状态落 `egress_state` 表。
+`on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）与探针
+（`probe.run_probe` 每账号前取额度、轮末 `persist`；只消费额度、不喂 AIMD 信号）。
+生产入口有两处：执行体 `executor_v3`（台账单池化后的唯一执行体）与探针 `probe`——探测是
+真实登录、与签到同一风控暴露面，故与执行体**共用同一个出口桶**（桶键都是本进程执行体
+身份），出口桶状态落 `egress_state` 表。
 """
 import logging
 import os
