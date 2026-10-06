@@ -20,9 +20,12 @@
 """
 import contextlib
 import importlib.util
+import json
 import os
+import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,6 +38,36 @@ import db  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
 
 TEST_KEY = "a" * 64
+
+#: node 解释器（急停色板真值门用**真导入**取运行时值，见 `_node_status_token`）。
+#: 与 `tests/test_dashboard_stats_caliber_js.py` 同一探测法。
+NODE = shutil.which("node")
+
+
+def _node_status_token(dash_js):
+    """在 node 里**真导入** `dashboard/model.js`，回读 `STATUS_TOKEN` 的运行时真值。
+
+    走真导入而非文本解析：由 JS 引擎自己解析源码，故注释、字符串字面量、模板串里写的
+    `码: "值"` 都不成词条——原文解析类伪装整类失效（三审 m4 的字符串诱饵即此）。
+
+    返回 `{"global_paused": ..., "paused": ...}`。缺键在 JSON 里表现为**键不存在**
+    （`JSON.stringify` 丢弃 `undefined`），调用方据此断言。
+    """
+    if NODE is None:
+        raise AssertionError("需要 node 真跑取 STATUS_TOKEN 真值（见调用方说明）")
+    entry = (
+        "import { STATUS_TOKEN } from %s;\n"
+        "console.log(JSON.stringify({ global_paused: STATUS_TOKEN.global_paused,"
+        " paused: STATUS_TOKEN.paused }));\n"
+    ) % json.dumps(pathlib.Path(dash_js).resolve().as_uri())
+    with tempfile.TemporaryDirectory() as td:
+        probe = os.path.join(td, "probe.mjs")
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write(entry)
+        proc = subprocess.run([NODE, probe], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise AssertionError("node 导入 dashboard/model.js 失败：%s" % (proc.stderr or proc.stdout))
+    return json.loads(proc.stdout)
 
 
 class StatusSingleSourceTest(unittest.TestCase):
@@ -270,6 +303,46 @@ class StatusSingleSourceTest(unittest.TestCase):
         done_text = yiban_status.DISPLAY[yiban_status.STATUS_SUCCESS]["text"]
         self.assertIn(done_text, src,
                       "my-accounts 今日完成文案与 DISPLAY 成功态文案已分叉")
+
+    def test_frontend_global_pause_color_stays_anomaly_tier(self):
+        """急停（global_paused）在前端图表色板里必须落异常档，不得落"无异常"档。
+
+        census P1-5：Vue 重写不得复刻旧 `data_dashboard.js` 的暂停假安心。权威口径是
+        `yiban.status.DISPLAY`——它把急停定为 `warn`（非正常，见 `_DISPLAY_ROWS`）。
+        前端 `dashboard/model.js` 的 `STATUS_TOKEN` 是图表配色（非展示词表，见
+        `SANCTIONED_MAPS`）；修复前它把急停自持为 `"muted"`（与「用户取消」同色 = 无异常
+        档），于是分布图上"管理员急停"与"用户自己取消"无从区分。此门钉四条：
+          ① `STATUS_TOKEN` 必须能被 node **真导入**（缺 node 即红，不静默跳过）；
+          ② `global_paused` 与 `paused` 两键必须在真值对象里存在；
+          ③ 急停档位必须落异常白名单（`warning` / `danger`）——挡空串与拿 tone 用词
+             当令牌两类绕过（两者运行时都回落 `light`）；
+          ④ 急停的档位与账密暂停（同为账号级暂停）同档。
+
+        取值走 node **真导入**而非原文正则：JS 引擎自己解析源码，故注释、字符串字面量、
+        模板串里写的 `码: "值"` 都不成词条——**原文解析类伪装整类失效**（前两轮的注释
+        冒充与三审的字符串诱饵都在此闭合）。
+        """
+        self.assertEqual(
+            yiban_status.DISPLAY[yiban_status.STATUS_GLOBAL_PAUSED]["tone"], "warn",
+            "权威口径：yiban.status 定急停语气为 warn（非正常）")
+        # 缺 node 即红：静默跳过等于复现本门要钉的假绿。dev-verify 环境（WSL）与 CI
+        # ubuntu 镜像均含 node，且本仓另有 node 真跑先例（test_dashboard_stats_caliber_js）。
+        self.assertIsNotNone(
+            NODE,
+            "本门用 node 真导入 dashboard/model.js 取 STATUS_TOKEN 真值；取不到 node 必须"
+            "响亮失败，不得跳过——跳过即本门要钉的假绿")
+        tokens = _node_status_token(self.DASH_JS)
+        self.assertIn("global_paused", tokens,
+                      "真值对象里没有 global_paused 键（词条被删或改名）")
+        self.assertIn("paused", tokens,
+                      "真值对象里没有 paused 键（词条被删或改名）")
+        # 白名单档位：空串与 `"warn"`（把 tone 用词当令牌）在此拦下。两者运行时都回落
+        # `light`（`statusColor` 的 `STATUS_TOKEN[st] || "light"`），正是本门要钉的形态。
+        self.assertIn(tokens["global_paused"], ("warning", "danger"),
+                      "急停档位必须落异常白名单（warning/danger）——不得用空串或 tone 用词冒充")
+        self.assertEqual(
+            tokens["global_paused"], tokens["paused"],
+            "急停与账密暂停同档（两者都是账号级暂停，都由 status.py 定为 warn）")
 
 
 if __name__ == "__main__":
