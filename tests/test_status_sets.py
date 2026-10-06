@@ -350,13 +350,19 @@ class HasUndoneAccountsTest(unittest.TestCase):
         with mock.patch.object(state_io.db, "is_initialized", return_value=False):
             self.assertTrue(self._undone())
 
-    def test_pool_error_falls_back_to_state_file(self):
-        """池读取异常同样回退状态文件，绝不把「读不到」当「已了结」。"""
+    def test_pool_error_is_fail_closed(self):
+        """池读取异常 = "读不到"：判「有未了结」并出声，**不得**回退状态文件后判「已了结」。
+
+        状态文件干净 + 库读不通 ⇒ 判"无未了结" ⇒ 补签轮不跑 ⇒ 漏签。
+        "宁多跑一轮，不漏签"与 `test_pool_unavailable_is_fail_safe` 是同一条纪律。
+        """
         self._write_state({PHONE: {"status": yiban_status.STATUS_SUCCESS}})
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
                 mock.patch.object(state_io.db, "task_open_count",
-                                  side_effect=RuntimeError("库抖动")):
-            self.assertFalse(self._undone())
+                                  side_effect=RuntimeError("库抖动")), \
+                self.assertLogs("yiban", level="WARNING") as cm:
+            self.assertTrue(self._undone())
+        self.assertIn("按未了结处理", "\n".join(cm.output))
 
 
 class LazyVshardRowTest(unittest.TestCase):
