@@ -11,19 +11,22 @@
   反例测试见 tests/test_migrations_fail_closed.py）；
 - 迁移助手 `_table_columns` / `_ensure_column` / `_ensure_index` 与表名白名单
   `_ALLOWED_TABLES`（助手对白名单外的表名直接拒绝，防拼接 SQL 的注入面）；
-- 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE（框架持事务期间
-  助手与被包迁移内部的 commit 不提前落盘，"整段迁移原子"成立）、核心迁移失败抛出阻断
-  启动、可选迁移失败或延后只置 blocked 且不提升版本（下次启动重试）；`_MIGRATIONS`
+- 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败抛出阻断
+  启动、可选迁移失败或延后只置 blocked 且不提升版本（下次启动重试）。框架持事务期间，
+  助手与各 `migrate_*` 体内的提交点一律走 `_commit_if_free`，不提前落盘——"整段迁移
+  原子"由此成立（结构守卫 `tests/test_migrations_schema_drift.py::NoBareCommitGuardTest`
+  禁止迁移体再出现裸 `conn.commit()`）；`_MIGRATIONS`
   是「版本号 → 名称 → 函数 → 是否核心」的登记表（v17/v18/v19 为核心档：v3 领取路径
   把它们的产物当硬编列名用，缺了整条路径静默拒跑，见登记表注释）；
 - 迁移完成记录表 `schema_migrations`：bump 分支按 **INSERT 记录 → `PRAGMA user_version`
   → commit** 的固定顺序在**同一事务**落库（失败/未提升 ⇒ 无记录；顺序不可倒——
-  `PRAGMA` 放最前会在"迁移体自带 conn.commit()"的迁移里走 autocommit 抢先提升版本，
-  与记录写入之间崩溃即留下"版本已提升、记录没写上"、下次启动被完整性门拒启且继承
-  回填救不回）。存量库（记录表上线前升的级）首见时按继承回填。
+  直调路径里迁移体自己已提交过，而 `PRAGMA` 不自开事务，放最前就按 autocommit 抢先
+  提升版本，与记录写入之间崩溃即留下"版本已提升、记录没写上"、下次启动被完整性门
+  拒启且继承回填救不回）。存量库（记录表上线前升的级）首见时按继承回填。
   链尾 `_verify_migration_integrity` fail-closed 校验：版本已过某迁移却无记录、或
-  核心迁移产物（表/列）缺失 ⇒ 抛 `MigrationIntegrityError` 点名该迁移并拒绝启动
-  （MF-40：不接受"版本声称过了、产物没落地"的库继续跑）；
+  该档在 `_ARTIFACTS` 登记的产物（表/列）缺失 ⇒ 抛 `MigrationIntegrityError` 点名该
+  迁移并拒绝启动（产物核对不分核心/可选档；MF-40：不接受"版本声称过了、产物没落地"
+  的库继续跑）；
 - `MigrationDeferred`：可选迁移遇到需人工处理的数据时主动延后；
 - JSON → SQLite 自动导入 `_maybe_migrate` / `_rename_backup`：库仍为空且 JSON 存在时把
   accounts/users 导入 SQLite（幂等），两个文件都成功后一起改名 `.bak` 保留逃生门。
@@ -88,7 +91,8 @@ class MigrationIntegrityError(Exception):
     """迁移完整性校验失败 ⇒ **拒绝启动**（fail-closed，MF-40）。
 
     抛出即说明 `user_version` 与库的实际 schema 脱节：版本声称已过了某条迁移，但该迁移
-    的完成记录缺失、或核心迁移的产物（表/列）不存在。典型成因：旧链"可选失败只告警"
+    的完成记录缺失、或该档在 `_ARTIFACTS` 登记的产物（表/列）不存在（产物核对不分
+    核心/可选档）。典型成因：旧链"可选失败只告警"
     时代留下的半升级库、有人手工拨 PRAGMA、绕过链直接改 schema。让 `try_claim` /
     执行体在这种库上继续跑只会把静默拒跑变成运维事故，故启动即拒、异常文本点名是哪条
     迁移缺了什么。调用面：`yiban.engine.runner` / `workers` 捕获后按退出码 4 退出
@@ -101,13 +105,31 @@ class MigrationIntegrityError(Exception):
 # 表本身在整链开跑前建好；记录缺失 ⇒ `MigrationIntegrityError`。
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 
-# 核心迁移的产物清单（表, 列|None=只要表）。校验按登记表逐个核对：这些名字是领取/
-# 队列路径的**硬编引用**（claims.try_claim 的 INSERT 列名含 epoch、executor_v3 的
-# WHERE vshard），缺一个就是整条 v3 路径静默失效，所以缺了必须拒启。
-_CORE_ARTIFACTS = {
-    17: (("sign_claims", None),),
-    18: (("sign_tasks", None), ("egress_state", None)),
-    19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),
+# 迁移产物登记表（值为 ((表, 列|None=只要表), ...)）。链尾按这张表核对："user_version
+# 过了这档 ⇒ 这档的产物还在库里"。缺一个就拒启。
+# 为什么这几档必须在册：它们的迁移体里曾有裸 `conn.commit()`（ba-p01-02）。可选档失败
+# 只告警、不抛异常，框架照写记录、照提版本——回滚吃掉的 DDL 从此没人看得见。v17/v18/v19
+# 是领取/队列路径的硬编引用（缺了整条 v3 路径静默失效），原先就在册。
+# 不在册的三档，逐档理由：
+# - v14：它的产物是"page_visits / server_metrics 被删掉"。存在性核对说不出"必须没有"；
+#   残表无正确性代价，把它变成拒启会逼存量库人工 DROP 才能重启。
+# - v20：只补 sign_tasks 的数据行，没有 schema 产物。"补 0 行"是全新部署的常态。
+# - v4/v6 里的 page_visits 与 server_metrics（含 v6 补的 user_id）：v14 会删掉它们，
+#   登记即自打。
+# 第 4 元（核心/可选）只决定**执行失败时**阻断不阻断启动；产物核对不分档，缺了都拒启。
+_ARTIFACTS = {
+    4: (("sign_events", None),),                          # migrate_v4 建表
+    6: (("sign_events", "account_id"),                    # migrate_v6 三处 _ensure_column
+        ("sign_events", "dur_sec"),
+        ("sign_events", "finished_at")),
+    8: (("session_cache", None),                          # migrate_v8 建两张表
+        ("app_meta", None)),
+    12: (("app_meta", None),),                            # migrate_v12 幂等补建
+    15: (("verify_jobs", None),),                         # migrate_v15 建表
+    16: (("verify_jobs", "prev_status"),),                # migrate_v16 补列
+    17: (("sign_claims", None),),                         # migrate_v17 建表
+    18: (("sign_tasks", None), ("egress_state", None)),   # migrate_v18 建两表
+    19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),  # migrate_v19 补两列
 }
 
 
@@ -121,10 +143,10 @@ def _quote_str_literal(text):
     return str(text).replace("'", "''")
 
 
-# 登记表框架事务标志：`_run_migrations` 在 BEGIN IMMEDIATE 里执行迁移函数时置真，
-# 期间 `_ensure_column` / `_ensure_index` / migrate_v5 内部的 commit 一律**不提前
-# 落盘**（原子性承诺的兑现点）；登记表之外直调（旧调用面/测试直接调迁移函数）时标志
-# 为假，commit 行为与历史完全一致。单线程写路径（init_db 全程持 `_conn_lock`）。
+# 登记表框架事务标志：`_run_migrations` 在 BEGIN IMMEDIATE 里执行迁移函数时置真。
+# 期间每一个提交点（`_ensure_column` / `_ensure_index` 与各 `migrate_*` 体内）**一律
+# 不提前落盘**——原子性承诺的兑现点。登记表之外直调（旧调用面/测试直接调迁移函数）时
+# 标志为假，提交点照旧自提，行为与历史完全一致。单线程写路径（init_db 全程持 `_conn_lock`）。
 _framework_txn = False
 
 
@@ -371,7 +393,7 @@ def migrate_v4(conn):
         ")"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts)")
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def _assert_rebuild_preserved(conn, table, expected_count, expected_cols):
@@ -473,7 +495,14 @@ def migrate_v5(conn):
 
 def migrate_v6(conn):
     """v6：WebUI 统计/监控补齐——sign_events 增加 account_id/dur_sec/finished_at，
-    page_visits 增加 user_id，并补索引。可选迁移，失败不阻断启动。"""
+    page_visits 增加 user_id，并补索引。可选迁移，失败不阻断启动。
+
+    回填 UPDATE 走命名保存点：它失败时只回滚自己，不回滚上面刚补的列与索引。
+    但保存点只覆盖"语句级失败"这一半：磁盘满/IO 错误这一族错误码会让 SQLite 把
+    **整条事务**自动回滚，保存点连同它之前刚补的列一起消失。故失败后复核产物，
+    产物不在就抛 `MigrationDeferred`——延后本档换取"下次启动整段重跑"，
+    绝不带着"产物缺失"去提升版本。
+    """
     _ensure_column(conn, "sign_events", "account_id", "INTEGER")
     _ensure_column(conn, "sign_events", "dur_sec", "REAL")
     _ensure_column(conn, "sign_events", "finished_at", "TEXT")
@@ -498,17 +527,43 @@ def migrate_v6(conn):
         "CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts "
         "ON page_visits(role, ts)",
     )
+    # 回填走命名保存点，失败只回滚这一条 UPDATE。
+    # 为什么不能用整段 rollback：框架持事务时上面补的三列四索引还滞留在
+    # `_run_migrations` 的 BEGIN IMMEDIATE 里（`_ensure_column`/`_ensure_index`
+    # 经 `_commit_if_free` 不提前落盘）。旧写法 `conn.rollback()` 把它们一起吃掉，
+    # 而 v6 不抛异常 ⇒ 框架照写记录、照把 user_version 提到 6 ⇒「版本说过了 v6、
+    # schema 里没有」，此后 events 的两条写入路径永久报 no such column（ba-p01-02）。
+    _backfill_sp = "v6_backfill_account_id"
     try:
+        conn.execute(f"SAVEPOINT {_backfill_sp}")
         conn.execute(
             "UPDATE sign_events SET account_id = ("
             "SELECT id FROM accounts WHERE accounts.phone = sign_events.phone LIMIT 1"
             ") WHERE account_id IS NULL"
         )
-        conn.commit()
+        conn.execute(f"RELEASE SAVEPOINT {_backfill_sp}")
+        _commit_if_free(conn)
     except Exception as e:
+        # 撤销的只是这条 UPDATE；刚补的列与索引留在事务里，由框架末尾一并提交。
         with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("回填 sign_events.account_id 失败: %s", e)
+            conn.execute(f"ROLLBACK TO SAVEPOINT {_backfill_sp}")
+            conn.execute(f"RELEASE SAVEPOINT {_backfill_sp}")
+        # 复核产物还在不在。SQLITE_FULL / SQLITE_IOERR / SQLITE_NOMEM / SQLITE_INTERRUPT
+        # 这一族错误让 SQLite 自动回滚**整条事务**：保存点随之消失（上面两条都会失败），
+        # 本迁移刚补的列一并消失。此时若照旧返回，框架仍会写记录、把 user_version
+        # 提到 6 ⇒ 重演"版本说过了 v6、schema 里没有"，链尾门拒启且只能人工修库。
+        # 抛延后则版本不提升，下次启动整段重跑（本迁移幂等）。
+        missing = [f"{t}.{c}" for t, c in _ARTIFACTS[6]
+                   if c is not None and c not in _table_columns(conn, t)]
+        if missing:
+            raise MigrationDeferred(
+                "回填 sign_events.account_id 失败，且本迁移的产物已不在库中"
+                f"（{'、'.join(missing)}，底层事务被整体回滚）: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+        logger.warning(
+            "回填 sign_events.account_id 未完成: %s——本迁移补的列与索引已生效，"
+            "只有存量行的 account_id 仍为 NULL（可视化按账号聚合会退化成按手机号）", e)
 
 
 def migrate_v7(conn):
@@ -547,7 +602,7 @@ def migrate_v8(conn):
         "value TEXT NOT NULL"
         ")"
     )
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v9(conn):
@@ -595,7 +650,7 @@ def migrate_v12(conn):
         "value TEXT NOT NULL"
         ")"
     )
-    conn.commit()
+    _commit_if_free(conn)
 
 
 # 畸形列声明：`col col TYPE ...`（列名被重复写进类型声明）。
@@ -691,7 +746,7 @@ def migrate_v14(conn):
     """
     conn.execute("DROP TABLE IF EXISTS page_visits")
     conn.execute("DROP TABLE IF EXISTS server_metrics")
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v15(conn):
@@ -720,7 +775,7 @@ def migrate_v15(conn):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
     )
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def _create_verify_jobs_table(conn):
@@ -766,7 +821,7 @@ def migrate_v16(conn):
     """
     _create_verify_jobs_table(conn)
     _ensure_column(conn, "verify_jobs", "prev_status", "TEXT NOT NULL DEFAULT 'pending'")
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v17(conn):
@@ -797,7 +852,7 @@ def migrate_v17(conn):
         "CREATE INDEX IF NOT EXISTS idx_sign_claims_day_state "
         "ON sign_claims(day, state)"
     )
-    conn.commit()
+    _commit_if_free(conn)
 
 
 def migrate_v18(conn):
@@ -865,16 +920,18 @@ def migrate_v18(conn):
         "updated_at TEXT NOT NULL"
         ")"
     )
-    # 提交建表（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    # 提交点与 v17 同形：迁移体不做事务管理，框架持事务时交给框架末尾统一提交。
     # **单池化后不再平移 `sign_claims`**：本表是唯一生产台账，旧表的存量行是当日临时的
     # 领取记录，切换后下一轮自然在本表重建；旧表与其 `epoch` 列冻结保留（见 `claims`
     # 模块头），不做数据迁移。
-    conn.commit()
+    _commit_if_free(conn)
     # 耐久级必须在**事务外**改：SQLite 对事务内的 PRAGMA synchronous 直接报
-    # "Safety level may not be changed inside a transaction"。放在末尾提交之后
-    # 既绕开该限制，又保住建表与平移在前一个事务里原子生效；PRAGMA 若仍失败，
-    # blocked 路径下次启动整段重跑（幂等）收敛。
-    conn.execute("PRAGMA synchronous = FULL")
+    # "Safety level may not be changed inside a transaction"。直调路径上面已经提交，
+    # 这里立刻生效；框架持事务时事务还没关，本条改由 `_run_migrations` 在整链提交后
+    # 补一次（连接级设置，重复执行幂等）。PRAGMA 若仍失败，blocked 路径下次启动整段
+    # 重跑（幂等）收敛。
+    if not conn.in_transaction:
+        conn.execute("PRAGMA synchronous = FULL")
 
 
 def migrate_v19(conn):
@@ -882,7 +939,7 @@ def migrate_v19(conn):
 
     **核心迁移**（MF-40 改判）：`try_claim`/`settle`/`claim_batch` 把 `epoch` 当
     硬编列名引用——缺列时领取整表 fail-closed 返回"不可执行"，全天零签到却只留下
-    warning。失败必须阻断启动并点名，产物缺失同样拒启（`_CORE_ARTIFACTS`）。
+    warning。失败必须阻断启动并点名，产物缺失同样拒启（`_ARTIFACTS`）。
 
     为什么需要：账号级租约 900s 的判据是"心跳时间串"，而执行体会被 STW 停顿/容器
     挂起卡住数分钟——它醒来后仍以为自己持有该账号，会把迟到的结论写进去，覆盖接管者
@@ -897,7 +954,7 @@ def migrate_v19(conn):
     """
     _ensure_column(conn, "sign_claims", "epoch", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "sign_tasks", "epoch", "INTEGER NOT NULL DEFAULT 0")
-    conn.commit()
+    _commit_if_free(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1079,8 @@ def migrate_v20(conn):
     执行体的分片集合不相交，既不参与批领也不进入任何接管并入范围。`INSERT OR IGNORE` 让本
     迁移幂等——已有行（平移行、执行体真写的行）一概不覆盖，故失败/延后后下次启动
     整段重跑也能收敛。每 `_BACKFILL_COMMIT_ROWS` 行提交一次，避免长事务占住写锁。
+    框架持事务时这个提交点走 `_commit_if_free` 不生效：写锁本来就被外层
+    `BEGIN IMMEDIATE` 持有，攒批只是直调（旧调用面/测试）形态下的让锁。
 
     返回本次**实际补入**的行数（重跑为 0），供调用方与运维判断收敛。
     """
@@ -1052,9 +1111,9 @@ def migrate_v20(conn):
             inserted += cur.rowcount
             uncommitted += 1
             if uncommitted >= _BACKFILL_COMMIT_ROWS:
-                conn.commit()
+                _commit_if_free(conn)
                 uncommitted = 0
-    conn.commit()
+    _commit_if_free(conn)
     # 只报计数：补账涉及的是账号，日志里不得出现手机号
     logger.info("v20 backfill：补入 %d 行（扫描 %d 天，跳过 %d 天）",
                 inserted, scanned_days, skipped_days)
@@ -1068,8 +1127,9 @@ def migrate_v20(conn):
 # v17/v18/v19 于 MF-40 修复改判为核心：登记成"可选"后任一失败只发 warning、
 # user_version 永不提升，而 v3 领取路径（claims.try_claim / queue_store.claim_batch /
 # executor_v3）把这三版的产物当**硬编表名/列名**引用——缺了不会崩，只会整日静默
-# 零签到。档位是数据（第 4 元），`_verify_migration_integrity` 按 `_CORE_ARTIFACTS`
-# 核对产物、按 `schema_migrations` 核对完成记录，两侧都点名报错。
+# 零签到。档位是数据（第 4 元），只管**执行失败时**阻断不阻断。产物由
+# `_verify_migration_integrity` 按 `_ARTIFACTS` 核对、完成记录按 `schema_migrations`
+# 核对，两侧都点名报错；产物核对不分档（可选档的 DDL 被回滚吃掉同样是脱节）。
 # v20 保持可选：它只补台账数据，延后重试无正确性代价（但"目录读不动"不再算成功）。
 _MIGRATIONS = [
     (1, "v1_add_account_user_paused", migrate_v1, True),
@@ -1134,8 +1194,9 @@ def _verify_migration_integrity(conn):
     对登记表里 `target <= user_version` 的每一项核两件事：
     1. `schema_migrations` 有完成记录——没有 ⇒ 版本推进与迁移执行脱钩（手工拨
        PRAGMA、绕过链改 schema 等）⇒ 拒启；
-    2. 核心档迁移的产物（`_CORE_ARTIFACTS`：表/列）仍存在于当前 schema——缺了
-       ⇒ 该迁移声称完成而效果不在（迁移后被人删列也算）⇒ 拒启。
+    2. 该档在 `_ARTIFACTS` 登记的产物（表/列）仍存在于当前 schema——缺了 ⇒ 该迁移
+       声称完成而效果不在（迁移后被人删列也算）⇒ 拒启。产物核对不分核心/可选档：
+       可选档的 DDL 被回滚吃掉，同样是"版本与 schema 脱节"（ba-p01-02）。
     错误文本必须点名迁移（版本 + 名称 + 缺的东西），运维不用读代码就能定位。
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -1147,32 +1208,34 @@ def _verify_migration_integrity(conn):
             "完整性校验的基准不存在，拒绝启动")
     recorded = {r[0] for r in conn.execute(
         f"SELECT version FROM {_SCHEMA_MIGRATIONS_TABLE}").fetchall()}
-    for target_version, name, _fn, is_core in _MIGRATIONS:
+    for target_version, name, _fn, _is_core in _MIGRATIONS:
         if target_version > version:
             continue
         if target_version not in recorded:
-            # 点名缺什么不能只到"迁移名"粒度：核心迁移的产物（表.列）一并列出，
+            # 点名缺什么不能只到"迁移名"粒度：该档登记的产物（表.列）一并列出，
             # 运维拿报错就能直接对照 PRAGMA 检查，不必再翻登记表。
             hints = "、".join(
                 f"{t}.{c}" if c else t
-                for t, c in _CORE_ARTIFACTS.get(target_version, ()))
+                for t, c in _ARTIFACTS.get(target_version, ()))
             raise MigrationIntegrityError(
                 f"迁移完整性校验失败: user_version={version} 声称已过 v{target_version}"
                 f"（{name}），但 {_SCHEMA_MIGRATIONS_TABLE} 无该迁移的完成记录"
                 + (f"（该迁移的产物：{hints}）" if hints else "")
                 + "——版本推进与迁移执行脱钩，拒绝启动")
-        if not is_core:
-            continue
-        for table, column in _CORE_ARTIFACTS.get(target_version, ()):
+        # 产物核对不看档位是核心还是可选：档位只决定**执行失败时**阻断不阻断，
+        # 而"版本过了这档、产物却不在"对两档都是同一类脱节（ba-p01-02）。
+        for table, column in _ARTIFACTS.get(target_version, ()):
             if table not in tables:
                 raise MigrationIntegrityError(
-                    f"迁移完整性校验失败: 核心迁移 v{target_version}（{name}）的产物表"
-                    f" {table} 缺失（user_version={version}）——拒绝启动")
+                    f"迁移完整性校验失败: 迁移 v{target_version}（{name}）的产物表"
+                    f" {table} 缺失（user_version={version}）——版本说这档做完了，"
+                    "schema 里却没有它建的表，拒绝启动")
             if column is not None and column not in _table_columns(conn, table):
                 raise MigrationIntegrityError(
-                    f"迁移完整性校验失败: 核心迁移 v{target_version}（{name}）的产物列"
-                    f" {table}.{column} 缺失（user_version={version}）——该列是领取路径"
-                    "的硬编引用，缺列整条 v3 路径静默拒跑——拒绝启动")
+                    f"迁移完整性校验失败: 迁移 v{target_version}（{name}）的产物列"
+                    f" {table}.{column} 缺失（user_version={version}）——该列由这档迁移"
+                    "补出、被引用它的读写路径当硬编列名用，缺了整条路径静默失效，"
+                    "拒绝启动")
 
 
 def _run_migrations(conn):
@@ -1184,9 +1247,10 @@ def _run_migrations(conn):
     下次启动重试。成功提升与写 `schema_migrations` 记录在**同一事务**——版本推进
     自此与迁移完成互相见证，链尾 `_verify_migration_integrity` 兜底点名。
 
-    执行迁移函数期间 `_framework_txn` 置真：`_ensure_column` / `_ensure_index` /
-    migrate_v5 内部的提交点不再提前 commit，"BEGIN IMMEDIATE 包整段迁移"的原子性
-    承诺自此成立（半途失败整体回滚，不留半列半表）。
+    执行迁移函数期间 `_framework_txn` 置真：每一个提交点（`_ensure_column` /
+    `_ensure_index` / 各 `migrate_*` 体内）都不再提前 commit，"BEGIN IMMEDIATE 包整段
+    迁移"的原子性承诺自此成立——半途失败整体回滚，不留半列半表。迁移体内不得再出现
+    裸 `conn.commit()`（守卫：tests/test_migrations_schema_drift.py::NoBareCommitGuardTest）。
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     _create_schema_migrations(conn)
@@ -1218,14 +1282,15 @@ def _run_migrations(conn):
                     conn.commit()
                     logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
                 else:
-                    # 记录必须先写、版本后拨：部分迁移体以自己的 conn.commit() 收尾
-                    # （v4/v16/v17/v19/v20；v18 是 PRAGMA synchronous 的合法例外），
-                    # 框架的 BEGIN IMMEDIATE 到 bump 时**已经关闭**。默认隔离级别下
-                    # PRAGMA 不自开事务——放前面就按 autocommit 立刻落盘，与随后
-                    # INSERT+commit 之间崩溃即留下"版本已提升、记录没写上"的库态，
-                    # 下次启动被完整性门拒启且回填救不回（= 人工干预，破红线）。
-                    # INSERT 先执行则隐式开事务，PRAGMA 落在事务内与记录**同 commit
-                    # 原子生效、同 rollback 一起消失**（反例见
+                    # 迁移体的提交点全部走 `_commit_if_free`，框架的 BEGIN IMMEDIATE 到
+                    # bump 时**仍然开着**：迁移 DDL、完成记录、user_version 三步同事务、
+                    # 同一次 commit 原子生效，半途失败整体回滚——版本与 schema 不脱节。
+                    # 记录仍先写、版本后拨：直调路径（`_framework_txn` 为假）里迁移体已经
+                    # 自己提交过，而默认隔离级别下 PRAGMA 不自开事务——放前面就按
+                    # autocommit 立刻落盘，与随后 INSERT+commit 之间崩溃即留下"版本已
+                    # 提升、记录没写上"的库态，下次启动被完整性门拒启且回填救不回
+                    # （= 人工干预，破红线）。INSERT 先执行则隐式开事务，PRAGMA 落在事务内
+                    # 与记录**同 commit 原子生效、同 rollback 一起消失**（反例见
                     # tests/test_migrations_fail_closed.py::BumpRecordAtomicityTest）。
                     conn.execute(
                         f"INSERT OR REPLACE INTO {_SCHEMA_MIGRATIONS_TABLE} "
@@ -1258,6 +1323,10 @@ def _run_migrations(conn):
                 conn.rollback()
             logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
             blocked = True
+    # 到这里每一条分支都提交或回滚过 ⇒ 事务已关。补一次 v18 的耐久级 PRAGMA：
+    # SQLite 不允许在事务内改 synchronous，框架路径下 migrate_v18 末尾那条被跳过
+    # （见其条件）。这是连接级设置、幂等，语义与 v18 内联那条一致。
+    conn.execute("PRAGMA synchronous = FULL")
     _verify_migration_integrity(conn)
 
 
