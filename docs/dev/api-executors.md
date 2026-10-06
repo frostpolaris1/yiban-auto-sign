@@ -390,6 +390,7 @@
  "day": "2026-10-01", "is_today": true, "in_window": true,
  "totals": {"total": 5, "settled": 3, "open": 2,
             "done": 3, "skipped": 0, "pending": 0, "claimed": 1, "failed": 1, "stolen": 0},
+ "totals_unreadable": false,
  "by_executor": [{"slot": 1, "role": "worker", "index": 0, "label": "并行执行体 #1",
                   "done": 2, "failed": 1, "claimed": 0, "total": 3}],
  "executor_totals": {"claimed": 1, "failed": 1, "done": 3, "total": 5},
@@ -402,6 +403,7 @@
 | `is_today` | bool | `day == 今天`。`false` 时页面要提示"下面是最近一次记录"，别当实时 |
 | `in_window` | bool | 与 `fallback.in_window` 同口径（**本应运行**的时段内：窗口内 且 今天未被周末门/暂停门挡下） |
 | `totals` | object | **全站**按 state 的分布。`settled = done + skipped`（当日不必再签）；`open = pending + claimed + failed + stolen`（仍可能被重排/接手）；`total = settled + open`。派生口径唯一处在 `yiban/store/queue_store.py::day_counts` |
+| `totals_unreadable` | bool | `true` = 任务队列**读不通**，此时 `totals` 是按键白名单出的全 0 占位、不代表真实进度（`note` 里同时写明）。`false` 时的全 0 才是"当日无记录"这个正常空态。两者是不同的两件事：`day_counts` 读不通回 `None` 哨兵，不许折成"当日没有待办" |
 | `by_executor[]` | list | 各执行体的 KPI，字段与 `activity.by_executor[]` **逐字相同**（`slot`/`role`/`index`/`label`/`claimed`/`failed`/`done`/`total`）。`slot` 是 1-based 槽位号，**替代 owner 原串**（脱敏硬要求） |
 | `executor_totals` | object | 各执行体之和（与 `activity.totals` 同键） |
 | `note` | string | 直接引用即可 |

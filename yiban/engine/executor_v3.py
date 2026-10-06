@@ -58,6 +58,21 @@ ENV_GLOBAL_RATE = "YIBAN_GLOBAL_RATE"
 RETRY_CAP_SEC = 600
 #: 补货间隔（秒）：批量领取的轮询周期
 REFILL_SEC = 5
+#: 队列**连续**读不通多少轮就停止本轮领取（ba-p01-01 的有界性担保）。
+#:
+#: **为什么必须有界**：降级口径改成 fail-closed 后，"读不通"不再判收干。库一直坏就会让
+#: 补货循环空转到窗口关闭。那比原来的静默漏签更糟：占着运行锁，压着宿主 timeout。
+#: **为什么取 60**：判据是"连续"，任何一轮读通即归零。故它挡的是"持续读不通"，不是
+#: "偶发一次"。连接层 `busy_timeout=15000`（`yiban/store/db.py`）⇒ 单次锁等待占 3 拍，
+#: 60 拍容得下约 20 次连续锁等待。整表重插级别的长事务压不住写锁 15 分钟；压住就说明
+#: 库真坏了，继续等没有意义。墙钟上界 ≈ 60 × (5s 轮询 + 15s 锁等待) = 20 分钟。
+#: 会话内回炉那次读再多一次锁等待 ⇒ 最坏 35 分钟。两者都小于签到窗口的 80 分钟，
+#: 停下来的那一轮当天仍补得回来。
+#: **落在哪一层**：落在补货循环 `_refiller`。只有循环知道自己读了几轮。`queue_store`
+#: 是无状态访问层，把计数放进去等于让存储层替调用方做降级决策。
+#: **触发时人看见什么**：一条 ERROR（按天日志 / 后台"日志"页）与一条管理员告警
+#: （轮末汇总邮件；推送已配置时即时推送），见 `_alert_queue_unreadable`。
+QUEUE_UNREADABLE_MAX_ROUNDS = 60
 #: 崩溃恢复间隔（秒）：租约回收与死主接管的周期。由补货循环节流（函数内不持时间状态）；
 #: 60s 与任务级租约同量级——租约到期后最多再等一个周期就被回收。
 RECOVER_SEC = 60
@@ -394,6 +409,10 @@ class _Ctx:
         self.inflight = 0
         self.busy = 0
         self.last_delay = {}
+        # 轮首回炉（`run_executor_v3` 里那一次）读不通的记号：交给补货循环计入同一条有界
+        # 放弃闸门（`QUEUE_UNREADABLE_MAX_ROUNDS`）。轮首读不通不等于"没有要回炉的行"，
+        # 不许就地丢掉（ba-p01-01）。
+        self.queue_unreadable = False
         # 会话内恢复周期是否顺带回炉默认档（常驻/长会话的兜底腿用它"当日接手"，
         # 一次性定时轮靠轮首回炉即可，不开这个口子以免在同一轮里重开保守档之外的循环）
         self.requeue_during_run = requeue_during_run
@@ -780,6 +799,22 @@ def _widen_with_dead_peers(ctx, shards):
     return tuple(sorted(set(shards) | set(extra)))
 
 
+def _alert_queue_unreadable(ctx, rounds):
+    """队列连续读不通到上界：一条 ERROR 与一条管理员告警。
+
+    为什么必须响亮：降级口径是 fail-closed 后，领取面与待办面读不通就不判收干。
+    库一直坏时本轮会走到上界再停止领取。现场若只有 `queue_store` 那几条 WARNING，
+    运维看到的就是"今天没活"——那正是 ba-p01-01 要消灭的形状。
+    """
+    logger.error("队列连续 %d 轮读不通（上界 %s），本轮停止领取；当天可能零签到",
+                 rounds, QUEUE_UNREADABLE_MAX_ROUNDS)
+    alerts.notify_admin_entry("易班队列读不通：本轮已放弃领取", [
+        ("日期", ctx.day),
+        ("连续读不通轮数", "%d（上界 %s）" % (rounds, QUEUE_UNREADABLE_MAX_ROUNDS)),
+        ("处置", "查库锁与磁盘空间；库恢复后跑补签轮"),
+    ])
+
+
 async def _refiller(queue, shards, ctx):
     """补货：每 `REFILL_SEC` 秒批量领取自己分片集内到点的任务投进通道队列。
 
@@ -812,13 +847,23 @@ async def _refiller(queue, shards, ctx):
     领取/回炉/待办计数一律带上 `ctx.allowed_phones`（`None` = 按分片集不限）：手动
     `--only` 轮**只领、只回炉本轮传进来的账号**，且在 reclaim 轮**跳过跨账号恢复**
     （`reap_expired` / 死主接管会改别人的行，手动轮不该做）。
+
+    **读不通不判收干（ba-p01-01）**：`claim_batch` 回 `[]` 与回 `None` 是两件事。前者是
+    "本轮无到期行"，后者是"库读不通"；`pending_count` 的 `0` 与 `None` 同理。本循环只在
+    两面都读通且待办为 0 时才收干。任一面回哨兵就计入 `QUEUE_UNREADABLE_MAX_ROUNDS`
+    那条有界闸门：连续满上界后告警并停止领取。不空转，也不抛异常打断整轮。
     """
     shards = tuple(shards)
     last_beat = _mono()
     last_recover = _mono()
     allowed = getattr(ctx, "allowed_phones", None)
     held = ctx.held
+    # 有界放弃闸门：连续读不通的轮数。轮首那次回炉也是一次读库失败，故按
+    # `ctx.queue_unreadable` 把起点取成 1，与循环内的读共用同一条上界。
+    unreadable_rounds = 1 if getattr(ctx, "queue_unreadable", False) else 0
     while True:
+        # 本拍是否读到"库读不通"：领取面、待办面、会话内回炉三处任一
+        round_unreadable = False
         # 手动 `--only` 豁免窗口判定：用户主动触发应当放行（与旧领取池的手动链路同语义）。
         if not getattr(ctx, "reclaim", False) and schedule._window_closed(ctx.cfg, _now()):
             break
@@ -838,23 +883,43 @@ async def _refiller(queue, shards, ctx):
                 # `pending`，下一拍就能被自己的通道重新领到——不等下一场会话。
                 # **只回炉默认档**：`final:`/无前缀保守档的第二次机会只留给有界的
                 # 显式路径（补签轮），常驻会话没有预算上界，自动复活等于无上限重登。
-                queue_store.requeue_failed(ctx.day, shards, include_final=False,
-                                           phones=allowed)
+                # 回炉回 `None` = 读不通：当日 `failed` 行仍留在原态，等于"没回炉"。
+                # 这不是"没有要回炉的行"，计入同一条有界闸门（ba-p01-01）。
+                flipped = queue_store.requeue_failed(ctx.day, shards, include_final=False,
+                                                     phones=allowed)
+                if flipped is None:
+                    round_unreadable = True
             last_recover = _mono()
         rows = queue_store.claim_batch(
             ctx.runtime_id, ctx.day, shards, now=_stamp_ms(_now()),
             limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS,
             phones=allowed)
-        for r in rows:
-            # 领取与登记在途之间**没有 await**：同一轮事件循环里同步完成，回收器不可能
-            # 在"行已 claimed、还没进 held"的缝里把它判死（那正是本条要堵的重复登录）。
-            held.add(r["phone"])
-            queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
-                              r["attempts"], r["epoch"]))
-        if (not rows and ctx.inflight == 0 and ctx.busy == 0
-                and queue.empty()
-                and queue_store.pending_count(ctx.day, shards, phones=allowed) == 0):
+        if rows is not None:
+            for r in rows:
+                # 领取与登记在途之间**没有 await**：同一轮事件循环里同步完成，回收器不可能
+                # 在"行已 claimed、还没进 held"的缝里把它判死（那正是本条要堵的重复登录）。
+                held.add(r["phone"])
+                queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
+                                  r["attempts"], r["epoch"]))
+        # 收干候选：领取面**读通**且回空、通道全闲、队列空。只有候选才问第二面——
+        # 领取面已是哨兵时再问一次只是白等一次锁等待。
+        drained = (rows is not None and not rows and ctx.inflight == 0
+                   and ctx.busy == 0 and queue.empty())
+        pending = (queue_store.pending_count(ctx.day, shards, phones=allowed)
+                   if drained else None)
+        # **唯一一条真·收干出口**：两面都必须读通（都不是 `None` 哨兵）且待办为 0。
+        # 把哨兵折成"没有待办"就是全天零签到而现场只有两条 WARNING（ba-p01-01）。
+        if rows is not None and pending is not None and not rows and pending == 0:
             break
+        if rows is None or (drained and pending is None):
+            round_unreadable = True
+        if round_unreadable:
+            unreadable_rounds += 1
+            if unreadable_rounds >= QUEUE_UNREADABLE_MAX_ROUNDS:
+                _alert_queue_unreadable(ctx, unreadable_rounds)
+                break
+        else:
+            unreadable_rounds = 0
         await _sleep(REFILL_SEC)
     for _ in range(ctx.m):
         queue.put_nowait((SENTINEL_PRIORITY, "", "", 0, 0))
@@ -1072,8 +1137,11 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         # 轮首回炉（作用域=本轮领取集 + 本业务日 + 允许集）：默认档 failed 翻回 pending
         # 才谈得上被本轮领到；回炉逐行走 `requeue_task` 的 state+epoch 门，在飞/终态行绝不
         # 复活。放在接管之后、预扫之前：死主分片并入后一并扫到。
-        queue_store.requeue_failed(day, ctx.shards, include_final=bool(requeue_final),
-                                   phones=ctx.allowed_phones)
+        # 回炉回 `None` = 读不通：不当作"没有要回炉的行"，把记号交给补货循环计入同一条
+        # 有界闸门（`QUEUE_UNREADABLE_MAX_ROUNDS`），不许就地丢掉（ba-p01-01）。
+        if queue_store.requeue_failed(day, ctx.shards, include_final=bool(requeue_final),
+                                      phones=ctx.allowed_phones) is None:
+            ctx.queue_unreadable = True
         _prescan(ctx, accounts)
         ctx.limiter.restore_from_store(ctx.egress, now=_mono())
         if ctx.global_limiter.invalid:

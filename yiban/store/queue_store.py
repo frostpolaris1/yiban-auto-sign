@@ -30,9 +30,9 @@
   事件签名 `(条数, 最新迁移标记)`，短轮询变化即接手；
 - `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/store/cleanup.py` 编排）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此给
-  进度展示取数；`open` **不过滤 `vshard`，不得当"当日是否了结"的闸门**（那会把永不
-  被领取的 `vshard=-1` 惰性行算进去），闸门用 `pending_count`（有分片上下文）或
-  `open_count`（无分片上下文）；
+  进度展示取数；**读不通回 `None` 哨兵**（降级口径见下）；`open` **不过滤 `vshard`，
+  不得当"当日是否了结"的闸门**（那会把永不被领取的 `vshard=-1` 惰性行算进去），
+  闸门用 `pending_count`（有分片上下文）或 `open_count`（无分片上下文）；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
   的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
@@ -55,6 +55,20 @@
 `sign_tasks`。
 `egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /
 `restore_from_store`）。
+
+**降级口径（全模块唯一一条，ba-p01-01）**
+读不通（库异常/表未落地/锁等待超时）**一律回 `None` 哨兵**，绝不回"空"值：`[]`、`0`、
+全 0 字典、`0` 翻回数都只用来回答"真的没有这一类行"。沿用同文件既有惯例
+（`claimed_owners` 回 `None`、`reap_expired` 见 `None` 即跳过本轮），不另造第二种形状。
+理由：**一次读库失败，永远不得被任何读者解释成"今天没有待办了 / 活已了结"**——把"坏"
+折叠成"空"就是全天零签到而现场只有两条 WARNING。执行体侧的有界退避与响亮告警见
+`yiban/engine/executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS`。
+`vshards=()` / 空允许集**不是**故障（本轮不该领活，与库无关），照旧回空值且不取连接。
+补偿动作与纯展示读面（`settle_tasks`、`requeue_task`、`reclaim_tasks`、`reap_expired`、
+`reap_abandoned`、`load_egress_state`、`save_egress_state`、`purge`、`fallback_event`、
+`latest_day`、`owners_for_day`、`owners_since`、`activity`）不在这条口径内：它们的失败
+方向是"这一轮少做一次"或"页面少显示一块"，不参与任何"退出/了结"判定，改动只会扩大面。
+
 """
 import datetime
 import logging
@@ -184,9 +198,10 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
     `pending` 领走（否则那些行会在执行体里被误当了结——见 `executor_v3` 的 `acc is None`
     处置）。分片集与允许集是**与**关系，两者都满足才领。
 
-    `vshards=()` 返回 `[]`（本轮不该领活，不算故障）；表未落地/库异常返回 `[]` **并
-    告警**——与"表在、但无到期行"的空返回是两件事，调用方据此决定是否退回动态领取
-    路径（本层不替调用方做降级决策）。
+    `vshards=()` / 空允许集返回 `[]`（本轮不该领活，不算故障，且不取连接）；表未落地/库
+    异常返回 **`None`（哨兵）并告警**——与"表在、但无到期行"的空返回分成两个可判的值，
+    调用方据此把"读不通"计入有界放弃闸门（见 `executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS`），
+    而不是当成"今天没活了"。本层不替调用方做降级决策。
     """
     shards = tuple(vshards or ())
     if not shards:
@@ -218,8 +233,8 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
             rows = conn.execute(sql, params).fetchall()
             conn.commit()
     except Exception as e:
-        logger.warning("批量领取签到任务失败（按无可领处理）: %s", e)
-        return []
+        logger.warning("批量领取签到任务失败（读不通，不等于无可领）: %s", e)
+        return None
     return [{"phone": r["phone"], "run_at": r["run_at"], "attempts": r["attempts"],
              "epoch": r["epoch"]} for r in rows]
 
@@ -317,8 +332,10 @@ def requeue_failed(day, shards, include_final=False, run_at=None, phones=None):
 
     `run_at` 缺省取"现在"（毫秒格式与 `run_at` 同型，字符串序比较不出偏）：回炉行
     立刻可领，与 v2"后续轮次马上接得动"同拍；`priority` 仍按 `requeue_task` 递增一档，
-    回炉排在新任务之后。空分片集 → 0 且不取连接；库异常 → 0 + warning（回炉是补偿
-    动作，失败不该打断调用方的本轮领取）。
+    回炉排在新任务之后。空分片集 / 空允许集 → 0 且不取连接；**库异常 → `None`（哨兵）+
+    warning**——0 只用来回答"没有要回炉的 failed 行"。这两件事必须分开：回炉读不通时
+    `failed` 行留在原态、不会进 `pending_count` 的视野，调用方若把"坏"当"0 翻回"就等于
+    把这批行当日判死（ba-p01-01）。
 
     `phones` 是本轮回炉的**账号允许集**（`None` = 不限，既有调用点语义不变）：手动
     `--only` 轮只回炉"本轮传进来的那几个账号"的 failed 行，不得把当日别人的
@@ -344,8 +361,8 @@ def requeue_failed(day, shards, include_final=False, run_at=None, phones=None):
         with lock:
             rows = conn.execute(sql, (day, STATE_FAILED, *shard_set, *phone_params)).fetchall()
     except Exception as e:
-        logger.warning("读取当日弃用任务失败（按无可回炉处理）: %s", e)
-        return 0
+        logger.warning("读取当日弃用任务失败（读不通，不等于无可回炉）: %s", e)
+        return None
     retry_prefix = claims_mod.RESULT_RETRY_PREFIX
     flipped = 0
     for r in rows:
@@ -710,8 +727,11 @@ def pending_count(day, vshards, phones=None):
     `phones` 与 `claim_batch` 同义（`None` = 不限）：收干判据必须与领取范围**同集**，
     否则手动 `--only` 轮会因"同分片里别人的 pending 行"永远数不完而空转到超时。
 
-    `vshards=()` → 0（本轮不该领活，不算故障，与 `claim_batch` 同口径）；库异常 → 0 +
-    warning（调用方据此走"没有待办"的收干分支，而不是抛出去打断签到）。
+    `vshards=()` / 空允许集 → 0（本轮不该领活，不算故障，且不取连接，与 `claim_batch`
+    同口径）；**库异常 → `None`（哨兵）+ warning**。0 与 `None` 是两件事：0 才允许调用方
+    走"没有待办"的收干分支，`None` 意味着"读不出来"，不得据此判了结（本函数是收干判据的
+    事实源，把它折回 0 就是全天零签到而现场只有两条 WARNING——ba-p01-01）。调用方对
+    `None` 的处理必须是"继续等下一轮 + 计入有界放弃闸门"，不是抛出去打断整轮签到。
     """
     shards = tuple(vshards or ())
     if not shards:
@@ -731,8 +751,8 @@ def pending_count(day, vshards, phones=None):
         with lock:
             row = conn.execute(sql, (day, STATE_PENDING, *shards, *phone_params)).fetchone()
     except Exception as e:
-        logger.warning("读取当日待办任务计数失败（按无待办处理）: %s", e)
-        return 0
+        logger.warning("读取当日待办任务计数失败（读不通，不等于无待办）: %s", e)
+        return None
     return int(row[0]) if row else 0
 
 
@@ -749,8 +769,11 @@ def open_count(day):
     ——与 `pending_count` 的核心口径一致，理由详见其文档。
 
     只数 `OPEN_STATES`（`pending`/`claimed`/`failed`/`stolen`），与 `day_counts(day)["open"]`
-    的差别仅在这个 `vshard` 过滤（后者不过滤，故不能当闸门用）。库不可用 → 0 +
-    warning（调用方据此回退状态文件，而不是把"读不到"当"已了结"）。
+    的差别仅在这个 `vshard` 过滤（后者不过滤，故不能当闸门用）。**库不可用 → `None`
+    （哨兵）+ warning**：0 只用来回答"当日确实没有未了结行"。调用方
+    （`state_io.has_undone_accounts_today`）见到 `None` 必须答"仍有未了结"并出声，
+    **不得**只回退状态文件——状态文件干净 + 库读不通 ⇒ 判"无未了结" ⇒ 补签轮不跑 ⇒
+    漏签，那正是本哨兵要消灭的形状（ba-p01-01）。
     """
     placeholders = ",".join("?" for _ in OPEN_STATES)
     sql = ("SELECT COUNT(*) FROM sign_tasks WHERE day=? AND vshard >= 0 "
@@ -760,16 +783,19 @@ def open_count(day):
         with lock:
             row = conn.execute(sql, (day, *OPEN_STATES)).fetchone()
     except Exception as e:
-        logger.warning("读取当日未了结任务计数失败（按 0 处理）: %s", e)
-        return 0
+        logger.warning("读取当日未了结任务计数失败（读不通，不等于已了结）: %s", e)
+        return None
     return int(row[0]) if row else 0
 
 
 def day_counts(day):
     """当日各 state 计数与派生口径——供调用方判"当日是否了结"、给进度展示取数。
 
-    与 `claims.stats` 同口径：`GROUP BY state` 计数、空 day 全 0、库不可用也不抛
-    （记 warning 后按全 0 返回），并在状态计数之外派生三项——调用方**不需要自己求和**：
+    与 `claims.stats` 同口径：`GROUP BY state` 计数、空 day 全 0（那是"当日没有行"这个
+    事实），并在状态计数之外派生三项——调用方**不需要自己求和**。**库不可用 → `None`
+    （哨兵）+ warning**：全 0 字典里的 `open=0` 就是"没有未了结"，不许拿来回答
+    "读不出来"（ba-p01-01）。展示类调用方拿到 `None` 必须把"未知"如实标成未知，
+    不得静默画成全 0。
 
     | 派生键 | 定义 |
     |--------|------|
@@ -792,7 +818,8 @@ def day_counts(day):
         for r in rows:
             out[r["state"]] = r["n"]
     except Exception as e:
-        logger.warning("读取当日签到任务计数失败（按全 0 处理）: %s", e)
+        logger.warning("读取当日签到任务计数失败（读不通，不返回全 0）: %s", e)
+        return None
     out["settled"] = sum(out[s] for s in SETTLED_STATES)
     out["open"] = sum(out[s] for s in OPEN_STATES)
     out["total"] = out["settled"] + out["open"]
@@ -821,7 +848,8 @@ def owners_for_day(day):
     **必须一次取全**：账号列表可能有几百行，逐账号查会让一次列表请求变成几百次查询。
     只回 owner 原串、**不解析角色、不脱敏**——角色口径与脱敏是展示层的事（Web 层用
     `yiban.egress.parse_owner` 折成角色与槽位，绝不把 owner 原串回给前端）。
-    库未初始化/表未落地 → `{}`（与 `day_counts` 同口径不抛）。
+    库未初始化/表未落地/读不通 → `{}` 且不抛：本函数只喂展示，不参与退出/了结判定，
+    故按空处理而不取哨兵（为什么它不在那条口径内，见模块头降级口径）。
     """
     try:
         conn, lock = _queue_conn()
@@ -872,7 +900,8 @@ def activity(day):
 
     只回 owner 原串、**不解析角色、不脱敏**（角色与脱敏是展示层的事，见 `owners_for_day`）。
     返回 `[{"owner":…, "claimed":n, "done":n, "failed":n, "total":n}, …]`（按 owner 升序，
-    顺序稳定）；空库/库未初始化 → `[]`，与 `day_counts` 同口径不抛。未登记的 state 照实
+    顺序稳定）；空库/库未初始化/读不通 → `[]` 且不抛，与 `owners_for_day` 同一条展示口径
+    （按空处理而不取哨兵，理由见模块头降级口径）。未登记的 state 照实
     计进 `total` 但不进三键（不丢数）。
     """
     out = {}
