@@ -270,12 +270,24 @@ def _is_credential_failure(message):
     return any(kw in message for kw in CRED_FAIL_KEYWORDS)
 
 
+def _next_probe_date(today):
+    """从 `today` 顺延一个半开试探周期，返回新的试探日。"""
+    return (datetime.strptime(today, "%Y-%m-%d")
+            + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+
+
 def _update_cred_state(cred_state, phone, success, message, today):
     """执行一次后更新账密熔断状态。
 
     - 成功：清除该账号记录（恢复 ACTIVE）
     - 凭据类失败：连续失败天数 +1（同一天多次失败只计 1 天）；达到阈值 → 暂停并设试探日
+    - 已暂停账号在试探日的凭据类失败（半开试探失败）：顺延试探日一个周期
     - 其他失败（网络等）：不计数不动记录
+
+    本函数是 `probe_date` 的**唯一写入点**，全部执行路径都经它更新熔断状态
+    （生产执行体 `executor_v3`、`--only` 手动轮、旧领取池 `round`）。顺延必须留在
+    这里：写在外层调用点会漏掉生产执行体那条路径，`probe_date` 便停在过去，
+    `_probe_due` 从此每天为真，密码确实错的账号被每天真实登录一次（风控暴露面）。
     """
     if success:
         if phone in cred_state:
@@ -288,10 +300,15 @@ def _update_cred_state(cred_state, phone, success, message, today):
         return  # 今天已计过
     cred["fail_days"] = cred.get("fail_days", 0) + 1
     cred["last_fail"] = today
-    if cred["fail_days"] >= CRED_FAIL_DAYS and not cred.get("paused_since"):
-        pause_day = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+    if cred.get("paused_since"):
+        if _probe_due(cred, today):
+            # 半开试探失败：只顺延试探日，暂停状态不变
+            cred["probe_date"] = _next_probe_date(today)
+            logger.warning("[%s] ⏸️ 半开试探失败，保持暂停（下次 %s 试探）",
+                           phone, cred["probe_date"])
+    elif cred["fail_days"] >= CRED_FAIL_DAYS:
         cred["paused_since"] = today
-        cred["probe_date"] = pause_day
+        cred["probe_date"] = _next_probe_date(today)
     cred_state[phone] = cred
 
 
