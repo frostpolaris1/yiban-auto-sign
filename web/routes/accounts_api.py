@@ -482,7 +482,8 @@ def api_account_update(idx):
                     if code_written:
                         _what.append("改写或清除了设备识别码"
                                      "（开启设备绑定的学校，签到时提交给易班的验证码随之改变）")
-                    m.mailer.send_user(
+                    m.run_after_file_lock(
+                        m.mailer.send_user,
                         _owner,
                         "【易班签到】您的易班账号信息被管理员修改",
                         m.mail_layout.Mail(
@@ -505,7 +506,8 @@ def api_account_update(idx):
                        or clean["phone"] != old.get("phone"))
         if (creds_written and not (gated_creds and
                                    m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL)):
-            m.send_notification(
+            m.run_after_file_lock(
+                m.send_notification,
                 "高危管理操作告警",
                 m._change_mail(
                     "改写他人易班凭据。",
@@ -716,9 +718,12 @@ def api_accounts_batch():
         if action == "reject" and reject_notify_owners:
             # 批量拒绝每户一封、同样文案（批量拒绝必填理由，无空理由分支）。
             # 刻意放在 batch_account_ops 成功之后——回滚路径已提前 return，不会
-            # 出现"状态没变先收拒信"。
+            # 出现"状态没变先收拒信"。本枚是 `ba-p05-01` 最重的落点：逐户登记、
+            # 出锁后按 owner 顺序统一发出（修复前是锁内最多 10 封 × 每封 10 条目 ×
+            # 每条 socket 超时）。
             for _owner, _phones in sorted(reject_notify_owners.items()):
-                m.mailer.send_user(
+                m.run_after_file_lock(
+                    m.mailer.send_user,
                     _owner,
                     "【易班签到】您提交的账号未通过审核",
                     m._review_reject_mail(_phones, reason),
@@ -939,7 +944,8 @@ def api_account_review(idx):
             # 绕过 mail_notify 开关与「本人知情权」口径一致。
             _owner = acc.get("owner", "")
             if _owner:
-                m.mailer.send_user(
+                m.run_after_file_lock(
+                    m.mailer.send_user,
                     _owner,
                     "【易班签到】您提交的账号未通过审核",
                     m._review_reject_mail(
