@@ -278,10 +278,12 @@ class StatusSingleSourceTest(unittest.TestCase):
         `yiban.status.DISPLAY`——它把急停定为 `warn`（非正常，见 `_DISPLAY_ROWS`）。
         前端 `dashboard/model.js` 的 `STATUS_TOKEN` 是图表配色（非展示词表，见
         `SANCTIONED_MAPS`）；修复前它把急停自持为 `"muted"`（与「用户取消」同色 = 无异常
-        档），于是分布图上"管理员急停"与"用户自己取消"无从区分。此门钉三条：
+        档），于是分布图上"管理员急停"与"用户自己取消"无从区分。此门钉四条：
           ① 两键必须解析出（缺键即红，防解析空转成假绿）；
-          ② 急停的色板档位与账密暂停（同为账号级暂停）同档；
-          ③ 急停不得落 `muted` / `light` 两个低强调档。
+          ② 急停档位必须落异常白名单（`warning` / `danger`）——挡空串与拿 tone 用词
+             当令牌两类绕过（两者运行时都回落 `light`）；
+          ③ 急停的档位与账密暂停（同为账号级暂停）同档；
+          ④ 注释不得冒充词条（解析前先剔除 `//` 行注释与 `/* */` 块注释）。
         """
         self.assertEqual(
             yiban_status.DISPLAY[yiban_status.STATUS_GLOBAL_PAUSED]["tone"], "warn",
@@ -290,17 +292,20 @@ class StatusSingleSourceTest(unittest.TestCase):
             src = fh.read()
         block = re.search(r"STATUS_TOKEN\s*=\s*\{(.*?)\};", src, re.S)
         self.assertIsNotNone(block, "dashboard/model.js 未找到 STATUS_TOKEN 表")
-        tokens = dict(re.findall(r"([A-Za-z_]\w*)\s*:\s*\"([^\"]*)\"", block.group(1)))
-        # 先钉键存在：解析不出（键被删、或引号风格改成单引号）时 tokens.get 返回 None，
-        # 下面两条断言会双双空转成假绿——而运行时 statusColor 走 STATUS_TOKEN[st] ||
-        # "light" 回落，恰是本门要钉的形态。缺键必须红。
+        # 先剔注释再做解析：注释里的 `码: "值"` 不是词条。不剔的话，删掉真词条、块内
+        # 补一行注释即可冒充词条，断言全真（复审实测的绕过路径）。
+        body = re.sub(r"/\*.*?\*/", "", block.group(1), flags=re.S)
+        body = "\n".join(re.sub(r"//.*$", "", ln) for ln in body.splitlines())
+        tokens = dict(re.findall(r"([A-Za-z_]\w*)\s*:\s*\"([^\"]*)\"", body))
+        # 缺键即红：解析不出（键被删、或引号风格改成单引号）时 tokens 少键，取值即抛错。
         self.assertIn("global_paused", tokens,
                       "STATUS_TOKEN 解析不到 global_paused 键（表被改或引号风格不匹配）")
         self.assertIn("paused", tokens,
                       "STATUS_TOKEN 解析不到 paused 键（表被改或引号风格不匹配）")
-        self.assertNotIn(
-            tokens["global_paused"], ("muted", "light"),
-            "急停不得用低强调色（muted/light = 无异常档）——census P1-5 的假安心形态")
+        # 白名单档位：空串与 `"warn"`（把 tone 用词当令牌）在此拦下。两者运行时都回落
+        # `light`（`statusColor` 的 `STATUS_TOKEN[st] || "light"`），正是本门要钉的形态。
+        self.assertIn(tokens["global_paused"], ("warning", "danger"),
+                      "急停档位必须落异常白名单（warning/danger）——不得用空串或 tone 用词冒充")
         self.assertEqual(
             tokens["global_paused"], tokens["paused"],
             "急停与账密暂停同档（两者都是账号级暂停，都由 status.py 定为 warn）")
