@@ -108,7 +108,7 @@
     ]
   },
   "dashboard.html": {
-    "file": "assets/dashboard-ogqCSUGY.js",
+    "file": "assets/dashboard-DUzbRVjS.js",
     "name": "dashboard",
     "src": "dashboard.html",
     "isEntry": true,
@@ -149,7 +149,7 @@
     ]
   },
   "logs.html": {
-    "file": "assets/logs-DuD6YTcI.js",
+    "file": "assets/logs-CrNPsER9.js",
     "name": "logs",
     "src": "logs.html",
     "isEntry": true,
@@ -164,7 +164,7 @@
       "_status-vocab-C0wP_145.js"
     ],
     "css": [
-      "assets/logs-BoUlecZk.css"
+      "assets/logs-DX98Vr4M.css"
     ]
   },
   "myaccounts.html": {
