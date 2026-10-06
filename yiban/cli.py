@@ -60,7 +60,7 @@ import sqlite3
 import sys
 
 from yiban import __version__ as RELEASE_VERSION
-from yiban import state_gc, window
+from yiban import config_loader, state_gc, window
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, db_maintenance, runner
 from yiban.engine import schedule as schedule_mod
@@ -279,7 +279,8 @@ def _capacity_numbers(view, signable):
         "sign_start": start, "sign_end": end,
         "edge_front_sec": front, "edge_back_sec": back,
     })
-    gap = _cfg_int(view, "YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600)
+    gap = _cfg_int(view, "YIBAN_ACCOUNT_GAP_MAX",
+                   config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX"), 0, 3600)
     avg = _cfg_int(view, "YIBAN_AVG_ATTEMPT_SEC", schedule_mod.avg_attempt_sec(), 1, 300)
     measured = _cfg_int(view, "YIBAN_CAPACITY_MEASURED", 0, 0)
     recommended = None
