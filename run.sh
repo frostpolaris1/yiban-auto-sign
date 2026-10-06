@@ -311,6 +311,38 @@ _need_second_round() {
 
 # 执行一轮签到；每轮按当前时刻重算超时（原实现只在脚本开头算一次，
 # 补签轮复用它会让第二轮的可用时长被高估）
+# 并行执行体数量的合法域：向 Python 取，本脚本不再自己抄一份。
+# 唯一事实源是 `yiban/egress.py` 的 WORKERS_MIN/WORKERS_MAX（census P1-3）：旧写法把
+# 2~64 硬编码在这里，而容器侧走 egress，两边对同一份 `.env` 给出不同的执行体数。
+# 取不到 ⇒ 返回 1（解释器调用失败）或 2（打印的不是两个整数），由调用方响亮告警并按
+# 单执行体执行；**绝不静默换成另一套缺省数**。方向取"少开"：每多一个执行体就多一路
+# 真实登录（风控面），少开看得见，多开看不见。
+# 成功时置 WORKERS_MIN_S/WORKERS_MAX_S，并把原始打印留在 WORKERS_DOMAIN_RAW 供告警点名。
+WORKERS_MIN_S=""
+WORKERS_MAX_S=""
+WORKERS_DOMAIN_RAW=""
+workers_domain() {
+    local _out _re='^[0-9]+ [0-9]+$'
+    WORKERS_MIN_S=""; WORKERS_MAX_S=""; WORKERS_DOMAIN_RAW=""
+    # 解释器与业务日取时同一条回退链（$PY + 仓库根进 sys.path）；stderr 丢弃：
+    # 失败的样子由返回码与下面的告警描述，不让 traceback 混进判定值。
+    _out="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.egress import WORKERS_MIN, WORKERS_MAX; print(WORKERS_MIN, WORKERS_MAX)" "$APP_DIR" 2>/dev/null)" || {
+        return 1
+    }
+    # 兼容 CRLF 与多行打印：折成一行后仍要求整串是"整数 空格 整数"，否则算取不到
+    _out="${_out%$'\r'}"
+    _out="${_out//$'\n'/ }"
+    _out="${_out#"${_out%%[![:space:]]*}"}"
+    _out="${_out%"${_out##*[![:space:]]}"}"
+    if [[ ! "$_out" =~ $_re ]]; then
+        WORKERS_DOMAIN_RAW="$_out"
+        return 2
+    fi
+    WORKERS_MIN_S="${_out%% *}"
+    WORKERS_MAX_S="${_out##* }"
+    return 0
+}
+
 _run_signin_round() {
     local end_hhmm="${YIBAN_SIGN_END:-07:50}" run_timeout end_ts now_ts raw
     if ! echo "$end_hhmm" | grep -qE '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; then
@@ -338,14 +370,24 @@ _run_signin_round() {
     _log "签到超时: ${run_timeout}s（窗口至 $end_hhmm）"
     # 多执行体（可选）：YIBAN_WORKERS>1 时由 signin 的监督模式拉起 N 个并行执行体，
     # 分工靠数据库里的领取池（账号不会被两个执行体同时登录）。默认 1 = 现状不变。
-    # 非法值只告警并回退 1：绝不能因为一个配置笔误让当天不签到。
+    # 非法值只告警并回退单执行体：绝不能因为一个配置笔误让当天不签到。
+    # 合法域的上下限由 `workers_domain` 向 Python 取（见该函数），这里不写死数字。
     workers_args=()
     workers_raw="${YIBAN_WORKERS:-1}"
     if [ -n "$workers_raw" ] && [ "$workers_raw" != "1" ]; then
-        if [[ "$workers_raw" =~ ^[0-9]+$ ]] && [ "$workers_raw" -ge 2 ] && [ "$workers_raw" -le 64 ]; then
-            workers_args=(--workers "$workers_raw")
+        workers_domain
+        _wd=$?
+        if [ "$_wd" -eq 0 ]; then
+            if [[ "$workers_raw" =~ ^[0-9]+$ ]] &&
+                [ "$workers_raw" -ge "$WORKERS_MIN_S" ] && [ "$workers_raw" -le "$WORKERS_MAX_S" ]; then
+                workers_args=(--workers "$workers_raw")
+            else
+                _log "警告: YIBAN_WORKERS=$workers_raw 非法（须为 ${WORKERS_MIN_S}~${WORKERS_MAX_S} 的整数），按单执行体执行"
+            fi
+        elif [ "$_wd" -eq 2 ]; then
+            _log "警告: 取不到 YIBAN_WORKERS 的合法域（$PY 打印的不是「MIN MAX」: '${WORKERS_DOMAIN_RAW}'），按单执行体执行"
         else
-            _log "警告: YIBAN_WORKERS=$workers_raw 非法（须为 2~64 的整数），按单执行体执行"
+            _log "警告: 取不到 YIBAN_WORKERS 的合法域（$PY 读取 yiban.egress 失败），按单执行体执行"
         fi
     fi
     if [ ${#workers_args[@]} -gt 0 ]; then
