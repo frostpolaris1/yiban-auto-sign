@@ -304,7 +304,7 @@ class SigtermFlushTest(unittest.TestCase):
         signin._mail_summary.extend(self._summary_backup)
 
     def test_sigterm_flushes_collected_admin_mail(self):
-        signin._mail_summary.append(("易班签到失败", "账号: 138****0000\n原因: 登录失败"))
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0000\n原因: 登录失败")
         with mock.patch.object(signin.mailer, "send_admin_alert",
                                return_value=True) as m_send, \
              mock.patch.object(signin.db, "admin_mail_recipients",
