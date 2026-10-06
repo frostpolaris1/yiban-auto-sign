@@ -36,7 +36,8 @@
 
 **复用**
 `parse_env_file` / `env_path`（`.env` 的行模型与指针口径）、`ENV_TRUTHY_LITERALS` /
-`ENV_FALSY_LITERALS`（开关键真值表，不再抄第二份）。谁调用：本批的生产消费点只有
+`ENV_FALSY_LITERALS`（开关键真值表，不再抄第二份）、`window.parse_hhmm`（时刻判据，
+本模块不另写一套：引擎收的写法加载器也必须收）。谁调用：本批的生产消费点只有
 `yiban/engine/token_bucket.py`、`yiban/engine/schedule.py`、`yiban/engine/runner.py`、
 `yiban/cli.py`、`web/app.py`，**一律取 `default_required(...)`**——代码里的默认常量
 必须响亮失败，不许把缺省缺失静默变成 `None`。`default_of(...)` **不做生产默认常量的
@@ -48,6 +49,7 @@ import logging
 import os
 import re
 
+from yiban import window as yiban_window
 from yiban.infra import env_io
 
 logger = logging.getLogger("yiban.config_loader")
@@ -64,7 +66,9 @@ SOURCES = ("process_env", "dotenv", "registry_default", "unset")
 META_KEY = "_meta"
 _META = META_KEY
 _KEY_RE = re.compile(r"^YIBAN_[A-Z0-9_]+$")
-_HHMM_RE = re.compile(r"^\d{1,2}:\d{1,2}$")
+#: `hhmm` 判据的哨兵：`window.parse_hhmm(value, 哨兵)` 返回哨兵即"不是合法时刻"。
+#: 用独立对象而非 None/(0,0)，因为合法取值也可能等于那些值。
+_HHMM_SENTINEL = object()
 #: 必填字段（缺一即名册残件）。
 _REQUIRED = ("group", "doc", "sensitive", "reload", "tier")
 #: §5.4：路径类与代理类默认不入网页白名单（改路径等于任意文件写、改代理等于出口劫持）。
@@ -98,15 +102,26 @@ def _is_number(value):
 
 
 def _is_hhmm(value):
-    """是不是合法时刻：**与 `yiban.window.parse_hhmm` 同口径**（该函数是 HH:MM 的既有
-    唯一实现）。两处口径不一致会让"引擎收、名册不收"这类分叉悄悄长出来。
+    r"""是不是合法时刻：**委托 `yiban.window.parse_hhmm`**，不在本模块另写判据。
 
-    接受 `H:MM` 与 `HH:MM`；小时 0~23、分钟 0~59；其余（`99:99`、`abc`、空）不算。
+    委托的理由是根因：引擎收的写法加载器也必须收。自己写一条"更严"的判据会把
+    "加载器回落缺省、引擎按原值跑"变成常态——`.env` 里手写的 `006:30`、`6 :30`
+    这类写法引擎认，名册也必须认。
+
+    **范围（勿越界）**：本函数只收口"加载器自己的"时刻判据。全仓其余时刻判据另有五处，
+    都不走 `parse_hhmm`。收口它们属**解析口径**轴（与优先级轴工单 71z7 不是同一条轴），
+    归读路径收口批次 —— 本模块不越界改，但逐处留痕，防止"假一致"扩散：
+    - `yiban/engine/probe.py`：探针时刻判定，就地 `int(x)` 拆解；
+    - `web/routes/settings_api.py`：窗口时刻与探针时刻校验（两处），同样就地 `int(x)`；
+    - `docker/scheduler.py`：`YIBAN_SIGN_END` 校验自带正则
+      `([01]?\d|2[0-3]):[0-5]\d`。实测（7 个分叉样本逐条比对）它拒收引擎收的写法，
+      而它上方的注释自称"格式校验与 run.sh / yiban.window.parse_hhmm 一致"——
+      与本次所修的同形（自带更严判据 + 不实的"一致"声明）。它不经本模块，
+      当前无实害；已单独立账（bd comment 的"已知边界"）；
+    - `frontend/src/settings/model.js` 的 `hhmmToMin`：`/^(\d{2}):(\d{2})$/`，比引擎更窄；
+    - `run.sh` 的 `_wait_until_hhmm`：只查含 `:`，其余交给 `date -d` 判。
     """
-    if _HHMM_RE.match(str(value).strip()) is None:
-        return False
-    hh, mm = str(value).strip().split(":")
-    return 0 <= int(hh) <= 23 and 0 <= int(mm) <= 59
+    return yiban_window.parse_hhmm(value, _HHMM_SENTINEL) is not _HHMM_SENTINEL
 
 
 def _check_domain(key, spec, type_name):
