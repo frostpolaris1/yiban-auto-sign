@@ -41,7 +41,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from yiban import __version__ as RELEASE_VERSION
 from yiban import clock, egress, window
@@ -576,21 +576,10 @@ def main(argv=None):
             if _res is None:
                 continue
             _ok, _msg, _skip, _status = _res
-            _was_paused = bool(merged.get(_acc.phone, {}).get("paused_since"))
+            # 手动试探了已暂停账号且凭据仍失败时，`_update_cred_state` 会顺延下次试探日
+            # （对齐全量模式语义）：否则存量过期的 probe_date 会让下一轮全量签到立即
+            # 再试探，失去半开试探的间隔保护。顺延只此一处，见该函数 docstring。
             attempts._update_cred_state(merged, _acc.phone, _ok, _msg, _merge_today)
-            # 手动试探了已暂停账号且凭据仍失败时，顺延下次试探日（对齐全量模式语义）：
-            # 否则存量过期的 probe_date 会让下一轮全量签到立即再试探，
-            # 失去半开试探的间隔保护
-            if (
-                not _ok
-                and _was_paused
-                and attempts._is_credential_failure(_msg)
-                and attempts._probe_due(merged.get(_acc.phone, {}), _merge_today)
-            ):
-                merged[_acc.phone]["probe_date"] = (
-                    datetime.strptime(_merge_today, "%Y-%m-%d")
-                    + timedelta(days=attempts.PROBE_INTERVAL_DAYS)
-                ).strftime("%Y-%m-%d")
         state_io._save_cred_state(merged, touched={a.phone for a in accounts})
     else:
         # 全量轮：按账号增量合并（内存快照不能整体覆盖磁盘——见 _save_cred_state 文档）
