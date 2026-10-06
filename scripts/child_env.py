@@ -43,6 +43,14 @@ def parse_env_file(path):
     `yiban.infra.env_io` / shell 入口的收敛口径一致："export 行不生效"
     （差异钉死见 env_io.parse_env_file 注释）。
     """
+    # 告警频次口径（两类读失败同族，只准一条上界；本块同时管住下面两个 except 分支）：
+    # 每次调用都喊，不设进程内闩、不去重。
+    # 调用频率有界——容器常驻调度器每 PROBE_TRY_SECONDS 试一次探针、每
+    # FALLBACK_TRY_SECONDS 查一次兜底（后者与引擎兜底常驻的扫描间隔
+    # YIBAN_FALLBACK_INTERVAL 同量级），web 手动签到每请求一次。
+    # 若改成"只喊一次"，退化状态可在其后数月的静默中持续。
+    # 告警只多一行日志；漏报会漏签。
+    # 两类事件的档位（哪类允许静默）见 run.sh 的「告警频次口径」段。
     pattern = _key_pattern()
     out = {}
     try:
@@ -65,9 +73,7 @@ def parse_env_file(path):
             ".env 不存在，全部 YIBAN_* 配置回落进程环境快照，"
             "设置页改动不生效: %s", path)
     except OSError:
-        # 每次调用都喊（不设进程内闩）：调用频率有界（调度器探针路径 ≤ 每
-        # PROBE_TRY_SECONDS 一次、web 手动签到每请求一次），而常驻调度器一旦"只喊
-        # 一次"，退化状态可在其后数月的静默中持续——正是本工单要消灭的形状。
+        # 与"不存在"分支分开报（消息不同）；频次与去重口径见函数开头的上界块。
         logger.warning(
             ".env 存在但当前用户不可读，全部 YIBAN_* 配置回落进程环境快照，"
             "设置页改动不生效: %s", path)
