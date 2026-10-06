@@ -24,7 +24,9 @@
 `capacity_accounts` 那一支：双轨开关已随单池消失，展示/闸门口径保持批 4 的取值不变），
 有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
 不另写一套容量模型。`_accounts_at_capacity` 复用 `_capacity_account_count`，
-`_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。
+`_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。触发告警的发信不在这里直接
+发出，而是经 `web/services/locks.py` 的 `run_after_file_lock` 登记——那是全局锁
+"锁内不得有网络 I/O"这条纪律的唯一汇合点，本模块不另造一套延后机制。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
@@ -40,6 +42,7 @@ import threading
 import time
 
 from web.services.accounts_data import load_accounts_raw
+from web.services.locks import run_after_file_lock
 from yiban import window as yb_window
 from yiban.engine.schedule import capacity_of
 from yiban.infra.env_io import parse_env_flag
@@ -197,6 +200,11 @@ _capacity_alerts = {"users": False, "accounts": False}
 def _notify_capacity_once(kind, limit, label, *, send_notification):
     """容量触顶通知（每进程每种资源只发一次）：管理员知情且不刷屏。
 
+    调用点持 `_file_lock`，故发信经 `run_after_file_lock` 登记、出锁后执行
+    （工单 ba-p05-01：锁内不得有网络 I/O）。**只有发信被推迟**：去重旗仍在锁内
+    落定，否则两个并发请求会各登记一封、出锁后双发。旗先立后发、失败不回滚的
+    口径不变。未持锁时登记即刻执行，行为同今天。
+
     参数注入口径见模块头「通信」（`send_notification` 是既有打桩点）。
     """
     if _capacity_alerts.get(kind):
@@ -205,7 +213,8 @@ def _notify_capacity_once(kind, limit, label, *, send_notification):
     # 也就是说"没收到容量告警"不等于"没触顶"——要看日志里的 warning 行。
     _capacity_alerts[kind] = True
     logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
-    send_notification(
+    run_after_file_lock(
+        send_notification,
         f"{label}已达上限",
         mail_layout.Mail(
             summary=f"{label}已达上限，新的注册/添加已被拒绝。",
