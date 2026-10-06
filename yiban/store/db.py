@@ -135,8 +135,8 @@ purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，
 
 # 任务队列（sign_tasks）展示读口径：台账单池化后展示/补签闸门读的就是这张表（唯一台账）。
 # 上方 `claim_*` 是旧领取池（sign_claims，冻结）的读法，仅供既有单测覆盖，不再是生产读口。
-task_stats = _queue_store.day_counts  # 当日各 state 计数与派生（settled/open/total）
-task_open_count = _queue_store.open_count  # 当日未了结且可领取（vshard>=0）的行数——无分片上下文的了结闸门
+task_stats = _queue_store.day_counts  # 当日各 state 计数与派生（settled/open/total）；读不通回 None 哨兵，别名原样透传
+task_open_count = _queue_store.open_count  # 当日未了结且可领取（vshard>=0）的行数——无分片上下文的了结闸门；读不通回 None 哨兵，别名原样透传
 task_owners_for_day = _queue_store.owners_for_day  # 当日 phone -> owner（一次取全）
 task_activity = _queue_store.activity  # 当日按执行体归属的 KPI 计数（已折 KPI 三键）
 task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日

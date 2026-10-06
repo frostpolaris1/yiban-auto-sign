@@ -53,8 +53,9 @@ logger = logging.getLogger("web")
 #: 进度端点回给前端的**全站 state 分布**键（顺序即页面画条的顺序）。
 #: 取自 `queue_store.day_counts` 的口径：7 个原始 state + 3 个派生键，派生口径见该函数
 #: 的表（settled = done + skipped；open = pending + claimed + failed + stolen；
-#: total = settled + open）。写死成白名单而不是直接把 dict 摊进响应：库不可用时
-#: `day_counts` 仍回全 0 的完整键集，白名单还能挡住"哪天多折一个键就悄悄改了契约"。
+#: total = settled + open）。写死成白名单而不是直接把 dict 摊进响应：`day_counts` 读不通
+#: 时回 `None`（fail-closed 哨兵），此时按本白名单出一栏全 0 占位、另置
+#: `totals_unreadable` 标成未知；平时它也挡住"哪天多折一个键就悄悄改了契约"。
 _PROGRESS_STATE_KEYS = ("total", "settled", "open", "done", "skipped",
                         "pending", "claimed", "failed", "stolen")
 
@@ -1313,14 +1314,24 @@ def api_scheduler_executors_progress():
     （`db.task_stats(day)`，即 `queue_store.day_counts`）以便页面画"已签/待签/失败"的
     总量条；② 这里的 `day` 取**最近一次有记录的业务日**（`db.task_latest_day`）而不是
     "今天"——周末停签后取"今天"会让整页归零，页面无法区分"没跑"与"今天不跑"。
+
+    `totals` 读不通时全 0 并置 `totals_unreadable: true`，同时 `note` 里写明。
+    "读数不可用"与"当日无记录（全 0）"是两件事，不许合成一件（ba-p01-01）。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看签到进度"}), 403
     day = m.db.task_latest_day() or m.clock.today()
     by_executor, activity_totals = m._executor_activity(day)
-    # 全站按 state 的分布（day_counts 同口径不抛：库不可用时全 0）
-    counts = m.db.task_stats(day)
+    # 全站按 state 的分布（day_counts 读不通回 None 哨兵：那是"读不出来"，不许画成全 0）。
+    # 兜底吞异常：展示面不得因一个计数读不到就把整页打成 5xx——与 `latest_day` /
+    # `owners_for_day` / `activity` 的"展示面不抛"是同一条纪律。
+    try:
+        counts = m.db.task_stats(day)
+    except Exception as e:
+        logger.warning("读取当日任务队列计数失败（页面按读数不可用显示）: %s", e)
+        counts = None
+    totals_unreadable = counts is None
     bounds = m._executors_window()
     return jsonify({
         "ok": True,
@@ -1329,11 +1340,16 @@ def api_scheduler_executors_progress():
         "is_today": day == m.clock.today(),
         "in_window": m._in_run_period(bounds),
         # 全站分布：state 计数 + 派生的 settled/open/total（派生口径见 queue_store.day_counts）
-        "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS},
+        "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS}
+                  if counts is not None else dict.fromkeys(_PROGRESS_STATE_KEYS, 0),
+        # 读不通的显式标记：全 0 是占位，不是"当日无记录"
+        "totals_unreadable": totals_unreadable,
         "by_executor": by_executor,
         "executor_totals": activity_totals,
         "note": ("聚合计数口径，不含逐账号明细（逐账号明细看账号列表页）。"
-                 "库未初始化或当日无记录时各计数全 0，属正常空态而非故障。"),
+                 "库未初始化或当日无记录时各计数全 0，属正常空态而非故障。"
+                 + ("本次任务队列读不通，`totals` 是占位值，不代表真实进度。"
+                    if totals_unreadable else "")),
     })
 
 
