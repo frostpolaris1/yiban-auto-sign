@@ -146,7 +146,10 @@ class DbFixes021Test(unittest.TestCase):
                 "pw_version INTEGER NOT NULL DEFAULT 1"
                 ")"
             )
-            conn.execute("PRAGMA user_version = 4")
+            # 版本下界取 3 而不是 4：本夹具只手工建了 users，没有 v4 的产物（sign_events）。
+            # 声称 v4 就是"版本说过了、产物不在"——链尾 fail-closed 门会拒启。
+            # 取 3 让 migrate_v4 在本用例里真的跑，版本声称与 schema 一致。
+            conn.execute("PRAGMA user_version = 3")
             conn.commit()
         finally:
             conn.close()
@@ -762,7 +765,9 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
         """框架层：v8（可选）失败后先前的 session_cache 回滚、后续迁移照常、版本不提升。"""
         conn = sqlite3.connect(self.db_file)
         db._create_tables(conn)
-        conn.execute("PRAGMA user_version = 7")
+        # 版本下界取 3：本夹具没建 v4/v6 的产物（sign_events 及其三列），声称 v7 就是
+        # "版本说过了、产物不在"。取 3 让 v4..v7 在本调用里真的跑，随后 v8 才失败。
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
         conn.close()
 

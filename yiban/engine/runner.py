@@ -323,7 +323,7 @@ def main(argv=None):
     try:
         accounts = accounts_mod.load_accounts(migrate=not args.check_config)
     except db.MigrationIntegrityError as e:
-        # 迁移完整性拒启（MF-40）：user_version 声称已过某迁移，但完成记录/核心产物
+        # 迁移完整性拒启（MF-40）：user_version 声称已过某迁移，但完成记录/登记产物
         # 缺失——领取路径在这种库上只会静默零签到。这不是配置错误(1)，独立码 4 让
         # run.sh / cron / 容器调度方区分"schema 半升级"；异常文本已点名缺哪条迁移。
         logger.error(f"schema 迁移完整性校验失败，拒绝启动: {e}")
