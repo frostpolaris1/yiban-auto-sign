@@ -70,7 +70,7 @@ from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import claims as claims_mod
-from yiban.store import clock_meta, queue_store
+from yiban.store import clock_meta, queue_store, run_events
 
 logger = logging.getLogger("yiban")
 
@@ -482,6 +482,32 @@ def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
         pass
 
 
+def _report(ctx, node, phone="", message=""):
+    """进度打点（执行体侧唯一入口）：身份与业务日从 ctx 取，调用方只给节点与账号。
+
+    身份用**稳定槽位名**（`ctx.executor_id`，如 `worker-0@host` / `single@host`），
+    不是写 `sign_tasks.owner` 的运行时串（含进程号/代次）：进度流的读者按槽位名认
+    执行体（与执行体页、HRW 分片成员同一套名字），跨重启同名才能续成一条线。
+
+    写入失败在 `run_events.report` 内被隔离（只告警），故此处不捕获、也不看返回值：
+    打点是观测面，任何失败都不得改变本轮的签到路径（工单行为四）。
+    """
+    run_events.report(node, day=ctx.day, executor=ctx.executor_id,
+                      phone=phone, message=message)
+
+
+def _report_many(ctx, node, phones, message=""):
+    """一批进度打点（执行体侧唯一批量入口）：同一时刻的一批行走一次写锁。
+
+    领取发生在事件循环线程里，逐行提交会把"一行一次锁等待"叠加成整条通道的停顿，
+    故领取用批量、单条用 `_report`。身份与业务日与 `_report` 同源（稳定槽位名 +
+    `ctx.day`）。
+    """
+    run_events.report_many([{"node": node, "day": ctx.day,
+                             "executor": ctx.executor_id, "phone": p,
+                             "message": message} for p in phones])
+
+
 def _settle(ctx, phone, epoch, state, message):
     """单行收尾：带上领取时的 fencing token——被接管者迟到的写会被拒。
 
@@ -498,11 +524,16 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
     以 `failed` 了结时同样带档位前缀（账密暂停属保守档，只有显式路径可回炉——
     自动回炉等于绕开凭据熔断反复真实登录）；`done` 是了结态，不带前缀。
+
+    进度打点按状态取节点：账密暂停落 `pause`，其余非成功终态落 `fail`。本函数是
+    **所有零请求收尾的唯一出口**，故打点挂在这里而不是两个调用点各写一遍。
     """
     _ok, _msg, _skip, status = result
     ctx.results[phone] = result
     state_io._write_sign_state(phone, status, state_message)
     _emit_event(ctx, phone, status, state_message)
+    _report(ctx, run_events.NODE_PAUSE if status == STATUS_PAUSED
+            else run_events.NODE_FAIL, phone, state_message)
     if state == queue_store.STATE_FAILED:
         state_message = _tier_prefix(status) + state_message
     _settle(ctx, phone, epoch, state, state_message)
@@ -625,6 +656,9 @@ async def _attempt(ctx, item):
         logger.info("[%s] ⏸️ 账密异常已暂停，请修改密码", _mask_phone(phone))
         return
     ctx.gap_gate.commit(phone, _mono())  # 走到这才是"真要发请求"：gap 的推进点必须与尝试一一对应
+    # 进度打点「开始」：闸门全过、请求即将发出。三件限速替身（出口桶/全局 Λ/gap）都在
+    # 这行之前，故 start 行只代表"真的要发请求了"，把"排队等额度"记成开始会虚报进度。
+    _report(ctx, run_events.NODE_START, phone)
     ctx.inflight += 1
     t0 = _mono()
     try:
@@ -636,6 +670,11 @@ async def _attempt(ctx, item):
     # 每次尝试结束即物化状态：v2 是逐账号增量写，v3 只在收尾物化会让当天网页日历空窗
     state_io._write_sign_state(phone, status, message, dur=dur)
     _emit_event(ctx, phone, status, message, dur=dur, attempt_no=attempts_n + 1)
+    # 进度打点「成功/失败」：一次尝试的结论，与上一行的 sign_events 同一时刻、同一判据
+    # （了结态集合 `CLAIM_DONE_STATUSES`）。重试中的尝试同样落 fail——那是这次尝试的
+    # 事实；该账号稍后重新被领到时会有新的 claim/start 行，进度流据此如实反映次数。
+    _report(ctx, run_events.NODE_SUCCESS if status in yiban_status.CLAIM_DONE_STATUSES
+            else run_events.NODE_FAIL, phone, message)
     # 每账号结果行：行内手机号为遮罩形态（日志文件本身脱敏，展示层统一再脱敏）。
     # 日历"我的日志"面板与日志页靠该行向账号归属用户回显每次尝试结果——只在
     # 重试/放弃时落行的话，成功/跳过账号在面板里查无记录。
@@ -926,6 +965,9 @@ async def _refiller(queue, shards, ctx):
                 held.add(r["phone"])
                 queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
                                   r["attempts"], r["epoch"]))
+            # 进度打点「领取」：整批一次写（见 `_report_many`）。放在投递之后，故
+            # "claim_batch → held 登记"那段无 await 的豁免窗口一字未动。
+            _report_many(ctx, run_events.NODE_CLAIM, [r["phone"] for r in rows])
         # 收干候选：领取面**读通**且回空、通道全闲、队列空。只有候选才问第二面——
         # 领取面已是哨兵时再问一次只是白等一次锁等待。
         drained = (rows is not None and not rows and ctx.inflight == 0
@@ -1005,6 +1047,9 @@ def _prescan(ctx, accounts):
             ctx.results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
             state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
             _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
+            # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
+            # claim/start 行——进度流里只出现这一行 pause 是正确形态。
+            _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
 
 
 def _mark_window_skips(ctx, accounts):
@@ -1034,6 +1079,10 @@ def _mark_window_skips(ctx, accounts):
             continue
         ctx.results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
         _emit_event(ctx, phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+        # 窗口外收尾同样落终态行（非成功终态一律 fail）：本轮该账号没有 claim/start
+        # （计划行缺失或库异常由本函数兜住），只出现一行 fail 是如实形态——汇总里的
+        # "跳过"计数与进度流就此对得上。
+        _report(ctx, run_events.NODE_FAIL, phone, "签到时段已结束")
         logger.info("[%s] ⛔ 签到时段已结束，跳过执行", _mask_phone(phone))
 
 
@@ -1193,4 +1242,10 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 外逃，写进去就把"被信号杀掉"记成"正常跑完"；留"有开始、无收尾"让心跳过期后判
     # `stale`（疑似被强杀，要用户注意），与监督进程不写收尾的口径一致。
     state_io.mark_worker_finished(slot, now=_now(), role=alive_role)
+    # 进度打点「收尾」：与上一行同时机、同一条"只在正常返回路径"的口径——被信号
+    # 杀掉的轮次留"有开始、无收尾"，进度流据此与执行体页的四态判定一致。
+    # message 前缀是本层的判别面（见 run_events 模块说明的"收尾有两层"）：单执行体
+    # 路径下 runner 另落一行"轮次收尾："，两行同 (业务日, 执行体, 节点) 但事实不同。
+    _report(ctx, run_events.NODE_FINALIZE,
+            message=f"执行体会话收尾：本轮完成 {len(ctx.results)} 个账号")
     return ctx.results

@@ -53,6 +53,7 @@ REQUIRED_ARTIFACTS = (
     (12, "app_meta", None),
     (15, "verify_jobs", None),
     (16, "verify_jobs", "prev_status"),
+    (21, "run_events", None),
 )
 
 

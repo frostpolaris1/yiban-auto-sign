@@ -12,11 +12,12 @@
 
 本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-- `migrations`：建表/索引、`migrate_v1..v20`、版本编排 `_run_migrations` 与完整性校验
+- `migrations`：建表/索引、`migrate_v1..v21`、版本编排 `_run_migrations` 与完整性校验
   （`MigrationIntegrityError`：迁移记录/登记产物缺失 ⇒ 拒启），以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
+- `run_events`：内核进度事件表（v21）的写入入口与保留期清理（N2a 打点层）。
 - `verify_jobs`：在线校验任务表的创建/领取/结算/取消、超龄回收与保留期清理。
 - `claims`：旧签到领取池（`sign_claims`，单池化后冻结）的领取/续租/结算/放弃与清理；
   生产读口径已收口到 `queue_store`（见下），本域仅供既有单测覆盖。
@@ -75,6 +76,7 @@ from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
 from yiban.store import queue_store as _queue_store  # noqa: E402
+from yiban.store import run_events as _run_events  # noqa: E402
 from yiban.store import session_cache as _session_cache  # noqa: E402
 from yiban.store import time_prefs as _time_prefs  # noqa: E402
 from yiban.store import tracking as _tracking  # noqa: E402
@@ -241,6 +243,15 @@ sign_events_recent_date = _events.sign_events_recent_date
 attempt_dur_quantile = _events.attempt_dur_quantile  # 容量告警的实测输入（MF-56③）
 _event_cleanup = _events._event_cleanup
 
+# 内核进度事件域（唯一定义点在 yiban/store/run_events.py，N2a 打点层）：两个写入入口
+# 按门面惯例补域后缀再导出；`yiban/store/cleanup.py` 的每日编排经
+# `_facade().purge_run_events()` 调保留期清理（与 purge_sign_tasks 同形）。
+# 节点值域（`NODES`）是下游消费者的契约面，按原名留在域模块，门面不另立别名
+# ——两处名字会让"改哪一处"变成判断题。
+report_run_event = _run_events.report
+report_run_events = _run_events.report_many
+purge_run_events = _run_events.purge
+
 # 会话缓存域（唯一定义点在 yiban/store/session_cache.py）：函数走下方读写转发（内部调用点
 # 会被 `db._session_cache_now` 打桩），四个常量是不可变配置、全仓无重绑与打桩，按常量
 # 再导出即等价。`db.SESSION_CACHE_TTL_HOURS_DEFAULT` 一类读取不变。
@@ -324,6 +335,7 @@ migrate_v17 = _migrations.migrate_v17
 migrate_v18 = _migrations.migrate_v18
 migrate_v19 = _migrations.migrate_v19
 migrate_v20 = _migrations.migrate_v20
+migrate_v21 = _migrations.migrate_v21
 _run_migrations = _migrations._run_migrations
 
 logger = logging.getLogger("yiban.db")
@@ -751,6 +763,14 @@ def _cascade_phone_owned(conn, phones):
     conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_claims WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_tasks WHERE phone=?", rows)
+    # run_events 只随**可选**迁移 v21 建出：v21 失败时版本不提升、链尾产物核对
+    # 只看 `target <= user_version` 的档（v21 不被核对），表可以合法地不存在而进程
+    # 照常服务（`run_events.report` / `purge` 也都容忍缺表）。本函数却落在强制路径上
+    # （`purge_account` / `delete_accounts_by_owner` / `replace_accounts`），无条件
+    # DELETE 会让缺表在删号/整表保存时抛 OperationalError、把整个事务连同删号一起
+    # 回滚。故只在表在时连带清理，与另两条路径同口径。
+    if _table_columns(conn, "run_events"):
+        conn.executemany("DELETE FROM run_events WHERE phone=?", rows)
 
 
 def _clear_session_cache_by_phones(conn, phones):
