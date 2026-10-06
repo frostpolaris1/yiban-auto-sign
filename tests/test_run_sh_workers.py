@@ -45,12 +45,19 @@ def _write_python_wrapper(app_dir):
 
     run.sh 的 sign-status 库内事实交叉核对直接调 $PY（不经假 timeout），
     必须保证它在 Git Bash 与 WSL 下都存在且能跑 sqlite3。
+
+    PYTHONPATH 补上仓库根（ census P1-3 起必需）：run.sh 现在还要向 Python 取
+    `YIBAN_WORKERS` 的合法域（`$PY -c "... sys.path.insert(0, sys.argv[1]); from
+    yiban.egress import WORKERS_MIN, WORKERS_MAX"`）。生产环境 APP_DIR 就是仓库根，
+    那次导入天然成立；本夹具把 APP_DIR 指到临时目录，故显式把仓库根交给解释器——
+    取的是 `yiban/egress.py` 里的真常量，不是第二份数。
     """
     venv_bin = os.path.join(app_dir, ".venv", "bin")
     os.makedirs(venv_bin, exist_ok=True)
     path = os.path.join(venv_bin, "python3")
     with io.open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+        f.write('#!/bin/sh\nPYTHONPATH="%s:$PYTHONPATH" exec "%s" "$@"\n'
+                % (BASE.replace("\\", "/"), sys.executable.replace("\\", "/")))
     os.chmod(path, os.stat(path).st_mode | 0o755)
     return path
 
