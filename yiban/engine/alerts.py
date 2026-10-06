@@ -5,8 +5,10 @@
 
 两条通道（口径不同，勿混）：
 - **A 线（管理员）**：运行期 `_collect_admin_mail` 只收集，任务收尾
-  `_flush_admin_mail_summary` 汇总成一封发出——避免多账号失败时逐封轰炸；收件人为空
-  且推送已配置时，同一份汇总改走 webhook 兜底（紧急 + 绕过节流），不让告警静默全灭；
+  `_flush_admin_mail_summary` 汇总成一封发出——避免多账号失败时逐封轰炸；封顶时
+  高级别条目（`ALERT_LEVEL_CRITICAL`）先占额度，逐账号明细按插入顺序填满余量；
+  收件人为空且推送已配置时，同一份汇总改走 webhook 兜底（紧急 + 绕过节流），
+  不让告警静默全灭；
 - **B 线（用户本人）**：`send_user_fail_mail` 逐条即时，受按天额度（默认每账号 1 封，
   签到/手动/探针三个入口统一计算）与用户开关约束，**发送成功才消耗额度**，未发出即归还。
 
@@ -78,24 +80,37 @@ def send_notification(title, content, url=None, urgent=False, force=False):
 
 # A 线：运行期把"发给管理员"的邮件先收集，任务结束统一汇总发送
 # （避免多账号失败时逐封轰炸）。B 线用户邮件不在此收集，保持逐条即时。
-_mail_summary = []  # list[(subject, text)]
+#
+# 记录形态是 `(subject, text, level)` 三元组。级别在唯一写点 `_collect_admin_mail`
+# 上声明，封顶选条才有依据：原先只有插入顺序，轮末产生的轮级告警必然排在数百条
+# 逐账号明细之后，恰好被挤出正文（`ba-p04-02`）。
+_mail_summary = []  # list[(subject, text, level)]
 
 # 汇总邮件条数/体积封顶：巨量账号全失败时不封顶会生成超大 MIME 被 SMTP 拒收，
-# 整封告警丢失。截断部分指引看后台日志。
+# 整封告警丢失。截断部分指引看后台日志，并点名被丢的主题与条数。
 MAIL_SUMMARY_MAX_ENTRIES = 200
 MAIL_SUMMARY_MAX_CHARS = 200_000
 
+# 封顶选条的级别。判据：一轮只出现一次、且运维据此才会当机处理的 ⇒ CRITICAL；
+# 每账号一条、量随账号数放大的 ⇒ NORMAL。新增调用点漏传 level 即按 NORMAL 处理。
+ALERT_LEVEL_CRITICAL = "critical"
+ALERT_LEVEL_NORMAL = "normal"
 
-def _collect_admin_mail(subject, text):
+
+def _collect_admin_mail(subject, text, level=ALERT_LEVEL_NORMAL):
     """把一条管理员告警并入任务结束汇总（不立即发送）。
 
     `text` 可以是 `[(标签, 值)]` 字段表（汇总时一项一行）或普通字符串（作为一段说明，
     兼容既有调用与测试）。
+    `level` 决定封顶时的去留：`ALERT_LEVEL_CRITICAL` 先占额度，`ALERT_LEVEL_NORMAL`
+    按插入顺序填满余量（见 `_select_summary_entries`）。缺省普通——漏传级别只退回旧
+    行为，不会把逐账号明细升成关键告警。
     """
-    _mail_summary.append((subject, text))
+    _mail_summary.append((subject, text, level))
 
 
-def notify_admin_entry(subject, entry, notify_url=None, push=True):
+def notify_admin_entry(subject, entry, notify_url=None, push=True, *,
+                       level=ALERT_LEVEL_NORMAL):
     """一条管理员告警并入任务结束汇总邮件；`push=True` 时同时即时推送。
 
     两路读同一份 `entry`：原先各调用点要把同一条 `"账号: X\n原因: Y"` 字面量写两遍
@@ -104,8 +119,11 @@ def notify_admin_entry(subject, entry, notify_url=None, push=True):
     `push=False` 用于"事后可读"的慢信号（单账号耗时、容量超载）：它们的价值在汇总信
     正文里，即时推送只是把同一件事再喊一遍；而推送日额度有限，要留给"现在就得知道"
     的故障（签到失败、通道降级）。探针预警与窗口配置异常本就只进汇总，与此同口径。
+
+    `level` 只影响汇总邮件封顶时的去留，不影响即时推送：两个旋钮各管一条通道。它必须
+    按关键字传——既有调用点与测试按位置取 `(subject, entry)` 两项。
     """
-    _collect_admin_mail(subject, entry)
+    _collect_admin_mail(subject, entry, level=level)
     if push and notify.is_configured():
         send_notification(subject, layout.Mail(fields=entry, time=""), notify_url)
 
@@ -172,16 +190,45 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
             ("未了结", f"{len(window_skips)} 个账号因窗口外/Range 缺失未签到（补签轮后仍未了结）"),
             ("请核查", "YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"),
         ]
-    _collect_admin_mail(title, entry)
+    _collect_admin_mail(title, entry, level=ALERT_LEVEL_CRITICAL)
     return True
+
+
+def _select_summary_entries():
+    """按级别挑进正文的条目：先高级别，再用普通条目按插入顺序填满余量。
+
+    返回 `(选中, 未选中)` 两段记录。判据是 `ba-p04-02`：轮级关键告警在轮末产生、
+    落在列表尾部，按插入顺序切片时它恰好在全量失败日（逐账号条目 ≥ 额度）被挤出。
+    高级别条目每轮至多几条（各产生器均去重或每轮一条），不会饿死普通明细；
+    如果高级别本身超额度，普通明细全部退回"未选中"——仍逐主题点名，不静默丢弃。
+    """
+    critical = [e for e in _mail_summary if e[2] == ALERT_LEVEL_CRITICAL]
+    normal = [e for e in _mail_summary if e[2] != ALERT_LEVEL_CRITICAL]
+    kept_critical = critical[:MAIL_SUMMARY_MAX_ENTRIES]
+    kept_normal = normal[:max(0, MAIL_SUMMARY_MAX_ENTRIES - len(kept_critical))]
+    dropped = critical[len(kept_critical):] + normal[len(kept_normal):]
+    return kept_critical + kept_normal, dropped
+
+
+def _dropped_subject_roster(dropped):
+    """被丢条目按主题归并成名册，保持首次出现顺序。
+
+    只报条数等于没说：运维看到"其余 200 条已截断"会以为只是明细变长，而实际少掉的
+    可能是当日唯一会被当机处理的那条告警。
+    """
+    counts = {}
+    for subject, _text, _level in dropped:
+        counts[subject] = counts.get(subject, 0) + 1
+    return list(counts.items())
 
 
 def _flush_admin_mail_summary(phase=None):
     """签到任务结束：把运行期收集的管理员邮件汇总成一封发送。
 
     无异常则不发送（成功不打扰）；按主题分组，每个账号独立条目；
-    条数超过 MAIL_SUMMARY_MAX_ENTRIES 或正文超长时截断并在尾部注明，
-    明细以按天签到日志为准；mailer 内部静默失败，不影响退出码。
+    条数超过 MAIL_SUMMARY_MAX_ENTRIES 时按级别选条（见 `_select_summary_entries`），
+    尾部注明少了多少条、都是哪些主题；正文超过 MAIL_SUMMARY_MAX_CHARS 时只截明细，
+    尾部说明必留。明细以按天签到日志为准；mailer 内部静默失败，不影响退出码。
     收件人集为空且推送通道已配置时，同一份汇总改走推送兜底（urgent+force）——
     「无收件人」本身不得成为第二处静默点，零成功且零收件人的一轮仍可被观测。
     发送后清空收集器。
@@ -192,11 +239,11 @@ def _flush_admin_mail_summary(phase=None):
     if not _mail_summary:
         return
     total = len(_mail_summary)
-    entries = _mail_summary[:MAIL_SUMMARY_MAX_ENTRIES]
-    truncated = total - len(entries)
+    entries, dropped = _select_summary_entries()
+    truncated = len(dropped)
     groups = {}
     order = []
-    for subject, text in entries:
+    for subject, text, _level in entries:
         if subject not in groups:
             groups[subject] = []
             order.append(subject)
@@ -207,18 +254,30 @@ def _flush_admin_mail_summary(phase=None):
             f"其余 {truncated} 条已截断以免邮件过大被拒收，"
             "明细见管理后台「日志」页或 /var/log/yiban 按天日志"
         )
+        footer.extend(f"被截断主题：{subject} {count} 条"
+                      for subject, count in _dropped_subject_roster(dropped))
     if phase:
         summary = f"易班{phase}已完成，共 {total} 条异常/预警。"
     else:
         summary = f"易班签到任务已结束，共 {total} 条异常/预警。"
-    mail = layout.Mail(summary=summary, groups=[(s, groups[s]) for s in order],
+    groups_arg = [(s, groups[s]) for s in order]
+    mail = layout.Mail(summary=summary, groups=groups_arg,
                        footer=footer, level="urgent")
     body = mail.to_plain()
     payload = mail
     if len(body) > MAIL_SUMMARY_MAX_CHARS:
         # 超长只可能在数百条明细时出现：那种量级下放弃 HTML、整封按纯文本截断送出，
         # 也好过生成超大 MIME 被 SMTP 拒收而整封告警丢失。
-        body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
+        # 额度先留给尾部说明，被截的只能是明细：尾部说明排在 to_plain() 的末尾
+        # （`-- ` 签名界之后），旧写法 body[:上限] 会把它连同主题名册一起切掉——那是
+        # 第二条静默丢告警的路径（实测 201 逐账号 + 1 轮级、正文 304305 字时，旧写法
+        # 发出的 200013 字里已无「其余 2 条已截断」与主题名册）。
+        note = "\n…（超长截断，明细见日志）"
+        detail = layout.Mail(summary=summary, groups=groups_arg,
+                             level="urgent", time=mail.time).to_plain()
+        tail = body[len(detail):]
+        budget = max(0, MAIL_SUMMARY_MAX_CHARS - len(tail) - len(note))
+        body = detail[:budget].rstrip("\n") + note + tail
         payload = body
     # 收件人 = ADMIN_TO（按个人开关过滤） + 所有开启接收的管理员用户邮箱：
     # 普通管理员自动获得告警收件权；关闭 mail_notify 后从收件人剔除。
