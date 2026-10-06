@@ -6,7 +6,8 @@
 两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `executor_v3.run_executor_v3`，
 它们只负责：谁持哪把锁（监督进程持全局锁、子进程各持自己的锁文件）、谁用哪个出口
 代理（执行体清单 `YIBAN_EXECUTORS` 每行一个出口；清单缺失时回退旧三键
-`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`，见 `egress.resolve`）、每个并行执行体的
+`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`；取值见 `egress.resolve`，交给执行体见
+`egress.apply_egress`——空出口=直连也必须写进环境，不得留着继承来的值）、每个并行执行体的
 **心跳**（开始/存活期/收尾，按**槽位号**写在 `state_io`，供接口判存活四态）、
 退出码怎么汇总（取最严重者，但补签轮判定的「需要补跑」原样透出）。清单里的拉起列表由
 `runner` 取 `egress.launch_slots` 后按槽位传进来，故**停用行不会被拉起**。
@@ -93,7 +94,8 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
 
     - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
     - 子进程各持自己的锁文件 + 各自的执行体身份（领取池据此分工）；
-    - 每个子进程可配一个独立出口代理（`egress.resolve`）；
+    - 每个子进程配一个独立出口，写入走 `egress.apply_egress`（唯一落实点）：清单里
+      配成空出口的那一格被显式写成"直连"，父环境继承来的 `YIBAN_PROXY` 不得留着；
     - 子进程的 argv 是本进程 argv 去掉 `--workers` 及其后随值（`--workers=N` 同样）后的
       逐字复刻：多执行体的身份靠注入的 `YIBAN_EXECUTOR_ID` 表达，`--workers` 下传只会
       让子进程再当一次监督进程；
@@ -169,9 +171,8 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
         # 故那把锁不能去掉）。
         env["YIBAN_EXECUTOR_ID"] = egress.worker_owner(slot)
         env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{slot}"
-        proxy = egress.resolve(egress.ROLE_WORKER, slot)
-        if proxy:
-            env["YIBAN_PROXY"] = proxy
+        # 出口交给环境只走 egress 单点：空出口也要写，否则继承来的父级代理把"直连"顶掉
+        proxy = egress.apply_egress(env, egress.ROLE_WORKER, slot)
         # 复刻本轮其余参数：剔除 `--workers` **及其后随值**（按 argv 序位解析，与
         # argparse 同语义；`--workers=N` 形态一并剔除）。不能按值匹配：清单模式下拉起
         # 的槽位数与命令行 `--workers N` 的 N 可以不等——网页改执行体清单只写
@@ -396,10 +397,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     # 重入须出示上一代 epoch，重启后没有它，只能等租约过期或心跳回收。代价是同一槽位名
     # 不得两台机器同时跑（跨主机靠 @主机名 区分，同机由下面那把 `signin-run.lock.fallback` 挡住）。
     os.environ.setdefault("YIBAN_EXECUTOR_ID", egress.fallback_owner())
-    proxy = egress.resolve(egress.ROLE_FALLBACK)
+    # 出口写入走 egress 单点：兜底行配成空出口时也必须显式写成直连，压掉继承来的
+    # `YIBAN_PROXY`（宿主形态由 run.sh 全量 export、容器/web 形态由 child_env 覆盖注入）
+    proxy = egress.apply_egress(os.environ, egress.ROLE_FALLBACK)
     logger.info("兜底执行体启动（出口: %s，扫描间隔 %ss）", egress.describe(proxy), interval)
-    if proxy:
-        os.environ["YIBAN_PROXY"] = proxy
 
     sch_cfg = None   # 每轮在循环内重读（见下）
     last_code = 0

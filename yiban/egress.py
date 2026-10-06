@@ -13,6 +13,10 @@
 分配规则（**可复现、可解释**）：执行体数超过表长时**循环取用**（第 4 个执行体用
 第 1 个出口）；表里留空位表示"这个执行体直连"；三种角色都允许为空（= 本机出口）。
 
+`resolve` 只负责取值（空串就是空串）。**把空串落成"真的直连"是 `apply_egress` 的职责**：
+执行体的环境从父进程复制而来，`YIBAN_PROXY` 常常已经带着值坐在那里，所以空出口也必须
+写进环境压掉它。生产代码里把出口交给执行体的地方只有 `apply_egress` 一处。
+
 **脱敏**：代理串可能带 userinfo（`http://user:pass@host:port`），任何进入日志、
 接口返回值的地方都必须经 `describe()`——它只回 `scheme://host[:port]`。
 
@@ -297,6 +301,29 @@ def describe(proxy):
     if not proxy:
         return "直连（本机出口）"
     return url_desc(proxy)
+
+
+def apply_egress(env, role, index=0):
+    """把该角色的出口写进 `env`，返回写进去的出口串（**"空=直连"的唯一落实点**）。
+
+    `resolve` 的契约到"空串就是空串"为止，落地由本函数负责——**生产代码里只许这一处
+    把出口写进环境**（守卫：`tests/test_egress_direct_applied.py`）。
+
+    为什么空值也必须写：执行体的环境从父进程复制而来。`run.sh` 无条件逐行 export 整份
+    `.env`，`scripts/child_env.build_child_env` 又用 `.env` 压过进程环境，于是
+    `YIBAN_PROXY` 往往已经带着一个值坐在子进程环境里。只在出口非空时写入，空出口那一格
+    等于"什么都不做"：管理员显式配下的"直连"被静默吞掉，执行体照用父级代理出网，而
+    `describe()` 与界面显示的仍是"直连（本机出口）"——两侧都看不见偏差（ba-p08-01）。
+
+    为什么写空串、而不是删键：子进程里 `yiban/engine/probe._egress_env` 先铺 `.env`、
+    再让进程环境压过它（那是每槽位出口管控的既有口径）。删掉键就查不到"进程环境"这一项，
+    它会退回 `.env` 里的那个值，同一条直连配置在那条路上被吞第二次。留一个空串才同时
+    压得住"继承来的进程环境"与"`.env` 补缺"两个来源；空串对每个读者都等于没配代理
+    （`yiban/client.py` 与 `resolve` 都 strip 后判假）。
+    """
+    proxy = resolve(role, index, env)
+    env[ENV_SINGLE] = proxy
+    return proxy
 
 
 def assignments(count, env=None):
