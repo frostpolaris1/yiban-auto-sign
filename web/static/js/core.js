@@ -33,13 +33,10 @@
     s.appendChild(u);
     return s;
   }
-  // 手机号展示层脱敏（幂等）：已含 * 原样返回；长度 >=7 保留前 3 后 4。
-  // 各页面统一走本助手，避免脱敏口径在页面脚本里各写一份。
-  function maskPhone(p) {
-    p = String(p || "");
-    if (p.indexOf("*") !== -1) return p;
-    return p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p;
-  }
+  // 手机号遮罩**不在前端**：服务端下发即为已遮值（`yiban.masking.mask_phone` 单源）。
+  // 前端曾有一份 `length >= 7 ? 前 3 + **** + 后 4 : 原样` 的副本——7 位输入会把每个
+  // 数字原样留下、只插一排星号，是"看起来遮了、实际零遮罩"的伪装形（census P0-3）。
+  // 展示面一律直接渲染服务端字段；删掉此助手后，下一处想加"自遮"的人无处可接。
   // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径，两份实现由
   // tests/test_web_mask_email_parity.py 真跑对拍钉住）：保留最多 3 个字符 + 域名；
   // 已含 * 或非邮箱（无 @ / @ 在首位）原样返回。完整邮箱只允许存在于 JS 内存态与
@@ -1680,7 +1677,6 @@
     el: el,
     $: $,
     escapeHtml: escapeHtml,
-    maskPhone: maskPhone,
     maskEmail: maskEmail,
     openModal: openModal,
     closeModal: closeModal,
@@ -1744,7 +1740,6 @@
   window.el = el;
   window.esc = escapeHtml;
   window.escapeHtml = escapeHtml;
-  window.maskPhone = maskPhone;
   window.maskEmail = maskEmail;
   window.openModal = openModal;
   window.closeModal = closeModal;

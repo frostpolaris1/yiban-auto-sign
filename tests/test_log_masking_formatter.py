@@ -24,9 +24,9 @@
 钉的就是这个落点）；
 它**不覆盖**：没挂 `MaskingFormatter` 的 handler（装配点为三入口各一处——CLI
 `_setup_cli_logging`、web `create_app`、容器调度器 `_setup_logging`，各自挂载由
-`tests/test_log_masking_entry_mounts.py` 钉住）、非手机号形态的标识（邮箱/身份证/IP 一概不动）、
-以及非"11 位连续数字"的号码写法——实测 `+8613800138000`、`138-0013-8000`、
-`138 0013 8000` 都原样穿过（号码规则要求两侧不是数字、且只认连续 11 位），
+`tests/test_log_masking_entry_mounts.py` 钉住）、以及非手机号形态的标识（邮箱/身份证/IP
+一概不动）。号码写法口径自 2026-10-06（census P0-3）起含 `+86`/`86` 前缀与空格/连字符
+分段，统一遮成 `138****8000`，见 `tests/test_masking_phone_contract.py`。
 盘上按天日志仍可能留裸号（signin 写盘 + 状态解析依赖），那条出口靠 HTTP 层的
 `_mask_log_phones` 再遮一遍，见 `tests/test_logs_export_masking.py`。
 坐标/时间戳/非号码数字串"不得被误伤"与"不得漏"同权重：误伤会让日志失去诊断价值。
