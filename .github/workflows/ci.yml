@@ -85,7 +85,9 @@ jobs:
         run: bash scripts/dev-verify.sh --ci
 
       - name: Gate ready
-        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster + path-env bare reads."'
+        # 这行只是收尾回执，但它枚举了子集内容 —— 子集变了这里也要变，否则"同一个事实
+        # 两个定义点"就从这里开始漂。2026-10-06（工单 2ula）加入 config-registry。
+        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster + path-env bare reads + config registry."'
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
   # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
