@@ -19,12 +19,20 @@
 账号复核 `account_still_signable` 取自 `yiban.store.accounts`。
 
 **通信**
-输入：账号列表、探针配置（`YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` 等，经 .env 传入）。
+输入：账号列表、探针配置（`YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` 等，经 .env 传入）、
+本进程执行体身份（`YIBAN_EXECUTOR_ID`，缺省 = 单执行体）。
 输出：`sign_events`（stage=probe）、管理员汇总（并入 A 线）与用户预警；退出码口径与
 `runner` 一致。
 调用谁：`client`（真实登录）、`security`（硬失败词元单一来源）、`alerts`、`state_io`、
-`cli_support`、`env_io`（once 自动关闭写 `.env`）、`db`。
+`cli_support`、`env_io`（once 自动关闭写 `.env`）、`db`、`egress`（按身份解析出口）、
+`token_bucket`（出口桶 / 全局 Λ / 每账号 gap 三道闸）。
 谁调用：`runner`（`--probe`）、web 注册/改密路径（`web/services/accounts_data.py`）。
+
+**限速（工单 ba-p04-08）**：探测是真实登录，与签到同一风控暴露面，故探针主循环与执行体
+走**同一套**三道闸（出口桶 → 全局 Λ → 每账号 gap），且登录量记进**同一个**持久化出口桶
+（`egress_state`，桶键 = 本进程执行体身份）。出口也按该身份解析——不再恒取 `ROLE_SINGLE`，
+那在清单/多执行体形态下既不是任何 worker 槽位的出口也不是兜底行的出口。等待用阻塞
+`sleep`，但**总等待有界**：到点停止本轮剩余账号并留痕，绝不放开限速。
 前端调用点：注册与改密表单（`web/static/js/components/account-form.js`、
 `web/static/js/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
 健康探测结果经 `/api/admin/sign-events` 进入仪表盘——验证口径变化会改变注册/改密的
@@ -36,11 +44,12 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 
 from yiban import client as yiban_client
 from yiban import clock, egress, security  # egress：与执行体同一套出口模型（M35）
-from yiban.engine import alerts, cli_support, state_io
+from yiban.engine import alerts, cli_support, schedule, state_io, token_bucket
 from yiban.infra import env_io
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
@@ -67,6 +76,13 @@ PROBE_ENABLE = env_io.parse_env_flag(os.environ.get("YIBAN_PROBE_ENABLE", ""),
 PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
 # 触发频率：正整数=每 N 天；once=下一次计划时间单次执行（执行后自动关闭）
 PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"
+
+#: 探针限速的**总等待预算**（秒）：主循环从开始等令牌起计时，越过即停止本轮剩余账号并
+#: 留痕。探针有 cadence（每晚/每若干天一轮），故"这轮少探一些"是安全的失败方向；反之
+#: 把限速放掉去探完全量，正是本项目红线要防的批量登录。缺省 1 小时，远大于目标规模
+#: （1~2 千账号）在出厂速率 1 attempt/s 下的用时（≤ 约 33 分钟），只在速率被压到很低而
+#: 账号数又很大时才触发。
+PROBE_EGRESS_MAX_SEC = 3600.0
 
 # 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）。
 # WAF/风控/挑战解析/非 JSON/假成功家族**不得手抄**：词元来自 `yiban.security.hard_fail_pattern()`
@@ -103,15 +119,65 @@ def _egress_env():
     return merged
 
 
+def _mono():
+    """单调浮点秒：令牌桶的时钟域（与执行体 `_mono` 同口径，不随墙钟跳变漂移）。"""
+    return time.monotonic()
+
+
+def _sleep(sec):
+    """阻塞等待：探针是同步路径（无事件循环），放行前的等待直接睡。
+
+    与执行体 `await asyncio.sleep` 同一语义——不自旋、不空烧 CPU。
+    """
+    time.sleep(sec)
+
+
+def _executor_identity():
+    """本进程的执行体身份串：与执行体同取法（`YIBAN_EXECUTOR_ID`，缺省单执行体）。
+
+    清单/多执行体形态下，监督进程按槽位给子进程注入 `YIBAN_EXECUTOR_ID`
+    （`worker-{i}@主机名`），探针子进程据此**与同一槽位的执行体**共用出口与出口桶键；
+    单执行体形态（裸机 cron、进程内 `--probe`）无此键，落到 `single@主机名`，与同机
+    单执行体的键一致。
+    """
+    return (os.environ.get("YIBAN_EXECUTOR_ID", "").strip() or egress.single_owner())
+
+
+def _resolve_egress(identity, env=None):
+    """按执行体身份解析出口：身份 →（角色，槽位）→ `egress.resolve`（与执行体同一套）。
+
+    角色判据复用 `egress.parse_owner`（写入与解析同一份口径），出口取值复用
+    `egress.resolve`。**不再恒取 `ROLE_SINGLE`**——那在清单/多执行体形态下既不是任何
+    worker 槽位的出口也不是兜底行的出口，常等于宿主直连（工单 ba-p04-08）：探针因此跑在
+    限速模型与 `egress_state` 记账之外的另一条出口上。
+    """
+    info = egress.parse_owner(identity)
+    return egress.resolve(info["role"], info["index"] or 0, env=env)
+
+
+def _probe_channels():
+    """探针出口桶的突发额度通道数：与执行体同一算式（`schedule.channel_count`）。
+
+    同一出口桶只有一行 `egress_state`（含 `burst`），两侧必须用同一算式算 `burst`，否则
+    后落库的一方会把对方的突发额度顶掉。`limiter_from_env` 的缺省通道数只对出厂速率成立，
+    故这里显式按执行体口径取 `M = min(16, ceil(rate × avg × 2))`。
+    """
+    cfg = schedule.planner_config()
+    return schedule.channel_count(cfg["bucket_rate"], cfg["avg_attempt_sec"])
+
+
 def _apply_egress_proxy(client):
-    """把 `YIBAN_PROXY` 解析出的出口套到客户端 session 上（读侧出口管控，M35）。
+    """把本进程身份对应的出口套到客户端 session 上（读侧出口管控，M35）。
 
     **为什么这里要再套一次**：`YibanClient.__init__` 只读 `os.environ["YIBAN_PROXY"]`。
     注册/添加账号的在线校验跑在 **web 进程**里，而该进程的环境通常没有这个键（出口是
     给执行体子进程注入的），于是这一次"服务器代用户向易班发起真实登录"就**直连出网**
     ——恰恰是风控暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径，却绕过了管控。
-    经 `egress.resolve(ROLE_SINGLE, ...)` 走与执行体**同一套**出口模型（`ROLE_SINGLE`
-    即"读 `YIBAN_PROXY`"那一档），不另造第二套解析。
+
+    **出口怎么取**：按**本进程执行体身份**解析（`_resolve_egress`）。web 进程无
+    `YIBAN_EXECUTOR_ID` ⇒ 单执行体角色 ⇒ 读 `YIBAN_PROXY`（与改造前逐字一致）；探针在
+    清单/多执行体形态下带着槽位身份 ⇒ 取**该槽位自己的出口**（不再恒取 `ROLE_SINGLE`）。
+    两条路径共用同一份解析，不另造第二套。
 
     解析为空（未配代理）时**不动** session：此时客户端构造期也没配上，保持直连的既有
     行为，不把"没配"变成"显式清空"。
@@ -119,7 +185,7 @@ def _apply_egress_proxy(client):
     日志只记 `egress.describe()`（`scheme://host[:port]`，去 userinfo），不落凭据。
     """
     try:
-        proxy = egress.resolve(egress.ROLE_SINGLE, env=_egress_env())
+        proxy = _resolve_egress(_executor_identity(), env=_egress_env())
     except Exception as e:  # 出口解析不该把注册/改密的主流程带崩
         logger.debug("解析账号校验出口失败（按直连处理）: %s", e)
         return ""
@@ -137,8 +203,8 @@ def verify_account(account):
     供注册时预处理验证（web 端）与探针模式（--probe）复用。
     返回 (ok, message)：ok=False 表示存在无法自愈的问题；message 已脱敏。
 
-    出口：登录前先按 `_apply_egress_proxy` 套上 `YIBAN_PROXY`——本函数是**唯一**一条
-    在 web 进程里代用户向易班发起的真实登录（探针轮则由执行体注入的出口兜着），
+    出口：登录前先按 `_apply_egress_proxy` 套上本进程身份对应的出口——本函数是**唯一**
+    一条在 web 进程里代用户向易班发起的真实登录（探针轮则由执行体注入的出口兜着），
     两处必须同源，见该函数说明（M35）。
     """
     phone = account.phone
@@ -258,6 +324,40 @@ def _env_update_probe(auto_disable=False):
         )
 
 
+def _sleep_until_admit(wait, deadline):
+    """睡 `min(wait, 剩余预算)`；剩余预算 <= 0 即回报"预算用尽"（True）。
+
+    把单次等待夹到 deadline 之内：GCRA 的 `retry_after` 本就小，但夹一刀让**总时长**在
+    任何配置下都有界，不让某一次等待把整轮探针拖成长尾。
+    """
+    budget = deadline - _mono()
+    if budget <= 0:
+        return True
+    _sleep(min(max(0.0, float(wait)), budget))
+    return False
+
+
+def _wait_for_egress(limiter, global_limiter, gap_gate, egress_key, phone, deadline):
+    """按执行体同一套三道闸取一次额度：出口桶 → 全局 Λ → 每账号 gap。
+
+    与执行体 `_throttle` **同序、同判据**（便宜且易命中的排最前；三件全过才允许发起
+    尝试）。差异两处：本函数是同步路径（`_sleep` 阻塞），且**总等待有 `deadline`**——
+    越过即返回 False，调用方停止本轮剩余账号（探针有 cadence，宁可这轮少探，绝不放掉
+    限速）。返回 True 表示三道闸全过。
+    """
+    while not limiter.acquire(egress_key, _mono()):
+        if _sleep_until_admit(limiter.bucket(egress_key).retry_after(_mono()), deadline):
+            return False
+    while not global_limiter.acquire(_mono()):
+        # 能进这条说明 Λ 非 None（None 时 acquire 恒放行）
+        if _sleep_until_admit(1.0 / global_limiter.lam, deadline):
+            return False
+    while not gap_gate.allow(phone, _mono()):
+        if _sleep_until_admit(gap_gate.gap_sec, deadline):
+            return False
+    return True
+
+
 def run_probe(accounts):
     """探针模式主流程：对全部账号做只读健康检查。
 
@@ -267,11 +367,16 @@ def run_probe(accounts):
       时间戳为当前时刻，追加在最近签到日志之后。
     - 无法自愈问题：管理员合并预警邮件（复用 A 线 _collect/_flush）+ 对应用户个人
       预警（复用 B 线 send_user_fail_mail，尊重用户开关）。
+    - 每个账号探测前先过出口桶 / 全局 Λ / 每账号 gap 三道闸（与执行体同一套），桶键 =
+      本进程执行体身份 ⇒ 登录量记进与执行体**同一个**持久化出口桶；等待用阻塞 sleep，
+      但**总等待有 `PROBE_EGRESS_MAX_SEC` 预算**，到点停止本轮剩余账号并留痕（探针有
+      cadence，少探一轮是安全方向；放开限速跑完全量是红线）。
     - 执行后更新 last_run；once 模式自动关闭探针（.env 写锁）。
 
     返回**未通过检查的账号数**（硬失败 + 网络类软失败；真跑且全绿为 0）或 `None`
-    （跳过）。退出码由调用方按它分族——外部监控原来看不出"探针跳过 / 撞锁 / 真跑
-    失败"的区别（一律 0），这是把三种结局分开的可判据。
+    （跳过）。因限速预算未探的账号**不计入**返回数——它们既没通过也没失败，是"这轮没
+    探到"，会由下一轮 cadence 顺延。退出码由调用方按它分族——外部监控原来看不出
+    "探针跳过 / 撞锁 / 真跑失败"的区别（一律 0），这是把三种结局分开的可判据。
     """
     if not PROBE_ENABLE:
         # 探针关闭：完全静默退出（不产生任何日志、不落库、不写状态）
@@ -296,7 +401,31 @@ def run_probe(accounts):
     hard_fail = []  # [(Account, message)]
     healthy_n = 0
     soft_fail_n = 0
+    unprobed_n = 0
+    # ---- 出口限速（工单 ba-p04-08）----
+    # 探测是真实登录，与签到同一风控暴露面。三道闸与出口都按**本进程执行体身份**取，
+    # 桶键即该身份（`egress_state` 里那一行）——探针登录量因此记进与执行体**同一个**
+    # 持久化出口桶，而不是另造第二套计数（跨进程共享限速的根因在此）。出口本身由
+    # `verify_account` 内的 `_apply_egress_proxy` 按同一身份解析，两处同源。
+    identity = _executor_identity()
+    limiter = token_bucket.limiter_from_env(channels=_probe_channels())
+    limiter.restore_from_store(identity, now=_mono())  # 装回该出口的速率/TAT：重启后不"重启即全速"
+    global_limiter = token_bucket.GlobalLimiter(os.environ.get("YIBAN_GLOBAL_RATE", ""))
+    gap_gate = token_bucket.gap_gate_from_env()
+    deadline = _mono() + PROBE_EGRESS_MAX_SEC
     for acc in accounts:
+        if not _wait_for_egress(limiter, global_limiter, gap_gate, identity, acc.phone,
+                                deadline):
+            # 到点停止本轮剩余账号：探针有 cadence，少探一轮是安全的；放开限速跑完全量
+            # 才是红线。这里必须留痕，否则"探针没跑完"会被误读成"全员健康"。
+            unprobed_n = len(accounts) - (healthy_n + len(hard_fail) + soft_fail_n)
+            logger.warning(
+                "探针限速等待已达本轮预算（%.0fs），停止本轮剩余 %d 个账号（未探完的账号"
+                "按当日 cadence 顺延）；已探：健康 %d、硬失败 %d、软失败 %d",
+                PROBE_EGRESS_MAX_SEC, unprobed_n, healthy_n, len(hard_fail), soft_fail_n,
+            )
+            break
+        gap_gate.commit(acc.phone, _mono())  # 走到这即"真要发请求"：gap 推进点与尝试一一对应
         ok, message = verify_account(acc)
         hard = (not ok) and bool(PROBE_HARD_FAIL_RE.search(message or ""))
         # 落库：stage=probe（复用 db.add_sign_event，内部 _conn_lock 并发保护）。
@@ -329,6 +458,10 @@ def run_probe(accounts):
                 "探针：账号 %s 网络类失败（不计预警）：%s",
                 _mask_phone(acc.phone), _sanitize_text(message),
             )
+    # 桶状态落库：探针消费掉的额度写回**同一行** `egress_state`，执行体下一轮（或本轮
+    # 重启）`restore_from_store` 即看见——这是"跨进程同一份限速"的落点。写失败由
+    # `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
+    limiter.persist(identity)
     # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
     if fuse_cleared:
         with contextlib.suppress(Exception):
@@ -351,6 +484,7 @@ def run_probe(accounts):
         _env_update_probe(auto_disable=True)
         logger.info("==== 探针模式（单次）执行完成，已自动关闭探针 ====")
     logger.info(
-        f"==== 探针模式完成：健康 {healthy_n}，网络类失败 {soft_fail_n}，预警 {len(hard_fail)} ===="
+        f"==== 探针模式完成：健康 {healthy_n}，网络类失败 {soft_fail_n}，"
+        f"预警 {len(hard_fail)}，因限速预算未探 {unprobed_n} ===="
     )
     return len(hard_fail) + soft_fail_n
