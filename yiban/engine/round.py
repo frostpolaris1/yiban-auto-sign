@@ -44,7 +44,7 @@ import logging
 import os
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from yiban import clock, egress, window
 from yiban import status as yiban_status
@@ -479,15 +479,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 if not success:  # success 时 _update_cred_state 已清除；窗口跳过需显式清除
                     cred_state.pop(phone, None)
                 logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
-            elif cred.get("paused_since") and attempts_mod._probe_due(cred, today):
-                # 试探失败：仅凭据类失败顺延试探日——网络类瞬时失败可自愈，
-                # 顺延会把状态放大成周级停签，故保持 probe_date 不变、次日再试
-                if attempts_mod._is_credential_failure(message):
-                    next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=attempts_mod.PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
-                    cred_state[phone]["probe_date"] = next_probe
-                    logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
-                else:
-                    logger.warning(f"[{phone}] ⏸️ 半开试探遇网络类失败，保持暂停（试探日不变，次日再试）")
+            # 试探失败的顺延不在本层做：`_update_cred_state` 是 probe_date 的唯一写入点
+            # （外层各写一份正是生产执行体漏掉顺延的根因形状）
             if success:
                 results[phone] = (True, message, skip, status)
                 logger.info(f"[{phone}] {STATUS_SYMBOL[status]} {message}")
@@ -618,14 +611,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if not success:  # success 时 _update_cred_state 已清除；窗口跳过需显式清除
                 cred_state.pop(phone, None)
             logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
-        elif cred.get("paused_since") and attempts_mod._probe_due(cred, today):
-            # 试探失败：仅凭据类失败才顺延试探日（理由同 schedule 分支）
-            if attempts_mod._is_credential_failure(message):
-                next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=attempts_mod.PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
-                cred_state[phone]["probe_date"] = next_probe
-                logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
-            else:
-                logger.warning(f"[{phone}] ⏸️ 半开试探遇网络类失败，保持暂停（试探日不变，次日再试）")
+        # 试探失败的顺延同 schedule 分支：唯一写入点是 `_update_cred_state`
 
         if success:
             results[phone] = (True, message, skip, status)
