@@ -2042,7 +2042,7 @@ MOVED_SECURITY = (
     "SCRYPT_METHOD",
     "ADMIN_SID_ENV_KEY",
     "LOGIN_LOCK_SECONDS",
-    "TRUSTED_PROXIES",
+    "_is_loopback_addr",
     "_IP_STORE_LIMIT",
     "_IP_STORE_MAX_AGE",
     "VERIFY_MAX",
@@ -2381,17 +2381,21 @@ class WebSecuritySplitContractTest(unittest.TestCase):
             self.assertEqual(len(flask.session), 0, "超限必须清空会话（视为未登录）")
 
     def test_client_ip_trusted_proxy_and_fallback(self):
-        proxies = self.webapp.TRUSTED_PROXIES
+        """回环首跳采信 XFF；非回环首跳丢弃；无 XFF 时回落 remote_addr。"""
         app = self.flask_app
-        with app.test_request_context("/", environ_base={"REMOTE_ADDR": proxies[0]},
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
                                       headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9")
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"},
+                                      headers={"X-Forwarded-For": "203.0.113.9"}):
+            self.assertEqual(self.webapp._client_ip(), "203.0.113.9",
+                             "IPv6 回环首跳同样是可信第一跳")
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "203.0.113.9"},
                                       headers={"X-Forwarded-For": "198.51.100.7"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9",
                              "非可信首跳的 XFF 必须被忽略（不可伪造）")
-        with app.test_request_context("/", environ_base={"REMOTE_ADDR": proxies[1]}):
-            self.assertEqual(self.webapp._client_ip(), proxies[1])
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"}):
+            self.assertEqual(self.webapp._client_ip(), "::1")
 
     def test_atomic_write_roundtrip_and_reparse(self):
         target = os.path.join(self.tmp, "aw-security.txt")

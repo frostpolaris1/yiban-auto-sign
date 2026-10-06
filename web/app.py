@@ -126,6 +126,7 @@ from web.security import (  # noqa: E402
     _REPLACE_RETRY_ATTEMPTS,  # noqa: F401
     _REPLACE_RETRY_BASE_SEC,  # noqa: F401
     ADMIN_SID_ENV_KEY,  # noqa: F401
+    FORWARDED_TRUST_ENV_KEY,
     LOGIN_LOCK_SECONDS,  # noqa: F401
     PW_CONFIRM_COOLDOWN_DEFAULT,  # noqa: F401
     PW_CONFIRM_TTL_DEFAULT,  # noqa: F401
@@ -137,7 +138,6 @@ from web.security import (  # noqa: E402
     PW_GATE_RISK,  # noqa: F401
     PW_GATE_TIERS,  # noqa: F401
     SCRYPT_METHOD,  # noqa: F401
-    TRUSTED_PROXIES,
     VERIFY_FAIL_AUTH_KEYWORDS,  # noqa: F401
     VERIFY_FAIL_COOLDOWN,  # noqa: F401
     VERIFY_FAIL_MAX,  # noqa: F401
@@ -149,10 +149,13 @@ from web.security import (  # noqa: E402
     _bump_window_count,
     _client_ip,
     _constant_time_dummy,
+    _forwarded_trust_enabled,
     _ip_store_trim,
+    _is_loopback_addr,
     _new_admin_sid,  # noqa: F401
     _record_verify_failure,
     _replace_with_retry,  # noqa: F401
+    _resolve_forwarded_trust,
     _verify_attempt_allowed,
     _verify_fail_cooldown_remaining,  # noqa: F401
 )
@@ -487,8 +490,8 @@ def _write_measure_state(path, payload):
 # web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、
 # 注册等路径经 m.* 取用；本模块的 verify_admin 转发包装在服务层内部按同一函数取用）。
 
-# 可信第一跳代理清单（`TRUSTED_PROXIES`）与真实客户端出口 `_client_ip` 实现见
-# web/security.py，此处以导入区再导出保持 m.* 可达。
+# 回环谓词（`_is_loopback_addr`）、转发头信任开关（`_forwarded_trust_enabled`）与真实
+# 客户端出口（`_client_ip`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达。
 
 
 # 防错位校验（`_stale_idx_guard`）实现见 web/services/accounts_data.py，此处以导入区
@@ -1575,12 +1578,6 @@ def _notify_capacity_once(kind, limit, label):
 WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 
 
-def _is_loopback_host(host):
-    """判断监听地址是否为回环（用于 H6 非回环 Secure Cookie 强警告）。"""
-    h = str(host or "").strip().lower()
-    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
-
-
 # .env 歧义键启动检测：每进程只报一次（同 _notify_capacity_once 的节流思路）。
 # 闩留在本模块（测试按 `webapp._env_collision_reported = False` 复位它来逐例复现启动）；
 # 检测、ERROR 日志与告警正文的实现见 web/services/env_io.py，告警出口现取本模块的
@@ -1801,6 +1798,10 @@ def create_app(host=None):
         cookie_secure_raw = read_env(ENV_FILE).get("YIBAN_COOKIE_SECURE", "")
     cookie_secure = str(cookie_secure_raw).strip().lower() in ("1", "true", "yes", "on")
     app.config["SESSION_COOKIE_SECURE"] = cookie_secure
+    # 转发头信任开关的唯一解析处（读点见 web/security.py 的 _forwarded_trust_enabled）。
+    # 解析本身也在 web/security.py：键名、字面量表与非法值告警只有那一份。
+    _fwd_trust, _fwd_trust_explicit = _resolve_forwarded_trust(ENV_FILE, read_env)
+    app.config[FORWARDED_TRUST_ENV_KEY] = _fwd_trust
     # 子路径部署收窄会话 Cookie 作用域——读取 .env 的
     # YIBAN_BASE_PATH（显式配置形态），值非空且非 "/" 时把 SESSION_COOKIE_PATH
     # 设为该前缀（统一补尾斜杠），登录 Cookie 不再下发到同域其他路径下的应用。
@@ -1817,8 +1818,9 @@ def create_app(host=None):
     # 两条判据都不能省：
     # 1) 只有**键在且非空**才算"显式配置"——把"未配置"与"显式关"混成一个 False 会让
     #    默认部署永不自动升级（HTTPS 反代下 Cookie 一直不带 Secure）；
-    # 2) 转发头只在**第一跳可信**（remote_addr 落在 TRUSTED_PROXIES）时才采信。判据与
-    #    `_client_ip` 同源：直连形态下客户端能自己发 `X-Forwarded-Proto: https`，粘性
+    # 2) 转发头只在**第一跳可信**（remote_addr 是回环，见 `_is_loopback_addr`）且转发头
+    #    信任开关为开时才采信。判据与 `_client_ip` 同源：直连形态下客户端能自己发
+    #    `X-Forwarded-Proto: https`，粘性
     #    采信会把这个进程的会话 Cookie 永久粘成 Secure，站点退回 HTTP 后浏览器不再回传
     #    Cookie，表现为"登录不上"。
     #
@@ -1832,8 +1834,9 @@ def create_app(host=None):
         """`X-Forwarded-Proto` 是否声称本次请求走 https（仅可信第一跳采信）。
 
         取首段（逗号分隔链里最靠近客户端的那一跳），与 `_client_ip` 读 XFF 的口径一致。
+        首跳判据与 XFF 侧同源：同一个回环谓词 + 同一个信任开关。
         """
-        if (request.remote_addr or "") not in TRUSTED_PROXIES:
+        if not (_is_loopback_addr(request.remote_addr) and _forwarded_trust_enabled()):
             return False
         raw = request.headers.get("X-Forwarded-Proto", "")
         return bool(raw) and raw.split(",")[0].strip().lower() == "https"
@@ -1848,6 +1851,27 @@ def create_app(host=None):
         if want and not _secure_auto_notice["logged"]:
             _secure_auto_notice["logged"] = True
             logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
+
+    # 歧义形态告警：本版缺省仍是"信任转发头"，而"来源是回环 + 带了 XFF"这一形态
+    # 分不出"反代（该显式开）"与"直连 / ssh -L 隧道（该显式关）"。开关未显式配置时，
+    # 首次满足条件即告警一次，指引运维表态（迁移期用告警换默认翻转）。
+    _forwarded_trust_notice = {"logged": False}
+
+    @app.before_request
+    def _report_ambiguous_forwarded_trust():
+        if _fwd_trust_explicit or _forwarded_trust_notice["logged"]:
+            return
+        if request.headers.get("X-Forwarded-For", "") and \
+                _is_loopback_addr(request.remote_addr):
+            _forwarded_trust_notice["logged"] = True
+            logger.warning(
+                "%s 未设置：本次请求来自回环且带了 X-Forwarded-For，应用按缺省「信任」"
+                "转发头执行。反向代理后请显式设 %s=1，并确认代理以覆盖式写入该头；"
+                "直连或 ssh -L 隧道请显式设 %s=0（否则客户端可自报该头伪造 IP 桶）。",
+                FORWARDED_TRUST_ENV_KEY, FORWARDED_TRUST_ENV_KEY,
+                FORWARDED_TRUST_ENV_KEY,
+            )
+
     @app.before_request
     def _bind_audit_scope():
         """为每个请求绑定审计作用域 id，使审计行能回答"这是哪个请求做的"。
@@ -1865,7 +1889,7 @@ def create_app(host=None):
     def _clear_audit_scope(_exc=None):
         db.set_request_scope(None)
 
-    if host is not None and not _is_loopback_host(host) and not cookie_secure:
+    if host is not None and not _is_loopback_addr(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
             "YIBAN_COOKIE_SECURE=1（.env 或环境变量），否则登录 Cookie 可能在 HTTPS 下被浏览器拒绝",
