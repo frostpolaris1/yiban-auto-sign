@@ -919,8 +919,8 @@ def site_image():
 
 
 # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
-# 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）
-# 存在时映射为 front=back=旧值，保证升级前配置行为不变。范围 0~300 秒。
+# 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
+# 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
 def edge_config():
     """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（实现见 web/render.py）。"""
     return _render.edge_config(read_env(ENV_FILE))
