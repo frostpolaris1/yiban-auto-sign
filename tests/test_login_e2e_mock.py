@@ -153,14 +153,20 @@ class _FakeYiban:
         "按发生顺序"由串行假服务端保证：上一请求落盘后才会 accept 下一请求，
         到达序=落盘序（线程化服务则只保证完成序，握手轨迹会乱序）。
 
-        ⚠ 容错：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
+        ⚠ 容错一：假服务端**在写完响应之后**才落盘。故首个业务请求落盘前，
+        日志文件还不存在。此时"文件不存在"与"还没有请求"同义，按 0 条返回。
+        不得改成"断言文件必在"——那会让紧随请求之后的读者随机红（工单 kgwn）。
+        ⚠ 容错二：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
         并发下可能读到只写了一半的末行 → `json.loads` 抛 JSONDecodeError。
         故只把**无法解析的末行**当作"尚未写完"跳过；中间出现坏行仍按错误抛出，
         免得真把"日志写坏了"当成正常。
         """
+        try:
+            with open(self.log_path, encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+        except FileNotFoundError:
+            return []  # 尚无业务请求：文件还没创建 = 0 条
         rows = []
-        with open(self.log_path, encoding="utf-8") as f:
-            lines = [ln for ln in f if ln.strip()]
         for i, line in enumerate(lines):
             try:
                 rows.append(json.loads(line))
@@ -317,6 +323,45 @@ class InjectedFailureE2ETest(_E2EBase):
         self.assertFalse(skip)
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("mock injected signIn failure", message)
+
+
+class MockLogAbsentIsEmptyTest(unittest.TestCase):
+    """竞态守卫（工单 kgwn）：假服务端**在响应之后**才落盘，读者会撞上"文件尚未创建"。
+
+    本用例钉住 CI 偶发红的根因。`KillYiBanE2ETest.test_waf_on_usersure_is_loud`
+    的 `wait_paths(1)` 在首个业务请求落盘前就 `open()`，故抛 `FileNotFoundError`。
+    本用例的复现手法是确定性的：把 `MockState.record` 换成被闸门挡住的替身，
+    使"客户端已拿到响应、日志文件尚未创建"必然出现，不靠反复跑碰运气。
+
+    判据两条。第一条：文件不存在 == 还没有请求 == 0 条。第二条：闸门一开，
+    轮询必须等到那条记录（deadline 语义不变）。
+    """
+
+    def test_reader_survives_log_written_after_response(self):
+        fake = _FakeYiban()
+        self.addCleanup(fake.close)
+        real_record = fake.state.record
+        gate = threading.Event()
+
+        def gated_record(*args, **kwargs):
+            gate.wait(10.0)  # 挡住落盘：把竞态窗口拉成一个确定状态
+            return real_record(*args, **kwargs)
+
+        with mock.patch.object(fake.state, "record", gated_record):
+            r = requests.get(f"http://127.0.0.1:{fake.port}/code/html",
+                             headers={"Host": "oauth.yiban.cn"}, timeout=5)
+            self.assertEqual(r.status_code, 200)
+            self.assertFalse(os.path.exists(fake.log_path),
+                             "前置：闸门未开，此刻日志文件必然还没创建")
+            self.assertEqual(fake.requests(), [], "文件还没创建 = 0 条，不是错误")
+            gate.set()
+            self.assertEqual(fake.wait_paths(1), ["/code/html"],
+                             "闸门一开，轮询必须等到那条记录")
+            t0 = time.monotonic()
+            self.assertEqual(fake.wait_paths(2), ["/code/html"],
+                             "等不到第 2 条时按 deadline 返回当前内容，不抛异常")
+            self.assertLess(time.monotonic() - t0, 8.0,
+                            "等不到也必须按 deadline 返回：不得放宽等待上限掩盖真实缺失")
 
 
 if __name__ == "__main__":
