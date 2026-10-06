@@ -494,12 +494,14 @@ def main(argv=None):
             # 与超载分支同口径：容量问题并入任务结束汇总邮件，不即时推送——
             # 它是"事后按窗口/间隔/账号数调参"的慢信号，推送日额度要留给现在就得
             # 知道的故障。
+            # 级别却是高级别：这条意味着"本轮不会发起任何请求"，当天可能全量漏签，
+            # 封顶时不得被逐账号明细挤出。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("状态", f"起跑时已过有效签到窗口（窗口至 {_win_end}）"),
                 ("影响", f"{active_n} 个账号本轮不会执行"),
                 ("请核查", "触发时刻（cron / 容器调度）与签到窗口设置"
                            "（YIBAN_SIGN_START / YIBAN_SIGN_END）"),
-            ], push=False)
+            ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
         elif active_n > _cap:
             logger.warning(
                 "容量预检: %d 个账号 > 剩余有效窗口 %d 秒告警阈值 %d 个"
@@ -509,13 +511,15 @@ def main(argv=None):
             )
             # 超载必须通知管理员，不能只留在日志里。文案只有一份（原先邮件与推送
             # 各写一遍同样的字面量，改一处必漏另一处）。
+            # 高级别：与上一分支同理，一轮至多一条，且它意味着"窗口跑不完这些账号"，
+            # 当天漏多少由它先说；不得被轮中累积的逐账号明细挤出。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("当前账号", f"{active_n} 个"),
                 ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），告警阈值 {_cap} 个"),
                 ("单账号耗时", f"{_avg_warn}s + 账号间隔 {gap_max}s，"
                                "阈值已按每账号 3 次尝试预留重试储备"),
                 ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
-            ], push=False)
+            ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
         for acc in accounts:
             t = schedule.get(acc.phone)
