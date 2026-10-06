@@ -152,7 +152,8 @@ def api_logs():
         candidate = m.db.sign_events_recent_date("sign")
         if candidate and candidate != date:
             recent_sign_date = candidate
-    # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
+    # 响应层脱敏：日志行内手机号不落完整号（唯一出口 `_mask_log_phones`，覆盖裸号 /
+    # `+86` 前缀 / 分段形态）。前端不再自遮，直接渲染本响应值。
     # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
     # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
     # 符号污染。
