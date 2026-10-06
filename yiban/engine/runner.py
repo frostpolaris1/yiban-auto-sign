@@ -63,7 +63,7 @@ from yiban.engine import (
 from yiban.engine import schedule as schedule_mod
 from yiban.infra import account_crypto, env_io
 from yiban.masking import mask_phone as _mask_phone
-from yiban.store import db
+from yiban.store import db, run_events
 
 logger = logging.getLogger("yiban")
 
@@ -109,17 +109,39 @@ _GATE_SKIP_MESSAGES = {
 }
 
 
+def _report_run(node, phone="", message=""):
+    """编排层进度打点（唯一入口）：与执行体共用 `yiban.store.run_events` 的 reporter。
+
+    身份取 `YIBAN_EXECUTOR_ID`（监督进程注入的子执行体身份）；单执行体与监督进程
+    自身没有该变量，回退到 egress 的**单执行体稳定名**——与 `run_executor_v3` 在
+    同一条路径上算出的身份同源，故编排层的收尾行与执行体的节点行归到同一条线上。
+    业务日取当前业务钟。写入失败在 `run_events.report` 内被隔离（只告警），
+    故此处不看返回值。
+    """
+    run_events.report(
+        node,
+        day=clock.now().strftime("%Y-%m-%d"),
+        executor=(os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
+                  or egress.single_owner()),
+        phone=phone, message=message)
+
+
 def _day_off_skip():
     """周末（周六/周日未开）或一键暂停命中时打日志并返回 2（SKIPPED 语义），否则 None。
 
     门本身只有 `schedule.day_off` 一个实现，本函数只负责把「当前时刻 + 导入期开关
     快照」喂给它——多执行体派发前的提前拦截与单执行体路径的门必须给出**同一个判定、
     同一句措辞**，否则两条路径对"这一轮为什么没跑"的解释会漂移。
+    一键暂停额外落一行 `pause` 进度事件：这是**运行级**暂停（整个调度被停），
+    与执行体侧的账号级暂停（账密熔断 / 用户自暂停）不同层，但同属「暂停」节点。
+    周末门不是暂停（是"今天不排班"），不落暂停行。
     """
     gate = schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN)
     if not gate:
         return None
     logger.info(_GATE_SKIP_MESSAGES[gate])
+    if gate == schedule_mod.DAY_OFF_PAUSED:
+        _report_run(run_events.NODE_PAUSE, message="签到已暂停（一键暂停生效）")
     return 2  # run.sh 据此写 SKIPPED 状态，次日正常执行
 
 
@@ -629,6 +651,12 @@ def main(argv=None):
     if other_n:
         summary += f"，⇄ {other_n} 由其他执行体负责"
     logger.info(f"==== 签到汇总（v{RELEASE_VERSION}）：{summary} ====")
+    # 进度打点「收尾」：汇总处就是本轮成败成定局的那一刻（结果集已收齐、退出码已定）。
+    # message 前缀（`轮次收尾：`）是本层与"执行体会话收尾"（`run_executor_v3` 的正常
+    # 返回路径）的判别面：单执行体路径下两者同 (业务日、执行体、节点)，靠前缀分层
+    # ——见 `run_events` 模块说明。多执行体形态下每个子执行体各落自己的会话收尾；
+    # 监督进程不做跨子进程的聚合收尾，那是 `workers` 层的职责，不在本单范围。
+    _report_run(run_events.NODE_FINALIZE, message=f"轮次收尾：{summary}")
 
     # 窗口外未了结专项告警。
     # is_second_run：run.sh 补签轮导出的 YIBAN_SECOND_RUN=1 优先（首签子进程被 timeout
