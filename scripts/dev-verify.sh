@@ -14,8 +14,8 @@
 #   # CI（ubuntu runner 上就地跑关键子集，不建副本）
 #   bash scripts/dev-verify.sh --ci
 #   # 提交前自查（最快；两档）
-#   bash scripts/dev-verify.sh --fast              # 安全档：全量减已知长尾（约 1 分钟）
-#   bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻面（数秒，覆盖面不全）
+#   bash scripts/dev-verify.sh --fast              # 安全档：全量减已知长尾（实测 57s）
+#   bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻面（实测 9~11s，覆盖面不全）
 #                                                  # 空覆盖（无改动/无命中）退出码 3，不是 0
 #
 # 选项：
@@ -23,10 +23,11 @@
 #                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
 #                    就地跑：不建副本、不归一化、不落日志
 #   --fast           **提交前自查·安全档**：跑全量，但剔除已实测的 5 条长尾
-#                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 153.6s → 57.9s，
+#                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 149s → 57s，
 #                    覆盖面无选择损失。**仍非门禁**：推送前跑全量或确认 CI 绿。
-#   --fast-scoped    **提交前自查·范围档**：只跑"改动相邻面"（实测约 4 秒）。
-#                    覆盖面明确不全，输出会声明"未被选中的用例没有跑"。
+#   --fast-scoped    **提交前自查·范围档**：只跑"改动相邻面"（目标为入口自检时实测 9~11s，
+#                    目标集越大越久）。覆盖面明确不全，输出会声明"未被选中的用例没有跑"；
+#                    空覆盖时退出码 3（见下）。
 #   --base REF       --fast / --fast-scoped 的比较基准（默认 HEAD = 只算工作树与暂存区改动；
 #                    传 origin/develop 则算整条分支的改动）
 #   --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
@@ -65,7 +66,7 @@
 # fast 模式口径（2026-10-07 立，依据实测）：
 #   8. **两档，都是为了提交前自查，都不替代门禁**：
 #      · `--fast`（安全档，默认推荐）：覆盖＝**全量 − 已知长尾**，无选择面损失。实测 149s → 57s。
-#      · `--fast-scoped`（范围档）：只跑改动相邻面，数秒级，但**未选中的用例没跑**。
+#      · `--fast-scoped`（范围档）：只跑改动相邻面（实测 9~11s），但**未选中的用例没跑**。
 #      推送前必须跑全量（默认模式）或确认 CI 绿；fast 的绿不得当成门禁的绿。
 #      为什么要有它：全量实测 4325 用例（passed 4319 + skipped 6）约 149s，
 #      单次改动后反复跑全量 + 报错重修极费时间。
@@ -634,7 +635,7 @@ fi
 # 同一秒内改完且尺寸不变的改动会被判成"没变"而跳过，副本陈旧后跑出来的是旧代码，
 # 可能报绿。加了 -c 就按内容校验，rsync 非 0 退出即 die，故不变式由 rsync 承重。
 # 代价实测（本树 rsync 面内约 750 个文件，2026-10-07）：副本已同步时 rsync -a 约 0.65s，
-# 加 -c 约 1.4s，多付约 0.7s；--fast-scoped 整跑墙钟 9s（含选中用例自身的执行）。
+# 加 -c 约 1.4s，多付约 0.7s；--fast-scoped 整跑墙钟 9~11s（含选中用例自身的执行）。
 rsync -a -c --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
     --exclude='.ruff_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
 echo "DEV-VERIFY copy: $DEST"
@@ -654,7 +655,7 @@ DESELECT=()
 if [ "$MODE" = fast ]; then
     if [ "$FAST_SCOPED" = "1" ]; then
         # 范围档：只跑"改动相邻面"。**覆盖面明确不全**，故声明必须响亮。
-        # 墙钟分两档：改动集为空（只跑入口自检）约数秒；有真实目标时更大（见文档实测表）。
+        # 墙钟随目标集大小变：目标为入口自检时实测 9~11s，目标集越大越久。
         FAST_CHANGED="$WORKDIR/fast-changed-$$.txt"
         FAST_COVERAGE="$WORKDIR/fast-coverage-$$.flag"
         fast_collect_changed "$BASE" "$FAST_CHANGED"
@@ -665,7 +666,7 @@ if [ "$MODE" = fast ]; then
         echo "DEV-VERIFY(fast-scoped): ⚠ 只覆盖改动相邻面 —— 未被选中的用例**没有跑**，它们照样可能红"
     else
         # 安全档（默认）：**全量 − 已知长尾**。零启发式、无漏选风险，只是剔掉 5 条与
-        # "提交前自查"无关的长尾（实测 153.6s → 57.9s）。目标保持默认 tests/。
+        # "提交前自查"无关的长尾（实测 149s → 57s）。目标保持默认 tests/。
         echo "DEV-VERIFY(fast): 覆盖＝全量（tests/）减去已知长尾，无选择面丢失"
     fi
     if [ "$FAST_KEEP_SLOW" = "1" ]; then
