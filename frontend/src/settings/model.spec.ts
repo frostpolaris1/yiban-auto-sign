@@ -83,22 +83,42 @@ describe("签到调度口径", () => {
     const form = {
       order: "random", dist: "uniform", edgeFront: 1, edgeBack: 1, gap: 10,
       pref: false, sat: false, sun: false, windowStart: "06:30", windowEnd: "07:50",
-      muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
+      muLo: 40, muHi: 60, sgLo: 15, sgHi: 25,
     };
     const body = scheduleBody(snap, form) as Record<string, unknown>;
     expect(body.sign_order).toBe("random");
     expect(Object.keys(body)).toEqual(["sign_order"]);
   });
 
+  // 回归钉（工单 4gvh 实测缺陷）：ScheduleCard 的 μ/σ 字段是 muLo/muHi/sgLo/sgHi，
+  // 而快照侧键名是 muMin/muMax/sigmaMin/sigmaMax。两侧一旦不同名，pctVal 对 undefined
+  // 回默认值 ⇒ 正态参数永远不进保存体（"编辑 → 保存 → 刷新后保持"整链断在这里）。
+  // 这个钉读的是**表单真实字段名**：谁再改名而漏改这边，此处必红。
+  it("scheduleBody 把 μ/σ 改动译成 mu_/sigma_ 各键（表单字段名对齐）", () => {
+    const snap = scheduleSnapshot({
+      sign_order: "sequence", sign_dist: "normal", gap_max: 10,
+      mu_min_pct: 40, mu_max_pct: 60, sigma_min_pct: 15, sigma_max_pct: 25,
+    });
+    const form = {
+      order: "sequence", dist: "normal", edgeFront: 1, edgeBack: 1, gap: 10,
+      pref: false, sat: false, sun: false, windowStart: "06:30", windowEnd: "07:50",
+      muLo: 45, muHi: 65, sgLo: 12, sgHi: 30,
+    };
+    expect(scheduleBody(snap, form)).toEqual({
+      mu_min_pct: 45, mu_max_pct: 65, sigma_min_pct: 12, sigma_max_pct: 30,
+    });
+  });
+
   it("scheduleFormSnapshot 与回填口径一致（缺字段用默认）", () => {
     const s = scheduleFormSnapshot({
       order: "", dist: "", edgeFront: "", edgeBack: "", gap: "", pref: 0, sat: 0, sun: 0,
-      windowStart: "06:30", windowEnd: "07:50", muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
+      windowStart: "06:30", windowEnd: "07:50", muLo: 45, muHi: 65, sgLo: 12, sgHi: 30,
     });
     expect(s.order).toBe("sequence");
     expect(s.dist).toBe("uniform");
     expect(s.edgeFront).toBe(0);
     expect(s.window).toBe("06:30 ~ 07:50");
+    expect([s.muMin, s.muMax, s.sigmaMin, s.sigmaMax]).toEqual([45, 65, 12, 30]);
   });
 
   it("scheduleWarnText：窗口异常提示 + 缓冲超 20% + 容量不足三条各自可现", () => {

@@ -27,7 +27,12 @@ import {
    散布（恒以峰尖对称）/ 画布聚焦后方向键 ±1（Shift ×5，上=更尖）/ 可见编辑器逐键实时预览。
    实时依赖：窗口与掐头去尾（含 20% 缓冲钳位，父组件算好经 ctxData 传入）、分布方式=均匀
    （钟形置灰 + 提示，编辑仍可用）、账号数（σ_eff 放大曲线与高峰速率）、主题（重取 CSS
-   变量重绘）、只读（A 档权限）。
+   变量重绘）、只读（A 档权限）、直接操作门（`editGate`，卡级「编辑」按钮）。
+
+   直接操作门（工单 4gvh，用户 2026-10-04 口径）：画布这类"直接操作控件"默认只读，父组件
+   的「编辑」按钮按下后才可操作，以降低窄屏误触。门是**真状态**——只读时画布吃不到指针
+   事件（CSS `pointer-events: none`）、键盘分支早退、`tabindex` 退到 -1；可见的 μ/σ 数字
+   编辑器不在此门内（逐键键入不是误触形状，且"先设好、切回即用"的便利不倒退）。
 
    ⚠ P3 收官重设计（2026-10-04）在本组件上落地三件事：
    ① 画布按分布态降级——`dist === "uniform"`（默认）时不渲染 210px 画布与图例（均匀态
@@ -45,6 +50,10 @@ const props = defineProps<{
   modelValue: { muLo: number; muHi: number; sgLo: number; sgHi: number };
   ctxData: { effLo: number; effHi: number; span: number; frontMin: number; backMin: number; dist: string; n: number };
   readonly: boolean;
+  /** 直接操作门（用户 2026-10-04 口径）：发起指针拖拽与方向键微调的**唯一**开关。
+      父组件持卡级「编辑」按钮的真实状态；`readonly` 只是权限口径（A 档），两者都不满足
+      时画布是只读的。 */
+  editGate: boolean;
 }>();
 const emit = defineEmits<{
   (e: "update:modelValue", v: { muLo: number; muHi: number; sgLo: number; sgHi: number }): void;
@@ -73,6 +82,9 @@ let hoverKind: "none" | "peak" | "base" = "none";
 let activeDrag = false;
 
 const isUniform = computed(() => props.ctxData.dist === "uniform");
+/* 画布能否被直接操作：权限（非只读）**且**编辑门开着。这是真门——只读时画布连指针事件都
+   收不到（CSS `pointer-events: none`），键盘分支也在此早退，不存在"看得见拖得动"的假门。 */
+const direct = computed(() => !props.readonly && props.editGate);
 
 /* 状态读取：四枚整数 % 是唯一事实源；lo>=hi 时防御性拉开（旧数据仍可画）。 */
 function readState() {
@@ -396,11 +408,17 @@ function syncEditors(): void {
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="sgLo"]'), String(Math.round(s.span * s.sgLo / 100)));
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="sgHi"]'), String(Math.round(s.span * s.sgHi / 100)));
   if (cv) {
+    // 可及性文案跟着门走：只读时不得继续宣称"拖动峰尖可调"——读屏用户据此操作会毫无反馈。
+    // 三种只读要分开说：权限不足（A 档，按「编辑」也没用）与"门还没开"不是同一件事，
+    // 混成一句会让非主管理员被指去按一枚 `disabled` 的按钮。
+    let how = "；当前只读，先按上方「编辑」进入可操作态";
+    if (direct.value) how = "；拖动峰尖可调峰值时刻与散布，方向键可微调";
+    else if (props.readonly) how = "；当前只读（无操作权限）";
     cv.setAttribute(
       "aria-label",
       "正态分布峰尖拖拽画布：峰值中心 " + fmtT(s.effLo + s.span * muMidPct(s) / 100) +
       "，散布 ±" + Math.round(s.span * s.sgLo / 100) + " ~ " +
-      Math.round(s.span * s.sgHi / 100) + " 分钟；拖动峰尖可调峰值时刻与散布，方向键可微调" +
+      Math.round(s.span * s.sgHi / 100) + " 分钟" + how +
       (s.dist === "uniform" ? "（当前为均匀分布，参数暂不生效）" : ""),
     );
   }
@@ -468,7 +486,7 @@ function hitKind(px: number, py: number): "base" | "peak" | "none" {
   return distHitKind(px, py, L.dotX, L.dotY, L.half, L.axisY) as "base" | "peak" | "none";
 }
 function onHoverMove(e: PointerEvent): void {
-  if (endDrag || props.readonly) return;
+  if (endDrag || !direct.value) return;
   const cv = canvasEl.value;
   if (!cv) return;
   const r = cv.getBoundingClientRect();
@@ -490,7 +508,7 @@ function onHoverLeave(): void {
 }
 function onPointerDown(e: PointerEvent): void {
   const cv = canvasEl.value;
-  if (!cv || props.readonly) return;
+  if (!cv || !direct.value) return;
   const s = readState();
   if (s.invalid || !layout) return;
   const r = cv.getBoundingClientRect();
@@ -536,7 +554,7 @@ function onPointerDown(e: PointerEvent): void {
   renderNow();
 }
 function onKeydown(e: KeyboardEvent): void {
-  if (props.readonly) return;
+  if (!direct.value) return;
   const s = readState();
   if (s.invalid) return;
   const dMu = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
@@ -600,7 +618,7 @@ onUnmounted(() => {
 });
 
 watch(
-  () => [props.modelValue, props.ctxData, props.readonly],
+  () => [props.modelValue, props.ctxData, props.readonly, props.editGate],
   () => {
     if (props.ctxData.dist === "uniform") {
       // 画布在均匀态不渲染：清掉交互态，切回正态时不残留光环/药丸。
@@ -611,6 +629,13 @@ watch(
   },
   { deep: true },
 );
+
+// 门在拖动途中关上（父组件收口）时立刻收尾：不收尾则残留 pointermove/up 监听、
+// grabbing 光标与光环，画布此后"看着能拖"。与卸载路径同一收尾函数（endDrag 里一并清）。
+watch(direct, (on) => {
+  if (!on && endDrag) endDrag();
+  requestRender();
+});
 
 const muMidText = computed(() => {
   const s = readState();
@@ -625,10 +650,10 @@ const muMidText = computed(() => {
       v-if="!isUniform"
       ref="canvasEl"
       class="dist-viz-canvas"
-      :class="{ 'is-readonly': readonly }"
+      :class="{ 'is-readonly': !direct }"
       :style="{ height: CANVAS_H + 'px' }"
-      :tabindex="0"
-      :aria-disabled="readonly ? 'true' : 'false'"
+      :tabindex="direct ? 0 : -1"
+      :aria-disabled="direct ? 'false' : 'true'"
       @pointerdown="onPointerDown"
       @pointermove="onHoverMove"
       @pointerleave="onHoverLeave"
@@ -662,6 +687,7 @@ const muMidText = computed(() => {
       </span>
     </div>
     <p v-if="!isUniform" class="dist-viz-legend">纵轴 = 预计每分钟签到人数 · 实线 = 名义钟形 · 深色核心 = ±1σ（约 68% 账号）· 虚线 = 按账号数放大后的实际钟形 · 轴上底座 = 散布宽度</p>
-    <p v-if="!isUniform" class="dist-viz-hint">拖峰尖：左右改峰值时刻、上下改散布；画布聚焦后方向键微调（Shift ×5）。</p>
+    <!-- 操作提示只在门开着时出现：只读态宣称"拖峰尖"是空头承诺（按钮自证，不加解释文案）。 -->
+    <p v-if="!isUniform && direct" class="dist-viz-hint" data-dist-hint>拖峰尖：左右改峰值时刻、上下改散布；画布聚焦后方向键微调（Shift ×5）。</p>
   </div>
 </template>
