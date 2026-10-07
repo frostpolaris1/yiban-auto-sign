@@ -1,10 +1,10 @@
 """密码加密——可选附加件（SPEC §2.7）。
 
 这是唯一允许依赖第三方包（``pycryptodome``）的模块。它刻意**不**被
-``yiban_protocol/__init__`` 直接导入，以保持核心包零第三方依赖；安装 extra 后
-再显式导入本模块（或使用 ``from yiban_protocol import encrypt_password``）::
+``yiban.protocol/__init__`` 直接导入，以保持核心包零第三方依赖；装上依赖后
+再显式导入本模块（或使用 ``from yiban.protocol import encrypt_password``）::
 
-    pip install 'yiban-protocol[crypto]'
+    pip install pycryptodome
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import base64
 
 # 缺少依赖时抛出的可读指引文案。
 _MISSING_DEP_MESSAGE = (
-    "yiban_protocol.crypto requires the optional dependency 'pycryptodome'. "
-    "Install it with: pip install 'yiban-protocol[crypto]'"
+    "yiban.protocol.crypto requires the optional dependency 'pycryptodome'. "
+    "Install it with: pip install pycryptodome"
 )
 
 try:  # pragma: no cover - 缺依赖路径由测试以阻塞导入方式覆盖

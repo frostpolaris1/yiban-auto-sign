@@ -2,20 +2,20 @@
 """**功能**
 安全策略层：WAF 拦截判定、URL 白名单、对外文本脱敏与失败现场诊断。
 
-**为什么单独一层**：`yiban/fyiban/` 承接的是上游（AGPL-3.0）的协议与算法，而
+**为什么单独一层**：`yiban/platform.py` 承接的是"平台要求怎么做"的知识，而
 "什么算被风控拦截""服务端下发的跳转目标能不能信""日志里哪些字段必须打码"是
-**本项目自有的安全判断**。若把它们内联进第三方层，将来替换或升级上游实现时会
+**本项目自有的安全判断**。若把它们内联进平台交互层，将来替换或升级协议实现时会
 连带丢掉这些保护。因此本模块提供策略**实现**，由 `yiban.client` 组装后注入协议层
-（契约见 `yiban/fyiban/protocol.py` 的 `RequestPolicy`）。
+（契约见 `yiban/platform.py` 的 `RequestPolicy`）。
 
 三个判定的口径（由 `tests/test_login_protocol_shape.py` 与
-`tests/test_fyiban_isolation.py` 钉住）：
+`tests/test_provenance_guard.py` 钉住）：
 
 - `is_yiban_trusted_url` —— **宽松**白名单：登录链路要跟随服务端下发的跳转，
   只放行 `yiban.cn` / `uyiban.com` 体系的 https 链接，防服务端被劫持时把登录态导流；
-- `is_fyiban_url` —— **严格**白名单：ydclearance 挑战页吐出的跳转目标，主机必须精确
-  等于 `f.yiban.cn`（求解器删除后仅作为白名单边界测试与历史契约保留）；
-- `is_waf_blocked` —— **挑战形态**（`yiban/fyiban/waf.looks_like_challenge` 的特征并集）不受
+- `is_strict_yiban_url` —— **严格**白名单：主机必须精确等于 `f.yiban.cn`（挑战求解器
+  删除后仅作为白名单边界测试与历史契约保留）；
+- `is_waf_blocked` —— **挑战形态**（`yiban/challenge.py` 的特征并集）不受
   长度限制一律判拦；**仅关键词**命中才按**短响应**设界，避免把含"风控""拦截"字样的
   正常法律文本误判成拦截页。关键词支按**边界口径**匹配：ASCII 词元两侧必须都不是字母或
   数字（`aWAFb` 不命中），中文词元维持子串——完整口径见词元定义处的上方注释。
@@ -25,24 +25,24 @@
   两族词元走同一条匹配规则（`_keyword_alternation`）：同一输入不会得出两种判据。
 
 **归属**
-`yiban` 包根的安全策略实现层，服务第三方隔离层：`yiban.client` 把本模块的函数组装成
-`RequestPolicy` 注入 `yiban/fyiban/protocol.py`，故本模块是"本项目自有安全判断"与
-"上游协议知识"的分界线。
+`yiban` 包根的安全策略实现层，服务于平台交互层：`yiban.client` 把本模块的函数组装成
+`RequestPolicy` 注入 `yiban/platform.py`，故本模块是"本项目自有安全判断"与
+"平台协议知识"的分界线。
 
 **复用**
-`is_yiban_trusted_url` / `is_fyiban_url` / `is_waf_blocked` 与
+`is_yiban_trusted_url` / `is_strict_yiban_url` / `is_waf_blocked` 与
 `WAF_BLOCKED_MESSAGE`、`_WHITELIST_MESSAGES`（对外文案单一来源）；失败分类的档位词元
 （`HARD_FAIL_TOKENS`/`is_hard_fail_message`/`hard_fail_pattern`）与 `WAF_KEYWORDS` 同在本模块，
 是重试档位（`yiban.engine.attempts`）与探针硬失败判据（`yiban.engine.probe`）的**唯一真值源**；
 WAF 词元的命中判定 `matches_waf_keywords` 由 `attempts` 的风控族判据复用（那边喂的是失败**消息**，
-不受"短响应"上界约束）；挑战形态特征复用 `yiban.fyiban.waf.looks_like_challenge`（不另抄特征串）；
+不受"短响应"上界约束）；挑战形态特征复用 `yiban.challenge.looks_like_challenge`（不另抄特征串）；
 脱敏口径复用 `yiban.masking`。
 
 **通信**
 输入：URL、响应文本/头部/状态码、待脱敏文本。输出：布尔判定或脱敏/诊断后的文本。
-调用谁：`yiban.masking`、`urlsplit`、`yiban.fyiban.waf`（挑战形态特征，单向依赖：隔离层
+调用谁：`yiban.masking`、`urlsplit`、`yiban.challenge`（挑战形态特征，单向依赖：平台层
 不得反向 import 本模块）。
-谁调用：`yiban.client`（组装 `RequestPolicy` 注入协议层）、`yiban/fyiban/protocol.py`
+谁调用：`yiban.client`（组装 `RequestPolicy` 注入协议层）、`yiban/platform.py`
 经注入的策略回调、`yiban/engine/attempts.py` 与 `yiban/engine/probe.py`（档位词元单一来源）、
 以及各日志/错误消息点。
 前端调用点：无直接调用点；本模块的结果经登录/签到错误消息（最终进入签到日志与
@@ -53,8 +53,8 @@ import logging
 import re
 from urllib.parse import urlsplit
 
+from yiban import challenge as yiban_challenge
 from yiban import masking
-from yiban.fyiban import waf as fyiban_waf
 
 logger = logging.getLogger("yiban.security")
 
@@ -72,7 +72,7 @@ WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 WAF_BLOCKED_MESSAGE = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
 
 # 硬失败词元（失败分类的**唯一真值源**，重试档位与探针判据都从这里取）：
-# - "ydclearance"：挑战检测命中的响亮失败文案（`yiban/fyiban/waf.CHALLENGE_DETECTED_MESSAGE`
+# - "ydclearance"：挑战检测命中的响亮失败文案（`yiban/challenge.CHALLENGE_DETECTED_MESSAGE`
 #   的前缀词元；求解器已按既定裁决删除，检测命中即失败）与挑战跳转白名单拒绝——同一输入
 #   必然得出同一结果，重试只会把同一死页重发；会话残片停在未通过的挑战链上，没有复用价值
 #   （attempts 据此联动清缓存）。
@@ -81,7 +81,7 @@ WAF_BLOCKED_MESSAGE = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理
 #   网络瞬断都无关，同样重试无用。
 # - "无签发方回执"：最终认证应答 code==0 但缺 data 载荷（协议层的签发回执判据）——
 #   重发同一请求只会再拿到同一份无回执应答，且会话残破没有复用价值，与上两类同档。
-# 这些消息是 `waf.py`/requests/`protocol.py` 的 raise **输出**，本表按词元匹配、
+# 这些消息是 `yiban/challenge.py` / requests / `yiban/platform.py` 的 raise **输出**，本表按词元匹配、
 # 不复制文案全文；匹配规则与 WAF 族同一条（见 `WAF_KEYWORDS` 上方口径）——两条腿共用
 # `_keyword_alternation`，档位判据与探针判据对同一输入同真同假。
 # 新增解析失败路径只要消息仍含词元即自动入档（词元变更须与产生方同批核对）。
@@ -158,7 +158,7 @@ def is_waf_blocked(response_text):
     """判断响应是否为 WAF 风控拦截。
 
     两条判据、两种长度口径：
-    - **形态**判据（`waf.looks_like_challenge` 的双 JS 特征）不受长度限制：挑战/拦截页是
+    - **形态**判据（`challenge.looks_like_challenge` 的双 JS 特征）不受长度限制：挑战/拦截页是
       平台产物，其形状就是判据本身；真实拦截页可以很长，旧"`len>2000` 一律不判"的短路
       失效方向是 fail-open（长拦截页被放行、被当「网络抖动」打满重试）。
     - **关键词**判据只在短响应里找：正常长文（服务协议、法律文本）合法含"风控""拦截"
@@ -168,7 +168,7 @@ def is_waf_blocked(response_text):
     易班 WAF 返回 JSON 时中文会被 Unicode 转义（如 \\u98ce\\u9669 = "风险"），
     需先解码再匹配（`matches_waf_keywords` 内部完成）。
     """
-    if fyiban_waf.looks_like_challenge(response_text):
+    if yiban_challenge.looks_like_challenge(response_text):
         return True
     if len(response_text) > 2000:
         return False
@@ -195,7 +195,7 @@ def is_yiban_trusted_url(url):
     )
 
 
-def is_fyiban_url(url):
+def is_strict_yiban_url(url):
     """严格校验易班跳转 URL：https + 主机精确为 f.yiban.cn + 不允许 userinfo。
 
     使用 urlsplit 避免 `https://f.yiban.cn.evil.com` 或
@@ -246,7 +246,7 @@ def location_desc(location):
 
 
 class ProtocolPolicy:
-    """注入给协议层（`yiban/fyiban/protocol.py`）的策略实现。
+    """注入给协议层（`yiban/platform.py`）的策略实现。
 
     协议层只描述"平台要求怎么做"，**所有**判定与措辞都回到这里：它能看到的
     只有 URL、响应对象与文本，不自己做域名比对，也不自己拼日志文案。
