@@ -117,7 +117,9 @@ class MigrateV20Test(unittest.TestCase):
         day = _day()
         self._write_state(day, {PHONE_A: {"status": "success", "time": "07:00:01"}})
         migrations._run_migrations(self.conn)
-        self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], 20)
+        self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0],
+                         migrations._MIGRATIONS[-1][0],
+                         "整链跑到链尾（v20 之后还有档位）")
         self.assertEqual(self._count(), 1)
         self.assertEqual(migrations.migrate_v20(self.conn), 0, "重入不得新增行")
         self.assertEqual(self._count(), 1)

@@ -226,6 +226,18 @@ bash scripts/backup.sh
   领取失败、收尾失败各有 warning。**日志里的手机号一律脱敏**。
 - **事件**：每次尝试经 `event_sink` 落 `sign_events`（`stage='sign'`，含 `attempt`/`dur_sec`），
   任务结束后单事务批量落库。
+- **进度事件表**：执行体与编排层把关键节点经 `yiban.store.run_events.report` 落
+  `run_events`（v21）——节点值域 `claim` 领取 / `start` 开始 / `success` 成功 /
+  `fail` 失败 / `pause` 暂停 / `finalize` 收尾，一节点一行，字段为节点、执行体身份
+  （稳定槽位名）、账号、业务日、时刻。`message` 入表前过 `masking.sanitize_text`
+  （与 `sign_events` 同一份净化口径，`run_events` 是唯一净化点）。**它与 `sign_events`
+  不是一张表**：`sign_events` 按**尝试**落行（签到事实，保留 180 天），`run_events`
+  按**进度节点**落行（观测面，领取等不发起请求的节点也在内，保留 14 天）。收尾分两层，
+  靠 `message` 前缀区分：`执行体会话收尾：`（一次执行体会话正常结束）与
+  `轮次收尾：`（一轮汇总与退出码定局）——单执行体路径下两行同
+  `(业务日, 执行体, 节点)`，消费方**不得对 `finalize` 计数求和**。保留期退役走既有
+  每日清理编排（`run_daily_cleanup` → `run_events.purge`），不另立名册。
+  写入失败只告警：观测面不得改变签到结论与退出码。
 - **状态文件**：`sign-state-<day>.json` 是网页日历的事实源（每次尝试与重试入队即写，
   故不会空窗）；`sched-run-<day>.json` 是全量收尾标记。
 - **文件心跳与执行体页**：`worker-alive-<身份键>.json`（v3 与监督进程都写；身份键 = 角色：

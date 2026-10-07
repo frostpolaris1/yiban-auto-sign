@@ -51,6 +51,13 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirem
 COPY web/ ./web/
 COPY scripts/ ./scripts/
 COPY yiban/ ./yiban/
+# 配置名册（104 §5.3）：`config/registry.json` 是每个配置键类型/域/缺省的唯一定义点，
+# `yiban/config_loader.py` 在 import 阶段读它取默认常量——漏拷会让容器在 import 阶段
+# 直接崩（本地跑测与裸机部署发现不了，它们的 sys.path 里本来就有仓库根）。
+# 守卫：tests/test_config_registry_gate.py 的
+# GateRealRegistryContentTest::test_real_registry_is_tracked_and_shipped 钉这行 COPY 与
+# 该文件入库（config/ 不是 Python 包，test_docker_image_contents.py 的包判据盖不到它）。
+COPY config/ ./config/
 # 合规文档 / 更新日志 / 自述显式白名单（M84）：原 `COPY ./*.md ./` 是根级通配，
 # 哪些 .md 进镜像取决于 .dockerignore 与 .gitignore 两份清单的差集——一旦本地存在
 # AGENTS.md / PROMPT*.md / HANDOFF*.md / MEMORY.md / MAINTENANCE.md 这类含服务器 IP

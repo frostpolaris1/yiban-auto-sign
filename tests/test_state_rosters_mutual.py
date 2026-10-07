@@ -71,6 +71,8 @@ NON_STATE_FIXED_NAME = {
     "accounts.json": "scripts/db_export.py 导出的账号清单（仓外产物，不在状态目录）",
     "users.json": "scripts/db_export.py 导出的用户清单（仓外产物，不在状态目录）",
     "manifest.json": "web/services/vue_assets.py 的前端构建产物清单（静态资源，非状态件）",
+    "registry.json": "config/registry.json 是配置名册（104 第一批·A）：入库的源码数据件，"
+                     "由 yiban/config_loader.py 读；不落状态目录、不进清理与备份名册",
 }
 #: 固定名状态件的枚举判据：抓"小写 token + 状态件扩展名"的字面量。
 #: 与 `tests/test_state_gc.py` 的按日扫描互补——非按日件从原理上逃过按日正则。

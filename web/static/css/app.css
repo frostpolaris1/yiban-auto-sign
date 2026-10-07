@@ -4357,6 +4357,9 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .dist-viz-canvas.is-readonly {
   opacity: 0.55;
   cursor: default;
+  /* 只读门是**真门**（工单 4gvh）：指针事件不得到达画布，鼠标/触摸的按下与拖动
+     一律落空（不是盖一层遮罩的假门）。窄屏误触因此在入口处消失，页面滚动也拿回手势。 */
+  pointer-events: none;
 }
 .dist-viz-editors {
   display: flex;

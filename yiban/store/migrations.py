@@ -130,6 +130,7 @@ _ARTIFACTS = {
     17: (("sign_claims", None),),                         # migrate_v17 建表
     18: (("sign_tasks", None), ("egress_state", None)),   # migrate_v18 建两表
     19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),  # migrate_v19 补两列
+    21: (("run_events", None),),                          # migrate_v21 建表
 }
 
 
@@ -251,7 +252,7 @@ def _create_tables(conn):
 _ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
                    "sign_events", "page_visits", "server_metrics", "session_cache",
                    "verify_jobs", "sign_claims", "sign_tasks",
-                   "egress_state", "app_meta"}
+                   "egress_state", "app_meta", "run_events"}
 
 
 def _table_columns(conn, table):
@@ -1120,6 +1121,39 @@ def migrate_v20(conn):
     return inserted
 
 
+def migrate_v21(conn):
+    """v21：内核进度事件表 `run_events`（N2a 打点层）。可选迁移，失败只告警不阻断。
+
+    **为什么可选**：本表是观测面——`yiban/engine/executor_v3.py` 与
+    `yiban/engine/runner.py` 经 `yiban.store.run_events.report` 写入，写入失败被
+    隔离（只告警），签到结论与退出码都不依赖它。故迁移执行失败不该阻断启动。
+
+    **但产物必须在册**：登记进产物登记表后，版本声称过了本档而表不存在
+    （半升级库、有人手工 DROP）一律 `MigrationIntegrityError` 拒启——
+    观测表静默零写比拒启更难查（与 sign_events 的成形理由相同）。
+
+    **按日保留期**：行由 `run_events.purge` 按业务日（`day` 列）删除，故
+    `day` 上建索引；`id` 是自增主键，下游按 id 增量尾读（SSE）时无须第二把索引。
+    列窄而固定：节点值域是有限集合（`run_events.NODES`），不放 JSON 详情列——
+    "什么节点、谁、哪个账号、哪一天、什么时刻"就是这张表的全部契约。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS run_events ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT NOT NULL, "
+        "day TEXT NOT NULL, "
+        "node TEXT NOT NULL, "
+        "executor TEXT NOT NULL DEFAULT '', "
+        "phone TEXT NOT NULL DEFAULT '', "
+        "message TEXT NOT NULL DEFAULT ''"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_run_events_day ON run_events(day)"
+    )
+    _commit_if_free(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1152,6 +1186,9 @@ _MIGRATIONS = [
     (18, "v18_sign_tasks", migrate_v18, True),
     (19, "v19_fencing_epoch", migrate_v19, True),
     (20, "v20_backfill_json_terminals", migrate_v20, False),
+    # v21 可选：产物是观测表（run_events），签到正确性不依赖它；但产物在册，
+    # 缺表仍 fail-closed 拒启（见 migrate_v21 的 docstring）。
+    (21, "v21_run_events", migrate_v21, False),
 ]
 
 

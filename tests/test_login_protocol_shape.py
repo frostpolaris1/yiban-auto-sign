@@ -10,7 +10,7 @@
    零缓存写入、落硬失败不可重试档）与真成功（回执齐全）写缓存回归、已登录标志的主机与路径判定（含子域伪装）、URL
    白名单边界与逐跳校验、风控形态判定的长度边界（挑战形态不受限、仅关键词维持上界）与转义解码、
    WAF 词元的非字母数字边界口径（base64 里的 `aWAFb` 不得判拦）、测试公钥夹具的跨进程确定性。
-对应实现：yiban/fyiban/protocol.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_trusted_yiban_url、_is_strict_fyiban_url、WAF
+对应实现：yiban/platform.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_yiban_trusted_url、is_strict_yiban_url、WAF
    文案识别）、scripts/signin.py 的签到接口。
 关键断言：这份断言的存在理由是「抽完再核对」：直接搬代码时删掉一整段 WAF 分支或改掉
    usersure 的表单字段，业务语义用例照样全绿，所以必须先钉形状。WAF
@@ -521,7 +521,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         # 而不是清完没写/压根没清）
         self.assertTrue(json.loads(row["cookies"]), "重建的缓存行必须带会话 cookies")
 
-    def test_logged_in_marker_requires_fyiban_host_and_path(self):
+    def test_logged_in_marker_requires_app_host_and_path(self):
         """M7：302 落在非 f.yiban.cn 的 /iapp7463 不得判"已登录"。
 
         原判定是子串 `in`：`https://evil.example/iapp7463`、
@@ -572,7 +572,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         resp = _killyiban_happy_responses()
         resp[-1] = _resp(final_body)
         client, rec = _killyiban_client(resp)
-        with _capture_logs("yiban.fyiban.protocol") as buf, \
+        with _capture_logs("yiban.platform") as buf, \
                 self.assertRaises(RuntimeError) as ctx:
             _run(rec, client.login_killyiban)
         msg = str(ctx.exception)
@@ -604,7 +604,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         resp[-1] = _resp({"code": 0, "msg": "ok"})
         client, rec = _killyiban_client(resp)
         signin.db.set_session_cache(self.PHONE, json.dumps({"csrf_token": "old"}), "old-csrf")
-        with _capture_logs("yiban.fyiban.protocol") as buf, self.assertRaises(RuntimeError):
+        with _capture_logs("yiban.platform") as buf, self.assertRaises(RuntimeError):
             _run(rec, client.login_killyiban)
         self.assertNotIn("登录成功", buf.getvalue())
         self.assertEqual(self._cache_rows(), 0,
@@ -616,7 +616,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         resp[-1] = _resp({"code": 0, "data": {"Token": "mock-receipt"}, "msg": ""},
                          cookies={"yiban_sess": "mock|sess"})
         client, rec = _killyiban_client(resp)
-        with _capture_logs("yiban.fyiban.protocol") as buf:
+        with _capture_logs("yiban.platform") as buf:
             _run(rec, client.login_killyiban)
         self.assertTrue(client.logged_in)
         self.assertEqual(buf.getvalue().count("登录成功"), 1)
@@ -765,14 +765,14 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertFalse(signin._is_yiban_trusted_url(url))
 
-    def test_strict_fyiban_url_boundaries(self):
-        self.assertTrue(signin._is_fyiban_url("https://f.yiban.cn/iapp7463"))
+    def test_strict_yiban_url_boundaries(self):
+        self.assertTrue(signin._is_strict_yiban_url("https://f.yiban.cn/iapp7463"))
         for url in ("https://f.yiban.cn.evil.com/iapp7463",
                     "https://f.yiban.cn@evil.com/iapp7463",
                     "http://f.yiban.cn/iapp7463",
                     "https://c.uyiban.com/iapp7463"):
             with self.subTest(url=url):
-                self.assertFalse(signin._is_fyiban_url(url))
+                self.assertFalse(signin._is_strict_yiban_url(url))
 
     def test_redir_chain_requires_every_hop_trusted(self):
         """M8：跟随重定向后每一跳（含落点）都必须在白名单内。"""
@@ -940,17 +940,17 @@ class LegacyPageFallbackTest(unittest.TestCase):
     """
 
     def test_legacy_page_without_var_keyword_parses_only_for_legacy_flow(self):
-        from yiban.fyiban import protocol as fyiban_protocol
+        from yiban import platform as platform_module
 
         pem = _pubkey_pem()
         html = (
             "<script>page_use = '" + "a" * 40 + "';</script>"
             '<input type="test" id="key" value="' + pem + '">'
         )
-        page_use, key = fyiban_protocol.parse_login_page(html, flow="legacy")
+        page_use, key = platform_module.parse_login_page(html, flow="legacy")
         self.assertEqual(page_use, "a" * 40)
         self.assertIsNotNone(key)
         # killyiban 契约仍严格要求 var 关键字：同一页面对默认流程解析失败
         self.assertEqual(
-            fyiban_protocol.parse_login_page(html, flow="killyiban"), (None, None)
+            platform_module.parse_login_page(html, flow="killyiban"), (None, None)
         )

@@ -11,8 +11,8 @@
        写理由。这不是"第二份事实源"，是**冻结的期望**——本批硬约束是"CI 结果与
        改前等价"，此断言让漂移必须显式发生。
     ①′ 抽出"执行行"的口径认三种调用形态：`"$py" -m 模块`、`bash 脚本`、
-       `"$py" 脚本路径`（B1 的 AST 门用第三种）。认少一种，那一步就不进冻结清单，
-       命令原文就此多出第二份事实源。
+       `"$py" 脚本路径`（B1 的 AST 门与 B2 的名册门都用第三种）。认少一种，那一步
+       就不进冻结清单，命令原文就此多出第二份事实源。
     ② **全量参数固定**：默认模式 `-n auto --dist loadfile`。`--dist loadfile`
        不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红。
     ③ **固定 venv**：全量模式只认 `/root/.venv-yiban-wsl/bin/python`，不可用就
@@ -44,6 +44,8 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
     '"$py" scripts/check-path-env-reads.py',
     '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly',
+    '"$py" scripts/check-config-registry.py',
+    '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
 )
 
 

@@ -154,6 +154,28 @@ def _restore_environ_around_class():
     os.environ.update(snapshot)
 
 
+@pytest.fixture(autouse=True)
+def _restore_process_umask():
+    """逐用例还原进程 umask：本仓有在**进程内**直调生产入口的用例，而那些入口会改 umask。
+
+    `yiban/engine/runner.py:207` 与 `yiban/cli.py:633` 都把进程 umask 收到 `077`
+    （生产入口的既定行为，自己不还原）。进程内调用它们的用例（`runner.main` /
+    `cli.main`）因此把 077 泄漏给同 worker 的后续用例：那些用例 `os.makedirs` 建出的
+    目录变 `0700`、`_write` 建出的文件变 `0600`，凡带降权（setpriv 到 nobody）或按
+    位格断言的用例就会爆。实测 `tests/test_deploy_prod_artifacts.py` 的非 root 暂存用例
+    报 `126 Permission denied`（或推到下一步的"清单为空"），而它单跑全绿——两个文件
+    都用例自身无改动，纯粹是 `--dist loadfile` 把它们分进了同一个 worker。
+
+    本 fixture 与 `_restore_environ_around_class` 属同一层纪律：进程级全局副作用必须逐
+    用例还原，不能押在"每个用例自己记得还原"上。读取 umask 只能靠设置它（`os.umask`
+    既设又返回旧值），故前两行是一次只读往返：设 022 拿到旧值，立刻设回旧值。
+    """
+    before = os.umask(0o022)
+    os.umask(before)
+    yield
+    os.umask(before)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """进程收尾兜底：即便个别测试异常中断，也释放全部文件句柄。"""
     _close_root_file_handlers()
