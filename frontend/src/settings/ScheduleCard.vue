@@ -32,8 +32,14 @@ import DistViz from "./DistViz.vue";
    权限（单源是后端档位表）：A 档（窗口/裁剪/周末/间隔/μσ）仅主管理员；B 档（排序/分布/自选）
    任意管理员可改。禁用只是界面口径，后端仍逐字段 403 + 口令门。
 
+   直接操作门（工单 4gvh，用户 2026-10-04 口径）：本卡的直接操作控件（正态钟形画布的指针
+   拖拽与方向键、掐头去尾两枚滑杆）一律默认只读，按下卡头「编辑」按钮才可操作，以降低窄屏
+   误触；按钮自证（编辑 ⇄ 完成 + aria-pressed），不加解释文案。门是真状态：只读时画布吃不到
+   指针事件、滑杆真禁用。可见的 μ/σ 数字编辑器不在门内——逐键键入不是误触形状。
+
    保存语义：改动只标脏，点「保存调度设置」才提交（只送相对快照变化的字段）；有改动就走
-   受门禁 helper（先不带凭据发，后端 reason 决定补口令）。 */
+   受门禁 helper（先不带凭据发，后端 reason 决定补口令）。门不改变这条语义：编辑态改完仍走
+   同一枚保存按钮与同一道口令门，刷新后回读一致。 */
 
 const props = defineProps<{ settings: Record<string, unknown>; isMaster: boolean }>();
 
@@ -57,6 +63,11 @@ const form = ref({
 const tip = ref<{ text: string; bad: boolean }>({ text: "", bad: false });
 const windowFallback = ref("");
 const saving = ref(false);
+/* 直接操作门（工单 4gvh，用户 2026-10-04 口径）：本卡的"直接操作控件"——正态钟形画布
+   （指针拖拽/方向键）与掐头去尾两枚滑杆——默认只读，按下卡头「编辑」才可操作，以降低
+   窄屏误触。门是**真状态**：只读时画布吃不到指针事件、滑杆真禁用（不是视觉覆盖）。 */
+const editing = ref(false);
+const gateOpen = computed(() => props.isMaster && editing.value);
 
 const orderItems = [
   { value: "sequence", label: "列表顺序（固定作息）" },
@@ -73,7 +84,7 @@ const edgeMax = computed(() => edgeMaxMin(winSec.value));
 // 此时给一个占位量程并把滑杆禁用，配合下方告警文案引导先修正窗口。
 const edgeMaxValid = computed(() => edgeMax.value > 0);
 const edgeSliderMax = computed(() => (edgeMaxValid.value ? edgeMax.value : 1));
-const edgeSliderDisabled = computed(() => !props.isMaster || !edgeMaxValid.value);
+const edgeSliderDisabled = computed(() => !props.isMaster || !edgeMaxValid.value || !editing.value);
 const capacityN = computed(() => {
   const cap = (props.settings.capacity_estimate || {}) as { current_accounts?: number };
   const n = Number(cap.current_accounts);
@@ -214,6 +225,17 @@ defineExpose({ isDirty: () => dirty.value, save });
             <svg aria-hidden="true"><use href="#i-info" /></svg>
             <span class="info-pop" id="set-pop-schedule" role="tooltip"><b>排序与分布：</b>「顺序」按列表先到先签，「随机」每天重排；分布决定时间点怎么铺开，「顺序 × 均匀」会集中在窗口前段，要铺满窗口选「随机 × 均匀」或正态。<b>掐头去尾：</b>裁掉窗口首尾各 n 分钟，避开边界超时；前后独立、0.5 分钟粒度。<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动均生效，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但占用更多窗口时间。<b>生效时机：</b>保存后下次自动签到时生效。</span>
           </button>
+          <!-- 直接操作门开关（工单 4gvh）：拖拽类控件默认只读，按下此处才可操作。
+               按钮自证（编辑 ⇄ 完成 + aria-pressed），不加解释文案。 -->
+          <button
+            type="button"
+            class="btn btn--ghost btn--sm"
+            id="ss-edit"
+            data-sched-edit
+            :aria-pressed="editing ? 'true' : 'false'"
+            :disabled="!isMaster"
+            @click="editing = !editing"
+          >{{ editing ? "完成" : "编辑" }}</button>
           <span class="badge badge--warn" id="ss-dirty" :hidden="!dirty">有未保存的修改</span>
         </div>
       </div>
@@ -289,7 +311,7 @@ defineExpose({ isDirty: () => dirty.value, save });
       </div>
       <div class="field span-2">
         <span class="field-label" id="ss-mu-label">正态分布（峰值中心与散布）</span>
-        <DistViz :model-value="muModel" :ctx-data="distCtx" :readonly="!isMaster" @update:model-value="setMu" />
+        <DistViz :model-value="muModel" :ctx-data="distCtx" :readonly="!isMaster" :edit-gate="gateOpen" @update:model-value="setMu" />
         <p class="set-warn" id="ss-mu-warn" :hidden="!muWarn">{{ muWarn }}</p>
         <p class="set-warn" id="ss-sigma-warn" :hidden="!sigmaWarn">{{ sigmaWarn }}</p>
       </div>
