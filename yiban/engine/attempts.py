@@ -7,8 +7,8 @@
 `runner`。
 
 另有一批**同名转发**（客户端 `YibanClient`、请求头版本特征、白名单/WAF 判定、定位
-算法）：它们都服务于"一次登录 + 签到"，实现分别在 `yiban/client.py`、`yiban/fyiban/`、
-`yiban/security.py`；此处转发的是**同一对象**，不是第二份实现——旧调用点
+算法）：它们都服务于"一次登录 + 签到"，实现分别在 `yiban/client.py`、`yiban/platform.py`、
+`yiban/geo.py`、`yiban/security.py`；此处转发的是**同一对象**，不是第二份实现——旧调用点
 （`signin.<名字>`、`web/app.py`）继续按原名引用。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
@@ -17,10 +17,10 @@ import logging
 from datetime import datetime, timedelta
 
 from yiban import client as yiban_client
+from yiban import geo as yiban_geo
+from yiban import platform as yiban_platform
 from yiban import security
 from yiban import status as yiban_status
-from yiban.fyiban import algo as fyiban_algo
-from yiban.fyiban import headers as fyiban_headers
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.masking import sanitize_url as _sanitize_url
@@ -115,22 +115,21 @@ PROBE_INTERVAL_DAYS = 7     # 暂停后半开试探周期（天）
 # ---------------------------------------------------------------------------
 # 同名转发（转发的是同一对象，不是第二份实现）
 # ---------------------------------------------------------------------------
-# 定位生成：多边形内随机点，算法**衍生自上游 FYIBAN**（缩放质心 + 射线法），
-# 实现在第三方隔离层 `yiban/fyiban/algo.py`，采样分布与兜底策略的本地差异见
-# 同目录 PROVENANCE.md。
-point_in_polygon = fyiban_algo.point_in_polygon
-generate_position_in_polygon = fyiban_algo.generate_position_in_polygon
+# 定位生成：多边形内随机点（洁净室自研：偶奇射线法 + 拒绝采样 + 显式兜底），
+# 实现在 `yiban/geo.py`，算法语义与边界条件清单见该模块文档串。
+point_in_polygon = yiban_geo.point_in_polygon
+generate_position_in_polygon = yiban_geo.generate_position_in_polygon
 
 # 客户端外观（凭据托管 / 会话缓存 / 代理 / 设备绑定）在 `yiban/client.py`，
-# 协议步骤在 `yiban/fyiban/protocol.py`，安全策略在 `yiban/security.py`。
+# 协议步骤在 `yiban/platform.py`，安全策略在 `yiban/security.py`。
 # 转发同一类对象：既有调用点与 `patch.object(signin.YibanClient, ...)` 的测试行为不变。
 YibanClient = yiban_client.YibanClient
 
-# 易班 App 请求头与版本特征：**衍生自上游 FYIBAN**，实现在第三方隔离层
-# （`yiban/fyiban/headers.py`，来源与差异见 `yiban/fyiban/PROVENANCE.md`）。
-YIBAN_APP_VERSION = fyiban_headers.YIBAN_APP_VERSION
-HEADERS = fyiban_headers.HEADERS
-KILLYIBAN_HEADERS = fyiban_headers.KILLYIBAN_HEADERS
+# 易班 App 请求头与版本特征：**平台事实常量**（客户端版本号取自官方安装包清单、
+# 头字段值取自实拍请求），实现在 `yiban/platform.py`。
+YIBAN_APP_VERSION = yiban_platform.YIBAN_APP_VERSION
+HEADERS = yiban_platform.HEADERS
+KILLYIBAN_HEADERS = yiban_platform.KILLYIBAN_HEADERS
 
 # WAF 判定口径的唯一实现在 `yiban/security.py`（形态判定不受长度限制、仅关键词匹配按
 # "短响应"设界的边界理由、词元的非字母数字边界口径、Unicode 转义解码）；调用方与既有测试
@@ -139,9 +138,9 @@ WAF_KEYWORDS = security.WAF_KEYWORDS
 is_waf_blocked = security.is_waf_blocked
 
 # 白名单口径的唯一实现在 `yiban/security.py`（宽松 = 登录链路跟随的跳转；
-# 严格 = 挑战页吐出的跳转目标）。
+# 严格 = 主机精确等于 f.yiban.cn）。
 _is_yiban_trusted_url = security.is_yiban_trusted_url
-_is_fyiban_url = security.is_fyiban_url
+_is_strict_yiban_url = security.is_strict_yiban_url
 
 # 运行期账号复核（"启动快照跑完整轮期间账号可能被删/停用"）的实现在
 # `yiban/store/accounts.py::account_still_signable`——会话缓存的写入闸门

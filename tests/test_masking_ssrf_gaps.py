@@ -24,7 +24,7 @@ fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自
 只有负例的话"一律拒绝"也算过。密钥遮罩断的是**星数不随长度变化**（否则等于把密钥
 精确长度也发出去）。
 （ydclearance 挑战解码/跳转白名单一组随求解器删除而移除；检测命中后的响亮失败
-改由 `tests/test_fyiban_isolation.py` 与 `tests/test_waf_failure_tier.py` 覆盖。）
+改由 `tests/test_provenance_guard.py` 与 `tests/test_waf_failure_tier.py` 覆盖。）
 依赖：无网络（`__new__` 绕过构造，不发请求）、无 skip；
 `YIBAN_STATE_DIR` 用临时目录覆盖后在 tearDown 还原。
 """
@@ -219,11 +219,11 @@ class SigninFixes021Test(unittest.TestCase):
         os.environ["YIBAN_STATE_DIR"] = blocked
         signin._write_sign_state("13800138000", "failed", "err")  # 不应抛异常
 
-    def test_is_fyiban_url_helper(self):
-        self.assertTrue(signin._is_fyiban_url("https://f.yiban.cn/iapp7463"))
-        self.assertFalse(signin._is_fyiban_url("https://f.yiban.cn.evil.com/iapp7463"))
-        self.assertFalse(signin._is_fyiban_url("https://f.yiban.cn@evil.com/iapp7463"))
-        self.assertFalse(signin._is_fyiban_url("http://f.yiban.cn/iapp7463"))
+    def test_is_strict_yiban_url_helper(self):
+        self.assertTrue(signin._is_strict_yiban_url("https://f.yiban.cn/iapp7463"))
+        self.assertFalse(signin._is_strict_yiban_url("https://f.yiban.cn.evil.com/iapp7463"))
+        self.assertFalse(signin._is_strict_yiban_url("https://f.yiban.cn@evil.com/iapp7463"))
+        self.assertFalse(signin._is_strict_yiban_url("http://f.yiban.cn/iapp7463"))
 
     # ---- H9 ----
     def test_attempt_signin_returns_safe_err_not_raw_exception(self):
