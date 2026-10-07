@@ -1,9 +1,18 @@
-"""yiban-protocol——易班网页 OAuth + nightAttendance 链路的洁净室解析/构造库。
+"""协议库（洁净室）：易班网页 OAuth + nightAttendance 链路的**纯解析/构造**。
 
 只做解析（bytes/dict → 结构化数据）与构造（结构化参数 → 请求体/URL）。无网络、
 无会话管理、无重试、无日志、无全局状态。
 
-``crypto.encrypt_password`` 位于可选 ``[crypto]`` extra 之后，经 :func:`__getattr__`
+**来源与许可**：本包是洁净室实现，唯一规格来源是第一手旁路实拍与端点响应观察；
+实现过程未参考任何第三方易班项目源码。**MIT 许可**（版权与许可全文见同目录
+`LICENSE`；分发与再分发都必须随代码保留它）。主仓其余部分为 AGPL-3.0——两段
+许可各自约束自己的文件。
+
+**单一源**：本包原先以"逐字节同步外部独立库"的方式与主仓并存（同一份代码两份副本）。
+该独立库已归档，本仓即单一源——可直接在本仓改本包，不再有"只许同步覆盖、禁止在本仓
+修改"的纪律，修改记录以本仓提交为准。
+
+``crypto.encrypt_password`` 位于可选附加件之后，经 :func:`__getattr__`
 惰性暴露，因此导入核心包永不依赖第三方包。
 """
 
@@ -28,27 +37,27 @@ from .position import Position, SignPositionConfig, TimeWindow, parse_sign_posit
 __version__ = "0.1.0"
 
 __all__ = [
-    "__version__",
-    "YibanProtocolError",
-    "ParseError",
-    "SessionExpired",
-    "AuthorizePage",
-    "parse_authorize_page",
-    "extract_verify_request",
-    "Envelope",
-    "parse_api_envelope",
-    "UsersureResult",
-    "parse_usersure_response",
-    "looks_like_challenge",
     "App",
+    "AuthorizePage",
+    "Envelope",
     "Identity",
-    "parse_identity",
+    "ParseError",
     "Position",
-    "TimeWindow",
+    "SessionExpired",
     "SignPositionConfig",
-    "parse_sign_position",
-    "build_usersure_form",
+    "TimeWindow",
+    "UsersureResult",
+    "YibanProtocolError",
+    "__version__",
     "build_sign_in_body",
+    "build_usersure_form",
+    "extract_verify_request",
+    "looks_like_challenge",
+    "parse_api_envelope",
+    "parse_authorize_page",
+    "parse_identity",
+    "parse_sign_position",
+    "parse_usersure_response",
 ]
 
 

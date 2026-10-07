@@ -376,7 +376,6 @@ from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一�
 
 # 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用
 from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
-from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402,F401
 from yiban.infra import (  # noqa: E402
     account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
@@ -386,6 +385,7 @@ from yiban.mail import (  # noqa: E402
     config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
 )
 from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
+from yiban.platform import API_AUTH_URL  # noqa: E402,F401
 from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
@@ -793,7 +793,7 @@ SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 we
 # 再导出，`web.app.<名字>` 的取用面不变。
 # 日志格式（与 signin.py 相同）：
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-# logger 名允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：只认 `(\w+)` 的正则匹配不到
+# logger 名允许点分（`yiban.client` / `yiban.platform` …）：只认 `(\w+)` 的正则匹配不到
 # 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）会整行被丢弃，日志页只剩
 # 汇总与结果。
 
