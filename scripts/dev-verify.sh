@@ -16,6 +16,7 @@
 #   # 提交前自查（最快；两档）
 #   bash scripts/dev-verify.sh --fast              # 安全档：全量减已知长尾（约 1 分钟）
 #   bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻面（数秒，覆盖面不全）
+#                                                  # 空覆盖（无改动/无命中）退出码 3，不是 0
 #
 # 选项：
 #   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts
@@ -29,6 +30,7 @@
 #   --base REF       --fast / --fast-scoped 的比较基准（默认 HEAD = 只算工作树与暂存区改动；
 #                    传 origin/develop 则算整条分支的改动）
 #   --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
+#   （--ci / --fast / --fast-scoped / --fast-all 四者互斥：给两个即报错退出 2）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
 #   --log-dir DIR    日志目录（默认 <仓库父目录>/yiban-dev-verify-logs）；只对默认全量模式有效
@@ -62,26 +64,35 @@
 #
 # fast 模式口径（2026-10-07 立，依据实测）：
 #   8. **两档，都是为了提交前自查，都不替代门禁**：
-#      · `--fast`（安全档，默认推荐）：覆盖＝**全量 − 已知长尾**，无选择面损失。实测 153.6s → 57.9s。
+#      · `--fast`（安全档，默认推荐）：覆盖＝**全量 − 已知长尾**，无选择面损失。实测 149s → 57s。
 #      · `--fast-scoped`（范围档）：只跑改动相邻面，数秒级，但**未选中的用例没跑**。
 #      推送前必须跑全量（默认模式）或确认 CI 绿；fast 的绿不得当成门禁的绿。
-#      为什么要有它：全量实测 4312 用例 153.61s，单次改动后反复跑全量 + 报错重修极费时间。
+#      为什么要有它：全量实测 4325 用例（passed 4319 + skipped 6）约 149s，
+#      单次改动后反复跑全量 + 报错重修极费时间。
+#      墙钟随机器负载变：并发跑测时本档从约 57s 涨到约 104s（见 docs/dev/dev-verify.md）。
 #   9. 长尾剔除依据（实测 `--durations`）：单个用例 135.92s（占全量墙钟 88%）＋"同文件四条被
 #      --dist loadfile 串行化约 116s"两处。它们只与全仓扫描/等待超时有关，与提交前自查无关。
 #      剔除清单硬编码在 FAST_KNOWN_SLOW，改它要连着重测墙钟。
 #   10. 范围档的选择法（无依赖、无状态）：改动文件 → 测试目标。
 #      · 改到 tests/ 下的用例 → 直接跑它；
 #      · 改到源码 → **按导入路径**反查（裸词会大面积误命中：实测 `window` 裸词命中 70 个文件＝29%，
-#        导入路径只命中 10 个）；导入路径 0 命中时回退裸词并如实打印回退与命中量；
+#        导入路径只命中 11 个）；导入路径 0 命中时回退裸词并如实打印回退与命中量；
 #      · 改到本脚本自身 → 补 tests/test_dev_verify_entry.py（它冻结了 CI 命令表）。
 #   11. 两档都必须打印"选了什么、依据是什么、没覆盖什么"——防止把 fast 的绿读成门禁的绿。
 #      另：本脚本只跑 pytest。**前端改动**（frontend/ 下的 vitest / playwright）不在本脚本面内，
 #      范围档遇到 frontend/ 改动会如实说"未反查到用例"，不要读成"有人覆盖"。
+#   12. 退出码：0 = 绿；1 = 门禁红（ruff 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**——
+#      范围档没测到任何真实用例，只跑了入口自检。3 的语义是"没测到东西"，不是"测了但失败"：
+#      文档类改动的正常结果就是 3，推送前仍要跑全量。两种 fast 档都打印 covered=<用例数>
+#      （pytest 汇总四数之和）。ruff/pytest 真红时按它们的退出码，不被 3 覆盖。
 #
 # 守卫与自证：副本 .git 失活、副本残留 CRLF、副本跟踪集为空，
 #   都判为环境错误并响亮失败（退出码 2），不许把伪红当红交出去。
 #   这两道守卫由 scripts/e2e/dev-verify-e2e.sh 用"变异体"钉住：
 #   摘掉守卫段后 e2e 必须变红，证明守卫承重。
+#   第三道守卫是 FAST_KNOWN_SLOW 名单本身：guard_fast_known_slow 要求每条 nodeid
+#   指向存在的文件、且无前缀嵌套条目。它由 tests/test_dev_verify_entry.py 的
+#   DevVerifyFastModeTest 同批钉住（元测试 + 在场性）。
 # ============================================================
 set -euo pipefail
 
@@ -272,6 +283,28 @@ FAST_KNOWN_SLOW=(
     "tests/test_path_env_read_gate.py::GateNoDoubleCountTest::test_routed_key_is_counted_by_exactly_one_engine"
 )
 
+guard_fast_known_slow() { # 名单防漂移：nodeid 的文件必须存在，且不许有前缀嵌套条目
+    # 名单是硬编码。文件或类改名后 --deselect 指向空气，剔除静默失效：长尾溜回 --fast，
+    # 提交前自查又变回两分半。故在建副本之前先验名单。
+    # 前缀嵌套指同时有 `x.py::Cls` 与 `x.py::Cls::test_a`：前者已覆盖后者，后者是假条目。
+    local e pre bad="" nested=""
+    for e in "${FAST_KNOWN_SLOW[@]}"; do
+        [ -f "$REPO/${e%%::*}" ] || bad="$bad $e"
+    done
+    [ -z "$bad" ] ||
+        die "FAST_KNOWN_SLOW 有条目指向不存在的文件（改名/删除后 --deselect 指空气）：$bad"
+    for e in "${FAST_KNOWN_SLOW[@]}"; do
+        for pre in "${FAST_KNOWN_SLOW[@]}"; do
+            case "$e" in
+                "$pre"::*) nested="$nested $e（已被 $pre 覆盖）" ;;
+            esac
+        done
+    done
+    [ -z "$nested" ] ||
+        die "FAST_KNOWN_SLOW 有前缀嵌套条目（短条目已覆盖长条目，长条目多余）：$nested"
+    echo "DEV-VERIFY fast-guard: FAST_KNOWN_SLOW ${#FAST_KNOWN_SLOW[@]} 条全部指向存在的文件，无前缀嵌套"
+}
+
 fast_collect_changed() { # $1 = 基准 ref；$2 = 输出文件（临时）；git 失败即 die
     local base=$1 outfile=$2
     : >"$outfile"
@@ -288,7 +321,8 @@ fast_collect_changed() { # $1 = 基准 ref；$2 = 输出文件（临时）；git
     git --git-dir="$GITDIR" --work-tree="$REPO" ls-files --others --exclude-standard >>"$outfile" 2>/dev/null || true
 }
 
-select_fast_targets() { # $1 = 改动清单文件；stdout 输出 pytest 目标（空格分隔），依据打到 stderr
+select_fast_targets() { # $1 = 改动清单文件；$2 = 覆盖标记文件（写 1 表示空覆盖）；
+    # stdout 输出 pytest 目标（空格分隔），依据打到 stderr
     local f stem hits h
     local found=""
     # 只留"当前存在的文件"：删除类改动没有可跑的相邻面，留着只会让目标集混入空路径
@@ -298,7 +332,9 @@ select_fast_targets() { # $1 = 改动清单文件；stdout 输出 pytest 目标�
     done)
 
     if [ -z "$changed" ]; then
+        # 空覆盖之一：改动集为空。写标记给调用方，让"只跑了入口自检"与"真覆盖"可区分。
         echo "DEV-VERIFY(fast): 改动集为空 ⇒ 只跑 ruff + 入口自检（脚本不会把它当作'已覆盖全量'）" >&2
+        printf '1' >"$2"
         printf '%s' "tests/test_dev_verify_entry.py"
         return 0
     fi
@@ -330,7 +366,7 @@ select_fast_targets() { # $1 = 改动清单文件；stdout 输出 pytest 目标�
             continue
         fi
         # 精确优先：按**导入路径**反查（裸词会大面积误命中——实测 `window` 裸词命中 70 个
-        # 用例文件、占全体的 29%，而导入路径只命中 10 个）。导入路径为 0 命中时回退裸词，
+        # 用例文件、占全体的 29%，而导入路径只命中 11 个）。导入路径为 0 命中时回退裸词，
         # 并如实打印回退与命中量：宁可慢，不许漏。
         local mod=${f%.py}
         mod=${mod//\//.}
@@ -364,9 +400,13 @@ select_fast_targets() { # $1 = 改动清单文件；stdout 输出 pytest 目标�
 
     found=$(printf '%s\n' $found | sort -u | tr '\n' ' ')
     if [ -z "${found// /}" ]; then
+        # 空覆盖之二：改动有，但反查不到任何相邻用例。写标记给调用方（退出码 3）。
         echo "DEV-VERIFY(fast): ⚠ 改动没有任何相邻用例命中 ⇒ 只跑入口自检。" >&2
         echo "DEV-VERIFY(fast): ⚠ 这不代表改动能过门禁——推送前请跑全量。" >&2
         found="tests/test_dev_verify_entry.py"
+        printf '1' >"$2"
+    else
+        printf '0' >"$2"
     fi
     printf '%s' "$found"
 }
@@ -416,16 +456,34 @@ BASE=""
 BASESET=0
 FAST_KEEP_SLOW=0
 FAST_SCOPED=0
+FAST_EMPTY=0
+MODE_COUNT=0
+
+mark_mode() { # $1 = 本次给的模式标志名；模式标志互斥，给第二个即响亮拒绝
+    # 静默让后者胜是危险方向：`--fast --fast-scoped` 会退成范围档，
+    # 调用方以为跑了全量减长尾，实际只跑了相邻面。
+    MODE_COUNT=$((MODE_COUNT + 1))
+    [ "$MODE_COUNT" -le 1 ] ||
+        die "模式标志只能给一个（--ci / --fast / --fast-scoped / --fast-all 互斥）：第二个是 $1"
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --ci) MODE=ci ;;
-        --fast) MODE=fast ;;
+        --ci)
+            mark_mode --ci
+            MODE=ci
+            ;;
+        --fast)
+            mark_mode --fast
+            MODE=fast
+            ;;
         --fast-scoped)
+            mark_mode --fast-scoped
             MODE=fast
             FAST_SCOPED=1
             ;;
         --fast-all)
+            mark_mode --fast-all
             MODE=fast
             FAST_KEEP_SLOW=1
             ;;
@@ -477,6 +535,8 @@ if [ "$MODE" = ci ]; then
         die "--log-dir 在 --ci 模式下不生效（--ci 就地跑、不落日志）：去掉 --log-dir"
     [ "$KEEP_SET" = "0" ] ||
         die "--keep 在 --ci 模式下不生效（--ci 就地跑、不落日志）：去掉 --keep"
+    [ "$BASESET" = "0" ] ||
+        die "--base 在 --ci 模式下不生效（--ci 跑固定关键子集）：去掉 --base"
     run_ci
     exit 0
 fi
@@ -511,6 +571,12 @@ if [ "${DEV_VERIFY_LOGGED:-0}" != "1" ]; then
     exit "$rc"
 fi
 LOG="${DEV_VERIFY_LOG:-}"
+
+# 名单守卫放在落盘之后、建副本之前。落盘之后是因为本脚本被 tee 包装跑两遍：
+# 放这里只跑一次，且失败信息进日志。建副本之前是为了 fail fast（名单坏了就别复制 750 个文件）。
+if [ "$MODE" = fast ] && [ "$FAST_KEEP_SLOW" != "1" ]; then
+    guard_fast_known_slow
+fi
 
 PY="$FIXED_VENV/bin/python"
 [ -x "$PY" ] || die "固定 venv 不可用：$PY（不许退化成 PATH 上的任意 python）"
@@ -563,8 +629,13 @@ else
     rm -rf "$DEST"
     mkdir -p "$DEST"
 fi
-# 只排除 .git 与工具缓存目录：副本 = 当前工作树的可跑形态，不带 VCS 元数据与缓存残渣
-rsync -a --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
+# 只排除 .git 与工具缓存目录：副本 = 当前工作树的可跑形态，不带 VCS 元数据与缓存残渣。
+# -c 是"副本 = 当前工作树"这条不变式的守卫本体：默认快检只看尺寸 + 整秒 mtime，
+# 同一秒内改完且尺寸不变的改动会被判成"没变"而跳过，副本陈旧后跑出来的是旧代码，
+# 可能报绿。加了 -c 就按内容校验，rsync 非 0 退出即 die，故不变式由 rsync 承重。
+# 代价实测（本树 rsync 面内约 750 个文件，2026-10-07）：副本已同步时 rsync -a 约 0.65s，
+# 加 -c 约 1.4s，多付约 0.7s；--fast-scoped 整跑墙钟 9s（含选中用例自身的执行）。
+rsync -a -c --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
     --exclude='.ruff_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
 echo "DEV-VERIFY copy: $DEST"
 
@@ -582,11 +653,14 @@ cd "$DEST"
 DESELECT=()
 if [ "$MODE" = fast ]; then
     if [ "$FAST_SCOPED" = "1" ]; then
-        # 范围档：只跑"改动相邻面"。快（实测 ~4s），但**覆盖面明确不全**，故声明必须响亮。
+        # 范围档：只跑"改动相邻面"。**覆盖面明确不全**，故声明必须响亮。
+        # 墙钟分两档：改动集为空（只跑入口自检）约数秒；有真实目标时更大（见文档实测表）。
         FAST_CHANGED="$WORKDIR/fast-changed-$$.txt"
+        FAST_COVERAGE="$WORKDIR/fast-coverage-$$.flag"
         fast_collect_changed "$BASE" "$FAST_CHANGED"
-        TARGET=$(select_fast_targets "$FAST_CHANGED")
-        rm -f "$FAST_CHANGED"
+        TARGET=$(select_fast_targets "$FAST_CHANGED" "$FAST_COVERAGE")
+        FAST_EMPTY=$(cat "$FAST_COVERAGE" 2>/dev/null || printf '0')
+        rm -f "$FAST_CHANGED" "$FAST_COVERAGE"
         echo "DEV-VERIFY(fast-scoped): 基准 $BASE ｜ 目标集：$TARGET"
         echo "DEV-VERIFY(fast-scoped): ⚠ 只覆盖改动相邻面 —— 未被选中的用例**没有跑**，它们照样可能红"
     else
@@ -628,11 +702,25 @@ if [ -n "$summary" ]; then
     }
     echo "DEV-VERIFY pytest summary line: $summary"
     echo "DEV-VERIFY summary: passed=$(num passed) failed=$(num failed) skipped=$(num skipped) errors=$(num error)"
+    if [ "$MODE" = fast ]; then
+        covered=$(($(num passed) + $(num failed) + $(num error) + $(num skipped)))
+        echo "DEV-VERIFY(fast): covered=$covered（pytest 汇总四数之和：passed+failed+errors+skipped）"
+        if [ "$FAST_EMPTY" = "1" ]; then
+            echo "DEV-VERIFY(fast): ⚠ 空覆盖 ⇒ 退出码 3。3 的意思是「没测到东西」，不是「测了但失败」："
+            echo "DEV-VERIFY(fast): ⚠ 上面的 covered 只是入口自检的数。推送前必须跑全量。"
+        fi
+    fi
 else
     echo "DEV-VERIFY summary: 无（pytest 未产出汇总行）"
 fi
 
-rc=$ruff_rc
-[ "$py_rc" = "0" ] || rc=$py_rc
+# 退出码裁决只有这一处：ruff/pytest 真红按自己的码；两者都绿而覆盖为空时用 3。
+resolve_exit_code() { # $1 = ruff 退出码；$2 = pytest 退出码；$3 = 空覆盖(1/0)
+    local rc=$1
+    [ "$2" = "0" ] || rc=$2
+    if [ "$rc" = "0" ] && [ "$3" = "1" ]; then rc=3; fi
+    printf '%s' "$rc"
+}
+rc=$(resolve_exit_code "$ruff_rc" "$py_rc" "${FAST_EMPTY:-0}")
 echo "DEV-VERIFY exit_code=$rc"
 exit "$rc"
