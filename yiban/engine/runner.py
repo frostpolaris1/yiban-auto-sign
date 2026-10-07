@@ -563,6 +563,10 @@ def main(argv=None):
     # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
     event_rows = []
     delegated = set()   # 不在本执行体范围内的账号（多执行体分工）
+    #: 本执行体范围内、`results` 里没有的账号 → 判因（`executor_v3.UNREACHED_*`）。
+    #: 由执行体在轮末按队列事实填（见 `executor_v3._mark_unreached`）；汇总计数与
+    #: `sign_events` 留痕共用这一份判因（同源同口径）。
+    unreached = {}
     # 台账单池化后生产执行恒定走 v3 队列执行体（`sign_tasks`）。旧领取池
     # （`sign_claims`）的实现仍在本仓（`round.run_queue_retry` / `store.claims`），
     # 但已无生产调用点——冻结保留，仅由既有单测覆盖其四柱语义。容量预检 / 计划写状态
@@ -577,14 +581,14 @@ def main(argv=None):
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
-            reclaim=True, requeue_final=True)
+            reclaim=True, requeue_final=True, unreached=unreached)
     else:
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
             # 补签轮就是显式路径：`final:`/无前缀保守档只在有界一次性轮次复活。
             # 普通轮 False：保守档绝不被定时轮自动复活，档位纪律与领取层同一份。
-            requeue_final=_second_run)
+            requeue_final=_second_run, unreached=unreached)
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
     # 不能用本次（仅含目标账号的）状态整体覆盖保存：空 dict 时会直接删除状态文件，
@@ -623,13 +627,38 @@ def main(argv=None):
     # run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底。
     has_window_skip = False
     ok_n = fail_n = skip_n = no_pos_n = other_n = 0
+    #: 本执行体未执行的判因（`executor_v3.UNREACHED_*`，由执行体在轮末按队列事实填进
+    #: `unreached`）：`peer_n` = 行已由别的执行体领取/了结（跨执行体交接的正常形态，
+    #: **不是失败**）；`stay_n` = 没人接手（故障）。两桶必须分列：2026-10-07 生产把
+    #: "被兜底领走"的两个 worker 报成 51/33 个失败，数据侧看不出"没轮到"。
+    #: 第三种判因 `retry`（本执行体跑过、回炉待重试）仍计入 `fail_n`——那是真失败，
+    #: 与改动前的口径一致（该账号自己的状态文件写的就是"重试中"）。
+    peer_n = stay_n = 0
     for acc in accounts:
         if acc.phone in delegated:
             # 由其他执行体负责：既不算成功也不算失败。若把它当失败，多执行体形态下
             # 每个执行体都会把别人的活报成自己的失败（退出码与告警都会失真）。
             other_n += 1
             continue
-        _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
+        res = results.get(acc.phone)
+        if res is None:
+            # 本执行体没有结果：判因由执行体给出（同一份判因喂事件留痕，见
+            # `executor_v3._mark_unreached`）。**不得**在这里凭"没有结果"就判失败——
+            # 那样被别的执行体领走的账号会变成假失败。
+            reason = unreached.get(acc.phone)
+            if reason == executor_v3.UNREACHED_PEER:
+                peer_n += 1
+                continue
+            # 其余两种（跑过没成 / 没人接手）都是真失败，只是分列两个桶：
+            # `retry` 归 `fail_n`（与改动前的口径一致），`unclaimed` 归独立桶。
+            if reason == executor_v3.UNREACHED_RETRY:
+                fail_n += 1
+            else:
+                # 含"没人接手"与"判因不可得"两种：都按故障暴露，不静默吞掉。
+                stay_n += 1
+            has_real_failure = True
+            continue
+        _s, _m, _sk, status = res
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
         elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
@@ -651,6 +680,10 @@ def main(argv=None):
         summary += f"，🚫 {no_pos_n} 无点位"
     if other_n:
         summary += f"，⇄ {other_n} 由其他执行体负责"
+    if peer_n:
+        summary += f"，⇢ {peer_n} 已由其他执行体领取"
+    if stay_n:
+        summary += f"，⏳ {stay_n} 未执行（无人接手）"
     logger.info(f"==== 签到汇总（v{RELEASE_VERSION}）：{summary} ====")
     # 进度打点「收尾」：汇总处就是本轮成败成定局的那一刻（结果集已收齐、退出码已定）。
     # message 前缀（`轮次收尾：`）是本层与"执行体会话收尾"（`run_executor_v3` 的正常
