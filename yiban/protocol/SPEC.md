@@ -55,7 +55,7 @@ def parse_authorize_page(html: str) -> AuthorizePage
   提取后须归一化为标准单行折叠 PEM 文本（保留头尾行，中间 base64 行以 `\n` 连接，
   去掉首尾空白与 CRLF）。注意上游把 type 写成了 `type="test"`——**靠 `id="key"` 定位，
   不得依赖 type**。找不到 → `ParseError("public_key")`。
-- 夹具：`authorize_page.html`（真实页面，59KB）。
+- 夹具：`authorize_page.html`（**合成页，1,297 字节**；`page_use` 与 `id="key"` 的结构与真实授权页逐一对应，原页未入仓）。
 
 ### 2.2 `location.py` — verify_request 提取
 
@@ -113,7 +113,7 @@ def looks_like_challenge(body: str | bytes) -> bool
   `ydclearance`、`fengkongcloud`（大小写不敏感）；或响应体是 HTML 且包含
   `acw_sc` / `captcha` 类特征（弱信号必须带 HTML 上下文，避免把引用了
   captcha.js 的正常页误判成挑战）。
-- **硬约束：对夹具中所有正常页面/JSON（含 59KB 授权页）必须返回 False**——
+- **硬约束：对夹具中所有正常页面/JSON（含授权页）必须返回 False**——
   误报（把正常页当挑战）不可接受，漏报（检测不出来）可接受。
 - 保留响亮失败原则：调用方检测到 True 时应停止并人工介入，本库不提供任何绕过手段。
 
