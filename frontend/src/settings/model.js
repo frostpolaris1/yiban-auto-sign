@@ -114,7 +114,14 @@ export function scheduleSnapshot(data) {
   };
 }
 
-/* 从当前表单值构造调度快照（保存成功后回写 snap；与 collect 同口径）。 */
+/* 从当前表单值构造调度快照（保存成功后回写 snap；与 collect 同口径）。
+
+   ⚠ 字段名对齐（工单 4gvh 实测缺陷）：本函数读的**必须是 ScheduleCard 表单真实的字段名**
+   `muLo/muHi/sgLo/sgHi`。Vue 迁移把表单的 μ/σ 字段改成了这四个名字（DistViz 的词汇），
+   而本函数沿用了快照/服务端侧的 `muMin/muMax/sigmaMin/sigmaMax`——两侧不同名，`pctVal`
+   对 undefined 一律回默认值。后果：正态参数**永远不进保存体**（改了 μ/σ 不动脏，保存也
+   不落盘），且服务端一旦是别的 μ/σ，保存任何其它字段都会把它静默重置成默认。快照侧的
+   键名继续用服务端词汇（与 `scheduleSnapshot` 与 `mu_min_pct` 各键对齐），映射只此一处。 */
 export function scheduleFormSnapshot(form) {
   return {
     order: form.order || SCHEDULE_DEFAULTS.order,
@@ -126,10 +133,10 @@ export function scheduleFormSnapshot(form) {
     sat: form.sat ? 1 : 0,
     sun: form.sun ? 1 : 0,
     window: form.windowStart + " ~ " + form.windowEnd,
-    muMin: pctVal(form.muMin, SCHEDULE_DEFAULTS.muMin),
-    muMax: pctVal(form.muMax, SCHEDULE_DEFAULTS.muMax),
-    sigmaMin: pctVal(form.sigmaMin, SCHEDULE_DEFAULTS.sigmaMin),
-    sigmaMax: pctVal(form.sigmaMax, SCHEDULE_DEFAULTS.sigmaMax),
+    muMin: pctVal(form.muLo, SCHEDULE_DEFAULTS.muMin),
+    muMax: pctVal(form.muHi, SCHEDULE_DEFAULTS.muMax),
+    sigmaMin: pctVal(form.sgLo, SCHEDULE_DEFAULTS.sigmaMin),
+    sigmaMax: pctVal(form.sgHi, SCHEDULE_DEFAULTS.sigmaMax),
   };
 }
 
