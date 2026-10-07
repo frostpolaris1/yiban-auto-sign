@@ -109,6 +109,23 @@ def _bash_array_items(text, name):
     return items
 
 
+def _pytest_exec_command(text):
+    """抽全量/fast 的**真跑** pytest 命令（执行行 + 续行，不含 echo 回显行）。
+
+    只认 `"$PY" -m pytest` 且含 `$TARGET` 的执行行（脚本里唯一的执行点）；续行按行尾
+    反斜杠拼接。返回空串表示没抽到——调用方必须判成失败，否则"结构改了"会让断言恒真。
+    """
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith('"$PY" -m pytest') and "$TARGET" in ln:
+            cmd = ln.strip()
+            while cmd.endswith("\\") and i + 1 < len(lines):
+                i += 1
+                cmd = cmd[:-1].rstrip() + " " + lines[i].strip()
+            return cmd
+    return ""
+
+
 def _bash(script, timeout=60):
     """跑一段 bash 脚本，返回 (退出码, stdout+stderr 合并)。不建副本、不联网。"""
     p = subprocess.run(["bash", "-c", script], stdout=subprocess.PIPE,
@@ -267,6 +284,12 @@ class DevVerifyFastModeTest(unittest.TestCase):
             rc, out = run(["tests/test_x.py::test_module_level"],
                           "def test_module_level():\n    pass\n")
             self.assertEqual(rc, 0, f"模块级 nodeid（无类名）被误判：{out}")
+            # low#5：单段 `::` 还有第二种合法形状——类级 nodeid `x.py::Cls`（pytest
+            # --deselect 接受 file::Class 整类形状）。名字是真类名时不许判红。
+            rc, out = run(["tests/test_x.py::CliExitCodeTest"], live)
+            self.assertEqual(rc, 0, f"类级 nodeid（file::Class）被误判成不存在：{out}")
+            rc, out = run(["tests/test_x.py::NoSuchClass"], live)
+            self.assertEqual(rc, 2, f"假类名（既非类也非用例）没被拦：{out}")
             rc, out = run(["tests/test_missing.py::Cls::t"], live)
             self.assertEqual(rc, 2, f"文件不存在没被拦：{out}")
 
@@ -280,6 +303,29 @@ class DevVerifyFastModeTest(unittest.TestCase):
                       "rsync 必须带 -c：默认快检只看尺寸+整秒 mtime，"
                       "同尺寸同秒改动会被跳过，副本陈旧即静默假绿")
         self.assertIn("--delete", tokens, "副本必须 --delete：源里删掉的文件副本里也要没")
+
+    # ---- M3：--deselect 拼接必须真进到跑测命令里 ----
+
+    def test_fast_pytest_command_splices_deselect_flags(self):
+        """fast 的真跑命令必须把 DESELECT 数组拼进去（M3）。
+
+        审查实测（2026-10-07）：把真跑命令里的 `${DESELECT[@]+"${DESELECT[@]}"}` 整段
+        删掉后，入口测试 16 套全绿 rc=0——上一行 echo 仍宣称"已剔除 5 条已知长尾"，
+        而真跑命令里一条 `--deselect` 也没有。5 条长尾因此全部溜回 --fast，
+        自查墙钟从 57s 回到 146s，且绿色是假象。本条钉住"拼接承重"：抽真跑命令
+        （执行行 + 续行，不含 echo 回显）断言数组拼接在场。
+        突变验证：删掉该段 ⇒ 本条红（见 work/m3-mutant.log）。
+        """
+        cmd = _pytest_exec_command(self.text)
+        self.assertGreater(len(cmd), 50, "抽不出真跑 pytest 命令——结构改了？本条会因此变废断言")
+        self.assertRegex(
+            cmd, r"\$\{DESELECT\[@\]",
+            "真跑 pytest 命令没拼 DESELECT 数组：--deselect 不会生效，长尾静默溜回 --fast。"
+            "只留 echo 回显不算——回显不是跑测命令")
+        build = [ln for ln in self.text.splitlines()
+                 if "DESELECT+=(" in ln and "--deselect" in ln]
+        self.assertEqual(len(build), 1,
+                         "DESELECT 数组必须由 FAST_KNOWN_SLOW 逐条装配 --deselect（装配点应只有一处）")
 
     # ---- F4：空覆盖必须与"真覆盖"可区分 ----
 
@@ -373,6 +419,26 @@ class DevVerifyFastModeTest(unittest.TestCase):
                       "默认日志目录必须由模式决定（调用点在场性）")
 
     # ---- low#2 / low#3：参数不许静默忽略 ----
+
+    def test_repeated_same_mode_flag_is_idempotent(self):
+        """同一模式标志重复给必须幂等接受（L3）。
+
+        实测（2026-10-07 审查）：`--fast --fast` 被 `mark_mode` 当成"第二个模式标志"
+        报"互斥"退出 2。重复同一标志不改变语义，拒绝它只会误伤脚本化调用。
+        异名（`--fast --fast-scoped`）仍必须拒绝——那是危险方向，不许一起放开。
+        本条只跑纯函数，不拉起入口脚本（避免重跑 fast、触发套娃）。
+        """
+        src = _func_source(self.text, "mark_mode")
+        self.assertGreater(len(src), 50, "抽不出 mark_mode——结构改了？本条会因此变废断言")
+        prelude = "MODE_FLAG=\"\"\ndie() { echo \"环境错误：$*\" >&2; exit 2; }\n"
+        rc, out = _bash("%s%s\nmark_mode --fast\nmark_mode --fast\nprintf 'OK\\n'\n"
+                        % (prelude, src))
+        self.assertEqual((rc, out.strip()), (0, "OK"),
+                         f"同一模式标志重复给被拒绝（应为幂等接受）：{out}")
+        rc, out = _bash("%s%s\nmark_mode --fast\nmark_mode --fast-scoped\nprintf 'OK\\n'\n"
+                        % (prelude, src))
+        self.assertEqual(rc, 2, f"不同模式标志没被拒绝：{out}")
+        self.assertIn("互斥", out, f"拒绝信息必须说清互斥：{out}")
 
     def test_second_mode_flag_is_rejected_loudly(self):
         if os.environ.get("DEV_VERIFY_ENTRY_TEST_NESTED") == "1":

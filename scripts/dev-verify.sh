@@ -31,7 +31,8 @@
 #   --base REF       --fast / --fast-scoped 的比较基准（默认 HEAD = 只算工作树与暂存区改动；
 #                    传 origin/develop 则算整条分支的改动）
 #   --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
-#   （--ci / --fast / --fast-scoped / --fast-all 四者互斥：给两个即报错退出 2）
+#   （--ci / --fast / --fast-scoped / --fast-all 四者互斥：给两个**不同**模式即报错退出 2；
+#     同一模式标志重复给（如 --fast --fast）按幂等接受）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
 #   --log-dir DIR    日志目录（默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
@@ -324,15 +325,23 @@ guard_fast_known_slow() { # 名单防漂移：nodeid 的文件、类、用例三
                     bad="$bad $e（用例 $meth 不在 $path 里）"
                 ;;
             *::*)
-                # 模块级 nodeid（没有类名）：只验用例名，不按类的形状去找，免造假失败。
+                # 单段 `::` 有两种合法形状：模块级用例 `x.py::test_a`，与**类级** nodeid
+                # `x.py::Cls`（pytest --deselect 接受 file::Class 整类形状）。名字可能是
+                # 用例名或类名，故对两者取或——只认 def 会把合法类级 nodeid 误判（实测 rc=2 假红）。
                 meth=${e##*::}
-                grep -qE "^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+${meth}([^A-Za-z0-9_]|$)" "$REPO/$path" ||
-                    bad="$bad $e（用例 $meth 不在 $path 里）"
+                if grep -qE "^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+${meth}([^A-Za-z0-9_]|$)" "$REPO/$path" ||
+                    grep -qE "^[[:space:]]*class[[:space:]]+${meth}([^A-Za-z0-9_]|$)" "$REPO/$path"; then
+                    :
+                else
+                    bad="$bad $e（$meth 在 $path 里既不是用例名也不是类名）"
+                fi
                 ;;
         esac
     done
     [ -z "$bad" ] ||
         die "FAST_KNOWN_SLOW 有条目指向不存在的文件/类/用例（改名后 --deselect 被 pytest 静默忽略，剔除失效）：$bad"
+    # 前缀嵌套检查不按 nodeid 形状分支，只做字符串前缀比较：类级形状 `x.py::Cls`
+    # 与 `x.py::Cls::test_a` 同样可达（长条目被判为多余）。故上面的形状分支不影响本检查。
     for e in "${FAST_KNOWN_SLOW[@]}"; do
         for pre in "${FAST_KNOWN_SLOW[@]}"; do
             case "$e" in
@@ -497,14 +506,18 @@ BASESET=0
 FAST_KEEP_SLOW=0
 FAST_SCOPED=0
 FAST_EMPTY=0
-MODE_COUNT=0
+MODE_FLAG=""
 
-mark_mode() { # $1 = 本次给的模式标志名；模式标志互斥，给第二个即响亮拒绝
-    # 静默让后者胜是危险方向：`--fast --fast-scoped` 会退成范围档，
-    # 调用方以为跑了全量减长尾，实际只跑了相邻面。
-    MODE_COUNT=$((MODE_COUNT + 1))
-    [ "$MODE_COUNT" -le 1 ] ||
-        die "模式标志只能给一个（--ci / --fast / --fast-scoped / --fast-all 互斥）：第二个是 $1"
+mark_mode() { # $1 = 本次给的模式标志名；同名重复幂等接受，异名互斥响亮拒绝
+    # 同名重复（`--fast --fast`）按幂等接受：重复同一标志不改变语义，拒绝它只会误伤
+    # 脚本化调用。异名（`--fast --fast-scoped`）必须拒绝——静默让后者胜是危险方向：
+    # 会退成范围档，调用方以为跑了全量减长尾，实际只跑了相邻面。
+    if [ -z "$MODE_FLAG" ]; then
+        MODE_FLAG=$1
+        return 0
+    fi
+    [ "$MODE_FLAG" = "$1" ] ||
+        die "模式标志互斥（--ci / --fast / --fast-scoped / --fast-all）：已给 $MODE_FLAG，又给 $1"
 }
 
 while [ $# -gt 0 ]; do
