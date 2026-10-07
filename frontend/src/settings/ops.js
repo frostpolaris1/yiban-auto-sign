@@ -301,10 +301,10 @@
     busySet(true, c);
     return YB.dangerousSubmit({
       method: "POST", path: "/api/settings", body: body,
-      desc: "探针与账号验证会让服务器对全站账号发起真实易班登录（与签到同一风控面）。请输入当前管理员密码确认。"
+      desc: "探针与账号验证会让服务器对全站账号发起真实易班登录（与签到同一风控面）；报告发送时刻决定这份周期性证据何时到达。请输入当前管理员密码确认。"
     }).then(function (data) {
       ctx = c;
-      setTip((data && data.msg) || "探针设置已保存（将在设定时间后的调度周期自动执行）", false);
+      setTip((data && data.msg) || "探针与健康报告设置已保存（探针按设定时间后的调度周期执行；报告发送时刻下一轮生效）", false);
       return true;
     }, function (e) {
       ctx = c;

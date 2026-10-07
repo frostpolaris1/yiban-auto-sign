@@ -1382,6 +1382,9 @@ SPEC_MASTER_ONLY = {
     "sunday_sign", "saturday_sign", "registration_pause",
     "start_delay_max", "gap_max", "max_users", "max_accounts",
     "account_verify", "probe_enable", "probe_time", "probe_interval",
+    # issue #23：报告发送时刻/星期与探针同属"安全网本身"（改到没人看的钟点 = 静默
+    # 失去周期性证据），故同判据留 A 档门。
+    "health_report_time", "health_report_weekday",
 }
 
 
@@ -1404,6 +1407,8 @@ A_SAMPLES = {
     "probe_enable": 1,
     "probe_time": "06:00",
     "probe_interval": "3",
+    "health_report_time": "06:00",
+    "health_report_weekday": 3,
 }
 
 
