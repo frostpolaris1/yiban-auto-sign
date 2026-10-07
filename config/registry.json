@@ -968,6 +968,34 @@
     "tier": "master",
     "reload": "next-round"
   },
+  "YIBAN_HEALTH_REPORT_TIME": {
+    "type": "hhmm",
+    "default": null,
+    "group": [
+      "通知"
+    ],
+    "doc": "告警通道健康报告发送时刻（未配置=沿用「例行日清理线程唤醒即发」）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
+  "YIBAN_HEALTH_REPORT_WEEKDAY": {
+    "type": "int",
+    "domain": [
+      0,
+      6
+    ],
+    "default": null,
+    "group": [
+      "通知"
+    ],
+    "doc": "告警通道健康报告发送星期（0=周一…6=周日；未配置或越界=周一）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "next-round"
+  },
   "YIBAN_AUDIT_KEY": {
     "type": "string",
     "default": null,

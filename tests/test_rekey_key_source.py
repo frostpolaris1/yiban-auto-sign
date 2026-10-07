@@ -1395,10 +1395,14 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertTrue(urgent, "这种降级必须按 urgent 发")
 
     def test_daily_loop_is_wired_to_health_report(self):
-        """接线检查：日报调用确实挂在每日线程里，且经周报闸门（否则闸门是死代码）。"""
+        """接线检查：日报调用确实挂在每日线程里，且经周报闸门（否则闸门是死代码）。
+
+        闸门调用自 issue #23 起多传一个 `since=`（上次唤醒时刻，用于跨零点的区间补发），
+        故这里只认调用前缀——钉死空参写法会把"给闸门加参数"这种正当改动判成接线断裂。
+        """
         src = inspect.getsource(self.webapp.create_app)
         self.assertIn("_send_channel_health_report()", src)
-        self.assertIn("_channel_health_report_due()", src,
+        self.assertIn("_channel_health_report_due(", src,
                       "日报必须经周报闸门调用——直接调等于每天照发")
         self.assertIn("_daily_purge_loop", src)
 
