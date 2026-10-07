@@ -53,17 +53,23 @@ SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".ico", ".gif", ".webp", ".woff", ".wo
 SQUARE = [(118.88, 31.92), (118.90, 31.92), (118.90, 31.94), (118.88, 31.94)]
 
 
+def _dir_files(directory):
+    """某个生产目录下的文本文件相对路径（相对仓库根，用 `/` 分隔）。"""
+    out = []
+    root = os.path.join(BASE, directory)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            if name.lower().endswith(SKIP_SUFFIXES):
+                continue
+            out.append(os.path.relpath(os.path.join(dirpath, name), BASE).replace(os.sep, "/"))
+    return out
+
+
 def _production_files():
     """产出生产树里的文本文件相对路径（相对仓库根，用 `/` 分隔）。"""
     for directory in PRODUCTION_DIRS:
-        root = os.path.join(BASE, directory)
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-            for name in filenames:
-                if name.lower().endswith(SKIP_SUFFIXES):
-                    continue
-                rel = os.path.relpath(os.path.join(dirpath, name), BASE).replace(os.sep, "/")
-                yield rel
+        yield from _dir_files(directory)
     for name in PRODUCTION_FILES:
         if os.path.isfile(os.path.join(BASE, name)):
             yield name
@@ -77,6 +83,34 @@ def _read(rel):
 def _source(rel):
     with io.open(os.path.join(BASE, rel), encoding="utf-8") as f:
         return f.read()
+
+
+class ScanSurfaceIsAliveTest(unittest.TestCase):
+    """防废门：声明的扫描面必须真的贡献文件。
+
+    判据与 `scripts/check-shared-facts.sh` 同族——"某行声明的 scope 在树下贡献 0 个
+    文件即判红"。目录被删/改名、或被清空时，上面的各项禁断会**静默少扫**（扫 0 个
+    文件当然 0 命中），门看着还在其实已经废了。这里把"扫描面活着"本身钉住。
+    """
+
+    def test_every_declared_directory_contributes_files(self):
+        empty = [d for d in PRODUCTION_DIRS if not _dir_files(d)]
+        self.assertEqual(
+            empty, [],
+            "生产扫描面里有目录贡献 0 个文本文件（路径打错 / 已改名 / 已被清空）："
+            + ", ".join(empty))
+
+    def test_every_declared_root_file_exists(self):
+        missing = [n for n in PRODUCTION_FILES if not os.path.isfile(os.path.join(BASE, n))]
+        self.assertEqual(missing, [], "生产扫描面里点名的根级文件不存在：" + ", ".join(missing))
+
+    def test_walk_reaches_the_new_core_modules(self):
+        """扫描面必须走到本批新建的核心模块（否则禁断只是在扫空气）。"""
+        files = set(_production_files())
+        for rel in ("yiban/geo.py", "yiban/platform.py", "yiban/challenge.py",
+                    "yiban/protocol/__init__.py", "yiban/protocol/SPEC.md"):
+            with self.subTest(rel=rel):
+                self.assertIn(rel, files, "扫描面没走到本批新建的核心文件")
 
 
 class RetiredLayerRevivalTest(unittest.TestCase):

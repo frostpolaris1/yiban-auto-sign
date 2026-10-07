@@ -2,8 +2,8 @@
 
 > 本文件是**唯一规格来源**。所有实现与测试以本文件为准；
 > 规格本身来自第一手黑盒证据（真实流量旁路记录，2026-10-03，已脱敏）。
-> 证据形态快照（`tests/fixtures/`）留在归档的独立库仓库里，未随本包进主仓；
-> 主仓对下列每条契约的回归由既有测试覆盖（登录链形状、协议脱敏、wire 转储等）。
+> 证据形态快照与用例组随本批迁入主仓 `tests/protocol/`（夹具为合成数据，
+> **字段结构与真实响应逐一对应**；个人数据已替换为虚构值）。
 
 ---
 
@@ -270,12 +270,17 @@ yiban/protocol/
   identity.py  position.py  forms.py  crypto.py
   LICENSE         # MIT 许可全文（随包分发）
   SPEC.md         # 本文件
+tests/protocol/
+  conftest.py     # 夹具读取辅助（read_fixture / read_fixture_json）
+  fixtures/       # 证据夹具（合成数据，勿改动）
+  test_*.py       # 本文件各用例组的回归
 ```
 
 ## 5. 契约回归清单（最低集合）
 
-> 夹具（`tests/fixtures/`）与用例组留在归档的独立库仓库；本表列出**必须在主仓
-> 被覆盖**的行为，主仓由既有测试（登录链形状、协议脱敏、wire 转储）逐条承担。
+> 夹具与用例组在 `tests/protocol/`（`conftest.py` 提供 `read_fixture` /
+> `read_fixture_json`）；下表逐条对应那里的用例。
+> `身份` 与 `usersure` 两组解析**当前没有生产消费者**——它们的用例是库资产保全。
 
 | 用例组 | 断言 |
 |---|---|
