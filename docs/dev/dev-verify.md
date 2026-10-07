@@ -12,11 +12,19 @@ bash scripts/dev-verify.sh
 # CI 关键子集（ubuntu runner 上就地跑，不建副本、不落日志）
 bash scripts/dev-verify.sh --ci
 
+# 提交前自查（两档，见 §1.1）
+bash scripts/dev-verify.sh --fast              # 安全档：全量减已知长尾（实测约 1 分钟）
+bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻面（实测数秒）
+
 # 选项
 --repo DIR       源仓库目录（默认 = 脚本所在仓库根）
 --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
 --log-dir DIR    日志目录（默认 <仓库父目录>/yiban-dev-verify-logs）；只对默认全量模式有效
 --keep N         日志保留最近 N 份（默认 5）；只对默认全量模式有效
+--fast           提交前自查·安全档：全量 − FAST_KNOWN_SLOW（5 条长尾）。无选择面损失
+--fast-scoped    提交前自查·范围档：只跑改动相邻面。快，但未选中的用例没有跑
+--base REF       上面两档的比较基准（默认 HEAD；传 origin/develop 则算整条分支的改动）
+--fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
 -h, --help       打印脚本头部说明（脚本头就是配方正文）
 ```
 
@@ -25,6 +33,35 @@ bash scripts/dev-verify.sh --ci
 
 `--target` / `--log-dir` / `--keep` 只对默认全量模式有效。`--ci` 就地跑固定关键子集、
 不落日志，三个参数一律响亮拒绝（退出码 2）——静默忽略会让调用方以为自己的设置生效了。
+`--fast` / `--fast-scoped` 拒绝 `--target`（目标由该模式自己决定），`--base` 只对它们有效。
+
+## 1.1 fast 模式（2026-10-07 立，两档）
+
+**由来**：全量实测 **4312 用例 / 153.61s**，而瓶颈不在用例数——`--durations` 显示单个用例
+（`test_locked_db_exit_two_not_tampered`，等待锁检测超时）独占 **135.92s＝全量墙钟的 88%**，
+另有一个文件内 4 条被 `--dist loadfile` 串行化约 **116s**。删掉这 5 条，全量立刻落到 **57.9s**。
+修一处跑一次全量再报错重修，时间全花在这两条长尾上。
+
+| 档 | 命令 | 实测墙钟 | 覆盖 | 什么时候用 |
+|---|---|---|---|---|
+| 安全档 | `--fast` | **63s**（4307 通过） | 全量 − 5 条已知长尾，**无选择面损失** | 提交前默认用这个 |
+| 范围档 | `--fast-scoped` | **5s** | 只覆盖改动相邻面，**其余没跑** | 改一处只想快速看一眼 |
+
+**都不是门禁**：两档都会打印免责声明。推送前跑全量（默认模式）或确认 CI 绿；fast 的绿
+不得当成门禁的绿。
+
+**范围档的选择法**（无依赖、无状态）：改到 `tests/` 下的用例就直接跑它；改到源码就**按导入
+路径**反查（`from a.b.c import` / `import a.b.c` / `a.b.c.`）——**不能用裸词**：实测 `window`
+裸词命中 70 个用例文件（占 29%），导入路径只命中 10 个；导入路径 0 命中时才回退裸词，并
+如实打印回退与命中量。改到本脚本自身会补 `tests/test_dev_verify_entry.py`（它冻结 CI 命令表）。
+
+**已知边界（必须知道）**：本脚本只跑 pytest。**前端改动**（`frontend/` 下的 vitest / playwright）
+不在本脚本面内，范围档遇到 `frontend/` 改动会如实说"未反查到用例"——不要读成"有人覆盖"。
+
+**fast 用独立副本与独立锁**（`…/fast-worktree`、`dev-verify-fast-runlock`）：共用一份副本会互相
+`rm -rf`，而串行化会让"自查"去等一个跑满两分半的全量。fast 还复用上一份副本做增量同步
+（`rsync -a --delete`），把固定开销压到几秒。
+
 
 ## 2. 全量模式做了什么（每一步都有来历）
 

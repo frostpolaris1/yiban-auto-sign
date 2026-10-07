@@ -13,11 +13,22 @@
 #   bash scripts/dev-verify.sh
 #   # CI（ubuntu runner 上就地跑关键子集，不建副本）
 #   bash scripts/dev-verify.sh --ci
+#   # 提交前自查（最快；两档）
+#   bash scripts/dev-verify.sh --fast              # 安全档：全量减已知长尾（约 1 分钟）
+#   bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻面（数秒，覆盖面不全）
 #
 # 选项：
 #   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts
 #                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
 #                    就地跑：不建副本、不归一化、不落日志
+#   --fast           **提交前自查·安全档**：跑全量，但剔除已实测的 5 条长尾
+#                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 153.6s → 57.9s，
+#                    覆盖面无选择损失。**仍非门禁**：推送前跑全量或确认 CI 绿。
+#   --fast-scoped    **提交前自查·范围档**：只跑"改动相邻面"（实测约 4 秒）。
+#                    覆盖面明确不全，输出会声明"未被选中的用例没有跑"。
+#   --base REF       --fast / --fast-scoped 的比较基准（默认 HEAD = 只算工作树与暂存区改动；
+#                    传 origin/develop 则算整条分支的改动）
+#   --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
 #   --log-dir DIR    日志目录（默认 <仓库父目录>/yiban-dev-verify-logs）；只对默认全量模式有效
@@ -48,6 +59,24 @@
 #      **不截断**（只留 tail 会丢失败名单）。日志内含：解释器绝对路径与版本、
 #      被跑提交 sha、ruff 退出码、pytest 汇总四数、脚本退出码。
 #   7. 脚本不改测试本身的行为，也不需要任何人先改环境变量。
+#
+# fast 模式口径（2026-10-07 立，依据实测）：
+#   8. **两档，都是为了提交前自查，都不替代门禁**：
+#      · `--fast`（安全档，默认推荐）：覆盖＝**全量 − 已知长尾**，无选择面损失。实测 153.6s → 57.9s。
+#      · `--fast-scoped`（范围档）：只跑改动相邻面，数秒级，但**未选中的用例没跑**。
+#      推送前必须跑全量（默认模式）或确认 CI 绿；fast 的绿不得当成门禁的绿。
+#      为什么要有它：全量实测 4312 用例 153.61s，单次改动后反复跑全量 + 报错重修极费时间。
+#   9. 长尾剔除依据（实测 `--durations`）：单个用例 135.92s（占全量墙钟 88%）＋"同文件四条被
+#      --dist loadfile 串行化约 116s"两处。它们只与全仓扫描/等待超时有关，与提交前自查无关。
+#      剔除清单硬编码在 FAST_KNOWN_SLOW，改它要连着重测墙钟。
+#   10. 范围档的选择法（无依赖、无状态）：改动文件 → 测试目标。
+#      · 改到 tests/ 下的用例 → 直接跑它；
+#      · 改到源码 → **按导入路径**反查（裸词会大面积误命中：实测 `window` 裸词命中 70 个文件＝29%，
+#        导入路径只命中 10 个）；导入路径 0 命中时回退裸词并如实打印回退与命中量；
+#      · 改到本脚本自身 → 补 tests/test_dev_verify_entry.py（它冻结了 CI 命令表）。
+#   11. 两档都必须打印"选了什么、依据是什么、没覆盖什么"——防止把 fast 的绿读成门禁的绿。
+#      另：本脚本只跑 pytest。**前端改动**（frontend/ 下的 vitest / playwright）不在本脚本面内，
+#      范围档遇到 frontend/ 改动会如实说"未反查到用例"，不要读成"有人覆盖"。
 #
 # 守卫与自证：副本 .git 失活、副本残留 CRLF、副本跟踪集为空，
 #   都判为环境错误并响亮失败（退出码 2），不许把伪红当红交出去。
@@ -231,6 +260,118 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
 }
 
 # ------------------------------------------------------------
+# fast 模式：改动 → 测试目标（无依赖、无状态；只做文件级反查）
+# ------------------------------------------------------------
+#: --fast 默认剔除的长尾用例（2026-10-07 实测：第一条单点 135.92s，占全量墙钟 88%；
+#: 余下同处一个文件、被 --dist loadfile 串行化合计约 116s）。均为"等待超时/全仓扫描"型。
+FAST_KNOWN_SLOW=(
+    "tests/test_audit_transaction.py::CliExitCodeTest::test_locked_db_exit_two_not_tampered"
+    "tests/test_shared_facts_gate.py::SharedFactsGateLiveTest::test_current_repo_tree_is_green"
+    "tests/test_shared_facts_gate.py::SharedFactsNewFamilyCoverageTest::test_gate_is_silent_when_a_registered_key_is_dropped"
+    "tests/test_shared_facts_gate.py::SharedFactsNewFamilyCoverageTest::test_cap_equals_measured_hit_count_for_both_new_families"
+    "tests/test_path_env_read_gate.py::GateNoDoubleCountTest::test_routed_key_is_counted_by_exactly_one_engine"
+)
+
+fast_collect_changed() { # $1 = 基准 ref；$2 = 输出文件（临时）；git 失败即 die
+    local base=$1 outfile=$2
+    : >"$outfile"
+    # **必须在主壳里收集**：`die` 在 `$( )` 子壳里只杀子壳，会让"git 失败"退化成
+    # "改动集为空 ⇒ 只跑入口自检 ⇒ 报绿"——伪绿的另一种形状。
+    # 必须走 `--git-dir` / `--work-tree`（与脚本其余部分同一套解析）：Windows 侧建的 worktree
+    # 其 `.git` 文件里是 Windows 绝对路径，WSL 的 git 用 `-C` 解析不了（fatal: not a git repository）。
+    if ! git --git-dir="$GITDIR" --work-tree="$REPO" diff --name-only "$base" >>"$outfile" 2>/dev/null; then
+        die "改动集取不到（git diff 失败，base=$base）：常见原因是 worktree 的 .git 指向 Windows 路径而 WSL 解析不了——fast 拒绝在'改动未知'时给绿"
+    fi
+    # 暂存区与未跟踪文件：任一取不到只影响"多选/少选"，不改变"改动集本身可信"这一前提，
+    # 故此处不 die；但下面会把空集当"确实无改动"如实打印，不冒充已覆盖。
+    git --git-dir="$GITDIR" --work-tree="$REPO" diff --cached --name-only >>"$outfile" 2>/dev/null || true
+    git --git-dir="$GITDIR" --work-tree="$REPO" ls-files --others --exclude-standard >>"$outfile" 2>/dev/null || true
+}
+
+select_fast_targets() { # $1 = 改动清单文件；stdout 输出 pytest 目标（空格分隔），依据打到 stderr
+    local f stem hits h
+    local found=""
+    # 只留"当前存在的文件"：删除类改动没有可跑的相邻面，留着只会让目标集混入空路径
+    local changed
+    changed=$(sort -u "$1" | while IFS= read -r f; do
+        if [ -n "$f" ] && [ -f "$REPO/$f" ]; then printf '%s\n' "$f"; fi
+    done)
+
+    if [ -z "$changed" ]; then
+        echo "DEV-VERIFY(fast): 改动集为空 ⇒ 只跑 ruff + 入口自检（脚本不会把它当作'已覆盖全量'）" >&2
+        printf '%s' "tests/test_dev_verify_entry.py"
+        return 0
+    fi
+
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        case "$f" in
+            tests/test_*.py)
+                echo "DEV-VERIFY(fast): 改到用例 ⇒ 直接跑 $f" >&2
+                found="$found $f"
+                continue
+                ;;
+            scripts/dev-verify.sh)
+                echo "DEV-VERIFY(fast): 改入口脚本 ⇒ 补 tests/test_dev_verify_entry.py（它冻结了 CI 命令表）" >&2
+                found="$found tests/test_dev_verify_entry.py"
+                continue
+                ;;
+            */*)
+                stem=$(basename "$f")
+                stem=${stem%.*}
+                ;;
+            *)
+                continue
+                ;;
+        esac
+        # 主干短于 4 字符不做反查：'a1'、'ui' 这类会命中一大片，等于退回全量
+        if [ "${#stem}" -lt 4 ]; then
+            echo "DEV-VERIFY(fast): 跳过 $f（主干 '$stem' 过短，反查不可信）" >&2
+            continue
+        fi
+        # 精确优先：按**导入路径**反查（裸词会大面积误命中——实测 `window` 裸词命中 70 个
+        # 用例文件、占全体的 29%，而导入路径只命中 10 个）。导入路径为 0 命中时回退裸词，
+        # 并如实打印回退与命中量：宁可慢，不许漏。
+        local mod=${f%.py}
+        mod=${mod//\//.}
+        local parent=${mod%.*}
+        hits=$(grep -rlE --include='test_*.py' \
+            "from ${mod} import|import ${mod}|${mod}\.|from ${parent} import ${stem}" \
+            "$REPO/tests" 2>/dev/null || true)
+        if [ -n "$hits" ]; then
+            while IFS= read -r h; do
+                [ -n "$h" ] || continue
+                h=${h#"$REPO"/}
+                echo "DEV-VERIFY(fast-scoped): $f ⇒ $h（导入路径 $mod）" >&2
+                found="$found $h"
+            done <<<"$hits"
+            continue
+        fi
+        hits=$(grep -rl --include='test_*.py' -F -- "$stem" "$REPO/tests" 2>/dev/null || true)
+        if [ -n "$hits" ]; then
+            local n
+            n=$(printf '%s\n' "$hits" | grep -c . || true)
+            echo "DEV-VERIFY(fast-scoped): ⚠ $f 导入路径无命中 ⇒ 回退裸词 '$stem'，命中 $n 个用例文件（选择面偏宽）" >&2
+            while IFS= read -r h; do
+                [ -n "$h" ] || continue
+                h=${h#"$REPO"/}
+                found="$found $h"
+            done <<<"$hits"
+        else
+            echo "DEV-VERIFY(fast-scoped): ⚠ $f 未反查到任何用例（主干 '$stem'）——该改动可能无人覆盖" >&2
+        fi
+    done <<<"$changed"
+
+    found=$(printf '%s\n' $found | sort -u | tr '\n' ' ')
+    if [ -z "${found// /}" ]; then
+        echo "DEV-VERIFY(fast): ⚠ 改动没有任何相邻用例命中 ⇒ 只跑入口自检。" >&2
+        echo "DEV-VERIFY(fast): ⚠ 这不代表改动能过门禁——推送前请跑全量。" >&2
+        found="tests/test_dev_verify_entry.py"
+    fi
+    printf '%s' "$found"
+}
+
+# ------------------------------------------------------------
 # Windows 侧（Git Bash / MSYS）：换算路径后进 WSL 跑同一条命令
 # ------------------------------------------------------------
 case "$(uname -s)" in
@@ -271,10 +412,27 @@ MODE=full
 TARGET_SET=0
 LOGDIR_SET=0
 KEEP_SET=0
+BASE=""
+BASESET=0
+FAST_KEEP_SLOW=0
+FAST_SCOPED=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --ci) MODE=ci ;;
+        --fast) MODE=fast ;;
+        --fast-scoped)
+            MODE=fast
+            FAST_SCOPED=1
+            ;;
+        --fast-all)
+            MODE=fast
+            FAST_KEEP_SLOW=1
+            ;;
+        --base)
+            BASE=${2:?--base 需要取值}
+            BASESET=1
+            ;;
         --repo) REPO=${2:?--repo 需要取值} ;;
         --target)
             TARGET=${2:?--target 需要取值}
@@ -295,7 +453,7 @@ while [ $# -gt 0 ]; do
         *) die "未知参数：$1（用 -h 看用法）" ;;
     esac
     case "$1" in
-        --ci) shift ;;
+        --ci | --fast | --fast-scoped | --fast-all) shift ;;
         *) shift 2 ;;
     esac
 done
@@ -321,6 +479,16 @@ if [ "$MODE" = ci ]; then
         die "--keep 在 --ci 模式下不生效（--ci 就地跑、不落日志）：去掉 --keep"
     run_ci
     exit 0
+fi
+
+# fast 模式：与全量共用同一套副本 / 固定 venv / LF 归一化管线（跑法一致，只有目标集不同）。
+# 目标由"改动 → 相邻面"推导，在副本建好并 cd 进去之后算（那之前没有源仓的位置信息）。
+if [ "$MODE" = fast ]; then
+    [ "$TARGET_SET" = "0" ] ||
+        die "--target 在 --fast 模式下不生效（fast 自己从改动推导目标）：去掉 --target，或改用默认全量模式"
+    [ -n "$BASE" ] || BASE=HEAD
+elif [ "$BASESET" = "1" ]; then
+    die "--base 只对 --fast 有效（全量模式没有比较基准）：去掉 --base，或改用 --fast"
 fi
 
 # ------------------------------------------------------------
@@ -362,12 +530,20 @@ SHA=$(git --git-dir="$GITDIR" --work-tree="$REPO" rev-parse HEAD) || die "源 HE
 echo "DEV-VERIFY sha: $SHA"
 # dev-verify-mutant-end: source-git
 
-DEST="$WORKDIR/worktree"
+if [ "$MODE" = fast ]; then
+    # fast 用**独立副本 + 独立锁**：共用同一份副本会互相 rm -rf（既有的 flock 就是防这个），
+    # 而串行化会让"提交前自查"去等一个可能跑满两分半的全量——那正是 fast 要消灭的等待。
+    DEST="$WORKDIR/fast-worktree"
+    LOCKFILE="$WORKDIR/dev-verify-fast-runlock"
+else
+    DEST="$WORKDIR/worktree"
+    LOCKFILE="$WORKDIR/dev-verify-runlock"
+fi
 # 并发保护：副本路径固定、日志目录按 N 份轮转，两者都是共享资源；两个 dev-verify
 # 同时跑会互相 rm -rf 掉对方的副本（正是本脚本要消灭的那类伪红）。
 # 后到者等前者结束，不把对方的副本删掉。日志文件名带 PID，故日志本身不互撞。
 mkdir -p "$WORKDIR" || die "副本根目录建不了：$WORKDIR"
-exec 9>"$WORKDIR/dev-verify-runlock" || die "锁文件不可写：$WORKDIR/dev-verify-runlock"
+exec 9>"$LOCKFILE" || die "锁文件不可写：$LOCKFILE"
 if command -v flock >/dev/null 2>&1; then
     if ! flock -n 9; then
         echo "DEV-VERIFY: 另一个 dev-verify 正在跑，等它结束（共享副本目录不能被并发清空）"
@@ -378,10 +554,17 @@ else
     # "并发跑法互相清副本"正是本脚本要消灭的伪红形状，故这里响亮拒绝，不许降级跑。
     die "没有 flock（util-linux）：共享副本目录 $DEST 无法串行化，拒绝跑测；装上 flock 后再跑"
 fi
-rm -rf "$DEST"
-mkdir -p "$DEST"
+if [ "$MODE" = fast ] && [ -d "$DEST" ]; then
+    # fast 复用上一份副本、走增量同步：不变的文件不再重传，把"提交前自查"的固定开销
+    # 从"整树重建"降到"只同步改动"。不变式仍是"副本 = 当前工作树"——靠 rsync --delete
+    # 删掉源里已不存在的文件（**不加** --delete-excluded，故副本自带的 .git 存活）。
+    echo "DEV-VERIFY(fast): 增量同步已有副本（$DEST）"
+else
+    rm -rf "$DEST"
+    mkdir -p "$DEST"
+fi
 # 只排除 .git 与工具缓存目录：副本 = 当前工作树的可跑形态，不带 VCS 元数据与缓存残渣
-rsync -a --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
+rsync -a --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
     --exclude='.ruff_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
 echo "DEV-VERIFY copy: $DEST"
 
@@ -396,6 +579,30 @@ guard_lf "$DEST"
 
 cd "$DEST"
 
+DESELECT=()
+if [ "$MODE" = fast ]; then
+    if [ "$FAST_SCOPED" = "1" ]; then
+        # 范围档：只跑"改动相邻面"。快（实测 ~4s），但**覆盖面明确不全**，故声明必须响亮。
+        FAST_CHANGED="$WORKDIR/fast-changed-$$.txt"
+        fast_collect_changed "$BASE" "$FAST_CHANGED"
+        TARGET=$(select_fast_targets "$FAST_CHANGED")
+        rm -f "$FAST_CHANGED"
+        echo "DEV-VERIFY(fast-scoped): 基准 $BASE ｜ 目标集：$TARGET"
+        echo "DEV-VERIFY(fast-scoped): ⚠ 只覆盖改动相邻面 —— 未被选中的用例**没有跑**，它们照样可能红"
+    else
+        # 安全档（默认）：**全量 − 已知长尾**。零启发式、无漏选风险，只是剔掉 5 条与
+        # "提交前自查"无关的长尾（实测 153.6s → 57.9s）。目标保持默认 tests/。
+        echo "DEV-VERIFY(fast): 覆盖＝全量（tests/）减去已知长尾，无选择面丢失"
+    fi
+    if [ "$FAST_KEEP_SLOW" = "1" ]; then
+        echo "DEV-VERIFY(fast): --fast-all：不剔除长尾（本跑可能长达数分钟）"
+    else
+        for _n in "${FAST_KNOWN_SLOW[@]}"; do DESELECT+=(--deselect "$_n"); done
+        echo "DEV-VERIFY(fast): 已剔除 ${#FAST_KNOWN_SLOW[@]} 条已知长尾（等待型/全仓扫描型；全量与 CI 仍覆盖）"
+    fi
+    echo "DEV-VERIFY(fast): ⚠ 本模式仍不是门禁——推送前跑全量，或至少确认 CI 绿"
+fi
+
 echo "DEV-VERIFY ruff: ruff check yiban/ tests/ scripts/ web/ --quiet"
 set +e
 "$PY" -m ruff check yiban/ tests/ scripts/ web/ --quiet
@@ -404,9 +611,10 @@ set -e
 echo "DEV-VERIFY ruff_exit=$ruff_rc"
 
 # $TARGET 故意不加引号：允许 `--target "tests/a.py tests/b.py"` 传多个目标
-echo "DEV-VERIFY pytest: pytest $TARGET -q -p no:randomly -n auto --dist loadfile"
+echo "DEV-VERIFY pytest: pytest $TARGET -q -p no:randomly -n auto --dist loadfile ${DESELECT[*]:-}"
 set +e
-"$PY" -m pytest $TARGET -q -p no:randomly -n auto --dist loadfile 2>&1 | tee "$TMPOUT"
+"$PY" -m pytest $TARGET -q -p no:randomly -n auto --dist loadfile \
+    ${DESELECT[@]+"${DESELECT[@]}"} 2>&1 | tee "$TMPOUT"
 py_rc=${PIPESTATUS[0]}
 set -e
 echo "DEV-VERIFY pytest_exit=$py_rc"
