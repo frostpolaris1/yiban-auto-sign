@@ -117,8 +117,8 @@ def looks_like_challenge(body: str | bytes) -> bool:
     lowered = text.lower()
     if any(marker in lowered for marker in _CHALLENGE_MARKERS):
         return True
-    if "acw_sc" in lowered and any(marker in lowered for marker in _HTML_MARKERS):
-        return True
-    if "captcha" in lowered and any(marker in lowered for marker in _HTML_MARKERS):
-        return True
-    return False
+    html_context = any(marker in lowered for marker in _HTML_MARKERS)
+    if not html_context:
+        return False
+    # 弱信号（`_WEAK_HTML_MARKERS`）与 `acw_sc` 同门槛：必须带 HTML 上下文
+    return "acw_sc" in lowered or any(marker in lowered for marker in _WEAK_HTML_MARKERS)

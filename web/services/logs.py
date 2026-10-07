@@ -60,7 +60,7 @@ def _log_line_visible(level, logger_name):
 
 # 日志格式（与 signin.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-# logger 名必须允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：只认 `\w+` 的话，
+# logger 名必须允许点分（`yiban.client` / `yiban.platform` …）：只认 `\w+` 的话，
 # 签到链路的细节行（登录成功 / 生成定位 / 签到成功）整行匹配失败被丢弃，日志页只剩汇总
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] ([\w.]+): (.*)")
 
