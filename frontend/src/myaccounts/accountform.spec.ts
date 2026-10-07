@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   CODE_CLEAR,
   CREDS_GATE_DESC,
+  FORM_TEXTS,
   MISSING_DETAIL,
   availableUserItems,
   buildAccountPayload,
   credsWritten,
   emailBaseItems,
   formSubtitle,
+  formTexts,
   formTitle,
   isMaskedPhone,
   makeSnapshot,
@@ -202,5 +204,21 @@ describe("标题/副标题/主按钮文案（两变体 × 新增/编辑）", () 
     expect(submitLabel({ editing: true, variant: "admin" })).toBe("保存修改");
     expect(submitLabel({ editing: false, variant: "user" })).toBe("提交账号");
     expect(submitLabel({ editing: false, variant: "admin" })).toBe("添加账号");
+  });
+});
+
+describe("口令字段文案（两套凭据必须读得出区别）", () => {
+  // 本站登录密码与易班口令是两套凭据：本字段改的是**易班**口令，且刻意不做本地策略校验，
+  // 标签一旦丢掉限定词，管理员会把错误口令一路存下去（生产已发生过：用户至今登不上）。
+  it("标签带「易班」限定词，两变体都不省", () => {
+    expect(formTexts("user").passwordLabel).toBe("易班密码");
+    expect(formTexts("admin").passwordLabel).toBe("易班密码");
+  });
+
+  it("两变体都有一行区分说明，且写明不是本站登录密码", () => {
+    for (const variant of ["user", "admin"] as const) {
+      expect(FORM_TEXTS[variant].passwordHelp).toContain("易班");
+      expect(FORM_TEXTS[variant].passwordHelp).toContain("本站");
+    }
   });
 });

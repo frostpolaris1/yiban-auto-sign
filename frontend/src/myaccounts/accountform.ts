@@ -70,6 +70,9 @@ export const FORM_TEXTS = {
     phonePlaceholder: "登录易班的手机号",
     passwordLabel: "易班密码",
     passwordNewPlaceholder: "用于自动登录签到",
+    // 本站也有自己的登录密码（本页的「修改密码」改的是它）。缺这一行区分说明时，用户与
+    // 管理员都会把本字段当成本站密码——生产实证：管理员据此改错凭据，账号归属人登不上。
+    passwordHelp: "用于自动登录易班签到，不是本站登录密码。",
     modelLabel: "设备型号（可选，不清楚就留空）",
     modelHelp: "仅在提示「请使用授权设备」时填写，不确定就留空。",
     codeLabel: "设备识别码（可选，不清楚就留空）",
@@ -82,8 +85,12 @@ export const FORM_TEXTS = {
     nameHelp: "留空时在列表里按顺序显示为「账号1」「账号2」，便于区分。",
     phoneLabel: "手机号",
     phonePlaceholder: "易班登录手机号",
-    passwordLabel: "密码",
+    // 限定词不可省：管理端丢了「易班」二字时，管理员会把它读成"用户在本站的登录密码"。
+    // 该字段是易班凭据，**有意不做本地口令策略校验**（必须与易班平台逐字一致），
+    // 故标签一旦误导，错误凭据会被静默接受。
+    passwordLabel: "易班密码",
     passwordNewPlaceholder: "易班登录密码",
+    passwordHelp: "用于自动登录易班签到，不是本站登录密码（改它不影响该用户登录本站）。",
     modelLabel: "设备型号（选填）",
     modelHelp: "学校开启设备绑定时建议填写；不确定就留空。",
     codeLabel: "设备识别码（选填）",

@@ -40,10 +40,50 @@ test("登录 → 审计页：首屏一页、加载更多补齐、动作过滤收
   await expect(page.locator(".audit-meta")).toContainText("共 1 条");
   await expect(rows).toContainText("e2e_seed_3");
 
+  // 4b) 筛选是一段**表单**（311u 同族载体）：移动端键盘的「搜索/前往」键要有去处，且回车
+  //     不得走原生 GET（整页重载会丢掉已加载批次与过滤态）。筛选是服务端查询，故行数就是
+  //     关键字真的发出去了的证据；"一次回车只发一次请求"钉住处理器内的 preventDefault。
+  const toolbar = page.locator('form[role="search"]');
+  await expect(toolbar, "审计筛选必须是 form[role=search]（否则移动端行动键无处可去）").toHaveCount(1);
+  await expect(toolbar.getByRole("button", { name: "查询" })).toBeVisible();
+  let auditReqs = 0;
+  await page.route("**/api/audit-logs**", (route) => {
+    auditReqs += 1;
+    void route.continue();
+  });
+  const auditUrl = page.url();
+  await page.fill('input[placeholder="如 login_success"]', "e2e_seed_7");
+  auditReqs = 0;
+  await page.press('input[placeholder="如 login_success"]', "Enter");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("e2e_seed_7");
+  expect(page.url(), "回车被原生 GET 接管").toBe(auditUrl);
+  await expect.poll(() => auditReqs, { message: "回车没发出查询请求" }).toBeGreaterThan(0);
+  expect(auditReqs, "一次回车发了两遍查询请求").toBe(1);
+
   // 5) 重置回到首屏一页
   await page.getByRole("button", { name: "重置" }).click();
   await expect(rows).toHaveCount(50);
   await expect(more).toBeEnabled();
+
+  // 6) 组合输入（中文输入法）期的回车**不得**发起查询——否则发出去的是未提交的拼音串。
+  //    这条与日志页那条是各自的载体（两页各一份守卫与标志），故各自钉住：只留一处会被
+  //    "改一处忘另一处"绕过。Chromium 不为 isComposing 跳过隐式提交，所以钉的是提交路径上
+  //    的守卫。用 CDP 造真组合态；后半段换干净页面做对照，证明上面的"0"不是"回车没生效"。
+  await page.goto("/data/audit");
+  const actionInput = page.locator('input[placeholder="如 login_success"]');
+  const cdp = await page.context().newCDPSession(page);
+  await actionInput.click();
+  await cdp.send("Input.imeSetComposition", { text: "zhongguo", selectionStart: 8, selectionEnd: 8 });
+  auditReqs = 0;
+  await page.press('input[placeholder="如 login_success"]', "Enter");
+  await page.waitForTimeout(400);
+  expect(auditReqs, "组合期的回车发起了查询（发出去的是未提交的拼音串）").toBe(0);
+  await page.goto("/data/audit");
+  await page.fill('input[placeholder="如 login_success"]', "e2e_seed_9");
+  auditReqs = 0;
+  await page.press('input[placeholder="如 login_success"]', "Enter");
+  await expect.poll(() => auditReqs, { message: "非组合期回车没发出查询请求（对照失败）" }).toBe(1);
 });
 
 test("审计页：非管理员登录被守卫挡回用户端", async ({ page }) => {

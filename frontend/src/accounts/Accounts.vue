@@ -141,6 +141,18 @@ function totalOf(group: string): number {
 function groupCount(group: string): string {
   return countLabel(totalOf(group), rowsOf(group).length, search.value[group] ?? "");
 }
+
+/**
+ * 检索表单提交（回车 / 点「搜索」）。
+ *
+ * 桌面端的筛选本就是即时的（`search` 由 v-model 驱动 computed），故这里刻意**不引入**
+ * "提交前不过滤"的第二态——那会退掉既有语义。提交只做一件用户看得见的事：让输入框失焦，
+ * 收起移动端软键盘，把筛出来的结果露出来。表单本身挡住原生 GET，避免整页重载丢掉内存态
+ * （选择态、快照指纹、已加载的完整手机号都只在内存里）。
+ */
+function commitSearch(group: string): void {
+  rootEl.value?.querySelector<HTMLInputElement>(`#${group}-search`)?.blur();
+}
 function isFiltering(group: string): boolean {
   return totalOf(group) > 0 && rowsOf(group).length === 0;
 }
@@ -613,10 +625,19 @@ const M = {
               <div class="panel-head-row">
                 <h2 class="panel-title">{{ GROUPS[g].title }}</h2>
                 <div class="acct-tools">
-                  <label class="acct-search">
-                    <span class="sr-only">{{ GROUPS[g].searchLabel }}</span>
+                  <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
+                       （原来只有裸 input + v-model，那个键按下去什么也不发生）。 -->
+                  <form
+                    class="acct-search"
+                    role="search"
+                    :aria-label="GROUPS[g].searchLabel"
+                    @submit.prevent="commitSearch(g)"
+                  >
+                    <label class="sr-only" :for="g + '-search'">{{ GROUPS[g].searchLabel }}</label>
                     <input v-model="search[g]" type="search" class="input" :id="g + '-search'" placeholder="名称 / 手机号 / 用户名" />
-                  </label>
+                    <!-- 可读名沿用同一份口径（可见「搜索」逐字保留，WCAG 2.5.3） -->
+                    <button type="submit" class="btn btn--ghost btn--sm" :aria-label="GROUPS[g].searchLabel">搜索</button>
+                  </form>
                 </div>
               </div>
               <p class="panel-sub">{{ GROUPS[g].sub }}</p>
@@ -900,6 +921,7 @@ const M = {
         <label class="field">
           <span class="field-label">{{ T.passwordLabel }}<span v-if="!formEditing" class="req" aria-hidden="true">*</span></span>
           <input v-model="f.password" class="input" type="password" autocomplete="new-password" :placeholder="formEditing ? PASSWORD_UNCHANGED_PLACEHOLDER : T.passwordNewPlaceholder" />
+          <span class="field-help">{{ T.passwordHelp }}</span>
         </label>
 
         <label class="field">
