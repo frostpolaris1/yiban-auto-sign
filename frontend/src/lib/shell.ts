@@ -172,9 +172,12 @@ export function pwMinClasses(): number {
 /**
  * 邮箱展示脱敏（core.js 唯一实现，幂等）。
  *
- * 与 `maskPhone` 同理：`tests/test_web_mask_email_parity.py` 把 core.js 的实现与后端
+ * `tests/test_web_mask_email_parity.py` 把 core.js 的实现与后端
  * `yiban.masking.mask_email` **真跑对拍**，故展示面一律消费它，不在 TS 里重写第二份
  * （用户管理页只渲染遮罩串，完整邮箱不进任何 DOM 文本或属性）。
+ *
+ * 手机号**没有**对应助手：号码遮罩唯一实现在后端（`yiban.masking.mask_phone`），
+ * 展示面直接渲染服务端下发值，前端零自遮（census P0-3 契约化，2026-10-06）。
  */
 export function maskEmail(email: string): string {
   const fn = (raw() as { maskEmail?: (e: string) => string }).maskEmail;
@@ -232,20 +235,6 @@ export function passwordHint(admin: boolean): string {
 export function ownerEmailVisible(): boolean {
   const fn = raw().prefs?.ownerEmailVisible;
   return fn ? fn() : false;
-}
-
-/**
- * 手机号展示脱敏（core.js 唯一实现，幂等）。
- * 服务端已是脱敏出口；页面对已脱敏值再走一遍是**防御性**的（与 legacy 事件行同做法），
- * 万一日后某条数据路径漏了服务端脱敏，这里仍不会把完整号渲染出去。
- */
-export function maskPhone(phone: string): string {
-  const fn = (raw() as { maskPhone?: (p: string) => string }).maskPhone;
-  if (fn) return fn(phone);
-  // 无外壳时的保守兜底：长度够就按"前 3 后 4"遮罩（与后端口径同形）
-  const p = String(phone ?? "");
-  if (p.indexOf("*") !== -1) return p;
-  return p.length >= 7 ? `${p.slice(0, 3)}****${p.slice(-4)}` : p;
 }
 
 export function setOwnerEmailVisible(v: boolean): void {

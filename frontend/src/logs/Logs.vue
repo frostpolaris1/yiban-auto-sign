@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, maskPhone, toast } from "../lib/shell";
+import { api, toast } from "../lib/shell";
 import { isValidDate } from "./date-guard.js";
 import {
   EVENT_PAGE_SIZES,
@@ -21,8 +21,8 @@ import {
 
 /* 签到日志页（GET /api/logs，三分区：日志 / 签到事件 / 探针记录）。
    纪律：
-   · 脱敏单出口在服务端（日志行 _mask_log_phones、事件 phone _mask_phone + 截断）；前端对
-     已脱敏值再走一遍 shell.maskPhone 是**防御性**的（与 legacy 同做法）；全程零 v-html。
+   · 脱敏单出口在服务端（日志行 _mask_log_phones、事件 phone _mask_phone + 截断），
+     前端只有插值渲染、**零自遮**（`+86`/分隔符形态由后端单源收口）；全程零 v-html。
    · 三元组 total_lines/returned/truncated 由服务端同轴推出，前端只按 truncated 显示
      「已截断」，不得用行数自行推断（见 format.ts）。
    · 翻页/排序是**客户端**行为（接口按日一次性返回当日结果集，封顶 5000 行）。
@@ -378,8 +378,8 @@ onBeforeUnmount(() => {
               <template #default="{ row }">{{ row.time || "--:--:--" }}</template>
             </el-table-column>
             <el-table-column prop="phone" label="账号" width="150">
-              <!-- 服务端已脱敏；这里再走一遍 shell.maskPhone 是防御性的（与 legacy 同做法） -->
-              <template #default="{ row }">{{ maskPhone(row.phone) }}</template>
+              <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
+              <template #default="{ row }">{{ row.phone }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="130" sortable="custom">
               <template #default="{ row }">
@@ -430,7 +430,8 @@ onBeforeUnmount(() => {
               <template #default="{ row }">{{ row.time || "--:--:--" }}</template>
             </el-table-column>
             <el-table-column prop="phone" label="账号" width="150">
-              <template #default="{ row }">{{ maskPhone(row.phone) }}</template>
+              <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
+              <template #default="{ row }">{{ row.phone }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="130" sortable="custom">
               <!-- 探针只有 failed/其它 两态：非 failed 一律「正常」，原始码保留在 title -->

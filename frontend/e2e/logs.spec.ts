@@ -191,6 +191,19 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.locator("#ping-btn").click();
   await expect(page.locator("#health-ping .badge")).toBeVisible();
 
+  // 急停档：把 /api/settings 的 global_pause 改写成 1（**只改响应、不触共享实例的 .env**），
+  // 重载后运行状态徽标必须报"暂停"且语气档为 bad。census P1-5：急停生效时前端暂停标签
+  // 必须与后端 state 一致（文案 + tone），不得显示"正常运行"（假安心）。
+  await page.route("**/api/settings**", async (route) => {
+    const body = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...body, global_pause: 1 } });
+  });
+  await page.reload();
+  await expect(page.locator("#health-global-pause")).toContainText("全局暂停中");
+  await expect(page.locator("#health-global-pause .badge")).toHaveClass(/badge--bad/);
+  await page.unroute("**/api/settings**");
+  await page.reload();
+
   // 失败降级（同一会话）：拦截签到事件接口 → 页级状态条 + 卡内错误行
   await page.route("**/api/admin/sign-events**", (route) => route.fulfill({
     status: 500,
@@ -423,12 +436,10 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
   await expect(distViz).toContainText("均匀分布");
 
-  // ⑧b 峰尖拖拽行为钉（既有功能钉，一条不许丢）：在 dist-viz canvas 上做一次真指针拖拽
-  //     （横向 = 峰时 μ、纵向 = 散布 σ），断言拖动后 μ 读数（峰值中心）与 σ 读数**同时**变化。
-  //     为什么必须真拖：这条交互纯指针驱动，单元测试覆盖不到；而 DistViz 早期实现一次手势步里
-  //     先 emit μ 再 emit σ，第二次展开的是父组件尚未更新的 props，μ 被旧值静默还原（每次拖动
-  //     只有 σ 生效）——CI 全绿也照样是坏的。断言 μ 必须变化正是防止该回归的空转钉。
-  //     峰尖拖拽只在正态分布下武装，故先把分布切到「正态分布」再拖（顺带钉住切换即时生效）。
+  // ⑧b 正态图表默认只读（工单 4gvh，用户 2026-10-04 口径）：画布与滑杆这类"直接操作控件"
+  //     在窄屏有误触风险，默认一律只读，按下显式「编辑」按钮才可操作。门必须是真的状态
+  //     切换（不是视觉覆盖）：只读态指针事件不得到达处理函数、键盘微调不生效、滑杆真禁用。
+  //     峰尖拖拽只在正态分布下武装，故先把分布切到「正态分布」再验。
   await page.locator('[data-select-field="ss-dist"] .el-select__wrapper').click();
   await page.getByRole("option", { name: "正态分布（钟形拟人）" }).click();
   await expect(distViz).toHaveAttribute("data-dist-state", "normal");
@@ -437,25 +448,126 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await canvas.scrollIntoViewIfNeeded();
   const muInput = page.locator('[data-ed="muMid"]');
   const sgLoInput = page.locator('[data-ed="sgLo"]');
+  const editBtn = page.locator("#ss-edit");
+
+  /** 画布中部按下 → 向右下拖动一次（远离时间轴底座 = 走峰尖抓取路径）。 */
+  const dragCanvas = async (): Promise<void> => {
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("dist-viz canvas 没有可拖拽的边界框");
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y + 30, { steps: 8 });
+    await page.mouse.up();
+  };
+
+  // ⑧b-1 默认只读（工单行为一）：门关着时拖拽不改变任何参数——先把行为钉在最前，
+  //       否则"现状默认可操作"这条实缺口会被后面的选择器断言盖住，红得看不出根因。
+  const muIdle = await muInput.inputValue();
+  const sgIdle = await sgLoInput.inputValue();
+  await dragCanvas();
+  await expect.poll(async () => muInput.inputValue()).toBe(muIdle);
+  await expect.poll(async () => sgLoInput.inputValue()).toBe(sgIdle);
+
+  // ⑧b-2 默认只读：按钮态可见且可及（aria-pressed），画布真只读（aria-disabled + 只读类）。
+  await expect(editBtn).toHaveAttribute("aria-pressed", "false");
+  await expect(editBtn).toHaveText("编辑");
+  await expect(canvas).toHaveAttribute("aria-disabled", "true");
+  await expect(canvas).toHaveClass(/is-readonly/);
+  await expect(page.locator("[data-dist-hint]")).toBeHidden();
+
+  // ⑧b-3 只读态：键盘微调不生效（画布不该是隐藏后门）。
+  await canvas.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(async () => muInput.inputValue()).toBe(muIdle);
+
+  // ⑧c 按下「编辑」→ 进入可操作态（工单行为二）：按钮态切换可见 + 画布与滑杆同时解锁。
+  await editBtn.click();
+  await expect(editBtn).toHaveAttribute("aria-pressed", "true");
+  await expect(editBtn).toHaveText("完成");
+  await expect(canvas).toHaveAttribute("aria-disabled", "false");
+  await expect(canvas).not.toHaveClass(/is-readonly/);
+  await expect(page.locator("[data-dist-hint]")).toBeVisible();
+
+  // ⑧c-1 峰尖拖拽行为钉（既有功能钉，一条不许丢）：一次真指针拖拽（横向 = 峰时 μ、
+  //       纵向 = 散布 σ），断言 μ 读数（峰值中心）与 σ 读数**同时**变化。
+  //       为什么必须真拖：这条交互纯指针驱动，单元测试覆盖不到；而 DistViz 早期实现一次手势
+  //       步里先 emit μ 再 emit σ，第二次展开的是父组件尚未更新的 props，μ 被旧值静默还原
+  //       （每次拖动只有 σ 生效）——CI 全绿也照样是坏的。断言 μ 必须变化正是防该回归的空转钉。
   const muBefore = await muInput.inputValue();
   const sgBefore = await sgLoInput.inputValue();
-  const canvasBox = await canvas.boundingBox();
-  if (!canvasBox) throw new Error("dist-viz canvas 没有可拖拽的边界框");
-  // 从画布中部按下（远离时间轴底座 → 走峰尖相对抓取路径），向右下拖动：右移调 μ、下移调 σ。
-  const startX = canvasBox.x + canvasBox.width / 2;
-  const startY = canvasBox.y + canvasBox.height / 2;
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + 70, startY + 40, { steps: 8 });
-  await page.mouse.up();
+  await dragCanvas();
   await expect.poll(async () => muInput.inputValue()).not.toBe(muBefore);
   await expect.poll(async () => sgLoInput.inputValue()).not.toBe(sgBefore);
 
-  // ⑧c 键盘可达性（重设计新增提示的对应行为钉）：画布聚焦后方向键微调峰值时刻。
+  // ⑧c-2 键盘可达性（重设计新增提示的对应行为钉）：可操作态下画布聚焦后方向键微调峰值时刻。
   await canvas.focus();
   const muBeforeKey = await muInput.inputValue();
   await page.keyboard.press("ArrowRight");
   await expect.poll(async () => muInput.inputValue()).not.toBe(muBeforeKey);
+
+  // ⑧d 退出路径（工单行为三）：再按「完成」回到只读；此后直接操作一律再次失效。
+  await editBtn.click();
+  await expect(editBtn).toHaveAttribute("aria-pressed", "false");
+  await expect(editBtn).toHaveText("编辑");
+  await expect(canvas).toHaveClass(/is-readonly/);
+  const muLocked = await muInput.inputValue();
+  await dragCanvas();
+  await expect.poll(async () => muInput.inputValue()).toBe(muLocked);
+
+  // ⑧e 只读门不丢既有保存语义（工单行为四）：⑧c 在可操作态改出的 μ/σ 走既有显式保存
+  //     （含口令门）→ 刷新后值保持，且门复位到默认只读。口令门档位 full + 300s 豁免：
+  //     本用例内刚复核过口令（见 ④），此处可能不再弹出——两种情形都算通过。判据只钉
+  //     "落盘 + 回读一致 + 门复位"；本段刻意不掺掐头去尾（见 ⑧f 放在刷新区之后的原因：
+  //     窗口/裁剪一变，峰值中心与散布的派生读数跟着变，混在同段就分不清是"没落盘"
+  //     还是"读数换了口径"）。
+  const muSaved = await muInput.inputValue();
+  const sgSaved = await sgLoInput.inputValue();
+  await page.locator("#ss-save").click();
+  const pwModal3 = page.locator(".pm-backdrop").first();
+  const pwShown = await pwModal3.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false);
+  if (pwShown) {
+    await pwModal3.locator('input[type="password"]').fill(ADMIN_PASS);
+    await pwModal3.getByRole("button", { name: "确认操作" }).click();
+  }
+  await expect(page.locator("#ss-dirty")).toBeHidden();
+  await page.reload();
+  await page.getByRole("tab", { name: "签到调度", exact: true }).click();
+  await expect(distViz).toHaveAttribute("data-dist-state", "normal"); // 分布方式已随本次保存落盘
+  await expect(page.locator("#ss-edit")).toHaveAttribute("aria-pressed", "false");
+  await expect(muInput).toHaveValue(muSaved);
+  await expect(sgLoInput).toHaveValue(sgSaved);
+
+  // 顺序约束：⑧f 起调度卡置脏且门停在开态，直到 ⑤ 的整页 goto 为止都不得插入页内页签点击（否则弹未保存守卫）。
+  // ⑧f 同族控件排查（泛化口径：滑杆类同属"直接操作控件"）：掐头/去尾两枚 el-slider 与画布
+  //     同吃一道门——默认只读，按下「编辑」后才可操作。判据取两条：滑杆按钮的 aria-disabled
+  //     （可及性语义）+ 点跑道不改变读数（真行为，不是只有灰壳）。逐个列证据，不做静默豁免。
+  const edgeFrontSlider = page.locator('[data-range-field="ss-edge-front"] [role="slider"]');
+  const edgeBackSlider = page.locator('[data-range-field="ss-edge-back"] [role="slider"]');
+  const edgeFrontHelp = page.locator(".sched-f-front .field-help");
+  const edgeFrontRunway = page.locator('[data-range-field="ss-edge-front"] .el-slider__runway');
+  /** 在掐头滑杆跑道 80% 处点一下（EP 的 mousedown 就跳到该刻度；禁用时该分支早退）。
+      先把字段滚到视口中线：保存行 `position: sticky; bottom: 0` 会盖住视口下缘，落在卡片
+      底部的滑杆若贴边，同坐标的点击会打在吸底行上，断言就变成"什么都没测"。 */
+  const slideEdge = async (): Promise<void> => {
+    await page.locator('[data-range-field="ss-edge-front"]').evaluate((el) => el.scrollIntoView({ block: "center" }));
+    const box = await edgeFrontRunway.boundingBox();
+    if (!box) throw new Error("掐头滑杆没有可操作的边界框");
+    await page.mouse.click(box.x + box.width * 0.8, box.y + box.height / 2);
+  };
+  await expect(edgeFrontSlider).toHaveAttribute("aria-disabled", "true");
+  await expect(edgeBackSlider).toHaveAttribute("aria-disabled", "true");
+  const edgeIdle = await edgeFrontHelp.textContent();
+  await slideEdge();
+  await expect.poll(async () => edgeFrontHelp.textContent()).toBe(edgeIdle);
+  await editBtn.click();
+  await expect(edgeFrontSlider).toHaveAttribute("aria-disabled", "false");
+  await expect(edgeBackSlider).toHaveAttribute("aria-disabled", "false");
+  // 同一个手势、同一处坐标：门开了才改值。两半边合起来才证明"门"在起作用——
+  // 只测半边，会把"点没点到"误读成"门生效"。
+  await slideEdge();
+  await expect.poll(async () => edgeFrontHelp.textContent()).not.toBe(edgeIdle);
 
   // ⑨ A15：三个布尔开关（周六 / 周日 / 自选）合并进同一列并各自带标注。
   await expect(page.locator("#ss-sat")).toBeAttached();

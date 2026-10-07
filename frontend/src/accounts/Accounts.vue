@@ -5,7 +5,6 @@ import {
   dangerousSubmit,
   errorMessage,
   isCanceled,
-  maskPhone,
   ownerEmailVisible,
   passwordHint,
   passwordPolicyOk,
@@ -133,7 +132,7 @@ const rootEl = ref<HTMLElement | null>(null);
 /* ---------------- 分组视图 ---------------- */
 function rowsOf(group: string): AccountRecord[] {
   const kw = search.value[group] ?? "";
-  return groupAll(accounts.value, group).filter((a) => accountMatch(a, kw, maskPhone));
+  return groupAll(accounts.value, group).filter((a) => accountMatch(a, kw));
 }
 function totalOf(group: string): number {
   return groupAll(accounts.value, group).length;
@@ -165,7 +164,7 @@ function selCount(group: string): number {
   return Object.keys(sel.value[group] ?? {}).length;
 }
 function allState(group: string) {
-  return selectAllState(accounts.value, sel.value, group, search.value[group] ?? "", maskPhone);
+  return selectAllState(accounts.value, sel.value, group, search.value[group] ?? "");
 }
 // KPI 是「今日签到统计」总览：口径覆盖**全部**正常账号，不随「正常账号」页的检索框收窄
 // （legacy renderStats(active) 用的也是未过滤的 groupAll）。检索只影响表格行。

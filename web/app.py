@@ -363,17 +363,19 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
 # 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
+from yiban import (  # noqa: E402
+    config_loader,  # 名册缺省唯一来源（104 §5.3）
+    notify,  # 有自用点，原 F401 豁免已失效
+)
 from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
 
 # 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
 from yiban import mail as mailer  # noqa: E402,F401
-from yiban import notify  # noqa: E402  # 有自用点，原 F401 豁免已失效
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 
 # 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用
 from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
-from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402,F401
 from yiban.infra import (  # noqa: E402
     account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
@@ -383,6 +385,7 @@ from yiban.mail import (  # noqa: E402
     config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
 )
 from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
+from yiban.platform import API_AUTH_URL  # noqa: E402,F401
 from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
@@ -521,7 +524,8 @@ def _json_body():
 
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
-DEFAULT_ACCOUNT_GAP_MAX = 10
+# 账号间隔缺省（秒）：住在 config/registry.json，代码不再写第二份字面量
+DEFAULT_ACCOUNT_GAP_MAX = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
 
 # 登录失败限速：同一 IP 连续失败超过阈值后锁定（锁定秒数 LOGIN_LOCK_SECONDS 随安全域
 # 搬入 web/security.py，此处以导入区再导出保持 m.LOGIN_LOCK_SECONDS 可达）
@@ -749,6 +753,9 @@ MASTER_ONLY_KEYS = frozenset({
     "sunday_sign", "saturday_sign", "registration_pause",
     "start_delay_max", "gap_max", "max_users", "max_accounts",
     "account_verify", "probe_enable", "probe_time", "probe_interval",
+    # 健康报告发送时刻/星期：与探针同属"安全网本身"——把时刻改到没人看的钟点、
+    # 或把星期改到别的一天，报告照发但看不见，静默失去周期性证据（同判据留门）。
+    "health_report_time", "health_report_weekday",
 })
 GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref"})
 # `global_pause` 刻意不进 `MASTER_ONLY_KEYS`：它是 A 档的唯一例外，权限按**变更方向**
@@ -789,7 +796,7 @@ SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 we
 # 再导出，`web.app.<名字>` 的取用面不变。
 # 日志格式（与 signin.py 相同）：
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-# logger 名允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：只认 `(\w+)` 的正则匹配不到
+# logger 名允许点分（`yiban.client` / `yiban.platform` …）：只认 `(\w+)` 的正则匹配不到
 # 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）会整行被丢弃，日志页只剩
 # 汇总与结果。
 
@@ -1464,11 +1471,111 @@ def _send_channel_health_report(force=False):
 # 告警通道健康报告的例行播报日（0=周一）。日报的价值在"通道被关掉这件事看得见"，
 # 而通道健康与否不会在一天内变化——日更只是每天多打扰一封。故例行收敛到固定一天；
 # 通道降级当天照发（见 _channel_health_report_due），报警器被拆仍当天可见。
+# 名册 `YIBAN_HEALTH_REPORT_WEEKDAY` 的缺省是 null（本键无缺省）：未配置时沿用本值，
+# 故本值是"未配置 ⇒ 现状"的行为回落，不是名册缺省的第二份定义点。
 _HEALTH_REPORT_WEEKDAY = 0
+#: 清理线程的唤醒间隔（秒）。报告要落到配置的钟点上，线程就得在钟点附近醒着：
+#: 24h 一醒的旧节拍做不到"配 09:00 就 09:00 到"。本值同时是**公布的到达精度**
+#: （±5 分钟，见设置页文案与 README）。清理动作本身不跟着变频繁——唤醒按日判一次，
+#: 只有报告判定每次唤醒都跑。
+_HEALTH_REPORT_TICK_SEC = 300
+#: 报告调度的两枚配置键（顺序 = 时刻、星期）。`_health_report_cfg` 按它们做"读一次"的闩。
+_HEALTH_REPORT_CFG_KEYS = ("YIBAN_HEALTH_REPORT_TIME", "YIBAN_HEALTH_REPORT_WEEKDAY")
 
 
-def _channel_health_report_due(status=None):
-    """今天是否该播告警通道健康报告：例行日（周一）、通道降级、或当日有额度耗尽待告知。
+#: 报告调度两键的"读一次、告警一次"闩：`(原始取值, 解析结果)`。见 `_health_report_cfg`。
+_report_cfg_latch = None
+
+
+def _health_report_cfg():
+    """报告调度配置的一次取值：`(配置时刻 (h,m) 或 None, 星期 int)`。
+
+    取值走 `yiban.config_loader`（名册是配置键的唯一定义点）：非法时刻由加载器按"未设"
+    处理并点名告警，随后落到名册缺省 null；越界星期由加载器按域告警、由本函数回落到
+    缺省。回落成"未配置/缺省"是刻意的：配置里写错一个字符不该让这份安全报告从此不再发出。
+
+    **两枚键每一跳都读**（清理线程的唤醒节拍 `_HEALTH_REPORT_TICK_SEC`），而加载器是
+    "出声的校验器"：坏键值下每读一次告警一次 ⇒ 一个坏键一天刷几百行日志。故按**两枚键的
+    原始取值**做闩：原始取值没变就不再进加载器（= 不重复告警），一变立刻重读 ⇒ "改完下一
+    轮生效"逐位不变。原始取值只用来判"要不要再问加载器"，**不参与取值**（取值仍只由加载器
+    给），故不是第二套 `.env` 解析。闩只挡重复告警，不挡取值新鲜度。
+    """
+    global _report_cfg_latch
+    dotenv = _env_io_svc.read_env(ENV_FILE)
+    raw = tuple(
+        (os.environ.get(_key) or "", dotenv.get(_key) or "")
+        for _key in _HEALTH_REPORT_CFG_KEYS)
+    if _report_cfg_latch is not None and _report_cfg_latch[0] == raw:
+        return _report_cfg_latch[1]
+    time_hm = None
+    configured = config_loader.resolve(_HEALTH_REPORT_CFG_KEYS[0], env_file=ENV_FILE)
+    if configured:
+        time_hm = yb_window.parse_hhmm(configured, None)
+    weekday = _HEALTH_REPORT_WEEKDAY
+    raw_weekday = config_loader.resolve(_HEALTH_REPORT_CFG_KEYS[1], env_file=ENV_FILE)
+    if isinstance(raw_weekday, int) and not isinstance(raw_weekday, bool) \
+            and 0 <= raw_weekday <= 6:
+        weekday = raw_weekday
+    elif raw_weekday is not None:
+        logger.warning("配置 %s=%r 不是 0~6，按缺省（周一）处理",
+                       _HEALTH_REPORT_CFG_KEYS[1], raw_weekday)
+    result = (time_hm, weekday)
+    _report_cfg_latch = (raw, result)
+    return result
+
+
+def _health_report_moment(moment, weekday, hhmm):
+    """`moment` 当日或此前最近一个配置日的**配置时刻**（<= moment）。
+
+    用于把例行判定从"单点采样"改成"区间判定"：唤醒是一跳一跳的，判定若只看当前这一跳，
+    末跳落在配置时刻之前、下一跳已跨日时，"配置时刻"永远不在任何一跳的当前点上——
+    整周的报告被静默丢掉（配置 23:58、末跳 23:56 就是这么丢的）。
+    """
+    day = moment - timedelta(days=(moment.weekday() - weekday) % 7)
+    return day.replace(hour=hhmm[0], minute=hhmm[1], second=0, microsecond=0)
+
+
+def _health_report_routine_due(moment, weekday=None, hhmm=None, since=None,
+                               unconfigured_hm=None):
+    """例行窗口判定（纯函数）：是不是例行日、且已到例行时刻。
+
+    `weekday` / `hhmm` 缺省时现取配置（`_health_report_cfg()` 的一次快照）。调用方传值
+    是为了测试能在同一份快照上逐时刻对拍。
+
+    `unconfigured_hm`：`YIBAN_HEALTH_REPORT_TIME` **未配置时的实际锚点** `(h, m)`。
+    清理线程传"本进程首跳的钟点"——改前循环 24h 一醒，例行报告就落在那个钟点上；节拍
+    收细到 5 分钟后若改成"当天唤醒即发"，未配置的部署会从"启动钟点"漂到"零点后第一跳"，
+    零迁移不成立。不传（只有直接调用的测试会这样）= 无时刻门。
+
+    `since` 传入"上一次唤醒的时刻"时改为**区间判定**：例行时刻落在 `(since, moment]`
+    这一跳里也算到点。两条判据取并集——
+      - 单点（`weekday` 命中且 `当前 >= 例行时刻`）：进程中途重启、醒来已在例行时刻之后，
+        仍按当日补齐（去重标记保证当日至多一封）；
+      - 区间：补上"例行时刻落在 `(since, moment]` 之间（含跨零点那一跳）"的空隙。
+    区间的回溯跨度 = 调用方给的 `since`，清理线程给的是一个唤醒间隔（5 分钟），不是一整天：
+    "进程在例行时刻之后、仍在例行当日起来"由单点判据兜住，"跨日之后才起来"这一周补不上
+    （补它意味着每次重启都可能多外发一封，破坏"一周恰好一封"）。跨零点补发最多让当周多出
+    一封：漏播比重复打扰严重，与本族"宁可多播一封"的既有取舍一致。实现见 `_health_report_moment`。
+    """
+    if weekday is None or hhmm is None:
+        cfg_hm, cfg_weekday = _health_report_cfg()
+        if weekday is None:
+            weekday = cfg_weekday
+        if hhmm is None:
+            hhmm = cfg_hm
+    if hhmm is None:
+        hhmm = unconfigured_hm
+    if hhmm is None:
+        return moment.weekday() == weekday
+    if moment.weekday() == weekday and (moment.hour, moment.minute) >= hhmm:
+        return True
+    if since is None:
+        return False
+    return since < _health_report_moment(moment, weekday, hhmm) <= moment
+
+
+def _channel_health_report_due(status=None, since=None, unconfigured_hm=None):
+    """今天是否该播告警通道健康报告：例行时刻、通道降级、或当日有额度耗尽待告知。
 
     降级判定沿用 `_channel_health_degraded` 的结构化字段（与日报内部同一口径）。额度
     那一档刻意用只读的 `notify.has_pending_exhaustion_notice()` 与
@@ -1479,8 +1586,21 @@ def _channel_health_report_due(status=None):
     报告一个取走方——只看前者，攻击当天（非例行日）这封报告不发，告知就在换日归零时
     永久消失。
 
-    降级期间每天都会判"该发"，与日更时的行为一致：报警器失效必须持续可见，不能因为
-    改成周报而静默。
+    例行那一档由 `_health_report_routine_due` 判：配置了 `YIBAN_HEALTH_REPORT_TIME`
+    就按钟点锚定（到达时刻由清理线程的唤醒粒度决定），未配置则与改前逐位一致。
+
+    **两套锚点，语义不同，刻意不对齐**（改前 24h 一醒时长这样，节拍收细后仍是这个分工）：
+      - 例行：落在"首跳钟点"的栅格上（配置了时刻则落在配置时刻）；
+      - 降级 / 额度耗尽的加发：按**北京日期开闸**——当天第一跳（零点后 5 分钟内）就发，
+        不看星期也不看时刻。报警器失效必须持续可见，不能等到例行日。进程当天是首次
+        起来时，"第一跳"就是启动后 60 秒那一刻（与改前的启动钟点一致）；跨日运行的
+        进程里，它落在零点后的第一跳（改前落在启动钟点）。
+
+    `since`（上一次唤醒的时刻）与 `unconfigured_hm`（时刻键未配置时的实际锚点，见
+    `_health_report_routine_due`）都透传给例行判定；不传则退回单点判定 / 无时刻门
+    （只有直接调用的测试会这样，生产只有清理线程一个调用点且两个都传）。
+
+    降级期间每次唤醒都会判"该发"（去重标记在发信侧兜底），与日更时的行为一致。
     """
     st = status if status is not None else _alert_channel_status()
     if _channel_health_degraded(st):
@@ -1490,7 +1610,8 @@ def _channel_health_report_due(status=None):
             return True
     except Exception as e:  # 兜底：额度状态读不动不该让日报整体缺席
         logger.warning("读取推送额度状态失败（按未耗尽处理）: %s", e)
-    return clock.now().weekday() == _HEALTH_REPORT_WEEKDAY
+    return _health_report_routine_due(clock.now(), since=since,
+                                      unconfigured_hm=unconfigured_hm)
 
 
 # 容量核计与触顶告警族（账号/用户配额判定 `_capacity_account_count` /
@@ -2707,73 +2828,51 @@ def create_app(host=None):
     # ---- 每日自动清除超期注销用户 ----
     # 此前 purge_deleted_users 只在 db 连接初始化（服务启动）时执行，长期不重启的
     # 服务会让超期注销用户数据（邮箱、软删易班账密）无限留存，与页面"系统定期
-    # 物理清除"的承诺不符。后台 daemon 线程：启动 60s 后先跑一次，此后每 24h 一次。
+    # 物理清除"的承诺不符。后台 daemon 线程：启动 60s 后先跑一次，此后每次唤醒
+    # （`_HEALTH_REPORT_TICK_SEC`）判一次"该不该做"，**清除与自检按北京日期换日各跑一次**。
+    #
+    # 唤醒节拍由 24h 收细到 5 分钟，是因为同一线程还要落地告警通道健康报告的钟点锚定
+    # （issue #23）：24h 一醒时"配置 09:00"落不到 09:00 那一分钟。收细后清理动作照旧
+    # 每日一次——`last_cleanup_day` 就是那道闸，不然全表 DELETE 会从每天一遍变成每天几百遍。
     def _daily_purge_loop():
         # 首轮延迟：避开启动高峰（迁移/预热），且此时 init_db 已跑过一次 purge，
-        # 延迟不会造成额外的清除延迟（下一轮 24h 内必然覆盖）
+        # 延迟不会造成额外的清除延迟（下一轮必然覆盖）
         time.sleep(60)
+        last_cleanup_day = None
+        # 报告**尝试**的当日闩（进程内、按北京日期）：唤醒节拍收细到 5 分钟后，不设这道闸
+        # 就会把发信侧"失败当日可重试"放大成"每 5 分钟重试一次"——一个降级日里 ~288 次
+        # 外发尝试 + 同量降级审计痕迹（旧 24h 节拍在同日内几乎不可能重试）。
+        # 送达记账不变：仍然只有 app_meta 的 `channel_health_last` 标记，且只在送达时落
+        # （"确实送达才记已播"）。本闩只管尝试、进程重启即清 ⇒ _send_channel_health_report
+        # 承诺的"下一次进程启动（同一日）再试一封"一字不变。
+        attempted_report_day = None
+        # 上一次唤醒的时刻：例行判定按 (上次唤醒, 本次] 的**区间**判"配置时刻是否已到"，
+        # 否则末跳落在配置时刻之前、下一跳已跨日时那份周报会被静默丢掉（配置 23:58、
+        # 末跳 23:56 就是这么丢的）。首跳按一个完整间隔回溯——覆盖的正是"配置时刻落在
+        # 本进程起来之前的那一跳里（含跨零点）"这一档。
+        # 诚实边界：这个回溯**只有一个唤醒间隔**。进程在配置时刻之后才起来、但仍在配置的
+        # 那一天，由单点判定（当天已过配置时刻即发）兜住；**跨日之后**才起来则这一周补不上
+        # ——与改前"只在例行日发"的取舍一致（补一周意味着每次重启都可能多外发一封，
+        # 而"一周恰好一封"是本单的验收不变量）。
+        prev_wake = None
+        # 未配置 `YIBAN_HEALTH_REPORT_TIME` 时的实际锚点 = **本进程首跳的钟点**。
+        # 改前循环 24h 一醒，例行报告的到达时刻就是这个钟点落在例行日的那一刻；节拍收细到
+        # 5 分钟后若改成"当天唤醒即发"，未配置的部署会从"启动钟点"漂到"零点后第一跳"——
+        # 那不是零迁移。锚点只在首跳标定一次，此后固定。
+        unconfigured_hm = None
+        # 唤醒栅格的原点：节拍对齐到"首跳 + k × 间隔"。固定 sleep(间隔) 会把每轮的耗时
+        # 累加成漂移，几轮之后就偏离首跳钟点；对齐后首跳钟点每天准时重现（86400 与
+        # 604800 都是 300 的整数倍），"未配置 ⇒ 启动钟点"才能逐位对上改前行为。
+        tick = float(_HEALTH_REPORT_TICK_SEC)
+        grid_origin = time.monotonic()
         while True:
-            try:
-                # 每日集中清理：审计/事件旧数据 +
-                # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
-                # 此前 _audit_cleanup/_event_cleanup（全表 DELETE）只挂在 init_db 上，
-                # 而 signin 子进程每天 2~3 次 init_db 也各跑一轮，与 web 8 线程争锁；
-                # 现清理只在 web 每日线程执行，signin 侧 init_db(cleanup=False)。
-                db.run_daily_cleanup()
-            except Exception as e:
-                logger.warning("每日自动清除注销用户失败: %s", e)
-            # 审计可追溯性每日校验：
-            # 此前 verify_audit_chain 生产环境从不调用、外部锚点只写不读——审计写入
-            # 可静默丢（B-1）、删前缀/删尾/清空验不出（B-2）也无人知晓。
-            # 现每日流程：先校验（链自洽 + 库外锚点比对 + 写入失败计数），任一异常
-            # 即告警；校验通过且清理已发生后，再追加新锚点（使锚点反映清理后的
-            # 合法状态，且记录 min_id/max_id 以覆盖删尾/清空检测，原两段格式不具备）。
-            try:
-                # 显式传入锚点路径——原调用走 db.audit_anchor_path()
-                # 默认解析（env 或 cwd），裸机部署下与本进程写锚点的 STATE_DIR 分裂，
-                # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
-                _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
-                if not _health["healthy"]:
-                    _facts = _audit_alert_facts(_health)
-                    # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
-                    logger.error("审计链异常告警: %s",
-                                 "；".join(f"{k} {v}" for k, v in _facts))
-                    # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
-                    # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
-                    # 基线只按**送达**推进（见 _alert_audit_unhealthy）：未送达则保持
-                    # 待发、下一轮重试；签名不变时仍留 ERROR 日志（可 grep）不外发。
-                    _alert_audit_unhealthy(_health)
-                else:
-                    if _health["anchor_msg"]:
-                        # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
-                        logger.info("审计链提示: %s", _health["anchor_msg"])
-                    # 恢复健康时复位告警基线：下一轮再出现异常（即使与上次同形）也要
-                    # 重新告警——基线不归零就等于给同一形态的复发免票。
-                    if db.audit_alert_needs_attention(_health):
-                        db.mark_audit_alert_sent(_health)
-                # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
-                # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
-                # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
-                db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
-            except Exception as e:
-                # 整段自检没执行本身就是安全事件：只落一条 WARNING 管理员看不到，
-                # 而一条非法字节/一次读失败就能让"当日校验"从此静默。这里把异常送到与
-                # "审计链异常"同一条用户可见通道（邮件 + 推送），并点明"未执行"——
-                # 绝不能让它看起来像一次通过。
-                logger.error("审计链每日校验/锚点写入失败: %s", e)
-                with contextlib.suppress(Exception):
-                    send_notification(
-                        "审计链自检未执行",
-                        mail_layout.Mail(
-                            summary="审计可追溯性每日自检未能执行（不等于通过）："
-                                    "无法确认审计记录是否完整。",
-                            fields=[("失败原因", _nl_safe(str(e)))],
-                            advice=["立即人工核查审计链与库外锚点",
-                                    "本次自检没有结论，勿按「无异常」对待"],
-                            level="urgent",
-                        ),
-                        urgent=True,
-                    )
+            now = clock.now()
+            if unconfigured_hm is None:
+                unconfigured_hm = (now.hour, now.minute)
+            day = now.strftime("%Y-%m-%d")
+            if day != last_cleanup_day:
+                last_cleanup_day = day
+                _run_daily_cleanup_and_audit()
             # 告警通道健康报告（旧称"日报"）——本系统所有安全告警只有邮件 +
             # 手机推送两条出口，两条同时失效时管理员将彻底失明（活体复现的
             # 攻击链正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加
@@ -2784,14 +2883,92 @@ def create_app(host=None):
             # 两通道全断时也仍留得住证据。
             # 修复轮 2：标记改在发信成功后才落——本处 except 吞掉的正是"今天没发出去"，
             # 不落标记才能让下一次进程启动（同一日）再试一封，而不是静默到明天。
-            # 周报化：例行收敛到每周固定一天（`_HEALTH_REPORT_WEEKDAY`），通道降级或当日
-            # 额度耗尽时当天就发——清理任务本身仍每日跑，不随本报告改成周跑。
+            # 本轮（节拍收细）：重试资格仍按送达判定，但**尝试**另有当日闩
+            # （`attempted_report_day`）——见该变量的注释。
+            # 周报化 + 钟点锚定：例行收敛到配置的那一天那一刻（`YIBAN_HEALTH_REPORT_*`，
+            # 未配置 = 既有的"周一 + 启动钟点"），通道降级或当日额度耗尽时当天就发——
+            # 清理任务本身仍每日跑，不随本报告改成周跑。
+            # 加发那一档按"北京日期开闸"、落在当天第一跳（零点后 5 分钟内，见
+            # `_channel_health_report_due` 的两套锚点说明）；例行那一档落在首跳钟点的栅格上。
             try:
-                if _channel_health_report_due():
+                report_since = prev_wake or (now - timedelta(seconds=_HEALTH_REPORT_TICK_SEC))
+                if _channel_health_report_due(since=report_since,
+                                              unconfigured_hm=unconfigured_hm) \
+                        and attempted_report_day != day:
+                    attempted_report_day = day
                     _send_channel_health_report()
             except Exception as e:
                 logger.warning("告警通道健康日报发送失败: %s", e)
-            time.sleep(24 * 3600)
+            prev_wake = now
+            # 对齐到唤醒栅格（见 grid_origin 的注释）；下界 1 秒防"本轮耗时超过一个间隔"
+            # 时变成忙等——跳过的那几跳直接落到下一个栅格点。
+            elapsed = time.monotonic() - grid_origin
+            time.sleep(max(1.0, grid_origin + (int(elapsed / tick) + 1) * tick
+                           - time.monotonic()))
+
+    def _run_daily_cleanup_and_audit():
+        """每日一次的两件事：集中清理、审计链自检与锚点写入（按北京日期换日触发）。"""
+        try:
+            # 每日集中清理：审计/事件旧数据 +
+            # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
+            # 此前 _audit_cleanup/_event_cleanup（全表 DELETE）只挂在 init_db 上，
+            # 而 signin 子进程每天 2~3 次 init_db 也各跑一轮，与 web 8 线程争锁；
+            # 现清理只在 web 每日线程执行，signin 侧 init_db(cleanup=False)。
+            db.run_daily_cleanup()
+        except Exception as e:
+            logger.warning("每日自动清除注销用户失败: %s", e)
+        # 审计可追溯性每日校验：
+        # 此前 verify_audit_chain 生产环境从不调用、外部锚点只写不读——审计写入
+        # 可静默丢（B-1）、删前缀/删尾/清空验不出（B-2）也无人知晓。
+        # 现每日流程：先校验（链自洽 + 库外锚点比对 + 写入失败计数），任一异常
+        # 即告警；校验通过且清理已发生后，再追加新锚点（使锚点反映清理后的
+        # 合法状态，且记录 min_id/max_id 以覆盖删尾/清空检测，原两段格式不具备）。
+        try:
+            # 显式传入锚点路径——原调用走 db.audit_anchor_path()
+            # 默认解析（env 或 cwd），裸机部署下与本进程写锚点的 STATE_DIR 分裂，
+            # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
+            _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
+            if not _health["healthy"]:
+                _facts = _audit_alert_facts(_health)
+                # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
+                logger.error("审计链异常告警: %s",
+                             "；".join(f"{k} {v}" for k, v in _facts))
+                # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
+                # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
+                # 基线只按**送达**推进（见 _alert_audit_unhealthy）：未送达则保持
+                # 待发、下一轮重试；签名不变时仍留 ERROR 日志（可 grep）不外发。
+                _alert_audit_unhealthy(_health)
+            else:
+                if _health["anchor_msg"]:
+                    # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
+                    logger.info("审计链提示: %s", _health["anchor_msg"])
+                # 恢复健康时复位告警基线：下一轮再出现异常（即使与上次同形）也要
+                # 重新告警——基线不归零就等于给同一形态的复发免票。
+                if db.audit_alert_needs_attention(_health):
+                    db.mark_audit_alert_sent(_health)
+            # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
+            # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
+            # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
+            db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
+        except Exception as e:
+            # 整段自检没执行本身就是安全事件：只落一条 WARNING 管理员看不到，
+            # 而一条非法字节/一次读失败就能让"当日校验"从此静默。这里把异常送到与
+            # "审计链异常"同一条用户可见通道（邮件 + 推送），并点明"未执行"——
+            # 绝不能让它看起来像一次通过。
+            logger.error("审计链每日校验/锚点写入失败: %s", e)
+            with contextlib.suppress(Exception):
+                send_notification(
+                    "审计链自检未执行",
+                    mail_layout.Mail(
+                        summary="审计可追溯性每日自检未能执行（不等于通过）："
+                                "无法确认审计记录是否完整。",
+                        fields=[("失败原因", _nl_safe(str(e)))],
+                        advice=["立即人工核查审计链与库外锚点",
+                                "本次自检没有结论，勿按「无异常」对待"],
+                        level="urgent",
+                    ),
+                    urgent=True,
+                )
 
     # 测试环境通过 YIBAN_DISABLE_PURGE_LOOP=1 禁止启动该线程（全量 pytest 会反复 create_app，
     # 大量 60s 后唤醒的线程并发访问共享 SQLite 单例有 access violation 风险）；

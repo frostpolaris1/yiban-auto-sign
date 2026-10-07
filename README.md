@@ -12,10 +12,10 @@
 > 部署方式：**国内云服务器**（推荐）、**Docker 容器**、**GitHub Actions**（备选）；自带网页管理后台，手机/平板/电脑均可访问。
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预；窗口内错峰排期（分片 + 账号间隔铺开），不是到点一起打
-- 🔐 **真实 App 登录特征**：登录流程复刻 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 的真实 App 请求特征（UA=Yiban + AppVersion + 随机 CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
+- 🔐 **真实 App 登录特征**：登录流程使用平台客户端的真实 App 请求特征（UA=Yiban + AppVersion + 随机 CSRF；字段值取自实拍），实测绕过易班风控 e003，新旧账号均稳定登录
 - 🖥️ **网页管理后台**：管理员在任意设备（手机/平板/电脑）登录管理——账号增删改/排序/手动签到、审核用户提交的账号、用户管理与权限分级、批量操作、全局公告、签到日志与日历
 - 🗄️ **SQLite 数据库存储**：账号与用户数据存于 SQLite——多人同时操作互不覆盖、手机号全局唯一；密码与设备识别码 AES-GCM 密文存储；数据库结构启动时自动迁移升级；批量操作整体回滚；关键管理操作自动审计留痕（HMAC 防篡改）
-- 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
+- 📍 **智能定位**：在签到围栏内生成随机定位点，模拟真实 GPS（外接矩形拒绝采样 + 偶奇射线法判定，围栏内精确均匀）
 - 👥 **多账号支持**：一个仓库管理多个易班账号，顺序执行 + 队列重试（失败账号分散重试，普通≤3次/风控类≤2次；密码错误不重试）
 - 🔔 **消息通知**：签到失败时推送通知（Server 酱 / Bark / 企业微信等）
 - 🆓 **完全免费**：使用 GitHub Actions 免费额度，每月消耗仅几分钟（远低于 2000 分钟配额）
@@ -631,6 +631,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_PROXY` | 代理地址（`http://host:port`、`socks5://host:port` 或带认证 `http://user:pass@host:port`） | 可选 |
 | `YIBAN_PHONE_MODEL` / `YIBAN_PHONE_CODE` | 设备型号与唯一识别码；账号未单独配置时全局回退（见 [设备绑定](#设备绑定可选)） | 视情况 |
 | `YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` / `YIBAN_PROBE_INTERVAL_DAYS` / `YIBAN_ACCOUNT_VERIFY` / `YIBAN_VERIFY_ASYNC` | 健康探针与注册时校验（默认全关，见 [账号健康检查](#账号健康检查探针模式可选)） | 可选 |
+| `YIBAN_HEALTH_REPORT_TIME` / `YIBAN_HEALTH_REPORT_WEEKDAY` | 告警通道健康报告的例行发送时刻（`HH:MM`）与星期（`0`=周一…`6`=周日）；都不配置 = 沿用「周一 + 清理线程唤醒即发」（见 [告警通道健康报告发送时刻](#告警通道健康报告发送时刻可选)） | 可选 |
 | `YIBAN_LEGACY_LOGIN` | 设为 `1` 使用旧登录流程（伪造 iOS UA）；默认用真实 App 特征（推荐） | 可选 |
 | `YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK` / `YIBAN_FALLBACK_ENABLE` / `YIBAN_FALLBACK_INTERVAL` / `YIBAN_CAPACITY_MEASURED` | 多执行体相关（单执行体部署**不需要**配置），见 [多执行体并行签到](#多执行体并行签到可选) 与 [代理配置](#代理配置可选) | 可选 |
 | `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD` | 内置主管理员账号（口令策略：至少 12 位且含四类字符中的至少三类） | 必填（Web） |
@@ -776,6 +777,23 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 - **注册时验证账号**：管理员开启后，用户 / 管理员提交账号时即时只读验证，失败**当场打回**并提示原因；同一手机号短时间内多次密码错误会被临时限制验证，防止反复试错导致易班账号被锁定。
 - 需要一条**高频轮询**调度任务：systemd 部署在 `/etc/cron.d/` 增加 `*/10 * * * * yiban /opt/yiban-auto-sign/run_probe.sh`（脚本内自行判断是否到触发时间/频率，**实际执行时刻由 `YIBAN_PROBE_TIME` 决定**，改探针时间无需再动 cron；若 cron 写成低频固定时刻，会把探针钉死在 cron 时刻、设置页时间失效）。Docker 部署由容器调度器自动支持。
 - 默认关闭：`YIBAN_PROBE_ENABLE=0`、`YIBAN_ACCOUNT_VERIFY=0`；在线校验默认**同步**（提交时当场返回结论），置 `YIBAN_VERIFY_ASYNC=1` 可改为异步（需界面支持）。不配置不影响现有签到。
+
+</details>
+
+### 告警通道健康报告发送时刻（可选）
+
+<details>
+<summary>🩺 固定每周报告的到达时间（时:分 + 星期几）</summary>
+
+告警通道健康报告（例行每周一封；通道降级或当日推送额度耗尽时当天加发）由 web 进程的清理线程发出。**不配置时**，例行报告在**周一**、**服务启动那一刻的钟点**发出——节拍从服务启动起算，故重装或重启会把到达时刻一起搬走，深夜部署就在半夜收到。
+
+- **配置入口**：「系统设置 → 健康与探针 → 固定健康报告的发送时刻」，或用 `.env` 直写 `YIBAN_HEALTH_REPORT_TIME=09:00`（`HH:MM`）与 `YIBAN_HEALTH_REPORT_WEEKDAY=0`（`0`=周一…`6`=周日）。
+- **到达精度**：清理线程每 5 分钟唤醒一次，报告在配置时刻之后的**最近一次唤醒**发出，误差不超过 5 分钟。若设定时刻恰好落在跨零点的那一跳空隙里（例如设定 `23:58`、末跳 `23:56`），报告在零点后的第一跳补发（当周可能多出一封，**不会丢**）——"漏播比重复打扰严重"是本族既有的取舍。
+- **时区口径**：时刻与星期一律按**北京时间（UTC+8）**判定——与签到窗口、按日账本同一时基，不是宿主系统本地时区。
+- **生效时机**：保存后**下一轮唤醒即生效**（约 5 分钟内），不必重启服务。
+- **不受影响的两件事**：① 通道降级或当日推送额度耗尽时**当天加发**，不看星期也不看时刻；②「确实送达才记已播」不变——没发出去就不记，当天稍后（重启后的下一轮）仍会重试。
+- **只配星期、不配时刻**也是合法用法：那一天按**服务启动钟点**发（与完全不配置同一锚点，只是把那一天从周一挪到配置的星期）。
+- 两枚键写坏（`99:99`、星期越界）会告警并**回落到"未配置"的既有行为**：报告照发，不会因为一处笔误而静默消失。
 
 </details>
 
@@ -1161,7 +1179,10 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             ├── client.py        易班客户端外观（凭据/会话缓存/代理/设备绑定）
             ├── state_gc.py      按日状态文件的保留期策略与清理
             ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
-            ├── fyiban/          ★ 第三方隔离层（易班协议与定位算法，来源见其 PROVENANCE.md）
+            ├── platform.py      易班平台事实（端点/请求头/版本）+ 登录与签到编排
+            ├── protocol/        ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+            ├── geo.py           多边形内定位点采样（偶奇射线法 + 拒绝采样 + 显式兜底）
+            ├── challenge.py     风控挑战检测（只检测不求解）
             ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
             ├── engine/          签到引擎（按"执行一轮"切分）：runner 编排 / round 队列重试
             │                     / schedule 排期与容量 / attempts 单账号尝试 / probe 探针
@@ -1186,23 +1207,28 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
     ↓
 解析签到多边形 Points
     ↓
-在多边形内生成随机定位点（缩放质心算法）
+在多边形内生成随机定位点（围栏内拒绝采样）
     ↓
 提交签到 (nightAttendance/signIn)
 ```
 
 ### 定位生成算法
 
-使用与 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）一致的**缩放质心算法**（射线法校验，感谢原作者开源）：
+在签到围栏（`Points` 顶点环）内生成随机定位点，取点为**外接矩形内的拒绝采样**：
+点在围栏内**精确均匀**，贴角与贴边区域与围栏中心一样可采到。（旧实现按三角形内缩
+0.7，角与边的采样概率为零，真实围栏覆盖率只有 57%–66%；本批已换掉。）
 
-1. 解析签到范围返回的多边形顶点 `Points`；
-2. 计算多边形质心 `(center_lng, center_lat)`；
-3. 将多边形顶点向质心收缩 0.7 倍，得到 `scaled_polygon`；
-4. 在质心附近的边界框内随机生成点（最多 5000 次尝试）；
-5. 校验点是否同时在 `scaled_polygon` 和 `original_polygon` 内；
-6. 若 5000 次均未命中，兜底返回质心。
+1. 解析签到范围返回的多边形顶点 `Points`（先折掉相邻重复点与闭合环的重复首点）；
+2. **退化判定**：顶点不足 3 个、外接矩形面积为零、面积为零、自交——命中即走第 5 步；
+3. 在围栏外接矩形内均匀取点，用**偶奇射线法**判定是否在围栏内；在内部即采用；
+4. 重复第 3 步，最多 `MAX_DRAWS`（10000）次仍未命中（极凹或极狭长围栏）即走第 5 步；
+5. **兜底**：返回顶点质心附近的坐标并落一条 WARNING。兜底点**不保证**落在围栏内
+   ——退化围栏没有可判定的内部，自交围栏的"内/外"也没有公认定义；仍返回坐标是因为
+   调用方契约要求"非空围栏必返回一个点"（`yiban/client.py` 直接解包）。原因是
+   **响亮**记录在日志里的，不静默。
 
-每次签到的定位点都不同，但都落在有效范围内，避免被识别为异常定位。
+每次签到的定位点都不同，非退化围栏的取点都落在有效范围内，避免被识别为异常定位。
+算法语义与边界条件清单见 `yiban/geo.py` 的模块文档串。
 
 ### 重试机制
 
@@ -1234,11 +1260,11 @@ GitHub 官方政策：**仓库连续 60 天无活动，定时工作流会被自�
 
 ### Q1 账号或密码错误（e003）
 
-> ✅ **已修复**：默认登录方式已改为参考 fyiban 的真实 App 请求特征。
+> ✅ **已修复**：默认登录方式已改为真实 App 请求特征（UA/AppVersion/Origin 等字段值取自平台实拍）。
 
 **根因**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
 
-**修复方式**：登录改为 fyiban 同款流程（UA=`Yiban` + `AppVersion` + 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回。版本号现值见 `yiban/fyiban/headers.py` 的 `YIBAN_APP_VERSION`。
+**修复方式**：登录改为标准 App 特征流程（UA=`Yiban` + `AppVersion` + 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回。版本号现值见 `yiban/platform.py` 的 `YIBAN_APP_VERSION`。
 
 **排查顺序（老版本或自行改回旧流程时参考）**：
 
@@ -1397,16 +1423,35 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 
 各组件版权声明与完整许可文本见其官方仓库 LICENSE 文件。本项目仅按各自许可条款使用，未修改上述组件源码。
 
-### 衍生来源
+### 早期参考与来源分类
 
-本项目直接参考 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）实现：
+本项目的易班协议与定位实现经过一次**换核**（2026-10）：早期实现参考
+[OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0，Kotlin/Android 库）
+把上游算法与协议特征在 Python 中重写；换核后**定位采样算法、平台事实常量（请求头 /
+端点）与登录签到编排全部改为洁净室重写**，仓内已不含上游派生代码。
 
-- 多边形内随机定位点算法（缩放质心 + 射线法验证）
-- 易班登录特征与 nightAttendance 签到流程
+当前实现的来源按**事实**分四类：
 
-> 披露：OneFeiFan/FYIBAN 在其 README 中声明参考了 [Qs315490/fyiban](https://github.com/Qs315490/fyiban)（无许可证，上游 Sricor/yiban 已删库）。本项目未直接使用上述无许可证项目的代码，直接参考对象为 FYIBAN（AGPL-3.0），并按 AGPL-3.0 条款发布。
+| 能力 | 现实现 | 来源分类 |
+|------|--------|----------|
+| 多边形内定位点采样 | `yiban/geo.py` | **洁净室自研**：偶奇射线法是公有领域教科书算法（本实现只按教科书定义编写）；取点为通用拒绝采样；退化/自交的兜底语义由本项目定义 |
+| 请求头字段值与 App 版本（`Yiban` / `AppVersion` / `Origin` / iOS UA） | `yiban/platform.py` | **平台事实**：字段值取自平台客户端实拍请求与官方安装包清单 |
+| 端点、`client_id` / `redirect_uri`、`scope` / `display` 取值、成功标志 `s200` | `yiban/platform.py` | **平台事实**：平台接口的固定取值 |
+| 六跳登录链路的**顺序与跳转形态** | `yiban/platform.py` | **本项目实拍**：逐端点抓包记录（TASK-C）；顺序是本项目的实现产物 |
+| 授权页 / 响应信封 / 表单 / 签到体的解析与构造 | `yiban/protocol/` | **洁净室库**（MIT）：唯一规格来源是第一手旁路实拍，见其 `SPEC.md` 与 `LICENSE` |
+| 调度错峰、重试预算与失败分级、账密熔断、通知告警、账号与数据库、Web 管理后台、多执行体并行 | `yiban/engine/` 等 | **本项目原创** |
 
-**改了什么（AGPL-3.0 §5(a) 要求的修改声明）**：复用部分已由 Kotlin 重写为 Python 并做了如下修改——定位采样由正态分布改为密码学安全随机的均匀分布并加质心抖动兜底，射线法补零除保护，登录侧新增会话缓存探活、URL 白名单、风控页面识别与日志脱敏；**其余部分（调度错峰、重试预算与失败分级、账密熔断、通知告警、账号与数据库、Web 管理后台、多执行体并行）为本项目原创**，上游无对应实现。逐项对照见[开源致谢](#开源致谢--acknowledgements)的「衍生来源」小节。
+> 历史沿革（如实记录）：早期版本曾把上游派生代码圈在一个独立隔离层目录内（目录名取自
+> 上游项目名）并随代码分发 AGPL 声明。换核后隔离层与目录内声明一并退役——判据不是
+> "文档说改写了"，而是**重写验证**：新的射线法与已退役实现在 9 块围栏 × 200 个确定性
+> 点位上逐点一致（对拍位串冻结在 `tests/test_geo_sampling.py`），采样分布与兜底语义
+> 另有独立行为测试。`OneFeiFan/FYIBAN` 其后声明参考了
+> [Qs315490/fyiban](https://github.com/Qs315490/fyiban)（无许可证）；本项目与该无许可证
+> 项目无代码关系。
+
+**许可**：本项目整体以 **AGPL-3.0** 分发（根 `LICENSE`），与上游项目同一许可版本；
+`yiban/protocol/` 是 **MIT** 许可的洁净室库，其许可全文随包分发
+（`yiban/protocol/LICENSE`）——MIT 与 AGPL 兼容，两段许可各自约束自己的文件。
 
 </details>
 
@@ -1446,33 +1491,39 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 
 > 精确锁定版本见 [`requirements.lock`](requirements.lock)。
 
-### 衍生来源（2026-09-15 逐项核对）
+### 上游对照（2026-09-15 首次核对；2026-10-07 换核后改判）
 
-上游 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 是一个 **Kotlin/Android 库**（AGPL-3.0，约 670 行，作者 OneFeiFan）。本项目**没有复制其代码**（语言不同），而是按其算法与协议在 Python 中重写易班客户端。逐项对照如下（"改写"= 本地已按自己的实现重做）：
+上游 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 是一个 **Kotlin/Android 库**
+（AGPL-3.0，约 670 行，作者 OneFeiFan）。本项目**早期**按其算法与协议在 Python 中重写
+易班客户端，逐项对照如下——"判定"列是**换核后**的现判（2026-10-07 重核）：
 
-| 能力 | 上游实现 | 本项目 | 判定 |
-|------|---------|--------|------|
-| App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `yiban/fyiban/headers.py` | 源自上游（版本值已更新） |
-| CSRF 随机令牌 | `Core/SchoolBased.kt` | `yiban/fyiban/protocol.py` | 源自上游（改为每次实例重生成） |
-| 校本化 OAuth 五步登录（`oauth.yiban.cn/code/html` → `code/usersure` → iframe → `verify_request` → `base/c/auth/yiban`）与全部请求常量 | `Core/SchoolBasedAuth.kt` | `yiban/fyiban/protocol.py` + `yiban/client.py` | 源自上游，本地改写（新增会话缓存分支、URL 白名单、风控识别、脱敏） |
-| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/fyiban/protocol.py` | 源自上游（补长度守卫） |
-| 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `yiban/fyiban/protocol.py` | 源自上游 |
-| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `yiban/fyiban/protocol.py` | 源自上游，本地改写（多任务遍历、Range 缺失、状态机化） |
-| 缩放质心 + 射线法定位点算法 | `tool/Point.kt` | `yiban/fyiban/algo.py` | 源自上游，本地改写（见下） |
-| **定位采样分布** | Box-Muller 正态分布（可能取到范围外的点） | 密码学安全随机的**均匀分布** + 质心抖动兜底 | 本地改写 |
+| 能力 | 上游实现 | 本项目现实现 | 现判 |
+|------|---------|--------------|------|
+| App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `yiban/platform.py` | **平台事实**：字段值取自平台客户端实拍与安装包清单（版本值随官方客户端更新） |
+| CSRF 随机令牌 | `Core/SchoolBased.kt` | `yiban/platform.py` | **平台事实** + 本地加固（每次实例重生成，用密码学安全随机源） |
+| 校本化 OAuth 五步登录与全部请求常量 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` + `yiban/client.py` | **平台事实（端点/参数取值）** + **本项目实拍（六跳顺序）**；另加本地特性：会话缓存分支、URL 白名单、风控识别、脱敏 |
+| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` → `yiban/protocol/crypto.py` | **平台事实（协议形态）**；实现属洁净室库（MIT），另加本地长度守卫 |
+| 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` | **平台事实**（响应取值） |
+| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `yiban/platform.py` + `yiban/protocol/forms.py` | **平台事实（字段与编码形态，取自实拍）**；构造由洁净室库承担，多任务遍历/容错分支为本项目实现 |
+| 定位点算法（缩放质心 + 射线法） | `tool/Point.kt` | `yiban/geo.py` | **洁净室自研**（2026-10-07 重写）：射线法按教科书偶奇定义重写、取点改外接矩形拒绝采样、兜底语义本项目自定；缩放质心骨架已退役 |
+| **定位采样分布** | Box-Muller 正态分布 | 围栏内**精确均匀**（拒绝采样） | 本地原创 |
 | **调度与错峰**（时间窗分块、锚点/σ、重试落点） | 无 | `yiban/engine/schedule.py` + `yiban/engine/round.py` | 本地原创 |
 | **重试预算与失败分级、账密熔断、健康探针** | 无（上游仅 HTTP 层 `retryOnConnectionFailure`） | `yiban/engine/attempts.py` + `yiban/engine/probe.py` | 本地原创 |
 | **通知告警**（webhook / 管理员汇总邮件 / 用户失败提醒） | 无 | `yiban/notify/`、`yiban/mail/`、`yiban/engine/alerts.py` | 本地原创 |
 | **账号存储、会话缓存、审计、Web 管理后台、多执行体并行** | 无（示例里凭据硬编码，单账号） | `yiban/`、`web/`、`scripts/db.py` | 本地原创 |
 
-上游仓库内没有任何调度、通知、Web 或数据库代码（可自行核对：其全库无 Python 文件，且除 `retryOnConnectionFailure` 外无定时/重试实现）。
+上游仓库内没有任何调度、通知、Web 或数据库代码（可自行核对：其全库无 Python 文件，且除
+`retryOnConnectionFailure` 外无定时/重试实现）。
 
-**许可与署名**：上游与本项目同为 **AGPL-3.0**（同一版本），本项目按 §5(a) 保留许可声明并在本节声明修改内容、按 §5(c) 以 AGPL-3.0 授权下游。上游未在文件头或 LICENSE 中填写具体版权行，故署名只能标注项目名与作者身份（OneFeiFan）；若上游后续补充版权声明，本项目亦应同步补入。
+**许可与署名**：本项目与上游同为 **AGPL-3.0**。换核后仓内已不含上游派生代码（判定依据见
+上表"现判"列与《早期参考与来源分类》小节的重写验证），故不再保留"修改声明"式声明；
+此处仍如实记录历史沿革与上游项目名。上游未在文件头或 LICENSE 中填写具体版权行，故署名
+只能标注项目名与作者身份（OneFeiFan）。
 
 ### 参考项目与资料
 
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
-- Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
+- Auto-Test - 早期易班登录流程参考（OAuth + RSA + ydclearance，其请求特征已被本项目采用的标准 App 特征取代；挑战求解器已删除）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
 
 特别感谢 [Lumjiel](https://github.com/Lumjiel) 对本项目的指导。
@@ -1483,7 +1534,7 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 
 - [2117516450/yiban_signin](https://github.com/2117516450/yiban-signin)（易签，Unlicense）- 易班校本化早签/晚签打卡，多用户 + 多线程 + Server酱推送
 - [Qs315490/YiBan_AutoSgin](https://github.com/Qs315490/YiBan_AutoSgin)（GPL-2.0）- 易班校本化晚点签到脚本（含活跃 fork：[Lumjiel/YiBan_AutoSgin](https://github.com/Lumjiel/YiBan_AutoSgin)）
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 易班 API 安卓库，校本化 OAuth 登录与签到（本项目定位算法与登录特征参考来源）
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 易班 API 安卓库，校本化 OAuth 登录与签到（本项目**早期**实现的参考来源；2026-10 换核后仓内已不含其派生代码）
 
 ## AI 生成说明
 

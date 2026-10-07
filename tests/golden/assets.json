@@ -12,9 +12,9 @@
     "script src=/static/vendor/chartjs/chart.min.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-CIzwvb-s.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-GZUw20XP.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-dGJbQ6eu.js",
     "link rel=modulepreload href=/static/vue/assets/status-vocab-C0wP_145.js",
-    "script src=/static/vue/assets/dashboard-ogqCSUGY.js"
+    "script src=/static/vue/assets/dashboard-f6kACgNC.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
@@ -28,8 +28,8 @@
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-CIzwvb-s.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-GZUw20XP.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
-    "script src=/static/vue/assets/login-Bjx8A8UX.js"
+    "link rel=modulepreload href=/static/vue/assets/shell-dGJbQ6eu.js",
+    "script src=/static/vue/assets/login-C0lurqhP.js"
   ],
   "user": [
     "link rel=icon href=/favicon.png?v=*",
@@ -49,9 +49,9 @@
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-GZUw20XP.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-CPzj5VBG.js",
     "link rel=modulepreload href=/static/vue/assets/ep-theme-rKpzsE0T.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
+    "link rel=modulepreload href=/static/vue/assets/shell-dGJbQ6eu.js",
     "link rel=modulepreload href=/static/vue/assets/accountform-pf4MpLra.js",
-    "script src=/static/vue/assets/myaccounts-Dvwz3y4A.js"
+    "script src=/static/vue/assets/myaccounts-BKcK7PcT.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
@@ -65,7 +65,7 @@
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/theme-CIzwvb-s.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-GZUw20XP.js",
-    "link rel=modulepreload href=/static/vue/assets/shell-DTEQHjJ3.js",
-    "script src=/static/vue/assets/calendar-BLtt2TPQ.js"
+    "link rel=modulepreload href=/static/vue/assets/shell-dGJbQ6eu.js",
+    "script src=/static/vue/assets/calendar-BaWvkfMJ.js"
   ]
 }
