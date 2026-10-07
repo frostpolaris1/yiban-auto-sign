@@ -252,12 +252,12 @@ class RefillerFailClosedTest(_DbBase):
         self.errors = []
 
     def _ctx(self, **over):
-        # 替身必须带**全部真字段**（含 `queue_unreadable`）：用 getattr 兜底会让缺字段
-        # 静默通过，正是「豁免在缺字段时静默失效」那一类错
+        # 替身必须带**全部真字段**（含 `queue_unreadable` 与归因前缀 `log_tag`）：用 getattr
+        # 兜底会让缺字段静默通过，正是「豁免在缺字段时静默失效」那一类错
         base = dict(cfg=_cfg(), day=DAY, executor_id=OWNER, runtime_id=RUNTIME_OWNER,
                     m=2, inflight=0, busy=0, slot=0, held=set(), v=8,
                     reclaim=True, allowed_phones=None, requeue_during_run=False,
-                    queue_unreadable=False)
+                    queue_unreadable=False, log_tag="[single]")
         base.update(over)
         return SimpleNamespace(**base)
 

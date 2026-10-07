@@ -31,7 +31,7 @@
   在领取池看来就是"自己人"，会互相放行同一账号——运行时身份用进程号+代次把这一点消掉。
 
 两种形态都含主机名，属部署信息——**任何接口/日志都不得回原串**，只回角色与槽位序号
-（`role_label`）。
+（展示面 `role_label`、日志面 `owner_tag`；后者多带一个可选的轮次序号）。
 
 **稳定槽位名为什么必须稳定、以及它的安全边界**（改这里之前先读完这两条）：
 
@@ -236,6 +236,30 @@ def role_label(role, index=None):
     if role == ROLE_SINGLE:
         return "单执行体"
     return "未标注（旧数据）"
+
+
+def owner_tag(owner, round_no=None):
+    """执行体身份串 → **日志归因前缀**：`[worker-3]` / `[fallback r7]` / `[single]` / `[unknown]`。
+
+    只回角色与槽位序号（`parse_owner` 的既有口径）——**不含主机名**：身份原串
+    （`worker-3@{主机名}`）带部署信息，任何接口/日志都不得回串（见模块 docstring）。
+    本函数是那个"只回角色与槽位"的**唯一渲染处**：写日志的一方都调它，免得各拼一份
+    前缀而漂移（多执行体并发写同一个按天日志文件，行与行之间只有这个标记能分辨是谁说的）。
+
+    `round_no` 只给**同一个进程内跑多轮**的兜底常驻：一轮一个序号，排障时能答出"第几轮"。
+    定时轮/手动轮一个进程只跑一轮，不传。
+    """
+    parsed = parse_owner(owner)
+    role, index = parsed["role"], parsed["index"]
+    if role == ROLE_WORKER and isinstance(index, int):
+        name = f"{OWNER_WORKER_PREFIX}{index}"
+    elif role == ROLE_FALLBACK:
+        name = OWNER_FALLBACK_NAME
+    elif role == ROLE_SINGLE:
+        name = OWNER_SINGLE_NAME
+    else:
+        name = ROLE_UNKNOWN
+    return f"[{name} r{round_no}]" if round_no is not None else f"[{name}]"
 
 
 def parse_list(raw):
