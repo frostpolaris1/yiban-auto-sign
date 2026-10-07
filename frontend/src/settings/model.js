@@ -569,6 +569,29 @@ export function clockText(sec) {
    健康与探针
    ========================================================================= */
 
+/* 报告发送星期的**配置值**：合法取值 "0"~"6"（0=周一），其余（未配置/越界/非数字）回空串。
+   空串是"本键没配"这个真实事实：界面要靠它分辨"配了周一"与"没配"，否则关掉固定发送时
+   删不掉残留的星期键（面板显示已关闭而报告照残留星期发）。
+   服务端已把取值归一成 "0"~"6" 或空串（`env_io.health_report_weekday_setting` 用 `int()`
+   归一，`00`/`+3`/` 5 ` 都会变成规范形态），故这里的严格形状判定只是防"非规范输入"的兜底
+   ——解析口径与后端不同（后端收的写法比这里宽），写"同口径"是不实的。
+   下拉框的显示缺省（周一）由组件承担，不进这里——那会把"没配"显示成"配了周一"。 */
+export function reportWeekday(v) {
+  var s = String(v == null ? "" : v).trim();
+  return /^[0-6]$/.test(s) ? s : "";
+}
+
+/* 报告发送星期的下拉项（值=后端 0~6 口径，标=人话）。 */
+export var HEALTH_REPORT_WEEKDAYS = [
+  { value: "0", label: "周一" },
+  { value: "1", label: "周二" },
+  { value: "2", label: "周三" },
+  { value: "3", label: "周四" },
+  { value: "4", label: "周五" },
+  { value: "5", label: "周六" },
+  { value: "6", label: "周日" },
+];
+
 export function healthSnapshot(data) {
   data = data || {};
   return {
@@ -578,21 +601,48 @@ export function healthSnapshot(data) {
     // 越界值（"25:00"）fail-closed 回退默认，避免显示值/落盘值/生效值三段不等。
     time: norm(data.probe_time, "20:00"),
     interval: String(data.probe_interval || "1"),
+    // 报告发送时刻：**空串是合法值**（未配置 = 沿用"例行日唤醒即发"），
+    // 故回退值也是空串，不能像探针那样补一个默认钟点——那会把"没配"显示成"配了"。
+    // 服务端已把时刻归一为 `HH:MM`（`9:00` → `09:00`），故这里的形状校验不会把
+    // "已配置"误判成"未配置"；它只兜住服务端不该回显的越界值（`25:00`）。
+    reportTime: norm(data.health_report_time, ""),
+    reportWeekday: reportWeekday(data.health_report_weekday),
   };
 }
 
+/* 报告发送配置是**一对键**："固定发送"开 = 时刻与星期一起生效；关 = 已配的两个键一起清。
+   只清时刻而留着星期，会让报告静默改到残留星期那一天（面板显示已关闭，行为却不是）。
+
+   提交规则三条，缺一条都会出静默改行为或假脏标记：
+     · 开：只提交**真的改过**的字段（时刻对比回显值，星期对比"回显值或显示缺省周一"）。
+       星期未配置时下拉显示周一——用户没动它就不该被写成一个键，否则一次无改动保存
+       也会走一遍 A 档口令门禁。
+     · 开：时刻为空时**不补** 09:00（.env 里只配了星期的那种形态，一保存就被塞进一个
+       时刻，等于把"那天唤醒即发"悄悄改成"09:00 发"）。补缺省是控件开关的事，不是这里。
+     · 关：只清**已配过**的键（都没配过时不提交，免得一次无改动保存也触发口令门禁）。 */
 export function healthBody(snap, form) {
+  var body = {};
   var now = {
     verify: form.verify ? 1 : 0,
     probe: form.probe ? 1 : 0,
     time: String(form.time || "20:00").slice(0, 5),
     interval: String(form.interval || "1"),
   };
-  var body = {};
   if (now.verify !== snap.verify) body.account_verify = now.verify;
   if (now.probe !== snap.probe) body.probe_enable = now.probe;
   if (now.time !== snap.time) body.probe_time = now.time;
   if (now.interval !== snap.interval) body.probe_interval = now.interval;
+  if (form.reportFixed) {
+    var wantTime = String(form.reportTime || "").slice(0, 5);
+    var wantWeekday = reportWeekday(form.reportWeekday);
+    if (wantTime !== snap.reportTime) body.health_report_time = wantTime;
+    if (wantWeekday && wantWeekday !== (snap.reportWeekday || "0")) {
+      body.health_report_weekday = wantWeekday;
+    }
+  } else {
+    if (snap.reportTime) body.health_report_time = "";
+    if (snap.reportWeekday) body.health_report_weekday = "";
+  }
   return body;
 }
 
