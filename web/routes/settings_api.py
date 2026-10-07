@@ -41,6 +41,8 @@ from web.services.env_io import (
     SCHEDULE_DIST_ENV_KEYS,
     SCHEDULE_DIST_KEYS,
     cleanup_env_ambiguous_line,
+    health_report_time_str,
+    health_report_weekday_setting,
 )
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import window as yb_window
@@ -308,6 +310,19 @@ def api_settings():
             "probe_enable": _bool_field("YIBAN_PROBE_ENABLE"),
             "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
             "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+            # 告警通道健康报告发送时刻（issue #23）：空串 = 未配置 = 沿用"例行日唤醒即发"。
+            # 时刻不补默认钟点：把"没配"显示成"配了 09:00"会让用户以为改过、也看不出
+            # 报告的到达时间仍跟着部署节拍走。取值经同一处归一（`9:00` → `09:00`），
+            # 保证回显值就是生效值。
+            "health_report_time": health_report_time_str(env),
+            # 星期回显**配置值**（空串 = 没配）而不是运行期生效值（未配置 ⇒ 周一）：
+            # 界面要靠它分辨"配了周一"与"没配"，否则"关掉固定发送"这一步删不掉残留的
+            # 星期键——面板显示已关闭，报告却照残留的那一天发。变更判定的现值
+            # （`_settings_effective_values`）取同一口径（配置值），两边必须逐字一致：
+            # 不一致时"提交一个等于回显的值"会被判成没改 ⇒ 键永不落盘、回显仍是空串
+            # ⇒ 每次打开设置页都有一条清不掉的脏标记。运行期生效缺省（周一）由
+            # `web.app._health_report_cfg()` 承担。
+            "health_report_weekday": health_report_weekday_setting(env),
         }
     )
 
@@ -461,6 +476,34 @@ def api_settings_save():
         if not (0 <= ph <= 23 and 0 <= pm <= 59):
             return jsonify({"error": "探针触发时间非法（需 HH:MM）"}), 400
         probe_time = f"{ph:02d}:{pm:02d}"
+    # ---- 告警通道健康报告发送时刻（A 档：仅主管理员；issue #23）----
+    # 时刻留空 = 删键 = 回落到"例行日唤醒即发"的既有行为（不是"从此不发"）。
+    health_report_time = None
+    if "health_report_time" in data:
+        ht = str(data.get("health_report_time", "")).strip()
+        if ht:
+            try:
+                hh, mm = (int(x) for x in ht.split(":"))
+            except (ValueError, AttributeError):
+                return jsonify({"error": "报告发送时刻应为 HH:MM 格式"}), 400
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                return jsonify({"error": "报告发送时刻非法（需 HH:MM）"}), 400
+            health_report_time = f"{hh:02d}:{mm:02d}"
+        else:
+            health_report_time = ""
+    # 星期留空 = 删键（与时刻键同口径）：关掉"固定发送"时必须能把两个键成对清掉——
+    # 只删时刻而留下星期，例行日会静默改到残留的那一天。
+    health_report_weekday = None
+    if "health_report_weekday" in data:
+        wd = str(data.get("health_report_weekday", "")).strip()
+        if not wd:
+            health_report_weekday = ""
+        # `isascii()` 不能省：`str.isdigit()` 对上标数字（"²"）也为真，而 `int("²")`
+        # 抛 ValueError——少了这一步，一个 `health_report_weekday: "²"` 就是 500 而不是 400。
+        elif wd.isascii() and wd.isdigit() and 0 <= int(wd) <= 6:
+            health_report_weekday = str(int(wd))
+        else:
+            return jsonify({"error": "报告发送星期应为 0~6（0=周一），留空=清除"}), 400
     probe_interval = None
     if "probe_interval" in data:
         pi = str(data.get("probe_interval", "")).strip()
@@ -552,6 +595,8 @@ def api_settings_save():
         "probe_enable": None if probe_enable is None else str(probe_enable),
         "probe_time": probe_time,
         "probe_interval": probe_interval,
+        "health_report_time": health_report_time,
+        "health_report_weekday": health_report_weekday,
         "max_users": None if max_users_val is None else str(max_users_val),
         "max_accounts": None if max_accounts_val is None else str(max_accounts_val),
     }
@@ -565,10 +610,20 @@ def api_settings_save():
             master_only | m.GATED_KEYS | {m.GLOBAL_PAUSE_KEY})):
         _new, _old = proposed.get(_k), cur_vals.get(_k)
         if _new is not None and _new != _old:
-            changes.append((_k, _old or "-", _new))
+            # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
+            # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
+            changes.append((_k, _old, _new))
     a_changes = [c for c in changes if c[0] in master_only]
     b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
     pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
+
+    def _change_text(key, value):
+        """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
+        翻成人话），再兜底 `-`（值本来就空、又不在那张表里的键，别印出半个等号）。
+
+        两处消费点（变更明细、口令门禁留痕）共用本函数——各写一份必然再漂移一次。
+        """
+        return m._settings_value_text(key, value) or "-"
 
     def _tier_gate(action_label, always_required, attempted, irreversible=False):
         """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
@@ -586,7 +641,8 @@ def api_settings_save():
                 "settings_switch_pw_fail",
                 "settings",
                 f"「{action_label}」口令复核未通过（尝试变更："
-                + "、".join(f"{m._settings_label(k)}={o}→{n}" for k, o, n in attempted)
+                + "、".join(f"{m._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
+                            for k, o, n in attempted)
                 + "）",
             )
         return denied
@@ -653,6 +709,11 @@ def api_settings_save():
         updates["YIBAN_PROBE_TIME"] = probe_time
     if probe_interval is not None:
         updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
+    if health_report_time is not None:
+        # "" = 删键（回落到"唤醒即发"），与其它设置键的"空值=删键"同口径
+        updates["YIBAN_HEALTH_REPORT_TIME"] = health_report_time
+    if health_report_weekday is not None:
+        updates["YIBAN_HEALTH_REPORT_WEEKDAY"] = health_report_weekday
     if max_users_val is not None:
         # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
         updates["YIBAN_MAX_USERS"] = str(max_users_val)
@@ -697,18 +758,24 @@ def api_settings_save():
         f"用户={'不变' if max_users_val is None else max_users_val}"
         f"/账号={'不变' if max_accounts_val is None else max_accounts_val}"
     )
-    # 真变化键的旧→新明细（一次请求只算一份，审计与告警共用同一串）
+    # 缺值一律写"未配置"（两枚键同一措辞，与 `_settings_value_text` 对空串的处理一致）：
+    # 一个写"未配置"、一个写"-"，同一件事在同一行里两种说法。
+    health_report_display = "不变" if (health_report_time is None
+                                       and health_report_weekday is None) else \
+        f"时={health_report_time or '未配置'}/星期={health_report_weekday or '未配置'}"
+    # 真变化键的旧→新明细（一次请求只算一份）。**只进下面的审计正文**——设置变更不外发
+    # 告警；日志行另用 health_report_display 等字段，不引用本串。
     changes_desc = "、".join(
-        f"{m._settings_label(k)}={m._settings_value_text(k, o)}→{m._settings_value_text(k, n)}"
+        f"{m._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
         for k, o, n in changes) or "无实质变更"
     m.logger.info(
-        "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 容量上限=%s",
+        "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 健康报告=%s 容量上限=%s",
         start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
         edge_display, pref_raw if pref_raw is not None else "不变",
         win or "不变", sunday_display, saturday_display, pause_display,
         reg_pause_display,
         "不变" if account_verify is None else ("开" if account_verify else "关"),
-        probe_display, cap_limits_display,
+        probe_display, health_report_display, cap_limits_display,
     )
     # 设置变更审计（否则调度/系统设置保存无留痕，与其他管理操作不一致）
     m.db.audit(
@@ -721,7 +788,8 @@ def api_settings_save():
         f"周六={saturday_display} "
         f"全局暂停={pause_display} 注册={reg_pause_display} "
         f"账号验证={'开' if account_verify else '关'} "
-        f"探针={probe_display} 容量上限={cap_limits_display} "
+        f"探针={probe_display} 健康报告={health_report_display} "
+        f"容量上限={cap_limits_display} "
         f"变更=[{changes_desc}]",
     )
     # 变更告警：整次请求**合并成一条**（一键一封会被拿来刷告警日额度与邮箱）。
