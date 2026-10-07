@@ -880,6 +880,46 @@ def owners_for_day(day):
         return {}
 
 
+def row_owners(day, phones=None):
+    """当日任务的 `{phone: (state, owner)}`——**轮末"本执行体未执行"判因的事实源**。
+
+    判因怎么用（见 `executor_v3._mark_unreached`）：行已不是 `pending`（或归属写的是
+    别人）⇒ 这件活已被别的执行体领走或了结，本执行体没领到**不等于签到失败**；行仍
+    `pending` 且归属是本执行体（或无人）⇒ 没人接手，那才是真问题。两件事必须分列：
+    2026-10-07 生产把"被兜底领走"报成 51/33 个失败，带的事件表里零记录。
+
+    `owner` 一列同时是**计划归属**与**当前持有者**（`claim_batch` 领取时就地改写，见其
+    docstring），所以"这件活派给谁"只有这一处记录。判因**同时读 `state` 与 `owner`**：
+    只看 `state` 分不出"仍待领但派给了别人"与"仍待领且没人管"。
+
+    `phones=None` 取该业务日全部行；给了就只取这些账号（**必须一次取全**：轮末判因的
+    账号可能上百个，逐账号查会把一次收尾变成上百次查询），按 `SQL_VAR_CHUNK` 分块拼
+    `IN`。只回原串，**不解析角色、不脱敏**——角色与脱敏是展示层的事。
+
+    **读不通回 `None`（哨兵）+ warning**（与 `claimed_owners` / `pending_count` 同口径）：
+    折成空映射会让判因把"读不出来"当成"没有行"——被领走的账号于是被认成"没人接手"，
+    方向不可控。调用方按"判因不可得"处置（见 `executor_v3._mark_unreached`）。
+    """
+    phones = None if phones is None else tuple(phones)
+    if phones is not None and not phones:
+        return {}
+    sql = ("SELECT phone, state, owner FROM sign_tasks WHERE day=?"
+           "{} ORDER BY phone")
+    try:
+        conn, lock = _queue_conn()
+        out = {}
+        with lock:
+            chunks = [()] if phones is None else list(_chunks(phones))
+            for chunk in chunks:
+                tail = (" AND phone IN (%s)" % ",".join("?" for _ in chunk)) if chunk else ""
+                for r in conn.execute(sql.format(tail), (day, *chunk)).fetchall():
+                    out[r["phone"]] = (r["state"], r["owner"])
+        return out
+    except Exception as e:
+        logger.warning("读取当日任务归属与状态失败（读不通，不等于没有行）: %s", e)
+        return None
+
+
 def owners_since(days=None):
     """保留期内出现过的执行体身份串（去重，升序）——供"槽位号只增不复用"用。
 
