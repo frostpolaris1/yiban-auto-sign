@@ -6,7 +6,7 @@
    流程的演练、usersure
    与登录页两种被风控位置的表现差异、签到最后一步被服务端拒绝的业务层判定、按落盘
    JSONL 断言握手顺序。
-对应实现：tests/fake_yiban_server.py（假服务端）、yiban/fyiban/protocol.py 与
+对应实现：tests/fake_yiban_server.py（假服务端）、yiban/platform.py 与
    client 外观、scripts/signin.py 的登录与签到编排。
 关键断言：端到端跑的是真 HTTP
    往返：脚本化响应的单测只能证明「我们发的确实是这个形状」，证明不了「这套形状能跑完一整条链」。因此必须响亮失败地确认回环流量没被本机加速器/TUN

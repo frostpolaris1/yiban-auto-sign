@@ -40,7 +40,7 @@ EDGE_KEYS = ("YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC",
 SINGLE_ENTRY = ("yiban/window.py", "parse_edges")
 #: AST 扫描的生产树目录，与 `scripts/check-shared-facts.sh` 的 DEFAULT_SCOPE 同族。
 SCAN_DIRS = ("yiban", "web", "docker", "scripts")
-SKIP_DIRS = ("__pycache__", "_vendor")
+SKIP_DIRS = ("__pycache__",)  # vendored 目录已退役：生产树整体受扫，不再有豁免面
 #: 只在注释里写这三个键名的生产模块；它们必须被扫到、且必须零命中。
 COMMENT_ONLY_MODULES = ("web/app.py", "web/render.py", "yiban/engine/schedule.py")
 

@@ -14,6 +14,7 @@ import {
   menuItemsWithout,
   ownerMailText,
   ownerText,
+  phoneMaskHit,
   prefText,
   pruneSelection,
   selectAllState,
@@ -87,13 +88,26 @@ describe("分组与排序", () => {
 });
 
 describe("检索", () => {
-  it("完整手机号输入经 maskPhone 后仍能命中脱敏列表；空关键词全通过", () => {
+  // 列表 phone 是服务端已遮值；前端不重写遮罩公式，而是把遮罩串当通配模式用。
+  it("完整手机号命中服务端遮罩串；空关键词全通过", () => {
     const a = acc({ name: "车站", phone: "138****8000", owner_display: "管理员" });
-    const mask = (p: string) => (p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p);
-    expect(accountMatch(a, "13800138000", mask)).toBe(true);
-    expect(accountMatch(a, "车站", mask)).toBe(true);
-    expect(accountMatch(a, "", mask)).toBe(true);
-    expect(accountMatch(a, "nope", mask)).toBe(false);
+    expect(accountMatch(a, "13800138000")).toBe(true);
+    expect(accountMatch(a, "车站")).toBe(true);
+    expect(accountMatch(a, "138")).toBe(true); // 前缀子串
+    expect(accountMatch(a, "8000")).toBe(true); // 后缀子串
+    expect(accountMatch(a, "")).toBe(true);
+    expect(accountMatch(a, "nope")).toBe(false);
+    expect(accountMatch(a, "13900139000")).toBe(false); // 不同号不得命中
+  });
+
+  it("遮罩通配只按前后段锁定，中间号段任意", () => {
+    expect(phoneMaskHit("138****8000", "13899999900")).toBe(false); // 后 4 位不符
+    expect(phoneMaskHit("138****8000", "138 0013 8000")).toBe(true); // 分段输入取数字后比
+    expect(phoneMaskHit("138****8000", "+8613800138000")).toBe(true); // +86 前缀归一到国内号
+    expect(phoneMaskHit("138****8000", "8613800138000")).toBe(true); // 裸 86 前缀同归一
+    expect(phoneMaskHit("138****8000", "1388000")).toBe(true); // 照可见数字拼接敲，也应命中
+    expect(phoneMaskHit("138****8000", "138")).toBe(false); // 太短不按号码比
+    expect(phoneMaskHit("13800138000", "13800138000")).toBe(false); // 无遮罩段即非模式
   });
 
   it("filterGroup 先按组归类再匹配", () => {
@@ -101,7 +115,7 @@ describe("检索", () => {
       acc({ index: 0, name: "甲", status: "active" }),
       acc({ index: 1, name: "乙", status: "active" }),
     ];
-    expect(filterGroup(accounts, "active", "乙", (x: string) => x).map((a) => a.index)).toEqual([1]);
+    expect(filterGroup(accounts, "active", "乙").map((a) => a.index)).toEqual([1]);
   });
 });
 
@@ -135,14 +149,14 @@ describe("选中集（身份键 = 手机号）", () => {
 
   it("全选态：整组勾满 checked；部分勾选 indeterminate；零行不 checked", () => {
     const accounts = [acc({ index: 0, phone: "111****0001" }), acc({ index: 1, phone: "222****0002" })];
-    expect(selectAllState(accounts, { active: { "111****0001": true } }, "active", "", () => "")).toEqual({
+    expect(selectAllState(accounts, { active: { "111****0001": true } }, "active", "")).toEqual({
       checked: false,
       indeterminate: true,
     });
     expect(
-      selectAllState(accounts, { active: { "111****0001": true, "222****0002": true } }, "active", "", () => ""),
+      selectAllState(accounts, { active: { "111****0001": true, "222****0002": true } }, "active", ""),
     ).toEqual({ checked: true, indeterminate: false });
-    expect(selectAllState([], { active: {} }, "active", "", () => "")).toEqual({
+    expect(selectAllState([], { active: {} }, "active", "")).toEqual({
       checked: false,
       indeterminate: false,
     });

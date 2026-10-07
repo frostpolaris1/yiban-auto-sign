@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  HEALTH_REPORT_WEEKDAYS,
   PILL_H,
   PILL_PAD_X,
   adminToPlaceholder,
@@ -30,6 +31,7 @@ import {
   pdf,
   pillRect,
   quotaPart,
+  reportWeekday,
   resolvePaintValue,
   sanitizeAnnouncement,
   scheduleBody,
@@ -83,22 +85,42 @@ describe("签到调度口径", () => {
     const form = {
       order: "random", dist: "uniform", edgeFront: 1, edgeBack: 1, gap: 10,
       pref: false, sat: false, sun: false, windowStart: "06:30", windowEnd: "07:50",
-      muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
+      muLo: 40, muHi: 60, sgLo: 15, sgHi: 25,
     };
     const body = scheduleBody(snap, form) as Record<string, unknown>;
     expect(body.sign_order).toBe("random");
     expect(Object.keys(body)).toEqual(["sign_order"]);
   });
 
+  // 回归钉（工单 4gvh 实测缺陷）：ScheduleCard 的 μ/σ 字段是 muLo/muHi/sgLo/sgHi，
+  // 而快照侧键名是 muMin/muMax/sigmaMin/sigmaMax。两侧一旦不同名，pctVal 对 undefined
+  // 回默认值 ⇒ 正态参数永远不进保存体（"编辑 → 保存 → 刷新后保持"整链断在这里）。
+  // 这个钉读的是**表单真实字段名**：谁再改名而漏改这边，此处必红。
+  it("scheduleBody 把 μ/σ 改动译成 mu_/sigma_ 各键（表单字段名对齐）", () => {
+    const snap = scheduleSnapshot({
+      sign_order: "sequence", sign_dist: "normal", gap_max: 10,
+      mu_min_pct: 40, mu_max_pct: 60, sigma_min_pct: 15, sigma_max_pct: 25,
+    });
+    const form = {
+      order: "sequence", dist: "normal", edgeFront: 1, edgeBack: 1, gap: 10,
+      pref: false, sat: false, sun: false, windowStart: "06:30", windowEnd: "07:50",
+      muLo: 45, muHi: 65, sgLo: 12, sgHi: 30,
+    };
+    expect(scheduleBody(snap, form)).toEqual({
+      mu_min_pct: 45, mu_max_pct: 65, sigma_min_pct: 12, sigma_max_pct: 30,
+    });
+  });
+
   it("scheduleFormSnapshot 与回填口径一致（缺字段用默认）", () => {
     const s = scheduleFormSnapshot({
       order: "", dist: "", edgeFront: "", edgeBack: "", gap: "", pref: 0, sat: 0, sun: 0,
-      windowStart: "06:30", windowEnd: "07:50", muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
+      windowStart: "06:30", windowEnd: "07:50", muLo: 45, muHi: 65, sgLo: 12, sgHi: 30,
     });
     expect(s.order).toBe("sequence");
     expect(s.dist).toBe("uniform");
     expect(s.edgeFront).toBe(0);
     expect(s.window).toBe("06:30 ~ 07:50");
+    expect([s.muMin, s.muMax, s.sigmaMin, s.sigmaMax]).toEqual([45, 65, 12, 30]);
   });
 
   it("scheduleWarnText：窗口异常提示 + 缓冲超 20% + 容量不足三条各自可现", () => {
@@ -372,6 +394,67 @@ describe("健康 / 系统开关", () => {
     const snap = healthSnapshot({ account_verify: 1, probe_enable: 0, probe_time: "20:00", probe_interval: "1" });
     const body = healthBody(snap, { verify: true, probe: true, time: "20:00", interval: "1" });
     expect(body).toEqual({ probe_enable: 1 });
+  });
+
+  it("健康报告：未配置时快照两条都空，且默认不改任何字段", () => {
+    const snap = healthSnapshot({});
+    expect(snap.reportTime).toBe("");
+    expect(snap.reportWeekday).toBe("");
+    const form = {
+      verify: false, probe: false, time: "20:00", interval: "1",
+      reportFixed: !!(snap.reportTime || snap.reportWeekday),
+      reportTime: snap.reportTime || "09:00", reportWeekday: snap.reportWeekday || "0",
+    };
+    expect(healthBody(snap, form)).toEqual({});
+  });
+
+  it("健康报告：开开关只提交改过的字段，星期停在显示缺省周一不算改动", () => {
+    const snap = healthSnapshot({});
+    expect(healthBody(snap, { reportFixed: true, reportTime: "09:00", reportWeekday: "0" }))
+      .toEqual({ health_report_time: "09:00" });
+    expect(healthBody(snap, { reportFixed: true, reportTime: "09:00", reportWeekday: "2" }))
+      .toEqual({ health_report_time: "09:00", health_report_weekday: "2" });
+  });
+
+  it("健康报告：开开关而时刻为空时不补钟点（只配星期的存量配置不得被改写）", () => {
+    const snap = healthSnapshot({});
+    expect(healthBody(snap, { reportFixed: true, reportTime: "", reportWeekday: "0" }))
+      .toEqual({});
+    // 只配了星期的存量形态：一打开就带脏标记 / 一保存就把时刻塞成 09:00 = 打开即改行为
+    const weekdayOnly = healthSnapshot({ health_report_weekday: "2" });
+    expect(weekdayOnly.reportTime).toBe("");
+    expect(weekdayOnly.reportWeekday).toBe("2");
+    expect(
+      healthBody(weekdayOnly, { reportFixed: true, reportTime: "", reportWeekday: "2" }),
+    ).toEqual({});
+    expect(
+      healthBody(weekdayOnly, { reportFixed: true, reportTime: "", reportWeekday: "3" }),
+    ).toEqual({ health_report_weekday: "3" });
+  });
+
+  it("健康报告：关开关把已配的键成对删掉；都没配过则一个键都不提交", () => {
+    const snap = healthSnapshot({ health_report_time: "09:00", health_report_weekday: "2" });
+    expect(
+      healthBody(snap, { reportFixed: false, reportTime: "09:00", reportWeekday: "2" }),
+    ).toEqual({ health_report_time: "", health_report_weekday: "" });
+    // 只有星期被配过（手工写 .env 的形态）时，"关掉"也必须删得掉它
+    const weekdayOnly = healthSnapshot({ health_report_weekday: "2" });
+    expect(healthBody(weekdayOnly, { reportFixed: false, reportWeekday: "2" }))
+      .toEqual({ health_report_weekday: "" });
+    // 都没配过：不做无谓提交（一次无改动保存也会走 A 档口令门禁）
+    expect(healthBody(healthSnapshot({}), { reportFixed: false, reportWeekday: "0" }))
+      .toEqual({});
+  });
+
+  it("健康报告：非法时刻 fail-closed 回空串，越界/非数字星期回空串", () => {
+    const snap = healthSnapshot({ health_report_time: "25:00", health_report_weekday: "9" });
+    expect(snap.reportTime).toBe("");
+    expect(snap.reportWeekday).toBe("");
+    expect(reportWeekday("2")).toBe("2");
+    expect(reportWeekday("abc")).toBe("");
+    expect(reportWeekday("2abc")).toBe("");
+    expect(reportWeekday("-1")).toBe("");
+    expect(HEALTH_REPORT_WEEKDAYS.length).toBe(7);
   });
 
   it("canDo：急停任意管理员、恢复与注册仅主管理员", () => {

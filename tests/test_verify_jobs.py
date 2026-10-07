@@ -582,7 +582,7 @@ PHONE = "13800000001"
 
 
 PHONE_KEYED_TABLES = {"time_prefs", "session_cache", "sign_events", "verify_jobs",
-                     "sign_claims", "sign_tasks"}
+                     "sign_claims", "sign_tasks", "run_events"}
 
 
 def _ago(seconds):
@@ -727,6 +727,9 @@ class _LifecycleBase(unittest.TestCase):
                      "(phone, day, vshard, owner, run_at, state, created_at) "
                      "VALUES (?,?,?,?,?,?,?)",
                      (phone, _ago(0)[:10], 0, "seed-proc", _ago(0), "claimed", _ago(0)))
+        conn.execute("INSERT INTO run_events (ts, day, node, executor, phone, message) "
+                     "VALUES (?,?,?,?,?,?)",
+                     (_ago(0), _ago(0)[:10], "success", "seed-proc", phone, ""))
         conn.commit()
 
 

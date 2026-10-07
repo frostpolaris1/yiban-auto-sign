@@ -72,7 +72,7 @@ ZO2F/jOXAwpzw0UKTwIDAQAB
 #   login          POST /code/usersure 回账密错形态（code != s200）；
 #   signIn         POST 签到提交回业务失败码（非登录阶段的提交失败）；
 #   waf            旧流程真实遇 ydclearance 挑战的落点 GET /iapp7463 回挑战页，
-#                  形态对照 `yiban/fyiban/waf.py` 的 looks_like_challenge 真实输入
+#                  形态对照 `yiban/challenge.py` 的 looks_like_challenge 真实输入
 #                  （window.onload=setTimeout + eval("qo=eval;qo(po);") 双特征 +
 #                  Set-Cookie https_ydclearance），保证识别支路按真页走；
 #   nonjson        JSON 期望端点（POST usersure/signIn、GET auth/signPosition）回
@@ -98,7 +98,7 @@ WAF_CHALLENGE_SET_COOKIE = "https_ydclearance=mock01clearance02; Path=/; Domain=
 def waf_challenge_body():
     """`waf` 旋钮的响应体：ydclearance 挑战页形态。
 
-    逐字对照 `yiban/fyiban/waf.py:looks_like_challenge` 的文本特征；刻意**不含**完整
+    逐字对照 `yiban/challenge.py:looks_like_challenge` 的文本特征；刻意**不含**完整
     可解挑战模板——真实改版/半页场景最常触发的就是"识别成挑战但无从求解"。求解器已按
     既定裁决删除，检测命中即响亮失败，故故障注入喂的正是这个形状。
     """
@@ -645,7 +645,7 @@ def main(argv=None):
                     help="故障注入旋钮（默认 none=全关，不开零变化）：login=登录端点回"
                          "账密错形态；signIn=签到提交回业务失败；signPosition=拉任务失败；"
                          "waf=旧流程挑战落点 GET /iapp7463 回 ydclearance 挑战页"
-                         "（形态对照 yiban/fyiban/waf.py 识别输入）；nonjson=JSON 期望"
+                         "（形态对照 yiban/challenge.py 识别输入）；nonjson=JSON 期望"
                          "端点回 200+超长拦截 HTML（现网 Expecting value: 形状）；"
                          "login-shallow=最终认证回 code==0 但无 data 载荷的假成功"
                          "（只判 code 的旧登录门会误写会话缓存，带回执判据必须拒绝）。"

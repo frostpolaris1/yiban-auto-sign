@@ -70,7 +70,7 @@ from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import claims as claims_mod
-from yiban.store import clock_meta, queue_store
+from yiban.store import clock_meta, queue_store, run_events
 
 logger = logging.getLogger("yiban")
 
@@ -398,7 +398,7 @@ class _Ctx:
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
                  cred_state, delegated, notify_url, event_sink, rng, slot=0,
                  runtime_id=None, requeue_during_run=False, reclaim=False,
-                 allowed_phones=None, alive_role=None):
+                 allowed_phones=None, alive_role=None, yield_probe=None, unreached=None):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
@@ -438,6 +438,11 @@ class _Ctx:
         # 会话内恢复周期是否顺带回炉默认档（常驻/长会话的兜底腿用它"当日接手"，
         # 一次性定时轮靠轮首回炉即可，不开这个口子以免在同一轮里重开保守档之外的循环）
         self.requeue_during_run = requeue_during_run
+        # 让位的运行期判据（见 `run_executor_v3` 的同名说明）：补货循环每次领取前问一次。
+        self.yield_probe = yield_probe
+        # 轮末"本执行体未执行"判因的出口（调用方传入的 dict，本函数往里填）：
+        # 判因同时喂汇总计数与事件留痕，见 `_mark_unreached`。
+        self.unreached = unreached
         # 手动 `--only` 的显式重签：豁免窗口关闭判定（用户主动触发应当放行，与旧领取池
         # 的手动链路一致），其余路径不受影响
         self.reclaim = reclaim
@@ -458,6 +463,10 @@ class _Ctx:
         # 这是"按持有者身份判活"而不是"把租约加长"：集合随处理完成而收缩，本进程真正
         # 泄漏的行（已领却没进集合）仍会被回收自愈。
         self.held = set()
+        # **本执行体真的执行过**的账号（过了 gap 闸门、发过请求）。轮末判因要靠它把
+        # "跑过但没收尾（重试回炉）"与"没轮到"分开——前者不是"未执行"（见
+        # `_mark_unreached`）。只在事件循环线程里改写，与本类其余计数同一纪律。
+        self.attempted = set()
 
 
 def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
@@ -482,6 +491,32 @@ def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
         pass
 
 
+def _report(ctx, node, phone="", message=""):
+    """进度打点（执行体侧唯一入口）：身份与业务日从 ctx 取，调用方只给节点与账号。
+
+    身份用**稳定槽位名**（`ctx.executor_id`，如 `worker-0@host` / `single@host`），
+    不是写 `sign_tasks.owner` 的运行时串（含进程号/代次）：进度流的读者按槽位名认
+    执行体（与执行体页、HRW 分片成员同一套名字），跨重启同名才能续成一条线。
+
+    写入失败在 `run_events.report` 内被隔离（只告警），故此处不捕获、也不看返回值：
+    打点是观测面，任何失败都不得改变本轮的签到路径（工单行为四）。
+    """
+    run_events.report(node, day=ctx.day, executor=ctx.executor_id,
+                      phone=phone, message=message)
+
+
+def _report_many(ctx, node, phones, message=""):
+    """一批进度打点（执行体侧唯一批量入口）：同一时刻的一批行走一次写锁。
+
+    领取发生在事件循环线程里，逐行提交会把"一行一次锁等待"叠加成整条通道的停顿，
+    故领取用批量、单条用 `_report`。身份与业务日与 `_report` 同源（稳定槽位名 +
+    `ctx.day`）。
+    """
+    run_events.report_many([{"node": node, "day": ctx.day,
+                             "executor": ctx.executor_id, "phone": p,
+                             "message": message} for p in phones])
+
+
 def _settle(ctx, phone, epoch, state, message):
     """单行收尾：带上领取时的 fencing token——被接管者迟到的写会被拒。
 
@@ -498,11 +533,16 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
     以 `failed` 了结时同样带档位前缀（账密暂停属保守档，只有显式路径可回炉——
     自动回炉等于绕开凭据熔断反复真实登录）；`done` 是了结态，不带前缀。
+
+    进度打点按状态取节点：账密暂停落 `pause`，其余非成功终态落 `fail`。本函数是
+    **所有零请求收尾的唯一出口**，故打点挂在这里而不是两个调用点各写一遍。
     """
     _ok, _msg, _skip, status = result
     ctx.results[phone] = result
     state_io._write_sign_state(phone, status, state_message)
     _emit_event(ctx, phone, status, state_message)
+    _report(ctx, run_events.NODE_PAUSE if status == STATUS_PAUSED
+            else run_events.NODE_FAIL, phone, state_message)
     if state == queue_store.STATE_FAILED:
         state_message = _tier_prefix(status) + state_message
     _settle(ctx, phone, epoch, state, state_message)
@@ -625,6 +665,12 @@ async def _attempt(ctx, item):
         logger.info("[%s] ⏸️ 账密异常已暂停，请修改密码", _mask_phone(phone))
         return
     ctx.gap_gate.commit(phone, _mono())  # 走到这才是"真要发请求"：gap 的推进点必须与尝试一一对应
+    # 本执行体**真的执行过**这个账号（轮末判因用：执行过却没收尾的（重试回炉）不是
+    # "没轮到"，见 `_mark_unreached`）。登记点与上面那条注释同一处：过了 gap 闸门才算执行。
+    ctx.attempted.add(phone)
+    # 进度打点「开始」：闸门全过、请求即将发出。三件限速替身（出口桶/全局 Λ/gap）都在
+    # 这行之前，故 start 行只代表"真的要发请求了"，把"排队等额度"记成开始会虚报进度。
+    _report(ctx, run_events.NODE_START, phone)
     ctx.inflight += 1
     t0 = _mono()
     try:
@@ -636,6 +682,11 @@ async def _attempt(ctx, item):
     # 每次尝试结束即物化状态：v2 是逐账号增量写，v3 只在收尾物化会让当天网页日历空窗
     state_io._write_sign_state(phone, status, message, dur=dur)
     _emit_event(ctx, phone, status, message, dur=dur, attempt_no=attempts_n + 1)
+    # 进度打点「成功/失败」：一次尝试的结论，与上一行的 sign_events 同一时刻、同一判据
+    # （了结态集合 `CLAIM_DONE_STATUSES`）。重试中的尝试同样落 fail——那是这次尝试的
+    # 事实；该账号稍后重新被领到时会有新的 claim/start 行，进度流据此如实反映次数。
+    _report(ctx, run_events.NODE_SUCCESS if status in yiban_status.CLAIM_DONE_STATUSES
+            else run_events.NODE_FAIL, phone, message)
     # 每账号结果行：行内手机号为遮罩形态（日志文件本身脱敏，展示层统一再脱敏）。
     # 日历"我的日志"面板与日志页靠该行向账号归属用户回显每次尝试结果——只在
     # 重试/放弃时落行的话，成功/跳过账号在面板里查无记录。
@@ -852,6 +903,9 @@ async def _refiller(queue, shards, ctx):
     到点的条目在库里已是 `claimed`、不在 `pending_count` 里，不数进来会在通道还在跑时
     提前收干，把刚重排回 `pending` 的重试任务留在库里没人领。
 
+    该循环开头还有一道**让位复检**（`ctx.yield_probe`，只给兜底腿）：答 True 就冻结领取、
+    已领的照常收尾。理由是让位不能依赖"进入这一轮那一刻"的锁状态——一轮扫描可能跑满整个
+    窗口，一次赢下启动竞态就等于吸收全天的工作量（2026-10-07 生产 84/100）。
     同一循环按间隔驱动两件恢复动作（**函数内不持时间状态**，间隔常量在模块级）：
     - `reap_expired`：回收本业务日内租约**超出宽限期**的 `claimed` 行——不回收的话崩溃
       通道留下的行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"。**判活按
@@ -915,6 +969,16 @@ async def _refiller(queue, shards, ctx):
                 if flipped is None:
                     round_unreadable = True
             last_recover = _mono()
+        # 让位复检（`ctx.yield_probe`，只给兜底腿）：判据不能只看"进入这一轮那一刻"的
+        # 状态——一轮扫描可能跑满整个窗口，一次赢下启动竞态就吸收全天的工作量
+        # （2026-10-07 生产 84/100）。这里每次领取前复检一次：答 True 就**冻结领取**
+        # （已领的照常收尾，半路丢弃会留下租约空转与"未了结"行），本轮很快自然收干。
+        probe = getattr(ctx, "yield_probe", None)
+        if probe is not None and probe():
+            logger.info(
+                "让位：检测到全量轮开始运行，停止继续领取（本轮已领 %d 个账号照常收尾）",
+                len(held))
+            break
         rows = queue_store.claim_batch(
             ctx.runtime_id, ctx.day, shards, now=_stamp_ms(_now()),
             limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS,
@@ -926,6 +990,9 @@ async def _refiller(queue, shards, ctx):
                 held.add(r["phone"])
                 queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
                                   r["attempts"], r["epoch"]))
+            # 进度打点「领取」：整批一次写（见 `_report_many`）。放在投递之后，故
+            # "claim_batch → held 登记"那段无 await 的豁免窗口一字未动。
+            _report_many(ctx, run_events.NODE_CLAIM, [r["phone"] for r in rows])
         # 收干候选：领取面**读通**且回空、通道全闲、队列空。只有候选才问第二面——
         # 领取面已是哨兵时再问一次只是白等一次锁等待。
         drained = (rows is not None and not rows and ctx.inflight == 0
@@ -1005,6 +1072,9 @@ def _prescan(ctx, accounts):
             ctx.results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
             state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
             _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
+            # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
+            # claim/start 行——进度流里只出现这一行 pause 是正确形态。
+            _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
 
 
 def _mark_window_skips(ctx, accounts):
@@ -1034,7 +1104,85 @@ def _mark_window_skips(ctx, accounts):
             continue
         ctx.results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
         _emit_event(ctx, phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+        # 窗口外收尾同样落终态行（非成功终态一律 fail）：本轮该账号没有 claim/start
+        # （计划行缺失或库异常由本函数兜住），只出现一行 fail 是如实形态——汇总里的
+        # "跳过"计数与进度流就此对得上。
+        _report(ctx, run_events.NODE_FAIL, phone, "签到时段已结束")
         logger.info("[%s] ⛔ 签到时段已结束，跳过执行", _mask_phone(phone))
+
+
+#: 「本执行体未执行」的三种判因（`_mark_unreached` 写进调用方的 `unreached`）。
+#: 三档必须分开：`PEER` 是**跨执行体交接的正常形态**（别人已经接手），`RETRY` 是**本轮
+#: 执行过但没成**（已回炉待重试），`UNCLAIMED` 才是**没人接手**的故障；并成一档就会把
+#: 正常交接报成故障，或者反过来把故障报成正常。
+UNREACHED_PEER = "peer"
+UNREACHED_RETRY = "retry"
+UNREACHED_UNCLAIMED = "unclaimed"
+
+
+def _mark_unreached(ctx, accounts):
+    """轮末判因：本执行体范围内、`results` 里没有的账号到底落到哪儿去了。
+
+    判据取两处**本进程握着的事实**，不猜：
+
+    - `ctx.attempted`（本执行体跑过这个账号）⇒ `RETRY`：这一轮执行过、没成而回炉待重试
+      （`retrying` 档）。它不是"没轮到"，事件/状态文件已由那次尝试写过，本函数不再补行。
+    - 队列（唯一台账）里那一行的 `state` 与 `owner`（`queue_store.row_owners`）：
+      归属不是本执行体 ⇒ `PEER`（这件活派给了别的执行体，或已被它领走/了结，
+      **本执行体没领到不等于签到失败**）；归属是本执行体、或无人归属且仍 `pending`
+      ⇒ `UNCLAIMED`（没人接手，那是要暴露的故障）；
+    - 队列读不通（哨兵）⇒ 判因不可得，按 `UNCLAIMED` 计并留 warning：不把"读不出来"
+      说成"别人做了"（那是掩盖），也不静默丢账。
+
+    为什么必须留痕：2026-10-07 生产里任务被别人领走时执行层**零事件、零日志**，
+    `sign_tasks.result` 又被实际领取者覆盖成"签到成功"，数据侧完全看不出"没轮到"，
+    运维只能靠人工比对日志时间线。这里逐账号落一行 `sign_events`（stage="sign"、
+    状态落 `pending` 档、文本点名判因），与调用方的汇总计数**同一份判因**——两处口径
+    不会互相漂移。
+
+    `ctx.unreached` 为 `None`（调用方不要判因，例如只关心自己退出码的子执行体）时本函数
+    只做事件留痕，不填 out-param。
+    """
+    attempted = getattr(ctx, "attempted", ())
+    phones = [a.phone for a in accounts
+              if a.phone not in ctx.results
+              and a.phone not in (ctx.delegated or ())]
+    if not phones:
+        return
+    pending_judge = [p for p in phones if p not in attempted]
+    rows = queue_store.row_owners(ctx.day, pending_judge) if pending_judge else {}
+    mine = {ctx.executor_id, ctx.runtime_id}
+    if rows is None:
+        # 判因不可得：**一条** warning（不是逐账号一条——大站一轮有上百个账号，逐号
+        # 告警会把日志淹掉）；逐账号的判因文本仍落事件表与 INFO 行，可查性不受损。
+        logger.warning("未执行判因不可得（当日任务归属读不通），%d 个账号按「无人接手」计",
+                       len(pending_judge))
+    for phone in phones:
+        if phone in attempted:
+            state = owner = ""
+            reason = UNREACHED_RETRY
+            message = ""    # 已由那次尝试落过事件与状态，不重复写
+        elif rows is None:
+            reason, state, owner = UNREACHED_UNCLAIMED, "", ""
+            message = "本执行体未执行：判因不可得（当日任务归属读不通）"
+        else:
+            state, owner = rows.get(phone, ("", ""))
+            reason = UNREACHED_PEER if (owner and owner not in mine) else UNREACHED_UNCLAIMED
+            if reason == UNREACHED_PEER:
+                role = egress.parse_owner(owner)["role"]
+                message = (f"本执行体未领取：任务已由其他执行体领取"
+                           f"（role={role}，state={state}）")
+            elif state == queue_store.STATE_PENDING:
+                message = f"本执行体未执行：行仍待领（state={state}）"
+            elif state:
+                message = f"本执行体未执行：行状态={state} 且无归属执行体"
+            else:
+                message = "本执行体未执行：队列中没有当日行"
+        if ctx.unreached is not None:
+            ctx.unreached[phone] = reason
+        if message:
+            _emit_event(ctx, phone, yiban_status.STATUS_PENDING, message)
+            logger.info("[%s] ⏳ %s", _mask_phone(phone), message)
 
 
 # ---------------------------------------------------------------------------
@@ -1043,7 +1191,8 @@ def _mark_window_skips(ctx, accounts):
 def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
                     cred_state=None, notify_url="", event_sink=None,
                     cfg=None, rng=None, requeue_final=False, claim_all=False,
-                    requeue_during_run=False, reclaim=False):
+                    requeue_during_run=False, reclaim=False,
+                    yield_probe=None, unreached=None):
     """同步入口（内部 `asyncio.run`）：跑一轮，返回
     `{phone: (success, message, skip, status)}`——调用方的收尾与退出码汇总零改动。
 
@@ -1073,6 +1222,18 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     计数写不回。`notify_url` 只为与旧调用签名对齐：逐次失败不在这里通知（汇总邮件是
     runner 收尾的职责，只在最终放弃时通知一次）。
     计划不可用时返回空结果并留 error：队列就是 `sign_tasks`，没有可用的库就没有队列。
+
+    `yield_probe`：**让位的运行期判据**（缺省 `None` = 不让位）。补货循环每次领取前问一次，
+    答 True 就立即停止领取、已领的照常收尾。为什么必须有它：让位判据写在调用方（兜底主
+    循环）的**循环顶**，而一轮扫描是一次调用、可能跑满整个窗口（2026-10-07 生产：兜底
+    一次赢下启动竞态就吸收了整个窗口 84/100 的工作量）。让位因此不能依赖"进入这一轮时
+    那一刻的锁状态"，必须在轮内复检——这正是本形参的存在理由。**只给兜底腿**：定时轮的
+    子执行体在监督进程持全局锁期间本就该照常干活，它们传它就会全员停摆。
+
+    `unreached`：调用方传入的 **out-param dict**，本函数在轮末往里填
+    `{phone: 判因}`（`UNREACHED_PEER` / `UNREACHED_UNCLAIMED`，见 `_mark_unreached`）——
+    本执行体范围内、`results` 里没有的账号各一条。判因同时喂两处：调用方的汇总计数
+    与 `sign_events` 留痕（同源同口径，见 `_mark_unreached`）。缺省 `None` = 调用方不要。
 
     **未预期异常一律不外逃**：本函数是 `runner` 退出码汇总的前置调用，traceback 逃出去退出码
     就落到契约（0/1/2/3/10）之外，`run.sh` 的补签闸门与状态写入随之失真。按"结果是否已成型"
@@ -1149,7 +1310,8 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
             rng=rng or random.Random(), slot=slot, alive_role=alive_role,
             requeue_during_run=requeue_during_run, reclaim=reclaim,
-            allowed_phones=allowed_phones)
+            allowed_phones=allowed_phones, yield_probe=yield_probe,
+            unreached=unreached)
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
         # 分片并入后这些账号已归本执行体，不该再被登记成"别人负责的活"。
         # 手动 `--only` 轮不接管死主分片：那是跨账号写别人的行，不是用户点这一下的范围。
@@ -1188,9 +1350,23 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         # 事实相反；没被收尾的账号由 runner 按"未执行"计入失败，可见性不受损
         logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
                      _mask_phones_in_text(_sanitize_text(str(e))))
+    try:
+        _mark_unreached(ctx, accounts)
+    except Exception as e:
+        # 与窗口收尾同一档：结果集已成型，判因失败只丢"未执行"的分因（调用方退回按
+        # "没人接手"计），照常返回结果。不并进"丢结果"那档——那会把一轮基本成功的活
+        # 汇总成"全部未执行"。
+        logger.error("v3 未执行判因失败，已完成的账号结果照常返回: %s",
+                     _mask_phones_in_text(_sanitize_text(str(e))))
     # 收尾写心跳**只在正常返回路径**（不是 finally）：四态从 running 落到 finished。
     # 异常/中断路径不写——`KeyboardInterrupt` / `SystemExit` 是 BaseException、会直接
     # 外逃，写进去就把"被信号杀掉"记成"正常跑完"；留"有开始、无收尾"让心跳过期后判
     # `stale`（疑似被强杀，要用户注意），与监督进程不写收尾的口径一致。
     state_io.mark_worker_finished(slot, now=_now(), role=alive_role)
+    # 进度打点「收尾」：与上一行同时机、同一条"只在正常返回路径"的口径——被信号
+    # 杀掉的轮次留"有开始、无收尾"，进度流据此与执行体页的四态判定一致。
+    # message 前缀是本层的判别面（见 run_events 模块说明的"收尾有两层"）：单执行体
+    # 路径下 runner 另落一行"轮次收尾："，两行同 (业务日, 执行体, 节点) 但事实不同。
+    _report(ctx, run_events.NODE_FINALIZE,
+            message=f"执行体会话收尾：本轮完成 {len(ctx.results)} 个账号")
     return ctx.results

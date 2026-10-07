@@ -1308,7 +1308,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_log_line_visibility_rules(self):
         vis = self.webapp._log_line_visible
-        for logger_name in ("yiban", "yiban.client", "yiban.fyiban.protocol",
+        for logger_name in ("yiban", "yiban.client", "yiban.platform",
                             "yiban.engine.queue"):
             for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
                 self.assertTrue(vis(level, logger_name), f"{logger_name}/{level} 应可见")

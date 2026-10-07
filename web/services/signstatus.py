@@ -37,8 +37,8 @@ import requests
 from yiban import clock
 from yiban import window as yb_window
 from yiban.engine import schedule as yb_schedule
-from yiban.fyiban.protocol import API_AUTH_URL
 from yiban.infra import env_io as _env_io
+from yiban.platform import API_AUTH_URL
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

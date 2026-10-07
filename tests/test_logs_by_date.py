@@ -137,7 +137,7 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(HIST_DATE, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
             _log_line(HIST_DATE, "INFO", "yiban", "==== 开始执行签到，共 1 个账号，队列重试模式 ===="),
             _log_line(HIST_DATE, "INFO", "yiban.client", "[13800138001] 生成定位: (118.8, 31.9)"),
-            _log_line(HIST_DATE, "INFO", "yiban.fyiban.protocol", "[13800138001] 登录成功"),
+            _log_line(HIST_DATE, "INFO", "yiban.platform", "[13800138001] 登录成功"),
             _log_line(HIST_DATE, "DEBUG", "yiban", "[13800138001] 登录方式: KillYiBan 同款"),
             _log_line(HIST_DATE, "INFO", "werkzeug", '127.0.0.1 - - "GET /api/logs HTTP/1.1" 200 -'),
             "无格式行（run.sh 直接 echo）",
@@ -147,7 +147,7 @@ class LogsByDateTest(unittest.TestCase):
         self.assertIn("签到成功", joined)
         self.assertIn("开始执行签到", joined)
         self.assertIn("生成定位", joined, "yiban.client 的细节行必须入列（旧正则漏掉带点的 logger）")
-        self.assertIn("登录成功", joined, "yiban.fyiban.protocol 同上")
+        self.assertIn("登录成功", joined, "yiban.platform 同上")
         self.assertIn("登录方式", joined, "yiban.* 的 DEBUG 也入列（部署自己开的级别）")
         self.assertNotIn("werkzeug", joined, "非 yiban 组件的 INFO 仍不入列")
         self.assertNotIn("无格式行", joined)
