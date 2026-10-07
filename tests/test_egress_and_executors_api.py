@@ -221,6 +221,46 @@ class OwnerIdentityTest(unittest.TestCase):
         self.assertEqual(egress.role_label("别的角色"), "未标注（旧数据）")
 
 
+class OwnerTagTest(unittest.TestCase):
+    """`owner_tag`：身份串 → 日志归因前缀，**只回角色与槽位**（不回带主机名的原串）。
+
+    `parse_owner` 的所有形态都要能被它渲染（新旧格式同源）；主机名一律不出现——身份原串
+    属部署信息，模块 docstring 的红线是"任何接口/日志都不得回原串"。轮次是可选后缀，
+    只有同一进程内跑多轮的兜底会传。
+    """
+
+    def test_roles_render_without_host(self):
+        cases = ((egress.worker_owner(3, "myhost"), "[worker-3]"),
+                 (egress.fallback_owner("myhost"), "[fallback]"),
+                 (egress.single_owner("myhost"), "[single]"),
+                 ("", "[unknown]"),
+                 ("legacy-nonsense", "[unknown]"))
+        for owner, want in cases:
+            with self.subTest(owner=owner):
+                got = egress.owner_tag(owner)
+                self.assertEqual(got, want)
+                self.assertNotIn("myhost", got, "归因前缀不得带主机名")
+
+    def test_legacy_formats_render_too(self):
+        """旧格式（库里 14 天保留期的存量）同样判得出角色，渲染口径不分叉。"""
+        self.assertEqual(egress.owner_tag("h1:workers:1234:w2"), "[worker-2]")
+        self.assertEqual(egress.owner_tag("fallback-h1:1234"), "[fallback]")
+        self.assertEqual(egress.owner_tag("exec-h1:1234"), "[single]")
+
+    def test_round_suffix_only_when_supplied(self):
+        owner = egress.fallback_owner("myhost")
+        self.assertEqual(egress.owner_tag(owner), "[fallback]")
+        self.assertEqual(egress.owner_tag(owner, 7), "[fallback r7]")
+        # 轮次 0 也要照实打（`is not None` 而不是真值判断——0 是合法轮次）
+        self.assertEqual(egress.owner_tag(owner, 0), "[fallback r0]")
+
+    def test_runtime_identity_renders_the_same_as_its_stable_name(self):
+        """运行时身份（稳定名 + 进程号/代次）与稳定名同角色同槽位：归因前缀相同。"""
+        stable = egress.worker_owner(1, "myhost")
+        self.assertEqual(egress.owner_tag(egress.runtime_owner(stable, pid=9, gen="101010")),
+                         egress.owner_tag(stable))
+
+
 class _WebBase(unittest.TestCase):
     """临时库/环境 + 主管理员登录（与既有 web 测试同一套骨架）。"""
 
