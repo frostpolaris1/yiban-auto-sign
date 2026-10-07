@@ -23,7 +23,7 @@
 #                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
 #                    就地跑：不建副本、不归一化、不落日志
 #   --fast           **提交前自查·安全档**：跑全量，但剔除已实测的 5 条长尾
-#                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 149s → 57s，
+#                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 146s → 57s，
 #                    覆盖面无选择损失。**仍非门禁**：推送前跑全量或确认 CI 绿。
 #   --fast-scoped    **提交前自查·范围档**：只跑"改动相邻面"（目标为入口自检时实测 9~11s，
 #                    目标集越大越久）。覆盖面明确不全，输出会声明"未被选中的用例没有跑"；
@@ -34,9 +34,12 @@
 #   （--ci / --fast / --fast-scoped / --fast-all 四者互斥：给两个即报错退出 2）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
-#   --log-dir DIR    日志目录（默认 <仓库父目录>/yiban-dev-verify-logs）；只对默认全量模式有效
-#   --keep N         日志保留最近 N 份（默认 5）；只对默认全量模式有效
-#                    （--ci 跑固定关键子集、就地跑不落日志：以上三者传了会被拒绝）
+#   --log-dir DIR    日志目录（默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
+#                    fast 两档 <仓库父目录>/yiban-dev-verify-logs-fast——两档走不同的锁、
+#                    可以并发，共用目录会互相轮转删掉对方的日志）
+#   --keep N         日志保留最近 N 份（默认 5）；fast 两档与全量各自计数
+#                    （--ci 跑固定关键子集、就地跑不落日志：--log-dir / --keep 传了会被拒绝；
+#                     --target 只对默认全量模式有效）
 #   -h, --help       打印本帮助
 #
 # 全量模式（默认）的固定口径，逐条都是踩过的坑：
@@ -65,10 +68,10 @@
 #
 # fast 模式口径（2026-10-07 立，依据实测）：
 #   8. **两档，都是为了提交前自查，都不替代门禁**：
-#      · `--fast`（安全档，默认推荐）：覆盖＝**全量 − 已知长尾**，无选择面损失。实测 149s → 57s。
+#      · `--fast`（安全档，默认推荐）：覆盖＝**全量 − 已知长尾**，无选择面损失。实测 146s → 57s。
 #      · `--fast-scoped`（范围档）：只跑改动相邻面（实测 9~11s），但**未选中的用例没跑**。
 #      推送前必须跑全量（默认模式）或确认 CI 绿；fast 的绿不得当成门禁的绿。
-#      为什么要有它：全量实测 4325 用例（passed 4319 + skipped 6）约 149s，
+#      为什么要有它：全量实测 4329 用例（passed 4323 + skipped 6）约 146s，
 #      单次改动后反复跑全量 + 报错重修极费时间。
 #      墙钟随机器负载变：并发跑测时本档从约 57s 涨到约 104s（见 docs/dev/dev-verify.md）。
 #   9. 长尾剔除依据（实测 `--durations`）：单个用例 135.92s（占全量墙钟 88%）＋"同文件四条被
@@ -82,18 +85,20 @@
 #   11. 两档都必须打印"选了什么、依据是什么、没覆盖什么"——防止把 fast 的绿读成门禁的绿。
 #      另：本脚本只跑 pytest。**前端改动**（frontend/ 下的 vitest / playwright）不在本脚本面内，
 #      范围档遇到 frontend/ 改动会如实说"未反查到用例"，不要读成"有人覆盖"。
-#   12. 退出码：0 = 绿；1 = 门禁红（ruff 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**——
-#      范围档没测到任何真实用例，只跑了入口自检。3 的语义是"没测到东西"，不是"测了但失败"：
+#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**。
+#      3 的语义是"没测到东西"，不是"测了但失败"：范围档没测到任何真实用例、只跑了入口自检。
 #      文档类改动的正常结果就是 3，推送前仍要跑全量。两种 fast 档都打印 covered=<用例数>
-#      （pytest 汇总四数之和）。ruff/pytest 真红时按它们的退出码，不被 3 覆盖。
+#      （pytest 汇总四数之和）。**3 由空覆盖独占**：ruff 或 pytest 的原始码一律归一为 1，
+#      不被透出（原始码逐行打印在日志里：ruff_exit= / pytest_exit=），否则 pytest 自己的
+#      3（INTERNALERROR）会与空覆盖撞码、语义两用。
 #
 # 守卫与自证：副本 .git 失活、副本残留 CRLF、副本跟踪集为空，
 #   都判为环境错误并响亮失败（退出码 2），不许把伪红当红交出去。
 #   这两道守卫由 scripts/e2e/dev-verify-e2e.sh 用"变异体"钉住：
 #   摘掉守卫段后 e2e 必须变红，证明守卫承重。
-#   第三道守卫是 FAST_KNOWN_SLOW 名单本身：guard_fast_known_slow 要求每条 nodeid
-#   指向存在的文件、且无前缀嵌套条目。它由 tests/test_dev_verify_entry.py 的
-#   DevVerifyFastModeTest 同批钉住（元测试 + 在场性）。
+#   第三道守卫是 FAST_KNOWN_SLOW 名单本身：guard_fast_known_slow 要求每条 nodeid 的
+#   文件、类、用例三层都存在（pytest 对不存在的 --deselect 静默忽略），且无前缀嵌套条目。
+#   它由 tests/test_dev_verify_entry.py 的 DevVerifyFastModeTest 同批钉住（元测试 + 在场性）。
 # ============================================================
 set -euo pipefail
 
@@ -147,6 +152,16 @@ prune_logs() { # $1 = 目录，$2 = 保留份数
         fi
     done <<<"$files"
     return 0
+}
+
+default_log_dir() { # $1 = 仓库目录；$2 = 模式（full / fast）；返回默认日志目录
+    # fast 两档与全量走**不同的锁**，两者可以同时跑。日志目录按 mtime 轮转（--keep），
+    # 共用一个目录就会互相删掉对方的日志——实测：fast 档用默认目录跑几次，把同目录里
+    # 他方的 5 份日志轮转删掉了。不同锁的两个流程不许共享可被轮转的资源，故按模式分目录。
+    case "$2" in
+        fast) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-fast" ;;
+        *) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs" ;;
+    esac
 }
 
 resolve_gitdir() { # 源仓库的 git 目录（.git 目录，或 .git 文件里 gitdir 指过去的目录）
@@ -284,16 +299,40 @@ FAST_KNOWN_SLOW=(
     "tests/test_path_env_read_gate.py::GateNoDoubleCountTest::test_routed_key_is_counted_by_exactly_one_engine"
 )
 
-guard_fast_known_slow() { # 名单防漂移：nodeid 的文件必须存在，且不许有前缀嵌套条目
-    # 名单是硬编码。文件或类改名后 --deselect 指向空气，剔除静默失效：长尾溜回 --fast，
-    # 提交前自查又变回两分半。故在建副本之前先验名单。
+guard_fast_known_slow() { # 名单防漂移：nodeid 的文件、类、用例三层都必须存在，且不许有前缀嵌套条目
+    # 名单是硬编码。文件、类或用例改名后 --deselect 指向空气：pytest 对不存在的
+    # --deselect **静默忽略**（实测 rc=0、无告警），剔除静默失效——长尾溜回 --fast，
+    # 提交前自查又变回两分半。故在建副本之前验名单三层：文件在、类在、用例在。
+    # 用文本匹配而不是 pytest --collect-only：后者要拉起 pytest 收集，会毁掉 --fast 的墙钟。
+    # 这里要挡的是"改名后静默变 no-op"，不是断言源码内容，文本匹配够用。
     # 前缀嵌套指同时有 `x.py::Cls` 与 `x.py::Cls::test_a`：前者已覆盖后者，后者是假条目。
-    local e pre bad="" nested=""
+    local e path rest cls meth bad="" nested=""
     for e in "${FAST_KNOWN_SLOW[@]}"; do
-        [ -f "$REPO/${e%%::*}" ] || bad="$bad $e"
+        path=${e%%::*}
+        if [ ! -f "$REPO/$path" ]; then
+            bad="$bad $e（文件 $path 不存在）"
+            continue
+        fi
+        case "$e" in
+            *::*::*)
+                rest=${e#*::}
+                cls=${rest%%::*}
+                meth=${rest##*::}
+                grep -qE "^[[:space:]]*class[[:space:]]+${cls}([^A-Za-z0-9_]|$)" "$REPO/$path" ||
+                    bad="$bad $e（类 $cls 不在 $path 里）"
+                grep -qE "^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+${meth}([^A-Za-z0-9_]|$)" "$REPO/$path" ||
+                    bad="$bad $e（用例 $meth 不在 $path 里）"
+                ;;
+            *::*)
+                # 模块级 nodeid（没有类名）：只验用例名，不按类的形状去找，免造假失败。
+                meth=${e##*::}
+                grep -qE "^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+${meth}([^A-Za-z0-9_]|$)" "$REPO/$path" ||
+                    bad="$bad $e（用例 $meth 不在 $path 里）"
+                ;;
+        esac
     done
     [ -z "$bad" ] ||
-        die "FAST_KNOWN_SLOW 有条目指向不存在的文件（改名/删除后 --deselect 指空气）：$bad"
+        die "FAST_KNOWN_SLOW 有条目指向不存在的文件/类/用例（改名后 --deselect 被 pytest 静默忽略，剔除失效）：$bad"
     for e in "${FAST_KNOWN_SLOW[@]}"; do
         for pre in "${FAST_KNOWN_SLOW[@]}"; do
             case "$e" in
@@ -303,7 +342,7 @@ guard_fast_known_slow() { # 名单防漂移：nodeid 的文件必须存在，且
     done
     [ -z "$nested" ] ||
         die "FAST_KNOWN_SLOW 有前缀嵌套条目（短条目已覆盖长条目，长条目多余）：$nested"
-    echo "DEV-VERIFY fast-guard: FAST_KNOWN_SLOW ${#FAST_KNOWN_SLOW[@]} 条全部指向存在的文件，无前缀嵌套"
+    echo "DEV-VERIFY fast-guard: FAST_KNOWN_SLOW ${#FAST_KNOWN_SLOW[@]} 条的文件/类/用例全部存在，无前缀嵌套"
 }
 
 fast_collect_changed() { # $1 = 基准 ref；$2 = 输出文件（临时）；git 失败即 die
@@ -561,7 +600,7 @@ if [ "${DEV_VERIFY_LOGGED:-0}" = "1" ] && [ -z "${DEV_VERIFY_LOG:-}" ]; then
     die "DEV_VERIFY_LOGGED=1 但 DEV_VERIFY_LOG 为空：拒绝在没有日志的情况下跑测"
 fi
 if [ "${DEV_VERIFY_LOGGED:-0}" != "1" ]; then
-    [ -n "$LOG_DIR" ] || LOG_DIR="$(dirname "$REPO")/yiban-dev-verify-logs"
+    [ -n "$LOG_DIR" ] || LOG_DIR=$(default_log_dir "$REPO" "$MODE")
     mkdir -p "$LOG_DIR" || die "日志目录建不了：$LOG_DIR"
     LOG="$LOG_DIR/dev-verify-$(date +%Y%m%d-%H%M%S)-$$.log"
     set +e
@@ -606,9 +645,10 @@ else
     DEST="$WORKDIR/worktree"
     LOCKFILE="$WORKDIR/dev-verify-runlock"
 fi
-# 并发保护：副本路径固定、日志目录按 N 份轮转，两者都是共享资源；两个 dev-verify
-# 同时跑会互相 rm -rf 掉对方的副本（正是本脚本要消灭的那类伪红）。
-# 后到者等前者结束，不把对方的副本删掉。日志文件名带 PID，故日志本身不互撞。
+# 并发保护：副本路径固定，是共享资源；两个 dev-verify 同时跑会互相 rm -rf 掉对方的副本
+# （正是本脚本要消灭的那类伪红）。后到者等前者结束，不把对方的副本删掉。
+# 日志目录也是共享的轮转资源，但**按模式分目录**（default_log_dir）：fast 两档与全量
+# 走不同的锁、可以并发，共用一个目录就会互相轮转删除。日志文件名带 PID，同目录也不互撞。
 mkdir -p "$WORKDIR" || die "副本根目录建不了：$WORKDIR"
 exec 9>"$LOCKFILE" || die "锁文件不可写：$LOCKFILE"
 if command -v flock >/dev/null 2>&1; then
@@ -666,7 +706,7 @@ if [ "$MODE" = fast ]; then
         echo "DEV-VERIFY(fast-scoped): ⚠ 只覆盖改动相邻面 —— 未被选中的用例**没有跑**，它们照样可能红"
     else
         # 安全档（默认）：**全量 − 已知长尾**。零启发式、无漏选风险，只是剔掉 5 条与
-        # "提交前自查"无关的长尾（实测 149s → 57s）。目标保持默认 tests/。
+        # "提交前自查"无关的长尾（实测 146s → 57s）。目标保持默认 tests/。
         echo "DEV-VERIFY(fast): 覆盖＝全量（tests/）减去已知长尾，无选择面丢失"
     fi
     if [ "$FAST_KEEP_SLOW" = "1" ]; then
@@ -706,22 +746,35 @@ if [ -n "$summary" ]; then
     if [ "$MODE" = fast ]; then
         covered=$(($(num passed) + $(num failed) + $(num error) + $(num skipped)))
         echo "DEV-VERIFY(fast): covered=$covered（pytest 汇总四数之和：passed+failed+errors+skipped）"
-        if [ "$FAST_EMPTY" = "1" ]; then
-            echo "DEV-VERIFY(fast): ⚠ 空覆盖 ⇒ 退出码 3。3 的意思是「没测到东西」，不是「测了但失败」："
-            echo "DEV-VERIFY(fast): ⚠ 上面的 covered 只是入口自检的数。推送前必须跑全量。"
-        fi
     fi
 else
     echo "DEV-VERIFY summary: 无（pytest 未产出汇总行）"
 fi
 
-# 退出码裁决只有这一处：ruff/pytest 真红按自己的码；两者都绿而覆盖为空时用 3。
+# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff 或 pytest 非 0）；
+# 2 = 环境错误（die）；3 = 空覆盖（没测到真实用例）。
+# 原始码不丢：ruff_exit= 与 pytest_exit= 已逐行打印在上面。
 resolve_exit_code() { # $1 = ruff 退出码；$2 = pytest 退出码；$3 = 空覆盖(1/0)
-    local rc=$1
-    [ "$2" = "0" ] || rc=$2
-    if [ "$rc" = "0" ] && [ "$3" = "1" ]; then rc=3; fi
-    printf '%s' "$rc"
+    if [ "$1" != "0" ] || [ "$2" != "0" ]; then
+        printf '1'
+        return 0
+    fi
+    if [ "$3" = "1" ]; then printf '3'; else printf '0'; fi
 }
+
+# 空覆盖提示按**最终 rc** 打印：只按 FAST_EMPTY 打，会在"空覆盖同时有红"时报出
+# 与下一行 exit_code 矛盾的码（实测：提示写 3，下一行写 1）。
+note_fast_empty_coverage() { # $1 = 空覆盖标记（1/0）；$2 = 最终退出码
+    [ "${1:-0}" = "1" ] || return 0
+    if [ "$2" = "3" ]; then
+        echo "DEV-VERIFY(fast): ⚠ 空覆盖 ⇒ 退出码 3。3 的意思是「没测到东西」，不是「测了但失败」："
+        echo "DEV-VERIFY(fast): ⚠ 上面的 covered 只是入口自检的数。推送前必须跑全量。"
+    else
+        echo "DEV-VERIFY(fast): ⚠ 本轮是空覆盖（只跑了入口自检），但有红 ⇒ 实际退出码 $2（红优先于空覆盖）"
+    fi
+}
+
 rc=$(resolve_exit_code "$ruff_rc" "$py_rc" "${FAST_EMPTY:-0}")
+note_fast_empty_coverage "${FAST_EMPTY:-0}" "$rc"
 echo "DEV-VERIFY exit_code=$rc"
 exit "$rc"

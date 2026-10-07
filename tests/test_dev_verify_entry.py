@@ -197,8 +197,9 @@ class DevVerifyEntryTest(unittest.TestCase):
 class DevVerifyFastModeTest(unittest.TestCase):
     """fast 两档的契约（修复单 yiban-auto-sign-rqvx，2026-10-07）。
 
-    钉住四件事：长尾名单不许漂移（F1 的同批守卫）、副本必须按内容校验、
-    空覆盖必须与"真覆盖"可区分、模式标志不许静默后者胜。
+    钉住六件事：长尾名单不许漂移（文件/类/用例三层都要存在）、副本必须按内容校验、
+    空覆盖必须与"真覆盖"可区分、空覆盖提示必须跟着最终退出码、日志目录按模式分开、
+    模式标志不许静默后者胜。
     """
 
     def setUp(self):
@@ -229,6 +230,45 @@ class DevVerifyFastModeTest(unittest.TestCase):
         self.assertIsNotNone(m, "guard_fast_known_slow 定义了却没人调用（在场性）")
         self.assertLess(m.start(), self.text.index('"$REPO/" "$DEST/"'),
                         "守卫必须在建副本（rsync）之前跑：名单坏了就要 fail fast")
+
+    def test_fast_known_slow_guard_catches_renamed_class_and_test(self):
+        """守卫必须拦"改名后静默变 no-op"：文件在、类或用例改名，剔除即失效。
+
+        pytest 对不存在的 `--deselect` **静默忽略**（审查实测 rc=0、无告警），
+        故只查文件存在挡不住"类/方法改名"。这里在临时目录上真跑守卫函数：
+        文本匹配类名与用例名，模块级 nodeid（无类名）按形状分支放行，不造假失败。
+        """
+        src = _func_source(self.text, "guard_fast_known_slow")
+        self.assertGreater(len(src), 100, "抽不出 guard_fast_known_slow——结构改了？")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tests"))
+            mod = os.path.join(d, "tests", "test_x.py")
+
+            def run(entries, content):
+                with io.open(mod, "w", encoding="utf-8") as f:
+                    f.write(content)
+                arr = " ".join('"%s"' % e for e in entries)
+                script = ("REPO=%s\nFAST_KNOWN_SLOW=(%s)\n"
+                          "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
+                          "%s\nguard_fast_known_slow\n"
+                          % (shlex.quote(d), arr, src))
+                return _bash(script)
+
+            live = "class CliExitCodeTest:\n    def test_locked(self):\n        pass\n"
+            rc, out = run(["tests/test_x.py::CliExitCodeTest::test_locked"], live)
+            self.assertEqual(rc, 0, f"名字都在却判红（假失败）：{out}")
+            rc, out = run(["tests/test_x.py::CliExitCodeTest::test_locked"],
+                          "class CliExitCodeTestRENAMED:\n    def test_locked(self):\n        pass\n")
+            self.assertEqual(rc, 2, f"类改名没被拦：剔除静默失效。{out}")
+            self.assertIn("CliExitCodeTest", out, "拒绝信息必须点名出问题的条目")
+            rc, out = run(["tests/test_x.py::CliExitCodeTest::test_locked"],
+                          "class CliExitCodeTest:\n    def test_locked_RENAMED(self):\n        pass\n")
+            self.assertEqual(rc, 2, f"用例改名没被拦：剔除静默失效。{out}")
+            rc, out = run(["tests/test_x.py::test_module_level"],
+                          "def test_module_level():\n    pass\n")
+            self.assertEqual(rc, 0, f"模块级 nodeid（无类名）被误判：{out}")
+            rc, out = run(["tests/test_missing.py::Cls::t"], live)
+            self.assertEqual(rc, 2, f"文件不存在没被拦：{out}")
 
     # ---- F1：副本必须按内容校验 ----
 
@@ -273,10 +313,13 @@ class DevVerifyFastModeTest(unittest.TestCase):
         src = _func_source(self.text, "resolve_exit_code")
         self.assertGreater(len(src), 30,
                            "resolve_exit_code 未定义：退出码没有单一裁决点，空覆盖无法与失败区分")
-        # (ruff_rc, pytest_rc, 空覆盖) → 期望退出码
+        # (ruff_rc, pytest_rc, 空覆盖) → 期望退出码。最终契约只有四种码：
+        # 0 通过 / 1 有红 / 2 环境错误 / 3 空覆盖。ruff 与 pytest 的任何非 0 一律归一为 1，
+        # 原始码只留在日志里（ruff_exit= / pytest_exit=）。3 由"空覆盖"独占，
+        # 故 pytest 自己的 3（INTERNALERROR）不许与空覆盖撞码。
         cases = [((0, 0, 0), "0"), ((0, 0, 1), "3"), ((1, 0, 0), "1"),
-                 ((0, 2, 0), "2"), ((0, 2, 1), "2"), ((1, 0, 1), "1"),
-                 ((0, 5, 0), "5")]
+                 ((0, 2, 0), "1"), ((0, 2, 1), "1"), ((1, 0, 1), "1"),
+                 ((0, 3, 0), "1"), ((0, 5, 0), "1"), ((1, 3, 0), "1")]
         for (ruff_rc, py_rc, empty), want in cases:
             rc, out = _bash("%s\nresolve_exit_code %d %d %d\n" % (src, ruff_rc, py_rc, empty))
             self.assertEqual((rc, out.strip()), (0, want),
@@ -285,6 +328,49 @@ class DevVerifyFastModeTest(unittest.TestCase):
                       "调用点必须把空覆盖标记传进裁决点")
         self.assertIn("DEV-VERIFY(fast): covered=", self.text,
                       "fast 档汇总行必须打覆盖数：只跑入口自检与真覆盖要能区分")
+
+    def test_raw_lint_and_pytest_codes_stay_visible_in_the_log(self):
+        """归一为 1 之后原始码必须仍逐行打印：否则定位信息随归一一起丢失。"""
+        self.assertIn('echo "DEV-VERIFY ruff_exit=$ruff_rc"', self.text,
+                      "ruff 原始退出码必须进日志")
+        self.assertIn('echo "DEV-VERIFY pytest_exit=$py_rc"', self.text,
+                      "pytest 原始退出码必须进日志")
+
+    def test_empty_coverage_note_follows_the_final_exit_code(self):
+        """空覆盖提示必须按最终 rc 打印：只按 FAST_EMPTY 打会与真红报的码自相矛盾。
+
+        实测（审查场景 B）：提示写"退出码 3"，下一行写"exit_code=1"。
+        """
+        src = _func_source(self.text, "note_fast_empty_coverage")
+        self.assertGreater(len(src), 50, "抽不出 note_fast_empty_coverage——结构改了？")
+        rc, out = _bash("%s\nnote_fast_empty_coverage 1 3\n" % src)
+        self.assertEqual(rc, 0, f"提示函数跑失败：{out}")
+        self.assertIn("空覆盖", out, "空覆盖必须被点名")
+        self.assertIn("退出码 3", out, "真正空覆盖时要报 3")
+        rc, out = _bash("%s\nnote_fast_empty_coverage 1 1\n" % src)
+        self.assertEqual(rc, 0, f"提示函数跑失败：{out}")
+        self.assertIn("实际退出码 1", out, "空覆盖同时有红时要报真实码 1")
+        self.assertNotIn("退出码 3", out, "有红时不许喊空覆盖的 3")
+        rc, out = _bash("%s\nnote_fast_empty_coverage 0 0\n" % src)
+        self.assertEqual((rc, out.strip()), (0, ""), "非空覆盖不许打印空覆盖提示")
+        m = re.search(r'^\s*note_fast_empty_coverage "\$\{FAST_EMPTY', self.text, re.M)
+        self.assertIsNotNone(m, "空覆盖提示没有调用点（在场性）")
+        self.assertGreater(m.start(), self.text.index('rc=$(resolve_exit_code'),
+                           "提示必须在最终 rc 算出之后打印：只看 FAST_EMPTY 会与真红报的码矛盾")
+
+    # ---- low#4：日志目录必须按模式分开（fast 与全量走不同的锁，可并发）----
+
+    def test_default_log_dir_is_separate_per_mode(self):
+        src = _func_source(self.text, "default_log_dir")
+        self.assertGreater(len(src), 50, "抽不出 default_log_dir——结构改了？")
+        rc, out = _bash("%s\ndefault_log_dir /x/y fast\necho\ndefault_log_dir /x/y full\n" % src)
+        self.assertEqual(rc, 0, f"default_log_dir 跑失败：{out}")
+        self.assertEqual(out.split(),
+                         ["/x/yiban-dev-verify-logs-fast", "/x/yiban-dev-verify-logs"],
+                         "fast 与全量的默认日志目录必须不同：两者走不同的锁、可并发，"
+                         "共用目录会让 prune_logs 轮转删掉对方的日志")
+        self.assertIn('LOG_DIR=$(default_log_dir "$REPO" "$MODE")', self.text,
+                      "默认日志目录必须由模式决定（调用点在场性）")
 
     # ---- low#2 / low#3：参数不许静默忽略 ----
 
