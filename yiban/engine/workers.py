@@ -51,8 +51,9 @@ logger = logging.getLogger("yiban")
 #: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
 FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
-#: **无领取池**（纯状态文件部署）时给全量轮整段让位的轮询间隔（秒）：只是一次 flock
-#: 探测。有池的部署不走这条路——让位收窄到"同一账号"，由领取池仲裁谁在做谁。
+#: **全量轮在飞**时整段让位的轮询间隔（秒）：只是一次 flock 探测，轮一收工就接手。
+#: 让位不看部署形态（有队列与否）——见 `_round_in_flight`：账号级仲裁只防重复登录，
+#: 不防兜底把那一轮计划给执行体的行先领走。
 _YIELD_POLL_SEC = 30
 
 #: 扫空后轮询领取池事件签名的短间隔（秒）：兜底的"失败即入队"读取端。别的执行体
@@ -71,6 +72,20 @@ _GATE_REASON_TEXT = {
 
 # 状态码别名（与 yiban.status 同一对象）
 STATUS_FAILED = yiban_status.STATUS_FAILED
+
+
+def _round_in_flight():
+    """此刻是否有一支全量轮在跑——**兜底让位的唯一判据**（运行时事实，非配置声明）。
+
+    判据取自全局轮次锁的探测：监督进程持该锁覆盖它的整轮（含全部子执行体），故"锁被持有"
+    与"有一轮在飞"是同一件事。为什么不用 `db.pool_db_declared()`：那判的是"库路径有没有
+    被声明"，与"有没有可仲裁的工作在跑"是两件事（10-07 生产用默认库、没声明键，被判成
+    纯状态文件部署）。队列在场与否不改变让位结论，它只决定兜底能领到什么。
+
+    让位与执行体的让位复检（`executor_v3.run_executor_v3(yield_probe=…)`）共用本函数：
+    进入一轮时的判据与轮内复检**必须是同一份事实**，否则两处会各判各的。
+    """
+    return cli_support._run_lock_held()
 
 #: 仓库根（`yiban/engine/<模块>.py` 上溯三层）。**不是**导入引导（包内模块本就靠
 #: `python -m` / 测试的 pythonpath 找到包）：这里只用来给拉起的子进程设 cwd 与
@@ -376,13 +391,16 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
 
     **运行前会先过四道关**（每轮重判，不是启动时判一次）：周末签到未开、一键暂停
     （都由 `schedule.day_off` 判定，与定时轮同源）→ 直接退出；签到时段**尚未开始**
-     → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
-     **全量轮正在跑且无领取池**（纯状态文件部署，没有账号级互斥可依赖）→ 整段让位。
-    有池在场时**让位只让"同一账号"**：全量轮持锁期间照常扫，池对在飞/已了结的账号
-    拒领（见循环内注释），该轮没碰的与中途弃权的照接。扫空后的等待是**事件驱动**的：
-    短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的执行体一弃权
-    就接手，等待上限仍是扫描间隔。故它是**捡漏**的那个——与定时轮/多执行体并发，
-    但"谁在做谁"由池仲裁，第一红线（同一账号当日一次真实登录）不因此松动。
+    → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
+    **全量轮正在运行** → 整段让位（判据见 `_round_in_flight`：只看运行时事实，不看
+    配置声明）。让位期间不复检就不放行——执行体每次领取前再问一次（`yield_probe`），
+    故"赢下启动竞态的亚秒窗口"不会被放大成吸收全天工作量。
+    全量轮收工后兜底照常接手：`claim_all` 的宽范围在**没有轮在飞**时才用得上（有轮
+    在飞时那正是"抢走别人计划工作"的那条路，见 `_round_in_flight`）。扫空后的等待是
+    **事件驱动**的：短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的
+    执行体一弃权就接手，等待上限仍是扫描间隔。故它是**捡漏**的那个——补全定时轮没碰
+    的、中途弃权的、窗口内新审核的账号；"谁在做谁"仍由池仲裁，第一红线（同一账号当日
+    一次真实登录）不因此松动。
 
     退出：窗口关闭 / 三道门命中 / 到达 `deadline` / 账号列表为空且已过窗口。
     返回退出码语义与单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
@@ -442,17 +460,21 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             logger.info("兜底执行体：签到时段尚未开始（%d 秒后开始），%d 秒后再看", opens_in, wait)
             time.sleep(wait)
             continue
-        if not db.pool_db_declared() and cli_support._run_lock_held():
-            # **让位的颗粒度是"全量轮正在做的那一个账号"，仲裁者是任务队列不是这把锁**：
-            # 有队列在场时这里不让位、照常扫——轮在飞的行 `claim_batch` 拒领（`claimed`
-            # 未过期=领不到，`done`/`skipped`=领不到，`retry:` 档弃权行=回炉后默认可接手），
-            # 兜底只接"该轮没碰的 / 该轮中途弃权的"账号。旧形态"全局锁被持有=整段停摆"
-            # 让兜底恰好在失败高峰（全量轮正在批量弃权）时段完全不可用——那正是它该捡漏
-            # 的时刻。例外是**没有队列可仲裁**的纯状态文件部署：账号级互斥不存在，并发跑
-            # 等于同一账号两次真实登录（第一红线），所以只有那里保留整段停摆。
-            # 让位期间的轮询比常规扫描密：全量轮一结束就接手，而这次探测只是一次 flock。
-            logger.info("兜底执行体：全量轮正在运行且无领取池，整段让位（%d 秒后再看）",
-                        _YIELD_POLL_SEC)
+        if _round_in_flight():
+            # **让位（整段）**：有一支全量轮在飞时不参与领取。
+            # 判据只取**运行时事实**（全局轮次锁被持有 = 有一轮在跑），不看任何配置声明：
+            # 旧判据 `not db.pool_db_declared() and …` 判的是"`YIBAN_DB_FILE` 在环境或
+            # `.env` 里有没有被声明"，与现场事实脱节——生产用默认库、没写该键，于是被判成
+            # "纯状态文件部署"，判据退化成"此刻能否探到锁"；而当时兜底先起飞、锁后持有，
+            # 它探到"无人在跑"就让了个空（2026-10-07 生产）。
+            # 让位的颗粒度也不能是"同一账号"：在飞的行 `claim_batch` 确实拒领，但兜底是
+            # **宽范围领取**（`claim_all`——兜底身份不在 HRW 候选集里，不放宽就是零领取的
+            # 空转），于是它把那一轮**计划给执行体的行**先领走。10-07 证明账号级仲裁只防
+            # 重复登录，**不防吸收全量**：兜底拿走 64 个分片（= 两个执行体全集）、84/100 个
+            # 账号，两个执行体到点只剩空扫，汇总出一堆假失败。故"有队列"不再是免让位的理由，
+            # 队列在场只决定兜底**能领什么**（无队列时它本就无行可领）。
+            # 让位期间按 `_YIELD_POLL_SEC` 轮询：只是一次 flock 探测，轮一收工就接手。
+            logger.info("兜底执行体：全量轮正在运行，整段让位（%d 秒后再看）", _YIELD_POLL_SEC)
             time.sleep(_YIELD_POLL_SEC)
             continue
 
@@ -487,11 +509,26 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
         #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
         #   第二次机会只留给一次性补签轮与手动。
+        # - `yield_probe=_round_in_flight`：**轮内让位复检**。循环顶那次让位判据只是
+        #   进入这一轮的入场券；一轮扫描可能跑满整个窗口（10-07 生产 58 分钟），故
+        #   执行体每次领取前再问一次同一份事实，轮一出现就停止领取（已领的照常收尾）。
+        # - `event_sink`：**兜底的工作必须落 `sign_events`**。此前不传 sink，兜底签成的
+        #   84 个账号在事件表里零记录（10-07 生产 `sign_events` 当日只有 16 条 success
+        #   = 两个 worker 的），数据侧看不出"谁做的"，判因留痕也随之丢失。攒一轮批量落库
+        #   （与 `runner` 全量轮同一条写入路径），失败由 `add_sign_events_batch` 内部告警。
+        # - `unreached`：轮末判因的出口——兜底自己也要能说清"本轮哪些账号不是我领的"，
+        #   与 runner 汇总同源同口径（`executor_v3._mark_unreached`）。
+        event_rows = []
+        unreached = {}
         results = executor_v3.run_executor_v3(
             accounts, day=now.strftime("%Y-%m-%d"),
             notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
             cred_state=cred_state, delegated=delegated,
-            claim_all=True, requeue_during_run=True)
+            claim_all=True, requeue_during_run=True,
+            yield_probe=_round_in_flight, event_sink=event_rows.append,
+            unreached=unreached)
+        if event_rows:
+            db.add_sign_events_batch(event_rows)
         # 轮末写回熔断计数（口径与 runner 全量轮一致：按本轮账号增量合并）。不写回则
         # "连续凭据失败达阈值 → 暂停"只在磁盘上不存在：下一轮 read() 又从零开始，
         # 错密码账号被无限次真实登录（易班侧照实计数，加重风控）。
@@ -501,9 +538,14 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             if acc.phone in delegated:
                 settled += 1
         own = len(results)
-        # 本轮自己没活干（全部已被别人接手/已了结）→ 睡一会儿再看
-        logger.info("兜底执行体：本轮处理 %d 个账号（%d 个已由他人负责），%ss 后再扫",
-                    own, settled, interval)
+        # 本轮自己没活干（全部已被别人接手/已了结）→ 睡一会儿再看。
+        # 未领到的账号按判因分列报出（与 runner 汇总同口径：只有"没人接手"才是故障）。
+        peer_n = sum(1 for r in unreached.values()
+                     if r == executor_v3.UNREACHED_PEER)
+        stay_n = len(unreached) - peer_n
+        logger.info("兜底执行体：本轮处理 %d 个账号（%d 个已由他人负责，%d 个已由他人领取，"
+                    "%d 个无人接手），%ss 后再扫",
+                    own, settled, peer_n, stay_n, interval)
         for _ok, _msg, skip, status in results.values():
             if status in (STATUS_FAILED,) and not skip:
                 last_code = 1
