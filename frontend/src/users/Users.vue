@@ -116,6 +116,18 @@ function emptyText(group: Group): string {
   return isFiltering(group) ? "无匹配结果" : specOf(group).emptyText;
 }
 
+/**
+ * 检索表单提交（回车 / 点「搜索」）。
+ *
+ * 桌面端的筛选本就是即时的（`search` 由 v-model 驱动 computed），故这里刻意**不引入**
+ * "提交前不过滤"的第二态——那会退掉既有语义。提交只做一件用户看得见的事：让输入框失焦，
+ * 收起移动端软键盘，把筛出来的结果露出来。表单本身挡住原生 GET，避免整页重载丢掉内存态
+ * （选择态、分页、已加载的完整邮箱都只在内存里）。
+ */
+function commitSearch(group: Group): void {
+  rootEl.value?.querySelector<HTMLInputElement>(`#usr-${group}-search`)?.blur();
+}
+
 /* ---------------- 选择态 ---------------- */
 function isSelected(group: Group, email: string): boolean {
   return sel.value[group].includes(email);
@@ -316,8 +328,17 @@ onMounted(async () => {
             <div class="panel-head usr-group-head">
               <div class="panel-head-row">
                 <h2 class="panel-title">{{ g.title }}</h2>
-                <label v-if="g.searchable" class="usr-search">
-                  <span class="sr-only">搜索{{ g.title }}</span>
+                <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
+                     （原来只有裸 input + v-model，那个键按下去什么也不发生）。容器上挂
+                     role=search，按钮是唯一的提交按钮，回车与点按走同一条路径。 -->
+                <form
+                  v-if="g.searchable"
+                  class="usr-search"
+                  role="search"
+                  :aria-label="'搜索' + g.title"
+                  @submit.prevent="commitSearch(g.key)"
+                >
+                  <label class="sr-only" :for="'usr-' + g.key + '-search'">搜索{{ g.title }}</label>
                   <input
                     v-model="search[g.key]"
                     type="search"
@@ -326,7 +347,10 @@ onMounted(async () => {
                     placeholder="搜索邮箱"
                     autocomplete="off"
                   />
-                </label>
+                  <!-- 可见文案「搜索」在可读名里逐字保留（WCAG 2.5.3 标签在名称中），
+                       另加组名消歧：三组各一个同名按钮，只报「搜索」分不清是哪一组。 -->
+                  <button type="submit" class="btn btn--ghost btn--sm" :aria-label="'搜索' + g.title">搜索</button>
+                </form>
               </div>
               <p class="panel-sub">{{ g.sub }}</p>
             </div>
