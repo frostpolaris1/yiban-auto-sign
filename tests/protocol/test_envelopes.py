@@ -14,7 +14,7 @@ from yiban.protocol import (
     parse_usersure_response,
 )
 
-# 全部正常夹具（含 59KB 授权页）都必须判为非挑战。
+# 全部正常夹具（含授权页；合成页 1,297 字节）都必须判为非挑战。
 _ALL_GOOD_FIXTURES = [
     "auth_response.json",
     "authorize_page.html",
