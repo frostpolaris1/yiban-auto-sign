@@ -539,6 +539,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(muInput).toHaveValue(muSaved);
   await expect(sgLoInput).toHaveValue(sgSaved);
 
+  // 顺序约束：⑧f 起调度卡置脏且门停在开态，直到 ⑤ 的整页 goto 为止都不得插入页内页签点击（否则弹未保存守卫）。
   // ⑧f 同族控件排查（泛化口径：滑杆类同属"直接操作控件"）：掐头/去尾两枚 el-slider 与画布
   //     同吃一道门——默认只读，按下「编辑」后才可操作。判据取两条：滑杆按钮的 aria-disabled
   //     （可及性语义）+ 点跑道不改变读数（真行为，不是只有灰壳）。逐个列证据，不做静默豁免。
