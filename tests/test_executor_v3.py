@@ -334,7 +334,7 @@ class _Base(unittest.TestCase):
     def _run_v3(self, accounts, items=None, *, cfg=None, rng=None, limiter=None,
                 gate=None, delegated=None, cred_state=None, event_sink=None,
                 dry_run=False, notify_url="", requeue_final=False, claim_all=False,
-                reclaim=False, requeue_during_run=False):
+                reclaim=False, requeue_during_run=False, round_no=None):
         """跑一轮 v3。
 
         `items` 给了就用"一次性投递 + 哨兵"的假补货（时序完全可控，行需已领取）；
@@ -361,7 +361,7 @@ class _Base(unittest.TestCase):
                 delegated=delegated, cred_state=cred_state, event_sink=event_sink,
                 dry_run=dry_run, notify_url=notify_url, requeue_final=requeue_final,
                 claim_all=claim_all, reclaim=reclaim,
-                requeue_during_run=requeue_during_run)
+                requeue_during_run=requeue_during_run, round_no=round_no)
         finally:
             for p in reversed(patches):
                 p.stop()
@@ -2174,6 +2174,140 @@ class PerAccountLogLineTest(_Base):
         self.assertIn(executor_v3._mask_phone(phone), joined, "结果行必须含遮罩号")
         self.assertNotIn(phone, joined, "结果行不得落完整号（文件纪元=遮罩）")
         self.assertIn("签到成功", joined)
+
+
+class LogAttributionTest(_Base):
+    """执行体日志行的**归因**：每账号行带 `[角色+槽位+轮次]`，且**不含主机名**。
+
+    多执行体并发写同一个按天日志文件（`sign-YYYY-MM-DD.log`），没有归因就只能靠时间戳猜
+    "这行是谁说的"。口径取 `egress.owner_tag`（`parse_owner` 的角色+槽位）；身份原串
+    （`single@{主机名}`，本文件里就是 `single@testhost`）带部署信息，**不得进日志**——
+    模块 docstring 的红线。轮次只有常驻多轮的兜底会传（`round_no`），定时轮/手动轮不传。
+    """
+
+    BANNER = "v3 执行体："
+
+    def setUp(self):
+        super().setUp()
+        # 横幅去重键是模块级的（同进程跨轮共享，正是降噪要的语义）：用例要断言"第一次
+        # 是 INFO"，就得先清掉上一批用例留下的键，否则断言取决于执行顺序。
+        self._saved_banner = executor_v3._BANNER_LAST
+        executor_v3._BANNER_LAST = None
+        self.addCleanup(setattr, executor_v3, "_BANNER_LAST", self._saved_banner)
+
+    def _run_records(self, phone, identity=None, **kw):
+        """跑一轮（打桩成必成功），返回 DEBUG 以上的全部日志记录。
+
+        `identity` 给了就先换成该执行体身份（用于"换执行体不漏横幅"那一条）。
+        """
+        env = {"YIBAN_EXECUTOR_ID": identity} if identity else {}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(executor_v3.attempts, "attempt_signin",
+                                  lambda acc: (True, "签到成功", False, "success")), \
+                self.assertLogs("yiban", level="DEBUG") as cm:
+            self._run_v3(self._accounts(phone), **kw)
+        return cm.records
+
+    @staticmethod
+    def _joined(records):
+        return "\n".join(r.getMessage() for r in records)
+
+    @classmethod
+    def _banner_records(cls, records):
+        return [r for r in records if cls.BANNER in r.getMessage()]
+
+    def test_per_account_line_carries_role_slot_and_round(self):
+        phone = _phone(0)
+        joined = self._joined(self._run_records(phone, round_no=3))
+        self.assertIn("[single r3] [%s]" % executor_v3._mask_phone(phone), joined,
+                      "每账号行必须带执行体归因前缀（角色+槽位+轮次）")
+        self.assertNotIn("testhost", joined, "日志里出现了身份原串里的主机名")
+
+    def test_round_is_absent_when_caller_does_not_supply_one(self):
+        """定时轮/手动轮一个进程只跑一轮：前缀只有角色，不凭空造轮次。"""
+        joined = self._joined(self._run_records(_phone(0)))
+        self.assertIn("[single] [", joined)
+        self.assertNotIn("[single r", joined)
+
+    def test_banner_is_info_once_then_debug_for_unchanged_scale(self):
+        """横幅只在**规模变化**时打 INFO：常驻空转轮逐轮重复同一行只是刷屏。
+
+        生产 2026-10-07 实测该行全天 184 次，全是同一串规模与归属。降级不是静默：
+        第二次仍要有留痕（DEBUG），排障时数得清轮次。
+        """
+        first = self._banner_records(self._run_records(_phone(0)))
+        second = self._banner_records(self._run_records(_phone(1)))
+        self.assertEqual([r.levelname for r in first], ["INFO"], "首次必须打 INFO")
+        self.assertEqual([r.levelname for r in second], ["DEBUG"],
+                         "规模没变的第二次不得再打 INFO（生产 5 秒一对刷屏的成因）")
+
+    def test_banner_key_includes_the_identity(self):
+        """去重键含身份：换执行体（规模不变）仍要打它起跑的那条 INFO。
+
+        键里只留规模时，同一进程里换一个执行体会被判成"没变"——去重就失去意义。
+        """
+        other = "fallback@testhost"
+        self._run_records(_phone(0))               # 本执行体（single@testhost）
+        records = self._banner_records(self._run_records(
+            _phone(1), identity=other, cfg=_cfg(executors=[other]), items=[]))
+        self.assertEqual([r.levelname for r in records], ["INFO"],
+                         "换了执行体却没重打 INFO——去重键漏了身份")
+
+    def test_banner_reports_scale_without_the_raw_identity(self):
+        records = self._banner_records(self._run_records(_phone(0), round_no=1))
+        self.assertEqual(len(records), 1)
+        message = records[0].getMessage()
+        self.assertNotIn("single@testhost", message,
+                         "横幅回了身份原串（带主机名）——模块红线要求只回角色与槽位")
+        self.assertIn("[single r1] " + self.BANNER, message, "横幅必须带归因前缀")
+
+    #: 复审点名的"可带而未带"行 → `(模块文件, 消息片段, 该条可接受的归因标识)`。
+    #: 这些行触发路径较深（队列连续读不通 / 轮内让位复检 / 判因不可得 / 三条收尾分支 /
+    #: 接管死主 / 出口限速），逐条构造运行场景的成本远高于收益，故按**该条 logger 语句
+    #: 本身**钉住。窗口必须精确到语句本身：早先的实现取消息前后各一段定长窗口，会被相邻
+    #: 分支的归因标识蒙过（复审实证假绿）——精确度靠下面的括号配对，不靠"取宽一点"。
+    TAGGED_CALLS = (
+        ("yiban/engine/executor_v3.py", "让位：检测到全量轮开始运行", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "队列连续 %d 轮读不通", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "未执行判因不可得", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "非法，全局速率上界按不限处理", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "v3 执行体未预期异常", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "v3 窗口收尾失败", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "v3 未执行判因失败", ("log_tag",)),
+        ("yiban/engine/executor_v3.py", "接管心跳过期的执行体", ("owner_tag",)),
+        ("yiban/engine/workers.py", "任务队列事件签名变化", ("tag",)),
+        ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("owner_tag",)),
+        ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("owner_tag",)),
+    )
+
+    @staticmethod
+    def _logger_call_text(src, at):
+        """取含 `src[at]` 的那一条 `logger.<level>(…)` 调用的完整文本（ASCII 括号配对）。
+
+        从消息往前找最近的 `logger.`，再配对到它自己的收尾右括号——相邻分支的实参因此
+        进不了这段文本。消息与实参里的全角括号不参与配对。
+        """
+        start = src.rindex("logger.", 0, at + 1)
+        open_at = src.index("(", start)
+        depth = 0
+        for i in range(open_at, len(src)):
+            if src[i] == "(":
+                depth += 1
+            elif src[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return src[start:i + 1]
+        raise AssertionError(f"logger 调用括号不配对（偏移 {start}）")
+
+    def test_reviewed_log_lines_keep_their_attribution(self):
+        for rel, msg, names in self.TAGGED_CALLS:
+            with self.subTest(msg=msg):
+                with open(os.path.join(BASE, rel), encoding="utf-8") as f:
+                    src = f.read()
+                call = self._logger_call_text(src, src.index(msg))
+                self.assertTrue(any(n in call for n in names),
+                                f"{rel} 的「{msg}」又丢了归因前缀：本条调用里没有 {names}；"
+                                f"实际调用文本：{call[:200]}")
 
 
 if __name__ == "__main__":
