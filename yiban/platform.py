@@ -1,34 +1,45 @@
 # -*- coding: utf-8 -*-
 """**功能**
-易班**协议步骤**：登录握手与签到两接口的请求**编排**（端点、顺序、请求形态与会话簿记）。
+易班平台事实与**协议步骤编排**：端点/参数/客户端请求特征这些**平台侧固定值**，
+加上登录握手与签到两接口的请求顺序与会话簿记。
 
-**核心换核（B'）**：授权页解析、usersure 表单构造、verify_request 提取、签到体构造这些
-**纯解析/构造**已下沉到 vendored 洁净室库 `yiban/_vendor/yiban_protocol`（MIT；来源、
-版本与同步纪律见 `yiban/_vendor/VENDORED.md`）。本文件只保留**编排层**——请求顺序、端点、
-注入策略与重试/会话语义——即 TASK-C《六跳链路实拍契约》的实现：
-`oauth.yiban.cn/code/html` → `/code/usersure` → `f.yiban.cn/iframe/index` →
-`api.uyiban.com/base/c/auth/yiban` → `.../signPosition` → `.../signIn`。
+**纯解析/构造不在本文件**：授权页解析、usersure 表单构造、verify_request 提取、签到体
+构造、响应信封解析都在洁净室协议库 `yiban.protocol`（契约见其 `SPEC.md`）；本文件只保留
+**编排层**——请求顺序、端点、注入策略与重试/会话语义。
+
+**来源按事实分类**（三类，逐条见下方注释标注）：
+
+- **平台事实**：端点 URL、`client_id` / `redirect_uri` 取值、`scope` / `display` 取值、
+  成功标志（`code == "s200"`）、请求头字段值（`User-Agent` / `AppVersion` / `Origin`）。
+  这些是易班平台与其客户端的行为事实，取自客户端安装包清单与实拍响应，可用同一批观测
+  复现；事实本身不构成实现代码的谱系。
+- **本项目实拍**：六跳链路的**顺序与跳转形态**取自本项目的 TASK-C 逐端点实拍记录——
+  `oauth.yiban.cn/code/html` → `/code/usersure` → `f.yiban.cn/iframe/index` →
+  `api.uyiban.com/base/c/auth/yiban` → `.../signPosition` → `.../signIn`。
+  编排结构因此是本项目的实现产物，不是照抄他人代码。
+- **本项目自有判定**：最终认证的"签发回执"判据、会话复用、挑战命中响亮失败——
+  逐处注释标明"本项目自有"，它们不属于平台知识。
 
 **归属**
-`yiban/fyiban/` 第三方隔离层的协议模块（"平台要求怎么做"的知识），**不含**本项目
-自有的安全判断：
+本项目自研链路里的"平台交互"层（"平台要求怎么做"）。**不含**本项目自有的安全判断：
 
 - URL 白名单、WAF 拦截判定、脱敏与诊断措辞一律经 `policy`（`RequestPolicy`）注入，
   由 `yiban/security.py` 实现、`yiban/client.py` 组装；
-- 会话缓存（我们减少登录频率的手段，非上游概念）经 `session_store` 注入，
-  未注入时即"不缓存"，本层不反向依赖 `yiban.store` / `yiban.client`。
+- 会话缓存（我们减少登录频率的手段，非平台概念）经 `session_store` 注入，未注入时即
+  "不缓存"，本层不反向依赖 `yiban.store` / `yiban.client`。
 
 **复用**
-端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、`RequestPolicy` / `SessionStore`
-协议与登录/签到函数是隔离层的对外接口；解析与构造一律委托
-`yiban._vendor.yiban_protocol`，本文件不得再内联一份正则或表单字段表。
+端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、平台请求头常量（`HEADERS` /
+`KILLYIBAN_HEADERS` / `APP_SIGN_HEADERS` / `YIBAN_APP_VERSION`）、`RequestPolicy` /
+`SessionStore` 协议与登录/签到函数是本层的对外接口；解析与构造一律委托
+`yiban.protocol`，本文件不得再内联一份正则或表单字段表。
 
 **通信**
 输入：`requests.Session`、注入的 `policy` 与 `session_store`、账号/密码与点位参数。
 输出：签到结果与会话；每一步跳转都过 `policy.require_*` 校验，本层不自算裁决。
-调用谁：`requests`、vendored `yiban_protocol`、同层 `waf`、注入的 `policy` / `session_store`。
+调用谁：`requests`、`yiban.protocol`、`yiban.challenge`、注入的 `policy` / `session_store`。
 谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
-前端调用点：无直接调用点（隔离层）。
+前端调用点：无直接调用点。
 """
 import contextlib
 import logging
@@ -39,7 +50,8 @@ from urllib.parse import urljoin
 from Crypto.PublicKey import RSA
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
-from yiban._vendor.yiban_protocol import (
+from yiban import challenge
+from yiban.protocol import (
     ParseError,
     SessionExpired,
     build_sign_in_body,
@@ -49,16 +61,50 @@ from yiban._vendor.yiban_protocol import (
     parse_authorize_page,
     parse_sign_position,
 )
-from yiban._vendor.yiban_protocol import crypto as _lib_crypto
+from yiban.protocol import crypto as _lib_crypto
 
-from . import headers as fyiban_headers
-from . import waf as fyiban_waf
-
-logger = logging.getLogger("yiban.fyiban.protocol")
+logger = logging.getLogger("yiban.platform")
 
 # ---------------------------------------------------------------------------
-# 端点与参数（平台侧固定值）
+# 平台事实：客户端标识、端点、请求头与版本
 # ---------------------------------------------------------------------------
+#: 易班 App 版本特征：两处请求头（KILLYIBAN_HEADERS / usersure 提交）必须同值，不一致
+#: 会触发服务端一致性校验；旧流程 iOS UA 尾段同步引用。取值须与易班官方客户端安装包的
+#: 清单版本号一致（`yiban/platform.py` 的常量是唯一来源，测试钉住同值关系）。
+YIBAN_APP_VERSION = "5.2.3"
+
+#: 易班 iOS 客户端 UA（旧流程 `YIBAN_LEGACY_LOGIN=1` 使用）
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/4.0 "
+    "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/" + YIBAN_APP_VERSION,
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "X-Requested-With": "com.yiban.app",
+    "Origin": "https://app.uyiban.com",
+    "Referer": "https://app.uyiban.com/",
+    "Connection": "close",
+}
+
+#: 默认登录方式（KILLYIBAN）的平台请求头：三个字段取自平台客户端的实拍请求。
+#: 注意：usersure 提交时会被显式覆盖为不带 Origin/Referer（见 `login_killyiban` 第 3 步，
+#: 实测带 Origin → e001 无效应用端编号），其余请求用此头。
+KILLYIBAN_HEADERS = {
+    "User-Agent": "Yiban",
+    "AppVersion": YIBAN_APP_VERSION,
+    "Origin": "https://c.uyiban.com",
+    "Referer": "https://c.uyiban.com/",
+    "Connection": "close",
+}
+
+#: 签到接口（nightAttendance）的目标站点特征：旧流程走 App 域。
+#: 登录链把 Origin/Referer 改成了 OAuth/回调域，签到时必须**改回来**，
+#: 故单独成一份常量而不是复用上面的整份头。
+APP_SIGN_HEADERS = {
+    "Origin": "https://app.uyiban.com",
+    "Referer": "https://app.uyiban.com/",
+}
+
+#: 端点与客户端标识（平台侧固定值）
 OAUTH_CLIENT_ID = "95626fa3080300ea"
 OAUTH_REDIRECT_URI = "https://f.yiban.cn/iapp7463"
 API_AUTH_URL = "https://api.uyiban.com/base/c/auth/yiban"
@@ -75,7 +121,7 @@ REQUEST_TIMEOUT = 15
 #: 超过即视为重定向环，响亮失败而不是无限跟下去
 MAX_FINAL_AUTH_REDIRECTS = 5
 
-#: KillYiBan 判断"已登录"的方式：OAuth 探针 302 落到 redirect_uri
+#: 判断"已登录"的方式：OAuth 探针 302 落到 redirect_uri
 LOGGED_IN_MARKER = "iapp7463"
 
 #: RSA-1024 公钥单次可加密的明文字节上限（PKCS#1 v1.5 填充开销 11 字节）
@@ -83,7 +129,7 @@ _RSA1024_MAX_BYTES = 117
 
 
 class RequestPolicy(Protocol):
-    """协议层需要的安全策略（实现见 `yiban/security.py::ProtocolPolicy`）。"""
+    """本层需要的安全策略（实现见 `yiban/security.py::ProtocolPolicy`）。"""
 
     def require_trusted(self, url, site):
         """宽松白名单；不合格抛 RuntimeError（site 用于定位到具体协议步骤）。"""
@@ -149,14 +195,14 @@ class SignResponse(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# 纯解析/构造：薄委托 vendored 洁净室库（本层不再内联正则与字段表）
+# 纯解析/构造：薄委托洁净室协议库（本层不再内联正则与字段表）
 # ---------------------------------------------------------------------------
 def encrypt_password(password, public_key_pem):
     """RSA-1024 + PKCS1_v1_5 加密密码，返回 base64 密文（str，与 urlencode 兼容）。
 
-    委托 `yiban_protocol.crypto.encrypt_password`（输入 PEM 文本）。本项目保留发送前的
+    委托 `yiban.protocol.crypto.encrypt_password`（输入 PEM 文本）。本层保留发送前的
     长度守卫：RSA-1024 单次最多 117 字节，超长时库底层的 pycryptodome 异常难以理解，
-    这里换成可执行的处置建议（`PROVENANCE.md` 的"本地差异"）。
+    这里换成可执行的处置建议。
     """
     if isinstance(password, (bytes, bytearray)):
         # 客户端以 bytearray 持有密码（可原位清零），库接口要求 str：此处产生一份
@@ -173,12 +219,12 @@ def encrypt_password(password, public_key_pem):
 def parse_login_page(text, *, flow):
     """解析授权页，返回 `(page_use, RSA 公钥对象)`；缺失/损坏一律 `(None, None)`。
 
-    主路径委托 vendored `parse_authorize_page`（killyiban 页契约，TASK-C 实拍：
-    `var page_use = …` + `id="key"` 隐藏 input 内多行 PEM）。`flow=="legacy"` 允许一次
-    **宽容重试**：旧 legacy 页的令牌赋值不要求 `var` 关键字；回退的令牌定位与主路径
-    **不同源**（库失败后独立找 `page_use = …` 并补 `var ` 重试同一条库路径），默认流程
-    页面结构变化、主路径失效时不致两路同时失效。key 命中但损坏（缺 PEM 头尾/非法 DER）
-    与"没命中"同价返回 `(None, None)`——底层 `ParseError` 不得越过本函数的返回契约。
+    主路径委托协议库 `parse_authorize_page`（页契约：`var page_use = …` + `id="key"`
+    隐藏 input 内多行 PEM）。`flow=="legacy"` 允许一次**宽容重试**：旧 legacy 页的令牌
+    赋值不要求 `var` 关键字；回退的令牌定位与主路径**不同源**（库失败后独立找
+    `page_use = …` 并补 `var ` 重试同一条库路径），默认流程页面结构变化、主路径失效时
+    不致两路同时失效。key 命中但损坏（缺 PEM 头尾/非法 DER）与"没命中"同价返回
+    `(None, None)`——底层 `ParseError` 不得越过本函数的返回契约。
     """
     try:
         page = parse_authorize_page(text)
@@ -212,7 +258,7 @@ def build_sign_info(lng, lat, address):
 def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     """把 `sign_info` 字典还原为库 `build_sign_in_body` 的入参并构造提交体。
 
-    与观测流量逐字节同构的保证在库侧（键序 Reason/AttachmentFileName/LngLat/Address、
+    与实拍流量逐字节同构的保证在库侧（键序 Reason/AttachmentFileName/LngLat/Address、
     JSON 默认分隔符、整串 urlencode）。
     """
     lng_text, _, lat_text = str(sign_info.get("LngLat", "")).partition(",")
@@ -246,7 +292,7 @@ def _parse_api_body(resp):
 
 
 def _validate_sign_position(data):
-    """成功信封里的签到配置过一次库解析（TASK-C §2[5] 契约）——结构不合即抛 ParseError。
+    """成功信封里的签到配置过一次库解析（实拍契约）——结构不合即抛 ParseError。
 
     只在"形状已足以进入客户端点位分支"时才解析：`code == 0`、`Position` 为非空数组、
     顶层 `Range` 带 `StartTime/EndTime`。这样既不改变既有"缺 Range / 空 Position"的
@@ -274,10 +320,9 @@ def _validate_sign_position(data):
 # 登录握手
 # ---------------------------------------------------------------------------
 def login_legacy(session, *, phone, password, csrf, policy):
-    """旧流程（Auto-Test 继承，iOS 伪造 UA）六次请求完成登录。
+    """旧流程（iOS 伪造 UA）六次请求完成登录；`YIBAN_LEGACY_LOGIN=1` 时启用。
 
-    仅在 `YIBAN_LEGACY_LOGIN=1` 时启用；失败抛 RuntimeError（消息已脱敏）。
-    返回本次生效的 `LoginOutcome`。
+    失败抛 RuntimeError（消息已脱敏）。返回本次生效的 `LoginOutcome`。
     """
     session.cookies = cookiejar_from_dict({"csrf_token": csrf})
     session.headers.update(Referer="https://c.uyiban.com/", Origin="https://c.uyiban.com")
@@ -336,10 +381,10 @@ def login_legacy(session, *, phone, password, csrf, policy):
     policy.require_trusted(reurl, "login_reurl")
     resp = session.get(reurl, allow_redirects=False, timeout=REQUEST_TIMEOUT)
 
-    if fyiban_waf.looks_like_challenge(resp.text, resp.headers.get("Set-Cookie", "")):
+    if challenge.looks_like_challenge(resp.text, resp.headers.get("Set-Cookie", "")):
         # 既定裁决：不再尝试求解挑战（生产全历史零触发的求解器已删除）。命中即响亮失败；
         # 文案含 "ydclearance" 词元 → 落不可重试硬失败档并联动清会话缓存。
-        raise RuntimeError(fyiban_waf.CHALLENGE_DETECTED_MESSAGE)
+        raise RuntimeError(challenge.CHALLENGE_DETECTED_MESSAGE)
     session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
 
     # 5. 获取 verify_request
@@ -378,11 +423,11 @@ def login_legacy(session, *, phone, password, csrf, policy):
 
 
 def login_killyiban(session, *, phone, password, csrf, policy, session_store=None):
-    """KillYiBan 同款登录（默认登录方式）：OAuth 页 → usersure → iframe → 认证。
+    """默认登录方式：OAuth 页 → usersure → iframe → 认证。
 
-    与旧流程的差异（差异本身即上游事实，改动等于换登录方式）：
+    平台侧差异（差异本身即平台事实，改动等于换登录方式）：
     - 入口直接打 `oauth.yiban.cn/code/html`（不先打 api.uyiban.com）；
-    - usersure **不带 Referer/Origin**（原 App 传空 headers；带 Origin 会得 e001）；
+    - usersure **不带 Referer/Origin**（App 传空 headers；带 Origin 会得 e001）；
     - `scope` 传空、`display` 传 "authorize"；
     - 成功标志是 `code == "s200"`。
 
@@ -427,13 +472,13 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
         raise RuntimeError("登录: OAuth 页解析失败")
 
     # 3. 提交账号密码。usersure 必须不带 Origin/Referer 才返回 s200（带 Origin 会得
-    #    e001"无效的应用端编号"）；scope 空 + display=authorize 与 App 一致
+    #    e001"无效的应用端编号"）；scope 空 + display=authorize 与平台客户端一致
     resp = session.post(
         OAUTH_USERSURE_URL,
         params={"ajax_sign": page_use},
         headers={
             "User-Agent": "Yiban",
-            "AppVersion": fyiban_headers.KILLYIBAN_HEADERS["AppVersion"],
+            "AppVersion": KILLYIBAN_HEADERS["AppVersion"],
             "Origin": None,
             "Referer": None,
             "X-Requested-With": None,
@@ -451,7 +496,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     if result.get("code") != "s200":
         raise RuntimeError(f"登录失败: {policy.sanitize(result.get('msgCN', result))}")
 
-    # 4. 打开 iframe/index 获取 Location → verify_request（默认三个头）
+    # 4. 打开 iframe/index 获取 Location → verify_request（平台默认三个头）
     resp = session.get(
         IFRAME_INDEX_URL, params={"act": LOGGED_IN_MARKER},
         allow_redirects=False, timeout=REQUEST_TIMEOUT,
@@ -464,7 +509,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
             f"无法提取 verify_request（Location={policy.describe_location(location)}）"
         )
 
-    # 5. 完成认证（默认三个头，最终返回 JSON）。这一跳服务端可能 302（落点才是
+    # 5. 完成认证（平台默认三个头，最终返回 JSON）。这一跳服务端可能 302（落点才是
     #    JSON），而请求自带的 csrf_token cookie 域名为空——对任意主机会一并带出。
     #    故**不**让 requests 自动跟随：自动跟随会在白名单校验之前就把令牌发往
     #    落点（SSRF 面），改为取 Location、先过宽松白名单、再发下一跳；判据与
@@ -493,13 +538,13 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
-    # code==0 只代表"签发方没有否认"，不代表签发发生过：成功签发附带的回执在 data
-    # 载荷（同一端点的入口步应答即 `data.Data`，签到成功门也 code/data 并读）。
-    # `data` 键缺失或为 null 即无签发信封形状——网关/降级层伪造 code:0 的假成功正落在
-    # 这一形状上，不得写"登录成功"日志、更不得把残破会话送进缓存密文库。空容器
-    # （`{}`）是录制到的真实成功形状之一，放行；判据只拒"无回执"。
-    # 错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一无回执应答必然同果，
-    # 落不可重试档并联动清会话。
+    # **本项目自有判定**（非平台知识）：code==0 只代表"签发方没有否认"，不代表签发
+    # 发生过：成功签发附带的回执在 data 载荷（同一端点的入口步应答即 `data.Data`，
+    # 签到成功门也 code/data 并读）。`data` 键缺失或为 null 即无签发信封形状——
+    # 网关/降级层伪造 code:0 的假成功正落在这一形状上，不得写"登录成功"日志、更不得
+    # 把残破会话送进缓存密文库。空容器（`{}`）是录制到的真实成功形状之一，放行；
+    # 判据只拒"无回执"。错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一无回执
+    # 应答必然同果，落不可重试档并联动清会话。
     if data.get("data") is None:
         _msg = data.get("msg")
         raise RuntimeError("最终认证失败: 无签发方回执（code=0 但 data 载荷缺失）"

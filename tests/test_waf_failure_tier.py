@@ -11,8 +11,8 @@
    只有一个名单来源。
 对应实现：yiban/security.py（档位判据唯一真值源）、yiban/engine/attempts.py（档位与清缓存联动）、
    yiban/engine/probe.py（硬失败判据同源构造）、yiban/engine/executor_v3.py（风控信号的第二个
-   读者）、yiban/fyiban/waf.py（挑战失败文案的来源）与
-   yiban/fyiban/protocol.py（检测命中即用该文案 raise）。
+   读者）、yiban/challenge.py（挑战失败文案的来源）与
+   yiban/platform.py（检测命中即用该文案 raise）。
 关键断言：waf 的挑战失败文案（`CHALLENGE_DETECTED_MESSAGE`）逐条过档位判据，且协议层
    真的会 raise 它——求解器删除后，"检测命中→响亮失败"是唯一入口，改坏词元即红。
 依赖：纯标准库 + signin 兼容壳；不联网、不建库。整文件在本机执行，无 skip。
@@ -24,9 +24,9 @@ import unittest
 
 import signin
 
+from yiban import challenge as yiban_challenge
 from yiban import security
 from yiban.engine import probe
-from yiban.fyiban import waf as fyiban_waf
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,7 +36,7 @@ LEG2_NON_JSON_MESSAGE = "Expecting value: line 1 column 1 (char 0)"
 
 def _waf_fail_messages():
     """waf.py 的挑战失败文案（检测命中由协议层 raise 该常量；求解器已删除）。"""
-    return [fyiban_waf.CHALLENGE_DETECTED_MESSAGE]
+    return [yiban_challenge.CHALLENGE_DETECTED_MESSAGE]
 
 
 class ChallengeParseTierTest(unittest.TestCase):
@@ -56,10 +56,10 @@ class ChallengeParseTierTest(unittest.TestCase):
 
     def test_protocol_raises_challenge_message(self):
         """协议层必须真的用该文案 raise（检测命中→响亮失败是求解器删除后的唯一入口）。"""
-        src = io.open(os.path.join(BASE, "yiban", "fyiban", "protocol.py"),
+        src = io.open(os.path.join(BASE, "yiban", "platform.py"),
                       encoding="utf-8").read()
-        self.assertIn("fyiban_waf.CHALLENGE_DETECTED_MESSAGE", src)
-        self.assertRegex(src, r"raise RuntimeError\(fyiban_waf\.CHALLENGE_DETECTED_MESSAGE\)")
+        self.assertIn("challenge.CHALLENGE_DETECTED_MESSAGE", src)
+        self.assertRegex(src, r"raise RuntimeError\(challenge\.CHALLENGE_DETECTED_MESSAGE\)")
 
     def test_leg2_non_json_message_lands_hard_tier(self):
         self.assertTrue(security.is_hard_fail_message(LEG2_NON_JSON_MESSAGE))
@@ -142,7 +142,7 @@ class WafTokenBoundaryTierTest(unittest.TestCase):
 
     def test_is_hard_fail_message_applies_the_same_boundary_rule(self):
         """硬失败词元与 WAF 词元同一条匹配规则：两侧字母数字的粘连形态不算命中。"""
-        self.assertTrue(security.is_hard_fail_message(fyiban_waf.CHALLENGE_DETECTED_MESSAGE))
+        self.assertTrue(security.is_hard_fail_message(yiban_challenge.CHALLENGE_DETECTED_MESSAGE))
         self.assertTrue(security.is_hard_fail_message(LEG2_NON_JSON_MESSAGE))
         self.assertTrue(security.is_hard_fail_message("Set-Cookie: https_ydclearance=abc"))
         self.assertFalse(security.is_hard_fail_message("abcydclearanceX"))
