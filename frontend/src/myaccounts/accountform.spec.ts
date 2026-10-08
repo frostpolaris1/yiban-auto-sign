@@ -222,3 +222,16 @@ describe("口令字段文案（两套凭据必须读得出区别）", () => {
     }
   });
 });
+
+describe("占位符必须写成真实形状（不得用说明式）", () => {
+  // 说明式占位（"如：我的易班账号"）实测被用户照抄当名称提交；占位符要放一个形状真实的
+  // 示例，且必须带「如：」前缀让人读得出"这是示例"。
+  it("两个变体的名称占位符都不是说明式，且可辨识为示例", () => {
+    for (const variant of ["user", "admin"] as const) {
+      const ph = FORM_TEXTS[variant].namePlaceholder;
+      expect(ph).not.toContain("我的易班账号");
+      expect(ph.startsWith("如：")).toBe(true);
+      expect(ph).toContain("123");
+    }
+  });
+});
