@@ -797,15 +797,24 @@ def verify_audit_chain():
 #
 # 锚点行格式（空格分隔；时间戳本身含 1 个空格，故按 token 数区分版本，
 # 解析一律从行尾取字段）：
+#   v0（2026-08-28 前写入的存量行）：  <ts> <head>                            = 3 token
 #   v1（存量生产文件）：              <ts> <min_id> <max_id> <head>              = 5 token
 #   v2（当前）：                        <ts> <min_id> <max_id> <count>
 #                                        <purge_total> <head> <prev_line_hash>     = 8 token
+# v0 行只有时间戳与链头：min_id / max_id / count / purge_total / prev_line_hash
+# 一律返回 None（不填 0/""）。生产锚点文件是**只增不改**的历史，早期版本写下的
+# v0 行永久留在文件头部（2026-10-08 实测 126 行里前 41 行是 v0）。解析器漏认这
+# 一支的后果实测过：第 1 行即判"不是合法锚点行"⇒ 整份文件 indeterminate ⇒
+# 行数比对与行间链校验一天都没跑过（2026-09-29 起连续 10 天），只因结论与上次
+# 同态不重复外发而无人察觉。**删旧行不是修法**：锚点文件只由应用追加，删行是
+# "应用写入之外的动作"，会真的毁掉取证链。故兼容在解析侧做，不动文件本身。
 # v2 新增三字段的用途——
 #   count         锚定时刻链内行数 → "min..max 区间该有多少行"的稠密性判据数据源；
 #   purge_total   锚定时刻已留痕的物理删除累计条数 → 只有锚点**之后**的留痕清理
 #                 才能解释缺口，事后补写事件无法自证；
 #   prev_line_hash 前一行原文 sha256 → 锚点文件自身成链，改写任一历史行/删中间行可检出。
 # 读 v1 行时这三字段为 None（不是 0/""），依赖它们的判据自动降级，不误报。
+_ANCHOR_V0_TOKENS = 3
 _ANCHOR_V1_TOKENS = 5
 _ANCHOR_V2_TOKENS = 8
 #: 库内锚点指纹：{"lines": int, "last_hash": str, "ts": str}
@@ -850,11 +859,21 @@ def _parse_anchor_line(ln):
     """解析单条锚点行；不可解析返回 None。
 
     字段一律**从行尾**取——时间戳本身含空格（"YYYY-MM-DD HH:MM:SS"），从头按下标
-    取会整体错位一格。v1 行缺失的三个字段返回 None（而非 0/""），让调用方能区分
+    取会整体错位一格。v0 行与 v1 行缺失的字段返回 None（而非 0/""），让调用方能区分
     "值为 0" 与"该行根本没有这个字段"，避免旧行被当成 count=0 误判。
+
+    三个版本返回同一组键。行内"没有的字段"这份契约只写在 `absent` 一处：两支各自
+    手抄字段名时漏抄一个就是下一个同类缺陷——解析器漏认 v0 那一支，已让生产机的
+    每日体检连续 10 天没跑过（2026-09-29 起）。
+
+    行内容的合法性判据是 token 数（v1/v2 另有 int() 转换作天然过滤）。v0 行不做
+    链头格式校验，与 v1/v2 同规：对老行加更严的校验，会在同一条路上再制造一次
+    "合法历史行判不可解析"的静默失效。补偿判据是行数三支、末行哈希与行间链。
     """
     parts = ln.split()
     n = len(parts)
+    #: v0/v1 行没有的字段：统一取 None，见上（区分"值为 0"与"没有这个字段"）。
+    absent = {"count": None, "purge_total": None, "prev_line_hash": None}
     try:
         if n == _ANCHOR_V2_TOKENS:
             return {
@@ -874,9 +893,19 @@ def _parse_anchor_line(ln):
                 "min_id": int(parts[-3]),
                 "max_id": int(parts[-2]),
                 "head": parts[-1],
-                "count": None,
-                "purge_total": None,
-                "prev_line_hash": None,
+                **absent,
+            }
+        if n == _ANCHOR_V0_TOKENS:
+            # v0 行是 `<ts> <head>`，整行只有时间戳与链头，没有编号/计数/链前驱。
+            # 它不能充当定点基准（没有 max_id），但**仍作为行间链的前驱参与哈希**
+            # ——与 v1 行同规；否则文件头部的老行整段脱离链，改写它无从发现。
+            return {
+                "version": 0,
+                "ts": " ".join(parts[:-1]),
+                "head": parts[-1],
+                "min_id": None,
+                "max_id": None,
+                **absent,
             }
     except ValueError:
         return None
@@ -1158,7 +1187,7 @@ def _last_anchor_of(lines):
 
 
 def _max_anchor_of(lines):
-    """`max_id` 最大的那条可解析锚点行（并列取靠后的）。
+    """`max_id` 最大的那条锚点行（并列取靠后的）；没有可用行返回 None。
 
     校验基准取"最大真行"而不是"最后一行"：追加一行**旧状态**的锚点（max_id 更小）
     即可把基准换成一个与现状自洽的旧记录，让删尾判据对着错的锚点算。取最大 max_id
@@ -1168,12 +1197,18 @@ def _max_anchor_of(lines):
     并列必须取靠后（最新自报）而非靠前：清理后补锚、链尾重签后重锚都会追加
     max_id 相同的新行，只有最新一行描述库内现状，取靠前会拿陈旧 head 定点、把
     合法重锚误判成篡改。`max()` 并列返回首个，故这里显式 >= 扫描。
+
+    只收 `max_id` 非 None 的行：v0（三字段）行没有 max_id，既无从定点，`None >= int`
+    还会抛 TypeError——调用点 `_anchor_status` 在 try 之外，一次抛异常即让当日体检
+    整体不执行（正是"把查不动印成无异常"的失败形态）。**返回值因此保证 min_id 与
+    max_id 均为 int**，`_anchor_status` 的库内比对段可直接取用这两个字段。
     """
     parsed = _parse_anchor_lines(lines)
-    if not parsed:
+    usable = [p for p in parsed if p["max_id"] is not None]
+    if not usable:
         return None
-    best = parsed[0]
-    for p in parsed[1:]:
+    best = usable[0]
+    for p in usable[1:]:
         if p["max_id"] >= best["max_id"]:
             best = p
     return best
@@ -1182,12 +1217,12 @@ def _max_anchor_of(lines):
 def _last_audit_anchor(path):
     """读取最后一条有效锚点行；无锚点或格式不符返回 None。
 
-    行格式见 _ANCHOR_V1_TOKENS / _ANCHOR_V2_TOKENS 附近说明。字段**从行尾**取——
-    时间戳本身含空格，从头按下标取会整体错位一格。
+    行格式见 _ANCHOR_V0_TOKENS / _ANCHOR_V1_TOKENS / _ANCHOR_V2_TOKENS 附近说明。
+    字段**从行尾**取——时间戳本身含空格，从头按下标取会整体错位一格。
 
     兼容三种形态：v2（8 token，含 count/purge_total/prev_line_hash）、
-    v1（5 token）、更旧的 `ts head`（3 token，int() 转换失败即跳过，
-    不参与判定，避免升级后误报）。
+    v1（5 token）、v0（3 token 的 `ts head`，2026-08-28 前的存量行）。
+    v0/v1 行没有的字段取 None，调用方按"该行没有这个字段"处理，不得当 0。
     """
     lines = _read_anchor_lines(path)
     if not lines:
@@ -1308,9 +1343,12 @@ def _anchor_status(path=None):
         return "none", ""
     anchor = _max_anchor_of(lines)
     if anchor is None:
+        # 两种来源落到同一结论：全是不可解析的行，或全是无 max_id 的 v0 行。
+        # 两者都没有定点基准可比，故判"无法定论"而不是"无异常"。
         return (
             "indeterminate",
-            "锚点文件存在但没有一行是合法锚点行——校验无法定论（不等于无异常）",
+            "锚点文件存在但没有一行可作定点基准（旧格式行无 max_id，或全体不可解析）"
+            "——校验无法定论（不等于无异常），请人工核查",
         )
     file_status, file_msg = _anchor_file_state_ex(path, lines=lines)
     if file_status != "ok":
