@@ -261,7 +261,10 @@ bash scripts/backup.sh
 - **巡检读取面**：`GET /api/admin/run-events` 只读回显进度事件（管理员面）。
   它回两块：轮级摘要（每轮一行）与单轮时间线。账号已遮罩，执行体只回角色与槽位，
   `message` 在写入面净化后再于读取面复遮一次（纵深防御）。日筛选**下推到 SQL**
-  （`WHERE day = ?`），故读取层的轮数上限只作用于已筛出的集合；当日轮数被截断时回
+  （`WHERE day = ?`），故读取层的轮数上限只作用于已筛出的集合；读取面另按保留窗口
+  两端过滤（`WHERE day = ? AND day >= 下界 AND day <= 上界`），窗外日期回空表。
+  窗口两端只有 `yiban/store/run_events.py::window_range()` 一个定义点，端点
+  `window.start_day` / `end_day` 从它取值，不另算公式。当日轮数被截断时回
   `rounds_truncated=true` 与 `rounds_limit`，页面写明「已截断」（不许静默出空表）。
   页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/store/run_events.py`，
   路由住在 `web/routes/run_events_api.py`。
@@ -307,9 +310,11 @@ bash scripts/backup.sh
   `/api/admin/run-events`。
 - 轮询已按可见性驱动：`shouldPoll` 要求页面可见（`visibilityState === "visible"`），
   切到后台即停。它另要求"跟随最新"视图与无在途请求。
-- 日筛选下推后，`run-events` 每次只聚合一天（`WHERE day = ? AND day >= 窗口下界`），
-  不再扫 14 天全表。窗口下界 = `今天-(RETENTION_DAYS-1)`；它挡掉保留期外的日期
-  （清理删界是 `今天-RETENTION_DAYS`，故起点外那一天在清理跑过前仍有行）。窗口外回空表。
+- 日筛选下推后，`run-events` 每次只聚合一天（`WHERE day = ? AND day >= 下界 AND day <= 上界`），
+  不再扫 14 天全表。窗口两端 = `[今天-(RETENTION_DAYS-1), 今天]`，只有
+  `run_events.window_range()` 一个定义点；下界挡掉保留期外日期（清理删界是
+  `今天-RETENTION_DAYS`，故起点外那一天在清理跑过前仍有行），上界挡掉未来业务日。
+  窗口外回空表。
 - 结论：节拍维持 10 秒。降频会拖慢"看最新一轮"的可见性，收益低。
 
 **SSE 的两类新噪音要防**
@@ -334,6 +339,16 @@ bash scripts/backup.sh
 - **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径，
   v3 下**总容量 ≈ 该值 × 出口数**。
 - **gap 默认开关**待实测裁决（纪律 2）；上游风控按账号还是按出口计数**尚未验证**。
+- **巡检选中态回落（`needsExecutorFallback`）的接线不可端到端触达（L7）**：该分支在
+  "带 `executor` 的请求返回的 `rounds` 不含该执行体"时触发，两种情况：① 该执行体当日
+  无行；② 该日分组数 > `MAX_ROUNDS`（200）且选中态跨越一次数据变化（选中的执行体在新
+  响应里被上限挤出）。两种情况都要求"选中态指向一个不在 `rounds` 里的执行体"，而 `rounds`
+  是页面唯一的选入来源（`#run-summary` 的行即 `rounds`），被上限挤出或当日无行的执行体
+  根本不可点选；请求间也不发生数据变化（e2e 的服务是独立进程，没有写入 `run_events` 的
+  接口）。现网约 20 执行体/日，远低于上限 200，② 更不可达。故该分支只有纯函数单测
+  （`frontend/src/logs/run-events.spec.ts`），接线（`Logs.vue` 重取循环）未被 e2e 覆盖。
+  触发后行为：本轮不带 `executor` 重取一次，回调该日最新一轮（只允许一次，不成环）。
+  本条目是**可达性论证的记载**，不用源码文本断言冒充接线守卫。
 
 ---
 

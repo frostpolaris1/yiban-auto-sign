@@ -263,6 +263,40 @@ class StoreReadLayerTest(InspectionCase):
                          f"分组键含业务日与执行体公开标签: {rounds}")
         self.assertEqual(rounds[0]["day"], self.day, "最新的轮次排在最前")
 
+    def test_window_range_is_the_single_definition_point(self):
+        """窗口区间的唯一定义点：`window_range()` 回 (下界, 上界)。
+
+        下界 = `今天-(RETENTION_DAYS-1)`（含），上界 = `今天`（含）。端点与读取层
+        都从这一处取值；少一个消费方抄公式，就少一条静默漂移路径（L1）。
+        """
+        now = clock.now()
+        lo, hi = run_events.window_range()
+        self.assertEqual(hi, now.strftime("%Y-%m-%d"))
+        self.assertEqual(
+            lo, (now - datetime.timedelta(
+                days=run_events.RETENTION_DAYS - 1)).strftime("%Y-%m-%d"))
+        self.assertFalse(hasattr(run_events, "_window_cutoff"),
+                         "旧的半窗口定义点 _window_cutoff 必须删除，否则又出现两份公式")
+
+    def _future_day(self):
+        return (clock.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def test_summarize_excludes_a_future_business_day(self):
+        """窗口上界也约束读取层（L4）：业务日晚于今天时回空行。
+
+        业务钟快一天即可写入未来日（runner 用 `clock.now()` 取 day），故上界不是
+        假想面。少了上界，端点会对未来日回 `has_data=true`，与窗口契约矛盾。
+        """
+        future = self._future_day()
+        self._insert(future, run_events.NODE_CLAIM, OWNER_SINGLE, RAW_PHONE, "",
+                     _ts(future, "06:40:00"))
+        rounds, _ = run_events.summarize(day=future)
+        self.assertEqual(rounds, [], "晚于今天的业务日必须被窗口上界挡掉")
+        events, _ = run_events.timeline(future, "single")
+        self.assertEqual(events, [], "晚于今天的业务日时间线必须为空")
+        self.assertEqual([r["day"] for r in run_events.summarize()[0]], [],
+                         "缺省日（最近 days 天）也不得纳入未来日")
+
     def test_summary_day_pushdown_keeps_a_full_older_day(self):
         """日筛选下推到 SQL：截断只作用于已筛出的集合（F1，根因修法）。
 
@@ -409,17 +443,23 @@ class RunEventsApiTest(InspectionCase):
         self.assertEqual(self._user_client().get("/api/admin/run-events").status_code, 403)
 
     def test_rounds_limit_comes_from_the_public_name(self):
-        """端点 `rounds_limit` 的取值源是公开名 `run_events.MAX_ROUNDS`（D2）。
+        """端点 `rounds_limit` 的取值源是公开名 `run_events.MAX_ROUNDS`（D2/L5）。
 
         该值已被前端渲染成用户可见文案（"本日最多 N 轮"），属对外契约字段。
-        端点若改读私有名 `_MAX_ROUNDS`，读取层重构改名不会触发任何失败——
-        契约取值源会静默失效。本用例两条腿：① 公开名存在且与截断上限同值；
-        ② 端点源码读的是公开名、不是私有名。
+        端点若改读私有名 `_MAX_ROUNDS`、或干脆写死数字，读取层改名即静默毁契约。
+        **主断言是行为**：请求端点，响应的 `rounds_limit` 必须等于公开名
+        `run_events.MAX_ROUNDS` 的真值（不写死 200）。取真值再改名，行为断言即红；
+        源码文本断言只作次要补充。
         """
+        self._seed_round()
+        body = self.admin_client.get("/api/admin/run-events").get_json()
+        self.assertEqual(body["rounds_limit"], run_events.MAX_ROUNDS,
+                         "端点 rounds_limit 必须等于公开名 MAX_ROUNDS 的真值（行为断言）")
         self.assertTrue(hasattr(run_events, "MAX_ROUNDS"),
                         "读取层必须暴露公开名 MAX_ROUNDS（端点的取值源）")
         self.assertEqual(run_events.MAX_ROUNDS, run_events._MAX_ROUNDS,
                          "公开名与内部截断上限必须是同一个值")
+        # 次要：源码文本断言（防端点读私有名或写死数字；行为断言覆盖不到同值改名）
         src = open(os.path.join(BASE, "web", "routes", "run_events_api.py"),
                    encoding="utf-8").read()
         self.assertIn("_run_events.MAX_ROUNDS", src,
@@ -525,6 +565,52 @@ class RunEventsApiTest(InspectionCase):
                          "窗口外不得回时间线（含未清理的窗外行）")
         self.assertLess(boundary, body["window"]["start_day"],
                         "本用例的边界日必须在窗口起点之前")
+
+    def test_future_business_day_is_out_of_window_and_empty(self):
+        """窗口上界也约束端点（L4）：业务日晚于今天时回 in_window=false / 空表。
+
+        复审实测：只约束下界时，未来业务日回 `in_window=false` 却 `has_data=true`。
+        本用例**不带 day**（默认日取表内最新 = 未来日），钉住两半窗口闭合。
+        """
+        future = (clock.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        self._insert(future, run_events.NODE_CLAIM, OWNER_SINGLE, RAW_PHONE, "",
+                     _ts(future, "06:40:00"))
+        body = self.admin_client.get("/api/admin/run-events").get_json()
+        self.assertEqual(body["window"]["day"], future,
+                         "无 day 时默认取表内最新业务日（本例是未来日）")
+        self.assertFalse(body["window"]["in_window"],
+                         "晚于窗口上界的日期必须回 in_window=false")
+        self.assertFalse(body["window"]["has_data"],
+                         "晚于窗口上界不得报有数据")
+        self.assertEqual(body["rounds"], [], "窗口外不得回轮级摘要（含未来日行）")
+        self.assertEqual(body["events"], [], "窗口外不得回时间线（含未来日行）")
+        self.assertEqual(body["window"]["end_day"], clock.now().strftime("%Y-%m-%d"),
+                         "上界是今天")
+
+    def test_future_day_explicit_param_is_empty(self):
+        """显式 day=未来日：同样回空表（不依赖端点默认选日）。"""
+        future = (clock.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        self._insert(future, run_events.NODE_CLAIM, OWNER_SINGLE, RAW_PHONE, "",
+                     _ts(future, "06:40:00"))
+        body = self.admin_client.get(
+            f"/api/admin/run-events?day={future}").get_json()
+        self.assertFalse(body["window"]["in_window"])
+        self.assertFalse(body["window"]["has_data"])
+        self.assertEqual(body["rounds"], [])
+        self.assertEqual(body["events"], [])
+
+    def test_window_bounds_come_from_store_window_range(self):
+        """端点窗口起止必须等于 store 的 `window_range()`（L1：钉住单一定义点）。
+
+        端点另抄一份"今天-(RETENTION_DAYS-1)"的公式即让声明"唯一定义点"失真；
+        本用例读 store 的返回值对拍，端点抄公式就会漂移而红。
+        """
+        lo, hi = run_events.window_range()
+        body = self.admin_client.get("/api/admin/run-events").get_json()
+        self.assertEqual(body["window"]["start_day"], lo,
+                         "窗口下界必须来自 store 的 window_range()，端点不得另算")
+        self.assertEqual(body["window"]["end_day"], hi,
+                         "窗口上界必须来自 store 的 window_range()，端点不得另算")
 
     def test_executor_filter_limits_timeline(self):
         self._seed_round(executor=OWNER_WORKER)

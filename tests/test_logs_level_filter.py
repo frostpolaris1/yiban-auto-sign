@@ -245,11 +245,24 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
     #: ② 响应式挂起值：`ref("warn")`
     #: ③ 查询串直接内联：`params.set("level", "warn")`
     #: 复审实测：旧正则（仅 `level:…= "warn"`）对上述形状全部不命中（弱牙）。
+    #: L6 复核：旧首条正则 `(\w+)[:=]\s*"warn|all"` 过宽——会命中 `const scope = "all"`
+    #: 这类与档位无关的赋值，也会咬注释文本。故**收窄到含 level 子串的标识符**，
+    #: 并在匹配前剥注释（见 `_strip_comments`）。
     FORBIDDEN_DEFAULT_RES = (
-        re.compile(r"([A-Za-z_$][\w$]*)\s*[:=]\s*[\"'](?:warn|all)[\"']"),
+        re.compile(r"(\w*[Ll][Ee][Vv][Ee][Ll]\w*)\s*[:=]\s*[\"'](?:warn|all)[\"']"),
         re.compile(r"\bref\(\s*[\"'](?:warn|all)[\"']\s*\)"),
         re.compile(r"\.set\(\s*[\"']level[\"']\s*,\s*[\"'](?:warn|all)[\"']"),
     )
+
+    @staticmethod
+    def _strip_comments(src):
+        """剥掉 JS/TS 注释（`/* */` 与 `//`）后再匹配。只影响匹配输入，不改判定对象。
+
+        为什么必须剥：注释里的 `level = "warn"` 是**说明文字**，不是内联默认档位。
+        复审实测：不剥注释时 `// 默认档 level = "warn" 是后端定的` 被咬成命中（假阳性）。
+        """
+        src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+        return re.sub(r"//[^\n]*", " ", src)
 
     def test_backend_is_the_single_source_of_the_default_level(self):
         from web.services import logs as logs_svc
@@ -257,7 +270,8 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
         self.assertIn(logs_svc.LOG_LEVEL_DEFAULT, logs_svc.LOG_LEVELS)
 
     def _inline_default_offenders(self, name, src):
-        """→ 该源文件里"内联默认档位"的命中清单（空 = 干净）。"""
+        """→ 该源文件里"内联默认档位"的命中清单（空 = 干净）。匹配前剥离注释。"""
+        src = self._strip_comments(src)
         out = []
         for tok in self.FORBIDDEN_TOKENS:
             if tok in src:
@@ -282,15 +296,17 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
         )
 
     def test_inline_default_shapes_are_actually_caught(self):
-        """守卫自身的牙齿：复审点名的四种内联形状必须被命中。
+        """守卫自身的牙齿：复审点名的内联形状必须被命中，且收窄后不误咬。
 
-        没有这条，下一个把正则改窄的人会让守卫静默失效（弱牙复发）。同时钉住
-        "合法取值声明放行"：咬住 `WARN_LOG_LEVEL = "warn"` 会把守卫变成噪声。
+        没有这条，下一个把正则改窄的人会让守卫静默失效（弱牙复发）。同时钉住两条反向：
+        ① "合法取值声明放行"（咬住 `WARN_LOG_LEVEL = "warn"` 会把守卫变成噪声）；
+        ② 收窄后不再误咬：与档位无关的赋值（`const scope = "all"`）与**注释文本**不命中。
         """
         must_hit = (
             'const level = "warn";',                # 初始赋值
             'const levelOverride = ref("warn");',   # 响应式挂起值
-            'if (!lv) lv = "warn";',                # 回退赋值
+            'if (!level) level = "warn";',          # 回退赋值
+            'const LEVEL = "warn";',                # 大写标识符
             'params.set("level", "warn");',         # 查询串内联
             'const opt = { level: "all" };',        # 对象字面量
         )
@@ -305,11 +321,14 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
             "const warnOnly = ref(true);",             # 布尔挂起值
             'const levelOverride = ref("");',          # 空串挂起值
             'if (lv) params.set("level", lv);',        # 变量下发
+            'const scope = "all";',                    # 与档位无关的赋值（L6）
+            '// 默认档 level = "warn" 是后端定的',      # 行注释不是定义（L6）
+            '/* 说明：level = "warn" */',              # 块注释不是定义（L6）
         )
         for snippet in must_pass:
             self.assertEqual(
                 self._inline_default_offenders("sample.ts", snippet), [],
-                f"合法取值声明必须放行：{snippet!r}",
+                f"必须放行（取值声明 / 无关赋值 / 注释）：{snippet!r}",
             )
 
 
