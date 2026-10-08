@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { api, toast } from "../lib/shell";
 import { isValidDate } from "./date-guard.js";
 import {
+  ALL_LOG_LEVEL,
+  DEFAULT_LOG_LEVEL,
   EVENT_PAGE_SIZES,
   TAB_KEYS,
   buildExportUrl,
@@ -18,20 +20,39 @@ import {
   type LogsPayload,
   type TabKey,
 } from "./format";
+import {
+  buildRunEventsQuery,
+  emptyRoundsText,
+  eventTime,
+  findRound,
+  formatDuration,
+  roundKey,
+  windowText,
+  type RunEvent,
+  type RunEventsPayload,
+  type RunRound,
+} from "./run-events";
 
-/* 签到日志页（GET /api/logs，三分区：日志 / 签到事件 / 探针记录）。
+/* 签到日志页（GET /api/logs + GET /api/admin/run-events，四分区内容：运行巡检 /
+   日志 / 签到事件 / 探针记录）。
+
    纪律：
-   · 脱敏单出口在服务端（日志行 _mask_log_phones、事件 phone _mask_phone + 截断），
-     前端只有插值渲染、**零自遮**（`+86`/分隔符形态由后端单源收口）；全程零 v-html。
+   · 脱敏单出口在服务端（日志行 _mask_log_phones、事件与进度流 phone _mask_phone、
+     执行体只回角色与槽位），前端只有插值渲染、**零自遮**；全程零 v-html。
    · 三元组 total_lines/returned/truncated 由服务端同轴推出，前端只按 truncated 显示
      「已截断」，不得用行数自行推断（见 format.ts）。
+   · 级别档默认 warn（收起 INFO/DEBUG）：巡检第一眼看的是 WARN／ERROR。收起过行时
+     信息栏与空态都显式写出「已收起 N 行」——不许让人把收起读成没有那些行。
+   · 运行进度只保留 14 天（服务端 `run_events.RETENTION_DAYS`）。页面显式写明窗口；
+     窗口外给「跨月回溯请走审计日志页」的指引，不静默出空表。
    · 翻页/排序是**客户端**行为（接口按日一次性返回当日结果集，封顶 5000 行）。
 
    日期语义（2026-10-03 修 blocking：原实现用服务端回显日期覆盖用户选择，导致
    查看该日/回到今天/空态跳转全部失效）：
    · `viewDate === ""` = **跟随最新**（服务端解析最近有日志的一天，通常是今天）；
    · 「查看该日」「空态跳转」pin 住某天并写进 `?date=`（可分享、刷新不丢）；pin 态**不轮询**；
-   · 「回到今天」清空 = 回到跟随态。 */
+   · 「回到今天」清空 = 回到跟随态。
+   运行巡检块跟随同一个日期，故两块内容始终同一天。 */
 
 const POLL_MS = 10000;
 const AUTO_KEY = "yiban-logs-autorefresh";
@@ -55,12 +76,20 @@ const loadedDate = ref("");
 const searchInput = ref("");
 const keyword = ref("");
 const showAll = ref(false);
+/** 级别档开关：true = 收起 INFO（默认，巡检口径）；false = 全量档 */
+const warnOnly = ref(true);
 const autoRefresh = ref(true);
 const logBox = ref<PreElement | null>(null);
 const signTable = ref<TableState>({ page: 1, size: 20, prop: "time", order: "descending" });
 const probeTable = ref<TableState>({ page: 1, size: 20, prop: "time", order: "descending" });
+/** 运行巡检：轮级摘要与时间线（独立于日志请求，失败不拖垮日志分区） */
+const runPayload = ref<RunEventsPayload | null>(null);
+const runError = ref("");
+const runLoading = ref(false);
+const selectedKey = ref("");
 
 let busy = false;
+let runBusy = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 let firstLoad = true;
 
@@ -71,6 +100,19 @@ const isToday = computed(() => payload.value?.is_today === true);
 const canExport = computed(() => !!loadedDate.value);
 const exportHref = computed(() => (loadedDate.value ? buildExportUrl(loadedDate.value) : ""));
 const exportName = computed(() => payload.value?.log_file ?? "sign.log");
+const collapsed = computed(() => payload.value?.collapsed_lines ?? 0);
+const level = computed(() => (warnOnly.value ? DEFAULT_LOG_LEVEL : ALL_LOG_LEVEL));
+
+const runRounds = computed<RunRound[]>(() => runPayload.value?.rounds ?? []);
+const runEvents = computed<RunEvent[]>(() => runPayload.value?.events ?? []);
+const selectedRound = computed(() => (runPayload.value ? findRound(runRounds.value, selectedKey.value) : null));
+const runWindowLine = computed(() =>
+  runPayload.value ? windowText(runPayload.value.window, runPayload.value.retention_days) : "",
+);
+const runEmptyText = computed(() => (runPayload.value ? emptyRoundsText(runPayload.value.window) : ""));
+const timelineTitle = computed(() =>
+  selectedRound.value ? `事件时间线 · ${selectedRound.value.day} · ${selectedRound.value.executor_label}` : "事件时间线",
+);
 
 function tableRows(events: LogEvent[], t: TableState): LogEvent[] {
   return paginate(sortEvents(events, t.prop, t.order), t.page, t.size);
@@ -131,7 +173,7 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
   // 否则跟随态下服务端会重新解析日期、把用户正在看的内容换掉。
   const date = mode === "poll" ? loadedDate.value : viewDate.value;
   try {
-    const resp = await api<LogsPayload>("GET", buildLogsQuery(date, keyword.value, showAll.value));
+    const resp = await api<LogsPayload>("GET", buildLogsQuery(date, keyword.value, showAll.value, level.value));
     payload.value = resp;
     loadedDate.value = resp.date;
     dateInput.value = resp.date;
@@ -146,6 +188,43 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
     busy = false;
     loading.value = false;
   }
+  // 运行巡检块跟随日志分区的**实际日期**：两块内容始终同一天。失败只影响本块。
+  await loadRuns(loadedDate.value);
+}
+
+/**
+ * 拉运行巡检（轮级摘要 + 选中轮的时间线）。
+ *
+ * `executor` 为空时由服务端取该日最新一轮，并同时回该轮时间线。
+ * 该端点与 `/api/logs` 是两个独立请求：巡检块失败只在块内报错，日志分区照常可用。
+ */
+async function loadRuns(day: string, executor = ""): Promise<void> {
+  if (runBusy) return;
+  runBusy = true;
+  runLoading.value = true;
+  runError.value = "";
+  try {
+    const resp = await api<RunEventsPayload>("GET", buildRunEventsQuery(day, executor));
+    runPayload.value = resp;
+    if (executor) selectedKey.value = `${resp.window.day}|${executor}`;
+    else if (resp.rounds.length) selectedKey.value = roundKey(resp.rounds[0]);
+    else selectedKey.value = "";
+  } catch (e) {
+    runError.value = (e as Error)?.message || "运行进度加载失败";
+  } finally {
+    runBusy = false;
+    runLoading.value = false;
+  }
+}
+
+function selectRound(row: RunRound): void {
+  const key = roundKey(row);
+  if (key === selectedKey.value) return;
+  void loadRuns(row.day, row.executor);
+}
+
+function refreshRuns(): void {
+  void loadRuns(runPayload.value?.window.day || loadedDate.value);
 }
 
 function search(): void {
@@ -224,6 +303,17 @@ function toggleAll(): void {
   void load();
 }
 
+/** 级别档开关：切档后重载（服务端按档过滤，前端不自筛）。 */
+function onLevelChange(): void {
+  void load();
+}
+
+/** 空态的「显示全部级别」：把收起 INFO 的档切回全量。 */
+function showAllLevels(): void {
+  warnOnly.value = false;
+  void load();
+}
+
 function onAutoRefreshChange(): void {
   try {
     localStorage.setItem(AUTO_KEY, autoRefresh.value ? "1" : "0");
@@ -280,6 +370,67 @@ onBeforeUnmount(() => {
   <div class="logs">
     <el-tabs v-model="tab">
       <el-tab-pane label="日志" name="main">
+        <!-- 运行巡检：巡检页首块。轮级摘要一眼看完，点某轮展开该轮时间线。 -->
+        <div id="run-panel" class="card">
+          <div class="logs-head">
+            <h2 class="logs-title">运行巡检</h2>
+            <div class="logs-tools">
+              <button type="button" class="btn btn--ghost btn--sm" :disabled="runLoading" @click="refreshRuns">
+                刷新进度
+              </button>
+              <span id="run-window" class="run-info">{{ runWindowLine }}</span>
+            </div>
+          </div>
+          <el-alert v-if="runError" type="error" :title="runError" :closable="false" show-icon style="margin: 8px 0" />
+          <div v-if="runError" class="logs-retry">
+            <button type="button" class="btn btn--ghost btn--sm" :disabled="runLoading" @click="refreshRuns">重试</button>
+          </div>
+
+          <div v-if="!runRounds.length" id="run-empty" class="run-empty">
+            <p>{{ runLoading ? "正在加载运行进度…" : runEmptyText }}</p>
+          </div>
+          <template v-else>
+            <div id="run-summary">
+              <el-table :data="runRounds" size="small" @row-click="selectRound">
+                <el-table-column prop="day" label="业务日" width="120" />
+                <el-table-column prop="executor_label" label="执行体" width="130" />
+                <el-table-column prop="claim" label="领取" width="80" />
+                <el-table-column prop="success" label="成功" width="80" />
+                <el-table-column prop="fail" label="失败" width="80" />
+                <el-table-column prop="unexecuted" label="未执行" width="90" />
+                <el-table-column label="耗时" width="110">
+                  <template #default="{ row }">{{ formatDuration(row.duration_sec) }}</template>
+                </el-table-column>
+                <el-table-column label="选中" width="90">
+                  <template #default="{ row }">
+                    <span v-if="roundKey(row) === selectedKey" class="run-current">当前</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <h3 class="run-sub">{{ timelineTitle }}</h3>
+            <div id="run-timeline">
+              <el-table :data="runEvents" size="small">
+                <template #empty>
+                  <div id="run-timeline-empty" class="run-empty">该轮没有可展开的事件行</div>
+                </template>
+                <el-table-column label="时刻" width="110">
+                  <template #default="{ row }">{{ eventTime(row.ts) }}</template>
+                </el-table-column>
+                <el-table-column prop="node_label" label="节点" width="90" />
+                <el-table-column prop="phone" label="账号" width="150">
+                  <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
+                  <template #default="{ row }">{{ row.phone || "--" }}</template>
+                </el-table-column>
+                <el-table-column prop="message" label="说明" min-width="260" show-overflow-tooltip />
+              </el-table>
+              <p v-if="runPayload?.events_truncated" id="run-timeline-truncated" class="run-note">
+                时间线已截断（本次最多 {{ runPayload.events_limit }} 行）。
+              </p>
+            </div>
+          </template>
+        </div>
+
         <div class="card">
           <div class="logs-head">
             <h2 class="logs-title">签到日志 <span class="logs-file">{{ payload?.log_file ?? "" }}</span></h2>
@@ -330,6 +481,12 @@ onBeforeUnmount(() => {
             </label>
             <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="viewDateAction">查看该日日志</button>
             <button v-if="payload && !isToday" type="button" class="btn btn--ghost btn--sm" @click="backToToday">回到今天</button>
+            <!-- 级别档开关：默认收起 INFO（巡检只看 WARN／ERROR）。类名刻意与
+                 `.logs-check`（自动刷新）分开——两处同用一个类会让既有 e2e 选择器命中两个。 -->
+            <label class="logs-level">
+              <input id="logs-level-warn" v-model="warnOnly" type="checkbox" @change="onLevelChange" />
+              <span>只看告警（收起 INFO）</span>
+            </label>
             <label class="logs-check">
               <input v-model="autoRefresh" type="checkbox" @change="onAutoRefreshChange" />
               <span>自动刷新（10 秒，仅跟随最新时）</span>
@@ -341,11 +498,16 @@ onBeforeUnmount(() => {
             <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="load()">重试</button>
           </div>
           <pre v-show="logText" ref="logBox" class="log-box" role="log" aria-live="off">{{ logText }}</pre>
-          <div v-if="!logText && !loading && !errorText" class="logs-empty">
-            <p>
-              {{ keyword ? "（无匹配日志行）" : viewDate ? `（${viewDate} 无签到日志）` : "（暂无签到日志，等待定时任务执行…）" }}
+          <div v-if="!logText && !loading && !errorText" id="logs-empty" class="logs-empty">
+            <p v-if="keyword">（无匹配日志行）</p>
+            <p v-else-if="collapsed > 0">
+              （当前档只显示 WARN／ERROR，已收起 {{ collapsed }} 行 INFO）
+              <button type="button" class="btn btn--ghost btn--sm" @click="showAllLevels">显示全部级别</button>
+            </p>
+            <p v-else>
+              {{ viewDate ? `（${viewDate} 无签到日志）` : "（暂无签到日志，等待定时任务执行…）" }}
               <button
-                v-if="!keyword && payload?.recent_log_date"
+                v-if="payload?.recent_log_date"
                 type="button"
                 class="btn btn--ghost btn--sm"
                 @click="jumpToRecent(payload.recent_log_date)"
@@ -525,7 +687,8 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--t-muted);
 }
-.logs-check {
+.logs-check,
+.logs-level {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -542,6 +705,18 @@ onBeforeUnmount(() => {
   color: var(--t-muted);
   font-size: 13px;
 }
+/* 运行巡检块的空态与说明：刻意**不**复用 `.logs-empty` / `.logs-info` 类——同名类会让
+   既有 e2e 选择器一次命中多处（Playwright 严格模式报错）。 */
+.run-empty {
+  padding: 12px 0;
+  color: var(--t-muted);
+  font-size: 13px;
+}
+.run-info,
+.run-note {
+  font-size: 12.5px;
+  color: var(--t-muted);
+}
 .logs-retry {
   margin-bottom: 8px;
 }
@@ -551,5 +726,19 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 10px;
+}
+/* 运行巡检块：摘要与时间线同卡；两块表各占一行，窄屏由 el-table 自身横滚。 */
+#run-panel {
+  margin-bottom: 12px;
+}
+.run-sub {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+.run-current {
+  font-size: 12px;
+  color: var(--t-muted);
 }
 </style>

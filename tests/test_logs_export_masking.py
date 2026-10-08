@@ -169,7 +169,12 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertIn(f"sign-{HIST_DATE}.log", cd)
 
     def test_export_lines_equal_view_lines(self):
-        """导出行集合与 /api/logs 视图逐行一致（同一 _log_lines_for 过滤管线）。"""
+        """导出行集合与 /api/logs 视图逐行一致（同一 _log_lines_for 可见性管线）。
+
+        `/api/logs` 的**级别档**（默认 warn，收起 INFO/DEBUG）不属于这条共用管线：
+        导出是全量脱敏副本，不以级别档过滤。故这里取 `level=all` 与导出对齐——对的是
+        "可见性"这一层；级别档由 tests/test_logs_level_filter.py 单独钉住。
+        """
         self._write_date_log(HIST_DATE, [
             _log_line(HIST_DATE, "INFO", "yiban", f"[{PHONE_FULL}] ✅ 签到成功"),
             _log_line(HIST_DATE, "INFO", "mailer", "mailer INFO 行 marker-mailer-info"),
@@ -178,7 +183,7 @@ class LogsExportMaskingTest(unittest.TestCase):
         ])
         c = self._admin_client()
         body = c.get(f"/api/logs/export?date={HIST_DATE}").get_data(as_text=True)
-        data = c.get(f"/api/logs?date={HIST_DATE}").get_json()
+        data = c.get(f"/api/logs?date={HIST_DATE}&level=all").get_json()
         self.assertEqual(data["logs"], body.splitlines(),
                          "导出与视图必须同一过滤管线（行集合逐行一致）")
         self.assertNotIn("marker-mailer-info", body, "其他组件 INFO 行不入列（视图同口径）")

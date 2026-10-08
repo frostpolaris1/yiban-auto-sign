@@ -1,13 +1,17 @@
 {# 签到日志（管理端 /data/logs）——前端翻新 P1：整页迁移到 Vue（原静态模板 + data_logs.js
    + components/date-field.js 已退役）。
 
-   数据客户端拉取：GET /api/logs（当日日志行 / 三元组 total_lines·returned·truncated /
-   签到事件 / 探针事件 / 最近有数据日期）、GET /api/logs/export（导出脱敏副本，走 <a download>）。
+   数据客户端拉取两条接口：
+   · GET /api/logs（当日日志行 / 三元组 total_lines·returned·truncated / 级别档
+     level 与 collapsed_lines / 签到事件 / 探针事件 / 最近有数据日期）；
+   · GET /api/admin/run-events（巡检块：轮级摘要与单轮时间线；契约见
+     web/routes/run_events_api.py 的模块 docstring；进度事件只保留 14 天）；
+   · GET /api/logs/export（导出脱敏副本，走 <a download>）。
    服务端只提供挂载点与 manifest 解析出的哈希资产（web.services.vue_assets）；
    缺 dist 时视图层直接 404。资产无 ?v=（文件名已含内容哈希）。
 
-   脱敏仍是服务端单出口（日志行 _mask_log_phones、事件 phone _mask_phone + 截断），
-   Vue 侧只插值渲染、零 v-html。 #}
+   脱敏仍是服务端单出口（日志行 _mask_log_phones、事件 phone _mask_phone、进度流
+   phone _mask_phone 且执行体只回角色与槽位），Vue 侧只插值渲染、零 v-html。 #}
 {% extends "layout_admin.html" %}
 
 {% block title %}签到日志 · 易班自动签到{% endblock %}
