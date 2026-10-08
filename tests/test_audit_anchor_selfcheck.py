@@ -343,8 +343,10 @@ class LegacyThreeFieldAnchorTest(_Fixture):
     （不填 0 或空串），于是两条定性必须记住：
       * v0 行不能充当定点基准（`_max_anchor_of`）——它没有 max_id，且 None 参与
         `>=` 比较会抛 TypeError，把每日体检炸成异常；
-      * v0 行仍须作为行间链的**前驱**参与哈希（与 v1 行同法）——否则老前缀整段
-        脱离链，改写它无从发现。
+      * v0 行仍须作为行间链的**前驱**参与哈希（与 v1 行同法）。链的覆盖面只到
+        "后继行带 prev_line_hash" 的那些行：v0 与 v1 行都没有该字段，故它们
+        **彼此之间**的相邻关系本就不受链保护，这在 v1 时代就已如此。本次兼容既没
+        缩小、也没扩大覆盖面；老前缀的完整性由行数三支与末行哈希承担。
     """
 
     def _legacy_file(self):
@@ -377,7 +379,13 @@ class LegacyThreeFieldAnchorTest(_Fixture):
         self.assertTrue(h["healthy"], h["anchor_msg"])
 
     def test_legacy_row_is_chain_predecessor(self):
-        """三字段行自身不做链校验，但必须作为前驱参与哈希：改写它须判红。"""
+        """链的覆盖面：只在「后继行带 prev_line_hash」处开火。
+
+        两段证据。① 后继（v2 行）带该字段时，改写三字段前驱行必红——老行确实在链上。
+        ② 两条 v1 行相邻时，改写前一行不红——前一行没有带该字段的后继去哈希它。
+        第②段是 v1 时代就有的覆盖面，不是本次兼容引入的缺口；本用例把这份真实覆盖面
+        钉住，将来谁扩大了覆盖面，这里会红。
+        """
         self._seed(3)
         v0 = f"2026-08-21 00:00:31 {self._row_hash(1)}"
         v2 = "2026-08-28 00:00:31 1 3 3 0 {} {}".format(
@@ -392,6 +400,16 @@ class LegacyThreeFieldAnchorTest(_Fixture):
         status, msg = db._anchor_status(self.anchor)
         self.assertEqual(status, "tampered", msg)
         self.assertIn("行间哈希不符", msg)
+
+        # ② 两条 v1 行相邻：改写前一行，末行哈希仍对得上，故判 ok（覆盖面边界）
+        v1a = f"2026-08-28 00:00:31 1 2 {self._row_hash(2)}"
+        v1b = f"2026-08-29 00:00:31 1 3 {self._row_hash(3)}"
+        self._write_lines([v1a, v1b])
+        self._set_meta(2, db._anchor_line_sha(v1b))
+        self.assertEqual(db._anchor_status(self.anchor)[0], "ok")
+        self._write_lines([f"2026-08-28 00:00:31 1 2 {'e' * 64}", v1b])
+        self.assertEqual(db._anchor_status(self.anchor)[0], "ok",
+                         "前一行没有带 prev_line_hash 的后继：链本来就够不到它")
 
     def test_only_legacy_rows_is_indeterminate_not_healthy(self):
         """文件里只有三字段行：没有 max_id 可定点 ⇒ 无法定论，且不得抛异常。"""
