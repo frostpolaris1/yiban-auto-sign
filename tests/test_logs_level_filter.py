@@ -237,9 +237,18 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
 
     FRONTEND_LOGS = ("format.ts", "run-events.ts", "Logs.vue")
     FORBIDDEN_TOKENS = ("DEFAULT_LOG_LEVEL",)
-    #: 内联默认档位的写法（形参默认值 / 初始赋值）
+    #: "档位取值声明"的合法标识符。它们声明**取值**（warn / all 两个档名），
+    #: 不是声明哪一档是**默认值**，必须放行（否则守卫会咬住合法取值声明）。
+    ALLOWED_LEVEL_VALUE_NAMES = ("WARN_LOG_LEVEL", "ALL_LOG_LEVEL")
+    #: 内联默认档位的写法。V2 加固：从窄"形参默认值"扩到更宽的常见形状——
+    #: ① 标识符赋值 / 对象字面量：`const level = "warn"` / `{ level: "warn" }`
+    #: ② 响应式挂起值：`ref("warn")`
+    #: ③ 查询串直接内联：`params.set("level", "warn")`
+    #: 复审实测：旧正则（仅 `level:…= "warn"`）对上述形状全部不命中（弱牙）。
     FORBIDDEN_DEFAULT_RES = (
-        re.compile(r"level\s*[:=][^=\n]*=\s*[\"'](?:warn|all)[\"']"),
+        re.compile(r"([A-Za-z_$][\w$]*)\s*[:=]\s*[\"'](?:warn|all)[\"']"),
+        re.compile(r"\bref\(\s*[\"'](?:warn|all)[\"']\s*\)"),
+        re.compile(r"\.set\(\s*[\"']level[\"']\s*,\s*[\"'](?:warn|all)[\"']"),
     )
 
     def test_backend_is_the_single_source_of_the_default_level(self):
@@ -247,23 +256,61 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
         self.assertEqual(logs_svc.LOG_LEVEL_DEFAULT, "warn")
         self.assertIn(logs_svc.LOG_LEVEL_DEFAULT, logs_svc.LOG_LEVELS)
 
+    def _inline_default_offenders(self, name, src):
+        """→ 该源文件里"内联默认档位"的命中清单（空 = 干净）。"""
+        out = []
+        for tok in self.FORBIDDEN_TOKENS:
+            if tok in src:
+                out.append(f"{name}: {tok}")
+        for rx in self.FORBIDDEN_DEFAULT_RES:
+            for m in rx.finditer(src):
+                # 放行合法的"取值声明"：那是档名，不是默认档。
+                if m.groups() and m.group(1) in self.ALLOWED_LEVEL_VALUE_NAMES:
+                    continue
+                out.append(f"{name}: {m.group(0)}")
+        return out
+
     def test_frontend_does_not_inline_the_default_level(self):
         base = os.path.join(BASE, "frontend", "src", "logs")
         offenders = []
         for name in self.FRONTEND_LOGS:
             with open(os.path.join(base, name), encoding="utf-8") as fh:
-                src = fh.read()
-            for tok in self.FORBIDDEN_TOKENS:
-                if tok in src:
-                    offenders.append(f"{name}: {tok}")
-            for rx in self.FORBIDDEN_DEFAULT_RES:
-                m = rx.search(src)
-                if m:
-                    offenders.append(f"{name}: {m.group(0)}")
+                offenders += self._inline_default_offenders(name, fh.read())
         self.assertEqual(
             offenders, [],
             "前端不得内联默认档位（档位默认值只有后端一份）：" + repr(offenders),
         )
+
+    def test_inline_default_shapes_are_actually_caught(self):
+        """守卫自身的牙齿：复审点名的四种内联形状必须被命中。
+
+        没有这条，下一个把正则改窄的人会让守卫静默失效（弱牙复发）。同时钉住
+        "合法取值声明放行"：咬住 `WARN_LOG_LEVEL = "warn"` 会把守卫变成噪声。
+        """
+        must_hit = (
+            'const level = "warn";',                # 初始赋值
+            'const levelOverride = ref("warn");',   # 响应式挂起值
+            'if (!lv) lv = "warn";',                # 回退赋值
+            'params.set("level", "warn");',         # 查询串内联
+            'const opt = { level: "all" };',        # 对象字面量
+        )
+        for snippet in must_hit:
+            self.assertTrue(
+                self._inline_default_offenders("sample.ts", snippet),
+                f"守卫必须命中内联默认档位形状：{snippet!r}",
+            )
+        must_pass = (
+            'export const WARN_LOG_LEVEL = "warn";',   # 取值声明
+            'export const ALL_LOG_LEVEL = "all";',     # 取值声明
+            "const warnOnly = ref(true);",             # 布尔挂起值
+            'const levelOverride = ref("");',          # 空串挂起值
+            'if (lv) params.set("level", lv);',        # 变量下发
+        )
+        for snippet in must_pass:
+            self.assertEqual(
+                self._inline_default_offenders("sample.ts", snippet), [],
+                f"合法取值声明必须放行：{snippet!r}",
+            )
 
 
 if __name__ == "__main__":

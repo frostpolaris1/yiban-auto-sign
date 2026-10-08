@@ -117,6 +117,25 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
 
   const { today, older } = dates();
   await page.goto("/data/logs");
+
+  // ⓪ V3 渲染层守卫：单日轮数超读取层上限 → 页面写明「已截断」；未超限的日子不显示。
+  //    为什么并进本用例：登录限速（60 秒 10 次/IP）是全套稀缺资源，单开一条再调一次
+  //    /api/login 会把 myaccounts 的管理员登录顶到 429（2026-10-08 实测）。此处复用本用例会话。
+  //    拥挤日种子见 e2e/server.py::_seed_run_events_crowded（205 个执行体分组 > 上限 200），
+  //    偏移 5 与 server.py 的 CROWDED_DAY_OFFSET 同值：落在 14 天保留窗口内，不撞今天/三天前。
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const d5 = new Date(Date.now() - 5 * 86400000);
+  const crowded = `${d5.getFullYear()}-${pad(d5.getMonth() + 1)}-${pad(d5.getDate())}`;
+  await page.fill('input[type="date"]', crowded);
+  await page.getByRole("button", { name: "查看该日日志" }).click();
+  const trunc = page.locator("#run-summary-truncated");
+  await expect(trunc).toBeVisible();
+  await expect(trunc).toContainText("已截断");
+  await expect(trunc).toContainText("200"); // 上限数字必须来自服务端 rounds_limit
+  await page.getByRole("button", { name: "回到今天" }).click();
+  await expect(page.locator("#run-summary .el-table__row")).toHaveCount(2); // 今天两轮，未超限
+  await expect(page.locator("#run-summary-truncated")).toHaveCount(0);
+
   // 级别档默认收起 INFO：本用例的下文都在核日志正文，先切到全量档（级别档本身
   // 由第一条用例与 tests/test_logs_level_filter.py 钉住）。等到 INFO 行真的出现再往下走：
   // 切档会触发一次重载，而 load() 在途时会丢弃后来的导航请求（既有形状），

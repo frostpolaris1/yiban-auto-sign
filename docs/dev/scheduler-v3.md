@@ -307,7 +307,9 @@ bash scripts/backup.sh
   `/api/admin/run-events`。
 - 轮询已按可见性驱动：`shouldPoll` 要求页面可见（`visibilityState === "visible"`），
   切到后台即停。它另要求"跟随最新"视图与无在途请求。
-- 日筛选下推后，`run-events` 每次只聚合一天（`WHERE day = ?`），不再扫 14 天全表。
+- 日筛选下推后，`run-events` 每次只聚合一天（`WHERE day = ? AND day >= 窗口下界`），
+  不再扫 14 天全表。窗口下界 = `今天-(RETENTION_DAYS-1)`；它挡掉保留期外的日期
+  （清理删界是 `今天-RETENTION_DAYS`，故起点外那一天在清理跑过前仍有行）。窗口外回空表。
 - 结论：节拍维持 10 秒。降频会拖慢"看最新一轮"的可见性，收益低。
 
 **SSE 的两类新噪音要防**

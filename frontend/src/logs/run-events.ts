@@ -55,7 +55,7 @@ export interface RunEventsPayload {
   retention_days: number;
   window: RunEventsWindow;
   rounds: RunRound[];
-  /** 轮级摘要行被 `_MAX_ROUNDS` 截断（本日轮数超过上限）；页面必须写明 */
+  /** 轮级摘要行被 `MAX_ROUNDS` 截断（本日轮数超过上限）；页面必须写明 */
   rounds_truncated: boolean;
   /** 读取层的轮级上限（用于写明"本日最多 N 轮"） */
   rounds_limit: number;
@@ -118,6 +118,24 @@ export function buildRunEventsQuery(day: string, executor: string): string {
   if (executor) params.set("executor", executor);
   const qs = params.toString();
   return `/api/admin/run-events${qs ? `?${qs}` : ""}`;
+}
+
+/**
+ * 本次响应是否需要"去掉 executor 重取一次"（R2：选中态与时间线必须同源）。
+ *
+ * 带 `executor` 的请求里，服务端总会回该执行体的时间线；但 `rounds` 可能不含该执行体
+ * 的分组（该执行体当日无行，或该日分组数超过读取层上限而被截断）。届时前端把
+ * `selectedKey` 设成该执行体，`findRound` 却在其外——标题取该日最新轮、时间线却是该
+ * 执行体的，两块不同源。本函数判定这种情形，调用方据此不带 executor 重取一次。
+ * `executor` 为空时不重取：缺省口径本来就是"服务端取最新一轮"，天然同源。
+ */
+export function needsExecutorFallback(
+  rounds: RunRound[],
+  day: string,
+  executor: string,
+): boolean {
+  if (!executor) return false;
+  return findRound(rounds, roundKey({ day, executor })) === null;
 }
 
 /** 耗时文案：null → "--"；小于 60 秒给"N 秒"，否则给"N 分 M 秒"。 */

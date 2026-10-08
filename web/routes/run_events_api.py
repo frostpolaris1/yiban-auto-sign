@@ -117,7 +117,7 @@ def api_run_events():
         },
         "rounds": rounds,
         "rounds_truncated": rounds_truncated,
-        "rounds_limit": _run_events._MAX_ROUNDS,
+        "rounds_limit": _run_events.MAX_ROUNDS,
         "events": events,
         "events_truncated": truncated,
         "events_limit": limit,
