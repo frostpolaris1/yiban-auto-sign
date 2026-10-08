@@ -325,6 +325,44 @@ class InjectedFailureE2ETest(_E2EBase):
         self.assertIn("mock injected signIn failure", message)
 
 
+class StrictFormE2ETest(_E2EBase):
+    """严格表单解析（strict_form）：签到提交必须**声明表单 Content-Type**。
+
+    假服务端开 `strict_form` 后按 servlet 容器语义处理表单：POST 表单端点只解析声明了
+    `Content-Type: application/x-www-form-urlencoded` 的请求体；signIn 缺该头时回真实
+    上游的 `code=1, msg="定位获取失败"`。本类因此复现 2026-10-08 实机 4 轮全拒的形状。
+
+    存在理由（钉测缺口）：原来的假服务端一律按 `Content-Length` 读体、**从不看**
+    Content-Type，日志演练也对这条头零断言，故"签到体少一个 Content-Type"在 4349 条
+    全量里绿着上了实机。默认登录流程的会话头（KILLYIBAN_HEADERS）本就不含
+    Content-Type，而旧实现把体作为 dict 交给 requests（自动补头）；换成预编码字符串后
+    补头不再发生，缺头只在**默认流程**暴露——旧 iOS 流程的会话头自带该头，故仍绿。
+    """
+
+    def setUp(self):
+        self.mock = _FakeYiban(strict_form=True)
+        self.addCleanup(self.mock.close)
+
+    def test_default_flow_signin_declares_form_content_type(self):
+        client = self._client()
+        client.login_killyiban()
+        self.assertTrue(client.logged_in, "登录链应跑完（usersure 本就自带 Content-Type）")
+        success, message, skip, status = client.signin()
+        self.assertTrue(success, f"签到应成功: {message}")
+        self.assertFalse(skip)
+        self.assertEqual(status, signin.STATUS_SUCCESS)
+
+    def test_legacy_flow_signin_still_declares_form_content_type(self):
+        """旧流程的会话头自带带 charset 的 Content-Type，签到不得把它丢掉。"""
+        client = self._client(legacy=True)
+        client.login()
+        self.assertTrue(client.logged_in)
+        success, message, skip, status = client.signin()
+        self.assertTrue(success, f"旧流程签到应成功: {message}")
+        self.assertFalse(skip)
+        self.assertEqual(status, signin.STATUS_SUCCESS)
+
+
 class MockLogAbsentIsEmptyTest(unittest.TestCase):
     """竞态守卫（工单 kgwn）：假服务端**在响应之后**才落盘，读者会撞上"文件尚未创建"。
 
