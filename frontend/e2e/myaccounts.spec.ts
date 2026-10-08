@@ -85,7 +85,12 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   await card.getByRole("button", { name: "编辑" }).click();
   const dialog = page.locator(".el-dialog");
   await expect(dialog).toBeVisible();
-  const nameInput = dialog.locator('input[placeholder="如：我的易班账号"]');
+  // 口令字段必须自带「易班」限定词与一行区分说明：易班口令与本站登录口令是两套凭据，
+  // 缺限定词时用户/管理员会把易班口令当本站密码改（生产已发生，用户至今登不上本站）。
+  await expect(dialog.locator(".field-label", { hasText: "易班密码" }).first()).toBeVisible();
+  await expect(dialog.locator(".field-help", { hasText: "不是本站登录密码" }).first()).toBeVisible();
+  // 占位符必须是真实形状的示例（说明式占位实测被用户照抄进名称字段）
+  const nameInput = dialog.locator('input[placeholder="如：电力123张三"]');
   await nameInput.fill("e2e-改名后");
   await dialog.locator(".el-dialog__footer .btn--primary").click();
   await expect(dialog).toBeHidden();
