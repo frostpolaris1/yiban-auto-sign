@@ -128,13 +128,24 @@ class AuditHashGoldenTest(_KeyInjectedTest):
 
 
 class AnchorLineGoldenTest(unittest.TestCase):
-    """v2 锚点行的金样例：原文、原文哈希、字段解析。"""
+    """锚点行的金样例：v2 行的原文/原文哈希/字段解析，三个版本的 token 常数与门面再导出。"""
 
     def test_token_count_is_eight(self):
         """7 字段实为 8 token——ts 自带一个空格。"""
         self.assertEqual(audit_chain._ANCHOR_V2_TOKENS, 8)
         self.assertEqual(db._ANCHOR_V2_TOKENS, 8)
         self.assertEqual(len(GOLDEN_ANCHOR_LINE.split()), 8)
+
+    def test_facade_exports_old_format_token_counts(self):
+        """门面必须再导出老格式的 token 常数；删掉再导出这一行，本用例必红。
+
+        V2 的再导出已由上面那条断言钉住。v0/v1 此前没有任何守卫：实测删掉
+        `yiban/store/db.py` 的 `_ANCHOR_V0_TOKENS` 再导出后，全量 4353 条仍全绿——
+        那行 diff 没人看着。本用例补上这一对，它就是那两行的校验者。
+        """
+        self.assertEqual(
+            (audit_chain._ANCHOR_V0_TOKENS, audit_chain._ANCHOR_V1_TOKENS), (3, 5))
+        self.assertEqual((db._ANCHOR_V0_TOKENS, db._ANCHOR_V1_TOKENS), (3, 5))
 
     def test_parse_matches_literal_fields(self):
         """字段一律从行尾取。改动偏移量会让本断言变红。"""
