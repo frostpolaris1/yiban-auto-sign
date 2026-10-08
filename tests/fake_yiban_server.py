@@ -138,13 +138,24 @@ class MockConfig:
     """
 
     def __init__(self, delay_ms=0, tail_delay_ms=0, tail_every=0,
-                 fail_rate=0.0, fail_stage="none", config_path=None):
+                 fail_rate=0.0, fail_stage="none", config_path=None,
+                 strict_form=False):
         self.delay_ms = float(delay_ms or 0)
         self.tail_delay_ms = float(tail_delay_ms or 0)
         self.tail_every = int(tail_every or 0)
         self.fail_rate = float(fail_rate or 0.0)
         self.fail_stage = _STAGE_CANON.get(str(fail_stage or "none").strip().lower(), "none")
         self.config_path = config_path
+        #: 严格表单解析：默认关。开启后 POST 表单端点只解析声明了
+        #: `Content-Type: application/x-www-form-urlencoded` 的请求体——对齐真实
+        #: servlet 容器（Tomcat 只对 urlencoded 请求 parseParameters；缺头时
+        #: `getParameter` 全返 null）。`signIn` 在**缺头**时按真实上游回
+        #: `code=1, msg="定位获取失败"`：服务端读不到 `SignInfo` 就没有定位。
+        #: 默认关的取舍：实测把默认改开**不误伤任何用例**（各流程本就自带该头）；
+        #: 关的作用是让"mock 按表单契约判"成为显式选择——它不是某个用例的局部
+        #: 夹具，而是假服务端对所有消费者的口径变更，故由显式开关承载，翻默认
+        #: 留待独立批次处理。
+        self.strict_form = bool(strict_form)
 
     def snapshot(self) -> dict:
         """返回本次请求生效的配置（配置文件的字段优先）。"""
@@ -154,6 +165,7 @@ class MockConfig:
             "tail_every": self.tail_every,
             "fail_rate": self.fail_rate,
             "fail_stage": self.fail_stage,
+            "strict_form": self.strict_form,
         }
         path = self.config_path
         if path:
@@ -475,6 +487,12 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                         body = self.rfile.read(n)
                 except (ValueError, OSError):
                     pass
+                # 严格表单解析（strict_form）：只有声明了 urlencoded 的请求体才算
+                # "服务端能读到的表单"。对齐 servlet 容器语义，见 MockConfig.strict_form。
+                form_readable = True
+                if cfg.get("strict_form"):
+                    ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    form_readable = ctype == "application/x-www-form-urlencoded"
 
                 if p == "/code/usersure":
                     # 登录链第 2 步：成功标志默认是 code == "s200"（KillYiBan 流程）；
@@ -484,7 +502,7 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                         self._send_json({"code": "e001", "msgCN": "mock injected login failure"})
                     elif self._maybe_inject(cfg, "nonjson"):
                         injected = True
-                    elif b"scope=1%2C2%2C3%2C4%2C" in body:
+                    elif form_readable and b"scope=1%2C2%2C3%2C4%2C" in body:
                         self._send_json({"reUrl": "https://f.yiban.cn/iapp7463"})
                     else:
                         self._send_json({"code": "s200", "msgCN": ""})
@@ -494,6 +512,10 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                         self._send_json({"code": 1, "msg": "mock injected signIn failure"})
                     elif self._maybe_inject(cfg, "nonjson"):
                         injected = True
+                    elif not form_readable:
+                        # 缺 urlencoded 声明：服务端读不到 SignInfo（无定位）——
+                        # 真实上游的响应形态就是 code=1 + msg="定位获取失败"
+                        self._send_json({"code": 1, "msg": "定位获取失败"})
                     else:
                         self._send_json({"code": 0, "data": {"Id": "1", "Msg": "ok"}})
                 else:
@@ -652,6 +674,11 @@ def main(argv=None):
                          "作用域为全局按端点路由；亦可经 --config 热读场景声明运行中切换")
     ap.add_argument("--config", default="",
                     help="热读配置 JSON 路径（字段同上方参数，可运行中切换档位）")
+    ap.add_argument("--strict-form", action="store_true",
+                    help="严格表单解析（默认关）：POST 表单端点只解析声明了 "
+                         "Content-Type: application/x-www-form-urlencoded 的请求体，"
+                         "模拟 servlet 容器的 getParameter 语义——signIn 缺该头时回 "
+                         'code=1, msg="定位获取失败"（真实上游形态）。')
     ap.add_argument("--log", default="", help="逐请求 JSONL 落盘路径（缺省不落盘）")
     ap.add_argument("--ready-file", default="",
                     help="启动完成后写入一行 ready（供驱动等待就绪）")
@@ -674,6 +701,7 @@ def main(argv=None):
         delay_ms=args.delay_ms, tail_delay_ms=args.tail_delay_ms,
         tail_every=args.tail_every, fail_rate=args.fail_rate,
         fail_stage=args.fail_stage, config_path=args.config or None,
+        strict_form=args.strict_form,
     )
     state = MockState(log_path=args.log or None)
 
