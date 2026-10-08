@@ -4,7 +4,7 @@ import { api, toast } from "../lib/shell";
 import { isValidDate } from "./date-guard.js";
 import {
   ALL_LOG_LEVEL,
-  DEFAULT_LOG_LEVEL,
+  WARN_LOG_LEVEL,
   EVENT_PAGE_SIZES,
   TAB_KEYS,
   buildExportUrl,
@@ -26,7 +26,9 @@ import {
   eventTime,
   findRound,
   formatDuration,
+  nextSelectedKey,
   roundKey,
+  roundsTruncatedText,
   windowText,
   type RunEvent,
   type RunEventsPayload,
@@ -41,8 +43,9 @@ import {
      执行体只回角色与槽位），前端只有插值渲染、**零自遮**；全程零 v-html。
    · 三元组 total_lines/returned/truncated 由服务端同轴推出，前端只按 truncated 显示
      「已截断」，不得用行数自行推断（见 format.ts）。
-   · 级别档默认 warn（收起 INFO/DEBUG）：巡检第一眼看的是 WARN／ERROR。收起过行时
-     信息栏与空态都显式写出「已收起 N 行」——不许让人把收起读成没有那些行。
+   · 级别档：默认档位只有服务端一份（前端不内联默认值）。首屏不带 level，
+     档位显示以服务端回执为准；用户切换后才显式下发。收起过行时信息栏与空态都
+     显式写出「已收起 N 行 INFO／DEBUG」——不许让人把收起读成没有那些行。
    · 运行进度只保留 14 天（服务端 `run_events.RETENTION_DAYS`）。页面显式写明窗口；
      窗口外给「跨月回溯请走审计日志页」的指引，不静默出空表。
    · 翻页/排序是**客户端**行为（接口按日一次性返回当日结果集，封顶 5000 行）。
@@ -76,8 +79,8 @@ const loadedDate = ref("");
 const searchInput = ref("");
 const keyword = ref("");
 const showAll = ref(false);
-/** 级别档开关：true = 收起 INFO（默认，巡检口径）；false = 全量档 */
-const warnOnly = ref(true);
+/** 级别档用户选择："" = 跟随服务端默认（首屏不下发 level）；切换后为显式档位 */
+const levelOverride = ref("");
 const autoRefresh = ref(true);
 const logBox = ref<PreElement | null>(null);
 const signTable = ref<TableState>({ page: 1, size: 20, prop: "time", order: "descending" });
@@ -90,6 +93,8 @@ const selectedKey = ref("");
 
 let busy = false;
 let runBusy = false;
+/** 在途巡检请求期间到达的请求（合并：后到覆盖先到），不许静默丢弃 */
+let runPending: { day: string; executor: string; keepSelection: boolean } | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
 let firstLoad = true;
 
@@ -101,7 +106,9 @@ const canExport = computed(() => !!loadedDate.value);
 const exportHref = computed(() => (loadedDate.value ? buildExportUrl(loadedDate.value) : ""));
 const exportName = computed(() => payload.value?.log_file ?? "sign.log");
 const collapsed = computed(() => payload.value?.collapsed_lines ?? 0);
-const level = computed(() => (warnOnly.value ? DEFAULT_LOG_LEVEL : ALL_LOG_LEVEL));
+/** 收起档开关的显示值：**由服务端回执校准**（`payload.level`），前端不内联档位取值。
+ *  首屏响应到达前的挂起值只作视觉占位，不参与任何请求参数（首屏不下发 level）。 */
+const warnOnly = ref(true);
 
 const runRounds = computed<RunRound[]>(() => runPayload.value?.rounds ?? []);
 const runEvents = computed<RunEvent[]>(() => runPayload.value?.events ?? []);
@@ -110,6 +117,7 @@ const runWindowLine = computed(() =>
   runPayload.value ? windowText(runPayload.value.window, runPayload.value.retention_days) : "",
 );
 const runEmptyText = computed(() => (runPayload.value ? emptyRoundsText(runPayload.value.window) : ""));
+const runTruncatedLine = computed(() => (runPayload.value ? roundsTruncatedText(runPayload.value) : ""));
 const timelineTitle = computed(() =>
   selectedRound.value ? `事件时间线 · ${selectedRound.value.day} · ${selectedRound.value.executor_label}` : "事件时间线",
 );
@@ -169,14 +177,17 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
   loading.value = true;
   errorText.value = "";
   const wasNearBottom = nearBottom();
+  const previousDate = loadedDate.value;
   // 导航请求用用户 pin 的日期（可能为空 = 跟随最新）；轮询刷新沿用**已加载的那一天**，
   // 否则跟随态下服务端会重新解析日期、把用户正在看的内容换掉。
   const date = mode === "poll" ? loadedDate.value : viewDate.value;
   try {
-    const resp = await api<LogsPayload>("GET", buildLogsQuery(date, keyword.value, showAll.value, level.value));
+    const resp = await api<LogsPayload>("GET", buildLogsQuery(date, keyword.value, showAll.value, levelOverride.value));
     payload.value = resp;
     loadedDate.value = resp.date;
     dateInput.value = resp.date;
+    // 档位显示校准：以服务端回执为准（不把默认档位抄进前端）
+    warnOnly.value = resp.level !== ALL_LOG_LEVEL;
     for (const t of [signTable.value, probeTable.value]) t.page = 1;
     await nextTick();
     const box = logBox.value;
@@ -189,28 +200,52 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
     loading.value = false;
   }
   // 运行巡检块跟随日志分区的**实际日期**：两块内容始终同一天。失败只影响本块。
-  await loadRuns(loadedDate.value);
+  // 轮询与同日重载**沿用在途选择**（10 秒一次不得把用户点开的旧轮改回最新）；
+  // 日期变了才回落该日最新一轮。
+  const keepSelection = mode === "poll" || loadedDate.value === previousDate;
+  await loadRuns(loadedDate.value, "", keepSelection);
 }
 
 /**
  * 拉运行巡检（轮级摘要 + 选中轮的时间线）。
  *
  * `executor` 为空时由服务端取该日最新一轮，并同时回该轮时间线。
+ * `keepSelection` 为真时沿用在途选择（轮询/同刷新路径），否则回落该日最新一轮。
  * 该端点与 `/api/logs` 是两个独立请求：巡检块失败只在块内报错，日志分区照常可用。
+ *
+ * 在途请求期间到达的请求**排队合并**（后到覆盖先到），不再静默丢弃：
+ * 丢弃会让一次点击的导航请求消失，页面停在旧轮。合并后每一次最终状态都执行一遍。
  */
-async function loadRuns(day: string, executor = ""): Promise<void> {
-  if (runBusy) return;
+async function loadRuns(day: string, executor = "", keepSelection = false): Promise<void> {
+  // 保留在途选择时，把选中轮的执行体一起带上。为什么必须带：不带 executor 时服务端回
+  // 该日**最新**一轮的时间线，页面选中态与时间线于是不一致——这是"轮询把旧轮改回最新"
+  // 的另一半根因（只保留 selectedKey 不够，取回的数据也必须是那一轮的）。
+  if (keepSelection && !executor && selectedKey.value.startsWith(`${day}|`)) {
+    executor = selectedKey.value.slice(day.length + 1);
+  }
+  if (runBusy) {
+    runPending = { day, executor, keepSelection };
+    return;
+  }
   runBusy = true;
   runLoading.value = true;
   runError.value = "";
+  let req = { day, executor, keepSelection };
   try {
-    const resp = await api<RunEventsPayload>("GET", buildRunEventsQuery(day, executor));
-    runPayload.value = resp;
-    if (executor) selectedKey.value = `${resp.window.day}|${executor}`;
-    else if (resp.rounds.length) selectedKey.value = roundKey(resp.rounds[0]);
-    else selectedKey.value = "";
+    for (;;) {
+      const resp = await api<RunEventsPayload>("GET", buildRunEventsQuery(req.day, req.executor));
+      runPayload.value = resp;
+      selectedKey.value = nextSelectedKey(
+        resp.rounds, resp.window.day, req.executor, selectedKey.value, req.keepSelection,
+      );
+      const next = runPending;
+      runPending = null;
+      if (!next) break;
+      req = next;
+    }
   } catch (e) {
     runError.value = (e as Error)?.message || "运行进度加载失败";
+    runPending = null;
   } finally {
     runBusy = false;
     runLoading.value = false;
@@ -224,7 +259,7 @@ function selectRound(row: RunRound): void {
 }
 
 function refreshRuns(): void {
-  void loadRuns(runPayload.value?.window.day || loadedDate.value);
+  void loadRuns(runPayload.value?.window.day || loadedDate.value, "", true);
 }
 
 function search(): void {
@@ -303,14 +338,15 @@ function toggleAll(): void {
   void load();
 }
 
-/** 级别档开关：切档后重载（服务端按档过滤，前端不自筛）。 */
+/** 级别档开关：切档后重载（服务端按档过滤，前端不自筛）。切换时才显式下发档位。 */
 function onLevelChange(): void {
+  levelOverride.value = warnOnly.value ? WARN_LOG_LEVEL : ALL_LOG_LEVEL;
   void load();
 }
 
-/** 空态的「显示全部级别」：把收起 INFO 的档切回全量。 */
+/** 空态的「显示全部级别」：把收起档切到全量档。 */
 function showAllLevels(): void {
-  warnOnly.value = false;
+  levelOverride.value = ALL_LOG_LEVEL;
   void load();
 }
 
@@ -408,6 +444,9 @@ onBeforeUnmount(() => {
                 </el-table-column>
               </el-table>
             </div>
+            <p v-if="runTruncatedLine" id="run-summary-truncated" class="run-note">
+              {{ runTruncatedLine }}
+            </p>
             <h3 class="run-sub">{{ timelineTitle }}</h3>
             <div id="run-timeline">
               <el-table :data="runEvents" size="small">
@@ -501,7 +540,7 @@ onBeforeUnmount(() => {
           <div v-if="!logText && !loading && !errorText" id="logs-empty" class="logs-empty">
             <p v-if="keyword">（无匹配日志行）</p>
             <p v-else-if="collapsed > 0">
-              （当前档只显示 WARN／ERROR，已收起 {{ collapsed }} 行 INFO）
+              （当前档只显示 WARN／ERROR，已收起 {{ collapsed }} 行 INFO／DEBUG）
               <button type="button" class="btn btn--ghost btn--sm" @click="showAllLevels">显示全部级别</button>
             </p>
             <p v-else>

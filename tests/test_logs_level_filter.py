@@ -28,6 +28,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -223,6 +224,46 @@ class LevelCaliberTest(unittest.TestCase):
         kept_all, collapsed_all = logs_svc._filter_log_level(lines, "all")
         self.assertEqual(len(kept_all), 3)
         self.assertEqual(collapsed_all, 0)
+
+
+class FrontendDefaultLevelGuardTest(unittest.TestCase):
+    """跨语言对拍：级别档默认值只有后端一份，前端不得内联默认档位。
+
+    后端单一出处：`web/services/logs.py::LOG_LEVEL_DEFAULT`。前端只认两档**取值**
+    （warn / all），不认哪一档是默认——首屏不带 `level`，档位以服务端回执为准
+    （响应已回 `level` 与 `collapsed_lines`）；用户切换后才显式下发。
+    本用例是跨语言守卫：把前端默认值加回去即红。
+    """
+
+    FRONTEND_LOGS = ("format.ts", "run-events.ts", "Logs.vue")
+    FORBIDDEN_TOKENS = ("DEFAULT_LOG_LEVEL",)
+    #: 内联默认档位的写法（形参默认值 / 初始赋值）
+    FORBIDDEN_DEFAULT_RES = (
+        re.compile(r"level\s*[:=][^=\n]*=\s*[\"'](?:warn|all)[\"']"),
+    )
+
+    def test_backend_is_the_single_source_of_the_default_level(self):
+        from web.services import logs as logs_svc
+        self.assertEqual(logs_svc.LOG_LEVEL_DEFAULT, "warn")
+        self.assertIn(logs_svc.LOG_LEVEL_DEFAULT, logs_svc.LOG_LEVELS)
+
+    def test_frontend_does_not_inline_the_default_level(self):
+        base = os.path.join(BASE, "frontend", "src", "logs")
+        offenders = []
+        for name in self.FRONTEND_LOGS:
+            with open(os.path.join(base, name), encoding="utf-8") as fh:
+                src = fh.read()
+            for tok in self.FORBIDDEN_TOKENS:
+                if tok in src:
+                    offenders.append(f"{name}: {tok}")
+            for rx in self.FORBIDDEN_DEFAULT_RES:
+                m = rx.search(src)
+                if m:
+                    offenders.append(f"{name}: {m.group(0)}")
+        self.assertEqual(
+            offenders, [],
+            "前端不得内联默认档位（档位默认值只有后端一份）：" + repr(offenders),
+        )
 
 
 if __name__ == "__main__":

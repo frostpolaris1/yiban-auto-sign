@@ -27,6 +27,8 @@ function shiftLabel(label: string, delta: number): string {
 }
 
 test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、三分区、无数据日期的空态", async ({ page }) => {
+  // 本用例含一段 11.5 秒的轮询观测（轮询沿用在途选择），默认 30 秒超时不够。
+  test.setTimeout(90_000);
   // 整个套件只在这里走一次真实登录表单（同 IP 10 秒内第 4 次访问 /login 会被
   // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）
   await page.goto("/login");
@@ -38,10 +40,12 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await page.goto("/data/logs");
 
   // 0) 巡检首块（本批新增）：可见窗口必须显式写明；轮级摘要一行一轮；时间线按轮展开。
-  //    种子（见 e2e/server.py::_seed_run_events）：一轮 3 个账号（1 成一败 1 未开始）。
+  //    种子（见 e2e/server.py::_seed_run_events）：**同一业务日两轮**——最新一轮 3 个账号
+  //    （1 成一败 1 未开始，耗时 21 秒），较早一轮是并行执行体。两轮是刻意的：下面
+  //    「点开较早一轮 + 轮询沿用选择」的行为只有在存在另一轮时才可观测。
   await expect(page.locator("#run-window")).toContainText("保留最近 14 天");
   const runRows = page.locator("#run-summary .el-table__row");
-  await expect(runRows).toHaveCount(1);
+  await expect(runRows).toHaveCount(2);
   await expect(runRows.first()).toContainText("单执行体");
   await expect(runRows.first()).toContainText("21 秒"); // 06:40:00 → 06:40:21
   const tl = page.locator("#run-timeline");
@@ -50,6 +54,21 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await expect(tl).toContainText("收尾");
   // 执行体只回角色与槽位：身份原串（带主机名）绝不进 DOM
   await expect(tl).not.toContainText("e2e-host");
+
+  // 0b) 轮询沿用在途选择（F5）：点开**较早的一轮**后，10 秒自动刷新（默认开）不得把
+  //     选中改回最新一轮。改回即「查昨天那轮」的主用途失效——用户点开的旧轮在 ≤10 秒内
+  //     被静默换掉。这条钉的是**接线**（纯函数单测钉不住 loadRuns 传没传 keepSelection）。
+  const olderRunRow = runRows.filter({ hasText: "并行执行体" });
+  await expect(olderRunRow).toHaveCount(1);
+  await olderRunRow.click();
+  await expect(olderRunRow.locator(".run-current")).toHaveText("当前");
+  await expect(tl).toContainText("06:30:09"); // 已切到较早一轮的时间线
+  await page.waitForTimeout(11_500); // 跨过至少一个 10 秒轮询节拍
+  await expect(tl).toContainText("06:30:09", { timeout: 5_000 });
+  await expect(
+    olderRunRow.locator(".run-current"),
+    "轮询把在途选择改回最新一轮（轮询必须沿用在途选择）",
+  ).toHaveText("当前");
 
   // 1) 日志正文：级别档**默认收起 INFO**（巡检只看 WARN／ERROR），且信息栏如实报出收起数
   const box = page.locator(".log-box");

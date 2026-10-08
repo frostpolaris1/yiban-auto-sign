@@ -11,11 +11,15 @@
 
 **读取面（巡检）**
 本模块是写入面与读取面的唯一收口点。写入面净化并截断 `message`。读取面遮罩
-`phone` 并把 `executor` 收敛成公开标签。
+`phone`、把 `executor` 收敛成公开标签、并**再复遮一次 `message`**。
 - `phone`：复用 `yiban.masking.mask_phone` 的单源口径。响应不出现原始号码。
 - `executor`：复用 `yiban.egress.owner_tag`，只回角色与槽位序号。身份原串带
   主机名；主机名属部署信息，任何接口都不得回原串。
+- `message`：复用 `yiban.masking.sanitize_text`（**幂等**）再复遮一次。写入面
+  已净化，读取面复遮是**纵深防御**：历史行与直插行未过写入面净化时仍不漏。
 - 轮级摘要的分组键是 (业务日, 执行体)。本表没有轮次列，这是唯一可复算的口径。
+  日筛选**下推到 SQL**（`summarize(day=…)`），故 `_MAX_ROUNDS` 截断只作用于已
+  筛出的集合；被截断时调用方必须回显 `rounds_truncated`。
 - `unexecuted` 的含义是"领取后未发起请求的账号数"。判据是有 claim 无 start。
   本表不记未被领取的账号，故这里看不到"无人领取"的那些账号。
 - 读取面只读。它不写表，也不写审计链。
@@ -297,26 +301,21 @@ def _rows_since(cutoff):
         return [dict(r) for r in cur.fetchall()]
 
 
-def summarize(days=RETENTION_DAYS):
-    """轮级摘要：按 (业务日, 执行体) 聚合最近 `days` 个业务日的事件。只读。
+def _rows_on(day):
+    """→ 该业务日的全部事件行（按 id 升序）。只读。日筛选在 SQL 侧完成。"""
+    db = _facade()
+    with db._conn_lock:
+        cur = db.get_conn().execute(
+            "SELECT id, ts, day, node, executor, phone, message FROM run_events "
+            "WHERE day = ? ORDER BY id ASC", (str(day),))
+        return [dict(r) for r in cur.fetchall()]
 
-    **一轮 = 一个 (业务日, 执行体) 分组**。表里没有轮次列，本口径是唯一可复算的定义。
 
-    每行字段与口径：
-    - `claim` / `start` / `success` / `fail` / `pause`：该节点的行数；
-    - `unexecuted`：**领取后未发起请求**的账号数（有 claim 无 start，按账号去重）。
-      本表只记已被领取的账号，故这里看不到"无人领取"的账号；
-    - `duration_sec`：该轮最晚与最早时刻之差（秒）；时刻解析不出时回 None；
-    - `first_ts` / `last_ts`：该轮最早与最晚时刻；
-    - `executor` / `executor_label`：公开标签（角色 + 槽位序号），**不含主机名**。
-
-    返回按"业务日降序、该轮最晚时刻降序"排列，最多 `_MAX_ROUNDS` 行。
-    """
-    days = max(1, int(days or RETENTION_DAYS))
-    cutoff = (clock.now() - datetime.timedelta(days=days - 1)).strftime("%Y-%m-%d")
+def _group_rounds(rows):
+    """事件行 → 轮级摘要行列表（按"业务日降序、该轮最晚时刻降序"排列）。只读。"""
     groups = {}
     order = []
-    for row in _rows_since(cutoff):
+    for row in rows:
         key = (row["day"], _public_executor(row["executor"]))
         g = groups.get(key)
         if g is None:
@@ -356,7 +355,36 @@ def summarize(days=RETENTION_DAYS):
         out.append(g)
 
     out.sort(key=lambda r: (r["day"], r["last_ts"]), reverse=True)
-    return out[:_MAX_ROUNDS]
+    return out
+
+
+def summarize(day=None, days=RETENTION_DAYS):
+    """轮级摘要：按 (业务日, 执行体) 聚合。→ (rounds, truncated)。只读。
+
+    **一轮 = 一个 (业务日, 执行体) 分组**。表里没有轮次列，本口径是唯一可复算的定义。
+
+    `day` 给定则只聚合该业务日：日筛选**下推到 SQL**（`WHERE day = ?`），
+    故 `_MAX_ROUNDS` 截断只作用于已筛出的集合。为什么必须下推：先在全部窗口内
+    截断、再按日筛选，会把"最新若干轮之外的整日"静默切掉——有数据的一日回空表，
+    页面写"该日没有运行进度记录"。受影响的正是"查昨天那轮"这一主用途。
+    `day` 缺省则聚合最近 `days` 个业务日。
+    `truncated` = 分组数超过 `_MAX_ROUNDS`、`rounds` 已被截断（消费方必须显式回显）。
+
+    每行字段与口径：
+    - `claim` / `start` / `success` / `fail` / `pause`：该节点的行数；
+    - `unexecuted`：**领取后未发起请求**的账号数（有 claim 无 start，按账号去重）。
+      本表只记已被领取的账号，故这里看不到"无人领取"的账号；
+    - `duration_sec`：该轮最晚与最早时刻之差（秒）；时刻解析不出时回 None；
+    - `first_ts` / `last_ts`：该轮最早与最晚时刻；
+    - `executor` / `executor_label`：公开标签（角色 + 槽位序号），**不含主机名**。
+    """
+    if day:
+        out = _group_rounds(_rows_on(str(day)))
+    else:
+        d = max(1, int(days or RETENTION_DAYS))
+        cutoff = (clock.now() - datetime.timedelta(days=d - 1)).strftime("%Y-%m-%d")
+        out = _group_rounds(_rows_since(cutoff))
+    return out[:_MAX_ROUNDS], len(out) > _MAX_ROUNDS
 
 
 def timeline(day, executor=None, limit=200):
@@ -364,6 +392,9 @@ def timeline(day, executor=None, limit=200):
 
     `executor` 是**公开标签**（`summarize` 的 `executor` 字段）；None 表示该日全部。
     每行字段：`ts` / `node` / `node_label` / `phone`（已遮罩）/ `message`。
+    `message` 再过一次 `sanitize_text`（**幂等**）：写入面已净化，读取面再复遮一次，
+    构成纵深防御。为什么读取面也要遮：历史行与直插行可能没过写入面净化；本模块是
+    读取面的唯一收口点，收在这里才没有下一个漏点。
     行数超过 `limit` 时截断，第二个返回值给 True。
     """
     limit = max(1, int(limit or 1))
@@ -382,6 +413,6 @@ def timeline(day, executor=None, limit=200):
             "node": r["node"],
             "node_label": NODE_LABELS.get(r["node"], r["node"]),
             "phone": _mask_phone(str(r["phone"] or "")),
-            "message": str(r["message"] or ""),
+            "message": _sanitize_text(str(r["message"] or "")),
         })
     return rows[:limit], len(rows) > limit
