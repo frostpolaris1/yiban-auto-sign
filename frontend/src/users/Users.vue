@@ -117,14 +117,27 @@ function emptyText(group: Group): string {
 }
 
 /**
+ * 组合输入（中文输入法）进行中。
+ *
+ * 为什么需要一个显式标志：组合期的那次回车是「提交候选词」，浏览器**仍会对表单做隐式提交**
+ * （实测 Chromium：keydown 的 isComposing 为真时 submit 照样发生一次）。提交落到 commitSearch
+ * 就会让输入框失焦、收起软键盘，而拼音串还没上屏。故守卫放在提交路径上，并保证组合期不做
+ * 任何拦截（不打断输入法）。同族的日志页与审计页各有一份同样的守卫。
+ */
+const composing = ref(false);
+
+/**
  * 检索表单提交（回车 / 点「搜索」）。
  *
  * 桌面端的筛选本就是即时的（`search` 由 v-model 驱动 computed），故这里刻意**不引入**
  * "提交前不过滤"的第二态——那会退掉既有语义。提交只做一件用户看得见的事：让输入框失焦，
  * 收起移动端软键盘，把筛出来的结果露出来。表单本身挡住原生 GET，避免整页重载丢掉内存态
  * （选择态、分页、已加载的完整邮箱都只在内存里）。
+ *
+ * 组合期直接返回：这次提交是输入法提交候选词带来的，不是检索指令。
  */
 function commitSearch(group: Group): void {
+  if (composing.value) return;
   rootEl.value?.querySelector<HTMLInputElement>(`#usr-${group}-search`)?.blur();
 }
 
@@ -330,13 +343,17 @@ onMounted(async () => {
                 <h2 class="panel-title">{{ g.title }}</h2>
                 <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
                      （原来只有裸 input + v-model，那个键按下去什么也不发生）。容器上挂
-                     role=search，按钮是唯一的提交按钮，回车与点按走同一条路径。 -->
+                     role=search，按钮是唯一的提交按钮，回车与点按走同一条路径。
+                     组合输入（中文输入法）期的回车不检索，由 form 上的 composing 标志挡住那次
+                     隐式提交（浏览器不为 isComposing 跳过隐式提交，只挡键盘处理器是不够的）。 -->
                 <form
                   v-if="g.searchable"
                   class="usr-search"
                   role="search"
                   :aria-label="'搜索' + g.title"
                   @submit.prevent="commitSearch(g.key)"
+                  @compositionstart="composing = true"
+                  @compositionend="composing = false"
                 >
                   <label class="sr-only" :for="'usr-' + g.key + '-search'">搜索{{ g.title }}</label>
                   <input

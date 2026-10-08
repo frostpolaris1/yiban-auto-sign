@@ -220,6 +220,16 @@ onMounted(search);
   align-items: center;
   gap: 6px;
 }
+/* 窄屏（≤720px，与全站窄屏段同口径）：两个日期框各占一行，第二个框不再顶出视口
+   （工单 yiban-auto-sign-w26p：360px 实测越界 18px）。
+   换行只许在窄屏段：`.input` 的 width:100% 让 flex 基宽等于行宽，无条件 wrap 会把两个
+   日期框在宽屏也压成两行（1280/1100/1024/900/768 实测两框分行、每框被拉到容器宽）。
+   宽屏维持本批之前的同行布局。 */
+@media (max-width: 720px) {
+  .audit-dates {
+    flex-wrap: wrap;
+  }
+}
 .audit-dash {
   color: var(--t-light);
 }
