@@ -2919,7 +2919,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
 
 .acct-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
-.acct-search { display: block; }
+/* 检索组（输入框 + 「搜索」按钮）：同排、可收缩。flex-basis 由输入框给（见下），
+   min-width:0 允许整组收缩——窄屏放不下时由本页 media 段改成整行铺满。 */
+.acct-search { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* 同一工具行内的控件统一 34px 控制高度：桌面档 .btn--sm 实际 31.2px（min-height 只在 ≤720
    才抬到 34），与 34px 的搜索框并排会差 2.8px，肉眼可见参差。 */
 .acct-search .input {
@@ -2927,7 +2929,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   /* 必须再写 min-height：section 29 的 .input{min-height:40px}（0,1,0）会压过本条的 height
      （同为 0,1,0 但它在后面），实测同一行里搜索框 40px、按钮 34px 参差。 */
   min-height: 34px;
-  min-width: 200px;
+  /* basis = 加按钮之前的输入框宽度；min-width:0 让它在挤压时先缩，而不是把按钮顶出容器 */
+  flex: 1 1 200px;
+  min-width: 0;
   padding: 4px 10px;
   font-size: 12.5px;
 }
@@ -3044,7 +3048,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   /* 竖屏：标题与工具行分两行，工具行（已 width:100%）落到第二行。
      只在本页放开换行——桌面端「标题左、控件右同行」是既定规范，不可全局 wrap。 */
   body[data-page="work-accounts"] .panel-head-row { flex-wrap: wrap; }
-  .acct-search .input { min-width: 0; width: 100%; }
+  /* 整组铺满：输入框吃掉余宽，按钮保持自身宽度。不能再写 width:100%——那是「一个控件
+     独占一行」时代的写法，组内还有按钮时会把按钮顶出容器（横向溢出）。 */
+  .acct-search .input { flex: 1 1 auto; width: auto; min-width: 0; }
   .acct-tools { width: 100%; }
   .acct-tools .acct-search { flex: 1 1 100%; }
 }
@@ -3209,11 +3215,20 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
    （23.3px 行盒）的行里只写 top:0 会向下溢出，实测中心比标题低 6.4px。 */
 
 .usr-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
-.usr-search { display: block; }
+/* 检索组（输入框 + 「搜索」按钮）：同排、可收缩，与账号页 .acct-search 同一形态。 */
+.usr-search { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* 同排控件并非同高：搜索框 34px、折叠按钮 .icon-btn 36px（vendor 原生）、批量条
    .btn--sm 31.2px（min-height 只在 ≤720 才抬到 34）。三者靠 .panel-head-row / 
    .usr-batch-actions 的 align-items:center 居中，不为凑同高去覆写全站的 .icon-btn。 */
-.usr-search .input { height: 34px; min-height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
+.usr-search .input {
+  height: 34px;
+  min-height: 34px;
+  /* basis = 加按钮之前的输入框宽度；min-width:0 让它在挤压时先缩，而不是把按钮顶出容器 */
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
 /* 与搜索框同排的按钮同高（账号页 .acct-tools .btn 已是 34） */
 body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 
@@ -3320,7 +3335,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   body[data-page="work-users"] .usr-group-head .panel-title { grid-column: 1; grid-row: 1; }
   body[data-page="work-users"] .usr-group-head .usr-collapse { position: static; grid-column: 2; grid-row: 1; }
   body[data-page="work-users"] .usr-group-head .usr-search { grid-column: 1 / -1; grid-row: 2; }
-  .usr-search .input { width: 100%; min-width: 0; }
+  /* 整组铺满：输入框吃掉余宽，按钮保持自身宽度（width:100% 是「一个控件独占一行」时代的
+     写法，组内还有按钮时会把按钮顶出容器）。 */
+  .usr-search .input { flex: 1 1 auto; width: auto; min-width: 0; }
 }
 
 /* ==========================================================================
