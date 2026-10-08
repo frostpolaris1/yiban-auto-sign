@@ -10,7 +10,11 @@
 **入库契约（改动即破坏 Vue 线对接，须同步前端）**
 1. 查询键白名单：只认 `day` / `executor` / `limit`。出现其它键即 400 JSON
    （`{"error": "不支持的过滤字段: X"}`）。
-2. `day` 可选，格式 `YYYY-MM-DD`。缺省取表内最新业务日；表空时取今天。
+2. `day` 可选，格式 `YYYY-MM-DD`。**缺省日的夹取只作用于缺省路径**：取表内最新
+   业务日（`day_bounds()`），但它必须落在窗口 `[start_day, end_day]` 内；表内最新
+   业务日可能是**未来日**（业务钟快一天即产生），直接取它会把缺省请求落到未来日、
+   被上界挡成空表并给出方向错误的"跨月回溯"指引，故越界时缺省取今天。表空时取今天。
+   显式 `day` 原样 honored（窗口外照样回 `in_window=false` 与指引，那是契约）。
    非法格式即 400。
 3. `executor` 可选，取值是**公开执行体标签**（`single` / `fallback` / `worker-N` /
    `unknown`，允许带方括号）。身份原串（带主机名）永不出现。非法取值即 400。
@@ -42,7 +46,7 @@
 
 **通信**
 视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger`、
-`_is_valid_date_str`、`clock`），避免与 `web/app.py` 形成导入环。
+`_is_valid_date_str`），避免与 `web/app.py` 形成导入环。
 """
 
 import re
@@ -89,11 +93,19 @@ def api_run_events():
         executor = raw_exec.strip("[]")
 
     try:
-        now = m.clock.now()
         min_day, max_day = _run_events.day_bounds()
-        day = raw_day or max_day or now.strftime("%Y-%m-%d")
         # 窗口两端只有 store 一份定义（`window_range`）；本路由不得另算公式。
         start_day, end_day = _run_events.window_range()
+        # 缺省日必须夹在窗口内（F4）：`max_day` 读全表，表内最新业务日可为未来日
+        # （业务钟快一天即产生）。直接取它会把缺省请求落到未来日，被上界挡成空表，
+        # 并给出方向错误的"跨月回溯"指引。只夹缺省路径：显式 `raw_day` 原样 honored
+        # （窗口外照样回 `in_window=false` 与指引，那是契约）。
+        if raw_day:
+            day = raw_day
+        elif max_day and start_day <= max_day <= end_day:
+            day = max_day
+        else:
+            day = end_day
         rounds, rounds_truncated = _run_events.summarize(day=day)
         if executor is None and rounds:
             executor = rounds[0]["executor"]
