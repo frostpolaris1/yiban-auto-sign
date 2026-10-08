@@ -16,12 +16,14 @@
 标签：E · Web：认证/权限/API
 覆盖：管理端编辑与人端编辑的探针触发（口令变更 / 识别码变更）、无凭据变更不触发、
      校验开关关闭时不触发、探针失败落终态与审计但账号状态不动（active/pending 两态）、
-     探针成功落 done
+     探针成功落 done、探针失败按 INFO 报级（设计内路径不得按 ERROR 报）、
+     三个 best-effort 跳过分支（冷却 / 待办队列满 / 配额用尽）各留一条可见记录
 对应实现：`web/routes/accounts_api.py` 的 api_account_update、
      `web/routes/my.py` 的 api_my_account_update、`web/services/verify_queue.py` 的
-     start_edit_probe
+     start_edit_probe 与 _reject_account
 关键断言：编辑口令为错值 → 200 且产生 status=rejected 的校验任务、账号 status 不变；
-     编辑正确凭据 → 任务 status=done；只改名称 → 零任务（零误报）
+     编辑正确凭据 → 任务 status=done；只改名称 → 零任务（零误报）；
+     跳过分支 → 200、零新增任务、探针未外呼、日志按级别与脱敏形态可分辨
 承重突变（逐个实测过，摘掉即本套必红）：
      ① 摘掉编辑端点的探针接线（条件恒假）→ 该端点断言红：人端 2 红、管理端 3 红；
      ② 探针任务改绑真实账号 id（`start_job(..., None, ...)` 的 None 换成 1）→ 失败回调
@@ -35,6 +37,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import logging
 import os
 import shutil
 import sys
@@ -147,10 +150,20 @@ class _ProbeBase(unittest.TestCase):
 
     # ---- 工具 ----
     def _client(self, username, password):
-        c = self.webapp.create_app().test_client()
+        return self._client_app(username, password)[1:]
+
+    def _client_app(self, username, password):
+        """与 `_client` 同款，但把 app 交出来。
+
+        探针的跳过分支要看**该 app 自己**的配额/冷却表：`verify_limits()` 与
+        `verify_fails()` 都是每 app 实例一份（`current_app.extensions`），拿不到
+        同一个 app 就没法在端点之外把这两张表置到目标状态。
+        """
+        app = self.webapp.create_app()
+        c = app.test_client()
         r = c.post("/api/login", json={"username": username, "password": password})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        return c, c.get("/api/me").get_json()["csrf_token"]
+        return app, c, c.get("/api/me").get_json()["csrf_token"]
 
     def _admin_client(self):
         return self._client("admin", ADMIN_PASS)
@@ -232,6 +245,52 @@ class AdminEditProbeTest(_ProbeBase):
         self.assertEqual(job["status"], "done", dict(job))
         self.assertEqual(job["error"], "")
         self.assertEqual(self._row()["status"], "active")
+
+    def test_探针失败不改账号状态按INFO报不按ERROR报(self):
+        """设计内路径必须按 INFO 报级。
+
+        探针任务刻意不绑账号 id（"失败不改账号状态"的唯一机制）。这条路径每天都会
+        正常出现；按 ERROR 报会让运维照缺陷口径追空，还可能误触 ERROR 告警器。
+        `account_id` 有值而 `prev_status` 空才是真缺陷，仍归 ERROR。
+        """
+        self._seed_account(status="active")
+        c, t = self._admin_client()
+        with self.assertLogs("web", level="INFO") as cm, mock.patch.object(
+                self.webapp.signin, "verify_account",
+                return_value=(False, AUTH_FAIL_MSG)):
+            r = c.put("/api/accounts/0",
+                      json={"name": "A", "phone": PHONE, "password": "222333",
+                            "confirm_password": ADMIN_PASS},
+                      headers={"X-CSRF-Token": t})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            job = self._wait_one_job()
+        self.assertEqual(job["status"], "rejected", dict(job))
+        hits = [rec for rec in cm.records if "不改账号状态" in rec.getMessage()]
+        self.assertEqual([(r.levelname, r.getMessage()) for r in hits],
+                         [("INFO", f"编辑探针任务不绑账号 id（设计内），不改账号状态: "
+                                   f"{self.webapp._mask_phone(PHONE)}")],
+                         [rec.getMessage() for rec in cm.records])
+        self.assertIn("设计内", hits[0].getMessage())
+        self.assertNotIn(PHONE, hits[0].getMessage(), "日志不留完整手机号")
+        self.assertEqual(
+            [rec.levelname for rec in cm.records
+             if rec.levelno >= logging.ERROR and "账号状态" in rec.getMessage()],
+            [], "不改账号状态的路径不得出现 ERROR 及以上")
+
+    def test_真缺任务上下文仍按ERROR报(self):
+        """`prev_status` 空是**真缺陷**（任务上下文丢失），不得被顺手压成 INFO。
+
+        分级是两向的：只有 `account_id is None`（设计内探针）走 INFO。若把真缺陷也
+        压成 INFO，"任务上下文丢失"就彻底静默了——这正是本次复审要防的过度纠偏。
+        本用例直接调用落库口，不经探针（探针永远带 prev_status）。
+        """
+        with self.assertLogs("web", level="INFO") as cm:
+            self.webapp._reject_account(PHONE, "校验未通过", 1, "")
+        hits = [rec for rec in cm.records if "不改账号状态" in rec.getMessage()]
+        self.assertEqual(len(hits), 1, [rec.getMessage() for rec in cm.records])
+        self.assertEqual(hits[0].levelname, "ERROR")
+        self.assertIn("缺少任务上下文", hits[0].getMessage())
+        self.assertNotIn(PHONE, hits[0].getMessage(), "日志不留完整手机号")
 
     def test_只改名称不触发探针(self):
         self._seed_account(status="active")
@@ -319,3 +378,83 @@ class EditProbeSwitchOffTest(_ProbeBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._jobs(), [], "开关关闭不得建任务")
         va.assert_not_called()
+
+
+class EditProbeSkipTest(_ProbeBase):
+    """探针的三个 best-effort 跳过分支：编辑照常成功，只是不发外呼（零阻塞）。
+
+    跳过是**设计内**：探针不是闸门。三个分支各要一条可见记录，否则"没发探针"这件事
+    在日志里不可分辨——运维看到编辑成功却查不到校验结论时无从判断是跳过还是卡住。
+    """
+
+    def _admin_edit_expect_skip(self, c, t, password="222333", expect_jobs=0):
+        """管理端编辑口令并断言跳过：200 + 任务数不变 + 探针未被调用 + 编辑本身已落库。"""
+        with mock.patch.object(self.webapp.signin, "verify_account") as va:
+            r = c.put("/api/accounts/0",
+                      json={"name": "A", "phone": PHONE, "password": password,
+                            "confirm_password": ADMIN_PASS},
+                      headers={"X-CSRF-Token": t})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(len(self._jobs()), expect_jobs, "跳过分支不得新增探针任务")
+            va.assert_not_called()
+        row = self._row()
+        self.assertEqual(row["password"], password, "编辑本身必须成功落库")
+        self.assertEqual(row["status"], "active", "跳过不得改动账号状态语义")
+
+    def test_冷却中跳过探针且脱敏日志不留全号(self):
+        """手机号在认证失败冷却中：跳过，并留一条**脱敏** INFO（该行是本批 +1 命中的落点）。"""
+        self._seed_account(status="active")
+        from web.routes import verify_fails
+        app, c, t = self._client_app("admin", ADMIN_PASS)
+        with app.app_context():
+            fails = verify_fails()
+        # 造冷却：同一手机号连续 2 次确定性认证失败即触发（VERIFY_FAIL_MAX=2）
+        for _ in range(2):
+            self.webapp._record_verify_failure(
+                fails, PHONE, "账号验证未通过：登录失败（账号或密码错误）", time.time())
+        with self.assertLogs("web", level="INFO") as cm:
+            self._admin_edit_expect_skip(c, t)
+        skip = [rec for rec in cm.records if "编辑探针跳过" in rec.getMessage()]
+        self.assertEqual([r.getMessage() for r in skip],
+                         [f"编辑探针跳过：手机号 {self.webapp._mask_phone(PHONE)} 在验证失败冷却中"],
+                         [rec.getMessage() for rec in cm.records])
+        self.assertEqual(skip[0].levelname, "INFO")
+        self.assertNotIn(PHONE, skip[0].getMessage(), "冷却跳过日志不得带完整手机号")
+
+    def test_待办队列满跳过探针(self):
+        """待办队列真实占满：跳过，并留一条 WARNING（队列满不是缺陷，但必须可见）。"""
+        self._seed_account(status="active")
+        _app, c, t = self._client_app("admin", ADMIN_PASS)
+        import db
+
+        from web.services.verify_queue import VERIFY_JOBS_MAX_PENDING
+        # 真实占满：插满上限条 pending 任务，走的是超龄收口 + 计数这条真判据
+        for i in range(VERIFY_JOBS_MAX_PENDING):
+            db.create_verify_job(None, f"139{i:08d}", OWNER, prev_status="active")
+        self.assertGreaterEqual(db.count_active_verify_jobs(), VERIFY_JOBS_MAX_PENDING)
+        with self.assertLogs("web", level="INFO") as cm:
+            self._admin_edit_expect_skip(c, t, expect_jobs=VERIFY_JOBS_MAX_PENDING)
+        skip = [rec for rec in cm.records if "编辑探针跳过" in rec.getMessage()]
+        self.assertEqual([r.getMessage() for r in skip],
+                         ["编辑探针跳过：校验任务队列已满"],
+                         [rec.getMessage() for rec in cm.records])
+        self.assertEqual(skip[0].levelname, "WARNING")
+
+    def test_每用户配额用尽跳过探针(self):
+        """发起者配额用尽（与新增路径同一份账）：跳过，并留一条 INFO。"""
+        self._seed_account(status="active")
+        from web.routes import verify_limits
+        app, c, t = self._client_app("admin", ADMIN_PASS)
+        with app.app_context():
+            limits = verify_limits()
+        # 真实耗尽：把该会话（admin）的窗口额度用完，再确认第 N+1 次被拒
+        for _ in range(self.webapp.VERIFY_MAX):
+            self.assertTrue(self.webapp._verify_attempt_allowed(limits, "admin"))
+        self.assertFalse(self.webapp._verify_attempt_allowed(limits, "admin"))
+        with self.assertLogs("web", level="INFO") as cm:
+            self._admin_edit_expect_skip(c, t)
+        skip = [rec for rec in cm.records if "编辑探针跳过" in rec.getMessage()]
+        self.assertEqual([r.getMessage() for r in skip],
+                         ["编辑探针跳过：验证尝试配额已用尽"],
+                         [rec.getMessage() for rec in cm.records])
+        self.assertEqual(skip[0].levelname, "INFO")
