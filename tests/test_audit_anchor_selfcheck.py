@@ -15,8 +15,8 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`_anchor_file_state_ex` 的行数三支与不可解析行、`_anchor_status` 的四态结论
 （ok/none/tampered/indeterminate）、`audit_health` 对"无法定论"的汇总与事实清单呈现、
-`record_audit_anchor` 对不可解析文件的拒绝续写、以及 `scripts/audit_verify.py`
-对"无法定论"的 exit 2。
+`record_audit_anchor` 对不可解析文件的拒绝续写、三字段（v0）历史锚点行的兼容与
+兼容不得放掉篡改检测、以及 `scripts/audit_verify.py` 对"无法定论"的 exit 2。
 对应实现：`yiban/store/audit_chain.py`（`_anchor_status` / `_anchor_file_state_ex` /
 `audit_health`）、`web/services/notify_mail.py` 的 `_audit_alert_facts`、
 `scripts/audit_verify.py`。
@@ -328,6 +328,126 @@ class AnchorTwoPartyJudgeTest(_Fixture):
         picked = db._max_anchor_of(lines)
         self.assertEqual(picked["head"], "e" * 64,
                          "并列必须取靠后（最新自报），取靠前会拿陈旧 head 定点")
+
+
+class LegacyThreeFieldAnchorTest(_Fixture):
+    """三字段（v0）历史锚点行：必须解析，且兼容不得放掉篡改检测。
+
+    生产实证（2026-09-29 起连续 10 天）：`/var/log/yiban/audit-anchor.log` 前 41 行是
+    早期版本写入的 `<ts> <head>` 三字段行（日期 2026-08-21 → 2026-08-28）。解析器只认
+    5/8 token，故 `_anchor_file_state_ex` 在第 1 行即返回 `indeterminate`（"第 1 行不是
+    合法锚点行"），行数比对与行间链校验从未执行。每日自检实际已死 10 天，只因
+    "结论与上次同态、不重复外发"而无人察觉。
+
+    v0 行没有 min_id / max_id / count / purge_total / prev_line_hash，一律返回 None
+    （不填 0 或空串），于是两条定性必须记住：
+      * v0 行不能充当定点基准（`_max_anchor_of`）——它没有 max_id，且 None 参与
+        `>=` 比较会抛 TypeError，把每日体检炸成异常；
+      * v0 行仍须作为行间链的**前驱**参与哈希（与 v1 行同法）。链的覆盖面只到
+        "后继行带 prev_line_hash" 的那些行：v0 与 v1 行都没有该字段，故它们
+        **彼此之间**的相邻关系本就不受链保护，这在 v1 时代就已如此。本次兼容既没
+        缩小、也没扩大覆盖面；老前缀的完整性由行数三支与末行哈希承担。
+    """
+
+    def _legacy_file(self):
+        """复刻生产文件形状：三字段前缀 + v1 行 + v2 主体；库内指纹按总行数登记。"""
+        self._seed(4)
+        v0a = f"2026-08-21 00:00:31 {self._row_hash(1)}"
+        v0b = f"2026-08-22 00:00:31 {self._row_hash(2)}"
+        v1 = f"2026-08-28 00:00:31 1 3 {self._row_hash(3)}"
+        v2 = "2026-09-01 00:00:31 1 4 4 0 {} {}".format(
+            self._row_hash(4), db._anchor_line_sha(v1))
+        lines = [v0a, v0b, v1, v2]
+        self._write_lines(lines)
+        self._set_meta(len(lines), db._anchor_line_sha(v2))
+        return lines
+
+    def test_legacy_prefix_file_is_ok(self):
+        """三字段前缀不得让整份锚点判"无法定论"——生产上就是这个结论压了 10 天。"""
+        lines = self._legacy_file()
+        parsed = db._parse_anchor_lines(lines)
+        self.assertEqual(len(parsed), len(lines), "每一行都必须可解析")
+        self.assertEqual(parsed[0]["version"], 0)
+        self.assertEqual(parsed[0]["head"], self._row_hash(1))
+        for field in ("min_id", "max_id", "count", "purge_total", "prev_line_hash"):
+            self.assertIsNone(parsed[0][field],
+                              f"v0 行没有 {field}：必须是 None，不是 0 或空串")
+        status, msg = db._anchor_status(self.anchor)
+        self.assertEqual(status, "ok", msg)
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "ok", h["anchor_msg"])
+        self.assertTrue(h["healthy"], h["anchor_msg"])
+
+    def test_legacy_row_is_chain_predecessor(self):
+        """后继行带 prev_line_hash 时，改三字段前驱行必红——老行确实在链上。
+
+        本用例只讲 v0 行的**前驱**角色。链路覆盖面的边界（哪些相邻对不受链保护）
+        由 `test_chain_coverage_boundary_excludes_old_format_adjacency` 单独钉住，
+        以便红点直接落在边界上。
+        """
+        self._seed(3)
+        v0 = f"2026-08-21 00:00:31 {self._row_hash(1)}"
+        v2 = "2026-08-28 00:00:31 1 3 3 0 {} {}".format(
+            self._row_hash(3), db._anchor_line_sha(v0))
+        self._write_lines([v0, v2])
+        self._set_meta(2, db._anchor_line_sha(v2))
+        status, msg = db._anchor_status(self.anchor)
+        self.assertEqual(status, "ok", msg)
+        rewritten = f"2026-08-21 00:00:31 {'d' * 64}"
+        self.assertEqual(len(rewritten.split()), 3, "前提：改写后仍是三字段行")
+        self._write_lines([rewritten, v2])
+        status, msg = db._anchor_status(self.anchor)
+        self.assertEqual(status, "tampered", msg)
+        self.assertIn("行间哈希不符", msg)
+
+    def test_chain_coverage_boundary_excludes_old_format_adjacency(self):
+        """链只覆盖「后继行带 prev_line_hash」的行；老格式相邻对不在覆盖面内。
+
+        两条 v1 行相邻时，改写前一行不红：前一行没有带该字段的后继去哈希它。这不是
+        本次 v0 兼容引入的缺口，v1 时代就是如此。本用例把这份真实覆盖面钉住，防止
+        有人把链的覆盖面说过头。
+
+        将来谁收紧覆盖面（让老格式相邻行也受链保护），这里会红——那时同批改本用例，
+        不得删除。
+        """
+        self._seed(3)
+        v1a = f"2026-08-28 00:00:31 1 2 {self._row_hash(2)}"
+        v1b = f"2026-08-29 00:00:31 1 3 {self._row_hash(3)}"
+        self._write_lines([v1a, v1b])
+        self._set_meta(2, db._anchor_line_sha(v1b))
+        self.assertEqual(db._anchor_status(self.anchor)[0], "ok")
+        self._write_lines([f"2026-08-28 00:00:31 1 2 {'e' * 64}", v1b])
+        self.assertEqual(db._anchor_status(self.anchor)[0], "ok",
+                         "前一行没有带 prev_line_hash 的后继：链本来就够不到它")
+
+    def test_only_legacy_rows_is_indeterminate_not_healthy(self):
+        """文件里只有三字段行：没有 max_id 可定点 ⇒ 无法定论，且不得抛异常。"""
+        self._seed(2)
+        self._write_lines([f"2026-08-21 00:00:31 {self._row_hash(2)}"])
+        status, msg = db._anchor_status(self.anchor)  # None 参与 max_id 比较会 TypeError
+        self.assertEqual(status, "indeterminate", msg)
+        self.assertIn("max_id", msg)
+        self.assertFalse(self._health()["healthy"])
+
+    def test_tampering_with_legacy_prefix_is_still_detected(self):
+        """兼容老格式不得放掉篡改检测：追加行、截断末行、改写末行都须判红。"""
+        scenarios = (
+            ("追加一行三字段行", lambda ls: [*ls, f"2026-08-29 00:00:31 {'c' * 64}"]),
+            ("追加一行垃圾行", lambda ls: [*ls, "这一行是人为写坏的垃圾内容"]),
+            ("截断末行", lambda ls: ls[:-1]),
+            ("末行改写为三字段行",
+             lambda ls: [*ls[:-1], f"2026-08-29 00:00:31 {ls[-1].split()[-2]}"]),
+        )
+        for label, mutate in scenarios:
+            with self.subTest(case=label):
+                self._reset_state()
+                lines = self._legacy_file()
+                mutated = mutate(lines)
+                self.assertNotEqual(mutated, lines, "前提：本场景真的改动了文件")
+                self._write_lines(mutated)
+                h = self._health()
+                self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
+                self.assertFalse(h["healthy"], h["anchor_msg"])
 
 
 class AnchorPointRowNotExemptTest(_Fixture):
