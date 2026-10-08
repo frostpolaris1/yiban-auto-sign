@@ -293,6 +293,32 @@ class DevVerifyFastModeTest(unittest.TestCase):
             rc, out = run(["tests/test_missing.py::Cls::t"], live)
             self.assertEqual(rc, 2, f"文件不存在没被拦：{out}")
 
+    def test_fast_known_slow_guard_rejects_prefix_nested_entries(self):
+        """守卫必须拦前缀嵌套条目：短条目已覆盖长条目，长条目是假条目。
+
+        复审突变 M5（2026-10-08）：删掉 guard_fast_known_slow 里的嵌套双层循环后，
+        入口测试原 18 套仍全绿——嵌套分支没有测试钉。本条补钉：注入
+        `file::Cls` 与 `file::Cls::test_x` 前缀嵌套对，守卫必须判红（rc=2）。
+        判据：pytest 的 `file::Cls` 已含整类，`file::Cls::test_x` 是多余条目。
+        """
+        src = _func_source(self.text, "guard_fast_known_slow")
+        self.assertGreater(len(src), 100, "抽不出 guard_fast_known_slow——结构改了？")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tests"))
+            mod = os.path.join(d, "tests", "test_x.py")
+            with io.open(mod, "w", encoding="utf-8") as f:
+                f.write("class Cls:\n    def test_x(self):\n        pass\n")
+            entries = ["tests/test_x.py::Cls", "tests/test_x.py::Cls::test_x"]
+            arr = " ".join('"%s"' % e for e in entries)
+            script = ("REPO=%s\nFAST_KNOWN_SLOW=(%s)\n"
+                      "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
+                      "%s\nguard_fast_known_slow\n"
+                      % (shlex.quote(d), arr, src))
+            rc, out = _bash(script)
+        self.assertEqual(rc, 2, f"前缀嵌套对没被拦（长条目是假条目）：guard rc={rc}，{out}")
+        self.assertIn("前缀嵌套", out, "拒绝信息必须点名前缀嵌套")
+        self.assertIn("tests/test_x.py::Cls::test_x", out, "拒绝信息必须点名多余的长条目")
+
     # ---- F1：副本必须按内容校验 ----
 
     def test_copy_verifies_content_by_checksum(self):
