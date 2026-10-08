@@ -110,6 +110,36 @@ def _seed_events() -> None:
     db.add_sign_event(f"{today} 06:40:00", "13800138001", "failed", "探测异常", stage="probe", attempt=1)
 
 
+def _seed_run_events() -> None:
+    """当日的内核进度事件（**须在 `db.init_db()` 之后**调用）。
+
+    巡检块（`GET /api/admin/run-events`）的端到端种子：一轮里两个账号（一成一败），
+    加一行执行体会话收尾。账号用**原始号**写入（表存原值），端到端断言响应里只有
+    掩码形态；执行体用带主机名的稳定名（接口只许回角色与槽位）。
+    时刻显式写死（不走 `report` 的当前钟）：耗时与顺序要确定可断言。
+    """
+    import db  # 裸模块名：sys.path 已含 scripts
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    owner = "single@e2e-host"
+    rows = [
+        (f"{today} 06:40:00", today, "claim", owner, "13800138001", ""),
+        (f"{today} 06:40:00", today, "claim", owner, "13900139002", ""),
+        (f"{today} 06:40:00", today, "claim", owner, "13700137003", ""),
+        (f"{today} 06:40:05", today, "start", owner, "13800138001", ""),
+        (f"{today} 06:40:06", today, "start", owner, "13900139002", ""),
+        (f"{today} 06:40:12", today, "success", owner, "13800138001", "签到成功"),
+        (f"{today} 06:40:20", today, "fail", owner, "13900139002", "密码错误"),
+        (f"{today} 06:40:21", today, "finalize", owner, "",
+         "执行体会话收尾：本轮完成 2 个账号"),
+    ]
+    conn = db.get_conn()
+    conn.executemany(
+        "INSERT INTO run_events (ts, day, node, executor, phone, message) "
+        "VALUES (?,?,?,?,?,?)", rows)
+    conn.commit()
+
+
 def _seed_state_files() -> None:
     """取样工作日（见 `_probe_day`）的假签到状态：让日历底色与图例端到端可见。
 
@@ -190,6 +220,7 @@ def main():
                                   "password": "p5", "status": "active", "owner": ADMIN_USER})
     db.set_account_deleted(_deleted_id, 1, deleted_at="2026-09-30 10:00:00", deleted_by="admin")
     _seed_events()
+    _seed_run_events()
     _seed_state_files()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
