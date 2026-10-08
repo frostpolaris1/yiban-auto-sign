@@ -25,8 +25,11 @@
    （`run_events` 的读取面）。写入面已净化 `message`，**读取面再复遮一次**，
    构成纵深防御。本模块不二次加工，也不放行原串。
 8. 保留期：响应回显 `retention_days` 与窗口起止（`window.start_day` /
-   `window.end_day`）。窗口外的日期回 `in_window=false`，`has_data=false`。
-   页面据此给"跨月回溯请走审计日志页"的指引，不静默出空表。
+   `window.end_day`，两端取自 `run_events.window_range()` 的**唯一定义点**）。
+   **早于下界或晚于上界的日期都算窗口外**：回 `in_window=false`、`has_data=false`、
+   空表。页面据此给"跨月回溯请走审计日志页"的指引，不静默出空表。
+   `window.min_day` / `max_day` 是**表内实际范围**（`run_events.day_bounds()` 读全表），
+   可能落在保留窗口之外（例如窗口起点之外那一天在清理跑过前仍有行）。
 9. 错误一律 JSON：400/401/403/500 全 JSON。
 
 **归属**
@@ -42,7 +45,6 @@
 `_is_valid_date_str`、`clock`），避免与 `web/app.py` 形成导入环。
 """
 
-import datetime
 import re
 
 from flask import jsonify, request
@@ -90,9 +92,8 @@ def api_run_events():
         now = m.clock.now()
         min_day, max_day = _run_events.day_bounds()
         day = raw_day or max_day or now.strftime("%Y-%m-%d")
-        start_day = (now - datetime.timedelta(
-            days=_run_events.RETENTION_DAYS - 1)).strftime("%Y-%m-%d")
-        end_day = now.strftime("%Y-%m-%d")
+        # 窗口两端只有 store 一份定义（`window_range`）；本路由不得另算公式。
+        start_day, end_day = _run_events.window_range()
         rounds, rounds_truncated = _run_events.summarize(day=day)
         if executor is None and rounds:
             executor = rounds[0]["executor"]

@@ -29,6 +29,8 @@
 
 **可见窗口**
 本表只保留 `RETENTION_DAYS` 天（默认 14）。窗口外的日期没有数据。
+窗口区间 = `[今天-(RETENTION_DAYS-1), 今天]`，**唯一定义点是本模块的 `window_range()`**：
+读取面与端点都从它取值，谁都不另算公式。窗口外的日期（早于下界或晚于上界）都要回空。
 读取面与页面必须显式写明窗口。窗口外要给"跨月回溯请走审计日志页"的指引。
 不许静默出空表——那会让人以为那几天没有数据。
 
@@ -255,16 +257,26 @@ _MAX_ROUNDS = 200
 MAX_ROUNDS = _MAX_ROUNDS
 
 
-def _window_cutoff(days=RETENTION_DAYS):
-    """→ 保留窗口下界（含）的业务日串 = `今天-(days-1)`。只读。
+def window_range(days=RETENTION_DAYS):
+    """→ 保留窗口的 (下界, 上界) 业务日串，两端**含**。只读。
 
-    窗口下界的**唯一定义点**。读取面按它过滤：`purge` 的删界是 `day < 今天-days`，
-    窗口起点却是 `今天-(days-1)`，故窗口起点之外那一天在清理跑过之前仍有行。
-    少了这道下界，端点会对窗口外日期回 `has_data=true`，与"窗口外回 has_data=false"
-    的契约矛盾（`web/routes/run_events_api.py` docstring 第 8 条）。
+    窗口区间的**唯一定义点**。下界 = `今天-(days-1)`，上界 = `今天`。
+    读取面（`_rows_on` / `_rows_since` / `timeline`）与端点（`web/routes/run_events_api.py`
+    的 `window.start_day` / `window.end_day`）都从这里取值；端点不得另算公式，否则
+    "唯一定义点"失真、两处会静默漂移。
+
+    为什么必须有下界：`purge` 的删界是 `day < 今天-days`，窗口起点却是 `今天-(days-1)`，
+    故窗口起点之外那一天在清理跑过之前仍有行。少了下界，端点会对窗口外日期回
+    `has_data=true`，与"窗口外回 has_data=false"的契约矛盾。
+
+    为什么必须有上界：业务日晚于今天时（业务钟快一天即可产生未来日），少了上界，
+    端点对未来日回 `in_window=false` 却 `has_data=true`，那是半个窗口。
     """
     d = max(1, int(days or RETENTION_DAYS))
-    return (clock.now() - datetime.timedelta(days=d - 1)).strftime("%Y-%m-%d")
+    now = clock.now()
+    upper = now.strftime("%Y-%m-%d")
+    lower = (now - datetime.timedelta(days=d - 1)).strftime("%Y-%m-%d")
+    return (lower, upper)
 
 
 def _public_executor(executor):
@@ -310,29 +322,34 @@ def day_bounds():
     return (str(row["lo"]), str(row["hi"]))
 
 
-def _rows_since(cutoff):
-    """→ 该业务日（含）之后的事件行（按业务日降序、id 升序）。只读。"""
+def _rows_since(lower, upper):
+    """→ 落在窗口 `[lower, upper]`（含两端）内的事件行（按业务日降序、id 升序）。只读。
+
+    区间来自 `window_range()`：两端都过滤，未来业务日不得混入缺省日的聚合。
+    """
     db = _facade()
     with db._conn_lock:
         cur = db.get_conn().execute(
             "SELECT id, ts, day, node, executor, phone, message FROM run_events "
-            "WHERE day >= ? ORDER BY day DESC, id ASC", (cutoff,))
+            "WHERE day >= ? AND day <= ? ORDER BY day DESC, id ASC", (lower, upper))
         return [dict(r) for r in cur.fetchall()]
 
 
 def _rows_on(day):
     """→ 该业务日的全部事件行（按 id 升序）。只读。日筛选在 SQL 侧完成。
 
-    **带保留窗口下界**：早于 `今天-(RETENTION_DAYS-1)` 的日期回空行。窗口下界与
-    清理删界之间有一天的缝（清理删 `day < 今天-14`，窗口起点是 `今天-13`），
-    `今天-14` 在清理跑过前仍有行；少了这道下界，窗口外日期会回非空表。
+    **带完整保留窗口**：日期早于下界或晚于上界都回空行。窗口下界与清理删界之间有一天的
+    缝（清理删 `day < 今天-RETENTION_DAYS`，窗口起点是 `今天-(RETENTION_DAYS-1)`），
+    `今天-RETENTION_DAYS` 在清理跑过前仍有行；上界挡掉未来业务日（业务钟快一天可产生）。
+    窗口两端都取自 `window_range()`。
     """
     db = _facade()
+    lo, hi = window_range()
     with db._conn_lock:
         cur = db.get_conn().execute(
             "SELECT id, ts, day, node, executor, phone, message FROM run_events "
-            "WHERE day = ? AND day >= ? ORDER BY id ASC",
-            (str(day), _window_cutoff()))
+            "WHERE day = ? AND day >= ? AND day <= ? ORDER BY id ASC",
+            (str(day), lo, hi))
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -410,7 +427,7 @@ def summarize(*, day=None, days=RETENTION_DAYS):
     if day:
         out = _group_rounds(_rows_on(str(day)))
     else:
-        out = _group_rounds(_rows_since(_window_cutoff(days)))
+        out = _group_rounds(_rows_since(*window_range(days)))
     return out[:_MAX_ROUNDS], len(out) > _MAX_ROUNDS
 
 
@@ -419,7 +436,7 @@ def timeline(day, executor=None, limit=200):
 
     `executor` 是**公开标签**（`summarize` 的 `executor` 字段）；None 表示该日全部。
     每行字段：`ts` / `node` / `node_label` / `phone`（已遮罩）/ `message`。
-    只回保留窗口内的日期（带窗口下界，见 `_window_cutoff`）；窗口外回空表。
+    只回保留窗口内的日期（带完整窗口两端，见 `window_range`）；窗口外回空表。
     `message` 再过一次 `sanitize_text`：写入面已净化，读取面再复遮一次，
     构成纵深防御。复遮**不是无条件幂等**（见模块说明），但对写入口径的产物在实测
     形态下幂等。为什么读取面也要遮：历史行与直插行可能没过写入面净化；本模块是
@@ -428,11 +445,12 @@ def timeline(day, executor=None, limit=200):
     """
     limit = max(1, int(limit or 1))
     db = _facade()
+    lo, hi = window_range()
     with db._conn_lock:
         cur = db.get_conn().execute(
             "SELECT ts, node, executor, phone, message FROM run_events "
-            "WHERE day = ? AND day >= ? ORDER BY id ASC",
-            (str(day), _window_cutoff()))
+            "WHERE day = ? AND day >= ? AND day <= ? ORDER BY id ASC",
+            (str(day), lo, hi))
         raw = [dict(r) for r in cur.fetchall()]
     rows = []
     for r in raw:
