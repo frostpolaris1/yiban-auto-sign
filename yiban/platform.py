@@ -577,11 +577,26 @@ def fetch_sign_position(session, csrf, policy):
 
 
 def submit_sign_in(session, csrf, *, phone_code, phone_model, sign_info, out_state, policy):
-    """提交一次签到。返回 `SignResponse`（`data` 为服务端返回体）。"""
+    """提交一次签到。返回 `SignResponse`（`data` 为服务端返回体）。
+
+    请求体是**预编码的表单串**（见 `_sign_in_body`），因此必须显式声明
+    `Content-Type: application/x-www-form-urlencoded`——`requests` 只对 dict
+    形态的 `data` 自动补这个头，对字符串形态**不补**。缺该头时上游 servlet
+    容器不解析表单（`getParameter` 全 null），读不到签到体，回
+    `msg="定位获取失败"`（2026-10-08 实机 4 轮全拒的根因，工单 3kmt）。
+
+    只在会话**缺**该头时补——这与 `requests` 对 dict 形态 `data` 的行为逐字一致
+    （它也只在本会话没有该头时补）。旧 iOS 流程的会话头自带带 charset 的版本
+    （`HEADERS`），补头因此不会动它，两条流程的线上形态与换核前保持不变。
+    """
+    headers = {}
+    if not session.headers.get("Content-Type"):
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
     resp = session.post(
         SIGN_IN_URL,
         params={"CSRF": csrf},
         data=_sign_in_body(phone_code, phone_model, sign_info, out_state),
+        headers=headers,
         allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )

@@ -784,6 +784,7 @@ onMounted(async () => {
             autocomplete="new-password"
             :placeholder="formEditing ? PASSWORD_UNCHANGED_PLACEHOLDER : T.passwordNewPlaceholder"
           />
+          <span class="field-help">{{ T.passwordHelp }}</span>
         </label>
 
         <label class="field">

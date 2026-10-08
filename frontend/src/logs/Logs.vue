@@ -153,6 +153,40 @@ function search(): void {
   void load();
 }
 
+/**
+ * 组合输入（中文输入法）进行中。
+ *
+ * 为什么需要一个显式标志：组合期的那次回车是「提交候选词」，浏览器**仍会对表单做隐式提交**
+ * （实测 Chromium：keydown 的 isComposing 为真时 submit 照样发生一次）。只在 keydown 里
+ * `if (isComposing) return` 挡不住它，提交照样进 search()，发出去的是**未提交**的拼音串。
+ * 故把守卫放在提交路径上，并保证组合期不 preventDefault（不打断输入法）。
+ */
+const composing = ref(false);
+
+/**
+ * 表单提交（点「检索」，以及回车走到的那次隐式提交）。
+ *
+ * 组合期直接返回：这次提交是输入法提交候选词带来的，不是检索指令。
+ * 注意 `.prevent` 由模板编译器内联在处理器之前执行，所以这里早退也不会发生原生 GET 重载。
+ */
+function submitSearch(): void {
+  if (composing.value) return;
+  search();
+}
+
+/**
+ * 检索框里按下回车。
+ *
+ * 组合期交给输入法（直接返回，也不 preventDefault）；非组合期挡掉隐式提交再发起检索——
+ * 挡掉是为了让一次回车只发一次请求（否则 keydown 与隐式提交会各发一次；`busy` 守卫虽能
+ * 兜住，但那条依赖实现细节，不该当作唯一保障）。
+ */
+function onSearchEnter(e: KeyboardEvent): void {
+  if (e.isComposing || composing.value) return;
+  e.preventDefault();
+  search();
+}
+
 /** 「查看该日」：空值与非法值各自提示（与 legacy 文案一致） */
 function viewDateAction(): void {
   const v = dateInput.value.trim();
@@ -250,8 +284,31 @@ onBeforeUnmount(() => {
           <div class="logs-head">
             <h2 class="logs-title">签到日志 <span class="logs-file">{{ payload?.log_file ?? "" }}</span></h2>
             <div class="logs-tools">
-              <input v-model="searchInput" class="input" type="search" placeholder="检索日志关键字" @keyup.enter="search" />
-              <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="search">检索</button>
+              <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
+                   （原来只有 @keyup.enter + 裸按钮，那个键按下去什么也不发生）。
+                   回车另有输入框上的 keydown 处理：检索按钮在 loading 期间是 disabled，而
+                   隐式提交要求默认按钮可用——只留表单会在 loading 窗口把回车变成静默无效。
+                   组合输入（中文输入法）期的回车不检索，由 form 上的 composing 标志挡住那次
+                   隐式提交（浏览器不为 isComposing 跳过隐式提交，只挡 keydown 是不够的）。 -->
+              <form
+                class="logs-search"
+                role="search"
+                aria-label="检索日志"
+                @submit.prevent="submitSearch"
+                @compositionstart="composing = true"
+                @compositionend="composing = false"
+              >
+                <label class="sr-only" for="logs-search-input">检索日志关键字</label>
+                <input
+                  id="logs-search-input"
+                  v-model="searchInput"
+                  class="input"
+                  type="search"
+                  placeholder="检索日志关键字"
+                  @keydown.enter="onSearchEnter"
+                />
+                <button type="submit" class="btn btn--ghost btn--sm" :disabled="loading">检索</button>
+              </form>
               <button
                 type="button"
                 class="btn btn--ghost btn--sm"
@@ -434,6 +491,19 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+/* 检索组（输入框 + 「检索」按钮）：同排显示，窄屏整组换行（.logs-tools 已 flex-wrap）。
+   flex-basis 给这一组的目标宽度，min-width 保底——否则输入框会被同排按钮挤成细条。 */
+.logs-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 320px;
+  min-width: 232px;
+}
+.logs-search .input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .logs-info {
   font-size: 12.5px;
