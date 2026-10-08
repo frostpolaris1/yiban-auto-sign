@@ -805,6 +805,34 @@ class WorkersIntegrityRc4Test(_DbTemp):
                 self.assertIn(f"退出码 {rc}", out,
                               f"子进程 {i}（码 {rc}）的结果必须逐条上报，不得吞掉")
 
+    def test_fallback_integrity_log_survives_percent_in_message(self):
+        """完整性拒启的**日志形态**：异常文本含 `%` 时，记录仍要完整落一条。
+
+        为什么单独钉：`logger.error(f"…{e}", round_tag)` 这种 f-string 与 `%` 形参混用，
+        会让 logging 的 `msg % args` 抛 ValueError、整条记录被丢掉（只在 stderr 留一行
+        handleError），而 rc=4 的断言照样通过——上面那条用例抓不到这种复发。
+        这里用带 `%partial%` 的异常文本钉住：记录仍是 1 条，且文本逐字保留。
+        """
+        boom = migrations.MigrationIntegrityError("v19 产物缺失 50%：%partial% 标记残缺")
+        with mock.patch.object(workers.schedule, "day_off", return_value=None), \
+             mock.patch.object(workers.schedule, "_window_closed", return_value=False), \
+             mock.patch.object(workers.schedule, "_window_open", return_value=True), \
+             mock.patch.object(workers.cli_support, "_run_lock_held", return_value=False), \
+             mock.patch.object(workers.state_io, "_write_fallback_alive"), \
+             mock.patch.object(workers.state_io, "_clear_fallback_alive"), \
+             mock.patch.object(workers.accounts_mod, "load_accounts", side_effect=boom), \
+             self.assertLogs("yiban", level="ERROR") as logs:
+            rc = workers.run_fallback_worker(
+                [], interval=60, deadline=clock.now() + timedelta(minutes=5))
+        self.assertEqual(rc, cli_support.EXIT_SCHEMA_MIGRATION)
+        errors = [r for r in logs.records if r.levelname == "ERROR"]
+        self.assertEqual(len(errors), 1,
+                         "完整性拒启必须恰好落一条 ERROR（形态错会让记录被丢掉）")
+        message = errors[0].getMessage()
+        self.assertIn("schema 迁移完整性校验失败", message)
+        self.assertIn("50%", message, "异常文本里的 % 序列不得被当格式符吃掉")
+        self.assertIn("%partial%", message, "异常文本必须逐字保留，不得截断")
+
     def test_fallback_daemon_refuses_on_integrity(self):
         """兜底常驻腿：窗口内每轮 load_accounts 撞完整性 ⇒ rc4 退出并清存活标记
         （不得吞成配置错误 1，更不得 continue 空转成"看似在跑实则永不签到"）。

@@ -61,6 +61,7 @@ import logging
 import os
 
 from yiban import config_loader
+from yiban import egress as yb_egress  # 别名必需：本模块的形参就叫 `egress`（桶键）
 from yiban.store import queue_store
 
 logger = logging.getLogger("yiban.engine.token_bucket")
@@ -232,9 +233,11 @@ class EgressLimiter:
         self._streak[egress] = 0  # 三步次序即语义：先销账，再压通道，最后减速
         self._half_open_until[egress] = now + HALF_OPEN_SEC
         if self.manual:
+            # 桶键就是执行体身份串（含主机名）——日志只回角色与槽位，不回原串
+            # （口径在 `egress.owner_tag`，见其模块 docstring 的红线）。
             logger.warning("出口 %s 风控信号，速率按安全回退下调（.env 人工接管的上限 "
                            "%.3f attempt/s，%ds 半开单通道探测）",
-                           egress, self._ceiling, HALF_OPEN_SEC)
+                           yb_egress.owner_tag(egress), self._ceiling, HALF_OPEN_SEC)
         return self._set_rate(egress, self._buckets[egress].rate * SHRINK_FACTOR,
                               "风控信号回退")  # 回退不吃延迟信号：单账号耗时 t≈1.9~3s 近常量，延迟信噪比差
 
@@ -301,7 +304,8 @@ class EgressLimiter:
         old, new = b.rate, min(max(_clamp(rate), RATE_MIN), self._ceiling)
         b.rate = new
         if new != old:
-            logger.info("出口 %s 速率 %.3f → %.3f attempt/s（%s）", egress, old, new, reason)
+            logger.info("出口 %s 速率 %.3f → %.3f attempt/s（%s）",
+                        yb_egress.owner_tag(egress), old, new, reason)
             if self._on_change is not None:
                 self._on_change(egress, old, new, reason)
         return new

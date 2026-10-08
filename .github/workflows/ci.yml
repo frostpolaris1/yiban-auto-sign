@@ -84,6 +84,16 @@ jobs:
       - name: Gate subset (scripts/dev-verify.sh --ci)
         run: bash scripts/dev-verify.sh --ci
 
+      # Vue 构建产物可复现门禁的元测试（工单 yiban-auto-sign-spn6）。
+      # 为什么单列一步：CI 的 -k 词集住在 scripts/dev-verify.sh 的 run_ci，本单不改该文件
+      #   （feature/dev-verify-fastmode 分支在飞改 run_ci，跨分支必冲突），故按文件路径直接选测。
+      # 为什么在 verify（不是 frontend）job：本元测试只跑 --lf-only 与 --compare 两个模式，
+      #   不需要 node；frontend job 有 node，本 job 有 Python，各取所需。
+      # 守卫本体（重建 + 逐字节比对，需要 node）在 frontend job 跑；承重段突变证明在
+      #   scripts/e2e/vue-build-reproducible-e2e.sh（WSL 内手跑）。
+      - name: Vue build reproducible meta-tests (no node)
+        run: python -m pytest tests/test_vue_build_reproducible.py -q -p no:randomly
+
       - name: Gate ready
         # 这行只是收尾回执，但它枚举了子集内容 —— 子集变了这里也要变，否则"同一个事实
         # 两个定义点"就从这里开始漂。2026-10-06（工单 2ula）加入 config-registry。
@@ -151,3 +161,9 @@ jobs:
         run: npm ci
       - name: Unit tests (Vitest)
         run: npm run test
+      # 构建产物可复现门禁（工单 yiban-auto-sign-spn6）：产物必须与已提交产物逐字节相同。
+      # 为什么在本 job：这里已有 node 与 node_modules（上面 npm ci），一次重建约 2 秒。
+      # 判据与理由写在 scripts/check-vue-build-reproducible.sh；承重段的突变证明写在
+      # scripts/e2e/vue-build-reproducible-e2e.sh（WSL 内手跑）；本文件不复制判据文本。
+      - name: Vue build artifacts reproducible (LF + byte-identical rebuild)
+        run: bash ../scripts/check-vue-build-reproducible.sh
