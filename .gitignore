@@ -116,6 +116,7 @@ docs/dev/*
 !docs/dev/dev-verify.md
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
+!docs/dev/architecture-target.md
 .superpowers/
 
 # ZCode 工具目录
