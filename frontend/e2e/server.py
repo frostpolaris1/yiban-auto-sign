@@ -23,12 +23,20 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
     sys.path.insert(0, str(_p))
+
+# 业务钟：读取面（`web` / `yiban`）一律按北京时间取"今天"。种子若用宿主钟
+# （`datetime.now()`），宿主时区 > UTC+8 时种子的"今天"行会变成未来业务日，
+# 被新上界排除，前端用例随即数不到那两轮（潜伏形状，CST / UTC 都不触发）。
+# 故种子的每一处日期都走 `yiban.clock.now()`，与读取面同一个钟。
+# 导入必须在本文件把 ROOT 加进 sys.path 之后：直接跑 `python e2e/server.py` 时
+# `yiban` 不在默认导入路径上。
+from yiban import clock  # noqa: E402
 
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
@@ -57,7 +65,7 @@ def _probe_day():
     from calendar import monthrange
     from datetime import date as _date
 
-    today = _date.today()
+    today = clock.now().date()  # 业务钟（与读取面同一个钟），不是宿主钟 date.today()
     older = today - timedelta(days=3)
     for d in range(1, monthrange(today.year, today.month)[1] + 1):
         cand = _date(today.year, today.month, d)
@@ -77,8 +85,8 @@ def _seed_log_file(webapp):
     行格式与 `tests/test_logs_by_date.py::_log_line` 一致（yiban 组件全级别入列）。
     事件由 `_seed_events()` 另种（须在 db.init_db 之后）。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
+    older = (clock.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     probe = _probe_day()
 
     def write_day(date_str: str, marker: str) -> None:
@@ -108,8 +116,8 @@ def _seed_events() -> None:
     """
     import db  # 裸模块名：sys.path 已含 scripts
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
+    older = (clock.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     db.add_sign_event(f"{today} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
     db.add_sign_event(f"{today} 06:31:05", "13800138001", "failed", "密码错误", stage="sign", attempt=3)
     db.add_sign_event(f"{older} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
@@ -130,7 +138,7 @@ def _seed_run_events() -> None:
     """
     import db  # 裸模块名：sys.path 已含 scripts
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
     owner = "single@e2e-host"
     older_owner = "worker-2@e2e-host"
     rows = [
@@ -165,7 +173,7 @@ def _seed_run_events_crowded() -> None:
     """
     import db  # 裸模块名：sys.path 已含 scripts
 
-    day = (datetime.now() - timedelta(days=CROWDED_DAY_OFFSET)).strftime("%Y-%m-%d")
+    day = (clock.now() - timedelta(days=CROWDED_DAY_OFFSET)).strftime("%Y-%m-%d")
     rows = [
         (f"{day} 06:40:{i % 60:02d}", day, "claim", f"worker-{i}@e2e-host",
          "13800138001", "")

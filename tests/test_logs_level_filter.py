@@ -245,24 +245,83 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
     #: ② 响应式挂起值：`ref("warn")`
     #: ③ 查询串直接内联：`params.set("level", "warn")`
     #: 复审实测：旧正则（仅 `level:…= "warn"`）对上述形状全部不命中（弱牙）。
-    #: L6 复核：旧首条正则 `(\w+)[:=]\s*"warn|all"` 过宽——会命中 `const scope = "all"`
-    #: 这类与档位无关的赋值，也会咬注释文本。故**收窄到含 level 子串的标识符**，
-    #: 并在匹配前剥注释（见 `_strip_comments`）。
+    #: **宽口径**（PM 2026-10-08 裁决，恢复 L6 之前的口径）：首条正则命中**任意**
+    #: 标识符赋 `"warn"`/`"all"` 字面量，**不按标识符名收窄**。L6 曾把它收窄成
+    #: "标识符须含 level 子串"，于是 `const lv = "warn";` 这类形状被放跑；漏报的代价
+    #: （前端悄悄内联默认档位）远高于误报的代价（一条响亮失败，人工几秒判掉）。
+    #: 已知噪声（刻意保留，不修）：宽口径会咬与档位无关的赋值，如
+    #: `const scope = "all";`（见 `KNOWN_NOISE_HITS`）——属可接受的响亮失败，需人工判。
+    #: 已知盲区（本正则不咬，不假装覆盖完整）：反引号模板 `const level = `warn`;`、
+    #: `` ref(`warn`) `` 新旧正则都不命中；剥注释只认 ' / " / ` 三种引号
+    #: （见 `_strip_comments`），模板里的 `${}` 内注释也不另剥。
+    #: **行为面的真守卫**在 `frontend/src/logs/format.spec.ts` 的 `buildLogsQuery`
+    #: 断言（首屏不带 `level`、切换后才下发，那条有牙）；本正则只是源码文本层的行程碑。
     FORBIDDEN_DEFAULT_RES = (
-        re.compile(r"(\w*[Ll][Ee][Vv][Ee][Ll]\w*)\s*[:=]\s*[\"'](?:warn|all)[\"']"),
+        re.compile(r"([A-Za-z_$][\w$]*)\s*[:=]\s*[\"'](?:warn|all)[\"']"),
         re.compile(r"\bref\(\s*[\"'](?:warn|all)[\"']\s*\)"),
         re.compile(r"\.set\(\s*[\"']level[\"']\s*,\s*[\"'](?:warn|all)[\"']"),
+    )
+    #: 覆盖不许回退（F1）：宽口径必须命中的**标识符**集合。含不含 level 子串的
+    #: （`lv` / `dflt`）。上一轮把首条正则改窄成"标识符须含 level"、又把 `must_hit`
+    #: 的 `lv` 例改写成 `level` 例，覆盖因此静默回退；本集合就是那次回退的守卫。
+    REQUIRED_HIT_IDENTIFIERS = ("level", "lv", "dflt", "defLevel", "LEVEL")
+    #: 宽口径下的**已知噪声**（刻意保留的命中）：与档位无关的赋值也会被咬。
+    #: 判决依据见 PM 2026-10-08 裁决：响亮失败 + 人工判掉，代价可接受。
+    #: 它不进 `must_pass`（宽口径下它确实命中），改放这里显式登记。
+    KNOWN_NOISE_HITS = (
+        'const scope = "all";',   # 与档位无关的赋值
     )
 
     @staticmethod
     def _strip_comments(src):
-        """剥掉 JS/TS 注释（`/* */` 与 `//`）后再匹配。只影响匹配输入，不改判定对象。
+        """剥掉 JS/TS 注释，**认字符串字面量**。只影响匹配输入，不改判定对象。
 
-        为什么必须剥：注释里的 `level = "warn"` 是**说明文字**，不是内联默认档位。
+        为什么必须剥注释：注释里的 `level = "warn"` 是**说明文字**，不是内联默认档位。
         复审实测：不剥注释时 `// 默认档 level = "warn" 是后端定的` 被咬成命中（假阳性）。
+        为什么必须**认字符串**（F2）：裸正则剥注释会吞掉字符串里的 `//` 与 `/*`——
+        `const BASE = "https://api"; const level = "warn";` 里 `//api...` 被当成行注释，
+        后面的真赋值被吞（漏报）；`const s = "/*"; const level = "warn"; */ x` 里字符串里的
+        `/*` 被当成块注释起始，吞到下一个 `*/`（漏报）。两条都是新开的盲区，必须关闭。
+        做法：逐字符扫描（不是正则），识别 ' / " / ` 三种引号并处理 `\\` 转义；
+        字符串内部一律不参与注释识别；字符串外才剥 `/* */`（可跨行）与 `//`（到行尾）。
         """
-        src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
-        return re.sub(r"//[^\n]*", " ", src)
+        out = []
+        i, n = 0, len(src)
+        quote = ""
+        while i < n:
+            ch = src[i]
+            if quote:
+                out.append(ch)
+                if ch == "\\" and i + 1 < n:
+                    out.append(src[i + 1])
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = ""
+                i += 1
+                continue
+            if ch in "'\"`":
+                quote = ch
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "/" and i + 1 < n and src[i + 1] == "*":
+                j = src.find("*/", i + 2)
+                if j == -1:
+                    break
+                out.append(" ")
+                i = j + 2
+                continue
+            if ch == "/" and i + 1 < n and src[i + 1] == "/":
+                j = src.find("\n", i)
+                if j == -1:
+                    break
+                out.append(" ")
+                i = j
+                continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
 
     def test_backend_is_the_single_source_of_the_default_level(self):
         from web.services import logs as logs_svc
@@ -296,19 +355,29 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
         )
 
     def test_inline_default_shapes_are_actually_caught(self):
-        """守卫自身的牙齿：复审点名的内联形状必须被命中，且收窄后不误咬。
+        """守卫自身的牙齿：复审点名的内联形状必须被命中，且注释文本不误咬。
 
-        没有这条，下一个把正则改窄的人会让守卫静默失效（弱牙复发）。同时钉住两条反向：
-        ① "合法取值声明放行"（咬住 `WARN_LOG_LEVEL = "warn"` 会把守卫变成噪声）；
-        ② 收窄后不再误咬：与档位无关的赋值（`const scope = "all"`）与**注释文本**不命中。
+        没有这条，下一个把正则改窄的人会让守卫静默失效（弱牙复发）。本用例钉住：
+        ① 必修形状全部命中（含 `lv` 等不含 level 子串的标识符，见 F1）；
+        ② "合法取值声明放行"（咬住 `WARN_LOG_LEVEL = "warn"` 会把守卫变成噪声）；
+        ③ **注释文本**不命中（`//` 与 `/* */` 两种）。
+        宽口径的已知噪声（与档位无关的 `= "all"`）另由
+        `test_known_noise_of_the_wide_caliber_is_accepted` 登记，不在此处冒充"放行"。
         """
         must_hit = (
             'const level = "warn";',                # 初始赋值
+            'const lv = "warn";',                   # F1 加回：不含 level 子串的标识符
+            'if (!lv) lv = "warn";',                # F1 加回：lv 形态的回退赋值
+            'let dflt = "warn";',                   # F1 新增
+            'const defLevel = "all";',              # F1 新增
             'const levelOverride = ref("warn");',   # 响应式挂起值
             'if (!level) level = "warn";',          # 回退赋值
             'const LEVEL = "warn";',                # 大写标识符
             'params.set("level", "warn");',         # 查询串内联
             'const opt = { level: "all" };',        # 对象字面量
+            # F2：字符串里的 `//` 与 `/*` 不得吞掉其后的真赋值
+            'const BASE = "https://api"; const level = "warn";',
+            'const s = "/*"; const level = "warn"; */ x',
         )
         for snippet in must_hit:
             self.assertTrue(
@@ -321,15 +390,43 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
             "const warnOnly = ref(true);",             # 布尔挂起值
             'const levelOverride = ref("");',          # 空串挂起值
             'if (lv) params.set("level", lv);',        # 变量下发
-            'const scope = "all";',                    # 与档位无关的赋值（L6）
-            '// 默认档 level = "warn" 是后端定的',      # 行注释不是定义（L6）
-            '/* 说明：level = "warn" */',              # 块注释不是定义（L6）
+            '// 默认档 level = "warn" 是后端定的',      # 行注释不是定义
+            '/* 说明：level = "warn" */',              # 块注释不是定义
         )
         for snippet in must_pass:
             self.assertEqual(
                 self._inline_default_offenders("sample.ts", snippet), [],
-                f"必须放行（取值声明 / 无关赋值 / 注释）：{snippet!r}",
+                f"必须放行（取值声明 / 变量下发 / 注释）：{snippet!r}",
             )
+
+    def test_the_wide_caliber_matches_any_identifier_name(self):
+        """覆盖不许回退（F1）：首条正则必须命中**任意**标识符赋 `"warn"`/`"all"`。
+
+        上一轮把首条正则收窄成"标识符须含 level 子串"（`(\\w*[Ll][Ee][Vv][Ee][Ll]\\w*)`），
+        于是 `const lv = "warn";` 不再命中；同一笔又把 `must_hit` 里的 `lv` 例改写成
+        `level` 例，自测跟着调口径，覆盖静默回退（复审活体突变实测：写进源码仍绿）。
+        本断言直接钉住"任意标识符都命中"这条性质，改窄正则即红。
+        """
+        for name in self.REQUIRED_HIT_IDENTIFIERS:
+            snippet = f'const {name} = "warn";'
+            self.assertTrue(
+                self._inline_default_offenders("sample.ts", snippet),
+                f"宽口径必须命中任意标识符赋值（含不含 level 子串的）：{snippet!r}")
+        self.assertTrue(
+            self._inline_default_offenders("sample.ts", 'if (!lv) lv = "all";'),
+            "宽口径必须命中 lv 形态的回退赋值")
+
+    def test_known_noise_of_the_wide_caliber_is_accepted(self):
+        """宽口径的已知噪声被显式登记（F1）：与档位无关的赋值会命中，属刻意保留。
+
+        宽口径下 `const scope = "all";` 确实命中，故它不进 `must_pass`；本断言钉住
+        这条噪声，下一个想"顺手消掉它"的人必须显式改这条断言与 docstring 口径，
+        不许悄悄把正则收窄回去（那正是上一轮放跑 `lv` 形状的路径）。
+        """
+        for snippet in self.KNOWN_NOISE_HITS:
+            self.assertTrue(
+                self._inline_default_offenders("sample.ts", snippet),
+                f"已知噪声应被宽口径命中（要消掉它须走显式口径变更）：{snippet!r}")
 
 
 if __name__ == "__main__":

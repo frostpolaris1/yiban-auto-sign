@@ -566,26 +566,29 @@ class RunEventsApiTest(InspectionCase):
         self.assertLess(boundary, body["window"]["start_day"],
                         "本用例的边界日必须在窗口起点之前")
 
-    def test_future_business_day_is_out_of_window_and_empty(self):
-        """窗口上界也约束端点（L4）：业务日晚于今天时回 in_window=false / 空表。
+    def test_default_day_is_clamped_into_the_window_when_newest_is_future(self):
+        """缺省日必须夹在窗口内（F4）：表内最新业务日是未来日时，缺省取今天。
 
-        复审实测：只约束下界时，未来业务日回 `in_window=false` 却 `has_data=true`。
-        本用例**不带 day**（默认日取表内最新 = 未来日），钉住两半窗口闭合。
+        复审实测：`max_day` 读全表，表内最新业务日可为未来日（业务钟快一天即产生），
+        直接用它会把缺省请求落到未来日，被上界挡成空表并给出方向错误的"跨月回溯"
+        指引。本用例只钉**缺省路径**：显式 `day=未来日` 仍原样 honored（见
+        `test_future_day_explicit_param_is_empty`）。
         """
         future = (clock.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        today = clock.now().strftime("%Y-%m-%d")
         self._insert(future, run_events.NODE_CLAIM, OWNER_SINGLE, RAW_PHONE, "",
                      _ts(future, "06:40:00"))
         body = self.admin_client.get("/api/admin/run-events").get_json()
-        self.assertEqual(body["window"]["day"], future,
-                         "无 day 时默认取表内最新业务日（本例是未来日）")
-        self.assertFalse(body["window"]["in_window"],
-                         "晚于窗口上界的日期必须回 in_window=false")
-        self.assertFalse(body["window"]["has_data"],
-                         "晚于窗口上界不得报有数据")
-        self.assertEqual(body["rounds"], [], "窗口外不得回轮级摘要（含未来日行）")
-        self.assertEqual(body["events"], [], "窗口外不得回时间线（含未来日行）")
-        self.assertEqual(body["window"]["end_day"], clock.now().strftime("%Y-%m-%d"),
-                         "上界是今天")
+        self.assertEqual(body["window"]["day"], today,
+                         "缺省日必须夹在窗口内：不得落到未来日")
+        self.assertTrue(body["window"]["in_window"],
+                        "缺省日必须落在窗口内（未来日不得被选为缺省日）")
+        self.assertEqual(body["window"]["end_day"], today, "上界是今天")
+        self.assertEqual(body["window"]["max_day"], future,
+                         "max_day 仍如实回显表内实际最新业务日（含未来日）")
+        self.assertEqual(body["rounds"], [],
+                         "缺省日是今天，未来日的行不得混入轮级摘要")
+        self.assertEqual(body["events"], [], "缺省日是今天，未来日的时间线不得混入")
 
     def test_future_day_explicit_param_is_empty(self):
         """显式 day=未来日：同样回空表（不依赖端点默认选日）。"""
@@ -600,17 +603,21 @@ class RunEventsApiTest(InspectionCase):
         self.assertEqual(body["events"], [])
 
     def test_window_bounds_come_from_store_window_range(self):
-        """端点窗口起止必须等于 store 的 `window_range()`（L1：钉住单一定义点）。
+        """端点窗口起止必须**取自 store 的 `window_range()`**（F6 强法：真行为断言）。
 
-        端点另抄一份"今天-(RETENTION_DAYS-1)"的公式即让声明"唯一定义点"失真；
-        本用例读 store 的返回值对拍，端点抄公式就会漂移而红。
+        旧写法只读 store 的返回值对拍：端点忠实照抄同一公式时它保持绿（复审实测：
+        抄一遍后仍 39 passed），只挡"异值漂移"、钉不住"唯一定义点"。改为把
+        `window_range` 换成哨兵值——端点若自己算公式（哪怕算出与今天一致的端点），
+        响应就不会等于哨兵，必红。`_run_events` 与测试里的 `run_events` 是同一个
+        模块对象，故 `mock.patch.object` 能同时影响端点与断言。
         """
-        lo, hi = run_events.window_range()
-        body = self.admin_client.get("/api/admin/run-events").get_json()
-        self.assertEqual(body["window"]["start_day"], lo,
-                         "窗口下界必须来自 store 的 window_range()，端点不得另算")
-        self.assertEqual(body["window"]["end_day"], hi,
-                         "窗口上界必须来自 store 的 window_range()，端点不得另算")
+        sentinel = ("1999-01-01", "1999-12-31")
+        with mock.patch.object(run_events, "window_range", return_value=sentinel):
+            body = self.admin_client.get("/api/admin/run-events").get_json()
+        self.assertEqual(body["window"]["start_day"], sentinel[0],
+                         "窗口下界必须取自 store 的 window_range()（哨兵断言）")
+        self.assertEqual(body["window"]["end_day"], sentinel[1],
+                         "窗口上界必须取自 store 的 window_range()（哨兵断言）")
 
     def test_executor_filter_limits_timeline(self):
         self._seed_round(executor=OWNER_WORKER)
