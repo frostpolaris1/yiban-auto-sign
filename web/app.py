@@ -260,10 +260,13 @@ from web.services.locks import (  # noqa: E402
     run_after_file_lock,  # noqa: F401
 )
 from web.services.logs import (  # noqa: E402
-    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     _LOG_TAIL_BYTES,  # noqa: F401
+    LOG_LEVEL_DEFAULT,  # noqa: F401
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    LOG_LEVELS,  # noqa: F401
     SIGN_LOG_RE,  # noqa: F401
     _cred_paused_phones,  # noqa: F401
+    _filter_log_level,  # noqa: F401
     _is_valid_date_str,  # noqa: F401
     _log_line_visible,  # noqa: F401
     _mask_log_phones,  # noqa: F401

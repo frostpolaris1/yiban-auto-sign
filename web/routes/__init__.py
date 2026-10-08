@@ -154,6 +154,7 @@ def register_all(app):
         my,
         notify,
         pages,
+        run_events_api,
         settings_api,
         signin_api,
         users_api,
@@ -167,5 +168,6 @@ def register_all(app):
     data.register(app)
     users_api.register(app)
     audit_api.register(app)
+    run_events_api.register(app)
     settings_api.register(app)
     signin_api.register(app)

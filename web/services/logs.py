@@ -4,12 +4,13 @@
 
 **功能**
 日志页、日志导出与账号卡「最近记录」共用的日志读取链路：行可见性判定
-`_log_line_visible`、尾部倒读 `_tail_lines`（上限 `_LOG_TAIL_BYTES`）、按天文件路径
-`log_path_for`、逐行解析 `parse_sign_log` / `_log_lines_for`、日期串形状校验
-`_is_valid_date_str`、最近有日志的日期 `_today_has_logs` / `_most_recent_log_date`、
-出站脱敏 `_mask_log_phones`；以及账号状态族的读取与熔断记录清理：按日状态文件
-`load_sign_state`、账密故障暂停集合 `_cred_paused_phones`、凭据变更后清熔断
-`clear_fuse_pause` / `clear_fuse_on_cred_change`。
+`_log_line_visible`（组件口径）与级别档过滤 `_filter_log_level`（人看面口径），
+两者共用同一份级别档次表 `LEVEL_RANK`；尾部倒读 `_tail_lines`（上限
+`_LOG_TAIL_BYTES`）、按天文件路径 `log_path_for`、逐行解析 `parse_sign_log` /
+`_log_lines_for`、日期串形状校验 `_is_valid_date_str`、最近有日志的日期
+`_today_has_logs` / `_most_recent_log_date`、出站脱敏 `_mask_log_phones`；以及账号
+状态族的读取与熔断记录清理：按日状态文件 `load_sign_state`、账密故障暂停集合
+`_cred_paused_phones`、凭据变更后清熔断 `clear_fuse_pause` / `clear_fuse_on_cred_change`。
 
 **归属**
 原 `web/app.py` 的模块级日志与状态辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
@@ -47,6 +48,28 @@ logger = logging.getLogger("web")
 # ---------------------------------------------------------------------------
 # 日志行可见性
 # ---------------------------------------------------------------------------
+#: 级别档次（**唯一一份**）：jmer 批次统一过级别语义——INFO 及以下=过程面，
+#: WARNING 及以上=人看面。可见性过滤与档次过滤都从这一份推出，不各写一套判据。
+LEVEL_RANK = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "WARNING": 30,
+    "ERROR": 40,
+    "CRITICAL": 50,
+}
+
+#: `/api/logs` 的级别档：`warn`（默认，收起 INFO/DEBUG）/ `all`（保留可见性口径全量）。
+LOG_LEVEL_WARN = "warn"
+LOG_LEVEL_ALL = "all"
+LOG_LEVELS = (LOG_LEVEL_WARN, LOG_LEVEL_ALL)
+LOG_LEVEL_DEFAULT = LOG_LEVEL_WARN
+
+
+def level_rank(level):
+    """级别名 → 档次值；未知级别回 0（低于任何已知级别 ⇒ 非人看面）。"""
+    return LEVEL_RANK.get(str(level or "").upper(), 0)
+
+
 def _log_line_visible(level, logger_name):
     """日志页 / 导出 / 账号卡「最近记录」显示哪些行（三处共用这一份口径）。"""
     if logger_name == "yiban" or logger_name.startswith("yiban."):
@@ -54,8 +77,29 @@ def _log_line_visible(level, logger_name):
         # 成功、engine.* 逐账号判定），只认精确名会让页面只剩汇总与结果
         return True  # DEBUG 也放行：那是部署自己开的级别，开了就该看得到
     # 其它组件（werkzeug / mailer / notify）的 INFO 与签到无关（请求日志、发送成功），
-    # 全放会把日志页灌满、把故障留痕冲走
-    return level in ("WARNING", "ERROR", "CRITICAL")
+    # 全放会把日志页灌满、把故障留痕冲走。判据复用同一份档次表：不低于 WARNING。
+    return level_rank(level) >= level_rank("WARNING")
+
+
+def _filter_log_level(lines, level):
+    """按级别档过滤日志行 → (保留行, 被档次收起的行数)。
+
+    `all` 档不设下限；其余档只留不低于 WARNING 的行。解析不出级别的行一律保留
+    并计入保留侧（宁可见，也不静默丢）。`lines` 来自 `_log_lines_for`，故已过
+    可见性口径——本函数只做第二层（档次），两层是不同的事实。
+    """
+    if level == LOG_LEVEL_ALL:
+        return list(lines), 0
+    floor = level_rank("WARNING")
+    kept = []
+    collapsed = 0
+    for line in lines:
+        mm = SIGN_LOG_RE.match(str(line).strip())
+        if mm is None or level_rank(mm.group(2)) >= floor:
+            kept.append(line)
+        else:
+            collapsed += 1
+    return kept, collapsed
 
 
 # 日志格式（与 signin.py 相同）

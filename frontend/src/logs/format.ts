@@ -26,6 +26,10 @@ export interface LogsPayload {
   truncated: boolean;
   dropped_lines: number;
   q: string;
+  /** 生效的级别档（服务端回显）：warn = 收起 INFO/DEBUG；all = 全量 */
+  level: string;
+  /** 被级别档收起的行数（0 表示没有收起任何行） */
+  collapsed_lines: number;
   log_file: string;
   date: string;
   is_today: boolean;
@@ -41,19 +45,26 @@ export const TAB_KEYS: TabKey[] = ["main", "signev", "probe"];
 
 export const EVENT_PAGE_SIZES = [20, 50, 100];
 
+/** 巡检默认档：收起 INFO/DEBUG，只看 WARN／ERROR（与后端 `LOG_LEVEL_DEFAULT` 同口径）。 */
+export const DEFAULT_LOG_LEVEL = "warn";
+/** 全量档：放出可见性口径下的全部级别。 */
+export const ALL_LOG_LEVEL = "all";
+
 /** 日志行信息栏文案。
  *  三分支与 legacy 一致：**检索态**报"X 行匹配 / 共 Y 行"（否则用户会以为总数被过滤前口径）；
  *  截断态报"显示 X / 共 Y 行"；否则只报总数（截断口径已由前一行覆盖）。
- *  检索态判据取**服务端回显**的 `q`（payload 自带），与页面已生效的过滤条件同源。 */
+ *  检索态判据取**服务端回显**的 `q`（payload 自带），与页面已生效的过滤条件同源。
+ *  级别档收起过行时追加"已收起 N 行 INFO"——不许让人把"收起"读成"没有那些行"。 */
 export function infoText(
-  p: Pick<LogsPayload, "truncated" | "returned" | "total_lines" | "dropped_lines" | "q">,
+  p: Pick<LogsPayload, "truncated" | "returned" | "total_lines" | "dropped_lines" | "q" | "collapsed_lines">,
 ): string {
   const base = p.q
     ? `${p.returned} 行匹配 / 共 ${p.total_lines} 行`
     : p.truncated
       ? `已截断：显示 ${p.returned} / 共 ${p.total_lines} 行`
       : `共 ${p.total_lines} 行`;
-  return p.dropped_lines > 0 ? `${base}（另有 ${p.dropped_lines} 行未计入）` : base;
+  const withCollapsed = p.collapsed_lines > 0 ? `${base}（已收起 ${p.collapsed_lines} 行 INFO）` : base;
+  return p.dropped_lines > 0 ? `${withCollapsed}（另有 ${p.dropped_lines} 行未计入）` : withCollapsed;
 }
 
 /* ---------------- 事件状态口径（终态码 → 中文标签 + 色调） ----------------
@@ -112,13 +123,16 @@ export function eventCountText(n: number): string {
   return `共 ${n} 条`;
 }
 
-/** 查询串：date 必带；q 与 all=1 仅在生效时下发（避免无意义参数）。 */
-export function buildLogsQuery(date: string, q: string, all: boolean): string {
+/** 查询串：date 必带；q 与 all=1 仅在生效时下发（避免无意义参数）。
+ *  `level` 总下发：默认 warn（收起 INFO/DEBUG），显式取值让服务端档位与页面一致，
+ *  不依赖服务端缺省——页面默认变了不会静默改口径。 */
+export function buildLogsQuery(date: string, q: string, all: boolean, level: string = DEFAULT_LOG_LEVEL): string {
   const params = new URLSearchParams();
   if (date) params.set("date", date);
   const kw = (q || "").trim();
   if (kw) params.set("q", kw);
   if (all) params.set("all", "1");
+  params.set("level", level);
   const qs = params.toString();
   return `/api/logs${qs ? `?${qs}` : ""}`;
 }

@@ -37,17 +37,38 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
 
   await page.goto("/data/logs");
 
-  // 1) 日志正文：信息栏报行数，正文 pre 渲染出种子行
-  await expect(page.locator(".logs-info")).toContainText("行");
-  const box = page.locator(".log-box");
-  await expect(box).toBeVisible();
-  await expect(box).toContainText("签到成功");
-  await expect(box).toContainText("（today）");
+  // 0) 巡检首块（本批新增）：可见窗口必须显式写明；轮级摘要一行一轮；时间线按轮展开。
+  //    种子（见 e2e/server.py::_seed_run_events）：一轮 3 个账号（1 成一败 1 未开始）。
+  await expect(page.locator("#run-window")).toContainText("保留最近 14 天");
+  const runRows = page.locator("#run-summary .el-table__row");
+  await expect(runRows).toHaveCount(1);
+  await expect(runRows.first()).toContainText("单执行体");
+  await expect(runRows.first()).toContainText("21 秒"); // 06:40:00 → 06:40:21
+  const tl = page.locator("#run-timeline");
+  await expect(tl.locator(".el-table__row")).toHaveCount(8); // 3 claim + 2 start + 成功/失败/收尾
+  await expect(tl).toContainText("领取");
+  await expect(tl).toContainText("收尾");
+  // 执行体只回角色与槽位：身份原串（带主机名）绝不进 DOM
+  await expect(tl).not.toContainText("e2e-host");
 
-  // 2) 端到端脱敏：脱敏形态出现，完整号码**绝不出现**（服务端单出口 + 前端只插值）
+  // 1) 日志正文：级别档**默认收起 INFO**（巡检只看 WARN／ERROR），且信息栏如实报出收起数
+  const box = page.locator(".log-box");
+  await expect(page.locator(".logs-info")).toContainText("已收起");
+  await expect(box).toBeVisible();
+  await expect(box).toContainText("单次尝试耗时偏长"); // WARNING 行仍在
+  await expect(box).not.toContainText("（today）"); // 带标记的 INFO 行默认收起
+  // 切到全量档：INFO 行回来，端到端脱敏照旧（服务端单出口 + 前端只插值）
+  await page.locator("#logs-level-warn").uncheck();
+  await expect(box).toContainText("（today）");
+  await expect(box).toContainText("签到成功");
+
+  // 2) 端到端脱敏：脱敏形态出现，完整号码**绝不出现**（进度流与日志行同一口径）
   const text = await box.innerText();
   expect(text).toContain("138****8001");
   expect(text).not.toContain("13800138001");
+  const tlText = await tl.innerText();
+  expect(tlText).toContain("138****8001");
+  expect(tlText).not.toContain("13800138001");
 
   // 3) 三分区切换（el-tabs）；事件表已种数据 → 行数可见
   await page.getByRole("tab", { name: /签到事件/ }).click();
@@ -77,7 +98,13 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
 
   const { today, older } = dates();
   await page.goto("/data/logs");
+  // 级别档默认收起 INFO：本用例的下文都在核日志正文，先切到全量档（级别档本身
+  // 由第一条用例与 tests/test_logs_level_filter.py 钉住）。等到 INFO 行真的出现再往下走：
+  // 切档会触发一次重载，而 load() 在途时会丢弃后来的导航请求（既有形状），
+  // 不等待就会把下面的「查看该日」吃掉。
+  await page.locator("#logs-level-warn").uncheck();
   const box = page.locator(".log-box");
+  await expect(box).toContainText("（today）");
   await expect(box).toContainText(today);
 
   // ① 日期导航——**这一条是 blocking 回归的守卫**：原实现用服务端回显日期覆盖用户选择，
@@ -850,7 +877,9 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 本段多条断言数"请求恰好 N 个"，而本页每 10s 自动轮询一次 /api/logs：轮询落进观测窗就
   // 是伪红（400ms 窗实测约 4%/次）。先关掉自动刷新（关掉后实测 12 秒 0 次轮询；该设置存
   // localStorage，同一 context 内换页后仍生效），并在每次归零前等首屏那一次请求落地。
+  // 级别档同样先切到全量档：本段要核日志正文（默认档会收起带标记的 INFO 行）。
   await mp.locator(".logs-check input").uncheck();
+  await mp.locator("#logs-level-warn").uncheck();
   await expect(mp.locator(".log-box")).toContainText("（today）");
   await logInput.fill("无匹配关键字-zzz");
   await logInput.press("Enter");
@@ -883,6 +912,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 证明前半段的"0"不是"回车根本没生效"的假绿。
   const cdp = await mobileCtx.newCDPSession(mp);
   await mp.goto("/data/logs");
+  await mp.locator("#logs-level-warn").uncheck(); // 全量档：下文的标记与关键字都落在 INFO 行
   await expect(mp.locator(".log-box")).toContainText("（today）"); // 首屏请求先落地，勿落进观测窗
   await logInput.click();
   await cdp.send("Input.imeSetComposition", { text: "zhongguo", selectionStart: 8, selectionEnd: 8 });
@@ -891,6 +921,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await mp.waitForTimeout(400);
   expect(logReqs, "组合期的回车发起了检索（发出去的是未提交的拼音串）").toBe(0);
   await mp.goto("/data/logs");
+  await mp.locator("#logs-level-warn").uncheck();
   await expect(mp.locator(".log-box")).toContainText("（today）");
   await logInput.fill("签到成功");
   logReqs = 0;
