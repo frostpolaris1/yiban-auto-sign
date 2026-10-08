@@ -18,9 +18,12 @@
 4. `limit` 可选，1..500，默认 200，回显为 `events_limit`。超过上限的行被截断，
    `events_truncated` 置 True。
 5. 响应分页无 offset：本表按天聚集，一天的行数有限。`rounds` 上限在读取层。
+   当日轮数超过上限时回 `rounds_truncated=true`；页面必须写明"已截断"，
+   不许静默出空表。
 6. 只读：不写表，不写审计链，**不调 `verify_audit_chain`**（照 audit_api 的先例）。
-7. 脱敏单出口：账号遮罩与执行体收敛在读取层完成（`run_events` 的读取面）。
-   本模块不二次加工，也不放行原串。
+7. 脱敏单出口：账号遮罩、执行体收敛与 message 复遮都在读取层完成
+   （`run_events` 的读取面）。写入面已净化 `message`，**读取面再复遮一次**，
+   构成纵深防御。本模块不二次加工，也不放行原串。
 8. 保留期：响应回显 `retention_days` 与窗口起止（`window.start_day` /
    `window.end_day`）。窗口外的日期回 `in_window=false`，`has_data=false`。
    页面据此给"跨月回溯请走审计日志页"的指引，不静默出空表。
@@ -90,7 +93,7 @@ def api_run_events():
         start_day = (now - datetime.timedelta(
             days=_run_events.RETENTION_DAYS - 1)).strftime("%Y-%m-%d")
         end_day = now.strftime("%Y-%m-%d")
-        rounds = [r for r in _run_events.summarize() if r["day"] == day]
+        rounds, rounds_truncated = _run_events.summarize(day=day)
         if executor is None and rounds:
             executor = rounds[0]["executor"]
         events, truncated = _run_events.timeline(day, executor, limit=limit)
@@ -113,6 +116,8 @@ def api_run_events():
             "has_data": bool(rounds),
         },
         "rounds": rounds,
+        "rounds_truncated": rounds_truncated,
+        "rounds_limit": _run_events._MAX_ROUNDS,
         "events": events,
         "events_truncated": truncated,
         "events_limit": limit,

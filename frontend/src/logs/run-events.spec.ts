@@ -5,8 +5,10 @@ import {
   eventTime,
   findRound,
   formatDuration,
+  nextSelectedKey,
   outOfWindowHint,
   roundKey,
+  roundsTruncatedText,
   windowText,
   type RunEventsWindow,
   type RunRound,
@@ -62,6 +64,32 @@ describe("roundKey / findRound", () => {
   });
 });
 
+describe("nextSelectedKey（轮询沿用在途选择）", () => {
+  const newest = round(); // 2026-10-08|single（最新）
+  const older = round({ executor: "worker-2", last_ts: "2026-10-08 06:20:00" });
+
+  it("保留在途选择：当前选中仍在新数据里就留（10 秒轮询不得改回最新）", () => {
+    expect(nextSelectedKey([newest, older], "2026-10-08", "", "2026-10-08|worker-2", true)).toBe(
+      "2026-10-08|worker-2",
+    );
+  });
+
+  it("保留态下选中项不在新数据里，才回落该日最新一轮", () => {
+    expect(nextSelectedKey([newest, older], "2026-10-08", "", "2026-10-07|x", true)).toBe(
+      "2026-10-08|single",
+    );
+    expect(nextSelectedKey([], "2026-10-08", "", "2026-10-08|single", true)).toBe("");
+  });
+
+  it("导航态：显式指定执行体就选它，否则选该日最新一轮", () => {
+    expect(nextSelectedKey([newest, older], "2026-10-08", "worker-2", "", false)).toBe(
+      "2026-10-08|worker-2",
+    );
+    expect(nextSelectedKey([newest, older], "2026-10-08", "", "", false)).toBe("2026-10-08|single");
+    expect(nextSelectedKey([], "2026-10-08", "", "", false)).toBe("");
+  });
+});
+
 describe("formatDuration", () => {
   it("null / undefined 回 --（时刻解析不出时不假装是 0 秒）", () => {
     expect(formatDuration(null)).toBe("--");
@@ -111,5 +139,16 @@ describe("窗口外指引与空态", () => {
     const out: RunEventsWindow = { ...WIN, day: "2026-08-01", in_window: false, has_data: false };
     expect(outOfWindowHint(out)).toContain("审计日志");
     expect(emptyRoundsText(out)).toContain("超出");
+  });
+});
+
+describe("轮级摘要截断文案（F1：不许静默丢轮）", () => {
+  it("未截断时不给文案", () => {
+    expect(roundsTruncatedText({ rounds_truncated: false, rounds_limit: 200 })).toBe("");
+  });
+
+  it("截断时写明已截断与该日上限", () => {
+    expect(roundsTruncatedText({ rounds_truncated: true, rounds_limit: 200 })).toContain("已截断");
+    expect(roundsTruncatedText({ rounds_truncated: true, rounds_limit: 200 })).toContain("200");
   });
 });

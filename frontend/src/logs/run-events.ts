@@ -55,6 +55,10 @@ export interface RunEventsPayload {
   retention_days: number;
   window: RunEventsWindow;
   rounds: RunRound[];
+  /** 轮级摘要行被 `_MAX_ROUNDS` 截断（本日轮数超过上限）；页面必须写明 */
+  rounds_truncated: boolean;
+  /** 读取层的轮级上限（用于写明"本日最多 N 轮"） */
+  rounds_limit: number;
   events: RunEvent[];
   events_truncated: boolean;
   events_limit: number;
@@ -71,6 +75,40 @@ export function findRound(rounds: RunRound[], key: string): RunRound | null {
     if (roundKey(r) === key) return r;
   }
   return null;
+}
+
+/**
+ * 本次响应后应当选中的轮次键。
+ *
+ * 两种意图分开，这是本函数的唯一理由：
+ * · 导航态（`keepSelection=false`）：用户显式指定执行体就选它，否则选该日最新一轮。
+ *   日期切换、「查看该日」走这条。
+ * · 保留态（`keepSelection=true`）：**在途选择优先**——当前选中仍在新数据里就留。
+ *   10 秒轮询与刷新走这条。为什么必须保留：轮询无条件回落最新一轮，会把用户点开的
+ *   旧轮在 ≤10 秒内改回最新，主用途「查昨天那轮」因此失效。
+ *   当前选中不在新数据里（例如跨天或被清理）才回落该日最新一轮。
+ */
+export function nextSelectedKey(
+  rounds: RunRound[],
+  day: string,
+  requestedExecutor: string,
+  currentKey: string,
+  keepSelection: boolean,
+): string {
+  if (keepSelection) {
+    if (currentKey && findRound(rounds, currentKey)) return currentKey;
+    return rounds.length ? roundKey(rounds[0]) : "";
+  }
+  if (requestedExecutor) return `${day}|${requestedExecutor}`;
+  return rounds.length ? roundKey(rounds[0]) : "";
+}
+
+/** 轮级摘要截断文案：未截断回空串；截断时写明本日上限（不许静默丢轮）。 */
+export function roundsTruncatedText(
+  p: Pick<RunEventsPayload, "rounds_truncated" | "rounds_limit">,
+): string {
+  if (!p.rounds_truncated) return "";
+  return `轮级摘要已截断（本日最多 ${p.rounds_limit} 轮），更早的轮次未列出。`;
 }
 
 /** 巡检查询串：日期缺省时不带 `day`（服务端取表内最新业务日）。 */

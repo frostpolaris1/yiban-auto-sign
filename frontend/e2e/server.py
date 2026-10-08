@@ -113,15 +113,19 @@ def _seed_events() -> None:
 def _seed_run_events() -> None:
     """当日的内核进度事件（**须在 `db.init_db()` 之后**调用）。
 
-    巡检块（`GET /api/admin/run-events`）的端到端种子：一轮里两个账号（一成一败），
-    加一行执行体会话收尾。账号用**原始号**写入（表存原值），端到端断言响应里只有
-    掩码形态；执行体用带主机名的稳定名（接口只许回角色与槽位）。
-    时刻显式写死（不走 `report` 的当前钟）：耗时与顺序要确定可断言。
+    巡检块（`GET /api/admin/run-events`）的端到端种子：**同一业务日两轮**。
+    为什么必须两轮：轮级摘要的「点开较早一轮」与「轮询沿用在途选择」两条行为
+    只有在存在"另一轮"时才可观测（一轮时点它等于点当前，什么都测不到）。
+    最新一轮是 `单执行体`（06:40，耗时 21 秒），较早一轮是 `并行执行体 #3`（06:30）。
+    账号用**原始号**写入（表存原值），端到端断言响应里只有掩码形态；
+    执行体用带主机名的稳定名（接口只许回角色与槽位）。时刻显式写死（不走 `report`
+    的当前钟）：耗时与顺序要确定可断言。
     """
     import db  # 裸模块名：sys.path 已含 scripts
 
     today = datetime.now().strftime("%Y-%m-%d")
     owner = "single@e2e-host"
+    older_owner = "worker-2@e2e-host"
     rows = [
         (f"{today} 06:40:00", today, "claim", owner, "13800138001", ""),
         (f"{today} 06:40:00", today, "claim", owner, "13900139002", ""),
@@ -132,6 +136,9 @@ def _seed_run_events() -> None:
         (f"{today} 06:40:20", today, "fail", owner, "13900139002", "密码错误"),
         (f"{today} 06:40:21", today, "finalize", owner, "",
          "执行体会话收尾：本轮完成 2 个账号"),
+        # 较早一轮（同一业务日、另一执行体）：供"点开较早一轮 + 轮询沿用选择"断言
+        (f"{today} 06:30:00", today, "claim", older_owner, "13800138001", ""),
+        (f"{today} 06:30:09", today, "success", older_owner, "13800138001", "签到成功"),
     ]
     conn = db.get_conn()
     conn.executemany(
