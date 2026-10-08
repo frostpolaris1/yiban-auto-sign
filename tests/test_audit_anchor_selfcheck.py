@@ -379,12 +379,11 @@ class LegacyThreeFieldAnchorTest(_Fixture):
         self.assertTrue(h["healthy"], h["anchor_msg"])
 
     def test_legacy_row_is_chain_predecessor(self):
-        """链的覆盖面：只在「后继行带 prev_line_hash」处开火。
+        """后继行带 prev_line_hash 时，改三字段前驱行必红——老行确实在链上。
 
-        两段证据。① 后继（v2 行）带该字段时，改写三字段前驱行必红——老行确实在链上。
-        ② 两条 v1 行相邻时，改写前一行不红——前一行没有带该字段的后继去哈希它。
-        第②段是 v1 时代就有的覆盖面，不是本次兼容引入的缺口；本用例把这份真实覆盖面
-        钉住，将来谁扩大了覆盖面，这里会红。
+        本用例只讲 v0 行的**前驱**角色。链路覆盖面的边界（哪些相邻对不受链保护）
+        由 `test_chain_coverage_boundary_excludes_old_format_adjacency` 单独钉住，
+        以便红点直接落在边界上。
         """
         self._seed(3)
         v0 = f"2026-08-21 00:00:31 {self._row_hash(1)}"
@@ -401,7 +400,17 @@ class LegacyThreeFieldAnchorTest(_Fixture):
         self.assertEqual(status, "tampered", msg)
         self.assertIn("行间哈希不符", msg)
 
-        # ② 两条 v1 行相邻：改写前一行，末行哈希仍对得上，故判 ok（覆盖面边界）
+    def test_chain_coverage_boundary_excludes_old_format_adjacency(self):
+        """链只覆盖「后继行带 prev_line_hash」的行；老格式相邻对不在覆盖面内。
+
+        两条 v1 行相邻时，改写前一行不红：前一行没有带该字段的后继去哈希它。这不是
+        本次 v0 兼容引入的缺口，v1 时代就是如此。本用例把这份真实覆盖面钉住，防止
+        有人把链的覆盖面说过头。
+
+        将来谁收紧覆盖面（让老格式相邻行也受链保护），这里会红——那时同批改本用例，
+        不得删除。
+        """
+        self._seed(3)
         v1a = f"2026-08-28 00:00:31 1 2 {self._row_hash(2)}"
         v1b = f"2026-08-29 00:00:31 1 3 {self._row_hash(3)}"
         self._write_lines([v1a, v1b])
