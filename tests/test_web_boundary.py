@@ -575,19 +575,34 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
             self.assertFalse(self.webapp._verify_queue_full())
 
     def test_reject_account_cas_semantics(self):
+        """`_reject_account` 的两向报级与 CAS 写回口径。
+
+        "缺任务上下文"分两档，**不得合并**：`account_id is None` 是设计内路径（编辑
+        探针刻意不绑账号 id，见 `start_edit_probe`），按 INFO 报；`account_id` 有值而
+        `prev_status` 空才是真缺陷（任务上下文丢失），按 ERROR 报。两档都零写回。
+        """
         with mock.patch.object(self.webapp.logger, "error") as err_log, \
                 mock.patch.object(self.webapp.logger, "info") as info_log, \
                 mock.patch.object(self.webapp.db, "update_account_status_if") as upd:
+            # ① 设计内（编辑探针不绑账号 id）→ INFO 留痕、零写回、不得报 ERROR
             self.webapp._reject_account(PHONE, "原因", None, "pending")
             self.assertEqual(upd.call_count, 0, "缺任务上下文时不得改账号状态")
-            self.assertEqual(err_log.call_count, 1, "缺上下文必须留痕")
+            self.assertEqual(info_log.call_count, 1, "设计内探针路径必须按 INFO 留痕")
+            self.assertEqual(err_log.call_count, 0, "设计内路径不得按 ERROR 报")
+            # ② 真缺陷（有账号 id 而无 prev_status）→ ERROR 留痕、零写回
+            self.webapp._reject_account(PHONE, "原因", 5, "")
+            self.assertEqual(upd.call_count, 0, "缺 prev_status 时不得改账号状态")
+            self.assertEqual(err_log.call_count, 1, "真缺上下文必须按 ERROR 留痕")
+            self.assertEqual(info_log.call_count, 1, "真缺陷不得被压成 INFO")
+            # ③ 上下文完整：按 expect_status 做 CAS，空原因落默认文案
             self.webapp._reject_account(PHONE, "", 5, "pending")
             self.assertEqual(upd.call_args.args,
                              (5, "rejected", "pending", "在线校验未通过"),
                              "空原因落默认文案，且按 expect_status 做 CAS")
+            # ④ CAS 失配（账号已被人工改动）→ INFO 留痕，不覆盖人工决定
             upd.return_value = False
             self.webapp._reject_account(PHONE, "原因", 5, "pending")
-            self.assertEqual(info_log.call_count, 1, "未写回（已人工变更）必须留痕")
+            self.assertEqual(info_log.call_count, 2, "未写回（已人工变更）必须留痕")
 
     def test_start_verify_job_raises_busy_when_queue_full(self):
         from web.services import verify_queue as vq
