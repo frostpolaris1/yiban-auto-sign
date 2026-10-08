@@ -38,6 +38,7 @@ from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from web.services.verify_queue import start_edit_probe as _start_edit_probe
 from yiban.engine import schedule as yb_schedule
 
 
@@ -799,7 +800,8 @@ def api_my_account_update(idx):
             clean["password"] = old.get("password", "")
         # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变
         # （与 /api/accounts/<idx> 及两条添加路径共用同一折算）
-        m.fold_phone_code(clean, old.get("phone_code", ""))
+        _old_code = old.get("phone_code") or ""
+        code_written = m.fold_phone_code(clean, _old_code) != _old_code
         clean["owner"] = old.get("owner", "")
         # 改绑手机号一律回待审核重审——否则 ACTIVE 号可被改绑成任意新号免审生效，
         # 历史审核结论不再可信。无论原状态（含 ACTIVE）；REJECTED 本就回 pending。
@@ -831,6 +833,25 @@ def api_my_account_update(idx):
         m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
                                     old.get("phone_code") or "")
         m.logger.info("用户 %s 编辑账号 %s", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
+        # 编辑路径的**异步探针**：口令或识别码实际变更后，后台复核新凭据是否可用。
+        # 易班口令对本地口令策略豁免，前提正是"真实登录探针兜底"；缺它时用户填错口令
+        # 会被静默接受，直到签到日才暴露（账号处于暂停态时错误凭据可无限期潜伏）。
+        # 一律异步：同步会占住请求线程与外呼席位，而编辑已落盘、不能回滚。
+        # 探针失败只留可查记录，**不改账号可用状态语义**（见 verify_queue.start_edit_probe）。
+        # 经 run_after_file_lock 登记：探针建任务（DB 写）并入队外呼，按锁纪律挪到出锁后。
+        # 触发口径只认口令/识别码变更，不认改绑手机号——改绑已回待审核重审。
+        if bool(str(data.get("password", "")).strip()) or code_written:
+            _probe_user = str(session.get("username", ""))
+            _probe_limits = verify_limits()
+            _probe_fails = verify_fails()
+            m.run_after_file_lock(
+                _start_edit_probe,
+                clean, _probe_user, _probe_fails, _probe_limits, m._start_verify_job,
+                m._account_verify_enabled, m._verify_queue_full,
+                lambda: m._verify_attempt_allowed(_probe_limits, _probe_user),
+                lambda: m._verify_fail_cooldown_remaining(
+                    _probe_fails, clean["phone"], time.time()),
+            )
         if rebind or old.get("status") == m.ACCOUNT_STATUS_REJECTED:
             return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
         return jsonify({"ok": True, "msg": "已保存"})
