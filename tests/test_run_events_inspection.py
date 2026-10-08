@@ -590,6 +590,40 @@ class RunEventsApiTest(InspectionCase):
                          "缺省日是今天，未来日的行不得混入轮级摘要")
         self.assertEqual(body["events"], [], "缺省日是今天，未来日的时间线不得混入")
 
+    def test_default_day_falls_back_to_today_when_newest_is_before_the_window(self):
+        """缺省日越界即取今天：表内最新业务日**早于窗口起点**时（F4）。
+
+        `max_day < start_day` 只在"过期但清理未跑"时出现：窗口起点之外那一天仍有行
+        （清理删界是 `day < 今天-RETENTION_DAYS`，窗口起点是 `今天-(RETENTION_DAYS-1)`）。
+        旧码 `day = raw_day or max_day or 今天` 直接取那个过期日，页面一进来就是空表；
+        F4 后越界即取今天（与空表路径同口径）。本用例钉两件事：① 缺省请求回今天
+        （`day == 今天`、`in_window=true`）；② 显式传那个过期日仍回 `in_window=false`
+        + 空表（显式参数不夹取，契约不变）。
+        """
+        stale = (clock.now() - datetime.timedelta(
+            days=run_events.RETENTION_DAYS)).strftime("%Y-%m-%d")
+        today = clock.now().strftime("%Y-%m-%d")
+        self._insert(stale, run_events.NODE_CLAIM, OWNER_SINGLE, RAW_PHONE, "",
+                     _ts(stale, "06:40:00"))
+        # 前提：表内最新业务日（=stale）必须早于窗口起点，否则钉不住本分支。
+        self.assertLess(stale, run_events.window_range()[0])
+        default_body = self.admin_client.get("/api/admin/run-events").get_json()
+        self.assertEqual(default_body["window"]["day"], today,
+                         "表内最新业务日早于窗口起点时，缺省日必须取今天")
+        self.assertTrue(default_body["window"]["in_window"],
+                        "缺省日取今天必须落在窗口内")
+        self.assertEqual(default_body["window"]["max_day"], stale,
+                         "max_day 仍如实回显表内实际最新业务日（含过期未清理行）")
+        self.assertEqual(default_body["rounds"], [],
+                         "缺省日是今天，过期日的行不得混入轮级摘要")
+        explicit = self.admin_client.get(
+            f"/api/admin/run-events?day={stale}").get_json()
+        self.assertFalse(explicit["window"]["in_window"],
+                         "显式传过期日：仍回 in_window=false（显式参数不夹取）")
+        self.assertFalse(explicit["window"]["has_data"])
+        self.assertEqual(explicit["rounds"], [], "显式传过期日不得回轮级摘要")
+        self.assertEqual(explicit["events"], [], "显式传过期日不得回时间线")
+
     def test_future_day_explicit_param_is_empty(self):
         """显式 day=未来日：同样回空表（不依赖端点默认选日）。"""
         future = (clock.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")

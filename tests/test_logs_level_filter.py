@@ -254,6 +254,12 @@ class FrontendDefaultLevelGuardTest(unittest.TestCase):
     #: 已知盲区（本正则不咬，不假装覆盖完整）：反引号模板 `const level = `warn`;`、
     #: `` ref(`warn`) `` 新旧正则都不命中；剥注释只认 ' / " / ` 三种引号
     #: （见 `_strip_comments`），模板里的 `${}` 内注释也不另剥。
+    #: 复审补记两条，两者都只存在于**非法 TS 源**。被护卫的三个文件必须通过编译，
+    #: 故这两条路径不可达；此处只登记，不改行为：
+    #: ① 未闭合块注释 `/*`：扫描器 `break`、丢掉其后全部文本（旧正则"不匹配则原样
+    #:    保留"），故未闭合 `/*` 之后的真赋值由"命中"变"漏"；
+    #: ② 未闭合字符串：其后的文本被当字符串内容，故随后的 `// level = "warn"` 这类
+    #:    注释文本不再被剥掉，从而**误报**命中。
     #: **行为面的真守卫**在 `frontend/src/logs/format.spec.ts` 的 `buildLogsQuery`
     #: 断言（首屏不带 `level`、切换后才下发，那条有牙）；本正则只是源码文本层的行程碑。
     FORBIDDEN_DEFAULT_RES = (
