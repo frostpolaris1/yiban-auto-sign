@@ -241,6 +241,18 @@ class StoreReadLayerTest(InspectionCase):
         self.assertEqual(r["first_ts"], _ts(self.day, "06:40:00"))
         self.assertEqual(r["last_ts"], _ts(self.day, "06:40:21"))
 
+    def test_summarize_rejects_positional_call(self):
+        """`summarize` 的参数是 keyword-only（D3）。
+
+        旧签名 `summarize(days=…)` 的首位参数曾是 `days`；加上 `day` 后若允许位置调用，
+        `summarize(7)` 会静默变成 `day="7"`、生成 `WHERE day='7'`，回 `([], False)` 而不抛。
+        keyword-only 让旧式位置调用直接抛 `TypeError`，不静默回空。
+        """
+        self._seed_round()
+        self.assertTrue(run_events.summarize(day=self.day)[0], "关键字调用照常可用")
+        with self.assertRaises(TypeError):
+            run_events.summarize(7)
+
     def test_summary_groups_by_day_and_executor(self):
         self._seed_round()
         other = (clock.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -396,6 +408,25 @@ class RunEventsApiTest(InspectionCase):
         self.assertEqual(anon.get("/api/admin/run-events").status_code, 401)
         self.assertEqual(self._user_client().get("/api/admin/run-events").status_code, 403)
 
+    def test_rounds_limit_comes_from_the_public_name(self):
+        """端点 `rounds_limit` 的取值源是公开名 `run_events.MAX_ROUNDS`（D2）。
+
+        该值已被前端渲染成用户可见文案（"本日最多 N 轮"），属对外契约字段。
+        端点若改读私有名 `_MAX_ROUNDS`，读取层重构改名不会触发任何失败——
+        契约取值源会静默失效。本用例两条腿：① 公开名存在且与截断上限同值；
+        ② 端点源码读的是公开名、不是私有名。
+        """
+        self.assertTrue(hasattr(run_events, "MAX_ROUNDS"),
+                        "读取层必须暴露公开名 MAX_ROUNDS（端点的取值源）")
+        self.assertEqual(run_events.MAX_ROUNDS, run_events._MAX_ROUNDS,
+                         "公开名与内部截断上限必须是同一个值")
+        src = open(os.path.join(BASE, "web", "routes", "run_events_api.py"),
+                   encoding="utf-8").read()
+        self.assertIn("_run_events.MAX_ROUNDS", src,
+                      "端点必须以公开名 MAX_ROUNDS 作为 rounds_limit 的取值源")
+        self.assertNotIn("_run_events._MAX_ROUNDS", src,
+                         "端点不得读私有名 _MAX_ROUNDS（内部名，改名即静默毁契约）")
+
     def test_endpoint_is_not_in_any_allowlist(self):
         """必须挂在默认拒绝的守卫下：不得被登记进 web/app.py 的放行清单。"""
         src = open(os.path.join(BASE, "web", "app.py"), encoding="utf-8").read()
@@ -467,6 +498,33 @@ class RunEventsApiTest(InspectionCase):
         self.assertEqual(body["window"]["start_day"],
                          (clock.now() - datetime.timedelta(
                              days=run_events.RETENTION_DAYS - 1)).strftime("%Y-%m-%d"))
+
+    def test_out_of_window_day_with_unpurged_rows_reports_no_data(self):
+        """窗口外但**未清理**的那一天必须回 in_window=false / has_data=false / 空表。
+
+        D1：日筛选下推到 SQL 后（`WHERE day = ?`）曾丢掉保留窗口下界。清理的删界是
+        `day < 今天-RETENTION_DAYS`，窗口起点是 `今天-(RETENTION_DAYS-1)`，于是
+        `今天-RETENTION_DAYS` 这一天在清理跑过之前仍有行——少了窗口下界时端点对它回
+        `has_data=true`、`rounds` 非空，与模块 docstring 第 8 条
+        （"窗口外的日期回 in_window=false，has_data=false"）直接矛盾。
+        本用例在**窗口外但未清理**的那一天插行，钉住读取层带窗口下界。
+        """
+        boundary = (clock.now() - datetime.timedelta(
+            days=run_events.RETENTION_DAYS)).strftime("%Y-%m-%d")
+        self._insert(boundary, run_events.NODE_CLAIM, OWNER_SINGLE, RAW_PHONE, "",
+                     _ts(boundary, "06:40:00"))
+        body = self.admin_client.get(
+            f"/api/admin/run-events?day={boundary}").get_json()
+        self.assertFalse(body["window"]["in_window"],
+                         "落在保留窗口起点之外的那一天必须回 in_window=false")
+        self.assertFalse(body["window"]["has_data"],
+                         "窗口外不得报有数据：未清理的行也要被窗口下界挡掉")
+        self.assertEqual(body["rounds"], [],
+                         "窗口外不得回轮级摘要（含未清理的窗外行）")
+        self.assertEqual(body["events"], [],
+                         "窗口外不得回时间线（含未清理的窗外行）")
+        self.assertLess(boundary, body["window"]["start_day"],
+                        "本用例的边界日必须在窗口起点之前")
 
     def test_executor_filter_limits_timeline(self):
         self._seed_round(executor=OWNER_WORKER)

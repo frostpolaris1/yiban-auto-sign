@@ -32,6 +32,13 @@ for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
 
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
+#: V3 渲染层截断守卫的种子：单日执行体分组数必须**超过**读取层轮级上限
+#: （`yiban/store/run_events.py::MAX_ROUNDS` = 200）。205 > 200，端点回
+#: `rounds_truncated=true`，页面「已截断」说明才有可断言的内容。
+CROWDED_ROUNDS = 205
+#: 上述拥挤日相对今天的天数偏移。取 5 = 落在 14 天保留窗口内（新的窗口下界不挡它），
+#: 且不撞今天 / 三天前（older）/ 取样工作日（_probe_day 取月初）。logs.spec.ts 用同一个偏移。
+CROWDED_DAY_OFFSET = 5
 ADMIN_USER = "admin"
 ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
 E2E_USER_EMAIL = "e2e-user@example.com"
@@ -147,6 +154,30 @@ def _seed_run_events() -> None:
     conn.commit()
 
 
+def _seed_run_events_crowded() -> None:
+    """单日轮数**超过读取层上限**的业务日（**须在 `db.init_db()` 之后**调用）。
+
+    V3 渲染层截断守卫的种子：读取层 `run_events.MAX_ROUNDS` = 200，本种子在
+    `今天-CROWDED_DAY_OFFSET` 造 `CROWDED_ROUNDS`（205）个执行体分组，使端点回
+    `rounds_truncated=true`。页面据此渲染 `#run-summary-truncated`；日志页其它
+    日子（今天 2 轮）不超限，据此断言该元素"不存在"。
+    执行体用带主机名的 `worker-N@e2e-host`（接口只回 `worker-N`）。
+    """
+    import db  # 裸模块名：sys.path 已含 scripts
+
+    day = (datetime.now() - timedelta(days=CROWDED_DAY_OFFSET)).strftime("%Y-%m-%d")
+    rows = [
+        (f"{day} 06:40:{i % 60:02d}", day, "claim", f"worker-{i}@e2e-host",
+         "13800138001", "")
+        for i in range(1, CROWDED_ROUNDS + 1)
+    ]
+    conn = db.get_conn()
+    conn.executemany(
+        "INSERT INTO run_events (ts, day, node, executor, phone, message) "
+        "VALUES (?,?,?,?,?,?)", rows)
+    conn.commit()
+
+
 def _seed_state_files() -> None:
     """取样工作日（见 `_probe_day`）的假签到状态：让日历底色与图例端到端可见。
 
@@ -228,6 +259,7 @@ def main():
     db.set_account_deleted(_deleted_id, 1, deleted_at="2026-09-30 10:00:00", deleted_by="admin")
     _seed_events()
     _seed_run_events()
+    _seed_run_events_crowded()
     _seed_state_files()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
