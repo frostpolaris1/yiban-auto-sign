@@ -91,10 +91,20 @@ def _reject_account(phone, reason, account_id, expect_status):
 
     缺少任务上下文时**不写**：无从判断账号是否已被人工改动，宁可不改也不能覆盖
     人工决定（账号状态由管理员在审核列表里可见并处理）。
+
+    **两种缺上下文分开报级**：`account_id is None` 是**设计内路径**——编辑探针任务
+    刻意不绑账号 id（见 `start_edit_probe`），探针失败只留痕、绝不回写状态。这条
+    路径按 INFO 报，措辞点明"设计内"；按 ERROR 报会让运维照缺陷口径追，而它每天
+    都会正常出现。`account_id` 有值而 `prev_status` 空才是真缺陷（任务上下文丢失），
+    仍按 ERROR 报。
     """
     if account_id is None or not expect_status:
-        logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
-                     account_id, expect_status, _mask_phone(phone))
+        masked = _mask_phone(phone)
+        if account_id is None:
+            logger.info("编辑探针任务不绑账号 id（设计内），不改账号状态: %s", masked)
+        else:
+            logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
+                         account_id, expect_status, masked)
         return
     try:
         wrote = db.update_account_status_if(
