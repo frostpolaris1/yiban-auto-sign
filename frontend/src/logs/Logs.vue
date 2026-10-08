@@ -219,7 +219,10 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
  *
  * **错误路径丢弃在途排队请求**（catch 里清空 `runPending`）：请求失败时，在途期排队的
  * 点击被清掉，`selectedKey` 不更新，页面停旧轮。这可以接受：错误已由 `runError` 显式
- * 呈现，属**非静默**；且 10 秒节拍的下一次轮询会重新发起请求。此处不做自我重试。
+ * 呈现，属**非静默**。此处不做自我重试。
+ * 自愈只在一半情形成立：**跟随最新态下**，10 秒节拍的下一次轮询会重新发起请求；
+ * **pin 住日期时不轮询**（`shouldPoll` 要求 `following === true`，pin 态 `following=false`），
+ * 那次被丢弃的点击**会永久丢失**，直到用户再点一次。
  */
 async function loadRuns(day: string, executor = "", keepSelection = false): Promise<void> {
   // 保留在途选择时，把选中轮的执行体一起带上。为什么必须带：不带 executor 时服务端回

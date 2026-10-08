@@ -42,10 +42,11 @@ export interface RunEventsWindow {
   end_day: string;
   /** 本次响应对应的业务日 */
   day: string;
-  /** day 是否落在保留窗口内 */
+  /** day 是否落在保留窗口内（早于下界或晚于上界都为 false） */
   in_window: boolean;
-  /** 表内真实最早/最晚业务日（无数据时 null） */
+  /** 表内真实最早/最晚业务日（无数据时 null）。是**表内实际范围**，可能落在保留窗口之外 */
   min_day: string | null;
+  /** 表内真实最晚业务日（无数据时 null）。同 min_day，可能落在保留窗口之外 */
   max_day: string | null;
   has_data: boolean;
 }
@@ -155,9 +156,14 @@ export function eventTime(ts: string): string {
   return m ? m[0] : text || "--:--:--";
 }
 
-/** 可见窗口文案（页面必须显式写明，否则"空表"会被读成"那几天没数据"）。 */
+/** 可见窗口文案（页面必须显式写明，否则"空表"会被读成"那几天没数据"）。
+ *  `min_day` / `max_day` 是**表内实际范围**（`day_bounds()` 读全表），可能落在保留窗口
+ *  之外——例如窗口起点之外那一天在清理跑过前仍有行。文案据此写明，别让读者把
+ *  "表内实际数据"读成"窗口边界"。 */
 export function windowText(win: RunEventsWindow, retentionDays: number): string {
-  const have = win.min_day && win.max_day ? `库内实际数据 ${win.min_day} ~ ${win.max_day}` : "库内暂无数据";
+  const have = win.min_day && win.max_day
+    ? `库内实际数据 ${win.min_day} ~ ${win.max_day}（表内实际范围，可能落在保留窗口外）`
+    : "库内暂无数据";
   return `进度事件只保留最近 ${retentionDays} 天（${win.start_day} ~ ${win.end_day}）；${have}`;
 }
 
