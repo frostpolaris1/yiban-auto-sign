@@ -27,6 +27,7 @@ import {
   findRound,
   formatDuration,
   nextSelectedKey,
+  needsExecutorFallback,
   roundKey,
   roundsTruncatedText,
   windowText,
@@ -213,8 +214,12 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
  * `keepSelection` 为真时沿用在途选择（轮询/同刷新路径），否则回落该日最新一轮。
  * 该端点与 `/api/logs` 是两个独立请求：巡检块失败只在块内报错，日志分区照常可用。
  *
- * 在途请求期间到达的请求**排队合并**（后到覆盖先到），不再静默丢弃：
- * 丢弃会让一次点击的导航请求消失，页面停在旧轮。合并后每一次最终状态都执行一遍。
+ * 在途请求期间到达的请求**排队合并**（后到覆盖先到）：成功路径上不再静默丢弃。
+ * 丢弃会让一次点击的导航请求消失，页面停在旧轮；合并后每一次最终状态都执行一遍。
+ *
+ * **错误路径丢弃在途排队请求**（catch 里清空 `runPending`）：请求失败时，在途期排队的
+ * 点击被清掉，`selectedKey` 不更新，页面停旧轮。这可以接受：错误已由 `runError` 显式
+ * 呈现，属**非静默**；且 10 秒节拍的下一次轮询会重新发起请求。此处不做自我重试。
  */
 async function loadRuns(day: string, executor = "", keepSelection = false): Promise<void> {
   // 保留在途选择时，把选中轮的执行体一起带上。为什么必须带：不带 executor 时服务端回
@@ -231,9 +236,20 @@ async function loadRuns(day: string, executor = "", keepSelection = false): Prom
   runLoading.value = true;
   runError.value = "";
   let req = { day, executor, keepSelection };
+  // R2：只允许一次"去掉 executor 的重取"，避免重取环。
+  let executorFallbackUsed = false;
   try {
     for (;;) {
       const resp = await api<RunEventsPayload>("GET", buildRunEventsQuery(req.day, req.executor));
+      // R2：带了 executor 但响应 rounds 不含该执行体分组时，选中态与时间线不同源
+      //（标题取该日最新轮、时间线该执行体却为空）。不带 executor 重取一次，让服务端
+      // 重新选定该日最新一轮，两块回到同源。只允许一次，不许成环。
+      if (!executorFallbackUsed &&
+          needsExecutorFallback(resp.rounds, resp.window.day, req.executor)) {
+        executorFallbackUsed = true;
+        req = { day: req.day, executor: "", keepSelection: false };
+        continue;
+      }
       runPayload.value = resp;
       selectedKey.value = nextSelectedKey(
         resp.rounds, resp.window.day, req.executor, selectedKey.value, req.keepSelection,

@@ -5,6 +5,7 @@ import {
   eventTime,
   findRound,
   formatDuration,
+  needsExecutorFallback,
   nextSelectedKey,
   outOfWindowHint,
   roundKey,
@@ -87,6 +88,30 @@ describe("nextSelectedKey（轮询沿用在途选择）", () => {
     );
     expect(nextSelectedKey([newest, older], "2026-10-08", "", "", false)).toBe("2026-10-08|single");
     expect(nextSelectedKey([], "2026-10-08", "", "", false)).toBe("");
+  });
+});
+
+describe("needsExecutorFallback（R2：选中态与时间线同源）", () => {
+  const newest = round(); // 2026-10-08|single
+
+  it("不带 executor 时不重取（缺省口径本就同源）", () => {
+    expect(needsExecutorFallback([newest], "2026-10-08", "")).toBe(false);
+    expect(needsExecutorFallback([], "2026-10-08", "")).toBe(false);
+  });
+
+  it("响应含该执行体分组时不重取", () => {
+    expect(
+      needsExecutorFallback([newest, round({ executor: "worker-2" })], "2026-10-08", "worker-2"),
+    ).toBe(false);
+  });
+
+  it("带了 executor 但响应不含该分组时重取一次（含 rounds 被截断/当日无该执行体）", () => {
+    expect(needsExecutorFallback([newest], "2026-10-08", "worker-9")).toBe(true);
+    expect(needsExecutorFallback([], "2026-10-08", "worker-9")).toBe(true);
+  });
+
+  it("键含业务日：别的业务日有同名执行体不算命中", () => {
+    expect(needsExecutorFallback([newest], "2026-10-07", "single")).toBe(true);
   });
 });
 

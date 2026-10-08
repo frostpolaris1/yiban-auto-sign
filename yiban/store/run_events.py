@@ -15,8 +15,11 @@
 - `phone`：复用 `yiban.masking.mask_phone` 的单源口径。响应不出现原始号码。
 - `executor`：复用 `yiban.egress.owner_tag`，只回角色与槽位序号。身份原串带
   主机名；主机名属部署信息，任何接口都不得回原串。
-- `message`：复用 `yiban.masking.sanitize_text`（**幂等**）再复遮一次。写入面
+- `message`：复用 `yiban.masking.sanitize_text` 再复遮一次。写入面
   已净化，读取面复遮是**纵深防御**：历史行与直插行未过写入面净化时仍不漏。
+  复遮**不是无条件幂等**：已遮值与下一个凭据键之间无分隔符时会吞掉后一段。
+  对写入口径的产物在实测形态下幂等。实测口径：定向 fuzz 出过非不动点；
+  务实形态 fuzz 与真实报文均为不动点。
 - 轮级摘要的分组键是 (业务日, 执行体)。本表没有轮次列，这是唯一可复算的口径。
   日筛选**下推到 SQL**（`summarize(day=…)`），故 `_MAX_ROUNDS` 截断只作用于已
   筛出的集合；被截断时调用方必须回显 `rounds_truncated`。
@@ -247,6 +250,22 @@ def purge(days=RETENTION_DAYS):
 #: 轮级摘要一次最多回几行（防异常写入把响应撑爆）。
 _MAX_ROUNDS = 200
 
+#: `_MAX_ROUNDS` 的公开名。端点的 `rounds_limit` 取值源；该值已被前端渲染成用户
+#: 可见文案（"本日最多 N 轮"），属契约字段。内部读取层仍用私有名。
+MAX_ROUNDS = _MAX_ROUNDS
+
+
+def _window_cutoff(days=RETENTION_DAYS):
+    """→ 保留窗口下界（含）的业务日串 = `今天-(days-1)`。只读。
+
+    窗口下界的**唯一定义点**。读取面按它过滤：`purge` 的删界是 `day < 今天-days`，
+    窗口起点却是 `今天-(days-1)`，故窗口起点之外那一天在清理跑过之前仍有行。
+    少了这道下界，端点会对窗口外日期回 `has_data=true`，与"窗口外回 has_data=false"
+    的契约矛盾（`web/routes/run_events_api.py` docstring 第 8 条）。
+    """
+    d = max(1, int(days or RETENTION_DAYS))
+    return (clock.now() - datetime.timedelta(days=d - 1)).strftime("%Y-%m-%d")
+
 
 def _public_executor(executor):
     """原始身份串 → 公开执行体标签（角色 + 槽位序号，不含主机名）。
@@ -302,12 +321,18 @@ def _rows_since(cutoff):
 
 
 def _rows_on(day):
-    """→ 该业务日的全部事件行（按 id 升序）。只读。日筛选在 SQL 侧完成。"""
+    """→ 该业务日的全部事件行（按 id 升序）。只读。日筛选在 SQL 侧完成。
+
+    **带保留窗口下界**：早于 `今天-(RETENTION_DAYS-1)` 的日期回空行。窗口下界与
+    清理删界之间有一天的缝（清理删 `day < 今天-14`，窗口起点是 `今天-13`），
+    `今天-14` 在清理跑过前仍有行；少了这道下界，窗口外日期会回非空表。
+    """
     db = _facade()
     with db._conn_lock:
         cur = db.get_conn().execute(
             "SELECT id, ts, day, node, executor, phone, message FROM run_events "
-            "WHERE day = ? ORDER BY id ASC", (str(day),))
+            "WHERE day = ? AND day >= ? ORDER BY id ASC",
+            (str(day), _window_cutoff()))
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -358,8 +383,12 @@ def _group_rounds(rows):
     return out
 
 
-def summarize(day=None, days=RETENTION_DAYS):
+def summarize(*, day=None, days=RETENTION_DAYS):
     """轮级摘要：按 (业务日, 执行体) 聚合。→ (rounds, truncated)。只读。
+
+    **两个参数都是 keyword-only**：旧签名是 `summarize(days=…)`，`days` 曾在首位。
+    加上 `day` 后若允许位置调用，`summarize(7)` 会静默变成 `day="7"`，回空表而不报错。
+    keyword-only 让旧式位置调用直接抛 `TypeError`，不静默回空。
 
     **一轮 = 一个 (业务日, 执行体) 分组**。表里没有轮次列，本口径是唯一可复算的定义。
 
@@ -381,9 +410,7 @@ def summarize(day=None, days=RETENTION_DAYS):
     if day:
         out = _group_rounds(_rows_on(str(day)))
     else:
-        d = max(1, int(days or RETENTION_DAYS))
-        cutoff = (clock.now() - datetime.timedelta(days=d - 1)).strftime("%Y-%m-%d")
-        out = _group_rounds(_rows_since(cutoff))
+        out = _group_rounds(_rows_since(_window_cutoff(days)))
     return out[:_MAX_ROUNDS], len(out) > _MAX_ROUNDS
 
 
@@ -392,8 +419,10 @@ def timeline(day, executor=None, limit=200):
 
     `executor` 是**公开标签**（`summarize` 的 `executor` 字段）；None 表示该日全部。
     每行字段：`ts` / `node` / `node_label` / `phone`（已遮罩）/ `message`。
-    `message` 再过一次 `sanitize_text`（**幂等**）：写入面已净化，读取面再复遮一次，
-    构成纵深防御。为什么读取面也要遮：历史行与直插行可能没过写入面净化；本模块是
+    只回保留窗口内的日期（带窗口下界，见 `_window_cutoff`）；窗口外回空表。
+    `message` 再过一次 `sanitize_text`：写入面已净化，读取面再复遮一次，
+    构成纵深防御。复遮**不是无条件幂等**（见模块说明），但对写入口径的产物在实测
+    形态下幂等。为什么读取面也要遮：历史行与直插行可能没过写入面净化；本模块是
     读取面的唯一收口点，收在这里才没有下一个漏点。
     行数超过 `limit` 时截断，第二个返回值给 True。
     """
@@ -402,7 +431,8 @@ def timeline(day, executor=None, limit=200):
     with db._conn_lock:
         cur = db.get_conn().execute(
             "SELECT ts, node, executor, phone, message FROM run_events "
-            "WHERE day = ? ORDER BY id ASC", (str(day),))
+            "WHERE day = ? AND day >= ? ORDER BY id ASC",
+            (str(day), _window_cutoff()))
         raw = [dict(r) for r in cur.fetchall()]
     rows = []
     for r in raw:
