@@ -50,8 +50,8 @@
     "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-CPzj5VBG.js",
     "link rel=modulepreload href=/static/vue/assets/ep-theme-rKpzsE0T.js",
     "link rel=modulepreload href=/static/vue/assets/shell-dGJbQ6eu.js",
-    "link rel=modulepreload href=/static/vue/assets/accountform-FKUA5_zG.js",
-    "script src=/static/vue/assets/myaccounts-BfWidwCl.js"
+    "link rel=modulepreload href=/static/vue/assets/accountform-C_UU9qDD.js",
+    "script src=/static/vue/assets/myaccounts-QoS3L-nM.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",

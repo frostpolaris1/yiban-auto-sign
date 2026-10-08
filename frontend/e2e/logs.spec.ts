@@ -306,6 +306,10 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   const acctForm = page.locator(".pm-backdrop, .el-dialog").first();
   await expect(acctForm).toBeVisible();
   await expect(acctForm.getByText("添加账号").first()).toBeVisible();
+  // 口令字段的标签必须带「易班」限定词，并有一行区分说明（工单 0h7p 的验收锚点）：
+  // 管理端丢限定词时，管理员会把易班凭据读成"用户在本站的登录密码"，据此改错凭据。
+  await expect(acctForm.locator(".field-label", { hasText: "易班密码" }).first()).toBeVisible();
+  await expect(acctForm.locator(".field-help", { hasText: "不影响该用户登录本站" }).first()).toBeVisible();
   await acctForm.getByPlaceholder(/易班登录手机号/).fill("");
   await acctForm.getByRole("button", { name: "添加账号" }).last().click();
   await expect(acctForm.locator(".alert.danger, .el-alert--error").first()).toBeVisible();
@@ -672,4 +676,254 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   const wideOverflow = await page.locator("#set-schedule").evaluate((el) => el.scrollWidth - el.clientWidth);
   expect(wideOverflow, "1440px 调度卡横向溢出").toBeLessThanOrEqual(1);
   await page.setViewportSize({ width: 1280, height: 720 });
+
+  // ======== 凭据文案 + 搜索提交（0h7p + 311u）——并入本用例复用同一管理员会话 ========
+  // 判据（工单原文）：
+  //   A（0h7p）管理端账号表单的口令字段必须读得出「不是本站登录密码」——标签带「易班」限定词，
+  //     并有一行区分说明。生产实证：管理员把该字段当成本站登录密码改，账号归属人至今登不上。
+  //   B（311u）三页七个搜索框在移动端既要有可见按钮、又要能回车提交；桌面「打字即时筛选」
+  //     是既有语义，不得退化。
+  // 为什么并入本用例：与看板/账号页同理，/api/login 有 60 秒 10 次/IP 的限速，整套 e2e 共用
+  // 同一实例与 127.0.0.1，单开一条 spec 会多一次登录、把后面的用例顶到 429。
+
+  // ---- A. 管理端账号表单：口令字段标签 + 区分说明 ----
+  await page.goto("/work/accounts");
+  await page.locator("[data-add-account]").first().click();
+  const pwForm = page.locator(".pm-backdrop, .el-dialog").first();
+  await expect(pwForm).toBeVisible();
+  // 用 CSS :has 结构定位（不用 filter({has})：那里的 inner locator 是相对外层再查一次的，
+  // 把已经锚在 pwForm 上的 locator 传进去会变成双侧锚定、一条也命不中）。
+  // 添加入口默认「不绑定」，手填分支（含「初始密码」）不渲染 ⇒ 本页只有一个 password 输入。
+  const pwField = pwForm.locator('label.field:has(input[type="password"])').first();
+  await expect(pwField.locator(".field-label"), "管理端口令标签丢了「易班」限定词").toHaveText(/易班密码/);
+  await expect(pwField.locator(".field-help"), "缺「不是本站登录密码」区分说明").toContainText("不是本站登录密码");
+  await pwForm.getByRole("button", { name: /取消/ }).first().click();
+  await expect(pwForm).toBeHidden();
+
+  // ---- B1. 桌面非退化：三页七个框都在 form[role=search] 内，打字即筛（不按回车也生效） ----
+  const boxes = page.locator('form[role="search"]');
+  // 721~1100px 是「工具行不换行 + 组内多了一个搜索按钮」的挤压区：本批把搜索框与按钮并排后，
+  // 桌面宽度预算变紧的地方就在这里（≤720 走的是另一套 grid/整行规则，360px 守卫测不到它）。
+  const midOverflow = async (label: string) => {
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${label} 在 900px 出现横向滚动`).toBeLessThanOrEqual(1);
+  };
+  await page.goto("/work/users");
+  await expect(boxes, "用户页应有 3 个可检索框").toHaveCount(3);
+  await page.locator('[data-usr-tab="normal"]').click();
+  await page.fill("#usr-normal-search", "e2e-user");
+  await expect(page.locator("#usr-normal-count"), "桌面端打字即筛（无需回车）").toHaveText(/1 人匹配 \/ 共 2 人/);
+  await page.fill("#usr-normal-search", "");
+  await page.setViewportSize({ width: 900, height: 800 });
+  await midOverflow("用户页");
+  await page.goto("/work/accounts");
+  await expect(boxes, "账号页应有 3 个可检索框").toHaveCount(3);
+  await page.locator('[data-acct-tab="active"]').click();
+  await midOverflow("账号页");
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/data/logs");
+  await expect(boxes, "日志页应有 1 个检索框").toHaveCount(1);
+
+  // ---- B2. 移动端 360×792@DPR4：按钮与回车两条路径都生效 ----
+  // 必须另开 context：deviceScaleFactor / isMobile 只能在建 context 时给（setViewportSize
+  // 改不了这两项）。会话用 storageState 继承，不额外调 /api/login（登录限速是全套稀缺资源）。
+  const mobileCtx = await page.context().browser()!.newContext({
+    viewport: { width: 360, height: 792 },
+    deviceScaleFactor: 4,
+    isMobile: true,
+    hasTouch: true,
+    storageState: await page.context().storageState(),
+  });
+  const mp = await mobileCtx.newPage();
+  const focusedId = () => mp.evaluate(() => document.activeElement?.id ?? "");
+  // 窄屏守卫：检索组由「一个控件独占一行」改成「输入框 + 按钮同排」，最坏的失效不是按钮
+  // 不可见，而是它把行撑出视口——那种情况 Playwright 的 toBeVisible 照样通过。
+  const noOverflow = async (label: string) => {
+    const over = await mp.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${label} 在 360px 出现横向滚动`).toBeLessThanOrEqual(1);
+  };
+
+  // 用户页：三个可检索组各有一个「搜索」按钮（进无障碍树），回车提交不整页重载、且收起键盘
+  await mp.goto("/work/users");
+  for (const key of ["pending", "normal", "vacant"]) {
+    await mp.locator(`[data-usr-tab="${key}"]`).click();
+    const btn = mp.locator(`#usr-panel-${key} form[role="search"] button[type="submit"]`);
+    await expect(btn).toBeVisible();
+    await expect(btn).toHaveAccessibleName(/搜索/);
+  }
+  await mp.locator('[data-usr-tab="normal"]').click();
+  const usrInput = mp.locator("#usr-normal-search");
+  const usersUrl = mp.url();
+  await noOverflow("用户页");
+  // **注意断言能证明什么**：桌面/移动端的筛选本来就是即时的（v-model 驱动 computed），
+  // 所以"筛选生效"在 fill 那一刻就成立，它证明不了提交路径通。提交路径真正独有、且用户
+  // 可见的两个效果是：① 没有被原生 GET 接管（URL 不变、内存态不丢）；② 输入框失焦
+  // （移动端软键盘收起，结果才露得出来）。两条路径各测这两个。
+  await usrInput.fill("e2e-user");
+  await expect(mp.locator("#usr-normal-count")).toHaveText(/1 人匹配 \/ 共 2 人/); // 即时筛选（上下文）
+  await usrInput.press("Enter");
+  expect(mp.url(), "回车被原生 GET 接管（整页重载）").toBe(usersUrl);
+  await expect
+    .poll(focusedId, { message: "回车后输入框未失焦（移动端键盘挡着结果）" })
+    .not.toBe("usr-normal-search");
+  // 按钮路径：不重载（点击本身会把焦点从输入框拿走，故不再断言失焦——那条断言测不到
+  // commitSearch()，属误导性覆盖）
+  await usrInput.fill("no-such-user-zzz");
+  await mp.locator('#usr-panel-normal form[role="search"] button[type="submit"]').click();
+  await expect(mp.locator("#usr-normal-count")).toHaveText(/0 人匹配 \/ 共 2 人/);
+  expect(mp.url(), "点按钮被原生 GET 接管").toBe(usersUrl);
+
+  // 组合输入（中文输入法）期的那次回车是「提交候选词」，不是检索指令：它不得让输入框失焦
+  // （失焦收起软键盘，而拼音串还没上屏）。本页与账号页各钉一份——同族的日志/审计两页早已
+  // 各自钉住，只留一处会被"改一处忘另一处"绕过。Chromium 不为 isComposing 跳过隐式提交，
+  // 故这里钉的是提交路径上的守卫，不是 keydown 处理器里的提前返回。
+  // 用 CDP 造真组合态；后半段在同一页做非组合期对照，证明"仍是焦点"不是"回车没生效"的假绿。
+  const cdpUsr = await mobileCtx.newCDPSession(mp);
+  await usrInput.fill("e2e-user");
+  await expect(mp.locator("#usr-normal-count")).toHaveText(/1 人匹配 \/ 共 2 人/); // 组合前的上下文
+  await usrInput.click();
+  await cdpUsr.send("Input.imeSetComposition", { text: "zhongguo", selectionStart: 8, selectionEnd: 8 });
+  await usrInput.press("Enter");
+  await mp.waitForTimeout(400);
+  expect(await focusedId(), "组合期的回车让输入框失焦（发出去的是未提交的拼音串）").toBe("usr-normal-search");
+  expect(mp.url(), "组合期回车被原生 GET 接管").toBe(usersUrl);
+  // 对照 + 即时筛选不变（同页两条）：换干净页面后打字即筛（不必回车或点按钮），非组合期回车
+  // 照常失焦。两条合起来证明上面的"仍是焦点"不是"回车没生效"的假绿，也证明守卫没有引入
+  // "提交前不过滤"的第二态。
+  await mp.goto("/work/users");
+  await mp.locator('[data-usr-tab="normal"]').click();
+  await mp.locator("#usr-normal-search").fill("e2e-user");
+  await expect(mp.locator("#usr-normal-count"), "打字即筛的既有语义被改动").toHaveText(/1 人匹配 \/ 共 2 人/);
+  await mp.locator("#usr-normal-search").press("Enter");
+  await expect.poll(focusedId, { message: "非组合期回车没失焦（对照失败）" }).not.toBe("usr-normal-search");
+
+  // 账号页（页签深链是既有契约：点页签会写 ?tab=，故 URL 基线要在点完之后取）
+  await mp.goto("/work/accounts");
+  await mp.locator('[data-acct-tab="active"]').click();
+  await expect(mp).toHaveURL(/[?&]tab=active/);
+  const acctUrl = mp.url();
+  const acctBtn = mp.locator('#acct-panel-active form[role="search"] button[type="submit"]');
+  await expect(acctBtn).toBeVisible();
+  await expect(acctBtn).toHaveAccessibleName(/搜索/);
+  const acctInput = mp.locator("#active-search");
+  await noOverflow("账号页");
+  await acctInput.fill("e2e-user-acct");
+  await acctInput.press("Enter");
+  await expect(mp.locator("#accounts-tbody tr")).toHaveCount(1);
+  expect(mp.url(), "回车被原生 GET 接管").toBe(acctUrl);
+  await expect.poll(focusedId, { message: "回车后输入框未失焦" }).not.toBe("active-search");
+  await acctInput.fill("e2e-admin-acct");
+  await acctBtn.click();
+  await expect(mp.locator("#accounts-tbody tr")).toHaveCount(1);
+  await expect(mp.locator("#accounts-tbody tr").first()).toContainText("e2e-admin-acct");
+  expect(mp.url(), "点按钮被原生 GET 接管").toBe(acctUrl); // 同上：点击路径不断言失焦（点击自带）
+
+  // 账号页的组合输入守卫（本页是另一份载体：表单与处理函数各有一份，故与用户页各钉各的）
+  const cdpAcct = await mobileCtx.newCDPSession(mp);
+  await acctInput.fill("e2e-user-acct");
+  await expect(mp.locator("#accounts-tbody tr")).toHaveCount(1);
+  await acctInput.click();
+  await cdpAcct.send("Input.imeSetComposition", { text: "zhongguo", selectionStart: 8, selectionEnd: 8 });
+  await acctInput.press("Enter");
+  await mp.waitForTimeout(400);
+  expect(await focusedId(), "组合期的回车让输入框失焦（发出去的是未提交的拼音串）").toBe("active-search");
+  expect(mp.url(), "组合期回车被原生 GET 接管").toBe(acctUrl);
+  // 对照 + 即时筛选不变（与用户页同两条口径，本页各自成立）
+  await mp.goto("/work/accounts");
+  await mp.locator('[data-acct-tab="active"]').click();
+  const acctInput2 = mp.locator("#active-search");
+  await acctInput2.fill("e2e-user-acct");
+  await expect(mp.locator("#accounts-tbody tr"), "打字即筛的既有语义被改动").toHaveCount(1);
+  await acctInput2.press("Enter");
+  await expect.poll(focusedId, { message: "非组合期回车没失焦（对照失败）" }).not.toBe("active-search");
+
+  // 日志页：检索是服务端查询（关键字随请求发出），回车与按钮两条路径都要生效
+  await mp.goto("/data/logs");
+  const logForm = mp.locator('form[role="search"]');
+  await expect(logForm).toHaveCount(1);
+  await noOverflow("日志页");
+  const logInput = logForm.locator('input[type="search"]');
+  // 本段多条断言数"请求恰好 N 个"，而本页每 10s 自动轮询一次 /api/logs：轮询落进观测窗就
+  // 是伪红（400ms 窗实测约 4%/次）。先关掉自动刷新（关掉后实测 12 秒 0 次轮询；该设置存
+  // localStorage，同一 context 内换页后仍生效），并在每次归零前等首屏那一次请求落地。
+  await mp.locator(".logs-check input").uncheck();
+  await expect(mp.locator(".log-box")).toContainText("（today）");
+  await logInput.fill("无匹配关键字-zzz");
+  await logInput.press("Enter");
+  await expect(mp.locator(".logs-empty")).toContainText("无匹配日志行");
+  await logInput.fill("签到成功");
+  await logForm.locator('button[type="submit"]').click();
+  await expect(mp.locator(".log-box")).toContainText("签到成功");
+  await expect(mp.locator(".log-box")).not.toContainText("生成定位");
+  // 一次回车只发一次检索请求。**这条钉的性质要看清**：该页 load() 首行有 `if (busy) return;`，
+  // 所以"1 个请求"也可能由 busy 兜住，而不是由处理器内的 preventDefault 保证；真正钉住后者的是
+  // 审计页那条同名断言（该页 search() 无重入守卫，去掉 preventDefault 即变红）。这里保留是防
+  // "发两遍请求"这一用户可见后果的回归守卫。
+  let logReqs = 0;
+  await mp.route("**/api/logs**", (route) => {
+    logReqs += 1;
+    void route.continue();
+  });
+  await logInput.fill("（today）");
+  logReqs = 0;
+  await logInput.press("Enter");
+  await expect(mp.locator(".log-box")).toContainText("（today）");
+  await expect.poll(() => logReqs, { message: "回车没发出检索请求" }).toBeGreaterThan(0);
+  expect(logReqs, "一次回车发了两遍检索请求").toBe(1);
+
+  // 组合输入（中文输入法）期的那次回车**不得**发起检索——否则发出去的是**未提交**的拼音串
+  // （守卫缺失时实测请求 URL 为 `?q=zhongguo`）。Chromium 不为 isComposing 跳过隐式提交，
+  // 故这条钉的是"提交路径上的守卫"而不是"keydown 处理器里的提前返回"。
+  // 用 CDP 造真组合态（Input.imeSetComposition 会派发 compositionstart，实测 keydown 的
+  // isComposing 也为真）。后半段换一张干净页面做对照：非组合期回车照常发出 1 个请求，
+  // 证明前半段的"0"不是"回车根本没生效"的假绿。
+  const cdp = await mobileCtx.newCDPSession(mp);
+  await mp.goto("/data/logs");
+  await expect(mp.locator(".log-box")).toContainText("（today）"); // 首屏请求先落地，勿落进观测窗
+  await logInput.click();
+  await cdp.send("Input.imeSetComposition", { text: "zhongguo", selectionStart: 8, selectionEnd: 8 });
+  logReqs = 0;
+  await logInput.press("Enter");
+  await mp.waitForTimeout(400);
+  expect(logReqs, "组合期的回车发起了检索（发出去的是未提交的拼音串）").toBe(0);
+  await mp.goto("/data/logs");
+  await expect(mp.locator(".log-box")).toContainText("（today）");
+  await logInput.fill("签到成功");
+  logReqs = 0;
+  await logInput.press("Enter");
+  await expect.poll(() => logReqs, { message: "非组合期回车没发出检索请求（对照失败）" }).toBe(1);
+
+  // 审计页也进移动端无横向溢出守备面（工单 w26p）：起止日期那一行 360px 下原本不换行，
+  // 第二个日期框右边缘越界 18px。页面级 scrollWidth 是代理指标，故同时钉直接指标：
+  // 两个日期框都完整落在视口内（换行生效后它们各占一行或并排收缩，两种形态都满足）。
+  await mp.goto("/data/audit");
+  await noOverflow("审计页");
+  const dateInputs = mp.locator(".audit-dates input");
+  await expect(dateInputs).toHaveCount(2);
+  const vp = mp.viewportSize()!;
+  for (const idx of [0, 1]) {
+    const box = await dateInputs.nth(idx).boundingBox();
+    expect(box, `审计页第 ${idx + 1} 个日期框取不到位置`).not.toBeNull();
+    expect(box!.x + box!.width, `审计页第 ${idx + 1} 个日期框右边缘越界`).toBeLessThanOrEqual(vp.width);
+  }
+  await mobileCtx.close();
+
+  // 宽视口这一头也要钉（首轮审查 D1）：窄屏换行必须只在窄屏生效。`.input` 的 width:100%
+  // 让 flex 基宽等于行宽，无条件 wrap 会把两个日期框在宽屏也压成两行——实测 1280/1100/1024/
+  // 900/768 各档两框分行、每框被拉到容器宽。此断言钉「两框同一行」（y 相同），
+  // 与上面 360px 那条（两框都在视口内）两头闭合。
+  for (const vw of [768, 1280]) {
+    await page.setViewportSize({ width: vw, height: 800 });
+    await page.goto("/data/audit");
+    const wideDates = page.locator(".audit-dates input");
+    await expect(wideDates).toHaveCount(2);
+    const boxes = await Promise.all([wideDates.nth(0).boundingBox(), wideDates.nth(1).boundingBox()]);
+    expect(boxes[0] && boxes[1], `${vw}px 取不到日期框位置`).toBeTruthy();
+    const dy = Math.abs(boxes[0]!.y - boxes[1]!.y);
+    expect(dy, `${vw}px 起止日期两框不在同一行：y=${boxes[0]!.y} / ${boxes[1]!.y}`).toBeLessThanOrEqual(1);
+  }
 });
