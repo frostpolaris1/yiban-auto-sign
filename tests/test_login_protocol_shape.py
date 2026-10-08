@@ -270,6 +270,10 @@ class LegacyLoginShapeTest(unittest.TestCase):
         self.assertNotIn("state", form)
         self.assertEqual(rec.header(2, "Origin"), "https://oauth.yiban.cn")
         self.assertEqual(rec.header(2, "Referer"), oauth_page_url)
+        # usersure 的表单体同样是预编码字符串（requests 不补头）：旧流程的头来自
+        # 会话（`HEADERS`），删掉会话里的 Content-Type 即上游读不到表单。
+        self.assertEqual(rec.header(2, "Content-Type"),
+                         "application/x-www-form-urlencoded; charset=UTF-8")
         # 密码必须是 RSA-1024 + PKCS1_v1_5 的 base64（128 字节密文）
         import base64
         self.assertEqual(len(base64.b64decode(form["oauth_upwd"])), 128)
@@ -366,6 +370,11 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         # 但 App 指纹必须保留
         self.assertEqual(rec.header(1, "User-Agent"), "Yiban")
         self.assertEqual(rec.header(1, "AppVersion"), signin.YIBAN_APP_VERSION)
+        # usersure 的表单体是预编码字符串，requests **不补** Content-Type：这两处
+        # 请求级显式头是唯一的来源，删掉即上游读不到表单（工单 3kmt 的同族缺口）。
+        # 与 signIn 两流程合起来，构成「两流程 × 两端点」的表单头完整矩阵。
+        self.assertEqual(rec.header(1, "Content-Type"),
+                         "application/x-www-form-urlencoded; charset=UTF-8")
 
         # 第 3 步：iframe/index 取 verify_request（不跟随重定向）
         self.assertEqual(rec.base(2), "f.yiban.cn")
@@ -685,6 +694,12 @@ class SigninShapeTest(unittest.TestCase):
 
         self.assertEqual(rec.path(1), "/nightAttendance/student/index/signIn")
         self.assertEqual(rec.query(1), {"CSRF": "csrf-token"})
+        # 表单体必须**显式**声明 Content-Type。requests 只对 dict 形态的 data 自动补
+        # `application/x-www-form-urlencoded`，对预编码字符串**不补**——缺这个头时
+        # 上游 servlet 容器不解析表单（getParameter 全 null），读不到 SignInfo，
+        # 回 msg="定位获取失败"（2026-10-08 实机 4 轮全拒的根因，工单 3kmt）。
+        self.assertEqual(rec.header(1, "Content-Type"),
+                         "application/x-www-form-urlencoded")
         form = rec.form(1)
         self.assertEqual(form["Code"], "C" * 64)
         self.assertEqual(form["PhoneModel"], "Vivo-Test")
@@ -703,6 +718,10 @@ class SigninShapeTest(unittest.TestCase):
         self._run_sign(client, rec)
         self.assertEqual(rec.form(1)["OutState"], "1.0")
         self.assertEqual(rec.header(0, "Origin"), "https://app.uyiban.com")
+        # 旧流程的会话头自带带 charset 的 Content-Type：请求级补头**不得**覆盖
+        # 它（补头只在会话缺头时发生，见 platform.submit_sign_in）。
+        self.assertEqual(rec.header(1, "Content-Type"),
+                         "application/x-www-form-urlencoded; charset=UTF-8")
 
     def test_three_states_and_window_skips(self):
         cases = [
