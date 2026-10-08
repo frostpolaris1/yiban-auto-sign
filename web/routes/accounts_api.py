@@ -45,6 +45,7 @@ from web.routes import read_audit_denied_trace as _read_audit_denied_trace
 from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
 from web.routes import verify_limits as _verify_limits
+from web.services.verify_queue import start_edit_probe as _start_edit_probe
 
 
 def api_accounts():
@@ -520,6 +521,24 @@ def api_account_update(idx):
             )
         accounts = m.load_accounts()
         m.logger.info("编辑账号 %s", m._mask_phone(clean["phone"]))
+        # 编辑路径的**异步探针**：口令或识别码实际变更后，后台复核新凭据是否可用。
+        # 豁免（不做本地口令策略）的前提正是"有真实登录探针兜底"。缺它时错误凭据静默
+        # 潜伏到下次签到才暴露。一律异步（同步会占住请求线程与外呼席位，而编辑已落盘
+        # 不能回滚）；失败只留记录，不改账号可用状态语义。经 run_after_file_lock 登记：
+        # 探针建任务（DB 写）并入队外呼，按锁纪律挪到出锁后执行。
+        # 触发口径只认口令/识别码变更，不认改绑手机号——改绑已回待审核重审。
+        if bool(str(data.get("password", "")).strip()) or code_written:
+            _probe_user = str(session.get("username", ""))
+            _probe_limits = _verify_limits()
+            _probe_fails = _verify_fails()
+            m.run_after_file_lock(
+                _start_edit_probe,
+                clean, _probe_user, _probe_fails, _probe_limits, m._start_verify_job,
+                m._account_verify_enabled, m._verify_queue_full,
+                lambda: m._verify_attempt_allowed(_probe_limits, _probe_user),
+                lambda: m._verify_fail_cooldown_remaining(
+                    _probe_fails, clean["phone"], time.time()),
+            )
         return jsonify(
             {"ok": True, "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)]}
         )
