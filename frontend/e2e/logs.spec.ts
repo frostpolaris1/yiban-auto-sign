@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { businessDay } from "./business-day";
+
 // 日志页真浏览器端到端（P1b + 2026-10-03 修复后加固）。
 //
 // 数据由 e2e/server.py 预置：**两天**日志（今天 + 三天前，行内含完整手机号与
@@ -7,12 +9,13 @@ import { expect, test } from "@playwright/test";
 // 三天前 1 条签到）。两天数据是刻意的——日期导航只有在"存在另一天"时才可观测。
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "TestPass1234!";
+//: 拥挤日（V3 渲染层截断守卫的种子日）相对业务日的天数偏移。必须与
+//: `e2e/server.py::CROWDED_DAY_OFFSET`（相对**业务钟**）同值，否则日期对不上。
+const CROWDED_DAY_OFFSET = 5;
 
+/** 用例要 pin 的两个业务日（今天 / 三天前）；按**业务时区**（UTC+8）算，不读宿主时区。 */
 function dates(): { today: string; older: string } {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const now = new Date();
-  return { today: fmt(now), older: fmt(new Date(now.getTime() - 3 * 86400000)) };
+  return { today: businessDay(0), older: businessDay(3) };
 }
 
 /** 看板热力图月份标签（`YYYY 年 M 月`）按 delta 月平移后的期望串（行为钉用）。 */
@@ -124,10 +127,9 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   //    的 4 处同类「并入用例」先例（看板段、账号管理段、系统设置段、凭据文案段各一处）都按
   //    这一理由并入，此处沿用同一形态：复用本用例会话，不额外调 /api/login。
   //    拥挤日种子见 e2e/server.py::_seed_run_events_crowded（205 个执行体分组 > 上限 200），
-  //    偏移 5 与 server.py 的 CROWDED_DAY_OFFSET 同值：落在 14 天保留窗口内，不撞今天/三天前。
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const d5 = new Date(Date.now() - 5 * 86400000);
-  const crowded = `${d5.getFullYear()}-${pad(d5.getMonth() + 1)}-${pad(d5.getDate())}`;
+  //    偏移与 server.py 的 CROWDED_DAY_OFFSET 同值：落在 14 天保留窗口内，不撞今天/三天前。
+  //    日期按**业务时区**算（businessDay）：本段跑在 Node 进程里，timezoneId 帮不上忙。
+  const crowded = businessDay(CROWDED_DAY_OFFSET);
   await page.fill('input[type="date"]', crowded);
   await page.getByRole("button", { name: "查看该日日志" }).click();
   const trunc = page.locator("#run-summary-truncated");
