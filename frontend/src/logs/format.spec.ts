@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ALL_LOG_LEVEL,
-  DEFAULT_LOG_LEVEL,
+  WARN_LOG_LEVEL,
   buildExportUrl,
   buildLogsQuery,
   eventCountText,
@@ -45,35 +45,37 @@ describe("infoText（三分支：检索态 / 截断态 / 总数）", () => {
     ).toBe("已截断：显示 80 / 共 500 行（另有 3 行未计入）");
   });
 
-  it("级别档收起过行时追加「已收起 N 行 INFO」——不许把收起读成没有那些行", () => {
+  it("级别档收起过行时追加「已收起 N 行 INFO／DEBUG」——不许把收起读成没有那些行", () => {
     expect(
       infoText({ truncated: false, returned: 2, total_lines: 2, dropped_lines: 0, q: "", collapsed_lines: 5 }),
-    ).toBe("共 2 行（已收起 5 行 INFO）");
+    ).toBe("共 2 行（已收起 5 行 INFO／DEBUG）");
     // 与 dropped_lines 两条提示可叠加
     expect(
       infoText({ truncated: false, returned: 2, total_lines: 2, dropped_lines: 1, q: "", collapsed_lines: 5 }),
-    ).toBe("共 2 行（已收起 5 行 INFO）（另有 1 行未计入）");
+    ).toBe("共 2 行（已收起 5 行 INFO／DEBUG）（另有 1 行未计入）");
   });
 });
 
 describe("buildLogsQuery", () => {
-  it("页面默认档是 warn（收起 INFO 的唯一前端出处）", () => {
-    expect(DEFAULT_LOG_LEVEL).toBe("warn");
+  it("级别档取值是契约常量；默认档位不在前端（由服务端回执决定）", () => {
+    expect(WARN_LOG_LEVEL).toBe("warn");
     expect(ALL_LOG_LEVEL).toBe("all");
   });
 
-  it("date 必带；q 与 all 仅在生效时下发；level 总下发且默认 warn", () => {
-    expect(buildLogsQuery("2026-10-03", "", false)).toBe("/api/logs?date=2026-10-03&level=warn");
-    expect(buildLogsQuery("2026-10-03", "  timeout  ", false)).toBe("/api/logs?date=2026-10-03&q=timeout&level=warn");
-    expect(buildLogsQuery("2026-10-03", "", true)).toBe("/api/logs?date=2026-10-03&all=1&level=warn");
-  });
-
-  it("level=all 显式下发（巡检切到全量档）", () => {
+  it("首屏不带 level 参数（档位以服务端回执为准）；用户切换后才显式下发", () => {
+    expect(buildLogsQuery("2026-10-03", "", false)).toBe("/api/logs?date=2026-10-03");
+    expect(buildLogsQuery("", "", false)).toBe("/api/logs");
     expect(buildLogsQuery("2026-10-03", "", false, ALL_LOG_LEVEL)).toBe("/api/logs?date=2026-10-03&level=all");
+    expect(buildLogsQuery("2026-10-03", "", false, WARN_LOG_LEVEL)).toBe("/api/logs?date=2026-10-03&level=warn");
   });
 
-  it("date 为空时不下发该键（由服务端解析最近有日志的一天）", () => {
-    expect(buildLogsQuery("", "", false)).toBe("/api/logs?level=warn");
+  it("q 与 all 仅在生效时下发", () => {
+    expect(buildLogsQuery("2026-10-03", "  timeout  ", false, ALL_LOG_LEVEL)).toBe(
+      "/api/logs?date=2026-10-03&q=timeout&level=all",
+    );
+    expect(buildLogsQuery("2026-10-03", "", true, ALL_LOG_LEVEL)).toBe(
+      "/api/logs?date=2026-10-03&all=1&level=all",
+    );
   });
 });
 

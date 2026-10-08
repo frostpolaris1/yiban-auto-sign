@@ -259,7 +259,10 @@ bash scripts/backup.sh
   `planner.plan_stats` 的 `hist`（按有效窗口 5 分钟格的落点直方图）与 `peak_per_sec` /
   `lam` 跟现网落点对账；**影子期没有 `shadow:` 影子行**，别去库里找。
 - **巡检读取面**：`GET /api/admin/run-events` 只读回显进度事件（管理员面）。
-  它回两块：轮级摘要（每轮一行）与单轮时间线。账号已遮罩，执行体只回角色与槽位。
+  它回两块：轮级摘要（每轮一行）与单轮时间线。账号已遮罩，执行体只回角色与槽位，
+  `message` 在写入面净化后再于读取面复遮一次（纵深防御）。日筛选**下推到 SQL**
+  （`WHERE day = ?`），故读取层的轮数上限只作用于已筛出的集合；当日轮数被截断时回
+  `rounds_truncated=true` 与 `rounds_limit`，页面写明「已截断」（不许静默出空表）。
   页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/store/run_events.py`，
   路由住在 `web/routes/run_events_api.py`。
 
@@ -285,8 +288,27 @@ bash scripts/backup.sh
 - INFO 只留轮级与账号级结论。它回答"这一轮跑了什么"。
 - WARN 与 ERROR 是给人看的面。它回答"哪里不对"。
 - 档次只有一份定义：`web/services/logs.py::LEVEL_RANK`。
-- `/api/logs` 的 `level` 档默认 `warn`，它收起 INFO 与 DEBUG。页面同默认。
-- 收起过行时，接口回 `collapsed_lines`，页面写明"已收起 N 行 INFO"。
+- 档位**默认值**只有后端一份：`web/services/logs.py::LOG_LEVEL_DEFAULT`（`warn`）。
+  前端不内联默认档位：首屏不带 `level`，档位显示以服务端回执为准；用户切换后才
+  显式下发。守卫：`tests/test_logs_level_filter.py::FrontendDefaultLevelGuardTest`。
+- `/api/logs` 的 `level` 档默认 `warn`，它收起 INFO 与 DEBUG。
+- 收起过行时，接口回 `collapsed_lines`，页面写明"已收起 N 行 INFO／DEBUG"
+  （被收起的是 INFO 与 DEBUG 两者，文案必须写出两者）。
+
+**已知边界：可见性判据改档次表后放宽了大小写（只记录）**
+
+- `_log_line_visible` 现在按 `LEVEL_RANK` 判非 yiban 组件（`level_rank` 内部大写化）。
+- 差异只有一项：非 yiban 组件的**小写级别别名**（例如 `warning`）由不可见变为可见。
+- 反向无丢失。Python logging 只产大写级别，故现网不可达。这条只记录，不修。
+
+**轮询节拍（复核结论，不新增机制）**
+
+- 巡检页每 10 秒轮询一次（前端 `POLL_MS`）。一次轮询发两个请求：`/api/logs` 与
+  `/api/admin/run-events`。
+- 轮询已按可见性驱动：`shouldPoll` 要求页面可见（`visibilityState === "visible"`），
+  切到后台即停。它另要求"跟随最新"视图与无在途请求。
+- 日筛选下推后，`run-events` 每次只聚合一天（`WHERE day = ?`），不再扫 14 天全表。
+- 结论：节拍维持 10 秒。降频会拖慢"看最新一轮"的可见性，收益低。
 
 **SSE 的两类新噪音要防**
 

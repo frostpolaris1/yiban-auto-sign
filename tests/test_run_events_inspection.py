@@ -35,6 +35,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -64,11 +65,25 @@ def _ts(day, hhmmss):
     return f"{day} {hhmmss}"
 
 
+def _reset_db_singleton():
+    """清掉进程级库单例连接。
+
+    机制：`db.init_db` 在 `db._conn` 非空时**复用旧连接**、跳过 JSON→SQLite 迁移
+    （根因单 `yiban-auto-sign-mgq5`）。本文件与 `test_masking_phone_contract.py` 的
+    夹具先清库单例是**绕过**，不是根因修法。mgq5 修好后应删除本函数、它的调用点
+    与校验用例 `LeftoverConnectionFixtureGuardTest`，让根因修法自己承担这条保证。
+    """
+    if db._conn is not None:
+        with contextlib.suppress(Exception):
+            db._conn.close()
+        db._conn = None
+
+
 class InspectionCase(unittest.TestCase):
     """共享夹具：临时 `.env`/SQLite（真实迁移链）+ 一个管理员会话。
 
-    三个子类共用同一套夹具（同一库文件、同一次登录）：`db` 是进程级单例，
-    每个类各建一个库会让先跑的类的连接被后跑的类换掉。登录只在 setUpClass 做
+    每个子类各跑一次 `setUpClass`：三个子类各建一个临时库、各登录一次。
+    `db` 是进程级单例，每个类建库前先清连接。登录只在 `setUpClass` 做
     一次——`/api/login` 有 60 秒 10 次/IP 的限速，逐用例登录会把后面的用例顶到 429。
     """
 
@@ -107,11 +122,8 @@ class InspectionCase(unittest.TestCase):
         import db
         # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
         # `init_db` 的既有语义——已存在连接时它复用旧连接、只刷新"声明的路径"，
-        # 于是本夹具的库根本没被打开（全量并发下 `/api/accounts` 空表那类伪红即由此而来）。
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
+        # 于是本夹具的库根本没被打开、迁移被跳过。机制与根因单见 `_reset_db_singleton`。
+        _reset_db_singleton()
         spec = importlib.util.spec_from_file_location(
             "webapp_runevents", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
@@ -153,6 +165,30 @@ class InspectionCase(unittest.TestCase):
             (ts or _ts(day, "06:40:00"), day, node, executor, phone, message))
         conn.commit()
 
+    def _insert_many(self, rows):
+        """一次事务写入多行：多轮夹具（数百行）逐行提交会把用例拖到秒级。"""
+        conn = db.get_conn()
+        conn.executemany(
+            "INSERT INTO run_events (ts, day, node, executor, phone, message) "
+            "VALUES (?,?,?,?,?,?)", rows)
+        conn.commit()
+
+    def _seed_many_rounds(self, n_days, execs_per_day, phone=""):
+        """跨 `n_days` 个业务日、每日 `execs_per_day` 个执行体各插一行 claim。
+
+        → (最旧业务日, 总轮数)。执行体用 `worker-N@host` 公开标签形态。
+        """
+        rows = []
+        oldest = ""
+        for d in range(n_days):
+            day = (clock.now() - datetime.timedelta(days=d)).strftime("%Y-%m-%d")
+            oldest = day
+            for i in range(1, execs_per_day + 1):
+                rows.append((_ts(day, "06:40:00"), day, run_events.NODE_CLAIM,
+                             f"worker-{i}@inspect-host", phone, ""))
+        self._insert_many(rows)
+        return oldest, n_days * execs_per_day
+
     def _seed_round(self, day=None, executor=OWNER_SINGLE):
         """一轮：A 成功、B 失败、C 领取后未开始；另有执行体会话收尾一行。"""
         day = day or self.day
@@ -189,7 +225,8 @@ class InspectionCase(unittest.TestCase):
 class StoreReadLayerTest(InspectionCase):
     def test_summary_counts_and_unexecuted_and_duration(self):
         self._seed_round()
-        rounds = run_events.summarize()
+        rounds, truncated = run_events.summarize()
+        self.assertFalse(truncated)
         self.assertEqual(len(rounds), 1, f"一个 (业务日, 执行体) 应聚成一行: {rounds}")
         r = rounds[0]
         self.assertEqual(r["day"], self.day)
@@ -208,15 +245,37 @@ class StoreReadLayerTest(InspectionCase):
         self._seed_round()
         other = (clock.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         self._insert(other, run_events.NODE_SUCCESS, OWNER_WORKER, RAW_PHONE, "签到成功")
-        rounds = run_events.summarize()
+        rounds, _ = run_events.summarize()
         keys = {(r["day"], r["executor"]) for r in rounds}
         self.assertEqual(keys, {(self.day, "single"), (other, "worker-2")},
                          f"分组键含业务日与执行体公开标签: {rounds}")
         self.assertEqual(rounds[0]["day"], self.day, "最新的轮次排在最前")
 
+    def test_summary_day_pushdown_keeps_a_full_older_day(self):
+        """日筛选下推到 SQL：截断只作用于已筛出的集合（F1，根因修法）。
+
+        280 轮（14 日 × 20 执行体）时，"先截断后筛选"口径会把最旧一日整日切掉，
+        端点随后静默报"该日没有运行进度记录"。下推后该日仍回全量行。
+        """
+        oldest, total = self._seed_many_rounds(n_days=14, execs_per_day=20)
+        self.assertGreater(total, run_events._MAX_ROUNDS,
+                           "夹具必须超过读取层上限，否则钉不住截断")
+        rounds, truncated = run_events.summarize(day=oldest)
+        self.assertEqual(len(rounds), 20, "最旧一日的轮次不得被全局截断切掉")
+        self.assertFalse(truncated, "该日 20 轮未超上限，不得报截断")
+        self.assertTrue(all(r["day"] == oldest for r in rounds),
+                        f"只应回该日的轮次: {rounds[:2]}")
+
+    def test_summary_flags_truncation_on_one_day(self):
+        """单日轮数超过上限时回 `truncated=True`：不许静默丢行。"""
+        self._seed_many_rounds(n_days=1, execs_per_day=run_events._MAX_ROUNDS + 51)
+        rounds, truncated = run_events.summarize(day=self.day)
+        self.assertEqual(len(rounds), run_events._MAX_ROUNDS)
+        self.assertTrue(truncated, "超过上限必须报截断（不许静默空表）")
+
     def test_phone_is_masked_at_the_read_boundary(self):
         self._seed_round()
-        rounds = run_events.summarize()
+        rounds, _ = run_events.summarize()
         events, _truncated = run_events.timeline(self.day, "single")
         blob = json.dumps([rounds, events], ensure_ascii=False)
         self.assertNotIn(RAW_PHONE, blob, "读取层响应里不得出现 11 位明文手机号")
@@ -225,7 +284,7 @@ class StoreReadLayerTest(InspectionCase):
 
     def test_executor_is_reduced_to_role_and_slot(self):
         self._seed_round(executor=OWNER_WORKER)
-        rounds = run_events.summarize()
+        rounds, _ = run_events.summarize()
         self.assertEqual(rounds[0]["executor"], "worker-2", "执行体只回槽位名，不带主机名")
         self.assertEqual(rounds[0]["executor_label"], "并行执行体 #3")
         self.assertNotIn("inspect-host", json.dumps(rounds, ensure_ascii=False),
@@ -246,6 +305,23 @@ class StoreReadLayerTest(InspectionCase):
         self.assertEqual(len(limited), 3)
         self.assertTrue(limited_trunc, "行数超过上限时必须报截断")
 
+    def test_timeline_re_sanitizes_message_from_the_table(self):
+        """读取面复遮 message：写入面已净化，读取面再兜一层（F2，纵深防御）。
+
+        直插一行带三种号码形态与一个凭据字面量的 message：写入面未过它的行
+        （历史行、直插行）不得由读取面原样下发。
+        """
+        self._insert(self.day, run_events.NODE_FAIL, OWNER_SINGLE, RAW_PHONE,
+                     "上游回显 13800138001 / +8613800138000 / 138 0013 8000 token=abc123",
+                     _ts(self.day, "06:40:20"))
+        events, _ = run_events.timeline(self.day, "single")
+        blob = json.dumps(events, ensure_ascii=False)
+        self.assertNotIn("13800138001", blob, "读取面不得原样下发裸号")
+        self.assertNotIn("+8613800138000", blob, "+86 前缀形态未遮")
+        self.assertNotIn("138 0013 8000", blob, "空格分段形态未遮")
+        self.assertIn("138****8000", blob, "读取面必须按单源口径复遮")
+        self.assertNotIn("abc123", blob, "凭据字面量也必须被复遮")
+
     def test_day_bounds_report_actual_min_and_max(self):
         older = (clock.now() - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
         self._seed_round()
@@ -262,6 +338,7 @@ class StoreReadLayerTest(InspectionCase):
         before = conn.execute("SELECT COUNT(*) FROM run_events").fetchone()[0]
         audits = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
         run_events.summarize()
+        run_events.summarize(day=self.day)
         run_events.timeline(self.day, "single")
         run_events.day_bounds()
         self.assertEqual(before,
@@ -282,7 +359,8 @@ class RunEventsApiTest(InspectionCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:400])
         body = r.get_json()
         for key in ("ok", "retention_days", "window", "rounds", "events",
-                    "events_truncated", "events_limit"):
+                    "events_truncated", "events_limit", "rounds_truncated",
+                    "rounds_limit"):
             self.assertIn(key, body, f"信封缺键：{key}")
         for key in ("start_day", "end_day", "day", "in_window", "min_day",
                     "max_day", "has_data"):
@@ -337,6 +415,39 @@ class RunEventsApiTest(InspectionCase):
         self.assertEqual(c.get("/api/admin/run-events?limit=99999").status_code, 400)
         self.assertEqual(c.get("/api/admin/run-events?limit=abc").status_code, 400)
         self.assertEqual(c.get("/api/admin/run-events?executor=%3Cscript%3E").status_code, 400)
+
+    def test_older_day_with_many_rounds_is_not_reported_empty(self):
+        """最旧在窗口内的一日有数据时，端点不得报 `has_data=false`（F1）。
+
+        280 轮（14 日 × 20 执行体）>"先截断后筛选"上限 200：旧口径会把最旧一日
+        整日切掉，端点回 `rounds=[]`、`has_data=false`、`in_window=true`，
+        页面写"该日没有运行进度记录"。这条正是"查昨天那轮"的主用途。
+        """
+        oldest, _ = self._seed_many_rounds(n_days=14, execs_per_day=20)
+        body = self.admin_client.get(
+            f"/api/admin/run-events?day={oldest}").get_json()
+        self.assertTrue(body["window"]["in_window"])
+        self.assertTrue(body["window"]["has_data"], "有数据的日不得被报成没有记录")
+        self.assertEqual(len(body["rounds"]), 20)
+        self.assertFalse(body["rounds_truncated"])
+
+    def test_rounds_truncated_flag_on_a_crowded_day(self):
+        """单日轮数超上限时端点回 `rounds_truncated=true`：页面据此写明被截断。"""
+        self._seed_many_rounds(n_days=1, execs_per_day=run_events._MAX_ROUNDS + 1)
+        body = self.admin_client.get(
+            f"/api/admin/run-events?day={self.day}").get_json()
+        self.assertEqual(len(body["rounds"]), run_events._MAX_ROUNDS)
+        self.assertTrue(body["rounds_truncated"])
+
+    def test_message_is_re_sanitized_at_the_endpoint(self):
+        """端点下发的 message 已复遮（F2）：直插行也不得漏号与凭据。"""
+        self._insert(self.day, run_events.NODE_FAIL, OWNER_SINGLE, RAW_PHONE,
+                     "上游回显 13800138001 token=abc123", _ts(self.day, "06:40:20"))
+        text = self.admin_client.get(
+            "/api/admin/run-events?executor=single").get_data(as_text=True)
+        self.assertNotIn("13800138001", text)
+        self.assertNotIn("abc123", text)
+        self.assertIn("138****8001", text)
 
     def test_no_plaintext_phone_nor_hostname_in_body(self):
         self._seed_round()
@@ -444,6 +555,38 @@ class InspectionPageWiringTest(InspectionCase):
         for key in body["events"][0]:
             self.assertIn(key, ("ts", "node", "node_label", "phone", "message"),
                           f"事件行多了前端不认的键：{key}")
+
+
+# ---------------------------------------------------------------------------
+# 夹具加固的校验者：留下连接的模块之后本类仍按预期装载
+# ---------------------------------------------------------------------------
+class LeftoverConnectionFixtureGuardTest(InspectionCase):
+    """夹具加固的校验者：在留下连接的模块之后，本类仍按预期装载。
+
+    机制：`db.init_db` 在 `db._conn` 非空时**复用旧连接**、跳过 JSON→SQLite 迁移
+    （根因单 `yiban-auto-sign-mgq5`）。本类 `setUpClass` 先清库单例是**绕过**，
+    不是根因修法。根因修好后应删除 `_reset_db_singleton` 与本类。
+    """
+
+    def test_reset_db_singleton_restores_the_class_load(self):
+        # ① 机制：留下活连接时 init_db 复用旧连接，本类的库根本没被打开
+        stale = sqlite3.connect(os.path.join(self.tmp, "leftover.db"))
+        db._conn = stale
+        reused = db.init_db(self.db_file, migrate_from=self.accounts_file,
+                            env_file=self.env_file)
+        self.assertIs(reused, stale, "机制：init_db 在已有连接时复用旧连接")
+        # ② 加固：按本类口径清连接后，装载按预期
+        try:
+            _reset_db_singleton()
+            db.init_db(self.db_file, migrate_from=self.accounts_file,
+                       env_file=self.env_file)
+            self.assertIsNot(db.get_conn(), stale,
+                             "清连接后必须打开本类自己的库，而不是复用遗留连接")
+            self.assertIsNotNone(db.find_user(USER_EMAIL),
+                                 "清连接后本类的用户必须按预期装载")
+        finally:
+            with contextlib.suppress(Exception):
+                stale.close()
 
 
 if __name__ == "__main__":

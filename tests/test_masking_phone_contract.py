@@ -268,10 +268,13 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         import db  # 裸模块名：pyproject 的 pythonpath 已含 scripts
 
         # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
-        # `init_db` 的既有语义——已存在连接时它只刷新"声明的路径"、**复用旧连接**，
-        # 于是本类的 accounts.json → SQLite 迁移被整段跳过，`/api/accounts` 回空表
-        # （2026-10-08 全量并发下实测：本类排在某个留下连接的模块之后就伪红，
-        # 判据见 test_accounts_response_has_no_plaintext_phone 的"账号未按预期装载"断言）。
+        # `init_db` 的既有语义——已存在连接时它复用旧连接、跳过 JSON→SQLite 迁移，
+        # 于是本类的 accounts.json→SQLite 迁移被整段跳过、`/api/accounts` 回空表
+        # （判据见 test_accounts_response_has_no_plaintext_phone 的"账号未按预期装载"断言）。
+        # 这是**绕过**，不是根因修法：根因单 `yiban-auto-sign-mgq5` 修好后应删除本段。
+        # 口径是「机制复现 ＋ 加固」：机制用已知留下连接的模块确定性复现（旧树红、新树绿），
+        # 不是"全量实测伪红"。加固的校验者见
+        # tests/test_run_events_inspection.py::LeftoverConnectionFixtureGuardTest。
         if db._conn is not None:
             with contextlib.suppress(Exception):
                 db._conn.close()
