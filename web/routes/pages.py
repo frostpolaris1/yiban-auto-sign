@@ -38,6 +38,7 @@ from flask import (
 
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
+from web.services import vue_assets as _vue_assets
 from yiban import status as _yiban_status
 from yiban.infra import env_io as _env_io
 
@@ -50,12 +51,14 @@ def _env_line_break_codes():
 
 
 def _calendar_page_context():
-    """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染，无构建步骤）。
+    """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染进页面的内联载荷）。
 
-    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。图例由
-    `legend_items()` 渲染成 `<li>`；同一份表经 `display_payload()` 序列化进页面的内联
-    脚本（`window.YB_CALENDAR_STATE`），供账号卡状态行与日期格消费。日历渲染与图例因此
-    消费同一份表——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移。
+    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。`display_payload()`
+    把它序列化进页面的内联脚本（`window.YB_CALENDAR_STATE`）；**图例档位清单同车下发**
+    （`payload["legend"] = legend_items()`），故图例与日期格/账号卡状态行消费的是同一份表
+    ——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移（急停曾渲染成
+    "排队待签"）。图例的 markup 由 Vue 渲染（前端只负责"只解释看得见的颜色"这一层收敛），
+    档位与中文短名一律不落前端。
 
     `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
     在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
@@ -63,7 +66,8 @@ def _calendar_page_context():
     m = _appmod()
     payload = _yiban_status.display_payload()
     payload["day_off"] = _signstatus.day_off_payload(m._day_off_reason())
-    return {"status_legend": _yiban_status.legend_items(), "calendar_state": payload}
+    payload["legend"] = _yiban_status.legend_items()
+    return {"calendar_state": payload}
 
 
 def _render_admin_page(template, nav_key, crumbs, extra=None):
@@ -103,13 +107,27 @@ def _admin_page_redirect():
     return None
 
 
+def _dashboard_page_context():
+    """数据看板的服务端载荷：热力图脚注基线文案。
+
+    本页数据**全部客户端拉取**（settings / sign-events / time-prefs / accounts / clock /
+    announcement / ping），服务端不新增查询上下文；唯一内联项是这条描述统计口径的文案
+    ——「真实数据（不含探针）」是后端语义，且 JS 在签到事件加载失败后会改写它、成功后按此
+    基线还原，故基线必须与挂载点同车下发，而不是在组件里硬编码第二份。
+    """
+    return {"dashboard_state": {"cal_note": "真实数据（不含探针），覆盖近 30 天"}}
+
+
 # ---- 页面路径：`组/页面`（数据 / 工作台 / 我的 + 用户端）----
 # 分组标题与首段一致，页面与第二段一致，便于按 URL 反推归属。
 def dashboard_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/data_dashboard.html", "data-dashboard", ["数据", "数据总览"])
+    return _render_vue_page(
+        "dashboard.html", "pages/data_dashboard.html", "data-dashboard",
+        ["数据", "数据总览"], extra=_dashboard_page_context(),
+    )
 
 
 # 旧路径 → 新路径：书签/分享链接不失效。用 302 而非 308：本项目仍在演进，
@@ -235,15 +253,18 @@ def user_account_page():
     blocked = _user_page_redirect()
     if blocked:
         return blocked
-    return _render_user_page("pages/user_account.html", "user-account", ["用户中心", "账号与设置"])
+    return _render_vue_page(
+        "myaccounts.html", "pages/user_account.html", "user-account", ["用户中心", "账号与设置"], user=True
+    )
 
 
 def user_calendar_page():
     blocked = _user_page_redirect()
     if blocked:
         return blocked
-    return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"],
-                             extra=_calendar_page_context())
+    return _render_vue_page("calendar.html", "pages/user_calendar.html", "user-calendar",
+                            ["用户中心", "签到日历"], user=True,
+                            extra=_calendar_page_context())
 
 
 # 登录页循环检测计数 {ip: (count, first_ts)}：浏览器缓存旧 JS 时可能无限 302 循环，
@@ -282,8 +303,22 @@ def login_page():
         if cnt < 4:
             return redirect(url_for("dashboard_page") if m._current_role() == "admin" else url_for("user_calendar_page"))
         m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", m.db.hash_ip(ip))
+    return _render_auth_vue_page("login.html", "login.html")
+
+
+def _render_auth_vue_page(entry, template):
+    """认证页（登录）的 Vue 渲染：外壳是 `layout_auth`，上下文与两套后台外壳都不同。
+
+    单独一个助手而不是给 `_render_vue_page` 加分支：登录页**不需要**导航高亮/面包屑/当前
+    身份（它渲染在登录态之外），却独有分享摘要、站点简介与两份协议正文——两套上下文没有
+    交集，硬塞进一个函数只会让"哪些键对哪页有意义"变得不可读。
+    """
+    assets = _vue_assets.vue_assets(entry)
+    if not assets["js"]:
+        abort(404)
+    m = _appmod()
     return render_template(
-        "login.html",
+        template,
         web_version=m.WEB_VERSION,
         app_version=m.APP_VERSION,
         icp_info=m.icp_info(),
@@ -293,6 +328,9 @@ def login_page():
         site_image=m.site_image(),
         agreement_html=m._read_doc_html("USER_AGREEMENT.md"),
         privacy_html=m._read_doc_html("PRIVACY_POLICY.md"),
+        vue_js=assets["js"][0],
+        vue_preloads=assets["preloads"],
+        vue_css=assets["css"],
     )
 
 
@@ -316,35 +354,35 @@ def accounts_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
+    return _render_vue_page("accounts.html", "pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
 
 
 def logs_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/data_logs.html", "data-logs", ["数据", "签到日志"])
+    return _render_vue_page("logs.html", "pages/data_logs.html", "data-logs", ["数据", "签到日志"])
 
 
 def users_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/work_users.html", "work-users", ["工作台", "用户管理"])
+    return _render_vue_page("users.html", "pages/work_users.html", "work-users", ["工作台", "用户管理"])
 
 
 def settings_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
+    return _render_vue_page("settings.html", "pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
 
 
 def my_account_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/my_account.html", "my-account", ["我的", "我的账号"])
+    return _render_vue_page("myaccounts.html", "pages/my_account.html", "my-account", ["我的", "我的账号"])
 
 
 # 管理员本人的签到日历（与用户端 /user/calendar 同源）；个人域的一部分，
@@ -353,8 +391,51 @@ def my_calendar_page():
     blocked = _admin_page_redirect()
     if blocked:
         return blocked
-    return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"],
-                              extra=_calendar_page_context())
+    return _render_vue_page("calendar.html", "pages/my_calendar.html", "my-calendar",
+                            ["我的", "我的日历"], extra=_calendar_page_context())
+
+
+# ---- Vue 页统一渲染（前端翻新；计划 docs/refactor/29）----
+# 三处共用同一套管道：解析 manifest 资产 → 下发模板（模板只出挂载点与模块脚本）。
+# 资产路径**不含 script_root**（模板层自行拼，子路径部署唯一收口点）；dist 缺失时 404
+# 而不是渲染一个空壳——缺资产是构建/入库错误，应显式可见。
+def _render_vue_page(entry, template, nav_key, crumbs, user=False, extra=None):
+    """Vue 页统一渲染。`user=True` 走用户端外壳（/user/*），否则管理端外壳。
+
+    `extra` 供单页追加自己的上下文（日历页的状态载荷与图例），与 manifest 资产一并发给
+    模板——服务端渲染的页头与内联载荷因此和挂载点同车到达，模板层不必二次取数。
+    """
+    assets = _vue_assets.vue_assets(entry)
+    if not assets["js"]:
+        abort(404)
+    render = _render_user_page if user else _render_admin_page
+    return render(
+        template,
+        nav_key,
+        crumbs,
+        extra={
+            "vue_js": assets["js"][0],
+            "vue_preloads": assets["preloads"],
+            "vue_css": assets["css"],
+            **(extra or {}),
+        },
+    )
+
+
+# 管线验证页：不进侧栏（避免动 sidebar.html 波及全部金标准快照），URL 直达。
+def vue_pilot_page():
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    return _render_vue_page("index.html", "pages/work_vue_pilot.html", "", ["工作台", "Vue 翻新试点"])
+
+
+# 审计日志页（P1 第一个原生新页面；API 契约见 web/routes/audit_api.py 的七约束）。
+def audit_page():
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    return _render_vue_page("audit.html", "pages/data_audit.html", "data-audit", ["数据", "审计日志"])
 
 
 # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
@@ -362,8 +443,8 @@ def my_calendar_page():
 # web.app 的 no_cache 中间件消费本清单（页面路径的唯一登记点在此）。
 NO_STORE_PAGES = frozenset(_MOVED_PAGES) | {
     "/", "/login", "/terms", "/privacy",
-    "/data/dashboard", "/data/logs",
-    "/work/accounts", "/work/users", "/work/settings",
+    "/data/dashboard", "/data/logs", "/data/audit",
+    "/work/accounts", "/work/users", "/work/settings", "/work/pilot",
     "/my/account", "/my/calendar",
     "/user/account", "/user/calendar",
 }
@@ -394,7 +475,9 @@ def register(app):
 
     app.add_url_rule("/work/accounts", view_func=accounts_page)
     app.add_url_rule("/data/logs", view_func=logs_page)
+    app.add_url_rule("/data/audit", view_func=audit_page)
     app.add_url_rule("/work/users", view_func=users_page)
     app.add_url_rule("/work/settings", view_func=settings_page)
+    app.add_url_rule("/work/pilot", view_func=vue_pilot_page)
     app.add_url_rule("/my/account", view_func=my_account_page)
     app.add_url_rule("/my/calendar", view_func=my_calendar_page)

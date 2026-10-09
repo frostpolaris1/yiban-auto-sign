@@ -7,6 +7,7 @@
 | `README.md`（本文件） | 模块树、依赖方向、多执行体现状与出口配置 |
 | `api-executors.md` | 执行体与出口接口契约（前端用） |
 | `cli.md` | CLI 契约（面向 agent/自动化） |
+| `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
 | `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
@@ -25,11 +26,10 @@ yiban/                        签到引擎与共享基础（可被 web / scripts
 ├── cred_state.py             账密熔断状态文件
 ├── state_gc.py               按日状态文件的保留期策略与清理
 ├── logging_ext.py            按天 + flock 的日志 handler
-├── fyiban/                   ★ 第三方隔离层（AGPL-3.0 上游衍生，见 PROVENANCE.md）
-│   ├── algo.py               多边形内随机定位点（缩放质心 + 射线法）
-│   ├── headers.py            易班 App 请求指纹（版本号/请求头）
-│   ├── waf.py                易盾 WAF 挑战纯 Python 解析 + 挑战特征识别
-│   └── protocol.py           端点/参数/页面正则/握手顺序（平台事实，无安全判断）
+├── platform.py               易班平台事实（端点/请求头/版本）+ 登录与签到编排
+├── protocol/                 ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+├── geo.py                    多边形内随机定位点（偶奇射线法 + 拒绝采样 + 显式兜底）
+├── challenge.py              风控挑战**检测**（只检测不求解）
 ├── infra/                    叶子工具：locks / env_io / env_lock / account_crypto
 ├── cli.py                    统一命令行入口（七个子命令；见 docs/dev/cli.md）
 ├── engine/                   签到引擎（按“执行一轮”切分）：runner / round / schedule
@@ -59,12 +59,12 @@ docker/                       容器：Dockerfile / entrypoint / supervisord / s
 ## 依赖方向（单向，有守卫测试钉住）
 
 ```
-web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得裸名导入 scripts/ 模块）
+web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`yiban` 不得裸名导入 scripts/ 模块）
 ```
 
-- `yiban/infra/` 与 `yiban/fyiban/` **不得导入业务模块**（`tests/test_infra_layer.py`、
-  `tests/test_fyiban_isolation.py`）；
-- `yiban/fyiban/` 的安全策略必须由调用方**注入**（协议层不自算白名单与拦截判定）；
+- `yiban/infra/`、`yiban/protocol/` 与 `yiban/geo.py` **不得导入业务模块**（`tests/test_infra_layer.py`、
+  `tests/test_provenance_guard.py`）；
+- `yiban/platform.py` 的安全策略必须由调用方**注入**（协议层不自算白名单与拦截判定）；
 - `scripts/*.py` 直接运行时**必须先引导 `sys.path`**，且引导要早于任何 `yiban` 导入
   （`tests/test_deploy_entry_imports.py`）。
 

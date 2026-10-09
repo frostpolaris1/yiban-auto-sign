@@ -93,6 +93,12 @@ class DbMailNotifyMigrationTest(unittest.TestCase):
         self.assertGreaterEqual(v, 9, "新库应执行到 v9")
 
     def test_old_db_auto_adds_column(self):
+        """存量库（本夹具的 users 是 v5 形态）升级时自动补 mail_notify。
+
+        版本下界取 3 而不是更高：夹具只手工建了 users，没有 v4/v6 的产物
+        （sign_events 及其三列）。声称更高的版本就是"版本说过了、产物不在"，
+        链尾 fail-closed 门会拒启。
+        """
         conn = sqlite3.connect(self.db_file)
         conn.executescript(
             "CREATE TABLE users ("
@@ -101,7 +107,7 @@ class DbMailNotifyMigrationTest(unittest.TestCase):
             "created_at TEXT NOT NULL DEFAULT '', pw_version INTEGER NOT NULL DEFAULT 1, "
             "deleted INTEGER NOT NULL DEFAULT 0, deleted_at TEXT NOT NULL DEFAULT '');"
         )
-        conn.execute("PRAGMA user_version = 8")
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
         conn.close()
         db.init_db(self.db_file, env_file=self.env_file)

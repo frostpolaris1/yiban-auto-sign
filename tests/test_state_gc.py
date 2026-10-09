@@ -71,6 +71,20 @@ class SweepPolicyTest(unittest.TestCase):
         self.assertEqual(removed, len(expired), detail)
         self.assertEqual(sorted(os.listdir(self.tmp)), [])
 
+    def test_run_sh_markers_follow_snapshot_retention(self):
+        """run.sh 的两个按日标记（触发/收尾，bash 写入）按 snapshot 档清理、保留期内不动。"""
+        self._touch("yiban-run-today-%s.marker" % _day(-30))
+        self._touch("yiban-settled-%s.marker" % _day(-30))
+        removed, detail = state_gc.sweep(self.tmp)
+        self.assertEqual(removed, 2, detail)
+        self.assertEqual(sorted(os.listdir(self.tmp)), [])
+        # 保留期内（默认 snapshot 7 天）不得动
+        self._touch("yiban-run-today-%s.marker" % _day(-1))
+        self._touch("yiban-settled-%s.marker" % _day(0))
+        removed, detail = state_gc.sweep(self.tmp)
+        self.assertEqual(removed, 0, detail)
+        self.assertEqual(len(os.listdir(self.tmp)), 2)
+
     def test_recent_artifacts_are_kept(self):
         keep = [
             "sign-%s.log" % _day(0),
@@ -194,6 +208,13 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "verify-job-": "校验任务的线程名（不是文件）",
     "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups）——不在状态目录里，"
               "由 backup.sh 自己的 30 天保留策略轮转；backup_sentinel.py 只是读它的名字",
+    "dev-verify-": "scripts/dev-verify.sh 的跑测日志文件名（dev-verify-<时间戳>.log）——"
+                   "落在仓库外的日志目录，不是状态文件；保留由该脚本的 --keep 自己轮转"
+                   "（默认最近 5 份）",
+    "worker-alive-": "并行执行体心跳文件名（固定名覆盖写，非按日）——"
+                     "常量 WORKER_ALIVE_FILE_PREFIX 定义在 yiban/engine/state_io.py，"
+                     "故被常量拼接检测器命中；它不是按日件，不进按日清理名册"
+                     "（该事实已登记在 shared-facts.tsv 状态件族）",
     # 邮件排版层的 HTML 内联样式：扫描正则只看"引号 + 小写 token + '-' + 后接 {表达式}"，
     # 而 style="border-top:1px solid {_RULE}" 正好是这个形状——CSS 属性名，不是文件名。
     "border-": "layout.py 的 HTML 内联样式属性名（style=\"border-…: {常量}\"）",
@@ -212,30 +233,68 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     1. 策略表 `state_gc.ARTIFACTS`（会被清理）；
     2. 非状态目录的允许清单（构建产物、线程名等，逐条给理由）；
     3. 都不在 → 失败，提示"新按日文件未登记，会无界增长"。
+
+    **5 种命名逃逸**（工单 census-P1-1）：主正则只认"名字里带日期表达式"的字面量，
+    下列 5 类写法实测逃过它。本类逐类补检测器，每类一枚能红的断言（`test_escape_*`）：
+    ① `%s` 拼名；② 月粒度 `%m`；③ 常量拼接（前缀只活在常量里）；
+    ④ `.corrupt-` 变体；⑤ 非按日命名（名字无日期表达式，主正则从原理上扫不到）。
+    前四类并入同一份前缀名册核对；第 ⑤ 类另立"固定名枚举"判据（`_scan` 的第二返回值）。
     """
 
+    _NAME_RE = re.compile(
+        r'["\'](?:\$[A-Za-z_{][^"\'\n]*/)?([a-z][a-z0-9-]*)-[^"\'\n]*'
+        r'(?:\{[^}]*\}|\$\([^)]*\)|%Y|YYYY)'
+    )
 
-    _NAME_RE = re.compile(r'["\']([a-z][a-z0-9-]*)-[^"\']*(?:\{[^}]*\}|%Y|YYYY)')
+    #: 逃逸 ①–④ 的补充检测器。每条只认**带状态件扩展名**的形态，故不会把
+    #: `"…: %s" % msg` 这类日志文案当成文件名（误报会喂假绿）。
+    _ESCAPE_RES = (
+        ("%s 拼名", re.compile(
+            r'["\']([a-z][a-z0-9-]*-)%s\.(?:json|jsonl|log|txt|marker)["\']')),
+        ("月粒度", re.compile(
+            r'["\']([a-z][a-z0-9-]*-)%m\.(?:json|jsonl|log|txt|marker)["\']')),
+        ("常量拼接", re.compile(
+            r'[A-Z][A-Z0-9_]*FILE_PREFIX\s*=\s*["\']([a-z][a-z0-9-]*-)["\']')),
+        (".corrupt-", re.compile(
+            r'["\']([a-z][a-z0-9-]*-)[^"\'\n]*\.(?:json|jsonl|log|txt|marker)\.corrupt-')),
+    )
+    #: 逃逸 ⑤：非按日命名的固定名件（名字里没有日期表达式）。
+    _NONDAILY_RE = re.compile(
+        r'["\']([a-z][a-z0-9-]+\.(?:json|jsonl|log|txt|marker))["\']')
 
-    def _scan(self):
+    def _scan(self, root=None):
+        """→ (按日前缀 dict, 固定名集合)；`root` 供逃逸用例扫合成树（默认本仓）。"""
+        root = root or BASE
         found = {}
-        for root in ("scripts", "docker", "web", "yiban"):
-            for dirpath, _dirs, files in os.walk(os.path.join(BASE, root)):
+        nondaily = set()
+        paths = []
+        for sub in ("scripts", "docker", "web", "yiban"):
+            for dirpath, _dirs, files in os.walk(os.path.join(root, sub)):
                 if "__pycache__" in dirpath:
                     continue
                 for name in files:
-                    if not name.endswith((".py", ".sh")):
-                        continue
-                    path = os.path.join(dirpath, name)
-                    with io.open(path, encoding="utf-8", errors="ignore") as f:
-                        src = f.read()
-                    for m in self._NAME_RE.finditer(src):
-                        found.setdefault(m.group(1) + "-", set()).add(
-                            os.path.relpath(path, BASE).replace("\\", "/"))
-        return found
+                    if name.endswith((".py", ".sh")):
+                        paths.append(os.path.join(dirpath, name))
+        # 仓库根的 bash 脚本（run.sh / run_probe.sh 等）不在上面的目录树里：
+        # bash 侧的按日文件名同样要核对（`$STATE_DIR/yiban-run-today-…` 等）
+        for name in sorted(os.listdir(root)):
+            if name.endswith(".sh"):
+                paths.append(os.path.join(root, name))
+        for path in paths:
+            with io.open(path, encoding="utf-8", errors="ignore") as f:
+                src = f.read()
+            rel = os.path.relpath(path, root).replace("\\", "/")
+            for m in self._NAME_RE.finditer(src):
+                found.setdefault(m.group(1) + "-", set()).add(rel)
+            for _label, rx in self._ESCAPE_RES:
+                for m in rx.finditer(src):
+                    found.setdefault(m.group(m.lastindex), set()).add(rel)
+            for m in self._NONDAILY_RE.finditer(src):
+                nondaily.add(m.group(1))
+        return found, nondaily
 
     def test_new_daily_file_must_be_registered(self):
-        found = self._scan()
+        found, _nondaily = self._scan()
         # 防扫描器失效（正则改坏会让下面的断言恒真）
         self.assertIn("sign-state-", found)
         self.assertIn("sched-slot-", found)
@@ -246,10 +305,54 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
 
     def test_policy_entries_all_have_writer(self):
         """反向核对：策略表里的每项都必须真有写入点（避免清理一个已不存在的文件）。"""
-        found = self._scan()
+        found, _nondaily = self._scan()
         for art in state_gc.ARTIFACTS:
             with self.subTest(prefix=art.prefix):
                 self.assertIn(art.prefix, found, f"{art.prefix} 无写入点，策略表项已过期")
+
+    # ---- 5 种命名逃逸：每种一枚能红的断言（删掉对应检测器即红）----
+    def _scan_escape(self, body, filename="probe.py"):
+        """把一段源码放进合成树，→ _scan 的 (found, nondaily)。"""
+        tmp = tempfile.mkdtemp(prefix="yiban-escape-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        os.makedirs(os.path.join(tmp, "yiban"))
+        with io.open(os.path.join(tmp, "yiban", filename), "w",
+                     encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        return self._scan(root=tmp)
+
+    def test_escape_pct_s_formatting_is_detected(self):
+        """逃逸 ①：`"sign-alpha-%s.json" % day` 这类 %s 拼名必须被抓到。"""
+        found, _ = self._scan_escape('A = "sign-alpha-%s.json" % day\n')
+        self.assertIn("sign-alpha-", found, "%s 拼名的按日前缀逃过了扫描")
+
+    def test_escape_month_granularity_is_detected(self):
+        """逃逸 ②：月粒度 `"sign-beta-%m.json"`（只到月，主正则的 %Y 分支不覆盖）。"""
+        found, _ = self._scan_escape('A = "sign-beta-%m.json" % now\n')
+        self.assertIn("sign-beta-", found, "月粒度命名的按日前缀逃过了扫描")
+
+    def test_escape_constant_prefix_concat_is_detected(self):
+        """逃逸 ③：前缀只活在常量里（`PREFIX = "sign-gamma-"` + f-string 拼接）。"""
+        found, _ = self._scan_escape(
+            'SIGN_GAMMA_FILE_PREFIX = "sign-gamma-"\n'
+            'B = f"{SIGN_GAMMA_FILE_PREFIX}{day}.json"\n')
+        self.assertIn("sign-gamma-", found, "常量拼接的按日前缀逃过了扫描")
+
+    def test_escape_corrupt_suffix_variant_is_detected(self):
+        """逃逸 ④：`.corrupt-` 变体（`"sign-delta-%s.json.corrupt-1"`）。
+
+        用 `%s` 拼名而非 `%Y`：否则主正则也会命中（`%Y` 在它的分支里），
+        本用例就钉不到 `.corrupt-` 这条检测器。
+        """
+        found, _ = self._scan_escape('A = "sign-delta-%s.json.corrupt-1" % day\n')
+        self.assertIn("sign-delta-", found, ".corrupt- 变体的按日前缀逃过了扫描")
+
+    def test_escape_non_daily_name_is_detected(self):
+        """逃逸 ⑤：非按日命名（固定名、无日期表达式）必须走另一条枚举判据。"""
+        _found, nondaily = self._scan_escape('A = "sign-epsilon.json"\n')
+        self.assertIn("sign-epsilon.json", nondaily,
+                      "非按日命名逃过了枚举判据（主正则从原理上扫不到这类件）")
+
 
 
 class CleanupEntryPointsTest(unittest.TestCase):

@@ -2,8 +2,8 @@
 """时间字段 `norm` 的范围校验（形状 **与** 00:00–23:59 同一处）。
 
 标签：F · 前端与界面守卫
-覆盖：`web/static/js/components/time-field.js` 的 `norm` 在 node 里真跑——越界值必须回退
-对应实现：`norm(v, fallback)`；消费点 `openSingle` / `openPair` / `set` / `apply`
+覆盖：`frontend/src/settings/model.js` 的 `norm` 在 node 里真跑——越界值必须回退
+对应实现：`norm(v, fallback)`；消费点 ScheduleCard / HealthCard / DistViz
 关键断言：`"25:00"` / `"23:60"` / `"24:00"` 必须回退到 fallback（而不是原样返回）
 依赖：⚠ **需要 node 真跑**——`norm` 抽出后交给 node 执行，`shutil.which("node")` 取不到时整类 skip
 
@@ -19,7 +19,9 @@ import subprocess
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TIME_FIELD_JS = os.path.join(BASE, "web", "static", "js", "components", "time-field.js")
+# 设置页迁到 Vue 后，自研 time-field.js 退役；`norm` 搬进口径层
+# frontend/src/settings/model.js（签到窗口/探针时间与 DistViz 编辑器共用）。
+TIME_FIELD_JS = os.path.join(BASE, "frontend", "src", "settings", "model.js")
 NODE = shutil.which("node")
 
 

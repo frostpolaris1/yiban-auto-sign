@@ -295,31 +295,31 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         self.assertEqual(full[0], "06:30~06:35")
         self.assertEqual(shifted[0], "07:00~07:05", "窗口打桩必须换掉预计时段")
 
-    def test_estimate_slot_block_cap_zero_means_unlimited(self):
-        """`YIBAN_BLOCK_CAP=0`（不限容量，与 my.py 拥挤度同口径）时预计时段照常返回。
+    def test_estimate_slot_block_cap_zero_falls_back_to_default(self):
+        """`YIBAN_BLOCK_CAP=0`（非法）按引擎口径回退默认 15，与显式 15 逐字一致。
 
-        不能拿块容量当除数——否则用户端自选片接口对全员 500。分块线下全员落首块：
-        第 20 人（idx=19）默认块容量 15 时应落第 2 块，不限容量时必须回到第 1 块。
+        旧实现把 0 当"不限容量"（全员落首块）——那是网页侧自造口径；引擎
+        `_env_int(..., 1, 200)` 本就把 0 判非法回退 15。对齐后 0 与 15 必须同结果。
         """
         accounts = [{"phone": f"1380013{i:04d}", "status": "active", "deleted": False}
                     for i in range(20)]
         target = accounts[-1]["phone"]
-        self._write_raw("YIBAN_BLOCK_CAP=0\n")
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(target)
-        self.assertEqual(got, ("06:30~06:35", "（每日固定时段，块内时刻每天略有抖动）"),
-                         "不限容量时全员落首块，且不得除零")
-        # 反证：默认块容量 15 下同一目标落第 2 块，说明上面的断言真的钉住了口径
-        self._write_raw("YIBAN_BLOCK_CAP=15\n")
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            capped = self.webapp._estimate_slot(target)
-        self.assertEqual(capped[0], "06:35~06:40")
+
+        def run(raw):
+            self._write_raw(raw)
+            with mock.patch.object(self.webapp, "_sign_window",
+                                   return_value=((6, 30), (7, 50))), \
+                    mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                    mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
+                return self.webapp._estimate_slot(target)
+
+        zero = run("YIBAN_BLOCK_CAP=0\n")
+        fifteen = run("YIBAN_BLOCK_CAP=15\n")
+        self.assertEqual(zero, fifteen, "0 必须与 15 同口径（非法回退默认，不再是不限容量）")
+        self.assertEqual(zero[0], "06:35~06:40", "第 20 人（idx=19）在 K=15 时落第 2 块")
+        # 反证：改大 K=25 → 第 20 人回到首块（证明上面钉住的确是块容口径，而非恰好如此）
+        big = run("YIBAN_BLOCK_CAP=25\n")
+        self.assertEqual(big[0], "06:30~06:35")
 
     def test_estimate_slot_nonempty_on_clamped_window(self):
         """缓冲过大被收缩：预计签到时段按收缩后的有效窗口算，不得静默变空。
@@ -575,19 +575,34 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
             self.assertFalse(self.webapp._verify_queue_full())
 
     def test_reject_account_cas_semantics(self):
+        """`_reject_account` 的两向报级与 CAS 写回口径。
+
+        "缺任务上下文"分两档，**不得合并**：`account_id is None` 是设计内路径（编辑
+        探针刻意不绑账号 id，见 `start_edit_probe`），按 INFO 报；`account_id` 有值而
+        `prev_status` 空才是真缺陷（任务上下文丢失），按 ERROR 报。两档都零写回。
+        """
         with mock.patch.object(self.webapp.logger, "error") as err_log, \
                 mock.patch.object(self.webapp.logger, "info") as info_log, \
                 mock.patch.object(self.webapp.db, "update_account_status_if") as upd:
+            # ① 设计内（编辑探针不绑账号 id）→ INFO 留痕、零写回、不得报 ERROR
             self.webapp._reject_account(PHONE, "原因", None, "pending")
             self.assertEqual(upd.call_count, 0, "缺任务上下文时不得改账号状态")
-            self.assertEqual(err_log.call_count, 1, "缺上下文必须留痕")
+            self.assertEqual(info_log.call_count, 1, "设计内探针路径必须按 INFO 留痕")
+            self.assertEqual(err_log.call_count, 0, "设计内路径不得按 ERROR 报")
+            # ② 真缺陷（有账号 id 而无 prev_status）→ ERROR 留痕、零写回
+            self.webapp._reject_account(PHONE, "原因", 5, "")
+            self.assertEqual(upd.call_count, 0, "缺 prev_status 时不得改账号状态")
+            self.assertEqual(err_log.call_count, 1, "真缺上下文必须按 ERROR 留痕")
+            self.assertEqual(info_log.call_count, 1, "真缺陷不得被压成 INFO")
+            # ③ 上下文完整：按 expect_status 做 CAS，空原因落默认文案
             self.webapp._reject_account(PHONE, "", 5, "pending")
             self.assertEqual(upd.call_args.args,
                              (5, "rejected", "pending", "在线校验未通过"),
                              "空原因落默认文案，且按 expect_status 做 CAS")
+            # ④ CAS 失配（账号已被人工改动）→ INFO 留痕，不覆盖人工决定
             upd.return_value = False
             self.webapp._reject_account(PHONE, "原因", 5, "pending")
-            self.assertEqual(info_log.call_count, 1, "未写回（已人工变更）必须留痕")
+            self.assertEqual(info_log.call_count, 2, "未写回（已人工变更）必须留痕")
 
     def test_start_verify_job_raises_busy_when_queue_full(self):
         from web.services import verify_queue as vq
@@ -1308,7 +1323,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_log_line_visibility_rules(self):
         vis = self.webapp._log_line_visible
-        for logger_name in ("yiban", "yiban.client", "yiban.fyiban.protocol",
+        for logger_name in ("yiban", "yiban.client", "yiban.platform",
                             "yiban.engine.queue"):
             for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
                 self.assertTrue(vis(level, logger_name), f"{logger_name}/{level} 应可见")
@@ -1803,10 +1818,15 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
                          "缺省上限必须现取本模块的常量")
         with mock.patch.object(self.webapp, "load_env_int", return_value=0):
             self.assertFalse(self.webapp._accounts_at_capacity(999), "0 = 不限")
-        with mock.patch.object(self.webapp, "load_env_int",
-                               side_effect=lambda f, k, d: 1 if k == "YIBAN_REGISTRATION_PAUSE"
-                               else d):
+        # 注册暂停开关的判定是**布尔真值口径**（`read_env` + env_io.parse_env_flag，
+        # 认 1/true/on/yes），故按 test 打桩的注入口径现取的是 `read_env`
+        # （census P0-1 收口：原 `load_env_int(...) == 1` 会把 `=true` 读成未暂停）。
+        with mock.patch.object(self.webapp, "read_env",
+                               return_value={"YIBAN_REGISTRATION_PAUSE": "true"}):
             self.assertTrue(self.webapp._registration_paused())
+        with mock.patch.object(self.webapp, "read_env",
+                               return_value={"YIBAN_REGISTRATION_PAUSE": "0"}):
+            self.assertFalse(self.webapp._registration_paused())
         with mock.patch.object(self.webapp, "load_env_int", return_value=1) as spy:
             self.webapp._users_at_capacity()
         self.assertEqual(spy.call_args.args[1], "YIBAN_MAX_USERS")
@@ -2037,7 +2057,7 @@ MOVED_SECURITY = (
     "SCRYPT_METHOD",
     "ADMIN_SID_ENV_KEY",
     "LOGIN_LOCK_SECONDS",
-    "TRUSTED_PROXIES",
+    "_is_loopback_addr",
     "_IP_STORE_LIMIT",
     "_IP_STORE_MAX_AGE",
     "VERIFY_MAX",
@@ -2376,17 +2396,21 @@ class WebSecuritySplitContractTest(unittest.TestCase):
             self.assertEqual(len(flask.session), 0, "超限必须清空会话（视为未登录）")
 
     def test_client_ip_trusted_proxy_and_fallback(self):
-        proxies = self.webapp.TRUSTED_PROXIES
+        """回环首跳采信 XFF；非回环首跳丢弃；无 XFF 时回落 remote_addr。"""
         app = self.flask_app
-        with app.test_request_context("/", environ_base={"REMOTE_ADDR": proxies[0]},
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
                                       headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9")
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"},
+                                      headers={"X-Forwarded-For": "203.0.113.9"}):
+            self.assertEqual(self.webapp._client_ip(), "203.0.113.9",
+                             "IPv6 回环首跳同样是可信第一跳")
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "203.0.113.9"},
                                       headers={"X-Forwarded-For": "198.51.100.7"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9",
                              "非可信首跳的 XFF 必须被忽略（不可伪造）")
-        with app.test_request_context("/", environ_base={"REMOTE_ADDR": proxies[1]}):
-            self.assertEqual(self.webapp._client_ip(), proxies[1])
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"}):
+            self.assertEqual(self.webapp._client_ip(), "::1")
 
     def test_atomic_write_roundtrip_and_reparse(self):
         target = os.path.join(self.tmp, "aw-security.txt")

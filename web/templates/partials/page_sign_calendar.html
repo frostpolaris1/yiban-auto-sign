@@ -1,68 +1,29 @@
-{# 用户端与管理端**共用**的「签到日历」正文（在册端点 /user/calendar 与 /my/calendar；
+{# 用户端与管理端**共用**的「签到日历」页面骨架（在册端点 /user/calendar 与 /my/calendar；
    /mine/calendar 不在路由表里，只是 pages.py 旧路径映射中的一条 302，排查别 grep 它）。
 
-   左列按账号纵向排列月历卡，右列是常驻的「签到记录」面板——未选日期时显示引导空态，
-   选中后回显当天日志；面板在宽屏下 sticky 跟随。
-   日志面板刻意**服务端渲染**空态，保证 JS 未执行时也留着"日志放这里"的位置
-   （旧版把日志塞进日历右半栏且初始高度为 0，被用户判定为"没有留空显示日志"）。
+   正文与行为**两页同一实现**（frontend/src/calendar/CalendarPage.vue，一个入口服务两页），
+   本宏只出三样东西：
+     ① 页头（两页文案不同；静态，留在服务端渲染）；
+     ② 挂载点与两页的**配置**——角色守卫、拒绝去向、空态去向以 data-* 注入，故不必为两页
+        各复制一份 bundle（对齐 legacy 的「共享 partial + 共享组件」分层）；
+     ③ 内联状态载荷 window.YB_CALENDAR_STATE：**必须留在正文里、且非 defer**——它先于
+        模块脚本执行，是「显示表单一源」（yiban.status.DISPLAY）的页面侧入口，日期格、
+        账号卡状态行与图例档位清单都消费它。
 
-   账号卡由共享组件 components/sign-calendar-view.js 按 /api/my-accounts 动态生成，
-   日历本体由 static/js/calendar.js 渲染。两端渲染的是同一段模板，只有页头文案不同。 #}
-{% macro body(page_title, page_sub) %}
-{% from "macros/ui.html" import icon with context %}
+   日历本体、日志面板与图例的 markup 全在 Vue 组件里（app.css 的 sc-* 类原样复用）。
+   路径一律带 request.script_root：子路径部署的唯一收口点，Vue 侧不再自己拼前缀。 #}
+{% macro body(page_title, page_sub, role, deny_href, empty_href) %}
 
 <div class="page-head">
   <h1 class="page-title">{{ page_title }}</h1>
   <p class="page-sub">{{ page_sub }}</p>
 </div>
 
-<div class="user-grid cal-layout">
-  {# 左侧：账号日历卡（JS 插入）；初始占位卡在无账号时被替换为空态。
-     .cal-placeholder 与真实日历卡同高，避免数据到达时左列高度跳变。 #}
-  <div class="col-6 cal-column" data-cal-list>
-    <section class="card cal-placeholder">
-      <p class="empty">
-        <span class="empty__icon">{{ icon('calendar') }}</span>
-        <span class="empty__msg">正在加载账号…</span>
-      </p>
-    </section>
-  </div>
+<div id="vue-calendar-app"
+     data-role="{{ role }}"
+     data-deny-href="{{ deny_href }}"
+     data-empty-href="{{ empty_href }}"></div>
+<noscript><p class="panel-sub">本页动态内容需要 JavaScript。</p></noscript>
 
-  {# 右侧：签到记录面板（常驻，保证"日志显示区"始终可见） #}
-  <section class="card col-6 sc-log-card" data-sc-log-card>
-    <div class="panel-head">
-      <div class="panel-head-row">
-        <h2 class="panel-title">签到记录</h2>
-      </div>
-      <p class="panel-sub" data-sc-log-date>选择日期查看当天记录</p>
-    </div>
-    <div class="sc-log" data-sc-log aria-live="polite">
-      <p class="sc-empty">
-        <span class="sc-empty-icon" aria-hidden="true">{{ icon('calendar') }}</span>
-        <span>点击日历中的日期，查看当天签到记录</span>
-        <span class="sc-empty-note">签到结果在每天调度后写入</span>
-      </p>
-    </div>
-  </section>
-
-  {# 状态图例与账号卡状态行消费**同一份状态表**（`yiban.status.DISPLAY`，服务端渲染进页面）。
-     两侧同源的方式：图例项由 `legend_items()` 按语气档归组渲染成 <li>，同一份表由
-     `display_payload()` 经 tojson 下发到内联脚本供状态行与日期格消费——新增状态码只会
-     同时出现在两侧，"渲染认得、图例不认得"的双单元漂移因此不可能再发生（急停曾渲染成
-     "排队待签"）。内联脚本必须留在正文里（非 defer）：它先于组件脚本执行，组件读
-     window.YB_CALENDAR_STATE。 #}
-  <script>window.YB_CALENDAR_STATE = {{ calendar_state | tojson }};</script>
-  {# 图例：整行独占（col-12），与日历状态一一对应（色彩即语义：绿成功/红失败/灰有意
-     不签/黄异常/蓝呼吸=正在签）。不能写成 col-6：日志面板隐藏时（无生效账号）它会被
-     自动排到空卡片右侧同一行，留下 6 列死区（实测：空卡 472px，图例 x=776 且同 y）。 #}
-  <ul class="col-12 sc-legend" aria-label="签到状态图例">
-    {% for item in status_legend %}
-    {# data-tone 供 calendar.js 动态收敛：图例只显示当前日历里出现过的颜色档
-       （语气档全量陈列是服务端职责，页面只解释看得见的） #}
-    <li data-tone="{{ item.tone }}"><i class="sc-swatch sc-swatch--{{ item.tone }}" aria-hidden="true"></i>{{ item.label }}</li>
-    {% endfor %}
-    <li><i class="sc-swatch sc-swatch--off" aria-hidden="true">休</i>周末停签</li>
-    <li><i class="sc-swatch sc-swatch--today" aria-hidden="true"></i>今天</li>
-  </ul>
-</div>
+<script>window.YB_CALENDAR_STATE = {{ calendar_state | tojson }};</script>
 {% endmacro %}

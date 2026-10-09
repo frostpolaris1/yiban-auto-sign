@@ -78,6 +78,8 @@ def api_logs():
 
     ?date=YYYY-MM-DD（可选，仅管理员）：缺省=最近有日志的一天（优先今天）；
     指定日期时 logs 为该日日志、states 仍为今日状态（账号表格图标语义不随历史日期变化）。
+    ?level=warn|all（可选，默认 warn）：warn 只留 WARNING 及以上（巡检口径），
+    all 保留可见性口径下的全量；被收起多少行由 `collapsed_lines` 回显。
     """
     m = _appmod()
     date = str(request.args.get("date", "")).strip()
@@ -97,6 +99,13 @@ def api_logs():
     # "结果集比本次返回的行数更大"——封顶截断与尾部 80 行截断共用同一个判据。
     q = str(request.args.get("q", "")).strip()
     show_all = str(request.args.get("all", "")).strip() == "1"
+    # 级别档（巡检口径）：默认收起 INFO/DEBUG，只留 WARN/ERROR。`level=all` 恢复全量。
+    # 两级过滤共用同一份档次表（web/services/logs.py::LEVEL_RANK）——本行的可见性口径
+    # 已由 _log_lines_for 施加，这里只加第二层（人看面从哪一级起）。
+    level = str(request.args.get("level", "")).strip() or m.LOG_LEVEL_DEFAULT
+    if level not in m.LOG_LEVELS:
+        return jsonify({"error": f"level 参数不合法（可选 {' / '.join(m.LOG_LEVELS)}）"}), 400
+    logs, collapsed_lines = m._filter_log_level(logs, level)
     masked_all = [m._mask_log_phones(ln) for ln in logs]
     if q:
         _ql = q.lower()
@@ -152,7 +161,8 @@ def api_logs():
         candidate = m.db.sign_events_recent_date("sign")
         if candidate and candidate != date:
             recent_sign_date = candidate
-    # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
+    # 响应层脱敏：日志行内手机号不落完整号（唯一出口 `_mask_log_phones`，覆盖裸号 /
+    # `+86` 前缀 / 分段形态）。前端不再自遮，直接渲染本响应值。
     # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
     # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
     # 符号污染。
@@ -169,6 +179,9 @@ def api_logs():
             # 返回面上 `dropped_lines` > 0 即"另有 N 行没被算进去"。
             "dropped_lines": _line_stats.get("dropped", 0),
             "q": q,
+            # 级别档与其结果：前端据此显示「已收起 N 行 INFO」，不静默出空表。
+            "level": level,
+            "collapsed_lines": collapsed_lines,
             "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
             "date": date,
             "is_today": date == m.clock.now().strftime("%Y-%m-%d"),

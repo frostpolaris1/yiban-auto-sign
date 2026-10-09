@@ -148,7 +148,7 @@ class ZeroSuccessAlertTest(unittest.TestCase):
             "13800000002": (False, "签到时间窗口缺失", True, "skipped_norange"),
         }
         self.assertTrue(signin._maybe_alert_zero_success(accounts, results, ok_n=0))
-        self.assertTrue(any(s == "当日签到异常告警" for s, _t in signin._mail_summary))
+        self.assertTrue(any(s == "当日签到异常告警" for s, _t, _lv in signin._mail_summary))
 
     def test_silent_when_any_success_first_run(self):
         """首签轮（is_second_run=False）部分成功+窗口外跳过：补签轮会重跑，不打扰。
@@ -188,7 +188,7 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         with _frozen_clock_at(2026, 9, 8, 8, 30):
             self.assertTrue(signin._maybe_alert_zero_success(
                 accounts, results, ok_n=1, is_second_run=True))
-        self.assertTrue(any(s == "签到窗口异常告警" for s, _t in signin._mail_summary))
+        self.assertTrue(any(s == "签到窗口异常告警" for s, _t, _lv in signin._mail_summary))
 
     def test_silent_when_any_success(self):
         accounts = [SimpleNamespace(phone="13800000001")]

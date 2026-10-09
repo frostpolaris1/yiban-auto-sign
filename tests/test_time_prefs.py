@@ -39,6 +39,7 @@ import sys
 import tempfile
 import unittest
 from datetime import timedelta  # 弹性冷却测试构造审计时间戳/窗口用
+from unittest import mock
 
 import db
 import signin
@@ -328,6 +329,131 @@ class TimePrefsTest(unittest.TestCase):
         data = c.get("/api/my-time-pref").get_json()
         slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
         self.assertEqual(slot5["pct"], 100)
+
+    @staticmethod
+    def _fake_active(n, base):
+        """引擎口径的合规账号行（active/未删/未暂停），供 mock `load_accounts` 用。"""
+        return [{"phone": f"{base}{i:08d}", "status": "active", "deleted": False,
+                 "user_paused": False} for i in range(n)]
+
+    def test_api_pref_crowding_uses_engine_block_cap_compressed(self):
+        """对抗（拥挤度链路修复）：压缩模式下分母 = 引擎真实块容 K = ceil(n/块数)。
+
+        mock `load_accounts` 返回 300 行合规账号（默认窗口 16 块 → 16×15=240，
+        300>240 → 压缩 K=ceil(300/16)=19）。某片 16 人 → 16/19=84.2% → 80% 档。
+        修复前用固定默认 cap=15：16>=15 → 直接判满 100%（拥挤度虚高）。
+        不真插几百行账号（逐行 AES 解密太慢），只 mock 读入口。
+        """
+        for i in range(16):
+            phone = f"139{i:08d}"
+            self._add_stat_account(phone)
+            db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        with mock.patch.object(self.webapp, "load_accounts_raw",
+                               return_value=self._fake_active(300, "136")):
+            data = c.get("/api/my-time-pref").get_json()
+        slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
+        self.assertEqual(slot0["pct"], 80, "16/19=84.2% → 80% 档（不是固定 cap=15 的 100%）")
+        # 反证：同样 16 人若 K=15（未压缩）→ 判满 100，证明压缩口径真的在起作用
+        with mock.patch.object(self.webapp, "load_accounts_raw",
+                               return_value=self._fake_active(16, "136")):
+            data2 = c.get("/api/my-time-pref").get_json()
+        slot0b = next(s for s in data2["slots"] if s["slot_min"] == 0)
+        self.assertEqual(slot0b["pct"], 100)
+
+    def test_db_time_pref_stats_excludes_user_paused(self):
+        """用户自暂停账号零占位、不占引擎容量 → 不得计入拥挤度（否则与容量脱钩虚高）。"""
+        self._add_stat_account("13900139001")
+        self._add_stat_account("13900139002")
+        ids = {r["phone"]: r["id"] for r in db.load_accounts_raw()}
+        db.set_user_paused(ids["13900139002"], True)
+        db.set_time_pref("13900139001", 0, "2026-08-15 10:00:00")
+        db.set_time_pref("13900139002", 0, "2026-08-15 10:00:01")
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        self.assertEqual(stats.get(0), 1, "自暂停账号的 pref 不得计入拥挤度")
+        # 反证：恢复后计入 → 证明钉的是 paused 过滤而非别的原因
+        db.set_user_paused(ids["13900139002"], False)
+        stats2 = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        self.assertEqual(stats2.get(0), 2)
+
+    def test_db_time_pref_stats_excludes_pending_rejected(self):
+        """待审/已拒账号的 pref 不计入拥挤度（SQL 分子与 block_capacity 分母同源）。"""
+        self._add_stat_account("13900139011")  # active
+        for ph, st in (("13900139012", "pending"), ("13900139013", "rejected")):
+            db.add_account({"name": "stat", "phone": ph, "password": "p",
+                            "phone_model": "", "phone_code": "", "status": st,
+                            "owner": "admin"})
+            db.set_time_pref(ph, 0, "2026-08-15 10:00:00")
+        db.set_time_pref("13900139011", 0, "2026-08-15 10:00:00")
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        self.assertEqual(stats.get(0), 1, "待审/已拒账号不参与调度，不得计入拥挤度")
+        # 反证：置回 active → 计入（证明排除的是审核态，而非 pref 本身）
+        ids = {r["phone"]: r["id"] for r in db.load_accounts_raw()}
+        db.update_account_status(ids["13900139012"], "active")
+        db.update_account_status(ids["13900139013"], "active")
+        stats2 = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        self.assertEqual(stats2.get(0), 3)
+
+    def test_api_pref_save_paused_self_no_double_deduction(self):
+        """自暂停者自身占位已被 stats 排除，保存时不得再减 1，否则满员提示漏报。
+
+        15 个其他活跃账号占满 slot 0（K=15），本人账号自暂停且已选 slot 0：stats 分母
+        排除其占位 → count=15。旧实现无条件 `count-1` → 14<15 漏报"已选满"。
+        """
+        for i in range(15):
+            phone = f"138{i:08d}"  # 13800000000..13800000014，不撞 13800138001
+            self._add_stat_account(phone)
+            db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
+        ids = {r["phone"]: r["id"] for r in db.load_accounts_raw()}
+        db.set_user_paused(ids["13800138001"], True)
+        db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("已选满", r.get_json()["msg"],
+                      "自暂停者占位已排除，保存时不得再扣自己")
+
+    def test_api_pref_pct_rounding_floor_e2e(self):
+        """舍入下限：cap=20 时 1 人 → round(1×100/20/10)×10=round(0.5)×10=0（银行家舍入），
+        必须被 10% 下限抬到 10%——否则有人的片显 0%，前端误判"无人选"。
+        """
+        db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        with mock.patch.object(self.webapp, "read_env",
+                               return_value={"YIBAN_BLOCK_CAP": "20",
+                                             "YIBAN_ALLOW_TIME_PREF": "1"}):
+            data = c.get("/api/my-time-pref").get_json()
+        slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
+        self.assertEqual(slot0["pct"], 10, "1/20=5% → round(0.5)=0 → 下限抬到 10%")
+
+    def test_api_pref_stats_cap_ignores_inactive_rows(self):
+        """待审/已拒/软删行不虚增分母 n：mock `load_accounts` 混入这些行 → cap 不变。
+
+        240 行合规（16 块 × 15 = 240，恰在容量线上不压缩）+ 60 行非 active：若把它们
+        也计入 n=300 > 240 → cap 被压到 19；按引擎三重过滤后 n=240 → cap 保持 15。
+        """
+        active = self._fake_active(240, "135")
+        junk = (
+            [{"phone": f"134{i:08d}", "status": "pending", "deleted": False,
+              "user_paused": False} for i in range(20)]
+            + [{"phone": f"133{i:08d}", "status": "rejected", "deleted": False,
+                "user_paused": False} for i in range(20)]
+            + [{"phone": f"132{i:08d}", "status": "active", "deleted": True,
+                "user_paused": False} for i in range(20)]
+        )
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=active + junk):
+            cap = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
+        self.assertEqual(cap, 15, "非 active 行不得计入 n（否则会被压到 19）")
+        # 反证：把 junk 也当 active（总量 300）→ cap 压缩为 19，证明是过滤在起作用
+        all_active = [dict(a, status="active", deleted=False) for a in (active + junk)]
+        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=all_active):
+            cap2 = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
+        self.assertEqual(cap2, 19)
 
     def test_api_pref_full_slot_notice(self):
         """对抗（2026-08-15 用户决策）：满员片仍可保存（先到先得+顺延语义），提示"已选满"且不带人数。"""

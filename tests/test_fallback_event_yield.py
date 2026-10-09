@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""兜底"失败即入队"的事件源与"同一账号让位"的仲裁面：都由**任务队列（sign_tasks）**的行迁移承担。
+"""兜底"失败即入队"的事件源与**队列级账号去重**的仲裁面：都由**任务队列（sign_tasks）**的行迁移承担。
 
 标签：B · 调度：领取/队列/执行体
 覆盖：`queue_store.fallback_event` 事件签名（只数 `sign_tasks` 里 `retry:` 档未了结行的
@@ -8,10 +8,13 @@
    三条反例（全量轮在飞的账号兜底领不到、轮中途弃权到 `retry:` 档的账号兜底（回炉后）
    立刻领得到、轮把账号收尾成 `done` 后兜底不再重领；此外从未被碰过的账号默认可接手）。
 对应实现：yiban/store/queue_store.py（fallback_event 与 claim_batch/requeue_failed/settle_tasks
-   的既有条款）、yiban/engine/workers.py（让位与唤醒的判据全部取队列，不自建第二套）。
-关键断言：让位与去重**不需要新机制**——队列的"`pending` 才可领、`claimed` 仅在租约过期
-   后回收、`done`/`skipped` 不复活、`final:` 档须显式路径才回炉"本身就是"同一账号让位"
-   与队列内去重；事件签名必须与"可接手"严格同集（数了 `final:` 就是为一个永远领不动的行
+   的既有条款）、yiban/engine/workers.py（唤醒判据取队列事件签名，不自建第二套；**让位判据**
+   另取运行时事实"有一轮在飞"，见 `workers._round_in_flight`——本文件断的是队列条款本身，
+   不覆盖让位判据）。
+关键断言：队列内去重**不需要新机制**——队列的"`pending` 才可领、`claimed` 仅在租约过期
+   后回收、`done`/`skipped` 不复活、`final:` 档须显式路径才回炉"本身就是队列级的账号去重
+   （它防的是同一账号两次真实登录，**不**承担"兜底别抢走那一轮计划工作"——那是让位判据的
+   职责）；事件签名必须与"可接手"严格同集（数了 `final:` 就是为一个永远领不动的行
    白唤醒；数了兜底自己的弃权会把"扫→弃权→唤醒→再扫"接成紧循环重复真实登录）。
 依赖：真临时库（init_db + 走 `queue_store` 真实领取/收尾/回炉原语）；不起子进程、不发网络
    请求、不打桩时钟。
@@ -114,7 +117,7 @@ class _TempDbCase(unittest.TestCase):
 
 
 class PoolYieldCounterexampleTest(_TempDbCase):
-    """同一账号让位的三条反例，全部落在队列的既有条款上（不新增互斥机制）。"""
+    """队列级账号去重的三条反例，全部落在队列的既有条款上（不新增互斥机制）。"""
 
     def test_inflight_blocks_fallback_and_rounds_failed_account_is_takeable(self):
         # (b) 账号在飞（刚被轮领取、租约未过期）⇒ 队列里是 claimed，兜底领不到
@@ -122,7 +125,7 @@ class PoolYieldCounterexampleTest(_TempDbCase):
         self._add_pending(phone)
         self._claim(phone, ROUND_OWNER)
         self.assertEqual(self._claim_batch(FB), [],
-                         "在飞的行是 claimed，兜底不该重领（同一账号让位）")
+                         "在飞的行是 claimed，兜底不该重领（队列级账号去重）")
         # (a) 轮把 D 弃权到 retry: 档 ⇒ 回炉后兜底立刻领得到
         d = "13900000003"
         self._round_fails(d)

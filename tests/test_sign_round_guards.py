@@ -304,7 +304,7 @@ class SigtermFlushTest(unittest.TestCase):
         signin._mail_summary.extend(self._summary_backup)
 
     def test_sigterm_flushes_collected_admin_mail(self):
-        signin._mail_summary.append(("易班签到失败", "账号: 138****0000\n原因: 登录失败"))
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0000\n原因: 登录失败")
         with mock.patch.object(signin.mailer, "send_admin_alert",
                                return_value=True) as m_send, \
              mock.patch.object(signin.db, "admin_mail_recipients",
@@ -490,6 +490,53 @@ class _FakeProc:
 
     def kill(self):
         pass
+
+
+class SigninRunLockProbeTest(unittest.TestCase):
+    """运行锁探测的判据：只有**独占**持锁者才算「签到队列忙」。
+
+    探测本身不得以独占方式问锁。同一进程里，请求线程与批量后台线程都会探测
+    运行锁；独占探测让两者互斥，后到的线程会被误报成「签到队列忙（定时签到
+    进行中）」——这就是 BatchSignCooldownTest 三条冷却用例负载敏感偶发红的
+    根因：第二条触发撞上「签到队列忙」而不是「冷却中」，断言错位。
+
+    真持锁者是 `yiban/engine/cli_support.py` 的 `_acquire_run_lock`，它取
+    `LOCK_EX`；探测只需判「有没有人独占持着」，故用共享锁问即可。
+    """
+
+    def setUp(self):
+        try:
+            import fcntl
+        except ImportError:
+            self.skipTest("本平台无 fcntl：运行锁探测走降级路径，无此判据")
+        self.fcntl = fcntl
+        self.tmp = tempfile.mkdtemp(prefix="yiban-run-lock-probe-")
+        self.lock_path = os.path.join(self.tmp, "signin-run.lock")
+        # `_signin_run_lock_busy` 只读 m.STATE_DIR，无需拉起整个 app
+        self.m = SimpleNamespace(STATE_DIR=self.tmp)
+        from web.routes import signin_api
+        self.probe = signin_api._signin_run_lock_busy
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _hold(self, op):
+        """本进程另开一个 fd 持锁：与被测探测自己开的 fd 相互独立。"""
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.fcntl.flock(fd, op)
+        self.addCleanup(os.close, fd)
+
+    def test_exclusive_holder_reports_busy(self):
+        """真信号：全量轮 / `--only` 子进程独占持锁 ⇒ 必须判忙。"""
+        self._hold(self.fcntl.LOCK_EX)
+        self.assertTrue(self.probe(self.m), "独占持锁者必须被判成队列忙")
+
+    def test_shared_holder_does_not_report_busy(self):
+        """探测不得独占问锁：同进程另一个探测的持锁者不是「有签到在跑」。"""
+        self._hold(self.fcntl.LOCK_SH)
+        self.assertFalse(
+            self.probe(self.m),
+            "共享持锁者不构成独占运行，探测不得自撞判忙")
 
 
 class BatchSignCooldownTest(unittest.TestCase):
@@ -745,6 +792,32 @@ class BatchSignCooldownTest(unittest.TestCase):
         self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
         self.assertIn("冷却中", r2.get_json()["error"],
                       "冷却未过期时不该由次数上限抢先拒绝")
+
+    def test_queue_busy_429_text_is_not_cooldown(self):
+        """运行锁被独占持有时，批量入口的 429 文案是「签到队列忙」，不是「冷却中」。
+
+        同一 429 端点有四条拒因文案（签到队列忙 / 冷却中 / 过于频繁 / 正在签到）。
+        断言必须断到具体文案：只看状态码会把「队列忙」误当成「冷却」。
+        """
+        try:
+            import fcntl
+        except ImportError:
+            self.skipTest("本平台无 fcntl：运行锁探测走降级路径，无此拒因")
+        c = self.webapp.create_app().test_client()
+        csrf = self._login(c)
+        fd = os.open(os.path.join(self.tmp, "signin-run.lock"),
+                     os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            r = self._trigger_batch(c, csrf)
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
+        err = r.get_json()["error"]
+        self.assertIn("签到队列忙", err, f"拒因应是队列忙：{err}")
+        self.assertNotIn("冷却中", err, "队列忙与冷却是同一端点的两条拒因，文案不得混同")
 
 
 if __name__ == "__main__":

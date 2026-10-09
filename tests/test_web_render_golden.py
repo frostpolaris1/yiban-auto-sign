@@ -318,8 +318,10 @@ class WebRenderGoldenTest(unittest.TestCase):
         body = r.get_data(as_text=True)
         # tojson 产出必须是真对象：漏合 extra 时 Jinja Undefined 序列化即抛
         self.assertIn("window.YB_CALENDAR_STATE = {", body)
-        # 图例由 status_legend 渲染：同样来自 extra
-        self.assertIn("sc-legend", body)
+        # 2026-10-03 换锚：图例改由前端按载荷渲染（档位清单仍来自 extra 的 legend_items()），
+        # 故服务端侧的可判据是"载荷带全量图例 + 挂载点在位"，不再是服务端渲染的 <ul>。
+        self.assertIn('"legend": [', body)
+        self.assertIn("vue-calendar-app", body)
 
     def test_asset_manifest_golden(self):
         """静态资源引用清单（顺序敏感）+ 清单与磁盘一致。
@@ -327,9 +329,9 @@ class WebRenderGoldenTest(unittest.TestCase):
         存在的理由：CSS/JS 外提后标签位置不变，结构指纹察觉不到 —— 那类改动必须在这里被看见。
         清单是**从当前真实渲染产物生成**的（不是手写）：`index` 键即新管理端 `/`，
         覆盖 adminator/chartjs/fonts/app.css/core.js 等；`login` 是认证页资源栈，
-        `user` 是用户端设置页，`user_calendar` 在用户端外壳之上另加共享
-        calendar.js + pages/user_calendar.js。除与金标准逐条比对外，再断言每个本仓
-        `/static/` 资源都真实存在于 `web/static/` 下（清单与磁盘一致）。
+        `user` 是用户端设置页，`user_calendar` 在用户端外壳之上另加 manifest 解析出的
+        Vue 入口资产（2026-10-03 前是共享 calendar.js + pages/user_calendar.js）。除与金标准
+        逐条比对外，再断言每个本仓 `/static/` 资源都真实存在于 `web/static/` 下（清单与磁盘一致）。
         """
         _ASSET_REF_RE = re.compile(r"/(static/.+?)(?:\?v=\*)?$")
         actual = {p: asset_manifest(self._render(p)) for p in ("index", "login", "user", "user_calendar")}

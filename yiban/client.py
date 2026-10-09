@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """易班客户端外观：凭据托管 / 会话缓存 / 代理 / 设备绑定 / 签到与探针的业务分支。
 
-协议步骤（登录握手、签到两个接口的请求形状）在 `yiban/fyiban/protocol.py`
-（第三方隔离层）；本模块负责把**本项目的关注点**组装上去：
+协议步骤（登录握手、签到两个接口的请求形状）在 `yiban/platform.py`；
+本模块负责把**本项目的关注点**组装上去：
 
 | 关注点 | 归属 |
 |--------|------|
@@ -25,11 +25,9 @@ import requests
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
 from yiban import masking, security
+from yiban import platform as yiban_platform
 from yiban import status as yiban_status
-from yiban.fyiban import headers as fyiban_headers
-from yiban.fyiban import protocol as fyiban_protocol
-from yiban.fyiban import waf as fyiban_waf
-from yiban.fyiban.algo import generate_position_in_polygon
+from yiban.geo import generate_position_in_polygon
 from yiban.store.accounts import account_still_signable
 
 logger = logging.getLogger("yiban.client")
@@ -120,21 +118,21 @@ class YibanClient:
         # 密码缓冲用可变 bytearray 持有（str 不可原位清零），单次签到尝试结束由
         # _wipe_credentials 原位清零（attempt_signin 的 finally）
         self.password = bytearray(account.password.encode("UTF-8"))
-        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，与同作者 FYIBAN 同源，
+        # 登录方式：默认"标准 App 特征"流程（真实客户端的请求头与参数取值，
         # 实测可绕过 e003）；旧流程（iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用
         self.use_killyiban = os.environ.get("YIBAN_LEGACY_LOGIN", "") != "1"
         if self.use_killyiban:
             self.csrf = secrets.token_hex(16)  # SecureRandom 真随机
             logger.debug(
                 f"[{account.phone}] 登录方式: 标准 App 特征（UA=Yiban/AppVersion="
-                f"{fyiban_headers.YIBAN_APP_VERSION}/SecureRandom CSRF）"
+                f"{yiban_platform.YIBAN_APP_VERSION}/SecureRandom CSRF）"
             )
         else:
             self.csrf = secrets.token_hex(16)  # 使用安全随机数替代可预测的时间戳 md5
             logger.debug(f"[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）")
         self.session = requests.Session()
         self.session.headers = dict(
-            fyiban_headers.KILLYIBAN_HEADERS if self.use_killyiban else fyiban_headers.HEADERS
+            yiban_platform.KILLYIBAN_HEADERS if self.use_killyiban else yiban_platform.HEADERS
         )
         # 协议核验诊断（默认关闭）：YIBAN_WIRE_DUMP 指向可写目录时挂载线路落盘
         from yiban.infra import wire_dump
@@ -182,7 +180,7 @@ class YibanClient:
     # ---- 登录 ----
     def login(self):
         """旧流程登录（YIBAN_LEGACY_LOGIN=1），成功置 `logged_in`，失败抛异常。"""
-        outcome = fyiban_protocol.login_legacy(
+        outcome = yiban_platform.login_legacy(
             self.session, phone=self.account.phone, password=self.password,
             csrf=self.csrf, policy=self._policy,
         )
@@ -190,7 +188,7 @@ class YibanClient:
 
     def login_killyiban(self):
         """默认登录方式（KillYiBan 同款），成功置 `logged_in`，失败抛异常。"""
-        outcome = fyiban_protocol.login_killyiban(
+        outcome = yiban_platform.login_killyiban(
             self.session, phone=self.account.phone, password=self.password,
             csrf=self.csrf, policy=self._policy, session_store=self._session_store,
         )
@@ -211,19 +209,6 @@ class YibanClient:
     def _clear_session_cache(self):
         self._session_store.clear()
 
-    # ---- 反爬挑战（实现见 yiban/fyiban/waf.py）----
-    def _is_ydclearance_challenge(self, resp):
-        return fyiban_waf.looks_like_challenge(
-            resp.text, resp.headers.get("Set-Cookie", "")
-        )
-
-    def _solve_ydclearance(self, text):
-        """纯 Python 解析易盾 WAF 挑战（实现与来源见 yiban/fyiban/waf.py）。
-
-        白名单是**本项目的安全策略**，以参数注入解析器——第三方层不内联安全校验。
-        """
-        return fyiban_waf.solve_ydclearance(text, allow_url=security.is_fyiban_url)
-
     # ---- 签到 ----
     def signin(self):
         """执行签到，返回 (success: bool, message: str, skip: bool, status: str)。
@@ -239,9 +224,9 @@ class YibanClient:
 
         # 1. 获取签到位置范围
         if not self.use_killyiban:
-            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 fyiban/headers.py）
-            self.session.headers.update(fyiban_headers.APP_SIGN_HEADERS)
-        resp = fyiban_protocol.fetch_sign_position(self.session, self.csrf, self._policy)
+            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 yiban/platform.py）
+            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+        resp = yiban_platform.fetch_sign_position(self.session, self.csrf, self._policy)
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
         data = resp.data
@@ -324,14 +309,14 @@ class YibanClient:
             )
 
             # 5. 构建签到数据并提交
-            sign_info = fyiban_protocol.build_sign_info(lng, lat, position.get("Address", ""))
+            sign_info = yiban_platform.build_sign_info(lng, lat, position.get("Address", ""))
             if not self.phone_model or not self.phone_code:
                 logger.warning(
                     f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
                     "如学校开启了设备绑定，签到将失败"
                 )
             # KillYiBan 的 MINI_VERSION 是 "1"，旧流程是 "1.0"（`out_state` 传参）
-            submitted = fyiban_protocol.submit_sign_in(
+            submitted = yiban_platform.submit_sign_in(
                 self.session, self.csrf,
                 phone_code=self.phone_code, phone_model=self.phone_model,
                 sign_info=sign_info,
@@ -387,9 +372,9 @@ class YibanClient:
             else:
                 self.login()
         if not self.use_killyiban:
-            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 fyiban/headers.py）
-            self.session.headers.update(fyiban_headers.APP_SIGN_HEADERS)
-        resp = fyiban_protocol.fetch_sign_position(self.session, self.csrf, self._policy)
+            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 yiban/platform.py）
+            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+        resp = yiban_platform.fetch_sign_position(self.session, self.csrf, self._policy)
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE
         data = resp.data

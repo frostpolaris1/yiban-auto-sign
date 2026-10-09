@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <title>账号与设置（开发壳）</title>
+  </head>
+  <body>
+    <!-- 本地 dev / preview 壳：生产挂载点与资产引入由
+         web/templates/pages/{user_account,my_account}.html 提供（经 manifest 解析）。
+         两页共用本入口，变体由 data-variant 区分。 -->
+    <div id="vue-myaccounts-app" data-variant="user" data-calendar-href="/user/calendar"></div>
+    <script type="module" src="/src/myaccounts/main.ts"></script>
+  </body>
+</html>

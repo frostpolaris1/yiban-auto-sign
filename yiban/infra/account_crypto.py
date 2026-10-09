@@ -108,8 +108,7 @@ def load_key(env_file=None):
     故此处按同口径就地复刻）。只读解密路径（`has_key` 先判）不受影响。
     """
     explicit = env_file is not None
-    env_file = env_file or (os.environ.get("YIBAN_ENV_FILE") or "").strip() \
-        or DEFAULT_ENV_FILE
+    env_file = env_file or env_io.env_path(default=DEFAULT_ENV_FILE)
     env_key = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()
     if env_key:
         # 环境变量档每次现取现解码，既不读缓存也不落缓存：同进程改环境变量必须当场换钥，
@@ -162,8 +161,7 @@ def assert_key_sources_agree(env_file=None):
     单档形态下没有可比对的第二侧，不抛，但 env-only 要 WARNING：未被注入的进程
     会在同一文件里自动生成**第二把**钥（正是轮换事故的路径）。
     """
-    env_file = env_file or (os.environ.get("YIBAN_ENV_FILE") or "").strip() \
-        or DEFAULT_ENV_FILE
+    env_file = env_file or env_io.env_path(default=DEFAULT_ENV_FILE)
     env_key_raw = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()
     file_key_raw = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
     env_key = _decode_key(env_key_raw) if env_key_raw else None

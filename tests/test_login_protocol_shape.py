@@ -8,8 +8,9 @@
    TypeError、签到两接口形状与三态语义、会话缓存命中与失效两分支（真临时库读写，
    不 mock 缓存写）、默认流假成功拒绝（code==0 无签发回执 ⇒ 不落"登录成功"日志、
    零缓存写入、落硬失败不可重试档）与真成功（回执齐全）写缓存回归、已登录标志的主机与路径判定（含子域伪装）、URL
-   白名单边界与逐跳校验、风控形态判定的长度边界（挑战形态不受限、仅关键词维持上界）与转义解码。
-对应实现：yiban/fyiban/protocol.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_trusted_yiban_url、_is_strict_fyiban_url、WAF
+   白名单边界与逐跳校验、风控形态判定的长度边界（挑战形态不受限、仅关键词维持上界）与转义解码、
+   WAF 词元的非字母数字边界口径（base64 里的 `aWAFb` 不得判拦）、测试公钥夹具的跨进程确定性。
+对应实现：yiban/platform.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_yiban_trusted_url、is_strict_yiban_url、WAF
    文案识别）、scripts/signin.py 的签到接口。
 关键断言：这份断言的存在理由是「抽完再核对」：直接搬代码时删掉一整段 WAF 分支或改掉
    usersure 的表单字段，业务语义用例照样全绿，所以必须先钉形状。WAF
@@ -18,8 +19,8 @@
    &）也必须提取——曾因此全站登录失败。已登录标志必须同时认主机与路径，子域伪装
    f.yiban.cn.evil.com 不得命中。断言走真实 requests.Session（只换
    send），Origin 置 None 这类删头手法只有真实 prepare_request 才观察得到。
-依赖：真实 requests.Session + 脚本化 send 替身、PyCryptodome 现场生成 1024
-   位测试公钥（模块级缓存复用）、会话缓存用例走真 db 门面 + 临时库/临时 .env（测试密钥）；
+依赖：真实 requests.Session + 脚本化 send 替身、`tests/fake_yiban_server.py` 里固定的
+   1024 位测试公钥（不现场生成，跨进程同值）、会话缓存用例走真 db 门面 + 临时库/临时 .env（测试密钥）；
    不发任何真实网络请求。整文件在本机执行，无 skip。
 
 1. 旧流登录 6 次请求的 URL / query / 表单字段 / 顺序 / 是否跟随重定向；
@@ -38,6 +39,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -45,20 +48,21 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 import signin
-from Crypto.PublicKey import RSA
+from fake_yiban_server import DEFAULT_PUBKEY_PEM, waf_challenge_body
 
 from yiban import security
 
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # 测试用 RSA-1024 公钥（登录页里的 input#key 必须是合法 PEM，签名侧只做公钥加密）。
-# 生成一次即可：RSA 生成较慢，且各用例共用不影响隔离性。
-_TEST_PUBKEY_PEM = None
-
-
+#
+# 夹具必须是**仓内固定字节**，不靠现场生成：随机 PEM 的 base64 正文能撞出 ASCII 词元
+# `WAF`，抽中它的那个 xdist worker 里所有嵌这枚 PEM 的用例全被判成"被风控拦截"
+# （工单 `yiban-auto-sign-u21x`）。名册只有一处定义——`tests/fake_yiban_server.py` 的
+# `DEFAULT_PUBKEY_PEM`，本文件与 `tests/test_protocol_masking.py` 共用它。
 def _pubkey_pem():
-    global _TEST_PUBKEY_PEM
-    if _TEST_PUBKEY_PEM is None:
-        _TEST_PUBKEY_PEM = RSA.generate(1024).publickey().export_key().decode("utf-8") # 1024 位生成快、够用：这里只要形状正确，不要密码学强度
-    return _TEST_PUBKEY_PEM
+    """测试公钥 PEM（固定常量：同进程重复调用同值、跨进程同值）。"""
+    return DEFAULT_PUBKEY_PEM
 
 
 def _resp(json_data=None, *, text="", status=200, headers=None, cookies=None, url=""):
@@ -142,11 +146,12 @@ _KILLYIBAN_PAGE = (
 
 
 def _legacy_page(pubkey):
-    # 旧流程的正则：`page_use ?= ?['|"]…` 与 `id="key"\s+value="…"`
+    # 旧流程与 KillYiBan 共用库 `parse_authorize_page` 的页面契约：
+    # `var page_use = '…'` + `id="key"` 的 PEM 公钥输入。
     return (
         "<html><body>"
         '<input type="hidden" id="key" value="%s">'
-        "<script>page_use = 'pageuse12345';</script>"
+        "<script>var page_use = 'pageuse12345';</script>"
         "</body></html>"
     ) % pubkey
 
@@ -258,11 +263,17 @@ class LegacyLoginShapeTest(unittest.TestCase):
         self.assertEqual(form["oauth_uname"], "13800138000")
         self.assertEqual(form["client_id"], "95626fa3080300ea")
         self.assertEqual(form["redirect_uri"], "https://f.yiban.cn/iapp7463")
-        self.assertEqual(form["state"], "")
         self.assertEqual(form["scope"], "1,2,3,4,")  # 旧流程的实值
         self.assertEqual(form["display"], "html")
+        # 换核后表单由库构造：字段集为 oauth_uname/oauth_upwd/client_id/redirect_uri/
+        # display(+scope)，不再含旧的 `state` 空字段（与 TASK-C §2[2] 实拍一致）
+        self.assertNotIn("state", form)
         self.assertEqual(rec.header(2, "Origin"), "https://oauth.yiban.cn")
         self.assertEqual(rec.header(2, "Referer"), oauth_page_url)
+        # usersure 的表单体同样是预编码字符串（requests 不补头）：旧流程的头来自
+        # 会话（`HEADERS`），删掉会话里的 Content-Type 即上游读不到表单。
+        self.assertEqual(rec.header(2, "Content-Type"),
+                         "application/x-www-form-urlencoded; charset=UTF-8")
         # 密码必须是 RSA-1024 + PKCS1_v1_5 的 base64（128 字节密文）
         import base64
         self.assertEqual(len(base64.b64decode(form["oauth_upwd"])), 128)
@@ -349,7 +360,7 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         self.assertEqual(form["oauth_uname"], "13800138000")
         self.assertEqual(form["scope"], "")           # App 实值为空
         self.assertEqual(form["display"], "authorize")
-        self.assertEqual(form["state"], "")
+        self.assertNotIn("state", form)               # 库构造表单不含旧 `state` 空字段
         self.assertEqual(form["client_id"], "95626fa3080300ea")
         self.assertEqual(form["redirect_uri"], "https://f.yiban.cn/iapp7463")
         # 关键：usersure **不得**带 Origin/Referer（实测带 Origin → e001）
@@ -359,6 +370,11 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         # 但 App 指纹必须保留
         self.assertEqual(rec.header(1, "User-Agent"), "Yiban")
         self.assertEqual(rec.header(1, "AppVersion"), signin.YIBAN_APP_VERSION)
+        # usersure 的表单体是预编码字符串，requests **不补** Content-Type：这两处
+        # 请求级显式头是唯一的来源，删掉即上游读不到表单（工单 3kmt 的同族缺口）。
+        # 与 signIn 两流程合起来，构成「两流程 × 两端点」的表单头完整矩阵。
+        self.assertEqual(rec.header(1, "Content-Type"),
+                         "application/x-www-form-urlencoded; charset=UTF-8")
 
         # 第 3 步：iframe/index 取 verify_request（不跟随重定向）
         self.assertEqual(rec.base(2), "f.yiban.cn")
@@ -514,7 +530,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         # 而不是清完没写/压根没清）
         self.assertTrue(json.loads(row["cookies"]), "重建的缓存行必须带会话 cookies")
 
-    def test_logged_in_marker_requires_fyiban_host_and_path(self):
+    def test_logged_in_marker_requires_app_host_and_path(self):
         """M7：302 落在非 f.yiban.cn 的 /iapp7463 不得判"已登录"。
 
         原判定是子串 `in`：`https://evil.example/iapp7463`、
@@ -565,7 +581,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         resp = _killyiban_happy_responses()
         resp[-1] = _resp(final_body)
         client, rec = _killyiban_client(resp)
-        with _capture_logs("yiban.fyiban.protocol") as buf, \
+        with _capture_logs("yiban.platform") as buf, \
                 self.assertRaises(RuntimeError) as ctx:
             _run(rec, client.login_killyiban)
         msg = str(ctx.exception)
@@ -597,7 +613,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         resp[-1] = _resp({"code": 0, "msg": "ok"})
         client, rec = _killyiban_client(resp)
         signin.db.set_session_cache(self.PHONE, json.dumps({"csrf_token": "old"}), "old-csrf")
-        with _capture_logs("yiban.fyiban.protocol") as buf, self.assertRaises(RuntimeError):
+        with _capture_logs("yiban.platform") as buf, self.assertRaises(RuntimeError):
             _run(rec, client.login_killyiban)
         self.assertNotIn("登录成功", buf.getvalue())
         self.assertEqual(self._cache_rows(), 0,
@@ -609,7 +625,7 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
         resp[-1] = _resp({"code": 0, "data": {"Token": "mock-receipt"}, "msg": ""},
                          cookies={"yiban_sess": "mock|sess"})
         client, rec = _killyiban_client(resp)
-        with _capture_logs("yiban.fyiban.protocol") as buf:
+        with _capture_logs("yiban.platform") as buf:
             _run(rec, client.login_killyiban)
         self.assertTrue(client.logged_in)
         self.assertEqual(buf.getvalue().count("登录成功"), 1)
@@ -628,10 +644,15 @@ def _sign_position_data(*, msg="", positions=None, rng=None):
         "code": 0,
         "data": {
             "Msg": msg,
+            "IsNeedPhoto": 2,
             "Position": positions if positions is not None else [{
+                "Id": "pos-1",
+                "Type": "campus",
+                "Title": "任务A",
                 "Name": "任务A",
                 "Points": ["118.0,31.0", "118.1,31.0", "118.1,31.1", "118.0,31.1"],
                 "Address": "点A",
+                "LngLat": "118.05,31.05",
             }],
             "Range": rng if rng is not None else {"StartTime": now - 3600, "EndTime": now + 3600},
         },
@@ -673,6 +694,12 @@ class SigninShapeTest(unittest.TestCase):
 
         self.assertEqual(rec.path(1), "/nightAttendance/student/index/signIn")
         self.assertEqual(rec.query(1), {"CSRF": "csrf-token"})
+        # 表单体必须**显式**声明 Content-Type。requests 只对 dict 形态的 data 自动补
+        # `application/x-www-form-urlencoded`，对预编码字符串**不补**——缺这个头时
+        # 上游 servlet 容器不解析表单（getParameter 全 null），读不到 SignInfo，
+        # 回 msg="定位获取失败"（2026-10-08 实机 4 轮全拒的根因，工单 3kmt）。
+        self.assertEqual(rec.header(1, "Content-Type"),
+                         "application/x-www-form-urlencoded")
         form = rec.form(1)
         self.assertEqual(form["Code"], "C" * 64)
         self.assertEqual(form["PhoneModel"], "Vivo-Test")
@@ -691,6 +718,10 @@ class SigninShapeTest(unittest.TestCase):
         self._run_sign(client, rec)
         self.assertEqual(rec.form(1)["OutState"], "1.0")
         self.assertEqual(rec.header(0, "Origin"), "https://app.uyiban.com")
+        # 旧流程的会话头自带带 charset 的 Content-Type：请求级补头**不得**覆盖
+        # 它（补头只在会话缺头时发生，见 platform.submit_sign_in）。
+        self.assertEqual(rec.header(1, "Content-Type"),
+                         "application/x-www-form-urlencoded; charset=UTF-8")
 
     def test_three_states_and_window_skips(self):
         cases = [
@@ -721,6 +752,19 @@ class SigninShapeTest(unittest.TestCase):
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("WAF", msg)
 
+    def test_session_expired_999_maps_to_relogin_path(self):
+        """信封 code==999 → 库 SessionExpired → 翻成"会话失效"，并入既有重登档（清缓存重登）。
+
+        这是 TASK-A/C 的会话过期语义：不新造异常面，靠消息里的"会话失效"词元落
+        `SESSION_STALE_FAIL_KEYWORDS`（attempts 清缓存后强制真重登）。
+        """
+        client, rec = self._client([_resp({"code": 999, "msg": "登录已超时"})])
+        with self.assertRaisesRegex(RuntimeError, "会话失效") as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertEqual(signin._retry_budget(msg),
+                         (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
 
 # ---------------------------------------------------------------------------
 # 策略函数自身的边界（安全策略属本项目层，抽取后仍须在协议路径上生效）
@@ -740,14 +784,14 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertFalse(signin._is_yiban_trusted_url(url))
 
-    def test_strict_fyiban_url_boundaries(self):
-        self.assertTrue(signin._is_fyiban_url("https://f.yiban.cn/iapp7463"))
+    def test_strict_yiban_url_boundaries(self):
+        self.assertTrue(signin._is_strict_yiban_url("https://f.yiban.cn/iapp7463"))
         for url in ("https://f.yiban.cn.evil.com/iapp7463",
                     "https://f.yiban.cn@evil.com/iapp7463",
                     "http://f.yiban.cn/iapp7463",
                     "https://c.uyiban.com/iapp7463"):
             with self.subTest(url=url):
-                self.assertFalse(signin._is_fyiban_url(url))
+                self.assertFalse(signin._is_strict_yiban_url(url))
 
     def test_redir_chain_requires_every_hop_trusted(self):
         """M8：跟随重定向后每一跳（含落点）都必须在白名单内。"""
@@ -798,5 +842,134 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
         self.assertFalse(signin.is_waf_blocked('{"code":0,"msg":""}'))
 
 
+#: 现网拦截页形态（中文词元 + 带边界的 ASCII 词元同页）：收紧后仍必须判拦。
+REAL_BLOCK_PAGE = ('<!DOCTYPE html><html><head><title>访问拦截</title></head><body>'
+                   '<p>您的访问存在风险访问，已被拦截，请联系管理员</p>'
+                   '<p>WAF: request blocked</p></body></html>')
+
+#: 只靠 ASCII 词元命中的真拦截页：证明收紧没有把 WAF 这一枚判据改瞎。
+ASCII_ONLY_BLOCK_PAGE = '<html><body>Request blocked by WAF. ID=7f3a</body></html>'
+
+
+class WafKeywordBoundaryTest(unittest.TestCase):
+    """ASCII 词元的命中必须两侧都非字母数字；中文词元维持子串；长度上界口径不动。
+
+    缺陷形状（工单 `yiban-auto-sign-u21x`）：登录页内嵌的 RSA 公钥 PEM 是 base64，
+    base64 字母表能拼出三连续 `WAF`。`is_waf_blocked` 原先按裸子串匹配，且关键词支
+    只在 `len<=2000` 的短响应里生效——PEM 页约 230 字符正落在启用区，于是抽中这枚
+    PEM 的那个 xdist worker 里，所有嵌它的用例全被判成"请求被 WAF 风控拦截"。
+    收紧只削掉 base64 这类造不出人话的误报面，真拦截页与真挑战页的判据一律不动。
+    """
+
+    #: base64 正文里的 aWAFb 形态：词元左右都是 base64 字符（字母或数字）。
+    _BASE64_AWAFB = ("MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDBC7aWAFbrWLsOSBrj"
+                     "57z0KDgqI2dvq7iKq6CZgXp2GvS5RufTg2d3L4A2fvWEMeH5y2LRkfPx")
+
+    def test_base64_ascii_triple_is_not_blocked(self):
+        """aWAFb 形态不得判拦截——这条在裸子串匹配下为红。"""
+        self.assertFalse(signin.is_waf_blocked(self._BASE64_AWAFB))
+
+    def test_login_page_embedding_such_a_key_is_not_blocked(self):
+        """工单原形状：假登录页 = 模板 + 含 aWAFb 的公钥正文，整页必须放行。"""
+        self.assertFalse(signin.is_waf_blocked(_KILLYIBAN_PAGE % self._BASE64_AWAFB))
+
+    def test_ascii_token_with_non_alnum_neighbors_is_blocked(self):
+        """两侧非字母数字即算命中：串首、串尾、空格、冒号、连字符、斜杠都算。"""
+        for text in ("WAF blocked request", "risk/WAF/", "<title>:WAF</title>",
+                     "请求被 WAF 拦截", "-WAF-"):
+            with self.subTest(text=text):
+                self.assertTrue(signin.is_waf_blocked(text),
+                                "带边界的 ASCII 词元必须照常判拦（收紧不得削弱检测）")
+
+    def test_real_block_pages_are_still_blocked(self):
+        """真实形态拦截页夹具收紧后仍判拦——这条防把判据改瞎。
+
+        `waf_challenge_body()` 逐字对照 `waf.looks_like_challenge` 的输入形态；
+        `REAL_BLOCK_PAGE` 取现网拦截页文案（中文词元 + 带边界的 WAF 同页）。
+        """
+        self.assertTrue(signin.is_waf_blocked(waf_challenge_body()),
+                        "真挑战页（形态支）必须照常判拦")
+        self.assertTrue(signin.is_waf_blocked(REAL_BLOCK_PAGE))
+        self.assertTrue(signin.is_waf_blocked(ASCII_ONLY_BLOCK_PAGE),
+                        "只靠 ASCII 词元命中的真拦截页也必须判拦")
+
+    def test_chinese_tokens_keep_substring_matching(self):
+        """四枚中文词元维持子串匹配：base64 与转义文本造不出它们，误报面为零。"""
+        for text in ("风控", "拦截", "访问服务禁用", "风险访问",
+                     '{"msg":"\\u98ce\\u9669\\u8bbf\\u95ee"}'):
+            with self.subTest(text=text):
+                self.assertTrue(signin.is_waf_blocked(text))
+
+    def test_keyword_leg_length_cap_unchanged(self):
+        """长度上界口径不动：>2000 的纯关键词命中仍不判拦。
+
+        中文长文的同口径由 `test_waf_detection_shape_unbounded_keyword_length_bounded`
+        钉住，本条只补 ASCII 词元的超长形态（收紧后新形状的对照）。
+        """
+        self.assertFalse(signin.is_waf_blocked("x" * 3000 + " WAF "))
+
+
+class PubkeyFixtureDeterminismTest(unittest.TestCase):
+    """测试公钥夹具必须是仓内固定字节：随机生成是本文件非确定性的唯一来源。
+
+    旧夹具每进程抽一枚（模块级 memo 让同进程内所有用例共用同一枚）。抽中含 `WAF`
+    的那枚即整类同红、同提交两个进程一红一绿、本地不复现。夹具固定后这四条一起消失。
+    """
+
+    def test_pubkey_pem_is_stable_within_process(self):
+        self.assertEqual(_pubkey_pem(), _pubkey_pem())
+
+    def test_pubkey_pem_is_stable_across_processes(self):
+        """子进程实跑一次比对：夹具不得随进程变化。"""
+        code = ("import sys\n"
+                "for p in ('.', 'scripts', 'tests'):\n"
+                "    sys.path.insert(0, p)\n"
+                "import test_login_protocol_shape as shape\n"
+                "sys.stdout.write(shape._pubkey_pem())\n")
+        proc = subprocess.run([sys.executable, "-c", code], cwd=BASE,
+                              capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, _pubkey_pem(),
+                         "公钥夹具跨进程不同值 = 每 worker 各抽一枚 = 非确定复发")
+
+    def test_pubkey_pem_contains_no_waf_keyword(self):
+        """夹具本身不得含任何一枚词元的命中形态。"""
+        self.assertFalse(security.matches_waf_keywords(_pubkey_pem()))
+
+    def test_fixtures_never_generate_keys_at_runtime(self):
+        """守卫有牙：两个受害文件的公钥夹具改回随机生成即红（不靠口头约定）。"""
+        # 探针名拆成两段拼接：整写会让本行自己命中，守卫就永远绿。
+        needle = "RSA" + ".generate"
+        for rel in ("tests/test_login_protocol_shape.py", "tests/test_protocol_masking.py"):
+            src = io.open(os.path.join(BASE, *rel.split("/")), encoding="utf-8").read()
+            with self.subTest(path=rel):
+                self.assertNotIn(needle, src,
+                                 "测试公钥必须固定字节，不得回到随机生成")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LegacyPageFallbackTest(unittest.TestCase):
+    """legacy 页宽容回退（评审 #5）：令牌赋值无 `var` 关键字时仅 legacy 流程可解析。
+
+    主路径（killyiban 契约）严格要求 `var page_use`；legacy 是兜底流程，其页面
+    解析路径必须与主路径不同源——主路径失效时不致双双失效。
+    """
+
+    def test_legacy_page_without_var_keyword_parses_only_for_legacy_flow(self):
+        from yiban import platform as platform_module
+
+        pem = _pubkey_pem()
+        html = (
+            "<script>page_use = '" + "a" * 40 + "';</script>"
+            '<input type="test" id="key" value="' + pem + '">'
+        )
+        page_use, key = platform_module.parse_login_page(html, flow="legacy")
+        self.assertEqual(page_use, "a" * 40)
+        self.assertIsNotNone(key)
+        # killyiban 契约仍严格要求 var 关键字：同一页面对默认流程解析失败
+        self.assertEqual(
+            platform_module.parse_login_page(html, flow="killyiban"), (None, None)
+        )
