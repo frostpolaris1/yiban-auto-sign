@@ -11,9 +11,10 @@
 故按同族先例（`yiban/engine/db_maintenance.py`）外移。
 
 **归属**
-`yiban.engine` 的命令行子命令实现层。速率的域名只有一份，在
-`yiban.engine.token_bucket`；出口速率的键名与出厂值都只由
-`yiban.engine.schedule.planner_config()` 取用。
+`yiban.engine` 的命令行子命令实现层。速率的**引擎域**只有一份，在
+`yiban.engine.token_bucket`——本模块回问桶自己的夹取，不自建字面量。出口速率的键名与
+出厂值都只由 `yiban.engine.schedule.planner_config()` 取用。名册另声明了该键的域，两者
+不一致（域漂移，登记在 `scripts/gate/shared-facts.tsv` 的已知盲点）。
 
 **复用**
 `token_bucket.EgressBucket`（速率域的判据：构造时经它自己的夹取）、
@@ -30,7 +31,7 @@
 `yiban.store.db`、`yiban.clock`、`yiban.engine.cli_support`。
 谁调用：`yiban/cli.py` 的 `_dispatch`。
 
-**三条边界**
+**四条边界**
 1. 出口键含主机名，属部署信息。本模块的**任何输出都不回原键**，只回角色与槽位标签
    （`egress.owner_tag` 的口径）。选择串也照此：写 `fallback` / `worker-2` / `single`。
    逐字键仍可作为逃生口（多主机同名时才需要），但它不会被打印出来。
@@ -40,6 +41,9 @@
    故输出里给 `held_by_live_process`（按 `updated_at` 是否在一分钟内），操作者可据此决定
    是先停执行体还是直接复位。复位本身也刷 `updated_at`（那是全库统一的"上次写入时刻"），
    故复位后一分钟内的 `--status` 会把该行标为可能被持有——方向保守，不是故障。
+4. 两条速率来源（配置键与 `--rate`）过**同一道**域校验。该键的名册声明域宽于引擎域，中间值
+   引擎会静默夹回，故本模块对两条来源都拒绝（不夹、不猜）。配置键越域时只读面也响亮失败：
+   那是配置错误，报一个引擎不会用的速率才是误导。
 """
 import datetime
 import os
@@ -67,37 +71,49 @@ _RATE_EPS = 1e-9
 # ---------------------------------------------------------------------------
 # 速率：取值点、显式值校验
 # ---------------------------------------------------------------------------
-def _engine_rate(view):
-    """引擎出厂速率（attempt/s）：导出配置视图后走**唯一取值点**取。
+def _check_rate(rate):
+    """速率是否与引擎域一致 → `(rate, 错误文本)`；域的唯一真值源是桶自己的夹取。
 
-    为什么先导出：`run.sh` 先把 `.env` 逐键导出为环境变量再拉起引擎；直接跑
+    判据不是"数值落在某个区间里"，而是"引擎装回这个值后还是不是它"。静默夹值会把
+    "我设了 50"变成"实际 4.0"而不留痕；拒绝并报出引擎会用的值更诚实。
+    """
+    from yiban.engine import token_bucket
+    effective = token_bucket.EgressBucket("rate-probe", rate=rate).rate
+    if effective != rate:
+        return None, (f"{rate} 不在引擎的速率域内：装载后会变成 {effective}，"
+                      "这里拒绝而不是静默夹值")
+    return rate, ""
+
+
+def _parse_rate(text):
+    """显式速率文本 → `(rate, 错误文本)`：非数值或越域一律拒绝，不夹、不猜。"""
+    try:
+        rate = float(text)
+    except (TypeError, ValueError):
+        return None, f"--rate 不是数值: {text!r}"
+    return _check_rate(rate)
+
+
+def _engine_rate(view):
+    """引擎出厂速率 → `(rate, 错误文本)`。
+
+    取值点只有一处（`schedule.planner_config()`）。取到的值再过**同一道**域校验：该键的
+    名册声明域（`config/registry.json`）宽于引擎域，中间值（如大于 4.0）引擎装载时会静默
+    夹回。不校验就会出现"命令报已写 50、引擎按 4.0 跑"（缺陷 D2）。
+
+    为什么先把视图导出进程环境：`run.sh` 先把 `.env` 逐键导出为环境变量再拉起引擎；直接跑
     `python -m yiban.cli` 时没有这一步，同一份配置在两条路径下会解析出不同的值。
-    导出后两条路径同值，否则会出现"复位到 A、引擎却按 .env 的 B 起跑"。
     """
     value = str(view.get(RATE_KEY, "") or "").strip()
     if value:
         os.environ[RATE_KEY] = value
     from yiban.engine import schedule
-    return float(schedule.planner_config()["bucket_rate"])
-
-
-def _parse_rate(text):
-    """显式速率 → `(rate, 错误文本)`：引擎装载时会改动的值一律拒绝，不夹、不猜。
-
-    判据不是"数值落在某个区间里"，而是"引擎装回这个值后还是不是它"：速率域的唯一真值源
-    是桶自己的夹取行为，故这里回问引擎一次。静默夹值会把"我设了 0.05"变成"实际 0.2"
-    而不留痕；拒绝并报出引擎会用的值更诚实。
-    """
-    try:
-        rate = float(text)
-    except (TypeError, ValueError):
-        return None, f"--rate 不是数值: {text!r}"
-    from yiban.engine import token_bucket
-    effective = token_bucket.EgressBucket("rate-probe", rate=rate).rate
-    if effective != rate:
-        return None, (f"--rate {rate} 不在引擎的速率域内：装载后会变成 {effective}，"
-                      "这里拒绝而不是静默夹值")
-    return rate, ""
+    rate = float(schedule.planner_config()["bucket_rate"])
+    checked, err = _check_rate(rate)
+    if err:
+        return None, (f"引擎出厂速率 {err}。请把 {RATE_KEY} 改到引擎域内，"
+                      "或用 --rate 指定一个域内值")
+    return checked, ""
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +241,21 @@ def cmd_egress(args, paths, view):
     """`egress` 子命令入口 → 退出码（0 / 1 / 2，家族见 `docs/dev/cli.md` §3）。
 
     默认只读（`--status`）；`--reset <出口>` 与 `--reset-all` 默认只报告，`--yes` 才写。
+    畸形入参（空选择串、越域速率）响亮失败，不退化成无操作的只读查询。
     """
     db_file = paths["db_file"]
     json_mode = bool(args.json)
-    resetting = bool(args.reset) or bool(args.reset_all)
+    # `is not None` 而非真值判定：`--reset ''` 是一次**给了参数的复位请求**。
+    # 按真值判会把空串当成"没给 --reset"，于是 `--yes` 被静默忽略、退出码 0（缺陷 D1）。
+    resetting = args.reset is not None or bool(args.reset_all)
     action = "reset" if resetting else "status"
+    if resetting and not bool(args.reset_all) and not str(args.reset).strip():
+        return _fail("egress", 2, [
+            "--reset 需要一个出口名（角色+槽位标签，如 fallback / worker-2 / single）；"
+            "收到的选择串是空的",
+        ], json_mode, error_kind="usage", action=action, db_file=db_file,
+            dry_run=True, applied=False, written=0, rows=[], changes=[],
+            target_rate=None, target_rate_source=None)
     raw_rows, err = _read_rows(db_file)
     if err:
         return _fail("egress", 1, [err], json_mode, error_kind="runtime_error",
@@ -246,15 +272,16 @@ def cmd_egress(args, paths, view):
         ], json_mode, error_kind="usage_conflict", action=action, db_file=db_file,
             dry_run=True, applied=False, written=0, rows=views, changes=[],
             target_rate=None, target_rate_source=rate_source)
+    # 两条速率来源走**同一道**域校验：键与 --rate 不得给出相反的结论（缺陷 D2）。
     if args.rate is not None:
         target_rate, err = _parse_rate(args.rate)
-        if err:
-            return _fail("egress", 1, [err], json_mode, error_kind="config_error",
-                         action=action, db_file=db_file, dry_run=not args.yes,
-                         applied=False, written=0, rows=views, changes=[],
-                         target_rate=None, target_rate_source=rate_source)
     else:
-        target_rate = _engine_rate(view)
+        target_rate, err = _engine_rate(view)
+    if err:
+        return _fail("egress", 1, [err], json_mode, error_kind="config_error",
+                     action=action, db_file=db_file, dry_run=not args.yes,
+                     applied=False, written=0, rows=views, changes=[],
+                     target_rate=None, target_rate_source=rate_source)
 
     if action == "status":
         payload = _payload(action=action, db_file=db_file, dry_run=True,
