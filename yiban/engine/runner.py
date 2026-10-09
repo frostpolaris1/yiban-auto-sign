@@ -628,8 +628,10 @@ def main(argv=None):
     # **但这条只挡住读状态文件的闸门**：队列里它是 `failed`（`TASKS_OPEN_STATES` 之一），
     # 而宿主/容器的补签闸门先读队列（`state_io.has_undone_accounts_today` →
     # `db.task_open_count`）⇒ 补签轮仍会起，且 `_second_run` 让 `requeue_final=True`
-    # 把 `final:` 档一并回炉，该账号当日仍多一次真实登录（与 no_position 同量级；
-    # 旧文本判据下 State=5 落 no_position，也一样重跑一次，故本批不是回归）。
+    # 把 `final:` 档一并回炉，该账号当日仍多一次真实登录。
+    # **不是回归**：旧文本判据下 State=5 的结局取决于 `Position` 是否为空——为空落
+    # `no_position`（也重跑一次，重跑次数与现在相同），非空则旧路径没有 State 判据挡它、
+    # 会继续往下走（比现在差）。
     # 要不要"彻底不重试"见工单（需定策：补齐签轮的 open 行判据，或让它也进
     # `_second_run_drop_done` 的剔除集）。
     has_real_failure = False

@@ -1402,21 +1402,23 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         self.assertEqual(self.webapp.load_sign_state(date), {})
 
     def test_legacy_daily_symbols_all_decode_to_a_real_status(self):
-        """写入侧会写的**每个**符号，回退反查都必须解出真实状态码（不得落 `pending` 兜底）。
+        """`SYMBOL` 全表的**每个**符号，回退反查都必须解出同符的状态码（不得落 `pending`）。
 
         反查表原先是手抄的三项（✅/❌/➖），写入侧（`runner._write_sign_daily`）却写六项。
         手抄子集随写入侧扩表静默陈旧时，多出的符号（🚫 no_position、🕓 supplementing）
         解不出，一律落 `pending`——日历把"已跳过/补签中"显示成"待签"。本门按**行为**钉住
         覆盖面：把这些符号逐个写进 sign-daily，核每个解出的状态码属于该符号的状态码集。
+
+        覆盖面**取自 `yiban.status.SYMBOL` 全表**，不手抄一份子集：手抄的那份会在写入侧
+        扩表时静默漏格——正是本门要防的形状，写成手抄就成了同病。
         """
         date = "2026-09-20"
-        writable = (yiban_status.STATUS_SUCCESS, yiban_status.STATUS_ALREADY,
-                    yiban_status.STATUS_NO_TASK, yiban_status.STATUS_FAILED,
-                    yiban_status.STATUS_NO_POSITION, yiban_status.STATUS_SUPPLEMENTING)
-        # 同一符号可能属多个状态码（✅ = success / already）：按符号分组，解出的码落组内即可
+        # 同一符号可能属多个状态码（✅ = success / already）：按符号分组，解出的码落组内即可。
+        # 唯一的单符号例外是 ⏳（pending）——它本就等于兜底值，故下面只断言"落组内"，
+        # 不另断言"不等于 pending"（那会把 ⏳ 误判成缺陷）。
         by_symbol = {}
-        for code in writable:
-            by_symbol.setdefault(yiban_status.SYMBOL[code], set()).add(code)
+        for code, sym in yiban_status.SYMBOL.items():
+            by_symbol.setdefault(sym, set()).add(code)
         rows = {"1380013%04d" % i: sym for i, sym in enumerate(sorted(by_symbol))}
         with io.open(os.path.join(self.tmp, f"sign-daily-{date}.json"), "w",
                      encoding="utf-8") as f:
@@ -1424,11 +1426,10 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         got = self.webapp.load_sign_state(date)
         self.assertEqual(len(got), len(rows), "每个符号都要解出一条记录")
         for phone, sym in rows.items():
+            # 漏格时该符号解成 `pending`，而 `pending` 只同符 ⏳ ⇒ 除 ⏳ 外一律当场翻红
             self.assertIn(got[phone]["status"], by_symbol[sym],
                           "符号 %s（%s）解出的状态码不属于它：%r"
                           % (sym, phone, got[phone]["status"]))
-            self.assertNotEqual(got[phone]["status"], yiban_status.STATUS_PENDING,
-                                "反查表没覆盖符号 %s ⇒ 落 pending 兜底" % sym)
 
     def test_mask_log_phones_masks_all_bare_11_digits(self):
         mask = self.webapp._mask_log_phones
