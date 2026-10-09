@@ -8,12 +8,15 @@
     不得少（还掉一处债就更新清单，防"账还在、测试假装看不见"）。
 对应实现：判据对象是 `web/services/locks.py` 的 `_file_lock`（进程级 RLock，
     gunicorn `-w 1 --threads 8` 下一堵八条线程全等）与各路由的持锁发信/哈希段。
-关键断言：**为什么是静态判据而不是运行时持锁时长断言**——"锁内不做 SMTP/scrypt"
-    在当前架构下尚不成立（MF-57 的异步化改造已按章程降级为"先给方案不硬做"，
-    存量 14 处锁内慢调用是登记在案的债），任何"秒级上限"的计时断言都会被一次
-    SMTP 超时随机打挂，等于没有。本用例把现状冻结成账，慢操作的**增长面**归零；
-    异步化落地时按清单逐条销账。另：锁内发信**抛出**的路径已由
+关键断言：**为什么是静态判据而不是运行时持锁时长断言**——"锁内不做 scrypt"
+    在当前架构下尚不成立（存量锁内慢调用是登记在案的债），任何"秒级上限"的计时
+    断言都会被一次 SMTP 超时随机打挂，等于没有。本用例把现状冻结成账，慢操作的
+    **增长面**归零；异步化落地时按清单逐条销账。另：锁内发信**抛出**的路径已由
     `tests/test_mail_send_never_raises.py` 单独封死（坏字符不再引发锁内 500）。
+    本单（`ba-p05-01`）已销账 9 条锁内 SMTP 调用：它们改经 `run_after_file_lock`
+    登记、出锁后发出（见 `tests/test_file_lock_no_network.py` 与
+    `tests/test_mail_outside_file_lock.py`），故清单只剩 5 条 scrypt。SMTP 三类名
+    仍留在 `SLOW_CALLS` 里：裸发信再回到锁内时，本用例照旧红。
 依赖：纯 AST + 文件系统遍历，不导入 web 应用、不触网、不落盘。
 """
 import ast
@@ -30,25 +33,16 @@ WEB = os.path.join(BASE, "web")
 SLOW_CALLS = {"send_user", "send_admin_alert", "send_notification",
               "generate_password_hash", "check_password_hash"}
 
-# 冻结的存量清单（文件相对路径, 宿主函数, 被调名）——按当前 HEAD 逐条扫描登记，
-# 出处为 MF-57 的持锁部分（改密/注销锁内 scrypt+SMTP、accounts_api 锁内同步 SMTP、
-# 审核拒绝/凭据改写/清空用户的通知在锁内）。**新增一条 = 本用例失败**；
-# 异步化改造还掉一条时，从清单删一条（清单与代码必须同账）。
+# 冻结的存量清单（文件相对路径, 宿主函数, 被调名）——按当前 HEAD 逐条扫描登记。
+# **新增一条 = 本用例失败**；还掉一条时，从清单删一条（清单与代码必须同账）。
+# 当前存量 = 5 条 scrypt（`ba-p05-01` 已把 9 条锁内 SMTP 调用改走
+# `run_after_file_lock`，逐条销账）。
 KNOWN_SLOW_IN_LOCK = {
-    ("web/routes/accounts_api.py", "api_account_update", "send_notification"),
-    ("web/routes/accounts_api.py", "api_account_update", "send_user"),
-    ("web/routes/accounts_api.py", "api_accounts_batch", "send_user"),
-    ("web/routes/accounts_api.py", "api_account_review", "send_user"),
     ("web/routes/auth.py", "api_register", "generate_password_hash"),
     ("web/routes/me.py", "api_me_password", "check_password_hash"),
     ("web/routes/me.py", "api_me_password", "generate_password_hash"),
-    ("web/routes/me.py", "api_me_password", "send_user"),
-    ("web/routes/me.py", "api_me_password", "send_notification"),
     ("web/routes/me.py", "api_me_delete", "check_password_hash"),
-    ("web/routes/my.py", "api_my_account_add", "send_notification"),
-    ("web/routes/my.py", "api_my_account_delete", "send_user"),
     ("web/routes/users_api.py", "api_user_password", "generate_password_hash"),
-    ("web/routes/users_api.py", "api_user_delete", "send_notification"),
 }
 
 

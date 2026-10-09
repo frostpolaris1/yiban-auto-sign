@@ -23,7 +23,10 @@
    容器内整链生效待生产演练。
 依赖：调度器用例按文件路径加载 docker/scheduler.py + subprocess/time 模块桩
    （真循环靠 sleep 抛异常打断）；心跳探活 CLI 用例不加载调度器（心跳手写落盘、
-   起 sys.executable 子进程，缺业务依赖的机器也能跑）；
+   起 sys.executable 子进程）；快路仍先导 `yiban.infra.env_io`，连带
+   `env_lock → locks → portalocker`。缺 portalocker 的机器跑不动这条反例
+   （阻断后抛 ModuleNotFoundError，走不到 sys.exit；暴露面见
+   docker/scheduler.py 模块头）；
    run.sh 锁目录用例真起 bash 子进程（无 bash 时整类跳过，同 test_schedule_retry
    惯例）；supervisord/compose 为纯文本/INI 解析断言。不发网络请求。
 
@@ -259,7 +262,11 @@ class CheckHealthCliTest(unittest.TestCase):
     """--check-health 是可执行出口：compose 的 healthcheck 直接调它（真跑子进程）。
 
     故意不继承 _SchedBase：CLI 快路在业务导入图之前就 sys.exit，判据只看心跳
-    mtime——心跳手写落盘即可，任何机器（缺业务依赖也一样）都能跑这条反例。
+    mtime。心跳手写落盘即可，不需要业务模块图。快路躲不开第三方依赖：STATEDIR
+    收口到 resolve_path 之后，它必须先导 `yiban.infra.env_io`，连带
+    `env_lock → locks → portalocker`。缺 portalocker 时这条反例抛
+    ModuleNotFoundError，走不到 sys.exit。残余暴露面记在 docker/scheduler.py
+    模块头。
     """
 
     HEARTBEAT = "sched-heartbeat.json"   # 与 scheduler.py 的 HEARTBEAT_FILE 同名

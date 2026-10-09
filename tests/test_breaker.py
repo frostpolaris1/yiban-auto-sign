@@ -205,6 +205,53 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(cred["13800138000"]["probe_date"], "2026-09-02",
                          "试探失败应顺延 7 天（8-26 + 7）")
 
+    def test_probe_day_credential_failure_postpones_on_production_path(self):
+        """生产路径（`runner.main` → `executor_v3`）上，半开试探凭据失败必须顺延试探日。
+
+        本用例走的是唯一生产执行体，不是冻结的 `run_queue_retry`：熔断到期后若这里
+        不顺延，`probe_date` 停在过去，`_probe_due` 每天为真，密码确实错的账号会被
+        每天真实登录一次（风控暴露面）。
+        """
+        probe_day = datetime(2026, 8, 26, 6, 40)  # = probe_date，周三
+        cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
+                                "paused_since": self.D3, "probe_date": "2026-08-26"}}
+        self._run_main(
+            probe_day, dict(cred),
+            attempt_result=(False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
+        )
+        self.assertEqual(self._attempt_signin.call_count, 1, "试探日应真实执行一次")
+        saved = self._saved_cred_state.call_args[0][0]
+        self.assertIn("13800138000", saved, "凭据类失败应保持暂停")
+        self.assertEqual(saved["13800138000"]["probe_date"], "2026-09-02",
+                         "生产执行体上的试探失败必须顺延 7 天（8-26 + 7）")
+
+    def test_probe_date_advance_has_one_owner(self):
+        """`probe_date` 的写入点只有一处：`attempts._update_cred_state`。
+
+        半开试探失败后的顺延原先写在三个非生产调用点（`round` 两处、`runner` 一处），
+        唯一生产执行体 `executor_v3` 那条路径漏掉。顺延收进 `_update_cred_state` 后，
+        本守卫钉住"不许再长出第二个写入点"：任何生产模块在它之外给 `probe_date`
+        赋值即红。
+        """
+        import re
+
+        assign = re.compile(r"probe_date\W*\]?\s*=[^=]")
+        offenders = []
+        for root, _dirs, files in os.walk(os.path.join(BASE, "yiban")):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(root, name)
+                with open(path, encoding="utf-8") as f:
+                    for lineno, line in enumerate(f, 1):
+                        code = line.split("#", 1)[0]
+                        if assign.search(code):
+                            rel = os.path.relpath(path, BASE).replace(os.sep, "/")
+                            if rel != "yiban/engine/attempts.py":
+                                offenders.append(f"{rel}:{lineno}")
+        self.assertEqual(offenders, [],
+                         "probe_date 只许在 attempts._update_cred_state 写入")
+
     # ---- 2b. F5 回归：全新系统熔断计数必须写回调用方持有的 dict ----
     # 症状（2026-09-21 测试机 47 E2E）：`run_queue_retry` 里 `cred_state = cred_state
     # or {}` 对空 dict 重新绑定新对象——全新系统（cred-state.json 不存在，
@@ -325,7 +372,7 @@ class BreakerTest(unittest.TestCase):
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
         sn.assert_not_called()  # 耗时属"事后可读"的慢信号：只进汇总，不即时推送
         self.assertEqual(len(signin._mail_summary), 1, f"实际 {signin._mail_summary}")
-        subject, fields = signin._mail_summary[0]
+        subject, fields, _level = signin._mail_summary[0]
         self.assertIn("耗时", subject)
         by_label = dict(fields)
         self.assertIn("31.0", by_label["耗时"], "汇总条目应含实际耗时")
@@ -356,7 +403,7 @@ class BreakerTest(unittest.TestCase):
         # 2 次尝试 → 只有最终放弃那一条即时通知（耗时条目未连收）
         self.assertEqual(sn.call_count, 1, "只有最终放弃的失败通知一条即时推送")
         self.assertEqual(sn.call_args_list[0].args[0], "易班签到失败")
-        self.assertEqual([s for s, _ in signin._mail_summary].count("易班签到耗时告警"), 1,
+        self.assertEqual([s for s, _t, _lv in signin._mail_summary].count("易班签到耗时告警"), 1,
                          f"两次慢尝试只收一条耗时条目，实际 {signin._mail_summary}")
         self.assertIn("31.0", dict(signin._mail_summary[0][1])["耗时"])
 

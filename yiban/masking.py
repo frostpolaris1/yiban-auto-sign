@@ -6,11 +6,15 @@
 
 - `sanitize_text`：服务端可控内容（异常消息、上游返回）落日志/通知前转义换行并
   抹掉可能内嵌的凭据字面量——防日志注入与凭据泄露；
+- `mask_credentials_in_text`：自由文本里的凭据字面量 → `key=***`，供**日志输出面**
+  （`MaskingFormatter`）兜底；与 `sanitize_text` 同一份规则表，只在取值形态上分叉
+  （见 `_BARE_VALUE_STRICT`）；
 - `sanitize_url`：URL 入日志前对 query 与 fragment 里的凭据类参数打码（OAuth code /
   CSRF / session 标识 / 隐式流放进 fragment 的令牌 / 未知高熵令牌）；
-- `mask_phone`：11 位手机号 → `138****8000`；
-- `mask_phones_in_text`：自由文本里**所有** 11 位手机号 → `138****8000`，供日志输出面
-  与展示/导出层共用（同一口径，不另起第二套）；
+- `mask_phone`：手机号 → `138****8000`（接受可选 `+86`/`86` 前缀与空格/连字符分段）；
+- `mask_phones_in_text`：自由文本里**所有**手机号 → `138****8000`，供日志输出面
+  与展示/导出层共用（同一口径，不另起第二套）。**号码口径只有这一处**：展示面一律
+  消费已遮值，前端不得再自行遮罩（2026-10-06 census P0-3 契约化）；
 - `mask_email`：邮箱 → `abc***@example.com`（本地部最多 3 字符 + 完整域名）——展示面
   与审计 `actor` 列共用的唯一口径（原 `accounts_data._mask_email` 的实现搬到这里做真源，
   前端 `maskEmail` 与它由对拍测试钉住同口径；口径本身逐字未变）。
@@ -18,6 +22,8 @@
 
 **日志落盘面也脱敏**：日志文件会被转发、导出、截图，故输出面的 formatter 对最终
 消息统一兜底脱敏（`yiban.logging_ext.MaskingFormatter`），不依赖各调用点自觉。
+它兜的是**两族**：手机号（`mask_phones_in_text`）与凭据字面量
+（`mask_credentials_in_text`）——两族各自幂等，且都只有这一处实现。
 
 本模块是**按键名/值形态打码**的一层，不是"任何形态都遮得住"的一层：每个规则的
 实际覆盖面与绕过面写在各自那行旁边，改口径要连 `tests/test_masking_ssrf_gaps.py`
@@ -37,14 +43,39 @@ _URL_SENSITIVE_KEY_PARTS = (
     "auth", "key", "secret", "passwd", "password", "verify",
     "phone", "mobile", "tel",
 )
-# 大陆手机号形态（11 位、1[3-9] 开头）——参数名不敏感时也按值打码：
-# 上游把手机号回显在 `u=`/`id=` 这类名字里时，24 位高熵阈值够不到 11 位。
-_PHONE_VALUE_RE = re.compile(r"^1[3-9]\d{9}$")  # 只认连续 11 位数字：编码/分段书写都不命中
+# 手机号形态：11 位、首位 `1`。**与写侧校验同宽**——`web/services/accounts_data.py::PHONE_RE`
+# 是 `^1\d{10}$`（首位 `1` 之后不必是 3–9）。两个口径必须一样宽：写侧收下的号，
+# 遮罩侧必须遮得住，否则已入库的 `12012345678` 会从展示面**原样**下发（旧 `1[3-9]`
+# 口径与旧 JS `>=7` 判长各自漏一半，2026-10-06 B2 契约化一并收口）。
+# 国际前缀 `+86`/`86` 可选，数字之间允许一个空格/制表/连字符（分段书写）。
+# **这是全站唯一的号码字符口径**——值判定（邮箱本地部、`mask_phone`）与文本判定
+# （`mask_phones_in_text`、`MaskingFormatter`、`sanitize_url` 的参数值）都从这两条 pattern
+# 取，不得再抄第二份。参数名不敏感时也按值打码：上游把手机号回显在 `u=`/`id=` 这类名字里时，
+# 24 位高熵阈值够不到 11 位。
+_PHONE_CC = r"(?:\+?86[ \t\-]?)?"           # 可选国际前缀 `+86` / `86`
+_PHONE_DIGITS = r"1[ \t\-]?\d(?:[ \t\-]?\d){9}"  # 11 位号码，数字之间（含首位 1 之后）都可分段
+# 值口径：整串就是号码（两侧允许空白——URL query 里未编码的 `+` 会被 `parse_qsl`
+# 解成空格，`?u=+8613800138000` 到此已是 `" 8613800138000"`；不容忍空白就等于放走这个
+# 形态，见 `sanitize_url`）。
+_PHONE_VALUE_RE = re.compile(r"^[ \t]*" + _PHONE_CC + _PHONE_DIGITS + r"[ \t]*$")
+# 文本口径：两侧不能是数字——否则会把 12 位订单号之类前 11 位截出来误伤；同时避免把
+# 坐标/时间戳里的数字段当号码（`1\d{10}` 的宽度只在两侧都是非数字时才算号码）。
+_PHONE_IN_TEXT_RE = re.compile(r"(?<!\d)" + _PHONE_CC + _PHONE_DIGITS + r"(?!\d)")
 
-# 自由文本里的手机号：与 `_PHONE_VALUE_RE` 同字符口径（直接复用其 pattern，不另写
-# 一套号码规则），只把首尾锚点换成"两侧不能是数字"——否则会把 12 位订单号之类
-# 前 11 位截出来误伤；同时避免把坐标/时间戳里的数字段当号码。
-_PHONE_IN_TEXT_RE = re.compile(r"(?<!\d)" + _PHONE_VALUE_RE.pattern.strip("^$") + r"(?!\d)")
+
+def _phone_digits_of(value):
+    """取出整串表示的 11 位国内号；不是号形态返回 None。
+
+    **整串**必须就是号码（`_PHONE_VALUE_RE`）：裸 11 位，或带 `+86`/`86` 前缀与空格/
+    制表/连字符分段的形态。`"tel:13800138000"` 这类"包含号码的串"返回 None——不在值里
+    做剥离，`mask_phone` 因此对非号形态原样返回。
+    """
+    s = str(value)
+    if not _PHONE_VALUE_RE.fullmatch(s):
+        return None
+    digits = re.sub(r"\D", "", s)
+    # 13 位必然是 `86` 前缀：`_PHONE_VALUE_RE` 只允许这一种前缀
+    return digits[2:] if len(digits) == 13 else digits
 
 
 # 凭据字面量的键名形态：允许 `refresh_token` / `session_id` / `id_token` /
@@ -72,6 +103,27 @@ _CRED_KEY = r"(?:token|secret|passwd|password|pwd|cookie|session|csrf|authorizat
 #   这是刻意的代价，日志可读性让位于泄漏面。
 _BARE_VALUE = r"[^\s,;]+(?:[ ,;]+(?![^\s,;]*=[^=\s,;])[^\s,;]+)*"
 _QUOTED_OR_BARE = r"(?:\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|" + _BARE_VALUE + r")"
+# 输出面（`mask_credentials_in_text`）的取值形态：引号串不变，裸值是"非空白开头的一小段"。
+# 两个面只在"值取到哪"上分叉，键名词表与规则条数仍只有一份（见 `_mask_credential_literals`）：
+# - 调用点面处理**上游文本**（异常消息、响应体回显），那里的裸值可能就是凭据本身，截半会
+#   把尾巴留成正文——贪心取值是那条面防"截断残留"的必要条件；
+# - 输出面处理**我们自己的成文行**，行里的 `key=value` 后面常常接着中文散文
+#   （`配置 YIBAN_SESSION_TTL_HOURS=12 非法，回退默认 168 小时`、`YIBAN_COOKIE_SECURE=1（.env
+#   或环境变量）`）：贪心取值会把整句解释一并吞掉——排障信息凭空消失，而这一层存在的理由
+#   正是"方便排障的前提下保证脱敏"。
+# 代价（如实登记）：**含空格的裸凭据值**在输出面只遮到第一个空白之前。这类值只出现在上游
+# 回显文本里，那条路已在调用点面（贪心）遮全，故输出面不再重复承担这条。
+#
+#: 输出面裸值的**终止字符集**：空白 + 中英文标点。仓库日志正文是中文成文，"值紧跟全角标点、
+#: 中间没有空格"是常态（上面那条 `…=1（.env 或环境变量）`）：只按空白终止会把标点之后的
+#: 整句一起吞掉。
+_VALUE_STOP = r"\s,;，。；：、！？（）【】「」『』“”‘’…"
+#: 值 = 首字符任取非空白 + 其后不落终止集。
+#: 首字符不设限是**漏防线**：凭据值可能以标点开头（`token=(a-b)`），首字符也受约束时该行
+#: 整条不匹配 ⇒ 明文原样放走。首字符之后立刻收紧，才既保住覆盖又保住散文。
+_BARE_VALUE_STRICT = r"[^\s][^" + _VALUE_STOP + r"]*"
+_QUOTED_OR_BARE_STRICT = (r"(?:\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|"
+                          + _BARE_VALUE_STRICT + r")")
 # 引号键形态（dict/JSON repr：`"access_token": "a b"`）：键名带引号时通用键规则接不上
 # （`[:=]` 必须紧跟裸键名，中间隔着收尾引号），故单独一条。"不误伤 JSON 正文"判据：
 # ①只有**整键**命中凭据名表（含前后缀复合名，与通用键规则同一张表）才处理——
@@ -97,14 +149,46 @@ def _mask_quoted_key_value(m):
 
 
 def sanitize_text(text):
-    """服务端可控内容进入错误消息/日志/通知前转义换行、遮裸号、抹凭据字面量。
+    """服务端可控内容进入错误消息/日志/通知前转义换行、抹凭据字面量、遮裸号。
 
     手机号按 `mask_phones_in_text`（与 `MaskingFormatter` 同一份号码口径，MF-49 的
     统一原语）收口在这里：上游异常消息/返回体里回显的裸号（如账号标识）随文本进
     告警与日志，此前只靠调用点自觉——出口面兜底脱敏与展示层必须共用一条规则，
     本函数补上最后一格，而不是在调用点再抄一份。
+
+    凭据部分走 `_mask_credential_literals`（与输出面 `mask_credentials_in_text` **同一份**
+    规则表，只在取值形态上用贪心那档——理由见 `_BARE_VALUE_STRICT` 上方的说明）。
     """
     s = str(text).replace("\r", "\\r").replace("\n", "\\n")
+    # 换行转义在凭据规则**之前**：本函数产出的是"一行"文本，转义后再遮才不会把
+    # 跨行内容并进同一个取值。
+    return mask_phones_in_text(_mask_credential_literals(s, _QUOTED_OR_BARE))
+
+
+def mask_credentials_in_text(text):
+    """自由文本里的**凭据字面量** → `key=***`，其余原样（**幂等**）。
+
+    供**输出面**（`yiban.logging_ext.MaskingFormatter`）兜底：日志文件会被转发、导出、
+    截图，而凭据此前只靠各调用点自觉先过 `sanitize_text`——没过它的调用点（含日志里
+    内嵌的上游回显文本）不被救回。本函数把那条口径搬到输出面，与调用点是否自觉解耦。
+
+    与 `sanitize_text` 共用 `_mask_credential_literals`（键名词表与规则条数只有一份）。
+    两者只差取值形态：本函数用 `_QUOTED_OR_BARE_STRICT`（值止于空白，**不吞散文**），
+    `sanitize_text` 用 `_QUOTED_OR_BARE`（贪心）。取舍与代价见 `_BARE_VALUE_STRICT`。
+
+    **不做换行转义**（输出面拿到的是已成文的整行，异常栈的多行形态必须保住）；
+    裸号由调用方按 `mask_phones_in_text` 另行收口（两族原语分开，各自幂等）。
+    """
+    return _mask_credential_literals(str(text), _QUOTED_OR_BARE_STRICT)
+
+
+def _mask_credential_literals(s, value_re):
+    """凭据字面量遮罩的**唯一实现**：`s` 内按键名抹值，返回新串。
+
+    `value_re` 是"值取到哪"的形态（两个面各自的取舍见模块内 `_BARE_VALUE_STRICT`）。
+    规则顺序不可换，各条的理由在下面逐条注释里（引号键先于 authorization 专项、
+    authorization 专项先于通用键规则）。
+    """
     # 异常消息可能含 Account dataclass repr（带明文密码/令牌）：
     # 整体替换 Account(...) 对象——引号串按**两种引号各自配对**跨过值内的 `)` 与 `(`
     # 不截断（旧版只配单引号：name 含撇号时 repr 改用双引号包裹，吞除在双引号段前
@@ -117,33 +201,46 @@ def sanitize_text(text):
     # "不误伤 JSON 正文"判据见 `_QKV_VALUE` 上方注释。必须排在 authorization 专项**之前**：
     # 那条的冒号可选（`:?`）会先从 `"authorization": "…"` 的键名后半咬进来，把配对的
     # 引号串咬错位、产出撕坏 JSON 的残串。
+    # 本条的取值不随 `value_re` 分叉：它的值是 JSON 形态（配对引号串 / JSON 原子之外的
+    # 裸值），裸值支只在引号不配对的残破输入上走到，"整段吞"在那里是安全侧。
     s = re.sub(rf"(?i)(['\"]{_QKEYED_CRED}['\"]\s*[:=]\s*){_QKV_VALUE}",
                _mask_quoted_key_value, s)
-    # authorization 专项必须**先于**下面的通用键规则：它把方案名 "Bearer" 一起
-    # 吃掉并归一为 `authorization=***`；值按通用取值（配对引号或整段裸值），
-    # 截断留尾与凭据键规则同罪。冒号可选（`:?`）使它能在引号键（`"authorization":`）
-    # 的收尾引号处下口、把配对引号咬错位——引号键形态已由上面的专属规则先行接管，
-    # 这里显式让位：键名右侧紧跟引号时不再匹配。
-    s = re.sub(r"(?i)\bauthorization\b(?!['\"]\s*[:=])\s*:?\s*(?:bearer\s+)?" + _QUOTED_OR_BARE,
+    # authorization 专项必须**先于**下面的通用键规则：它把**方案名**一起吃掉并归一为
+    # `authorization=***`；值按通用取值（配对引号或裸值），截断留尾与凭据键规则同罪。
+    # 方案名按**通用形态**认（`[a-z]+\s+`），不只认 `Bearer`：`Authorization: Basic <base64>`
+    # 只吃方案名会把 base64 凭据留在行上（`authorization=*** ZGVmOg==`）——那正是
+    # `tests/test_users_exit_surface.py::test_authorization_basic_tail_swallowed` 在
+    # 调用点面钉住的形态，输出面必须同形收口。方案名不存在时（`authorization: abc123`）
+    # 这一支匹配空串，值照常取到 `abc123`（回溯保证不会因"把值当方案名"而漏）。
+    # 冒号可选（`:?`）使它能在引号键（`"authorization":`）的收尾引号处下口、把配对引号
+    # 咬错位——引号键形态已由上面的专属规则先行接管，这里显式让位：键名右侧紧跟引号时
+    # 不再匹配。
+    s = re.sub(r"(?i)\bauthorization\b(?!['\"]\s*[:=])\s*:?\s*(?:[a-z]+\s+)?" + value_re,
                r"authorization=***", s)
-    s = re.sub(rf"(?i)\b(password|phone_code)\s*[:=]\s*{_QUOTED_OR_BARE}", r"\1=***", s)
+    s = re.sub(rf"(?i)\b(password|phone_code)\s*[:=]\s*{value_re}", r"\1=***", s)
     # 凭据字面量：意外落入文本的 token/cookie/session 等直接抹值，
     # 键名允许带前后缀（refresh_token / session_id / JSESSIONID / x-csrf / api_key）。
-    # 值与 password 同用 `_QUOTED_OR_BARE`：`[^\s,;]+` 在引号/空格/逗号处截半，
+    # 值与 password 同用同一个取值形态：`[^\s,;]+` 在引号/空格/逗号处截半，
     # `refresh_token="abc def"` 会留下 ` def"` 这种明文尾巴——本层是最后兜底，
-    # 截半等于没遮。
-    s = re.sub(
-        rf"(?i)(?<![\w-])([a-z0-9_\-]*{_CRED_KEY}[a-z0-9_\-]*)\s*[:=]\s*{_QUOTED_OR_BARE}",
+    # 截半等于没遮（调用点面）；输出面改用"非空白开头的一小段"，代价与理由见
+    # `_BARE_VALUE_STRICT`。
+    return re.sub(
+        rf"(?i)(?<![\w-])([a-z0-9_\-]*{_CRED_KEY}[a-z0-9_\-]*)\s*[:=]\s*{value_re}",
         r"\1=***",
         s,
     )
-    # 裸号收口（文档字符串所述）：放在凭据规则**之后**——键值对形态先归值，再按
-    # 值形态扫剩余号码；`mask_phones_in_text` 幂等，已遮形态不会二次变形。
-    return mask_phones_in_text(s)
 
 
 def mask_phone(phone):
-    """11 位手机号 → 138****8000；已脱敏（含 `*`）或非 11 位原样返回（**幂等**）。
+    """手机号 → `138****8000`；已脱敏（含 `*`）或非号形态原样返回（**幂等**）。
+
+    号形态口径只有一份（`_phone_digits_of`，与写侧校验 `PHONE_RE = ^1\\d{10}$` 同宽）：
+    裸 11 位，或可选 `+86`/`86` 前缀、数字间允许一个空格/制表/连字符的分段形态。
+    前缀与分隔符都不保留——输出一律是 11 位号码的规范遮罩形。
+    **整串**必须是号码：`"tel:13800138000"` 原样返回，不在值里剥离号码段。
+
+    非号形态**原样返回**：不得产出"插了星号的伪装串"（7–10 位输入若按长度判长再插
+    `****`，看起来遮了、实际每个数字都在，历史 JS 副本正是这个形状）。
 
     幂等是有意的：同一串可能被判据链上多处脱敏（日志页展示层再脱敏一次），
     不幂等会把 `138****8000` 二次打码成 `138*****8000` 之类的畸形串。
@@ -151,16 +248,18 @@ def mask_phone(phone):
     p = str(phone)
     if "*" in p:
         return p
-    return p[:3] + "****" + p[7:] if len(p) == 11 else p
+    digits = _phone_digits_of(p)
+    return digits[:3] + "****" + digits[7:] if digits else p
 
 
 def mask_phones_in_text(text):
-    """把自由文本里**全部** 11 位手机号替换为 `138****8000`，其余原样（**幂等**）。
+    """把自由文本里**全部**手机号替换为 `138****8000`，其余原样（**幂等**）。
 
     日志输出面（`yiban.logging_ext.MaskingFormatter`）与展示/导出层（`_mask_log_phones`）
     共用本函数：脱敏必须只有一个号码口径，否则两套必然分叉（历史缺陷正是展示层只认
-    `[11 位]` 方括号形态、中文逗号分隔的裸号漏过）。已遮形态（含 `*`）不匹配 11 位
-    连续数字，故重复调用不再变形。
+    `[11 位]` 方括号形态、中文逗号分隔的裸号漏过）。号码形态见 `_PHONE_IN_TEXT_RE`：
+    裸 11 位、`+86`/`86` 前缀、空格/连字符分段都在射程内，输出统一为规范遮罩形。
+    已遮形态（含 `*`）不匹配号码数字串，故重复调用不再变形。
     """
     return _PHONE_IN_TEXT_RE.sub(lambda m: mask_phone(m.group(0)), str(text))
 
@@ -198,7 +297,7 @@ def mask_email_local(e):
         return s
     if not s:
         return s
-    if _PHONE_VALUE_RE.match(s):
+    if _phone_digits_of(s):
         return mask_phone(s)
     return s[:3] + "***"
 
@@ -235,10 +334,11 @@ def sanitize_url(url):
             return f"{key}=***"
         if len(value) >= 24 and re.fullmatch(r"[A-Za-z0-9_\-]+", value):
             return f"{key}=***"  # 高熵兜底是纯形式判定：值里含 % / + . 的长令牌不命中
-        if _PHONE_VALUE_RE.match(value):
-            # 按值兜底：保留 mask_phone 同口径的前 3 后 4，仍可区分是哪个号
-            return f"{key}={value[:3]}****{value[7:]}"
-        return f"{key}={value}"  # 参数名不在片段表 + 值不够"高熵" = 原样回显，这是常态不是异常
+        # 按值兜底：值里**出现**号码就遮，直接走文本出口同一函数 `mask_phones_in_text`。
+        # 覆盖整值号码（`u=138…`）、`+86` 前缀与分段书写，也覆盖"号码嵌在散文里"的形态
+        # （`u=tel:138…`）——只认"整值即号码"时，前后缀一加就整串放行入日志。
+        # 参数名不在片段表 + 值不够"高熵"时的其余原样回显，是常态不是异常。
+        return f"{key}={mask_phones_in_text(value)}"
 
     # 注意输出是**解码后**的 query/fragment（`%2F` 变回 `/`、`;` 分隔段的值里带回了
     # 原文），只能拿去写日志；回填成请求会改变实际发出去的内容。

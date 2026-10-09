@@ -7,8 +7,8 @@
 `runner`。
 
 另有一批**同名转发**（客户端 `YibanClient`、请求头版本特征、白名单/WAF 判定、定位
-算法）：它们都服务于"一次登录 + 签到"，实现分别在 `yiban/client.py`、`yiban/fyiban/`、
-`yiban/security.py`；此处转发的是**同一对象**，不是第二份实现——旧调用点
+算法）：它们都服务于"一次登录 + 签到"，实现分别在 `yiban/client.py`、`yiban/platform.py`、
+`yiban/geo.py`、`yiban/security.py`；此处转发的是**同一对象**，不是第二份实现——旧调用点
 （`signin.<名字>`、`web/app.py`）继续按原名引用。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
@@ -17,10 +17,10 @@ import logging
 from datetime import datetime, timedelta
 
 from yiban import client as yiban_client
+from yiban import geo as yiban_geo
+from yiban import platform as yiban_platform
 from yiban import security
 from yiban import status as yiban_status
-from yiban.fyiban import algo as fyiban_algo
-from yiban.fyiban import headers as fyiban_headers
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.masking import sanitize_url as _sanitize_url
@@ -62,7 +62,12 @@ AUTH_FAIL_KEYWORDS = [
 # 确定性认证失败的总尝试上限：仅首试 1 次
 AUTH_FAIL_MAX_ATTEMPTS = 1
 
-# 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记
+# 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记。
+#
+# WAF 族**不写进本表**：名单与匹配口径都只有一份，在 `yiban.security`
+# （`WAF_KEYWORDS` + `matches_waf_keywords`）——同一事实两个定义点必然各自演化
+# （工单 `yiban-auto-sign-u21x` 的根因形状）。想加风控词元请改 security 的名册，
+# 本表只列本层自有的凭据/协议措辞（都是服务端文案原文，按子串匹配）。
 RISK_FAIL_KEYWORDS = [
     "账号或密码错误",
     "e003",
@@ -72,12 +77,6 @@ RISK_FAIL_KEYWORDS = [
     "登录失败",
     "登录响应异常",
     "OAuth 页解析失败",
-    # WAF 风控拦截：重试只会浪费请求并加重 IP/账号标记（与 WAF_KEYWORDS 对应）
-    "风险访问",
-    "风控",
-    "访问服务禁用",
-    "WAF",
-    "拦截",
 ]
 
 # 会话陈旧类失败特征：缓存会话已被服务端作废（夜间自然过期、或本人用手机端易班登录
@@ -116,32 +115,32 @@ PROBE_INTERVAL_DAYS = 7     # 暂停后半开试探周期（天）
 # ---------------------------------------------------------------------------
 # 同名转发（转发的是同一对象，不是第二份实现）
 # ---------------------------------------------------------------------------
-# 定位生成：多边形内随机点，算法**衍生自上游 FYIBAN**（缩放质心 + 射线法），
-# 实现在第三方隔离层 `yiban/fyiban/algo.py`，采样分布与兜底策略的本地差异见
-# 同目录 PROVENANCE.md。
-point_in_polygon = fyiban_algo.point_in_polygon
-generate_position_in_polygon = fyiban_algo.generate_position_in_polygon
+# 定位生成：多边形内随机点（洁净室自研：偶奇射线法 + 拒绝采样 + 显式兜底），
+# 实现在 `yiban/geo.py`，算法语义与边界条件清单见该模块文档串。
+point_in_polygon = yiban_geo.point_in_polygon
+generate_position_in_polygon = yiban_geo.generate_position_in_polygon
 
 # 客户端外观（凭据托管 / 会话缓存 / 代理 / 设备绑定）在 `yiban/client.py`，
-# 协议步骤在 `yiban/fyiban/protocol.py`，安全策略在 `yiban/security.py`。
+# 协议步骤在 `yiban/platform.py`，安全策略在 `yiban/security.py`。
 # 转发同一类对象：既有调用点与 `patch.object(signin.YibanClient, ...)` 的测试行为不变。
 YibanClient = yiban_client.YibanClient
 
-# 易班 App 请求头与版本特征：**衍生自上游 FYIBAN**，实现在第三方隔离层
-# （`yiban/fyiban/headers.py`，来源与差异见 `yiban/fyiban/PROVENANCE.md`）。
-YIBAN_APP_VERSION = fyiban_headers.YIBAN_APP_VERSION
-HEADERS = fyiban_headers.HEADERS
-KILLYIBAN_HEADERS = fyiban_headers.KILLYIBAN_HEADERS
+# 易班 App 请求头与版本特征：**平台事实常量**（客户端版本号取自官方安装包清单、
+# 头字段值取自实拍请求），实现在 `yiban/platform.py`。
+YIBAN_APP_VERSION = yiban_platform.YIBAN_APP_VERSION
+HEADERS = yiban_platform.HEADERS
+KILLYIBAN_HEADERS = yiban_platform.KILLYIBAN_HEADERS
 
 # WAF 判定口径的唯一实现在 `yiban/security.py`（形态判定不受长度限制、仅关键词匹配按
-# "短响应"设界的边界理由、Unicode 转义解码）；调用方与既有测试继续用这里的名字。
+# "短响应"设界的边界理由、词元的非字母数字边界口径、Unicode 转义解码）；调用方与既有测试
+# 继续用这里的名字。
 WAF_KEYWORDS = security.WAF_KEYWORDS
 is_waf_blocked = security.is_waf_blocked
 
 # 白名单口径的唯一实现在 `yiban/security.py`（宽松 = 登录链路跟随的跳转；
-# 严格 = 挑战页吐出的跳转目标）。
+# 严格 = 主机精确等于 f.yiban.cn）。
 _is_yiban_trusted_url = security.is_yiban_trusted_url
-_is_fyiban_url = security.is_fyiban_url
+_is_strict_yiban_url = security.is_strict_yiban_url
 
 # 运行期账号复核（"启动快照跑完整轮期间账号可能被删/停用"）的实现在
 # `yiban/store/accounts.py::account_still_signable`——会话缓存的写入闸门
@@ -152,6 +151,18 @@ account_still_signable = accounts_store.account_still_signable
 # ---------------------------------------------------------------------------
 # 公开入口
 # ---------------------------------------------------------------------------
+def matches_risk_keywords(message):
+    """失败消息是否命中风控族——档位与执行体风控信号的同一判据。
+
+    本层自有词元按子串（都是服务端文案原文，无误报面）；WAF 族走
+    `security.matches_waf_keywords`——ASCII 词元要求两侧非字母数字，否则失败消息里嵌的
+    base64（异常消息会带上响应片段或请求 URL）会把普通失败判成风控档：少一次重试、
+    还白清一次会话缓存。这里**不设**`is_waf_blocked` 的"短响应"上界：入参是消息不是响应体。
+    """
+    return (any(kw in message for kw in RISK_FAIL_KEYWORDS)
+            or security.matches_waf_keywords(message))
+
+
 def classify_failure(message):
     """对失败信息分级，返回总尝试上限。
 
@@ -163,9 +174,8 @@ def classify_failure(message):
     """
     if security.is_hard_fail_message(message):
         return HARD_FAIL_MAX_ATTEMPTS
-    for kw in RISK_FAIL_KEYWORDS:
-        if kw in message:
-            return RISK_MAX_ATTEMPTS
+    if matches_risk_keywords(message):
+        return RISK_MAX_ATTEMPTS
     return MAX_ATTEMPTS
 
 
@@ -259,12 +269,24 @@ def _is_credential_failure(message):
     return any(kw in message for kw in CRED_FAIL_KEYWORDS)
 
 
+def _next_probe_date(today):
+    """从 `today` 顺延一个半开试探周期，返回新的试探日。"""
+    return (datetime.strptime(today, "%Y-%m-%d")
+            + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+
+
 def _update_cred_state(cred_state, phone, success, message, today):
     """执行一次后更新账密熔断状态。
 
     - 成功：清除该账号记录（恢复 ACTIVE）
     - 凭据类失败：连续失败天数 +1（同一天多次失败只计 1 天）；达到阈值 → 暂停并设试探日
+    - 已暂停账号在试探日的凭据类失败（半开试探失败）：顺延试探日一个周期
     - 其他失败（网络等）：不计数不动记录
+
+    本函数是 `probe_date` 的**唯一写入点**，全部执行路径都经它更新熔断状态
+    （生产执行体 `executor_v3`、`--only` 手动轮、旧领取池 `round`）。顺延必须留在
+    这里：写在外层调用点会漏掉生产执行体那条路径，`probe_date` 便停在过去，
+    `_probe_due` 从此每天为真，密码确实错的账号被每天真实登录一次（风控暴露面）。
     """
     if success:
         if phone in cred_state:
@@ -277,10 +299,15 @@ def _update_cred_state(cred_state, phone, success, message, today):
         return  # 今天已计过
     cred["fail_days"] = cred.get("fail_days", 0) + 1
     cred["last_fail"] = today
-    if cred["fail_days"] >= CRED_FAIL_DAYS and not cred.get("paused_since"):
-        pause_day = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+    if cred.get("paused_since"):
+        if _probe_due(cred, today):
+            # 半开试探失败：只顺延试探日，暂停状态不变
+            cred["probe_date"] = _next_probe_date(today)
+            logger.warning("[%s] ⏸️ 半开试探失败，保持暂停（下次 %s 试探）",
+                           phone, cred["probe_date"])
+    elif cred["fail_days"] >= CRED_FAIL_DAYS:
         cred["paused_since"] = today
-        cred["probe_date"] = pause_day
+        cred["probe_date"] = _next_probe_date(today)
     cred_state[phone] = cred
 
 

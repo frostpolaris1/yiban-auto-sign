@@ -18,6 +18,8 @@ sign_events 的保留期清理（同事务兼清超期 verify_jobs）留在 `yib
 **复用**
 `db.run_daily_cleanup()` 是 web 每日线程与 `init_db(cleanup=True)` 的共用入口；
 `db._audit_cleanup` / `db.purge_expired_deleted_accounts` 仍可从门面直接调用。
+进度事件表（`run_events`，N2a）的保留期清理同样只是被编排调用：策略与实现留在
+`yiban/store/run_events.py` 的 `purge`，本模块不另写规则。
 
 **通信**
 连接、锁、时钟守卫、清理留痕（`get_conn` / `_conn_lock` / `_clock_jump_guard` /
@@ -190,3 +192,4 @@ def run_daily_cleanup():
     _facade().purge_old_delete_requests()
     _facade().purge_sign_claims()   # 旧领取池（冻结）的存量清理：保留期外删除
     _facade().purge_sign_tasks()    # 唯一台账（sign_tasks）的保留期清理：不跑会逐日无限增长
+    _facade().purge_run_events()    # 进度事件表（run_events）的保留期清理：同上

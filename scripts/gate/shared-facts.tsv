@@ -1,0 +1,154 @@
+# B0.5 §14 共享事实名册 —— 每枚"共享事实"允许有几个**定义点**（非注释命中数）。
+#
+# 列（tab 分隔，7 列，本文件用 .tsv 扩展名故不会被门禁自身扫描）：
+#   族        本册覆盖五族：路径配置 / 状态件 / 语义常量 / 信任权限 / 线格式身份
+#   键        事实名（取自 census ROSTER.csv 的"键"列；一枚 census 键若横跨多个
+#             文件（如三张名册），拆成多行登记，口径备注里写明拆分关系）
+#   状态      active = 参与判定；pending = 今天**不可机械单模式计数**，不判定
+#             （零载体 / 多事实混计 / 判据在注释里 / 负空间 / 无共享 token，
+#              逐条理由见该行的"口径备注"）
+#   判定模式  用于计数的 ERE（awk ~ 语义），大小写敏感。以 `ast:` 开头是**引擎路由**：
+#             awk 引擎见该前缀让开，改由 scripts/check-path-env-reads.py 用 AST 判定，
+#             形态为 `ast:<规则名>:<键1,键2,…>`。上限与扫描范围照旧住在本行，两处共用。
+#             一枚 active 行只许一个引擎计数（钉在 tests/test_path_env_read_gate.py）。
+#   扫描范围  相对 --root 的路径列表（空格分隔）；写 `default` = 生产树全扫
+#   允许上限  非注释命中数超过它即判红（= 冻结当天的**实测值**，不是估算）
+#   口径备注  该键的判定口径、上限出处、已知弱化点
+#
+# 上限怎么来的、与 census 的关系（重要，别误读）：
+#   census（D:/code/_census/out/ROSTER.csv，仓外只读）给出每枚事实的 def 点数，
+#   那是**人工判读的"定义点"**（且含 docs、含注释、含仓外件）；本门的 允许上限
+#   是**机械实测**的"生产树非注释命中数"，两者刻意不是同一个数。备注里的
+#   "census def=N" 只作口径参考，判据永远是本行第 6 列。
+#   因此本门是**上限冻结/漂移警报**，不是语义定义点普查：命中数从 46 变 47 即红、
+#   从 46 变 30 仍绿（门只管"长"不管"删"）。修复若确实需要新增或改名命中，就改
+#   本文件那一行并写清理由——那一行 diff 就是留痕点（B1–B3 的治理成本 O(1)）。
+#
+# 什么叫"非注释"（决定计数口径的那条线）：
+#   排除的是**注释语法**本身——Python/bash 的 `#`（含行尾，但 `${#arr[@]}` /
+#   `${x#y}` 这类参数展开里的 `#` 不是注释）、JS 的 `//` 与 `/* */`、CSS 的
+#   `/* */`（CSS 里 `//` 不是注释）、HTML 的 `<!-- -->`、Jinja 的 `{# #}`
+#   （HTML 内 `<script>…</script>` 段按 JS 规则剥）。**不排除**的是字符串字面量与
+#   docstring：Python 的 `"""..."""` 里的命中照算。这是刻意的——"把共享事实的具体
+#   数字抄进散文"正是 census 判名册 B 点名的病（改代码不会改散文），把它算进来
+#   比不算更严：例如 yiban/egress.py:41 的模块 docstring 里抄了 `signin-run.lock`，
+#   它计入"锁名规则"键。若哪天要把 docstring 也排除，属于放水。
+#   本册全部上限都在"计 docstring"这条口径下测得：剥掉 docstring 会让全部上限
+#   同时作废，下一个想剥的人必须显式重定本册全部上限（tests/test_shared_facts_gate.py
+#   的 SharedFactsDocstringSurfaceTest 钉住这条口径）。
+#
+# 已知残余盲点（今日仓内无实例；登记在此，别把它当"已完全覆盖"）：
+#   ① 跨行的 `${…}`（`$` 与 `{` 分行）与 here-doc 正文里的 `#` 仍会被当注释起始；
+#   ② `EXT_RE` 白名单外的文件（如无扩展名的 scripts/git-hooks/commit-msg）不扫。
+#
+# 覆盖边界（诚实登记）：census（ROSTER.csv）共 86 数据行 5 族，其中 2 行是
+# `(交付状态)` 非键行（路径配置 1、信任权限 1）⇒ 真键 84 枚。本册覆盖全部 5 族：
+# 路径配置 20 / 状态件 20 / 语义常量 19 / 信任权限 10 / 线格式身份 15（合成 84）。
+# gxf4（2026-10-06）补登记了 B0.5 未覆盖的两族。两族 active 行的上限
+# **等于登记当天的门实测值**，不是估算值。
+# 84 枚真键里 1 枚零定义点（线格式身份的"JS 侧状态字符串硬编码比较"）按 pending
+# 登记、不判定。登记行数 = 84 枚真键 + 3 行拆分（状态件的"state_gc 清理名册"一枚
+# census 键横跨三张名册文件 ⇒ +2 行；"fake_yiban_server 的 JSONL 落盘件"按生产
+# 定义点与测试引用两个口径拆开 ⇒ +1 行，gxf4 前是 1 行混装）⇒ 合计登记 87 行，
+# 其中 active 73 行、pending 14 行。
+# active 里 72 行由 awk 引擎计数、1 行（"env_io.resolve_path 唯一入口与绕过点"，
+# B1 第二刀 2026-10-06 翻通）由 `ast:` 路由给 AST 引擎计数。
+#
+# 族	键	状态	判定模式	扫描范围	允许上限	口径备注
+
+# ==== 路径配置（census 20 键）================================================
+路径配置	YIBAN_STATE_DIR 默认状态目录	active	/var/log/yiban|/data/state	default	46	census def=17：12 处 Python 调用 + 4 处 bash + audit_chain 平台分叉分支 + 容器侧 /data/state（本模式同时覆盖宿主默认与容器默认）
+路径配置	YIBAN_DB_FILE / DB_DEFAULT 默认库名	active	yiban\.db	default	39	census def=7："yiban.db" 字面量在引擎/web/bash/compose 各写一遍（含 /data/yiban.db 变体）
+路径配置	YIBAN_LOG_FILE 默认日志路径	active	sign\.log	default	20	census def=8：sign.log 基名与目录拼接在 Python/bash/容器各一套，无共享常量
+路径配置	YIBAN_ENV_FILE 指针默认值	active	YIBAN_ENV_FILE	default	43	census def=7：三套默认基（cwd/.、APP_DIR/.env、/data/.env）；本模式数键名出现全集（读/写/绕过）
+路径配置	YIBAN_LOCK_DIR 与锁名规则	active	YIBAN_LOCK_DIR|/var/lock/yiban|signin-run\.lock|_LOCK_SUFFIX|GLOBAL_RUN_LOCK_NAME|FALLBACK_LOCK_NAME	yiban scripts web run.sh run_probe.sh	22	census def=8：锁目录 bash 与引擎两套互不引用；<path>.lock 与自名 *.lock 两套规则；范围限定代码目录以避开 requirements.lock 噪音
+路径配置	仓库根解析（APP_DIR/REPO_ROOT/脚本相对）	active	/opt/yiban-auto-sign|YIBAN_APP_DIR|YIBAN_APP_ROOT|_REPO_DIR	default	19	census def=12：三种算法（run.sh 常量 / cleanup.sh 脚本相对 / Python 文件相对）+ 三个 env 名（YIBAN_APP_DIR、APP_DIR、YIBAN_APP_ROOT）
+路径配置	YIBAN_WORKERS 默认值与上下限	active	YIBAN_WORKERS|WORKERS_MIN|WORKERS_MAX|SLOT_MAX	default	40	census def=8：默认 1、下限 bash=2/Python=1、上限 64 三处各写。本模式钉键名与上限常量。上限 40=改名当天门实测值（gxf4，2026-10-06），顶格即黄灯。旧模式含已销名 WORKER_COUNT_MAX（0 命中；yiban/egress.py:108 记其并入 WORKERS_MAX），又漏掉活的 WORKERS_MIN/WORKERS_MAX。故旧记 21 与新值 40 不是同一集合，不许照抄旧数（bd gxf4 NOTES 1）。
+路径配置	YIBAN_PROXY 与 per-egress 代理读取点	active	YIBAN_PROXY	default	36	census def=4：单键/清单/兜底三键 + 清单段分隔符；client.py 绕过 egress.resolve 直读；唯一写点 = yiban/egress.py::apply_egress（bd gxf4 NOTES 2）
+路径配置	时区/业务日时钟（硬编码时区字面量）	active	Asia/Shanghai|hours=8	default	14	census def=12：clock.py 固定 +8、bash date 退化、compose env、Dockerfile ENV+symlink 各一份；cron 表字面时刻不在本模式内
+路径配置	容器/系统道路径口径（/data 系）	active	/data/(logs|state|\.env|yiban\.db)	default	39	census def=11：compose 挂载 / entrypoint.sh / supervisord.conf / Dockerfile / scheduler 各写各的 /data 路径
+路径配置	.env 解析实现的套数	pending	-	-	-	8 套实现（Python 3 + bash 5）无共享字面量，grep 分不出"实现"与"调用"；B2 先收口成单一解析器再登记
+路径配置	export KEY=value 行语义	pending	-	-	-	三读者机制差异是语义而非字面量（"export 行永不生效"已由专门契约测试钉住）；B2
+路径配置	拆分符不变式（str.splitlines 禁令）	pending	-	-	-	禁令只活在 env_io.py 的注释里，无可计数载体；B2 先引入可执行断言
+路径配置	env_io.resolve_path 唯一入口与绕过点	active	ast:bare_environ_read:YIBAN_ENV_FILE,YIBAN_DB_FILE,YIBAN_STATE_DIR,YIBAN_LOG_FILE,YIBAN_BASE_PATH,YIBAN_ACCOUNTS_FILE	yiban scripts web docker	2	AST 门计数：判定模式以 ast: 开头的行由 scripts/check-path-env-reads.py 判定，scripts/check-shared-facts.sh 见该前缀让开——同一枚键只许一个引擎计数（tests/test_path_env_read_gate.py 钉住这条分工）。口径=读位置三形 os.environ.get(K)/os.getenv(K)/environ[K]（Subscript 取 Load 上下文），K 必须是本行判定模式给的在册字面常量；写侧 environ[K] 赋值、del、setdefault 一律不计（db_export、dev_visual_seed、list_duplicate_owners 三处写键不是病形）；注释不计、docstring 与字符串字面量算（与本文件头同一口径）。扫描面含 docker 是刻意的：CI 的 ruff 面不含 docker/（10-01 审查登记的那个缺口），本门不继承——实测 docker 今天 0 处命中，收的是回归敞口。tests 与 frontend 有意排除，理由登记在此：两处实测分别 61 处与 4 处命中，都是测试脚手架——tests 的 conftest 必须在 import 任何测试模块之前裸设 .env 指针，改走 resolve_path 会把测试打到工程 .env 上（真发信给真实收件人）；计入会把上面那个实测上限抬到 76，新增的生产绕过点会落进这段虚高余量里不被发现。允许上限=2026-10-06 实测 2（立门当天 11 处；A 组 6 处 YIBAN_ENV_FILE 指针重实现连根收进 env_io.env_path，B 组 2 处库路径取值改直接调 resolve_path，C 组 1 处 BASE_PATH 改直接调 resolve_path，每修一处同批降一档）——守卫测试同时钉住"上限=实测数"与"下面这份白名单=真树逐文件分布"两条，违规点搬家也要红。基线逐处（文件=处数，为什么暂时允许）：yiban/infra/env_io.py=1(env_path 本体：唯一解析器的定义点，不是绕过点，永久允许)|yiban/notify/ledger.py=1(待用户裁定，本刀明令不收：第三档回落 dirname(env_path)，而 resolve_path 的第三档落到默认值，两者不同形；并进去会改变现役部署里 notify 账本与节流文件的落点，属生产可见搬迁)。已知弱化点：键名来自变量、f-string 或别名导入（from os import environ as e）时取不到字面常量，本门不计。在册 6 枚键的来处：resolve_path 的调用点名册给出 STATE_DIR/DB_FILE/LOG_FILE/ENV_FILE/ACCOUNTS_FILE 五枚（实测 grep 得到），加本刀控制器现状名册点名、却还没有 resolve_path 调用点的 BASE_PATH。LOG_FILE 与 ACCOUNTS_FILE 今天 0 处裸读（PR #41 已收口），登记它们是钉回归敞口。
+路径配置	.env 写入口清单	pending	-	-	-	两套平行原子落盘实现（env_io._atomic_replace_env 与 web.security._atomic_write）无唯一 token；B2
+路径配置	requirements.txt vs requirements.lock	pending	-	-	-	"lock 满足 txt 安全下限"是关系而非字面量，唯一表达在 lock 的注释里；B1 先建定义点
+路径配置	项目版本号（5 个"版本"事实）	pending	-	-	-	semver / DB schema / 密文格式 / web 时间戳 / 易班协议五个独立事实，单模式会互相混计；B3 拆键后登记
+路径配置	deploy/prod/manifest.tsv 列语义	pending	-	-	-	列序由 install.sh 与 check-cron-provenance.sh 两处 IFS read 各自独立解释，无字面量；B2
+路径配置	cron.d 绝对路径↔仓库原件对应	pending	-	-	-	已由 scripts/check-cron-provenance.sh 逐路径 fail-closed 守住（含活体反例），本刀不重复建门
+路径配置	docker/Dockerfile 依赖集 vs requirements.lock	pending	-	-	-	apt 系统依赖与 lock 同源这件事只有 Dockerfile 注释表达，无可计数 token；B2
+
+# ==== 状态件（census 20 键；"state_gc 清理名册"横跨三张名册文件，拆成 3 行）====
+状态件	sign-state-<day>.json	active	sign-state-	default	14	census def=8：同一条"当日状态事实源"的路径形状 Python 手写 5 次 + 清理名册 1 + 备份名册 1
+状态件	sign-daily-<day>.json	active	sign-daily-	default	10	census def=7：符号→状态码双向表分写两模块且已实测漂移（🚫/⏸ 缺回解）
+状态件	sched-run-<day>.json	active	sched-run-	default	13	census def=5：同一模块内三次手写，且两处判读口径不同（存在性 vs completed 真值）
+状态件	sched-slot-<kind>-<day>.json / sched-snapshot-<day>.json	active	sched-slot-|sched-snapshot-	default	10	census def=8：kind 段无定义点/校验点，清理靠"末 10 字符是日期"的隐式约定匹配
+状态件	worker-alive-<身份键>.json	active	worker-alive-	default	4	census def=5：state_io 把记录体 role 写死 "worker"，与文件名用的真实 role 分叉
+状态件	cred-state.json	active	cred-state\.json	default	12	census def=4：自称唯一入口的模块之外还有 3 处独立拼名
+状态件	fallback-alive.json	active	fallback-alive\.json	default	1	census def=2：名与格式同源；README 把绝对路径写死成默认（文档不在本门扫描面内）
+状态件	mail-user-fail-<day>.json	active	mail-user-fail-	default	3	census def=3：已登记进清理名册却不在备份收录名册（恢复后当日邮件额度归零）
+状态件	notify-throttle.json / notify-ledger.json	active	notify-(throttle|ledger)\.json	default	12	census def=6：notify 家族自持一套状态目录解析，绕开全仓 resolve_path
+状态件	sign-status-<day>.txt	active	sign-status-	default	3	census def=7：两个清理者保留期冲突（state_gc 7 天 vs logrotate 30 天），权限位也分叉
+状态件	yiban-run-today-<day>.marker	active	yiban-run-today-	default	2	census def=3：标记文件与导出环境变量两个载体之间无校验
+状态件	yiban-settled-<day>.marker	active	yiban-settled-	default	2	census def=3：第三种落盘写法（裸 :> 直接覆盖，非 noclobber、非 tmp+mv）
+状态件	audit-anchor.log	active	audit-anchor\.log	default	22	census def=5：路径事实源与实际写者分家，默认值还按平台分叉（nt 上 "." vs POSIX /var/log/yiban）
+状态件	probe-state.json	active	probe-state\.json	default	1	census def=2：因非按日命名而天然逃过 state_gc 元测试的扫描
+状态件	sign-<day>.log（按天签到日志本体）	active	sign-[^"']*\.log	default	23	census def=11（本身）/13（日期来源）：7 处拼名 + 4 个写者；模式不覆盖无日期的裸 sign.log（已由"YIBAN_LOG_FILE 默认日志路径"键登记）
+状态件	<path>.lock 伴生锁文件命名规则	active	(^|[^s])\.lock	yiban scripts web run.sh run_probe.sh	21	census def=9（状态件族口径）：伴生 <path>.lock 与自名 *.lock 两套规则、2 个语言、3 个目录；模式用 (^|[^s]) 前缀避开 requirements.lock 的子串噪音，范围限定代码目录同样为此
+状态件	备份产物命名与目录	active	yiban-data-|BACKUP_DIR|/var/backups	default	23	census def=13：4 种名字写法（yiban-<day> / yiban-data-<day> / yiban-backup-<day> / 哨兵重建）+ 3 个目录默认值 + 4 份 business_day
+状态件	fake_yiban_server 的 JSONL 落盘件——生产定义点	active	wire-%s|wire-\{|YIBAN_WIRE_DUMP|wire_dump	yiban scripts	9	census def=5：本行只数**生产树**里这条落盘件命名/开关的定义点（yiban/infra/wire_dump.py 与 scripts 下的引用）。gxf4（2026-10-06）把原 `yiban scripts tests` 一行混装的两个口径拆开：生产定义点与测试引用各自一行、各自一个上限，测试引用增长不再吃掉生产余量。上限历史（原单行 scope=`yiban scripts tests` 时的留痕，2026-10-05 两次上调）：21→33 来自 wire_dump 模块 docstring 的脱敏口径订正与 `_dump` 新增 f-string 文件名（不再用 %s 拼日期，writer 因此能被 state_gc 元测试正则扫到），实质定义点未增；33→41 来自 tests/test_wire_dump.py 三条新 e2e 用例对 `wire_dump` 的引用（D1 响应头 URL 脱敏、D2 签到体 `Code`、D3 幂等），生产侧 wire_dump.py 未新增定义点。上限=拆分当天门实测值。
+状态件	fake_yiban_server 的 JSONL 落盘件——测试侧引用	active	wire-%s|wire-\{|YIBAN_WIRE_DUMP|wire_dump	tests	32	census def=5（同一枚 census 键的第二行，与上一行合起来才是完整口径）：本行只数 tests/ 里对该落盘件的名字/开关引用。这些引用不是定义点，而是**改名敞口**——生产侧改名而测试不同步会在这里现形；把它单列一枚上限，是为了让"新增一条 e2e 用例"这种增长只动这一行，不再把生产行的上限抬高。上限历史（原单行 scope=`yiban scripts tests` 时的留痕，2026-10-05 两次上调）：21→33 来自 wire_dump 模块 docstring 的脱敏口径订正与 `_dump` 新增 f-string 文件名（不再用 %s 拼日期，writer 因此能被 state_gc 元测试正则扫到），实质定义点未增；33→41 来自 tests/test_wire_dump.py 三条新 e2e 用例对 `wire_dump` 的引用（D1 响应头 URL 脱敏、D2 签到体 `Code`、D3 幂等），生产侧 wire_dump.py 未新增定义点。上限=拆分当天门实测值。
+状态件	state_gc 清理名册 ARTIFACTS 登记条数	active	Artifact\(	yiban/state_gc.py	11	census def=8（三张名册之一）："新增状态文件必须登记"只能靠正则元测试兜，且 %s/常量拼接/月粒度/.corrupt- 四种写法实测漏检；上限 10→11（2026-10-05，止血批 B0 刀7 ba-p08-03）：新增 Artifact("wire-", ".jsonl", "snapshot", "state")，wire- 按日诊断样本此前无人清理
+状态件	备份收录名册（scripts/backup.sh 状态件列表）	active	SIGN_STATE_DIR\}"/	scripts/backup.sh	9	census def=8（三张名册之二）：与清理名册互不引用、无交叉校验（mail-user-fail / probe-state 已确认漏收）
+状态件	测试侧豁免名册 ALLOWED_NON_STATE	active	ALLOWED_NON_STATE	tests/test_state_gc.py	3	census def=8（三张名册之三）：第二张名册住在测试文件里，与 ARTIFACTS 一起才构成完整判定
+状态件	文件名里的日期来源（bash business_day 副本）	active	^business_day\(\)	run.sh run_probe.sh scripts	4	census def=13：business_day() 在 4 个 bash 文件里逐字复制；run_probe.sh 改用宿主日，口径分叉
+
+# ==== 语义常量（census 19 键）================================================
+语义常量	status.py 状态集合与跨语言副本	active	ALL_STATUSES|UNDONE_STATUSES|CLAIM_DONE_STATUSES|CONCLUDED_JSON_STATUSES|TASKS_OPEN_STATES|TASKS_SETTLED_STATES|STATE_ICON|STATE_TEXT|STATE_TONE|SIGN_MAP|STATUS_LABEL|STATUS_TOKEN	default	41	census def=14（证书 19）：Python 侧收口好，但同一枚举跨语言有 5 处无守卫副本（bash 大写词表 / 4 张 JS 表 / emoji 反查表）
+语义常量	签到窗口 06:30-07:50 与 FIRST/SECOND 时刻	active	06:30|07:50|07:12|06:31|6, *30\)|7, *50\)|7, *12\)|7, *10\)	default	47	census def=12：schedule.py 与 window.py 各一份 Python 定义，加 bash 2 处、JS 2 处、crontab 2 行、容器元组 1 处；容器 SECOND=07:10 与宿主 07:12 已经不同值。上限 48→47（修 D3：原 48 含 web/static/preview-states/dist-viz.html:413 一处**JS 块注释**内的命中——该行在 `<script>` 里，旧版 HTML 分档不认 JS 注释，属假阳性；按"注释不计"的判据排除后实测 47）
+语义常量	业务日切换时刻与"日界"逻辑（Python 侧）	active	_norm_day|_prev_business_day|clock\.today|TZ_NAME	default	12	census def=8：clock.py 是唯一好定义点，但 _norm_day 独立归一化、web 侧 _prev_business_day 另起炉灶
+语义常量	重试分级关键词表与分级常量	active	AUTH_FAIL_KEYWORDS|RISK_FAIL_KEYWORDS|SESSION_STALE_FAIL_KEYWORDS|NO_POSITION_FAIL_KEYWORDS|CRED_FAIL_KEYWORDS|WAF_KEYWORDS|HARD_FAIL_TOKENS|MAX_ATTEMPTS|RISK_MAX_ATTEMPTS	default	43	census def=12：上限 44→43（2026-10-06 工单 u21x：executor_v3._is_risk_signal 改走 attempts.matches_risk_keywords，本行少 1 处非注释命中，实测 43）。WAF 族词元只剩一份，在 security——attempts 的 WAF_KEYWORDS 是同名转发（同一对象），RISK_FAIL_KEYWORDS 尾部 5 枚 WAF 字面量已删除；守卫见 tests/test_waf_failure_tier.py::test_waf_family_has_one_definition_point。RISK/CRED 前 5 条仍逐字重叠（实测两表首 5 元素相同，CRED 止于第 5 条）
+语义常量	租约常量 LEASE_SECONDS / REAP_GRACE_SEC / CLAIM_BATCH_LIMIT	active	LEASE_SECONDS|REAP_GRACE_SEC|CLAIM_BATCH_LIMIT|CLAIM_LEASE_SECONDS|RECOVER_SEC	default	20	census def=6：同名 LEASE_SECONDS 在 queue_store(60) 与 claims(900) 不同义；RECOVER_SEC=60 与租约只靠注释绑定
+语义常量	HRW 的 V=64 与 shard 哨兵	active	V_DEFAULT|_TRANSLATED_SHARD|_BACKFILL_OWNER|shards_of	default	21	census def=3：改 V 的后果只活在 docstring，无启动期断言；哨兵 -1 在两处各写
+语义常量	token_bucket 速率/间隔默认值	active	RATE_MIN|RATE_MAX|RATE_DEFAULT|_DEFAULT_BUCKET_RATE|_DEFAULT_UTIL|DEFAULT_ACCOUNT_GAP_SEC|DEFAULT_MIN_EXEC_GAP_SEC|_DEFAULT_MIN_EXEC_GAP|_DEFAULT_AVG_ATTEMPT_SEC|ENV_GLOBAL_RATE	default	45	census def=13：速率默认 3 份、gap 默认 2 份；"单账号耗时 3s"与"账号间隔 10s"常被混读 2026-10-06 上抬 42→45（工单 2ula）：桶速率的三个函数签名缺省从字面量 `1.0` 改为引用唯一常量 `_DEFAULT_BUCKET_RATE`，命中 +3；定义点由 5 处收敛为名册 1 处（104 §5.3 硬规则一）。
+语义常量	每账号 HTTP 请求数 6	pending	-	-	-	**零定义点**：该数字今天只活在 7 处散文里，没有任何可计数的定义点；不许硬编上限凑数。B3 先把它建成具名常量，再由本门登记
+语义常量	容量上限族（BATCH_OP_LIMIT/_LOG_VIEW_CAP/…）	active	BATCH_OP_LIMIT|_LOG_VIEW_CAP|VERIFY_CONCURRENCY_MAX|DEFAULT_MAX_USERS|DEFAULT_MAX_ACCOUNTS|_DETAIL_MAX|DETAIL_MAX|EXECUTOR_INDEX_MAX|MEASURE_COOLDOWN_SEC|_IP_STORE_LIMIT|_IP_STORE_MAX_AGE|_DEFAULT_BLOCK_CAP|_DEFAULT_CHANNELS_MAX	default	73	census def=13：13 枚上限各写各的，无 SIZE_CEILINGS 集中名册；DETAIL_MAX 同名不同义（60s 窗口 vs detail 截断）;合流校准 2026-10-05:71→73(Vue 线 cfdd72f 新增 web/services/capacity.py 容量单源,合法源码载体 +2)
+语义常量	退出码族 0/1/2/3/4/10 与 error_kind	active	EXIT_SCHEMA_MIGRATION|_EXIT_KINDS|SECOND_RUN_CHECK_NEED|_SIGNIN_EXIT_REASONS	default	21	census def=12：0/1/2/3 三枚最核心的码无命名常量；三套码族共用同一数值空间却无作用域声明
+语义常量	--workers 汇总序 4>10>1>3>2>0	pending	-	-	-	优先序由 workers.py 的 if/elif 分支顺序隐式承载，无可导出序列表；B3 先建序列表再登记
+语义常量	权限档位（MASTER_ONLY_KEYS/GATED_KEYS/急停分权）	active	MASTER_ONLY_KEYS|GATED_KEYS|GLOBAL_PAUSE_KEY|SCHEDULE_DIST_KEYS|SCHEDULE_DIST_ENV_KEYS|PW_GATE_TIERS	default	24	census def=8：有效名册在 settings_api 组装，四个 SCHEDULE_DIST 键的 A 档判定被复刻；parity 测试不覆盖 README/注释名册。上限 25→24（2026-10-05，急停批 B0）：settings_api 原来两行各含一次 GLOBAL_PAUSE_KEY，收口时合为一行，实测由 25 降到 24；门是上限冻结，收紧到实测值才对，留 25 会让门更松
+语义常量	限速表（命名常量族）	active	RATE_WINDOW|RATE_MAX|RATE_MAX_AUTH_GET|REGISTER_WINDOW|REGISTER_MAX|EXPORT_WINDOW|EXPORT_MAX|DETAIL_WINDOW|DUPCHECK_WINDOW|DUPCHECK_MAX|READ_AUDIT_WINDOW|TIME_PREF_COOLDOWN_SEC|PAUSE_COOLDOWN_SEC|LOGIN_MAX_FAILS	default	54	census def=17：12 张表有名字、共享原语收口成功；第 13 张（登录口 10/60s）只有裸字面量 + README 散文
+语义常量	邮件配额/通知节流阈值	active	DEFAULT_COOLDOWN|DEFAULT_DAILY_MAX|DEFAULT_URGENT_DAILY_MAX|DEFAULT_LOGINFAIL_DAILY_MAX|DEFAULT_ADMIN_CHANGE_DAILY_MAX|USER_FAIL_MAIL_DAILY_CAP	default	21	census def=11：通知与邮件是两套独立配额机制，邮件侧那套未出现在任何文档里
+语义常量	请求超时 15s 与各层 timeout	active	REQUEST_TIMEOUT|_LOCK_TIMEOUT|OUTBOUND_TIMEOUT|busy_timeout|API_TIMEOUT_MS	default	25	census def=14：本族多数是各自独立的事实（不该一律算重复）；真重复只有 db.py 的 busy_timeout 两处字面量
+语义常量	BATCH/队列开关默认值	active	requeue_final=|claim_all=|requeue_during_run=|reclaim=|include_final=|allow_settled=	default	20	census def=8：四个执行身份开关以裸 bool 形参在 3 处各写一遍默认值；"兜底腿只给这两个 True"的红线只在注释
+语义常量	账号密文对象版本 {v:2}	active	SCHEMA_VERSION|SUPPORTED_SCHEMA_VERSIONS|KID_CONTEXT	default	10	census def=5："当前值"与"允许值集合"分写两行需人工同步；KID_CONTEXT 里还有第二个互不相关的 v1
+语义常量	判名册 A：跨语言枚举副本	pending	-	-	-	跨语言枚举（bash 大写词表 / 4 张 JS 状态表 / SQL 池状态词表）无统一 token，单模式会与本族"status 集合"行互相混计；B3 拆键登记
+语义常量	判名册 B：被抄进注释/文档的数字	pending	-	-	-	判定对象是**注释内容**，而本门明令排除注释（排除注释是刻意设计，避免把叙述当定义点）；B3 改由"注释↔代码数字对拍"门处理
+
+# ==== 信任权限（census 10 真键；a4a 那 11 行里的 `(交付状态)` 元行不是键，不登记）====
+信任权限	XFF / remote_addr 信任判定（TRUSTED_PROXIES + _client_ip）	active	TRUSTED_PROXIES|_client_ip|X[-_]Forwarded[-_]For|forwarded_allow_ips|ProxyFix	default	31	census a4a#1 def=9 reader=18：同一"首跳是否可信"有 3 份 Python 实现（security.py:_client_ip、app.py:_forwarded_proto_is_https、app.py:1577 一带）且回环取值域互不相等；nginx 侧 proxy_set_header X-Forwarded-For 与 gunicorn forwarded_allow_ips 是同一条事实的另两种语言载体，本模式刻意把它们数进来。上限=登记当天门实测值（gxf4，2026-10-06），不是 census 的人工判读数。上限 33→31（2026-10-06，census-P1-4 收口）：`TRUSTED_PROXIES` 元组整体删除（4 处非注释命中消失，回环谓词收口为 web/security.py 的 `_is_loopback_addr` 单一实现），新增转发头信任开关的歧义告警文案（2 处），净 -2；判定模式未改，故键名保留 census 标识以便回溯 a4a#1。
+信任权限	require_login 路径前缀白名单与匿名豁免集	active	require_login|/api/login|/api/register|/api/me/restore|/api/announcement|/api/changelog|/api/registration_paused	default	26	census a4a#2 def=9：白名单本体 1 个执行点、内部 5 段判据混写；"/api/ 作用域"复制 3 次、"匿名豁免三键"复制 2 次，且 check_csrf 里另有一份逐字重复的登录前豁免三键（与 CSRF 那枚键刻意重叠，两处任改其一都会让另一处静默不同步）。上限=登记当天门实测值（gxf4）。；2026-10-08 巡检读取面批（feature/log-inspection）净新增 1 处命中：`web/routes/run_events_api.py` 的模块 docstring 指向既有守卫（“见 web/app.py 的 require_login”）1 处；新端点未进任何放行清单，权限完全复用该守卫（匿名 401、普通用户 403）。全部是**复用**既有唯一实现或引用既有守卫，没有新增第二份定义。门自报实测 26 处，故上限由 25 上调为 26（按门输出重定，非估算）。
+信任权限	主管理员判定四件套（_is_builtin_admin_session/YIBAN_ADMIN_SID/_effective_role/_current_role）	active	_is_builtin_admin_session|YIBAN_ADMIN_SID|_effective_role|_current_role|ADMIN_SID_ENV_KEY	default	66	census a4a#3 def=10 reader=32：判权分两档——强档 _is_builtin_admin_session 与弱档 _current_role()=="admin" 并行；27 个消费站点里只有 17 处是硬门，其余是展示取值。本模式数标识符出现全集（判权与展示混计），因为两档共用同一组名字正是这枚事实的病形。上限=登记当天门实测值（gxf4）。
+信任权限	高危门禁名册（_high_risk_gate / _sensitive_password_gate / _admin_*_limited）	active	_high_risk_gate|_sensitive_password_gate|_admin_delete_limited|_admin_creds_limited|_admin_quota_limited|_reconfirm_admin_password	default	48	census a4a#4 def=12 validator=4：名册住在闭包函数的 __doc__ 里、来源是运行期 app.url_map、扫描者用 inspect.getsource、校验者只有 dev 期 unittest，启动路径零校验。docstring 计入定义点（与本文件头"什么叫非注释"同一口径）——这枚键是那条口径最直接的受益者：它的契约本体就是 docstring。上限=登记当天门实测值（gxf4）。
+信任权限	CSRF：token 生成/交付/校验与登录前同源回退	active	csrf_token|X-CSRF-Token|csrfToken|_is_same_origin|SESSION_COOKIE_SAMESITE	default	24	census a4a#5 def=11 writer=5 test=10：四点各 1 个实现点但字面量各 2 份（session 键在生成与校验两处、头名在携带与校验两处）；前端 core.js 靠错误文案正则判断是否重取 token。web/static/js 与模板都在 default 扫描面内，故 JS 侧副本一并计入。上限=登记当天门实测值（gxf4）。
+信任权限	安全响应头与 CSP（含 unsafe-inline 的因果）	active	Content-Security-Policy|unsafe-inline|X-Frame-Options|X-Content-Type-Options|Referrer-Policy|Permissions-Policy|Cross-Origin-Opener-Policy|Strict-Transport-Security	default	8	census a4a#6 def=16：app.py 响应钩子一份、web/deploy/nginx.conf.example 一份、docker/nginx.conf 一份，三份互不引用；'unsafe-inline' 的真实依赖是内联 <script> 块（theme_boot 独占 4 个），注释写的理由与事实不符且无对拍。docs/ 不在扫描面，文档叙述不计。上限=登记当天门实测值（gxf4）。
+信任权限	口令门禁三档与 PW_VERSION 会话吊销归属	active	PW_GATE|pw_gate|PW_VERSION|pw_version	default	70	census a4a#7 def=17 writer=10：档位常量收在 security.py 一处，但两条吊销维度（pw_version / admin_sid）在内置分支与注册分支两套实现里各写一遍且兼容判据不同形。与名册"权限档位"键刻意重叠 PW_GATE_TIERS 一处 token——同一枚常量被两枚键各计一次是已知的（两枚键问的是不同问题：档位归属 vs 分权名册）；分引擎去重不在本门语义内。上限=登记当天门实测值（gxf4）。
+信任权限	schema 版本的多重表达（user_version/schema_migrations/_MIGRATIONS/is_core）	active	schema_migrations|_MIGRATIONS|_ARTIFACTS|CURRENT_SCHEMA_VERSION|PRAGMA user_version|is_core	default	42	census a4a#8 def=8 validator=2：链尾校验只覆盖"名册↔记录"与"名册↔产物"，"名册↔文档叙述""name↔migrate_vN"两对无校验者（ba-p01-02 后产物核对不再按 is_core 分档，故"is_core↔产物登记键集"这对已不存在）。与语义常量族"账号密文对象版本 {v:2}"键的分界：那枚数 SCHEMA_VERSION/SUPPORTED_SCHEMA_VERSIONS（密文格式事实），本枚不含裸 SCHEMA_VERSION，只数库 schema 那套名字。上限=登记当天门实测值（gxf4）；2026-10-06 migr 单（ba-p01-02）把产物登记表 `_CORE_ARTIFACTS` 改名为 `_ARTIFACTS`（产物核对不再按 is_core 分档），门的计数串同批改为 `_ARTIFACTS`，门自报实测 42 处，故上限由 39 重定为 42（按门输出重定，非估算）。
+信任权限	告警触发条件（阈值/去重/静音/has_real_failure）	active	has_real_failure|has_window_skip|has_executed|_maybe_alert_zero_success|_mail_alert_due|MAIL_SUMMARY_MAX|_capacity_alerts|_notify_capacity_once|audit_alert_needs_attention|_AUDIT_ALERT_STATE_KEY	default	57	census a4a#9 def=24：同一条"要不要打扰人"有 7 个决定点、5 套互不相认的去重机制，其中 4 个决定点各自内联写了一份状态码子集，与真源 yiban.status.UNDONE_STATUSES 无对拍（那枚状态集合事实由语义常量族单独登记，本枚不重复数）。与"邮件配额"键刻意不重叠：USER_FAIL_MAIL_DAILY_CAP 留给那枚。上限=登记当天门实测值（gxf4）；2026-10-06 alerts 单（ba-p04-02）在 alerts.py/runner.py 新增 2 处命中，门自报实测 56 处，故上限由 54 上调为 56（按门输出重定，非估算）。2026-10-07 R2 批（3ukk+q1to）在 runner.py 汇总里新增 1 处命中（轮末判因：被其他执行体领走的账号不再计失败；retry 与无人接手两种仍判真失败，两处判定合并为一条 has_real_failure），门自报实测 57 处，故上限由 56 上调为 57（按门输出重定，非估算）。
+信任权限	急停/暂停（global_pause / manual_paused / registration_pause / 周末门）	active	GLOBAL_PAUSE|global_pause|manual_paused|user_paused|registration_pause|_registration_paused|day_off|_day_off_reason|clear_fuse_pause	default	151	census a4a#10 def=27：同一个 YIBAN_GLOBAL_PAUSE 值在 schedule(_env_flag)、run.sh(_is_truthy)、面板(load_env_int) 三处按三种取值域解读，`true` 会让引擎停而面板说停。run.sh 在 default 扫描面内 ⇒ bash 侧那一份计入。与"权限档位"键重叠 GLOBAL_PAUSE_KEY 一个 token（同一行的命中只计一次）。上限=登记当天门实测值（gxf4）。
+
+# ==== 线格式身份（census 15 真键）====
+线格式身份	runtime_owner 字符串格式与解析	active	runtime_owner|worker_owner|fallback_owner|single_owner|IDENT_WORKER_INFIX|IDENT_FALLBACK_PREFIX|IDENT_SINGLE_PREFIX|OWNER_HOST_SEP|OWNER_WORKER_PREFIX|parse_owner	default	66	census a4b#1 def=19 writer=9 reader=12 test=38：生成收在 egress 一处（好），但同一格式的"识别"被写三遍——Python parse_owner、queue_store+claims 的 SQL `owner = ? OR instr(owner,?)=1`、ledger_check 的纯等值。SQL 形态不在本模式内（标识符串与 SQL 文本两种载体各自计数会重复扣同一行），这是已知弱化点：改 SQL 前缀匹配不会被本门看见，需靠 B 组后续刀的状态件契约测试。上限=登记当天门实测值（gxf4）；2026-10-06 探针单（ba-p04-08）在 probe.py 新增 3 处命中（按执行体身份解析出口引用 single_owner/parse_owner），门自报实测 59 处，故上限由 56 上调为 59（按门输出重定，非估算）。；2026-10-06 N2a 单（n2a，内核进度事件打点层）在 runner.py 新增 1 处命中（运行级进度事件的执行体身份回退到 egress 的单执行体稳定名——与执行体侧算出同一身份），门自报实测 60 处，故上限由 59 上调为 60（按门输出重定，非估算）。2026-10-07 R2 批（3ukk+q1to）在 executor_v3._mark_unreached 新增 1 处命中（轮末判因要在事件表与日志里点名角色——哪个角色的执行体领走了这件活；角色解析只有 egress.parse_owner 一处实现，故按唯一事实源调用），门自报实测 61 处，故上限由 60 上调为 61（按门输出重定，非估算）。；2026-10-07 R2 批（jmer 第一批 · ikik 同批）在 egress.py 新增 3 处命中（`owner_tag` 是归因前缀的唯一渲染处：docstring 点名 `parse_owner` 1 处、函数体调用 `parse_owner` 1 处、复用 `OWNER_WORKER_PREFIX` 拼槽位名 1 处——三处都是**消费**同一事实源，不是新定义），门自报实测 64 处，故上限由 61 上调为 64（按门输出重定，非估算）。；2026-10-08 巡检读取面批（feature/log-inspection）净新增 2 处命中：`yiban/store/run_events.py::_executor_label` 1 处 docstring 点名 `egress.parse_owner`、1 处函数体调用它——身份原串（带主机名）不得出接口，页面要的中文角色标签只有 egress 一处实现，故按唯一事实源调用。`_public_executor` 另调 `egress.owner_tag`（不在本模式内，不计数）。全部是**复用**既有唯一实现或引用既有守卫，没有新增第二份定义。门自报实测 66 处，故上限由 64 上调为 66（按门输出重定，非估算）。
+线格式身份	egress describe 的 scheme://host[:port] 格式	active	url_desc|location_desc	default	16	census a4b#2 def=3 writer=21 reader=4：同一串格式有两处独立手写（url_desc / location_desc），describe 的"空=直连（本机出口）"文案只有一处，而 client.py 绕过 describe 直调 url_desc。writer=21 是调用点不是定义点——本模式只数两个函数名的出现（含调用），因为"绕过 describe"这件事在机械上就表现为直调 url_desc。上限=登记当天门实测值（gxf4）。
+线格式身份	代理 userinfo 剥离与脱敏的两套实现	active	mask_url_userinfo|_URL_USERINFO_RE|_is_http_proxy_url|_validated_proxy_value	default	29	census a4b#3 def=3 writer=4 validator=3：剥离规则两套实现（urlsplit 结构法丢 path、正则法留 path），同一串代理在 describe 与 mask_url_userinfo 两条出口产出字符集不同。上限=登记当天门实测值（gxf4）。
+线格式身份	KILLYIBAN_HEADERS 与 APP_SIGN_HEADERS 请求头集	active	KILLYIBAN_HEADERS|APP_SIGN_HEADERS	default	8	census a4b#4 def=14 writer=4："Origin 缺失否则 e001"写在注释、实现在一处（yiban/platform.py）、守卫在 tests/test_login_protocol_shape.py。tests 不在本枚扫描面内（default 不含 tests）。2026-10-07 换核把原隔离层的请求头文件与协议编排文件合并为 yiban/platform.py，命名空间里的出现次数由 9 降为 8（文件整合少了一处引用，不是放水）。上游 e001 的域名值本身散在若干字面量，尚未收进本模式。上限=换核当天门实测值。
+线格式身份	签到请求体逐字节形状（forms 公共函数与绕过点）	active	build_sign_in_body|build_usersure_form|SignInfo|LngLat|OutState	default	26	census a4b#5 def=8 writer=4 validator=4：公共函数只有 2 个（yiban/protocol/forms.py），但有 1 处真绕过（yiban/platform.py:build_sign_info 自拼 LngLat 串）加 1 处拆回（partition+float 往返）。2026-10-07 换核后协议库成为仓内一等模块（原 vendored 目录退役，EXCL_RE 已去掉该目录豁免），yiban/protocol/forms.py 的 2 个公共定义点与 yiban/platform.py 的组装面一并进入扫描范围，上限随之实测上调；本门数的仍是「定义点 + 绕过 + 消费面」的总量。上限=换核当天门实测值。
+线格式身份	账号密文对象的手写与手解（is_encrypted 三套判据）	active	is_encrypted|_is_encrypted_value|encrypt_password|decrypt_password|encrypt_text|decrypt_text	default	55	census a4b#6 def=6 writer=8 reader=7：同一个对象手写两遍、手解两遍、有效性判据三套（is_encrypted / _is_encrypted_value / session_cache 内联）。与语义常量族"账号密文对象版本 {v:2}"键分界：那枚数版本常量与 KID_CONTEXT，本枚数读写与判据函数名，两者不重叠 token。2026-10-07 换核把协议库（含 crypto.encrypt_password）纳入扫描范围，上限实测上调。上限=换核当天门实测值。
+线格式身份	AES-GCM 的 AAD==手机号不变式	active	MODE_GCM|yiban-notify|aad=	default	8	census a4b#7 def=6 writer=8 validator=1：不变式只以参数名与注释存在，无常量、无断言；加密侧与解密侧各写一遍 str(phone)，phone 缺键时 migrations 静默用空串当 AAD。`aad=` 只匹配传参形态（awk 的 ERE 不保证 \b 词边界，故不用裸 aad 以免命中 header/word 之类子串）——负空间（缺 AAD 参数）不可计数，这是本枚已知弱化点。上限=登记当天门实测值（gxf4）。
+线格式身份	kid 派生（HMAC-SHA256 前 8 字节）	active	KID_HEX_LEN|key_fingerprint	default	11	census a4b#8 def=5 writer=2 reader=4：派生式与上下文常量单点（好），但"8"这个数只以 KID_HEX_LEN // 2 的除法存在，测试也引用同一常量 ⇒ 长度无外部锚。KID_CONTEXT 留给语义常量族那枚键计数，本枚不重复。上限=登记当天门实测值（gxf4）。
+线格式身份	HKDF salt/context 与会话缓存 TTL 钳制	active	HKDF|SESSION_CACHE_TTL_HOURS|YIBAN_SESSION_TTL_HOURS|_session_cache_key	default	32	census a4b#9 def=8 writer=1 validator=3：默认 6 与钳制 [1,72] 各只有 1 个定义点，但YIBAN_SESSION_TTL_HOURS 既不在 .env.example 也不在 run.sh ⇒ 部署者无从发现这个键（.env.example 在 default 扫描面内，本模式命中 0 于该文件即是这条缺口的机械证据）。上限=登记当天门实测值（gxf4）。
+线格式身份	审计链哈希编码（六元组顺序与 separators）	active	_audit_hash|prev_line_hash|_anchor_line_sha|ANCHOR_GENESIS|_ANCHOR_V0_TOKENS|_ANCHOR_V1_TOKENS|_ANCHOR_V2_TOKENS|verify_audit_chain|record_audit_anchor|_scope_detail	default	65	census a4b#10 def=15 writer=5 validator=4 comment=18 test=41：逐字节一致的复刻要求（六元组顺序、json.dumps separators、HMAC 密钥、时间格式、hex 截断长度）没有任何字节级金样例锚住。audit-anchor.log 这个路径事实由状态件族单独登记，本枚不重复数文件名。上限=登记当天门实测值（gxf4）。；2026-10-08 锚点 v0 兼容单（yiban-auto-sign-jswn）把 `_ANCHOR_V0_TOKENS` 纳入本行判据模式，门自报实测 64 处，故上限由 61 上调为 64（按门输出重定，非估算）。理由：解析器新增支持第三种锚点行格式（三字段 v0，生产文件 2026-08-28 前的存量行），属**新增定义点**，不是放松口径——上限按门实测值冻结，上抬须写清理由（本行 diff 即留痕点）。三处新增命中：yiban/store/audit_chain.py 的常量定义与解析分支的条件，yiban/store/db.py 的门面再导出。；2026-10-08 巡检读取面批（feature/log-inspection）净新增 1 处命中：`web/routes/run_events_api.py` 的模块 docstring 明写“不调 `verify_audit_chain`”（读接口不触发全表哈希，照 audit_api 先例）1 处。端点本体不触审计链。全部是**复用**既有唯一实现或引用既有守卫，没有新增第二份定义。门自报实测 65 处，故上限由 64 上调为 65（按门输出重定，非估算）。
+线格式身份	脱敏规则集（手机号/邮箱跨越九个出口的副本）	active	mask_account|_mask_email|_nl_safe|MaskingFormatter|actor_tag|mask_phone|mask_phones_in_text|mask_email_local|sanitize_text|sanitize_url|_mask_log_phones|maskPhone|maskEmail|_REDACTED	default	422	census a4b#11 def=20 writer=8 reader=30：同一个手机号至少过 9 个出口（落盘 formatter、sanitize_text、sanitize_url、mask_account、日志页、wire_dump、CLI 打印、JS maskPhone、JS maskEmail），masking.py 自称单一事实源但 JS 侧与日志页各有一份独立实现。JS 两个名字在 default 面内（web/static/js）。上限=登记当天门实测值（gxf4）。；2026-10-06 N2a 单（n2a，内核进度事件打点层）在新增的 yiban/store/run_events.py 记 2 处命中（导入并调用脱敏原语——它是第 N 个脱敏出口：进度事件表的 message 落库前必须与 sign_events 同一口径净化），门自报实测 402 处，故上限由 400 上调为 402（按门输出重定，非估算）。**两侧同改本行，按下文合并**：2026-10-06 B2 契约化（本批）删掉 JS core.js 的 maskPhone 与 yiban/store/accounts.py 的切片公式副本、sanitize_url 改走 mask_phones_in_text、转发层补 import 与文档串，单独实测 403（净 +3）。合并后按**合并代码的门实测**重定为 405（= 400 + 本批 3 + N2a 2，无重复计数）。真实**公式副本**由 2 处降为 0（JS 侧归零、Python 侧只剩 masking.py 一处），本键的文本计数已不再等于副本数——本行现在守"文本定义面不许再涨"，副本纪律由 tests/test_masking_phone_contract.py 钉。run_events.py 是**转发**调用 sanitize_text，不是第十份公式。2026-10-07 R2 批（3ukk+q1to）在 executor_v3 新增 2 处命中（_mark_unreached 的逐账号 INFO 行 1 处 mask_phone；轮末收尾新增的 except 分支 1 处 mask_phones_in_text+sanitize_text，与同文件相邻两条收尾分支同一形状。「判因不可得」的告警收成**一条批量**告警，故不按账号再计一处），门自报实测 407 处，故上限由 405 上调为 407（按门输出重定，非估算）。；2026-10-07 R2 批（jmer 第一批 · ikik 同批）净新增 8 处命中：输出面扩面（`logging_ext.MaskingFormatter` 改为复用 `mask_credentials_in_text` + `mask_phones_in_text` 两个原语对象；`masking.py` 把 `sanitize_text` 的凭据规则抽成唯一实现 `_mask_credential_literals` 并新增输出面入口）与执行体日志归因（executor_v3/masking 的 9 条日志行改写后仍各命中一次）。全部是**调用/引用**既有唯一实现，没有新增第二份规则（`mask_credentials_in_text` 与 `sanitize_text` 共用同一份规则表）。门自报实测 415 处，故上限由 407 上调为 415（按门输出重定，非估算）。；2026-10-08 R2 批（ws9v 编辑路径异步探针）净新增 1 处命中：`web/services/verify_queue.py` 的 `start_edit_probe` 在跳过探针（手机号处于验证失败冷却）时按既有口径记一条脱敏 INFO 行，复用唯一实现 `_mask_phone`，**没有新增第二份掩码规则**。合并 develop（93ab9a1c）后按**合并态门实测**重定为 416（= 415 + 本批 1；develop 侧同期新增面零叠加，逐条实测确认），故上限由 415 上调为 416（按门输出重定，非估算）。；2026-10-08 巡检读取面批（feature/log-inspection）净新增 3 处命中：`yiban/store/run_events.py` 的读取面新增 3 处：docstring 点名 `mask_phone` 1 处、导入原语 1 处、`timeline` 调用 1 处——进度流的账号列存原值，读取面按单源口径遮罩后才下发（第 N 个脱敏出口，仍是**调用**既有唯一实现，不新增公式）。同文件 sanitize_text 的导入与调用在本批之前已在册。全部是**复用**既有唯一实现或引用既有守卫，没有新增第二份定义。门自报实测 419 处，故上限由 416 上调为 419（按门输出重定，非估算）。；2026-10-08 巡检读取面补修批（feature/log-inspection 第二笔）净新增 3 处命中：`yiban/store/run_events.py` 读取面把 `message` 再过一次既有单源 `sanitize_text`（纵深防御）——1 处模块 docstring 引用、1 处 `timeline` docstring 引用、1 处实际调用。全部是**复用**既有唯一实现的调用/引用，没有新增第二份公式或规则表。门自报实测 422 处，故上限由 419 上调为 422（按门输出重定，非估算）。
+线格式身份	window.YB 前端注入契约（YB_* 名字三处并存）	active	YB_CALENDAR_STATE|YB_ENV_LINE_BREAK_CODES|window\.YB	default	12	census a4b#12 def=8 writer=3 reader=4 validator=5：注入名共 2 个，每个的定义点是模板 1 处 + Python 1 处 + JS 2-3 处，无名册校验；与约 40 个裸 window.* 导出三套契约并存。模板（web/templates，Jinja）与 JS 都在 default 面内，跨语言副本一并计入。上限=登记当天门实测值（gxf4）。
+线格式身份	静态资源版本戳（内容哈希 / 进程时间戳 / 产物名册三处不同源）	active	stamp_font_versions|stamp_fonts_dir|web_version|WEB_VERSION|build_cjk_font_slices|build_lucide_sprite|HASH_LEN	default	49	census a4b#13 def=14 writer=4 reader=6：stamp 生成方（sha256[:8]）、CSS 消费方（?v={{web_version}} 是进程时间戳）、产物名册方（字体切片集 / ICONS 70 项 / ui.html 手抄的"70 个"）是三种机制，只有第一种自证。ui.html 的手抄数字在 default 面内（web/templates），docs 里的叙述不在面内。上限=登记当天门实测值（gxf4）。
+线格式身份	路由名册 vs 文档名册（两口径并列）	active	add_url_rule|_ROOT_MARKERS|iter_rules|url_map	default	94	census a4b#14 def=14 writer=11 doc=3 test=16：代码注册 87 处调用 / 73 条唯一路径，门禁名册 10 条（有双向同源测试），文档名册 14 条（无同源测试）。docs/ 与 README.md 不在default 扫描面 ⇒ 文档那 14 条今天数不到，这是刻意的（本门数定义点，不数叙述）；文档↔代码对拍已由 tests/test_gate_manifest_sync.py 承担。与高危门禁键共用 url_map/iter_rules 语义面，两枚各计各的。上限=登记当天门实测值（gxf4）。；2026-10-08 巡检读取面批（feature/log-inspection）净新增 1 处命中：`web/routes/run_events_api.py::register` 新增 1 条 `add_url_rule`（`/api/admin/run-events`，管理员面只读端点）。文档面不登记只读 API 明细；文档↔代码对拍由 tests/test_gate_manifest_sync.py 承担（本批未触该对拍面）。全部是**复用**既有唯一实现或引用既有守卫，没有新增第二份定义。门自报实测 94 处，故上限由 93 上调为 94（按门输出重定，非估算）。
+线格式身份	JS 侧状态字符串硬编码比较（17 处消费、零定义点）	pending	-	-	-	census a4b#15 def=0 writer=0 reader=17 validator=1：**零定义点**——这枚事实今天只以17 处硬编码字符串比较存在（「待审核」文案 2 份、`|| "pending"` 缺省档 3 份、`already` 码名只 my-accounts.js 一处消费），没有任何具名码集可计数；单模式若用 pending/success/failed 这类通用词会与语义常量族"status.py 状态集合"行大量混计。不许硬编上限凑数。B3 先在前端建码名具名集并由后端名册同源校验，再由本门登记。

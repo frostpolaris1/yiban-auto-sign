@@ -14,22 +14,18 @@
 覆盖：脱敏三处残余绕过面（复合凭据键名、引号配对截断、`is_safe_url` 段覆盖：CGNAT/组播/
 保留段与 IPv4-mapped IPv6 写法）、收件人逗号列表逐项遮罩、通知密钥定宽遮罩、
 URL query 手机号按名/按值两条口径、URL fragment 与 query 同口径打码（不透明
-fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自愈、
-ydclearance 挑战解码与跳转白名单）。
+fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自愈、队列等待语义）。
 对应实现：`yiban/masking.py` 的 `sanitize_text` / `sanitize_url`（`_CRED_KEY`、
 `_QUOTED_OR_BARE`）、`yiban/notify/config.py` 的 `is_safe_url` 与 `_mask_secret`、
 `yiban/mail/config.py` 的 `_mask_addr`；末尾一组走 `signin` 门面（仓库根的旧名 shim），
-真实现在 `yiban/client.py::YibanClient._solve_ydclearance` 与
-`yiban/engine/state_io.py::_write_sign_state`。
+真实现在 `yiban/engine/state_io.py::_write_sign_state` 与 `yiban/engine/attempts.py`。
 关键断言：段覆盖用例逐个网段列举（含 `100.64.0.0/10` 这段 `ipaddress.is_private`
 **不含**的 CGNAT），配 `test_public_https_targets_still_allowed` 一条正向对照——
 只有负例的话"一律拒绝"也算过。密钥遮罩断的是**星数不随长度变化**（否则等于把密钥
-精确长度也发出去）。ydclearance 三条白名单拒绝分别钉"非白名单 / 形似主机 /
-userinfo 绕过"，是三种不同构造，不要合并成一条。
-本文件的 ydclearance 用例喂的是**自造假挑战页**（`_challenge_text` 按真模板形状造），
-真模板换形状要靠 `legacy_bound` / `timeout_outside_script` 两个变体补，不等于对真站点
-做过验证。
-依赖：无网络（假页 + `__new__` 绕过构造，不发请求）、无 skip；
+精确长度也发出去）。
+（ydclearance 挑战解码/跳转白名单一组随求解器删除而移除；检测命中后的响亮失败
+改由 `tests/test_provenance_guard.py` 与 `tests/test_waf_failure_tier.py` 覆盖。）
+依赖：无网络（`__new__` 绕过构造，不发请求）、无 skip；
 `YIBAN_STATE_DIR` 用临时目录覆盖后在 tearDown 还原。
 """
 import json
@@ -181,59 +177,6 @@ class UrlFragmentTest(unittest.TestCase):
                 self.assertEqual(sanitize_url(url), url)
 
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _challenge_text(target_url, cookie="abc123", arg=0, k=1000, legacy_bound=False):
-    """构造可被 _solve_ydclearance 解析的本地假挑战页（不访问网络）。
-
-    按真模板形状造：po 循环 `qo < oo.length - 1` 比 C 段上界多取一格，而真模板里
-    n_c = len(oo) - 3，故 n_c+1 落在 C 变换范围之外——那一格直接存"收尾字符 ^ arg"
-    （收尾字符是跳转路径的右引号）。两段都按 `chr(oo[i] ^ arg)` 的读法预先把 arg 异或
-    编进去（arg 需 ≤ 0xFF，否则异或的高位会在解码侧带回来）。legacy_bound=True 还原
-    改造前的假页形状（数组不设最后两格、po 上界恰好等于 n_c），用作"少解收尾字符"的负对照。
-    """
-    desired = f"https_ydclearance={cookie};window.document.location=\"{target_url}\""
-    add1, add2, shift_l, shift_r = 1, 2, 3, 5
-    head, tail = (desired, "") if legacy_bound else (desired[:-1], desired[-1])
-    n_c = len(head)
-    vals = [ord(c) ^ arg for c in head]  # 先异或 arg：解码侧读法是 chr(oo[i] ^ arg)
-    arr = [0] + [
-        ((((v >> shift_l) | ((v << shift_r) & 0xFF)) - add1 - add2) & 0xFF) for v in vals
-    ]
-    if not legacy_bound:
-        arr += [ord(tail) ^ arg, 0]  # n_c+1 格存尾字符；len(oo)-1 格在模板里从不参与运算
-    arr_str = ",".join(hex(x) for x in arr)
-    return (
-        "function ab(arg) { "
-        'eval("qo=eval;qo(po);"); '
-        "oo = [" + arr_str + "]; "
-        '"qo=1; do{oo[qo]=(-oo[qo])&0xff;'
-        "oo[qo]=((oo[qo]>>3)|((oo[qo]<<5)&0xff)-1)&0xff;} while(--qo>=2);\" "
-        "qo = 1; do { oo[qo] = (oo[qo] - oo[qo - 1]) } while(--qo>=2); "
-        f"if (qo > {n_c}) break; "
-        "oo[qo] = ((((oo[qo] + 1) & 0xff) + 2) & 0xff) << 3) >> 5); qo++; "
-        f"for (qo = 1; qo < oo.length - 1; qo++) "
-        f"if (qo % {k}) po += String.fromCharCode(oo[qo] ^ arg); "
-        f'window.document.location="{target_url}"; }} '
-        f'window.onload=setTimeout("ab({arg})", 200) </script>'
-    )
-
-
-def _challenge_text_timeout_outside_script(target_url, cookie="abc123", arg=0):
-    """真模板的另一种形状：`window.onload=setTimeout(...)` 落在 `</script>` 之后。
-
-    这样它就不在 `re` 从 `function … </script>` 截出的函数体里——挑战参数只能回退整页
-    找（`yiban/fyiban/waf.py` 的整页回退分支）。其余形状与 `_challenge_text` 逐字相同。
-    """
-    text = _challenge_text(target_url, cookie=cookie, arg=arg)
-    body, sep, tail = text.rpartition("window.onload=setTimeout")
-    assert sep and tail.endswith("</script>"), \
-        "假页形状变了：setTimeout 段不在末尾的 </script> 之前"
-    # 把 </script> 挪到函数体之后、setTimeout 之前：函数体与 setTimeout 分属两个脚本块
-    return body.rstrip() + "</script> " + sep + tail[: -len("</script>")].rstrip()
-
-
 class SigninFixes021Test(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="yiban-signin-fix-")
@@ -276,83 +219,11 @@ class SigninFixes021Test(unittest.TestCase):
         os.environ["YIBAN_STATE_DIR"] = blocked
         signin._write_sign_state("13800138000", "failed", "err")  # 不应抛异常
 
-    # ---- H8 ----
-    def test_solve_ydclearance_accepts_whitelist_absolute_url(self):
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        cookie, target = client._solve_ydclearance(_challenge_text("https://f.yiban.cn/iapp7463"))
-        self.assertEqual(cookie, "abc123")
-        self.assertTrue(target.startswith("https://f.yiban.cn"), target)
-
-    def test_solve_ydclearance_rejects_non_whitelist_url(self):
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
-            client._solve_ydclearance(_challenge_text("http://evil.example"))
-
-    def test_solve_ydclearance_rejects_lookalike_host(self):
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
-            client._solve_ydclearance(_challenge_text("https://f.yiban.cn.evil.com/iapp7463"))
-
-    def test_solve_ydclearance_rejects_userinfo_bypass(self):
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
-            client._solve_ydclearance(_challenge_text("https://f.yiban.cn@evil.com/iapp7463"))
-
-    # ---- T-WAF-9：po 上界与真模板 `qo < oo.length - 1` 对齐 ----
-    def test_solve_ydclearance_decodes_tail_char_outside_transform_c(self):
-        """收尾字符（路径右引号）在下标 len(oo)-2，不在 C 变换范围内，必须逐字解出。
-
-        arg 同时覆盖非 0 值：假页的 head 与 tail 两段都要按 `chr(oo[i] ^ arg)` 的
-        读法把参数异或编进去，否则只有 arg=0 才自洽。158 是公开样本里的真实量级。
-        """
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        for arg in (0, 7, 158):
-            with self.subTest(arg=arg):
-                cookie, target = client._solve_ydclearance(
-                    _challenge_text("https://f.yiban.cn/iapp7463", arg=arg)
-                )
-                self.assertEqual(cookie, "abc123")
-                self.assertEqual(target, "https://f.yiban.cn/iapp7463")
-
-    def test_solve_ydclearance_settimeout_outside_script_tag(self):
-        """T-WAF-10：setTimeout 在 `</script>` 之后（真模板形状）时，参数须回退整页提取。
-
-        此时 setTimeout 文本不在挑战函数体内，只看函数体会漏掉 arg；回退分支必须生效，
-        且回退取到的 arg 要真正参与 po 解码（arg=158 为公开样本量级）。
-        """
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        cookie, target = client._solve_ydclearance(
-            _challenge_text_timeout_outside_script("https://f.yiban.cn/iapp7463", arg=158)
-        )
-        self.assertEqual(cookie, "abc123")
-        self.assertEqual(target, "https://f.yiban.cn/iapp7463")
-
-    def test_solve_ydclearance_old_fixture_shape_fails_loudly(self):
-        """改造前的假页形状（po 上界恰好等于 C 段上界）在新实现下必须响亮失败，不得静默截断。"""
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        with self.assertRaisesRegex(RuntimeError, "ydclearance 挑战解析失败"):
-            client._solve_ydclearance(
-                _challenge_text("https://f.yiban.cn/iapp7463", legacy_bound=True)
-            )
-
-    # ---- T-WAF-6：异常契约（越界输入给明确 RuntimeError，不给裸内置异常）----
-    def test_solve_ydclearance_rejects_arg_beyond_code_point_range(self):
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        with self.assertRaisesRegex(RuntimeError, "ydclearance 挑战解析失败"):
-            client._solve_ydclearance(
-                _challenge_text("https://f.yiban.cn/iapp7463", arg=0x110000)
-            )
-
-    def test_solve_ydclearance_rejects_zero_k(self):
-        client = signin.YibanClient.__new__(signin.YibanClient)
-        with self.assertRaisesRegex(RuntimeError, "ydclearance 挑战解析失败"):
-            client._solve_ydclearance(_challenge_text("https://f.yiban.cn/iapp7463", k=0))
-
-    def test_is_fyiban_url_helper(self):
-        self.assertTrue(signin._is_fyiban_url("https://f.yiban.cn/iapp7463"))
-        self.assertFalse(signin._is_fyiban_url("https://f.yiban.cn.evil.com/iapp7463"))
-        self.assertFalse(signin._is_fyiban_url("https://f.yiban.cn@evil.com/iapp7463"))
-        self.assertFalse(signin._is_fyiban_url("http://f.yiban.cn/iapp7463"))
+    def test_is_strict_yiban_url_helper(self):
+        self.assertTrue(signin._is_strict_yiban_url("https://f.yiban.cn/iapp7463"))
+        self.assertFalse(signin._is_strict_yiban_url("https://f.yiban.cn.evil.com/iapp7463"))
+        self.assertFalse(signin._is_strict_yiban_url("https://f.yiban.cn@evil.com/iapp7463"))
+        self.assertFalse(signin._is_strict_yiban_url("http://f.yiban.cn/iapp7463"))
 
     # ---- H9 ----
     def test_attempt_signin_returns_safe_err_not_raw_exception(self):

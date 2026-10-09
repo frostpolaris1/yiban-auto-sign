@@ -45,12 +45,19 @@ def _write_python_wrapper(app_dir):
 
     run.sh 的 sign-status 库内事实交叉核对直接调 $PY（不经假 timeout），
     必须保证它在 Git Bash 与 WSL 下都存在且能跑 sqlite3。
+
+    PYTHONPATH 补上仓库根（ census P1-3 起必需）：run.sh 现在还要向 Python 取
+    `YIBAN_WORKERS` 的合法域（`$PY -c "... sys.path.insert(0, sys.argv[1]); from
+    yiban.egress import WORKERS_MIN, WORKERS_MAX"`）。生产环境 APP_DIR 就是仓库根，
+    那次导入天然成立；本夹具把 APP_DIR 指到临时目录，故显式把仓库根交给解释器——
+    取的是 `yiban/egress.py` 里的真常量，不是第二份数。
     """
     venv_bin = os.path.join(app_dir, ".venv", "bin")
     os.makedirs(venv_bin, exist_ok=True)
     path = os.path.join(venv_bin, "python3")
     with io.open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+        f.write('#!/bin/sh\nPYTHONPATH="%s:$PYTHONPATH" exec "%s" "$@"\n'
+                % (BASE.replace("\\", "/"), sys.executable.replace("\\", "/")))
     os.chmod(path, os.stat(path).st_mode | 0o755)
     return path
 
@@ -239,6 +246,10 @@ class RunShMarkerTest(unittest.TestCase):
         self.env["PATH"] = posix_fakebin + os.pathsep + self.env.get("PATH", "")
 
     def tearDown(self):
+        # 先摘 immutable 再删：带 +i 的目录挡住 rmtree，ignore_errors 只静默留垃圾。
+        # 也不走 addCleanup：unittest 的 cleanup 跑在 tearDown 之后，那时目录已被
+        # 删掉，恢复动作自己会变成 CI 上那条 teardown FileNotFoundError。
+        self._clear_state_immutable()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run(self):
@@ -311,26 +322,49 @@ class RunShMarkerTest(unittest.TestCase):
         except OSError:
             return False
 
+    def _apply_run_sh_normalization(self):
+        """复刻 run.sh 的 STATE_DIR 收紧步：`[ -O "$STATE_DIR" ] && chmod 700`。
+
+        脚本在可写预检之前做这一步（M07：已存在目录也要收紧到 700），所以注入必须
+        在它之后仍然成立。"""
+        subprocess.run(["chmod", "700", self.state], capture_output=True)
+
+    def _clear_state_immutable(self):
+        """摘掉 +i。不摘的话 tearDown 的 rmtree 会被挡住，静默留下临时目录垃圾。"""
+        if getattr(self, "_state_immutable", False):
+            subprocess.run(["chattr", "-i", self.state], capture_output=True)
+            self._state_immutable = False
+
     def _make_state_dir_unwritable_or_skip(self):
-        """把状态目录变成"实际不可写"：chattr +i（对 root 也生效）→ chmod 0500
-        （仅非 root 有意义）→ 都不生效（Windows/drvfs、无 e2fsprogs）时 skip。"""
-        if shutil.which("chattr"):
+        """把状态目录置成『run.sh 自己也改不回可写』；探不出来就响亮 skip。
+
+        为什么 chmod 0500 不能当前提：run.sh 在可写预检之前，先把本用户属主的
+        状态目录 chmod 700（M07 收紧）。注入被脚本自己撤销 ⇒ 脚本照跑、退 0 ⇒ 假红
+        （CI nightly run 37408174079 实测）。本地 root 更看不出：权限位约束不住 root。
+        chattr +i 站得住：新建文件被挡，收紧步之后 `[ -w ]` 仍判不可写。
+        它需要特权（非 root 没有 CAP_LINUX_IMMUTABLE）⇒ 造不出时如实 skip，
+        理由里点名这一格在本环境覆盖不到，由具备特权的格（本地 WSL root）覆盖。
+        """
+        unavailable = None
+        if not shutil.which("chattr"):
+            unavailable = "宿主没有 chattr"
+        else:
             r = subprocess.run(["chattr", "+i", self.state],
                                capture_output=True, text=True)
-            if r.returncode == 0:
-                if not self._probe_state_writable():
-                    self.addCleanup(subprocess.run, ["chattr", "-i", self.state],
-                                    capture_output=True)
-                    return
-                subprocess.run(["chattr", "-i", self.state], capture_output=True)
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            self.skipTest("root 且 chattr 不可用：权限位约束不住写入")
-        os.chmod(self.state, 0o500)
-        self.addCleanup(os.chmod, self.state, 0o700)
-        if not self._probe_state_writable():
-            return
-        os.chmod(self.state, 0o700)
-        self.skipTest("当前文件系统不强制 unix 写权限位（如 Windows drvfs）")
+            if r.returncode != 0:
+                unavailable = "chattr +i 被拒: %s" % (r.stderr.strip() or "无错误详情")
+            else:
+                self._state_immutable = True
+                # 注入必须扛住脚本自己的收紧步，扛不住就不算"实际不可写"
+                self._apply_run_sh_normalization()
+                if self._probe_state_writable():
+                    unavailable = "immutable 位未生效（宿主文件系统不强制）"
+        if unavailable is not None:
+            self._clear_state_immutable()
+            self.skipTest(
+                "%s：置不出 run.sh 改不回来的不可写状态目录；"
+                "chmod 0500 会被脚本的 STATE_DIR 收紧步撤销，不能当前提。"
+                "本环境的『状态目录不可写 ⇒ 拒绝运行』这一格覆盖不到。" % unavailable)
 
     # ---------------- sign-status 采信必须交叉核对库内事实 ----------------
 
@@ -396,8 +430,9 @@ class RunShMarkerTest(unittest.TestCase):
         """活体反例：状态目录置不可写 ⇒ 拒绝运行（不跑）、写不出任何
         SUCCESS、也绝不执行签到轮次，并给出带声音的告警。
 
-        注入走 chattr +i（root 也挡）或 chmod 0500；两条拒绝线（STATE_DIR 预检 /
-        RUN_MARKER 写失败判码）任一命中都算拒绝——共同口径是"拒绝运行"。"""
+        注入只有 chattr +i 站得住（理由见 _make_state_dir_unwritable_or_skip）。
+        命中的拒绝线是 STATE_DIR 预检：脚本在本用户属主的目录上 chmod 700 收紧后，
+        `[ ! -w ]` 仍判不可写 ⇒ 拒绝运行。造不出注入的环境响亮 skip。"""
         self._make_state_dir_unwritable_or_skip()
         r = self._run()
         self.assertEqual(r.returncode, 1, self._stderr(r))
@@ -405,6 +440,21 @@ class RunShMarkerTest(unittest.TestCase):
         self.assertEqual(self._timeout_calls(), [], "状态目录不可写时不得执行签到轮次")
         self.assertFalse(os.path.exists(self._status_path()),
                          "不得留下（更不得写出）SUCCESS")
+
+    def test_injection_survives_run_sh_mode_normalization(self):
+        """守卫（AGENTS §15）：helper 判成的不可写，必须扛得住 run.sh 自己的收紧步。
+
+        CI nightly 的假红就出在这里：注入用 chmod 0500，而 run.sh 先把本用户属主的
+        状态目录 chmod 700，再判可写。前提在脚本决策时已经不成立 ⇒ 脚本照跑、退 0。
+        把 helper 退回 chmod 0500 注入，本用例必须红。
+        """
+        self._make_state_dir_unwritable_or_skip()
+        self.assertFalse(self._probe_state_writable(), "helper 返回即应已不可写")
+        self._apply_run_sh_normalization()
+        self.assertFalse(
+            self._probe_state_writable(),
+            "注入被 run.sh 的 chmod 700 撤销 ⇒ 它不是『实际不可写』，"
+            "helper 不许拿它当前提")
 
     def test_uncreatable_state_dir_is_fatal(self):
         """`mkdir -p "$STATE_DIR"` 判码：目录建不出来（父路径是文件）⇒ 不跑并告警。

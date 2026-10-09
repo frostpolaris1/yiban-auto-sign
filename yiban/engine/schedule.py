@@ -19,8 +19,9 @@ import os
 import random
 from datetime import timedelta
 
-from yiban import clock, window
+from yiban import clock, config_loader, window
 from yiban.engine import hrw
+from yiban.infra import env_io as _env_io
 from yiban.store import db
 
 logger = logging.getLogger("yiban")
@@ -35,7 +36,8 @@ _DEFAULT_MU_MIN_PCT = 40        # 正态高峰中心范围（有效窗口相对�
 _DEFAULT_MU_MAX_PCT = 60
 _DEFAULT_SIGMA_MIN_PCT = 15     # 正态分散程度范围（有效窗口宽度 %）
 _DEFAULT_SIGMA_MAX_PCT = 25
-_DEFAULT_MIN_EXEC_GAP = 5       # 请求最小间隔下限（秒，压缩模式防请求过密，接线于 run_queue_retry）
+# 请求最小间隔下限（秒，压缩模式防请求过密，接线于 run_queue_retry）；缺省值住在名册里。
+_DEFAULT_MIN_EXEC_GAP = config_loader.default_required("YIBAN_MIN_EXEC_GAP")
 # 容量预检与容量预估共用的单账号耗时估算（秒）。缺省按压测实测定档：
 # 单账号（登录链 + 签到链共 6 次请求）实测 0.08s（零延迟）、1.87s（拟真 300ms）、
 # 3.1s（含尾延迟）。取 8s 会把可容纳账号数低估约 2.6 倍，并使保存门误拒 261~360 个
@@ -45,8 +47,8 @@ _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
 # V3 全局容量口径：出口令牌桶速率（次尝试/s）、通道数上限、重试与尾延迟降额系数。
-# 桶速率键供引擎与 web 侧容量预估共用（web 侧尚未接入）。
-_DEFAULT_BUCKET_RATE = 1.0
+# 桶速率键供引擎与 web 侧容量预估共用（web 侧尚未接入）。缺省值住在名册里。
+_DEFAULT_BUCKET_RATE = config_loader.default_required("YIBAN_EGRESS_RATE")
 _DEFAULT_CHANNELS_MAX = 16
 _DEFAULT_UTIL = 0.8
 # K 的自动公式里"重试占比" r 的缺省（总尝试量 T = N×(1+r)）：依据既有分级重试预算
@@ -178,6 +180,27 @@ def capacity_accounts(window_sec, gap=0, avg=None, env=None):
     return slack // (avg + gap) + 1
 
 
+def block_capacity(n_accounts, n_blocks, env=None):
+    """单块容量 K（调度 v2）：块的**唯一事实源**，计划/执行/Web 拥挤度三方共用。
+
+    与 `build_schedule` 内联式同构：偏好/自动分配都以"每块最多 K 人"填块，超出
+    `n_blocks × K` 进入压缩模式（K 放大到 `ceil(n / n_blocks)`）。返回：
+    - `n_blocks <= 0`（无有效块）→ 0（调用方按"无容量"处理，不得拿它当除数）；
+    - `n_accounts <= n_blocks × block_cap` → `block_cap`（不压缩）；
+    - 否则 → `ceil(n_accounts / n_blocks)`。
+
+    `block_cap` 经 `_env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200, env=env)`
+    读取：缺失/非法/越界一律回退 15（与 `_schedule_config` 同一夹取口径）。
+    **MF-93**：web 进程环境里没有 `.env` 的键，调用方必须传 `env=read_env(ENV_FILE)`，
+    否则会读到默认 15、与引擎实际生效容量分叉（拥挤度百分比虚高/虚低）。
+    """
+    block_cap = _env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200, env=env)
+    if n_blocks <= 0:
+        return 0
+    cap = n_blocks * block_cap
+    return block_cap if n_accounts <= cap else math.ceil(n_accounts / n_blocks)
+
+
 def channel_count(bucket_rate, avg=None):
     """每执行体的并发通道数 `M = min(_DEFAULT_CHANNELS_MAX, ceil(bucket_rate × avg × 2))`。
 
@@ -199,7 +222,8 @@ def channel_count(bucket_rate, avg=None):
     return min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
 
 
-def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8,
+def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=_DEFAULT_BUCKET_RATE,
+                         util=0.8,
                          env=None):
     """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
 
@@ -225,7 +249,7 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8,
     return math.floor(k * rate_eff * max(0, int(window_sec)) * util + 1e-9)
 
 
-def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
+def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=_DEFAULT_BUCKET_RATE,
                 util=0.8, enabled=None, env=None, retry_reserve=False):
     """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
 
@@ -269,7 +293,7 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
                                 bucket_rate, util, env=env)
 
 
-def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
+def executor_count(n_accounts, window_sec, *, bucket_rate=_DEFAULT_BUCKET_RATE, retry_ratio=None,
                    egress_count=1):
     """满足当日账号量的执行体数 `K = clamp(ceil(N×(1+r)/(W×bucket×0.8)), 1, 出口数)`。
 
@@ -340,7 +364,9 @@ def _schedule_config(now=None):
             logger.error("%s", _msg)
             # 只写日志不够：管理员在 Web 界面看到的窗口设置"看起来生效"、实际签到
             # 时刻完全不同且无人知情。故并入当日汇总邮件（A 线）。
-            alerts._collect_admin_mail("签到窗口配置异常", _msg)
+            # 高级别：实际签到时刻与配置不符 = 当天可能全量漏签，运维须当机改 .env。
+            alerts._collect_admin_mail("签到窗口配置异常", _msg,
+                                       level=alerts.ALERT_LEVEL_CRITICAL)
         start, end = _DEFAULT_SIGN_START, _DEFAULT_SIGN_END
     mu_lo = _env_int("YIBAN_SCHEDULE_MU_MIN_PCT", _DEFAULT_MU_MIN_PCT, 0, 100)
     mu_hi = _env_int("YIBAN_SCHEDULE_MU_MAX_PCT", _DEFAULT_MU_MAX_PCT, 0, 100)
@@ -396,7 +422,7 @@ def planner_config():
     """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 三模式 + μσ + 桶速率 + 执行体。
 
     读法与 `_schedule_config` **同源**（直接复用它的结果），只补两项 Planner 独有的：
-    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省 1.0）与 `executors`（HRW 候选集）。
+    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省住在名册里）与 `executors`（HRW 候选集）。
     不另存一份窗口/模式口径——两份口径迟早会分叉。
     """
     cfg = _schedule_config()
@@ -476,6 +502,9 @@ def _schedule_blocks(cfg):
         global _window_clamped_notified
         if not _window_clamped_notified:
             _window_clamped_notified = True
+            # 高级别：与下面 fell_back 那支"签到窗口配置异常"同属"窗口退化 ⇒ 配置与
+            # 实际生效不符"一族（有效窗口被压到窗口宽度的 80%，重试空间随之减少）。
+            # 判级只看语义、不看它在列表里的位置。
             alerts._collect_admin_mail(
                 "签到窗口缓冲已收缩",
                 (
@@ -485,6 +514,7 @@ def _schedule_blocks(cfg):
                     "窗口宽度的 80%）。请调小 YIBAN_WINDOW_EDGE_FRONT_SEC / "
                     "YIBAN_WINDOW_EDGE_BACK_SEC（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
                 ),
+                level=alerts.ALERT_LEVEL_CRITICAL,
             )
     if win.fell_back:
         logger.warning("签到窗口 %s 不可用（宽度 <= 0），回退默认窗口 06:30~07:50", _win_txt)
@@ -492,6 +522,8 @@ def _schedule_blocks(cfg):
         global _window_fallback_notified
         if not _window_fallback_notified:
             _window_fallback_notified = True
+            # 高级别：窗口不可用而回退默认窗口，实际签到时刻与配置不符
+            # （同 `_schedule_config` 那支"签到窗口配置异常"口径）。
             alerts._collect_admin_mail(
                 "签到窗口配置异常",
                 (
@@ -499,6 +531,7 @@ def _schedule_blocks(cfg):
                     "06:30~07:50，实际签到时间将与配置不符！请检查 "
                     "YIBAN_SIGN_START / YIBAN_SIGN_END"
                 ),
+                level=alerts.ALERT_LEVEL_CRITICAL,
             )
     blocks = []
     b = start_min
@@ -530,14 +563,20 @@ def _window_opens_in(sch_cfg, now_dt):
     return window.bounds(sch_cfg).opens_in_sec(now_dt)
 
 
-#: 开关类环境变量的真值字面量（与 `run.sh` 的 `_is_truthy`、web 写入侧同一套写法）
-_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+#: 开关类环境变量的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
+#: （引擎 / web / 通知 / 容器调度 / bash 共用一套口径）；此处只保留别名供既有再导出
+#: （`web/app.py` 的 `_TRUTHY_LITERALS`）与测试引用，勿在此另抄一份字面量。
+_TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 
 
 def _env_flag(name, env=None):
-    """开关类环境变量真值（1/true/on/yes，大小写不敏感）；未设/其它值一律为假。"""
+    """开关类环境变量真值（1/true/on/yes，大小写不敏感、两侧空白忽略）。
+
+    判定单源在 `yiban.infra.env_io.parse_env_flag`：非预期取值按缺省（假）处理并出声一次，
+    不再静默吞掉。未设/空/其它假值字面量一律为假。
+    """
     src = os.environ if env is None else env
-    return str(src.get(name, "")).strip().lower() in _TRUTHY_LITERALS
+    return _env_io.parse_env_flag(src.get(name, ""), default=False, key=name, log=logger)
 
 
 #: `day_off()` 的返回原因（空串表示照常签到）
@@ -668,7 +707,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     # 顺序×均匀 = 线性填块（n=2 → 两人同块等分）；随机×均匀 = 循环填块；正态 = 采样落块
     # 容量：块数 × K；超出 → 压缩模式（K 放大到能容纳所有人，间隔下限告警）
     cap = len(blocks) * cfg["block_cap"]
-    k = cfg["block_cap"] if n <= cap else math.ceil(n / len(blocks))
+    k = block_capacity(n, len(blocks), env=os.environ)
     if n > cap:
         logger.warning(
             "压缩模式: %d 个账号超出块容量 %d，块容量放大至 %d（间隔 ≈ %.1fs）",

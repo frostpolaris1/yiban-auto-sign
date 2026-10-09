@@ -200,7 +200,14 @@ def _alert_due(title):
 
 
 def _send_admin_alert(title, mail):
-    """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。"""
+    """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。
+
+    已知残余（ba-p11-02 盘查所获，本批不改）：库文件不存在时，`_alert_mail_recipients()`
+    里的 `db.admin_mail_recipients()` 会经 `connection.get_conn()` 的隐式 `init_db()`
+    （缺省 `create=True`）把库就地建出来——与本函数上方 `_anchor_snapshot` 刚收口的
+    那条路同形，但收件人读法不是取证类调用，收口它要动引擎侧或让收件人算法分叉。
+    故本批只把哨兵的**链头读取**收成只读；哨兵整进程"绝不建库"尚不成立。
+    """
     from web.services.notify_mail import _alert_mail_recipients
     recipients = _alert_mail_recipients()
     if not recipients:
@@ -278,13 +285,23 @@ def _anchor_snapshot():
     `scripts/audit_verify.py --anchor` 的职责（它读文件，不走邮件宽度）。
     链头走 `audit_head_hash_ex` 的**三态**读取：空链（`state="empty"`）与读失败
     （`state="error"`）处置相反，绝不压成同一个"无锚点"。
+    库文件不存在或打不开时同样返回 None——那是"读不到"，不是"空链"。
     """
     from yiban.store import db
-    # 只读取证类调用：`get_conn()` 的隐式 `init_db()` 是**全套缺省**
-    # （cleanup=True / migrate=True），cron 这个进程不是业务进程，让它顺手做一次
-    # 启动清理/迁移会让"哨兵"变成一次计划外的写库动作。这里显式传 False 关掉
-    # （与 `yiban/store/db.py` 里"校验类应显式传 False"的既有约定同源）。
-    db.init_db(cleanup=False, migrate=False)
+    # 只读取证类调用一律 `create=False`（与 `scripts/audit_verify.py` 同一口径）。
+    # `get_conn()` 的隐式 `init_db()` 是**全套缺省**（cleanup/migrate/create 全 True）；
+    # 本文件此前显式关了 cleanup 与 migrate，却漏了 create——`init_db` 于是
+    # `sqlite3.connect` 就地建库、`PRAGMA journal_mode=WAL`、`_create_tables`。
+    # 库路径落空时（回落档没命中、或库被挪走，正是 ba-p02-02 那条链）后果不是报错
+    # 而是"读出一份空链"：`audit_head_hash_ex` 得到 state="empty"，下面那条
+    # "读不到就别发"的自保不触发，于是一份**当场建出来的空伪库**被当成当日离机基线
+    # 外发出去——审计链有没有被整段删掉，唯一的外部参照就此失效。
+    try:
+        db.init_db(cleanup=False, migrate=False, create=False)
+    except OSError as e:
+        # 库不存在 / 打不开：只读取证绝不建库，按"读不到"处置（不外发）
+        logger.warning("审计库不可只读打开，本日无链头可锚（不建库）: %s", e)
+        return None
     state, head = db.audit_head_hash_ex()
     if state == "error":
         logger.warning("审计链头读取失败（读不到就别发锚点外发：宁缺毋滥）")

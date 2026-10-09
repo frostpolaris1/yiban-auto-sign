@@ -54,12 +54,17 @@ def _signin_state():
 
 
 def _signin_run_lock_busy(m):
-    """非阻塞探测 signin 运行锁是否被其他进程持有。
+    """非阻塞探测 signin 运行锁是否被**独占**持有。
 
     全量签到/cron 运行期间，--only 子进程会拿锁失败并 exit 3 静默退出——
     若照样返回"已触发"，用户侧无感；spawn 前先探测，忙时直接
     429 如实提示（POSIX flock 试探；Windows 无 fcntl 返回 False 走旧行为，
     与 _acquire_run_lock 的降级策略一致）。
+
+    **探测只取共享锁**（`LOCK_SH`）：真持锁者 `_acquire_run_lock` 取独占锁，
+    共享试探与它相冲、足以判忙；而本进程的请求线程与批量后台线程都会探测，
+    独占试探会让两者互斥，后到者被误报成"签到队列忙（定时签到进行中）"。
+    探测自己不得改变被探测对象的状态。
     """
     path = os.path.join(m.STATE_DIR, "signin-run.lock")
     try:
@@ -72,9 +77,9 @@ def _signin_run_lock_busy(m):
         except ImportError:
             return False
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except OSError:
-            return True  # 被其他签到进程持有
+            return True  # 被其他签到进程独占持有
         with contextlib.suppress(OSError):
             fcntl.flock(fd, fcntl.LOCK_UN)
         return False

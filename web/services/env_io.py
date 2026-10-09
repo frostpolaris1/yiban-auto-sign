@@ -77,7 +77,8 @@ def load_env_int(env_path, key, default):
 # ---------------------------------------------------------------------------
 # 设置项展示（键的中文名 / 值的展示形态 / A/B 档生效值）
 # ---------------------------------------------------------------------------
-# A/B 档键的中文标签：变更告警正文与审计明细共用一份，避免同一件事在两处各写一套字面量
+# A/B 档键的中文标签：400 提示、口令门禁留痕与变更明细（审计正文）共用一份，
+# 避免同一件事在多处各写一套字面量（本表**不进日志**——全仓没有 logger 消费它）
 _SETTINGS_KEY_LABELS = {
     "sign_window": "签到窗口",
     "window_edge_sec": "首尾裁剪",
@@ -95,6 +96,8 @@ _SETTINGS_KEY_LABELS = {
     "probe_enable": "健康探针",
     "probe_time": "探针时刻",
     "probe_interval": "探针频率",
+    "health_report_time": "健康报告发送时刻",
+    "health_report_weekday": "健康报告发送星期",
     "sign_order": "签到排序",
     "sign_dist": "签到分布",
     "sign_mode": "签到模式",
@@ -131,16 +134,81 @@ _BOOL_SETTINGS_KEYS = frozenset({
 })
 
 
+#: 报告发送星期的展示名（下标 = `YIBAN_HEALTH_REPORT_WEEKDAY` 的 0=周一…6=周日）。
+#: 给变更明细用：运维在审计正文里看 "0→2" 还要心算，看 "周一→周三" 不用。
+_WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
 def _settings_label(key):
     """设置键的中文名（未列入标签表的按键名原样回，绝不编一个名字）。"""
     return _SETTINGS_KEY_LABELS.get(key, key)
 
 
+#: 空串对这两个键是**有意义的值**（= 回到未配置），不是"没有值"：审计正文里要写成人话，
+#: 否则变更明细会出现"健康报告发送时刻=09:00→"这种半句话。
+_UNSET_IS_MEANINGFUL_KEYS = frozenset({"health_report_time", "health_report_weekday"})
+
+
 def _settings_value_text(key, value):
-    """设置值写进审计/告警正文时的展示形态（值本身已在现读侧归一，不含敏感串）。"""
+    """设置值写进变更明细时的展示形态（值本身已在现读侧归一，不含敏感串）。
+
+    两处消费点（`settings_api` 的变更明细与口令门禁留痕，都经 `_change_text`），两处都只进
+    审计正文（设置变更不外发告警）。
+    """
     if key in _BOOL_SETTINGS_KEYS:
         return "开" if str(value) == "1" else "关"
+    if key in _UNSET_IS_MEANINGFUL_KEYS and not str(value).strip():
+        return "未配置"
+    if key == "health_report_weekday":
+        return _weekday_text(value)
     return str(value)
+
+
+def _weekday_text(value):
+    """星期取值的中文名；越界/非法原样回（不编一个不存在的星期）。"""
+    try:
+        idx = int(str(value))
+    except (TypeError, ValueError):
+        return str(value)
+    return _WEEKDAY_NAMES[idx] if 0 <= idx < len(_WEEKDAY_NAMES) else str(value)
+
+
+def health_report_time_str(env):
+    """报告发送时刻的**归一取值**（`"HH:MM"`）；未配置或写坏返回 `""`（= 未配置）。
+
+    刻意归一而不是原样回显：生效判据走 `yiban.window.parse_hhmm`，它同时收 `9:00`
+    这种不补零写法。原样回显时前端的时间形状校验（`^\\d{2}:\\d{2}$`）会把它判成非法值
+    ⇒ 界面显示"未配置"（开关关）而报告其实已按 09:00 锚定——显示值/生效值两段不等，
+    正是时间类设置要消灭的病。
+    """
+    raw = str(env.get("YIBAN_HEALTH_REPORT_TIME", "")).strip()
+    hhmm = yb_window.parse_hhmm(raw, None)
+    return "" if hhmm is None else "%02d:%02d" % hhmm
+
+
+def health_report_weekday_setting(env):
+    """报告发送星期的**配置值**（归一为 `"0"~"6"`，0=周一…6=周日）；未配置、越界或
+    解不出数字时返回空串 = "本键没配"。
+
+    解析口径与运行期**同一处**：都先按 `int()` 归一（`"00"`→`0`、`"+3"`→`3`），不做
+    更严的形状校验——更严的判据会让 `.env` 里手写的 `YIBAN_HEALTH_REPORT_WEEKDAY=00`
+    出现"运行期按周一发、界面却显示未配置"的分叉。越界值（`9`）两侧都落到周一这个缺省上，
+    故等价于未配置。`int()` 同时挡掉上标数字一类 `isdigit()` 认、`int()` 不认的写法。
+
+    刻意与"运行期生效值"分开：运行期有缺省（未配置 ⇒ 周一，见
+    `web.app._health_report_cfg()` 的回落），而界面必须能分辨"用户配了周一"与"没配"——
+    分辨不出时"关掉固定发送"这一步就删不掉残留的星期键，报告会静默改到那一天
+    （面板显示"已关闭"而实际按残留星期发）。`_settings_effective_values` 也取本函数的
+    **配置值**（不补缺省）：那是"这次请求改没改配置"的判据，必须与 GET 回显同一口径，
+    补了缺省就会让"提交一个等于回显的值"被判成没改、键永不落盘（0=周一…6=周日 与
+    `web/app.py` 的 `_health_report_cfg()` 同一口径）。
+    """
+    raw = str(env.get("YIBAN_HEALTH_REPORT_WEEKDAY", "")).strip()
+    try:
+        idx = int(raw)
+    except (TypeError, ValueError):
+        return ""
+    return str(idx) if 0 <= idx <= 6 else ""
 
 
 def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users_default,
@@ -150,6 +218,10 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
     只用于"这次请求到底改没改配置"的判定：一律现读现算，绝不信请求自带的旧值——
     否则把当前值原样抄进请求就能自称"无变更"，口令复核与变更告警双双被绕开
     （系统开关门原本就是这个语义，这里把同一语义铺满全部 A/B 档键）。
+
+    取值口径与 `GET /api/settings` 的回显**逐键**同源：回显怎么归一，这里就怎么归一——
+    两边不一致时"提交一个等于回显的值"会被判成改过（多要一次口令）或没改过（设置永不落盘，
+    而每次打开设置页都显示一条清不掉的脏标记）。
 
     开关解析器与三个容量缺省值由调用方传入：它们是 `web.app` 的模块级名字（`_env_flag`
     之后还会随签到状态域迁走），本模块另持绑定会让打桩与后续搬动静默失效。
@@ -175,10 +247,11 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         "edge_back_sec": str(back),
         "sunday_sign": _flag("YIBAN_SUNDAY_SIGN"),
         "saturday_sign": _flag("YIBAN_SATURDAY_SIGN"),
-        # 两个暂停位沿用 `load_env_int(...) == 1` 的既有判据（写侧只落 "1" 或删键），
-        # 与 GET /api/settings 及系统开关门读的现值逐字一致
-        "global_pause": "1" if load_env_int(env_file, "YIBAN_GLOBAL_PAUSE", 0) == 1 else "0",
-        "registration_pause": "1" if load_env_int(env_file, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else "0",
+        # 两个暂停位与周末位同口径（`_env_flag` = 引擎/run.sh 同一套真值判定）：原先用
+        # `load_env_int(...) == 1`，`=true/on/yes` 会被读成 0，与 GET /api/settings 及引擎
+        # 分叉（census P0-1）。整改后两处读者与引擎同源，`_flag` 认 1/true/on/yes。
+        "global_pause": _flag("YIBAN_GLOBAL_PAUSE"),
+        "registration_pause": _flag("YIBAN_REGISTRATION_PAUSE"),
         "allow_time_pref": str(load_env_int(env_file, "YIBAN_ALLOW_TIME_PREF", 0)),
         "sign_mode": mode,
         # 排序/分布的生效值由旧模式派生（与 GET 同一式子）：只存 YIBAN_SIGN_MODE 的
@@ -191,6 +264,15 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         "probe_enable": _flag("YIBAN_PROBE_ENABLE"),
         "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
         "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+        # 告警通道健康报告：时刻缺省是空串（未配置 = 沿用"唤醒即发"，不是某个钟点），
+        # 故不能用 `or "09:00"` 那种"补一个默认钟点"的写法——那会把"没配"显示成"配了"。
+        "health_report_time": health_report_time_str(env),
+        # 本键的"现值"取**配置值**（未配置 = 空串），不补缺省周一：本函数的用途是
+        # "这次请求到底改没改配置"，而回显走的是同一个取值口径（配置值）。补了缺省就不是
+        # 同一口径——提交"周一"会被判成"没改"、键永不落盘，而回显仍是空串 ⇒ 每次打开
+        # 设置页都会显示一条永远清不掉的"未保存的修改"。生效缺省（未配置 ⇒ 周一）由
+        # 运行期判定 `web.app._health_report_cfg()` 承担。
+        "health_report_weekday": health_report_weekday_setting(env),
         "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", max_users_default)),
         "max_accounts": str(load_env_int(env_file, "YIBAN_MAX_ACCOUNTS",
                                          max_accounts_default)),

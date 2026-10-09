@@ -723,10 +723,10 @@ class AuditVerifyCliTest(_DbFixture):
         except (LookupError, UnicodeDecodeError):
             return r.stdout.decode("utf-8", errors="replace")
 
-    def _run(self, extra=(), db_file=None):
+    def _run(self, extra=(), db_file=None, env_file=None):
         env = dict(os.environ)
         env["YIBAN_DB_FILE"] = db_file or self.db_file
-        env["YIBAN_ENV_FILE"] = self.env_file
+        env["YIBAN_ENV_FILE"] = env_file or self.env_file
         env["YIBAN_STATE_DIR"] = self.tmp
         return subprocess.run(
             [sys.executable, os.path.join(BASE, "scripts", "audit_verify.py"), *extra],
@@ -766,6 +766,29 @@ class AuditVerifyCliTest(_DbFixture):
         r = self._run(db_file=os.path.join(self.tmp, "nope.db"))
         self.assertEqual(r.returncode, 2)
 
+    def test_blank_process_db_file_reports_a_usable_path(self):
+        """进程环境把 YIBAN_DB_FILE 写成空白串时：中止消息必须点出一个可用路径。
+
+        空白串被当成库路径时，消息写成"数据库文件不存在: （三个空格）"，运维看不出
+        它落到了哪份库。`os.environ.get(K, default)` 在"键在而值为空白"这一格返回
+        空白串；`env_io.resolve_path` 同格落到 `.env` 那一档。这一格是本组收口
+        唯一的行为差。
+        落点刻意由 `.env` 给（不靠默认值）：仓根有一份未跟踪的 yiban.db，走默认值时
+        它存在，缺库那一支根本走不到。
+        """
+        dot_env = os.path.join(self.tmp, "dotenv-db.env")
+        target = os.path.join(self.tmp, "from-dotenv-nope.db")
+        with open(dot_env, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_DB_FILE={target}\n")
+        r = self._run(db_file="   ", env_file=dot_env)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 2, out)
+        m = re.search(r"数据库文件不存在: (.*)（", out)
+        self.assertIsNotNone(m, f"没走到缺库中止那一支，量具失效：{out}")
+        self.assertTrue(m.group(1).strip(), f"报告里的库路径是空白串: {m.group(1)!r}")
+        self.assertIn("from-dotenv-nope.db", m.group(1),
+                      f"报告里的路径不是 `.env` 声明的那份库: {m.group(1)!r}")
+
 
 class BackupScriptContractTest(unittest.TestCase):
     """备份脚本的取证契约（文本级断言，与 tests/test_backup_require_encrypt.py 同口径：
@@ -790,7 +813,7 @@ class BackupScriptContractTest(unittest.TestCase):
         self.assertIn("rm -f \"${TMPDIR_BAK}/data/${DB_FILE}\"", block,
                       "校验不过必须删掉坏快照（不落该归档）")
         self.assertIn("exit 1", block, "校验不过必须以非 0 退出")
-        self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${APP_DIR}/${DB_FILE}\" ]"))
+        self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${DB_SRC}\" ]"))
 
     def test_corrupt_source_keeps_archive_but_exits_nonzero(self):
         """.backup 成功但 integrity 不过 = 源库损坏：归档照留（最后一份素材），退出码非 0。"""

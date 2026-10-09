@@ -6,8 +6,8 @@
 外呼校验的两条路径：同步带闸的 `run_verify_with_gate`（全局并发席位 + 每用户配额，
 附异常类型 `VerifyGateBusy` / `VerifyQuotaExceeded`）与异步任务族的建任务
 `_start_verify_job`、待办上限 `_verify_queue_full`、超龄收口 `_reclaim_stale_verify_jobs`、
-失败落库 `_reject_account`；外加两个开关的解析 `verify_async_enabled` /
-`_account_verify_enabled`。
+失败落库 `_reject_account`、编辑路径的后台探针 `start_edit_probe`（不绑定账号 id，
+失败只留痕）；外加两个开关的解析 `verify_async_enabled` / `_account_verify_enabled`。
 
 **归属**
 原 `web/app.py` 的模块级校验队列辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
@@ -34,6 +34,7 @@ import os
 
 from web.services.accounts_data import ACCOUNT_STATUS_REJECTED
 from yiban.attempt import jobs as attempt_jobs
+from yiban.infra.env_io import parse_env_flag
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
@@ -90,10 +91,20 @@ def _reject_account(phone, reason, account_id, expect_status):
 
     缺少任务上下文时**不写**：无从判断账号是否已被人工改动，宁可不改也不能覆盖
     人工决定（账号状态由管理员在审核列表里可见并处理）。
+
+    **两种缺上下文分开报级**：`account_id is None` 是**设计内路径**——编辑探针任务
+    刻意不绑账号 id（见 `start_edit_probe`），探针失败只留痕、绝不回写状态。这条
+    路径按 INFO 报，措辞点明"设计内"；按 ERROR 报会让运维照缺陷口径追，而它每天
+    都会正常出现。`account_id` 有值而 `prev_status` 空才是真缺陷（任务上下文丢失），
+    仍按 ERROR 报。
     """
     if account_id is None or not expect_status:
-        logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
-                     account_id, expect_status, _mask_phone(phone))
+        masked = _mask_phone(phone)
+        if account_id is None:
+            logger.info("编辑探针任务不绑账号 id（设计内），不改账号状态: %s", masked)
+        else:
+            logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
+                         account_id, expect_status, masked)
         return
     try:
         wrote = db.update_account_status_if(
@@ -137,6 +148,54 @@ def _start_verify_job(clean, username, account_id, fails, limits):
     return started
 
 
+def start_edit_probe(clean, username, fails, limits, start_job,
+                     enabled, queue_full, attempt_allowed, cooldown_remaining):
+    """编辑账号后对**已变更的易班凭据**做后台复核，返回 job_id 或 None。
+
+    **用途**
+    新增账号路径有真实登录探针。编辑路径此前既无探针也无本地口令策略，错误凭据被
+    静默接受。本函数补上这条前提：口令或识别码实际变更时，后台复核新凭据。
+
+    **语义**
+    一律走异步任务，不退回同步带闸路径。同步会占住请求线程与外呼席位。编辑已落盘，
+    不能回滚。探针失败**不改账号可用状态语义**：不自动禁用，不回审翻转。失败只留
+    可查记录（任务终态、审计行、失败冷却）。
+
+    **承重突变**
+    任务**不绑定账号 id**（`start_job(..., None, ...)`）。这是"探针失败不改账号
+    可用状态"的唯一机制：`yiban/attempt/jobs.py` 的失败回调与
+    `yiban/store/verify_jobs.py` 的超龄收口都以 `account_id is None` 为跳过条件
+    （见 `_reject_account` 与 `reclaim_stale`）。改传真实账号 id 后，校验失败会把
+    账号翻成 rejected，违反本端点的验收。
+
+    **跳过条件**
+    以下任一成立时跳过探针，编辑仍算成功：账号校验开关未开、该手机号在失败冷却中、
+    待办队列已满、每用户配额已用尽。以上都是 best-effort。
+
+    **注入**
+    `start_job` 等宿主侧能力由调用方传入（保持 `web.app.<名字>` 的打桩面）。
+    """
+    phone = clean.get("phone", "")
+    if not enabled():
+        return None
+    if cooldown_remaining() > 0:
+        logger.info("编辑探针跳过：手机号 %s 在验证失败冷却中", _mask_phone(phone))
+        return None
+    if queue_full():
+        logger.warning("编辑探针跳过：校验任务队列已满")
+        return None
+    if not attempt_allowed():
+        logger.info("编辑探针跳过：验证尝试配额已用尽")
+        return None
+    try:
+        job_id, _ = start_job(clean, username, None, fails, limits)
+    except VerifyGateBusy:
+        # 建任务与扣配额之间队列被占满（竞态兜底）：编辑已成功，不因此报错。
+        logger.warning("编辑探针跳过：校验任务队列已满（入队竞态）")
+        return None
+    return job_id
+
+
 def verify_async_enabled(read_env, env_file):
     """在线校验异步开关：**默认关**，显式置 `YIBAN_VERIFY_ASYNC=1` 才启用。
 
@@ -162,6 +221,10 @@ def _account_verify_enabled(read_env, env_file):
 
     `.env` 路径与读取器由调用方传入（`web.app` 的 `ENV_FILE` / `read_env`）：
     两者都是会被测试改写、也会随 `--config` 变化的模块级名字。
+
+    真值口径单源在 `yiban.infra.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白
+    不敏感），与面板 `GET /api/settings` 的 account_verify 同口径。
     """
     env = read_env(env_file)
-    return env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes")
+    return parse_env_flag(env.get("YIBAN_ACCOUNT_VERIFY", ""), default=False,
+                          key="YIBAN_ACCOUNT_VERIFY", log=logger)

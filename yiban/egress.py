@@ -13,6 +13,10 @@
 分配规则（**可复现、可解释**）：执行体数超过表长时**循环取用**（第 4 个执行体用
 第 1 个出口）；表里留空位表示"这个执行体直连"；三种角色都允许为空（= 本机出口）。
 
+`resolve` 只负责取值（空串就是空串）。**把空串落成"真的直连"是 `apply_egress` 的职责**：
+执行体的环境从父进程复制而来，出口键（`ENV_SINGLE`）常常已经带着值坐在那里，所以空出口
+也必须写进环境压掉它。生产代码里把出口交给执行体的地方只有 `apply_egress` 一处。
+
 **脱敏**：代理串可能带 userinfo（`http://user:pass@host:port`），任何进入日志、
 接口返回值的地方都必须经 `describe()`——它只回 `scheme://host[:port]`。
 
@@ -27,7 +31,7 @@
   在领取池看来就是"自己人"，会互相放行同一账号——运行时身份用进程号+代次把这一点消掉。
 
 两种形态都含主机名，属部署信息——**任何接口/日志都不得回原串**，只回角色与槽位序号
-（`role_label`）。
+（展示面 `role_label`、日志面 `owner_tag`；后者多带一个可选的轮次序号）。
 
 **稳定槽位名为什么必须稳定、以及它的安全边界**（改这里之前先读完这两条）：
 
@@ -62,10 +66,15 @@
 """
 import datetime
 import json
+import logging
 import os
 import socket
 
 from yiban.security import url_desc
+
+#: 告警通道：与 `scripts/child_env.py`、`yiban/engine/*` 同一条 "yiban"（root 之下），
+#: 故容器 stdout 与 web 按天日志面都能收到这里越界配置的那一行 WARNING。
+logger = logging.getLogger("yiban")
 
 DIRECT = ""
 
@@ -88,10 +97,17 @@ TYPE_FALLBACK = "fallback"
 TYPE_DISABLED = "disabled"
 TYPES = (TYPE_WORKER, TYPE_FALLBACK, TYPE_DISABLED)
 
-#: 槽位下标上限：`YIBAN_WORKERS` 旧口径允许 1~64 → 下标 0~63。
+#: 槽位下标上限：`YIBAN_WORKERS` 合法域 1~64 → 下标 0~63。
 SLOT_MAX = 63
-#: 旧口径执行体数的上限（与 SLOT_MAX 对应）
-WORKER_COUNT_MAX = SLOT_MAX + 1
+#: `YIBAN_WORKERS` 的合法域：**这两个常量是全仓唯一的一份数**（census P1-3）。
+#: `WORKERS_MAX` 与 `SLOT_MAX` 对应（1 个执行体占槽位 0，64 个占满 0~63）；
+#: `WORKERS_MIN` 同时是"未设/非法/越界"时的回退值（= 单执行体）。
+#: 宿主 `run.sh` 不再自己抄一份上下限，而是经 `"$PY" -c` 从这里取（取不到 ⇒ 响亮告警 +
+#: 按单执行体，绝不静默换成第二份数）；Web 写入校验（`web/routes/settings_api.py`）与
+#: 本模块的读取（`legacy_worker_count`）也引用同两个常量。
+#: 旧名 `WORKER_COUNT_MAX` 已并入 `WORKERS_MAX`：一枚事实一个名字。
+WORKERS_MIN = 1
+WORKERS_MAX = SLOT_MAX + 1
 
 ROLE_SINGLE = "single"
 ROLE_WORKER = "worker"
@@ -162,6 +178,27 @@ def runtime_owner(stable, pid=None, gen=None):
             f":{gen or _RUNTIME_GEN}")
 
 
+def stable_owner(owner):
+    """把持有者串折回**稳定槽位名**（`worker-3@host` / `fallback@host` / `single@host`）。
+
+    持有者列存的是运行时身份 `{稳定名}:{进程号}:{代次}`（`runtime_owner`），也可能只是
+    计划行写的裸稳定名。本函数是 `runtime_owner` 的**反向**：去掉尾部的运行时段，只留
+    `名字@主机`。主机名不含 `:`，故按首个 `:` 切断主机段即可（`worker-3@host:1:2` →
+    `worker-3@host`；裸 `worker-3@host` 原样返回）。判不出稳定名（空串、旧格式
+    `:workers:` / `fallback-` / `exec-`、缺主机段的历史串）返回 `None`——调用方据此
+    **不做豁免**，与库内既有"旧格式不进名册"的口径一致。
+
+    为什么需要它：租约回收的豁免名册要能判断"某个持有者是不是**本执行体自己的稳定槽位**"
+    （含其历史代次的运行时串）。只比运行时串会比不出自己的旧代次，于是本进程重启前遗留的
+    行永远回收不到（"重启即卡死"）。
+    """
+    text = (owner or "").strip()
+    if _parse_stable_owner(text) is None:
+        return None
+    name, _sep, host = text.rpartition(OWNER_HOST_SEP)
+    return f"{name}{OWNER_HOST_SEP}{host.split(':', 1)[0]}"
+
+
 def parse_owner(owner):
     """把身份串解析成 `{"role", "index", "label"}`（判不出即 `unknown`）。
 
@@ -199,6 +236,30 @@ def role_label(role, index=None):
     if role == ROLE_SINGLE:
         return "单执行体"
     return "未标注（旧数据）"
+
+
+def owner_tag(owner, round_no=None):
+    """执行体身份串 → **日志归因前缀**：`[worker-3]` / `[fallback r7]` / `[single]` / `[unknown]`。
+
+    只回角色与槽位序号（`parse_owner` 的既有口径）——**不含主机名**：身份原串
+    （`worker-3@{主机名}`）带部署信息，任何接口/日志都不得回串（见模块 docstring）。
+    本函数是那个"只回角色与槽位"的**唯一渲染处**：写日志的一方都调它，免得各拼一份
+    前缀而漂移（多执行体并发写同一个按天日志文件，行与行之间只有这个标记能分辨是谁说的）。
+
+    `round_no` 只给**同一个进程内跑多轮**的兜底常驻：一轮一个序号，排障时能答出"第几轮"。
+    定时轮/手动轮一个进程只跑一轮，不传。
+    """
+    parsed = parse_owner(owner)
+    role, index = parsed["role"], parsed["index"]
+    if role == ROLE_WORKER and isinstance(index, int):
+        name = f"{OWNER_WORKER_PREFIX}{index}"
+    elif role == ROLE_FALLBACK:
+        name = OWNER_FALLBACK_NAME
+    elif role == ROLE_SINGLE:
+        name = OWNER_SINGLE_NAME
+    else:
+        name = ROLE_UNKNOWN
+    return f"[{name} r{round_no}]" if round_no is not None else f"[{name}]"
 
 
 def parse_list(raw):
@@ -276,6 +337,29 @@ def describe(proxy):
     if not proxy:
         return "直连（本机出口）"
     return url_desc(proxy)
+
+
+def apply_egress(env, role, index=0):
+    """把该角色的出口写进 `env`，返回写进去的出口串（**"空=直连"的唯一落实点**）。
+
+    `resolve` 的契约到"空串就是空串"为止，落地由本函数负责——**生产代码里只许这一处
+    把出口写进环境**（守卫：`tests/test_egress_direct_applied.py`）。
+
+    为什么空值也必须写：执行体的环境从父进程复制而来。`run.sh` 无条件逐行 export 整份
+    `.env`，`scripts/child_env.build_child_env` 又用 `.env` 压过进程环境，于是出口键
+    （`ENV_SINGLE`）往往已经带着一个值坐在子进程环境里。只在出口非空时写入，空出口那一格
+    等于"什么都不做"：管理员显式配下的"直连"被静默吞掉，执行体照用父级代理出网，而
+    `describe()` 与界面显示的仍是"直连（本机出口）"——两侧都看不见偏差（ba-p08-01）。
+
+    为什么写空串、而不是删键：子进程里 `yiban/engine/probe._egress_env` 先铺 `.env`、
+    再让进程环境压过它（那是每槽位出口管控的既有口径）。删掉键就查不到"进程环境"这一项，
+    它会退回 `.env` 里的那个值，同一条直连配置在那条路上被吞第二次。留一个空串才同时
+    压得住"继承来的进程环境"与"`.env` 补缺"两个来源；空串对每个读者都等于没配代理
+    （`yiban/client.py` 与 `resolve` 都 strip 后判假）。
+    """
+    proxy = resolve(role, index, env)
+    env[ENV_SINGLE] = proxy
+    return proxy
 
 
 def assignments(count, env=None):
@@ -401,12 +485,30 @@ def executor_label(rtype, slot=None):
 
 
 def legacy_worker_count(env):
-    """旧 `YIBAN_WORKERS` 的执行体数：未设/非整数=1，按旧口径钳在 1~64。"""
-    try:
-        n = int(str((env or {}).get(ENV_WORKER_COUNT, "")).strip())
-    except (TypeError, ValueError):
-        return 1
-    return min(WORKER_COUNT_MAX, max(1, n))
+    """`YIBAN_WORKERS` 的执行体数：合法域 `WORKERS_MIN~WORKERS_MAX`，越界回退下限。
+
+    越界与非整数**告警后回退 `WORKERS_MIN`（单执行体），不再静默钳到上限**：钳位会把
+    65 读成 64，而宿主 `run.sh` 对同一个值降级单执行体——同一份配置两种结果。选"回退下限"
+    不选"钳到上限"：越界的数不是管理员确认过的意图，而每多一个执行体就多一路真实登录
+    （风控面）；少开有告警看得见，多开看不见。口径与 `schedule._env_int` 一致
+    （超范围 ⇒ 回退默认 + WARNING）。
+    整数判据取 ASCII 十进制（`raw.isascii() and raw.isdigit()`）：`int("1_0")`、`int("+5")`
+    这类 Python 侧宽容写法会让 bash 的正则与本函数再次分叉，故这里不宽容。
+    未设/空白是默认形态（单执行体），按 `WORKERS_MIN` 静默返回。
+    """
+    raw = str((env or {}).get(ENV_WORKER_COUNT, "")).strip()
+    if not raw:
+        return WORKERS_MIN
+    if not (raw.isascii() and raw.isdigit()):
+        logger.warning("配置 %s=%r 非法（须为 %d~%d 的整数），按单执行体执行",
+                       ENV_WORKER_COUNT, raw, WORKERS_MIN, WORKERS_MAX)
+        return WORKERS_MIN
+    n = int(raw)
+    if not WORKERS_MIN <= n <= WORKERS_MAX:
+        logger.warning("配置 %s=%s 超出范围 [%d, %d]，按单执行体执行",
+                       ENV_WORKER_COUNT, n, WORKERS_MIN, WORKERS_MAX)
+        return WORKERS_MIN
+    return n
 
 
 def legacy_worker_proxies(env):

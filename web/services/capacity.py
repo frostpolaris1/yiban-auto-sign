@@ -12,7 +12,8 @@
 **归属**
 原 `web/app.py` 的模块级容量与触顶告警辅助，唯一真源在本模块；`web/app.py` 只保留
 名字面与转发，把它自己持有、而本模块需要的模块级名字——`.env` 路径 `ENV_FILE`、整数
-配置读取器 `load_env_int`、两个缺省上限 `DEFAULT_MAX_ACCOUNTS` / `DEFAULT_MAX_USERS`、
+配置读取器 `load_env_int`、`.env` 宽松读取器 `read_env`（注册暂停开关的布尔判定用）、
+两个缺省上限 `DEFAULT_MAX_ACCOUNTS` / `DEFAULT_MAX_USERS`、
 窗口解析器 `_sign_window`、掐头去尾口径 `edge_config`、告警出口
 `send_notification`——在调用时刻现取后注入。
 
@@ -23,7 +24,9 @@
 `capacity_accounts` 那一支：双轨开关已随单池消失，展示/闸门口径保持批 4 的取值不变），
 有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
 不另写一套容量模型。`_accounts_at_capacity` 复用 `_capacity_account_count`，
-`_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。
+`_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。触发告警的发信不在这里直接
+发出，而是经 `web/services/locks.py` 的 `run_after_file_lock` 登记——那是全局锁
+"锁内不得有网络 I/O"这条纪律的唯一汇合点，本模块不另造一套延后机制。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
@@ -39,8 +42,10 @@ import threading
 import time
 
 from web.services.accounts_data import load_accounts_raw
+from web.services.locks import run_after_file_lock
 from yiban import window as yb_window
 from yiban.engine.schedule import capacity_of
+from yiban.infra.env_io import parse_env_flag
 from yiban.mail import layout as mail_layout
 from yiban.store import db
 
@@ -120,16 +125,21 @@ def _accounts_at_capacity(extra_accounts=0, *, env_file, load_env_int, max_accou
     return _capacity_account_count() + extra_accounts > max_accounts
 
 
-def _registration_paused(env_file, load_env_int):
+def _registration_paused(env_file, read_env):
     """注册是否处于暂停状态。
 
     默认允许注册（升级后 .env 无此键时行为不变）；新部署由 ensure_secret_key 首次创建
     .env 时写入 1，管理员完成初始配置后在设置页危险区（仅主管理员）开启。与
     YIBAN_GLOBAL_PAUSE 同款读写口径。注册接口（web/routes/auth.py）与
     api_registration_paused 共用这一份实现。参数注入口径见模块头「通信」。
+
+    判定与引擎的开关真值**同一口径**（`yiban.infra.env_io.parse_env_flag`：1/true/on/yes=开）。
+    原实现 `load_env_int(...) == 1` 只认整数，`=true` 会让引擎真停注册、此门（及登录页
+    探测端点）却判"开放"——与面板显示的同一处假安心（census P0-1）。
     """
-    # 只认整数 1：写 true/on/yes 会读成默认 0、注册照旧开放（与 _env_flag 那套字面量不同）
-    return load_env_int(env_file, "YIBAN_REGISTRATION_PAUSE", 0) == 1
+    raw = read_env(env_file).get("YIBAN_REGISTRATION_PAUSE", "")
+    return parse_env_flag(raw, default=False,
+                          key="YIBAN_REGISTRATION_PAUSE", log=logger)
 
 
 def _users_at_capacity(*, env_file, load_env_int, max_users_default):
@@ -190,6 +200,11 @@ _capacity_alerts = {"users": False, "accounts": False}
 def _notify_capacity_once(kind, limit, label, *, send_notification):
     """容量触顶通知（每进程每种资源只发一次）：管理员知情且不刷屏。
 
+    调用点持 `_file_lock`，故发信经 `run_after_file_lock` 登记、出锁后执行
+    （工单 ba-p05-01：锁内不得有网络 I/O）。**只有发信被推迟**：去重旗仍在锁内
+    落定，否则两个并发请求会各登记一封、出锁后双发。旗先立后发、失败不回滚的
+    口径不变。未持锁时登记即刻执行，行为同今天。
+
     参数注入口径见模块头「通信」（`send_notification` 是既有打桩点）。
     """
     if _capacity_alerts.get(kind):
@@ -198,7 +213,8 @@ def _notify_capacity_once(kind, limit, label, *, send_notification):
     # 也就是说"没收到容量告警"不等于"没触顶"——要看日志里的 warning 行。
     _capacity_alerts[kind] = True
     logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
-    send_notification(
+    run_after_file_lock(
+        send_notification,
         f"{label}已达上限",
         mail_layout.Mail(
             summary=f"{label}已达上限，新的注册/添加已被拒绝。",

@@ -6,7 +6,7 @@
    流程的演练、usersure
    与登录页两种被风控位置的表现差异、签到最后一步被服务端拒绝的业务层判定、按落盘
    JSONL 断言握手顺序。
-对应实现：tests/fake_yiban_server.py（假服务端）、yiban/fyiban/protocol.py 与
+对应实现：tests/fake_yiban_server.py（假服务端）、yiban/platform.py 与
    client 外观、scripts/signin.py 的登录与签到编排。
 关键断言：端到端跑的是真 HTTP
    往返：脚本化响应的单测只能证明「我们发的确实是这个形状」，证明不了「这套形状能跑完一整条链」。因此必须响亮失败地确认回环流量没被本机加速器/TUN
@@ -153,14 +153,20 @@ class _FakeYiban:
         "按发生顺序"由串行假服务端保证：上一请求落盘后才会 accept 下一请求，
         到达序=落盘序（线程化服务则只保证完成序，握手轨迹会乱序）。
 
-        ⚠ 容错：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
+        ⚠ 容错一：假服务端**在写完响应之后**才落盘。故首个业务请求落盘前，
+        日志文件还不存在。此时"文件不存在"与"还没有请求"同义，按 0 条返回。
+        不得改成"断言文件必在"——那会让紧随请求之后的读者随机红（工单 kgwn）。
+        ⚠ 容错二：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
         并发下可能读到只写了一半的末行 → `json.loads` 抛 JSONDecodeError。
         故只把**无法解析的末行**当作"尚未写完"跳过；中间出现坏行仍按错误抛出，
         免得真把"日志写坏了"当成正常。
         """
+        try:
+            with open(self.log_path, encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+        except FileNotFoundError:
+            return []  # 尚无业务请求：文件还没创建 = 0 条
         rows = []
-        with open(self.log_path, encoding="utf-8") as f:
-            lines = [ln for ln in f if ln.strip()]
         for i, line in enumerate(lines):
             try:
                 rows.append(json.loads(line))
@@ -317,6 +323,83 @@ class InjectedFailureE2ETest(_E2EBase):
         self.assertFalse(skip)
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("mock injected signIn failure", message)
+
+
+class StrictFormE2ETest(_E2EBase):
+    """严格表单解析（strict_form）：签到提交必须**声明表单 Content-Type**。
+
+    假服务端开 `strict_form` 后按 servlet 容器语义处理表单：POST 表单端点只解析声明了
+    `Content-Type: application/x-www-form-urlencoded` 的请求体；signIn 缺该头时回真实
+    上游的 `code=1, msg="定位获取失败"`。本类因此复现 2026-10-08 实机 4 轮全拒的形状。
+
+    存在理由（钉测缺口）：原来的假服务端一律按 `Content-Length` 读体、**从不看**
+    Content-Type，日志演练也对这条头零断言，故"签到体少一个 Content-Type"在 4349 条
+    全量里绿着上了实机。默认登录流程的会话头（KILLYIBAN_HEADERS）本就不含
+    Content-Type，而旧实现把体作为 dict 交给 requests（自动补头）；换成预编码字符串后
+    补头不再发生，缺头只在**默认流程**暴露——旧 iOS 流程的会话头自带该头，故仍绿。
+    """
+
+    def setUp(self):
+        self.mock = _FakeYiban(strict_form=True)
+        self.addCleanup(self.mock.close)
+
+    def test_default_flow_signin_declares_form_content_type(self):
+        client = self._client()
+        client.login_killyiban()
+        self.assertTrue(client.logged_in, "登录链应跑完（usersure 本就自带 Content-Type）")
+        success, message, skip, status = client.signin()
+        self.assertTrue(success, f"签到应成功: {message}")
+        self.assertFalse(skip)
+        self.assertEqual(status, signin.STATUS_SUCCESS)
+
+    def test_legacy_flow_signin_still_declares_form_content_type(self):
+        """旧流程的会话头自带带 charset 的 Content-Type，签到不得把它丢掉。"""
+        client = self._client(legacy=True)
+        client.login()
+        self.assertTrue(client.logged_in)
+        success, message, skip, status = client.signin()
+        self.assertTrue(success, f"旧流程签到应成功: {message}")
+        self.assertFalse(skip)
+        self.assertEqual(status, signin.STATUS_SUCCESS)
+
+
+class MockLogAbsentIsEmptyTest(unittest.TestCase):
+    """竞态守卫（工单 kgwn）：假服务端**在响应之后**才落盘，读者会撞上"文件尚未创建"。
+
+    本用例钉住 CI 偶发红的根因。`KillYiBanE2ETest.test_waf_on_usersure_is_loud`
+    的 `wait_paths(1)` 在首个业务请求落盘前就 `open()`，故抛 `FileNotFoundError`。
+    本用例的复现手法是确定性的：把 `MockState.record` 换成被闸门挡住的替身，
+    使"客户端已拿到响应、日志文件尚未创建"必然出现，不靠反复跑碰运气。
+
+    判据两条。第一条：文件不存在 == 还没有请求 == 0 条。第二条：闸门一开，
+    轮询必须等到那条记录（deadline 语义不变）。
+    """
+
+    def test_reader_survives_log_written_after_response(self):
+        fake = _FakeYiban()
+        self.addCleanup(fake.close)
+        real_record = fake.state.record
+        gate = threading.Event()
+
+        def gated_record(*args, **kwargs):
+            gate.wait(10.0)  # 挡住落盘：把竞态窗口拉成一个确定状态
+            return real_record(*args, **kwargs)
+
+        with mock.patch.object(fake.state, "record", gated_record):
+            r = requests.get(f"http://127.0.0.1:{fake.port}/code/html",
+                             headers={"Host": "oauth.yiban.cn"}, timeout=5)
+            self.assertEqual(r.status_code, 200)
+            self.assertFalse(os.path.exists(fake.log_path),
+                             "前置：闸门未开，此刻日志文件必然还没创建")
+            self.assertEqual(fake.requests(), [], "文件还没创建 = 0 条，不是错误")
+            gate.set()
+            self.assertEqual(fake.wait_paths(1), ["/code/html"],
+                             "闸门一开，轮询必须等到那条记录")
+            t0 = time.monotonic()
+            self.assertEqual(fake.wait_paths(2), ["/code/html"],
+                             "等不到第 2 条时按 deadline 返回当前内容，不抛异常")
+            self.assertLess(time.monotonic() - t0, 8.0,
+                            "等不到也必须按 deadline 返回：不得放宽等待上限掩盖真实缺失")
 
 
 if __name__ == "__main__":

@@ -13,31 +13,33 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：登录失败消息与诊断响应头两处账号标识脱敏（都经 `RequestPolicy.mask_account` 注入），
 以及 `parse_login_page` 在"key 命中但损坏"时与"没命中"同价返回 `(None, None)`。
-对应实现：`yiban/fyiban/protocol.py` 的登录消息/`parse_login_page`、
+对应实现：`yiban/platform.py` 的登录消息/`parse_login_page`、
 `yiban/security.py` 的 `RequestPolicy.mask_account`（实现为 `masking.mask_phone`）、
-`yiban/fyiban/protocol.py` 自带的 `ProtocolPolicy.mask_account`。
+`yiban/security.py` 的 `ProtocolPolicy.mask_account`。
 关键断言：假会话是**脚本化的响应**、被测的 protocol 逻辑真跑，所以"异常消息里不含裸号"
 这类断言是行为级而非文本级；另配 `test_valid_page_still_parses` 一条正向对照，
 防止靠"任何页面都解析失败"把损坏分支伪造成通过。
 本文件守的是协议层自身的两处出口，不覆盖上层（web/日志）如何再处理这条消息。
-依赖：`Crypto.PublicKey.RSA` 现生成一次性公钥构造假页，无网络、无 skip。
+依赖：`tests/fake_yiban_server.py` 里固定的 1024 位测试公钥构造假页（不现场生成），
+`Crypto.PublicKey.RSA` 只用于比对导入结果；无网络、无 skip。
 """
 import unittest
 
 from Crypto.PublicKey import RSA
+from fake_yiban_server import DEFAULT_PUBKEY_PEM
 
-from yiban.fyiban import protocol as fyiban_protocol
+from yiban import platform as yiban_protocol
 from yiban.security import ProtocolPolicy
-
-# 测试用 RSA-1024 公钥：RSA 生成较慢，模块内生成一次共用（各用例互不影响）。
-_TEST_PUBKEY_PEM = None
 
 
 def _pubkey_pem():
-    global _TEST_PUBKEY_PEM
-    if _TEST_PUBKEY_PEM is None:
-        _TEST_PUBKEY_PEM = RSA.generate(1024).publickey().export_key().decode("utf-8")
-    return _TEST_PUBKEY_PEM
+    """测试用 RSA-1024 公钥：取 `tests/fake_yiban_server.py` 的固定常量，不现场生成。
+
+    随机 PEM 的 base64 正文能撞出 ASCII 词元 `WAF`；本文件的 `login_legacy` 走
+    `policy.require_not_blocked`，抽中即整条用例被判"被风控拦截"（工单 `yiban-auto-sign-u21x`
+    的第二个受害文件）。夹具固定 = 非确定源清零。
+    """
+    return DEFAULT_PUBKEY_PEM
 
 
 class _Resp:
@@ -76,7 +78,7 @@ class _ScriptedSession:
 def _legacy_page(key_value):
     return (
         '<input type="hidden" id="key" value="%s">'
-        "<script>page_use = 'pageuse12345';</script>"
+        "<script>var page_use = 'pageuse12345';</script>"
     ) % key_value
 
 
@@ -97,7 +99,7 @@ class LoginFailureMessageTest(unittest.TestCase):
             _Resp(json_data={"reUrl": "https://f.yiban.cn/iapp7463?error=1"}),
         ])
         with self.assertRaises(RuntimeError) as ctx:
-            fyiban_protocol.login_legacy(
+            yiban_protocol.login_legacy(
                 session, phone="13800138000", password=b"pw", csrf="c",
                 policy=ProtocolPolicy())
         message = str(ctx.exception)
@@ -127,14 +129,14 @@ class CorruptedKeyContractTest(unittest.TestCase):
         for flow, page in cases:
             with self.subTest(flow=flow, page=page):
                 self.assertEqual(
-                    fyiban_protocol.parse_login_page(page, flow=flow), (None, None))
+                    yiban_protocol.parse_login_page(page, flow=flow), (None, None))
 
     def test_valid_page_still_parses(self):
         """守卫不得变成"永远返回 (None, None)"：合法页两分支都要照常解出公钥。"""
         for flow, page in (("killyiban", _killyiban_page(_pubkey_pem())),
                            ("legacy", _legacy_page(_pubkey_pem()))):
             with self.subTest(flow=flow):
-                page_use, key = fyiban_protocol.parse_login_page(page, flow=flow)
+                page_use, key = yiban_protocol.parse_login_page(page, flow=flow)
                 self.assertEqual(page_use, "pageuse12345")
                 self.assertEqual(key.n, RSA.import_key(_pubkey_pem()).n)
 

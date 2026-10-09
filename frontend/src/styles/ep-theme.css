@@ -1,0 +1,75 @@
+/*
+ * Element Plus → 本项目 Adminator token 映射（计划 §3.3，裁决 J2：设计语言不动）。
+ *
+ * 规则：EP 组件的一切观感入口尽量接既有 token，使 EP 组件随外壳深浅色自动成立。
+ * 映射写在 :root[data-theme='light'] / :root[data-theme='dark'] 两个作用域（同为
+ * (0,2,0)，高于 EP 暗色 css-vars 的 html.dark (0,1,1)），保证暗色下被映射的变量
+ * 不会被 EP 自带暗色值反超；未映射的 EP 内部变量仍取 EP 暗色值，组件内部自洽。
+ *
+ * token 名称以 web/static/vendor/adminator/adminator.css 的 36 个主题变量为准。
+ */
+
+/* ---------- 浅色（值取自 :root[data-theme=light]，经 var 间接即随主题翻转） ---------- */
+:root[data-theme="light"],
+:root[data-theme="dark"] {
+  /* 品牌色 */
+  --el-color-primary: var(--primary);
+  --el-color-primary-light-3: var(--primary-light);
+  --el-color-primary-light-5: var(--primary-soft);
+  --el-color-primary-light-7: var(--primary-soft);
+  --el-color-primary-light-8: var(--primary-soft);
+  --el-color-primary-light-9: var(--primary-soft);
+  --el-color-primary-dark-2: var(--primary-dark);
+
+  /* 语义色 */
+  --el-color-success: var(--success);
+  --el-color-success-light-8: var(--success-soft);
+  --el-color-success-light-9: var(--success-soft);
+  --el-color-warning: var(--warning);
+  --el-color-warning-light-8: var(--warning-soft);
+  --el-color-warning-light-9: var(--warning-soft);
+  --el-color-danger: var(--danger);
+  --el-color-danger-light-8: var(--danger-soft);
+  --el-color-danger-light-9: var(--danger-soft);
+  --el-color-error: var(--danger);
+  --el-color-info: var(--info);
+  --el-color-info-light-8: var(--info-soft);
+  --el-color-info-light-9: var(--info-soft);
+
+  /* 面与字 */
+  --el-bg-color: var(--bg-card);
+  --el-bg-color-page: var(--bg-body);
+  --el-bg-color-overlay: var(--bg-card);
+  --el-text-color-primary: var(--t-base);
+  --el-text-color-regular: var(--t-base);
+  --el-text-color-secondary: var(--t-muted);
+  --el-text-color-placeholder: var(--t-light);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border-soft);
+  --el-border-color-lighter: var(--border-soft);
+  --el-border-color-extra-light: var(--border-soft);
+  --el-fill-color: var(--bg-muted);
+  --el-fill-color-light: var(--bg-muted);
+  --el-fill-color-lighter: var(--bg-hover);
+  --el-fill-color-blank: var(--bg-card);
+
+  /* 形体 */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+  --el-font-family: var(--font-sans);
+  --el-font-size-base: 14px;
+}
+
+/* ---------- 开关「关」态轨道（WCAG 1.4.11 非文字 3:1） ----------
+ * EP 把 --el-switch-off-color 声明在 .el-switch **自身**（不是 :root），故上面那批
+ * :root 作用域的令牌映射够不到它：EP 默认值吃 --el-border-color（= --border，
+ * 浅 #E4E8EF 对白卡 1.23:1 / 深 #222C42 对深卡 1.23:1），关态轨道几乎看不见。
+ * 这里直接落到 .el-switch 上并复用 app.css §A3 的语义令牌 --switch-off-bg
+ * （浅 #868FA0 3.26:1、深 #64748B 3.60:1，且白滑块对其亦 ≥3:1），
+ * 主题切换由 :root 上的令牌值翻转。选择器带 :root[data-theme] 提升特异性，
+ * 防 EP 组件样式在打包序里排到本文件之后把覆盖反超。 */
+:root[data-theme="light"] .el-switch,
+:root[data-theme="dark"] .el-switch {
+  --el-switch-off-color: var(--switch-off-bg);
+}

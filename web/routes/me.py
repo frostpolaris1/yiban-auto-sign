@@ -182,8 +182,10 @@ def api_me_password():
                 _login_fails().pop(fail_key, None)
             # 改密是核心安全事件——本人邮件（直接 send_user 绕过
             # mail_notify 开关：开关本身可被攻击者关闭）+ 管理员告警（被盗号
-            # 改密时的可感知信号，审计之外的第一时间渠道）
-            m.mailer.send_user(
+            # 改密时的可感知信号，审计之外的第一时间渠道）。两封都在锁内登记、
+            # 出锁后发出（工单 ba-p05-01：锁内不得有网络 I/O）。
+            m.run_after_file_lock(
+                m.mailer.send_user,
                 username,
                 "【易班签到】您的账号密码已被修改",
                 m.mail_layout.Mail(
@@ -192,7 +194,8 @@ def api_me_password():
                     level="urgent",
                 ),
             )
-            m.send_notification(
+            m.run_after_file_lock(
+                m.send_notification,
                 "账号安全事件告警",
                 m.mail_layout.Mail(
                     summary=f"用户 {m._mask_email(username)} 自助修改密码。",

@@ -6,7 +6,8 @@
 两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `executor_v3.run_executor_v3`，
 它们只负责：谁持哪把锁（监督进程持全局锁、子进程各持自己的锁文件）、谁用哪个出口
 代理（执行体清单 `YIBAN_EXECUTORS` 每行一个出口；清单缺失时回退旧三键
-`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`，见 `egress.resolve`）、每个并行执行体的
+`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`；取值见 `egress.resolve`，交给执行体见
+`egress.apply_egress`——空出口=直连也必须写进环境，不得留着继承来的值）、每个并行执行体的
 **心跳**（开始/存活期/收尾，按**槽位号**写在 `state_io`，供接口判存活四态）、
 退出码怎么汇总（取最严重者，但补签轮判定的「需要补跑」原样透出）。清单里的拉起列表由
 `runner` 取 `egress.launch_slots` 后按槽位传进来，故**停用行不会被拉起**。
@@ -50,8 +51,9 @@ logger = logging.getLogger("yiban")
 #: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
 FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
-#: **无领取池**（纯状态文件部署）时给全量轮整段让位的轮询间隔（秒）：只是一次 flock
-#: 探测。有池的部署不走这条路——让位收窄到"同一账号"，由领取池仲裁谁在做谁。
+#: **全量轮在飞**时整段让位的轮询间隔（秒）：只是一次 flock 探测，轮一收工就接手。
+#: 让位不看部署形态（有队列与否）——见 `_round_in_flight`：账号级仲裁只防重复登录，
+#: 不防兜底把那一轮计划给执行体的行先领走。
 _YIELD_POLL_SEC = 30
 
 #: 扫空后轮询领取池事件签名的短间隔（秒）：兜底的"失败即入队"读取端。别的执行体
@@ -59,6 +61,11 @@ _YIELD_POLL_SEC = 30
 #: 一个扫描间隔；只是一次 COUNT/MAX 读，代价远低于一轮签到。等待总预算仍以扫描
 #: 间隔为上限（新账号没有池行、无事件可感，照旧由全量节律发现）。
 _POOL_WATCH_SEC = 5
+
+#: **有活干**时两轮之间的连扫拍长（秒）：不睡满扫描间隔，直到没活为止（窗口是有限的）。
+#: 单独一个常量是为了让轮次行"打出来的秒数"与这里的拍长**同源**——两处各写一个 5 会
+#: 漂移成"文案在声称代码没做的事"，那正是 2026-10-07 生产日志回归的形状。
+_TIGHT_SCAN_SEC = 5
 
 #: 三道门（周日/周六未开、一键暂停）的日志措辞——门本身在 `schedule.day_off`（唯一实现），
 #: 这里只给兜底自己的说法（定时轮的措辞在 `runner._GATE_SKIP_MESSAGES`）。
@@ -70,6 +77,20 @@ _GATE_REASON_TEXT = {
 
 # 状态码别名（与 yiban.status 同一对象）
 STATUS_FAILED = yiban_status.STATUS_FAILED
+
+
+def _round_in_flight():
+    """此刻是否有一支全量轮在跑——**兜底让位的唯一判据**（运行时事实，非配置声明）。
+
+    判据取自全局轮次锁的探测：监督进程持该锁覆盖它的整轮（含全部子执行体），故"锁被持有"
+    与"有一轮在飞"是同一件事。为什么不用 `db.pool_db_declared()`：那判的是"库路径有没有
+    被声明"，与"有没有可仲裁的工作在跑"是两件事（10-07 生产用默认库、没声明键，被判成
+    纯状态文件部署）。队列在场与否不改变让位结论，它只决定兜底能领到什么。
+
+    让位与执行体的让位复检（`executor_v3.run_executor_v3(yield_probe=…)`）共用本函数：
+    进入一轮时的判据与轮内复检**必须是同一份事实**，否则两处会各判各的。
+    """
+    return cli_support._run_lock_held()
 
 #: 仓库根（`yiban/engine/<模块>.py` 上溯三层）。**不是**导入引导（包内模块本就靠
 #: `python -m` / 测试的 pythonpath 找到包）：这里只用来给拉起的子进程设 cwd 与
@@ -93,7 +114,8 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
 
     - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
     - 子进程各持自己的锁文件 + 各自的执行体身份（领取池据此分工）；
-    - 每个子进程可配一个独立出口代理（`egress.resolve`）；
+    - 每个子进程配一个独立出口，写入走 `egress.apply_egress`（唯一落实点）：清单里
+      配成空出口的那一格被显式写成"直连"，父环境继承来的 `YIBAN_PROXY` 不得留着；
     - 子进程的 argv 是本进程 argv 去掉 `--workers` 及其后随值（`--workers=N` 同样）后的
       逐字复刻：多执行体的身份靠注入的 `YIBAN_EXECUTOR_ID` 表达，`--workers` 下传只会
       让子进程再当一次监督进程；
@@ -169,9 +191,8 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
         # 故那把锁不能去掉）。
         env["YIBAN_EXECUTOR_ID"] = egress.worker_owner(slot)
         env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{slot}"
-        proxy = egress.resolve(egress.ROLE_WORKER, slot)
-        if proxy:
-            env["YIBAN_PROXY"] = proxy
+        # 出口交给环境只走 egress 单点：空出口也要写，否则继承来的父级代理把"直连"顶掉
+        proxy = egress.apply_egress(env, egress.ROLE_WORKER, slot)
         # 复刻本轮其余参数：剔除 `--workers` **及其后随值**（按 argv 序位解析，与
         # argparse 同语义；`--workers=N` 形态一并剔除）。不能按值匹配：清单模式下拉起
         # 的槽位数与命令行 `--workers N` 的 N 可以不等——网页改执行体清单只写
@@ -375,13 +396,16 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
 
     **运行前会先过四道关**（每轮重判，不是启动时判一次）：周末签到未开、一键暂停
     （都由 `schedule.day_off` 判定，与定时轮同源）→ 直接退出；签到时段**尚未开始**
-     → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
-     **全量轮正在跑且无领取池**（纯状态文件部署，没有账号级互斥可依赖）→ 整段让位。
-    有池在场时**让位只让"同一账号"**：全量轮持锁期间照常扫，池对在飞/已了结的账号
-    拒领（见循环内注释），该轮没碰的与中途弃权的照接。扫空后的等待是**事件驱动**的：
-    短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的执行体一弃权
-    就接手，等待上限仍是扫描间隔。故它是**捡漏**的那个——与定时轮/多执行体并发，
-    但"谁在做谁"由池仲裁，第一红线（同一账号当日一次真实登录）不因此松动。
+    → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
+    **全量轮正在运行** → 整段让位（判据见 `_round_in_flight`：只看运行时事实，不看
+    配置声明）。让位期间不复检就不放行——执行体每次领取前再问一次（`yield_probe`），
+    故"赢下启动竞态的亚秒窗口"不会被放大成吸收全天工作量。
+    全量轮收工后兜底照常接手：`claim_all` 的宽范围在**没有轮在飞**时才用得上（有轮
+    在飞时那正是"抢走别人计划工作"的那条路，见 `_round_in_flight`）。扫空后的等待是
+    **事件驱动**的：短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的
+    执行体一弃权就接手，等待上限仍是扫描间隔。故它是**捡漏**的那个——补全定时轮没碰
+    的、中途弃权的、窗口内新审核的账号；"谁在做谁"仍由池仲裁，第一红线（同一账号当日
+    一次真实登录）不因此松动。
 
     退出：窗口关闭 / 三道门命中 / 到达 `deadline` / 账号列表为空且已过窗口。
     返回退出码语义与单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
@@ -396,14 +420,24 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     # 重入须出示上一代 epoch，重启后没有它，只能等租约过期或心跳回收。代价是同一槽位名
     # 不得两台机器同时跑（跨主机靠 @主机名 区分，同机由下面那把 `signin-run.lock.fallback` 挡住）。
     os.environ.setdefault("YIBAN_EXECUTOR_ID", egress.fallback_owner())
-    proxy = egress.resolve(egress.ROLE_FALLBACK)
-    logger.info("兜底执行体启动（出口: %s，扫描间隔 %ss）", egress.describe(proxy), interval)
-    if proxy:
-        os.environ["YIBAN_PROXY"] = proxy
+    # 出口写入走 egress 单点：兜底行配成空出口时也必须显式写成直连，压掉继承来的
+    # `YIBAN_PROXY`（宿主形态由 run.sh 全量 export、容器/web 形态由 child_env 覆盖注入）
+    proxy = egress.apply_egress(os.environ, egress.ROLE_FALLBACK)
+    # 身份前缀只算一次：本进程的身份（`YIBAN_EXECUTOR_ID`）启动期就定了，跨轮不变；
+    # 轮次序号在循环内逐轮拼（见下）——日志归因要能答出"哪个执行体、第几轮"。
+    tag = egress.owner_tag(os.environ.get("YIBAN_EXECUTOR_ID", ""))
+    logger.info("%s 兜底执行体启动（出口: %s，扫描间隔 %ss）",
+                tag, egress.describe(proxy), interval)
 
     sch_cfg = None   # 每轮在循环内重读（见下）
     last_code = 0
+    #: 上一轮报出的事实（`own`/`settled`/判因数/等待文案）。事实不变就不打 INFO——
+    #: 常驻空转轮连轮报同一件事只是刷屏（生产 10-07 实测 5 秒一对）。
+    last_facts = None
+    round_no = 0
     while True:
+        round_no += 1
+        round_tag = egress.owner_tag(os.environ.get("YIBAN_EXECUTOR_ID", ""), round_no)
         # 每轮先把 .env 的最新配置并回进程环境：门/窗口/间隔的判据读的是 `os.environ`，
         # 而运行期 Web 只写 .env（见 `_reload_env_into_environ` 的说明）——不重读就是
         # "每轮重判"名不副实（窗口内点一键暂停照签）。
@@ -418,7 +452,7 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         # 不必再取一次时钟——常驻进程每秒级的取时不该翻倍。
         sch_cfg = schedule._schedule_config(now)
         if deadline is not None and now >= deadline:
-            logger.info("兜底执行体：到达截止时刻，退出")
+            logger.info("%s 到达截止时刻，退出", round_tag)
             break
         # 周末门 / 一键暂停门：走**与定时轮同一实现**（schedule.day_off）。
         # 这两道门原先只写在 runner.main 里，而本进程在它之前就 return（见分支顺序），
@@ -426,10 +460,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         # 每轮重判（不是启动时判一次）⇒ 窗口中途改设置也能在下一次扫描生效。
         gate = schedule.day_off(now)
         if gate:
-            logger.info("兜底执行体：%s，退出（本日不签到）", _GATE_REASON_TEXT[gate])
+            logger.info("%s %s，退出（本日不签到）", round_tag, _GATE_REASON_TEXT[gate])
             break
         if schedule._window_closed(sch_cfg, now):
-            logger.info("兜底执行体：签到时段已结束，退出")
+            logger.info("%s 签到时段已结束，退出", round_tag)
             break
         if not schedule._window_open(sch_cfg, now):
             # 提前拉起（cron 模板 06:05、窗口 06:30）时**必须等**，不能照走：
@@ -438,20 +472,26 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             # 仍会先把到点的行领掉并真实登录。故窗口未开先等。
             opens_in = int(schedule._window_opens_in(sch_cfg, now))
             wait = min(interval, max(1, opens_in))
-            logger.info("兜底执行体：签到时段尚未开始（%d 秒后开始），%d 秒后再看", opens_in, wait)
+            logger.info("%s 签到时段尚未开始（%d 秒后开始），%d 秒后再看",
+                        round_tag, opens_in, wait)
             time.sleep(wait)
             continue
-        if not db.pool_db_declared() and cli_support._run_lock_held():
-            # **让位的颗粒度是"全量轮正在做的那一个账号"，仲裁者是任务队列不是这把锁**：
-            # 有队列在场时这里不让位、照常扫——轮在飞的行 `claim_batch` 拒领（`claimed`
-            # 未过期=领不到，`done`/`skipped`=领不到，`retry:` 档弃权行=回炉后默认可接手），
-            # 兜底只接"该轮没碰的 / 该轮中途弃权的"账号。旧形态"全局锁被持有=整段停摆"
-            # 让兜底恰好在失败高峰（全量轮正在批量弃权）时段完全不可用——那正是它该捡漏
-            # 的时刻。例外是**没有队列可仲裁**的纯状态文件部署：账号级互斥不存在，并发跑
-            # 等于同一账号两次真实登录（第一红线），所以只有那里保留整段停摆。
-            # 让位期间的轮询比常规扫描密：全量轮一结束就接手，而这次探测只是一次 flock。
-            logger.info("兜底执行体：全量轮正在运行且无领取池，整段让位（%d 秒后再看）",
-                        _YIELD_POLL_SEC)
+        if _round_in_flight():
+            # **让位（整段）**：有一支全量轮在飞时不参与领取。
+            # 判据只取**运行时事实**（全局轮次锁被持有 = 有一轮在跑），不看任何配置声明：
+            # 旧判据 `not db.pool_db_declared() and …` 判的是"`YIBAN_DB_FILE` 在环境或
+            # `.env` 里有没有被声明"，与现场事实脱节——生产用默认库、没写该键，于是被判成
+            # "纯状态文件部署"，判据退化成"此刻能否探到锁"；而当时兜底先起飞、锁后持有，
+            # 它探到"无人在跑"就让了个空（2026-10-07 生产）。
+            # 让位的颗粒度也不能是"同一账号"：在飞的行 `claim_batch` 确实拒领，但兜底是
+            # **宽范围领取**（`claim_all`——兜底身份不在 HRW 候选集里，不放宽就是零领取的
+            # 空转），于是它把那一轮**计划给执行体的行**先领走。10-07 证明账号级仲裁只防
+            # 重复登录，**不防吸收全量**：兜底拿走 64 个分片（= 两个执行体全集）、84/100 个
+            # 账号，两个执行体到点只剩空扫，汇总出一堆假失败。故"有队列"不再是免让位的理由，
+            # 队列在场只决定兜底**能领什么**（无队列时它本就无行可领）。
+            # 让位期间按 `_YIELD_POLL_SEC` 轮询：只是一次 flock 探测，轮一收工就接手。
+            logger.info("%s 全量轮正在运行，整段让位（%d 秒后再看）",
+                        round_tag, _YIELD_POLL_SEC)
             time.sleep(_YIELD_POLL_SEC)
             continue
 
@@ -461,15 +501,17 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         except db.MigrationIntegrityError as e:
             # 迁移完整性拒启（MF-40）：schema 半升级不是配置错误，独立码 4 透出，
             # 常驻循环不得吞掉它继续空转。
-            logger.error(f"兜底执行体：schema 迁移完整性校验失败，拒绝启动: {e}")
+            # 形态与下面那条一致：**% 形参**传 e，不用 f-string 混搭——e 里带一个 `%`
+            # 就会让 logging 的 `msg % args` 抛错，整条记录被丢弃（复审实证）。
+            logger.error("%s schema 迁移完整性校验失败，拒绝启动: %s", round_tag, e)
             state_io._clear_fallback_alive()
             return cli_support.EXIT_SCHEMA_MIGRATION
         except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
-            logger.error("兜底执行体：配置加载失败: %s", e)
+            logger.error("%s 配置加载失败: %s", round_tag, e)
             state_io._clear_fallback_alive()
             return 1
         if not accounts:
-            logger.info("兜底执行体：当前没有账号，%ss 后再看", interval)
+            logger.info("%s 当前没有账号，%ss 后再看", round_tag, interval)
             time.sleep(interval)
             continue
 
@@ -486,11 +528,29 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
         #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
         #   第二次机会只留给一次性补签轮与手动。
+        # - `yield_probe=_round_in_flight`：**轮内让位复检**。循环顶那次让位判据只是
+        #   进入这一轮的入场券；一轮扫描可能跑满整个窗口（10-07 生产 58 分钟），故
+        #   执行体每次领取前再问一次同一份事实，轮一出现就停止领取（已领的照常收尾）。
+        # - `event_sink`：**兜底的工作必须落 `sign_events`**。此前不传 sink，兜底签成的
+        #   84 个账号在事件表里零记录（10-07 生产 `sign_events` 当日只有 16 条 success
+        #   = 两个 worker 的），数据侧看不出"谁做的"，判因留痕也随之丢失。攒一轮批量落库
+        #   （与 `runner` 全量轮同一条写入路径），失败由 `add_sign_events_batch` 内部告警。
+        # - `unreached`：轮末判因的出口——兜底自己也要能说清"本轮哪些账号不是我领的"，
+        #   与 runner 汇总同源同口径（`executor_v3._mark_unreached`）。
+        # - `round_no`：只给日志归因——执行体的每账号行带 `[fallback rN]` 前缀，排障时
+        #   能答出"这个账号是第几轮、哪个执行体动的"（多执行体写同一个按天日志文件，
+        #   没有这个标记就只能靠时间戳猜）。
+        event_rows = []
+        unreached = {}
         results = executor_v3.run_executor_v3(
             accounts, day=now.strftime("%Y-%m-%d"),
             notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
             cred_state=cred_state, delegated=delegated,
-            claim_all=True, requeue_during_run=True)
+            claim_all=True, requeue_during_run=True,
+            yield_probe=_round_in_flight, event_sink=event_rows.append,
+            unreached=unreached, round_no=round_no)
+        if event_rows:
+            db.add_sign_events_batch(event_rows)
         # 轮末写回熔断计数（口径与 runner 全量轮一致：按本轮账号增量合并）。不写回则
         # "连续凭据失败达阈值 → 暂停"只在磁盘上不存在：下一轮 read() 又从零开始，
         # 错密码账号被无限次真实登录（易班侧照实计数，加重风控）。
@@ -500,31 +560,58 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             if acc.phone in delegated:
                 settled += 1
         own = len(results)
-        # 本轮自己没活干（全部已被别人接手/已了结）→ 睡一会儿再看
-        logger.info("兜底执行体：本轮处理 %d 个账号（%d 个已由他人负责），%ss 后再扫",
-                    own, settled, interval)
+        # 本轮自己没活干（全部已被别人接手/已了结）→ 睡一会儿再看。
+        # 未领到的账号按判因分列报出（与 runner 汇总同口径：只有"没人接手"才是故障）。
+        peer_n = sum(1 for r in unreached.values()
+                     if r == executor_v3.UNREACHED_PEER)
+        stay_n = len(unreached) - peer_n
+        # **等待形态先定，再打日志**：打出来的秒数必须等于下面真正睡掉的那个。旧实现
+        # 恒打配置间隔（60），而实际等待有三种形态（下面三条分支），生产 10-07 实测的
+        # "文案在声称代码没做的事"就是这么来的（窗口未开与全量轮让位是另外两条分支，
+        # 它们本来各打自己的真实秒数）：
+        # - 有活干：连续扫，`_TIGHT_SCAN_SEC` 一拍（窗口有限，不睡满间隔）；
+        # - 扫空且有池：事件驱动短轮询，`interval` 是**上界**（不是"等满"）；
+        # - 扫空且无池：没有可轮询的事件源，盲等的就是整段间隔。
+        has_pool = db.is_initialized()
+        if own == 0 and has_pool:
+            wait_text = f"事件驱动等待（最多 {interval}s）"
+        elif own == 0:
+            wait_text = f"{interval}s 后再扫"
+        else:
+            wait_text = f"{min(interval, _TIGHT_SCAN_SEC)}s 后再扫（本轮有活，连扫）"
+        facts = (own, settled, peer_n, stay_n, wait_text)
+        line = "%s 本轮处理 %d 个账号（%d 个已由他人负责，%d 个已由他人领取，%d 个无人接手），%s" % (
+            round_tag, own, settled, peer_n, stay_n, wait_text)
+        # **事实不变就不打 INFO**：空转轮连轮报同一件事只是刷屏（生产 10-07 实测 5 秒
+        # 一对、全天 180 次）。降级而不是静默——DEBUG 下仍逐轮留痕，排障时照样数得清轮次、
+        # 看得见每一轮的等待形态；事实一变（有活、判因变化、等待形态变化）立刻回到 INFO。
+        if facts != last_facts:
+            logger.info(line)
+        else:
+            logger.debug(line)
+        last_facts = facts
         for _ok, _msg, skip, status in results.values():
             if status in (STATUS_FAILED,) and not skip:
                 last_code = 1
         if own == 0:
-            if db.is_initialized():
+            if has_pool:
                 # **事件驱动**：扫空后不再盲睡满间隔，而是轮询领取池的事件签名——别的
                 # 执行体把账号弃权到默认档就是"入队"（见 `claims.fallback_event`），
                 # 一变即接手。等待总预算仍是 interval：新审核账号没有池行、无事件可感，
                 # 由全量节律兜底发现。
-                _await_pool_event(now.strftime("%Y-%m-%d"), interval)
+                _await_pool_event(now.strftime("%Y-%m-%d"), interval, round_tag)
             else:
                 # 无池可轮询（纯状态文件部署）：退回盲的整段间隔原节律
                 time.sleep(interval)
         else:
             # 有活干就连续扫（不睡满间隔），直到没活为止——窗口是有限的
-            time.sleep(min(interval, 5))
+            time.sleep(min(interval, _TIGHT_SCAN_SEC))
     state_io._clear_fallback_alive()
-    logger.info("兜底执行体已退出（心跳已清除）")
+    logger.info("%s 兜底执行体已退出（心跳已清除）", tag)
     return last_code
 
 
-def _await_pool_event(day, budget_sec):
+def _await_pool_event(day, budget_sec, tag=""):
     """扫空后的等待：短轮询任务队列事件签名，变化即返回，安静则等满 `budget_sec`。
 
     取舍（对"失败即入队"字面另建一条队列）：全量轮与兜底是**两个进程**，执行体弃权
@@ -534,6 +621,9 @@ def _await_pool_event(day, budget_sec):
     （`queue_store.fallback_event`：`retry:` 档、剔除自己的弃权），唤醒频率与可接手
     频率同集。读不到签名（库抖动）按"无事件"处理——事件驱动是延迟优化、不是正确性依赖，
     最坏仍由扫描间隔这个上限兜住。
+
+    `tag` 是调用方的执行体归因前缀（`[fallback r7]`）：签名变化那条 INFO 行要带它，
+    否则多执行体共写同一个按天日志文件时这行认不出是谁说的。
     """
     owner = os.environ.get("YIBAN_EXECUTOR_ID", "").strip() or egress.fallback_owner()
     last = queue_store.fallback_event(day, owner)
@@ -548,7 +638,7 @@ def _await_pool_event(day, budget_sec):
         if sig is None:
             continue
         if sig != last:
-            logger.info("兜底执行体：任务队列事件签名变化 %s（业务日 %s），立即接手", sig, day)
+            logger.info("%s 任务队列事件签名变化 %s（业务日 %s），立即接手", tag, sig, day)
             return
         last = sig
 

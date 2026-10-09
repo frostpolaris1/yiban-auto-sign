@@ -3,7 +3,7 @@
 
 标签：F · 前端与界面守卫
 覆盖：设置页缓冲滑块上限 `edgeMaxMin(winSec)` 与服务端夹取口径的逐值对拍，以及上限落到 `data-max`、回填消费服务端异常提示的源码形态
-对应实现：`web/static/js/components/settings-schedule.js` 的 `edgeMaxMin`；`yiban.window.edge_cap_sec`
+对应实现：`frontend/src/settings/model.js` 的 `edgeMaxMin`（Vue 滑杆上限）；`yiban.window.edge_cap_sec`
 关键断言：前端上限（分钟）逐值等于 `edge_cap_sec / 60`——前端宽服务端窄会让用户「保存后数字变小」，反之合法值存不进；窗口不可用（0）时上限为 0（fail-closed，与服务端一致），不把滑块放到最大；上限确实 `setAttribute("data-max"`，回填时消费 `window_fallback_text`
 依赖：⚠ **需要 node 真跑**——`edgeMaxMin` 抽出后交给 node 执行，`shutil.which("node")` 取不到时整类 `skipUnless`；另需能导入 `yiban.window`（纯本地计算，不联网）
 
@@ -26,12 +26,19 @@ import unittest
 from yiban import window
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCHEDULE_JS = os.path.join(BASE, "web", "static", "js", "components",
-                           "settings-schedule.js")
+# 设置页迁到 Vue 后，`edgeMaxMin` 从 settings-schedule.js 搬进口径层 model.js；
+# 可见编辑器改用 EP el-slider（上限动态绑定 edgeMaxMin 的结果）。
+SCHEDULE_JS = os.path.join(BASE, "frontend", "src", "settings", "model.js")
+SCHEDULE_CARD = os.path.join(BASE, "frontend", "src", "settings", "ScheduleCard.vue")
 NODE = shutil.which("node")  # 取不到 ⇒ 本文件的对拍用例整类 skip，不是「没测到」
 
 #: 与 JS 对拍用的窗口宽度（秒）；0 是"窗口不可用"（倒置/未知）的特例，必须 fail-closed
 WINDOW_SECS = (0, 120, 300, 600, 900, 1500, 1800, 3000)
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
 
 
 def _extract_function(src, name):
@@ -90,15 +97,27 @@ class EdgeLimitParityTest(unittest.TestCase):
         got = _run_edge_max(self.fn_src, (0, -1))
         self.assertEqual(got, [0, 0])
 
-    def test_limits_are_written_to_data_max(self):
-        """上限确实落到 `data-max`（弹窗数字框/滑杆的量程读的就是它）。"""
-        self.assertIn('setAttribute("data-max"', self.src)
-        self.assertIn('data-range-field', self.src)
+    def test_limits_are_wired_to_the_slider_max(self):
+        """上限确实接到可见滑杆的量程上（EP el-slider 的 `:max`），零宽窗口不绑退化量程。
+
+        旧实现把上限写进自研 range-field 的 `data-max`；改用 EP 后由 ScheduleCard 把
+        `edgeMaxMin(...)` 的结果算成 `edgeMax`，再经 `edgeSliderMax` 绑给滑杆（窗口无效、
+        edgeMax=0 时给占位量程并禁用，避免 0/0 的 NaN/Infinity）。判据换锚、意图不变：
+        量程必须来自与服务端同式的 edgeMaxMin，而不是写死的 5。
+        """
+        self.assertIn("edgeMaxMin(", self.src)
+        vue = _read(SCHEDULE_CARD)
+        self.assertIn("edgeMaxMin(", vue, "ScheduleCard 未用 edgeMaxMin 算滑杆上限")
+        self.assertIn(':max="edgeSliderMax"', vue, "滑杆上限未绑定 edgeSliderMax（量程会与服务端分叉）")
+        self.assertIn("const edgeSliderMax", vue, "缺少 edgeSliderMax（零宽窗口会给出 max=0 的退化量程）")
+        self.assertIn("edgeMaxValid", vue, "缺少窗口有效性判定（窗口无效时应给占位量程并禁用滑杆）")
+        self.assertNotIn(':max="5"', vue, "滑杆上限不得写死")
 
     def test_apply_consumes_window_fallback_text(self):
         """回填时消费服务端的窗口异常提示（否则该异常在设置页看不见）。"""
-        self.assertIn("window_fallback_text", self.src)
         self.assertIn("fallbackText", self.src)
+        vue = _read(SCHEDULE_CARD)
+        self.assertIn("window_fallback_text", vue)
 
 
 if __name__ == "__main__":

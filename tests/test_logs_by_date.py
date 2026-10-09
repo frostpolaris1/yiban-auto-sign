@@ -137,7 +137,7 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(HIST_DATE, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
             _log_line(HIST_DATE, "INFO", "yiban", "==== 开始执行签到，共 1 个账号，队列重试模式 ===="),
             _log_line(HIST_DATE, "INFO", "yiban.client", "[13800138001] 生成定位: (118.8, 31.9)"),
-            _log_line(HIST_DATE, "INFO", "yiban.fyiban.protocol", "[13800138001] 登录成功"),
+            _log_line(HIST_DATE, "INFO", "yiban.platform", "[13800138001] 登录成功"),
             _log_line(HIST_DATE, "DEBUG", "yiban", "[13800138001] 登录方式: KillYiBan 同款"),
             _log_line(HIST_DATE, "INFO", "werkzeug", '127.0.0.1 - - "GET /api/logs HTTP/1.1" 200 -'),
             "无格式行（run.sh 直接 echo）",
@@ -147,7 +147,7 @@ class LogsByDateTest(unittest.TestCase):
         self.assertIn("签到成功", joined)
         self.assertIn("开始执行签到", joined)
         self.assertIn("生成定位", joined, "yiban.client 的细节行必须入列（旧正则漏掉带点的 logger）")
-        self.assertIn("登录成功", joined, "yiban.fyiban.protocol 同上")
+        self.assertIn("登录成功", joined, "yiban.platform 同上")
         self.assertIn("登录方式", joined, "yiban.* 的 DEBUG 也入列（部署自己开的级别）")
         self.assertNotIn("werkzeug", joined, "非 yiban 组件的 INFO 仍不入列")
         self.assertNotIn("无格式行", joined)
@@ -195,7 +195,9 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
         ])
         c = self._admin_client()
-        data = c.get("/api/logs").get_json()
+        # level=all：本用例测的是**日期**参数，故显式要全量档。默认档是 warn（收起
+        # INFO/DEBUG），其行为由 tests/test_logs_level_filter.py 专测。
+        data = c.get("/api/logs?level=all").get_json()
         self.assertEqual(data["date"], today)
         self.assertEqual(data["log_file"], f"sign-{today}.log")
         self.assertEqual(len(data["logs"]), 1, data["logs"])
@@ -214,7 +216,7 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(HIST_DATE, "INFO", "yiban", "[13900139002] ✅ 签到成功"),
         ])
         c = self._admin_client()
-        data = c.get(f"/api/logs?date={HIST_DATE}").get_json()
+        data = c.get(f"/api/logs?date={HIST_DATE}&level=all").get_json()
         self.assertEqual(data["date"], HIST_DATE)
         self.assertEqual(data["log_file"], f"sign-{HIST_DATE}.log")
         self.assertEqual(len(data["logs"]), 1)
@@ -273,7 +275,8 @@ class LogsByDateTest(unittest.TestCase):
 
     # ---- 5b. /api/my-calendar：周末开关载荷形状（MF-54：=true 与 =1 同判）----
     def test_my_calendar_weekend_flags_are_int_01(self):
-        """`sunday_sign`/`saturday_sign` 必须是整数 0/1——`calendar.js` 用 `=== 1` 判定置灰。
+        """`sunday_sign`/`saturday_sign` 必须是整数 0/1——前端日历用 `=== 1` 判定置灰
+        （现为 `frontend/src/calendar/model.js` 的 `offDayOf`；迁移前是 `calendar.js`）。
 
         两字段原先在 web 侧各走整数解析（`=true` 解析不出），于是引擎照签而日历把周末
         置灰（两套值域的分叉点）。现改走与引擎同一的 `schedule.weekend_flags`
@@ -401,12 +404,17 @@ class LogsRecentDateTest(unittest.TestCase):
 
     def test_default_date_falls_back_to_recent_log_day(self):
         c = self._client()
-        d = c.get("/api/logs").get_json()
+        # level=all：本用例测的是**缺省日期回退**。该日的种子只有一行 INFO，默认档
+        # （warn）会把它收起，故显式要全量档。
+        d = c.get("/api/logs?level=all").get_json()
         self.assertEqual(d["date"], self.log_day)
         self.assertTrue(d["logs"])
 
 
-LOGS_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_logs.js")
+# 日期校验的**行为**守卫：从实现文件里抽出 `function isValidDate(...)` 整段，在 Node 里
+# 按两个时区真跑。2026-10-03 该页迁到 Vue 后，函数随之搬到前端源码树（仍刻意保持纯 JS、
+# 仍用 `function isValidDate(` 这个字面量写法，就是为了本测试能原样抽取，见文件内注释）。
+LOGS_JS = os.path.join(BASE, "frontend", "src", "logs", "date-guard.js")
 
 
 NODE = shutil.which("node")
@@ -611,7 +619,8 @@ class LogSearchAllExportTest(_Base):
         date = "2026-09-07"
         c, h = self._master()  # 先建会话：口令迁移等启动期日志写在覆写之前
         self._write_log(date)
-        r = c.get("/api/logs?date=" + date, headers=h)
+        # level=all：本用例测的是**默认返回行数（尾 80 行）与三元组**，种子含 INFO。
+        r = c.get("/api/logs?date=" + date + "&level=all", headers=h)
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertEqual(data["total_lines"], 4)
@@ -622,8 +631,9 @@ class LogSearchAllExportTest(_Base):
         date = "2026-09-07"
         c, h = self._master()
         self._write_log(date)
-        # q 作用于打码后的行（与页面展示一致）：原始手机号已变 [139****9000]
-        r = c.get(f"/api/logs?date={date}&q=138%2A%2A%2A%2A9000", headers=h)
+        # q 作用于打码后的行（与页面展示一致）：原始手机号已变 [139****9000]。
+        # level=all：命中行跨 INFO 与 ERROR 两级，本用例测的是检索口径。
+        r = c.get(f"/api/logs?date={date}&q=138%2A%2A%2A%2A9000&level=all", headers=h)
         data = r.get_json()
         # 三元组同轴（total 取**过滤后**集合，与 returned/truncated 同一份）：
         # 曾 total=过滤前 4 行，前端"匹配 X / 共 Y 行"与 truncated 各说一件事
@@ -631,14 +641,15 @@ class LogSearchAllExportTest(_Base):
         self.assertEqual(data["returned"], 2)
         self.assertTrue(all("138****9000" in ln for ln in data["logs"]))
         # 大小写不敏感子串（对 ERROR 级别关键字）
-        r2 = c.get(f"/api/logs?date={date}&q=error", headers=h)
+        r2 = c.get(f"/api/logs?date={date}&q=error&level=all", headers=h)
         self.assertEqual(r2.get_json()["returned"], 1)
 
     def test_logs_all_flag(self):
         date = "2026-09-07"
         self._write_log(date)
         c, h = self._master()
-        r = c.get(f"/api/logs?date={date}&all=1", headers=h)
+        # level=all：本用例测的是 all=1（封顶全量）而非缺省尾 80 行。
+        r = c.get(f"/api/logs?date={date}&all=1&level=all", headers=h)
         data = r.get_json()
         self.assertEqual(data["returned"], 4)
         self.assertFalse(data["truncated"])
@@ -671,20 +682,21 @@ class LogSearchAllExportTest(_Base):
         from web.routes import data as data_routes
         self.assertEqual(data_routes._LOG_VIEW_CAP, cap, "cap 常量单源")
         c, h = self._master()
+        # 种子行都是 INFO，故三次请求都带 level=all（本用例测的是三元组同轴与 cap 边界）。
         # 边界一：命中恰好 = cap（日文件总量 > cap，过滤后正好等于 cap）
         self._write_day_rows("2026-09-05", cap, 501)
-        d1 = c.get("/api/logs?date=2026-09-05&all=1&q=KEEP", headers=h).get_json()
+        d1 = c.get("/api/logs?date=2026-09-05&all=1&q=KEEP&level=all", headers=h).get_json()
         self.assertEqual(d1["total_lines"], cap, "total 必须是过滤后命中数")
         self.assertEqual(d1["returned"], cap)
         self.assertFalse(d1["truncated"], "恰好等于 cap 不算截断")
         # 边界二：命中 = cap + 1 ⇒ 截断，且 total/returned 同轴可对账
         self._write_day_rows("2026-09-06", cap + 1, 500)
-        d2 = c.get("/api/logs?date=2026-09-06&all=1&q=KEEP", headers=h).get_json()
+        d2 = c.get("/api/logs?date=2026-09-06&all=1&q=KEEP&level=all", headers=h).get_json()
         self.assertEqual(d2["total_lines"], cap + 1)
         self.assertEqual(d2["returned"], cap)
         self.assertTrue(d2["truncated"], "超过 cap 必须报截断")
         # 缺省尾 80 行视图同样同轴：还有更多由 truncated 说真话（修复前恒 False）
-        d3 = c.get("/api/logs?date=2026-09-06", headers=h).get_json()
+        d3 = c.get("/api/logs?date=2026-09-06&level=all", headers=h).get_json()
         self.assertEqual(d3["total_lines"], cap + 501)
         self.assertEqual(d3["returned"], 80)
         self.assertTrue(d3["truncated"], "结果集大于返回行数即有更多")
@@ -706,14 +718,15 @@ class LogSearchAllExportTest(_Base):
             f.write(f"[{date} 06:00:02] [INFO] yiban: 完整行二\n")
         self.addCleanup(lambda p=path: os.path.exists(p) and os.remove(p))
         c, h = self._master()
-        data = c.get(f"/api/logs?date={date}&all=1", headers=h).get_json()
+        # level=all：本用例测的是**丢弃计数**（收录集合原口径），种子行都是 INFO。
+        data = c.get(f"/api/logs?date={date}&all=1&level=all", headers=h).get_json()
         self.assertEqual(data["dropped_lines"], 1,
                          "劈出的后半行必须被数出来（不再静默消失）")
         self.assertEqual(data["total_lines"], 3, "收录集合保持原口径不变")
         self.assertFalse(any("丢失的后半" in ln for ln in data["logs"]))
         # 无脏行时计数为 0（正常日不误报）
         clean = self._write_day_rows("2026-09-09", 2, 0)  # noqa: F841 只用其写文件
-        d2 = c.get("/api/logs?date=2026-09-09&all=1", headers=h).get_json()
+        d2 = c.get("/api/logs?date=2026-09-09&all=1&level=all", headers=h).get_json()
         self.assertEqual(d2["dropped_lines"], 0)
 
     def test_export_download(self):
