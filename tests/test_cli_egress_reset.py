@@ -3,15 +3,17 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖：`egress --status` 只读列出 `egress_state` 各行；`egress --reset <出口>` 与
-   `--reset-all` 默认只报告、加 `--yes` 才写；复位后速率逐行可核对；未知出口、越界速率、
-   互斥开关、多余参数各自落到既有的退出码家族；`--json` 的每条退出路径都是一整行对象；
-   库不存在时只读面不失败。另钉"哪些行可能被活进程覆盖"的事实在输出里在场。
+   `--reset-all` 默认只报告、加 `--yes` 才写；复位后速率逐行可核对；未知出口、空选择串、
+   越域的目标速率、互斥开关、多余参数各自落到既有的退出码家族；同名多行拒绝与逐字键逃生口；
+   `--json` 的每条退出路径都是一整行对象；库不存在时只读面不失败。另钉"哪些行可能被活进程
+   覆盖"的事实在输出里在场。
 对应实现：yiban/engine/egress_admin.py（实现）、yiban/cli.py（子命令注册与分派）、
    yiban/engine/token_bucket.py（速率域名与出厂速率唯一真值源）、
    yiban/store/queue_store.py（`egress_state` 唯一持久化路径）、yiban/clock.py（时间域）。
 关键断言：复位把被误判砍过的出口速率写回**引擎出厂速率**（或 `--rate` 显式值），且只改
-   `rate` 一列（`burst`/`tat` 逐字保留）；不加 `--yes` 时逐字不动。用途是给运维一条
-   "受支持的撤销"——否则误报降档只能直接改库，或等约 8 个干净轮让 AIMD 爬回。
+   `rate` 一列（`burst`/`tat` 逐字保留）；不加 `--yes` 时逐字不动；两条速率来源过**同一道**
+   引擎域校验（引擎会夹掉的值一律拒绝）；同级标签命中多行时拒绝而不是任选一行。用途是给
+   运维一条"受支持的撤销"——否则误报降档只能直接改库，或等约 8 个干净轮让 AIMD 爬回。
 依赖：起 `sys.executable -m yiban.cli` 子进程 + 临时库（真 schema）；不联网。
 """
 import json
@@ -207,6 +209,100 @@ class _EgressCliCase(unittest.TestCase):
                          ["[%s]" % STALE_SELECTOR, "[%s]" % FRESH_SELECTOR])
         for egress in (STALE_EGRESS, FRESH_EGRESS):
             self.assertAlmostEqual(self._row(egress)[0], 2.5, places=9)
+
+    def test_empty_reset_selector_fails_loudly(self):
+        """`--reset` 收到空选择串必须响亮失败：不得静默退化成只读查询（缺陷 D1）。"""
+        self._seed([(STALE_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        before = self._row(STALE_EGRESS)
+        for argv in (["egress", "--reset", "", "--yes"],
+                     ["egress", "--reset", "   ", "--yes"],
+                     ["egress", "--reset", ""]):
+            with self.subTest(argv=argv):
+                r = _run([*argv, "--json"], self.env)
+                self.assertEqual(r.returncode, 2, r.stderr[-400:])
+                payload = self._one_json(r)
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error_kind"], "usage")
+                self.assertEqual(payload["action"], "reset",
+                                 "给了 --reset 就是复位请求，不得退成 status")
+                self.assertEqual(self._row(STALE_EGRESS), before, "畸形参数不得写库")
+
+    def test_engine_default_rate_out_of_engine_domain_fails(self):
+        """默认目标速率与 `--rate` 走**同一道**域校验：引擎会夹掉的值一律拒绝（D2）。
+
+        名册声明域是 [0.01, 100]，引擎的速率域是 [0.2, 4.0]。写 50 时引擎按 4.0 起跑，
+        故入口必须拒绝——否则命令报"已写 50"，引擎跑 4.0。
+        """
+        self._seed([(STALE_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        before = self._row(STALE_EGRESS)
+        env = dict(self.env, YIBAN_EGRESS_RATE="50")
+        r = _run(["egress", "--reset", STALE_SELECTOR, "--yes", "--json"], env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_kind"], "config_error")
+        self.assertIn("4.0", r.stderr, "拒绝时要报出引擎会用的值")
+        self.assertEqual(self._row(STALE_EGRESS), before, "越域值不得写库")
+        # 只读面同样响亮：不得报一个引擎不会用的速率
+        r2 = _run(["egress", "--status", "--json"], env)
+        self.assertEqual(r2.returncode, 1, r2.stderr[-400:])
+        self.assertEqual(self._one_json(r2)["error_kind"], "config_error")
+
+    def test_engine_default_rate_in_domain_is_used(self):
+        """上一条的非空对照：键值在引擎域内时必须照用（否则那条断言可能空转）。"""
+        self._seed([(STALE_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        env = dict(self.env, YIBAN_EGRESS_RATE="2.0")
+        r = _run(["egress", "--reset", STALE_SELECTOR, "--yes", "--json"], env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertEqual(payload["target_rate"], 2.0)
+        self.assertEqual(payload["target_rate_source"], "engine_default")
+        self.assertAlmostEqual(self._row(STALE_EGRESS)[0], 2.0, places=9)
+
+    def test_rate_domain_edges_are_accepted(self):
+        """域端点必须放行：判据是"引擎装回后不变"，端点处引擎不改值（防判据改紧）。"""
+        self._seed([(STALE_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        for edge in ("0.2", "4.0"):
+            with self.subTest(edge=edge):
+                r = _run(["egress", "--reset", STALE_SELECTOR, "--rate", edge,
+                          "--yes", "--json"], self.env)
+                self.assertEqual(r.returncode, 0, r.stderr[-400:])
+                self.assertAlmostEqual(self._row(STALE_EGRESS)[0], float(edge),
+                                       places=9)
+
+    def test_same_label_multiple_rows_is_refused(self):
+        """同名多行必须拒绝：猜错出口等于把速率改到别的桶上（缺陷 D3 的守卫）。"""
+        self._seed([
+            ("fallback@host-a", 0.25, 6.0, 0.0, STALE_STAMP),
+            ("fallback@host-b", 0.5, 6.0, 0.0, STALE_STAMP),
+        ])
+        before = (self._row("fallback@host-a"), self._row("fallback@host-b"))
+        r = _run(["egress", "--reset", STALE_SELECTOR, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_kind"], "runtime_error")
+        self.assertEqual(payload["written"], 0)
+        self.assertEqual((self._row("fallback@host-a"), self._row("fallback@host-b")),
+                         before, "同名多行时两行都不得改")
+        self.assertNotIn("host-a", r.stdout + r.stderr,
+                         "拒绝时也不得回吐含主机名的原键")
+
+    def test_exact_key_selector_targets_one_row(self):
+        """逃生口：逐字出口键只改被点名那一行（同名多行时的唯一出路）。"""
+        self._seed([
+            ("fallback@host-a", 0.25, 6.0, 0.0, STALE_STAMP),
+            ("fallback@host-b", 0.5, 6.0, 0.0, STALE_STAMP),
+        ])
+        r = _run(["egress", "--reset", "fallback@host-b", "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertEqual(payload["written"], 1)
+        self.assertEqual(payload["changes"][0]["tag"], "[fallback]")
+        self.assertAlmostEqual(self._row("fallback@host-b")[0], ENGINE_DEFAULT_RATE,
+                               places=9)
+        self.assertAlmostEqual(self._row("fallback@host-a")[0], 0.25, places=9,
+                               msg="不得顺手改另一行")
 
     def test_unknown_egress_fails_and_creates_no_row(self):
         """未知出口是失败（不静默建行、不动别的行）。"""
