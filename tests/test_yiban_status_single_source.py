@@ -44,6 +44,59 @@ TEST_KEY = "a" * 64
 NODE = shutil.which("node")
 
 
+#: 两侧语气档的**已登记分歧**：状态码 → (前端档, 服务端档, 为什么必须有差异)。
+#:
+#: 两侧是两套档位字母表，服务不同消费语境，取值**不是同一个量**：
+#:   前端 `STATUS_VOCAB[*].tone` 服务三个前端页面（日志徽标 / 账号表 / 图表短名），
+#:   档位集 = `logs/format.ts` 的 `StatusTone`：{ok, bad, warn, info, muted}；
+#:   服务端 `DISPLAY[*].tone` 服务月历日期格与「我的账号」状态行（经 `ctx.by_code` 下发），
+#:   档位集 = `yiban/status.py` 的 `_LEGEND_TONES`：{ok, bad, muted, warn, busy}。
+#: 所以本册登记的是**语境对照台账**，不是缺陷豁免单：没有这一列理由，下一个人看到两个不同
+#: 的字母就分不清该保留还是该修。`frontend/src/lib/status-vocab.js` 文件头那节
+#: 「与服务端 DISPLAY 的关系（语境不同，非逐项对拍）」是同一件事的散文版。
+#:
+#: 除本册之外**任何**分歧即红（见 `test_frontend_vocab_tones_match_display`）；
+#: 本册自身陈旧（两侧改成一致、或理由列空）同样即红（见下一条用例）。
+VOCAB_TONE_DIVERGENCES = {
+    # 服务端的 `busy` 驱动"正在签到"的蓝色呼吸动画（`sc-cell--busy` / `state-line--busy`）；
+    # 前端档位集没有 busy，徽标面只能落 warn。
+    "retrying": ("warn", "busy", "服务端用 busy 表示'正在签到'（蓝、呼吸动画）；前端无该档"),
+    # 服务端把"时段外跳过"归"有意不签"族（见 `_DISPLAY_ROWS` 头部：muted=不是异常、不报警）；
+    # 前端徽标面取 warn，以便与同族的 `no_task`（muted）分开显示。
+    "skipped_window": ("warn", "muted", "服务端按'有意不签族'记 muted 不报警；前端徽标面要与 no_task 分开"),
+    "skipped_norange": ("warn", "muted", "同 skipped_window：跳过类在服务端不进异常族，前端徽标面另置一档"),
+    # JS 文件头明示："本表 tone 为 bad（账号表语义），服务端语境为 warn"。
+    "paused": ("bad", "warn", "前端账号表按'需用户改密'记红；服务端月历把账号级暂停与其它异常同列 warn"),
+    # 服务端档位集无 info；前端用它表达"待办"（蓝）。
+    "pending": ("info", "warn", "前端有 info 档表达'待办'；服务端档位集无 info，只能落 warn"),
+}
+
+
+def _node_status_vocab(vocab_js):
+    """在 node 里**真导入** `lib/status-vocab.js`，回读 `STATUS_VOCAB` 的运行时真值。
+
+    走真导入而非文本解析：由 JS 引擎自己解析源码，故注释、字符串字面量、模板串里写的
+    `码: "值"` 都不成词条。本门刻意不读源码文本——断言源码文本的脆性正是要削减的来源。
+
+    返回 `{状态码: {"full":…, "short":…, "icon":…, "tone":…}}`。
+    """
+    if NODE is None:
+        raise AssertionError("本门用 node 真导入 lib/status-vocab.js 取 STATUS_VOCAB 真值；"
+                             "取不到 node 必须响亮失败，不得跳过——跳过即本门要钉的假绿")
+    entry = (
+        "import { STATUS_VOCAB } from %s;\n"
+        "console.log(JSON.stringify(STATUS_VOCAB));\n"
+    ) % json.dumps(pathlib.Path(vocab_js).resolve().as_uri())
+    with tempfile.TemporaryDirectory() as td:
+        probe = os.path.join(td, "probe-vocab.mjs")
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write(entry)
+        proc = subprocess.run([NODE, probe], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise AssertionError("node 导入 lib/status-vocab.js 失败：%s" % (proc.stderr or proc.stdout))
+    return json.loads(proc.stdout)
+
+
 def _node_status_token(dash_js):
     """在 node 里**真导入** `dashboard/model.js`，回读 `STATUS_TOKEN` 的运行时真值。
 
@@ -172,6 +225,65 @@ class StatusSingleSourceTest(unittest.TestCase):
                          "前端状态词表与唯一事实源的状态码集合已分叉")
         for field in ("full", "short", "icon", "tone"):
             self.assertIn(field + ":", body, "STATUS_VOCAB 词条缺 %s 字段" % field)
+
+    def test_frontend_vocab_tones_match_display(self):
+        """两侧语气档跨语言对拍：未登记的分歧即红。
+
+        为什么要有本门：`tone` 在两侧各有一份定义，且**值**此前无任何守卫——把
+        `supplementing` 的 `tone` 由 `warn` 改成 `ok` 时，前端 vitest 与既有的键集合门
+        全绿（键集合是字面量钉住的，值不是）。键集合的守卫留在上一条用例，本门管值。
+
+        形态＝**一致性 ＋ 已登记分歧名册**，不是逐值字面量断言：两侧一起改成同一个新档
+        无需改测试（值不冻在测试里，呈现层正常改色不制造测试耦合），改任一侧而不动另一侧
+        当场翻红。已登记的分歧见 `VOCAB_TONE_DIVERGENCES`（每条带理由列）。
+
+        两侧取值都走 node **真导入**取运行时真值，不读源码文本。
+        """
+        vocab = _node_status_vocab(self.VOCAB_JS)
+        # 键集合一致是本门的前提（遍历面的完整性）：少一格时下面的逐码比较会静默漏它。
+        # 上一条用例从源码文本钉同一件事；本门要的是**运行时**真值的完整性。
+        self.assertEqual(set(vocab), set(yiban_status.DISPLAY),
+                         "前端词表键集合与 DISPLAY 已分叉（对拍面不完整）")
+        unregistered, wrong_pair = {}, {}
+        for code in sorted(vocab):
+            js_tone = vocab[code].get("tone")
+            srv_tone = yiban_status.DISPLAY[code]["tone"]
+            if js_tone == srv_tone:
+                continue
+            entry = VOCAB_TONE_DIVERGENCES.get(code)
+            if entry is None:
+                unregistered[code] = (js_tone, srv_tone)
+            elif (js_tone, srv_tone) != (entry[0], entry[1]):
+                wrong_pair[code] = ((js_tone, srv_tone), (entry[0], entry[1]))
+        self.assertEqual(unregistered, {},
+                         "两侧语气档分歧且未登记（改一侧忘了另一侧？）：%r" % unregistered)
+        self.assertEqual(wrong_pair, {},
+                         "两侧语气档与登记册不符（码: 实际对, 登记对）：%r" % wrong_pair)
+
+    def test_vocab_tone_divergence_roster_is_live_and_explained(self):
+        """登记册自身不许腐化：每条仍在册、仍真分歧、且写了理由。
+
+        没有这条，两条路径会静默烂掉：
+          ① 两侧后来改成一致了，登记条目却留着——下一个人照册子"对齐"，反把差异改回来；
+          ② 新登记只填两个档位字母、不写理由——登记退化成凑绿的白名单。
+        """
+        vocab = _node_status_vocab(self.VOCAB_JS)
+        stale, missing, unexplained = [], [], []
+        for code, entry in sorted(VOCAB_TONE_DIVERGENCES.items()):
+            with self.subTest(code=code):
+                self.assertEqual(len(entry), 3, "登记项必须是 (前端档, 服务端档, 理由)")
+                if not (isinstance(entry[2], str) and entry[2].strip()):
+                    unexplained.append(code)
+                if code not in vocab or code not in yiban_status.DISPLAY:
+                    missing.append(code)
+                    continue
+                # 仍分歧？两侧一致即登记已陈旧，必须销账。
+                if vocab[code].get("tone") == yiban_status.DISPLAY[code]["tone"]:
+                    stale.append(code)
+        self.assertEqual(unexplained, [], "登记项缺理由列：%r" % unexplained)
+        self.assertEqual(missing, [], "登记项的状态码在某一侧不存在：%r" % missing)
+        self.assertEqual(stale, [],
+                         "登记项已陈旧（两侧语气档现在一致了，应销账）：%r" % stale)
 
     def test_frontend_pages_import_the_single_source(self):
         """三页必须从 status-vocab 取词，且不得再各留一份字面量表。"""
