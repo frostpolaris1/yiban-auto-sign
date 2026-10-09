@@ -99,6 +99,9 @@ TEXT = {
 # `signin --second-run-check` 的退出码判定（该脚本内部亦用本集合）。
 # `supplementing`（补签中）**刻意不在本集合**：它结果未定、平台正在处理，我们再跑一轮
 # 既改不了结果、又多一次真实登录（与 paused / user_cancelled 同一条取舍）。
+# 注意这只管**本集合的消费者**（状态文件那条腿）：补签闸门另有一条读**任务队列**的腿
+# （`state_io.has_undone_accounts_today` → `db.task_open_count`），而 `supplementing` 在
+# 队列里落 `failed`（`TASKS_OPEN_STATES` 之一）⇒ 补签轮仍会重领它一次。彻底不重试需定策。
 UNDONE_STATUSES = frozenset((
     STATUS_FAILED, STATUS_RETRYING, STATUS_PENDING,
     STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,

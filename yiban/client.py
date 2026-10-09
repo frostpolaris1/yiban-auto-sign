@@ -93,12 +93,15 @@ def _as_state_int(raw):
 def _judge_by_state(state):
     """把**已结论**的 `State` 翻成 `signin()` 的返回值；"尚无结论"（0/1）返回 None。
 
-    `skip=True` 表示"不需要重试"（与窗口外跳过同一语义）：
-    - `State=3/4`（已签到）与 `State=2`（无需签到）：本来就有结论；
-    - `State=5`（补签中）：**结果未定**。平台正在处理补签，我们再登录一次改不了结果，
-      只会多一次真实登录，故本轮不提交、不重试，只记状态。领取池侧另按保守档收尾：
-      `supplementing` 不在 `claims.RETRYABLE_GIVE_UP_STATUSES` ⇒ 写 `final:` 前缀
-      （默认不自动回炉，只有显式路径才可再领），见 `yiban/status.py` 该状态码的说明。
+    `skip=True` 表示"不需要重试"（与窗口外跳过同一语义）。**只有"未定"态才用它**：
+    - `State=3/4`（已签到）与 `State=2`（无需签到）：`skip=False`——它们本来就进
+      `CLAIM_DONE_STATUSES`，执行体先按"了结"短路，`skip` 在那条路径上到不了；
+    - `State=5`（补签中）：**结果未定**，故 `skip=True`。平台正在处理补签，我们再登录
+      一次改不了结果，只会多一次真实登录，故本轮不提交、不重试，只记状态。领取池侧另按
+      保守档收尾：`supplementing` 不在 `claims.RETRYABLE_GIVE_UP_STATUSES` ⇒ 写 `final:`
+      前缀（默认档不自动回炉）。**注意 `final:` 不是"当日绝不回炉"**：补签轮把回炉口的
+      `include_final` 开关置真（见 `queue_store.requeue_failed`），仍会把它翻回 `pending`
+      再领一次；见 `yiban/status.py` 该状态码的说明与 `runner.main` 的补签闸门注释。
     """
     status = SIGN_POSITION_STATE_STATUS[state]
     if status is None:
