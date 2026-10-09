@@ -27,11 +27,15 @@ from yiban import client as yiban_client  # noqa: E402  # 打桩目标：调用�
 
 
 def _sign_position_data():
-    """构造 signPosition 返回体：2 个任务、当前时间在签到窗口内。"""
+    """构造 signPosition 返回体：2 个任务、当前时间在签到窗口内。
+
+    `State=0`（可签到）＝本组用例要走的正常分支（判定只看 `State`，见 yiban/client.py）。
+    """
     now = int(_dt.datetime.now().timestamp())
     return {
         "code": 0,
         "data": {
+            "State": 0,
             "Msg": "",
             "Position": [
                 {
