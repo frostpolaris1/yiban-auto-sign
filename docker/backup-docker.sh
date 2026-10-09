@@ -130,13 +130,53 @@ OUT="$BACKUP_DIR/yiban-data-$STAMP.tar.gz.gpg"
 # 管道送入 gpg stdin 的 tar 数据流（同一命令上后出现的重定向胜出），gpg 实际
 # 加密的是口令字符串本身——产物约 70 字节的「空备份」，tar 侧 SIGPIPE，
 # Docker 部署唯一加密备份入口产出空包。fd 3 让 stdin 保留给 tar 数据流。
-# 2026-09-01 CI 修复：`|| true` 容忍 tar 的 SIGPIPE——加密器（gpg/假 gpg）
-# 提前关闭 stdin 时 tar 收 SIGPIPE(141)，`set -euo pipefail` 下管道非零会在
-# 自检前终止脚本，坏包残留且无「疑似空包」告警。容忍后必然走到下方尺寸
-# 下限检查：空包/坏包被检出并删除（B12-1 契约）。
-tar -C "$(dirname "$DATA_DIR")" -czf - "$(basename "$DATA_DIR")" \
+# 2026-09-01 CI 修复：容忍 tar 的 SIGPIPE——加密器（gpg/假 gpg）提前关闭 stdin 时
+# tar 收 SIGPIPE(141/144)，`set -euo pipefail` 下管道非零会在自检前终止脚本，
+# 坏包残留且无「疑似空包」告警。
+#
+# **2026-10-09 收窄（工单 yiban-auto-sign-4o35）**：原实现给整条管道挂 `|| true`，
+# 那会**连 tar 的真实失败一起吞掉**。tar 读不到某个条目时返回 2，`|| true` 抹平它
+# ⇒ 包少了东西却照报成功。实测（干净容器，一遍复现）：把 `/data/yiban.db` 置
+# `root:0600` 后，tar 打印 `data/yiban.db: Cannot open: Permission denied` 并以 2
+# 退出，脚本仍打印「备份完成 / 自检：解密+解包验证通过」且 **exit 0**；包内剩
+# `yiban.db-wal`/`-shm` 与审计锚点，**唯独没有库本体**，调度器据此判"备份成功"。
+# 现只容忍 SIGPIPE 两码；其余非零**在源头立即失败并删除产物**，不靠下游内容断言兜。
+#
+# 另两处必须同批处理，否则"硬失败"会把容器备份变成天天失败：
+#   ① `PIPESTATUS` 必须**一次读全**（`_RC=("${PIPESTATUS[@]}")`）——分开两次读时，
+#      第一次赋值本身就会把 PIPESTATUS 重置，第二次读到的下标为空，`set -u` 下
+#      直接以 "unbound variable" 中断，且**坏包不会被删除**（实测踩到）。
+#   ② 排除 supervisord 自己的管理件：它以 root 运行、`umask=077`，故
+#      `/data/logs/{web,sched,supervisord}.log` 与 `supervisord.pid` 恒为 root:0600，
+#      yiban 读不到 ⇒ 每轮 tar 都报 4 行 Permission denied 并以 2 退出。它们是进程
+#      管理产物、不是用户数据（工单 4o35 已判"不进包无害"），故显式排除。
+#      排除后**任何**非零都指向真问题（读不到的数据文件），判据才立得住。
+_MGMT_EXCLUDES=(
+    --exclude "$(basename "$DATA_DIR")/logs/web.log"
+    --exclude "$(basename "$DATA_DIR")/logs/sched.log"
+    --exclude "$(basename "$DATA_DIR")/logs/supervisord.log"
+    --exclude "$(basename "$DATA_DIR")/logs/supervisord.pid"
+)
+set +e
+tar -C "$(dirname "$DATA_DIR")" "${_MGMT_EXCLUDES[@]}" -czf - "$(basename "$DATA_DIR")" \
     | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 \
-          -o "$OUT" 3<<< "$PASSPHRASE" || true
+          -o "$OUT" 3<<< "$PASSPHRASE"
+_RC=("${PIPESTATUS[@]}")
+set -e
+_TAR_RC="${_RC[0]:-0}"
+_GPG_RC="${_RC[1]:-0}"
+if [ "$_TAR_RC" -ne 0 ] && [ "$_TAR_RC" -ne 141 ] && [ "$_TAR_RC" -ne 144 ]; then
+    echo "错误：tar 打包失败（rc=${_TAR_RC}）——备份不完整，拒绝留存。" >&2
+    echo "      常见成因：DATA_DIR 下有本用户读不到的条目（权限/属主不对）。" >&2
+    echo "      产物已删除；修好读取权限后重跑。" >&2
+    rm -f "$OUT" "$OUT.sha256"
+    exit 1
+fi
+if [ "$_GPG_RC" -ne 0 ]; then
+    echo "错误：gpg 加密失败（rc=${_GPG_RC}）——产物不可信，已删除" >&2
+    rm -f "$OUT" "$OUT.sha256"
+    exit 1
+fi
 
 # 产物自检（B12-1）：先做尺寸下限，再流式解密+解包验证（解密输出直接进
 # tar -tzf 的 stdin，不在磁盘留明文副本）。自检失败删除产物并报错退出，
@@ -153,6 +193,28 @@ if ! gpg --batch --yes --decrypt --passphrase-fd 3 -o - 3<<< "$PASSPHRASE" "$OUT
     echo "错误：备份自检失败（解密/解包验证不通过），产物不可信，已删除" >&2
     rm -f "$OUT" "$OUT.sha256"
     exit 1
+fi
+
+# 库本体必须在包里（**硬断言**，工单 yiban-auto-sign-4o35）。与下方锚点检查同一形状，
+# 但判据更硬：库是这份备份存在的全部理由，缺它这份包没有任何恢复价值。
+# 为什么不能只靠"自检通过"：自检只验"能不能解开"、不验内容；而 DATA_DIR 里日志与
+# state 的体积远超尺寸下限（实测 9 KB 对 200 B），故"少了库"能轻松越过体积门。
+# 只在磁盘上确有该文件时断言：没有它是"尚未建库"的正常形态（首启前），
+# 不构成"备份漏了东西"——两者必须分开，否则全新部署天天报假失败。
+DB_BASENAME="$(basename "${YIBAN_DB_FILE:-yiban.db}")"
+if [ -e "$DATA_DIR/$DB_BASENAME" ]; then
+    DB_IN_ARCHIVE="$(gpg --batch --yes --decrypt --passphrase-fd 3 -o - 3<<< "$PASSPHRASE" "$OUT" 2>/dev/null \
+        | tar -tzf - 2>/dev/null | grep -c "/${DB_BASENAME}\$" || true)"
+    if [ "${DB_IN_ARCHIVE:-0}" -lt 1 ]; then
+        echo "错误：备份包内【没有】${DB_BASENAME}——库本体未入包，这份备份恢复不出数据" >&2
+        echo "      磁盘上该文件存在（${DATA_DIR}/${DB_BASENAME}），故不是「尚未建库」。" >&2
+        echo "      产物不可信，已删除。先查该文件的属主与权限是否让本用户可读。" >&2
+        rm -f "$OUT" "$OUT.sha256"
+        exit 1
+    fi
+    echo "库本体 : 已包含 ${DB_BASENAME}（${DB_IN_ARCHIVE} 份）"
+else
+    echo "提醒   : ${DATA_DIR}/${DB_BASENAME} 不存在（尚未建库？），本次不断言库本体入包" >&2
 fi
 
 # 审计链外部锚点必须在包里（断言，不是假设）：容器默认 YIBAN_STATE_DIR=/data/state
