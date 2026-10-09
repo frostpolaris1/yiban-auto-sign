@@ -2,7 +2,7 @@
 """状态词汇表单一事实源：`yiban.status` 定义，signin / web 只做别名引用。
 
 标签：D · 状态词汇与账号生命周期
-覆盖：12 个状态码常量在 `signin` 侧与 `yiban.status` 等值、`STATUS_SYMBOL`/
+覆盖：13 个状态码常量在 `signin` 侧与 `yiban.status` 等值、`STATUS_SYMBOL`/
     `UNDONE_STATUSES` 是**同一对象**；web 侧常量与 `STATUS_ICON`/`STATUS_TEXT` 同为
     别名；未了结集合的成员口径；两张展示映射刻意不合并；**前端三页的状态中文已收敛为
     唯一事实源 `frontend/src/lib/status-vocab.js`**（键集合 == ALL_STATUSES，三页 import 它）。
@@ -104,8 +104,8 @@ class StatusSingleSourceTest(unittest.TestCase):
     def test_signin_is_alias_not_duplicate(self):
         for name in ("STATUS_SUCCESS", "STATUS_ALREADY", "STATUS_NO_TASK", "STATUS_FAILED",
                      "STATUS_RETRYING", "STATUS_SKIPPED_WINDOW", "STATUS_SKIPPED_NORANGE",
-                     "STATUS_NO_POSITION", "STATUS_PAUSED", "STATUS_USER_CANCELLED",
-                     "STATUS_PENDING", "STATUS_GLOBAL_PAUSED"):
+                     "STATUS_NO_POSITION", "STATUS_SUPPLEMENTING", "STATUS_PAUSED",
+                     "STATUS_USER_CANCELLED", "STATUS_PENDING", "STATUS_GLOBAL_PAUSED"):
             with self.subTest(name=name):
                 self.assertEqual(getattr(self.signin, name), getattr(yiban_status, name))
         self.assertIs(self.signin.STATUS_SYMBOL, yiban_status.SYMBOL,  #is 而非 ==：复制一份内容相同的字典同样能骗过等值断言
