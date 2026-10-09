@@ -1414,8 +1414,9 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         date = "2026-09-20"
         # 同一符号可能属多个状态码（✅ = success / already）：按符号分组，解出的码落组内即可。
-        # 唯一的单符号例外是 ⏳（pending）——它本就等于兜底值，故下面只断言"落组内"，
-        # 不另断言"不等于 pending"（那会把 ⏳ 误判成缺陷）。
+        # 本表**不含** ⏳（`STATUS_PENDING` 不在 `SYMBOL` 里），故"落组内"已等价于
+        # "不等于 `pending`"——漏格时该符号解成 `pending`，而没有任何组含 `pending`。
+        # 若日后把 `pending` 并入 `SYMBOL`，这条等价即失效，本门须补一条"不等于 pending"。
         by_symbol = {}
         for code, sym in yiban_status.SYMBOL.items():
             by_symbol.setdefault(sym, set()).add(code)
