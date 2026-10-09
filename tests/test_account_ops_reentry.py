@@ -2,7 +2,7 @@
 """账号写操作的防重入（在途时后续触发早退）。
 
 标签：F · 前端与界面守卫
-覆盖：`web/static/js/components/account-ops.js` 在 node 里真跑——`restore`/`move` 与批量 `batch` 重入被挡、实时在途结束
+覆盖：`frontend/src/accounts/ops.js` 在 node 里真跑——`restore`/`move` 与批量 `batch` 重入被挡、实时在途结束
 对应实现：`create(ctx)` 内的 `inflight` 守卫（`run` / `submit` / `signin` 共用）
 关键断言：在途中的第二次触发不得再发请求；在途结束后再次触发必须放行（守卫不粘住）
 依赖：⚠ **需要 node 真跑**——整份组件源码在 node 中执行，`shutil.which("node")` 取不到时整类 skip
@@ -18,7 +18,7 @@ import subprocess
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ACCOUNT_OPS_JS = os.path.join(BASE, "web", "static", "js", "components", "account-ops.js")
+ACCOUNT_OPS_JS = os.path.join(BASE, "frontend", "src", "accounts", "ops.js")
 NODE = shutil.which("node")
 
 

@@ -1,6 +1,21 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""**功能**
+"""**算法溯源**
+- GCRA（Generic Cell Rate Algorithm，通用单元速率算法）：Jim Kurose、Don Towsley 的
+  速率整形理论。`EgressBucket` 的理论到达时间 `tat = max(now, tat) + T` 与放行判据
+  `now >= tat − τ` 即该算法的整形点；`max(now, ...)` 使其**不累积额度**（长期空闲只放行
+  burst 条，而不是攒够一次放行上千条）。
+- AIMD（Additive Increase / Multiplicative Decrease，加性增乘性减）：Tahoe 算法与其后
+  RFC 5681 的 TCP 拥塞控制。`GROWTH_FACTOR` / `SHRINK_FACTOR` 是它的两个动作。
+- Adaptive Concurrency Limits（自适应并发上限）：Netflix 的并发限制方法论，见
+  *Rethinking Concurrency Control for Microservices*（Mahadut 等）。核心主张是把速率当成
+  TCP 拥塞窗口、按响应反馈自调，而不是人工设一个会随部署规模过期的固定值。
+- EWMA（Exponentially Weighted Moving Average，指数加权移动平均）：`apply_ewma` 的外环
+  速率平滑。
+- Token Bucket（令牌桶）：ATM 网络整形的经典方法。本模块刻意**不**直接用容量型令牌桶——
+  它会累积空闲额度，改用 GCRA（见 `EgressBucket` 说明）。
+
+**功能**
 出口限速件：按出口整形的令牌桶（GCRA/TAT，不累积额度）+ AIMD 自适应 + 全局聚合
 速率上界 Λ + 每账号间隔安全件 + EWMA 外环微调。
 
@@ -30,29 +45,34 @@
 落库：`egress_state(egress, rate, burst, tat, updated_at)`，经 `queue_store.
 load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路径，10s 粒度由
 调用方循环，写失败只告警不阻断签到。配置面只有三个旋钮：每出口目标速率
-`YIBAN_EGRESS_RATE`（attempt/s，缺省 1.0，**值只由 `schedule.planner_config` 读**，
+`YIBAN_EGRESS_RATE`（attempt/s，缺省值住在名册里，**值只由 `schedule.planner_config` 读**，
 本模块经 `limiter_from_env` 取用而不另立字面量；该键**是否被显式写入**由
 `schedule.egress_rate_explicit` 回答，用来判人工接管）、`YIBAN_MIN_EXEC_GAP`
 （突发额度收口，见 `burst_from_env`）、`YIBAN_ACCOUNT_GAP_MAX` /
 `YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
 调用谁：`yiban.store.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
-`on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）。
-唯一生产入口是 `executor_v3`——台账单池化后它是唯一执行体，本模块因此在产线恒被调用，
-出口桶状态落 `egress_state` 表。
+`on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）与探针
+（`probe.run_probe` 每账号前取额度、轮末 `persist`；只消费额度、不喂 AIMD 信号）。
+生产入口有两处：执行体 `executor_v3`（台账单池化后的唯一执行体）与探针 `probe`——探测是
+真实登录、与签到同一风控暴露面，故与执行体**共用同一个出口桶**（桶键都是本进程执行体
+身份），出口桶状态落 `egress_state` 表。
 """
 import logging
 import os
 
+from yiban import config_loader
+from yiban import egress as yb_egress  # 别名必需：本模块的形参就叫 `egress`（桶键）
 from yiban.store import queue_store
 
 logger = logging.getLogger("yiban.engine.token_bucket")
 
-#: AIMD 下限（attempt/s）：与 `YIBAN_MIN_EXEC_GAP` 缺省 5s 同源（1/5 = 0.2）。
+#: AIMD 下限（attempt/s）：与 `YIBAN_MIN_EXEC_GAP` 的缺省秒数同源（互为倒数）。
 RATE_MIN = 0.2
 #: AIMD 上限（attempt/s）
 RATE_MAX = 4.0
-#: 出厂速率（attempt/s）：单账号 = 6 次 HTTP 请求，故 ≈ 6 请求/s
-RATE_DEFAULT = 1.0
+#: 出厂速率（attempt/s）：单账号 = 6 次 HTTP 请求，故 ≈ 6 请求/s。
+#: **缺省值住在名册**（`YIBAN_EGRESS_RATE`），代码里不得再写一份字面量。
+RATE_DEFAULT = config_loader.default_required("YIBAN_EGRESS_RATE")
 #: 无风控信号连续尝试数才加性探测（每满一轮 ×GROWTH_FACTOR）
 SUCCESS_STREAK = 200
 #: 风控命中后该出口的半开时长（秒）
@@ -74,14 +94,14 @@ DEFAULT_BURST = 6
 ENV_ACCOUNT_GAP_MAX = "YIBAN_ACCOUNT_GAP_MAX"
 #: gap 安全件的开关键（缺省 1=开）：上游是否按账号维度看间隔尚未实测裁决
 ENV_GAP_ENFORCE = "YIBAN_ACCOUNT_GAP_ENFORCE"
-#: `YIBAN_ACCOUNT_GAP_MAX` 缺省值（秒）
-DEFAULT_ACCOUNT_GAP_SEC = 10
+#: `YIBAN_ACCOUNT_GAP_MAX` 缺省值（秒）：住在名册里，代码不再写第二份字面量。
+DEFAULT_ACCOUNT_GAP_SEC = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
 #: 最小执行间隔的键（秒）：旧语义是"相邻两次尝试的最小间隔"（压缩模式防请求过密），
 #: 在令牌桶形态下由 `burst_from_env` 收口进突发额度，读取点仍在 schedule
 ENV_MIN_EXEC_GAP = "YIBAN_MIN_EXEC_GAP"
 #: `YIBAN_MIN_EXEC_GAP` 缺省值（秒）：`RATE_MIN = 0.2` 正是它的倒数——最慢时一条尝试
-#: 占满一个最小间隔，同一个物理量的两种写法。
-DEFAULT_MIN_EXEC_GAP_SEC = 5
+#: 占满一个最小间隔，同一个物理量的两种写法。缺省值住在名册里。
+DEFAULT_MIN_EXEC_GAP_SEC = config_loader.default_required("YIBAN_MIN_EXEC_GAP")
 #: 开关类环境变量的假值字面量（与 `schedule._env_flag` 的真值表互补）：写这些值才是
 #: "显式关闭"；既非真值也非假值的手写错值另有归属，见 `gap_gate_from_env`。
 _FALSY_LITERALS = ("0", "false", "off", "no")
@@ -213,9 +233,11 @@ class EgressLimiter:
         self._streak[egress] = 0  # 三步次序即语义：先销账，再压通道，最后减速
         self._half_open_until[egress] = now + HALF_OPEN_SEC
         if self.manual:
+            # 桶键就是执行体身份串（含主机名）——日志只回角色与槽位，不回原串
+            # （口径在 `egress.owner_tag`，见其模块 docstring 的红线）。
             logger.warning("出口 %s 风控信号，速率按安全回退下调（.env 人工接管的上限 "
                            "%.3f attempt/s，%ds 半开单通道探测）",
-                           egress, self._ceiling, HALF_OPEN_SEC)
+                           yb_egress.owner_tag(egress), self._ceiling, HALF_OPEN_SEC)
         return self._set_rate(egress, self._buckets[egress].rate * SHRINK_FACTOR,
                               "风控信号回退")  # 回退不吃延迟信号：单账号耗时 t≈1.9~3s 近常量，延迟信噪比差
 
@@ -282,7 +304,8 @@ class EgressLimiter:
         old, new = b.rate, min(max(_clamp(rate), RATE_MIN), self._ceiling)
         b.rate = new
         if new != old:
-            logger.info("出口 %s 速率 %.3f → %.3f attempt/s（%s）", egress, old, new, reason)
+            logger.info("出口 %s 速率 %.3f → %.3f attempt/s（%s）",
+                        yb_egress.owner_tag(egress), old, new, reason)
             if self._on_change is not None:
                 self._on_change(egress, old, new, reason)
         return new
@@ -380,14 +403,14 @@ def burst_cap(rate, gap_sec, channels):
 
     突发额度换算成时间是 τ=(burst−1)·T，即**桶允许超前发放的时间**。`gap_sec` 是相邻两次
     尝试的最小间隔（`YIBAN_MIN_EXEC_GAP` 的旧语义）：一次突发最多吃掉一个最小间隔的时间
-    预算，即 τ ≤ gap ⇒ burst ≤ 1 + gap × rate。缺省（gap=5s、rate=1）恰好得 6 = 通道数 M；
-    收紧 gap（如 1s）时突发随之收紧到 2，"一次放几条"确实由这个键管住。
+    预算，即 τ ≤ gap ⇒ burst ≤ 1 + gap × rate。按名册缺省（gap 秒、rate 次尝试/s）恰好得
+    6 = 通道数 M；收紧 gap 时突发随之收紧，"一次放几条"确实由这个键管住。
     """
     return max(1.0, min(float(channels or 0.0), 1.0 + float(gap_sec) * float(rate)))
 
 
 def burst_from_env(channels, rate):
-    """`burst_cap` 的环境口径：`gap_sec` 取 `YIBAN_MIN_EXEC_GAP`（缺省 5s，夹 1~60）。
+    """`burst_cap` 的环境口径：`gap_sec` 取 `YIBAN_MIN_EXEC_GAP`（缺省住在名册里，域同源）。
 
     键的读取口径复用 `schedule._env_int`（与 `_schedule_config` 的既有读取同一套回退与
     范围校验），`channels` 由调用方按通道数公式算好传入——本模块不自算通道数。
@@ -400,7 +423,7 @@ def burst_from_env(channels, rate):
 def limiter_from_env(channels=DEFAULT_BURST, on_change=None):
     """按环境配置造出口限速器：速率 + 突发额度一次读全（配置面收口的入口）。
 
-    - `rate` = `YIBAN_EGRESS_RATE`（attempt/s，缺省 1.0）——经 `schedule.planner_config`
+    - `rate` = `YIBAN_EGRESS_RATE`（attempt/s，缺省住在名册里）——经 `schedule.planner_config`
       取，本模块不另立键名字面量；
     - `burst` = `burst_from_env(channels, rate)`（`YIBAN_MIN_EXEC_GAP` 收口）；
     - `channels` 缺省按出厂速率下的通道数（`DEFAULT_BURST`）；执行体按
@@ -419,7 +442,7 @@ def limiter_from_env(channels=DEFAULT_BURST, on_change=None):
 def gap_gate_from_env():
     """按环境配置造每账号 gap 门。
 
-    gap = `YIBAN_ACCOUNT_GAP_MAX`（缺省 10s，与 `capacity_accounts` 的 gap 入参、执行体读的是
+    gap = `YIBAN_ACCOUNT_GAP_MAX`（缺省住在名册里，与 `capacity_accounts` 的 gap 入参、执行体读的是
     同一个键）；enabled 由 `YIBAN_ACCOUNT_GAP_ENFORCE` 决定，键语义是"缺省开"，故真值判据
     分四档、次序不可换（见下）。
     """

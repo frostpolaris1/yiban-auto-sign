@@ -3,9 +3,19 @@
 
 标签：F · 前端与界面守卫
 覆盖：状态显示表 `yiban.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对有结论的日子渲染语气档色点（色彩即语义，emoji 不上界面）；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
-对应实现：`yiban/status.py`（`DISPLAY` / `legend_items` / `display_payload`）、`web/templates/partials/page_sign_calendar.html`、`web/static/js/components/sign-calendar-view.js`（`statusLine`）、`web/static/js/calendar.js`（`dayCell`）、`web/services/signstatus.py`（`_day_off_reason` / `day_off_text`）、`web/routes/pages.py`
-关键断言：状态枚举与图例同源——图例项由 `DISPLAY` 生成，往表里加一个新状态码即自动进图例（用例直接改表断言，不靠"人记得改两处"）；`statusLine` 对 `global_paused`/未知码绝不再回落成"排队待签"；web 侧门判定与引擎 `schedule.day_off` 读同一份 `.env` 真值（置位急停 ⇒ 两侧同时为"暂停"，复位 ⇒ 同时恢复）
-依赖：⚠ **需要 node 真跑**——`statusLine` / `dayCell` / `stateEntry` 按花括号配对从源码抽出后交给 node 执行，`shutil.which("node")` 取不到时这两个类整类 `skipUnless`。其余为纯本地 Flask test client + 临时 `.env`/SQLite；不联网、不访问真实易班接口
+对应实现：`yiban/status.py`（`DISPLAY` / `legend_items` / `display_payload`）、`web/routes/pages.py`
+（`_calendar_page_context` 把表与图例同车下发）、`web/templates/partials/page_sign_calendar.html`
+（内联载荷）、`frontend/src/calendar/model.js`（`statusLine` / `stateEntry` / `dayCell`）、
+`frontend/src/calendar/CalendarPage.vue`（图例与状态行渲染）、`web/services/signstatus.py`
+（`_day_off_reason` / `day_off_text`）
+关键断言：状态枚举与图例同源——图例项由 `DISPLAY` 生成并随载荷下发，往表里加一个新状态码即
+自动进载荷与图例（用例直接改表断言，不靠"人记得改两处"）；`statusLine` 对 `global_paused`/
+未知码绝不再回落成"排队待签"；web 侧门判定与引擎 `schedule.day_off` 读同一份 `.env` 真值
+（置位急停 ⇒ 两侧同时为"暂停"，复位 ⇒ 同时恢复）
+依赖：⚠ **需要 node 真跑**——`statusLine` / `dayCell` / `stateEntry` 按花括号配对从
+`frontend/src/calendar/model.js` 抽出后交给 node 执行，`shutil.which("node")` 取不到时这两个
+类整类 `skipUnless`。其余为纯本地 Flask test client + 临时 `.env`/SQLite；不联网、不访问真实
+易班接口
 
 **为什么需要**："急停在面板上不可见"整改的四处病灶里，两处是"同一事实两份定义"——
 ①前端状态行 `sign-calendar-view.js:30-44` 逐码手写文案但漏了 `global_paused`/`no_position`，
@@ -15,6 +25,14 @@
 判别的方式只有一条：让两侧消费**同一份表**，并把"新增状态自动进两侧"做成可执行的断言；
 再加"web 侧门判定读 `.env` 真值"——引擎读 `.env` 会真暂停，而 web 侧原来经
 `day_off(env=None)` 落回 `os.environ`，在 web 进程里恒不生效，于是"实际暂停、界面说没有"。
+
+**2026-10-03 换锚（日历对迁到 Vue）**：前端实现从 `web/static/js/{calendar.js,
+components/sign-calendar-view.js}` 迁到 `frontend/src/calendar/{model.js,CalendarPage.vue}`，
+判据逐条换锚、意图不变：Node 对拍改成抽 `model.js` 的同名函数（**刻意保留纯 JS**，正是为了
+让这两组"真跑"用例继续跑真实交付代码，见该文件头部说明）；日期格的返回从 HTML 串改为数据
+（类名/读屏名/角标三个字段），断言随之改为按字段比对——比原先的子串匹配更严（还能直接断言
+"状态符号本身不上界面"）；图例改为前端按载荷渲染，服务端侧的判据落到"载荷必须带全量图例
+（由 `legend_items()` 生成）"上，页面侧则钉住"由载荷驱动、不得写死"。
 
 **不变量边界**：手动腿不受急停/周末门的豁免是写进 UI 契约的设计（`tests/test_global_pause.py`
 锁定）。本文件只钉"显示与计数"，一行门语义都不碰。
@@ -37,9 +55,11 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from yiban import status as yiban_status  # noqa: E402
 
-SIGN_CAL_VIEW = os.path.join(BASE, "web", "static", "js", "components", "sign-calendar-view.js")
-CALENDAR_JS = os.path.join(BASE, "web", "static", "js", "calendar.js")
-CAL_PARTIAL = os.path.join(BASE, "web", "templates", "partials", "page_sign_calendar.html")
+#: 日历前端口径（**刻意保留纯 JS**，Node 对拍用例按字面量抽函数——见该文件头部说明）。
+#: 迁移前这里是 legacy 的 components/sign-calendar-view.js 与 js/calendar.js。
+MODEL_JS = os.path.join(BASE, "frontend", "src", "calendar", "model.js")
+CAL_PAGE_VUE = os.path.join(BASE, "frontend", "src", "calendar", "CalendarPage.vue")
+PAGES_PY = os.path.join(BASE, "web", "routes", "pages.py")
 NODE = shutil.which("node")
 
 #: 本地时间 2026-09-26 是周六（周末门用例用它固定"周六"这一事实）
@@ -192,7 +212,7 @@ class StatusLineJsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.fn_src = _extract_function(_read(SIGN_CAL_VIEW), "statusLine")
+        cls.fn_src = _extract_function(_read(MODEL_JS), "statusLine")
 
     def _run(self, cases):
         script = (
@@ -259,20 +279,25 @@ class StatusLineJsTest(unittest.TestCase):
 
 @unittest.skipUnless(NODE, "node 不可用：跳过前端状态行/日期格的 JS 行为用例")
 class CalendarCellJsTest(unittest.TestCase):
-    """日期格：语气档与标签取自注入的状态表；有结论的日子都要有色点（emoji 不上界面）。"""
+    """日期格：语气档与标签取自注入的状态表；有结论的日子都要有色底（emoji 不上界面）。
+
+    换锚（2026-10-03）：`dayCell` 从返回 HTML 串改为返回数据（`cls` / `label` / `offBadge`），
+    故断言按字段比对而不是在 HTML 里找子串——更严，且能直接断言"状态符号本身不进界面"。
+    `ctx` 由用例显式传入（迁移前读的是全局 `window.YB_CALENDAR_STATE`），故无需伪造 window。
+    """
 
     @classmethod
     def setUpClass(cls):
-        src = _read(CALENDAR_JS)
+        src = _read(MODEL_JS)
         cls.entry_src = _extract_function(src, "stateEntry")
         cls.cell_src = _extract_function(src, "dayCell")
 
     def _run(self, cells, payload):
         script = (
-            "var window = { YB_CALENDAR_STATE: " + json.dumps(payload, ensure_ascii=False) + " };\n"
+            "var ctx = " + json.dumps(payload, ensure_ascii=False) + ";\n"
             + _ESC_JS + self.entry_src + "\n" + self.cell_src + "\n"
             "var cells = " + json.dumps(cells, ensure_ascii=False) + ";\n"
-            "console.log(JSON.stringify(cells.map(dayCell)));\n"
+            "console.log(JSON.stringify(cells.map(function (c) { return dayCell(c, ctx); })));\n"
         )
         proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
@@ -285,41 +310,50 @@ class CalendarCellJsTest(unittest.TestCase):
         base.update(over)
         return base
 
+    def _symbols_are_not_rendered(self, cell, payload):
+        """状态符号（emoji）只是按日状态文件的存储口径，反查完语气档即弃，不进界面。"""
+        for entry in payload["by_code"].values():
+            self.assertNotIn(entry["symbol"], cell["label"])
+        self.assertNotIn("sc-sym", cell["cls"])
+        self.assertNotIn("sc-dot", cell["cls"])
+
     def test_ok_and_bad_cells_get_their_tone_background(self):
         payload = yiban_status.display_payload()
         ok, bad = self._run(
             [self._cell(state="✅"), self._cell(state="❌")], payload)
-        self.assertIn("sc-cell--ok", ok)
-        self.assertIn("sc-cell--bad", bad)
-        self.assertNotIn("sc-dot", ok + bad)
+        self.assertIn("sc-cell--ok", ok["cls"])
+        self.assertIn("sc-cell--bad", bad["cls"])
+        for cell in (ok, bad):
+            self._symbols_are_not_rendered(cell, payload)
 
     def test_other_states_get_a_tone_background(self):
         """时段外/无点位/正在签到不再渲染成空白格——底色即状态（emoji 与色点都不上界面）。"""
         payload = yiban_status.display_payload()
         no_pos, skipped, retrying = self._run(
             [self._cell(state="🚫"), self._cell(state="⛔"), self._cell(state="🔄")], payload)
-        self.assertIn("sc-cell--warn", no_pos)
-        self.assertIn("sc-cell--muted", skipped)
-        self.assertIn("sc-cell--busy", retrying)
+        self.assertIn("sc-cell--warn", no_pos["cls"])
+        self.assertIn("sc-cell--muted", skipped["cls"])
+        self.assertIn("sc-cell--busy", retrying["cls"])
         for cell in (no_pos, skipped, retrying):
-            self.assertNotIn("sc-sym", cell)
-            self.assertNotIn("sc-dot", cell)
-        self.assertIn("点位", no_pos, "读屏名必须说明这一格发生了什么")
+            self._symbols_are_not_rendered(cell, payload)
+        self.assertIn("点位", no_pos["label"], "读屏名必须说明这一格发生了什么")
 
     def test_empty_day_has_no_state_color(self):
         payload = yiban_status.display_payload()
         empty = self._run([self._cell()], payload)[0]
-        self.assertIn("sc-cell--none", empty)
-        self.assertNotIn("sc-dot", empty)
-        self.assertIn("查看签到记录", empty)
+        self.assertIn("sc-cell--none", empty["cls"])
+        self.assertNotIn("sc-dot", empty["cls"])
+        self.assertIn("查看签到记录", empty["label"])
 
     def test_off_day_keeps_the_neutral_background(self):
         """周末停签格：中性底 + 「休」角标，不叠状态底色（该格本就无当日结论）。"""
         payload = yiban_status.display_payload()
         off = self._run([self._cell(state="🚫", off=True, offDay="六")], payload)[0]
-        self.assertIn("sc-cell--off", off)
-        self.assertNotIn("sc-cell--warn", off)
-        self.assertNotIn("sc-cell--none", off)
+        self.assertIn("sc-cell--off", off["cls"])
+        self.assertNotIn("sc-cell--warn", off["cls"])
+        self.assertNotIn("sc-cell--none", off["cls"])
+        self.assertEqual(off["offBadge"], "六")
+        self.assertIn("（周六不签到）", off["label"])
 
 
 class _WebAppMixin:
@@ -392,7 +426,15 @@ class _WebAppMixin:
 
 
 class CalendarPageRendersTableTest(_WebAppMixin, unittest.TestCase):
-    """日历页：图例与内联状态上下文都由服务端从同一份表渲染。"""
+    """日历页：图例与内联状态上下文都由服务端从同一份表生成。
+
+    换锚（2026-10-03）：图例的 markup 改由前端按载荷渲染（服务端仍负责"档位清单与中文短名"
+    这一半——它来自 `legend_items()`，随载荷同车下发）。故判据分两半：
+    · 服务端：内联载荷必须带**全量**图例项（每档一条、含中文短名），逐条与 `legend_items()`
+      比对——这正是原先"渲染认得、图例不认得"要杜绝的漂移点；
+    · 页面侧：图例必须由载荷驱动（`data-tone` / 色块类名都由循环变量拼），不得写死；
+      两条结构性常驻项（周末停签/今天）不是状态码，留在组件模板里。
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -402,24 +444,30 @@ class CalendarPageRendersTableTest(_WebAppMixin, unittest.TestCase):
     def tearDownClass(cls):
         cls._teardown_env()
 
-    def test_legend_renders_every_item_of_the_table(self):
-        html = self._calendar_html()
+    def test_payload_carries_every_legend_item_of_the_table(self):
+        ctx = self._inline_context(self._calendar_html())
+        self.assertEqual(ctx["legend"], yiban_status.legend_items(),
+                         "内联载荷的图例项与 yiban.status.legend_items() 分叉")
         for item in yiban_status.legend_items():
             with self.subTest(tone=item["tone"]):
-                self.assertIn(item["label"], html, "图例缺了表里的一条")
-                self.assertIn('data-tone="%s"' % item["tone"], html)
-                self.assertIn("sc-swatch--%s" % item["tone"], html)
-        self.assertIn("周末停签", html)   # 非状态通道（周末停签/今天）仍在
-        self.assertIn("今天", html)
+                self.assertTrue(item["label"], "图例条目缺中文短名")
 
     def test_legend_is_generated_not_hand_written(self):
-        """模板不得再手写图例项：色块与档名都必须由表生成的循环驱动。"""
-        src = _read(CAL_PARTIAL)
-        self.assertIn("status_legend", src, "图例必须由表生成的列表驱动")
-        self.assertIn('data-tone="{{ item.tone }}"', src,
+        """页面不得再手写图例项：档位键与色块类名都必须由载荷循环驱动。"""
+        # 服务端：图例由表生成后随载荷下发（pages.py 是唯一注入点）
+        self.assertIn("legend", _read(PAGES_PY), "日历页上下文未下发图例")
+        self.assertIn("legend_items()", _read(PAGES_PY), "图例必须由表生成的列表驱动")
+        partial = _read(os.path.join(BASE, "web", "templates", "partials", "page_sign_calendar.html"))
+        self.assertIn("calendar_state | tojson", partial, "图例载荷必须随内联上下文渲染进页面")
+        # 页面侧：档位键与色块类名由循环变量拼，不得写死
+        vue = _read(CAL_PAGE_VUE)
+        self.assertIn(':data-tone="item.tone"', vue,
                       "图例档位键必须由循环变量驱动，不得写死")
-        self.assertIn('sc-swatch--{{ item.tone }}', src,
+        self.assertIn("sc-swatch--${item.tone}", vue,
                       "图例色块必须由循环变量驱动，不得写死")
+        # 结构性常驻项（不是状态码，刻意不走状态表）
+        self.assertIn("周末停签", vue)
+        self.assertIn("今天", vue)
         html = self._calendar_html()
         self.assertNotIn("data-symbol", html, "图例仍按符号陈列（应按语气档归组）")
 

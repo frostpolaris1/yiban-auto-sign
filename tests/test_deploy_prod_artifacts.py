@@ -12,12 +12,14 @@
       口令确实经 stdin 到达。活体反例：旧 export 式 wrapper（测试内构造）经同一
       检查器必须判脏；wrapper 还会先 unset 遗留 env 注入（第二道活体反例）。
       正例加深：真 backup.sh + 真 gpg（有则跑）闭环，产出 .gpg 可用该口令解开。
-    ③ install.sh：DESTDIR 无特权安装到 fixture 前缀；安装前后校验和输出；
-      已存在文件校验和不符 ⇒ 拒装（现网 3 行手工漂移不得被静默覆盖），
-      --adopt-production 归档现网件后以仓库为准；`.bak-*` 残留清理并记录；
-      以 root（未设 DESTDIR）安装时检出必须属 root 且非组/其他可写，否则在执行
-      检出内脚本之前拒装（M01）；该门**逐级**校验被 root 读取/执行的每一条路径
-      （顶层合规而 `scripts/` 可写同样拒装——复审点名的绕过）。
+    ③ install.sh：DESTDIR 暂存安装到 fixture 前缀（装的是从 git 名册复制出来的
+      合规检出）；安装前后校验和输出；已存在文件校验和不符 ⇒ 拒装（现网 3 行手工
+      漂移不得被静默覆盖），--adopt-production 归档现网件后以仓库为准；`.bak-*`
+      残留清理并记录；以 root 安装时**无论是否带 DESTDIR** 检出都必须属 root 且
+      非组/其他可写，否则在执行检出内脚本之前拒装（M01）；该门**逐级**校验被 root
+      读取/执行的每一条路径（顶层合规而 `scripts/` 可写同样拒装——复审点名的绕过）。
+      两道门的判据差异另钉三条：root + DESTDIR 拒装、非 root + DESTDIR 照装、
+      root + DESTDIR 仍跳过 root:root 属主设置（属主门管写入侧，不看执行来源）。
     ④ check-deploy-target.sh：本地裸仓 fixture 远端（无网络）——目标提交在远端
       分支 ⇒ 0；不在 ⇒ 非 0 且输出人类可读结论。不做任何 push。
     ⑤ 真名示例门（合法的字面量门——字符串本身就是缺陷）：真实姓名（此处仅以转义
@@ -29,7 +31,8 @@
 关键断言：一律以真子进程的**退出码/产物/stdin/环境**为准（含旧 export 式 wrapper 必判脏、
 校验和不符必拒装、无来源路径必点名、含名 fixture 必命中）——不 grep 被测脚本源码字符串。
 依赖：bash（`skipIf` 整文件；Git Bash/WSL）；②正例真 gpg（无则单条 skip）；git（跟踪树
-扫描与本地裸仓 fixture）；无网络、不 push。
+扫描、本地裸仓 fixture 与 ③ 的暂存检出名册）；无特权位格用 setpriv（缺它则该条 skip）；
+无网络、不 push。
 
 测试夹具里的口令全部是明显的假值（"e2e-"前缀），不含任何真实凭据。
 """
@@ -43,6 +46,9 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASH = shutil.which("bash")
+SETPRIV = shutil.which("setpriv")
+# WSL Ubuntu 的 nobody/nogroup 位格；只借它的 uid/gid，不碰任何账号数据。
+UNPRIVILEGED_ID = 65534
 
 PROD_DIR = os.path.join(BASE, "deploy", "prod")
 WRAPPER = os.path.join(PROD_DIR, "yiban-backup-wrapper.sh")
@@ -146,9 +152,62 @@ def _ls_tracked():
     return listing.stdout
 
 
-# 2026-10-02 用户裁定：该串为游戏角色名（虚构人物，现实中无人使用），作为
-# account-form.js 的占位示例保留在仓库内；门禁对其余文件继续生效。
-_AUTHORIZED_NAME_PATHS = frozenset({"web/static/js/components/account-form.js"})
+def _current_uid():
+    """跑测进程的有效 uid（读不到 ⇒ -1）。"""
+    r = subprocess.run([BASH, "-c", "id -u"], capture_output=True, timeout=60)
+    return int(((r.stdout or b"").decode().strip() or "-1"))
+
+
+def _unprivileged_prefix():
+    """造「非 root 位格」的 argv 前缀。
+
+    ()   ⇒ 当前进程已不是 root，直接跑就是无特权跑法。
+    None ⇒ 当前是 root 但宿主没有 setpriv ⇒ 造不出该位格，用例须 skip。
+    其余 ⇒ 用 setpriv 降到 nobody 的 uid/gid 并清掉附加组。
+    """
+    if _current_uid() != 0:
+        return []
+    if SETPRIV is None:
+        return None
+    return [SETPRIV, "--reuid=%d" % UNPRIVILEGED_ID,
+            "--regid=%d" % UNPRIVILEGED_ID, "--clear-groups"]
+
+
+def _stage_tracked_checkout(dest_root):
+    """按 git 名册复制出一份检出，权限收成 root:755/644。
+
+    为什么要它：M01 门只看 uid。root 执行检出内文件时，被读取或执行的每条路径
+    都要属 root 且非组/其他可写。跑测副本由 dev-verify 用 `rsync -a` 从 DrvFs
+    生成，全树 0777、属主 uid=0。以 root 直跑暂存安装会被那道门拒掉——那是门在
+    正常工作，不是被测件的缺陷。本函数造出的检出等价于生产里执行过
+    `chown -R root:root && chmod -R go-w` 的那一份，用例于是照旧断言装出来的
+    内容与权限。名册取自 `git ls-files`，所以检出永不会缺件。
+    """
+    os.makedirs(dest_root, exist_ok=True)
+    for raw in _ls_tracked().split(b"\0"):
+        if not raw:
+            continue
+        parts = os.fsdecode(raw).split("/")
+        src = os.path.join(BASE, *parts)
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(dest_root, *parts)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+        os.chmod(dst, 0o644)
+    os.chmod(dest_root, 0o755)
+    for root, dirs, _files in os.walk(dest_root):
+        for name in dirs:
+            os.chmod(os.path.join(root, name), 0o755)
+    return dest_root
+
+
+# 2026-10-02 用户裁定：门禁真名串（见上方 REAL_NAME）为游戏角色名，曾作为
+# account-form.js 的示例保留在仓库内（该文件因此被列入豁免）。2026-10-03 账号管理页迁到
+# Vue，该 legacy 文件退役；实测全仓已无该真名字面命中——故豁免清单清空，门禁继续对全部
+# 跟踪文件生效。（注：accountform.ts 的占位文案「电力123示例站」与门禁真名串无关，不构成
+# 命中，勿据此恢复豁免。）
+_AUTHORIZED_NAME_PATHS = frozenset()
 
 
 def _tracked_hit_scan():
@@ -178,10 +237,10 @@ class _TmpBase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.env = _clean_subprocess_env()
 
-    def _run_bash(self, script, args=(), env=None, cwd=BASE):
+    def _run_bash(self, script, args=(), env=None, cwd=BASE, prefix=()):
         e = dict(self.env)
         e.update(env or {})
-        return subprocess.run([BASH, script, *args], capture_output=True,
+        return subprocess.run([*prefix, BASH, script, *args], capture_output=True,
                               env=e, cwd=cwd, timeout=300)
 
     def _out(self, r):
@@ -355,13 +414,24 @@ class WrapperPassphraseTest(_TmpBase):
 # --------------------------------------------------------------------③ install.sh
 @unittest.skipIf(BASH is None, "需要 bash")
 class InstallScriptTest(_TmpBase):
+    """DESTDIR 暂存安装的语义（清单落位 / 校验和对峙 / adopt 归档 / 幂等）。
+
+    安装对象是 `_stage_tracked_checkout()` 复制出来的合规检出：M01 门只看 uid，
+    跑测时进程就是 root，工作树副本 0777 会被那道门拒装（门在正常工作）。断言的
+    内容基准仍取仓库原件，故暂存件与仓库不一致同样会红。
+    """
+
     def setUp(self):
         super().setUp()
+        if shutil.which("git") is None:
+            self.skipTest("需要 git 取暂存检出的名册")
         self.destroot = os.path.join(self.tmp, "destdir")
         os.makedirs(self.destroot)
+        self.checkout = _stage_tracked_checkout(os.path.join(self.tmp, "checkout"))
+        self.installer = os.path.join(self.checkout, "deploy", "prod", "install.sh")
 
     def _install(self, extra_args=(), destroot=None):
-        return self._run_bash(INSTALL, extra_args,
+        return self._run_bash(self.installer, extra_args,
                               {"DESTDIR": destroot or self.destroot})
 
     def _manifest_rows(self):
@@ -444,7 +514,7 @@ class InstallScriptTest(_TmpBase):
 # -------------------------------------------- install.sh 以 root 安装的前置门（M01）
 @unittest.skipIf(BASH is None, "需要 bash")
 class InstallRootCheckoutGateTest(_TmpBase):
-    """M01：以 root（未设 DESTDIR）安装时，检出必须属 root 且组/其他不可写。
+    """M01：以 root 安装时（与 DESTDIR 无关），检出必须属 root 且组/其他不可写。
 
     威胁：install.sh 以 root 执行检出内的 `scripts/check-cron-provenance.sh` 并把检出件
     root:root 安装；生产里 `/opt/yiban-auto-sign` 对服务账号 yiban 可写
@@ -469,17 +539,16 @@ class InstallRootCheckoutGateTest(_TmpBase):
         _write(os.path.join(self.checkout, "scripts", "check-cron-provenance.sh"),
                '#!/usr/bin/env bash\necho ran >> "%s"\nexit 0\n' % self.marker)
 
-    def _install_from_checkout(self, destroot=None, extra_env=None):
+    def _install_from_checkout(self, destroot=None, extra_env=None, prefix=()):
         env = {}
         if destroot is not None:
             env["DESTDIR"] = destroot
         env.update(extra_env or {})
         return self._run_bash(os.path.join(self.checkout, "deploy", "prod", "install.sh"),
-                              (), env=env, cwd=self.checkout)
+                              (), env=env, cwd=self.checkout, prefix=prefix)
 
     def _running_as_root(self):
-        r = subprocess.run([BASH, "-c", "id -u"], capture_output=True, timeout=60)
-        return r.stdout.decode().strip() == "0"
+        return _current_uid() == 0
 
     def _fs_preserves_modes(self):
         r = subprocess.run(
@@ -525,6 +594,12 @@ class InstallRootCheckoutSubPathGateTest(InstallRootCheckoutGateTest):
     继承父类夹具：同样的最小检出、同样的 marker 语义（marker 存在 = 检出内脚本
     已被 root 跑过）。注意父类的两条既有用例在本子类里会**原样重跑**一遍——那是
     有意的对照：逐级门不得把"顶层合规 + DESTDIR"的正常路径也拒掉。
+
+    ba-p12-02 追加三条，钉住**门的作用域**与**两道门的判据差异**：
+      · 威胁是"root 执行检出内文件"，与装到哪里无关 ⇒ `DESTDIR` 不再豁免 M01 门；
+      · 非 root + `DESTDIR` 是受支持的无特权暂存用法 ⇒ 不得被 M01 门挡住；
+      · 属主设置门（`install.sh` 第二道门）的判据是**写入侧**行为 ⇒ `DESTDIR`
+        暂存必须继续跳过它，两条门不许被"统一"成同一个条件。
     """
 
     def _require_root_and_modes(self):
@@ -556,6 +631,83 @@ class InstallRootCheckoutSubPathGateTest(InstallRootCheckoutGateTest):
         self.assertIn("payload.sh", out)
         self.assertFalse(os.path.exists(self.marker),
                          "门必须在执行检出内脚本之前拦下")
+
+    def test_destdir_does_not_exempt_root_from_the_provenance_gate(self):
+        """活体反例（ba-p12-02）：root + DESTDIR 时 M01 门必须照样拦。
+
+        判据与写入目标无关：被 root 执行的是**检出内**的
+        `scripts/check-cron-provenance.sh`，DESTDIR 只改安装落点。顶层合规、
+        `scripts/` 组可写 ⇒ 必须在执行那枚脚本**之前**拒装。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)          # 顶层合规（旧门在这里就放行）
+        os.chmod(os.path.join(self.checkout, "scripts"), 0o775)  # 篡改面
+        destroot = os.path.join(self.tmp, "destdir")
+        os.makedirs(destroot, exist_ok=True)
+        r = self._install_from_checkout(destroot=destroot)
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0,
+                            f"root + DESTDIR 竟跳过 M01 门：{out}")
+        self.assertIn("每个被 root 读取/执行的路径", out,
+                      f"拒绝原因必须来自 M01 门，不是别的检查：{out}")
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在 root 执行 check-cron-provenance.sh 之前拦下")
+        self.assertFalse(os.path.isdir(os.path.join(destroot, "tmp")),
+                         "拒装不得往暂存前缀里写任何东西")
+
+    def test_unprivileged_staging_install_with_destdir_is_not_blocked(self):
+        """非 root + DESTDIR = 头注释与 README 承诺的无特权暂存用法 ⇒ 门不得挡它。
+
+        这条挡住反向改法：把两道门"统一"成只看 DESTDIR（或干脆无条件跑门）会把
+        受支持的暂存用法一起废掉。检出组/其他可写在非 root 位格下不构成提权路径。
+        """
+        prefix = _unprivileged_prefix()
+        if prefix is None:
+            self.skipTest("当前是 root 而宿主没有 setpriv：造不出非 root 位格")
+        if not self._fs_preserves_modes():
+            self.skipTest("宿主文件系统不保留 POSIX mode（Windows 开发机）")
+        if prefix:  # 确认降权真的生效，位格不是假的
+            probe = subprocess.run([*prefix, BASH, "-c", "id -u"],
+                                   capture_output=True, timeout=60)
+            self.assertNotEqual(probe.stdout.decode().strip(), "0",
+                                f"setpriv 没降下权来：{probe.stdout!r}")
+        os.chmod(self.tmp, 0o755)  # nobody 要能穿进本用例的临时区
+        os.chmod(self.checkout, 0o777)
+        os.chmod(os.path.join(self.checkout, "scripts"), 0o777)
+        os.chmod(os.path.join(self.checkout, "deploy", "prod"), 0o777)
+        destroot = os.path.join(self.tmp, "destdir")
+        os.makedirs(destroot, exist_ok=True)
+        os.chmod(destroot, 0o777)
+        r = self._install_from_checkout(destroot=destroot, prefix=prefix)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0,
+                         f"无特权暂存安装被挡 ⇒ M01 门的作用域写过头了：{out}")
+        self.assertNotIn("检出必须属 root", out)
+        self.assertTrue(os.path.exists(self.marker), "cron 来源断言照旧要跑")
+        self.assertTrue(os.path.isfile(destroot + self.dest.replace("/", os.sep)), out)
+
+    def test_root_staging_install_does_not_force_root_ownership(self):
+        """两道门判据不同（ba-p12-02 的边界）：属主设置门仍要看 DESTDIR。
+
+        暂存前缀带 setgid + 组 nobody：不显式 chgrp 时产物继承该组。若有人把属主门
+        里的 `-z "$DESTDIR"` 也删掉，root + DESTDIR 会走 `install -o root -g root`
+        ⇒ 产物组变成 0、跳过提示消失，两条断言同时红。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)  # 合规检出 ⇒ M01 门放行
+        staging = os.path.join(self.tmp, "staging")
+        os.makedirs(staging)
+        os.chown(staging, 0, UNPRIVILEGED_ID)
+        os.chmod(staging, 0o2777)
+        r = self._install_from_checkout(destroot=staging)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("跳过 root:root 属主设置", out,
+                      "root + DESTDIR 必须继续跳过属主设置（那是写入侧的不变量）")
+        payload = staging + self.dest.replace("/", os.sep)
+        self.assertTrue(os.path.isfile(payload), out)
+        self.assertEqual(os.stat(payload).st_gid, UNPRIVILEGED_ID,
+                         "暂存件被显式 chgrp 成 root ⇒ 属主门吃掉了 DESTDIR 豁免")
 
 
 # ----------------------------------------------------------④ check-deploy-target.sh

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # 易班自动签到脚本（AGPL-3.0，见项目根 LICENSE）
-# 本项目为以下 AGPL-3.0 项目的衍生实现，保留上游版权与许可条款：
-#   - OneFeiFan/FYIBAN（多边形内随机定位点算法：缩放质心 + 射线法验证；nightAttendance 签到流程）
-#   - 同作者的 KillYiBan（脱胎于 FYIBAN）：默认登录流程的真实 App 请求特征来源
+# 本项目的易班协议与定位算法为洁净室自研实现：平台事实（端点/请求头/版本）取自平台
+# 实拍与客户端安装包，六跳登录链路的顺序取自本项目自己的逐端点实拍记录，多边形定位
+# 采样算法取自教科书偶奇射线法定义（详见 yiban/geo.py 与 yiban/platform.py 的文档串）。
 """
 易班自动签到（**兼容壳**）
 

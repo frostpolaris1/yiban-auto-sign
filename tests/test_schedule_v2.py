@@ -475,5 +475,47 @@ class MinExecGapTest(unittest.TestCase):
         self.assertTrue(any(abs(s - 5) < 1e-6 for s in sleeps), f"到点后应补 min_gap=5: {sleeps}")
 
 
+class BlockCapacityTest(unittest.TestCase):
+    """`schedule.block_capacity`：块的唯一事实源（纯函数直钉；web 拥挤度/预计时段共用）。"""
+
+    def test_within_capacity_returns_block_cap(self):
+        """n <= 块数 × cap → 原样返回块的配置容量（不压缩）。"""
+        self.assertEqual(signin.schedule.block_capacity(240, 16, env={"YIBAN_BLOCK_CAP": "15"}), 15)
+        self.assertEqual(signin.schedule.block_capacity(1, 16, env={"YIBAN_BLOCK_CAP": "20"}), 20)
+        self.assertEqual(signin.schedule.block_capacity(0, 16, env={}), 15)  # 缺省 15
+
+    def test_compressed_mode_ceil(self):
+        """n > 块数 × cap → 压缩为 ceil(n / 块数)。"""
+        self.assertEqual(signin.schedule.block_capacity(300, 16, env={"YIBAN_BLOCK_CAP": "15"}), 19)
+        self.assertEqual(signin.schedule.block_capacity(241, 16, env={"YIBAN_BLOCK_CAP": "15"}), 16)
+        self.assertEqual(signin.schedule.block_capacity(17, 1, env={"YIBAN_BLOCK_CAP": "15"}), 17)
+
+    def test_cap_out_of_range_falls_back_to_default(self):
+        """0/负/越界/非法/缺失一律回退默认 15（与 `_env_int(..., 1, 200)` 同夹取口径）。"""
+        for raw in ("0", "-3", "201", "abc", ""):
+            self.assertEqual(
+                signin.schedule.block_capacity(300, 16, env={"YIBAN_BLOCK_CAP": raw}), 19, raw)
+        # 越界回退默认后按默认算：10 人 ≤ 16×15 → 15
+        self.assertEqual(signin.schedule.block_capacity(10, 16, env={"YIBAN_BLOCK_CAP": "300"}), 15)
+
+    def test_cap_upper_bound_200_allowed(self):
+        """上界 200 合法：n=块数×200 时返回 200（不压缩）。"""
+        self.assertEqual(signin.schedule.block_capacity(3200, 16, env={"YIBAN_BLOCK_CAP": "200"}), 200)
+
+    def test_env_injection_beats_process_env(self):
+        """MF-93：env 显式注入优先；env={} 不回落进程环境（web 侧必须传 read_env(ENV_FILE)）。"""
+        with mock.patch.dict(os.environ, {"YIBAN_BLOCK_CAP": "7"}):
+            self.assertEqual(
+                signin.schedule.block_capacity(100, 16, env={"YIBAN_BLOCK_CAP": "20"}), 20)
+            self.assertEqual(signin.schedule.block_capacity(100, 16, env={}), 15)
+        # env=None 才读进程环境
+        with mock.patch.dict(os.environ, {"YIBAN_BLOCK_CAP": "7"}):
+            self.assertEqual(signin.schedule.block_capacity(16, 16, env=None), 7)
+
+    def test_zero_blocks_returns_zero(self):
+        """无有效块（块数 0）→ 0，调用方按"无容量"处理（不得当除数）。"""
+        self.assertEqual(signin.schedule.block_capacity(10, 0, env={}), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

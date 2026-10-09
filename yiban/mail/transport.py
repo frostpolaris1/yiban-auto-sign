@@ -3,11 +3,15 @@
 
 授权码与完整发件地址不回显（只记失败粗分类、打码地址与条目序号）；发送异常只记日志、
 绝不抛出。发信条目与通道状态判定住在 `config` 层，本层只做构造与投递。
+
+一封邮件、以及一次多收件人告警的全部邮件，共用一份时间预算。超预算即放弃剩余
+条目，并留一行可定位的 warning。单个 socket 操作的超时不是整封的预算（工单 ba-p09-01）。
 """
 import hashlib
 import logging
 import smtplib
 import ssl
+import time
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,6 +23,15 @@ from yiban.store import db
 from . import config, layout
 
 logger = logging.getLogger("mailer")
+
+#: 单个 socket 操作的超时（既有取值，本单不许改小）。smtplib 的 timeout 是每个
+#: socket 操作一次，不是整封调用的截止时间。
+_OP_TIMEOUT_SEC = 15
+
+#: 整封（一次 `_send`、一次 `send_admin_alert`）的时间预算上界。取值按一条正常条目
+#: 推导：连接、登录、投递各给一次操作超时。预算只截停**条目循环的开始**。已在跑的
+#: 那一条会跑完自己的操作序列。故整封耗时上界 = 预算 + 一条条目的最坏耗时。
+_TOTAL_BUDGET_SEC = 3 * _OP_TIMEOUT_SEC
 
 # 发信条目 port 非法的发送侧一次性告警（同 config._port_warned 风格；条目 port 与旧键
 # SMTP_PORT 来源不同，分开记旗避免互相吞掉对方的告警）
@@ -97,18 +110,24 @@ def _record_recipient_refusals(refused, host, idx, total, message_id):
             logger.error("邮件投递账未能落审计链，请人工核查: %s", masked)
 
 
-def _send(subject, text, to):
+def _send(subject, text, to, deadline=None):
     """发送一封邮件：按 smtp_list() 顺序逐条尝试（主备 failover），静默失败（记日志不抛出）。
 
     任一条发送成功即返回；单条失败（SMTP 异常/网络错误）记 warning（含条目序号、
     本封幂等键与 host，不含凭据）后尝试下一条；换条目重投留一行可观测记录
     （"第 N 条目重投同一封"，MF-90）；条目 port 非法回退 465 并记一次性告警；目标为
     内网/保留地址时进程内只记一次告警但**不**停发；全部失败返回 False。
+
+    `deadline` 是整封预算的到期时刻（单调钟秒）。缺省按 `_TOTAL_BUDGET_SEC` 在本函数
+    内起算；`send_admin_alert` 传入同一个到期时刻，让多收件人共用一份预算。到期即放弃
+    剩余条目并记 warning；每次 socket 操作的超时取"剩余预算与该操作超时的较小者"。
     """
     global _private_target_warned
     to = str(to or "").strip()
     if not to or not config.is_enabled():
         return False
+    if deadline is None:
+        deadline = time.monotonic() + _TOTAL_BUDGET_SEC
     entries = config.smtp_list()
     # 正文在条目循环**之外**定稿：同封 failover 的每一条都必须是同一封——同
     # plain/html、同 Message-ID（键含正文，哈希跟着正文走，正文若在循环内二次
@@ -116,7 +135,7 @@ def _send(subject, text, to):
     # 排版定稿同样进 try：本层契约是"静默失败（记日志不抛出）"，而排版吃的是
     # 调用方拼出来的正文（用户名/邮箱/理由等外部输入可携带孤立代理对，utf-8
     # 编码直接失败）。此前这段与 MIME 构造都露在 try 外，一次坏字符会把异常
-    # 抛回所有在 `_file_lock` 里同步发信的调用点——业务已落盘、锁内爆 500、
+    # 抛回当时在 `_file_lock` 里同步发信的调用点——业务已落盘、锁内爆 500、
     # 排在其后的审计行也没了。
     try:
         plain, html_body = layout.as_body(text)
@@ -126,6 +145,17 @@ def _send(subject, text, to):
         logger.warning("邮件正文渲染失败（本封不发，只记不抛）: %s", ascii(e))
         return False
     for idx, entry in enumerate(entries):
+        # 整封预算：条目循环逐条吃 socket 超时，最坏 = 条目数 × 操作数 × 每操作超时
+        # （工单 ba-p09-01）。到点即放弃剩余条目；已在途的那次操作无法中断，故预算
+        # 只截停"还开不开始下一条"。剩余预算同时压住本条的每次 socket 操作超时。
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "邮件通知整封超时，放弃剩余条目（已试 %d/%d 条目，id=%s）: %s → %s",
+                idx, len(entries), message_id, subject, config._mask_addr(to),
+            )
+            return False
+        op_timeout = min(_OP_TIMEOUT_SEC, remaining)
         host = str(entry.get("host") or "").strip()
         port = entry.get("port", 465)
         if not _private_target_warned:
@@ -178,9 +208,9 @@ def _send(subject, text, to):
             # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
             ctx = ssl.create_default_context()
             if port == 465:
-                server = smtplib.SMTP_SSL(host, port, timeout=15, context=ctx)
+                server = smtplib.SMTP_SSL(host, port, timeout=op_timeout, context=ctx)
             else:
-                server = smtplib.SMTP(host, port, timeout=15)
+                server = smtplib.SMTP(host, port, timeout=op_timeout)
                 server.starttls(context=ctx)
             with server:
                 server.login(user, password)
@@ -219,10 +249,10 @@ def _send(subject, text, to):
         except Exception as e:
             # 消息级缺陷（构造/序列化对坏字符敏感，如孤立代理对 →
             # UnicodeEncodeError）：换条目重投的是同一封、必然同样失败，直接按
-            # "本封未送达"收口。不在本层收口的话异常会抛回调用方——多为持
-            # `_file_lock` 同步发信的路径，等于让一封坏邮件在锁内爆 500、
-            # 并把排在其后的审计留痕一起带走。细节走 ascii() 转义：坏字符
-            # 正是失败原因本身，原样进日志会在写流时二次爆。
+            # "本封未送达"收口。不在本层收口的话异常会抛回调用方（`ba-p05-01`
+            # 前多为持 `_file_lock` 同步发信的 web 路由），等于让一封坏邮件在
+            # 锁内爆 500、并把排在其后的审计留痕一起带走。细节走 ascii() 转义：
+            # 坏字符正是失败原因本身，原样进日志会在写流时二次爆。
             logger.warning("邮件构造/序列化失败（本封不再换条目重试）: %s", ascii(e))
             return False
     return False
@@ -237,6 +267,9 @@ def send_admin_alert(subject, text, to=None):
 
     to 缺省 fail-closed 拒发（不再回退原始 ADMIN_TO）：那会绕过 users.mail_notify
     个人开关过滤，是留给未来调用方的隐私回归陷阱。
+
+    逐收件人的循环乘在条目循环之上，故整次调用只领一份预算：第一个收件人把预算用尽后，
+    其余收件人不再开新的 SMTP 连接（工单 ba-p09-01 点名的第二层乘数）。
     """
     to = (to or "").strip()
     if not to:
@@ -246,8 +279,9 @@ def send_admin_alert(subject, text, to=None):
         )
         return False
     sent = False
+    deadline = time.monotonic() + _TOTAL_BUDGET_SEC
     for addr in [a.strip() for a in to.split(",") if a.strip()]:
-        if _send(subject, text, addr):
+        if _send(subject, text, addr, deadline=deadline):
             sent = True
     return sent
 

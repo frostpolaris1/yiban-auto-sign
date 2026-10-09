@@ -1,6 +1,17 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""**功能**
+"""**算法溯源**
+- Rendezvous Hashing（HRW）：Thaler & Ravishankar，同项溯源见 `yiban/engine/hrw.py`。
+  `build_plan` 调 `hrw.vshard_of` 取分片、`hrw.owner_of` 定归属，即其两段式。
+- Stratified Sampling（分层抽样）+ Jitter（抖动 / splay）：把 N 个待办铺进时间窗的经典做法
+  是「分层抖动」——按序分层（`i % n_slices`）保证每层等量，再加槽内相位错开，避免同刻齐发；
+  AWS 的 Shuffle Sharding 是同族思路在分片维度上的应用。**均匀分布不可取**：窗口开头齐发
+  正是外部系统最容易识别为机器人的形态。
+- 密度整形（`_density`）：按当日作息取 μ/σ 的正态到达率，并**按出口令牌桶 Λ 封顶**——只压
+  σ 不封峰值会让中段形成相对突发，故压的是归一化密度与均匀分布的混合比 α，μ/σ 保持不动
+  （改 σ 会连作息形状一起改掉）。峰值仍超 Λ 的余量交执行层排队，计划层不越权。
+
+**功能**
 每日一次的计划生成器（Planner）：把账号按双粒度时间分片铺进有效窗口——对外仍是
 5 分钟自选片，引擎侧是 1 分钟分片 × 1 秒微槽 × 槽内相位——再叠加 HRW 分工，得到
 `(vshard, owner, run_at)`，并批量幂等落库 `sign_tasks`。

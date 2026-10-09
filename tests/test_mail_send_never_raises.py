@@ -10,7 +10,8 @@
 关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/mail/__init__.py` 模块
     头）此前对 UnicodeEncodeError 不成立——排版/构造在 try 外，一次坏字符会沿
     `send_user`/`send_notification` 抛回**持 `_file_lock` 同步发信**的路由（锁内 500，
-    且把排在其后的审计留痕一起带走）。修复后同输入必须返回 False 且不触 SMTP。
+    且把排在其后的审计留痕一起带走；`ba-p05-01` 起锁内发信改走 `run_after_file_lock`，
+    本契约照旧承重——其余调用方仍按"不抛出"收口）。修复后同输入必须返回 False 且不触 SMTP。
 依赖：mock `config.is_enabled/_get/smtp_list` 与 `smtplib.SMTP_SSL`；不触网、
     不发真实邮件、不落盘。
 """

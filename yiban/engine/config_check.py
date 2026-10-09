@@ -10,18 +10,23 @@ import logging
 import os
 import sys
 
+from yiban.infra import env_io
 from yiban.masking import mask_phone as _mask_phone
 
 logger = logging.getLogger("yiban")
 
 
 def _key_env_file():
-    """密钥来源 .env 路径：YIBAN_ENV_FILE 优先（与 web 子进程约定一致），回退默认 .env。
+    """密钥来源 .env 指针：只认进程环境的 YIBAN_ENV_FILE（去空白），未设返回 None。
 
     传递的是**路径**而非密钥本身：把 YIBAN_ACCOUNTS_KEY 明文注入子进程环境会让同 uid
     进程可读 /proc/<pid>/environ，扩大密钥暴露面；本函数即子进程侧的解析入口。
+
+    刻意返回 None 而不返回 ".env"：与 `db.resolve_env_file` 同一立场——把"来源未指定"
+    伪装成"来源已指定"会绕过 `account_crypto._assert_source_certain` 的防游离落盘检查。
+    读法单源在 `env_io.env_path`（本函数只是它的一个调用点，不再自抄一遍）。
     """
-    return os.environ.get("YIBAN_ENV_FILE", "").strip() or None
+    return env_io.env_path(default=None)
 
 
 def parse_env_int(name, default):

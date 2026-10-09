@@ -26,6 +26,7 @@
 write_env_batch / read_env / ENV_FILE / _in_sign_window / edge_config 等）必须继续生效。
 `.env` 写入一律经 `write_env_batch` 原子批写；被 `web.app` 的 `register_all(app)` 一次接入。
 """
+import logging
 import os
 import time
 from datetime import datetime, timedelta
@@ -40,16 +41,23 @@ from web.services.env_io import (
     SCHEDULE_DIST_ENV_KEYS,
     SCHEDULE_DIST_KEYS,
     cleanup_env_ambiguous_line,
+    health_report_time_str,
+    health_report_weekday_setting,
 )
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
+from yiban.infra.env_io import parse_env_flag as _parse_env_flag
+
+# 与 web 日志同通道：面板读到的非预期开关取值落回既有通道，便于运维沿用同一处过滤
+logger = logging.getLogger("web")
 
 #: 进度端点回给前端的**全站 state 分布**键（顺序即页面画条的顺序）。
 #: 取自 `queue_store.day_counts` 的口径：7 个原始 state + 3 个派生键，派生口径见该函数
 #: 的表（settled = done + skipped；open = pending + claimed + failed + stolen；
-#: total = settled + open）。写死成白名单而不是直接把 dict 摊进响应：库不可用时
-#: `day_counts` 仍回全 0 的完整键集，白名单还能挡住"哪天多折一个键就悄悄改了契约"。
+#: total = settled + open）。写死成白名单而不是直接把 dict 摊进响应：`day_counts` 读不通
+#: 时回 `None`（fail-closed 哨兵），此时按本白名单出一栏全 0 占位、另置
+#: `totals_unreadable` 标成未知；平时它也挡住"哪天多折一个键就悄悄改了契约"。
 _PROGRESS_STATE_KEYS = ("total", "settled", "open", "done", "skipped",
                         "pending", "claimed", "failed", "stolen")
 
@@ -177,6 +185,16 @@ def _reply_slot_egress(env_key, index):
 def api_settings():
     m = _appmod()
     env = m.read_env(m.ENV_FILE)
+
+    def _bool_field(key):
+        """面板布尔键的**唯一**读法：与引擎/run.sh 同一真值口径（1/true/on/yes=开）。
+
+        刻意不用 `load_env_int`——它只认整数，把 `true` 读成 0，于是引擎真停、面板显示
+        "未暂停"（census P0-1 的反向假安心）。非预期取值按缺省（关）处理并出声一次。
+        """
+        return 1 if _parse_env_flag(env.get(key, ""), default=False,
+                                    key=key, log=logger) else 0
+
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
     sw = m._sign_window()
     # 窗口不可用（已回退默认）时把"配置异常、已按 X~Y 运行"暴露给设置页：那才是管理员
@@ -277,20 +295,34 @@ def api_settings():
                 "accounts_audit": _bd_audit,
             },
             # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
-            "sunday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
+            "sunday_sign": _bool_field("YIBAN_SUNDAY_SIGN"),
             # 周六签到：1=开启（周六照常签到），0=关闭（默认，周六暂停）
-            "saturday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),
-            # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
-            "global_pause": m.load_env_int(m.ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
+            "saturday_sign": _bool_field("YIBAN_SATURDAY_SIGN"),
+            # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常。
+            # 读法与引擎 `schedule.day_off` 同源（`_parse_env_flag`），`=true` 也判暂停。
+            "global_pause": _bool_field("YIBAN_GLOBAL_PAUSE"),
             # 暂停注册：1=暂停（登录页关闭注册入口），0/未配置=允许
-            "registration_pause": m.load_env_int(m.ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0),
+            "registration_pause": _bool_field("YIBAN_REGISTRATION_PAUSE"),
             # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
             "batch_mode": False,
             # 注册账号验证 + 探针模式（任意管理员可改）
-            "account_verify": 1 if env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes") else 0,
-            "probe_enable": 1 if env.get("YIBAN_PROBE_ENABLE", "").strip().lower() in ("1", "true", "on", "yes") else 0,
+            "account_verify": _bool_field("YIBAN_ACCOUNT_VERIFY"),
+            "probe_enable": _bool_field("YIBAN_PROBE_ENABLE"),
             "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
             "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+            # 告警通道健康报告发送时刻（issue #23）：空串 = 未配置 = 沿用"例行日唤醒即发"。
+            # 时刻不补默认钟点：把"没配"显示成"配了 09:00"会让用户以为改过、也看不出
+            # 报告的到达时间仍跟着部署节拍走。取值经同一处归一（`9:00` → `09:00`），
+            # 保证回显值就是生效值。
+            "health_report_time": health_report_time_str(env),
+            # 星期回显**配置值**（空串 = 没配）而不是运行期生效值（未配置 ⇒ 周一）：
+            # 界面要靠它分辨"配了周一"与"没配"，否则"关掉固定发送"这一步删不掉残留的
+            # 星期键——面板显示已关闭，报告却照残留的那一天发。变更判定的现值
+            # （`_settings_effective_values`）取同一口径（配置值），两边必须逐字一致：
+            # 不一致时"提交一个等于回显的值"会被判成没改 ⇒ 键永不落盘、回显仍是空串
+            # ⇒ 每次打开设置页都有一条清不掉的脏标记。运行期生效缺省（周一）由
+            # `web.app._health_report_cfg()` 承担。
+            "health_report_weekday": health_report_weekday_setting(env),
         }
     )
 
@@ -308,8 +340,10 @@ def api_settings_save():
     # global_pause 是唯一例外——0→1「急停」任意管理员都能做，1→0「恢复签到」仍仅
     # 主管理员：能把全站停下去是止损，能放开来是权力。
     gp_req = None
-    if m.GLOBAL_PAUSE_KEY in data:
-        gp_req = 1 if m._env_flag(data.get(m.GLOBAL_PAUSE_KEY, "")) else 0
+    gp_key = m.GLOBAL_PAUSE_KEY
+    if gp_key in data:
+        gp_req = 1 if _parse_env_flag(data.get(gp_key, ""), default=False,
+                                      key=gp_key, log=logger) else 0
     wanted_a = set()
     if not is_master:
         wanted_a = master_only.intersection(data)
@@ -408,25 +442,30 @@ def api_settings_save():
     # 周日签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
     sunday_sign = None
     if "sunday_sign" in data:
-        sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        sunday_sign = 1 if _parse_env_flag(data.get("sunday_sign", ""), default=False,
+                                           key="YIBAN_SUNDAY_SIGN", log=logger) else 0
     # 周六签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
     saturday_sign = None
     if "saturday_sign" in data:
-        saturday_sign = 1 if str(data.get("saturday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        saturday_sign = 1 if _parse_env_flag(data.get("saturday_sign", ""), default=False,
+                                             key="YIBAN_SATURDAY_SIGN", log=logger) else 0
     # 全局暂停（一键暂停签到）：0→1 急停任意管理员可做、1→0 恢复仅主管理员
     # （方向判定在档位门禁块里），下一轮 cron 生效。
     global_pause = gp_req
     # 暂停注册：A 档，仅主管理员可写（与签到窗口同权限口径）
     registration_pause = None
     if "registration_pause" in data:
-        registration_pause = 1 if str(data.get("registration_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        registration_pause = 1 if _parse_env_flag(data.get("registration_pause", ""), default=False,
+                                                  key="YIBAN_REGISTRATION_PAUSE", log=logger) else 0
     # ---- 注册账号验证 + 探针模式（A 档：仅主管理员可改）----
     account_verify = None
     if "account_verify" in data:
-        account_verify = 1 if str(data.get("account_verify", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        account_verify = 1 if _parse_env_flag(data.get("account_verify", ""), default=False,
+                                              key="YIBAN_ACCOUNT_VERIFY", log=logger) else 0
     probe_enable = None
     if "probe_enable" in data:
-        probe_enable = 1 if str(data.get("probe_enable", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        probe_enable = 1 if _parse_env_flag(data.get("probe_enable", ""), default=False,
+                                            key="YIBAN_PROBE_ENABLE", log=logger) else 0
     probe_time = None
     if "probe_time" in data:
         pt = str(data.get("probe_time", "")).strip()
@@ -437,6 +476,34 @@ def api_settings_save():
         if not (0 <= ph <= 23 and 0 <= pm <= 59):
             return jsonify({"error": "探针触发时间非法（需 HH:MM）"}), 400
         probe_time = f"{ph:02d}:{pm:02d}"
+    # ---- 告警通道健康报告发送时刻（A 档：仅主管理员；issue #23）----
+    # 时刻留空 = 删键 = 回落到"例行日唤醒即发"的既有行为（不是"从此不发"）。
+    health_report_time = None
+    if "health_report_time" in data:
+        ht = str(data.get("health_report_time", "")).strip()
+        if ht:
+            try:
+                hh, mm = (int(x) for x in ht.split(":"))
+            except (ValueError, AttributeError):
+                return jsonify({"error": "报告发送时刻应为 HH:MM 格式"}), 400
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                return jsonify({"error": "报告发送时刻非法（需 HH:MM）"}), 400
+            health_report_time = f"{hh:02d}:{mm:02d}"
+        else:
+            health_report_time = ""
+    # 星期留空 = 删键（与时刻键同口径）：关掉"固定发送"时必须能把两个键成对清掉——
+    # 只删时刻而留下星期，例行日会静默改到残留的那一天。
+    health_report_weekday = None
+    if "health_report_weekday" in data:
+        wd = str(data.get("health_report_weekday", "")).strip()
+        if not wd:
+            health_report_weekday = ""
+        # `isascii()` 不能省：`str.isdigit()` 对上标数字（"²"）也为真，而 `int("²")`
+        # 抛 ValueError——少了这一步，一个 `health_report_weekday: "²"` 就是 500 而不是 400。
+        elif wd.isascii() and wd.isdigit() and 0 <= int(wd) <= 6:
+            health_report_weekday = str(int(wd))
+        else:
+            return jsonify({"error": "报告发送星期应为 0~6（0=周一），留空=清除"}), 400
     probe_interval = None
     if "probe_interval" in data:
         pi = str(data.get("probe_interval", "")).strip()
@@ -528,6 +595,8 @@ def api_settings_save():
         "probe_enable": None if probe_enable is None else str(probe_enable),
         "probe_time": probe_time,
         "probe_interval": probe_interval,
+        "health_report_time": health_report_time,
+        "health_report_weekday": health_report_weekday,
         "max_users": None if max_users_val is None else str(max_users_val),
         "max_accounts": None if max_accounts_val is None else str(max_accounts_val),
     }
@@ -541,10 +610,20 @@ def api_settings_save():
             master_only | m.GATED_KEYS | {m.GLOBAL_PAUSE_KEY})):
         _new, _old = proposed.get(_k), cur_vals.get(_k)
         if _new is not None and _new != _old:
-            changes.append((_k, _old or "-", _new))
+            # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
+            # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
+            changes.append((_k, _old, _new))
     a_changes = [c for c in changes if c[0] in master_only]
     b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
     pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
+
+    def _change_text(key, value):
+        """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
+        翻成人话），再兜底 `-`（值本来就空、又不在那张表里的键，别印出半个等号）。
+
+        两处消费点（变更明细、口令门禁留痕）共用本函数——各写一份必然再漂移一次。
+        """
+        return m._settings_value_text(key, value) or "-"
 
     def _tier_gate(action_label, always_required, attempted, irreversible=False):
         """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
@@ -562,7 +641,8 @@ def api_settings_save():
                 "settings_switch_pw_fail",
                 "settings",
                 f"「{action_label}」口令复核未通过（尝试变更："
-                + "、".join(f"{m._settings_label(k)}={o}→{n}" for k, o, n in attempted)
+                + "、".join(f"{m._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
+                            for k, o, n in attempted)
                 + "）",
             )
         return denied
@@ -629,6 +709,11 @@ def api_settings_save():
         updates["YIBAN_PROBE_TIME"] = probe_time
     if probe_interval is not None:
         updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
+    if health_report_time is not None:
+        # "" = 删键（回落到"唤醒即发"），与其它设置键的"空值=删键"同口径
+        updates["YIBAN_HEALTH_REPORT_TIME"] = health_report_time
+    if health_report_weekday is not None:
+        updates["YIBAN_HEALTH_REPORT_WEEKDAY"] = health_report_weekday
     if max_users_val is not None:
         # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
         updates["YIBAN_MAX_USERS"] = str(max_users_val)
@@ -673,18 +758,24 @@ def api_settings_save():
         f"用户={'不变' if max_users_val is None else max_users_val}"
         f"/账号={'不变' if max_accounts_val is None else max_accounts_val}"
     )
-    # 真变化键的旧→新明细（一次请求只算一份，审计与告警共用同一串）
+    # 缺值一律写"未配置"（两枚键同一措辞，与 `_settings_value_text` 对空串的处理一致）：
+    # 一个写"未配置"、一个写"-"，同一件事在同一行里两种说法。
+    health_report_display = "不变" if (health_report_time is None
+                                       and health_report_weekday is None) else \
+        f"时={health_report_time or '未配置'}/星期={health_report_weekday or '未配置'}"
+    # 真变化键的旧→新明细（一次请求只算一份）。**只进下面的审计正文**——设置变更不外发
+    # 告警；日志行另用 health_report_display 等字段，不引用本串。
     changes_desc = "、".join(
-        f"{m._settings_label(k)}={m._settings_value_text(k, o)}→{m._settings_value_text(k, n)}"
+        f"{m._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
         for k, o, n in changes) or "无实质变更"
     m.logger.info(
-        "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 容量上限=%s",
+        "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 健康报告=%s 容量上限=%s",
         start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
         edge_display, pref_raw if pref_raw is not None else "不变",
         win or "不变", sunday_display, saturday_display, pause_display,
         reg_pause_display,
         "不变" if account_verify is None else ("开" if account_verify else "关"),
-        probe_display, cap_limits_display,
+        probe_display, health_report_display, cap_limits_display,
     )
     # 设置变更审计（否则调度/系统设置保存无留痕，与其他管理操作不一致）
     m.db.audit(
@@ -697,7 +788,8 @@ def api_settings_save():
         f"周六={saturday_display} "
         f"全局暂停={pause_display} 注册={reg_pause_display} "
         f"账号验证={'开' if account_verify else '关'} "
-        f"探针={probe_display} 容量上限={cap_limits_display} "
+        f"探针={probe_display} 健康报告={health_report_display} "
+        f"容量上限={cap_limits_display} "
         f"变更=[{changes_desc}]",
     )
     # 变更告警：整次请求**合并成一条**（一键一封会被拿来刷告警日额度与邮箱）。
@@ -916,8 +1008,9 @@ def api_scheduler_executors_save():
             workers = int(data["workers"])
         except (TypeError, ValueError):
             return jsonify({"error": "执行体数量必须是整数"}), 400
-        if not (1 <= workers <= 64):
-            return jsonify({"error": "执行体数量应为 1~64"}), 400
+        if not (m.yb_egress.WORKERS_MIN <= workers <= m.yb_egress.WORKERS_MAX):
+            return jsonify({"error": f"执行体数量应为 {m.yb_egress.WORKERS_MIN}"
+                                     f"~{m.yb_egress.WORKERS_MAX}"}), 400
         updates["YIBAN_WORKERS"] = str(workers)
     for field, env_key in (("proxy_list", m.yb_egress.ENV_WORKER_LIST),
                            ("proxy_fallback", m.yb_egress.ENV_FALLBACK)):
@@ -1003,10 +1096,13 @@ def api_scheduler_executor_worker_egress(index):
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    manifest_rows = m.yb_egress.parse_manifest(
-        m.read_env(m.ENV_FILE).get(m.yb_egress.ENV_MANIFEST))
+    env_now = m.read_env(m.ENV_FILE)
+    manifest_rows = m.yb_egress.parse_manifest(env_now.get(m.yb_egress.ENV_MANIFEST))
     if manifest_rows is None:
-        configured = max(1, m.load_env_int(m.ENV_FILE, "YIBAN_WORKERS", 1))
+        # 执行体数只有 `egress.legacy_worker_count` 一个口径：含合法域判定与"越界 ⇒
+        # 单执行体"的回退。此前这里另读一次原始值，于是 .env 写 65 时界面按 65 个槽位
+        # 放行、引擎只起 1 个执行体（census P1-3 的同一处分叉）。
+        configured = m.yb_egress.legacy_worker_count(env_now)
         if not (0 <= index <= m.EXECUTOR_INDEX_MAX) or index >= configured:
             return jsonify({"error": f"槽位 {index} 未被使用（当前执行体数 {configured}）"}), 400
     elif not (0 <= index <= m.EXECUTOR_INDEX_MAX) or \
@@ -1286,14 +1382,24 @@ def api_scheduler_executors_progress():
     （`db.task_stats(day)`，即 `queue_store.day_counts`）以便页面画"已签/待签/失败"的
     总量条；② 这里的 `day` 取**最近一次有记录的业务日**（`db.task_latest_day`）而不是
     "今天"——周末停签后取"今天"会让整页归零，页面无法区分"没跑"与"今天不跑"。
+
+    `totals` 读不通时全 0 并置 `totals_unreadable: true`，同时 `note` 里写明。
+    "读数不可用"与"当日无记录（全 0）"是两件事，不许合成一件（ba-p01-01）。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看签到进度"}), 403
     day = m.db.task_latest_day() or m.clock.today()
     by_executor, activity_totals = m._executor_activity(day)
-    # 全站按 state 的分布（day_counts 同口径不抛：库不可用时全 0）
-    counts = m.db.task_stats(day)
+    # 全站按 state 的分布（day_counts 读不通回 None 哨兵：那是"读不出来"，不许画成全 0）。
+    # 兜底吞异常：展示面不得因一个计数读不到就把整页打成 5xx——与 `latest_day` /
+    # `owners_for_day` / `activity` 的"展示面不抛"是同一条纪律。
+    try:
+        counts = m.db.task_stats(day)
+    except Exception as e:
+        logger.warning("读取当日任务队列计数失败（页面按读数不可用显示）: %s", e)
+        counts = None
+    totals_unreadable = counts is None
     bounds = m._executors_window()
     return jsonify({
         "ok": True,
@@ -1302,11 +1408,16 @@ def api_scheduler_executors_progress():
         "is_today": day == m.clock.today(),
         "in_window": m._in_run_period(bounds),
         # 全站分布：state 计数 + 派生的 settled/open/total（派生口径见 queue_store.day_counts）
-        "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS},
+        "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS}
+                  if counts is not None else dict.fromkeys(_PROGRESS_STATE_KEYS, 0),
+        # 读不通的显式标记：全 0 是占位，不是"当日无记录"
+        "totals_unreadable": totals_unreadable,
         "by_executor": by_executor,
         "executor_totals": activity_totals,
         "note": ("聚合计数口径，不含逐账号明细（逐账号明细看账号列表页）。"
-                 "库未初始化或当日无记录时各计数全 0，属正常空态而非故障。"),
+                 "库未初始化或当日无记录时各计数全 0，属正常空态而非故障。"
+                 + ("本次任务队列读不通，`totals` 是占位值，不代表真实进度。"
+                    if totals_unreadable else "")),
     })
 
 

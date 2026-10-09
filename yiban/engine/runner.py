@@ -41,10 +41,10 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from yiban import __version__ as RELEASE_VERSION
-from yiban import clock, egress, window
+from yiban import clock, config_loader, egress, window
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 
@@ -63,17 +63,18 @@ from yiban.engine import (
 from yiban.engine import schedule as schedule_mod
 from yiban.infra import account_crypto, env_io
 from yiban.masking import mask_phone as _mask_phone
-from yiban.store import db
+from yiban.store import db, run_events
 
 logger = logging.getLogger("yiban")
 
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
-# 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
-SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+# 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入。
+# 真值口径与 `schedule._env_flag` 同源（1/true/on/yes，大小写与两侧空白不敏感）。
+SUNDAY_SIGN = schedule_mod._env_flag("YIBAN_SUNDAY_SIGN")
 # 周六签到开关：默认同样关闭，与周日同语义——缺省/空/非法一律视为关闭，
 # 仅显式 1/true/on/yes 开启（缺省即开启的 fail-open 解析已废止）。
 # 需要在周六签到的部署要在网页「系统设置 → 周末签到」开启，或 .env 写 YIBAN_SATURDAY_SIGN=1。
-SATURDAY_SIGN = os.environ.get("YIBAN_SATURDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+SATURDAY_SIGN = schedule_mod._env_flag("YIBAN_SATURDAY_SIGN")
 
 # 签到状态码与日志/日历符号：**定义在 yiban.status（唯一事实源）**，此处为别名
 # （此前 web/app.py 另有一份同名常量，两份会各自漂移，收口后只有一处定义）。
@@ -108,17 +109,39 @@ _GATE_SKIP_MESSAGES = {
 }
 
 
+def _report_run(node, phone="", message=""):
+    """编排层进度打点（唯一入口）：与执行体共用 `yiban.store.run_events` 的 reporter。
+
+    身份取 `YIBAN_EXECUTOR_ID`（监督进程注入的子执行体身份）；单执行体与监督进程
+    自身没有该变量，回退到 egress 的**单执行体稳定名**——与 `run_executor_v3` 在
+    同一条路径上算出的身份同源，故编排层的收尾行与执行体的节点行归到同一条线上。
+    业务日取当前业务钟。写入失败在 `run_events.report` 内被隔离（只告警），
+    故此处不看返回值。
+    """
+    run_events.report(
+        node,
+        day=clock.now().strftime("%Y-%m-%d"),
+        executor=(os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
+                  or egress.single_owner()),
+        phone=phone, message=message)
+
+
 def _day_off_skip():
     """周末（周六/周日未开）或一键暂停命中时打日志并返回 2（SKIPPED 语义），否则 None。
 
     门本身只有 `schedule.day_off` 一个实现，本函数只负责把「当前时刻 + 导入期开关
     快照」喂给它——多执行体派发前的提前拦截与单执行体路径的门必须给出**同一个判定、
     同一句措辞**，否则两条路径对"这一轮为什么没跑"的解释会漂移。
+    一键暂停额外落一行 `pause` 进度事件：这是**运行级**暂停（整个调度被停），
+    与执行体侧的账号级暂停（账密熔断 / 用户自暂停）不同层，但同属「暂停」节点。
+    周末门不是暂停（是"今天不排班"），不落暂停行。
     """
     gate = schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN)
     if not gate:
         return None
     logger.info(_GATE_SKIP_MESSAGES[gate])
+    if gate == schedule_mod.DAY_OFF_PAUSED:
+        _report_run(run_events.NODE_PAUSE, message="签到已暂停（一键暂停生效）")
     return 2  # run.sh 据此写 SKIPPED 状态，次日正常执行
 
 
@@ -322,7 +345,7 @@ def main(argv=None):
     try:
         accounts = accounts_mod.load_accounts(migrate=not args.check_config)
     except db.MigrationIntegrityError as e:
-        # 迁移完整性拒启（MF-40）：user_version 声称已过某迁移，但完成记录/核心产物
+        # 迁移完整性拒启（MF-40）：user_version 声称已过某迁移，但完成记录/登记产物
         # 缺失——领取路径在这种库上只会静默零签到。这不是配置错误(1)，独立码 4 让
         # run.sh / cron / 容器调度方区分"schema 半升级"；异常文本已点名缺哪条迁移。
         logger.error(f"schema 迁移完整性校验失败，拒绝启动: {e}")
@@ -406,9 +429,10 @@ def main(argv=None):
         return 0
 
     # 启动延迟已废弃：旧领取池的实现仍收该形参，但生产执行已不读取它
-    # 账号间隔：缺省 10 与 web 设置页「默认开启 10 秒」口径一致（web 端
-    # DEFAULT_ACCOUNT_GAP_MAX）：纯 signin 部署（.env 未配置该键）升级后自动获得 10s 账号间隔
-    gap_max = config_check.parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 10)
+    # 账号间隔：缺省与 web 设置页「默认开启」口径同源（web 端 DEFAULT_ACCOUNT_GAP_MAX
+    # 与本行都取自名册）：纯 signin 部署（.env 未配置该键）升级后自动获得账号间隔。
+    gap_max = config_check.parse_env_int(
+        "YIBAN_ACCOUNT_GAP_MAX", config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX"))
 
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
     # 周六同语义；一键暂停（管理员 Web UI）同理。
@@ -493,12 +517,14 @@ def main(argv=None):
             # 与超载分支同口径：容量问题并入任务结束汇总邮件，不即时推送——
             # 它是"事后按窗口/间隔/账号数调参"的慢信号，推送日额度要留给现在就得
             # 知道的故障。
+            # 级别却是高级别：这条意味着"本轮不会发起任何请求"，当天可能全量漏签，
+            # 封顶时不得被逐账号明细挤出。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("状态", f"起跑时已过有效签到窗口（窗口至 {_win_end}）"),
                 ("影响", f"{active_n} 个账号本轮不会执行"),
                 ("请核查", "触发时刻（cron / 容器调度）与签到窗口设置"
                            "（YIBAN_SIGN_START / YIBAN_SIGN_END）"),
-            ], push=False)
+            ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
         elif active_n > _cap:
             logger.warning(
                 "容量预检: %d 个账号 > 剩余有效窗口 %d 秒告警阈值 %d 个"
@@ -508,13 +534,15 @@ def main(argv=None):
             )
             # 超载必须通知管理员，不能只留在日志里。文案只有一份（原先邮件与推送
             # 各写一遍同样的字面量，改一处必漏另一处）。
+            # 高级别：与上一分支同理，一轮至多一条，且它意味着"窗口跑不完这些账号"，
+            # 当天漏多少由它先说；不得被轮中累积的逐账号明细挤出。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("当前账号", f"{active_n} 个"),
                 ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），告警阈值 {_cap} 个"),
                 ("单账号耗时", f"{_avg_warn}s + 账号间隔 {gap_max}s，"
                                "阈值已按每账号 3 次尝试预留重试储备"),
                 ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
-            ], push=False)
+            ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
         for acc in accounts:
             t = schedule.get(acc.phone)
@@ -535,6 +563,10 @@ def main(argv=None):
     # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
     event_rows = []
     delegated = set()   # 不在本执行体范围内的账号（多执行体分工）
+    #: 本执行体范围内、`results` 里没有的账号 → 判因（`executor_v3.UNREACHED_*`）。
+    #: 由执行体在轮末按队列事实填（见 `executor_v3._mark_unreached`）；汇总计数与
+    #: `sign_events` 留痕共用这一份判因（同源同口径）。
+    unreached = {}
     # 台账单池化后生产执行恒定走 v3 队列执行体（`sign_tasks`）。旧领取池
     # （`sign_claims`）的实现仍在本仓（`round.run_queue_retry` / `store.claims`），
     # 但已无生产调用点——冻结保留，仅由既有单测覆盖其四柱语义。容量预检 / 计划写状态
@@ -549,14 +581,14 @@ def main(argv=None):
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
-            reclaim=True, requeue_final=True)
+            reclaim=True, requeue_final=True, unreached=unreached)
     else:
         results = executor_v3.run_executor_v3(
             accounts, notify_url=notify_url, cred_state=cred_state,
             event_sink=event_rows.append, delegated=delegated,
             # 补签轮就是显式路径：`final:`/无前缀保守档只在有界一次性轮次复活。
             # 普通轮 False：保守档绝不被定时轮自动复活，档位纪律与领取层同一份。
-            requeue_final=_second_run)
+            requeue_final=_second_run, unreached=unreached)
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
     # 不能用本次（仅含目标账号的）状态整体覆盖保存：空 dict 时会直接删除状态文件，
@@ -571,21 +603,10 @@ def main(argv=None):
             if _res is None:
                 continue
             _ok, _msg, _skip, _status = _res
-            _was_paused = bool(merged.get(_acc.phone, {}).get("paused_since"))
+            # 手动试探了已暂停账号且凭据仍失败时，`_update_cred_state` 会顺延下次试探日
+            # （对齐全量模式语义）：否则存量过期的 probe_date 会让下一轮全量签到立即
+            # 再试探，失去半开试探的间隔保护。顺延只此一处，见该函数 docstring。
             attempts._update_cred_state(merged, _acc.phone, _ok, _msg, _merge_today)
-            # 手动试探了已暂停账号且凭据仍失败时，顺延下次试探日（对齐全量模式语义）：
-            # 否则存量过期的 probe_date 会让下一轮全量签到立即再试探，
-            # 失去半开试探的间隔保护
-            if (
-                not _ok
-                and _was_paused
-                and attempts._is_credential_failure(_msg)
-                and attempts._probe_due(merged.get(_acc.phone, {}), _merge_today)
-            ):
-                merged[_acc.phone]["probe_date"] = (
-                    datetime.strptime(_merge_today, "%Y-%m-%d")
-                    + timedelta(days=attempts.PROBE_INTERVAL_DAYS)
-                ).strftime("%Y-%m-%d")
         state_io._save_cred_state(merged, touched={a.phone for a in accounts})
     else:
         # 全量轮：按账号增量合并（内存快照不能整体覆盖磁盘——见 _save_cred_state 文档）
@@ -606,13 +627,38 @@ def main(argv=None):
     # run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底。
     has_window_skip = False
     ok_n = fail_n = skip_n = no_pos_n = other_n = 0
+    #: 本执行体未执行的判因（`executor_v3.UNREACHED_*`，由执行体在轮末按队列事实填进
+    #: `unreached`）：`peer_n` = 行已由别的执行体领取/了结（跨执行体交接的正常形态，
+    #: **不是失败**）；`stay_n` = 没人接手（故障）。两桶必须分列：2026-10-07 生产把
+    #: "被兜底领走"的两个 worker 报成 51/33 个失败，数据侧看不出"没轮到"。
+    #: 第三种判因 `retry`（本执行体跑过、回炉待重试）仍计入 `fail_n`——那是真失败，
+    #: 与改动前的口径一致（该账号自己的状态文件写的就是"重试中"）。
+    peer_n = stay_n = 0
     for acc in accounts:
         if acc.phone in delegated:
             # 由其他执行体负责：既不算成功也不算失败。若把它当失败，多执行体形态下
             # 每个执行体都会把别人的活报成自己的失败（退出码与告警都会失真）。
             other_n += 1
             continue
-        _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
+        res = results.get(acc.phone)
+        if res is None:
+            # 本执行体没有结果：判因由执行体给出（同一份判因喂事件留痕，见
+            # `executor_v3._mark_unreached`）。**不得**在这里凭"没有结果"就判失败——
+            # 那样被别的执行体领走的账号会变成假失败。
+            reason = unreached.get(acc.phone)
+            if reason == executor_v3.UNREACHED_PEER:
+                peer_n += 1
+                continue
+            # 其余两种（跑过没成 / 没人接手）都是真失败，只是分列两个桶：
+            # `retry` 归 `fail_n`（与改动前的口径一致），`unclaimed` 归独立桶。
+            if reason == executor_v3.UNREACHED_RETRY:
+                fail_n += 1
+            else:
+                # 含"没人接手"与"判因不可得"两种：都按故障暴露，不静默吞掉。
+                stay_n += 1
+            has_real_failure = True
+            continue
+        _s, _m, _sk, status = res
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
         elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
@@ -634,7 +680,17 @@ def main(argv=None):
         summary += f"，🚫 {no_pos_n} 无点位"
     if other_n:
         summary += f"，⇄ {other_n} 由其他执行体负责"
+    if peer_n:
+        summary += f"，⇢ {peer_n} 已由其他执行体领取"
+    if stay_n:
+        summary += f"，⏳ {stay_n} 未执行（无人接手）"
     logger.info(f"==== 签到汇总（v{RELEASE_VERSION}）：{summary} ====")
+    # 进度打点「收尾」：汇总处就是本轮成败成定局的那一刻（结果集已收齐、退出码已定）。
+    # message 前缀（`轮次收尾：`）是本层与"执行体会话收尾"（`run_executor_v3` 的正常
+    # 返回路径）的判别面：单执行体路径下两者同 (业务日、执行体、节点)，靠前缀分层
+    # ——见 `run_events` 模块说明。多执行体形态下每个子执行体各落自己的会话收尾；
+    # 监督进程不做跨子进程的聚合收尾，那是 `workers` 层的职责，不在本单范围。
+    _report_run(run_events.NODE_FINALIZE, message=f"轮次收尾：{summary}")
 
     # 窗口外未了结专项告警。
     # is_second_run：run.sh 补签轮导出的 YIBAN_SECOND_RUN=1 优先（首签子进程被 timeout

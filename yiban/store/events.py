@@ -79,6 +79,15 @@ _INSERT_SIGN_EVENT_SQL = (
     "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)"
 )
 
+# 两条写入路径共用的告警指针：本表的产物各由哪一档迁移建出。
+# 为什么要点名到档：INSERT 报 "no such column" 时，后果是这张表在保留期内**永久零写入**
+# （每次写都失败、失败只发告警），而告警原文里没有升级链的线索。给出院名与登记表位置，
+# 运维才能一步判断"版本说过了这档、schema 里却没有它的产物"（ba-p01-02 的下游形状）。
+_SIGN_EVENTS_ARTIFACT_HINT = (
+    "缺失产物归属：表 sign_events=v4、列 account_id/dur_sec/finished_at=v6"
+    "（核对 yiban/store/migrations.py 的 _ARTIFACTS 与 schema_migrations 记录）"
+)
+
 
 def _normalize_limit(limit, default):
     """把 limit 钳制到 1..1000；非法值回退到默认值。"""
@@ -107,7 +116,12 @@ def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
     except Exception as e:
         with contextlib.suppress(Exception):
             conn.rollback()
-        logger.warning("写入 sign_events 失败: %s", e)
+        # 出声但不抛：事件写入不得拖累签到主流程（既有契约）。级别保持 warning，
+        # 文本必须能定位——本条事件已经丢了，180 天保留期内没有任何补写路径。
+        logger.warning("写入 sign_events 失败（本条事件已丢弃，%d 天保留期内不补写）: "
+                       "sign_events 表/列 [%s: %s]——%s",
+                       SIGN_EVENTS_RETENTION_DAYS, type(e).__name__, e,
+                       _SIGN_EVENTS_ARTIFACT_HINT)
 
 
 def add_sign_events_batch(rows):
@@ -139,7 +153,12 @@ def add_sign_events_batch(rows):
         except Exception as e:
             with contextlib.suppress(Exception):
                 conn.rollback()
-            logger.warning("批量写入 sign_events 失败: %s", e)
+            # 单事务批量：一条失败整批回滚 ⇒ 报出条数，运维才知道丢了几个事件。
+            # 出声但不抛：签到主流程不得被事件写入拖累（既有契约）。
+            logger.warning("批量写入 sign_events 失败（本批 %d 条全部未落库，%d 天保留期内"
+                           "不补写）: sign_events 表/列 [%s: %s]——%s",
+                           len(rows), SIGN_EVENTS_RETENTION_DAYS,
+                           type(e).__name__, e, _SIGN_EVENTS_ARTIFACT_HINT)
 
 
 # ---------------------------------------------------------------------------

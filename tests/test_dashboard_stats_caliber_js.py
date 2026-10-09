@@ -1,35 +1,45 @@
 # -*- coding: utf-8 -*-
-"""数据总览页「账号数 / 事件数」双口径聚合的 JS 行为测试（MF-55 收口后版本）。
+"""数据看板页「账号数 / 事件数」双口径聚合的 JS 行为测试（前端翻新 P3 重锚版）。
 
 标签：F · 前端与界面守卫
-覆盖：数据总览页对 `/api/admin/sign-events` 两类数字的消费口径——事件数（`row_cnt`，
+覆盖：数据看板页对 `/api/admin/sign-events` 两类数字的消费口径——事件数（`row_cnt`，
     原始行数）由 JS 按天打桶；账号数一律取**后端终值** `accounts_stats`（窗口去重总数
     `total`、按状态去重 `by_status`、按日最终态 `by_day`），JS **不再消费 `cnt`**；
     外加各视图取数来源的静态钉点、防探针混算的 URL 防线钉、成功率分母真跑钉。
-对应实现：`web/static/js/pages/data_dashboard.js` 的 `statusKind` / `normalizeDaily` /
-    `acceptAccounts` / `rateOf` / `renderDist` / `renderCalendar` / `renderTrend`
+对应实现：`frontend/src/dashboard/model.js` 的 `statusKind` / `normalizeDaily` /
+    `acceptAccounts` / `rateOf`（**真跑**）与 `trendView` / `distView` / `calendarView` /
+    `rateKpiView`（口径静态钉）。
+    页面已于前端翻新 P3 从 legacy `web/static/js/pages/data_dashboard.js` 整页迁到 Vue；
+    本文件随口径源**重锚**到纯 JS 模块（同 calendar 页 model.js 的做法）。口径函数签名
+    由"就地改全局长态"改为"返回结果"（纯函数），故 harness 读返回值而非 `state`——
+    行为钉的仍是真跑代码，不是 grep。
 关键断言：
-    ① `statusKind` 与页面**同源**（从 data_dashboard.js 里抽真函数在 node 真跑——旧版
-       这里是页面的**不等价重写**，`already` 被写成 skip，页面与测试各说各话）；
+    ① `statusKind` 与页面**同源**（从 model.js 里抽真函数在 node 真跑——旧版这里是页面的
+       **不等价重写**，`already` 被写成 skip，页面与测试各说各话）；
        词表外的未知码必须落 `unknown` 档而不是静默 skip（否则成功率只抬不降）；
     ② `rateOf` 的分母只含 成功+失败：跳过与未知都不进（真跑断言）；
-    ③ 防探针混算的唯一防线——请求 URL 里 `stage=sign` 这 10 个字符（静态钉死）；
+    ③ 防探针混算的唯一防线——请求路径常量里 `days=30&stage=sign`（静态钉死）；
     ④ `cnt` 跨维直加（953 vs 真值 94 的来源）禁止：`normalizeDaily` 不读 `r.cnt`，
        分布/日历读后端终值；构造样本里 `by_status` 桶合计 > `total`（桶间有交集），
        钉「总数取 total 而不是桶合计」。
-依赖：⚠ **需要 node 真跑**——页面里的 statusKind/normalizeDaily/acceptAccounts/rateOf
+依赖：⚠ **需要 node 真跑**——model.js 里的 statusKind/normalizeDaily/acceptAccounts/rateOf
     按花括号配对从源码抽出后交给 node 执行；`shutil.which("node")` 取不到时整类
     `skipUnless`。静态钉点与它们同在一个类里，所以本机没有 node 时本文件**零用例执行**、
     不是「还剩静态那几条在跑」。不联网
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DASH_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_dashboard.js")
+DASH_JS = os.path.join(BASE, "frontend", "src", "dashboard", "model.js")
+#: 状态词表的唯一事实源（2026-10-04 收敛）：dashboard 的 STATUS_LABEL 由它的
+#: `STATUS_VOCAB[*].short` 派生。本守卫随之重锚——从该对象在 node 里重建
+#: STATUS_LABEL（与运行时同一派生式），口径钉点不变。
+VOCAB_JS = os.path.join(BASE, "frontend", "src", "lib", "status-vocab.js")
 NODE = shutil.which("node")
 
 DAY = "2026-09-20"
@@ -105,26 +115,32 @@ def _extract_object(src, name):
     raise AssertionError("对象 %s 未找到匹配的右花括号" % name)
 
 
-#: statusKind 的依赖词表——**从页面源码抽**，测试不再自带重写（旧版 `already`→skip
+#: statusKind 的依赖词表——**从唯一事实源抽**，测试不再自带重写（旧版 `already`→skip
 #: 的不等价重写正是登记点名的缺口之一）。
+#: 2026-10-04 状态词表收敛后，STATUS_LABEL 不再是 dashboard 内的字面量表，而是
+#: `lib/status-vocab.js` 的 STATUS_VOCAB 派生量；harness 从该对象按**与运行时相同的
+#: 派生式**重建 STATUS_LABEL，SUCCESS_ST / FAIL_ST / statusKind 仍从 dashboard 抽。
 def _status_vocab_js(src):
+    with open(VOCAB_JS, encoding="utf-8") as fh:
+        vocab_src = fh.read()
     return (
+        "var STATUS_VOCAB = " + _extract_object(vocab_src, "STATUS_VOCAB") + ";\n"
+        "var STATUS_LABEL = {};\n"
+        "for (var _vk in STATUS_VOCAB) STATUS_LABEL[_vk] = STATUS_VOCAB[_vk].short;\n"
         "var SUCCESS_ST = " + _extract_object(src, "SUCCESS_ST") + ";\n"
         "var FAIL_ST = " + _extract_object(src, "FAIL_ST") + ";\n"
-        "var STATUS_LABEL = " + _extract_object(src, "STATUS_LABEL") + ";\n"
         + _extract_function(src, "statusKind") + "\n"
     )
 
 
 def _run_page(src, tail):
-    """在 node 里跑页面真函数：词表 + statusKind + 聚合函数就位后执行 `tail`。
+    """在 node 里跑模块真函数：词表 + statusKind + 聚合函数就位后执行 `tail`。
 
-    返回末行 JSON。`tail` 是拼在函数定义之后的调用脚本。
+    返回末行 JSON。`tail` 是拼在函数定义之后的调用脚本。口径函数是纯函数（返回结果，
+    不改全局长态），故 harness 不再注入 `state`。
     """
     script = (
-        "var state = { dailyMap: {}, dailyDays: [], accountsTotal: 0,"
-        " statusAccounts: {}, dayFinal: {} };\n"
-        + _status_vocab_js(src)
+        _status_vocab_js(src)
         + _extract_function(src, "normalizeDaily") + "\n"
         + _extract_function(src, "acceptAccounts") + "\n"
         + _extract_function(src, "rateOf") + "\n"
@@ -137,17 +153,17 @@ def _run_page(src, tail):
 
 
 def _run_caliber(src):
-    """跑 normalizeDaily(ROWS) + acceptAccounts(ACCOUNTS)，回读 state 三面。"""
+    """跑两个聚合函数，回读事件桶、账号终值三面与天数。"""
     tail = (
-        "normalizeDaily(" + json.dumps(ROWS) + ");\n"
-        "acceptAccounts(" + json.dumps(ACCOUNTS) + ");\n"
-        "console.log(JSON.stringify({dailyMap: state.dailyMap, byStatus: state.statusAccounts,"
-        " accountsTotal: state.accountsTotal, dayFinal: state.dayFinal}));\n"
+        "var ev = normalizeDaily(" + json.dumps(ROWS) + ");\n"
+        "var ac = acceptAccounts(" + json.dumps(ACCOUNTS) + ");\n"
+        "console.log(JSON.stringify({dailyMap: ev.map, dailyDays: ev.days,"
+        " accountsTotal: ac.total, byStatus: ac.byStatus, dayFinal: ac.dayFinal}));\n"
     )
     return _run_page(src, tail)
 
 
-@unittest.skipUnless(NODE, "node 不可用：跳过数据总览双口径聚合的 JS 行为测试")
+@unittest.skipUnless(NODE, "node 不可用：跳过数据看板双口径聚合的 JS 行为测试")
 class DashboardStatsCaliberTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -181,8 +197,7 @@ class DashboardStatsCaliberTest(unittest.TestCase):
         mutated = json.loads(json.dumps(ROWS))
         for r in mutated:
             r["cnt"] = 999
-        tail = ("normalizeDaily(" + json.dumps(mutated) + ");\n"
-                "console.log(JSON.stringify(state.dailyMap));\n")
+        tail = ("console.log(JSON.stringify(normalizeDaily(" + json.dumps(mutated) + ").map));\n")
         self.assertEqual(_run_page(self.src, tail),
                          {DAY: {"success": 1, "fail": 0, "skip": 2, "unknown": 0, "total": 3},
                           DAY2: {"success": 1, "fail": 0, "skip": 0, "unknown": 0, "total": 1}},
@@ -195,40 +210,41 @@ class DashboardStatsCaliberTest(unittest.TestCase):
         self.assertIn("row_cnt", body)
         self.assertNotIn("r.cnt", body, "前端不得再读 cnt——跨维直加是 953 vs 真值 94 的来源")
         self.assertNotIn("byStatus", body, "页面内不再构造跨天累加的 byStatus")
-        dist = _extract_function(self.src, "renderDist")
+        dist = _extract_function(self.src, "distView")
         self.assertIn("state.statusAccounts", dist)
         self.assertIn("state.accountsTotal", dist, "「签到账号总数」读后端窗口去重终值")
         self.assertNotIn("row_cnt", dist, "分布视图不得按事件行数计数")
-        cal = _extract_function(self.src, "renderCalendar")
+        cal = _extract_function(self.src, "calendarView")
         self.assertIn("state.dayFinal", cal, "日历格读日终态分桶（染色不再 fail 优先）")
 
     def test_trend_view_reads_event_column(self):
         """趋势视图的堆叠必须取事件（行数）桶，文案用「次」。"""
-        trend = _extract_function(self.src, "renderTrend")
+        trend = _extract_function(self.src, "trendView")
         self.assertIn("state.dailyMap[day]", trend)
         self.assertIn("次", trend)
 
     def test_rate_kpi_declares_event_caliber(self):
         """成功率按事件（尝试）口径，标签/tooltip 必须写明。"""
-        rate = _extract_function(self.src, "renderRateKpi")
+        rate = _extract_function(self.src, "rateKpiView")
         self.assertIn("rateOf(m)", rate, "成功率取 normalizeDaily 的事件桶")
         self.assertIn("按事件", rate, "标签或 tooltip 必须写出「按事件（尝试）」口径")
 
     # ======== 新增聚焦钉（登记点名的两处缺口 + 状态枚举穷举） ========
     def test_probe_exclusion_pinned_in_request_url(self):
-        """防探针混算的唯一防线 = 请求 URL 里 `stage=sign` 这 10 个字符，必须钉死。
+        """防探针混算的唯一防线 = 请求路径常量里 `days=30&stage=sign`，必须钉死。
 
         sign_events 表混载签到与探针（后者同样写 success/failed），不带 stage 过滤
-        探针就会污染成功率；这条防线只剩字面量，改一个字符测试必须红。
+        探针就会污染成功率；这条防线只剩常量字面量，改一个字符测试必须红。
         """
-        load = _extract_function(self.src, "loadSign")
-        self.assertIn("/api/admin/sign-events?days=30&stage=sign", load,
-                      "数据总览的签到请求必须显式带 stage=sign（探针隔离的唯一防线）")
+        m = re.search(r'SIGN_EVENTS_PATH\s*=\s*"([^"]+)"', self.src)
+        self.assertIsNotNone(m, "model.js 缺少 SIGN_EVENTS_PATH 常量（请求路径唯一定义处）")
+        self.assertEqual(m.group(1), "/api/admin/sign-events?days=30&stage=sign",
+                         "数据看板的签到请求必须显式带 stage=sign（探针隔离的唯一防线）")
 
     def test_rate_denominator_excludes_skip_and_unknown(self):
         """`rateOf` 分母只含 成功+失败；`statusKind` 穷举且未知码落 unknown 不静默落 skip。
 
-        statusKind/rateOf 都是页面真函数（同源抽出真跑）——成功率「只抬不降」的
+        statusKind/rateOf 都是模块真函数（同源抽出真跑）——成功率「只抬不降」的
         默认分支就在这里钉死：未知码进不了分母也进不了分子，但必须**可见**。
         """
         tail = (

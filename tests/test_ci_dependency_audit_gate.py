@@ -14,10 +14,12 @@
        可变 tag 被篡改即供应链入口）。
     ③ **M42/M24 的可自动触发 workflow 不许回潮**：`signin.yml`（真签到，跑在
        CI runner 上）与带 Gitee 私钥的 `mirror.yml` 在 develop 上已删除，不得被
-       再加回来；`nightly.yml` 的排程只在默认分支生效这件事必须在文件头写明
-       （main 分支治理属所有者动作，代码侧只能留证据）。
+       再加回来；`nightly.yml` / `e2e-nightly.yml` 的排程**唯一定义点在默认分支
+       main**（`schedule` 只在默认分支生效，M24），本分支（develop）不得再持有
+       这两个文件，且 `ci.yml` 注释块必须写明该约定与 checkout 的 `ref: develop`。
 
-对应实现：`.github/workflows/ci.yml`、`nightly.yml`、`docker/Dockerfile`。
+对应实现：`.github/workflows/ci.yml`、`docker/Dockerfile`，以及默认分支上的
+`nightly.yml` / `e2e-nightly.yml`（不在本分支内）。
 关键断言：纯静态（读文本 + 轻量解析，**不调 GitHub API、不跑 yaml 解析器**——
 PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖）；活体反例：对同一
 检查器喂一份"可变 tag / 无 pip-audit / 带私钥"的合成内容必须判红。
@@ -26,7 +28,9 @@ PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖�
 import io
 import os
 import re
+import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(BASE, ".github", "workflows")
@@ -54,6 +58,50 @@ def _unpinned_refs(text):
         ref = match.group(1).split("@")[-1]
         if not _SHA.match(ref):
             bad.append(match.group(1))
+    return bad
+
+
+#: M24 修后（2026-10-05）：这两条排程的**唯一定义点在默认分支 main**。`schedule` 只在
+#: 默认分支生效，故本仓检出（develop）不得再持有它们——一旦回潮，同一个事实就有两个
+#: 定义点，两者必然漂移（本仓 B0.5 门禁的既有纪律）。
+NIGHTLY_SCHEDULED = ("nightly.yml", "e2e-nightly.yml")
+
+#: `ci.yml` 注释块必须逐一点名的约定要素。带反引号是**必须的**：`nightly.yml` 是
+#: `e2e-nightly.yml` 的裸子串，不加锚点时前者会被后者白送通过——只提 e2e 那条、
+#: 删掉 nightly 那条也没人红，守卫就漏了一半。
+_CI_CONVENTION_TOKENS = ("`nightly.yml`", "`e2e-nightly.yml`", "`ref: develop`", "默认分支")
+
+
+def _on_default_branch():
+    """本次检出是否属于**默认分支线**。本地（无 GITHUB_* 环境变量）返回 False。
+
+    为什么要它：默认分支 main 上这两个排程文件**本就该在**（那是唯一定义点），"不得持有"
+    这条只对非默认分支的检出成立。两情形算"属于"：
+      ① CI 直接检出默认分支（push 到 main：`GITHUB_REF_NAME=main`）；
+      ② PR 以默认分支为基（`GITHUB_BASE_REF=main`）——此时检出是 base(main)+head 的合并
+         树，main 侧本就有的定义点在树里，按 develop 口径判会假红。
+    本仓门禁以 develop 检出为前提（同 RetiredWorkflowGuardTest）：本地与 develop 的 CI
+    都必须真判"不得持有"。
+    """
+    return os.environ.get("GITHUB_REF_NAME") == "main" or os.environ.get("GITHUB_BASE_REF") == "main"
+
+
+def _nightly_boundary_violations(workflow_dir, ci_text, on_default_branch=False):
+    """返回违反「排程唯一定义点在默认分支」边界的项；空列表 = 未越界。
+
+    两判：① 非默认分支的检出不得出现这两份 workflow（默认分支上它们本就该在）；
+    ② `ci.yml` **注释块**须写明该约定（逐一点名两个文件、默认分支、以及排程 checkout
+    的 `ref: develop`）。只认注释行：约定要写在人读得到的地方，YAML 正文里的同名串不算。
+    """
+    bad = []
+    if not on_default_branch:
+        for name in NIGHTLY_SCHEDULED:
+            if os.path.isfile(os.path.join(workflow_dir, name)):
+                bad.append("本分支出现了排程定义点：" + name)
+    comments = "\n".join(ln for ln in ci_text.splitlines() if ln.lstrip().startswith("#"))
+    for token in _CI_CONVENTION_TOKENS:
+        if token not in comments:
+            bad.append("ci.yml 注释块缺少约定要素：" + token)
     return bad
 
 
@@ -114,7 +162,7 @@ class WorkflowShaPinTest(unittest.TestCase):
 
 
 class RetiredWorkflowGuardTest(unittest.TestCase):
-    """③ M42/M24：已退役的自动触发 workflow 不得回潮，排程限制必须写在文件头。"""
+    """③ M42：已退役的自动触发 workflow 不得回潮。"""
 
     #: develop 上已删除（commit 7c7ccf7），回潮即重新引入两个审查发现
     RETIRED = ("signin.yml", "mirror.yml")
@@ -136,18 +184,70 @@ class RetiredWorkflowGuardTest(unittest.TestCase):
         self.assertEqual(offenders, [],
                          "不得有 workflow 引用 Gitee 私钥/推送到 Gitee：%s" % offenders)
 
-    def test_nightly_documents_that_schedule_only_fires_on_default_branch(self):
-        """M24：`schedule` 是 workflow 级触发且**只在默认分支生效**。
 
-        默认分支是 main，而 nightly.yml 只在 develop 上 ⇒ 这条排程永不触发。
-        修法是 main 分支治理（所有者动作），代码侧唯一能做的就是**把这件事写在
-        文件头**——否则下一个来改 cron 的人会以为夜间门在跑。
-        """
-        text = _read(os.path.join(WORKFLOWS, "nightly.yml"))
-        self.assertIn("schedule", text)
-        self.assertRegex(text, r"默认分支",
-                         "nightly.yml 头部必须写明 schedule 只在默认分支触发（M24）")
-        self.assertIn("M24", text, "要指名发现编号，便于回查处置清单")
+class ScheduledWorkflowDefinitionPointTest(unittest.TestCase):
+    """③ M24：`schedule` 只在默认分支生效 ⇒ 两条排程的唯一定义点在 main。
+
+    修法（2026-10-05）：`nightly.yml` / `e2e-nightly.yml` 落在默认分支 main，两文件的
+    checkout 显式 `ref: develop`（排程跑活跃线）；develop 侧删除副本，避免同一事实两个
+    定义点漂移。本类钉住该边界：非默认分支的检出出现副本即红，`ci.yml` 丢掉这条约定也红。
+    """
+
+    def test_this_branch_holds_no_scheduled_workflow(self):
+        ci = _read(os.path.join(WORKFLOWS, "ci.yml"))
+        self.assertEqual(
+            _nightly_boundary_violations(WORKFLOWS, ci, _on_default_branch()), [],
+            "M24 修后 nightly.yml / e2e-nightly.yml 只住在默认分支 main（schedule 只在"
+            "默认分支生效）；非默认分支的检出出现副本 = 同一事实两个定义点，必然漂移。"
+            "且任何检出的 ci.yml 注释块都必须写明该约定与排程 checkout 的 ref: develop，"
+            "否则后人会以为排程没跑")
+
+    def test_the_default_branch_signal_comes_from_the_ci_environment(self):
+        """默认分支线判定读平台自己的信号（push 到 main / PR 以 main 为基）。"""
+        with mock.patch.dict(os.environ, {"GITHUB_REF_NAME": "main"}, clear=True):
+            self.assertTrue(_on_default_branch(), "push 到 main 必须认成默认分支线，否则假红")
+        with mock.patch.dict(os.environ, {"GITHUB_BASE_REF": "main"}, clear=True):
+            self.assertTrue(_on_default_branch(), "PR 以 main 为基时检出含 main 的定义点")
+        with mock.patch.dict(os.environ, {"GITHUB_REF_NAME": "develop",
+                                          "GITHUB_BASE_REF": "develop"}, clear=True):
+            self.assertFalse(_on_default_branch(), "develop 上不得认成默认分支线，否则漏判")
+
+    def test_the_boundary_checker_catches_a_workflow_that_came_back(self):
+        """活体反例：守卫不承重就是废的——放回一份 nightly.yml 必须判红。"""
+        good_ci = "# `nightly.yml` `e2e-nightly.yml` 默认分支 `ref: develop`"
+        with tempfile.TemporaryDirectory() as tmp:
+            with io.open(os.path.join(tmp, "nightly.yml"), "w", encoding="utf-8") as f:
+                f.write("on:\n  schedule:\n    - cron: '0 6 * * *'\n")
+            bad = _nightly_boundary_violations(tmp, good_ci)
+            # 默认分支上这两个文件本就该在——同一判定不得在那里判红（否则 main 假红）
+            on_default = _nightly_boundary_violations(tmp, good_ci, on_default_branch=True)
+        self.assertEqual(bad, ["本分支出现了排程定义点：nightly.yml"],
+                         "检查器必须抓住回潮到非默认分支的排程文件")
+        self.assertEqual(on_default, [], "默认分支上排程文件本就该在，不得判红")
+
+    def test_the_boundary_checker_catches_a_ci_comment_without_the_convention(self):
+        """活体反例：`ci.yml` 里的约定被删掉也必须判红（否则这条约定无人守）。"""
+        missing_all = [
+            "ci.yml 注释块缺少约定要素：`nightly.yml`",
+            "ci.yml 注释块缺少约定要素：`e2e-nightly.yml`",
+            "ci.yml 注释块缺少约定要素：`ref: develop`",
+            "ci.yml 注释块缺少约定要素：默认分支",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_nightly_boundary_violations(tmp, "# 只有 fast 轨，没别的话"),
+                             missing_all, "检查器必须抓住 ci.yml 里丢失的定义点约定")
+            # 约定要写在注释里：YAML 正文里的同名串不算（判据是注释行）
+            self.assertEqual(_nightly_boundary_violations(
+                tmp, "name: `nightly.yml` `e2e-nightly.yml` `ref: develop` 默认分支"),
+                missing_all, "非注释行里的名字不算'写进注释块'，不得白送通过")
+
+    def test_the_boundary_checker_is_not_fooled_by_the_substring_pair(self):
+        """活体反例：`nightly.yml` 是 `e2e-nightly.yml` 的裸子串——只提后者不得白送前者过。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = _nightly_boundary_violations(
+                tmp, "# `e2e-nightly.yml` 在默认分支，checkout 用 `ref: develop`")
+        self.assertEqual(bad, ["ci.yml 注释块缺少约定要素：`nightly.yml`"],
+                         "锚点丢了就会被裸子串白送通过，nightly.yml 的提及被删也不红")
 
 
 if __name__ == "__main__":

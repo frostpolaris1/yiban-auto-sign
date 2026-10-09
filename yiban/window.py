@@ -40,13 +40,20 @@ env 映射一律由调用方取好传进来——这正是上面"两个入口刻
 （见 `remaining_sec` / `is_open` / `is_closed` 的 `now_dt` 形参）。
 """
 import datetime
+import logging
 import os
+
+logger = logging.getLogger("yiban.window")
 
 DEFAULT_START = (6, 30)
 DEFAULT_END = (7, 50)
 DEFAULT_EDGE_SEC = 60
 EDGE_MIN_SEC = 0
 EDGE_MAX_SEC = 300
+#: 旧键 `YIBAN_WINDOW_EDGE_SEC` 的合法上界（秒）。旧键只有一枚、前后对称，历史上界
+#: 比新键宽（600）；新键沿用 `EDGE_MAX_SEC`（300）。统一两条上界属产品决定，未裁前
+#: 任一数值都不得改动，且两侧都不得静默吞掉越界值（工单 yz90）。
+LEGACY_EDGE_MAX_SEC = 600
 #: 缓冲合计占窗口宽度的比例上限：收缩后有效窗口 = 窗口宽度的 (1 - 此值)。
 #: 取 0.2 是"精修仍有意义"与"窗口被吃空"之间的余量，也远小于前端/保存侧
 #: 单边 20%（合计 40%）的预防上限，故正常路径下根本不会走到收缩。
@@ -83,15 +90,21 @@ def parse_window(env):
 
 
 def parse_edges(env):
-    """→ (front_sec, back_sec)。旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）优先映射。"""
-    front = _int_or_none(env, "YIBAN_WINDOW_EDGE_FRONT_SEC")
-    back = _int_or_none(env, "YIBAN_WINDOW_EDGE_BACK_SEC")
-    legacy = _int_or_none(env, "YIBAN_WINDOW_EDGE_SEC", 0, 600)
-    if front is None:
-        front = legacy if legacy is not None else DEFAULT_EDGE_SEC
-    if back is None:
-        back = legacy if legacy is not None else DEFAULT_EDGE_SEC
-    return front, back
+    """→ (front_sec, back_sec)：窗口两端各让出的秒数。
+
+    同一边的新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先。
+    旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补对应新键缺席的那一边。
+    新键合法域 0~300；旧键合法域 0~600（历史上界更宽，见 LEGACY_EDGE_MAX_SEC）。
+    键缺失、无法解析或越界都算缺席，该边取旧键（若可用）否则 DEFAULT_EDGE_SEC。
+    取值被拒（无法解析或越界）时各出一条 WARNING，点名键、原值与合法域。
+    """
+    legacy = _int_or_none(env, "YIBAN_WINDOW_EDGE_SEC", EDGE_MIN_SEC, LEGACY_EDGE_MAX_SEC,
+                          fallback=DEFAULT_EDGE_SEC)
+    fill = legacy if legacy is not None else DEFAULT_EDGE_SEC
+    front = _int_or_none(env, "YIBAN_WINDOW_EDGE_FRONT_SEC", fallback=fill)
+    back = _int_or_none(env, "YIBAN_WINDOW_EDGE_BACK_SEC", fallback=fill)
+    return (fill if front is None else front,
+            fill if back is None else back)
 
 
 def retry_hm(env=None):
@@ -261,15 +274,39 @@ def to_dt(base_date, minute):
 
 
 # ---- 内部实现 ----
-def _int_or_none(env, key, lo=EDGE_MIN_SEC, hi=EDGE_MAX_SEC):
+def _announce_rejected(key, raw, bounds, adopted):
+    """取值被拒时的唯一告警式（与 `yiban.engine.schedule._env_int` 同形）。
+
+    `bounds` 为 None 表示"无法解析"，否则是 `(下界, 上界)`；`adopted` 是最终采用值。
+    告警必须说全键、原值、合法域与采用值：静默回落会让 `.env` 里写的值与实际生效值
+    不一致，而日志里没有任何原因（工单 yz90）。
+    """
+    if bounds is None:
+        logger.warning("配置 %s=%r 非法，改用 %s", key, raw, adopted)
+    else:
+        logger.warning("配置 %s=%s 超出范围 [%s, %s]，改用 %s",
+                       key, raw, bounds[0], bounds[1], adopted)
+
+
+def _int_or_none(env, key, lo=EDGE_MIN_SEC, hi=EDGE_MAX_SEC, *, fallback):
+    """读一个窗口边界键 → 整数；键缺席（未写或空串）返回 None。
+
+    键写了但取值被拒（无法解析或不在 [lo, hi] 内）时，先出声再返回 None；`fallback`
+    是该边被拒后实际采用的值，只用于告警、不改变本函数的返回。缺席不出声——没写键
+    不是错误（工单 yz90）。
+    """
     raw = str(env.get(key, "") or "").strip()
     if not raw:
         return None
     try:
         v = int(raw)
     except ValueError:
+        _announce_rejected(key, raw, None, fallback)
         return None
-    return v if lo <= v <= hi else None
+    if not (lo <= v <= hi):
+        _announce_rejected(key, raw, (lo, hi), fallback)
+        return None
+    return v
 
 
 def _minute_of_day(dt):

@@ -35,12 +35,20 @@ def _sign_position_data():
             "Msg": "",
             "Position": [
                 {
+                    "Id": "pos-A",
+                    "Type": "campus",
+                    "Title": "任务A",
                     "Name": "任务A",
+                    "LngLat": "118.05,31.05",
                     "Points": ["118.0,31.0", "118.1,31.0", "118.1,31.1", "118.0,31.1"],
                     "Address": "点A",
                 },
                 {
+                    "Id": "pos-B",
+                    "Type": "campus",
+                    "Title": "任务B",
                     "Name": "任务B",
+                    "LngLat": "118.25,31.25",
                     "Points": ["118.2,31.2", "118.3,31.2", "118.3,31.3", "118.2,31.3"],
                     "Address": "点B",
                 },
