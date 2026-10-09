@@ -655,6 +655,36 @@ class InstallRootCheckoutSubPathGateTest(InstallRootCheckoutGateTest):
         self.assertFalse(os.path.isdir(os.path.join(destroot, "tmp")),
                          "拒装不得往暂存前缀里写任何东西")
 
+    def test_drift_list_is_still_reported_when_the_m01_gate_refuses(self):
+        """M01 拒装时，执行件漂移清单**仍必须打印**（工单 yiban-auto-sign-ybg8）。
+
+        生产实测：M01 在检出属主不合时 `exit 1`，而漂移对账原先排在它**之后** ⇒ 现场只
+        看到归属报错，看不到"有几个执行件已与仓库不符"。一个哨兵脚本缺失、一份旧版
+        wrapper（口令经 `export` 进子进程树）就这么共存两周无人发现——**检测器被门自己
+        挡在门外**。
+
+        本门钉住顺序：门拒装**的同时**，输出里必须有每个不符目标的 checksum 行。
+        反例（把只读收集段挪回 M01 之后即红）：`checksum mismatch` 断言消失。
+        提前收集只读、零改动，故另断言 M01 仍在执行检出内脚本**之前**拦下。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)                          # 顶层合规
+        os.chmod(os.path.join(self.checkout, "scripts"), 0o775)  # 让 M01 拒装
+        destroot = os.path.join(self.tmp, "destdir")
+        destpath = destroot + self.dest.replace("/", os.sep)
+        os.makedirs(os.path.dirname(destpath), exist_ok=True)
+        _write(destpath, "#!/bin/bash\n# 现网手工漂移件（模拟哨兵缺失这类）\n")
+        r = self._install_from_checkout(destroot=destroot)
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"组可写检出必须拒装：{out}")
+        self.assertIn("每个被 root 读取/执行的路径", out,
+                      f"拒绝原因必须来自 M01 门，不是别的检查：{out}")
+        self.assertIn("checksum mismatch", out,
+                      f"M01 拒装时漂移清单仍须打印（检测器不得被门挡住）：{out}")
+        self.assertIn(self.dest, out, f"漂移行要点名目标路径：{out}")
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下")
+
     def test_unprivileged_staging_install_with_destdir_is_not_blocked(self):
         """非 root + DESTDIR = 头注释与 README 承诺的无特权暂存用法 ⇒ 门不得挡它。
 
