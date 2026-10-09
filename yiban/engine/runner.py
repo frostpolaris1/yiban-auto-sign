@@ -624,8 +624,14 @@ def main(argv=None):
     # 宿主 exit 2 / 容器补签轮均会重跑一次——学校延迟放位时仍有兜底
     # （无点位账号 1 次即止、幂等无害）。
     # supplementing（平台 State=5，补签中）同样归入跳过计数：**不是失败**，不该触发失败
-    # 告警与退出码 1。它与 no_position 的区别在"未了结"：补签中不进 UNDONE_STATUSES，
-    # 故不为它重跑补签轮（结果未定、重跑也改不了，只会多一次真实登录）。
+    # 告警与退出码 1。它与 no_position 的区别在"未了结"：补签中不进 UNDONE_STATUSES。
+    # **但这条只挡住读状态文件的闸门**：队列里它是 `failed`（`TASKS_OPEN_STATES` 之一），
+    # 而宿主/容器的补签闸门先读队列（`state_io.has_undone_accounts_today` →
+    # `db.task_open_count`）⇒ 补签轮仍会起，且 `_second_run` 让 `requeue_final=True`
+    # 把 `final:` 档一并回炉，该账号当日仍多一次真实登录（与 no_position 同量级；
+    # 旧文本判据下 State=5 落 no_position，也一样重跑一次，故本批不是回归）。
+    # 要不要"彻底不重试"见工单（需定策：补齐签轮的 open 行判据，或让它也进
+    # `_second_run_drop_done` 的剔除集）。
     has_real_failure = False
     has_executed = False
     # 窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
