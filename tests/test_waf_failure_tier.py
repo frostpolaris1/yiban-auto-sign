@@ -187,9 +187,12 @@ class WafTokenBoundaryTierTest(unittest.TestCase):
                          "前置：本条消息不得含 WAF 词元，否则挑战腿的断言是空转")
         self.assertTrue(executor_v3._is_risk_signal(CHALLENGE_ONLY_MESSAGE),
                         "挑战形态是风控信号，不得漏判")
+        # 生产文案必须仍触发信号。它自带 "WAF" 字样，故**由 WAF 腿满足**——钉挑战腿的是
+        # 上面那对（前置断言 + CHALLENGE_ONLY_MESSAGE）。本条只钉"线上那句 raise 的文案
+        # 不会掉出信号面"（文案改写即红）。
         self.assertTrue(executor_v3._is_risk_signal(
             yiban_challenge.CHALLENGE_DETECTED_MESSAGE),
-            "挑战检测命中的响亮失败是风控信号，不得漏判")
+            "生产用的挑战文案必须仍是风控信号（本条可能由 WAF 腿满足）")
 
     def test_credential_message_is_not_a_risk_signal(self):
         """凭据类失败**不是**风控信号：判成风控会把整条出口速率砍半（工单 zggs 的根因）。
