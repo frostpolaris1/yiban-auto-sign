@@ -638,11 +638,16 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
 # ---------------------------------------------------------------------------
 # 签到两个接口的形状与三态
 # ---------------------------------------------------------------------------
-def _sign_position_data(*, msg="", positions=None, rng=None):
+def _sign_position_data(*, state=0, msg="", positions=None, rng=None):
+    """signPosition 信封：判定走 `State`（平台 stateEnum），`msg` 只作日志原文。
+
+    默认 `state=0`（可签到）＝照常取点位并提交；判定用例逐值传 `state`。
+    """
     now = int(signin.datetime.now().timestamp())
     return {
         "code": 0,
         "data": {
+            "State": state,
             "Msg": msg,
             "IsNeedPhoto": 2,
             "Position": positions if positions is not None else [{
@@ -724,10 +729,16 @@ class SigninShapeTest(unittest.TestCase):
                          "application/x-www-form-urlencoded; charset=UTF-8")
 
     def test_three_states_and_window_skips(self):
+        # 判定逐值走 `State`（平台 stateEnum）：3 已签到 / 4 已更改（班委手动补签，2026-10-08
+        # 实拍形态：Msg="已更改"、Position 为空）/ 2 无需签到；`msg` 只作日志原文。
         cases = [
-            (_sign_position_data(msg="今日已签到"), signin.STATUS_ALREADY, "已签到"),
-            (_sign_position_data(msg="今日无需签到"), signin.STATUS_NO_TASK, "无需签到"),
-            (_sign_position_data(positions=[]), signin.STATUS_NO_POSITION, "未找到签到位置数据"),
+            (_sign_position_data(state=3, msg="已签到"), signin.STATUS_ALREADY, "已签到"),
+            (_sign_position_data(state=4, msg="已更改", positions=[]),
+             signin.STATUS_ALREADY, "已签到"),
+            (_sign_position_data(state=2, msg="今日无需签到", positions=[]),
+             signin.STATUS_NO_TASK, "无需签到"),
+            (_sign_position_data(state=1, positions=[]), signin.STATUS_NO_POSITION,
+             "未找到签到位置数据"),
             (_sign_position_data(rng={}), signin.STATUS_SKIPPED_NORANGE, "时间窗口缺失"),
             (_sign_position_data(rng={"StartTime": 1, "EndTime": 2}),
              signin.STATUS_SKIPPED_WINDOW, "未在签到时间内"),

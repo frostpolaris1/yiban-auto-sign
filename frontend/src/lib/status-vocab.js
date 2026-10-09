@@ -53,6 +53,9 @@ export var STATUS_VOCAB = {
   skipped_window: { full: "时段外跳过", short: "时段外跳过", icon: "ban", tone: "warn" },
   skipped_norange: { full: "窗口缺失", short: "窗口缺失", icon: "ban", tone: "warn" },
   no_position: { full: "无点位", short: "无点位", icon: "ban", tone: "warn" },
+  // 补签中：平台 signPosition 的 State=5（补签申请或流程进行中，结果未定）。
+  // 语气档 warn 与服务端 DISPLAY 同档：不是完成，也不是"有意不签"。
+  supplementing: { full: "补签中（结果未定）", short: "补签中", icon: "clock", tone: "warn" },
   paused: { full: "账号暂停", short: "账密暂停", icon: "circle-pause", tone: "bad" },
   user_cancelled: { full: "用户已取消", short: "用户取消", icon: "circle-stop", tone: "muted" },
   pending: { full: "待签", short: "待签", icon: "clock", tone: "info" },
