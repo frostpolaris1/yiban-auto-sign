@@ -29,12 +29,13 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 期望的 schema 顶（迁移登记表的最后一项）：新增迁移时本文件不必再改
 SCHEMA_TOP = migrations._MIGRATIONS[-1][0]
 
-#: 七个子命令（`docs/dev/cli.md` §1 的目标形态）
-SUBCOMMANDS = ("sign", "probe", "config", "capacity", "state", "db", "version")
+#: 子命令（`docs/dev/cli.md` §1 的目标形态）
+SUBCOMMANDS = ("sign", "probe", "config", "capacity", "state", "egress", "db", "version")
 
 #: `--json` 的期望退出码：临时环境里 0 账号（config 判配置错误=1）、sign 同理=1
 JSON_EXPECTED_RC = {
-    "sign": 1, "probe": 0, "config": 1, "capacity": 0, "state": 0, "db": 0, "version": 0,
+    "sign": 1, "probe": 0, "config": 1, "capacity": 0, "state": 0, "egress": 0,
+    "db": 0, "version": 0,
 }
 
 EXPIRED_STATE_FILE = "sched-run-2020-01-01.json"
@@ -120,7 +121,7 @@ class CliContractTest(unittest.TestCase):
                 r = _run([cmd, "--help"], self.env)
                 self.assertEqual(r.returncode, 0, f"{cmd} --help 退出码应为 0：{r.stderr[-300:]}")
                 self.assertIn(cmd, r.stdout)
-        # 根用法里要列全七个子命令（agent 靠它发现能力）
+        # 根用法里要列全每个子命令（agent 靠它发现能力）
         for cmd in SUBCOMMANDS:
             with self.subTest(usage=cmd):
                 self.assertIn(cmd, root.stdout)

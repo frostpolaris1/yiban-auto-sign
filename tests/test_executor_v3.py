@@ -1377,6 +1377,40 @@ class LimiterWiringTest(_Base):
         self.assertIn(("on_risk_signal", OWNER), trace)
         self.assertNotIn("on_success", [k for k, _ in trace])
 
+    def test_credential_failure_leaves_the_real_bucket_untouched(self):
+        """口令错不得让整条出口降速：真实限速器下桶值与半开都不动（工单 zggs 的 e2e 钉）。
+
+        `on_risk_signal` 会 `rate ÷= 2` 并进半开，且经 10s 落库持久化、重启装回。
+        生产实证：一个口令错的账号砍掉整条出口一半速率，两天三次后 fallback 只剩 1/4。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=1)
+        self._seed_v(8)
+        limiter = token_bucket.EgressLimiter(rate=1.0)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "登录失败: 账号或密码错误",
+                                            False, "failed")):
+            self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
+                         limiter=limiter)
+        self.assertAlmostEqual(limiter.bucket(OWNER).rate, 1.0, places=9,
+                               msg="口令错是账号自己的问题，不是平台限速：出口速率不得变")
+        self.assertFalse(limiter.is_half_open(OWNER, self.fc.mono),
+                         "不得进半开（半开期只放单通道）")
+
+    def test_waf_message_backs_off_the_real_bucket(self):
+        """上一条的非空对照：真 WAF 文案必须让真实限速器降速，否则那条断言是空转。"""
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=1)
+        self._seed_v(8)
+        limiter = token_bucket.EgressLimiter(rate=1.0)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "风险访问 拦截", False, "failed")):
+            self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
+                         limiter=limiter)
+        self.assertAlmostEqual(limiter.bucket(OWNER).rate, 0.5, places=9,
+                               msg="WAF 文案必须触发乘性回退（这一路必须活着）")
+        self.assertTrue(limiter.is_half_open(OWNER, self.fc.mono))
+
     def test_persist_loop_writes_every_interval(self):
         limiter = _PermissiveLimiter()
         ctx = SimpleNamespace(limiter=limiter, egress=OWNER)
