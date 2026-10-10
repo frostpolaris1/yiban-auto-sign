@@ -231,7 +231,7 @@ onMounted(search);
   }
 }
 .audit-dash {
-  color: var(--t-light);
+  color: var(--t-weak);
 }
 .audit-actions {
   display: flex;
@@ -246,12 +246,12 @@ onMounted(search);
 }
 .audit-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 700;
   color: var(--t-base);
 }
 .audit-meta {
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   color: var(--t-muted);
 }
 .audit-pagesize {
