@@ -1127,7 +1127,7 @@ cd /opt/yiban-auto-sign
 git pull --ff-only          # 首次用 git clone 部署才有 .git；压缩包部署请重新上传覆盖
 ```
 
-> 面向脚本/agent 的统一入口是 `python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
+> 面向脚本/agent 的统一入口是 `python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `egress` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
 
 ## 本地调试
 

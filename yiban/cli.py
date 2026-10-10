@@ -27,6 +27,7 @@
 | `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
 | `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
 | `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
+| `egress` | 出口令牌桶状态 / 速率复位（默认只读；`--reset` 不加 `--yes` 只报告） | `command` `ok` `dry_run` `action` `db_file` `target_rate` `target_rate_source` `rows` `changes` `applied` `written` | 0 正常 / 1 库读不了或出口不在库中 / 2 开关互斥 |
 | `db` | 数据库维护（状态/完整性/备份/恢复） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `restore_from` `fingerprint` `backup_user_version` `backup_size_bytes` `pre_restore_copy` `dry_run` | 0 / 1 / 2 |
 | `version` | 打印版本 | `command` `version` `python` `user_version` | 0 |
 
@@ -45,7 +46,8 @@
 输入：`argv`（子命令 + 选项）与环境变量/.env（敏感值只从环境读）。
 输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码见上表。
 调用谁：`yiban.engine.runner`（`sign`/`probe`）、`yiban.state_gc`（`state`）、
-`yiban.store.db`（`db`）、配置检查与容量计算（`config`/`capacity`）。
+`yiban.store.db`（`db`）、`yiban.engine.egress_admin`（`egress`）、
+配置检查与容量计算（`config`/`capacity`）。
 谁调用：`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py` 兼容壳、
 `run.sh`、`docker/scheduler.py`，以及 web 手动签到经 `scripts/signin.py --only`
 （`web/services/manual_sign.py`）拉起。
@@ -62,7 +64,7 @@ import sys
 from yiban import __version__ as RELEASE_VERSION
 from yiban import config_loader, state_gc, window
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import cli_support, db_maintenance, runner
+from yiban.engine import cli_support, db_maintenance, egress_admin, runner
 from yiban.engine import schedule as schedule_mod
 from yiban.engine.cli_support import (
     _emit_json,
@@ -81,7 +83,7 @@ from yiban.store import purge_guard
 
 USAGE = (
     "用法: python -m yiban.cli <子命令> [选项]\n"
-    "子命令: sign | probe | config | capacity | state | db | version\n"
+    "子命令: sign | probe | config | capacity | state | egress | db | version\n"
     "（见 `python -m yiban.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
 )
 
@@ -492,7 +494,7 @@ def _build_parser():
                 "本命令不读 stdin、不做交互确认。 " + _PATHS_HELP),
     )
     subs = parser.add_subparsers(
-        dest="command", metavar="{sign,probe,config,capacity,state,db,version}")
+        dest="command", metavar="{sign,probe,config,capacity,state,egress,db,version}")
     sub_parsers = {}
 
     def _sub(name, **kwargs):
@@ -547,6 +549,26 @@ def _build_parser():
     p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
     p = _sub(
+        "egress", help="出口令牌桶状态 / 速率复位（默认只读）",
+        description=("列出各出口的令牌桶速率与上次落库时刻；--reset <出口> 或 --reset-all "
+                     "把速率复位到引擎出厂速率（默认只报告，--yes 才写库）。出口按"
+                     "角色+槽位指定（fallback / worker-2 / single，与日志行的 [fallback] "
+                     "同一个词）——输出里不回含主机名的原键。"
+                     + _PATHS_HELP),
+    )
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--status", action="store_true", help="只读列出各出口桶状态（默认）")
+    group.add_argument("--reset", metavar="出口", default=None,
+                       help="复位该出口的速率（默认只报告，--yes 才写）")
+    group.add_argument("--reset-all", action="store_true",
+                       help="复位所有出口的速率（默认只报告，--yes 才写）")
+    p.add_argument("--rate", default=None, metavar="值",
+                   help="复位到的目标速率（attempt/s；默认 = 引擎出厂速率）")
+    p.add_argument("--yes", action="store_true", help="真的写库（默认只报告计划）")
+    p.add_argument("--dry-run", action="store_true", help="只报告不写（默认行为，显式声明用）")
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
         "db", help="数据库维护（状态 / 完整性 / 备份 / 恢复）",
         description=("默认 --status（只读：user_version、表清单、账号数、文件大小）；"
                      "--integrity 跑 PRAGMA integrity_check；--backup 写一致性副本"
@@ -592,7 +614,7 @@ def _dispatch(args, extra, subs):
         # stderr 用法 + 退出码 2
         raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd,
                           kind="usage_extra_args")
-    # `--dry-run` / `--yes` 只有 state 与 db 定义（其余子命令没有这两个开关）
+    # `--dry-run` / `--yes` 只有 state / egress 与 db 定义（其余子命令没有这两个开关）
     if getattr(args, "dry_run", False) and getattr(args, "yes", False):
         raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd,
                           kind="usage_conflict")
@@ -601,6 +623,10 @@ def _dispatch(args, extra, subs):
         # db 维护族（快照 / 备份）实现在 yiban/engine/db_maintenance.py：入口模块只做
         # 路径解析与分派，避免体量门继续膨胀（见该模块头部说明）。
         return db_maintenance.cmd_db(args, _paths(view))
+    if cmd == "egress":
+        # 同族的独立变更轴（出口桶状态的只读快照与速率复位）在
+        # yiban/engine/egress_admin.py，理由同 db 族（见该模块头部说明）。
+        return egress_admin.cmd_egress(args, _paths(view), view)
     handlers = {
         "config": _cmd_config,
         "capacity": _cmd_capacity,
