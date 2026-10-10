@@ -510,14 +510,15 @@
   "YIBAN_SIGN_DIST": {
     "type": "enum",
     "domain": [
+      "front",
       "uniform",
       "normal"
     ],
-    "default": "uniform",
+    "default": "front",
     "group": [
       "调度"
     ],
-    "doc": "分布模式",
+    "doc": "分布模式（front=提前铺完，默认；uniform=均匀铺满整窗；normal=钟形高峰）",
     "sensitive": false,
     "web_editable": true,
     "tier": "master",
