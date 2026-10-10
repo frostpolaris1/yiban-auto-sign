@@ -35,8 +35,8 @@
     "file": "assets/shell-dGJbQ6eu.js",
     "name": "shell"
   },
-  "_status-vocab-DDwGXPz2.js": {
-    "file": "assets/status-vocab-DDwGXPz2.js",
+  "_status-vocab-C0wP_145.js": {
+    "file": "assets/status-vocab-C0wP_145.js",
     "name": "status-vocab"
   },
   "_theme-CIzwvb-s.js": {
@@ -63,7 +63,7 @@
     "name": "vendor-vue"
   },
   "accounts.html": {
-    "file": "assets/accounts-CF3robhm.js",
+    "file": "assets/accounts-DujWmlid.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -74,7 +74,7 @@
       "_vendor-element-plus-CPzj5VBG.js",
       "_ep-theme-rKpzsE0T.js",
       "_shell-dGJbQ6eu.js",
-      "_status-vocab-DDwGXPz2.js",
+      "_status-vocab-C0wP_145.js",
       "_accountform-C_UU9qDD.js"
     ]
   },
@@ -108,7 +108,7 @@
     ]
   },
   "dashboard.html": {
-    "file": "assets/dashboard-Cp7bNvDy.js",
+    "file": "assets/dashboard-f6kACgNC.js",
     "name": "dashboard",
     "src": "dashboard.html",
     "isEntry": true,
@@ -116,7 +116,7 @@
       "_theme-CIzwvb-s.js",
       "_vendor-vue-GZUw20XP.js",
       "_shell-dGJbQ6eu.js",
-      "_status-vocab-DDwGXPz2.js"
+      "_status-vocab-C0wP_145.js"
     ]
   },
   "index.html": {
@@ -149,7 +149,7 @@
     ]
   },
   "logs.html": {
-    "file": "assets/logs-L1ANp7PK.js",
+    "file": "assets/logs-DG7RmO0V.js",
     "name": "logs",
     "src": "logs.html",
     "isEntry": true,
@@ -161,10 +161,10 @@
       "_ep-theme-rKpzsE0T.js",
       "__plugin-vue_export-helper-BDNMzG2s.js",
       "_shell-dGJbQ6eu.js",
-      "_status-vocab-DDwGXPz2.js"
+      "_status-vocab-C0wP_145.js"
     ],
     "css": [
-      "assets/logs-IqodjY8K.css"
+      "assets/logs-f-WdYfpQ.css"
     ]
   },
   "myaccounts.html": {

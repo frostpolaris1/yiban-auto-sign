@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ALL_LOG_LEVEL,
+  WARN_LOG_LEVEL,
   buildExportUrl,
   buildLogsQuery,
   eventCountText,
@@ -18,41 +20,62 @@ function ev(over: Partial<LogEvent>): LogEvent {
 
 describe("infoText（三分支：检索态 / 截断态 / 总数）", () => {
   it("无检索无截断时只报总数", () => {
-    expect(infoText({ truncated: false, returned: 12, total_lines: 12, dropped_lines: 0, q: "" })).toBe("共 12 行");
+    expect(infoText({ truncated: false, returned: 12, total_lines: 12, dropped_lines: 0, q: "", collapsed_lines: 0 })).toBe("共 12 行");
   });
 
   it("截断时报「已截断：显示 X / 共 Y 行」", () => {
-    expect(infoText({ truncated: true, returned: 80, total_lines: 500, dropped_lines: 0, q: "" })).toBe(
-      "已截断：显示 80 / 共 500 行",
-    );
+    expect(
+      infoText({ truncated: true, returned: 80, total_lines: 500, dropped_lines: 0, q: "", collapsed_lines: 0 }),
+    ).toBe("已截断：显示 80 / 共 500 行");
   });
 
   it("**检索态**报「X 行匹配 / 共 Y 行」（判据取服务端回显的 q）", () => {
-    expect(infoText({ truncated: false, returned: 1, total_lines: 1, dropped_lines: 0, q: "签到" })).toBe(
-      "1 行匹配 / 共 1 行",
-    );
+    expect(
+      infoText({ truncated: false, returned: 1, total_lines: 1, dropped_lines: 0, q: "签到", collapsed_lines: 0 }),
+    ).toBe("1 行匹配 / 共 1 行");
     // 检索态下截断标志不再参与（匹配数即本页全部匹配）
-    expect(infoText({ truncated: true, returned: 3, total_lines: 3, dropped_lines: 0, q: "k" })).toBe(
-      "3 行匹配 / 共 3 行",
-    );
+    expect(
+      infoText({ truncated: true, returned: 3, total_lines: 3, dropped_lines: 0, q: "k", collapsed_lines: 0 }),
+    ).toBe("3 行匹配 / 共 3 行");
   });
 
   it("有被丢弃的行时追加提示（dropped_lines 是切行模型丢掉的，不是截断）", () => {
-    expect(infoText({ truncated: true, returned: 80, total_lines: 500, dropped_lines: 3, q: "" })).toBe(
-      "已截断：显示 80 / 共 500 行（另有 3 行未计入）",
-    );
+    expect(
+      infoText({ truncated: true, returned: 80, total_lines: 500, dropped_lines: 3, q: "", collapsed_lines: 0 }),
+    ).toBe("已截断：显示 80 / 共 500 行（另有 3 行未计入）");
+  });
+
+  it("级别档收起过行时追加「已收起 N 行 INFO／DEBUG」——不许把收起读成没有那些行", () => {
+    expect(
+      infoText({ truncated: false, returned: 2, total_lines: 2, dropped_lines: 0, q: "", collapsed_lines: 5 }),
+    ).toBe("共 2 行（已收起 5 行 INFO／DEBUG）");
+    // 与 dropped_lines 两条提示可叠加
+    expect(
+      infoText({ truncated: false, returned: 2, total_lines: 2, dropped_lines: 1, q: "", collapsed_lines: 5 }),
+    ).toBe("共 2 行（已收起 5 行 INFO／DEBUG）（另有 1 行未计入）");
   });
 });
 
 describe("buildLogsQuery", () => {
-  it("date 必带；q 与 all 仅在生效时下发", () => {
-    expect(buildLogsQuery("2026-10-03", "", false)).toBe("/api/logs?date=2026-10-03");
-    expect(buildLogsQuery("2026-10-03", "  timeout  ", false)).toBe("/api/logs?date=2026-10-03&q=timeout");
-    expect(buildLogsQuery("2026-10-03", "", true)).toBe("/api/logs?date=2026-10-03&all=1");
+  it("级别档取值是契约常量；默认档位不在前端（由服务端回执决定）", () => {
+    expect(WARN_LOG_LEVEL).toBe("warn");
+    expect(ALL_LOG_LEVEL).toBe("all");
   });
 
-  it("date 为空时不下发该键（由服务端解析最近有日志的一天）", () => {
+  it("首屏不带 level 参数（档位以服务端回执为准）；用户切换后才显式下发", () => {
+    expect(buildLogsQuery("2026-10-03", "", false)).toBe("/api/logs?date=2026-10-03");
     expect(buildLogsQuery("", "", false)).toBe("/api/logs");
+    expect(buildLogsQuery("2026-10-03", "", false, ALL_LOG_LEVEL)).toBe("/api/logs?date=2026-10-03&level=all");
+    expect(buildLogsQuery("2026-10-03", "", false, WARN_LOG_LEVEL)).toBe("/api/logs?date=2026-10-03&level=warn");
+  });
+
+  it("q 与 all 仅在生效时下发", () => {
+    expect(buildLogsQuery("2026-10-03", "  timeout  ", false, ALL_LOG_LEVEL)).toBe(
+      "/api/logs?date=2026-10-03&q=timeout&level=all",
+    );
+    expect(buildLogsQuery("2026-10-03", "", true, ALL_LOG_LEVEL)).toBe(
+      "/api/logs?date=2026-10-03&all=1&level=all",
+    );
   });
 });
 

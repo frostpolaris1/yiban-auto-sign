@@ -267,6 +267,19 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         global db
         import db  # 裸模块名：pyproject 的 pythonpath 已含 scripts
 
+        # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
+        # `init_db` 的既有语义——已存在连接时它复用旧连接、跳过 JSON→SQLite 迁移，
+        # 于是本类的 accounts.json→SQLite 迁移被整段跳过、`/api/accounts` 回空表
+        # （判据见 test_accounts_response_has_no_plaintext_phone 的"账号未按预期装载"断言）。
+        # 这是**绕过**，不是根因修法：根因单 `yiban-auto-sign-mgq5` 修好后应删除本段。
+        # 口径是「机制复现 ＋ 加固」：机制用已知留下连接的模块确定性复现（旧树红、新树绿），
+        # 不是"全量实测伪红"。加固的校验者见
+        # tests/test_run_events_inspection.py::LeftoverConnectionFixtureGuardTest。
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+
         spec = importlib.util.spec_from_file_location(
             "webapp_mask_contract", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
@@ -319,7 +332,9 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(path), "临时按天日志未按夹具写入")
 
     def test_logs_response_has_no_plaintext_phone(self):
-        body = self._admin_client().get("/api/logs").get_data(as_text=True)
+        # level=all：脱敏必须覆盖**每一级**的行。默认档（warn）会收起含号的 INFO 行，
+        # 只测默认档就变成"没测到那些行"（覆盖退化），故显式要全量档。
+        body = self._admin_client().get("/api/logs?level=all").get_data(as_text=True)
         self.assertNotIn(PHONE, body, "日志响应含 11 位明文手机号")
         self.assertNotIn("+8613800138000", body, "+86 前缀形态未遮")
         self.assertNotIn("138 0013 8000", body, "空格分段形态未遮")
