@@ -1257,9 +1257,9 @@ def _slot_to_label(slot_min):
 def _estimate_slot(phone):
     """预计签到时段（实现见 web/services/accounts_data.py）。
 
-    账号读入口、`.env` 路径与读取器、有效窗口视图都按调用
-    时刻现取本模块的（测试会打桩 `read_env` / `_sign_window` / `edge_config` /
-    `load_accounts`，也会赋值 `ENV_FILE`）。
+    转发包装保留原有参数签名；实现已改读台账 `sign_tasks.run_at`，**不再消费**这几个
+    注入名（`load_accounts` / `read_env` / `ENV_FILE` / `sign_window_bounds`）。取数来源
+    经 `web.services.accounts_data.today_plan_map` → `db.task_run_at_by_phone`，打桩它即可。
     """
     return _accounts_data._estimate_slot(
         phone, load_accounts, read_env, ENV_FILE, sign_window_bounds)

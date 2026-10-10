@@ -547,14 +547,11 @@ def main(argv=None):
                                "阈值已按每账号 3 次尝试预留重试储备"),
                 ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
             ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
-        # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
-        for acc in accounts:
-            t = schedule.get(acc.phone)
-            if t:
-                state_io._write_sign_state(
-                    acc.phone, STATUS_PENDING,
-                    f"计划 {t.strftime('%H:%M')}", scheduled=t.strftime("%H:%M:%S"),
-                )
+        # 执行时按时间点排序（**保留**：本序经 v3 计划的 sequence 间接影响 run_at，
+        # 其口径收敛属 Phase 2/D3，见工单 m9bi）。展示不再写状态文件：计划时刻的唯一
+        # 事实源是台账 `sign_tasks.run_at`，web 读取时生成「计划 HH:MM」（见
+        # `web/routes/my.py`、`web/routes/accounts_api.py`）。此前在此写 v2 scheduled
+        # 让网页显示与真正执行的 v3 计划成为两个算法（uniform 下实测差 47 分钟）。
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
         # 调度快照标记：见 `_write_sched_snapshot`；标记不可写时 web 端回退旧分界，不影响签到
         with contextlib.suppress(OSError):
