@@ -352,8 +352,12 @@ bash scripts/backup.sh
   `token_bucket.downgrade_all`，另批处理）。**单出口的速率复位已有受支持入口**
   （2026-10-09）：`python -m yiban.cli egress --reset <出口> --yes`。
 - **`_alert_slow_sign`（慢签到告警）**：v3 未接入（v2 有）。
-- **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径，
-  v3 下**总容量 ≈ 该值 × 出口数**。
+- **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径。
+  引擎预检的**总阈值**按**生效执行体数 K** 缩放（`egress.effective_worker_count`：清单拉起
+  列表行数 / 清单缺失时旧 `YIBAN_WORKERS` 口径 / 没被派发过恒 1）。K≥2 走计划口径
+  `capacity_accounts`，K=1 保留 `retry_reserve` 口径。K 个执行体共享出口时该口径会高估：
+  声明出口数低于 `ceil(K×(1/(avg+gap))/λ)`（λ = `YIBAN_EGRESS_RATE`）⇒ 预检另报一条
+  『出口预算不足，实际吞吐受出口限制（出口 N1 < 需要 N2）』。
 - **gap 默认开关**待实测裁决（纪律 2）；上游风控按账号还是按出口计数**尚未验证**。
 - **巡检选中态回落（`needsExecutorFallback`）的接线在 e2e 环境不可达（L7）**：该分支在
   "带 `executor` 的请求返回的 `rounds` 不含该执行体"时触发，三条路径：
