@@ -2,14 +2,16 @@
 """`yiban/engine/planner.py`（双粒度分片 Planner）与 `schedule.capacity_accounts_v3` 的契约用例。
 
 标签：A · 调度：计划与分片
-覆盖：计划层的全部形状契约：确定性与可重放、与执行体数 K
-   解耦、落点有界、分层零方差与微槽/相位两级自由度、跨天重排、小 N
-   前载、自暂停零占位、重复号折叠、自选硬约束与双层溢出（先到先得）、三模式与正态密度/削峰、压缩模式与元数据、plan_stats
-   摘要与直方图基点、capacity_accounts_v3 取值、幂等落库与降级信号。
+覆盖：计划层的全部形状契约：确定性与可重放、`uniform`/`normal` 与执行体数 K
+   解耦、`front`（默认）提前铺完与安全铺点间距、落点有界、分层零方差与微槽/相位两级自由度、
+   跨天重排、小 N 前载、自暂停零占位、重复号折叠、自选硬约束与双层溢出（先到先得）、
+   分布三态与正态密度/削峰、压缩模式与元数据、plan_stats 摘要与直方图基点、
+   capacity_accounts_v3 取值、幂等落库与降级信号。
 对应实现：yiban/engine/planner.py（build_plan、write_plan、has_plan、plan_stats）、yiban/engine/schedule.py（capacity_accounts_v3、planner_config）、yiban/window.py、yiban/store/queue_store
    与 clock_meta（计划行与元数据的落库处）。
-关键断言：计划层与执行体数无关：改 executors 只改 owner，一个 run_at
-   都不许动——否则换一台机器重排会把当天已跑完的账号再排一遍。分片归属必须由H(phone‖day)
+关键断言：`uniform`/`normal` 下计划层与执行体数无关：改 executors 只改 owner，一个 run_at
+   都不许动——否则换一台机器重排会把当天已跑完的账号再排一遍。`front`（默认）**有意**依赖
+   K：安全铺点速率随并发数放大，铺点分片数 = 首个 K 能及时消化的人数段。分片归属必须由H(phone‖day)
    决定并与 hrw
    同口径（用例自算哈希核对）。自选片与直方图桶键的基点一律取「窗口起点」而非收缩后的有效窗口起点——网页片号与计划桶号必须同号，否则用户选的片和实际落的片错位。库不可用时
    has_plan 读作「当日无计划」让执行体降级动态领取，而 write_plan
@@ -27,6 +29,7 @@
 import contextlib
 import datetime
 import hashlib
+import math
 import os
 import shutil
 import tempfile
@@ -61,6 +64,9 @@ _TOUCHED = (
     "YIBAN_ALLOW_TIME_PREF", "YIBAN_SCHEDULE_SIGMA_MIN_PCT",
     "YIBAN_SCHEDULE_SIGMA_MAX_PCT", "YIBAN_SCHEDULE_MU_MIN_PCT",
     "YIBAN_SCHEDULE_MU_MAX_PCT",
+    # `front` 的安全铺点速率吃单账号周期 avg+gap：两者泄漏会让 front 用例的
+    # `used_slices` 与期望值错位（单跑绿、全量红），必须同批还原。
+    "YIBAN_AVG_ATTEMPT_SEC", "YIBAN_ACCOUNT_GAP_MAX",
 )
 DAY = "2026-09-23"
 NEXT_DAY = "2026-09-24"
@@ -194,10 +200,16 @@ class DeterminismTest(_Base):
 
 class IndependenceOfKTest(_Base):
     def test_run_at_identical_owner_changes_with_executors(self):
-        """与 K 无关：改 executors 只改 owner，不改任何 run_at（计划层与执行体数解耦）。"""
+        """`uniform`/`normal` 与 K 无关：改 executors 只改 owner，不改任何 run_at。
+
+        `uniform`/`normal` 的计划层与执行体数必须解耦——否则换一台机器重排会把当天已跑完
+        的账号再排一遍。此处**显式**取 uniform：`front`（默认）有意依赖 K（见
+        `FrontFillTest.test_front_run_at_depends_on_executor_count`），那条依赖不是本用例
+        的判据。
+        """
         accs = _accounts(200)
-        one = self.plan(accs, executors=["worker-0@hostA"])
-        three = self.plan(accs, executors=EXECUTORS)
+        one = self.plan(accs, executors=["worker-0@hostA"], dist="uniform")
+        three = self.plan(accs, executors=EXECUTORS, dist="uniform")
         self.assertEqual([r["run_at"] for r in one], [r["run_at"] for r in three])
         self.assertEqual([r["vshard"] for r in one], [r["vshard"] for r in three])
         self.assertEqual({r["owner"] for r in one}, {"worker-0@hostA"})
@@ -231,16 +243,20 @@ class WindowBoundsTest(_Base):
         })
         win = self.bounds()
         self.assertEqual((win.lo_min, win.hi_min), (362.0, 437.0))
-        rows = self.plan(_accounts(400))
+        rows = self.plan(_accounts(400), dist="uniform")
         self._assert_in_window(rows)
         self.assertEqual(max(_slice_of(r["run_at"], win.lo_min) for r in rows), 74)
 
 
 class StratifiedTest(_Base):
     def test_seven_hundred_accounts_fill_seventy_slices_exactly(self):
-        """N=700、N_slices=70 ⇒ 每片恰 10 人（`slice_i = i mod 70` 的零方差分层）。"""
+        """N=700、N_slices=70 ⇒ 每片恰 10 人（`slice_i = i mod 70` 的零方差分层）。
+
+        显式取 `uniform`：零方差铺满 70 片是均匀模式的语义；`front` 只铺前段（见
+        `FrontFillTest`），默认值改为 front 后必须在这里固定住 uniform 的逐值行为。
+        """
         eff_lo = self.eff_lo_min()
-        rows = self.plan(_accounts(700))
+        rows = self.plan(_accounts(700), dist="uniform")
         counts = {}
         for r in rows:
             k = _slice_of(r["run_at"], eff_lo)
@@ -249,17 +265,21 @@ class StratifiedTest(_Base):
         self.assertEqual(set(counts.values()), {10})
 
     def test_small_n_is_front_loaded(self):
-        """小 N 前载是预期行为（早签留足重试余量），不是"没铺满窗口"的 bug。"""
+        """小 N 前载是预期行为（早签留足重试余量），不是"没铺满窗口"的 bug。
+
+        显式取 `uniform` 钉住逐值形状：`front` 的小 N 更前载（多账号共片），另见
+        `FrontFillTest`。
+        """
         eff_lo = self.eff_lo_min()
-        three = self.plan(_accounts(3))
+        three = self.plan(_accounts(3), dist="uniform")
         self.assertEqual(sorted(_slice_of(r["run_at"], eff_lo) for r in three), [0, 1, 2])
-        thirty = self.plan(_accounts(30))
+        thirty = self.plan(_accounts(30), dist="uniform")
         self.assertEqual(sorted(_slice_of(r["run_at"], eff_lo) for r in thirty), list(range(30)))
 
     def test_user_paused_accounts_are_not_planned(self):
         """自暂停账号零占位（与 v2 `build_schedule` 同口径）：不出现、也不留空位。"""
         eff_lo = self.eff_lo_min()
-        rows = self.plan(_accounts(30, paused=(0, 5)))
+        rows = self.plan(_accounts(30, paused=(0, 5)), dist="uniform")
         self.assertEqual(len(rows), 28)
         self.assertNotIn(_phone(0), {r["phone"] for r in rows})
         self.assertEqual(sorted(_slice_of(r["run_at"], eff_lo) for r in rows), list(range(28)))
@@ -340,7 +360,7 @@ class PrefHardTest(_Base):
         窗口 06:00~07:20 前裁 300s 后，第 0 片（06:00~06:05）整片落在有效窗口之外。
         """
         eff_lo = self.eff_lo_min()
-        rows = self.plan(_accounts(10), prefs=_prefs([_phone(0)], 0))
+        rows = self.plan(_accounts(10), prefs=_prefs([_phone(0)], 0), dist="uniform")
         self.assertEqual(len(rows), 10)
         self.assertEqual(sorted(_slice_of(r["run_at"], eff_lo) for r in rows), list(range(10)))
 
@@ -493,10 +513,116 @@ class ModeTest(_Base):
         self.assertLess(flat["rate_peak"], plain["rate_peak"], "峰值被削")
 
     def test_uniform_density_reports_flat_peak(self):
-        rows = self.plan(_accounts(700))
+        """均匀模式无密度整形：φ_max = 1/整窗、α = 0。显式取 uniform（front 亦无整形）。"""
+        os.environ["YIBAN_SIGN_DIST"] = "uniform"
+        rows = self.plan(_accounts(700), dist="uniform")
         st = planner.plan_stats(rows, self.cfg(), DAY)
+        self.assertEqual(st["dist"], "uniform")
         self.assertAlmostEqual(st["phi_max"], 1.0 / 4200.0, places=12)
         self.assertEqual(st["flatten_alpha"], 0.0)
+
+
+#: 生产窗口（2026-10-10 首轮实测口径）：有效窗口 06:31~07:45 = 74 分钟 = 74 个 1 分钟分片。
+#: avg=3、gap=10 是名下缺省（YIBAN_AVG_ATTEMPT_SEC / YIBAN_ACCOUNT_GAP_MAX），显式写入
+#: 以免别的用例泄漏覆盖。
+PROD_WINDOW_ENV = {
+    "YIBAN_SIGN_START": "06:30",
+    "YIBAN_SIGN_END": "07:50",
+    "YIBAN_WINDOW_EDGE_FRONT_SEC": "60",
+    "YIBAN_WINDOW_EDGE_BACK_SEC": "300",
+    "YIBAN_AVG_ATTEMPT_SEC": "3",
+    "YIBAN_ACCOUNT_GAP_MAX": "10",
+}
+
+
+class FrontFillTest(_Base):
+    """`front`（"提前铺完"，默认）：铺进容量允许的最早一段，余窗留作重试与兜底。
+
+    `front` 只改自由账号分层所用的分片数，自选（pinned）账号落点完全不变。铺点分片数
+    = `ceil(ceil(n_free/K)×(avg+gap)/60)`，K = 执行体数（声明名册行数）。整窗装不下时
+    `used_slices` 退化成 `n_slices`，`front` 与 `uniform` 逐字段相同（设计降级路径）。
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.environ.update(PROD_WINDOW_ENV)
+
+    def _place(self, n, k):
+        """铺 n 个自由账号（K 个执行体），返回 (rows, 升序落点秒)。"""
+        execs = [f"worker-{i}@hostA" for i in range(k)]
+        rows = self.plan(_accounts(n), executors=execs, dist="front")
+        eff_lo = self.eff_lo_min()
+        return rows, sorted(_off_sec(r["run_at"], eff_lo) for r in rows)
+
+    def test_average_spacing_never_faster_than_the_gate(self):
+        """**校验者**：排序后相邻 run_at 的平均间距 ≥ (avg+gap)/K。
+
+        平均值 = (最大 run_at − 最小 run_at) / (n−1)。只断平均值，**不断最小值**：
+        分片内微槽与相位由哈希派生，同一秒内可能落两个账号，个例很密属正常；平均值
+        才是"计划是否跑在闸门前面"的观测量。
+        """
+        for n, k in ((183, 2), (1200, 6)):
+            with self.subTest(n=n, k=k):
+                _, offs = self._place(n, k)
+                avg_gap = (offs[-1] - offs[0]) / (len(offs) - 1)
+                self.assertGreaterEqual(avg_gap, (3 + 10) / k)
+
+    def test_span_within_capacity_allowed_segment(self):
+        """跨度判据：last − first ≤ span_needed + 一片宽（末片内相位可跨一点点）。"""
+        for n, k in ((183, 2), (1200, 6)):
+            with self.subTest(n=n, k=k):
+                _, offs = self._place(n, k)
+                span_needed = math.ceil(n / k) * (3 + 10)
+                self.assertLessEqual(offs[-1] - offs[0], span_needed + planner.SLICE_SEC)
+
+    def test_production_scale_leaves_thirty_minute_tail(self):
+        """183 账号 / K=2（首轮生产量级）：最后一个 run_at 距有效窗口末 ≥ 30 分钟。"""
+        win = self.bounds()
+        _, offs = self._place(183, 2)
+        last_min = self.eff_lo_min() + offs[-1] / 60.0
+        self.assertGreaterEqual(win.hi_min - last_min, 30.0,
+                                "尾部余量不足 30 分钟，出问题时来不及兜底")
+
+    def test_degrades_to_uniform_when_span_exceeds_window(self):
+        """span_needed ≥ 整窗 ⇒ `front` 与 `uniform` 逐字段相同（设计降级路径）。"""
+        # n=1000、K=2 ⇒ span_needed = 500×13 = 6500s > 4440s 整窗 ⇒ used=n_slices
+        execs = ["worker-0@hostA", "worker-1@hostA"]
+        front = self.plan(_accounts(1000), executors=execs, dist="front")
+        uni = self.plan(_accounts(1000), executors=execs, dist="uniform")
+        self.assertEqual(front, uni)
+
+    def test_front_run_at_depends_on_executor_count(self):
+        """`front` 有意依赖 K：改 executors（K=1 vs K=3）会改 run_at。
+
+        安全铺点速率随并发数放大 ⇒ 计划落点随之变化。这是设计语义，不是缺陷；
+        `uniform`/`normal` 的解耦契约另在 `IndependenceOfKTest` 钉住。
+        """
+        accs = _accounts(600)
+        one = self.plan(accs, executors=["worker-0@hostA"], dist="front")
+        three = self.plan(accs, executors=EXECUTORS, dist="front")
+        self.assertNotEqual([r["run_at"] for r in one], [r["run_at"] for r in three])
+
+    def test_pinned_accounts_are_unaffected_by_front(self):
+        """自选账号落点与 uniform 完全一致：`front` 只改自由账号分层所用的分片数。"""
+        phones = [_phone(i) for i in range(40)]
+        prefs = _prefs(phones[:20], 35)
+        front = {r["phone"]: r["run_at"]
+                 for r in self.plan(_accounts(40), dist="front", prefs=prefs)}
+        uni = {r["phone"]: r["run_at"]
+               for r in self.plan(_accounts(40), dist="uniform", prefs=prefs)}
+        for p in phones[:20]:
+            self.assertEqual(front[p], uni[p], "自选账号 %s 的落点被 front 改动了" % p)
+
+    def test_default_dist_is_front(self):
+        """不传 dist、环境无该键：`build_plan` 与 `plan_stats` 都按 front 出图。"""
+        self.assertNotIn("YIBAN_SIGN_DIST", os.environ)
+        self.assertEqual(self.cfg()["dist"], "front")
+        rows = self.plan(_accounts(183), executors=["worker-0@hostA", "worker-1@hostA"])
+        self.assertEqual(planner.plan_stats(rows, self.cfg(), DAY)["dist"], "front")
+        eff_lo = self.eff_lo_min()
+        n_slices = planner._slice_count(self.cfg())
+        max_slice = max(_slice_of(r["run_at"], eff_lo) for r in rows)
+        self.assertLess(max_slice, n_slices - 1, "默认未走 front：落点铺满了整窗")
 
 
 class CompressionTest(_Base):
@@ -527,7 +653,7 @@ class PlanStatsTest(_Base):
         self.assertEqual(set(st["owners"]), set(EXECUTORS))
 
     def test_histogram_buckets_are_five_minute_slices(self):
-        rows = self.plan(_accounts(700))
+        rows = self.plan(_accounts(700), dist="uniform")
         st = planner.plan_stats(rows)
         # 桶键 = 自选片号（相对窗口起点的 5 分钟格，与 time_prefs.slot_min 同号）：
         # 第 0 格（06:00~06:05）被前裁吃空，其后 14 格各 50 人

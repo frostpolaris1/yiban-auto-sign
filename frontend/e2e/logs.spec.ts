@@ -335,7 +335,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 下拉取两栈共通的 data-select-field 锚点（legacy 自研控件根 / Vue 包裹层都用它），
   // 不用 getByText——选项文本与触发器文本会同时命中（strict mode 冲突）。
   await expect(page.locator('[data-select-field="ss-order"]')).toContainText("列表顺序");
-  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("均匀分布");
+  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("提前铺完");
   await expect(page.locator("#ss-gap")).toHaveValue("10");
   await expect(page.locator(".time-pair")).toContainText("06:30 至 07:50");
 
@@ -432,10 +432,21 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.getByRole("tab", { name: "签到调度", exact: true }).click();
   await expect(page.locator("#set-panel-schedule")).toBeVisible();
 
-  // ⑧a 画布按分布态降级：默认「均匀分布」下不渲染 210px 钟形画布（均匀态没有钟形可画，
-  //     画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
-  //     data-dist-state 是重设计新增的稳定锚点。
+  // ⑧a 画布按分布态降级：默认「提前铺完」（front）下不渲染 210px 钟形画布（非正态态没有钟形
+  //     可画，画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
+  //     front / uniform / normal 三态都写进 data-dist-state 这个稳定锚点。
   const distViz = page.locator("[data-dist-viz]");
+  await expect(distViz).toHaveAttribute("data-dist-state", "front");
+  await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
+  await expect(distViz).toContainText("提前铺完");
+
+  // ⑧a-1 分布三态：切到「均匀分布」仍无画布（uniform 亦无钟形可画），文案随之改口。
+  const distSelect = page.locator('[data-select-field="ss-dist"] .el-select__wrapper');
+  const pickDist = async (name: string): Promise<void> => {
+    await distSelect.click();
+    await page.getByRole("option", { name }).click();
+  };
+  await pickDist("均匀分布");
   await expect(distViz).toHaveAttribute("data-dist-state", "uniform");
   await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
   await expect(distViz).toContainText("均匀分布");
@@ -444,8 +455,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   //     在窄屏有误触风险，默认一律只读，按下显式「编辑」按钮才可操作。门必须是真的状态
   //     切换（不是视觉覆盖）：只读态指针事件不得到达处理函数、键盘微调不生效、滑杆真禁用。
   //     峰尖拖拽只在正态分布下武装，故先把分布切到「正态分布」再验。
-  await page.locator('[data-select-field="ss-dist"] .el-select__wrapper').click();
-  await page.getByRole("option", { name: "正态分布（钟形拟人）" }).click();
+  await pickDist("正态分布（钟形拟人）");
   await expect(distViz).toHaveAttribute("data-dist-state", "normal");
   const canvas = page.locator("[data-dist-viz] canvas");
   await expect(canvas).toBeVisible();

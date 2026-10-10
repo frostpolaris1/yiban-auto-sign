@@ -18,9 +18,10 @@
    签到调度
    ========================================================================= */
 
-/* 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显。 */
+/* 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显。
+   `dist` 缺省是 `front`（提前铺完），与 `schedule.DEFAULT_SIGN_DIST` 及名册缺省同一个值。 */
 export var SCHEDULE_DEFAULTS = {
-  order: "sequence", dist: "uniform", edge: 60, start: "06:30", end: "07:50",
+  order: "sequence", dist: "front", edge: 60, start: "06:30", end: "07:50",
   muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
 };
 
