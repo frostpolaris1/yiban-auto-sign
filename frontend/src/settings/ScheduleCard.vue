@@ -20,7 +20,8 @@ import DistViz from "./DistViz.vue";
 /* 签到调度卡（设置页第一分区）。legacy = components/settings-schedule.js + settings-dist-viz.js。
    自研控件四件套按既定方向换 EP 基础件：排序/分布 → el-select；掐头去尾 → el-slider；
    签到窗口 → el-time-picker(is-range)；周末签到与自选开关 → el-switch（A15 统一为开关）。
-   正态 μ/σ 的可见编辑器仍由 DistViz 构建（原生 input，legacy 同款，不在四件套内）。
+   正态 μ/σ 的可见编辑器仍由 DistViz 构建（散布/半径是原生 number input；峰值中心已换
+   EP el-time-picker，提交式预览）。
 
    2026-10-04 P3 收官重设计（本文件）：
    · 布局——字段按语义重排，≤720 单列 / 721–1439 双列 / ≥1440 三列（密度随视口放大）；

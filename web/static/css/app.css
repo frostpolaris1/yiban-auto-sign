@@ -808,12 +808,8 @@ html {
   vertical-align: -0.125em;
 }
 
-/* 原生 date/time 控件在暗色下指示图标为黑色，反色保证可见 */
-[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
-[data-theme="dark"] input[type="time"]::-webkit-calendar-picker-indicator {
-  filter: invert(1);
-  cursor: pointer;
-}
+/* 原生 date/time 控件已悉数换为 Element Plus（el-date-picker / el-time-picker），
+   本仓库不再有原生 date/time 输入；原先给它们做的暗色指示图标反色规则随之删除。 */
 
 /* ==========================================================================
    16. 数据总览页（pages/data_dashboard.html + pages/data_dashboard.js）
@@ -4450,10 +4446,8 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 }
 .dist-viz-editors .field-label { font-size: 12px; }
 .dist-viz-editors .input { width: 64px; }
-.dist-viz-editors .input[type="time"] { width: 88px; }
-/* 原生时钟图标会压住 88px 输入框里 HH:MM 的尾字（选型页实测）；此处时间入口只做
-   快速键入，落地版完整的"选时间"体验走自研 time-field 一族，图标无存在必要 */
-.dist-viz-editors .input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+/* 峰值中心已换 EP el-time-picker（原生 input[type=time] 退役）：原先针对原生时间框的
+   宽度与「隐藏 UA 时钟图标」两条规则随之删除；picker 宽度在组件内联给定。 */
 .dist-viz-legend {
   margin: 6px 0 0;
   font-size: 12px;
