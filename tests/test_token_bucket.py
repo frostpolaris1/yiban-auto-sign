@@ -191,6 +191,37 @@ class AimdTest(unittest.TestCase):
             self.assertLessEqual(lim.snapshot()["e0"]["rate"], token_bucket.RATE_MAX)
 
 
+class SharesTest(unittest.TestCase):
+    """出口预算均分：子桶速率 = 出口级 rate ÷ n；份额**不夹到 `RATE_MIN`**（否则合计 > λ）。"""
+
+    def test_share_rate_and_burst_are_outlet_divided_by_shares(self):
+        lim = token_bucket.EgressLimiter(rate=2.0, burst=6, shares=4)
+        self.assertAlmostEqual(lim.share_rate, 0.5, places=9)
+        self.assertAlmostEqual(lim.share_burst, 1.5, places=9)
+        self.assertAlmostEqual(lim.bucket("e0").rate, 0.5, places=9,
+                               msg="子桶速率是份额，不是出口级速率")
+        self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], 2.0, places=9,
+                               msg="snapshot/persist 报**出口级**速率")
+
+    def test_share_below_rate_min_is_not_floored(self):
+        """出口级 λ=0.2、n=64 ⇒ 份额 0.003125 < RATE_MIN：夹回 RATE_MIN 会让合计 = 64×0.2 > λ。"""
+        lim = token_bucket.EgressLimiter(rate=0.2, burst=1, shares=64)
+        self.assertAlmostEqual(lim.share_rate, 0.2 / 64, places=9)
+        self.assertLess(lim.share_rate, token_bucket.RATE_MIN)
+        self.assertAlmostEqual(lim.bucket("e0").rate, 0.2 / 64, places=9)
+
+    def test_aimd_rescales_share_around_outlet_rate(self):
+        lim = token_bucket.EgressLimiter(rate=4.0, burst=1, shares=2)
+        lim.bucket("e0")
+        self.assertAlmostEqual(lim.on_risk_signal("e0", 0.0), 2.0, places=9,
+                               msg="风控打在出口级速率上（减半）")
+        self.assertAlmostEqual(lim.bucket("e0").rate, 1.0, places=9,
+                               msg="子桶份额随出口级速率同步缩")
+        lim.downgrade_all(1.0)
+        self.assertAlmostEqual(lim.rate, token_bucket.RATE_MIN, places=9)
+        self.assertAlmostEqual(lim.bucket("e0").rate, token_bucket.RATE_MIN / 2, places=9)
+
+
 class EwmaTest(unittest.TestCase):
     """外环：目标跟踪的连续微调，单次幅度夹 ±20%。"""
 
@@ -477,13 +508,15 @@ class PersistTest(unittest.TestCase):
             self.assertFalse(queue_store.save_egress_state("e0", 1.0, 6, 0.0))
 
     def test_13c_limiter_persist_and_restore(self):
+        """落库写**出口级** `rate`/`burst`，`tat` **不落库**；装回只取 `rate`（子桶从 0 起算）。"""
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
         for _ in range(6):
             lim.acquire("e0", 0.0)
         self.assertTrue(lim.persist("e0"))
         saved = queue_store.load_egress_state("e0")
         self.assertAlmostEqual(saved["rate"], 1.0, places=9)
-        self.assertAlmostEqual(saved["tat"], 6.0, places=9)
+        self.assertAlmostEqual(saved["tat"], 0.0, places=9,
+                               msg="tat 不落库（多进程不共享令牌位置，写进去只会互相覆盖）")
 
         self.assertTrue(lim.persist("e0", stamp="2026-09-23 07:00:00"))
         row = db.get_conn().execute(
@@ -493,19 +526,20 @@ class PersistTest(unittest.TestCase):
 
         fresh = token_bucket.EgressLimiter()
         self.assertTrue(fresh.restore_from_store("e0", now=6.0),
-                        "崩溃重启后必须能装回速率与 TAT")
+                        "崩溃重启后必须能装回出口级速率")
         self.assertAlmostEqual(fresh.snapshot()["e0"]["rate"], 1.0, places=9)
-        self.assertAlmostEqual(fresh.snapshot()["e0"]["tat"], 6.0, places=9)
+        self.assertAlmostEqual(fresh.snapshot()["e0"]["tat"], 0.0, places=9,
+                               msg="装回只取速率：令牌位置不跨进程共享，从 0 起算")
 
         empty = token_bucket.EgressLimiter()
         self.assertFalse(empty.restore_from_store("e404", now=0.0),
                          "无记录 → 保持出厂速率")
         self.assertEqual(empty.snapshot(), {})
 
-    def test_13d_restore_clamps_foreign_clock_tat(self):
-        """持久化的 TAT 可能与本次进程不同时钟域（如 monotonic 跨重启归零），
-        超前的 TAT 会把桶误锁很久——装回时必须夹到 `now + T`。"""
+    def test_13d_restore_ignores_persisted_tat(self):
+        """`tat` 不再跨进程共享：库里即使存着（别人的）大 TAT，装回也不用它。"""
         queue_store.save_egress_state("e0", 1.0, 6, 1e9)
         lim = token_bucket.EgressLimiter()
         self.assertTrue(lim.restore_from_store("e0", now=100.0))
-        self.assertLessEqual(lim.snapshot()["e0"]["tat"], 100.0 + 1.0)
+        self.assertAlmostEqual(lim.snapshot()["e0"]["tat"], 0.0, places=9)
+        self.assertTrue(lim.acquire("e0", 0.0), "新鲜令牌：装回后立即放行一次")

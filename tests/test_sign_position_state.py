@@ -405,7 +405,7 @@ class _V3Base(unittest.TestCase):
                 mock.patch.object(executor_v3, "_persist_loop", _never), \
                 mock.patch.object(executor_v3, "_refiller", _refill), \
                 mock.patch.object(executor_v3, "_make_limiter",
-                                  lambda channels: _PermissiveLimiter()), \
+                                  lambda channels, shares=1: _PermissiveLimiter()), \
                 mock.patch.object(executor_v3, "_make_global_limiter",
                                   lambda: token_bucket.GlobalLimiter("")), \
                 mock.patch.object(executor_v3, "_make_gap_gate", lambda: _PermissiveGate()):

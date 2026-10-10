@@ -285,7 +285,7 @@ class _Harness(unittest.TestCase):
             mock.patch.object(runner.cli_support, "_acquire_run_lock",
                               lambda *a, **k: None),
             mock.patch.object(executor_v3, "_persist_loop", _never),
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: _Limiter()),
+            mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: _Limiter()),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: _Gate()),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),

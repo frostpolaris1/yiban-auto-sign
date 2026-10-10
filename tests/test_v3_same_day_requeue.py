@@ -233,7 +233,7 @@ class _Base(unittest.TestCase):
                     queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
             patches.append(mock.patch.object(executor_v3, "_refiller", _refill))
         patches += [
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: limiter),
+            mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: limiter),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: gate),
