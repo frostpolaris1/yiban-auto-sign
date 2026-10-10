@@ -110,6 +110,9 @@ ENV_FALLBACK_ENABLE = "YIBAN_FALLBACK_ENABLE"
 ENV_MANIFEST = "YIBAN_EXECUTORS"
 #: 旧口径的并行执行体数量键（迁移来源之一，也是"清单缺失时"的回退读取口径）
 ENV_WORKER_COUNT = "YIBAN_WORKERS"
+#: 本进程的执行体身份键（监督进程在派发点注入）。**不是配置键**：它只作"本进程有没有
+#: 被派发过"的判据（见 `effective_worker_count`），网页/`.env` 都不写它。
+ENV_EXECUTOR_ID = "YIBAN_EXECUTOR_ID"
 #: 旧三键全量：任一存在且清单缺失 ⇒ 需要一次性迁移写回
 LEGACY_KEYS = (ENV_WORKER_COUNT, ENV_WORKER_LIST, ENV_FALLBACK)
 
@@ -595,6 +598,29 @@ def launch_slots(env=None):
     """拉起列表的槽位号列表（语义同 `launch_rows`；None = 清单不可用，回退旧口径）。"""
     rows = launch_rows(env)
     return None if rows is None else [r["slot"] for r in rows]
+
+
+def effective_worker_count(env=None):
+    """本轮**生效**的并行执行体数（容量预检按它缩放总阈值）。唯一取法，三级：
+
+    1. 无 `YIBAN_EXECUTOR_ID` ⇒ 本进程没被派发过，生效数恒 1。`runner` 的派发条件保证
+       这件事：清单在场、或 `--workers N>1`，二者有一个才会拉子进程；没派发就只有一个
+       执行体（本进程自己）。故这一条不是估计，是派发语义的推论。
+    2. 清单拉起列表在场 ⇒ 取其行数（与 `runner` 的数法逐字相同：子进程继承监督进程的
+       同一份清单，停用/兜底行不在内）。
+    3. 清单缺失/非法 ⇒ 旧 worker 口径 `legacy_worker_count`：宿主 `run.sh` 决定
+       `--workers N` 读的就是这个键，合法域与回退也同源（越界/非法 ⇒ 1）。
+
+    与派发同源是硬要求：`--workers N` 被监督进程从子进程 argv 剔除，子进程只能从环境
+    复原生效数；数错一处，容量预检的告警就在多执行体下少算 N 倍。
+    """
+    env = os.environ if env is None else env
+    if not str(env.get(ENV_EXECUTOR_ID, "") or "").strip():
+        return 1
+    rows = launch_rows(env)
+    if rows is not None:
+        return max(1, len(rows))
+    return max(1, legacy_worker_count(env))
 
 
 def executor_label(rtype, slot=None):

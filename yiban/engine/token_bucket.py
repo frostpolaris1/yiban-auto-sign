@@ -115,12 +115,16 @@ DEFAULT_MIN_EXEC_GAP_SEC = config_loader.default_required("YIBAN_MIN_EXEC_GAP")
 _FALSY_LITERALS = ("0", "false", "off", "no")
 
 
-def _clamp(rate, floor=None):
+def clamp_rate(rate, floor=None):
     """速率夹到 `[floor, RATE_MAX]`（attempt/s）；非法输入回退出厂速率。
 
     `floor` 缺省是出口级速率的域下界 `RATE_MIN`。子桶份额（出口级 rate ÷ n）可以低于它，
     故限速器构造子桶时传 `SHARE_RATE_FLOOR`——夹回出口级下界会让 n 个进程合计超过 λ
     （工单 2cwd 的预算均分就靠这一点）。
+
+    桶的每个入口都调本函数，故"配置里写的速率"与"实际执行的速率"可以是两个数（
+    `YIBAN_EGRESS_RATE` 的名册域比桶域宽）。按**出口级生效速率**算的地方（容量预检的
+    出口预算告警）必须经过本函数，否则越界配置会让结论偏一个方向：偏大漏报、偏小多报。
     """
     floor = RATE_MIN if floor is None else floor
     try:
@@ -146,7 +150,7 @@ class EgressBucket:
     def __init__(self, egress, rate=RATE_DEFAULT, burst=DEFAULT_BURST, tat=0.0,
                  rate_min=None):
         self.egress = egress
-        self.rate = _clamp(rate, rate_min)
+        self.rate = clamp_rate(rate, rate_min)
         self.burst = float(burst)
         self.tat = float(tat)
 
@@ -213,7 +217,7 @@ class EgressLimiter:
                  shares=1):
         self.shares = max(1, int(shares))
         #: **出口级**速率（attempt/s）：AIMD 与落库用它；子桶速率 = 本值 ÷ shares
-        self.rate = _clamp(rate)
+        self.rate = clamp_rate(rate)
         #: **出口级**突发额度（尝试数）：子桶额度 = 本值 ÷ shares
         self.burst = float(burst)
         self.manual = bool(manual)
@@ -356,7 +360,7 @@ class EgressLimiter:
         st = queue_store.load_egress_state(egress)
         if not st:
             return False
-        self.rate = _clamp(st.get("rate"))
+        self.rate = clamp_rate(st.get("rate"))
         burst = float(st.get("burst") or 0.0)
         if burst > 0:
             self.burst = burst
@@ -376,7 +380,7 @@ class EgressLimiter:
         """
         self.bucket(egress)
         old = self.rate
-        new = min(_clamp(rate), self._ceiling)  # `_clamp` 已把速率夹到 `RATE_MIN` 以上
+        new = min(clamp_rate(rate), self._ceiling)  # `clamp_rate` 已把速率夹到域下界以上
         self.rate = new
         share = self.share_rate
         for b in self._buckets.values():
@@ -468,12 +472,12 @@ def apply_ewma(prev_rate, risk_ratio_hat, r_target, beta=EWMA_BETA):
     与 AIMD 的分工与次序（调用方必须照此排）：先处理 AIMD 事件、再跑本函数，且只在两次尝试
     之间调整（单次尝试中途变速率会让半程限速的状态不一致）；人工接管的出口不再调用本函数。
     """
-    prev = _clamp(prev_rate)
+    prev = clamp_rate(prev_rate)
     if not r_target or float(r_target) <= 0:
         return prev
     target = prev * (1.0 + beta * (risk_ratio_hat - r_target) / float(r_target))
     step = MAX_STEP * prev
-    return _clamp(min(max(_clamp(target), prev - step), prev + step))
+    return clamp_rate(min(max(clamp_rate(target), prev - step), prev + step))
 
 
 def burst_cap(rate, gap_sec, channels):

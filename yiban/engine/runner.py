@@ -38,6 +38,7 @@ import argparse
 import contextlib
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -58,6 +59,7 @@ from yiban.engine import (
     executor_v3,
     probe,
     state_io,
+    token_bucket,
     workers,
 )
 from yiban.engine import schedule as schedule_mod
@@ -489,10 +491,15 @@ def main(argv=None):
     if schedule:
         # 容量预检（告警阈值口径）：可容纳账号数 < 待签到账号数 → 告警不静默
         # 用户自暂停账号不参与调度，也不计入容量
-        # **口径保留**：单池后执行体是 v3，但本预检仍是"窗口 − 重试储备"的告警阈值
-        # （`retry_reserve`，v2 公式分支）——登记验收不变量「122–360 不得静默」压在这条
-        # 阈值上，且 `capacity_of` 的取值逐值不动；K/桶速率不参与本行（`executor_count`
-        # 语法保留，见 `schedule.executor_count`）。
+        # **多执行体：总阈值按 K 缩放**。本预检跑在监督进程拉起的每个执行体子进程里，
+        # 每个子进程都载全量账号；K 不参与就是拿"单执行体容量"比"全量账号数"，少算 K 倍
+        # ——K=2 少一半、K=6 少六分之五。10-10 生产 K=2、183 个账号全部签完，却报
+        # "部分账号可能无法在窗口内完成"，正是这条误报。
+        # K 取**生效执行体数**（`egress.effective_worker_count`，与派发同源）：清单在场
+        # 数拉起列表；清单缺失按旧 worker 口径（`YIBAN_WORKERS`，宿主 run.sh 就是按它
+        # 决定 `--workers N`）；没被派发过 ⇒ 恒 1。数错一处，阈值就少算 N 倍。
+        # 不取 `--workers`：监督进程从子进程 argv 剔除了它，子进程看不到。
+        _k = egress.effective_worker_count()
         _cfg = schedule_mod._schedule_config()
         _win = window.bounds(_cfg)
         # 预检按**剩余**有效窗口算：本进程此刻才起跑，已流逝的窗口签不了。
@@ -504,15 +511,47 @@ def main(argv=None):
             _win.hi_min,
         ).strftime("%H:%M")
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
-        # 与 web 容量预估同一函数（`capacity_of`）：账号间隔是「上一次完成 →
-        # 下一次开始」的下限，故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约
-        # 2.3 倍）。告警阈值再扣「重试储备」（retry_reserve）：按零重试排满
-        # 窗口就是 122–360 静默死带——当天必签不完却要到 361 才出声。avg 用实测分位数
-        # （warn_avg_attempt_sec）：缺省档 3s 来自 mock 注入，不是实测。
+        # 单账号周期模型与 web 容量预估同源（`capacity_accounts`）：账号间隔是
+        # 「上一次完成 → 下一次开始」的下限，故周期 = avg + gap（只算 n × avg 会与预估
+        # 口径相差约 2.3 倍）。avg 用实测分位数（warn_avg_attempt_sec）：缺省档 3s 来自
+        # mock 注入，不是实测。
+        # **口径两支**：
+        # - K≥2：计划口径 `capacity_accounts`（与排程器同源；B3 实测 1,200 个 44 分钟，
+        #   折算 80 分钟约 366 ≈ 公式 370）。reserve 口径即使乘 K 仍会误报
+        #   （K=6/1,200 时 744 < 1,200），恰是波期每天的噪音。
+        # - K=1：保留"窗口 − 重试储备"的旧口径（`retry_reserve`，v2 公式分支）——
+        #   登记验收不变量「122–360 不得静默」（MF-56④）压在这条阈值上，取值逐值不动。
         _avg_warn = schedule_mod.warn_avg_attempt_sec(_cfg["avg_attempt_sec"])
-        _cap = schedule_mod.capacity_of(
-            max(0.0, _rest_sec), gap=gap_max, avg=_avg_warn,
-            retry_reserve=True, enabled=False)
+        if _k >= 2:
+            # 计划口径单执行体容量 × K = 全站总阈值（见上方「口径两支」）。
+            _cap_single = schedule_mod.capacity_accounts(
+                max(0.0, _rest_sec), gap=gap_max, avg=_avg_warn)
+            _cap = _k * _cap_single
+        else:
+            _cap = schedule_mod.capacity_of(
+                max(0.0, _rest_sec), gap=gap_max, avg=_avg_warn,
+                retry_reserve=True, enabled=False)
+        # 出口预算（K× 口径的**高估方向**兜底）：K 个执行体各按 1/(avg+gap) 产出尝试，
+        # 出口级速率 λ 决定需要几个物理出口。声明出口数 < 需要数 ⇒ 实际吞吐受出口限制。
+        # 声明出口数按**真实 worker 行**取出口：清单的槽位号**可以不连续**（生产是
+        # slot0 worker / slot1 fallback / slot2 worker），按 0..K-1 枚举槽位会把占位槽
+        # 当直连多算一个 ⇒ 声明数虚高 ⇒ 漏报。清单缺失时旧口径就是按下标取
+        # （`resolve` 的 `items[i % len]`），故那里按 0..K-1 枚举是对的。
+        # 命名行去重按**出口标识**（`egress.egress_identity`，与限速预算的持久键同一
+        # 口径，2cwd 裁定）：同址不同凭据的代理本就共桶。按原始串去重会把它算成两个出口
+        # ⇒ 声明数虚高 ⇒ 漏报。空出口（直连）也归一到 `DIRECT_EGRESS`，只算本机一条。
+        _worker_rows = egress.launch_rows()
+        _slots = ([r["slot"] for r in _worker_rows] if _worker_rows is not None
+                  else list(range(_k)))
+        _declared = {egress.egress_identity(egress.resolve(egress.ROLE_WORKER, i))
+                     for i in _slots}
+        _egress_n = max(1, len(_declared))
+        # λ 必须与令牌桶同域（`clamp_rate` 是桶的公开夹取口径）：名册域 [0.01, 100] 比
+        # 桶域 [0.2, 4.0] 宽，不夹取会让结论偏一个方向（λ > 4 漏报、λ < 0.2 多报）。
+        # caveat：平台侧按 IP 限速未测，λ 只用配置值，不含 AIMD 实时档位。
+        _lam = token_bucket.clamp_rate(schedule_mod.egress_rate())
+        _need_egress = max(1, math.ceil(_k / (_avg_warn + gap_max) / _lam))
+        _budget_short = _egress_n < _need_egress
         if _rest_sec <= 0:
             logger.warning(
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
@@ -529,24 +568,54 @@ def main(argv=None):
                 ("请核查", "触发时刻（cron / 容器调度）与签到窗口设置"
                            "（YIBAN_SIGN_START / YIBAN_SIGN_END）"),
             ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
-        elif active_n > _cap:
-            logger.warning(
-                "容量预检: %d 个账号 > 剩余有效窗口 %d 秒告警阈值 %d 个"
-                "（单账号 %.0fs + 账号间隔 %ds，每账号已预留 3 次尝试的重试储备，"
-                "窗口至 %s），部分账号可能无法在窗口内完成",
-                active_n, int(_rest_sec), _cap, _avg_warn, gap_max, _win_end,
-            )
-            # 超载必须通知管理员，不能只留在日志里。文案只有一份（原先邮件与推送
-            # 各写一遍同样的字面量，改一处必漏另一处）。
-            # 高级别：与上一分支同理，一轮至多一条，且它意味着"窗口跑不完这些账号"，
-            # 当天漏多少由它先说；不得被轮中累积的逐账号明细挤出。
-            alerts.notify_admin_entry("易班签到容量超载", [
-                ("当前账号", f"{active_n} 个"),
-                ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），告警阈值 {_cap} 个"),
-                ("单账号耗时", f"{_avg_warn}s + 账号间隔 {gap_max}s，"
-                               "阈值已按每账号 3 次尝试预留重试储备"),
-                ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
-            ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
+        else:
+            if active_n > _cap:
+                # 文案按口径分支拼一份，日志与邮件共用同一份 `_basis` / `_cost_field`：
+                # 原先邮件与推送各写一遍同样的字面量，改一处必漏另一处。
+                if _k >= 2:
+                    _basis = (f"{_k} 个执行体的计划口径合计（单执行体 {_cap // _k} 个，"
+                              f"单账号 {_avg_warn:.0f}s + 账号间隔 {gap_max}s，未折重试储备）")
+                    _cost_field = ("阈值口径", f"{_k} 个执行体 × 计划口径合计 {_cap} 个"
+                                               f"（单执行体 {_cap // _k} 个）；"
+                                               f"单账号 {_avg_warn}s + 账号间隔 {gap_max}s，"
+                                               "未折重试储备")
+                else:
+                    _basis = (f"单账号 {_avg_warn:.0f}s + 账号间隔 {gap_max}s，"
+                              "每账号已预留 3 次尝试的重试储备")
+                    _cost_field = ("单账号耗时", f"{_avg_warn}s + 账号间隔 {gap_max}s，"
+                                                "阈值已按每账号 3 次尝试预留重试储备")
+                logger.warning(
+                    "容量预检: %d 个账号 > 剩余有效窗口 %d 秒告警阈值 %d 个（%s，窗口至 %s），"
+                    "部分账号可能无法在窗口内完成",
+                    active_n, int(_rest_sec), _cap, _basis, _win_end,
+                )
+                # 超载必须通知管理员，不能只留在日志里。
+                # 高级别：与上一分支同理，一轮至多一条，且它意味着"窗口跑不完这些账号"，
+                # 当天漏多少由它先说；不得被轮中累积的逐账号明细挤出。
+                alerts.notify_admin_entry("易班签到容量超载", [
+                    ("当前账号", f"{active_n} 个"),
+                    ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），告警阈值 {_cap} 个"),
+                    _cost_field,
+                    ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
+                ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
+            if _budget_short:
+                # **多报一条**：合计未超总阈值也可能因出口不够而跑不完，那一支不在
+                # `active_n > _cap` 里。此处只说出口预算——合计没超时不得说
+                # "部分账号可能无法在窗口内完成"（工单 5wjy 判据 (c)）。
+                logger.warning(
+                    "容量预检: 出口预算不足，实际吞吐受出口限制（出口 %d < 需要 %d）；"
+                    "测算：%d 个执行体 × 单账号周期 %ds ⇒ %.2f 尝试/s，出口速率 %s 尝试/s",
+                    _egress_n, _need_egress, _k, _avg_warn + gap_max,
+                    _k / (_avg_warn + gap_max), f"{_lam:g}",
+                )
+                alerts.notify_admin_entry("易班签到出口预算不足", [
+                    ("出口预算不足",
+                     f"实际吞吐受出口限制（出口 {_egress_n} < 需要 {_need_egress}）"),
+                    ("测算", f"{_k} 个执行体 × 单账号周期 {_avg_warn + gap_max}s ⇒ "
+                             f"{_k / (_avg_warn + gap_max):.2f} 尝试/s；"
+                             f"声明出口 {_egress_n} 个 × 出口速率 {_lam:g} 尝试/s"),
+                    ("处置", "为执行体清单声明更多物理出口，或加大窗口 / 减少账号数"),
+                ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
         # 执行时按时间点排序（**保留**：本序经 v3 计划的 sequence 间接影响 run_at，
         # 其口径收敛属 Phase 2/D3，见工单 m9bi）。展示不再写状态文件：计划时刻的唯一
         # 事实源是台账 `sign_tasks.run_at`，web 读取时生成「计划 HH:MM」（见
