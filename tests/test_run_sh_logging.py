@@ -308,11 +308,18 @@ class SourceContractTest(unittest.TestCase):
         self.assertLess(trap_at, self.src.index("已有签到进程在运行"))
 
     def test_all_log_writes_carry_the_tag(self):
-        """所有日志走 _log（唯一带前缀的出口），不再散落裸 echo "[时间戳]"。"""
-        self.assertEqual(self.src.count('echo "[$(date '), 2,
-                         "带时间戳的 echo 只应剩 _log 与 _on_exit 两处（其余走 _log）")
+        """日志文件出口只有 `_log` / `_on_exit` 两处且必带触发来源前缀；stderr 出口只有 `_err` 一处。
+
+        2026-10-10（工单 yiban-auto-sign-2k1i）：新增 `_err` 给面向 stderr 的警告/致命
+        统一加时间戳（落 run-cron.log）。故带时间戳的 echo 由 2 处变 3 处；其中只有落
+        **日志文件**的 `_log` / `_on_exit` 两处带 `[$TRIGGER_TAG]`，`_err` 只带时间戳。
+        """
+        self.assertEqual(self.src.count('echo "[$(date '), 3,
+                         "带时间戳的 echo 应为 _log / _on_exit（落日志文件）与 _err（落 stderr）三处")
         self.assertEqual(self.src.count("[$TRIGGER_TAG]"), 2,
-                         "两处时间戳日志都必须带触发来源前缀")
+                         "两处落日志文件的时间戳行都必须带触发来源前缀")
+        self.assertIn('echo "[$(date \'+%F %T\')] $*" >&2', self.src,
+                      "stderr 出口必须是 _err（统一时间戳前缀）")
 
     def test_trigger_tag_judges_on_stdin(self):
         """判据取 stdin（fd 0）：手工执行常把输出重定向进日志，按 stdout/stderr 判会误报排程。"""
