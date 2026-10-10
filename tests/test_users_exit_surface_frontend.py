@@ -4,7 +4,8 @@
 钉的出口（每条都是**真函数体在 node 里执行**，桩只给浏览器环境）：
   ② `core.js::hydrateIdentity`——/api/me 不再经 apiCached：真跑后 sessionStorage 必须零写入；
   ② `core.js::loadNavBadges`——nav-users 缓存的是**标量投影**（计数），整表明文邮箱
-     不落 sessionStorage；60s 窗口的请求收敛语义不变；
+     不落 sessionStorage；10s 窗口（工单 vff0：从 60s 降到与列表同拍）的请求收敛语义不变；
+  ② `core.js::refreshNavBadges`——周期刷新先丢缓存再重取：每一拍都真发网络（不被缓存吞掉）；
   ② `core.js::doLogout`——退出**无条件先清**外壳缓存：logout 请求失败（catch 路径）
      也带走 `yiban-cache:*`，非缓存键不误伤；
   ③ `user-ops.js` 单条 role/password/delete——path 只含不透明 id（不含 `@`），
@@ -65,6 +66,9 @@ var domTexts = [];
 var logoutFails = false;
 var csrfToken = "";
 var me = null;
+// 徽标刷新的环境替身：身份态（loadNavBadges 复用）与可见性（refreshNavBadges 的门控）。
+var navBadgeIdentity = null;
+var document = { visibilityState: "visible" };
 function url(p) { return "/base" + p; }
 var location = { href: "" };
 function setText(sel, v) { domTexts.push([sel, String(v)]); }
@@ -122,10 +126,15 @@ class CoreCacheLifecycleTest(unittest.TestCase):
         import re
         decl = re.search(r'var CACHE_PREFIX = "[^"]*";', src)
         assert decl, "core.js 的 CACHE_PREFIX 声明找不到：抽取环境失效（红不是假绿）"
-        cls.fns = decl.group(0) + "\n" + "\n".join(
+        # 徽标节拍常量随源码抽取（工单 vff0 把它从 60s 降到与列表同拍 10s）：
+        # 硬编在测试里会与实现漂移，抽取则跟着实现走、由下面的行为断言钉口径。
+        ttl_decl = re.search(r'var NAV_BADGE_TTL = \d+;', src)
+        assert ttl_decl, "core.js 的 NAV_BADGE_TTL 声明找不到：抽取环境失效"
+        cls.fns = decl.group(0) + "\n" + ttl_decl.group(0) + "\n" + "\n".join(
             _extract_js_function(src, name)
-            for name in ("forEach", "cacheGet", "cacheSet", "cacheClearAll",
-                         "apiCached", "hydrateIdentity", "loadNavBadges", "doLogout"))
+            for name in ("forEach", "cacheGet", "cacheSet", "cacheClearAll", "cacheDrop",
+                         "apiCached", "hydrateIdentity", "loadNavBadges", "refreshNavBadges",
+                         "doLogout"))
 
     def test_identity_never_touches_session_storage(self):
         # hydrateIdentity 真跑：/api/me 响应含 csrf_token 与登录邮箱——
@@ -140,19 +149,35 @@ class CoreCacheLifecycleTest(unittest.TestCase):
 
     def test_nav_users_caches_scalar_projection_only(self):
         # loadNavBadges 真跑：缓存键里只允许躺计数；整表（含明文邮箱）不得落存储。
-        # 60s 窗口的收敛语义保留：首次装载落缓存，第二次（缓存已写入）命中不发网络。
+        # 10s 窗口（工单 vff0：从 60s 降到与 /work/users 列表同拍）的收敛语义保留：
+        # 首次装载落缓存，窗口内第二次（缓存已写入）命中不发网络。
         # 两次调用**跨 tick**（首次 cacheSet 是异步），模拟 MPA 切页时 sessionStorage 已在。
         driver = ("loadNavBadges({role: 'admin'});\n"
                   "setTimeout(function(){ loadNavBadges({role: 'admin'}); }, 20);\n")
         out = _run_node(_HARNESS + "\n" + self.fns + "\n" + driver + _flush(
             "{store: store, calls: apiCalls, badges: badges}"), "nav-users")
         users_calls = [c for c in out["calls"] if c[1] == "/api/users"]
-        self.assertEqual(len(users_calls), 1, "60s 窗口内两次装载只许发一次请求")
+        self.assertEqual(len(users_calls), 1, "10s 窗口内两次装载只许发一次请求")
         cached = out["store"].get("yiban-cache:nav-users")
         self.assertIsNotNone(cached, "计数缓存语义保留（否则切页重新打表）")
         self.assertNotIn("@", json.dumps(out["store"]), "sessionStorage 不得出现邮箱形态")
         self.assertNotIn("13800000000", json.dumps(out["store"]))
         self.assertIn(["work-users", 1], out["badges"], "徽标计数=有待处理账号的用户数（口径不变）")
+
+    def test_refresh_nav_badges_reloads_each_tick(self):
+        # 周期刷新真跑（工单 vff0）：refreshNavBadges 先 cacheDrop 两个键再重取——
+        # 每一拍都真发网络。两个退化都红：只重取不丢缓存（命中旧值、数据永不更新）、
+        # 只丢缓存不重取（徽标停摆）。这是"徽标与列表同节拍"的承重段。
+        driver = ("loadNavBadges({role: 'admin'});\n"
+                  "setTimeout(function(){ refreshNavBadges(); }, 20);\n")
+        out = _run_node(_HARNESS + "\n" + self.fns + "\n" + driver + _flush(
+            "{calls: apiCalls, badges: badges}"), "nav-refresh")
+        users_calls = [c for c in out["calls"] if c[1] == "/api/users"]
+        self.assertEqual(len(users_calls), 2, "周期刷新必须绕过缓存、每拍真重取一次")
+        # 一次 loadNavBadges 写两类徽标（work-accounts + work-users），两拍共四次。
+        self.assertEqual(
+            len([b for b in out["badges"] if b[0] == "work-users"]), 2,
+            "每拍都要重写用户徽标（含数量为 0 的收回）")
 
     def _logout_case(self, fails):
         driver = (

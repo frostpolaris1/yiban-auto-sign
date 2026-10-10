@@ -12,6 +12,43 @@ async function loginUser(page: import("@playwright/test").Page): Promise<void> {
   expect(resp.ok()).toBeTruthy();
 }
 
+/* ---- 待审核刷新的外部变化制造器（工单 vff0）----
+   变化一律直连后端、不经页面 JS：页面只能靠轮询发现，正是被测行为。
+   写请求必须自带头 CSRF（登录后 /api/me 下发 session 内的 token）。 */
+async function csrfToken(page: import("@playwright/test").Page): Promise<string> {
+  const me = await (await page.request.get("/api/me")).json();
+  return String(me.csrf_token ?? "");
+}
+
+/** 新建一个归属新用户、状态 pending 的账号（该用户随即进入「待处理用户」组）。
+ *  把账号置为 pending 的唯一入口就是账号创建，故用这条路径制造"外部新提交待审核"。 */
+async function addPendingUser(
+  page: import("@playwright/test").Page,
+  name: string,
+  email: string,
+  phone: string,
+): Promise<void> {
+  const resp = await page.request.post("/api/accounts", {
+    data: { name, phone, password: "e2e-phone-pw", email, initial_password: "RefreshPass123" },
+    headers: { "X-CSRF-Token": await csrfToken(page) },
+  });
+  expect(resp.ok(), `新建待审核账号失败：${resp.status()} ${await resp.text()}`).toBeTruthy();
+}
+
+/** 软删该账号 → 归属用户回到「空用户」组，待处理组与徽标复归初始（本用例可重跑）。 */
+async function softDeleteAccount(page: import("@playwright/test").Page, name: string): Promise<void> {
+  const list = await (await page.request.get("/api/accounts")).json();
+  const target = (list.accounts as Array<{ index: number; name: string; phone: string }>).find(
+    (a) => a.name === name,
+  );
+  expect(target, `待清理账号 ${name} 不在 /api/accounts 里`).toBeTruthy();
+  const resp = await page.request.delete(`/api/accounts/${target!.index}`, {
+    data: { phone: target!.phone },
+    headers: { "X-CSRF-Token": await csrfToken(page) },
+  });
+  expect(resp.ok(), `清理账号失败：${resp.status()} ${await resp.text()}`).toBeTruthy();
+}
+
 test("用户端账号页：账号行/调度提示/自选时段/邮件开关/改密入口，且无管理端专有卡", async ({ page }) => {
   await loginUser(page);
   await page.goto("/user/account");
@@ -110,6 +147,8 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
 });
 
 test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号行与改密入口在位", async ({ page }) => {
+  // 末尾的「待审核刷新」段各等 1 个 10 秒轮询节拍，30 秒默认预算不够；标 slow 放宽到 3×。
+  test.slow();
   const resp = await page.request.post("/api/login", { data: { username: "admin", password: "TestPass1234!" } });
   expect(resp.ok()).toBeTruthy();
   await page.goto("/my/account");
@@ -186,4 +225,44 @@ test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号�
   await expect(normal.locator(".empty__msg")).toHaveText("无匹配结果");
   await normal.locator("[data-empty-clear]").click();
   await expect(row.locator(".usr-cell-mail")).toContainText("e2e***@example.com");
+
+  // ---- 待审核刷新（工单 vff0）----
+  // 判据：列表、导航徽标与总览 KPI **不经任何用户操作**，在数据外部变化后 ≤1 个轮询
+  // 周期（10 秒）内更新。并进本用例（而非单开 spec）：/api/login 有 60 秒 10 次/IP 限速，
+  // 本套件已贴上限，多一次登录会把别处顶到 429（同本文件既有并入先例）。
+  // 外部变化（直连后端、不经页面 JS）→ 页面只能靠轮询发现，正是被测行为。
+  //
+  // 段一：/work/users 列表 + work-users 导航徽标（此刻在 /work/users，待处理组为空）。
+  const pendingPanel = page.locator('[data-usr-panel="pending"]');
+  const usersBadge = page.locator('[data-nav-badge="work-users"]');
+  await expect(pendingPanel.locator(".empty__msg")).toHaveText("暂无待处理用户");
+  await expect(usersBadge).toBeHidden();
+
+  await addPendingUser(page, "e2e刷新A", "e2e-refresh-a@refresh-e2e.dev", "13712340001");
+  // 超时取 14 秒：够 1 个 10 秒节拍 + 响应余量，且明显小于 2 个节拍（20 秒），
+  // 故断言成立即证明"≤1 个轮询周期"，而不是"碰巧在某次刷新里看到"。
+  await expect(pendingPanel.locator("tbody .usr-cell-mail").first()).toContainText("e2e***@refresh-e2e.dev", {
+    timeout: 14_000,
+  });
+  await expect(page.locator('[data-usr-tab="pending"]')).toContainText("1 人", { timeout: 14_000 });
+  await expect(usersBadge).toHaveText("1", { timeout: 14_000 });
+  await expect(pendingPanel.locator(".empty__msg")).toBeHidden();
+
+  // 复原：软删该账号 → 用户回到空用户组。同一节拍也应把徽标收回。
+  await softDeleteAccount(page, "e2e刷新A");
+  await expect(pendingPanel.locator(".empty__msg")).toHaveText("暂无待处理用户", { timeout: 14_000 });
+  await expect(usersBadge).toBeHidden({ timeout: 14_000 });
+
+  // 段二：总览 KPI「待处理账号」（与账号管理页/徽标同源：待审核 + 已拒绝）。
+  await page.goto("/data/dashboard");
+  const kpiValue = page.locator("#kpi-pending-value");
+  const kpiSub = page.locator("#kpi-pending-sub");
+  await expect(kpiValue).toHaveText("2");
+  await expect(kpiSub).toContainText("待审核 1 · 已拒绝 1");
+
+  await addPendingUser(page, "e2e刷新B", "e2e-refresh-b@refresh-e2e.dev", "13712340002");
+  await expect(kpiValue).toHaveText("3", { timeout: 14_000 });
+  await expect(kpiSub).toContainText("待审核 2 · 已拒绝 1", { timeout: 14_000 });
+
+  await softDeleteAccount(page, "e2e刷新B");
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { api, maskEmail, openPasswordModal, passwordHint, shellBase, swapOut, toast } from "../lib/shell";
 import "./ops.js"; // 注册 window.YB.userOps（MF-49 出口面：纯 JS，由 Python 侧 node 真跑钉住）
 import {
@@ -35,7 +35,9 @@ import {
    2. 单条操作从记录回查**不透明 id** 编进 URL path；邮箱只在 batch/purge 的请求体里
       （MF-49：path 进 nginx `$request`、经同源 Referrer 外送）。
    3. 零 `v-html`：全部走插值/属性绑定。
-   4. 不做轮询（用户列表变化低频）；刷新只由写操作成功后就地重拉触发。
+   4. 列表 10 秒轮询，含可见性变化补拉。节拍与账号管理页一致。
+      外部新提交的待审核账号因此自动出现，不需手动刷新。
+      写操作成功仍就地重拉。
 
    ## 与 legacy 的三处有意简化
    · 四组共用一个 `v-for` + 列定义表（legacy 是四份近重复模板 + 四份近乎同构的 JS），差异
@@ -67,6 +69,8 @@ const builtin = ref("admin");
 const isMaster = ref(false);
 const loading = ref(true);
 const loadError = ref(false);
+/** 写操作在途（ops.js 的 ctx.busy 驱动）；在途时不轮询刷新，避免打断写链路。 */
+const busy = ref(false);
 const tab = ref<Group>("pending");
 const search = ref<Record<string, string>>({ pending: "", normal: "", vacant: "", deleted: "" });
 /** 选择态：按组持有邮箱（仅内存；键不进 DOM） */
@@ -175,9 +179,7 @@ function pruneSelection(): void {
 function makeOps(): UserOps {
   const shell = (window as { YB?: { userOps?: { create(c: unknown): unknown } } }).YB;
   return (shell?.userOps?.create({
-    busy: () => {
-      /* 本页无轮询与并发重建，忙碌态不改变视图 */
-    },
+    busy: (on: boolean) => (busy.value = on),
     refresh: () => load(true),
     resolve: (email: string) =>
       users.value.find((u) => u.email === email) ?? deleted.value.find((d) => d.email === email),
@@ -266,6 +268,26 @@ function syncTabUrl(next: Group): void {
 }
 watch(tab, syncTabUrl);
 
+/* ---------------- 轮询 / 可见性 ----------------
+   与 `accounts/Accounts.vue` 同一节拍（10 秒）。用户列表变化低频，但外部提交的
+   待审核账号必须自动出现，故不能再"只在写操作后重拉"（工单 vff0）。
+   节拍只打 /api/users 与 /api/users/deleted 两张小表；管理端 1~3 人。
+   弹窗或行下拉打开时不刷新：重渲染会打断在途操作与选择态。 */
+let timer: ReturnType<typeof setInterval> | null = null;
+const menuOpen = ref(false);
+function onMenuVisible(v: boolean): void {
+  menuOpen.value = v;
+}
+function pollTick(): void {
+  if (document.visibilityState !== "visible") return;
+  if (busy.value || loading.value || menuOpen.value) return;
+  if (document.querySelector(".pm-backdrop, .el-overlay")) return;
+  void load(true).catch(() => undefined);
+}
+function onVisibility(): void {
+  pollTick();
+}
+
 onMounted(async () => {
   const wanted = new URLSearchParams(location.search).get("tab");
   if (wanted && (TAB_KEYS as string[]).includes(wanted)) tab.value = wanted as Group;
@@ -277,6 +299,13 @@ onMounted(async () => {
     return;
   }
   await startLoad();
+  timer = setInterval(pollTick, 10000);
+  document.addEventListener("visibilitychange", onVisibility);
+});
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer);
+  document.removeEventListener("visibilitychange", onVisibility);
 });
 </script>
 
@@ -457,7 +486,7 @@ onMounted(async () => {
                             </span>
                           </td>
                           <td class="usr-cell-actions">
-                            <el-dropdown v-if="isMaster" trigger="click">
+                            <el-dropdown v-if="isMaster" trigger="click" @visible-change="onMenuVisible">
                               <button type="button" class="btn btn--ghost btn--sm" :aria-label="'更多操作 ' + maskEmail(row.email)">
                                 更多操作
                               </button>
@@ -509,7 +538,7 @@ onMounted(async () => {
                           <td class="usr-cell-actions">
                             <!-- 行菜单由 model 给出：非主管理员对注册管理员目标不给任何动作
                                  （后端 403 兜底；UI 只是不给出不可能成功的动作） -->
-                            <el-dropdown v-if="menuActions(row, g.key, isMaster).length" trigger="click">
+                            <el-dropdown v-if="menuActions(row, g.key, isMaster).length" trigger="click" @visible-change="onMenuVisible">
                               <button type="button" class="btn btn--ghost btn--sm" :aria-label="'更多操作 ' + maskEmail(row.email)">
                                 更多操作
                               </button>
