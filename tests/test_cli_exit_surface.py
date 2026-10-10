@@ -152,7 +152,7 @@ class CliChokeUnitTest(_CliExitHarness):
 
 
 class CliSubprocessExitTest(_CliExitHarness):
-    """七个子命令里本段负责的五个：config/capacity/state/db/version（进程级真跑）。"""
+    """维护类子命令里本段负责的五个：config/capacity/state/db/version（进程级真跑）。"""
 
     def test_config_fail_masks_stderr_and_json_errors(self):
         """密文与钥不匹配 ⇒ 异常消息含裸号；`config` 的 stderr 与 `--json errors` 双出口都遮。"""

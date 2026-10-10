@@ -63,7 +63,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from yiban import clock, egress, window
+from yiban import challenge, clock, egress, security, window
 from yiban import status as yiban_status
 from yiban.engine import alerts, attempts, hrw, planner, schedule, state_io, token_bucket
 from yiban.masking import mask_phone as _mask_phone
@@ -557,16 +557,24 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
 
 def _is_risk_signal(message):
-    """风控信号判定：WAF 拦截或命中风控关键词（与失败分级同一判据、同一批词元）。
+    """风控信号判定：只认 WAF 族与挑战形态，**不含凭据族**（工单 `yiban-auto-sign-zggs`）。
+
+    两个消费方对同一批文案的语义相反，判据必须分开：
+    - 重试档位（`attempts.classify_failure`）把风控**与**凭据都算"少给重试"——凭据错重试无用；
+    - 本函数命中即认为"平台在限我们"，调用方据此把**整条出口**的速率砍半。
+    复用档位判据是把凭据错当成平台风控：一个口令错的账号就砍掉整条出口一半速率
+    （生产实证两天三次，fallback 落到 1/4）。凭据族留在 `attempts.RISK_FAIL_KEYWORDS`
+    里不动——那张表是档位的唯一真值源。
 
     `is_waf_blocked` 的入参契约是**响应体**（它按"短响应"设界，见 `yiban.security`），
-    这里传的是失败 `message`：`message` 可能内嵌服务端返回的 `\\uXXXX` 转义 JSON——保留
-    这一路解码。词元的命中口径不再由本处逐条 `in` 比对（那会把 ASCII 词元退回裸子串，
-    base64 片段即可误报），而是复用 `attempts.matches_risk_keywords`——它与重试档位共用
-    `yiban.security` 那一份名单与边界规则。要按契约传响应体，得把响应对象一路带到这里
-    （新数据源）；在那之前本判定以 `message` 为准。
+    这里传的是失败 `message`，故按**无界**口径判：`security.matches_waf_keywords` 不设长度
+    上界、按词元边界匹配（ASCII 词元两侧非字母数字），并解码内嵌的 `\\uXXXX` 转义；
+    挑战形态走 `challenge.looks_like_challenge`（与 `is_waf_blocked` 的形态腿同源，也不受
+    长度限制）。要按响应体契约判定，得把响应对象一路带到这里（新数据源）；在那之前本判定
+    以 `message` 为准。
     """
-    return attempts.is_waf_blocked(message) or attempts.matches_risk_keywords(message)
+    return (security.matches_waf_keywords(message)
+            or challenge.looks_like_challenge(message))
 
 
 def _tier_prefix(status):
