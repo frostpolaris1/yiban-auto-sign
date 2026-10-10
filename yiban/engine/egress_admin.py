@@ -20,7 +20,8 @@
 `token_bucket.EgressBucket`（速率域的判据：构造时经它自己的夹取）、
 `schedule.planner_config()`（出口速率键的唯一取值点）、
 `store.db.open_readonly`（只读打开：不建库、不建表、不迁移）、
-`egress.owner_tag`（角色与槽位标签的唯一渲染处）、`clock`（时间域）、
+`egress.outlet_label`（出口标识的展示渲染处）、`egress.is_outlet_identity`
+（区分出口标识与旧执行体身份键）、`clock`（时间域）、
 `engine.cli_support`（`_say` / `_emit_json` / `_fail` 输出收口）。
 
 **通信**
@@ -32,9 +33,10 @@
 谁调用：`yiban/cli.py` 的 `_dispatch`。
 
 **四条边界**
-1. 出口键含主机名，属部署信息。本模块的**任何输出都不回原键**，只回角色与槽位标签
-   （`egress.owner_tag` 的口径）。选择串也照此：写 `fallback` / `worker-2` / `single`。
-   逐字键仍可作为逃生口（多主机同名时才需要），但它不会被打印出来。
+1. 桶键现在是**出口标识**（`direct` 或去 userinfo 的 `scheme://host[:port]`，工单 2cwd）。
+   本模块的**任何输出都不回含主机名的旧格式键**：`egress.outlet_label` 把直连渲染为
+   「直连（本机出口）」、把不是出口标识的旧键渲染为「已弃用」，两者都不回原串。
+   逐字键仍可作为逃生口（`selector` 列就是库里那一列），但它不会被打印出来。
 2. 维护类子命令不得顺手建库、建表、跑迁移或跑启动清理（`db_maintenance` 的同一条红线）。
    故只读面走 `open_readonly`，写入只发一条 `UPDATE`，都不经 `db.get_conn()`。
 3. 活进程持有内存态时，复位只落到库里：执行体每 10s 把内存态落库一次，会把复位覆盖回去。
@@ -129,16 +131,20 @@ def _stale_sec(stamp):
 
 
 def _row_view(row):
-    """库里一行 → 输出视图：**不回含主机名的原键**，只回角色与槽位标签。
+    """库里一行 → 输出视图。`egress_state.egress` 现在是**出口标识**（工单 2cwd：限速桶键
+    = 出口标识，不再是执行体身份），故标签由 `egress.outlet_label` 渲染：直连回「直连（本机
+    出口）」，代理回脱敏的 `scheme://host[:port]`，旧格式（执行体身份键）回「已弃用」。
 
-    标签由 `egress.owner_tag` 渲染（日志行的同一个词）；`selector` 是它去掉方括号的形态，
-    可以直接拿去当 `--reset` 的取值，故不再另报角色与槽位两列。
+    `selector` 只对**出口标识**回原值（供 `--reset` 精确命中）；旧格式键的 `selector` 留空—
+    ——**绝不回含主机名的原键**（本模块边界 #1）。旧行是改键前的存量、改键后不再被引擎消费，
+    其清理归 `migrate_v22`（一次性清空）。
     """
-    tag = yb_egress.owner_tag(row["egress"])
+    key = str(row["egress"] or "")
+    tag = f"[{yb_egress.outlet_label(key)}]"
     stale = _stale_sec(row["updated_at"])
     return {
         "tag": tag,
-        "selector": tag.strip("[]"),
+        "selector": key if yb_egress.is_outlet_identity(key) else "",
         "rate": float(row["rate"]),
         "burst": float(row["burst"]),
         "tat": float(row["tat"]),
@@ -173,8 +179,9 @@ def _read_rows(db_file):
 def _match_rows(raws, views, target):
     """按选择串挑**下标** → `(indexes, error)`。
 
-    先按逐字出口键精确匹配（多主机同名时的逃生口），再按角色+槽位标签匹配
-    （`fallback` / `worker-2` / `single`，与日志行的 `[fallback]` 同一个词）。
+    先按逐字出口键精确匹配（`selector` 列就是库里那一列，`direct` 或
+    `scheme://host[:port]`；多行同名时的逃生口），再按展示标签匹配（`[直连（本机出口）]` /
+    `[http://host:port]` / `[已弃用（旧执行体身份键）]`）。
     标签命中多行时**拒绝**而不是任选一行：猜错出口等于把速率改到别的桶上。
     """
     key = str(target or "").strip()
@@ -182,7 +189,7 @@ def _match_rows(raws, views, target):
     if exact:
         return exact, ""
     label = key.strip("[]")
-    hits = [i for i, v in enumerate(views) if v["selector"] == label]
+    hits = [i for i, v in enumerate(views) if v["tag"].strip("[]") == label]
     if len(hits) > 1:
         return [], (f"选择串 {target!r} 匹配到 {len(hits)} 行，无法唯一确定；"
                     "请改用逐字出口键（本命令的 `--status` 按角色+槽位输出，"
@@ -251,8 +258,8 @@ def cmd_egress(args, paths, view):
     action = "reset" if resetting else "status"
     if resetting and not bool(args.reset_all) and not str(args.reset).strip():
         return _fail("egress", 2, [
-            "--reset 需要一个出口名（角色+槽位标签，如 fallback / worker-2 / single）；"
-            "收到的选择串是空的",
+            "--reset 需要一个出口名（出口标识如 direct / http://host:port，"
+            "或 `--status` 报出的方括号标签）；收到的选择串是空的",
         ], json_mode, error_kind="usage", action=action, db_file=db_file,
             dry_run=True, applied=False, written=0, rows=[], changes=[],
             target_rate=None, target_rate_source=None)
@@ -303,7 +310,7 @@ def cmd_egress(args, paths, view):
                          applied=False, written=0, rows=views, changes=[],
                          target_rate=target_rate, target_rate_source=rate_source)
         if not picked:
-            known = "、".join(sorted(v["selector"] for v in views)) or "（无）"
+            known = "、".join(sorted(v["tag"] for v in views)) or "（无）"
             return _fail("egress", 1, [
                 f"出口 {args.reset!r} 不在库中；库内现有出口：{known}",
             ], json_mode, error_kind="runtime_error", action=action, db_file=db_file,

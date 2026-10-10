@@ -66,9 +66,10 @@ DAY = "2026-09-22"          # 周二，避开周末门
 #: 固定起跑时刻：默认窗口 06:30~07:50（有效窗口 06:31~07:49），06:40 在窗口内
 START = datetime.datetime(2026, 9, 22, 6, 40, 0)
 OWNER = "single@testhost"
-#: 队列**持有者**身份：稳定槽位名再拼本进程的进程号与代次（`egress.runtime_owner`）。
-#: 稳定名仍是 HRW 分片成员判据与出口桶持久键，两者刻意分开——见 `HolderIdentitySplitTest`。
+#: 队列**持有者**身份：稳定槽位名再拼本进程的进程号/代次（`egress.runtime_owner`）。
 RUNTIME_OWNER = egress.runtime_owner(OWNER)
+#: 出口桶键（工单 2cwd：键 = **出口标识**，不再是执行体身份）。基座未配出口 ⇒ 直连标识。
+EGRESS_KEY = egress.DIRECT_EGRESS
 MY_SHARDS = (0, 1, 2, 3) # 与 FOREIGN_SHARD 配对：任何顺手扫了别人分片的改动都会在这里现形
 FOREIGN_SHARD = 7
 
@@ -243,6 +244,11 @@ class _Base(unittest.TestCase):
         self.state_dir = tempfile.mkdtemp(dir=self.tmp, prefix="state-")
         os.environ["YIBAN_STATE_DIR"] = self.state_dir
         self.addCleanup(shutil.rmtree, self.state_dir, ignore_errors=True)
+        # 出口配置键清干净：`_Ctx.egress` 按出口解析（工单 2cwd），继承来的 YIBAN_PROXY
+        # 会让出口标识漂到别的值、把 `EGRESS_KEY` 的断言变成假红。
+        for k in ("YIBAN_PROXY", "YIBAN_PROXY_LIST", "YIBAN_PROXY_FALLBACK",
+                  "YIBAN_EXECUTORS", "YIBAN_FALLBACK_ENABLE"):
+            os.environ.pop(k, None)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
         self.fc = _FakeClock()
         # `clock.now` 一并打桩：状态文件名、租约时刻、重排时刻都取它，只打桩
@@ -334,11 +340,13 @@ class _Base(unittest.TestCase):
     def _run_v3(self, accounts, items=None, *, cfg=None, rng=None, limiter=None,
                 gate=None, delegated=None, cred_state=None, event_sink=None,
                 dry_run=False, notify_url="", requeue_final=False, claim_all=False,
-                reclaim=False, requeue_during_run=False, round_no=None):
+                reclaim=False, requeue_during_run=False, round_no=None,
+                shares_seen=None):
         """跑一轮 v3。
 
         `items` 给了就用"一次性投递 + 哨兵"的假补货（时序完全可控，行需已领取）；
         不给则用真实补货（走 `claim_batch`，行由它置 owner/epoch）。
+        `shares_seen` 给了就收下 `_make_limiter` 收到的 `shares`（出口预算均分的接线断言）。
         """
         cfg = cfg or _cfg()
         limiter = limiter if limiter is not None else _PermissiveLimiter()
@@ -347,8 +355,14 @@ class _Base(unittest.TestCase):
         if items is not None:
             patches.append(
                 mock.patch.object(executor_v3, "_refiller", _refiller_pushing(items)))
+
+        def _mk(channels, shares=1):
+            if shares_seen is not None:
+                shares_seen.append(shares)
+            return limiter
+
         patches += [
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: limiter),
+            mock.patch.object(executor_v3, "_make_limiter", _mk),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: gate),
@@ -1356,7 +1370,7 @@ class LimiterWiringTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)], limiter=limiter,
                          gate=gate)
         self.assertEqual(limiter.restored, 1, "起跑装回一次桶状态")
-        self.assertIn(("restore", OWNER), trace)
+        self.assertIn(("restore", EGRESS_KEY), trace)
         kinds = [k for k, _ in trace]
         self.assertEqual(kinds[:3], ["restore", "acquire", "allow"],
                          "取额度 → 判 gap → 才发起尝试")
@@ -1374,7 +1388,7 @@ class LimiterWiringTest(_Base):
                                lambda acc: (False, "风险访问 拦截", False, "failed")):
             self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
                          limiter=limiter)
-        self.assertIn(("on_risk_signal", OWNER), trace)
+        self.assertIn(("on_risk_signal", EGRESS_KEY), trace)
         self.assertNotIn("on_success", [k for k, _ in trace])
 
     def test_credential_failure_leaves_the_real_bucket_untouched(self):
@@ -1392,9 +1406,9 @@ class LimiterWiringTest(_Base):
                                             False, "failed")):
             self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
                          limiter=limiter)
-        self.assertAlmostEqual(limiter.bucket(OWNER).rate, 1.0, places=9,
+        self.assertAlmostEqual(limiter.bucket(EGRESS_KEY).rate, 1.0, places=9,
                                msg="口令错是账号自己的问题，不是平台限速：出口速率不得变")
-        self.assertFalse(limiter.is_half_open(OWNER, self.fc.mono),
+        self.assertFalse(limiter.is_half_open(EGRESS_KEY, self.fc.mono),
                          "不得进半开（半开期只放单通道）")
 
     def test_waf_message_backs_off_the_real_bucket(self):
@@ -1407,9 +1421,9 @@ class LimiterWiringTest(_Base):
                                lambda acc: (False, "风险访问 拦截", False, "failed")):
             self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
                          limiter=limiter)
-        self.assertAlmostEqual(limiter.bucket(OWNER).rate, 0.5, places=9,
+        self.assertAlmostEqual(limiter.bucket(EGRESS_KEY).rate, 0.5, places=9,
                                msg="WAF 文案必须触发乘性回退（这一路必须活着）")
-        self.assertTrue(limiter.is_half_open(OWNER, self.fc.mono))
+        self.assertTrue(limiter.is_half_open(EGRESS_KEY, self.fc.mono))
 
     def test_persist_loop_writes_every_interval(self):
         limiter = _PermissiveLimiter()
@@ -2122,13 +2136,13 @@ class DeadPeerTakeoverSkipLiveTest(_Base):
 
 
 class HolderIdentitySplitTest(_Base):
-    """v3 的两个身份必须显式分开：持有者落 PID/代次，稳定名留给分片与出口桶。
+    """v3 的三个身份必须显式分开：持有者落 PID/代次，稳定名留给分片，出口桶键 = 出口标识。
 
     `sign_tasks.owner` 一列同时是"计划 owner"与"当前持有者"。HRW 分片成员判据
-    （`hrw.shards_of` 要求身份串是 `cfg["executors"]` 的成员）与出口令牌桶的持久键
-    （`egress_state.egress`，跨重启必须同名）都要求**稳定槽位名**；而"谁在持有"必须
-    含进程号与代次，否则同机两个进程拿同一个名字，接管/收尾的作用域校验就分不出人。
-    两个身份各走各的路，不许再合并成一个变量。
+    （`hrw.shards_of` 要求身份串是 `cfg["executors"]` 的成员）要求**稳定槽位名**；而"谁在
+    持有"必须含进程号与代次，否则同机两个进程拿同一个名字，接管/收尾的作用域校验就分不出人。
+    限速桶键另走一路（工单 2cwd）：`_Ctx.egress = egress.egress_identity(该出口)`——按**出口**
+    计数，同一出口的多个执行体共享一桶（否则该出口速率 = K×λ）。
     """
 
     def test_stable_name_is_the_shard_member_and_runtime_is_not(self):
@@ -2139,7 +2153,9 @@ class HolderIdentitySplitTest(_Base):
                          "运行时身份不是清单成员：拿它去分片会零领取（故两个身份不能合并）")
         self.assertIn(f":{os.getpid()}:", RUNTIME_OWNER)
 
-    def test_ctx_exposes_stable_for_egress_and_runtime_for_holder(self):
+    def test_ctx_egress_key_is_outlet_identity_not_stable_owner(self):
+        """出口桶键 = 出口标识（`egress.egress_identity(该出口)`），不再是执行体身份。"""
+        proxy = "http://u:pw@127.0.0.1:3128"
         seen = {}
         real = executor_v3._run_async
 
@@ -2149,14 +2165,32 @@ class HolderIdentitySplitTest(_Base):
             seen["egress"] = ctx.egress
             return await real(ctx)
 
-        with mock.patch.object(executor_v3, "_run_async", spy),                 mock.patch.object(executor_v3.attempts, "attempt_signin",
+        with mock.patch.dict(os.environ, {"YIBAN_PROXY": proxy}), \
+                mock.patch.object(executor_v3, "_run_async", spy), \
+                mock.patch.object(executor_v3.attempts, "attempt_signin",
                                   lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(_phone(0)))
         self.assertEqual(seen["executor_id"], OWNER, "稳定名仍是分片/展示口径")
-        self.assertEqual(seen["egress"], OWNER,
-                         "出口令牌桶的持久键必须稳定（跨重启续上自适应速率）")
+        self.assertEqual(seen["egress"], egress.egress_identity(proxy),
+                         "出口桶键 = 出口标识（去 userinfo 的 scheme://host[:port]）")
+        self.assertNotEqual(seen["egress"], OWNER, "桶键不再是执行体身份")
         self.assertEqual(seen["runtime_id"], RUNTIME_OWNER,
                          "写库的持有者身份必须含本进程的 PID/代次")
+
+    def test_ctx_passes_outlet_executor_count_as_shares(self):
+        """同出口 3 个执行体（2 worker + 开启的兜底）⇒ 限速器收到 `shares=3`。"""
+        os.environ["YIBAN_EXECUTORS"] = egress.dump_manifest([
+            {"slot": 0, "type": "worker", "proxy": ""},
+            {"slot": 1, "type": "worker", "proxy": ""},
+            {"slot": 2, "type": "fallback", "proxy": ""},
+        ])
+        os.environ["YIBAN_FALLBACK_ENABLE"] = "1"
+        seen_shares = []
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(_phone(0)), shares_seen=seen_shares)
+        self.assertEqual(seen_shares, [3],
+                         "同出口 3 个执行体（2 worker + 兜底）⇒ 份额分母 3")
 
     def test_real_refill_writes_runtime_owner_to_queue(self):
         phone = _phone(0)
@@ -2310,8 +2344,8 @@ class LogAttributionTest(_Base):
         ("yiban/engine/executor_v3.py", "v3 未执行判因失败", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "接管心跳过期的执行体", ("owner_tag",)),
         ("yiban/engine/workers.py", "任务队列事件签名变化", ("tag",)),
-        ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("owner_tag",)),
-        ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("owner_tag",)),
+        ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("outlet_label",)),
+        ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("outlet_label",)),
     )
 
     @staticmethod

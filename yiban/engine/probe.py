@@ -30,7 +30,8 @@
 
 **限速（工单 ba-p04-08）**：探测是真实登录，与签到同一风控暴露面，故探针主循环与执行体
 走**同一套**三道闸（出口桶 → 全局 Λ → 每账号 gap），且登录量记进**同一个**持久化出口桶
-（`egress_state`，桶键 = 本进程执行体身份）。出口也按该身份解析——不再恒取 `ROLE_SINGLE`，
+（`egress_state`，桶键 = **出口标识**，见 `_egress_bucket_key`）。出口也按该身份解析——
+不再恒取 `ROLE_SINGLE`，
 那在清单/多执行体形态下既不是任何 worker 槽位的出口也不是兜底行的出口。等待用阻塞
 `sleep`，但**总等待有界**：到点停止本轮剩余账号并留痕，绝不放开限速。
 前端调用点：注册与改密表单（`web/static/js/components/account-form.js`、
@@ -155,6 +156,16 @@ def _resolve_egress(identity, env=None):
     return egress.resolve(info["role"], info["index"] or 0, env=env)
 
 
+def _egress_bucket_key(identity):
+    """本进程的**出口标识** = 按身份解析出的出口归一到**出口标识**
+    （`egress.egress_identity`：空出口 → `direct`，否则去 userinfo 的 `scheme://host[:port]`）。
+
+    与执行体 `_Ctx.egress` **同一口径**：同一出口的探针与执行体因此共用同一个持久键。运行期
+    预算由出口预算均分（调用侧按 `egress.outlet_executor_count` 传 `shares`）。
+    """
+    return egress.egress_identity(_resolve_egress(identity, env=_egress_env()))
+
+
 def _probe_channels():
     """探针出口桶的突发额度通道数：与执行体同一算式（`schedule.channel_count`）。
 
@@ -164,6 +175,29 @@ def _probe_channels():
     """
     cfg = schedule.planner_config()
     return schedule.channel_count(cfg["bucket_rate"], cfg["avg_attempt_sec"])
+
+
+def _probe_time_overlaps_sign_window(probe_time=None, cfg=None):
+    """`YIBAN_PROBE_TIME` 是否落在签到窗口内（F2）。
+
+    探针不计入出口预算分母 n（窗口外单发动作）。若探针时刻落在窗口内，探针与执行体争同一
+    出口的份额，窗口内该出口瞬时可能超 λ/n 一次——`run_probe` 据此告警。"窗口内"按
+    `[sign_start, sign_end)` 判；跨午夜的窗口按并集判。
+    """
+    text = (probe_time if probe_time is not None else PROBE_TIME).strip()
+    try:
+        hh, mm = (int(x) for x in text.split(":"))
+    except (TypeError, ValueError):
+        return False
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return False
+    minute = hh * 60 + mm
+    cfg = cfg if cfg is not None else schedule.planner_config()
+    start = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+    end = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
+    if start <= end:
+        return start <= minute < end
+    return minute >= start or minute < end   # 跨午夜
 
 
 def _apply_egress_proxy(client):
@@ -368,7 +402,8 @@ def run_probe(accounts):
     - 无法自愈问题：管理员合并预警邮件（复用 A 线 _collect/_flush）+ 对应用户个人
       预警（复用 B 线 send_user_fail_mail，尊重用户开关）。
     - 每个账号探测前先过出口桶 / 全局 Λ / 每账号 gap 三道闸（与执行体同一套），桶键 =
-      本进程执行体身份 ⇒ 登录量记进与执行体**同一个**持久化出口桶；等待用阻塞 sleep，
+      **出口标识**（`_egress_bucket_key`）⇒ 登录量记进与**同出口的执行体**同一个持久化
+      出口桶；等待用阻塞 sleep，
       但**总等待有 `PROBE_EGRESS_MAX_SEC` 预算**，到点停止本轮剩余账号并留痕（探针有
       cadence，少探一轮是安全方向；放开限速跑完全量是红线）。
     - 执行后更新 last_run；once 模式自动关闭探针（.env 写锁）。
@@ -403,18 +438,26 @@ def run_probe(accounts):
     soft_fail_n = 0
     unprobed_n = 0
     # ---- 出口限速（工单 ba-p04-08）----
-    # 探测是真实登录，与签到同一风控暴露面。三道闸与出口都按**本进程执行体身份**取，
-    # 桶键即该身份（`egress_state` 里那一行）——探针登录量因此记进与执行体**同一个**
-    # 持久化出口桶，而不是另造第二套计数（跨进程共享限速的根因在此）。出口本身由
-    # `verify_account` 内的 `_apply_egress_proxy` 按同一身份解析，两处同源。
+    # 探测是真实登录，与签到同一风控暴露面。三道闸按**出口标识**取（`_egress_bucket_key`：
+    # 空出口归一为 `direct`，否则去 userinfo 的 scheme://host[:port]）——探针登录量因此
+    # 记进与**同出口的执行体**同一个持久键。**运行期合计**靠出口预算均分：本进程子桶速率 =
+    # 出口级 λ ÷ 同出口执行体数 n。探针**不计入 n**（它是窗口外的单发动作，F2），故若
+    # `YIBAN_PROBE_TIME` 落在签到窗口内，窗口内该出口瞬时可能超 λ/n 一次——下面显式告警。
+    # 出口本身由 `verify_account` 内的 `_apply_egress_proxy` 按同一身份解析，两处同源。
+    if _probe_time_overlaps_sign_window():
+        logger.warning("探针时刻 YIBAN_PROBE_TIME=%s 落在签到窗口内：探针与执行体争同一出口预算，"
+                       "窗口内该出口瞬时可能超 λ/n 一次；建议把探针时刻放到窗口外",
+                       PROBE_TIME)
     identity = _executor_identity()
-    limiter = token_bucket.limiter_from_env(channels=_probe_channels())
-    limiter.restore_from_store(identity, now=_mono())  # 装回该出口的速率/TAT：重启后不"重启即全速"
+    egress_key = _egress_bucket_key(identity)
+    shares = egress.outlet_executor_count(egress_key)
+    limiter = token_bucket.limiter_from_env(channels=_probe_channels(), shares=shares)
+    limiter.restore_from_store(egress_key, now=_mono())  # 装回该出口的出口级速率：重启后不"重启即全速"
     global_limiter = token_bucket.GlobalLimiter(os.environ.get("YIBAN_GLOBAL_RATE", ""))
     gap_gate = token_bucket.gap_gate_from_env()
     deadline = _mono() + PROBE_EGRESS_MAX_SEC
     for acc in accounts:
-        if not _wait_for_egress(limiter, global_limiter, gap_gate, identity, acc.phone,
+        if not _wait_for_egress(limiter, global_limiter, gap_gate, egress_key, acc.phone,
                                 deadline):
             # 到点停止本轮剩余账号：探针有 cadence，少探一轮是安全的；放开限速跑完全量
             # 才是红线。这里必须留痕，否则"探针没跑完"会被误读成"全员健康"。
@@ -458,10 +501,10 @@ def run_probe(accounts):
                 "探针：账号 %s 网络类失败（不计预警）：%s",
                 _mask_phone(acc.phone), _sanitize_text(message),
             )
-    # 桶状态落库：探针消费掉的额度写回**同一行** `egress_state`，执行体下一轮（或本轮
-    # 重启）`restore_from_store` 即看见——这是"跨进程同一份限速"的落点。写失败由
-    # `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
-    limiter.persist(identity)
+    # 桶状态落库：把**出口级速率**写回同一行 `egress_state`，执行体下一轮（或本轮重启）
+    # `restore_from_store` 即看见——这是"跨进程同一份出口速率"的落点（令牌位置 `tat` 不落库，
+    # 各进程独立）。写失败由 `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
+    limiter.persist(egress_key)
     # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
     if fuse_cleared:
         with contextlib.suppress(Exception):

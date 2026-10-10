@@ -142,9 +142,13 @@ def _new_thread_pool(max_workers):
     return ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="yiban-v3")
 
 
-def _make_limiter(channels):
-    """出口限速器（配置面收口在 `token_bucket.limiter_from_env`）。"""
-    return token_bucket.limiter_from_env(channels=channels)
+def _make_limiter(channels, shares=1):
+    """出口限速器（配置面收口在 `token_bucket.limiter_from_env`）。
+
+    `shares` = 同出口执行体数 n（`egress.outlet_executor_count`）：本进程子桶速率 = 出口级
+    λ ÷ n，n 个进程运行期合计 ≤ λ（工单 2cwd 的出口预算均分）。
+    """
+    return token_bucket.limiter_from_env(channels=channels, shares=shares)
 
 
 def _make_global_limiter():
@@ -406,7 +410,7 @@ class _Ctx:
         self.v = v
         self.shards = shards
         # 稳定槽位名：HRW 分片成员判据（`hrw.shards_of` 要求它是 `cfg["executors"]`
-        # 的成员）与出口令牌桶的持久键（`egress_state.egress`）都用它。**不用于写库**。
+        # 的成员）与界面"执行体"对象都用它。**不用于写库**，也不再是限速桶键。
         self.executor_id = executor_id
         #: 日志归因前缀（`[worker-3 r2]` / `[fallback]`）：**只**由 `egress.owner_tag` 渲染
         #: （角色+槽位+可选轮次，不含主机名——身份原串带部署信息，不得入日志）。
@@ -423,9 +427,13 @@ class _Ctx:
         # 判存活四态。两者一起才分得开 `worker-0` 与无槽位号的 `single` / `fallback`。
         self.slot = slot
         self.alive_role = alive_role or egress.ROLE_WORKER
-        # 桶键 = 执行体身份串（每进程一个出口，与 egress.resolve 的代理一一对应）；
-        # 用稳定名：跨重启同名才能续上自适应速率
-        self.egress = executor_id
+        # 桶键 = **出口标识**（`egress.egress_identity`：空出口归一为 `direct`，否则去
+        # userinfo 的 scheme://host[:port]）。限速按出口计数：这是**持久键与预算分母**，
+        # 同一出口的多个执行体共用一个持久键、并均分该出口的速率预算（每进程子桶速率 =
+        # 出口级 λ ÷ 同出口执行体数 n，n 个进程运行期合计 ≤ λ；见 `token_bucket` 模块头）。
+        # 用出口标识而不是执行体身份：改槽位号/换主机名不再丢掉该出口的自适应速率。
+        self.egress = egress.egress_identity(
+            egress.resolve(_worker_role(executor_id), _worker_slot(executor_id)))
         self.m = schedule.channel_count(cfg["bucket_rate"], cfg["avg_attempt_sec"])
         self.results = results
         self.cred_state = cred_state
@@ -433,7 +441,7 @@ class _Ctx:
         self.notify_url = notify_url
         self.event_sink = event_sink
         self.rng = rng
-        self.limiter = _make_limiter(self.m)
+        self.limiter = _make_limiter(self.m, egress.outlet_executor_count(self.egress))
         self.global_limiter = _make_global_limiter()
         self.gap_gate = _make_gap_gate()
         self.inflight = 0
@@ -1359,10 +1367,10 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         return {}
     # **两个身份显式分开**（详见 `_Ctx` 的字段注释）：
     # - 稳定槽位名（`executor_id`）：HRW 分片成员判据（`hrw.shards_of` 要求它是
-    #   `cfg["executors"]` 的成员，否则一件活都领不到）与出口令牌桶的持久键
-    #   （`egress_state.egress`，跨重启必须同名才能续上自适应速率）；
+    #   `cfg["executors"]` 的成员，否则一件活都领不到）；
     # - 运行时身份（`runtime_id = egress.runtime_owner(稳定名)`）：写进 `sign_tasks.owner`
     #   的**持有者**身份，含本进程的进程号与代次。
+    # 限速桶键另走一路：`_Ctx.egress = egress_identity(该出口)`（出口标识），与这两个都不同。
     # 为什么持有者必须含进程号/代次：同名进程在 v3 仍可能并存（同槽位重启后的新进程、
     # 同机手工再起一个），而收尾/重排/接管的 CAS 按 owner 做作用域校验——名字相同就
     # 分不出"是不是同一个持有者"。计划行（`planner.write_plan`）仍写稳定名：那是 HRW
