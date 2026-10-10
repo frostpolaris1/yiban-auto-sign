@@ -184,6 +184,12 @@ def sign_event_stats(days=30, stage=None):
     stage 为可选过滤开关：sign_events 同时承载真实签到（stage="sign"）与健康探针
     （stage="probe"），不传时两者混算。需要「签到口径」的调用方必须显式传
     stage="sign"，否则探针的成功/失败会被计入签到成功率。
+
+    **摘要行（`phone=''`）排除在账号口径之外**：兜底收尾扫描把「已由他人负责」收成
+    一条批量事件（工单 81xt），该行没有单一账号。它若参与聚合，就会凭空造出一个
+    `pending` 桶、并把 `COUNT(DISTINCT phone)` 抬高 1——正是 2026-10-10 生产
+    「pending 桶 = 全部账号数」的成因形状（MF-55）。摘要行仍留在表里、仍可被事件流
+    读出，只是不进按账号聚合。
     """
     try:
         with _facade()._conn_lock:
@@ -194,7 +200,7 @@ def sign_event_stats(days=30, stage=None):
             sql = (
                 "SELECT substr(ts, 1, 10) AS day, status, "
                 "COUNT(DISTINCT phone) AS cnt, COUNT(*) AS row_cnt "
-                "FROM sign_events WHERE ts >= ?"
+                "FROM sign_events WHERE ts >= ? AND phone <> ''"
             )
             params = [cutoff]
             if stage:
@@ -225,6 +231,9 @@ def sign_event_accounts_summary(days=30, stage=None):
 
     stage 语义与 `sign_event_stats` 相同：签到口径必须显式传 "sign"，否则
     探针事件混入账号数。失败返回空骨架（与 `sign_event_stats` 的失败口径一致）。
+
+    **摘要行（`phone=''`）排除在账号口径之外**（同 `sign_event_stats`）：收尾扫描的
+    批量留痕没有单一账号，不能算进「签到账号总数」或按日终态分桶。
     """
     empty = {"total": 0, "by_status": {}, "by_day": []}
     try:
@@ -233,7 +242,7 @@ def sign_event_accounts_summary(days=30, stage=None):
             cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
-            where = "ts >= ?"
+            where = "ts >= ? AND phone <> ''"
             params = [cutoff]
             if stage:
                 where += " AND stage = ?"
