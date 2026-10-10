@@ -126,16 +126,22 @@ defineExpose({ isDirty: () => dirty.value, save });
     <div class="set-row">
       <label class="set-row-text" for="sh-verify">
         <span class="set-row-label">注册时验证账号</span>
-        <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。</p>
+        <p class="set-help">提交账号即时验证，失败当场提示。</p>
       </label>
       <el-switch id="sh-verify" v-model="form.verify" aria-label="注册时验证账号" :disabled="!isMaster" />
     </div>
     <div class="set-row">
       <label class="set-row-text" for="sh-probe-enable">
         <span class="set-row-label">开启探针模式</span>
-        <p class="set-help">非签到时段对全部账号做健康检查（仅登录，不实际签到），异常账号提前预警。</p>
+        <p class="set-help">非签到时段健康检查，异常账号提前预警。</p>
       </label>
-      <el-switch id="sh-probe-enable" v-model="form.probe" aria-label="探针模式" :disabled="!isMaster" />
+      <div class="set-row-ctl">
+        <button type="button" class="info-tip set-row-info" aria-label="探针模式说明" aria-describedby="set-pop-probe">
+          <svg aria-hidden="true"><use href="#i-info" /></svg>
+          <span class="info-pop" id="set-pop-probe" role="tooltip">非签到时段对全部账号做健康检查（仅登录，不实际签到）；异常账号在报告里提前预警。</span>
+        </button>
+        <el-switch id="sh-probe-enable" v-model="form.probe" aria-label="探针模式" :disabled="!isMaster" />
+      </div>
     </div>
     <p class="alert info" id="sh-perm" :hidden="isMaster">仅主管理员可修改健康与探针设置。</p>
     <div class="form-grid">
@@ -166,9 +172,15 @@ defineExpose({ isDirty: () => dirty.value, save });
     <div class="set-row">
       <label class="set-row-text" for="sh-report-fixed">
         <span class="set-row-label">按固定时刻发送健康报告</span>
-        <p class="set-help">告警通道健康报告（例行每周一封，通道降级或当日推送额度耗尽时当天加发）目前跟着部署节拍到达：服务重启后到达时间会跟着漂移，深夜部署就在半夜收到。开启后按下面的时刻与星期发出；关闭则回到现状（周一 + 服务启动时的钟点），并把已配的时刻与星期一并清除。</p>
+        <p class="set-help">按下面的时刻与星期发出；关闭即清除。</p>
       </label>
-      <el-switch id="sh-report-fixed" v-model="form.reportFixed" aria-label="按固定时刻发送健康报告" :disabled="!isMaster" @change="onReportFixedToggle" />
+      <div class="set-row-ctl">
+        <button type="button" class="info-tip set-row-info" aria-label="健康报告发送说明" aria-describedby="set-pop-report">
+          <svg aria-hidden="true"><use href="#i-info" /></svg>
+          <span class="info-pop" id="set-pop-report" role="tooltip">关闭时会回到现状：按「周一 + 服务启动时的钟点」发送，服务重启后到达时间会跟着漂移，深夜部署就在半夜收到。开启后按下面的时刻与星期发出。健康报告（例行每周一封）遇到通道降级或当日推送额度耗尽时当天加发。</span>
+        </button>
+        <el-switch id="sh-report-fixed" v-model="form.reportFixed" aria-label="按固定时刻发送健康报告" :disabled="!isMaster" @change="onReportFixedToggle" />
+      </div>
     </div>
     <div class="form-grid">
       <div class="field">

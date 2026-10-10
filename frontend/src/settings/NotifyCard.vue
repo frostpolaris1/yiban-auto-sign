@@ -287,9 +287,15 @@ defineExpose({
       <div class="set-row">
         <label class="set-row-text" for="sm-global">
           <span class="set-row-label">全局邮件通知</span>
-          <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</p>
+          <p class="set-help">关闭后所有邮件都不发送；推送不受影响。</p>
         </label>
-        <el-switch id="sm-global" v-model="mailForm.enabled" aria-label="全局邮件通知" :disabled="!isMaster" @change="onMailChange" />
+        <div class="set-row-ctl">
+          <button type="button" class="info-tip set-row-info" aria-label="全局邮件通知说明" aria-describedby="set-pop-mail-global">
+            <svg aria-hidden="true"><use href="#i-info" /></svg>
+            <span class="info-pop" id="set-pop-mail-global" role="tooltip">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</span>
+          </button>
+          <el-switch id="sm-global" v-model="mailForm.enabled" aria-label="全局邮件通知" :disabled="!isMaster" @change="onMailChange" />
+        </div>
       </div>
       <div class="field">
         <label class="field-label" for="sm-to">告警收件人</label>
