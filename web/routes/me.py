@@ -480,7 +480,7 @@ def api_me():
         "random" if mode == "random" else "sequence"
     )
     sign_dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-        "normal" if mode == "normal" else "uniform"
+        "normal" if mode == "normal" else "front"
     )
     # 窗口展示取**有效**窗口端点（`window.bounds`，含裁剪吃空时的回退）：与同页自选片
     # 卡片同一份几何——直读原始配置会在回退时让两处显示两个钟点（片卡 06:30~07:50、
