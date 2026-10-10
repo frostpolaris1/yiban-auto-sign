@@ -718,7 +718,7 @@ onMounted(async () => {
         <div class="set-row">
           <div class="set-row-text">
             <span class="set-row-label">竖屏显示归属邮箱</span>
-            <p class="set-help">窄屏在名称下补一行归属邮箱（已脱敏）；宽屏归属列不受影响。</p>
+            <p class="set-help">窄屏补显归属邮箱（已脱敏）。</p>
           </div>
           <label class="switch" title="竖屏显示归属邮箱">
             <input v-model="ownerEmailOn" type="checkbox" @change="toggleOwnerEmail" />
