@@ -624,6 +624,32 @@ class FrontFillTest(_Base):
         max_slice = max(_slice_of(r["run_at"], eff_lo) for r in rows)
         self.assertLess(max_slice, n_slices - 1, "默认未走 front：落点铺满了整窗")
 
+    def test_plan_stats_density_denominator_is_the_front_span(self):
+        """`plan_stats` 对 `front` 的 φ 分母取计划实际占用的跨度，不是整窗。
+
+        用整窗分母会把 front 的峰值报成与 `uniform` 同值；而 `front` 是默认值，
+        影子对账（`shadow_stats`）与容量核对都会照着这个错值比。
+        `plan_stats` 的模式与 K 都取自 `cfg`（不是行），故两侧各自把 cfg 摆对——
+        这也是生产调用方的口径（`shadow_stats` 传的就是同一份 cfg）。
+        """
+        n = 183
+        execs = ["worker-0@hostA", "worker-1@hostA"]
+        base = dict(self.cfg(), executors=execs)
+        st_front = planner.plan_stats(
+            self.plan(_accounts(n), executors=execs, dist="front"), dict(base, dist="front"), DAY)
+        st_uni = planner.plan_stats(
+            self.plan(_accounts(n), executors=execs, dist="uniform"), dict(base, dist="uniform"), DAY)
+        self.assertEqual(st_front["dist"], "front")
+        self.assertEqual(st_uni["dist"], "uniform")
+        win_sec = planner._slice_count(base) * planner.SLICE_SEC
+        # front 的密度分母（1/φ）必须落在前段：小于整窗一半
+        self.assertLess(1.0 / st_front["phi_max"], win_sec * 0.5,
+                        "front 的密度分母仍是整窗 ⇒ 峰值被报成与 uniform 同值")
+        self.assertGreater(st_front["phi_max"], st_uni["phi_max"] * 2)
+        self.assertAlmostEqual(st_front["rate_peak"], n * st_front["phi_max"], places=9)
+        # uniform 的分母仍是整窗（逐值不变）
+        self.assertAlmostEqual(st_uni["phi_max"], 1.0 / win_sec, places=12)
+
 
 class CompressionTest(_Base):
     def test_over_slot_capacity_halves_slot_width(self):

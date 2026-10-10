@@ -535,7 +535,14 @@ def plan_stats(rows, cfg=None, day=None):
     if dist == "normal" and items:
         mu_min, sigma_min, alpha, phi = _density(len(items), cfg, day, span_sec)
     else:
-        mu_min, sigma_min, alpha, phi = None, None, 0.0, 1.0 / span_sec
+        # 密度分母：`uniform` 铺满整窗，故是整窗跨度；`front` 只占窗口前段，分母是它占用的
+        # 那一段（同一条 `_front_slices` 规则）。用整窗分母会把 front 的峰值报成与 uniform
+        # 同值，比实际低一个数量级——而 front 恰是默认值，影子对账会照着错值比。
+        dens_span = span_sec
+        if dist == "front" and items:
+            k = max(1, len(cfg.get("executors") or ()))
+            dens_span = _front_slices(len(items), cfg, n_slices, k) * SLICE_SEC
+        mu_min, sigma_min, alpha, phi = None, None, 0.0, 1.0 / dens_span
     return {
         "day": day,
         "n": len(items),
