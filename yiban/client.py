@@ -9,7 +9,7 @@
 | WAF 判定 / URL 白名单 / 脱敏诊断 | `yiban/security.py`（以 `ProtocolPolicy` 注入协议层） |
 | 会话缓存（少登录 = 少风控暴露面） | 本模块 `_SessionCache`（协议层只通过 restore/save/clear 使用） |
 | 凭据内存清零 | `YibanClient._wipe_credentials`（由 `attempt_signin` 的 finally 调用） |
-| 三态判定 / 窗口校验 / 多任务容错 | `YibanClient.signin` |
+| 三态判定（按 `signPosition` 的 `State` 枚举）/ 窗口校验 / 多任务容错 | 本模块 `YibanClient.signin` |
 
 `scripts/signin.py` 以 `YibanClient` 之名转发本类（**同一对象**，不是第二份实现），
 故既有调用点与测试（`patch.object(signin.YibanClient, ...)`）行为不变。
@@ -31,6 +31,91 @@ from yiban.geo import generate_position_in_polygon
 from yiban.store.accounts import account_still_signable
 
 logger = logging.getLogger("yiban.client")
+
+# ---------------------------------------------------------------------------
+# signPosition 的 `State` 判定（工单 yiban-auto-sign-yng6）
+# ---------------------------------------------------------------------------
+#: 易班 `signPosition` 的 `State` 数值枚举（平台 stateEnum）→ 本项目状态码。
+#: 枚举来源：`yiban-apk-reverse/TASK-A-nightattendance-web-api.md` 的 stateEnum，
+#: 2026-10-08 经用户确认：
+#:   0 可签到 / 1 未签到 / 2 无需签到 / 3 已签到 / 4 已更改 / 5 补签中
+#: 逐值写死；值为 None = "尚无结论"，照常往下取点位并提交（0 与 1）。
+#:
+#: **判定只看 State，不看 `Msg`**：`Msg` 是平台的中文文案，改词、地区/校方配置差异都会
+#: 让它静默漂移。2026-10-08 只读采集实拍：`State=4`、`Msg="已更改"`、`Position` 为空
+#: ——旧判据是 `"已签到" in Msg`，不命中，于是这个**已签到**的账号落进"Position 为空"
+#: 分支被记成 `no_position`（管理员以为平台没开任务）。后果二：`no_position` 不在
+#: `CLAIM_DONE_STATUSES` ⇒ 不算了结 ⇒ 补签轮重跑它 ⇒ 同一天多一次真实登录。
+#: 注意 `4`（已更改＝班委手动补签）与 `3`（已签到）同归 `already`，**必须落"了结"**。
+SIGN_POSITION_STATE_STATUS = {
+    0: None,                                  # 可签到：尚未签到，照常取点位并提交
+    1: None,                                  # 未签到：同上
+    2: yiban_status.STATUS_NO_TASK,           # 无需签到（非签到日）
+    3: yiban_status.STATUS_ALREADY,           # 已签到
+    4: yiban_status.STATUS_ALREADY,           # 已更改＝班委手动补签＝今日已签到
+    5: yiban_status.STATUS_SUPPLEMENTING,     # 补签中：流程进行中，结果未定
+}
+
+#: `State=5` 的返回文案：把平台原值写进 message，排障时从状态文件也能看出是哪种结局。
+_SUPPLEMENTING_MESSAGE = (
+    "补签申请处理中（平台 State=5「补签中」，结果未定），本轮不再提交"
+)
+
+
+def _as_state_int(raw):
+    """把 `State` 收敛为 int；收敛失败（缺失/空串/"None"/非数字）返回 None。
+
+    上游数值字段可能发数字也可能发数字字符串（协议库 SPEC §3.1），故这里按同一容忍度
+    收敛。不复用 `yiban.protocol.position` 的收敛：那要经 `parse_sign_position`，而它对
+    候选点是**严格**的（缺必填键即抛 ParseError），会把"点位形状不标准"变成"State 读不到"
+    （同一条理由见 `yiban/platform._validate_sign_position`）。
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return int(float(text))
+            except ValueError:
+                return None
+    return None
+
+
+def _judge_by_state(state):
+    """把**已结论**的 `State` 翻成 `signin()` 的返回值；"尚无结论"（0/1）返回 None。
+
+    `skip=True` 表示"不需要重试"（与窗口外跳过同一语义）。**只有"未定"态才用它**：
+    - `State=3/4`（已签到）与 `State=2`（无需签到）：`skip=False`——它们本来就进
+      `CLAIM_DONE_STATUSES`，执行体先按"了结"短路，`skip` 在那条路径上到不了；
+    - `State=5`（补签中）：**结果未定**，故 `skip=True`。平台正在处理补签，我们再登录
+      一次改不了结果，只会多一次真实登录，故本轮不提交、不重试，只记状态。领取池侧另按
+      保守档收尾：`supplementing` 不在 `claims.RETRYABLE_GIVE_UP_STATUSES` ⇒ 写 `final:`
+      前缀（默认档不自动回炉）。**注意 `final:` 不是"当日绝不回炉"**：补签轮把回炉口的
+      `include_final` 开关置真（见 `queue_store.requeue_failed`），仍会把它翻回 `pending`
+      再领一次；见 `yiban/status.py` 该状态码的说明与 `runner.main` 的补签闸门注释。
+    """
+    status = SIGN_POSITION_STATE_STATUS[state]
+    if status is None:
+        return None
+    if status == yiban_status.STATUS_ALREADY:
+        if state == 4:
+            # 报文里没有可用的 Position，但平台已判今日已签到：文案写清来历，
+            # 管理员看日志/状态文件即可分辨"平台已签到"与"我们签成功"。
+            return (True, "今日已签到（平台 State=4「已更改」＝班委手动补签）",
+                    False, status)
+        return True, "今日已签到（无需重复签到）", False, status
+    if status == yiban_status.STATUS_NO_TASK:
+        return True, "今日无需签到（非签到日）", False, status
+    return False, _SUPPLEMENTING_MESSAGE, True, status
 
 
 class _SessionCache:
@@ -236,17 +321,31 @@ class YibanClient:
 
         data_obj = data["data"]
         msg = data_obj.get("Msg", "")
-        if "已签到" in msg:
-            return True, "今日已签到（无需重复签到）", False, yiban_status.STATUS_ALREADY
-        if "今日无需签到" in msg:
-            return True, "今日无需签到（非签到日）", False, yiban_status.STATUS_NO_TASK
+        # 判据**只看结构化的 State**；`Msg` 只作日志原文（排障用），不再作判据——
+        # 中文文本判据会随平台文案改词而静默改变判定（见 SIGN_POSITION_STATE_STATUS）。
+        state = _as_state_int(data_obj.get("State"))
+        if state in SIGN_POSITION_STATE_STATUS:
+            verdict = _judge_by_state(state)
+            if verdict is not None:
+                return verdict
+        else:
+            # 未知/缺失 State：**不静默**。把 State 与 Msg 原文一起落 WARN，再走保守回退
+            # （继续按 Position 判：空点位 → no_position，有点位 → 照常提交）。
+            # 为什么不退回旧的文本判据：两套判据并存时，平台改一个词就会让台账按另一套
+            # 记数，而那正是本工单的缺陷形状。
+            logger.warning(
+                f"[{self.account.phone}] signPosition 的 State 无对应判定，按 Position 保守回退: "
+                f"State={masking.sanitize_text(str(data_obj.get('State')))!r} "
+                f"Msg={masking.sanitize_text(msg)!r}"
+            )
 
         position_list = data_obj.get("Position", [])
         if not position_list:
-            # 登录成功、signPosition 返回 code=0 但 Position 为空：必须把 Msg 原文落日志，
-            # 管理员才能判断是"任务未配置点位"还是"当日任务已关闭"。状态独立为
-            # STATUS_NO_POSITION——非账号/凭据问题，不按失败告警、不触发补签重跑
-            # （重试预算对 NO_POSITION 只给 1 次，见 engine 的 _retry_budget）。
+            # 走到这里说明 State 判不出结论：`State=0/1`（尚未签到）而平台没给点位，
+            # 或 State 缺失/未知。登录成功、signPosition 返回 code=0 但 Position 为空：
+            # 必须把 Msg 原文落日志，管理员才能判断是"任务未配置点位"还是"当日任务已关闭"。
+            # 状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败告警、不触发补签
+            # 重跑（重试预算对 NO_POSITION 只给 1 次，见 engine 的 _retry_budget）。
             logger.warning(
                 f"[{self.account.phone}] signPosition 无可用点位: "
                 f"Msg={masking.sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"

@@ -159,7 +159,10 @@ class NoPositionAttemptSigninTest(unittest.TestCase):
         client = signin.YibanClient(acc)
         client.logged_in = True  # 跳过真实登录
         resp = mock.Mock()
-        resp.json.return_value = {"code": 0, "data": {"Msg": "", "Position": [], "Range": {}}}
+        # State=1（未签到）＋ 空 Position：平台没给点位的真实形态（判定只看 State，
+        # 见 yiban/client.py 的 State 映射表）。
+        resp.json.return_value = {"code": 0, "data": {"State": 1, "Msg": "",
+                                                      "Position": [], "Range": {}}}
         # text 与 json() 保持一致：换核后信封解析读 resp.text（真实 requests 两者同源）
         resp.text = json.dumps(resp.json.return_value)
         client.session.get = mock.Mock(return_value=resp)

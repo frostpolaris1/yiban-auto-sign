@@ -981,7 +981,11 @@ _BACKFILL_COMMIT_ROWS = 50
 #:   今天的窗口不会再开），都属"还该再试"，落 `skipped` 会把它们判成已了结、让
 #:   补签轮不再重跑；
 #: - `paused`/`user_cancelled`/`global_paused` 是管理侧决策（熔断/用户自停/全站
-#:   暂停），今天不会再试 → `skipped`。
+#:   暂停），今天不会再试 → `skipped`；
+#: - `supplementing`（平台 State=5 补签中）与上面三格同组 → `skipped`：平台正在处理，
+#:   我们再跑一轮既改不了结果、又多一次真实登录（它也不在 `UNDONE_STATUSES`，
+#:   见 `yiban/status.STATUS_SUPPLEMENTING`）。落 `failed` 会把它算成"未了结"，
+#:   补签轮据此重跑该账号。
 #: 在途状态（`retrying`/`pending`）**不补**：那不是终态，补进台账会凭空多出待办。
 #: **新增状态码必须同步本表**：本表被 v20 补账与 `scripts/ledger_check.py` 的对账判定
 #: 共用，少一格时两头同时失效——该补的行不进台账，而用同一张表做的对账还报"对账平"，
@@ -993,6 +997,7 @@ _JSON_TERMINAL_TO_TASK_STATE = {
     "failed": "failed",
     "skipped_window": "failed", "skipped_norange": "failed", "no_position": "failed",
     "paused": "skipped", "user_cancelled": "skipped", "global_paused": "skipped",
+    "supplementing": "skipped",
 }
 
 #: 补账行的 owner 标记（对账据此区分"平移行/补账行"）。
