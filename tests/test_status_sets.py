@@ -61,8 +61,8 @@ class StatusSetsTest(unittest.TestCase):
             {getattr(yiban_status, n) for n in names},
             "状态码全集漏了某个 STATUS_*，差集定义就会跟着漏",
         )
-        self.assertEqual(len(yiban_status.ALL_STATUSES), 12)
-        self.assertEqual(len(set(yiban_status.ALL_STATUSES)), 12, "全集内不得有重复串")
+        self.assertEqual(len(yiban_status.ALL_STATUSES), 13)
+        self.assertEqual(len(set(yiban_status.ALL_STATUSES)), 13, "全集内不得有重复串")
 
     def test_all_statuses_matches_display_maps(self):
         """两张映射表的键并集即全部状态码。
@@ -78,7 +78,7 @@ class StatusSetsTest(unittest.TestCase):
     def test_concluded_excludes_only_pending(self):
         """「只有 `pending` 不算结论」的可观察后果，按消费方的判据断言。
 
-        1. 窗口收尾的 CAS 判据 `_has_conclusion` 对 `pending` 为假、对其余 11 个状态码
+        1. 窗口收尾的 CAS 判据 `_has_conclusion` 对 `pending` 为假、对其余 12 个状态码
            为真——若把 `pending`（排计划写下的"打算什么时候签"）当成记录，窗口外起跑的
            整轮零请求账号会一个都进不了 `results`，汇总把它们算成失败并退出码 1；
         2. `pending` 不在「已了结」三态里 ⇒ 该账号仍会被补签轮纳入。
@@ -163,7 +163,7 @@ class HasConclusionTest(unittest.TestCase):
         self.assertFalse(state_io._has_conclusion({"status": yiban_status.STATUS_PENDING}))
 
     def test_every_known_status_is_a_conclusion(self):
-        """12 个状态码里除 `pending` 外都是结论——**含未了结状态**。
+        """13 个状态码里除 `pending` 外都是结论——**含未了结状态**。
 
         `failed` 是事实，窗口外跳过不得覆盖它（覆盖会让 `has_real_failure` 变 False、
         失败告警被吞）。这正是本集合与 `UNDONE_STATUSES` 重叠、却都把 `pending`
@@ -174,7 +174,7 @@ class HasConclusionTest(unittest.TestCase):
                 self.assertTrue(state_io._has_conclusion({"status": st}))
 
     def test_unknown_status_counts_as_conclusion(self):
-        """12 个状态码之外的串按「已有结论」处理（排除法判据，失效方向偏安全）。
+        """13 个状态码之外的串按「已有结论」处理（排除法判据，失效方向偏安全）。
 
         状态文件的 `status` 可能是本进程不认识的串（新增状态码而读侧未同步、外部工具
         手写）。判「无记录」会让窗口外跳过覆盖掉这个真实结果且不报警；判「有结论」只会

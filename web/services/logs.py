@@ -219,6 +219,21 @@ def _mask_log_phones(line):
 # ---------------------------------------------------------------------------
 # 按日签到状态
 # ---------------------------------------------------------------------------
+#: sign-daily 符号 → 状态码的反查表，由 `yiban.status.SYMBOL` **取反**得到（不手抄）。
+#:
+#: 为什么必须取反：本表原来是手抄的三项（✅/❌/➖），而写入侧 `runner._write_sign_daily`
+#: 写的是 `SYMBOL` 里的六项（含 🚫 no_position 与 🕓 supplementing）。手抄子集会随写入侧
+#: 扩表静默陈旧——落盘的符号反查不到，一律落 `pending`，日历把"已跳过/补签中"显示成
+#: "待签"（面板给安心假信号，与 `no_position` 曾漏进图例同一形状）。
+#:
+#: 同符号取**先出现的状态码**（`setdefault`，按 `SYMBOL` 的插入序）：`✅` 同属 success 与
+#: already、`⛔` 同属 skipped_window 与 skipped_norange。取先者保持本表原有口径
+#: （`✅`→success），不因改法而挪动既有语义。
+_SYM_TO_STATUS = {}
+for _code, _sym in yiban_status.SYMBOL.items():
+    _SYM_TO_STATUS.setdefault(_sym, _code)
+
+
 def load_sign_state(state_dir, date_str=None):
     """读取按日结构化状态文件：{phone: {status, message, time, task}}。
 
@@ -239,7 +254,7 @@ def load_sign_state(state_dir, date_str=None):
             return data
     except (OSError, ValueError):
         pass
-    # 回退：sign-daily（旧版符号 ✅/❌/➖）→ 状态码
+    # 回退：sign-daily（旧版符号）→ 状态码（反查表见模块级 `_SYM_TO_STATUS`，由 `SYMBOL` 取反）
     daily_path = os.path.join(state_dir, f"sign-daily-{date_str}.json")
     try:
         with open(daily_path, encoding="utf-8-sig") as f:
@@ -248,11 +263,8 @@ def load_sign_state(state_dir, date_str=None):
         return {}
     if not isinstance(daily, dict):
         return {}
-    sym_map = {"✅": yiban_status.STATUS_SUCCESS,
-               "❌": yiban_status.STATUS_FAILED,
-               "➖": yiban_status.STATUS_NO_TASK}
     return {
-        phone: {"status": sym_map.get(sym, yiban_status.STATUS_PENDING),
+        phone: {"status": _SYM_TO_STATUS.get(sym, yiban_status.STATUS_PENDING),
                 "message": "", "task": "default"}
         for phone, sym in daily.items()
     }

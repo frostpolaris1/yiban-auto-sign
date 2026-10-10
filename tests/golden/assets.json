@@ -13,8 +13,8 @@
     "link rel=modulepreload href=/static/vue/assets/theme-CIzwvb-s.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-GZUw20XP.js",
     "link rel=modulepreload href=/static/vue/assets/shell-dGJbQ6eu.js",
-    "link rel=modulepreload href=/static/vue/assets/status-vocab-C0wP_145.js",
-    "script src=/static/vue/assets/dashboard-f6kACgNC.js"
+    "link rel=modulepreload href=/static/vue/assets/status-vocab-DDwGXPz2.js",
+    "script src=/static/vue/assets/dashboard-Cp7bNvDy.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
