@@ -22,6 +22,43 @@
      补偿交互是共享的「回到顶部」按钮（core.js initBackToTop + .to-top）。原变量
      --table-max-h 及其 ≤720/≥721 两档覆盖一并删除，避免留下"唯一来源"的误导注释。 */
 }
+
+/* ==========================================================================
+   0. 统一令牌（R2.5 D4 打磨包②，来源 docs/refactor/122 §R2.3.3）
+   --------------------------------------------------------------------------
+   三杆尺子的单一事实源：字号 / 控件高 / 圆角。组件一律消费令牌，不得再写裸值。
+   字号六档收掉 9 / 10.5 / 11.5 / 12.5 / 14.5 的零散值；≥24px 的大数字
+   （KPI 数值、错误码）属展示档，单列 --fs-metric，不进正文六档。
+   由 tests/test_web_style_tokens.py 普查守卫（扫构建产物 CSS，越界即红）。
+   ========================================================================== */
+:root {
+  /* 字号阶：6 档（正文/控件用）+ 1 档展示大数字 */
+  --fs-display: 22px;   /* 页面 H1 */
+  --fs-title:   16px;   /* 卡/面板标题 */
+  --fs-body:    13px;   /* 正文、表格单元格、按钮、页签 */
+  --fs-label:   12px;   /* 字段标签、表头、说明 */
+  --fs-micro:   11px;   /* badge、页脚 */
+  --fs-metric:  44px;   /* KPI 数值、404 错误码（展示档，不参与正文六档） */
+
+  /* 控件高：3 档（对齐 Element Plus large / default / 触屏命中） */
+  --ctl-h-lg:    40px;  /* 主操作按钮、原生 .input、EP select */
+  --ctl-h-md:    32px;  /* 桌面工具行紧凑控件、EP 表格/开关 */
+  --ctl-h-touch: 44px;  /* 粗指针命中区（第 38 节） */
+
+  /* 圆角：3 档（收掉 4/5/6/7/11/12/16） */
+  --r-ctl:   8px;   /* 控件 */
+  --r-card:  14px;  /* 卡（Adminator 原版刻度） */
+  --r-inner: 10px;  /* 卡内块、画布 */
+
+  /* 间距阶：4 的倍数（收掉 6/10/14/18/24 的零散值） */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 28px;
+
+  /* 弱化文字单一口径：收掉 --t-light 当正文用的 2.32–2.56:1 档 */
+  --t-weak: var(--t-muted);
+
+  /* 列表页表格行高（Adminator 原版刻度，两族表同高） */
+  --table-row-h: 44px;
+}
 body,
 button,
 input,
@@ -50,7 +87,7 @@ textarea {
   background: var(--primary-solid);
   box-shadow: 0 4px 10px -2px color-mix(in oklab, var(--primary) 40%, transparent);
   place-items: center;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1;
   color: #fff;
@@ -61,14 +98,14 @@ textarea {
    .brand（flex align-items:center）里「40px 方块 + 两行文字块」的垂直配对。
    主标题 19px / 正文 14px = 1.36，明显大于正文；副标题 12px 居中分层。
    图标栏（721–1100 收成 72px）也放得下：40px 方块 + .brand 左右内距各 10px = 60 < 72。 */
-.d-sidebar .brand-name { font-size: 19px; line-height: 1.2; }
+.d-sidebar .brand-name { font-size: 16px; line-height: 1.2; }
 .d-sidebar .brand-tag { font-size: 12px; line-height: 1.3; }
 /* flex-shrink:0：721–1100 收成 72px 图标栏时 .brand 内容盒仅 32px，
    默认可收缩会把 40px 方块压成 31×40（高度仍 40）→ 非方形。
    40 + 图标栏左右内距 10×2 + .brand 内距 10×2 = 60 < 72，不裁切。 */
 .d-sidebar .brand-logo { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; }
 .d-sidebar .brand-logo svg { width: 22px; height: 22px; }
-.d-sidebar .brand-logo .brand-fallback { border-radius: 10px; font-size: 17px; }
+.d-sidebar .brand-logo .brand-fallback { border-radius: 10px; font-size: 16px; }
 
 /* 服务器时钟：图标 + 等宽时间，弱化配色，用于判断签到窗口 */
 .sidebar-clock {
@@ -78,7 +115,7 @@ textarea {
   margin-bottom: 10px;
   padding: 0 2px;
   color: var(--t-muted);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .sidebar-clock svg {
   width: 13px;
@@ -90,7 +127,7 @@ textarea {
 }
 .sidebar-clock [data-clock-text] {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   letter-spacing: 0.02em;
 }
 
@@ -137,7 +174,7 @@ textarea {
   gap: 14px;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.5;
   letter-spacing: 0.06em;
   color: var(--t-sub);
@@ -154,9 +191,9 @@ textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--t-light);
+  color: var(--t-weak);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0.06em;
 }
 
@@ -233,8 +270,8 @@ textarea {
   height: 20px;
   margin: -2px -2px 0 0;
   flex-shrink: 0;
-  border-radius: 5px;
-  color: var(--t-light);
+  border-radius: 8px;
+  color: var(--t-weak);
   transition: background 150ms, color 150ms;
 }
 @media (hover: hover) and (pointer: fine) {
@@ -328,7 +365,7 @@ textarea {
 .modal-sub {
   /* 与模态标题同处头部：副标题紧贴标题下方，而不是隔着整段正文内距 */
   margin-top: 2px;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--t-muted);
 }
@@ -418,7 +455,7 @@ textarea {
 .pager__info {
   color: var(--t-muted);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   letter-spacing: 0.03em;
 }
 .pager__info strong {
@@ -435,7 +472,7 @@ textarea {
   min-width: 30px;
   height: 30px;
   padding: 0 8px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--t-muted);
   font-size: 12px;
@@ -484,7 +521,7 @@ textarea {
 .log-view__line {
   display: block;
   padding: 0 2px;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 .log-view__line--error {
   color: var(--danger);
@@ -499,7 +536,7 @@ textarea {
   color: var(--info);
 }
 .log-view__line--muted {
-  color: var(--t-light);
+  color: var(--t-weak);
 }
 
 
@@ -515,11 +552,11 @@ textarea {
   color: var(--danger);
 }
 .mini-cal-day.is-none {
-  color: var(--t-light);
+  color: var(--t-weak);
 }
 .mini-cal-day.is-future {
   background: var(--bg-muted);
-  color: var(--t-light);
+  color: var(--t-weak);
 }
 /* is-today 用实心底色，叠加签到结果后仍保持高对比可辨 */
 .mini-cal-day.is-today.is-ok {
@@ -560,7 +597,7 @@ textarea {
   display: inline;
   padding: 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: 8px;
   background: none;
   color: var(--primary);
   font: inherit;
@@ -657,7 +694,7 @@ html {
 .empty__icon {
   width: 34px;
   height: 34px;
-  color: var(--t-light);
+  color: var(--t-weak);
 }
 .empty__icon svg {
   width: 100%;
@@ -682,7 +719,7 @@ html {
   position: relative;
   overflow: hidden;
   min-height: 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg-muted);
 }
 .skeleton::after {
@@ -801,7 +838,7 @@ html {
 }
 .dash-page .dash-error-text {
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 /* 页级加载状态条（P61-B5 兜底）：形态与 .usr-status 一致 —— 失败才出现，成功即隐藏 */
 .dash-page .dash-status { margin: 0 0 16px; align-items: center; }
@@ -886,7 +923,7 @@ html {
 .dash-page .mini-cal-day.is-today.is-ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); }
 .dash-page .mini-cal-day.is-today.is-fail { background: var(--cal-bad-bg); color: var(--cal-bad-fg); }
 .dash-page .mini-cal-day.is-today.is-none { background: var(--bg-muted); color: var(--t-base); }
-.dash-page .mini-cal-day.is-today.is-future { background: transparent; color: var(--t-light); }
+.dash-page .mini-cal-day.is-today.is-future { background: transparent; color: var(--t-weak); }
 /* 右下角圆点与日历页 .sc-dot（5px / 距右下各 5px）统一；原 6px / 8px 在缩小后的格上偏大 */
 .dash-page .mini-cal-day.is-ok::after,
 .dash-page .mini-cal-day.is-fail::after {
@@ -951,7 +988,7 @@ html {
   gap: 14px;
   flex-wrap: wrap;
   color: var(--t-muted);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .dash-page .dash-cal-key {
   display: inline-flex;
@@ -963,7 +1000,7 @@ html {
   width: 12px;
   height: 12px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 8px;
 }
 .dash-page .dash-cal-key i.is-ok {
   background: var(--cal-ok-bg);
@@ -979,7 +1016,7 @@ html {
   border-color: var(--border);
 }
 .dash-page .dash-cal-note {
-  color: var(--t-light);
+  color: var(--t-weak);
   font-size: 11px;
 }
 /* 图例色块同步带圆点，与热力图日期格的形状编码一致（不只靠底色/描边）；
@@ -1019,7 +1056,7 @@ html {
   align-items: center;
   gap: 6px 18px;
   margin: 12px 0 0;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .dash-page .dash-cap-links .linklike { font-weight: 700; }   /* 中文文案：600 无字面（实渲 700） */
 
@@ -1045,7 +1082,7 @@ html {
   gap: 8px;
   flex-shrink: 0;
   color: var(--t-muted);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .dash-health-label svg {
   width: 14px;
@@ -1109,7 +1146,7 @@ html {
 }
 /* 页说明与卡说明同档（12.5）：两者都是"标题下方的次要说明"，原 13 / 12.5 只差 0.5px
    （比值 1.04，读者分不出），统一到 12.5 收掉一个伪层级。 */
-.page-sub { margin: 8px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
+.page-sub { margin: 8px 0 0; font-size: 12px; line-height: 1.55; color: var(--t-sub); }
 
 /* 页脚两栏：备案信息靠左、版本与开源入口靠右（Adminator 的 .d-footer 已是 space-between） */
 .footer-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
@@ -1162,8 +1199,12 @@ html {
 /* 表头同样是"小标签"：Adminator 按拉丁小型大写设计（10px + .14em 字距），
    中文在该尺寸与字距下笔画发糊（实测 10px/1.4px 字距，账号页与用户页共 11 处）。 */
 .data-table thead th {
-  font-size: 11px;
+  font-size: var(--fs-micro);
   letter-spacing: 0;
+  /* 表头弱化文字单一口径：vendor 用 --t-light（白卡 2.56:1，不达 AA 4.5:1）；
+     统一到 --t-weak（=--t-muted，4.76:1）。账号/用户/执行体三表此前各自覆盖，此处收成
+     一条全局口径，SMTP 等无覆盖的表头一并生效（122 §R2.3.2 表头色漂移、第一轮 P2-4）。 */
+  color: var(--t-weak);
 }
 
 /* 中文断行：line-break:strict 让「、。，）」等标点按 clreq 避头尾，不落行首；
@@ -1319,7 +1360,7 @@ body {
   height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--t-muted);   /* 承载「显示/隐藏密码」动作的图标，--t-light 仅 2.31:1 < 1.4.11 的 3:1 */
   transition: background 160ms, color 160ms;
 }
@@ -1346,7 +1387,7 @@ body {
    连带切换勾选状态（label 的默认激活行为），故只让复选框自己裹在 label 里。 */
 .auth-agree { display: flex; align-items: flex-start; gap: 8px; }
 .auth-agree .check { padding-top: 1px; }
-.auth-agree-text { font-size: 11.5px; color: var(--t-muted); line-height: 1.6; }
+.auth-agree-text { font-size: 12px; color: var(--t-muted); line-height: 1.6; }
 /* 《用户协议》按钮是全角标点的中文串，600 无字面（实渲 700），写 700 */
 .auth-agree-text button { color: var(--primary); font-weight: 700; font-size: inherit; }
 @media (hover: hover) and (pointer: fine) {
@@ -1408,7 +1449,7 @@ body {
   justify-content: center;
   gap: 6px;
   margin-top: 6px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .auth-links a { color: var(--primary); font-weight: 700; }   /* 中文链接：600 无字面（实渲 700） */
 .auth-links .sep { color: var(--t-light); }
@@ -1446,10 +1487,10 @@ body {
   line-height: 1.35;
   margin: 18px 0 8px;
 }
-.md-body h1 { font-size: 18px; }
+.md-body h1 { font-size: 16px; }
 .md-body h2 { font-size: 16px; }
-.md-body h3 { font-size: 14.5px; }
-.md-body h4 { font-size: 13.5px; }
+.md-body h3 { font-size: 13px; }
+.md-body h4 { font-size: 13px; }
 /* 段距：段间视觉空白 = 行高 22.75px + margin，16px 让段边界明显强于行边界
    （原 10px 与行距太接近，长文档里分不出段）。列表项间距另算，不跟着放大。 */
 .md-body p { margin: 0 0 16px; }
@@ -1469,7 +1510,7 @@ body {
   font-size: 12px;
   background: var(--bg-muted);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 /* 文档正文里的强调用 700：自托管 Noto Sans SC 只有 400/700 两档，600 对中文实渲 700，
    写 700 才是字面存在的档位（写 600 只是让浏览器去模拟、且注释层面误导）。 */
@@ -1594,7 +1635,7 @@ html[data-theme="dark"] .auth-aside {
 .auth-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 14px;
   padding: 28px 26px;
   box-shadow:
     0 1px 2px rgb(15 23 42 / 0.04),
@@ -1621,14 +1662,16 @@ html[data-theme="dark"] .auth-card {
   margin-bottom: 22px;
   background: var(--bg-muted);
   border: 1px solid var(--border);
-  border-radius: 11px;
+  /* 同心圆角链（tests/test_web_css_contrast.py 钉住）：内层 = 外层 − 内距。
+     取圆角令牌 --r-card(14) − --r-inner(10) 配对，轨道内距 4px。 */
+  border-radius: 14px;   /* = --r-card，同心链需字面值（对比度测试按 px 解析） */
 }
 .auth-tabs.auth-seg .tab {
   --seg-fg: #475569;
   top: 0;
   border: 0;
-  /* 同心圆角：轨道 11px − 轨道内距 4px = 7px。选中胶囊贴轨道内弧，同心后不再错角。 */
-  border-radius: 7px;
+  /* 同心圆角：轨道 14px − 轨道内距 4px = 10px（= --r-inner）。选中胶囊贴轨道内弧，同心后不再错角。 */
+  border-radius: 10px;   /* = --r-inner：14px − 4px 内距，同心 */
   padding: 9px 12px;
   font-size: 13px;
   font-weight: 600;
@@ -1713,7 +1756,7 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
   border-radius: 8px;
   background: var(--warning-soft);
   color: var(--t-base);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 .alert.auth-announce .ico {
@@ -1740,7 +1783,7 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--t-muted);   /* 承载「关闭」动作的图标，--t-light 仅 2.22:1 < 1.4.11 的 3:1 */
   background: none;
   cursor: pointer;
@@ -2023,7 +2066,7 @@ html[data-theme="dark"] {
 .card-title { font-size: 16px; letter-spacing: 0; }
 /* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零。
    色用 --t-sub：与 .page-sub 同决策——--t-muted 在白卡上实测 3.98:1，未到正文 AA。 */
-.panel-sub { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
+.panel-sub { margin: 0; font-size: 12px; line-height: 1.55; color: var(--t-sub); }
 .panel-stack { display: flex; flex-direction: column; }
 .panel-head:last-child { margin-bottom: 0; }
 /* 折叠卡收起时，summary 之后无内容，不该留 16px ；展开时由 collapse-body 自带间距 */
@@ -2083,7 +2126,7 @@ html[data-theme="dark"] {
      （实测 844 视口下面板 748 / 滚轮仅 132，中间大片空白、操作行被推到底）。
      align-self:center 让高度回到内容尺寸；超长内容仍由 .modal-body 的
      overflow-y:auto 在面板触顶后自行滚动，不会裁切。 */
-  .pm-panel { max-height: calc(100dvh - 96px); border-radius: 16px; align-self: center; height: auto; }
+  .pm-panel { max-height: calc(100dvh - 96px); border-radius: 14px; align-self: center; height: auto; }
   .user-grid { gap: 16px; }
   /* 窄屏也不把控件换行：文字折行、按钮留在右侧同一行（见上） */
 }
@@ -2163,7 +2206,7 @@ html[data-theme="dark"] {
 .account-card {
   padding: 16px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--bg-card);
 }
 .account-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
@@ -2175,7 +2218,7 @@ html[data-theme="dark"] {
 .account-name { font-size: 13px; font-weight: 600; color: var(--t-base); }
 /* 账号卡三处次级文字统一到 --t-sub：--t-muted 在白卡上实测 3.1–3.62:1，未到正文 AA；
    .account-note 又是整张卡唯一回答「今天签没成」的那一行，读不清代价最大。 */
-.account-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-sub); word-break: normal; overflow-wrap: anywhere; }
+.account-meta { font-family: var(--font-mono); font-size: 12px; color: var(--t-sub); word-break: normal; overflow-wrap: anywhere; }
 .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .account-note { margin-top: 2px; font-size: 12px; color: var(--t-sub); }
 .account-reject { margin-top: 10px; }
@@ -2213,7 +2256,7 @@ html[data-theme="dark"] {
   background: var(--bg-muted);
   color: var(--t-base);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
   /* 不硬拆：break-all 会把号码/URL 从任意字符处切开；日常按词换行，仅当整词
@@ -2442,7 +2485,7 @@ html[data-theme="dark"] {
   text-align: center;
   /* 星期表头是纯中文（一/二/…），不用等宽栈（等宽只服务拉丁数字）；字距归零 */
   font-family: var(--font-sans);
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0;
   color: var(--t-muted);
 }
@@ -2474,7 +2517,7 @@ html[data-theme="dark"] {
   background: transparent;
   color: var(--cal-cell-fg);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   /* 不用 font-weight:500：对中文无字面（实渲 400），日期格层级由状态色 + 圆点承担 */
   cursor: pointer;
 }
@@ -2511,7 +2554,7 @@ html[data-theme="dark"] {
   position: absolute;
   top: 3px;
   right: 5px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-style: normal;
   line-height: 1;
   color: var(--cal-off-fg);
@@ -2525,7 +2568,7 @@ html[data-theme="dark"] {
   gap: 10px;
   padding: 16px 0;
   text-align: center;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--t-muted);
 }
 .sc-spin { animation: sc-rotate 900ms linear infinite; }
@@ -2539,7 +2582,7 @@ html[data-theme="dark"] {
   margin: 0;
   padding: 0;
   list-style: none;
-  font-size: 11.5px;
+  font-size: 12px;
   /* 图例贴在页面底（不是卡片）上：--t-muted 在此只有 4.31:1，必须用 --t-sub(6.86:1) */
   color: var(--t-sub);
 }
@@ -2552,8 +2595,8 @@ html[data-theme="dark"] {
   width: 16px;
   height: 16px;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  font-size: 9px;
+  border-radius: 8px;
+  font-size: 11px;
   font-style: normal;
   line-height: 1;
 }
@@ -2597,7 +2640,7 @@ html[data-theme="dark"] {
   /* 竖屏：操作按钮必须在同一行——收窄内距与字号并禁止换行（宽度已实测放得下） */
   .account-actions { flex-wrap: nowrap; gap: 6px; }
   .account-actions .btn--sm { padding: 5px 8px; font-size: 11px; min-height: 32px; }
-  .btn--sm { min-height: 34px; }
+  .btn--sm { min-height: var(--ctl-h-md); }
   .sc-weekdays { gap: 3px; }
 }
 
@@ -2811,12 +2854,12 @@ html[data-theme="dark"] {
   color: var(--t-muted);
 }
 .notif-label svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
-.notif-body { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-base); white-space: pre-wrap; word-break: break-word; }
+.notif-body { margin: 0; font-size: 12px; line-height: 1.6; color: var(--t-base); white-space: pre-wrap; word-break: break-word; }
 .notif-note {
   margin: 0;
   padding: 10px 16px 12px;
   /* 不再画线：公告可见时 .notif-section 的下边框就在它上方，两条线会叠成 2px */
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
   color: var(--t-muted);
 }
@@ -2916,7 +2959,7 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   }
 }
 
-.acct-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
+.acct-count { font-size: 12px; font-weight: 600; color: var(--t-muted); }
 
 .acct-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
 /* 检索组（输入框 + 「搜索」按钮）：同排、可收缩。flex-basis 由输入框给（见下），
@@ -2925,17 +2968,17 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 /* 同一工具行内的控件统一 34px 控制高度：桌面档 .btn--sm 实际 31.2px（min-height 只在 ≤720
    才抬到 34），与 34px 的搜索框并排会差 2.8px，肉眼可见参差。 */
 .acct-search .input {
-  height: 34px;
+  height: var(--ctl-h-md);
   /* 必须再写 min-height：section 29 的 .input{min-height:40px}（0,1,0）会压过本条的 height
-     （同为 0,1,0 但它在后面），实测同一行里搜索框 40px、按钮 34px 参差。 */
-  min-height: 34px;
+     （同为 0,1,0 但它在后面），实测同一行里搜索框 40px、按钮参差。 */
+  min-height: var(--ctl-h-md);
   /* basis = 加按钮之前的输入框宽度；min-width:0 让它在挤压时先缩，而不是把按钮顶出容器 */
   flex: 1 1 200px;
   min-width: 0;
   padding: 4px 10px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
-.acct-tools .btn { min-height: 34px; }
+.acct-tools .btn { min-height: var(--ctl-h-md); }
 
 /* 批量条：选中 >0 才显示；用 inset 底色表达「作用于以上选中项」，不画分隔线。
    文字用 --t-sub（--t-muted on --bg-muted 仅 4.34:1，不达 AA）。 */
@@ -2950,7 +2993,7 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   border-radius: 8px;
   background: var(--bg-muted);
 }
-.acct-batch-count { font-size: 12.5px; color: var(--t-sub); }
+.acct-batch-count { font-size: 12px; color: var(--t-sub); }
 .acct-batch-count strong { color: var(--t-base); }
 .acct-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
@@ -2958,7 +3001,7 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0 0 12px; }
 /* 账号页 KPI 口径说明（.panel-sub 全局 margin:0，这里补下边距与前一块分开）。 */
 .acct-kpi-note { margin: 0 0 12px; }
-.acct-state { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; }
+.acct-state { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
 .acct-state svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 .acct-state--ok { color: var(--state-ok-fg); }
 .acct-state--bad { color: var(--state-bad-fg); }
@@ -3011,8 +3054,8 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 }
 .acct-table thead .acct-cell-actions { z-index: 3; }
 .acct-row-actions { display: flex; align-items: center; gap: 4px; }
-.acct-row-actions .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
-.acct-row-actions .btn--sm { min-height: 30px; }
+.acct-row-actions .btn--icon { width: var(--ctl-h-md); height: var(--ctl-h-md); padding: 0; justify-content: center; }
+.acct-row-actions .btn--sm { min-height: var(--ctl-h-md); }
 
 /* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变）。
    is-swapping 是退出方向 → ease-in-strong；基类 ease-out-strong 留给进入。 */
@@ -3036,7 +3079,7 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
     display: block;
     margin-top: 2px;
     font-family: var(--font-mono);
-    font-size: 11.5px;
+    font-size: 12px;
     font-weight: 400;
     color: var(--t-muted);
     /* 脱敏邮箱是等宽串：允许在任意位置换行，但不要用 break-all 硬拆词 */
@@ -3090,11 +3133,11 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 /* ---- 日志卡头：标题 + 文件名；右侧工具行（检索 / 显示全部 / 导出 / 行数） ---- */
 body[data-page="data-logs"] .panel-title { min-width: 0; }
 .log-file { font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--t-muted); }
-.log-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
+.log-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex-shrink: 0; }
 .log-search { display: block; }
-.log-search .input { height: 34px; min-height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
+.log-search .input { height: var(--ctl-h-md); min-height: var(--ctl-h-md); min-width: 200px; padding: 4px 10px; font-size: 12px; }
 /* 同排控件统一 34px：桌面 .btn--sm 约 31.2px，与 34px 搜索框并排会参差 */
-.log-tools .btn { min-height: 34px; }
+.log-tools .btn { min-height: var(--ctl-h-md); }
 /* 行数信息降为工具行内的次要文本（原为独占一行的 .panel-sub，把工具行与日期行隔开）。
    字号归到日志卡次要文本统一档 12：原 12.5 与 .log-file(12)/.log-count(11.5) 三个近邻
    值（比值 ≤1.09）并存，同一卡头里看不出差别，统一到 12。 */
@@ -3107,16 +3150,16 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
    读起来像一个悬空的孤立控件（真机 360×792@DPR4 实拍）。
    space-between 折行后该行只剩一个子项，按规则落在行首，与「按日期查看」共用左基线；
    未折行时两种写法几何完全一致（默认态 460~2953、含「回到今天」态 536~768 实测逐像素相同）。 */
-.log-datebar { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 10px 12px; margin-bottom: 0; }
-.log-datebar__group { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
-.log-datebar__label { font-size: 12.5px; color: var(--t-sub); }
+.log-datebar { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-bottom: 0; }
+.log-datebar__group { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.log-datebar__label { font-size: 12px; color: var(--t-sub); }
 /* 日志页日期栏的原生 date input：自研 date-field 退役后，尺寸仍按日期栏对齐。 */
-.log-datebar__date { width: auto; min-width: 150px; height: 34px; padding: 4px 10px; font-size: 12.5px; }
-.log-datebar .btn { min-height: 34px; }
+.log-datebar__date { width: auto; min-width: 150px; height: var(--ctl-h-md); padding: 4px 10px; font-size: 12px; }
+.log-datebar .btn { min-height: var(--ctl-h-md); }
 /* 历史日期提示独占一行：与开关同排时，折行的长文案会把开关挤到视觉"悬空"处 */
-.log-date-tip { margin: 8px 0 0; font-size: 12.5px; color: var(--t-sub); }
+.log-date-tip { margin: 8px 0 0; font-size: 12px; color: var(--t-sub); }
 .log-date-tip:empty { display: none; }
-.log-auto__text { font-size: 12.5px; color: var(--t-sub); }
+.log-auto__text { font-size: 12px; color: var(--t-sub); }
 
 /* ---- 日志正文：等宽 + 自动换行（2026-09-14 起取消限高内滚，随内容自然增高） ---- */
 /* 用户 2026-09-14 裁决：三页表格取消内滚、整页滚动。日志正文同口径：
@@ -3158,7 +3201,7 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
   gap: 6px 10px;
   padding: 0 0 6px;
   border-bottom: 1px solid var(--border-soft);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--t-muted);
 }
@@ -3214,23 +3257,23 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 /* 折叠箭头绝对定位在组头行右上角。必须上下双锚定再 auto 居中：36px 的按钮在只有标题
    （23.3px 行盒）的行里只写 top:0 会向下溢出，实测中心比标题低 6.4px。 */
 
-.usr-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
+.usr-count { font-size: 12px; font-weight: 600; color: var(--t-muted); }
 /* 检索组（输入框 + 「搜索」按钮）：同排、可收缩，与账号页 .acct-search 同一形态。 */
 .usr-search { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* 同排控件并非同高：搜索框 34px、折叠按钮 .icon-btn 36px（vendor 原生）、批量条
    .btn--sm 31.2px（min-height 只在 ≤720 才抬到 34）。三者靠 .panel-head-row / 
    .usr-batch-actions 的 align-items:center 居中，不为凑同高去覆写全站的 .icon-btn。 */
 .usr-search .input {
-  height: 34px;
-  min-height: 34px;
+  height: var(--ctl-h-md);
+  min-height: var(--ctl-h-md);
   /* basis = 加按钮之前的输入框宽度；min-width:0 让它在挤压时先缩，而不是把按钮顶出容器 */
   flex: 1 1 200px;
   min-width: 0;
   padding: 4px 10px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 /* 与搜索框同排的按钮同高（账号页 .acct-tools .btn 已是 34） */
-body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
+body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-md); }
 
 /* 批量条：选中 >0 才显示；inset 底色表达「作用于以上选中项」，不画分隔线。
    文字用 --t-sub（--t-muted on --bg-muted 仅 4.34:1，不达 AA）。 */
@@ -3245,7 +3288,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   border-radius: 8px;
   background: var(--bg-muted);
 }
-.usr-batch-count { font-size: 12.5px; color: var(--t-sub); }
+.usr-batch-count { font-size: 12px; color: var(--t-sub); }
 .usr-batch-count strong { color: var(--t-base); }
 .usr-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
@@ -3317,7 +3360,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   .usr-inline-meta {
     display: block;
     margin-top: 2px;
-    font-size: 11.5px;
+    font-size: 12px;
     font-weight: 400;
     color: var(--t-muted);
   }
@@ -3504,8 +3547,22 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   .form-actions.is-sticky { position: static; }
 }
 .set-row-text { min-width: 0; }
-.set-row-label { display: block; font-size: 13px; color: var(--t-base); }
-.set-help { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
+.set-row-label { display: block; font-size: var(--fs-body); color: var(--t-base); }
+/* 说明不换行（122 §R2.4.1 规格②）：开关行是"一行标题 + 一行说明 + 右侧开关"，
+   说明折行会把行高顶到 2–7 行、开关与标题脱开。nowrap + ellipsis 兜底；
+   文案在源头收短到一行（挤不下的细节进本行就地 ⓘ，见 .set-row-info）。 */
+.set-help {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  color: var(--t-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 行内就地 ⓘ：与右侧开关同组、排在开关左侧、靠行右缘（浮层向左展开，不撑宽文档）。 */
+.set-row-ctl { display: flex; align-items: flex-start; gap: 8px; flex: 0 0 auto; }
+.set-row-info { flex: 0 0 auto; }
 
 /* 数值滑杆（模板无滑杆组件）：用于「0–5 分钟」这类标量刻度。
    轨道用 --bg-muted，拇指用 --primary；读数由 <output> 就地回显（见 settings-schedule.js）。
@@ -3601,8 +3658,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 /* ---- 27.3 就地状态文字与软警示 ---- */
 /* 卡内"结论/数据"行：与 .field-help（11.5px、--t-muted）分层——这一行是决策要看的数据，
    不是说明文字；同色同号会让读者分不出"当前建议是什么"与"这段话在解释什么"（复审实测）。 */
-.set-summary { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-sub); }
-.set-tip { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
+.set-summary { margin: 0; font-size: 12px; line-height: 1.6; color: var(--t-sub); }
+.set-tip { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--t-sub); }
 .set-tip:empty { display: none; }
 .set-warn {
   margin: 12px 0 0;
@@ -3610,7 +3667,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   border-radius: 8px;
   background: var(--badge-warn-bg);
   color: var(--badge-warn-fg);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 .set-bad { color: var(--state-bad-fg); }
@@ -3623,7 +3680,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .set-more { margin-top: 16px; }
 .set-more > summary {
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--t-sub);
   margin-bottom: 0;
   transition: margin-bottom 220ms var(--ease-out-strong);
@@ -3650,9 +3707,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    既不是可点目标、也不提示"可滑"（可滑性由上面的右缘渐隐遮罩承担，触屏同样可见）。 */
 @media (hover: hover) and (pointer: fine) {
   .table-scroll::-webkit-scrollbar { height: 4px; }
-  .table-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .table-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
   .tabs-scroll::-webkit-scrollbar { height: 4px; }
-  .tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
 }
 .tabs-scroll .tabs { margin-bottom: 18px; }
 .tabs-scroll .tab { white-space: nowrap; }
@@ -3700,7 +3757,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .set-danger-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .set-danger-btn { flex: 1 1 220px; justify-content: center; }
 /* 说明限宽：整卡宽（953px）下行长过久，扫读困难（教程 #15/#18）；680px 与 .set-row 同刻度 */
-.set-danger-note { margin: 0 0 16px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
+.set-danger-note { margin: 0 0 16px; font-size: 12px; line-height: 1.6; color: var(--state-bad-fg); }
 
 /* ---- 27.7 动效收敛 ----
    模板 .tab-panel.is-active 自带 keyframes rise-in 320ms ease + 位移 10px，且模板文件里
@@ -3778,7 +3835,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
   min-height: var(--density-kpi-value);
   display: inline-flex;
   align-items: center;
-  font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0;
+  font-size: 22px; font-weight: 600; color: var(--t-muted); letter-spacing: 0;
 }
 /* 回退模板的单行头部（pill 文案缩短后不再换行）；但标题仍可能被窄卡挤掉，
    故把模板的 nowrap+ellipsis 改成允许折行 —— 宁可两行，也不要把标题吃掉。 */
@@ -3831,7 +3888,26 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
       不再对「标签 + 多行说明」整块居中（实测偏低 18px）。
    E) 空表体不留底边线：空态行 + .form-actions 上边线会形成「双线夹空带」。
    ========================================================================== */
-.input, .select, .textarea, .input-group { min-height: 40px; }
+.input, .select, .textarea, .input-group { min-height: var(--ctl-h-lg); }
+/* 控件高统一到三档（122 §R2.3.3）：桌面工具行的紧凑控件收 32px（EP default 刻度），
+   主操作按钮沿用 40px（EP large，由 vendor .btn 的 padding 9/14 + 13px 字高自然到位）。
+   触屏 44px 命中区集中在第 38 节。 */
+.btn--sm { min-height: var(--ctl-h-md); }
+.el-switch { min-height: var(--ctl-h-md); }
+/* 列表页表格行高统一 44px（Adminator 原版刻度，122 §R2.6）：
+   自研 .data-table 的行高原本由最高的操作按钮（32px）+ vendor 12px 上下内距撑到 56.8–65；
+   这里把行高钉到 --table-row-h（44），两族表（自研 .data-table 与 EP .el-table）同高。
+   最小行高用 height（td 上等同 min-height）；内容更高的行（如 SMTP 输入行）仍由内容撑开。 */
+.data-table tbody td { height: var(--table-row-h); padding-block: 0; }
+/* EP 表（audit / pilot）size=small 行高 32：抬到 --table-row-h。
+   EP 行高由 .el-table__cell 的上下内距承担：size=small 是 4px 上下内距、内容行高 24px
+   （4×2+24=32 实测）。用内距令牌换算成 (44-24)/2 = 10px。
+   选择器带元素名（td.el-table__cell）压过 EP 的 `.el-table--small .el-table__cell`
+   （同权重时 EP chunk 在 app.css 之后注入会赢，故多一个元素名提高权重）。 */
+.el-table--small td.el-table__cell {
+  padding-top: calc((var(--table-row-h) - 24px) / 2);
+  padding-bottom: calc((var(--table-row-h) - 24px) / 2);
+}
 /* 输入类控件描边统一吃 --control-border：vendor 的 --border(#E4E8EF) 对白卡只有
    1.10–1.23:1，输入框看起来像一段浅灰文字而不是可输入处（WCAG 1.4.11 需 ≥3:1）。
    :focus / .is-invalid 等状态规则特异性更高，覆盖不受影响（见 vendor 同名规则）。 */
@@ -4145,14 +4221,14 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .err-card .err-page { max-width: 560px; margin: 0 auto; }
 .err-code {
   font-family: var(--font-mono);
-  font-size: 44px;
+  font-size: var(--fs-metric);
   font-weight: 700;
   line-height: 1.1;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   color: var(--primary);
 }
-.err-title { font-size: 19px; font-weight: 700; letter-spacing: 0; margin: 10px 0 0; }
+.err-title { font-size: 16px; font-weight: 700; letter-spacing: 0; margin: 10px 0 0; }
 .err-desc {
   font-size: 13px;
   line-height: 1.7;
@@ -4208,7 +4284,7 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 #set-exec-table .set-exec-ops .btn { height: 32px; min-height: 0; }
 #set-exec-table .set-exec-ops .btn--icon { width: 32px; padding: 0; }
 @media (max-width: 720px) {
-  #set-exec-table .set-exec-ops .btn { height: 34px; }
+  #set-exec-table .set-exec-ops .btn { height: var(--ctl-h-md); }
   #set-exec-table .set-exec-ops .btn--icon { width: 34px; }
 }
 /* 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） */
@@ -4322,11 +4398,15 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   .toast__close,
   .pm-panel .pm-panel-close,
   .info-tip,
-  [data-settings-tabs] .tab,
   .sc-nav-btn,
   .to-top,
   .d-topbar .icon-btn,
   .d-topbar .avatar { min-width: 44px; min-height: 44px; }
+  /* 设置页页签只保 44px 高度，**不设 min-width**：把 flex 子项的 min-width:auto 改成 44px
+     会让 7 个页签各被压到 44px，13px nowrap 文字（自然总宽 532.8px）溢出重叠（P1）。
+     宽度退回内容 + padding 自然撑开，容器横滑承担 —— 与用户 2026-10-04「单行横滑、
+     下一个页签半露」的裁决同一形态。 */
+  [data-settings-tabs] .tab { min-height: 44px; }
   .auth-links a { display: inline-flex; align-items: center; }
   .auth-switch-hint button,
   .auth-agree-text button { display: inline-flex; align-items: center; padding: 0 6px; }
@@ -4368,7 +4448,7 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   flex-wrap: wrap;
   margin-top: 10px;
 }
-.dist-viz-editors .field-label { font-size: 12.5px; }
+.dist-viz-editors .field-label { font-size: 12px; }
 .dist-viz-editors .input { width: 64px; }
 .dist-viz-editors .input[type="time"] { width: 88px; }
 /* 原生时钟图标会压住 88px 输入框里 HH:MM 的尾字（选型页实测）；此处时间入口只做
@@ -4376,7 +4456,7 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .dist-viz-editors .input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
 .dist-viz-legend {
   margin: 6px 0 0;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--t-muted);
 }
@@ -4405,7 +4485,7 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
    它所在的列约 500px，若不设限行内 space-between 会把开关推到 ~470px 外（label 与控件
    分家）。360px 是"label + 开关 + 一个短距"的可读刻度。 */
 .sched-switches { display: flex; flex-direction: column; max-width: 360px; }
-.sched-switches .set-row + .set-row { margin-top: 10px; padding-top: 10px; }
+.sched-switches .set-row + .set-row { margin-top: 12px; padding-top: 12px; }
 
 /* EP 控件与原生 .input 同高（40px）：EP 默认 32px，同排 select / 时间框比数字框矮 8px
    （实测）。仅限设置页，避免波及账号页等其它 EP 消费面；颜色仍全部走 ep-theme.css 令牌。 */
@@ -4437,10 +4517,10 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   padding: 10px 12px;
   border: 1px dashed var(--border);
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--t-muted);
 }
 /* 交互提示行：与图例同档，补齐"怎么操作"这条看不见的事实。 */
-.dist-viz-hint { margin: 4px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--t-muted); }
+.dist-viz-hint { margin: 4px 0 0; font-size: 12px; line-height: 1.6; color: var(--t-muted); }
 
