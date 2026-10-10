@@ -1,12 +1,23 @@
 #!/bin/bash
 umask 077
+
+# ---- stderr 出口：全部警告/致命统一带时间戳（工单 yiban-auto-sign-2k1i，2026-10-10）----
+# 面向 stderr 的行落进 run-cron.log。原实现无时间戳，跨日累积的同类行（例如每日
+# cron 各留 1 条）会被读成"同日被反复调用多次"，是 10-10 误判的直接原因。统一经本
+# 函数出口，前缀与 _log 同格式（`%F %T` 即 `%Y-%m-%d %H:%M:%S`）。新增警告/致命
+# 一律走 _err；不经 _err 的裸 stderr 写入由 tests/test_run_sh_stderr_timestamps.py 结构门拦下。
+# 位置约束：本定义必须先于首次使用（下面 `cd "$APP_DIR"` 的失败分支即最先使用）。
+_err() {
+    echo "[$(date '+%F %T')] $*" >&2
+}
+
 # 易班自动签到运行脚本
 #
 # 应用目录：默认生产路径；可用 YIBAN_APP_DIR 覆盖。原实现把 /opt/yiban-auto-sign
 # 硬编码在多处，导致本脚本无法在任意目录下被回归测试或本地演练——改为变量后
 # 生产行为完全不变（默认值仍是 /opt/yiban-auto-sign）。
 APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
-cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
+cd "$APP_DIR" 2>/dev/null || { _err "致命: 无法进入应用目录 $APP_DIR"; exit 1; }
 ENV_PATH="$APP_DIR/.env"
 
 # Python 解释器：优先项目虚拟环境，缺失时回退系统 Python（须在按天文件名之前定好：
@@ -70,14 +81,14 @@ if [ -r "$ENV_PATH" ]; then
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            echo "警告: .env 含非法键名，已跳过: $key" >&2
+            _err "警告: .env 含非法键名，已跳过: $key"
             continue
         fi
         # 2026-08-21 对抗性审查加固：仅导出 YIBAN_* 前缀键——防止 .env 被写入
         # PATH/LD_PRELOAD 等敏感变量覆盖后续命令解析（纵深防御；当前能写 .env 的
         # web 设置页只产 YIBAN_* 键，此白名单同时约束未来变更）
         if [[ ! "$key" =~ ^YIBAN_ ]]; then
-            echo "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key" >&2
+            _err "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key"
             continue
         fi
         export "$key=$value"
@@ -104,7 +115,7 @@ STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 # 此刻 _log/LOG_FILE 尚不可用，声音只能走 stderr + 非零退出码。
 if [ ! -d "$STATE_DIR" ]; then
     if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
-        echo "致命: 无法创建状态目录 $STATE_DIR，无法完成跑/不跑判定，拒绝运行" >&2
+        _err "致命: 无法创建状态目录 $STATE_DIR，无法完成跑/不跑判定，拒绝运行"
         exit 1
     fi
 fi
@@ -112,11 +123,11 @@ fi
 # 新建分支内，同机其他用户预建的目录（或早期版本留下的非本用户属主目录）完全不查，
 # 可长期压住签到或伪造状态锚点。
 if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
-    echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    _err "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行"
     exit 1
 fi
 if [ ! -w "$STATE_DIR" ]; then
-    echo "致命: 状态目录 $STATE_DIR 不可写，无法完成跑/不跑判定，拒绝运行" >&2
+    _err "致命: 状态目录 $STATE_DIR 不可写，无法完成跑/不跑判定，拒绝运行"
     exit 1
 fi
 
@@ -148,7 +159,7 @@ _log() {
 # .env 缺失/不可读的告警在此补报（解析处 _log 尚未定义，见上面 ENV_WARNING 赋值处）。
 # fail-open（继续用默认值跑）+ 双声音：stderr + 当日日志。
 if [ -n "${ENV_WARNING:-}" ]; then
-    echo "警告: $ENV_WARNING" >&2
+    _err "警告: $ENV_WARNING"
     _log "警告: $ENV_WARNING"
 fi
 
@@ -203,7 +214,7 @@ else
     # 被占成目录等），不是"已触发过"。旧实现把两者混为一谈：静默导出
     # YIBAN_SECOND_RUN=1 → 进程内补签轮被关掉（漏签，而现网补签只剩这一条通道）。
     # fail-closed：无法判定首签/补签 ⇒ 不跑并告警（stderr + 日志 + 非零码）。
-    echo "警告: 无法写入当日触发标记 $RUN_MARKER，无法判定首签/补签，拒绝运行" >&2
+    _err "警告: 无法写入当日触发标记 $RUN_MARKER，无法判定首签/补签，拒绝运行"
     _log "警告: 当日触发标记写入失败（$RUN_MARKER 不存在且不可创建），拒绝运行本轮"
     exit 1
 fi
@@ -219,7 +230,7 @@ fi
 LOCK_DIR="${YIBAN_LOCK_DIR:-/var/lock/yiban}"
 if [ ! -d "$LOCK_DIR" ]; then
     if ! mkdir -p "$LOCK_DIR" 2>/dev/null; then
-        echo "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）" >&2
+        _err "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）"
         _log "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行"
         exit 1
     fi
@@ -227,7 +238,7 @@ fi
 # M07：属主 + 700 硬检查对【已存在】锁目录同样执行——旧实现只在新建分支执行，
 # 同机其他用户预建锁目录（或符号链接）即可抢占锁使签到长期静默跳过。
 if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
-    echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    _err "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行"
     exit 1
 fi
 exec 9>"$LOCK_DIR/sign.lock"
@@ -421,18 +432,18 @@ _run_signin_round() {
 _status_write() {
     local content="$1" tmp
     if ! tmp=$(mktemp "${STATUS_FILE}.tmp.XXXXXX" 2>/dev/null); then
-        echo "警告: 状态文件临时件创建失败（mktemp ${STATUS_FILE}.tmp.*）" >&2
+        _err "警告: 状态文件临时件创建失败（mktemp ${STATUS_FILE}.tmp.*）"
         return 1
     fi
     if ! echo "$content" > "$tmp" 2>/dev/null; then
-        echo "警告: 状态文件临时件写入失败: $tmp" >&2
+        _err "警告: 状态文件临时件写入失败: $tmp"
         rm -f "$tmp" 2>/dev/null
         return 1
     fi
     # 目标是已存在目录时 `mv -f` 会把临时件**搬进目录里**并返回 0（GNU 语义）——
     # 状态看似写成功、实际没写：这正是"写失败==已完成"的等价类，必须显式拒绝。
     if [ -d "$STATUS_FILE" ] || ! mv -f "$tmp" "$STATUS_FILE" 2>/dev/null; then
-        echo "警告: 状态文件原子替换失败: $STATUS_FILE" >&2
+        _err "警告: 状态文件原子替换失败: $STATUS_FILE"
         rm -f "$tmp" 2>/dev/null
         return 1
     fi
@@ -504,13 +515,13 @@ _status_credible_success() {
     content=$(cat "$STATUS_FILE" 2>/dev/null) || return 1
     [ "$content" = "SUCCESS" ] || return 1   # 非 SUCCESS 文本：不是"谎报成功"，静默不采信
     if ! facts=$(_db_settled_today); then
-        echo "警告: sign-status 声称 SUCCESS，但当日库内事实查询失败（$DB_FILE），拒绝采信" >&2
+        _err "警告: sign-status 声称 SUCCESS，但当日库内事实查询失败（$DB_FILE），拒绝采信"
         _log "警告: sign-status 拒绝采信（库内事实查询失败: $DB_FILE），按未完成处理"
         return 1
     fi
     case "$facts" in ''|*[!0-9]*) facts=0 ;; esac
     if [ "$facts" -le 0 ]; then
-        echo "警告: sign-status 声称 SUCCESS，但库内当日无已了结任务（疑似伪造/搬运 STATE_DIR），拒绝采信" >&2
+        _err "警告: sign-status 声称 SUCCESS，但库内当日无已了结任务（疑似伪造/搬运 STATE_DIR），拒绝采信"
         _log "警告: sign-status 与库内当日事实不符（了结数=$facts），拒绝采信、按未完成处理"
         return 1
     fi
@@ -559,7 +570,7 @@ PYEOF
     then
         return 0
     fi
-    echo "警告: YIBAN_FALLBACK_ENABLE=1 但未检测到兜底执行体在跑（心跳缺失或已过期），本轮启动即拉起" >&2
+    _err "警告: YIBAN_FALLBACK_ENABLE=1 但未检测到兜底执行体在跑（心跳缺失或已过期），本轮启动即拉起"
     _log "警告: 兜底开关置 1 而无兜底进程（心跳缺失/过期），拉起兜底常驻执行体（-m yiban.cli sign --fallback）"
     nohup "$PY" -m yiban.cli sign --fallback < /dev/null >> "$LOG_FILE" 2>&1 9<&- &
     return 0
@@ -619,7 +630,7 @@ _seal_second_done_marker() {
     fi
     if [ "$SEAL_CHECK_RC" = "0" ]; then
         if ! : > "$SECOND_DONE_MARKER" 2>/dev/null; then
-            echo "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮" >&2
+            _err "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮"
             _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
             if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
         fi
@@ -629,7 +640,7 @@ _seal_second_done_marker() {
         _log "收尾标记：库内仍有未了结账号（判定 10），不封存，留给 07:12 兜底轮继续处理"
         return 0
     fi
-    echo "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存；下一触发将重判" >&2
+    _err "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存；下一触发将重判"
     _log "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存"
     if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
     return 0
