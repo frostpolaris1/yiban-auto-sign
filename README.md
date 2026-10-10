@@ -243,6 +243,7 @@ tail -20 /var/log/yiban/sign-$(date +%F).log
 ### 1. 前置条件
 
 - 已安装 Docker 与 Compose（验证：`docker --version`、`docker compose version`；Ubuntu 可参考 `curl -fsSL https://get.docker.com | sh`）
+  > **Ubuntu 的 `docker.io` 包不含 Compose**：走 `sudo apt install docker.io` 这条路的人，`docker compose version` 会报 `unknown command: docker compose`，需再装 `sudo apt install docker-compose-v2`（2026-10-09 全新环境演练实测）。用 `get.docker.com` 脚本装的版本自带 compose，不受影响。
 - **x86_64** 架构（镜像暂仅构建 x86_64）
 - 资源建议 1 核 1G，端口 **80/443** 空闲
 
