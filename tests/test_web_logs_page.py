@@ -36,6 +36,7 @@ USER_EMAIL = "logs-page-user@example.com"
 # format.ts::LogsPayload 消费的键（缺任何一个，页面就会渲染空/报错）
 PAYLOAD_KEYS = (
     "logs", "total_lines", "returned", "truncated", "dropped_lines", "q",
+    "level", "collapsed_lines",
     "log_file", "date", "is_today", "probe_events", "sign_events",
     "recent_log_date", "recent_probe_date", "recent_sign_date",
 )
