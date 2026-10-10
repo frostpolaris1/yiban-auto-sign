@@ -51,6 +51,8 @@
   进度展示取数；**读不通回 `None` 哨兵**（降级口径见下）；`open` **不过滤 `vshard`，
   不得当"当日是否了结"的闸门**（那会把永不被领取的 `vshard=-1` 惰性行算进去），
   闸门用 `pending_count`（有分片上下文）或 `open_count`（无分片上下文）；
+- `run_at_by_phone`：当日 `phone -> run_at` 映射（一次取全）——展示层读**执行计划时刻**
+  的唯一事实源；只读 `vshard >= 0` 的真实计划行；**读不通回 `None` 哨兵**（降级口径见下）；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
   的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
@@ -878,6 +880,32 @@ def owners_for_day(day):
     except Exception as e:
         logger.debug("读取当日任务归属失败（按空处理）: %s", e)
         return {}
+
+
+def run_at_by_phone(day):
+    """当日 `phone -> run_at` 映射——展示层读**执行计划时刻**的唯一事实源。
+
+    `run_at` 就是执行体 `claim_batch` 的领取依据，故读它即读执行事实。计划落库后
+    冻结（`write_plan` 用 `INSERT OR IGNORE` 不覆盖既有行），未了结行的它即当前计划
+    时刻；重试/重签会改写它（`requeue_task` / `reclaim_tasks`），此时读到的就是重试时刻。
+
+    只取 `vshard >= 0` 的真实计划行：v18 平移 / v20 补账的 `vshard=-1` 标记行不是任何
+    分片集的计划，`claim_batch` 也永不由它领取，读它会把补账痕迹当成计划时刻。
+    **一次取全**：账号列表可几百行，逐账号查会把一次列表请求变成几百次查询。
+
+    **读不通回 `None`（哨兵）+ warning**：折成空映射会让展示把"读不出来"当成"今日
+    无计划"，页面给每个账号都画上「待生成」，而实际计划已存在。调用方见到 `None`
+    必须走同一条「待生成」降级，**绝不回退旧的派生算法**（显示不得有两套算法）。
+    """
+    sql = "SELECT phone, run_at FROM sign_tasks WHERE day=? AND vshard >= 0"
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(sql, (day,)).fetchall()
+        return {r["phone"]: r["run_at"] for r in rows}
+    except Exception as e:
+        logger.warning("读取当日计划时刻失败（读不通，不等于今日无计划）: %s", e)
+        return None
 
 
 def row_owners(day, phones=None):
