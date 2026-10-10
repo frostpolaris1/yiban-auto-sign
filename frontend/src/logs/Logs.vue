@@ -691,12 +691,12 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 .logs-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 700;
   color: var(--t-base);
 }
@@ -724,17 +724,22 @@ onBeforeUnmount(() => {
 .logs-search .input {
   flex: 1 1 auto;
   min-width: 0;
+  /* 与同排按钮同高（--ctl-h-md=32）：全局 .input 是 40px，与 32px 的 .btn--sm 并排
+     时检索组比工具按钮高 8px，二者顶缘差 4.2px → 网格判定为「控件与标签分行」
+     （122 §R2.2-c：/data/logs 工具行与检索表单在 640–2954 全桌面档错位）。 */
+  height: var(--ctl-h-md);
+  min-height: var(--ctl-h-md);
 }
 .logs-info {
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   color: var(--t-muted);
 }
 .logs-datebar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 .logs-field {
   display: flex;
@@ -750,7 +755,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   color: var(--t-muted);
 }
 .logs-count,
@@ -772,7 +777,7 @@ onBeforeUnmount(() => {
 }
 .run-info,
 .run-note {
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   color: var(--t-muted);
 }
 .logs-retry {
@@ -782,8 +787,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 12px;
+  margin-top: 12px;
 }
 /* 运行巡检块：摘要与时间线同卡；两块表各占一行，窄屏由 el-table 自身横滚。 */
 #run-panel {

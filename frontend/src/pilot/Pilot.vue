@@ -187,7 +187,7 @@ function roleTagType(role: string): "danger" | "primary" | "info" {
 }
 .panel-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 700;
   color: var(--t-base);
 }
@@ -217,7 +217,7 @@ function roleTagType(role: string): "danger" | "primary" | "info" {
 .token-chip {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   display: inline-block;
 }
