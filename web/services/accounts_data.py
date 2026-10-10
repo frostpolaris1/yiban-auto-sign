@@ -389,7 +389,7 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds)
     order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
         "random" if mode == "random" else "sequence")
     dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-        "normal" if mode == "normal" else "uniform")
+        "normal" if mode == "normal" else "front")
     if order != "sequence":
         return None, "随机模式每日重排，签到时间当天 06:31 后可见"
     accounts = load_accounts()
@@ -413,9 +413,10 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds)
         m = int(m)
         return f"{m // 60:02d}:{m % 60:02d}"
 
-    if dist == "uniform":
+    if dist in ("uniform", "front"):
         # 线性填块（与 schedule._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
-        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）
+        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）。`front` 只把落点收进窗口
+        # 前段，与 `uniform` 同属确定性的非钟形一族，网页的"预计时段"取同一支。
         valid = []
         b = start_min
         while b < end_min:

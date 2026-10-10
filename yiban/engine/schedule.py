@@ -56,6 +56,14 @@ _DEFAULT_UTIL = 0.8
 # 最多多试 2 次，而失败本身不是常态；取 0.2（约每 5 个账号多 1 次尝试）把重试算进容量，
 # 宁可略高估出口需求，也不按"零重试"把出口排满。
 _DEFAULT_RETRY_RATIO = 0.2
+# 账号间隔下限（秒）：`front` 铺点速率与容量估算共用的单账号周期项；缺省值住在名册里。
+_DEFAULT_ACCOUNT_GAP_MAX = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
+
+#: 分布模式词表（**唯一事实源**）：uniform=均匀铺满；normal=钟形高峰；front=提前铺完。
+#: planner 的分布白名单与 web 取值域门都引用它——三处各写一份词表，加模式时必漏两处。
+SIGN_DIST_CHOICES = ("uniform", "normal", "front")
+#: 分布模式的缺省值：**提前铺完**（留足重试与兜底余量）。刻意不取词表首项。
+DEFAULT_SIGN_DIST = "front"
 
 # 签到窗口配置非法的一次性告警标记：_schedule_config 每次调度都会调用，
 # 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
@@ -326,8 +334,8 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=_DEFAULT_BUCKET_RATE, 
 def _schedule_config(now=None):
     """读取调度 v2 配置（每次调用读取，便于测试与热改）。
 
-    兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
-    新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
+    兼容旧 YIBAN_SIGN_MODE：sequence→顺序×提前铺完、random→随机×提前铺完、
+    normal→顺序×正态；新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
     返回 dict：order/dist/edge_front_sec/edge_back_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
 
@@ -346,10 +354,10 @@ def _schedule_config(now=None):
     dist = os.environ.get("YIBAN_SIGN_DIST", "").strip().lower()
     if order not in ("sequence", "random"):
         order = "random" if mode == "random" else "sequence"
-        if dist not in ("uniform", "normal"):
-            dist = "normal" if mode == "normal" else "uniform"
-    elif dist not in ("uniform", "normal"):
-        dist = "uniform"
+        if dist not in SIGN_DIST_CHOICES:
+            dist = "normal" if mode == "normal" else DEFAULT_SIGN_DIST
+    elif dist not in SIGN_DIST_CHOICES:
+        dist = DEFAULT_SIGN_DIST
     # 窗口与前后裁剪的解析委托 yiban.window（排计划/判关闭/算容量同源）；告警仍在此处发
     start, end, _win_invalid = window.parse_window(os.environ)
     if _win_invalid:
@@ -419,15 +427,17 @@ def _executor_ids(env=None):
 
 
 def planner_config():
-    """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 三模式 + μσ + 桶速率 + 执行体。
+    """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 分布三态 + μσ + 桶速率 + 执行体/间隔。
 
-    读法与 `_schedule_config` **同源**（直接复用它的结果），只补两项 Planner 独有的：
-    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省住在名册里）与 `executors`（HRW 候选集）。
+    读法与 `_schedule_config` **同源**（直接复用它的结果），只补三项 Planner 独有的：
+    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省住在名册里）、`executors`（HRW 候选集）与
+    `account_gap_max`（`YIBAN_ACCOUNT_GAP_MAX`，`front` 铺点速率的单账号周期项）。
     不另存一份窗口/模式口径——两份口径迟早会分叉。
     """
     cfg = _schedule_config()
     cfg["bucket_rate"] = _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
     cfg["executors"] = _executor_ids()
+    cfg["account_gap_max"] = _env_int("YIBAN_ACCOUNT_GAP_MAX", _DEFAULT_ACCOUNT_GAP_MAX, 0, 3600)
     return cfg
 
 
