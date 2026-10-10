@@ -7,18 +7,20 @@
     `front` 在两个取值域里都在（名册 domain + settings_api 取值域门）。
 对应实现：`config/registry.json` 的 YIBAN_SIGN_DIST、`yiban/engine/schedule.py`
     的 `DEFAULT_SIGN_DIST` 与 `_schedule_config` 派生式子、`yiban/engine/planner.py`
-    的 build_plan / plan_stats 回退、`web/` 四处派生式子（me / settings_api /
-    env_io / accounts_data）、`.env.example`、`.env.docker.example`、
+    的 build_plan / plan_stats 回退、`web/` 三处派生式子（me / settings_api /
+    env_io）、`.env.example`、`.env.docker.example`、
     `frontend/src/settings/model.js` 的 `SCHEDULE_DEFAULTS.dist`。
 关键断言：默认值不是散在各处的字面量，而是**一个值**；谁只改一处（例如只改名册、
     忘了 web 回显式子），此处必红。`front` 必须在名册 domain 与写入门取值域里都登记，
     防"加了模式却存不进去"。
 依赖：纯本地——读源码文本 + import 引擎取常量，不执行 JS、不联网、不建库。
 
-背景：默认值这条"设计常量"在仓里有 9 类载体（名册、引擎常量、引擎回退、四个 web
+背景：默认值这条"设计常量"在仓里有 8 类载体（名册、引擎常量、引擎回退、三个 web
     派生式子、两个 .env 模板、前端默认表）。它们必须逐值相等；只改一处会让回显
     （web）与生效（引擎）分裂——用户看到"均匀分布"而引擎按"提前铺完"排期。
     本守卫是"下一个人只改一处就会红"的那道门。
+    2026-10-10 工单 m9bi：`web/services/accounts_data.py` 的预计时段改读台账
+    `sign_tasks.run_at`，不再自算分布几何，故从本名册移除（它已不派生分布默认值）。
 """
 import json
 import os
@@ -29,11 +31,12 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REGISTRY = os.path.join(BASE, "config", "registry.json")
 
 #: 会写"分布默认值"派生式子的 web 文件（仓库相对路径）。
+#: `accounts_data.py` 不在其列：其 `_estimate_slot` 已改读台账 `sign_tasks.run_at`
+#: （工单 m9bi），不再自算分布几何，故不再派生分布默认值。
 _WEB_CARRIERS = (
     os.path.join("web", "routes", "me.py"),
     os.path.join("web", "routes", "settings_api.py"),
     os.path.join("web", "services", "env_io.py"),
-    os.path.join("web", "services", "accounts_data.py"),
 )
 #: 缺省值必须出现的 env 模板。
 _ENV_CARRIERS = (".env.example", ".env.docker.example")
@@ -93,7 +96,7 @@ class SignDistCarrierParityTest(unittest.TestCase):
         self.assertGreaterEqual(src.count("schedule.DEFAULT_SIGN_DIST"), 2,
                                 "build_plan / plan_stats 的回退未引用单源常量")
 
-    def test_four_web_derivations_use_the_default(self):
+    def test_web_derivations_use_the_default(self):
         default = self._default()
         want = '"normal" if mode == "normal" else "%s"' % default
         for rel in _WEB_CARRIERS:

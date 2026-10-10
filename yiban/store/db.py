@@ -140,6 +140,7 @@ purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，
 task_stats = _queue_store.day_counts  # 当日各 state 计数与派生（settled/open/total）；读不通回 None 哨兵，别名原样透传
 task_open_count = _queue_store.open_count  # 当日未了结且可领取（vshard>=0）的行数——无分片上下文的了结闸门；读不通回 None 哨兵，别名原样透传
 task_owners_for_day = _queue_store.owners_for_day  # 当日 phone -> owner（一次取全）
+task_run_at_by_phone = _queue_store.run_at_by_phone  # 当日 phone -> run_at（计划时刻唯一事实源）；读不通回 None 哨兵，别名原样透传
 task_activity = _queue_store.activity  # 当日按执行体归属的 KPI 计数（已折 KPI 三键）
 task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日
 task_owners_since = _queue_store.owners_since  # 保留期内出现过的执行体身份串

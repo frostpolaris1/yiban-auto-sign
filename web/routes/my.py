@@ -38,6 +38,8 @@ from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from web.services.accounts_data import plan_state_message as _plan_state_message
+from web.services.accounts_data import today_plan_map as _today_plan_map
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
 from yiban.engine import schedule as yb_schedule
 
@@ -88,19 +90,22 @@ def _my_account_view(accounts, indices):
     m = _appmod()
     recent = m.parse_sign_log(m.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
     states = m.load_sign_state()  # 今日状态事实源（signin.py 写入）
+    # 今日计划时刻的唯一事实源是台账 `sign_tasks.run_at`（执行体 claim_batch 的领取依据）；
+    # 读不通回 None 哨兵 → 当作"今日无计划"，展示「待生成」，绝不回退旧的派生算法。
+    run_at = _today_plan_map()
+    plan_at = run_at if isinstance(run_at, dict) else {}
     # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除、未自暂停
     active = [
         a for a in accounts
         if a.get("status") == m.ACCOUNT_STATUS_ACTIVE and not a.get("deleted")
         and not a.get("user_paused", False)
     ]
-    # 执行顺序（调度 v2）：优先按今日计划时间（sign-state scheduled 字段，
-    # cron 生成后即真实执行顺序——覆盖自选/正态/随机模式）；计划未生成（06:31 前）回退列表顺序。
-    # scheduled 为 "HH:MM:SS" 字符串，字典序即时间序；无计划者排在有计划者之后（列表序兜底）。
+    # 执行顺序：按当日台账计划时刻（run_at）排序——与执行体领取顺序同源（覆盖自选/
+    # 正态/随机模式）。run_at 是 "YYYY-MM-DD HH:MM:SS.mmm"，字典序即时间序；
+    # 无计划者排在有计划者之后（列表序兜底）。
     def _exec_order_key(a):
-        st = states.get(a.get("phone", ""), {})
-        sched = st.get("scheduled", "") if isinstance(st, dict) else ""
-        return (0 if sched else 1, sched, a.get("sort_order", 0))
+        r = plan_at.get(a.get("phone", ""))
+        return (0 if r else 1, r or "", a.get("sort_order", 0))
 
     active_sorted = sorted(active, key=_exec_order_key)
     # 排队位置预计算（单次遍历累计，替代每个账号 O(pos) 切片求和）
@@ -127,6 +132,9 @@ def _my_account_view(accounts, indices):
             queue_ahead = queue_before.get(phone, 0)
         st = states.get(phone, {})
         st_status = st.get("status", m.STATUS_PENDING) if isinstance(st, dict) else m.STATUS_PENDING
+        # 状态文案由共享助手唯一裁定（参与调度的未了结账号按台账 run_at 生成「计划 HH:MM」/
+        # 「待生成」，其余保留结论文案）；与 /api/accounts 同源，见 accounts_data.plan_state_message。
+        state_message = _plan_state_message(acc, st, plan_at)
         result.append(
             {
                 "index": i,
@@ -138,7 +146,7 @@ def _my_account_view(accounts, indices):
                 "reject_reason": acc.get("reject_reason", ""),
                 "state_icon": m.STATUS_ICON.get(st_status, "⏳"),
                 "state_status": st_status,  # 状态码（前端按码映射文案）
-                "state_message": st.get("message", "") if isinstance(st, dict) else "",
+                "state_message": state_message,
                 "queue_ahead": queue_ahead,
                 # 出站脱敏：与 /api/my-logs、/api/logs
                 # 统一口径——当前 signin.py 日志每行仅含本人手机号，但口径不设防时，
@@ -330,7 +338,7 @@ def api_my_time_pref():
         "edge_front_sec": front_sec,              # 前后独立
         "edge_back_sec": back_sec,
         "has_account": bool(phone),
-        "estimated": estimated,        # 预计签到时段（顺序排序可预期；随机为 None）
+        "estimated": estimated,        # 预计签到时段（读台账 run_at；无计划行/读不通 → note「待生成」）
         "estimate_note": estimate_note,
     })
 

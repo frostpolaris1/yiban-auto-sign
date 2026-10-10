@@ -217,9 +217,9 @@ class TimePrefsTest(unittest.TestCase):
         self.assertTrue(data["allowed"])
         self.assertEqual(len(data["slots"]), 16)
         self.assertIsNone(data["pref"])
-        # 预计签到时段：顺序排序（默认）→ 非空可预期
-        self.assertIsNotNone(data["estimated"], "顺序排序应返回预计时段")
-        self.assertRegex(data["estimated"], r"\d{2}:\d{2}")
+        # 预计签到时段：取自台账 run_at；当日未写计划行 → 「待生成」，不再回退旧算法
+        self.assertIsNone(data["estimated"], "当日无计划行时不返回任何钟点")
+        self.assertEqual(data["estimate_note"], "待生成")
         # 保存 slot 0（06:30 片）
         r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -230,8 +230,22 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(c.get("/api/my-time-pref").get_json()["pref"])
 
-    def test_api_pref_estimate_random_order_null(self):
-        """随机排序：预计时段为 None + 提示文案（随机才不提醒）。"""
+    def test_api_pref_estimate_ignores_order_key(self):
+        """排序键不再改变预计时段：显示只读台账 `run_at`（v2 自算分支已撤除）。
+
+        旧实现按 `YIBAN_SIGN_ORDER=random` 返回固定提示（不提醒钟点）——那是网页侧自算
+        几何的一部分，与 v3 执行计划分叉（工单 m9bi）。置位该键不得改变台账取到的钟点。
+        """
+        day = clock.now().strftime("%Y-%m-%d")
+        conn = db.get_conn()
+        conn.execute(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, state, "
+            "attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("13800138001", day, 0, "", f"{day} 06:41:00", 5, "pending", 0, "", "", 0,
+             f"{day} 00:00:00"),
+        )
+        conn.commit()
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
         env = open(self.env_file, "a", encoding="utf-8")
@@ -239,8 +253,8 @@ class TimePrefsTest(unittest.TestCase):
         env.close()
         try:
             data = c.get("/api/my-time-pref").get_json()
-            self.assertIsNone(data["estimated"])
-            self.assertIn("当天 06:31 后可见", data["estimate_note"])
+            self.assertEqual(data["estimated"], "06:41",
+                             "排序键不得改变预计时段来源（仍读台账 run_at）")
         finally:
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(

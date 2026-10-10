@@ -9,7 +9,8 @@
 `_duplicate_phone_error` / `_owner_has_other_live`、设备识别码表单协议折算
 `fold_phone_code`（`CLEAR_SENTINEL` 唯一真源）、按 idx 寻址的错位守卫 `_stale_idx_guard`、
 注销冷却剩余 `_delete_grace_remaining`、口令策略 `_password_policy_error` /
-`_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`，
+`_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`、
+当日计划映射 `today_plan_map`、计划文案 `plan_message` / `plan_state_message`，
 以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`。
 
 **归属**
@@ -35,7 +36,6 @@
 不提交签到），不自建第二套探针。
 """
 
-import random
 import re
 from datetime import datetime, timedelta
 
@@ -43,7 +43,7 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 
 from web.services.locks import _file_lock
 from yiban import clock
-from yiban.engine import schedule as yb_schedule
+from yiban import status as yiban_status
 from yiban.masking import mask_email, mask_email_local
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
@@ -368,76 +368,83 @@ def _slot_to_label(slot_min, sign_window_bounds):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds):
-    """预计签到时段（调度 v2）：
-    顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
-    随机排序 = 每天重排，返回 None + 提示文案。
-    返回 (estimated_str|None, note_str)。
+def _plan_clock(run_at):
+    """台账 `run_at`（"YYYY-MM-DD HH:MM:SS[.mmm]"）→ "HH:MM"；空值 / 短串返回 ""。
 
-    几何一律取自**有效窗口视图**（`window.bounds`，含裁剪吃空时的回退）：自己按原始
-    窗口与原始裁剪拼 `eff_lo/eff_hi` 会在回退时得到空区间（span=0），预计时段静默变空。
-    找不到可用片时仍返回 `(None, "")`（fail-closed，不回退成某个默认片）。
-
-    块容量取引擎唯一源 `schedule.block_capacity`，env 用本函数已读的 `.env` 结果传入
-    （MF-93：不能读 web 进程环境，那里没有 `.env` 的键）。
-
-    参数注入口径见模块头「通信」（`load_accounts` / `read_env` / `ENV_FILE` /
-    `sign_window_bounds` 都可被打桩或赋值改写）。
+    只取时分：展示口径与状态文案「计划 HH:MM」同一精度（秒不展示）。截断而非解析，
+    是因为本仓时间串格式单一（`yiban.clock` 产出），多一次解析只多一处失败点。
     """
-    env = read_env(env_file)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()  # 旧的模式键，下面两个新键缺省时用它
-    order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-        "random" if mode == "random" else "sequence")
-    dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-        "normal" if mode == "normal" else "front")
-    if order != "sequence":
-        return None, "随机模式每日重排，签到时间当天 06:31 后可见"
-    accounts = load_accounts()
-    # 与引擎同源的三重过滤：软删 / 待审 / 已拒（工程装载器）+ 自暂停（build_schedule 开头），
-    # 均不参与调度；旧数据缺 status 字段=视为已过审，必须放行。预计时段按实际参与人计算。
-    live = [
-        a for a in accounts
-        if not a.get("deleted")
-        and a.get("status") not in ("pending", "rejected")
-        and not a.get("user_paused")
-    ]
-    idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
-    if idx is None or not live:
-        return None, ""
-    win = sign_window_bounds()
-    start_min, end_min = win.start_min, win.end_min
-    eff_lo, eff_hi = win.lo_min, win.hi_min
-    span = eff_hi - eff_lo
+    text = str(run_at or "").strip()
+    return text[11:16] if len(text) >= 16 else ""
 
-    def fmt(m):
-        m = int(m)
-        return f"{m // 60:02d}:{m % 60:02d}"
 
-    if dist in ("uniform", "front"):
-        # 线性填块（与 schedule._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
-        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）。`front` 只把落点收进窗口
-        # 前段，与 `uniform` 同属确定性的非钟形一族，网页的"预计时段"取同一支。
-        valid = []
-        b = start_min
-        while b < end_min:
-            lo = max(b, eff_lo)
-            hi = min(b + 5, eff_hi)
-            if hi > lo:
-                valid.append((lo, hi))
-            b += 5
-        if not valid:
-            return None, ""
-        # 块容与引擎同源：`block_capacity` 内部对 YIBAN_BLOCK_CAP 做 [1,200] 夹取、
-        # 非法/越界回退 15（含显式 0），压缩模式放大为 ceil(n/块数)。网页侧不再有
-        # "k<=0=不限容量" 特判——该口径在引擎侧本就不存在，对齐后此分支不可达。
-        k = yb_schedule.block_capacity(len(live), len(valid), env=env)
-        bi = min(idx // k, len(valid) - 1)
-        lo, hi = valid[bi]
-        return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
-    # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
-    z = random.Random(str(phone)).gauss(0, 1)
-    center = max(eff_lo, min(eff_hi, eff_lo + span * 0.5 + span * 0.20 * z))
-    return f"约 {fmt(center)}", "（每日波动约 ±10 分钟）"
+def plan_message(run_at):
+    """台账计划时刻 → 展示文案：有计划行 → "计划 HH:MM"；无行 / 读不通 → "待生成"。
+
+    文案前缀是**跨端契约**：以"计划"开头时日历状态行才追加"· 今日计划 HH:MM"
+    （`frontend/src/calendar/model.js` 的 `statusLine`），故前缀不可改。
+    未了结账号用它展示今日计划；有结论的账号由调用方保留各自结论文案。
+    """
+    clock_label = _plan_clock(run_at)
+    return f"计划 {clock_label}" if clock_label else "待生成"
+
+
+def plan_state_message(acc, prev, plan_at):
+    """账号行状态文案的**唯一取点**：满足"参与调度且未了结"⇒ 台账计划文案；否则留结论文案。
+
+    - 参与调度 = 已生效（`active`）且未软删、未自暂停（与引擎装载器同口径）。
+    - 未了结 = 状态文件无该账号条目，或条目状态为 `pending`
+      （`yiban_status.is_concluded_status` 取反：`retrying`/`failed` 等有结论）。
+
+    两个消费端点（`web/routes/my.py` 与 `web/routes/accounts_api.py`）共用本函数，
+    谓词只此一处——故同一账号同一输入必得同一文案（跨端点等值由守卫钉住）。
+    `prev` 是状态文件条目（dict 或 None）；`plan_at` 是 `{phone: run_at}`（可为 None）。
+    """
+    prev_status = (
+        prev.get("status", yiban_status.STATUS_PENDING)
+        if isinstance(prev, dict) else yiban_status.STATUS_PENDING
+    )
+    schedulable = (
+        acc.get("status") == ACCOUNT_STATUS_ACTIVE
+        and not acc.get("deleted")
+        and not acc.get("user_paused", False)
+    )
+    if schedulable and not yiban_status.is_concluded_status(prev_status):
+        return plan_message((plan_at or {}).get(acc.get("phone", "")))
+    return prev.get("message", "") if isinstance(prev, dict) else ""
+
+
+def today_plan_map():
+    """当日 `phone -> run_at` 台账映射（执行计划时刻的唯一事实源）。
+
+    展示层的**唯一取日点**：本函数按业务钟算出"今天"，再向台账层取当日计划。三条读路径
+    （`_estimate_slot` / `web/routes/my.py` / `web/routes/accounts_api.py`）都经此取数，
+    避免各写一遍"今天"的日期口径。读不通回 `None` 哨兵（透传 `run_at_by_phone`），
+    调用方按同一"待生成"降级处理，**绝不回退旧的派生算法**（显示不得有两套算法）。
+    """
+    return db.task_run_at_by_phone(clock.now().strftime("%Y-%m-%d"))
+
+
+def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds):
+    """预计签到时段 = **当日台账计划时刻**（`sign_tasks.run_at`，唯一事实源）。
+
+    显示与执行必须同源。本函数曾自抄调度 v2 的线性填块算法，与真正执行的 v3 计划
+    （分层抖动 `i % n_slices`）在 uniform 下实测差 47 分钟（工单 m9bi）。现在只读台账
+    `run_at`——它正是执行体 `claim_batch` 的领取依据，读它即读执行事实，残差恒为 0。
+
+    当日无计划行（通常 06:31 前）→ 返回 `(None, "待生成")`，**不回退旧算法**：计划未生成
+    时没有真值可比，编造钟点只会再次分叉。库读不通同样走"待生成"（`None` 哨兵与无行同一
+    失败方向，fail-closed）。自选（pinned）与重试/重签改写过的行一并读台账当前值。
+
+    参数 `load_accounts` / `read_env` / `env_file` / `sign_window_bounds` 保留原签名：
+    `web/app.py` 的转发包装按原参数调用，本函数不再消费它们。账号有效性由调用方
+    `_my_phone()` 已保证（仅 active 账号可查）。
+    """
+    run_at = today_plan_map()
+    plan_clock = _plan_clock((run_at or {}).get(phone))
+    if not plan_clock:
+        return None, "待生成"
+    return plan_clock, "（今日计划）"
 
 
 # ---------------------------------------------------------------------------

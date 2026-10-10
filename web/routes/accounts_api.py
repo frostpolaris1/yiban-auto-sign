@@ -45,6 +45,8 @@ from web.routes import read_audit_denied_trace as _read_audit_denied_trace
 from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
 from web.routes import verify_limits as _verify_limits
+from web.services.accounts_data import plan_state_message as _plan_state_message
+from web.services.accounts_data import today_plan_map as _today_plan_map
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
 
 
@@ -55,6 +57,10 @@ def api_accounts():
     # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
     # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
     states = m.load_sign_state()
+    # 今日计划时刻的唯一事实源：台账 run_at（执行体 claim_batch 的领取依据）。读不通回
+    # None 哨兵 → 当作"今日无计划"展示「待生成」，绝不回退旧的派生算法。一次取全。
+    _run_at = _today_plan_map()
+    plan_at = _run_at if isinstance(_run_at, dict) else {}
     # 用户自暂停账号：当日还没有结论时直接呈现"已取消"（⏹️）——无需等下次签到执行
     # 写状态文件，管理员面板立即反映。**只在无结论时合成**：无条件覆写会把"先签
     # 成功、再自暂停"的已了结事实涂成"已取消"，面板与 sign_events 台账给出相反信号。
@@ -112,10 +118,13 @@ def api_accounts():
                 m._mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
                 for k, v in states.items()
             },
-            # 状态原因/计划（如"计划 06:42"），前端表格 title 展示
+            # 状态原因/计划（如"计划 06:42"），前端表格 title 展示；计划态由台账 run_at 生成，
+            # 故按**全部账号**取值（runner 不再为每个账号预写 sign-state 条目）。
+            # 文案由共享助手唯一裁定，与 /api/my-accounts 同源（accounts_data.plan_state_message）。
             "state_msgs": {
-                m._mask_phone(k): (v.get("message", "") if isinstance(v, dict) else "")
-                for k, v in states.items()
+                m._mask_phone(a.get("phone", "")): _plan_state_message(
+                    a, states.get(a.get("phone", "")), plan_at)
+                for a in accounts
             },
             # 单次签到耗时秒数：表格状态 title 展示"耗时 xx s"；无记录为 None
             "state_durs": {
