@@ -331,6 +331,15 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=_DEFAULT_BUCKET_RATE, 
     return min(max(1, need), egress)
 
 
+def egress_rate():
+    """出口级目标速率 λ（`YIBAN_EGRESS_RATE`，次尝试/s）。**唯一读取点**：
+    `planner_config`（限速桶速率）与容量预检的**出口预算告警**都调本函数——同一个量
+    只许一处读，域与夹取也只此一份（两处各写一遍式子，改一处必漏另一处）。
+    非法/越界回退名册缺省（与 `channel_count` 的"非法回退出厂速率"同口径）。
+    """
+    return _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+
+
 def _schedule_config(now=None):
     """读取调度 v2 配置（每次调用读取，便于测试与热改）。
 
@@ -435,7 +444,7 @@ def planner_config():
     不另存一份窗口/模式口径——两份口径迟早会分叉。
     """
     cfg = _schedule_config()
-    cfg["bucket_rate"] = _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+    cfg["bucket_rate"] = egress_rate()
     cfg["executors"] = _executor_ids()
     cfg["account_gap_max"] = _env_int("YIBAN_ACCOUNT_GAP_MAX", _DEFAULT_ACCOUNT_GAP_MAX, 0, 3600)
     return cfg
