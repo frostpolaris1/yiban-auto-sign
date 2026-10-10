@@ -24,7 +24,8 @@ import {
    emit 上去。
 
    交互：抓峰尖拖（左右=峰值时刻、上下=散布）/ 空白处按下=整体推移 / 拖时间轴底座两端=调
-   散布（恒以峰尖对称）/ 画布聚焦后方向键 ±1（Shift ×5，上=更尖）/ 可见编辑器逐键实时预览。
+   散布（恒以峰尖对称）/ 画布聚焦后方向键 ±1（Shift ×5，上=更尖）/ 可见编辑器预览
+   （数字字段逐键实时；峰值中心为 EP el-time-picker，提交式——Enter/失焦/面板选择才生效）。
    实时依赖：窗口与掐头去尾（含 20% 缓冲钳位，父组件算好经 ctxData 传入）、分布方式=均匀
    （钟形置灰 + 提示，编辑仍可用）、账号数（σ_eff 放大曲线与高峰速率）、主题（重取 CSS
    变量重绘）、只读（A 档权限）、直接操作门（`editGate`，卡级「编辑」按钮）。
@@ -401,7 +402,8 @@ function syncEditors(): void {
   };
   const root = rootEl.value;
   if (!root) return;
-  setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="muMid"]'), fmtT(s.effLo + s.span * muMidPct(s) / 100));
+  // muMid 不再在此写入：它是 EP el-time-picker，显示值由 `:model-value="muMidText"` 受控派生。
+  // 其余三枚仍是原生 number input，保留"焦点时不覆盖"的即时回写。
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="muR"]'), String(Math.max(1, Math.round(s.span * (s.muHi - s.muLo) / 200))));
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="sgLo"]'), String(Math.round(s.span * s.sgLo / 100)));
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="sgHi"]'), String(Math.round(s.span * s.sgHi / 100)));
@@ -442,12 +444,14 @@ function requestRender(): void {
   fallbackTimer = setTimeout(run, 1200);
 }
 
-/* ---------- 可见编辑器（逐键实时预览） ---------- */
-function onMuMidInput(e: Event): void {
-  const v = (e.target as HTMLInputElement).value;
-  if (!/^\d{1,2}:\d{2}$/.test(v)) return;
+/* ---------- 可见编辑器（数字字段逐键实时；峰值中心 el-time-picker 提交式） ---------- */
+// 峰值中心由 EP el-time-picker 受控（`:model-value="muMidText"`），回调收到的是
+// value-format="HH:mm" 的字符串（清空时为 null）。语义与旧原生 type=time 一致：
+// 形状非法或空 → 不改状态。
+function onMuMidInput(v: string | null | undefined): void {
   const s = readState();
   if (!(s.span > 0)) return;
+  if (typeof v !== "string" || !/^\d{1,2}:\d{2}$/.test(v)) return;
   const p = v.split(":");
   const min = (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
   write(applyMu(clampPct((min - s.effLo) / s.span * 100), (s.muHi - s.muLo) / 2));
@@ -671,7 +675,20 @@ const muMidText = computed(() => {
       <span class="dist-viz-editor">
         <span class="field-label">峰值中心</span>
         <span class="input-group">
-          <input class="input" type="time" step="60" data-ed="muMid" :value="muMidText" :disabled="readonly" @change="onMuMidInput" @input="onMuMidInput" />
+          <!-- 时间输入一律走 EP el-time-picker：原生 <input type="time"> 的滚轮选择器由 UA
+               渲染、样式不可控（用户既定禁令）；与同页 ScheduleCard 的签到窗口同一控件形态。
+               data-ed="muMid" 保留为两栈共通的 e2e 锚点（落在包裹层，e2e 取内层 input 的值）。 -->
+          <span class="dist-mu-time" data-ed="muMid">
+            <el-time-picker
+              :model-value="muMidText"
+              format="HH:mm"
+              value-format="HH:mm"
+              :disabled="readonly"
+              aria-label="峰值中心"
+              style="width: 96px"
+              @update:model-value="onMuMidInput"
+            />
+          </span>
           <span class="addon">±</span>
           <input class="input" type="number" min="1" step="1" data-ed="muR" :disabled="readonly" @change="onMuRInput" @input="onMuRInput" />
           <span class="addon">分钟</span>
