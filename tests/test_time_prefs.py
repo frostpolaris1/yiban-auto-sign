@@ -687,7 +687,7 @@ class TimePrefsTest(unittest.TestCase):
         token = self._login(c, "admin", ADMIN_PASS)
         data = c.get("/api/settings").get_json()
         self.assertEqual(data["sign_order"], "sequence")
-        self.assertEqual(data["sign_dist"], "uniform")
+        self.assertEqual(data["sign_dist"], "front")
         self.assertEqual(data["window_edge_sec"], 60)
         self.assertEqual(data["edge_front_sec"], 60)  # 0.22.0 前后独立（默认各 60s）
         self.assertEqual(data["edge_back_sec"], 60)

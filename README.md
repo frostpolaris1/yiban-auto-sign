@@ -614,7 +614,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_ACCOUNT_GAP_MAX` | 账号间隔：相邻两次签到请求的最小间隔秒数，自动与手动签到均生效；默认 `10`，`0`=关闭 | 可选 |
 | `YIBAN_SIGN_START` / `YIBAN_SIGN_END` | 签到窗口（`HH:MM`，默认 `06:30` / `07:50`） | 可选 |
 | `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` | 窗口首尾裁剪秒数（各默认 `60`，`0`~`300` 且 30 的倍数）；有效窗口 = 两端裁剪后的区间。旧键 `YIBAN_WINDOW_EDGE_SEC`（前后对称）仍兼容 | 可选 |
-| `YIBAN_SIGN_ORDER` / `YIBAN_SIGN_DIST` | 排序 `sequence`（默认）/`random`；分布 `uniform`（默认）/`normal` | 可选 |
+| `YIBAN_SIGN_ORDER` / `YIBAN_SIGN_DIST` | 排序 `sequence`（默认）/`random`；分布 `front`（默认，提前铺完）/`uniform`（均匀铺满整窗）/`normal`（钟形高峰） | 可选 |
 | `YIBAN_BLOCK_CAP` | 错峰分块容量（每块最多人数，默认 `15`） | 可选 |
 | `YIBAN_SECOND_RUN_TIME` | 补签轮触发点，默认 `07:12`；**须与补签 cron 时刻一致**（见服务器部署第 6 步） | 可选 |
 | `YIBAN_SUNDAY_SIGN` / `YIBAN_SATURDAY_SIGN` | `1`=当天也执行；缺省/`0`=跳过（两个默认都跳过） | 可选 |
@@ -642,6 +642,8 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_BASE_PATH` | Web 挂载前缀，仅在自动识别切错时兜底（见 [部署形态](#部署形态)） | 可选 |
 
 > 调度 v2 的其余内部参数（正态 μ/σ 范围、重试最小间隔等）见代码 `yiban/engine/schedule.py` 的 `_schedule_config()`，网页不展示的项一般无需调整。
+>
+> 「分布」默认是 `front`（提前铺完）：计划按安全速率铺进窗口前段，尾部留作重试与兜底。**想改回铺满整窗**：在 `.env` 写入 `YIBAN_SIGN_DIST=uniform`（或在「系统设置 → 签到调度」把分布选为「均匀分布」），保存后下次触发即生效。
 
 ### 账号间隔（防风控）与容量预估
 

@@ -3,6 +3,7 @@ import {
   HEALTH_REPORT_WEEKDAYS,
   PILL_H,
   PILL_PAD_X,
+  SCHEDULE_DEFAULTS,
   adminToPlaceholder,
   applyMu,
   applySgBounds,
@@ -117,10 +118,31 @@ describe("签到调度口径", () => {
       windowStart: "06:30", windowEnd: "07:50", muLo: 45, muHi: 65, sgLo: 12, sgHi: 30,
     });
     expect(s.order).toBe("sequence");
-    expect(s.dist).toBe("uniform");
+    expect(s.dist).toBe("front");
     expect(s.edgeFront).toBe(0);
     expect(s.window).toBe("06:30 ~ 07:50");
     expect([s.muMin, s.muMax, s.sigmaMin, s.sigmaMax]).toEqual([45, 65, 12, 30]);
+  });
+
+  it("分布默认值是 front（提前铺完），三态都能进出表单", () => {
+    // 缺省表：与后端 schedule.DEFAULT_SIGN_DIST 同值。
+    expect(SCHEDULE_DEFAULTS.dist).toBe("front");
+    // 服务端未给分布时，快照回退到这个默认值。
+    expect(scheduleSnapshot({}).dist).toBe("front");
+    const baseForm = {
+      order: "sequence", edgeFront: 1, edgeBack: 1, gap: 10,
+      pref: false, sat: false, sun: false, windowStart: "06:30", windowEnd: "07:50",
+      muLo: 40, muHi: 60, sgLo: 15, sgHi: 25,
+    };
+    for (const d of ["front", "uniform", "normal"]) {
+      // 服务端给什么就回填什么（无映射层）。
+      expect(scheduleSnapshot({ sign_dist: d }).dist).toBe(d);
+      // 表单值原样提交：改成非默认值时 body 带该值；保持默认 front 时不提交该键。
+      const snap = scheduleSnapshot({ sign_dist: "front" });
+      const body = scheduleBody(snap, { ...baseForm, dist: d }) as Record<string, unknown>;
+      if (d === "front") expect(body.sign_dist).toBeUndefined();
+      else expect(body.sign_dist).toBe(d);
+    }
   });
 
   it("scheduleWarnText：窗口异常提示 + 缓冲超 20% + 容量不足三条各自可现", () => {
