@@ -365,3 +365,37 @@ class WebuiStatsDbTest(unittest.TestCase):
         for r in s["by_day"]:
             day_totals[r["day"]] = day_totals.get(r["day"], 0) + r["accounts"]
         self.assertEqual(day_totals, {d2: 2, d1: 1}, "日终态桶合计 = 当下去重账号数")
+
+    def test_summary_rows_do_not_pollute_account_stats(self):
+        """收尾扫描的**批量摘要行**（`phone=''`）不进账号统计——工单 81xt 的读者面。
+
+        兜底收尾扫描把「已由他人负责」收成一条批量事件（O(1)）。该行没有单一账号
+        （`phone=''`），若照常参与聚合：`sign_event_stats` 会凭空造出一个 `pending`
+        桶、`sign_event_accounts_summary.total` 会把摘要当成第 N+1 个账号——正是
+        2026-10-10 生产「pending 桶 = 全部账号数」的成因形状（MF-55）。
+        摘要行仍留在表里、仍可被事件流读出（它是那条 O(1) 留痕本身）。
+        """
+        db.add_sign_event(_recent(minutes=2), "13800138000", "success", stage="sign")
+        # 摘要行：一条批量结论，不带单一账号
+        db.add_sign_event(_recent(minutes=1), "", "pending",
+                          "本执行体未领取：任务已由其他执行体领取，共 6 个账号",
+                          stage="sign")
+        # ① 聚合：摘要行不得造出 pending 桶、不得计入账号总数
+        stats = {(r["day"], r["status"]): r
+                 for r in db.sign_event_stats(days=30, stage="sign")}
+        self.assertEqual(set(s for (_d, s) in stats), {"success"},
+                         f"摘要行凭空造出了状态桶（生产 pending 桶污染的形状）：{stats}")
+        summary = db.sign_event_accounts_summary(days=30, stage="sign")
+        self.assertEqual(summary["total"], 1,
+                         "摘要行被算成了第 2 个账号——账号总数被污染")
+        self.assertEqual(summary["by_status"], {"success": 1},
+                         "摘要行混进了按状态去重的账号数")
+        # ② 留痕：摘要行仍在表内、仍可被事件流读出
+        raw = db.get_conn().execute(
+            "SELECT phone, status FROM sign_events ORDER BY id").fetchall()
+        self.assertEqual([(r["phone"], r["status"]) for r in raw],
+                         [("13800138000", "success"), ("", "pending")],
+                         "摘要行必须仍在表里（它就是那条 O(1) 留痕）")
+        stream = db.sign_events_since("1970-01-01 00:00:00", limit=10)
+        self.assertIn("", [str(r["phone"]) for r in stream],
+                      "摘要行必须仍能被事件流读出，不得被静默丢弃")
