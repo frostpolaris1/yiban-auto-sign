@@ -352,6 +352,12 @@ function backToToday(): void {
   void load();
 }
 
+/* el-date-picker 清空时回 null；归一成 "" 与旧原生 input 的空值口径一致
+   （viewDateAction 只认 "YYYY-MM-DD"，空值走「请先选择日期」提示）。 */
+function onDatePick(v: string | null): void {
+  dateInput.value = v ?? "";
+}
+
 function toggleAll(): void {
   showAll.value = !showAll.value;
   void load();
@@ -535,7 +541,19 @@ onBeforeUnmount(() => {
           <div class="logs-datebar">
             <label class="logs-field">
               <span class="logs-label">查看日期</span>
-              <input v-model="dateInput" class="input" type="date" />
+              <!-- 日期也走 Element Plus：原生 input[type=date] 的日历弹层由 UA 渲染、样式不可控。
+                   value-format 保持 "YYYY-MM-DD"，与 isValidDate / URL 深链口径逐字一致；
+                   清空得到 null，onDatePick 归一成 ""。 -->
+              <el-date-picker
+                :model-value="dateInput || null"
+                type="date"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                placeholder="选择日期"
+                aria-label="查看日期"
+                class="logs-date"
+                @update:model-value="onDatePick"
+              />
             </label>
             <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="viewDateAction">查看该日日志</button>
             <button v-if="payload && !isToday" type="button" class="btn btn--ghost btn--sm" @click="backToToday">回到今天</button>
@@ -745,6 +763,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+/* 日期选择器宽度：EP .el-date-editor 默认 220px，收到与工具行同档。 */
+.logs-date {
+  width: 152px;
 }
 .logs-label {
   font-size: 12px;
