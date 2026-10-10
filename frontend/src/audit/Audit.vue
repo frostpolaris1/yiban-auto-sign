@@ -96,6 +96,15 @@ function resetFilters(): void {
   search();
 }
 
+/* el-date-picker 清空时回 null；归一成 "" 与旧原生 input 的空值口径一致
+   （query.ts 的 toDayStart/toDayEnd 只认 "YYYY-MM-DD"，空串不下发该过滤键）。 */
+function setFromDate(v: string | null): void {
+  filters.value.fromDate = v ?? "";
+}
+function setToDate(v: string | null): void {
+  filters.value.toDate = v ?? "";
+}
+
 function onPageSizeChange(): void {
   pageSize.value = clampPageSize(pageSize.value);
   search();
@@ -136,9 +145,30 @@ onMounted(search);
         <label class="audit-field">
           <span class="audit-label">起止日期</span>
           <span class="audit-dates">
-            <input v-model="filters.fromDate" class="input" type="date" />
+            <!-- 日期也走 Element Plus：原生 input[type=date] 的日历弹层由 UA 渲染、样式不可控。
+                 value-format 保持 "YYYY-MM-DD"，与 query.ts 的 toDayStart/toDayEnd 口径逐字一致；
+                 清空得到 null，由 setFromDate/setToDate 归一成 ""（等同旧原生空值）。 -->
+            <el-date-picker
+              :model-value="filters.fromDate || null"
+              type="date"
+              format="YYYY-MM-DD"
+              value-format="YYYY-MM-DD"
+              placeholder="开始"
+              aria-label="开始日期"
+              class="audit-date"
+              @update:model-value="setFromDate"
+            />
             <span class="audit-dash">–</span>
-            <input v-model="filters.toDate" class="input" type="date" />
+            <el-date-picker
+              :model-value="filters.toDate || null"
+              type="date"
+              format="YYYY-MM-DD"
+              value-format="YYYY-MM-DD"
+              placeholder="结束"
+              aria-label="结束日期"
+              class="audit-date"
+              @update:model-value="setToDate"
+            />
           </span>
         </label>
         <div class="audit-actions">
@@ -154,14 +184,26 @@ onMounted(search);
         <span class="audit-meta">
           共 <strong>{{ total }}</strong> 条<template v-if="rows.length">（已显示 {{ rows.length }}）</template>
         </span>
-        <label class="audit-pagesize">
+        <div class="audit-pagesize">
           <span class="audit-label">每页</span>
-          <select v-model.number="pageSize" class="input" @change="onPageSizeChange">
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-            <option :value="200">200</option>
-          </select>
-        </label>
+          <!-- 选择控件一律走 Element Plus：原生 <select> 的下拉弹层由 UA 渲染、样式不可控
+               （用户既定禁令）。data-select-field 是两栈共通的 e2e 锚点形态。
+               可访问名用 aria-label：el-select 的 $attrs fallthrough 落在根 div（role=null），
+               aria-labelledby 不会进 role=combobox 的内层 input；EP 会把 ariaLabel 转发到
+               内层 input（select2.mjs 的 combobox 分支），故名字才成立。 -->
+          <div class="select-field audit-pagesize-select" data-select-field="audit-pagesize">
+            <el-select
+              v-model.number="pageSize"
+              aria-label="每页"
+              style="width: 100%"
+              @change="onPageSizeChange"
+            >
+              <el-option :value="50" label="50" />
+              <el-option :value="100" label="100" />
+              <el-option :value="200" label="200" />
+            </el-select>
+          </div>
+        </div>
       </div>
 
       <el-alert
@@ -233,6 +275,11 @@ onMounted(search);
 .audit-dash {
   color: var(--t-weak);
 }
+/* 日期选择器宽度：EP .el-date-editor 默认 220px，两枚并排会过宽；收到与工具行同档的紧凑宽度。
+   窄屏仍靠上面的 .audit-dates flex-wrap 规则换行。 */
+.audit-date {
+  width: 152px;
+}
 .audit-actions {
   display: flex;
   gap: 8px;
@@ -259,6 +306,14 @@ onMounted(search);
   align-items: center;
   gap: 6px;
   margin-left: auto;
+}
+/* EP select 与本页原生 .input 同高（--ctl-h-lg = 40px）：EP 默认 32px。只在本页生效，
+   不波及设置页的单点规则（.settings-page .el-select__wrapper）。 */
+.audit-pagesize-select {
+  width: 92px;
+}
+.audit-pagesize-select :deep(.el-select__wrapper) {
+  min-height: 40px;
 }
 .audit-foot {
   display: flex;
