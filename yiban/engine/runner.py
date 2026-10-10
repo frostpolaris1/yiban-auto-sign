@@ -85,6 +85,9 @@ STATUS_FAILED = yiban_status.STATUS_FAILED
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 STATUS_NO_POSITION = yiban_status.STATUS_NO_POSITION
+# 补签中（易班 signPosition 的 State=5）：结果未定，非成功也非失败——见
+# `yiban/status.STATUS_SUPPLEMENTING` 的三处集合口径。
+STATUS_SUPPLEMENTING = yiban_status.STATUS_SUPPLEMENTING
 STATUS_PAUSED = yiban_status.STATUS_PAUSED
 STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 STATUS_PENDING = yiban_status.STATUS_PENDING
@@ -158,7 +161,8 @@ def _write_sched_snapshot(state_dir, attempt_date):
 def _write_sign_daily(state_dir, accounts, results):
     """写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）。
 
-    符号按状态码：success/already→✅、no_task→➖、failed→❌、no_position→🚫。
+    符号按状态码：success/already→✅、no_task→➖、failed→❌、no_position→🚫、
+    supplementing→🕓（补签中也要上日历：它结果未定，留空会被读成"没记录"）。
     锁内读-改-写，写盘走状态文件私有写单通道。
     """
     try:
@@ -180,7 +184,7 @@ def _write_sign_daily(state_dir, accounts, results):
             for acc in accounts:
                 _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
                 if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
-                              STATUS_FAILED, STATUS_NO_POSITION):
+                              STATUS_FAILED, STATUS_NO_POSITION, STATUS_SUPPLEMENTING):
                     daily[acc.phone] = STATUS_SYMBOL[status]
             state_io._write_private_json(daily_path, daily)
     except (OSError, ValueError, TypeError) as e:
@@ -619,6 +623,17 @@ def main(argv=None):
     # has_real_failure；但归入"未了结"（与容器调度器 _UNDONE_STATUSES 同语义），
     # 宿主 exit 2 / 容器补签轮均会重跑一次——学校延迟放位时仍有兜底
     # （无点位账号 1 次即止、幂等无害）。
+    # supplementing（平台 State=5，补签中）同样归入跳过计数：**不是失败**，不该触发失败
+    # 告警与退出码 1。它与 no_position 的区别在"未了结"：补签中不进 UNDONE_STATUSES。
+    # **但这条只挡住读状态文件的闸门**：队列里它是 `failed`（`TASKS_OPEN_STATES` 之一），
+    # 而宿主/容器的补签闸门先读队列（`state_io.has_undone_accounts_today` →
+    # `db.task_open_count`）⇒ 补签轮仍会起，且 `_second_run` 让 `requeue_final=True`
+    # 把 `final:` 档一并回炉，该账号当日仍多一次真实登录。
+    # **不是回归**：旧文本判据下 State=5 的结局取决于 `Position` 是否为空——为空落
+    # `no_position`（也重跑一次，重跑次数与现在相同），非空则旧路径没有 State 判据挡它、
+    # 会继续往下走并发起一次真实提交（平台是否受理该提交未采集，无定论）。
+    # 要不要"彻底不重试"见工单（需定策：补齐签轮的 open 行判据，或让它也进
+    # `_second_run_drop_done` 的剔除集）。
     has_real_failure = False
     has_executed = False
     # 窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
@@ -662,7 +677,8 @@ def main(argv=None):
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
         elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
-                        STATUS_PAUSED, STATUS_USER_CANCELLED, STATUS_NO_POSITION):
+                        STATUS_PAUSED, STATUS_USER_CANCELLED, STATUS_NO_POSITION,
+                        STATUS_SUPPLEMENTING):
             skip_n += 1
             if status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE):
                 has_window_skip = True

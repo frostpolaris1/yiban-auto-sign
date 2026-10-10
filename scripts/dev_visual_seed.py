@@ -265,7 +265,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     _sym = {code: e["symbol"] for code, e in _DISPLAY.items()}
     DAILY_CYCLE = ["success", "already", "no_task", "failed", "retrying",
                    "skipped_window", "skipped_norange", "no_position",
-                   "user_cancelled", "pending"]
+                   "supplementing", "user_cancelled", "pending"]
     for day in range(35):
         base_day = now - timedelta(days=day)
         if base_day.weekday() >= 5:
