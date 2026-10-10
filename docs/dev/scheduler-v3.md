@@ -264,6 +264,71 @@ bash scripts/backup.sh
 - **影子期对比口径**：`dry_run` 只算计划与落点分布、零落库零请求。用
   `planner.plan_stats` 的 `hist`（按有效窗口 5 分钟格的落点直方图）与 `peak_per_sec` /
   `lam` 跟现网落点对账；**影子期没有 `shadow:` 影子行**，别去库里找。
+- **巡检读取面**：`GET /api/admin/run-events` 只读回显进度事件（管理员面）。
+  它回两块：轮级摘要（每轮一行）与单轮时间线。账号已遮罩，执行体只回角色与槽位，
+  `message` 在写入面净化后再于读取面复遮一次（纵深防御）。日筛选**下推到 SQL**
+  （`WHERE day = ?`），故读取层的轮数上限只作用于已筛出的集合；读取面另按保留窗口
+  两端过滤（`WHERE day = ? AND day >= 下界 AND day <= 上界`），窗外日期回空表。
+  窗口两端只有 `yiban/store/run_events.py::window_range()` 一个定义点，端点
+  `window.start_day` / `end_day` 从它取值，不另算公式。当日轮数被截断时回
+  `rounds_truncated=true` 与 `rounds_limit`，页面写明「已截断」（不许静默出空表）。
+  页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/store/run_events.py`，
+  路由住在 `web/routes/run_events_api.py`。
+
+### 日志面判据
+
+判据只回答一个问题：出了故障，谁能几分钟内说清"谁、做了什么、为什么"。
+
+**要打**
+
+- 凡改变用户可见状态或安全边界的动作，必须留痕。
+- 一条留痕记四个字段：actor、action、target、决策理由。
+- 例：账号审核、删号、暂停、口令门、配置变更。
+
+**不要打**
+
+- 凭据、手机号、邮箱的明文。脱敏只有一个出口（`yiban/masking.py`）。
+- 逐账号的重复成功明细。成功是常规态，逐条打会冲走故障痕。
+- 每条推送事件。推送走账本（`notify/ledger.py`），不逐条落日志。
+- SSE 心跳。心跳是保活流量，不是业务事件。
+
+**分级**
+
+- INFO 只留轮级与账号级结论。它回答"这一轮跑了什么"。
+- WARN 与 ERROR 是给人看的面。它回答"哪里不对"。
+- 档次只有一份定义：`web/services/logs.py::LEVEL_RANK`。
+- 档位**默认值**只有后端一份：`web/services/logs.py::LOG_LEVEL_DEFAULT`（`warn`）。
+  前端不内联默认档位：首屏不带 `level`，档位显示以服务端回执为准；用户切换后才
+  显式下发。守卫：`tests/test_logs_level_filter.py::FrontendDefaultLevelGuardTest`。
+- `/api/logs` 的 `level` 档默认 `warn`，它收起 INFO 与 DEBUG。
+- 收起过行时，接口回 `collapsed_lines`，页面写明"已收起 N 行 INFO／DEBUG"
+  （被收起的是 INFO 与 DEBUG 两者，文案必须写出两者）。
+
+**已知边界：可见性判据改档次表后放宽了大小写（只记录）**
+
+- `_log_line_visible` 现在按 `LEVEL_RANK` 判非 yiban 组件（`level_rank` 内部大写化）。
+- 差异只有一项：非 yiban 组件的**小写级别别名**（例如 `warning`）由不可见变为可见。
+- 反向无丢失。Python logging 只产大写级别，故现网不可达。这条只记录，不修。
+
+**轮询节拍（复核结论，不新增机制）**
+
+- 巡检页每 10 秒轮询一次（前端 `POLL_MS`）。一次轮询发两个请求：`/api/logs` 与
+  `/api/admin/run-events`。
+- 轮询已按可见性驱动：`shouldPoll` 要求页面可见（`visibilityState === "visible"`），
+  切到后台即停。它另要求"跟随最新"视图与无在途请求。
+- 日筛选下推后，`run-events` 每次只聚合一天（`WHERE day = ? AND day >= 下界 AND day <= 上界`），
+  不再扫 14 天全表。窗口两端 = `[今天-(RETENTION_DAYS-1), 今天]`，只有
+  `run_events.window_range()` 一个定义点；下界挡掉保留期外日期（清理删界是
+  `今天-RETENTION_DAYS`，故起点外那一天在清理跑过前仍有行），上界挡掉未来业务日。
+  窗口外回空表。
+- 结论：节拍维持 10 秒。降频会拖慢"看最新一轮"的可见性，收益低。
+
+**SSE 的两类新噪音要防**
+
+- 连接生命周期。每建一条连接都打一行，会把日志页灌满。
+- 重连风暴。`EventSource` 默认约 3 秒重连一次。失败即刷屏。
+- 只记建立与异常断开这两条。
+- 两条都要去重加限速。它与刚修掉的 `ikik` 横幅同形（同因降噪）。
 
 ---
 
@@ -281,6 +346,22 @@ bash scripts/backup.sh
 - **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径，
   v3 下**总容量 ≈ 该值 × 出口数**。
 - **gap 默认开关**待实测裁决（纪律 2）；上游风控按账号还是按出口计数**尚未验证**。
+- **巡检选中态回落（`needsExecutorFallback`）的接线在 e2e 环境不可达（L7）**：该分支在
+  "带 `executor` 的请求返回的 `rounds` 不含该执行体"时触发，三条路径：
+  ① 该执行体当日无行；
+  ② 该日分组数 > `MAX_ROUNDS`（200）且选中态跨越一次数据变化（选中的执行体在新响应里
+  被上限挤出）；
+  ③ **pin 住窗口下界那一天，跨零点后窗口整体上移**：该日滑出下界 ⇒ `_rows_on` 回空 ⇒
+  `rounds` 为空，而请求仍带 `executor` ⇒ `needsExecutorFallback([], day, exec)` 回 true，
+  接线触发一次。路径 ③ 只多一次请求，无副作用。
+  路径 ① 与 ② 都要求"选中态指向一个不在 `rounds` 里的执行体"，而 `rounds` 是页面唯一的
+  选入来源（`#run-summary` 的行即 `rounds`），被上限挤出或当日无行的执行体根本不可点选；
+  请求间也不发生数据变化（e2e 的服务是独立进程，没有写入 `run_events` 的接口）。故该分支
+  **在 e2e 环境不可达**；路径 ③ 只在**生产跨零点**那一刻可见（e2e 不跨零点跑）。现网约 20
+  执行体/日，远低于上限 200，② 在生产也几乎不可达。故该分支只有纯函数单测
+  （`frontend/src/logs/run-events.spec.ts`），接线（`Logs.vue` 重取循环）未被 e2e 覆盖。
+  触发后行为：本轮不带 `executor` 重取一次，回调该日最新一轮（只允许一次，不成环）。
+  本条目是**可达性论证的记载**，不用源码文本断言冒充接线守卫。
 
 ---
 
