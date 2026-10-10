@@ -20,6 +20,14 @@
 **脱敏**：代理串可能带 userinfo（`http://user:pass@host:port`），任何进入日志、
 接口返回值的地方都必须经 `describe()`——它只回 `scheme://host[:port]`。
 
+本模块同时是**出口标识的唯一口径**：限速桶按**出口**计数（见
+`yiban/engine/token_bucket.py` 模块头），持久键与预算分母都由这里的函数产出：
+`egress_identity(proxy)` 给出**出口标识**——空（直连）归一为 `DIRECT_EGRESS`，非空取
+`scheme://host[:port]` 的寻址形态（去 userinfo，IPv6 保留方括号）。同一出口的多个执行体
+因此共用一个持久键；`outlet_executor_count(identity)` 数出该出口上**真会拉起**的执行体数 n
+（worker 行 + **开关打开的**兜底行；停用行不计），供限速器把出口级速率均分成每进程份额
+（合计 ≤ λ）。桶键会进日志与 `egress_state` 表，故 `egress_identity` **不回 userinfo**（凭据）。
+
 本模块同时是**执行体身份串的唯一口径**：身份串的构造与解析都在这里，避免"写入一处、
 解析另一处"各写一份字符串而漂移。两种形态分别是：
 
@@ -69,7 +77,9 @@ import json
 import logging
 import os
 import socket
+from urllib.parse import urlsplit
 
+from yiban.infra import env_io
 from yiban.security import url_desc
 
 #: 告警通道：与 `scripts/child_env.py`、`yiban/engine/*` 同一条 "yiban"（root 之下），
@@ -78,10 +88,22 @@ logger = logging.getLogger("yiban")
 
 DIRECT = ""
 
+#: 直连（出口为空）的**出口标识**（限速持久键与预算分母的标识）：全部直连执行体归到这一个
+#: 出口。为什么归到一个固定串而不是每个执行体各一个空串：限速按出口计数，空出口彼此是
+#: 同一个物理出口（本机 IP），必须同归一处，否则该 IP 的预算会随执行体数重复发放（工单 2cwd）。
+DIRECT_EGRESS = "direct"
+
+#: `_outlet_addressing` 对不可解析输入回的哨兵。它**不是**出口标识（`is_outlet_identity`
+#: 显式排除），否则两个坏代理会被当成同一出口、且展示层把它打出去（工单 2cwd 复审 F4）。
+UNPARSEABLE = "<无法解析>"
+
 #: 三类角色的环境变量名（前端/文档/测试都引用这里，避免各写一份字符串）
 ENV_SINGLE = "YIBAN_PROXY"
 ENV_WORKER_LIST = "YIBAN_PROXY_LIST"
 ENV_FALLBACK = "YIBAN_PROXY_FALLBACK"
+#: 兜底常驻执行体的开关（1/true/on/yes=开；未设=关）。只设开关不拉进程；但"声明开启"决定
+#: `outlet_executor_count` 是否把兜底计入**限速预算分母**（工单 2cwd 复审 F1）。
+ENV_FALLBACK_ENABLE = "YIBAN_FALLBACK_ENABLE"
 
 #: 执行体清单键名：**单键 JSON 数组**，每项 `{"slot": 0, "type": "worker", "proxy": "..."}`
 #: （`proxy` 空串=直连）。取代旧三键；旧键保留一个版本周期以便回退读取。
@@ -337,6 +359,112 @@ def describe(proxy):
     if not proxy:
         return "直连（本机出口）"
     return url_desc(proxy)
+
+
+def egress_identity(proxy):
+    """出口串 → **出口标识**（限速持久键的**唯一口径**，见模块 docstring）。
+
+    空（直连）→ `DIRECT_EGRESS`；非空 → `scheme://host[:port]` 的寻址形态（去 userinfo）。
+    **不回 userinfo**：标识进日志与 `egress_state` 表，凭据不得外流。同址不同凭据的代理因此
+    归一到同一标识（同一出口）。
+
+    为什么不用原串：原串带 `user:pass@`，进库/进日志即泄凭据（见模块 docstring 的脱敏红线）；
+    而且同址两个账号会各得一个键，那个出口的预算会被重复发放。
+
+    为什么不用 `describe` 的口径：它会丢掉 IPv6 的方括号（`http://[::1]:3128` →
+    `http://::1:3128`），该形态不可再解析，`is_outlet_identity` 与展示层都会误判。故本函数
+    自带一份**保留方括号**的寻址实现（`_outlet_addressing`），与 `describe` 的差异只在 IPv6。
+    """
+    text = (proxy or "").strip()
+    return DIRECT_EGRESS if not text else _outlet_addressing(text)
+
+
+def is_outlet_identity(identity):
+    """该串是否是一个**出口标识**（`egress_identity` 的产物）。
+
+    判据是**幂等**：`direct`，或 `egress_identity` 作用后逐字不变（含 IPv6 的方括号形态）。
+    旧执行体身份键（`worker-0@主机名` / `fallback@主机名` 等，改键前的存量 `egress_state`
+    行）与 `_outlet_addressing` 的哨兵 `UNPARSEABLE` 判假——展示层据此**不回声**，也避免把
+    两个坏代理当成同一出口（工单 2cwd 复审 F4）。
+    """
+    text = str(identity or "").strip()
+    if not text or text == UNPARSEABLE:
+        return False
+    return text == DIRECT_EGRESS or text == _outlet_addressing(text)
+
+
+def outlet_label(identity):
+    """出口标识 → **展示/日志形态**：直连回 `describe` 的中文描述；其余经 `_outlet_addressing`
+    再脱敏一次并**保留 IPv6 方括号**（与标识同形，工单 2cwd 复审 F5）；不是出口标识的旧键与
+    哨兵回「已弃用」且**不回声**。日志与 `egress` 子命令的人类可读汇总用它。
+    """
+    text = str(identity or "").strip()
+    if text == DIRECT_EGRESS:
+        return describe("")
+    if is_outlet_identity(text):
+        return _outlet_addressing(text)
+    return "已弃用（旧执行体身份键）"
+
+
+def fallback_enabled(env=None):
+    """兜底常驻执行体是否**声明的开启**（`YIBAN_FALLBACK_ENABLE`：1/true/on/yes=开；未设=关）。
+
+    "声明开启"不等于"在跑"，但它是 `outlet_executor_count` 是否把兜底计入预算分母的口径
+    （工单 2cwd 复审 F1：只数**真会拉起**的执行体）。真值判定复用全项目唯一开关口径
+    `env_io.parse_env_flag`，不另立字面量表。
+    """
+    env = os.environ if env is None else env
+    raw = (env or {}).get(ENV_FALLBACK_ENABLE, "")
+    return env_io.parse_env_flag(raw, default=False, key=ENV_FALLBACK_ENABLE, log=logger)
+
+
+def outlet_executor_count(identity, env=None):
+    """该出口上**真会拉起**的执行体数 n（停用行不计）。限速预算按它均分。
+
+    `identity` 是**出口标识**（`egress_identity` 的产物，调用方给 `_Ctx.egress` 或探针的
+    出口键）。数出与 `identity` 相同者：
+
+    - **worker**：清单的 `worker` 行（`worker_rows`，即拉起列表）；清单缺失/非法时按旧键的
+      `legacy_worker_proxies`（与监督进程的拉起口径同源）。停用行不在内。
+    - **兜底**：仅当 `YIBAN_FALLBACK_ENABLE` 声明开启时计入（`fallback_enabled`）；开关未设
+      =关（registry 缺省 false）⇒ **默认部署 n=1**，出口速率不被静默减半（F1）。
+
+    返回值至少 1（本进程自己），故份额 = 出口级速率 / n 恒可算。**运行期不得改清单**：
+    n 是启动快照，改了要重启执行体（漂移由 `EgressLimiter.persist` 周期告警，见 F3）。
+    """
+    env = os.environ if env is None else env
+    target = str(identity or "").strip()   # `identity` 已是出口标识（调用方给 `egress_identity` 的产物）
+    rows = parse_manifest((env or {}).get(ENV_MANIFEST))
+    if rows is not None:
+        proxies = [r["proxy"] for r in worker_rows(rows)]
+    else:
+        proxies = list(legacy_worker_proxies(env))
+    if fallback_enabled(env):
+        proxies.append(resolve(ROLE_FALLBACK, 0, env))
+    return max(1, sum(1 for p in proxies if egress_identity(p) == target))
+
+
+def _outlet_addressing(url):
+    """出口标识的寻址形态：`scheme://host[:port]`，**去 userinfo**，host 为 IPv6 时保留
+    方括号。不可解析返回哨兵 `UNPARSEABLE`。
+
+    与 `describe` 口径的唯一差异是 IPv6 保留方括号（`urlsplit.hostname` 会剥掉方括号，直接拼回
+    就得到不可再解析的串）。两者都只回寻址信息，不回 query/userinfo。
+    """
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return UNPARSEABLE
+    host = parts.hostname
+    if not host:
+        return UNPARSEABLE
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
 
 
 def apply_egress(env, role, index=0):

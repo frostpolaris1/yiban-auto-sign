@@ -6,7 +6,7 @@
 1. **旧代码无感**（`docs/dev/m1-task-rearrangement-20260923.md` §7 的 I-5）：库的
    `user_version` 高于本进程迁移顶时，`_run_migrations` 整链跳过——不抛异常、不执行
    任何迁移项、不降版本。回滚路径（换回旧代码、库不动）就建立在这条性质上。
-2. **既有表零变更**：完整迁移链（0→21）跑完后，升级前既有的 **10 张表**逐表行数相等
+2. **既有表零变更**：完整迁移链（0→22）跑完后，升级前既有的 **10 张表**逐表行数相等
    （基线五表 + `sign_events`/`session_cache`/`app_meta`/`verify_jobs`/`sign_claims`），
    `sign_claims` 的列集合只多出一个 `epoch`；`sign_tasks` 建成空表（v18 不平移旧行）。
 
@@ -16,7 +16,7 @@
 标签：C · 存储：迁移与库完整性
 覆盖：升级兼容的两条硬门——**旧代码打开新库**（`user_version` 高于本进程迁移顶时整链
 跳过：不抛、不执行任何迁移项、不降版本）与 **新代码打开旧库后的既有表零变更**
-（完整链 0→21 跑完，既有 10 张表逐表行数相等，`sign_claims` 只多出 `epoch` 列）。
+（完整链 0→22 跑完，既有 10 张表逐表行数相等，`sign_claims` 只多出 `epoch` 列）。
 对应实现：`yiban/store/db.py` 的 `_run_migrations` 版本判定与各 `migrate_v*`。
 关键断言：反向（新代码打开旧库）由 `tests/test_db_migrations.py` 与三个
 `test_migrations_v18/19/20.py` 分工守；本文件只守"旧代码遇新库必须完全不动手"，
@@ -77,7 +77,7 @@ class MigrationCompatTest(unittest.TestCase):
         """生产形态的升级前库：既有 10 张表各留存量行，`user_version` 仍为 0。
 
         迁移函数按登记表顺序**直接**调用（不过 `_run_migrations`）：表是 v17 形态而版本
-        还在 0，测试里那次 `_run_migrations` 才会真跑完整 1→21 链（各迁移幂等）。
+        还在 0，测试里那次 `_run_migrations` 才会真跑完整 1→22 链（各迁移幂等）。
         """
         migrations._create_tables(self.conn)
         for version, _name, fn, _core in migrations._MIGRATIONS:
@@ -136,8 +136,8 @@ class MigrationCompatTest(unittest.TestCase):
     # ---- 1. 旧代码冒烟 ----
     def test_old_code_smoke_is_a_noop_on_a_higher_version_db(self):
         self._seed_production_like()
-        migrations._run_migrations(self.conn)          # 0 → 21
-        self.assertEqual(self._user_version(), 21)
+        migrations._run_migrations(self.conn)          # 0 → 22
+        self.assertEqual(self._user_version(), 22)
         # 此刻起模拟"旧代码（迁移顶 v17）打开升过级的库"：迁移项换成旧集合 + 炸弹体
         calls = []
 
@@ -157,7 +157,7 @@ class MigrationCompatTest(unittest.TestCase):
             migrations._MIGRATIONS = saved
         self.assertEqual(calls, [], "旧代码不得执行任何迁移项")
         self.assertEqual(self.conn.total_changes, before_changes, "旧代码不得写入任何行")
-        self.assertEqual(self._user_version(), 21, "版本不得被降或被抬")
+        self.assertEqual(self._user_version(), 22, "版本不得被降或被抬")
 
     def test_run_migrations_is_a_noop_when_version_is_already_at_top(self):
         self._seed_production_like()
@@ -168,7 +168,7 @@ class MigrationCompatTest(unittest.TestCase):
         migrations._run_migrations(self.conn)
         self.assertEqual({t: self._count(t) for t in counts}, counts)
         self.assertEqual(self.conn.total_changes, before_changes)
-        self.assertEqual(self._user_version(), 21)
+        self.assertEqual(self._user_version(), 22)
 
     # ---- 2. 既有表零变更 ----
     def test_full_chain_leaves_existing_tables_untouched(self):
@@ -178,7 +178,7 @@ class MigrationCompatTest(unittest.TestCase):
                         f"每张表都要先有存量行，否则「行数不变」是 0 == 0 的空断言: {before}")
         cols_before = self._columns("sign_claims")
         migrations._run_migrations(self.conn)
-        self.assertEqual(self._user_version(), 21)
+        self.assertEqual(self._user_version(), 22)
         self.assertEqual({t: self._count(t) for t in _SEEDED_TABLES}, before,
                          "既有表行数必须逐表不变")
         self.assertEqual(self._columns("sign_claims"), cols_before | {"epoch"},
