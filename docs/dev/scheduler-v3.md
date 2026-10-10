@@ -54,7 +54,9 @@
    `yiban-auto-sign-u21x`）：本表只留本层自有的凭据/协议措辞；WAF 族的名单与匹配口径都在
    `yiban.security`（`WAF_KEYWORDS` + `matches_waf_keywords`）。风控命中判定统一走
    `attempts.matches_risk_keywords`——ASCII 词元按非字母数字边界匹配，中文词元按子串。
-   `executor_v3._is_risk_signal` 是这条判据的第二个读者。
+   `executor_v3._is_risk_signal` **不再是这条判据的读者**（2026-10-09，工单
+   `yiban-auto-sign-zggs`）：它只认 WAF 族与挑战形态。两个消费方语义相反——档位是
+   "别浪费重试"，信号是"平台在限我们，该出口降速"；共用判据会把口令错的账号当成平台风控。
 
 **上线步骤建议**：先 `dry_run` 影子期 3 天对账落点分布 → 升级部署后的第一个当日盯
 §6 的观测项与 §8 的排障项（无开关，部署即生效）。
@@ -133,9 +135,13 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
   进程一个桶，多执行体各持各的桶、**不共用同一个桶**；同名执行体跨重启续上同一行的自适应速率。
   桶状态落 `egress_state` 表（**一个桶一行**，10s 粒度），重启不"重启即全速"。桶内 AIMD
   自适应：无风控连续 `SUCCESS_STREAK=200` 次后 `rate ×= 1.2`（封顶 `RATE_MAX=4.0`）；
-  风控信号（e003 / WAF / 验证码 / 被拦页）`rate ÷= 2`（下限 `RATE_MIN=0.2`）并半开
-  `HALF_OPEN_SEC=300`。**显式写了 `YIBAN_EGRESS_RATE` 即人工接管**：上探变 no-op，
-  但风控的乘性回退照做（安全反应不随接管停）。
+  风控信号（WAF 词元 / 挑战形态 / 被拦页）`rate ÷= 2`（下限 `RATE_MIN=0.2`）并半开
+  `HALF_OPEN_SEC=300`。**风控信号只认 WAF 族与挑战形态，不含凭据类文案**（口令错是账号
+  自己的问题，不是平台限速；见 `executor_v3._is_risk_signal`）。**显式写了
+  `YIBAN_EGRESS_RATE` 即人工接管**：上探变 no-op，但风控的乘性回退照做（安全反应不随
+  接管停）。被误判降档后的受支持撤销入口是
+  `python -m yiban.cli egress --reset <出口> --yes`（默认只报告；活执行体会在 10s 内
+  用内存态覆盖库里的复位，故稳妥做法是先停执行体、复位后重启）。
 - **全局上界 Λ**：`YIBAN_GLOBAL_RATE`（attempt/s，缺省空=不限）。**它是「每个执行体
   进程各自一份」的计数**——限速器是进程内对象（`yiban/engine/token_bucket.py` 的
   `GlobalLimiter` 只持一个内存态 `_tat`，每个执行体进程各构造各的），**不跨进程共享**。
@@ -269,7 +275,8 @@ bash scripts/backup.sh
   仍写它；v2 未退役。
 - **`outcome_buffer` / `shadow:` 影子行 / `ledger_days` 日写者表**：未引入。
 - **`downgrade_all` 的恢复入口**：站点级熔断的"恢复"入口未接（降档入口在
-  `token_bucket.downgrade_all`，另批处理）。
+  `token_bucket.downgrade_all`，另批处理）。**单出口的速率复位已有受支持入口**
+  （2026-10-09）：`python -m yiban.cli egress --reset <出口> --yes`。
 - **`_alert_slow_sign`（慢签到告警）**：v3 未接入（v2 有）。
 - **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径，
   v3 下**总容量 ≈ 该值 × 出口数**。

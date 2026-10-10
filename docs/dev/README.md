@@ -31,10 +31,11 @@ yiban/                        签到引擎与共享基础（可被 web / scripts
 ├── geo.py                    多边形内随机定位点（偶奇射线法 + 拒绝采样 + 显式兜底）
 ├── challenge.py              风控挑战**检测**（只检测不求解）
 ├── infra/                    叶子工具：locks / env_io / env_lock / account_crypto
-├── cli.py                    统一命令行入口（七个子命令；见 docs/dev/cli.md）
+├── cli.py                    统一命令行入口（八个子命令；见 docs/dev/cli.md）
 ├── engine/                   签到引擎（按“执行一轮”切分）：runner / round / schedule
 │                             / attempts / probe / alerts / state_io / accounts
 │                             / workers / config_check / cli_support
+│                             / db_maintenance / egress_admin
 ├── store/                    数据层：db（连接/迁移）+ accounts / verify_jobs / claims
 ├── notify/                   通知推送：config / ledger（额度与节流账本）/ transport
 └── mail/                     邮件：config / transport

@@ -8,7 +8,7 @@
 
 ## 1. 形态（**M3 已实施**）
 
-统一入口已落地，七个子命令与 `--json` 全部可用：
+统一入口已落地，八个子命令与 `--json` 全部可用：
 
 ```
 python3 -m yiban.cli <子命令> [选项]
@@ -17,6 +17,7 @@ python3 -m yiban.cli <子命令> [选项]
   config    配置检查（脱敏打印，不联网）
   capacity  容量基准与建议（只读展示与换算建议；实测值由部署者自行量取后录入设置页）
   state     状态文件清理（默认 dry-run，--yes 才动手）
+  egress    出口令牌桶状态 / 速率复位（默认只读；--reset 不加 --yes 只报告）
   db        数据库维护（--status / --integrity / --backup [路径] / --restore [路径]）
   version   版本与库版本
 ```
@@ -26,7 +27,7 @@ python3 -m yiban.cli <子命令> [选项]
 `scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连 `yiban.notify` / `yiban.mail`。
 
 模块落位：引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
-state_io / accounts / workers / config_check / cli_support / db_maintenance），SQLite 层在
+state_io / accounts / workers / config_check / cli_support / db_maintenance / egress_admin），SQLite 层在
 `yiban/store/db.py`。入口一律 `python3 -m yiban.cli`（以文件路径直接跑既不支持也不需要）；
 开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.cli`（cwd 为仓库根）。
 
@@ -118,6 +119,10 @@ python3 -m yiban.cli db --restore /tmp/copy.db --json        # 默认 dry-run：
 python3 -m yiban.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # 覆盖当前库
 python3 -m yiban.cli state                    # 默认 dry-run，只报告
 python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
+python3 -m yiban.cli egress --status --json   # 各出口令牌桶速率（只读，不回含主机名的原键）
+python3 -m yiban.cli egress --reset fallback --json          # 默认只报告：要写什么、写后速率
+python3 -m yiban.cli egress --reset fallback --yes           # 真写：速率回到引擎出厂值
+python3 -m yiban.cli egress --reset-all --rate 1.5 --yes     # 全体复位到显式速率
 python3 -m yiban.cli capacity --json          # 读实测值给建议
 python3 -m yiban.cli sign --workers 4
 python3 -m yiban.cli sign --fallback
@@ -157,6 +162,25 @@ dry-run、只报告计划。真正的恢复需要 `--yes --fingerprint <指纹>`
 `backup.sh --restore` 的职责，本命令只认 `db --backup` 产出的裸 SQLite 副本。
 `--json` 的 `user_version` 字段只在 `--status` 模式出现；`--restore` 模式报的是**备份的**
 schema 版本 `backup_user_version`（恢复后的库版本已由 `--integrity` 独立回读校验）。
+
+`egress` 是出口令牌桶的**受支持撤销入口**。出口桶按出口整形并落 `egress_state` 表：
+命中风控信号时速率减半（乘性回退），此后靠 AIMD 每约 200 次干净尝试 ×1.2 慢慢爬回。
+风控信号被误报一次，整条出口就要带几周的降速——本子命令把速率直接写回目标值。
+三条口径：
+
+- **出口怎么指定**：只写角色+槽位（`fallback` / `worker-2` / `single`，与日志行的
+  `[fallback]` 同一个词）。出口键含主机名，属部署信息——本命令的任何输出都不回原键；
+  逐字键仍可作逃生口（多主机同名才需要）。同标签命中多行时**拒绝**而不是任选一行。
+  空选择串（`--reset ''`）退 2，不退化成只读查询。
+- **只改一列**：只写 `rate` 与 `updated_at`；`burst` / `tat` 逐字保留（`tat` 是单调钟域
+  浮点，装载时按新速率夹住，超前值不会锁桶）。不加 `--yes` 时一字不写。
+- **目标速率**：默认取引擎出厂速率（显式写了 `YIBAN_EGRESS_RATE` 就取该值），`--rate` 可
+  显式指定。两条来源过**同一道**域校验：引擎装载时会改动的值一律拒绝，不静默夹值。
+  该键的名册声明域宽于引擎的速率域（域漂移，登记在名册门禁的已知盲点）；`--rate` 可以
+  高于 `YIBAN_EGRESS_RATE`（人工接管的上限）——那是操作者的显式覆写，装载路径不按该键设限。
+- **何时生效**：复位写的是库里的记忆，进程内的桶不受影响。执行体每 10s 把内存态落库一次，
+  故它持有该出口时会**把复位覆盖回去**。`--json` 的 `held_by_live_process`（按 `updated_at`
+  是否在一分钟内判定）给出这个风险；稳妥做法是先停执行体再复位，复位后重启执行体。
 
 ## 5. 相关文档
 
