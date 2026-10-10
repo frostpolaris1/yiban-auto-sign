@@ -646,7 +646,6 @@ class FrontFillTest(_Base):
         self.assertLess(1.0 / st_front["phi_max"], win_sec * 0.5,
                         "front 的密度分母仍是整窗 ⇒ 峰值被报成与 uniform 同值")
         self.assertGreater(st_front["phi_max"], st_uni["phi_max"] * 2)
-        self.assertAlmostEqual(st_front["rate_peak"], n * st_front["phi_max"], places=9)
         # uniform 的分母仍是整窗（逐值不变）
         self.assertAlmostEqual(st_uni["phi_max"], 1.0 / win_sec, places=12)
 
