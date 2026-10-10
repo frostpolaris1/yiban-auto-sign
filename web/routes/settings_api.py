@@ -261,7 +261,7 @@ def api_settings():
             "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
                 "random" if mode == "random" else "sequence"),
             "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-                "normal" if mode == "normal" else "uniform"),
+                "normal" if mode == "normal" else "front"),
             # 掐头去尾（前后独立，秒；window_edge_sec 兼容旧前端 = 前裁）
             "window_edge_sec": m.edge_config()[0],
             "edge_front_sec": m.edge_config()[0],
@@ -393,8 +393,8 @@ def api_settings_save():
     sign_dist = str(data.get("sign_dist", "")).strip().lower()
     if sign_order and sign_order not in ("sequence", "random"):
         return jsonify({"error": "排序方式取值应为 sequence 或 random"}), 400
-    if sign_dist and sign_dist not in ("uniform", "normal"):
-        return jsonify({"error": "分布方式取值应为 uniform 或 normal"}), 400
+    if sign_dist and sign_dist not in ("uniform", "normal", "front"):
+        return jsonify({"error": "分布方式取值应为 uniform、normal 或 front"}), 400
     # 掐头去尾（前后独立）：window_edge_sec 兼容旧前端（对称写）；
     # edge_front_sec / edge_back_sec 各自独立（秒，0~300，30 的倍数 = 0.5 分钟粒度）。
     # 0 是合法值（不裁切），不能用 write_env_int（其语义为 <=0 删除行）。

@@ -5,8 +5,11 @@
   `build_plan` 调 `hrw.vshard_of` 取分片、`hrw.owner_of` 定归属，即其两段式。
 - Stratified Sampling（分层抽样）+ Jitter（抖动 / splay）：把 N 个待办铺进时间窗的经典做法
   是「分层抖动」——按序分层（`i % n_slices`）保证每层等量，再加槽内相位错开，避免同刻齐发；
-  AWS 的 Shuffle Sharding 是同族思路在分片维度上的应用。**均匀分布不可取**：窗口开头齐发
-  正是外部系统最容易识别为机器人的形态。
+  AWS 的 Shuffle Sharding 是同族思路在分片维度上的应用。三种分布都靠分层抖动错峰。
+- 提前铺完（`front`，默认）：把自由账号收进「容量允许的最早一段」，余窗留作重试与兜底。
+  铺点分片数 = `ceil(ceil(n_free/K)×(avg+gap)/60)`，K = 执行体数。整窗装不下即等于
+  `uniform`（自然降级）。**本模式不加出口桶 Λ 封顶**：`uniform` 也不封；计划只决定落点，
+  Λ 的排队余量交执行层的出口令牌桶，计划层不越权。自选（pinned）账号落点不受 `front` 影响。
 - 密度整形（`_density`）：按当日作息取 μ/σ 的正态到达率，并**按出口令牌桶 Λ 封顶**——只压
   σ 不封峰值会让中段形成相对突发，故压的是归一化密度与均匀分布的混合比 α，μ/σ 保持不动
   （改 σ 会连作息形状一起改掉）。峰值仍超 Λ 的余量交执行层排队，计划层不越权。
@@ -28,7 +31,8 @@
 
 **通信**
 输入：账号序列（只读 `.phone`，可选 `.user_paused`）、业务日 `day`、执行体身份串列表；
-配置经 `schedule.planner_config()` 取（窗口/裁剪/三模式/μσ/bucket_rate/executors）。
+配置经 `schedule.planner_config()` 取（窗口/裁剪/分布三态/μσ/bucket_rate/executors/
+account_gap_max）。
 输出：`[PlanRow, ...]`（dict）或落库行数；`plan_stats` 回摘要 dict。
 调用谁：`yiban.window.bounds`（窗口唯一口径）、`yiban.engine.hrw`（分工与哈希）、
 `yiban.engine.schedule`（配置、`_sigma_eff`、自选片成员性判定）、
@@ -323,21 +327,42 @@ def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, fille
     return pinned
 
 
+def _front_slices(n_free, cfg, n_slices, k):
+    """`front` 模式自由账号铺进的分片数：容量允许的最早一段。
+
+    安全铺点 = 一个账号周期 `(avg + gap)` 走完一个账号；K 个执行体并行，故每个 K
+    账号占一个周期。`span_needed = ceil(n_free/K) × (avg+gap)` 是 K 能及时消化的
+    最早跨度。铺进再多分片只是把计划摊薄、把执行体推到空等。整窗装不下时返回
+    `n_slices`，`front` 逐字段等于 `uniform`（自然降级，无需特判）。
+    """
+    per = max(1, int(cfg["avg_attempt_sec"])) + max(0, int(cfg["account_gap_max"]))
+    span_needed = math.ceil(n_free / max(1, k)) * per
+    span_slices = max(1, math.ceil(span_needed / SLICE_SEC))
+    return min(n_slices, span_slices)
+
+
 def _place_free(phones, pinned, day, order, dist, cfg, n_slices, slots, slot_sec,
-                span_sec, placed):
+                span_sec, placed, k=1):
     """自由账号落点：分层抖动为主，`dist=normal` 时改为受速率约束的密度采样。
 
     `order=sequence` 用输入顺序分层（跨天稳定、每片人数零方差）；`order=random` 先按
     `H(phone‖day)` 排序再分层——是"当天重排的均匀序列"，不是逐账号独立抽样，故
     t=0 不会齐发（NHPP 生成器的等价物）。
+
+    `dist=front` 只改分层所用分片数（`_front_slices`）：自由账号收进最早一段；外层可见的
+    微槽与相位不变。`dist=uniform` 用整窗分片数。
     """
     free = [p for p in phones if p not in pinned]
     if order == "random":
         free.sort(key=lambda p: (_u(p, day, "rank"), p))
     profile = _density(len(phones), cfg, day, span_sec) if dist == "normal" and free else None
+    if profile is None and dist == "front" and free:
+        used_slices = _front_slices(len(free), cfg, n_slices, k)
+    else:
+        used_slices = n_slices
     for i, phone in enumerate(free):
         if profile is None:
-            placed[phone] = (i % n_slices, _slot_of(phone, day, slots),
+            placed[phone] = (i % used_slices, _slot_of(phone, day, slots),
                              _phase_of(phone, day, slot_sec))
         else:
             x = _normal_off(phone, day, profile[0], profile[1], profile[2], span_sec / 60.0)
@@ -351,7 +376,9 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     PlanRow = {"phone","day","vshard","owner","run_at","priority","state","epoch"}
     - `run_at` 为 "YYYY-MM-DD HH:MM:SS.mmm"（秒级微槽 + 亚秒相位，字符串可直接比较）；
     - `state` 恒为 `pending`、`priority` 恒为 5（重试 +1 / 手动 0 由运行期改）；
-    - **与 K 无关**：改 `executors` 只改 `owner`，不改任何 `run_at`（加执行体不该挪签到时间）。
+    - `dist=uniform`/`normal` 时**与 K 无关**：改 `executors` 只改 `owner`，不改任何
+      `run_at`（加执行体不该挪签到时间）；`dist=front`（默认）**有意**依赖 K：安全铺点
+      速率随并发数放大，K 越大铺得越开（`_front_slices`）。
 
     `accounts` 只需 `.phone`（可选 `.user_paused`）；`day` 缺省取 `now`（默认 `clock.now()`）
     的日期；`prefs` 为 `None` 且自选总开关开启时读库；`v` 缺省按规模选虚分片数（`hrw.v_for`）。
@@ -361,8 +388,8 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     dist = (dist or cfg["dist"]).strip().lower()
     if order not in ("sequence", "random"):
         order = "sequence"
-    if dist not in ("uniform", "normal"):
-        dist = "uniform"
+    if dist not in schedule.SIGN_DIST_CHOICES:
+        dist = schedule.DEFAULT_SIGN_DIST
     day = _day_str(day if day else (now or clock.now()))
     phones = _phones(accounts)
     if not phones:
@@ -372,6 +399,7 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     n_slices = _slice_count(cfg)
     slot_sec = slot_width_ms(len(phones), cfg) / 1000.0
     slots = max(1, round(SLICE_SEC / slot_sec))
+    k = max(1, len(executors or ()))  # front 的安全铺点速率随执行体数放大
     if prefs is None:
         prefs = _read_prefs() if cfg.get("allow_time_pref") else {}
 
@@ -382,7 +410,7 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     pinned = _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots,
                           filled, placed, slot_sec)
     _place_free(phones, pinned, day, order, dist, cfg, n_slices, slots, slot_sec,
-                span_sec, placed)
+                span_sec, placed, k)
 
     v = v or hrw.v_for(len(phones))
     base = datetime.datetime.strptime(day, "%Y-%m-%d")
@@ -503,7 +531,7 @@ def plan_stats(rows, cfg=None, day=None):
         per_sec[stamp[:19]] = per_sec.get(stamp[:19], 0) + 1
         key = int((_minute_of_day(stamp) - start_min) // 5) * 5
         hist[key] = hist.get(key, 0) + 1
-    dist = (cfg["dist"] or "uniform").strip().lower()
+    dist = (cfg["dist"] or schedule.DEFAULT_SIGN_DIST).strip().lower()
     if dist == "normal" and items:
         mu_min, sigma_min, alpha, phi = _density(len(items), cfg, day, span_sec)
     else:
