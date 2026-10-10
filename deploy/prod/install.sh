@@ -54,6 +54,28 @@ for row in "${ROWS[@]}"; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# 对账·**只读收集与打印**（2026-10-09 修正，工单 yiban-auto-sign-ybg8）。
+#
+# **为什么必须在 M01 前置门之前**：M01 在检出属主不合时 `exit 1`。本段原先排在它之后，
+# 于是"M01 拒装"的现场只看到归属报错，看不到"有几个执行件已与仓库不符"——检测器被门
+# 自己挡在门外。生产实测即如此**静默漂移**：一份哨兵脚本缺失、一份旧版 wrapper 共存，
+# 两周无人发现（哨兵缺 = 备份静默失败无防护 + 审计链离机留痕断；旧 wrapper =
+# 口令经 export 进整棵子进程树）。
+#
+# 本段只读、零改动，提前**只改"先报事实"的顺序，不改任何拒装语义**：裁决留在 M01 之后
+# 的原位置（`drift` 在这里只赋值、不退出）。两条判据各自完整，互不遮蔽。
+drift=0
+for row in "${ROWS[@]}"; do
+    IFS=$'\t' read -r _mode src dest <<< "$row"
+    destpath="$DESTDIR$dest"
+    if [ -f "$destpath" ] && [ "$(sha "$destpath")" != "$(sha "$REPO_ROOT/$src")" ]; then
+        drift=1
+        echo "checksum mismatch: $dest" >&2
+        echo "  expected(repo):    $(sha "$REPO_ROOT/$src")" >&2
+        echo "  actual(present):   $(sha "$destpath")" >&2
+    fi
+done
+
 # 前置门（M01，fail-closed）：以 root 安装时，本脚本会 root 执行检出内的
 # scripts/check-cron-provenance.sh 并把检出件 root:root 落到生产路径。若检出本身对
 # 服务账号可写（典型：/opt/yiban-auto-sign 被 ReadWritePaths 放开给 yiban 写 .env/
@@ -124,18 +146,7 @@ fi
 # 预检 2：cron 路径来源断言（装前必过；装后同门复查一道，双保险）
 bash "$REPO_ROOT/scripts/check-cron-provenance.sh"
 
-# 对账（只读阶段）：收集全部漂移；非 --adopt-production 一律拒装、零改动
-drift=0
-for row in "${ROWS[@]}"; do
-    IFS=$'\t' read -r _mode src dest <<< "$row"
-    destpath="$DESTDIR$dest"
-    if [ -f "$destpath" ] && [ "$(sha "$destpath")" != "$(sha "$REPO_ROOT/$src")" ]; then
-        drift=1
-        echo "checksum mismatch: $dest" >&2
-        echo "  expected(repo):    $(sha "$REPO_ROOT/$src")" >&2
-        echo "  actual(present):   $(sha "$destpath")" >&2
-    fi
-done
+# 对账·**拒装裁决**（漂移的收集与打印已提前到 M01 前置门之前；此处只裁决，见该段注释）
 if [ "$drift" -eq 1 ] && [ "$ADOPT" -ne 1 ]; then
     echo "yiban-install: refusing install —— 现网与仓库校验和不符（漂移不得静默覆盖）。" >&2
     echo "  先 diff 两侧把差异回填仓库；确认以仓库为准时加 --adopt-production" >&2
