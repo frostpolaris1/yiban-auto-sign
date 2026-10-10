@@ -1137,6 +1137,15 @@ UNREACHED_PEER = "peer"
 UNREACHED_RETRY = "retry"
 UNREACHED_UNCLAIMED = "unclaimed"
 
+#: 上一次落下的「已由他人负责」批量留痕**组成**（`_mark_unreached` 的去重依据）：
+#: `(执行体, 账号数, 分因明细)`。兜底常驻循环每 ~5s 一拍、窗口内可上百轮；同一批被别人
+#: 领走的账号在每轮组成不变，逐轮重落只是刷屏（2026-10-10 工单 81xt 的 LOW-1）。状态是
+#: 进程内模块级变量：不落盘、不跨进程。取组成而非轮次/时间：轮次每轮都变，并进去就永远
+#: "变了"。身份必须在键里：同进程换执行体（测试夹具、进程内多执行体）若只按组成判，
+#: 第二个执行体会被判成"没变"而漏掉它唯一的一条批量——与 `_log_banner` 的 `_BANNER_LAST`
+#: 同一形状。peer 为 0 时清回 `None`：同组成 N→0→N 的第三次留痕不得被吞。
+_UNREACHED_PEER_LAST = None
+
 
 def _mark_unreached(ctx, accounts):
     """轮末判因：本执行体范围内、`results` 里没有的账号到底落到哪儿去了。
@@ -1154,13 +1163,26 @@ def _mark_unreached(ctx, accounts):
 
     为什么必须留痕：2026-10-07 生产里任务被别人领走时执行层**零事件、零日志**，
     `sign_tasks.result` 又被实际领取者覆盖成"签到成功"，数据侧完全看不出"没轮到"，
-    运维只能靠人工比对日志时间线。这里逐账号落一行 `sign_events`（stage="sign"、
-    状态落 `pending` 档、文本点名判因），与调用方的汇总计数**同一份判因**——两处口径
-    不会互相漂移。
+    运维只能靠人工比对日志时间线。
+
+    留痕按判因的**性质**分两档：
+
+    - `PEER`（跨执行体交接的正常形态，不是故障）收成**一条批量**：日志一行 + 事件一行，
+      带账号数。逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行
+      `pending` 事件与 1830 行日志（工单 81xt）。措辞与形状对齐本函数里那条
+      "未执行判因不可得"批量告警。该批量按**组成**去重（见 `_UNREACHED_PEER_LAST`）：
+      执行体、账号数与分因明细都不变时整段跳过，不重复写日志与事件。
+    - `UNCLAIMED`（无人接手，真异常）**逐账号**留痕：判因文本与故障账号逐条可查。
+      健康运行下这类账号为 0，逐条不产生日常噪声；一旦出现，运维要能按账号定位。
+      `_emit_event` 的 message 截断在 200 字符，一条批量装不下上百账号的明细，
+      故不并进批量。
+
+    两档与调用方的汇总计数**同一份判因**——两处口径不会互相漂移。
 
     `ctx.unreached` 为 `None`（调用方不要判因，例如只关心自己退出码的子执行体）时本函数
     只做事件留痕，不填 out-param。
     """
+    global _UNREACHED_PEER_LAST
     attempted = getattr(ctx, "attempted", ())
     phones = [a.phone for a in accounts
               if a.phone not in ctx.results
@@ -1175,21 +1197,26 @@ def _mark_unreached(ctx, accounts):
         # 告警会把日志淹掉）；逐账号的判因文本仍落事件表与 INFO 行，可查性不受损。
         logger.warning("%s 未执行判因不可得（当日任务归属读不通），%d 个账号按「无人接手」计",
                        ctx.log_tag, len(pending_judge))
+    # 「已由他人负责」的账号收进这一批，循环里不逐账号落事件与日志（见 docstring）。
+    peer_n = 0
+    #: `{role/state: 账号数}`——只用于那条批量日志的分因明细（日志不截断）。
+    peer_detail = {}
     for phone in phones:
+        message = ""
         if phone in attempted:
-            state = owner = ""
             reason = UNREACHED_RETRY
-            message = ""    # 已由那次尝试落过事件与状态，不重复写
+            # 已由那次尝试落过事件与状态，不重复写
         elif rows is None:
-            reason, state, owner = UNREACHED_UNCLAIMED, "", ""
+            reason = UNREACHED_UNCLAIMED
             message = "本执行体未执行：判因不可得（当日任务归属读不通）"
         else:
             state, owner = rows.get(phone, ("", ""))
             reason = UNREACHED_PEER if (owner and owner not in mine) else UNREACHED_UNCLAIMED
             if reason == UNREACHED_PEER:
                 role = egress.parse_owner(owner)["role"]
-                message = (f"本执行体未领取：任务已由其他执行体领取"
-                           f"（role={role}，state={state}）")
+                peer_n += 1
+                key = f"{role}/{state or '?'}"
+                peer_detail[key] = peer_detail.get(key, 0) + 1
             elif state == queue_store.STATE_PENDING:
                 message = f"本执行体未执行：行仍待领（state={state}）"
             elif state:
@@ -1199,8 +1226,27 @@ def _mark_unreached(ctx, accounts):
         if ctx.unreached is not None:
             ctx.unreached[phone] = reason
         if message:
+            # 真异常（无人接手）：**逐账号**留痕，判因文本与账号逐条可查。
             _emit_event(ctx, phone, yiban_status.STATUS_PENDING, message)
             logger.info("%s [%s] ⏳ %s", ctx.log_tag, _mask_phone(phone), message)
+    if peer_n:
+        # 跨执行体交接的**一条批量**留痕：日志一行 + 事件一行，带账号数与分因。
+        # 事件是摘要行（`phone=""`，没有单一账号），读者面按摘要行口径排除其账号统计
+        # （见 `store.events` 的 sign_event_stats / sign_event_accounts_summary）。
+        # 组成去重：签名取 `(执行体, 账号数, 分因明细)`，**不含轮次/时间**——兜底常驻循环
+        # 每轮扫描，组成不变就整段跳过（工单 81xt 返修 LOW-1）；组成一变立刻回到留痕。
+        # 身份进键：同进程换执行体不得互相压掉（同 `_BANNER_LAST`）。
+        signature = (ctx.executor_id, peer_n, tuple(sorted(peer_detail.items())))
+        if signature != _UNREACHED_PEER_LAST:
+            digest = "，".join(f"{k}×{n}" for k, n in sorted(peer_detail.items()))
+            logger.info("%s 未领取：任务已由其他执行体领取，%d 个账号（跨执行体交接，%s）",
+                        ctx.log_tag, peer_n, digest)
+            _emit_event(ctx, "", yiban_status.STATUS_PENDING,
+                        f"本执行体未领取：任务已由其他执行体领取，共 {peer_n} 个账号")
+            _UNREACHED_PEER_LAST = signature
+    else:
+        # peer 为 0：清回 `None`。同组成 N→0→N 时，中间的 0 拍必须让第三次留痕复活。
+        _UNREACHED_PEER_LAST = None
 
 
 #: 上一次打出的 v3 横幅**规模与归属**（`_log_banner` 的去重依据）：`(身份, 通道数, 分片数)`。
