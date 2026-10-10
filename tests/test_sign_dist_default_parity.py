@@ -37,6 +37,8 @@ _WEB_CARRIERS = (
 )
 #: 缺省值必须出现的 env 模板。
 _ENV_CARRIERS = (".env.example", ".env.docker.example")
+#: 容器演练脚本：它按显式 `.env` 起容器，取值须等于新部署默认——否则演练验的不是默认路径。
+_DRILL_CARRIER = os.path.join("scripts", "drill-container.sh")
 #: 前端默认表的源文件。
 _FRONTEND_MODEL = os.path.join("frontend", "src", "settings", "model.js")
 
@@ -104,6 +106,12 @@ class SignDistCarrierParityTest(unittest.TestCase):
         for rel in _ENV_CARRIERS:
             self.assertRegex(_read(rel), pat,
                              "%s 的 YIBAN_SIGN_DIST 缺省未跟随 %s" % (rel, default))
+
+    def test_drill_script_uses_the_default(self):
+        """演练脚本写的是显式 `.env`（Python dict 字面量，不是 KEY=VALUE 行）。"""
+        default = self._default()
+        self.assertIn('"YIBAN_SIGN_DIST": "%s"' % default, _norm(_read(_DRILL_CARRIER)),
+                      "容器演练脚本的 YIBAN_SIGN_DIST 未跟随默认值 %s（演练将不测默认路径）" % default)
 
     def test_frontend_defaults_table_uses_the_default(self):
         default = self._default()
