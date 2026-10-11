@@ -5,7 +5,7 @@
 # 为什么有它（2026-10-05 合流实证）：解释器三轮才找到、副本缺 .git 造成伪红、
 #   CRLF 炸门禁、两负责人分组跑法不同致伪红、tail 截断两轮丢名单。
 #   这些都不是被测代码的缺陷，是"跑法"没有唯一入口造成的。本脚本把跑法固化为
-#   一条命令：建带 .git 的 WSL 副本 → 转 LF → 固定 venv → ruff → 全量并发 pytest
+#   一条命令：建带 .git 的 WSL 副本 → 转 LF → 固定 venv → ruff → mypy → 全量并发 pytest
 #   → 完整输出 tee 到固定日志路径。
 #
 # 用法：
@@ -19,7 +19,7 @@
 #                                                  # 空覆盖（无改动/无命中）退出码 3，不是 0
 #
 # 选项：
-#   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts
+#   --ci             跑 CI 关键子集（ruff + mypy + 安全子集 -n 4 + e2e smoke + shared-facts
 #                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
 #                    就地跑：不建副本、不归一化、不落日志
 #   --fast           **提交前自查·安全档**：跑全量，但剔除已实测的 5 条长尾
@@ -46,7 +46,7 @@
 # 全量模式（默认）的固定口径，逐条都是踩过的坑：
 #   1. 副本落在 WSL 原生文件系统（/root/.cache/yiban-dev-verify/worktree），
 #      不放 /mnt（DrvFs 慢）。每次运行整体重建，保证"副本 = 当前工作树"；
-#      只排除 .git 与工具缓存目录（__pycache__ / .pytest_cache / .ruff_cache）。
+#      只排除 .git 与工具缓存目录（__pycache__ / .pytest_cache / .ruff_cache / .mypy_cache）。
 #      副本路径固定，故并发跑时用 flock 串行化——两个运行不能同时重建同一份副本。
 #   2. 副本带**能用的** git 仓库：.git 由本脚本播种（HEAD 指向源提交、
 #      对象经 alternates 复用源对象库、索引直接取源索引）。为什么必须带：
@@ -64,7 +64,7 @@
 #      文件内先后依赖与进程级 DB 单例，按单条分发即误红。
 #   6. 输出整份 tee 到 <日志目录>/dev-verify-<时间戳>-<pid>.log，保留最近 N 份。
 #      **不截断**（只留 tail 会丢失败名单）。日志内含：解释器绝对路径与版本、
-#      被跑提交 sha、ruff 退出码、pytest 汇总四数、脚本退出码。
+#      被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码。
 #   7. 脚本不改测试本身的行为，也不需要任何人先改环境变量。
 #
 # fast 模式口径（2026-10-07 立，依据实测）：
@@ -88,12 +88,12 @@
 #   11. 两档都必须打印"选了什么、依据是什么、没覆盖什么"——防止把 fast 的绿读成门禁的绿。
 #      另：本脚本只跑 pytest。**前端改动**（frontend/ 下的 vitest / playwright）不在本脚本面内，
 #      范围档遇到 frontend/ 改动会如实说"未反查到用例"，不要读成"有人覆盖"。
-#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**。
+#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff/mypy 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**。
 #      3 的语义是"没测到东西"，不是"测了但失败"：范围档没测到任何真实用例、只跑了入口自检。
 #      只有改动集反查零命中才是 3（改 docs/dev/dev-verify.md 本身会命中入口自检与文档相关
 #      用例，不属零命中）。推送前仍要跑全量。两种 fast 档都打印 covered=<用例数>
-#      （pytest 汇总四数之和）。**3 由空覆盖独占**：ruff 或 pytest 的原始码一律归一为 1，
-#      不被透出（原始码逐行打印在日志里：ruff_exit= / pytest_exit=），否则 pytest 自己的
+#      （pytest 汇总四数之和）。**3 由空覆盖独占**：ruff/mypy 或 pytest 的原始码一律归一为 1，
+#      不被透出（原始码逐行打印在日志里：ruff_exit= / mypy_exit= / pytest_exit=），否则 pytest 自己的
 #      3（INTERNALERROR）会与空覆盖撞码、语义两用。
 #
 # 守卫与自证：副本 .git 失活、副本残留 CRLF、副本跟踪集为空，
@@ -274,6 +274,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     cd "$REPO"
     echo "DEV-VERIFY(ci) lint"
     "$py" -m ruff check yiban/ tests/ scripts/ web/ --quiet
+    echo "DEV-VERIFY(ci) mypy（收编名单住 pyproject.toml 的 [tool.mypy] files）"
+    "$py" -m mypy
+    "$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
     echo "DEV-VERIFY(ci) security subset"
     "$py" -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
     echo "DEV-VERIFY(ci) e2e smoke"
@@ -694,7 +697,7 @@ fi
 # 代价实测（本树 rsync 面内约 750 个文件，2026-10-07）：副本已同步时 rsync -a 约 0.65s，
 # 加 -c 约 1.4s，多付约 0.7s；--fast-scoped 整跑墙钟 9~11s（含选中用例自身的执行）。
 rsync -a -c --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
-    --exclude='.ruff_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
+    --exclude='.ruff_cache' --exclude='.mypy_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
 echo "DEV-VERIFY copy: $DEST"
 
 # dev-verify-mutant-begin: copy-git
@@ -742,6 +745,15 @@ ruff_rc=$?
 set -e
 echo "DEV-VERIFY ruff_exit=$ruff_rc"
 
+# mypy 静态类型门禁（收编名单住 pyproject.toml 的 [tool.mypy] files）：与 ruff 同属静态检查，
+# 排在 ruff 之后、pytest 之前。裸 `mypy` 即读 [tool.mypy] 的 files 白名单——收编名单只此一处。
+echo "DEV-VERIFY mypy: mypy（收编名单见 pyproject.toml [tool.mypy] files）"
+set +e
+"$PY" -m mypy
+mypy_rc=$?
+set -e
+echo "DEV-VERIFY mypy_exit=$mypy_rc"
+
 # $TARGET 故意不加引号：允许 `--target "tests/a.py tests/b.py"` 传多个目标
 echo "DEV-VERIFY pytest: pytest $TARGET -q -p no:randomly -n auto --dist loadfile ${DESELECT[*]:-}"
 set +e
@@ -768,10 +780,10 @@ else
     echo "DEV-VERIFY summary: 无（pytest 未产出汇总行）"
 fi
 
-# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff 或 pytest 非 0）；
+# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff/mypy 或 pytest 非 0）；
 # 2 = 环境错误（die）；3 = 空覆盖（没测到真实用例）。
-# 原始码不丢：ruff_exit= 与 pytest_exit= 已逐行打印在上面。
-resolve_exit_code() { # $1 = ruff 退出码；$2 = pytest 退出码；$3 = 空覆盖(1/0)
+# 原始码不丢：ruff_exit= / mypy_exit= / pytest_exit= 已逐行打印在上面。
+resolve_exit_code() { # $1 = 静态检查退出码（ruff 与 mypy 归一后）；$2 = pytest 退出码；$3 = 空覆盖(1/0)
     if [ "$1" != "0" ] || [ "$2" != "0" ]; then
         printf '1'
         return 0
@@ -791,7 +803,11 @@ note_fast_empty_coverage() { # $1 = 空覆盖标记（1/0）；$2 = 最终退出
     fi
 }
 
-rc=$(resolve_exit_code "$ruff_rc" "$py_rc" "${FAST_EMPTY:-0}")
+# 静态检查（ruff + mypy）任一非 0 即归一到 lint 码：统一裁决点只认一个"静态检查"入参。
+# 原始码已在上面逐行打印（ruff_exit= / mypy_exit=），此处只做归一，不覆盖原始输出。
+lint_rc=$ruff_rc
+[ "$mypy_rc" = "0" ] || lint_rc=1
+rc=$(resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}")
 note_fast_empty_coverage "${FAST_EMPTY:-0}" "$rc"
 echo "DEV-VERIFY exit_code=$rc"
 exit "$rc"
