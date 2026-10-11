@@ -1231,15 +1231,17 @@ html {
    但裸 .field-help 曾排到 1082px 宽（实测 76 字/行，容量配额那条）。 */
 .field-help { max-width: var(--text-line-max); }
 /* 文本行宽上限补齐（124 §A.6 实测的缺失容器）：
-   4K 实测 .page-sub=3528px、.panel-sub=3470px、运行巡检空态 <p>=3470px、
-   .dist-viz-flat=2306px；.set-danger-note 的注释早已声明 680px 刻度却没落地。
-   一律收口到 --text-line-max。**不给布局容器加 max-width**（裁决：布局宽度不可限）。 */
+   4K 实测 .page-sub=3528px、.panel-sub=3470px、.dist-viz-flat=2306px；
+   .set-danger-note 的注释早已声明 680px 刻度却没落地。
+   一律收口到 --text-line-max。**不给布局容器加 max-width**（裁决：布局宽度不可限）。
+   本组只列 app.css 自己拥有的类（跨页共用的设计层）。
+   运行巡检的 .run-empty / .run-note 是 Vue 日志页组件私有的类（样式定义在
+   frontend/src/logs/Logs.vue 的 scoped style），其 4K 收口住该组件——
+   写进本全局表会泄入 Vue 页，且随组件改名悄悄失效。 */
 .page-sub,
 .panel-sub,
 .set-danger-note,
-.dist-viz-flat,
-.run-empty > p,
-.run-note {
+.dist-viz-flat {
   max-width: var(--text-line-max);
 }
 /* 小字说明行高：原继承 vendor 的 1.45（11.5px → 16.7px），中文小字偏挤；

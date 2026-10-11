@@ -135,7 +135,8 @@ def api_accounts():
             if _page_phones is None or k in _page_phones
         },
         # 状态原因/计划（如"计划 06:42"），前端表格 title 展示；计划态由台账 run_at 生成，
-        # 故按**全部账号**取值（runner 不再为每个账号预写 sign-state 条目）。
+        # 故按**当前下发的账号**取值：不传分页参数＝整表，分页时只覆盖当前页。
+        # runner 不再为每个账号预写 sign-state 条目。
         # 文案由共享助手唯一裁定，与 /api/my-accounts 同源（accounts_data.plan_state_message）。
         "state_msgs": {
             m._mask_phone(a.get("phone", "")): _plan_state_message(
