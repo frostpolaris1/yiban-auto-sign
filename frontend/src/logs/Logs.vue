@@ -1052,7 +1052,8 @@ onBeforeUnmount(() => {
   color: var(--t-muted);
 }
 .live-total-value {
-  font-size: 18px;
+  /* 展示档字号走令牌（--fs-display=22px）：裸 px 必须落在六档或 ≥24，此法最稳 */
+  font-size: var(--fs-display);
   font-weight: 700;
   color: var(--t-base);
   font-variant-numeric: tabular-nums;
