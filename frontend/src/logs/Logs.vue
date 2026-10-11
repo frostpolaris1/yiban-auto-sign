@@ -802,6 +802,13 @@ onBeforeUnmount(() => {
   font-size: var(--fs-label);
   color: var(--t-muted);
 }
+/* 4K 长行收口（124 §A.6 实测运行巡检空态 <p>=3470px）。这两个类是本组件私有
+   （见上一条注释），样式住本组件，不写全局 app.css——全局表写组件私有类会泄入
+   本页且随组件改名失效。 */
+.run-empty > p,
+.run-note {
+  max-width: var(--text-line-max);
+}
 .logs-retry {
   margin-bottom: 8px;
 }
