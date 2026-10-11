@@ -63,7 +63,11 @@ jobs:
           #   docs/refactor/128 三节；同 ruff/mypy 先例只钉在本行，不进 requirements.lock。
           #   本地 WSL 门禁 venv 单独装同版号。升版须同批改 tests/test_import_linter_gate.py
           #   的 PINNED_TOOL——门走 import-linter 的非公开 API，升版可能改元数据形态）
-          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0 mypy==1.19.0 import-linter==2.15
+          # grimp 3.17 = import-linter 的图引擎。import-linter 2.15 对 grimp 只给下限
+          #   （Requires-Dist: grimp>=3.17，无上界），不钉版即每次拉当时最新。而门自己
+          #   重实现了 grimp 的 `X.*` 通配语义（见 check-import-linter.py 的空转守卫），
+          #   故 grimp 也必须钉住。升版须同批改测试的 PINNED_GRIMP（审查 M2）。
+          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0 mypy==1.19.0 import-linter==2.15 grimp==3.17
 
       # 提交/PR 标题规范校验（Conventional Commits）
       # 不符合 feat/fix/docs/... 前缀则门禁失败。
@@ -87,6 +91,8 @@ jobs:
       #   与它的元测试。加步是工单要求的（"门禁要真进 CI，不许只当仓里的摆设"），
       #   除这两步之外 CI 结果与改前等价；命令原文仍只住 run_ci 一份，漂移由
       #   tests/test_dev_verify_entry.py 的冻结清单钉住。
+      # 2026-10-11 起又多了一步：import-linter 结构门（scripts/check-import-linter.py）
+      #   与它的元测试（P0 批，四条依赖方向契约）。同上，命令原文只住 run_ci 一份。
       - name: Gate subset (scripts/dev-verify.sh --ci)
         run: bash scripts/dev-verify.sh --ci
 
