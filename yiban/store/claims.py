@@ -87,7 +87,7 @@ STATE_DONE = "done"
 #: 两点必须知道：①「预算」住在**单轮进程内**（`yiban.engine.attempts._retry_budget`），
 #: 换一轮即重新计数；②故领取层必须**按弃权原因分档**，否则"预算耗尽"的账号会被
 #: 后面每一轮无上限地重领一遍（每次都是一次真实登录）。分档用 `result` 字段前缀表达
-#: （见 `RESULT_RETRY_PREFIX` / `RESULT_FINAL_PREFIX`，不动表结构）。
+#: （词表住 `yiban.status`：`RESULT_RETRY_PREFIX` / `RESULT_FINAL_PREFIX`，不动表结构）。
 STATE_FAILED = "failed"
 #: 终态集合（「了结」的账号）。
 SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
@@ -96,22 +96,6 @@ SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
                   & yiban_status.TASKS_SETTLED_STATES)  # 交集后只剩 done：failed 是"可再领"、不是终态
 #: 参与"未了结账号"统计的状态（与 done 互斥）
 OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
-
-#: 弃权原因档的 `result` 前缀协议（**无库迁移**：复用既有 result 列）。
-#: `give_up` 把原因档写成 `result` 的前缀，`try_claim` 的冲突分支据此决定"默认参数下
-#: 能不能再领"——这是领取层唯一能记住"为什么弃权"的字段。升级前写入的历史行不带前缀，
-#: 一律按保守档（默认不可再领）处置，只由显式路径放行；收尸路径主动写 `retry:` 档。
-RESULT_RETRY_PREFIX = "retry:"   # 窗口外/无点位：该重试，当日默认可被任何一轮再接手
-RESULT_FINAL_PREFIX = "final:"   # 预算耗尽/风控：不该无上限重试，需显式路径才可再领
-
-#: 默认可再领的弃权状态档（"窗口外/无点位"）。**必须是唯一一份**：`give_up` 写入前缀与
-#: `round._settle_claims` 选择档位都由它派生，各写一份会漂移成"记 retry、判 final"。
-RETRYABLE_GIVE_UP_STATUSES = frozenset((
-    yiban_status.STATUS_SKIPPED_WINDOW,
-    yiban_status.STATUS_SKIPPED_NORANGE,
-    yiban_status.STATUS_NO_POSITION,
-))
-
 
 #: 领取池不可用的一次性告警标记：`try_claim` 每个账号每轮都会被调到，而"表未落地/库锁"
 #: 是持续状态，不去重会把同一条故障刷成几十条（与 `yiban/engine/schedule.py` 的配置告警
@@ -215,7 +199,7 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     from yiban.store import db
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
-    retry_prefix_len = len(RESULT_RETRY_PREFIX)
+    retry_prefix_len = len(yiban_status.RESULT_RETRY_PREFIX)
     # 三条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
     # <= 的比较口径：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期（见 give_up）。
     # failed 分支用 `substr(...)=?` 而不是 `LIKE 'retry:%'`：主机名/结果文本里可能出现
@@ -247,7 +231,7 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
                 sql, (phone, day, owner, ts, ts, STATE_CLAIMED,
                       STATE_DONE, 1 if allow_settled else 0, epoch, epoch,
                       STATE_CLAIMED, expired_before, epoch, epoch,
-                      STATE_FAILED, retry_prefix_len, RESULT_RETRY_PREFIX,
+                      STATE_FAILED, retry_prefix_len, yiban_status.RESULT_RETRY_PREFIX,
                       1 if allow_failed else 0, expired_before, epoch, epoch),
             )
             # RETURNING 只对**真的写成**的行出行：条件不满足时零行，正是"没领到"。
@@ -362,7 +346,7 @@ def give_up(phone, day, owner, result="", epoch=None, retryable=False):
       （`try_claim(allow_failed=True)`）才可再领——否则它会当日每轮重来一遍。
 
     缺省保守是刻意的：判不清原因时宁可要求显式路径，也不要无上限重复真实登录。
-    调用方按 `RETRYABLE_GIVE_UP_STATUSES` 选档（`round._settle_claims`），不要各写一份。
+    调用方按 `yiban.status.RETRYABLE_GIVE_UP_STATUSES` 选档（`round._settle_claims`），不要各写一份。
 
     `epoch` 的语义同 `settle`（弃权同样是终态写：被接管者不得把接管者的在飞记录改成 failed）。
     返回是否写成功（被接管 / token 落后时为 False）。
@@ -371,7 +355,8 @@ def give_up(phone, day, owner, result="", epoch=None, retryable=False):
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=?")
     expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
-    prefix = RESULT_RETRY_PREFIX if retryable else RESULT_FINAL_PREFIX
+    prefix = (yiban_status.RESULT_RETRY_PREFIX if retryable
+              else yiban_status.RESULT_FINAL_PREFIX)
     params = [STATE_FAILED, (prefix + (result or ""))[:200], expired, phone, day, owner]
     if epoch is not None:
         sql += " AND epoch=?"
@@ -449,7 +434,7 @@ def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退
     expired = _utc_offset_str(LEASE_SECONDS)   # 与 give_up 同口径：立刻放开租约
     sql = ("UPDATE sign_claims SET state=?, result=?, "
            "heartbeat_at=?, epoch=epoch + 1 WHERE state=? AND (owner = ? OR instr(owner, ?) = 1)")
-    params = [STATE_FAILED, (RESULT_RETRY_PREFIX + (result or ""))[:200],
+    params = [STATE_FAILED, (yiban_status.RESULT_RETRY_PREFIX + (result or ""))[:200],
               expired, STATE_CLAIMED, owner, prefix]
     if day is not None:
         sql += " AND day=?"

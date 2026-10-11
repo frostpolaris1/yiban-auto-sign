@@ -98,7 +98,7 @@ def _judge_by_state(state):
       `CLAIM_DONE_STATUSES`，执行体先按"了结"短路，`skip` 在那条路径上到不了；
     - `State=5`（补签中）：**结果未定**，故 `skip=True`。平台正在处理补签，我们再登录
       一次改不了结果，只会多一次真实登录，故本轮不提交、不重试，只记状态。领取池侧另按
-      保守档收尾：`supplementing` 不在 `claims.RETRYABLE_GIVE_UP_STATUSES` ⇒ 写 `final:`
+      保守档收尾：`supplementing` 不在 `yiban.status.RETRYABLE_GIVE_UP_STATUSES` ⇒ 写 `final:`
       前缀（默认档不自动回炉）。**注意 `final:` 不是"当日绝不回炉"**：补签轮把回炉口的
       `include_final` 开关置真（见 `queue_store.requeue_failed`），仍会把它翻回 `pending`
       再领一次；见 `yiban/status.py` 该状态码的说明与 `runner.main` 的补签闸门注释。
