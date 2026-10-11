@@ -44,6 +44,8 @@ AUDIT_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "UserPass123!"
 USER_EMAIL = "stream-user@example.com"
+#: 注册管理员（`users.role=admin`，非 `.env` 内置）：钉 `/api/stream/progress` 的强档授权面。
+REG_ADMIN_EMAIL = "stream-regadmin@example.com"
 RAW_PHONE = "13800138001"
 OTHER_PHONE = "13900139002"
 OWNER_SINGLE = "single@stream-host"
@@ -121,6 +123,11 @@ class StreamCase(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
         db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        # 注册管理员（users.role=admin，非 .env 内置）：弱档 `_current_role()` 会把它判成
+        # admin，强档 `_is_builtin_admin_session()` 不认它。progress 走强档，故本账号是钉
+        # 授权面的对照组（见 AuthTest::test_registered_admin_progress_403）。
+        db.create_user(REG_ADMIN_EMAIL, cls.webapp.generate_password_hash(USER_PASS),
+                       role="admin")
         db.add_account({"name": "u-acct", "phone": RAW_PHONE, "password": "p1",
                         "status": "active", "owner": USER_EMAIL})
         db.add_account({"name": "admin-acct", "phone": OTHER_PHONE, "password": "p2",
@@ -482,6 +489,22 @@ class AuthTest(StreamCase):
         r = self._user_client().get("/api/stream/progress")
         self.assertEqual(r.status_code, 403)
 
+    def test_registered_admin_progress_403(self):
+        """注册管理员（`users.role=admin`，非 .env 内置）访问 progress ⇒ 403。
+
+        设计 §3.6 明令 progress 仅**主管理员**（强档 `_is_builtin_admin_session()`，与
+        `/api/scheduler/executors/progress` 同口径，见 settings_api.py 先例）。执行体级
+        运行细节不该给注册管理员。弱档 `_current_role()` 会把注册管理员也判成 admin，
+        正是本测试钉住的缺口：只查 `role=="admin"` 会放它进来。
+        """
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": REG_ADMIN_EMAIL, "password": USER_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        resp = c.get("/api/stream/progress")
+        self.assertEqual(resp.status_code, 403,
+                         "注册管理员不得看执行体级进度流（仅主管理员）")
+        self._close(resp)
+
     def test_normal_user_my_signin_ok(self):
         resp = self._open(self._user_client(), path="/api/stream/my-signin")
         try:
@@ -517,6 +540,34 @@ class LimitsTest(StreamCase):
             self.assertEqual(data["reason"], "disabled")
         finally:
             self._close(resp)
+
+    def test_stream_budgets_are_separate(self):
+        """管理员流与用户流各自预算（设计 §6.3）：一方占满不阻塞另一方。
+
+        判据两条：① 管理员流占满（`YIBAN_SSE_CONNECTIONS_MAX=1`）时，用户流仍可建连
+        ——管理员预算只数管理员订阅；② 用户流占满（`YIBAN_SSE_USER_CONNECTIONS_MAX=1`）
+        时，第二个用户连接得 `server_busy`。
+        """
+        self._env(YIBAN_SSE_CONNECTIONS_MAX=1, YIBAN_SSE_USER_CONNECTIONS_MAX=1)
+        admin = self._open(self.admin_client)
+        user = self._open(self._user_client(), path="/api/stream/my-signin")
+        try:
+            self._next_event(admin)     # 登记管理员订阅（管理员预算 1/1 用满）
+            ev, _eid, _d, _f = self._next_event(user)
+            self.assertIn(ev, ("snapshot", "heartbeat"),
+                          "管理员流占满不得阻塞用户流（两预算分家）")
+            # 保持 user 打开：用户预算 1/1 已占，第二个用户连接应被拒（不能被上一行的 close 放掉）
+            user2 = self._open(self._user_client(), path="/api/stream/my-signin")
+            try:
+                ev2, _eid2, data2, _f2 = self._next_event(user2)
+                self.assertEqual(ev2, "end")
+                self.assertEqual(data2["reason"], "server_busy",
+                                 "用户预算 1 已占，第二个用户连接应被拒")
+            finally:
+                self._close(user2)
+        finally:
+            self._close(user)
+            self._close(admin)
 
     def test_per_session_cap(self):
         self._env(YIBAN_SSE_SESSION_MAX=1)
@@ -567,6 +618,7 @@ class RegistryKeysTest(unittest.TestCase):
         ("YIBAN_SSE_GAP_MAX", 500),
         ("YIBAN_SSE_SESSION_MAX", 3),
         ("YIBAN_SSE_CONNECTIONS_MAX", 10),
+        ("YIBAN_SSE_USER_CONNECTIONS_MAX", 10),
         ("YIBAN_SSE_IDLE_SEC", 300),
         ("YIBAN_SSE_SESSION_RECHECK_SEC", 60),
         ("YIBAN_SSE_CONNECTION_MAX_SEC", 7200),

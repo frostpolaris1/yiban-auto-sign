@@ -1884,7 +1884,20 @@
     "group": [
       "实时进度流"
     ],
-    "doc": "全局最大并发 SSE 连接数（10 档取 min(10, gunicorn threads-4)，需给普通请求留线程）",
+    "doc": "管理员进度流全局最大并发 SSE 连接数（10 档取 min(10, gunicorn threads-4)，需给普通请求留线程）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_USER_CONNECTIONS_MAX": {
+    "type": "int",
+    "domain": [1, 1000],
+    "default": 10,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "用户端流（my-signin）全局最大并发 SSE 连接数；与管理员流各自预算（设计 §6.3）",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
