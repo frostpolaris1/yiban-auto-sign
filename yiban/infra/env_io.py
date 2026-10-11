@@ -116,7 +116,7 @@ def parse_env_flag(value, *, default=False, key=None, log=None):
       "同键两侧结论相反"（本族缺陷形状），归后续统一。
     - `yiban/engine/token_bucket.py:85`（`_FALSY_LITERALS`）：是"显式关闭"的**互补**
       判据（另一个轴），非本函数的替代。
-    请求体（`web/routes/my.py:914`、`web/routes/settings_api.py:411`）与数据库列
+    请求体（`web/routes/my_api.py`、`web/routes/settings_api.py:411`）与数据库列
     （`yiban/engine/alerts.py:372`、`yiban/store/users.py` 的 `mail_notify`）不由
     `.env` 契约定值域，**不该**走本函数。
     """
