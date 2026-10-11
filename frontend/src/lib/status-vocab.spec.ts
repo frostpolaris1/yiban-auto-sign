@@ -11,12 +11,12 @@ import { statusLabel } from "../logs/format";
 const CODES = Object.keys(STATUS_VOCAB);
 
 describe("STATUS_VOCAB（唯一事实源）", () => {
-  it("覆盖全部 12 个状态码，每条含 full/short/icon/tone", () => {
+  it("覆盖全部 13 个状态码，每条含 full/short/icon/tone", () => {
     expect(CODES.sort()).toEqual(
       [
         "already", "failed", "global_paused", "no_position", "no_task", "paused",
         "pending", "retrying", "skipped_norange", "skipped_window", "success",
-        "user_cancelled",
+        "supplementing", "user_cancelled",
       ].sort(),
     );
     for (const k of CODES) {

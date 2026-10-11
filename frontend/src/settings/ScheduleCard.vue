@@ -20,7 +20,8 @@ import DistViz from "./DistViz.vue";
 /* 签到调度卡（设置页第一分区）。legacy = components/settings-schedule.js + settings-dist-viz.js。
    自研控件四件套按既定方向换 EP 基础件：排序/分布 → el-select；掐头去尾 → el-slider；
    签到窗口 → el-time-picker(is-range)；周末签到与自选开关 → el-switch（A15 统一为开关）。
-   正态 μ/σ 的可见编辑器仍由 DistViz 构建（原生 input，legacy 同款，不在四件套内）。
+   正态 μ/σ 的可见编辑器仍由 DistViz 构建（散布/半径是原生 number input；峰值中心已换
+   EP el-time-picker，提交式预览）。
 
    2026-10-04 P3 收官重设计（本文件）：
    · 布局——字段按语义重排，≤720 单列 / 721–1439 双列 / ≥1440 三列（密度随视口放大）；
@@ -74,6 +75,7 @@ const orderItems = [
   { value: "random", label: "列表随机（每天重排）" },
 ];
 const distItems = [
+  { value: "front", label: "提前铺完（推荐）" },
   { value: "uniform", label: "均匀分布" },
   { value: "normal", label: "正态分布（钟形拟人）" },
 ];
@@ -194,7 +196,7 @@ function reset(): void {
   if (!props.isMaster || saving.value) return;
   void confirmDialog({
     title: "恢复默认调度",
-    body: "恢复为：窗口 06:30 ~ 07:50 · 掐头去尾各 1 分钟 · 排序顺序 · 分布均匀。\n（账号间隔与自选开关不在恢复范围，可点保存生效）",
+    body: "恢复为：窗口 06:30 ~ 07:50 · 掐头去尾各 1 分钟 · 排序顺序 · 分布提前铺完。\n（账号间隔与自选开关不在恢复范围，可点保存生效）",
     confirmText: "恢复默认",
   }).then((ok) => {
     if (!ok) return;
@@ -223,7 +225,7 @@ defineExpose({ isDirty: () => dirty.value, save });
         <div class="set-head-actions">
           <button type="button" class="info-tip" aria-label="调度说明" aria-describedby="set-pop-schedule">
             <svg aria-hidden="true"><use href="#i-info" /></svg>
-            <span class="info-pop" id="set-pop-schedule" role="tooltip"><b>排序与分布：</b>「顺序」按列表先到先签，「随机」每天重排；分布决定时间点怎么铺开，「顺序 × 均匀」会集中在窗口前段，要铺满窗口选「随机 × 均匀」或正态。<b>掐头去尾：</b>裁掉窗口首尾各 n 分钟，避开边界超时；前后独立、0.5 分钟粒度。<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动均生效，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但占用更多窗口时间。<b>生效时机：</b>保存后下次自动签到时生效。</span>
+            <span class="info-pop" id="set-pop-schedule" role="tooltip"><b>排序与分布：</b>「顺序」按列表先到先签，「随机」每天重排；分布决定时间点怎么铺开：「提前铺完」把账号铺进窗口前段、尾部留作重试与兜底，「均匀」铺满整窗，「正态」钟形拟人。<b>掐头去尾：</b>裁掉窗口首尾各 n 分钟，避开边界超时；前后独立、0.5 分钟粒度。<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动均生效，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但占用更多窗口时间。<b>生效时机：</b>保存后下次自动签到时生效。</span>
           </button>
           <!-- 直接操作门开关（工单 4gvh）：拖拽类控件默认只读，按下此处才可操作。
                按钮自证（编辑 ⇄ 完成 + aria-pressed），不加解释文案。 -->

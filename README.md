@@ -243,6 +243,7 @@ tail -20 /var/log/yiban/sign-$(date +%F).log
 ### 1. 前置条件
 
 - 已安装 Docker 与 Compose（验证：`docker --version`、`docker compose version`；Ubuntu 可参考 `curl -fsSL https://get.docker.com | sh`）
+  > **Ubuntu 的 `docker.io` 包不含 Compose**：走 `sudo apt install docker.io` 这条路的人，`docker compose version` 会报 `unknown command: docker compose`，需再装 `sudo apt install docker-compose-v2`（2026-10-09 全新环境演练实测）。用 `get.docker.com` 脚本装的版本自带 compose，不受影响。
 - **x86_64** 架构（镜像暂仅构建 x86_64）
 - 资源建议 1 核 1G，端口 **80/443** 空闲
 
@@ -356,6 +357,8 @@ printf '%s\n' '你的备份口令' > /etc/yiban/backup-passphrase && chmod 600 /
 YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase bash docker/backup-docker.sh
 
 # 也可手动裸 tar（明文落盘，请自行妥善保管）
+# 注意：此命令打包的是活库快照，已提交但尚未 checkpoint 的行在 data/yiban.db-wal 里；
+# 恢复时必须把整棵 data/ 解回，且不能留下目标侧旧 yiban.db-wal/yiban.db-shm（见下方恢复说明）。
 tar czf yiban-backup-$(date +%F).tar.gz data/
 ```
 
@@ -370,6 +373,8 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
     bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
 ```
 
+> **恢复后启用（任意 Docker 备份路线：`backup-docker.sh` 或手动裸 tar）**：两种路线产出的都是 `data/` 的**活库快照**（含 `yiban.db` 与其 `yiban.db-wal`/`yiban.db-shm`；非 `sqlite3 .backup` 一致性快照）。生效步骤：① `docker compose stop yiban`；② **整棵 `data/` 覆盖**回宿主 `./data`；若采用"保留原目录、只覆盖库文件"的做法，必须先删掉目标侧残留的 `yiban.db-wal` 与 `yiban.db-shm`，再把 `yiban.db`、`yiban.db-wal`、`yiban.db-shm` 三件一起覆盖；③ `docker compose start yiban`。**不要只替换 `yiban.db`**：已提交但尚未 checkpoint 的行在 `yiban.db-wal` 里，只搬主文件会静默丢掉这一批行。
+>
 > ⚠️ 与 systemd 部署一致：加密密钥（`data/.env`）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
 >
 > ⚠️ 威胁边界：口令与数据**同机**存放（root crontab/.env）时，加密只能防「备份介质单独失窃」——SSH/root 失陷即口令与全部备份（含异机副本）同时易手。更高强度口径：用 systemd 部署 `scripts/backup.sh` 的 `BACKUP_GPG_RECIPIENT` 公钥模式（服务器只存公钥），或把口令/私钥保存在异机、仅在备份时注入。
@@ -614,7 +619,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_ACCOUNT_GAP_MAX` | 账号间隔：相邻两次签到请求的最小间隔秒数，自动与手动签到均生效；默认 `10`，`0`=关闭 | 可选 |
 | `YIBAN_SIGN_START` / `YIBAN_SIGN_END` | 签到窗口（`HH:MM`，默认 `06:30` / `07:50`） | 可选 |
 | `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` | 窗口首尾裁剪秒数（各默认 `60`，`0`~`300` 且 30 的倍数）；有效窗口 = 两端裁剪后的区间。旧键 `YIBAN_WINDOW_EDGE_SEC`（前后对称）仍兼容 | 可选 |
-| `YIBAN_SIGN_ORDER` / `YIBAN_SIGN_DIST` | 排序 `sequence`（默认）/`random`；分布 `uniform`（默认）/`normal` | 可选 |
+| `YIBAN_SIGN_ORDER` / `YIBAN_SIGN_DIST` | 排序 `sequence`（默认）/`random`；分布 `front`（默认，提前铺完）/`uniform`（均匀铺满整窗）/`normal`（钟形高峰） | 可选 |
 | `YIBAN_BLOCK_CAP` | 错峰分块容量（每块最多人数，默认 `15`） | 可选 |
 | `YIBAN_SECOND_RUN_TIME` | 补签轮触发点，默认 `07:12`；**须与补签 cron 时刻一致**（见服务器部署第 6 步） | 可选 |
 | `YIBAN_SUNDAY_SIGN` / `YIBAN_SATURDAY_SIGN` | `1`=当天也执行；缺省/`0`=跳过（两个默认都跳过） | 可选 |
@@ -642,6 +647,8 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_BASE_PATH` | Web 挂载前缀，仅在自动识别切错时兜底（见 [部署形态](#部署形态)） | 可选 |
 
 > 调度 v2 的其余内部参数（正态 μ/σ 范围、重试最小间隔等）见代码 `yiban/engine/schedule.py` 的 `_schedule_config()`，网页不展示的项一般无需调整。
+>
+> 「分布」默认是 `front`（提前铺完）：计划按安全速率铺进窗口前段，尾部留作重试与兜底。**想改回铺满整窗**：在 `.env` 写入 `YIBAN_SIGN_DIST=uniform`（或在「系统设置 → 签到调度」把分布选为「均匀分布」），保存后下次触发即生效。
 
 ### 账号间隔（防风控）与容量预估
 
@@ -1092,10 +1099,11 @@ YIBAN_PROXY_FALLBACK=http://fb:8080                    # 兜底执行体单独�
 
 实测的"需要 N 个执行体"与引擎的执行体数口径（`schedule.executor_count`）**不是同一个
 数**：实测按"每个进程各自一份限速桶"量取，N 个"执行体"= N 份桶；引擎（调度 v3）的 K 夹在
-`[1, 出口数]` 内，是**目标出口口径**——桶与物理出口同键之后（v3 目标），共用一个出口的多个
-进程不会放大总速率。所以"5000 人要 20–22 个执行体"实际意味着**声明 20–22 个出口**
-（`YIBAN_PROXY_LIST` 一行一个）。没声明出口清单的单出口部署里 K≡1 是设计语义，不是故障；
-要提量，先加出口、再加执行体。
+`[1, 出口数]` 内，是**目标出口口径**——同一出口的多个进程按**出口预算均分**该出口的速率
+（每进程子桶速率 = 出口级 λ ÷ 同出口执行体数），**运行期合计 ≤ λ**，加进程不放大该出口的
+实际速率（各进程首条仍即时放行，属可接受的小突发）。所以"5000 人要 20–22 个执行体"实际
+意味着**声明 20–22 个出口**（`YIBAN_PROXY_LIST` 一行一个）。没声明出口清单的单出口部署里
+K≡1 是设计语义，不是故障；要提量，先加出口、再加执行体。
 
 > **虚分片数已定档 64**：它是"谁领哪批待办"的划分单位，**代码常量**（`yiban/engine/hrw.py`
 > 的 `v_for`，2026-09 定档），**不是配置项**——按需改代码比多一个没人用的键更合本项目的取舍。
@@ -1127,7 +1135,7 @@ cd /opt/yiban-auto-sign
 git pull --ff-only          # 首次用 git clone 部署才有 .git；压缩包部署请重新上传覆盖
 ```
 
-> 面向脚本/agent 的统一入口是 `python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
+> 面向脚本/agent 的统一入口是 `python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `egress` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
 
 ## 本地调试
 

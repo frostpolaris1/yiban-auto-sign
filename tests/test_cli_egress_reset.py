@@ -1,0 +1,386 @@
+# -*- coding: utf-8 -*-
+"""出口令牌桶复位的受支持入口：`python -m yiban.cli egress`（工单 `zggs` + `2cwd`）。
+
+标签：J · 运维：部署/备份/发布
+覆盖：`egress --status` 只读列出 `egress_state` 各行（键 = **出口标识**，工单 2cwd）；
+   `egress --reset <出口>` 与 `--reset-all` 默认只报告、加 `--yes` 才写；复位后速率逐行
+   可核对；未知出口、空选择串、越域的目标速率、互斥开关、多余参数各自落到既有的退出码家族；
+   同名多行拒绝与逐字键逃生口；`--json` 的每条退出路径都是一整行对象；库不存在时只读面不
+   失败；旧格式（执行体身份键）行**不回含主机名的原串**。另钉"哪些行可能被活进程覆盖"的
+   事实在输出里在场。
+对应实现：yiban/engine/egress_admin.py（实现）、yiban/cli.py（子命令注册与分派）、
+   yiban/engine/token_bucket.py（速率域名与出厂速率唯一真值源）、
+   yiban/store/queue_store.py（`egress_state` 唯一持久化路径）、yiban/clock.py（时间域）、
+   yiban/egress.py（出口标识口径 `outlet_label` / `is_outlet_identity`）。
+关键断言：复位把被误判砍过的出口速率写回**引擎出厂速率**（或 `--rate` 显式值），且只改
+   `rate` 一列（`burst`/`tat` 逐字保留）；不加 `--yes` 时逐字不动；两条速率来源过**同一道**
+   引擎域校验（引擎会夹掉的值一律拒绝）；展示标签命中多行时拒绝而不是任选一行。用途是给
+   运维一条"受支持的撤销"——否则误报降档只能直接改库，或等约 8 个干净轮让 AIMD 爬回。
+依赖：起 `sys.executable -m yiban.cli` 子进程 + 临时库（真 schema）；不联网。
+"""
+import json
+import os
+import pathlib
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from yiban import config_loader
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: 出口标识（工单 2cwd：限速桶键 = 出口标识）：直连与代理各一行。
+DIRECT_EGRESS = "direct"
+PROXY_EGRESS = "http://127.0.0.1:3128"
+#: 直连的展示标签（`egress.describe` 的空出口形态）。
+DIRECT_TAG = "[直连（本机出口）]"
+PROXY_TAG = "[http://127.0.0.1:3128]"
+#: 旧格式键（改键前的存量行）：展示为「已弃用」，且**不得回含主机名的原串**。
+LEGACY_EGRESS = "fallback@test-host"
+LEGACY_HOST = "test-host"
+LEGACY_TAG = "[已弃用（旧执行体身份键）]"
+#: 陈旧落库时刻：远早于"活进程持有"的判定窗，用来钉 `held_by_live_process` 的假侧。
+STALE_STAMP = "2026-10-09 07:43:35"
+#: 引擎出厂速率：从配置名册读，不抄字面量（名册改了这条用例不会假装还绿）。
+ENGINE_DEFAULT_RATE = float(config_loader.default_of("YIBAN_EGRESS_RATE"))
+
+
+def _cli_env(root, extra=None):
+    """隔离环境：临时路径四件套 + 剥掉进程里继承的全部 YIBAN_*（防串真实部署）。"""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
+    env.update({
+        "YIBAN_STATE_DIR": os.path.join(root, "state"),
+        "YIBAN_LOG_FILE": os.path.join(root, "logs", "sign.log"),
+        "YIBAN_DB_FILE": os.path.join(root, "yiban.db"),
+        "YIBAN_ENV_FILE": os.path.join(root, ".env"),
+        "YIBAN_ACCOUNTS_KEY": "a" * 64,
+        "PYTHONPATH": BASE,             # `python -m yiban.cli` 需要仓库根在导入路径上
+        "PYTHONIOENCODING": "utf-8",    # JSON 里的中文在任意平台都可解码
+    })
+    env.update(extra or {})
+    return env
+
+
+def _run(argv, env, timeout=120):
+    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=BASE,
+                          env=env, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
+
+
+class _EgressCliCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="yiban-cli-egress-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        os.makedirs(self.root / "state", exist_ok=True)
+        self.env = _cli_env(str(self.root))
+
+    # ---- 夹具 ----
+
+    def _seed(self, rows=()):
+        """建真 schema 的临时库并写入若干 `egress_state` 行（走数据层，绝不碰别的库）。"""
+        code = (
+            "import sys;from yiban.store import db, queue_store;"
+            "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
+            "i=3\n"
+            "while i < len(sys.argv):\n"
+            "    queue_store.save_egress_state(sys.argv[i], float(sys.argv[i+1]),"
+            " float(sys.argv[i+2]), float(sys.argv[i+3]), sys.argv[i+4])\n"
+            "    i += 5\n"
+            "db.get_conn().close()")
+        argv = [sys.executable, "-c", code, str(self.root / "yiban.db"),
+                str(self.root / ".env")]
+        for egress, rate, burst, tat, stamp in rows:
+            argv += [egress, str(rate), str(burst), str(tat), stamp]
+        r = subprocess.run(argv, cwd=BASE, env=self.env, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=120)
+        self.assertEqual(r.returncode, 0, f"临时库/行写入失败: {r.stdout}{r.stderr}")
+
+    def _row(self, egress):
+        """直读库里的那一行（不信 CLI 自报的值：两者不一致才算断到东西）。"""
+        conn = sqlite3.connect(str(self.root / "yiban.db"))
+        try:
+            row = conn.execute(
+                "SELECT rate, burst, tat, updated_at FROM egress_state WHERE egress=?",
+                (egress,)).fetchone()
+        finally:
+            conn.close()
+        return row
+
+    def _row_count(self):
+        conn = sqlite3.connect(str(self.root / "yiban.db"))
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM egress_state").fetchone()[0])
+        finally:
+            conn.close()
+
+    def _one_json(self, r):
+        lines = r.stdout.splitlines()
+        self.assertEqual(len(lines), 1, f"stdout 必须只有一行 JSON：{lines!r}")
+        return json.loads(lines[0])
+
+    def _fresh_stamp(self):
+        """当前北京时间戳串——与引擎落库同一时间域（`yiban.clock`）。"""
+        code = "from yiban import clock;print(clock.ts())"
+        r = subprocess.run([sys.executable, "-c", code], cwd=BASE, env=self.env,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        return r.stdout.strip()
+
+    # ---- 用例 ----
+
+    def test_status_lists_rows_and_writes_nothing(self):
+        """只读面：列出各行速率、给出出厂速率，且不写库；selector 就是出口标识本身。"""
+        self._seed([
+            (DIRECT_EGRESS, 0.25, 6.0, 3735447.86549844, STALE_STAMP),
+            (PROXY_EGRESS, 1.0, 6.0, 0.0, self._fresh_stamp()),
+        ])
+        before = self._row(DIRECT_EGRESS)
+        r = _run(["egress", "--status", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertEqual(payload["command"], "egress")
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["dry_run"], "只读面必须自报 dry_run")
+        self.assertFalse(payload["applied"])
+        self.assertEqual(payload["target_rate"], ENGINE_DEFAULT_RATE,
+                         "目标速率默认 = 引擎出厂速率（唯一真值源）")
+        rows = {row["selector"]: row for row in payload["rows"]}
+        self.assertEqual(set(rows), {DIRECT_EGRESS, PROXY_EGRESS})
+        self.assertAlmostEqual(rows[DIRECT_EGRESS]["rate"], 0.25, places=9)
+        self.assertEqual(rows[DIRECT_EGRESS]["tag"], DIRECT_TAG)
+        self.assertEqual(rows[PROXY_EGRESS]["tag"], PROXY_TAG)
+        # 人类可读汇总要走 stderr，且带上可核对的速率
+        self.assertIn("0.25", r.stderr)
+        # "会不会被活进程覆盖"的事实必须在输出里：陈旧行=无人持有，刚写过的行=有人持有
+        self.assertFalse(rows[DIRECT_EGRESS]["held_by_live_process"],
+                         "4 小时没落库的行不可能有活进程持有")
+        self.assertTrue(rows[PROXY_EGRESS]["held_by_live_process"],
+                        "刚落库的行极可能有活执行体在持有（复位会被 10s 落库覆盖）")
+        self.assertEqual(self._row(DIRECT_EGRESS), before, "只读面一字不写")
+
+    def test_legacy_executor_key_row_is_never_echoed(self):
+        """旧格式键（执行体身份，含主机名）不得出现在任何输出里；展示为「已弃用」。"""
+        self._seed([(LEGACY_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        r = _run(["egress", "--status", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertNotIn("test-host", r.stdout + r.stderr,
+                         "含主机名的出口旧键不得出现在任何输出里")
+        self.assertEqual(payload["rows"][0]["tag"], LEGACY_TAG)
+        self.assertEqual(payload["rows"][0]["selector"], "",
+                         "旧键不可作为 selector 回吐（含部署信息）")
+
+    def test_reset_without_yes_reports_only(self):
+        """默认 dry-run：报告将要写什么，库一字不动。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 3735447.86549844, STALE_STAMP)])
+        before = self._row(DIRECT_EGRESS)
+        r = _run(["egress", "--reset", DIRECT_EGRESS, "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertTrue(payload["dry_run"])
+        self.assertFalse(payload["applied"])
+        changes = payload["changes"]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["tag"], DIRECT_TAG,
+                         "变更行按出口标识的展示标签报出")
+        self.assertAlmostEqual(changes[0]["rate_before"], 0.25, places=9)
+        self.assertAlmostEqual(changes[0]["rate_after"], ENGINE_DEFAULT_RATE, places=9)
+        self.assertEqual(self._row(DIRECT_EGRESS), before, "不加 --yes 必须一字不写")
+
+    def test_reset_accepted_by_bracket_label(self):
+        """展示标签（`--status` 打印的方括号形态）也可作为选择串。"""
+        self._seed([(PROXY_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        r = _run(["egress", "--reset", PROXY_TAG, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertAlmostEqual(self._row(PROXY_EGRESS)[0], ENGINE_DEFAULT_RATE, places=9)
+
+    def test_reset_with_yes_restores_engine_default_rate(self):
+        """受支持的撤销：`--yes` 把速率写回出厂值，且只改 rate 一列。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 3735447.86549844, STALE_STAMP)])
+        r = _run(["egress", "--reset", DIRECT_EGRESS, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertFalse(payload["dry_run"])
+        self.assertTrue(payload["applied"])
+        # 可核对：JSON 里的 rate_after 必须等于库里真值
+        self.assertAlmostEqual(payload["changes"][0]["rate_after"],
+                               ENGINE_DEFAULT_RATE, places=9)
+        rate, burst, tat, _stamp = self._row(DIRECT_EGRESS)
+        self.assertAlmostEqual(rate, ENGINE_DEFAULT_RATE, places=9)
+        self.assertAlmostEqual(burst, 6.0, places=9, msg="burst 不得被复位顺手改掉")
+        self.assertAlmostEqual(tat, 3735447.86549844, places=9,
+                               msg="tat 不得被复位顺手改掉（装载时会按新速率夹住）")
+        self.assertIn("1.000", r.stderr, "复位后的速率要打在人类可读出口上")
+
+    def test_reset_all_with_explicit_rate(self):
+        """`--reset-all` + `--rate`：全体复位到显式速率。"""
+        self._seed([
+            (DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP),
+            (PROXY_EGRESS, 0.5, 6.0, 0.0, STALE_STAMP),
+        ])
+        r = _run(["egress", "--reset-all", "--rate", "2.5", "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertEqual(payload["target_rate"], 2.5)
+        self.assertEqual(sorted(c["tag"] for c in payload["changes"]),
+                         sorted([DIRECT_TAG, PROXY_TAG]))
+        for egress in (DIRECT_EGRESS, PROXY_EGRESS):
+            self.assertAlmostEqual(self._row(egress)[0], 2.5, places=9)
+
+    def test_empty_reset_selector_fails_loudly(self):
+        """`--reset` 收到空选择串必须响亮失败：不得静默退化成只读查询（缺陷 D1）。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        before = self._row(DIRECT_EGRESS)
+        for argv in (["egress", "--reset", "", "--yes"],
+                     ["egress", "--reset", "   ", "--yes"],
+                     ["egress", "--reset", ""]):
+            with self.subTest(argv=argv):
+                r = _run([*argv, "--json"], self.env)
+                self.assertEqual(r.returncode, 2, r.stderr[-400:])
+                payload = self._one_json(r)
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error_kind"], "usage")
+                self.assertEqual(payload["action"], "reset",
+                                 "给了 --reset 就是复位请求，不得退成 status")
+                self.assertEqual(self._row(DIRECT_EGRESS), before, "畸形参数不得写库")
+
+    def test_engine_default_rate_out_of_engine_domain_fails(self):
+        """默认目标速率与 `--rate` 走**同一道**域校验：引擎会夹掉的值一律拒绝（D2）。
+
+        名册声明域是 [0.01, 100]，引擎的速率域是 [0.2, 4.0]。写 50 时引擎按 4.0 起跑，
+        故入口必须拒绝——否则命令报"已写 50"，引擎跑 4.0。
+        """
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        before = self._row(DIRECT_EGRESS)
+        env = dict(self.env, YIBAN_EGRESS_RATE="50")
+        r = _run(["egress", "--reset", DIRECT_EGRESS, "--yes", "--json"], env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_kind"], "config_error")
+        self.assertIn("4.0", r.stderr, "拒绝时要报出引擎会用的值")
+        self.assertEqual(self._row(DIRECT_EGRESS), before, "越域值不得写库")
+        # 只读面同样响亮：不得报一个引擎不会用的速率
+        r2 = _run(["egress", "--status", "--json"], env)
+        self.assertEqual(r2.returncode, 1, r2.stderr[-400:])
+        self.assertEqual(self._one_json(r2)["error_kind"], "config_error")
+
+    def test_engine_default_rate_in_domain_is_used(self):
+        """上一条的非空对照：键值在引擎域内时必须照用（否则那条断言可能空转）。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        env = dict(self.env, YIBAN_EGRESS_RATE="2.0")
+        r = _run(["egress", "--reset", DIRECT_EGRESS, "--yes", "--json"], env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertEqual(payload["target_rate"], 2.0)
+        self.assertEqual(payload["target_rate_source"], "engine_default")
+        self.assertAlmostEqual(self._row(DIRECT_EGRESS)[0], 2.0, places=9)
+
+    def test_rate_domain_edges_are_accepted(self):
+        """域端点必须放行：判据是"引擎装回后不变"，端点处引擎不改值（防判据改紧）。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        for edge in ("0.2", "4.0"):
+            with self.subTest(edge=edge):
+                r = _run(["egress", "--reset", DIRECT_EGRESS, "--rate", edge,
+                          "--yes", "--json"], self.env)
+                self.assertEqual(r.returncode, 0, r.stderr[-400:])
+                self.assertAlmostEqual(self._row(DIRECT_EGRESS)[0], float(edge),
+                                       places=9)
+
+    def test_same_label_multiple_rows_is_refused(self):
+        """同一展示标签命中多行必须拒绝：猜错出口等于把速率改到别的桶上（D3 守卫）。
+
+        旧格式键（执行体身份）都渲染成同一个「已弃用」标签，故该标签命中多行时拒绝。
+        """
+        self._seed([
+            ("fallback@host-a", 0.25, 6.0, 0.0, STALE_STAMP),
+            ("fallback@host-b", 0.5, 6.0, 0.0, STALE_STAMP),
+        ])
+        before = (self._row("fallback@host-a"), self._row("fallback@host-b"))
+        r = _run(["egress", "--reset", LEGACY_TAG, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_kind"], "runtime_error")
+        self.assertEqual(payload["written"], 0)
+        self.assertEqual((self._row("fallback@host-a"), self._row("fallback@host-b")),
+                         before, "同名多行时两行都不得改")
+        self.assertNotIn("host-a", r.stdout + r.stderr,
+                         "拒绝时也不得回吐含主机名的原键")
+
+    def test_exact_key_selector_targets_one_row(self):
+        """逃生口：逐字出口键只改被点名那一行（不同出口的两行互不影响）。"""
+        self._seed([
+            (DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP),
+            (PROXY_EGRESS, 0.5, 6.0, 0.0, STALE_STAMP),
+        ])
+        r = _run(["egress", "--reset", PROXY_EGRESS, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertEqual(payload["written"], 1)
+        self.assertEqual(payload["changes"][0]["tag"], PROXY_TAG)
+        self.assertAlmostEqual(self._row(PROXY_EGRESS)[0], ENGINE_DEFAULT_RATE, places=9)
+        self.assertAlmostEqual(self._row(DIRECT_EGRESS)[0], 0.25, places=9,
+                               msg="不得顺手改另一行")
+
+    def test_unknown_egress_fails_and_creates_no_row(self):
+        """未知出口是失败（不静默建行、不动别的行）。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        r = _run(["egress", "--reset", "nope", "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_kind"], "runtime_error")
+        self.assertEqual(self._row_count(), 1, "不得为不存在的出口新建行")
+        self.assertAlmostEqual(self._row(DIRECT_EGRESS)[0], 0.25, places=9)
+
+    def test_rate_out_of_range_is_rejected(self):
+        """越界/非数值的 `--rate` 响亮拒绝：不夹、不猜、不写。"""
+        self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
+        for bad in ("abc", "0", "99"):
+            with self.subTest(rate=bad):
+                r = _run(["egress", "--reset", DIRECT_EGRESS, "--rate", bad,
+                          "--yes", "--json"], self.env)
+                self.assertEqual(r.returncode, 1, r.stderr[-400:])
+                payload = self._one_json(r)
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error_kind"], "config_error")
+                self.assertAlmostEqual(self._row(DIRECT_EGRESS)[0], 0.25, places=9)
+
+    def test_status_on_missing_db_is_not_a_failure(self):
+        """库不存在 = 还没有任何桶状态；只读面报空表并返回 0（不因未配置失败）。"""
+        r = _run(["egress", "--status", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = self._one_json(r)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["rows"], [])
+
+    def test_reset_on_missing_db_creates_no_file(self):
+        """库不存在时复位是失败，且**不得**建出一个空库（维护命令不建库）。"""
+        db_path = self.root / "yiban.db"
+        r = _run(["egress", "--reset", DIRECT_EGRESS, "--yes", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        self.assertEqual(self._one_json(r)["error_kind"], "runtime_error")
+        self.assertFalse(db_path.exists(),
+                         "维护命令不得顺手建库（同 db_maintenance 的红线）")
+
+    def test_illegal_argument_shapes_land_in_family_codes(self):
+        """互斥开关与多余参数落既有用法族：rc=2，`error_kind` 可区分。"""
+        for argv, kind in (
+            (["egress", "--status", "--reset", DIRECT_EGRESS], "usage"),
+            (["egress", "--status", "--reset-all"], "usage"),
+            (["egress", "bogus"], "usage_extra_args"),
+            (["egress", "--status", "--rate", "2"], "usage_conflict"),
+        ):
+            with self.subTest(argv=argv):
+                r = _run([*argv, "--json"], self.env)
+                self.assertEqual(r.returncode, 2, r.stderr[-400:])
+                self.assertEqual(self._one_json(r)["error_kind"], kind)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

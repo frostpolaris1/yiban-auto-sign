@@ -43,7 +43,7 @@
   --el-text-color-primary: var(--t-base);
   --el-text-color-regular: var(--t-base);
   --el-text-color-secondary: var(--t-muted);
-  --el-text-color-placeholder: var(--t-light);
+  --el-text-color-placeholder: var(--t-weak);
   --el-border-color: var(--border);
   --el-border-color-light: var(--border-soft);
   --el-border-color-lighter: var(--border-soft);
@@ -55,7 +55,7 @@
 
   /* 形体 */
   --el-border-radius-base: 8px;
-  --el-border-radius-small: 6px;
+  --el-border-radius-small: 8px;
   --el-border-radius-round: 999px;
   --el-font-family: var(--font-sans);
   --el-font-size-base: 14px;

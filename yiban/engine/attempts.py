@@ -152,7 +152,12 @@ account_still_signable = accounts_store.account_still_signable
 # 公开入口
 # ---------------------------------------------------------------------------
 def matches_risk_keywords(message):
-    """失败消息是否命中风控族——档位与执行体风控信号的同一判据。
+    """失败消息是否命中"风控**或**凭据"族——**只给重试档位用**。
+
+    读者只有 `classify_failure`（档位语义：凭据错重试无用，故少给重试）。**不要**拿它当
+    "平台在限我们"的判据：执行体的风控信号另有一套只认 WAF 族与挑战形态的判据
+    （`executor_v3._is_risk_signal`）——两处语义相反，共用会把口令错的账号当成平台风控
+    （工单 `yiban-auto-sign-zggs`）。
 
     本层自有词元按子串（都是服务端文案原文，无误报面）；WAF 族走
     `security.matches_waf_keywords`——ASCII 词元要求两侧非字母数字，否则失败消息里嵌的

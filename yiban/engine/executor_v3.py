@@ -63,7 +63,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from yiban import clock, egress, window
+from yiban import challenge, clock, egress, security, window
 from yiban import status as yiban_status
 from yiban.engine import alerts, attempts, hrw, planner, schedule, state_io, token_bucket
 from yiban.masking import mask_phone as _mask_phone
@@ -142,9 +142,13 @@ def _new_thread_pool(max_workers):
     return ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="yiban-v3")
 
 
-def _make_limiter(channels):
-    """出口限速器（配置面收口在 `token_bucket.limiter_from_env`）。"""
-    return token_bucket.limiter_from_env(channels=channels)
+def _make_limiter(channels, shares=1):
+    """出口限速器（配置面收口在 `token_bucket.limiter_from_env`）。
+
+    `shares` = 同出口执行体数 n（`egress.outlet_executor_count`）：本进程子桶速率 = 出口级
+    λ ÷ n，n 个进程运行期合计 ≤ λ（工单 2cwd 的出口预算均分）。
+    """
+    return token_bucket.limiter_from_env(channels=channels, shares=shares)
 
 
 def _make_global_limiter():
@@ -406,7 +410,7 @@ class _Ctx:
         self.v = v
         self.shards = shards
         # 稳定槽位名：HRW 分片成员判据（`hrw.shards_of` 要求它是 `cfg["executors"]`
-        # 的成员）与出口令牌桶的持久键（`egress_state.egress`）都用它。**不用于写库**。
+        # 的成员）与界面"执行体"对象都用它。**不用于写库**，也不再是限速桶键。
         self.executor_id = executor_id
         #: 日志归因前缀（`[worker-3 r2]` / `[fallback]`）：**只**由 `egress.owner_tag` 渲染
         #: （角色+槽位+可选轮次，不含主机名——身份原串带部署信息，不得入日志）。
@@ -423,9 +427,13 @@ class _Ctx:
         # 判存活四态。两者一起才分得开 `worker-0` 与无槽位号的 `single` / `fallback`。
         self.slot = slot
         self.alive_role = alive_role or egress.ROLE_WORKER
-        # 桶键 = 执行体身份串（每进程一个出口，与 egress.resolve 的代理一一对应）；
-        # 用稳定名：跨重启同名才能续上自适应速率
-        self.egress = executor_id
+        # 桶键 = **出口标识**（`egress.egress_identity`：空出口归一为 `direct`，否则去
+        # userinfo 的 scheme://host[:port]）。限速按出口计数：这是**持久键与预算分母**，
+        # 同一出口的多个执行体共用一个持久键、并均分该出口的速率预算（每进程子桶速率 =
+        # 出口级 λ ÷ 同出口执行体数 n，n 个进程运行期合计 ≤ λ；见 `token_bucket` 模块头）。
+        # 用出口标识而不是执行体身份：改槽位号/换主机名不再丢掉该出口的自适应速率。
+        self.egress = egress.egress_identity(
+            egress.resolve(_worker_role(executor_id), _worker_slot(executor_id)))
         self.m = schedule.channel_count(cfg["bucket_rate"], cfg["avg_attempt_sec"])
         self.results = results
         self.cred_state = cred_state
@@ -433,7 +441,7 @@ class _Ctx:
         self.notify_url = notify_url
         self.event_sink = event_sink
         self.rng = rng
-        self.limiter = _make_limiter(self.m)
+        self.limiter = _make_limiter(self.m, egress.outlet_executor_count(self.egress))
         self.global_limiter = _make_global_limiter()
         self.gap_gate = _make_gap_gate()
         self.inflight = 0
@@ -557,16 +565,24 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
 
 def _is_risk_signal(message):
-    """风控信号判定：WAF 拦截或命中风控关键词（与失败分级同一判据、同一批词元）。
+    """风控信号判定：只认 WAF 族与挑战形态，**不含凭据族**（工单 `yiban-auto-sign-zggs`）。
+
+    两个消费方对同一批文案的语义相反，判据必须分开：
+    - 重试档位（`attempts.classify_failure`）把风控**与**凭据都算"少给重试"——凭据错重试无用；
+    - 本函数命中即认为"平台在限我们"，调用方据此把**整条出口**的速率砍半。
+    复用档位判据是把凭据错当成平台风控：一个口令错的账号就砍掉整条出口一半速率
+    （生产实证两天三次，fallback 落到 1/4）。凭据族留在 `attempts.RISK_FAIL_KEYWORDS`
+    里不动——那张表是档位的唯一真值源。
 
     `is_waf_blocked` 的入参契约是**响应体**（它按"短响应"设界，见 `yiban.security`），
-    这里传的是失败 `message`：`message` 可能内嵌服务端返回的 `\\uXXXX` 转义 JSON——保留
-    这一路解码。词元的命中口径不再由本处逐条 `in` 比对（那会把 ASCII 词元退回裸子串，
-    base64 片段即可误报），而是复用 `attempts.matches_risk_keywords`——它与重试档位共用
-    `yiban.security` 那一份名单与边界规则。要按契约传响应体，得把响应对象一路带到这里
-    （新数据源）；在那之前本判定以 `message` 为准。
+    这里传的是失败 `message`，故按**无界**口径判：`security.matches_waf_keywords` 不设长度
+    上界、按词元边界匹配（ASCII 词元两侧非字母数字），并解码内嵌的 `\\uXXXX` 转义；
+    挑战形态走 `challenge.looks_like_challenge`（与 `is_waf_blocked` 的形态腿同源，也不受
+    长度限制）。要按响应体契约判定，得把响应对象一路带到这里（新数据源）；在那之前本判定
+    以 `message` 为准。
     """
-    return attempts.is_waf_blocked(message) or attempts.matches_risk_keywords(message)
+    return (security.matches_waf_keywords(message)
+            or challenge.looks_like_challenge(message))
 
 
 def _tier_prefix(status):
@@ -1129,6 +1145,15 @@ UNREACHED_PEER = "peer"
 UNREACHED_RETRY = "retry"
 UNREACHED_UNCLAIMED = "unclaimed"
 
+#: 上一次落下的「已由他人负责」批量留痕**组成**（`_mark_unreached` 的去重依据）：
+#: `(执行体, 账号数, 分因明细)`。兜底常驻循环每 ~5s 一拍、窗口内可上百轮；同一批被别人
+#: 领走的账号在每轮组成不变，逐轮重落只是刷屏（2026-10-10 工单 81xt 的 LOW-1）。状态是
+#: 进程内模块级变量：不落盘、不跨进程。取组成而非轮次/时间：轮次每轮都变，并进去就永远
+#: "变了"。身份必须在键里：同进程换执行体（测试夹具、进程内多执行体）若只按组成判，
+#: 第二个执行体会被判成"没变"而漏掉它唯一的一条批量——与 `_log_banner` 的 `_BANNER_LAST`
+#: 同一形状。peer 为 0 时清回 `None`：同组成 N→0→N 的第三次留痕不得被吞。
+_UNREACHED_PEER_LAST = None
+
 
 def _mark_unreached(ctx, accounts):
     """轮末判因：本执行体范围内、`results` 里没有的账号到底落到哪儿去了。
@@ -1146,13 +1171,26 @@ def _mark_unreached(ctx, accounts):
 
     为什么必须留痕：2026-10-07 生产里任务被别人领走时执行层**零事件、零日志**，
     `sign_tasks.result` 又被实际领取者覆盖成"签到成功"，数据侧完全看不出"没轮到"，
-    运维只能靠人工比对日志时间线。这里逐账号落一行 `sign_events`（stage="sign"、
-    状态落 `pending` 档、文本点名判因），与调用方的汇总计数**同一份判因**——两处口径
-    不会互相漂移。
+    运维只能靠人工比对日志时间线。
+
+    留痕按判因的**性质**分两档：
+
+    - `PEER`（跨执行体交接的正常形态，不是故障）收成**一条批量**：日志一行 + 事件一行，
+      带账号数。逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行
+      `pending` 事件与 1830 行日志（工单 81xt）。措辞与形状对齐本函数里那条
+      "未执行判因不可得"批量告警。该批量按**组成**去重（见 `_UNREACHED_PEER_LAST`）：
+      执行体、账号数与分因明细都不变时整段跳过，不重复写日志与事件。
+    - `UNCLAIMED`（无人接手，真异常）**逐账号**留痕：判因文本与故障账号逐条可查。
+      健康运行下这类账号为 0，逐条不产生日常噪声；一旦出现，运维要能按账号定位。
+      `_emit_event` 的 message 截断在 200 字符，一条批量装不下上百账号的明细，
+      故不并进批量。
+
+    两档与调用方的汇总计数**同一份判因**——两处口径不会互相漂移。
 
     `ctx.unreached` 为 `None`（调用方不要判因，例如只关心自己退出码的子执行体）时本函数
     只做事件留痕，不填 out-param。
     """
+    global _UNREACHED_PEER_LAST
     attempted = getattr(ctx, "attempted", ())
     phones = [a.phone for a in accounts
               if a.phone not in ctx.results
@@ -1167,21 +1205,26 @@ def _mark_unreached(ctx, accounts):
         # 告警会把日志淹掉）；逐账号的判因文本仍落事件表与 INFO 行，可查性不受损。
         logger.warning("%s 未执行判因不可得（当日任务归属读不通），%d 个账号按「无人接手」计",
                        ctx.log_tag, len(pending_judge))
+    # 「已由他人负责」的账号收进这一批，循环里不逐账号落事件与日志（见 docstring）。
+    peer_n = 0
+    #: `{role/state: 账号数}`——只用于那条批量日志的分因明细（日志不截断）。
+    peer_detail = {}
     for phone in phones:
+        message = ""
         if phone in attempted:
-            state = owner = ""
             reason = UNREACHED_RETRY
-            message = ""    # 已由那次尝试落过事件与状态，不重复写
+            # 已由那次尝试落过事件与状态，不重复写
         elif rows is None:
-            reason, state, owner = UNREACHED_UNCLAIMED, "", ""
+            reason = UNREACHED_UNCLAIMED
             message = "本执行体未执行：判因不可得（当日任务归属读不通）"
         else:
             state, owner = rows.get(phone, ("", ""))
             reason = UNREACHED_PEER if (owner and owner not in mine) else UNREACHED_UNCLAIMED
             if reason == UNREACHED_PEER:
                 role = egress.parse_owner(owner)["role"]
-                message = (f"本执行体未领取：任务已由其他执行体领取"
-                           f"（role={role}，state={state}）")
+                peer_n += 1
+                key = f"{role}/{state or '?'}"
+                peer_detail[key] = peer_detail.get(key, 0) + 1
             elif state == queue_store.STATE_PENDING:
                 message = f"本执行体未执行：行仍待领（state={state}）"
             elif state:
@@ -1191,8 +1234,27 @@ def _mark_unreached(ctx, accounts):
         if ctx.unreached is not None:
             ctx.unreached[phone] = reason
         if message:
+            # 真异常（无人接手）：**逐账号**留痕，判因文本与账号逐条可查。
             _emit_event(ctx, phone, yiban_status.STATUS_PENDING, message)
             logger.info("%s [%s] ⏳ %s", ctx.log_tag, _mask_phone(phone), message)
+    if peer_n:
+        # 跨执行体交接的**一条批量**留痕：日志一行 + 事件一行，带账号数与分因。
+        # 事件是摘要行（`phone=""`，没有单一账号），读者面按摘要行口径排除其账号统计
+        # （见 `store.events` 的 sign_event_stats / sign_event_accounts_summary）。
+        # 组成去重：签名取 `(执行体, 账号数, 分因明细)`，**不含轮次/时间**——兜底常驻循环
+        # 每轮扫描，组成不变就整段跳过（工单 81xt 返修 LOW-1）；组成一变立刻回到留痕。
+        # 身份进键：同进程换执行体不得互相压掉（同 `_BANNER_LAST`）。
+        signature = (ctx.executor_id, peer_n, tuple(sorted(peer_detail.items())))
+        if signature != _UNREACHED_PEER_LAST:
+            digest = "，".join(f"{k}×{n}" for k, n in sorted(peer_detail.items()))
+            logger.info("%s 未领取：任务已由其他执行体领取，%d 个账号（跨执行体交接，%s）",
+                        ctx.log_tag, peer_n, digest)
+            _emit_event(ctx, "", yiban_status.STATUS_PENDING,
+                        f"本执行体未领取：任务已由其他执行体领取，共 {peer_n} 个账号")
+            _UNREACHED_PEER_LAST = signature
+    else:
+        # peer 为 0：清回 `None`。同组成 N→0→N 时，中间的 0 拍必须让第三次留痕复活。
+        _UNREACHED_PEER_LAST = None
 
 
 #: 上一次打出的 v3 横幅**规模与归属**（`_log_banner` 的去重依据）：`(身份, 通道数, 分片数)`。
@@ -1305,10 +1367,10 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         return {}
     # **两个身份显式分开**（详见 `_Ctx` 的字段注释）：
     # - 稳定槽位名（`executor_id`）：HRW 分片成员判据（`hrw.shards_of` 要求它是
-    #   `cfg["executors"]` 的成员，否则一件活都领不到）与出口令牌桶的持久键
-    #   （`egress_state.egress`，跨重启必须同名才能续上自适应速率）；
+    #   `cfg["executors"]` 的成员，否则一件活都领不到）；
     # - 运行时身份（`runtime_id = egress.runtime_owner(稳定名)`）：写进 `sign_tasks.owner`
     #   的**持有者**身份，含本进程的进程号与代次。
+    # 限速桶键另走一路：`_Ctx.egress = egress_identity(该出口)`（出口标识），与这两个都不同。
     # 为什么持有者必须含进程号/代次：同名进程在 v3 仍可能并存（同槽位重启后的新进程、
     # 同机手工再起一个），而收尾/重排/接管的 CAS 按 owner 做作用域校验——名字相同就
     # 分不出"是不是同一个持有者"。计划行（`planner.write_plan`）仍写稳定名：那是 HRW

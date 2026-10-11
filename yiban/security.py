@@ -44,6 +44,7 @@ WAF 词元的命中判定 `matches_waf_keywords` 由 `attempts` 的风控族判�
 不得反向 import 本模块）。
 谁调用：`yiban.client`（组装 `RequestPolicy` 注入协议层）、`yiban/platform.py`
 经注入的策略回调、`yiban/engine/attempts.py` 与 `yiban/engine/probe.py`（档位词元单一来源）、
+`yiban/engine/executor_v3.py`（风控信号只取 WAF 族那一半，见 `_is_risk_signal`）、
 以及各日志/错误消息点。
 前端调用点：无直接调用点；本模块的结果经登录/签到错误消息（最终进入签到日志与
 `/api/my-logs`、`/api/admin/sign-events` 页面）间接可见——白名单/脱敏口径变化会改变

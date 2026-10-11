@@ -260,10 +260,13 @@ from web.services.locks import (  # noqa: E402
     run_after_file_lock,  # noqa: F401
 )
 from web.services.logs import (  # noqa: E402
-    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     _LOG_TAIL_BYTES,  # noqa: F401
+    LOG_LEVEL_DEFAULT,  # noqa: F401
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    LOG_LEVELS,  # noqa: F401
     SIGN_LOG_RE,  # noqa: F401
     _cred_paused_phones,  # noqa: F401
+    _filter_log_level,  # noqa: F401
     _is_valid_date_str,  # noqa: F401
     _log_line_visible,  # noqa: F401
     _mask_log_phones,  # noqa: F401
@@ -1254,9 +1257,9 @@ def _slot_to_label(slot_min):
 def _estimate_slot(phone):
     """预计签到时段（实现见 web/services/accounts_data.py）。
 
-    账号读入口、`.env` 路径与读取器、有效窗口视图都按调用
-    时刻现取本模块的（测试会打桩 `read_env` / `_sign_window` / `edge_config` /
-    `load_accounts`，也会赋值 `ENV_FILE`）。
+    转发包装保留原有参数签名；实现已改读台账 `sign_tasks.run_at`，**不再消费**这几个
+    注入名（`load_accounts` / `read_env` / `ENV_FILE` / `sign_window_bounds`）。取数来源
+    经 `web.services.accounts_data.today_plan_map` → `db.task_run_at_by_phone`，打桩它即可。
     """
     return _accounts_data._estimate_slot(
         phone, load_accounts, read_env, ENV_FILE, sign_window_bounds)
