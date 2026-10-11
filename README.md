@@ -357,6 +357,8 @@ printf '%s\n' '你的备份口令' > /etc/yiban/backup-passphrase && chmod 600 /
 YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase bash docker/backup-docker.sh
 
 # 也可手动裸 tar（明文落盘，请自行妥善保管）
+# 注意：此命令打包的是活库快照，已提交但尚未 checkpoint 的行在 data/yiban.db-wal 里；
+# 恢复时必须把整棵 data/ 解回，且不能留下目标侧旧 yiban.db-wal/yiban.db-shm（见下方恢复说明）。
 tar czf yiban-backup-$(date +%F).tar.gz data/
 ```
 
@@ -371,6 +373,8 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
     bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
 ```
 
+> **恢复后启用（任意 Docker 备份路线：`backup-docker.sh` 或手动裸 tar）**：两种路线产出的都是 `data/` 的**活库快照**（含 `yiban.db` 与其 `yiban.db-wal`/`yiban.db-shm`；非 `sqlite3 .backup` 一致性快照）。生效步骤：① `docker compose stop yiban`；② **整棵 `data/` 覆盖**回宿主 `./data`；若采用"保留原目录、只覆盖库文件"的做法，必须先删掉目标侧残留的 `yiban.db-wal` 与 `yiban.db-shm`，再把 `yiban.db`、`yiban.db-wal`、`yiban.db-shm` 三件一起覆盖；③ `docker compose start yiban`。**不要只替换 `yiban.db`**：已提交但尚未 checkpoint 的行在 `yiban.db-wal` 里，只搬主文件会静默丢掉这一批行。
+>
 > ⚠️ 与 systemd 部署一致：加密密钥（`data/.env`）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
 >
 > ⚠️ 威胁边界：口令与数据**同机**存放（root crontab/.env）时，加密只能防「备份介质单独失窃」——SSH/root 失陷即口令与全部备份（含异机副本）同时易手。更高强度口径：用 systemd 部署 `scripts/backup.sh` 的 `BACKUP_GPG_RECIPIENT` 公钥模式（服务器只存公钥），或把口令/私钥保存在异机、仅在备份时注入。
