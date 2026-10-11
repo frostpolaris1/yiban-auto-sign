@@ -42,6 +42,7 @@ import-linter 走静态图，这条边界由它自身决定。这类写法要收
 `tests/` 与 `frontend/` 不在 `root_packages` 内。本门只判生产树。
 `exclude_type_checking_imports` 保持默认（False）。故 `if TYPE_CHECKING:` 里的导入
 照常判定，这是刻意从严。
+有节点零边的图不设防（零边即全 KEPT），已知边界：本门只守模块数，不守依赖边数。
 
 **归属**
 门禁/结构侧脚本（`scripts/`）。守卫测试：`tests/test_import_linter_gate.py`。
@@ -165,8 +166,11 @@ def _assert_contracts_have_targets(user_options, graph_modules):
                     continue
                 if expr.endswith(".*"):
                     base = expr[:-2]
-                    hits = [m for m in graph_modules
-                            if m == base or m.startswith(base + ".")]
+                    # grimp 的 `X.*` 只匹配 X 的**子模块**，不含 X 本身（实测 2026-10-11：
+                    # `find_matching_modules("pkg.deadend.*") == []`，尽管 `pkg.deadend` 是包）。
+                    # 故命中只按 `base + "."` 前缀判，不许把 `m == base` 也算命中——算了就会
+                    # 放过"base 包在、零子模块"的空转配置（审查 H1）。
+                    hits = [m for m in graph_modules if m.startswith(base + ".")]
                 else:
                     hits = [m for m in graph_modules if m == expr]
                 if not hits:
@@ -235,6 +239,19 @@ def _build_report(use_cases, config, root, min_modules):
     return report, sorted(violations)
 
 
+def _ratchet_blocks_write(baseline_path, current):
+    """棘轮判定：基线已存在时，只许收紧（新违规集 ⊆ 旧基线集）。
+
+    返回要新增的条目（加宽集）。为空即允许写入。
+    基线文件不存在 ⇒ 首次生成，允许全量写入。此判定是"基线只许缩小"这条语义的
+    机械守卫——`--write-baseline` 曾能一个开关把红变绿（审查 M1）。
+    """
+    if not os.path.isfile(baseline_path):
+        return []
+    old = _parse_baseline(_read_text(baseline_path, "基线文件"), baseline_path)
+    return sorted(set(current) - old)
+
+
 def _write_baseline(path, violations):
     """把当前违规集写成基线文件（含文件头）。返回写入条数。"""
     body = "".join("%s\t%s\t%s\n" % row for row in violations)
@@ -247,7 +264,12 @@ def _write_baseline(path, violations):
     return len(violations)
 
 
-def main(argv=None):
+def _build_parser():
+    """构建参数解析器。独立成函数：元测试正面钉住 `--min-modules` 的默认下限（M3）。
+
+    下限是"图塌后假绿"的守卫，而元测试真跑时恒传 `--min-modules 1`。故默认值只能
+    由解析器对象本身钉住，否则把默认改成 0 也不会有红。
+    """
     ap = argparse.ArgumentParser(
         prog="scripts/check-import-linter.py",
         description="import-linter 四条依赖方向契约门（基线外新增违规即红）")
@@ -255,10 +277,16 @@ def main(argv=None):
     ap.add_argument("--config", default=None, help="默认 <root>/.importlinter")
     ap.add_argument("--baseline", default=None,
                     help="默认 <root>/scripts/gate/import-linter-baseline.txt")
+    # 128-P0 定值：实测 131 模块，取下限 100 防图塌。跌破 100 必须同批重定并在 PR 写理由。
     ap.add_argument("--min-modules", type=int, default=100,
                     help="分析到的模块数下限；低于它判环境错误（防图塌后假绿）")
     ap.add_argument("--write-baseline", action="store_true",
-                    help="把当前违规集写回基线（收紧用；加宽须在 PR 里写理由）")
+                    help="把当前违规集写回基线（只许收紧；加宽即退 2）")
+    return ap
+
+
+def main(argv=None):
+    ap = _build_parser()
     args = ap.parse_args(argv)
 
     if not os.path.isdir(args.root):
@@ -272,6 +300,15 @@ def main(argv=None):
     current = set(violations)
 
     if args.write_baseline:
+        # 棘轮：基线已存在时只许收紧。加宽 = 放水，退 2 并保持文件原样（审查 M1）。
+        added = _ratchet_blocks_write(baseline_path, current)
+        if added:
+            print("拒绝写入基线：基线只许缩小（ratchet）。本次要新增 %d 条：" % len(added))
+            for name, importer, imported in added:
+                print("    新增 %s: %s -> %s" % (name, importer, imported))
+            print("先修掉这些违规再收紧；或在 PR 描述里逐条写理由后手工登记。"
+                  "本开关不许用来加宽基线。")
+            return 2
         n = _write_baseline(baseline_path, violations)
         print("%s ok: 已写入 %d 条违规为基线（%s）" % (ap.prog, n, baseline_path))
         return 0

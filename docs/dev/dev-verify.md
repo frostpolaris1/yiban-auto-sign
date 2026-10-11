@@ -171,9 +171,11 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
 静态检查的 mypy 版本由 CI 的 `pip install mypy==1.19.0`（`ci.yml`）与本地 WSL 门禁 venv 提供；
 **从未进 `requirements.lock`**（生产镜像不背门禁工具），先例同 ruff 与 pytest。
-结构门禁的 import-linter 版本同理，由 CI 的 `pip install import-linter==2.15` 与本地
-WSL 门禁 venv 提供；本地 venv 需先装一次
-（`python -m pip install import-linter==2.15`），缺件时门退 2 并点名，不静默跳过。
+结构门禁的 import-linter 版本同理，由 CI 的 `pip install import-linter==2.15 grimp==3.17`
+与本地 WSL 门禁 venv 提供；本地 venv 需先装一次
+（`python -m pip install import-linter==2.15 grimp==3.17`），缺件时门退 2 并点名，不静默跳过。
+`grimp==3.17` 必须一起钉：import-linter 2.15 对 grimp 只给下限、无上界，而门自己重实现了
+grimp 的 `X.*` 通配语义（空转守卫），不钉版会让判定随 grimp 升版静默改变（审查 M2）。
 
 `--ci` **就地跑、不做 LF 归一化**（CI runner 的新检出按 `.gitattributes` 是 LF）。
 若工作树的**跟踪文件**里真有 CRLF，脚本响亮拒绝（退出码 2）并点名文件，而不是
