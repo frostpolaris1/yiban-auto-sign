@@ -77,6 +77,7 @@ import json
 import logging
 import os
 import socket
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
 from yiban.infra import env_io
@@ -158,7 +159,7 @@ OWNER_SINGLE_NAME = "single"
 SLOT_SEP = ","
 
 
-def worker_owner(index, hostname=None):
+def worker_owner(index: int, hostname: str | None = None) -> str:
     """并行执行体身份（**唯一构造处**）：`worker-{序号}@{主机名}`。
 
     名字**跨重启稳定**（同一台机器上同一槽位永远同名），是界面"执行体"、槽位号与
@@ -171,13 +172,13 @@ def worker_owner(index, hostname=None):
     return f"{OWNER_WORKER_PREFIX}{index}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
-def fallback_owner(hostname=None):
+def fallback_owner(hostname: str | None = None) -> str:
     """兜底常驻执行体身份：`fallback@{主机名}`（同 `worker_owner` 的稳定名字纪律：
     跨重启稳定的只是名字与持久化键，重入仍须出示上一代 epoch，不等同于重启即接手）。"""
     return f"{OWNER_FALLBACK_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
-def single_owner(hostname=None):
+def single_owner(hostname: str | None = None) -> str:
     """单执行体身份：`single@{主机名}`（同 `worker_owner` 的稳定名字纪律：名字稳定
     只服务界面与持久化键，重入不复用同名，须出示当前 epoch）。"""
     return f"{OWNER_SINGLE_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
@@ -188,7 +189,7 @@ def single_owner(hostname=None):
 _RUNTIME_GEN = datetime.datetime.now().strftime("%H%M%S")
 
 
-def runtime_owner(stable, pid=None, gen=None):
+def runtime_owner(stable: str, pid: int | None = None, gen: str | None = None) -> str:
     """把稳定槽位名扩成**这一代进程**的运行时身份：`{稳定名}:{进程号}:{代次}`。
 
     稳定名（`single@{主机名}` 等）跨重启不变，是给界面上的"执行体"与槽位号用的；但它
@@ -203,7 +204,7 @@ def runtime_owner(stable, pid=None, gen=None):
             f":{gen or _RUNTIME_GEN}")
 
 
-def stable_owner(owner):
+def stable_owner(owner: str | None) -> str | None:
     """把持有者串折回**稳定槽位名**（`worker-3@host` / `fallback@host` / `single@host`）。
 
     持有者列存的是运行时身份 `{稳定名}:{进程号}:{代次}`（`runtime_owner`），也可能只是
@@ -224,7 +225,7 @@ def stable_owner(owner):
     return f"{name}{OWNER_HOST_SEP}{host.split(':', 1)[0]}"
 
 
-def parse_owner(owner):
+def parse_owner(owner: str | None) -> dict[str, Any]:
     """把身份串解析成 `{"role", "index", "label"}`（判不出即 `unknown`）。
 
     新旧两种格式都认（旧记录仍在库里，保留期 14 天，不能因为改了写入格式就读不懂）：
@@ -247,7 +248,7 @@ def parse_owner(owner):
     return {"role": ROLE_UNKNOWN, "index": None, "label": role_label(ROLE_UNKNOWN)}
 
 
-def role_label(role, index=None):
+def role_label(role: str, index: int | None = None) -> str:
     """角色的中文标签（前端直接显示，不必自己拼文案）。
 
     `fallback` 的标签是「故障转移」——**唯一一处**，故执行体清单行标签与账号页
@@ -263,7 +264,7 @@ def role_label(role, index=None):
     return "未标注（旧数据）"
 
 
-def owner_tag(owner, round_no=None):
+def owner_tag(owner: str | None, round_no: int | None = None) -> str:
     """执行体身份串 → **日志归因前缀**：`[worker-3]` / `[fallback r7]` / `[single]` / `[unknown]`。
 
     只回角色与槽位序号（`parse_owner` 的既有口径）——**不含主机名**：身份原串
@@ -287,7 +288,7 @@ def owner_tag(owner, round_no=None):
     return f"[{name} r{round_no}]" if round_no is not None else f"[{name}]"
 
 
-def parse_list(raw):
+def parse_list(raw: str | None) -> list[str]:
     """解析 `YIBAN_PROXY_LIST`：逗号或空白分隔，**保留空位**（空位=该执行体直连）。
 
     只去首尾空白、**不过滤空元素**——否则"第 3 个执行体直连"这种配置无法表达。
@@ -299,7 +300,7 @@ def parse_list(raw):
     return [item.strip() for item in raw.replace(",", "\n").split("\n")]
 
 
-def replace_slot(raw, index, value):
+def replace_slot(raw: str | None, index: int, value: str) -> str:
     """把原始串 `raw` 的**第 index 段**换成 `value`，其余段**逐字保留**。
 
     写单段出口的接口用它：前端只改一个执行体的出口，就绝不能让别段的写法被顺手
@@ -317,7 +318,7 @@ def replace_slot(raw, index, value):
     return SLOT_SEP.join(fields)
 
 
-def resolve(role, index=0, env=None):
+def resolve(role: str, index: int = 0, env: Mapping[str, str] | None = None) -> str:
     """按角色取出口；未配置返回 `DIRECT`（空串=走本机出口）。
 
     `index` 只在 `role=worker` 时有意义（**清单模式下就是槽位号**）。取值顺序：
@@ -356,7 +357,7 @@ def resolve(role, index=0, env=None):
     return env.get(ENV_SINGLE, "").strip()
 
 
-def describe(proxy):
+def describe(proxy: str | None) -> str:
     """出口的可入日志/接口的描述：空=直连，否则只留 `scheme://host[:port]`（去 userinfo）。"""
     proxy = (proxy or "").strip()
     if not proxy:
@@ -364,7 +365,7 @@ def describe(proxy):
     return url_desc(proxy)
 
 
-def egress_identity(proxy):
+def egress_identity(proxy: str | None) -> str:
     """出口串 → **出口标识**（限速持久键的**唯一口径**，见模块 docstring）。
 
     空（直连）→ `DIRECT_EGRESS`；非空 → `scheme://host[:port]` 的寻址形态（去 userinfo）。
@@ -382,7 +383,7 @@ def egress_identity(proxy):
     return DIRECT_EGRESS if not text else _outlet_addressing(text)
 
 
-def is_outlet_identity(identity):
+def is_outlet_identity(identity: object) -> bool:
     """该串是否是一个**出口标识**（`egress_identity` 的产物）。
 
     判据是**幂等**：`direct`，或 `egress_identity` 作用后逐字不变（含 IPv6 的方括号形态）。
@@ -396,7 +397,7 @@ def is_outlet_identity(identity):
     return text == DIRECT_EGRESS or text == _outlet_addressing(text)
 
 
-def outlet_label(identity):
+def outlet_label(identity: object) -> str:
     """出口标识 → **展示/日志形态**：直连回 `describe` 的中文描述；其余经 `_outlet_addressing`
     再脱敏一次并**保留 IPv6 方括号**（与标识同形，工单 2cwd 复审 F5）；不是出口标识的旧键与
     哨兵回「已弃用」且**不回声**。日志与 `egress` 子命令的人类可读汇总用它。
@@ -409,7 +410,7 @@ def outlet_label(identity):
     return "已弃用（旧执行体身份键）"
 
 
-def fallback_enabled(env=None):
+def fallback_enabled(env: Mapping[str, str] | None = None) -> bool:
     """兜底常驻执行体是否**声明的开启**（`YIBAN_FALLBACK_ENABLE`：1/true/on/yes=开；未设=关）。
 
     "声明开启"不等于"在跑"，但它是 `outlet_executor_count` 是否把兜底计入预算分母的口径
@@ -421,7 +422,7 @@ def fallback_enabled(env=None):
     return env_io.parse_env_flag(raw, default=False, key=ENV_FALLBACK_ENABLE, log=logger)
 
 
-def outlet_executor_count(identity, env=None):
+def outlet_executor_count(identity: str | None, env: Mapping[str, str] | None = None) -> int:
     """该出口上**真会拉起**的执行体数 n（停用行不计）。限速预算按它均分。
 
     `identity` 是**出口标识**（`egress_identity` 的产物，调用方给 `_Ctx.egress` 或探针的
@@ -447,7 +448,7 @@ def outlet_executor_count(identity, env=None):
     return max(1, sum(1 for p in proxies if egress_identity(p) == target))
 
 
-def _outlet_addressing(url):
+def _outlet_addressing(url: object) -> str:
     """出口标识的寻址形态：`scheme://host[:port]`，**去 userinfo**，host 为 IPv6 时保留
     方括号。不可解析返回哨兵 `UNPARSEABLE`。
 
@@ -470,7 +471,7 @@ def _outlet_addressing(url):
     return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
 
 
-def apply_egress(env, role, index=0):
+def apply_egress(env: MutableMapping[str, str], role: str, index: int = 0) -> str:
     """把该角色的出口写进 `env`，返回写进去的出口串（**"空=直连"的唯一落实点**）。
 
     `resolve` 的契约到"空串就是空串"为止，落地由本函数负责——**生产代码里只许这一处
@@ -493,7 +494,7 @@ def apply_egress(env, role, index=0):
     return proxy
 
 
-def assignments(count, env=None):
+def assignments(count: int, env: Mapping[str, str] | None = None) -> list[tuple[int, str, str]]:
     """给 `count` 个并行执行体各算一个出口，返回 `[(index, proxy, 描述)]`。
 
     供拉起执行体的一方（监督进程 / 容器调度器 / 前端预览）统一使用；
@@ -510,7 +511,7 @@ def assignments(count, env=None):
 # ---------------------------------------------------------------------------
 # 执行体清单：解析 / 序列化 / 迁移 / 行操作（纯函数，不碰文件与网络）
 # ---------------------------------------------------------------------------
-def parse_manifest(raw):
+def parse_manifest(raw: str | None) -> list[dict[str, Any]] | None:
     """解析 `YIBAN_EXECUTORS` → 行列表（按 slot 升序）；**缺失或非法返回 None**。
 
     返回 None 让调用方回退读旧三键。**键在但 JSON 坏时也回 None，但调用方不得据此
@@ -535,7 +536,7 @@ def parse_manifest(raw):
     return _sorted_rows(by_slot.values())
 
 
-def dump_manifest(rows):
+def dump_manifest(rows: Iterable[dict[str, Any]]) -> str:
     """行列表 → 单键 JSON 串（**紧凑、无换行**；只落 slot/type/proxy[/name] 四个字段）。
 
     紧凑写法是有意的：这个值要整条写进 `.env` 的一行，宿主 `run.sh` 逐行解析并
@@ -557,22 +558,22 @@ def dump_manifest(rows):
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def row_by_slot(rows, slot):
+def row_by_slot(rows: Iterable[dict[str, Any]], slot: int) -> dict[str, Any] | None:
     """按槽位取行；不存在返回 None。"""
     return next((r for r in rows if r["slot"] == slot), None)
 
 
-def worker_rows(rows):
+def worker_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """**拉起列表**：清单里 `type=worker` 的行（按 slot 升序）。停用与兜底都不在内。"""
     return [r for r in _sorted_rows(rows) if r["type"] == TYPE_WORKER]
 
 
-def fallback_row(rows):
+def fallback_row(rows: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
     """兜底行（`type=fallback`）；清单里没有则 None。"""
     return next((r for r in _sorted_rows(rows) if r["type"] == TYPE_FALLBACK), None)
 
 
-def next_slot(rows):
+def next_slot(rows: Iterable[dict[str, Any]]) -> int:
     """追加新行要用的槽位号 = 现有最大 + 1（空清单 = 0）。**只增不复用**：删行不重排。
 
     纯函数只能算到"最大值 + 1"：删掉**当前最大**那一行之后，下一次追加会拿到刚空出来的号。
@@ -583,7 +584,7 @@ def next_slot(rows):
     return max((r["slot"] for r in rows), default=-1) + 1
 
 
-def launch_rows(env=None):
+def launch_rows(env: Mapping[str, str] | None = None) -> list[dict[str, Any]] | None:
     """清单的拉起列表：`type=worker` 的行；**清单缺失/非法返回 None**（调用方回退旧口径）。
 
     `env` 省略时读进程环境变量（与 `resolve` 同口径：拉起执行体的进程读的是环境变量，
@@ -594,13 +595,13 @@ def launch_rows(env=None):
     return None if rows is None else worker_rows(rows)
 
 
-def launch_slots(env=None):
+def launch_slots(env: Mapping[str, str] | None = None) -> list[int] | None:
     """拉起列表的槽位号列表（语义同 `launch_rows`；None = 清单不可用，回退旧口径）。"""
     rows = launch_rows(env)
     return None if rows is None else [r["slot"] for r in rows]
 
 
-def effective_worker_count(env=None):
+def effective_worker_count(env: Mapping[str, str] | None = None) -> int:
     """本轮**生效**的并行执行体数（容量预检按它缩放总阈值）。唯一取法，三级：
 
     1. 无 `YIBAN_EXECUTOR_ID` ⇒ 本进程没被派发过，生效数恒 1。`runner` 的派发条件保证
@@ -623,7 +624,7 @@ def effective_worker_count(env=None):
     return max(1, legacy_worker_count(env))
 
 
-def executor_label(rtype, slot=None):
+def executor_label(rtype: str, slot: int | None = None) -> str:
     """清单行的中文标签（前端直接显示，不必自己拼文案）。
 
     `disabled` 的标签就是「已停用」——标签口径已冻结给前端（见接口契约），
@@ -638,7 +639,7 @@ def executor_label(rtype, slot=None):
     return role_label(ROLE_UNKNOWN)
 
 
-def legacy_worker_count(env):
+def legacy_worker_count(env: Mapping[str, str] | None) -> int:
     """`YIBAN_WORKERS` 的执行体数：合法域 `WORKERS_MIN~WORKERS_MAX`，越界回退下限。
 
     越界与非整数**告警后回退 `WORKERS_MIN`（单执行体），不再静默钳到上限**：钳位会把
@@ -665,7 +666,7 @@ def legacy_worker_count(env):
     return n
 
 
-def legacy_worker_proxies(env):
+def legacy_worker_proxies(env: Mapping[str, str] | None) -> list[str]:
     """旧口径下各并行执行体（下标 0..n-1）的出口——与 `resolve(ROLE_WORKER, i)` 同源。
 
     列表键存在且非空白时按逗号取段、不足**循环取用**、空位=直连；列表键缺失/全空白时
@@ -680,14 +681,14 @@ def legacy_worker_proxies(env):
     return [(env.get(ENV_SINGLE, "") or "").strip()] * n
 
 
-def legacy_fallback_proxy(env):
+def legacy_fallback_proxy(env: Mapping[str, str] | None) -> str:
     """旧口径下兜底执行体的出口：`YIBAN_PROXY_FALLBACK`，未设退回 `YIBAN_PROXY`。"""
     env = env or {}
     fb = (env.get(ENV_FALLBACK, "") or "").strip()
     return fb if fb else (env.get(ENV_SINGLE, "") or "").strip()
 
 
-def legacy_rows(env):
+def legacy_rows(env: Mapping[str, str] | None) -> list[dict[str, Any]]:
     """旧三键 → 清单行（迁移口径）：worker 行占 0..n-1，兜底行紧随其后。
 
     **与旧 `resolve`/`assignments` 逐字等价**：worker 行的出口就是旧口径逐个算出的串
@@ -703,7 +704,7 @@ def legacy_rows(env):
     return rows
 
 
-def manifest_state(env):
+def manifest_state(env: Mapping[str, str] | None) -> tuple[list[dict[str, Any]], bool]:
     """读清单：返回 `(rows, needs_write)`。
 
     | 情形 | rows | needs_write |
@@ -725,7 +726,8 @@ def manifest_state(env):
     return legacy_rows(env), any(k in env for k in LEGACY_KEYS)
 
 
-def add_row(rows, rtype, proxy, min_slot=None, name=""):
+def add_row(rows: Sequence[dict[str, Any]], rtype: str, proxy: object,
+            min_slot: int | None = None, name: object = "") -> list[dict[str, Any]]:
     """追加一行：`slot = max(现有最大 + 1, min_slot)`。
 
     `min_slot` 是**槽位下限**，供调用方把"领取历史里用过的号"并进来（数据层算，见
@@ -746,7 +748,8 @@ def add_row(rows, rtype, proxy, min_slot=None, name=""):
     return _sorted_rows([*rows, row])
 
 
-def update_row(rows, slot, rtype=None, proxy=None, name=None):
+def update_row(rows: Sequence[dict[str, Any]], slot: int, rtype: str | None = None,
+               proxy: object = None, name: object = None) -> list[dict[str, Any]]:
     """改一行（`None` = 不改该字段）；槽位不存在抛 ValueError，其余行逐字保留。
 
     改类型时同样受"兜底最多 1 行"约束；改 `disabled` 只改类型，**出口原样保留**。
@@ -767,14 +770,15 @@ def update_row(rows, slot, rtype=None, proxy=None, name=None):
     return _sorted_rows([updated if r["slot"] == slot else r for r in rows])
 
 
-def delete_row(rows, slot):
+def delete_row(rows: Sequence[dict[str, Any]], slot: int) -> list[dict[str, Any]]:
     """删一行（**不重排**其余槽位）；槽位不存在抛 ValueError。"""
     if row_by_slot(rows, slot) is None:
         raise ValueError(f"槽位 {slot} 不在执行体清单里")
     return [r for r in rows if r["slot"] != slot]
 
 
-def apply_legacy_config(rows, env):
+def apply_legacy_config(rows: Sequence[dict[str, Any]],
+                        env: Mapping[str, str] | None) -> list[dict[str, Any]]:
     """把旧三键口径应用到现有清单（旧"整条写入"接口用；清单存在时维护它，别让旧键写入变成空写）。
 
     - **保留已存在的 worker 槽位**（按 slot 升序与新的执行体下标一一对应），槽位不重排；
@@ -818,12 +822,12 @@ def apply_legacy_config(rows, env):
 
 
 # ---- 内部实现 ----
-def _sorted_rows(rows):
+def _sorted_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """按槽位升序（清单的输出顺序**只有这一种**，前端与写回都据此稳定）。"""
     return sorted(rows, key=lambda r: int(r["slot"]))
 
 
-def _normalize_row(item):
+def _normalize_row(item: object) -> dict[str, Any] | None:
     """单项校验/归一：非法返回 None（调用方跳过）。布尔是 int 的子类，须显式排除。
 
     `name`（行的自定义名）缺省/空/非法一律**不落键**——等价于"没设名，用后端标签"。
@@ -848,7 +852,7 @@ def _normalize_row(item):
 NAME_MAX_LEN = 32
 
 
-def clean_name(raw):
+def clean_name(raw: object) -> str:
     """行自定义名的**解析侧**归一：None/非字符串/空 → `""`；去两侧空白、剥掉控制字符、
     按 `NAME_MAX_LEN` 截断。
 
@@ -862,29 +866,29 @@ def clean_name(raw):
     return "".join(ch for ch in raw.strip() if ch.isprintable())[:NAME_MAX_LEN]
 
 
-def _clean_proxy(proxy):
+def _clean_proxy(proxy: object) -> str:
     """出口串归一：None/缺省=直连（空串），两侧空白去掉（与 `parse_list` 的取值口径一致）。"""
     return "" if proxy is None else str(proxy).strip()
 
 
-def _validate_type(rtype):
+def _validate_type(rtype: str) -> None:
     if rtype not in TYPES:
         raise ValueError("执行体类型只能是 worker / fallback / disabled")
 
 
-def _fallback_taken(rows, slot, rtype):
+def _fallback_taken(rows: Iterable[dict[str, Any]], slot: int | None, rtype: str) -> bool:
     """把 `slot` 行设为 `rtype` 后是否与别的兜底行冲突（兜底最多 1 行）。"""
     if rtype != TYPE_FALLBACK:
         return False
     return any(r["type"] == TYPE_FALLBACK and r["slot"] != slot for r in rows)
 
 
-def _owner_host(hostname=None):
+def _owner_host(hostname: str | None = None) -> str:
     """槽位名里的主机后缀：省略时取本机名（`socket.gethostname()`）。"""
     return socket.gethostname() if hostname is None else hostname
 
 
-def _parse_stable_owner(text):
+def _parse_stable_owner(text: str) -> dict[str, Any] | None:
     """解析新的稳定槽位名；不是该格式返回 None（交给旧格式分支）。"""
     name, sep, host = text.rpartition(OWNER_HOST_SEP)
     if not (sep and name and host):
@@ -900,7 +904,7 @@ def _parse_stable_owner(text):
     return None
 
 
-def _worker_index(owner):
+def _worker_index(owner: str) -> int | None:
     """从**旧格式**并行执行体身份里取序号；取不到（历史串/被改写）返回 None。"""
     tail = owner.rsplit(":", 1)[-1]
     if not tail.startswith("w"):
