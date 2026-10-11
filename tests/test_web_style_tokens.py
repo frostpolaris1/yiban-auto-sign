@@ -55,7 +55,7 @@ ALLOWED_RADIUS = {"8px", "10px", "14px"}
 RADIUS_EXEMPT = {"0", "50%", "999px", "0 8px 8px 0"}
 
 #: 控件选择器：主体（最后一个 compound）命中这些类时，其 height/min-height 必须吃三档令牌。
-_CTL_SEL_RE = re.compile(r"\.(btn|input|select|textarea|switch|tab|el-input|el-select|el-switch)\b")
+_CTL_SEL_RE = re.compile(r"\.(btn|input|select|textarea|switch|tab|el-input|el-select|el-switch|el-date-editor)\b")
 #: 纯装饰/豁免例外：--t-light 只许出现在这两个选择器上（页脚分隔符 · / 禁用控件）。
 _T_LIGHT_ALLOW = {".auth-links .sep", ".slot--off"}
 

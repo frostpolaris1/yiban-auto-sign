@@ -4522,6 +4522,22 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
    全局样式已随自研控件整段删除（见第 30 节墓碑注）。 */
 .sched-range { display: flex; align-items: center; min-height: 40px; }
 
+/* 设置页 EP 单选时间框抬到 40（页级口径）：el-select / el-range-editor 已在上文抬 40，
+   单选 time 编辑器漏网仍 32 ⇒ 与同排 .input / el-select 混排（用户实测框中框：
+   调度卡「峰值中心」与健康卡「触发时间」两处，2026-10-11）。range 编辑器走既有规则不受影响。 */
+.settings-page .el-date-editor--time {
+  --el-input-height: 40px;
+  --el-input-inner-height: 38px;
+  height: 40px;
+}
+/* dist-viz 组内的时间段额外融入分段控件：剥 wrapper 自带描边与圆角，
+   段间用组内同款 1px 分隔线——读作一个分段控件而非框中框。 */
+.settings-page .dist-viz-editors .el-date-editor--time .el-input__wrapper {
+  box-shadow: none;
+  border-radius: 0;
+  border-right: 1px solid var(--border);
+}
+
 /* dist-viz 编辑器单元：label 与它的控件组不可拆分 —— 换行只在单元之间发生，
    标签永远不会与控件分家（旧平铺布局窄屏折行后「散布」标签孤行）。
    标签 nowrap：中文标签在空间紧张时会被逐字折成竖排（360 实测「峰值中心」断成两行），
