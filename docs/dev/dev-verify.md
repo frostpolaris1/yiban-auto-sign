@@ -78,14 +78,14 @@ audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loa
 
 | 码 | 含义 |
 |---|---|
-| `0` | 通过：ruff 与 pytest 都 0，且覆盖非空 |
-| `1` | 有红：ruff 非 0，或 pytest 非 0 |
+| `0` | 通过：ruff、mypy 与 pytest 都 0，且覆盖非空 |
+| `1` | 有红：ruff 或 mypy 非 0，或 pytest 非 0 |
 | `2` | 环境错误：守卫判红或参数被拒（见 §2 表） |
 | `3` | 空覆盖：范围档没测到任何真实用例，只跑了入口自检 |
 
-ruff 与 pytest 的**原始退出码一律归一为 1**，不再原样透出。3 因此只有一个含义：
+ruff、mypy 与 pytest 的**原始退出码一律归一为 1**，不再原样透出。3 因此只有一个含义：
 pytest 自身的 3（INTERNALERROR）也与空覆盖撞码不了。定位信息不丢——原始码仍逐行打印在
-日志里（`DEV-VERIFY ruff_exit=` 与 `DEV-VERIFY pytest_exit=`）。红优先于空覆盖：
+日志里（`DEV-VERIFY ruff_exit=`、`DEV-VERIFY mypy_exit=` 与 `DEV-VERIFY pytest_exit=`）。红优先于空覆盖：
 空覆盖同时有红时退出码是 1，不是 3；空覆盖提示会按最终退出码打印，不与它矛盾。
 
 **范围档的选择法**（无依赖、无状态）：改到 `tests/` 下的用例就直接跑它；改到源码就**按导入
@@ -118,20 +118,21 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 
 | 步骤 | 固定口径 | 为什么 |
 |------|----------|--------|
-| 副本落点 | `/root/.cache/yiban-dev-verify/worktree`，每次整体重建 | 必须落在 WSL 原生文件系统；`/mnt` 走 DrvFs，全量跑测慢且文件语义有差异。只排除 `.git` 与工具缓存目录（`__pycache__` / `.pytest_cache` / `.ruff_cache`）。副本路径固定，故用 `flock` 串行化并发运行（两个 dev-verify 不能同时重建同一份副本）；后到者等前者结束。机器上没有 `flock` 时脚本直接拒绝跑测（退出码 2）——共享副本路径不能在没有串行化的情况下降级运行 |
+| 副本落点 | `/root/.cache/yiban-dev-verify/worktree`，每次整体重建 | 必须落在 WSL 原生文件系统；`/mnt` 走 DrvFs，全量跑测慢且文件语义有差异。只排除 `.git` 与工具缓存目录（`__pycache__` / `.pytest_cache` / `.ruff_cache` / `.mypy_cache`）。副本路径固定，故用 `flock` 串行化并发运行（两个 dev-verify 不能同时重建同一份副本）；后到者等前者结束。机器上没有 `flock` 时脚本直接拒绝跑测（退出码 2）——共享副本路径不能在没有串行化的情况下降级运行 |
 | `.git` | 由脚本播种：HEAD 指向源提交、对象经 `alternates` 复用源对象库、索引直接取源索引 | 入库类门禁（`tests/test_deploy_prod_artifacts.py`、`tests/test_web_vue_sources_tracked.py`）靠 `git ls-files` 判"哪些文件入库"；副本没有 `.git` 就是伪红。索引取源索引而不是 `git add -A`：源仓存在"已跟踪但被 `.gitignore` 命中"的文件（`scripts/git-hooks/commit-msg`），`git add -A` 会静默漏掉它 |
 | LF 归一 | 副本内文本先转 LF 再跑 | `.gitattributes` 只约束入库形态；Windows 侧 `core.autocrlf=true` 会让工作树出现 CRLF。CRLF 会炸 shell 门禁脚本（`set -euo pipefail` 被 CR 破坏），是伪红大头 |
 | 解释器 | 只认 `/root/.venv-yiban-wsl/bin/python`，跑测前打印绝对路径与版本 | 不许退化成 PATH 上的任意 python（历史上三轮才找到解释器） |
 | 并发 | `-n auto --dist loadfile` | `--dist loadfile` 不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红 |
-| 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按模式分开（全量 `yiban-dev-verify-logs`，fast 两档 `yiban-dev-verify-logs-fast`，见 §1.1）：两档走不同的锁、可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、pytest 汇总四数、脚本退出码 |
+| 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按模式分开（全量 `yiban-dev-verify-logs`，fast 两档 `yiban-dev-verify-logs-fast`，见 §1.1）：两档走不同的锁、可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码 |
 | ruff | `ruff check yiban/ tests/ scripts/ web/ --quiet` | 与 CI 同口径（含 `web/`） |
+| mypy | `mypy`（裸调，读 `pyproject.toml` 的 `[tool.mypy]`） | 静态类型门禁：收编名单住 `[tool.mypy].files`，只此一处；名单内严格档全开。与 ruff 同属静态检查，排在 ruff 之后、pytest 之前 |
 
 退出码（四种，全量模式与 fast 两档共用同一套裁决点）：
 
 | 码 | 含义 | 什么时候出现 |
 |---|---|---|
-| `0` | 通过 | ruff 与 pytest 都 0，且覆盖非空 |
-| `1` | 有红 | ruff 非 0，或 pytest 非 0（失败/错误都算）。**原始码不透出**，逐行打印在日志里（`ruff_exit=` / `pytest_exit=`） |
+| `0` | 通过 | ruff、mypy 与 pytest 都 0，且覆盖非空 |
+| `1` | 有红 | ruff 或 mypy 非 0，或 pytest 非 0（失败/错误都算）。**原始码不透出**，逐行打印在日志里（`ruff_exit=` / `mypy_exit=` / `pytest_exit=`） |
 | `2` | 环境错误 | 守卫判红：副本 `.git` 失活、副本残留 CRLF、副本跟踪集为空、源仓库不可解析为 git 仓库、固定 venv 不可用、参数被响亮拒绝（互斥/失效参数）、`FAST_KNOWN_SLOW` 名单坏 |
 | `3` | 空覆盖 | 只出现在 `--fast-scoped`：没测到任何真实用例，只跑了入口自检（见 §1.1）。**此码由空覆盖独占**：红优先，空覆盖同时有红时给 1 |
 
@@ -145,6 +146,8 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 
 ```bash
 python -m ruff check yiban/ tests/ scripts/ web/ --quiet
+python -m mypy
+python -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
 python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 bash scripts/check-shared-facts.sh
@@ -163,6 +166,8 @@ python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
 可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
+静态检查的 mypy 版本由 CI 的 `pip install mypy==1.19.0`（`ci.yml`）与本地 WSL 门禁 venv 提供；
+**从未进 `requirements.lock`**（生产镜像不背门禁工具），先例同 ruff 与 pytest。
 
 `--ci` **就地跑、不做 LF 归一化**（CI runner 的新检出按 `.gitattributes` 是 LF）。
 若工作树的**跟踪文件**里真有 CRLF，脚本响亮拒绝（退出码 2）并点名文件，而不是
@@ -214,7 +219,7 @@ e2e 用 `sed` 删掉该段造出变异体，再断言"伪红真的出现"。摘�
 在场性（调用行必须出现在 rsync
 之前）、rsync 行必须带 `-c`（防回退）、真跑 pytest 命令必须拼 `DESELECT` 数组（防拼接被删后
 长尾静默溜回）、空覆盖必须写标记且最终退出码为 3、退出码归一
-（ruff/pytest 非 0 一律 1，原始码留在日志）、空覆盖提示必须跟最终退出码、默认日志目录按模式
+（ruff/mypy/pytest 非 0 一律 1，原始码留在日志）、空覆盖提示必须跟最终退出码、默认日志目录按模式
 分开、`--ci --base` 与两个不同模式标志必须响亮拒绝、同一模式标志重复给必须幂等接受。
 
 ## 5. e2e（`scripts/e2e/dev-verify-e2e.sh`，必须在 WSL 内跑）
