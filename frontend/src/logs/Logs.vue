@@ -689,7 +689,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="card">
-          <div class="logs-head">
+          <div class="logs-head logs-head--log">
             <h2 class="logs-title">签到日志 <span class="logs-file">{{ payload?.log_file ?? "" }}</span></h2>
             <div class="logs-tools">
               <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
@@ -727,8 +727,11 @@ onBeforeUnmount(() => {
               </button>
               <a v-if="canExport" class="btn btn--ghost btn--sm" :href="exportHref" :download="exportName" role="button">导出日志</a>
               <button v-else type="button" class="btn btn--ghost btn--sm" disabled title="尚未加载出可导出的日期">导出日志</button>
-              <span class="logs-info" role="status">{{ loading ? "正在加载日志…" : info }}</span>
             </div>
+            <!-- 状态文本是「看不见的事实」类文案，不是控件。它独立成次要行、落在控件行之下，
+                 不与按钮抢同一行——否则右组超宽时它折到第二行，标题（align-items:center）
+                 会对齐两行整块，与控件行错位（2026-10-11 结构修）。 -->
+            <span class="logs-info" role="status">{{ loading ? "正在加载日志…" : info }}</span>
           </div>
 
           <div class="logs-datebar">
@@ -944,6 +947,20 @@ onBeforeUnmount(() => {
 .logs-info {
   font-size: var(--fs-label);
   color: var(--t-muted);
+}
+/* 签到日志卡头专有排布（.logs-head--log）。两件事：
+   ① 状态文本独占一整行、落到控件行之下（flex-basis:100% 强制换行）；
+   ② 控件组吃满剩余行宽并把控件右贴 —— 否则 .logs-tools 的 intrinsic 宽度偏小
+      （实测 1366 档只算到 424.8px，而三个控件同排需要 494.8px），「导出日志」会被
+      挤到第二行；控件组一换行，标题（align-items:center）就对不齐控件行了。
+   只作用在本卡：运行巡检卡（共用 .logs-head / .logs-tools）宽度够用，不动它。 */
+.logs-head--log .logs-tools {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: flex-end;
+}
+.logs-head--log .logs-info {
+  flex: 1 0 100%;
 }
 .logs-datebar {
   display: flex;
