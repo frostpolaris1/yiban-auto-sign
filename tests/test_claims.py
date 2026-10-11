@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 import db  # noqa: E402
 
 from yiban import egress  # noqa: E402  # 身份串口径的唯一来源（activity 的消费侧）
+from yiban import status as yiban_status  # noqa: E402  # 分档词表唯一家（128-P1）
 
 TEST_KEY = "a" * 64
 DAY = time.strftime("%Y-%m-%d")  # 运行日：硬编日期会随时间漂出 14 天保留窗（基线红组A/B 根因）
@@ -355,7 +356,7 @@ class SingleStatementClaimTest(_Base):
         self.assertIn("heartbeat_at <= ?", sql)        # claimed 行按租约接管
         # failed 行按**原因档前缀**判：默认只放行 retry: 档（预算耗尽档需 allow_failed）
         self.assertIn("substr(sign_claims.result, 1, ?) = ?", sql)
-        self.assertIn(db.CLAIM_RESULT_RETRY_PREFIX,
+        self.assertIn(yiban_status.RESULT_RETRY_PREFIX,
                       next(c[1] for c in fake.calls if c[0] != "COMMIT"),
                       "前缀档位必须真的作为结果协议写进判据，不能只留在注释里")
 

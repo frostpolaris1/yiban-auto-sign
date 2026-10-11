@@ -9,7 +9,7 @@
    `round.run_queue_retry` 把补签轮/手动两条**有界**显式路径接到 `allow_failed` 上；兜底常驻
    是无界循环、取默认（不接），否则预算耗尽档在窗口内每轮重登一次。
 对应实现：yiban/store/claims.py（try_claim / give_up / reap_unreported / reap_abandoned /
-   RESULT_RETRY_PREFIX / RESULT_FINAL_PREFIX / RETRYABLE_GIVE_UP_STATUSES）、
+   result 分档词表现住 `yiban.status`：RESULT_RETRY_PREFIX / RESULT_FINAL_PREFIX / RETRYABLE_GIVE_UP_STATUSES）、
    yiban/engine/round.py（_claim / _settle_claims / retry_failed）。
 关键断言：**预算耗尽而弃权的账号，当日不得被默认参数再领**——旧行为下 `failed` 与
    `claimed` 同列"可再接手"，后面每一轮（补签轮、兜底常驻、别的执行体）都会把它重领一遍
@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 
+from yiban import status as yiban_status  # noqa: E402  # 分档词表唯一家（128-P1）
 from yiban.store import claims  # noqa: E402
 
 TEST_KEY = "a" * 64
@@ -101,7 +102,7 @@ class GiveUpReasonTierTest(_Base):
         self.assertTrue(db.claim_give_up(PHONE, DAY, OWNER_A, "重试耗尽", epoch=e1))
         row = self._row()
         self.assertEqual(row["state"], db.CLAIM_STATE_FAILED)
-        self.assertTrue(row["result"].startswith(claims.RESULT_FINAL_PREFIX),
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
                         f"预算耗尽档必须带 final 前缀，实际 {row['result']!r}")
 
         self.assertEqual(db.claim_sign_account(PHONE, DAY, OWNER_B), (False, 0),
@@ -118,17 +119,17 @@ class GiveUpReasonTierTest(_Base):
         self.assertTrue(ok)
         self.assertTrue(db.claim_give_up(PHONE, DAY, OWNER_A, "skipped_window",
                                          epoch=e1, retryable=True))
-        self.assertTrue(self._row()["result"].startswith(claims.RESULT_RETRY_PREFIX),
+        self.assertTrue(self._row()["result"].startswith(yiban_status.RESULT_RETRY_PREFIX),
                         "窗口外档必须带 retry 前缀")
         ok2, _e2 = db.claim_sign_account(PHONE, DAY, OWNER_B)
         self.assertTrue(ok2, "窗口外弃权的账号当日应可被默认参数再接手")
 
     def test_no_position_status_is_in_retryable_tier(self):
         """无点位属"该重试"侧：领取层要按同一份档位表分派，不能各写一份。"""
-        self.assertIn("no_position", claims.RETRYABLE_GIVE_UP_STATUSES)
-        self.assertIn("skipped_window", claims.RETRYABLE_GIVE_UP_STATUSES)
-        self.assertIn("skipped_norange", claims.RETRYABLE_GIVE_UP_STATUSES)
-        self.assertNotIn("failed", claims.RETRYABLE_GIVE_UP_STATUSES,
+        self.assertIn("no_position", yiban_status.RETRYABLE_GIVE_UP_STATUSES)
+        self.assertIn("skipped_window", yiban_status.RETRYABLE_GIVE_UP_STATUSES)
+        self.assertIn("skipped_norange", yiban_status.RETRYABLE_GIVE_UP_STATUSES)
+        self.assertNotIn("failed", yiban_status.RETRYABLE_GIVE_UP_STATUSES,
                          "预算耗尽的 failed 不在默认可再领档")
 
     def test_reap_paths_stay_reclaimable_by_default(self):
@@ -137,7 +138,7 @@ class GiveUpReasonTierTest(_Base):
         self.assertTrue(ok)
         claims.reap_unreported(OWNER_A, {PHONE: (DAY, e1)}, set())
         self.assertEqual(self._row()["state"], db.CLAIM_STATE_FAILED)
-        self.assertTrue(self._row()["result"].startswith(claims.RESULT_RETRY_PREFIX),
+        self.assertTrue(self._row()["result"].startswith(yiban_status.RESULT_RETRY_PREFIX),
                         "轮末收尸行必须落 retry 档")
         self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B)[0],
                         "收尸行默认就该能被下一轮接手")
@@ -147,7 +148,7 @@ class GiveUpReasonTierTest(_Base):
         ok, _e1 = db.claim_sign_account(PHONE, DAY, OWNER_A)
         self.assertTrue(ok)
         self.assertEqual(claims.reap_abandoned(OWNER_A, day=DAY), 1)
-        self.assertTrue(self._row()["result"].startswith(claims.RESULT_RETRY_PREFIX))
+        self.assertTrue(self._row()["result"].startswith(yiban_status.RESULT_RETRY_PREFIX))
         self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B)[0])
 
     def test_claimed_expired_lease_takeover_unaffected(self):

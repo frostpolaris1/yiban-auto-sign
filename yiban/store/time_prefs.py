@@ -22,7 +22,7 @@ time_prefs 表以 phone 为键，服务调度 v2 的「用户自选时间片」
 落在 `yiban/store/events.py`。建表在迁移域（`yiban/store/migrations.py`），本模块只读写。
 
 **复用**
-`web/routes/my.py`（自选读写、拥挤度与保存冷却）、`web/routes/accounts_api.py`（改绑手机号
+`web/routes/my_api.py`（自选读写、拥挤度与保存冷却）、`web/routes/accounts_api.py`（改绑手机号
 时清旧号自选）、`yiban/engine/schedule.py` 与 `yiban/engine/planner.py`（调度每次启动/重排时
 读一次全量，只读不写）经 db 门面调用；`scripts/generate_demo_data.py` 写演示自选。
 换号/注销路径是否保留自选由 `yiban/store/users.py` 与账号软删路径决定，本模块不做取舍。

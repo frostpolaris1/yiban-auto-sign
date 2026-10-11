@@ -189,7 +189,7 @@ def _seed_run_events_crowded() -> None:
 def _seed_state_files() -> None:
     """取样工作日（见 `_probe_day`）的假签到状态：让日历底色与图例端到端可见。
 
-    文件形态与 web/routes/my.py 的月历读取一致（`sign-daily-YYYY-MM-DD.json`，值 =
+    文件形态与 web/routes/my_api.py 的月历读取一致（`sign-daily-YYYY-MM-DD.json`，值 =
     账号键 → 状态符号）。只种这一个账号的状态：管理端日历用另一张卡，正好顺带验证
     "状态按账号过滤"。
     """

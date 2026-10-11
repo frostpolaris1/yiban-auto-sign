@@ -23,7 +23,7 @@
 `run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）。
 `SIGN_MODE` 与 `_DEFAULT_SLOW_SIGN_SEC` **不对齐任何外部口径**，只在本文件内自用（前者喂
 随机模式判定，后者喂慢签告警）：读 `YIBAN_SIGN_MODE` 的另外五处（`engine/schedule.py`、
-`web/routes/me.py`、`web/routes/settings_api.py`、`web/services/accounts_data.py`、
+`web/routes/me_api.py`、`web/routes/settings_api.py`、`web/services/accounts_data.py`、
 `web/services/env_io.py`）各自现取环境变量、不经本常量，容量计算也不读这两个值。
 "同一件事六份读法"是既存口径，改模式语义时六处得一起改。
 
@@ -314,7 +314,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     # 按原因分档：窗口外/无点位默认可再领（该重试），预算耗尽/风控默认不可
                     # （需显式路径）——否则后者当日会被后面每一轮重领一遍。
                     db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch,
-                                     retryable=st in claims_mod.RETRYABLE_GIVE_UP_STATUSES)
+                                     retryable=st in yiban_status.RETRYABLE_GIVE_UP_STATUSES)
             except Exception as e:
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
         try:

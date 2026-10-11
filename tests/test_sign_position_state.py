@@ -51,7 +51,6 @@ from yiban import client as yiban_client  # noqa: E402
 from yiban import clock, egress  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
 from yiban.engine import executor_v3, state_io, token_bucket  # noqa: E402
-from yiban.store import claims as claims_mod  # noqa: E402
 from yiban.store import clock_meta, queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
@@ -227,7 +226,7 @@ class SupplementingVocabularyTest(unittest.TestCase):
                          yiban_status.UNDONE_STATUSES,
                          "补签中不进未了结：否则补签轮天天为它多跑一次真实登录")
         self.assertNotIn(yiban_status.STATUS_SUPPLEMENTING,
-                         claims_mod.RETRYABLE_GIVE_UP_STATUSES,
+                         yiban_status.RETRYABLE_GIVE_UP_STATUSES,
                          "补签中不得落'默认可再领'档（那是'可自由再签'）")
 
     def test_display_and_symbol_are_complete(self):
@@ -427,7 +426,7 @@ class State4SettlesForTheDayTest(_V3Base):
         row = self._row()
         self.assertEqual(row["state"], "done",
                          "State=4 判 already ⇒ 队列记 done（补签轮据 done 剔除它）")
-        self.assertFalse(row["result"].startswith(claims_mod.RESULT_FINAL_PREFIX))
+        self.assertFalse(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
 
     def test_state4_already_is_dropped_by_the_supplement_round(self):
         """宿主/容器补签轮的剔除判据：状态文件里是 already ⇒ 不再真实登录一次。"""
@@ -450,10 +449,10 @@ class SupplementingTierTest(_V3Base):
         self._run_round(verdict)
         row = self._row()
         self.assertEqual(row["state"], "failed", "补签中不是了结：队列不记 done")
-        self.assertTrue(row["result"].startswith(claims_mod.RESULT_FINAL_PREFIX),
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
                         "补签中属保守档：默认不自动回炉，只有显式路径才可再领")
         self.assertEqual(executor_v3._tier_prefix(yiban_status.STATUS_SUPPLEMENTING),
-                         claims_mod.RESULT_FINAL_PREFIX)
+                         yiban_status.RESULT_FINAL_PREFIX)
 
     def test_default_round_cannot_reclaim_it(self):
         """默认轮（含兜底常驻）不得把补签中当成"可自由再签"：回炉口不放行。
@@ -468,7 +467,7 @@ class SupplementingTierTest(_V3Base):
                          "final: 档不得被默认回炉口复活")
         row = self._row()
         self.assertEqual(row["state"], "failed")
-        self.assertTrue(row["result"].startswith(claims_mod.RESULT_FINAL_PREFIX))
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
 
     def test_explicit_path_is_the_documented_boundary(self):
         """本行钉的是 `final:` 档的**既有语义**（显式路径放行），不是对 `State=5` 策略的
