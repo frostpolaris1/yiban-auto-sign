@@ -7,7 +7,7 @@
     ② GET /api/my-accounts 的 `state_message` 与排队键（`queue_ahead` 的排序依据）；
     ③ GET /api/accounts 的 `state_msgs`。
 对应实现：`yiban/store/queue_store.run_at_by_phone`（台账按日批量读）、
-    `web/services/accounts_data._estimate_slot`、`web/routes/my.py`、
+    `web/services/accounts_data._estimate_slot`、`web/routes/my_api.py`、
     `web/routes/accounts_api.py`、`yiban/engine/runner.py`（停写 v2 scheduled）。
 关键断言：三端点取值 == `sign_tasks.run_at`（|差| < 60 秒 = 1 个分片宽）；当日无计划行
     时显示「待生成」而非任何钟点；重试/重签改写过的 `run_at` 显示为当前台账值；

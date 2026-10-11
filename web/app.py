@@ -37,7 +37,7 @@
 """
 
 import argparse
-import calendar  # noqa: F401  # 月历路由已入 web/routes/my.py，此处仅为保持 web.app 名字面不变
+import calendar  # noqa: F401  # 月历路由已入 web/routes/my_api.py，此处仅为保持 web.app 名字面不变
 import contextlib
 import html  # noqa: F401  # 文档页转义已入 web/render.py，此处仅为保持 web.app 名字面不变
 import json  # noqa: F401  # 通道健康日报已入 web/services/channel_health.py，此处仅为保持 web.app 名字面不变
@@ -2235,7 +2235,7 @@ def create_app(host=None):
     # ---- CSRF 防护：登录后所有写请求（POST/PUT/DELETE）必须携带与 session 匹配的 token ----
     # 登录/注册无需 token（未登录态，跨站表单攻击由 SameSite=Lax 已基本阻断）；
     # 已登录用户的写操作由 token 双重校验（借鉴 flask-wtf 的 Session 方案，自实现零依赖）。
-    # token 的生成随个人域路由迁往 web/routes/me.py（唯一使用点），校验仍在下面。
+    # token 的生成随个人域路由迁往 web/routes/me_api.py（唯一使用点），校验仍在下面。
     def _is_same_origin():
         """登录/注册等未登录写接口的同源校验：跨站表单提交的 POST 必然携带 Origin 头。
 
@@ -2651,7 +2651,7 @@ def create_app(host=None):
         """
         # 基准两级：pw_ok_ip（口令复核通过那一刻写，见 _sensitive_password_gate 的③段）优先；
         # 会话还没验证过任何口令时退回 login_ip（由 web/routes/auth.py 的 api_login 与
-        # web/routes/me.py 的 api_me_restore 写入）。少一个写入点，risk 档对那类会话就静默失效。
+        # web/routes/me_api.py 的 api_me_restore 写入）。少一个写入点，risk 档对那类会话就静默失效。
         trusted = session.get("pw_ok_ip") or session.get("login_ip")
         # 两级都空 = 未知，判"未换环境"而不是"换环境"：历史会话没有 login_ip，判异常会让
         # 升级后所有存量会话人人被要求输口令，那正是要避免的摩擦。bool(trusted) 就是这个

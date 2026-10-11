@@ -22,7 +22,7 @@
     的哨兵折算、grep 级"哨兵折算单点、无进 SET 前 pop"
 对应实现：`web/services/accounts_data.py` 的 `CLEAR_SENTINEL`/`fold_phone_code`、
     `web/routes/accounts_api.py` 的 api_account_update/api_account_add、
-    `web/routes/my.py` 的 api_my_account_update/api_my_account_add、
+    `web/routes/my_api.py` 的 api_my_account_update/api_my_account_add、
     `web/services/logs.py` 的 clear_fuse_on_cred_change
 关键断言：`__clear__` ⇒ 库行 `phone_code` 变 `""` 且响应 `has_phone_code` 如实为假；
     哨兵绝不作为字面量落库；只改识别码在任何档位都 200 放行（门收窄）且当次审计
