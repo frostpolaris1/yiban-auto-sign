@@ -29,7 +29,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.store import claims, db, queue_store
+from yiban import status as yiban_status  # 分档词表唯一家（128-P1）
+from yiban.store import db, queue_store
 
 #: 测试业务日与三方身份：全量轮执行体（worker）与兜底（fallback）
 DAY = "2026-09-02"
@@ -102,8 +103,8 @@ class _TempDbCase(unittest.TestCase):
         """全量轮领走账号后弃权——"失败即入队"就是这次 failed 收尾（带档位前缀）。"""
         self._add_pending(phone)
         epoch = self._claim(phone, owner)
-        prefix = (claims.RESULT_RETRY_PREFIX if retryable
-                  else claims.RESULT_FINAL_PREFIX)
+        prefix = (yiban_status.RESULT_RETRY_PREFIX if retryable
+                  else yiban_status.RESULT_FINAL_PREFIX)
         self.assertEqual(queue_store.settle_tasks(
             owner, DAY, [(phone, prefix + status)], state=queue_store.STATE_FAILED,
             epochs={phone: epoch}), 1, f"前置：轮弃权应写成功 {phone}")
@@ -204,7 +205,7 @@ class FallbackEventSignatureTest(_TempDbCase):
             "state, attempts, lease_until, result, epoch, created_at) "
             "VALUES (?,?,-1,'','2026-09-02 00:00:00.000',5,'failed',0,'',?,1,"
             "'2026-09-02 00:00:00.000')",
-            (PHONE_G, DAY, claims.RESULT_RETRY_PREFIX + "skipped_window"))
+            (PHONE_G, DAY, yiban_status.RESULT_RETRY_PREFIX + "skipped_window"))
         conn.commit()
         self.assertEqual(queue_store.fallback_event(DAY, FB), base,
                          "历史惰性行不属于任何分片集，不得计入兜底可接手集")
