@@ -14,6 +14,9 @@
 #     .venv 本地未安装，无实测版本可引）
 #   - 2026-09-15 补录 portalocker==4.3.2（BSD-3-Clause，零强制依赖，纯 Python wheel；
 #     选它而非自写跨平台文件锁的理由见 scripts/locks.py 与 requirements.txt 注释）
+#   - 2026-10-11 mypy==1.19.0（静态类型门禁工具）**不进本清单**：门禁工具随 ruff/pytest
+#     先例只钉在 ci.yml 的显式安装行——生产 Docker 镜像（python:3.11-slim）不背门禁工具。
+#     本地 WSL 门禁 venv（~/.venv-yiban-wsl）单独安装同版号。
 # 恢复 pip-tools 后可用 pip-compile --output-file=requirements.lock requirements.txt 重新生成
 #
 blinker==1.9.0
