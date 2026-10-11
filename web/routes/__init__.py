@@ -18,7 +18,7 @@ CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 `verify_limits()` / `verify_fails()` 是账号验证配额与冷却的唯一取用点（管理员添加与
 用户自助提交共用同一份账），`detail_limits()` 是账号详情读取限速表，`export_limits()`
 是日志导出限速表，`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕
-的两个入口。
+的两个入口；`page_args()` 是列表接口（账号 / 用户）可选分页参数的唯一解析点。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
@@ -26,7 +26,13 @@ web.app——`appmod()` 在调用时才解析，避免与 `web/app.py` 形成导
 """
 import sys
 
-from flask import current_app
+from flask import current_app, request
+
+#: 列表接口分页参数的上下限（沿用日志列表的 1–200 口径）。
+PAGE_LIMIT_MIN = 1
+PAGE_LIMIT_MAX = 200
+#: limit 缺省（参数缺失或非法时取它）；与日志列表 sign_events 的缺省同值。
+PAGE_LIMIT_DEFAULT = 100
 
 
 def appmod():
@@ -44,6 +50,35 @@ def appmod():
         import web.app
         mod = web.app
     return mod
+
+
+def page_args():
+    """解析列表接口的可选分页参数 `limit` / `offset`（唯一取用点）。
+
+    返回三元组 (limit, offset, paged)：
+      - 两个参数都未出现时：paged=False、limit=None、offset=0。调用方必须返回
+        **与分页前逐字相同**的整表响应（向后兼容，旧调用方不受影响）。
+      - 出现任一参数时：paged=True。limit 夹取到 [1, 200]，offset 夹取到 >= 0。
+      - 参数存在但不是十进制整数时回落到缺省（limit=100 / offset=0），不抛异常。
+        这一口径与仓内日志列表（`web.routes.data.api_admin_sign_events` 的 limit）
+        的处理一致：客户端把参数写坏时仍拿到有界的一页，而不是 500。
+    上限 200 沿用日志列表的 1–200 口径，也落在 124 §B.2.3 的
+    "limit=100 → 约 45 KiB/页"外推以内。两域（账号 / 用户）共用本函数，避免各写一份。
+    """
+    args = request.args
+    if "limit" not in args and "offset" not in args:
+        return None, 0, False
+    try:
+        limit = int(args.get("limit", PAGE_LIMIT_DEFAULT))
+    except (TypeError, ValueError):
+        limit = PAGE_LIMIT_DEFAULT
+    limit = min(max(limit, PAGE_LIMIT_MIN), PAGE_LIMIT_MAX)
+    try:
+        offset = int(args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(offset, 0)
+    return limit, offset, True
 
 
 def login_fails():
