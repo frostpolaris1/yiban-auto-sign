@@ -67,6 +67,27 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   // 执行体只回角色与槽位：身份原串（带主机名）绝不进 DOM
   await expect(tl).not.toContainText("e2e-host");
 
+  // 0a) 运行进度（实时）：SSE 流自动建连，快照在首帧到达。一屏两带：六节点总数 +
+  //     每执行体一行 + 最近事件。事件计数**不去重**（≠ 首页「今日成功账号」）。
+  await expect(page.locator("#live-status")).toContainText("流已连接");
+  await expect(page.locator("#live-totals .live-total")).toHaveCount(6);
+  // 种子（_seed_run_events，今日两轮）：claim 4（单执行体 3 + 较早轮 1）、start 2、
+  // success 2、fail 1、finalize 1。finalize 单独一列，不并入任何"完成数"。
+  const liveTotal = (label: string) =>
+    page.locator("#live-totals .live-total", { hasText: label }).locator(".live-total-value");
+  await expect(liveTotal("领取")).toHaveText("4");
+  await expect(liveTotal("开始")).toHaveText("2");
+  await expect(liveTotal("成功")).toHaveText("2");
+  await expect(liveTotal("收尾")).toHaveText("1");
+  await expect(page.locator("#live-execs .el-table__row")).toHaveCount(2);
+  await expect(page.locator("#live-recent")).toContainText("最近事件");
+  // 口径防火墙：本块显式写明"事件计数"，与首页按账号去重的 KPI 区分
+  await expect(page.locator("#run-live")).toContainText("事件计数");
+  // 隐私：流 DOM 不含原始手机号，也不含执行体主机名
+  const liveHtml = await page.locator("#run-live").innerHTML();
+  expect(liveHtml).not.toContain("13800138001");
+  expect(liveHtml).not.toContain("e2e-host");
+
   // 0b) 轮询沿用在途选择（F5）：点开**较早的一轮**后，10 秒自动刷新（默认开）不得把
   //     选中改回最新一轮。改回即「查昨天那轮」的主用途失效——用户点开的旧轮在 ≤10 秒内
   //     被静默换掉。这条钉的是**接线**（纯函数单测钉不住 loadRuns 传没传 keepSelection）。
@@ -120,6 +141,14 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   const logPane = page.locator(".el-tab-pane:visible");
   await expect(logPane.locator(".logs-empty")).toContainText("（2000-01-01 无签到日志）");
   await expect(logPane.locator(".logs-empty")).toContainText("查看"); // 「最近有数据日期」跳转出口
+
+  // 6) 降级：流端点被拒（403）→ EventSource 判不可恢复 → 页面明说"已回退 10 秒轮询"，
+  //    不让人把"流断了"误读成"没在跑"（125 §4.3 首屏第 1 条）。
+  await page.route("**/api/stream/progress", (route) =>
+    route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "无权限" }) }),
+  );
+  await page.reload();
+  await expect(page.locator("#live-status")).toContainText("回退");
 });
 
 test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账号管理（复用同一管理员会话）", async ({ page }) => {

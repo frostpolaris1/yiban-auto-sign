@@ -58,6 +58,27 @@ server {
     # 管理后台仅一人使用，无需大上传体；64KB 与应用 MAX_CONTENT_LENGTH 对齐
     client_max_body_size 64k;
 
+    # SSE 实时进度流：必须单独一条 location（nginx 默认缓冲事件流 ⇒ 等于没有 SSE；
+    # proxy_read_timeout 默认 60s 会每 60 秒切断长连接）。应用侧同时回
+    # X-Accel-Buffering: no 与 Cache-Control: no-cache（双保险）。
+    # 刻意**不**加 limit_req：长连接不重复计数，建连只占 1 次额度。
+    # ⚠️ 子路径形态（文件末尾形态 B）部署时，前缀按实际挂载点拼接
+    #    （如 /tools/yiban-auto-sign/demo/api/stream/），且此处一条 location 也要同步。
+    location /api/stream/ {
+        proxy_pass http://127.0.0.1:17892;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # 覆盖式 XFF（丢弃客户端自报值），应用按此取真实客户端 IP
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_connect_timeout 5s;
+        gzip off;
+        add_header X-Accel-Buffering no;
+    }
+
     location / {
         limit_req zone=yiban_perip burst=40 nodelay;
         limit_req_status 429;

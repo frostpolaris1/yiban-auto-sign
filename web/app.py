@@ -519,6 +519,26 @@ def _json_body():
     return data
 
 
+def _request_is_same_origin():
+    """请求是否同源（`Origin` 与 `(scheme, host)` 一致）。
+
+    **同源语义的单一定义点**：`create_app` 的 `check_csrf` 闭包与 SSE 端点
+    （`web/routes/stream_api.py`）都从这里取同一份判定，避免两处各写一套。
+    `EventSource` 不能自定义请求头，只能靠 Cookie 会话，故它的 GET 也必须过同源校验。
+    无 `Origin` 头（同站导航、curl、同源 GET）放行——与既有登录/注册口径一致。
+    """
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    from urllib.parse import urlparse
+
+    try:
+        o = urlparse(origin)
+    except ValueError:
+        return False
+    return (o.scheme, o.netloc) == (request.scheme, request.host)
+
+
 # 真实客户端出口（`_client_ip`）见 web/security.py，此处以导入区再导出保持 m.* 可达。
 
 
@@ -2187,7 +2207,9 @@ def create_app(host=None):
             return jsonify({"error": "未登录"}), 401
         if role == "admin":
             return
-        # 普通用户：只能操作自己的账号（/api/my-*）、读取时钟、查询身份与登出
+        # 普通用户：只能操作自己的账号（/api/my-*）、读取时钟、查询身份与登出，
+        # 以及本人的签到进度流（`/api/stream/my-signin`：服务端按本人 phone 过滤，
+        # 只推本人；管理员流 `/api/stream/progress` 不在放行面内，普通用户得 403）。
         if request.path.startswith("/api/my-") or request.path.startswith(
             "/api/verify-jobs"
         ) or request.path in (
@@ -2196,6 +2218,7 @@ def create_app(host=None):
             "/api/logout",
             "/api/me/password",
             "/api/me/delete",
+            "/api/stream/my-signin",
         ):
             return
         # 越权尝试留痕——已登录普通用户命中管理面路径是盗号/滥用
@@ -2217,17 +2240,9 @@ def create_app(host=None):
         """登录/注册等未登录写接口的同源校验：跨站表单提交的 POST 必然携带 Origin 头。
 
         浏览器同源 fetch POST 也携带 Origin；无 Origin 的请求（同站导航、curl）放行。
+        判定委托模块级 `_request_is_same_origin`（同源语义的单一定义点；SSE 端点也用它）。
         """
-        origin = request.headers.get("Origin")
-        if not origin:
-            return True
-        from urllib.parse import urlparse
-
-        try:
-            o = urlparse(origin)
-        except ValueError:
-            return False
-        return (o.scheme, o.netloc) == (request.scheme, request.host)
+        return _request_is_same_origin()
 
     # NEW-M1（反代转发头误诊断）：Origin 为 https 而应用侧 request.scheme 为 http
     # 时，说明反向代理的 X-Forwarded-Proto 未生效（nginx 缺 proxy_set_header，或
