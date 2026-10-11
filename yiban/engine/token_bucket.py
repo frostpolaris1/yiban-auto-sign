@@ -64,6 +64,7 @@ load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路
 """
 import logging
 import os
+from typing import Any, Callable
 
 from yiban import config_loader
 from yiban import egress as yb_egress  # 别名必需：本模块的形参就叫 `egress`（桶键）
@@ -115,7 +116,7 @@ DEFAULT_MIN_EXEC_GAP_SEC = config_loader.default_required("YIBAN_MIN_EXEC_GAP")
 _FALSY_LITERALS = ("0", "false", "off", "no")
 
 
-def clamp_rate(rate, floor=None):
+def clamp_rate(rate: Any, floor: float | None = None) -> float:
     """速率夹到 `[floor, RATE_MAX]`（attempt/s）；非法输入回退出厂速率。
 
     `floor` 缺省是出口级速率的域下界 `RATE_MIN`。子桶份额（出口级 rate ÷ n）可以低于它，
@@ -147,19 +148,19 @@ class EgressBucket:
     传 `SHARE_RATE_FLOOR`——份额常低于出口级下界，夹回去会让 n 个进程合计超过 λ。
     """
 
-    def __init__(self, egress, rate=RATE_DEFAULT, burst=DEFAULT_BURST, tat=0.0,
-                 rate_min=None):
+    def __init__(self, egress: str, rate: Any = RATE_DEFAULT, burst: float = DEFAULT_BURST,
+                 tat: float = 0.0, rate_min: float | None = None) -> None:
         self.egress = egress
         self.rate = clamp_rate(rate, rate_min)
         self.burst = float(burst)
         self.tat = float(tat)
 
     @property
-    def interval(self):
+    def interval(self) -> float:
         """T = 1/rate（秒/尝试）：rate=1 的 T 恰为 1.0s（1 attempt/s），不是 1/6。"""
         return 1.0 / self.rate
 
-    def burst_sec(self, burst=None):
+    def burst_sec(self, burst: float | None = None) -> float:
         """突发额度换算成时间：τ = (burst−1)·T（容量 burst 的令牌桶等价容差）。
 
         burst=0 ⇒ τ=0（严格 1/T 间隔）；burst=1 ⇒ τ=0（单通道，无突发）。`burst` 给了就
@@ -168,22 +169,22 @@ class EgressBucket:
         b = self.burst if burst is None else float(burst)
         return max(0.0, b - 1.0) * self.interval
 
-    def admit_at(self, burst=None):
+    def admit_at(self, burst: float | None = None) -> float:
         """下一次可放行的最早时刻（`now >= admit_at` 即放行）。"""
         return self.tat - self.burst_sec(burst)
 
-    def try_acquire(self, now, burst=None):
+    def try_acquire(self, now: float, burst: float | None = None) -> bool:
         """TAT 推进成功即放行；失败**不动状态**（等价于"等 retry_after 秒"）。"""
         if now < self.admit_at(burst):
             return False
         self.tat = max(now, self.tat) + self.interval
         return True
 
-    def retry_after(self, now, burst=None):
+    def retry_after(self, now: float, burst: float | None = None) -> float:
         """放行需等多少秒（阻塞替代品：调用方 sleep 它之后下一次必放行）。"""
         return max(0.0, self.admit_at(burst) - now)
 
-    def wait_sec(self, now, burst=None):
+    def wait_sec(self, now: float, burst: float | None = None) -> float:
         """桶侧同一量：`max(0, tat − burst_sec − now)`。"""
         return self.retry_after(now, burst)
 
@@ -213,8 +214,9 @@ class EgressLimiter:
     故 `YIBAN_PROBE_TIME` 落在签到窗口内时窗口内该出口瞬时可能超 `λ/n` 一次（`probe` 侧告警）。
     """
 
-    def __init__(self, rate=RATE_DEFAULT, burst=DEFAULT_BURST, on_change=None, manual=False,
-                 shares=1):
+    def __init__(self, rate: Any = RATE_DEFAULT, burst: float = DEFAULT_BURST,
+                 on_change: Callable[[str, float, float, str], Any] | None = None,
+                 manual: bool = False, shares: int = 1) -> None:
         self.shares = max(1, int(shares))
         #: **出口级**速率（attempt/s）：AIMD 与落库用它；子桶速率 = 本值 ÷ shares
         self.rate = clamp_rate(rate)
@@ -224,23 +226,23 @@ class EgressLimiter:
         # 速率上限：manual 时是管理员设定值（上探不得越过），否则是模块上限。
         self._ceiling = self.rate if self.manual else RATE_MAX
         self._on_change = on_change
-        self._buckets = {}
-        self._streak = {}
-        self._half_open_until = {}
+        self._buckets: dict[str, EgressBucket] = {}
+        self._streak: dict[str, int] = {}
+        self._half_open_until: dict[str, float] = {}
         #: 份额分母漂移告警只喊一次（F3）：`shares` 是启动快照，运行期改清单不重算份额。
         self._shares_drift_warned = False
 
     @property
-    def share_rate(self):
+    def share_rate(self) -> float:
         """本进程子桶速率 = 出口级 `rate` ÷ `shares`（下限 `SHARE_RATE_FLOOR`，不夹到出口级下界）。"""
         return max(SHARE_RATE_FLOOR, self.rate / self.shares)
 
     @property
-    def share_burst(self):
+    def share_burst(self) -> float:
         """本进程子桶突发额度 = 出口级 `burst` ÷ `shares`（预算均分，含突发）。"""
         return max(0.0, self.burst / self.shares)
 
-    def _new_bucket(self, egress):
+    def _new_bucket(self, egress: str) -> EgressBucket:
         """按**份额**建子桶（`rate = share_rate`、`burst = share_burst`）。
 
         新建桶的起算速率随 `self.rate` 走：站点级降档把 `self.rate` 粘到出口级下界，故降档后
@@ -249,7 +251,7 @@ class EgressLimiter:
         return EgressBucket(egress, rate=self.share_rate, burst=self.share_burst,
                             rate_min=SHARE_RATE_FLOOR)
 
-    def bucket(self, egress):
+    def bucket(self, egress: str) -> EgressBucket:
         """取该出口的**本进程份额子桶**；首次访问按起算速率（降档后即降档值）建桶。"""
         b = self._buckets.get(egress)
         if b is None:
@@ -258,11 +260,11 @@ class EgressLimiter:
         self._streak.setdefault(egress, 0)
         return b
 
-    def is_half_open(self, egress, now):
+    def is_half_open(self, egress: str, now: float) -> bool:
         """该出口是否处于半开期（风控命中后的冷却，只放单通道探测）。"""
         return now < self._half_open_until.get(egress, 0.0)
 
-    def acquire(self, egress, now):
+    def acquire(self, egress: str, now: float) -> bool:
         """取一次出口额度（走**本进程份额子桶**）。半开期内突发额度压到 1，冷却走完才恢复。"""
         b = self.bucket(egress)
         # 半开只在这里生效：它是按时间结束的冷却，不是"探测一次成功就放行"——窗口内该出口
@@ -270,7 +272,7 @@ class EgressLimiter:
         burst = 1.0 if self.is_half_open(egress, now) else None
         return b.try_acquire(now, burst)
 
-    def on_success(self, egress):
+    def on_success(self, egress: str) -> float:
         """连续 `SUCCESS_STREAK` 次无风控 → **出口级** `rate ×= 1.2`（封顶 `_ceiling`），
         返回生效后的出口级 rate。子桶份额随 `self.rate` 同步更新。
 
@@ -286,7 +288,7 @@ class EgressLimiter:
         self._streak[egress] = 0
         return self._set_rate(egress, self.rate * GROWTH_FACTOR, "连续无风控上探")
 
-    def on_risk_signal(self, egress, now):
+    def on_risk_signal(self, egress: str, now: float) -> float:
         """风控信号 → **出口级** `rate ÷= 2`（下限为出口级下界）+ 半开 `HALF_OPEN_SEC`，
         返回新出口级 rate。回退是**安全反应**：人工接管下照做（见 `_set_rate`）。
         """
@@ -302,7 +304,7 @@ class EgressLimiter:
         return self._set_rate(egress, self.rate * SHRINK_FACTOR,
                               "风控信号回退")  # 回退不吃延迟信号：单账号耗时 t≈1.9~3s 近常量，延迟信噪比差
 
-    def downgrade_all(self, now, reason="站点级熔断"):
+    def downgrade_all(self, now: float, reason: str = "站点级熔断") -> dict[str, float]:
         """全体出口降档到 `RATE_MIN`（出口级）并进入半开，返回 `{egress: 子桶 rate}`。
 
         站点级熔断（风控信号率超阈）的**降档入口**：阈值判定与告警归调用方，本方法只做
@@ -315,14 +317,14 @@ class EgressLimiter:
             self._set_rate(egress, RATE_MIN, reason)
         return {e: b.rate for e, b in self._buckets.items()}
 
-    def snapshot(self):
+    def snapshot(self) -> dict[str, dict[str, float]]:
         """落库用快照：`{egress: {"rate", "burst", "tat"}}`。`rate` / `burst` 是**出口级**量
         （与 `egress_state` 列同口径）；`tat` 是子桶的本进程令牌位置（只作观测，不落库）。
         """
         return {e: {"rate": self.rate, "burst": self.burst, "tat": b.tat}
                 for e, b in self._buckets.items()}
 
-    def persist(self, egress, stamp=None):
+    def persist(self, egress: str, stamp: str | None = None) -> bool:
         """把**出口级** `rate` / `burst` 落库（调用方按 10s 粒度循环）。失败只告警、不阻断签到。
 
         `tat` **不落库**（多进程不共享令牌位置，写进去只会互相覆盖）：写 0。口径见类 docstring。
@@ -338,7 +340,7 @@ class EgressLimiter:
         self._warn_if_shares_drifted(egress)
         return queue_store.save_egress_state(egress, self.rate, self.burst, 0.0, stamp)
 
-    def _warn_if_shares_drifted(self, egress):
+    def _warn_if_shares_drifted(self, egress: str) -> None:
         """同出口执行体数变了就告警一次（仅告警，不重算份额）。"""
         if self._shares_drift_warned:
             return
@@ -349,7 +351,7 @@ class EgressLimiter:
                            "均分，运行期改清单不生效；请重启执行体",
                            yb_egress.outlet_label(egress), self.shares, current, self.shares)
 
-    def restore_from_store(self, egress, now=None):
+    def restore_from_store(self, egress: str, now: float | None = None) -> bool:
         """从 `egress_state` 装回该出口的**出口级** `rate`（崩溃重启后不"重启即全速"）。
 
         无记录 / 库不可用 → 保持出厂速率并返回 False（出厂速率不是全速，回退是保守的）。
@@ -368,7 +370,7 @@ class EgressLimiter:
         self._streak.setdefault(egress, 0)
         return True
 
-    def _set_rate(self, egress, rate, reason):
+    def _set_rate(self, egress: str, rate: float, reason: str) -> float:
         """改**出口级**速率（夹到 `[出口级下界, _ceiling]`）+ 同步全部子桶份额 + 审计日志/
         变更回调，返回生效后的出口级 rate。
 
@@ -410,7 +412,7 @@ class GlobalLimiter:
     （None / 空串 / 纯空白）是 .env 既有约定的"未配置/关闭"，按不限且不告警、不标非法。
     """
 
-    def __init__(self, lam):
+    def __init__(self, lam: str | None) -> None:
         self.invalid = False
         text = lam.strip() if isinstance(lam, str) else lam
         if text is None or text == "":
@@ -425,7 +427,7 @@ class GlobalLimiter:
         self.lam = v if v > 0 else None  # ≤0 归一成 None（不限），下游只需判 is None
         self._tat = 0.0
 
-    def acquire(self, now):
+    def acquire(self, now: float) -> bool:
         """放行一次全局额度；`lam` 为 None/≤0 时恒放行（不记账）。"""
         if self.lam is None:
             return True  # 不限：不记账也不阻塞，全局层缺席时出口桶仍在管速率
@@ -443,25 +445,26 @@ class AccountGapGate:
     是两种执行形态下的共同底限）。
     """
 
-    def __init__(self, gap_sec, enabled=True):
+    def __init__(self, gap_sec: float, enabled: bool = True) -> None:
         self.gap_sec = max(0.0, float(gap_sec))
         self.enabled = bool(enabled)
-        self._tat = {}
+        self._tat: dict[str, float] = {}
 
-    def allow(self, phone, now):
+    def allow(self, phone: str, now: float) -> bool:
         """该账号现在是否已过 gap（**只判不推进**；关闭或 gap=0 时恒 True）。"""
         if not self.enabled or self.gap_sec <= 0:
             return True
         return now >= self._tat.get(phone, 0.0)
 
-    def commit(self, phone, now):
+    def commit(self, phone: str, now: float) -> None:
         """推进该账号的 TAT：下一次放行要等到 `now + gap`（**只有真发起尝试才该调**）。"""
         if not self.enabled or self.gap_sec <= 0:
             return  # 与 allow 同一判据，否则关闭态下 commit 会白改状态
         self._tat[phone] = max(now, self._tat.get(phone, 0.0)) + self.gap_sec
 
 
-def apply_ewma(prev_rate, risk_ratio_hat, r_target, beta=EWMA_BETA):
+def apply_ewma(prev_rate: float, risk_ratio_hat: float, r_target: float,
+               beta: float = EWMA_BETA) -> float:
     """外环一步速率更新（目标跟踪的连续微调），返回新 rate。
 
     `bucket_rate = clamp(prev × (1 + β·(r̂ − R_target)/R_target), RATE_MIN, RATE_MAX)`，
@@ -480,7 +483,7 @@ def apply_ewma(prev_rate, risk_ratio_hat, r_target, beta=EWMA_BETA):
     return clamp_rate(min(max(clamp_rate(target), prev - step), prev + step))
 
 
-def burst_cap(rate, gap_sec, channels):
+def burst_cap(rate: float, gap_sec: float, channels: float) -> float:
     """把通道数收口成突发额度：`max(1, min(channels, 1 + gap_sec × rate))`。
 
     突发额度换算成时间是 τ=(burst−1)·T，即**桶允许超前发放的时间**。`gap_sec` 是相邻两次
@@ -491,7 +494,7 @@ def burst_cap(rate, gap_sec, channels):
     return max(1.0, min(float(channels or 0.0), 1.0 + float(gap_sec) * float(rate)))
 
 
-def burst_from_env(channels, rate):
+def burst_from_env(channels: float, rate: float) -> float:
     """`burst_cap` 的环境口径：`gap_sec` 取 `YIBAN_MIN_EXEC_GAP`（缺省住在名册里，域同源）。
 
     键的读取口径复用 `schedule._env_int`（与 `_schedule_config` 的既有读取同一套回退与
@@ -502,7 +505,9 @@ def burst_from_env(channels, rate):
     return burst_cap(rate, gap, channels)
 
 
-def limiter_from_env(channels=DEFAULT_BURST, on_change=None, shares=1):
+def limiter_from_env(channels: float = DEFAULT_BURST,
+                     on_change: Callable[[str, float, float, str], Any] | None = None,
+                     shares: int = 1) -> EgressLimiter:
     """按环境配置造出口限速器：速率 + 突发额度一次读全（配置面收口的入口）。
 
     - `rate` = `YIBAN_EGRESS_RATE`（**出口级** attempt/s，缺省住在名册里）——经
@@ -524,7 +529,7 @@ def limiter_from_env(channels=DEFAULT_BURST, on_change=None, shares=1):
                          shares=shares)
 
 
-def gap_gate_from_env():
+def gap_gate_from_env() -> AccountGapGate:
     """按环境配置造每账号 gap 门。
 
     gap = `YIBAN_ACCOUNT_GAP_MAX`（缺省住在名册里，与 `capacity_accounts` 的 gap 入参、执行体读的是

@@ -31,6 +31,8 @@
 **这里没有脱敏**：本模块只是状态词汇，遮手机号/凭据发生在 `yiban.masking` 与
 `yiban.logging_ext` 两层——状态串会进日志、日状态文件与 `/api/my-accounts`，把关不在这里。
 """
+from typing import Any
+
 # ---- 状态码 ----
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
 STATUS_ALREADY = "already"               # 今日已签到（重复执行时服务器告知）
@@ -160,7 +162,7 @@ _DISPLAY_ROWS = (
 )
 
 
-def _build_display():
+def _build_display() -> dict[str, dict[str, str]]:
     """把 `_DISPLAY_ROWS` 展成 {状态码: {symbol,text,legend,tone}}。
 
     symbol 沿用 SYMBOL/ICON——它只是按日状态文件（sign-daily-*.json）的**存储/传输
@@ -190,7 +192,7 @@ _LEGEND_TONES = (
 )
 
 
-def legend_items():
+def legend_items() -> list[dict[str, str]]:
     """日历图例项：按语气档归组，返回 `[{"tone", "label"}, ...]`。
 
     图例与状态行消费同一份表——往 `_DISPLAY_ROWS` 加行只要落到既有语气档，图例
@@ -205,7 +207,7 @@ def legend_items():
     return items
 
 
-def display_payload():
+def display_payload() -> dict[str, Any]:
     """日历页内联的显示载荷（服务端渲染进页面，前端状态行与日期格消费同一份表）。
 
     `by_code` 供账号卡状态行按状态码取文案与语气档；`by_symbol` 供日期格按**符号**
@@ -220,7 +222,7 @@ def display_payload():
     #: 先到先得会让「急停」被排在前面的日常态吞掉——日历上急停日显示成
     #: 「未在签到时段」的灰档，恰恰是最不能看错的状态。
     severity = {"ok": 0, "muted": 1, "busy": 2, "warn": 3, "bad": 4}
-    by_symbol = {}
+    by_symbol: dict[str, dict[str, str]] = {}
     for e in DISPLAY.values():
         cur = by_symbol.get(e["symbol"])
         if cur is None or severity.get(e["tone"], 0) > severity.get(cur["tone"], 0):
@@ -236,7 +238,7 @@ def display_payload():
 CONCLUDED_JSON_STATUSES = frozenset(ALL_STATUSES) - {STATUS_PENDING}
 
 
-def is_concluded_status(value):
+def is_concluded_status(value: object) -> bool:
     """该状态串是否代表「已有结论」（非空且非 `pending`）；未知串按有结论处理。
 
     判据用**排除法**而不是集合成员：状态文件是跨进程事实源，其 `status` 可能是本进程
