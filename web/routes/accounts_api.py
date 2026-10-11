@@ -3,7 +3,8 @@
 """账号管理域路由：管理员侧的账号列表/详情/增删改、批量操作、审核与排序。
 
 **功能**
-`GET /api/accounts` 列表（脱敏 + 今日签到状态 + 自选时间片 + 上一业务日执行体归属）；
+`GET /api/accounts` 列表（脱敏 + 今日签到状态 + 自选时间片 + 上一业务日执行体归属；
+可选 `limit`/`offset` 分页，不传＝整表，向后兼容）；
 `GET /api/accounts/<idx>/detail` 单号完整信息（列表外唯一回传明文口令与完整手机号的面，
 带会话级限速与聚合读审计）；`POST /api/accounts` 添加（不填邮箱=管理员自有号直接生效，
 填邮箱=归属该用户并回待审核，邮箱未注册则连带创建网站用户）；`PUT /api/accounts/<idx>`
@@ -41,6 +42,7 @@ from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
 from web.routes import detail_limits as _detail_limits
 from web.routes import high_risk_gate as _high_risk_gate
+from web.routes import page_args as _page_args
 from web.routes import read_audit_denied_trace as _read_audit_denied_trace
 from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
@@ -53,6 +55,19 @@ from web.services.verify_queue import start_edit_probe as _start_edit_probe
 def api_accounts():
     m = _appmod()
     accounts = m.load_accounts()
+    # 可选分页：不传 limit/offset 时 paged=False，下发整表（与分页前逐字相同）。
+    # 传了则只下发 [offset, offset+limit) 一页，并附分页元数据（total/limit/offset/returned）。
+    # 目标：消掉 124 §A.5.1 的"5k 整表 ≈2.14 MiB + 每 10s 轮询全量"隐患——轮询只取当前页。
+    limit, offset, paged = _page_args()
+    # `index` 是账号在**整表**里的绝对下标：前端用它拼 /api/accounts/<index>/detail
+    # 等行操作 URL（见 accounts-*.js），也用它显示行号。分页只切窗口，不改下标基准；
+    # 若按页内重数，第二页起每行的操作都会指向错号账号。
+    base_index = offset if paged else 0
+    if paged:
+        total = len(accounts)
+        accounts = accounts[offset:offset + limit]
+    # 逐账号派生映射的收窄判据：分页时只保留当前页账号的手机号（轮询只取当前页）。
+    _page_phones = {a.get("phone", "") for a in accounts} if paged else None
     # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
     # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
     # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
@@ -99,41 +114,51 @@ def api_accounts():
             return "last"
         return None
 
-    return jsonify(
-        {
-            "ok": True,
-            "accounts": [
-                {
-                    **m.mask_account(a, i),
-                    "time_pref": m._slot_to_label(prefs.get(a["phone"])),
-                    "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
-                    # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
-                    # 误以为"有归属但字段缺失"）
-                    "last_executor": last_exec.get(a["phone"]),
-                }
-                for i, a in enumerate(accounts)
-            ],
-            # states 值压成状态码字符串（前端图标映射用）
-            "states": {
-                m._mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
-                for k, v in states.items()
-            },
-            # 状态原因/计划（如"计划 06:42"），前端表格 title 展示；计划态由台账 run_at 生成，
-            # 故按**全部账号**取值（runner 不再为每个账号预写 sign-state 条目）。
-            # 文案由共享助手唯一裁定，与 /api/my-accounts 同源（accounts_data.plan_state_message）。
-            "state_msgs": {
-                m._mask_phone(a.get("phone", "")): _plan_state_message(
-                    a, states.get(a.get("phone", "")), plan_at)
-                for a in accounts
-            },
-            # 单次签到耗时秒数：表格状态 title 展示"耗时 xx s"；无记录为 None
-            "state_durs": {
-                m._mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
-                for k, v in states.items()
-            },
-            "config_file": os.path.basename(m.DB_FILE),
-        }
-    )
+    payload = {
+        "ok": True,
+        "accounts": [
+            {
+                **m.mask_account(a, base_index + i),
+                "time_pref": m._slot_to_label(prefs.get(a["phone"])),
+                "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
+                # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
+                # 误以为"有归属但字段缺失"）
+                "last_executor": last_exec.get(a["phone"]),
+            }
+            for i, a in enumerate(accounts)
+        ],
+        # states 值压成状态码字符串（前端图标映射用）
+        "states": {
+            m._mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
+            for k, v in states.items()
+            # 分页时只下发当前页账号的状态；不传参数（paged=False）保持整表口径不变
+            if _page_phones is None or k in _page_phones
+        },
+        # 状态原因/计划（如"计划 06:42"），前端表格 title 展示；计划态由台账 run_at 生成，
+        # 故按**全部账号**取值（runner 不再为每个账号预写 sign-state 条目）。
+        # 文案由共享助手唯一裁定，与 /api/my-accounts 同源（accounts_data.plan_state_message）。
+        "state_msgs": {
+            m._mask_phone(a.get("phone", "")): _plan_state_message(
+                a, states.get(a.get("phone", "")), plan_at)
+            for a in accounts
+        },
+        # 单次签到耗时秒数：表格状态 title 展示"耗时 xx s"；无记录为 None
+        "state_durs": {
+            m._mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
+            for k, v in states.items()
+            if _page_phones is None or k in _page_phones
+        },
+        "config_file": os.path.basename(m.DB_FILE),
+    }
+    if paged:
+        # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
+        payload.update({
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "returned": len(payload["accounts"]),
+        })
+    return jsonify(payload)
 
 
 def api_account_detail(idx):
