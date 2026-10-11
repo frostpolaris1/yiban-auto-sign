@@ -109,7 +109,7 @@ class RunStreamHub:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._subs = []          # [(sub, session_key)]
+        self._subs = []          # [(sub, session_key, kind)]；kind ∈ {"admin","user"}
         self._cursor = None
         self._thread = None
         self._poll = 1.0
@@ -129,18 +129,34 @@ class RunStreamHub:
         self._snap_cache[key] = (now, payload)
         return payload
 
-    # ---- 订阅 ----
-    def subscribe(self, session_key="", *, poll=1.0, batch=_BATCH, queue_max=QUEUE_MAX,
-                  phones=None):
-        """登记一个订阅者；必要时启动广播线程。→ Subscriber。
+    # ---- 订阅（原子查上限 + 登记）----
+    def try_subscribe(self, session_key="", *, kind="admin", poll=1.0, batch=_BATCH,
+                      queue_max=QUEUE_MAX, phones=None, session_max=0, connections_max=0):
+        """原子「查上限 + 订阅」。→ (Subscriber, None) 成功；(None, reason) 超限。
+
+        上限判定与登记必须在**同一把锁**内完成。分成两步（先 `session_count` /
+        `subscriber_count` 查计数，再另调订阅）会有 TOCTOU：两个并发请求各自通过检查、
+        各自登记，实际连接数越过上限（长连接下这个窗口可达秒级）。本方法复用本类既有的
+        `self._lock`（订阅表与广播游标都由它守），**不新增锁名**。
+
+        `kind` 是流别（`admin` / `user`）：`connections_max` 只数**同流别**的订阅，故
+        管理员流与用户流预算各自独立（125 §6.3），一方占满不阻塞另一方。`session_max`
+        按 `session_key` 计（同会话总连接数，不分流别）。
+
+        `session_max` / `connections_max` 为 0 表示该维不设限。`reason` 取值与端点发出的
+        `end` 原因一致：`too_many_connections`（每会话超限）/ `server_busy`（本流别全局超限）。
 
         线程首次启动时把游标定在**当前最大 id**：历史事件由各连接自己重放/取快照，
         广播器只负责"此后新增"的事件（否则新连接会把整表灌给所有人）。
         `phones` 非 None = 用户端流：只投本人手机号的行（本人过滤）。
         """
-        sub = Subscriber(queue_max, phones=phones)
         with self._lock:
-            self._subs.append((sub, session_key))
+            if session_max and self._session_count_locked(session_key) >= session_max:
+                return None, "too_many_connections"
+            if connections_max and self._kind_count_locked(kind) >= connections_max:
+                return None, "server_busy"
+            sub = Subscriber(queue_max, phones=phones)
+            self._subs.append((sub, session_key, kind))
             self._poll = max(0.1, float(poll))
             self._batch = max(1, int(batch))
             if self._thread is None or not self._thread.is_alive():
@@ -148,12 +164,20 @@ class RunStreamHub:
                 self._thread = threading.Thread(
                     target=self._loop, daemon=True, name="run-stream-hub")
                 self._thread.start()
-        return sub
+            return sub, None
+
+    def _session_count_locked(self, session_key):
+        """同会话订阅数（**须已持 `self._lock`**：供 `try_subscribe` 内部调用）。"""
+        return sum(1 for (_s, k, _kd) in self._subs if k == session_key)
+
+    def _kind_count_locked(self, kind):
+        """同流别订阅数（**须已持 `self._lock`**）。`connections_max` 按它判（预算分家）。"""
+        return sum(1 for (_s, _k, kd) in self._subs if kd == kind)
 
     def unsubscribe(self, sub):
         """注销订阅者（连接结束）。线程在无订阅者时自行退出。"""
         with self._lock:
-            self._subs = [(s, k) for (s, k) in self._subs if s is not sub]
+            self._subs = [(s, k, kd) for (s, k, kd) in self._subs if s is not sub]
 
     def subscriber_count(self):
         with self._lock:
@@ -161,7 +185,7 @@ class RunStreamHub:
 
     def session_count(self, session_key):
         with self._lock:
-            return sum(1 for (_s, k) in self._subs if k == session_key)
+            return self._session_count_locked(session_key)
 
     def _loop(self):
         while True:
@@ -181,7 +205,7 @@ class RunStreamHub:
                 continue
             with self._lock:
                 self._cursor = max(self._cursor or 0, rows[-1]["id"])
-                subs = [s for (s, _k) in self._subs]
+                subs = [s for (s, _k, _kd) in self._subs]
             for s in subs:
                 s.offer(rows)
 
@@ -214,6 +238,7 @@ _KEY_HEARTBEAT = "YIBAN_SSE_HEARTBEAT_SEC"
 _KEY_GAP = "YIBAN_SSE_GAP_MAX"
 _KEY_SESSION_MAX = "YIBAN_SSE_SESSION_MAX"
 _KEY_CONNECTIONS = "YIBAN_SSE_CONNECTIONS_MAX"
+_KEY_USER_CONNECTIONS = "YIBAN_SSE_USER_CONNECTIONS_MAX"
 _KEY_IDLE = "YIBAN_SSE_IDLE_SEC"
 _KEY_RECHECK = "YIBAN_SSE_SESSION_RECHECK_SEC"
 _KEY_MAX_SEC = "YIBAN_SSE_CONNECTION_MAX_SEC"
@@ -253,6 +278,8 @@ def stream_config(env_file, read_env):
         "gap_max": _int(env.get(_KEY_GAP), d(_KEY_GAP)),
         "session_max": _int(env.get(_KEY_SESSION_MAX), d(_KEY_SESSION_MAX)),
         "connections_max": _int(env.get(_KEY_CONNECTIONS), d(_KEY_CONNECTIONS)),
+        "user_connections_max": _int(env.get(_KEY_USER_CONNECTIONS),
+                                     d(_KEY_USER_CONNECTIONS)),
         "idle_sec": _int(env.get(_KEY_IDLE), d(_KEY_IDLE)),
         "recheck_sec": _int(env.get(_KEY_RECHECK), d(_KEY_RECHECK)),
         "connection_max_sec": _int(env.get(_KEY_MAX_SEC), d(_KEY_MAX_SEC)),

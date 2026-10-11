@@ -8,11 +8,14 @@
 （类型与 payload 的唯一定义点在 `yiban/store/run_events.py`；本模块只做帧封装与调度）。
 
 **两条端点的受众与数据面**
-- `/api/stream/progress`：**仅主管理员**（与 `/api/scheduler/executors/progress` 同口径）。
-  推送聚合计数（快照）+ 全部执行体的进度事件；payload **不含手机号**。
-- `/api/stream/my-signin`：**任何已登录会话**。只推**本人账号**（服务端按会话用户
-  的本人 phone 集合过滤）；过滤用的 phone **不进 payload**。payload 只保留
-  id/ts/node/node_label/message。
+- `/api/stream/progress`：**仅主管理员**（强档判定，与 `/api/scheduler/executors/progress`
+  同一口径；注册管理员同得 403）。执行体级运行细节不给注册管理员，故授权面用强档，
+  不用"弱档角色 == admin"那一条。推送聚合计数（快照）+ 全部执行体的进度事件；
+  payload **不含手机号**。
+- `/api/stream/my-signin`：**任何已登录会话**。只推**本人账号**的事件；服务端按会话用户
+  的本人 phone 集合过滤；过滤用的 phone **不进 payload**。payload 只保留
+  id/ts/day/node/node_label/executor/executor_label/message（后三者均为公开标签，
+  不含手机号与主机名）。
 
 **建连与续传（125 §3.3）**
 1. 无 `Last-Event-ID`（首连）：发 `snapshot`（定向聚合，带 cursor），转常态。
@@ -26,18 +29,23 @@
    表内区间"，两者叠起来才不漏事件（重叠部分按 id 去重）。
 
 **连接治理（全部 < gunicorn `--timeout 60`）**
-心跳 15 秒；每会话连接上限 3；全局上限 `YIBAN_SSE_CONNECTIONS_MAX`（缺省 10）；
+心跳 15 秒；每会话连接上限 3（`YIBAN_SSE_SESSION_MAX`）；全局上限**两条流各自预算**
+（设计 §6.3"用户端流连接预算另算"）：管理员流 `YIBAN_SSE_CONNECTIONS_MAX`（缺省 10）、
+用户流 `YIBAN_SSE_USER_CONNECTIONS_MAX`（缺省 10）；
 空闲 300 秒（**无 progress 事件**）关；会话复查 60 秒（登出即 `end(session_expired)`）；
 单连接硬上限 120 分钟。全部取自 `config/registry.json` 的键。
+上限判定与订阅在 `run_stream.hub().try_subscribe` 的**同一把锁**内完成（check-and-subscribe
+原子化），消除并发建连的 TOCTOU。
 
 **隐私红线（125 §3.6）**
 `progress` 与快照都不含手机号；`executor` 只回公开标签（角色 + 槽位序号）；
 `message` 读取面复遮一次（纵深防御）；用户端流只推本人。
 
 **鉴权与审计**
-两端点**显式**校验会话与角色（长连接是权限旁路高发区），并对 GET 补 `Origin` 同源
-校验（`EventSource` 不能自定义请求头，只能靠 Cookie；无 Origin 放行，语义同应用既有
-`_is_same_origin`）。只读面留痕**只在建连时**调一次 `read_audit_trace()`——绝不每拍写
+两端点**显式**校验会话与角色（长连接是权限旁路高发区）：progress 走强档主管理员判定
+（注册管理员 403），my-signin 只要求会话已登录（弱档）。两端点都对 GET 补 `Origin`
+同源校验（`EventSource` 不能自定义请求头，只能靠 Cookie；无 Origin 放行，语义同应用
+既有的同源判定）。只读面留痕**只在建连时**调一次 `read_audit_trace()`——绝不每拍写
 （每拍写 = 50 行/秒并串哈希链写者，125 §5.2）。
 
 **归属**
@@ -45,8 +53,8 @@
 `web.routes.register_all`。进程内广播器与帧封装在 `web/services/run_stream.py`。
 
 **通信**
-视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger` / `_current_role` /
-`_request_is_same_origin` / `read_env` / `ENV_FILE` / `load_accounts` / `ACCOUNT_STATUS_ACTIVE`），
+视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger` / 角色判定与同源判定
+两枚 helper / `read_env` / `ENV_FILE` / `load_accounts` / `ACCOUNT_STATUS_ACTIVE`），
 避免导入环；本人号码集合复用 `web/routes/my.py` 的归属口径。
 """
 import contextlib
@@ -119,9 +127,13 @@ def _user_snapshot():
     }
 
 
-def _stream_generator(m, hub, cfg, last_id, session_key, phones):
-    """建连补发 + 常态扇出（管理员流与用户流共用；`phones` 非 None 即用户流）。"""
-    poll = cfg["poll_sec"] or 1
+def _stream_generator(m, hub, cfg, last_id, sub, phones):
+    """建连补发 + 常态扇出（管理员流与用户流共用；`phones` 非 None 即用户流）。
+
+    `sub` 由端点在 `try_subscribe` 里**原子**登记后传入（上限判定与订阅同锁，见 125 §3.4
+    与 `run_stream.hub`）。订阅先于补发：广播线程自此起投递"新增"事件，补发覆盖"此刻
+    表内区间"，两者叠起来才不漏事件（重叠按 id 去重）。
+    """
     heartbeat = cfg["heartbeat_sec"] or 15
     gap_max = cfg["gap_max"] if cfg["gap_max"] is not None else 500
     user_mode = phones is not None
@@ -133,8 +145,6 @@ def _stream_generator(m, hub, cfg, last_id, session_key, phones):
             return _user_snapshot()
         return hub.snapshot(None, max_age=(0 if fresh else None))
 
-    # 订阅先于补发：广播线程自此起投递"新增"事件；补发覆盖"此刻表内区间"。
-    sub = hub.subscribe(session_key, poll=poll, phones=phones)
     try:
         if last_id <= 0:
             snap = snapshot()
@@ -211,33 +221,46 @@ def _session_key():
 
 
 def api_stream_progress():
-    """SSE：管理员进度流（聚合计数 + 全部执行体事件；不含手机号）。"""
+    """SSE：主管理员进度流（聚合计数 + 全部执行体事件；不含手机号）。
+
+    授权走**强档**主管理员判定（与 `/api/scheduler/executors/progress` 同口径，见
+    `web/routes/settings_api.py` 的该端点）。注册管理员（`users.role=admin`）虽被弱档
+    角色判定当成 admin，仍得 403——执行体级运行细节不给它。匿名由登录守卫守成 401
+    （本端点不自判未登录，与 settings_api 先例同形）。
+    """
     m = _appmod()
     if not _same_origin(m):
         return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
-    role = m._current_role()
-    if role is None:
-        return jsonify({"error": "未登录"}), 401
-    if role != "admin":
-        return jsonify({"error": "无权限"}), 403
+    if not m._is_builtin_admin_session():
+        return jsonify({"error": "仅主管理员可查看实时进度流"}), 403
     cfg = _run_stream.stream_config(m.ENV_FILE, m.read_env)
     if not cfg["enabled"]:
         return _end_only("disabled")
     hub = _run_stream.hub()
-    key = _session_key()
-    if cfg["session_max"] and hub.session_count(key) >= cfg["session_max"]:
-        return _end_only("too_many_connections")
-    if cfg["connections_max"] and hub.subscriber_count() >= cfg["connections_max"]:
-        return _end_only("server_busy")
+    sub, reason = hub.try_subscribe(
+        _session_key(), kind="admin", poll=cfg["poll_sec"] or 1, phones=None,
+        session_max=cfg["session_max"], connections_max=cfg["connections_max"])
+    if sub is None:
+        return _end_only(reason)
     # 只读面留痕：**建连时一次**，绝不每拍写（125 §5.2）。
     with contextlib.suppress(Exception):
         read_audit_trace()("run_events_stream", "progress")
     return _sse_response(_stream_generator(
-        m, hub, cfg, _last_event_id(), key, None))
+        m, hub, cfg, _last_event_id(), sub, None))
 
 
 def api_stream_my_signin():
-    """SSE：用户端流，只推**本人账号**的事件（服务端过滤；phone 不进 payload）。"""
+    """SSE：用户端流，只推**本人账号**的事件（服务端过滤；phone 不进 payload）。
+
+    `progress` 事件实际下发的字段 = `id` / `ts` / `day` / `node` / `node_label` /
+    `executor` / `executor_label` / `message`。`executor` 与 `executor_label` 都是
+    **公开标签**（角色 + 槽位序号，经读取面 `_public_executor` / `_executor_label` 收敛），
+    不含手机号与主机名；过滤用的 phone 不进 payload。快照只给 `cursor` / `day` / 生成时刻，
+    **不含**全局 `totals` / `by_executor`（那是管理员面口径，推给普通用户就是越权）。
+
+    连接预算与管理员流**分家**：本端点用 `YIBAN_SSE_USER_CONNECTIONS_MAX`（125 §6.3
+    "用户端流连接预算另算"），管理员流另用 `YIBAN_SSE_CONNECTIONS_MAX`。
+    """
     m = _appmod()
     if not _same_origin(m):
         return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
@@ -247,16 +270,16 @@ def api_stream_my_signin():
     if not cfg["enabled"]:
         return _end_only("disabled")
     hub = _run_stream.hub()
-    key = _session_key()
-    if cfg["session_max"] and hub.session_count(key) >= cfg["session_max"]:
-        return _end_only("too_many_connections")
-    if cfg["connections_max"] and hub.subscriber_count() >= cfg["connections_max"]:
-        return _end_only("server_busy")
     phones = _my_phones(m)
+    sub, reason = hub.try_subscribe(
+        _session_key(), kind="user", poll=cfg["poll_sec"] or 1, phones=phones,
+        session_max=cfg["session_max"], connections_max=cfg["user_connections_max"])
+    if sub is None:
+        return _end_only(reason)
     with contextlib.suppress(Exception):
         read_audit_trace()("run_events_stream", "my-signin")
     return _sse_response(_stream_generator(
-        m, hub, cfg, _last_event_id(), key, phones))
+        m, hub, cfg, _last_event_id(), sub, phones))
 
 
 def register(app):
