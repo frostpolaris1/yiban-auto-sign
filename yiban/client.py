@@ -363,7 +363,7 @@ class YibanClient:
         # 取当前时间必须用"真时间戳"语义。`datetime.now().timestamp()` 与
         # `clock.now().timestamp()` 不等价——后者把北京时间当宿主本地时间再转戳，
         # 在 UTC 宿主上会差 8 小时。故此处刻意不走业务钟（与其他取时点不同）。
-        now_ts = int(datetime.now().timestamp())
+        now_ts = int(datetime.now().timestamp())  # noqa: DTZ005 真时间戳语义：与易班服务端 Range 时间戳同钟，刻意不走业务钟
         start_ts = int(range_obj.get("StartTime", 0))
         end_ts = int(range_obj.get("EndTime", 0))
         if not start_ts or not end_ts:
@@ -374,8 +374,8 @@ class YibanClient:
             # 不在签到时间窗口内，标记为 skip（不需要重试）
             return (
                 False,
-                f"未在签到时间内（{datetime.fromtimestamp(start_ts)} ~ "
-                f"{datetime.fromtimestamp(end_ts)}）",
+                f"未在签到时间内（{datetime.fromtimestamp(start_ts)} ~ "  # noqa: DTZ006 真时间戳语义，仅用于提示文案
+                f"{datetime.fromtimestamp(end_ts)}）",  # noqa: DTZ006 真时间戳语义，仅用于提示文案
                 True,
                 yiban_status.STATUS_SKIPPED_WINDOW,
             )

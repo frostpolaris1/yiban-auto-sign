@@ -621,7 +621,7 @@ def main(argv=None):
         # 事实源是台账 `sign_tasks.run_at`，web 读取时生成「计划 HH:MM」（见
         # `web/routes/my_api.py`、`web/routes/accounts_api.py`）。此前在此写 v2 scheduled
         # 让网页显示与真正执行的 v3 计划成为两个算法（uniform 下实测差 47 分钟）。
-        accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
+        accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))  # noqa: DTZ901 datetime.max 是排序哨兵（未排到即排尾），无时区语义
         # 调度快照标记：见 `_write_sched_snapshot`；标记不可写时 web 端回退旧分界，不影响签到
         with contextlib.suppress(OSError):
             _write_sched_snapshot(

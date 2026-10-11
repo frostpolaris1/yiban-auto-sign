@@ -659,7 +659,7 @@ def _clock_jump_guard(conn, key):
         conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
         return True, ""
     try:
-        last = datetime.datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")
+        last = datetime.datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析 app_meta 库内业务本地 naive 时间串
     except ValueError:
         conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
         return True, ""
