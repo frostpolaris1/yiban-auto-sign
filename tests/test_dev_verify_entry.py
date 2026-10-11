@@ -44,6 +44,8 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 #: `"$py"` = `--ci` 解析出的解释器绝对路径（CI 上是 setup-python 那个）。
 EXPECTED_CI_COMMANDS = (
     '"$py" -m ruff check yiban/ tests/ scripts/ web/ --quiet',
+    '"$py" -m mypy',
+    '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
     '"$py" -m pytest tests/ -q -n 4 --dist loadfile -k '
     '"security or mask or audit or login or private or csrf or ratelimit"',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
@@ -396,8 +398,8 @@ class DevVerifyFastModeTest(unittest.TestCase):
             rc, out = _bash("%s\nresolve_exit_code %d %d %d\n" % (src, ruff_rc, py_rc, empty))
             self.assertEqual((rc, out.strip()), (0, want),
                              f"final rc 不对：ruff={ruff_rc} pytest={py_rc} 空覆盖={empty} → {out.strip()}")
-        self.assertIn('resolve_exit_code "$ruff_rc" "$py_rc" "${FAST_EMPTY:-0}"', self.text,
-                      "调用点必须把空覆盖标记传进裁决点")
+        self.assertIn('resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}"', self.text,
+                      "调用点必须把空覆盖标记传进裁决点；第一参是 ruff+mypy 归一后的静态检查码")
         self.assertIn("DEV-VERIFY(fast): covered=", self.text,
                       "fast 档汇总行必须打覆盖数：只跑入口自检与真覆盖要能区分")
 
@@ -405,6 +407,8 @@ class DevVerifyFastModeTest(unittest.TestCase):
         """归一为 1 之后原始码必须仍逐行打印：否则定位信息随归一一起丢失。"""
         self.assertIn('echo "DEV-VERIFY ruff_exit=$ruff_rc"', self.text,
                       "ruff 原始退出码必须进日志")
+        self.assertIn('echo "DEV-VERIFY mypy_exit=$mypy_rc"', self.text,
+                      "mypy 原始退出码必须进日志")
         self.assertIn('echo "DEV-VERIFY pytest_exit=$py_rc"', self.text,
                       "pytest 原始退出码必须进日志")
 
