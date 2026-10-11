@@ -1812,5 +1812,134 @@
     "web_editable": false,
     "tier": "master",
     "reload": "restart"
+  },
+  "YIBAN_SSE_ENABLED": {
+    "type": "bool",
+    "default": true,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "SSE 实时进度流总开关（关则端点回 end(disabled)）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_POLL_SEC": {
+    "type": "seconds",
+    "domain": [1, 60],
+    "default": 1,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "广播器增量读节拍（秒）；每进程每拍一次读，扇出给全部订阅者",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_HEARTBEAT_SEC": {
+    "type": "seconds",
+    "domain": [1, 50],
+    "default": 15,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "SSE 心跳间隔（秒）；必须小于 gunicorn --timeout 60 与 nginx 读超时",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_GAP_MAX": {
+    "type": "int",
+    "domain": [0, 100000],
+    "default": 500,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "断线续传可补发的最大缺口（行数）；超过则发 resync + snapshot",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_SESSION_MAX": {
+    "type": "int",
+    "domain": [1, 100],
+    "default": 3,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "每会话（同 cookie）最大并发 SSE 连接数",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_CONNECTIONS_MAX": {
+    "type": "int",
+    "domain": [1, 1000],
+    "default": 10,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "管理员进度流全局最大并发 SSE 连接数（10 档取 min(10, gunicorn threads-4)，需给普通请求留线程）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_USER_CONNECTIONS_MAX": {
+    "type": "int",
+    "domain": [1, 1000],
+    "default": 10,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "用户端流（my-signin）全局最大并发 SSE 连接数；与管理员流各自预算（设计 §6.3）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_IDLE_SEC": {
+    "type": "seconds",
+    "domain": [0, 86400],
+    "default": 300,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "空闲超时（秒）：无 progress 事件达此时长即关流（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_SESSION_RECHECK_SEC": {
+    "type": "seconds",
+    "domain": [0, 3600],
+    "default": 60,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "会话复查节拍（秒）：登出即 end(session_expired)（0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SSE_CONNECTION_MAX_SEC": {
+    "type": "seconds",
+    "domain": [0, 86400],
+    "default": 7200,
+    "group": [
+      "实时进度流"
+    ],
+    "doc": "单连接硬上限（秒，默认 120 分钟，0=关闭）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
   }
 }

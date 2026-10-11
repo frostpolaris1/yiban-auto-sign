@@ -192,6 +192,7 @@ def register_all(app):
         run_events_api,
         settings_api,
         signin_api,
+        stream_api,
         users_api,
     )
     pages.register(app)
@@ -204,5 +205,6 @@ def register_all(app):
     users_api.register(app)
     audit_api.register(app)
     run_events_api.register(app)
+    stream_api.register(app)
     settings_api.register(app)
     signin_api.register(app)

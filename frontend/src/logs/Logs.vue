@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, toast } from "../lib/shell";
+import { api, shellBase, toast } from "../lib/shell";
 import { isValidDate } from "./date-guard.js";
 import {
   ALL_LOG_LEVEL,
@@ -35,6 +35,19 @@ import {
   type RunEventsPayload,
   type RunRound,
 } from "./run-events";
+import {
+  applyProgress,
+  emptyStreamState,
+  execRowNote,
+  isTerminalEnd,
+  recentText,
+  stateFromSnapshot,
+  streamStatusText,
+  windowLine,
+  type StreamProgress,
+  type StreamSnapshot,
+  type StreamState,
+} from "./stream";
 
 /* 签到日志页（GET /api/logs + GET /api/admin/run-events，四分区内容：运行巡检 /
    日志 / 签到事件 / 探针记录）。
@@ -92,6 +105,22 @@ const runError = ref("");
 const runLoading = ref(false);
 const selectedKey = ref("");
 
+/** 实时进度流（SSE，`GET /api/stream/progress`）：挂在「运行巡检」分区顶部。
+ *  本页仅管理员可达（pages.py 的 _admin_page_redirect），故流端点不会对普通用户开。
+ *  口径纪律：事件计数**不去重**（≠ 首页「今日成功账号」）；`finalize` 单独一列；
+ *  最近事件只给节点与执行体标签，逐账号明细留在下方时间线。 */
+const liveState = ref<StreamState>(emptyStreamState());
+const liveConn = ref<"connecting" | "open" | "closed">("connecting");
+/** `end` 事件的原因（机器可读串）；空串 = 尚未收到 end */
+const liveEndReason = ref("");
+/** 流不可用（终止原因 / 握手被拒）：降级到既有 10 秒轮询，本块显示降级文案 */
+const liveFallback = ref(false);
+/** 最近一次收到 progress 事件的**本地**时刻：年龄按本地钟差算，不解析服务端时刻（免时区偏差） */
+const liveLastRxMs = ref(0);
+const liveNowMs = ref(Date.now());
+let stream: EventSource | null = null;
+let liveAgeTimer: ReturnType<typeof setInterval> | null = null;
+
 let busy = false;
 let runBusy = false;
 /** 在途巡检请求期间到达的请求（合并：后到覆盖先到），不许静默丢弃 */
@@ -122,6 +151,29 @@ const runTruncatedLine = computed(() => (runPayload.value ? roundsTruncatedText(
 const timelineTitle = computed(() =>
   selectedRound.value ? `事件时间线 · ${selectedRound.value.day} · ${selectedRound.value.executor_label}` : "事件时间线",
 );
+
+const liveConnected = computed(() => liveConn.value === "open" && !liveFallback.value);
+const liveStatusLine = computed(() =>
+  liveFallback.value
+    ? "— 实时流不可用，已回退 10 秒轮询"
+    : streamStatusText(liveConn.value, liveEndReason.value),
+);
+const liveMetaLine = computed(() => windowLine(liveState.value));
+const liveAgeText = computed(() => {
+  if (!liveLastRxMs.value) return "";
+  const sec = Math.max(0, Math.floor((liveNowMs.value - liveLastRxMs.value) / 1000));
+  return `距最近事件 ${sec} 秒`;
+});
+const liveNodeOrder = computed(() => liveState.value.nodeOrder);
+const liveNodeLabels = computed(() => liveState.value.nodeLabels);
+const liveExecs = computed(() => liveState.value.execs);
+const liveRecentText = computed(() => recentText(liveState.value.recent));
+
+/** 六节点某一列的计数（`node_order` 里的键在 `totals` 上必有；缺则回 0，不抛）。 */
+function liveTotalOf(node: string): number {
+  const totals = liveState.value.totals as unknown as Record<string, number>;
+  return Number(totals[node] ?? 0);
+}
 
 function tableRows(events: LogEvent[], t: TableState): LogEvent[] {
   return paginate(sortEvents(events, t.prop, t.order), t.page, t.size);
@@ -281,6 +333,91 @@ function refreshRuns(): void {
   void loadRuns(runPayload.value?.window.day || loadedDate.value, "", true);
 }
 
+/** SSE 帧 → JSON（非字符串 / 非法 JSON 回 null，一次坏帧不得打断状态机）。 */
+function parseFrame<T>(e: Event): T | null {
+  const raw = (e as MessageEvent).data;
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function stopStream(): void {
+  if (stream) {
+    stream.close();
+    stream = null;
+  }
+}
+
+/**
+ * 接进度流。自动重连与 `Last-Event-ID` 续传由浏览器原生 `EventSource` 承担。
+ *
+ * 降级判据两条（满足任一即回退既有 10 秒轮询）：
+ * ① `end` 的终止原因（会话过期 / 开关关闭 / 连接超限 / 服务繁忙）——重连只会再被拒；
+ * ② `error` 且 `readyState=CLOSED`（握手被拒，如 401/403/内容类型不符）——不可恢复。
+ * 其余 `end` 原因（时限 / 空闲）与瞬断交给浏览器自动重连，本函数不拦。
+ */
+function startStream(): void {
+  stopStream();
+  liveEndReason.value = "";
+  liveFallback.value = false;
+  liveConn.value = "connecting";
+  let es: EventSource;
+  try {
+    // 子路径部署（BasePathMiddleware）下必须带 `shellBase()` 前缀，与 `api()` 同口径；
+    // 根路径形态下 shellBase() 为空串，URL 不变。
+    es = new EventSource(shellBase() + "/api/stream/progress");
+  } catch {
+    liveFallback.value = true;
+    liveConn.value = "closed";
+    return;
+  }
+  stream = es;
+  es.addEventListener("open", () => {
+    liveConn.value = "open";
+  });
+  es.addEventListener("snapshot", (e) => {
+    const snap = parseFrame<StreamSnapshot>(e);
+    if (snap) liveState.value = stateFromSnapshot(snap);
+    liveConn.value = "open";
+  });
+  es.addEventListener("progress", (e) => {
+    const ev = parseFrame<StreamProgress>(e);
+    if (ev) {
+      liveState.value = applyProgress(liveState.value, ev);
+      liveLastRxMs.value = Date.now();
+    }
+    liveConn.value = "open";
+  });
+  es.addEventListener("heartbeat", () => {
+    liveConn.value = "open";
+  });
+  es.addEventListener("resync", () => {
+    /* 后紧跟一个 snapshot：等它整体替换，此处不动状态 */
+  });
+  es.addEventListener("end", (e) => {
+    liveEndReason.value = parseFrame<{ reason?: string }>(e)?.reason ?? "";
+    if (isTerminalEnd(liveEndReason.value)) {
+      stopStream();
+      liveConn.value = "closed";
+      liveFallback.value = true;
+    }
+  });
+  es.addEventListener("error", () => {
+    if (!stream) return;
+    if (es.readyState === EventSource.CLOSED) {
+      liveEndReason.value = "";
+      liveConn.value = "closed";
+      liveFallback.value = true;
+      stopStream();
+    } else {
+      liveConn.value = "connecting";
+    }
+  });
+}
+
 function search(): void {
   keyword.value = searchInput.value.trim();
   void load();
@@ -420,10 +557,17 @@ onMounted(() => {
   }
   void load();
   timer = setInterval(tick, POLL_MS);
+  // 实时流与年龄心跳分开计时：轮询 10 秒，流自带 1 秒节拍、年龄每秒刷新。
+  startStream();
+  liveAgeTimer = setInterval(() => {
+    liveNowMs.value = Date.now();
+  }, 1000);
 });
 
 onBeforeUnmount(() => {
   if (timer !== null) clearInterval(timer);
+  if (liveAgeTimer !== null) clearInterval(liveAgeTimer);
+  stopStream();
 });
 </script>
 
@@ -442,6 +586,55 @@ onBeforeUnmount(() => {
               <span id="run-window" class="run-info">{{ runWindowLine }}</span>
             </div>
           </div>
+
+          <!-- 运行进度（实时）：SSE 流（bd fdjl / 125 §4.2）。一屏两带：全局六节点总数
+               + 每执行体一行 + 最近事件。两条口径纪律：事件计数**不去重**（≠ 首页
+               「今日成功账号」）；`finalize` 单独一列。最近事件只给节点与执行体标签，
+               逐账号明细留在下方时间线。流不可用时本块显示降级文案，10 秒轮询照常。 -->
+          <div id="run-live" class="run-live">
+            <div class="run-live-head">
+              <span
+                id="live-status"
+                class="run-live-status"
+                :class="liveConnected ? 'is-on' : 'is-off'"
+                role="status"
+              >{{ liveStatusLine }}</span>
+              <span id="live-meta" class="run-info">{{ liveMetaLine }}</span>
+              <span v-if="liveAgeText" id="live-age" class="run-info">{{ liveAgeText }}</span>
+            </div>
+            <div v-if="liveNodeOrder.length" id="live-totals" class="live-totals">
+              <div v-for="n in liveNodeOrder" :key="n" class="live-total">
+                <span class="live-total-label">{{ liveNodeLabels[n] ?? n }}</span>
+                <span class="live-total-value">{{ liveTotalOf(n) }}</span>
+              </div>
+            </div>
+            <p v-else class="run-note">等待实时进度流…</p>
+            <p class="run-note">注：以上为 run_events 事件计数（不去重），与首页「今日成功账号」（按账号去重）不是同一口径。</p>
+            <el-table v-if="liveExecs.length" id="live-execs" :data="liveExecs" size="small">
+              <el-table-column prop="executor" label="执行体" width="130" />
+              <el-table-column label="最近活动" width="110">
+                <template #default="{ row }">{{ eventTime(row.last_ts) }}</template>
+              </el-table-column>
+              <el-table-column prop="claim" label="领取" width="70" />
+              <el-table-column prop="start" label="开始" width="70" />
+              <el-table-column prop="success" label="成功事件" width="90" />
+              <el-table-column prop="fail" label="失败" width="70" />
+              <el-table-column prop="pause" label="暂停" width="70" />
+              <el-table-column prop="finalize" label="收尾" width="70" />
+              <el-table-column prop="unexecuted" label="未执行" width="80" />
+              <el-table-column label="耗时" width="90">
+                <template #default="{ row }">{{ formatDuration(row.duration_sec) }}</template>
+              </el-table-column>
+              <el-table-column label="状态" min-width="110">
+                <template #default="{ row }">{{ execRowNote(row) }}</template>
+              </el-table-column>
+            </el-table>
+            <div id="live-recent" class="live-recent">
+              <span class="live-recent-label">最近事件（不含账号）</span>
+              <span class="live-recent-text">{{ liveRecentText }}</span>
+            </div>
+          </div>
+
           <el-alert v-if="runError" type="error" :title="runError" :closable="false" show-icon style="margin: 8px 0" />
           <div v-if="runError" class="logs-retry">
             <button type="button" class="btn btn--ghost btn--sm" :disabled="runLoading" @click="refreshRuns">重试</button>
@@ -822,6 +1015,73 @@ onBeforeUnmount(() => {
 /* 运行巡检块：摘要与时间线同卡；两块表各占一行，窄屏由 el-table 自身横滚。 */
 #run-panel {
   margin-bottom: 12px;
+}
+/* 运行进度（实时）块：一屏两带（全局六节点总数 + 每执行体一行 + 最近事件）。
+   外观用全局令牌（--border / --bg-card / --r-inner），与同卡其他块一致；
+   六节点总数用 flex 自适应（flex-basis 90px），360px 下折行、不横向溢出。 */
+.run-live {
+  border: 1px solid var(--border);
+  border-radius: var(--r-inner, 10px);
+  background: var(--bg-card);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.run-live-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.run-live-status {
+  font-size: var(--fs-label);
+  font-weight: 600;
+}
+.run-live-status.is-on {
+  color: var(--state-ok-fg);
+}
+.run-live-status.is-off {
+  color: var(--t-muted);
+}
+.live-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px var(--sp-2, 8px);
+  margin-bottom: 4px;
+}
+.live-total {
+  flex: 1 1 90px;
+  min-width: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.live-total-label {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.live-total-value {
+  /* 展示档字号走令牌（--fs-display=22px）：裸 px 必须落在六档或 ≥24，此法最稳 */
+  font-size: var(--fs-display);
+  font-weight: 700;
+  color: var(--t-base);
+  font-variant-numeric: tabular-nums;
+}
+.live-recent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.live-recent-label {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.live-recent-text {
+  font-size: 12px;
+  color: var(--t-base);
+  font-family: var(--font-mono);
+  word-break: break-all;
 }
 .run-sub {
   margin: 12px 0 6px;
