@@ -66,6 +66,24 @@ test("登录 → 审计页：首屏一页、加载更多补齐、动作过滤收
   await expect(rows).toHaveCount(50);
   await expect(more).toBeEnabled();
 
+  // 5b) 每页条数由原生 <select> 换成 EP el-select（原生控件禁令）：控件换形，取值与提交
+  //     口径不变——选 100 后新查询带 page_size=100，行数随之补齐（旧 select 同一行为）。
+  //     可访问名用 aria-label 而非 aria-labelledby：el-select 的 $attrs fallthrough 落在
+  //     根 div（role=null），aria-labelledby 不会进 role=combobox 的内层 input ⇒ 下拉无名。
+  //     EP 2.14.7 会把 ariaLabel prop 转发到内层 input（select2.mjs 的 role=combobox 分支），
+  //     故这里断言真实 DOM 里该 combobox 的可访问名，防再回归。
+  const pagesizeCombo = page.locator('[data-select-field="audit-pagesize"] input[role="combobox"]');
+  await expect(pagesizeCombo).toHaveAccessibleName("每页");
+  let lastPageSize = "";
+  page.on("request", (req) => {
+    const u = new URL(req.url());
+    if (u.pathname === "/api/audit-logs") lastPageSize = u.searchParams.get("page_size") ?? "";
+  });
+  await page.locator('[data-select-field="audit-pagesize"] .el-select__wrapper').click();
+  await page.getByRole("option", { name: "100", exact: true }).click();
+  await expect.poll(() => lastPageSize, { message: "换页大小没带 page_size=100" }).toBe("100");
+  await expect.poll(async () => Number(await rows.count())).toBeGreaterThan(50);
+
   // 6) 组合输入（中文输入法）期的回车**不得**发起查询——否则发出去的是未提交的拼音串。
   //    这条与日志页那条是各自的载体（两页各一份守卫与标志），故各自钉住：只留一处会被
   //    "改一处忘另一处"绕过。Chromium 不为 isComposing 跳过隐式提交，所以钉的是提交路径上

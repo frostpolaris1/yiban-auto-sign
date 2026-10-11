@@ -24,7 +24,8 @@ import {
    emit 上去。
 
    交互：抓峰尖拖（左右=峰值时刻、上下=散布）/ 空白处按下=整体推移 / 拖时间轴底座两端=调
-   散布（恒以峰尖对称）/ 画布聚焦后方向键 ±1（Shift ×5，上=更尖）/ 可见编辑器逐键实时预览。
+   散布（恒以峰尖对称）/ 画布聚焦后方向键 ±1（Shift ×5，上=更尖）/ 可见编辑器预览
+   （数字字段逐键实时；峰值中心为 EP el-time-picker，提交式——Enter/失焦/面板选择才生效）。
    实时依赖：窗口与掐头去尾（含 20% 缓冲钳位，父组件算好经 ctxData 传入）、分布方式=均匀
    （钟形置灰 + 提示，编辑仍可用）、账号数（σ_eff 放大曲线与高峰速率）、主题（重取 CSS
    变量重绘）、只读（A 档权限）、直接操作门（`editGate`，卡级「编辑」按钮）。
@@ -35,9 +36,10 @@ import {
    编辑器不在此门内（逐键键入不是误触形状，且"先设好、切回即用"的便利不倒退）。
 
    ⚠ P3 收官重设计（2026-10-04）在本组件上落地三件事：
-   ① 画布按分布态降级——`dist === "uniform"`（默认）时不渲染 210px 画布与图例（均匀态
-      根本没有钟形可画，旧观感是"空矩形 + 解释不存在之物的图例"，是卡里最重的噪音），
-      改由一行紧凑说明承担；峰值中心/散布编辑器保留（"先设好、切回即用"的便利不倒退）。
+   ① 画布按分布态降级——只有 `dist === "normal"` 渲染 210px 画布与图例；`front`（默认，
+      提前铺完）与 `uniform` 都没有钟形可画（旧观感是"空矩形 + 解释不存在之物的图例"，
+      是卡里最重的噪音），改由一行紧凑说明承担；峰值中心/散布编辑器保留（"先设好、切回即用"
+      的便利不倒退）。`data-dist-state` 是三态锚点（front / uniform / normal）。
    ② 参数行换行不再"散布"孤行——标签与控件组包成不可拆分的 `.dist-viz-editor` 单元。
    ③ 峰尖拖拽手感精修——更大的命中区、hover/拖拽光标、悬停外扩光环 + 拖动数值药丸
       （μ 时刻与 σ 散布一眼可见）、方向键可达性在画布与可视提示行双写。
@@ -81,7 +83,12 @@ let endDrag: (() => void) | null = null;
 let hoverKind: "none" | "peak" | "base" = "none";
 let activeDrag = false;
 
-const isUniform = computed(() => props.ctxData.dist === "uniform");
+const distState = computed(() => {
+  const d = props.ctxData.dist;
+  return d === "normal" ? "normal" : (d === "front" ? "front" : "uniform");
+});
+/* 只有正态态有钟形可画（画布 v-if=isNormal）；front / uniform 都是一行紧凑说明。 */
+const isNormal = computed(() => distState.value === "normal");
 /* 画布能否被直接操作：权限（非只读）**且**编辑门开着。这是真门——只读时画布连指针事件都
    收不到（CSS `pointer-events: none`），键盘分支也在此早退，不存在"看得见拖得动"的假门。 */
 const direct = computed(() => !props.readonly && props.editGate);
@@ -125,7 +132,6 @@ function resolve(expr: string): string {
 function readColors(): void {
   colors.curve = resolve("rgb(var(--c-blue-600))");
   colors.curveSoft = resolve("color-mix(in srgb, rgb(var(--c-blue-600)) 65%, transparent)");
-  colors.envFill = resolve("color-mix(in srgb, rgb(var(--c-blue-500)) 10%, transparent)");
   colors.bandFill = resolve("color-mix(in srgb, rgb(var(--c-blue-500)) 22%, transparent)");
   colors.guide = resolve("color-mix(in srgb, rgb(var(--c-blue-600)) 55%, transparent)");
   colors.hairline = resolve("color-mix(in srgb, rgb(var(--c-blue-600)) 20%, transparent)");
@@ -227,18 +233,11 @@ function draw(): void {
   hatch(xOf(winStart), xEffL);
   hatch(xEffR, xOf(winEnd));
 
-  if (s.dist === "uniform") {
-    // 均匀态：画布在模板层已不渲染（v-if），此处只是防御性兜底；清掉交互态避免切回
-    // 正态时残留光环/药丸。
+  if (s.dist !== "normal") {
+    // 非正态态（front / uniform）：画布在模板层已不渲染（v-if），此处只是防御性兜底；
+    // 清掉交互态避免切回正态时残留光环/药丸。
     hoverKind = "none";
     activeDrag = false;
-    const uh = (axisY - topY) * 0.34;
-    c.fillStyle = colors.envFill;
-    c.fillRect(xEffL, axisY - uh, xEffR - xEffL, uh);
-    c.strokeStyle = colors.guide; c.lineWidth = 1;
-    c.strokeRect(xEffL + 0.5, axisY - uh + 0.5, xEffR - xEffL - 1, uh - 1);
-    c.fillStyle = colors.muted; c.font = FONT_SMALL; c.textAlign = "center"; c.textBaseline = "middle";
-    c.fillText("均匀分布：正态参数暂不生效（可先设好，切回即用）", (xEffL + xEffR) / 2, (topY + axisY - uh) / 2);
     return;
   }
 
@@ -403,7 +402,8 @@ function syncEditors(): void {
   };
   const root = rootEl.value;
   if (!root) return;
-  setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="muMid"]'), fmtT(s.effLo + s.span * muMidPct(s) / 100));
+  // muMid 不再在此写入：它是 EP el-time-picker，显示值由 `:model-value="muMidText"` 受控派生。
+  // 其余三枚仍是原生 number input，保留"焦点时不覆盖"的即时回写。
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="muR"]'), String(Math.max(1, Math.round(s.span * (s.muHi - s.muLo) / 200))));
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="sgLo"]'), String(Math.round(s.span * s.sgLo / 100)));
   setIfIdle(root.querySelector<HTMLInputElement>('[data-ed="sgHi"]'), String(Math.round(s.span * s.sgHi / 100)));
@@ -419,7 +419,7 @@ function syncEditors(): void {
       "正态分布峰尖拖拽画布：峰值中心 " + fmtT(s.effLo + s.span * muMidPct(s) / 100) +
       "，散布 ±" + Math.round(s.span * s.sgLo / 100) + " ~ " +
       Math.round(s.span * s.sgHi / 100) + " 分钟" + how +
-      (s.dist === "uniform" ? "（当前为均匀分布，参数暂不生效）" : ""),
+      (s.dist === "normal" ? "" : "（当前非正态分布，参数暂不生效）"),
     );
   }
 }
@@ -444,12 +444,14 @@ function requestRender(): void {
   fallbackTimer = setTimeout(run, 1200);
 }
 
-/* ---------- 可见编辑器（逐键实时预览） ---------- */
-function onMuMidInput(e: Event): void {
-  const v = (e.target as HTMLInputElement).value;
-  if (!/^\d{1,2}:\d{2}$/.test(v)) return;
+/* ---------- 可见编辑器（数字字段逐键实时；峰值中心 el-time-picker 提交式） ---------- */
+// 峰值中心由 EP el-time-picker 受控（`:model-value="muMidText"`），回调收到的是
+// value-format="HH:mm" 的字符串（清空时为 null）。语义与旧原生 type=time 一致：
+// 形状非法或空 → 不改状态。
+function onMuMidInput(v: string | null | undefined): void {
   const s = readState();
   if (!(s.span > 0)) return;
+  if (typeof v !== "string" || !/^\d{1,2}:\d{2}$/.test(v)) return;
   const p = v.split(":");
   const min = (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
   write(applyMu(clampPct((min - s.effLo) / s.span * 100), (s.muHi - s.muLo) / 2));
@@ -577,7 +579,8 @@ onMounted(() => {
   probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
   document.body.appendChild(probe);
   readColors();
-  // 观察**常驻的 rootEl**（不是 canvas）：canvas 是 v-if="!isUniform"，默认均匀态下
+  // 观察**常驻的 rootEl**（不是 canvas）：canvas 是 v-if="isNormal"，默认（front / uniform）
+  // 非正态态下
   // onMounted 时 canvasEl 为 null——旧写法 `ro.observe(cv)`/`io.observe(cv)` 会因 cv 为空
   // 整段跳过，且 uniform→normal 切换后也不再补挂。后果：?tab= 深链落在其它页签（画布在
   // display:none 容器里按 160×100 兜底绘制）时既无 RO 也无 IO 触发重绘，切回调度页后
@@ -620,8 +623,8 @@ onUnmounted(() => {
 watch(
   () => [props.modelValue, props.ctxData, props.readonly, props.editGate],
   () => {
-    if (props.ctxData.dist === "uniform") {
-      // 画布在均匀态不渲染：清掉交互态，切回正态时不残留光环/药丸。
+    if (props.ctxData.dist !== "normal") {
+      // 画布在非正态态不渲染：清掉交互态，切回正态时不残留光环/药丸。
       hoverKind = "none";
       activeDrag = false;
     }
@@ -644,10 +647,10 @@ const muMidText = computed(() => {
 </script>
 
 <template>
-  <div class="dist-viz" data-dist-viz :data-dist-state="isUniform ? 'uniform' : 'normal'" ref="rootEl">
-    <!-- 画布只在正态分布下渲染：均匀态没有钟形可画，210px 空矩形 + 图例是纯噪音（默认即均匀态）。 -->
+  <div class="dist-viz" data-dist-viz :data-dist-state="distState" ref="rootEl">
+    <!-- 画布只在正态分布下渲染：front / uniform 没有钟形可画，210px 空矩形 + 图例是纯噪音。 -->
     <canvas
-      v-if="!isUniform"
+      v-if="isNormal"
       ref="canvasEl"
       class="dist-viz-canvas"
       :class="{ 'is-readonly': !direct }"
@@ -659,8 +662,11 @@ const muMidText = computed(() => {
       @pointerleave="onHoverLeave"
       @keydown="onKeydown"
     />
-    <!-- 均匀态降级：一行紧凑说明替代画布；峰值中心/散布编辑器保留（先设好、切回即用）。 -->
-    <p v-if="isUniform" class="dist-viz-flat" data-dist-flat>
+    <!-- 非正态态降级：一行紧凑说明替代画布；峰值中心/散布编辑器保留（先设好、切回即用）。 -->
+    <p v-if="distState === 'front'" class="dist-viz-flat" data-dist-flat>
+      当前为「提前铺完」：账号按安全速率铺进签到窗口前段，尾部留作重试与兜底。以下峰值中心与散布在切换回「正态分布」后生效。
+    </p>
+    <p v-else-if="distState === 'uniform'" class="dist-viz-flat" data-dist-flat>
       当前为均匀分布：账号在签到窗口内均匀铺开，无需调参。以下峰值中心与散布在切换回「正态分布」后生效。
     </p>
     <div class="dist-viz-editors">
@@ -669,7 +675,20 @@ const muMidText = computed(() => {
       <span class="dist-viz-editor">
         <span class="field-label">峰值中心</span>
         <span class="input-group">
-          <input class="input" type="time" step="60" data-ed="muMid" :value="muMidText" :disabled="readonly" @change="onMuMidInput" @input="onMuMidInput" />
+          <!-- 时间输入一律走 EP el-time-picker：原生 <input type="time"> 的滚轮选择器由 UA
+               渲染、样式不可控（用户既定禁令）；与同页 ScheduleCard 的签到窗口同一控件形态。
+               data-ed="muMid" 保留为两栈共通的 e2e 锚点（落在包裹层，e2e 取内层 input 的值）。 -->
+          <span class="dist-mu-time" data-ed="muMid">
+            <el-time-picker
+              :model-value="muMidText"
+              format="HH:mm"
+              value-format="HH:mm"
+              :disabled="readonly"
+              aria-label="峰值中心"
+              style="width: 96px"
+              @update:model-value="onMuMidInput"
+            />
+          </span>
           <span class="addon">±</span>
           <input class="input" type="number" min="1" step="1" data-ed="muR" :disabled="readonly" @change="onMuRInput" @input="onMuRInput" />
           <span class="addon">分钟</span>
@@ -686,8 +705,8 @@ const muMidText = computed(() => {
         </span>
       </span>
     </div>
-    <p v-if="!isUniform" class="dist-viz-legend">纵轴 = 预计每分钟签到人数 · 实线 = 名义钟形 · 深色核心 = ±1σ（约 68% 账号）· 虚线 = 按账号数放大后的实际钟形 · 轴上底座 = 散布宽度</p>
+    <p v-if="isNormal" class="dist-viz-legend">纵轴 = 预计每分钟签到人数 · 实线 = 名义钟形 · 深色核心 = ±1σ（约 68% 账号）· 虚线 = 按账号数放大后的实际钟形 · 轴上底座 = 散布宽度</p>
     <!-- 操作提示只在门开着时出现：只读态宣称"拖峰尖"是空头承诺（按钮自证，不加解释文案）。 -->
-    <p v-if="!isUniform && direct" class="dist-viz-hint" data-dist-hint>拖峰尖：左右改峰值时刻、上下改散布；画布聚焦后方向键微调（Shift ×5）。</p>
+    <p v-if="isNormal && direct" class="dist-viz-hint" data-dist-hint>拖峰尖：左右改峰值时刻、上下改散布；画布聚焦后方向键微调（Shift ×5）。</p>
   </div>
 </template>

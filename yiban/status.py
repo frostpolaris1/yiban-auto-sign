@@ -9,9 +9,9 @@
 
 | 表 | 消费方 | 现状 |
 |----|--------|------|
-| `SYMBOL` | `signin` 写日状态文件 → 日历渲染 | 含 `no_position`(🚫) / `global_paused`(⏸)，无 `pending` |
-| `ICON` / `TEXT` | `/api/my-accounts` 的 `state_icon` / 文案 → 前端按码渲染 | 含 `pending`(⏳)，无 `no_position` / `global_paused` |
-| `DISPLAY` | 日历**显示层**：日期格、账号卡状态行、日历图例 | 覆盖全部 12 个状态码（含 `pending` / `no_position` / `global_paused`） |
+| `SYMBOL` | `signin` 写日状态文件 → 日历渲染 | 含 `no_position`(🚫) / `global_paused`(⏸) / `supplementing`(🕓)，无 `pending` |
+| `ICON` / `TEXT` | `/api/my-accounts` 的 `state_icon` / 文案 → 前端按码渲染 | 含 `pending`(⏳) / `supplementing`(🕓)，无 `no_position` / `global_paused` |
+| `DISPLAY` | 日历**显示层**：日期格、账号卡状态行、日历图例 | 覆盖全部 13 个状态码（含 `pending` / `no_position` / `supplementing` / `global_paused`） |
 
 合并会**改变前端可见表现**，属需要前后端协同的改动，不宜顺手做。
 
@@ -20,6 +20,10 @@
 同一份表。历史缺陷：状态行逐码手写文案漏了 `global_paused`/`no_position`（急停渲染成
 "排队待签"），而图例只覆盖 2 个状态码——两份清单必然漂移。
 
+`supplementing`（补签中）来自易班 `signPosition` 的 `State=5`；同一次判定的其余取值
+（`State=3/4`→`already`、`State=2`→`no_task`、`State=0/1`→照常取点位）住在
+`yiban/client.py` 的 `SIGN_POSITION_STATE_STATUS`——那里是平台枚举的唯一映射点。
+
 「今日是否了结」的划分同样收在本模块（`UNDONE_STATUSES` / `CLAIM_DONE_STATUSES` /
 `CONCLUDED_JSON_STATUSES`，以及领取池侧的 `TASKS_*`）：补签闸门、补签轮剔除与领取池
 收尾都引用同一批对象，判定口径只有一处可改。
@@ -27,6 +31,8 @@
 **这里没有脱敏**：本模块只是状态词汇，遮手机号/凭据发生在 `yiban.masking` 与
 `yiban.logging_ext` 两层——状态串会进日志、日状态文件与 `/api/my-accounts`，把关不在这里。
 """
+from typing import Any
+
 # ---- 状态码 ----
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
 STATUS_ALREADY = "already"               # 今日已签到（重复执行时服务器告知）
@@ -40,6 +46,16 @@ STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空�
 # "签到失败"告警轰炸、并把补签闸门判为未了结而白跑一轮全量；独立状态后
 # 展示可区分、不按失败告警、不触发补签重跑（重试拿不到就是拿不到）。
 STATUS_NO_POSITION = "no_position"
+# 易班 signPosition 的 `State=5`「补签中」：补签申请/流程正在进行，**当日结果未定**。
+# 来历：平台 stateEnum 里 5＝补签中（TASK-A 逆向记录，2026-10-08 用户确认）。
+# 它既不是 already（今天还没签成），也不是 failed（不是失败、没有可重试的动作），故独立成码。
+# 三处口径同批定死，改一处必须先看另两处：
+#   ① 不属于 CLAIM_DONE_STATUSES——结果未定，不能当"已了结"；
+#   ② 不属于 UNDONE_STATUSES——补签轮不该为它多跑一次真实登录（与 paused /
+#      user_cancelled 同理：把"有意不动"的状态塞进未了结集合，只会天天拖着重跑）；
+#   ③ 不属于 `yiban.store.claims.RETRYABLE_GIVE_UP_STATUSES`——领取池按 `final:` 保守档
+#      收尾（默认不自动回炉，只有显式路径才可再领），见 client 的 State 映射表。
+STATUS_SUPPLEMENTING = "supplementing"
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）
 STATUS_PENDING = "pending"               # 待签（未执行/无记录）
@@ -55,6 +71,10 @@ SYMBOL = {
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
     STATUS_NO_POSITION: "🚫",
+    # 补签中：符号刻意不与 `pending` 的 ⏳ 同形——`display_payload().by_symbol` 按符号
+    # 反查语气档（`test_symbol_lookup_has_no_tone_conflict` 钉住同符号必须同语气档），
+    # 同形会让日历日期格的档位随状态抖动。
+    STATUS_SUPPLEMENTING: "🕓",
     STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️",
     STATUS_GLOBAL_PAUSED: "⏸",
 }
@@ -64,6 +84,7 @@ ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
+    STATUS_SUPPLEMENTING: "🕓",
     STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️", STATUS_PENDING: "⏳",
 }
 # 状态码 → 中文文案（同上，前端直接用）
@@ -71,12 +92,18 @@ TEXT = {
     STATUS_SUCCESS: "签到成功", STATUS_ALREADY: "已签到", STATUS_NO_TASK: "无需签到",
     STATUS_FAILED: "签到失败", STATUS_RETRYING: "重试中",
     STATUS_SKIPPED_WINDOW: "时段外", STATUS_SKIPPED_NORANGE: "窗口缺失",
+    STATUS_SUPPLEMENTING: "补签中",
     STATUS_PAUSED: "暂停", STATUS_USER_CANCELLED: "已取消", STATUS_PENDING: "待签",
 }
 
 # 「未了结」状态集合：状态文件里任一账号落此集合，即判定本轮尚未跑完 → 触发补签轮。
 # **单一事实源**：`docker/scheduler.py` 以别名引用同一对象，宿主 run.sh 依据
 # `signin --second-run-check` 的退出码判定（该脚本内部亦用本集合）。
+# `supplementing`（补签中）**刻意不在本集合**：它结果未定、平台正在处理，我们再跑一轮
+# 既改不了结果、又多一次真实登录（与 paused / user_cancelled 同一条取舍）。
+# 注意这只管**本集合的消费者**（状态文件那条腿）：补签闸门另有一条读**任务队列**的腿
+# （`state_io.has_undone_accounts_today` → `db.task_open_count`），而 `supplementing` 在
+# 队列里落 `failed`（`TASKS_OPEN_STATES` 之一）⇒ 补签轮仍会重领它一次。彻底不重试需定策。
 UNDONE_STATUSES = frozenset((
     STATUS_FAILED, STATUS_RETRYING, STATUS_PENDING,
     STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
@@ -88,11 +115,12 @@ UNDONE_STATUSES = frozenset((
 #: 手写的枚举会在新增状态码时静默漏掉一格。
 ALL_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK, STATUS_FAILED,
                 STATUS_RETRYING, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
-                STATUS_NO_POSITION, STATUS_PAUSED, STATUS_USER_CANCELLED,
-                STATUS_PENDING, STATUS_GLOBAL_PAUSED)
+                STATUS_NO_POSITION, STATUS_SUPPLEMENTING, STATUS_PAUSED,
+                STATUS_USER_CANCELLED, STATUS_PENDING, STATUS_GLOBAL_PAUSED)
 
 #: 「已了结、今日不必再签」的 JSON 状态集：补签轮定向剔除与领取池记 `done` 共用
 #: 同一对象（各写一份会漂移成漏签或重复登录，而重复登录踩上游风控红线）。
+#: **`supplementing` 不在其中**：补签中的结果未定，不算"今日已了结"。
 CLAIM_DONE_STATUSES = frozenset((STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK))
 
 # ---------------------------------------------------------------------------
@@ -122,6 +150,9 @@ _DISPLAY_ROWS = (
     # 无点位：登录成功但没有签到点位（任务未配置/当日已关闭），与"失败"语义不同，
     # 更不是"排队待签"——它是一个有结论的独立结果。
     (STATUS_NO_POSITION, "未找到签到点位，无法签到", "无点位", "warn"),
+    # 补签中（平台 State=5）：结果未定。语气档取 warn——不进 ok（今天没签成）、也不进 muted
+    # （不是"有意不签"），与"待签/无点位"同档：需要人看着，且不许渲染成已完成。
+    (STATUS_SUPPLEMENTING, "补签申请处理中（平台侧结果未定）", "补签中", "warn"),
     (STATUS_PAUSED, "账号密码异常，签到已暂停，请到「我的账号」修改密码", "账密暂停", "warn"),
     (STATUS_USER_CANCELLED, "已取消签到（可在「我的账号」恢复）", "已取消", "muted"),
     (STATUS_PENDING, "待签到", "待签", "warn"),
@@ -131,7 +162,7 @@ _DISPLAY_ROWS = (
 )
 
 
-def _build_display():
+def _build_display() -> dict[str, dict[str, str]]:
     """把 `_DISPLAY_ROWS` 展成 {状态码: {symbol,text,legend,tone}}。
 
     symbol 沿用 SYMBOL/ICON——它只是按日状态文件（sign-daily-*.json）的**存储/传输
@@ -161,7 +192,7 @@ _LEGEND_TONES = (
 )
 
 
-def legend_items():
+def legend_items() -> list[dict[str, str]]:
     """日历图例项：按语气档归组，返回 `[{"tone", "label"}, ...]`。
 
     图例与状态行消费同一份表——往 `_DISPLAY_ROWS` 加行只要落到既有语气档，图例
@@ -176,7 +207,7 @@ def legend_items():
     return items
 
 
-def display_payload():
+def display_payload() -> dict[str, Any]:
     """日历页内联的显示载荷（服务端渲染进页面，前端状态行与日期格消费同一份表）。
 
     `by_code` 供账号卡状态行按状态码取文案与语气档；`by_symbol` 供日期格按**符号**
@@ -191,7 +222,7 @@ def display_payload():
     #: 先到先得会让「急停」被排在前面的日常态吞掉——日历上急停日显示成
     #: 「未在签到时段」的灰档，恰恰是最不能看错的状态。
     severity = {"ok": 0, "muted": 1, "busy": 2, "warn": 3, "bad": 4}
-    by_symbol = {}
+    by_symbol: dict[str, dict[str, str]] = {}
     for e in DISPLAY.values():
         cur = by_symbol.get(e["symbol"])
         if cur is None or severity.get(e["tone"], 0) > severity.get(cur["tone"], 0):
@@ -207,7 +238,7 @@ def display_payload():
 CONCLUDED_JSON_STATUSES = frozenset(ALL_STATUSES) - {STATUS_PENDING}
 
 
-def is_concluded_status(value):
+def is_concluded_status(value: object) -> bool:
     """该状态串是否代表「已有结论」（非空且非 `pending`）；未知串按有结论处理。
 
     判据用**排除法**而不是集合成员：状态文件是跨进程事实源，其 `status` 可能是本进程

@@ -20,16 +20,16 @@ TZ = datetime.timezone(datetime.timedelta(hours=8), name="CST")
 TZ_NAME = "Asia/Shanghai"
 
 
-def now():
+def now() -> datetime.datetime:
     """当前北京时间（naive datetime，秒级精度与 datetime.now() 一致）。"""
     return datetime.datetime.now(TZ).replace(tzinfo=None)
 
 
-def today():
+def today() -> str:
     """当前北京日期（YYYY-MM-DD）。"""
     return now().strftime("%Y-%m-%d")
 
 
-def ts():
+def ts() -> str:
     """当前北京时间戳串（YYYY-MM-DD HH:MM:SS，全库统一的字符串时间格式）。"""
     return now().strftime("%Y-%m-%d %H:%M:%S")

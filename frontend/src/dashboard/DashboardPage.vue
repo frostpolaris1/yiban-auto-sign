@@ -528,12 +528,26 @@ function onTheme(): void {
   if (slotsLoaded.value && state.slots.length) paintSlots();
 }
 
+/* KPI「待处理账号」按 10 秒节拍刷新（工单 vff0）：与账号页/用户列表同拍。
+   只重取 loadPending（读 /api/accounts），不动图表与其它卡片。
+   口径同源：本 KPI = 待审核 + 已拒绝账号数（model.js::pendingKpiView），
+   与账号管理页「待处理账号」组、导航徽标 work-accounts 一致。 */
+let pendingTimer: ReturnType<typeof setInterval> | null = null;
+function onPendingTick(): void {
+  if (document.visibilityState !== "visible") return;
+  void loadPending();
+}
+
 onMounted(() => {
   calMonth.value = fmtMonth(getServerNow());
   document.addEventListener("yiban:theme", onTheme);
   void loadAll();
+  pendingTimer = setInterval(onPendingTick, 10000);
+  document.addEventListener("visibilitychange", onPendingTick);
 });
 onBeforeUnmount(() => {
+  if (pendingTimer) clearInterval(pendingTimer);
+  document.removeEventListener("visibilitychange", onPendingTick);
   cancelCalShift();                        // 清兜底定时器 + 让在途 enter() 短路
   document.removeEventListener("yiban:theme", onTheme);
   destroyAll();

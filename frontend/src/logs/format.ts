@@ -26,6 +26,10 @@ export interface LogsPayload {
   truncated: boolean;
   dropped_lines: number;
   q: string;
+  /** 生效的级别档（服务端回显）：warn = 收起 INFO/DEBUG；all = 全量 */
+  level: string;
+  /** 被级别档收起的行数（0 表示没有收起任何行） */
+  collapsed_lines: number;
   log_file: string;
   date: string;
   is_today: boolean;
@@ -41,19 +45,30 @@ export const TAB_KEYS: TabKey[] = ["main", "signev", "probe"];
 
 export const EVENT_PAGE_SIZES = [20, 50, 100];
 
+/** 级别档**取值**（契约：与后端 `/api/logs` 的 `level` 白名单同名）。
+ *  前端只认两档取值，**不认哪一档是默认**——默认值只有后端一份
+ *  （`web/services/logs.py::LOG_LEVEL_DEFAULT`）。首屏不下发 `level`，
+ *  档位显示以服务端回执为准；用户切换后才显式下发其中一档。 */
+export const WARN_LOG_LEVEL = "warn";
+/** 全量档：放出可见性口径下的全部级别。 */
+export const ALL_LOG_LEVEL = "all";
+
 /** 日志行信息栏文案。
  *  三分支与 legacy 一致：**检索态**报"X 行匹配 / 共 Y 行"（否则用户会以为总数被过滤前口径）；
  *  截断态报"显示 X / 共 Y 行"；否则只报总数（截断口径已由前一行覆盖）。
- *  检索态判据取**服务端回显**的 `q`（payload 自带），与页面已生效的过滤条件同源。 */
+ *  检索态判据取**服务端回显**的 `q`（payload 自带），与页面已生效的过滤条件同源。
+ *  级别档收起过行时追加"已收起 N 行 INFO／DEBUG"——被收起的是 INFO 与 DEBUG 两者，
+ *  文案必须写出两者，不许让人把"收起"读成"没有那些行"。 */
 export function infoText(
-  p: Pick<LogsPayload, "truncated" | "returned" | "total_lines" | "dropped_lines" | "q">,
+  p: Pick<LogsPayload, "truncated" | "returned" | "total_lines" | "dropped_lines" | "q" | "collapsed_lines">,
 ): string {
   const base = p.q
     ? `${p.returned} 行匹配 / 共 ${p.total_lines} 行`
     : p.truncated
       ? `已截断：显示 ${p.returned} / 共 ${p.total_lines} 行`
       : `共 ${p.total_lines} 行`;
-  return p.dropped_lines > 0 ? `${base}（另有 ${p.dropped_lines} 行未计入）` : base;
+  const withCollapsed = p.collapsed_lines > 0 ? `${base}（已收起 ${p.collapsed_lines} 行 INFO／DEBUG）` : base;
+  return p.dropped_lines > 0 ? `${withCollapsed}（另有 ${p.dropped_lines} 行未计入）` : withCollapsed;
 }
 
 /* ---------------- 事件状态口径（终态码 → 中文标签 + 色调） ----------------
@@ -112,13 +127,17 @@ export function eventCountText(n: number): string {
   return `共 ${n} 条`;
 }
 
-/** 查询串：date 必带；q 与 all=1 仅在生效时下发（避免无意义参数）。 */
-export function buildLogsQuery(date: string, q: string, all: boolean): string {
+/** 查询串：date 必带；q 与 all=1 仅在生效时下发（避免无意义参数）。
+ *  `level` **仅在显式给定下发**：首屏不带 `level`，档位以服务端回执为准
+ *  （响应回 `level`/`collapsed_lines`），不把默认档位抄进前端。 */
+export function buildLogsQuery(date: string, q: string, all: boolean, level: string = ""): string {
   const params = new URLSearchParams();
   if (date) params.set("date", date);
   const kw = (q || "").trim();
   if (kw) params.set("q", kw);
   if (all) params.set("all", "1");
+  const lv = (level || "").trim();
+  if (lv) params.set("level", lv);
   const qs = params.toString();
   return `/api/logs${qs ? `?${qs}` : ""}`;
 }

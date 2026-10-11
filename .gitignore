@@ -116,6 +116,7 @@ docs/dev/*
 !docs/dev/dev-verify.md
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
+!docs/dev/architecture-target.md
 .superpowers/
 
 # ZCode 工具目录
@@ -123,6 +124,7 @@ docs/dev/*
 .jspace/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
 
 # 内部 AI 工作记忆（含服务器 IP/部署细节，严禁入库，2026-08-15 对抗性审查 F1）
 .workbuddy/
@@ -192,6 +194,9 @@ memory/
 HANDOFF*.md
 # 工具运行期在本仓库内创建的隔离 worktree 与任务输出目录，与项目内容无关
 .qoder/
+# 子代理/演练的临时产物根目录（AGENTS.md 第七节：与代码无关的内容一律存 work/）。
+# 通用名、不泄密；显式忽略以保证**新克隆**也忽略（不依赖各机器的 .git/info/exclude）。
+/work/
 
 # 本地 AI/技能工具产物（skills 工具生成，非项目产物，2026-09-19 补忽略）
 .agents/

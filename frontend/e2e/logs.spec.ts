@@ -1,4 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+import { businessDay } from "./business-day";
 
 // 日志页真浏览器端到端（P1b + 2026-10-03 修复后加固）。
 //
@@ -7,12 +9,22 @@ import { expect, test } from "@playwright/test";
 // 三天前 1 条签到）。两天数据是刻意的——日期导航只有在"存在另一天"时才可观测。
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "TestPass1234!";
+//: 拥挤日（V3 渲染层截断守卫的种子日）相对业务日的天数偏移。必须与
+//: `e2e/server.py::CROWDED_DAY_OFFSET`（相对**业务钟**）同值，否则日期对不上。
+const CROWDED_DAY_OFFSET = 5;
 
+/** 日志页「查看日期」入口填值：原生 input[type=date] 已换 EP el-date-picker，
+ *  走它可编辑的输入框键入 `YYYY-MM-DD`（value-format）再回车提交。 */
+async function fillLogDate(page: Page, value: string): Promise<void> {
+  const input = page.locator(".logs-date input");
+  await input.click();
+  await input.fill(value);
+  await input.press("Enter");
+}
+
+/** 用例要 pin 的两个业务日（今天 / 三天前）；按**业务时区**（UTC+8）算，不读宿主时区。 */
 function dates(): { today: string; older: string } {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const now = new Date();
-  return { today: fmt(now), older: fmt(new Date(now.getTime() - 3 * 86400000)) };
+  return { today: businessDay(0), older: businessDay(3) };
 }
 
 /** 看板热力图月份标签（`YYYY 年 M 月`）按 delta 月平移后的期望串（行为钉用）。 */
@@ -27,6 +39,8 @@ function shiftLabel(label: string, delta: number): string {
 }
 
 test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、三分区、无数据日期的空态", async ({ page }) => {
+  // 本用例含一段 11.5 秒的轮询观测（轮询沿用在途选择），默认 30 秒超时不够。
+  test.setTimeout(90_000);
   // 整个套件只在这里走一次真实登录表单（同 IP 10 秒内第 4 次访问 /login 会被
   // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）
   await page.goto("/login");
@@ -37,17 +51,55 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
 
   await page.goto("/data/logs");
 
-  // 1) 日志正文：信息栏报行数，正文 pre 渲染出种子行
-  await expect(page.locator(".logs-info")).toContainText("行");
-  const box = page.locator(".log-box");
-  await expect(box).toBeVisible();
-  await expect(box).toContainText("签到成功");
-  await expect(box).toContainText("（today）");
+  // 0) 巡检首块（本批新增）：可见窗口必须显式写明；轮级摘要一行一轮；时间线按轮展开。
+  //    种子（见 e2e/server.py::_seed_run_events）：**同一业务日两轮**——最新一轮 3 个账号
+  //    （1 成一败 1 未开始，耗时 21 秒），较早一轮是并行执行体。两轮是刻意的：下面
+  //    「点开较早一轮 + 轮询沿用选择」的行为只有在存在另一轮时才可观测。
+  await expect(page.locator("#run-window")).toContainText("保留最近 14 天");
+  const runRows = page.locator("#run-summary .el-table__row");
+  await expect(runRows).toHaveCount(2);
+  await expect(runRows.first()).toContainText("单执行体");
+  await expect(runRows.first()).toContainText("21 秒"); // 06:40:00 → 06:40:21
+  const tl = page.locator("#run-timeline");
+  await expect(tl.locator(".el-table__row")).toHaveCount(8); // 3 claim + 2 start + 成功/失败/收尾
+  await expect(tl).toContainText("领取");
+  await expect(tl).toContainText("收尾");
+  // 执行体只回角色与槽位：身份原串（带主机名）绝不进 DOM
+  await expect(tl).not.toContainText("e2e-host");
 
-  // 2) 端到端脱敏：脱敏形态出现，完整号码**绝不出现**（服务端单出口 + 前端只插值）
+  // 0b) 轮询沿用在途选择（F5）：点开**较早的一轮**后，10 秒自动刷新（默认开）不得把
+  //     选中改回最新一轮。改回即「查昨天那轮」的主用途失效——用户点开的旧轮在 ≤10 秒内
+  //     被静默换掉。这条钉的是**接线**（纯函数单测钉不住 loadRuns 传没传 keepSelection）。
+  const olderRunRow = runRows.filter({ hasText: "并行执行体" });
+  await expect(olderRunRow).toHaveCount(1);
+  await olderRunRow.click();
+  await expect(olderRunRow.locator(".run-current")).toHaveText("当前");
+  await expect(tl).toContainText("06:30:09"); // 已切到较早一轮的时间线
+  await page.waitForTimeout(11_500); // 跨过至少一个 10 秒轮询节拍
+  await expect(tl).toContainText("06:30:09", { timeout: 5_000 });
+  await expect(
+    olderRunRow.locator(".run-current"),
+    "轮询把在途选择改回最新一轮（轮询必须沿用在途选择）",
+  ).toHaveText("当前");
+
+  // 1) 日志正文：级别档**默认收起 INFO**（巡检只看 WARN／ERROR），且信息栏如实报出收起数
+  const box = page.locator(".log-box");
+  await expect(page.locator(".logs-info")).toContainText("已收起");
+  await expect(box).toBeVisible();
+  await expect(box).toContainText("单次尝试耗时偏长"); // WARNING 行仍在
+  await expect(box).not.toContainText("（today）"); // 带标记的 INFO 行默认收起
+  // 切到全量档：INFO 行回来，端到端脱敏照旧（服务端单出口 + 前端只插值）
+  await page.locator("#logs-level-warn").uncheck();
+  await expect(box).toContainText("（today）");
+  await expect(box).toContainText("签到成功");
+
+  // 2) 端到端脱敏：脱敏形态出现，完整号码**绝不出现**（进度流与日志行同一口径）
   const text = await box.innerText();
   expect(text).toContain("138****8001");
   expect(text).not.toContain("13800138001");
+  const tlText = await tl.innerText();
+  expect(tlText).toContain("138****8001");
+  expect(tlText).not.toContain("13800138001");
 
   // 3) 三分区切换（el-tabs）；事件表已种数据 → 行数可见
   await page.getByRole("tab", { name: /签到事件/ }).click();
@@ -63,7 +115,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   // 5) 空态：pin 一个没有数据的合法日期 → 日志空态（含「最近有数据日期」跳转出口）
   //    注意先切回「日志」分区：日期输入框在日志面板内，面板未激活时不可见、填不进去
   await page.getByRole("tab", { name: "日志", exact: true }).click();
-  await page.fill('input[type="date"]', "2000-01-01");
+  await fillLogDate(page, "2000-01-01");
   await page.getByRole("button", { name: "查看该日日志" }).click();
   const logPane = page.locator(".el-tab-pane:visible");
   await expect(logPane.locator(".logs-empty")).toContainText("（2000-01-01 无签到日志）");
@@ -77,12 +129,38 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
 
   const { today, older } = dates();
   await page.goto("/data/logs");
+
+  // ⓪ V3 渲染层守卫：单日轮数超读取层上限 → 页面写明「已截断」；未超限的日子不显示。
+  //    为什么并进本用例：登录限速（60 秒 10 次/IP，见 web/routes/auth.py:67-71）是全套 e2e
+  //    共享的稀缺资源——整套共用一个 Flask 实例与 127.0.0.1，登录请求越少越稳。本文件既有
+  //    的 4 处同类「并入用例」先例（看板段、账号管理段、系统设置段、凭据文案段各一处）都按
+  //    这一理由并入，此处沿用同一形态：复用本用例会话，不额外调 /api/login。
+  //    拥挤日种子见 e2e/server.py::_seed_run_events_crowded（205 个执行体分组 > 上限 200），
+  //    偏移与 server.py 的 CROWDED_DAY_OFFSET 同值：落在 14 天保留窗口内，不撞今天/三天前。
+  //    日期按**业务时区**算（businessDay）：本段跑在 Node 进程里，timezoneId 帮不上忙。
+  const crowded = businessDay(CROWDED_DAY_OFFSET);
+  await fillLogDate(page, crowded);
+  await page.getByRole("button", { name: "查看该日日志" }).click();
+  const trunc = page.locator("#run-summary-truncated");
+  await expect(trunc).toBeVisible();
+  await expect(trunc).toContainText("已截断");
+  await expect(trunc).toContainText("200"); // 上限数字必须来自服务端 rounds_limit
+  await page.getByRole("button", { name: "回到今天" }).click();
+  await expect(page.locator("#run-summary .el-table__row")).toHaveCount(2); // 今天两轮，未超限
+  await expect(page.locator("#run-summary-truncated")).toHaveCount(0);
+
+  // 级别档默认收起 INFO：本用例的下文都在核日志正文，先切到全量档（级别档本身
+  // 由第一条用例与 tests/test_logs_level_filter.py 钉住）。等到 INFO 行真的出现再往下走：
+  // 切档会触发一次重载，而 load() 在途时会丢弃后来的导航请求（既有形状），
+  // 不等待就会把下面的「查看该日」吃掉。
+  await page.locator("#logs-level-warn").uncheck();
   const box = page.locator(".log-box");
+  await expect(box).toContainText("（today）");
   await expect(box).toContainText(today);
 
   // ① 日期导航——**这一条是 blocking 回归的守卫**：原实现用服务端回显日期覆盖用户选择，
   //    日期栏整体失效（点了没反应、深链被忽略），此处必红。
-  await page.fill('input[type="date"]', older);
+  await fillLogDate(page, older);
   await page.getByRole("button", { name: "查看该日日志" }).click();
   await expect(box).toContainText(older);
   await expect(box).toContainText("（older）");
@@ -335,7 +413,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 下拉取两栈共通的 data-select-field 锚点（legacy 自研控件根 / Vue 包裹层都用它），
   // 不用 getByText——选项文本与触发器文本会同时命中（strict mode 冲突）。
   await expect(page.locator('[data-select-field="ss-order"]')).toContainText("列表顺序");
-  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("均匀分布");
+  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("提前铺完");
   await expect(page.locator("#ss-gap")).toHaveValue("10");
   await expect(page.locator(".time-pair")).toContainText("06:30 至 07:50");
 
@@ -432,10 +510,21 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.getByRole("tab", { name: "签到调度", exact: true }).click();
   await expect(page.locator("#set-panel-schedule")).toBeVisible();
 
-  // ⑧a 画布按分布态降级：默认「均匀分布」下不渲染 210px 钟形画布（均匀态没有钟形可画，
-  //     画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
-  //     data-dist-state 是重设计新增的稳定锚点。
+  // ⑧a 画布按分布态降级：默认「提前铺完」（front）下不渲染 210px 钟形画布（非正态态没有钟形
+  //     可画，画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
+  //     front / uniform / normal 三态都写进 data-dist-state 这个稳定锚点。
   const distViz = page.locator("[data-dist-viz]");
+  await expect(distViz).toHaveAttribute("data-dist-state", "front");
+  await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
+  await expect(distViz).toContainText("提前铺完");
+
+  // ⑧a-1 分布三态：切到「均匀分布」仍无画布（uniform 亦无钟形可画），文案随之改口。
+  const distSelect = page.locator('[data-select-field="ss-dist"] .el-select__wrapper');
+  const pickDist = async (name: string): Promise<void> => {
+    await distSelect.click();
+    await page.getByRole("option", { name }).click();
+  };
+  await pickDist("均匀分布");
   await expect(distViz).toHaveAttribute("data-dist-state", "uniform");
   await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
   await expect(distViz).toContainText("均匀分布");
@@ -444,13 +533,14 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   //     在窄屏有误触风险，默认一律只读，按下显式「编辑」按钮才可操作。门必须是真的状态
   //     切换（不是视觉覆盖）：只读态指针事件不得到达处理函数、键盘微调不生效、滑杆真禁用。
   //     峰尖拖拽只在正态分布下武装，故先把分布切到「正态分布」再验。
-  await page.locator('[data-select-field="ss-dist"] .el-select__wrapper').click();
-  await page.getByRole("option", { name: "正态分布（钟形拟人）" }).click();
+  await pickDist("正态分布（钟形拟人）");
   await expect(distViz).toHaveAttribute("data-dist-state", "normal");
   const canvas = page.locator("[data-dist-viz] canvas");
   await expect(canvas).toBeVisible();
   await canvas.scrollIntoViewIfNeeded();
-  const muInput = page.locator('[data-ed="muMid"]');
+  // 峰值中心已换 EP el-time-picker（原生 type=time 退役）：data-ed="muMid" 落在包裹层，
+  // 显示的输入框是 EP 内层 <input>，故锚点 + input 两级取到可读值的输入框。
+  const muInput = page.locator('[data-ed="muMid"] input');
   const sgLoInput = page.locator('[data-ed="sgLo"]');
   const editBtn = page.locator("#ss-edit");
 
@@ -850,7 +940,9 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 本段多条断言数"请求恰好 N 个"，而本页每 10s 自动轮询一次 /api/logs：轮询落进观测窗就
   // 是伪红（400ms 窗实测约 4%/次）。先关掉自动刷新（关掉后实测 12 秒 0 次轮询；该设置存
   // localStorage，同一 context 内换页后仍生效），并在每次归零前等首屏那一次请求落地。
+  // 级别档同样先切到全量档：本段要核日志正文（默认档会收起带标记的 INFO 行）。
   await mp.locator(".logs-check input").uncheck();
+  await mp.locator("#logs-level-warn").uncheck();
   await expect(mp.locator(".log-box")).toContainText("（today）");
   await logInput.fill("无匹配关键字-zzz");
   await logInput.press("Enter");
@@ -883,6 +975,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 证明前半段的"0"不是"回车根本没生效"的假绿。
   const cdp = await mobileCtx.newCDPSession(mp);
   await mp.goto("/data/logs");
+  await mp.locator("#logs-level-warn").uncheck(); // 全量档：下文的标记与关键字都落在 INFO 行
   await expect(mp.locator(".log-box")).toContainText("（today）"); // 首屏请求先落地，勿落进观测窗
   await logInput.click();
   await cdp.send("Input.imeSetComposition", { text: "zhongguo", selectionStart: 8, selectionEnd: 8 });
@@ -891,6 +984,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await mp.waitForTimeout(400);
   expect(logReqs, "组合期的回车发起了检索（发出去的是未提交的拼音串）").toBe(0);
   await mp.goto("/data/logs");
+  await mp.locator("#logs-level-warn").uncheck();
   await expect(mp.locator(".log-box")).toContainText("（today）");
   await logInput.fill("签到成功");
   logReqs = 0;

@@ -114,6 +114,8 @@ _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 # - v14：它的产物是"page_visits / server_metrics 被删掉"。存在性核对说不出"必须没有"；
 #   残表无正确性代价，把它变成拒启会逼存量库人工 DROP 才能重启。
 # - v20：只补 sign_tasks 的数据行，没有 schema 产物。"补 0 行"是全新部署的常态。
+# - v22：清空 egress_state（桶键改口径，工单 2cwd）。产物是"旧键行不存在"，
+#   存在性核对说不出"必须没有"；表本身由 v18 建、仍在册。
 # - v4/v6 里的 page_visits 与 server_metrics（含 v6 补的 user_id）：v14 会删掉它们，
 #   登记即自打。
 # 第 4 元（核心/可选）只决定**执行失败时**阻断不阻断启动；产物核对不分档，缺了都拒启。
@@ -981,7 +983,11 @@ _BACKFILL_COMMIT_ROWS = 50
 #:   今天的窗口不会再开），都属"还该再试"，落 `skipped` 会把它们判成已了结、让
 #:   补签轮不再重跑；
 #: - `paused`/`user_cancelled`/`global_paused` 是管理侧决策（熔断/用户自停/全站
-#:   暂停），今天不会再试 → `skipped`。
+#:   暂停），今天不会再试 → `skipped`；
+#: - `supplementing`（平台 State=5 补签中）与上面三格同组 → `skipped`：平台正在处理，
+#:   我们再跑一轮既改不了结果、又多一次真实登录（它也不在 `UNDONE_STATUSES`，
+#:   见 `yiban/status.STATUS_SUPPLEMENTING`）。落 `failed` 会把它算成"未了结"，
+#:   补签轮据此重跑该账号。
 #: 在途状态（`retrying`/`pending`）**不补**：那不是终态，补进台账会凭空多出待办。
 #: **新增状态码必须同步本表**：本表被 v20 补账与 `scripts/ledger_check.py` 的对账判定
 #: 共用，少一格时两头同时失效——该补的行不进台账，而用同一张表做的对账还报"对账平"，
@@ -993,6 +999,7 @@ _JSON_TERMINAL_TO_TASK_STATE = {
     "failed": "failed",
     "skipped_window": "failed", "skipped_norange": "failed", "no_position": "failed",
     "paused": "skipped", "user_cancelled": "skipped", "global_paused": "skipped",
+    "supplementing": "skipped",
 }
 
 #: 补账行的 owner 标记（对账据此区分"平移行/补账行"）。
@@ -1154,6 +1161,26 @@ def migrate_v21(conn):
     _commit_if_free(conn)
 
 
+def migrate_v22(conn):
+    """v22：清空 `egress_state`——限速桶键从**执行体身份**改判为**出口标识**（工单 2cwd）。
+
+    **为什么清空而不是搬迁**：旧行的键是执行体身份（`worker-0@主机名` 等），新键是出口标识
+    （`direct` 或去 userinfo 的 `scheme://host[:port]`）。旧→新的映射要按每个槽位的出口配置
+    解析，SQL 层拿不到；放到进程里做则 K 个共用出口的执行体争着把各自的旧行写进同一个新键
+    （竞态、结果不确定）。故取**一次性重建**：清掉整个旧命名空间，桶从出厂速率重起。
+
+    **为什么安全**：出厂速率是**保守**方向（`token_bucket.EgressLimiter.restore_from_store`
+    对"无记录"的处置就是回退出厂速率，本模块 docstring 亦如此声明）。丢失的只是被风控信号
+    压低过的自适应值，运维可用 `yiban.cli egress --reset` 手动复位。
+
+    **为什么是可选档**：本迁移只清数据、不改 schema，失败不阻断签到。但没有产物可登记
+    （产物登记表不列 v22）：`egress_state` 表由 v18 建，本档的产物是"旧键行不存在"，
+    存在性核对说不出"必须没有"。
+    """
+    conn.execute("DELETE FROM egress_state")
+    _commit_if_free(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1189,6 +1216,9 @@ _MIGRATIONS = [
     # v21 可选：产物是观测表（run_events），签到正确性不依赖它；但产物在册，
     # 缺表仍 fail-closed 拒启（见 migrate_v21 的 docstring）。
     (21, "v21_run_events", migrate_v21, False),
+    # v22 可选：清空 `egress_state`——桶键由执行体身份改判为出口标识（工单 2cwd）。
+    # 只清数据、无 schema 产物，故不进 `_ARTIFACTS`；失败不阻断启动。
+    (22, "v22_egress_identity_rebuild", migrate_v22, False),
 ]
 
 

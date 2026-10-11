@@ -23,15 +23,30 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
     sys.path.insert(0, str(_p))
 
+# 业务钟：读取面（`web` / `yiban`）一律按北京时间取"今天"。种子若用宿主钟
+# （`datetime.now()`），宿主时区 > UTC+8 时种子的"今天"行会变成未来业务日，
+# 被新上界排除，前端用例随即数不到那两轮（潜伏形状，CST / UTC 都不触发）。
+# 故种子的每一处日期都走 `yiban.clock.now()`，与读取面同一个钟。
+# 导入必须在本文件把 ROOT 加进 sys.path 之后：直接跑 `python e2e/server.py` 时
+# `yiban` 不在默认导入路径上。
+from yiban import clock  # noqa: E402
+
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
+#: V3 渲染层截断守卫的种子：单日执行体分组数必须**超过**读取层轮级上限
+#: （`yiban/store/run_events.py::MAX_ROUNDS` = 200）。205 > 200，端点回
+#: `rounds_truncated=true`，页面「已截断」说明才有可断言的内容。
+CROWDED_ROUNDS = 205
+#: 上述拥挤日相对今天的天数偏移。取 5 = 落在 14 天保留窗口内（新的窗口下界不挡它），
+#: 且不撞今天 / 三天前（older）/ 取样工作日（_probe_day 取月初）。logs.spec.ts 用同一个偏移。
+CROWDED_DAY_OFFSET = 5
 ADMIN_USER = "admin"
 ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
 E2E_USER_EMAIL = "e2e-user@example.com"
@@ -50,7 +65,7 @@ def _probe_day():
     from calendar import monthrange
     from datetime import date as _date
 
-    today = _date.today()
+    today = clock.now().date()  # 业务钟（与读取面同一个钟），不是宿主钟 date.today()
     older = today - timedelta(days=3)
     for d in range(1, monthrange(today.year, today.month)[1] + 1):
         cand = _date(today.year, today.month, d)
@@ -70,8 +85,8 @@ def _seed_log_file(webapp):
     行格式与 `tests/test_logs_by_date.py::_log_line` 一致（yiban 组件全级别入列）。
     事件由 `_seed_events()` 另种（须在 db.init_db 之后）。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
+    older = (clock.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     probe = _probe_day()
 
     def write_day(date_str: str, marker: str) -> None:
@@ -101,13 +116,74 @@ def _seed_events() -> None:
     """
     import db  # 裸模块名：sys.path 已含 scripts
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    older = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
+    older = (clock.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     db.add_sign_event(f"{today} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
     db.add_sign_event(f"{today} 06:31:05", "13800138001", "failed", "密码错误", stage="sign", attempt=3)
     db.add_sign_event(f"{older} 06:31:01", "13800138001", "success", "签到成功", stage="sign", attempt=1)
     db.add_sign_event(f"{today} 06:35:00", "13800138001", "ok", "探测正常", stage="probe", attempt=1)
     db.add_sign_event(f"{today} 06:40:00", "13800138001", "failed", "探测异常", stage="probe", attempt=1)
+
+
+def _seed_run_events() -> None:
+    """当日的内核进度事件（**须在 `db.init_db()` 之后**调用）。
+
+    巡检块（`GET /api/admin/run-events`）的端到端种子：**同一业务日两轮**。
+    为什么必须两轮：轮级摘要的「点开较早一轮」与「轮询沿用在途选择」两条行为
+    只有在存在"另一轮"时才可观测（一轮时点它等于点当前，什么都测不到）。
+    最新一轮是 `单执行体`（06:40，耗时 21 秒），较早一轮是 `并行执行体 #3`（06:30）。
+    账号用**原始号**写入（表存原值），端到端断言响应里只有掩码形态；
+    执行体用带主机名的稳定名（接口只许回角色与槽位）。时刻显式写死（不走 `report`
+    的当前钟）：耗时与顺序要确定可断言。
+    """
+    import db  # 裸模块名：sys.path 已含 scripts
+
+    today = clock.now().strftime("%Y-%m-%d")
+    owner = "single@e2e-host"
+    older_owner = "worker-2@e2e-host"
+    rows = [
+        (f"{today} 06:40:00", today, "claim", owner, "13800138001", ""),
+        (f"{today} 06:40:00", today, "claim", owner, "13900139002", ""),
+        (f"{today} 06:40:00", today, "claim", owner, "13700137003", ""),
+        (f"{today} 06:40:05", today, "start", owner, "13800138001", ""),
+        (f"{today} 06:40:06", today, "start", owner, "13900139002", ""),
+        (f"{today} 06:40:12", today, "success", owner, "13800138001", "签到成功"),
+        (f"{today} 06:40:20", today, "fail", owner, "13900139002", "密码错误"),
+        (f"{today} 06:40:21", today, "finalize", owner, "",
+         "执行体会话收尾：本轮完成 2 个账号"),
+        # 较早一轮（同一业务日、另一执行体）：供"点开较早一轮 + 轮询沿用选择"断言
+        (f"{today} 06:30:00", today, "claim", older_owner, "13800138001", ""),
+        (f"{today} 06:30:09", today, "success", older_owner, "13800138001", "签到成功"),
+    ]
+    conn = db.get_conn()
+    conn.executemany(
+        "INSERT INTO run_events (ts, day, node, executor, phone, message) "
+        "VALUES (?,?,?,?,?,?)", rows)
+    conn.commit()
+
+
+def _seed_run_events_crowded() -> None:
+    """单日轮数**超过读取层上限**的业务日（**须在 `db.init_db()` 之后**调用）。
+
+    V3 渲染层截断守卫的种子：读取层 `run_events.MAX_ROUNDS` = 200，本种子在
+    `今天-CROWDED_DAY_OFFSET` 造 `CROWDED_ROUNDS`（205）个执行体分组，使端点回
+    `rounds_truncated=true`。页面据此渲染 `#run-summary-truncated`；日志页其它
+    日子（今天 2 轮）不超限，据此断言该元素"不存在"。
+    执行体用带主机名的 `worker-N@e2e-host`（接口只回 `worker-N`）。
+    """
+    import db  # 裸模块名：sys.path 已含 scripts
+
+    day = (clock.now() - timedelta(days=CROWDED_DAY_OFFSET)).strftime("%Y-%m-%d")
+    rows = [
+        (f"{day} 06:40:{i % 60:02d}", day, "claim", f"worker-{i}@e2e-host",
+         "13800138001", "")
+        for i in range(1, CROWDED_ROUNDS + 1)
+    ]
+    conn = db.get_conn()
+    conn.executemany(
+        "INSERT INTO run_events (ts, day, node, executor, phone, message) "
+        "VALUES (?,?,?,?,?,?)", rows)
+    conn.commit()
 
 
 def _seed_state_files() -> None:
@@ -190,6 +266,8 @@ def main():
                                   "password": "p5", "status": "active", "owner": ADMIN_USER})
     db.set_account_deleted(_deleted_id, 1, deleted_at="2026-09-30 10:00:00", deleted_by="admin")
     _seed_events()
+    _seed_run_events()
+    _seed_run_events_crowded()
     _seed_state_files()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):

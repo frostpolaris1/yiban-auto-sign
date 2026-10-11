@@ -3,8 +3,9 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：`probe.run_probe` 主循环前接出口桶 / 全局 Λ / 每账号 gap 三道闸；探针按**本进程
-   执行体身份**解析出口（不再恒取 `ROLE_SINGLE`）；探针登录量落进与执行体**同一个**
-   `egress_state` 行（同一桶键、同速率），并写回以便执行体重启后装回；等待总时长有界。
+   执行体身份**解析出口（不再恒取 `ROLE_SINGLE`）；探针登录量落进与**同出口的执行体**
+   同一个 `egress_state` 行（桶键 = 出口标识，工单 2cwd），并写回以便执行体重启后装回；
+   等待总时长有界。
 
 对应实现：yiban/engine/probe.py（`run_probe`、`verify_account`、`_apply_egress_proxy`、
    `_resolve_egress`、`_executor_identity`）、yiban/engine/token_bucket.py（EgressLimiter /
@@ -33,6 +34,7 @@ from unittest import mock
 
 import db
 
+from yiban import egress
 from yiban.engine import probe
 from yiban.store import queue_store
 
@@ -66,7 +68,8 @@ class _ProbeCase(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
         for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
                   "YIBAN_STATE_DIR", "YIBAN_EXECUTOR_ID", "YIBAN_PROXY",
-                  "YIBAN_PROXY_LIST", "YIBAN_GLOBAL_RATE", "YIBAN_EGRESS_RATE"):
+                  "YIBAN_PROXY_LIST", "YIBAN_GLOBAL_RATE", "YIBAN_EGRESS_RATE",
+                  "YIBAN_EXECUTORS"):
             os.environ.pop(k, None)
 
     @staticmethod
@@ -182,37 +185,44 @@ class ProbeEgressIdentityTest(_ProbeCase):
 
 
 class ProbeSharesExecutorBucketTest(_ProbeCase):
-    """缺陷一：探针登录量必须记进与执行体同一个持久化出口桶（同一桶键）。"""
+    """缺陷一：探针登录量必须记进与执行体同一个持久化出口桶（同一出口键）。
+
+    工单 2cwd 后桶键是**出口标识**（`egress.egress_identity`），不再是执行体身份：同一出口的
+    探针与执行体因此共桶；不同出口的执行体仍各持一桶。
+    """
 
     def test_probe_consumes_and_persists_same_key_as_executor(self):
-        os.environ["YIBAN_EXECUTOR_ID"] = "single@host"
-        key = "single@host"
-        # 执行体已落过桶状态：速率 1.0、突发 1、tat=0（严格 1/s 间隔）
+        os.environ["YIBAN_EXECUTOR_ID"] = "single@host"   # 单执行体、未配出口 = 直连
+        key = egress.DIRECT_EGRESS
+        # 执行体已落过**出口级**桶状态：速率 1.0、突发 1
         self.assertTrue(queue_store.save_egress_state(key, 1.0, 1, 0.0))
         clock = self._install_fake_clock(0.0)
         with mock.patch.object(probe, "verify_account", return_value=(True, "ok")) as va:
             probe.run_probe(self._accounts(3))
         self.assertEqual(va.call_count, 3)
         row = queue_store.load_egress_state(key)
-        self.assertIsNotNone(row, "探针必须把桶状态写回它自己身份那个键")
+        self.assertIsNotNone(row, "探针必须把速率写回出口标识那个键（直连 = direct）")
         self.assertAlmostEqual(row["rate"], 1.0, places=9,
-                               msg="探针不喂风控/成功信号，速率不该被它改写")
-        self.assertAlmostEqual(row["tat"], 3.0, places=6,
-                               msg="3 次登录消费的 TAT 必须记进同一桶（3 × 1s）")
-        # 执行体侧重新装回：必须看见探针推进后的 TAT（否则跨进程仍是两套限速）
+                               msg="探针不喂风控/成功信号，出口级速率不该被它改写")
+        self.assertAlmostEqual(row["tat"], 0.0, places=9,
+                               msg="tat 不落库（多进程不共享令牌位置）")
+        # 执行体侧重新装回：看见同一出口级速率（否则跨进程不是同一份速率）
         from yiban.engine import token_bucket
         fresh = token_bucket.EgressLimiter()
         self.assertTrue(fresh.restore_from_store(key, now=clock["t"]))
-        self.assertAlmostEqual(fresh.snapshot()[key]["tat"], 3.0, places=6)
+        self.assertAlmostEqual(fresh.rate, 1.0, places=9)
 
-    def test_probe_does_not_create_a_second_bucket_key(self):
+    def test_probe_writes_under_outlet_identity_not_executor_identity(self):
+        """探针不得按执行体身份另造桶键：非直连出口时键 = 该出口的标识。"""
         os.environ["YIBAN_EXECUTOR_ID"] = "worker-2@host"
+        os.environ["YIBAN_PROXY_LIST"] = "http://w0:0,http://w1:1," + WORKER2_PROXY
+        outlet = egress.egress_identity(WORKER2_PROXY)
         self._install_fake_clock(0.0)
         with mock.patch.object(probe, "verify_account", return_value=(True, "ok")):
             probe.run_probe(self._accounts(2))
-        self.assertIsNotNone(queue_store.load_egress_state("worker-2@host"))
-        self.assertIsNone(queue_store.load_egress_state("single@host"),
-                          "不得为探针另造第二套桶键")
+        self.assertIsNotNone(queue_store.load_egress_state(outlet))
+        self.assertIsNone(queue_store.load_egress_state("worker-2@host"),
+                          "桶键是出口标识，不是执行体身份——不得按身份另造一份")
 
 
 class ProbeThreeGatesTest(_ProbeCase):
@@ -251,8 +261,11 @@ class ProbeBoundedWaitTest(_ProbeCase):
     """等待总时长有界：到点停止本轮剩余账号，绝不放掉限速（失败方向=少探）。"""
 
     def test_hitting_budget_stops_remaining_accounts(self):
-        os.environ["YIBAN_EXECUTOR_ID"] = "single@host"
-        queue_store.save_egress_state("single@host", 1.0, 1, 0.0)
+        os.environ["YIBAN_EXECUTOR_ID"] = "single@host"     # 未配出口 = 直连
+        # 显式清单 = 1 个 worker（无兜底）⇒ 同出口执行体数 n=1 ⇒ 份额 = 出口级速率（不缩水）
+        os.environ["YIBAN_EXECUTORS"] = egress.dump_manifest(
+            [{"slot": 0, "type": "worker", "proxy": ""}])
+        queue_store.save_egress_state(egress.DIRECT_EGRESS, 1.0, 1, 0.0)
         self._install_fake_clock(0.0)
         with mock.patch.object(probe, "PROBE_EGRESS_MAX_SEC", 2.5), \
                 mock.patch.object(probe, "verify_account",
@@ -265,6 +278,34 @@ class ProbeBoundedWaitTest(_ProbeCase):
                          "预算 2.5s、1 次/s 恰好放行 3 次（t=0/1/2），第 4 次超预算")
         self.assertTrue(any("预算" in m or "限速" in m for m in cm.output),
                         "停止必须留痕，不能静默少探")
+
+
+class ProbeTimeWindowTest(_ProbeCase):
+    """F2：探针时刻落在签到窗口内时告警（探针不计入出口预算分母）。"""
+
+    def test_overlap_detection(self):
+        cfg = {"sign_start": (6, 30), "sign_end": (7, 50)}
+        for text, want in (("06:30", True), ("06:40", True), ("07:49", True),
+                           ("07:50", False), ("05:00", False), ("20:00", False),
+                           ("bad", False), ("25:00", False)):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    probe._probe_time_overlaps_sign_window(text, cfg=cfg), want)
+
+    def test_cross_midnight_window(self):
+        cfg = {"sign_start": (23, 0), "sign_end": (1, 0)}
+        self.assertTrue(probe._probe_time_overlaps_sign_window("23:30", cfg=cfg))
+        self.assertTrue(probe._probe_time_overlaps_sign_window("00:30", cfg=cfg))
+        self.assertFalse(probe._probe_time_overlaps_sign_window("12:00", cfg=cfg))
+
+    def test_run_probe_warns_when_time_inside_window(self):
+        os.environ["YIBAN_EXECUTOR_ID"] = "single@host"
+        self._install_fake_clock(0.0)
+        with mock.patch.object(probe, "PROBE_TIME", "06:40"), \
+                mock.patch.object(probe, "verify_account", return_value=(True, "ok")), \
+                self.assertLogs("yiban", level="WARNING") as cm:
+            probe.run_probe(self._accounts(1))
+        self.assertTrue(any("落在签到窗口内" in m for m in cm.output), cm.output)
 
 
 if __name__ == "__main__":

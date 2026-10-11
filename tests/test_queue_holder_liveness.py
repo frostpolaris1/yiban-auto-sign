@@ -384,7 +384,7 @@ class NoDoubleLoginE2ETest(unittest.TestCase):
                  mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
                  mock.patch.object(executor_v3.attempts, "attempt_signin", _signin), \
                  mock.patch.object(executor_v3, "_make_limiter",
-                                   lambda n: _Permissive()), \
+                                   lambda n, shares=1: _Permissive()), \
                  mock.patch.object(executor_v3, "_make_global_limiter", lambda: None), \
                  mock.patch.object(executor_v3, "_make_gap_gate", lambda: _Permissive()):
                 lane = asyncio.ensure_future(executor_v3._lane(q, 0, ctx))

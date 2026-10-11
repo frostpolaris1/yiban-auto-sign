@@ -291,6 +291,10 @@
       forEach(keys, function (k) { sessionStorage.removeItem(k); });
     } catch (e) {}
   }
+  // 单键失效：周期刷新徽标前先丢缓存，避免 TTL 与节拍同长时命中缓存而跳过网络。
+  function cacheDrop(key) {
+    try { sessionStorage.removeItem(CACHE_PREFIX + key); } catch (e) {}
+  }
   function apiCached(key, ttlMs, fn) {
     var hit = cacheGet(key);
     if (hit !== null) return Promise.resolve(hit);
@@ -1185,6 +1189,10 @@
   }
 
   /* ---------- 导航徽标（仅管理员） ---------- */
+  // 徽标节拍：与 /work/users 列表同一拍（10 秒），使待处理数随列表同步更新。
+  // 身份只取一次（外壳首屏），后续刷新复用；非管理员整段短路。
+  var NAV_BADGE_TTL = 10000;
+  var navBadgeIdentity = null;
   function setNavBadge(key, count) {
     forEach(document.querySelectorAll('[data-nav-badge="' + cssEscape(key) + '"]'), function (node) {
       if (!count || count <= 0) { node.hidden = true; node.textContent = ""; return; }
@@ -1192,10 +1200,13 @@
     });
   }
   function loadNavBadges(identity) {
-    if (!identity || identity.role !== "admin") return;
-    // 导航徽标是外壳级低频数据：60s 缓存，切页不再重复拉 /api/accounts、/api/users
-    // （审核/删除等写操作成功会整体清缓存，徽标随之即时重取）。
-    apiCached("nav-accounts", 60000, function () { return api("GET", "/api/accounts"); }).then(function (data) {
+    if (identity) navBadgeIdentity = identity;
+    var who = navBadgeIdentity;
+    if (!who || who.role !== "admin") return;
+    // 徽标只算一次会让待处理数长期停在首屏值（工单 vff0：60s 缓存 + 外壳只取一次）。
+    // 现按 10 秒节拍重取，与 /work/users 列表同一拍；TTL 与节拍同长，
+    // 周期刷新前先 cacheDrop 掉这两个 key，保证每一拍都真发一次网络请求。
+    apiCached("nav-accounts", NAV_BADGE_TTL, function () { return api("GET", "/api/accounts"); }).then(function (data) {
       var list = (data && data.accounts) || [];
       // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。
       // 只数 pending 会让徽标数小于页面里的待处理条数，同一条目两处不一致。
@@ -1205,9 +1216,9 @@
     }).catch(function () {});
     // 徽标只用到「有待处理的用户数」这一个计数，缓存**投影后的标量**而非整表：
     // /api/users 全量含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
-    // 敏感字段不入磁盘可见存储）。apiCached 仍在 60s 窗口内把外壳请求收敛成一次，
+    // 敏感字段不入磁盘可见存储）。apiCached 仍在 10s 窗口内把同页重复请求收敛成一次，
     // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变。
-    apiCached("nav-users", 60000, function () {
+    apiCached("nav-users", NAV_BADGE_TTL, function () {
       return api("GET", "/api/users").then(function (data) {
         var list = (data && data.users) || [];
         // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
@@ -1216,6 +1227,14 @@
     }).then(function (review) {
       setNavBadge("work-users", review);
     }).catch(function () {});
+  }
+  // 周期刷新：先丢两个 key 再重取（TTL 与节拍同长，不丢会命中缓存跳过网络）。
+  // 标签页隐藏时不取——切回可见由 visibilitychange 立刻补一次。
+  function refreshNavBadges() {
+    if (document.visibilityState !== "visible") return;
+    cacheDrop("nav-accounts");
+    cacheDrop("nav-users");
+    loadNavBadges();
   }
 
   /* ---------- 公告 ---------- */
@@ -1476,6 +1495,9 @@
     // /api/clock 对匿名请求返回 401；跳过可避免登录页每次加载产生无谓的失败请求。
     if (document.body.getAttribute("data-page") === "auth") return;
     identity().then(function (data) { if (data) loadNavBadges(data); });
+    // 徽标按 10 秒节拍刷新（非管理员在 loadNavBadges 里短路）；切回可见立刻补一次。
+    setInterval(refreshNavBadges, NAV_BADGE_TTL);
+    document.addEventListener("visibilitychange", refreshNavBadges);
     calibrateClock();
     renderClock();
     setInterval(renderClock, 1000);

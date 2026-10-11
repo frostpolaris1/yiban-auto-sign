@@ -333,7 +333,7 @@ env_io.write_env_keys(ENV, {
     "YIBAN_GLOBAL_PAUSE": "0",
     "YIBAN_ACCOUNT_GAP_MAX": "2",
     "YIBAN_SIGN_ORDER": "sequence",
-    "YIBAN_SIGN_DIST": "uniform",
+    "YIBAN_SIGN_DIST": "front",
     # 演练轮可能落在周末；置位周末门，否则 day_off 直接退出一轮不发请求
     "YIBAN_SATURDAY_SIGN": "1",
     "YIBAN_SUNDAY_SIGN": "1",

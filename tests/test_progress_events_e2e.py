@@ -258,7 +258,7 @@ class _E2EBase(unittest.TestCase):
         """跑一轮真实执行体：真实补货领取（claim_batch）+ 替身登录。"""
         patches = [
             mock.patch.object(executor_v3, "_persist_loop", _never),
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: _Limiter()),
+            mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: _Limiter()),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: _Gate()),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),

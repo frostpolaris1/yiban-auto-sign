@@ -34,6 +34,12 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: "off",
+    // 浏览器时区固定为北京（UTC+8）：e2e/server.py 按业务钟 `yiban.clock`（固定 +8）
+    // 种日期，而日历页等用例在**页面内**用 `new Date()` 推导"今天/当月"
+    // （`calendar.spec.ts::probeDay` 走 `page.evaluate`）。宿主时区不是 +8 时，页面内
+    // 推导会与服务端种子错位。此设定只覆盖浏览器侧；**Node 侧**在进程内算日期的断言
+    // （`logs.spec.ts::dates()` 与 `crowded`）不受它影响，另走 `e2e/business-day.ts`。
+    timezoneId: "Asia/Shanghai",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
