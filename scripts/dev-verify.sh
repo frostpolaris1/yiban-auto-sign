@@ -20,8 +20,8 @@
 #
 # 选项：
 #   --ci             跑 CI 关键子集（ruff + mypy + 安全子集 -n 4 + e2e smoke + shared-facts
-#                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
-#                    就地跑：不建副本、不归一化、不落日志
+#                    + path-env-reads + config-registry + import-linter 四道门禁，
+#                    各带自己的元测试），就地跑：不建副本、不归一化、不落日志
 #   --fast           **提交前自查·安全档**：跑全量，但剔除已实测的 5 条长尾
 #                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 146s → 57s，
 #                    覆盖面无选择损失。**仍非门禁**：推送前跑全量或确认 CI 绿。
@@ -290,6 +290,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     echo "DEV-VERIFY(ci) config registry gate"
     "$py" scripts/check-config-registry.py
     "$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) import-linter structure gate"
+    "$py" scripts/check-import-linter.py
+    "$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly
     echo "DEV-VERIFY(ci) done"
 }
 
