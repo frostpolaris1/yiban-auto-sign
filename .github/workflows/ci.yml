@@ -57,7 +57,9 @@ jobs:
           # 旧钉 0.15.22 与本地漂移，同一份代码两套编辑器判出不同结果）
           # pytest 9.1.1 = 含 CVE-2025-71176 修复（0~9.0.3 受影响）
           # pytest-xdist = 并发跑测试（-n 按 CI 核数分发；单测各自隔离临时目录）
-          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
+          # mypy 1.19.0 = 静态类型门禁（dev-verify 的 mypy 步；与本地 WSL 门禁 venv 同版号；
+          #   不进 requirements.lock——生产 Docker 镜像不背门禁工具，先例同 ruff/pytest）
+          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0 mypy==1.19.0
 
       # 提交/PR 标题规范校验（Conventional Commits）
       # 不符合 feat/fix/docs/... 前缀则门禁失败。
@@ -97,7 +99,8 @@ jobs:
       - name: Gate ready
         # 这行只是收尾回执，但它枚举了子集内容 —— 子集变了这里也要变，否则"同一个事实
         # 两个定义点"就从这里开始漂。2026-10-06（工单 2ula）加入 config-registry。
-        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster + path-env bare reads + config registry."'
+        # 2026-10-11 加入 mypy（静态类型门禁与它的元测试进 run_ci 子集）。
+        run: 'echo "Fast gate active: lint + mypy + security subset + e2e smoke + shared-facts roster + path-env bare reads + config registry."'
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
   # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，

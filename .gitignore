@@ -124,6 +124,7 @@ docs/dev/*
 .jspace/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
 
 # 内部 AI 工作记忆（含服务器 IP/部署细节，严禁入库，2026-08-15 对抗性审查 F1）
 .workbuddy/

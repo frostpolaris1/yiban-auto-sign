@@ -1,3 +1,50 @@
+[tool.mypy]
+# 静态类型门禁（2026-10-11 立）。策略＝**strict per-module 增量收编**：
+# 只检查 `files` 列出的"收编名单"，名单内严格档全开；名单外显式豁免（本轮不检查）。
+# 为什么用 files 白名单而不是全树 ignore_errors：白名单让"收编进度"成为一份可读的
+# 清单（改一行 = 收编一个模块），也不依赖"谁把某个模块 import 进来"这种隐式路径。
+python_version = "3.10"
+files = [
+    "yiban/clock.py",
+    "yiban/status.py",
+    "yiban/egress.py",
+    "yiban/engine/schedule.py",
+    "yiban/engine/planner.py",
+    "yiban/store/queue_store.py",
+    "yiban/engine/token_bucket.py",
+]
+# 被导入模块的类型信息照常取用，但不报它们的错：收编模块可引用尚未收编的模块，
+# 收编边界因此是"本模块"而不是"整条 import 闭包"。
+follow_imports = "silent"
+ignore_missing_imports = true
+# ---- 名单内的严格档（等价 mypy --strict 减去下面两项有因豁免）----
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unused_configs = true
+# `--strict` 的两项**有意不启用**（增量收编边界，非放水）：
+#   · disallow_untyped_calls：启用即要求"收编模块调用的每个函数都已收编"——会把收编
+#     面扩成整条 import 闭包（planner 一调 hrw/schedule/window 就牵连全包），与"增量"矛盾。
+#     收编推进到全包时再开。
+#   · warn_return_any：本批的行数据用 `dict[str, Any]` 表达（manifest 行 / PlanRow / owner
+#     视图），Any 返回告警会逼出大量无意义 cast。批次 2 把这些形状改 TypedDict 后再开。
+#
+# ---- 名单外豁免清单（本轮不检查；显式登记，防止"以为在管其实没管"）----
+# 其余 `yiban/**`、`web/**`、`scripts/**`、`docker/**`、`tests/**` 全部豁免。
+# 收编路线（按"判据/契约轻重"排序，逐批推进）：
+#   批次 2：`yiban/window.py`、`yiban/engine/hrw.py`、`yiban/masking.py`、`yiban/config_loader.py`
+#           （被收编模块直接依赖的判据件，收编后本批的 Any 可收窄）
+#   批次 3：`yiban/store/**`（connection/migrations/clock_meta）、`yiban/engine/executor_v3.py`
+#   批次 4：`web/**`（路由与展示层）
+# 收编一个新模块 = 把它的路径加进 `files`，并就地修完它的红。
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
