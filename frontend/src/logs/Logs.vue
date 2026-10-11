@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, toast } from "../lib/shell";
+import { api, shellBase, toast } from "../lib/shell";
 import { isValidDate } from "./date-guard.js";
 import {
   ALL_LOG_LEVEL,
@@ -366,7 +366,9 @@ function startStream(): void {
   liveConn.value = "connecting";
   let es: EventSource;
   try {
-    es = new EventSource("/api/stream/progress");
+    // 子路径部署（BasePathMiddleware）下必须带 `shellBase()` 前缀，与 `api()` 同口径；
+    // 根路径形态下 shellBase() 为空串，URL 不变。
+    es = new EventSource(shellBase() + "/api/stream/progress");
   } catch {
     liveFallback.value = true;
     liveConn.value = "closed";
