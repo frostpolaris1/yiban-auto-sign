@@ -314,7 +314,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     # 按原因分档：窗口外/无点位默认可再领（该重试），预算耗尽/风控默认不可
                     # （需显式路径）——否则后者当日会被后面每一轮重领一遍。
                     db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch,
-                                     retryable=st in claims_mod.RETRYABLE_GIVE_UP_STATUSES)
+                                     retryable=st in yiban_status.RETRYABLE_GIVE_UP_STATUSES)
             except Exception as e:
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
         try:

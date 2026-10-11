@@ -26,7 +26,9 @@
 
 「今日是否了结」的划分同样收在本模块（`UNDONE_STATUSES` / `CLAIM_DONE_STATUSES` /
 `CONCLUDED_JSON_STATUSES`，以及领取池侧的 `TASKS_*`）：补签闸门、补签轮剔除与领取池
-收尾都引用同一批对象，判定口径只有一处可改。
+收尾都引用同一批对象，判定口径只有一处可改。弃权分档词表（`RESULT_RETRY_PREFIX` /
+`RESULT_FINAL_PREFIX` / `RETRYABLE_GIVE_UP_STATUSES`，128-P1 自 `yiban.store.claims`
+迁入）同样收在本模块（文末）——判据与成员同文件，「唯一一份」才钉得住。
 
 **这里没有脱敏**：本模块只是状态词汇，遮手机号/凭据发生在 `yiban.masking` 与
 `yiban.logging_ext` 两层——状态串会进日志、日状态文件与 `/api/my-accounts`，把关不在这里。
@@ -53,7 +55,7 @@ STATUS_NO_POSITION = "no_position"
 #   ① 不属于 CLAIM_DONE_STATUSES——结果未定，不能当"已了结"；
 #   ② 不属于 UNDONE_STATUSES——补签轮不该为它多跑一次真实登录（与 paused /
 #      user_cancelled 同理：把"有意不动"的状态塞进未了结集合，只会天天拖着重跑）；
-#   ③ 不属于 `yiban.store.claims.RETRYABLE_GIVE_UP_STATUSES`——领取池按 `final:` 保守档
+#   ③ 不属于本模块的 `RETRYABLE_GIVE_UP_STATUSES`——领取池按 `final:` 保守档
 #      收尾（默认不自动回炉，只有显式路径才可再领），见 client 的 State 映射表。
 STATUS_SUPPLEMENTING = "supplementing"
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
@@ -259,3 +261,23 @@ def is_concluded_status(value: object) -> bool:
 #: "当日已了结"，补签闸门会因此放过它——判「当日是否了结」一律用下面这两个集合。
 TASKS_OPEN_STATES = frozenset(("pending", "claimed", "failed", "stolen"))
 TASKS_SETTLED_STATES = frozenset(("done", "skipped"))
+
+# ---------------------------------------------------------------------------
+# 弃权分档词表：`sign_tasks.result` / `sign_claims.result` 列的**前缀协议**（无库迁移，
+# 复用既有 result 列；v18 平移时逐字带过来的协议，不另造一套）。128-P1 自
+# `yiban.store.claims` 迁入——该模块是 D3a 的退役对象，而这份词表是活的生产契约；
+# 判据与成员（上方 STATUS_SKIPPED_* / STATUS_NO_POSITION）同文件，"唯一一份"才钉得住。
+# 消费方：`queue_store.requeue_failed`（当日回炉口：默认档自动回炉 / 须显式路径）、
+# `executor_v3._tier_prefix`（弃权收尾选档）、`round._settle_claims`、`claims.give_up`。
+# 各写一份会漂移成"记成 retry、判成 final"——回炉口对默认档失明，当日失败没人接手。
+#: 该重试档：窗口外/无点位，当日默认可被任何一轮再接手。
+RESULT_RETRY_PREFIX = "retry:"
+#: 保守档：预算耗尽/风控，不该无上限重试，需显式路径才可再领。
+RESULT_FINAL_PREFIX = "final:"
+#: 默认可再领的弃权状态档。写入前缀与收尾选档都由它派生，只此一份。
+#: 升级前写入的历史行不带前缀，一律按保守档处置，只由显式路径放行。
+RETRYABLE_GIVE_UP_STATUSES = frozenset((
+    STATUS_SKIPPED_WINDOW,
+    STATUS_SKIPPED_NORANGE,
+    STATUS_NO_POSITION,
+))
