@@ -62,14 +62,22 @@ pythonpath = ["tests", ".", "scripts", "web", "docker"]
 addopts = "-ra --tb=short"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "SIM", "RUF"]
+select = ["E", "W", "F", "I", "B", "SIM", "RUF", "DTZ"]
 ignore = [
-    "DTZ005",  # 服务器本地时间是有意设计（签到窗口基于本地时间）
-    "DTZ006",
     "BLE001",  # 顶层兜底已逐处审查（API 输入校验/网络调用/文件降级）
     "SIM115",  # 行缓冲写入是有意行为（log_fh）
-    "E501",    # 行长交由格式化器处理
+    # E501 是有意豁免，不是疏漏。行长上限 100 为两类必要长行让路：essay 式中文注释，
+    # 与长 SQL 字面量（列清单写一行才可读）。属设计取舍。
+    # 另记一处事实：两道门禁只跑 `ruff check`，从不跑 `ruff format`，故超限行不会
+    # 被格式化器自动折行。实测（--line-length 100）生产面 213 行超限（yiban 119／
+    # web 81／scripts 11／docker 2；另有 tests 553）。
+    "E501",
     "RUF001",  # 中文文档字符串的全角标点是项目惯例（误报率高）
     "RUF002",
     "RUF003",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# tests/ 整体豁免 DTZ：测试大量用 naive datetime 构造业务本地时间做断言与打桩，
+# 按定义不带时区。生产面的每一处 DTZ 命中一律逐处 noqa 处置，不用文件级豁免。
+"tests/**" = ["DTZ"]

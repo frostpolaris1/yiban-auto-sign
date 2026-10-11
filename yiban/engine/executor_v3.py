@@ -190,7 +190,7 @@ def _parse_run_at(run_at):
     """`run_at` 串 → datetime；解析不出按"立即执行"处理（不打断整轮）。"""
     for fmt in _RUN_AT_FORMATS:
         try:
-            return datetime.datetime.strptime(str(run_at), fmt)
+            return datetime.datetime.strptime(str(run_at), fmt)  # noqa: DTZ007 解析业务本地 naive 的 run_at 串
         except (TypeError, ValueError):
             continue
     logger.warning("run_at 无法解析（按立即执行处理）: %r", run_at)

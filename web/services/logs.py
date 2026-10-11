@@ -156,7 +156,7 @@ def parse_sign_log(path, tail_lines):
 def _is_valid_date_str(s):
     """YYYY-MM-DD 格式且为真实日历日期（2026-13-99 这类非法值拒绝）。"""
     try:
-        datetime.strptime(s, "%Y-%m-%d")
+        datetime.strptime(s, "%Y-%m-%d")  # noqa: DTZ007 仅校验 YYYY-MM-DD 业务日期串，无时区语义
         return True
     except (TypeError, ValueError):
         return False

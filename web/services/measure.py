@@ -87,7 +87,7 @@ def _measure_cooldown_remaining(state, cooldown_sec, now=None):
     if cooldown_sec <= 0:
         return 0
     try:
-        at = datetime.strptime(str(state.get("at") or ""), "%Y-%m-%d %H:%M:%S")
+        at = datetime.strptime(str(state.get("at") or ""), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析状态文件业务本地 naive 时间串（限频）
     except (TypeError, ValueError):
         return 0
     remaining = cooldown_sec - ((now or clock.now()) - at).total_seconds()

@@ -268,7 +268,7 @@ def _iter_expired(state_dir, log_dir, cutoffs, now=None):
         return
     # epoch 秒与文件 mtime 比较，属"物理时刻"语义而非业务日——保留宿主时间
     # （与 client.py 比对服务端时间戳那处同属刻意例外，见 clock 模块头注）。
-    threshold = ((now or datetime.datetime.now()) - datetime.timedelta(
+    threshold = ((now or datetime.datetime.now()) - datetime.timedelta(  # noqa: DTZ005 与文件 mtime 比对的物理时刻，刻意留宿主钟（见上方注释）
         seconds=_TMP_MAX_AGE_SEC)).timestamp()
     for name in sorted(os.listdir(state_dir)):
         if _TMP_MARK not in name:

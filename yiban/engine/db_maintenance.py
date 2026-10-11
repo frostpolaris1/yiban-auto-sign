@@ -318,7 +318,7 @@ def restore_fingerprint(db_file, backup):
 
 def _pre_restore_path(db_file):
     """覆盖前副本路径：`<库文件>.pre-restore-<本地时间戳>`；同秒重名自动加后缀。"""
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 备份文件名戳，只求唯一（含同秒后缀），与业务钟无关
     base = f"{db_file}.pre-restore-{stamp}"
     path = base
     seq = 1

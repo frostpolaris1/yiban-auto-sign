@@ -145,7 +145,7 @@ _notify_pool_down = notify_pool_down
 
 def new_owner(prefix=""):
     """执行体标识：`主机:进程:启动时刻`——重启后必然变化，便于识别"上一轮的持有者"。"""
-    return f"{prefix}{socket.gethostname()}:{os.getpid()}:{datetime.datetime.now():%H%M%S}"
+    return f"{prefix}{socket.gethostname()}:{os.getpid()}:{datetime.datetime.now():%H%M%S}"  # noqa: DTZ005 执行体身份里的启动时刻标记，只求唯一，与业务钟无关
 
 
 def _now_str(now=None):

@@ -124,7 +124,7 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 | 解释器 | 只认 `/root/.venv-yiban-wsl/bin/python`，跑测前打印绝对路径与版本 | 不许退化成 PATH 上的任意 python（历史上三轮才找到解释器） |
 | 并发 | `-n auto --dist loadfile` | `--dist loadfile` 不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红 |
 | 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按模式分开（全量 `yiban-dev-verify-logs`，fast 两档 `yiban-dev-verify-logs-fast`，见 §1.1）：两档走不同的锁、可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码 |
-| ruff | `ruff check yiban/ tests/ scripts/ web/ --quiet` | 与 CI 同口径（含 `web/`） |
+| ruff | `ruff check yiban/ tests/ scripts/ web/ docker/ --quiet` | 与 CI 同口径（含 `web/` 与 `docker/`） |
 | mypy | `mypy`（裸调，读 `pyproject.toml` 的 `[tool.mypy]`） | 静态类型门禁：收编名单住 `[tool.mypy].files`，只此一处；名单内严格档全开。与 ruff 同属静态检查，排在 ruff 之后、pytest 之前 |
 
 退出码（四种，全量模式与 fast 两档共用同一套裁决点）：
@@ -145,7 +145,7 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 命令原文只住在入口脚本的 `run_ci` 一份，逐字冻结在 `tests/test_dev_verify_entry.py`：
 
 ```bash
-python -m ruff check yiban/ tests/ scripts/ web/ --quiet
+python -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
 python -m mypy
 python -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
 python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
@@ -271,5 +271,5 @@ e2e 不写进 CI：CI 结果必须与改前等价，加一步即改变 CI 行为
   pytest 自己算的数，那个数与目标集无关（实测：目标集只有 1 个文件，汇总行报 `97 failed`）。
   `covered=` 跟着这个数走，于是也数出无意义的值。影响面有限：此时 `rc=1`（红），
   不会产生假绿；只是别拿那一轮的 `covered=` 与 `failed=` 当事实。要可信的数字就重跑。
-- ruff 在任何档都扫 `yiban/ tests/ scripts/ web/` 全量，不随范围档缩小；范围档省的是
+- ruff 在任何档都扫 `yiban/ tests/ scripts/ web/ docker/` 全量，不随范围档缩小；范围档省的是
   pytest 时间，不是 ruff 时间。

@@ -196,11 +196,11 @@ def seed(tmp: str, reset: bool = False) -> dict:
                         db.set_user_paused(aid, True)
                 if deleted:
                     with contextlib.suppress(Exception):
-                        db.set_account_deleted(aid, True, deleted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), deleted_by="admin")
+                        db.set_account_deleted(aid, True, deleted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), deleted_by="admin")  # noqa: DTZ005 开发演示种子数据，非判定路径
 
     # 签到事件 + 按天日志
     rng = random.Random(20260921)
-    now = datetime.now()
+    now = datetime.now()  # noqa: DTZ005 开发演示种子数据，非判定路径
     rows = []
     for day in range(LOG_DAYS):
         base_day = now - timedelta(days=day)
@@ -240,7 +240,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     for i, r in enumerate(rows):
         day = r["ts"][:10]
         txt_by_day.setdefault(day, []).append(
-            _log_line(datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"), i, "演示账号", r["phone"], r["status"])
+            _log_line(datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"), i, "演示账号", r["phone"], r["status"])  # noqa: DTZ007 解析本脚本生成的业务格式串
         )
     for _i, day in enumerate(sorted(txt_by_day)):
         path = os.path.join(log_dir, f"sign-{day}.log")

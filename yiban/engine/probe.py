@@ -328,7 +328,7 @@ def _health_probe_due(now=None):
     if not last:
         return True
     try:
-        last_dt = datetime.strptime(last, "%Y-%m-%d")
+        last_dt = datetime.strptime(last, "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日，无时区语义
     except ValueError:
         return True
     return (now.date() - last_dt.date()).days >= n
