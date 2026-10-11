@@ -464,3 +464,196 @@ def timeline(day, executor=None, limit=200):
             "message": _sanitize_text(str(r["message"] or "")),
         })
     return rows[:limit], len(rows) > limit
+
+
+# ---------------------------------------------------------------------------
+# 实时流读取面（SSE 进度流）
+# ---------------------------------------------------------------------------
+# 本段是 SSE 端点的**唯一**取数口。两条纪律直接来自模块头与 125 §3.2：
+# · `finalize` 只计数、不并入任何"完成数"（`totals` 与 `by_executor` 各列一份）；
+# · 快照走**定向聚合 SQL**（`GROUP BY node, executor`），**绝不调 `summarize()`**
+#   ——实测 12 万行时 `summarize` 407ms、定向聚合 22ms，差 18 倍；每拍跑它必然打死服务。
+# phone 列在本段函数**一律不出返回**；`stream_events(phones=…)` 只用它做本人过滤。
+
+#: 增量读一次最多回几行（索引定位 + 上限；12 万行下实测 ~0ms）。
+STREAM_LIMIT = 200
+
+#: 快照里每执行体最多回几行（防异常写入把响应撑爆）；超限时 `truncated=True`。
+_SNAPSHOT_EXEC_MAX = 200
+
+
+def default_day(days=RETENTION_DAYS):
+    """→ 缺省业务日：表内最晚业务日，越界（未来日/窗口外）或表空时取窗口上界（今天）。
+
+    窗口两端取自 `window_range()` 的唯一定义点。缺省日必须夹在窗口内——表内最晚
+    业务日可能是**未来日**（业务钟快一天即产生），直接取它会落到窗口外、被上界挡成
+    空表。缺省路径夹取，显式日不夹。
+    """
+    lo, hi = window_range(days)
+    _min_day, max_day = day_bounds()
+    if max_day and lo <= max_day <= hi:
+        return max_day
+    return hi
+
+
+def max_id():
+    """→ 表内最大 `id`（空表回 0）。只读。SSE 游标的上界。"""
+    db = _facade()
+    with db._conn_lock:
+        row = db.get_conn().execute(
+            "SELECT MAX(id) AS m FROM run_events").fetchone()
+    return int((row["m"] if row else None) or 0)
+
+
+def min_id():
+    """→ 表内最小 `id`（空表回 None）。只读。用于判游标下方的行是否已被 purge。"""
+    db = _facade()
+    with db._conn_lock:
+        row = db.get_conn().execute(
+            "SELECT MIN(id) AS m FROM run_events").fetchone()
+    m = row["m"] if row else None
+    return None if m is None else int(m)
+
+
+def render_stream_event(r):
+    """一行 run_events → 公开进度事件 dict（**不含 phone**；executor 收敛；message 复遮）。
+
+    public：广播器持**原始行**（含 phone）做本人过滤，但出流前必须过本函数——
+    它是"原始行 → 公开事件"的唯一投影点，`phone` 在投影里被显式丢弃。
+    """
+    return {
+        "id": int(r["id"]),
+        "ts": str(r["ts"] or ""),
+        "day": str(r["day"] or ""),
+        "node": r["node"],
+        "node_label": NODE_LABELS.get(r["node"], r["node"]),
+        "executor": _public_executor(r["executor"]),
+        "executor_label": _executor_label(r["executor"]),
+        "message": _sanitize_text(str(r["message"] or "")),
+    }
+
+
+def stream_rows(after_id, limit=STREAM_LIMIT, phones=None):
+    """→ `id` 严格大于 `after_id` 的**原始行**（升序，最多 `limit` 条）。只读。
+
+    `phones` 给定时只回这些手机号的行（**本人过滤在 SQL 侧**，不先取回再筛——
+    否则别人的行会把本人的顶出 `LIMIT`）。空列表 = 无本人行，直接回空
+    （绝不退化成"不过滤"）。返回**含 phone**（广播器做过滤用），调用方必须经
+    `render_stream_event` 投影后才能出流。
+    """
+    limit = max(1, int(limit or 1))
+    after_id = int(after_id or 0)
+    sql = ("SELECT id, ts, day, node, executor, phone, message FROM run_events "
+           "WHERE id > ?")
+    params = [after_id]
+    if phones is not None:
+        wanted = [str(p) for p in phones if str(p)]
+        if not wanted:
+            return []
+        sql += " AND phone IN (%s)" % ",".join("?" * len(wanted))
+        params.extend(wanted)
+    sql += " ORDER BY id ASC LIMIT ?"
+    params.append(limit)
+    db = _facade()
+    with db._conn_lock:
+        cur = db.get_conn().execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def stream_events(after_id, limit=STREAM_LIMIT, phones=None):
+    """→ `id` 严格大于 `after_id` 的公开进度事件（升序，最多 `limit` 条）。只读。
+
+    `stream_rows` 的公开投影（断线补发路径用）。`phone` 列永不进返回；message 复遮一次。
+    """
+    return [render_stream_event(r) for r in stream_rows(after_id, limit, phones)]
+
+
+def snapshot(day=None, days=RETENTION_DAYS):
+    """实时进度快照：`totals`（六节点各计数）+ `by_executor`（每执行体一行）。只读。
+
+    **走定向聚合 SQL**，不调 `summarize()`（理由见本段头注释）。口径：
+    - `totals` 是六节点各自的行数；`finalize` 单独一列，**不并入任何完成数**；
+    - `by_executor[]` 字段名沿用 `summarize()` 的既有字段
+      （`claim/start/success/fail/pause/unexecuted/first_ts/last_ts/duration_sec`）
+      另加 `finalize`；`unexecuted` = 有 claim 无 start 的账号数（按号去重）；
+    - `executor` / `executor_label` 是公开标签（角色 + 槽位序号），不含主机名；
+    - `cursor` = 当前表内最大 id（断线续传的基准）；
+    - 窗口两端取自 `window_range()`；`day` 缺省取 `default_day()`。
+    `days` 只影响窗口与缺省日，不改分组键（分组键是业务日）。
+    """
+    days = max(1, int(days or RETENTION_DAYS))
+    lo, hi = window_range(days)
+    day = str(day) if day else default_day(days)
+    in_window = lo <= day <= hi
+    totals = {n: 0 for n in NODES}
+    by_exec = {}
+    order = []
+    claimed, started = {}, {}
+    if in_window:
+        db = _facade()
+        with db._conn_lock:
+            cur = db.get_conn().execute(
+                "SELECT executor, node, COUNT(*) AS n, MIN(ts) AS lo, MAX(ts) AS hi "
+                "FROM run_events WHERE day = ? AND day >= ? AND day <= ? "
+                "GROUP BY executor, node", (day, lo, hi))
+            groups = [dict(r) for r in cur.fetchall()]
+            cur2 = db.get_conn().execute(
+                "SELECT executor, node, phone FROM run_events "
+                "WHERE day = ? AND day >= ? AND day <= ? AND phone <> '' "
+                "AND node IN (?, ?)", (day, lo, hi, NODE_CLAIM, NODE_START))
+            pairs = [dict(r) for r in cur2.fetchall()]
+        for p in pairs:
+            label = _public_executor(p["executor"])
+            if p["node"] == NODE_CLAIM:
+                claimed.setdefault(label, set()).add(p["phone"])
+            else:
+                started.setdefault(label, set()).add(p["phone"])
+        for g in groups:
+            label = _public_executor(g["executor"])
+            e = by_exec.get(label)
+            if e is None:
+                e = by_exec[label] = {
+                    "executor": label,
+                    "executor_label": _executor_label(g["executor"]),
+                    "claim": 0, "start": 0, "success": 0, "fail": 0,
+                    "pause": 0, "finalize": 0, "unexecuted": 0,
+                    "first_ts": "", "last_ts": "", "duration_sec": None,
+                    "_lo": None, "_hi": None,
+                }
+                order.append(label)
+            n = int(g["n"])
+            if g["node"] in NODES:
+                e[g["node"]] += n
+                totals[g["node"]] += n
+            st, en = _parse_ts(g["lo"]), _parse_ts(g["hi"])
+            if st is not None and (e["_lo"] is None or st < e["_lo"]):
+                e["_lo"] = st
+            if en is not None and (e["_hi"] is None or en > e["_hi"]):
+                e["_hi"] = en
+    out_exec = []
+    for label in order[:_SNAPSHOT_EXEC_MAX]:
+        e = by_exec[label]
+        e["unexecuted"] = len(claimed.get(label, set()) - started.get(label, set()))
+        lo_dt, hi_dt = e.pop("_lo"), e.pop("_hi")
+        if lo_dt is not None and hi_dt is not None:
+            e["first_ts"] = lo_dt.strftime("%Y-%m-%d %H:%M:%S")
+            e["last_ts"] = hi_dt.strftime("%Y-%m-%d %H:%M:%S")
+            e["duration_sec"] = int((hi_dt - lo_dt).total_seconds())
+        out_exec.append(e)
+    truncated = len(order) > _SNAPSHOT_EXEC_MAX
+    out_exec.sort(key=lambda r: r["last_ts"], reverse=True)
+    return {
+        "day": day,
+        "window": {
+            "start_day": lo, "end_day": hi, "in_window": in_window,
+            "retention_days": days,
+        },
+        "totals": totals,
+        "by_executor": out_exec,
+        # 节点值域与中文标签的唯一定义点在本模块；下发给前端，前端**不另抄一张表**。
+        "node_order": list(NODES),
+        "node_labels": dict(NODE_LABELS),
+        "cursor": max_id(),
+        "generated_ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "truncated": truncated,
+    }
