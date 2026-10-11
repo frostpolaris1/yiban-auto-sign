@@ -3295,7 +3295,7 @@ class StaleIdxGuardE2ETest(unittest.TestCase):
         self.assertEqual(self._snapshot(), before)
 
     def test_ip_store_trim_runs_inside_rate_lock(self):
-        """N3：my.py / pages.py 两处 _ip_store_trim 必须在 _rate_lock 内调用。
+        """N3：my_api.py / pages.py 两处 _ip_store_trim 必须在 _rate_lock 内调用。
 
         `_ip_store_trim` 在超限时会 `store.items()` 遍历；锁外调用时并发插入会让
         迭代中的 dict 变尺寸 → RuntimeError → 500（locks.py:37 的不变量是"调用方持锁、
@@ -3312,14 +3312,14 @@ class StaleIdxGuardE2ETest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
         with mock.patch.object(_sec, "_IP_STORE_LIMIT", 0):
-            # 1) my.py 的判重预检 trim：提交一个在册手机号即命中该分支
+            # 1) my_api.py 的判重预检 trim：提交一个在册手机号即命中该分支
             dup_store = _TrimProbeStore({"seed": (0, time.time())})
             app.extensions["yiban_dupcheck_limits"] = dup_store
             r = c.post("/api/my-accounts", json={
                 "name": "dup", "phone": "13800138102", "password": "pw"},
                 headers={"X-CSRF-Token": token})
             self.assertNotEqual(r.status_code, 500, r.get_data(as_text=True))
-            self.assertTrue(dup_store.saw_locked, "my.py 的 trim 未在 _rate_lock 内调用")
+            self.assertTrue(dup_store.saw_locked, "my_api.py 的 trim 未在 _rate_lock 内调用")
             self.assertFalse(dup_store.saw_unlocked)
             # 2) pages.py 的登录页循环检测 trim：已登录 GET /login 触发
             loop_store = _TrimProbeStore({"1.2.3.4": (1, time.time())})

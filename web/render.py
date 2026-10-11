@@ -340,7 +340,7 @@ def edge_config(env):
 def edge_front_sec(env):
     """前裁秒数的便捷入口（等价 `edge_config(env)[0]`），**本仓无生产调用点**。
 
-    要取前裁秒数的地方都直接调 `edge_config()`：`web/routes/my.py:280`、
+    要取前裁秒数的地方都直接调 `edge_config()`：`web/routes/my_api.py`、
     `web/routes/settings_api.py:225-227`、`web/services/capacity.py:85`、`web/app.py:889`。
     现存唯一消费者是 `web/app.py:875` 的同名转发；那条转发存在只为保留拆分前的模块级名字
     （`tests/test_web_boundary.py` 的再导出清单与 `edge_front_sec() == 90` 的取值断言在守它），

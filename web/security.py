@@ -245,7 +245,7 @@ def _builtin_admin_email(env_path, read_env):
 def _is_builtin_admin_session(env_path, read_env):
     """当前会话是否确实是内置管理员（.env）登录，而非同邮箱注册用户/注册管理员。
 
-    定为模块级而非 create_app 局部：个人域路由已迁往 web/routes/me.py，需按模块
+    定为模块级而非 create_app 局部：个人域路由已迁往 web/routes/me_api.py，需按模块
     属性取用（打桩面要求）；其余调用点按模块全局名解析，取值与闭包直读一致。
     """
     return (
