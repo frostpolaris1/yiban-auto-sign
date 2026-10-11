@@ -39,9 +39,9 @@ SLOW_CALLS = {"send_user", "send_admin_alert", "send_notification",
 # `run_after_file_lock`，逐条销账）。
 KNOWN_SLOW_IN_LOCK = {
     ("web/routes/auth.py", "api_register", "generate_password_hash"),
-    ("web/routes/me.py", "api_me_password", "check_password_hash"),
-    ("web/routes/me.py", "api_me_password", "generate_password_hash"),
-    ("web/routes/me.py", "api_me_delete", "check_password_hash"),
+    ("web/routes/me_api.py", "api_me_password", "check_password_hash"),
+    ("web/routes/me_api.py", "api_me_password", "generate_password_hash"),
+    ("web/routes/me_api.py", "api_me_delete", "check_password_hash"),
     ("web/routes/users_api.py", "api_user_password", "generate_password_hash"),
 }
 

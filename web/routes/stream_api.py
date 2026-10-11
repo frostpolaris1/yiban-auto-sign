@@ -55,7 +55,7 @@
 **通信**
 视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger` / 角色判定与同源判定
 两枚 helper / `read_env` / `ENV_FILE` / `load_accounts` / `ACCOUNT_STATUS_ACTIVE`），
-避免导入环；本人号码集合复用 `web/routes/my.py` 的归属口径。
+避免导入环；本人号码集合复用 `web/routes/my_api.py` 的归属口径。
 """
 import contextlib
 import time
@@ -86,10 +86,10 @@ def _last_event_id():
 def _my_phones(m):
     """当前会话用户的本人手机号集合（生效且未删除）；用户流只推这些号。
 
-    归属口径复用 `web/routes/my.py`（`_my_account_indices_of` + `_my_active_phones`），
+    归属口径复用 `web/routes/my_api.py`（`_my_account_indices_of` + `_my_active_phones`），
     避免"本人是谁"出现第二套定义。管理员会话也按同一归属规则取（其名下账号）。
     """
-    from web.routes import my as _my
+    from web.routes import my_api as _my
     accounts = m.load_accounts()
     indices = _my._my_account_indices_of(accounts)
     return _my._my_active_phones(accounts, indices)

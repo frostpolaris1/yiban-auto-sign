@@ -34,7 +34,7 @@ REGISTRY = os.path.join(BASE, "config", "registry.json")
 #: `accounts_data.py` 不在其列：其 `_estimate_slot` 已改读台账 `sign_tasks.run_at`
 #: （工单 m9bi），不再自算分布几何，故不再派生分布默认值。
 _WEB_CARRIERS = (
-    os.path.join("web", "routes", "me.py"),
+    os.path.join("web", "routes", "me_api.py"),
     os.path.join("web", "routes", "settings_api.py"),
     os.path.join("web", "services", "env_io.py"),
 )

@@ -19,7 +19,7 @@
      探针成功落 done、探针失败按 INFO 报级（设计内路径不得按 ERROR 报）、
      三个 best-effort 跳过分支（冷却 / 待办队列满 / 配额用尽）各留一条可见记录
 对应实现：`web/routes/accounts_api.py` 的 api_account_update、
-     `web/routes/my.py` 的 api_my_account_update、`web/services/verify_queue.py` 的
+     `web/routes/my_api.py` 的 api_my_account_update、`web/services/verify_queue.py` 的
      start_edit_probe 与 _reject_account
 关键断言：编辑口令为错值 → 200 且产生 status=rejected 的校验任务、账号 status 不变；
      编辑正确凭据 → 任务 status=done；只改名称 → 零任务（零误报）；
