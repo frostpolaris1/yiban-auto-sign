@@ -156,18 +156,24 @@ python scripts/check-path-env-reads.py
 python -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
 python scripts/check-config-registry.py
 python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
+python scripts/check-import-linter.py
+python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 ```
 
-三道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
+四道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
 `check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
-缺省值字面量在代码内清零、未登记键不得出现在生产代码）。名册门禁的元测试是**突变
-验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
+缺省值字面量在代码内清零、未登记键不得出现在生产代码），`check-import-linter.py` 跑
+`.importlinter` 的四条依赖方向契约（P0 观测模式：只对基线之外的新增违规红）。名册门禁的
+元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
 可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
 静态检查的 mypy 版本由 CI 的 `pip install mypy==1.19.0`（`ci.yml`）与本地 WSL 门禁 venv 提供；
 **从未进 `requirements.lock`**（生产镜像不背门禁工具），先例同 ruff 与 pytest。
+结构门禁的 import-linter 版本同理，由 CI 的 `pip install import-linter==2.15` 与本地
+WSL 门禁 venv 提供；本地 venv 需先装一次
+（`python -m pip install import-linter==2.15`），缺件时门退 2 并点名，不静默跳过。
 
 `--ci` **就地跑、不做 LF 归一化**（CI runner 的新检出按 `.gitattributes` 是 LF）。
 若工作树的**跟踪文件**里真有 CRLF，脚本响亮拒绝（退出码 2）并点名文件，而不是
