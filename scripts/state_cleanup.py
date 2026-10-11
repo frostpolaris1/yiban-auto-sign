@@ -89,7 +89,7 @@ def main(argv=None):
     state_dir = state_dir_from_env()
     log_dir = log_dir_from_env(state_dir)
     log_path = os.path.join(state_dir, "cleanup.log")
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # noqa: DTZ005 日志行展示时刻，刻意跟随宿主钟（见模块头注 MF-109）
     if not os.path.isdir(state_dir):
         # 状态目录由 run.sh 首次签到时 mkdir -p 建立；此刻仍不存在，要么部署还没跑过
         # 签到，要么 YIBAN_STATE_DIR 配错了。两种都值得让 cron 报出来——**不在这里

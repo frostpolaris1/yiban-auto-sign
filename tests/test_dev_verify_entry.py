@@ -43,7 +43,7 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 #: `run_ci` 里必须逐字出现、且按此顺序执行的关键子集命令。
 #: `"$py"` = `--ci` 解析出的解释器绝对路径（CI 上是 setup-python 那个）。
 EXPECTED_CI_COMMANDS = (
-    '"$py" -m ruff check yiban/ tests/ scripts/ web/ --quiet',
+    '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
     '"$py" -m mypy',
     '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
     '"$py" -m pytest tests/ -q -n 4 --dist loadfile -k '
