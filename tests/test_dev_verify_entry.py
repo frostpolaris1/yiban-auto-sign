@@ -55,6 +55,8 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly',
     '"$py" scripts/check-config-registry.py',
     '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
+    '"$py" scripts/check-import-linter.py',
+    '"$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly',
 )
 
 
