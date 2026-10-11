@@ -142,6 +142,9 @@ class StatusDisplayTableTest(unittest.TestCase):
             yiban_status.STATUS_USER_CANCELLED: "muted",
             yiban_status.STATUS_PENDING: "warn",
             yiban_status.STATUS_NO_POSITION: "warn",
+            # 补签中（平台 State=5）：结果未定，与"待签/无点位"同档——需要人看着，
+            # 且不许渲染成已完成（它不是 `ok`，也不是"有意不签"的 `muted`）。
+            yiban_status.STATUS_SUPPLEMENTING: "warn",
             yiban_status.STATUS_PAUSED: "warn",
             yiban_status.STATUS_GLOBAL_PAUSED: "warn",
             yiban_status.STATUS_RETRYING: "busy",

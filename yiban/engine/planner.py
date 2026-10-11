@@ -5,8 +5,11 @@
   `build_plan` 调 `hrw.vshard_of` 取分片、`hrw.owner_of` 定归属，即其两段式。
 - Stratified Sampling（分层抽样）+ Jitter（抖动 / splay）：把 N 个待办铺进时间窗的经典做法
   是「分层抖动」——按序分层（`i % n_slices`）保证每层等量，再加槽内相位错开，避免同刻齐发；
-  AWS 的 Shuffle Sharding 是同族思路在分片维度上的应用。**均匀分布不可取**：窗口开头齐发
-  正是外部系统最容易识别为机器人的形态。
+  AWS 的 Shuffle Sharding 是同族思路在分片维度上的应用。三种分布都靠分层抖动错峰。
+- 提前铺完（`front`，默认）：把自由账号收进「容量允许的最早一段」，余窗留作重试与兜底。
+  铺点分片数 = `ceil(ceil(n_free/K)×(avg+gap)/60)`，K = 执行体数。整窗装不下即等于
+  `uniform`（自然降级）。**本模式不加出口桶 Λ 封顶**：`uniform` 也不封；计划只决定落点，
+  Λ 的排队余量交执行层的出口令牌桶，计划层不越权。自选（pinned）账号落点不受 `front` 影响。
 - 密度整形（`_density`）：按当日作息取 μ/σ 的正态到达率，并**按出口令牌桶 Λ 封顶**——只压
   σ 不封峰值会让中段形成相对突发，故压的是归一化密度与均匀分布的混合比 α，μ/σ 保持不动
   （改 σ 会连作息形状一起改掉）。峰值仍超 Λ 的余量交执行层排队，计划层不越权。
@@ -28,7 +31,8 @@
 
 **通信**
 输入：账号序列（只读 `.phone`，可选 `.user_paused`）、业务日 `day`、执行体身份串列表；
-配置经 `schedule.planner_config()` 取（窗口/裁剪/三模式/μσ/bucket_rate/executors）。
+配置经 `schedule.planner_config()` 取（窗口/裁剪/分布三态/μσ/bucket_rate/executors/
+account_gap_max）。
 输出：`[PlanRow, ...]`（dict）或落库行数；`plan_stats` 回摘要 dict。
 调用谁：`yiban.window.bounds`（窗口唯一口径）、`yiban.engine.hrw`（分工与哈希）、
 `yiban.engine.schedule`（配置、`_sigma_eff`、自选片成员性判定）、
@@ -43,6 +47,7 @@ import datetime
 import logging
 import math
 import statistics
+from typing import Any, Iterable, Mapping, Sequence
 
 from yiban import clock, window
 from yiban.engine import hrw, schedule
@@ -65,7 +70,7 @@ PRIORITY_DEFAULT = 5
 STATE_PENDING = queue_store.STATE_PENDING
 
 
-def _u(*parts):
+def _u(*parts: str) -> float:
     """`[0,1)` 均匀量：委托 `hrw.u01`（同一 blake2b 口径，禁内置 `hash`）。
 
     相位、正态分位、随机排序键都从它派生——全部只吃 `(phone, day, 用途串)`，
@@ -75,20 +80,21 @@ def _u(*parts):
     return hrw.u01(*parts)
 
 
-def _day_str(day):
+def _day_str(day: Any) -> str:
     """业务日归一化为 `YYYY-MM-DD`（接受 str / date / datetime）。"""
     if isinstance(day, (datetime.datetime, datetime.date)):
         return day.strftime("%Y-%m-%d")
     return str(day).strip()
 
 
-def _phones(accounts):
+def _phones(accounts: Iterable[Any]) -> list[str]:
     """账号序列 → 手机号列表：剔用户自暂停账号（零占位），按首次出现去重并保持顺序。
 
     顺序即分层抖动的"账号序号 `i`"——它必须跨天稳定（`slice_i = i mod N_slices`），
     故用调用方给的顺序，**不**按哈希排名（那样跨天会把片序号一起打乱）。
     """
-    out, seen = [], set()
+    out: list[str] = []
+    seen: set[str] = set()
     for acc in accounts or ():
         phone = getattr(acc, "phone", None)
         if phone is None:
@@ -101,13 +107,13 @@ def _phones(accounts):
     return out
 
 
-def _span(cfg):
+def _span(cfg: Mapping[str, Any]) -> tuple[float, float]:
     """有效窗口的分钟边界 `(eff_lo, eff_hi)`——唯一口径在 `yiban.window`。"""
     win = window.bounds(cfg)
     return win.lo_min, win.hi_min
 
 
-def _slice_count_of(win):
+def _slice_count_of(win: Any) -> int:
     """有效窗口视图 → 1 分钟分片数（向下取整，至少 1 片）。
 
     与 `_slice_count(cfg)` 分开只为"一份视图派生多个量"的调用方：几何量各自再调一次
@@ -116,19 +122,19 @@ def _slice_count_of(win):
     return max(1, int((win.hi_min - win.lo_min) * 60 // SLICE_SEC))
 
 
-def _slice_count(cfg):
+def _slice_count(cfg: Mapping[str, Any]) -> int:
     """有效窗口内的 1 分钟分片数（向下取整，至少 1 片）。"""
     return _slice_count_of(window.bounds(cfg))
 
 
-def _slot_width_ms(n, n_slices):
+def _slot_width_ms(n: int, n_slices: int) -> int:
     """`slot_width_ms` 的纯计算部分：按已算好的分片数判压缩（避免重复解析配置）。"""
     if n > n_slices * SLOTS_PER_SLICE:
         return int(SLOT_SEC_COMPRESSED * 1000)
     return int(SLOT_SEC * 1000)
 
 
-def slot_width_ms(n, cfg=None):
+def slot_width_ms(n: int, cfg: Mapping[str, Any] | None = None) -> int:
     """计划的槽宽（毫秒）：N 超过槽位总容量（分片数 × 每片槽数）时 1s → 0.5s。
 
     容量 = 分片数 × 每片槽数（1s 时 60）。超过就把槽宽减半、槽数翻倍，而不是落一条
@@ -138,7 +144,8 @@ def slot_width_ms(n, cfg=None):
     return _slot_width_ms(n, _slice_count(cfg))
 
 
-def _pref_slices(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi):
+def _pref_slices(slot_min: int, cfg: Mapping[str, Any], eff_lo: float, eff_hi: float,
+                 n_slices: int, slot_to_bi: Mapping[int, int]) -> list[int]:
     """自选 5 分钟片 → 它覆盖的 1 分钟候选分片（升序）；空列表 = 该片今日不可用。
 
     可用性判定走 `schedule._slot_to_bi`（与 web `_pref_slots` 同一口径），本函数只把"片"切成
@@ -157,7 +164,7 @@ def _pref_slices(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi):
             if eff_lo + k < b + 5 and eff_lo + k + 1 > b]  # 只留与该片真有交集的分片，跨边界不整片放行
 
 
-def _nearest_free(cands, k0, filled, cap):
+def _nearest_free(cands: list[int], k0: int, filled: list[int], cap: int) -> int | None:
     """候选分片内就近找未满（同距离优先更早的片）——v2 `_nearest_available` 的同语义。"""
     for d in range(len(cands)):
         for k in (k0 - d, k0 + d):  # 先减后加 = 同距离取更早的分片：错峰往前贴，别烧穿窗口后段
@@ -166,7 +173,9 @@ def _nearest_free(cands, k0, filled, cap):
     return None  # None = 候选全满，由调用方决定溢出到邻近片还是回退自动分配
 
 
-def _spill_block(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi, filled, cap, k0):
+def _spill_block(slot_min: int, cfg: Mapping[str, Any], eff_lo: float, eff_hi: float,
+                 n_slices: int, slot_to_bi: Mapping[int, int], filled: list[int],
+                 cap: int, k0: int) -> int | None:
     """外层溢出：向邻近 5 分钟片整体顺延（±5min → ±10min → …），同距离优先更早的片。
 
     只有自选片内 5 个 1 分钟分片全满才会走到这里，故跨片距离与 v2 完全一致。
@@ -186,7 +195,8 @@ def _spill_block(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi, filled, ca
     return None
 
 
-def _density(n, cfg, day, span_sec):
+def _density(n: int, cfg: Mapping[str, Any], day: str,
+             span_sec: float) -> tuple[float, float, float, float]:
     """正态模式的密度整形 → `(mu_min, sigma_min, alpha, phi_max)`。
 
     φ 是**归一化**密度（∫φ = 1），峰值到达速率 = `N × φ_max`，受出口令牌桶 Λ 封顶：只封 σ
@@ -216,7 +226,8 @@ def _density(n, cfg, day, span_sec):
     return mu_min, sigma_min, alpha, (1 - alpha) * phi_norm + alpha * phi_flat
 
 
-def _normal_off(phone, day, mu_min, sigma_min, alpha, span_min):
+def _normal_off(phone: str, day: str, mu_min: float, sigma_min: float, alpha: float,
+                span_min: float) -> float:
     """正态模式的落点（相对有效窗口起点的分钟数）。
 
     以 α 概率先走均匀（`_density` 压平的产物），否则按正态分位数抽样。
@@ -240,17 +251,17 @@ def _normal_off(phone, day, mu_min, sigma_min, alpha, span_min):
     return min(max(x, 0.0), span_min - 1e-6)
 
 
-def _slot_of(phone, day, slots):
+def _slot_of(phone: str, day: str, slots: int) -> int:
     """片内微槽：`H(phone ‖ day ‖ "slot") mod 槽数`（确定性哈希，不用内置 hash）。"""
     return hrw._h(phone, day, "slot") % slots
 
 
-def _phase_of(phone, day, slot_sec):
+def _phase_of(phone: str, day: str, slot_sec: float) -> float:
     """槽内相位：`U(0, 槽宽)`（当日密钥就是 day，跨天自动重排）。"""
     return _u(phone, day, "phase") * slot_sec
 
 
-def _split_off(off_min, n_slices, slots, slot_sec):
+def _split_off(off_min: float, n_slices: int, slots: int, slot_sec: float) -> tuple[int, int, float]:
     """窗口内偏移（分钟）→ `(分片, 微槽, 槽内相位)`，与 `_stamp_at` 互逆。"""
     off = max(0.0, off_min) * 60.0
     k = min(n_slices - 1, int(off // SLICE_SEC))
@@ -259,7 +270,8 @@ def _split_off(off_min, n_slices, slots, slot_sec):
     return k, j, rem - j * slot_sec
 
 
-def _stamp_at(base, eff_lo, k, j, phase, slot_sec):
+def _stamp_at(base: datetime.datetime, eff_lo: float, k: int, j: int, phase: float,
+              slot_sec: float) -> str:
     """`(分片, 微槽, 相位)` → `YYYY-MM-DD HH:MM:SS.mmm`（毫秒精度，字符串可直接比较）。
 
     与 `queue_store._lease_until` 同格式：计划列 `run_at`、租约列与领取比较都是
@@ -270,7 +282,7 @@ def _stamp_at(base, eff_lo, k, j, phase, slot_sec):
     return t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
-def _read_prefs():
+def _read_prefs() -> dict[str, Any]:
     """读全量自选片（总开关开启时才读）；读失败按"无人自选"继续，不阻断计划。"""
     from yiban.store import db
     try:
@@ -280,8 +292,9 @@ def _read_prefs():
         return {}
 
 
-def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, filled,
-                 placed, slot_sec):
+def _place_prefs(phones: Sequence[str], day: str, prefs: Mapping[str, Any], cfg: Mapping[str, Any],
+                 eff_lo: float, eff_hi: float, n_slices: int, slots: int, filled: list[int],
+                 placed: dict[str, tuple[int, int, float]], slot_sec: float) -> set[str]:
     """自选优先占位：先到先得（`updated_at` 升序）→ 片内就近顺延 → 邻近 5 分钟片溢出。
 
     返回被钉住的手机号集合（其余走自动分配）。片容量 = 槽数（1 槽 1 账号），且**只在自选账号
@@ -292,7 +305,7 @@ def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, fille
         return set()
     slot_to_bi = schedule._slot_to_bi(cfg)
     valid = set(phones)
-    by_slot = {}
+    by_slot: dict[int, list[tuple[str, str]]] = {}
     for phone, p in prefs.items():
         if phone not in valid:
             continue                        # 换号/删号后的孤儿不占容量
@@ -301,7 +314,7 @@ def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, fille
         except (TypeError, ValueError):
             continue
         by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
-    pinned = set()
+    pinned: set[str] = set()
     for slot in sorted(by_slot):  # 片号升序 + 片内 updated_at 升序：谁抢到空位由这两层次序定，必须确定
         cands = _pref_slices(slot, cfg, eff_lo, eff_hi, n_slices, slot_to_bi)
         if not cands:
@@ -323,35 +336,61 @@ def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, fille
     return pinned
 
 
-def _place_free(phones, pinned, day, order, dist, cfg, n_slices, slots, slot_sec,
-                span_sec, placed):
+def _front_slices(n_free: int, cfg: Mapping[str, Any], n_slices: int, k: int) -> int:
+    """`front` 模式自由账号铺进的分片数：容量允许的最早一段。
+
+    安全铺点 = 一个账号周期 `(avg + gap)` 走完一个账号；K 个执行体并行，故每个 K
+    账号占一个周期。`span_needed = ceil(n_free/K) × (avg+gap)` 是 K 能及时消化的
+    最早跨度。铺进再多分片只是把计划摊薄、把执行体推到空等。整窗装不下时返回
+    `n_slices`，`front` 逐字段等于 `uniform`（自然降级，无需特判）。
+    """
+    per = max(1, int(cfg["avg_attempt_sec"])) + max(0, int(cfg["account_gap_max"]))
+    span_needed = math.ceil(n_free / max(1, k)) * per
+    span_slices = max(1, math.ceil(span_needed / SLICE_SEC))
+    return min(n_slices, span_slices)
+
+
+def _place_free(phones: Sequence[str], pinned: set[str], day: str, order: str, dist: str,
+                cfg: Mapping[str, Any], n_slices: int, slots: int, slot_sec: float,
+                span_sec: float, placed: dict[str, tuple[int, int, float]], k: int = 1) -> None:
     """自由账号落点：分层抖动为主，`dist=normal` 时改为受速率约束的密度采样。
 
     `order=sequence` 用输入顺序分层（跨天稳定、每片人数零方差）；`order=random` 先按
     `H(phone‖day)` 排序再分层——是"当天重排的均匀序列"，不是逐账号独立抽样，故
     t=0 不会齐发（NHPP 生成器的等价物）。
+
+    `dist=front` 只改分层所用分片数（`_front_slices`）：自由账号收进最早一段；外层可见的
+    微槽与相位不变。`dist=uniform` 用整窗分片数。
     """
     free = [p for p in phones if p not in pinned]
     if order == "random":
         free.sort(key=lambda p: (_u(p, day, "rank"), p))
     profile = _density(len(phones), cfg, day, span_sec) if dist == "normal" and free else None
+    if profile is None and dist == "front" and free:
+        used_slices = _front_slices(len(free), cfg, n_slices, k)
+    else:
+        used_slices = n_slices
     for i, phone in enumerate(free):
         if profile is None:
-            placed[phone] = (i % n_slices, _slot_of(phone, day, slots),
+            placed[phone] = (i % used_slices, _slot_of(phone, day, slots),
                              _phase_of(phone, day, slot_sec))
         else:
             x = _normal_off(phone, day, profile[0], profile[1], profile[2], span_sec / 60.0)
             placed[phone] = _split_off(x, n_slices, slots, slot_sec)
 
 
-def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
-               prefs=None, v=None, cfg=None):
+def build_plan(accounts: Iterable[Any], day: Any, executors: Sequence[str] | None, *,
+               order: str | None = None, dist: str | None = None, now: Any = None,
+               prefs: Mapping[str, Any] | None = None, v: int | None = None,
+               cfg: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """生成当日全量计划（纯函数，不落库）。返回 `[PlanRow, ...]`（按 run_at 排序）。
 
     PlanRow = {"phone","day","vshard","owner","run_at","priority","state","epoch"}
     - `run_at` 为 "YYYY-MM-DD HH:MM:SS.mmm"（秒级微槽 + 亚秒相位，字符串可直接比较）；
     - `state` 恒为 `pending`、`priority` 恒为 5（重试 +1 / 手动 0 由运行期改）；
-    - **与 K 无关**：改 `executors` 只改 `owner`，不改任何 `run_at`（加执行体不该挪签到时间）。
+    - `dist=uniform`/`normal` 时**与 K 无关**：改 `executors` 只改 `owner`，不改任何
+      `run_at`（加执行体不该挪签到时间）；`dist=front`（默认）**有意**依赖 K：安全铺点
+      速率随并发数放大，K 越大铺得越开（`_front_slices`）。
 
     `accounts` 只需 `.phone`（可选 `.user_paused`）；`day` 缺省取 `now`（默认 `clock.now()`）
     的日期；`prefs` 为 `None` 且自选总开关开启时读库；`v` 缺省按规模选虚分片数（`hrw.v_for`）。
@@ -361,8 +400,8 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     dist = (dist or cfg["dist"]).strip().lower()
     if order not in ("sequence", "random"):
         order = "sequence"
-    if dist not in ("uniform", "normal"):
-        dist = "uniform"
+    if dist not in schedule.SIGN_DIST_CHOICES:
+        dist = schedule.DEFAULT_SIGN_DIST
     day = _day_str(day if day else (now or clock.now()))
     phones = _phones(accounts)
     if not phones:
@@ -372,21 +411,22 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     n_slices = _slice_count(cfg)
     slot_sec = slot_width_ms(len(phones), cfg) / 1000.0
     slots = max(1, round(SLICE_SEC / slot_sec))
+    k = max(1, len(executors or ()))  # front 的安全铺点速率随执行体数放大
     if prefs is None:
         prefs = _read_prefs() if cfg.get("allow_time_pref") else {}
 
-    placed = {}
+    placed: dict[str, tuple[int, int, float]] = {}
     filled = [0] * n_slices
     # 先钉自选、后铺自由：两次落点共用同一个 filled 计数器，顺序反了自由账号会先把自选片占满、
     # 用户显式选的时段反而回退自动分配；pinned 集也必须在 `_place_free` 之前成形
     pinned = _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots,
                           filled, placed, slot_sec)
     _place_free(phones, pinned, day, order, dist, cfg, n_slices, slots, slot_sec,
-                span_sec, placed)
+                span_sec, placed, k)
 
     v = v or hrw.v_for(len(phones))
     base = datetime.datetime.strptime(day, "%Y-%m-%d")
-    rows = []
+    rows: list[dict[str, Any]] = []
     for phone in phones:
         k, j, phase = placed[phone]
         vshard = hrw.vshard_of(phone, day, v)
@@ -406,7 +446,7 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     return rows
 
 
-def write_plan(rows, day=None):
+def write_plan(rows: Iterable[dict[str, Any]], day: str | None = None) -> int:
     """幂等落库：单事务 `executemany` + `INSERT OR IGNORE`，按 `(phone, day)` 主键去重。
 
     返回**实际写入**行数（被 IGNORE 的重复行不计），故 Planner 崩溃后直接重跑即可。
@@ -450,7 +490,7 @@ def write_plan(rows, day=None):
     return written
 
 
-def has_plan(day):
+def has_plan(day: Any) -> bool:
     """当日是否有计划行（`sign_tasks` 当日任意行，含 `vshard = -1` 的历史惰性行）。
 
     库不可用 / 表未落地一律回 `False`（只 warning 不抛）。唯一生产调用点
@@ -468,12 +508,13 @@ def has_plan(day):
         return False
 
 
-def _minute_of_day(stamp):
+def _minute_of_day(stamp: str) -> float:
     """`YYYY-MM-DD HH:MM:SS.mmm` → 当天分钟数（浮点）。"""
     return int(stamp[11:13]) * 60 + int(stamp[14:16]) + float(stamp[17:]) / 60.0
 
 
-def plan_stats(rows, cfg=None, day=None):
+def plan_stats(rows: Iterable[dict[str, Any]], cfg: Mapping[str, Any] | None = None,
+               day: Any = None) -> dict[str, Any]:
     """计划摘要：总行数、按 vshard 的 owner 分布、落点直方图（按 5 分钟片分桶）。
 
     直方图桶键 = 自选片号（相对**有效窗口起点**的 5 分钟格，与 `time_prefs.slot_min` 同号），
@@ -495,7 +536,10 @@ def plan_stats(rows, cfg=None, day=None):
     # 回退默认窗口，若这里仍按原始 `sign_start` 算，回退窗口起点的落点会落进负键，
     # 影子期落点对比与 web 片号整体错格。
     start_min = win.start_min
-    owners, shards, hist, per_sec = {}, {}, {}, {}
+    owners: dict[str, int] = {}
+    shards: dict[int, int] = {}
+    hist: dict[int, int] = {}
+    per_sec: dict[str, int] = {}
     for r in items:
         owners[r["owner"]] = owners.get(r["owner"], 0) + 1
         shards[r["vshard"]] = shards.get(r["vshard"], 0) + 1
@@ -503,11 +547,18 @@ def plan_stats(rows, cfg=None, day=None):
         per_sec[stamp[:19]] = per_sec.get(stamp[:19], 0) + 1
         key = int((_minute_of_day(stamp) - start_min) // 5) * 5
         hist[key] = hist.get(key, 0) + 1
-    dist = (cfg["dist"] or "uniform").strip().lower()
+    dist = (cfg["dist"] or schedule.DEFAULT_SIGN_DIST).strip().lower()
     if dist == "normal" and items:
         mu_min, sigma_min, alpha, phi = _density(len(items), cfg, day, span_sec)
     else:
-        mu_min, sigma_min, alpha, phi = None, None, 0.0, 1.0 / span_sec
+        # 密度分母：`uniform` 铺满整窗，故是整窗跨度；`front` 只占窗口前段，分母是它占用的
+        # 那一段（同一条 `_front_slices` 规则）。用整窗分母会把 front 的峰值报成与 uniform
+        # 同值，比实际低一个数量级——而 front 恰是默认值，影子对账会照着错值比。
+        dens_span = span_sec
+        if dist == "front" and items:
+            k = max(1, len(cfg.get("executors") or ()))
+            dens_span = _front_slices(len(items), cfg, n_slices, k) * SLICE_SEC
+        mu_min, sigma_min, alpha, phi = None, None, 0.0, 1.0 / dens_span
     return {
         "day": day,
         "n": len(items),

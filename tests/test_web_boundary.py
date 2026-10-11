@@ -33,8 +33,8 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -49,6 +49,7 @@ from unittest import mock
 import flask
 
 from yiban import clock
+from yiban import status as yiban_status
 from yiban.masking import mask_email_local
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -253,99 +254,36 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
                          "web/services/verify_queue.py 不得定义/别名 verify_jobs")
         self.assertIs(vq.attempt_jobs, yb_jobs, "新模块须用真源（别名 attempt_jobs）")
 
-    def test_load_accounts_stub_reaches_estimate_slot(self):
-        """`web.app.load_accounts` 是全仓最高频的打桩名：替换后 `_estimate_slot` 必须跟着变。"""
-        accounts = [
-            {"phone": OTHER, "status": "active", "deleted": False},
-            {"phone": PHONE, "status": "active", "deleted": False},
-        ]
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts) as spy:
-            got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(spy.call_count, 1, "转发必须现取 load_accounts（而非服务层自持绑定）")
-        self.assertEqual(got, ("06:30~06:35", "（每日固定时段，块内时刻每天略有抖动）"))
-        # 打桩换成"没有这个号"的列表 → 结果随之变化（证明确实用了桩）
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=[]):
-            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, ""))
+    def test_estimate_slot_reads_ledger_via_app(self):
+        """`_estimate_slot` 的取值来源是台账 `sign_tasks.run_at`（与执行同源）。
 
-    def test_sign_window_and_edge_stubs_reach_slot_labels(self):
-        """`web.app._sign_window` / `edge_config` 的既有打桩点对迁出后的两处消费方生效。"""
+        stub 台账读口 `db.task_run_at_by_phone` 必须换掉结果——网页侧不再自算窗口/块容/
+        分布（那正是与 v3 执行计划分叉的旧算法，工单 m9bi）。
+        """
+        day = clock.now().strftime("%Y-%m-%d")
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
+                               return_value={PHONE: f"{day} 07:20:00"}) as spy:
+            got = self.webapp._estimate_slot(PHONE)
+        self.assertEqual(spy.call_count, 1, "转发必须现取台账（服务层不自持一份快照）")
+        self.assertEqual(got[0], "07:20", "estimated 必须等于台账 run_at 的时分")
+        # 打桩换成"台账没有这个号" → （当日无计划行）返回「待生成」，不回退任何钟点
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value={}):
+            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, "待生成"))
+
+    def test_sign_window_stub_reaches_slot_labels(self):
+        """`web.app._sign_window` 的既有打桩点对 `_slot_to_label` 仍生效。"""
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((8, 0), (9, 0))):
             self.assertEqual(self.webapp._slot_to_label(0), "08:00")
             self.assertEqual(self.webapp._slot_to_label(5), "08:05")
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            full = self.webapp._estimate_slot(PHONE)
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((7, 0), (8, 0))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            shifted = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(full[0], "06:30~06:35")
-        self.assertEqual(shifted[0], "07:00~07:05", "窗口打桩必须换掉预计时段")
 
-    def test_estimate_slot_block_cap_zero_falls_back_to_default(self):
-        """`YIBAN_BLOCK_CAP=0`（非法）按引擎口径回退默认 15，与显式 15 逐字一致。
+    def test_estimate_slot_no_plan_returns_pending_generation(self):
+        """fail-closed：台账读不通（`None` 哨兵）时也返回「待生成」，绝不回退旧算法。
 
-        旧实现把 0 当"不限容量"（全员落首块）——那是网页侧自造口径；引擎
-        `_env_int(..., 1, 200)` 本就把 0 判非法回退 15。对齐后 0 与 15 必须同结果。
+        `None` 与空映射同一失败方向——页面标"未知"，不得编造钟点，也不得回退 v2 派生。
         """
-        accounts = [{"phone": f"1380013{i:04d}", "status": "active", "deleted": False}
-                    for i in range(20)]
-        target = accounts[-1]["phone"]
-
-        def run(raw):
-            self._write_raw(raw)
-            with mock.patch.object(self.webapp, "_sign_window",
-                                   return_value=((6, 30), (7, 50))), \
-                    mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                    mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-                return self.webapp._estimate_slot(target)
-
-        zero = run("YIBAN_BLOCK_CAP=0\n")
-        fifteen = run("YIBAN_BLOCK_CAP=15\n")
-        self.assertEqual(zero, fifteen, "0 必须与 15 同口径（非法回退默认，不再是不限容量）")
-        self.assertEqual(zero[0], "06:35~06:40", "第 20 人（idx=19）在 K=15 时落第 2 块")
-        # 反证：改大 K=25 → 第 20 人回到首块（证明上面钉住的确是块容口径，而非恰好如此）
-        big = run("YIBAN_BLOCK_CAP=25\n")
-        self.assertEqual(big[0], "06:30~06:35")
-
-    def test_estimate_slot_nonempty_on_clamped_window(self):
-        """缓冲过大被收缩：预计签到时段按收缩后的有效窗口算，不得静默变空。
-
-        自拼 `eff_lo/eff_hi`（原始窗口 + 原始裁剪）时：原始 07:00~07:10 各 300s
-        会让 span=0、无有效块 ⇒ 返回 (None, "")，用户端"预计签到时段"整块空白。消费
-        有效窗口（窗口保留、缓冲收缩为各 60s ⇒ 有效窗口 07:01~07:09）后首块 07:01~07:05，
-        与引擎同源。
-        """
-        self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
-                        "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(got, ("07:01~07:05", "（每日固定时段，块内时刻每天略有抖动）"),
-                         "收缩后的有效窗口下不得返回空（span=0 → (None, \"\")）")
-
-    def test_estimate_slot_still_fails_closed_when_no_usable_block(self):
-        """fail-closed 语义保留：确实没有可用片时仍返回 (None, "")，不回退成默认片。"""
-        import yiban.window as yb_window
-        degenerate = yb_window.Window(390, 470, 400.0, 400.0, 60, 60)
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=degenerate), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(got, (None, ""))
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value=None):
+            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, "待生成"))
 
     def test_read_env_and_env_file_stubs_reach_verify_switches(self):
         """`web.app.read_env` / `ENV_FILE` 是既有开关打桩点（test_probe 的写法）。"""
@@ -660,25 +598,23 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-    def test_estimate_slot_normal_branch_is_deterministic(self):
-        """顺序 × 正态：锚点 z 由手机号固定 → 同一账号每天同一中心（与文档公式一致）。"""
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_SIGN_DIST": "normal"}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(PHONE)
-        z = random.Random(str(PHONE)).gauss(0, 1)
-        center = max(390.0, min(470.0, 390 + 80 * 0.5 + 80 * 0.20 * z))
-        self.assertEqual(got, (f"约 {int(center) // 60:02d}:{int(center) % 60:02d}",
-                               "（每日波动约 ±10 分钟）"))
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_SIGN_ORDER": "random"}), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            self.assertEqual(self.webapp._estimate_slot(PHONE),
-                             (None, "随机模式每日重排，签到时间当天 06:31 后可见"))
+    def test_estimate_slot_dist_and_order_do_not_change_the_source(self):
+        """分布/排序键不再影响预计时段：取值只来自台账，与 v2 自算几何解耦。
+
+        旧实现按 `YIBAN_SIGN_DIST` / `YIBAN_SIGN_ORDER` 分支自算钟点——正是与 v3 执行
+        计划分叉的那条路（工单 m9bi）。置位这两个键不得改变 `_estimate_slot` 的结果。
+        """
+        day = clock.now().strftime("%Y-%m-%d")
+        envs = ({"YIBAN_SIGN_DIST": "normal"}, {"YIBAN_SIGN_DIST": "uniform"},
+                {"YIBAN_SIGN_ORDER": "random"})
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
+                               return_value={PHONE: f"{day} 06:41:00"}):
+            want = self.webapp._estimate_slot(PHONE)
+            self.assertEqual(want[0], "06:41")
+            for env in envs:
+                with mock.patch.object(self.webapp, "read_env", return_value=env):
+                    self.assertEqual(self.webapp._estimate_slot(PHONE), want,
+                                     f"{env} 不得改变预计时段来源")
 
 
 MOVED_ENV_IO = (
@@ -1398,6 +1334,37 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         for name in (structured, os.path.join(self.tmp, f"sign-daily-{date}.json")):
             os.remove(name)
         self.assertEqual(self.webapp.load_sign_state(date), {})
+
+    def test_legacy_daily_symbols_all_decode_to_a_real_status(self):
+        """`SYMBOL` 全表的**每个**符号，回退反查都必须解出同符的状态码（不得落 `pending`）。
+
+        反查表原先是手抄的三项（✅/❌/➖），写入侧（`runner._write_sign_daily`）却写六项。
+        手抄子集随写入侧扩表静默陈旧时，多出的符号（🚫 no_position、🕓 supplementing）
+        解不出，一律落 `pending`——日历把"已跳过/补签中"显示成"待签"。本门按**行为**钉住
+        覆盖面：把这些符号逐个写进 sign-daily，核每个解出的状态码属于该符号的状态码集。
+
+        覆盖面**取自 `yiban.status.SYMBOL` 全表**，不手抄一份子集：手抄的那份会在写入侧
+        扩表时静默漏格——正是本门要防的形状，写成手抄就成了同病。
+        """
+        date = "2026-09-20"
+        # 同一符号可能属多个状态码（✅ = success / already）：按符号分组，解出的码落组内即可。
+        # 本表**不含** ⏳（`STATUS_PENDING` 不在 `SYMBOL` 里），故"落组内"已等价于
+        # "不等于 `pending`"——漏格时该符号解成 `pending`，而没有任何组含 `pending`。
+        # 若日后把 `pending` 并入 `SYMBOL`，这条等价即失效，本门须补一条"不等于 pending"。
+        by_symbol = {}
+        for code, sym in yiban_status.SYMBOL.items():
+            by_symbol.setdefault(sym, set()).add(code)
+        rows = {"1380013%04d" % i: sym for i, sym in enumerate(sorted(by_symbol))}
+        with io.open(os.path.join(self.tmp, f"sign-daily-{date}.json"), "w",
+                     encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        got = self.webapp.load_sign_state(date)
+        self.assertEqual(len(got), len(rows), "每个符号都要解出一条记录")
+        for phone, sym in rows.items():
+            # 漏格时该符号解成 `pending`，而 `pending` 只同符 ⏳ ⇒ 除 ⏳ 外一律当场翻红
+            self.assertIn(got[phone]["status"], by_symbol[sym],
+                          "符号 %s（%s）解出的状态码不属于它：%r"
+                          % (sym, phone, got[phone]["status"]))
 
     def test_mask_log_phones_masks_all_bare_11_digits(self):
         mask = self.webapp._mask_log_phones

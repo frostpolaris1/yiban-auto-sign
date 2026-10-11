@@ -51,6 +51,8 @@
   进度展示取数；**读不通回 `None` 哨兵**（降级口径见下）；`open` **不过滤 `vshard`，
   不得当"当日是否了结"的闸门**（那会把永不被领取的 `vshard=-1` 惰性行算进去），
   闸门用 `pending_count`（有分片上下文）或 `open_count`（无分片上下文）；
+- `run_at_by_phone`：当日 `phone -> run_at` 映射（一次取全）——展示层读**执行计划时刻**
+  的唯一事实源；只读 `vshard >= 0` 的真实计划行；**读不通回 `None` 哨兵**（降级口径见下）；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
   的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
@@ -90,6 +92,7 @@
 """
 import datetime
 import logging
+from typing import Any, Iterable, Iterator, Mapping
 
 from yiban import clock
 from yiban import status as yiban_status
@@ -145,7 +148,7 @@ OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  #
 REQUEUEABLE_STATES = OPEN_STATES
 
 
-def _queue_conn():
+def _queue_conn() -> tuple[Any, Any]:
     """队列库连接与写锁的**唯一取点**。
 
     当前与业务表同库同连接（`sign_tasks` 落在 yiban.db）；按属性取而不是模块级
@@ -155,7 +158,7 @@ def _queue_conn():
     return connection.get_conn(), connection._conn_lock
 
 
-def _lease_until(lease_sec):
+def _lease_until(lease_sec: float) -> str:
     """租约到期时刻（毫秒精度、与 `run_at` 同格式的可比字符串）。
 
     **不用 SQL 的 `strftime(..., 'now')`**：SQLite 的 `'now'` 是 UTC，而全库时间串是
@@ -165,7 +168,7 @@ def _lease_until(lease_sec):
     return t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
-def _shift_stamp(stamp, sec):
+def _shift_stamp(stamp: object, sec: float) -> str:
     """时间串平移 `sec` 秒，返回毫秒精度、与 `run_at` 同格式的可比字符串。
 
     本库的时间串一律北京时间（`yiban.clock`），**不能用 SQL 的 `datetime(..., '-N seconds')`
@@ -186,9 +189,9 @@ def _shift_stamp(stamp, sec):
     return (t + datetime.timedelta(seconds=sec)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
-def _chunks(items, size=SQL_VAR_CHUNK):
+def _chunks(items: Iterable[Any], size: int = SQL_VAR_CHUNK) -> Iterator[list[Any]]:
     """把可迭代对象切成不超过 `size` 的定长块（生成器，空输入不产出）。"""
-    chunk = []
+    chunk: list[Any] = []
     for item in items:
         chunk.append(item)
         if len(chunk) >= size:
@@ -198,8 +201,9 @@ def _chunks(items, size=SQL_VAR_CHUNK):
         yield chunk
 
 
-def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
-                lease_sec=LEASE_SECONDS, phones=None):
+def claim_batch(owner: str, day: str, vshards: Iterable[int], now: str | None = None,
+                limit: int = CLAIM_BATCH_LIMIT, lease_sec: float = LEASE_SECONDS,
+                phones: Iterable[str] | None = None) -> list[dict[str, Any]] | None:
     """按分片（`vshard`）批量领取到期任务。返回
     `[{"phone","run_at","attempts","epoch"}, ...]`。
 
@@ -257,7 +261,8 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
              "epoch": r["epoch"]} for r in rows]
 
 
-def settle_tasks(owner, day, outcomes, state=STATE_DONE, epochs=None):
+def settle_tasks(owner: str, day: str, outcomes: Iterable[tuple[str, str]] | None,
+                 state: str = STATE_DONE, epochs: Mapping[str, int] | None = None) -> int:
     """批量收尾：`outcomes=[(phone, result), ...]`，返回受影响行数。
 
     `WHERE day=? AND phone=? AND owner=?` 单事务收尾：被接管（owner 已是别人）的行
@@ -289,7 +294,8 @@ def settle_tasks(owner, day, outcomes, state=STATE_DONE, epochs=None):
         return 0
 
 
-def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
+def requeue_task(phone: str, day: str, run_at: str, priority_delta: int = 1, result: str = "",
+                 epoch: int | None = None) -> int:
     """重试重排：返回受影响行数（0 = 该行不存在 / 态不允许 / 被 token 拒）。
 
     `priority` 递增让重试任务排在新任务之后（活号优先）；`attempts` 落库后即**跨执行体
@@ -325,7 +331,8 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
         return 0
 
 
-def requeue_failed(day, shards, include_final=False, run_at=None, phones=None):
+def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
+                   run_at: str | None = None, phones: Iterable[str] | None = None) -> int | None:
     """当日回炉：把本业务日 `failed` 行逐行经 `requeue_task` 翻回 `pending`，返回翻回数。
 
     **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
@@ -394,7 +401,7 @@ def requeue_failed(day, shards, include_final=False, run_at=None, phones=None):
     return flipped
 
 
-def reclaim_tasks(day, phones):
+def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
     """显式重签：把指定账号当日**终态**行（`done` / `skipped`）翻回 `pending`，并把
     这些账号的 `run_at` 一概置为"现在"（让手动签到不必等到计划时刻），返回行数。
 
@@ -442,7 +449,7 @@ def reclaim_tasks(day, phones):
         return 0
 
 
-def claimed_owners(day=None):
+def claimed_owners(day: str | None = None) -> list[str] | None:
     """当日**在途 `claimed` 行**的持有者全集（去重、非空、升序）——回收豁免名册的输入。
 
     豁免的**唯一来源是队列本身**：谁真的握着 `claimed` 行，谁才需要判活。按执行体清单
@@ -476,8 +483,9 @@ def claimed_owners(day=None):
     return sorted({str(r[0]) for r in rows if r[0]})
 
 
-def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None,
-                 held=(), live_owners=()):
+def reap_expired(now: str | None = None, day: str | None = None, grace_sec: float = REAP_GRACE_SEC,
+                 phones: Iterable[str] | None = None, held: Iterable[str] = (),
+                 live_owners: Iterable[str] | None = ()) -> int:
     """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
     `lease_until < now - grace_sec` 的行回退为 `pending`（清 `owner`/`lease_until`、
     `epoch = epoch + 1`）。返回受影响行数。
@@ -576,7 +584,7 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC, phones=None,
         return 0
 
 
-def reap_abandoned(owner, day=None):
+def reap_abandoned(owner: str, day: str | None = None) -> int:
     """显式回收某个**已确认死亡**的执行体名下仍 `claimed` 的任务：回退 `pending`，
     清 `owner`/`lease_until`、`epoch = epoch + 1`。返回受影响行数。
 
@@ -618,7 +626,7 @@ def reap_abandoned(owner, day=None):
         return 0
 
 
-def load_egress_state(egress):
+def load_egress_state(egress: str) -> dict[str, Any] | None:
     """读某出口的令牌桶状态：`{"rate","burst","tat"}`；无记录/库异常 → `None`。
 
     `rate` 单位是**账号尝试/s**（attempt/s，见 `yiban/engine/token_bucket.py` 模块头）。
@@ -639,7 +647,8 @@ def load_egress_state(egress):
     return {"rate": row["rate"], "burst": row["burst"], "tat": row["tat"]}
 
 
-def save_egress_state(egress, rate, burst, tat, now=None):
+def save_egress_state(egress: str, rate: float, burst: float, tat: float,
+                      now: str | None = None) -> bool:
     """UPSERT 某出口的令牌桶状态，返回是否写入成功。
 
     `rate` 单位 = 账号尝试/s（attempt/s）；`burst` 是突发额度（尝试数）；`tat` 是 GCRA 的
@@ -663,7 +672,7 @@ def save_egress_state(egress, rate, burst, tat, now=None):
         return False
 
 
-def purge(days=claims_mod.RETENTION_DAYS):
+def purge(days: int = claims_mod.RETENTION_DAYS) -> int:
     """清理保留期外的任务行（按业务日字符串比较）。失败仅告警，返回删除行数。
 
     本表是**唯一台账**（当日计划 + 了结事实 + 手机号/owner/结果），不清理会逐日无限
@@ -692,7 +701,7 @@ def purge(days=claims_mod.RETENTION_DAYS):
         return 0
 
 
-def fallback_event(day, exclude_owner=""):
+def fallback_event(day: str, exclude_owner: str = "") -> tuple[int, int] | None:
     """兜底常驻的事件签名：默认可接手（`retry:` 档）未了结行的 `(条数, 最新迁移标记)`。
 
     为什么这一行就是"失败即入队"：执行体弃权（give-up 档）在同一事务里把行置 `failed`
@@ -733,7 +742,8 @@ def fallback_event(day, exclude_owner=""):
         return None
 
 
-def pending_count(day, vshards, phones=None):
+def pending_count(day: str, vshards: Iterable[int],
+                  phones: Iterable[str] | None = None) -> int | None:
     """当日「我的分片集」内仍待办（`state='pending'`）的行数——**当日是否了结的闸门**。
 
     为什么必须带 `vshard` 过滤，而不能用 `day_counts(day)["open"]`：历史平移/补账写入的
@@ -774,7 +784,7 @@ def pending_count(day, vshards, phones=None):
     return int(row[0]) if row else 0
 
 
-def open_count(day):
+def open_count(day: str) -> int | None:
     """当日仍**未了结**（`OPEN_STATES`）且**可被领取**（`vshard >= 0`）的行数。
 
     这是「当日是否了结」的库内事实源，供**没有分片上下文**的调用方使用
@@ -806,7 +816,7 @@ def open_count(day):
     return int(row[0]) if row else 0
 
 
-def day_counts(day):
+def day_counts(day: str) -> dict[str, int] | None:
     """当日各 state 计数与派生口径——供调用方判"当日是否了结"、给进度展示取数。
 
     与 `claims.stats` 同口径：`GROUP BY state` 计数、空 day 全 0（那是"当日没有行"这个
@@ -825,7 +835,7 @@ def day_counts(day):
     派生口径按上表定；未登记的 state 照实计进自己的键（不丢数）但不进派生三项
     ——与 `claims.stats` 对未知状态的处理同形。
     """
-    out = dict.fromkeys(STATES, 0)
+    out: dict[str, int] = dict.fromkeys(STATES, 0)
     try:
         conn, lock = _queue_conn()
         with lock:
@@ -844,7 +854,7 @@ def day_counts(day):
     return out
 
 
-def latest_day():
+def latest_day() -> str | None:
     """`sign_tasks` 里最近一次有记录的业务日（`MAX(day)`）；表空 / 库不可用返回 None。
 
     展示口径的"上次实领是哪天"：取最近一次**有记录**的日而不是"昨天"——周末停签后按
@@ -860,7 +870,7 @@ def latest_day():
     return row[0] if row else None
 
 
-def owners_for_day(day):
+def owners_for_day(day: str) -> dict[str, str]:
     """某业务日 `phone -> owner` 映射，供账号列表批量标注归属。
 
     **必须一次取全**：账号列表可能有几百行，逐账号查会让一次列表请求变成几百次查询。
@@ -880,7 +890,33 @@ def owners_for_day(day):
         return {}
 
 
-def row_owners(day, phones=None):
+def run_at_by_phone(day: str) -> dict[str, str] | None:
+    """当日 `phone -> run_at` 映射——展示层读**执行计划时刻**的唯一事实源。
+
+    `run_at` 就是执行体 `claim_batch` 的领取依据，故读它即读执行事实。计划落库后
+    冻结（`write_plan` 用 `INSERT OR IGNORE` 不覆盖既有行），未了结行的它即当前计划
+    时刻；重试/重签会改写它（`requeue_task` / `reclaim_tasks`），此时读到的就是重试时刻。
+
+    只取 `vshard >= 0` 的真实计划行：v18 平移 / v20 补账的 `vshard=-1` 标记行不是任何
+    分片集的计划，`claim_batch` 也永不由它领取，读它会把补账痕迹当成计划时刻。
+    **一次取全**：账号列表可几百行，逐账号查会把一次列表请求变成几百次查询。
+
+    **读不通回 `None`（哨兵）+ warning**：折成空映射会让展示把"读不出来"当成"今日
+    无计划"，页面给每个账号都画上「待生成」，而实际计划已存在。调用方见到 `None`
+    必须走同一条「待生成」降级，**绝不回退旧的派生算法**（显示不得有两套算法）。
+    """
+    sql = "SELECT phone, run_at FROM sign_tasks WHERE day=? AND vshard >= 0"
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(sql, (day,)).fetchall()
+        return {r["phone"]: r["run_at"] for r in rows}
+    except Exception as e:
+        logger.warning("读取当日计划时刻失败（读不通，不等于今日无计划）: %s", e)
+        return None
+
+
+def row_owners(day: str, phones: Iterable[str] | None = None) -> dict[str, tuple[str, str]] | None:
     """当日任务的 `{phone: (state, owner)}`——**轮末"本执行体未执行"判因的事实源**。
 
     判因怎么用（见 `executor_v3._mark_unreached`）：行已不是 `pending`（或归属写的是
@@ -907,9 +943,9 @@ def row_owners(day, phones=None):
            "{} ORDER BY phone")
     try:
         conn, lock = _queue_conn()
-        out = {}
+        out: dict[str, tuple[str, str]] = {}
         with lock:
-            chunks = [()] if phones is None else list(_chunks(phones))
+            chunks: list[Any] = [()] if phones is None else list(_chunks(phones))
             for chunk in chunks:
                 tail = (" AND phone IN (%s)" % ",".join("?" for _ in chunk)) if chunk else ""
                 for r in conn.execute(sql.format(tail), (day, *chunk)).fetchall():
@@ -920,7 +956,7 @@ def row_owners(day, phones=None):
         return None
 
 
-def owners_since(days=None):
+def owners_since(days: int | None = None) -> list[str]:
     """保留期内出现过的执行体身份串（去重，升序）——供"槽位号只增不复用"用。
 
     用途：删除清单里**当前最大**那一行之后，纯函数只能给出"最大值 + 1"（它会拿到刚空出
@@ -942,7 +978,7 @@ def owners_since(days=None):
         return []
 
 
-def activity(day):
+def activity(day: str) -> list[dict[str, Any]]:
     """当日**按执行体归属**的分组计数（前端"谁做了多少"的数据来源），已折成 KPI 三键。
 
     与 `day_counts(day)` 的区别只在分组维度：`day_counts` 回答"当日了结了多少"，本函数
@@ -962,7 +998,7 @@ def activity(day):
     （按空处理而不取哨兵，理由见模块头降级口径）。未登记的 state 照实
     计进 `total` 但不进三键（不丢数）。
     """
-    out = {}
+    out: dict[str, dict[str, int]] = {}
     try:
         conn, lock = _queue_conn()
         with lock:
@@ -974,12 +1010,12 @@ def activity(day):
         return []
     for r in rows:
         out.setdefault(r["owner"], {})[r["state"]] = r["n"]
-    result = []
+    result: list[dict[str, Any]] = []
     for owner, counts in out.items():
         claimed = counts.get(STATE_CLAIMED, 0) + counts.get(STATE_STOLEN, 0)
         done = counts.get(STATE_DONE, 0) + counts.get(STATE_SKIPPED, 0)
         failed = counts.get(STATE_PENDING, 0) + counts.get(STATE_FAILED, 0)
-        item = {"owner": owner, "claimed": claimed, "done": done, "failed": failed}
+        item: dict[str, Any] = {"owner": owner, "claimed": claimed, "done": done, "failed": failed}
         item["total"] = sum(counts.values())
         result.append(item)
     return result

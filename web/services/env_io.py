@@ -259,7 +259,7 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
             "random" if mode == "random" else "sequence"),
         "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-            "normal" if mode == "normal" else "uniform"),
+            "normal" if mode == "normal" else "front"),
         "account_verify": _flag("YIBAN_ACCOUNT_VERIFY"),
         "probe_enable": _flag("YIBAN_PROBE_ENABLE"),
         "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",

@@ -1,11 +1,38 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""内核进度事件域：`run_events` 表的写入与保留期清理（N2a 打点层）。
+"""内核进度事件域：`run_events` 表的写入、读取与保留期清理（N2a 打点层）。
 
 **功能**
 - 写入：`report`（单条）与 `report_many`（单事务批量）——执行体与编排层共用的
   **唯一 reporter 接口**，调用方不拼 SQL；
+- 读取：`summarize`（轮级摘要）、`timeline`（单轮时间线）、`day_bounds`（窗口边界）
+  ——巡检面的**唯一读取接口**，调用方不拼 SQL；
 - 保留期：`purge`（删除超期事件行，同事务写清理留痕）。
+
+**读取面（巡检）**
+本模块是写入面与读取面的唯一收口点。写入面净化并截断 `message`。读取面遮罩
+`phone`、把 `executor` 收敛成公开标签、并**再复遮一次 `message`**。
+- `phone`：复用 `yiban.masking.mask_phone` 的单源口径。响应不出现原始号码。
+- `executor`：复用 `yiban.egress.owner_tag`，只回角色与槽位序号。身份原串带
+  主机名；主机名属部署信息，任何接口都不得回原串。
+- `message`：复用 `yiban.masking.sanitize_text` 再复遮一次。写入面
+  已净化，读取面复遮是**纵深防御**：历史行与直插行未过写入面净化时仍不漏。
+  复遮**不是无条件幂等**：已遮值与下一个凭据键之间无分隔符时会吞掉后一段。
+  对写入口径的产物在实测形态下幂等。实测口径：定向 fuzz 出过非不动点；
+  务实形态 fuzz 与真实报文均为不动点。
+- 轮级摘要的分组键是 (业务日, 执行体)。本表没有轮次列，这是唯一可复算的口径。
+  日筛选**下推到 SQL**（`summarize(day=…)`），故 `_MAX_ROUNDS` 截断只作用于已
+  筛出的集合；被截断时调用方必须回显 `rounds_truncated`。
+- `unexecuted` 的含义是"领取后未发起请求的账号数"。判据是有 claim 无 start。
+  本表不记未被领取的账号，故这里看不到"无人领取"的那些账号。
+- 读取面只读。它不写表，也不写审计链。
+
+**可见窗口**
+本表只保留 `RETENTION_DAYS` 天（默认 14）。窗口外的日期没有数据。
+窗口区间 = `[今天-(RETENTION_DAYS-1), 今天]`，**唯一定义点是本模块的 `window_range()`**：
+读取面与端点都从它取值，谁都不另算公式。窗口外的日期（早于下界或晚于上界）都要回空。
+读取面与页面必须显式写明窗口。窗口外要给"跨月回溯请走审计日志页"的指引。
+不许静默出空表——那会让人以为那几天没有数据。
 
 **节点值域（本模块是唯一定义点）**
 `NODE_CLAIM` 领取 / `NODE_START` 开始 / `NODE_SUCCESS` 成功 / `NODE_FAIL` 失败 /
@@ -54,6 +81,7 @@ import datetime
 import logging
 
 from yiban import clock
+from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
 
 logger = logging.getLogger("yiban.store.run_events")
@@ -66,6 +94,16 @@ NODE_FAIL = "fail"
 NODE_PAUSE = "pause"
 NODE_FINALIZE = "finalize"
 NODES = (NODE_CLAIM, NODE_START, NODE_SUCCESS, NODE_FAIL, NODE_PAUSE, NODE_FINALIZE)
+
+#: 节点 → 中文标签。读取面与前端共用这一份，前端不另抄一张表。
+NODE_LABELS = {
+    NODE_CLAIM: "领取",
+    NODE_START: "开始",
+    NODE_SUCCESS: "成功",
+    NODE_FAIL: "失败",
+    NODE_PAUSE: "暂停",
+    NODE_FINALIZE: "收尾",
+}
 
 #: 事件行保留期（天）。进度事件只服务"实时进度 + 近期排障"，与签到事实
 #: （sign_events 180 天）不同档；取 14 与领取台账（claims.RETENTION_DAYS）同量级。
@@ -201,3 +239,228 @@ def purge(days=RETENTION_DAYS):
                 conn.rollback()
         logger.warning("清理进度事件失败（不影响其他清理）: %s", e)
         return 0
+
+
+# ---------------------------------------------------------------------------
+# 读取面（巡检）
+# ---------------------------------------------------------------------------
+# 本模块是写入面与读取面的**唯一收口点**。写入面把 message 净化后截断（`_row`）。
+# 读取面把 phone 遮罩、把 executor 收敛成公开标签。两处都只做一次，调用方不重复处理。
+# 为什么收在这里：`phone` 列存的是原始号码（`_row` 存原值），逐调用点遮罩是
+# "漏一个就泄漏"的形状；收在唯一读取点才没有下一个漏点。
+
+#: 轮级摘要一次最多回几行（防异常写入把响应撑爆）。
+_MAX_ROUNDS = 200
+
+#: `_MAX_ROUNDS` 的公开名。端点的 `rounds_limit` 取值源；该值已被前端渲染成用户
+#: 可见文案（"本日最多 N 轮"），属契约字段。内部读取层仍用私有名。
+MAX_ROUNDS = _MAX_ROUNDS
+
+
+def window_range(days=RETENTION_DAYS):
+    """→ 保留窗口的 (下界, 上界) 业务日串，两端**含**。只读。
+
+    窗口区间的**唯一定义点**。下界 = `今天-(days-1)`，上界 = `今天`。
+    读取面（`_rows_on` / `_rows_since` / `timeline`）与端点（`web/routes/run_events_api.py`
+    的 `window.start_day` / `window.end_day`）都从这里取值；端点不得另算公式，否则
+    "唯一定义点"失真、两处会静默漂移。
+
+    为什么必须有下界：`purge` 的删界是 `day < 今天-days`，窗口起点却是 `今天-(days-1)`，
+    故窗口起点之外那一天在清理跑过之前仍有行。少了下界，端点会对窗口外日期回
+    `has_data=true`，与"窗口外回 has_data=false"的契约矛盾。
+
+    为什么必须有上界：业务日晚于今天时（业务钟快一天即可产生未来日），少了上界，
+    端点对未来日回 `in_window=false` 却 `has_data=true`，那是半个窗口。
+    """
+    d = max(1, int(days or RETENTION_DAYS))
+    now = clock.now()
+    upper = now.strftime("%Y-%m-%d")
+    lower = (now - datetime.timedelta(days=d - 1)).strftime("%Y-%m-%d")
+    return (lower, upper)
+
+
+def _public_executor(executor):
+    """原始身份串 → 公开执行体标签（角色 + 槽位序号，不含主机名）。
+
+    复用 `yiban.egress.owner_tag` 的唯一渲染点（日志归因前缀），只去掉方括号。
+    身份原串带主机名，属部署信息；任何接口都不得回原串（见 egress 模块说明）。
+    判不出的串回 `unknown`，照实回而不猜。
+    """
+    from yiban import egress
+    tag = egress.owner_tag(executor or "")
+    return tag[1:-1] if tag.startswith("[") and tag.endswith("]") else tag
+
+
+def _executor_label(executor):
+    """原始身份串 → 中文角色标签（`yiban.egress.parse_owner` 的既有口径）。"""
+    from yiban import egress
+    return egress.parse_owner(executor or "")["label"]
+
+
+def _parse_ts(text):
+    """事件时刻串 → `datetime`；解析不出回 None（耗时按 None 处理，不抛）。"""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.datetime.strptime(str(text), fmt)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def day_bounds():
+    """→ (最早已落库的业务日, 最晚已落库的业务日)。表空时回 (None, None)。
+
+    只读。调用方据此回显"可见窗口的真实边界"。窗口外的日期必须给指引，
+    不许静默出空表——那会让人以为那几天没有数据。
+    """
+    db = _facade()
+    with db._conn_lock:
+        row = db.get_conn().execute(
+            "SELECT MIN(day) AS lo, MAX(day) AS hi FROM run_events").fetchone()
+    if row is None or row["lo"] is None:
+        return (None, None)
+    return (str(row["lo"]), str(row["hi"]))
+
+
+def _rows_since(lower, upper):
+    """→ 落在窗口 `[lower, upper]`（含两端）内的事件行（按业务日降序、id 升序）。只读。
+
+    区间来自 `window_range()`：两端都过滤，未来业务日不得混入缺省日的聚合。
+    """
+    db = _facade()
+    with db._conn_lock:
+        cur = db.get_conn().execute(
+            "SELECT id, ts, day, node, executor, phone, message FROM run_events "
+            "WHERE day >= ? AND day <= ? ORDER BY day DESC, id ASC", (lower, upper))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def _rows_on(day):
+    """→ 该业务日的全部事件行（按 id 升序）。只读。日筛选在 SQL 侧完成。
+
+    **带完整保留窗口**：日期早于下界或晚于上界都回空行。窗口下界与清理删界之间有一天的
+    缝（清理删 `day < 今天-RETENTION_DAYS`，窗口起点是 `今天-(RETENTION_DAYS-1)`），
+    `今天-RETENTION_DAYS` 在清理跑过前仍有行；上界挡掉未来业务日（业务钟快一天可产生）。
+    窗口两端都取自 `window_range()`。
+    """
+    db = _facade()
+    lo, hi = window_range()
+    with db._conn_lock:
+        cur = db.get_conn().execute(
+            "SELECT id, ts, day, node, executor, phone, message FROM run_events "
+            "WHERE day = ? AND day >= ? AND day <= ? ORDER BY id ASC",
+            (str(day), lo, hi))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def _group_rounds(rows):
+    """事件行 → 轮级摘要行列表（按"业务日降序、该轮最晚时刻降序"排列）。只读。"""
+    groups = {}
+    order = []
+    for row in rows:
+        key = (row["day"], _public_executor(row["executor"]))
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {
+                "day": row["day"], "executor": key[1],
+                "executor_label": _executor_label(row["executor"]),
+                "claim": 0, "start": 0, "success": 0, "fail": 0, "pause": 0,
+                "claimed": set(), "started": set(),
+                "_ts": [],
+            }
+            order.append(key)
+        node = row["node"]
+        if node in ("claim", "start", "success", "fail", "pause"):
+            g[node] += 1
+        if node == "claim" and row["phone"]:
+            g["claimed"].add(row["phone"])
+        if node == "start" and row["phone"]:
+            g["started"].add(row["phone"])
+        stamp = _parse_ts(row["ts"])
+        if stamp is not None:
+            g["_ts"].append(stamp)
+
+    out = []
+    for key in order:
+        g = groups[key]
+        stamps = g.pop("_ts")
+        g["unexecuted"] = len(g.pop("claimed") - g.pop("started"))
+        if stamps:
+            lo, hi = min(stamps), max(stamps)
+            g["first_ts"] = lo.strftime("%Y-%m-%d %H:%M:%S")
+            g["last_ts"] = hi.strftime("%Y-%m-%d %H:%M:%S")
+            g["duration_sec"] = int((hi - lo).total_seconds())
+        else:
+            g["first_ts"] = ""
+            g["last_ts"] = ""
+            g["duration_sec"] = None
+        out.append(g)
+
+    out.sort(key=lambda r: (r["day"], r["last_ts"]), reverse=True)
+    return out
+
+
+def summarize(*, day=None, days=RETENTION_DAYS):
+    """轮级摘要：按 (业务日, 执行体) 聚合。→ (rounds, truncated)。只读。
+
+    **两个参数都是 keyword-only**：旧签名是 `summarize(days=…)`，`days` 曾在首位。
+    加上 `day` 后若允许位置调用，`summarize(7)` 会静默变成 `day="7"`，回空表而不报错。
+    keyword-only 让旧式位置调用直接抛 `TypeError`，不静默回空。
+
+    **一轮 = 一个 (业务日, 执行体) 分组**。表里没有轮次列，本口径是唯一可复算的定义。
+
+    `day` 给定则只聚合该业务日：日筛选**下推到 SQL**（`WHERE day = ?`），
+    故 `_MAX_ROUNDS` 截断只作用于已筛出的集合。为什么必须下推：先在全部窗口内
+    截断、再按日筛选，会把"最新若干轮之外的整日"静默切掉——有数据的一日回空表，
+    页面写"该日没有运行进度记录"。受影响的正是"查昨天那轮"这一主用途。
+    `day` 缺省则聚合最近 `days` 个业务日。
+    `truncated` = 分组数超过 `_MAX_ROUNDS`、`rounds` 已被截断（消费方必须显式回显）。
+
+    每行字段与口径：
+    - `claim` / `start` / `success` / `fail` / `pause`：该节点的行数；
+    - `unexecuted`：**领取后未发起请求**的账号数（有 claim 无 start，按账号去重）。
+      本表只记已被领取的账号，故这里看不到"无人领取"的账号；
+    - `duration_sec`：该轮最晚与最早时刻之差（秒）；时刻解析不出时回 None；
+    - `first_ts` / `last_ts`：该轮最早与最晚时刻；
+    - `executor` / `executor_label`：公开标签（角色 + 槽位序号），**不含主机名**。
+    """
+    if day:
+        out = _group_rounds(_rows_on(str(day)))
+    else:
+        out = _group_rounds(_rows_since(*window_range(days)))
+    return out[:_MAX_ROUNDS], len(out) > _MAX_ROUNDS
+
+
+def timeline(day, executor=None, limit=200):
+    """某一轮的事件时间线（按影响行序 = 写入序）。→ (rows, truncated)。只读。
+
+    `executor` 是**公开标签**（`summarize` 的 `executor` 字段）；None 表示该日全部。
+    每行字段：`ts` / `node` / `node_label` / `phone`（已遮罩）/ `message`。
+    只回保留窗口内的日期（带完整窗口两端，见 `window_range`）；窗口外回空表。
+    `message` 再过一次 `sanitize_text`：写入面已净化，读取面再复遮一次，
+    构成纵深防御。复遮**不是无条件幂等**（见模块说明），但对写入口径的产物在实测
+    形态下幂等。为什么读取面也要遮：历史行与直插行可能没过写入面净化；本模块是
+    读取面的唯一收口点，收在这里才没有下一个漏点。
+    行数超过 `limit` 时截断，第二个返回值给 True。
+    """
+    limit = max(1, int(limit or 1))
+    db = _facade()
+    lo, hi = window_range()
+    with db._conn_lock:
+        cur = db.get_conn().execute(
+            "SELECT ts, node, executor, phone, message FROM run_events "
+            "WHERE day = ? AND day >= ? AND day <= ? ORDER BY id ASC",
+            (str(day), lo, hi))
+        raw = [dict(r) for r in cur.fetchall()]
+    rows = []
+    for r in raw:
+        if executor is not None and _public_executor(r["executor"]) != executor:
+            continue
+        rows.append({
+            "ts": str(r["ts"] or ""),
+            "node": r["node"],
+            "node_label": NODE_LABELS.get(r["node"], r["node"]),
+            "phone": _mask_phone(str(r["phone"] or "")),
+            "message": _sanitize_text(str(r["message"] or "")),
+        })
+    return rows[:limit], len(rows) > limit

@@ -17,7 +17,8 @@ import logging
 import math
 import os
 import random
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any, Iterable, Mapping
 
 from yiban import clock, config_loader, window
 from yiban.engine import hrw
@@ -56,6 +57,14 @@ _DEFAULT_UTIL = 0.8
 # 最多多试 2 次，而失败本身不是常态；取 0.2（约每 5 个账号多 1 次尝试）把重试算进容量，
 # 宁可略高估出口需求，也不按"零重试"把出口排满。
 _DEFAULT_RETRY_RATIO = 0.2
+# 账号间隔下限（秒）：`front` 铺点速率与容量估算共用的单账号周期项；缺省值住在名册里。
+_DEFAULT_ACCOUNT_GAP_MAX = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
+
+#: 分布模式词表（**唯一事实源**）：uniform=均匀铺满；normal=钟形高峰；front=提前铺完。
+#: planner 的分布白名单与 web 取值域门都引用它——三处各写一份词表，加模式时必漏两处。
+SIGN_DIST_CHOICES = ("uniform", "normal", "front")
+#: 分布模式的缺省值：**提前铺完**（留足重试与兜底余量）。刻意不取词表首项。
+DEFAULT_SIGN_DIST = "front"
 
 # 签到窗口配置非法的一次性告警标记：_schedule_config 每次调度都会调用，
 # 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
@@ -71,7 +80,7 @@ _window_fallback_notified = False
 _alert_mark_day = ""
 
 
-def reset_daily_alerts(now=None):
+def reset_daily_alerts(now: datetime | None = None) -> bool:
     """业务日翻页时复位三个窗口告警去重标记；返回本次是否真的复位了。
 
     为什么必须有复位点：这三个标记是"同一配置错误当日只并入一次汇总邮件"的去重位，
@@ -95,7 +104,8 @@ def reset_daily_alerts(now=None):
     return True
 
 
-def _env_int(name, default, lo=None, hi=None, env=None):
+def _env_int(name: str, default: int, lo: int | None = None, hi: int | None = None,
+             env: Mapping[str, str] | None = None) -> int:
     """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。
 
     `env` 给出时只读它、不回落进程环境——口径与 `_env_flag` 一致。容量预估这类
@@ -117,7 +127,7 @@ def _env_int(name, default, lo=None, hi=None, env=None):
     return v
 
 
-def avg_attempt_sec(env=None):
+def avg_attempt_sec(env: Mapping[str, str] | None = None) -> int:
     """单账号签到耗时估算（秒）：YIBAN_AVG_ATTEMPT_SEC 显式配置优先，缺省 3s。
 
     `env` 口径见 `_env_int`：web 侧容量预估必须把生效配置层传进来，与 gap 同源。
@@ -125,7 +135,7 @@ def avg_attempt_sec(env=None):
     return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300, env=env)
 
 
-def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
+def warn_avg_attempt_sec(cfg_avg: int | None = None, *, days: int = 7, min_samples: int = 20) -> int:
     """容量**告警阈值**的 avg 输入：显式配置（管理员钉住）> 实测 p95（近 `days` 天
     `sign_events.dur_sec`）> 配置缺省档；读不到实测就回退缺省档，绝不把预检拖崩。
     只喂预检告警——保存闸门/展示按计划口径，"能不能保存"不该跟着昨天的网络抖。
@@ -142,7 +152,7 @@ def warn_avg_attempt_sec(cfg_avg=None, *, days=7, min_samples=20):
     return max(1, math.ceil(p95)) if p95 else max(1, int(cfg_avg))
 
 
-def _env_float(name, default, lo=None, hi=None):
+def _env_float(name: str, default: float, lo: float | None = None, hi: float | None = None) -> float:
     """读浮点环境变量；缺失/非法回退默认（与 `_env_int` 同一套回退 + 告警口径）。"""
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -158,7 +168,8 @@ def _env_float(name, default, lo=None, hi=None):
     return v
 
 
-def capacity_accounts(window_sec, gap=0, avg=None, env=None):
+def capacity_accounts(window_sec: float, gap: float = 0, avg: int | None = None,
+                      env: Mapping[str, str] | None = None) -> int:
     """有效窗口内可容纳的账号数（容量口径唯一源：引擎预检与 web 容量预估共用）。
 
     模型：首个账号立刻占用 avg 秒，此后每个账号按「上一次完成 + 间隔下限」推进，
@@ -180,7 +191,8 @@ def capacity_accounts(window_sec, gap=0, avg=None, env=None):
     return slack // (avg + gap) + 1
 
 
-def block_capacity(n_accounts, n_blocks, env=None):
+def block_capacity(n_accounts: int, n_blocks: int,
+                   env: Mapping[str, str] | None = None) -> int:
     """单块容量 K（调度 v2）：块的**唯一事实源**，计划/执行/Web 拥挤度三方共用。
 
     与 `build_schedule` 内联式同构：偏好/自动分配都以"每块最多 K 人"填块，超出
@@ -201,7 +213,7 @@ def block_capacity(n_accounts, n_blocks, env=None):
     return block_cap if n_accounts <= cap else math.ceil(n_accounts / n_blocks)
 
 
-def channel_count(bucket_rate, avg=None):
+def channel_count(bucket_rate: float, avg: int | None = None) -> int:
     """每执行体的并发通道数 `M = min(_DEFAULT_CHANNELS_MAX, ceil(bucket_rate × avg × 2))`。
 
     通道能力 `M/avg` 只需略高于出口令牌桶上限（系数 2 是余量），瓶颈因此始终是两者中
@@ -222,9 +234,10 @@ def channel_count(bucket_rate, avg=None):
     return min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
 
 
-def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=_DEFAULT_BUCKET_RATE,
-                         util=0.8,
-                         env=None):
+def capacity_accounts_v3(window_sec: float, k: int = 1, avg: int | None = None,
+                         bucket_rate: float = _DEFAULT_BUCKET_RATE,
+                         util: float = 0.8,
+                         env: Mapping[str, str] | None = None) -> int:
     """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
 
     `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数（唯一口径见
@@ -249,8 +262,10 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=_DEFAULT_BUCKET_
     return math.floor(k * rate_eff * max(0, int(window_sec)) * util + 1e-9)
 
 
-def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=_DEFAULT_BUCKET_RATE,
-                util=0.8, enabled=None, env=None, retry_reserve=False):
+def capacity_of(window_sec: float, *, gap: float = 0, avg: int | None = None,
+                k: int | None = None, bucket_rate: float = _DEFAULT_BUCKET_RATE,
+                util: float = 0.8, enabled: bool | None = None,
+                env: Mapping[str, str] | None = None, retry_reserve: bool = False) -> int:
     """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
 
     为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
@@ -293,8 +308,9 @@ def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=_DEFAULT_BUC
                                 bucket_rate, util, env=env)
 
 
-def executor_count(n_accounts, window_sec, *, bucket_rate=_DEFAULT_BUCKET_RATE, retry_ratio=None,
-                   egress_count=1):
+def executor_count(n_accounts: int, window_sec: float, *,
+                   bucket_rate: float = _DEFAULT_BUCKET_RATE,
+                   retry_ratio: float | None = None, egress_count: int = 1) -> int:
     """满足当日账号量的执行体数 `K = clamp(ceil(N×(1+r)/(W×bucket×0.8)), 1, 出口数)`。
 
     **K 的唯一口径**：容量公式、预检告警与"该开几个执行体"的建议都调本函数——三处各写
@@ -323,11 +339,20 @@ def executor_count(n_accounts, window_sec, *, bucket_rate=_DEFAULT_BUCKET_RATE, 
     return min(max(1, need), egress)
 
 
-def _schedule_config(now=None):
+def egress_rate() -> float:
+    """出口级目标速率 λ（`YIBAN_EGRESS_RATE`，次尝试/s）。**唯一读取点**：
+    `planner_config`（限速桶速率）与容量预检的**出口预算告警**都调本函数——同一个量
+    只许一处读，域与夹取也只此一份（两处各写一遍式子，改一处必漏另一处）。
+    非法/越界回退名册缺省（与 `channel_count` 的"非法回退出厂速率"同口径）。
+    """
+    return _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+
+
+def _schedule_config(now: datetime | None = None) -> dict[str, Any]:
     """读取调度 v2 配置（每次调用读取，便于测试与热改）。
 
-    兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
-    新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
+    兼容旧 YIBAN_SIGN_MODE：sequence→顺序×提前铺完、random→随机×提前铺完、
+    normal→顺序×正态；新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
     返回 dict：order/dist/edge_front_sec/edge_back_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
 
@@ -346,10 +371,10 @@ def _schedule_config(now=None):
     dist = os.environ.get("YIBAN_SIGN_DIST", "").strip().lower()
     if order not in ("sequence", "random"):
         order = "random" if mode == "random" else "sequence"
-        if dist not in ("uniform", "normal"):
-            dist = "normal" if mode == "normal" else "uniform"
-    elif dist not in ("uniform", "normal"):
-        dist = "uniform"
+        if dist not in SIGN_DIST_CHOICES:
+            dist = "normal" if mode == "normal" else DEFAULT_SIGN_DIST
+    elif dist not in SIGN_DIST_CHOICES:
+        dist = DEFAULT_SIGN_DIST
     # 窗口与前后裁剪的解析委托 yiban.window（排计划/判关闭/算容量同源）；告警仍在此处发
     start, end, _win_invalid = window.parse_window(os.environ)
     if _win_invalid:
@@ -402,7 +427,7 @@ def _schedule_config(now=None):
     }
 
 
-def _executor_ids(env=None):
+def _executor_ids(env: Mapping[str, str] | None = None) -> list[str]:
     """执行体身份串列表（HRW 分工的候选集）：清单里的并行执行体行；无清单 → 单执行体。
 
     身份串的唯一构造处是 `yiban.egress`（跨重启稳定、含主机名），这里只按清单行取
@@ -418,20 +443,22 @@ def _executor_ids(env=None):
     return [egress.single_owner()]
 
 
-def planner_config():
-    """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 三模式 + μσ + 桶速率 + 执行体。
+def planner_config() -> dict[str, Any]:
+    """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 分布三态 + μσ + 桶速率 + 执行体/间隔。
 
-    读法与 `_schedule_config` **同源**（直接复用它的结果），只补两项 Planner 独有的：
-    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省住在名册里）与 `executors`（HRW 候选集）。
+    读法与 `_schedule_config` **同源**（直接复用它的结果），只补三项 Planner 独有的：
+    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省住在名册里）、`executors`（HRW 候选集）与
+    `account_gap_max`（`YIBAN_ACCOUNT_GAP_MAX`，`front` 铺点速率的单账号周期项）。
     不另存一份窗口/模式口径——两份口径迟早会分叉。
     """
     cfg = _schedule_config()
-    cfg["bucket_rate"] = _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+    cfg["bucket_rate"] = egress_rate()
     cfg["executors"] = _executor_ids()
+    cfg["account_gap_max"] = _env_int("YIBAN_ACCOUNT_GAP_MAX", _DEFAULT_ACCOUNT_GAP_MAX, 0, 3600)
     return cfg
 
 
-def egress_rate_explicit():
+def egress_rate_explicit() -> bool:
     """`YIBAN_EGRESS_RATE` 是否被显式写入（供限速器判「人工接管」）。
 
     值本身仍由 `planner_config` 读（本键的唯一取值点），这里只回答"有没有配"：
@@ -440,19 +467,19 @@ def egress_rate_explicit():
     return bool(os.environ.get("YIBAN_EGRESS_RATE", "").strip())
 
 
-def _anchor_z(phone):
+def _anchor_z(phone: str) -> float:
     """账号锚点分位（顺序×正态）：hash(phone) 派生标准正态值，零持久化、每天稳定。"""
     return random.Random(str(phone)).gauss(0, 1)
 
 
-def _sigma_eff(sigma, n, span_minutes):
+def _sigma_eff(sigma: float, n: int, span_minutes: float) -> float:
     """人数自适应 + 封顶：σ×(1+log2(n/20))，上限 有效窗口/3（防端点堆积）。"""
     if n > 20:
         sigma = sigma * (1 + math.log2(n / 20))
     return min(sigma, span_minutes / 3)
 
 
-def day_mu_sigma_pct(cfg, day):
+def day_mu_sigma_pct(cfg: Mapping[str, Any], day: Any) -> tuple[float, float]:
     """正态 μ/σ 的**当日取值**（占有效窗口的 %）：返回 `(mu_pct, sigma_pct)`。
 
     μ/σ 定义的是一个区间（`YIBAN_SCHEDULE_MU_MIN_PCT`~`_MAX_PCT` 等），落在区间的
@@ -476,7 +503,7 @@ def day_mu_sigma_pct(cfg, day):
     return mu_pct, sg_pct
 
 
-def _schedule_blocks(cfg):
+def _schedule_blocks(cfg: Mapping[str, Any]) -> tuple[list[tuple[float, float]], float, float]:
     """按时钟 5 分钟对齐切块（首尾块各 4 分钟），返回 (blocks, eff_lo, eff_hi)。
 
     blocks: [(lo_min, hi_min), ...]（浮点分钟，支持 0.5 分钟=30s 的裁剪粒度）；
@@ -544,7 +571,7 @@ def _schedule_blocks(cfg):
     return blocks, eff_lo, eff_hi
 
 
-def _window_closed(sch_cfg, now_dt):
+def _window_closed(sch_cfg: Mapping[str, Any], now_dt: datetime) -> bool:
     """签到窗口是否已关闭（与 _schedule_blocks 同源：都走 window.bounds，含同一套回退）。
 
     若这里只按 sign_end - edge_back 算，而 _schedule_blocks 在"有效窗口被裁剪吃空"时
@@ -553,12 +580,12 @@ def _window_closed(sch_cfg, now_dt):
     return window.bounds(sch_cfg).is_closed(now_dt)
 
 
-def _window_open(sch_cfg, now_dt):
+def _window_open(sch_cfg: Mapping[str, Any], now_dt: datetime) -> bool:
     """签到窗口是否已开始（同源同上）。"还没开"与"已经关"是两种情形，调用方要分开处理。"""
     return window.bounds(sch_cfg).is_open(now_dt)
 
 
-def _window_opens_in(sch_cfg, now_dt):
+def _window_opens_in(sch_cfg: Mapping[str, Any], now_dt: datetime) -> float:
     """距窗口开始还有多少秒（已开始为 <= 0）。"""
     return window.bounds(sch_cfg).opens_in_sec(now_dt)
 
@@ -569,7 +596,7 @@ def _window_opens_in(sch_cfg, now_dt):
 _TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 
 
-def _env_flag(name, env=None):
+def _env_flag(name: str, env: Mapping[str, str] | None = None) -> bool:
     """开关类环境变量真值（1/true/on/yes，大小写不敏感、两侧空白忽略）。
 
     判定单源在 `yiban.infra.env_io.parse_env_flag`：非预期取值按缺省（假）处理并出声一次，
@@ -585,7 +612,7 @@ DAY_OFF_SATURDAY = "saturday"
 DAY_OFF_PAUSED = "paused"
 
 
-def weekend_flags(env=None):
+def weekend_flags(env: Mapping[str, str] | None = None) -> tuple[bool, bool]:
     """周末签到开关（周六, 周日）的**唯一解析口径**（`_env_flag`：1/true/on/yes 为真）。
 
     `day_off` 与 web 展示（面板状态行、我的日历置灰）都只读这里——原先 web 侧各自
@@ -594,7 +621,8 @@ def weekend_flags(env=None):
     return (_env_flag("YIBAN_SATURDAY_SIGN", env), _env_flag("YIBAN_SUNDAY_SIGN", env))
 
 
-def day_off(now=None, sat=None, sun=None, env=None):
+def day_off(now: datetime | None = None, sat: bool | None = None, sun: bool | None = None,
+            env: Mapping[str, str] | None = None) -> str:
     """今天这一刻是否**有意不签到** → 原因串；空串=照常。
 
     周末门与一键暂停门的**唯一实现**（顺序与历史行为一致：周日 → 周六 → 暂停）。
@@ -618,7 +646,7 @@ def day_off(now=None, sat=None, sun=None, env=None):
     return ""
 
 
-def _nearest_available(bi, filled, blocks, cap):
+def _nearest_available(bi: int, filled: list[int], blocks: list[Any], cap: int) -> int | None:
     """双向就近找未满块（自选溢出顺延用；同距离优先更早的块）。无可用返回 None。"""
     n = len(blocks)
     for d in range(n):
@@ -628,7 +656,7 @@ def _nearest_available(bi, filled, blocks, cap):
     return None
 
 
-def _next_available(bi, filled, blocks, cap):
+def _next_available(bi: int, filled: list[int], blocks: list[Any], cap: int) -> int:
     """从 bi 向后（环回）找第一个未满块。"""
     n = len(blocks)
     for step in range(n):
@@ -638,7 +666,7 @@ def _next_available(bi, filled, blocks, cap):
     return bi  # 全满（理论不会发生：cap 已按 n 放大）
 
 
-def _slot_to_bi(cfg):
+def _slot_to_bi(cfg: Mapping[str, Any]) -> dict[int, int]:
     """自选片分钟偏移（相对窗口起点）→ 块索引。
 
     窗口起止与前后裁剪一律取 `window.bounds(cfg)`，与 `_schedule_blocks` 同准绳：有效
@@ -662,7 +690,9 @@ def _slot_to_bi(cfg):
     return m
 
 
-def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=None):
+def build_schedule(accounts: Iterable[Any], order: str | None = None, dist: str | None = None,
+                   now: datetime | None = None, rng: Any = None,
+                   prefs: Mapping[str, Any] | None = None) -> dict[str, datetime]:
     """调度 v2：统一填充框架。
 
     排序维度 × 分布维度（2×2）：
@@ -727,7 +757,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
         # 只保留当前账号集合内的 pref（换号/删号后的孤儿不占容量）
         valid_phones = {a.phone for a in accounts}
         slot_to_bi = _slot_to_bi(cfg)
-        by_slot = {}
+        by_slot: dict[int, list[tuple[str, str]]] = {}
         for phone, p in prefs.items():
             if phone not in valid_phones:
                 continue
