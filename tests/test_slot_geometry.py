@@ -9,7 +9,7 @@
    的「相对窗口起点」语义、web 侧 _pref_slots
    的置灰与基点、web.app.sign_window_bounds 只做转发。
 对应实现：scripts/signin.py（_slot_to_bi、_schedule_blocks、build_schedule）、yiban/engine/planner.py（v3
-   自选候选分片）、yiban/window.py（bounds）、web/routes/my.py 与
+   自选候选分片）、yiban/window.py（bounds）、web/routes/my_api.py 与
    web/services/accounts_data.py（_pref_slots、_slot_to_label）。
 关键断言：片号只有一份准绳：调度侧的 _slot_to_bi、块数、web
    侧的可点片与标签必须同时变化，任何一处另算一套就会出现「网页能选、调度判落窗外」的错位回退。缓冲收缩时基点仍是窗口起点（07:00
@@ -28,7 +28,7 @@ from unittest import mock
 
 import signin
 
-from web.routes import my
+from web.routes import my_api
 from web.services import accounts_data
 from yiban import window
 from yiban.engine import planner, schedule
@@ -212,7 +212,7 @@ class WebPrefSlotsYardstickTest(unittest.TestCase):
             cropped = window.bounds(cropped_cfg)
         self.assertTrue(cropped.edges_clamped)
         self.assertFalse(cropped.fell_back)
-        slots = my._pref_slots(cropped)
+        slots = my_api._pref_slots(cropped)
         self.assertFalse(all(s["disabled"] for s in slots), "缓冲收缩后全部片被置灰")
         self.assertEqual(
             slots[0], {"slot_min": 0, "label": "06:30",
@@ -231,7 +231,7 @@ class WebPrefSlotsYardstickTest(unittest.TestCase):
         win = window.bounds({"sign_start": (6, 30), "sign_end": (7, 0),
                              "edge_front_sec": 300, "edge_back_sec": 0})
         self.assertFalse(win.fell_back)
-        slots = my._pref_slots(win)
+        slots = my_api._pref_slots(win)
         self.assertEqual(
             slots[0], {"slot_min": 0, "label": "06:30",
                        "disabled": True, "edge_note": ""})

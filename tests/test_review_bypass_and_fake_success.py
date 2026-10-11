@@ -8,7 +8,7 @@
     `VerifyGateBusy` 时，响应不得静默 `ok:true` 装作无事发生——如实给
     `status=verify_deferred` 并在 msg 交代"本次未排上在线校验"。
 对应实现：`yiban/store/accounts.py::replace_accounts`；
-    `web/routes/my.py::api_my_account_add` 的 VerifyGateBusy 分支。
+    `web/routes/my_api.py::api_my_account_add` 的 VerifyGateBusy 分支。
 关键断言：①含引擎选号面（`_load_accounts_from_file` 只跳 pending/rejected/deleted，
     pending 的行必须缺席）；②账号仍入库待审核（拒绝的是"假装在验证"，不是提交本身）。
 依赖：纯本地 SQLite + Flask test client，patch 掉 `_verify_queue_full`/
