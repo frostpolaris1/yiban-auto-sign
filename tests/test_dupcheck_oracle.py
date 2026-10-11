@@ -7,7 +7,7 @@
     窗口内第 N 次）、连续命中达 DUPCHECK_MAX 后改答 429 且被拒留痕每窗口至多一行、
     未重号的正常提交不占额度不写命中审计；另钉窗口翻窗后额度复位、按会话隔离计数、
     单账号/容量拦截仍排在判重之前（错误优先级不变）。
-对应实现：`web/routes/my.py` 的 `api_my_account_add` 预检分支；限速表
+对应实现：`web/routes/my_api.py` 的 `api_my_account_add` 预检分支；限速表
     `web.routes.dupcheck_limits()`（app 实例 extensions，键为会话用户名）；配额原语
     `web.security._bump_window_count` / `_ip_store_trim`；被拒留痕复用
     `web.app` 的 `_read_audit_denied_trace`（limit=1）；常量 `DUPCHECK_WINDOW` /
@@ -17,7 +17,7 @@
     拒绝面不能反过来把审计表刷成打字机（2 次 429 只许 1 行被拒审计）。
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite（`import db` 走 scripts 门面），
     不联网、不起子进程、无需 node/bash；`YIBAN_ACCOUNT_VERIFY` 不开（预筛路径不触
-    外呼）；翻窗用例以 `mock.patch` 拨 `web.routes.my` 的 `time.time`。
+    外呼）；翻窗用例以 `mock.patch` 拨 `web.routes.my_api` 的 `time.time`。
 """
 import contextlib
 import importlib.util
@@ -208,12 +208,12 @@ class DupcheckOracleTest(unittest.TestCase):
         token = self._login(c, ACTOR)
         quota = self.webapp.DUPCHECK_MAX
         t0 = time.time()
-        with mock.patch("web.routes.my.time.time", side_effect=lambda: t0):
+        with mock.patch("web.routes.my_api.time.time", side_effect=lambda: t0):
             for _ in range(quota):
                 self.assertEqual(_post_account(c, token, PHONE_TAKEN).status_code, 400)
             self.assertEqual(_post_account(c, token, PHONE_TAKEN).status_code, 429)
         # 拨过 DUPCHECK_WINDOW 后额度复位：回到 400 契约并继续留痕
-        with mock.patch("web.routes.my.time.time",
+        with mock.patch("web.routes.my_api.time.time",
                         side_effect=lambda: t0 + self.webapp.DUPCHECK_WINDOW + 1):
             r = _post_account(c, token, PHONE_TAKEN)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))

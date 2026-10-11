@@ -185,8 +185,8 @@ def register_all(app):
         audit_api,
         auth,
         data,
-        me,
-        my,
+        me_api,
+        my_api,
         notify,
         pages,
         run_events_api,
@@ -197,10 +197,10 @@ def register_all(app):
     )
     pages.register(app)
     auth.register(app)
-    me.register(app)
+    me_api.register(app)
     notify.register(app)
     accounts_api.register(app)
-    my.register(app)
+    my_api.register(app)
     data.register(app)
     users_api.register(app)
     audit_api.register(app)

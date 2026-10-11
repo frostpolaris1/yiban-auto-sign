@@ -19,8 +19,8 @@
 说明中记录理由。
 
 **复用**
-`web/app.py` 与 `web/routes/{auth,me,pages}.py` 的审计 target、登录/改密限速键经 db 门面
-调 `hash_ip`；`web/routes/my.py` 的审计 target 与 `yiban/store/time_prefs.py` 的保存冷却
+`web/app.py` 与 `web/routes/{auth,me_api,pages}.py` 的审计 target、登录/改密限速键经 db 门面
+调 `hash_ip`；`web/routes/my_api.py` 的审计 target 与 `yiban/store/time_prefs.py` 的保存冷却
 查询（经门面按属性取，`db.hash_phone = 替身` 必须被它看见）调 `hash_phone`。
 
 **通信**

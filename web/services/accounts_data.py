@@ -396,7 +396,7 @@ def plan_state_message(acc, prev, plan_at):
     - 未了结 = 状态文件无该账号条目，或条目状态为 `pending`
       （`yiban_status.is_concluded_status` 取反：`retrying`/`failed` 等有结论）。
 
-    两个消费端点（`web/routes/my.py` 与 `web/routes/accounts_api.py`）共用本函数，
+    两个消费端点（`web/routes/my_api.py` 与 `web/routes/accounts_api.py`）共用本函数，
     谓词只此一处——故同一账号同一输入必得同一文案（跨端点等值由守卫钉住）。
     `prev` 是状态文件条目（dict 或 None）；`plan_at` 是 `{phone: run_at}`（可为 None）。
     """
@@ -418,7 +418,7 @@ def today_plan_map():
     """当日 `phone -> run_at` 台账映射（执行计划时刻的唯一事实源）。
 
     展示层的**唯一取日点**：本函数按业务钟算出"今天"，再向台账层取当日计划。三条读路径
-    （`_estimate_slot` / `web/routes/my.py` / `web/routes/accounts_api.py`）都经此取数，
+    （`_estimate_slot` / `web/routes/my_api.py` / `web/routes/accounts_api.py`）都经此取数，
     避免各写一遍"今天"的日期口径。读不通回 `None` 哨兵（透传 `run_at_by_phone`），
     调用方按同一"待生成"降级处理，**绝不回退旧的派生算法**（显示不得有两套算法）。
     """

@@ -69,7 +69,6 @@ from yiban.engine import alerts, attempts, hrw, planner, schedule, state_io, tok
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 from yiban.masking import sanitize_text as _sanitize_text
-from yiban.store import claims as claims_mod
 from yiban.store import clock_meta, queue_store, run_events
 
 logger = logging.getLogger("yiban")
@@ -590,13 +589,13 @@ def _tier_prefix(status):
 
     `sign_tasks.result` 的 `retry:`/`final:` 前缀是当日回炉口
     （`queue_store.requeue_failed`）区分"默认档自动回炉 / 须显式路径"的唯一判据；
-    成员表只认 `claims.RETRYABLE_GIVE_UP_STATUSES`（v2 的 `claims.give_up` 与
+    成员表只认 `yiban.status.RETRYABLE_GIVE_UP_STATUSES`（v2 的 `claims.give_up` 与
     `round._settle_claims` 选档用的是同一 frozenset）。各写一份会漂移成
     "记成 retry、判成 final"——回炉口对默认档失明，当日失败又没人接手。
     """
-    return (claims_mod.RESULT_RETRY_PREFIX
-            if status in claims_mod.RETRYABLE_GIVE_UP_STATUSES
-            else claims_mod.RESULT_FINAL_PREFIX)
+    return (yiban_status.RESULT_RETRY_PREFIX
+            if status in yiban_status.RETRYABLE_GIVE_UP_STATUSES
+            else yiban_status.RESULT_FINAL_PREFIX)
 
 
 def _log_give_up(phone, tried, status, message, tag=""):

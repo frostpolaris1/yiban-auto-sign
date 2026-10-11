@@ -338,8 +338,8 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
     `failed` 行若没有这条路，当日就**无人接手**——v2 的等价物是领取层"默认参数可再领
     `retry:` 档"（`claims.try_claim`），v3 的队列以 `pending` 为唯一可领态，档位语义只能
-    靠这里翻态来兑现。**档位判据沿用领取层的同一份常量**（`claims.RESULT_RETRY_PREFIX`
-    /`RESULT_FINAL_PREFIX`，v18 平移时逐字带过来的协议，不另造一套）：
+    靠这里翻态来兑现。**档位判据沿用领取层的同一份常量**（`yiban.status.RESULT_RETRY_PREFIX`
+    /`RESULT_FINAL_PREFIX`，v18 平移时逐字带过来的协议，128-P1 迁入 status，不另造一套）：
 
     - 缺省只回炉 `retry:` 档（窗口外/无点位/"本轮没产生结论"，"该重试"）——当日任何
       后续轮次都接得动的默认档；
@@ -388,7 +388,7 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     except Exception as e:
         logger.warning("读取当日弃用任务失败（读不通，不等于无可回炉）: %s", e)
         return None
-    retry_prefix = claims_mod.RESULT_RETRY_PREFIX
+    retry_prefix = yiban_status.RESULT_RETRY_PREFIX
     flipped = 0
     for r in rows:
         result = str(r["result"] or "")
@@ -730,8 +730,8 @@ def fallback_event(day: str, exclude_owner: str = "") -> tuple[int, int] | None:
         ex = [exclude_owner, exclude_owner]
     sql = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
            "WHERE day=? AND state=? AND vshard >= 0 AND substr(result, 1, ?)=?" + tail)
-    probe = [day, STATE_FAILED, len(claims_mod.RESULT_RETRY_PREFIX),
-             claims_mod.RESULT_RETRY_PREFIX, *ex]
+    probe = [day, STATE_FAILED, len(yiban_status.RESULT_RETRY_PREFIX),
+             yiban_status.RESULT_RETRY_PREFIX, *ex]
     try:
         conn, lock = _queue_conn()
         with lock:

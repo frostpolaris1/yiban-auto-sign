@@ -202,7 +202,7 @@ class SameTransactionTest(_Fixture):
 
 
 class CredentialPathTransactionTest(_Fixture):
-    """生产凭据路径的 kill 注入：me.py 自助改密 / my.py 提交易班凭据。
+    """生产凭据路径的 kill 注入：me_api.py 自助改密 / my_api.py 提交易班凭据。
 
     这两条路径的审计由 store 层内嵌 `audit_spec` 与业务写同事务（`update_user` /
     `add_account`）。真子进程在链尾哈希计算处 `os._exit` ⇒ 未提交事务随进程退出回滚，
@@ -226,7 +226,7 @@ class CredentialPathTransactionTest(_Fixture):
         db._conn = None
 
     def test_me_password_path_kill_leaves_neither(self):
-        """me.py 自助改密：`update_user` 内审计前被杀 ⇒ 口令未改、审计无此条。"""
+        """me_api.py 自助改密：`update_user` 内审计前被杀 ⇒ 口令未改、审计无此条。"""
         self._run_kill([
             "db.create_user('victim@test.local', 'oldhash', role='user')",
             "db._audit_hash = lambda *a, **k: os._exit(0)",
@@ -257,7 +257,7 @@ class CredentialPathTransactionTest(_Fixture):
             "业务生效 ⇒ 审计行必在")
 
     def test_my_credentials_path_kill_leaves_neither(self):
-        """my.py 提交易班凭据：`add_account` 内审计前被杀 ⇒ 账号未建、审计无此条。"""
+        """my_api.py 提交易班凭据：`add_account` 内审计前被杀 ⇒ 账号未建、审计无此条。"""
         self._run_kill([
             "db._audit_hash = lambda *a, **k: os._exit(0)",
             "db.add_account({'name': 'n', 'phone': '13800000000', 'password': 'p',",
