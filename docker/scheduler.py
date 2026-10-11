@@ -267,7 +267,7 @@ def _touch_heartbeat(state_dir=None):
         private_json.write_private_json(
             path,
             {"pid": os.getpid(),
-             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},  # noqa: DTZ005 心跳旁路观测件，与 mtime 同钟，故意用系统钟（见上方注释）
             ensure_dir=False)
 
 
@@ -517,9 +517,9 @@ def _child_timeout(env):
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
         end_hhmm = "07:50"
     try:
-        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
     except ValueError:
-        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
     return max(600, int((end_dt - clock.now()).total_seconds()) + 300)
 
 

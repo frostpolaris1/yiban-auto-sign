@@ -301,7 +301,7 @@ def _parse_ts(text):
     """事件时刻串 → `datetime`；解析不出回 None（耗时按 None 处理，不抛）。"""
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
         try:
-            return datetime.datetime.strptime(str(text), fmt)
+            return datetime.datetime.strptime(str(text), fmt)  # noqa: DTZ007 解析事件业务本地 naive 时间串
         except (TypeError, ValueError):
             continue
     return None

@@ -276,7 +276,7 @@ def _is_credential_failure(message):
 
 def _next_probe_date(today):
     """从 `today` 顺延一个半开试探周期，返回新的试探日。"""
-    return (datetime.strptime(today, "%Y-%m-%d")
+    return (datetime.strptime(today, "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日期串，无时区语义
             + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
 
 

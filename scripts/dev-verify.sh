@@ -273,7 +273,7 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     guard_worktree_crlf
     cd "$REPO"
     echo "DEV-VERIFY(ci) lint"
-    "$py" -m ruff check yiban/ tests/ scripts/ web/ --quiet
+    "$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
     echo "DEV-VERIFY(ci) mypy（收编名单住 pyproject.toml 的 [tool.mypy] files）"
     "$py" -m mypy
     "$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
@@ -741,9 +741,9 @@ if [ "$MODE" = fast ]; then
     echo "DEV-VERIFY(fast): ⚠ 本模式仍不是门禁——推送前跑全量，或至少确认 CI 绿"
 fi
 
-echo "DEV-VERIFY ruff: ruff check yiban/ tests/ scripts/ web/ --quiet"
+echo "DEV-VERIFY ruff: ruff check yiban/ tests/ scripts/ web/ docker/ --quiet"
 set +e
-"$PY" -m ruff check yiban/ tests/ scripts/ web/ --quiet
+"$PY" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
 ruff_rc=$?
 set -e
 echo "DEV-VERIFY ruff_exit=$ruff_rc"

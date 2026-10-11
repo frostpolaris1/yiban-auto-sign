@@ -448,7 +448,7 @@ def fallback_alive(interval_sec=None, now=None):
     try:
         with open(path, encoding="utf-8") as f:
             at = json.load(f).get("at", "")
-        stamp = datetime.strptime(at, _TS_FMT)
+        stamp = datetime.strptime(at, _TS_FMT)  # noqa: DTZ007 解析状态文件业务本地 naive 时间串
     except (OSError, ValueError, TypeError, AttributeError):
         return False, None
     now = now or clock.now()
@@ -604,6 +604,6 @@ def _alive_record(index, at):
 def _parse_stamp(value):
     """状态文件里的时间串 → datetime；读不出返回 None。"""
     try:
-        return datetime.strptime(str(value or ""), _TS_FMT)
+        return datetime.strptime(str(value or ""), _TS_FMT)  # noqa: DTZ007 解析状态文件业务本地 naive 时间串
     except (TypeError, ValueError):
         return None

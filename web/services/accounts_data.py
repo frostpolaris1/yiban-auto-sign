@@ -307,7 +307,7 @@ def _delete_grace_remaining(deleted_at):
     if not deleted_at:
         return 0
     try:
-        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
+        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（注销冷却）
     except ValueError:
         try:
             d = datetime.fromisoformat(str(deleted_at))

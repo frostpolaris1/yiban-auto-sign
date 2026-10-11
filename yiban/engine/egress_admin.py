@@ -124,7 +124,7 @@ def _engine_rate(view):
 def _stale_sec(stamp):
     """`updated_at` 距现在多少秒；解析不出返回 None（照实回，不猜）。"""
     try:
-        then = datetime.datetime.strptime(str(stamp), "%Y-%m-%d %H:%M:%S")
+        then = datetime.datetime.strptime(str(stamp), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（时区在 yiban/clock 边界统一施加）
     except (TypeError, ValueError):
         return None
     return (clock.now() - then).total_seconds()

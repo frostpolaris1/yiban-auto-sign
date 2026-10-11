@@ -186,7 +186,7 @@ def single_owner(hostname: str | None = None) -> str:
 
 #: 本进程的"代次"标记：进程启动时刻（HMMSS）。进程号会被系统复用（重启后拿到上一轮
 #: 的号并非不可能），配上启动时刻才能让每一次进程启动都得到独一无二的身份串。
-_RUNTIME_GEN = datetime.datetime.now().strftime("%H%M%S")
+_RUNTIME_GEN = datetime.datetime.now().strftime("%H%M%S")  # noqa: DTZ005 进程代次标记，只求同机唯一，与业务钟无关
 
 
 def runtime_owner(stable: str, pid: int | None = None, gen: str | None = None) -> str:
