@@ -58,6 +58,13 @@
 
   /* 列表页表格行高（Adminator 原版刻度，两族表同高） */
   --table-row-h: 44px;
+
+  /* 文本行宽上限（可读刻度）：说明/正文类容器一律 ≤ 本值。
+     裁决（124 §A.6）：**文本行宽可限，布局宽度不可限**——只给"说明/正文"容器
+     加上限，不给任何布局容器加 max-width。124 实测 4K 下 .page-sub=3528px、
+     .panel-sub=3470px（一行 100+ 汉字，超出可读区间 3–4 倍），故把既有 680px
+     刻度收成一个令牌，并补齐到仍缺失的文本类容器。 */
+  --text-line-max: 680px;
 }
 body,
 button,
@@ -1222,7 +1229,20 @@ html {
 }
 /* 表单说明的单行长度上限：项目自己声明「680px 是表单可读刻度」（见 27 节注释），
    但裸 .field-help 曾排到 1082px 宽（实测 76 字/行，容量配额那条）。 */
-.field-help { max-width: 680px; }
+.field-help { max-width: var(--text-line-max); }
+/* 文本行宽上限补齐（124 §A.6 实测的缺失容器）：
+   4K 实测 .page-sub=3528px、.panel-sub=3470px、.dist-viz-flat=2306px；
+   .set-danger-note 的注释早已声明 680px 刻度却没落地。
+   一律收口到 --text-line-max。**不给布局容器加 max-width**（裁决：布局宽度不可限）。
+   本组只列 app.css 自己拥有的类（跨页共用的设计层）。
+   运行巡检的 .run-empty / .run-note 是 Vue 日志页组件私有的类（样式定义在
+   frontend/src/logs/Logs.vue 的 scoped style），其 4K 收口住该组件——
+   写进本全局表会泄入 Vue 页，且随组件改名悄悄失效。 */
+.page-sub,
+.panel-sub,
+.set-danger-note,
+.dist-viz-flat {
+  max-width: var(--text-line-max);
 }
 /* 小字说明行高：原继承 vendor 的 1.45（11.5px → 16.7px），中文小字偏挤；
    与正文同口径抬到 1.6，让两行以上的说明读起来有节奏。 */
@@ -4154,9 +4174,10 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
      1440x900 @100% -> 1440（基线，不改）
      1920x1080@125% -> 1536
      2560x1440@100% -> 2560
-     3840x2160@130% -> 2954
+     3840x2160@100% -> 3840（4K 原生；≥2560 起进入 4K 档）
    取值集中在 :root 的 --fs-* / --density-* 令牌，组件只消费令牌、不散落硬编码。
    ≤720 不参与：移动端沿用 Adminator 的窄屏档，避免放大后挤压。
+   124 §A.6 实测 4K 内容只占屏高约 1/4，故 ≥2560 与 ≥3840 两档把字号与内距一起放大。
    ========================================================================== */
 :root {
   --fs-base: 14px;                 /* 正文基准字号（body 继承链） */
@@ -4196,11 +4217,22 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
     --density-kpi-value: 54px; --density-card-pad: 26px;
   }
 }
-@media (min-width: 2700px) {
+@media (min-width: 2560px) {
   :root {
-    --density-cal-w: clamp(420px, 39vw, 1120px);
-    --density-chart-h: 440px; --density-chart-h-sm: 400px;
-    --density-kpi-value: 58px; --density-card-pad: 28px;
+    --fs-base: 16px; --fs-table: 15px; --fs-log: 14px;
+    --density-cal-w: clamp(420px, 39vw, 1200px);
+    --density-chart-h: 460px; --density-chart-h-sm: 420px;
+    --density-kpi-value: 60px; --density-card-pad: 30px;
+  }
+}
+/* ≥3840：4K 原生（3840×2160@100%）。同 4K 档口径，再放大一级。
+   字号与内距同批上调，使 4K 下内容不再"只占屏高 1/4"（124 §A.6）。 */
+@media (min-width: 3840px) {
+  :root {
+    --fs-base: 18px; --fs-table: 17px; --fs-log: 16px;
+    --density-cal-w: clamp(420px, 40vw, 1500px);
+    --density-chart-h: 520px; --density-chart-h-sm: 480px;
+    --density-kpi-value: 68px; --density-card-pad: 34px;
   }
 }
 
