@@ -180,7 +180,7 @@ def _shift_stamp(stamp: object, sec: float) -> str:
     text = str(stamp)
     for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
         try:
-            t = datetime.datetime.strptime(text, fmt)
+            t = datetime.datetime.strptime(text, fmt)  # noqa: DTZ007 解析库内业务本地 naive 时间串（上方注释已说明非时区问题）
             break
         except ValueError:
             continue

@@ -143,7 +143,7 @@ def _backfill_window(conn):
     stamp = str(row["applied_at"] or "")[:10]
     if not _DAY_RE.match(stamp):
         return None
-    end = datetime.strptime(stamp, "%Y-%m-%d")
+    end = datetime.strptime(stamp, "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日期串，无时区语义
     start = end - timedelta(days=migrations._BACKFILL_DAYS - 1)
     return start.strftime("%Y-%m-%d"), stamp
 

@@ -425,7 +425,7 @@ def build_plan(accounts: Iterable[Any], day: Any, executors: Sequence[str] | Non
                 span_sec, placed, k)
 
     v = v or hrw.v_for(len(phones))
-    base = datetime.datetime.strptime(day, "%Y-%m-%d")
+    base = datetime.datetime.strptime(day, "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日，无时区语义
     rows: list[dict[str, Any]] = []
     for phone in phones:
         k, j, phase = placed[phone]

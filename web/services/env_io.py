@@ -552,7 +552,7 @@ def _parse_announcement_meta(raw):
     if not author or not when:
         return "", ""
     try:
-        datetime.strptime(when, ANNOUNCEMENT_DRAFT_META_FMT)
+        datetime.strptime(when, ANNOUNCEMENT_DRAFT_META_FMT)  # noqa: DTZ007 仅校验业务时间串格式，不对时刻做运算
     except ValueError:
         return "", ""
     return author, when
