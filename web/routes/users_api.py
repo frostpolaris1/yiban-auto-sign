@@ -3,7 +3,8 @@
 """用户管理域路由：注册用户的列表/批量操作/角色/密码/删除与已注销用户清除（管理员面）。
 
 **功能**
-`GET /api/users` 用户列表（含内置管理员信息与账号计数）；`GET /api/users/deleted`
+`GET /api/users` 用户列表（含内置管理员信息与账号计数；可选 `limit`/`offset`
+分页，不传＝整表，向后兼容）；`GET /api/users/deleted`
 已注销用户与剩余宽限期；`POST /api/users/deleted/purge` 主管理员物理清除；
 `POST /api/users/batch` 批量重置密码/删除；`POST /api/users/<int:id>/role`
 设置/取消管理员；`POST /api/users/<int:id>/password` 重置密码；
@@ -32,6 +33,7 @@ from flask import jsonify, session
 
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate, read_audit_trace
+from web.routes import page_args as _page_args
 
 
 def _builtin_admin_display():
@@ -42,10 +44,18 @@ def _builtin_admin_display():
 
 
 def api_users():
-    """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。"""
+    """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。
+
+    可选分页：不传 `limit`/`offset` 时下发整表（与分页前逐字相同，向后兼容）；
+    传了则只下发 [offset, offset+limit) 一页并附分页元数据（total/limit/offset/returned）。
+    """
     m = _appmod()
     users = m.load_users()
     accounts = m.load_accounts()
+    limit, offset, paged = _page_args()
+    total = len(users)
+    if paged:
+        users = users[offset:offset + limit]
     # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)
     owner_account_count = {}
     owner_pending_count = {}
@@ -79,14 +89,24 @@ def api_users():
         }
         for u in users
     ]
-    read_audit_trace()("users_list_read", f"整表 {len(result)} 条用户")
-    return jsonify(
-        {
-            "ok": True,
-            "users": result,
-            "builtin_admin": _builtin_admin_display(),
-        }
-    )
+    if paged:
+        read_audit_trace()("users_list_read", f"分页 limit={limit} offset={offset} 返回 {len(result)}/{total} 条用户")
+    else:
+        read_audit_trace()("users_list_read", f"整表 {len(result)} 条用户")
+    payload = {
+        "ok": True,
+        "users": result,
+        "builtin_admin": _builtin_admin_display(),
+    }
+    if paged:
+        # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
+        payload.update({
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "returned": len(result),
+        })
+    return jsonify(payload)
 
 
 def api_users_deleted():
