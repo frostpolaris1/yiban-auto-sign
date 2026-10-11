@@ -1,0 +1,116 @@
+; ============================================================================
+; import-linter 契约（P0 批，docs/refactor/128 三节）
+;
+; 为什么有这个文件
+;   后端分层此前只活在散文与人的记忆里。没有任何机械判据。
+;   本文件把四条依赖方向固化成可执行契约。
+;   执行器是 scripts/check-import-linter.py。它在 dev-verify 与 CI 里跑。
+;   本批是观测模式。现状违规落进基线文件。新增违规即红。
+;   基线文件：scripts/gate/import-linter-baseline.txt。
+;   存量收紧留作后续批次。P2c 出口条件＝基线清零或显式豁免清单。
+;
+; 判据为什么用 import-linter
+;   依赖方向判定要处理相对导入、包与模块的包含关系、间接依赖、重叠对。
+;   自写扫描器会在这些边界上漏判。漏判等于假绿。
+;   import-linter 用 grimp 图引擎实现这套判定。它有文档、有版本、可复现。
+;   用户指令：优先经受打磨的外部库。
+;
+; 与既有门禁的关系
+;   本门不改任何既有门禁的语义。它是新增的一道。
+;   本门只对基线之外的新增违规红。
+;   观测期禁止把本门结果读成"结构已达标"。它今天只保证"不再变坏"。
+;
+; root_packages 为什么是这三个
+;   yiban 是后端命名空间。web 是管理后台，P2 才并入 yiban。
+;   scripts 是兼容壳与运维脚本。该目录无 __init__.py，按 PEP 420 解析为命名空间包。
+;   契约 3 要判 "yiban/web 反向 import scripts"。scripts 不进 root_packages 就判不到。
+; ============================================================================
+
+[importlinter]
+root_packages =
+    yiban
+    web
+    scripts
+
+; ---------------------------------------------------------------------------
+; 契约 1：后端命名空间不得依赖管理后台
+;
+; 128 二节把 web 定为 L6a，最上层。依赖只许上层引下层。
+; yiban 引 web 是反向依赖。后端核心会被 Web 框架与请求上下文绑架。
+; 命令行路径与容器路径随后无法独立运行。
+; 今天实测零违规。本契约钉回归敞口。P2 把 web 并入 yiban.web 时最容易踩这条。
+; ---------------------------------------------------------------------------
+[importlinter:contract:yiban-no-web]
+name = yiban 不得 import web（管理后台属上层，不许反向依赖）
+type = forbidden
+source_modules =
+    yiban
+forbidden_modules =
+    web
+
+; ---------------------------------------------------------------------------
+; 契约 2：洁净室协议库不得依赖仓内任何其他包
+;
+; yiban.protocol 是 L2 洁净室。MIT 许可随代码，SPEC.md 是契约。
+; 它要能整包独立复用与审计。它引 yiban 兄弟模块即污染洁净室。
+; 引 web 或 scripts 同理。许可与可复用性同时失效。
+;
+; 为什么 forbidden_modules 写 `yiban.*`，不写 `yiban`
+;   import-linter 的 forbidden 契约跳过重叠对。源与目标同属一棵包树时该对不参与判定。
+;   见其 _modules_overlap。写 `yiban` 会让 yiban.protocol 与 yiban 重叠。
+;   整条契约随即静默失效。那是假门。
+;   写 `yiban.*` 展开成兄弟包与模块。protocol 与各兄弟不再重叠。判定才真正生效。
+;   protocol 子模块之间的内部导入不在判定面内。它们与源重叠，本就该允许。
+;
+; web 与 scripts 与契约 1、3 有意重叠。契约 2 的语义是"protocol 不引仓内任何东西"。
+;   它应当自成一条。protocol → scripts 这条边不靠别的契约替它兜。
+; ---------------------------------------------------------------------------
+[importlinter:contract:protocol-clean-room]
+name = protocol 洁净室：不得 import 仓内任何其他包
+type = forbidden
+source_modules =
+    yiban.protocol
+forbidden_modules =
+    yiban.*
+    web
+    scripts
+
+; ---------------------------------------------------------------------------
+; 契约 3：兼容壳不得被反向 import
+;
+; scripts/ 是兼容壳与运维脚本。它是 L6b 的过渡形态。
+; 它调 yiban 是允许的。yiban 或 web 反向 import 它则把脚本层拉进运行时依赖图。
+; 容器镜像里 scripts 未随包分发时立刻 ImportError。兼容壳一删核心链路就炸。
+; 今天实测零违规。全仓唯一的 `scripts` 导入在 tests/ 里。
+; 本契约钉回归敞口。
+; ---------------------------------------------------------------------------
+[importlinter:contract:no-reverse-import-of-scripts]
+name = yiban/web 不得反向 import scripts（兼容壳只许被 scripts 层调用）
+type = forbidden
+source_modules =
+    yiban
+    web
+forbidden_modules =
+    scripts
+
+; ---------------------------------------------------------------------------
+; 契约 4：core 级模块两两独立
+;
+; 128 二节把 L0 core 定为 clock/window/status/masking。它们是纯常量与纯函数。
+; 这四个今天仍是 yiban/ 根级散文件。故按现坐标登记。P0 不搬文件。
+;
+; 契约类型为什么选 independence，不选 acyclic_siblings
+;   L0 内部没有先后次序。它们是并列的纯件。
+;   正确的约束是"谁都不许引谁"。这条比"不许出环"更严。
+;   反例：A→B→C→A 是环，A→B 不是环但已违反零依赖。
+;   independence 表达"这一组模块之间没有任何依赖"。它同时隐含禁环。
+;   代价：这四个模块若要共享数据，必须显式抽出新模块。那正是想要的信号。
+; ---------------------------------------------------------------------------
+[importlinter:contract:core-layer-independence]
+name = core 级模块两两独立（clock/window/status/masking 互不依赖）
+type = independence
+modules =
+    yiban.clock
+    yiban.window
+    yiban.status
+    yiban.masking
