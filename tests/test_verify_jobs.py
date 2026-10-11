@@ -707,6 +707,20 @@ class _LifecycleBase(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"任务未在 {timeout}s 内落终态: {db.get_verify_job(job_id)}")
 
+    def _wait_account_status(self, phone=PHONE, status="rejected", timeout=10.0):
+        """轮询到账号落目标状态，返回账号 dict（超时返回当时快照）。
+
+        worker 分两步写：先落任务终态（store.finish），后写账号状态（_reject）。
+        两步非原子。只等任务终态会在两步之间读到账号旧状态，形成负载敏感假红
+        （工单 nvno）。故账号侧断言必须等账号自身落定。"""
+        end = time.time() + timeout
+        while time.time() < end:
+            acct = self._acct_by_phone(phone)
+            if acct and acct["status"] == status:
+                return acct
+            time.sleep(0.05)
+        return self._acct_by_phone(phone)
+
     def _seed_phone_rows(self, phone=PHONE):
         """在每张以 phone 为键的表里插一行（级联清理的验证素材）。"""
         conn = db.get_conn()
@@ -1086,8 +1100,9 @@ class VerifyJobIntegrationTest(_LifecycleBase):
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             job_id = r.get_json()["job_id"]
             self._wait_terminal(job_id)
+            acct = self._wait_account_status(PHONE, "rejected")
         self.assertEqual(db.get_verify_job(job_id)["prev_status"], "active")
-        self.assertEqual(self._acct_by_phone()["status"], "rejected",
+        self.assertEqual(acct["status"], "rejected",
                          "裸账号建库即 active，校验失败必须能打回")
 
 
@@ -1188,6 +1203,20 @@ class _A4Base(unittest.TestCase):
             time.sleep(0.05)
         return db.get_verify_job(job_id)
 
+    def _wait_account_status(self, phone=PHONE, status="rejected", timeout=10.0):
+        """轮询到账号落目标状态，返回账号 dict（超时返回当时快照）。
+
+        worker 分两步写：先落任务终态（store.finish），后写账号状态（_reject）。
+        两步非原子。只等任务终态会在两步之间读到账号旧状态，形成负载敏感假红
+        （工单 nvno）。故账号侧断言必须等账号自身落定。"""
+        end = time.time() + timeout
+        while time.time() < end:
+            acct = self._account(phone)
+            if acct and acct["status"] == status:
+                return acct
+            time.sleep(0.05)
+        return self._account(phone)
+
     def _account(self, phone=PHONE):
         for a in db.load_accounts():
             if a["phone"] == phone:
@@ -1237,9 +1266,9 @@ class VerifyAsyncSubmitTest(_A4Base):
             r = self._submit(token)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             job = self._wait_job(r.get_json()["job_id"])
+            acct = self._wait_account_status(PHONE, "rejected")
         self.assertEqual(job["status"], "rejected", job)
         self.assertIn("账号验证异常", job["error"])
-        acct = self._account()
         self.assertIsNotNone(acct, "账号必须留在库中（不得因校验失败被删）")
         self.assertEqual(acct["status"], "rejected")
         self.assertIn("账号验证异常", acct["reject_reason"])
