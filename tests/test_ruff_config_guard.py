@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """ruff 门禁配置守卫（工单 yiban-auto-sign-n3il）。
 
-本文件钉住三处**极易被无声摘除**的配置，防止回潮：
+本文件钉住四处**极易被无声摘除**的配置，防止回潮：
 ① `pyproject.toml` 的 `[tool.ruff.lint].select` 含 `DTZ`（时区静态守卫开着）。
 ② 同一 `ignore` 不含 `DTZ005` / `DTZ006`（旧的"本地时间有意设计"化石豁免已清除）。
 ③ `scripts/dev-verify.sh` 的两条 ruff 执行命令都扫到 `docker/`（扫描面是五路径）。
+④ `tests/**` 的 DTZ 豁免在 `[tool.ruff.lint.per-file-ignores]` 注册在案（豁免面收窄即红）。
 
 为什么需要它：三处都是"删一行就悄悄关掉一条门禁、测试仍全绿"的形状。
 本文件只读配置文本，不做运行，故薄且快。
