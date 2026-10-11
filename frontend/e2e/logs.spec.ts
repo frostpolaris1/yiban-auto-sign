@@ -51,6 +51,86 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
 
   await page.goto("/data/logs");
 
+  // ── 卡头结构守卫（2026-10-11 结构修）────────────────────────────────────────
+  // 缺陷（真实浏览器 1468×900 实测）：签到日志卡头 `.logs-head`＝标题（左）＋
+  // `.logs-tools`（margin-left:auto 右贴：检索框 320px ＋「显示全部日志」＋「导出日志」
+  // ＋ 状态文本 `.logs-info`）。状态文本当时住在 `.logs-tools` 里、排在最末。右组自然宽
+  // 超出可用宽时，flex 收缩把最软的 `.logs-info` 挤到第二行（落在检索框正下方）；
+  // 而 `.logs-head` 是 align-items:center，标题对齐"两行整块"⇒ 标题悬在两行中间、
+  // 与控件行错位。状态文本是"看不见的事实"类文案，不是控件，不该与按钮抢同一行。
+  // 用户已拍板**结构修**：状态文本移出控件行，独立成次要行。
+  // 本守卫钉三件事：① `.logs-info` 不再是 `.logs-tools` 的子元素；② 卡头第一行只有
+  // 标题与控件（状态文本落到控件行之下）；③ 标题与第一行控件垂直居中对齐（误差 ≤1px）。
+  // 逐档量：宽档 1366/1468/1920/2560；移动档 360×792 验堆叠形态不回归。
+  const ACCEPT = 1; // px：抗锯齿与子像素取整余量
+  const logHead = page.locator(".logs-head:has(.logs-search)"); // 只看「签到日志」卡头
+  const centerY = (b: { y: number; height: number }): number => b.y + b.height / 2;
+  const headGeom = async () => {
+    const title = await logHead.locator(".logs-title").boundingBox();
+    const tools = await logHead.locator(".logs-tools").boundingBox();
+    const form = await logHead.locator(".logs-search").boundingBox();
+    const info = await page.locator(".logs-info").boundingBox();
+    if (!title || !tools || !form || !info) throw new Error("日志卡头元素取不到位置");
+    return { title, tools, form, info };
+  };
+
+  // ① 结构：状态文本不得留在控件组内
+  await expect(
+    logHead.locator(".logs-tools .logs-info"),
+    "状态文本仍住在控件组 .logs-tools 内（未移出控件行）",
+  ).toHaveCount(0);
+  // ①b 卡头直属子元素只许是标题、控件组、状态文本三者
+  const headKids = await logHead.evaluate((el) =>
+    Array.from(el.children).map((c) => c.className.split(/\s+/)[0]),
+  );
+  expect(
+    headKids.every((c) => ["logs-title", "logs-tools", "logs-info"].includes(c)),
+    `卡头出现预期外的直属子元素：${headKids.join(" / ")}`,
+  ).toBe(true);
+
+  for (const vw of [1366, 1468, 1920, 2560]) {
+    await page.setViewportSize({ width: vw, height: 900 });
+    await page.waitForTimeout(120);
+    const g = await headGeom();
+    // ② 状态文本独立成行：顶边不低于控件组底边
+    expect(
+      g.info.y,
+      `${vw}px 状态文本与控件同行（未独立成行）：info.y=${g.info.y} tools.bottom=${g.tools.y + g.tools.height}`,
+    ).toBeGreaterThanOrEqual(g.tools.y + g.tools.height - ACCEPT);
+    // ③ 标题与第一行控件对齐
+    expect(
+      Math.abs(centerY(g.title) - centerY(g.form)),
+      `${vw}px 标题未与控件行对齐：title.cy=${centerY(g.title)} form.cy=${centerY(g.form)}`,
+    ).toBeLessThanOrEqual(ACCEPT);
+    // 控件单行：检索表单与两枚按钮中心 y 一致
+    const btnCenters = await logHead
+      .locator(".logs-tools > .btn")
+      .evaluateAll((els) => els.map((e) => e.getBoundingClientRect().y + e.getBoundingClientRect().height / 2));
+    const centers = [centerY(g.form), ...btnCenters];
+    expect(
+      Math.max(...centers) - Math.min(...centers),
+      `${vw}px 控件不在同一行：${centers.join(" / ")}`,
+    ).toBeLessThanOrEqual(ACCEPT);
+    // 页面无横向溢出
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${vw}px 整页横向溢出`).toBeLessThanOrEqual(ACCEPT);
+  }
+
+  // 移动档：堆叠形态不回归（三者都可见、整页无横向溢出）
+  await page.setViewportSize({ width: 360, height: 792 });
+  await page.waitForTimeout(120);
+  await expect(logHead.locator(".logs-title")).toBeVisible();
+  await expect(logHead.locator(".logs-search")).toBeVisible();
+  await expect(page.locator(".logs-info")).toBeVisible();
+  const mOver = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(mOver, "360px 整页横向溢出").toBeLessThanOrEqual(ACCEPT);
+  await page.setViewportSize({ width: 1280, height: 720 }); // 还原默认视口
+  await page.waitForTimeout(120);
+
   // 0) 巡检首块（本批新增）：可见窗口必须显式写明；轮级摘要一行一轮；时间线按轮展开。
   //    种子（见 e2e/server.py::_seed_run_events）：**同一业务日两轮**——最新一轮 3 个账号
   //    （1 成一败 1 未开始，耗时 21 秒），较早一轮是并行执行体。两轮是刻意的：下面
