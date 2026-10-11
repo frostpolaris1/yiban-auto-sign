@@ -408,7 +408,7 @@ def api_my_time_pref_save():
                 last_ts = m.db.last_time_pref_set_at(phone)
                 if last_ts:
                     try:
-                        last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                        last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（时间偏好冷却判定）
                         elapsed = (now_ts - last_dt).total_seconds()
                         # 负间隔（时钟回拨）视为已过冷却，不误伤
                         if 0 <= elapsed < cooldown:
@@ -446,7 +446,7 @@ def api_my_time_pref_save():
             snap_path = os.path.join(m.STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
             with open(snap_path, encoding="utf-8") as f:
                 snap = json.load(f)
-            boundary = datetime.strptime(
+            boundary = datetime.strptime(  # noqa: DTZ007 快照时刻与业务日期拼接，业务本地 naive
                 f"{now.strftime('%Y-%m-%d')} {snap['snapshot_at']}", "%Y-%m-%d %H:%M:%S"
             )
             # 快照标记晚于当前时刻（时钟偏移/写坏）→ 视为无效回退兜底，
@@ -1010,7 +1010,7 @@ def api_my_account_pause(idx):
                     last_ts = m.db.last_pause_at(session.get("username", "") or "")
                     if last_ts:
                         try:
-                            last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                            last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（暂停冷却判定）
                             # 负间隔（时钟回拨）视为已过冷却，不误伤
                             if 0 <= (now_ts - last_dt).total_seconds() < cooldown:
                                 return jsonify({"error": "操作过于频繁，请稍后再试"}), 429

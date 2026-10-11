@@ -1506,7 +1506,7 @@ def _prev_business_day(day):
     手动轮），跳周末会让"迁移"两端的日期间隔变得不固定，前端无法解释。
     """
     try:
-        return (datetime.strptime(str(day), "%Y-%m-%d")
+        return (datetime.strptime(str(day), "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日期串，无时区语义
                 - timedelta(days=1)).strftime("%Y-%m-%d")
     except (TypeError, ValueError):
         return None
