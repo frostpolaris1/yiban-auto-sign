@@ -94,12 +94,11 @@ class RunShExitTrailTest(unittest.TestCase):
                 f.write(body)
             os.chmod(path, 0o755)  #假件必须可执行且抢在 PATH 前面，否则 run.sh 调到真 flock/timeout
 
-    def _run(self, state, extra_env=None):
-        """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。
+    def _run_full(self, state, extra_env=None):
+        """跑一次 run.sh；返回 (退出码, 当日日志文本, stderr 文本)。
 
-        stdin 显式钉成 DEVNULL：触发来源判据看的是 stdin 有没有控制终端，而用例宿主
-        自身的 stdin 可能是终端（开发者在终端里跑 pytest）——不钉死的话"排程"这条
-        断言会随宿主的终端而变。
+        两个声音分列是为了能**各自**被断言：run.sh 的 `_log` 写当日日志文件、`_err`
+        写 stderr（见 run.sh 顶部两处出口）。只读其一证不了"双声音到位"。
         """
         env = dict(self.env)
         env["YIBAN_STATE_DIR"] = state
@@ -112,7 +111,17 @@ class RunShExitTrailTest(unittest.TestCase):
         if os.path.exists(log_path):
             with io.open(log_path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
-        return r.returncode, text
+        return r.returncode, text, r.stderr.decode("utf-8", "replace")
+
+    def _run(self, state, extra_env=None):
+        """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。
+
+        stdin 显式钉成 DEVNULL：触发来源判据看的是 stdin 有没有控制终端，而用例宿主
+        自身的 stdin 可能是终端（开发者在终端里跑 pytest）——不钉死的话"排程"这条
+        断言会随宿主的终端而变。
+        """
+        code, text, _err = self._run_full(state, extra_env)
+        return code, text
 
     @staticmethod
     def _exit_line(code, tag="排程"):
@@ -209,6 +218,32 @@ class ExitTrailTest(RunShExitTrailTest):
                 _code, log = self._run(state, {"YIBAN_DB_FILE": db})
                 self.assertNotIn("今天已签到成功，跳过执行", log,
                                  f"{text} 被当成成功采信了（采信只认 SUCCESS）")
+
+    def test_rc10_warning_is_audible_on_both_voices(self):
+        """rc=10（second_run_check）的"双声音"留痕必须**各自**被钉住（f7va 复审 G1）。
+
+        背景：状态文件落 `NEED_SECOND_RUN` 只证明"文件写了"，证不了"人看得见"。本批把
+        "轮退出码 10 = 管道接错"定为修复边界，其**可见性即交付语义的一部分**（§15）：
+        删掉任一声音而不变红，这条边界就会重新退成静默事件。
+
+        两个声音各钉一条（run.sh 顶部的两处出口）：
+          · `_err` → stderr；删该行 ⇒ 本用例红；
+          · `_log` → 当日日志文件；删该行 ⇒ 本用例红（直接读当日日志文件，不把"写了
+            stderr"当成"双声音都到位"）。
+        粒度：钉**稳定片段**（关键词 `判定码` ＋ `second_run_check` ＋ 码值 `轮退出码 10`），
+        不整句逐字比对——本仓测试瘦身方向是减少"读源码文本"式脆性断言。
+        负向佐证：rc=10 的其它既有日志（如封存闸门的"判定 10"）不含 `判定码`/`second_run_check`，
+        故这两枚片段对本告警是**判别性**的。
+        """
+        state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+        code, log, err = self._run_full(state, {"FAKE_EXIT_CODE": "10"})
+        self.assertEqual(code, 10, "退出码照旧原样透传")
+        self.assertIn("轮退出码 10", err, "rc=10 必须在 stderr 响亮告警（_err 声音）: %r" % err)
+        self.assertIn("判定码", err, "stderr 告警须点明这是判定码: %r" % err)
+        self.assertIn("second_run_check", err, "stderr 告警须点名该码: %r" % err)
+        self.assertIn("轮退出码 10", log, "rc=10 必须在当日日志留痕（_log 声音）: %r" % log)
+        self.assertIn("判定码", log, "当日日志留痕须点明这是判定码: %r" % log)
+        self.assertIn("second_run_check", log, "当日日志留痕须点名该码: %r" % log)
 
     def test_settled_marker_path_logs_exit_zero(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
