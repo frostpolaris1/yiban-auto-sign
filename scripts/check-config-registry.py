@@ -122,18 +122,31 @@ def _git_tracked_top_dirs(root):
     root 不是可用检出 / **索引为空**。调用方此时不得跳过任何目录，退回"每个顶层目录
     都算候选"的旧行为：空索引下"没有任何目录是生产面"会把新生产目录放绿，那是
     fail-open，方向错在危险的一边。
+
+    **已知窗口（刻意代价，别当漏口）**：新开但**尚未 `git add`** 的顶层生产目录在本地
+    不判生产面（无被跟踪文件）。它一入库（提交/CI/部署）即红。取舍理由：生产面由
+    "入库"定义——未入库件不进提交、不进镜像，放行它不会把键漏出交付面；反之若把
+    未入库目录也算生产面，被忽略/未入库的本地工具目录又会把每次全量拉成伪红（i8kk）。
+    要覆盖 stage 前的新目录，靠的是提交前审查，不是这道门。
+
+    **解码口径**：`git ls-files` 输出按**原始字节**取（不设 `text=True`），再用
+    `os.fsdecode` 解——与 `os.listdir` 取候选目录名用的是同一套（文件系统编码 +
+    surrogateescape）。理由有二：①名里含非法 UTF-8 字节时不会抛 `UnicodeDecodeError`
+    （曾经该异常冒到顶层，门以 traceback 崩成 exit 1＝"有违规"，方向错）；②候选名与
+    跟踪名按同一种解码比较，非 ASCII 名不会因两套编码而错配。
     """
     if shutil.which("git") is None:
         return None
     try:
         r = subprocess.run(["git", "-C", root, "ls-files", "-z"],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 or not r.stdout:
         # 非零 = 不是可用检出；空 stdout = 索引为空。两者都按"无法判定"处置。
         return None
-    return {entry.split("/", 1)[0] for entry in r.stdout.split("\0") if entry}
+    return {os.fsdecode(name).split("/", 1)[0]
+            for name in r.stdout.split(b"\0") if name}
 
 
 def _die(msg):
@@ -207,6 +220,9 @@ def _guard_scan_surface(root, entries):
     （`.beads` / `.qoder` / `.tmp` / `.zcode` 一类）永非生产面——按目录名逐个维护
     BENIGN_TOP_DIRS 会随每台机器的工具变化而漂移，本机每次全量都伪红。无法判定生产面
     （问不到 git / 索引为空）时不跳过任何目录（旧行为），fail-closed。
+
+    **刻意代价**：新开且**尚未 `git add`** 的顶层生产目录在本地不判生产面，入库（提交
+    /CI/部署）后即红。理由与边界见 `_git_tracked_top_dirs` 的"已知窗口"一段。
     """
     scanned = {e.split("/")[0] for e in entries}
     candidates = []
