@@ -50,6 +50,17 @@ source_modules =
     yiban
 forbidden_modules =
     web
+; 128-P2a 逐边豁免：yiban/web/ 再导出命名空间（shim 骨架）必然 import web。
+; 用 ignore_imports 只豁免这 5 条具体边，不用基线——基线粒度是模块对（yiban -> web），
+; 登记它会一并放行将来新增的任何 yiban→web 边（整条契约对盲，审查发现）。
+; ignore_imports 保留逐边牙齿：这 5 条之外的新增 yiban→web 边照常判红。
+; 生命周期：P2c 拆墙时随 shim 一并删除本段——边消失，豁免即失效，条目必须删。
+ignore_imports =
+    yiban.web -> web.app
+    yiban.web -> web.render
+    yiban.web -> web.routes
+    yiban.web -> web.security
+    yiban.web -> web.services
 
 ; ---------------------------------------------------------------------------
 ; 契约 2：洁净室协议库不得依赖仓内任何其他包

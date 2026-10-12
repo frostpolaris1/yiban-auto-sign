@@ -139,6 +139,33 @@ class ContractConfigTest(unittest.TestCase):
         self.assertEqual(_field(sec, "source_modules"), ["yiban"])
         self.assertEqual(_field(sec, "forbidden_modules"), ["web"])
 
+    def test_contract_one_ignores_only_the_shim_edges(self):
+        """契约 1 的豁免必须逐边，且恰为 shim 的静态边集合。
+
+        128-P2a 用 `ignore_imports` 豁免 `yiban/web/` 再导出命名空间产生的 5 条
+        `yiban.web -> web.*` 边。**不许**改用基线或整对豁免：基线粒度是模块对
+        （`yiban -> web`），登记它会一并放行将来任何新增的 yiban→web 边——契约 1
+        对整个方向变盲（审查发现的缺陷形状）。逐边豁免才保留"这 5 条之外新增即红"。
+        P2c 拆墙时随 shim 同批删除这些条目（边消失，豁免即失效——import-linter 对
+        无匹配的豁免条目报错退 2，故漏删会当场红）。
+        """
+        sec = _section(self.text, "yiban-no-web")
+        got = sorted(_field(sec, "ignore_imports"))
+        want = sorted((
+            "yiban.web -> web.app",
+            "yiban.web -> web.render",
+            "yiban.web -> web.routes",
+            "yiban.web -> web.security",
+            "yiban.web -> web.services",
+        ))
+        self.assertEqual(got, want,
+                         "契约 1 的 ignore_imports 必须恰为 shim 的 5 条静态边（逐边豁免）")
+        for entry in got:
+            with self.subTest(entry=entry):
+                self.assertNotIn("*", entry, "豁免不许用通配：通配会重新放行一大批边")
+                self.assertNotEqual(entry.replace(" ", ""), "yiban->web",
+                                    "豁免不许放宽成整对 yiban -> web（那等于关掉契约 1）")
+
     def test_protocol_contract_uses_wildcard_not_bare_package(self):
         """契约 2 的目标模块必须是 `yiban.*`，不是 `yiban`。
 
@@ -219,21 +246,22 @@ class GateWiringTest(unittest.TestCase):
                                 f"缺产物 {path}")
 
     def test_committed_baseline_matches_the_writer(self):
-        """入库基线必须逐行沿用执行器的文件头，其后为违规行。
+        """入库基线正文必须逐字等于执行器写它的形态（头 + 违规行）。
 
         头里写着"契约 id 还是契约 name"这条身份口径。两处漂移过一次（改了口径忘了
-        重生成文件），基线读起来就与判据不符。
-        128-P2a 起真树含 shim 过渡态违规，正文不再为空。故这里钉两件事：
-        正文逐行以执行器文件头起头；文件头只出现一次。
-        正文 == 当前违规集这条仍由 CurrentTreeTest 用 `--write-baseline` 重生成后
-        逐字节比对——手工追加的加宽行在那里现形（审查 M1 的强断言未撤）。
+        重生成文件），基线读起来就与判据不符。真树当前零违规，故入库基线正文必须
+        恰为文件头——只 `startswith` 会放过手工追加的加宽行（审查 M1）。
+        正文 == 当前违规集这条由 CurrentTreeTest 用 `--write-baseline` 重生成后比对。
+
+        真树零违规靠 ignore_imports 维持（128-P2a：shim 的 5 条边逐边豁免，见
+        ContractConfigTest::test_contract_one_ignores_only_the_shim_edges），
+        故本断言不必放宽。
         """
         mod = _load_gate_module()
         body = _read(BASELINE)
-        self.assertTrue(body.startswith(mod.BASELINE_HEADER),
-                        "入库基线必须逐行以执行器的文件头起头（头里写着契约 id 身份口径）")
-        self.assertEqual(body.count(mod.BASELINE_HEADER), 1,
-                         "文件头只许出现一次，且必须在开头")
+        self.assertEqual(body, mod.BASELINE_HEADER,
+                         "入库基线正文必须恰为文件头（真树当前零违规）："
+                         "多出的行等于未走流程的手工加宽")
         self.assertIn("契约 id", mod.BASELINE_HEADER, "身份口径必须是契约 id")
 
 
