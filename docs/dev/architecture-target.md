@@ -99,7 +99,9 @@ yiban/
 │   ├── classify.py        #   三分类（现 attempts 关键词表）
 │   ├── idempotency.py     #   幂等裁决
 │   ├── masking.py         #   脱敏（现 yiban/masking，纯函数）
-│   └── security_policy.py #   WAF 词表与白名单裁决（现 yiban/security）
+│   ├── security_policy.py #   WAF 词表与白名单裁决（现 yiban/security）
+│   └── elbow.py           #   ✅ 已落地（2026-10-12，第一枚 core 模块）：领取肘界谓词
+│                          #      ——"谁该做"是行的函数（取代按进程身份的让位）；纯函数、时钟注入
 ├── ports/                 # 端口：只声明接口
 │   ├── store.py           #   持久化契约
 │   ├── protocol.py        #   协议契约
