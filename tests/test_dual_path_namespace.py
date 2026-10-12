@@ -31,6 +31,10 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 仓库根入 sys.path：本文件在 pytest 外直接跑时也能解析 `yiban` / `web`。
+# 必须**先于**任何 yiban 导入（tests/test_deploy_entry_imports.py 按出现位置钉死顺序）。
+sys.path.insert(0, BASE)
+
 #: 进入 shim 命名空间的 web 子模块。app/security/render/routes 是 128-P2a 点名面；
 #: services 同族（web 的 Python 模块面除去 `__main__` 只有一个入口壳），一并钉住，
 #: 防止 shim 只覆盖一半（§13 同族必齐）。
@@ -91,6 +95,80 @@ class DualPathIdentityTest(unittest.TestCase):
                              424242,
                              "在 web.app 上打桩，yiban.web.app 侧必须看到同一值")
 
+    def test_alias_import_keeps_real_spec_and_loader(self):
+        """别名导入不得改写真实模块的 `__spec__` 与 `__loader__`（审查 M-1）。
+
+        import 机制会无条件把别名 spec 写进被返回的真模块。不还原时真模块的
+        `__spec__.name` 变成 `yiban.web.*`，且 loader 变成别名的 no-op loader——
+        `find_spec` 与 `reload` 随之失准。
+        """
+        importlib.import_module("yiban.web.app")
+        importlib.import_module("yiban.web.routes")
+        importlib.import_module("yiban.web.services.measure")
+        for dotted in ("web.app", "web.routes", "web.services.measure"):
+            mod = importlib.import_module(dotted)
+            with self.subTest(module=dotted):
+                self.assertEqual(mod.__spec__.name, dotted,
+                                 "别名导入不得改写真实模块的 __spec__.name")
+        routes = importlib.import_module("web.routes")
+        sssl = routes.__spec__.submodule_search_locations
+        self.assertIsNotNone(sssl, "web.routes 的 spec 必须仍是包 spec（带 __path__）")
+        self.assertTrue(sssl[0].replace("\\", "/").endswith("web/routes"),
+                        f"web.routes 的 spec 必须指回真实目录，实得 {sssl!r}")
+        self.assertEqual(type(routes.__loader__).__name__, "SourceFileLoader",
+                         "真模块的 loader 不得被别名 loader 顶替")
+
+    def test_find_spec_is_not_corrupted_by_alias_import(self):
+        """`importlib.util.find_spec("web.X")` 必须返回真实 spec（审查 M-1）。"""
+        importlib.import_module("yiban.web.routes")
+        spec = importlib.util.find_spec("web.routes")
+        self.assertEqual(spec.name, "web.routes",
+                         "别名导入后 find_spec 不得返回别名 spec")
+        sssl = spec.submodule_search_locations
+        self.assertIsNotNone(sssl, "find_spec 必须带回包 spec 的 submodule_search_locations")
+        self.assertTrue(sssl[0].replace("\\", "/").endswith("web/routes"),
+                        f"find_spec 必须指回真实 routes 目录，实得 {sssl!r}")
+
+    def test_alias_loader_restores_spec_so_reload_really_reloads(self):
+        """`importlib.reload` 必须真重载（审查 M-1）。
+
+        复现法（审查同法）：把模块体定义的 `VALUE` 改成 99 再 reload——真重载把它还原。
+        用合成模块对，避免 reload 真 `web.*` 影响进程内其他用例；走的是 shim 的真
+        `_AliasLoader`。
+        """
+        from yiban.web import _AliasLoader
+        tmp = tempfile.mkdtemp(prefix="yiban-alias-reload-")
+        real_name = "_p2a_real_target"
+        sys.path.insert(0, tmp)  # reload 按名字重找 spec，故合成模块所在目录须在 sys.path 上
+        try:
+            path = os.path.join(tmp, real_name + ".py")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("VALUE = 1\n")
+            real_spec = importlib.util.spec_from_file_location(real_name, path)
+            real_mod = importlib.util.module_from_spec(real_spec)
+            sys.modules[real_name] = real_mod
+            real_spec.loader.exec_module(real_mod)
+            self.assertEqual(real_mod.VALUE, 1, "不变量前提：合成模块初值 1")
+
+            # 走与 shim 同一条机制：别名 spec 的 loader 是 _AliasLoader。
+            alias_spec = importlib.util.spec_from_loader(
+                "_p2a_alias_name", _AliasLoader(real_name))
+            alias_mod = importlib.util.module_from_spec(alias_spec)  # create_module＋spec 补写
+            alias_spec.loader.exec_module(alias_mod)                 # 还原真 spec
+            self.assertIs(alias_mod, real_mod, "别名必须指向同一模块对象")
+            self.assertEqual(real_mod.__spec__.name, real_name,
+                             "别名加载后真模块的 __spec__.name 必须保真")
+
+            real_mod.VALUE = 99
+            importlib.reload(real_mod)
+            self.assertEqual(real_mod.VALUE, 1,
+                             "reload 必须真重载（修复前 __spec__ 指向别名 no-op loader，静默不重载）")
+        finally:
+            sys.modules.pop(real_name, None)
+            if tmp in sys.path:
+                sys.path.remove(tmp)
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class DualPathEntrypointTest(unittest.TestCase):
     """生产入口可经 `yiban.web` 走通：建 app 且 url_map 与 `web.app` 侧一致。"""
@@ -112,8 +190,6 @@ class DualPathEntrypointTest(unittest.TestCase):
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
         os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
         os.environ["YIBAN_DISABLE_PURGE_LOOP"] = "1"
-        if BASE not in sys.path:
-            sys.path.insert(0, BASE)
         import db as db_mod
         db_mod.init_db(os.environ["YIBAN_DB_FILE"], env_file=cls.env_file)
         cls.web_app = importlib.import_module("web.app")

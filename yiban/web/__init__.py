@@ -6,8 +6,8 @@
 
 实现机制一：显式再导出。`from web import app as app` 建立静态依赖边。
 import-linter 契约 1（`yiban` 不得 import `web`）看得见这条边。
-这条边是 P2a 的已知过渡态。基线文件 `scripts/gate/import-linter-baseline.txt`
-登记它。P2c 拆墙时该基线行即退场清单。
+这条边是 P2a 的已知过渡态。`.importlinter` 的契约 1 用 `ignore_imports`
+逐边豁免它（5 条 `yiban.web -> web.*`）。P2c 拆墙时该段即退场清单。
 
 实现机制二：`sys.modules` 别名。`_AliasFinder` 把 `yiban.web.<子模块>`
 映射到 `web.<子模块>` 本体。两侧拿到**同一个模块对象**。
@@ -43,13 +43,23 @@ class _AliasLoader(importlib.abc.Loader):
 
     def __init__(self, real_name):
         self._real_name = real_name
+        self._real_spec = None
 
     def create_module(self, spec):
         # 返回已存在的真模块对象。import 机制随后把它放进 sys.modules。
-        # importlib 只在属性缺失时才补 __name__ / __spec__，故 web.* 侧身份不变。
-        return importlib.import_module(self._real_name)
+        # 但 import 机制会**无条件**把别名 spec 写进 module.__spec__（不是"缺失才补"），
+        # web.* 的 __spec__.name 因此会被改成 yiban.web.*。故这里先把真 spec 存下来，
+        # 交给 exec_module 还原（否则 find_spec / reload 失准）。
+        module = importlib.import_module(self._real_name)
+        self._real_spec = module.__spec__
+        return module
 
     def exec_module(self, module):
+        # 在 import 机制补写 __spec__ 之后还原真 spec。
+        # 未还原时：web.X.__spec__.name == "yiban.web.X"，find_spec 返回别名 spec；
+        # importlib.reload(web.X) 走别名 loader 的 no-op，静默不重载（审查 M-1）。
+        if self._real_spec is not None:
+            module.__spec__ = self._real_spec
         return None
 
 
