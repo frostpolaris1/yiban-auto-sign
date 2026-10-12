@@ -1,0 +1,28 @@
+{
+  "name": "yiban-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "前端翻新源码（Vue 3 + Vite + Element Plus）。构建产物提交入库到 ../web/static/vue/，部署期不需要 Node —— 见 docs/refactor/29-frontend-vue-refactor-plan.md",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "element-plus": "^2.14.7",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "happy-dom": "^20.14.5",
+    "typescript": "^7.0.2",
+    "unplugin-auto-import": "^21.1.0",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.3"
+  }
+}

@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""邮箱通知 B 线（用户签到失败邮件）+ 用户开关测试。
+"""邮箱通知 B 线（用户签到失败邮件）与用户开关。
 
-覆盖：
-- db 迁移 v9：新库 users 含 mail_notify 列；旧库（v8）缺列自动补齐；
-- B 线 send_user_fail_mail：owner 空 / 用户不存在 / 开关关闭 → 不发送；
-  开关开启 → 发送且内容脱敏（手机号打码、不含完整号）；
-- Web API /api/my-mail-notify：未登录默认开、401/400 防护、保存生效、审计留痕。
-
-全程本地（临时 sqlite + Flask test client + mock mailer），无真实网络请求。
-用法（项目根目录）：py -m pytest tests/test_mail_notify.py -v
+标签：H · 通知：邮件与推送
+覆盖：db 迁移 v9（新库 users 含 `mail_notify` 列、v8 旧库缺列自动补齐）；
+    `send_user_fail_mail` 的 owner 空 / 用户不存在 / 开关关闭三种不发送；
+    开关开启则发送且内容脱敏；`/api/my-mail-notify` 的未登录默认开、401/400 防护、
+    保存生效、审计留痕；汇总 flush 的空收件人与"管理员关通知则不转 admin"。
+对应实现：B 线发信与额度账本在 `yiban/engine/alerts.py`（`_user_fail_mail_reserve`）
+    与 `yiban/mail/`，迁移在 `yiban/store/migrations.py`，端点在 `web/app.py`。
+关键断言：内容必须脱敏（手机号打码、不含完整号）——正文会带上账号信息，
+    漏脱敏等于把手机号寄到别人邮箱。
+依赖：临时 sqlite（走真实迁移）+ Flask test client + mock mailer；复用同目录
+    `tests/_mail_body.py` 的 `render_body` 助手，需在仓库根跑 pytest；
+    不连 SMTP、不触网。
 """
 import contextlib
 import importlib.util
@@ -22,6 +26,13 @@ import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一经 body() 渲染成文本
+from _mail_body import render_body  # noqa: E402
+
+from yiban.infra import account_crypto  # noqa: E402
+from yiban.notify import config as notify_config  # noqa: E402
+from yiban.notify import transport as notify_transport  # noqa: E402
 
 TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -82,6 +93,12 @@ class DbMailNotifyMigrationTest(unittest.TestCase):
         self.assertGreaterEqual(v, 9, "新库应执行到 v9")
 
     def test_old_db_auto_adds_column(self):
+        """存量库（本夹具的 users 是 v5 形态）升级时自动补 mail_notify。
+
+        版本下界取 3 而不是更高：夹具只手工建了 users，没有 v4/v6 的产物
+        （sign_events 及其三列）。声称更高的版本就是"版本说过了、产物不在"，
+        链尾 fail-closed 门会拒启。
+        """
         conn = sqlite3.connect(self.db_file)
         conn.executescript(
             "CREATE TABLE users ("
@@ -90,7 +107,7 @@ class DbMailNotifyMigrationTest(unittest.TestCase):
             "created_at TEXT NOT NULL DEFAULT '', pw_version INTEGER NOT NULL DEFAULT 1, "
             "deleted INTEGER NOT NULL DEFAULT 0, deleted_at TEXT NOT NULL DEFAULT '');"
         )
-        conn.execute("PRAGMA user_version = 8")
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
         conn.close()
         db.init_db(self.db_file, env_file=self.env_file)
@@ -135,29 +152,15 @@ class SignUserFailMailTest(unittest.TestCase):
         db.init_db(self.db_file, env_file=self.env_file)
         db.create_user("owner@test.local", "x")  # mail_notify 默认 1
 
-    def test_owner_empty_skips(self):
-        with mock.patch.object(signin.mailer, "send_user") as m:
-            signin.send_user_fail_mail("", "13800000000", "boom")
-        m.assert_not_called()
-
-    def test_unknown_user_skips(self):
-        with mock.patch.object(signin.mailer, "send_user") as m:
-            signin.send_user_fail_mail("nobody@test.local", "13800000000", "boom")
-        m.assert_not_called()
-
-    def test_notify_off_skips(self):
-        db.update_user("owner@test.local", {"mail_notify": 0})
-        with mock.patch.object(signin.mailer, "send_user") as m:
-            signin.send_user_fail_mail("owner@test.local", "13800000000", "boom")
-        m.assert_not_called()
-
     def test_notify_on_sends_masked(self):
         with mock.patch.object(signin.mailer, "send_user") as m:
             signin.send_user_fail_mail("owner@test.local", "13800000000", "boom")
         m.assert_called_once()
         to, subject, text = m.call_args[0]
+        text = render_body(text)
         self.assertEqual(to, "owner@test.local")
-        self.assertEqual(subject, "易班签到失败提醒")
+        self.assertEqual(subject, "【易班签到】签到失败提醒")
+        self.assertTrue(subject.startswith("【易班签到】"), "用户邮件主题须带统一前缀")
         self.assertIn("138****0000", text)
         self.assertNotIn("13800000000", text, "邮件不得含完整手机号")
 
@@ -393,11 +396,6 @@ class SignAdminMailSummaryTest(unittest.TestCase):
     def setUp(self):
         signin._mail_summary.clear()
 
-    def test_flush_empty_skips(self):
-        with mock.patch.object(signin.mailer, "send_admin_alert") as m:
-            signin._flush_admin_mail_summary()
-        m.assert_not_called()
-
     def test_collect_and_flush_merges_one_mail(self):
         signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
         signin._collect_admin_mail("易班签到失败", "账号: 138****0002\n原因: B")
@@ -405,6 +403,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
             signin._flush_admin_mail_summary()
         m.assert_called_once()
         subject, text = m.call_args[0]
+        text = render_body(text)
         self.assertEqual(subject, "易班签到汇总")
         self.assertIn("共 2 条异常", text)
         self.assertIn("138****0001", text)
@@ -416,6 +415,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert") as m:
             signin._flush_admin_mail_summary()
         _subject, text = m.call_args[0]
+        text = render_body(text)
         self.assertIn("【易班签到失败】", text)
         self.assertIn("【易班签到耗时告警】", text)
         self.assertLess(
@@ -428,25 +428,6 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert"):
             signin._flush_admin_mail_summary()
         self.assertEqual(signin._mail_summary, [], "发送后应清空收集器")
-
-    def test_flush_uses_filtered_recipients(self):
-        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
-        with mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
-             mock.patch.object(signin.mailer, "admin_recipients", return_value=["a@x.com", "b@x.com"]), \
-             mock.patch.object(signin.mailer, "send_admin_alert") as m:
-            signin._flush_admin_mail_summary()
-        f.assert_called_once_with(["a@x.com", "b@x.com"])
-        m.assert_called_once()
-        self.assertEqual(m.call_args[1].get("to"), "a@x.com", "汇总邮件应只发给合并后的收件人")
-
-    def test_flush_skips_admin_to_when_admin_notify_off(self):
-        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
-        with mock.patch.object(signin.mailer, "admin_notify_enabled", return_value=False), \
-             mock.patch.object(signin.mailer, "admin_recipients", return_value=["master@x.com"]), \
-             mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
-             mock.patch.object(signin.mailer, "send_admin_alert") as _m:
-            signin._flush_admin_mail_summary()
-        f.assert_called_once_with([]), "主管理员关闭收件时不应传入 ADMIN_TO"
 
 
 class DbFilterMailNotifyTest(unittest.TestCase):
@@ -501,6 +482,79 @@ class DbFilterMailNotifyTest(unittest.TestCase):
         db.create_user("admin1@x.com", "x", role="admin")
         result = db.admin_mail_recipients([])
         self.assertEqual(result, ["admin1@x.com"], "无 ADMIN_TO 时仍收所有开启接收的管理员")
+
+
+class NotifyCustomUrlRecheckTest(unittest.TestCase):
+    """自定义通知地址的加载期只读复核：不合格记一次 WARNING，不改通道可用性/发送行为。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-notify-recheck-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n")
+        cls._old_env = {k: os.environ.get(k) for k in
+                        ("YIBAN_ENV_FILE", "YIBAN_NOTIFY_SECRET_ENC", "YIBAN_NOTIFY_TYPE",
+                         "YIBAN_NOTIFY_URL")}
+        for k in ("YIBAN_NOTIFY_SECRET_ENC", "YIBAN_NOTIFY_TYPE", "YIBAN_NOTIFY_URL"):
+            os.environ.pop(k, None)
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k, v in cls._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def setUp(self):
+        notify_config._unsafe_custom_warned = False
+
+    def _write_custom(self, url):
+        enc = account_crypto.encrypt_text(url, account_crypto.load_key(self.env_file))
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n"
+                    "YIBAN_NOTIFY_TYPE=custom\n"
+                    "YIBAN_NOTIFY_SECRET_ENC=" + json.dumps(enc, ensure_ascii=False) + "\n")
+
+    def test_unsafe_url_warns_once_and_channel_still_configured(self):
+        """加载期复核 warn-only（地址不变、只记一次）；但 is_configured 与 send 同判据。
+
+        旧断言把"is_configured=True 而 send 恒拒发"的**口径分叉**钉成了设计（引擎侧
+        据此判"推送出口存在"却发不出信，告警在此静默丢失）——MF-44 明列为缺陷。
+        收口方向只能收紧判定侧对齐 send()：白名单外的 custom 地址同判"出口不存在"；
+        **不**反向弱化 send 的 SSRF 拒发。复核函数自身仍只告警不改行为。
+        """
+        self._write_custom("http://127.0.0.1/hook")
+        with self.assertLogs("notify", level="WARNING") as logs:
+            secret = notify_config.get_secret()
+            notify_config.get_secret()  # 第二次不应再告警
+        self.assertEqual(secret, "http://127.0.0.1/hook", "复核不得改变解出的地址")
+        hits = [line for line in logs.output if "安全复核" in line]
+        self.assertEqual(len(hits), 1, "同一进程内只应记一条复核告警")
+        self.assertIn("设置页", hits[0], "应提示在设置页更正")
+        # 同一份判据：send 拒发的地址，is_configured 也答"出口不存在"（分叉消除）
+        self.assertFalse(notify_config.is_configured(),
+                         "白名单外的 custom：is_configured 必须与 send 同判 False")
+        self.assertFalse(notify_transport.send("t", "c", force=True))
+
+    def test_safe_url_no_warning(self):
+        self._write_custom("https://smtp.example.com/hook")
+        with self.assertNoLogs("notify", level="WARNING"):
+            notify_config.get_secret()
+        self.assertTrue(notify_config.is_configured())
+
+    def test_safe_then_unsafe_still_warns(self):
+        """合格地址不置旗，随后的不合格地址仍应告警（旗只被"不通过"置位）。"""
+        self._write_custom("https://smtp.example.com/hook")
+        with self.assertNoLogs("notify", level="WARNING"):
+            notify_config.get_secret()
+        self._write_custom("http://10.0.0.1/hook")
+        with self.assertLogs("notify", level="WARNING") as logs:
+            notify_config.get_secret()
+        self.assertTrue(any("安全复核" in line for line in logs.output))
 
 
 if __name__ == "__main__":

@@ -13,8 +13,22 @@ import pytest
 
 os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
 
-# 测试默认禁用邮件通知：mailer._get 环境变量优先于 .env 文件，此处设为 0
-# 可防止 signin/web 测试（如 send_notification("t","c",...)）意外真实发信。
+# 测试默认禁用邮件通知。真值口径是「.env 文件优先、进程环境只补缺」
+# （mail.config._get，M27 全仓口径）——只在本进程环境里设 YIBAN_MAIL_ENABLE=0 挡不住
+# 工程 .env：yiban/infra/env_io.env_path() 在 YIBAN_ENV_FILE 未设时回落到 cwd 的 .env
+# （裸机 cron / 开发机上就是生产 .env）。该文件若写了 YIBAN_MAIL_ENABLE=1 且有可用
+# SMTP 条目，is_enabled() 仍为真，signin/web 测试的 send_notification("t","c",...)
+# 会真发信到真实收件人。故先把 YIBAN_ENV_FILE 指向测试专用 fixture（会话级临时目录里的
+# 空 .env），使 _read_env_file() / env_path() 在测试期读不到工程 .env；再把
+# YIBAN_MAIL_ENABLE 钉成 0 兜底。各测试类仍可显式覆盖 YIBAN_ENV_FILE 实现自己的隔离
+# （先例同下方 YIBAN_LOG_FILE / YIBAN_STATE_DIR）。
+if not os.environ.get("YIBAN_ENV_FILE", "").strip():
+    import tempfile
+    os.environ["YIBAN_ENV_FILE"] = os.path.join(
+        tempfile.mkdtemp(prefix="yiban-test-env-"), ".env"
+    )
+
+# 进程环境兜底：即便某用例把 fixture 之外的路径也曝了光，仍默认关闭。
 # test_mailer.py 自带 _isolate_env 清理 YIBAN_MAIL_* 后按用例显式设置，不受影响。
 os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")
 
@@ -26,6 +40,16 @@ if "YIBAN_LOG_FILE" not in os.environ:
     os.environ["YIBAN_LOG_FILE"] = os.path.join(
         tempfile.mkdtemp(prefix="yiban-test-logs-"), "sign.log"
     )
+
+# 状态目录的会话级临时默认——与 YIBAN_LOG_FILE 同法。init_db / 迁移 v20 / 状态读写在
+# 没有 YIBAN_STATE_DIR 时回落到真实 `/var/log/yiban`（机器级路径）：WSL 以 root 跑测时
+# 会把临时用例写下的状态"补账"进真实部署目录，成为跨用例的环境依赖型 flake（本次
+# test_capacity_of 3 红、test_rekey flake 的共同放大器）。设一个会话级临时默认后，任何
+# 用例即便 pop 掉本键、经类级环境快照（_restore_environ_around_class）还原，也回到这个
+# 临时目录而非真实机器路径。各测试类仍可显式覆盖或摘除来验证"未设态回落"。
+if "YIBAN_STATE_DIR" not in os.environ:
+    import tempfile
+    os.environ["YIBAN_STATE_DIR"] = tempfile.mkdtemp(prefix="yiban-test-state-")
 
 
 def _close_root_file_handlers():
@@ -116,7 +140,7 @@ def _restore_environ_around_class():
     等指向各自的临时目录，tearDownClass 只 rmtree、不还原环境变量（个别类干脆 pop
     conftest 设的会话默认值）。这些键被带进后续用例后指向已删目录，会让无关断言
     以间歇形式失败——实测串行组合
-    tests/test_mail_admin_to_edit_0909.py + test_scheduler_gate 的锚点默认路径断言
+    tests/test_mailer.py + test_scheduler_gate 的锚点默认路径断言
     必挂；xdist `-n 8` 下同一 worker 跨文件执行时表现为随机 1~2 项失败
     （已复现并修复：test_scheduler_gate 锚点默认路径、test_web_auth_security 的
     purge 线程门）。
@@ -128,6 +152,28 @@ def _restore_environ_around_class():
     yield
     os.environ.clear()
     os.environ.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_umask():
+    """逐用例还原进程 umask：本仓有在**进程内**直调生产入口的用例，而那些入口会改 umask。
+
+    `yiban/engine/runner.py:207` 与 `yiban/cli.py:633` 都把进程 umask 收到 `077`
+    （生产入口的既定行为，自己不还原）。进程内调用它们的用例（`runner.main` /
+    `cli.main`）因此把 077 泄漏给同 worker 的后续用例：那些用例 `os.makedirs` 建出的
+    目录变 `0700`、`_write` 建出的文件变 `0600`，凡带降权（setpriv 到 nobody）或按
+    位格断言的用例就会爆。实测 `tests/test_deploy_prod_artifacts.py` 的非 root 暂存用例
+    报 `126 Permission denied`（或推到下一步的"清单为空"），而它单跑全绿——两个文件
+    都用例自身无改动，纯粹是 `--dist loadfile` 把它们分进了同一个 worker。
+
+    本 fixture 与 `_restore_environ_around_class` 属同一层纪律：进程级全局副作用必须逐
+    用例还原，不能押在"每个用例自己记得还原"上。读取 umask 只能靠设置它（`os.umask`
+    既设又返回旧值），故前两行是一次只读往返：设 022 拿到旧值，立刻设回旧值。
+    """
+    before = os.umask(0o022)
+    os.umask(before)
+    yield
+    os.umask(before)
 
 
 def pytest_sessionfinish(session, exitstatus):

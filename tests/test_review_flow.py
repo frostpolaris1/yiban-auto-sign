@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """账号审核流转 API 测试（锁定 2026-08-16 审查轮 ACCOUNT_STATUS_* 改名行为）。
 
-覆盖：普通用户提交（pending）→ 管理员通过（active）/ 拒绝（rejected+理由）→
+标签：E · Web：认证/权限/API
+覆盖：账号审核流转（提交→通过/拒绝→被拒后编辑重提→批量通过/拒绝）、拒绝理由的行分隔符净化、号主通知与审计，以及 `/api/users` 的 review_count 口径
+对应实现：`web/app.py` 的账号提交与审核路由、`ACCOUNT_STATUS_*` 状态常量、设置保存的审计写入
+关键断言：状态迁移以 API 返回与库内行为为准；拒绝理由里的所有行分隔符都要压平（只压 `\r\n` 会留下伪造日志行的口子——该值会落库、进审计详情、进 sign.log）；拒绝对号主发一封邮件、无理由时邮件里注明未给理由、通过不发信；批量拒绝每个号主各一封
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；邮件与告警出口打桩
+
+逐项明细：普通用户提交（pending）→ 管理员通过（active）/ 拒绝（rejected+理由）→
 被拒用户编辑重新提交（回 pending）→ 批量通过。全部断言走 API 层真实返回。
 
 用法（项目根目录）：
@@ -9,6 +15,7 @@
 """
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -18,6 +25,9 @@ import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
+from _mail_body import render_body  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -110,14 +120,15 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(acc["status"], "pending")
         idx = acc["index"]
         # 通过
-        r = _c.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = _c.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         _c2, data2 = self._admin_accounts()
         acc2 = next(a for a in data2["accounts"] if a["phone"] == "138****8001")
         self.assertEqual(acc2["status"], "active")
         # 重复通过 → 400（无需审核）
-        r = _c2.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+        r = _c2.post(f"/api/accounts/{idx}/review",
+                     json={"action": "approve", "phone": acc2["phone"]},
                      headers=self._csrf(self._login(_c2, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 400)
 
@@ -129,7 +140,7 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8002")
         r = _c.post(f"/api/accounts/{acc['index']}/review",
-                    json={"action": "reject", "reason": "设备信息不符"},
+                    json={"action": "reject", "reason": "设备信息不符", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 管理员视角：rejected + 理由
@@ -144,6 +155,51 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(mine[0]["status"], "rejected")
         self.assertEqual(mine[0]["reject_reason"], "设备信息不符")
 
+    def test_reject_reason_sanitizes_all_line_separators(self):
+        """拒绝理由的全部行分隔符都要净化：只压 \\r\\n 会留下 8 个伪造行口子。
+
+        理由会落库（用户可见）、进审计详情、进 sign.log；U+2028/U+0085 等分隔符
+        在只压 \\r\\n 时能一路穿过去，在审计与日志里伪造额外一行。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._submit(c, token, "13800138012")
+        _c, data = self._admin_accounts()
+        acc = next(a for a in data["accounts"] if a["phone"] == "138****8012")
+        r = _c.post(f"/api/accounts/{acc['index']}/review",
+                    json={"action": "reject", "reason": "理由\u2028伪造行\u0085再一行",
+                          "phone": acc["phone"]},
+                    headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        _c2, data2 = self._admin_accounts()
+        acc2 = next(a for a in data2["accounts"] if a["phone"] == "138****8012")
+        for ch in ("\u2028", "\u0085", "\n", "\r"):
+            self.assertNotIn(ch, acc2["reject_reason"], "拒绝理由不得夹带裸行分隔符")
+        import sqlite3
+        conn = sqlite3.connect(self.db_file)
+        row = conn.execute(
+            "SELECT detail FROM audit_logs WHERE action='account_review' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row, "审核拒绝应留审计")
+        for ch in ("\u2028", "\u0085", "\n", "\r"):
+            self.assertNotIn(ch, row[0], "审计详情不得夹带裸行分隔符")
+        # 批量路径同一口径（此处原先完全没有净化）：落库的理由不得夹带裸分隔符
+        _c3, data3 = self._admin_accounts()
+        ids = [a["index"] for a in data3["accounts"]]
+        r = _c3.post("/api/accounts/batch",
+                     json={"action": "reject", "ids": ids,
+                           "phones": [a["phone"] for a in data3["accounts"]],
+                           "reason": "批量\u2028伪造行"},
+                     headers=self._csrf(self._login(_c3, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        _c4, data4 = self._admin_accounts()
+        self.assertTrue(data4["accounts"], "前置条件：批量拒绝后仍有账号行")
+        for a in data4["accounts"]:
+            for ch in ("\u2028", "\u0085", "\n", "\r"):
+                self.assertNotIn(ch, a.get("reject_reason") or "",
+                                 "批量拒绝理由落库不得夹带裸行分隔符")
+
     # ---- 3. 被拒用户编辑 → 重新提交（回 pending，清除理由） ----
     def test_rejected_edit_resubmits_pending(self):
         c = self.webapp.create_app().test_client()
@@ -152,7 +208,7 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8003")
         r = _c.post(f"/api/accounts/{acc['index']}/review",
-                    json={"action": "reject", "reason": "资料不全"},
+                    json={"action": "reject", "reason": "资料不全", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200)
         # 用户编辑（改密码）→ 自动回 pending
@@ -178,13 +234,17 @@ class ReviewFlowTest(unittest.TestCase):
         _c, data = self._admin_accounts()
         ids = [a["index"] for a in data["accounts"]]
         self.assertEqual(len(ids), 2)
-        r = _c.post("/api/accounts/batch", json={"action": "approve", "ids": ids},
+        r = _c.post("/api/accounts/batch",
+                    json={"action": "approve", "ids": ids,
+                          "phones": [a["phone"] for a in data["accounts"]]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         _c2, data2 = self._admin_accounts()
         self.assertTrue(all(a["status"] == "active" for a in data2["accounts"]))
         # 再次批量通过 → 0 个（全部已 active）
-        r = _c2.post("/api/accounts/batch", json={"action": "approve", "ids": ids},
+        r = _c2.post("/api/accounts/batch",
+                     json={"action": "approve", "ids": ids,
+                           "phones": [a["phone"] for a in data["accounts"]]},
                      headers=self._csrf(self._login(_c2, "admin", ADMIN_PASS)))
         self.assertIn("0 个", r.get_json()["msg"])
 
@@ -197,10 +257,12 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8006")
         # 管理员删除（软删除）
         r = _c.delete(f"/api/accounts/{acc['index']}",
+                      json={"phone": acc["phone"]},
                       headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 审核通过 → 400（deleted 账号不参与审核流转）
-        r = _c.post(f"/api/accounts/{acc['index']}/review", json={"action": "approve"},
+        r = _c.post(f"/api/accounts/{acc['index']}/review",
+                    json={"action": "approve", "phone": acc["phone"]},
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 400)
 
@@ -231,11 +293,12 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8011")
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post(f"/api/accounts/{acc['index']}/review",
-                        json={"action": "reject", "reason": "班级信息缺失"},
+                        json={"action": "reject", "reason": "班级信息缺失", "phone": acc["phone"]},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1, "拒绝应给提交者恰好发一封邮件")
         to, subject, body = m.call_args[0]
+        body = render_body(body)
         self.assertEqual(to, "user1@test.local")
         self.assertIn("未通过审核", subject)
         self.assertIn("班级信息缺失", body)
@@ -249,11 +312,12 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8012")
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post(f"/api/accounts/{acc['index']}/review",
-                        json={"action": "reject"},
+                        json={"action": "reject", "phone": acc["phone"]},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1)
         _to, _subject, body = m.call_args[0]
+        body = render_body(body)
         self.assertIn("未填写", body)
 
     def test_approve_sends_no_owner_mail(self):
@@ -264,7 +328,7 @@ class ReviewFlowTest(unittest.TestCase):
         acc = next(a for a in data["accounts"] if a["phone"] == "138****8013")
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post(f"/api/accounts/{acc['index']}/review",
-                        json={"action": "approve"},
+                        json={"action": "approve", "phone": acc["phone"]},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         m.assert_not_called()
@@ -280,14 +344,110 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(len(ids), 2)
         with mock.patch.object(self.webapp.mailer, "send_user") as m:
             r = _c.post("/api/accounts/batch",
-                        json={"action": "reject", "ids": ids, "reason": "批量复核不符"},
+                        json={"action": "reject", "ids": ids,
+                              "phones": [a["phone"] for a in data["accounts"]],
+                              "reason": "批量复核不符"},
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 2, "批量拒绝应每户恰好一封")
-        notified = {call[0][0] for call in m.call_args_list}
-        self.assertEqual(notified, {"user1@test.local", "user2@test.local"})
-        _to, _subject, body = m.call_args[0]
-        self.assertIn("批量复核不符", body)
+        sent = {c[0][0]: render_body(c[0][2]) for c in m.call_args_list}
+        self.assertEqual(set(sent), {"user1@test.local", "user2@test.local"})
+        for addr, mine, other in (
+            ("user1@test.local", "138****8014", "139****9015"),
+            ("user2@test.local", "139****9015", "138****8014"),
+        ):
+            self.assertIn("批量复核不符", sent[addr])
+            self.assertIn(mine, sent[addr], "批量拒信也要写明被拒的是哪个账号（原先缺失）")
+            self.assertNotIn(other, sent[addr], "按户分封，不得把另一户的账号写进这封")
+
+
+ADMIN_PASS_B19 = "MasterPass#2026"
+
+
+def _load_webapp(tag):
+    import db as _db
+    spec = importlib.util.spec_from_file_location(f"webapp_{tag}", os.path.join(BASE, "web", "app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[f"webapp_{tag}"] = mod
+    with contextlib.suppress(Exception):
+        spec.loader.exec_module(mod)
+    return _db, mod
+
+
+class _Base(unittest.TestCase):
+    """共享脚手架：临时 .env/DB + webapp 加载 + 主管理员登录。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-b19-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS_B19}\n"
+            )
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        cls.db, cls.webapp = _load_webapp(cls.__name__)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_LOG_FILE", "YIBAN_STATE_DIR"):
+            os.environ.pop(k, None)
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+
+    def _master(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS_B19})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": t}
+
+    def _seed_user_with_account(self, email, phone, status="pending"):
+        """注册用户 + 建一条指定状态的账号（owner=email）。"""
+        self.db.create_user(email, "x", role="user")
+        acc = {"name": "N", "phone": phone, "password": "pw", "status": status, "owner": email}
+        self.db.add_account(acc)
+
+
+class UsersReviewCountTest(_Base):
+    """/api/users review_count：待审核 + 已拒绝（修复口径差）。"""
+
+    def test_review_count_covers_rejected(self):
+        self._seed_user_with_account("u-pending@test.local", "13900139001", "pending")
+        self._seed_user_with_account("u-rejected@test.local", "13900139002", "rejected")
+        self._seed_user_with_account("u-active@test.local", "13900139003", "active")
+        c, h = self._master()
+        data = c.get("/api/users", headers=h).get_json()
+        counts = {u["email"]: u for u in data["users"]}
+        self.assertEqual(counts["u-pending@test.local"]["review_count"], 1)
+        self.assertEqual(counts["u-pending@test.local"]["pending_count"], 1)
+        # 修复点：仅有已拒绝账号的用户 review_count=1（旧口径 pending_count=0 → 不显示）
+        self.assertEqual(counts["u-rejected@test.local"]["review_count"], 1)
+        self.assertEqual(counts["u-rejected@test.local"]["pending_count"], 0)
+        self.assertEqual(counts["u-active@test.local"]["review_count"], 0)
 
 
 if __name__ == "__main__":

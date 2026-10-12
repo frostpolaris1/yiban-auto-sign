@@ -1,26 +1,21 @@
 # -*- coding: utf-8 -*-
-"""无点位账号独立状态回归测试（2026-09-01，用户裁决）。
+"""无点位账号的独立状态（no_position）回归。
 
-背景：易班侧无签到点位（登录成功、signPosition 返回 code=0 但 Position 为空，
-如任务未配置/当日任务已关闭）此前并入 STATUS_FAILED，导致两个问题：
-  1. 与凭据/网络真失败混淆，逐账号触发"易班签到失败"邮件 + webhook + 用户邮件
-     ——管理员无从修复，属误报轰炸；
-  2. 展示上无法与真失败区分。
+标签：D · 状态词汇与账号生命周期
+覆盖：STATUS_NO_POSITION 的独立性与符号、attempt_signin 无点位分支的返回值、
+    队列/排程两种模式下无点位均不触发失败通知（真失败仍触发）、main() 汇总与退出码
+    （仅无点位=exit 2、含真失败=exit 1、有成功=exit 0）、每日状态文件写入 🚫、
+    容器补签闸门与宿主 run.sh 双路径一致、汇总邮件异常不得改退出码。
+对应实现：状态码权威定义 `yiban.status.STATUS_NO_POSITION`（符号
+    `yiban.status.SYMBOL`，未了结集合 `yiban.status.UNDONE_STATUSES`）；分支判定在
+    客户端/引擎侧，补签闸门在 `docker/scheduler.py` 的 `_UNDONE_STATUSES`。
+关键断言：无点位 ≠ 凭据/网络失败——此前并入 STATUS_FAILED 会造成逐账号误报轰炸；
+    retry budget 为 1（`NO_POSITION_MAX_ATTEMPTS`），不像 failed 那样反复重试；
+    但**当日仍未了结**，宿主侧 exit 2→SKIPPED→07:10 补签与容器侧补签必须同结论。
+依赖：进程内 mock + importlib 按路径加载 `docker/scheduler.py`（不 import 执行副作用）；
+    临时 STATE 目录写真伪状态文件；不起子进程、不触网、不需 bash/docker CLI。
 
-现改为独立状态 STATUS_NO_POSITION="no_position"：
-  - attempt_signin 无点位分支返回独立状态码；STATUS_SYMBOL 有独立符号 🚫；
-  - run_queue_retry 放弃时按"无点位"静默（不触发任何失败通知），仅留日志；
-  - main() 汇总归入跳过计数但单独展示（🚫 N 无点位），不计 has_real_failure；
-  - **不进入失败重试**：signin 内部 retry budget 1 次即止
-    （NO_POSITION_MAX_ATTEMPTS=1），不会像 failed 那样逐账号反复重试；
-  - **补签闸门视为未了结**（2026-09-01 修正）：scheduler._UNDONE_STATUSES 含
-    no_position——与宿主 run.sh 退出码 2 → SKIPPED → 07:10 补签轮重跑一致
-    （学校上午任务未配置=无点位，07:10 已配置=顺带补上；无点位账号 1 次即止、
-    幂等无害，不会白跑太多）；
-  - 每日状态文件（sign-daily）写入 🚫 供日历展示。
-
-用法（项目根目录）：
-    py -m pytest tests/test_no_position_status_091.py -v
+背景：登录成功、signPosition 返回 code=0 但 Position 为空（任务未配置/当日任务已关闭）。
 """
 import importlib.util
 import json
@@ -28,7 +23,6 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,7 +43,7 @@ def _load_sched():
     return mod
 
 
-def _run_main(argv=None, run_queue_result=None):
+def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
     """在隔离环境下执行 signin.main()，返回退出码或捕获的 SystemExit。
 
     run_queue_result：替换 run_queue_retry 返回值（不触网）；load_accounts
@@ -74,18 +68,20 @@ def _run_main(argv=None, run_queue_result=None):
                   "YIBAN_SIGN_MODE", "YIBAN_PROBE_ENABLE",
                   "YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC"):
             os.environ.pop(k, None)
-        # 周日门禁解耦（与被测逻辑无关，仅为排除周日门禁对用例的日期依赖）：
-        # 周日（weekday()==6）且 YIBAN_SUNDAY_SIGN 关闭时，main() 在签到流程
-        # 开始前即 exit(2)，到达不了本组用例要断言的无点位汇总/退出码/状态文件
-        # 逻辑。显式开启周日门，使用例在任意星期几运行结果一致。
+        # 周末门禁解耦（与被测逻辑无关，仅为排除门禁对用例的日期依赖）：
+        # 周六/周日且对应开关关闭时，main() 在签到流程开始前即 exit(2)，到不了本组
+        # 用例要断言的汇总/退出码/状态文件逻辑。真正的开关补丁在下方 mock.patch.object
+        # （两个 SIGN 都是模块导入时求值的常量，这里设环境变量只对首次导入生效）。
         os.environ["YIBAN_SUNDAY_SIGN"] = "1"
+        os.environ["YIBAN_SATURDAY_SIGN"] = "1"
         # 窗口覆盖全天：避免测试运行时已过默认 07:50 截止导致 build_schedule 提前收口
         os.environ["YIBAN_SIGN_START"] = "00:00"
         os.environ["YIBAN_SIGN_END"] = "23:59"
         sys.argv = ["signin.py"] + (argv or [])
         result = run_queue_result or {}
 
-        def _fake_load_accounts():
+        def _fake_load_accounts(migrate=True):
+            # migrate 入参（F3 只读校验）与本组用例无关：普通签到路径传 True
             return [
                 signin.Account(phone=p, password="test-pass", name="测试")
                 for p in result
@@ -93,16 +89,19 @@ def _run_main(argv=None, run_queue_result=None):
                 signin.Account(phone="13800000000", password="test-pass", name="测试")
             ]
 
-        # SUNDAY_SIGN 是 signin 模块导入时求值的常量（scripts/signin.py:308），
-        # env 只对进程内首次导入生效；全量跑测时其他用例文件可能已先把 signin
-        # 以"周日门关闭"态导入，故以模块属性补丁兜底（与 test_saturday_sign 的
-        # const_override 同法），不依赖用例文件的导入顺序。
+        # SUNDAY_SIGN / SATURDAY_SIGN 都是 signin 模块导入时求值的常量（runner.py:40/44），
+        # env 只对进程内首次导入生效；全量跑测时其他用例文件可能已先把 signin 以"周末门
+        # 关闭"态导入，故以模块属性补丁兜底（与 test_saturday_sign 的 const_override 同法），
+        # 不依赖用例文件的导入顺序。**周六门原先漏了补丁**：周六跑全量时本组 4 条必红
+        # （2026-09-19 实测，develop 上同样复现）。
         with mock.patch.object(signin, "load_accounts", side_effect=_fake_load_accounts), \
-             mock.patch.object(signin, "run_queue_retry", return_value=result), \
+             mock.patch.object(signin.executor_v3, "run_executor_v3", return_value=result), \
              mock.patch.object(signin, "SUNDAY_SIGN", True), \
+             mock.patch.object(signin, "SATURDAY_SIGN", True), \
              mock.patch.object(signin, "_acquire_run_lock", return_value=None), \
              mock.patch.object(signin, "_save_cred_state"), \
-             mock.patch.object(signin, "_flush_admin_mail_summary"), \
+             mock.patch.object(signin, "_flush_admin_mail_summary",
+                               side_effect=flush_side_effect), \
              mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False):
             try:
                 signin.main()
@@ -160,8 +159,9 @@ class NoPositionAttemptSigninTest(unittest.TestCase):
         client = signin.YibanClient(acc)
         client.logged_in = True  # 跳过真实登录
         resp = mock.Mock()
-        resp.text = "{}"
         resp.json.return_value = {"code": 0, "data": {"Msg": "", "Position": [], "Range": {}}}
+        # text 与 json() 保持一致：换核后信封解析读 resp.text（真实 requests 两者同源）
+        resp.text = json.dumps(resp.json.return_value)
         client.session.get = mock.Mock(return_value=resp)
 
         success, message, skip, status = client.signin()
@@ -244,7 +244,7 @@ class NoPositionRetryNotificationTest(unittest.TestCase):
 
     def test_schedule_mode_no_position_no_notifications(self):
         """schedule（时间驱动）分支同样跳过通知。"""
-        schedule = {self.acc.phone: datetime.now()}
+        schedule = {self.acc.phone: signin.clock.now()}
         results, m_mail, m_notify, m_user = self._run_queue(
             (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
             schedule=schedule,
@@ -255,7 +255,7 @@ class NoPositionRetryNotificationTest(unittest.TestCase):
         m_user.assert_not_called()
 
     def test_schedule_mode_real_failure_still_notifies(self):
-        schedule = {self.acc.phone: datetime.now()}
+        schedule = {self.acc.phone: signin.clock.now()}
         results, m_mail, _m_notify, _m_user = self._run_queue(
             (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
             schedule=schedule,
@@ -295,11 +295,26 @@ class NoPositionMainSummaryTest(unittest.TestCase):
         _code, tmp = _run_main(run_queue_result={
             "13800000000": (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
         })
-        daily_path = os.path.join(tmp, f"sign-daily-{datetime.now():%Y-%m-%d}.json")
+        daily_path = os.path.join(tmp, f"sign-daily-{signin.clock.today()}.json")
         self.assertTrue(os.path.exists(daily_path), "应写入按日状态文件")
         with open(daily_path, encoding="utf-8") as f:
             daily = json.load(f)
         self.assertEqual(daily.get("13800000000"), "🚫")
+
+    def test_flush_mail_summary_exception_does_not_break_exit_code(self):
+        """M10：汇总邮件异常不得逃逸（退出码是 run.sh/调度器事实源）。
+
+        `_flush_admin_mail_summary` 在 `_write_sched_done` 之前调用；若异常逃逸，
+        全量运行标记不写、退出码契约被破坏。修复后异常被吞（仅 warning），
+        收尾与退出码照常。
+        """
+        with mock.patch.object(signin, "_write_sched_done") as m_done:
+            code, _ = _run_main(run_queue_result={
+                "13800000000": (False, NO_POSITION_MSG, False,
+                                signin.STATUS_NO_POSITION),
+            }, flush_side_effect=RuntimeError("boom"))
+        self.assertEqual(code, 2, "邮件异常不影响退出码（SKIPPED 语义照旧）")
+        m_done.assert_called_once()
 
 
 class NoPositionSchedulerGateTest(unittest.TestCase):
@@ -307,7 +322,7 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="sched-nopos-")
-        self.sched = _load_sched()
+        self.sched = _load_sched()  #调度器按文件路径加载：它在 docker/ 而非包内，直连 import 拿不到
         self.sched.STATEDIR = self.tmp
         self.sched.ENV_FILE = os.path.join(self.tmp, ".env")
 
@@ -316,12 +331,12 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_marker(self):
-        with open(os.path.join(self.tmp, f"sched-run-{datetime.now():%Y-%m-%d}.json"),
+        with open(os.path.join(self.tmp, f"sched-run-{signin.clock.today()}.json"),
                   "w", encoding="utf-8") as f:
             json.dump({"completed": True}, f)
 
     def _write_state(self, data):
-        with open(os.path.join(self.tmp, f"sign-state-{datetime.now():%Y-%m-%d}.json"),
+        with open(os.path.join(self.tmp, f"sign-state-{signin.clock.today()}.json"),
                   "w", encoding="utf-8") as f:
             json.dump(data, f)
 

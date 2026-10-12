@@ -1,38 +1,113 @@
 # -*- coding: utf-8 -*-
-"""邮箱通知的配置层：.env / 环境变量读取、收件人算法与脱敏展示。
+"""邮箱通知的配置层：`.env` / 环境变量读取、发信条目解析、收件人算法与脱敏展示。
 
 只读配置（`YIBAN_MAIL_*`）与判定通道状态（ok/broken/off），不发送；发信在
-`transport` 层。依赖方向：本层不依赖包内其它模块。
+`transport` 层。SMTP 目标地址判据（`check_smtp_host`）复用 `yiban.notify.config`
+的不可路由段判据，是该口径在邮件侧的单一实现，供 web 设置页与库层共用。
 """
+import ipaddress
 import json
 import logging
 import os
 
 from yiban.infra import account_crypto, env_io
+from yiban.notify import config as notify_config
 
 logger = logging.getLogger("mailer")
 
 _PREFIX = "YIBAN_MAIL_"
 
-# SMTP_PORT 配置无效时的「回退 465」一次性告警（v0.24.4：原静默回退会让
-# 填错端口的用户在设置页看到 465 而误以为配置正确，排查困难）
+# SMTP_PORT 配置无效时的「回退 465」一次性告警：静默回退会让填错端口的用户在设置页
+# 看到 465 而误以为配置正确，排查困难。
 _port_warned = False
 
+# 允许私网/回环 SMTP 目标的显式开关。取值口径与项目其它开关一致（1/true/on/yes，
+# 大小写不敏感），未设或其它值一律为假。
+_ALLOW_PRIVATE_KEY = "YIBAN_MAIL_ALLOW_PRIVATE_HOST"
+_TRUTHY_LITERALS = ("1", "true", "on", "yes")
 
-def _mask_addr(addr):
-    """邮箱打码（保留域名；非邮箱原样返回）。
+# 可经显式开关放行的「私网/回环」段：RFC1918 三段 + 127.0.0.0/8 + IPv6 环回 ::1。
+# 其余不可路由/保留段（链路本地、CGNAT、组播、保留、未指定、site-local 等）无论如何
+# 都拒——把安全开关的放行面收窄到"确属自建内网/本机"的场景。
+_PRIVATE_TOGGLE_NETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+)
+_LOOPBACK_V6 = ipaddress.ip_address("::1")
 
-    口径：用户名 >6 位保留前 3 位，否则只保留第 1 位；星号数 = max(3,
-    用户名长度 - 可见位数)，3 星下限兜底（短名打码段总宽可能略宽于原
-    用户名）——固定保留前 3 位时短名几乎全暴露（旧口径 ab@x.com →
-    ab***@x.com，2026-09-08）。
+
+def _allow_private_host(env=None):
+    """`YIBAN_MAIL_ALLOW_PRIVATE_HOST` 真值判定（1/true/on/yes，大小写不敏感）。
+
+    env：测试注入用的映射；给出时只读它（不回落 .env），缺省读进程环境变量并回落
+    `.env`——口径与 `_get` 一致：web 写入 .env，cron 子进程未必带该键。
     """
-    addr = str(addr or "").strip()
-    if "@" not in addr:
-        return addr or "<未配置>"
-    name, _, domain = addr.partition("@")
-    visible = name[:3] if len(name) > 6 else name[:1]
-    return visible + "*" * max(3, len(name) - len(visible)) + "@" + domain
+    if env is not None:
+        return str(env.get(_ALLOW_PRIVATE_KEY, "")).strip().lower() in _TRUTHY_LITERALS
+    # 与 `_get` 同一口径：.env 优先、进程环境补缺（M27）
+    value = (_read_env_file().get(_ALLOW_PRIVATE_KEY, "").strip()
+             or os.environ.get(_ALLOW_PRIVATE_KEY, "").strip())
+    return value.lower() in _TRUTHY_LITERALS
+
+
+def _is_toggleable_private(ip):
+    """是否属于"可用显式开关放行"的私网/回环段（RFC1918 + 127/8 + ::1）。
+
+    `notify_config._is_nonroutable_target` 把私网/回环与链路本地、保留段一并判为不可
+    路由；邮件侧需要把前者（可开关放行）与后者（一律拒）区分开，故类别在这里单独判定，
+    不改变 notify 侧语义。
+    """
+    if ip.version == 4:
+        return any(ip in net for net in _PRIVATE_TOGGLE_NETS)
+    return ip == _LOOPBACK_V6
+
+
+def check_smtp_host(host, env=None):
+    """SMTP 目标地址判据：返回拒绝原因（中文文案）或 None（放行）。
+
+    判据三档：
+    1. 链路本地 / CGNAT / 组播 / 保留 / 未指定 / site-local 等不可路由段一律拒；
+    2. RFC1918 私网、127.0.0.0/8、::1 默认拒，`YIBAN_MAIL_ALLOW_PRIVATE_HOST` 为真时放行；
+    3. 域名与其余公网 IPv4/IPv6 放行（DNS rebinding 由发送超时兜底，不做连接期复检）。
+
+    `localhost`、非标准 IPv4 字面量（`2130706433`、`0x7f000001`、`127.1` 等）与回环同档；
+    方括号 IPv6（`[::1]`、`[::1]:465`）先去括号再解析；IPv4-mapped IPv6 按其映射的 v4 判。
+    web 设置页的写侧硬拦与库层告警共用本函数，避免两处各写一遍判据。
+    """
+    raw = str(host or "").strip()
+    if not raw:
+        return "SMTP 主机为空"
+    candidate = raw
+    if candidate.startswith("["):
+        end = candidate.find("]")
+        if end < 0:
+            return "IPv6 地址方括号不闭合"
+        candidate = candidate[1:end].strip()
+    # 尾点（FQDN 根）剥掉，否则 `127.0.0.1.` 会绕过 ip_address 解析被当成域名放行
+    candidate = candidate.rstrip(".").lower()
+    if not candidate:
+        return "SMTP 主机为空"
+    if candidate == "localhost":
+        return "目标为本机回环名，属内网地址"
+    try:
+        ip = ipaddress.ip_address(candidate)
+    except ValueError:
+        if notify_config._is_ipv4_literal_like(candidate):
+            return "目标为非标准 IPv4 字面量（疑似回环/内网写法），已拒绝"
+        return None  # 真域名放行
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        # `[::ffff:100.100.100.200]` 形态：v6 对象自身属性全 False，须按映射的 v4 判
+        ip = mapped
+    if not notify_config._is_nonroutable_target(ip):
+        return None
+    if _is_toggleable_private(ip):
+        if _allow_private_host(env):
+            return None
+        return "目标为内网/回环地址，如需保留请开启 YIBAN_MAIL_ALLOW_PRIVATE_HOST"
+    return "目标为链路本地/CGNAT/组播/保留等不可路由地址，不允许作为 SMTP 目标"
 
 
 def _read_env_file():
@@ -45,8 +120,53 @@ def _read_env_file():
 
 
 def _get(key):
-    """读取配置：环境变量优先，回退 .env 文件（与 web/app.py send_notification 惯例一致）。"""
-    return os.environ.get(_PREFIX + key, "").strip() or _read_env_file().get(_PREFIX + key, "").strip()
+    """读取配置：**.env 文件优先**，进程环境只补缺（M27）。
+
+    与 `yiban/notify/config._env_str` 同一口径、同一理由：本组件的写侧（设置页落盘）
+    与 web 读侧都是「`.env` 优先」，读侧若反过来，键一旦进了 web 进程环境，设置页的
+    写入就静默失效、GET 回显与磁盘状态长期不一致。进程环境保留为兜底（`.env` 没有该键
+    的部署形态仍取得到值）。
+    """
+    return (_read_env_file().get(_PREFIX + key, "").strip()
+            or os.environ.get(_PREFIX + key, "").strip())
+
+
+def _mask_addr(addr):
+    """邮箱打码（保留域名；非邮箱原样返回）。**逗号列表逐项打码**。
+
+    口径：用户名 >6 位保留前 3 位，否则只保留第 1 位；星号数 = max(3,
+    用户名长度 - 可见位数)，3 星下限兜底（短名打码段总宽可能略宽于原用户名）。
+    固定保留前 3 位会让短名几乎全暴露（ab@x.com → ab***@x.com），故短名只留 1 位。
+
+    `YIBAN_MAIL_ADMIN_TO` 的语义本就是逗号分隔多地址（`admin_recipients` 按逗号拆），
+    而"按第一个 @ 切分、其余整段当域名"会把第 2 个及之后的地址**原样**留在返回值里
+    ——收件人名单因此明文进 HTTP 响应、推送正文与审计 detail，故逐项处理。
+    """
+    raw = str(addr or "").strip()
+    if not raw:
+        return "<未配置>"
+    if "," in raw:
+        return ",".join(_mask_addr(one) for one in raw.split(",") if one.strip())
+    if "@" not in raw:
+        return raw
+    name, _, domain = raw.partition("@")
+    visible = name[:3] if len(name) > 6 else name[:1]
+    return visible + "*" * max(3, len(name) - len(visible)) + "@" + domain
+
+
+def _smtps_enc_decrypts_to_list():
+    """SMTPS_ENC 密文能否解出一个 JSON 列表（内容不限，元素有效性由 smtp_list 过滤）。
+
+    供 smtp_channel_state 区分「解密成功但无有效条目」（设置页允许 smtps: [] 的合法
+    清空/未配置）与「密文解不开」（换钥失配等真故障）——两者 smtp_list 都返回空列表，
+    病因却完全不同。
+    """
+    try:
+        entry = json.loads(_get("SMTPS_ENC"))
+        plain = account_crypto.decrypt_text(entry, account_crypto.load_key(env_io.env_path()))
+        return isinstance(json.loads(plain), list)
+    except (ValueError, OSError, TypeError):
+        return False
 
 
 def smtp_list():
@@ -62,8 +182,8 @@ def smtp_list():
     raw = _get("SMTPS_ENC")
     if raw:
         try:
-            # 密钥路径口径与 _read_env_file 一致（YIBAN_ENV_FILE 优先，见 notify.get_secret
-            # 的教训：不带路径会回落 cwd/.env，容器部署下解错钥致通道静默死亡）
+            # 密钥路径口径与 _read_env_file 一致（YIBAN_ENV_FILE 优先）。不能省路径：
+            # 不带路径会回落 cwd/.env，容器部署下解错钥致通道静默死亡。
             entry = json.loads(raw)
             plain = account_crypto.decrypt_text(entry, account_crypto.load_key(env_io.env_path()))
             items = json.loads(plain)
@@ -92,8 +212,8 @@ def smtp_list():
 def get_config():
     """读取邮件配置概览（脱敏：不含授权码，发件地址打码），供设置页/日志展示。
 
-    port_fallback：SMTP_PORT 缺省或非法时为 True——展示层据此提示
-    「端口未按预期生效，实际按 465 处理」，不再无声回退（2026-08-27 审查 P3）。
+    port_fallback：SMTP_PORT 缺省或非法时为 True——展示层据此提示「端口未按预期生效，
+    实际按 465 处理」，不再无声回退。
     """
     global _port_warned
     raw_port = _get("SMTP_PORT")
@@ -122,21 +242,6 @@ def get_config():
     }
 
 
-def _smtps_enc_decrypts_to_list():
-    """SMTPS_ENC 密文能否解出一个 JSON 列表（内容不限，元素有效性由 smtp_list 过滤）。
-
-    供 smtp_channel_state 区分「解密成功但无有效条目」（设置页允许 smtps: [] 的
-    合法清空/未配置）与「密文解不开」（换钥失配等真故障）——两者 smtp_list 都
-    返回空列表，病因却完全不同。
-    """
-    try:
-        entry = json.loads(_get("SMTPS_ENC"))
-        plain = account_crypto.decrypt_text(entry, account_crypto.load_key(env_io.env_path()))
-        return isinstance(json.loads(plain), list)
-    except (ValueError, OSError, TypeError):
-        return False
-
-
 def smtp_channel_state():
     """邮件发信通道三态判定：返回 (state, detail)。
 
@@ -144,22 +249,20 @@ def smtp_channel_state():
     （未配置条目 / 条目缺发件账号或授权码 / 密文解不开且旧键也为空）；
     off=总开关未开启。detail 为人话病因，供健康日报展示。
 
-    为什么需要三态：is_enabled 原先只判 smtp_list 非空——条目结构性残缺
-    （如 {"host":"x"} 缺 user/pass，每封必败）与"密文解不开回落空旧键"两种病态
-    同样非空或被当作正常（2026-09-08：日报显示「已开启」而实际一封都
-    发不出去）。is_enabled() 与本函数单源，只有 ok 算启用；调用方需要区分
-    「没配置 / 坏了 / 可用」时用它而非 smtp_list()。
+    需要三态而非"smtp_list 非空"：条目结构性残缺（如 {"host":"x"} 缺 user/pass，
+    每封必败）与"密文解不开回落空旧键"两种病态同样非空或被当作正常。is_enabled() 与
+    本函数单源（只有 ok 算启用）；调用方需要区分「没配置 / 坏了 / 可用」时用它。
 
-    刻意保留：密文解不开但旧单条键可用时按 ok 报（沿用旧键发信确实可达），
-    解密失败的 WARNING 由 smtp_list 记录；不把"密文废但旧键活"误报成坏。
+    刻意保留：密文解不开但旧单条键可用时按 ok 报（沿用旧键发信确实可达），解密失败的
+    WARNING 由 smtp_list 记录；不把"密文废但旧键活"误报成坏。
     """
     if _get("ENABLE").strip().lower() not in ("1", "true", "on", "yes"):
         return "off", "YIBAN_MAIL_ENABLE 未开启"
     entries = smtp_list()
     if _get("SMTPS_ENC"):
-        # 密文存在但条目为空 = smtp_list 已回落旧键仍空。两种病因分开报：
-        # 解密成功但无有效条目（含合法清空）只该补条目；解不开才指向密钥失配，
-        # 否则一次合法的 smtps: [] 清空会把 ops 引去排查换钥问题
+        # 密文存在但条目为空 = smtp_list 已回落旧键仍空。两种病因分开报：解密成功但无
+        # 有效条目（含合法清空）只该补条目；解不开才指向密钥失配，否则一次合法的
+        # smtps: [] 清空会把 ops 引去排查换钥问题
         if not entries:
             if _smtps_enc_decrypts_to_list():
                 return "broken", ("YIBAN_MAIL_SMTPS_ENC 解密成功但无有效发信条目"
@@ -178,9 +281,8 @@ def smtp_channel_state():
 def is_enabled():
     """邮件通知是否启用：仅当通道状态为 ok（开关开且发信条目真正可用）。
 
-    原先只判 smtp_list 非空：条目缺 user/pass、或密文解不开且旧键也为空时照样
-    报启用——每日健康日报据此显示「已开启」而实际一封都发不出去；现在与
-    smtp_channel_state 单源，只有 ok 算启用。
+    与 smtp_channel_state 单源，只有 ok 算启用——否则条目缺 user/pass、或密文解不开且
+    旧键也为空时会被报成启用，日报显示「已开启」而实际一封都发不出去。
     """
     return smtp_channel_state()[0] == "ok"
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""重建 Noto Sans SC 自托管分片：npm OFL 上游字体 + 按字频重切片。
+"""**功能**
+重建 Noto Sans SC 自托管分片：npm OFL 上游字体 + 按字频重切片。
 
 背景与动机
 ----------
@@ -44,6 +45,23 @@ npm `noto-sans-sc@37.0.0`（14 个版本、2019–2024 持续发布，看似更�
   区间数，兼顾 CSS 体积。
 * `unicode-range` 由分片内容精确生成，不引用任何外网地址。
 
+**归属**
+构建/运维脚本（`scripts/`），只在构建机本地运行；产物是 web 前端自托管字体分片
+（`web/static/vendor/fonts/notosanssc`），不进生产服务进程。
+
+**复用**
+无对外可复用函数；字频/规范字表（`FREQ_ORDER` / `STD_ORDER`）与 `UPSTREAM_*` 是
+本脚本的自有固化数据，不供其它模块导入。
+
+**通信**
+输入：`--fetch <目录>`（联网取上游字体并逐文件 SHA-256 校验）或离线切片输出目录，
+以及 `--font` / `--weight-font` / `--strict-source` 开关。
+输出：输出目录下的 woff2 分片与 `unicode-range` CSS（整目录原子替换）；`--fetch`
+只写本地字体目录，不碰产物。
+调用谁：`fontTools.subset` / `fontTools.varLib.instancer`、`cu2qu`（CFF→glyf）、
+标准库 `urllib.request` / `tarfile`。
+谁调用：构建者手工执行（CI 或本地构建机）；运行时零依赖。
+
 用法
 ----
     # 1) 取上游字体（联网，写入本地目录，逐文件 SHA-256 校验）
@@ -69,8 +87,8 @@ npm `noto-sans-sc@37.0.0`（14 个版本、2019–2024 持续发布，看似更�
   `unpkg.com/...`）。包内 `vfs_fonts.js` 内嵌 Noto Sans SC 完整静态字重
   `NotoSansSC-Regular.otf`（400）/ `NotoSansSC-Bold.otf`（700），SIL OFL-1.1。
   固定版本、URL 形态与逐文件 SHA-256 见 `UPSTREAM_*` 常量。
-  保留理由：本轮评估的 `noto-sans-sc@37.0.0` 等 npm 候选均为 Google 网页子集，
-  采用会降级覆盖；完整字体的候选包成熟度不优于本包，故来源保持不变。
+  保留理由：其它候选包均为 Google 网页子集或成熟度不优于本包，采用会降级覆盖，
+  故来源保持不变。
 * `FREQ_ORDER`：hanziDB.csv（github.com/ruddfawcett/hanziDB.csv，MIT License），
   取 frequency_rank 升序去重后的汉字序列。固化于本文件，运行时不需要网络。
 * `STD_ORDER`：《通用规范汉字表》（GF 0013-2013，国务院 2013 年发布）一/二/三级
@@ -623,6 +641,34 @@ def verify_weight_source(weight, path, strict):
     print("警告：字重 %d 源 %s 未经上游哈希校验（--strict-source 可强制）" % (weight, name))
 
 
+#: 允许被整目录替换（`shutil.rmtree` + `os.replace`）的输出根，相对仓库根。
+#: outdir 是位置参数、随后直接 rmtree，接受任意路径意味着一次笔误
+#: （漏写一层目录、变量为空、补全选错）就是不可逆的目录删除。
+OUTDIR_WHITELIST = ("web/static",)
+
+
+def resolve_outdir(path):
+    """把 outdir 解析为绝对路径并校验落在仓库白名单内；不在则抛 ValueError。
+
+    判包含关系用 `commonpath` 而非字符串前缀——前缀会把 `web/static-evil`
+    误判为合法。白名单根自身也拒绝：`rmtree(web/static)` 不是任何一次切片该做的事。
+    """
+    root = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    target = os.path.realpath(path)
+    for rel in OUTDIR_WHITELIST:
+        allowed = os.path.join(root, *rel.split("/"))
+        try:
+            inside = os.path.commonpath([target, allowed]) == allowed
+        except ValueError:          # 不同盘符（Windows）：必然不在白名单内
+            continue
+        if inside and target != allowed:
+            return target
+    raise ValueError(
+        "输出目录不在白名单内：%s（仅允许仓库内 %s 之下的子目录）"
+        % (path, "、".join(OUTDIR_WHITELIST))
+    )
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("outdir", nargs="?", help="输出目录（整目录原子替换）")
@@ -652,6 +698,10 @@ def main(argv=None):
 
     if not args.outdir:
         ap.error("需要输出目录（--fetch 模式除外）")
+    try:
+        args.outdir = resolve_outdir(args.outdir)
+    except ValueError as e:
+        ap.error(str(e))
     weights = [int(w) for w in args.weights.split(",") if w.strip()]
     weight_sources = parse_weight_sources(args.weight_font)
     if args.font and weight_sources:

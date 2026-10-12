@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""修复回归测试（2026-08-28 深夜）。
+"""一批修复的回归合集（含 mailer 显式 TLS 校验）。
 
-覆盖：
-- P2-1  mailer 显式 TLS 证书校验（SMTP_SSL/starttls 均传 create_default_context）
-- P2-2  db_export / generate_demo_data 不触发启动清理（cleanup=False）
-- P2-3  env_lock Windows msvcrt 跨进程锁（导入与接口形态；平台行为差异仅冒烟）
-- P2-4  密钥/盐落盘临时文件创建即 0600 且无残留
-- P2-7  audit_verify 只读化：缺库报错退出、不执行迁移
-- P1-1/P2-10 child_env 共享模块：YIBAN_ 白名单 + 非法键名丢弃 + 覆盖注入
-- A1    SSH 重设主管理员密码 → 迁移检测明文与哈希不一致 → 递增 PW_VERSION
-- A2/A3 批量端点单次 10 上限（users/batch、accounts/batch）
-- A4    settings 部分更新不再静默清空未提交的延迟字段
-- A5    start_delay_max/gap_max 收归主管理员（注册管理员 403）
-- A6    登录成功写审计（action=login_ok，IP 匿名化；动作名后来由 login 收敛）
-
-用法（项目根目录）：
-    py -m pytest tests/test_batch8_fixes_0828.py -v
+标签：H · 通知：邮件与推送
+覆盖：其中与邮件/推送相关的是 mailer 显式 TLS 证书校验（`SMTP_SSL` 与 `starttls` 两条
+    路径都传 `create_default_context`）与密钥/盐落盘临时文件创建即 0600 且无残留；
+    其余条目跨子系统：`db_export`/`generate_demo_data` 不触发启动清理、env_lock
+    Windows msvcrt 跨进程锁、`audit_verify` 只读化（缺库报错退出、不执行迁移）、
+    child_env 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
+    递增、批量端点单次 10 上限、settings 部分更新不清空延迟字段、
+    `start_delay_max`/`gap_max` 收归主管理员、登录成功写审计（IP 匿名化）。
+对应实现：`yiban/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
+    `scripts/audit_verify.py`、`yiban/infra/child_env.py`、`web/app.py` 批量与设置端点。
+关键断言：TLS 必须带证书校验（不接受"能连上就算对"）；只读工具不得顺手跑迁移；
+    白名单之外的环境变量不得被子进程继承。
+依赖：⚠ 混合回归文件，按主题 importlib 单独加载多个脚本 + mock `smtplib`；
+    临时 DB/密钥文件；平台相关那条（msvcrt 锁）只做接口形态冒烟，行为差异不在本机断言；
+    不触网、不发真实邮件。
 """
 import contextlib
 import importlib.util
@@ -31,6 +31,8 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
+
+from yiban.store.audit_chain import actor_tag  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
@@ -71,7 +73,11 @@ class MailerTlsContextTest(unittest.TestCase):
     """P2-1：SMTP_SSL/starttls 必须显式传入证书校验 context。"""
 
     def test_ssl_uses_default_context(self):
-        import mailer
+        # 直连实现包（旧的 scripts/mailer.py 兼容壳已删除）：配置名（is_enabled/_get）
+        # 打在 config 上（transport 内部正是以 `config.is_enabled()` 读它），
+        # 发送名（smtplib / _send）在 transport 上打。
+        from yiban.mail import config as mailer
+        from yiban.mail import transport as mailer_transport
 
         captured = {}
 
@@ -99,8 +105,8 @@ class MailerTlsContextTest(unittest.TestCase):
         }
         with mock.patch.object(mailer, "is_enabled", lambda: True), \
              mock.patch.object(mailer, "_get", lambda k: cfg.get(k)), \
-             mock.patch.object(mailer.smtplib, "SMTP_SSL", _FakeSMTP):
-            mailer._send("标题", "正文", "to@example.com")
+             mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FakeSMTP):
+            mailer_transport._send("标题", "正文", "to@example.com")
         ctx = captured.get("context")
         self.assertIsNotNone(ctx, "SMTP_SSL 必须显式传 context")
         import ssl
@@ -245,14 +251,18 @@ class AdminPasswordRotationTest(unittest.TestCase):
         webapp.migrate_admin_password_to_hash(env_path)
         self.assertIn("YIBAN_ADMIN_PW_VERSION=3", self._read(env_path), "口令未变更不得递增")
 
-    def test_first_migration_no_bump(self):
+    def test_first_migration_bumps_pw_version(self):
+        # M09/F86：README 追回手册推荐「删/清空 HASH 行」，落进"无现存哈希"分支。
+        # 该分支也必须递增 PW_VERSION 并换发 sid，否则旧 cookie 仍以 admin 可用
+        # （与保留旧 HASH 行相比等于没吊销）。首次迁移根本不是"追回"也一律递增：
+        # 新装无存量会话，不受影响。
         env_path = self._env_with(
             "YIBAN_ADMIN_PASSWORD=FirstPass#1\n"
             "YIBAN_ADMIN_USER=admin\n"
         )
         webapp.migrate_admin_password_to_hash(env_path)
         env = self._read(env_path)
-        self.assertNotIn("YIBAN_ADMIN_PW_VERSION", env, "首次明文迁移不递增（会话 pw_version 保持有效）")
+        self.assertIn("YIBAN_ADMIN_PW_VERSION=2", env, "无现存哈希的迁移同样递增（删 HASH 行追回等价）")
         self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", env)
 
 
@@ -352,7 +362,9 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         r = c.post("/api/settings", json={"gap_max": 60, "confirm_password": ADMIN_PASS},
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=self._csrf(t))
+        # 周日开关属 A 档：主管理员也要当次口令（本例钉的是"部分更新不清零"）
+        r = c.post("/api/settings", json={"sunday_sign": 1, "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = io.open(self.env_file, encoding="utf-8").read()
         self.assertIn("YIBAN_ACCOUNT_GAP_MAX=60", env)
@@ -364,14 +376,20 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         self.assertNotIn("YIBAN_ACCOUNT_GAP_MAX=60", env)
 
     def test_delay_settings_master_only(self):
-        """A5：注册管理员改延迟/调度字段 → 403；改周日开关仍可。"""
+        """A5：注册管理员改延迟/调度字段 → 403；周末开关已上收 A 档，同样 403。"""
         c, t = self._reg_admin()
         r = c.post("/api/settings", json={"gap_max": 3600, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 403)
         r = c.post("/api/settings", json={"gap_max": 3600}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 403)
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=self._csrf(t))
+        r = c.post("/api/settings", json={"sunday_sign": 1, "confirm_password": USER_PASS},
+                   headers=self._csrf(t))
+        self.assertEqual(r.status_code, 403, "周日开关属破坏性设置（A 档）")
+        # 下放到 B 档的排序键仍归普通管理员管（带当次口令）
+        r = c.post("/api/settings", json={"sign_order": "random", "confirm_password": USER_PASS},
+                   headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("YIBAN_SIGN_ORDER=random", io.open(self.env_file, encoding="utf-8").read())
 
     def test_login_success_audited(self):
         """A6：登录成功写审计（action=login_ok），IP 匿名化。
@@ -386,7 +404,8 @@ class BatchCapAndSettingsTest(unittest.TestCase):
             "SELECT username, action, target FROM audit_logs WHERE action='login_ok'"
         ).fetchall()
         self.assertTrue(rows, "登录成功应写审计")
-        self.assertEqual(rows[-1]["username"], "admin@test.local")
+        self.assertEqual(rows[-1]["username"], actor_tag("admin@test.local"),
+                         "MF-49：actor 列按写入口遮罩")
         self.assertNotIn("127.0.0.1", rows[-1]["target"], "IP 必须匿名化（hash_ip）")
         self.assertRegex(rows[-1]["target"], r"^[0-9a-f]{64}$")
 

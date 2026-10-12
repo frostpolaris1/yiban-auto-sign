@@ -1,12 +1,30 @@
 name: CI
 
-# PR 门禁：独立于 .github/workflows/signin.yml（后者是定时签到服务自动化）
-# 触发：向 server-web / main 提 PR，或向这两个分支 push
+# fast 轨（push/PR）：Lint + 安全子集 + e2e smoke + **依赖漏洞审计（pip-audit）**，
+# 前三项目标 ≤3min 含 setup（审计为并行独立 job，不在关键路径上）。
+# 全量轨独立为 nightly.yml（schedule 06:00 UTC / 14:00 北京）——拆成两文件而非同文件两 job，
+# 理由：schedule 是 workflow 级触发，若与 fast job 同文件则必须给 fast job 加
+# `if: github.event_name != 'schedule'` 的事件守卫，语义更脆；两文件让每个 workflow 的
+# 触发条件各自诚实，且 nightly 可用独立的 timeout/并行度。（取舍全文见
+# .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
+# ⚠️ 排程定义点（M24 已修，2026-10-05）：GitHub 的 `schedule` **只在默认分支上生效**
+# （本仓库默认分支 = main）——所以 `nightly.yml` 与 `e2e-nightly.yml` 的**唯一定义点在
+# 默认分支 main**，**develop 分支不持有这两个文件**（此前在 develop = 同一事实两个定义
+# 点，必然漂移）。两文件的 `actions/checkout` 显式 `ref: develop`：被测对象是活跃线
+# develop——main 是"对外默认可见的已验证分支"、天然落后（见 docs/dev/release-gate.md
+# §1）；e2e-nightly 还依赖当前只在 develop 上的 `frontend/`。
+# 两条不许破：① 不许把这两个文件加回 develop；② 不许把 checkout 的 `ref` 改成 main
+# （nightly 变成跑旧线、e2e 直接失败）。回潮守卫见
+# tests/test_ci_dependency_audit_gate.py::ScheduledWorkflowDefinitionPointTest。
+# 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
+# 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
+# （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
 on:
+  workflow_dispatch:
   pull_request:
-    branches: [server-web, main]
+    branches: [develop, server-web, main]
   push:
-    branches: [server-web, main]
+    branches: [develop, server-web, main, 'feature/**']
 
 # 最小权限：仅读取代码与 PR 元数据
 permissions:
@@ -14,9 +32,11 @@ permissions:
   pull-requests: read
 
 jobs:
+  # job 名保持 verify（不改成 fast）：仓库分支保护/必需检查可能按 job 名引用，
+  # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,10 +53,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.lock
           # 开发/门禁工具：与运行依赖分离，锁定版本保证 CI 可复现
-          # ruff 0.15.22 = 0.15 系列最终版（0.16 起默认规则集大改，待迁移后再升）
+          # ruff 0.16.6 = 与本地 WSL 门禁（~/.venv-yiban-wsl）逐字对齐（MF-106：
+          # 旧钉 0.15.22 与本地漂移，同一份代码两套编辑器判出不同结果）
           # pytest 9.1.1 = 含 CVE-2025-71176 修复（0~9.0.3 受影响）
-          # pytest-xdist = 并发跑测试（-n auto 按 CI 核数分发；单测各自隔离临时目录）
-          pip install ruff==0.15.22 pytest==9.1.1 pytest-xdist==3.8.0
+          # pytest-xdist = 并发跑测试（-n 按 CI 核数分发；单测各自隔离临时目录）
+          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
 
       # 提交/PR 标题规范校验（Conventional Commits）
       # 不符合 feat/fix/docs/... 前缀则门禁失败。
@@ -47,15 +68,102 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- Lint ----
-      - name: Lint (ruff)
-        run: ruff check .
+      # ---- 关键子集：本地与 CI 同源（scripts/dev-verify.sh --ci） ----
+      # 为什么收成一步：跑法此前有两个入口（CI 内联一份、本地各人一套），两位负责人
+      #   分组跑法不同会产出伪红。现在命令原文只存在仓内入口脚本里一份，CI 只调它的
+      #   子集模式；本地全量（`bash scripts/dev-verify.sh`）与这条子集共用同一个脚本。
+      # 子集内容与参数**与改前逐字相同**（ruff 扫描面 / -k 词集 / -n 4 / --dist loadfile /
+      #   -p no:randomly / e2e smoke 目标 / shared-facts 门与元测试），命令原文与理由写在
+      #   scripts/dev-verify.sh 的 run_ci 与 docs/dev/dev-verify.md；本条不复制命令文本，
+      #   免得同一个事实出现第二个定义点（漂移由 tests/test_dev_verify_entry.py 冻结）。
+      # 任一环节非 0 即本步非 0——与改前"步级失败即停"等价。
+      # 2026-10-06 起多了一步：B1 的在册部署键裸读门（scripts/check-path-env-reads.py）
+      #   与它的元测试。加步是工单要求的（"门禁要真进 CI，不许只当仓里的摆设"），
+      #   除这两步之外 CI 结果与改前等价；命令原文仍只住 run_ci 一份，漂移由
+      #   tests/test_dev_verify_entry.py 的冻结清单钉住。
+      - name: Gate subset (scripts/dev-verify.sh --ci)
+        run: bash scripts/dev-verify.sh --ci
 
-      # ---- Test ----
-      # 单元/回归测试（tests/，pyproject.toml testpaths=["tests"]）
-      # -n auto：按 runner 核数并发（GitHub 默认 2 核 → 提速约 2 倍）
-      - name: Test (pytest)
-        run: pytest -q -n auto
+      # Vue 构建产物可复现门禁的元测试（工单 yiban-auto-sign-spn6）。
+      # 为什么单列一步：CI 的 -k 词集住在 scripts/dev-verify.sh 的 run_ci，本单不改该文件
+      #   （feature/dev-verify-fastmode 分支在飞改 run_ci，跨分支必冲突），故按文件路径直接选测。
+      # 为什么在 verify（不是 frontend）job：本元测试只跑 --lf-only 与 --compare 两个模式，
+      #   不需要 node；frontend job 有 node，本 job 有 Python，各取所需。
+      # 守卫本体（重建 + 逐字节比对，需要 node）在 frontend job 跑；承重段突变证明在
+      #   scripts/e2e/vue-build-reproducible-e2e.sh（WSL 内手跑）。
+      - name: Vue build reproducible meta-tests (no node)
+        run: python -m pytest tests/test_vue_build_reproducible.py -q -p no:randomly
 
       - name: Gate ready
-        run: echo "Lint + Test gate active."
+        # 这行只是收尾回执，但它枚举了子集内容 —— 子集变了这里也要变，否则"同一个事实
+        # 两个定义点"就从这里开始漂。2026-10-06（工单 2ula）加入 config-registry。
+        run: 'echo "Fast gate active: lint + security subset + e2e smoke + shared-facts roster + path-env bare reads + config registry."'
+
+  # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
+  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
+  # 因此没有哈希锁可复核——"镜像实际装的版本 = 被审计过的版本"这件事**只由 pip-audit
+  # 兜住**（0.5.1 评审批已把 urllib3 抬到 2.8.0、Werkzeug 抬到 3.1.9 关掉 4 个 CVE，
+  # 该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
+  # ⚠️ 它要真的"拦得住"，必须把它加进分支保护的 required checks（所有者在仓库设置里
+  # 勾选 `dependency-audit`）——本文件无法替你做这件事；没勾之前它只是**报告式**审计。
+  # 独立 job 而非 verify 里的一步：审计要解算整棵依赖树并访问漏洞库，与 verify 的
+  # 测试子集无关联，并行跑不占 fast 轨关键路径（两个 job 共用一次 checkout + setup）。
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      # 审计**锁定清单**（requirements.lock）而不是下限清单（requirements.txt）：
+      # 锁定版本才是镜像实际安装、也是现网实际跑的那个版本。
+      # pip-audit 2.10.0 钉版（与本 job 的 ruff/pytest 钉版同一纪律：门禁工具必须可
+      # 复现，否则"昨天绿今天红"分不清是漏洞库更新还是工具行为变化）。
+      # 退出码：0=无已知漏洞；1=检出漏洞（门禁失败）；>1=审计本身跑不起来。
+      - name: pip-audit (locked dependencies)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit==2.10.0
+          pip-audit -r requirements.lock
+
+      - name: Audit ready
+        run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'
+
+  # ---- 前端单测（Vue + Vitest）----
+  # 为什么必须有：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
+  # 恰好落在无门禁区——2026-10-03 独立审查实测到一个 blocking 回归（日志页日期栏整体失效）
+  # 正是这样漏掉的。前端测试与后端测试同门槛。
+  # 只跑 Vitest：Playwright e2e 需要 Python 侧临时实例与浏览器二进制，留给
+  # e2e-nightly.yml（定义点在默认分支 main，见文件头的"排程定义点"一段）。
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies (locked)
+        run: npm ci
+      - name: Unit tests (Vitest)
+        run: npm run test
+      # 构建产物可复现门禁（工单 yiban-auto-sign-spn6）：产物必须与已提交产物逐字节相同。
+      # 为什么在本 job：这里已有 node 与 node_modules（上面 npm ci），一次重建约 2 秒。
+      # 判据与理由写在 scripts/check-vue-build-reproducible.sh；承重段的突变证明写在
+      # scripts/e2e/vue-build-reproducible-e2e.sh（WSL 内手跑）；本文件不复制判据文本。
+      - name: Vue build artifacts reproducible (LF + byte-identical rebuild)
+        run: bash ../scripts/check-vue-build-reproducible.sh

@@ -14,7 +14,7 @@
 {# iOS 主屏图标复用同一张方图（不声明 sizes，由浏览器缩放；建议部署者用 180×180） #}
 <link rel="apple-touch-icon" href="{{ request.script_root }}/favicon.png?v={{ web_version }}">
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 <title>{% block title %}用户中心 · 易班自动签到{% endblock %}</title>
 {% block head_meta %}{% endblock %}
 {% include "partials/theme_boot.html" %}
@@ -27,7 +27,10 @@
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
 </head>
-{# data-page="user"：core.js 据此执行身份/时钟初始化（"auth" 会提前返回） #}
+{# data-page="user"：core.js 里与 data-page 有关的判据只有一条 —— 值等于 "auth" 时提前
+   返回、跳过 /api/me 与 /api/clock；它对 "user" 这个字面量本身不做任何事，本页走的是
+   "不命中跳过条件"那条通用路径，而不是"据此执行初始化"。
+   真正按字面量消费 "user" 的是样式层：app.css 有 14 条 body[data-page="user"] 作用域规则。 #}
 <body data-page="user">
 {{ sprite() }}
 <div class="shell">
@@ -42,8 +45,8 @@
 </div>
 {# 移动端抽屉遮罩：点击关闭；Adminator 靠 body.has-drawer-open 控制显隐 #}
 <div class="drawer-backdrop" data-drawer-close></div>
-{# 全局提示与模态挂载点（core.js 填充） #}
-<div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>
+{# 全局提示与模态挂载点（core.js 填充）；toast-host 是全站唯一的 polite 播报区 #}
+<div id="toast-host" class="toast-host" role="status" aria-live="polite" aria-atomic="false"></div>
 <div id="modal-host"></div>
 {# 首屏加载指示：120ms 内就绪则完全不出现（快加载不闪）；core.js 就绪或 window.load 后淡出。
    服务端已渲染正文，故不遮内容，只在顶部提示"样式/脚本仍在就绪"。样式见 app.css「首屏加载指示」。 #}

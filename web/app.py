@@ -16,41 +16,59 @@
 
 管理员账号：首次启动自动生成 SECRET_KEY 并写入 .env；
 在 .env 配置 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD 后即可登录。
+
+**归属**
+本仓 web 管理后台的入口与装配层：`create_app` 建 Flask 实例、登记工厂局部的可变状态（各类
+限速 / 失败 / 冷却计数表）与跨域中间件（前置限速、登录守卫、CSRF 校验、同源校验、安全响应
+头），再把各视图域交 `web.routes.register_all` 接上。域实现已下沉到 `web/routes/*` 与
+`web/services/*`；本模块留下工厂骨架、共享门禁闭包与名字面转发。
+
+**复用**
+`create_app()` 是唯一构建入口。口令门禁分两级真源：档位与旋钮的**解析**在 `web/security.py`
+（`_pw_gate_tier` / `_sensitive_gate_params`，三档语义见该模块 `PW_GATE_*` 常量段），
+"这次到底要不要输口令"的**执行**在本模块的 `_sensitive_password_gate` 及其包装闭包。
+
+**通信**
+入：HTTP 请求 + `.env`（配置与内置管理员凭据）；出：JSON 与渲染页（渲染在 `web/render.py`）、
+`.env` 原子落盘、SQLite、告警邮件与推送。它调用 `web.routes.register_all`、`web.services.*`、
+`web.security`、`yiban.*`；调用方是 `python -m web`（上面的运行段）与 tests/*。路由模块经
+`web.routes.appmod()` 现取本模块的模块级名字、测试按属性打桩它们，所以这些名字的**字面**
+是对外契约的一部分，改名等于改接口。
 """
 
 import argparse
-import calendar
+import calendar  # noqa: F401  # 月历路由已入 web/routes/my.py，此处仅为保持 web.app 名字面不变
 import contextlib
-import hashlib
-import html
-import json
+import html  # noqa: F401  # 文档页转义已入 web/render.py，此处仅为保持 web.app 名字面不变
+import json  # noqa: F401  # 通道健康日报已入 web/services/channel_health.py，此处仅为保持 web.app 名字面不变
 import logging
 import os
-import random
 import re
 import secrets
-import sqlite3
-import subprocess
+import sqlite3  # noqa: F401  # 个人/数据域路由已迁出，此处仅为保持 web.app 名字面不变
+import subprocess  # noqa: F401  # 手动签到子进程族已入 web/services/manual_sign.py，保留名字面（测试打桩 webapp.subprocess.Popen）
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
 
-import requests
+# 时间构造已随账号数据 / 日志 / 实测族迁出；测试仍以 `webapp.datetime` 替换 web 侧时钟
+from datetime import datetime, timedelta  # noqa: F401  # 名字面零损失
+
+import requests  # noqa: F401  # 连通性检测已入 web/services/signstatus.py，此处仅为保持 web.app 名字面不变
 from flask import (
     Flask,
-    Response,
+    Response,  # noqa: F401  # 日志导出已入 web/routes/data.py，此处仅为保持 web.app 名字面不变
     abort,
     jsonify,
-    redirect,
+    redirect,  # noqa: F401  # 页面路由已入 web/routes/pages.py，此处仅为保持 web.app 的导入面不变
     render_template,
     request,
-    send_file,
+    send_file,  # noqa: F401  # 日志导出已入 web/routes/data.py，保留 web.app.<名字> 可 import（打桩面零损失）
     session,
     url_for,
 )
 from markupsafe import Markup
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash  # noqa: F401
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
 # **必须排在下面的 yiban.* 导入之前**：yiban 包在仓库根（scripts/ 下的 locks 等又被它
@@ -61,238 +79,334 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from yiban import clock, cred_state  # noqa: E402  （须在引导之后导入）
+# scripts/ 下的裸模块（同属"共享模块"段）：三者本模块均无自用点，保留供 web.app.<名字>
+# 取用（routes 经 m.* 取用、测试按属性打桩）。位置随包导入引导之后、web./yiban. 之前。
+import child_env  # noqa: E402,F401  # 签到子进程环境注入已入 web/routes/signin_api.py
+import email_policy  # noqa: E402,F401  # 域名审查实现已入 web/render.py
+import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出
+
+# 渲染层实现（web/render.py）：合规文档与站点展示族的真源。本模块只转发，并在转发时
+# 注入本模块持有的模块级状态（`_REPO_ROOT` / `_doc_cache` / `ENV_FILE` / `read_env`）
+# ——它们会被测试改写、也会随运行方式变化，必须调用时刻现取。
+from web import render as _render  # noqa: E402
+
+# 服务层实现（web/services/）：env 读写与执行体清单的真源。本模块只保留名字面，
+# 需要本模块模块级状态的入口（_atomic_write / write_env_batch / _env_flag / 设置缺省值 /
+# send_notification / ENV_FILE / _sign_window）在下方转发时调用时刻现取后注入——它们会被
+# 测试改写、也会随运行方式变化，服务层另持一份绑定会让打桩与 --config 静默失效。
+# 安全域实现（web/security.py）同理：它在本模块持有的模块级名字（ENV_FILE / read_env /
+# write_env_key / write_env_batch / load_env_int / _count_env_key_lines /
+# send_notification / SESSION_ABS_TTL_SECONDS / _constant_time_dummy）在下方转发包装里
+# 调用时刻现取后注入，另持一份绑定会让打桩与 --env-file 静默失效。
+from web import security as _security  # noqa: E402
+from web.render import (  # noqa: E402
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    _DOC_FILES,  # noqa: F401
+    _LINK_RE,  # noqa: F401
+    _SAFE_LINK_SCHEMES,  # noqa: F401
+    _inline_md,  # noqa: F401
+    _render_md,  # noqa: F401
+)
+from web.routes import (  # noqa: E402
+    register_all,  # 路由分域装配（各域在 web/routes/）
+    # 账号验证冷却与配额：取用点已收在 web.routes，两条提交路径均已随域迁出，
+    # 此处保留仅为 web.app 名字面零损失（打桩面）
+    verify_fails,  # noqa: F401
+    verify_limits,  # noqa: F401
+)
+from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清单（页面路径唯一登记点）
+
+# 安全域（web/security.py）：纯再导出保持 web.app.<名字> 可达（routes 经 m.* 取用、
+# 测试按属性读取或替换）。需要本模块模块级状态的入口（`.env` 路径与读取器、写路径、
+# 整数读取器、键行计数、告警出口、会话绝对期）在下方转发包装里调用时刻现取后注入。
+from web.security import (  # noqa: E402
+    _DEFAULT_ADMIN_LITERALS,  # noqa: F401
+    _IP_STORE_LIMIT,  # noqa: F401
+    _IP_STORE_MAX_AGE,
+    _REPLACE_RETRY_ATTEMPTS,  # noqa: F401
+    _REPLACE_RETRY_BASE_SEC,  # noqa: F401
+    ADMIN_SID_ENV_KEY,  # noqa: F401
+    FORWARDED_TRUST_ENV_KEY,
+    LOGIN_LOCK_SECONDS,  # noqa: F401
+    PW_CONFIRM_COOLDOWN_DEFAULT,  # noqa: F401
+    PW_CONFIRM_TTL_DEFAULT,  # noqa: F401
+    PW_CONFIRM_TTL_MAX,  # noqa: F401
+    PW_GATE_DEFAULT,  # noqa: F401
+    PW_GATE_ENV_KEY,  # noqa: F401
+    PW_GATE_FULL,
+    PW_GATE_OFF,
+    PW_GATE_RISK,  # noqa: F401
+    PW_GATE_TIERS,  # noqa: F401
+    SCRYPT_METHOD,  # noqa: F401
+    VERIFY_FAIL_AUTH_KEYWORDS,  # noqa: F401
+    VERIFY_FAIL_COOLDOWN,  # noqa: F401
+    VERIFY_FAIL_MAX,  # noqa: F401
+    VERIFY_FAIL_WINDOW,  # noqa: F401
+    VERIFY_MAX,  # noqa: F401
+    VERIFY_WINDOW,  # noqa: F401
+    _atomic_write,
+    _bump_login_failure,  # noqa: F401
+    _bump_window_count,
+    _client_ip,
+    _constant_time_dummy,
+    _forwarded_trust_enabled,
+    _ip_store_trim,
+    _is_loopback_addr,
+    _new_admin_sid,  # noqa: F401
+    _record_verify_failure,
+    _replace_with_retry,  # noqa: F401
+    _resolve_forwarded_trust,
+    _verify_attempt_allowed,
+    _verify_fail_cooldown_remaining,  # noqa: F401
+)
+from web.services import accounts_data as _accounts_data  # noqa: E402
+from web.services import capacity as _capacity  # noqa: E402
+from web.services import channel_health as _channel_health  # noqa: E402
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import executor_env as _executor_env  # noqa: E402
+from web.services import logs as _logs_svc  # noqa: E402
+from web.services import manual_sign as _manual_sign  # noqa: E402
+from web.services import measure as _measure  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+from web.services import signstatus as _signstatus  # noqa: E402
+from web.services import verify_queue as _verify_queue  # noqa: E402
+
+# 名字面零损失：以下再导出的 web.app.<名字> 仍可 import（routes 经 m.* 取用、
+# 测试按属性读取或替换）。
+from web.services.accounts_data import (  # noqa: E402
+    # 账号审核态词表、手机号正则、注销宽限期与口令策略常量随账号数据族搬入
+    # web/services/accounts_data.py，此处取回保 m.* 名字面
+    _PASSWORD_CLASS_HINT,  # noqa: F401
+    _PASSWORD_CLASS_LABELS,  # noqa: F401
+    _PASSWORD_CLASS_PATTERNS,  # noqa: F401
+    _PASSWORD_MIN_CLASSES,  # noqa: F401
+    _PASSWORD_POLICY_HINT,  # noqa: F401
+    ACCOUNT_STATUS_ACTIVE,  # noqa: F401
+    ACCOUNT_STATUS_PENDING,  # noqa: F401
+    ACCOUNT_STATUS_REJECTED,  # noqa: F401
+    ADMIN_PASSWORD_MIN_CLASSES,  # noqa: F401
+    ADMIN_PASSWORD_MIN_LEN,  # noqa: F401
+    CLEAR_SENTINEL,  # noqa: F401
+    DELETE_GRACE_DAYS,  # noqa: F401
+    PASSWORD_MIN_LEN,  # noqa: F401
+    PHONE_RE,  # noqa: F401
+    _admin_password_policy_error,  # noqa: F401
+    _as_signin_account,  # noqa: F401
+    _delete_grace_remaining,  # noqa: F401
+    _duplicate_phone_error,  # noqa: F401
+    _mask_email,  # noqa: F401
+    _owner_display_of,  # noqa: F401
+    _owner_has_other_live,  # noqa: F401
+    _password_policy_error,  # noqa: F401
+    _stale_idx_guard,  # noqa: F401
+    _verify_account_clean,
+    find_account_index,  # noqa: F401
+    fold_phone_code,  # noqa: F401
+    load_accounts,
+    load_accounts_raw,  # noqa: F401
+    load_users,  # noqa: F401
+    mask_account,  # noqa: F401
+    validate_account,  # noqa: F401
+)
+from web.services.capacity import (  # noqa: E402
+    # 名字面零损失：容量族常量与节流状态随族搬入 web/services/capacity.py
+    # （routes 经 m.* 取用、测试按属性读取 `_mail_alert_ts` 复位节流），此处再导出
+    DEFAULT_MAIL_ALERT_COOLDOWN,  # noqa: F401
+    _capacity_account_count,  # noqa: F401
+    _capacity_alerts,  # noqa: F401
+    _capacity_audit_count,  # noqa: F401
+    _mail_alert_lock,  # noqa: F401
+    _mail_alert_ts,  # noqa: F401
+)
+from web.services.channel_health import (  # noqa: E402
+    # 名字面零损失：通道健康族的纯逻辑与常量（routes/测试按属性读取日报标记键）
+    _HEALTH_REPORT_META_KEY,  # noqa: F401
+    _audit_channel_health_degraded,  # noqa: F401
+    _channel_health_degraded,
+    _channel_health_facts,  # noqa: F401
+    _daily_budget_desc,  # noqa: F401
+    _health_report_sent_today,  # noqa: F401
+)
+from web.services.env_io import (  # noqa: E402
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    _BOOL_SETTINGS_KEYS,  # noqa: F401
+    _SETTINGS_KEY_LABELS,  # noqa: F401
+    ANNOUNCEMENT_DRAFT_META_FMT,  # noqa: F401
+    ANNOUNCEMENT_DRAFT_META_SEP,  # noqa: F401
+    _env_write_lock,  # noqa: F401
+    _is_http_proxy_url,  # noqa: F401
+    _parse_announcement_meta,  # noqa: F401
+    _settings_label,  # noqa: F401
+    _settings_value_text,  # noqa: F401
+    load_env_int,
+    read_env,
+)
+from web.services.executor_env import (  # noqa: E402
+    # 名字面零损失：执行体清单及其 .env 键已入 web/services/executor_env.py，
+    # 本模块已无自用点，保留为 web.app.<名字> 的兼容面（routes 经 m.* 取用）
+    _executor_activity,  # noqa: F401
+    _executor_row_payload,  # noqa: F401
+    _last_executors,  # noqa: F401
+    _next_executor_slot,  # noqa: F401
+    _validated_name,  # noqa: F401
+    _validated_proxy_value,  # noqa: F401
+)
+from web.services.locks import (  # noqa: E402
+    # 进程内锁真源：`_file_lock`（账号/用户读改写）与 `_rate_lock`（限速/失败计数表）
+    # 都与 m.<名字> 是同一把，供路由取用；`run_after_file_lock` 是"锁内不得有网络
+    # I/O"这条纪律的唯一汇合点，路由在锁内登记发信、出锁后执行
+    _file_lock,  # noqa: F401
+    _rate_lock,
+    run_after_file_lock,  # noqa: F401
+)
+from web.services.logs import (  # noqa: E402
+    _LOG_TAIL_BYTES,  # noqa: F401
+    LOG_LEVEL_DEFAULT,  # noqa: F401
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    LOG_LEVELS,  # noqa: F401
+    SIGN_LOG_RE,  # noqa: F401
+    _cred_paused_phones,  # noqa: F401
+    _filter_log_level,  # noqa: F401
+    _is_valid_date_str,  # noqa: F401
+    _log_line_visible,  # noqa: F401
+    _mask_log_phones,  # noqa: F401
+    _most_recent_log_cache,  # noqa: F401
+    _tail_lines,
+    clear_fuse_on_cred_change,  # noqa: F401
+    clear_fuse_pause,  # noqa: F401
+)
+from web.services.manual_sign import (  # noqa: E402
+    # 名字面零损失：手动签到子进程族（终止进程树、等待回收、队列超时缩放、退出码词表）
+    # 随族搬入 web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
+    # `log_path_for`，故在下方转发
+    _SIGNIN_EXIT_REASONS,  # noqa: F401
+    _batch_wait_timeout,  # noqa: F401
+    _manual_sign_failure_reason,  # noqa: F401
+    _terminate_signin_proc,  # noqa: F401
+    _wait_signin_proc,  # noqa: F401
+)
+from web.services.measure import (  # noqa: E402
+    # 名字面零损失：现场实测的状态文件与冷却判定已入 web/services/measure.py，
+    # 保留 web.app.<名字> 的兼容面；
+    # `_measure_state_path` / `_write_measure_state` 另被本模块的转发包装注入
+    MEASURE_STATE_FILE,  # noqa: F401
+    _measure_cooldown_remaining,  # noqa: F401
+    _pick_measure_account,  # noqa: F401
+    _read_measure_state,  # noqa: F401
+)
+from web.services.notify_mail import (  # noqa: E402
+    # 名字面零损失：通知与告警邮件族随族搬入 web/services/notify_mail.py
+    # （`_nl_safe` / `_audit_actor` / `_audit_alert_facts` 本模块自用，其余为 m.* 兼容面）；
+    # `send_notification` 与 `_push_ever_configured` 需注入本模块的名字，故在下方转发
+    _MAIL_FLAG_NAMES,  # noqa: F401
+    _NOTIFY_LEDGER_LABELS,  # noqa: F401
+    _PUSH_CONFIG_ENV_KEYS,  # noqa: F401
+    _alert_mail_recipients,  # noqa: F401
+    _audit_actor,
+    _audit_alert_facts,
+    _change_mail,  # noqa: F401
+    _last_cleanup_text,  # noqa: F401
+    _nl_safe,
+    _review_reject_mail,  # noqa: F401
+)
+from web.services.signstatus import (  # noqa: E402
+    # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
+    # 保留 web.app.<名字> 的兼容面；
+    # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
+    _TRUTHY_LITERALS,  # noqa: F401
+    _env_flag,
+    _in_sign_window,
+    check_connectivity,  # noqa: F401
+)
+from web.services.verify_queue import (  # noqa: E402
+    # 名字面零损失：在线校验的执行闸门、异步任务与失败落库已入
+    # web/services/verify_queue.py，保留 web.app.<名字> 的兼容面；
+    # `run_verify_with_gate` / `verify_async_enabled` / `_account_verify_enabled`
+    # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
+    VERIFY_JOBS_MAX_PENDING,  # noqa: F401
+    VerifyGateBusy,  # noqa: F401
+    VerifyQuotaExceeded,  # noqa: F401
+    _reclaim_stale_verify_jobs,
+    _reject_account,
+    _start_verify_job,  # noqa: F401
+    _verify_queue_full,
+)
+from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
+
+# cred_state 已无自用点，保留供 web.app.<名字> 取用（须在引导之后导入）
+from yiban import clock, cred_state  # noqa: E402,F401
+
+# 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
-from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
+from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
+from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402,F401  # 代理脱敏
 
-# 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
-# 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
-_DOC_FILES = {"USER_AGREEMENT.md", "PRIVACY_POLICY.md"}
-
-
-# 行内链接协议白名单（防存储型 XSS）：javascript:/data:/vbscript: 等协议一律降级为纯文本。
-# 文档由部署者维护，但内容常从第三方模板/网文粘贴，协议不校验会把可执行链接投放到公开页面。
-_SAFE_LINK_SCHEMES = ("http://", "https://", "mailto:")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+# 名字面零损失：纯再导出见上方 import；需要注入本模块模块级状态的入口
+# （_read_doc_html / _doc_page / 站点展示族）在下方转发。
 
 
-def _inline_md(text):
-    """行内格式：先转义 HTML，再处理 **粗体**、`代码`、[文本](链接)。"""
-    s = html.escape(text, quote=True)
-    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-    s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
-
-    def _safe_link(m):
-        # 仅放行 http/https/mailto；其余（javascript:/data:/vbscript: 等）按纯文本渲染，
-        # 不输出 href，避免把可执行协议注入 <a> 标签。
-        inner, url = m.group(1), m.group(2)
-        if url.strip().lower().startswith(_SAFE_LINK_SCHEMES):
-            return f'<a href="{url}" target="_blank" rel="noopener">{inner}</a>'
-        return inner
-
-    s = _LINK_RE.sub(_safe_link, s)
-    return s
-
-
-def _render_md(md_text):
-    """极简 Markdown → HTML（仅支持本项目合规文档用到的子集，无第三方依赖）。
-
-    支持：#~#### 标题、--- 分隔线、> 引用、有序/无序列表、- 段落合并。
-    """
-    lines = md_text.split("\n")
-    out, i, n = [], 0, len(lines)
-    while i < n:
-        line = lines[i]
-        if line.strip() == "":
-            i += 1
-            continue
-        if line.lstrip().startswith("<!--"):
-            # 跳过 HTML 注释：部署者模板说明留在文件中供编辑者阅读，但不渲染到页面。
-            # 未闭合（到文件末尾仍无 -->）时只跳过注释起始行并告警，正文继续渲染——
-            # 避免少写一个 --> 导致其后全部正文被吞、整份文档静默回退"尚未发布"（0.21.2 审查修复）。
-            if "-->" in line:
-                i += 1  # 单行注释
-                continue
-            j = i
-            while j < n and "-->" not in lines[j]:
-                j += 1
-            if j >= n:
-                logger.warning("合规文档存在未闭合的 <!-- 注释（起始行 %d），仅跳过该行", i + 1)
-                i += 1
-            else:
-                i = j + 1  # 多行注释：跳过整块（含闭合行）
-            continue
-        if line.strip() == "---":
-            out.append("<hr>")
-            i += 1
-            continue
-        m = re.match(r"^(#{1,4})\s+(.*)$", line)
-        if m:
-            lvl = len(m.group(1))
-            out.append(f"<h{lvl}>{_inline_md(m.group(2))}</h{lvl}>")
-            i += 1
-            continue
-        if line.lstrip().startswith(">"):
-            buf = []
-            while i < n and lines[i].lstrip().startswith(">"):
-                buf.append(lines[i].lstrip()[1:].strip())
-                i += 1
-            out.append("<blockquote>" + _inline_md(" ".join(s for s in buf if s)) + "</blockquote>")
-            continue
-        if re.match(r"^[-*]\s+", line):
-            items = []
-            while i < n and re.match(r"^[-*]\s+", lines[i]):
-                items.append("<li>" + _inline_md(re.sub(r"^[-*]\s+", "", lines[i])) + "</li>")
-                i += 1
-            out.append("<ul>" + "".join(items) + "</ul>")
-            continue
-        if re.match(r"^\d+\.\s+", line):
-            items = []
-            while i < n and re.match(r"^\d+\.\s+", lines[i]):
-                items.append("<li>" + _inline_md(re.sub(r"^\d+\.\s+", "", lines[i])) + "</li>")
-                i += 1
-            out.append("<ol>" + "".join(items) + "</ol>")
-            continue
-        para = []
-        while (
-            i < n
-            and lines[i].strip() != ""
-            and lines[i].strip() != "---"
-            and not lines[i].lstrip().startswith(">")
-            and not re.match(r"^(?:#{1,4})\s+", lines[i])
-            and not re.match(r"^[-*]\s+", lines[i])
-            and not re.match(r"^\d+\.\s+", lines[i])
-        ):
-            para.append(_inline_md(lines[i]))
-            i += 1
-        out.append("<p>" + " ".join(para) + "</p>")
-    return "\n".join(out)
-
-
-# 合规文档渲染缓存（0.21.2 审查修复）：登录页为公开高频入口，每次请求读盘+全量正则渲染
-# 会放大 I/O 与 DoS 面。按 (mtime_ns, size) 缓存，部署者更新文件后自动失效。
+# 合规文档渲染缓存：登录页为公开高频入口，每次请求读盘+全量正则渲染会放大 I/O 与 DoS 面。
+# 按 (mtime_ns, size) 缓存，部署者更新文件后自动失效；转发的 `_read_doc_html` 在本模块
+# 调用时刻现取本字典，故测试清空/读取 `web.app._doc_cache` 仍是同一份。
 _doc_cache = {}  # filename -> ((mtime_ns, size), html)
 
 
 def _read_doc_html(filename):
-    """读取仓库根目录的合规文档并渲染为 HTML；缺失/空模板/出错均回退兜底提示。"""
-    if filename not in _DOC_FILES:
-        return "<p>未知文档。</p>"
-    path = os.path.join(_REPO_ROOT, filename)
-    try:
-        st = os.stat(path)
-        key = (st.st_mtime_ns, st.st_size)
-        cached = _doc_cache.get(filename)
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        with open(path, "r", encoding="utf-8") as f:
-            rendered = _render_md(f.read())
-        # 模板未填（只剩注释/空白）时回退中性占位文案，不回显面向编辑者的开发注释
-        if not re.sub(r"<[^>]+>", "", rendered).strip():
-            out = "<p>该文档尚未发布，请联系运营者。</p>"
-        else:
-            out = rendered
-        _doc_cache[filename] = (key, out)
-        return out
-    except Exception as exc:  # 文件缺失/编码异常不应拖垮页面
-        logger.warning("读取合规文档失败 %s: %s", filename, exc)
-        return "<p>文档暂时无法加载，请联系运营者。</p>"
+    """读取并渲染合规文档（实现见 web/render.py）；注入本模块现取的文档根与渲染缓存。"""
+    return _render._read_doc_html(filename, _REPO_ROOT, _doc_cache)
 
 
 def _doc_page(title, body_html, icp_text="", police_text="", base_path="", police_link="https://beian.mps.gov.cn/", description=""):
-    """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
-    base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
-    由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。
-    description：分享/搜索摘要（留空取 site_description() 默认文案）。
+    """合规文档独立页（实现见 web/render.py）；摘要留空时取本模块现读的站点简介默认文案。"""
+    return _render._doc_page(title, body_html, icp_text, police_text, base_path, police_link,
+                             description or site_description())
 
-    （反射型 XSS 防护）：base_path 来自 request.script_root——攻击者可构造
-    形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
-    icp/police 文本与 police_link 均来自 .env，含引号/尖括号时同样破坏 HTML 结构。
-    四者统一
-    html.escape(quote=True)（同时覆盖文本与属性两种上下文）后才拼入模板，
-    转义收敛在本函数内，调用点（含传 request.script_root 的两处）无需各自处理。"""
-    base_path = html.escape(str(base_path), quote=True)
-    icp_text = html.escape(str(icp_text), quote=True)
-    police_text = html.escape(str(police_text), quote=True)
-    police_link = html.escape(str(police_link), quote=True)
-    # 摘要同样来自 .env（可配置），与上面四项同口径转义后才进 content 属性
-    desc_attr = html.escape(str(description or site_description()), quote=True)
-    icp_block = f'<p class="doc-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{icp_text}</a></p>' if icp_text else ""
-    police_block = f'<p class="doc-icp"><a href="{police_link}" target="_blank" rel="noopener"><img src="{base_path}/gongan-beian.png" alt="" width="12" height="14" style="vertical-align:-2px;margin-right:4px"> {police_text}</a></p>' if police_text else ""
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- 站标与主外壳同源：独立页（/terms /privacy）从新标签打开，此前无 icon 而不显示标签页图标 -->
-<link rel="icon" type="image/png" href="{base_path}/favicon.png">
-<link rel="apple-touch-icon" href="{base_path}/favicon.png">
-<title>{title} · 易班自动签到</title>
-<meta name="description" content="{desc_attr}">
-<meta property="og:title" content="{title} · 易班自动签到">
-<meta property="og:description" content="{desc_attr}">
-<style>
-  /* 协议/隐私文档页（Tailwind 默认配色；卡片容器与圆角为结构优化，随图标/圆角体系保留） */
-  /* 独立内联页不引 app.css，字体用系统中文栈 */
-  body {{ font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-         max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75;
-         background: #fafafa; }}
-  .doc-card {{ background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px;
-               padding: 32px 36px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08); }}
-  h1 {{ font-size: 26px; margin-bottom: 8px; }}
-  h2 {{ font-size: 19px; margin-top: 30px; border-left: 4px solid #2563eb; padding-left: 10px;
-       border-radius: 2px; }}
-  h3 {{ font-size: 16px; margin-top: 22px; }}
-  h4 {{ font-size: 15px; }}
-  a {{ color: #2563eb; }}
-  blockquote {{ border-left: 3px solid #d4d4d8; margin: 14px 0; padding: 6px 14px;
-               color: #52525b; background: #fafafa; border-radius: 8px; }}
-  code {{ background: #f4f4f5; padding: 1px 5px; border-radius: 5px; font-size: 0.92em; }}
-  hr {{ border: none; border-top: 1px solid #e4e4e7; margin: 28px 0; }}
-  .doc-back {{ margin-top: 36px; padding-top: 16px; border-top: 1px solid #e4e4e7; }}
-  .doc-icp {{ text-align: center; color: #a1a1aa; font-size: 12px; margin-top: 8px; }}
-</style>
-<script>
-  // 长文档页默认从顶部开始：关闭浏览器滚动位置记忆，页面每次出现（含回退/bfcache 恢复）都回到顶部
-  history.scrollRestoration = 'manual';
-  addEventListener('pageshow', () => window.scrollTo(0, 0));
-</script>
-</head>
-<body>
-<div class="doc-card">
-<h1>{title}</h1>
-{body_html}
-<p class="doc-back"><a href="{base_path}/login">&larr; 返回登录页</a></p>
-</div>
-{icp_block}
-{police_block}
-</body>
-</html>"""
-import child_env  # noqa: E402
-import db  # noqa: E402
-import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
-import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
-import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
-import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
-from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
-from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
-from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯一出处（web 不写字面量）
-from yiban.infra import (  # noqa: E402
-    account_crypto,  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
-    env_io,
-    env_lock,
+# 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
+# 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
+from yiban import (  # noqa: E402
+    config_loader,  # 名册缺省唯一来源（104 §5.3）
+    notify,  # 有自用点，原 F401 豁免已失效
 )
+from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
+
+# 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
+# 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
+from yiban import mail as mailer  # noqa: E402,F401
+from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
+
+# 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用
+from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
+from yiban.infra import (  # noqa: E402
+    account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
+    env_io,
+    env_lock,  # noqa: F401  # 跨进程写锁真源（写路径已入 web/services/env_io.py），保留名字面
+)
+from yiban.mail import (  # noqa: E402
+    config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
+)
+from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
+from yiban.platform import API_AUTH_URL  # noqa: E402,F401
+from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
+
+#: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
+#: 唯一口径在 `yiban.egress.SLOT_MAX`（清单模型的槽位上限），此处只是别名：
+#: 单槽位出口写接口按"下标 + 当前执行体数"两重判定拒绝未被使用的槽位。
+EXECUTOR_INDEX_MAX = yb_egress.SLOT_MAX
 
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
-ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
+ACCOUNTS_DEFAULT = env_io.resolve_path("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
-STATE_DIR_DEFAULT = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-LOG_DEFAULT = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
-ENV_DEFAULT = os.environ.get("YIBAN_ENV_FILE", ".env")
-DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
+# 路径必须读 .env（环境变量优先）——只认 os.environ 时"写进 .env"对 web 进程无效，
+# 会静默落到 /var/log/yiban；同机第二份部署因此与第一份共用状态目录与磁盘外锚点。
+STATE_DIR_DEFAULT = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+LOG_DEFAULT = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
+# ENV_DEFAULT / DB_DEFAULT 也走 resolve_path。只认 os.environ 时，`.env` 里写的值对 web 进程无效。
+# 库路径一侧的后果最直白：引擎开到 `.env` 声明的库，web 开到默认库。同一部署会出现两个库。
+ENV_DEFAULT = env_io.resolve_path("YIBAN_ENV_FILE", ".env")
+DB_DEFAULT = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
 # 模块级路径（gunicorn 走 create_app() 不执行 main()，需在此初始化；main() 用 --config 等参数覆盖）
 ACCOUNTS_FILE = ACCOUNTS_DEFAULT  # 仅作 JSON→SQLite 自动迁移来源（迁移后改名 .bak；users.json 同目录推断，无需单独路径）
 LOG_FILE = LOG_DEFAULT
@@ -300,94 +414,94 @@ ENV_FILE = ENV_DEFAULT
 STATE_DIR = STATE_DIR_DEFAULT
 DB_FILE = DB_DEFAULT
 
-# 普通用户账号的审核状态（2026-08-16 审查轮：原 STATUS_PENDING/ACTIVE/REJECTED 与签到状态码
-# STATUS_* 同名异义（历史遗留），改名为 ACCOUNT_STATUS_* 彻底分离命名空间）
-ACCOUNT_STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
-ACCOUNT_STATUS_ACTIVE = "active"  # 已生效（参与定时签到）
-ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提交）
+# 普通用户账号的审核状态（原 STATUS_PENDING/ACTIVE/REJECTED 与签到状态码 STATUS_* 同名
+# 异义（历史遗留），改名为 ACCOUNT_STATUS_* 彻底分离命名空间）实现见
+# web/services/accounts_data.py，此处以导入区再导出保持 m.ACCOUNT_STATUS_* 可达。
 
 # 软删除保留期（天）：管理员删除的账号进入待删除状态，超期自动彻底清除。
-# 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移（2026-08-15 审查）
+# 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移
 DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
-# 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
-PASSWORD_MIN_LEN = 10
-# 口令"字符类别"单一事实源：四个类别正则按文案顺序排列，与 _PASSWORD_CLASS_LABELS
-# 同序同数。判定语义是"命中类别数 >= _PASSWORD_MIN_CLASSES 即通过"——符号算一类，不额外要求含符号。
-# 前端三个模板各内联一份同名同序的 PW_CLASS_PATTERNS（不跨文件共享脚本），由
-# tests/test_batch14_fixes_0829.py 的元测试从模板源码提取后与本元组逐字比对，任一侧漂移即红。
-_PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
-_PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
-# 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
-_PASSWORD_MIN_CLASSES = 2
-# 统一口径文案（前后端同句）：旧写法一处把下限写成易被读成"三类起"的中文比较词、另一处
-# 简写得像"数量恰好等于下限"。此后统一用"…中的至少两类"这一无歧义说法。
-# 2026-09-07 起大小写合并显示（文案精简）；判定仍按上方四类（大写/小写/数字/符号各自独立），
-# 故 _PASSWORD_CLASS_LABELS 保持四元组——管理员"至少三类"消息（L1310）必须完整列举四类。
-_PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
-_PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
+# 密码策略（至少 10 位且包含大写/小写/数字/符号中至少两类，只对新建/修改生效）及其
+# 主管理员单独提档的两档下限实现见 web/services/accounts_data.py，此处以导入区再导出
+# 保持 m.PASSWORD_MIN_LEN / m._PASSWORD_* / m.ADMIN_PASSWORD_MIN_* 可达。
 # 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
-SCRYPT_METHOD = "scrypt:65536:8:1"
+# 已随安全域搬入 web/security.py，此处以导入区再导出保持 m.SCRYPT_METHOD 可达。
 
-# 账号编辑时识别码清空哨兵值（收到该值 = 显式删除设备识别码字段）
-CLEAR_SENTINEL = "__clear__"
+# 账号编辑时识别码清空哨兵值与表单折算（CLEAR_SENTINEL / fold_phone_code）唯一真源
+# 在 web/services/accounts_data.py，上方导入区再导出保 m.CLEAR_SENTINEL 名字面；
+# 折算必须发生在进 SET 之前——哨兵若在进 SET 前被摘掉，"清除"就成了库里无感的空操作。
 
-# 单次批量操作上限（2026-08-29 由 100 收紧为 10）：批量通过/删除/设管理员/重置密码
+# 单次批量操作上限：批量通过/删除/设管理员/重置密码
 # 与「清除已注销用户」共用同一上限——被盗管理员会话即使一个请求，一次最多影响 10 条，
 # 降低误操作与滥用影响范围。三处接口共用本常量，防单处调整后其他路径遗漏。
 BATCH_OP_LIMIT = 10
 
-# 签到窗口默认值（06:30 ~ 07:50）：可被 .env 的 YIBAN_SIGN_START/END 覆盖（见 _sign_window）
-SIGN_START = (6, 30)
-SIGN_END = (7, 50)
-
 
 def _sign_window():
-    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认）。
+    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认，实现见 web/services/signstatus.py）。
 
-    解析委托 `yiban.window.parse_window`——与引擎（signin）同一份口径，
-    避免"网页显示 07:50、引擎按别的值判定"这类同概念两套实现。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
     """
-    start, end, _invalid = yb_window.parse_window(read_env(ENV_FILE))
-    return start, end
-
-# 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
-# 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
-_dummy_pw_hash = None
+    return _signstatus._sign_window(ENV_FILE, read_env)
 
 
-def _constant_time_dummy(password):
-    """对不存在的账号执行一次与真实校验等价的 scrypt 比对（耗时拉平）。"""
-    global _dummy_pw_hash
-    if _dummy_pw_hash is None:
-        _dummy_pw_hash = generate_password_hash("dummy-placeholder", method=SCRYPT_METHOD)
-    check_password_hash(_dummy_pw_hash, password)
+def _in_run_period(bounds, now=None):
+    """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
 
-
-# 可信第一跳代理（nginx 反代）：仅当请求来自这些地址时才信任转发头。
-# 生产部署：yiban-web 监听 127.0.0.1，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
-# 覆盖设置（客户端伪造的 XFF 会被丢弃），故此处读取的 XFF 即真实客户端 IP。
-TRUSTED_PROXIES = ("127.0.0.1", "::1")
-
-# 仅回环地址：客户端伪造的 XFF 会被丢弃，故此处读取的 XFF 即真实客户端 IP。
-# 若改为非回环地址，XFF 可被伪造绕过速率限制——**不要**引入配置项放开这里。
-TRUSTED_PROXIES = ("127.0.0.1", "::1")
-
-
-def _stale_idx_guard(acc, data):
-    """防错位校验（2026-08-20 对抗性审查 P1）：mutation 按 idx 寻址时，客户端
-    携带的 phone 与服务端 idx 解析结果不一致 → 账号列表在视图快照后已漂移
-    （并发删除/移动等），放行会静默操作错误对象。返回 True 表示错位，调用方
-    应返回 409 引导刷新。未携带 phone 的请求（旧客户端/测试）保持兼容不校验。
-
-    比对前双侧 _mask_phone 归一：/api/accounts 出站即脱敏（mask_account），
-    浏览器回传的是 138****8000 形态；_mask_phone 幂等（含 * 原样返回），直连
-    API 发全号的旧客户端/测试同样归一可比；伪造他人号码仍因不等被拦。
+    门与钟点判定的口径见 web/services/signstatus.py；两个判定都按调用时刻现取本模块的
+    （`_in_sign_window` 与 `_day_off_reason` 在既有测试中被直接打桩）。
     """
-    phone = data.get("phone") if isinstance(data, dict) else None
-    if phone is None:
-        return False
-    return _mask_phone(str(phone).strip()) != _mask_phone(str(acc.get("phone", "")))
+    return _signstatus._in_run_period(bounds, _in_sign_window, _day_off_reason, now)
+
+
+def _day_off_reason(now=None):
+    """今天此刻是否被周末门/一键暂停挡下 → 原因串（实现见 web/services/signstatus.py）。
+
+    与引擎读**同一份 `.env` 真值**：`.env` 的键值按调用时刻现读后注入（原先落回
+    `os.environ`，`.env` 里的急停/周末开关在 web 进程里恒不生效——引擎真暂停、界面说
+    "排队待签"）。`.env` 路径与读取器都会被测试与 `--config` 改写，故按调用时刻现取。
+    """
+    return _signstatus._day_off_reason(read_env(ENV_FILE), now)
+
+
+def _executors_window():
+    """执行体接口口径的**有效签到窗口**（实现见 web/services/executor_env.py）。
+
+    `.env` 路径与窗口解析器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
+    """
+    return _executor_env._executors_window(ENV_FILE, _sign_window)
+
+
+# ---------------------------------------------------------------------------
+# 现场实测单账号耗时（仅主管理员；**会真实访问易班一次**）
+# ---------------------------------------------------------------------------
+#: 两次实测之间的全局冷却（秒）；可被 `.env` 的 YIBAN_MEASURE_COOLDOWN 覆盖。
+MEASURE_COOLDOWN_SEC = 600
+# 实测状态文件的路径/读写/冷却判定与可实测账号的挑选实现见 web/services/measure.py；
+# 本模块的 `_measure_state_path` 与 `_write_measure_state` 转发时现取本模块的
+# STATE_DIR 与 _atomic_write（测试会赋值 `web.app.STATE_DIR`、在 `web.app` 上打桩
+# `_atomic_write`），其余三个名字以导入区再导出保持 m.* 可达。
+def _measure_state_path():
+    """实测冷却状态文件路径（实现见 web/services/measure.py）。"""
+    return _measure._measure_state_path(STATE_DIR)
+
+
+def _write_measure_state(path, payload):
+    """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
+    return _measure._write_measure_state(path, payload, _atomic_write)
+
+
+# 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
+# web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、
+# 注册等路径经 m.* 取用；本模块的 verify_admin 转发包装在服务层内部按同一函数取用）。
+
+# 回环谓词（`_is_loopback_addr`）、转发头信任开关（`_forwarded_trust_enabled`）与真实
+# 客户端出口（`_client_ip`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达。
+
+
+# 防错位校验（`_stale_idx_guard`）实现见 web/services/accounts_data.py，此处以导入区
+# 再导出保持 m.* 可达。
 
 
 def _json_body():
@@ -405,60 +519,69 @@ def _json_body():
     return data
 
 
-def _client_ip():
-    """真实客户端 IP（限速/锁定/审计按真实 IP 隔离，防反代后全站共享同一桶）。
-
-    - 反代场景：remote_addr 为代理地址且第一跳可信 → 取 X-Forwarded-For 首个值（nginx 已覆盖，不可伪造）；
-    - 直连场景（无转发头/首跳不可信）：回退 remote_addr。
-    注意：本函数假设应用不直接暴露公网（17892 仅监听回环 + 防火墙放行 22/443）。
-    """
-    r = request.remote_addr or "?"
-    if r in TRUSTED_PROXIES:
-        xff = request.headers.get("X-Forwarded-For", "")
-        first = xff.split(",")[0].strip() if xff else ""
-        if first and first != r:
-            return first
-    return r
+# 真实客户端出口（`_client_ip`）见 web/security.py，此处以导入区再导出保持 m.* 可达。
 
 
-def _delete_grace_remaining(deleted_at):
-    """注销冷却剩余秒数：deleted_at + 宽限期 − now；非冷却中（无时间/已过期/解析失败）返回 0。
-
-    登录即恢复（2026-08-16 用户裁决）与已注销用户视图共用此判定。
-    兼容两种格式：主格式 strftime("%Y-%m-%d %H:%M:%S")（新写入），存量 ISO 格式自动回退。
-    """
-    if not deleted_at:
-        return 0
-    try:
-        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        try:
-            d = datetime.fromisoformat(str(deleted_at))
-        except (ValueError, TypeError):
-            return 0
-    remain = (d + timedelta(days=DELETE_GRACE_DAYS)) - clock.now()
-    return remain.total_seconds() if remain.total_seconds() > 0 else 0
+# 注销冷却剩余（`_delete_grace_remaining`）与注销宽限期常量（DELETE_GRACE_DAYS）见
+# web/services/accounts_data.py，此处以导入区再导出保持 m.* 可达。
 
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
-DEFAULT_ACCOUNT_GAP_MAX = 10
+# 账号间隔缺省（秒）：住在 config/registry.json，代码不再写第二份字面量
+DEFAULT_ACCOUNT_GAP_MAX = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
 
-# 登录失败限速：同一 IP 连续失败超过阈值后锁定
-LOGIN_MAX_FAILS = 5
-LOGIN_LOCK_SECONDS = 300
-# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱 5 次锁定
+# 登录失败限速：同一 IP 连续失败超过阈值后锁定（锁定秒数 LOGIN_LOCK_SECONDS 随安全域
+# 搬入 web/security.py，此处以导入区再导出保持 m.LOGIN_LOCK_SECONDS 可达）
+LOGIN_MAX_FAILS = 10
+# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱的失败阈值
 # 只约束单账号，攻击者可换邮箱继续；命中恢复即接管该账号与其易班凭据）
 RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
-# 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
-LOGIN_FAIL_NOTIFY = 3
+# 连续失败告警阈值：达到后通知管理员（每轮锁定只告警一次）。阈值与锁定阈值
+# （LOGIN_MAX_FAILS）同值时，告警恰好落在"锁定"那一刻——本人反复输错口令是最常见的
+# 失败来源，阈值压低只会把误报刷满告警通道；真攻击由边缘限速与逐次 scrypt 时延承担。
+LOGIN_FAIL_NOTIFY = 10
+# 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
+# 只用于告警与冷却判定，不锁管理员。
+SENSITIVE_PW_FAIL_WINDOW = 900
+# 口令门失败告警阈值与冷却布防起点（次），与 LOGIN_FAIL_NOTIFY 各取各的值：
+# 登录侧抬高阈值是为了少发误报，而本阈值同时是**同一窗口内允许的 scrypt 尝试次数上界**
+# （达阈值即布防冷却，见 _sensitive_pw_denied），跟着一起抬高等于把门禁预算放宽数倍。
+# 取值沿用早期版本的 3，此后两侧各自调参、互不牵连。
+SENSITIVE_PW_FAIL_NOTIFY = 3
+# 敏感口令门禁的两个默认窗口（.env 可覆盖，唯一解析处见 web/security.py 的
+# _sensitive_gate_params）：PW_CONFIRM_TTL_DEFAULT 是豁免窗口（本会话在 TTL 秒内
+# 复核过口令、且出口 IP 未变 → 配置类动作免再输口令），PW_CONFIRM_TTL_MAX 是硬钳
+# （豁免窗口比会话本身还长就等于取消门禁）；PW_CONFIRM_COOLDOWN_DEFAULT 是独立计数
+# 达阈值后**一切需要复核的写操作**（含正确口令）一律拒绝的时长。三个常量本体随安全
+# 域搬入 web/security.py，此处以导入区再导出保持 m.* 可达。
+# 门禁拒绝文案（按状态码取）：403 是"设置未生效"（系统开关/执行体写沿用），
+# 400 是"操作已取消"（高危二次鉴权沿用）。两处历史契约都不动。
+PW_DENY_TEXT = {400: "当前密码不正确，操作已取消", 403: "口令校验未通过，设置未生效"}
+# 「没提交口令」与「口令输错」必须分开：前者是调用方还没问用户要口令（前端应弹口令框
+# 后重试），后者是用户真的输错了（应显示"不正确"）。共用一句"密码不正确"会让前端无法
+# 区分这两种处置，也让运维误以为自己的口令被改了。状态码两档与上面完全一致，
+# 只有 error 文案与 reason 不同。
+PW_MISSING_TEXT = {400: "此操作需要输入当前密码，操作已取消",
+                   403: "需要输入当前口令，设置未生效"}
+# 给前端的机器可读口径（前端不要靠比对中文文案分支）：
+# password_required → 收口令后重试；password_incorrect → 提示输错并计数。
+PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
+# 不可逆操作的"倒计时后确认"凭据（请求体 `confirm_delay_ack`，JSON 布尔）。
+# 非 full 档下它替代口令成为主要摩擦：后端只认 `true` 这一个值（严格判等，字符串
+# "true"/数字 1 都不算——这是给前端的确认凭据，宽松真值判定等于把校验交给输入形态），
+# 且**不校验秒数**（前端可被绕过；真正的兜底是配额 + 事后告警 + 审计链）。
+# 拒绝文案按所在路由的 deny_status 取，与口令门两档同构；reason 单独一档，
+# 前端据此弹倒计时框而不是口令框。
+PW_DELAY_ACK_TEXT = {400: "此操作不可逆，请在倒计时结束后确认，操作已取消",
+                     403: "此操作不可逆，请在倒计时结束后确认，操作未执行"}
+PW_DELAY_ACK_REASON = "delay_ack_required"
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
 
-# IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留：防公网扫描器多 IP 打爆内存
-_IP_STORE_LIMIT = 10000
-_IP_STORE_MAX_AGE = 3600
+# IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留实现见 web/security.py
+# （`_ip_store_trim` 按它们判定），此处以导入区再导出保持 m.* 可达。
 
 # API 请求限速（防脚本轰炸）：每 IP 窗口内最多 RATE_MAX 次 /api/* 请求
 RATE_WINDOW = 10  # 窗口（秒）
@@ -478,28 +601,71 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 EXPORT_WINDOW = 60  # 窗口（秒）
 EXPORT_MAX = 6  # 窗口内最大导出次数
 
-# 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
-# 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
-VERIFY_MAX = 6  # 每用户窗口内最大验证尝试次数（正常添加流程远用不到）
-VERIFY_WINDOW = 600  # 窗口（秒）= 10 分钟
+# 账号详情读取限速：/api/accounts/<idx>/detail 的 idx 从 0 递增即可整库枚举，
+# 且它是列表接口之外唯一回传明文口令/完整手机号的面。列表侧已脱敏、编辑框每次
+# 只取一行，故取"一个会话一分钟 60 次"——等于每秒点开一次编辑框且整整一分钟
+# 不停，人类运维到不了；对照 EXPORT_WINDOW/EXPORT_MAX 同量级的"整份数据出口"口径。
+DETAIL_WINDOW = 60  # 窗口（秒）
+DETAIL_MAX = 60  # 窗口内最大详情读取次数（超限 429）
 
-# 账号验证认证失败冷却（2026-09-04 生产复盘）：同一手机号窗口内认证失败达到
+# 个人提交预检「号码在册」命中计数限速（每会话 DUPCHECK_MAX 次 / DUPCHECK_WINDOW 秒）。
+# 预检判重打在全站账号表上、且早于任何真实外呼，等于给"已登录且名下无未删账号"的
+# 会话一个零成本零留痕的定向确认面：全局 IP 限速（60 次/10 秒 ≈ 21600 次/时）比
+# 详情/导出等同档面宽几个数量级，压不住定向确认。只计「判重命中」——未重号的正常
+# 提交不吃额度、不写这行审计，400/成功语义与文案不动；超限改答 429，不再继续
+# 确认。按会话计数与详情限速同口径（校园网出口高度共享，按 IP 会把共用出口的正常
+# 用户互相挡死）。
+DUPCHECK_WINDOW = 60  # 窗口（秒）
+DUPCHECK_MAX = 5  # 窗口内最大判重命中数（超限 429）
+
+# 只读面聚合审计：同一管理员对同一资源类在一个窗口内只按档位落几行，detail 带
+# 累计次数与脱敏目标摘要。逐请求一行会把审计表变成"被盗会话的免费打字机"——
+# 拒绝面已经实测过这个洞（拿 429 当产出），读取面若做成逐条就是换个口子重开。
+# 窗口取 1 小时：日志页 10s 轮询是页面心跳而非取数，短窗口会让心跳自己刷满
+# 审计表；档位（首次必落 + 10/50 两个批量档 + 此后每 200 次）保证"读一次也留痕、
+# 读五十行得见累计"，最坏情形（日志页常开一整天）约百行，远小于逐条口径。
+READ_AUDIT_WINDOW = 3600  # 聚合窗口（秒）= 1 小时
+READ_AUDIT_LADDER = (1, 10, 50)  # 窗口内累计次数落在这些档位时各写一行
+READ_AUDIT_EVERY = 200  # 越过最高档后每多少次追加一行
+READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的 detail 本身截 200 字）
+
+# 告警通道 GET 里仅主管理员可读的字段：两本账的**当日余量**。
+# 上限（daily_max / urgent_daily_max）与节流（cooldown）刻意不在此列——它们是规则
+# 配置，注册管理员看不到就无法判断"为什么没收到告警"，而余量才是拆报警器前的勘察面。
+_NOTIFY_QUOTA_HIDDEN_KEYS = ("daily_remaining", "urgent_daily_remaining")
+
+# ---- 推送/邮件配置的输入上限（写侧唯一拦点）----
+# 为什么要有上限：本项在裸机直连形态下没有 nginx 的请求体/头长度兜底，超长值会被
+# 原样加密进 .env，并在每次推送/发信时带出；条数不设限则一次请求就能把 .env 撑大。
+# 取值依据（不是拍脑袋）：Server酱 SendKey 是"定长前缀 SCT + 固定宽度主体"，
+# 实测 35 字符 → 上限取 64（约一倍余量），下限 8 只为挡明显占位串；自定义通知地址
+# 按 URL 的实际长度上限取 2048；告警收件人与 SMTP 备选条目都是"管理员级"的小列表
+# （当前部署各 1~3 条），上限取 10 足够真实使用且不会被误触。
+NOTIFY_SENDKEY_MIN_LEN = 8
+NOTIFY_SENDKEY_MAX_LEN = 64
+NOTIFY_URL_MAX_LEN = 2048
+MAIL_ADMIN_TO_MAX = 10
+MAIL_SMTPS_MAX = 10
+
+# 账号验证尝试限频：每用户窗口内网络验证次数上限。
+# 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
+# 常量本体（VERIFY_MAX / VERIFY_WINDOW）随安全域搬入 web/security.py（判定在
+# `_verify_attempt_allowed`），此处以导入区再导出保持 m.* 可达。
+
+# 账号验证认证失败冷却：同一手机号窗口内认证失败达到
 # 阈值后临时拒绝再验证。密码错误属确定性失败，重复验证每次都是一次真实易班
 # 登录，连续少量错误易班侧即返回「错误尝试过多」锁定账号（生产实测 6 次即锁），
 # 故按「被锁定对象 = 易班账号 = 手机号」设冷却；仅限 web 验证路径，探针与
 # cron 签到不受影响。
-VERIFY_FAIL_MAX = 2  # 窗口内第 2 次认证失败即触发冷却
-VERIFY_FAIL_WINDOW = 900  # 失败计数窗口（秒）= 15 分钟
-VERIFY_FAIL_COOLDOWN = 600  # 冷却时长（秒）= 10 分钟
-# 确定性认证失败特征（与 signin 登录流程的实际文案对应：usersure reUrl error →
-# 「登录失败（账号或密码错误）」，锁定 → msgCN「错误尝试过多…」）
-VERIFY_FAIL_AUTH_KEYWORDS = ("账号或密码错误", "密码错误", "错误尝试过多")
+# 三个阈值与失败特征词本体（VERIFY_FAIL_MAX / VERIFY_FAIL_WINDOW /
+# VERIFY_FAIL_COOLDOWN / VERIFY_FAIL_AUTH_KEYWORDS）随安全域搬入 web/security.py
+# （判定在 `_record_verify_failure`），此处以导入区再导出保持 m.* 可达。
 VERIFY_FAIL_COOLDOWN_MSG = (
     "该手机号验证失败次数过多，已被临时限制验证，请约 10 分钟后再试；"
     "连续密码错误会导致易班账号被锁定，如密码有误请先在易班 APP 重置。"
 )
 
-# 外呼校验的**全局**并发上限（A4，2026-09-15）：上面两条配额都是「按会话用户」与
+# 外呼校验的**全局**并发上限：上面两条配额都是「按会话用户」与
 # 「按手机号」，覆盖不到"多个账号同时校验"这个维度。实测 8 个并发校验即占满
 # gunicorn 的 8 个线程 → 整站约 15 秒完全无响应（/api/clock 探针在饱和期无响应）。
 # 这里限制同时在跑的外呼条数，**超出立即失败而非排队**——排队会把线程继续钉住，
@@ -507,13 +673,12 @@ VERIFY_FAIL_COOLDOWN_MSG = (
 VERIFY_CONCURRENCY_MAX = 2
 VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 
-# 异步校验任务（A4 第二段）：实现已收进 yiban/attempt/jobs.py（调度核心行为），
-# 这里保留路由与测试按原口径引用的两个常量，其余在模块内自用。
+# 异步校验任务（A4 第二段）：实现已收进 yiban/attempt/jobs.py（调度核心行为）。
 # 待办（pending + running）上限说明：每个任务占一个后台线程，而外呼席位只有
 # VERIFY_CONCURRENCY_MAX 个——不设上界时并发提交会堆出大量等席位的线程。
 # 这是 503「校验繁忙」在异步模式下的**可达来源**（席位满由后台排队消化，
-# 不拒绝用户；待办队列满才拒绝）。
-VERIFY_JOBS_MAX_PENDING = verify_jobs.MAX_PENDING
+# 不拒绝用户；待办队列满才拒绝）。待办上限常量本体已随校验队列搬入
+# web/services/verify_queue.py，此处以导入区再导出保持 m.* 可达。
 # 任务终态（查询/取消端点判定用）
 VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 
@@ -522,27 +687,33 @@ VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
 DELETE_COOLDOWN_SEC = 60
 
-# 会话绝对过期上限默认天数（2026-08-27 P2-5）：实际值在 create_app 内按
+# 会话绝对过期上限默认天数：实际值在 create_app 内按
 # YIBAN_SESSION_ABS_DAYS 解析并钳制到 [1,30]；此处为 create_app 前引用兜底。
 SESSION_ABS_DAYS_DEFAULT = 7
 SESSION_ABS_TTL_SECONDS = SESSION_ABS_DAYS_DEFAULT * 86400
 DELETE_MAX_REQUESTS_PER_IP = 5
-# 高危删除操作冷却（2026-08-29 被盗号滥用面加固）：同一管理员在窗口内最多执行
+# 高危删除操作冷却：同一管理员在窗口内最多执行
 # ADMIN_DELETE_MAX 次删除类高危操作（批量删除/彻底清除/完全删除），防被盗会话
 # 快速反复删除用户并刷告警邮件。与注销冷却同语义，超限 429 且不暴露冷却参数。
+# 上限按合法批量清理的规模定（连续清理若干垃圾账号是常见运维动作，阈值卡太紧会误伤），
+# 防脚本滥用的作用由"窗口内次数"本身承担。
 # .env 可调（YIBAN_ADMIN_DELETE_COOLDOWN_SEC / YIBAN_ADMIN_DELETE_MAX，0=关闭）。
 ADMIN_DELETE_COOLDOWN_SEC = 60
-ADMIN_DELETE_MAX = 5
-# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐（7 天，安全审查 2026-08-16）；
-# 与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
-# 2026-08-28 审查 C-1：原实现硬编码 7，与 db.SOFT_DELETE_RETENTION_DAYS（账号保留期
-# 唯一事实源）及 db.purge_deleted_users 默认值形成三份互不相干的"7"——运维按注释去调
-# SOFT_DELETE_RETENTION_DAYS 时，账号会被提前物理清除而恢复宽限期仍按 7 天，用户点
-# 恢复会看到"成功"实际账号已消失（静默数据丢失）。现统一取同一常量（**唯一事实源**，
-# 不要再写字面量），使两处口径无法各自漂移。
-DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
+ADMIN_DELETE_MAX = 20
+# 凭据改写类高危操作（改写他人易班凭据/重置他人口令/换推送密钥）**独立额度**，
+# 与删除类分开计数：删除额度按"批量清理垃圾账号"的规模定，
+# 凭据批量重绑（换号、换密码）是另一条合法高频运维动作——共用一套计数时，重绑
+# 几下就把删除预算吃光，反过来删几个账号也会把重绑撞进 429。既有
+# YIBAN_ADMIN_DELETE_* 两键的语义逐字未动，本组是**新增键**：
+# .env 可调（YIBAN_ADMIN_CREDS_COOLDOWN_SEC / YIBAN_ADMIN_CREDS_MAX，0=关闭）。
+ADMIN_CREDS_COOLDOWN_SEC = 60
+ADMIN_CREDS_MAX = 20
+# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐，与 db.purge_deleted_users
+# 默认一致；已注销用户视图按此计算剩余天数。常量本体（取 db.SOFT_DELETE_RETENTION_DAYS
+# ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
+# web/services/accounts_data.py，此处以导入区再导出保持 m.DELETE_GRACE_DAYS 可达。
 
-# 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底；2026-08-31 口径修订）：
+# 容量上限（注册/使用人数超负载兜底）：
 # 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
 # 账号 = 至少持有 1 个非删除账号的活跃注册用户，上限默认 200（一人一号 ≈ 200 活跃使用者，
 #   调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
@@ -550,7 +721,51 @@ DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 DEFAULT_MAX_USERS = 500
 DEFAULT_MAX_ACCOUNTS = 200
 
-# 自选时间片切换冷却（2026-08-15 用户反馈 → 弹性冷却）：
+# ---- 设置项档位（`POST /api/settings` 权限判定的**唯一事实源**）----
+# 分档判据是「影响半径 × 能否造成静默漏签」，不是"看起来危不危险"：
+#   A 档（`MASTER_ONLY_KEYS`）一次改动就波及全站签到或直接拆掉安全闸门——周末开关、
+#     签到窗口与首尾裁切决定"今天到底签不签得到"，随机延迟与容量上限决定"多少账号被
+#     挤出窗口"，account_verify / probe_* 会让服务器对**全站账号**发起真实易班登录。
+#     故仅主管理员可写，且值真变化时必须当次输口令（短时豁免不适用）+ 变更告警。
+#   B 档（`GATED_KEYS`）只改排序风格与自选权，出错有 A 档参数兜底，故任意管理员可写，
+#     值真变化时过同一个口令门禁但允许豁免。
+# 唯一的例外是 `global_pause`：0→1「急停」任意管理员都能做（当次口令 + 占用高危额度 +
+# 紧急告警），1→0 恢复仍仅主管理员——把"先止损"的权力留在在场每个人手里，把"放开"的
+# 权力收在主管理员手里。
+# 新增设置键时必须改这里而不是在路由里再列一遍键名：此前 403 清单只写在 handler 内，
+# 与前端各页自己的收控件清单两处各写一遍、必然漂移（测试里的元测试负责比对这两份）。
+#
+# 逐键复核（2026-09-28 用户判据：**在不当时间——窗口前几秒或窗口内——改它，能不能
+# 静悄悄把签到序列搞炸？能，就留口令门**；不能的仅剩"只增摩擦"的键）：
+#   留门（能静默搞炸，或属安全网本身）：
+#     sign_window / window_edge_sec / edge_front_sec / edge_back_sec
+#       ——窗口改窄或首尾裁切吃光有效窗口 ⇒ 当天整批账号静默跳过；
+#     sunday_sign / saturday_sign —— 当天整天空签且不报错（面板会显示休息，但没人盯着看）；
+#     start_delay_max / gap_max —— 延迟或间隔 × 账号数超出窗口 ⇒ 后段账号排队到最后全落空；
+#     account_verify / registration_pause —— 关验证/重开注册 ⇒ 未验证的批量账号涌入主链
+#       对易班发起真实登录 ⇒ 平台风控封号（§5.2 明列的用户面合规事故）；
+#     probe_enable / probe_time / probe_interval —— 探针是发现账号异常的眼睛，改坏即
+#       静默失去监测（与 SMTP 条目同属"安全网本身"，故同判据留门）；
+#     global_pause 0→1 —— 全站停签（见下）。
+#   仅摩擦、按判据可以放开（本次刻意不动：这三个键半年改一次，放开要连前端面板的收控件
+#   一起改，收益不抵新增面；若日后摩擦真的咬人再动）：
+#     max_users / max_accounts —— 只影响**新提交**的配额判定（有明确报错），
+#       不触碰已排定的签到序列，改小也不会让在册账号掉队。
+MASTER_ONLY_KEYS = frozenset({
+    "sign_window", "window_edge_sec", "edge_front_sec", "edge_back_sec",
+    "sunday_sign", "saturday_sign", "registration_pause",
+    "start_delay_max", "gap_max", "max_users", "max_accounts",
+    "account_verify", "probe_enable", "probe_time", "probe_interval",
+    # 健康报告发送时刻/星期：与探针同属"安全网本身"——把时刻改到没人看的钟点、
+    # 或把星期改到别的一天，报告照发但看不见，静默失去周期性证据（同判据留门）。
+    "health_report_time", "health_report_weekday",
+})
+GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref"})
+# `global_pause` 刻意不进 `MASTER_ONLY_KEYS`：它是 A 档的唯一例外，权限按**变更方向**
+# 分流（0→1 急停人人可做、1→0 恢复仅主管理员），故单独用这个键名判方向。
+GLOBAL_PAUSE_KEY = "global_pause"
+
+# 自选时间片切换冷却（弹性冷却，非固定节流）：
 # 60 秒窗口内前 TIME_PREF_COOLDOWN_FREE 次切换完全自由（浏览式"全点一遍再定"属正常行为）；
 # 超出后冷却递增：基础 × 2^(超限次数)，封顶 TIME_PREF_COOLDOWN_MAX（持续高频才被压制）。
 # 高频切换本质是自我惩罚（updated_at 变晚 → 先到先得排后），冷却只为防连点/防刷屏噪音。
@@ -560,7 +775,7 @@ TIME_PREF_COOLDOWN_FREE = 20        # 60 秒窗口内自由切换次数（覆盖
 TIME_PREF_COOLDOWN_MAX = 300        # 弹性封顶（秒）
 TIME_PREF_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
-# 暂停签到冷却（2026-08-16 调整）：恢复不受限；暂停采用弹性冷却——
+# 暂停签到冷却：恢复不受限；暂停采用弹性冷却——
 # 60 秒窗口内前 PAUSE_COOLDOWN_FREE 次完全自由（好奇地暂停/恢复/再暂停不会被误杀），
 # 超出后冷却递增（基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX）。
 # 防脚本刷审计/状态显示抖动，但不惩罚正常手快用户。0=关闭。
@@ -574,15 +789,19 @@ PAUSE_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 # 一次性域名黑名单的字面匹配；限 ASCII 后此类注册直接被格式校验拦截
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$", re.ASCII)
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
-# 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
-PHONE_RE = re.compile(r"^1\d{10}$")
+# 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）常量已随
+# 账号数据族搬入 web/services/accounts_data.py，此处以导入区再导出保持 m.PHONE_RE 可达。
 
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
-SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 _spawn_signin docstring
+SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring
 
-# 日志格式（与 signin.py 相同）
+# 日志行可见性与行正则（`SIGN_LOG_RE`）的实现见 web/services/logs.py：两者在导入区
+# 再导出，`web.app.<名字>` 的取用面不变。
+# 日志格式（与 signin.py 相同）：
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
+# logger 名允许点分（`yiban.client` / `yiban.platform` …）：只认 `(\w+)` 的正则匹配不到
+# 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）会整行被丢弃，日志页只剩
+# 汇总与结果。
 
 # 签到状态码与图标/文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
 # 历史上本文件另定义了一份同名常量与 STATUS_ICON/STATUS_TEXT，与 signin 侧各自漂移
@@ -604,85 +823,17 @@ STATUS_ICON = yiban_status.ICON
 STATUS_TEXT = yiban_status.TEXT
 
 
-def _cred_paused_phones():
-    """处于「账密故障暂停」（熔断/半开试探中）的手机号集合，供设置页容量拆解展示。
-
-    数据源：STATE_DIR/cred-state.json（signin 维护，{phone: {fail_days, last_fail,
-    paused_since, probe_date}}）。判定口径与 signin 一致：`paused_since` 非空即暂停中。
-    **必须容错**：该文件由签到进程按"无暂停=文件不存在"语义维护，随时可能缺失、被删或
-    半写；设置页不能因为一个可选状态文件读不出来就 500，故一切异常都退化为空集合
-    （展示层显示 0，判定逻辑不受影响——本函数只服务显示，绝不参与配额判定）。
-    utf-8-sig 容错 Windows 手工编辑留下的 BOM（与 signin._load_cred_state 同口径）。
-    """
-    data = cred_state.read()
-    if not data:
-        return set()
-    return {
-        str(phone)
-        for phone, rec in data.items()
-        if isinstance(rec, dict) and str(rec.get("paused_since", "") or "").strip()
-    }
-
-
-def clear_fuse_pause(phone):
-    """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
-
-    经 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）。原实现自己读整个
-    文件、删一条、再整体写回且**完全不持锁**：与签到进程收尾保存并发时，按自己的
-    读取结果重写会抹掉对方写入的其他账号记录。文件不存在时无需清除，
-    静默返回——用户每次编辑账号都会走到这里，按 I/O 失败告警会刷屏。
-    """
-    try:
-        cred_state.clear(phone)
-    except Exception as e:
-        # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
-        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]",
-                       _mask_phone(phone), e)
-
-
-def clear_fuse_on_cred_change(old_phone, old_password, clean):
-    """仅凭据（密码/手机号）实际变更时清除熔断计数；只改备注/状态等不清。
-
-    此前任意编辑都触发 clear_fuse_pause → fail_days 清零 → 熔断永不跳闸。
-    改绑清旧号条目（账号主体已迁移），改密清当前号条目（立即恢复签到资格）。
-    """
-    if old_phone != clean["phone"]:
-        clear_fuse_pause(old_phone)
-    if clean["password"] != old_password:
-        clear_fuse_pause(clean["phone"])
+# 账号状态族（`load_sign_state` / `_cred_paused_phones` / `clear_fuse_pause` /
+# `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：前三个与凭据熔断清理族在
+# 导入区再导出，`load_sign_state` 在下方转发（需注入本模块持有的 STATE_DIR）。
 
 
 def load_sign_state(date_str=None):
-    """读取按日结构化状态文件：{phone: {status, message, time, task}}。
+    """读取按日结构化状态文件（实现见 web/services/logs.py）。
 
-    缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
-    覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
-    两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
+    状态目录按调用时刻现取本模块的 `STATE_DIR`（可被 `--config` 等参数覆盖）。
     """
-    date_str = date_str or clock.now().strftime("%Y-%m-%d")
-    path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
-    try:
-        # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
-        if isinstance(data, dict) and data:
-            return data
-    except (OSError, ValueError):
-        pass
-    # 回退：sign-daily（旧版符号 ✅/❌/➖）→ 状态码
-    daily_path = os.path.join(STATE_DIR, f"sign-daily-{date_str}.json")
-    try:
-        with open(daily_path, encoding="utf-8-sig") as f:
-            daily = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(daily, dict):
-        return {}
-    sym_map = {"✅": STATUS_SUCCESS, "❌": STATUS_FAILED, "➖": STATUS_NO_TASK}
-    return {
-        phone: {"status": sym_map.get(sym, STATUS_PENDING), "message": "", "task": "default"}
-        for phone, sym in daily.items()
-    }
+    return _logs_svc.load_sign_state(STATE_DIR, date_str)
 
 logger = logging.getLogger("web")
 
@@ -690,201 +841,76 @@ logger = logging.getLogger("web")
 # ---------------------------------------------------------------------------
 # 签到日志解析
 # ---------------------------------------------------------------------------
-_LOG_TAIL_BYTES = 2 * 1024 * 1024  # 日志倒读上限 2MB（约 2 万行）
-
-
-def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
-    """从文件尾部读取最多 max_bytes 的完整文本行：大日志避免整读入内存。"""
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return []
-    try:
-        with open(path, "rb") as f:
-            if size > max_bytes:
-                f.seek(size - max_bytes)
-                f.readline()  # 丢弃首个不完整行
-                raw = f.read()
-            else:
-                raw = f.read()
-    except OSError:
-        return []
-    return raw.decode("utf-8", errors="replace").splitlines()
+# 实现见 web/services/logs.py：`_LOG_TAIL_BYTES` / `_tail_lines` / `_most_recent_log_cache`
+# 与 `_is_valid_date_str` 在导入区再导出；需要本模块模块级状态的入口（日志目录 LOG_FILE、
+# 倒读实现 `_tail_lines`）在下方转发时调用时刻现取后注入——它们会被测试改写（既有测试直接
+# 赋值 `web.app.LOG_FILE`、并在 `web.app` 上打桩 `_tail_lines`），服务层另持一份绑定会让
+# 打桩静默失效。
 
 
 def parse_sign_log(path):
-    """解析签到日志：返回最近日志行列表（yiban 非 DEBUG 行）。
-
-    2026-08-16 审查轮：原返回值 (states, recent) 的 states（日志符号 → 图标）从未被
-    正确消费——账号状态的事实源是 sign-state 文件（load_sign_state，/api/accounts），
-    日志符号与前端状态码语义不符，曾被 /api/logs 透传污染前端图标/统计卡（历史遗留）。
-    现仅返回 recent 行。
-    """
-    recent = []
-    for line in _tail_lines(path):
-        m = SIGN_LOG_RE.match(line.strip())
-        if not m:
-            continue
-        _date, level, logger_name, _msg = m.groups()
-        if level == "DEBUG":
-            continue
-        if logger_name != "yiban" and level not in ("WARNING", "ERROR", "CRITICAL"):
-            # v0.26.3：签到日志（yiban）照旧全量展示；其他组件（web/notify/
-            # mailer/db）仅展示告警级输出——它们是"非签到功能留下的最终结果"
-            # （如邮件/推送发送失败），此前只进 journald 后台页看不到。
-            # INFO 级维持不展示，日志页洁净度不变。
-            continue
-        recent.append(line.strip())
-    return recent
-
-
-def _is_valid_date_str(s):
-    """YYYY-MM-DD 格式且为真实日历日期（2026-13-99 这类非法值拒绝）。"""
-    try:
-        datetime.strptime(s, "%Y-%m-%d")
-        return True
-    except (TypeError, ValueError):
-        return False
+    """解析签到日志（实现见 web/services/logs.py）；倒读实现现取本模块的 `_tail_lines`。"""
+    return _logs_svc.parse_sign_log(path, _tail_lines)
 
 
 def log_path_for(date_str=None):
-    """按天日志文件路径：{LOG_FILE 目录}/sign-YYYY-MM-DD.log（date_str 缺省=今天）。
+    """按天日志文件路径（实现见 web/services/logs.py）；日志目录现取本模块的 `LOG_FILE`。"""
+    return _logs_svc.log_path_for(LOG_FILE, date_str)
 
-    2026-08-16 日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
-    run.sh / signin.py / 手动签到子进程均写入当天文件（保留 LOG_FILE 配置的目录）。
+
+def _log_lines_for(date_str, stats=None):
+    """读取指定日期日志的行（实现见 web/services/logs.py）。
+
+    路径与倒读实现都按调用时刻现取本模块的（`LOG_FILE` 可被测试直接赋值改写）。
+    `stats` 可选 dict：服务层把解析不出而被丢弃的行数写进 `stats["dropped"]`。
     """
-    date_str = date_str or clock.now().strftime("%Y-%m-%d")
-    return os.path.join(os.path.dirname(LOG_FILE), f"sign-{date_str}.log")
-
-
-def _log_lines_for(date_str):
-    """读取指定日期日志的行（行首日期过滤防跨天残留；仅 yiban 非 DEBUG 行）。
-
-    文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
-    """
-    prefix = f"[{date_str} "
-    out = []
-    for line in _tail_lines(log_path_for(date_str)):
-        if not line.startswith(prefix):
-            continue
-        m = SIGN_LOG_RE.match(line.strip())
-        if not m:
-            continue
-        _, level, logger_name, _msg = m.groups()
-        if level == "DEBUG":
-            continue
-        if logger_name != "yiban" and level not in ("WARNING", "ERROR", "CRITICAL"):
-            # v0.26.3：与 parse_sign_log 同口径——其他组件仅告警级入列
-            continue
-        out.append(line.strip())
-    return out
-
-
-# 最近日志日期缓存 {date: "YYYY-MM-DD"}：轮询每 10s 调用，避免每次都扫描 30 天文件
-_most_recent_log_cache = {"history_date": None, "checked_day": ""}
+    return _logs_svc._log_lines_for(date_str, log_path_for, _tail_lines, stats)
 
 
 def _today_has_logs():
-    """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
+    """今天是否有 yiban 签到日志行（实现见 web/services/logs.py）。
 
-    原实现只扫文件尾部 4096 字节——一旦尾部被其他 logger（如 web 每日清理循环的
-    yiban.db 告警）刷屏会误判「今天无日志」而回退到历史日期（2026-08-29 线上复现：
-    回到今天显示昨天）。按天文件体积有限，整读开销可忽略；判定口径与
-    _log_lines_for 一致（logger=yiban 且非 DEBUG）。
+    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
     """
-    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d")))
+    return _logs_svc._today_has_logs(log_path_for, _tail_lines)
 
 
 def _most_recent_log_date(max_days=30):
-    """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD。
+    """查找最近有日志的日期（实现见 web/services/logs.py）。
 
-    每次先检查今天（开销小，今天有新日志立即生效）；无日志时用历史缓存（每天只扫一次）。
+    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
     """
-    today = clock.now().strftime("%Y-%m-%d")
-    # 今天有日志 → 直接返回今天（并更新缓存）
-    if _today_has_logs():
-        _most_recent_log_cache["history_date"] = today
-        return today
-    # 今天无日志：跨天重置缓存，重新扫描历史
-    if _most_recent_log_cache["checked_day"] != today:
-        _most_recent_log_cache["checked_day"] = today
-        _most_recent_log_cache["history_date"] = None
-        for i in range(1, max_days + 1):
-            d = (clock.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
-            # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
-            if _log_lines_for(d):
-                _most_recent_log_cache["history_date"] = d
-                break
-    return _most_recent_log_cache["history_date"] or today
+    return _logs_svc._most_recent_log_date(max_days, log_path_for, _tail_lines)
 
 
 # ---------------------------------------------------------------------------
 # .env 读写
 # ---------------------------------------------------------------------------
-def read_env(env_path):
-    """读取 .env 全部键值，返回 dict（宽松：文件缺失/读失败返回空 dict）。
-
-    解析实现单一来源见 scripts/env_io.py（utf-8-sig 兼容 BOM——Windows 记事本等
-    工具保存时会带 BOM，否则首个键名会带上 \ufeff 前缀导致读不到，
-    管理员登录/改密会静默失败）。
-    """
-    return env_io.parse_env_file(env_path)
+# 读（read_env / load_env_int）在导入区再导出；写与设置项展示族的转发在下方
+# （它们需要注入本模块持有的 _atomic_write / write_env_batch / _env_flag / 设置缺省值）。
 
 
-def load_env_int(env_path, key, default):
-    """读取 .env 中的整数配置，缺失/非法回退默认值。"""
-    try:
-        return max(0, int(read_env(env_path).get(key, "")))
-    except (TypeError, ValueError):
-        return default
-
-
+# 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py，本模块只转发。
+# `.env` 一律经本模块的 `read_env(ENV_FILE)` 调用时刻现读，保持既有打桩面（测试与
+# `--env` 都会改写 ENV_FILE，由转发处取用才不会被 render 层的副本绑定架空）。
 def email_domain_error(email):
-    """邮箱域名可用性审查（白名单/黑名单）。通过返回 None，否则返回用户可读错误。
-
-    名单配置走 .env：YIBAN_EMAIL_DOMAIN_ALLOWLIST（可选白名单，逗号分隔，
-    非空则仅名单内域名可注册）、YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA（追加
-    黑名单）。内置保留域名与一次性邮箱域名数据在 email_policy 模块内维护。
-    """
-    env = read_env(ENV_FILE)
-    return email_policy.review_email(
-        email,
-        allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST", ""),
-        blocklist_extra=env.get("YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA", ""),
-    )
+    """邮箱域名可用性审查（实现见 web/render.py）。"""
+    return _render.email_domain_error(email, read_env(ENV_FILE))
 
 
 def icp_info():
-    """网站 ICP 备案信息（可选）：.env 的 YIBAN_ICP_INFO，留空不显示。
-
-    解耦设计：未配置时模板 `{% if icp_info %}` 块不输出，footer 保持旧样式；
-    配置后所有页面底部显示该文本（模板经 Jinja autoescape 转义，无 XSS）。
-    """
-    return read_env(ENV_FILE).get("YIBAN_ICP_INFO", "").strip()
+    """网站 ICP 备案信息（可选，实现见 web/render.py）。"""
+    return _render.icp_info(read_env(ENV_FILE))
 
 
 def police_info():
-    """公安备案信息（可选）：.env 的 YIBAN_POLICE_INFO，留空不显示。
-
-    与 ICP 备案分开独立预留位；未配置时模板 `{% if police_info %}` 块不输出。
-    """
-    return read_env(ENV_FILE).get("YIBAN_POLICE_INFO", "").strip()
+    """公安备案信息（可选，实现见 web/render.py）。"""
+    return _render.police_info(read_env(ENV_FILE))
 
 
 def police_link():
-    """公安备案查询链接（可选）：.env 的 YIBAN_POLICE_LINK。
-
-    备案号属于运营者身份信息，不入仓库：模板与文档页外壳回落到公安部通用
-    门户，真实查询链接（含备案号）由部署方在 .env 配置（v0.29.0 脱敏）。
-    scheme 白名单（复用 _SAFE_LINK_SCHEMES）：该值未经转义直接进公开页
-    href，配置 javascript:/data: 等即点击型 XSS——不在白名单（含空值）一律
-    回落公安部通用门户（2026-09-08）。
-    """
-    link = read_env(ENV_FILE).get("YIBAN_POLICE_LINK", "").strip()
-    if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
-        return link
-    return "https://beian.mps.gov.cn/"
+    """公安备案查询链接（实现见 web/render.py；scheme 白名单与回落同在其中）。"""
+    return _render.police_link(read_env(ENV_FILE))
 
 
 # 站点简介默认文案（分享预览用；措辞取自 README 项目介绍，勿写成营销语）。
@@ -896,69 +922,104 @@ SITE_DESCRIPTION_DEFAULT = (
 
 
 def site_description():
-    """站点简介（分享预览/搜索引擎摘要用）：.env 的 YIBAN_SITE_DESCRIPTION 优先。
-
-    2026-09-09：此前全站无 meta description 与 og:* 标签，分享链接解析出的
-    卡片只有标题、没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。
-    """
-    return read_env(ENV_FILE).get("YIBAN_SITE_DESCRIPTION", "").strip() or SITE_DESCRIPTION_DEFAULT
+    """站点简介（实现见 web/render.py）；留空时用本模块的默认文案。"""
+    return _render.site_description(read_env(ENV_FILE), SITE_DESCRIPTION_DEFAULT)
 
 
 def site_image():
-    """分享预览配图绝对地址（可选）：.env 的 YIBAN_SITE_IMAGE，留空不输出 og:image。
-
-    必须为绝对 https 地址（分享抓取方无法解析相对路径）；不在 https 白名单
-    一律忽略——该值进公开页 meta content，配置 javascript:/data: 无意义且有害。
-    """
-    url = read_env(ENV_FILE).get("YIBAN_SITE_IMAGE", "").strip()
-    return url if url.lower().startswith("https://") else ""
+    """分享预览配图绝对地址（可选，实现见 web/render.py）。"""
+    return _render.site_image(read_env(ENV_FILE))
 
 
-# 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度）：
-# 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）
-# 存在时映射为 front=back=旧值，保证升级前配置行为不变。范围 0~300 秒。
+# 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
+# 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
+# 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
 def edge_config():
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.window.parse_edges）。"""
-    return yb_window.parse_edges(read_env(ENV_FILE))
+    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（实现见 web/render.py）。"""
+    return _render.edge_config(read_env(ENV_FILE))
 
 
 def edge_front_sec():
-    """前裁秒数（兼容旧调用的便捷入口）。"""
-    return edge_config()[0]
+    """前裁秒数（兼容旧调用的便捷入口，实现见 web/render.py）。"""
+    return _render.edge_front_sec(read_env(ENV_FILE))
 
 
-def _is_http_proxy_url(value):
-    """代理地址格式校验：`http(s)://[user:pass@]host[:port]`（宽松但明确）。
+def sign_window_bounds():
+    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
 
-    只做形状校验（scheme + 主机非空、无空白/换行）；**不解析、不连接**——
-    代理是否可用由签到进程在使用时报错，网页侧只拦"明显填错"（例如把备注写进去）。
+    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
+    几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
+    配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪两个取值点按调用
+    时刻现取本模块的（测试会打桩 `web.app._sign_window` / `web.app.edge_config`）。
     """
-    if not value:
-        return True                       # 空串=直连，合法
-    if re.search(r"\s", value):
-        return False
-    parts = re.match(r"^https?://([^/]*?)(/.*)?$", value)
-    if not parts:
-        return False
-    host_part = parts.group(1)
-    if "@" in host_part:                  # 去掉可能的 userinfo
-        host_part = host_part.rsplit("@", 1)[1]
-    return bool(host_part)
+    start, end = _sign_window()
+    front_sec, back_sec = edge_config()
+    return yb_window.bounds({
+        "sign_start": start,
+        "sign_end": end,
+        "edge_front_sec": front_sec,
+        "edge_back_sec": back_sec,
+    })
+
+
+# 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
+# 三个容量缺省值与开关解析器 `_env_flag` 由本模块现取注入（它们是本模块的名字，会被测试改写）。
+def _settings_effective_values(env_file):
+    """A/B 档设置项的当前生效值（实现见 web/services/env_io.py）。"""
+    return _env_io_svc._settings_effective_values(
+        env_file, _env_flag,
+        gap_max_default=DEFAULT_ACCOUNT_GAP_MAX,
+        max_users_default=DEFAULT_MAX_USERS,
+        max_accounts_default=DEFAULT_MAX_ACCOUNTS,
+    )
+
+
+#: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 允许 1~64 → 下标 0~63）；
+#: 单槽位出口写接口按"下标 + 当前执行体数"两重判定拒绝未被使用的槽位。
+#: 常量本体在导入区（= `yiban.egress.SLOT_MAX`，清单模型的唯一口径）定义。
+
+
+# 执行体清单的写入与校验（`YIBAN_EXECUTORS`）实现见 web/services/executor_env.py。
+# 写回一律经本模块的 `write_env_batch` 现取注入：它既是"每一次 .env 落盘"的观测点
+# （测试在此打桩），也负责把落盘交给本模块的 `_atomic_write`。
+def _save_slot_egress(env_path, key, index, value):
+    """读-改-写 `.env` 里一段出口（实现见 web/services/executor_env.py）。"""
+    return _executor_env._save_slot_egress(env_path, key, index, value, write_env_batch)
+
+
+def _executor_rows(env_path=ENV_FILE):
+    """读执行体清单，必要时按旧三键迁移写回（实现见 web/services/executor_env.py）。"""
+    return _executor_env._executor_rows(env_path, write_env_batch)
+
+
+def _mutate_executor_rows(mutator, env_path=ENV_FILE):
+    """`.env` 写锁内读清单 → 应用 mutator → 写回（实现见 web/services/executor_env.py）。"""
+    return _executor_env._mutate_executor_rows(mutator, env_path, write_env_batch)
+
+
+def _save_row_egress(env_path, slot, value):
+    """清单模式下只改该行的出口（实现见 web/services/executor_env.py）。"""
+    return _executor_env._save_row_egress(env_path, slot, value, write_env_batch)
+
+
+def _save_fallback_egress(env_path, value):
+    """清单模式下改兜底行的出口（实现见 web/services/executor_env.py）。"""
+    return _executor_env._save_fallback_egress(env_path, value, write_env_batch)
 
 
 def write_env_int(env_path, key, value):
-    """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
-    write_env_key(env_path, key, str(value) if value > 0 else "")
+    """把整数配置写入 .env：value<=0 删除该行，>0 写入（实现见 web/services/env_io.py）。"""
+    return _env_io_svc.write_env_int(env_path, key, value, write_env_batch)
 
 
-# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 scripts/env_io.py
+# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 yiban/infra/env_io.py
 # （ENV_LINE_BREAK_CHARS / has_line_break / key_line_pattern / count_key_lines /
 # find_env_key_collisions）：读的一半（parse_env_file）本就在那里，写的一半随之
 # 落位，scripts/ 各 .env 写入方无需反向依赖 web 即可共用同一套判定。
-# 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；修复升级前
-# 已埋下的潜伏载荷不会被回溯改写——由 create_app 启动时的
-# _report_env_key_collisions（env_io.find_env_key_collisions）报告、运维手工清理。
-# 此处保留模块级别名：既有调用点与测试的探测口径
+# 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；升级前已埋下的
+# 潜伏载荷不会被回溯改写——由 create_app 启动时的
+# _report_env_key_collisions（yiban.infra.env_io.find_env_key_collisions）报告、运维手工清理。
+# 此处保留模块级别名（本模块已无自用点）：既有调用点与测试的探测口径
 # （webapp._has_line_break / webapp._ENV_LINE_BREAK_CHARS）保持不变。
 _ENV_LINE_BREAK_CHARS = env_io.ENV_LINE_BREAK_CHARS
 _has_line_break = env_io.has_line_break
@@ -966,182 +1027,124 @@ _env_key_line_re = env_io.key_line_pattern
 _count_env_key_lines = env_io.count_key_lines
 
 
+def _env_write_refuse_audit(code, detail):
+    """.env 写入被拒的 fail-closed 审计回调（写入与业务无法同事务，见 audit_or_refuse）。
+
+    注入给 `write_env_batch` 与 `ensure_secret_key`：任何"写入被拒"都必须留痕，否则一次
+    被拒的注入尝试在审计链上等于没发生。detail 已由 env_io 保证只含键名/行号，绝不回带
+    值原文（口令/明文代理串不进审计）。审计失败也不把拒绝变成放行——写入本来就已经被拒，
+    本回调只吞异常并记日志，绝不向上抛（抛错会盖住真正的拒绝原因）。
+    """
+    try:
+        actor = session.get("username") or "?"
+    except Exception:  # 无请求上下文（启动路径/CLI）：如实记 system，不猜身份
+        actor = "system"
+    try:
+        db.audit_or_refuse(actor, "env_write_refused", "env", f"{code}｜{detail}")
+    except Exception as e:
+        logger.error("拒绝 .env 写入的审计失败（写入已被拒绝，立场不变）: %s", e)
+
+
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
-    单键形态 = write_env_batch({key: value})：行分隔符注入校验、写锁、原子替换
-    均单源在 write_env_batch（防两份安全校验实现漂移）。
+    实现见 web/services/env_io.py；写回落在本模块的 `write_env_batch` 上（同一观测点）。
     """
-    write_env_batch(env_path, {key: value})
+    return _env_io_svc.write_env_key(env_path, key, value, write_env_batch)
 
 
 def write_env_batch(env_path, updates):
-    """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
-    避免多次独立写入时进程崩溃导致配置不一致。
-    updates: dict {key: value}，value 为空字符串则删除该键。
+    """批量写入多个键值（原子操作，实现见 web/services/env_io.py）。
 
-    写锁（_env_write_lock）：并发保存设置/公告时读-改-写互斥，防跨 worker 丢更新。
-    安全约束（安全审查 2026-08）：.env 为逐行键值格式，键或值含换行符会注入出
-    新的配置行（如经公告文本写入 YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。
-    此处为兜底硬校验（调用方应先自行校验并返回友好错误），违规直接抛 ValueError。
-    字符集口径（2026-09-07 修订）：本函数自己用 splitlines() 读、
-    用 "\\n".join() 写，故校验必须覆盖 splitlines 认定的**全部**行分隔符
-    （见 _ENV_LINE_BREAK_CHARS）——只挡 \\n \\r 会留下"潜伏分隔符 + 后续读改写
-    实体化"这条同效路径。
+    落盘交给本模块现取的 `_atomic_write`：它是"每一次 .env 落盘"的观测点（测试在此
+    打桩快照全文），且 Windows 上的替换重试策略在那里；服务层另持绑定会让打桩静默失效。
+    行模型/校验/键集合 diff 单源在 `yiban.infra.env_io.write_env_keys`；写入被拒时经
+    `_env_write_refuse_audit` 强制留痕。
     """
-    with _env_write_lock(env_path):
-        for key, value in updates.items():
-            if _has_line_break(key) or _has_line_break(value):
-                raise ValueError(f"write_env_batch 拒绝包含行分隔符的键值: {key}")
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        # 保留注释行和非更新键；过滤被更新键的旧行后追加新值
-        # （折叠用 _env_key_line_re，`KEY = v` 写法同样是该键的旧行）
-        pats = [_env_key_line_re(k) for k in updates]
-        out = [ln for ln in lines if not any(p.match(ln.strip()) for p in pats)]
-        for key, value in updates.items():
-            if value:
-                out.append(f"{key}={value}")
-        _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
+    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write,
+                                       _env_write_refuse_audit)
 
 
 def ensure_secret_key(env_path):
-    """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
+    """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值，实现见 web/services/env_io.py）。
 
-    .env 不可写时降级为进程内随机密钥并告警（服务可用，重启后会话失效）——
-    与 migrate_admin_password_to_hash 的降级策略一致（对抗性审查 F4）。
+    落盘同样交本模块现取的 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
     """
-    with _env_write_lock(env_path):
-        # v0.26.3：全新部署判定必须在读取前——.env 不存在 = 首次初始化，
-        # 默认写入「暂停注册」；既有部署（文件已存在，如升级安装）不写此键，
-        # 注册行为保持不变（用户裁决：默认允许，新部署才默认暂停）。
-        # touch 空 .env / 复制 .env.example 后文件存在但无任何有效键
-        # 仍视为全新部署（此前判定仅看文件存在性，会把空配置误判为既有部署
-        # 而不写暂停键，新部署默认开放注册）。
-        env = read_env(env_path)
-        new_deployment = not os.path.exists(env_path) or not env
-        key = env.get("YIBAN_SECRET_KEY", "").strip()
-        if key:
-            return key
-        key = secrets.token_hex(32)
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                lines = f.read().splitlines()
-        # 旧键折叠与 key_line_pattern 同源：`YIBAN_SECRET_KEY = `（= 号前带空格、
-        # 值为空）此前被 startswith("YIBAN_SECRET_KEY=") 漏判，函数继续生成并追加
-        # 第二行，留下重复键影子行。走到这里 = 解析侧该键值为空，滤掉该键全部
-        # 旧行再落新行是安全的，任何写法都不会追加出重复。
-        # 这是日后把主凭据"歧义拒绝"扩大到 YIBAN_SECRET_KEY 的前提（现在不扩：
-        # scripts/ 各写入方尚未收敛到同一写入实现，此处拒绝会把写入侧缺陷
-        # 变成活体锁死）。
-        _sk_pat = _env_key_line_re("YIBAN_SECRET_KEY")
-        lines = [ln for ln in lines if not _sk_pat.match(ln.strip())]
-        lines.append(f"YIBAN_SECRET_KEY={key}")
-        if new_deployment:
-            # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
-            lines.append("YIBAN_REGISTRATION_PAUSE=1")
-        try:
-            _atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
-        except OSError as e:
-            logger.warning(
-                "无法写入 %s（%s）：YIBAN_SECRET_KEY 仅本次进程生效（重启后会话将失效），"
-                "请修复目录权限或手动配置密钥",
-                env_path, e,
-            )
-            return key
-        logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
-        if new_deployment:
-            logger.info(
-                "新部署默认暂停注册（YIBAN_REGISTRATION_PAUSE=1），"
-                "完成初始配置后可在设置页开启"
-            )
-        return key
+    return _env_io_svc.ensure_secret_key(env_path, _atomic_write,
+                                         _env_write_refuse_audit)
+
+
+# 内置主管理员（.env 账号）的会话凭据键名与会话凭据族（_new_admin_sid /
+# _issue_admin_sid / _admin_session_facts）实现见 web/security.py；键名以导入区再导出
+# 保持 m.ADMIN_SID_ENV_KEY 可达（改密路径经 m.* 取用它写 .env）。
+def _issue_admin_sid(env_path):
+    """换发内置主管理员会话凭据（实现见 web/security.py）。
+
+    `.env` 写路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`，
+    `--env-file` 也会改写 `ENV_FILE`）——服务层另持一份绑定会让改写静默失效。
+    """
+    return _security._issue_admin_sid(env_path, write_env_key, read_env)
+
+
+def _admin_session_facts(env_path):
+    """内置主管理员的两项会话吊销凭据 (口令版本, sid)（实现见 web/security.py）。
+
+    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。
+    """
+    return _security._admin_session_facts(env_path, read_env)
+
+
+def _builtin_admin_email():
+    """内置管理员（.env）标识（小写）（实现见 web/security.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的（测试与 `--env-file` 都会改写）。
+    """
+    return _security._builtin_admin_email(ENV_FILE, read_env)
+
+
+def _is_builtin_admin_session():
+    """当前会话是否确实是内置管理员（.env）登录（实现见 web/security.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的；本函数与 `_effective_role` 都在
+    请求期调用（盘点确认无调度线程/启动路径调用）。
+    """
+    return _security._is_builtin_admin_session(ENV_FILE, read_env)
+
+
+def _effective_role(username, pw_version=None):
+    """实时角色判定（实现见 web/security.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的。注册用户侧按 `yiban.store.db` 的
+    真源查表（本模块的 `db` 即那一份）。
+    """
+    return _security._effective_role(username, pw_version, ENV_FILE, read_env)
+
+
+def _current_role():
+    """当前登录会话的实时角色（实现见 web/security.py）。
+
+    会话绝对期按调用时刻现取本模块的 `SESSION_ABS_TTL_SECONDS`：它在 create_app 里
+    按 `YIBAN_SESSION_ABS_DAYS` 重新解析后回写模块全局，转发必须取到新值。
+    """
+    return _security._current_role(SESSION_ABS_TTL_SECONDS, ENV_FILE, read_env)
 
 
 def migrate_admin_password_to_hash(env_path):
-    """启动时安全迁移：检测到管理员口令以明文（YIBAN_ADMIN_PASSWORD）存储且无哈希时，
-    自动生成 scrypt 哈希写入 YIBAN_ADMIN_PASSWORD_HASH 并清空明文。
+    """启动时安全迁移管理员口令明文 → scrypt 哈希（实现见 web/security.py）。
 
-    说明：仅改变口令的存储形态（明文 → 哈希），口令本身不变；已有哈希则跳过；
-    明文回退比对路径（verify_admin）保留以兼容未迁移的存量部署。
-    迁移失败（如 .env 对进程不可写）只告警不阻断启动——明文回退仍可登录。
-
-    （SSH 追回路径堵漏）：检测到「明文与现存哈希不一致」——即运维通过
-    SSH 重设了 YIBAN_ADMIN_PASSWORD（主管理员被盗后的追回操作）——重迁移哈希的
-    同时递增 YIBAN_ADMIN_PW_VERSION，使全部被盗旧会话立即失效。原实现哈希存在
-    即跳过，导致重设的明文被忽略（verify_admin 哈希优先）、攻击者旧密码 + 旧
-    cookie 双通道继续掌控。
+    `.env` 读取器、整数配置读取器与批量写路径按调用时刻现取本模块的：三者都会被
+    测试打桩或赋值改写，服务层另持一份绑定会让改写静默失效。
+    本函数由 create_app 启动路径调用（多 worker 各自执行），自带 `env_path`
+    参数、不读请求上下文。
     """
-    rotated = False
-    try:
-        env = read_env(env_path)
-        existing_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
-        plain = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
-        if not plain:
-            return
-        updates = {
-            "YIBAN_ADMIN_PASSWORD_HASH": generate_password_hash(plain, method=SCRYPT_METHOD),
-            "YIBAN_ADMIN_PASSWORD": "",
-        }
-        if existing_hash:
-            try:
-                same = check_password_hash(existing_hash, plain)
-            except (ValueError, TypeError):
-                same = False
-            if same:
-                return  # 明文与哈希一致（重复启动），无需任何写入
-            cur_pwv = load_env_int(env_path, "YIBAN_ADMIN_PW_VERSION", 1)
-            updates["YIBAN_ADMIN_PW_VERSION"] = str(cur_pwv + 1)
-            rotated = True
-        write_env_batch(
-            env_path,
-            updates,
-        )
-    except OSError as e:
-        logger.warning(
-            "管理员口令明文迁移失败（%s 不可写？）：%s；将暂时回退明文比对，"
-            "请修复权限后重启或手动改密",
-            env_path,
-            e,
-        )
-        return
-    if rotated:
-        logger.warning(
-            "检测到管理员口令被外部更改（%s，明文与现存哈希不一致）：已重迁移哈希"
-            "并递增 YIBAN_ADMIN_PW_VERSION，全部旧会话已失效（SSH 追回场景）",
-            env_path,
-        )
-    else:
-        logger.warning(
-            "检测到管理员口令明文存储（%s），已自动迁移为 scrypt 哈希并清空明文；"
-            "口令本身未变更，请确认其强度足够（弱口令仍可被猜测）",
-            env_path,
-        )
+    return _security.migrate_admin_password_to_hash(
+        env_path, read_env, load_env_int, write_env_batch)
 
 
-def _atomic_write(path, content, chmod_priv=False):
-    """原子写文件：先写临时文件再替换，避免半写状态（cron 并发读取安全）。
-
-    chmod_priv=True 时写完后收紧为 0600（含密钥/口令的 .env 场景），
-    防止默认 umask 下产生同主机其他用户可读的宽松权限。
-    临时文件改为创建即 0600（os.open + fdopen，与
-    account_crypto._write_key_to_env_file 口径一致）——open("w") 在默认 umask 下
-    0644，写完到 replace 之间（及进程崩溃残留时）文件对同机其他用户可读；
-    收尾的 os.chmod 保留（对既有 0644 旧文件幂等收紧，无害）。
-    """
-    tmp = f"{path}.tmp{secrets.token_hex(4)}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
-    os.replace(tmp, path)
-    if chmod_priv:
-        with contextlib.suppress(OSError):
-            os.chmod(path, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
+# `os.replace` 的瞬态失败重试预算与 `_replace_with_retry` / `_atomic_write` 实现见
+# web/security.py，此处以导入区再导出保持 m.* 可达（`_atomic_write` 必须是**同一个
+# 函数对象**：env_io / measure 的转发包装按调用时刻现取本模块的这个名字注入，
+# patch.object(web.app, "_atomic_write") 才继续被落盘路径看见）。
 
 
 # ---------------------------------------------------------------------------
@@ -1149,551 +1152,142 @@ def _atomic_write(path, content, chmod_priv=False):
 # RLock：进程内"读→检查→写"操作级序列互斥（防呆判定与写入之间不被同进程请求交错；
 # 跨进程一致性由 SQLite 事务与 UNIQUE 约束保证）
 # ---------------------------------------------------------------------------
-_file_lock = threading.RLock()
-# 限速/失败计数 dict 的进程内读改写锁（H7：单 worker + 锁内原子更新；
-# scrypt 校验不持锁，避免长时间阻塞其他请求）
-_rate_lock = threading.Lock()
+# 进程内两把锁的唯一真源都在 web/services/locks.py，本模块在导入区再导出
+# （`web.app._file_lock` / `web.app._rate_lock` 与 m.* 是同一把）：账号读改写序列经
+# `_file_lock` 互斥，限速/失败计数 dict 的读改写（H7：单 worker + 锁内原子更新；
+# scrypt 校验不持锁，避免长时间阻塞其他请求）经 `_rate_lock` 互斥；各模块自建一把
+# 会让"同进程内互斥"静默失效。
 # 每日清理线程只允许同一进程启动一次（测试多次 create_app 时避免并发访问共享 SQLite 单例）
 _purge_loop_started = False
 _purge_loop_lock = threading.Lock()
 
 
-def _ip_store_trim(store, max_age):
-    """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
+# IP 计数表的回收与窗口/失败计数（`_ip_store_trim` / `_bump_window_count` /
+# `_bump_login_failure`）、敏感口令门禁档位与旋钮（`_pw_gate_tier` /
+# `_sensitive_gate_params`）、账号校验配额与冷却（`_verify_attempt_allowed` /
+# `_verify_fail_cooldown_remaining` / `_record_verify_failure`）实现见 web/security.py，
+# 此处以导入区再导出保持 m.* 可达（路由在 m._rate_lock 下调用这些计数助手，同一把锁
+# 真源在 web/services/locks.py）。
+# 两个解析器要注入本模块的读取器（`_pw_gate_tier` 注入 `read_env`、
+# `_sensitive_gate_params` 注入 `load_env_int`），故各自带一个转发包装见下方。
 
-    各 store 的值为二元/三元组，末位统一是时间戳；防止公网扫描器用海量
-    不同 IP 打爆内存（无界增长 DoS）。
-    由 create_app 内嵌套函数上提为模块级——_verify_attempt_allowed
-    等模块级写入路径也要在同一口径下 trim，嵌套作用域够不到。
+
+def _read_audit_row_due(cnt):
+    """只读面聚合审计：窗口内第 cnt 次读取是否该落一行（True=落行）。
+
+    单独成函数的理由是把"聚合而非逐条"这条判据变成可被用例直接钉住的纯逻辑：
+    首行必落（读一次也得留痕，不能等窗口关闭才 flush——进程重启或"就读这一次"
+    会让痕迹永久消失），此后只在批量档位补行。行数上界 = 档位数 + 越档后每
+    READ_AUDIT_EVERY 次一行，详情面这一路还被 DETAIL_MAX 的 429 再卡一道。
     """
-    if len(store) <= _IP_STORE_LIMIT:
-        return
-    now = time.time()
-    stale = [k for k, v in store.items() if now - v[-1] > max_age]
-    for k in stale:
-        store.pop(k, None)
+    if cnt in READ_AUDIT_LADDER:
+        return True
+    return cnt > READ_AUDIT_LADDER[-1] and cnt % READ_AUDIT_EVERY == 0
 
 
-def _bump_window_count(store, key, now, window, limit=None):
-    """锁内递增窗口计数，返回 (count, window_start, allowed)。
+def _sensitive_gate_params(env_path):
+    """敏感口令门禁两个旋钮的唯一解析处（实现见 web/security.py）。
 
-    - limit 为 None：总是递增，allowed 恒为 True；
-    - limit 非 None：达到 limit 后不再递增并返回 allowed=False（用于“先判断再递增”的限速语义，
-      例如登录频率限制允许第 10 次、拒绝第 11 次）。
-    H7：限速计数 dict 的读改写统一走这里，避免并发请求丢失更新。
+    整数配置读取器按调用时刻现取本模块的（测试会打桩 `web.app.load_env_int`）。
     """
-    with _rate_lock:
-        cnt, start = store.get(key, (0, now))
-        if now - start > window:
-            cnt, start = 0, now
-        if limit is not None and cnt >= limit:
-            return cnt, start, False
-        cnt += 1
-        store[key] = (cnt, start)
-        return cnt, start, True
+    return _security._sensitive_gate_params(env_path, load_env_int)
 
 
-def _bump_login_failure(store, key, now):
-    """锁内递增失败计数，返回递增后的次数。
+def _pw_gate_tier(env_path):
+    """敏感口令门禁档位（`YIBAN_PW_GATE`）的唯一解析处（实现见 web/security.py）。
 
-    H7：登录/改密/注销/恢复共用失败计数的读改写统一走这里。
+    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。路由侧
+    需要它判断"非 full 档才补发事后告警"，故在模块级留一个可 `m.*` 取用的名字。
     """
-    with _rate_lock:
-        fails, _, _ = store.get(key, (0, 0, 0))
-        fails += 1
-        store[key] = (fails, 0, now)
-        return fails
+    return _security._pw_gate_tier(env_path, read_env)
 
 
-def _verify_attempt_allowed(store, username):
-    """账号验证尝试配额（2026-08-27 对抗性审查 P1-2）。
-
-    「注册/添加账号即时验证」会让服务器代用户向易班发起真实登录，必须防止
-    被当作凭据试探的免费代理：在真正发起网络验证前按「会话用户名」扣减配额，
-    超过 VERIFY_MAX 次 / VERIFY_WINDOW 秒即拒绝。全局 IP 限速之外的账号维度
-    补充；计数语义与登录频率限制一致（先判后增）。store 由调用方传入
-    （create_app 内的 _verify_limits，随应用生命周期存在于内存）。
-    """
-    # 写入前顺带 trim（键为会话用户名/邮箱，长度有界但基数无界），
-    # 与其余 IP 计数表同口径防无界增长
-    with _rate_lock:
-        _ip_store_trim(store, VERIFY_WINDOW + _IP_STORE_MAX_AGE)
-    _, _, allowed = _bump_window_count(
-        store,
-        (username or "?").lower(),
-        time.time(),
-        VERIFY_WINDOW,
-        limit=VERIFY_MAX,
-    )
-    return allowed
-
-
-def _verify_fail_cooldown_remaining(store, phone, now):
-    """同一手机号验证冷却剩余秒数（0 = 不在冷却中）。
-
-    store 由调用方传入（create_app 内的 _verify_fails，随应用生命周期存在于
-    内存）；gunicorn 单进程多线程，读写统一走 _rate_lock。
-    """
-    with _rate_lock:
-        entry = store.get(phone)
-        if not entry:
-            return 0
-        return max(0, int(entry[2] - now))
-
-
-def _record_verify_failure(store, phone, message, now):
-    """记录一次 web 触发验证的失败，返回原因类别（供审计 detail，不含原始消息）。
-
-    仅「确定性认证失败」（密码错误/账号锁定）计入冷却——网络类失败不是用户
-    过错、重试也不增加易班锁定风险；冷却触发后窗口计数清零，冷却到期重新计数。
-    """
-    if not any(kw in message for kw in VERIFY_FAIL_AUTH_KEYWORDS):
-        return "其他失败"
-    with _rate_lock:
-        fails, window_start, cooldown_until = store.get(phone, (0, 0.0, 0.0))
-        if now - window_start > VERIFY_FAIL_WINDOW:
-            fails, window_start = 0, now
-        fails += 1
-        if fails >= VERIFY_FAIL_MAX:
-            cooldown_until = now + VERIFY_FAIL_COOLDOWN
-            fails, window_start = 0, now
-        store[phone] = (fails, window_start, cooldown_until)
-        # 防御性清理（同 _ip_store_trim 思路）：窗口与冷却均已过期的条目可回收，
-        # 判定用 window_start（冷却至多再延 VERIFY_FAIL_COOLDOWN，已并入 max_age）
-        if len(store) > _IP_STORE_LIMIT:
-            max_age = VERIFY_FAIL_WINDOW + VERIFY_FAIL_COOLDOWN + _IP_STORE_MAX_AGE
-            for k in [k for k, v in store.items() if now - v[1] > max_age]:
-                store.pop(k, None)
-    return "认证失败"
-
-
-def _wait_signin_proc(proc, timeout=300):
-    """等待手动签到子进程；超时则终止并回收，避免批量签到队列被卡死。
-
-    M8：原 proc.wait(timeout=300) 超时抛出 TimeoutExpired 后未回收子进程，
-    队列仍会继续触发下一个账号，造成并发签到。超时后先 terminate，再等待
-    回收；仍不退则 kill 兜底。
-    """
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-
-def _batch_wait_timeout(count):
-    """批量签到队列的等待超时按账号数缩放。
-
-    固定 300s 在多账号场景过紧：每号真实登录+网络余量约 2 分钟，10 号队列
-    原本会被 300s 截断误杀。公式 max(300, 120 * count + 300)——单账号 420s、
-    10 号（BATCH_OP_LIMIT 上限）1500s；300s 下限兜底空队列/边界。
-    _wait_signin_proc 的默认参数保持 300 不动，由调用方传参缩放。
-    """
-    return max(300, 120 * count + 300)
-
-
-# 手动签到子进程非 0 退出码 → 用户可见原因（与 signin.py 退出码表同口径）
-_SIGNIN_EXIT_REASONS = {
-    2: "子进程自行退出（时段外跳过/暂停/存在未了结账号），本轮未实际签到",
-    3: "签到队列忙（运行锁被其他签到进程持有），本轮未执行",
-}
-
-
-def _manual_sign_failure_reason(returncode):
-    """手动签到子进程退出码的用户可见原因；0/None 返回 None（正常）。"""
-    if not returncode:
-        return None
-    return _SIGNIN_EXIT_REASONS.get(
-        int(returncode), f"签到子进程异常退出（退出码 {returncode}）"
-    )
-
-
+# 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
+# 退出码原因 `_manual_sign_failure_reason` 与退出码表 `_SIGNIN_EXIT_REASONS`）实现见
+# web/services/manual_sign.py，此处以导入区再导出保持 m.* 可达；只有 `_log_manual_sign_exit`
+# 需要注入本模块持有的入口，故在下方转发。
 def _log_manual_sign_exit(phone_label, returncode):
-    """手动签到子进程异常退出写入签到日志——前端「结果稍后出现在日志」的
-    唯一结果通道：exit 3（队列忙）等此前被静默吞掉，用户看到已触发实际没签。"""
-    reason = _manual_sign_failure_reason(returncode)
-    if not reason:
-        return
-    try:
-        with open(log_path_for(), "a", encoding="utf-8") as fh:
-            fh.write(f"[{clock.now():%Y-%m-%d %H:%M:%S}] "
-                     f"[{phone_label}] ⚠️ 手动签到未完成: {reason}\n")
-    except OSError:
-        logger.warning("手动签到退出码留痕失败: %s (returncode=%s)", phone_label, returncode)
+    """手动签到退出码留痕（实现见 web/services/manual_sign.py）。
 
-
-@contextlib.contextmanager
-def _env_write_lock(env_path):
-    """.env 写互斥：复用 scripts/env_lock.py 的共享锁。
-
-    修复（对抗性审查 2026-08-15 实证）：并发保存设置/公告时 read-modify-write
-    丢更新——gunicorn 多 worker 跨进程写 .env 需文件锁；同一把锁也供
-    密钥生成等场景使用，避免各写各的锁文件。
+    日志路径按调用时刻现取本模块的 `log_path_for`（它再现取 `LOG_FILE`）：测试会赋值
+    `webapp.LOG_FILE` 换日志目录，转发处不现取就会被服务层的副本绑定架空。
     """
-    with env_lock.env_write_lock(env_path):
-        yield
+    return _manual_sign._log_manual_sign_exit(phone_label, returncode, log_path_for)
 
-# 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告保存时同步更新
+
+# `.env` 写互斥与公告元数据解析的实现见 web/services/env_io.py：
+# `_env_write_lock` 是纯再导出（跨进程写锁沿用 yiban.infra.env_lock 真源）；
+# `_parse_announcement_meta` 与其分隔符/时刻格式常量同在导入区再导出。
+
+# 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告**发布**时同步更新
 _changelog_cache = [None]  # [文本]
-_announcement_cache = [None]  # [公告文本]
+_announcement_cache = [None]  # [已发布公告文本]（草稿刻意不进缓存：它要按会话现读）
+
+# ---- 全站公告双人发布：三个 .env 键的键名单源在此 ----
+# 公告会出现在**全体学生**的页面顶横幅与登录页上，是内部人/被盗会话最好用的社工面，
+# 故拆成两半：普通管理员只能写草稿，主管理员点"发布"才落成对外可见的那一键。
+# 作者与时刻单独成键（而非塞进草稿正文），为的是发布人批准前就能看见"这是谁、
+# 什么时候写的"——审计表只能事后追，双人发布要的是事前那一眼。
+ANNOUNCEMENT_KEY = "YIBAN_ANNOUNCEMENT"
+ANNOUNCEMENT_DRAFT_KEY = "YIBAN_ANNOUNCEMENT_DRAFT"
+ANNOUNCEMENT_DRAFT_META_KEY = "YIBAN_ANNOUNCEMENT_DRAFT_META"
+# 线上公告的发布人/时刻：前端要同屏显示"草稿是谁写的"与"线上是谁在何时发的"，
+# 否则管理员只能看到一串文本，分不清自己看到的到底是待发布内容还是已生效内容。
+ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
+# 元数据值的分隔符与时刻格式随解析器（_parse_announcement_meta）留在
+# web/services/env_io.py，此处以导入区再导出保持 m.ANNOUNCEMENT_DRAFT_META_SEP/_FMT 可达。
 
 
-def load_accounts():
-    """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。
-
-    `_file_lock` 只护住「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——
-    否则 8 个 web 线程的账号读写仍会被解密串行化（A2，2026-09-15）。
-    `_file_lock` 与写操作同锁，避免读到同一连接上未提交事务的部分结果
-    （RLock 可重入，写操作内调用无死锁）。
-    """
-    def _snap():
-        with _file_lock:
-            return db.accounts_snapshot()
-
-    return db.read_accounts(_snap)
-
-
-def load_accounts_raw():
-    """全部账号原始行（不解密 password/phone_code），供仅需明文列的统计/归类路径。
-
-    只 SELECT + 组行，无 AES-GCM 解密、无明文自愈回写：计数、取 owner 集合、
-    容量三分类等只用得到 phone（本就是明文列，兼作 AAD）/status/user_paused/
-    deleted/owner，调用方拿不到也无需明文凭据。
-    _file_lock 与 load_accounts 同锁：同连接上未提交事务的部分结果不可见。
-    """
-    with _file_lock:
-        return db.accounts_snapshot()
-
-
-def load_users():
-    """全部用户（SQLite）。"""
-    with _file_lock:
-        return db.load_users()
-
-
-def _mask_log_phones(line):
-    """日志行内全部 [11 位手机号] 脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
-
-    覆盖 signin.py 的行格式 `[13800138000] 结果`；其他格式（如 `账号: 138...`）
-    不进日志（通知内容不落盘），单一格式正则足够——见日志审查 P3。
-    """
-    return re.sub(r"\[(\d{11})\]", lambda m: "[" + _mask_phone(m.group(1)) + "]", line)
-
-
-def _mask_email(e):
-    """日志/列表脱敏：邮箱 → abc***@example.com（保留域名）；已脱敏或非邮箱原样返回（幂等）。"""
-    e = str(e)
-    if "*" in e:
-        return e
-    i = e.find("@")
-    if i <= 0:
-        return e
-    return e[: min(3, i)] + "***" + e[i:]
-
-
-def _password_policy_error(password):
-    """校验密码强度：至少 PASSWORD_MIN_LEN 位且命中 _PASSWORD_CLASS_PATTERNS 中
-    _PASSWORD_MIN_CLASSES 个类别（符号算一类）。返回错误信息 or None。
-
-    类别正则与文案都取自模块级常量（本函数不再内联字面量）：前端 login/user/index
-    三模板各有一份同序的 PW_CLASS_PATTERNS 与 PW_POLICY_HINT，由元测试逐字比对防漂移。
-    """
-    if len(password) < PASSWORD_MIN_LEN:
-        return f"密码{_PASSWORD_POLICY_HINT}"
-    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if classes < _PASSWORD_MIN_CLASSES:
-        return f"密码需包含{_PASSWORD_CLASS_HINT}"
-    return None
-
-
-def _admin_password_policy_error(password):
-    """主管理员（内置 .env 管理员）口令策略：至少 12 位且命中至少三类。
-
-    2026-09-05 用户裁决：主管理员口令单独提档（普通用户维持原口径不变），
-    与 reject_default_admin_password 的启动 fail-closed 同一策略。
-    """
-    if len(password) < ADMIN_PASSWORD_MIN_LEN:
-        return f"至少 {ADMIN_PASSWORD_MIN_LEN} 位，且包含大写字母、小写字母、数字、符号中的至少三类"
-    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if classes < ADMIN_PASSWORD_MIN_CLASSES:
-        return f"需包含{'、'.join(_PASSWORD_CLASS_LABELS)}中的至少三类"
-    return None
-
-
-def _owner_display_of(owner_email):
-    """把账号归属邮箱映射为展示名（后台归属列用）：普通用户显示邮箱前缀（@ 前）。"""
-    if owner_email in ("admin", ""):
-        return "管理员"
-    return owner_email.split("@")[0] if "@" in owner_email else owner_email
-
-
+# 账号 / 用户读取（load_accounts / load_accounts_raw / load_users）、展示序列化
+# （mask_account / _mask_email / _owner_display_of）、定位与字段校验
+# （find_account_index / _duplicate_phone_error / _owner_has_other_live / validate_account）、
+# 口令策略（_password_policy_error / _admin_password_policy_error）与只读验证
+# （_as_signin_account / _verify_account_clean）实现见 web/services/accounts_data.py；
+# 审核态词表、手机号正则、注销宽限期与口令策略常量也随该族搬入，此处一律以导入区再导出
+# 保持 m.* 可达。
 def _slot_to_label(slot_min):
-    """自选片窗口内分钟数 → "HH:MM"（调度 v2，与 signin 的 slot 口径一致：06:30 → 390）。"""
-    if slot_min is None:
-        return None
-    sw = _sign_window()
-    base = sw[0][0] * 60 + sw[0][1]
-    m = base + int(slot_min)
-    return f"{m // 60:02d}:{m % 60:02d}"
+    """自选片窗口内分钟数 → "HH:MM"（实现见 web/services/accounts_data.py）。
+
+    有效窗口视图按调用时刻现取本模块的（测试会打桩 `web.app._sign_window` /
+    `web.app.edge_config`，`sign_window_bounds` 现取后穿透到服务层）。
+    """
+    return _accounts_data._slot_to_label(slot_min, sign_window_bounds)
 
 
 def _estimate_slot(phone):
-    """预计签到时段（调度 v2 2.1，docs/design/plan-scheduler-v2.md）：
-    顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
-    随机排序 = 每天重排，返回 None + 提示文案。
-    返回 (estimated_str|None, note_str)。
+    """预计签到时段（实现见 web/services/accounts_data.py）。
+
+    账号读入口、`.env` 路径与读取器、有效窗口视图都按调用
+    时刻现取本模块的（测试会打桩 `read_env` / `_sign_window` / `edge_config` /
+    `load_accounts`，也会赋值 `ENV_FILE`）。
     """
-    env = read_env(ENV_FILE)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-    order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-        "random" if mode == "random" else "sequence")
-    dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-        "normal" if mode == "normal" else "uniform")
-    if order != "sequence":
-        return None, "随机模式每日重排，签到时间当天 06:31 后可见"
-    accounts = load_accounts()
-    # 与 build_schedule 一致：user_paused 账号不参与调度（零占位），预计时段按实际参与人计算
-    live = [a for a in accounts if not a.get("user_paused")]
-    idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
-    if idx is None or not live:
-        return None, ""
-    sw = _sign_window()
-    front_min, back_min = edge_config()[0] / 60.0, edge_config()[1] / 60.0
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
-    eff_lo = start_min + front_min
-    eff_hi = end_min - back_min
-    span = eff_hi - eff_lo
-
-    def fmt(m):
-        m = int(m)
-        return f"{m // 60:02d}:{m % 60:02d}"
-
-    if dist == "uniform":
-        # 线性填块（与 signin._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
-        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）
-        k = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-        valid = []
-        b = start_min
-        while b < end_min:
-            lo = max(b, eff_lo)
-            hi = min(b + 5, eff_hi)
-            if hi > lo:
-                valid.append((lo, hi))
-            b += 5
-        if not valid:
-            return None, ""
-        bi = min(idx // k, len(valid) - 1)
-        lo, hi = valid[bi]
-        return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
-    # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
-    z = random.Random(str(phone)).gauss(0, 1)
-    center = max(eff_lo, min(eff_hi, eff_lo + span * 0.5 + span * 0.20 * z))
-    return f"约 {fmt(center)}", "（每日波动约 ±10 分钟）"
+    return _accounts_data._estimate_slot(
+        phone, load_accounts, read_env, ENV_FILE, sign_window_bounds)
 
 
-def mask_account(acc, index, masked=True):
-    """账号展示序列化（列表默认脱敏手机号/归属邮箱，网络层不泄露完整 PII）。
-
-    masked=False 时返回完整信息（仅详情接口使用，按需取完整号用于编辑/签到等操作）。
-    密码始终不下发（has_password 布尔）；设备识别码始终不下发（has_phone_code 布尔）。
-    """
-    phone = acc.get("phone", "")
-    owner = acc.get("owner", "admin")
-    return {
-        "index": index,
-        "name": acc.get("name", ""),
-        "phone": _mask_phone(phone) if masked else phone,
-        "phone_model": acc.get("phone_model", ""),
-        "has_password": bool(acc.get("password")),
-        "has_phone_code": bool(acc.get("phone_code")),
-        "display_name": acc.get("name") or f"账号{index + 1}",
-        # 普通用户体系：owner=提交者邮箱（'admin'=管理员添加），status=待审核/已生效
-        "owner": _mask_email(owner) if masked else owner,
-        "owner_display": _owner_display_of(owner),
-        "status": acc.get("status", ACCOUNT_STATUS_ACTIVE),
-        "reject_reason": acc.get("reject_reason", ""),
-        "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
-        # 软删除：管理员删除后进入待删除状态（保留期内可恢复）
-        "deleted": bool(acc.get("deleted")),
-        "deleted_at": acc.get("deleted_at", ""),
-    }
+# 账号展示序列化（mask_account）、定位与字段校验（find_account_index /
+# _duplicate_phone_error / _owner_has_other_live / validate_account）、即时验证开关
+# （_account_verify_enabled，转发见下方）与只读验证（_as_signin_account /
+# _verify_account_clean）实现见 web/services/accounts_data.py，此处以导入区再导出保持
+# m.* 可达；`_verify_account_clean` 另被本模块的转发包装与 verify_jobs 回调现取注入。
 
 
-def find_account_index(accounts, phone):
-    """按手机号查账号下标（手动签到用）。"""
-    for i, acc in enumerate(accounts):
-        if acc.get("phone") == phone:
-            return i
-    return None
-
-
-def _duplicate_phone_error(accounts, phone, email):
-    """重提手机号冲突的差异化文案（v10 用户删除软删化）。
-
-    冲突行是本人刚删除的账号（deleted_by=本人）时给撤销指引；其余统一口径，
-    不向调用方泄露该手机号的归属信息。返回 None 表示非本人待删除行冲突。
-    """
-    conflict = next((a for a in accounts if a.get("phone") == phone), None)
-    if (
-        conflict is not None
-        and conflict.get("owner") == email
-        and conflict.get("deleted")
-        and conflict.get("deleted_by", "") == email
-    ):
-        return "该手机号对应你刚删除的账号，可先撤销删除；或等 7 天自动清除后再提交"
-    return None
-
-
-def _owner_has_other_live(accounts, acc):
-    """归属用户（非 admin）名下是否已有其他未删除账号（每人限 1 个，恢复/添加时校验）。"""
-    owner = acc.get("owner", "admin")
-    if not owner or owner == "admin":
-        return False
-    return any(
-        a.get("owner") == owner and not a.get("deleted") and a is not acc for a in accounts
-    )
-
-
-def validate_account(data, require_password):
-    """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。"""
-    name = str(data.get("name", "")).strip()
-    if len(name) > 50:
-        return "名称过长（最多 50 字）", None
-    phone = str(data.get("phone", "")).strip()
-    password = str(data.get("password", "")).strip()
-    if not phone:
-        return "手机号为必填项", None
-    if not PHONE_RE.match(phone):
-        return "手机号格式不正确（应为 1 开头的 11 位数字）", None
-    if require_password and not password:
-        return "密码为必填项", None
-    phone_model = str(data.get("phone_model", "")).strip()
-    if len(phone_model) > 50:
-        return "设备型号过长（最多 50 字）", None
-    phone_code = str(data.get("phone_code", "")).strip()
-    if len(phone_code) > 128:
-        return "设备识别码过长", None
-    return None, {
-        "name": name,
-        "phone": phone,
-        "password": password,
-        "phone_model": phone_model,
-        "phone_code": phone_code,
-    }
-
-
-def _account_verify_enabled():
-    """注册/添加账号时是否做即时验证（YIBAN_ACCOUNT_VERIFY=1，任意管理员可开关）。"""
-    env = read_env(ENV_FILE)
-    return env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes")
-
-
-def _verify_account_clean(clean):
-    """对清洗后的账号字段做只读验证（复用 signin.verify_account：登录+拉任务，不提交签到）。
-
-    返回错误信息 or None（验证通过）。message 来自 signin（已脱敏），此处再转义换行防注入。
-    """
-    try:
-        ok_v, msg_v = signin.verify_account(
-            signin.Account(
-                phone=clean["phone"],
-                password=clean.get("password", ""),
-                phone_model=clean.get("phone_model", ""),
-                phone_code=clean.get("phone_code", ""),
-            )
-        )
-    except Exception as e:
-        return f"账号验证异常：{str(e).replace(chr(10), ' ').replace(chr(13), ' ')}"
-    if not ok_v:
-        return f"账号验证未通过：{str(msg_v).replace(chr(10), ' ').replace(chr(13), ' ')}"
-    return None
-
-
-# A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。
+# 外呼校验的闸门与异步任务族（`VerifyGateBusy` / `VerifyQuotaExceeded` /
+# `run_verify_with_gate` / `_reject_account` / `_reclaim_stale_verify_jobs` /
+# `_verify_queue_full` / `_start_verify_job` / `verify_async_enabled` /
+# `_account_verify_enabled`）实现见 web/services/verify_queue.py。
+# 两个异常类型、失败落库、超龄收口、待办上限与建任务以导入区再导出保持 m.* 可达；
+# 带闸校验与两个开关在下方转发时现取本模块的席位 / 配额判定 / 只读验证 / .env
+# 路径与读取器（它们会被测试打桩或赋值改写）。
+# A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。席位留在本模块：
+# 静/异步两条路径共用同一个（异步侧经 verify_jobs.configure 登记）。
 _verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
 
 
-class VerifyGateBusy(Exception):
-    """外呼校验的全局并发席位已满（**未消耗**每用户配额）。"""
-
-
-class VerifyQuotaExceeded(Exception):
-    """该会话用户的验证尝试配额用尽。"""
-
-
 def run_verify_with_gate(clean, username, limits):
-    """执行一次外呼校验（A4：全局并发闸包裹）。
-
-    `limits` 是 create_app 内的每用户配额表（进程内字典，非模块级，故显式传入）。
-
-    顺序刻意如此：**先抢全局席位、再扣用户配额**——抢不到席位时立即抛
-    VerifyGateBusy 且不消耗配额，否则我们自己的饱和会变成对用户的惩罚。
-    席位在 `finally` 中释放，含配额拒绝与校验异常两条路径。
-
-    返回 verify_err（None 表示验证通过）；并发满/配额尽时抛上述异常，
-    由调用方翻译成 503 / 429。
-    """
-    if not _verify_sem.acquire(blocking=False):
-        raise VerifyGateBusy()
-    try:
-        if not _verify_attempt_allowed(limits, username):
-            raise VerifyQuotaExceeded()
-        return _verify_account_clean(clean)
-    finally:
-        _verify_sem.release()
-
-
-def _reject_account(phone, reason, account_id, expect_status):
-    """把校验未通过的账号置为 rejected（D-2：账号**留在库中**并承载技术原因）。
-
-    `expect_status` 是任务建立时账号的状态（verify_jobs.prev_status）。**只有账号
-    仍处于该状态时才写**——异步校验在后台跑，期间管理员可能已点"审核通过"
-    （pending → active），无条件写回会把管理员的决定静默回滚。人类决定优先。
-
-    缺少任务上下文时**不写**：无从判断账号是否已被人工改动，宁可不改也不能覆盖
-    人工决定（账号状态由管理员在审核列表里可见并处理）。
-    """
-    if account_id is None or not expect_status:
-        logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
-                     account_id, expect_status, _mask_phone(phone))
-        return
-    try:
-        wrote = db.update_account_status_if(
-            account_id, ACCOUNT_STATUS_REJECTED, expect_status,
-            reason or "在线校验未通过",
-        )
-        if not wrote:
-            logger.info(
-                "账号 %s 状态已人工变更（非 %s），异步校验结果不覆盖人工决定",
-                _mask_phone(phone), expect_status,
-            )
-    except Exception as e:
-        logger.error("置账号为 rejected 失败（%s）: %s", _mask_phone(phone), e)
-
-
-def _reclaim_stale_verify_jobs():
-    """收口超龄校验任务（启动期与取消端点调用；入队路径见 _verify_queue_full）。
-
-    进程在任务执行期间消失（重启/重部署/OOM）会让任务永久停在 running：既不去
-    终态、又不可取消，还一直占用待办名额，累计到上限后所有新增账号的在线校验
-    永久 503。收口与账号侧的 CAS 拒绝在同一事务内完成（见 store 的 reclaim_stale）。
-    返回收口条数。
-    """
-    rows = db.reclaim_stale_verify_jobs(reject_status=ACCOUNT_STATUS_REJECTED)
-    if rows:
-        logger.warning("已收口 %d 条超龄校验任务（进程重启或线程异常终止）", len(rows))
-    return len(rows)
-
-
-def _verify_queue_full():
-    """待办队列是否已满（判定前先收口超龄任务，否则卡死的任务会永久占满名额）。"""
-    _reclaim_stale_verify_jobs()
-    return db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING
+    """执行一次外呼校验（实现见 web/services/verify_queue.py），注入本模块现取的席位。"""
+    return _verify_queue.run_verify_with_gate(
+        clean, username, limits, _verify_sem, _verify_attempt_allowed, _verify_account_clean)
 
 
 # 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
@@ -1707,925 +1301,425 @@ verify_jobs.configure(
 )
 
 
-def _start_verify_job(clean, username, account_id, fails, limits):
-    """建任务并起后台线程；待办队列满时抛 VerifyGateBusy（调用方翻成 503）。"""
-    started = verify_jobs.start(clean, username, account_id, fails, limits)
-    if started is None:
-        raise VerifyGateBusy()
-    return started
-
-
 def verify_async_enabled():
-    """在线校验异步开关：**默认关**，显式置 `YIBAN_VERIFY_ASYNC=1` 才启用。
+    """在线校验异步开关（实现见 web/services/verify_queue.py）。
 
-    异步路径把外呼交给后台任务、请求线程不再被占用（长任务不拖垮整站），
-    但**结果需要前端轮询 `/api/verify-jobs/<id>` 才能展示**——当前前端尚未实现该轮询，
-    故默认走同步带闸路径：用户提交账号时当场得到校验结论（与界面现状一致）。
-    前端就绪后把默认值改为开即可（两侧契约已在 `yiban/attempt/jobs.py` 与
-    `/api/verify-jobs` 端点就位，测试也按显式开关覆盖了两条路径）。
-
-    与 `YIBAN_ACCOUNT_VERIFY` 同口径读 `.env`（`os.environ` 优先，便于临时覆盖）——
-    只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。留在这里而不下沉到
-    yiban/attempt（那里读的是 db.ENV_FILE）：本函数须用**本进程的** ENV_FILE，
-    它可被 --env-file 改写。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`，
+    也会赋值 `ENV_FILE`）——本函数须用**本进程的** ENV_FILE，它可被 --env-file 改写。
     """
-    raw = os.environ.get("YIBAN_VERIFY_ASYNC")
-    if raw is None:
-        raw = read_env(ENV_FILE).get("YIBAN_VERIFY_ASYNC", "")
-    return str(raw).strip().lower() in ("1", "true", "on", "yes")
+    return _verify_queue.verify_async_enabled(read_env, ENV_FILE)
+
+
+def _account_verify_enabled():
+    """注册/添加账号时是否做即时验证（实现见 web/services/verify_queue.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。
+    """
+    return _verify_queue._account_verify_enabled(read_env, ENV_FILE)
 
 
 # ---------------------------------------------------------------------------
 # 管理员认证
 # ---------------------------------------------------------------------------
 def check_admin_configured():
-    """管理员账号是否已在 .env 配置（口令哈希或旧明文任一即可）。"""
-    env = read_env(ENV_FILE)
-    return bool(
-        env.get("YIBAN_ADMIN_USER", "").strip()
-        and (
-            env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
-            or env.get("YIBAN_ADMIN_PASSWORD", "").strip()
-        )
-    )
+    """管理员账号是否已在 .env 配置（实现见 web/security.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`，
+    `--env-file` 也会改写 `ENV_FILE`）。
+    """
+    return _security.check_admin_configured(ENV_FILE, read_env)
+
+
+def _builtin_admin_loginable():
+    """内置（.env）主管理员此刻是否真的进得来（实现见 web/security.py）。
+
+    判据与 `verify_admin` 的三道 fail-closed 逐条对齐，一致性由用例对拍（防两侧漂移）。
+    `.env` 路径、读取器与键行计数按调用时刻现取本模块的。
+    """
+    return _security._builtin_admin_loginable(ENV_FILE, read_env, _count_env_key_lines)
 
 
 def verify_admin(username, password):
-    """校验管理员账号（每次登录实时读 .env，修改立即生效）。
+    """校验管理员账号（实现见 web/security.py；每次登录实时读 .env，修改立即生效）。
 
-    口令哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt）优先；哈希缺失而明文仍在
-    （启动迁移失败态）按 M1 fail-closed 直接拒绝——明文比对路径已停用，
-    修复 .env 权限重启即自动补齐哈希。
-    主凭据歧义同样 fail-closed：该键在 .env 中无法确认恰好一行（多于一行，或
-    统计读取失败）时拒绝认证并告警（生效行由"后写覆盖先写"决定，歧义即注入面），
-    修成唯一一行即恢复，无需重启。
-    注意：compare_digest 不支持非 ASCII 直接比较，先编码为 UTF-8 字节。
+    `.env` 路径与读取器、键行计数、告警出口、时延拉平都按调用时刻现取本模块的
+    （这些名字会被测试打桩或赋值改写，服务层另持绑定会让打桩静默失效）。
     """
-    env = read_env(ENV_FILE)
-    admin_user = env.get("YIBAN_ADMIN_USER", "").strip()
-    # 2026-08-20 对抗性审查修复（P1）：凭据未配置完整时直接拒绝——
-    # 原实现 admin_user/admin_pass 均为空串时 compare_digest(b"", b"") 恒真，
-    # "只配了用户名没配密码"（或完全未配置）的部署可用空口令登录管理员。
-    # 该状态 check_admin_configured() 明确判定为"未配置"，此处口径对齐。
-    if not admin_user or not (
-        env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
-        or env.get("YIBAN_ADMIN_PASSWORD", "").strip()
-    ):
-        _constant_time_dummy(password)  # 时延拉平：与真实比对等开销
-        return False
-    # 用户名比较统一小写——登录成功后 session 存小写（历史修复），
-    # 而此处大小写敏感比对导致混合大小写 YIBAN_ADMIN_USER 永远无法自助改密，
-    # 且会被失败计数锁定（管理员被自己的改密界面锁死）
-    if not secrets.compare_digest(
-        username.strip().lower().encode("utf-8"), admin_user.strip().lower().encode("utf-8")
-    ):
-        _constant_time_dummy(password)
-        return False
-    pw_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
-    if pw_hash:
-        # 刻意放在"即将拿哈希去比对"的决策点、而不是启动时炸掉：一个坏配置
-        # 不该把还在正常提供服务的部署直接 brick；把 .env 修成唯一一行即自动恢复，
-        # 无需重启。检测口径与 write_env_batch 的旧行折叠同源（_count_env_key_lines）；
-        # 统计读取失败计得 0 行，与多行同判 fail-closed（读失败 ≠ 未配置）。
-        dup = _count_env_key_lines(ENV_FILE, "YIBAN_ADMIN_PASSWORD_HASH")
-        if dup != 1:
-            logger.error(
-                "拒绝管理员登录：%s 的 YIBAN_ADMIN_PASSWORD_HASH 无法确认为恰好一行"
-                "（统计得 %d 行，0 = 读取失败），解析器按后写覆盖先写取值——可能是"
-                "配置错误，也可能是 .env 行分隔符注入提权尝试（2026-09-07）。"
-                "请核对文件属主与内容，只保留唯一一行后恢复正常（无需重启）",
-                ENV_FILE, dup,
-            )
-            send_notification(
-                "主管理员凭据歧义告警",
-                f".env 中 YIBAN_ADMIN_PASSWORD_HASH 未确认为恰好一行"
-                f"（统计得 {dup} 行，0 = 读取失败），主管理员登录已被拒绝。\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "该状态要么是配置错误，要么是配置注入提权：\n"
-                "请立即核对 .env 内容与文件属主，只保留唯一一行，并排查近期登录与改密记录。",
-                urgent=True,
-                # 独立账本 login_fail：本告警可由未认证的 POST /api/login 触发，
-                # 不得挤占共享紧急额度（登录失败账本正是为高频可达的告警设立）
-                ledger="login_fail",
-            )
-            _constant_time_dummy(password)
-            return False
-        return check_password_hash(pw_hash, password)
-    admin_pass = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
-    if admin_pass:
-        # M1 明文回退 fail-closed：走到这里 = 哈希缺失而明文仍在，即启动迁移
-        # （migrate_admin_password_to_hash）写 .env 失败的降级态。此前回退明文比对，
-        # 意味着迁移失败被静默容忍、明文口令路径长期可用；直接拒绝并指导修复，
-        # 修复 .env 权限/可写性后重启即自动补齐哈希（迁移逻辑本身不变）。
-        logger.error(
-            "管理员口令仍为明文存储（%s 缺 YIBAN_ADMIN_PASSWORD_HASH，启动迁移失败态），"
-            "明文比对已停用（fail-closed）。请修复 .env 的属主/权限（属主可写）后重启服务，"
-            "迁移会自动将口令转为哈希；或手工设置 YIBAN_ADMIN_PASSWORD_HASH",
-            ENV_FILE,
-        )
-        _constant_time_dummy(password)
-        return False
-    # 2026-08-27 审查 P3：此处两种既有分支均已返回——
-    # 哈希存在 → 已比对返回；明文存在 → M1 fail-closed 返回 False。
-    # 能走到这 = 哈希与明文都为空（配置在两次 read_env 之间被清空的极端竞态），
-    # 原 compare_digest 行在该态对空密码恒真，属理论上的失效盲区，显式拒绝。
-    return False
+    return _security.verify_admin(
+        username, password, ENV_FILE, read_env, _count_env_key_lines,
+        send_notification, _constant_time_dummy)
 
 
 # ---------------------------------------------------------------------------
 # 系统信息
 # ---------------------------------------------------------------------------
 def sign_status(now=None):
-    """基于服务器时间计算签到状态。
+    """基于服务器时间计算签到状态（实现见 web/services/signstatus.py）。
 
-    返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
-    文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
+    `.env` 路径、整数配置读取器与有效窗口视图都按调用时刻现取本模块的
+    （测试会打桩 `web.app._sign_window` / `web.app.edge_config`，窗口打桩经
+    `sign_window_bounds` 现取后穿透）。
     """
-    now = now or clock.now()
-    if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
-        # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
-        return "今日无需打卡（周日）", "#a1a1aa"
-    if now.weekday() == 5 and not load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0):
-        # 周六：2026-09-07（v0.29.0）起默认关闭；开启后走正常窗口逻辑
-        return "今日无需打卡（周六）", "#a1a1aa"
-    sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
-    start_h, start_m = sw[0]
-    end_h, end_m = sw[1]
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
-    if now < start:
-        return f"未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
-    if now <= end:
-        return f"签到窗口进行中（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
-    return "今日签到已结束", "#e0af68"
+    # file_env 现读传入：周末门判定走引擎同一份解析，且必须读到 web 的这份 .env
+    #（web 进程环境里未必有这些键——口径见 _day_off_reason 的说明）。
+    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now,
+                                   file_env=read_env(ENV_FILE))
 
 
-def check_connectivity():
-    """连通性检测：不登录，仅检查易班 API 可达性。返回 (ok, detail)。"""
-    try:
-        resp = requests.get(
-            API_AUTH_URL,
-            timeout=6,
-            headers={
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-            },
-        )
-        ok = resp.status_code < 500
-        detail = f"HTTP {resp.status_code}"
-    except Exception as e:
-        ok = False
-        detail = str(e)[:60]
-    return ok, detail
-
-
-def _nl_safe(value):
-    """告警正文插值净化（2026-08-27 对抗性审查 P2-4）：压平 CR/LF。
-
-    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前转义换行为字面量，
-    防止请求体夹带换行在告警正文中伪造额外行。对齐 signin._sanitize_text 的
-    换行纪律；正常值不含换行，显示语义不变。
-    """
-    return str(value).replace("\r", "\\r").replace("\n", "\\n")
-
-
-def _alert_mail_recipients():
-    """A 线告警邮件的收件人（唯一算法）：ADMIN_TO（受个人接收开关约束）+ 开启接收的管理员。
-
-    刻意只留一份实现，由 send_notification、_exhaustion_notice_mail 与
-    _alert_channel_status() 共用：通道健康判据要回答的是"这一封日报到底发不发得出去"，
-    它与 send_notification 实际取收件人的算法必须严格一致，各算一套就会分叉——
-    复评点名的组合变体（只关 admin_notify + 无其他接收管理员）正是
-    "邮件通道看着全绿、收件人却为空"，判据若另算一份就会报成"一切正常"。
-    """
-    extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
-    return db.admin_mail_recipients(extra)
+# 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
+# `_audit_alert_facts` / `_last_cleanup_text`、变更与审核邮件 `_change_mail` /
+# `_review_reject_mail`、收件人算法 `_alert_mail_recipients` 及随族常量）实现见
+# web/services/notify_mail.py，此处以导入区
+# 再导出保持 m.* 可达；`send_notification` 与 `_push_ever_configured` 需要注入本模块
+# 持有的名字，故在下方转发。
 
 
 def send_notification(title, content, urgent=False, force=False, ledger=None):
-    """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
+    """发送告警通知（A 线邮件 + Webhook 双通道，实现见 web/services/notify_mail.py）。
 
-    - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
-      （按个人开关过滤）+ 所有开启接收的管理员用户邮箱；主管理员关闭
-      YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。邮件不受 urgent 影响，始终发送。
-    - Webhook：scripts/notify.py 组件（Server酱/自定义 URL，加密配置 +
-      同类型节流 + 每日预算 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
-      urgent=True 标记重要告警：设置页开启「仅推送重要告警」后，仅 urgent 通知会推手机，
-      其余（用户日常改密/签到结果类等）仅走邮件，把推送额度留给真正威胁系统/账号安全的事件。
-    - force=True：跳过两侧节流（邮件同类节流 + webhook 的
-      节流/每日额度/仅重要开关），供"先告警后落盘"的配置变更告警等**必须送达**的
-      场景使用——此刻额度/节流参数仍为旧值，告警不会被本次刚提交的新参数吞掉。
-      默认 False，向后兼容（既有调用方行为不变）。
-    - ledger：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
-      "login_fail" = 登录失败告警独立账本，日额度 YIBAN_LOGINFAIL_DAILY_MAX
-      （默认 3，0=不限），与 general/urgent 互不挤占——登录失败是公网最高频的
-      告警源，独占账本后喷洒类攻击烧不光紧急账的额度。
+    同类型告警邮件节流 `_mail_alert_due` 按调用时刻现取本模块的（测试会打桩
+    `webapp._mail_alert_due`，服务层另持绑定会让这个桩静默失效）。
     """
-    recipients = _alert_mail_recipients()
-    # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
-    # SMTP 额度）；webhook 由 notify.py 独立节流。force=True 时绕过（必须送达场景）
-    if recipients and (force or _mail_alert_due(title)):
-        mailer.send_admin_alert(title, content, to=",".join(recipients))
-    elif recipients:
-        logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
-    # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, content, urgent=urgent, force=force, ledger=ledger)
-    # 手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
-    # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
-    # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
-    # 告知只走邮件（推送额度正是刚用尽的东西），且整段兜异常——耗尽告知属附加信息，
-    # 绝不能把本次主告警带崩。
-    try:
-        exhausted = notify.pop_exhaustion_notice()
-    except Exception as e:  # 兜底：告知接线不得影响本次主告警
-        logger.warning("读取推送额度耗尽标记失败（忽略）: %s", e)
-        exhausted = None
-    if exhausted:
-        try:
-            _exhaustion_notice_mail(exhausted)
-        except Exception as e:  # 兜底：同上
-            logger.warning("推送额度耗尽告知邮件发送失败: %s", e)
+    return _notify_mail.send_notification(
+        title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
 
 
-_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}
+def _alert_audit_unhealthy(health):
+    """审计链异常告警的一次尝试：按账目变化触发、按**送达**推进基线。
 
-
-def _exhaustion_notice_mail(kinds):
-    """手机推送额度耗尽告知：一封邮件写清哪几本账耗尽、上限是多少。
-
-    kinds 为 notify.pop_exhaustion_notice() 返回的账本名列表（"general"/"urgent"），
-    每本账每日各一次，故本函数每天最多被调用两次且不会重复发同一本。
-    只走邮件通道（不经 send_notification，避免与本函数互相递归）。
+    返回本次是否真正外发（任一通道送达）。签名未变（与上次已告警的同一故障态）时只留
+    ERROR 日志、不外发，返回 False。**送达失败时不推进基线**：告警因此保持待发，下一轮
+    （次日或下次进程启动）仍会重试，而不是一次发送失败就被永久静默。
     """
-    try:
-        cfg = notify.get_config()
-    except Exception:  # 兜底：取额度概览失败时按"未知"出文，不抛
-        cfg = {}
-    max_keys = {"general": "daily_max", "urgent": "urgent_daily_max"}
-    parts = []
-    for kind in kinds:
-        label = _NOTIFY_LEDGER_LABELS.get(kind, kind)
-        limit = cfg.get(max_keys.get(kind, ""))
-        has_cap = isinstance(limit, int) and limit > 0
-        tail = f"（今日上限 {limit} 条已全部用尽）" if has_cap else "（今日额度已用尽）"
-        parts.append(f"{label}推送额度已用尽{tail}")
-    body = (
-        "手机消息推送" + "、".join(parts) + "。\n"
-        f"当日后续同类告警不再推手机，请改查管理员告警邮件（邮件通道不受影响）。\n"
-        f"如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / YIBAN_NOTIFY_URGENT_DAILY_MAX"
-        f"（0=不限），或关闭「仅推送重要告警」。\n"
-        f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    if not db.audit_alert_needs_attention(health):
+        logger.error("审计链异常态与上次已告警的相同，本次不重复外发（结论未变，日志照留）")
+        return False
+    delivered = send_notification(
+        "审计链异常告警",
+        mail_layout.Mail(
+            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
+                    "或存在未留痕的管理操作。",
+            fields=_audit_alert_facts(health),
+            advice=["立即核查审计链与库外锚点",
+                    "确认之前不要依赖审计记录做处置结论"],
+            level="urgent",
+        ),
+        urgent=True,
     )
-    logger.warning("手机推送%s，已补发告知邮件", "、".join(parts))
-    recipients = _alert_mail_recipients()
-    if not recipients:
-        logger.warning("推送额度耗尽告知无法送达（邮件收件人为空），请登录后台自查推送配置")
-        return
-    mailer.send_admin_alert("手机推送额度已用尽告警", body, to=",".join(recipients))
+    if delivered:
+        db.mark_audit_alert_sent(health)
+        db.mark_audit_write_failures_notified()
+    else:
+        logger.error("审计链异常告警未能送达（邮件与推送均未成功），基线不推进，"
+                     "下一轮将继续重试")
+    return bool(delivered)
 
 
-# 两个邮件开关的中文名表（env_key → 可读名）：变更告警文案与高危动作标签共用，
-# 避免同一件事在两个地方各写一套字面量（评审 ⑤：告警标签必须按字段区分）
-_MAIL_FLAG_NAMES = {
-    "YIBAN_MAIL_ENABLE": "全局邮件通知",
-    "YIBAN_MAIL_ADMIN_NOTIFY": "主管理员个人接收",
-}
-
-
-def _mail_flags_desc(flags):
-    """邮件开关变更集（env_key → bool）→ 告警正文可读描述。
-
-    文案里带上"具体改了什么"：运营者只看一行标题无法判断是
-    全局关停下线、还是主管理员个人收件被拔线，两者的处置动作完全不同。
-    键名来自代码常量（非外部输入），无注入面。
-    """
-    return "；".join(
-        f"{_MAIL_FLAG_NAMES.get(k, k)}：{'开启' if v else '关闭'}" for k, v in flags.items()
-    )
-
-
-def _notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric):
-    """消息推送配置变更集 → 告警正文可读描述。
-
-    关闭通道与"只是换了个数"在告警里必须一眼可辨：前者是攻击者掩盖痕迹的必经动作，
-    后者是日常调参。ntype 已过白名单校验、numeric 为 int/bool，均无注入面。
-    """
-    parts = []
-    if close_channel:
-        parts.append("通道：关闭（⚠ 告警不再推手机）")
-    elif ntype:
-        parts.append(f"通道：{ntype}")
-    if swap_secret:
-        parts.append("密钥：已更换")
-    elif clear_secret and not close_channel:
-        parts.append("密钥：已清空（⚠ 通道随之失效）")
-    labels = {
-        "cooldown": "节流秒数", "urgent_only": "仅重要告警",
-        "daily_max": "非紧急每日上限", "urgent_daily_max": "紧急每日上限",
-    }
-    for key, value in numeric.items():
-        shown = ("开启" if value else "关闭") if isinstance(value, bool) else value
-        parts.append(f"{labels.get(key, key)}：{shown}")
-    return "；".join(parts) or "无实质变更"
-
-
-# 判定"推送这路是否曾配置过"的最轻事实来源：.env 里这两个键**存在且值非空**。
-# 口径（修复轮 3 裁定）：两键都不存在、或都在而值都为空 ⇒ 按"从未配置"处理，不算降级；
-# 设置页关闭通道会把两键一并删掉、手工"清空"则写成 `KEY=` 空值行，两者在配置文件里
-# 同形，一律落进"从未配置"这个合法终态。
-_PUSH_CONFIG_ENV_KEYS = ("YIBAN_NOTIFY_TYPE", "YIBAN_NOTIFY_SECRET_ENC")
+# 判定"推送这路是否曾配置过"的键表与其唯一实现见 web/services/notify_mail.py，
+# 此处以导入区再导出保持 m.* 可达。
 
 
 def _push_ever_configured(envs=None):
-    """手机推送通道在本部署历史上是否配置过（修复轮 3 的降级判据输入）。
+    """手机推送通道在本部署历史上是否配置过（实现见 web/services/notify_mail.py）。
 
-    轮 2 把"推送未配置"一并判为降级，于是**邮件单通道**这一刻意的终态配置每天落一条
-    channel_health 降级痕迹、日报每天挂 ⚠/urgent —— 天天喊降级就是告警疲劳，真出事时
-    这条痕迹反而没人看。降级只该回答"本应可用的出口现在不可用"，因此需要一个
-    "是否曾配置"的事实来源。刻意复用现成的 .env 解析结果，**不新增 app_meta 键、不新建
-    状态存储**："把推送配置拆掉"这个**动作**（设置页关闭/清钥、或直接改文件）本身已由
-    notify_config 审计行 + urgent=True 变更播报覆盖，日报无需对一个
-    已经安静消失的通道天天重复定性。
-    代价照实记下：管理员用设置页"关闭推送"后两个键行都被删除，此后日报不再因此挂
-    降级旗标——该动作发生当时那一条 notify_config 审计 + urgent 播报就是痕迹本体。
-    .env 整个读不到（文件不存在）时按"可能配过"处理：宁可多判一次降级留痕，不可静默
-    当健康——与本函数调用方对"收件人读取失败"的取向完全一致。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`、
+    也会赋值 `ENV_FILE`），故转发必须在调用时刻现取后传入。
     """
-    if envs is None:
-        if not os.path.exists(ENV_FILE):
-            return True
-        envs = read_env(ENV_FILE)
-    return any(str(envs.get(k) or "").strip() for k in _PUSH_CONFIG_ENV_KEYS)
+    return _notify_mail._push_ever_configured(ENV_FILE, read_env, envs)
 
 
 def _alert_channel_status():
-    """两条告警通道的结构化可用性判据。
+    """两条告警通道的结构化可用性判据（实现见 web/services/channel_health.py）。
 
-    刻意把"通道到底可用不可用"从展示文案里拆出来单独算：是否降级决定日报按不按
-    urgent 发、以及要不要往审计链落痕迹，属安全判定，不能靠"正文里有没有 ⚠ 字符"
-    这种字符串嗅探——措辞改一次、或某条本该报的事实恰好不带 ⚠（旧写法里
-    「主管理员个人接收=否」与「推送通道：未配置」两行都不带），嗅探就会静默漏判。
-    本函数一次读清两侧与收件人，_channel_status_lines() 只负责把它翻译成人话，
-    判定与文案共用同一份数据，不可能再各说各话。
+    "推送是否曾配置过"的判据按调用时刻现取本模块的 `_push_ever_configured`（它再现取
+    本进程的 `ENV_FILE` 与 `read_env`），服务层另持绑定会让改写 `web.app.ENV_FILE`
+    的测试静默失效。
     """
-    status = {
-        "mail_flag_on": False,      # YIBAN_MAIL_ENABLE 开关本身
-        "mail_usable": False,       # mailer.is_enabled()：开关 + SMTP 发信条目真正可用
-        "mail_state": "",           # mailer.smtp_channel_state()：ok/broken/off 三态
-        "mail_state_detail": "",    # broken 时的具体病因（供日报点名，不必翻日志）
-        "mail_self_notify": True,   # 主管理员个人接收（YIBAN_MAIL_ADMIN_NOTIFY）
-        "mail_recipients": 0,       # 实际可送达收件人（为空 == 邮件这路等于不存在）
-        "mail_user": "",
-        "mail_admin_to": "",
-        "mail_error": "",
-        "push_usable": False,       # notify.get_config()["enabled"]：有 type 且密钥解得开
-        "push_configured": False,   # 配过（含"配过又被清钥"= 已知病症）
-        # 是否曾配置过（.env 两键存在且值非空）：区分"从未启用推送"与"配过又被拆"（修复轮 3）
-        "push_ever_configured": False,
-        "push_type": "",
-        "push_secret_masked": "",
-        "push_urgent_only": False,
-        "push_error": "",
-        # 两本推送额度账（P2-1 分账后分开展示；键名与 notify.get_config 保持一致）
-        "daily_max": None,
-        "daily_remaining": None,
-        "urgent_daily_max": None,
-        "urgent_daily_remaining": None,
-    }
-    # ---- 邮件通道（A 线：全部安全告警的最后送达路径）----
-    try:
-        mcfg = mailer.get_config()
-        status["mail_flag_on"] = str(mcfg.get("enable", "")).strip().lower() in (
-            "1", "true", "on", "yes")
-        # 可用性判据必须是 mailer.is_enabled()：除 YIBAN_MAIL_ENABLE 外还要求 SMTP
-        # 发信条目列表非空（YIBAN_MAIL_SMTPS_ENC 或旧键 USER+PASS），否则
-        # mailer._send 就静默跳过、一封都不发。只看 enable 真值会把"开了但发不出去"
-        # 误报成"一切正常"（修复轮 1 评审 ①）。
-        status["mail_usable"] = bool(mailer.is_enabled())
-        # 三态与病因同行取出（两次调用会重复解密一次）：broken 时日报按
-        # "已开启但不可用 + 具体病因"展示——密文解不开与未配置条目是两种不同处置
-        mail_state, mail_state_detail = mailer.smtp_channel_state()
-        status["mail_state"] = mail_state
-        status["mail_state_detail"] = mail_state_detail
-        status["mail_self_notify"] = bool(mcfg.get("admin_notify", True))
-        status["mail_user"] = mcfg.get("user", "") or "-"
-        status["mail_admin_to"] = mcfg.get("admin_to", "") or "-"
-    except Exception as e:  # 兜底：日报不得因单通道读取失败整体缺席
-        status["mail_error"] = type(e).__name__
-    try:
-        # 收件人与 send_notification 同一套算法（_alert_mail_recipients）：开关与凭据
-        # 都齐、但 ADMIN_TO 被个人接收开关摘掉且无其他接收管理员时，recipients 为空，
-        # 邮件这路同样一封都发不出去——修复轮 2 复评点名的组合变体。
-        status["mail_recipients"] = len(_alert_mail_recipients())
-    except Exception as e:
-        # 读不动收件人按 0 处理（宁可多判一次降级留痕，不可静默当健康）
-        status["mail_error"] = status["mail_error"] or type(e).__name__
-    # ---- 手机推送通道（B 线：Webhook / Server酱）----
-    try:
-        ncfg = notify.get_config()
-        status["push_usable"] = bool(ncfg.get("enabled"))
-        status["push_configured"] = bool(ncfg.get("configured"))
-        status["push_type"] = ncfg.get("type", "")
-        status["push_secret_masked"] = ncfg.get("secret_masked", "")
-        status["push_urgent_only"] = bool(ncfg.get("urgent_only"))
-        for key in ("daily_max", "daily_remaining",
-                    "urgent_daily_max", "urgent_daily_remaining"):
-            status[key] = ncfg.get(key)
-        # 曾配置判据与 notify 侧读的是同一份 .env（两键存在且值非空），本函数唯一的额外
-        # 开销是一次 os.path.exists；抛错时上面的 push_error 已置位 ⇒ 直接判降级。
-        status["push_ever_configured"] = _push_ever_configured()
-    except Exception as e:  # 兜底：同上
-        status["push_error"] = type(e).__name__
-    return status
+    return _channel_health._alert_channel_status(_push_ever_configured)
 
 
-def _channel_health_degraded(status, exhausted=()):
-    """本次通道状态是否算"降级"（决定日报 urgent 与要不要落审计痕迹）。
-
-    判据逐条取自结构化数据（_alert_channel_status() 的字段 + pop_exhaustion_notice()
-    返回的账本名列表），与正文里有没有 ⚠ 字符无关。
-
-    修复轮 3 口径修正：**降级只回答"本应可用的出口现在不可用"**。轮 2 把"推送从未
-    配置"也算降级，后果是邮件单通道部署（本项目真实生产在某个时点就是这样）每天落
-    一条 channel_health 降级痕迹、日报每天挂 ⚠/urgent —— 对一个刻意的终态配置天天
-    喊"降级"就是告警疲劳，正是本任务要消灭的病。"清空推送配置"这个**动作**本身已由
-    notify_config 审计行 + urgent 播报覆盖，日报无需重复定性。
-    注意：本函数只管"要不要挂旗标"，两侧事实由 _channel_health_facts() **无条件**
-    落审计与 meta（无论是否降级），"事后核查"不因此少一个字。
-
-    成立条件（任一即降级）：
-      - 看不清状态：邮件侧或推送侧读取失败——报警器本身出了毛病；
-      - 当日有推送账本额度耗尽（exhausted 非空）：这路当天等于死了；
-      - (a) 邮件侧不可用：mailer.is_enabled() 为假（YIBAN_MAIL_ENABLE 开了却没有
-        可用的 SMTP 发信条目，或整个开关被关），一封都发不出去；
-      - (b) 邮件侧可用却无任何可送达收件人（_alert_mail_recipients() 为空）——
-        "只关 admin_notify 且库里没有其他接收管理员"这个组合变体仍算降级；
-      - (c) 推送侧**曾配置过**而现在不可用：.env 里 type 或密文至少一个仍有值，却
-        已被清钥、或密文存在却解不出（push_configured 真而 push_usable 假
-        = 已知病症）。
-    「从未配置过推送」不在 (c) 内：.env 里 YIBAN_NOTIFY_TYPE 与 YIBAN_NOTIFY_SECRET_ENC
-    两键都不存在、或都在而值都为空（设置页关闭通道是删键行、手工清空是空值行，二者在
-    配置文件里同形）—— 这样的部署日报照常用于每日一封，只是不挂降级旗标。
-    """
-    if status["mail_error"] or status["push_error"]:
-        return True  # 看不清通道状态本身就是报警器出了毛病
-    if exhausted:
-        return True
-    if not status["mail_usable"] or status["mail_recipients"] <= 0:
-        return True  # (a)(b)：邮件是全部安全告警的最后送达路径，任何时候都本应可用
-    # (c)：推送这路只有在"曾经配过"的前提下缺失才算被拆；从未启用手机推送是合法终态
-    return bool(status["push_ever_configured"]) and not status["push_usable"]
+# 告警通道健康族（降级判定 `_channel_health_degraded`、状态行 `_channel_status_lines`、
+# 额度描述 `_daily_budget_desc`、日报已播标记读取 `_health_report_sent_today`、事实摘要
+# `_channel_health_facts`、降级痕迹 `_audit_channel_health_degraded` 与日报标记键
+# `_HEALTH_REPORT_META_KEY`）的纯逻辑实现见 web/services/channel_health.py，此处以导入区
+# 再导出保持 m.* 可达；需要现取本模块名字（状态生产者 / 状态行 / 告警出口）的入口在
+# 下方转发。
 
 
 def _channel_status_lines(status=None):
-    """两条告警通道的当前状态文本行（供每日健康日报使用）——纯展示层。
+    """两条告警通道的当前状态文本行（实现见 web/services/channel_health.py）。
 
-    判据一律取自 _alert_channel_status()（或调用方传入的那一份），本函数只把结构化
-    事实翻译成人话；是否降级由 _channel_health_degraded() 直接看结构化字段，不回过来
-    嗅这里有没有 ⚠。
-
-    刻意"不依赖被改配置本身"：通道被关闭时照样输出"被关"这一行，而不是跳过——
-    攻击者关掉报警器后，日报里必须仍然看得见"被关"这个事实，否则关闭动作与
-    "一切正常"在运维眼里无法区分。读取失败也出一行（并标注读取失败），保证
-    日报每次都有这条状态，不会静默缺席。
+    默认的状态生产者按调用时刻现取本模块的 `_alert_channel_status`（它再现取
+    `_push_ever_configured` 与 `.env` 状态）：服务层另持绑定会让改写 `ENV_FILE`
+    的测试静默失效。
     """
-    st = status if status is not None else _alert_channel_status()
-    lines = []
-    # ---- 邮件通道 ----
-    if st["mail_error"]:
-        lines.append(f"邮件通道：⚠ 状态读取失败（{st['mail_error']}）")
-    elif st["mail_usable"] and st["mail_recipients"] <= 0:
-        lines.append(
-            "邮件通道：⚠ 已开启但无可送达收件人（0 人可收：主管理员个人接收已关、或未配置 "
-            "ADMIN_TO，且库里没有其他开启接收的管理员——全部告警邮件实际一封都发不出去）"
-        )
-    elif st["mail_usable"]:
-        lines.append(
-            f"邮件通道：已开启（发件 {_nl_safe(st['mail_user'])}，"
-            f"主管理员个人接收={'是' if st['mail_self_notify'] else '否（ADMIN_TO 不收）'}，"
-            f"告警收件 {_nl_safe(st['mail_admin_to'])}，今日可送达收件人 "
-            f"{st['mail_recipients']} 人）"
-        )
-    elif st["mail_flag_on"]:
-        # 三态 broken（开关开但发不出去）：把具体病因（未配置条目 / 条目缺账号
-        # 授权码 / 密文解不开）带到日报行，运维不必翻日志就能区分处置
-        lines.append(
-            f"邮件通道：⚠ 已开启但不可用（{st['mail_state_detail']}），"
-            "需处理：全部告警邮件实际一封都不会发出"
-        )
-    else:
-        lines.append("邮件通道：⚠ 已关闭（YIBAN_MAIL_ENABLE=0，全部告警邮件不发送）")
-    # ---- 手机推送通道 ----
-    if st["push_error"]:
-        lines.append(f"推送通道：⚠ 状态读取失败（{st['push_error']}）")
-    else:
-        if st["push_usable"]:
-            lines.append(
-                f"推送通道：已开启（{_nl_safe(st['push_type'])}，"
-                f"密钥 {_nl_safe(st['push_secret_masked'])}，"
-                f"{'仅推送重要告警' if st['push_urgent_only'] else '全部告警均推送'}）"
-            )
-        elif st["push_configured"]:
-            # 配过但当前不可用（密钥被清 / 换钥后解不开 = 已知病症）
-            lines.append("推送通道：⚠ 已配置但不可用（密钥缺失或解密失败，需重新配置）")
-        else:
-            # 修复轮 2：「未配置」同样标 ⚠ 并计入降级。旧写法把它当正常文本，于是
-            # "只关 admin_notify + 关闭推送（type 置空后 configured 一并转假）" 这个
-            # 组合变体两行都不带 ⚠ —— 日报既发不出去、又一条痕迹不落。手机推送这路
-            # 不存在是真实的致盲风险（邮件一挂就零告警），必须看得见。
-            lines.append("推送通道：⚠ 未配置（手机推送这路不存在，告警只剩邮件一条出口）")
-        lines.append(_daily_budget_desc(st))
-    return lines
-
-
-def _daily_budget_desc(cfg):
-    """两本推送额度账的今日剩余描述（分账后必须分开报，不能只报非紧急）。
-
-    入参可以是 notify.get_config() 的原始输出，也可以是 _alert_channel_status() 的
-    快照——后者刻意沿用同名键，展示层不再重复读一遍配置。
-    """
-    def _fmt(label, remaining, limit):
-        if remaining is None:
-            return f"{label}不限额"
-        cap = f"/{limit}" if isinstance(limit, int) and limit > 0 else ""
-        return f"{label}剩余 {remaining}{cap} 条"
-
-    return "今日推送额度：" + "，".join([
-        _fmt("非紧急", cfg.get("daily_remaining"), cfg.get("daily_max")),
-        _fmt("紧急", cfg.get("urgent_daily_remaining"), cfg.get("urgent_daily_max")),
-    ])
-
-
-# 通道健康日报"今日已播"标记（app_meta 键）。刻意落库而非进程内 dict：
-# 每日线程在启动 60 秒后即跑第一轮，_mail_alert_ts 这类进程内状态重启即失效，
-# 频繁重启的环境会把"每日健康日报 + 每轮一封"变成"每次重启各发一封外发邮件"。
-_HEALTH_REPORT_META_KEY = "channel_health_last"
-
-
-def _health_report_sent_today(today):
-    """app_meta 里记录的最近一次日报是否就是今天（跨进程重启有效）。
-
-    读失败 / 无记录一律按"未发送"处理：宁可多播一封，也不能因为库读不动而让
-    报警器彻底沉默（漏播比重复打扰严重）。兼容两种写法：JSON 与裸日期串。
-    """
-    raw = db.get_meta(_HEALTH_REPORT_META_KEY, "")
-    if not raw:
-        return False
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return raw.strip() == today
-    return isinstance(data, dict) and data.get("date") == today
-
-
-def _channel_health_facts(status, exhausted=()):
-    """两侧通道的压缩事实摘要（审计 detail 与 app_meta 记录共用这一份）。
-
-    修复轮 2 评审：旧 detail 只拼正文里含 ⚠ 的行，两通道全断的那个变体里恰好
-    两侧都不带 ⚠（或只有一侧带），detail 就只剩半条链，"推送侧也被拆了"这个关键
-    事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
-    事后要能回答"坏的是哪一路、另一路当时是不是好的"。
-    刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
-    （scripts/db.py:2429），拼完整句子在最坏情况下会把后半句（推送侧）截没，
-    等于重犯同一个错。
-    """
-    if status["mail_error"]:
-        mail = f"读取失败({status['mail_error']})"
-    elif not status["mail_usable"]:
-        mail = "开关开但凭据缺失" if status["mail_flag_on"] else "已关闭"
-    elif status["mail_recipients"] <= 0:
-        mail = "可用但收件人为空"
-    else:
-        mail = "可用"
-    if status["push_error"]:
-        push = f"读取失败({status['push_error']})"
-    elif status["push_usable"]:
-        push = "可用"
-    elif status["push_configured"]:
-        push = "已配置但不可用"
-    else:
-        push = "未配置"
-    facts = (f"邮件通道={mail}(收件人{status['mail_recipients']},"
-             f"主管理员接收={'是' if status['mail_self_notify'] else '否'})；"
-             f"推送通道={push}")
-    if exhausted:
-        facts += "；推送额度已用尽=" + "/".join(
-            _NOTIFY_LEDGER_LABELS.get(k, k) for k in exhausted)
-    return facts
-
-
-def _audit_channel_health_degraded(facts):
-    """把"通道处于降级"这一事实落到审计链。
-
-    两条通道同时被拆时，日报本身既发不出去也没有任何别的出口；没有库内痕迹，
-    事后就无法证明"系统曾检测到通道被拆"，攻击者的拔线动作与运维正常停机在
-    取证上完全同形。审计行会进入既有 HMAC 哈希链并被库外锚点覆盖（app_meta 不在
-    链内，所以痕迹刻意写审计而不是 meta）。db.audit 自身已含重试与失败计数。
-
-    facts 必须由 _channel_health_facts()（结构化状态）产出，不得改为拼正文里含 ⚠
-    的行——那正是修复轮 2 复评点名的失准来源。
-    """
-    detail = f"degraded=1 {facts}"[:200]
-    if not db.audit("system", "channel_health", "alert_channels", detail):
-        # 审计也写不进去时只剩日志这条退路（此时大概率两通道与库都在打架）
-        logger.error("告警通道降级痕迹未能落审计链，请人工核查: %s", detail)
+    return _channel_health._channel_status_lines(_alert_channel_status, status)
 
 
 def _send_channel_health_report(force=False):
-    """告警通道健康日报（每日线程调用）。
+    """告警通道健康报告（旧称"日报"，实现见 web/services/channel_health.py）。
 
-    三件事：① 固定附一行两条通道当前状态（被关闭也要看得见"被关"）；
-    ② 接线 Task 2 的 pop_exhaustion_notice()——当日有账本额度耗尽且尚未告知时，
-    在此把行补进日报。这里的 pop 必须在 send_notification 之前：pop 是取走语义，
-    先取走就不会再被本次 send_notification 内部的接线重复发一封（一次 pop 拿全列表）；
-    ③ 评审 ④（"日报本身不得依赖被改配置/进程内状态"）：
-      - 每日至多一封用 app_meta 落库去重（进程内 dict 重启即失效）；
-      - 通道降级时**先落一条审计痕迹再尝试发信**——两条通道同时被拆时这封日报
-        既发不出去也没有别的出口，没有库内痕迹就无法在事后证明"系统曾检测到
-        通道被拆"。审计行走既有 HMAC 哈希链 + 库外锚点覆盖范围（app_meta 不在链内，
-        故痕迹用 db.audit 而非只写 meta）。
+    清理线程每日醒一次，但例行播报只在 `_HEALTH_REPORT_WEEKDAY` 那天（周一）落地；
+    通道降级或当日额度耗尽时由 `_channel_health_report_due()` 放行当天照发。
 
-    降级判定（修复轮 2）：一律取自结构化状态 _alert_channel_status() + pop 出的账本
-    名列表，不看正文有没有 ⚠；痕迹摘要同样按结构化事实拼，两侧都记。
-
-    返回 True 表示本次已排出一封日报（含"发不出去但痕迹已落库"），
-    False 表示今日已播过、本次跳过。force=True 只越过"今日已播"判定，
-    仍会写入标记——人工补发同样算当日那一封。
-    发信抛异常时异常原样上抛（调用方记日志），且**不落**去重标记：当日稍后仍可重试。
+    状态生产者 / 状态行 / 告警出口三个入口都按调用时刻现取本模块的（既有测试在
+    `web.app` 上打桩 `_channel_status_lines` 做"纯文案改版"对拍，又打桩
+    `send_notification` 模拟发信失败），服务层另持绑定会让这些桩静默失效。
     """
-    today = clock.now().strftime("%Y-%m-%d")
-    if not force and _health_report_sent_today(today):
-        logger.info("告警通道健康日报今日已播报（标记 %s），本次跳过", _HEALTH_REPORT_META_KEY)
+    return _channel_health._send_channel_health_report(
+        force, alert_channel_status=_alert_channel_status,
+        status_lines=_channel_status_lines, send_notification=send_notification)
+
+
+# 告警通道健康报告的例行播报日（0=周一）。日报的价值在"通道被关掉这件事看得见"，
+# 而通道健康与否不会在一天内变化——日更只是每天多打扰一封。故例行收敛到固定一天；
+# 通道降级当天照发（见 _channel_health_report_due），报警器被拆仍当天可见。
+# 名册 `YIBAN_HEALTH_REPORT_WEEKDAY` 的缺省是 null（本键无缺省）：未配置时沿用本值，
+# 故本值是"未配置 ⇒ 现状"的行为回落，不是名册缺省的第二份定义点。
+_HEALTH_REPORT_WEEKDAY = 0
+#: 清理线程的唤醒间隔（秒）。报告要落到配置的钟点上，线程就得在钟点附近醒着：
+#: 24h 一醒的旧节拍做不到"配 09:00 就 09:00 到"。本值同时是**公布的到达精度**
+#: （±5 分钟，见设置页文案与 README）。清理动作本身不跟着变频繁——唤醒按日判一次，
+#: 只有报告判定每次唤醒都跑。
+_HEALTH_REPORT_TICK_SEC = 300
+#: 报告调度的两枚配置键（顺序 = 时刻、星期）。`_health_report_cfg` 按它们做"读一次"的闩。
+_HEALTH_REPORT_CFG_KEYS = ("YIBAN_HEALTH_REPORT_TIME", "YIBAN_HEALTH_REPORT_WEEKDAY")
+
+
+#: 报告调度两键的"读一次、告警一次"闩：`(原始取值, 解析结果)`。见 `_health_report_cfg`。
+_report_cfg_latch = None
+
+
+def _health_report_cfg():
+    """报告调度配置的一次取值：`(配置时刻 (h,m) 或 None, 星期 int)`。
+
+    取值走 `yiban.config_loader`（名册是配置键的唯一定义点）：非法时刻由加载器按"未设"
+    处理并点名告警，随后落到名册缺省 null；越界星期由加载器按域告警、由本函数回落到
+    缺省。回落成"未配置/缺省"是刻意的：配置里写错一个字符不该让这份安全报告从此不再发出。
+
+    **两枚键每一跳都读**（清理线程的唤醒节拍 `_HEALTH_REPORT_TICK_SEC`），而加载器是
+    "出声的校验器"：坏键值下每读一次告警一次 ⇒ 一个坏键一天刷几百行日志。故按**两枚键的
+    原始取值**做闩：原始取值没变就不再进加载器（= 不重复告警），一变立刻重读 ⇒ "改完下一
+    轮生效"逐位不变。原始取值只用来判"要不要再问加载器"，**不参与取值**（取值仍只由加载器
+    给），故不是第二套 `.env` 解析。闩只挡重复告警，不挡取值新鲜度。
+    """
+    global _report_cfg_latch
+    dotenv = _env_io_svc.read_env(ENV_FILE)
+    raw = tuple(
+        (os.environ.get(_key) or "", dotenv.get(_key) or "")
+        for _key in _HEALTH_REPORT_CFG_KEYS)
+    if _report_cfg_latch is not None and _report_cfg_latch[0] == raw:
+        return _report_cfg_latch[1]
+    time_hm = None
+    configured = config_loader.resolve(_HEALTH_REPORT_CFG_KEYS[0], env_file=ENV_FILE)
+    if configured:
+        time_hm = yb_window.parse_hhmm(configured, None)
+    weekday = _HEALTH_REPORT_WEEKDAY
+    raw_weekday = config_loader.resolve(_HEALTH_REPORT_CFG_KEYS[1], env_file=ENV_FILE)
+    if isinstance(raw_weekday, int) and not isinstance(raw_weekday, bool) \
+            and 0 <= raw_weekday <= 6:
+        weekday = raw_weekday
+    elif raw_weekday is not None:
+        logger.warning("配置 %s=%r 不是 0~6，按缺省（周一）处理",
+                       _HEALTH_REPORT_CFG_KEYS[1], raw_weekday)
+    result = (time_hm, weekday)
+    _report_cfg_latch = (raw, result)
+    return result
+
+
+def _health_report_moment(moment, weekday, hhmm):
+    """`moment` 当日或此前最近一个配置日的**配置时刻**（<= moment）。
+
+    用于把例行判定从"单点采样"改成"区间判定"：唤醒是一跳一跳的，判定若只看当前这一跳，
+    末跳落在配置时刻之前、下一跳已跨日时，"配置时刻"永远不在任何一跳的当前点上——
+    整周的报告被静默丢掉（配置 23:58、末跳 23:56 就是这么丢的）。
+    """
+    day = moment - timedelta(days=(moment.weekday() - weekday) % 7)
+    return day.replace(hour=hhmm[0], minute=hhmm[1], second=0, microsecond=0)
+
+
+def _health_report_routine_due(moment, weekday=None, hhmm=None, since=None,
+                               unconfigured_hm=None):
+    """例行窗口判定（纯函数）：是不是例行日、且已到例行时刻。
+
+    `weekday` / `hhmm` 缺省时现取配置（`_health_report_cfg()` 的一次快照）。调用方传值
+    是为了测试能在同一份快照上逐时刻对拍。
+
+    `unconfigured_hm`：`YIBAN_HEALTH_REPORT_TIME` **未配置时的实际锚点** `(h, m)`。
+    清理线程传"本进程首跳的钟点"——改前循环 24h 一醒，例行报告就落在那个钟点上；节拍
+    收细到 5 分钟后若改成"当天唤醒即发"，未配置的部署会从"启动钟点"漂到"零点后第一跳"，
+    零迁移不成立。不传（只有直接调用的测试会这样）= 无时刻门。
+
+    `since` 传入"上一次唤醒的时刻"时改为**区间判定**：例行时刻落在 `(since, moment]`
+    这一跳里也算到点。两条判据取并集——
+      - 单点（`weekday` 命中且 `当前 >= 例行时刻`）：进程中途重启、醒来已在例行时刻之后，
+        仍按当日补齐（去重标记保证当日至多一封）；
+      - 区间：补上"例行时刻落在 `(since, moment]` 之间（含跨零点那一跳）"的空隙。
+    区间的回溯跨度 = 调用方给的 `since`，清理线程给的是一个唤醒间隔（5 分钟），不是一整天：
+    "进程在例行时刻之后、仍在例行当日起来"由单点判据兜住，"跨日之后才起来"这一周补不上
+    （补它意味着每次重启都可能多外发一封，破坏"一周恰好一封"）。跨零点补发最多让当周多出
+    一封：漏播比重复打扰严重，与本族"宁可多播一封"的既有取舍一致。实现见 `_health_report_moment`。
+    """
+    if weekday is None or hhmm is None:
+        cfg_hm, cfg_weekday = _health_report_cfg()
+        if weekday is None:
+            weekday = cfg_weekday
+        if hhmm is None:
+            hhmm = cfg_hm
+    if hhmm is None:
+        hhmm = unconfigured_hm
+    if hhmm is None:
+        return moment.weekday() == weekday
+    if moment.weekday() == weekday and (moment.hour, moment.minute) >= hhmm:
+        return True
+    if since is None:
         return False
-    status = _alert_channel_status()
-    lines = _channel_status_lines(status)
-    try:
-        exhausted = notify.pop_exhaustion_notice() or []
-    except Exception as e:  # 兜底：告知接线不得影响日报
-        logger.warning("读取推送额度耗尽标记失败（日报内省略）: %s", e)
-        exhausted = []
-    for kind in exhausted:
-        lines.append(
-            f"⚠ 手机推送{_NOTIFY_LEDGER_LABELS.get(kind, kind)}额度今日已用尽，"
-            "当日后续同类告警请查邮件（本行每日每本账各一次）"
-        )
-    # 审计链锚点随日报出箱：HMAC 链密钥、锚点文件、备份都在同一台机器上，
-    # 这封日报是唯一每天离开这台机器的链状态记录——运维拿昨日邮件对照今日库，
-    # 删链/篡改即可被发现。只读（不创建、不轮转锚点）；读取失败省略该行，
-    # 不影响日报本体的发送与降级判定。
-    try:
-        head = db.audit_head_hash()
-        count = db.audit_row_count()
-        if not head and count:
-            # 链头读取失败被 audit_head_hash 吞成空串、而记录数却非零：两侧读到的
-            # 不是同一份一致状态，锚点行宁缺毋滥
-            logger.warning("审计链头读取异常（记录数 %d 但链头为空），日报内省略锚点行", count)
-        else:
-            desc = f"{head[:12]}…" if head else "空链"
-            lines.append(f"审计链锚点：head_hash={desc}（记录数 {count}）")
-    except Exception as e:
-        logger.warning("读取审计链锚点失败（日报内省略该行）: %s", e)
-    body = (
-        "告警通道每日健康报告（两条通道状态、今日额度与审计链锚点）：\n"
-        + "\n".join(lines)
-        + f"\n时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    # 降级口径：健康日不占紧急额度——例行日报若每天都吃掉一格紧急预算，反而会把真正
-    # 的紧急告警挤出预算（那正是本次修复要治的"该响的不响"）。判据是两条出口是否都活着
-    # （邮件可用且有收件人 + 推送可用）以及当日是否还有账本被用尽：攻击链第一步正是
-    # "只关邮件"，此时日报必须还能从手机推送那条通道被听见。
-    degraded = _channel_health_degraded(status, exhausted)
-    facts = _channel_health_facts(status, exhausted)
-    # 痕迹落在发信**之前**：下面这句 send_notification 在两条通道全断时既送不到也没
-    # 回执，先落库才谈得上"无论是否发出都留痕"。摘要（facts）与下面的 meta 共用一份，
-    # 两侧事实无条件都在，不再从正文里挑 ⚠ 行拼。
-    if degraded:
-        _audit_channel_health_degraded(facts)
-    send_notification("告警通道健康日报", body, urgent=degraded)
-    # 去重标记刻意落在发信**之后**（修复轮 2 Minor）：写在之前等于"今天只要想过一遍就
-    # 永久不再试"——send_notification 抛异常或 SMTP 瞬断时，当天这封日报既没出去、
-    # 标记又已落库，直到次日都不会再播，一次瞬断被放大成整天静默，与"宁可多播不少播"
-    # 的取向相反。目标仍是"跨重启每日至多一封"（成功即落标记，重启不会各发一封），
-    # 只是失败那一次不占名额：当日稍后（进程重启后的下一轮、或人工 force 补发）还能重试。
-    # 不为此另起第三套状态存储——仍用同一个 app_meta 键，只是写入时机后移。
-    db.set_meta(_HEALTH_REPORT_META_KEY, json.dumps(
-        {"date": today, "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-         "degraded": degraded, "channels": len(lines),
-         "summary": facts}, ensure_ascii=False))
-    return True
+    return since < _health_report_moment(moment, weekday, hhmm) <= moment
 
 
-# 容量告警去重（进程内）：首次触顶通知一次，之后静默拒绝（防通知风暴；重启后重置）
-_capacity_alerts = {"users": False, "accounts": False}
+def _channel_health_report_due(status=None, since=None, unconfigured_hm=None):
+    """今天是否该播告警通道健康报告：例行时刻、通道降级、或当日有额度耗尽待告知。
 
+    降级判定沿用 `_channel_health_degraded` 的结构化字段（与日报内部同一口径）。额度
+    那一档刻意用只读的 `notify.has_pending_exhaustion_notice()` 与
+    `notify.budget_exhausted_today()`，而不是 `pop_exhaustion_notice()`：pop 是取走
+    语义，在闸门上取走会让真正发信时少了那几行"哪本账用尽"的告知，而账本的 notice
+    标记按日重置 ⇒ 漏到下一个例行日就再也补不回来。两个判据都要：`budget_exhausted_today`
+    只覆盖 general / urgent 两本推送账，登录失败账（login_fail）的耗尽告知同样只有本
+    报告一个取走方——只看前者，攻击当天（非例行日）这封报告不发，告知就在换日归零时
+    永久消失。
 
-def _capacity_account_count():
-    """计入账号容量的账号数（= 会发起易班请求的账号，含 owner='admin' 裸账号）。
+    例行那一档由 `_health_report_routine_due` 判：配置了 `YIBAN_HEALTH_REPORT_TIME`
+    就按钟点锚定（到达时刻由清理线程的唤醒粒度决定），未配置则与改前逐位一致。
 
-    口径（判据唯一来源 `yiban.store.accounts.signs_in`）：**非删除且审核态已通过**。
-    审核态未通过（pending/rejected）的行永不签到（引擎加载与运行期复核都按同一条件
-    过滤），把它们计入会让"永不签到的存量"长期占满名额——新账号在提交时被
-    「账号数量已达上限」误拒，而总览三分类还把这类行显示成"正常"。
-    user_paused 仍计入（用户主动暂停、一键可恢复；三分类已单独列出）。
-    显示/配额/预估三处同一源；2026-09-14 性能：只用明文列，走 load_accounts_raw
-    免解密（原 load_accounts 对每行做 AES-GCM 解密并长持 _conn_lock）。
+    **两套锚点，语义不同，刻意不对齐**（改前 24h 一醒时长这样，节拍收细后仍是这个分工）：
+      - 例行：落在"首跳钟点"的栅格上（配置了时刻则落在配置时刻）；
+      - 降级 / 额度耗尽的加发：按**北京日期开闸**——当天第一跳（零点后 5 分钟内）就发，
+        不看星期也不看时刻。报警器失效必须持续可见，不能等到例行日。进程当天是首次
+        起来时，"第一跳"就是启动后 60 秒那一刻（与改前的启动钟点一致）；跨日运行的
+        进程里，它落在零点后的第一跳（改前落在启动钟点）。
+
+    `since`（上一次唤醒的时刻）与 `unconfigured_hm`（时刻键未配置时的实际锚点，见
+    `_health_report_routine_due`）都透传给例行判定；不传则退回单点判定 / 无时刻门
+    （只有直接调用的测试会这样，生产只有清理线程一个调用点且两个都传）。
+
+    降级期间每次唤醒都会判"该发"（去重标记在发信侧兜底），与日更时的行为一致。
     """
-    return sum(1 for a in load_accounts_raw() if db.account_signs_in(a))
+    st = status if status is not None else _alert_channel_status()
+    if _channel_health_degraded(st):
+        return True
+    try:
+        if notify.has_pending_exhaustion_notice() or notify.budget_exhausted_today():
+            return True
+    except Exception as e:  # 兜底：额度状态读不动不该让日报整体缺席
+        logger.warning("读取推送额度状态失败（按未耗尽处理）: %s", e)
+    return _health_report_routine_due(clock.now(), since=since,
+                                      unconfigured_hm=unconfigured_hm)
 
 
-def _capacity_audit_count():
-    """未通过审核而不占容量的账号数（仅展示：总览/设置页的容量说明）。
-
-    与 `_capacity_account_count` 互斥互补：两者之和 = 全部非删除账号。
-    """
-    return sum(1 for a in load_accounts_raw()
-               if not a["deleted"] and not db.account_signs_in(a))
-
-
+# 容量核计与触顶告警族（账号/用户配额判定 `_capacity_account_count` /
+# `_capacity_audit_count` / `_accounts_at_capacity` / `_users_at_capacity`、容量预估
+# `_capacity_estimate`、注册暂停 `_registration_paused`、同类型告警邮件节流
+# `_mail_alert_due` 与触顶通知 `_notify_capacity_once`，含去重表 `_capacity_alerts`、
+# 节流表 `_mail_alert_ts` / `_mail_alert_lock` 与缺省窗口常量）实现见
+# web/services/capacity.py，此处以导入区再导出保持 m.* 可达；需要现取本模块名字
+# （`.env` 路径与读取器、缺省上限、窗口/裁剪口径、告警出口）的入口在下方转发。
 def _capacity_estimate(gap=0):
-    """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
+    """按当前窗口与账号间隔预估可容纳账号数（实现见 web/services/capacity.py）。
 
-    公式与引擎共用 `signin.capacity_accounts`，有效窗口取
-    `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
-    出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
+    窗口解析器与掐头去尾口径按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`
+    与 `web.app.edge_config`），故转发必须现取后传入。
 
-    **刻意用完整有效窗口、不扣已流逝时间**：本函数服务设置页展示与**保存闸门**
-    （"按新设置预估容量 < 当前账号数则拒绝保存"），问的是"这套配置能容纳几个"。
-    若按时段扣减，管理员在窗口末尾将永远无法保存设置。引擎侧预检问的是"今天还能
-    签几个"，那里才用 `remaining_sec()`。
+    `env` 传**生效配置层**（进程环境为底、`.env` 覆盖，与 run.sh 起引擎前的 export
+    同一优先级）：web 进程从不把 `.env` 装进环境，avg/开关若按 os.environ 读而
+    gap 按 `.env` 读，一次估算就跨两层、按缺省 avg 高估容量（MF-93）。
     """
-    win = yb_window.bounds({
-        "sign_start": _sign_window()[0], "sign_end": _sign_window()[1],
-        "edge_front_sec": edge_config()[0], "edge_back_sec": edge_config()[1],
-    })
-    return signin.capacity_accounts(win.full_sec(), gap)
+    return _capacity._capacity_estimate(
+        gap, sign_window=_sign_window, edge_config=edge_config,
+        env={**os.environ, **read_env(ENV_FILE)})
 
 
 def _accounts_at_capacity(extra_accounts=0):
-    """账号配额判定：占用 = **会签到的账号数** + 本次将新增账号数，
-    > 上限则 True（0 = 不限）。调小上限不删除存量账号，只限制新增。
+    """账号配额判定（实现见 web/services/capacity.py）。
 
-    口径见 `_capacity_account_count`：未通过审核（pending/rejected）的行不计入
-    ——它们永不发起易班请求，计入会把名额被"永不签到的存量"占满，新账号被误拒。
-    审核通过是"让这一行开始产生负载"的动作，故 `api_account_review` 的 approve
-    分支同样过这道门（否则名额只在提交时把关、审批时无门可越界）。
-    extra_accounts：本次提交将新增（或转为参与签到）的账号数，添加/通过恰为 1 个。
+    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
+    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
     """
-    max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-    if max_accounts <= 0:
-        return False
-    return _capacity_account_count() + extra_accounts > max_accounts
+    return _capacity._accounts_at_capacity(
+        extra_accounts, env_file=ENV_FILE, load_env_int=load_env_int,
+        max_accounts_default=DEFAULT_MAX_ACCOUNTS)
+
+
+def _registration_paused():
+    """注册是否处于暂停状态（实现见 web/services/capacity.py）。
+
+    `.env` 路径与宽松读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
+    `read_env`），故转发必须现取后传入。
+    """
+    return _capacity._registration_paused(ENV_FILE, read_env)
 
 
 def _users_at_capacity():
-    """用户配额判定（与 `_accounts_at_capacity` 同构的"超过上限才拒绝"语义，
-    2026-09 容量阈值语义统一）：再注册 1 人后全部未删除注册用户数
-    > 上限 则 True（注册每次恰好新增 1 用户；0 = 不限）。
-    users 口径 = 全部未删除注册用户（含空用户）。
+    """用户配额判定（实现见 web/services/capacity.py）。
+
+    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
+    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
     """
-    max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
-    if max_users <= 0:
-        return False
-    return len(db.load_users()) + 1 > max_users
+    return _capacity._users_at_capacity(
+        env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
 
 
-# 高危告警邮件节流（2026-08-29 被盗号滥用面加固）：同类型告警邮件在窗口内只发一封，
-# 防被盗管理员会话通过反复触发高危操作（批量删除等）耗尽 SMTP 发件额度；webhook
-# 保持实时逐条推送，不受影响。窗口可调：YIBAN_MAIL_ALERT_COOLDOWN（秒，0=关闭，默认 300）。
-DEFAULT_MAIL_ALERT_COOLDOWN = 300
-_mail_alert_ts = {}
-_mail_alert_lock = threading.Lock()
+def _mail_alert_due(title, level=None):
+    """同类型告警邮件节流判断（实现见 web/services/capacity.py）。
 
-
-def _mail_alert_due(title):
-    """同类型告警邮件节流判断：窗口内已发过返回 False（本次跳过邮件，仅走 webhook）。"""
-    window = load_env_int(ENV_FILE, "YIBAN_MAIL_ALERT_COOLDOWN", DEFAULT_MAIL_ALERT_COOLDOWN)
-    if window <= 0:
-        return True  # 0 = 关闭节流
-    now = time.time()
-    with _mail_alert_lock:
-        last = _mail_alert_ts.get(title, 0.0)
-        if now - last < window:
-            return False
-        _mail_alert_ts[title] = now
-        return True
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
+    `read_env`），故转发必须现取后传入。`level` 缺省 None：既有单参调用
+    （含 `mock.patch.object(webapp, "_mail_alert_due")` 打桩点）行为不变。
+    """
+    return _capacity._mail_alert_due(
+        title, ENV_FILE, load_env_int, level=level)
 
 
 def _notify_capacity_once(kind, limit, label):
-    """容量触顶通知（每进程每种资源只发一次）：管理员知情且不刷屏。"""
-    if _capacity_alerts.get(kind):
-        return
-    _capacity_alerts[kind] = True
-    logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
-    send_notification(
-        f"{label}已达上限",
-        f"{label}已达上限（{limit}），新的注册/添加已被拒绝。\n"
-        f"如需扩容请在 .env 调整 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS。",
-        urgent=True,
-    )
+    """容量触顶通知（实现见 web/services/capacity.py）。
+
+    告警出口按调用时刻现取本模块的 `send_notification`（测试会打桩
+    `webapp.send_notification`），服务层另持绑定会让那些桩静默失效。
+    """
+    return _capacity._notify_capacity_once(
+        kind, limit, label, send_notification=send_notification)
 
 
 # ---------------------------------------------------------------------------
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；0.x 阶段递增规则：里程碑级功能波次 +0.1.0 / 修复与微调 +0.0.1 / 大版本暂不升 1）
-# 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-# 2026-08-17 清理任务权限事故修复：cleanup 独立日志 + cron 改 yiban 用户（0.20.8）
-# 2026-08-17 全量审查第一批修复：事务锁+时间戳+宽限期+密码泄露（0.20.9）
-# 2026-08-17 全量审查第二批修复：AES弱密钥检测+CSP nonce+systemd加固+flock路径+migrate_v5+备份加密+测试补齐（0.20.10）
-# 2026-08-17 全量审查第三+四批修复：中/低严重度问题全面清理（0.20.11）
-# 2026-08-17 全量审查 0.21.0 修复：版本号更新
-# 2026-08-17 全局暂停签到 + 备案信息预留区（0.21.1）
-# 2026-08-17 合规文档接入网页 + 部署者模板化 + 渲染修复（0.21.2）
-# 2026-08-20 审查修复（XSS/同意校验/缓存/状态语义）+ 掐头去尾前后独立可配（0.21.3）
-# 2026-08-21 对抗性审查修复：空凭据管理员登录 + idx 防错位 + 读路径清理外移 + 审计链
-#           BEGIN IMMEDIATE + 注册时延拉平 + my-* 单快照/日志脱敏 + HSTS/Permissions-Policy
-#           + --host 默认回环（0.21.4）
-# 2026-08-23 新增 Docker 部署能力（0.22.0）
-# 2026-08-23 系统设置页容量统计口径修正（0.22.1）
-# 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
-# 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（v0.2.7 内并入）
-# 2026-08-29 通知推送与账户安全加固：消息推送组件（Server酱/自定义 URL，加密配置）+ 高危告警邮件节流 + 高危删除冷却 + 删除二次鉴权（v0.3.0）
-# 2026-08-31 安全修复 + 公测反馈：告警通道二次鉴权、推送额度分账、账号清除门禁、登录留痕、口令策略口径、失效会话自动重登、新申请提醒（v0.3.0 内并入）
-# 2026-09-01：注册暂停开关、web 日志落盘、notify 账本单锁化、重置密码二次鉴权、
-# 批量签到冷却、无点位独立状态、节流跨进程化、迁移原子性、e2e 契约刷新（v0.3.1）
-# 2026-09-06：文档页脚本注入转义、告警通道参数收口+先告警后落盘、改绑回审、
-# 历史数据隔离、清空账号门禁、注册文案统一、cookie path、签到冷却单源、批量上限与超时、
-# 告警兜底与额度分账、日志单写、超时钳位（v0.3.2）
-# 2026-09-06：审核拒绝邮件触达提交者、待处理列待审核置顶/已拒绝沉底、账号弹窗改「内容区滚动+按钮常驻」修小视口按钮截断（v0.3.2 内并入）
-# 2026-09-07 移除 TUI 终端面板（账号配置统一走网页后台）+ 内部冗余收敛：.env 解析单一实现、
-# write_env 安全校验单源化、删除未引用字体切片（v0.3.3）
-# 2026-09-08 安全加固：.env 行边界判定单源化+提权链封堵、告警通道实际可用性判定、
-# 日志导出脱敏副本+审计限速、审计链锚点进健康日报、容量口径单档化（v0.3.4）
-# 2026-09-09 告警收件人网页可编辑（admin_to 写路径+旧收件人变更通知）、
-# 站点分享摘要 meta/og、表单占位字号统一（v0.3.4 内并入）
-# 2026-09-10 补签改为进程内第二轮（与容器同语义，失败账号当天即得第二次尝试）、
-# 管理端软删账号纳入高危限速并即时通知、设置页账号容量三分类明细、
-# 签到重试日志补记失败原因、注销恢复保留自选时间片（v0.3.4）
-# 2026-09-13 前端整体重写（导航分组/路由统一/列表标签页化/自研日期时间控件/暗色与可达性/
-# 加载错误态与重试/系统开关口令真校验）；历史版本号已压缩重编号（0.1.0–0.3.4）
-# 2026-09-14 运营面收口（错误页/爬虫协议/站标族）+ 容量口径统一（容量与保存门同源）
-# + 密钥轮换强制参数生效 + 总览成功率数字着色与空态字号修复（v0.4.1）
-# 2026-09-16 容量口径与数据恢复修正（v0.4.3）：未通过审核不占账号容量 + 审核通过过闸门
-# + 注销恢复带回账号（时间戳错位）+ 按日状态文件清理收口（宿主/容器同一套规则）
-# + 容器时段标记原子化 + 告警末轮时刻与补签时刻对齐
-# 2026-09-15 后端修复批次（v0.4.2）：时区口径（UTC 主机不再整日漏签）+ 运行期账号复核
-# + 在线校验三缺陷 + 窗口单一口径与容量预检 + 熔断状态读改写原子化 + 镜像补拷共享包
-# 2026-09-16 结构与通知拆分（v0.4.4）：登录/签到协议层独立（yiban/fyiban/protocol.py，
-# 安全校验以策略注入）+ 客户端外观（yiban/client.py）+ 安全策略层（yiban/security.py）
-# + 通知与邮件拆为 yiban/notify 与 yiban/mail
-APP_VERSION = "0.4.4"
+# 变更明细不在此维护：面向用户的记 CHANGELOG.md，逐提交的记 git log。别在这里补第二份流水账——
+# v0.4.4 之前那套老编号已被压缩重编号，两处并列只会互相分叉、并且再也没人能对上号。
+# 版本号：由 yiban/__init__.py 的 __version__ 唯一提供（上文已导入为 APP_VERSION）。
+# 改版本时的连带项：根目录 CHANGELOG.md + web/__init__.py（转出）+ 版本门禁用例。
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 
 
-def _is_loopback_host(host):
-    """判断监听地址是否为回环（用于 H6 非回环 Secure Cookie 强警告）。"""
-    h = str(host or "").strip().lower()
-    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
-
-
 # .env 歧义键启动检测：每进程只报一次（同 _notify_capacity_once 的节流思路）。
+# 闩留在本模块（测试按 `webapp._env_collision_reported = False` 复位它来逐例复现启动）；
+# 检测、ERROR 日志与告警正文的实现见 web/services/env_io.py，告警出口现取本模块的
+# `send_notification`（它带着既有的节流与账本语义）。
 _env_collision_reported = False
 
 
 def _report_env_key_collisions(env_path):
-    """启动时报告 .env 的行模型歧义键（潜伏行分隔符 / 影子重复行）。只检测不改写。
-
-    刻意先于 create_app 里一切 .env 写入（口令迁移 / init_db 落盐 /
-    ensure_secret_key）：这些写入的读-改-写会把潜伏载荷实体化——升级后第一次
-    重启本身就是一个实体化器，报告必须赶在它前面，运维才能据此判断是否在
-    升级前被打。不做静默自动改写：归一化会连带改动其他键的存量值；
-    清理动作 = ERROR 日志 + 一次 urgent 告警点名键与清理方法。
-    """
+    """启动时报告 .env 的行模型歧义键（实现见 web/services/env_io.py）。只检测不改写。"""
     global _env_collision_reported
     if _env_collision_reported:
         return
     _env_collision_reported = True
-    hits = env_io.find_env_key_collisions(env_path)
-    if not hits:
-        return
-    keys = ", ".join(sorted(hits))
-    logger.error(
-        "%s 检测到行模型歧义配置键（值内潜伏行分隔符或同名键多行，"
-        "解析器按后写覆盖先写取值）：%s。请备份后手工把每个键清理为唯一一行；"
-        "本次启动只检测不改写",
-        env_path, keys,
-    )
-    send_notification(
-        ".env 配置歧义告警",
-        f"{env_path} 检测到行模型歧义配置键: {keys}\n"
-        "成因: 值内藏行分隔符（U+2028 等，任何一次读-改-写都会实体化成新配置行）"
-        "或同名键多行（含带空格 `KEY = v` 写法），解析器按后写覆盖先写取值，"
-        "生效值不可信。\n"
-        f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        "请备份后手工编辑 .env，把列出的每个键清理为唯一一行；本检测不会自动改写文件。",
-        urgent=True,
-    )
+    return _env_io_svc._report_env_key_collisions(env_path, send_notification)
 
 
 # ---------------------------------------------------------------------------
-# 子路径 / 独立子域 前缀自适应中间件（2026-08-23）
+# 子路径 / 独立子域 前缀自适应中间件
 # ---------------------------------------------------------------------------
 # 背景：本应用可部署在域名根、独立子域、或主站子路径（如 /tools/yiban-auto-sign/demo/）下。
 # 部署契约：反向代理只需把完整 URI【原样透传】（proxy_pass 后面不要加 "/" 去剥前缀），
@@ -2633,7 +1727,9 @@ def _report_env_key_collisions(env_path):
 #   · url_for() 自动带上前缀（服务端 redirect 改用 url_for 即可，见页面路由）；
 #   · 应用内部 request.path 仍是干净路径（现有 /static/、/api/ 判断无需改动）；
 #   · Flask 的 strict_slashes 补斜杠跳转自动带前缀。
-# 前缀判定优先级：代理已传 SCRIPT_NAME（WSGI 契约，直接放行）> 环境变量 YIBAN_BASE_PATH > 自动探测。
+# 前缀判定优先级：代理已传 SCRIPT_NAME（WSGI 契约，直接放行）> 进程环境 YIBAN_BASE_PATH
+# > .env 里的同名键 > 自动探测。第二、三档由 env_io.resolve_path 给出，与启动期 Cookie
+# 作用域那一支（read_env(ENV_FILE)）同源——同一份配置的两个消费方必须给同一个答案。
 # 自动探测采用【最短（首个）命中】前缀：优先把 /api/、/static/、页面路由等应用自身路由留在
 # 剩余路径里（如 /tools/yiban-auto-sign/demo/api/login 应切成前缀 + /api/login，而非 .../api + /login）。
 # 若挂载前缀本身恰好含 /api、/static 或页面名等会与应用路由撞车的段，自动探测可能切错，
@@ -2649,6 +1745,11 @@ class BasePathMiddleware:
     _ROOT_MARKERS = (
         "/login", "/user", "/terms", "/privacy",
         "/favicon.png", "/gongan-beian.png", "/robots.txt",
+        # 裸 /api 前缀：自身即 API 命名空间（404 handler 按它返回 JSON）。不登记时
+        # `/tool/demo/api` 这段「其余部分」两头不命中（既非 /api/ 前缀也非已知路由），
+        # 自动探测切不出前缀 → 回落到 HTML 404；登记后 rest == "/api" 即命中，
+        # SCRIPT_NAME 回填 /tool/demo、PATH_INFO 落回 /api，交给 404 handler 出 JSON。
+        "/api",
         # 改版前的旧路径（历史书签兼容，302 到 /组/页面）
         "/logs", "/accounts", "/users", "/settings", "/mine", "/mine/calendar",
     )
@@ -2673,8 +1774,8 @@ class BasePathMiddleware:
         return self.wsgi_app(environ, start_response)
 
     def _resolve_prefix(self, environ, path):
-        # 显式配置（构造参数 > 环境变量 YIBAN_BASE_PATH）；仅当路径确实以该前缀开头才生效
-        configured = (self.base_path or os.environ.get("YIBAN_BASE_PATH", "") or "").strip().strip("/")
+        # 显式配置（构造参数 > 进程环境 > `.env`，走唯一解析器）；仅当路径确实以该前缀开头才生效
+        configured = (self.base_path or env_io.resolve_path("YIBAN_BASE_PATH", "")).strip().strip("/")
         if configured:
             configured = "/" + configured
             if path == configured or path.startswith(configured + "/"):
@@ -2711,56 +1812,23 @@ class BasePathMiddleware:
         return ""
 
 
-# 仓库公开模板（.env.docker.example）自带的字面量默认口令。
-# 随仓库公开 = 众所周知字符串，忘改即后台口令为公开知识。
-_DEFAULT_ADMIN_LITERALS = frozenset((
-    "请修改为强密码",
-    "admin123",
-    "admin888",
-    "123456",
-    "12345678",
-    "password",
-    "admin",
-))
-# 主管理员（内置 .env 管理员）口令单独提档：12 位三类（2026-09-05 用户裁决）——
-# 最高权限账号的口令强度要求高于普通用户原口径，启动 fail-closed
-# 与自助改密（_admin_password_policy_error）共用本常量
-ADMIN_PASSWORD_MIN_LEN = 12
-ADMIN_PASSWORD_MIN_CLASSES = 3
+# 公开模板默认字面量口令表（_DEFAULT_ADMIN_LITERALS）与启动检测
+# reject_default_admin_password 的实现见 web/security.py，此处以导入区再导出 /
+# 转发包装保持 m.* 可达与打桩面。
+# 主管理员（内置 .env 管理员）口令单独提档：12 位三类——最高权限账号的口令强度要求
+# 高于普通用户原口径，启动 fail-closed 与自助改密（_admin_password_policy_error）共用
+# 同一组常量；常量本体随口令策略搬入 web/services/accounts_data.py，此处以导入区再导出
+# 保持两处口径同源（不要再写字面量）。
 
 
 def reject_default_admin_password(env_path):
-    """启动检测：内置管理员仍为公开模板默认字面量/弱口令时拒绝启动（fail-closed）。
+    """启动检测内置管理员弱口令（实现见 web/security.py）。
 
-    仓库公开，忘改 YIBAN_ADMIN_PASSWORD 即主管理员口令为众所周
-    知字符串，且此前应用侧无任何检测。仅检查明文口令（纯哈希部署无法逆向检查；
-    迁移会清空明文，故本检测必须在 migrate_admin_password_to_hash 之前执行）。
-    抛 SystemExit 使 gunicorn worker 退出——supervisor/systemd 会带清晰日志重启，
-    运维按提示改口令即可，宁可起不来也不能带着公开口令上线。
+    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。
+    本函数由 create_app 启动路径调用（多 worker 各自执行），自带 `env_path`
+    参数、不读请求上下文。
     """
-    try:
-        plain = str(read_env(env_path).get("YIBAN_ADMIN_PASSWORD", "") or "").strip()
-    except Exception:
-        return
-    if not plain:
-        return
-    if plain in _DEFAULT_ADMIN_LITERALS:
-        logger.critical(
-            "拒绝启动：YIBAN_ADMIN_PASSWORD 为公开模板默认字面量。"
-            "请编辑 .env 将其改为强密码（或在设置哈希 YIBAN_ADMIN_PASSWORD_HASH 后"
-            "清空明文），再重启服务。",
-        )
-        raise SystemExit(2)
-    classes = sum(bool(re.search(pat, plain)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if len(plain) < ADMIN_PASSWORD_MIN_LEN or classes < ADMIN_PASSWORD_MIN_CLASSES:
-        logger.critical(
-            "拒绝启动：YIBAN_ADMIN_PASSWORD 弱于主管理员口令策略（至少 %d 位，且包含"
-            "大写字母、小写字母、数字、符号中的至少 %d 类）。请编辑 .env 将其改为强密码"
-            "（或在设置哈希 YIBAN_ADMIN_PASSWORD_HASH 后清空明文），再重启服务。",
-            ADMIN_PASSWORD_MIN_LEN,
-            ADMIN_PASSWORD_MIN_CLASSES,
-        )
-        raise SystemExit(2)
+    return _security.reject_default_admin_password(env_path, read_env)
 
 
 def create_app(host=None):
@@ -2794,7 +1862,7 @@ def create_app(host=None):
                 "仅输出到 stderr/标准日志通道", _log_dir)
             _daily_fh = None
         if _daily_fh is not None:
-            _daily_fh.setFormatter(logging.Formatter(
+            _daily_fh.setFormatter(MaskingFormatter(
                 "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             ))
@@ -2818,6 +1886,10 @@ def create_app(host=None):
     reject_default_admin_password(ENV_FILE)
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
     migrate_admin_password_to_hash(ENV_FILE)
+    # 账号凭据密钥两侧自证（fail-closed，须在 init_db 之前——init_db 的迁移会用这把钥
+    # 重加密账号列）：env 档（systemd EnvironmentFile 注入）与 .env 档并存且不同 ⇒ 拒绝
+    # 启动，杜绝"web 一把钥、引擎另一把钥"的静默分叉；一致则把 kid 打进启动日志。
+    account_crypto.assert_key_sources_agree(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
     # JSON 改名 .bak 保留逃生门）；多 worker 各自调用幂等（模块级连接缓存）
     db.init_db(DB_FILE, migrate_from=ACCOUNTS_FILE, env_file=ENV_FILE)
@@ -2844,12 +1916,16 @@ def create_app(host=None):
     app.config["SESSION_COOKIE_HTTPONLY"] = True  # JS 不可读 session cookie（防 XSS 窃取）
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # 跨站请求不携带 cookie（防 CSRF）
     # H6：Secure 标志可由 YIBAN_COOKIE_SECURE 显式开启（env 文件或环境变量，1/true/yes 开，
-    # 默认关）。默认关保持本机 HTTP 直连演示可用；生产 systemd 模板置 1（Task 7）。
+    # 默认关）。默认关保持本机 HTTP 直连演示可用；生产 systemd 模板置 1。
     cookie_secure_raw = os.environ.get("YIBAN_COOKIE_SECURE")
     if cookie_secure_raw is None:
         cookie_secure_raw = read_env(ENV_FILE).get("YIBAN_COOKIE_SECURE", "")
     cookie_secure = str(cookie_secure_raw).strip().lower() in ("1", "true", "yes", "on")
     app.config["SESSION_COOKIE_SECURE"] = cookie_secure
+    # 转发头信任开关的唯一解析处（读点见 web/security.py 的 _forwarded_trust_enabled）。
+    # 解析本身也在 web/security.py：键名、字面量表与非法值告警只有那一份。
+    _fwd_trust, _fwd_trust_explicit = _resolve_forwarded_trust(ENV_FILE, read_env)
+    app.config[FORWARDED_TRUST_ENV_KEY] = _fwd_trust
     # 子路径部署收窄会话 Cookie 作用域——读取 .env 的
     # YIBAN_BASE_PATH（显式配置形态），值非空且非 "/" 时把 SESSION_COOKIE_PATH
     # 设为该前缀（统一补尾斜杠），登录 Cookie 不再下发到同域其他路径下的应用。
@@ -2859,24 +1935,85 @@ def create_app(host=None):
     _base_path_env = read_env(ENV_FILE).get("YIBAN_BASE_PATH", "").strip()
     if _base_path_env and _base_path_env != "/":
         app.config["SESSION_COOKIE_PATH"] = "/" + _base_path_env.strip("/") + "/"
-    # HTTPS 反代自动升级 Secure——请求经 https（X-Forwarded-Proto）
-    # 到达而 Secure 未显式开启时，粘性开启会话 Cookie 的 Secure 标志（首次 https
-    # 请求即生效，无需重启）；显式配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
-    _secure_auto_upgrade = {"done": not cookie_secure}  # 显式关闭时不自动升级
+    # HTTPS 反代自动升级 Secure——请求经 https 到达而 Secure 未显式开启时，给本次响应
+    # 的会话 Cookie 带上 Secure 标志（逐请求判定，不需要重启也不粘住进程）。
+    # **显式**配置 YIBAN_COOKIE_SECURE（含显式 0）的部署完全不参与自动判定，保持原行为。
+    #
+    # 两条判据都不能省：
+    # 1) 只有**键在且非空**才算"显式配置"——把"未配置"与"显式关"混成一个 False 会让
+    #    默认部署永不自动升级（HTTPS 反代下 Cookie 一直不带 Secure）；
+    # 2) 转发头只在**第一跳可信**（remote_addr 是回环，见 `_is_loopback_addr`）且转发头
+    #    信任开关为开时才采信。判据与 `_client_ip` 同源：直连形态下客户端能自己发
+    #    `X-Forwarded-Proto: https`，粘性
+    #    采信会把这个进程的会话 Cookie 永久粘成 Secure，站点退回 HTTP 后浏览器不再回传
+    #    Cookie，表现为"登录不上"。
+    #
+    # 逐请求而非粘性：反代头消失（拓扑变更、代理降级为纯 HTTP）时必须能跟着回落，否则
+    # 进程会继续发已不可用的 Secure Cookie。同进程内不同请求可给出不同判定——每个响应
+    # 只按"自己这一跳"是否 https 决定，这正是要的语义。
+    _cookie_secure_explicit = bool(str(cookie_secure_raw or "").strip())
+    _secure_auto_notice = {"logged": False}
+
+    def _forwarded_proto_is_https():
+        """`X-Forwarded-Proto` 是否声称本次请求走 https（仅可信第一跳采信）。
+
+        取首段（逗号分隔链里最靠近客户端的那一跳），与 `_client_ip` 读 XFF 的口径一致。
+        首跳判据与 XFF 侧同源：同一个回环谓词 + 同一个信任开关。
+        """
+        if not (_is_loopback_addr(request.remote_addr) and _forwarded_trust_enabled()):
+            return False
+        raw = request.headers.get("X-Forwarded-Proto", "")
+        return bool(raw) and raw.split(",")[0].strip().lower() == "https"
 
     @app.before_request
     def _auto_secure_on_https():
-        if (
-            not _secure_auto_upgrade["done"]
-            and (
-                request.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
-                or request.is_secure
+        if _cookie_secure_explicit:
+            return
+        want = bool(request.is_secure or _forwarded_proto_is_https())
+        if app.config.get("SESSION_COOKIE_SECURE") != want:
+            app.config["SESSION_COOKIE_SECURE"] = want
+        if want and not _secure_auto_notice["logged"]:
+            _secure_auto_notice["logged"] = True
+            logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
+
+    # 歧义形态告警：本版缺省仍是"信任转发头"，而"来源是回环 + 带了 XFF"这一形态
+    # 分不出"反代（该显式开）"与"直连 / ssh -L 隧道（该显式关）"。开关未显式配置时，
+    # 首次满足条件即告警一次，指引运维表态（迁移期用告警换默认翻转）。
+    _forwarded_trust_notice = {"logged": False}
+
+    @app.before_request
+    def _report_ambiguous_forwarded_trust():
+        if _fwd_trust_explicit or _forwarded_trust_notice["logged"]:
+            return
+        if request.headers.get("X-Forwarded-For", "") and \
+                _is_loopback_addr(request.remote_addr):
+            _forwarded_trust_notice["logged"] = True
+            logger.warning(
+                "%s 未设置：本次请求来自回环且带了 X-Forwarded-For，应用按缺省「信任」"
+                "转发头执行。反向代理后请显式设 %s=1，并确认代理以覆盖式写入该头；"
+                "直连或 ssh -L 隧道请显式设 %s=0（否则客户端可自报该头伪造 IP 桶）。",
+                FORWARDED_TRUST_ENV_KEY, FORWARDED_TRUST_ENV_KEY,
+                FORWARDED_TRUST_ENV_KEY,
             )
-        ):
-            app.config["SESSION_COOKIE_SECURE"] = True
-            _secure_auto_upgrade["done"] = True
-            logger.info("检测到 HTTPS 反代（X-Forwarded-Proto=https），会话 Cookie 已自动启用 Secure")
-    if host is not None and not _is_loopback_host(host) and not cookie_secure:
+
+    @app.before_request
+    def _bind_audit_scope():
+        """为每个请求绑定审计作用域 id，使审计行能回答"这是哪个请求做的"。
+
+        来源列只有可伪造的加盐 IP 哈希（输入 XFF/remote_addr 客户端可控），区分不了
+        同一出口内的多次操作；请求 id 由服务端生成、编码进审计 detail，链 HMAC 覆盖它。
+        线程局部在 teardown 清除——Flask 复用工作线程，残留会让后续后台线程误带旧 id。
+        """
+        # 作用域 id 形状（含中段连字符）契约在真源 `db.new_request_scope_id`：
+        # 十六进制串有约千分之一概率全为数字，构成 ≥11 位数字连段会被裸手机号
+        # 子串判据（脱敏回归等扫描消费方）偶发误报，切段后最长连段 8 位。
+        db.set_request_scope(db.new_request_scope_id())
+
+    @app.teardown_request
+    def _clear_audit_scope(_exc=None):
+        db.set_request_scope(None)
+
+    if host is not None and not _is_loopback_addr(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
             "YIBAN_COOKIE_SECURE=1（.env 或环境变量），否则登录 Cookie 可能在 HTTPS 下被浏览器拒绝",
@@ -2884,7 +2021,7 @@ def create_app(host=None):
         )
     app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 14  # 14 天（折中：安全与管理员便利平衡）
 
-    # ---- 会话绝对过期上限（2026-08-27 对抗性审查 P2-5）----
+    # ---- 会话绝对过期上限 ----
     # 滑动续期防不了「被盗 Cookie 永久续命」：任何会话自登录起最多存活 N 天，
     # 到期硬失效需重新登录。YIBAN_SESSION_ABS_DAYS 可配，越界回退默认并告警
     # （风格对齐 M13 会话缓存 TTL 钳制）。判定逻辑见 _current_role。
@@ -2901,30 +2038,114 @@ def create_app(host=None):
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 请求体上限 64KB
 
     # 登录失败记录 {ip: [fail_count, lock_until]}
-    _login_fails = {}
+    # 可变状态挂在 app.extensions（而非模块级）：测试进程反复 create_app，进程级
+    # 共享会把上一个实例的失败计数与 lock 带进下一个。登录、改密、注销、恢复四条
+    # 路由共用**同一份**字典（安全语义依赖同一份账），取用点收在 web/routes 包。
+    app.extensions["yiban_login_fails"] = {}
+    # 敏感操作口令复核失败的**独立**计数 {fail_key: [count, window_start]}（M5）：
+    # 与登录失败表分开——教训是"持 Cookie 者若写共享计数可把管理员锁出登录"，
+    # 故高危二次鉴权/开关门/执行体门的失败只走本计数 + 首达阈值告警，绝不碰登录计数。
+    _sensitive_pw_fails = {}
+    # 门禁级冷却 {(ip, 用户名): (失败次数, 解锁时刻)}：独立计数达阈值后，解锁时刻之前
+    # 一律拒绝需要复核的写操作（见 _sensitive_password_gate）。刻意与登录失败表的
+    # lock_until 分开两份账——冷却封的是"高危写"，登录与只读必须照常，反之亦然。
+    # 值末位统一是时间戳，故写入路径的 _ip_store_trim 能按同口径回收（防无界增长）。
+    _sensitive_pw_cooldown = {}
     # 全局限速记录 {ip: [count, window_start]}
     _rate_limits = {}
     # 已登录 GET 的独立计数桶（与严格桶分开，互不挤占；见 rate_limit 说明）
     _rate_limits_get = {}
-    # 注册限速记录 {ip: [count, window_start]}
-    _register_limits = {}
+    # 注册限速记录 {ip: [count, window_start]}（仅注册接口使用，状态挂 extensions 保每实例语义）
+    app.extensions["yiban_register_limits"] = {}
     # 登录频率限制 {ip: [count, window_start]}：比全局限速更严，防换用户名密码喷洒
-    _login_rate = {}
-    # 账号恢复的每 IP 聚合失败窗口 {ip: [count, window_start]}
-    _restore_fail_rate = {}
-    # 账号验证尝试配额 {username.lower(): (count, window_start)}（2026-08-27 P1-2）
-    _verify_limits = {}
-    # 账号验证认证失败冷却 {phone: (fails, window_start, cooldown_until)}（2026-09-04 生产复盘）
-    _verify_fails = {}
-    # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
+    app.extensions["yiban_login_rate"] = {}
+    # 账号恢复的每 IP 聚合失败窗口 {ip: [count, window_start]}（仅恢复接口使用，
+    # 状态挂 extensions 保每实例语义）
+    app.extensions["yiban_restore_fail_rate"] = {}
+    # 账号验证尝试配额 {username.lower(): (count, window_start)}
+    # 管理员添加与用户自助提交共用同一份账；状态挂 extensions 保每 app 实例一份，
+    # 取用点收在 web.routes.verify_limits()
+    app.extensions["yiban_verify_limits"] = {}
+    # 账号验证认证失败冷却 {phone: (fails, window_start, cooldown_until)}
+    # 同上：两条提交路径共用，取用点 web.routes.verify_fails()
+    app.extensions["yiban_verify_fails"] = {}
+    # 高危删除操作冷却 {username.lower(): (count, window_start)}
     _admin_delete_limits = {}
+    # 高危额度整体被关（limit<=0 或 cooldown<=0）时是否已留过审计，防逐请求刷审计表
+    _admin_delete_limit_off_audited = [False]
+    # 凭据改写类高危额度（独立于删除类计数，两族分开计数）+ 同款关闭留痕位
+    _admin_creds_limits = {}
+    _admin_creds_limit_off_audited = [False]
     # 日志导出限速 {ip: (count, window_start)}
-    _export_limits = {}
+    # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.export_limits()
+    app.extensions["yiban_export_limits"] = {}
+    # 账号详情读取限速 {actor: (count, window_start)}（按会话而非 IP：校园网出口
+    # 高度共享，按 IP 会把两个管理员的运维互相挡死，与"新 IP 即告警"同一理由）
+    # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.detail_limits()
+    app.extensions["yiban_detail_limits"] = {}
+    # 个人提交判重预检命中限速 {actor: (count, window_start)}（按会话而非 IP，同详情）
+    # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.dupcheck_limits()
+    app.extensions["yiban_dupcheck_limits"] = {}
+    # 只读面聚合审计计数 {(actor, 资源类): (count, window_start)}
+    _read_audit_counts = {}
+    # 只读面聚合审计的目标摘要 {(actor, 资源类): [脱敏目标样本, 目标总数, window_start]}
+    _read_audit_targets = {}
+    # 只读面"超限被拒"留痕 {(actor, 资源类): (count, window_start)}：limit=1 即
+    # "每个窗口至多一行"——被拒的那一侧绝不能逐条写，否则又被当成免费打字机
+    _read_audit_denied = {}
+
+    def _read_audit_trace(action, target=""):
+        """只读面留痕：按 (actor, 资源类) 在窗口内聚合成一行，不逐请求写。
+
+        target 必须是**已脱敏**的短标识（_mask_phone/_mask_email 或"N 条"这类
+        聚合量），因为它进审计表、随日志页与备份包外流。
+
+        拒绝面（超限 429）走 _read_audit_denied 的另一条 limit=1 计数，同样
+        复用 _bump_window_count——全项目只有一份窗口计数实现。
+        """
+        actor = (session.get("username") or "?")[:64]
+        key = (actor, action)
+        now = time.time()
+        with _rate_lock:
+            _ip_store_trim(_read_audit_counts, READ_AUDIT_WINDOW + _IP_STORE_MAX_AGE)
+            _ip_store_trim(_read_audit_targets, READ_AUDIT_WINDOW + _IP_STORE_MAX_AGE)
+        cnt, start, _ = _bump_window_count(
+            _read_audit_counts, key, now, READ_AUDIT_WINDOW)
+        with _rate_lock:
+            # 摘要与计数同窗口：_bump_window_count 翻窗时给出的 start 是新窗口起点，
+            # 与存量摘要的 start 不一致即丢弃旧摘要（旧窗口的行已在首行时落库）
+            entry = _read_audit_targets.get(key)
+            if not entry or entry[2] != start:
+                entry = _read_audit_targets[key] = [[], 0, start]
+            if target and target not in entry[0]:
+                entry[1] += 1
+                if len(entry[0]) < READ_AUDIT_TARGET_CAP:
+                    entry[0].append(target)
+        if not _read_audit_row_due(cnt):
+            return
+        shown = "、".join(entry[0]) or "-"
+        if entry[1] > READ_AUDIT_TARGET_CAP:
+            shown += f" 等 {entry[1]} 个"
+        db.audit(actor, action, db.hash_ip(_client_ip()),
+                 f"窗口内累计第 {cnt} 次读取；目标 {shown}")
+
+    def _read_audit_denied_trace(action):
+        """超限被拒只留一行/窗口：既不能无痕，更不能被拿去刷表。"""
+        actor = (session.get("username") or "?")[:64]
+        key = (actor, action)
+        with _rate_lock:
+            _ip_store_trim(_read_audit_denied, READ_AUDIT_WINDOW + _IP_STORE_MAX_AGE)
+        _cnt, _start, first = _bump_window_count(
+            _read_audit_denied, key, now=time.time(), window=READ_AUDIT_WINDOW, limit=1)
+        if not first:
+            return
+        db.audit(actor, action, db.hash_ip(_client_ip()),
+                 "读取超限被拒（本窗口仅留此一行）")
 
     # _ip_store_trim（上提为模块级，见 _bump_window_count 上方）：
     # 各限速表写入路径统一调用，防公网扫描器用海量键打爆内存。
 
-    # ---- 全局限速：防脚本轰炸 API（2026-08-16 用户决策：只对 /api/* 限速，
+    # ---- 全局限速：防脚本轰炸 API（只对 /api/* 限速，
     # 页面/静态放宽，避免 302+200 双请求导致正常页面浏览被误伤）----
     @app.before_request
     def rate_limit():
@@ -2981,22 +2202,17 @@ def create_app(host=None):
         # 的最高信号之一，此前 403 零留痕。IP 经 hash_ip 匿名化；频次天然受
         # /api/* 全局限速约束，且普通用户正常操作不会触达本分支。
         db.audit(
-            (session.get("username") or "?")[:64],
+            _audit_actor(),
             "forbidden_path",
             db.hash_ip(_client_ip()),
-            request.path[:120],
+            _nl_safe(request.path)[:120],
         )
         return jsonify({"error": "无权限"}), 403
 
     # ---- CSRF 防护：登录后所有写请求（POST/PUT/DELETE）必须携带与 session 匹配的 token ----
     # 登录/注册无需 token（未登录态，跨站表单攻击由 SameSite=Lax 已基本阻断）；
     # 已登录用户的写操作由 token 双重校验（借鉴 flask-wtf 的 Session 方案，自实现零依赖）。
-    def get_csrf_token():
-        """惰性生成并返回当前会话的 CSRF token。"""
-        if "csrf_token" not in session:
-            session["csrf_token"] = secrets.token_hex(32)
-        return session["csrf_token"]
-
+    # token 的生成随个人域路由迁往 web/routes/me.py（唯一使用点），校验仍在下面。
     def _is_same_origin():
         """登录/注册等未登录写接口的同源校验：跨站表单提交的 POST 必然携带 Origin 头。
 
@@ -3056,8 +2272,8 @@ def create_app(host=None):
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
                     db.hash_ip(_client_ip()),
-                    request.path,
-                    request.headers.get("Origin"),
+                    _nl_safe(request.path),
+                    _nl_safe(request.headers.get("Origin")),
                 )
                 return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
             return
@@ -3069,127 +2285,11 @@ def create_app(host=None):
             logger.warning(
                 "CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d",
                 db.hash_ip(_client_ip()),
-                request.path,
+                _nl_safe(request.path),
                 len(token),
                 len(sess_token),
             )
             return jsonify({"error": "请求校验失败，请刷新页面后重试"}), 403
-
-    # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----
-    # ---- 管理端多页：一页一模板，外壳（侧栏/顶栏/页脚）由 layout_admin.html 服务端渲染 ----
-    def _render_admin_page(template, nav_key, crumbs):
-        """管理端页面统一上下文：版本 / 备案 / 导航高亮 / 面包屑 / 当前身份。
-
-        身份显式下发（而非模板内读 session），便于侧栏常驻显示当前账号——
-        这是防误操作设计：登录错账号后误删数据的代价高。
-        """
-        return render_template(
-            template,
-            web_version=WEB_VERSION,
-            app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            nav_active=nav_key,
-            crumbs=crumbs,
-            current_username=session.get("username", ""),
-            current_role=_current_role() or "",
-        )
-
-    def _admin_page_redirect():
-        """管理端页面守卫：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
-
-        返回而非装饰，是因为三处守卫各自需要不同模板/导航键，装饰器会增加一层间接。
-        """
-        role = _current_role()
-        if role is None:
-            return redirect(url_for("login_page"))
-        if role != "admin":
-            return redirect(url_for("user_calendar_page"))
-        return None
-
-    # ---- 页面路径：`组/页面`（数据 / 工作台 / 我的 + 用户端）----
-    # 分组标题与首段一致，页面与第二段一致，便于按 URL 反推归属。
-    @app.route("/data/dashboard")
-    def dashboard_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/data_dashboard.html", "data-dashboard", ["数据", "数据总览"])
-
-    # 旧路径 → 新路径：书签/分享链接不失效。用 302 而非 308：本项目仍在演进，
-    # 永久重定向会被浏览器长期缓存，路径再调整时无法纠正。
-    # 值写**端点名**而不是路径字面量：redirect() 不做 SCRIPT_NAME 拼接，子路径部署
-    # （/tools/yiban-…/）下写死 "/work/accounts" 会把用户甩回域名根。
-    _MOVED_PAGES = {
-        "/logs": "logs_page",
-        "/accounts": "accounts_page",
-        "/users": "users_page",
-        "/settings": "settings_page",
-        "/mine": "my_account_page",
-        "/mine/calendar": "my_calendar_page",
-        "/user": "user_account_page",
-    }
-
-    def _moved_page_view(endpoint):
-        def view():
-            # 保留查询串：theme_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
-            qs = request.query_string.decode("utf-8", "ignore")
-            return redirect(url_for(endpoint) + (("?" + qs) if qs else ""), code=302)
-        return view
-
-    for _old, _target in _MOVED_PAGES.items():
-        app.add_url_rule(
-            _old,
-            endpoint="moved_" + _old.strip("/").replace("/", "_"),
-            view_func=_moved_page_view(_target),
-        )
-
-    @app.route("/favicon.png")
-    def favicon_png():
-        """站标：优先服务部署者自放的 static/vendor/favicon.png（不入库，与 logo.png 同机制）。
-
-        重写后模板引用带挂载前缀，请求进入应用而非域名层静态目录，须自带路由；
-        未放置时 404（浏览器退回默认图标）。短缓存便于部署者换图后及时生效。
-        """
-        icon_path = os.path.join(app.static_folder, "vendor", "favicon.png")
-        if not os.path.isfile(icon_path):
-            abort(404)
-        resp = send_file(icon_path, mimetype="image/png", conditional=True)
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
-
-    @app.route("/gongan-beian.png")
-    def gongan_beian_png():
-        """页脚备案图标：服务部署者自放的 static/vendor/gongan-beian.png（不入库，未放置 404）。
-
-        模板引用带挂载前缀，须自带路由；短缓存便于换图后及时生效。
-        """
-        icon_path = os.path.join(app.static_folder, "vendor", "gongan-beian.png")
-        if not os.path.isfile(icon_path):
-            abort(404)
-        resp = send_file(icon_path, mimetype="image/png", conditional=True)
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
-
-    @app.route("/robots.txt")
-    def robots_txt():
-        """爬虫协议：只放行登录页与静态资源，登录后的私有页（/api、/data、/work、/my、
-        /user 及各旧路径）一律禁止抓取。
-
-        路径带挂载前缀（子路径部署下 robots.txt 与页面同前缀），否则爬虫会去抓
-        前缀之外的地址而拿到 404，反而把私有页当"可抓"。
-        """
-        root = (request.script_root or "").rstrip("/")
-        lines = [
-            "User-agent: *",
-            f"Allow: {root}/login",
-            f"Allow: {root}/static/",
-            "Disallow: /",
-        ]
-        resp = app.response_class("\n".join(lines) + "\n", mimetype="text/plain")
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
 
     # ---- 错误页（404/500）----
     # 静态资源与 API 的 404 不渲染 HTML 页面：前者只需空响应（浏览器/爬虫不当页面看），
@@ -3209,32 +2309,50 @@ def create_app(host=None):
         return "login_page", "去登录"
 
     def _render_error_page(code, title, message):
+        """错误页：匿名用认证外壳，**登录态用管理端外壳**（保留侧栏与导航）。
+
+        登录态管理员点到过期链接时不该"丢侧栏"，错误页恰恰最需要导航。
+        管理端外壳要读更多上下文（导航/公告等），**错误路径本身可能是坏的**，故渲染失败
+        （任何异常）一律退回认证外壳，绝不让 404/500 再抛一次。
+        """
         role = _current_role()
         endpoint, label = _home_endpoint_for(role)
+        base = dict(
+            web_version=WEB_VERSION,
+            app_version=APP_VERSION,
+            icp_info=icp_info(),
+            police_info=police_info(),
+            police_link=police_link(),
+            site_description=site_description(),
+            err_code=code,
+            err_title=title,
+            err_message=message,
+            home_url=url_for(endpoint),
+            home_label=label,
+            logged_in=role is not None,
+        )
+        if role is not None:
+            try:
+                return (
+                    render_template("error.html", layout_name="layout_admin.html",
+                                    use_admin_shell=True, **base),
+                    code,
+                )
+            except Exception as e:      # 兜底就是"什么错都退回安全外壳"，见 docstring
+                logger.warning("错误页渲染管理端外壳失败，退回认证外壳: %s", e)
         return (
-            render_template(
-                "error.html",
-                web_version=WEB_VERSION,
-                app_version=APP_VERSION,
-                icp_info=icp_info(),
-                police_info=police_info(),
-                police_link=police_link(),
-                site_description=site_description(),
-                err_code=code,
-                err_title=title,
-                err_message=message,
-                home_url=url_for(endpoint),
-                home_label=label,
-                logged_in=role is not None,
-            ),
+            render_template("error.html", layout_name="layout_auth.html",
+                            use_admin_shell=False, **base),
             code,
         )
 
     @app.errorhandler(404)
     def _handle_404(e):
         path = request.path
-        if path.startswith((request.script_root or "") + "/api/"):
-            return jsonify({"error": "接口不存在"}), 404
+        # 判据只认 path 自身：werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME（子路径下
+        # path='/api/nope'、script_root='/tool/demo'），再拼 script_root 前缀会永不命中而落 HTML 错误页。
+        if path == "/api" or path.startswith("/api/"):
+            return jsonify({"error": "未知接口"}), 404
         if path.lower().endswith(_404_OPAQUE_EXT):
             return app.response_class("", status=404, mimetype="text/plain")
         return _render_error_page(
@@ -3243,180 +2361,60 @@ def create_app(host=None):
 
     @app.errorhandler(500)
     def _handle_500(e):
-        if request.path.startswith((request.script_root or "") + "/api/"):
+        path = request.path
+        if path == "/api" or path.startswith("/api/"):
             return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
         return _render_error_page(
             500, "服务器内部错误", "请求处理失败，请稍后重试；若持续出现，请联系管理员。"
         )
 
-    @app.route("/")
-    def root_page():
-        """根路径：按登录态**一步**转到对应首页。
+    # ---- 请求态错误（400/405/413）：/api/* 一律 JSON ----
+    # `_json_body()` 用 `abort(400, description=...)` 拒绝非法/非对象 JSON，werkzeug 对
+    # 错方法（405）与超 MAX_CONTENT_LENGTH（413，见上方 app.config）也抛 HTTPException。
+    # 缺这三个 handler 时它们全落 werkzeug 默认 text/html 错误页，前端 `res.json()` 直接
+    # 抛解析异常、拿不到 `error` 文案——与 404/500 的 /api/* JSON 口径必须一致。
+    # 判据同 404/500：只认 path 自身（werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME）。
+    def _is_api_path():
+        p = request.path
+        return p == "/api" or p.startswith("/api/")
 
-        不做成到 /data/dashboard 的盲跳：未登录时会多一跳（/ → /data/dashboard → /login），
-        而 theme_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
-        """
-        role = _current_role()
-        if role is None:
-            return redirect(url_for("login_page"))
-        if role == "admin":
-            return redirect(url_for("dashboard_page"))
-        # 普通用户的首页是「签到日历」而不是「账号与设置」：进站第一眼要看到今天的签到结果，
-        # 账号本身是低频维护对象（用户 2026-09-13 指定）
-        return redirect(url_for("user_calendar_page"))
-
-    def _user_page_redirect():
-        """用户端页面守卫：未登录 → 登录页；管理员 → 管理端首页。合规时返回 None。
-
-        与管理端守卫同构：返回而非装饰，便于各页按需处理。
-        """
-        role = _current_role()
-        if role is None:
-            return redirect(url_for("login_page"))
-        if role != "user":
-            return redirect(url_for("dashboard_page"))
-        return None
-
-    def _render_user_page(template, nav_key, crumbs):
-        """用户端页面统一上下文（与管理端同构：版本 / 备案 / 导航高亮 / 面包屑）。
-
-        身份不在此下发：用户端外壳由 core.js 的 /api/me 填充账号区，
-        避免服务端再走一次会话取值（管理员页下发的理由见 _render_admin_page）。
-        """
-        return render_template(
-            template,
-            web_version=WEB_VERSION,
-            app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            nav_active=nav_key,
-            crumbs=crumbs,
+    @app.errorhandler(400)
+    def _handle_400(e):
+        if _is_api_path():
+            # description 只来自本仓 `abort(400, description=...)`（当前仅 _json_body 两处），
+            # 是给前端看的用户文案；缺失时回退通用文案，绝不回显内部异常细节。
+            return jsonify({"error": getattr(e, "description", "") or "请求无效"}), 400
+        return _render_error_page(
+            400, "请求无效", "请求格式不正确，请检查后重试。"
         )
 
-    @app.route("/user/account")
-    def user_account_page():
-        blocked = _user_page_redirect()
-        if blocked:
-            return blocked
-        return _render_user_page("pages/user_account.html", "user-account", ["用户中心", "账号与设置"])
-
-    @app.route("/user/calendar")
-    def user_calendar_page():
-        blocked = _user_page_redirect()
-        if blocked:
-            return blocked
-        return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"])
-
-    # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
-    # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
-    _login_loop = {}
-    _LOGIN_LOOP_LIMIT = 1000  # 条目上限，防止内存无限增长
-
-    @app.route("/login")
-    def login_page():
-        if session.get("auth"):
-            ip = _client_ip()
-            now = time.time()
-            _ip_store_trim(_login_loop, 60)
-            # 条目上限防护：超出时清理最老的 20%
-            if len(_login_loop) > _LOGIN_LOOP_LIMIT:
-                sorted_ips = sorted(_login_loop, key=lambda k: _login_loop[k][1])
-                for old_ip in sorted_ips[:_LOGIN_LOOP_LIMIT // 5]:
-                    _login_loop.pop(old_ip, None)
-            cnt, first = _login_loop.get(ip, (0, now))
-            if now - first > 10:
-                cnt, first = 0, now
-            cnt += 1
-            _login_loop[ip] = (cnt, first)
-            if cnt < 4:
-                return redirect(url_for("dashboard_page") if _current_role() == "admin" else url_for("user_calendar_page"))
-            logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
-        return render_template(
-            "login.html",
-            web_version=WEB_VERSION,
-            app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            site_description=site_description(),
-            site_image=site_image(),
-            agreement_html=_read_doc_html("USER_AGREEMENT.md"),
-            privacy_html=_read_doc_html("PRIVACY_POLICY.md"),
+    @app.errorhandler(405)
+    def _handle_405(e):
+        if _is_api_path():
+            return jsonify({"error": "方法不允许"}), 405
+        return _render_error_page(
+            405, "方法不允许", "该地址不支持当前请求方法。"
         )
 
-    @app.route("/terms")
-    def terms_page():
-        """用户协议独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), police_info(), request.script_root, police_link())
-
-    @app.route("/privacy")
-    def privacy_page():
-        """隐私政策独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), police_info(), request.script_root, police_link())
-
-    # 管理端各功能页。拆页而非单页 tab：URL 可书签/可分享、刷新不丢状态，
-    # 且每页只加载自己的脚本（单页方案需一次性加载全部 5 个功能域的 JS）。
-    @app.route("/work/accounts")
-    def accounts_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
-
-    @app.route("/data/logs")
-    def logs_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/data_logs.html", "data-logs", ["数据", "签到日志"])
-
-    @app.route("/work/users")
-    def users_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/work_users.html", "work-users", ["工作台", "用户管理"])
-
-    @app.route("/work/settings")
-    def settings_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
-
-    @app.route("/my/account")
-    def my_account_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/my_account.html", "my-account", ["我的", "我的账号"])
-
-    # 管理员本人的签到日历（与用户端 /user/calendar 同源）；个人域的一部分，
-    # 数据取本人邮箱归属账号（与 /my/account 同口径，一人一号）。
-    @app.route("/my/calendar")
-    def my_calendar_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"])
-
-    # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
-    # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）
-    _NO_STORE_PAGES = set(_MOVED_PAGES) | {
-        "/", "/login", "/terms", "/privacy",
-        "/data/dashboard", "/data/logs",
-        "/work/accounts", "/work/users", "/work/settings",
-        "/my/account", "/my/calendar",
-        "/user/account", "/user/calendar",
-    }
+    @app.errorhandler(413)
+    def _handle_413(e):
+        if _is_api_path():
+            return jsonify({"error": "请求体过大"}), 413
+        return _render_error_page(
+            413, "请求体过大", "提交的内容超过大小限制，请精简后重试。"
+        )
 
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
-        # 注意：不使用 CSP nonce——模板含大量内联 onclick 处理器（无法加 nonce），
-        # nonce 存在时 'unsafe-inline' 会被浏览器忽略导致全部处理器失效（2026-08-17 线上事故）。
-        # 后续可将内联事件迁移到 addEventListener 后再启用 nonce 防护。
+        # 注意：不使用 CSP nonce——模板含内联 <script> 块（无 src；theme_boot 为主要载体，
+        # 另有若干其它模板），nonce 存在时 'unsafe-inline' 会被浏览器忽略，
+        # 这些内联块会全部失效（theme_boot 静默失效）。真因是内联 <script> 块（主载体）；
+        # 此外内联事件属性（onclick / onerror 共 6 处）也是 nonce 的阻碍——nonce/hash
+        # 不适用于事件处理器属性，撤掉 'unsafe-inline' 后这 6 处同样失效。将来要上 nonce：
+        # 上述两者都得先处理——先把这些内联 <script> 块外移为带 src 的静态文件（或逐块
+        # nonce 化），同时把内联事件属性迁到 addEventListener（或按需改用 'unsafe-hashes'）；
+        # 仅把内联事件迁移到 addEventListener 并不够——内联 <script> 块仍会被 nonce 拦掉。
         resp.headers["X-Content-Type-Options"] = "nosniff"
         # 与边缘 nginx 保持一致（SAMEORIGIN）：防止子路径(经 nginx 反代)下出现
         # "应用 DENY / nginx SAMEORIGIN" 双头取值不一致。SAMEORIGIN 仍防点击劫持，
@@ -3430,7 +2428,7 @@ def create_app(host=None):
         # 本应用不再重复下发，避免与 nginx 的 max-age 取值不一致造成双头歧义。
         # 注：若部署不经 nginx（如本地直连远程调试），可在此按需补回
         #   if request.is_secure: resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # 关闭无关能力面（2026-08-20 对抗性审查 P3 补；payment 与 nginx 对齐）
+        # 关闭无关能力面（payment 项与 nginx 配置对齐）
         resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' 'unsafe-inline'; "
@@ -3439,7 +2437,7 @@ def create_app(host=None):
             "base-uri 'self'; form-action 'self'; object-src 'none'"
         )
         # 页面一律禁缓存（含旧的被重定向路径），防止浏览器缓存旧版 HTML/JS 造成登录循环
-        if request.path in _NO_STORE_PAGES:
+        if request.path in NO_STORE_PAGES:
             resp.headers["Cache-Control"] = "no-store"
         elif request.path.startswith("/static/") and resp.status_code < 400:
             # 静态资源长缓存 30 天（版本变化由 ?v= 兜底）；404 等错误响应不缓存（防浏览器缓存 404）
@@ -3452,2831 +2450,50 @@ def create_app(host=None):
         logger.error("数据层错误: %s", e)  # 详细信息只入日志，不回显客户端（防内部路径/字段泄露）
         return jsonify({"error": "服务器内部错误，请稍后重试或联系管理员"}), 500
 
-    # ---- 认证 API ----
-    @app.route("/api/login", methods=["POST"])
-    def api_login():
-        """登录：管理员（.env 配置）或普通用户（users 表注册）。返回 role。"""
-        ip = _client_ip()
-        now = time.time()
-        data = _json_body()
-        username = str(
-            data.get("username", "")
-        ).strip()  # 管理员用户名保持原样；邮箱仅用户登录时小写
-        password = str(data.get("password", ""))
-        # 失败计数按 (IP, 用户名) 组合：同一出口 IP 的用户不因他人爆破尝试被连带锁定
-        # 值三元组 (count, lock_until, last_ts)：last_ts 供超限清理
-        # username 直接来自请求体、长度无界，fail_key 统一截断 [:128]
-        # （防公网扫描器用海量超长用户名打爆 _login_fails 内存表）
-        fail_key = (ip, username.lower()[:128])
-        with _rate_lock:
-            _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
-            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-            if now < lock_until:
-                # 不显示剩余秒数：避免向用户暴露锁定窗口参数（信息分层，2026-08-15）
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-        # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒。
-        # 先清理过期条目再按“先判断后递增”的旧语义计数：允许第 10 次，第 11 次 429。
-        with _rate_lock:
-            _ip_store_trim(_login_rate, 60 + _IP_STORE_MAX_AGE)
-        _lcnt, _lstart, allowed = _bump_window_count(_login_rate, ip, now, 60, limit=10)
-        if not allowed:
-            return jsonify({"error": "登录尝试过于频繁，请稍后再试"}), 429
+    # ---- .env 写入 fail-closed 拒绝的统一出口（公告 / 告警通道 / 改密 / 执行体等写点）----
+    # 这些写点此前让 `EnvWriteRefused` 冒泡成 500（无清理指引）；只有 /api/settings 自己
+    # 映射过 409。集中在这里回同一份 409 body + 清理指引；吞掉该异常再改报 400 的写点
+    # （executor_env 与执行体路由）已改为放行本类型（见各自 except 顺序）。
+    @app.errorhandler(env_io.EnvWriteRefused)
+    def _handle_env_write_refused(e):
+        logger.error("配置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+        # 定位载荷（问题行号/键名 + 脱敏片段，绝不回显值原文）随 409 下发，
+        # 前端据此渲染"一键定位/清理"入口（写拒绝定位）。
+        return _env_io_svc.env_write_refused_response(e, ENV_FILE)
 
-        role = None
-        pw_version = None
-        auth_source = None
-        recoverable = False
-        # 1) 内置管理员（.env，兜底超级管理员）
-        if verify_admin(username, password):
-            role = "admin"
-            auth_source = "builtin"
-            pw_version = load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)  # 改密后旧会话失效
-        else:
-            # 2) 普通用户（users，邮箱登录，不区分大小写；role 支持多管理员）
-            email = username.lower()
-            u = db.find_user(email)
-            if u is None:
-                _constant_time_dummy(password)  # 时延拉平：防邮箱枚举（与真实比对等开销）
-                # 登录即恢复（2026-08-16 用户裁决）：冷静期（7 天）内密码正确的已注销账号
-                # 不放行登录，返回 recoverable 标记，由前端引导恢复（受冷却限速）
-                du = db.find_user_any(email)
-                if (
-                    du is not None
-                    and du.get("deleted")
-                    and _delete_grace_remaining(du.get("deleted_at", "")) > 0
-                    and check_password_hash(du.get("password_hash", ""), password)
-                ):
-                    recoverable = True
-            elif check_password_hash(u.get("password_hash", ""), password):
-                role = "admin" if u.get("role") == "admin" else "user"
-                auth_source = "user"  # 注册用户（含提升的管理员）统一记为 user
-                pw_version = u.get("pw_version", 1)
-        if role:
-            with _rate_lock:
-                _login_fails.pop(fail_key, None)
-            # 登录成功写入审计（原实现成功登录零留痕，被盗会话无法还原
-            # 会话何时建立、来自哪个 IP；IP 经 hash_ip 匿名化，与审计侧口径一致）。
-            # 失败登录已有阈值邮件告警，不重复写审计（避免爆破刷爆审计表）。
-            # 动作名由 login 收敛为 login_ok，与 login_failed /
-            # logout_ok 同组命名，并补齐登出端（logout_ok）与恢复入口（api_me_restore
-            # 的"恢复即登录"）两处留痕；成功路径的 username 补 64 字截断——该值直接
-            # 来自请求体，不截断等于把审计表当垃圾场。两条成功分支（内置管理员
-            # 走 .env 口令/哈希、注册用户走 users.password_hash）在 `if role:` 处汇合，
-            # 所以这一行同时覆盖两条分支、每次登录仍只有一行，走的哪条由 detail 里的
-            # auth_source 指明。成组之后取证侧一句 WHERE action='login_ok' 就能重建
-            # "谁的账号、何时、从哪个 IP 登录过"的时间线。查不到 login_ok 属正常：它只
-            # 说明本改动上线后还没人重新走过 /api/login，不代表这个汇合点以前没写过审计。
-            # 跨版本取证须写 action IN ('login','login_ok')：上面那句"登录成功写入
-            # 审计"早期即以动作名 login 落在同一个汇合点，改名前写入的行
-            # （现网库与历史备份包内都是）只查 login_ok 会整段漏掉。
-            # 位置刻意留在校验通过后立即记录，早于 session 重建与下方 set_user_sid：
-            # 口令通过校验即一次既成的登录事实，即使后续 sid 落库失败也要留下这次
-            # 登录；且此时手上还没有 sid，本行天然不可能写进可重放的凭据。
-            db.audit(
-                (username.lower() or "?")[:64], "login_ok", db.hash_ip(ip),
-                f"登录成功（{auth_source}）",
-            )
-            # S1/复审：auth_source 记录实际认证来源，不用 role+邮箱反推
-            # 防 session 固定：登录成功先清空再重建会话
-            session.clear()
-            session.permanent = True
-            session["auth"] = True
-            session["role"] = role
-            # 会话用户名统一小写（2026-08-27）：注册用户邮箱库内小写存储，而
-            # /api/me、邮件开关等接口以 session username 做大小写敏感的
-            # find_user/update_user 精确匹配——存原始大小写会静默失效。
-            # 内置管理员不受影响（_is_builtin_admin_session/_effective_role 比对端自行小写）。
-            session["username"] = username.lower()
-            session["auth_source"] = auth_source
-            session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
-            # 会话绝对过期基准（P2-5）：自此刻起最多 SESSION_ABS_TTL_SECONDS
-            session["login_ts"] = int(time.time())
-            # 服务端会话吊销：注册用户登录签发 sid 并落库——登出/被
-            # 重置密码/被踢时轮换，被盗 cookie 重放即失效。内置管理员走 .env 的
-            # PW_VERSION 吊销机制，无需 sid。
-            if auth_source == "user":
-                sid = secrets.token_hex(16)
-                session["sid"] = sid
-                db.set_user_sid(username.lower(), sid)
-            return jsonify({"ok": True, "role": role})
-        if recoverable:
-            # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
-            return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
-        fails = _bump_login_failure(_login_fails, fail_key, now)
-        # 失败登录留痕审计链——原仅内存计数+日志，"被盗号溯源"
-        # 场景无法从审计还原爆破片段。刻意不在每次失败都写（防爆破刷爆审计表），
-        # 与阈值邮件/锁定同节奏：达到告警阈值（3 次）与锁定阈值（5 次）各留痕一条，
-        # IP 经 hash_ip 匿名化（与登录成功审计同口径）。用户名截断防长串刷审计。
-        if fails in (LOGIN_FAIL_NOTIFY, LOGIN_MAX_FAILS):
-            db.audit(
-                (username.lower() or "?")[:64],
-                "login_failed",
-                db.hash_ip(ip),
-                f"连续失败 {fails} 次（阈值留痕）",
-            )
-        if fails >= LOGIN_MAX_FAILS:
-            with _rate_lock:
-                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-            logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
-            return jsonify(
-                {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
-            ), 429
-        # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
-        if fails == LOGIN_FAIL_NOTIFY:
-            # 2026-08-31 公测反馈：原实现把"输错 3 次密码"一律标成紧急告警，而紧急额度
-            # 默认只有 3 条/天——公测首日 07:59 就有一次学生忘密码触发锁定，等于用一个
-            # 常见误操作挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。改判据：
-            # 只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
-            # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
-            with _rate_lock:
-                distinct_users = sum(1 for (fip, _u) in _login_fails if fip == ip)
-            send_notification(
-                "登录失败告警",
-                f"IP {_nl_safe(ip)} 连续 {fails} 次登录失败"
-                f"（尝试用户名: {_nl_safe(username)}）\n"
-                f"该 IP 本窗口内尝试过 {distinct_users} 个不同用户名\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"如非本人操作，请检查是否有人尝试暴力破解",
-                urgent=distinct_users >= LOGIN_SPRAY_USERS,
-                # 独立账本 YIBAN_LOGINFAIL_DAILY_MAX（默认 3，0=不限）——
-                # 登录失败是公网最高频告警源，不再与 general/urgent 两本账互挤，
-                # 喷洒类攻击烧光本账后审计链异常等真紧急告警仍可达手机
-                ledger="login_fail",
-            )
-        return jsonify({"error": "用户名或密码错误"}), 401
+    # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
+    # 这几个闭包依赖请求上下文与会话状态，出不了 `create_app`；路由模块经 `web.routes`
+    # 的取回函数按 app 实例拿它们（登记键见 `app.extensions["yiban_sensitive_password_gate"]`）。
+    def _admin_quota_limited(table, off_audited, window_key, limit_key,
+                             window_default, limit_default, off_action, kind):
+        """删除类/凭据类高危额度的共用计数核：先判后增，窗口内超限返回 True。
 
-    def _registration_paused():
-        """注册是否处于暂停状态（v0.26.3）。
-
-        YIBAN_REGISTRATION_PAUSE=1 视为暂停；未配置/空 = 允许——既有部署升级后
-        无此键，注册行为不变（用户裁决：默认允许，新部署才默认暂停）。新部署由
-        ensure_secret_key 首次创建 .env 时写入 1，管理员完成初始配置后在设置页
-        （危险区，仅主管理员）开启。与 YIBAN_GLOBAL_PAUSE 同款读写口径。
+        键 = 会话用户名（统一小写）；窗口/上限由 .env 键调整，0 = 关闭（关闭本身
+        留一条审计，防"拆了闸却无痕"）。两个额度族共用这一份实现，保证语义
+        （判定即占用、0=不限速而非全拒、trim 防无界增长）逐字一致。
         """
-        return load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1
-
-    @app.route("/api/register", methods=["POST"])
-    def api_register():
-        """开放注册普通用户：邮箱 + 密码（哈希存储）。
-
-        邮箱格式校验；邮箱全局唯一；不做验证码服务。无昵称体系（一人一号，账号备注名在账号表单中填写）。
-        """
-        # v0.26.3：暂停注册时最先拦截——全局开关状态本身即公开信息（登录页
-        # 同步提示），早返回不产生枚举/时延侧信道；不占注册限速计数，不写审计
-        # （防机器人刷审计表）。
-        if _registration_paused():
-            return jsonify({"error": "注册已暂停，请联系管理员添加账号"}), 403
-        data = _json_body()
-        email = str(data.get("email", "")).strip().lower()
-        password = str(data.get("password", ""))
-        # 后端同意校验：必须显式勾选《用户协议》与《隐私政策》（前端勾选仅为 UX，此处为强制）。
-        # 严格布尔判断（is not True）：真值判断会让 "0"/"false"/"no" 等非空字符串绕过同意校验。
-        if data.get("agree") is not True:
-            return jsonify({"error": "请先阅读并同意《用户协议》和《隐私政策》"}), 400
-        if len(email.split("@")[0]) > EMAIL_USER_MAX:
-            return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
-        if not EMAIL_RE.match(email) or len(email) > 64:
-            return jsonify({"error": "请输入有效的邮箱地址"}), 400
-        # 邮箱域名审查（2026-08-28）：占位/一次性域名在写库前排除，防挤占用户池
-        dom_err = email_domain_error(email)
-        if dom_err:
-            return jsonify({"error": dom_err}), 400
-        pw_err = _password_policy_error(password)
-        if pw_err:
-            return jsonify({"error": pw_err}), 400
-        # S1：内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用
-        if email.strip().lower() == _builtin_admin_email().strip().lower():
-            return jsonify({"error": "内置管理员邮箱不可注册"}), 400
-        # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
-        ip = _client_ip()
-        now = time.time()
-        with _rate_lock:
-            _ip_store_trim(_register_limits, REGISTER_WINDOW)
-            rcnt, rstart = _register_limits.get(ip, (0, now))
-            if now - rstart > REGISTER_WINDOW:
-                rcnt, rstart = 0, now
-            if rcnt >= REGISTER_MAX:
-                # 不暴露限速窗口分钟数（防恶意用户据此规划批量注册节奏，信息分层 2026-08-15）
-                return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
-        # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
-        with _file_lock:
-            # 容量兜底：用户配额（2026-08-31 口径修订：全部未删除注册用户，含空用户；
-            # 防分布式注册无限膨胀 users 表，对抗性审查补。与账号配额同构，
-            # 统一为"再注册 1 人后 > 上限才拒"语义，见 _users_at_capacity）
-            max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
-            if _users_at_capacity():
-                _notify_capacity_once("users", max_users, "注册人数")
-                return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
-            if db.find_user(email) is not None:
-                # 时延拉平（2026-08-20 对抗性审查 P2）：已注册邮箱在此提前返回，
-                # 跳过了后方的 scrypt 哈希（约百毫秒），响应时序差可被用于批量
-                # 枚举"哪些邮箱是本站注册用户"。与登录/恢复的 _constant_time_dummy 惯例对齐。
-                _constant_time_dummy(password)
-                return jsonify({"error": "该邮箱已注册"}), 400
-            # 冷却期邮箱保护（安全审查 2026-08-16）：已注销账号 7 天冷却期内禁止同邮箱注册，
-            # 否则恢复权会被新注册抢占（登录即恢复形同虚设）；宽限期结束后邮箱正常释放
-            du = db.find_user_any(email)
-            if (
-                du is not None
-                and du.get("deleted")
-                and _delete_grace_remaining(du.get("deleted_at", "")) > 0
-            ):
-                _constant_time_dummy(password)  # 时延拉平：同上，防探测"近期注销"邮箱
-                # （防枚举文案）：冷却期分支文案与「该邮箱已注册」
-                # 逐字一致——专属文案（"正在注销冷却期"）让攻击者批量探测"哪些邮箱近期
-                # 注销过"（低警惕期用户是钓鱼高价值目标）。恢复入口仍由登录页提供，
-                # 注册侧不给出任何差异信号。
-                return jsonify({"error": "该邮箱已注册"}), 400
-            try:
-                created = db.create_user(
-                    email,
-                    generate_password_hash(password, method=SCRYPT_METHOD),
-                    role="user",
-                    created_at=clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
-                )
-            except sqlite3.IntegrityError:
-                return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
-            if not created:
-                return jsonify({"error": "该邮箱已注册"}), 400  # M10：OR IGNORE 未实际创建
-            db.audit(email, "user_register", email, "开放注册")
-        # 成功注册计数：原子重读后递增，避免并发注册丢失计数
-        _bump_window_count(_register_limits, ip, now, REGISTER_WINDOW)
-        logger.info("新用户注册: %s", _mask_email(email))
-        return jsonify({"ok": True})
-
-    @app.route("/api/logout", methods=["POST"])
-    def api_logout():
-        # 登出留痕。生产 audit_logs 里 logout 类动作此前 0 条——
-        # "被盗号者用完会话有没有登出、本人何时从哪个 IP 结束登录"完全无从还原；
-        # 只有与 login_ok 成对，一次会话的起止两端才都钉在 HMAC 链上。
-        # 三元组口径与 forbidden_path/login_ok 逐字同构：target 只存 IP 的 HMAC
-        # （不落明文、不存 User-Agent）、username 截断 64、detail 只记认证来源，
-        # 绝不写入 sid/Cookie/CSRF 值（那些一旦进链就等于把可重放的凭据抄进日志）。
-        # 顺序刻意在 session.clear() 之前：清空后就再也取不到 username 与 auth_source。
-        db.audit(
-            (session.get("username") or "?")[:64], "logout_ok", db.hash_ip(_client_ip()),
-            f"登出（{session.get('auth_source') or 'builtin'}）",
-        )
-        # 登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
-        # cookie 副本在登出后重放依然有效。轮换后所有旧会话（含当前）即时失效；
-        # 内置管理员走 PW_VERSION 机制，无需轮换。
-        if (
-            session.get("auth_source") == "user"
-            and session.get("username")
-        ):
-            try:
-                db.set_user_sid(
-                    session["username"].strip().lower(), secrets.token_hex(16)
-                )
-            except Exception as e:
-                # 不得静默吞掉：本条失败意味着"被盗 cookie 在登出后仍有效"这一
-                # 服务端吊销机制未生效，而对外仍返回 {"ok": true}。与 db.audit
-                # 写失败同口径留痕（调用方无法区分，只能靠日志）。
-                logger.error("登出轮换 sid 失败（旧会话可能仍有效）: %s", e)
-        session.clear()
-        return jsonify({"ok": True})
-
-    @app.route("/api/me/password", methods=["POST"])
-    def api_me_password():
-        """所有用户自助修改自己的密码（账号不可修改）。
-
-        内置管理员（.env）验证当前口令后写入新哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt），
-        并清理旧明文；注册用户（含提升的管理员）验证当前密码后更新 users 表密码哈希。
-        失败计数与登录共用限速：达阈值（LOGIN_MAX_FAILS）锁定，超阈值返回 429；
-        旧会话失效由 pw_version 递增实现（_effective_role 实时校验）。
-        """
-        data = _json_body()
-        old_password = str(data.get("old_password", ""))
-        new_password = str(data.get("new_password", ""))
-        if new_password != str(data.get("confirm_password", "")):
-            return jsonify({"error": "两次输入的新密码不一致"}), 400
-        # 主管理员（内置 .env 管理员）口令走 12 位三类提档策略；注册用户维持原口径
-        pw_err = (
-            _admin_password_policy_error(new_password)
-            if _is_builtin_admin_session()
-            else _password_policy_error(new_password)
-        )
-        if pw_err:
-            return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
-        username = session.get("username", "")
-        ip = _client_ip()
-        now = time.time()
-        # 失败计数键与登录一致：按 (IP, 用户名) 组合
-        fail_key = (ip, username.strip().lower())
-        with _rate_lock:
-            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-            if now < lock_until:
-                # 不显示剩余秒数（信息分层，2026-08-15）
-                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
-
-        def _handle_failed_login():
-            """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。
-
-            2026-08-15 命名审查：原名 _pw_failed 读作"记录失败"，实际返回 429/400 响应。
-            """
-            nfails = _bump_login_failure(_login_fails, fail_key, now)
-            if nfails >= LOGIN_MAX_FAILS:
-                with _rate_lock:
-                    _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-                logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
-                # 不暴露锁定时长分钟数（信息分层，2026-08-15）
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-            if nfails == LOGIN_FAIL_NOTIFY:
-                send_notification(
-                    "改密失败告警",
-                    f"IP {_nl_safe(ip)} 连续 {nfails} 次修改密码失败"
-                    f"（用户名: {_nl_safe(username)}）\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试暴力破解",
-                )
-            return jsonify({"error": "当前密码不正确"}), 400
-
-        # 内置管理员：验证 .env 当前口令后更新（同邮箱注册用户不进入此分支）
-        if _is_builtin_admin_session():
-            if not verify_admin(username, old_password):
-                return _handle_failed_login()
-            # 哈希在锁外先算（scrypt 不该占住写锁）；现值读取必须与落盘同处一把
-            # 写锁临界区：写锁同线程可重入（write_env_batch 内部的再次加锁直接
-            # 放行），否则读在锁外时两个并发改密都会读到旧版本并写出同一个
-            # 递增值——一次递增被吞，本应随版本失效的旧会话继续有效。
-            new_hash = generate_password_hash(new_password, method=SCRYPT_METHOD)
-            with _env_write_lock(ENV_FILE):
-                write_env_batch(
-                    ENV_FILE,
-                    {
-                        "YIBAN_ADMIN_PASSWORD_HASH": new_hash,
-                        "YIBAN_ADMIN_PASSWORD": "",  # 清理旧明文口令，改由哈希校验
-                        "YIBAN_ADMIN_PW_VERSION": str(load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1),
-                    },
-                )
-            with _rate_lock:
-                _login_fails.pop(fail_key, None)
-            # 审计留痕（2026-08-20 对抗性审查 P2 补）：主管理员改密是最高权限的
-            # 关键事件，此前注册用户分支有审计而本分支缺席，防篡改链上无法追责
-            db.audit(
-                username or "builtin-admin",
-                "admin_password",
-                _mask_email(username) if username else "-",
-                "内置管理员自助改密",
-            )
-            # 主管理员即时告警——改密是「被盗号接管」最强信号
-            #（本人会话随 PW_VERSION 失效，攻击者以新密重登），此前仅审计+日志，
-            # 告警渠道存在却未接（此前漏了本分支）。对齐注册用户分支口径。
-            send_notification(
-                "账号安全事件告警",
-                f"内置主管理员（{_mask_email(username) if username else 'builtin-admin'}）"
-                f"密码已通过自助改密修改，时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}。\n"
-                "如非本人操作，请立即按 README「主管理员权限追回」流程处理"
-                "（SSH 重写 YIBAN_ADMIN_PASSWORD + PW_VERSION 递增）。",
-                urgent=True,
-            )
-            logger.info("内置管理员密码已更新")
-            return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
-        # 注册用户（含提升的管理员）：db 单行更新（事务内，防并发覆盖）
-        with _file_lock:
-            u = db.find_user(username.strip().lower())
-            if u is not None:
-                if not check_password_hash(u.get("password_hash", ""), old_password):
-                    return _handle_failed_login()
-                db.update_user(
-                    u["email"],
-                    {
-                        "password_hash": generate_password_hash(new_password, method=SCRYPT_METHOD),
-                        "pw_version": u.get("pw_version", 1) + 1,  # 旧会话随之失效
-                    },
-                )
-                db.audit(username, "user_password", username, "自助改密")
-                # 自助改密轮换 sid——当前会话保持有效（同步 session），
-                # 此前被窃取的 cookie 副本随旧 sid 失效
-                new_sid = secrets.token_hex(16)
-                db.set_user_sid(username.strip().lower(), new_sid)
-                session["sid"] = new_sid
-                with _rate_lock:
-                    _login_fails.pop(fail_key, None)
-                # 改密是核心安全事件——本人邮件（直接 send_user 绕过
-                # mail_notify 开关：开关本身可被攻击者关闭）+ 管理员告警（被盗号
-                # 改密时的可感知信号，审计之外的第一时间渠道）
-                mailer.send_user(
-                    username,
-                    "【易班签到】您的账号密码已被修改",
-                    "您的账号密码刚刚通过自助改密被修改。\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    "如非本人操作，请立即联系管理员重置密码并检查账号安全。",
-                )
-                send_notification(
-                    "账号安全事件告警",
-                    f"用户 {_mask_email(username)} 自助修改密码，"
-                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                )
-                logger.info("用户 %s 已修改自己的密码", _mask_email(username))
-                return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
-        return jsonify({"error": "用户不存在"}), 404
-
-    @app.route("/api/me/delete", methods=["POST"])
-    def api_me_delete():
-        """用户自助注销（软删除 + 7 天宽限期，数据库 v5；安全审查 2026-08-16 3→7 天对齐）。
-
-        安全设计（docs/design/plan-frontend-user-deregistration.md）：
-        - 登录要求 + CSRF：全局写请求校验（X-CSRF-Token）自动覆盖；
-        - 防 IDOR：只从 session 取当前用户，请求体任何目标参数一律忽略；
-        - 密码确认：防"离开电脑被恶意页面直接注销"；
-        - 防批量：每用户 60s 1 次 + 每 IP 60s 5 次（user_delete_requests 表计数，
-          成功进入注销流程才记录；试密码已由 _login_fails 限速，两层防护不重叠），
-          超限 429 且不暴露冷却秒数；
-        - 管理员保护：内置管理员（.env 主管理员）不可注销；最后一个注册管理员
-          不可注销（is_last_registered_admin，防失去全部管理入口）；
-        - 审计：user_self_delete_request / user_self_delete_confirm，detail 脱敏；
-        - 注销即清会话（软删除后 find_user 查无此人，_effective_role 同步失效）。
-        """
-        if not session.get("auth") or not session.get("username"):
-            return jsonify({"error": "未登录"}), 401
-        data = _json_body()
-        password = str(data.get("password", ""))
-        if not password:
-            return jsonify({"error": "请输入当前密码"}), 400
-        username = session.get("username", "")
-        email = username.strip().lower()
-        ip = _client_ip()
-        now = time.time()
-        # 防批量冷却：计数基于 user_delete_requests 表（kind=delete，v7 分流：
-        # 恢复记录不占注销冷却，允许"恢复后立即再注销"）
-        since_ts = (clock.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        if (
-            db.count_user_delete_requests(
-                username=email, since_ts=since_ts, kind="delete"
-            )
-            >= 1
-        ):
-            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
-        if (
-            db.count_user_delete_requests(
-                ip_hash=ip_hash, since_ts=since_ts, kind="delete"
-            )
-            >= DELETE_MAX_REQUESTS_PER_IP
-        ):
-            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        # 内置管理员（.env 主管理员）不可自助注销：系统兜底账号，不落 users 表；
-        # 同邮箱注册用户不受此限制（可正常自助注销）
-        if _is_builtin_admin_session():
-            return jsonify({"error": "当前账号不可注销"}), 400
-        # 密码确认 + 失败锁定（与登录/改密共用 _login_fails 计数，达阈值锁定）
-        fail_key = (ip, email)
-        with _rate_lock:
-            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-            if now < lock_until:
-                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
-
-        def _handle_failed_login():
-            """当前密码校验失败：递增失败计数，达阈值锁定（与 api_me_password 一致）。"""
-            nfails = _bump_login_failure(_login_fails, fail_key, now)
-            if nfails >= LOGIN_MAX_FAILS:
-                with _rate_lock:
-                    _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-                logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
-                # 不暴露锁定时长（信息分层，2026-08-15）
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-            if nfails == LOGIN_FAIL_NOTIFY:
-                send_notification(
-                    "注销密码失败告警",
-                    f"IP {_nl_safe(ip)} 连续 {nfails} 次注销密码验证失败"
-                    f"（用户名: {_nl_safe(username)}）\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试注销该账号",
-                )
-            return jsonify({"error": "当前密码不正确"}), 400
-
-        with _file_lock:
-            u = db.find_user(email)
-            if u is None:
-                return jsonify({"error": "用户不存在"}), 404
-            if not check_password_hash(u.get("password_hash", ""), password):
-                return _handle_failed_login()
-            # 最后一个注册管理员不可注销（无内置管理员时会失去全部管理入口）
-            if u.get("role") == "admin" and db.is_last_registered_admin(email):
-                return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
-            # 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
-            db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
-            try:
-                _deleted = db.soft_delete_user_with_accounts(email)
-            except db.LastAdminError:
-                # C-M3（2026-08-28）：事务内复核兜底——跨进程并发注销时
-                # 上面的 is_last_registered_admin 预检可能双双通过，db 层
-                # 复核拦截后转 400（原路径会 500）
-                return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
-            if not _deleted:
-                return jsonify({"error": "注销失败，请稍后再试"}), 500
-            # 防批量计数仅在注销成功后才记录（低项：失败不占冷却额度）
-            db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
-            db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，7 天宽限期）")
-            with _rate_lock:
-                _login_fails.pop(fail_key, None)
-            logger.info("用户 %s 已注销账号（7 天宽限期）", _mask_email(username))
-            # 2026-08-16 用户裁决：自助注销不发管理员通知（正常操作，避免通知轰炸）；
-            # 管理员在「用户管理 → 已注销用户」区块主动查看（/api/users/deleted）
-        session.clear()
-        return jsonify({"ok": True, "msg": "账号已注销，7 天内可撤销"})
-
-    @app.route("/api/me/restore", methods=["POST"])
-    def api_me_restore():
-        """冷静期账号恢复（2026-08-16 用户裁决：仅登录即恢复，不做注册引导）。
-
-        未登录可调（冷静期用户无会话；CSRF 走同源校验，与登录同等级）；
-        密码验证 + 冷却限速（复用 user_delete_requests 计数：每邮箱 60s 1 次、
-        每 IP 60s 5 次——与注销同一套底层冷却系统）；
-        成功后 restore_user（联动恢复易班账号）+ 建立会话 + 审计 user_self_delete_restore。
-        """
-        data = _json_body()
-        email = str(data.get("email", "")).strip().lower()
-        password = str(data.get("password", ""))
-        ip = _client_ip()
-        if not email or not password:
-            return jsonify({"error": "邮箱和密码为必填项"}), 400
-        # 防批量冷却（与注销同一张计数表，但按 kind 分流——v7 修复：
-        # 注销动作自身的记录不再阻断 60s 内的恢复请求，"注销后立即反悔"路径畅通）
-        since_ts = (clock.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        if (
-            db.count_user_delete_requests(
-                username=email, since_ts=since_ts, kind="restore"
-            )
-            >= 1
-        ):
-            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
-        if (
-            db.count_user_delete_requests(
-                ip_hash=ip_hash, since_ts=since_ts, kind="restore"
-            )
-            >= DELETE_MAX_REQUESTS_PER_IP
-        ):
-            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        # 密码失败锁定预检（2026-08-17）：与登录/注销共用 (ip, email) 计数与锁定窗口
-        # email 直接来自请求体、长度无界，fail_key 统一截断 [:128]
-        # （真实邮箱不可能超过 128；防公网扫描器用海量超长键打爆内存表）
-        fail_key = (ip, email[:128])
-        with _rate_lock:
-            _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
-            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-            if time.time() < lock_until:
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-        u = db.find_user_any(email)
-        in_grace = (
-            u is not None
-            and u.get("deleted")
-            and _delete_grace_remaining(u.get("deleted_at", "")) > 0
-        )
-        verified = in_grace and check_password_hash(u.get("password_hash", ""), password)
-        if not in_grace:
-            # 时延拉平：账号不存在/过期时也做等开销 dummy 比对，防时序探测
-            _constant_time_dummy(password)
-        if not verified:
-            # 密码失败锁定（2026-08-17 安全审查补齐）：与登录/注销共用 _login_fails
-            # （键 (ip, email) 相同）——此前试错完全不计数，同 IP 可无限爆破冷却期
-            # 账号密码，命中即恢复并建立会话；共用计数后登录侧锁定同样约束本接口
-            now2 = time.time()
-            nfails = _bump_login_failure(_login_fails, fail_key, now2)
-            # 补每 IP 聚合失败窗口（30 次/10 分钟）——单邮箱 5 次锁定
-            # 只约束单账号，攻击者可跨邮箱喷洒（总速率仅受全局限速约束）；
-            # 命中即获得该冷静期账号的完整会话与其易班凭据，须有聚合闸门
-            # _restore_fail_rate 此前是唯一无 trim 的限速表，
-            # 写入路径补同口径清理（窗口 + 最大年龄）
-            with _rate_lock:
-                _ip_store_trim(_restore_fail_rate, RESTORE_FAIL_WINDOW + _IP_STORE_MAX_AGE)
-            _rc, _rs, ip_allowed = _bump_window_count(
-                _restore_fail_rate, ip, now2, RESTORE_FAIL_WINDOW, limit=RESTORE_FAIL_MAX
-            )
-            if not ip_allowed:
-                logger.warning("恢复密码尝试过于频繁（每 IP 聚合），IP %s 临时限制", db.hash_ip(ip))
-                return jsonify({"error": "尝试过于频繁，请稍后再试"}), 429
-            if nfails >= LOGIN_MAX_FAILS:
-                with _rate_lock:
-                    _login_fails[fail_key] = (0, now2 + LOGIN_LOCK_SECONDS, now2)
-                logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-            if nfails == LOGIN_FAIL_NOTIFY:
-                send_notification(
-                    "恢复密码失败告警",
-                    f"IP {_nl_safe(ip)} 连续 {nfails} 次恢复密码验证失败"
-                    f"（邮箱: {_nl_safe(email)}）\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
-                )
-            # 统一文案（2026-08-17 安全审查）：不区分"账号不存在/已过期"与"密码错误"，
-            # 防无凭探测"哪些邮箱正处于注销冷却期"（注销用户警惕性低，是钓鱼高价值目标）
-            return jsonify({"error": "邮箱或密码错误，或账号已过恢复期"}), 400
-        try:
-            _restored = db.restore_user(email)
-        except sqlite3.IntegrityError:
-            # 2026-08-28 审查 M7：并发注册抢注同邮箱（db 层已用写锁串行化，
-            # 此处为防御纵深）——提示占用而非笼统"恢复失败"
-            return jsonify({"error": "该邮箱已被注册，无法恢复"}), 409
-        if not _restored:
-            return jsonify({"error": "恢复失败，请稍后再试"}), 500
-        # 防批量计数仅在恢复成功后才记录（低项：失败不占冷却额度）
-        db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
-        with _rate_lock:
-            _login_fails.pop(fail_key, None)
-        db.audit(email, "user_self_delete_restore", email, "冷静期内恢复账号")
-        # 恢复即登录：与 api_login 同款会话建立（防 session 固定）
-        role = "admin" if u.get("role") == "admin" else "user"
-        session.clear()
-        session.permanent = True
-        session["auth"] = True
-        session["role"] = role
-        session["username"] = email
-        session["auth_source"] = "user"
-        session["pw_version"] = u.get("pw_version", 1)
-        # 会话绝对过期基准（P2-5），与 api_login 同口径
-        session["login_ts"] = int(time.time())
-        # 恢复即登录须与 api_login 同样签发 sid 并落库。注销与恢复
-        # （db.restore_user）均不轮换 sid，库内保留注销前登录签发的旧值——
-        # 此处不签发则新会话无 sid、与库内旧值不匹配，恢复成功后下个请求即 401；
-        # 且注销前被窃取的旧 cookie 会在恢复后原样复活，绕过整套 sid 吊销设计。
-        sid = secrets.token_hex(16)
-        session["sid"] = sid
-        db.set_user_sid(email, sid)
-        # 恢复即登录也要留 login_ok。上面建立的是与 api_login 完全同款
-        # 的会话（sid 签发与 pw_version 语义一字未动），只记 user_self_delete_restore
-        # 会让"这条会话当时是怎么建立的"在链上缺一半——恢复入口同样是被认证认可的
-        # 登录成功路径，盗号者可借它取得带 sid 的完整会话。detail 用「恢复登录」区分
-        # 入口；三元组与 login_ok 同口径（target 为 IP 的 HMAC，不落明文，用户名截断）。
-        db.audit(
-            (email or "?")[:64], "login_ok", db.hash_ip(ip), "登录成功（恢复登录）",
-        )
-        logger.info("用户 %s 已恢复注销账号", _mask_email(email))
-        return jsonify({"ok": True, "role": role})
-
-    @app.route("/api/me")
-    def api_me():
-        # admin 字段为旧版前端兼容（早期前端检查 me.admin；新版用 role）——
-        # 防止浏览器缓存旧页面时误判未登录导致刷新循环
-        role = _current_role()
-        username = session.get("username") or ""
-        # 邮箱通知开关（B 线：用户签到失败提醒，默认开；用户端可关）
-        _me = db.find_user(username) if username else None
-        mail_notify = bool(_me.get("mail_notify", 1)) if _me else True
-        # 调度 v2：排序×分布模式与自选开关同步给用户（只读展示）
-        env = read_env(ENV_FILE)
-        mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-        sign_order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-            "random" if mode == "random" else "sequence"
-        )
-        sign_dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-            "normal" if mode == "normal" else "uniform"
-        )
-        sw = _sign_window()
-        return jsonify(
-            {
-                "ok": True,
-                "auth": bool(session.get("auth")),
-                "role": role,
-                "username": username,
-                "email": username,  # 普通用户顶部显示邮箱前缀（管理员为用户名）
-                "admin": role == "admin",
-                "mail_notify": mail_notify,  # B 线：用户签到失败邮件开关
-                "is_builtin_admin": _is_builtin_admin_session(),  # 仅 .env 主管理员会话为 True
-                "csrf_token": get_csrf_token(),
-                # 调度 v2（docs/design/plan-scheduler-v2.md 2.1/2.2）
-                "sign_order": sign_order,
-                "sign_dist": sign_dist,
-                "time_pref_allowed": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
-                "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-            }
-        )
-
-    # ---- 我的邮箱通知开关（B 线：用户签到失败邮件）----
-    @app.route("/api/my-mail-notify")
-    def api_my_mail_notify():
-        """读取当前用户邮箱通知开关。未登录默认视为开启（前端展示用）。"""
-        email = session.get("username") or ""
-        user = db.find_user(email) if email else None
-        return jsonify(
-            {"ok": True, "mail_notify": bool(user.get("mail_notify", 1)) if user else True}
-        )
-
-    @app.route("/api/my-mail-notify", methods=["PUT"])
-    def api_my_mail_notify_save():
-        """保存当前用户邮箱通知开关：{enabled: bool}。CSRF 由 before_request 统一校验。"""
-        email = session.get("username") or ""
-        if not email:
-            return jsonify({"error": "未登录"}), 401
-        data = _json_body()
-        enabled = data.get("enabled")
-        if not isinstance(enabled, bool):
-            return jsonify({"error": "取值无效"}), 400
-        affected = db.update_user(email, {"mail_notify": 1 if enabled else 0})
-        if affected == 0:
-            # C-M1（2026-08-28）：update_user 对不存在的邮箱是静默 no-op。
-            # 内置管理员（.env 账号，不在 users 表）原会收到 ok:true 但刷新后
-            # 开关弹回开启，还写入一条不存在的变更审计——改为明确 404 且不审计
-            return jsonify({
-                "error": "当前账号不支持此设置（内置管理员请用管理员邮件配置）"
-            }), 404
-        db.audit(email, "mail_notify", email, "on" if enabled else "off")
-        if not enabled:
-            # 关闭通知本身是"先静默关通知再作案"攻击链的一环——
-            # 确认邮件直接 send_user 绕过刚被关闭的开关，让本人知情
-            mailer.send_user(
-                email,
-                "【易班签到】签到失败邮件通知已被关闭",
-                "您的签到失败邮件通知已被关闭（本人操作确认）。\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "如非本人操作，请立即联系管理员（账号可能已被他人控制）。",
-            )
-        return jsonify({"ok": True, "mail_notify": enabled})
-
-    # ---- 邮件通知配置（全局开关，仅主管理员）----
-    @app.route("/api/mail-config")
-    def api_mail_config():
-        """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。
-
-        smtps：SMTP 发信条目列表（mailer.smtp_list 解密结果；pass 绝不回显，
-        仅以 has_pass 标记该条是否已有授权码；user 同顶层字段口径
-        经 mailer._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
-        条目级 admin_to 已摘除（2026-09-08）：发送路径只读顶层旧键 ADMIN_TO，
-        条目携带的收件人从不生效，历史死字段不再序列化/落盘。顶层 admin_to
-        是活字段（A 线告警收件算法的唯一来源，见 mailer._admin_tos），保留
-        序列化与状态行展示——管理员必须始终可见告警发往何处。
-        """
-        cfg = mailer.get_config()
-        enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
-        return jsonify({
-            "ok": True,
-            "enabled": enabled,
-            "admin_notify": bool(cfg.get("admin_notify", True)),
-            "smtp_host": cfg.get("host", ""),
-            "smtp_port": cfg.get("port", 465),
-            "user": cfg.get("user", ""),
-            "admin_to": cfg.get("admin_to", ""),
-            "smtps": [
-                {
-                    "host": str(e.get("host", "")),
-                    "port": e.get("port", 465),
-                    "user": mailer._mask_addr(e.get("user")),
-                    "has_pass": bool(e.get("pass")),
-                }
-                for e in mailer.smtp_list()
-            ],
-        })
-
-    @app.route("/api/mail-config", methods=["PUT"])
-    def api_mail_config_save():
-        """主管理员：切换邮件配置开关 / 保存 SMTP 发信条目列表（写 .env）。
-
-        支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
-        接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
-        admin_to（2026-09-09）：告警收件人（顶层 YIBAN_MAIL_ADMIN_TO，逗号
-        分隔多地址）——A 线告警收件算法的唯一来源（见 mailer.admin_recipients
-        / db.admin_mail_recipients），此前只有只读展示、无写入入口，改收件人
-        须登服务器改 .env。**键存在即以提交值为准**：空串 = 显式清空（删键）、
-        键缺失 = 不改动；前端输入框留空不提交（GET 已打码、不回显完整地址，
-        避免误清），清空走单独的「清空」按钮。不再需要收 ADMIN_TO 时优先用
-        同卡「接收发给我自己的邮件提醒」开关，那只是停止本人接收、不影响其他管理员。
-        smtps（v0.3.4 起）：SMTP 发信条目列表（主备 failover），每条
-        {host, port=465, user, pass}；pass 留空且该索引旧条目已有
-        授权码 → 保留旧 pass（不改授权码时无需重输），user 留空同理按索引
-        沿用旧值（GET 打码后前端不回显完整地址），落盘前 AES-GCM 加密为
-        YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不再接受/写入（2026-09-08，
-        发送路径从不读该键）。
-
-        邮件通道是全部安全告警的最后一条送达路径——"先关通知再作案"
-        是活体复现的攻击链首步（拿到内置主管理员 Cookie 后一个 PUT 就能让所有
-        告警静默）。故**关闭**类改动纳入高危门禁：与三处高危删除同口径，
-        统一走 _high_risk_gate()（二次鉴权 + 复用同一份高危限速计数；修复轮 1 起
-        顺序为"先验口令，通过了才占用额度"）；
-        纯开启、以及不带开关的改动不要求口令（不得给正常成功路径加摩擦）。
-        smtps/admin_to 变更与开关关闭是两套并存的高危门禁（不合并）：两者
-        同属"改告警送达路径"，共用一次 _reconfirm_admin_password，不占高危
-        限速额度；同时提交时只验一次口令。
-        """
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可操作"}), 403
-        data = _json_body()
-        # 先全量校验、再统一落盘（原实现边校验边 write_env_key：enabled 合法而
-        # admin_notify 非法时会留下"一半已生效"的写入）
-        flags = {}
-        for field, env_key in (("enabled", "YIBAN_MAIL_ENABLE"),
-                               ("admin_notify", "YIBAN_MAIL_ADMIN_NOTIFY")):
-            if field not in data:
-                continue
-            v = data[field]
-            if not isinstance(v, bool):
-                return jsonify({"error": "取值无效"}), 400
-            flags[env_key] = v
-        # ---- 告警收件人（admin_to）：校验通过后才做口令二次确认 ----
-        # 键存在 = 本次以提交值为准（空串 = 显式清空）；键缺失 = 不改动。
-        # 前端输入框留空按"不改动"处理（不回显完整地址，避免误清），清空走单独按钮。
-        admin_to_val = None
-        if "admin_to" in data:
-            raw_to = str(data.get("admin_to") or "").strip()
-            if raw_to:
-                # 逗号分隔多地址：逐条校验格式与长度（EMAIL_RE 与注册同源，
-                # 上限 64 与 users.email 列口径一致），任一非法即整请求拒绝
-                addrs = [a.strip() for a in raw_to.split(",") if a.strip()]
-                if not addrs:
-                    return jsonify({"error": "告警收件人格式无效"}), 400
-                for a in addrs:
-                    if not EMAIL_RE.match(a) or len(a) > 64:
-                        return jsonify({"error": f"告警收件人格式无效：{a[:32]}"}), 400
-                admin_to_val = ",".join(addrs)
-            else:
-                admin_to_val = ""  # 显式清空（write_env_batch 空值 = 删键）
-        # ---- SMTP 发信条目列表（smtps）：全量校验通过后才做口令二次确认 ----
-        smtps_list = None
-        if "smtps" in data:
-            raw_list = data["smtps"]
-            if not isinstance(raw_list, list):
-                return jsonify({"error": "smtps 应为列表"}), 400
-            # 旧列表取自改动前的解密结果：pass 留空且该索引旧条目已有授权码 → 保留旧值
-            old_entries = mailer.smtp_list()
-            smtps_list = []
-            for i, e in enumerate(raw_list):
-                if not isinstance(e, dict):
-                    return jsonify({"error": f"smtps 第 {i + 1} 条格式无效"}), 400
-                # or "" 兜底：JSON null（键存在值为 null 时 get 的默认值不生效）不得
-                # 经 str(None) 落盘为 "None"（与下方 pass 同口径）
-                host = str(e.get("host") or "").strip()
-                user = str(e.get("user") or "").strip()
-                if not host:
-                    return jsonify({"error": f"smtps 第 {i + 1} 条 host 不能为空"}), 400
-                # user 留空 = 沿用该索引旧条目的 user（与 pass 的按索引保留一致：
-                # GET 已打码，前端不回显完整发件账号，留空提交才不会误清空）；
-                # 无旧值可沿用时存空串（同 pass 口径）
-                if not user and i < len(old_entries) and old_entries[i].get("user"):
-                    user = str(old_entries[i]["user"])
-                try:
-                    port = int(e.get("port", 465))
-                except (TypeError, ValueError):
-                    return jsonify({"error": f"smtps 第 {i + 1} 条端口无效"}), 400
-                if not 1 <= port <= 65535:
-                    return jsonify({"error": f"smtps 第 {i + 1} 条端口应为 1~65535"}), 400
-                pwd = str(e.get("pass", "") or "")
-                if not pwd and i < len(old_entries) and old_entries[i].get("pass"):
-                    pwd = str(old_entries[i]["pass"])  # 留空 = 不修改该条授权码
-                smtps_list.append({
-                    "host": host,
-                    "port": port,
-                    "user": user,
-                    "pass": pwd,
-                })
-        # smtps 与 admin_to 同属"改告警送达路径"，合并为一次口令确认
-        # （同时提交只验一次；两者都不涉及则不做口令校验）
-        if smtps_list is not None or admin_to_val is not None:
-            # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
-            denied = _reconfirm_admin_password(
-                str(data.get("confirm_password", "")), "修改邮件 SMTP 配置")
-            if denied is not None:
-                return denied
-        if not flags and smtps_list is None and admin_to_val is None:
-            return jsonify({"error": "缺少有效配置项"}), 400
-        # 高危判定：任一开关被置为"关"即为关闭通道（admin_notify=false 只关主管理员
-        # 本人的 ADMIN_TO 收件，同样是给报警器拔线）
-        closing = [k for k, v in flags.items() if v is False]
-        if closing:
-            # 评审 ⑤：动作标签按字段区分——"全站告警邮件停发"与"只拔主管理员本人的
-            # ADMIN_TO 收件"危害面完全不同，二次鉴权失败告警里必须看得见对方当时
-            # 想关的是哪一路（键名来自代码常量，无注入面）
-            label = "关闭邮件告警通道（" + "、".join(_MAIL_FLAG_NAMES[k] for k in closing) + "）"
-            # 评审 ②：限速与鉴权的顺序由统一门禁保证——先验口令，通过了才占额度
-            gate = _high_risk_gate(data, label)
-            if gate:
-                return gate
-        # 加密排在口令确认之后（同 notify-config 评审 ③：失败请求零写盘痕迹）
-        smtps_enc = None
-        if smtps_list is not None:
-            try:
-                enc = account_crypto.encrypt_text(
-                    json.dumps(smtps_list, ensure_ascii=False),
-                    account_crypto.load_key(ENV_FILE),
-                )
-            except ValueError as e:
-                return jsonify({"error": f"加密失败：{e}"}), 500
-            smtps_enc = json.dumps(enc, ensure_ascii=False)
-        # 密文与开关合成**一次** write_env_batch 落盘（2026-09-08）：
-        # 原先 write_env_key 写密文 + write_env_batch 写开关两次独立写，中间崩溃
-        # 会留下"密文新/开关旧"的中间态。write_env_key 单键形态本就是本函数的
-        # 一半，此处不再经由它。
-        # 改收件人前先记下旧地址：落盘后 _alert_mail_recipients() 读到的已是新值，
-        # 若不额外通知旧地址，被盗会话只要一次 PUT 就能把告警悄悄改投他人信箱，
-        # 而真正的管理员收不到任何"收件人被改了"的提示（与"关开关"同族的拔线动作）。
-        old_admin_to = mailer.admin_recipients()
-        updates = {k: ("1" if v else "0") for k, v in flags.items()}
-        if smtps_enc is not None:
-            updates["YIBAN_MAIL_SMTPS_ENC"] = smtps_enc
-        if admin_to_val is not None:
-            updates["YIBAN_MAIL_ADMIN_TO"] = admin_to_val
-        write_env_batch(ENV_FILE, updates)
-        # 变更告警在写入**成功之后**发出。原先放在落盘之前，理由是"若先落盘，
-        # 额度/节流即按新值生效，这条'通道被人动了'的告警会被自己刚写入的参数
-        # 吞掉"——但 force=True 本就绕过两侧节流，该担忧不成立；先发反而让
-        # 加密/写盘失败（500）时运营者已收到一条描述从未生效变更的通知。
-        # urgent=True——设置页开着「仅推送重要告警」时非紧急通知不推手机。
-        if flags:
-            send_notification(
-                "邮件配置变更告警",
-                f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                urgent=True,
-                force=True,
-            )
-        if smtps_list is not None:
-            # SMTP 发信条目是告警邮件的送达路径，被人改动必须让管理员知情
-            send_notification(
-                "邮件 SMTP 配置变更告警",
-                f"邮件 SMTP 配置已变更: 发信 SMTP 条目 {len(smtps_list)} 条，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                urgent=True,
-                force=True,
-            )
-        if admin_to_val is not None:
-            new_addrs = {a.strip() for a in admin_to_val.split(",") if a.strip()}
-            if new_addrs != set(old_admin_to):
-                # 变更后的收件人：走正常通道（落盘后 _alert_mail_recipients 已含新值）。
-                # 正文写新值但打码——告警正文不得回显完整邮箱（与 GET 同口径）。
-                shown = mailer._mask_addr(admin_to_val) if admin_to_val else "（已清空）"
-                send_notification(
-                    "邮件告警收件人变更告警",
-                    f"告警收件人已变更: 新收件人 {shown}，"
-                    f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                    urgent=True,
-                    force=True,
-                )
-                # 被摘掉的旧地址：绕过 send_notification 的收件人合成（此刻已解析
-                # 不到旧值），直接发给改动前的收件人。这是防"改收件人即致盲"的关键一封。
-                stale = [a for a in old_admin_to if a not in new_addrs]
-                if stale:
-                    mailer.send_admin_alert(
-                        "邮件告警收件人变更告警",
-                        f"你已不再是本系统的告警邮件收件人。\n"
-                        f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                        f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"如非本人操作，请立即检查管理后台。",
-                        to=",".join(stale),
-                    )
-        detail = {
-            "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
-            for k, v in flags.items()
-        }
-        if smtps_list is not None:
-            detail["smtps_count"] = len(smtps_list)
-        if admin_to_val is not None:
-            # 审计记打码值：留痕要能回答"收件人被谁改到哪个域名"，但不落完整地址
-            detail["admin_to"] = mailer._mask_addr(admin_to_val)
-        resp = {"ok": True}
-        resp.update(detail)
-        db.audit(
-            session.get("username") or "?",
-            "mail_config", "mail_config",
-            json.dumps(detail, ensure_ascii=False),
-        )
-        return jsonify(resp)
-
-    # ---- 消息推送（Webhook 组件：Server酱/自定义 URL，2026-08-29）----
-    @app.route("/api/notify-config")
-    def api_notify_config():
-        """消息推送配置状态（脱敏：密钥打码），供管理后台显示。
-
-        响应含 cooldown / urgent_only 与两本账每日额度（分账）：
-        daily_max / daily_remaining = 非紧急账，urgent_daily_max /
-        urgent_daily_remaining = 紧急账；上限为 0（不限）时对应 remaining 为 null。
-        """
-        return jsonify(notify.get_config())
-
-    @app.route("/api/notify-config", methods=["PUT"])
-    def api_notify_config_save():
-        """主管理员：保存消息推送配置（写 .env，密钥 AES-GCM 加密）。
-
-        body: {"type": "serverchan"|"custom"|"", "secret": "..."|"", "cooldown": 秒|省略,
-               "urgent_only": true|false|省略, "daily_max": 条数|省略,
-               "urgent_daily_max": 条数|省略}
-        type 为空 = 清除配置；secret 为空 = 清除密钥；cooldown 0 = 关闭同类型节流
-        （0 显式落盘，不再"删键回落默认"）；urgent_only = 仅推送重要告警（非紧急仅走邮件）；
-        daily_max / urgent_daily_max 0 = 不限（两本账分账）。
-
-        推送通道与邮件通道是告警仅有的两条出口，"关闭推送 / 清空密钥 /
-        换密钥"三类动作等同给报警器拔线，与三处高危删除同口径加二次鉴权 +
-        限速（同窗口同上限，语义即"高危配置变更限速"，不新建第二套计数）。
-        （参数收口）：额度/节流参数（cooldown /
-        urgent_only / daily_max / urgent_daily_max）同样纳入二次鉴权——它们决定告警
-        推不推、何时推、推几条，调大 cooldown、打开 urgent_only、把 daily_max 压到 1
-        与"拔线"同效（给报警器装消音器），同口径收口。
-        """
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可操作"}), 403
-        data = _json_body()
-        ntype = str(data.get("type", "")).strip().lower()
-        secret = str(data.get("secret", "")).strip()
-        if ntype not in ("serverchan", "custom", ""):
-            return jsonify({"error": "未知的通知类型"}), 400
-        if ntype == "serverchan" and secret and not secret.startswith("SCT"):
-            return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
-        if ntype == "custom" and secret and not notify.is_safe_url(secret):
-            return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
-        # ---- 高危判定：会"让推送通道失效、改密钥，
-        # 或调整告警送达节奏/额度"的请求都要口令 ----
-        # (a) type 置空 = 关闭推送；(b) 本次落盘后不再有密钥 = 清空密钥（含"只提交
-        # type 却不带 secret"这条隐蔽路径——它同样会删掉旧密文）；(c) 携带新密钥 = 换钥；
-        # (d)：出现任一额度/节流键 = 调整告警送达参数（同样致盲面）。
-        touches_channel = ("type" in data) or ("secret" in data)
-        close_channel = "type" in data and ntype == ""
-        clear_secret = touches_channel and not secret
-        swap_secret = bool(secret)
-        weakens_alerting = any(
-            k in data for k in ("cooldown", "urgent_only", "daily_max", "urgent_daily_max")
-        )
-        # 三类动作互斥，其并集恰好等于"触碰通道"的请求：带 type/secret 时要么有密钥
-        # （换钥）要么没有（关闭或清钥）；(d) 与之可叠加（一次请求既换钥又调参数）
-        need_reconfirm = close_channel or clear_secret or swap_secret or weakens_alerting
-        # 支持部分更新：仅在请求体出现的字段才写入（如「仅重要告警」开关单独保存时
-        # 不携带 type/secret，避免误清空已配置的推送通道）
-        updates = {}
-        numeric = {}
-        if "type" in data:
-            updates["YIBAN_NOTIFY_TYPE"] = ntype
-            if not secret:
-                # 空 = 删除键（关闭或换型不留旧钥）；带密钥时由闸门之后的加密段填
-                updates["YIBAN_NOTIFY_SECRET_ENC"] = ""
-        if "cooldown" in data:
-            try:
-                cd = max(0, int(data["cooldown"]))
-            except (TypeError, ValueError):
-                return jsonify({"error": "冷却参数无效"}), 400
-            # 口径修正：0 也要显式落盘。原实现 0 → 删键 → 回落 DEFAULT_COOLDOWN
-            # =60，于是设置页"关闭节流"点了个寂寞（想调成不节流反被节流 60 秒），
-            # 与 .env.example 里"0=关闭"的文档承诺相反。
-            updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd)
-            numeric["cooldown"] = cd
-        if "urgent_only" in data:
-            # 仅重要告警：true → 非紧急通知不推手机（邮件不受影响）；false → 全部推送
-            updates["YIBAN_NOTIFY_URGENT_ONLY"] = "1" if data["urgent_only"] else ""
-            numeric["urgent_only"] = bool(data["urgent_only"])
-        if "daily_max" in data:
-            try:
-                dm = max(0, int(data["daily_max"]))
-            except (TypeError, ValueError):
-                return jsonify({"error": "每日上限参数无效"}), 400
-            updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)  # 0 = 不限（显式写 0）
-            numeric["daily_max"] = dm
-        if "urgent_daily_max" in data:
-            # 紧急账此前只能在 .env 手改，分账后设置页必须能同时管两本账
-            try:
-                udm = max(0, int(data["urgent_daily_max"]))
-            except (TypeError, ValueError):
-                return jsonify({"error": "紧急每日上限参数无效"}), 400
-            updates["YIBAN_NOTIFY_URGENT_DAILY_MAX"] = "0" if udm == 0 else str(udm)
-            numeric["urgent_daily_max"] = udm
-        if need_reconfirm:
-            # 高危动作（含额度/节流参数调整）通过后才占用高危额度
-            label = (
-                "关闭消息推送通道" if close_channel
-                else "更换消息推送密钥" if swap_secret
-                else "清空消息推送密钥" if clear_secret
-                else "调整推送限流/额度参数"
-            )
-            # 评审 ②：统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）
-            gate = _high_risk_gate(data, label)
-            if gate:
-                return gate
-        # 密钥加密刻意排在闸门**之后**（评审 ③）：account_crypto.load_key 在既无
-        # YIBAN_ACCOUNTS_KEY 环境变量、.env 里也没有该键时会"生成随机密钥并原子写回
-        # .env"。放在闸门之前会让一次被拒绝的高危请求凭空留下写盘痕迹，与"鉴权失败
-        # 零写入"的口径相反（加密失败仍返回 500 且不落任何配置）。
-        if secret:
-            try:
-                enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
-                updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
-            except ValueError as e:
-                return jsonify({"error": f"加密失败：{e}"}), 500
-        # 变更告警在写入**成功之后**发出（与 mail-config 同口径，2026-09-08）。
-        # 原先放在落盘之前，理由是"若先落盘，daily_max/urgent_daily_max/cooldown/
-        # urgent_only 即按新值生效（daily_max=1 且当日额度恰被占、cooldown 被调到
-        # 天文数字等），这条'通道被人动了'的告警会被刚写入的参数吞掉"——但 force=True
-        # 本就绕过两侧节流与额度，该担忧不成立；先发反而让落盘失败（500）时运营者
-        # 已收到一条描述从未生效变更的通知。urgent=True——本告警正是"通道被人拆了"的信号。
-        write_env_batch(ENV_FILE, updates)
-        send_notification(
-            "消息推送配置变更告警",
-            f"消息推送配置已变更: {_notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric)}，"
-            f"操作者 {_nl_safe(session.get('username', '?'))}，"
-            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            urgent=True,
-            force=True,
-        )
-        # 审计只记实际落盘的键：未提交 type 不得按 off 记录（把"没动通道"伪造成
-        # "关过通道"）；密文真的写入时补记去向，事后才能还原完整动作。
-        detail = dict(numeric)
-        if "type" in data:
-            detail["type"] = ntype or "off"
-        if "YIBAN_NOTIFY_SECRET_ENC" in updates:
-            detail["secret"] = "updated" if updates["YIBAN_NOTIFY_SECRET_ENC"] else "cleared"
-        db.audit(
-            session.get("username") or "?",
-            "notify_config", "notify_config",
-            json.dumps(detail, ensure_ascii=False),
-        )
-        return jsonify(notify.get_config())
-
-    @app.route("/api/notify-test", methods=["POST"])
-    def api_notify_test():
-        """主管理员：发送一条测试消息验证推送配置。"""
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可操作"}), 403
-        ok = notify.send_test()
-        if not ok:
-            return jsonify({"error": "测试消息发送失败（未配置或推送被拒，详见服务日志）"}), 400
-        return jsonify({"ok": True, "msg": "测试消息已发送，请检查手机/接收端"})
-
-    # ---- 账号管理 ----
-    @app.route("/api/accounts")
-    def api_accounts():
-        accounts = load_accounts()
-        # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
-        # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
-        # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
-        states = load_sign_state()
-        # 用户自暂停账号：状态直接呈现"已取消"（⏹️）——无需等下次签到执行写状态文件，
-        # 管理员面板立即反映（2026-08-15 修复：此前仅 sign-state 有该状态时才会显示）
-        for acc in accounts:
-            if acc.get("user_paused"):
-                states[acc.get("phone", "")] = {
-                    "status": STATUS_USER_CANCELLED,
-                    "message": "用户已取消签到",
-                }
-        # 调度 v2：自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
-        prefs = {p: v["slot_min"] for p, v in db.get_time_prefs().items()}
-        sw = _sign_window()
-        _span_min = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-
-        def _edge_mark(slot):
-            if slot is None:
-                return None
-            if slot == 0:
-                return "first"
-            if slot >= _span_min - 5:
-                return "last"
-            return None
-
-        return jsonify(
-            {
-                "ok": True,
-                "accounts": [
-                    {
-                        **mask_account(a, i),
-                        "time_pref": _slot_to_label(prefs.get(a["phone"])),
-                        "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
-                    }
-                    for i, a in enumerate(accounts)
-                ],
-                # states 值压成状态码字符串（前端图标映射用）
-                "states": {
-                    _mask_phone(k): (v.get("status", STATUS_PENDING) if isinstance(v, dict) else STATUS_PENDING)
-                    for k, v in states.items()
-                },
-                # 状态原因/计划（如"计划 06:42"），前端表格 title 展示
-                "state_msgs": {
-                    _mask_phone(k): (v.get("message", "") if isinstance(v, dict) else "")
-                    for k, v in states.items()
-                },
-                # 单次签到耗时秒数（P6）：表格状态 title 展示"耗时 xx s"；无记录为 None
-                "state_durs": {
-                    _mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
-                    for k, v in states.items()
-                },
-                "config_file": os.path.basename(DB_FILE),
-            }
-        )
-
-    @app.route("/api/accounts/<int:idx>/detail")
-    def api_account_detail(idx):
-        """账号完整信息（仅管理员；列表接口已脱敏，编辑/签到等操作按需取完整号）。"""
-        accounts = load_accounts()
-        if not 0 <= idx < len(accounts):
-            return jsonify({"error": "账号不存在"}), 404
-        return jsonify({"ok": True, "account": mask_account(accounts[idx], idx, masked=False)})
-
-    @app.route("/api/accounts", methods=["POST"])
-    def api_account_add():
-        """添加账号。
-
-        - 不填邮箱：管理员自有账号（owner=admin，直接生效）
-        - 填用户邮箱：账号归属该用户并进入待审核（仍需管理员点"通过"）；
-          邮箱未注册时自动创建网站用户（生成临时密码，需告知用户）。
-        """
-        # 操作级锁：手机号唯一/每人限 1/自动注册检查与写入原子（防并发重复添加与覆盖丢失）
-        data = _json_body()
-        err, clean = validate_account(data, require_password=True)
-        if err:
-            return jsonify({"error": err}), 400
-        # P1-2 预筛（同 api_my_account_add，2026-08-27）：容量/手机号占用/内置邮箱
-        # 占用先拦，注定失败的添加不再消耗易班网络验证。权威校验仍在下方写锁内。
-        with _file_lock:
-            accounts_pre = load_accounts()
-            max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            email_screen = str(data.get("email", "")).strip().lower()
-            # 容量兜底（2026-09-08 口径）：账号配额 = 活跃账号数（含裸账号）；
-            # 本次将新增 1 个非删除账号——归属邮箱已持有活跃账号的重复添加
-            # 不会新增（随后 400 拦截），不计增量，保持原错误优先级
-            holds_live = email_screen and any(
-                a.get("owner") == email_screen and not a["deleted"] for a in accounts_pre)
-            if _accounts_at_capacity(0 if holds_live else 1):
-                _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
-                return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
-            if find_account_index(accounts_pre, clean["phone"]) is not None:
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-            if email_screen and email_screen == _builtin_admin_email():
-                return jsonify({"error": "内置管理员邮箱不可注册"}), 400
-            # 域名预筛（2026-08-28）：注定被拒的占位/一次性域名不消耗易班验证配额
-            if email_screen:
-                dom_err = email_domain_error(email_screen)
-                if dom_err:
-                    return jsonify({"error": dom_err}), 400
-        # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
-        # 验证尝试受每用户配额限制（P1-2），认证失败另有按手机号冷却（与用户提交路径同口径）
-        verify_async_job = False
-        if _account_verify_enabled():
-            if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
-                return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
-            _vuser = str(session.get("username", ""))
-            if verify_async_enabled():
-                # 异步（A4 第二段）：请求线程只**先扣配额**，外呼交给后台任务。
-                # 待办队列满 → 503（此时账号尚未落库，拒绝无副作用）。
-                if _verify_queue_full():
-                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-                if not _verify_attempt_allowed(_verify_limits, _vuser):
-                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-                verify_async_job = True
-            else:
-                try:
-                    verify_err = run_verify_with_gate(clean, _vuser, _verify_limits)
-                except VerifyGateBusy:
-                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-                except VerifyQuotaExceeded:
-                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-                if verify_err:
-                    fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
-                    db.audit(
-                        session.get("username") or "?",
-                        "account_add_verify_fail",
-                        _mask_phone(clean["phone"]),
-                        f"验证未通过（{fail_kind}）",
-                    )
-                    return jsonify({"error": verify_err}), 400
-        email = str(data.get("email", "")).strip().lower()
-        initial_hash = None  # 锁外预计算（scrypt ~100ms 不阻塞其他请求）
-        if email:
-            initial = str(data.get("initial_password", ""))
-            if initial:
-                pw_err = _password_policy_error(initial)
-                if pw_err:
-                    return jsonify({"error": f"初始密码不符合要求：{pw_err}"}), 400
-                initial_hash = generate_password_hash(initial, method=SCRYPT_METHOD)
-        with _file_lock:
-            accounts = load_accounts()
-            # 容量兜底：账号配额（2026-09-08 口径：活跃账号数含裸账号，防无限增长，对抗性审查补）；
-            # 归属邮箱已持有活跃账号的重复添加不新增，不计增量（保持原错误优先级）
-            max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            holds_live = email and any(a.get("owner") == email and not a["deleted"] for a in accounts)
-            if _accounts_at_capacity(0 if holds_live else 1):
-                _notify_capacity_once("accounts", max_accounts, "账号数量")
-                return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
-            if find_account_index(accounts, clean["phone"]) is not None:
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-
-            if email:
-                if len(email.split("@")[0]) > EMAIL_USER_MAX:
-                    return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
-                if not EMAIL_RE.match(email) or len(email) > 64:
-                    return jsonify({"error": "用户邮箱格式不正确"}), 400
-                # 邮箱域名审查（2026-08-28）：与开放注册同规则，防自动注册路径绕过
-                dom_err = email_domain_error(email)
-                if dom_err:
-                    return jsonify({"error": dom_err}), 400
-                # S1：内置管理员邮箱不可被自动注册占用
-                if email.strip().lower() == _builtin_admin_email().strip().lower():
-                    return jsonify({"error": "内置管理员邮箱不可注册"}), 400
-                # 该用户已有账号（每人限 1 个）则拒绝（软删除的不占名额，与用户端一致）
-                if any(a.get("owner") == email and not a.get("deleted") for a in accounts):
-                    return jsonify({"error": f"{email} 已有一个账号，无需重复添加"}), 400
-                # 自动注册：邮箱未注册则创建网站用户（初始密码由管理员在表单中设置，不生成明文临时密码）
-                if db.find_user(email) is None:
-                    if initial_hash is None:
-                        return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
-                    # H14：自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
-                    max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
-                    if _users_at_capacity():
-                        _notify_capacity_once("users", max_users, "注册人数")
-                        return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
-                    du = db.find_user_any(email)
-                    if (
-                        du is not None
-                        and du.get("deleted")
-                        and _delete_grace_remaining(du.get("deleted_at", "")) > 0
-                    ):
-                        return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
-                    try:
-                        created = db.create_user(
-                            email, initial_hash, "user",
-                            clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
-                        )
-                    except sqlite3.IntegrityError:
-                        return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
-                    if not created:
-                        return jsonify({"error": "该邮箱已注册"}), 400  # M10：OR IGNORE 未实际创建
-                    logger.info("为邮箱 %s 自动注册用户（管理员设置初始密码）", _mask_email(email))
-                clean["owner"] = email
-                clean["status"] = ACCOUNT_STATUS_PENDING
-            else:
-                clean["owner"] = "admin"
-                clean["status"] = ACCOUNT_STATUS_ACTIVE
-            try:
-                new_id = db.add_account(clean)
-            except db.DuplicatePhoneError:
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-            except db.DuplicateOwnerError:
-                return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
-            except sqlite3.IntegrityError:
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发重复兜底
-            db.audit(
-                session.get("username") or "?",
-                "account_add",
-                _mask_phone(clean["phone"]),
-                f"归属 {_mask_email(clean['owner'])} 状态 {clean['status']}",
-            )
-            accounts = load_accounts()  # 重读（含新行，返回前端列表）
-        logger.info(
-            "添加账号 %s（归属 %s，状态 %s）",
-            _mask_phone(clean["phone"]),
-            _mask_email(clean["owner"]),
-            clean["status"],
-        )
-        resp = {
-            "ok": True,
-            "msg": "已添加，等待审核通过后参与签到",
-            "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-        }
-        if verify_async_job:
-            # 账号已落库，随后由后台任务校验；响应**增补** job_id/status（不改既有字段）
-            try:
-                job_id, _ = _start_verify_job(
-                    clean, str(session.get("username", "")), new_id,
-                    _verify_fails, _verify_limits,
-                )
-                resp["job_id"] = job_id
-                resp["status"] = "verifying"
-            except VerifyGateBusy:
-                # 待办队列在扣配额与建任务之间被占满（竞态兜底）：账号已入库，
-                # 不因此让请求失败——置为 rejected 并说明原因，由用户重试。
-                logger.warning("校验任务队列已满，账号 %s 未建校验任务",
-                               _mask_phone(clean["phone"]))
-        return jsonify(resp)
-
-    @app.route("/api/accounts/<int:idx>", methods=["PUT"])
-    def api_account_update(idx):
-        with _file_lock:
-            accounts = load_accounts()
-            if not 0 <= idx < len(accounts):
-                return jsonify({"error": "账号不存在"}), 404
-            old = accounts[idx]
-            # 软删除账号禁止编辑（防编辑流程绕过软删除，恢复需走 restore 接口）
-            if old.get("deleted"):
-                return jsonify({"error": "账号已删除，请先恢复"}), 400
-            data = _json_body()
-            # 乐观锁：请求携带编辑打开时的账号快照（JSON 字符串），与库内当前值
-            # 不一致 → db 返回 False → 409，防多管理员/多标签页并发编辑互相覆盖
-            snapshot = None
-            snapshot_raw = data.get("_snapshot") or ""
-            if snapshot_raw:
-                try:
-                    snapshot = (
-                        json.loads(snapshot_raw) if isinstance(snapshot_raw, str) else snapshot_raw
-                    )
-                except json.JSONDecodeError:
-                    snapshot = None
-            # 防错位守卫补齐——/api/accounts/* 同族写端点里此前唯一漏接
-            # 的一个（对照同 idx 的 /restore 会正确 409）。目标行被物理清除（purge、
-            # 用户注销连带）后，旧列表里的 idx 会指到另一账号上，没有这层守卫就是
-            # "静默改写他人凭据 + 返回 200"。
-            # 比对基准优先用乐观锁快照里的 phone：编辑表单本来允许"填写完整新号码"
-            # 改绑手机号（db.update_account 还专门做了重加密），那是一次变更而不是
-            # 错位，直接拿 data["phone"] 比会把这条合法路径全部 409 掉。快照缺失或
-            # 不含 phone（旧客户端、直连 API）时退回与 /restore、/review 完全一致的
-            # data["phone"] 比对；未携带 phone 的请求保持既有语义不校验（不改 fail-closed）。
-            guard_src = (
-                {"phone": snapshot["phone"]}
-                if isinstance(snapshot, dict) and snapshot.get("phone")
-                else data
-            )
-            if _stale_idx_guard(old, guard_src):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            err, clean = validate_account(data, require_password=False)
-            if err:
-                return jsonify({"error": err}), 400
-            # 手机号变更时检查冲突（排除自己）
-            if (
-                clean["phone"] != old.get("phone")
-                and find_account_index(accounts, clean["phone"]) is not None
-            ):
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-            # 密码留空 = 保持不变（密码明文永不下发前端）
-            if not clean["password"]:
-                clean["password"] = old.get("password", "")
-            # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变（表单不预填防误清空）
-            if clean["phone_code"] == CLEAR_SENTINEL:
-                clean.pop("phone_code", None)
-            elif not clean["phone_code"]:
-                clean["phone_code"] = old.get("phone_code", "")
-            # 归属保持不变（管理员编辑不改变提交者）
-            clean["owner"] = old.get("owner", "admin")
-            # （编辑回审，用户裁决 C）：改绑手机号一律回待审核重审——
-            # 手机号即凭据主体，原审核结论绑定的是旧号，改绑后若维持 ACTIVE 就等于
-            # "免审换号继续签到"。管理员改绑用户的号同样回 pending，由管理员再批；
-            # 仅密码/识别码变更（phone 不变）维持原状态不变。
-            rebind = clean["phone"] != old.get("phone")
-            if rebind:
-                clean["status"] = ACCOUNT_STATUS_PENDING
-                # 回审即清除旧拒绝理由（与用户侧重新提交同口径，避免 pending 行带旧理由）
-                clean["reject_reason"] = ""
-            else:
-                clean["status"] = old.get("status", ACCOUNT_STATUS_ACTIVE)
-            try:
-                result = db.update_account(
-                    old["id"],
-                    clean,
-                    expect_snapshot=snapshot if isinstance(snapshot, dict) else None,
-                )
-            except db.DuplicatePhoneError:
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-            except db.DuplicateOwnerError:
-                return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
-            except sqlite3.IntegrityError:
-                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发改号兜底
-            if result is False:
-                return jsonify({"error": "账号已被其他管理员修改，请刷新后重试"}), 409
-            if result is None:
-                return jsonify({"error": "账号不存在"}), 404
-            # M11：手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清，
-            # 避免更新失败时误删旧号自选（防孤儿 pref 占容量，对抗性审查补）
-            if clean["phone"] != old.get("phone"):
-                db.clear_time_pref(old.get("phone", ""))
-            # 凭据变更（改密码/改绑手机号）才清除熔断暂停，立即恢复签到；
-            # 仅改备注/状态等不动熔断计数（防任意编辑把 fail_days 清零、熔断永不跳闸）
-            clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
-            db.audit(
-                session.get("username") or "?",
-                "account_update",
-                _mask_phone(clean["phone"]),
-                "编辑账号 改绑回审" if rebind else "编辑账号",
-            )
-            accounts = load_accounts()
-            logger.info("编辑账号 %s", _mask_phone(clean["phone"]))
-            return jsonify(
-                {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
-            )
-
-    @app.route("/api/accounts/batch", methods=["POST"])
-    def api_accounts_batch():
-        """批量操作账号（批量多选功能）：approve/reject 审核，purge 彻底删除。
-
-        body: {"action": ..., "ids": [...], "reason": "批量拒绝理由"}
-        Phase 1：整体事务，失败全部回滚；无效项软跳过。
-
-        （账号侧物理清除链路补齐门禁）：purge 与用户侧
-        /api/users/batch(delete)、/api/users/deleted/purge 属同一类"不可逆清除"，
-        此前却一处都没接——实测普通管理员会话不带 confirm_password 即可逐段跳过
-        防错位校验并 200，一个请求最多 BATCH_OP_LIMIT 条、连发即可在数十秒内把
-        全部易班凭据不可逆清零，且只有"真的删成"时才有告警。现要求二次鉴权 +
-        同管理员窗口限速（429）。其余动作门禁不变：approve/reject/restore 与
-        delete（软删）都可逆且已有 409 防错位 + 7 天宽限兜底，再加口令只会增加误伤。
-        （2026-09-10 批次20 Y1 修订：**delete（软删）不再是"无门禁"**——它虽可逆，
-        但立即停止该用户代签且受害者无法自助恢复，故接入同一份高危限速并逐次告警；
-        仍不要求二次口令。审批/恢复类动作维持无门禁。）
-        """
-        # 参数校验与高危门禁刻意留在 _file_lock 之外（与三处高危删除同口径）：
-        # scrypt 口令校验单次数百毫秒，放进全局文件锁里会让一次鉴权阻塞全进程的
-        # 账号读写（该锁同时护着 JSON 与 SQLite 侧的读-改-写）。
-        data = _json_body()
-        action = data.get("action")
-        ids = data.get("ids") or []
-        if action not in ("approve", "reject", "purge", "restore", "delete"):
-            return jsonify({"error": "未知操作"}), 400
-        if not isinstance(ids, list) or not ids:
-            return jsonify({"error": "请选择要操作的账号"}), 400
-        # 2026-08-29 收紧：单次批量上限——被盗 admin 会话原本可用一个
-        # 请求清空全部账号（≤500）；与 /api/users/deleted/purge 共用 BATCH_OP_LIMIT
-        if len(ids) > BATCH_OP_LIMIT:
-            return jsonify({"error": f"单次批量操作最多 {BATCH_OP_LIMIT} 个账号"}), 400
-        reason = str(data.get("reason", "")).strip()[:100]
-        if action == "reject" and not reason:
-            return jsonify({"error": "批量拒绝需要填写理由"}), 400
-        if action == "purge":
-            # 统一走 _high_risk_gate（先验口令，通过了才占高危额度）；
-            # 429 文案与用户侧批量删除一致，运维只需记一句话
-            gate = _high_risk_gate(
-                data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
-            if gate:
-                return gate
-        # 2026-09-10（批次20 Y1）：软删也占用同一份高危额度。
-        # 软删虽可逆（7 天内可恢复），但它立即让该用户当天起停止代签，且**受害者
-        # 无法自助恢复**（/api/my-accounts/<idx>/restore 对管理员删除的行返回 403），
-        # 因此被盗的注册管理员会话可用几十次调用在数秒内静默让全站停签——与
-        # "删数据 / 拆报警器是同一条链" 同风险。这里**仍然不要求二次口令**
-        # （保留既有裁决"可逆不加口令，加了口令只增误伤"），只限制速率并逐次告警
-        # （告警在 ops 落库与审计之后发送，见下方）。
-        if action == "delete" and _admin_delete_limited():
-            return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
-        with _file_lock:
-            accounts = load_accounts()
-            # 2026-08-20 对抗性审查 P1：idx 寻址防错位——客户端随 ids 携带对齐的
-            # phones 数组，与服务端当前列表逐一比对，不一致整体拒绝（409 引导刷新）。
-            # 另修 bool 混淆：isinstance(True, int) 为真，ids 里的 JSON true 会被
-            # 当作索引 1，改用 type(i) is int 严格判定。
-            valid = sorted(
-                {i for i in ids if type(i) is int and 0 <= i < len(accounts)}
-            )
-            if not valid:
-                return jsonify({"error": "所选账号不存在"}), 404
-            phones_in = data.get("phones")
-            if isinstance(phones_in, list) and len(phones_in) == len(ids):
-                expect = {
-                    i: str(phones_in[k]).strip()
-                    for k, i in enumerate(ids)
-                    if type(i) is int
-                }
-                # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
-                if any(
-                    i in expect
-                    and _mask_phone(expect[i]) != _mask_phone(str(accounts[i].get("phone", "")))
-                    for i in valid
-                ):
-                    return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-
-            ops = []
-            batch_targets = []  #：审计留目标清单（脱敏截断）
-            purge_targets = []  #：高危操作（物理删除）即时告警汇总
-            soft_delete_targets = []  #：软删即时告警汇总（批次20 Y1）
-            reject_notify_owners = set()  # 2026-09-06 用户裁决：批量拒绝每户一封
-            # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
-            live_owners = {
-                a.get("owner", "")
-                for a in accounts
-                if a.get("owner") and not a.get("deleted")
-            }
-            for i in valid:
-                acc = accounts[i]
-                if action == "approve":
-                    # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
-                    if not acc.get("deleted") and acc.get("status") in (
-                        ACCOUNT_STATUS_PENDING,
-                        ACCOUNT_STATUS_REJECTED,
-                    ):
-                        ops.append(("update_status", acc["id"], ACCOUNT_STATUS_ACTIVE, ""))
-                elif action == "reject":
-                    if acc.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
-                        ops.append(("update_status", acc["id"], ACCOUNT_STATUS_REJECTED, reason))
-                        if acc.get("owner"):
-                            reject_notify_owners.add(acc["owner"])
-                elif action == "purge":
-                    # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
-                    if acc.get("deleted"):
-                        ops.append(("purge", acc["id"]))
-                        purge_targets.append(_mask_phone(str(acc.get("phone", ""))))
-                elif action == "restore":
-                    if acc.get("deleted"):
-                        owner = acc.get("owner", "")
-                        if owner and owner != "admin" and owner in live_owners:
-                            return jsonify(
-                                {
-                                    "error": f"账号「{acc.get('name', '')}」的归属用户已有生效账号，无法恢复（每人限 1 个）"
-                                }
-                            ), 400
-                        ops.append(("set_deleted", acc["id"], 0, ""))
-                        if owner:
-                            live_owners.add(owner)
-                elif action == "delete" and not acc.get("deleted"):
-                    # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
-                    ops.append(
-                        ("set_deleted", acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    )
-                    soft_delete_targets.append(_mask_phone(str(acc.get("phone", ""))))
-                batch_targets.append(acc.get("phone", ""))
-            done = len(ops)
-            if ops:
-                try:
-                    db.batch_account_ops(ops)
-                    if purge_targets:
-                        # 高危操作即时告警（不等每日审计体检）
-                        send_notification(
-                            "高危管理操作告警",
-                            f"批量彻底删除账号 ×{len(purge_targets)}: "
-                            f"{', '.join(purge_targets[:20])}，"
-                            f"操作者 {session.get('username', '?')}，时间 "
-                            f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                            urgent=True,
-                        )
-                except db.DuplicateOwnerError:
-                    db.audit(
-                        session.get("username") or "?",
-                        "account_batch",
-                        action,
-                        "失败，已回滚（该用户已有一个账号）",
-                    )
-                    return jsonify({"error": "批量操作失败，已全部回滚（该用户已有一个账号）"}), 400
-                except Exception as e:
-                    logger.error("批量%s账号失败: %s（已回滚）", action, e)
-                    db.audit(
-                        session.get("username") or "?",
-                        "account_batch",
-                        action,
-                        "失败，已回滚",
-                    )
-                    return jsonify({"error": "批量操作失败，已全部回滚"}), 500
-            if action == "reject" and reject_notify_owners:
-                # 2026-09-06 用户裁决：批量拒绝每户一封、同样文案（批量拒绝必填理由，
-                # 无空理由分支）。刻意放在 batch_account_ops 成功之后——回滚路径已提前
-                # return，不会出现"状态没变先收拒信"。
-                for _owner in sorted(reject_notify_owners):
-                    mailer.send_user(
-                        _owner,
-                        "【易班签到】您提交的账号未通过审核",
-                        (
-                            "您提交的易班账号未通过管理员审核。\n"
-                            f"理由: {reason}\n"
-                            "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
-                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        ),
-                    )
-            db.audit(
-                session.get("username") or "?",
-                "account_batch",
-                action,
-                # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
-                (f"处理 {done} 个: " + ",".join(
-                    _mask_phone(str(p)) for p in (batch_targets or [])[:20]
-                ))[:200],
-            )
-            if action == "delete" and soft_delete_targets:
-                # 2026-09-10（批次20 Y1）软删即时告警：刻意排在 db.audit 之后、
-                # 返回之前——先把证据落进审计链（HMAC 链 + 库外锚点），再尝试外发，
-                # 外发失败不影响留痕（与 api_account_purge 同顺序、同理由）。
-                # 标题沿用「高危管理操作告警」：send_notification 的邮件节流按**标题**
-                # 计窗（见 _mail_alert_due），因此被盗会话快速连删不会刷爆 SMTP 额度、
-                # 合法运维的批量清理也只留一封邮件；webhook 仍逐条实时推送（告警实时性
-                # 由 webhook 保证），两头的语义都保住。
-                send_notification(
-                    "高危管理操作告警",
-                    f"批量删除账号（软删）×{len(soft_delete_targets)}: "
-                    f"{', '.join(soft_delete_targets[:20])}，"
-                    f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                    f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}，"
-                    f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
-                    urgent=True,
-                )
-            accounts = load_accounts()
-            logger.info("批量%s账号 %d 个", action, done)
-            msg = {
-                "approve": f"已通过 {done} 个账号",
-                "reject": f"已拒绝 {done} 个账号",
-                "purge": f"已彻底删除 {done} 个账号",
-                "restore": f"已恢复 {done} 个账号",
-                "delete": f"已删除 {done} 个账号（可恢复）",
-            }[action]
-            return jsonify(
-                {
-                    "ok": True,
-                    "msg": msg,
-                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-                }
-            )
-
-    @app.route("/api/accounts/<int:idx>", methods=["DELETE"])
-    def api_account_delete(idx):
-        """删除账号（软删除）：进入待删除状态，保留期内可恢复，超期自动彻底清除。
-
-        2026-09-10（批次20 Y1）：软删占用高危额度并即时告警——理由见
-        /api/accounts/batch 的 action=="delete" 分支注释（软删可逆但立即停签、
-        受害者无法自助恢复，被盗注册管理员会话可借此静默让全站停签）。
-        仍不要求二次口令，保留"可逆操作不加口令"的既有裁决。
-        """
-        # 门禁刻意留在 _file_lock 之外：_admin_delete_limited 只做内存计数与判速，
-        # 放进全局文件锁会白占锁（与批量 purge 的门禁位置同口径）。
-        if _admin_delete_limited():
-            return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
-        with _file_lock:
-            accounts = load_accounts()
-            if not 0 <= idx < len(accounts):
-                return jsonify({"error": "账号不存在"}), 404
-            acc = accounts[idx]
-            if _stale_idx_guard(acc, _json_body()):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            db.set_account_deleted(
-                acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                deleted_by="admin",
-            )
-            db.audit(
-                session.get("username") or "?",
-                "account_delete",
-                _mask_phone(acc.get("phone", "")),
-                "软删除",
-            )
-            # 先落审计再外发：外发失败不影响留痕（与 api_account_purge 同顺序）。
-            # 标题沿用「高危管理操作告警」以共享邮件节流窗口（见批量分支注释）。
-            send_notification(
-                "高危管理操作告警",
-                f"删除账号（软删）: {_mask_phone(str(acc.get('phone', '')))}，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}，"
-                f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
-                urgent=True,
-            )
-            accounts = load_accounts()
-            logger.info(
-                "软删除账号 %s（%s 天内可恢复）", _mask_phone(acc.get("phone", "")), DELETED_RETENTION_DAYS
-            )
-            return jsonify(
-                {
-                    "ok": True,
-                    "msg": f"已删除「{acc.get('name', '')}」，{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
-                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-                }
-            )
-
-    @app.route("/api/accounts/<int:idx>/restore", methods=["POST"])
-    def api_account_restore(idx):
-        """恢复待删除账号：撤销软删除，回到删除前状态。"""
-        with _file_lock:
-            accounts = load_accounts()
-            if not 0 <= idx < len(accounts):
-                return jsonify({"error": "账号不存在"}), 404
-            acc = accounts[idx]
-            if _stale_idx_guard(acc, _json_body()):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            if not acc.get("deleted"):
-                return jsonify({"error": "该账号不在待删除状态"}), 400
-            # 防呆：归属用户名下已有其他未删除账号则拒绝恢复（每人限 1 个，防恢复后重复）
-            if _owner_has_other_live(accounts, acc):
-                return jsonify(
-                    {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
-                ), 400
-            db.set_account_deleted(acc["id"], 0)
-            db.audit(
-                session.get("username") or "?",
-                "account_restore",
-                _mask_phone(acc.get("phone", "")),
-                "撤销软删除",
-            )
-            accounts = load_accounts()
-            logger.info("恢复账号 %s", _mask_phone(acc.get("phone", "")))
-            return jsonify(
-                {
-                    "ok": True,
-                    "msg": f"已恢复「{acc.get('name', '')}」",
-                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-                }
-            )
-
-    @app.route("/api/accounts/<int:idx>/purge", methods=["POST"])
-    def api_account_purge(idx):
-        """彻底删除待删除账号：立即物理清除，不可恢复。
-
-        单条物理清除此前完全裸奔——不要求 confirm_password、不受删除
-        冷却约束、成功也不发任何告警（实测连删多条零外发，比批量 purge 更安静）。
-        现与批量口径一致：二次鉴权 + 同管理员窗口限速（429），并补一条 urgent 告警。
-        """
-        # 门禁放在 _file_lock 之外（同 api_accounts_batch 与三处高危删除）：
-        # 口令校验耗时数百毫秒，放进全局锁里会凭一次尝试卡住全进程账号读写
-        data = _json_body()
-        gate = _high_risk_gate(
-            data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
-        if gate:
-            return gate
-        with _file_lock:
-            accounts = load_accounts()
-            if not 0 <= idx < len(accounts):
-                return jsonify({"error": "账号不存在"}), 404
-            acc = accounts[idx]
-            if _stale_idx_guard(acc, data):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            if not acc.get("deleted"):
-                return jsonify({"error": "该账号不在待删除状态"}), 400
-            db.purge_account(acc["id"])
-            db.audit(
-                session.get("username") or "?",
-                "account_purge",
-                _mask_phone(acc.get("phone", "")),
-                "彻底删除",
-            )
-            # 即时告警刻意排在 db.audit 之后、返回之前——先把证据落进
-            # 审计链（HMAC 哈希链 + 库外锚点），再尝试外发，外发失败不影响留痕。
-            # 标题与批量 purge / 用户侧清除完全相同：send_notification 的邮件节流
-            # 按标题计窗（_mail_alert_due），同标题才共享窗口——被盗会话快速连删
-            # 不会被刷爆 SMTP 额度，合法运维的批量清理也只留一封，两头的语义都保住。
-            send_notification(
-                "高危管理操作告警",
-                f"彻底删除账号: {_mask_phone(str(acc.get('phone', '')))}，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                urgent=True,
-            )
-            accounts = load_accounts()
-            logger.info("彻底删除账号 %s", _mask_phone(acc.get("phone", "")))
-            return jsonify(
-                {
-                    "ok": True,
-                    "msg": f"已彻底删除「{acc.get('name', '')}」",
-                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-                }
-            )
-
-    @app.route("/api/accounts/<int:idx>/review", methods=["POST"])
-    def api_account_review(idx):
-        """审核普通用户提交的账号：
-        approve=生效参与定时签到；reject=标记拒绝并附理由（用户可编辑后重新提交）。
-        """
-        with _file_lock:
-            accounts = load_accounts()
-            if not 0 <= idx < len(accounts):
-                return jsonify({"error": "账号不存在"}), 404
-            data = _json_body()
-            action = data.get("action")
-            acc = accounts[idx]
-            if _stale_idx_guard(acc, data):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            if action == "approve":
-                # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
-                if acc.get("deleted") or acc.get("status") not in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
-                    return jsonify({"error": "该账号无需审核"}), 400
-                # 容量闸门：通过审核 = 让这一行开始产生签到负载。未通过审核的行不计入
-                # 账号容量（见 _capacity_account_count），故此处是本口径下唯一的把关点——
-                # 不放这道门就等于"提交时受限、审批时任意越界"，容量上限失去意义。
-                if _accounts_at_capacity(1):
-                    return jsonify({
-                        "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
-                    }), 403
-                db.update_account_status(acc["id"], ACCOUNT_STATUS_ACTIVE, reject_reason="")
-                db.audit(
-                    session.get("username") or "?",
-                    "account_review",
-                    _mask_phone(acc.get("phone", "")),
-                    "approve",
-                )
-                logger.info("审核通过账号 %s（提交者 %s）", _mask_phone(acc.get("phone", "")), _mask_email(acc.get("owner", "")))
-                # 回显脱敏（与列表口径一致，防响应混入完整 PII；管理员详情页可取完整号）
-                return jsonify({"ok": True, "msg": f"已通过 {_mask_phone(acc.get('phone', ''))}，将参与定时签到"})
-            if action == "reject":
-                if acc.get("status") not in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
-                    return jsonify({"error": "该账号无需拒绝"}), 400
-                # 理由清洗：换行/控制字符 → 空格（防日志注入伪造日志行）
-                reason = (
-                    str(data.get("reason", ""))
-                    .strip()[:100]
-                    .replace("\r", " ")
-                    .replace("\n", " ")
-                )
-                db.update_account_status(acc["id"], ACCOUNT_STATUS_REJECTED, reason)
-                db.audit(
-                    session.get("username") or "?",
-                    "account_review",
-                    _mask_phone(acc.get("phone", "")),
-                    "reject" + (f" {reason[:60]}" if reason else ""),
-                )
-                # 2026-09-06 用户裁决：拒绝必须主动触达提交者——理由只挂「我的账号」页
-                # 属被动知情，提交者不回访即永远不知情；审核通过不发（登录即见生效，
-                # 节约额度）。send_user 未启用/无收件人静默跳过、失败仅记日志，不影响
-                # 审核流；绕过 mail_notify 开关与「本人知情权」口径一致。
-                _owner = acc.get("owner", "")
-                if _owner:
-                    mailer.send_user(
-                        _owner,
-                        "【易班签到】您提交的账号未通过审核",
-                        (
-                            f"您提交的易班账号（{_mask_phone(str(acc.get('phone', '')))}）"
-                            "未通过管理员审核。\n"
-                            "理由: "
-                            + (reason if reason else "管理员未填写，可联系管理员了解详情")
-                            + "\n"
-                            "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
-                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        ),
-                    )
-                logger.info(
-                    "拒绝账号 %s（提交者 %s，理由: %s）",
-                    _mask_phone(acc.get("phone", "")),
-                    _mask_email(acc.get("owner", "")),
-                    reason or "无",
-                )
-                return jsonify({"ok": True, "msg": "已拒绝，用户可查看理由并重新提交"})
-        return jsonify({"error": "未知操作"}), 400
-
-    @app.route("/api/accounts/<int:idx>/move", methods=["POST"])
-    def api_account_move(idx):
-        """上移/下移账号：调整顺序模式下的打卡顺序。body: {"dir": -1|1}"""
-        with _file_lock:
-            accounts = load_accounts()
-            if not 0 <= idx < len(accounts):
-                return jsonify({"error": "账号不存在"}), 404
-            data = _json_body()
-            acc = accounts[idx]
-            if _stale_idx_guard(acc, data):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            try:
-                direction = int(data.get("dir", 0))
-            except (TypeError, ValueError):
-                return jsonify({"error": "无法移动"}), 400
-            if direction not in (-1, 1):
-                return jsonify({"error": "无法移动"}), 400
-            if not db.move_account(acc["id"], direction):
-                return jsonify({"error": "无法移动"}), 400
-            db.audit(
-                session.get("username") or "?",
-                "account_move",
-                _mask_phone(acc.get("phone", "")),
-                f"dir {direction}",
-            )
-            accounts = load_accounts()
-            return jsonify(
-                {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
-            )
-
-    # ---- 普通用户：我的账号（提交 / 查看 / 编辑 / 删除，仅限本人）----
-    def _my_account_indices_of(accounts):
-        """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
-
-        管理员：**仅本人邮箱归属**的账号（一人一号）。无人认领的裸账号（owner='admin'）
-        属「代管」，只在账号管理页（/api/accounts）维护，不进「我的账号」视图 ——
-        否则内置管理员会把名下全部裸账号当成"我的账号"列出，与一人一号口径冲突。
-        普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
-
-        注意：裸账号的 owner 是字面量 `admin`，当 YIBAN_ADMIN_USER 也取 `admin`（默认值）
-        时两者不可区分；生产建议把 YIBAN_ADMIN_USER 设为管理员本人邮箱。
-        """
-        email = session.get("username", "").lower()
-        if _current_role() == "admin":
-            return [
-                i for i, a in enumerate(accounts) if a.get("owner") == email and not a.get("deleted")
-            ]
-        return [i for i, a in enumerate(accounts) if a.get("owner") == email]
-
-    def _my_account_indices():
-        return _my_account_indices_of(load_accounts())
-
-    def _my_active_phones(accounts, indices):
-        """历史查询用手机号（历史数据隔离）：仅取已生效
-        （status=active）且未软删除账号——待审核/已拒绝/软删除行不参与签到，
-        其历史日历/日志也不再回显，防"提交个 pending 号就翻到该号全部历史"。
-        /api/my-accounts 列表展示口径不变（仍含 pending/deleted，展示状态用）。"""
-        return [
-            str(accounts[i].get("phone", ""))
-            for i in indices
-            if accounts[i].get("status") == ACCOUNT_STATUS_ACTIVE
-            and not accounts[i].get("deleted")
-        ]
-
-    def _my_account_view(accounts, indices):
-        """用户视图：账号脱敏 + 今日状态（结构化状态文件）+ 审核状态 + 最近相关日志 + 排队信息。
-
-        排队说明：开启签到调度时按当日计划时间执行，否则按账号列表顺序（队列重试）；
-        queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
-        """
-        recent = parse_sign_log(log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
-        states = load_sign_state()  # 今日状态事实源（signin.py 写入）
-        # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除、未自暂停
-        active = [
-            a for a in accounts
-            if a.get("status") == ACCOUNT_STATUS_ACTIVE and not a.get("deleted")
-            and not a.get("user_paused", False)
-        ]
-        # 执行顺序（调度 v2，2026-08-15 改进）：优先按今日计划时间（sign-state scheduled 字段，
-        # cron 生成后即真实执行顺序——覆盖自选/正态/随机模式）；计划未生成（06:31 前）回退列表顺序。
-        # scheduled 为 "HH:MM:SS" 字符串，字典序即时间序；无计划者排在有计划者之后（列表序兜底）。
-        def _exec_order_key(a):
-            st = states.get(a.get("phone", ""), {})
-            sched = st.get("scheduled", "") if isinstance(st, dict) else ""
-            return (0 if sched else 1, sched, a.get("sort_order", 0))
-
-        active_sorted = sorted(active, key=_exec_order_key)
-        # 排队位置预计算（单次遍历累计，替代每个账号 O(pos) 切片求和）
-        queue_before = {}
-        running = 0
-        for a in active_sorted:
-            queue_before[a.get("phone", "")] = running
-            st_status = states.get(a.get("phone", ""), {}).get("status", STATUS_PENDING)
-            if st_status not in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK):
-                running += 1
-        # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
-        today_prefix = f"[{clock.now().strftime('%Y-%m-%d')} "
-        result = []
-        for i, real_idx in enumerate(indices):
-            acc = accounts[real_idx]
-            phone = acc.get("phone", "")
-            my_logs = [
-                line for line in recent
-                if line.startswith(today_prefix) and f"[{phone}]" in line
-            ]
-            # 排队：按今日计划时间排序的队列中，自己之前未了结的账号数（含自暂停排除）
-            queue_ahead = 0
-            if acc.get("status") == ACCOUNT_STATUS_ACTIVE and not acc.get("user_paused", False):
-                queue_ahead = queue_before.get(phone, 0)
-            st = states.get(phone, {})
-            st_status = st.get("status", STATUS_PENDING) if isinstance(st, dict) else STATUS_PENDING
-            result.append(
-                {
-                    "index": i,
-                    "name": acc.get("name", ""),
-                    "display_name": acc.get("name") or f"账号{i + 1}",
-                    "phone": phone,
-                    "phone_model": acc.get("phone_model", ""),
-                    "status": acc.get("status", ACCOUNT_STATUS_ACTIVE),
-                    "reject_reason": acc.get("reject_reason", ""),
-                    "state_icon": STATUS_ICON.get(st_status, "⏳"),
-                    "state_status": st_status,  # 状态码（前端按码映射文案）
-                    "state_message": st.get("message", "") if isinstance(st, dict) else "",
-                    "queue_ahead": queue_ahead,
-                    # 出站脱敏（2026-08-20 对抗性审查 P3）：与 /api/my-logs、/api/logs
-                    # 统一口径——当前 signin.py 日志每行仅含本人手机号，但口径不设防时，
-                    # 未来出现一行多号的日志格式会把他人号码原样下发普通用户
-                    "logs": [_mask_log_phones(ln) for ln in my_logs[-5:]],
-                    "deleted": bool(acc.get("deleted")),
-                    "deleted_at": acc.get("deleted_at", ""),
-                    # v10 用户删除可撤销：仅本人自删行（deleted_by=本人）前端展示撤销入口
-                    "deleted_by_me": bool(acc.get("deleted"))
-                    and acc.get("deleted_by", "")
-                    == (session.get("username", "") or "").strip().lower(),
-                    "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
-                    # 2026-08-15 用户确认：管理员账号（owner=admin）不支持自暂停——
-                    # 暂停是普通用户管理自己账号的能力；该字段仅管理员视图可见（前端据此隐藏按钮）
-                    "pause_forbidden": acc.get("owner", "admin") == "admin" and not acc.get("deleted"),
-                }
-            )
-        return result
-
-    @app.route("/api/my-accounts")
-    def api_my_accounts():
-        # 单快照（2026-08-20 对抗性审查 P3 修复）：原实现 load_accounts() 后
-        # _my_account_indices() 内部再次读取，两次读之间其他线程的物理删除会使
-        # S2 的下标套在 S1 上错位，极端时短暂展示他人账号（含完整手机号）
-        accounts = load_accounts()
-        indices = _my_account_indices_of(accounts)
-        return jsonify({"ok": True, "accounts": _my_account_view(accounts, indices)})
-
-    # ---- 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）----
-    def _my_phone():
-        """当前用户的自选绑定账号（2026-08-15 修复：与「我的账号」视图同口径）。
-
-        普通用户=本人账号；内置管理员=本人邮箱归属的账号（一人一号，裸账号不参与）；
-        注册管理员=归属本人邮箱的账号。
-        ——此前 admin 分支硬编码 owner='admin'，导致注册管理员也绑定到内置管理员的账号，
-        选片显示/保存互相覆盖（用户实测报告）。
-        仅 status=active（正式进入签到列表）才算——pending/rejected 的"注册但未生效"
-        用户不可查看/选择时间片（GET 返回 has_account=False → 前端整卡隐藏；PUT 400 兜底）。
-        """
-        accounts = load_accounts()
-        for idx in _my_account_indices_of(accounts):
-            acc = accounts[idx]
-            if not acc.get("deleted") and acc.get("status") == ACCOUNT_STATUS_ACTIVE:
-                return acc.get("phone", "")
-        return None
-
-    def _pref_slots(sw):
-        """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
-
-        0.22.0 掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
-        disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
-        标记 edge_note 提示且仍可点选（调度在可用部分内安排）。返回全部片（含 disabled），
-        前端据此渲染，保证"满 5 分钟才完全灰掉、不足时提示"的需求语义。
-        """
-        start_min = sw[0][0] * 60 + sw[0][1]
-        end_min = sw[1][0] * 60 + sw[1][1]
-        span = end_min - start_min
-        front_min = edge_config()[0] / 60.0
-        back_min = edge_config()[1] / 60.0
-        slots = []
-        for b in range(start_min, end_min, 5):
-            off = b - start_min  # 片起点相对窗口起点的分钟偏移
-            lo = max(off, front_min)
-            hi = min(off + 5, span - back_min)
-            disabled = hi <= lo  # 整片在裁剪区内（裁剪值 >= 5 分钟覆盖）
-            note = ""
-            if not disabled and (off < front_min or off + 5 > span - back_min):
-                # 部分裁剪：提示"开头/结尾保留 X 分钟"，仍可选
-                if off < front_min:
-                    note = f"开头 {front_min:g} 分钟保留"
-                else:
-                    note = f"结尾 {back_min:g} 分钟保留"
-            slots.append({
-                "slot_min": off,
-                "label": f"{b // 60:02d}:{b % 60:02d}",
-                "disabled": disabled,
-                "edge_note": note,
-            })
-        return slots
-
-    @app.route("/api/my-time-pref")
-    def api_my_time_pref():
-        """我的自选 + 拥挤度 + 预计签到时段（选片卡片数据；总开关关时仍可预配置，调度侧不激活）。
-
-        拥挤度防调研（2026-08-15 用户决策）：普通用户端只下发「已选百分比」（整数，四舍五入），
-        不下发真实人数/块容量——不知道 K 无法反推人数；管理端 stats 接口保留精确计数。
-        """
-        sw = _sign_window()
-        phone = _my_phone()
-        pref = db.get_time_pref(phone) if phone else None
-        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
-        cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-        slots = []
-        for s in _pref_slots(sw):
-            count = stats.get(s["slot_min"], 0)
-            # 粗粒度 10% 档（对抗性审查补）：精确百分比 + 已知默认 K 可反推人数；
-            # 未满封顶 90、满员恰好 100——前端 pct>=100 判满精确（19/20=95% 不会再被
-            # 四舍五入成 100 误报"已选满"，与后端 count>=cap 口径一致）
-            if cap > 0:
-                pct = 100 if count >= cap else min(90, round(count * 100 / cap / 10) * 10)
-            else:
-                pct = 0
-            slots.append({
-                "slot_min": s["slot_min"],
-                "label": s["label"],
-                "pct": pct,
-                "disabled": s["disabled"],     # 完全在裁剪区 → 灰色不可选（0.22.0）
-                "edge_note": s["edge_note"],   # 部分裁剪提示（如"开头 2 分钟保留"）
-            })
-        estimated, estimate_note = _estimate_slot(phone) if phone else (None, "")
-        front_sec, back_sec = edge_config()
-        return jsonify({
-            "ok": True,
-            "pref": _slot_to_label(pref["slot_min"]) if pref else None,
-            "pref_slot": pref["slot_min"] if pref else None,
-            "slots": slots,
-            "allowed": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
-            "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-            "edge_sec": front_sec,                    # 兼容旧前端（=前裁）
-            "edge_front_sec": front_sec,              # 0.22.0 前后独立
-            "edge_back_sec": back_sec,
-            "has_account": bool(phone),
-            "estimated": estimated,        # 预计签到时段（顺序排序可预期；随机为 None）
-            "estimate_note": estimate_note,
-        })
-
-    @app.route("/api/my-time-pref", methods=["PUT"])
-    def api_my_time_pref_save():
-        """保存/清除自选：{slot_min: int|null}。校验 5 对齐、窗口内；生效按分界时刻提示。"""
-        # F3 对抗性审查（TOCTOU）：read-check-write 整段持 _file_lock 原子化——
-        # 并发 purge 删号时不再重新插入孤儿 pref（已删 phone 残留→重占号被新账号继承泄漏）；
-        # 冷却检查与写入原子化（防并发双请求绕过冷却）；满员统计与写入原子化（防超容写入）
-        with _file_lock:
-            phone = _my_phone()
-            if not phone:
-                # 2026-08-15 用户反馈：非正式用户不可选时间片——区分"未提交"与"已提交未生效"，
-                # 提示不给待审核用户误导（信息分层，不暴露审核细节）
-                # 低项：has_submitted 统一走 _my_account_indices，避免管理员/普通用户双口径漂移
-                # 单快照读取（2026-08-21 对抗性审查 P3：消除双读间列表漂移的越界/错判窗口）
-                _accounts_now = load_accounts()
-                has_submitted = any(
-                    not _accounts_now[i].get("deleted")
-                    for i in _my_account_indices_of(_accounts_now)
-                )
-                if has_submitted:
-                    return jsonify({"error": "账号审核通过后即可选择签到时间"}), 400
-                return jsonify({"error": "请先提交易班账号"}), 400
-            data = _json_body()
-            slot = data.get("slot_min")
-            if slot is None:
-                db.clear_time_pref(phone)
-                db.audit(session.get("username", "?"), "time_pref_clear", db.hash_phone(phone), "")
-                return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
-            # M1 对抗性审查：严格类型校验——bool（False→0）与小数（5.9→5）截断不得误入合法槽位
-            if isinstance(slot, bool) or (isinstance(slot, float) and not slot.is_integer()):
-                return jsonify({"error": "时间片取值无效"}), 400
-            try:
-                slot = int(slot)
-            except (TypeError, ValueError):
-                return jsonify({"error": "时间片取值无效"}), 400
-            sw = _sign_window()
-            span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-            front_min = edge_config()[0] / 60.0
-            back_min = edge_config()[1] / 60.0
-            # 0.22.0 前后独立裁剪：部分落入裁剪区的片（如首片剩 3 分钟）允许保存，
-            # 调度会在可用部分内安排；完全落入裁剪区（前端已置灰）拒绝。
-            if slot % 5 != 0 or not (0 <= slot < span) or not (
-                slot + 5 > front_min and slot < span - back_min
-            ):
-                # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
-                return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
-            # 弹性切换冷却（2026-08-15 用户反馈）：60s 窗口内自由次数内完全放行（浏览式
-            # "全点一遍再定"正常）；超出后冷却随超限次数递增（30s→60s→120s→…封顶 300s），
-            # 持续高频才被压制。按被选账号计价（H3 多管理员共享全局生效；H4 新号豁免）。
-            # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC 基础值，默认 30；0=关闭）
-            base_cd = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
-            if base_cd > 0:
-                now_ts = clock.now()
-                since = (now_ts - timedelta(seconds=TIME_PREF_COOLDOWN_WINDOW)
-                         ).strftime("%Y-%m-%d %H:%M:%S")
-                count = db.time_pref_set_count_since(phone, since)
-                if count >= TIME_PREF_COOLDOWN_FREE:
-                    # 弹性冷却 = 基础 × 2^(超限次数)，封顶
-                    cooldown = min(base_cd * (2 ** (count - TIME_PREF_COOLDOWN_FREE + 1)),
-                                   TIME_PREF_COOLDOWN_MAX)
-                    last_ts = db.last_time_pref_set_at(phone)
-                    if last_ts:
-                        try:
-                            last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
-                            elapsed = (now_ts - last_dt).total_seconds()
-                            # 负间隔（时钟回拨）视为已过冷却，不误伤（对抗性审查第三轮）
-                            if 0 <= elapsed < cooldown:
-                                # 不暴露冷却时长（信息分层）
-                                return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
-                        except ValueError:
-                            # ts 格式异常（写坏）：保守按冷却生效拦截（M3：防 fail-open 绕过）
-                            return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
-            # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
-            # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
-            # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
-            cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-            stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
-            count = stats.get(slot, 0)
-            cur = db.get_time_pref(phone)
-            if cur and cur.get("slot_min") == slot:
-                count = max(0, count - 1)  # 排除自己已占的位（换片/保留不误报）
-            # 低项：cap=0（不限容量）时不应提示“已选满”
-            full_notice = "，该时段已选满，将就近安排到附近时段" if (cap > 0 and count >= cap) else ""
-            # updated_at 带微秒（M2 对抗性审查）：同秒保存的"先到先得"可区分先后，
-            # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
-            db.set_time_pref(phone, slot, clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
-            db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), _slot_to_label(slot))
-            # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
-            # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
-            # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
-            # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
-            now = clock.now()
-            boundary = None
-            try:
-                snap_path = os.path.join(STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
-                with open(snap_path, encoding="utf-8") as f:
-                    snap = json.load(f)
-                boundary = datetime.strptime(
-                    f"{now.strftime('%Y-%m-%d')} {snap['snapshot_at']}", "%Y-%m-%d %H:%M:%S"
-                )
-                # H1 对抗性审查：快照标记晚于当前时刻（时钟偏移/写坏）→ 视为无效回退兜底，
-                # 避免"提示今日生效但实际不可能"（改选时 cron 早已建表）
-                if boundary > now:
-                    boundary = None
-            except (OSError, ValueError, KeyError, TypeError):
-                boundary = None
-            if boundary is None:
-                try:
-                    boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
-                except ValueError:
-                    boundary = now
-                boundary += timedelta(minutes=1)
-            when = "今日生效" if now < boundary else "明日生效"
-            return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}{full_notice}"})
-
-    @app.route("/api/time-prefs/stats")
-    def api_time_prefs_stats():
-        """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
-        sw = _sign_window()
-        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
-        cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-        return jsonify({
-            "ok": True,
-            "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
-                      for s in _pref_slots(sw)],
-        })
-
-    @app.route("/api/my-accounts", methods=["POST"])
-    def api_my_account_add():
-        """提交自己的易班账号：每个用户仅限 1 套，写入 accounts 表状态 pending（待审核）。
-
-        操作级锁：单账号限制与手机号唯一检查 + 写入原子（防并发双提交互相覆盖）。
-        """
-        data = _json_body()
-        err, clean = validate_account(data, require_password=True)
-        if err:
-            return jsonify({"error": err}), 400
-        # P1-2 预筛（2026-08-27 对抗性审查）：资格校验全部前置到网络验证之前，
-        # 杜绝「先向易班发起真实登录、再发现根本没资格」的凭据试探滥用面。
-        # 权威校验仍保留在下方写入临界区（预筛通过≠最终名额，双检以锁内为准）。
-        email_pre = str(session.get("username", "")).lower()
-        with _file_lock:
-            accounts_pre = load_accounts()
-            max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            # 容量兜底（2026-09-08 口径）：账号配额 = 活跃账号数（含裸账号）；
-            # 提交者已持有未删除账号时不新增（随后 400 拦截），不计增量，保持原错误优先级
-            holds_live = any(a.get("owner") == email_pre and not a["deleted"] for a in accounts_pre)
-            if _accounts_at_capacity(0 if holds_live else 1):
-                _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
-                # 不向普通用户暴露容量数字（信息分层，2026-08-15）
-                return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
-            if holds_live:
-                return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-            if find_account_index(accounts_pre, clean["phone"]) is not None:
-                err = _duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
-                if err:
-                    return jsonify({"error": err}), 400
-                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-        # R1：用户提交账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
-        # 放锁外：verify 为网络操作，不阻塞其他请求；验证尝试受每用户配额限制（P1-2），
-        # 认证失败另有按手机号的冷却（2026-09-04 生产复盘：密码错误反复重交会把
-        # 易班账号打锁定，冷却同时给用户明确提示）
-        verify_async_job = False
-        if _account_verify_enabled():
-            if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
-                return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
-            if verify_async_enabled():
-                # 异步（A4 第二段）：请求线程只**先扣配额**，外呼交给后台任务。
-                # 待办队列满 → 503（账号尚未落库，拒绝无副作用）。
-                if _verify_queue_full():
-                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-                if not _verify_attempt_allowed(_verify_limits, email_pre):
-                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-                verify_async_job = True
-            else:
-                try:
-                    verify_err = run_verify_with_gate(clean, email_pre, _verify_limits)
-                except VerifyGateBusy:
-                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-                except VerifyQuotaExceeded:
-                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-                if verify_err:
-                    fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
-                    # 验证失败同样留痕审计（2026-09-04 生产复盘）：否则无法还原
-                    # 「某账号被反复试错锁定」事件的提交者与次数；detail 只记类别不记原始消息
-                    db.audit(
-                        email_pre,
-                        "my_account_add_verify_fail",
-                        _mask_phone(clean["phone"]),
-                        f"验证未通过（{fail_kind}）",
-                    )
-                    return jsonify({"error": verify_err}), 400
-        with _file_lock:
-            accounts = load_accounts()
-            # 容量兜底：账号配额（2026-09-08 口径：活跃账号数含裸账号；用户提交同样受限，对抗性审查补）；
-            # 提交者已持有未删除账号时不新增，不计增量（保持原错误优先级）
-            max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            email = session.get("username", "").lower()
-            # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
-            has_live = any(a.get("owner") == email and not a["deleted"] for a in accounts)
-            if _accounts_at_capacity(0 if has_live else 1):
-                _notify_capacity_once("accounts", max_accounts, "账号数量")
-                # 不向普通用户暴露容量数字（信息分层，2026-08-15）
-                return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
-            if has_live:
-                return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-            if find_account_index(accounts, clean["phone"]) is not None:
-                err = _duplicate_phone_error(accounts, clean["phone"], email)
-                if err:
-                    return jsonify({"error": err}), 400
-                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-            # 归属一律取本人邮箱（与「我的账号」视图同口径，一人一号）；无人认领的裸账号
-            # （owner='admin'）只由账号管理页的「不填邮箱」分支创建。此前管理员提交写死
-            # 'admin'，在「仅本人邮箱」口径下会让注册管理员自提交的账号立刻从个人视图消失。
-            clean["owner"] = session.get("username", "").lower()
-            clean["status"] = ACCOUNT_STATUS_PENDING if _current_role() != "admin" else ACCOUNT_STATUS_ACTIVE
-            try:
-                new_id = db.add_account(clean)
-            except sqlite3.IntegrityError:
-                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发提交兜底
-            db.audit(
-                clean["owner"],
-                "my_account_add",
-                _mask_phone(clean["phone"]),
-                f"用户提交 状态 {clean['status']}",
-            )
-            logger.info("用户 %s 提交账号 %s（待审核）", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
-            # 2026-08-31 公测反馈：申请入库后管理员侧零通知，只能靠主动打开后台发现，
-            # 于是出现"用户说交了申请、管理员说没收到"。补一条非紧急告警：邮件必达，
-            # 手机推送受「仅推送重要告警」与当日非紧急额度约束（不挤占紧急账）。
-            # 整段兜异常——账号已入库，通知失败不得把提交结果带崩成 500。
-            try:
-                send_notification(
-                    "新账号申请待审核",
-                    f"用户 {_nl_safe(str(clean['owner']))} 提交易班账号 "
-                    f"{_mask_phone(clean['phone'])}，请在管理台「待审核」列表中处理。"
-                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                )
-            except Exception as e:
-                logger.warning("新申请待审核通知发送失败（不影响提交结果）: %s", e)
-            resp = {"ok": True, "msg": "已提交，等待管理员审核后参与签到"}
-            if verify_async_job:
-                # 账号已落库，随后由后台任务校验；响应**增补** job_id/status（不改既有字段）
-                try:
-                    job_id, _ = _start_verify_job(
-                        clean, clean["owner"], new_id, _verify_fails, _verify_limits)
-                    resp["job_id"] = job_id
-                    resp["status"] = "verifying"
-                except VerifyGateBusy:
-                    logger.warning("校验任务队列已满，账号 %s 未建校验任务",
-                                   _mask_phone(clean["phone"]))
-            return jsonify(resp)
-
-    # ---- 在线校验异步任务（A4）：查询与取消 ----
-    def _verify_job_visible(job, username, role):
-        """归属校验：任务仅本人或管理员可读/可操作。"""
-        if role == "admin":
-            return True
-        return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
-
-    def _job_payload(job):
-        return {
-            "job_id": job["id"],
-            "status": job["status"],
-            "error": job.get("error") or "",
-            "phone": _mask_phone(job.get("phone", "")),
-            "created_at": job.get("created_at"),
-            "started_at": job.get("started_at"),
-            "finished_at": job.get("finished_at"),
-        }
-
-    @app.route("/api/verify-jobs/<int:job_id>")
-    def api_verify_job_get(job_id):
-        """查询校验任务状态与结果（仅本人或管理员）。"""
-        job = db.get_verify_job(job_id)
-        if not job:
-            return jsonify({"error": "任务不存在"}), 404
-        if not _verify_job_visible(job, session.get("username"), _current_role()):
-            return jsonify({"error": "无权限"}), 403
-        return jsonify({"ok": True, "job": _job_payload(job)})
-
-    @app.route("/api/verify-jobs/<int:job_id>", methods=["DELETE"])
-    def api_verify_job_cancel(job_id):
-        """取消校验任务（仅 pending 可取消；仅本人或管理员）。
-
-        先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
-        "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
-        """
-        _reclaim_stale_verify_jobs()
-        job = db.get_verify_job(job_id)
-        if not job:
-            return jsonify({"error": "任务不存在"}), 404
-        if not _verify_job_visible(job, session.get("username"), _current_role()):
-            return jsonify({"error": "无权限"}), 403
-        if job["status"] in VERIFY_JOB_TERMINAL:
-            return jsonify({"error": "任务已结束，无法取消"}), 409
-        if not db.cancel_verify_job(job_id):
-            # 与查询之间被后台线程抢走（进入 running）→ 同样视为已无法取消
-            return jsonify({"error": "任务已开始执行，无法取消"}), 409
-        return jsonify({"ok": True, "job": _job_payload(db.get_verify_job(job_id))})
-
-    @app.route("/api/my-calendar")
-    def api_my_calendar():
-        """我的账号月历：返回指定月份（YYYY-MM）每天每账号的签到状态（✅/❌/空字符串）。"""
-        month = str(request.args.get("month", "")).strip()
-        try:
-            year, mon = map(int, month.split("-"))
-            if not (2000 <= year <= 2100 and 1 <= mon <= 12):
-                raise ValueError
-        except Exception:
-            return jsonify({"error": "月份格式不正确，应为 YYYY-MM"}), 400
-        accounts = load_accounts()
-        indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
-        # 日历仅回显已生效账号的历史（pending/rejected/软删除不回显）
-        phones = _my_active_phones(accounts, indices)
-        days_in_month = calendar.monthrange(year, mon)[1]
-        result = {f"{year:04d}-{mon:02d}-{d:02d}": {} for d in range(1, days_in_month + 1)}
-        # 聚合读取：单次目录遍历取本月全部日文件（替代每天一次 exists+open 共 30 次 IO）
-        prefix = f"sign-daily-{year:04d}-{mon:02d}-"
-        try:
-            for entry in os.scandir(STATE_DIR):
-                if entry.name.startswith(prefix):
-                    date = entry.name[len("sign-daily-") : -len(".json")]
-                    try:
-                        with open(entry.path, encoding="utf-8") as f:
-                            daily = json.load(f)
-                    except Exception:
-                        daily = {}
-                    # setdefault：异常文件名（非 YYYY-MM-DD）不落入本月键时自动补空，防 KeyError 500
-                    result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
-        except OSError:
-            pass  # STATE_DIR 不存在等：按无记录返回
-        return jsonify({
-            "ok": True,
-            "month": month,
-            "days": result,
-            "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),  # 前端据此决定周日是否置灰/可查
-            "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),  # 默认关闭（v0.29.0）；前端据此决定周六是否置灰/可查
-        })
-
-    @app.route("/api/my-logs")
-    def api_my_logs():
-        """我的账号指定日期（YYYY-MM-DD）的日志（按手机号过滤，最多 50 条）。
-
-        2026-08-16 起读按天文件（sign-YYYY-MM-DD.log）：历史日期同样可查
-        （此前只读当前 sign.log，轮转后历史日期恒为空）。
-        """
-        date = str(request.args.get("date", "")).strip()
-        if date and not _is_valid_date_str(date):
-            return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
-        if not date:
-            date = _most_recent_log_date()
-        accounts = load_accounts()
-        indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
-        # 日志仅回显已生效账号的历史（pending/rejected/软删除不回显）
-        phones = _my_active_phones(accounts, indices)
-        out = []
-        for line in _log_lines_for(date):
-            if any(f"[{p}]" in line for p in phones):
-                out.append(line.strip())
-        # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）
-        return jsonify({"ok": True, "date": date, "logs": [_mask_log_phones(ln) for ln in out[-50:]]})
-
-    @app.route("/api/my-accounts/<int:idx>", methods=["PUT"])
-    def api_my_account_update(idx):
-        """编辑自己提交的账号：密码/识别码留空=保留；改绑手机号一律回待审核重审
-        仅密码/识别码变更不影响已生效状态。"""
-        with _file_lock:
-            accounts = load_accounts()
-            indices = _my_account_indices_of(accounts)
-            if not 0 <= idx < len(indices):
-                return jsonify({"error": "账号不存在"}), 404
-            real_idx = indices[idx]
-            old = accounts[real_idx]
-            data = _json_body()
-            # 防错位（与 /api/accounts/* 同口径）：本人视图的 idx 在渲染后可能因
-            # 管理员删除/清除而漂移，不校验会静默改到本人另一行。
-            # 比对基准优先取编辑表单的乐观锁快照 phone——本端点允许"填写完整新号码"
-            # 改绑（改绑后回待审核），直接拿 data["phone"] 比会把这条合法路径 409 掉。
-            _snap = data.get("_snapshot")
-            if isinstance(_snap, str):
-                try:
-                    _snap = json.loads(_snap)
-                except json.JSONDecodeError:
-                    _snap = None
-            guard_src = ({"phone": _snap["phone"]}
-                         if isinstance(_snap, dict) and _snap.get("phone") else data)
-            if _stale_idx_guard(old, guard_src):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            # 软删除账号禁止编辑（防编辑流程绕过软删除；恢复由管理员操作）
-            if old.get("deleted"):
-                return jsonify({"error": "账号已删除，请先恢复"}), 400
-            err, clean = validate_account(data, require_password=False)
-            if err:
-                return jsonify({"error": err}), 400
-            if (
-                clean["phone"] != old.get("phone")
-                and find_account_index(accounts, clean["phone"]) is not None
-            ):
-                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-            if not clean["password"]:
-                clean["password"] = old.get("password", "")
-            # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
-            if clean["phone_code"] == CLEAR_SENTINEL:
-                clean.pop("phone_code", None)
-            elif not clean["phone_code"]:
-                clean["phone_code"] = old.get("phone_code", "")
-            clean["owner"] = old.get("owner", "")
-            # （编辑回审，用户裁决 C）：改绑手机号一律回待审核重审——
-            # 原 ACTIVE 号可被改绑成任意新号免审生效，历史审核结论不再可信。
-            # 无论原状态（含 ACTIVE）；REJECTED 本就回 pending，行为维持不变。
-            # 仅密码/识别码变更（phone 不变）→ 状态不变。
-            rebind = clean["phone"] != old.get("phone")
-            clean["status"] = (
-                ACCOUNT_STATUS_PENDING
-                if rebind or old.get("status") == ACCOUNT_STATUS_REJECTED
-                else old.get("status", ACCOUNT_STATUS_PENDING)
-            )
-            if clean["status"] == ACCOUNT_STATUS_PENDING:
-                # 2026-08-16 审查轮修复：原 clean.pop("reject_reason") 对不存在的键是空操作，
-                # 导致重新提交后旧拒绝理由残留（注释意图与实际不符）；显式置空随 update 落库
-                clean["reject_reason"] = ""
-            try:
-                db.update_account(old["id"], clean)
-            except sqlite3.IntegrityError:
-                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发改号兜底
-            # M11：手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清
-            if rebind:
-                db.clear_time_pref(old.get("phone", ""))
-            db.audit(
-                clean["owner"],
-                "my_account_update",
-                _mask_phone(clean["phone"]),
-                "用户编辑 改绑回审" if rebind else "用户编辑",
-            )
-            # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
-            # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
-            clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
-            logger.info("用户 %s 编辑账号 %s", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
-            if rebind or old.get("status") == ACCOUNT_STATUS_REJECTED:
-                return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
-            return jsonify({"ok": True, "msg": "已保存"})
-
-    @app.route("/api/my-accounts/<int:idx>", methods=["DELETE"])
-    def api_my_account_delete(idx):
-        """用户删除自己的账号：软删除进入 7 天宽限期，可在本页撤销恢复，超期自动清除。
-
-        2026-08-28 用户裁决：原实现为立即物理清除（无反悔），与
-        「注销登录账号 7 天可恢复」的产品语义相反；现统一为软删 + 可撤销。
-        deleted_by 留痕操作者（v10）：仅本人自删行可自行撤销，管理员删除的
-        账号仍由管理员恢复/清除，防清退账号被用户一键复活。
-        """
-        with _file_lock:
-            accounts = load_accounts()
-            indices = _my_account_indices_of(accounts)
-            if not 0 <= idx < len(indices):
-                return jsonify({"error": "账号不存在"}), 404
-            removed = accounts[indices[idx]]
-            if removed.get("deleted"):
-                return jsonify({"error": "该账号已在待删除状态，可在本页撤销恢复"}), 400
-            # 防错位（同 /api/accounts/*）：删除是不可逆前置动作，视图漂移时宁可让
-            # 用户刷新，也不能删到本人另一行
-            if _stale_idx_guard(removed, _json_body()):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            db.set_account_deleted(
-                removed["id"],
-                1,
-                clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                deleted_by=(session.get("username", "") or "").strip().lower(),
-            )
-            db.audit(
-                session.get("username", "") or "?",
-                "my_account_delete",
-                _mask_phone(removed.get("phone", "")),
-                "用户删除（软删除，宽限期内可撤销）",
-            )
-            logger.info(
-                "用户 %s 删除账号 %s（软删除）",
-                session.get("username", ""),
-                _mask_phone(removed.get("phone", "")),
-            )
-            # 删号（软删）给本人留痕邮件（绕过 mail_notify 开关）
-            mailer.send_user(
-                session.get("username", ""),
-                "【易班签到】您的易班账号已删除（7 天内可撤销）",
-                f"您的易班账号（{_mask_phone(removed.get('phone', ''))}）已被删除，"
-                "进入 7 天宽限期。\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "宽限期内可在「我的账号」页自行撤销恢复；如非本人操作，"
-                "请立即联系管理员。",
-            )
-            return jsonify({"ok": True, "msg": "已删除，7 天内可在本页撤销恢复，超期自动清除"})
-
-    @app.route("/api/my-accounts/<int:idx>/restore", methods=["POST"])
-    def api_my_account_restore(idx):
-        """用户撤销删除自己的账号：仅限本人自删（deleted_by=本人）且名下无其他生效账号。
-
-        与管理员 /api/accounts/<idx>/restore 同构，但收窄授权：
-        - 普通用户视图（_my_account_indices_of）含本人待删除行，idx 口径与展示一致；
-        - deleted_by != 本人（管理员删除/系统连带）一律 403，防清退账号被复活；
-        - 「每人限 1」防呆与管理员侧同源（_owner_has_other_live）。
-        """
-        with _file_lock:
-            accounts = load_accounts()
-            indices = _my_account_indices_of(accounts)
-            if not 0 <= idx < len(indices):
-                return jsonify({"error": "账号不存在"}), 404
-            acc = accounts[indices[idx]]
-            if not acc.get("deleted"):
-                return jsonify({"error": "该账号不在待删除状态"}), 400
-            if acc.get("deleted_by", "") != (session.get("username", "") or "").strip().lower():
-                return jsonify({"error": "该账号由管理员删除，如需恢复请联系管理员"}), 403
-            if _owner_has_other_live(accounts, acc):
-                return jsonify(
-                    {"error": "你已有生效账号，无法恢复（每人限 1 个）"}
-                ), 400
-            if _stale_idx_guard(acc, _json_body()):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            db.set_account_deleted(acc["id"], 0)
-            db.audit(
-                session.get("username") or "?",
-                "my_account_restore",
-                _mask_phone(acc.get("phone", "")),
-                "用户撤销删除",
-            )
-            accounts = load_accounts()
-            logger.info(
-                "用户 %s 撤销删除账号 %s",
-                session.get("username", ""),
-                _mask_phone(acc.get("phone", "")),
-            )
-            return jsonify(
-                {
-                    "ok": True,
-                    "msg": f"已恢复「{acc.get('name', '')}」",
-                    "accounts": _my_account_view(
-                        accounts, _my_account_indices_of(accounts)
-                    ),
-                }
-            )
-
-    @app.route("/api/my-accounts/<int:idx>/pause", methods=["PUT"])
-    def api_my_account_pause(idx):
-        """用户自暂停/恢复签到（调度 v2）：暂停后主程序自动跳过，状态显示红底"已取消"。"""
-        with _file_lock:
-            accounts = load_accounts()
-            indices = _my_account_indices_of(accounts)
-            if not 0 <= idx < len(indices):
-                return jsonify({"error": "账号不存在"}), 404
-            acc = accounts[indices[idx]]
-            if acc.get("deleted"):
-                return jsonify({"error": "账号已删除，请先恢复"}), 400
-            data = _json_body()
-            # 防错位（同 /api/accounts/*）：视图漂移时不得改到本人另一行
-            if _stale_idx_guard(acc, data):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-            # 2026-08-15 用户确认：管理员不能暂停自己账号（owner=admin 为系统/管理员账号；
-            # 暂停是普通用户管理自己账号的能力，管理端界面本无此入口，防 /user 页绕过）。
-            # 恢复放行（幂等无害；该状态本不可达，仅保持接口一致性）
-            if paused and acc.get("owner", "admin") == "admin":
-                return jsonify({"error": "管理员账号不支持自暂停"}), 403
-            # 暂停冷却（2026-08-15 用户裁决）：仅"暂停"计冷却（固定间隔，默认 30s），
-            # "恢复"不受限——恢复是紧迫正向操作，绝不该被挡。冷却防连点/防审计噪音，
-            # 非安全边界。按用户计价（多管理员共享账号各自独立，可接受）。时长可配
-            # （YIBAN_PAUSE_COOLDOWN_SEC，默认 30；0=关闭）。不暴露时长（信息分层）。
-            if paused:
-                base_cd = load_env_int(ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", PAUSE_COOLDOWN_SEC)
-                if base_cd > 0:
-                    # 弹性冷却：60s 窗口内前 PAUSE_COOLDOWN_FREE 次完全自由，
-                    # 超出后冷却 = 基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX。
-                    now_ts = clock.now()
-                    since = (now_ts - timedelta(seconds=PAUSE_COOLDOWN_WINDOW)
-                             ).strftime("%Y-%m-%d %H:%M:%S")
-                    pause_count = db.pause_count_since(
-                        session.get("username", "") or "", since
-                    )
-                    if pause_count >= PAUSE_COOLDOWN_FREE:
-                        cooldown = min(
-                            base_cd * (2 ** (pause_count - PAUSE_COOLDOWN_FREE + 1)),
-                            PAUSE_COOLDOWN_MAX,
-                        )
-                        last_ts = db.last_pause_at(session.get("username", "") or "")
-                        if last_ts:
-                            try:
-                                last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
-                                # 负间隔（时钟回拨）视为已过冷却，不误伤
-                                if 0 <= (now_ts - last_dt).total_seconds() < cooldown:
-                                    return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-                            except ValueError:
-                                # ts 格式异常（写坏）：保守按冷却生效拦截
-                                return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-            db.set_user_paused(acc["id"], paused)
-            db.audit(
-                session.get("username", "") or "?",
-                "my_account_pause" if paused else "my_account_resume",
-                _mask_phone(acc.get("phone", "")),
-                "用户自暂停" if paused else "用户恢复",
-            )
-            logger.info(
-                "用户 %s %s 账号 %s",
-                session.get("username", ""), "暂停" if paused else "恢复",
-                _mask_phone(acc.get("phone", "")),
-            )
-            return jsonify({
-                "ok": True,
-                "msg": "已暂停签到，主程序将自动跳过" if paused else "已恢复签到",
-                "paused": bool(paused),
-            })
-
-    # ---- 用户管理（仅管理员；路径不在普通用户白名单，自动 403）----
-    def _builtin_admin_email():
-        """内置管理员（.env）标识（小写），用于防呆比较：不可改角色/删除。"""
-        env = read_env(ENV_FILE)
-        return env.get("YIBAN_ADMIN_USER", "").strip().lower()
-
-    def _builtin_admin_display():
-        """内置管理员显示名（保留 .env 原始大小写，仅用于界面展示）。"""
-        env = read_env(ENV_FILE)
-        return env.get("YIBAN_ADMIN_USER", "").strip() or "admin"
-
-    def _is_builtin_admin_session():
-        """当前会话是否确实是内置管理员（.env）登录，而非同邮箱注册用户/注册管理员。"""
-        return (
-            session.get("auth_source") == "builtin"
-            and str(session.get("username") or "").strip().lower() == _builtin_admin_email()
-        )
-
-    def _admin_delete_limited():
-        """高危操作限速（2026-08-29）：同一管理员窗口内超限返回 True（应拒绝 429）。
-
-        键 = 会话用户名（统一小写）；窗口/上限由 .env 调整，0 = 关闭。
-        与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，之后拒绝。
-
-        调用点从"三处高危删除"扩到"两处告警通道的高危配置变更"
-        （关闭邮件通道 / 关闭推送 / 清空或更换推送密钥）。刻意共用同一套计数、
-        不另建第二套——在攻击者手里"删数据"与"拆报警器"是同一条链，合并计数才
-        真的限制得住一个被盗会话能造成多大静默。
-
-        本函数**判定即占用**，故必须在二次鉴权通过
-        之后调用（五个高危调用点统一走 _high_risk_gate，不再各自手搓顺序）。
-        原先放在口令校验之前，不知口令的被盗会话可以用错口令尝试把主管理员的
-        "删除 + 通道变更"预算（默认 5 次 / 60 秒）刷满，反过来让合法运维全程 429。
-        """
-        window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
-        limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
+        window = load_env_int(ENV_FILE, window_key, window_default)
+        limit = load_env_int(ENV_FILE, limit_key, limit_default)
         if window <= 0 or limit <= 0:
-            return False
+            # 关闭动作本身要有痕迹：把额度置 0 后该类高危操作不再受"每管理员窗口"
+            # 限制，而此前既无日志也无审计，事后无从还原是谁、在什么时候拆了这道闸。
+            # 走**既有** db.audit、每 app 实例至多一条（判定即占用语义不变，
+            # 返回 False 仍照常放行）。
+            if not off_audited[0]:
+                off_audited[0] = True
+                db.audit(
+                    session.get("username") or "?",
+                    off_action,
+                    "?",
+                    f"高危{kind}额度整体关闭（窗口={window}s 上限={limit}），"
+                    f"本次由首个触发该配置的高危操作留痕",
+                )
+            return False  # 关闭 = 不限速而不是全拒：返回 False 让调用方照常往下走
         # 写入前顺带 trim（与其余限速表同口径防无界增长）
         with _rate_lock:
-            _ip_store_trim(_admin_delete_limits, window + _IP_STORE_MAX_AGE)
+            _ip_store_trim(table, window + _IP_STORE_MAX_AGE)
         _cnt, _start, allowed = _bump_window_count(
-            _admin_delete_limits,
+            table,
             (session.get("username") or "?").strip().lower(),
             time.time(),
             window,
@@ -6284,14 +2501,51 @@ def create_app(host=None):
         )
         return not allowed
 
+    def _admin_delete_limited():
+        """删除类高危额度：同一管理员窗口内超限返回 True（应拒绝 429）。
+
+        键 = 会话用户名（统一小写）；窗口/上限由 .env 调整（YIBAN_ADMIN_DELETE_*，
+        0 = 关闭）。与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，
+        之后拒绝。
+
+        现在**只计删除类落点**（账号软删/彻底删除、用户删除、批量删除、
+        清库清理），与凭据改写类（`_admin_creds_limited`）分开计数——删除额度按
+        批量清理的规模定，凭据批量重绑共用它会互相撞 429。曾合并计数的理由
+        （"删数据与拆报警器是同一条链"）随口令门收窄失效：告警通道开关已免门，
+        不再消耗任何高危额度。
+
+        本函数**判定即占用**额度，唯一的调用序约定（先过口令、通过了才占）写在
+        `_high_risk_gate` 的调用行上；要给别的端点加限速前先读那里。
+        """
+        return _admin_quota_limited(
+            _admin_delete_limits, _admin_delete_limit_off_audited,
+            "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", "YIBAN_ADMIN_DELETE_MAX",
+            ADMIN_DELETE_COOLDOWN_SEC, ADMIN_DELETE_MAX,
+            "admin_delete_limit_off", "删除")
+
+    def _admin_creds_limited():
+        """凭据改写类高危额度（独立于删除类）：同一管理员窗口内超限返回 True。
+
+        覆盖"改写他人易班凭据 / 重置他人口令（单条与批量）/ 换推送密钥"。
+        键 = 会话用户名（统一小写）；窗口/上限由**新增** .env 键调整
+        （YIBAN_ADMIN_CREDS_COOLDOWN_SEC / YIBAN_ADMIN_CREDS_MAX，0 = 关闭），
+        语义与删除类逐字一致（先判后增、判定即占用、0=关闭并留审计）。
+        分流的动机：删除额度按"批量清理垃圾账号"规模定，凭据批量重绑（换号/换密码）
+        是另一条合法高频动作——共用一套计数时两个方向互相撞 429。
+        """
+        return _admin_quota_limited(
+            _admin_creds_limits, _admin_creds_limit_off_audited,
+            "YIBAN_ADMIN_CREDS_COOLDOWN_SEC", "YIBAN_ADMIN_CREDS_MAX",
+            ADMIN_CREDS_COOLDOWN_SEC, ADMIN_CREDS_MAX,
+            "admin_creds_limit_off", "凭据改写")
+
     def _verify_session_password(password):
         """当前会话管理员口令纯比对（不读写失败计数、不判定锁定）。
 
         口令核对语义的单一来源：内置管理员（.env）走 verify_admin（哈希优先，
         fail-closed）；注册管理员（users 表）走 password_hash 比对。
-        失败处置由调用方自行决定——_reconfirm_admin_password 在此之上叠加与
-        登录共用的 _login_fails 失败计数；系统开关门禁只比对不计数（P18 教训：
-        持 Cookie 者若能写共享计数，可反复试错把管理员锁出登录）。
+        失败处置**只有一处**——_sensitive_password_gate 在其上叠加独立计数、告警与
+        冷却；本函数自己不动任何计数表。
         """
         username = session.get("username", "")
         if _is_builtin_admin_session():
@@ -6299,1754 +2553,425 @@ def create_app(host=None):
         u = db.find_user(username.strip().lower())
         return bool(u) and check_password_hash(u.get("password_hash", ""), password)
 
-    def _reconfirm_admin_password(password, action_label):
-        """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
+    def _pw_confirm_exempt(ttl, now):
+        """本会话是否处在"刚复核过口令"的豁免窗口内（仅配置类动作可用）。
 
-        口令比对语义见 _verify_session_password。失败计数与登录/改密共用
-        _login_fails（达阈值锁定并告警）；成功清除失败计数。
-        返回 None 表示通过，否则返回 4xx 响应。
+        两个条件缺一不可：TTL 内复核成功过 + 当前出口 IP 与授权时一致。
+        基准键由 `_sensitive_password_gate` 在口令比对通过那一刻写进会话。
+        """
+        if ttl <= 0:
+            return False  # .env 把豁免窗口配成 0 = 关掉豁免，回到"每次复核都要口令"
+        ts = session.get("pw_ok_ts")
+        return bool(
+            isinstance(ts, (int, float))
+            and now - ts <= ttl
+            # 出口 IP 必须与授权时同一个：被窃 Cookie 换个出口就免检不可接受，
+            # 而管理员从手机热点/VPN 换出口后重输一次口令是可接受的摩擦
+            and session.get("pw_ok_ip") == _client_ip()
+        )
+
+    def _sensitive_pw_denied(key, action, deny_status, cooldown, now):
+        """门禁口令不符的处置：独立计数 → 首达阈值告警 → 达阈值起进入/续期冷却。
+
+        刻意**绝不写登录失败表**：能持 Cookie 撞门禁的人若可写登录侧的共享
+        计数，就能用错口令把管理员同时锁在"登录"和"所有高危运维"之外，把风控变成攻击面。
+        本函数只在"提交了错口令"时被调用；空口令不计数（见 `_sensitive_password_gate`）。
+        """
+        with _rate_lock:
+            _ip_store_trim(_sensitive_pw_fails,
+                           SENSITIVE_PW_FAIL_WINDOW + _IP_STORE_MAX_AGE)
+        cnt, _start, _allowed = _bump_window_count(
+            _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
+        if cnt == 1:
+            # 窗口内第一次被挡就落一条审计：原先只有第 N 次的告警/审计，前 N-1 次
+            # 错口令"白撞无痕"。也不能逐条写（拒绝面会被人当免费打字机刷审计表），
+            # 每窗口首尾各一行、上限两条封顶。
+            db.audit(
+                key[1], "sensitive_pw_denied", db.hash_ip(key[0]),
+                f"「{action}」口令复核失败（窗口内首次）",
+            )
+        if cnt >= SENSITIVE_PW_FAIL_NOTIFY and cooldown > 0:
+            # 冷却按 `>= 阈值`**每次失败都续期**：只在"恰好等于阈值"那一次布防的话，冷却
+            # 到期后的第 4、5… 次失败既不再告警也不再被挡，等于把同一个洞留回原处。续期后
+            # 攻击者每 cooldown 秒最多做 SENSITIVE_PW_FAIL_NOTIFY 次口令散列（实测单次
+            # scrypt 约 157ms），而不是此前的约 6 次/秒——本常量因此同时是"同窗口 scrypt
+            # 尝试次数上界"，别把它当纯告警阈值调大。
+            with _rate_lock:
+                _sensitive_pw_cooldown[key] = (cnt, now + cooldown)
+        if cnt == SENSITIVE_PW_FAIL_NOTIFY:
+            # 告警按 `== 阈值`只发一条（同一窗口不刷屏，运维口径）。判据不能换成"是否已
+            # 布防"：冷却可被 .env 配成 0，那种部署下这就是唯一的管理员侧信号。
+            send_notification(
+                "高危操作二次鉴权失败告警",
+                mail_layout.Mail(
+                    summary=f"IP {_nl_safe(key[0])} 对「{action}」连续 {cnt} 次口令验证失败。",
+                    fields=([("会话用户", _nl_safe(key[1]))]
+                            + ([("敏感操作已暂停",
+                                 f"{cooldown} 秒（登录、只读页面与普通设置不受影响）")]
+                               if cooldown > 0 else [])),
+                    advice=["如非本人操作，可能是账号或会话被他人使用，请立即检查"],
+                    level="urgent",
+                ),
+                urgent=True,
+            )
+            # 达阈值这一行审计**不随 cooldown 走**：cooldown=0 的部署只是不进冷却，
+            # "失败到阈值"这个事实照样要能事后取证。429 本身仍不逐条写，否则被盗
+            # 会话又能拿"拒绝"当免费打字机刷审计表。
+            db.audit(
+                key[1], "sensitive_pw_cooldown", db.hash_ip(key[0]),
+                f"「{action}」口令复核连续失败 {cnt} 次，"
+                + (f"敏感操作暂停 {cooldown} 秒"
+                   if cooldown > 0 else "本部署未配冷却，仅告警"),
+            )
+        return jsonify({"error": PW_DENY_TEXT[deny_status],
+                        "reason": PW_DENY_REASON["wrong"]}), deny_status
+
+    def _pw_gate_ip_changed():
+        """本次请求的出口 IP 是否与本会话**已验证 IP** 不一致（无基准 = 未知，不触发）。
+
+        判据是"换环境"而非操作密度：要拦的是被盗 session cookie 换个出口后用危险操作
+        拆防护（现实的会话劫持场景）；"同一出口短时连做若干危险操作"恰是管理员清理垃圾
+        账号这类最常见的合法操作，拿它当判据只会误伤——密度面另有 `_admin_delete_limited`
+        的配额兜着，不必在门禁上再叠一层。判定不新造存储，只用会话里已有的两个键。
+        """
+        # 基准两级：pw_ok_ip（口令复核通过那一刻写，见 _sensitive_password_gate 的③段）优先；
+        # 会话还没验证过任何口令时退回 login_ip（由 web/routes/auth.py 的 api_login 与
+        # web/routes/me.py 的 api_me_restore 写入）。少一个写入点，risk 档对那类会话就静默失效。
+        trusted = session.get("pw_ok_ip") or session.get("login_ip")
+        # 两级都空 = 未知，判"未换环境"而不是"换环境"：历史会话没有 login_ip，判异常会让
+        # 升级后所有存量会话人人被要求输口令，那正是要避免的摩擦。bool(trusted) 就是这个
+        # 兜底本身，删掉它空会话会恒真。
+        return bool(trusted) and trusted != _client_ip()
+
+    def _sensitive_password_gate(data, action, *, always_required=False,
+                                 deny_status=403, irreversible=False,
+                                 risk_always=False):
+        """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
+
+        为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）各写各的
+        判定，共同点是**没有冷却**——实测以主管理员会话对 `POST /api/settings` 连投错误
+        `confirm_password`，200 次只被通用 API 限速（60 次/10 秒）挡住，约 6 次/秒 ×
+        单次 scrypt 157ms 就能打满一核；比项目自己的登录口（10 次/60 秒 + 第 5 次锁
+        300 秒）快约 38 倍且**永不锁**，等于给绕过登录限速留了个算力口子。
+
+        入参契约：`data` 收**整个请求体**而不是口令串——非 `full` 档还要读同一请求里的
+        `confirm_delay_ack`，只传口令串会把那字段截掉，门禁于是永远判它缺失。
+        `always_required=True` = 必须当次输口令、不吃 TTL 豁免，用于"不可逆清除 / 关闭或
+        改道告警通道 / 角色变更 / 重置他人口令 / 改主管理员口令"，调用点逐个标注。
+        `deny_status` 只换响应码、不换判定（保持各落点原有的客户端契约）。
+        `irreversible=True` 只标"删了就回不来"的落点（物理清除、彻底删除、删用户）；
+        可逆动作别传，否则把可回滚的操作也套上不可撤销的确认负担。
+
+        `risk_always=True` = **缺省 `risk` 档下也不吃"同出口免口令"**（用户 2026-10-01
+        拍板的口径变更，覆盖此前"risk 档同出口免口令"的拍板）：缺省档里
+        `_pw_gate_ip_changed()` 为假就早退放行，本参数把那一处早退跳过，让判定落到口令
+        比对上。**只作用于 `risk` 档**——`full` 档本就逐条走完三段（不变），`off` 档在
+        本参数之前就早退、永不要求口令（不变）。四类操作逐个标注：`risk_always=True`
+        即"拆掉同出口免口令"的落点清单，四类之外**一律不传**（risk 档其余操作仍免口令）。
+
+        失败会怎样：错口令由 `_sensitive_pw_denied` 记**独立**计数，达阈值起本
+        (出口 IP, 会话账号) 进冷却；这条链绝不碰登录失败表，所以门禁判错也不会把管理员
+        锁在登录之外。三档语义（`full` / `risk` / `off`）的准绳写在 `web/security.py` 的
+        `PW_GATE_*` 常量段，下面在每个档位分支处各标一行它实际拦什么、放什么。
+
+        判定次序：先按 `YIBAN_PW_GATE` 档位决定"这次到底要不要口令"，非 `full` 档还要先过
+        一道软摩擦，最后才走三段 ①冷却 ②豁免 ③口令比对；任一段拦下就短路返回。
         """
         if not session.get("auth"):
             return jsonify({"error": "未登录"}), 401
-        username = session.get("username", "")
-        ip = _client_ip()
+        ttl, cooldown = _sensitive_gate_params(ENV_FILE)
+        key = (_client_ip(), (session.get("username") or "?").strip().lower()[:64])
         now = time.time()
-        fail_key = (ip, username.strip().lower())
+        tier = _pw_gate_tier(ENV_FILE)  # 档位解析唯一入口；非法值已在 web/security.py 侧回退成 risk
+        if tier != PW_GATE_FULL:  # full = 旧行为：三段判定逐条走完，档位在此是唯一分叉点
+            # 软摩擦排在 off 早退**之前**，所以 `off` 档下不可逆操作照样要前端先跑完倒计时、
+            # 回 `confirm_delay_ack: true`，缺了就拒。它是软摩擦不是防线：挡手滑不挡攻击者
+            # （前端常量可绕），故拒绝文案与 reason 单独一档给前端弹倒计时框，真正的兜底是
+            # 配额 + 事后告警 + 审计。
+            if irreversible and data.get("confirm_delay_ack") is not True:
+                return jsonify({"error": PW_DELAY_ACK_TEXT[deny_status],
+                                "reason": PW_DELAY_ACK_REASON}), deny_status
+            if tier == PW_GATE_OFF:
+                return None  # off：永不要求口令——下面口令比对、失败计数与冷却整段不执行
+            # 缺省档唯一的放行口就是这一句：出口 IP 没换 → 不要口令。`risk_always=True`
+            # 的四类操作（拆告警通道 / 改角色与提权 / 重置他人口令 / 改写他人易班凭据）
+            # 跳过它，同出口也必须当次输口令（用户 2026-10-01 拍板）；其余操作逐字不变。
+            if not risk_always and not _pw_gate_ip_changed():
+                return None  # risk（缺省档）：出口 IP 没换就不要口令，危险操作默认免输、换环境才要一次
+            # 换环境命中 = 当次必须输口令。豁免判的是"本出口刚复核过"，而这里恰恰是
+            # 本出口还没复核过，故显式置位：日后豁免口径若有变动，也不至于把命中的
+            # 那一次悄悄放行。
+            always_required = True
         with _rate_lock:
-            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-            if now < lock_until:
-                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
-        if _verify_session_password(password):
-            with _rate_lock:
-                _login_fails.pop(fail_key, None)
-            return None
-        nfails = _bump_login_failure(_login_fails, fail_key, now)
-        if nfails >= LOGIN_MAX_FAILS:
-            with _rate_lock:
-                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-            logger.warning("二次鉴权失败次数过多，IP %s 锁定 %s 秒（%s）", db.hash_ip(ip), LOGIN_LOCK_SECONDS, action_label)
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-        if nfails == LOGIN_FAIL_NOTIFY:
-            send_notification(
-                "高危操作二次鉴权失败告警",
-                f"IP {_nl_safe(ip)} 对「{action_label}」连续 {nfails} 次口令验证失败"
-                f"（会话用户: {_nl_safe(username)}）\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "如非本人操作，可能是账号或会话被他人使用，请立即检查。",
-                urgent=True,
-            )
-        return jsonify({"error": "当前密码不正确，操作已取消"}), 400
-
-    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试"):
-        """高危动作统一门禁：先二次鉴权，**通过之后**才占用高危限速额度。
-
-        顺序即本次修复：原五处调用都是"先判后增再鉴权"，于是
-        一个只拿到 Cookie、不知道口令的被盗会话，用错口令反复尝试就能把主管理员
-        的"删除 + 告警通道变更"预算（默认 5 次 / 60 秒）全部吃掉，反过来让合法
-        运维的每一次高危操作都撞 429（运维 DoS）。口令暴力的防护本就由
-        _reconfirm_admin_password 里的 _login_fails 承担（第 3 次告警、第 5 次锁定
-        15 分钟），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
-
-        仍复用同一套计数（不新建第二套 store，评审口径），不改变"超限即 429"的语义。
-        返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
-        """
-        pw_err = _reconfirm_admin_password(str(data.get("confirm_password", "")), action_label)
-        if pw_err:
-            return pw_err
-        if _admin_delete_limited():
-            return jsonify({"error": limit_msg}), 429
-        return None
-
-    def _effective_role(username, pw_version=None):
-        """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
-        内置管理员 → admin；注册用户 → users 表的 role；查无此人 → None。
-        管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
-        被删除/取消权限的用户旧会话随之失效（None 视为未登录）；
-        注册用户密码被重置/修改后（pw_version 递增）旧会话随之失效；
-        内置管理员改密后（.env 版本递增）旧会话同样失效。
-        """
-        if not username:
-            return None
-        # S1/复审：所有会话都必须带 auth_source；旧会话（无该字段）一律视为未登录
-        if not session.get("auth_source"):
-            return None
-        if (
-            username.strip().lower() == _builtin_admin_email()
-            and session.get("auth_source") == "builtin"
-        ):
-            # 内置管理员：必须是 builtin 登录来源且 session 版本与当前 .env 版本一致；
-            # auth_source == "user" 的同名注册用户继续按普通用户判定，不借内置邮箱提权
-            cur = load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)
-            return "admin" if pw_version == cur else None
-        email = username.strip().lower()
-        u = db.find_user(email)
-        if u is not None:
-            # 旧数据（无 pw_version 字段）不做会话吊销校验，兼容存量会话
-            if "pw_version" in u and pw_version != u.get("pw_version", 1):
-                return None
-            # 服务端会话吊销：users.sid 为该用户当前唯一有效会话标识，
-            # 登录时签发、登出/被重置密码/被踢时轮换——被盗 cookie 重放即失效。
-            # sid 为空串视为未签发（升级日存量会话兼容），签发后不匹配即失效。
-            sid = u.get("sid", "")
-            if sid and session.get("sid") != sid:
-                return None
-            return "admin" if u.get("role") == "admin" else "user"
-        return None
-
-    def _current_role():
-        """当前登录会话的实时角色；未登录 → None。
-
-        会话绝对过期（2026-08-27 审查修复 P2-5）：滑动续期（14 天）之外另设
-        「自登录起最多 N 天」硬上限，防止被盗 Cookie 永久续命。时间戳在登录/
-        恢复时写入 session["login_ts"]；存量旧会话无该字段则就地补记当下
-        （升级日不强制全体重新登录）。超限即清空会话视为未登录。
-        """
-        if not session.get("auth"):
-            return None
-        ts = session.get("login_ts")
-        now = time.time()
-        if not isinstance(ts, (int, float)) or ts <= 0:
-            session["login_ts"] = int(now)
-        elif now - ts > SESSION_ABS_TTL_SECONDS:
-            session.clear()
-            return None
-        return _effective_role(session.get("username"), session.get("pw_version"))
-
-    @app.route("/api/users")
-    def api_users():
-        """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。"""
-        users = load_users()
-        accounts = load_accounts()
-        # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)
-        owner_account_count = {}
-        owner_pending_count = {}
-        owner_review_count = {}
-        for a in accounts:
-            if a.get("deleted"):
-                continue
-            owner = a.get("owner", "")
-            owner_account_count[owner] = owner_account_count.get(owner, 0) + 1
-            if a.get("status") == ACCOUNT_STATUS_PENDING:
-                owner_pending_count[owner] = owner_pending_count.get(owner, 0) + 1
-            # review 口径 = 待审核 + 已拒绝，与账号管理「待处理账号」组一致
-            # （修复：仅有已拒绝账号的用户此前不出现在用户管理待处理栏）
-            if a.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
-                owner_review_count[owner] = owner_review_count.get(owner, 0) + 1
-        result = [
-            {
-                "email": u.get("email", ""),
-                "role": u.get("role", "user"),
-                "created_at": u.get("created_at", ""),
-                # 计数排除软删除账号（删除后不占账号数/待审核数）
-                "account_count": owner_account_count.get(u.get("email", ""), 0),
-                "pending_count": owner_pending_count.get(u.get("email", ""), 0),
-                "review_count": owner_review_count.get(u.get("email", ""), 0),
-            }
-            for u in users
-        ]
-        return jsonify(
-            {
-                "ok": True,
-                "users": result,
-                "builtin_admin": _builtin_admin_display(),
-            }
-        )
-
-    @app.route("/api/users/deleted")
-    def api_users_deleted():
-        """已注销用户列表（仅管理员，v0.20.1）：软删除冷却中/待清除用户 + 剩余天数。
-
-        用户裁决 2026-08-16：自助注销不发管理员通知，改为本视图主动查看；
-        时间按天粒度（remaining_days 整天向下取整，0 = 不足一天），无秒级计算。
-        require_login 已限定仅管理员（普通用户白名单外 → 403）。
-        """
-        items = []
-        for u in db.load_users(include_deleted=True):
-            if not u.get("deleted"):
-                continue
-            deleted_at = str(u.get("deleted_at") or "")
-            remain_sec = _delete_grace_remaining(deleted_at)
-            status = "cooling" if remain_sec > 0 else "purge_pending"
-            items.append(
-                {
-                    "email": u["email"],
-                    "deleted_at": deleted_at,
-                    "remaining_days": int(remain_sec // 86400) if remain_sec > 0 else 0,
-                    "status": status,
-                }
-            )
-        items.sort(key=lambda x: x["deleted_at"])  # 最早到期在前（ISO 字符串字典序 = 时间序）
-        return jsonify({"ok": True, "items": items})
-
-    @app.route("/api/users/deleted/purge", methods=["POST"])
-    def api_users_deleted_purge():
-        """主管理员手动物理清除已注销用户（2026-08-17 需求：不留存已注销用户信息）。
-
-        body: {"emails": [...]}——只清 deleted=1 的用户（db 层再校验，活跃用户传入即跳过）；
-        冷却期内的用户也可被清除（管理员裁决权高于 7 天宽限承诺，审计留痕可追溯）。
-        连带清理其全部易班账号行（含软删）与 time_prefs；单事务失败全部回滚。
-
-        收归主管理员专属——物理清除不可逆且剥夺用户 7 天反悔权，
-        与角色变更/邮件配置等 master-only 口径对齐；普通管理员此前可绕过宽限
-        承诺清除用户，现 403。过期清理由系统每日清理自动完成，
-        不受影响。同步即时告警。
-        """
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可操作"}), 403
-        data = _json_body()
-        emails = data.get("emails") or []
-        if not isinstance(emails, list) or not emails:
-            return jsonify({"error": "请选择要清除的用户"}), 400
-        if len(emails) > BATCH_OP_LIMIT:
-            return jsonify({"error": f"单次最多清除 {BATCH_OP_LIMIT} 个用户"}), 400
-        if any(not isinstance(e, str) or len(e) > 64 for e in emails):
-            return jsonify({"error": "邮箱格式不正确"}), 400
-        # 被盗号滥用面加固（2026-08-29）：物理清除不可逆 → 二次鉴权 + 同管理员限速
-        # （顺序统一为"先鉴权、通过了才占额度"）
-        gate = _high_risk_gate(data, "彻底清除已注销用户")
-        if gate:
-            return gate
-        with _file_lock:
-            purged = db.purge_deleted_users_hard(emails)
-            if purged:
-                admin = session.get("username") or "admin"
-                db.audit(
-                    admin,
-                    "user_deleted_purge",
-                    ",".join(purged),
-                    f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
-                )
-        skipped = [e for e in emails if e not in purged]
-        logger.info("主管理员手动清除已注销用户: 成功 %d 个", len(purged))
-        if purged:
-            # 物理清除不可逆，与批量删除用户同级即时告警
-            send_notification(
-                "高危管理操作告警",
-                f"物理清除已注销用户 ×{len(purged)}: "
-                f"{', '.join(_mask_email(e) for e in purged[:20])}，"
-                f"操作者 {session.get('username', '?')}，时间 "
-                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                urgent=True,
-            )
-        return jsonify({
-            "ok": True,
-            "purged": purged,
-            "skipped": skipped,
-            "msg": f"已彻底清除 {len(purged)} 个用户"
-            + (f"，跳过 {len(skipped)} 个（非已注销状态）" if skipped else ""),
-        })
-
-    @app.route("/api/users/batch", methods=["POST"])
-    def api_users_batch():
-        """批量操作注册用户：reset_password/delete。
-
-        body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
-        角色变更不支持批量（2026-09-05 用户裁决）：提权/降权仅保留
-        /api/users/<email>/role 单个路径，且须二次输入当前管理员密码确认。
-        Phase 1：整体事务，失败全部回滚；无效项软跳过。
-        """
-        data = _json_body()
-        action = data.get("action")
-        emails = data.get("emails") or []
-        if action not in ("reset_password", "delete"):
-            return jsonify({"error": "未知操作"}), 400
-        if not isinstance(emails, list) or not emails:
-            return jsonify({"error": "请选择要操作的用户"}), 400
-        if len(emails) > BATCH_OP_LIMIT:
-            # 2026-08-29 收紧：单次批量上限——被盗 admin 会话原本可用一个
-            # 请求物理删除全部用户；与 accounts/batch 共用 BATCH_OP_LIMIT
-            return jsonify({"error": f"单次批量操作最多 {BATCH_OP_LIMIT} 个用户"}), 400
-        if any(not isinstance(e, str) or len(e) > 64 for e in emails):
-            return jsonify({"error": "邮箱格式不正确"}), 400
-        password = str(data.get("password", ""))
-        reset_hash = None
-        if action == "reset_password":
-            pw_err = _password_policy_error(password)
-            if pw_err:
-                return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
-            # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
-            reset_hash = generate_password_hash(password, method=SCRYPT_METHOD)
-
-        # 被盗号滥用面加固（2026-08-29）：删除用户 = 高危不可逆操作 → 二次鉴权 +
-        # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）。
-        # 批量重置密码同为账号控制权转移操作（e2e 实锤：普通管理员
-        # 无口令即可批量接管用户登录），与 delete 同口径走高危门禁。
-        if action in ("delete", "reset_password"):
-            # 顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
-            gate = _high_risk_gate(
-                data,
-                "批量删除用户" if action == "delete" else "批量重置密码",
-                limit_msg="删除操作过于频繁，请稍后再试"
-                if action == "delete" else "重置操作过于频繁，请稍后再试",
-            )
-            if gate:
-                return gate
-
-        with _file_lock:
-            users = load_users()
-            builtin = _builtin_admin_email()
-
-            # 内存模拟用户表，保持动态管理员数量判断
-            sim_users = {u["email"]: dict(u) for u in users}
-            ops = []
-            for email in emails:
-                target = sim_users.get(email)
-                if not target or email == builtin:  # 内置管理员不可批量操作
-                    continue
-                if (
-                    action in ("reset_password", "delete")
-                    and target.get("role") == "admin"
-                    and not _is_builtin_admin_session()
-                ):
-                    # 安全审查 2026-08：普通管理员不可重置/删除其他管理员（与单条 403 同口径；
-                    # 批量沿用"无效项软跳过"惯例，与内置管理员跳过一致）
-                    continue
-                if action == "reset_password":
-                    ops.append(
-                        (
-                            "update_user",
-                            email,
-                            {
-                                "password_hash": reset_hash,
-                                "pw_version": target.get("pw_version", 1) + 1,
-                            },
-                        )
-                    )
-                    sim_users[email]["pw_version"] = target.get("pw_version", 1) + 1
-                elif action == "delete":
-                    # 防呆：目标为管理员时校验至少保留 1 个管理员
-                    # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
-                    if target.get("role") == "admin":
-                        admins = [u for u in sim_users.values() if u.get("role") == "admin"]
-                        if len(admins) <= 1 and not builtin:
-                            continue
-                    ops.append(("delete_user_with_accounts", email, bool(builtin)))
-                    sim_users.pop(email, None)
-            done = len(ops)
-            if ops:
-                try:
-                    db.batch_user_ops(ops)
-                except db.LastAdminError:
-                    # db 事务内复核兜底（跨进程竞态时整体回滚转 400）
-                    db.audit(
-                        session.get("username") or "?",
-                        "users_batch",
-                        action,
-                        "被拒：批量操作命中最后一个注册管理员保护，已整体回滚",
-                    )
-                    return jsonify({"error": "批量操作包含最后一个注册管理员的删除/降权，已整体回滚"}), 400
-                except Exception as e:
-                    logger.error("批量%s用户失败: %s（已回滚）", action, e)
-                    db.audit(
-                        session.get("username") or "?",
-                        "users_batch",
-                        action,
-                        "失败，已回滚",
-                    )
-                    return jsonify({"error": "批量操作失败，已全部回滚"}), 500
-                if action == "delete":
-                    # 批量物理删除用户为不可逆高危操作，即时告警
-                    send_notification(
-                        "高危管理操作告警",
-                        f"批量删除用户 ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
-                        f"操作者 {session.get('username', '?')}，时间 "
-                        f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                        urgent=True,
-                    )
-                # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）
-                if action == "reset_password":
-                    for e in emails:
-                        with contextlib.suppress(Exception):
-                            db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
-                    # 批量重置密码即时告警
-                    send_notification(
-                        "密码重置告警",
-                        f"批量重置密码 ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
-                        f"操作者 {session.get('username', '?')}，时间 "
-                        f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                        urgent=True,
-                    )
-            db.audit(
-                session.get("username") or "?",
-                "users_batch",
-                action,
-                # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
-                (f"处理 {done} 个: " + ",".join(
-                    _mask_email(e) for e in (emails or [])[:20]
-                ))[:200],
-            )
-            logger.info("批量%s用户 %d 个", action, done)
-            msg = {
-                "reset_password": f"已重置密码 {done} 个用户",
-                "delete": f"已删除 {done} 个用户",
-            }[action]
-            return jsonify({"ok": True, "msg": msg})
-
-    @app.route("/api/users/<email>/role", methods=["POST"])
-    def api_user_role(email):
-        """设为管理员 / 取消管理员。仅主管理员（.env 内置管理员）可操作；
-        只能将「正式用户」（有生效账号且无待审核）设为管理员；
-        防呆：内置管理员不可改；至少保留 1 个管理员。
-
-        2026-09-05 用户裁决：角色变更是权限面变更，接入高危门禁（二次输入当前
-        管理员密码 + 限速）；批量角色变更入口已移除，本端点是唯一变更路径。
-        """
-        # 权限：仅主管理员（普通管理员无管理员权限变更权）
-        username = (session.get("username") or "").strip().lower()
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
-        data = _json_body()
-        # 高危门禁：先二次鉴权（当前管理员密码），通过后才占限速额度（与删除/重置同口径）
-        gate = _high_risk_gate(data, "修改管理员权限")
-        if gate:
-            return gate
-        new_role = data.get("role")
-        if new_role not in ("admin", "user"):
-            return jsonify({"error": "未知角色"}), 400
-        # 内置管理员（.env）不可修改角色
-        if email.strip().lower() == _builtin_admin_email().strip().lower():
-            return jsonify({"error": "内置管理员不可修改角色"}), 400
-        with _file_lock:
-            target = db.find_user(email)
-            if not target:
-                return jsonify({"error": "用户不存在"}), 404
-            if new_role == "admin":
-                # 只能将正式用户（有生效账号且无待审核）设为管理员；
-                # 正式用户判定仅 status==active 算（rejected 不算），且软删除不算
-                accounts = load_accounts()
-                has_pending = any(
-                    a.get("owner") == email
-                    and a.get("status") == ACCOUNT_STATUS_PENDING
-                    and not a.get("deleted")
-                    for a in accounts
-                )
-                has_active = any(
-                    a.get("owner") == email
-                    and a.get("status") == ACCOUNT_STATUS_ACTIVE
-                    and not a.get("deleted")
-                    for a in accounts
-                )
-                if not has_active or has_pending:
-                    return jsonify({"error": "仅正式用户可设为管理员（需有已生效账号且无待审核）"}), 400
-            if new_role == "user" and target.get("role") == "admin":
-                admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users 表中的最后一个管理员
-                if len(admins) <= 1 and not _builtin_admin_email():
-                    return jsonify({"error": "至少保留 1 个管理员"}), 400
-            # 改走事务内复核的 set_user_role——进程内预检挡不住
-            # 跨进程并发（多实例）同时把最后一个注册管理员降权
-            try:
-                changed = db.set_user_role(
-                    email, new_role, allow_last_admin=bool(_builtin_admin_email())
-                )
-            except db.LastAdminError:
-                return jsonify({"error": "至少保留 1 个管理员"}), 400
-            if changed == 0:
-                # 0 行 = 目标已被并发删除，不得谎报成功
-                return jsonify({"error": "用户不存在"}), 404
-            db.audit(
-                username,
-                "user_role",
-                _mask_email(email),
-                f"角色 → {new_role}",
-            )
-            logger.info("主管理员 %s 将用户 %s 角色 → %s", _mask_email(username), _mask_email(email), new_role)
-            # 提降权即时告警（权限面变更应可感知）
-            send_notification(
-                "权限变更告警",
-                f"用户 {_mask_email(email)} 角色 → {new_role}，"
-                f"操作者 {username}，时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                urgent=True,
-            )
-            # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
+            _ip_store_trim(_sensitive_pw_cooldown, cooldown + _IP_STORE_MAX_AGE)
+            until = (_sensitive_pw_cooldown.get(key) or (0, 0))[1]
+        if now < until:
+            # ①冷却优先于口令：正确口令也不放行——否则"改用对口令"就是冷却自带的绕过口子。
+            # 冷却只封这条门禁：登录、只读 GET、不需要复核的写操作一律照常。
             return jsonify(
-                {
-                    "ok": True,
-                    "msg": f"{_mask_email(email)} 已{'设为管理员' if new_role == 'admin' else '取消管理员'}",
-                }
-            )
-
-    @app.route("/api/users/<email>/password", methods=["POST"])
-    def api_user_password(email):
-        """重置用户密码（管理员无法查看原密码，只能设置新密码）。
-        安全审查 2026-08：目标为注册管理员时仅主管理员可操作（防普通管理员横向接管）。"""
-        data = _json_body()
-        password = str(data.get("password", ""))
-        pw_err = _password_policy_error(password)
-        if pw_err:
-            return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
-        # 管理员重置他人密码 = 账号控制权转移 → 高危二次鉴权 + 同管理员
-        # 限速（与批量重置同口径）。普通用户自改密码走 /api/me/password（需验当前
-        # 旧密码，且 require_login 已把普通用户挡在管理面之外），不落此门禁。
-        if _current_role() == "admin":
-            gate = _high_risk_gate(
-                data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
-            if gate:
-                return gate
-        is_master = _is_builtin_admin_session()
-        with _file_lock:
-            target = db.find_user(email)
-            if not target:
-                return jsonify({"error": "用户不存在"}), 404
-            if target.get("role") == "admin" and not is_master:
-                return jsonify({"error": "仅主管理员可重置管理员密码"}), 403
-            if db.update_user(
-                email,
-                {
-                    "password_hash": generate_password_hash(password, method=SCRYPT_METHOD),
-                    "pw_version": target.get("pw_version", 1) + 1,  # 被重置用户的旧会话随之失效
-                },
-            ) == 0:
-                # 0 行 = 目标已被并发删除
-                return jsonify({"error": "用户不存在"}), 404
-            # 轮换目标 sid，被盗 cookie 即便未因 pw_version 失效（如
-            # 旧版本客户端）也双重确保吊销
-            db.set_user_sid(email.strip().lower(), secrets.token_hex(16))
-            db.audit(
-                session.get("username") or "?",
-                "user_password_reset",
-                _mask_email(email),
-                "管理员重置密码",
-            )
-            logger.info("已重置用户 %s 密码", _mask_email(email))
-            # 重置他人密码即时告警（被盗号会话中的静默接管信号）
-            send_notification(
-                "密码重置告警",
-                f"用户 {_mask_email(email)} 的密码已被管理员重置，"
-                f"操作者 {session.get('username', '?')}，"
-                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                urgent=True,
-            )
-            return jsonify({"ok": True, "msg": f"{_mask_email(email)} 密码已重置"})
-
-    @app.route("/api/users/<email>/delete", methods=["POST"])
-    def api_user_delete(email):
-        """删除用户：mode=accounts_only 仅清空其易班账号（保留用户可重新提交）；
-        mode=full 完全删除用户及其账号。
-        安全审查 2026-08：目标为注册管理员时仅主管理员可操作（与 role/密码重置口径一致）。"""
-        data = _json_body()
-        mode = data.get("mode", "full")
-        if mode not in ("accounts_only", "full"):
-            return jsonify({"error": "未知操作"}), 400
-        if email.strip().lower() == _builtin_admin_email().strip().lower():
-            return jsonify({"error": "内置管理员不可删除"}), 400
-        is_master = _is_builtin_admin_session()
-        # 被盗号滥用面加固（2026-08-29）：完全删除用户 = 高危不可逆 → 二次鉴权 +
-        # 同管理员限速。
-        # （accounts_only 门禁）：仅清空账号虽保留用户可重新
-        # 提交，但一次请求即把该用户**全部**易班凭据（不可逆）清零，滥用面与 full 同级；
-        # 两种模式统一接入 _high_risk_gate，响应语义与 full 模式对齐（口令错 400/未登录
-        # 401、冷却 429）。
-        gate = _high_risk_gate(
-            data,
-            "完全删除用户" if mode == "full" else "清空用户账号",
-            limit_msg="删除操作过于频繁，请稍后再试")
-        if gate:
-            return gate
-        with _file_lock:
-            target = db.find_user(email)
-            if not target:
-                return jsonify({"error": "用户不存在"}), 404
-            if target.get("role") == "admin" and not is_master:
-                return jsonify({"error": "仅主管理员可删除管理员"}), 403
-            if mode == "full" and target.get("role") == "admin":
-                admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）兜底存在时可删除 users 表中的最后一个管理员
-                if len(admins) <= 1 and not _builtin_admin_email():
-                    return jsonify({"error": "至少保留 1 个管理员"}), 400
-            # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
-            if mode == "full":
-                # 事务内复核最后一个注册管理员（allow 与原预检同语义：
-                # 内置管理员存在时允许删掉 users 表最后一个注册管理员）
-                try:
-                    db.delete_user_with_accounts(
-                        email, allow_last_admin=bool(_builtin_admin_email())
-                    )
-                except db.LastAdminError:
-                    return jsonify({"error": "至少保留 1 个管理员"}), 400
-            else:
-                db.delete_accounts_by_owner(email)
-            db.audit(
-                session.get("username") or "?",
-                "user_delete",
-                _mask_email(email),
-                f"mode={mode}",
-            )
-            if mode == "full":
-                logger.info("完全删除用户 %s（含易班账号）", _mask_email(email))
-                # 完全删除（物理、不可逆）为高危操作，即时告警
-                send_notification(
-                    "高危管理操作告警",
-                    f"完全删除用户 {_mask_email(email)} 及其全部易班账号，"
-                    f"操作者 {session.get('username', '?')}，时间 "
-                    f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                    urgent=True,
-                )
-                return jsonify({"ok": True, "msg": f"{_mask_email(email)} 已完全删除"})
-            logger.info("清空用户 %s 的易班账号（保留用户）", _mask_email(email))
-            return jsonify({"ok": True, "msg": f"{_mask_email(email)} 的易班账号已清空（用户保留，可重新提交）"})
-
-    # ---- 手动签到 ----
-    _last_trigger = {}  # phone -> 上次触发时间戳
-    _signin_procs = {}  # phone -> Popen（新触发时终止仍在运行的旧进程，防重复签到触发风控）
-    _signin_lock = threading.Lock()  # 防抖检查+赋值原子化（TOCTOU 竞态防护）
-    _batch_signin_running = False  # 批量签到队列互斥：同时只允许一个在跑
-    _batch_signin_lock = threading.Lock()
-    # 批量签到冷却（2026-09-01 用户裁决）：队列完成时刻 + 冷却窗口内拒绝再次触发，
-    # 防被盗管理员会话循环触发全量真实登录打爆易班风控。窗口 YIBAN_BATCH_SIGN_COOLDOWN_SEC
-    # （默认 1800s，0=关闭）；进程内计数（单 worker 8 线程，重启复位可接受——被盗会话
-    # 无法重启进程来绕过）。
-    _last_batch_signin_ts = 0.0
-
-    # ---- 手动签到（单个 / 批量）----
-    def _signin_run_lock_busy():
-        """非阻塞探测 signin 运行锁是否被其他进程持有。
-
-        全量签到/cron 运行期间，--only 子进程会拿锁失败并 exit 3 静默退出——
-        原实现 web 照样返回"已触发"，用户侧无感。现在 spawn 前先探测，忙时直接
-        429 如实提示（POSIX flock 试探；Windows 无 fcntl 返回 False 走旧行为，
-        与 _acquire_run_lock 的降级策略一致）。
-        """
-        path = os.path.join(STATE_DIR, "signin-run.lock")
-        try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        except OSError:
-            return False
-        try:
-            try:
-                import fcntl
-            except ImportError:
-                return False
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                return True  # 被其他签到进程持有
-            with contextlib.suppress(OSError):
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
-        finally:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-
-    def _reap_signin(phone, proc):
-        """M9：子进程结束后在锁内从 _signin_procs 移除同对象（防僵尸记录/重复 terminate）。"""
-        try:
-            proc.wait()
-        finally:
-            with _signin_lock:
-                if _signin_procs.get(phone) is proc:
-                    _signin_procs.pop(phone, None)
-        # 退出码透传：exit 3（队列忙/运行锁占用）等非 0 退出此前被静默吞掉，
-        # 用户看到"已触发"实际没签——真实原因写入签到日志（日志页可见）
-        _log_manual_sign_exit(_mask_phone(phone), proc.returncode)
-
-    def _launch_signin_proc(only_arg):
-        """起一个 `signin.py --only <only_arg>` 子进程；only_arg 可为逗号分隔多号。
-
-        环境与定时签到同口径（进程环境为底座、.env 的 YIBAN_* 覆盖注入）；密钥经
-        YIBAN_ENV_FILE 由子进程自读，不注入明文。
-        返回 Popen；脚本缺失等启动失败返回 None。
-        """
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        script = os.path.join(base, "scripts", "signin.py")
-        env = child_env.build_child_env(ENV_FILE, base=dict(os.environ))
-        # 启动延迟已废弃（v0.29.0），不再注入 YIBAN_START_DELAY_MAX=0；账号间隔
-        # YIBAN_ACCOUNT_GAP_MAX 也不强制清零——按全局设置对自动+手动一致生效
-        # （手动单账号本无相邻请求，批量手动按 .env/缺省 10 生效，与文档口径一致）。
-        env["YIBAN_DB_FILE"] = DB_FILE
-        env["YIBAN_ENV_FILE"] = ENV_FILE
-        log_fh = None
-        with contextlib.suppress(OSError):
-            log_fh = open(log_path_for(), "a", encoding="utf-8", buffering=1)
-        try:
-            return subprocess.Popen(
-                [sys.executable, script, "--only", only_arg],
-                cwd=base, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
-            )
-        except FileNotFoundError:
+                {"error": "口令校验失败次数过多，敏感操作已暂停，请稍后再试"}), 429
+        if not always_required and _pw_confirm_exempt(ttl, now):
+            return None  # ②豁免：只给 always_required=False 的配置类动作（TTL 内且同出口）
+        submitted = str(data.get("confirm_password", ""))
+        if not submitted:
+            # 没提交口令 ≠ 猜错口令：照旧拒绝（状态码不变），但**不计数、不告警、
+            # 不进冷却**。冷却要限的是口令散列次数（实测单次 scrypt 约 157ms），而空口令
+            # 在入口就被挡掉、一次散列都不做；把它计入阈值等于让攻击者用"空请求"就能把
+            # 合法管理员的敏感操作预算刷光，也正是 _admin_delete_limited 防的那类运维 DoS
+            # （前端"点了保存又取消口令框"的正常操作同样不该被罚）。
+            # 文案走 PW_MISSING_TEXT：不能对用户说"密码不正确"，他根本没输。
+            return jsonify({"error": PW_MISSING_TEXT[deny_status],
+                            "reason": PW_DENY_REASON["missing"]}), deny_status
+        if _verify_session_password(submitted):
+            # ③口令比对通过。写进会话的两个键是一对：pw_ok_ts 给②的豁免 TTL 当依据，
+            # pw_ok_ip 给 risk 档的"换环境"判据当已验证基准（见 _pw_gate_ip_changed）——
+            # 只留一个的话，豁免与风控各自少掉一半依据。
+            session["pw_ok_ts"] = now
+            session["pw_ok_ip"] = key[0]  # 记住本出口：同一出口后续危险操作不再重复要口令
             return None
-        finally:
-            if log_fh is not None:
-                log_fh.close()
+        return _sensitive_pw_denied(key, action, deny_status, cooldown, now)
 
-    def _spawn_signin_many(phones):
-        """批量手动签到合并为单个队列子进程（--only 逗号分隔）。
+    def _reconfirm_admin_password(data, action_label, *, always_required=True,
+                                  irreversible=False, risk_always=False):
+        """高危操作二次鉴权：要求当前会话管理员重新输入口令。
 
-        底层 signin.py --only 本就支持多号：一次登录批处理、一次队列重试、只发一封
-        汇总邮件——替代原"逐账号各起一个子进程、各发一封汇总"，N 个账号从 N 封降到 1 封。
-        返回 (ok: bool, msg: str, proc: Popen|None)。
+        薄封装：返回约定（None = 通过，否则 `(响应, 状态码)` 元组）与失败处置
+        （独立计数、告警、冷却）全在 `_sensitive_password_gate`，本函数不改写语义。
+        `always_required` 默认 True——经 `_high_risk_gate` 的落点本就是一串"不可逆
+        清除 / 重置他人口令"（必须当次输口令）；设置页里两个纯配置项（签到随机
+        延迟、容量上限）显式传 False 走豁免。另一直连调用点是 /api/mail-config 的
+        SMTP 凭据变更（换中继/授权码 = 换钥类，要口令但不占高危额度）。
+        `risk_always` 原样透传（缺省 `risk` 档是否吃"同出口免口令"，语义见
+        `_sensitive_password_gate`）；**不传即逐字保持旧行为**。
         """
-        if not phones:
-            return False, "无可签到账号", None
-        if _signin_run_lock_busy():
-            return False, "签到队列忙（定时签到进行中），请稍后再试", None
-        proc = _launch_signin_proc(",".join(phones))
-        if proc is None:
-            return False, "批量手动签到启动失败，请稍后重试", None
-        # 冷却基准单源化——只有 spawn 真正成功才刷新（原实现写在
-        # _run_batch 的 finally 里，spawn 失败也刷新基准，失败后 30 分钟内合法重试被拒）
-        nonlocal _last_batch_signin_ts
-        with _batch_signin_lock:
-            _last_batch_signin_ts = time.time()
-        logger.info("触发批量手动签到（单队列）: %s 个账号", len(phones))
-        return True, "", proc
+        return _sensitive_password_gate(
+            # 第一个参数收**整个请求体**而不是单独的口令串：非 `full` 档还要看同一请求里
+            # 的倒计时确认凭据 confirm_delay_ack，只传口令串会把那字段截掉，门禁永远判它缺失
+            data, action_label, always_required=always_required, deny_status=400,
+            irreversible=irreversible, risk_always=risk_always)
 
-    def _spawn_signin(phone, accounts=None):
-        """触发单账号手动签到子进程（signin.py --only）。
+    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试",
+                        irreversible=False, quota="delete", risk_always=False):
+        """高危动作统一门禁：先过口令二次鉴权，**通过之后**才占用对应类别的额度。
 
-        防抖：30 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
-        手动签到冷却单源化——单条与批量共用同一冷却计数
-        （YIBAN_BATCH_SIGN_COOLDOWN_SEC，默认 1800s，0=关闭）：spawn 成功前检查
-        冷却（与批量端点同口径拒绝），spawn 成功后刷新 _last_batch_signin_ts。
-        单条手动签到自此同样受全局冷却约束（a8e9c43 威胁模型：被盗会话循环触发
-        单号真实登录同样打爆易班风控）；30 秒 per-phone 防抖语义保持不变。
-        返回 (ok: bool, msg: str)。
+        返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
+        `quota` 选额度族：`"delete"` = 删除类（YIBAN_ADMIN_DELETE_*，账号/用户删除、
+        清库清理）；`"creds"` = 凭据改写类（YIBAN_ADMIN_CREDS_*，改写他人易班凭据、
+        重置他人口令、换推送密钥）——两族分开计数，"超限即 429"
+        的语义两族一致。
+        `risk_always=True` 原样透传给统一门禁（缺省 `risk` 档是否吃"同出口免口令"），
+        四类落点逐个标注；**不传即逐字保持旧行为**。
+
+        口令门收窄（用户拍板清单）：门内只剩**不可逆/凭据类**动作
+        ——删除账号、清库清理、换钥、改管理员口令、改他人凭据，以及**关闭邮件/推送
+        告警通道**（拆掉安全网本身）。改设备识别码、备注、改角色、调推送额度/节流
+        参数、**开启**邮件通道与邮件收件人变更等**可逆操作一律免门免额度**，但保留
+        审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之回退）。
+
+        `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
+        删用户）：非 `full` 档下它们还要求请求体带倒计时确认凭据，见
+        `_sensitive_password_gate`。可逆动作不传，避免把"可回滚"的动作也变成
+        不可撤销的确认负担。
+
+        本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用）。
+        覆盖面（每行 = `METHOD /path`，形态即清单；由 `tests/test_gate_manifest_sync.py`
+        与 url_map / 视图源码**双向自动比对**，改名漏登即红——这份表不再是手抄件）：
+        - POST /api/accounts/batch（purge 分支）
+        - POST /api/accounts/<int:idx>/purge
+        - PUT /api/accounts/<int:idx>（改写他人易班凭据时——密码/改绑手机号；
+          只改设备识别码不过本门，仅标审计位 + 发信）
+        - POST /api/users/batch（delete / reset_password 分支）
+        - POST /api/users/deleted/purge
+        - POST /api/users/<int:user_id>/role（角色变更与提权；**主管理员专属**，
+          占凭据额度——提权是控制权转移，与"重置他人口令"同一族）
+        - POST /api/users/<int:user_id>/password（改他人凭据）
+        - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
+        - PUT /api/notify-config（触碰推送密钥时——换钥/清钥/改道；调额度/节流参数免门）
+        - PUT /api/mail-config（**关闭邮件通道**时——开 → 关；SMTP 凭据变更直连
+          _reconfirm_admin_password 要口令、不占额度，开启方向与收件人变更免门）
+        免门（均保留审计）：PUT /api/mail-config 的**开启**与收件人变更
+        （关闭邮件通道过本门；SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、
+        不占额度）。`/api/announcement/publish` 与 `/api/settings` 的 A/B 档另走
+        `sensitive_password_gate()`（不占额度），不在本清单内。
+        可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的 B 档（排序风格与
+        自选权）、/api/scheduler/executors* 的写操作；A 档（签到窗口与缓冲边距、周末开关、
+        随机延迟、账号间隔、容量上限、探针、注册面）在设置路由走 A 档门禁、**不吃豁免**。
+        **只占额度、刻意不过本门禁**的（可逆不加口令——加了只增误伤；留痕在审计行；
+        非本函数覆盖面，故不写成 `METHOD /path` 形态）：账号软删（路径
+        `/api/accounts/<int:idx>` 的删除方法，以及上面 accounts/batch 那条的
+        delete 分支）。
         """
-        accounts = accounts if accounts is not None else load_accounts()
-        idx = find_account_index(accounts, phone)
-        if idx is None:
-            return False, f"账号 {phone} 不在配置中"
-        acc = accounts[idx]
-        if acc.get("deleted") or acc.get("status") != ACCOUNT_STATUS_ACTIVE:
-            return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
-        if _signin_run_lock_busy():
-            return False, "签到队列忙（定时签到进行中），请稍后再试"
-        nonlocal _last_batch_signin_ts
-        with _batch_signin_lock:
-            cooldown = load_env_int(ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC", 1800)
-            if cooldown > 0:
-                elapsed = time.time() - _last_batch_signin_ts
-                if elapsed < cooldown:
-                    remain = int(cooldown - elapsed)
-                    return False, f"签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
-        with _signin_lock:  # 原子检查+占位：并发请求不能同时通过防抖
-            now = time.time()
-            if phone in _last_trigger and now - _last_trigger[phone] < SIGN_MIN_INTERVAL:
-                remain = int(SIGN_MIN_INTERVAL - (now - _last_trigger[phone]))
-                return False, f"账号 {phone} 正在签到，请 {remain} 秒后再试"
-            old = _signin_procs.get(phone)
-            if old and old.poll() is None:
-                old.terminate()  # 仍在运行 → 终止旧进程，防止同账号并发签到
-            _last_trigger[phone] = now
+        # 顺序就是本函数的全部要点：口令在前、占额度在后。反序（先判后增再鉴权）的话，一个
+        # 只拿到 Cookie、不知道口令的被盗会话用错口令反复尝试，就能把主管理员的"删除 +
+        # 凭据改写"预算（ADMIN_DELETE_MAX / ADMIN_CREDS_MAX 次每窗口）全部吃掉，
+        # 反过来让合法运维每次高危操作都撞 429（运维 DoS）。口令暴力本就由
+        # _sensitive_password_gate 的独立计数与门禁级冷却承担（第 3 次告警并暂停敏感操作），
+        # 额度只该被**真实执行过**的高危动作消耗。
+        pw_err = _reconfirm_admin_password(
+            data, action_label, always_required=True, irreversible=irreversible,
+            risk_always=risk_always)
+        if pw_err:
+            return pw_err  # 口令没过：一分额度都没被占用
+        limited = _admin_creds_limited() if quota == "creds" else _admin_delete_limited()
+        if limited:
+            return jsonify({"error": limit_msg}), 429  # 走到这里说明口令已过，额度已扣一次、不退还
+        return None
 
-        proc = _launch_signin_proc(phone)
-        if proc is None:
-            with _signin_lock:
-                _last_trigger.pop(phone, None)
-            return False, f"账号 {phone} 手动签到启动失败，请稍后重试"
-        with _signin_lock:
-            _signin_procs[phone] = proc  # 记录子进程，供下次触发时终止旧进程
-        # M9：daemon 回收线程，进程退出后自动从 _signin_procs 移除同对象
-        threading.Thread(target=_reap_signin, args=(phone, proc), daemon=True).start()
-        with _batch_signin_lock:
-            _last_batch_signin_ts = time.time()  # M4：spawn 成功 = 冷却基准（单条/批量同源）
-        logger.info("触发手动签到: %s", _mask_phone(phone))
-        return True, f"已触发 {phone} 手动签到（后台执行，日志约 30 秒内刷新）"
-
-    @app.route("/api/signin", methods=["POST"])
-    def api_signin():
-        """手动签到指定账号：子进程执行 signin.py --only。"""
-        data = _json_body()
-        phone = str(data.get("phone", "")).strip()
-        ok, msg = _spawn_signin(phone)
-        if not ok:
-            if "不在配置中" in msg:
-                return jsonify({"error": msg}), 404
-            if "不可手动签到" in msg:
-                return jsonify({"error": msg}), 400
-            if "冷却中" in msg:  # 单条与批量共用的全局签到冷却
-                return jsonify({"error": msg}), 429
-            if "正在签到" in msg or "签到队列忙" in msg:
-                return jsonify({"error": msg}), 429
-            return jsonify({"error": msg}), 500
-        db.audit(session.get("username") or "?", "signin_manual", _mask_phone(phone), "手动签到")
-        return jsonify({"ok": True, "msg": msg})
-
-    @app.route("/api/signin/batch", methods=["POST"])
-    def api_signin_batch():
-        """批量手动签到：顺序逐个触发（与自动签到同语义，防风控）。
-
-        全局互斥（同时只允许一个批量队列在跑）；防抖冲突的账号自动跳过。
-        接口立即返回，实际执行在后台线程。
-        """
-        data = _json_body()
-        ids = data.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return jsonify({"error": "请先勾选要签到的账号"}), 400
-        accounts = load_accounts()
-        if _signin_run_lock_busy():
-            return jsonify({"error": "签到队列忙（定时签到进行中），请稍后再试"}), 429
-        # 防错位 + bool 混淆修复（同 /api/accounts/batch，2026-08-20 对抗性审查 P1）：
-        # 签到用错位下标取到的会是他人账号的凭据，危害比管理操作更直接
-        phones_in = data.get("phones")
-        expect = {}
-        if isinstance(phones_in, list) and len(phones_in) == len(ids):
-            expect = {
-                i: str(phones_in[k]).strip() for k, i in enumerate(ids) if type(i) is int
-            }
-        phones = []
-        for i in ids:
-            if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(accounts):
-                continue
-            acc = accounts[i]
-            # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
-            if i in expect and _mask_phone(expect[i]) != _mask_phone(str(acc.get("phone", ""))):
-                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-            if acc.get("deleted") or acc.get("status") != ACCOUNT_STATUS_ACTIVE:
-                continue
-            phone = str(acc.get("phone", "")).strip()
-            if phone:
-                phones.append(phone)
-        if not phones:
-            return jsonify({"error": "选中的账号均不可手动签到（未生效或已删除）"}), 400
-        # 单次批量签到账号数与 /api/accounts/batch 同口径（BATCH_OP_LIMIT）。
-        # 队列子进程的等待超时按账号数缩放，无上限的"全选"会把后台队列线程长时间占死；
-        # 超出上限 400，管理员分批触发（每批 ≤10 个）。
-        if len(phones) > BATCH_OP_LIMIT:
-            return jsonify({"error": f"单次批量签到最多 {BATCH_OP_LIMIT} 个账号"}), 400
-        nonlocal _batch_signin_running
-        with _batch_signin_lock:
-            if _batch_signin_running:
-                return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
-            # 批量签到冷却（防循环触发全量真实登录）——队列完成后窗口内拒绝
-            cooldown = load_env_int(ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC", 1800)
-            if cooldown > 0:
-                elapsed = time.time() - _last_batch_signin_ts
-                if elapsed < cooldown:
-                    remain = int(cooldown - elapsed)
-                    return jsonify({
-                        "error": f"批量签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
-                    }), 429
-            _batch_signin_running = True
-
-        def _run_batch():
-            try:
-                ok, msg, proc = _spawn_signin_many(phones)
-                if not ok:
-                    logger.warning("批量手动签到未启动: %s", msg)
-                    return
-                # M5：等待超时按账号数缩放（默认 300s 仅够单号，多号队列会被误杀）
-                _wait_signin_proc(proc, timeout=_batch_wait_timeout(len(phones)))
-                logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
-                # 非 0 退出码（如 exit 3 队列忙）如实留痕到签到日志，不冒充成功
-                _log_manual_sign_exit(
-                    f"批量签到 {len(phones)} 个账号", proc.returncode)
-            finally:
-                # 此处不再无条件重置 _last_batch_signin_ts——冷却基准
-                # 由 _spawn_signin_many 在 spawn 成功时刷新（消除"失败也刷新基准"：
-                # spawn 失败后 30 分钟内合法重试不该被拒）。
-                nonlocal _batch_signin_running
-                with _batch_signin_lock:
-                    _batch_signin_running = False
-
-        threading.Thread(target=_run_batch, daemon=True).start()
-        db.audit(
-            session.get("username") or "?",
-            "signin_batch",
-            ",".join(_mask_phone(p) for p in phones),
-            f"批量签到 {len(phones)} 个",
-        )
-        return jsonify({
-            "ok": True,
-            "msg": f"已加入批量签到队列（{len(phones)} 个账号，合并为一个队列执行、只发一封汇总邮件，日志约几分钟内刷新）",
-        })
-
-    # ---- 日志与状态 ----
-    @app.route("/api/logs/export")
-    def api_logs_export():
-        """导出某日签到日志（脱敏副本，管理员）。
-
-        date 必填且强校验（防路径穿越），文件名仅含日期。响应体不是磁盘原
-        文件：按天日志在盘上按设计保留完整手机号（signin 状态解析 / run.sh
-        依赖），HTTP 出口必须与 /api/logs 展示层同一契约——经 _log_lines_for
-        （yiban 全量 + 其余组件仅告警级，同一尾部读取封顶）过滤后逐行
-        _mask_log_phones 脱敏，任何登录身份都无法经 HTTP 取得未脱敏号码。
-        成功导出写 logs_export 审计留痕（400/404 不写），并受每 IP 窗口限速。
-        """
-        date = str(request.args.get("date", "")).strip()
-        if not _is_valid_date_str(date):
-            return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        ip = _client_ip()
-        now = time.time()
-        with _rate_lock:
-            _ip_store_trim(_export_limits, EXPORT_WINDOW + _IP_STORE_MAX_AGE)
-        _cnt, _start, allowed = _bump_window_count(
-            _export_limits, ip, now, EXPORT_WINDOW, limit=EXPORT_MAX
-        )
-        if not allowed:
-            return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
-        if not os.path.exists(log_path_for(date)):
-            return jsonify({"error": f"{date} 无签到日志"}), 404
-        text = "".join(_mask_log_phones(ln) + "\n" for ln in _log_lines_for(date))
-        db.audit(
-            session.get("username") or "?",
-            "logs_export",
-            date,
-            f"导出 {date} 签到日志（脱敏）",
-        )
-        return Response(text, mimetype="text/plain", headers={
-            "Content-Disposition": f"attachment; filename=sign-{date}.log",
-        })
-
-    @app.route("/api/logs")
-    def api_logs():
-        """签到日志与今日状态。
-
-        ?date=YYYY-MM-DD（可选，仅管理员）：缺省=最近有日志的一天（优先今天）；
-        指定日期时 logs 为该日日志、states 仍为今日状态（账号表格图标语义不随历史日期变化）。
-        """
-        date = str(request.args.get("date", "")).strip()
-        if date and not _is_valid_date_str(date):
-            return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
-        if not date:
-            date = _most_recent_log_date()
-        logs = _log_lines_for(date)
-        # v0.29.0：检索与全量查看。q=子串过滤（大小写不敏感，作用于当日全量行）；
-        # all=1 返回当日全部行（封顶 5000 行防拖垮浏览器，truncated 标记）；
-        # 缺省仍返回最后 80 行（轮询口径不变，靠前日志经 all=1 或导出获取）。
-        q = str(request.args.get("q", "")).strip()
-        show_all = str(request.args.get("all", "")).strip() == "1"
-        masked_all = [_mask_log_phones(ln) for ln in logs]
-        total_lines = len(masked_all)
-        if q:
-            _ql = q.lower()
-            masked_all = [ln for ln in masked_all if _ql in ln.lower()]
-        if show_all:
-            _LOG_VIEW_CAP = 5000
-            out_lines = masked_all[:_LOG_VIEW_CAP]
-            truncated = len(masked_all) > _LOG_VIEW_CAP
-        else:
-            out_lines = masked_all[-80:]
-            truncated = False
-        # 探针结构化事件（v0.24.4）：此前 stage="probe" 只落库无任何可见出口，
-        # 现随日志接口附带当日探测记录（独立字段，不混入签到文本流；
-        # 手机号打码，条数封顶）。
-        probe_events = []
-        try:
-            for ev in db.probe_events_on(date, limit=100):
-                msg = str(ev.get("message") or "")
-                probe_events.append({
-                    "time": str(ev.get("ts", ""))[-8:] if ev.get("ts") else "",
-                    "phone": signin._mask_phone(str(ev.get("phone") or "")),
-                    "status": str(ev.get("status") or ""),
-                    "message": (msg[:160] + "…") if len(msg) > 160 else msg,
-                })
-        except Exception as e:
-            logger.warning("probe_events 查询失败（不影响日志页）: %s", e)
-            probe_events = []
-        # 裁决：当日签到事件（stage="sign"）——sign_events 表此前主流程
-        # 零写入、读取函数零调用方（基础设施空转）；写入已在 signin 侧补齐，
-        # 此处与探针记录同口径脱敏展示（手机号打码、条数封顶）。
-        sign_events = []
-        try:
-            for ev in db.sign_events_on(date, limit=100):
-                msg = str(ev.get("message") or "")
-                sign_events.append({
-                    "time": str(ev.get("ts", ""))[-8:] if ev.get("ts") else "",
-                    "phone": signin._mask_phone(str(ev.get("phone") or "")),
-                    "status": str(ev.get("status") or ""),
-                    "attempt": int(ev.get("attempt") or 0),
-                    "message": (msg[:160] + "…") if len(msg) > 160 else msg,
-                })
-        except Exception as e:
-            logger.warning("sign_events 查询失败（不影响日志页）: %s", e)
-            sign_events = []
-        # 空态一键跳转的「最近有数据日期」：仅在该标签当前无数据时才查库，
-        # 避免每次 10s 轮询都多做两次聚合查询。检索态（q 非空）不给出口——
-        # 「无匹配」是检索结果，不是日期没数据。
-        recent_log_date = ""
-        recent_probe_date = ""
-        recent_sign_date = ""
-        if not logs and not q:
-            candidate = _most_recent_log_date()
-            if candidate and candidate != date:
-                recent_log_date = candidate
-        if not probe_events:
-            candidate = db.sign_events_recent_date("probe")
-            if candidate and candidate != date:
-                recent_probe_date = candidate
-        if not sign_events:
-            candidate = db.sign_events_recent_date("sign")
-            if candidate and candidate != date:
-                recent_sign_date = candidate
-        # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
-        # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
-        # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
-        # 符号污染（2026-08-16 审查轮修复）。
-        return jsonify(
-            {
-                "ok": True,
-                "logs": out_lines,
-                "total_lines": total_lines,
-                "returned": len(out_lines),
-                "truncated": truncated,
-                "q": q,
-                "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
-                "date": date,
-                "is_today": date == clock.now().strftime("%Y-%m-%d"),
-                "probe_events": probe_events,
-                "sign_events": sign_events,
-                # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
-                "recent_log_date": recent_log_date,
-                "recent_probe_date": recent_probe_date,
-                "recent_sign_date": recent_sign_date,
-            }
-        )
-
-    # ---- 签到事件查询（管理员；sign_events 补消费端）----
-    @app.route("/api/admin/sign-events")
-    def api_admin_sign_events():
-        """sign_events 结构化查询：单账号时间线 / 实时事件流 / 按天统计。
-
-        权限：路径不在普通用户白名单，require_login 统一 403（普通用户越权访问
-        会另记 forbidden_path 审计）。手机号一律打码后返回，条数封顶 200。
-        """
-        phone = str(request.args.get("phone", "")).strip()
-        try:
-            days = min(max(int(request.args.get("days", 7)), 1), 90)
-        except (TypeError, ValueError):
-            days = 7
-        try:
-            limit = min(max(int(request.args.get("limit", 100)), 1), 200)
-        except (TypeError, ValueError):
-            limit = 100
-        # stage 过滤：sign=真实签到、probe=健康探针；缺省不过滤（两者混算，保持旧行为）。
-        # 两种事件共用 sign_events 表，不区分会让探针的成功/失败污染签到成功率，
-        # 故需要「签到口径」的调用方显式传 stage=sign。取值走白名单 + 参数绑定。
-        stage = str(request.args.get("stage", "")).strip().lower()
-        if stage not in ("sign", "probe"):
-            stage = ""
-
-        def _mask(ev):
-            msg = str(ev.get("message") or "")
-            return {
-                "ts": str(ev.get("ts", "")),
-                "phone": signin._mask_phone(str(ev.get("phone") or "")),
-                "status": str(ev.get("status") or ""),
-                "message": (msg[:160] + "…") if len(msg) > 160 else msg,
-                "stage": str(ev.get("stage") or ""),
-                "attempt": int(ev.get("attempt") or 0),
-                "dur_sec": ev.get("dur_sec"),
-            }
-
-        events = []
-        if phone:
-            events = [_mask(ev) for ev in db.sign_events_by_phone(phone, days=days)][:limit]
-        else:
-            cutoff = (clock.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-            events = [_mask(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
-        if stage:
-            # 事件流本身不带 stage 过滤（sign_events_since 无该参数），故在此收口；
-            # 代价是过滤后条数可能少于 limit，对展示样本无影响。
-            events = [ev for ev in events if ev["stage"] == stage]
-        stats = db.sign_event_stats(days=days, stage=stage or None)
-        return jsonify(
-            {
-                "ok": True,
-                "days": days,
-                "stage": stage,
-                "count": len(events),
-                "events": events,
-                "daily_stats": stats,
-            }
-        )
-
-    # ---- 设置（随机延迟，写入 .env）----
-    @app.route("/api/settings")
-    def api_settings():
-        env = read_env(ENV_FILE)
-        mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-        sw = _sign_window()
-        # 容量口径（与配额检查同源 `_capacity_account_count`）：
-        #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
-        #   账号 = **会发起易班请求的账号**（非删除且审核态已通过，含 admin 直属裸账号）
-        # 2026-09-14 性能：单请求只读一次 users / 一次 accounts（raw，不解密）。
-        # 原先 load_accounts() 同请求 3 次、db.load_users() 2 次，每次 AES-GCM 解密
-        # 且长持 _conn_lock，2 核机上把 /api/settings 串行化到 ~13.5 rps。此处四处
-        # 用途（计数/三分类/未通过审核数/owners 集合）都只用明文列，共享同一快照还
-        # 消除并发下 _cur_accounts 与三分类求和不一致的可能。
-        _users = db.load_users()
-        _accts_raw = load_accounts_raw()
-        _cap_users = len(_users)
-        # 与 _capacity_account_count() 同口径，只是复用同一快照
-        _cur_accounts = sum(1 for a in _accts_raw if db.account_signs_in(a))
-        # 账号容量拆解（2026-09-10 需求3，**纯展示**）：名额制下"停签/故障账号占满名额、
-        # 新账号被拒但实际负载不高"是管理者的真实困惑，故展示分类计数。
-        # 三桶互斥且求和 = _cur_accounts（= 计容量的账号数），优先级：
-        # 用户自暂停 > 账密故障暂停 > 正常（同一账号两者都命中时归"用户自暂停"——
-        # 那是用户主动行为，先说清楚"是他自己要停的"）。
-        # 未通过审核的行**不属于任何一桶**（它们不计容量，见 accounts_audit），
-        # 归进"正常"会让管理者以为名额被有效账号占满。
-        _cred_paused = _cred_paused_phones()
-        _bd_normal = _bd_user_paused = _bd_cred_paused = _bd_audit = 0
-        for _a in _accts_raw:
-            if _a.get("deleted"):
-                continue
-            if not db.account_signs_in(_a):
-                _bd_audit += 1
-            elif _a.get("user_paused"):
-                _bd_user_paused += 1
-            elif str(_a.get("phone", "")) in _cred_paused:
-                _bd_cred_paused += 1
-            else:
-                _bd_normal += 1
-        # 潜在负载：已注册未提交人数（注册用户中尚无任何非删除账号者）
-        _owners = {a.get("owner") for a in _accts_raw if not a["deleted"] and a.get("owner")}
-        _potential = sum(1 for u in _users if u["email"] not in _owners)
-        # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
-        _est_start = load_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
-        _est_gap = load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", DEFAULT_ACCOUNT_GAP_MAX)
-        _est_accounts = _capacity_estimate(_est_gap)
-        return jsonify(
-            {
-                "ok": True,
-                "start_delay_max": _est_start,
-                "gap_max": _est_gap,
-                "default_start_delay_max": DEFAULT_START_DELAY_MAX,
-                "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
-                # 容量预估（2026-09-08 单档口径）：签到容量按当前账号间隔与有效窗口
-                # （已扣掐头去尾）估算；前端已用（或含潜在负载）超容量仅警示变色
-                "capacity_estimate": {
-                    "accounts_cap": _est_accounts,
-                    "current_accounts": _cur_accounts,
-                    "potential_load": _potential,
-                },
-                # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
-                "sign_mode": mode or "sequence",
-                # 调度 v2：排序×分布二级开关 + 首尾缓冲 + 自选总开关 + 窗口
-                "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-                    "random" if mode == "random" else "sequence"),
-                "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-                    "normal" if mode == "normal" else "uniform"),
-                # 掐头去尾（0.22.0 前后独立，秒；window_edge_sec 兼容旧前端 = 前裁）
-                "window_edge_sec": edge_config()[0],
-                "edge_front_sec": edge_config()[0],
-                "edge_back_sec": edge_config()[1],
-                "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
-                "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-                # 容量状态：注册用户/计容量账号 当前使用量 vs 上限（管理员知情）
-                "capacity": {
-                    "users": _cap_users,
-                    "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
-                    "accounts": _cur_accounts,
-                    "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
-                    # 账号容量拆解（仅展示）：三桶互斥、求和 = accounts。
-                    # 定义见 api_settings 顶部注释；配额判定与 accounts 同源。
-                    "accounts_breakdown": {
-                        "normal": _bd_normal,
-                        "user_paused": _bd_user_paused,
-                        "cred_paused": _bd_cred_paused,
-                    },
-                    # 未通过审核、**不占容量**的账号数（与 accounts 互斥互补：
-                    # accounts + accounts_audit = 全部非删除账号）。前端据此解释
-                    # "账号管理里有很多行、容量却只算 N 个"。
-                    "accounts_audit": _bd_audit,
-                },
-                # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
-                "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
-                # 周六签到：1=开启（默认，周六照常签到），0=关闭（周六暂停）
-                "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),
-                # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
-                "global_pause": load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
-                # 暂停注册（v0.26.3）：1=暂停（登录页关闭注册入口），0/未配置=允许
-                "registration_pause": load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0),
-                # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
-                "batch_mode": False,
-                # 注册账号验证 + 探针模式（v0.23.x，任意管理员可改）
-                "account_verify": 1 if env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes") else 0,
-                "probe_enable": 1 if env.get("YIBAN_PROBE_ENABLE", "").strip().lower() in ("1", "true", "on", "yes") else 0,
-                "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
-                "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
-            }
-        )
-
-    @app.route("/api/settings", methods=["POST"])
-    def api_settings_save():
-        data = _json_body()
-        # 调度权限（2026-08-15 确认）：仅主管理员可改调度字段（排序/分布/缓冲/自选/窗口/旧版模式）；
-        # 随机延迟（start_delay_max/gap_max）同为调度核心参数——注册管理员
-        # 拉满 3600s 可把几乎全部账号挤出签到窗口（事实性停签），一并收归主管理员。
-        # 普通管理员可改周日/公告等低风险项。
-        # sign_mode 为遗留字段（已无 UI 控件），但 signin.py 在未设 sign_order 时以其为回退，
-        # 普通管理员改之可间接变更调度排序 → 同样仅主管理员可写（安全审查 2026-08）。
-        is_master = _is_builtin_admin_session()
-        if not is_master and any(
-            k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
-                                "edge_front_sec", "edge_back_sec",
-                                "allow_time_pref", "sign_window", "sign_mode",
-                                "global_pause", "start_delay_max", "gap_max",
-                                "registration_pause", "max_users", "max_accounts")
-        ):
-            return jsonify({"error": "仅主管理员可修改调度设置"}), 403
-        # 字段携带才写——原实现缺省即 0 且无条件写两个键，
-        # "只改周日开关"之类的部分更新会把已配置的延迟静默清零
-        has_start = "start_delay_max" in data
-        has_gap = "gap_max" in data
-        try:
-            start = int(data.get("start_delay_max", 0))
-            gap = int(data.get("gap_max", 0))
-        except (TypeError, ValueError):
-            return jsonify({"error": "延迟秒数必须是整数"}), 400
-        # 上限 1 小时：防止误填超大值破坏签到随机延迟
-        start = min(max(start, 0), 3600)
-        gap = min(max(gap, 0), 3600)
-        # v0.29.0：随机延迟影响自动+手动签到节奏，修改需主管理员密码二次确认，
-        # 且新设置预估容量不足（当前活跃账号超过预估值）时拒绝保存。
-        if has_start or has_gap:
-            # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
-            denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改签到随机延迟")
-            if denied is not None:
-                return denied
-            # 2026-09-08 单门：容量口径收敛为活跃账号数（账号容量约束易班请求负载），
-            # 注册用户多但活跃账号少不构成负载；存量站点瞬间显示超限仅警示，
-            # 仅此处保存延迟时保留既有硬门
-            est_accounts = _capacity_estimate(gap)
-            cur_accounts = _capacity_account_count()
-            if cur_accounts > est_accounts:
-                return jsonify({
-                    "error": f"按新设置预估账号容量仅 {est_accounts} 个，当前活跃账号 {cur_accounts} 个，"
-                             "保存被拒绝。请缩短账号间隔、延长签到窗口或清理不用的账号后再试"
-                }), 400
-        # 安全审查 2026-08：先全量校验、再统一写入——此前边校验边写，
-        # 后续字段非法返回 400 时前面的字段已落盘（"报错但设置变了"的部分写入）。
-        # 签到模式（sequence/random）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
-        sign_mode = str(data.get("sign_mode", "")).strip().lower()
-        if sign_mode and sign_mode not in ("sequence", "random"):
-            return jsonify({"error": "签到模式取值应为 sequence 或 random"}), 400
-        # 调度 v2：排序×分布二级开关（替代旧三选一，旧值自动映射兼容）
-        sign_order = str(data.get("sign_order", "")).strip().lower()
-        sign_dist = str(data.get("sign_dist", "")).strip().lower()
-        if sign_order and sign_order not in ("sequence", "random"):
-            return jsonify({"error": "排序方式取值应为 sequence 或 random"}), 400
-        if sign_dist and sign_dist not in ("uniform", "normal"):
-            return jsonify({"error": "分布方式取值应为 uniform 或 normal"}), 400
-        # 掐头去尾（0.22.0 前后独立）：window_edge_sec 兼容旧前端（对称写）；
-        # edge_front_sec / edge_back_sec 各自独立（秒，0~300，30 的倍数 = 0.5 分钟粒度）。
-        # 0 是合法值（不裁切），不能用 write_env_int（其语义为 <=0 删除行）。
-        edge_front = edge_back = None
-        edge_raw = data.get("window_edge_sec")
-        if edge_raw is not None:
-            try:
-                edge = int(edge_raw)
-            except (TypeError, ValueError):
-                return jsonify({"error": "首尾缓冲必须是整数秒"}), 400
-            if not (0 <= edge <= 300 and edge % 30 == 0):
-                return jsonify({"error": "首尾缓冲应为 0~300 秒且为 30 的倍数（0.5 分钟粒度）"}), 400
-            edge_front = edge_back = edge
-        for _key, _field in (("edge_front_sec", "front"), ("edge_back_sec", "back")):
-            if _key in data:
-                try:
-                    v = int(data[_key])
-                except (TypeError, ValueError):
-                    return jsonify({"error": f"{_field}裁剪秒数必须是整数"}), 400
-                if not (0 <= v <= 300 and v % 30 == 0):
-                    return jsonify({"error": f"{_field}裁剪应为 0~300 秒且为 30 的倍数（0.5 分钟粒度）"}), 400
-                if _key == "edge_front_sec":
-                    edge_front = v
-                else:
-                    edge_back = v
-        # 用户自选总开关（0/1；0 同样需显式写入）
-        pref_raw = data.get("allow_time_pref")
-        pref = None
-        if pref_raw is not None:
-            pref = 1 if str(pref_raw).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 签到窗口（HH:MM，管理员可调；校验非法拒绝）
-        win = str(data.get("sign_window", "")).strip()
-        win_start_str = win_end_str = None
-        if win:
-            try:
-                w_start, w_end = win.split("~")
-                sh, sm = (int(x) for x in w_start.strip().split(":"))
-                eh, em = (int(x) for x in w_end.strip().split(":"))
-            except (ValueError, AttributeError):
-                return jsonify({"error": "签到窗口格式应为 HH:MM ~ HH:MM"}), 400
-            if not (0 <= sh <= 23 and 0 <= sm <= 59 and 0 <= eh <= 23 and 0 <= em <= 59 and (sh, sm) < (eh, em)):
-                return jsonify({"error": "签到窗口非法（需 HH:MM 且开始早于结束）"}), 400
-            win_start_str = f"{sh:02d}:{sm:02d}"
-            win_end_str = f"{eh:02d}:{em:02d}"
-        # 周日签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
-        sunday_sign = None
-        if "sunday_sign" in data:
-            sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 周六签到开关（1=开启/0=关闭）：默认开启，仅请求携带时才更新，避免保存其他设置时误关
-        saturday_sign = None
-        if "saturday_sign" in data:
-            saturday_sign = 1 if str(data.get("saturday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 全局暂停（一键暂停签到）：仅主管理员可写（上方 403 已拦），下一轮 cron 生效。
-        # 1=暂停（signin.py 检测后 exit(2) 跳过），0/空=正常。
-        global_pause = None
-        if "global_pause" in data:
-            global_pause = 1 if str(data.get("global_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 暂停注册（v0.26.3）：仅主管理员可写（与全局暂停同权限口径）
-        registration_pause = None
-        if "registration_pause" in data:
-            registration_pause = 1 if str(data.get("registration_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 系统开关口令门禁（2026-09）：global_pause / registration_pause 是一键停摆
-        # 的系统级开关，此前前端口令框收集的 confirm_password 后端并不校验（假门），
-        # 被窃的主管理员会话可无口令直接翻转。现口径：仅当请求值与当前值**不同**时
-        # 才要求口令复核；值未变（或未携带这两个字段）不要求——其它字段的保存流程
-        # 零影响。当前值读取与 GET /api/settings（上方 403 列表同源）一致，取
-        # load_env_int（==1 视为暂停），与读写两侧口径对齐。
-        _cur_gp = 1 if load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0) == 1 else 0
-        _cur_rp = 1 if load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else 0
-        _switch_changed = (
-            (global_pause is not None and global_pause != _cur_gp)
-            or (registration_pause is not None and registration_pause != _cur_rp)
-        )
-        # 只比对不计数：不写与登录共用的 _login_fails（P18 教训——持 Cookie 者
-        # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
-        # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
-        if _switch_changed and not _verify_session_password(str(data.get("confirm_password", ""))):
-            db.audit(
-                session.get("username") or "?",
-                "settings_switch_pw_fail",
-                "settings",
-                "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
-                    "未携带" if global_pause is None else
-                    ("无变更" if global_pause == _cur_gp else "尝试变更"),
-                    "未携带" if registration_pause is None else
-                    ("无变更" if registration_pause == _cur_rp else "尝试变更"),
-                ),
-            )
-            return jsonify({"error": "口令校验未通过，设置未生效"}), 403
-        # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
-        account_verify = None
-        if "account_verify" in data:
-            account_verify = 1 if str(data.get("account_verify", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        probe_enable = None
-        if "probe_enable" in data:
-            probe_enable = 1 if str(data.get("probe_enable", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        probe_time = None
-        if "probe_time" in data:
-            pt = str(data.get("probe_time", "")).strip()
-            try:
-                ph, pm = (int(x) for x in pt.split(":"))
-            except (ValueError, AttributeError):
-                return jsonify({"error": "探针触发时间应为 HH:MM 格式"}), 400
-            if not (0 <= ph <= 23 and 0 <= pm <= 59):
-                return jsonify({"error": "探针触发时间非法（需 HH:MM）"}), 400
-            probe_time = f"{ph:02d}:{pm:02d}"
-        probe_interval = None
-        if "probe_interval" in data:
-            pi = str(data.get("probe_interval", "")).strip()
-            if pi.lower() == "once":
-                probe_interval = "once"
-            else:
-                try:
-                    n = int(pi)
-                except (TypeError, ValueError):
-                    return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
-                if n <= 0:
-                    return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
-                probe_interval = str(n)
-        # 容量上限（2026-09-08 新增，主管理员专属；0=不限，钳位 0~100000）：
-        # 字段携带才写——部分更新不得把未携带的 max_* 静默清零
-        max_users_val = max_accounts_val = None
-        for _key, _label in (("max_users", "用户容量上限"), ("max_accounts", "账号容量上限")):
-            if _key not in data:
-                continue
-            try:
-                v = int(data[_key])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"{_label}必须是整数"}), 400
-            if not (0 <= v <= 100000):
-                return jsonify({"error": f"{_label}应为 0~100000（0=不限）"}), 400
-            if _key == "max_users":
-                max_users_val = v
-            else:
-                max_accounts_val = v
-        if max_users_val is not None or max_accounts_val is not None:
-            # 容量上限与调度参数同风险级：被窃主管理员会话可借此拆掉负载闸门，
-            # 变更同样要求口令二次确认（2026-09-08，前端确认框本就为此收集密码）；
-            # 与 start/gap 同时携带时走两次校验，密码相同无额外副作用
-            denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改容量上限")
-            if denied is not None:
-                return denied
-        # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
-        # 仅请求携带的字段才写入（缺失不重置）
-        updates = {}
-        if has_start:
-            updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
-        if has_gap:
-            updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
-        if sign_mode:
-            updates["YIBAN_SIGN_MODE"] = sign_mode
-        if sign_order:
-            updates["YIBAN_SIGN_ORDER"] = sign_order
-        if sign_dist:
-            updates["YIBAN_SIGN_DIST"] = sign_dist
-        if edge_front is not None or edge_back is not None:
-            # 只写其中一个时保持另一个现值；写入新键并删除旧键（迁移）
-            if edge_front is None:
-                edge_front = edge_config()[0]
-            if edge_back is None:
-                edge_back = edge_config()[1]
-            updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
-            updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
-            updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
-        if pref is not None:
-            updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
-        if win_start_str is not None:
-            updates["YIBAN_SIGN_START"] = win_start_str
-            updates["YIBAN_SIGN_END"] = win_end_str
-        if sunday_sign is not None:
-            updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
-        if saturday_sign is not None:
-            # 显式写 0/1（默认已是 0，显式落盘自文档化；不改写 sunday 的删键风格以保持各自历史口径）
-            updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
-        if global_pause is not None:
-            updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
-        if registration_pause is not None:
-            # ""=开放（删键，读侧默认 0），与 global_pause 同口径；"1"=暂停
-            updates["YIBAN_REGISTRATION_PAUSE"] = "1" if registration_pause else ""
-        if account_verify is not None:
-            updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
-        if probe_enable is not None:
-            updates["YIBAN_PROBE_ENABLE"] = "1" if probe_enable else ""
-        if probe_time is not None:
-            updates["YIBAN_PROBE_TIME"] = probe_time
-        if probe_interval is not None:
-            updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
-        if max_users_val is not None:
-            # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
-            updates["YIBAN_MAX_USERS"] = str(max_users_val)
-        if max_accounts_val is not None:
-            updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
-        write_env_batch(ENV_FILE, updates)
-        sunday_display = "不变" if sunday_sign is None else sunday_sign
-        saturday_display = "不变" if saturday_sign is None else saturday_sign
-        pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
-        reg_pause_display = "不变" if registration_pause is None else ("暂停" if registration_pause else "开放")
-        if edge_front is None and edge_back is None:
-            edge_display = "不变"
-        elif edge_front == edge_back:
-            edge_display = f"各{edge_front / 60:g}分钟"
-        else:
-            edge_display = f"前{edge_front / 60:g}后{edge_back / 60:g}分钟"
-        # 批量多选为前端会话级开关，不写入配置
-        probe_display = "不变" if (probe_enable is None and probe_time is None and probe_interval is None) else \
-            f"启={'1' if probe_enable else '0'}/时={probe_time or '-'}/频={probe_interval or '-'}"
-        cap_limits_display = (
-            f"用户={'不变' if max_users_val is None else max_users_val}"
-            f"/账号={'不变' if max_accounts_val is None else max_accounts_val}"
-        )
-        logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 容量上限=%s",
-            start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
-            edge_display, pref_raw if pref_raw is not None else "不变",
-            win or "不变", sunday_display, saturday_display, pause_display,
-            reg_pause_display,
-            "不变" if account_verify is None else ("开" if account_verify else "关"),
-            probe_display, cap_limits_display,
-        )
-        # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
-        db.audit(
-            session.get("username") or "?",
-            "settings_save",
-            "settings",
-            f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
-            f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
-            f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
-            f"周六={saturday_display} "
-            f"全局暂停={pause_display} 注册={reg_pause_display} "
-            f"账号验证={'开' if account_verify else '关'} "
-            f"探针={probe_display} 容量上限={cap_limits_display}",
-        )
-        return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
-
-    # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
-    @app.route("/api/changelog")
-    def api_changelog():
-        """更新日志：读取项目根 CHANGELOG.md（公开，无需登录；启动后缓存，部署重启自然失效）。"""
-        if _changelog_cache[0] is None:
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            path = os.path.join(base, "CHANGELOG.md")
-            try:
-                with open(path, encoding="utf-8") as f:
-                    _changelog_cache[0] = f.read()
-            except OSError:
-                _changelog_cache[0] = "暂无更新日志"
-        return jsonify({"ok": True, "text": _changelog_cache[0]})
-
-    @app.route("/api/scheduler/executors", methods=["GET"])
-    def api_executors():
-        """执行体与出口（多执行体形态的只读视图；**仅主管理员**可见）。
-
-        前端要做"执行体配置"页时读这个接口即可，不必知道 .env 键名。字段说明：
-
-        - `workers.configured`：当前配置的并行执行体数（`YIBAN_WORKERS`，0/未设=1）
-        - `workers.assignments[]`：每个执行体的出口描述（**已脱敏**，见下）
-        - `fallback`：兜底常驻执行体的出口与扫描间隔
-        - `measured` / `recommendation`：容量建议（只有部署者实测过才有值，
-          **建议值不是上限**；没实测就是 null，不编数字）
-
-        脱敏：代理串可能带 `user:pass@`，一律只回 `scheme://host[:port]`；
-        接口本身也只回描述串，不回原始凭据。
-        """
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可查看执行体配置"}), 403
-        env = read_env(ENV_FILE)
-        # 与 signin 侧同一口径（yiban/egress.py）：这里只做展示，不重复实现分配规则
-        configured = load_env_int(ENV_FILE, "YIBAN_WORKERS", 1)
-        configured = max(1, configured)
-        # 注意传 env：出口分配的唯一口径在 yiban/egress.py，且**读的是 .env 那份配置**
-        # （不传就会去读进程环境变量，网页里配好的出口会显示成"直连"）
-        assignments = [
-            {"index": i, "egress": desc}
-            for i, _proxy, desc in yb_egress.assignments(configured, env=env)
-        ]
-        fallback_proxy = yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env)
-        # 窗口：用现成的 `_sign_window()`（与引擎同一份解析）+ window.bounds 的有效秒数
-        _start, _end = _sign_window()
-        bounds = yb_window.bounds({
-            "sign_start": _start, "sign_end": _end,
-            "edge_front_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
-            "edge_back_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
-        })
-        measured = load_env_int(ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
-        cur_accounts = _capacity_account_count()
-        payload = {
-            "ok": True,
-            "workers": {
-                "configured": configured,
-                "assignments": assignments,
-                "env_keys": {
-                    "list": yb_egress.ENV_WORKER_LIST,
-                    "single": yb_egress.ENV_SINGLE,
-                },
-            },
-            "fallback": {
-                "egress": yb_egress.describe(fallback_proxy),
-                "interval_sec": load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60),
-                "env_key": yb_egress.ENV_FALLBACK,
-                # 是否在跑：按心跳新鲜度判定（进程被强杀时心跳会过期，故不能只看文件在不在）
-                "alive": signin.fallback_alive(
-                    load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60))[0],
-            },
-            "window": {
-                "effective_sec": bounds.full_sec() if bounds else None,
-                "start": f"{int(bounds.lo_min) // 60:02d}:{int(bounds.lo_min) % 60:02d}"
-                         if bounds else None,
-                "end": f"{int(bounds.hi_min) // 60:02d}:{int(bounds.hi_min) % 60:02d}"
-                       if bounds else None,
-            },
-            "measured": ({"per_executor_capacity": measured,
-                          "source": "capacity_probe（部署者实测录入）",
-                          "env_key": "YIBAN_CAPACITY_MEASURED"} if measured else None),
-            "recommendation": None,
-            "current_accounts": cur_accounts,
-        }
-        if measured:
-            per_exec = max(1, int(measured * 2 / 3))
-            payload["recommendation"] = {
-                "per_executor_accounts": per_exec,
-                "executors_needed": -(-cur_accounts // per_exec),
-                "note": "实测容量 × 2/3 的建议值；这是建议，不是程序上限",
-            }
-        return jsonify(payload)
-
-    @app.route("/api/scheduler/executors", methods=["PUT"])
-    def api_scheduler_executors_save():
-        """改执行体数量与出口配置（D-17：由主管理员手动调整；可部分提交）。
-
-        **只写 `.env`，不重启也不拉起进程**——下一轮定时任务/容器重启后生效
-        （与既有设置项同一语义，页面上要如实说明）。非法值一律 400 且不落盘。
-        """
-        if not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-        data = _json_body()
-        updates = {}
-        if "workers" in data:
-            try:
-                workers = int(data["workers"])
-            except (TypeError, ValueError):
-                return jsonify({"error": "执行体数量必须是整数"}), 400
-            if not (1 <= workers <= 64):
-                return jsonify({"error": "执行体数量应为 1~64"}), 400
-            updates["YIBAN_WORKERS"] = str(workers)
-        for field, env_key in (("proxy_list", yb_egress.ENV_WORKER_LIST),
-                               ("proxy_fallback", yb_egress.ENV_FALLBACK)):
-            if field not in data:
-                continue
-            raw = str(data[field] or "").strip()
-            if env_io.has_line_break(raw):
-                return jsonify({"error": "代理配置不能包含换行"}), 400
-            items = yb_egress.parse_list(raw) if field == "proxy_list" else [raw]
-            for item in items:
-                if item and not _is_http_proxy_url(item):
-                    return jsonify({"error": f"代理地址格式不正确: {item[:40]}"}), 400
-            updates[env_key] = raw
-        if "capacity_measured" in data:
-            try:
-                cap = int(data["capacity_measured"])
-            except (TypeError, ValueError):
-                return jsonify({"error": "实测容量必须是整数"}), 400
-            if not (0 <= cap <= 100000):
-                return jsonify({"error": "实测容量应为 0~100000（0 表示清除）"}), 400
-            updates["YIBAN_CAPACITY_MEASURED"] = str(cap) if cap else ""
-        if not updates:
-            return jsonify({"error": "没有可更新的字段"}), 400
-        try:
-            write_env_batch(ENV_FILE, updates)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        # 审计只记键名：代理串可能带凭据，不得进审计链
-        db.audit("admin", "settings", "executors", ",".join(sorted(updates))[:200])
-        return jsonify({"ok": True, "applied": sorted(updates),
-                        "note": "已写入配置；下一轮定时任务或容器重启后生效"})
-
-    @app.route("/api/announcement", methods=["GET"])
-    def api_announcement():
-        # 公告缓存：首次读取 .env，保存公告时更新（write 接口同步 _announcement_cache）
-        if _announcement_cache[0] is None:
-            _announcement_cache[0] = read_env(ENV_FILE).get("YIBAN_ANNOUNCEMENT", "").strip()
-        return jsonify({"ok": True, "text": _announcement_cache[0]})
-
-    @app.route("/api/registration_paused")
-    def api_registration_paused():
-        """注册暂停状态（公开，v0.26.3）：供登录页决定是否禁用注册入口。
-
-        仅暴露一个布尔——暂停注册本就是面向访客的全局状态（提示文案公开显示），
-        无敏感信息，无需鉴权。
-        """
-        return jsonify({"paused": _registration_paused()})
-
-    @app.route("/api/announcement", methods=["PUT"])
-    def api_announcement_save():
-        data = _json_body()
-        text = str(data.get("text", "")).strip()
-        if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
-            return jsonify({"error": "公告内容过长（最多 200 字）"}), 400
-        if _has_line_break(text):
-            # 安全审查 2026-08：公告存入 .env 单行键值，换行会注入新配置行
-            # （如 YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
-            # 前端为 textarea 但展示端换行本就折叠，直接拒绝（write_env_key 另有兜底）。
-            # 判据单源在 _has_line_break（2026-09-07）：此处原先只挡
-            # \n \r，与 write_env_batch 读写用的 splitlines() 不同集，
-            # \v \f \x1c \x1d \x1e \x85 \u2028 \u2029 会作为潜伏分隔符蒙混过关。
-            return jsonify({"error": "公告内容不能包含换行或行分隔符（单行存储）"}), 400
-        write_env_key(ENV_FILE, "YIBAN_ANNOUNCEMENT", text)
-        _announcement_cache[0] = text  # 同步内存缓存
-        db.audit(
-            session.get("username") or "?",
-            "announcement_save",
-            "announcement",
-            text or "（已清除）",
-        )
-        logger.info("公告已更新: %s", text[:50] or "（已清除）")
-        # 公告变更是普通管理员可用的对外触达渠道（社工面），变更可感知
-        send_notification(
-            "公告变更告警",
-            f"全局公告已{'更新' if text else '清空'}，"
-            f"操作者 {session.get('username', '?')}，"
-            f"内容: {text[:80] or '（空）'}，"
-            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        )
-        return jsonify({"ok": True, "msg": "公告已更新" if text else "公告已清除"})
-
-    # ---- 连通性检测 ----
-    @app.route("/api/ping", methods=["POST"])
-    def api_ping():
-        ok, detail = check_connectivity()
-        return jsonify({"ok": True, "reachable": ok, "detail": detail})
-
-    # ---- 时钟与签到状态 ----
-    @app.route("/api/clock")
-    def api_clock():
-        text, color = sign_status()
-        try:
-            tz_offset_min = int(clock.now().astimezone().utcoffset().total_seconds() // 60)
-        except Exception:
-            tz_offset_min = 0
-        return jsonify(
-            {
-                "ok": True,
-                "now": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "server_ts": int(time.time()),  # 服务器 epoch 秒，供前端平滑走秒与校准
-                "tz_offset_min": tz_offset_min,  # 服务器本地时区相对 UTC 的分钟偏移
-                "sign_status": text,
-                "color": color,
-            }
-        )
-
-    # ---- 每日自动清除超期注销用户（2026-08-17：修复"仅启动时清除一次"的隐患）----
+    # 高危门禁与只读留痕闭包登记为 app 属性：它们闭包依赖工厂局部的限速计数表，做成模块级
+    # 会跨 app 实例串额度（测试进程反复 create_app）；搬进 web/routes 的通知/账号域经
+    # web.routes.high_risk_gate() / reconfirm_admin_password() / admin_delete_limited() /
+    # read_audit_trace() / read_audit_denied_trace() 按实例取回同一闭包。
+    app.extensions["yiban_high_risk_gate"] = _high_risk_gate
+    app.extensions["yiban_reconfirm_admin_password"] = _reconfirm_admin_password
+    app.extensions["yiban_admin_delete_limited"] = _admin_delete_limited
+    app.extensions["yiban_admin_creds_limited"] = _admin_creds_limited
+    app.extensions["yiban_read_audit_trace"] = _read_audit_trace
+    app.extensions["yiban_read_audit_denied_trace"] = _read_audit_denied_trace
+    app.extensions["yiban_sensitive_password_gate"] = _sensitive_password_gate
+    # ---- 每日自动清除超期注销用户 ----
     # 此前 purge_deleted_users 只在 db 连接初始化（服务启动）时执行，长期不重启的
     # 服务会让超期注销用户数据（邮箱、软删易班账密）无限留存，与页面"系统定期
-    # 物理清除"的承诺不符。后台 daemon 线程：启动 60s 后先跑一次，此后每 24h 一次。
+    # 物理清除"的承诺不符。后台 daemon 线程：启动 60s 后先跑一次，此后每次唤醒
+    # （`_HEALTH_REPORT_TICK_SEC`）判一次"该不该做"，**清除与自检按北京日期换日各跑一次**。
+    #
+    # 唤醒节拍由 24h 收细到 5 分钟，是因为同一线程还要落地告警通道健康报告的钟点锚定
+    # （issue #23）：24h 一醒时"配置 09:00"落不到 09:00 那一分钟。收细后清理动作照旧
+    # 每日一次——`last_cleanup_day` 就是那道闸，不然全表 DELETE 会从每天一遍变成每天几百遍。
     def _daily_purge_loop():
         # 首轮延迟：避开启动高峰（迁移/预热），且此时 init_db 已跑过一次 purge，
-        # 延迟不会造成额外的清除延迟（下一轮 24h 内必然覆盖）
+        # 延迟不会造成额外的清除延迟（下一轮必然覆盖）
         time.sleep(60)
+        last_cleanup_day = None
+        # 报告**尝试**的当日闩（进程内、按北京日期）：唤醒节拍收细到 5 分钟后，不设这道闸
+        # 就会把发信侧"失败当日可重试"放大成"每 5 分钟重试一次"——一个降级日里 ~288 次
+        # 外发尝试 + 同量降级审计痕迹（旧 24h 节拍在同日内几乎不可能重试）。
+        # 送达记账不变：仍然只有 app_meta 的 `channel_health_last` 标记，且只在送达时落
+        # （"确实送达才记已播"）。本闩只管尝试、进程重启即清 ⇒ _send_channel_health_report
+        # 承诺的"下一次进程启动（同一日）再试一封"一字不变。
+        attempted_report_day = None
+        # 上一次唤醒的时刻：例行判定按 (上次唤醒, 本次] 的**区间**判"配置时刻是否已到"，
+        # 否则末跳落在配置时刻之前、下一跳已跨日时那份周报会被静默丢掉（配置 23:58、
+        # 末跳 23:56 就是这么丢的）。首跳按一个完整间隔回溯——覆盖的正是"配置时刻落在
+        # 本进程起来之前的那一跳里（含跨零点）"这一档。
+        # 诚实边界：这个回溯**只有一个唤醒间隔**。进程在配置时刻之后才起来、但仍在配置的
+        # 那一天，由单点判定（当天已过配置时刻即发）兜住；**跨日之后**才起来则这一周补不上
+        # ——与改前"只在例行日发"的取舍一致（补一周意味着每次重启都可能多外发一封，
+        # 而"一周恰好一封"是本单的验收不变量）。
+        prev_wake = None
+        # 未配置 `YIBAN_HEALTH_REPORT_TIME` 时的实际锚点 = **本进程首跳的钟点**。
+        # 改前循环 24h 一醒，例行报告的到达时刻就是这个钟点落在例行日的那一刻；节拍收细到
+        # 5 分钟后若改成"当天唤醒即发"，未配置的部署会从"启动钟点"漂到"零点后第一跳"——
+        # 那不是零迁移。锚点只在首跳标定一次，此后固定。
+        unconfigured_hm = None
+        # 唤醒栅格的原点：节拍对齐到"首跳 + k × 间隔"。固定 sleep(间隔) 会把每轮的耗时
+        # 累加成漂移，几轮之后就偏离首跳钟点；对齐后首跳钟点每天准时重现（86400 与
+        # 604800 都是 300 的整数倍），"未配置 ⇒ 启动钟点"才能逐位对上改前行为。
+        tick = float(_HEALTH_REPORT_TICK_SEC)
+        grid_origin = time.monotonic()
         while True:
-            try:
-                # 每日集中清理（2026-08-28 审查 M6 收口）：审计/事件旧数据 +
-                # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
-                # 此前 _audit_cleanup/_event_cleanup（全表 DELETE）只挂在 init_db 上，
-                # 而 signin 子进程每天 2~3 次 init_db 也各跑一轮，与 web 8 线程争锁；
-                # 现清理只在 web 每日线程执行，signin 侧 init_db(cleanup=False)。
-                db.run_daily_cleanup()
-            except Exception as e:
-                logger.warning("每日自动清除注销用户失败: %s", e)
-            # 审计可追溯性每日校验（2026-08-28 审查 B-3）：
-            # 此前 verify_audit_chain 生产环境从不调用、外部锚点只写不读——审计写入
-            # 可静默丢（B-1）、删前缀/删尾/清空验不出（B-2）也无人知晓。
-            # 现每日流程：先校验（链自洽 + 库外锚点比对 + 写入失败计数），任一异常
-            # 即告警；校验通过且清理已发生后，再追加新锚点（使锚点反映清理后的
-            # 合法状态，且记录 min_id/max_id 以覆盖删尾/清空检测，原两段格式不具备）。
-            try:
-                # 显式传入锚点路径——原调用走 db.audit_anchor_path()
-                # 默认解析（env 或 cwd），裸机部署下与本进程写锚点的 STATE_DIR 分裂，
-                # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
-                _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
-                if not _health["healthy"]:
-                    _alert = (
-                        "审计可追溯性校验失败："
-                        f"链自洽={_health['chain_ok']}(broken={_health['broken']}) "
-                        f"锚点={_health['anchor_ok']}（{_health['anchor_msg']}） "
-                        f"审计写入失败次数={_health['write_failures']}。"
-                        "审计记录可能被篡改/删除，或存在未留痕的管理操作，请立即核查！"
-                    )
-                    logger.error("审计链异常告警: %s", _alert)
-                    send_notification("审计链异常告警", _alert, urgent=True)
-                elif _health["anchor_msg"]:
-                    # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
-                    logger.info("审计链提示: %s", _health["anchor_msg"])
-                # 时钟守卫拦截后的持续告警——守卫拦截会把清理永久
-                # 冻结（人工重置前不恢复），每日线程在此读 app_meta 留痕并发邮件，
-                # 直到管理员运行 scripts/clock_guard_reset.py 重置为止（每日重发
-                # 是刻意的：冻结状态必须保持可见，防止静默腐烂）
-                _cg = db.clock_guard_alert()
-                if _cg:
-                    _cg_alert = (
-                        "时钟跳变守卫告警：系统时间异常跳变已被拦截，全部物理清理"
-                        f"处于冻结状态（告警时间 {_cg.get('ts', '?')}）。\n"
-                        f"{_cg.get('note', '')}\n"
-                        "请核实系统时间与 NTP；确认正确后运行 "
-                        "python3 scripts/clock_guard_reset.py --confirm 重置。"
-                    )
-                    logger.error("时钟守卫告警: %s", _cg.get("note", ""))
-                    send_notification("时钟跳变守卫告警", _cg_alert, urgent=True)
-                db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
-            except Exception as e:
-                logger.warning("审计链每日校验/锚点写入失败: %s", e)
-            # 告警通道健康日报——本系统所有安全告警只有邮件 +
+            now = clock.now()
+            if unconfigured_hm is None:
+                unconfigured_hm = (now.hour, now.minute)
+            day = now.strftime("%Y-%m-%d")
+            if day != last_cleanup_day:
+                last_cleanup_day = day
+                _run_daily_cleanup_and_audit()
+            # 告警通道健康报告（旧称"日报"）——本系统所有安全告警只有邮件 +
             # 手机推送两条出口，两条同时失效时管理员将彻底失明（活体复现的
             # 攻击链正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加
-            # 一层兜底：每日固定报告两条通道当前状态与今日额度，通道被关也照样
-            # 发一封"已关闭"，让"报警器被拆"这件事本身有个可观测的周期性痕迹。
+            # 一层兜底：报告两条通道当前状态与今日额度，通道被关也照样发一封"已关闭"，
+            # 让"报警器被拆"这件事本身有个可观测的周期性痕迹。
             # 修复轮 1 ④：本线程在启动 60 秒后即跑第一轮，故"每日至多一封"的去重
             # 标记与"通道降级"痕迹都在函数内落库（app_meta + db.audit），重启不重发、
             # 两通道全断时也仍留得住证据。
             # 修复轮 2：标记改在发信成功后才落——本处 except 吞掉的正是"今天没发出去"，
             # 不落标记才能让下一次进程启动（同一日）再试一封，而不是静默到明天。
+            # 本轮（节拍收细）：重试资格仍按送达判定，但**尝试**另有当日闩
+            # （`attempted_report_day`）——见该变量的注释。
+            # 周报化 + 钟点锚定：例行收敛到配置的那一天那一刻（`YIBAN_HEALTH_REPORT_*`，
+            # 未配置 = 既有的"周一 + 启动钟点"），通道降级或当日额度耗尽时当天就发——
+            # 清理任务本身仍每日跑，不随本报告改成周跑。
+            # 加发那一档按"北京日期开闸"、落在当天第一跳（零点后 5 分钟内，见
+            # `_channel_health_report_due` 的两套锚点说明）；例行那一档落在首跳钟点的栅格上。
             try:
-                _send_channel_health_report()
+                report_since = prev_wake or (now - timedelta(seconds=_HEALTH_REPORT_TICK_SEC))
+                if _channel_health_report_due(since=report_since,
+                                              unconfigured_hm=unconfigured_hm) \
+                        and attempted_report_day != day:
+                    attempted_report_day = day
+                    _send_channel_health_report()
             except Exception as e:
                 logger.warning("告警通道健康日报发送失败: %s", e)
-            time.sleep(24 * 3600)
+            prev_wake = now
+            # 对齐到唤醒栅格（见 grid_origin 的注释）；下界 1 秒防"本轮耗时超过一个间隔"
+            # 时变成忙等——跳过的那几跳直接落到下一个栅格点。
+            elapsed = time.monotonic() - grid_origin
+            time.sleep(max(1.0, grid_origin + (int(elapsed / tick) + 1) * tick
+                           - time.monotonic()))
+
+    def _run_daily_cleanup_and_audit():
+        """每日一次的两件事：集中清理、审计链自检与锚点写入（按北京日期换日触发）。"""
+        try:
+            # 每日集中清理：审计/事件旧数据 +
+            # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
+            # 此前 _audit_cleanup/_event_cleanup（全表 DELETE）只挂在 init_db 上，
+            # 而 signin 子进程每天 2~3 次 init_db 也各跑一轮，与 web 8 线程争锁；
+            # 现清理只在 web 每日线程执行，signin 侧 init_db(cleanup=False)。
+            db.run_daily_cleanup()
+        except Exception as e:
+            logger.warning("每日自动清除注销用户失败: %s", e)
+        # 审计可追溯性每日校验：
+        # 此前 verify_audit_chain 生产环境从不调用、外部锚点只写不读——审计写入
+        # 可静默丢（B-1）、删前缀/删尾/清空验不出（B-2）也无人知晓。
+        # 现每日流程：先校验（链自洽 + 库外锚点比对 + 写入失败计数），任一异常
+        # 即告警；校验通过且清理已发生后，再追加新锚点（使锚点反映清理后的
+        # 合法状态，且记录 min_id/max_id 以覆盖删尾/清空检测，原两段格式不具备）。
+        try:
+            # 显式传入锚点路径——原调用走 db.audit_anchor_path()
+            # 默认解析（env 或 cwd），裸机部署下与本进程写锚点的 STATE_DIR 分裂，
+            # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
+            _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
+            if not _health["healthy"]:
+                _facts = _audit_alert_facts(_health)
+                # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
+                logger.error("审计链异常告警: %s",
+                             "；".join(f"{k} {v}" for k, v in _facts))
+                # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
+                # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
+                # 基线只按**送达**推进（见 _alert_audit_unhealthy）：未送达则保持
+                # 待发、下一轮重试；签名不变时仍留 ERROR 日志（可 grep）不外发。
+                _alert_audit_unhealthy(_health)
+            else:
+                if _health["anchor_msg"]:
+                    # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
+                    logger.info("审计链提示: %s", _health["anchor_msg"])
+                # 恢复健康时复位告警基线：下一轮再出现异常（即使与上次同形）也要
+                # 重新告警——基线不归零就等于给同一形态的复发免票。
+                if db.audit_alert_needs_attention(_health):
+                    db.mark_audit_alert_sent(_health)
+            # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
+            # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
+            # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
+            db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
+        except Exception as e:
+            # 整段自检没执行本身就是安全事件：只落一条 WARNING 管理员看不到，
+            # 而一条非法字节/一次读失败就能让"当日校验"从此静默。这里把异常送到与
+            # "审计链异常"同一条用户可见通道（邮件 + 推送），并点明"未执行"——
+            # 绝不能让它看起来像一次通过。
+            logger.error("审计链每日校验/锚点写入失败: %s", e)
+            with contextlib.suppress(Exception):
+                send_notification(
+                    "审计链自检未执行",
+                    mail_layout.Mail(
+                        summary="审计可追溯性每日自检未能执行（不等于通过）："
+                                "无法确认审计记录是否完整。",
+                        fields=[("失败原因", _nl_safe(str(e)))],
+                        advice=["立即人工核查审计链与库外锚点",
+                                "本次自检没有结论，勿按「无异常」对待"],
+                        level="urgent",
+                    ),
+                    urgent=True,
+                )
 
     # 测试环境通过 YIBAN_DISABLE_PURGE_LOOP=1 禁止启动该线程（全量 pytest 会反复 create_app，
     # 大量 60s 后唤醒的线程并发访问共享 SQLite 单例有 access violation 风险）；
@@ -8058,6 +2983,9 @@ def create_app(host=None):
                 threading.Thread(
                     target=_daily_purge_loop, daemon=True, name="daily-purge"
                 ).start()
+
+    # 路由装配：页面/API 各域在 web/routes/*，此处一次接入（注册顺序不参与路由判定）
+    register_all(app)
 
     # 前缀自适应：把 WSGI 层包一层（app 本身仍是 Flask 对象，.run()/gunicorn 调用不受影响）。
     # 支持子路径 / 独立子域 / 根路径三种部署；详见 BasePathMiddleware 类注释。
@@ -8072,7 +3000,7 @@ def create_app(host=None):
 def main():
     global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, STATE_DIR, DB_FILE
     parser = argparse.ArgumentParser(description="易班自动签到网页管理系统")
-    # 2026-08-20 对抗性审查 P2：默认改回环——werkzeug 开发服务器不应默认暴露
+    # 默认监听改回环——werkzeug 开发服务器不应默认暴露
     # 全网卡（明文 HTTP + 无反代防护）。生产走 systemd/gunicorn 模板不受影响；
     # 确需直连局域网时显式传 --host 0.0.0.0（自担风险）。
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1，仅回环）")

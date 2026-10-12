@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """账号容量口径：**未通过审核的账号不占容量**（2026-09-15 修订）。
 
+标签：I · 容量、熔断与账号有效性
+覆盖：容量口径修订——未通过审核（pending/rejected）的行不计容量、不进「正常」桶、单独给计数；「审核通过」这个开始产生负载的动作本身也要过容量闸门
+对应实现：判据唯一来源 `yiban.store.accounts.signs_in`、运行期复核用的 `account_is_signable`、`webapp._accounts_at_capacity` 与 `/api/settings` 的 `capacity_estimate` / `accounts_audit`
+关键断言：`signs_in` 与 `is_signable` 对同一行必须给出一致判定（一套口径两处取用）；名额被「永不签到的存量」占满时新账号不再被误拒；approve 超容量 403、腾出名额后放行、reject 永不设门（它是减少负载的方向）、上限 0 = 不限；前端必须消费 `accounts_audit`，否则「账号管理里很多行、容量只算 N 个」在页面上无从解释
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node
+
 缺陷背景（DAT-3）：容量原先按"全部非删除账号"统计，含 pending/rejected。这两类行
 永不发起易班请求（引擎加载与运行期复核都按同一条件过滤），却：
 
@@ -202,8 +208,9 @@ class CapacityExcludesAuditTest(_Base):
 class ApproveGateTest(_Base):
     """审核通过 = 开始产生负载 → 必须过容量闸门（否则提交时受限、审批时无门）。"""
 
-    def _approve(self, c, token, idx):
-        return c.post(f"/api/accounts/{idx}/review", json={"action": "approve"},
+    def _approve(self, c, token, idx, phone):
+        # M91 起位置寻址写口不带 phone 即 409；按真实前端携带脱敏/全号均可（守卫双侧归一）。
+        return c.post(f"/api/accounts/{idx}/review", json={"action": "approve", "phone": phone},
                       headers={"X-CSRF-Token": token})
 
     def test_approve_refused_at_capacity(self):
@@ -214,7 +221,7 @@ class ApproveGateTest(_Base):
         self._add("13950000003", status="pending")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13950000003")
-        r = self._approve(c, token, idx)
+        r = self._approve(c, token, idx, "13950000003")
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertIn("已达上限", r.get_json()["error"])
         self.assertEqual(self._row(
@@ -232,7 +239,7 @@ class ApproveGateTest(_Base):
                                     deleted_by="admin")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13960000003")
-        r = self._approve(c, token, idx)
+        r = self._approve(c, token, idx, "13960000003")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._row(
             next(a["id"] for a in self.db.load_accounts() if a["phone"] == "13960000003")
@@ -246,7 +253,8 @@ class ApproveGateTest(_Base):
         self._add("13970000002", status="pending")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13970000002")
-        r = c.post(f"/api/accounts/{idx}/review", json={"action": "reject", "reason": "照片不清"},
+        r = c.post(f"/api/accounts/{idx}/review",
+                   json={"action": "reject", "reason": "照片不清", "phone": "13970000002"},
                    headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
@@ -256,23 +264,32 @@ class ApproveGateTest(_Base):
         self._add("13980000002", status="pending")
         c, token = self._client()
         idx = next(i for i, a in enumerate(self.db.load_accounts()) if a["phone"] == "13980000002")
-        self.assertEqual(self._approve(c, token, idx).status_code, 200)
+        self.assertEqual(self._approve(c, token, idx, "13980000002").status_code, 200)
 
 
 class FrontendConsumesAuditFieldTest(_Base):
-    """前端必须消费 accounts_audit（否则"账号管理里有很多行、容量只算 N 个"无法解释）。"""
+    """前端必须消费 accounts_audit（否则"账号管理里有很多行、容量只算 N 个"无法解释）。
+
+    2026-10-03：数据看板页迁到 Vue，容量口径搬到 `frontend/src/dashboard/model.js`
+    （纯 JS）；判据与"展示点"的意图不变，只是换了源文件路径。
+
+    2026-10-04（A17）：总览 KPI 去重——原「活跃账号 / 注册用户」与下方容量卡同源同数，
+    已换成今日成功/失败账号（账号口径），容量数字只在「账号与用户容量」卡出现一次。
+    故 accounts_audit 的展示点从两处收敛为一处（capacityText 的"未通过审核 N 个未计入"）；
+    仍要求被消费，防止这个解释性字段被整体删掉。
+    """
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        with open(os.path.join(BASE, "web", "static", "js", "pages", "data_dashboard.js"),
+        with open(os.path.join(BASE, "frontend", "src", "dashboard", "model.js"),
                   encoding="utf-8") as f:
             cls.js = f.read()
 
     def test_dashboard_reads_audit_count(self):
         self.assertIn("accounts_audit", self.js)
-        # 账号容量行与 KPI 副文案都要带上（两处展示点，只改一处会让口径自相矛盾）
-        self.assertGreaterEqual(self.js.count("accounts_audit"), 2, self.js.count("accounts_audit"))
+        # 容量行必须带上未过审数（唯一展示点；KPI 去重后不再重复消费同一字段）
+        self.assertGreaterEqual(self.js.count("accounts_audit"), 1, self.js.count("accounts_audit"))
 
 
 if __name__ == "__main__":

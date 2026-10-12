@@ -35,7 +35,7 @@ def main(argv=None):
     # 导出是"逃生门"，绝不允许在导出前触发破坏性清理
     # （init_db 缺省 cleanup=True 会物理清掉过期软删账号/注销用户/旧审计——
     # 保留期边界导出的数据会静默缺一批且无法区分"本来没有"还是"被清理"）
-    # 补 migrate=False——迁移会用当前密钥重写审计链（v3 rechain），
+    # 补 migrate=False——迁移会用当前密钥回填审计链（v3），
     # 使"被导出对象在校验/导出过程中被改动"（与 audit_verify.py 同口径，
     # 本工具当时漏网）。旧 schema 库导出报错属预期：逃生门要求用配套版本工具。
     db.init_db(env_file=args.env, cleanup=False, migrate=False)
