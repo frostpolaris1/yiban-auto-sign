@@ -366,15 +366,36 @@ class GateRealRegistryContentTest(unittest.TestCase):
 
 
 class GateScanSurfaceTest(unittest.TestCase):
-    """扫描面残缺守卫：新开的生产目录不许整片漏出判据（漏了门禁照旧判绿）。"""
+    """扫描面残缺守卫：新开的生产目录不许整片漏出判据（漏了门禁照旧判绿）。
+
+    生产面的判据是 **git 跟踪集**：生产目录必被跟踪入库（部署只带跟踪文件），
+    被忽略/未入库的本地工具目录永非生产面。放行断言与"新开且被跟踪的目录仍红"
+    的反向断言成对，防止把假阳性修成"真门一起废掉"。
+    """
 
     SRC = 'KEY = "YIBAN_EGRESS_RATE"\n'
 
-    def _add_top_dir(self, fx):
-        os.makedirs(os.path.join(fx.root, "newprod"), exist_ok=True)
-        with open(os.path.join(fx.root, "newprod", "a.py"), "w",
+    def _add_top_dir(self, fx, name="newprod"):
+        os.makedirs(os.path.join(fx.root, name), exist_ok=True)
+        with open(os.path.join(fx.root, name, "a.py"), "w",
                   encoding="utf-8") as f:
             f.write(self.SRC)
+
+    def _git(self, root, *args):
+        return subprocess.run(["git", "-C", root, *args], capture_output=True,
+                              text=True, timeout=60)
+
+    def _init_repo(self, root):
+        self.assertEqual(self._git(root, "init", "-q").returncode, 0)
+        self._git(root, "config", "user.email", "gate@example.invalid")
+        self._git(root, "config", "user.name", "gate")
+
+    def _exclude_in_info(self, fx, pattern):
+        """.git/info/exclude 追加一条（.beads 的形状：忽略规则不在 .gitignore 里）。"""
+        info = os.path.join(fx.root, ".git", "info")
+        os.makedirs(info, exist_ok=True)
+        with open(os.path.join(info, "exclude"), "a", encoding="utf-8") as f:
+            f.write(pattern + "\n")
 
     def test_unscanned_top_dir_with_source_turns_gate_red(self):
         with _Fixture(registry=GOOD_REGISTRY) as fx:
@@ -389,6 +410,48 @@ class GateScanSurfaceTest(unittest.TestCase):
             self._add_top_dir(fx)
             r = _run_gate(fx.root, fx.registry_path, "--scan", "newprod")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_untracked_tool_dir_with_source_passes(self):
+        """未入库（无被跟踪文件）的顶层目录不是生产面，门禁必须放行。
+
+        复现本机恒伪红：`.beads`/`.qoder`/`.tmp`/`.zcode` 这些本地工具目录里有被扫
+        扩展名的文件，但它们一个都没入库 ⇒ 不是生产面。放行它们不是放宽门：真正的
+        生产目录被跟踪，仍由 test_tracked_top_dir_with_source_still_red 钉住。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._add_top_dir(fx, "toolcache")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0,
+                             "未入库的工具目录不该让门拒判：" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_tool_dir_ignored_via_info_exclude_passes(self):
+        """忽略规则只写在 .git/info/exclude（`.beads` 的形状）时也必须放行。
+
+        dev-verify 的副本用源索引重建 `.git`，info/exclude 是空的——只认
+        `git check-ignore` 会在副本里把 `.beads` 误判成生产面。判据必须落在
+        **跟踪集**上，才对任何检出形态都成立。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._add_top_dir(fx, "toolcache")
+            self._exclude_in_info(fx, "toolcache/")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_tracked_top_dir_with_source_still_red(self):
+        """反向守卫：新开且**被跟踪**的顶层生产目录必须仍拒判（防修假阳性把门废掉）。"""
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._add_top_dir(fx, "newprod")
+            self.assertEqual(self._git(fx.root, "add", "newprod").returncode, 0)
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2,
+                             "被跟踪的新生产目录必须仍拒判：" + r.stdout + r.stderr)
+            self.assertIn("newprod", r.stderr)
 
 
 class GateStringDefaultTest(unittest.TestCase):
