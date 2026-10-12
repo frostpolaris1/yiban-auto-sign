@@ -94,7 +94,7 @@
 状态件	fallback-alive.json	active	fallback-alive\.json	default	1	census def=2：名与格式同源；README 把绝对路径写死成默认（文档不在本门扫描面内）
 状态件	mail-user-fail-<day>.json	active	mail-user-fail-	default	3	census def=3：已登记进清理名册却不在备份收录名册（恢复后当日邮件额度归零）
 状态件	notify-throttle.json / notify-ledger.json	active	notify-(throttle|ledger)\.json	default	12	census def=6：notify 家族自持一套状态目录解析，绕开全仓 resolve_path
-状态件	sign-status-<day>.txt	active	sign-status-	default	3	census def=7：两个清理者保留期冲突（state_gc 7 天 vs logrotate 30 天），权限位也分叉
+状态件	sign-status-<day>.txt	active	sign-status-	default	2	census def=7：保留期归唯一 owner state_gc（snapshot 档，默认 7 天）。2026-10-12 工单 f7va：删去 logrotate-yiban.conf 的 sign-status 段（它 copytruncate 把当日 SUCCESS 就地截成 0 字节），故上限由 3 收紧为 2（棘轮：门只冻上限、不拦删，收紧才不给「再引入第二个清理者」留余量）。权限位分叉的旧记录随单一 owner 消失
 状态件	yiban-run-today-<day>.marker	active	yiban-run-today-	default	2	census def=3：标记文件与导出环境变量两个载体之间无校验
 状态件	yiban-settled-<day>.marker	active	yiban-settled-	default	2	census def=3：第三种落盘写法（裸 :> 直接覆盖，非 noclobber、非 tmp+mv）
 状态件	audit-anchor.log	active	audit-anchor\.log	default	24	census def=5：路径事实源与实际写者分家，默认值还按平台分叉（nt 上 "." vs POSIX /var/log/yiban）；2026-10-11 新增脚本 scripts/deploy_gate.sh（部署闸门/演练脚本，不是生产运行时）。该脚本只**消费**既有审计锚点文件名口径（C3b 断言与失败文案两处引用，不是新定义点）。门自报实测 24 处，故上限由 22 上调为 24（按门输出重定，非估算）。

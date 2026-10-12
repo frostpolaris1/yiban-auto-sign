@@ -191,8 +191,9 @@ trap 'exit 130' INT
 
 # 识别「当日已触发过」标记。
 # 06:31 与 07:12 是同一脚本的两次 cron 调用，仅靠 sign-status 状态文件无法区分——
-# 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）时不写状态文件，07:12 补签
-# 轮读到的状态文件可能不存在，与首签轮无异。
+# 状态文件只记结果取值（SUCCESS/SKIPPED/GLOBAL_PAUSED/TIMEOUT/FAILED），不记"第几轮"：
+# 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）后，07:12 那一轮读到的文本与
+# 首签轮无异（f7va 前这两种码根本不写文件；现在写 TIMEOUT/FAILED，仍不区分轮次）。
 # 标记语义（M6 修订）：「当日 run.sh 已触发过」（而非「首签轮已抢到锁」）——标记
 # 写入前移到 flock 之前，06:31 触发被 flock 弹开（上一触发进程仍在运行）时同样
 # 留痕；此后任意一次成功拿到锁的触发读到标记即以补签轮身份运行（导出
@@ -419,14 +420,41 @@ _run_signin_round() {
     return $?
 }
 
-# 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
-# 全部 skip（无实际执行，退出码 2）写 SKIPPED，避免把"没签到"记录成成功
-# 从而吞掉后续任务；其他失败（退出码 1）不写状态文件
-# 退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景
-# （部分成功 + 部分 skipped_window/norange）——signin.py 此时返回 2，
-# 这里写 SKIPPED 而非 SUCCESS，补签才会重跑，
-# 窗口外账号不因"有账号成功"而失去当天兜底（容器调度器同语义）。
+# 状态文件记的是**"本次触发的结果"**，不是"当日最终结论"（工单 yiban-auto-sign-f7va，
+# 2026-10-12）。它是审计/巡检的机器可读留痕。**唯一读者**是"当日已 SUCCESS ⇒ 跳过本轮"
+# 的采信闸门（`_status_credible_success` 只认字面 SUCCESS）；**补签判定与封存判定都不
+# 读它**——补签走 `signin --second-run-check`（读 sign-state json 与库内未了结计数），
+# 封存走 `--second-run-check` 的判 0/10。故这里多写的文本不改变任何"跑/不跑/补签"判定。
+#
+# 取值表——**逐码派生**自 `yiban/engine/cli_support.py::_EXIT_KINDS`（码表本身"只增不改"
+# 既有码含义）。**不许有 catch-all 把已知码悄悄归进"失败"**：
+#   码   _EXIT_KINDS kind     状态文本            理由
+#   0    ok                   SUCCESS            确实执行并成功
+#   1    failure              FAILED             有真实失败（账号/网络/配置）
+#   2    skipped              SKIPPED            全部跳过 / 存在窗口外未了结
+#        （YIBAN_GLOBAL_PAUSE 时写 GLOBAL_PAUSED——人为暂停与普通跳过分开）
+#   3    locked               BUSY               队列忙：本轮**没跑**（另有持有者持有运行锁，
+#                                                或互斥不可得）。**不是失败**
+#   4    schema_migration     SCHEMA_MIGRATION   迁移拒启：本轮没跑，需运维介入（不伪装成账号失败）
+#   124  （不在码表内）         TIMEOUT            timeout(1) 击杀整轮（外部杀）
+#   其余非零  unknown          FAILED             未知码：安全方向（见下），绝不写 SUCCESS
+#
+# rc=3/rc=4 曾按"其余非零"一并写作 FAILED——那是**假失败**：3 是"另有持有者正在跑"、
+# 4 是"schema 半升级"，两者都不是账号签到失败（本项目 10-07 栽过"执行体领不到任务被
+# 上报成批假失败"那族缺陷，见记忆 fallback-gates-and-yield）。故逐码分列。
+# 旧口径"非 0/2 不写文件"另让失败轮当天两件判据全缺（v0.6.2 生产实测 10-12：✅229/❌1、
+# 两件产物都缺），同批改为"每个跑过一轮的码都落盘"。
+# 退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景（部分成功 + 部分
+# skipped_window/norange）——signin.py 此时返回 2，这里写 SKIPPED 而非 SUCCESS，
+# 补签才会重跑；窗口外账号不因"有账号成功"而失去当天兜底（容器调度器同语义）。
+#
+# 未知码为何落 FAILED（安全方向）：未知意味着"本轮没走完正常收场链路"。写 SUCCESS 会
+# 谎报成功（不可逆地吃掉当天兜底）；写 FAILED 只多一条"未成功"留痕，且采信侧本就不认
+# 非 SUCCESS ⇒ 方向偏安全。护栏测试显式钉住"未知码→FAILED"。
+#
 # 原子写：写临时文件 + mv，防止掉电/被杀时文件处于半写状态。
+# MF-81：mktemp/echo/mv 三步全部判码——状态文件决定后续触发"跑/不跑"，任何一步
+# 失败都必须显式失败返回（rc 1），由调用方升级退出码，绝不静默续跑。
 # MF-81：mktemp/echo/mv 三步全部判码——状态文件决定后续触发"跑/不跑"，任何一步
 # 失败都必须显式失败返回（rc 1），由调用方升级退出码，绝不静默续跑。
 _status_write() {
@@ -452,20 +480,25 @@ _status_write() {
 
 _write_status_from_exit() {
     local exit_code="$1" want=""
-    if [ "$exit_code" -eq 0 ]; then
-        want="SUCCESS"
-    elif [ "$exit_code" -eq 2 ]; then
-        # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE）写 GLOBAL_PAUSED，
-        # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可直接区分"人为暂停"与"技术性跳过"。
-        # MF-81⑤：与 _need_second_round 统一走 _is_truthy 一处解析，不再两套取值域。
-        if _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}"; then
-            want="GLOBAL_PAUSED"
-        else
-            want="SKIPPED"
-        fi
-    else
-        return 0   # 其余退出码不写状态文件（既有口径）
-    fi
+    # 逐码派生自 cli_support._EXIT_KINDS（见表与护栏测试）；无 catch-all 归族：
+    # 3=locked、4=schema_migration 各有专属文本，不被"其余非零"吞进 FAILED。
+    case "$exit_code" in
+        0)   want="SUCCESS" ;;          # _EXIT_KINDS 0 = ok
+        1)   want="FAILED" ;;           # _EXIT_KINDS 1 = failure
+        2)                              # _EXIT_KINDS 2 = skipped
+            # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE）写 GLOBAL_PAUSED，
+            # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可区分"人为暂停"与"技术性跳过"。
+            # MF-81⑤：与 _need_second_round 统一走 _is_truthy 一处解析，不再两套取值域。
+            if _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}"; then
+                want="GLOBAL_PAUSED"
+            else
+                want="SKIPPED"
+            fi ;;
+        3)   want="BUSY" ;;             # _EXIT_KINDS 3 = locked（队列忙，本轮没跑，非失败）
+        4)   want="SCHEMA_MIGRATION" ;; # _EXIT_KINDS 4 = schema_migration（迁移拒启，需运维）
+        124) want="TIMEOUT" ;;          # _EXIT_KINDS 外：timeout(1) 击杀整轮
+        *)   want="FAILED" ;;           # 未知非零：安全方向（唯一允许的兜底档）
+    esac
     if ! _status_write "$want"; then
         _log "警告: 状态文件写入失败（本轮结果 $want 未落盘），本轮不得按已完成处理"
         return 1
