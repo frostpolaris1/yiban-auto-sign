@@ -66,7 +66,7 @@
 
 ```bash
 cd /opt/yiban-auto-sign
-python3 -m yiban.cli capacity                    # 按当前窗口/间隔给容量建议（不发请求）
+.venv/bin/python3 -m yiban.cli capacity             # 按当前窗口/间隔给容量建议（不发请求）
 ```
 
 量到「单执行体容量」后把它写进 `.env` 的 `YIBAN_CAPACITY_MEASURED`，`capacity` 与网页
@@ -80,23 +80,34 @@ python3 -m yiban.cli capacity                    # 按当前窗口/间隔给容�
 
 ```bash
 # 1. 环境（只需一次）
-# sqlite3 用于备份的一致性快照与完整性校验（Ubuntu 默认未装；缺它时备份会回退 cp
-# 并跳过校验，属静默降级）
-apt update && apt install -y python3-pip sqlite3
+# python3-venv 建项目虚拟环境（生产用 .venv，不用系统 pip）；sqlite3 用于备份的
+# 一致性快照与完整性校验（Ubuntu 默认未装；缺它时备份会回退 cp 并跳过校验，属静默降级）
+apt update && apt install -y python3-venv python3-pip sqlite3
 pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 2. 拉取代码（服务器为主力签到，推荐国内网络直拉 Gitee 或上传压缩包）
-git clone https://gitee.com/frostpolaris/yiban-auto-sign.git /opt/yiban-auto-sign
-cd /opt/yiban-auto-sign && pip3 install -r requirements.lock
+# 2. 拉取代码（服务器为主力签到）
+#    GitHub 是开发源（提交最新）；Gitee 是它的国内镜像，直连 GitHub 慢时换
+#    https://gitee.com/frostpolaris/yiban-auto-sign.git 即可，两者同一仓库。
+git clone https://github.com/frostpolaris1/yiban-auto-sign.git /opt/yiban-auto-sign
+# 上面的 /opt/yiban-auto-sign 是生产默认目录：run.sh、systemd 单元模板与 crontab
+# 都默认用它。换目录部署必须同步改（见「网页管理后台」的 systemd 单元说明）。
+
+# 3. 依赖（装进项目自带虚拟环境 .venv，与生产一致；不要装进系统 Python）
+cd /opt/yiban-auto-sign
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.lock
 # 裸机部署安装精确锁定的 requirements.lock（与 CI/Docker 镜像同源），
 # 保证实际部署的依赖版本 = 安全审计覆盖的版本；requirements.txt 仅作下限声明。
+# 依赖升级（安全修复等）走同一条命令，见「常用运维命令」。
+# .venv 建好后，本文其余 python3 命令都在该解释器下运行：交互式先
+# `source .venv/bin/activate`；run.sh 与 systemd 单元会自动选用 .venv。
 
-# 3. 配置账号：推荐用网页管理后台（见「网页管理后台」）；
+# 4. 配置账号：推荐用网页管理后台（见「网页管理后台」）；
 #    无头环境/CI 可用 .env 的 YIBAN_ACCOUNTS_JSON（见「配置说明」）；
 #    只有 SSH、没有浏览器的部署者可以走管理端 REST 接口（登录拿 CSRF → 增删账号 →
 #    审核 → 手动签到），接口清单见「无浏览器部署（纯命令行/自动化）」
 
-# 4. 定时任务（每天 06:31 首签；同一条脚本在进程内补签，07:12 再有一条 cron 兜底）
+# 5. 定时任务（每天 06:31 首签；同一条脚本在进程内补签，07:12 再有一条 cron 兜底）
 crontab -e   # 追加：
 # 31 6 * * * /opt/yiban-auto-sign/run.sh
 # 12 7 * * * /opt/yiban-auto-sign/run.sh
@@ -108,8 +119,8 @@ crontab -e   # 追加：
 # 两个默认都关（未开启时当天自动跳过），也可直接用 .env 的
 # YIBAN_SATURDAY_SIGN / YIBAN_SUNDAY_SIGN=1 打开（改完重启 web 生效）。
 
-# 5. 验证
-python3 scripts/signin.py --check-config   # 只读配置检查，不发任何请求
+# 6. 验证
+.venv/bin/python3 scripts/signin.py --check-config   # 只读配置检查，不发任何请求
 bash run.sh && tail -20 /var/log/yiban/sign-$(date +%F).log
 # 上面这条日志路径是默认状态目录；若 .env 设了 YIBAN_LOG_FILE，日志在该路径所在目录，
 # 且目录由它的 dirname 决定（web、脚本、备份三处现在同源）
@@ -124,7 +135,7 @@ bash run.sh && tail -20 /var/log/yiban/sign-$(date +%F).log
 
 ```bash
 apt update
-apt install -y python3 python3-pip
+apt install -y python3 python3-venv python3-pip
 ```
 
 > **时区建议**：把服务器时区设为 `Asia/Shanghai`（`sudo timedatectl set-timezone Asia/Shanghai`）。
@@ -145,8 +156,13 @@ scp yiban.tar.gz root@你的服务器IP:/opt/
 mkdir -p /opt/yiban-auto-sign && cd /opt/yiban-auto-sign
 tar -xzf /opt/yiban.tar.gz && rm /opt/yiban.tar.gz
 pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-pip3 install -r requirements.lock
+# 依赖装进项目自带虚拟环境 .venv（生产用 .venv，不用系统 pip）
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.lock
 ```
+
+> `mkdir -p /opt/yiban-auto-sign` 是生产默认目录，run.sh、systemd 单元模板与 crontab
+> 都默认用它；换目录部署要同步改这几处（见「网页管理后台」的 systemd 单元说明）。
 
 #### 3. 账号数据
 
@@ -250,8 +266,8 @@ tail -20 /var/log/yiban/sign-$(date +%F).log
 ### 2. 一键部署
 
 ```bash
-# 1. 拉取代码
-git clone https://gitee.com/frostpolaris/yiban-auto-sign.git && cd yiban-auto-sign
+# 1. 拉取代码（GitHub 为开发源；国内镜像见「快速开始」的克隆说明）
+git clone https://github.com/frostpolaris1/yiban-auto-sign.git && cd yiban-auto-sign
 
 # 2. 数据目录与配置（数据全部落在 ./data，证书放 ./certs）
 mkdir -p data certs
@@ -426,8 +442,9 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
 >
 > ```bash
 > cd /opt/yiban-auto-sign   # Docker 部署在容器内相应目录
+> PY=.venv/bin/python3        # 裸机用部署的 .venv；容器内依赖装在系统解释器，改成 PY=python3
 > OLD_KEY='<旧钥64hex>' NEW_KEY='<新钥64hex>' YIBAN_ENV_FILE=.env \
-> python3 - <<'PY'
+> "$PY" - <<'PY'
 > import json, os, sqlite3
 > from yiban.infra import account_crypto as ac, env_io
 > old, new = bytes.fromhex(os.environ["OLD_KEY"]), bytes.fromhex(os.environ["NEW_KEY"])
@@ -681,7 +698,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 
 - `phone` / `password` 必填；`phone_model` / `phone_code` 可选（学校开启设备绑定时必填，每个账号可独立配置）；
 - 同一手机号重复出现会按号码去重并告警；
-- 检查配置（不发送任何请求）：`python3 scripts/signin.py --check-config` 或 `python3 -m yiban.cli config`。
+- 检查配置（不发送任何请求）：`.venv/bin/python3 scripts/signin.py --check-config` 或 `.venv/bin/python3 -m yiban.cli config`。
 
 > ⚠️ 数据库里的 `password` / `phone_code` 是 **AES-GCM 密文对象**。解密密钥 `YIBAN_ACCOUNTS_KEY` 自动生成在 `.env`（chmod 600）：**密钥丢失 = 已加密账号密码不可恢复**，备份数据时必须连同 `.env` 一起备份（建议与数据分开放、分开打包）。生产环境可用 `/etc/yiban/accounts-key` 分盘存放（见 `web/deploy/yiban-web.service`）。
 
@@ -809,8 +826,10 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 ## 网页管理后台
 
 ```bash
-# 1. 安装依赖
-pip3 install -r requirements.lock
+# 1. 依赖（装进项目自带虚拟环境 .venv，与生产一致；上面已建过则跳过建环境那两行）
+cd /opt/yiban-auto-sign
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.lock
 
 # 2. .env 配置管理员账号（否则无法登录后台）
 cat >> .env << 'EOF'
@@ -823,7 +842,7 @@ EOF
 #    PW_VERSION（旧会话全部失效），并触发安全告警。
 
 # 3. 启动（默认只监听回环 127.0.0.1:17892，--host/--port 可改）
-python3 -m web
+.venv/bin/python3 -m web
 # 生产用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
 #   systemd 单元模板 web/deploy/yiban-web.service，nginx 示例 web/deploy/nginx.conf.example
 #
@@ -838,8 +857,9 @@ python3 -m web
 #   进程环境只补缺（唯一例外 YIBAN_ACCOUNTS_KEY 仍是环境变量档优先），整份拷贝
 #   虽不再压住「系统设置」页的新值，但会把启动时刻的旧值留成第二份来源、随 .env
 #   漂移。模板只放上面这一行；旧部署若已整份拷贝，收窄成只含这一行即可。
-# 若部署目录不是 /opt/yiban-auto-sign，必须同步改单元里的 WorkingDirectory / ExecStart /
-# ReadWritePaths（模板是写死的绝对路径）。
+# ⚠️ 换目录部署要改齐这几处（模板与 cron 写的都是绝对路径 /opt/yiban-auto-sign）：
+#   ① 单元的 WorkingDirectory；② 单元的 ExecStart（.venv/bin/gunicorn 的完整路径）；
+#    ③ 单元的 ReadWritePaths；另有 crontab 里的 /opt/yiban-auto-sign/run.sh。
 #
 # 安装与开机自启（照抄即可，先按上面改好路径）：
 #   cp web/deploy/yiban-web.service /etc/systemd/system/
@@ -847,13 +867,20 @@ python3 -m web
 #   systemctl status yiban-web        # 启动失败看 journalctl -u yiban-web -n 50
 ```
 
+> ⚠️ **Cookie Secure 必须与访问方式匹配**（systemd 模板默认 `YIBAN_COOKIE_SECURE=1`）：
+> 经 nginx HTTPS 反代访问时保持 `1`，让浏览器只经 HTTPS 回传会话 Cookie；**直连 HTTP**
+> （`http://IP:17892`、`--host 0.0.0.0`）调试时必须删掉该行或设为 `0`，否则浏览器在明文
+> HTTP 下不回传会话 Cookie，表现为登录后立刻显示未登录。不设该键时应用按请求自动判定：
+> 仅当第一跳是回环可信代理、且带 `X-Forwarded-Proto: https` 时，才给本次响应的 Cookie 加
+> Secure（详见 `.env.example` 的 `YIBAN_COOKIE_SECURE` 说明）。
+
 > ⚠️ **关掉系统的自动重启**：Debian/Ubuntu 的 `unattended-upgrades` 在自动升级后**默认会重启**
 > （`Unattended-Upgrade::Automatic-Reboot` 上游缺省为 `true`）。本项目的签到由定时任务按固定时点
 > 发起，重启落在窗口内会**静默漏签一轮**（不报错，只是少签）。请显式写死：新建
 > `/etc/apt/apt.conf.d/51unattended-noreboot`，内容一行 `Unattended-Upgrade::Automatic-Reboot "false";`
 > ——另起一个文件，别改 `50unattended-upgrades`（那是包提供的文件，改它升级时会被 `.dpkg-dist` 顶掉）。
 
-浏览器访问 `https://你的域名`（经 nginx 反代）或 `http://127.0.0.1:17892`（本机调试）。**默认不监听全网卡**：确需直连局域网请显式 `python3 -m web --host 0.0.0.0`（明文 HTTP 无防护，自担风险）。
+浏览器访问 `https://你的域名`（经 nginx 反代）或 `http://127.0.0.1:17892`（本机调试）。**默认不监听全网卡**：确需直连局域网请显式 `.venv/bin/python3 -m web --host 0.0.0.0`（明文 HTTP 无防护，自担风险），此时务必按上面的 Cookie 说明关掉 `YIBAN_COOKIE_SECURE`，否则登录后拿不到会话。
 
 管理员侧导航：**数据总览 / 签到日志 / 账号管理 / 用户管理 / 系统设置**（个人域为 **我的日历 / 我的账号**）。普通用户走邮箱注册，提交自己的易班账号（名称 + 手机号 + 密码 + 设备信息），管理员审核通过后参与每日自动签到；每人限一个账号，可自助注销（两次确认 + 密码验证，7 天内可登录撤销）。
 
@@ -876,7 +903,7 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 
 **部署契约（务必遵守）**：反向代理把完整 URI【原样透传】给后端——nginx 的 `proxy_pass` 后**不要**加 `/`（加 `/` 会剥掉前缀，自动识别失效）。应用会从请求路径自动识别挂载前缀，登录后的跳转、静态资源、API 请求都会带上正确前缀；不依赖 nginx/Caddy/Apache 的特定配置，直连 17892 也能用。
 
-> 顺带把 IP 口径说清（同一节的"直连也能用"经常被误读成"直连时 XFF 也算数"）：**只有当请求的 `remote_addr` 是回环地址、且转发头信任开关为开时，应用才采信 `X-Forwarded-For`**；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。**"直连 `17892` 时 `remote_addr` 就是那台客户端自己的地址"这句只在显式 `python3 -m web --host 0.0.0.0` 下成立**——默认监听是回环（`--host` 缺省 `127.0.0.1`），此时 `remote_addr` 恒为 `127.0.0.1`、客户端自带的 XFF 反而会被采信。反代场景下 nginx 到应用恒为回环且它会覆盖式重写 XFF，那一跳读到的就是真实客户端 IP。**回环直连、`ssh -L` 隧道这两种形态请显式设 `YIBAN_TRUST_FORWARDED_HEADERS=0`**；不要为了"方便调试"把应用监听到非回环，那时 XFF 才会变成可伪造的输入。
+> 顺带把 IP 口径说清（同一节的"直连也能用"经常被误读成"直连时 XFF 也算数"）：**只有当请求的 `remote_addr` 是回环地址、且转发头信任开关为开时，应用才采信 `X-Forwarded-For`**；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。**"直连 `17892` 时 `remote_addr` 就是那台客户端自己的地址"这句只在显式 `.venv/bin/python3 -m web --host 0.0.0.0` 下成立**——默认监听是回环（`--host` 缺省 `127.0.0.1`），此时 `remote_addr` 恒为 `127.0.0.1`、客户端自带的 XFF 反而会被采信。反代场景下 nginx 到应用恒为回环且它会覆盖式重写 XFF，那一跳读到的就是真实客户端 IP。**回环直连、`ssh -L` 隧道这两种形态请显式设 `YIBAN_TRUST_FORWARDED_HEADERS=0`**；不要为了"方便调试"把应用监听到非回环，那时 XFF 才会变成可伪造的输入。
 
 - 子路径首页请**带尾斜杠访问**；不带尾斜杠的裸路径按 404 处理（避免误伤根路径部署）。
 - 若挂载前缀本身包含 `/api`、`/static` 或页面名等会与应用路由撞车的段（极少见），自动识别可能切错，请在 `.env` 显式设置 `YIBAN_BASE_PATH=/你的/前缀` 兜底。
@@ -952,7 +979,7 @@ sudo bash deploy/prod/install.sh
 # 手工/恢复场景仍可环境变量注入（会给整棵子进程树带上口令，用完即散）：
 sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh --require-encrypt
 # 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
-30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
 # 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
 # 管理员告警；正常路径零输出（安装与排期见 scripts/yiban-backup-sentinel.sh 头部）
 5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
@@ -977,10 +1004,10 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
 **取证与排障工具**：
 
 ```bash
-python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log
+.venv/bin/python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log
     # 链自洽 + 库外锚点比对 + 审计写入欠账三件一起跑；0=健康 1=检出删除/篡改 2=无法定论
-python3 scripts/list_duplicate_owners.py                            # 列出"同一用户多个未删除账号"（人工清理后自动恢复一人一号约束）
-python3 scripts/db_export.py --out /tmp/export                      # 导出回 JSON（降级/迁移用）
+.venv/bin/python3 scripts/list_duplicate_owners.py                   # 列出"同一用户多个未删除账号"（人工清理后自动恢复一人一号约束）
+.venv/bin/python3 scripts/db_export.py --out /tmp/export             # 导出回 JSON（降级/迁移用）
 ```
 
 ### 状态文件清理
@@ -989,7 +1016,7 @@ python3 scripts/db_export.py --out /tmp/export                      # 导出回 
 
 ```bash
 bash scripts/yiban-cleanup.sh        # 薄包装，宿主 cron 调用（策略唯一在 yiban/state_gc.py）
-python3 -m yiban.cli state           # 默认 dry-run，列出将删除的文件；加 --yes 才动手
+.venv/bin/python3 -m yiban.cli state  # 默认 dry-run，列出将删除的文件；加 --yes 才动手
 ```
 
 保留期用环境变量配：`YIBAN_RETENTION_DAYS`（日志与可回看的状态文件，默认 `365`）、`YIBAN_SNAPSHOT_RETENTION_DAYS`（只在近几天有意义的标记/账本，默认 `7`）。清理结果追加到 `<状态目录>/cleanup.log`（运维按它判断清理是否在跑）。
@@ -1004,7 +1031,7 @@ python3 -m yiban.cli state           # 默认 dry-run，列出将删除的文件
 **先说结论**：几十到几百个账号**不需要**这一节——单执行体（默认）就够了。什么时候需要，用你自己的机器量：
 
 ```bash
-python3 -m yiban.cli capacity     # 按当前窗口/间隔给容量与建议执行体数（不发请求）
+.venv/bin/python3 -m yiban.cli capacity   # 按当前窗口/间隔给容量与建议执行体数（不发请求）
 ```
 
 **(可选) 不想上测试机？让网页现场量一次**：网页「系统设置 → 执行体」里有一个"实测"按钮（仅主管理员可见）：
@@ -1035,7 +1062,7 @@ YIBAN_WORKERS=4
 
 ```bash
 bash /opt/yiban-auto-sign/run.sh          # cron 里仍是这一条
-python3 scripts/signin.py --workers 4     # 手动拉起一轮试跑（打印每个执行体的出口与结果）
+.venv/bin/python3 scripts/signin.py --workers 4   # 手动拉起一轮试跑（打印每个执行体的出口与结果）
 ```
 
 **兜底常驻执行体**：它在签到时段内**反复扫描"还没签完"的账号**并随手接手（学校晚放号、窗口内刚通过审核的账号、被慢账号拖住的、失败待重试的），窗口结束自动退出。开它需要**两步**（只做第一步不会有任何进程被拉起来）：
@@ -1092,7 +1119,7 @@ YIBAN_PROXY_FALLBACK=http://fb:8080                    # 兜底执行体单独�
 - **进度**：签到分工记录表（`sign_claims`）里一行就是一个账号当天的"了结"情况（保留 14 天）。
 
 **想量一量这台机器能带多少账号**：在本机按完整登录+签到链路量出「单执行体容量」，
-写进 `.env` 的 `YIBAN_CAPACITY_MEASURED`，再跑一次 `python3 -m yiban.cli capacity`
+写进 `.env` 的 `YIBAN_CAPACITY_MEASURED`，再跑一次 `.venv/bin/python3 -m yiban.cli capacity`
 即可得到「建议每执行体账号数（实测 × 2/3）/ 需要几个执行体」。**换机器、换网络都要重新
 量**——这是建议值，不是程序上限。（自带的离线容量基准工具已于 2026-09 移除；实测值由
 部署者自行量取后录入，重启条件见归档的容量口径设计说明。）
@@ -1120,7 +1147,7 @@ tail -50 /var/log/yiban/sign-$(date +%F).log
 
 # 清理过期数据（保留期见「状态文件清理」）
 scripts/yiban-cleanup.sh
-python3 -m yiban.cli state --json          # 机器可读的清理结果（默认 dry-run）
+.venv/bin/python3 -m yiban.cli state --json   # 机器可读的清理结果（默认 dry-run）
 
 # 手动触发签到
 bash /opt/yiban-auto-sign/run.sh
@@ -1133,9 +1160,19 @@ sudo systemctl restart yiban-web.service   # 只改了 .env 也必须重启（�
 # 更新代码（**整仓更新**：代码已拆到 yiban/ 多个模块，单文件覆盖会漏文件）
 cd /opt/yiban-auto-sign
 git pull --ff-only          # 首次用 git clone 部署才有 .git；压缩包部署请重新上传覆盖
+
+# 更新依赖（**每次更新代码后都跑一次**：只更新代码不同步依赖，安全修复上不了生产）
+.venv/bin/pip install -r requirements.lock
+sudo systemctl restart yiban-web.service   # 依赖变更后重启常驻服务
+# 判据：`pip install -r requirements.lock` 报 "Requirement already satisfied" 即已与 lock 一致。
 ```
 
-> 面向脚本/agent 的统一入口是 `python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `egress` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
+> ⚠️ **依赖同步是部署的必要一步**（2026-10-12 测试机实测的缺口）：本仓的裸机部署流程
+> 只落位执行件与 cron，**不含任何依赖同步**。venv 一旦建好就不再自动更新，lock 后续的
+> 安全修复（如 urllib3 / Werkzeug 的 CVE 修复）永远上不了生产。故更新代码后必须显式跑
+> 上面那条 `.venv/bin/pip install -r requirements.lock`。
+
+> 面向脚本/agent 的统一入口是 `.venv/bin/python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `egress` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
 
 ## 本地调试
 
@@ -1204,7 +1241,7 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
 
 > 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
 > 新文件规模建议按类型自设目标（py 600 / js·css 800 / html·sh 400 行）——只是建议，无门禁；文件该不该拆以"拆了是否更好维护"判断，不逐行较劲。
-> 命令行有两条等价通道：人类按本文的命令（`bash run.sh`、`python3 scripts/signin.py ...`）照旧可用；统一入口与机器可读输出见 [`docs/dev/cli.md`](docs/dev/cli.md)。
+> 命令行有两条等价通道：人类按本文的命令（`bash run.sh`、`.venv/bin/python3 scripts/signin.py ...`）照旧可用；统一入口与机器可读输出见 [`docs/dev/cli.md`](docs/dev/cli.md)。
 
 ### 签到流程
 
