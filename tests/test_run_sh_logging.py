@@ -5,8 +5,8 @@
 覆盖：flock 弹开、当日已签到成功、当日已收尾、timeout 击杀、正常收尾五条路径的留痕；
     行首触发来源前缀（排程/手工，按 stdin 有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
     退出码 0/1/2/3/10 逐字透传；状态文件口径（0 写 SUCCESS、2 写 SKIPPED/GLOBAL_PAUSED、
-    3 写 BUSY、4 写 SCHEMA_MIGRATION、124 写 TIMEOUT、其余非零写 FAILED——每个确实跑过
-    一轮的退出码都落盘，逐码派生自 `cli_support._EXIT_KINDS`，f7va）。
+    3 写 BUSY、4 写 SCHEMA_MIGRATION、10 写 NEED_SECOND_RUN、124 写 TIMEOUT、其余非零写
+    FAILED——每个确实跑过一轮的退出码都落盘，逐码派生自 `cli_support._EXIT_KINDS`，f7va）。
 对应实现：`run.sh`（shell 侧，无 Python 对应物）。
 关键断言：① 每条退出路径都有 `=== run.sh 退出，退出码: N ===`——原先只有正常收尾
     那一行，日志里看不出"这轮到底跑过没有、为什么没签"；② 加日志不得顺手改退出码。
@@ -198,7 +198,7 @@ class ExitTrailTest(RunShExitTrailTest):
         新写的 FAILED/TIMEOUT/BUSY/SCHEMA_MIGRATION/SKIPPED/GLOBAL_PAUSED 不改变任何
         跑/不跑判定。
         """
-        for text in ("FAILED", "TIMEOUT", "BUSY", "SCHEMA_MIGRATION",
+        for text in ("FAILED", "TIMEOUT", "BUSY", "SCHEMA_MIGRATION", "NEED_SECOND_RUN",
                      "SKIPPED", "GLOBAL_PAUSED"):
             with self.subTest(text=text):
                 state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
@@ -251,10 +251,12 @@ class ExitCodeContractTest(RunShExitTrailTest):
         失败轮当天两件判据全缺，恰在最需要当日判据的那天失去机器可读证据。
         文本**逐码派生**自 `cli_support._EXIT_KINDS`：0→SUCCESS、1→FAILED、
         2→SKIPPED、3→BUSY（locked，队列忙＝本轮没跑，非失败）、4→SCHEMA_MIGRATION
-        （迁移拒启）、124→TIMEOUT。3/4 不得被 catch-all 归进 FAILED（假失败）。
+        （迁移拒启）、10→NEED_SECOND_RUN（判定码，不得伪装成 FAILED）、124→TIMEOUT。
+        已知码不得被 catch-all 归进 FAILED（假失败）。
         """
         for code, want in ((0, "SUCCESS"), (1, "FAILED"), (2, "SKIPPED"),
-                           (3, "BUSY"), (4, "SCHEMA_MIGRATION"), (124, "TIMEOUT")):
+                           (3, "BUSY"), (4, "SCHEMA_MIGRATION"),
+                           (10, "NEED_SECOND_RUN"), (124, "TIMEOUT")):
             with self.subTest(code=code):
                 state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
                 self._run(state, {"FAKE_EXIT_CODE": str(code)})
