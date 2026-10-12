@@ -48,7 +48,7 @@
 #   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
-#   30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+#   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
 #   # 上一条的退出码 1 = 检出篡改/删除，2 = 无法定论（密钥缺失等）；0 才是健康。
 #   # 想让 cron 直接告警，可包一层：|| mail -s 'yiban 审计校验失败' root@localhost
 #   # 备份哨兵——本脚本的加密配置一旦失效会 fail-closed 不产出任何归档，cron 拿不到
