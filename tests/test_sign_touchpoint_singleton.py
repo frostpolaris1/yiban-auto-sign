@@ -9,14 +9,18 @@
     ② `yiban/client.py` 的 `YibanClient.signin`（签到客户端外观）
        在生产代码里**恰好一个**调用点：`yiban/engine/attempts.py` 的 `attempt_signin` 内。
 
-判定面（计为命中的静态形态）：
+判定面（计为命中的静态形态；两条不变量共用同一判定面）：
     · 直接调用：`submit_sign_in(...)`、`obj.submit_sign_in(...)`（按调用末段名匹配）。
     · 别名导入调用：`from <mod> import <目标名> as <别名>` 之后调用 `<别名>(...)`。
-    · `getattr(<任意>, "<目标名>")` 的**字符串字面量**形态。
-判定面外的形态：完全动态的构造不计为命中。
-    例：运行时拼名 `getattr(p, "submit_" + "sign_in")`、经其它反射路径取到的可调用对象。
+    · 赋值别名调用：`_f = <目标名>`（简单名绑定，模块级或函数内局部，含 `_g = _f`
+      链式传递）之后调用 `_f(...)`。属性链赋值（`self.f = …`）与容器存取不在内。
+    · `getattr(<任意>, <常量>)`：第二参常量折叠后 == 目标名。
+      常量含解析期已折叠的相邻字面量与运行前可折叠的 `+` 拼接。
+判定面外的形态：运行时才定名的构造不计为命中。
+    例：运行时拼名、变量名（`getattr(p, name_var)`）、f-string 拼名、
+    其它反射路径（`vars()`／`globals()` 取值）、属性链赋值、容器存取。
     这些形态由**审查**兜底，不由本门判定。
-    故本门**不声称绝对保证**：它覆盖上述三类静态可判形态，不覆盖运行时拼名。
+    故本门**不声称绝对保证**：它覆盖上述静态可判形态，不覆盖运行时才定的名字。
 
 门的定义域：本门守的是**登录/签到提交流程**的触网点唯一性。
 它**不是**"任何平台请求都只有一个触网点"。
@@ -31,7 +35,7 @@
 
 立此守卫的理由（AGENTS.md §15）：签到提交的触网点是审计与限流的唯一口径锚。
     下一个改这里的人新增第二处**静态可判**的提交触网点时（直接调用、别名导入、
-    getattr 字面量），本文件必须变红。
+    赋值别名、getattr 常量），本文件必须变红。
 
 依赖：只用标准库 `ast` 读源码，不导入被测模块、不触网、不落盘。
 """
@@ -72,41 +76,91 @@ def _callee_last(func):
     return ""
 
 
-def _import_aliases(tree, target):
-    """`from <mod> import <target> [as 别名]` 引入的本地名字集合。
+def _ref_name(node):
+    """表达式的「被引用名」：`Name`→id，`Attribute`→末段名，其余→None。"""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
 
-    含原名与别名两态。调用别名（`_sis(x)`）即视为对目标名的调用。
-    注意：`import <mod>`（`ast.Import`）不走本函数——那是对模块的引用，不是对目标名的引入。
+
+def _fold_const_str(node):
+    """折叠字符串常量表达式并返回其值；非字符串常量返回 None。
+
+    覆盖两种常量拼接：
+      · 解析期已折叠的相邻字面量（`"a" "b"` 进入 AST 时已是单个 `Constant`）；
+      · 运行前可折叠的 `+` 拼接（`"a" + "b"`）。
+    变量、f-string、函数调用参加拼接时含非常量枝，返回 None（判为动态）。
     """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_const_str(node.left)
+        right = _fold_const_str(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _alias_names(tree, target):
+    """`target` 的静态可判别名集合（不含 `target` 自身），取传递闭包。
+
+    两个来源：
+      · `from <mod> import <target> [as 别名]` 引入的本地名；
+      · 简单名赋值 `_f = <引用 target 的表达式>`（模块级或函数内局部），
+        含 `_g = _f` 这类链式传递。
+    不在内：属性链赋值（`self.f = …`）与容器存取（`d[k] = …`）——
+    见模块 docstring 的判定面外清单。
+    """
+    seed = {target}
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name == target:
                     names.add(alias.asname or alias.name)
-    return names
+    binds = []  # [(左侧简单名, 右侧被引用名)]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            ref = _ref_name(node.value)
+            if ref is not None:
+                binds.extend((t.id, ref) for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and node.value is not None \
+                and isinstance(node.target, ast.Name):
+            ref = _ref_name(node.value)
+            if ref is not None:
+                binds.append((node.target.id, ref))
+    known = seed | names
+    changed = True
+    while changed:  # 定点闭包：链式别名一次铺开
+        changed = False
+        for lhs, ref in binds:
+            if ref in known and lhs not in known:
+                known.add(lhs)
+                changed = True
+    return known - seed
 
 
 def _getattr_literal_target(call):
-    """`getattr(<任意>, "<名>")` 的第二参字符串字面量；非字面量返回 None。"""
+    """`getattr(<任意>, <常量>)` 的第二参常量折叠结果；非常量返回 None。"""
     if len(call.args) >= 2:
-        second = call.args[1]
-        if isinstance(second, ast.Constant) and isinstance(second.value, str):
-            return second.value
+        return _fold_const_str(call.args[1])
     return None
 
 
 def _collect_calls(tree, target):
     """收集对 `target` 的调用，返回 `[(行号, 宿主限定名)]`。
 
-    命中三类静态形态（判定面）：
+    命中四类静态形态（判定面）：
       · 调用末段名 == target（`submit_sign_in(...)` / `obj.submit_sign_in(...)`）；
-      · 调用 `from <mod> import <target> as <别名>` 得来的别名；
-      · `getattr(<任意>, "<target>")` 的字符串字面量形态。
+      · 调用别名导入名（`from <mod> import <target> as <别名>`）；
+      · 调用赋值别名名（`_f = <target>` 简单名绑定，含链式传递）；
+      · `getattr(<任意>, <常量>)` 的常量折叠结果 == target（含相邻字面量与 `+` 拼接）。
     不命中：docstring / 注释里的同名字样；`m.signin.worker_presence()` 这类末段非
-    target 的属性调用；运行时拼名的完全动态构造（由审查兜底，不在判定面内）。
+    target 的属性调用；运行时才定名的动态构造（由审查兜底，不在判定面内）。
     """
-    aliases = _import_aliases(tree, target) - {target}
+    aliases = _alias_names(tree, target)
     hits = []
 
     def walk(node, scope):
@@ -249,10 +303,32 @@ class SignTouchpointSingletonTest(unittest.TestCase):
         src = 'def f(p):\n    return getattr(p, "submit_sign_in")()\n'
         self.assertEqual(len(_collect_calls(ast.parse(src), "submit_sign_in")), 1)
 
-    def test_scanner_ignores_a_dynamic_getattr_name(self):
-        """边界：运行时拼名的 getattr 不在判定面内（docstring 的精确陈述据此承重）。"""
-        src = 'def f(p):\n    return getattr(p, "submit_" + "sign_in")()\n'
-        self.assertEqual(_collect_calls(ast.parse(src), "submit_sign_in"), [])
+    def test_scanner_counts_an_assignment_alias_call(self):
+        """赋值别名后调用别名 ⇒ 计为命中（模块级、函数内局部、链式传递三种）。"""
+        mod_src = "_f = submit_sign_in\n\ndef g(x):\n    return _f(x)\n"
+        loc_src = "def g(x):\n    _f = submit_sign_in\n    return _f(x)\n"
+        chain_src = "_f = submit_sign_in\n_g = _f\n\ndef g(x):\n    return _g(x)\n"
+        for src in (mod_src, loc_src, chain_src):
+            self.assertEqual(len(_collect_calls(ast.parse(src), "submit_sign_in")), 1)
+
+    def test_scanner_counts_a_constant_concatenated_getattr(self):
+        """常量拼接的 getattr 名字 ⇒ 计为命中（显式 `+` 与相邻字面量两种）。"""
+        plus_src = 'def f(p):\n    return getattr(p, "submit_" + "sign_in")()\n'
+        adj_src = 'def f(p):\n    return getattr(p, "submit_" "sign_in")()\n'
+        self.assertEqual(len(_collect_calls(ast.parse(plus_src), "submit_sign_in")), 1)
+        self.assertEqual(len(_collect_calls(ast.parse(adj_src), "submit_sign_in")), 1)
+
+    def test_scanner_ignores_a_truly_dynamic_call(self):
+        """边界：运行时才定名的形态不计命中（变量名、f-string 拼名）。
+
+        docstring 的判定面外清单据此承重。
+        注意 `"submit_" + "sign_in"` 是**常量**拼接，会被折叠并计命中
+        （见 test_scanner_counts_a_constant_concatenated_getattr），故不在此列。
+        """
+        var_src = "def f(p, name_var):\n    return getattr(p, name_var)()\n"
+        fstr_src = 'def f(p):\n    return getattr(p, f"submit_{p}" + "sign_in")()\n'
+        self.assertEqual(_collect_calls(ast.parse(var_src), "submit_sign_in"), [])
+        self.assertEqual(_collect_calls(ast.parse(fstr_src), "submit_sign_in"), [])
 
     def test_definition_probe_flags_a_renamed_function(self):
         """定义改名后在场性探针返回 None（定义点在场性断言因此变红）。"""
