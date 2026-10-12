@@ -191,9 +191,10 @@ trap 'exit 130' INT
 
 # 识别「当日已触发过」标记。
 # 06:31 与 07:12 是同一脚本的两次 cron 调用，仅靠 sign-status 状态文件无法区分——
-# 状态文件只记结果取值（SUCCESS/SKIPPED/GLOBAL_PAUSED/TIMEOUT/FAILED），不记"第几轮"：
-# 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）后，07:12 那一轮读到的文本与
-# 首签轮无异（f7va 前这两种码根本不写文件；现在写 TIMEOUT/FAILED，仍不区分轮次）。
+# 状态文件只记"本次触发的结果"文本（**取值表只住一处**：见下方 `_write_status_from_exit`
+# 上方），不记"第几轮"：首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）后，07:12
+# 那一轮读到的文本与首签轮无异（f7va 前这两种码根本不写文件；现在会落盘一份非 SUCCESS
+# 文本，但仍不区分轮次）。
 # 标记语义（M6 修订）：「当日 run.sh 已触发过」（而非「首签轮已抢到锁」）——标记
 # 写入前移到 flock 之前，06:31 触发被 flock 弹开（上一触发进程仍在运行）时同样
 # 留痕；此后任意一次成功拿到锁的触发读到标记即以补签轮身份运行（导出
@@ -436,12 +437,21 @@ _run_signin_round() {
 #   3    locked               BUSY               队列忙：本轮**没跑**（另有持有者持有运行锁，
 #                                                或互斥不可得）。**不是失败**
 #   4    schema_migration     SCHEMA_MIGRATION   迁移拒启：本轮没跑，需运维介入（不伪装成账号失败）
+#   10   second_run_check     NEED_SECOND_RUN    判定码，**不是轮结果码**（只由
+#                                                `--second-run-check` 产生）。正常轮不可达
+#                                                （见下），出现即管道接错——响亮记日志
 #   124  （不在码表内）         TIMEOUT            timeout(1) 击杀整轮（外部杀）
 #   其余非零  unknown          FAILED             未知码：安全方向（见下），绝不写 SUCCESS
 #
-# rc=3/rc=4 曾按"其余非零"一并写作 FAILED——那是**假失败**：3 是"另有持有者正在跑"、
-# 4 是"schema 半升级"，两者都不是账号签到失败（本项目 10-07 栽过"执行体领不到任务被
-# 上报成批假失败"那族缺陷，见记忆 fallback-gates-and-yield）。故逐码分列。
+# rc=3/rc=4/rc=10 曾被 `else` 一并吞成 FAILED——那是**假失败/归族**：3 是"另有持有者正在跑"、
+# 4 是"schema 半升级"、10 是"判定码漏进结果通道"，三者都不是账号签到失败（本项目 10-07
+# 栽过"执行体领不到任务被上报成批假失败"那族缺陷，见记忆 fallback-gates-and-yield）。
+# 故逐码分列，已知码**一律不许**被 catch-all 归族。
+# rc=10 不可达证据（当前代码）：run.sh 的轮调用不带 `--second-run-check`（见 `_run_signin_round`
+# 的 `"$PY" scripts/signin.py ${workers_args...}`）；监督进程给子进程的命令行只是剔掉
+# `--workers`（workers.py 的 child_argv），故子进程也不带它；`SECOND_RUN_CHECK_NEED` 只在
+# `runner.main` 的 `args.second_run_check` 分支返回。但**契约承认**"轮退出码 10"这一形态
+# （监督进程汇总会原样透出子码 10，workers.py；用例 `([10,-9],10)` 钉住），故仍显式分列。
 # 旧口径"非 0/2 不写文件"另让失败轮当天两件判据全缺（v0.6.2 生产实测 10-12：✅229/❌1、
 # 两件产物都缺），同批改为"每个跑过一轮的码都落盘"。
 # 退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景（部分成功 + 部分
@@ -453,8 +463,6 @@ _run_signin_round() {
 # 非 SUCCESS ⇒ 方向偏安全。护栏测试显式钉住"未知码→FAILED"。
 #
 # 原子写：写临时文件 + mv，防止掉电/被杀时文件处于半写状态。
-# MF-81：mktemp/echo/mv 三步全部判码——状态文件决定后续触发"跑/不跑"，任何一步
-# 失败都必须显式失败返回（rc 1），由调用方升级退出码，绝不静默续跑。
 # MF-81：mktemp/echo/mv 三步全部判码——状态文件决定后续触发"跑/不跑"，任何一步
 # 失败都必须显式失败返回（rc 1），由调用方升级退出码，绝不静默续跑。
 _status_write() {
@@ -496,6 +504,13 @@ _write_status_from_exit() {
             fi ;;
         3)   want="BUSY" ;;             # _EXIT_KINDS 3 = locked（队列忙，本轮没跑，非失败）
         4)   want="SCHEMA_MIGRATION" ;; # _EXIT_KINDS 4 = schema_migration（迁移拒启，需运维）
+        10)  # _EXIT_KINDS 10 = second_run_check：**判定码，不是轮结果码**。正常轮不可达
+             # （见上方注释的不可达证据）；出现即"判定码漏进了结果通道"＝管道接错，
+             # 不得伪装成账号失败，故独立文本 + 响亮留痕（stderr + 当日日志）。
+            want="NEED_SECOND_RUN"
+            _err "警告: 轮退出码 10（second_run_check）是 --second-run-check 的判定码，不是轮结果码；正常轮不该以它收场，出现即管道接错"
+            _log "警告: 轮退出码 10（second_run_check）出现——判定码被当成轮结果码透出，请核管道/调用配置"
+            ;;
         124) want="TIMEOUT" ;;          # _EXIT_KINDS 外：timeout(1) 击杀整轮
         *)   want="FAILED" ;;           # 未知非零：安全方向（唯一允许的兜底档）
     esac

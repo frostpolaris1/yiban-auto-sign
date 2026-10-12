@@ -480,16 +480,19 @@ class RunShStatusTextContractTest(_RunShHarness):
 
     f7va：旧口径"非 0/2 不写状态文件"让失败轮当天无机器可读判据。现在 0→SUCCESS、
     1→FAILED、2→SKIPPED（全局暂停则 GLOBAL_PAUSED）、3→BUSY（locked，队列忙＝本轮
-    **没跑**）、4→SCHEMA_MIGRATION（迁移拒启）、124→TIMEOUT。3/4 各有专属文本，**不得**
-    被 catch-all 归进 FAILED——那会把"另有持有者正在跑"/"schema 半升级"报成账号失败
-    （本项目 10-07 栽过"领不到任务被上报成批假失败"那族）。
+    **没跑**）、4→SCHEMA_MIGRATION（迁移拒启）、10→NEED_SECOND_RUN（`second_run_check`
+    ＝判定码，不是轮结果码；正常轮不可达，出现即管道接错）、124→TIMEOUT。**每个已知码
+    各有专属文本，不得被 catch-all 归进 FAILED**——那会把"另有持有者正在跑"/"schema
+    半升级"/"判定码漏进结果通道"报成账号失败（本项目 10-07 栽过"领不到任务被上报成批
+    假失败"那族）。
     "非 SUCCESS 文本不被采信"由 tests/test_run_sh_logging.py 钉住：本夹具的 $PY 把
     `-`（兜底存活探测）拦成桩件，库内事实查询走不了真解释器，故不在此处测采信。
     """
 
-    #: rc → 状态文件文本（0/1/2/3/4/124 逐一钉住；与 cli_support._EXIT_KINDS 同源）
+    #: rc → 状态文件文本（0/1/2/3/4/10/124 逐一钉住；与 cli_support._EXIT_KINDS 同源）
     RC_TO_TEXT = ((0, "SUCCESS"), (1, "FAILED"), (2, "SKIPPED"),
-                  (3, "BUSY"), (4, "SCHEMA_MIGRATION"), (124, "TIMEOUT"))
+                  (3, "BUSY"), (4, "SCHEMA_MIGRATION"),
+                  (10, "NEED_SECOND_RUN"), (124, "TIMEOUT"))
 
     def _fresh_state(self):
         """换一个全新状态目录：每条子用例独立，避免上一轮的落盘短路本轮。"""
@@ -497,7 +500,7 @@ class RunShStatusTextContractTest(_RunShHarness):
         return self.state
 
     def test_each_round_exit_code_writes_its_text(self):
-        """0/1/2/3/4/124 各自落盘文本——失败轮那天也有据可查，且 busy/迁移各有其名。"""
+        """0/1/2/3/4/10/124 各自落盘文本——各码有其名，已知码不被归进"未知"兜底。"""
         for code, want in self.RC_TO_TEXT:
             with self.subTest(code=code):
                 self._fresh_state()
@@ -508,26 +511,32 @@ class RunShStatusTextContractTest(_RunShHarness):
                                      % (code, want, log))
 
     def test_status_texts_are_derived_from_exit_kinds(self):
-        """rc→文本必须按 `cli_support._EXIT_KINDS` 逐码派生：已知码不得落进"未知"兜底。
+        """rc→文本必须按 `cli_support._EXIT_KINDS` 逐码派生：**任何**已知码不得落"未知"兜底。
 
-        f7va 复审抓到的错：3（`locked`＝队列忙，本轮没跑）曾被 catch-all 归进 FAILED
-        ＝假失败。本用例从码表**本身**派生要求，防"再抓一个已知码悄悄归族"：
-          · `_EXIT_KINDS` 里除 10（`--second-run-check` 专用，不作轮退出码）外**每个码**，
-            上表都须有专属条目；码表新增码而本表未跟 ⇒ 本用例红（咬住"静默归族"）。
-          · `locked`(3) 的文本不得为 FAILED（钉死本次错形），且文本须与码表 kind 单义对应。
+        f7va 复审抓到的错：3（`locked`＝队列忙，本轮没跑）、4（`schema_migration`）、
+        10（`second_run_check`＝判定码）都曾被 catch-all 归进 FAILED＝假失败/归族。
+        本用例从码表**本身**派生要求，防"再抓一个已知码悄悄归族"：
+          · `_EXIT_KINDS` 的**每一个**码（含 10）上表都须有专属条目；码表新增码而本表未跟
+            ⇒ 本用例红（咬住"静默归族"）。
+          · `locked`(3) 与 `second_run_check`(10) 的文本都不得为 FAILED。
         """
         from yiban.engine import cli_support
         expected = dict(self.RC_TO_TEXT)
-        known_round = {c for c in cli_support._EXIT_KINDS if c != 10}
-        missing = sorted(known_round - set(expected))
+        known = set(cli_support._EXIT_KINDS)          # 含 10：判定码也要有专属文本
+        missing = sorted(known - set(expected))
         self.assertEqual(
             missing, [],
-            "cli_support._EXIT_KINDS 的这些轮退出码在 run.sh 的 rc→文本表里没有专属条目："
-            "%s（新增码必须同批给文本，不得静默落进未知兜底）" % missing)
+            "cli_support._EXIT_KINDS 的这些码在 run.sh 的 rc→文本表里没有专属条目：%s"
+            "（新增码必须同批给文本，不得静默落进未知兜底）" % missing)
         self.assertEqual(cli_support._EXIT_KINDS.get(3), "locked",
                          "退出码 3 的 kind 应仍是 locked（队列忙）")
         self.assertNotEqual(expected[3], "FAILED",
                             "locked（队列忙）不得表述成失败：本轮没跑，不是账号签到失败")
+        self.assertEqual(cli_support._EXIT_KINDS.get(10), "second_run_check",
+                         "退出码 10 的 kind 应仍是 second_run_check（判定码）")
+        self.assertNotEqual(expected[10], "FAILED",
+                            "second_run_check（判定码）不得表述成失败：出现是管道接错，"
+                            "不是账号签到失败")
 
 
 class RunShFallbackBootTest(_RunShHarness):
