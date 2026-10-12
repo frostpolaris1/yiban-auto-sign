@@ -647,18 +647,24 @@ def main(argv=None):
     # 不会碰别人的行）+ `requeue_final`（重领预算耗尽/风控档），对齐旧领取池的
     # `reclaim=True, retry_failed=True` 语义。**不用** `claim_all`：通配宽分片会把
     # 当日别人的行一并领走/回炉（越界收尾 ⇒ 静默漏签）。
-    if args.only:
-        results = executor_v3.run_executor_v3(
-            accounts, notify_url=notify_url, cred_state=cred_state,
-            event_sink=event_rows.append, delegated=delegated,
-            reclaim=True, requeue_final=True, unreached=unreached)
-    else:
-        results = executor_v3.run_executor_v3(
-            accounts, notify_url=notify_url, cred_state=cred_state,
-            event_sink=event_rows.append, delegated=delegated,
-            # 补签轮就是显式路径：`final:`/无前缀保守档只在有界一次性轮次复活。
-            # 普通轮 False：保守档绝不被定时轮自动复活，档位纪律与领取层同一份。
-            requeue_final=_second_run, unreached=unreached)
+    # 一轮的按日状态与失败提醒额度文件**在进程内累积、按界整批落盘**（写放大治理，
+    # 见 `state_io` 的"写放大治理"段与 131 行为补丁账）：本轮每个账号各写一次全量文件
+    # 的读改写会使写盘量随账号数平方增长。上下文退出即整批落盘（轮末数据必须可见），
+    # 中途按 `_FLUSH_MAX`/`_FLUSH_SEC` 与轮末触发；SIGTERM 与 atexit 另有兜底冲刷。
+    # 上下文外（探针/直接调用）行为不变：逐条立即落盘。
+    with state_io.batch_sign_state(), alerts.batch_user_fail_mail():
+        if args.only:
+            results = executor_v3.run_executor_v3(
+                accounts, notify_url=notify_url, cred_state=cred_state,
+                event_sink=event_rows.append, delegated=delegated,
+                reclaim=True, requeue_final=True, unreached=unreached)
+        else:
+            results = executor_v3.run_executor_v3(
+                accounts, notify_url=notify_url, cred_state=cred_state,
+                event_sink=event_rows.append, delegated=delegated,
+                # 补签轮就是显式路径：`final:`/无前缀保守档只在有界一次性轮次复活。
+                # 普通轮 False：保守档绝不被定时轮自动复活，档位纪律与领取层同一份。
+                requeue_final=_second_run, unreached=unreached)
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
     # 不能用本次（仅含目标账号的）状态整体覆盖保存：空 dict 时会直接删除状态文件，
