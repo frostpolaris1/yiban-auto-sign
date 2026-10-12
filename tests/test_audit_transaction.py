@@ -626,9 +626,12 @@ class CliExitCodeTest(_Fixture):
         ):
             mod.main()
         out = buf.getvalue()
-        self.assertEqual(raised.exception.code, 2, out)
+        # 单一断言承重："无法定论"必须是 exit 2。旧写法在其后又加一句
+        # `assertNotEqual(code, 1)`，它被 `== 2` 蕴含，永不独立失败（冗余）；"不得用 1
+        # 冒充篡改"的意图移进本断言的说明里。
+        self.assertEqual(raised.exception.code, 2,
+                         "链校验无法定论必须是 exit 2，不得用 exit 1 冒充「检出篡改」：" + out)
         self.assertIn("无法定论", out)
-        self.assertNotEqual(raised.exception.code, 1, "锁住/无法定论不得与检出篡改同码")
 
     @unittest.skipUnless(os.environ.get("YIBAN_DRILL_REAL_DB_LOCK"),
                          "真占写锁重演练为 opt-in（要等满 9×busy_timeout≈135s，占全量"
