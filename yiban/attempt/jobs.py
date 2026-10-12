@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""在线校验异步任务：排队、外呼、看门狗与收口（A4 异步化）。
+"""在线校验异步任务：排队、外呼、看门狗与收口。
 
-调度核心的一环——请求线程只**扣配额并建任务**，外呼交给后台线程，因此可以
-等待全局席位（请求线程不能等，那正是要消除的线程占用）。
+调度核心的一环——请求线程只**扣配额并建任务**，外呼交给后台线程，因此可以等待全局席位
+（请求线程不能等，那正是要消除的线程占用）。
 
 收口路径共三条，都经 CAS 落终态，互不覆盖：
 ① 正常完成 → done / rejected（并置账号为 rejected）
@@ -10,9 +10,9 @@
 ③ 看门狗到点（`OUTBOUND_TIMEOUT`）→ rejected；
    worker 之后回来时 CAS 已失配，不会把终态改写掉。
 
-宿主（`web/app.py`）通过 `configure()` 注入外呼实现、席位闸与账号写回动作
-——这些都是 web 侧的进程内状态与业务规则，本模块不复制它们；用 lambda 延迟
-解析，故测试替换 `webapp` 上的实现后仍然生效。
+宿主（`web/app.py`）通过 `configure()` 注入外呼实现、席位闸与账号写回动作——这些都是
+web 侧的进程内状态与业务规则，本模块不复制它们；用 lambda 延迟解析，故测试替换 `webapp`
+上的实现后仍然生效。
 """
 import logging
 import threading
@@ -89,7 +89,14 @@ def run(job_id, clean, username, account_id, prev_status, fails, limits):
     watchdog.daemon = True
     watchdog.start()
     try:
-        if not _hooks["seat"].acquire(timeout=GATE_WAIT):
+        # 席位句柄**在这一行取一次**，acquire/release 必须是同一个对象：宿主的
+        # `seat` 是 BoundedSemaphore（超发会直接 `ValueError: Semaphore released too
+        # many times`），而读两次 `_hooks["seat"]` 就等于假设"取席位与还席位之间注册
+        # 不会被换掉"——全量测试里这条假设真的会破（上一个测试文件留下的校验线程还在
+        # 飞，下一个文件调用 configure 重新注册了自己的信号量，旧线程的 release 就打到
+        # 别人的信号量上）。取一次句柄后，释放永远回到它当初拿的那个对象。
+        seat = _hooks["seat"]
+        if not seat.acquire(timeout=GATE_WAIT):
             if store.finish(job_id, error="校验繁忙：等待全局校验席位超时"):
                 _reject("校验繁忙：等待全局校验席位超时")
             return
@@ -98,14 +105,14 @@ def run(job_id, clean, username, account_id, prev_status, fails, limits):
                 return  # 看门狗已收口，省掉一次无谓外呼
             verify_err = _hooks["verify_one"](clean)
         finally:
-            _hooks["seat"].release()
+            seat.release()
     finally:
         watchdog.cancel()
 
     if expired.is_set():
         return
     if verify_err:
-        import db
+        from yiban.store import db
         fail_kind = _hooks["record_failure"](fails, clean["phone"], verify_err, time.time())
         db.audit(username or "?", "account_verify_job_fail", mask(clean["phone"]),
                  f"异步校验未通过（{fail_kind}）")

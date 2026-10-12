@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """暂停注册（v0.26.3）+ web 日志落盘（DailyFlockFileHandler）测试。
 
-覆盖：
+标签：E · Web：认证/权限/API
+覆盖：注册暂停开关（`.env` 键、公开端点、设置接口权限、全新部署默认值）+ web 日志按天落盘与日志页解析口径
+对应实现：`web/app.py` 的 `/api/register`、`/api/registration_paused`、`/api/settings`、`ensure_secret_key`，以及 `DailyFlockFileHandler` 与 `parse_sign_log`
+关键断言：暂停只关注册入口——已注册用户登录、管理员添加账号的自动建用户都不受影响；普通管理员改该键 403；`.env` 不存在才写默认暂停键、既有部署不补写；root logger 保持 WARNING 而自有组件单独放开 INFO；日志页对 `yiban.*` 全级别入列、其它组件仅 WARNING+
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；日志解析用例打桩 `_tail_lines` 与 `log_path_for` 读构造文件
+
+逐项明细：
 - 注册开关：未配置=允许；YIBAN_REGISTRATION_PAUSE=1 → /api/register 403；
   已注册用户登录不受影响（用户裁决：暂停仅关注册入口）；
 - 设置接口：GET 返回 registration_pause；主管理员可写（写入 .env）；
@@ -50,6 +56,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         os.environ["YIBAN_USERS_FILE"] = cls.users_file
         os.environ["YIBAN_DB_FILE"] = cls.db_file
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        # cls.log_dir 事先不存在：下面的按天落盘用例能过，就说明目录是 handler 自建的
         os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.log_dir, "sign.log")
         global db
         import db
@@ -232,7 +239,8 @@ class RegistrationPauseWebTest(unittest.TestCase):
     def test_root_logger_writes_daily_file(self):
         """create_app 后 root logger 挂 DailyFlockFileHandler 且 INFO 落入 sign-*.log。"""
         import logging
-        from datetime import datetime
+
+        from yiban import clock  # 按天日志 handler 按业务钟取日期：宿主 TZ 下须同源
         c = self.webapp.create_app().test_client()
         c.get("/api/registration_paused")  # 触发一条请求级日志路径
         root = logging.getLogger()
@@ -244,7 +252,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         self.assertEqual(root.level, logging.WARNING, "root 应保持 WARNING")
         self.assertEqual(logging.getLogger("web").level, logging.INFO,
                          "自有组件 web 应放开 INFO（否则 INFO 全被丢弃）")
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         log_path = os.path.join(self.log_dir, f"sign-{today}.log")
         self.assertTrue(os.path.exists(log_path), "按天日志文件应已创建")
         with open(log_path, encoding="utf-8") as f:
@@ -252,25 +260,27 @@ class RegistrationPauseWebTest(unittest.TestCase):
         self.assertIn("web:", content, "web logger 的 INFO 应落盘（此前被丢弃）")
 
     def test_log_page_shows_component_warnings(self):
-        """后台日志页解析：非 yiban 组件仅 WARNING+ 入列（INFO 仍不展示）。"""
+        """日志页解析口径（2026-09-19 改）：`yiban.*` 全级别入列，其它组件仅 WARNING+。"""
         parse = self.webapp.parse_sign_log
         yiban_info = "[2026-09-01 10:00:00] [INFO] yiban: 签到正常"
+        yiban_sub = "[2026-09-01 10:00:03] [INFO] yiban.client: [13800138000] 生成定位: (118.8, 31.9)"
         comp_warn = "[2026-09-01 10:00:01] [WARNING] mailer: 邮件通知发送失败（SMTPAuthenticationError）"
         comp_info = "[2026-09-01 10:00:02] [INFO] notify: 消息推送已发送（serverchan）: t"
-        comp_debug = "[2026-09-01 10:00:03] [DEBUG] yiban: 探针跳过"
+        yiban_debug = "[2026-09-01 10:00:03] [DEBUG] yiban: 探针跳过"
         tmp_log = os.path.join(self.tmp, "parse-probe.log")
         with open(tmp_log, "w", encoding="utf-8") as f:
-            f.write("\n".join([yiban_info, comp_warn, comp_info, comp_debug]) + "\n")
+            f.write("\n".join([yiban_info, comp_warn, comp_info, yiban_debug, yiban_sub]) + "\n")
         with unittest.mock.patch.object(self.webapp, "_tail_lines",
                                         return_value=[yiban_info, comp_warn,
-                                                      comp_info, comp_debug]), \
+                                                      comp_info, yiban_debug, yiban_sub]), \
              unittest.mock.patch.object(self.webapp, "log_path_for",
                                         return_value=tmp_log):
             lines = parse(tmp_log)
         self.assertIn(yiban_info, lines)
         self.assertIn(comp_warn, lines, "组件 WARNING 应展示（故障留痕）")
-        self.assertNotIn(comp_info, lines, "组件 INFO 不展示（维持日志页洁净）")
-        self.assertNotIn(comp_debug, lines)
+        self.assertNotIn(comp_info, lines, "非 yiban 组件的 INFO 仍不展示（维持日志页洁净）")
+        self.assertIn(yiban_debug, lines, "yiban 的 DEBUG 入列（部署自己开的级别）")
+        self.assertIn(yiban_sub, lines, "yiban.client 等子模块入列（细节行）")
 
 
 import unittest.mock  # noqa: E402  （置于文件尾部：仅测试方法内使用）

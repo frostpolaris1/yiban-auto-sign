@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
-"""子路径 / 独立子域 前缀自适应部署契约回归测试（2026-08-23）。
+"""子路径 / 独立子域 前缀自适应部署契约回归测试。
 
-背景：应用可部署在域名根、独立子域、或主站子路径（如 /tools/yiban-auto-sign/demo/）下。
-反向代理只需把完整 URI 原样透传，BasePathMiddleware 自动感知前缀（见 web/app.py 类注释）。
-本测试锁定三类关键契约：
-  1. 根路径部署行为与改造前完全一致（不回归）；
-  2. 子路径下跳转/静态/API 都带前缀，登录后可正常渲染；
-  3. 自动探测 / SCRIPT_NAME / YIBAN_BASE_PATH 的前缀判定。
+标签：J · 运维：部署/备份/发布
+覆盖：前缀自动探测（含图标与旧路径书签）、`SCRIPT_NAME` 透传、`YIBAN_BASE_PATH` 显式
+    覆盖与不匹配时的回落、根路径部署不回归、子路径下跳转/静态/API 都带前缀、
+    子路径登录后可正常渲染数据总览。
+对应实现：`web/app.py` 的 `BasePathMiddleware`（`_detect_prefix`、`_ROOT_MARKERS`）。
+关键断言：① 根路径行为与改造前完全一致（不回归）；② 元测试从 `app.url_map` 自动推导
+    根级路由——新增路由忘了登记前缀清单立刻报红，否则线上表现为"根路径可用、
+    生产子路径 404"。
+依赖：进程内加载 `web/app.py`（importlib 隔离）+ Flask test client；临时目录与临时
+    .env；不起子进程、不需 bash/docker/网络。
 
+反向代理只需把完整 URI 原样透传，中间件自己感知前缀。
 用法：py -m pytest tests/test_subpath_deploy.py -v
 """
 import contextlib
@@ -40,8 +45,8 @@ class SubpathDeployTest(unittest.TestCase):
         os.environ["YIBAN_DB_FILE"] = os.path.join(cls.tmp, "yiban.db")
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
         os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
-        os.environ.pop("YIBAN_BASE_PATH", None)
-        spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
+        os.environ.pop("YIBAN_BASE_PATH", None)  #清掉继承值：本机 .env 配了前缀的话，"根路径不回归"那组会整组红
+        spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))  #按路径隔离加载：与真实 web 模块同名导入会串环境
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
         with contextlib.suppress(Exception):
@@ -90,7 +95,7 @@ class SubpathDeployTest(unittest.TestCase):
             path = str(rule.rule)
             with self.subTest(rule=path):
                 self.assertEqual(det(P + path), P)
-            checked += 1
+            checked += 1  #计数是元测试的自锁：一条路由都没推导出来时断言就白给
         self.assertGreaterEqual(checked, 10, "根级路由数量异常，元测试可能失效")
 
     def test_script_name_passthrough(self):
@@ -129,6 +134,45 @@ class SubpathDeployTest(unittest.TestCase):
         finally:
             os.environ.pop("YIBAN_BASE_PATH", None)
 
+    # ---- 1b. 显式前缀必须认 `.env` 那一档，且环境变量赢 ----
+    def test_base_path_from_env_file_and_precedence(self):
+        """中间件的显式前缀走唯一解析器：进程环境 → `.env` → 无。
+
+        改前中间件只读进程环境。同一枚 `YIBAN_BASE_PATH`，启动期的 Cookie 作用域
+        （`web/app.py` 的 `read_env(ENV_FILE)` 那一支）认 `.env`，逐请求的前缀改写
+        不认——一份配置两个消费方，一半生效一半不生效。
+        探针前缀刻意取 `/my`：它在 `_ROOT_PREFIXES` 清单里，自动探测对它一律给空串，
+        所以"配置生效"与"自动探测兜住"在这条路径上分得开。
+        """
+        with open(self.env_file, encoding="utf-8") as f:
+            original = f.read()
+        captured = {}
+
+        def stub(environ, start_response):
+            captured["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "")
+            captured["PATH_INFO"] = environ.get("PATH_INFO", "")
+            start_response("200 OK", [])
+            return [b""]
+
+        try:
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original + "YIBAN_BASE_PATH=/my\n")
+            os.environ.pop("YIBAN_BASE_PATH", None)
+            mw = self.webapp.BasePathMiddleware(stub)
+            mw({"PATH_INFO": "/my/login"}, lambda *a, **k: None)
+            self.assertEqual(captured["SCRIPT_NAME"], "/my",
+                             "`.env` 里的前缀对中间件无效（Cookie 那一支却认它）")
+            os.environ["YIBAN_BASE_PATH"] = "/env-wins"
+            mw({"PATH_INFO": "/my/login"}, lambda *a, **k: None)
+            self.assertEqual(captured["SCRIPT_NAME"], "",
+                             "环境变量与 `.env` 都有值时必须环境变量赢")
+            mw({"PATH_INFO": "/env-wins/login"}, lambda *a, **k: None)
+            self.assertEqual(captured["SCRIPT_NAME"], "/env-wins")
+        finally:
+            os.environ.pop("YIBAN_BASE_PATH", None)
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original)
+
     # ---- 2. 根路径部署不回归 ----
     def test_root_behavior_unchanged(self):
         r = self.c.get("/")
@@ -155,6 +199,27 @@ class SubpathDeployTest(unittest.TestCase):
         r = self.c.get(P + "/user")
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("Location"), P + "/user/account")
+
+    def test_auto_detect_bare_api_returns_json_404(self):
+        """零配置自动探测下，**裸** /tool/demo/api 必须是 JSON 404（M38 缺口）。
+
+        裸 `rest == "/api"` 既不在 _ROOT_MARKERS、也不以 "/api/" 开头，前缀探测两头
+        不命中 → 不回填 SCRIPT_NAME → PATH_INFO 仍是 `/tool/demo/api` → 落 HTML 404。
+        登记 "/api" 到 _ROOT_MARKERS 后，rest=="/api" 命中，PATH_INFO 落回 "/api"，
+        交给 /api/* 的 404 handler 出 JSON。带子路径的未知接口现状已是 JSON（非回归）。
+        """
+        r = self.c.post(P + "/api/login",
+                        json={"username": "admin", "password": "TestPass12345"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:120])
+        bare = self.c.get(P + "/api")
+        self.assertEqual(bare.status_code, 404, bare.get_data(as_text=True))
+        self.assertEqual(bare.mimetype, "application/json")
+        self.assertIn("未知接口", bare.get_json()["error"])
+        self.assertNotIn("<!DOCTYPE", bare.get_data(as_text=True))
+        # 非回归：/tool/demo/api/nope 现状已命中 "/api/" 前缀并返 JSON
+        deeper = self.c.get(P + "/api/nope")
+        self.assertEqual(deeper.status_code, 404)
+        self.assertEqual(deeper.mimetype, "application/json")
 
     def test_subpath_page_static_api_prefixed(self):
         r = self.c.get(P + "/login")

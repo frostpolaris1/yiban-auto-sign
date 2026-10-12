@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """对抗性测试：用户体验不误杀 + 安全边界。
 
-覆盖：
+标签：E · Web：认证/权限/API
+覆盖：对抗性边界——限速不误杀正常操作、IDOR、批量赋值越权、软删账号的 DELETE 语义、非法输入与日志日期路径穿越
+对应实现：`web/app.py` 的账号与用户 API（`/api/accounts/*`、`/api/me`、`/api/register`、`/api/logs`）
+关键断言：反复暂停/恢复与快速点选时间片在自由次数内不触发 429（不误杀好奇用户）；操作他人账号不得成功；请求体里的 owner/deleted/status 不得被批量赋值采纳；非对象 JSON、超长名称、负数与超大索引、非法日期一律拒绝；`/api/me` 未登录 401；内置管理员不能自助注销
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node
+
+逐项明细：
 - 暂停/恢复/再暂停：前几次自由，不误杀好奇用户；
 - 快速点选全部时间片：自由次数内不误杀；
 - IDOR：用户不能操作他人账号；
@@ -149,6 +155,31 @@ class AdversarialTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", data="{bad json", content_type="application/json")
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        # N1：/api/* 的请求态错误必须是 JSON（此前落 werkzeug text/html，前端 res.json() 炸）
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    # ---- /api/* 请求态错误（400/405/413）一律 JSON 契约（N1） ----
+
+    def test_api_wrong_method_returns_json_405(self):
+        # 对已有 /api/audit-logs（仅 GET）用错方法：此前落 HTML 405，前端读不到 error。
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/audit-logs", headers=self._csrf(token))
+        self.assertEqual(r.status_code, 405, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    def test_api_oversized_body_returns_json_413(self):
+        # MAX_CONTENT_LENGTH=64KB（web/app.py）超限 → werkzeug 413；此前 HTML。
+        c = self.webapp.create_app().test_client()
+        payload = json.dumps({"username": "admin", "password": "x" * (70 * 1024)})
+        r = c.post("/api/login", data=payload, content_type="application/json")
+        self.assertEqual(r.status_code, 413, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
 
     def test_negative_and_oversized_account_indices_rejected(self):
         c = self.webapp.create_app().test_client()
@@ -173,6 +204,10 @@ class AdversarialTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", data="[1,2,3]", content_type="application/json")
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        # N1：非对象 JSON 同样必须是 JSON 错误体（含 error 键、非 HTML）
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("error", r.get_json())
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
 
     def test_api_me_requires_login(self):
         c = self.webapp.create_app().test_client()
@@ -208,6 +243,30 @@ class AdversarialTest(unittest.TestCase):
         token = self._login(c, "admin", ADMIN_PASS)
         r = c.get("/api/logs?date=../../etc/passwd", headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
+    # ---- 子路径部署下的 404 契约（M38/F23） ----
+
+    def test_subpath_unknown_api_returns_json_404(self):
+        # 子路径部署（生产形态）下未知 /api/* 必须是 JSON 404：werkzeug 3.1 的
+        # request.path 已不含 SCRIPT_NAME（path='/api/nope'、script_root='/tool/demo'），
+        # 不能再拼 script_root 前缀判 API——否则落 HTML 错误页，前端 res.json() 解析炸。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/tool/demo/api/nope")
+        self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
+        self.assertEqual(r.mimetype, "application/json")
+        self.assertIn("未知接口", r.get_json()["error"])
+        self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
+
+    def test_subpath_unknown_page_still_html(self):
+        # 另一面：非 API 的未知页面仍走 HTML 兜底（前端兜底不得覆盖 /api/*）。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/tool/demo/no-such-page")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("text/html", r.headers.get("Content-Type", ""))
+        self.assertIn("页面不存在", r.get_data(as_text=True))
+        self.assertNotIn('"未知接口"', r.get_data(as_text=True))
 
 
 if __name__ == "__main__":

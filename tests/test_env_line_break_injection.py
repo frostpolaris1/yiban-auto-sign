@@ -12,8 +12,8 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
 活体复现的杀链（普通管理员即可发动，无需任何主管理员凭据）：
   1) PUT /api/announcement  text = "notify" + U+2028 + "YIBAN_ADMIN_PASSWORD_HASH=<攻击者哈希>"
      （公告是自由文本，路由自己的校验同样只挡 \n / \r）
-  2) POST /api/settings     {"sunday_sign": false}   ← 任意管理员都做的日常自服务写入，
-     本次写入把潜伏行实体化到真哈希之后
+  2) POST /api/settings     {"sign_order": "sequence"}  ← 任意管理员都做的日常自服务写入
+     （同值提交不进门禁），本次写入把潜伏行实体化到真哈希之后
   3) 攻击者用自己的口令登录内置主管理员；合法主管理员 401
 
 本文件钉住的修复（三处，缺一即链未死）：
@@ -28,6 +28,21 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
 全程 mock / 纯本地（Flask test client + 临时 .env/DB），无任何网络请求。
 用法（项目根目录，勿设 PYTHONIOENCODING）：
     py -m pytest tests/test_env_line_break_injection.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：提权杀链的四个环节——① 分隔符判据与 `splitlines()` 口径一致（`has_line_break`
+认得全 10 个字符）、② 告警正文落盘前的行安全化、③ `write_env_batch` 的值/键注入拒绝
+与键名白名单、④ 公告→设置的端到端杀链不再生效，外加"同键空白影子行折叠"与
+`verify_admin` 对哈希行歧义的 fail-closed。
+对应实现：`yiban/infra/env_io.py` 的 `has_line_break` / `write_env_keys` / `parse_env_file`、
+web 的公告与设置写接口、`verify_admin` 的主凭据判定。
+关键断言：`test_predicate_matches_splitlines_over_whole_charspace` 是**成对核对**的锚点——
+它拿 `str.splitlines()` 的真行为去校验收口函数，改任何一侧的字符集都会红；
+杀链用例必须断"改完之后的主管理员哈希没变"而不是只断"接口回 400"，否则半生效也算过。
+本文件覆盖的是**写入侧**注入面（值里潜伏分隔符），不覆盖解析顺序本身
+（`parse_env_file` 的 last-wins 语义是设计，靠"不许潜伏"来兜）。
+依赖：Flask test client + 临时 `.env`/DB，无网络、无 skip；r-string 里的
+`\u2028` 等宽字符按码位逐个枚举，别用 `isprintable()` 之类近似判据替代。
 """
 import contextlib
 import importlib.util
@@ -102,6 +117,9 @@ class _Base(unittest.TestCase):
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
             "YIBAN_ADMIN_USER=admin@test.local\n"
             f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            # 例行写入的载体：B 档键 + 提交同值 = 不进门禁、不新增物理行，
+            # 走的仍是同一条 .env 读-改-写路径
+            "YIBAN_SIGN_ORDER=sequence\n"
         )
         with io.open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(cls._pristine_env)
@@ -217,6 +235,31 @@ class LineBreakPredicateTest(_Base):
             "写入侧用 splitlines() 拆行，校验侧漏一个字符就留一条注入链")
 
 
+class AlertBodyLineSafeTest(_Base):
+    """`_nl_safe`（告警正文净化）与 .env 写入侧共用同一个 10 字符行模型。
+
+    旧实现只压 `\\r`/`\\n`：其余 8 个分隔符在邮件客户端与日志页里照样断行，
+    等于留下"在管理员告警正文里伪造一行"的口子（与 .env 那次 CRITICAL 同源）。
+    """
+
+    def test_every_splitlines_break_is_escaped(self):
+        for ch in ALL_BREAKS:
+            with self.subTest(ch=hex(ord(ch))):
+                out = self.webapp._nl_safe(f"甲{ch}乙")
+                self.assertNotIn(ch, out, f"U+{ord(ch):04X} 未转义，仍会在正文断行")
+                self.assertEqual(len(out.splitlines()), 1, "转义后必须是单行")
+                self.assertTrue(out.startswith("甲") and out.endswith("乙"),
+                                "只转义分隔符，不得吃掉两侧内容")
+
+    def test_plain_text_untouched_and_repeat_is_stable(self):
+        """正常值零改动；二次调用不得再改（同一值可能被链路上多处净化）。"""
+        for s in ("admin@test.local", "138****8000", "签到窗口 06:30~07:50", "制表\t正常"):
+            self.assertEqual(self.webapp._nl_safe(s), s)
+        for ch in ALL_BREAKS:
+            once = self.webapp._nl_safe(f"a{ch}b")
+            self.assertEqual(self.webapp._nl_safe(once), once, "净化必须幂等")
+
+
 class WriteEnvBatchInjectionTest(_Base):
     """兜底硬校验：值/键含任意行分隔符都必须 ValueError 且零写盘。"""
 
@@ -249,6 +292,24 @@ class WriteEnvBatchInjectionTest(_Base):
                     self.webapp.write_env_batch(
                         self.env_file, {f"YIBAN_X{ch}Y": "1"})
                 self.assertEqual(_read(self.env_file), before)
+
+    def test_key_name_whitelist(self):
+        """键名白名单（批 3 §4.13）：只认 `^[A-Z][A-Z0-9_]*$`，其余一律拒且零写盘。
+
+        行分隔符那一关挡不住的另一半：带 `=`/`#`/空白/小写/前导数字的键写进 .env 后，
+        解析侧（按首个 `=` 切分）与折叠侧（按"键名+空白+="匹配）对"这是哪一条键"
+        的理解会分叉——后写覆盖先写，正是那条提权链的落点形态。
+        """
+        self._poisoned_env()
+        before = _read(self.env_file)
+        for bad in ("yiban_x", "YIBAN X", "YIBAN_X=1", "#YIBAN_X", "1YIBAN",
+                    "", "YIBAN-KEY", "YIBAN_Ö"):
+            with self.subTest(key=bad), self.assertRaises(ValueError):
+                self.webapp.write_env_batch(self.env_file, {bad: "1"})
+        self.assertEqual(_read(self.env_file), before, "拒绝必须零写盘")
+        # 反向：不得把规则写成只认 YIBAN_ 前缀之类的过窄判定（正常键要能存）
+        self.webapp.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
+        self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_OK_2"], "1")
 
     def test_ordinary_values_still_write(self):
         """不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。"""
@@ -297,7 +358,8 @@ class EnvInjectionKillChainTest(_Base):
         self.assertEqual(_physical_lines(self.env_file), lines_before,
                          "被拒绝的请求不得改动 .env 物理行数")
         # 步骤 2：任意管理员都会做的例行自服务写入——修复前它负责"实体化"
-        r = c.post("/api/settings", json={"sunday_sign": False}, headers=h)
+        # （B 档 sign_order 提交同值：不进门禁、不新增物理行，走的仍是同一条读-改-写）
+        r = c.post("/api/settings", json={"sign_order": "sequence"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 断言一：主管理员哈希原样未动（既没被追加、也没被覆盖）
         self.assertEqual(self._master_hash_line(), master_hash,
@@ -334,7 +396,7 @@ class EnvInjectionKillChainTest(_Base):
                 self.assertEqual(self._master_hash_line(), base_hash)
                 self.assertEqual(_physical_lines(self.env_file), base_lines)
         # 拦下的所有尝试之后，再走一次例行写入也不得冒出注入行
-        r = c.post("/api/settings", json={"sunday_sign": False}, headers=h)
+        r = c.post("/api/settings", json={"sign_order": "sequence"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(_physical_lines(self.env_file), base_lines)
         self.assertEqual(self._master_hash_line(), base_hash)
@@ -344,23 +406,38 @@ class EnvInjectionKillChainTest(_Base):
         c, h = self._sub_admin()
         r = c.put("/api/announcement", json={"text": "服务器今晚 23:00 维护"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # 公告改双人发布（2026-09）后，普通管理员这一次只落草稿两键：
+        # 正式键与匿名可见文本必须原样不动（否则"草稿"就是个假名）
+        env = self.webapp.read_env(self.env_file)
+        self.assertEqual(env["YIBAN_ANNOUNCEMENT_DRAFT"], "服务器今晚 23:00 维护")
+        self.assertRegex(env["YIBAN_ANNOUNCEMENT_DRAFT_META"],
+                         rf"^{SUB_ADMIN}\|\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}$")
+        self.assertNotIn("YIBAN_ANNOUNCEMENT", env)
+        anon = self.webapp.create_app().test_client()   # 公告 GET 公开
+        self.assertEqual(anon.get("/api/announcement").get_json()["text"], "")
+        mc = self.webapp.create_app().test_client()
+        mh = self._csrf(self._login(mc, "admin@test.local", ADMIN_PASS))
+        self.assertEqual(mc.post("/api/announcement/publish",
+                                 json={"confirm_password": ADMIN_PASS},
+                                 headers=mh).status_code, 200)
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_ANNOUNCEMENT"],
                          "服务器今晚 23:00 维护")
-        anon = self.webapp.create_app().test_client()   # 公告 GET 公开
         self.assertEqual(anon.get("/api/announcement").get_json()["text"],
                          "服务器今晚 23:00 维护")
-        r = c.post("/api/settings", json={"sunday_sign": True, "account_verify": True},
+        r = c.post("/api/settings", json={"sign_order": "random",
+                                          "confirm_password": SUB_PASS},
                    headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
-        self.assertEqual(env["YIBAN_SUNDAY_SIGN"], "1")
-        self.assertEqual(env["YIBAN_ACCOUNT_VERIFY"], "1")
+        self.assertEqual(env["YIBAN_SIGN_ORDER"], "random")
         got = c.get("/api/settings", headers=h).get_json()
-        self.assertEqual(got["sunday_sign"], 1)
-        # 清空公告（空值 = 删键）仍是常规能力
+        self.assertEqual(got["sign_order"], "random")
+        # 清空草稿（空值 = 删键）仍是常规能力；已发布的那一条不会被它牵连
         r = c.put("/api/announcement", json={"text": ""}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertNotIn("YIBAN_ANNOUNCEMENT", _read(self.env_file))
+        raw = _read(self.env_file)
+        self.assertNotIn("YIBAN_ANNOUNCEMENT_DRAFT", raw)
+        self.assertIn("YIBAN_ANNOUNCEMENT=服务器今晚 23:00 维护", raw)
 
 
 # ---------------------------------------------------------------------------

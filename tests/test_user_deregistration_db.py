@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""用户主动注销：数据库层测试（软删除 + 宽限期 + 邮箱复用）。
+"""用户主动注销：数据库层（软删除 + 宽限期 + 邮箱复用）。
 
-覆盖：
-- 迁移 v5：users 软删除列、部分唯一索引、注销请求表；
-- 软注销软删除账号，并**保留** time_prefs（物理清除时才清，2026-09-10 批次20 起）；
-- 撤销注销；
-- 邮箱复用；
-- find_user 只返回有效用户；
-- 最后注册管理员判断；
-- 注销请求计数；
-- 超过宽限期 purge。
+标签：L · 注销与软删
+覆盖：迁移 v5（users 软删除列、部分唯一索引、注销请求表）；软注销时软删除账号但
+    **保留** `time_prefs`（物理清除时才清）；撤销注销；邮箱复用；`find_user` 只返回
+    有效用户；最后注册管理员判断；注销请求计数；超宽限期 purge。
+对应实现：`yiban/store/migrations.py`（v5）与 `yiban/store/users.py`
+    （`find_user`、`find_user_any`、`purge_deleted_users`）；到期连带清除
+    `time_prefs` 走 `yiban/store/cleanup.py` 的 purge 路径。
+关键断言：软删与物理删是两条路径——宽限期内只打标记（偏好数据留着，撤销后原样可用），
+    到期才连带清除 `time_prefs`；把偏好提前清掉就等于让"可撤销"变成空壳。
+依赖：临时 sqlite（真实迁移路径）；纯数据层，不启 web、不触网、不发信。
 """
 import contextlib
 import datetime
@@ -17,6 +18,8 @@ import os
 import shutil
 import tempfile
 import unittest
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -169,7 +172,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
         self.assertTrue(db.is_last_registered_admin("admin1@test.local"))
 
     def test_delete_request_count_and_record(self):
-        since = (datetime.datetime.now() - datetime.timedelta(minutes=1)).strftime(
+        since = (clock.now() - datetime.timedelta(minutes=1)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         db.record_user_delete_request("user@test.local", "iphash1")
@@ -183,7 +186,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
         db.soft_delete_user_with_accounts("old@test.local")
         # 把 deleted_at 改成超过 3 天
         conn = db.get_conn()
-        old = (datetime.datetime.now() - datetime.timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - datetime.timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "old@test.local"))
         conn.commit()
         db.purge_deleted_users(days=3)
@@ -200,7 +203,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
             "保留期内记录不应被清理")
         # 改成 31 天前 → 清除
         conn = db.get_conn()
-        old = (datetime.datetime.now() - datetime.timedelta(days=31)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (clock.now() - datetime.timedelta(days=31)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE user_delete_requests SET created_at=?", (old,))
         conn.commit()
         db.purge_old_delete_requests(days=30)

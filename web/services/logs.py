@@ -1,0 +1,357 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+"""签到日志族与账号状态族：日志行可见性、按天日志读写解析、状态文件与熔断暂停。
+
+**功能**
+日志页、日志导出与账号卡「最近记录」共用的日志读取链路：行可见性判定
+`_log_line_visible`（组件口径）与级别档过滤 `_filter_log_level`（人看面口径），
+两者共用同一份级别档次表 `LEVEL_RANK`；尾部倒读 `_tail_lines`（上限
+`_LOG_TAIL_BYTES`）、按天文件路径 `log_path_for`、逐行解析 `parse_sign_log` /
+`_log_lines_for`、日期串形状校验 `_is_valid_date_str`、最近有日志的日期
+`_today_has_logs` / `_most_recent_log_date`、出站脱敏 `_mask_log_phones`；以及账号
+状态族的读取与熔断记录清理：按日状态文件 `load_sign_state`、账密故障暂停集合
+`_cred_paused_phones`、凭据变更后清熔断 `clear_fuse_pause` / `clear_fuse_on_cred_change`。
+
+**归属**
+原 `web/app.py` 的模块级日志与状态辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
+转发，把它自己持有、而本模块需要的模块级名字——日志文件路径 `LOG_FILE`、状态目录
+`STATE_DIR`、倒读实现 `_tail_lines`——在调用时刻现取后注入。
+
+**复用**
+`parse_sign_log` 与 `_log_lines_for` 共用同一条可见性规则（`_log_line_visible`）与同一份
+行正则 `SIGN_LOG_RE`，避免两处各写一遍必然漂移；`_today_has_logs` / `_most_recent_log_date`
+复用 `_log_lines_for` 的整读判定；`clear_fuse_on_cred_change` 复用 `clear_fuse_pause`。
+
+**通信**
+本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
+模块）。日志目录、状态目录与倒读实现都作为显式参数接收：它们在 `web.app` 上是会被测试
+改写、也会随运行方式变化的模块级名字（既有测试直接赋值 `web.app.LOG_FILE` 来换日志目录，
+又在 `web.app` 上打桩 `_tail_lines` 来替换解析输入），本模块另持一份绑定会让这些改写静默
+失效。熔断状态文件的读写一律走 `yiban.cred_state` 的唯一入口，不自建第二套。
+"""
+
+import json
+import logging
+import os
+import re
+from datetime import datetime, timedelta
+
+from yiban import clock, cred_state
+from yiban import status as yiban_status
+from yiban.masking import mask_phone as _mask_phone
+from yiban.masking import mask_phones_in_text as _mask_phones_in_text
+
+# 与 web.app 同名的日志通道：熔断清理失败的告警落回既有通道，便于运维沿用同一处过滤
+logger = logging.getLogger("web")
+
+
+# ---------------------------------------------------------------------------
+# 日志行可见性
+# ---------------------------------------------------------------------------
+#: 级别档次（**唯一一份**）：jmer 批次统一过级别语义——INFO 及以下=过程面，
+#: WARNING 及以上=人看面。可见性过滤与档次过滤都从这一份推出，不各写一套判据。
+LEVEL_RANK = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "WARNING": 30,
+    "ERROR": 40,
+    "CRITICAL": 50,
+}
+
+#: `/api/logs` 的级别档：`warn`（默认，收起 INFO/DEBUG）/ `all`（保留可见性口径全量）。
+LOG_LEVEL_WARN = "warn"
+LOG_LEVEL_ALL = "all"
+LOG_LEVELS = (LOG_LEVEL_WARN, LOG_LEVEL_ALL)
+LOG_LEVEL_DEFAULT = LOG_LEVEL_WARN
+
+
+def level_rank(level):
+    """级别名 → 档次值；未知级别回 0（低于任何已知级别 ⇒ 非人看面）。"""
+    return LEVEL_RANK.get(str(level or "").upper(), 0)
+
+
+def _log_line_visible(level, logger_name):
+    """日志页 / 导出 / 账号卡「最近记录」显示哪些行（三处共用这一份口径）。"""
+    if logger_name == "yiban" or logger_name.startswith("yiban."):
+        # 子模块也算：签到细节都在 yiban.* 下（protocol 登录成功、client 生成定位与签到
+        # 成功、engine.* 逐账号判定），只认精确名会让页面只剩汇总与结果
+        return True  # DEBUG 也放行：那是部署自己开的级别，开了就该看得到
+    # 其它组件（werkzeug / mailer / notify）的 INFO 与签到无关（请求日志、发送成功），
+    # 全放会把日志页灌满、把故障留痕冲走。判据复用同一份档次表：不低于 WARNING。
+    return level_rank(level) >= level_rank("WARNING")
+
+
+def _filter_log_level(lines, level):
+    """按级别档过滤日志行 → (保留行, 被档次收起的行数)。
+
+    `all` 档不设下限；其余档只留不低于 WARNING 的行。解析不出级别的行一律保留
+    并计入保留侧（宁可见，也不静默丢）。`lines` 来自 `_log_lines_for`，故已过
+    可见性口径——本函数只做第二层（档次），两层是不同的事实。
+    """
+    if level == LOG_LEVEL_ALL:
+        return list(lines), 0
+    floor = level_rank("WARNING")
+    kept = []
+    collapsed = 0
+    for line in lines:
+        mm = SIGN_LOG_RE.match(str(line).strip())
+        if mm is None or level_rank(mm.group(2)) >= floor:
+            kept.append(line)
+        else:
+            collapsed += 1
+    return kept, collapsed
+
+
+# 日志格式（与 signin.py 相同）
+# 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
+# logger 名必须允许点分（`yiban.client` / `yiban.platform` …）：只认 `\w+` 的话，
+# 签到链路的细节行（登录成功 / 生成定位 / 签到成功）整行匹配失败被丢弃，日志页只剩汇总
+SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] ([\w.]+): (.*)")
+
+#: 日志倒读上限 2MB（约 2 万行）
+_LOG_TAIL_BYTES = 2 * 1024 * 1024
+
+
+def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
+    """从文件尾部读取最多 max_bytes 的完整文本行：大日志避免整读入内存。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    try:
+        with open(path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # 丢弃首个不完整行
+                raw = f.read()
+            else:
+                raw = f.read()
+    except OSError:
+        return []
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+
+def parse_sign_log(path, tail_lines):
+    """解析签到日志：返回最近日志行列表（可见性口径见 `_log_line_visible`）。
+
+    只返回日志行，不返回"日志符号 → 图标"这类派生状态：账号状态的事实源是 sign-state
+    文件（`load_sign_state`，`/api/accounts`），日志符号与前端状态码语义不符，透传会把
+    前端图标/统计卡污染。
+
+    倒读实现由调用方传入（`web.app` 的 `_tail_lines`）：它是本函数的既有打桩点，
+    测试以它替换解析输入。
+    """
+    recent = []
+    for line in tail_lines(path):
+        m = SIGN_LOG_RE.match(line.strip())
+        if not m:
+            continue
+        _date, level, logger_name, _msg = m.groups()
+        if not _log_line_visible(level, logger_name):
+            continue
+        recent.append(line.strip())
+    return recent
+
+
+def _is_valid_date_str(s):
+    """YYYY-MM-DD 格式且为真实日历日期（2026-13-99 这类非法值拒绝）。"""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def log_path_for(log_file, date_str=None):
+    """按天日志文件路径：{log_file 目录}/sign-YYYY-MM-DD.log（date_str 缺省=今天）。
+
+    日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
+    run.sh / signin.py / 手动签到子进程均写入当天文件（保留 `LOG_FILE` 配置的目录）。
+
+    参数注入口径见模块头「通信」（`LOG_FILE` 可被测试直接赋值改写）。
+    """
+    date_str = date_str or clock.now().strftime("%Y-%m-%d")
+    return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
+
+
+def _log_lines_for(date_str, path_for, tail_lines, stats=None):
+    """读取指定日期日志的行（行首日期过滤防跨天残留；可见性口径见 `_log_line_visible`）。
+
+    文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
+    路径与倒读实现由调用方传入，故日志目录切到别处的既有打桩面继续生效。
+
+    `stats`：可选 dict，读入 `stats["dropped"]` = 被丢弃的**无法解析**行数。
+    上游按宽行模型（`splitlines()`）切文本，行内裸 NEL/LS/PS 会把一条逻辑行
+    劈成两半：前半仍像合法行照常展示，后半既不匹配行首日期前缀也过不了
+    `SIGN_LOG_RE`——不计数就整块静默消失，"看起来只有一半日志"。这里刻意
+    不改切行语义（窄侧 `readline()` 只按 `\\n` 切，改成一致会动所有行的
+    归属），只把丢掉多少数出来给调用方回显（MF-99）。收录行的集合与原
+    口径逐字一致；可见性过滤只是**设计内**的隐藏，不算丢弃。
+    """
+    prefix = f"[{date_str} "
+    out = []
+    dropped = 0
+    for line in tail_lines(path_for(date_str)):
+        if line.startswith(prefix):
+            m = SIGN_LOG_RE.match(line.strip())
+            if not m:
+                dropped += 1  # 当日前缀却解析不出：形状残缺的脏行
+            elif _log_line_visible(m.group(2), m.group(3)):
+                out.append(line.strip())
+            # 能解析但被可见性过滤：设计内的隐藏，不是"没算进去的行"，不计
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue  # 空行无内容可丢，不计
+        if SIGN_LOG_RE.match(stripped):
+            continue  # 能解析 = 完整的外日残留行（跨天口径，设计内剔除）
+        dropped += 1  # 解析不出：被撑开的后半行/续行，静默消失正是要消灭的害
+    if stats is not None:
+        stats["dropped"] = dropped
+    return out
+
+
+# 最近日志日期缓存 {date: "YYYY-MM-DD"}：轮询每 10s 调用，避免每次都扫描 30 天文件
+_most_recent_log_cache = {"history_date": None, "checked_day": ""}
+
+
+def _today_has_logs(path_for, tail_lines):
+    """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
+
+    """
+    # 整读而不倒读：尾部被其他 logger（如 web 每日清理循环的 yiban.db 告警）刷屏时，
+    # 只看尾部会得出「今天无日志」而回退到历史日期；按天文件体积有限，整读开销可忽略
+    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d"), path_for, tail_lines))
+
+
+def _most_recent_log_date(max_days, path_for, tail_lines):
+    """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD。
+
+    每次先检查今天（开销小，今天有新日志立即生效）；无日志时用历史缓存（每天只扫一次）。
+    """
+    today = clock.now().strftime("%Y-%m-%d")
+    # 今天有日志 → 直接返回今天（并更新缓存）
+    if _today_has_logs(path_for, tail_lines):
+        _most_recent_log_cache["history_date"] = today
+        return today
+    # 今天无日志：跨天重置缓存，重新扫描历史
+    if _most_recent_log_cache["checked_day"] != today:
+        _most_recent_log_cache["checked_day"] = today
+        _most_recent_log_cache["history_date"] = None
+        for i in range(1, max_days + 1):
+            d = (clock.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
+            # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
+            if _log_lines_for(d, path_for, tail_lines):
+                _most_recent_log_cache["history_date"] = d
+                break
+    return _most_recent_log_cache["history_date"] or today
+
+
+# ---------------------------------------------------------------------------
+# 出站脱敏
+# ---------------------------------------------------------------------------
+def _mask_log_phones(line):
+    """日志行内全部 11 位手机号脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
+
+    直接复用输出面兜底同一实现 `mask_phones_in_text`：只认 `[11 位]` 方括号形态会漏过
+    中文逗号分隔等其它位置的裸号，展示/导出层与落盘面必须是同一个号码口径。
+    """
+    return _mask_phones_in_text(line)
+
+
+# ---------------------------------------------------------------------------
+# 按日签到状态
+# ---------------------------------------------------------------------------
+def load_sign_state(state_dir, date_str=None):
+    """读取按日结构化状态文件：{phone: {status, message, time, task}}。
+
+    缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
+    覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
+    两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
+
+    `state_dir` 由调用方传入（`web.app` 的 `STATE_DIR`）——它是可被参数覆盖、
+    也会随运行方式变化的模块级名字。
+    """
+    date_str = date_str or clock.now().strftime("%Y-%m-%d")
+    path = os.path.join(state_dir, f"sign-state-{date_str}.json")
+    try:
+        # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data:
+            return data
+    except (OSError, ValueError):
+        pass
+    # 回退：sign-daily（旧版符号 ✅/❌/➖）→ 状态码
+    daily_path = os.path.join(state_dir, f"sign-daily-{date_str}.json")
+    try:
+        with open(daily_path, encoding="utf-8-sig") as f:
+            daily = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(daily, dict):
+        return {}
+    sym_map = {"✅": yiban_status.STATUS_SUCCESS,
+               "❌": yiban_status.STATUS_FAILED,
+               "➖": yiban_status.STATUS_NO_TASK}
+    return {
+        phone: {"status": sym_map.get(sym, yiban_status.STATUS_PENDING),
+                "message": "", "task": "default"}
+        for phone, sym in daily.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+# 账密故障暂停（熔断）
+# ---------------------------------------------------------------------------
+def _cred_paused_phones():
+    """处于「账密故障暂停」（熔断/半开试探中）的手机号集合，供设置页容量拆解展示。
+
+    数据源经 `yiban.cred_state` 唯一入口（读写口径与 signin 一致）：`paused_since`
+    非空即暂停中。**只服务展示**——配额与调度判定一律不读这里，所以退化成本低。
+    """
+    data = cred_state.read()
+    if not data:
+        # 一切异常退化为空集合：该文件由签到进程按"无暂停=文件不存在"语义维护，随时
+        # 可能缺失、被删或半写，设置页不能因一个可选状态文件读不出来就 500
+        return set()
+    return {
+        str(phone)
+        for phone, rec in data.items()
+        if isinstance(rec, dict) and str(rec.get("paused_since", "") or "").strip()
+    }
+
+
+def clear_fuse_pause(phone):
+    """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
+
+    必须走 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）：自己读整个文件、
+    删一条、再整体写回且不持锁，会与签到进程的收尾保存并发——按自己的读取结果重写会
+    抹掉对方写入的其他账号记录。文件不存在时静默返回：用户每次编辑账号都走到这里，
+    按 I/O 失败告警会刷屏。
+    """
+    try:
+        cred_state.clear(phone)
+    except Exception as e:
+        # 留痕：裸吞会让"改密后仍暂停"无从排查
+        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]",
+                       _mask_phone(phone), e)
+
+
+def clear_fuse_on_cred_change(old_phone, old_password, clean, old_phone_code=None):
+    """仅凭据（密码/手机号/设备识别码）实际变更时清除熔断计数；只改备注/状态等不清。
+
+    只清真正变过的那一项：备注/状态等编辑一律不清——任意编辑都清会让 fail_days 反复
+    归零，熔断永不跳闸。设备识别码与 password 同档（store 写侧同档加密/重加密、只进
+    登录表单的 Code），改写它同样可能让签到从失败转可用，故按凭据变更对待；
+    `old_phone_code=None`（调用方没带旧识别码）或 clean 里没有该字段（部分字段更新）
+    时一律不比较，防把"没提供"当成"改过"。
+    """
+    if old_phone != clean["phone"]:
+        clear_fuse_pause(old_phone)  # 改绑：主体已迁走，清旧手机号的条目
+    if clean["password"] != old_password:
+        clear_fuse_pause(clean["phone"])  # 改密：新密码可能已经能用，立刻给一次重试资格
+    if (old_phone_code is not None and "phone_code" in clean
+            and (clean["phone_code"] or "") != (old_phone_code or "")):
+        clear_fuse_pause(clean["phone"])  # 改写/清除识别码：换码后可能已经能用，给一次重试资格

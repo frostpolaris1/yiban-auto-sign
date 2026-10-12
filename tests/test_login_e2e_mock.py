@@ -1,18 +1,35 @@
 # -*- coding: utf-8 -*-
 """登录 / 签到链的**端到端演练**：真 HTTP 往返 + 假易班服务端（绝不碰真实易班）。
 
-为什么需要这一层：登录路径是"钱路"——请求形状、跳转顺序、成功标志任一处改错都可能
-悄悄坏到线上，而单测用脚本化响应只能证明"我们发的确实是这个形状"，证明不了"这套形状
-能跑完一整条链"。这里用 `scripts/loadtest/mock_yiban.py` 起一个假服务端，让真实客户端
-从头跑到尾（默认 KillYiBan 流程 + 旧 iOS 流程两条），并按落盘 JSONL 断言**握手顺序**。
+标签：K · 登录协议与第三方隔离
+覆盖：默认 KillYiBan 流程的整链演练（登录 + 探针 + 一次签到）、旧 iOS
+   流程的演练、usersure
+   与登录页两种被风控位置的表现差异、签到最后一步被服务端拒绝的业务层判定、按落盘
+   JSONL 断言握手顺序。
+对应实现：tests/fake_yiban_server.py（假服务端）、yiban/platform.py 与
+   client 外观、scripts/signin.py 的登录与签到编排。
+关键断言：端到端跑的是真 HTTP
+   往返：脚本化响应的单测只能证明「我们发的确实是这个形状」，证明不了「这套形状能跑完一整条链」。因此必须响亮失败地确认回环流量没被本机加速器/TUN
+   按 Host
+   头转发到真实易班——否则用例只是「失败」，而真实请求量、账号锁定、风控都已经发生。URL
+   改写只发生在连接层且保留原始 Host，故响应 url
+   必须还原成逻辑形态，不然逐跳白名单校验会把回环地址误判成站外。
+依赖：进程内假服务端（127.0.0.1 随机端口、明文 HTTP）+ requests 适配器改写 +
+   真回环；本机装有按 Host 转发的加速器/TUN
+   时会被守卫判为拦截并报错要求先退出。演练用**串行**假服务端
+   （`create_servers(threaded=False)`）：单线程顺序处理使 JSONL
+   落盘序=请求到达序，握手顺序断言因此确定。此前默认线程化、落盘序=
+   **完成序**，满载 runner 上末条登录记录可能被探针反超（两个
+   rehearsal 曾"并发全量偶发红、串行复跑绿"），根因与修复见
+   `.superpowers/sdd/m3-batch1-plan-20260925/task-e2e-rerun.md`「CI
+   flake 根治」节。
 
 假服务端跑在回环**明文 HTTP** 上；客户端的 https URL 由**测试侧适配器**改写到本机
 端口——不改被测代码的任何常量或分支，CI 也不需要 root/TLS/改 hosts。
 """
-import importlib
+import importlib.util
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
@@ -25,11 +42,12 @@ import signin
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-_LOADTEST = os.path.join(_ROOT, "scripts", "loadtest")
-if os.path.dirname(_LOADTEST) not in sys.path:
-    sys.path.insert(0, os.path.dirname(_LOADTEST))
-
-mock_yiban = importlib.import_module("loadtest.mock_yiban")
+#: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）：按 __file__ 相对
+#: 路径装载，不依赖 sys.path 里的 `loadtest.*` 命名空间包。
+_FAKE_YIBAN = os.path.join(_HERE, "fake_yiban_server.py")
+_spec = importlib.util.spec_from_file_location("_fake_yiban_server", _FAKE_YIBAN)
+mock_yiban = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(mock_yiban)
 
 
 _REAL_MOCK_SEND = None  # 由下方在类定义后绑定：打补丁时不能再按类属性取（会递归）
@@ -48,11 +66,18 @@ class _LocalMockAdapter(requests.adapters.BaseAdapter):
         self._inner = requests.adapters.HTTPAdapter()
 
     def send(self, request, **kwargs):
+        logical_url = request.url  # 逻辑 URL（https://<host>/…，连接层改写前）
         parts = urlsplit(request.url)
         path = parts.path + (f"?{parts.query}" if parts.query else "")
         request.headers["Host"] = parts.netloc
         request.url = self._base + path
-        return self._inner.send(request, **kwargs)
+        resp = self._inner.send(request, **kwargs)
+        # 改写只发生在连接层：响应 URL 必须保持逻辑形态，否则协议层基于
+        # resp.url/history 的白名单判定（M8 逐跳校验）会把回环地址误判为
+        # "跳转 URL 不在白名单"。history 里的每一跳也走本 send（重定向时
+        # requests 会用 Location 重新构造逻辑 request），url 同样被还原。
+        resp.url = logical_url
+        return resp
 
     def close(self):
         self._inner.close()
@@ -70,22 +95,87 @@ class _FakeYiban:
         state = mock_yiban.MockState(log_path=self.log_path)
         config = mock_yiban.MockConfig(**cfg)
         servers, state, config = mock_yiban.create_servers(
-            host="127.0.0.1", port=0, cert=None, key=None,
+            host="127.0.0.1", port=0, cert=None, key=None, # port=0 让系统挑空闲端口：并发跑测时各用例的假服务端不互相抢口
             state=state, config=config, enable_ipv6=False,
+            threaded=False, # 单线程串行：落盘序=到达序（默认线程化时落盘序=完成序，满载 runner 上握手轨迹会乱序，CI 曾因此偶发红）
         )
-        self.server, self.state = servers[0], state
+        self.server, self.state = servers[0], state # enable_ipv6=False 下只有一个 listener，取错索引就连到不监听的 socket 上
         self.port = self.server.server_address[1]
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self._thread.start()
+        self._assert_loopback_is_not_intercepted()
+
+    def _assert_loopback_is_not_intercepted(self):
+        """响亮失败守卫：确认发往本机回环的请求**真的**落在本用例的假服务端上。
+
+        为什么必须有：适配器把 URL 改写成 `http://127.0.0.1:<port>` 但**保留原始 Host 头**
+        （假服务端按 Host 统计）。于是任何本机"加速器 / 透明代理 / TUN 模式"都可能按 Host
+        把请求转发到**真实易班**——请求量、账号锁定、风控都会真实发生，而用例只是"失败"，
+        看不出它其实打过真站。实测踩到一次：Steam++ 加速器监听 443 时，
+        响应头带 `Server: WAF` 与 `.yiban.cn` 的真站 cookie，假服务端一条记录都没收到。
+
+        判据：带**原始 Host 头**（`oauth.yiban.cn`）去探假服务端自己的运维入口 `/__health` ——
+        这与真实请求走的是**同一条路径**（适配器改写 URL 但保留 Host），拦截层正是按 Host
+        决定往真站转发；拿到的不是假服务端就报错，并给出可操作处置（退出加速器/系统代理后重跑）。
+        """
+        import requests as _rq
+        # 判据只有一条：带**原始 Host** 探假服务端的运维入口（与真实请求同一条路径）。
+        # 不查 `getproxies()` 是因为**本机常开着系统代理**，而 `_client()` 已把会话设为
+        # `trust_env=False`（会话不看代理），此时系统代理并不影响本用例；
+        # 真正要防的是**透明拦截**（加速器/TUN 按 Host 转发），那只能靠这一探发现。
+
+        try:
+            r = _rq.get(f"http://127.0.0.1:{self.port}/__health",
+                        headers={"Host": "oauth.yiban.cn"}, timeout=3) # 探一次就够：判据是「回环上谁在应答」，不是这个健康检查本身有没有用
+        except Exception as e:
+            self._fail_intercepted(f"直连回环失败: {type(e).__name__}: {e}")
+            return
+        server = r.headers.get("Server", "")
+        if "yiban-mock" not in server.lower():
+            self._fail_intercepted(
+                f"回环响应不是假服务端（Server={server!r}，body 前 60 字={r.text[:60]!r}）")
+
+    @staticmethod
+    def _fail_intercepted(detail):
+        raise AssertionError(
+            "本机回环流量被拦截，假服务端收不到请求——本用例需要真实回环才能保证"
+            "「绝不连接真实易班」。请退出加速器/系统代理/TUN 模式后重跑。\n"
+            f"细节: {detail}"
+        )
 
     def close(self):
         self.server.shutdown()
         self.server.server_close()
 
     def requests(self):
-        """逐请求记录（按发生顺序），来自假服务端的 JSONL。"""
-        with open(self.log_path, encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
+        """逐请求记录（按发生顺序），来自假服务端的 JSONL。
+
+        "按发生顺序"由串行假服务端保证：上一请求落盘后才会 accept 下一请求，
+        到达序=落盘序（线程化服务则只保证完成序，握手轨迹会乱序）。
+
+        ⚠ 容错一：假服务端**在写完响应之后**才落盘。故首个业务请求落盘前，
+        日志文件还不存在。此时"文件不存在"与"还没有请求"同义，按 0 条返回。
+        不得改成"断言文件必在"——那会让紧随请求之后的读者随机红（工单 kgwn）。
+        ⚠ 容错二：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
+        并发下可能读到只写了一半的末行 → `json.loads` 抛 JSONDecodeError。
+        故只把**无法解析的末行**当作"尚未写完"跳过；中间出现坏行仍按错误抛出，
+        免得真把"日志写坏了"当成正常。
+        """
+        try:
+            with open(self.log_path, encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+        except FileNotFoundError:
+            return []  # 尚无业务请求：文件还没创建 = 0 条
+        rows = []
+        for i, line in enumerate(lines):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                if i == len(lines) - 1:
+                    break  # 末行未写完（并发追加）
+                raise
+        # 运维入口（存活自检 / 统计）不算业务请求：本类 setUp 的"回环被拦截"守卫会探 /__health
+        return [r for r in rows if r.get("path") not in ("/__health", "/__stats")]
 
     def wait_paths(self, count, timeout=3.0):
         """等落盘记录达到 `count` 条后返回路径序列。
@@ -123,7 +213,7 @@ class _E2EBase(unittest.TestCase):
         """构造真实客户端并把它的 https 流量改写到假服务端。
 
         会话缓存（db）在演练里显式关闭：那不是协议链的一部分，且会引入库依赖；
-        缓存本身的语义由 `tests/test_session_cache_db.py` 与 `tests/test_login_protocol_shape.py`
+        缓存本身的语义由 `tests/test_session.py` 与 `tests/test_login_protocol_shape.py`
         覆盖。
         """
         acc = signin.Account(phone="13800138000", password="secret-pw",
@@ -134,6 +224,12 @@ class _E2EBase(unittest.TestCase):
             with mock.patch.object(signin.db, "is_initialized", return_value=False):
                 client = signin.YibanClient(acc)
         client.session.mount("https://", _LocalMockAdapter(f"http://127.0.0.1:{self.mock.port}"))
+        # **必须关掉系统/环境代理**：本用例要求完全离线，而 requests 默认 `trust_env=True`
+        # 会读系统代理设置（Windows 注册表 / 环境变量）。实测踩到一次：本机开着 Clash 类代理
+        # （127.0.0.1:7897）时，回环请求被代理按 **Host 头**（`oauth.yiban.cn`）转发到真实易班
+        # ——假服务端一条记录都收不到，而用例只是报"登录失败"，看不出真站已被访问过。
+        client.session.trust_env = False
+        client.session.proxies = {}
         return client
 
 
@@ -227,6 +323,83 @@ class InjectedFailureE2ETest(_E2EBase):
         self.assertFalse(skip)
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("mock injected signIn failure", message)
+
+
+class StrictFormE2ETest(_E2EBase):
+    """严格表单解析（strict_form）：签到提交必须**声明表单 Content-Type**。
+
+    假服务端开 `strict_form` 后按 servlet 容器语义处理表单：POST 表单端点只解析声明了
+    `Content-Type: application/x-www-form-urlencoded` 的请求体；signIn 缺该头时回真实
+    上游的 `code=1, msg="定位获取失败"`。本类因此复现 2026-10-08 实机 4 轮全拒的形状。
+
+    存在理由（钉测缺口）：原来的假服务端一律按 `Content-Length` 读体、**从不看**
+    Content-Type，日志演练也对这条头零断言，故"签到体少一个 Content-Type"在 4349 条
+    全量里绿着上了实机。默认登录流程的会话头（KILLYIBAN_HEADERS）本就不含
+    Content-Type，而旧实现把体作为 dict 交给 requests（自动补头）；换成预编码字符串后
+    补头不再发生，缺头只在**默认流程**暴露——旧 iOS 流程的会话头自带该头，故仍绿。
+    """
+
+    def setUp(self):
+        self.mock = _FakeYiban(strict_form=True)
+        self.addCleanup(self.mock.close)
+
+    def test_default_flow_signin_declares_form_content_type(self):
+        client = self._client()
+        client.login_killyiban()
+        self.assertTrue(client.logged_in, "登录链应跑完（usersure 本就自带 Content-Type）")
+        success, message, skip, status = client.signin()
+        self.assertTrue(success, f"签到应成功: {message}")
+        self.assertFalse(skip)
+        self.assertEqual(status, signin.STATUS_SUCCESS)
+
+    def test_legacy_flow_signin_still_declares_form_content_type(self):
+        """旧流程的会话头自带带 charset 的 Content-Type，签到不得把它丢掉。"""
+        client = self._client(legacy=True)
+        client.login()
+        self.assertTrue(client.logged_in)
+        success, message, skip, status = client.signin()
+        self.assertTrue(success, f"旧流程签到应成功: {message}")
+        self.assertFalse(skip)
+        self.assertEqual(status, signin.STATUS_SUCCESS)
+
+
+class MockLogAbsentIsEmptyTest(unittest.TestCase):
+    """竞态守卫（工单 kgwn）：假服务端**在响应之后**才落盘，读者会撞上"文件尚未创建"。
+
+    本用例钉住 CI 偶发红的根因。`KillYiBanE2ETest.test_waf_on_usersure_is_loud`
+    的 `wait_paths(1)` 在首个业务请求落盘前就 `open()`，故抛 `FileNotFoundError`。
+    本用例的复现手法是确定性的：把 `MockState.record` 换成被闸门挡住的替身，
+    使"客户端已拿到响应、日志文件尚未创建"必然出现，不靠反复跑碰运气。
+
+    判据两条。第一条：文件不存在 == 还没有请求 == 0 条。第二条：闸门一开，
+    轮询必须等到那条记录（deadline 语义不变）。
+    """
+
+    def test_reader_survives_log_written_after_response(self):
+        fake = _FakeYiban()
+        self.addCleanup(fake.close)
+        real_record = fake.state.record
+        gate = threading.Event()
+
+        def gated_record(*args, **kwargs):
+            gate.wait(10.0)  # 挡住落盘：把竞态窗口拉成一个确定状态
+            return real_record(*args, **kwargs)
+
+        with mock.patch.object(fake.state, "record", gated_record):
+            r = requests.get(f"http://127.0.0.1:{fake.port}/code/html",
+                             headers={"Host": "oauth.yiban.cn"}, timeout=5)
+            self.assertEqual(r.status_code, 200)
+            self.assertFalse(os.path.exists(fake.log_path),
+                             "前置：闸门未开，此刻日志文件必然还没创建")
+            self.assertEqual(fake.requests(), [], "文件还没创建 = 0 条，不是错误")
+            gate.set()
+            self.assertEqual(fake.wait_paths(1), ["/code/html"],
+                             "闸门一开，轮询必须等到那条记录")
+            t0 = time.monotonic()
+            self.assertEqual(fake.wait_paths(2), ["/code/html"],
+                             "等不到第 2 条时按 deadline 返回当前内容，不抛异常")
+            self.assertLess(time.monotonic() - t0, 8.0,
+                            "等不到也必须按 deadline 返回：不得放宽等待上限掩盖真实缺失")
 
 
 if __name__ == "__main__":

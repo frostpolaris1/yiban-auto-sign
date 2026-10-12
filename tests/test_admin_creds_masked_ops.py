@@ -1,15 +1,26 @@
 # -*- coding: utf-8 -*-
-"""2026-08-20 对抗性审查修复回归测试。
+"""管理员凭据门禁、账号 idx 防错位与 my-accounts 出站脱敏的回归。
 
-覆盖：
-1. 空凭据/部分配置管理员登录拒绝（P1：verify_admin 空配置直通）
-2. idx 寻址防错位校验：单账号 mutation 携带 phone 不匹配 → 409（P1：列表漂移错位操作）
+分条说明：
+1. 空凭据/部分配置管理员登录拒绝（`verify_admin` 曾对空配置直通）
+2. idx 寻址防错位校验：单账号 mutation 携带 phone 不匹配 → 409（列表漂移会错位操作）
 3. 批量接口 phones 对齐校验 + bool 索引混淆修复
-4. /api/my-accounts 日志出站脱敏（P3：与 /api/my-logs 口径统一）
+4. /api/my-accounts 日志出站脱敏（与 /api/my-logs 同口径）
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
-    python -m pytest tests/test_adversarial_fixes_0820.py -v
+    python -m pytest tests/test_admin_creds_masked_ops.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：登录侧空/半配置凭据（内置管理员）、账号 mutation 的 idx↔phone 对齐（单条与批量）、
+`true` 被当成索引的混淆、my-accounts 响应体里日志行的出站脱敏。
+对应实现：`web/app.py` 的 `verify_admin` / 账号单条与批量路由 / `api_my_accounts`，
+出站脱敏走展示层 `_mask_log_phones`（与 `/api/my_logs` 同一函数）。
+关键断言：409 之外还必须断"库里那行没被动过"——错位操作即使回错状态码也可能已写；
+出站脱敏只喂了**方括号形态**的号（`[13800138000]`），裸号形态的出站面不在本用例覆盖内
+（那是 `test_logs_export_masking.py` 与 `test_log_masking_formatter.py` 的口径）。
+依赖：Flask test client + 临时库/临时日志目录，无网络；内置管理员口令哈希经
+`_write_env` 现写现恢复，改的是临时 `.env` 而非仓库那份。
 """
 import contextlib
 import importlib.util
@@ -19,7 +30,8 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -68,7 +80,10 @@ class AdversarialFixes0820Test(unittest.TestCase):
     @classmethod
     def _write_env(cls, admin_user=None, admin_pass=None):
         """按需写 .env：admin_user/admin_pass 任一为 None 即不写该行（构造部分配置场景）。"""
-        lines = [f"YIBAN_ACCOUNTS_KEY={TEST_KEY}"]
+        lines = [f"YIBAN_ACCOUNTS_KEY={TEST_KEY}",
+                 # 本类钉的是"口令正确时的防错位 409 / 脱敏回显"，固定在 full——
+                 # 默认档 risk 下 purge 会先要倒计时确认，把 409 抢先成 delay_ack_required
+                 "YIBAN_PW_GATE=full"]
         if admin_user is not None:
             lines.append(f"YIBAN_ADMIN_USER={admin_user}")
         if admin_pass is not None:
@@ -190,7 +205,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
         self._reset_db()
         self._add_account("13800138000")
         id2 = self._add_account("13900139000")
-        db.set_account_deleted(id2, 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        db.set_account_deleted(id2, 1, clock.ts())
         c = self._client()
         token = self._login_admin(c)
         # idx1 是已软删的 139 账号；携带错误 phone 应 409（防漂移后误删他人）
@@ -251,7 +266,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
         db.add_account({"name": "Mine", "phone": "13800138000", "password": "p1",
                         "status": "active", "owner": "u1@test.local"})
         # 构造今日日志行（含完整手机号）
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.today()
         log_path = os.path.join(self.log_dir, f"sign-{today}.log")
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(f"[{today} 07:10:00] [INFO] yiban: [13800138000] ✅ 签到成功\n")

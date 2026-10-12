@@ -1,0 +1,8 @@
+# /etc/cron.d/yiban-cleanup —— 每日 03:00 按天状态/日志清理（生产 cron 表原件，MF-42 收编）
+# 仓库来源：deploy/prod/cron.d/yiban-cleanup（install.sh 装到 /etc/cron.d/，0644 root:root）
+# 语义：scripts/yiban-cleanup.sh 只是薄包装，清理策略与实现唯一在 yiban/state_gc.py；
+#       结果写 <state>/cleanup.log，绝不写 sign-*.log（口径见该脚本头注释）。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+0 3 * * * yiban /bin/bash /opt/yiban-auto-sign/scripts/yiban-cleanup.sh >> /var/log/yiban/cleanup.log 2>&1

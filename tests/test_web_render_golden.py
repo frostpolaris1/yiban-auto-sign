@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """Web 模板渲染「金标准」回归测试（2026-09-10 前端模块化护栏）。
 
+标签：F · 前端与界面守卫
+覆盖：登录页、管理端总览 `/`、用户端 `/user` 与 `/user/calendar` 的渲染结构指纹，以及静态资源引用清单的金标准
+对应实现：`web/app.py` 的页面路由与 `web/templates/**`；快照在 `tests/golden/*.rendered.html` 与 `tests/golden/assets.json`
+关键断言：归一化只允许 N1–N4（清 script/style 内容、`?v=` 归一、空白压平），**不要为了让测试通过而新增规则**；资源清单单独存在是因为「CSS/JS 外提」会被结构指纹悄悄抹平；清单里的每个 `/static/` 资源都必须真实存在于磁盘；快照缺失时报错并给出重建命令，而不是自动重建
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node（真渲染页面，故临时库里要预置主管理员与一个 role=user 的账号——`_current_role` 会回查数据库）。更新快照靠 `UPDATE_GOLDEN=1`
+
 ## 为什么需要它
 
 本仓前端**零自动化覆盖**：`tests/` 全是 Python，没有任何模板渲染断言。而
@@ -299,15 +305,33 @@ class WebRenderGoldenTest(unittest.TestCase):
         """`/user/calendar` 的结构指纹（用户端第二页，与 /user 同一外壳）。"""
         self._assert_golden("user_calendar.rendered.html", normalize(self._render("user_calendar")))
 
+    def test_admin_calendar_renders_calendar_state(self):
+        """/my/calendar 必须把管理端渲染器的 extra 上下文真正渲染进页面。
+
+        管理端与用户端渲染器同签名但实现分叉：用户端合并 `extra`、管理端漏合，
+        模板 `{{ calendar_state | tojson }}` 遇 Undefined 直接 500。金标准只渲染
+        用户端日历（管理端日历当时未纳快照），拦不住这条——故单独立此用例。
+        """
+        c = self._admin_client()
+        r = c.get("/my/calendar")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:400])
+        body = r.get_data(as_text=True)
+        # tojson 产出必须是真对象：漏合 extra 时 Jinja Undefined 序列化即抛
+        self.assertIn("window.YB_CALENDAR_STATE = {", body)
+        # 2026-10-03 换锚：图例改由前端按载荷渲染（档位清单仍来自 extra 的 legend_items()），
+        # 故服务端侧的可判据是"载荷带全量图例 + 挂载点在位"，不再是服务端渲染的 <ul>。
+        self.assertIn('"legend": [', body)
+        self.assertIn("vue-calendar-app", body)
+
     def test_asset_manifest_golden(self):
         """静态资源引用清单（顺序敏感）+ 清单与磁盘一致。
 
         存在的理由：CSS/JS 外提后标签位置不变，结构指纹察觉不到 —— 那类改动必须在这里被看见。
         清单是**从当前真实渲染产物生成**的（不是手写）：`index` 键即新管理端 `/`，
         覆盖 adminator/chartjs/fonts/app.css/core.js 等；`login` 是认证页资源栈，
-        `user` 是用户端设置页，`user_calendar` 在用户端外壳之上另加共享
-        calendar.js + pages/user_calendar.js。除与金标准逐条比对外，再断言每个本仓
-        `/static/` 资源都真实存在于 `web/static/` 下（清单与磁盘一致）。
+        `user` 是用户端设置页，`user_calendar` 在用户端外壳之上另加 manifest 解析出的
+        Vue 入口资产（2026-10-03 前是共享 calendar.js + pages/user_calendar.js）。除与金标准
+        逐条比对外，再断言每个本仓 `/static/` 资源都真实存在于 `web/static/` 下（清单与磁盘一致）。
         """
         _ASSET_REF_RE = re.compile(r"/(static/.+?)(?:\?v=\*)?$")
         actual = {p: asset_manifest(self._render(p)) for p in ("index", "login", "user", "user_calendar")}

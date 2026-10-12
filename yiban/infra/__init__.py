@@ -6,5 +6,6 @@
 不会把业务逻辑卷进来，单独替换或测试都不需要拉起整个应用。
 
 成员：`env_io`（.env 解析唯一实现）、`env_lock`（.env 写锁）、`account_crypto`
-（AES-GCM 字段加密）、`locks`（跨进程锁原语，唯一实现）。
+（AES-GCM 字段加密）、`locks`（跨进程锁原语，唯一实现）、`private_json`
+（状态 JSON 私有写单通道，创建即 0600 的唯一实现）。
 """
