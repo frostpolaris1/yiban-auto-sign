@@ -287,6 +287,70 @@
     "tier": "master",
     "reload": "next-round"
   },
+  "YIBAN_SIGN_STATE_FLUSH_MAX": {
+    "type": "int",
+    "domain": [
+      0,
+      1000000
+    ],
+    "default": 64,
+    "group": [
+      "执行体"
+    ],
+    "doc": "按日状态文件进程内累积的条数上界（达到即整批落盘）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SIGN_STATE_FLUSH_SEC": {
+    "type": "seconds",
+    "domain": [
+      0,
+      86400
+    ],
+    "default": 10,
+    "group": [
+      "执行体"
+    ],
+    "doc": "按日状态文件进程内累积的落盘间隔上界（秒；默认＝最快读者轮询周期）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_QUOTA_STATE_FLUSH_MAX": {
+    "type": "int",
+    "domain": [
+      0,
+      1000000
+    ],
+    "default": 64,
+    "group": [
+      "通知"
+    ],
+    "doc": "失败提醒额度文件进程内累积的条数上界（达到即整批落盘）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_QUOTA_STATE_FLUSH_SEC": {
+    "type": "seconds",
+    "domain": [
+      0,
+      86400
+    ],
+    "default": 10,
+    "group": [
+      "通知"
+    ],
+    "doc": "失败提醒额度文件进程内累积的落盘间隔上界（秒；默认＝最快读者轮询周期）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_EGRESS_RATE": {
     "type": "float",
     "domain": [
