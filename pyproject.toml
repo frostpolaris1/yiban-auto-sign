@@ -1,6 +1,8 @@
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# 无 lint 排除项：洁净室协议库 `yiban/protocol/` 已是本仓一等模块（不再 vendored），
+# 与本仓其余部分同口径受检。
 exclude = [".git", "__pycache__"]
 
 [tool.pytest.ini_options]

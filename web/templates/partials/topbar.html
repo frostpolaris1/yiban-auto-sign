@@ -22,13 +22,13 @@
         {{ icon('bell') }}<span class="count info" data-announcement-dot hidden></span>
       </button>
       <div class="dd-menu notif-menu" role="region" aria-label="通知">
-        <div class="notif-head">通知</div>
+        <div class="notif-head"><span>通知</span><span class="badge badge--info notif-count" data-announcement-count hidden></span></div>
         <div class="notif-list">
           <div class="notif-section" data-announcement-block hidden>
             <div class="notif-label">{{ icon('triangle-alert') }}公告</div>
             <p class="notif-body" data-announcement-text></p>
           </div>
-          <p class="notif-note">账号异常与邮件通知将在后续版本接入。</p>
+          <p class="notif-note">其它通知：暂无。</p>
         </div>
       </div>
     </div>
@@ -44,8 +44,8 @@
           <div class="dd-profile-name" data-account-name>—</div>
           <div class="dd-profile-email" data-account-email>—</div>
         </div>
-        <a class="dd-menu-item" role="menuitem" href="{{ request.script_root }}/mine">我的账号</a>
-        <a class="dd-menu-item" role="menuitem" href="{{ request.script_root }}/settings">系统设置</a>
+        <a class="dd-menu-item" role="menuitem" href="{{ request.script_root }}/my/account">我的账号</a>
+        <a class="dd-menu-item" role="menuitem" href="{{ request.script_root }}/work/settings">系统设置</a>
         <div class="dd-divider"></div>
         <button type="button" class="dd-menu-item danger" role="menuitem" onclick="doLogout()">退出登录</button>
       </div>

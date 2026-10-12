@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """手动签到与账号编辑守卫回归（2026-09-08）。
 
+标签：E · Web：认证/权限/API
+覆盖：编辑账号时熔断计数的清除条件（只有凭据实际变更才清）+ 手动签到子进程非 0 退出码向签到日志的透传
+对应实现：`web/app.py` 的账号编辑路由（管理员侧与用户侧）与手动签到的子进程收尾（退出码→用户可见原因的映射）
+关键断言：只改备注（password 留空）时 `fail_days` 原样保留、改口令才清除熔断条目；子进程 exit 3 必须在签到日志留下失败痕迹而不是「无声成功」；退出码 0→无原因、3→队列忙、2→跳过、其他→异常退出
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；`subprocess.Popen` 打桩返回假句柄（不真的拉起签到子进程），熔断条目直接写文件构造、不经真实 db 写路径
+
 逐项活体复现 + 修复钉版：
 1. 仅凭据（密码/手机号）实际变更才清熔断计数，只改备注不再重置 fail_days
 2. 手动签到子进程非 0 退出码透传到签到日志（用户可见真实失败原因）
@@ -15,11 +21,12 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
 import db
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -84,6 +91,7 @@ class _WebAppMixin:
         db.init_db(self.db_file, migrate_from=self.accounts_file,
                    env_file=self.env_file)
 
+    # 熔断状态文件就写在 YIBAN_STATE_DIR（= cls.tmp）下，与被测代码读的是同一份
     def _seed_fuse_pause(self, phone, fail_days=3):
         """写入熔断暂停条目（fail_days=3 表示已连续失败 3 天）。"""
         path = os.path.join(self.tmp, "cred-state.json")
@@ -161,10 +169,14 @@ class FuseResetGateTest(_WebAppMixin, unittest.TestCase):
         self.assertEqual(entry.get("fail_days"), 3)
 
     def test_admin_password_change_clears_fuse_pause(self):
-        """改密码（凭据变更）：熔断条目清除，账号立即恢复签到资格。"""
+        """改密码（凭据变更）：须当次口令，通过后熔断条目清除、立即恢复签到资格。
+
+        与上一条"只改备注（password 留空）"正好成对：留空即非凭据变更，不加二次鉴权这道门。
+        """
         c, token = self._admin_client()
         r = c.put("/api/accounts/0",
-                  json={"phone": self.PHONE, "name": "x", "password": "NewPass456"},
+                  json={"phone": self.PHONE, "name": "x", "password": "NewPass456",
+                        "confirm_password": ADMIN_PASS},
                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertNotIn(self.PHONE, self._read_fuse_pause())
@@ -208,7 +220,7 @@ class ManualSignExitTest(_WebAppMixin, unittest.TestCase):
 
     def _today_log(self):
         path = os.path.join(
-            self.tmp, f"sign-{datetime.now().strftime('%Y-%m-%d')}.log")
+            self.tmp, f"sign-{clock.today()}.log")
         return path
 
     def _wait_reap(self):

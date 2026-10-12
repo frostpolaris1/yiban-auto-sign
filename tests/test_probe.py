@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""探针模式 + 注册时账号验证测试（v0.23.x）。
+"""探针模式与注册时账号验证。
 
-覆盖：
-- signin.verify_account：登录+拉任务成功 / 失败 / 异常（mock YibanClient）
-- signin._probe_due：未开启 / 未到时间 / 当天已跑 / 每 N 天频率 / once 单次
-- signin.run_probe：预警收集（管理员合并 + 用户个人）、落库 stage=probe、once 自动关闭
-- web._account_verify_enabled / _verify_account_clean（mock signin.verify_account）
-
-全程本地（mock 网络与邮件），无真实请求。
-用法（项目根目录）：py -m pytest tests/test_probe.py -v
+标签：D · 状态词汇与账号生命周期
+覆盖：`verify_account` 的登录+拉任务成功/失败/异常三态；`_probe_due` 的未开启、
+    未到时间、当天已跑、每 N 天频率、once 单次；`run_probe` 的预警收集（管理员合并 +
+    用户个人）、落库 stage=probe、once 跑完自动关闭；`.env` 自动关闭时写临时文件
+    权限 0600 且无残留；web 侧 `_account_verify_enabled`/`_verify_account_clean`。
+对应实现：探针与账号验证的实现在 `yiban/engine/probe.py`（兼容壳
+    `scripts/signin.py` 转发），web 侧入口在 `web/app.py`。
+关键断言：探针只在"到期"时才跑、once 必须自我关闭（否则每天重复验证同一账号）；
+    关闭开关写 .env 属敏感文件，必须 0600 且不留下半成品。
+依赖：全程 mock 网络与邮件（`YibanClient`、发送出口），无真实请求；临时
+    STATE/DB/ENV 目录。用法（项目根目录）：py -m pytest tests/test_probe.py -v
 """
 import os
 import shutil
@@ -116,75 +119,15 @@ class ProbeSigninTest(unittest.TestCase):
         with mock.patch.object(self.s, "_read_probe_state", return_value={}):
             self.assertTrue(self.s._health_probe_due(datetime(2026, 8, 25, 21, 0)))
 
-    # ---- run_probe ----
-    def test_run_probe_collects_and_flushes(self):
-        self._set_probe("1", "20:00", "1")
-        ok_acc = self._mk_account("13800138001")
-        bad_acc = self._mk_account("13800138002")
-        bad_acc.owner = "owner@test.com"
-        with mock.patch.object(self.s, "_health_probe_due", return_value=True), \
-             mock.patch.object(self.s, "verify_account", side_effect=[
-                 (True, "账号健康，可正常签到"),
-                 (False, "登录失败（账号或密码错误）"),
-             ]), \
-             mock.patch.object(self.s, "_collect_admin_mail") as col, \
-             mock.patch.object(self.s, "_flush_admin_mail_summary") as fl, \
-             mock.patch.object(self.s, "send_user_fail_mail") as suf, \
-             mock.patch.object(self.s, "_write_probe_state") as wsp, \
-             mock.patch.object(self.s, "_env_update_probe") as eup, \
-             mock.patch.object(self.s.db, "add_sign_event") as add:
-            self.s.run_probe([ok_acc, bad_acc])
-        col.assert_called_once()
-        # v0.24.4：探针路径的用户邮件带 scenario="probe"（措辞与签到失败解耦）
-        suf.assert_called_once_with("owner@test.com", "13800138002",
-                                    mock.ANY, scenario="probe")
-        fl.assert_called_once()
-        wsp.assert_called_once()
-        eup.assert_not_called()  # 非 once 不自动关闭
-        self.assertEqual(add.call_count, 2)  # 每账号一条（stage=probe）
-
-    def test_run_probe_once_auto_disable(self):
-        self._set_probe("1", "20:00", "once")
-        acc = self._mk_account()
-        with mock.patch.object(self.s, "_health_probe_due", return_value=True), \
-             mock.patch.object(self.s, "verify_account", return_value=(True, "健康")), \
-             mock.patch.object(self.s, "_write_probe_state"), \
-             mock.patch.object(self.s, "_env_update_probe") as eup:
-            self.s.run_probe([acc])
-        eup.assert_called_once_with(auto_disable=True)
-
-    def test_run_probe_disabled_is_silent(self):
-        # 探针关闭：完全静默——不调到期判断、不探测、不落库、不写状态、不预警
-        acc = self._mk_account()
-        with mock.patch.object(self.s, "verify_account") as va, \
-             mock.patch.object(self.s, "_health_probe_due") as h, \
-             mock.patch.object(self.s, "_write_probe_state") as wsp, \
-             mock.patch.object(self.s, "_collect_admin_mail") as col, \
-             mock.patch.object(self.s.db, "add_sign_event") as add:
-            self.s.run_probe([acc])
-        va.assert_not_called()
-        h.assert_not_called()
-        wsp.assert_not_called()
-        col.assert_not_called()
-        add.assert_not_called()
-
-    def test_run_probe_skipped_when_enabled_but_not_due(self):
-        # 已开启但未到触发时间/频率：跳过且不探测、不写状态
-        self._set_probe("1", "20:00", "1")
-        acc = self._mk_account()
-        with mock.patch.object(self.s, "_health_probe_due", return_value=False), \
-             mock.patch.object(self.s, "verify_account") as va, \
-             mock.patch.object(self.s, "_write_probe_state") as wsp:
-            self.s.run_probe([acc])
-        va.assert_not_called()
-        wsp.assert_not_called()
-
     # ---- _env_update_probe：once 自动关闭写 .env ----
     def test_env_update_probe_writes_disable_and_creates_tmp_0600(self):
         """写 YIBAN_PROBE_ENABLE=0 且临时文件**创建即 0600**。
 
         事后 chmod 不够：写完到 os.replace 之间（及崩溃残留时）整个 .env 对同机
         其他用户可读，而默认 umask 未必是 077（交互 shell 手工跑 --probe 即可能命中）。
+        落盘已并入 `env_io.write_env_key`（单一行模型 + 内持写锁），tmp 由
+        `env_io._atomic_replace_env` 创建——间谍按 `.tmp` 路径过滤，别把锁文件的
+        0600 当成用例证据。
         """
         env_path = os.path.join(self._state_dir, "probe-once.env")
         with open(env_path, "w", encoding="utf-8") as f:
@@ -192,16 +135,17 @@ class ProbeSigninTest(unittest.TestCase):
         os.environ["YIBAN_ENV_FILE"] = env_path
 
         real_open = os.open
-        modes = []
+        tmp_modes = []
 
         def _spy(path, flags, mode=0o777):
-            modes.append(mode)
+            if ".tmp" in str(path):
+                tmp_modes.append(mode)
             return real_open(path, flags, mode)
 
         with mock.patch.object(self.s.os, "open", side_effect=_spy):
             self.s._env_update_probe(auto_disable=True)
 
-        self.assertIn(0o600, modes, "临时文件必须创建即 0600，不能靠事后 chmod")
+        self.assertIn(0o600, tmp_modes, "临时文件必须创建即 0600，不能靠事后 chmod")
         with open(env_path, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("YIBAN_PROBE_ENABLE=0", text)
@@ -210,6 +154,24 @@ class ProbeSigninTest(unittest.TestCase):
         if os.name == "posix":
             import stat as _stat
             self.assertEqual(_stat.S_IMODE(os.stat(env_path).st_mode), 0o600)
+
+    def test_env_update_probe_folds_spaced_shadow_line(self):
+        """`YIBAN_PROBE_ENABLE = 1`（带空格旧行）也必须折掉。
+
+        自写读-改-写只滤精确前缀 `YIBAN_PROBE_ENABLE=`，带空格写法折不掉、与新行
+        并存成影子行（解析器后写覆盖先写，"自动关闭"可能被旧行悄悄顶掉）。
+        单一行模型的 key_line_pattern 认两种写法。
+        """
+        from yiban.infra import env_io
+        env_path = os.path.join(self._state_dir, "probe-shadow.env")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("YIBAN_PROBE_ENABLE = 1\n")
+        os.environ["YIBAN_ENV_FILE"] = env_path
+        self.s._env_update_probe(auto_disable=True)
+        self.assertEqual(env_io.count_key_lines(env_path, "YIBAN_PROBE_ENABLE"), 1,
+                         "同键只剩一行：旧影子行必须被折叠")
+        with open(env_path, encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "YIBAN_PROBE_ENABLE=0")
 
     def test_env_update_probe_noop_when_not_auto_disable(self):
         """非 once 模式不得改动 .env。"""
@@ -246,6 +208,50 @@ class WebVerifyTest(unittest.TestCase):
             self.assertTrue(self.w._account_verify_enabled())
         with mock.patch.object(self.w, "read_env", return_value={}):
             self.assertFalse(self.w._account_verify_enabled())
+
+
+class ProbeAccountingTest(unittest.TestCase):
+    """探针记账口径：未通过（含网络类软失败）一律记 failed，不得涂成 success。
+
+    原式 `"failed" if hard else "success"` 把软失败涂成 success，探针自身断网时
+    台账仍是"全员可用"（生产 255 行全 success、0 failed）。本钉锁"记账=探测结论"；
+    硬/软的区分仍由告警分支与 message 承载，探测行为与预警口径不变。
+    """
+
+    def test_soft_fail_records_failed_not_success(self):
+        import signin
+
+        import yiban.engine.probe as probe
+
+        recorded = []
+        soft_msg = "探测连接不可达 (ECONNREFUSED)"
+        # 前置自检：这条消息必须确实落在"软失败"档（不匹配硬失败特征），
+        # 否则本钉锁的不是它声称要锁的分支
+        self.assertFalse(probe.PROBE_HARD_FAIL_RE.search(soft_msg))
+        accounts = [
+            signin.Account(phone="13800000001", password="pw", phone_model="", phone_code=""),
+            signin.Account(phone="13800000002", password="pw", phone_model="", phone_code=""),
+        ]
+        with mock.patch.object(probe, "PROBE_ENABLE", True), \
+                mock.patch.object(probe, "PROBE_INTERVAL", ""), \
+                mock.patch.object(probe, "_health_probe_due", return_value=True), \
+                mock.patch.object(probe, "_update_probe_state_run"), \
+                mock.patch.object(probe, "verify_account",
+                                  side_effect=[(True, "ok"), (False, soft_msg)]), \
+                mock.patch.object(probe.state_io, "_load_cred_state", return_value={}), \
+                mock.patch.object(probe.alerts, "_collect_admin_mail"), \
+                mock.patch.object(probe.alerts, "send_user_fail_mail") as user_mail, \
+                mock.patch.object(probe.alerts, "_flush_admin_mail_summary"), \
+                mock.patch.object(probe.db, "add_sign_event",
+                                  side_effect=lambda *a, **k: recorded.append(a)):
+            probe.run_probe(accounts)
+        statuses = [row[2] for row in recorded]
+        self.assertEqual(
+            statuses, ["success", "failed"],
+            "软失败必须记 failed——涂成 success 会让探针断网时台账显示全员可用",
+        )
+        # 软失败不出用户预警（告警口径不变：只有硬失败才发个人邮件）
+        user_mail.assert_not_called()
 
 
 if __name__ == "__main__":

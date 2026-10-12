@@ -14,7 +14,7 @@
 {# iOS 主屏图标复用同一张方图（不声明 sizes，由浏览器缩放；建议部署者用 180×180） #}
 <link rel="apple-touch-icon" href="{{ request.script_root }}/favicon.png?v={{ web_version }}">
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 <title>{% block title %}易班自动签到{% endblock %}</title>
 {% block head_meta %}{% endblock %}
 {% include "partials/theme_boot.html" %}
@@ -27,9 +27,11 @@
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
 </head>
-{# data-page：core.js 据此决定是否初始化身份/时钟。
-   auth = 登录/注册等匿名页（跳过 /api/me、/api/clock，避免 401 噪音）；
-   user = 已登录的用户自助页（继承块覆盖为 "user"，走完整初始化）。 #}
+{# data-page：core.js 只有一条判据 —— 值等于 "auth" 时提前返回，跳过 /api/me 与
+   /api/clock（匿名页不该制造 401 噪音）；其余任何取值都走同一套完整初始化。
+   本外壳实际只会渲染出 "auth"：继承它的是 login.html 与 error.html，全树（模板/测试/脚本）
+   没有任何一处覆盖下面的 page_id 块，所以"子模板继承时覆盖为 user"从未发生 ——
+   用户自助页的 data-page="user" 写死在 layout_user.html，不经过本块。 #}
 <body data-page="{% block page_id %}auth{% endblock %}">
 {{ sprite() }}
 <div class="auth-shell">
@@ -96,7 +98,7 @@
   </main>
 </div>
 
-<div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>
+<div id="toast-host" class="toast-host" role="status" aria-live="polite" aria-atomic="false"></div>
 <div id="modal-host"></div>
 {# 首屏加载指示：120ms 内就绪则完全不出现（快加载不闪）；core.js 就绪或 window.load 后淡出。
    服务端已渲染正文，故不遮内容，只在顶部提示"样式/脚本仍在就绪"。样式见 app.css「首屏加载指示」。 #}

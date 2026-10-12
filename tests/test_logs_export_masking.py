@@ -17,6 +17,24 @@ date 按天可枚举，一个管理员 GET 即可无痕批量拉取历史未脱�
 全程 mock / 纯本地（Flask test client + 临时 .env/DB/日志目录），无网络请求。
 用法（项目根目录，勿设 PYTHONIOENCODING）：
     py -m pytest tests/test_logs_export_masking.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：`/api/logs/export` 与视图共用同一过滤+脱敏管线（响应体是内存脱敏副本）、
+写入侧两类旁路收口（signin `--only` 未命中路径的裸号、web 告警行的裸 IP）、
+成功导出恰写一条 `logs_export` 审计（400/404 不写）、每 IP 窗口限速、
+401/403 鉴权边界与 `forbidden_path` 留痕不回退。
+对应实现：`web/services/logs.py` 的 `_log_lines_for` / `_mask_log_phones` 与
+导出路由（经 `web/app.py` 门面）、`signin` 的 `--only` 未命中写日志处、
+告警行的 `hash_ip` 口径。
+关键断言：`test_export_serves_masked_copy_not_raw_file` 与
+`test_export_lines_equal_view_lines` 是一对——前者断"不回磁盘原文"，后者断"与视图同口径"，
+只留前者可以通过"导出走另一套更狠的过滤"，只留后者可以通过"两边一起漏"。
+盘上按天日志**按设计仍留裸号**（signin 状态解析与 run.sh 依赖），所以这里守的是
+HTTP 出口那一层，不是"日志文件里查不到裸号"；`test_csrf_warning_logs_hashed_ip_not_raw`
+守的是写入侧（落盘即 hash_ip），与出口侧不是一回事。
+`date` 可按天枚举这条由限速 + 审计留痕共同兜，任何一项被删本文件都会红。
+依赖：Flask test client + 临时 `.env`/DB/日志目录，无网络、无 skip；
+运行环境**不要**预设 `PYTHONIOENCODING`（模块头写明），否则子进程编码约定会变。
 """
 import contextlib
 import importlib.util
@@ -151,7 +169,12 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertIn(f"sign-{HIST_DATE}.log", cd)
 
     def test_export_lines_equal_view_lines(self):
-        """导出行集合与 /api/logs 视图逐行一致（同一 _log_lines_for 过滤管线）。"""
+        """导出行集合与 /api/logs 视图逐行一致（同一 _log_lines_for 可见性管线）。
+
+        `/api/logs` 的**级别档**（默认 warn，收起 INFO/DEBUG）不属于这条共用管线：
+        导出是全量脱敏副本，不以级别档过滤。故这里取 `level=all` 与导出对齐——对的是
+        "可见性"这一层；级别档由 tests/test_logs_level_filter.py 单独钉住。
+        """
         self._write_date_log(HIST_DATE, [
             _log_line(HIST_DATE, "INFO", "yiban", f"[{PHONE_FULL}] ✅ 签到成功"),
             _log_line(HIST_DATE, "INFO", "mailer", "mailer INFO 行 marker-mailer-info"),
@@ -160,11 +183,12 @@ class LogsExportMaskingTest(unittest.TestCase):
         ])
         c = self._admin_client()
         body = c.get(f"/api/logs/export?date={HIST_DATE}").get_data(as_text=True)
-        data = c.get(f"/api/logs?date={HIST_DATE}").get_json()
+        data = c.get(f"/api/logs?date={HIST_DATE}&level=all").get_json()
         self.assertEqual(data["logs"], body.splitlines(),
                          "导出与视图必须同一过滤管线（行集合逐行一致）")
         self.assertNotIn("marker-mailer-info", body, "其他组件 INFO 行不入列（视图同口径）")
-        self.assertNotIn("marker-yiban-debug", body, "DEBUG 行不入列")
+        self.assertIn("marker-yiban-debug", body,
+                      "yiban 的 DEBUG 入列（2026-09-19 提高显示等级：部署自己开的级别要看得到）")
         self.assertIn("marker-web-warn", body, "非 yiban 组件告警级行视图本就入列——同口径")
 
     def test_view_shows_masked_only_warning(self):
@@ -232,9 +256,23 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertEqual(
             c.get(f"/api/logs/export?date={HIST_DATE}").status_code, 403)
         rows = self._audit_rows("forbidden_path")
-        # 既有口径：target=hash_ip、detail=越权路径
-        self.assertTrue(any(row["detail"] == "/api/logs/export" for row in rows),
+        # 既有口径：target=hash_ip、detail=越权路径（+ 请求作用域后缀 ` [req=...]`）
+        self.assertTrue(any(row["detail"].startswith("/api/logs/export") for row in rows),
                         f"普通用户越权导出应留 forbidden_path 审计: {[dict(r) for r in rows]}")
+
+    # ---- 5b. 越权路径里的换行必须被压平（%0A 能在日志/审计里伪造第二行）----
+    def test_forbidden_path_detail_stays_single_line(self):
+        c = self._user_client()
+        r = c.get("/api/logs%0Aexport-injected")
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        rows = [row for row in self._audit_rows("forbidden_path")
+                if "injected" in row["detail"]]
+        self.assertTrue(rows, f"越权尝试应留痕: {[dict(x) for x in rows]}")
+        for row in rows:
+            self.assertNotIn("\n", row["detail"], "审计 detail 里不得有真换行")
+            self.assertIn("\\n", row["detail"], "换行须转义成字面量，信息不丢")
+            self.assertEqual(len(row["detail"].splitlines()), 1,
+                             "detail 必须单行——日志页与导出都按行切")
 
     # ---- 6. 写入侧：web 告警行不得落盘裸 IP（与审计 hash_ip 同口径）----
     def test_csrf_warning_logs_hashed_ip_not_raw(self):

@@ -8,12 +8,29 @@ venv/
 env/
 .venv/
 .env
+# .env 键名变体与原子写临时件（env_io 写侧/并发锁产生；M39）
+.env.*
+# 例外：模板文件必须入库（负向规则须紧跟在排除规则之后）
+!.env.example
+!.env.docker.example
+.env.tmp*
+
+# Node / 前端（frontend/ 只入库源码与构建配置；产物在 web/static/vue/，提交入库）
+node_modules/
+frontend/.vite/
+*.tsbuildinfo
+# Playwright 运行产物（失败时的 error context / trace / 报告），属本地产物不入库
+frontend/test-results/
+frontend/playwright-report/
 
 # 本地配置（避免泄露账号密码）
 config.local.py
 *.local
 # 账号配置文件（含密码，严禁入库）
 accounts.json
+# 迁移/升级产出的按日备份（yiban/store/migrations.py 的 _rename_backup；M39）
+accounts.json.bak-*
+users.json.bak-*
 # 通知额度/限速运行时状态（web 进程按 cwd 生成，严禁入库）
 notify-ledger.json
 notify-throttle.json
@@ -33,6 +50,11 @@ yiban.db-shm
 # 日志与数据
 *.log
 logs/
+# 例外：Vue 源码目录名恰为 logs（与上面的「日志目录」规则同名）——必须显式放行。
+# 2026-10-03 实测踩过：frontend/src/logs/** 被静默忽略，git add -A 跳过，导致分支上
+# 只有构建产物、没有源码（新检出无法 npm run build，test_logs_by_date 引用的
+# date-guard.js 也不存在）。负向规则必须紧跟在排除规则之后。
+!frontend/src/logs/
 data/
 
 # Docker 部署本地目录（含加密密钥/数据库/证书私钥，严禁入库）
@@ -84,8 +106,16 @@ hardening/
 # 注意用的是 `docs/*` 而不是 `docs/`：目录整体被排除时，任何负向规则都**无法**再放行其中
 # 的文件（git 的"父目录已排除则子文件不可重新包含"）。下一行的负向规则依赖这一点。
 docs/*
-# 例外：开发文档（模块地图 / API 契约）可入库，内容已脱敏
+# 例外：开发文档按白名单入库（2026-10-01 裁定：内部工作文档——计划/审查/修复台账/
+# 演练预案/过程记录——一律不入库，仅本地留存；历史不追溯清理）。白名单=指南与契约：
 !docs/dev/
+docs/dev/*
+!docs/dev/README.md
+!docs/dev/api-executors.md
+!docs/dev/cli.md
+!docs/dev/dev-verify.md
+!docs/dev/release-gate.md
+!docs/dev/scheduler-v3.md
 .superpowers/
 
 # ZCode 工具目录
@@ -105,6 +135,14 @@ build/
 
 # 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
 web/static/vendor/logo.png
+
+# 工具产物（2026-09-17 用户要求）：编码助手/审查工具往仓库里落的技能与锁文件，
+# 与运行时、部署、文档都无关，一律不入版本控制
+# （`.agents/`、`.claude/`、`agent/` 是同一份技能在三种 IDE 布局下的副本）
+.agents/
+.claude/
+agent/
+skills-lock.json
 web/static/vendor/favicon.png
 # 页脚备案图标（备案号对应官方图标，部署者自放；缺失时页脚 onerror 隐藏，不入库）
 web/static/vendor/gongan-beian.png
@@ -119,7 +157,10 @@ AGENTS.md
 # 协作备用文件（未启用；等协作场景再决定入库，2026-08-16 补忽略）
 WORKFLOW.md
 CONTRIBUTING.md
-.github/pull_request_template.md
+# 2026-10-05 n4c 第一刀：.github/pull_request_template.md **移出**忽略清单。
+# 理由：模板必须入库才生效（GitHub 从仓库里的模板文件生成 PR 正文），而 develop
+# 分支保护要求所有变更经 PR——自检清单（e2e 先行 / 门禁 / changelog）靠它承载。
+# 守卫见 tests/test_pr_template_gate.py（被忽略 / 未入库 / 缺项都会红）。
 # 2026-08-22 M10：ci.yml / mirror.yml 解除忽略入库（文件内只有 secrets 名引用无值，
 # 入库安全），并全量 SHA 固定第三方 action（防可变 tag 被篡改）
 # signin.yml 必须入库：README「GitHub Actions 使用教程（备选）」的部署通道，
@@ -139,10 +180,8 @@ web/static/vendor/fonts/fangyuan/
 dsh-routing-suite/
 v4-flash-godmode-opencode-go/
 
-# 开发文档（模块地图 / API 契约）例外放行：docs/ 整体仍本地留存，只用**负向规则**
-# 单独放行 docs/dev/（内容已脱敏：不含真实域名/IP/邮箱/手机号/密钥、备案信息、测试机信息）
-!docs/dev/
-!docs/dev/**
+# 开发文档白名单规则见上方 docs/ 块（2026-10-01：内部工作文档不入库，本地留存；
+# 此处不再重复放行规则，防止两处漂移）
 
 # 设计/调研文稿与 AI 记忆文件：一律本地留存，不入版本控制
 # （docs/ 已有同类规则，此处显式覆盖根目录记忆锚点与后续可能新增的文稿目录）
@@ -151,3 +190,16 @@ PROMPT_*.md
 MEMORY.md
 memory/
 HANDOFF*.md
+# 工具运行期在本仓库内创建的隔离 worktree 与任务输出目录，与项目内容无关
+.qoder/
+
+# 本地 AI/技能工具产物（skills 工具生成，非项目产物，2026-09-19 补忽略）
+.agents/
+.claude/
+agent/
+skills-lock.json
+# 某工具未展开波浪号误生成的字面量 ~ 目录（内含 .cache；2026-09-19 已清理，规则防复发）
+~/
+
+# 会话临时产物（pytest tmp_path / 截图 / visual-seed 演示数据），纪律见 .tmp/README.md；2026-09-30 起 C 盘禁写
+.tmp/

@@ -1,0 +1,423 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+"""手动签到域路由：按账号触发 `signin.py --only` 子进程（单个 / 批量）。
+
+**功能**
+`POST /api/signin` 触发单账号手动签到；`POST /api/signin/batch` 触发批量手动签到
+（合并为一个队列子进程、只发一封汇总邮件）。
+
+**归属**
+`web.app.create_app` 的"手动签到"面。工厂骨架、跨域中间件（前置限速、登录守卫、CSRF、
+同源校验、安全响应头）与库访问层仍留在 `web/app.py`；本模块自带子进程管理。
+
+**复用**
+`register(app)` 供 `web.routes.register_all` 装配，并在此时把本域可变状态（防抖表、
+子进程表、批量互斥与冷却基准）登记进 `current_app.extensions`——它们原本是 create_app
+的工厂局部，必须保持"每个 app 实例一份"，不能做成模块级（测试进程会反复 create_app）。
+
+**通信**
+视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
+`mock.patch.object(web.app, …)` 打桩（subprocess.Popen / os.open / db / logger /
+load_accounts / log_path_for / ENV_FILE / STATE_DIR 等）必须继续生效。批量队列在后台
+线程执行，线程内不得再取 `current_app`：模块对象与状态字典在请求期解析后随闭包传入。
+"""
+import contextlib
+import os
+import subprocess
+import sys
+import threading
+import time
+
+from flask import current_app, jsonify, session
+
+from web.routes import appmod as _appmod
+
+#: 手动签到全局冷却默认秒数（.env 的 `YIBAN_BATCH_SIGN_COOLDOWN_SEC` 可覆盖，0=关闭）。
+#: 单条与批量共用同一冷却基准，两处读取必须取同一个默认——各写一遍字面量迟早漂移。
+BATCH_SIGN_COOLDOWN_SEC_DEFAULT = 60
+#: 手动签到全局速率上限（次数 / 窗口秒，.env 的 `YIBAN_SIGNIN_RATE_MAX` 与
+#: `YIBAN_SIGNIN_RATE_WINDOW_SEC` 可覆盖，任一为 0 即关闭）。
+#: 与冷却的分工：冷却是"两次触发之间的最小间隔"（单点节流），本上限是"窗口内总次数"
+#: （积分节流）——冷却被调小或关闭后，被盗会话仍能高频触发真实登录，次数上限是那之后
+#: 唯一还在的防线。
+SIGNIN_RATE_MAX_DEFAULT = 10
+SIGNIN_RATE_WINDOW_SEC_DEFAULT = 600
+
+
+def _signin_state():
+    """手动签到的每 app 实例状态（防抖表 / 子进程表 / 批量互斥与冷却基准）。
+
+    对应原 create_app 的六个工厂局部；背景线程拿不到 Flask 应用上下文，故一律
+    在请求期取出后作为参数传给子进程助手。
+    """
+    return current_app.extensions["yiban_signin_state"]
+
+
+def _signin_run_lock_busy(m):
+    """非阻塞探测 signin 运行锁是否被**独占**持有。
+
+    全量签到/cron 运行期间，--only 子进程会拿锁失败并 exit 3 静默退出——
+    若照样返回"已触发"，用户侧无感；spawn 前先探测，忙时直接
+    429 如实提示（POSIX flock 试探；Windows 无 fcntl 返回 False 走旧行为，
+    与 _acquire_run_lock 的降级策略一致）。
+
+    **探测只取共享锁**（`LOCK_SH`）：真持锁者 `_acquire_run_lock` 取独占锁，
+    共享试探与它相冲、足以判忙；而本进程的请求线程与批量后台线程都会探测，
+    独占试探会让两者互斥，后到者被误报成"签到队列忙（定时签到进行中）"。
+    探测自己不得改变被探测对象的状态。
+    """
+    path = os.path.join(m.STATE_DIR, "signin-run.lock")
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return False
+    try:
+        try:
+            import fcntl
+        except ImportError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return True  # 被其他签到进程独占持有
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _signin_rate_limited(m, state):
+    """手动签到全局速率上限判定：窗口内超过上限返回 True（调用方回 429）。
+
+    键 = 会话用户名：被盗的是**会话**，换账号不改变这一点；按 IP 计数会让同一出口后的
+    多个管理员互相挡死（与账号详情读取限速同口径）。计数表挂在 `yiban_signin_state`
+    上而不是新建一个 extensions 键——它与同一份状态里的冷却基准是同一件事的两半，
+    另起一处只会让"手动签到节流"有两个注册点。
+
+    只在冷却已放行之后调用：被冷却拒掉的请求没有发起任何真实登录，不该消耗次数额度
+    （否则合法运维连点几次就把 10 分钟的次数预算花光，正是本批要消除的摩擦）。
+    """
+    window = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_WINDOW_SEC",
+                            SIGNIN_RATE_WINDOW_SEC_DEFAULT)
+    limit = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_MAX", SIGNIN_RATE_MAX_DEFAULT)
+    if window <= 0 or limit <= 0:
+        return False
+    key = (session.get("username") or "?").strip().lower()
+    _cnt, _start, allowed = m._bump_window_count(
+        state["rate_limits"], key, time.time(), window, limit=limit)
+    return not allowed
+
+
+def _signin_rate_message(m):
+    """速率超限的用户可见文案：与"签到冷却中"区分开，运维一眼能分辨是哪道闸。"""
+    window = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_WINDOW_SEC",
+                            SIGNIN_RATE_WINDOW_SEC_DEFAULT)
+    limit = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_MAX", SIGNIN_RATE_MAX_DEFAULT)
+    return (f"手动签到触发过于频繁（{window // 60} 分钟内最多 {limit} 次），"
+            "请稍后再试")
+
+
+#: 手动签到拒因文案 → HTTP 状态码的**单一判定表**（顺序敏感：先具体后兜底）。
+#: 判据是"用户可见整句里是否含该子串"而不是让 `_spawn_signin` 直接回状态码，因为它的拒因
+#: 散在多处判定、返回值是给前端看的整句。把子串与状态码集中成一张表：改文案/加拒因时
+#: 只动这张表与被测函数一处，并有测试钉住"每条已知文案都显式命中一条、绝不静默落兜底"——
+#: 否则文案一改、HTTP 契约就无声漂移（客户端拒因被伪装成 500）。
+_SIGNIN_DENY_STATUS = (
+    ("不在配置中", 404),      # 请求引用的账号不在登记名单：资源不存在
+    ("不可手动签到", 400),    # 未生效 / 已删除：当前状态不允许该操作
+    ("已自暂停", 400),        # 用户自行暂停：需在「我的账号」恢复，非服务端问题
+    ("签到队列忙", 429),      # 定时签到占用运行锁：稍后可重试
+    ("冷却中", 429),          # 全局冷却窗口内（单条与批量共用同一基准）
+    ("过于频繁", 429),        # 窗口内总次数超限
+    ("正在签到", 429),        # per-phone 防抖：同账号短时重复触发
+    ("启动失败", 500),        # 子进程脚本缺失等：服务端无法拉起，属内部错误
+)
+
+
+def _signin_deny_status(msg):
+    """把 `_spawn_signin` 返回的拒因整句归一到一个 HTTP 状态码；未命中显式文案一律 500。"""
+    for key, code in _SIGNIN_DENY_STATUS:
+        if key in msg:
+            return code
+    return 500
+
+
+def _reap_signin(m, state, phone, proc):
+    """子进程结束后在锁内从子进程表移除同对象（防僵尸记录/重复 terminate）。"""
+    try:
+        proc.wait()
+    finally:
+        with state["lock"]:
+            if state["procs"].get(phone) is proc:
+                state["procs"].pop(phone, None)
+    # 退出码透传：exit 3（队列忙/运行锁占用）等非 0 退出若被静默吞掉，
+    # 用户看到"已触发"实际没签——真实原因写入签到日志（日志页可见）
+    m._log_manual_sign_exit(m._mask_phone(phone), proc.returncode)
+
+
+def _launch_signin_proc(m, only_arg):
+    """起一个 `signin.py --only <only_arg>` 子进程；only_arg 可为逗号分隔多号。
+
+    环境与定时签到同口径（进程环境为底座、.env 的 YIBAN_* 覆盖注入）；密钥经
+    YIBAN_ENV_FILE 由子进程自读，不注入明文。
+    返回 Popen；脚本缺失等启动失败返回 None。
+    """
+    base = os.path.dirname(os.path.dirname(os.path.abspath(m.__file__)))
+    script = os.path.join(base, "scripts", "signin.py")
+    env = m.child_env.build_child_env(m.ENV_FILE, base=dict(os.environ))
+    # 启动延迟已废弃，不再注入 YIBAN_START_DELAY_MAX=0；账号间隔
+    # YIBAN_ACCOUNT_GAP_MAX 也不强制清零——按全局设置对自动+手动一致生效
+    # （手动单账号本无相邻请求，批量手动按 .env/缺省 10 生效，与文档口径一致）。
+    env["YIBAN_DB_FILE"] = m.DB_FILE
+    env["YIBAN_ENV_FILE"] = m.ENV_FILE
+    log_fh = None
+    with contextlib.suppress(OSError):
+        log_fh = open(m.log_path_for(), "a", encoding="utf-8", buffering=1)
+    try:
+        return subprocess.Popen(
+            [sys.executable, script, "--only", only_arg],
+            cwd=base, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+            # 自成进程组（POSIX setsid）：终止时可由 `_terminate_signin_proc` 整组 kill，
+            # 连带子进程可能拉起的执行体一起退出。Windows 忽略该参数（无进程组语义）。
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        return None
+    finally:
+        if log_fh is not None:
+            log_fh.close()
+
+
+def _spawn_signin_many(m, state, phones):
+    """批量手动签到合并为单个队列子进程（--only 逗号分隔）。
+
+    底层 signin.py --only 本就支持多号：一次登录批处理、一次队列重试、只发一封
+    汇总邮件——替代原"逐账号各起一个子进程、各发一封汇总"，N 个账号从 N 封降到 1 封。
+    返回 (ok: bool, msg: str, proc: Popen|None)。
+    """
+    if not phones:
+        return False, "无可签到账号", None
+    if _signin_run_lock_busy(m):
+        return False, "签到队列忙（定时签到进行中），请稍后再试", None
+    proc = _launch_signin_proc(m, ",".join(phones))
+    if proc is None:
+        return False, "批量手动签到启动失败，请稍后重试", None
+    # 冷却基准单源化——只有 spawn 真正成功才刷新（若写在 _run_batch 的 finally
+    # 里，spawn 失败也刷新基准，失败后 30 分钟内合法重试会被拒）
+    with state["batch_lock"]:
+        state["last_batch_ts"] = time.time()
+    m.logger.info("触发批量手动签到（单队列）: %s 个账号", len(phones))
+    return True, "", proc
+
+
+def _spawn_signin(m, state, phone, accounts=None):
+    """触发单账号手动签到子进程（signin.py --only）。
+
+    防抖：30 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
+    手动签到冷却单源化——单条与批量共用同一冷却计数
+    （YIBAN_BATCH_SIGN_COOLDOWN_SEC，0=关闭）：spawn 成功前检查
+    冷却（与批量端点同口径拒绝），spawn 成功后刷新冷却基准。
+    单条手动签到同样受全局冷却约束（被盗会话循环触发
+    单号真实登录同样打爆易班风控）；30 秒 per-phone 防抖语义保持不变。
+    冷却之后再过一道全局次数上限（`_signin_rate_limited`）：冷却是单点节流，
+    次数上限才是"窗口内总共能触发几次"的积分节流。
+    返回 (ok: bool, msg: str)。
+    """
+    accounts = accounts if accounts is not None else m.load_accounts()
+    idx = m.find_account_index(accounts, phone)
+    if idx is None:
+        return False, f"账号 {phone} 不在配置中"
+    acc = accounts[idx]
+    if acc.get("deleted") or acc.get("status") != m.ACCOUNT_STATUS_ACTIVE:
+        return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
+    if acc.get("user_paused"):
+        # 用户自暂停：派发前就剔除。不剔除的话请求返回"已触发"、子进程起来后才被引擎侧
+        # 拦下并写"用户已取消签到"——用户侧得到的是一次假成功（引擎侧拦截保持不动，
+        # 这里是第二道保险之前的"不派发"）。
+        return False, f"账号 {phone} 已自暂停签到，跳过（可在「我的账号」恢复）"
+    if _signin_run_lock_busy(m):
+        return False, "签到队列忙（定时签到进行中），请稍后再试"
+    with state["batch_lock"]:
+        cooldown = m.load_env_int(m.ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC",
+                                  BATCH_SIGN_COOLDOWN_SEC_DEFAULT)
+        if cooldown > 0:
+            elapsed = time.time() - state["last_batch_ts"]
+            if elapsed < cooldown:
+                remain = int(cooldown - elapsed)
+                return False, f"签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
+        # 冷却放行后才记次数：冷却拒掉的请求不消耗次数额度（见 _signin_rate_limited）
+        if _signin_rate_limited(m, state):
+            return False, _signin_rate_message(m)
+    with state["lock"]:  # 原子检查+占位：并发请求不能同时通过防抖
+        now = time.time()
+        if phone in state["last_trigger"] and now - state["last_trigger"][phone] < m.SIGN_MIN_INTERVAL:
+            remain = int(m.SIGN_MIN_INTERVAL - (now - state["last_trigger"][phone]))
+            return False, f"账号 {phone} 正在签到，请 {remain} 秒后再试"
+        old = state["procs"].get(phone)
+        if old and old.poll() is None:
+            # 仍在运行 → 终止旧进程（连同它的进程组），防止同账号并发签到；
+            # 只 terminate 监督进程会把执行体留成孤儿继续真实登录
+            m._terminate_signin_proc(old)
+        state["last_trigger"][phone] = now
+
+    proc = _launch_signin_proc(m, phone)
+    if proc is None:
+        with state["lock"]:
+            state["last_trigger"].pop(phone, None)
+        return False, f"账号 {phone} 手动签到启动失败，请稍后重试"
+    with state["lock"]:
+        state["procs"][phone] = proc  # 记录子进程，供下次触发时终止旧进程
+    # daemon 回收线程：进程退出后自动从子进程表移除同对象
+    threading.Thread(target=_reap_signin, args=(m, state, phone, proc), daemon=True).start()
+    with state["batch_lock"]:
+        state["last_batch_ts"] = time.time()  # spawn 成功 = 冷却基准（单条/批量同源）
+    m.logger.info("触发手动签到: %s", m._mask_phone(phone))
+    return True, f"已触发 {phone} 手动签到（后台执行，日志约 30 秒内刷新）"
+
+
+def api_signin():
+    """手动签到指定账号：子进程执行 signin.py --only。"""
+    m = _appmod()
+    state = _signin_state()
+    data = m._json_body()
+    phone = str(data.get("phone", "")).strip()
+    ok, msg = _spawn_signin(m, state, phone)
+    if not ok:
+        # 拒因 → 状态码走单源判定表（见 `_SIGNIN_DENY_STATUS`）：不再在本处逐条 `in msg`，
+        # 文案与契约解耦，改文案只动表且测试会拦住漏项。
+        return jsonify({"error": msg}), _signin_deny_status(msg)
+    m.db.audit(session.get("username") or "?", "signin_manual", m._mask_phone(phone), "手动签到")
+    return jsonify({"ok": True, "msg": msg})
+
+
+def api_signin_batch():
+    """批量手动签到：顺序逐个触发（与自动签到同语义，防风控）。
+
+    全局互斥（同时只允许一个批量队列在跑）；防抖冲突的账号自动跳过。
+    接口立即返回，实际执行在后台线程。
+    """
+    m = _appmod()
+    state = _signin_state()
+    data = m._json_body()
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "请先勾选要签到的账号"}), 400
+    accounts = m.load_accounts()
+    if _signin_run_lock_busy(m):
+        return jsonify({"error": "签到队列忙（定时签到进行中），请稍后再试"}), 429
+    # 防错位 + bool 混淆（同 /api/accounts/batch）：
+    # 签到用错位下标取到的会是他人账号的凭据，危害比管理操作更直接
+    phones_in = data.get("phones")
+    expect = {}
+    if isinstance(phones_in, list) and len(phones_in) == len(ids):
+        expect = {
+            i: str(phones_in[k]).strip() for k, i in enumerate(ids) if type(i) is int
+        }
+    phones = []
+    paused_skipped = 0
+    for i in ids:
+        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(accounts):
+            continue
+        acc = accounts[i]
+        # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
+        if i in expect and m._mask_phone(expect[i]) != m._mask_phone(str(acc.get("phone", ""))):
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        if acc.get("deleted") or acc.get("status") != m.ACCOUNT_STATUS_ACTIVE:
+            continue
+        if acc.get("user_paused"):
+            # 用户自暂停：派发前剔除并计数。不剔除的话"N 个账号"与批量审计计数都是虚的，
+            # 子进程起来后由引擎侧拦下（`round.py` 的第二道拦截保持不动）——用户看到
+            # "已触发 N 个"而实际一个都没签。
+            paused_skipped += 1
+            continue
+        phone = str(acc.get("phone", "")).strip()
+        if phone:
+            phones.append(phone)
+    if not phones:
+        if paused_skipped:
+            return jsonify({
+                "error": f"选中的账号均已自暂停签到，跳过（{paused_skipped} 个），"
+                         "可在「我的账号」恢复"
+            }), 400
+        return jsonify({"error": "选中的账号均不可手动签到（未生效或已删除）"}), 400
+    # 单次批量签到账号数与 /api/accounts/batch 同口径（BATCH_OP_LIMIT）。
+    # 队列子进程的等待超时按账号数缩放，无上限的"全选"会把后台队列线程长时间占死；
+    # 超出上限 400，管理员分批触发（每批 ≤10 个）。
+    if len(phones) > m.BATCH_OP_LIMIT:
+        return jsonify({"error": f"单次批量签到最多 {m.BATCH_OP_LIMIT} 个账号"}), 400
+    with state["batch_lock"]:
+        if state["batch_running"]:
+            return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
+        # 批量签到冷却（防循环触发全量真实登录）——队列完成后窗口内拒绝
+        cooldown = m.load_env_int(m.ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC",
+                                  BATCH_SIGN_COOLDOWN_SEC_DEFAULT)
+        if cooldown > 0:
+            elapsed = time.time() - state["last_batch_ts"]
+            if elapsed < cooldown:
+                remain = int(cooldown - elapsed)
+                return jsonify({
+                    "error": f"批量签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
+                }), 429
+        # 冷却放行后才记次数（与单条同口径，见 _signin_rate_limited）
+        if _signin_rate_limited(m, state):
+            return jsonify({"error": _signin_rate_message(m)}), 429
+        state["batch_running"] = True
+
+    def _run_batch():
+        try:
+            ok, msg, proc = _spawn_signin_many(m, state, phones)
+            if not ok:
+                m.logger.warning("批量手动签到未启动: %s", msg)
+                return
+            # 等待超时按账号数缩放（默认 300s 仅够单号，多号队列会被误杀）
+            m._wait_signin_proc(proc, timeout=m._batch_wait_timeout(len(phones)))
+            m.logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
+            # 非 0 退出码（如 exit 3 队列忙）如实留痕到签到日志，不冒充成功
+            m._log_manual_sign_exit(
+                f"批量签到 {len(phones)} 个账号", proc.returncode)
+        finally:
+            # 此处不再无条件重置冷却基准——它由 _spawn_signin_many 在 spawn 成功
+            # 时刷新（否则失败也刷新基准，spawn 失败后 30 分钟内合法重试会被拒）。
+            with state["batch_lock"]:
+                state["batch_running"] = False
+
+    threading.Thread(target=_run_batch, daemon=True).start()
+    m.db.audit(
+        session.get("username") or "?",
+        "signin_batch",
+        ",".join(m._mask_phone(p) for p in phones),
+        f"批量签到 {len(phones)} 个",
+    )
+    skip_note = f"{paused_skipped} 个已自暂停，跳过；" if paused_skipped else ""
+    return jsonify({
+        "ok": True,
+        # 计数口径：`count` 是**实际派发**的账号数（被自暂停剔掉的只计入 skipped_paused），
+        # 与 `--only` 的账号串、审计明细、后台日志逐字一致。
+        "count": len(phones),
+        "skipped_paused": paused_skipped,
+        "msg": skip_note + f"已加入批量签到队列（{len(phones)} 个账号，合并为一个队列执行、"
+                           "只发一封汇总邮件，日志约几分钟内刷新）",
+    })
+
+
+def register(app):
+    """登记本域每实例状态并注册两条手动签到路由；endpoint 取函数名（url_for 依赖）。"""
+    app.extensions["yiban_signin_state"] = {
+        # phone -> 上次触发时间戳（30 秒防抖）
+        "last_trigger": {},
+        # phone -> Popen（新触发时终止仍在运行的旧进程，防重复签到触发风控）
+        "procs": {},
+        # 防抖检查+赋值原子化（TOCTOU 竞态防护）
+        "lock": threading.Lock(),
+        # 批量签到队列互斥：同时只允许一个在跑
+        "batch_running": False,
+        "batch_lock": threading.Lock(),
+        # 批量签到冷却基准（spawn 成功时刻；单条与批量共用同一计数）
+        "last_batch_ts": 0.0,
+        # 全局速率上限计数表：username -> (窗口内次数, 窗口起点)
+        "rate_limits": {},
+    }
+    app.add_url_rule("/api/signin", view_func=api_signin, methods=["POST"])
+    app.add_url_rule("/api/signin/batch", view_func=api_signin_batch, methods=["POST"])

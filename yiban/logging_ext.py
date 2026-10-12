@@ -1,25 +1,50 @@
 # -*- coding: utf-8 -*-
-"""日志落盘处理器：跨进程互斥 + 按天滚动。
+"""日志落盘处理器：跨进程互斥 + 按天滚动 + 出站脱敏。
 
 签到进程与 web 进程写同一批 `sign-YYYY-MM-DD.log`（web 的「日志」页与运维排查
 都读它），必须：
 
-- **跨进程互斥**：并发写入时行不交错 —— 经 `locks.file_lock`（POSIX flock /
-  Windows msvcrt）统一加锁，真无法加锁时由 locks 告警留痕（原先 Windows 上
-  直接退化为无锁且无提示）；
-- **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径。
+- **跨进程互斥**：并发写入时行不交错——经 `yiban/infra/locks.py` 统一加锁，真无法
+  加锁时由 locks 告警留痕；
+- **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径；
+- **出站脱敏**：`MaskingFormatter` 对格式化后的整行兜底遮**手机号与凭据字面量**。覆盖面 =
+  装上这个 formatter 的那些 handler——三个入口各装配一处：CLI
+  `yiban.engine.cli_support._setup_cli_logging`、web `create_app`、容器调度器
+  `docker/scheduler.py::_setup_logging`；别处自建 handler 写的日志不在保护范围内。
+  两族口径都取自 `yiban.masking`（`mask_phones_in_text` / `mask_credentials_in_text`），
+  本层不另造规则：号码写成编码形态（凑不出号码数字串）仍照漏，凭据键名被百分号编码
+  （`tok%65n=v`）仍照漏——绕过面与那两族各自登记的同一份。
 
 日期口径取 `yiban.clock`（北京时间），与签到事件/状态文件一致。
-
-`locks` 目前仍在 `scripts/`（M1② 的 `yiban/infra/` 会收走）；导入本模块的
-signin / web 启动时都已把 `scripts/` 放进 sys.path。
 """
 import logging
 import os
 
 from yiban.infra import locks
+from yiban.masking import mask_credentials_in_text, mask_phones_in_text
 
 from . import clock
+
+
+class MaskingFormatter(logging.Formatter):
+    """对最终输出串做幂等脱敏的 formatter（输出面兜底）：手机号 + 凭据字面量。
+
+    挂在**输出面**而不是逐个调用点：脱敏此前靠调用点手工调 `mask_phone` /
+    `sanitize_text`，漏一处就漏一处（新写的日志天然不受保护）。放在 formatter 而非
+    handler filter，是因为 formatter 拿到的是最终成文（含 `%(message)s` 插值与异常
+    traceback），一处覆盖全部落盘/降级通道；且三个日志装配点（CLI 的
+    `_setup_cli_logging`、web 的 `create_app`、容器调度器的 `_setup_logging`）都经
+    `setFormatter` 装配，新增入口按同一形状挂即可。
+
+    覆盖 `format`（而非 `formatMessage`）：异常栈文本由 `Formatter.format` 追加，
+    它可能内嵌上游回显的手机号与令牌，只有对最终串替换才兜得住。
+
+    两族都用 `yiban.masking` 的**同一个**原语对象（改口径只改那一处）；顺序是凭据先、
+    号码后——号码规则幂等，且凭据规则不看数字形态，两者互不干扰。
+    """
+
+    def format(self, record):
+        return mask_phones_in_text(mask_credentials_in_text(super().format(record)))
 
 
 class FlockFileHandler(logging.FileHandler):
@@ -36,10 +61,8 @@ class FlockFileHandler(logging.FileHandler):
 class DailyFlockFileHandler(FlockFileHandler):
     """按天滚动 + 跨进程互斥的 web 日志 handler。
 
-    背景：gunicorn 走 create_app() 不执行 main()，此前 root logger 无任何文件
-    handler —— INFO 级日志被 logging 的 lastResort（仅放行 WARNING+）丢弃，
-    WARNING+ 只进 stderr（journald），后台「日志」页与 sign-*.log 均不可见。
-    与签到子进程同口径写入按天文件：
+    常驻的 web 进程（gunicorn 走 create_app()、不执行 main()）必须与签到子进程写
+    同一批按天文件：
 
     - 继承 flock 版 FileHandler：与 cron 子进程并发写同一文件时行不交错；
     - emit 时按当前日期切换目标文件（常驻进程跨天自动滚动），rollover 后先重开

@@ -1,0 +1,11 @@
+root = true
+
+# 行尾口径：全仓 LF。
+# `.gitattributes` 钉入库形态与检出形态；本文件钉编辑器写入形态。
+# 缺这一条时，编辑器把新编辑的源写成 CRLF。
+# Vite 底层的 rolldown 按源字节算 Vue scopeId，CRLF 会让产物文件名漂移
+#（2026-10-06 工单 yiban-auto-sign-spn6 实测）。
+# 守卫：`scripts/check-vue-build-reproducible.sh`。
+[*]
+charset = utf-8
+end_of_line = lf
