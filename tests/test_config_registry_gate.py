@@ -408,6 +408,21 @@ class GateScanSurfaceTest(unittest.TestCase):
         self.assertNotEqual(self._git(fx.root, "ls-files").stdout.strip(), "",
                             "夹具跟踪集不得为空（否则验的是「全空索引」而非混合形状）")
 
+    def _add_undecodable_file(self, fx):
+        """造一个名字含非法 UTF-8 字节的**入库**文件；文件系统不接受时返回 None。
+
+        名字用 `os.fsdecode(b"...")` 表示（与本用例要复现的 git 原始字节同形）。
+        """
+        rel = os.fsdecode(b"bad\xff.py")
+        try:
+            with open(os.path.join(fx.root, rel), "w", encoding="utf-8") as f:
+                f.write("")
+        except (OSError, UnicodeError):
+            return None
+        if self._git(fx.root, "add", "--", rel).returncode != 0:
+            return None
+        return rel
+
     def test_unscanned_top_dir_with_source_turns_gate_red(self):
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             self._add_top_dir(fx)
@@ -440,20 +455,50 @@ class GateScanSurfaceTest(unittest.TestCase):
                              "未入库的工具目录不该让门拒判：" + r.stdout + r.stderr)
 
     @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
-    def test_tool_dir_ignored_via_info_exclude_passes(self):
-        """忽略规则只写在 .git/info/exclude（`.beads` 的形状）时也必须放行。
+    def test_tracked_tool_dir_matching_ignore_rule_still_red(self):
+        """**被跟踪**的顶层目录即使命中忽略规则，仍是生产面 ⇒ 必须拒判。
 
-        dev-verify 的副本用源索引重建 `.git`，info/exclude 是空的——只认
-        `git check-ignore` 会在副本里把 `.beads` 误判成生产面。判据必须落在
-        **跟踪集**上，才对任何检出形态都成立。
+        承载的不变式：判据是**跟踪集**，不是忽略规则。忽略规则只写在
+        `.git/info/exclude`（`.beads` 的形状）时尤其要看清——dev-verify 的副本用源索引
+        重建 `.git`，副本的 info/exclude 是空的，任何"按忽略规则判生产面"的实现都会
+        在副本与工作树之间摇摆。被跟踪件必进提交与部署，忽略规则不改变这一点。
+
+        （前一版此用例用的是**未跟踪**目录＋info/exclude：真正让它绿的是
+        `git add` 与否，那条 info/exclude 对断言无因果，等于第二条
+        `test_untracked_tool_dir_with_source_passes`。改为被跟踪形状才承重。）
         """
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             self._init_repo(fx.root)
             self._track_scan_face(fx)
             self._add_top_dir(fx, "toolcache")
-            self._exclude_in_info(fx, "toolcache/")
+            self.assertEqual(self._git(fx.root, "add", "toolcache").returncode, 0)
+            self._exclude_in_info(fx, "toolcache/")   # 忽略规则不豁免被跟踪目录
             r = _run_gate(fx.root, fx.registry_path)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(r.returncode, 2,
+                             "被跟踪的目录命中忽略规则也必须拒判：" + r.stdout + r.stderr)
+            self.assertIn("toolcache", r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_undecodable_tracked_name_does_not_crash_gate(self):
+        """索引含非法 UTF-8 文件名 ⇒ 门必须照常判，不得以 traceback 崩（exit 1）。
+
+        跟踪集查询原先用 `subprocess.run(..., text=True)`：git 输出的文件名若是原始
+        非 UTF-8 字节，解码当场抛 `UnicodeDecodeError`。该异常不在 `except` 面内 ⇒ 冒到
+        顶层 ⇒ Python 打 traceback 并以 **exit 1** 收场。exit 1 在本门的语义是"有违规"，
+        而真实情形是"门压根没跑成"——fail 方向错（正确方向是 fail-closed：不跳过任何
+        目录照旧判，或以 exit 2 拒判）。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._track_scan_face(fx)
+            rel = self._add_undecodable_file(fx)
+            if rel is None:
+                self.skipTest("文件系统不接受非法 UTF-8 名（本用例面向 POSIX 检出）")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertNotIn("Traceback", r.stderr,
+                             "门不得以 Python traceback 崩：" + r.stderr[-2000:])
+            self.assertEqual(r.returncode, 0,
+                             "非法 UTF-8 名不得改变判据结论：" + r.stdout + r.stderr)
 
     @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
     def test_empty_index_new_prod_dir_still_red(self):

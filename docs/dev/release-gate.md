@@ -84,7 +84,7 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 
 1. `开始执行签到`（**带版本号**，见 §4）
 2. `签到汇总` 中 `❌ 0 失败`
-3. `run.sh 执行完成，退出码: 0`
+3. `run.sh 退出，退出码: 0`（`run.sh:184` 实打串为 `=== run.sh 退出，退出码: $rc ===`）
 
 且当日 `sign-status-<日期>.txt` 为 `SUCCESS`。
 
@@ -102,7 +102,8 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 - **账号固有失败不计为失败**：失败原因＝平台要求的签到类型不是普通签到（拍照/扫码/手势等）、
   自动化无法执行，平台返回含 `非法签到` 字样。该类失败**不触发清零、不推翻退出码判据**。
   已知实例 `182****0444`（真实用户、未删除、未暂停）。裁决与台账见 `docs/refactor/134-v062-main-release.md`。
-- **两条过渡期例外（同批记录，非阻断）**：①"日志无 5 秒级重复行"在 `ikik` 部署前不列为阻断；
+- **两条过渡期例外（同批记录，非阻断）**：①判据③（见工单 `l065`：日志无 5 秒级重复行，
+  该判据只在该工单里定义，本仓无第二处定义）在 `ikik` 部署前不列为阻断；
   ②`sign-status-<日期>.txt` 在 `f7va` 部署前缺失不列为阻断，当日判据以日志
   `run.sh 退出，退出码: …` 收尾行为准。两条修复随 2026-10-17 部署生效。
 
@@ -128,7 +129,7 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 ssh <生产别名> 'cd <部署目录> && git rev-parse --short HEAD'
 ssh <生产别名> 'date; systemctl show -p NRestarts <服务名>'
 ssh <生产别名> 'for f in <状态目录>/sign-status-*.txt; do echo "$f: $(cat $f)"; done'
-ssh <生产别名> 'grep -aE "开始执行签到|签到汇总|run.sh 执行完成" <状态目录>/sign-<日期>.log \
+ssh <生产别名> 'grep -aE "开始执行签到|签到汇总|run.sh 退出" <状态目录>/sign-<日期>.log \
   | sed -E "s/\[[0-9]{11}\]/[号码]/g"'
 ssh <生产别名> 'grep -acE "ERROR|Traceback" <状态目录>/sign-<日期>.log'
 # cron 链路前提预检（2026-10-03 事故：M07 收紧后存量锁目录属主不符，两轮启动即败；
