@@ -4,3 +4,4 @@
 # 语义：基线之外的违规即红。基线只许缩小（ratchet）。
 # 收紧基线：修掉违规后跑 scripts/check-import-linter.py --write-baseline。
 # 本文件不许手工加宽：加宽等于放水，须在 PR 描述里逐条写理由。
+yiban-no-web	yiban	web

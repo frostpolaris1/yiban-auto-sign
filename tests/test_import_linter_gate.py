@@ -219,18 +219,21 @@ class GateWiringTest(unittest.TestCase):
                                 f"缺产物 {path}")
 
     def test_committed_baseline_matches_the_writer(self):
-        """入库基线正文必须逐字等于执行器写它的形态（头 + 违规行）。
+        """入库基线必须逐行沿用执行器的文件头，其后为违规行。
 
         头里写着"契约 id 还是契约 name"这条身份口径。两处漂移过一次（改了口径忘了
-        重生成文件），基线读起来就与判据不符。真树当前零违规，故入库基线正文必须
-        恰为文件头——只 `startswith` 会放过手工追加的加宽行（审查 M1）。
-        正文 == 当前违规集这条由 CurrentTreeTest 用 `--write-baseline` 重生成后比对。
+        重生成文件），基线读起来就与判据不符。
+        128-P2a 起真树含 shim 过渡态违规，正文不再为空。故这里钉两件事：
+        正文逐行以执行器文件头起头；文件头只出现一次。
+        正文 == 当前违规集这条仍由 CurrentTreeTest 用 `--write-baseline` 重生成后
+        逐字节比对——手工追加的加宽行在那里现形（审查 M1 的强断言未撤）。
         """
         mod = _load_gate_module()
         body = _read(BASELINE)
-        self.assertEqual(body, mod.BASELINE_HEADER,
-                         "入库基线正文必须恰为文件头（真树当前零违规）："
-                         "多出的行等于未走流程的手工加宽")
+        self.assertTrue(body.startswith(mod.BASELINE_HEADER),
+                        "入库基线必须逐行以执行器的文件头起头（头里写着契约 id 身份口径）")
+        self.assertEqual(body.count(mod.BASELINE_HEADER), 1,
+                         "文件头只许出现一次，且必须在开头")
         self.assertIn("契约 id", mod.BASELINE_HEADER, "身份口径必须是契约 id")
 
 
