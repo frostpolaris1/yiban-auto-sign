@@ -4,7 +4,9 @@
 标签：J · 运维：部署/备份/发布
 覆盖：flock 弹开、当日已签到成功、当日已收尾、timeout 击杀、正常收尾五条路径的留痕；
     行首触发来源前缀（排程/手工，按 stdin 有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
-    退出码 0/1/2/3/10 逐字透传；状态文件口径（0 写 SUCCESS、2 写 SKIPPED、其余不写）。
+    退出码 0/1/2/3/10 逐字透传；状态文件口径（0 写 SUCCESS、2 写 SKIPPED/GLOBAL_PAUSED、
+    3 写 BUSY、4 写 SCHEMA_MIGRATION、124 写 TIMEOUT、其余非零写 FAILED——每个确实跑过
+    一轮的退出码都落盘，逐码派生自 `cli_support._EXIT_KINDS`，f7va）。
 对应实现：`run.sh`（shell 侧，无 Python 对应物）。
 关键断言：① 每条退出路径都有 `=== run.sh 退出，退出码: N ===`——原先只有正常收尾
     那一行，日志里看不出"这轮到底跑过没有、为什么没签"；② 加日志不得顺手改退出码。
@@ -187,6 +189,27 @@ class ExitTrailTest(RunShExitTrailTest):
         self.assertIn("拒绝采信", text)
         self.assertIn("run.sh 开始执行", text, "拒绝采信 ⇒ 按未完成继续跑本轮")
 
+    def test_non_success_status_texts_are_never_credible(self):
+        """所有非 SUCCESS 文本一律拒绝采信（f7va：防"写了 FAILED 反被当成功"）。
+
+        库内当日有 done 行（SUCCESS 本会被采信）、状态文本却是别的取值 ⇒ 不得走
+        "今天已签到成功，跳过执行"。正对照（SUCCESS ⇒ 跳过）由
+        test_already_success_path_logs_exit_zero 钉住；安全论证落在本用例上：
+        新写的 FAILED/TIMEOUT/BUSY/SCHEMA_MIGRATION/SKIPPED/GLOBAL_PAUSED 不改变任何
+        跑/不跑判定。
+        """
+        for text in ("FAILED", "TIMEOUT", "BUSY", "SCHEMA_MIGRATION",
+                     "SKIPPED", "GLOBAL_PAUSED"):
+            with self.subTest(text=text):
+                state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+                db = self._seed_success_facts()
+                with io.open(os.path.join(state, f"sign-status-{_today()}.txt"), "w",
+                             encoding="utf-8") as f:
+                    f.write(text)
+                _code, log = self._run(state, {"YIBAN_DB_FILE": db})
+                self.assertNotIn("今天已签到成功，跳过执行", log,
+                                 f"{text} 被当成成功采信了（采信只认 SUCCESS）")
+
     def test_settled_marker_path_logs_exit_zero(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
         open(os.path.join(state, f"yiban-settled-{_today()}.marker"), "w").close()  #收尾标记只看存在性，内容不参与判定
@@ -221,18 +244,25 @@ class ExitCodeContractTest(RunShExitTrailTest):
                 self.assertEqual(got, code, f"退出码 {code} 必须原样透传")
                 self._assert_exit_line(text, code)
 
-    def test_success_status_file_only_written_for_zero(self):
-        """留痕逻辑不得改变状态文件口径：0 写 SUCCESS，2 写 SKIPPED，其余不写。"""
-        for code, want in ((0, "SUCCESS"), (2, "SKIPPED"), (1, None), (3, None)):
+    def test_status_file_written_for_every_round_exit_code(self):
+        """留痕逻辑不得改变状态文件口径之外的东西：每个跑过一轮的码都落盘文本。
+
+        f7va 行为变更（旧断言写错了，不是行为错了）：旧口径"非 0/2 不写文件"让
+        失败轮当天两件判据全缺，恰在最需要当日判据的那天失去机器可读证据。
+        文本**逐码派生**自 `cli_support._EXIT_KINDS`：0→SUCCESS、1→FAILED、
+        2→SKIPPED、3→BUSY（locked，队列忙＝本轮没跑，非失败）、4→SCHEMA_MIGRATION
+        （迁移拒启）、124→TIMEOUT。3/4 不得被 catch-all 归进 FAILED（假失败）。
+        """
+        for code, want in ((0, "SUCCESS"), (1, "FAILED"), (2, "SKIPPED"),
+                           (3, "BUSY"), (4, "SCHEMA_MIGRATION"), (124, "TIMEOUT")):
             with self.subTest(code=code):
                 state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
                 self._run(state, {"FAKE_EXIT_CODE": str(code)})
                 path = os.path.join(state, f"sign-status-{_today()}.txt")
-                if want is None:
-                    self.assertFalse(os.path.exists(path), f"退出码 {code} 不该写状态文件")
-                else:
-                    with io.open(path, encoding="utf-8") as f:
-                        self.assertEqual(f.read().strip(), want)
+                self.assertTrue(os.path.exists(path),
+                                f"退出码 {code} 必须写状态文件（每个跑过一轮的码都落盘）")
+                with io.open(path, encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), want)
 
 
 class TriggerTagTest(RunShExitTrailTest):
