@@ -7,8 +7,8 @@
     GLOBAL_PAUSED、引擎日志打暂停门措辞、假上游记账为零；把同一份 `.env` 的暂停键翻成 0
     后同一条链的 rc/状态文件/页面显示**一起翻转**（判据与显示都现读同一份文件）；
     解除轮的判码**由构造决定、不由平台/日期/用例先后决定**：台账归零 + 运行锁空置 ⇒
-    rc=2/SKIPPED（干净腿），持住运行锁构造忙态 ⇒ rc=3 且不写状态文件（活体反例
-    "忙态被拒"）；
+    rc=2/SKIPPED（干净腿），持住运行锁构造忙态 ⇒ rc=3 且状态文件落 BUSY（活体反例
+    "忙态被拒"；f7va 前 rc=3 不写文件，更早还曾被误落 FAILED，见下方判码契约注）；
     web 侧 `_day_off_reason` 与日历页内联上下文（day_off/图例/状态表载荷）与引擎判定同源；
     活体反例：伪造 web 读源（read_env 桩成空）或只翻文件一侧 ⇒ 同源性判据必须变红
 对应实现：run.sh（`.env` 装载、`_write_status_from_exit` 判码契约）、
@@ -19,7 +19,11 @@
     web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/status.py
     （`DISPLAY`/`legend_items`/`display_payload`）、tests/fake_yiban_server.py（假上游记账）
 关键断言：rc 契约本单**只钉不改**：暂停命中 ⇒ 引擎 rc=2 且 run.sh 状态文件为
-    GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）；同源判据 = 引擎侧
+    GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）。注（f7va，2026-10-12）：
+    run.sh 的**状态文件落盘判码**本批改为"每个跑过一轮的码都落盘文本"，且**逐码派生**
+    自 cli_support._EXIT_KINDS——rc=3（locked＝队列忙，本轮没跑）落 **BUSY**，**不是
+    FAILED**（本轮没跑≠失败）。这里钉的"忙态被拒"不变式（rc=3、**不写 SUCCESS**、
+    不写 FAILED、留痕"拒绝运行"）照旧；同源判据 = 引擎侧
     `day_off(同一份 .env)` 与 web 侧 `_day_off_reason` 相等，且页面内联 day_off 载荷
     的文案/语气档逐字段取自 `DAY_OFF_TEXT`/表派生——伪造任一侧后该等式必须不成立，
     用例里以显式 assertNotEqual 钉住"判据会咬人"，不是恒真比较
@@ -518,9 +522,12 @@ class GlobalPauseChainTest(_ChainBase):
 
         rc=3（队列忙）族的唯一产线源头：引擎进程级运行锁 `signin-run.lock` 的争抢
         ——`_RunLockHeld`/`_RunLockUnavailable`（等待超时、无锁后端、锁件不可开）
-        一律 fail-closed 返 3（yiban/engine/runner.py），run.sh 对非 0/2 码**不写
-        状态文件**（`_write_status_from_exit`）⇒ statuses 为空。
-        构造：与干净腿同一轮型（暂停键翻 0 + 账号级自暂停）且台账同样归零——本轮
+        一律 fail-closed 返 3（yiban/engine/runner.py）。run.sh 对 rc=3 落盘 **BUSY**
+        （`_EXIT_KINDS` 把 3 定名为 `locked`＝队列忙，**本轮没跑**）：真意是"不得写
+        SUCCESS"，且**不得写 FAILED**——本轮没跑≠账号签到失败（本项目栽过"领不到任务
+        被上报成批假失败"，10-07）。旧断言用"statuses 为空"当"非 SUCCESS"的代理，
+        已被 BUSY 取代，并显式加钉"不得为 SUCCESS/FAILED"。构造：与干净腿同一轮型
+        （暂停键翻 0 + 账号级自暂停）且台账同样归零——本轮
         **唯一变量是"锁忙/锁闲"**：本测试进程用 fcntl 持住该锁件（模拟"前一轮还
         活着"），`.env` 把等锁上限压到 3s（引擎等满即拒）。干净腿钉 rc=2、本用例钉
         rc=3，两侧都由构造保证，与业务日、用例先后、平台一律无关。
@@ -537,8 +544,14 @@ class GlobalPauseChainTest(_ChainBase):
         self.assertEqual(run["rc"], 3,
                          "锁忙态的解除轮必须走队列忙判码 3（拿不到互斥绝不无锁照跑）：%s"
                          % run["log"])
-        self.assertEqual(run["statuses"], [],
-                         "rc=3 不属 run.sh 写状态文件的码族（忙≠已有结论）：%s" % run["statuses"])
+        self.assertEqual(run["statuses"], ["BUSY"],
+                         "rc=3 落 BUSY（locked=队列忙，本轮没跑；非失败）：%s"
+                         % run["statuses"])
+        self.assertNotIn("SUCCESS", run["statuses"],
+                         "忙态轮不得写 SUCCESS（本轮没跑，不得谎报成功）：%s" % run["statuses"])
+        self.assertNotIn("FAILED", run["statuses"],
+                         "队列忙不得表述成失败（本轮没跑≠失败，假失败禁止）：%s"
+                         % run["statuses"])
         self.assertIn("拒绝运行", run["log"],
                       "忙态拒跑必须留痕（fail-closed 不得静默），log=%s" % run["log"])
         stats, business = self._mock_evidence()

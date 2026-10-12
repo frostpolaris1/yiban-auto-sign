@@ -259,7 +259,7 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
 class WindowClosedExitCodeTest(unittest.TestCase):
     """窗口已关的零请求收尾轮：退出码必须按账号的真实结论算，而不是按"未执行"算。
 
-    run.sh 只认退出码：2 写 SKIPPED（补签会再跑），1 不写状态文件（当天留着失败语义，
+    run.sh 只认退出码：2 写 SKIPPED（补签会再跑），1 写 FAILED（当天留着失败语义，
     还伴随失败邮件）。已有结论的账号若被收尾漏出 `results`，汇总按默认 `pending`
     计成失败 → 退出码 1——真相却是"当日已有结论、本轮无需处理"。
     """
