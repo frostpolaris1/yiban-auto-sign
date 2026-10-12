@@ -92,16 +92,18 @@ TOKEN_QUOTED = re.compile(
 TOKEN_KEYLINE = re.compile(r"(?:^|[\s\-\[])(YIBAN_[A-Z0-9_]+)\s*[=:]")
 #: 被扫文件里必须出现的最小文件数（防"扫描面塌了 ⇒ 零命中 ⇒ 全绿"）。
 DEFAULT_MIN_FILES = 100
-#: 非生产顶层目录（不参与配置键判据）。新增一枚目录要么进 `DEFAULT_SCAN`、
-#: 要么进本表并写明理由——否则门禁把"新目录里的键"整片漏掉而依旧判绿。
+#: 额外豁免的顶层目录。扫描面残缺守卫先按 **git 跟踪集**排除无被跟踪文件的目录
+#: （见 `_guard_scan_surface`），故被忽略/未入库的本地工具目录不必在此登记。
+#: 本表只收**被跟踪但不属生产面**的目录（如 docs/、tests/）——否则门禁会把它们的
+#: 键按生产面判红。新增被跟踪的顶层目录要么进 `DEFAULT_SCAN`、要么进本表并写明理由。
 BENIGN_TOP_DIRS = {
     ".git", ".github", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__",
     "build", "docs", "node_modules", "out", "tests", "work",
 }
 
 
-def _git_tracked_top_dirs(root, names):
-    """`names` 里哪些顶层目录含被跟踪文件（= 生产面）。
+def _git_tracked_top_dirs(root):
+    """这个检出里含被跟踪文件的顶层目录集合（= 生产面）。
 
     生产目录**必被跟踪入库**（部署只带跟踪文件），故"含被跟踪文件"是生产面的
     准确判据。被 git 忽略的本地工具目录（.beads / .qoder / .tmp / .zcode 一类）
@@ -112,24 +114,26 @@ def _git_tracked_top_dirs(root, names):
     info/exclude 是空的——按忽略规则判会在副本里把 `.beads` 误判成生产面。跟踪集
     来自索引本身，对任何检出形态（工作树 / dev-verify 副本 / 直跑）都一致。
 
-    返回 set（被跟踪的目录名）。**返回 None** 表示问不到 git（git 缺失 / root 不是
-    可用检出）——调用方此时不得跳过任何目录，退回"每个顶层目录都算候选"的旧行为
-    （`git archive` 导出的干净树与临时夹具树都走这条）。
+    查询**整个索引**而不限定路径：限定到候选目录时，"stdout 为空"既可能是空索引，
+    也可能是"这几个候选恰好都没被跟踪"（健康仓里大量存在）。两者必须分开判——前者
+    无法判定生产面，后者是真的都不是生产面。
+
+    返回 set（被跟踪的顶层目录名）。**返回 None** 表示无法判定生产面——git 缺失 /
+    root 不是可用检出 / **索引为空**。调用方此时不得跳过任何目录，退回"每个顶层目录
+    都算候选"的旧行为：空索引下"没有任何目录是生产面"会把新生产目录放绿，那是
+    fail-open，方向错在危险的一边。
     """
-    if not names or shutil.which("git") is None:
+    if shutil.which("git") is None:
         return None
     try:
-        r = subprocess.run(["git", "-C", root, "ls-files", "-z", "--", *names],
+        r = subprocess.run(["git", "-C", root, "ls-files", "-z"],
                            capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
-    if r.returncode != 0:
+    if r.returncode != 0 or not r.stdout:
+        # 非零 = 不是可用检出；空 stdout = 索引为空。两者都按"无法判定"处置。
         return None
-    tracked = set()
-    for entry in r.stdout.split("\0"):
-        if entry:
-            tracked.add(entry.split("/", 1)[0])
-    return tracked
+    return {entry.split("/", 1)[0] for entry in r.stdout.split("\0") if entry}
 
 
 def _die(msg):
@@ -201,8 +205,8 @@ def _guard_scan_surface(root, entries):
     生产面的判据是 **git 跟踪集**（见 `_git_tracked_top_dirs`）：无被跟踪文件的顶层
     目录不参与判据。理由是生产目录必被跟踪入库，而被忽略/未入库的本地工具目录
     （`.beads` / `.qoder` / `.tmp` / `.zcode` 一类）永非生产面——按目录名逐个维护
-    BENIGN_TOP_DIRS 会随每台机器的工具变化而漂移，本机每次全量都伪红。问不到 git
-    时不跳过任何目录（旧行为）。
+    BENIGN_TOP_DIRS 会随每台机器的工具变化而漂移，本机每次全量都伪红。无法判定生产面
+    （问不到 git / 索引为空）时不跳过任何目录（旧行为），fail-closed。
     """
     scanned = {e.split("/")[0] for e in entries}
     candidates = []
@@ -214,7 +218,7 @@ def _guard_scan_surface(root, entries):
         candidates.append(name)
     if not candidates:
         return
-    tracked = _git_tracked_top_dirs(root, candidates)
+    tracked = _git_tracked_top_dirs(root)
     missing = []
     for name in candidates:
         if tracked is not None and name not in tracked:

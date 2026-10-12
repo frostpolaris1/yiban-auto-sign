@@ -397,6 +397,17 @@ class GateScanSurfaceTest(unittest.TestCase):
         with open(os.path.join(info, "exclude"), "a", encoding="utf-8") as f:
             f.write(pattern + "\n")
 
+    def _track_scan_face(self, fx):
+        """把夹具的扫描面（config/ + yiban/）入库，得到**混合**跟踪集。
+
+        只 `git init` 而不 add 会让索引全空——那时"按跟踪集判生产面"对任何目录都得
+        不出结论。现实的形状是"扫描面被跟踪、工具目录未被跟踪"，夹具必须照它搭。
+        """
+        r = self._git(fx.root, "add", "config", "yiban")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(self._git(fx.root, "ls-files").stdout.strip(), "",
+                            "夹具跟踪集不得为空（否则验的是「全空索引」而非混合形状）")
+
     def test_unscanned_top_dir_with_source_turns_gate_red(self):
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             self._add_top_dir(fx)
@@ -416,11 +427,13 @@ class GateScanSurfaceTest(unittest.TestCase):
         """未入库（无被跟踪文件）的顶层目录不是生产面，门禁必须放行。
 
         复现本机恒伪红：`.beads`/`.qoder`/`.tmp`/`.zcode` 这些本地工具目录里有被扫
-        扩展名的文件，但它们一个都没入库 ⇒ 不是生产面。放行它们不是放宽门：真正的
-        生产目录被跟踪，仍由 test_tracked_top_dir_with_source_still_red 钉住。
+        扩展名的文件，但它们一个都没入库 ⇒ 不是生产面。夹具是**混合**跟踪集（扫描面
+        已入库），故放行不是因为"索引全空"。放行它们不是放宽门：真正的生产目录被
+        跟踪，仍由 test_tracked_top_dir_with_source_still_red 钉住。
         """
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             self._init_repo(fx.root)
+            self._track_scan_face(fx)
             self._add_top_dir(fx, "toolcache")
             r = _run_gate(fx.root, fx.registry_path)
             self.assertEqual(r.returncode, 0,
@@ -436,10 +449,28 @@ class GateScanSurfaceTest(unittest.TestCase):
         """
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             self._init_repo(fx.root)
+            self._track_scan_face(fx)
             self._add_top_dir(fx, "toolcache")
             self._exclude_in_info(fx, "toolcache/")
             r = _run_gate(fx.root, fx.registry_path)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_empty_index_new_prod_dir_still_red(self):
+        """空索引的检出（`git init` 后一个文件都没入库）⇒ 门必须退回 fail-closed。
+
+        空索引下"按跟踪集判生产面"会得出"没有任何目录是生产面"。若据此跳过全部候选，
+        本应拒判的新生产目录反而放绿——这是 fail-open，方向错在危险的一边。无法判定
+        生产面时退回旧行为（每个顶层目录都算候选）才安全。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)              # 只 init、不 add ⇒ 索引为空
+            self.assertEqual(self._git(fx.root, "ls-files").stdout, "")
+            self._add_top_dir(fx, "newprod")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2,
+                             "空索引不得让新生产目录放绿：" + r.stdout + r.stderr)
+            self.assertIn("newprod", r.stderr)
 
     @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
     def test_tracked_top_dir_with_source_still_red(self):
