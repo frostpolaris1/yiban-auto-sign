@@ -323,13 +323,20 @@ def _flush_mail_on_sigterm(signum, frame):
 
     同一信号路径还冲刷**进程内累积的状态文件缓冲**（按日状态与失败提醒额度）：
     二者默认按界落盘，被 SIGTERM 击杀时最后一个落盘界之后的尾部条目会随进程消失，
-    故必须在此同步冲刷（崩溃语义的网络，见 state_io 的"写放大治理"段）。
+    故在此同步冲刷（崩溃语义的网络，见 state_io 的"写放大治理"段）。
+
+    **两个冲刷一律 `blocking=False`**：本处理器跑在主线程上，而两个缓冲锁都是**不可
+    重入**的 `threading.Lock`。主线程若正在临界区内，处理器再取同名锁＝同线程自杀式
+    阻塞（`contextlib.suppress(Exception)` 兜不住死锁，它是阻塞不是异常），进程从此不再
+    响应任何信号，宿主 `timeout` 只能升级成 SIGKILL ⇒ 缓冲真丢。取不到锁就跳过：
+    紧随其后的 `sys.exit`（SystemExit）会展开调用栈，`batch_sign_state` /
+    `batch_user_fail_mail` 的退出分支与 `atexit` 会完成真正的落盘。
     """
     # 冲刷失败不改变退出码：SIGTERM 路径的首要契约是尽快退出
     with contextlib.suppress(Exception):
-        state_io.flush_sign_state()
+        state_io.flush_sign_state(blocking=False)
     with contextlib.suppress(Exception):
-        flush_user_fail_mail_state()
+        flush_user_fail_mail_state(blocking=False)
     with contextlib.suppress(Exception):
         _flush_admin_mail_summary(phase="签到超时终止")
     sys.exit(128 + int(signum or 15))
@@ -355,9 +362,10 @@ def _user_fail_mail_state_path(today_str):
 # 待写条数 ≥ `_QUOTA_FLUSH_MAX`、距上次落盘 ≥ `_QUOTA_FLUSH_SEC`、或批量上下文退出。
 # **与按日状态唯一的语义差别**：本文件的读改写是**跨进程额度 CAS**（"每账号每天最多
 # 1 封"）。批量区内，另一个进程在本区落盘前看不到本区已占的额度 ⇒ 同一账号在
-# 一个落盘窗口内被两个进程同时判定"可发"。窗口上界即 `_QUOTA_FLUSH_SEC`（默认 10s），
-# 且两个进程同秒内同时失败同一账号才触发；代价是多一封提醒邮件，不触及"并发真实登录"
-# 红线。要彻底避免须把额度计数挪进库（另批，不在本批范围）。
+# 一个落盘窗口内被两个进程同时判定"可发"。窗口的**实际上界不是严格的 `_QUOTA_FLUSH_SEC`**：
+# 检查是事件驱动（每次预占/归还时比对），写入停顿时窗口可以更长，直到下一次操作或
+# 上下文退出才收口。触发还需两个进程在窗口内同时失败同一账号；代价是多一封提醒邮件，
+# 不触及"并发真实登录"红线。要彻底避免须把额度计数挪进库（另批，不在本批范围）。
 _QUOTA_BUFFERS = {}       # mail-user-fail 路径 -> _QuotaBuf
 _QUOTA_GATE = threading.Lock()
 _QUOTA_BATCH_DEPTH = 0    # 批量上下文嵌套层数；0 = 逐条立即落盘（既有行为）
@@ -397,22 +405,35 @@ def batch_user_fail_mail():
                 _QUOTA_BUFFERS.clear()
 
 
-def flush_user_fail_mail_state():
-    """把进程内累积的额度操作整批落盘（幂等；无待写操作时为空操作）。"""
-    with _QUOTA_GATE:
+def flush_user_fail_mail_state(blocking=True):
+    """把进程内累积的额度操作整批落盘（幂等；无待写操作时为空操作）。
+
+    `blocking=False` 供**信号处理器**使用：`_QUOTA_GATE` 不可重入，主线程正在临界区内
+    时处理器必须立即返回而不是等锁（否则同线程自杀式阻塞、进程不再响应任何信号）。
+    取不到锁就跳过，交给异常展开（上下文退出）与 `atexit` 兜底。
+    """
+    if not _QUOTA_GATE.acquire(blocking=blocking):
+        return
+    try:
         paths = list(_QUOTA_BUFFERS)
+    finally:
+        _QUOTA_GATE.release()
     for path in paths:
-        _flush_quota_path(path)
+        _flush_quota_path(path, blocking=blocking)
 
 
-def _flush_quota_path(path):
-    with _QUOTA_GATE:
+def _flush_quota_path(path, blocking=True):
+    if not _QUOTA_GATE.acquire(blocking=blocking):
+        return
+    try:
         buf = _QUOTA_BUFFERS.get(path)
         if buf is None:
             return
         ops = buf.ops
         buf.ops = []
         buf.last_flush = time.monotonic()
+    finally:
+        _QUOTA_GATE.release()
     if not ops:
         return
     try:
@@ -426,12 +447,27 @@ def _flush_quota_path(path):
             if changed:
                 state_io._write_private_json(path, data)
     except OSError as e:
+        _requeue_quota(path, ops)
         logger.warning("写入失败提醒额度文件失败（不影响签到）: %s", e)
+        return
+    except BaseException:
+        # 信号/中断打断落盘：先还原条目再让异常继续展开，不丢已占的额度
+        _requeue_quota(path, ops)
+        raise
+    if not changed:
         return
     with _QUOTA_GATE:
         buf = _QUOTA_BUFFERS.get(path)
         if buf is not None:
             buf.view = data
+
+
+def _requeue_quota(path, ops):
+    """把一批未落盘的额度操作放回队首（保序），交给下一次落盘重试。"""
+    with _QUOTA_GATE:
+        buf = _QUOTA_BUFFERS.get(path)
+        if buf is not None:
+            buf.ops = ops + buf.ops
 
 
 def _read_quota_file(path):
