@@ -108,7 +108,7 @@ reclaim_stale_verify_jobs = _verify_jobs.reclaim_stale
 purge_verify_jobs = _verify_jobs.purge
 
 # 签到领取池（v17，多执行体协调）：唯一定义点在 `yiban/store/claims.py`
-CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS  # 账号级租约（900s），与 queue_store 的 60s 任务级租约不是同一档
+CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS  # 账号级租约（900s，旧领取池冻结件）；queue_store 的任务级租约已随工单 l1rx 删除
 CLAIM_RETENTION_DAYS = _claims.RETENTION_DAYS
 CLAIM_STATE_CLAIMED = _claims.STATE_CLAIMED
 CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.status.CLAIM_DONE_STATUSES

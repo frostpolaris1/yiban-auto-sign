@@ -60,10 +60,6 @@ def _is_readonly_round(argv):
     """该轮是否只读（不签任何账号）：判据是 argv 里的只读开关。"""
     return any(a in _READONLY_FLAGS for a in argv)
 
-#: **全量轮在飞**时整段让位的轮询间隔（秒）：只是一次 flock 探测，轮一收工就接手。
-#: 让位不看部署形态（有队列与否）——见 `_round_in_flight`：账号级仲裁只防重复登录，
-#: 不防兜底把那一轮计划给执行体的行先领走。
-_YIELD_POLL_SEC = 30
 
 #: 扫空后轮询领取池事件签名的短间隔（秒）：兜底的"失败即入队"读取端。别的执行体
 #: 弃权（retry: 档）就是入队，签名一变立刻接手，失败账号最坏只等这一拍而不是等满
@@ -87,21 +83,6 @@ _GATE_REASON_TEXT = {
 # 状态码别名（与 yiban.status 同一对象）
 STATUS_FAILED = yiban_status.STATUS_FAILED
 
-
-def _round_in_flight():
-    """此刻是否有一支全量轮在跑——**兜底让位的唯一判据**（运行时事实，非配置声明）。
-
-    判据取自全局轮次锁的探测：监督进程持该锁覆盖它的整轮（含全部子执行体），故"锁被持有"
-    与"有一轮在飞"是同一件事。为什么不用 `db.pool_db_declared()`：那判的是"库路径有没有
-    被声明"，与"有没有可仲裁的工作在跑"是两件事（10-07 生产用默认库、没声明键，被判成
-    纯状态文件部署）。队列在场与否不改变让位结论，它只决定兜底能领到什么。
-
-    让位与执行体的让位复检曾共用本函数（`executor_v3.run_executor_v3(yield_probe=…)`）；
-    工单 `l1rx` 后**轮内复检形参已删**，让位改由兜底腿的**肘界谓词**承担（结构上不抢新鲜
-    工作）。本函数只剩"循环顶的整段让位"这一个用途——省掉全量轮在跑时兜底的无谓空转，
-    不再是正确性依赖。
-    """
-    return cli_support._run_lock_held()
 
 #: 仓库根（`yiban/engine/<模块>.py` 上溯三层）。**不是**导入引导（包内模块本就靠
 #: `python -m` / 测试的 pythonpath 找到包）：这里只用来给拉起的子进程设 cwd 与
@@ -262,12 +243,15 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     codes = _await_workers(children, slot_list[:len(children)])
     for i, rc in enumerate(codes):
         logger.info("执行体 %d/%d（槽位 %d）结束，退出码 %s", i + 1, n, slot_list[i], rc)
-    # 轮末收尸：被信号杀死的执行体（rc < 0）来不及自己收尾，它在领的账号会一直挂着
-    # `claimed` 到 900s 租约过期才可能被别人接管。监督进程**直接观测到了**这次异常退出
-    # （比"心跳过期"更强的证据），故在轮末显式了结这些行，不留给下一轮按在飞误判。
-    for i, rc in enumerate(codes):
-        if rc is not None and rc < 0:
-            _reap_dead_worker(slot_list[i])
+    # 轮末收尸（工单 `l1rx` 必修 R1）：**每个**已拉起并已退出的槽位都收一次。
+    # 判据是"子进程已经不在"（`_await_workers` 已 `poll()` 到全部退出）＝**进程句柄**事实，
+    # 不是心跳时间戳、也不看退出码。为什么不能只看 `rc < 0`（旧实现）：`rc == 1` 表示子进程
+    # **未走到自己的收尾**（未预期异常 / 汇总成真失败），它留下的在飞行没人收；而
+    # `claim_batch` 只领 `pending` ⇒ 那些行当天永久卡死＝漏签。
+    # 干净跑完的子执行体名下没有在飞行（都收尾了），收尸对它恒为 0 行——故"全收"既不误伤
+    # 也不漏判；被信号杀死（rc<0）、未知码、`None` 同样被这一条接住。
+    for i, _rc in enumerate(codes):
+        _reap_dead_worker(slot_list[i])
 
     # rc 契约（宿主 run.sh 与容器读的是**同一份码**）：任何非零子退出码都必须被汇总
     # 结果接住，**不得归 0**——`Popen.poll()` 对信号杀返回负数（-9 = SIGKILL），
@@ -329,33 +313,39 @@ def _settled_child_code(rc):
 def _reap_dead_worker(slot):
     """轮末收尸：显式了结某个**已确认死亡**的执行体槽位名下的在领任务。
 
-    判据不是心跳而是"监督进程看到它异常退出（返回码为负）"：这与"租约过期 ⇒ 可能死了"
-    是两个强度不同的证据——此处是**已知死亡**，故不必等满租约。只按槽位身份前缀匹配
-    （`queue_store.reap_abandoned`），已被别人接管的行 owner 已换、不会被误动；代次同时
-    自增，任何迟到的旧代写仍被 fence。
+    判据不是心跳、也不是退出码，而是"监督进程看到该子进程已经不在"（`_await_workers`
+    已 `poll()` 到它退出）——**进程句柄**事实，强于"租约过期 ⇒ 可能死了"。故不必等任何
+    宽限期。只按槽位身份前缀匹配（`queue_store.reap_abandoned`），已被别人接管的行 owner
+    已换、不会被误动；代次同时自增（`epoch+1`），任何迟到的旧代写仍被 `settle_tasks`
+    的 `epochs` fence 住。
+
+    **调用面是"每个已退出的槽位"**（不只 `rc < 0`）：`rc == 1` 的子进程没走到自己的收尾
+    （未预期异常），同样会留下在飞行；干净跑完的槽位名下没有在飞行，收尸对它恒为 0 行。
+    这一条是删除任务级租约后"崩溃即漏签"的收口（工单 `l1rx` 必修 R1 路径二）。
 
     **仍同时收旧领取表 `sign_claims`**：台账单池化后该表零写入，生产上这里恒为 0 行，
     但它依然是"旧领取池时代的监督收尸"这条正确性路径（四柱之一），且既有 E2E 用例覆盖
     它——故保留，不改写成只收一侧。旧表收尸走 `claims.reap_abandoned`，身份前缀同源
     （都取本槽位的稳定槽位名）。
 
-    收尸失败只留日志：它不影响本轮的退出码汇总，下一轮起跑仍会走"租约过期接管"兜住。
+    收尸失败只留日志：它不影响本轮的退出码汇总；下一轮起跑仍会按**本稳定名**收自己的尸
+    （`run_executor_v3` 的起跑收尸），兜底腿亦同。
     """
     stable = egress.worker_owner(slot)
     try:
         n = db.claim_reap_abandoned(stable)
     except Exception as e:
-        logger.debug("轮末收尸失败（不影响退出码，下一轮仍可接手）: %s", e)
+        logger.debug("轮末收尸失败（不影响退出码，下一轮起跑仍会收自己的尸）: %s", e)
         n = 0
     if n:
-        logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领记录已显式了结", slot, n)
+        logger.warning("执行体槽位 %d 已退出，轮末收尸：%d 条在领记录已显式了结", slot, n)
     try:
         m = queue_store.reap_abandoned(stable)
     except Exception as e:
-        logger.debug("轮末收尸任务队列失败（不影响退出码，下一轮仍可接手）: %s", e)
+        logger.debug("轮末收尸任务队列失败（不影响退出码，下一轮起跑仍会收自己的尸）: %s", e)
         return
     if m:
-        logger.warning("执行体槽位 %d 异常退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
+        logger.warning("执行体槽位 %d 已退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
 
 
 #: 每轮从 .env 并回 `os.environ` 时**只放行**的键——门 / 窗口 / 间隔三类，即
@@ -415,20 +405,19 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     本函数只把锁名写进环境变量，好让子路径/日志口径一致；撞上已在跑的兜底时由调用方
     退出 3。故它与定时全量、手动签到、其他执行体都能并存（账号级互斥交给领取池）。
 
-    **运行前会先过四道关**（每轮重判，不是启动时判一次）：周末签到未开、一键暂停
+    **运行前会先过三道关**（每轮重判，不是启动时判一次）：周末签到未开、一键暂停
     （都由 `schedule.day_off` 判定，与定时轮同源）→ 直接退出；签到时段**尚未开始**
-    → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
-    **全量轮正在运行** → 整段让位（判据见 `_round_in_flight`：只看运行时事实，不看
-    配置声明）。轮内不再复检——工单 `l1rx` 把"让位"改成了**肘界谓词**：兜底只领
-    "已过期超过肘界"的行（`elbow_sec=FALLBACK_ELBOW_SEC`），故即便循环顶让位漏判
-    （"赢下启动竞态的亚秒窗口"），它结构上也只能捡到计划轮此刻不碰的陈旧行，
-    抢跑不再被放大成吸收全天工作量。循环顶让位因此降为省空转的粗粒度入场券。
-    全量轮收工后兜底照常接手：`claim_all` 的宽范围在**没有轮在飞**时才用得上（有轮
-    在飞时那正是"抢走别人计划工作"的那条路，见 `_round_in_flight`）。扫空后的等待是
-    **事件驱动**的：短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的
-    执行体一弃权就接手，等待上限仍是扫描间隔。故它是**捡漏**的那个——补全定时轮没碰
-    的、中途弃权的、窗口内新审核的账号；"谁在做谁"仍由池仲裁，第一红线（同一账号当日
-    一次真实登录）不因此松动。
+    → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）。
+
+    **让位改由肘界谓词承担（工单 `l1rx`，R4）**：原先"全量轮在飞就整段让位"的两道判据
+    （循环顶 `_round_in_flight` 探测 + 轮内 `yield_probe` 复检）**已删**。理由：肘界让
+    "谁该做"成为**行的函数**——兜底只领"已过期超过肘界"的行
+    （`elbow_sec=FALLBACK_ELBOW_SEC`）⇒ 它结构上碰不到计划轮此刻要签的新鲜行，
+    10-07 型启动竞态（兜底赢下亚秒窗口后吸收整轮工作量）从机制上消失，也不需要任何
+    锁探测。兜底与计划轮并发时它只捡计划轮**超过肘界还没接住**的行。
+    `claim_all` 的宽范围保留：那是"捡漏的手"（分片集对兜底恒空，不放宽就是零领取）。
+    扫空后的等待是**事件驱动**的：短轮询领取池"默认可接手未了结"签名
+    （`_await_pool_event`），别的执行体一弃权就接手，等待上限仍是扫描间隔。
 
     退出：窗口关闭 / 三道门命中 / 到达 `deadline` / 账号列表为空且已过窗口。
     返回退出码语义与单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
@@ -438,10 +427,11 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     fixed_interval = interval
     interval = interval or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
     os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
-    # 身份串：兜底常驻与单执行体/并行执行体各用**稳定的槽位名**（`fallback@{主机名}`），
-    # 跨重启不变只服务界面与持久化键；**不等于重启后立刻接手自己上一轮的在飞账号**——
-    # 重入须出示上一代 epoch，重启后没有它，只能等租约过期或心跳回收。代价是同一槽位名
-    # 不得两台机器同时跑（跨主机靠 @主机名 区分，同机由下面那把 `signin-run.lock.fallback` 挡住）。
+    # 身份串：兜底常驻用**稳定的槽位名**（`fallback@{主机名}`），跨重启不变只服务界面与
+    # 持久化键。持有者列存运行时串（含进程号/代次）；**自己上一轮被杀留下的在飞行**由本进程
+    # 起跑收尸（`run_executor_v3` 的起跑收尸按本稳定名回收，换代 fence 迟到写），不再靠
+    # 租约过期或心跳。代价是同一槽位名不得两台机器同时跑（由下面那把
+    # `signin-run.lock.fallback` 挡住，跨主机靠 @主机名 区分）。
     os.environ.setdefault("YIBAN_EXECUTOR_ID", egress.fallback_owner())
     # 出口写入走 egress 单点：兜底行配成空出口时也必须显式写成直连，压掉继承来的
     # `YIBAN_PROXY`（宿主形态由 run.sh 全量 export、容器/web 形态由 child_env 覆盖注入）
@@ -499,25 +489,6 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
                         round_tag, opens_in, wait)
             time.sleep(wait)
             continue
-        if _round_in_flight():
-            # **让位（整段）**：有一支全量轮在飞时不参与领取。
-            # 判据只取**运行时事实**（全局轮次锁被持有 = 有一轮在跑），不看任何配置声明：
-            # 旧判据 `not db.pool_db_declared() and …` 判的是"`YIBAN_DB_FILE` 在环境或
-            # `.env` 里有没有被声明"，与现场事实脱节——生产用默认库、没写该键，于是被判成
-            # "纯状态文件部署"，判据退化成"此刻能否探到锁"；而当时兜底先起飞、锁后持有，
-            # 它探到"无人在跑"就让了个空（2026-10-07 生产）。
-            # 让位的颗粒度也不能是"同一账号"：在飞的行 `claim_batch` 确实拒领，但兜底是
-            # **宽范围领取**（`claim_all`——兜底身份不在 HRW 候选集里，不放宽就是零领取的
-            # 空转），于是它把那一轮**计划给执行体的行**先领走。10-07 证明账号级仲裁只防
-            # 重复登录，**不防吸收全量**：兜底拿走 64 个分片（= 两个执行体全集）、84/100 个
-            # 账号，两个执行体到点只剩空扫，汇总出一堆假失败。故"有队列"不再是免让位的理由，
-            # 队列在场只决定兜底**能领什么**（无队列时它本就无行可领）。
-            # 让位期间按 `_YIELD_POLL_SEC` 轮询：只是一次 flock 探测，轮一收工就接手。
-            logger.info("%s 全量轮正在运行，整段让位（%d 秒后再看）",
-                        round_tag, _YIELD_POLL_SEC)
-            time.sleep(_YIELD_POLL_SEC)
-            continue
-
         state_io._write_fallback_alive(now)
         try:
             accounts = accounts_mod.load_accounts()
@@ -551,13 +522,12 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
         #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
         #   第二次机会只留给一次性补签轮与手动。
-        # - `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`：**肘界谓词取代轮内让位探针**
-        #   （工单 `l1rx`；`docs/refactor/130` §3.3）。兜底只领"已过期超过肘界"的行，
+        # - `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`：**肘界谓词就是让位机制**
+        #   （工单 `l1rx` R4；`docs/refactor/130` §3.3）。兜底只领"已过期超过肘界"的行，
         #   故它**结构上**不可能抢走计划轮此刻该领的新鲜工作——那个 10-07 型启动竞态
-        #   （兜底赢下亚秒窗口后吸收整轮 84/100）从机制上消失。原先的 `yield_probe`
-        #   （每领取前问一次全局锁）已删：它是轮内止损，起跑胜负未变；肘界是**行的函数**，
-        #   零协调。循环顶那次整段让位（`_round_in_flight`）保留为粗粒度入场券——它省掉
-        #   "全量轮在跑时兜底还去查库"的无谓空转，正确性不再依赖它。
+        #   （兜底赢下亚秒窗口后吸收整轮 84/100）从机制上消失。原先的两道锁探测
+        #   （轮内 `yield_probe` 与循环顶 `_round_in_flight`）**都已删**：它们是轮内止损，
+        #   起跑胜负未变；肘界是**行的函数**，零协调。
         # - `event_sink`：**兜底的工作必须落 `sign_events`**。此前不传 sink，兜底签成的
         #   84 个账号在事件表里零记录（10-07 生产 `sign_events` 当日只有 16 条 success
         #   = 两个 worker 的），数据侧看不出"谁做的"，判因留痕也随之丢失。攒一轮批量落库

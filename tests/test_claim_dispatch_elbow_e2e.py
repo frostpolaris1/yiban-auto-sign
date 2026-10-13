@@ -359,19 +359,23 @@ class FallbackElbowWiringTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # ⑤ 端到端：一轮只领"过期超过肘界"的行
 # ---------------------------------------------------------------------------
-class RoundClaimsOnlyPastElbowTest(_DbBase):
-    def test_round_executes_only_rows_past_elbow(self):
-        """真一轮执行体（肘界 60s）：陈旧行被领走执行，肘界**之内**的行原样留着。
+def _keeper_until(fc, seconds):
+    """假协调循环：假时钟推进到 `START + seconds` 即置停止（不自己推进时钟）。"""
+    async def _keep(ctx):
+        limit = START + datetime.timedelta(seconds=seconds)
+        while not ctx.stop.is_set() and fc.t < limit:
+            await asyncio.sleep(0)
+        ctx.stop.set()
+    return _keep
 
-        "新鲜行"取 `run_at` 在未来（未到点）：它在整轮里都不可能被领，故本用例对
-        假时钟推进速度不敏感——断言的是不变式，不是某一拍的时序。
-        """
-        stale, fresh = _phone(1), _phone(2)
-        self._add_task(stale, run_at=_ts(seconds=-120))
-        self._add_task(fresh, run_at=_ts(seconds=3600))
-        clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + DAY, 8)
+
+class _RoundMixin:
+    """"跑真一轮"的公用夹具：真领取（不走 items 替身）、替身登录/限速、可抑制协调循环。"""
+
+    def _run_real_round(self, phones, *, elbow_sec=0.0, keeper_seconds=10, cfg_extra=None):
         fc = _FakeClock()
         calls = []
+        cfg = _cfg(**(cfg_extra or {}))
         patches = [
             mock.patch.object(executor_v3, "_persist_loop", _never),
             mock.patch.object(executor_v3, "_now", fc.now),
@@ -384,28 +388,140 @@ class RoundClaimsOnlyPastElbowTest(_DbBase):
             mock.patch.object(executor_v3.attempts, "attempt_signin",
                               lambda acc: (calls.append(acc.phone),
                                            (True, "ok", False, "success"))[1]),
+            mock.patch.object(executor_v3, "_dispatch_keeper", _keeper_until(fc, keeper_seconds)),
         ]
         with contextlib.ExitStack() as st:
-            for p in patches:
-                st.enter_context(p)
-            # 收干嘛由协调循环裁决；未到点的行一直 pending ⇒ 换成"时钟推进 10s 即停"的替身，
-            # 免得用例依赖窗口关闭（也不依赖拍数——假时钟被多条通道共同推进）。
-            st.enter_context(mock.patch.object(
-                executor_v3, "_dispatch_keeper", self._keeper_until(fc, 10)))
+            for pr in patches:
+                st.enter_context(pr)
             executor_v3.run_executor_v3(
-                [SimpleNamespace(phone=stale, user_paused=False, owner="u@" + stale),
-                 SimpleNamespace(phone=fresh, user_paused=False, owner="u@" + fresh)],
-                day=DAY, cfg=_cfg(v=8), rng=__import__("random").Random(7),
-                cred_state={}, elbow_sec=60.0)
+                [SimpleNamespace(phone=p, user_paused=False, owner="u@" + p) for p in phones],
+                day=DAY, cfg=cfg, rng=__import__("random").Random(7),
+                cred_state={}, elbow_sec=elbow_sec)
+        return calls, fc
+
+
+class RoundClaimsOnlyPastElbowTest(_RoundMixin, _DbBase):
+    def test_round_executes_only_rows_past_elbow(self):
+        """真一轮执行体（肘界 60s）：陈旧行被领走执行，肘界**之内**的行原样留着。
+
+        "新鲜行"取 `run_at` 在未来（未到点）：它在整轮里都不可能被领，故本用例对
+        假时钟推进速度不敏感——断言的是不变式，不是某一拍的时序。
+        """
+        stale, fresh = _phone(1), _phone(2)
+        self._add_task(stale, run_at=_ts(seconds=-120))
+        self._add_task(fresh, run_at=_ts(seconds=3600))
+        clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + DAY, 8)
+        calls, _fc = self._run_real_round([stale, fresh], elbow_sec=60.0,
+                                          cfg_extra={"v": 8})
         self.assertEqual(calls, [stale], "只有过期超过肘界的行被领走执行")
         self.assertEqual(self._row(stale)["state"], "done")
         self.assertEqual(self._row(fresh)["state"], "pending", "肘界内的行必须原样留着")
 
-    @staticmethod
-    def _keeper_until(fc, seconds):
-        async def _keep(ctx):
-            limit = START + datetime.timedelta(seconds=seconds)
-            while not ctx.stop.is_set() and fc.t < limit:
-                await asyncio.sleep(0)      # 不推进假时钟：只让出
-            ctx.stop.set()
-        return _keep
+
+# ---------------------------------------------------------------------------
+# ⑥ 崩溃自愈三条路径（工单 `l1rx` 必修 R1）：判活＝进程句柄，不是时间戳
+# ---------------------------------------------------------------------------
+class CrashRecoveryPathsTest(_RoundMixin, _DbBase):
+    """删除任务级租约后，"崩溃遗留的 `claimed` 行谁来收"必须仍有答案。
+
+    `claim_batch` 只领 `pending`、`reclaim_tasks` 只翻终态 ⇒ 停在 `claimed` 的行当天
+    **永久卡死＝漏签**。原 `reap_expired` 覆盖了这些路径；它随租约族删除后，收口改由
+    **进程句柄口径**的 `reap_abandoned` 承担。三条路径各有一条能红的门：
+
+    ① 单进程部署被 SIGKILL／异常 → 下一次起跑按本稳定名收尸（本类 test_round_start_…）；
+    ② 多进程子进程未预期异常（`rc=1`）→ 监督进程轮末对**每个**已退出槽位收尸
+       （本类 test_supervisor_…）；
+    ③ 兜底进程被杀 → 兜底腿**下一次起跑**收自己的尸（本类 test_fallback_…）。
+    """
+
+    OLD_GEN = "99999:z"
+
+    def test_round_start_reaps_own_stable_name_corpse(self):
+        """路径①：上一次 `single@host` 崩溃留下的 `claimed` 行，下一次起跑必须救回来。"""
+        stale = _phone(1)
+        # 尸体行：owner 是本稳定名的**上一代**运行时串（进程已不在）
+        self._add_task(stale, run_at=_ts(seconds=-120),
+                       state="claimed", owner=f"{OWNER}:{self.OLD_GEN}", epoch=3)
+        clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + DAY, 8)
+        calls, _fc = self._run_real_round([stale], cfg_extra={"v": 8})
+        self.assertEqual(calls, [stale], "起跑收尸没生效：崩溃遗留的行当天没人签（漏签）")
+        self.assertEqual(self._row(stale)["state"], "done", "救回来的行照常收尾")
+
+    def test_round_start_does_not_touch_foreign_stable_name(self):
+        """反向控制：收尸**只按本稳定名**——别人的在飞行（可能活着）一行不动。"""
+        mine, theirs = _phone(1), _phone(2)
+        self._add_task(theirs, run_at=_ts(seconds=-120),
+                       state="claimed", owner=f"worker-9@otherhost:{self.OLD_GEN}", epoch=7)
+        clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + DAY, 8)
+        calls, _fc = self._run_real_round([mine, theirs], cfg_extra={"v": 8})
+        self.assertIn(mine, calls, "前置：本轮自己的账号照常领取执行（否则本用例失去判别力）")
+        self.assertNotIn(theirs, calls, "别人的 claimed 行不得被本执行体收尸后拿去执行")
+        self.assertEqual(self._row(theirs)["state"], "claimed", "别人的行一字不变")
+        self.assertEqual(self._row(theirs)["epoch"], 7, "别人的行不得换代")
+
+    def test_fallback_leg_reaps_its_own_corpse(self):
+        """路径③：兜底被杀后，它自己下一次起跑必须救回 `fallback@host` 的尸体行。"""
+        stale = _phone(1)
+        fowner = egress.fallback_owner()
+        self._add_task(stale, run_at=_ts(seconds=-120),
+                       state="claimed", owner=f"{fowner}:{self.OLD_GEN}", epoch=2)
+        clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + DAY, 8)
+        calls = []
+        fc = _FakeClock()
+        cfg = _cfg(v=8)
+        with mock.patch.dict(os.environ, {"YIBAN_EXECUTOR_ID": fowner}), \
+                mock.patch.object(executor_v3, "_persist_loop", _never), \
+                mock.patch.object(executor_v3, "_now", fc.now), \
+                mock.patch.object(executor_v3, "_sleep", fc.sleep), \
+                mock.patch.object(executor_v3, "_mono", lambda: fc.mono), \
+                mock.patch.object(clock, "now", fc.now), \
+                mock.patch.object(executor_v3, "_make_limiter",
+                                  lambda channels, shares=1: _PermissiveLimiter()), \
+                mock.patch.object(executor_v3, "_make_gap_gate", lambda: _PermissiveGate()), \
+                mock.patch.object(executor_v3.attempts, "attempt_signin",
+                                  lambda acc: (calls.append(acc.phone),
+                                               (True, "ok", False, "success"))[1]), \
+                mock.patch.object(executor_v3, "_dispatch_keeper", _keeper_until(fc, 10)):
+            executor_v3.run_executor_v3(
+                [SimpleNamespace(phone=stale, user_paused=False, owner="u@" + stale)],
+                day=DAY, cfg=cfg, rng=__import__("random").Random(7),
+                cred_state={}, claim_all=True, elbow_sec=executor_v3.FALLBACK_ELBOW_SEC)
+        self.assertEqual(calls, [stale], "兜底腿起跑没救回自己的尸体行")
+        self.assertEqual(self._row(stale)["state"], "done")
+
+    def test_supervisor_reaps_every_slot_that_exited(self):
+        """路径②：监督进程轮末对**每个**已退出槽位收尸（判据是进程已退出，不是 `rc<0`）。
+
+        静态钉住"收尸调用不受退出码条件约束"——旧实现 `if rc is not None and rc < 0:`
+        会让 `rc=1`（未预期异常）的槽位漏收。
+        """
+        src = inspect.getsource(workers.run_worker_supervisor)
+        tree = ast.parse(src)
+        reap_calls = [n for n in ast.walk(tree)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                      and n.func.id == "_reap_dead_worker"]
+        self.assertTrue(reap_calls, "监督进程轮末必须收尸")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If):
+                names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+                has_reap = any(
+                    isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                    and c.func.id == "_reap_dead_worker"
+                    for c in ast.walk(node))
+                self.assertFalse(
+                    has_reap and "rc" in names,
+                    "收尸不得挂在退出码条件（`rc < 0`）下——rc=1 的子进程同样会留下在飞行")
+
+    def test_dead_worker_reaping_releases_claimed_rows(self):
+        """行为面：`_reap_dead_worker` 真把该槽位名下的在飞行翻回 `pending` 并换代。"""
+        slot = 3
+        stable = egress.worker_owner(slot)
+        self._add_task(_phone(1), run_at=_ts(seconds=-120),
+                       state="claimed", owner=f"{stable}:{self.OLD_GEN}", epoch=4)
+        self._add_task(_phone(2), run_at=_ts(seconds=-120),
+                       state="claimed", owner="worker-9@otherhost:1:a", epoch=9)
+        workers._reap_dead_worker(slot)
+        row = self._row(_phone(1))
+        self.assertEqual(row["state"], "pending", "该槽位的在飞行必须回退待领")
+        self.assertGreater(row["epoch"], 4, "回退必须换代（fence 迟到旧代写）")
+        self.assertEqual(self._row(_phone(2))["state"], "claimed", "别的槽位不动")

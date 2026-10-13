@@ -405,6 +405,7 @@ class _V3Base(unittest.TestCase):
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                side_effect=_fake_attempt), \
                 mock.patch.object(executor_v3, "_persist_loop", _never), \
+                mock.patch.object(queue_store, "reap_abandoned", lambda *a, **k: 0), \
                 mock.patch.object(executor_v3, "_claim_one",
                                   lambda ctx: [box.pop(0)] if box else []), \
                 mock.patch.object(executor_v3, "_dispatch_keeper", _keep), \
