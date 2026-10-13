@@ -42,7 +42,7 @@ import time
 from yiban import clock, egress
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import cli_support, executor_v3, schedule, state_io
+from yiban.engine import cli_support, crash_semantics, executor_v3, schedule, state_io
 from yiban.infra import env_io
 from yiban.store import db, queue_store
 
@@ -50,6 +50,15 @@ logger = logging.getLogger("yiban")
 
 #: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
 FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
+
+#: 只读轮开关：这些轮次一个账号都不签，既不作证"全量已收尾"，也不该产生推送类副作用。
+#: **单一定义点**——收尾标记判定与协调器启动识别（崩溃语义）共用它，各写一份会漂移。
+_READONLY_FLAGS = ("--check-config", "--probe", "--second-run-check")
+
+
+def _is_readonly_round(argv):
+    """该轮是否只读（不签任何账号）：判据是 argv 里的只读开关。"""
+    return any(a in _READONLY_FLAGS for a in argv)
 
 #: **全量轮在飞**时整段让位的轮询间隔（秒）：只是一次 flock 探测，轮一收工就接手。
 #: 让位不看部署形态（有队列与否）——见 `_round_in_flight`：账号级仲裁只防重复登录，
@@ -177,6 +186,17 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
             "未配置任何账号：请配置 yiban.db（网页后台添加）、YIBAN_ACCOUNTS_JSON、"
             "YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（配置方法详见日志）")
         return 1
+    # 崩溃语义（V-S3）：监督进程是**多执行体形态的协调器**（它持全局运行锁、单点起跑）。
+    # 库与账号已就绪，子执行体尚未拉起 ⇒ 此刻识别"有写前标记、无终态结果"的账号并告警，
+    # 不自动重签。子进程带 `YIBAN_EXECUTOR_ID`，在 `runner.main` 里跳过本识别，故只此一份。
+    # **只读模式不识别**：`--check-config`（部署验证）与 `--probe`（只读健康检查）都不该
+    # 发签到动作，也不该产生推送类副作用——识别会投递一条 CRITICAL 管理员告警（`push=True`），
+    # 那不是"只读校验"该干的事。识别失败不得阻断本轮（观测面语义）：只记 warning。
+    if not _is_readonly_round(argv):
+        try:
+            crash_semantics.report_unknown_outcomes(clock.now().strftime("%Y-%m-%d"))
+        except Exception as e:
+            logger.warning("崩溃遗留识别失败（不影响签到）: %s", type(e).__name__)
     logger.info("多执行体：共 %d 个账号待签，拉起 %d 个执行体（槽位 %s）",
                 len(loaded_accounts), n, slot_list)
     children = []
@@ -287,8 +307,7 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
     # 子执行体侧的写入口按身份（`YIBAN_EXECUTOR_ID`）关停，见 `runner.main`。
     # 只读校验形态（--check-config / --probe / --second-run-check 派发给子执行体）
     # 不作证"全量已收尾"：那类轮次一个账号都不签，写标记等于谎报。
-    _readonly_round = any(a in ("--check-config", "--probe", "--second-run-check")
-                          for a in argv)
+    _readonly_round = _is_readonly_round(argv)
     if _round_settled and not _readonly_round:
         state_io._write_sched_done()
     return _final
