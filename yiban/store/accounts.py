@@ -166,6 +166,10 @@ def _decrypt_row(row, env_file=None):
     a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
     key_env_file = _connection._env_file if env_file is None else env_file
     pending = []
+    # 本行只取一次钥（工单 dnox ④）：判定"有没有钥"与装载钥都在下面 `key is None` 的
+    # 首枚密文字段处做一次，字段循环内不再逐字段重复。一行有 password / phone_code 两枚
+    # 密文字段，逐字段判定会把 `has_key`（读盘）与 `load_key` 的调用翻倍。
+    key = None
     # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
     for k in ("password", "phone_code"):
         v = a.get(k)
@@ -176,11 +180,12 @@ def _decrypt_row(row, env_file=None):
         except (TypeError, ValueError):
             obj = None
         if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(key_env_file):
-                raise RuntimeError(
-                    "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
-                )
-            key = account_crypto.load_key(key_env_file)
+            if key is None:
+                if not account_crypto.has_key(key_env_file):
+                    raise RuntimeError(
+                        "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
+                    )
+                key = account_crypto.load_key(key_env_file)
             try:
                 a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
             except ValueError as e:
