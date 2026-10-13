@@ -300,8 +300,9 @@ class SupervisorReapDeadWorkerV3E2ETest(_ClaimE2EBase):
     """真子进程用 `claim_batch` 领取任务后自杀：监督进程轮末把该任务回退待领。
 
     与组 3 对称：两套持有记录（旧表 `sign_claims` 与 v3 `sign_tasks`）必须在同一个轮末
-    收尸路径里各自处置。不做的话，被杀执行体的在领任务只能等 `reap_expired` 的租约 +
-    宽限期（数十分钟），期间该账号当天无人再签。
+    收尸路径里各自处置。不做的话，被杀执行体的在领任务没人回退，该账号当天无人再签——
+    v3 侧的回退走 `queue_store.reap_abandoned`（进程句柄口径；任务级租约已随工单 `l1rx`
+    删除，不再有"等租约+宽限过期"这条路）。
     """
 
     class _RealChildPopen:

@@ -399,39 +399,47 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
 
 
 def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
-    """显式重签：把指定账号当日**终态**行（`done` / `skipped`）翻回 `pending`，并把
-    这些账号的 `run_at` 一概置为"现在"（让手动签到不必等到计划时刻），返回行数。
+    """显式重签：把指定账号当日的行翻回 `pending`，并把它们的 `run_at` 一概置为"现在"
+    （让手动签到不必等到计划时刻），返回行数。
 
-    只服务手动 `--only`（"用户主动点的那一下应当照做"）这条有界显式路径：终态复活默认
-    是红线（复活回 `pending` 会被 `claim_batch` 重新领取 ⇒ 同一账号当日再真实登录一次），
-    故本函数没有缺省调用者，必须显式传具体 `phones`；且只翻 `done`/`skipped` 两类——
-    `failed` 走当日回炉口（`requeue_failed`），`claimed`（他人在飞）不改状态。
+    只服务手动 `--only`（"用户主动点的那一下应当照做"）这条有界显式路径：复活默认是红线
+    （复活回 `pending` 会被 `claim_batch` 重新领取 ⇒ 同一账号当日再真实登录一次），故本
+    函数没有缺省调用者，必须显式传具体 `phones`。翻三类行：
 
-    `run_at` 置"现在"对两类行都做：`pending` 行（当日计划尚未到点）也要能被立刻领到，
-    否则手动签到会睡到计划时刻（窗口外更会一直等）。`epoch` 只在**翻态**的行上自增
-    （在飞 `claimed` 行不动 token，免得打断当前持有者的收尾）；清 `owner` 同理只对
-    翻态行做。`vshard < 0` 的历史行不属于任何分片集，一律不碰（与 `reap_abandoned`
-    / `pending_count` 同界）。空 `phones` → 0 且不取连接；库异常 → 0 + warning。
+    - `done` / `skipped`（终态）：用户主动触发即重签；
+    - `claimed`（**在飞行**）：这是**卡死行的逃生口**（工单 `l1rx` 必修 R2）。任务级租约
+      删除后，"持有者已死"不再由时间戳判定，故本口对所有 `claimed` 一律翻回——用户点的
+      那一下对卡死行必须有效。翻动**换代**（`epoch+1`）并清 `owner`，故原持有者迟到的
+      `settle_tasks` / `requeue_task` 仍被 fence 住、写不回去。
+      **代价（登记为残余）**：原持有者若仍存活（只有兜底腿能与本口并存——手动轮持全局
+      运行锁，全量轮起不来），会有一次同账号并发登录。这是"逃生口"换来的风险，方向由
+      用户在管理面上显式选择。
+    - `failed` 走当日回炉口（`requeue_failed`），不在此翻。
+
+    `run_at` 置"现在"对全部在册行都做：`pending` 行（当日计划尚未到点）也要能被立刻领到，
+    否则手动签到会睡到计划时刻（窗口外更会一直等）。`vshard < 0` 的历史行不属于任何分片集，
+    一律不碰（与 `reap_abandoned` / `pending_count` 同界）。空 `phones` → 0 且不取连接；
+    库异常 → 0 + warning。
     """
     items = tuple(phones or ())
     if not items:
         return 0
     placeholders = ",".join("?" for _ in items)
     stamp = clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把终态行翻回 pending，
-    # 非终态行只刷新 run_at，一次 UPDATE 完成两件事。
+    # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把可翻态翻回 pending，
+    # 其余行只刷新 run_at，一次 UPDATE 完成两件事。
     sql = (
         "UPDATE sign_tasks SET "
-        "state=CASE WHEN state IN (?, ?) THEN ? ELSE state END, "
-        "owner=CASE WHEN state IN (?, ?) THEN '' ELSE owner END, "
-        "epoch=epoch + CASE WHEN state IN (?, ?) THEN 1 ELSE 0 END, "
+        "state=CASE WHEN state IN (?, ?, ?) THEN ? ELSE state END, "
+        "owner=CASE WHEN state IN (?, ?, ?) THEN '' ELSE owner END, "
+        "epoch=epoch + CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END, "
         "run_at=? "
         "WHERE day=? AND vshard >= 0 "
         f"AND phone IN ({placeholders})"
     )
-    params = (STATE_DONE, STATE_SKIPPED, STATE_PENDING,
-              STATE_DONE, STATE_SKIPPED,
-              STATE_DONE, STATE_SKIPPED,
+    params = (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED, STATE_PENDING,
+              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
+              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
               stamp, day, *items)
     try:
         conn, lock = _queue_conn()

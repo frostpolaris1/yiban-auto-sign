@@ -93,8 +93,12 @@ REFILL_SEC = 5
 #: 兜底常驻的**肘界**（秒）：只领 `run_at` 已过期超过该时长的行（`yiban/core/elbow.py`）。
 #: 兜底因此不与计划轮抢新到点的活——"谁该做"是**行的函数**而非进程身份的函数，10-07 型
 #: 启动竞态（兜底抢跑吸收整轮工作量）从机制上消失（工单 `l1rx`；`docs/refactor/130` §3.3）。
-#: 取值 ≈ 2× 单次尝试时长 P99：足够长到"计划轮此刻该领的行，兜底一律不碰"，又足够短到
-#: "计划轮没接住的活很快落回兜底"。`elbow` 谓词本体只管算术，取值是应用层的职责。
+#:
+#: **取值＝估算，不是实测**（工单 `l1rx` 必修 R10）：设计口径是"≈2× 单次尝试时长 P99"，
+#: 而 P99 **未测**（`docs/refactor/133` §六同款登记），60 秒是拍的。方向安全：偏大只让兜底
+#: 晚一点捡漏，偏小才可能碰到计划轮要签的行。**残余（部署后复算重定）**：10-17 部署后
+#: `run_events` 在真实轮次上全量可用，用 `scripts/elbow_shadow.py` 对每天的兜底领取算
+#: "提前量"分布重定此值。`elbow` 谓词本体只管算术，取值是应用层的职责。
 FALLBACK_ELBOW_SEC = 60
 #: 队列**连续**读不通多少轮就停止本轮领取（ba-p01-01 的有界性担保）。
 #:
@@ -1348,16 +1352,22 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     slot = _worker_slot(executor_id)
     alive_role = _worker_role(executor_id)
     # 起跑写文件心跳：执行体页读的是监督进程写的**文件心跳**，单进程 v3 路径不写就只会
-    # 显示 idle。心跳**只服务 UI**（工单 `l1rx`：租约族已删，判活靠监督进程的进程句柄，
-    # 不再看心跳时间戳）——此处写盘纯是展示动作，写失败只留 debug，不阻断签到。
-    #
-    # **起跑不再做租约回收 / 死主接管**（`reap_expired` / `_widen_with_dead_peers` 已随
-    # 租约族删除）：claim-at-dispatch 下行的持有时间 = 一次尝试的时间（有界），"租约过期
-    # 被回收"这条判据连同它的宽限期与豁免名册整族退场。崩溃（进程被信号杀死）留下的
-    # `claimed` 行由**监督进程按进程句柄**在轮末回收（`workers._reap_dead_worker` →
-    # `queue_store.reap_abandoned`）；进程内未预期异常留下的行由写前标记 + `unknown_outcome`
-    # 识别并告警（`crash_semantics`），不自动重签。
+    # 显示 idle。心跳**只服务 UI**（工单 `l1rx`：租约族已删，判活靠进程句柄，不看心跳
+    # 时间戳）——此处写盘纯是展示动作，写失败只留 debug，不阻断签到。
     state_io.mark_worker_started(slot, now=_now(), role=alive_role)
+    # **起跑收尸（工单 `l1rx` 必修 R1）**：按**进程句柄口径**回收"本稳定名"名下的在飞行。
+    # 判据不是时间戳，是**本进程持有本稳定名的运行锁**（单执行体＝全局锁 `signin-run.lock`、
+    # worker 子进程＝`signin-run.lock.w{i}`、兜底＝`signin-run.lock.fallback`）：拿到锁
+    # ⇒ 同稳定名的上一个持有者必然已不在 ⇒ 它留下的 `claimed` 行是尸体。翻回 `pending`
+    # 并换代，原持有者迟到的写仍被 `settle_tasks(..., epochs=…)` fence。
+    #
+    # 为什么必须有它（删除租约族后缺口的收口）：`claim_batch` 只领 `pending` ⇒ 停在
+    # `claimed` 的行当天**永久卡死＝漏签**；手工 `--only` 那条逃生口只覆盖用户点名的账号
+    # （见 `reclaim_tasks`），覆盖不了"没人点"的日常崩溃。原 `reap_expired` 覆盖了这些
+    # 路径，它随租约族删除后必须由本条补上。覆盖：①单进程部署被 SIGKILL/异常；
+    # ②worker 子进程未预期异常（rc=1，监督进程轮末另有一道，见 `workers`）；③兜底进程被
+    # 杀后其**下一次起跑**（兜底每 ~60s 一轮，故尸体最多留一拍）。
+    queue_store.reap_abandoned(executor_id, day=day)
     # 归因前缀算**一次**：ctx 建立之前的行（计划不可用）与 ctx 可能已丢的行（异常收尾）
     # 都要用它，而那时 ctx 取不到；渲染本身仍只有 `egress.owner_tag` 一处。
     log_tag = egress.owner_tag(executor_id, round_no)

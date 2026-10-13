@@ -9,7 +9,7 @@
    对齐的放弃通知/日志、令牌桶三件接线、产品契约（每次尝试写
    sign-state、dry_run
    零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
-对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、reclaim_tasks）、yiban/engine/runner.py
+对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reclaim_tasks、reap_abandoned）、yiban/engine/runner.py
    的执行调用点、yiban/engine/hrw.py 与 token_bucket.py。
 关键断言：单池后 `runner` 恒定转调 `run_executor_v3`（`--only` 走显式路径：reclaim +
    claim_all + requeue_final），`round.run_queue_retry` 无生产调用点。写进
@@ -331,9 +331,8 @@ class _Base(unittest.TestCase):
         """写一个已过新鲜度门的心跳（`stale`：有开始、无收尾、心跳过期）。
 
         这是"崩溃执行体"的忠实表示：进程起跑时写过心跳、随后被杀，文件留下且时间戳变旧。
-        它与"当日完全没有心跳记录"（`idle`）必须区分——`idle` 是保守侧、算活、当日不回收
-        （心跳写失败 / 跨午夜 / 进程没跑都会落到 `idle`，见 `_live_row_owners`）；只有
-        `stale` 才判死、才回收。
+        心跳**只服务执行体页的存活展示**（工单 `l1rx`：判活与回收改走**进程句柄**，
+        `queue_store.reap_abandoned` 不再读心跳时间戳）。
         """
         state_io.mark_worker_started(
             index, now=self.fc.t - datetime.timedelta(
@@ -355,6 +354,12 @@ class _Base(unittest.TestCase):
         gate = gate if gate is not None else _PermissiveGate()
         patches = [mock.patch.object(executor_v3, "_persist_loop", _never)]
         if items is not None:
+            # 夹具把行预置成"本进程已领取"（owner＝本进程运行时身份）——那是**起跑之后**
+            # 才可能出现的状态；而执行体起跑第一件事就是按本稳定名收自己的尸（工单 `l1rx`
+            # 必修 R1），会把夹具行翻回 pending。故 items 模式把起跑收尸替身为 no-op；
+            # **R1 本身**由 `tests/test_claim_dispatch_elbow_e2e.py` 的三条路径用例正面钉住。
+            patches.append(mock.patch.object(queue_store, "reap_abandoned",
+                                             lambda *a, **k: 0))
             box = list(items)
 
             def _claim(ctx, _box=box):
@@ -481,13 +486,14 @@ class ManualReclaimIsolationTest(_Base):
                          "别人的 sign-state 不得被改写成 user_cancelled")
         self.assertEqual(self._row(a)["state"], "done", "本轮账号被重签并收尾")
 
-    def test_stale_claims_are_left_to_supervisor_reaping(self):
-        """租约族删除后（工单 `l1rx`）执行体起跑**不再按时间戳回收** `claimed` 行。
+    def test_manual_reclaim_recovers_stale_claimed_rows(self):
+        """手工 `--only` 的**逃生口**（工单 `l1rx` 必修 R2）：卡死的 `claimed` 行必须能被
+        "立即签到"救回来。
 
-        陈旧 `claimed`（本人或别人的）一律原样留在库里：崩溃遗留由监督进程按进程句柄的
-        `reap_abandoned`（或补签轮）处置，执行体**不在起跑时就地回收**。本用例钉两件：
-        ① 执行体不改任何 `claimed` 行；② 本轮账号自己的陈旧 `claimed` 也不被自动重签
-        （新口径，如实登记）。
+        任务级租约删除后，"持有者已死"不再由时间戳判定。手工路径若也不翻 `claimed`，
+        用户点"立即签到"对卡死行就**永久无效**（旧逃生口＝手工跑一轮也一并失效）。
+        本用例钉两点：① 本轮账号自己的陈旧 `claimed` 被翻回并重新执行；② 别人的
+        `claimed` 行一字不动（不得跨账号写）。`epoch` 换代使原持有者的迟到写仍被 fence。
         """
         a, b = _phone(1), _phone(2)
         self._seed_v(self.V)
@@ -496,19 +502,14 @@ class ManualReclaimIsolationTest(_Base):
                        lease_until=_ts(seconds=-600), epoch=5)
         self._add_task(a, vshard=sh, state="claimed", owner="me:1:1",
                        lease_until=_ts(seconds=-600), epoch=3)
-        before_a, before_b = self._row(a), self._row(b)
+        before_b = self._row(b)
         calls = []
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (calls.append(acc.phone),
                                             (True, "ok", False, "success"))[1]):
             self._run_v3(self._accounts(a), reclaim=True, requeue_final=True)
-        self.assertEqual(calls, [], "陈旧 claimed 不被执行体就地回收/执行")
-        # `reclaim_tasks` 会把到手账号的 `run_at` 刷成"现在"（手动签到的既定语义），
-        # 故这里比对**状态机三列**而不是整行。
-        ra = self._row(a)
-        self.assertEqual((ra["state"], ra["owner"], ra["epoch"]),
-                         (before_a["state"], before_a["owner"], before_a["epoch"]),
-                         "本轮账号自己的陈旧 claimed 也不自动重签（交给监督进程收尸）")
+        self.assertEqual(calls, [a], "手工路径必须把卡死的 claimed 行救回来并执行")
+        self.assertEqual(self._row(a)["state"], "done", "救回来的行照常收尾")
         self.assertEqual(self._row(b), before_b, "别人的 claimed 行一字不变")
 
 
@@ -1258,7 +1259,7 @@ class UnexpectedErrorTest(_Base):
       成功的活汇总成"全部未执行"（退出码 1 + 失败邮件），与事实相反。
     """
 
-    def test_refiller_exception_is_contained(self):
+    def test_claim_exception_is_contained(self):
         phone = _phone(1)
         self._add_claimed(phone)
         self._seed_v(8)
@@ -1556,7 +1557,14 @@ class ProductContractTest(_Base):
         self.fc.t = START.replace(hour=8, minute=0)
         with open(self._state_path(), "w", encoding="utf-8") as f:
             json.dump({_phone(1): {"status": "failed", "message": "真实失败"}}, f)
-        results = self._run_v3(accounts)
+        # 触网点必须显式替身（工单 `l1rx` 必修 R7）：不许靠"假账号没有 password 属性"
+        # 与生产窗口门挡住请求——那正是 48 次请求漏站的同族形状（护栏不是判据）。
+        calls = []
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: calls.append(acc.phone) or (True, "ok",
+                                                                       False, "success")):
+            results = self._run_v3(accounts)
+        self.assertEqual(calls, [], "窗口已关：一个真实请求都不许发")
         self.assertEqual(results[_phone(1)][3], "failed", "已有结论按原结论透传")
         self.assertEqual(self._read_state()[_phone(1)]["message"], "真实失败")
 
@@ -1686,7 +1694,7 @@ class RunnerSplitTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 崩溃恢复接线：起跑回收 + 崩溃行被重新领取 + 文件心跳四态
+# 收尾标记与心跳四态（UI 面）
 # ---------------------------------------------------------------------------
 class WorkerFinishMarkTest(_Base):
     """收尾标记只在**正常返回路径**写：异常/中断不得被记成"正常跑完"。

@@ -237,6 +237,13 @@ class _Base(unittest.TestCase):
         gate = gate if gate is not None else _PermissiveGate()
         patches = [mock.patch.object(executor_v3, "_persist_loop", _never)]
         if items is not None:
+            # 夹具把行预置成"本进程已领取"（owner＝本进程运行时身份）——那是**起跑之后**
+            # 才可能出现的状态；而执行体起跑第一件事就是按本稳定名收自己的尸（工单 `l1rx`
+            # 必修 R1），会把夹具行翻回 pending。故 items 模式把起跑收尸替身为 no-op；
+            # **R1 本身**由 `tests/test_claim_dispatch_elbow_e2e.py::CrashRecoveryPathsTest`
+            # 的三条路径用例正面钉住。
+            patches.append(mock.patch.object(queue_store, "reap_abandoned",
+                                             lambda *a, **k: 0))
             box = list(items)
             patches.append(mock.patch.object(
                 executor_v3, "_claim_one", lambda ctx: [box.pop(0)] if box else []))
