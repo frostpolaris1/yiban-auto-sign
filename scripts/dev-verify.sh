@@ -283,7 +283,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # `tests/test_store_queue.py` 都不被命中，PR CI 对这条面零覆盖。`claim` 覆盖
     # `ClaimBatchTest` 类与全部 `test_claims_*` 文件；`queue` 覆盖整个 `test_queue_*`
     # 文件族（-k 按关键词语义切分，模块名 `test_queue_failclosed` 只被 `queue` 命中）。
-    # 实测：+claim 929 条、+queue 909 条、两词并集 1039 条（基线 762 条）；新增文件全是
+    # 实测（独立复审 2026-10-13 复测：+claim 939 条、+queue 909 条、两词并集 1049 条，
+    # 基线 762 条。首版注释写 929/1039，差的 10 条正是本文件自带用例——那时新文件还没计
+    # 入收集。以复审实测值为准）；新增文件全是
     # claim/queue/fallback/执行体面，无无关重测被捞。
     "$py" -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit or claim or queue"
     echo "DEV-VERIFY(ci) e2e smoke"
