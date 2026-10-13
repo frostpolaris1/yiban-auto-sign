@@ -458,6 +458,11 @@ class _Ctx:
         # 轮末"本执行体未执行"判因的出口（调用方传入的 dict，本函数往里填）：
         # 判因同时喂汇总计数与事件留痕，见 `_mark_unreached`。
         self.unreached = unreached
+        # 轮次序号：`None` = **一次性轮**（定时全量与手动 `--only`），整数 = **常驻多轮**
+        # 的第 N 轮（兜底常驻循环逐轮传）。除日志归因外，它还是收尾"逐账号重扫幂等"的
+        # 判别面：常驻轮重扫到当日已有结论的用户自暂停账号时不再登记（见 `_prescan`），
+        # 否则 `results` 永远非空 —— 兜底紧循环不停、且每轮重落事件与进度行。
+        self.round_no = round_no
         # 手动 `--only` 的显式重签：豁免窗口关闭判定（用户主动触发应当放行，与旧领取池
         # 的手动链路一致），其余路径不受影响
         self.reclaim = reclaim
@@ -482,6 +487,12 @@ class _Ctx:
         # "跑过但没收尾（重试回炉）"与"没轮到"分开——前者不是"未执行"（见
         # `_mark_unreached`）。只在事件循环线程里改写，与本类其余计数同一纪律。
         self.attempted = set()
+        # 本轮认定的**用户自暂停**账号（`_prescan` 写；`_mark_unreached` 读）。
+        # 它们是"有意不动"、没有计划行的账号，既不是"未执行"（无从领取），也不是
+        # "已由他人负责"。登记（状态/事件/进度行）当日**只做一次**：兜底常驻每 ~5s
+        # 重扫，重复登记会按轮灌 `user_cancelled` 事件与 `pause` 进度行（2026-10-13
+        # 生产单日 752+752），并把"有活"喂给紧循环（见 `_prescan`）。
+        self.user_paused = set()
 
 
 def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
@@ -1086,7 +1097,21 @@ def _prescan(ctx, accounts):
     - **用户自暂停**：计划里本就没有它的行（`planner._phones` 剔除自暂停账号），不登记
       就会在汇总里变成"未执行"（按失败计），与 v2 的"跳过"口径不符。由**归属执行体**
       登记一次。
+
+    登记当日**只做一次**（判据＝当日状态文件里已是 `user_cancelled`）：兜底常驻每 ~5s
+    重扫、窗口内可上百轮，重复登记会按轮灌 `user_cancelled` 事件与 `pause` 进度行
+    （2026-10-13 生产单日 752+752，工单 uuqb），并把"本轮有活"喂给紧循环（`own` 恒 > 0
+    ⇒ 扫描间隔从 60s 掉到 5s）。两个调用形态的差异必须保留：
+
+    - **一次性轮**（`round_no` 为 `None`：定时全量、手动 `--only`）即便状态文件已有该
+      结论**仍登记进 `results`**——汇总按 `results` 计"跳过"，不登记就会被算成"未执行"
+      （真失败 + 退出码 1）。写状态/事件/进度行的副作用则按"当日只做一次"跳过，避免
+      同一账号当日重复留痕。
+    - **常驻多轮**（`round_no` 有值：兜底）在已有结论时**不进 `results`**：这正是"本轮
+      无活"的如实口径，紧循环据此回到配置的扫描间隔；该账号的当日结论本就在状态文件里，
+      汇总侧由 `ctx.user_paused` 排除它，不会回落成"未执行"。
     """
+    recorded = None
     for acc in accounts:
         phone = acc.phone
         if (ctx.delegated is not None
@@ -1094,12 +1119,21 @@ def _prescan(ctx, accounts):
             ctx.delegated.add(phone)
             continue
         if getattr(acc, "user_paused", False):
+            ctx.user_paused.add(phone)
+            if recorded is None:
+                # 当日状态快照按需取一次：没暂停账号的部署（常态）不必每轮多读一次盘。
+                recorded = state_io._daily_statuses()
+            already = str(recorded.get(phone, "")).strip() == STATUS_USER_CANCELLED
+            if already and ctx.round_no is not None:
+                # 常驻重复轮：当日结论已在，本轮无活可做（见 docstring）。
+                continue
+            if not already:
+                state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
+                # claim/start 行——进度流里只出现这一行 pause 是正确形态。
+                _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
             ctx.results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
-            state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
-            _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
-            # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
-            # claim/start 行——进度流里只出现这一行 pause 是正确形态。
-            _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
 
 
 def _mark_window_skips(ctx, accounts):
@@ -1153,6 +1187,17 @@ UNREACHED_UNCLAIMED = "unclaimed"
 #: 同一形状。peer 为 0 时清回 `None`：同组成 N→0→N 的第三次留痕不得被吞。
 _UNREACHED_PEER_LAST = None
 
+#: 上一次落下的「无人接手」批量留痕**组成**（`_mark_unreached` 的去重依据）：
+#: `(执行体, 分因明细)`。去重理由与 `_UNREACHED_PEER_LAST` 相同（组成不变即整段跳过、
+#: 身份必须进键、归零要能复活），但**形状不同**：peer 那枚是三元的 `(执行体, 账号数,
+#: 分因明细)`，本枚是二元的——无人接手档的账号数就是明细之和，不必另存一列。
+#: 真异常健康时该档为 0；但**队列读不通**时本执行体全部账号都落进这一档——逐账号落库
+#: 就是 O(账号数) 的事件与日志（2026-10-13 生产的 `pending` 洪泛形状），故同样收成一条
+#: 批量并按组成去重。真异常的**规模与分因**由批量行与 `unreached` 出参承担；逐账号事实源
+#: 是台账 `sign_tasks` 的行状态——**仅当台账读得通且该账号当日有行**：「判因不可得」
+#: （队列读不通）读不到台账，「队列中没有当日行」本就没有行，这两种分因只有批量明细可查。
+_UNREACHED_UNCLAIMED_LAST = None
+
 
 def _mark_unreached(ctx, accounts):
     """轮末判因：本执行体范围内、`results` 里没有的账号到底落到哪儿去了。
@@ -1168,54 +1213,66 @@ def _mark_unreached(ctx, accounts):
     - 队列读不通（哨兵）⇒ 判因不可得，按 `UNCLAIMED` 计并留 warning：不把"读不出来"
       说成"别人做了"（那是掩盖），也不静默丢账。
 
+    `ctx.user_paused`（用户自暂停）不在判因范围内：计划里本就没有它的行，它既不是
+    未执行也不是别人负责（应由 `_prescan` 登记）。
+
     为什么必须留痕：2026-10-07 生产里任务被别人领走时执行层**零事件、零日志**，
     `sign_tasks.result` 又被实际领取者覆盖成"签到成功"，数据侧完全看不出"没轮到"，
     运维只能靠人工比对日志时间线。
 
-    留痕按判因的**性质**分两档：
+    留痕一律收成**一条批量**（日志一行 + 事件一行，带账号数与分因明细），按**组成**去重
+    （见上面两个 `_UNREACHED_*_LAST`）——兜底常驻循环每轮扫描，组成不变就整段跳过：
 
-    - `PEER`（跨执行体交接的正常形态，不是故障）收成**一条批量**：日志一行 + 事件一行，
-      带账号数。逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行
-      `pending` 事件与 1830 行日志（工单 81xt）。措辞与形状对齐本函数里那条
-      "未执行判因不可得"批量告警。该批量按**组成**去重（见 `_UNREACHED_PEER_LAST`）：
-      执行体、账号数与分因明细都不变时整段跳过，不重复写日志与事件。
-    - `UNCLAIMED`（无人接手，真异常）**逐账号**留痕：判因文本与故障账号逐条可查。
-      健康运行下这类账号为 0，逐条不产生日常噪声；一旦出现，运维要能按账号定位。
-      `_emit_event` 的 message 截断在 200 字符，一条批量装不下上百账号的明细，
-      故不并进批量。
+    - 逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行 `pending`
+      事件与 1830 行日志（工单 81xt）；2026-10-13 生产更在 `pending` 档上单日灌入
+      49,148 行。批量事件是**摘要行**（`phone=""`，没有单一账号），读者面按摘要行口径
+      排除其账号统计（见 `store.events` 的 sign_event_stats / sign_event_accounts_summary），
+      故它**永不成为某账号当日最后一条事件**（看板终态读的是每账号最后一条）。
+    - 真异常（`UNCLAIMED`）的可查性不靠逐条事件行：**规模与分因**在批量行里（账号数 +
+      `{分因文本: 账号数}` 明细），**逐账号判因**经 `unreached` 出参喂运行汇总的独立桶。
+      逐账号事实源是台账 `sign_tasks` 的行状态——**仅当台账读得通且该账号当日有行**：
+      「判因不可得」（队列读不通）时台账读不到，「队列中没有当日行」时台账本就没有行，
+      这两种分因只有批量明细一项可查，往下追账号得另开手段。
 
     两档与调用方的汇总计数**同一份判因**——两处口径不会互相漂移。
 
     `ctx.unreached` 为 `None`（调用方不要判因，例如只关心自己退出码的子执行体）时本函数
     只做事件留痕，不填 out-param。
     """
-    global _UNREACHED_PEER_LAST
+    global _UNREACHED_PEER_LAST, _UNREACHED_UNCLAIMED_LAST
     attempted = getattr(ctx, "attempted", ())
+    paused = getattr(ctx, "user_paused", ())
     phones = [a.phone for a in accounts
               if a.phone not in ctx.results
-              and a.phone not in (ctx.delegated or ())]
+              and a.phone not in (ctx.delegated or ())
+              and a.phone not in paused]
     if not phones:
+        # 没有要判因的账号：两个去重键都清回 `None`（同组成 N→0→N 的第三次留痕不得被吞）。
+        _UNREACHED_PEER_LAST = None
+        _UNREACHED_UNCLAIMED_LAST = None
         return
     pending_judge = [p for p in phones if p not in attempted]
     rows = queue_store.row_owners(ctx.day, pending_judge) if pending_judge else {}
     mine = {ctx.executor_id, ctx.runtime_id}
     if rows is None:
         # 判因不可得：**一条** warning（不是逐账号一条——大站一轮有上百个账号，逐号
-        # 告警会把日志淹掉）；逐账号的判因文本仍落事件表与 INFO 行，可查性不受损。
+        # 告警会把日志淹掉）；逐账号判因经 `ctx.unreached` 出参喂汇总，可查性不受损。
         logger.warning("%s 未执行判因不可得（当日任务归属读不通），%d 个账号按「无人接手」计",
                        ctx.log_tag, len(pending_judge))
-    # 「已由他人负责」的账号收进这一批，循环里不逐账号落事件与日志（见 docstring）。
+    # 两档判因各收进一批，循环里**不逐账号落事件与日志**（见 docstring）。
     peer_n = 0
-    #: `{role/state: 账号数}`——只用于那条批量日志的分因明细（日志不截断）。
+    #: `{role/state: 账号数}`——只用于那条 peer 批量日志的分因明细（日志不截断）。
     peer_detail = {}
+    #: `{分因文本: 账号数}`——无人接手档的分因明细（同样只给批量用）。
+    unclaimed_detail = {}
     for phone in phones:
-        message = ""
         if phone in attempted:
             reason = UNREACHED_RETRY
             # 已由那次尝试落过事件与状态，不重复写
         elif rows is None:
             reason = UNREACHED_UNCLAIMED
-            message = "本执行体未执行：判因不可得（当日任务归属读不通）"
+            unclaimed_detail["判因不可得（当日任务归属读不通）"] = (
+                unclaimed_detail.get("判因不可得（当日任务归属读不通）", 0) + 1)
         else:
             state, owner = rows.get(phone, ("", ""))
             reason = UNREACHED_PEER if (owner and owner not in mine) else UNREACHED_UNCLAIMED
@@ -1225,17 +1282,16 @@ def _mark_unreached(ctx, accounts):
                 key = f"{role}/{state or '?'}"
                 peer_detail[key] = peer_detail.get(key, 0) + 1
             elif state == queue_store.STATE_PENDING:
-                message = f"本执行体未执行：行仍待领（state={state}）"
+                unclaimed_detail["行仍待领（state=pending）"] = (
+                    unclaimed_detail.get("行仍待领（state=pending）", 0) + 1)
             elif state:
-                message = f"本执行体未执行：行状态={state} 且无归属执行体"
+                unclaimed_detail[f"行状态={state} 且无归属执行体"] = (
+                    unclaimed_detail.get(f"行状态={state} 且无归属执行体", 0) + 1)
             else:
-                message = "本执行体未执行：队列中没有当日行"
+                unclaimed_detail["队列中没有当日行"] = (
+                    unclaimed_detail.get("队列中没有当日行", 0) + 1)
         if ctx.unreached is not None:
             ctx.unreached[phone] = reason
-        if message:
-            # 真异常（无人接手）：**逐账号**留痕，判因文本与账号逐条可查。
-            _emit_event(ctx, phone, yiban_status.STATUS_PENDING, message)
-            logger.info("%s [%s] ⏳ %s", ctx.log_tag, _mask_phone(phone), message)
     if peer_n:
         # 跨执行体交接的**一条批量**留痕：日志一行 + 事件一行，带账号数与分因。
         # 事件是摘要行（`phone=""`，没有单一账号），读者面按摘要行口径排除其账号统计
@@ -1254,6 +1310,20 @@ def _mark_unreached(ctx, accounts):
     else:
         # peer 为 0：清回 `None`。同组成 N→0→N 时，中间的 0 拍必须让第三次留痕复活。
         _UNREACHED_PEER_LAST = None
+    if unclaimed_detail:
+        # 无人接手（真异常）的**一条批量**留痕：形状与上面那条 peer 批量一致。
+        # 摘要行（`phone=""`）不进账号聚合，故不污染看板终态（见 docstring）。
+        unclaimed_sig = (ctx.executor_id, tuple(sorted(unclaimed_detail.items())))
+        if unclaimed_sig != _UNREACHED_UNCLAIMED_LAST:
+            n_all = sum(unclaimed_detail.values())
+            digest = "，".join(f"{k}×{n}" for k, n in sorted(unclaimed_detail.items()))
+            logger.info("%s 未执行：%d 个账号（无人接手，%s）",
+                        ctx.log_tag, n_all, digest)
+            _emit_event(ctx, "", yiban_status.STATUS_PENDING,
+                        f"本执行体未执行：{n_all} 个账号（无人接手，{digest}）")
+            _UNREACHED_UNCLAIMED_LAST = unclaimed_sig
+    else:
+        _UNREACHED_UNCLAIMED_LAST = None
 
 
 #: 上一次打出的 v3 横幅**规模与归属**（`_log_banner` 的去重依据）：`(身份, 通道数, 分片数)`。
@@ -1335,11 +1405,16 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     本执行体范围内、`results` 里没有的账号各一条。判因同时喂两处：调用方的汇总计数
     与 `sign_events` 留痕（同源同口径，见 `_mark_unreached`）。缺省 `None` = 调用方不要。
 
-    `round_no`：**只影响日志归因**，不参与任何判定。本执行体的日志行都带
-    `egress.owner_tag` 渲染的前缀（角色+槽位，不含主机名），`round_no` 传进来则再带一个
-    轮次序号（`[fallback r7]`）——多执行体并发写同一个按天日志文件，排障要能答出
-    "这个账号是哪个执行体在第几轮动的"。只有**同一进程内跑多轮**的兜底常驻会传；
-    定时轮/手动轮一个进程只跑一轮，不传（行上是 `[worker-3]`）。
+    `round_no`：**既是日志归因面，也是收尾的判定面**。它区分两种调用形态：
+    `None` = **一次性轮**（定时全量、手动 `--only`，一个进程只跑一轮）；整数 = **常驻
+    多轮**的第 N 轮（只有兜底常驻会传）。判定侧：`_prescan` 据此决定"当日已有结论的
+    用户自暂停账号是否还登记进 `results`"（见 `_prescan`）——一次性轮必须登记（否则
+    汇总按"未执行"计失败），常驻重复轮不得登记（登记了 `results` 恒非空，兜底紧循环
+    的"有活"判据 `own = len(results)` 就恒 > 0：扫描间隔从 60s 掉到 5s，且每轮重落
+    事件与进度行）。改这个参数会同时改扫描间隔，不只是日志。日志侧：本执行体的日志行
+    都带 `egress.owner_tag` 渲染的前缀（角色+槽位，不含主机名），`round_no` 传进来则
+    再带一个轮次序号（兜底 `[fallback r7]`；一次性轮不带序号，行上是 `[worker-3]`）——
+    多执行体并发写同一个按天日志文件，排障要能答出"这个账号是哪个执行体在第几轮动的"。
     口径边界（**不许在这里写"每一条"**）：带前缀的是"这一轮/这一个账号"的日志行与起跑横幅；
     计划构建期的行（`_ensure_plan` 及其"当日计划不可用"、`_max_vshard` / `_plan_covers` /
     `_parse_run_at`）与监督进程关于子进程的行不带——那时身份虽已可算，但判据是"ctx 是否已
