@@ -206,6 +206,15 @@ verify_audit_anchor = _audit_chain.verify_audit_anchor
 _purge_events_after_anchor = _audit_chain._purge_events_after_anchor
 _purge_event_sets_min = _audit_chain._purge_event_sets_min
 audit_health = _audit_chain.audit_health
+# 巡检面「审计链自洽」块（第二刀 ⑤，工单 vjy9）：三态裁决的唯一映射、锚点摘要、
+# 已知欠账，以及体检快照的写/读（写方＝每日线程，读方＝巡检端点；端点不重算）。
+audit_verdict = _audit_chain.audit_verdict
+VERDICT_EXIT_CODES = _audit_chain.VERDICT_EXIT_CODES
+VERDICT_INDETERMINATE = _audit_chain.VERDICT_INDETERMINATE
+audit_anchor_summary = _audit_chain.audit_anchor_summary
+audit_known_debt = _audit_chain.audit_known_debt
+write_audit_health_snapshot = _audit_chain.write_audit_health_snapshot
+read_audit_health_snapshot = _audit_chain.read_audit_health_snapshot
 
 _AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
 _AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY

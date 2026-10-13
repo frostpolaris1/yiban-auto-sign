@@ -48,6 +48,29 @@ import {
   type StreamSnapshot,
   type StreamState,
 } from "./stream";
+import {
+  cardName,
+  execHealthQuery,
+  healthSummary,
+  heartbeatText,
+  stateText as execStateText,
+  stateTone as execStateTone,
+  throughputText,
+  unconfiguredNote,
+  type ExecHealthCard,
+  type ExecHealthPayload,
+} from "./exec-health";
+import {
+  anchorText,
+  auditDetailText,
+  auditStateText,
+  auditStatusQuery,
+  auditTone,
+  dataAtText,
+  indeterminateText,
+  knownDebtLines,
+  type AuditStatusPayload,
+} from "./audit-status";
 
 /* 签到日志页（GET /api/logs + GET /api/admin/run-events，四分区内容：运行巡检 /
    日志 / 签到事件 / 探针记录）。
@@ -105,6 +128,15 @@ const runError = ref("");
 const runLoading = ref(false);
 const selectedKey = ref("");
 
+/** 执行体健康卡（第二刀 ④）：独立于其它两块的请求，失败不拖垮整页。 */
+const execPayload = ref<ExecHealthPayload | null>(null);
+const execError = ref("");
+const execLoading = ref(false);
+/** 审计链自洽状态块（第二刀 ⑤）：只读服务端缓存快照（不重算全表哈希）。 */
+const auditPayload = ref<AuditStatusPayload | null>(null);
+const auditError = ref("");
+const auditLoading = ref(false);
+
 /** 实时进度流（SSE，`GET /api/stream/progress`）：挂在「运行巡检」分区顶部。
  *  本页仅管理员可达（pages.py 的 _admin_page_redirect），故流端点不会对普通用户开。
  *  口径纪律：事件计数**不去重**（≠ 首页「今日成功账号」）；`finalize` 单独一列；
@@ -150,6 +182,35 @@ const runEmptyText = computed(() => (runPayload.value ? emptyRoundsText(runPaylo
 const runTruncatedLine = computed(() => (runPayload.value ? roundsTruncatedText(runPayload.value) : ""));
 const timelineTitle = computed(() =>
   selectedRound.value ? `事件时间线 · ${selectedRound.value.day} · ${selectedRound.value.executor_label}` : "事件时间线",
+);
+
+/* 执行体健康卡与审计链状态块的**渲染派生**全部住在各自的纯函数模块里
+   （`./exec-health` / `./audit-status`，有 Vitest 单测）：本组件只做取值与插值，
+   不在模板里另写一份身份/新鲜度/三态的判据。 */
+const execCards = computed<ExecHealthCard[]>(() => execPayload.value?.executors ?? []);
+const execSummaryLine = computed(() =>
+  execPayload.value ? healthSummary(execCards.value) : "",
+);
+const auditToneClass = computed(() =>
+  auditPayload.value ? `badge--${auditTone(auditPayload.value.state)}` : "badge--muted",
+);
+const auditStateLine = computed(() =>
+  auditPayload.value ? auditStateText(auditPayload.value.state) : "",
+);
+const auditAnchorLine = computed(() =>
+  auditPayload.value ? anchorText(auditPayload.value) : "",
+);
+const auditDataAtLine = computed(() =>
+  auditPayload.value ? dataAtText(auditPayload.value) : "",
+);
+const auditIndeterminateLine = computed(() =>
+  auditPayload.value ? indeterminateText(auditPayload.value) : "",
+);
+const auditDebtLines = computed(() =>
+  auditPayload.value ? knownDebtLines(auditPayload.value) : [],
+);
+const auditDetailLine = computed(() =>
+  auditPayload.value ? auditDetailText(auditPayload.value) : "",
 );
 
 const liveConnected = computed(() => liveConn.value === "open" && !liveFallback.value);
@@ -257,6 +318,10 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
   // 日期变了才回落该日最新一轮。
   const keepSelection = mode === "poll" || loadedDate.value === previousDate;
   await loadRuns(loadedDate.value, "", keepSelection);
+  // 健康卡与 10 秒轮询同节拍（它回答"现在在不在跑"，越新越有用）；
+  // 审计体检快照一天只写一次，只在导航/首屏取，不必每 10 秒拉一次。
+  if (mode !== "poll") void loadAuditStatus();
+  void loadExecHealth();
 }
 
 /**
@@ -331,6 +396,47 @@ function selectRound(row: RunRound): void {
 
 function refreshRuns(): void {
   void loadRuns(runPayload.value?.window.day || loadedDate.value, "", true);
+}
+
+/**
+ * 拉执行体健康卡（第二刀 ④）。三块（时间线 / 健康卡 / 审计链）各自独立请求：
+ * 任一块失败只在该块内报错，不拖垮其它块——巡检页最需要的是"其余部分照常可用"。
+ */
+async function loadExecHealth(): Promise<void> {
+  if (execLoading.value) return;
+  execLoading.value = true;
+  execError.value = "";
+  try {
+    execPayload.value = await api<ExecHealthPayload>("GET", execHealthQuery());
+  } catch (e) {
+    execError.value = (e as Error)?.message || "执行体健康卡加载失败";
+  } finally {
+    execLoading.value = false;
+  }
+}
+
+/**
+ * 拉审计链自洽状态块（第二刀 ⑤）。服务端只回**缓存的体检快照**（每日自检写入），
+ * 本请求不触发全表哈希重算；结果自带数据时刻，页面照实显示。
+ */
+async function loadAuditStatus(): Promise<void> {
+  if (auditLoading.value) return;
+  auditLoading.value = true;
+  auditError.value = "";
+  try {
+    auditPayload.value = await api<AuditStatusPayload>("GET", auditStatusQuery());
+  } catch (e) {
+    auditError.value = (e as Error)?.message || "审计链状态加载失败";
+  } finally {
+    auditLoading.value = false;
+  }
+}
+
+/** 巡检块的三块一起刷新（「刷新进度」按钮与首屏用）。 */
+function refreshInspection(): void {
+  refreshRuns();
+  void loadExecHealth();
+  void loadAuditStatus();
 }
 
 /** SSE 帧 → JSON（非字符串 / 非法 JSON 回 null，一次坏帧不得打断状态机）。 */
@@ -580,7 +686,7 @@ onBeforeUnmount(() => {
           <div class="logs-head">
             <h2 class="logs-title">运行巡检</h2>
             <div class="logs-tools">
-              <button type="button" class="btn btn--ghost btn--sm" :disabled="runLoading" @click="refreshRuns">
+              <button type="button" class="btn btn--ghost btn--sm" :disabled="runLoading" @click="refreshInspection">
                 刷新进度
               </button>
               <span id="run-window" class="run-info">{{ runWindowLine }}</span>
@@ -633,6 +739,72 @@ onBeforeUnmount(() => {
               <span class="live-recent-label">最近事件（不含账号）</span>
               <span class="live-recent-text">{{ liveRecentText }}</span>
             </div>
+          </div>
+
+          <!-- 执行体健康卡（第二刀 ④，工单 o3o7）：每个执行体一行，回答心跳新鲜度、
+               最后活动时刻、吞吐。身份由服务端按**心跳文件名**解析（记录体自称的
+               role/index 不作数）；心跳过期或无记录都显式写「无心跳」，不留白。 -->
+          <div id="exec-health" class="run-block">
+            <h3 class="run-sub">执行体健康</h3>
+            <p v-if="execError" class="run-note">{{ execError }}</p>
+            <template v-else>
+              <p id="exec-health-summary" class="run-info">{{ execSummaryLine }}</p>
+              <el-table v-if="execCards.length" id="exec-health-table" :data="execCards" size="small">
+                <el-table-column label="执行体" min-width="150">
+                  <template #default="{ row }">
+                    <span class="exec-name">{{ cardName(row) }}</span>
+                    <span
+                      v-if="unconfiguredNote(row)"
+                      id="exec-health-unconfigured"
+                      class="exec-flag"
+                    >{{ unconfiguredNote(row) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="身份" width="120">
+                  <template #default="{ row }"><span class="exec-ident">{{ row.identity }}</span></template>
+                </el-table-column>
+                <el-table-column label="状态" width="110">
+                  <template #default="{ row }">
+                    <span class="badge" :class="`badge--${execStateTone(row.state)}`">
+                      {{ execStateText(row.state) }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="心跳 / 最后活动" min-width="230">
+                  <template #default="{ row }">{{ heartbeatText(row) }}</template>
+                </el-table-column>
+                <el-table-column label="吞吐" min-width="200">
+                  <template #default="{ row }">{{ throughputText(row) }}</template>
+                </el-table-column>
+              </el-table>
+              <p id="exec-health-caliber" class="run-note">
+                吞吐口径：分子＝当日该执行体名下**已了结**的账号数（任务台账按执行体分组，一账号一行）；
+                分母＝有效签到窗口长度。它与上方「运行进度」的事件计数（不去重）不是同一口径。
+                身份以心跳文件名编码的档位为准；心跳记录体自称的角色/槽位一律不采。
+              </p>
+            </template>
+          </div>
+
+          <!-- 审计链自洽状态块（第二刀 ⑤，工单 vjy9）：三态分开显示——健康 / 检出篡改 /
+               无法定论；「判不出来」绝不当成健康，也不静默略过。已知欠账单独一行、用中性色
+               （不与「篡改」同色）。只读服务端缓存快照，页面不触发全表哈希重算。 -->
+          <div id="audit-chain" class="run-block">
+            <h3 class="run-sub">审计链自洽</h3>
+            <p v-if="auditError" class="run-note">{{ auditError }}</p>
+            <template v-else>
+              <p class="audit-line">
+                <span id="audit-state" class="badge" :class="auditToneClass">{{ auditStateLine }}</span>
+                <span id="audit-anchor" class="run-info">{{ auditAnchorLine }}</span>
+                <span id="audit-data-at" class="run-info">{{ auditDataAtLine }}</span>
+              </p>
+              <p v-if="auditIndeterminateLine" id="audit-indeterminate" class="run-note">
+                {{ auditIndeterminateLine }}
+              </p>
+              <ul v-if="auditDebtLines.length" id="audit-known-debt" class="audit-debt">
+                <li v-for="(line, i) in auditDebtLines" :key="i">{{ line }}</li>
+              </ul>
+              <p v-if="auditDetailLine" id="audit-detail" class="run-note">{{ auditDetailLine }}</p>
+            </template>
           </div>
 
           <el-alert v-if="runError" type="error" :title="runError" :closable="false" show-icon style="margin: 8px 0" />
@@ -1105,6 +1277,50 @@ onBeforeUnmount(() => {
   font-size: 13px;
   font-weight: 600;
   color: var(--t-base);
+}
+/* 执行体健康卡与审计链状态块：与「运行进度」块同族（同一张卡内的兄弟块），
+   只加一条上分隔线，避免与卡内其它块粘连。 */
+.run-block {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.run-block .run-sub {
+  margin-top: 0;
+}
+.exec-name {
+  color: var(--t-base);
+}
+.exec-flag {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--badge-warn-fg);
+  background: var(--badge-warn-bg);
+  border-radius: var(--r-ctl);
+  padding: 0 4px;
+}
+.exec-ident {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.audit-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 6px;
+}
+/* 已知欠账：**中性**呈现，刻意不借任何状态色——它与「篡改」不同色是判据之一。 */
+.audit-debt {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  list-style: disc;
+}
+.audit-debt > li {
+  font-size: var(--fs-label);
+  color: var(--t-muted);
+  max-width: var(--text-line-max);
 }
 .run-current {
   font-size: 12px;

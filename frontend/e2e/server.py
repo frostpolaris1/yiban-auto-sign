@@ -203,6 +203,54 @@ def _seed_state_files() -> None:
     )
 
 
+def _seed_heartbeats() -> None:
+    """执行体心跳种子（巡检面第二刀 ④，断言见 `logs.spec.ts`（并入既有用例，省一次 /api/login））。
+
+    两个身份，各钉一条不变式：
+    · **兜底**（新鲜心跳）：`worker-alive-fallback.json` 的记录体自称
+      `{"role": "worker", "index": 0}`（写侧 `_alive_record` 把 role 写死、槽位折成 0，
+      ba-p03-09）。页面据此必须显示身份 `fallback`——若有人改成读记录体字段，这一条会红。
+      文件名走 `state_io.worker_alive_path`（唯一命名处），不手写文件名。
+    · **槽位 3**（过期心跳、无收尾）：状态必须落到"可疑中断"，文案里出现「无心跳 ·
+      已过期」——心跳过期不许留白，也不许显示成 0。
+    """
+    from yiban import egress
+    from yiban.engine import state_io
+
+    now = clock.now().replace(microsecond=0)
+    state_io.mark_worker_started(0, now=now, role=egress.ROLE_FALLBACK)
+    state_io.mark_worker_started(3, now=now - timedelta(minutes=10))
+
+
+def _seed_audit_health_snapshot() -> None:
+    """审计体检快照种子（巡检面第二刀 ⑤，断言见 `logs.spec.ts`（并入既有用例，省一次 /api/login））。
+
+    - 一份**健康**快照（形状与 web 每日线程写的那份一致）：页面必须显示绿色「健康」，
+      并带上数据时刻与校验到的锚点。
+    - 锚点文件里放两行 2026-08-28 前的**老格式（三字段）行**：`audit_known_debt` 据此
+      产出"已知欠账"一条，页面必须**单独一行**显示它（中性色，不与「篡改」同色）。
+
+    本种子只写 app_meta 快照与锚点文件，**不跑全表哈希**，也不动 `audit_logs` 行
+    （audit.spec.ts 的断言读那些行，与本种子无关）。
+    """
+    import db
+
+    anchor = Path(os.environ["YIBAN_STATE_DIR"]) / "audit-anchor.log"
+    anchor.write_text(
+        "\n".join([
+            f"2026-08-21 00:00:31 {'a' * 64}",
+            f"2026-08-22 00:00:31 {'b' * 64}",
+            f"2026-09-01 00:00:31 1 3 {'c' * 64}",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    db.write_audit_health_snapshot(
+        {"chain_ok": True, "broken": 0, "anchor_ok": True, "anchor_status": "ok",
+         "anchor_msg": "", "write_failures": 0, "empty_hash_rows": 0, "healthy": True},
+        path=str(anchor), at="2026-10-13 00:00:07",
+    )
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="yiban-e2e-"))
     (tmp / "state").mkdir()
@@ -269,6 +317,8 @@ def main():
     _seed_run_events()
     _seed_run_events_crowded()
     _seed_state_files()
+    _seed_heartbeats()
+    _seed_audit_health_snapshot()
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
             db.record_in_txn(conn, ADMIN_USER, f"e2e_seed_{i}", target=f"acct-{i}", detail=f"seed detail {i}")
