@@ -166,15 +166,25 @@ def _sign_state_path():
 # - 落盘触发＝三条任一：① 待写条数 ≥ `_FLUSH_MAX`；② 距上次落盘 ≥ `_FLUSH_SEC`；
 #   ③ 批量上下文退出（轮末）或 `flush_sign_state()` 显式调用。
 # - `_FLUSH_SEC` 默认 10s ＝**跨进程读者最快的轮询周期**（`/api/accounts`、`/api/logs`、
-#   `/api/users`、仪表盘待签卡均为 10s 轮询；日历页只在进入时取一次）。陈旧窗口因此不
-#   超过读者一个轮询周期 ⇒ 对轮询读者不可观测。
+#   `/api/users`、仪表盘待签卡均为 10s 轮询；日历页只在进入时取一次）。检查是**事件
+#   驱动**（每次写入时比对），不是后台定时器：写入停顿时陈旧窗口可以超过 10s，直到
+#   下一次写入或上下文退出才收口。窗口因此是"至多相差一个落盘界"，不是硬时限。
 # - 进程被信号/异常终止时由 `flush_sign_state()`（信号链 + `atexit`）冲刷；**硬崩溃
 #   （SIGKILL / os._exit）会丢"最后一个落盘界之后"的尾部条目**——这正是 `_FLUSH_MAX` /
 #   `_FLUSH_SEC` 存在的理由：把可能丢失的尾部界定在有界的小批内，而不是"整轮"。
+#   **丢失的下游代价**：这些账号**已真实登录过**，但状态文件仍记 `pending`/无记录 ⇒
+#   补签轮把它们当未了结、**再真实登录一次**（多余真实登录，本项目第一类代价）。
+#   上界＝ `_FLUSH_MAX`（默认 64 条）或 `_FLUSH_SEC`（默认 10s）内的到达量。
 #   **不采用"轮末一次性落盘"**：`executor_v3.py` 每次尝试即物化状态（防当天网页日历空窗，
 #   见该文件 707 行注释）是既有设计，轮末一次性落盘会把它整段推翻。
 # - 已落盘条目**永不回退**：后续 `pending` 不覆盖已有结论（与本文件既有规则同一份），
 #   且落盘走 `os.replace`，崩溃不留半截文件。
+# - **信号处理器不得阻塞**：`_STATE_GATE` 是**不可重入**的 `threading.Lock`，处理器跑在
+#   主线程上；主线程若正在临界区内，处理器再取同名锁＝同线程自杀式阻塞（实测：持锁收
+#   SIGTERM 后进程不再响应任何信号，宿主 `timeout` 只能升级成 SIGKILL ⇒ 缓冲真丢）。
+#   故信号链一律走 `flush_sign_state(blocking=False)`：取不到锁就跳过，交给异常展开
+#   （上下文退出）与 `atexit` 兜底（守卫见 tests/test_state_write_batching.py 的
+#   `test_sigterm_in_critical_section_exits_promptly`）。
 _STATE_BUFFERS = {}       # sign-state 路径 -> _StateBuf
 _STATE_GATE = threading.Lock()
 _STATE_BATCH_DEPTH = 0    # 批量上下文嵌套层数；0 = 逐条立即落盘（既有行为）
@@ -218,49 +228,78 @@ def batch_sign_state():
                 _STATE_BUFFERS.clear()
 
 
-def flush_sign_state():
+def flush_sign_state(blocking=True):
     """把进程内累积的所有按日状态条目整批落盘（幂等；无待写条目时为空操作）。
 
     信号链与 `atexit` 用它兜住"进程被终止时缓冲随进程消失"（崩溃语义的网络）。
+    `blocking=False` 供**信号处理器**使用：`_STATE_GATE` 不可重入（见上），主线程正在
+    临界区内时处理器必须**立即返回**而不是等锁，否则同线程自杀式阻塞、进程不再响应
+    任何信号。取不到锁就跳过；已落盘条目不受影响，未落盘的尾批交给异常展开（上下文
+    退出）与 `atexit` 兜底。
     """
-    with _STATE_GATE:
+    if not _STATE_GATE.acquire(blocking=blocking):
+        return
+    try:
         paths = list(_STATE_BUFFERS)
+    finally:
+        _STATE_GATE.release()
     for path in paths:
-        _flush_sign_state_path(path)
+        _flush_sign_state_path(path, blocking=blocking)
 
 
-def _flush_sign_state_path(path):
-    """把一个路径的待写条目整批并入磁盘最新内容后原子落盘（读改写整体持锁）。"""
-    with _STATE_GATE:
+def _flush_sign_state_path(path, blocking=True):
+    """把一个路径的待写条目整批并入磁盘最新内容后原子落盘（读改写整体持锁）。
+
+    `blocking=False`：取不到缓冲锁即返回（信号处理器专用，见 `flush_sign_state`）。
+    """
+    if not _STATE_GATE.acquire(blocking=blocking):
+        return
+    try:
         buf = _STATE_BUFFERS.get(path)
         if buf is None:
             return
         ops = buf.ops
         buf.ops = []
         buf.last_flush = time.monotonic()
+    finally:
+        _STATE_GATE.release()
     if not ops:
         return
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with cli_support._state_file_lock(path):  # 读改写整体持锁，否则并发覆盖丢条目
             data = _read_sign_state_file(path)
-            for phone, status, message, scheduled, dur, only_if_absent, now in ops:
-                _apply_sign_state(data, phone, status, message, scheduled, dur,
-                                  only_if_absent, now)
-            _write_private_json(path, data)
+            any_written = False
+            for op in ops:
+                # 旧逐条形态在 CAS 拒绝时**不写文件**；一批全被拒不写，与旧形态同权
+                if _apply_sign_state(data, *op):
+                    any_written = True
+            if any_written:
+                _write_private_json(path, data)
     except (OSError, ValueError, TypeError, AttributeError) as e:
         # 落盘失败：把这批条目**放回队首**（下一次落盘重试），不静默丢已收的结论。
         # 日志级别与逐条写路径一致（debug）：状态目录不可写时整轮失败，不由本函数定级。
-        with _STATE_GATE:
-            buf = _STATE_BUFFERS.get(path)
-            if buf is not None:
-                buf.ops = ops + buf.ops
+        _requeue_sign_state(path, ops)
         logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
+        return
+    except BaseException:
+        # 信号/中断（SystemExit 等）打断落盘：先还原条目再让异常继续展开，不丢已收结论
+        _requeue_sign_state(path, ops)
+        raise
+    if not any_written:
         return
     with _STATE_GATE:
         buf = _STATE_BUFFERS.get(path)
         if buf is not None:
             buf.view = data
+
+
+def _requeue_sign_state(path, ops):
+    """把一批未落盘的条目放回队首（保序），交给下一次落盘重试。"""
+    with _STATE_GATE:
+        buf = _STATE_BUFFERS.get(path)
+        if buf is not None:
+            buf.ops = ops + buf.ops
 
 
 def _read_sign_state_file(path):
@@ -388,8 +427,18 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     **批量区（`batch_sign_state()`）内**：本调用只并入进程内缓冲（规则与返回值不变），
     由 `_FLUSH_MAX` / `_FLUSH_SEC` / 上下文退出触发整批落盘（见上方"写放大治理"说明）；
     区外逐条立即落盘，行为与本函数引入本机制之前逐字相同。
+
+    **`only_if_absent=True` 是例外：它立即落盘，不进缓冲**。它是一条 CAS，判定与写入
+    必须原子（旧形态在锁内一次性判定并写）。若把写推迟，判定时刻与落盘时刻之间会出现
+    "返回 True 而盘上已是别的结论"的分歧：调用方（`_mark_window_skips`）按返回值把该号
+    记成 `skipped_window`，而日历/状态行按盘上结论——两个事实源不一致。故本路径先冲刷
+    本路径已有条目（让盘上含本轮结论），再走原子读改写。代价是该路径回到逐条写盘，
+    但调用点只有窗口收尾那两处，且只对"本轮没轮到"的账号发。
     """
     path = _sign_state_path()
+    if only_if_absent:
+        _flush_sign_state_path(path)  # 让盘上含本轮已有结论，CAS 才看得见它们
+        return _write_sign_state_now(path, phone, status, message, scheduled, dur, True)
     with _STATE_GATE:
         buf = None
         if _STATE_BATCH_DEPTH > 0:
