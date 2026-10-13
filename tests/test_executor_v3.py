@@ -967,6 +967,29 @@ class TerminalStateTest(_Base):
         results = self._run_v3([paused], [])
         self.assertEqual(results[_phone(1)], (False, "用户已取消签到", True, "user_cancelled"))
 
+    def test_user_paused_already_recorded_still_skipped_in_one_shot_round(self):
+        """一次性轮（`round_no` 为 `None`）即便当日已有该结论，仍须把暂停账号登记进 `results`。
+
+        `_prescan` 的当日幂等有两个分支：常驻多轮（`round_no` 有值）在已登记时**不进**
+        `results`（兜底紧循环据此判"本轮无活"，回到配置的扫描间隔）；一次性轮（定时全量、
+        手动 `--only`）**必须进**——`runner` 的汇总只认 `results`，缺席的账号会落到
+        `unreached` 的 `UNCLAIMED` 档 ⇒ `stay_n + 1` 且 `has_real_failure=True` ⇒
+        退出码 1 与一封失败邮件。独立审查实测：反转那个 `round_no` 守卫时，全测试面
+        **只有常驻轮那条变红**，本路径原先零覆盖——正是这条守卫存在的理由。
+        """
+        paused = SimpleNamespace(phone=_phone(1), user_paused=True)
+        self._seed_v(8)
+        # 入口条件＝当日状态文件里**已有**该结论（上一次全量轮或别的执行体写的）：
+        # 幂等分支只在"已有"时生效，这正是本路径与常驻轮的差别所在。
+        state_io._write_sign_state(_phone(1), "user_cancelled", "用户已取消签到")
+        events = []
+        results = self._run_v3([paused], [], event_sink=events.append)
+        self.assertEqual(results[_phone(1)],
+                         (False, "用户已取消签到", True, "user_cancelled"),
+                         "一次性轮缺席 results ⇒ 汇总按「未执行」计失败（退出码 1）")
+        self.assertEqual(events, [],
+                         f"当日已有结论不得重复落事件（一次性轮同样只登记一次）：{events}")
+
     def test_other_shard_accounts_are_delegated(self):
         other = "worker-1@testhost"
         cfg = _cfg(executors=[OWNER, other])
