@@ -185,6 +185,7 @@ def register_all(app):
         audit_api,
         auth,
         data,
+        executor_health_api,
         me_api,
         my_api,
         notify,
@@ -205,6 +206,7 @@ def register_all(app):
     users_api.register(app)
     audit_api.register(app)
     run_events_api.register(app)
+    executor_health_api.register(app)
     stream_api.register(app)
     settings_api.register(app)
     signin_api.register(app)

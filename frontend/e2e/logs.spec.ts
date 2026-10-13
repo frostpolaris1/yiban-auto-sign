@@ -229,6 +229,74 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   );
   await page.reload();
   await expect(page.locator("#live-status")).toContainText("回退");
+
+  // 7) 巡检面第二刀 ④⑤ 的**渲染层**守卫（执行体健康卡 + 审计链自洽状态块）。
+  //    为什么并入本用例而不是单开 spec：/api/login 有 60 秒 10 次/IP 限速（见 auth.py），
+  //    单开一条用例会多一次登录、把后面的 myaccounts 顶到 429（实测：加两条独立用例后
+  //    整套 e2e 的 myaccounts 两条全红）。本文件既有 4 处「并入用例」先例同此理由。
+  //    为什么必须有渲染层守卫：后端用例与 Vitest 单测只钉到"服务端下发什么 / 纯函数返回
+  //    什么"——删掉页面元素或改掉文案它们全绿（本仓上一次巡检批的 V3 缺口正是这个形状）。
+  //    种子见 e2e/server.py::_seed_heartbeats / _seed_audit_health_snapshot。
+  const execPanel = page.locator("#exec-health");
+  await expect(execPanel).toBeVisible();
+  // 三个身份：清单里的 worker-0（无记录）、心跳文件里的 fallback（新鲜）、worker-3（过期）
+  const execRows = execPanel.locator("#exec-health-table .el-table__row");
+  await expect(execRows).toHaveCount(3);
+
+  // ① 身份以**心跳文件名**为准：兜底的心跳记录体自称 {"role":"worker","index":0}
+  //    （ba-p03-09），页面必须显示 `fallback`，不得出现"worker-0 挂着兜底心跳"。
+  const fbRow = execRows.filter({ hasText: "fallback" });
+  await expect(fbRow).toHaveCount(1);
+  await expect(fbRow).toContainText("故障转移");
+  await expect(fbRow).toContainText("运行中");
+  await expect(fbRow).toContainText("心跳");
+
+  // ② 过期心跳：状态"可疑中断"，文案里必须出现「无心跳 · 已过期」（不留白、不显示 0），
+  //    且清单外的槽位要标出来（"配置说没有、机器上在跑"）。
+  const staleRow = execRows.filter({ hasText: "worker-3" });
+  await expect(staleRow).toHaveCount(1);
+  await expect(staleRow).toContainText("可疑中断");
+  await expect(staleRow).toContainText("无心跳");
+  await expect(staleRow).toContainText("已过期");
+  await expect(staleRow).toContainText("清单外");
+
+  // ③ 无记录的执行体：必须显式「无心跳」，且不是 0 秒/0 分钟
+  const idleRow = execRows.filter({ hasText: "worker-0" });
+  await expect(idleRow).toHaveCount(1);
+  await expect(idleRow).toContainText("未运行");
+  await expect(idleRow).toContainText("无心跳");
+  await expect(idleRow).not.toContainText("0 秒前");
+  // 吞吐口径写在页面上（分子/分母都说得出）
+  await expect(page.locator("#exec-health-caliber")).toContainText("已了结");
+
+  // ⑤ 审计链自洽状态块：三态之一的「健康」显示（绿），锚点与数据时刻随附，
+  //    已知欠账**单独一行**且不带状态色（不与「篡改」混色），健康态下没有"判不出来"的区间。
+  const auditBadge = page.locator("#audit-state");
+  await expect(auditBadge).toHaveText("健康");
+  await expect(auditBadge).toHaveClass(/badge--ok/);
+  await expect(page.locator("#audit-anchor")).toContainText("2026-09-01 00:00:31");
+  await expect(page.locator("#audit-anchor")).toContainText("第 3 行");
+  // 数据时刻取业务钟的当下（种子不写死日期，否则第二天过期降级、假红）；
+  // 同时没有"已超龄"字样——超龄降级由 pytest 与 vitest 两侧钉住。
+  await expect(page.locator("#audit-data-at")).toContainText(businessDay(0));
+  await expect(page.locator("#audit-data-at")).not.toContainText("已超龄");
+  await expect(page.locator("#audit-indeterminate")).toHaveCount(0);
+  const debt = page.locator("#audit-known-debt");
+  await expect(debt.locator("li")).toHaveCount(1);
+  await expect(debt).toContainText("已知欠账");
+  await expect(debt).toContainText("2 行");
+  await expect(debt).toContainText("2026-08-28");
+  await expect(debt.locator(".badge")).toHaveCount(0);
+
+  // ④ 密度：360px 与 4K 两档都不许整页横向溢出（窄屏由 el-table 自身横滚）
+  for (const vw of [360, 2560]) {
+    await page.setViewportSize({ width: vw, height: 900 });
+    await page.waitForTimeout(120);
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${vw}px 整页横向溢出`).toBeLessThanOrEqual(ACCEPT);
+  }
 });
 
 test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账号管理（复用同一管理员会话）", async ({ page }) => {

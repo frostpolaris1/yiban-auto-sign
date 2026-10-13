@@ -28,6 +28,7 @@
 """
 
 import logging
+import os
 
 import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.app 的引导保证）
 
@@ -36,6 +37,7 @@ from web.services.env_io import (
     _is_http_proxy_url,
     read_env,
 )
+from yiban import clock
 from yiban import egress as yb_egress
 from yiban import window as yb_window
 from yiban.infra import env_io as _yiban_env_io
@@ -136,6 +138,128 @@ def _executor_activity(day):
         for key in totals:
             totals[key] += int(row.get(key, 0))
     return by_executor, totals
+
+
+# ---------------------------------------------------------------------------
+# 执行体健康卡（巡检面第二刀 ④，工单 o3o7）
+# ---------------------------------------------------------------------------
+def _identity_key(role, index):
+    """卡片的身份键字符串：`worker-<槽位>` / `single` / `fallback`（与心跳文件名同源）。"""
+    return f"{role}-{index}" if role == yb_egress.ROLE_WORKER else role
+
+
+def _executor_health_cards(env_file, window_sec, now=None):
+    """每个执行体一块健康卡（巡检面第二刀 ④，工单 o3o7）→ 响应块 dict。
+
+    三件事各自单义：
+
+    1. **身份只认心跳文件名**。候选身份来自清单（`yiban.egress`：并行行 → `worker` +
+       槽位；无并行行 → 单执行体形态 `single`；兜底行 → `fallback`），但一旦状态目录里
+       存在对应的心跳文件，身份改由 `state_io.worker_alive_identity(路径)` 从**文件名**
+       解析。记录体自称的 `role`/`index` 一律不读——生产实测兜底身份的心跳文件
+       内容写着 `{"role": "worker", "index": 0}`（工单 ba-p03-09）。
+       清单里没有、机器上却有心跳文件的执行体照样出卡
+       （`configured=false`）：那正是"配置说没有、实际在跑"的信号。
+    2. **心跳新鲜度只有一份判据**（`state_io.worker_alive_facts`）：状态四态与年龄由它
+       给出，本函数不复算超时。无记录时各心跳字段为 `None`（前端据此写"无心跳"，
+       不留白、不显示 0）。
+    3. **吞吐口径单义**：分子＝当日该执行体名下**了结**的账号数（`sign_tasks` 台账按
+       owner 分组计数，一账号一行、不重复），分母＝有效签到窗口长度（秒，与容量换算
+       同一份 `window.effective_sec`）。它与 `run_events` 的事件计数（不去重）**不是
+       同一口径**，两者不得混算。
+
+    只读：不写 `.env`（清单只读 `manifest_state`，不触发迁移写回），不碰审计链。
+    """
+    now = now or clock.now()
+    day = now.strftime("%Y-%m-%d")
+    rows, _needs_write = yb_egress.manifest_state(read_env(env_file))
+    activity, _totals = _executor_activity(day)
+    # 吞吐表按（角色，槽位）建索引：单执行体/兜底的 owner 解析不出槽位号，统一折成 0，
+    # 与心跳身份键 `worker_alive_key` 的口径一致（它们的身份键就是角色名）。
+    tp_map = {}
+    for row in activity:
+        idx = row["index"] if isinstance(row["index"], int) else 0
+        tp_map[(row["role"], idx)] = row
+    # 候选身份（清单口径）。`disabled` 行不拉起也不参与分配，故不出卡；它的存量心跳
+    # 文件若还在，会以"孤儿"卡（configured=false）出现，那是对得上事实的呈现。
+    candidates = []
+    worker_rows = yb_egress.worker_rows(rows)
+    if worker_rows:
+        for row in worker_rows:
+            candidates.append((yb_egress.ROLE_WORKER, row["slot"],
+                               yb_egress.executor_label(yb_egress.TYPE_WORKER, row["slot"]),
+                               row.get("name") or None))
+    else:
+        candidates.append((yb_egress.ROLE_SINGLE, 0,
+                           yb_egress.role_label(yb_egress.ROLE_SINGLE), None))
+    candidates.append((yb_egress.ROLE_FALLBACK, 0,
+                       yb_egress.role_label(yb_egress.ROLE_FALLBACK), None))
+    by_key = {}
+    for path in signin.iter_worker_alive_files():
+        ident = signin.worker_alive_identity(path)
+        if ident is not None:
+            by_key[ident] = path
+    cards = []
+    seen = set()
+    for role, index, label, name in candidates:
+        key = (role, index)
+        if key in seen:
+            continue
+        seen.add(key)
+        cards.append(_health_card(role, index, label, name, True,
+                                  by_key.get(key), now, tp_map, window_sec))
+    for key in sorted(by_key, key=lambda k: (k[0], k[1])):
+        if key in seen:
+            continue
+        role, index = key
+        cards.append(_health_card(role, index, yb_egress.role_label(role, index), None,
+                                  False, by_key[key], now, tp_map, window_sec))
+    return {
+        "day": day,
+        "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "heartbeat_sec": signin.WORKER_HEARTBEAT_SEC,
+        "freshness_limit_sec": 2 * signin.WORKER_HEARTBEAT_SEC,
+        "window_sec": int(window_sec or 0),
+        "executors": cards,
+    }
+
+
+def _health_card(role, index, label, name, configured, path, now, tp_map, window_sec):
+    """一块健康卡。`path` 非空 = 状态目录里存在该身份的心跳文件。"""
+    facts = signin.worker_alive_facts(index, now=now, role=role)
+    if path is not None:
+        # 身份以文件名回读一次：文件在，"谁是它"就由文件说了算（本行是身份口径的承重点）。
+        parsed = signin.worker_alive_identity(path)
+        if parsed is not None:
+            role, index = parsed
+    row = tp_map.get((role, index if isinstance(index, int) else 0)) or {}
+    done = int(row.get("done", 0))
+    win = int(window_sec or 0)
+    return {
+        "identity": _identity_key(role, index),
+        "identity_source": "heartbeat_file" if path is not None else "config",
+        "heartbeat_file": os.path.basename(path) if path is not None else None,
+        "role": role,
+        "index": index,
+        "label": label,
+        "name": name,
+        "configured": configured,
+        "state": facts["state"],
+        "heartbeat_at": facts["heartbeat_at"],
+        "age_sec": facts["age_sec"],
+        "fresh": facts["fresh"],
+        "last_seen_at": facts["last_seen_at"],
+        # 吞吐：分子＝名下了结数，分母＝有效签到窗口长度（秒）。`done + skipped` 由
+        # `queue_store.activity` 的折叠口径给出（唯一实现处），此处不再折一次。
+        "throughput": {
+            "done": done,
+            "claimed": int(row.get("claimed", 0)),
+            "failed": int(row.get("failed", 0)),
+            "total": int(row.get("total", 0)),
+            "window_sec": win,
+            "per_min": (done * 60.0 / win) if win > 0 else None,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
