@@ -288,14 +288,17 @@ class ReclaimTasksTest(_Base):
             self.assertEqual(row["owner"], "")
             self.assertGreater(row["epoch"], 0, "翻态必须换一代 token（fence 迟到旧代写）")
 
-    def test_inflight_and_failed_rows_are_not_state_changed(self):
-        """`claimed`（他人在飞）不改状态、不动 token；`failed` 由回炉口管，不在此翻。"""
+    def test_stale_claimed_is_flipped_but_failed_is_not(self):
+        """`claimed`（在飞行）**翻回 pending 并换代**——手工 `--only` 的卡死行逃生口
+        （工单 `l1rx` 必修 R2）；`failed` 由回炉口管，不在此翻。"""
         self._add_task(_phone(1), state="claimed", owner="other:1:1", epoch=7)
         self._add_task(_phone(2), state="failed", owner="other:1:1", epoch=3)
         queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2)])
         r1 = self._row(_phone(1))
-        self.assertEqual((r1["state"], r1["owner"], r1["epoch"]),
-                         ("claimed", "other:1:1", 7), "在飞行不得被手动重签打断")
+        self.assertEqual((r1["state"], r1["owner"]), ("pending", ""),
+                         "卡死的 claimed 行必须被手动重签救回（否则用户点立即签到无效）")
+        self.assertGreater(r1["epoch"], 7,
+                           "翻动必须换代——原持有者迟到的写要被 fence")
         r2 = self._row(_phone(2))
         self.assertEqual((r2["state"], r2["epoch"]), ("failed", 3),
                          "failed 不归重签口管（走 requeue_failed）")
