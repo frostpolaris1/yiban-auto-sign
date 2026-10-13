@@ -366,15 +366,62 @@ class GateRealRegistryContentTest(unittest.TestCase):
 
 
 class GateScanSurfaceTest(unittest.TestCase):
-    """扫描面残缺守卫：新开的生产目录不许整片漏出判据（漏了门禁照旧判绿）。"""
+    """扫描面残缺守卫：新开的生产目录不许整片漏出判据（漏了门禁照旧判绿）。
+
+    生产面的判据是 **git 跟踪集**：生产目录必被跟踪入库（部署只带跟踪文件），
+    被忽略/未入库的本地工具目录永非生产面。放行断言与"新开且被跟踪的目录仍红"
+    的反向断言成对，防止把假阳性修成"真门一起废掉"。
+    """
 
     SRC = 'KEY = "YIBAN_EGRESS_RATE"\n'
 
-    def _add_top_dir(self, fx):
-        os.makedirs(os.path.join(fx.root, "newprod"), exist_ok=True)
-        with open(os.path.join(fx.root, "newprod", "a.py"), "w",
+    def _add_top_dir(self, fx, name="newprod"):
+        os.makedirs(os.path.join(fx.root, name), exist_ok=True)
+        with open(os.path.join(fx.root, name, "a.py"), "w",
                   encoding="utf-8") as f:
             f.write(self.SRC)
+
+    def _git(self, root, *args):
+        return subprocess.run(["git", "-C", root, *args], capture_output=True,
+                              text=True, timeout=60)
+
+    def _init_repo(self, root):
+        self.assertEqual(self._git(root, "init", "-q").returncode, 0)
+        self._git(root, "config", "user.email", "gate@example.invalid")
+        self._git(root, "config", "user.name", "gate")
+
+    def _exclude_in_info(self, fx, pattern):
+        """.git/info/exclude 追加一条（.beads 的形状：忽略规则不在 .gitignore 里）。"""
+        info = os.path.join(fx.root, ".git", "info")
+        os.makedirs(info, exist_ok=True)
+        with open(os.path.join(info, "exclude"), "a", encoding="utf-8") as f:
+            f.write(pattern + "\n")
+
+    def _track_scan_face(self, fx):
+        """把夹具的扫描面（config/ + yiban/）入库，得到**混合**跟踪集。
+
+        只 `git init` 而不 add 会让索引全空——那时"按跟踪集判生产面"对任何目录都得
+        不出结论。现实的形状是"扫描面被跟踪、工具目录未被跟踪"，夹具必须照它搭。
+        """
+        r = self._git(fx.root, "add", "config", "yiban")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(self._git(fx.root, "ls-files").stdout.strip(), "",
+                            "夹具跟踪集不得为空（否则验的是「全空索引」而非混合形状）")
+
+    def _add_undecodable_file(self, fx):
+        """造一个名字含非法 UTF-8 字节的**入库**文件；文件系统不接受时返回 None。
+
+        名字用 `os.fsdecode(b"...")` 表示（与本用例要复现的 git 原始字节同形）。
+        """
+        rel = os.fsdecode(b"bad\xff.py")
+        try:
+            with open(os.path.join(fx.root, rel), "w", encoding="utf-8") as f:
+                f.write("")
+        except (OSError, UnicodeError):
+            return None
+        if self._git(fx.root, "add", "--", rel).returncode != 0:
+            return None
+        return rel
 
     def test_unscanned_top_dir_with_source_turns_gate_red(self):
         with _Fixture(registry=GOOD_REGISTRY) as fx:
@@ -389,6 +436,98 @@ class GateScanSurfaceTest(unittest.TestCase):
             self._add_top_dir(fx)
             r = _run_gate(fx.root, fx.registry_path, "--scan", "newprod")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_untracked_tool_dir_with_source_passes(self):
+        """未入库（无被跟踪文件）的顶层目录不是生产面，门禁必须放行。
+
+        复现本机恒伪红：`.beads`/`.qoder`/`.tmp`/`.zcode` 这些本地工具目录里有被扫
+        扩展名的文件，但它们一个都没入库 ⇒ 不是生产面。夹具是**混合**跟踪集（扫描面
+        已入库），故放行不是因为"索引全空"。放行它们不是放宽门：真正的生产目录被
+        跟踪，仍由 test_tracked_top_dir_with_source_still_red 钉住。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._track_scan_face(fx)
+            self._add_top_dir(fx, "toolcache")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0,
+                             "未入库的工具目录不该让门拒判：" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_tracked_tool_dir_matching_ignore_rule_still_red(self):
+        """**被跟踪**的顶层目录即使命中忽略规则，仍是生产面 ⇒ 必须拒判。
+
+        承载的不变式：判据是**跟踪集**，不是忽略规则。忽略规则只写在
+        `.git/info/exclude`（`.beads` 的形状）时尤其要看清——dev-verify 的副本用源索引
+        重建 `.git`，副本的 info/exclude 是空的，任何"按忽略规则判生产面"的实现都会
+        在副本与工作树之间摇摆。被跟踪件必进提交与部署，忽略规则不改变这一点。
+
+        （前一版此用例用的是**未跟踪**目录＋info/exclude：真正让它绿的是
+        `git add` 与否，那条 info/exclude 对断言无因果，等于第二条
+        `test_untracked_tool_dir_with_source_passes`。改为被跟踪形状才承重。）
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._track_scan_face(fx)
+            self._add_top_dir(fx, "toolcache")
+            self.assertEqual(self._git(fx.root, "add", "toolcache").returncode, 0)
+            self._exclude_in_info(fx, "toolcache/")   # 忽略规则不豁免被跟踪目录
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2,
+                             "被跟踪的目录命中忽略规则也必须拒判：" + r.stdout + r.stderr)
+            self.assertIn("toolcache", r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_undecodable_tracked_name_does_not_crash_gate(self):
+        """索引含非法 UTF-8 文件名 ⇒ 门必须照常判，不得以 traceback 崩（exit 1）。
+
+        跟踪集查询原先用 `subprocess.run(..., text=True)`：git 输出的文件名若是原始
+        非 UTF-8 字节，解码当场抛 `UnicodeDecodeError`。该异常不在 `except` 面内 ⇒ 冒到
+        顶层 ⇒ Python 打 traceback 并以 **exit 1** 收场。exit 1 在本门的语义是"有违规"，
+        而真实情形是"门压根没跑成"——fail 方向错（正确方向是 fail-closed：不跳过任何
+        目录照旧判，或以 exit 2 拒判）。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._track_scan_face(fx)
+            rel = self._add_undecodable_file(fx)
+            if rel is None:
+                self.skipTest("文件系统不接受非法 UTF-8 名（本用例面向 POSIX 检出）")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertNotIn("Traceback", r.stderr,
+                             "门不得以 Python traceback 崩：" + r.stderr[-2000:])
+            self.assertEqual(r.returncode, 0,
+                             "非法 UTF-8 名不得改变判据结论：" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_empty_index_new_prod_dir_still_red(self):
+        """空索引的检出（`git init` 后一个文件都没入库）⇒ 门必须退回 fail-closed。
+
+        空索引下"按跟踪集判生产面"会得出"没有任何目录是生产面"。若据此跳过全部候选，
+        本应拒判的新生产目录反而放绿——这是 fail-open，方向错在危险的一边。无法判定
+        生产面时退回旧行为（每个顶层目录都算候选）才安全。
+        """
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)              # 只 init、不 add ⇒ 索引为空
+            self.assertEqual(self._git(fx.root, "ls-files").stdout, "")
+            self._add_top_dir(fx, "newprod")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2,
+                             "空索引不得让新生产目录放绿：" + r.stdout + r.stderr)
+            self.assertIn("newprod", r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "本用例需要 git CLI（门按跟踪集判生产面）")
+    def test_tracked_top_dir_with_source_still_red(self):
+        """反向守卫：新开且**被跟踪**的顶层生产目录必须仍拒判（防修假阳性把门废掉）。"""
+        with _Fixture(registry=GOOD_REGISTRY) as fx:
+            self._init_repo(fx.root)
+            self._add_top_dir(fx, "newprod")
+            self.assertEqual(self._git(fx.root, "add", "newprod").returncode, 0)
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2,
+                             "被跟踪的新生产目录必须仍拒判：" + r.stdout + r.stderr)
+            self.assertIn("newprod", r.stderr)
 
 
 class GateStringDefaultTest(unittest.TestCase):
