@@ -63,6 +63,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 
 from yiban.infra import env_lock
 
@@ -135,8 +136,67 @@ def parse_env_flag(value, *, default=False, key=None, log=None):
     return default
 
 
+# ---------------------------------------------------------------------------
+# .env 解析进程内缓存（工单 dnox ④）
+# ---------------------------------------------------------------------------
+# 读侧唯一入口 `parse_env_file` 过去每次都读盘并逐行解析。调用方里存在"逐账号反复问
+# 同一份文件"的形态：`yiban/store/accounts._decrypt_row` 在字段循环里逐字段判密钥存在，
+# 1,200 账号档一次全量装载可放大到数千次读盘解析。
+#
+# 缓存口径：按**来源路径**存解析结果；取值前用 (mtime_ns, size, ino) 与磁盘现况比对，
+# 不符即丢弃重解析。为何是这三元组（= 失效策略，任一变化即失效）：
+#   · 本仓写入方一律 `os.replace`（引擎 `_atomic_replace_env` / web `_atomic_write`）
+#     ⇒ 目标 inode 换新，ino 变；
+#   · 唯一不经 os.replace 的直接写（web `cleanup_env_ambiguous_line` 原地改写）必删行
+#     ⇒ size 变；
+#   · 部署者用编辑器 / sed 改 .env ⇒ mtime 变（编辑器多走 rename，ino 也变）。
+# 故无需在各写入点另挂失效钩子；这三元组同时覆盖"进程内写"与"外部编辑"两路。
+# 绝不把"读不到值"缓存进去（文件缺失/读失败不落缓存），文件稍后出现能被立刻读到。
+_PARSE_CACHE = {}
+#: 来源条目上限：正常部署只有 1~2 份 .env；上限只为防 env_file 取值无界时缓存无限增长。
+#: 越限时整体腾空（与 account_crypto._KEY_CACHE 同一处置），随后按当前来源重新积累。
+_PARSE_CACHE_MAX = 8
+_PARSE_CACHE_LOCK = threading.Lock()
+
+
+def _env_stamp(path):
+    """路径的磁盘现况指纹 (mtime_ns, size, ino)；读不到（缺失/无权限）返回 None。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def clear_parse_cache():
+    """清空 .env 解析缓存（测试隔离与运维排障用；正常路径不需要手工调用）。"""
+    with _PARSE_CACHE_LOCK:
+        _PARSE_CACHE.clear()
+
+
+def _parse_cache_lookup(path):
+    """缓存命中返回已解析 dict（未变），否则 None。"""
+    entry = _PARSE_CACHE.get(path)
+    if entry is None:
+        return None
+    stamp, parsed = entry
+    return parsed if stamp == _env_stamp(path) else None
+
+
+def _parse_cache_store(path, stamp, parsed):
+    """按路径落缓存；新来源且已满时整体腾空，再从当前来源重新积累。"""
+    with _PARSE_CACHE_LOCK:
+        if path not in _PARSE_CACHE and len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+            _PARSE_CACHE.clear()
+        _PARSE_CACHE[path] = (stamp, parsed)
+
+
 def parse_env_file(path, *, strict=False):
     """解析 .env 全部键值，返回 dict。strict 语义见模块 docstring。
+
+    **进程内缓存（dnox ④）**：解析结果按来源路径复用，取值前与磁盘现况比对，文件一变即
+    失效（见 `_PARSE_CACHE`）。返回的是**副本**——调用方可能就地改结果，共享同一对象会污染
+    缓存。缓存只吸收"读成功"的解析：文件缺失/读失败一律不落缓存，文件稍后出现能被读到。
 
     **`export KEY=v` 行为设计上的分叉，勿"归一"**：三个 .env 读取方对它各有不同处理，
     但对**任何真实键的取值**恒一致（KEY 一律读不到，export 行永不生效）——
@@ -150,21 +210,31 @@ def parse_env_file(path, *, strict=False):
     载荷实体化成提权面）——正撞"键语义不变"红线，故保留三态、以双向测试钉住
     "真实键可读到、export 键读不到"这一收敛不变量（见 tests/test_env_export_line_divergence.py）。
     """
+    cached = _parse_cache_lookup(path)
+    if cached is not None:
+        return dict(cached)
     result = {}
+    stamp = None
     try:
         with open(path, encoding="utf-8-sig") as f:
+            # 指纹取自**已打开的这一份**（fstat），与下面读到的内容同源：先 stat 路径再
+            # open 会在两者之间留下可被替换的窗口，指纹就会标错内容。
+            st = os.fstat(f.fileno())
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
                     result[key.strip()] = value.strip()
     except FileNotFoundError:
-        pass  # 文件确实不存在 → 空配置（调用方据此走"未配置"分支）
+        return {}  # 文件确实不存在 → 空配置（调用方据此走"未配置"分支）；不落缓存
     except OSError:
         if strict:
             raise
-        return {}
-    return result
+        return {}  # 读失败：不落缓存，稍后成功的一读仍能拿到真值
+    if stamp is not None:
+        _parse_cache_store(path, stamp, result)
+    return dict(result)
 
 
 def env_path(default=".env"):
