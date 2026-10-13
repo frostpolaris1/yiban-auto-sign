@@ -19,7 +19,10 @@ user_cancelled——这 84 条"失败"零事件、零日志。运维从数据侧
    不随账号数线性增长——2026-10-10 生产该扫描对每个账号各落一行 pending 事件
    （×1830），事件表与日志被按账号数灌噪声；
 3. 反向控制（红线）：真"没人接手"的账号**仍算失败**——统计口径不许被改成"看起来对"；
-   这类真异常**仍逐账号留痕**（不并进批量），每条的判因文本完整可查；
+   这类真异常同样收成**一条批量**（带账号数与分因明细，摘要行不进账号聚合），可查性由
+   批量计数 + `unreached` 判因（喂汇总桶）+ 台账 `sign_tasks` 行状态承担（工单 81xt；
+   逐账号落事件会按账号数线性灌噪声，并抢成账号当日最后一条事件、打穿看板——2026-10-13
+   生产实证）；
 4. 同源同口径：汇总计数与批量事件计数出自同一份判因（同一分桶），两者数量一致。
 
 **依赖**：临时 SQLite（真迁移链）+ 真 `runner.main` + 真执行体补货循环（只替身登录与
@@ -160,6 +163,12 @@ class _Harness(unittest.TestCase):
         executor_v3._UNREACHED_PEER_LAST = None
         self.addCleanup(setattr, executor_v3, "_UNREACHED_PEER_LAST",
                         self._saved_unreached)
+        # 无人接手档同样收成批量并按**组成**去重（工单 81xt）：同一个键、同一条理由，
+        # 用例间也要清（否则同组成的后一个用例会漏落它那唯一一条批量）。
+        self._saved_uc = getattr(executor_v3, "_UNREACHED_UNCLAIMED_LAST", None)
+        executor_v3._UNREACHED_UNCLAIMED_LAST = None
+        self.addCleanup(setattr, executor_v3, "_UNREACHED_UNCLAIMED_LAST",
+                        self._saved_uc)
         self.root = tempfile.mkdtemp(prefix="yiban-unreach-")
         self.db_file = os.path.join(self.root, "yiban.db")
         self.state_dir = os.path.join(self.root, "state")
@@ -382,11 +391,19 @@ class TrulyUnreachedStillFailsTest(_Harness):
                          "没人接手的账号不得被算成成功（藏进成功即掩盖）")
         self.assertEqual(rc, 1, "存在无人接手的账号必须是真失败（退出码 1）")
         rows = self._events()
-        self.assertEqual(len(rows), len(self.phones), "无人接手的账号同样要留痕")
-        self.assertTrue(all(r["status"] == yiban_status.STATUS_PENDING for r in rows),
-                        f"「未执行」的留痕状态不得写成 failed/success：{rows}")
-        self.assertTrue(all("未执行" in r["message"] for r in rows),
-                        f"留痕文本必须能读出「本执行体未执行」：{rows}")
+        # 留痕收成**一条批量**（O(1)）：账号数与分因明细都在事件正文里，摘要行不进账号
+        # 聚合（故永不成为某账号当日最后一条事件）。逐账号落行是 2026-10-13 生产
+        # `pending` 洪泛的形状，也是这里必须拒的形状。
+        self.assertEqual(len(rows), 1,
+                         f"无人接手的留痕必须收成一条批量（O(1)），实得 {len(rows)} 行：{rows}")
+        self.assertEqual(rows[0]["phone"], "",
+                         f"批量是摘要行（无单一账号），phone 必须留空：{rows[0]}")
+        self.assertEqual(rows[0]["status"], yiban_status.STATUS_PENDING,
+                         f"「未执行」的留痕状态不得写成 failed/success：{rows[0]}")
+        self.assertIn("未执行", rows[0]["message"],
+                      f"留痕文本必须能读出「本执行体未执行」：{rows[0]}")
+        self.assertIn(str(len(self.phones)), rows[0]["message"],
+                      f"批量必须带账号数（运维据此知道规模）：{rows[0]}")
 
 
 class RetryRequeuedIsNotUnreachedTest(_Harness):
@@ -533,6 +550,9 @@ class PeerBatchDedupTest(unittest.TestCase):
         self._saved = getattr(executor_v3, "_UNREACHED_PEER_LAST", None)
         executor_v3._UNREACHED_PEER_LAST = None
         self.addCleanup(setattr, executor_v3, "_UNREACHED_PEER_LAST", self._saved)
+        self._saved_uc = getattr(executor_v3, "_UNREACHED_UNCLAIMED_LAST", None)
+        executor_v3._UNREACHED_UNCLAIMED_LAST = None
+        self.addCleanup(setattr, executor_v3, "_UNREACHED_UNCLAIMED_LAST", self._saved_uc)
 
     def _scan(self, phones, owners, executor_id=WORKER0, attempted=()):
         """跑一拍 `_mark_unreached`，返回 (摘要事件列表, 本拍批量日志文本)。"""
