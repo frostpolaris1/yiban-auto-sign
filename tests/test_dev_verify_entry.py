@@ -47,7 +47,7 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m mypy',
     '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
     '"$py" -m pytest tests/ -q -n 4 --dist loadfile -k '
-    '"security or mask or audit or login or private or csrf or ratelimit"',
+    '"security or mask or audit or login or private or csrf or ratelimit or claim or queue"',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
     "bash scripts/check-shared-facts.sh",
     '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
