@@ -52,6 +52,7 @@ OWNER = "single@testhost"
 NODE_START = "start"
 NODE_SUCCESS = "success"
 NODE_FAIL = "fail"
+NODE_PAUSE = "pause"
 
 
 def _phone(i):
@@ -301,19 +302,35 @@ class ResolveStateTest(unittest.TestCase):
                 self.assertFalse(crash_semantics.disposition_submits(disposition),
                                  "读不到就维持 unknown_outcome，不擅自重签")
 
-    def test_platform_enum_is_the_single_source(self):
-        """判据复用 `client.SIGN_POSITION_STATE_STATUS`：它在唯一事实源里被改写即红。"""
-        for state, status in yiban_client.SIGN_POSITION_STATE_STATUS.items():
+    def test_agrees_with_client_judgement_for_every_enum_value(self):
+        """派生守卫：`resolve_state` 只许是 `client._judge_by_state` 的**投影**。
+
+        遍历 `SIGN_POSITION_STATE_STATUS` 的**全部取值**逐值比对：状态码必须与
+        `_judge_by_state` 同源；处置必须是同一结论的换名。若有人在 `resolve_state` 里
+        **另判一遍**（把 state→status 的映射再写一份），或两处任一侧改了枚举/映射，
+        本用例必红——这就把"两处判据"的漂移面封成一条可执行断言。
+        """
+        expected_disposition = {
+            yiban_status.STATUS_ALREADY: crash_semantics.RESOLVE_ALREADY,
+            yiban_status.STATUS_NO_TASK: crash_semantics.RESOLVE_NO_TASK,
+            yiban_status.STATUS_SUPPLEMENTING: crash_semantics.RESOLVE_UNDETERMINED,
+        }
+        for state in yiban_client.SIGN_POSITION_STATE_STATUS:
             with self.subTest(state=state):
-                disposition, got = crash_semantics.resolve_state(state)
-                if status is None:
-                    self.assertEqual(disposition, crash_semantics.RESOLVE_SIGNABLE)
-                elif status == yiban_status.STATUS_ALREADY:
-                    self.assertEqual(got, yiban_status.STATUS_ALREADY)
-                elif status == yiban_status.STATUS_NO_TASK:
-                    self.assertEqual(got, yiban_status.STATUS_NO_TASK)
-                elif status == yiban_status.STATUS_SUPPLEMENTING:
-                    self.assertEqual(got, yiban_status.STATUS_SUPPLEMENTING)
+                verdict = yiban_client._judge_by_state(state)
+                disposition, status = crash_semantics.resolve_state(state)
+                if verdict is None:
+                    self.assertEqual(
+                        (disposition, status),
+                        (crash_semantics.RESOLVE_SIGNABLE, None),
+                        f"state={state}: 客户端判'尚无结论' ⇒ 可签")
+                    continue
+                self.assertEqual(
+                    status, verdict[3],
+                    f"state={state}: 状态码必须与 _judge_by_state 同源（不许自成一份判据）")
+                self.assertEqual(
+                    disposition, expected_disposition[verdict[3]],
+                    f"state={state}: 处置必须由 _judge_by_state 的结论投影而来")
 
 
 # ===========================================================================
@@ -422,6 +439,22 @@ class UnknownOutcomeDetectionTest(_Base):
         self._insert_event(NODE_SUCCESS, phone)
         self.assertEqual(run_events.unresolved_starts(DAY), [],
                          "同一账号后续有了终态，就不是未定论")
+
+    def test_start_followed_by_fail_is_not_flagged(self):
+        """`fail` 是终态：start 后接 fail 即已定论，不得再算未定论（守卫 fail 分支）。"""
+        phone = _phone(2)
+        self._insert_event(NODE_START, phone)
+        self._insert_event(NODE_FAIL, phone)
+        self.assertEqual(run_events.unresolved_starts(DAY), [],
+                         "start 后接 fail 已定论，不得再算未定论")
+
+    def test_start_followed_by_pause_is_not_flagged(self):
+        """`pause` 是终态：start 后接 pause 即已定论，不得再算未定论（守卫 pause 分支）。"""
+        phone = _phone(3)
+        self._insert_event(NODE_START, phone)
+        self._insert_event(NODE_PAUSE, phone)
+        self.assertEqual(run_events.unresolved_starts(DAY), [],
+                         "start 后接 pause 已定论，不得再算未定论")
 
     def test_other_days_are_ignored(self):
         phone = _phone(1)
