@@ -84,7 +84,7 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 
 1. `开始执行签到`（**带版本号**，见 §4）
 2. `签到汇总` 中 `❌ 0 失败`
-3. `run.sh 执行完成，退出码: 0`
+3. `run.sh 退出，退出码: 0`（`run.sh:184` 实打串为 `=== run.sh 退出，退出码: $rc ===`）
 
 且当日 `sign-status-<日期>.txt` 为 `SUCCESS`。
 
@@ -94,6 +94,18 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 
 **计数清零**：生产在该提交上出现失败、异常（ERROR/Traceback）、人工干预或回滚，
 该提交的轮次计数**从零重算**——"不存在问题的版本"要求连续性，不接受"三次里两次好"。
+
+### 3.1 豁免条款（用户 2026-10-13 裁决）
+
+用户原话：**「判据本身有错，豁免。」**
+
+- **账号固有失败不计为失败**：失败原因＝平台要求的签到类型不是普通签到（拍照/扫码/手势等）、
+  自动化无法执行，平台返回含 `非法签到` 字样。该类失败**不触发清零、不推翻退出码判据**。
+  已知实例 `138****0001`（真实用户、未删除、未暂停）。裁决与台账见 `docs/refactor/134-v062-main-release.md`。
+- **两条过渡期例外（同批记录，非阻断）**：①判据③（见工单 `l065`：日志无 5 秒级重复行，
+  该判据只在该工单里定义，本仓无第二处定义）在 `ikik` 部署前不列为阻断；
+  ②`sign-status-<日期>.txt` 在 `f7va` 部署前缺失不列为阻断，当日判据以日志
+  `run.sh 退出，退出码: …` 收尾行为准。两条修复随 2026-10-17 部署生效。
 
 ## 4. 轮次与提交怎么对齐（否则台账无法自证）
 
@@ -117,7 +129,7 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 ssh <生产别名> 'cd <部署目录> && git rev-parse --short HEAD'
 ssh <生产别名> 'date; systemctl show -p NRestarts <服务名>'
 ssh <生产别名> 'for f in <状态目录>/sign-status-*.txt; do echo "$f: $(cat $f)"; done'
-ssh <生产别名> 'grep -aE "开始执行签到|签到汇总|run.sh 执行完成" <状态目录>/sign-<日期>.log \
+ssh <生产别名> 'grep -aE "开始执行签到|签到汇总|run.sh 退出" <状态目录>/sign-<日期>.log \
   | sed -E "s/\[[0-9]{11}\]/[号码]/g"'
 ssh <生产别名> 'grep -acE "ERROR|Traceback" <状态目录>/sign-<日期>.log'
 # cron 链路前提预检（2026-10-03 事故：M07 收紧后存量锁目录属主不符，两轮启动即败；
@@ -132,13 +144,19 @@ ssh <生产别名> 'runuser -u <运行用户> -- bash -c "d=<锁目录>; [ -O \$
 
 ```bash
 # 1) 开发分支完成并自测
-git push origin refactor/web-adminator
+git push origin develop                 # 集成基线现名 develop（原 refactor/web-adminator）
 # 2) 四条通用门禁（§2④ = smoke + 备份可恢复演练；重演练按需）→ 推 server-web
 git push origin server-web
 # 3) 授权后部署到生产；攒够 ≥3 个有效轮次并把台账写进当批文稿
 # 4) 达标的**同一提交**才允许进 main
 git branch -f main <已达标提交> && git push origin main && git push gitee main
 ```
+
+> ⚠ **条件（2026-10-13 补，实测踩到）**：`git branch -f` 只在 `main` 能被该提交**整段覆盖**
+> （即 `main` 无独有提交）时正确。若 `main` 已带提交（例：CI/chore 类，其提交不在 `server-web` 线上），
+> 强移会**删掉这些改动**——实测会删掉默认分支的 `nightly.yml` 与 `e2e-nightly.yml`，作废 M24
+> "排程只在默认分支生效"的修复。此时改用 **merge**：`git merge --no-ff <已达标提交>`，再推双远端；
+> 合并后业务树须与 `<已达标提交>` **逐字节相同**（`git diff <合并tip> <已达标提交>` 只许有 CI 文件的差）。
 
 **未达标的唯一正确动作**：留在开发分支（或 `server-web`）继续修。
 **禁止**为了让 `main` 看起来同步而先推后补；**禁止**把没在生产跑过的提交推给 `main`。

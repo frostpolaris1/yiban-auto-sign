@@ -30,10 +30,18 @@
 关键断言：**"未查"与"通过"必须是两个不同返回值，"锁住"与"检出篡改"必须不同码**；
 业务效果可见 ⇒ 审计行必在（kill 注入后两者同在或同不在）；回填失败必须回滚到原链。
 依赖：临时库 + 临时 `.env` + 临时锚点文件；CLI 与 kill 注入用例起真子进程，
-故依赖 `sys.executable` 并对子进程 stdout 按本地代码页解码；无网络、无 skip。
+故依赖 `sys.executable` 并对子进程 stdout 按本地代码页解码；无网络。
+
+**锁库重演练 opt-in**：真占写锁的演练要等满每一次 `busy_timeout`（`audit_health`
+在锁下做 9 次读，实测 135s＝本文件全量墙钟的 92%），缺省 skip，设
+`YIBAN_DRILL_REAL_DB_LOCK=1` 才跑。同一退出码契约另有**常跑**的等价轻量判据
+（`test_unverifiable_chain_maps_to_exit_two_not_tampered`），钉"无法定论 ⇒ exit 2、
+不得 exit 1"。先例：`tests/test_second_round_rc_contract.py` 的真信号杀演练。
 """
 import contextlib
 import datetime as dt
+import importlib.util
+import io
 import locale
 import os
 import re
@@ -545,6 +553,9 @@ class BackfillAtomicTest(_Fixture):
 class CliExitCodeTest(_Fixture):
     """`audit_verify.py` 判码映射：0 通过 / 1 篡改 / 2 未查·锁住·无法定论。"""
 
+    #: 真占写锁重演练的开关（见模块 docstring 的"锁库重演练 opt-in"）。
+    DRILL_ENV = "YIBAN_DRILL_REAL_DB_LOCK"
+
     @staticmethod
     def _out(r):
         enc = locale.getpreferredencoding(False) or "utf-8"
@@ -582,6 +593,49 @@ class CliExitCodeTest(_Fixture):
         r = self._run()
         self.assertEqual(r.returncode, 1, self._out(r))
 
+    def test_unverifiable_chain_maps_to_exit_two_not_tampered(self):
+        """链校验报"无法定论"（broken=-1）⇒ exit 2，绝不用 exit 1 冒充"检出篡改"。
+
+        锁库重演练（`test_locked_db_exit_two_not_tampered`，opt-in）的**等价轻量判据**：
+        真锁下 `audit_health` 的每一次读都以 `database is locked` 收场，链校验返回
+        broken=-1（fail-closed），再由本判码映射收成 exit 2。那次重演练要付
+        9×busy_timeout 的墙钟（实测 135s），故常跑面只钉映射本体：把同一结论
+        （broken=-1）喂给脚本入口。
+
+        突变验证：删掉 `_verify` 的 `broken == -1` 分支，本用例立刻变红——那时脚本会
+        继续走完，按 `healthy=False` 印成"校验失败"并 exit 1（锁住被冒充成篡改）。
+        """
+        self._seed(3)
+        db.record_audit_anchor(self.anchor)
+        spec = importlib.util.spec_from_file_location(
+            "audit_verify_under_test", os.path.join(BASE, "scripts", "audit_verify.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # 锁库下链校验的真实结论：链没验成 ⇒ chain_ok=False、broken=-1；
+        # 锚点文件本身读得到 ⇒ anchor_status=ok。其余计数无欠账。
+        health = {"chain_ok": False, "broken": -1, "anchor_ok": True,
+                  "anchor_status": "ok", "anchor_msg": "", "write_failures": 0,
+                  "write_failures_new": 0, "empty_hash_rows": 0, "purge_total": 0,
+                  "last_cleanup": None, "note": "", "healthy": False}
+        buf = io.StringIO()
+        with (
+            mock.patch.object(mod.db, "audit_health", return_value=health),
+            mock.patch.object(sys, "argv", ["audit_verify.py", "--anchor", self.anchor]),
+            contextlib.redirect_stdout(buf),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            mod.main()
+        out = buf.getvalue()
+        # 单一断言承重："无法定论"必须是 exit 2。旧写法在其后又加一句
+        # `assertNotEqual(code, 1)`，它被 `== 2` 蕴含，永不独立失败（冗余）；"不得用 1
+        # 冒充篡改"的意图移进本断言的说明里。
+        self.assertEqual(raised.exception.code, 2,
+                         "链校验无法定论必须是 exit 2，不得用 exit 1 冒充「检出篡改」：" + out)
+        self.assertIn("无法定论", out)
+
+    @unittest.skipUnless(os.environ.get("YIBAN_DRILL_REAL_DB_LOCK"),
+                         "真占写锁重演练为 opt-in（要等满 9×busy_timeout≈135s，占全量"
+                         "墙钟 92%）：设 YIBAN_DRILL_REAL_DB_LOCK=1 按需运行")
     def test_locked_db_exit_two_not_tampered(self):
         """真占写锁后跑校验：必须 exit 2（无法定论），不得用 exit 1 冒充"检出篡改"。"""
         self._seed(3)
