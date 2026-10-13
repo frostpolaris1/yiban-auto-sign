@@ -232,6 +232,9 @@ def _seed_audit_health_snapshot() -> None:
 
     本种子只写 app_meta 快照与锚点文件，**不跑全表哈希**，也不动 `audit_logs` 行
     （audit.spec.ts 的断言读那些行，与本种子无关）。
+
+    数据时刻取**业务钟的当下**（不是写死的日期）：端点对超龄快照（>36 小时）会把
+    "健康"降级成"无法定论"，写死一个日期会让这条 e2e 在第二天自动变红（假红）。
     """
     import db
 
@@ -247,7 +250,7 @@ def _seed_audit_health_snapshot() -> None:
     db.write_audit_health_snapshot(
         {"chain_ok": True, "broken": 0, "anchor_ok": True, "anchor_status": "ok",
          "anchor_msg": "", "write_failures": 0, "empty_hash_rows": 0, "healthy": True},
-        path=str(anchor), at="2026-10-13 00:00:07",
+        path=str(anchor), at=clock.now(),
     )
 
 

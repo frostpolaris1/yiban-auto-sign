@@ -20,6 +20,7 @@ function payload(over: Partial<AuditStatusPayload> = {}): AuditStatusPayload {
     reason: "",
     cached: true,
     data_at: "2026-10-13 00:00:07",
+    snapshot_stale: false,
     chain_ok: true,
     broken: 0,
     anchor_status: "ok",
@@ -98,6 +99,13 @@ describe("dataAtText：缓存结果必须自报数据时刻", () => {
 
   it("无快照时明说没有", () => {
     expect(dataAtText(payload({ cached: false, data_at: null }))).toContain("无");
+  });
+
+  it("超龄时把「已超龄」写出来（自检停摆不许只换个日期继续绿）", () => {
+    const text = dataAtText(payload({ snapshot_stale: true }));
+    expect(text).toContain("已超龄");
+    expect(text).toContain("2026-10-13 00:00:07");
+    expect(dataAtText(payload())).not.toContain("已超龄");
   });
 });
 

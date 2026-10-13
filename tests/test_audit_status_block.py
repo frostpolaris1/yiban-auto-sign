@@ -241,6 +241,108 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
         import db
         return db.write_audit_health_snapshot(health, path=self.anchor, at=at)
 
+    def _corrupt_snapshot(self, mutate):
+        """把已落库的快照 JSON 改坏（模拟"快照被篡改或损坏"——本端点自述的威胁模型）。"""
+        import db
+        snapshot = db.read_audit_health_snapshot()
+        mutate(snapshot)
+        with db._conn_lock:
+            conn = db.get_conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+                ("audit_health_snapshot", json.dumps(snapshot, ensure_ascii=False)))
+            conn.commit()
+
+    def test_corrupt_snapshot_answers_200_and_indeterminate(self):
+        """M1：快照损坏时端点**不得 500**——它正是用来显示"有没有被篡改"的那一面。
+
+        损坏快照让它崩，既不假绿也不诚实回答。任何一种装配异常都必须落到
+        "无法定论+尚无可用体检结果"，而不是把整页打成 5xx。
+        """
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True})
+        self._corrupt_snapshot(lambda s: s.__setitem__(
+            "known_debt",
+            [{"code": "old_format_anchor_lines", "label": "锚点老格式行",
+              "count": "not-a-number", "reason": "坏值"}]))
+        body = self._status()   # 当前实现在这里 500
+        self.assertEqual(body["state"], "indeterminate")
+        self.assertEqual(body["verdict_code"], 2)
+        self.assertNotEqual(body["state"], "healthy", "损坏的快照不许报成健康")
+
+    def test_other_corrupt_shapes_also_answer_200(self):
+        """损坏形状的另外三支：`at` 非字符串、`health` 非 dict、`verdict` 非 dict。"""
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True})
+        cases = (
+            ("at 非字符串", lambda s: s.__setitem__("at", 12345)),
+            ("health 非 dict", lambda s: s.__setitem__("health", ["坏"])),
+            ("verdict 非 dict", lambda s: s.__setitem__("verdict", "坏")),
+            ("known_debt 项非 dict", lambda s: s.__setitem__("known_debt", ["坏"])),
+        )
+        for label, mutate in cases:
+            with self.subTest(case=label):
+                self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                                      "anchor_status": "ok", "anchor_msg": "",
+                                      "write_failures": 0, "empty_hash_rows": 0,
+                                      "healthy": True})
+                self._corrupt_snapshot(mutate)
+                body = self._status()
+                self.assertIn(body["state"], VALID_STATES, body)
+
+    def test_stale_snapshot_downgrades_away_from_healthy(self):
+        """M2：快照**超龄**即降级为"无法定论"——自检停摆时页面不许继续显示健康。
+
+        这一条打的是整个第二刀 ⑤ 的核心承诺：绿色"健康"必须对应"最近真验过"。
+        每日线程按业务日换日自检一次，故健康快照的正常年龄 ≤ 24 小时；40 小时前
+        的快照只能说明"自检没在跑"。
+        """
+        from datetime import timedelta
+
+        from yiban import clock
+        old_at = (clock.now() - timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True}, at=old_at)
+        body = self._status()
+        self.assertEqual(body["state"], "indeterminate", body)
+        self.assertEqual(body["verdict_code"], 2)
+        self.assertTrue(body["snapshot_stale"], body)
+        self.assertTrue(body["indeterminate"]["present"])
+        self.assertIn("超龄", body["indeterminate"]["reason"])
+
+    def test_fresh_snapshot_is_not_downgraded(self):
+        """边界另一头：刚刚写的快照不许被误降级（否则本块恒为黄，等于没修）。"""
+        from datetime import timedelta
+
+        from yiban import clock
+        at = (clock.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True}, at=at)
+        body = self._status()
+        self.assertEqual(body["state"], "healthy", body)
+        self.assertFalse(body["snapshot_stale"], body)
+
+    def test_tampered_state_is_not_downgraded_by_staleness(self):
+        """超龄只降"健康"：篡改是确证结论，超龄不得把它洗成"无法定论"。"""
+        from datetime import timedelta
+
+        from yiban import clock
+        at = (clock.now() - timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
+        self._write_snapshot({"chain_ok": False, "broken": 2, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 1,
+                              "healthy": False}, at=at)
+        body = self._status()
+        self.assertEqual(body["state"], "tampered", body)
+
     def test_endpoint_does_not_recompute_health(self):
         """J4：把全表体检打成抛异常，端点仍须 200（它只读快照）。"""
         health = {"chain_ok": True, "broken": 0, "anchor_ok": True,
@@ -308,6 +410,18 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
         body = self._status()
         self.assertEqual(body["data_at"], "2026-10-13 00:00:07")
         self.assertTrue(body["cached"])
+
+    def test_snapshot_note_reaches_the_endpoint(self):
+        """L1：`note` 必须随快照出到接口——它是 `audit_health` 的附加诊断文本。
+
+        漏掉它会让端点顶层 `note` 恒为空串（审计链条的既有读方都把它显示给人看）。
+        """
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "note": "附加诊断：锚点自检提示", "healthy": True})
+        body = self._status()
+        self.assertEqual(body["note"], "附加诊断：锚点自检提示")
 
     def test_missing_snapshot_is_indeterminate_not_healthy(self):
         """J5：没有体检结果 = 无法定论（绝不当成健康）。"""
