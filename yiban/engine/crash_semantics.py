@@ -42,10 +42,26 @@
 读取面 `unresolved_starts`（数据层）。调用点：`yiban/engine/runner.py`（单执行体/手动）
 与 `yiban/engine/workers.py`（多执行体监督进程）的启动路径。定论判据的**平台枚举事实源**
 是 `yiban/client.py`，本模块只 import 复用、不另抄一张表。
+
+**告警去重：当前不去重（有意，已登记）**
+识别只在**协调器启动**跑一次（单执行体/手动轮在 `runner.main`，多执行体在监督进程），
+故上界约等于每日协调器启动次数（约 2–5 次）；`alerts.notify_admin_entry` 自身也不去重。
+本批**不**为它新增手写状态文件——"用进程内/文件状态回答一个跨进程跨日的问题"正是
+`docs/refactor/137` 与单 `hkew` 要退役的形状。去重（收成"每账号每日一次"）按 137/hkew 的
+机制做，不在此另起一套。**兜底常驻未接线**（见下），故那条 ~5s 一拍的高频循环不产生重复
+告警 ⇒ 不是 81xt/uuqb 式的洪水源。
+
+**已知边界：兜底常驻不识别（窄洞，已登记）**
+`runner.py` 的 `--fallback` 分支在识别点**之前** return，故兜底执行体**自身不识别**；它崩溃
+留下的 `start` 行由**下一次**协调器启动识别。若崩溃发生在当日**最后一次**协调器启动之后、
+且当日再无启动，该遗留当日不识别、次日又被 `day=` 过滤排除 ⇒ **当日永久漏识别**。触发需
+"崩溃 ＋ 无后续协调器 ＋ 无重启收口"，本批不阻塞、不扩面；修复留给"接线兜底识别"的批次。
+这与 `--probe`/`--check-config` 只读轮不识别是两回事：后者不签任何账号，不产生遗留。
 """
 import logging
 
 from yiban import client as yiban_client
+from yiban import egress
 from yiban import status as yiban_status
 from yiban.engine import alerts
 from yiban.masking import mask_phone
@@ -75,16 +91,31 @@ RESOLVE_UNKNOWN = "unknown_outcome"
 #: 允许发起一次真实签到提交的处置只有"可签"这一档：其余四档都不得提交。
 _SUBMITTING_DISPOSITIONS = frozenset((RESOLVE_SIGNABLE,))
 
+#: 判定结果（`client._judge_by_state` 的 `status`）→ 处置。**这是投影，不是第二份判据**：
+#: 本表只把客户端**已作出的结论**换个名字，不做 state→status 的再判定（那份判据住
+#: `yiban/client.py`）。平台枚举或映射一改，`resolve_state` 随之改变，无第二处要同改。
+_STATUS_DISPOSITION = {
+    yiban_status.STATUS_ALREADY: RESOLVE_ALREADY,
+    yiban_status.STATUS_NO_TASK: RESOLVE_NO_TASK,
+    yiban_status.STATUS_SUPPLEMENTING: RESOLVE_UNDETERMINED,
+}
+
 
 def resolve_state(state):
-    """平台 `signPosition` 的 `State` → `(处置, 状态码)`。V-S2 的定论判据（纯函数）。
+    """平台 `signPosition` 的 `State` → `(处置, 状态码)`。V-S2 的定论判据（**派生**）。
+
+    **判据不在这里**：本函数只把 `yiban/client.py::_judge_by_state` 的结论**再投影**成崩溃
+    语义的处置名。理由有两条：① 单一事实源——平台枚举（`SIGN_POSITION_STATE_STATUS`）与
+    state→status 的映射（`_judge_by_state`）全在 `client.py`，本函数不另判一遍；② 用户
+    2026-10-13 新规 `prefer-simpler-algorithm-on-selfbuilt-defect`——自研判据出缺陷时，
+    正确动作是复用既有成熟判据（`_judge_by_state` 已同时产出签到返回值、`skip`、`message`
+    并被 `client.signin()` 生产使用），而不是再写一份。两处漂移由
+    `tests/test_crash_semantics.py::ResolveStateTest::test_agrees_with_client_judgement_for_every_enum_value`
+    遍历枚举逐值钉住。
 
     `state` 是**已收敛**的 int 或 `None`（上游原始值先经 `yiban/client.py::_as_state_int`
-    收敛，协议库 SPEC §3.1 容忍数字字符串）。映射取
-    `yiban.client.SIGN_POSITION_STATE_STATUS`——平台枚举的**唯一事实源**；本函数不另抄
-    一张表，改枚举即改本函数的结论。
+    收敛，协议库 SPEC §3.1 容忍数字字符串）。逐值口径：
 
-    逐值口径（与 l3a4 2026-10-13 一致的"已知能力 ＋ 一条判据"）：
     - `3` / `4` ⇒ `RESOLVE_ALREADY` ＋ `already`：只回填结果、不提交；
     - `2` ⇒ `RESOLVE_NO_TASK` ＋ `no_task`：收敛为无需签到；
     - `0` / `1` ⇒ `RESOLVE_SIGNABLE` ＋ `None`：尚未签到，按可签重新纳入；
@@ -94,17 +125,14 @@ def resolve_state(state):
     """
     if isinstance(state, bool) or state not in yiban_client.SIGN_POSITION_STATE_STATUS:
         return RESOLVE_UNKNOWN, None
-    status = yiban_client.SIGN_POSITION_STATE_STATUS[state]
-    if status is None:                                  # 0 / 1：尚无结论 → 可签
+    verdict = yiban_client._judge_by_state(state)
+    if verdict is None:                                 # 0 / 1：尚无结论 → 可签
         return RESOLVE_SIGNABLE, None
-    if status == yiban_status.STATUS_ALREADY:
-        return RESOLVE_ALREADY, yiban_status.STATUS_ALREADY
-    if status == yiban_status.STATUS_NO_TASK:
-        return RESOLVE_NO_TASK, yiban_status.STATUS_NO_TASK
-    if status == yiban_status.STATUS_SUPPLEMENTING:
-        return RESOLVE_UNDETERMINED, yiban_status.STATUS_SUPPLEMENTING
-    # 平台枚举新增了本函数还没接的取值：保守地当"读不到"，不擅自定论。
-    return RESOLVE_UNKNOWN, None
+    status = verdict[3]                                 # (success, message, skip, status)
+    disposition = _STATUS_DISPOSITION.get(status)
+    if disposition is None:     # 平台枚举新增了本模块未接的取值：保守当"读不到"，不擅自定论
+        return RESOLVE_UNKNOWN, None
+    return disposition, status
 
 
 def disposition_submits(disposition):
@@ -133,15 +161,20 @@ def report_unknown_outcomes(day, *, notify_url=None):
     rows = unknown_outcomes(day)
     if not rows:
         return []
-    masked = sorted({mask_phone(r["phone"]) for r in rows})
+    accounts = {r["phone"] for r in rows}               # 去重账号数（rows 是**行**数，可多行一号）
+    masked = sorted({mask_phone(p) for p in accounts})
+    # 执行体身份经 `egress.owner_tag` 收窄成角色+槽位序号：身份原串带主机名，属部署信息，
+    # 任何出口（含日志）都不得回原串（与 `run_events` 读取面同一口径）。
+    execs = sorted({egress.owner_tag(r["executor"]) for r in rows})
     logger.warning(
-        "崩溃语义：当日 %d 个账号有 start 标记、无终态结果（unknown_outcome），"
+        "崩溃语义：当日 %d 个账号有 start 标记、无终态结果（unknown_outcome，共 %d 条），"
         "可能已在发出请求后崩溃；只告警、不自动重签。执行体=%s 账号=%s",
-        len(rows), sorted({r["executor"] for r in rows}), masked,
+        len(accounts), len(rows), execs, masked,
     )
     try:
         alerts.notify_admin_entry("易班签到：崩溃遗留的未定论尝试", [
-            ("现象", f"当日 {len(rows)} 个账号有开始标记、无结果（unknown_outcome）"),
+            ("现象", f"当日 {len(accounts)} 个账号有开始标记、无结果"
+                     f"（unknown_outcome，共 {len(rows)} 条）"),
             ("业务日", str(day)),
             ("账号", "、".join(masked[:10]) + ("、…" if len(masked) > 10 else "")),
             ("处置", "读平台 signPosition 的 State 定论（已签到则回填、未签则重纳入）；"
