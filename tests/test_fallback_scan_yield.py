@@ -221,12 +221,14 @@ class _Harness(unittest.TestCase):
             conn.commit()
         return accounts, cfg
 
-    def _scan(self, accounts, cfg, *, passes=1, extra_events=(), unreadable=False):
+    def _scan(self, accounts, cfg, *, passes=1, extra_events=(), unreadable=False,
+              unreached_log=None):
         """跑 `passes` 轮 `run_executor_v3`（兜底常驻的扫描形态），返回逐轮 results。
 
         事件按执行体口径攒批落库（与 `workers.run_fallback_worker` 同一条写入路径）。
         `unreadable=True`：把判因事实源 `row_owners` 打成哨兵（`None` = 队列读不通），
         此时判因不可得、**全部**账号都落进"无人接手"档——那是唯一的 O(账号数) 现场。
+        `unreached_log`：给了就逐轮把执行体填的 `{phone: 判因}` 追加进去（判因断言用）。
         """
         def _no_login(acc):
             raise AssertionError(f"本用例不该发起真实登录：{acc.phone}")
@@ -263,6 +265,8 @@ class _Harness(unittest.TestCase):
                     round_no=i + 1)
                 if rows:
                     db.add_sign_events_batch(rows)
+                if unreached_log is not None:
+                    unreached_log.append(dict(unreached))
                 rounds.append(results)
         finally:
             for p in reversed(patches):
@@ -404,6 +408,26 @@ class FallbackRoundYieldTest(_Harness):
         self.assertIn("本轮完成 3 个账号", finals[0], f"首轮计数不对：{finals[0]}")
         self.assertIn("本轮完成 0 个账号", finals[-1],
                       f"重复排除被计入 finalize 计数：{finals}")
+
+    def test_paused_account_is_not_judged_unreached_on_repeat_rounds(self):
+        """D4 守卫：`_mark_unreached` 必须排除用户自暂停账号（`ctx.user_paused`）。
+
+        不排除会怎样：常驻重复轮（`round_no` 有值）里暂停账号**不在** `results`
+        （本轮无活，按设计不登记），判因便回落队列；而计划层本就剔除了它 ⇒
+        `sign_tasks` 无当日行 ⇒ 判因落 `UNCLAIMED`（"队列中没有当日行"）⇒ 多一条
+        批量事件，账号也进了 `unreached` ⇒ 兜底汇总的 `stay_n`（"未执行（无人接手）"）
+        虚增。独立审查只读码、未做扰动，此处补钉这条承重排除。
+        """
+        accounts, cfg = self._seed(n_orphan=0, n_paused=2)
+        unreached_rounds = []
+        self._scan(accounts, cfg, passes=2, unreached_log=unreached_rounds)
+        self.assertEqual(len(unreached_rounds), 2, "前置：两轮判因都要采到")
+        for i, un in enumerate(unreached_rounds, start=1):
+            self.assertEqual(un, {},
+                             f"第 {i} 轮把用户自暂停账号判成了未执行：{un}")
+        unclaimed = [r for r in self._events()
+                     if "无人接手" in (r.get("message") or "")]
+        self.assertEqual(unclaimed, [], f"暂停账号被补写「无人接手」批量：{unclaimed}")
 
 
 if __name__ == "__main__":

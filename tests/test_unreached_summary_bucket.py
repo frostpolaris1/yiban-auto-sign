@@ -644,5 +644,123 @@ class PeerBatchDedupTest(unittest.TestCase):
                          "组成再现必须再落一条（同组成 N→0→N 不得吞第三次留痕）")
 
 
+class UnclaimedBatchDedupTest(unittest.TestCase):
+    """无人接手档的同一条去重守卫（工单 81xt 的另一半）：同一组成只落一次。
+
+    该档在健康运行时为 0，但**队列读不通**时本执行体全部账号落进它——逐账号落库就是
+    O(账号数)（2026-10-13 生产的 `pending` 洪泛形状）。修法与 PEER 档同一条：进程内
+    模块级去重键 `_UNREACHED_UNCLAIMED_LAST`，按 `(执行体, 分因明细)` 变化才落。
+    三条性质必须与 PEER 档逐条对齐：身份在键里、组成 N→0→N 能复活、组成一变即再落。
+    形状差别（本枚是二元、peer 那枚是三元）不该让这三条漏钉。
+
+    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，不引入库与网络，
+    队列归属用打桩事实喂入。
+    """
+
+    TAG = "[fallback]"
+    LOG_MARK = "未执行："
+
+    def setUp(self):
+        self._saved = getattr(executor_v3, "_UNREACHED_PEER_LAST", None)
+        executor_v3._UNREACHED_PEER_LAST = None
+        self.addCleanup(setattr, executor_v3, "_UNREACHED_PEER_LAST", self._saved)
+        self._saved_uc = getattr(executor_v3, "_UNREACHED_UNCLAIMED_LAST", None)
+        executor_v3._UNREACHED_UNCLAIMED_LAST = None
+        self.addCleanup(setattr, executor_v3, "_UNREACHED_UNCLAIMED_LAST", self._saved_uc)
+
+    def _scan(self, phones, owners, executor_id=WORKER0, attempted=(), unreadable=False):
+        """跑一拍 `_mark_unreached`，返回 (摘要事件列表, 本拍无人接手档的批量日志文本)。"""
+        events = []
+        ctx = SimpleNamespace(
+            attempted=set(attempted), results={}, delegated=(), day=DAY,
+            executor_id=executor_id, runtime_id=executor_id,
+            log_tag=self.TAG, unreached={}, event_sink=events.append)
+        cap = _LogCapture()
+        logger = logging.getLogger("yiban")
+        logger.addHandler(cap)
+        self.addCleanup(logger.removeHandler, cap)
+        _prev = logger.level
+        logger.setLevel(logging.INFO)
+        self.addCleanup(logger.setLevel, _prev)
+        with mock.patch.object(executor_v3.queue_store, "row_owners",
+                               lambda *a, **k: (None if unreadable else owners)):
+            executor_v3._mark_unreached(
+                ctx, [SimpleNamespace(phone=p) for p in phones])
+        return events, [t for t in cap.texts if self.LOG_MARK in t]
+
+    @staticmethod
+    def _owners(phones, state="done"):
+        """无归属执行体的已了结行 ⇒ 判因落 `UNCLAIMED`（"行状态=done 且无归属执行体"）。"""
+        return {p: (state, "") for p in phones}
+
+    def test_repeated_same_composition_emits_one_log_and_one_event(self):
+        """同一组成连扫两拍 ⇒ 只落 1 条日志 + 1 条事件（按轮刷屏）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners)
+        self.assertEqual(len(ev1), 1, f"第一拍应落一条摘要事件：{ev1}")
+        self.assertEqual(len(log1), 1, f"第一拍应落一条批量日志：{log1}")
+
+        ev2, log2 = self._scan(phones, owners)
+        self.assertEqual(len(ev2), 0, f"同一组成再扫一拍不得重复落事件：{ev2}")
+        self.assertEqual(len(log2), 0, "同一组成再扫一拍不得重复落日志")
+
+    def test_composition_change_emits_again(self):
+        """组成变（账号数变 / 同数下分因明细变）⇒ 必须再落一条，不许吞掉真变化。"""
+        first = [_phone(i) for i in range(1, 4)]
+        ev1, log1 = self._scan(first, self._owners(first))
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一拍应落一条")
+
+        more = [*first, _phone(4)]
+        ev2, log2 = self._scan(more, self._owners(more))
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "账号数由 3 变 4 必须再落一条")
+        self.assertIn("4 个账号", ev2[0]["message"])
+
+        ev3, log3 = self._scan(more, self._owners(more, state="failed"))
+        self.assertEqual((len(ev3), len(log3)), (1, 1),
+                         "同数下分因明细变化（done→failed）必须再落一条")
+
+    def test_unreadable_judgement_has_its_own_composition(self):
+        """「判因不可得」是另一个分因明细 ⇒ 与「无归属行」互不压掉（各落一条）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        ev1, _log1 = self._scan(phones, self._owners(phones))
+        self.assertEqual(len(ev1), 1, f"第一拍应落一条：{ev1}")
+        ev2, _log2 = self._scan(phones, {}, unreadable=True)
+        self.assertEqual(len(ev2), 1, f"换成判因不可得必须再落一条：{ev2}")
+        self.assertIn("判因不可得", ev2[0]["message"], f"分因文本不对：{ev2[0]}")
+
+    def test_identity_change_emits_per_executor(self):
+        """同进程换执行体、组成相同 ⇒ 两个执行体各落一条（身份在去重键里）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners, executor_id=WORKER0)
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一个执行体应落一条")
+
+        other = egress.worker_owner(1)
+        self.assertNotEqual(other, WORKER0, "前置：两个执行体身份不同")
+        ev2, log2 = self._scan(phones, owners, executor_id=other)
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "换执行体后同一组成必须再落一条（身份被判成没变）")
+
+    def test_zero_composition_resets_so_reappearance_emits(self):
+        """组成 N→0→N：中间的 0 拍把键清空，N 再现必须再落一条。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners)
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一拍应落一条")
+
+        # 0 拍：全部账号本执行体跑过（retry 档）⇒ 无明细，键被清回 None
+        ev0, log0 = self._scan(phones, {}, attempted=set(phones))
+        self.assertEqual((len(ev0), len(log0)), (0, 0), "该档为 0 时不得落批量")
+
+        ev2, log2 = self._scan(phones, owners)
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "组成再现必须再落一条（N→0→N 不得吞第三次留痕）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

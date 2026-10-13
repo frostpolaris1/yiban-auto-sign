@@ -537,9 +537,14 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   （与 `runner` 全量轮同一条写入路径），失败由 `add_sign_events_batch` 内部告警。
         # - `unreached`：轮末判因的出口——兜底自己也要能说清"本轮哪些账号不是我领的"，
         #   与 runner 汇总同源同口径（`executor_v3._mark_unreached`）。
-        # - `round_no`：只给日志归因——执行体的每账号行带 `[fallback rN]` 前缀，排障时
-        #   能答出"这个账号是第几轮、哪个执行体动的"（多执行体写同一个按天日志文件，
-        #   没有这个标记就只能靠时间戳猜）。
+        # - `round_no`：日志归因**与收尾幂等判定共用**这一个参数。判定侧：执行体据它
+        #   区分"一次性轮（None）/ 常驻多轮（整数）"——常驻轮重扫到当日已有结论的用户
+        #   自暂停账号时不再登记（见 `executor_v3._prescan`）；不传就会每轮重登记，
+        #   下面 `own = len(results)` 恒 > 0 ⇒ 本循环进 `_TIGHT_SCAN_SEC` 秒级连扫、
+        #   且每轮重落 `user_cancelled` 事件与 `pause` 进度行（工单 uuqb）。日志侧只是
+        #   第二用途：执行体的每账号行带 `[fallback rN]` 前缀，排障时能答出"这个账号是
+        #   第几轮、哪个执行体动的"（多执行体写同一个按天日志文件，没有这个标记就只能
+        #   靠时间戳猜）。
         event_rows = []
         unreached = {}
         results = executor_v3.run_executor_v3(
@@ -559,6 +564,11 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         for acc in accounts:
             if acc.phone in delegated:
                 settled += 1
+        # `own` 是"本轮有活"的**唯一**判据，也是下面三档等待形态的选择依据。它取
+        # `len(results)`，故 `results` 里**只能**装真有结论的账号：已登记过的用户自暂停
+        # 账号若每轮都进 `results`，这里就恒 > 0，兜底掉进 `_TIGHT_SCAN_SEC` 秒级连扫
+        # 且永不回配置间隔（工单 uuqb）。该幂等由执行体按 `round_no` 承担（见上面
+        # `round_no` 那条说明与 `executor_v3._prescan`），本层不再另加筛选。
         own = len(results)
         # 本轮自己没活干（全部已被别人接手/已了结）→ 睡一会儿再看。
         # 未领到的账号按判因分列报出（与 runner 汇总同口径：只有"没人接手"才是故障）。
