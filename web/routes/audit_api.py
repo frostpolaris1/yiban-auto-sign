@@ -136,21 +136,24 @@ _PRESENT_ANCHOR_KEYS = ("path_state", "lines", "old_format_lines",
                         "unparsable_lines", "max_id", "max_ts")
 
 
-def _no_snapshot_payload():
-    """无体检快照时的结论：**无法定论**，绝不当成健康，也绝不静默略过。"""
+def _unavailable_payload(reason, indeterminate_reason):
+    """拿不到可用结论时的应答：**无法定论**，绝不当成健康，也绝不静默略过。
+
+    `reason` 是给人看的一句话；`indeterminate_reason` 是"判不出来的区间"那一段的短因。
+    """
     return {
         "ok": True,
         "state": _audit_chain.VERDICT_INDETERMINATE,
         "verdict_code": _audit_chain.VERDICT_EXIT_CODES["indeterminate"],
-        "reason": "尚无体检结果（每日自检还没跑过或快照已损坏）——本次无法定论，"
-                  "不等于健康。每日线程在下一次换日自检后写入结果。",
+        "reason": reason,
         "cached": False,
         "data_at": None,
+        "snapshot_stale": True,
         "chain_ok": None,
         "broken": None,
         "anchor_status": None,
         "anchor": None,
-        "indeterminate": {"present": True, "reason": "尚无体检结果"},
+        "indeterminate": {"present": True, "reason": indeterminate_reason},
         "known_debt": [],
         "write_failures": None,
         "empty_hash_rows": None,
@@ -158,53 +161,58 @@ def _no_snapshot_payload():
     }
 
 
-def api_audit_status():
-    """审计链自洽状态块（巡检面第二刀 ⑤，工单 vjy9）。
+def _no_snapshot_payload():
+    """无体检快照时的结论（快照缺失或损坏到读不出）。"""
+    return _unavailable_payload(
+        "尚无体检结果（每日自检还没跑过或快照已损坏）——本次无法定论，"
+        "不等于健康。每日线程在下一次换日自检后写入结果。",
+        "尚无体检结果")
 
-    **只读体检快照**（`app_meta.audit_health_snapshot`，由 web 每日线程写入）：
-    本端点不重算全表哈希（v1 大表全扫会把库跑满），也不写任何东西。快照缺失时
-    答"无法定论 + 尚无体检结果"，绝不当成健康。
 
-    返回三态之一，与 `scripts/audit_verify.py` 的退出码同源（`audit_verdict`）：
-    `healthy`(0) / `tampered`(1) / `indeterminate`(2)。另给：
-    · `data_at`：这份结果是什么时候跑出来的（数据时刻；不标时刻的缓存会被当成当下结论）；
-    · `anchor`：校验到哪个锚点（行数、定点 `max_id`/`max_ts`、老格式行数）；
-    · `indeterminate`：有没有"判不出来"的区间（present + reason）；
-    · `known_debt`：**已知欠账**逐条（单独一行显示，不与"篡改"混色）。
-    隐私：只出计数与时刻，不出账号明细。
+def _payload_from_snapshot(m, snapshot):
+    """把体检快照装配成响应体（可能抛：调用方按"无法定论"兜底）。
+
+    超龄降级（M2）在这里做，**只降"健康"**：既有的"体检结论"是当时真验过的结果。
+    绿色"健康"必须对应"最近真验过"——每日线程停摆时快照会冻结，页面若继续显示
+    绿色就是本块唯一一条"界面说健康、现场可能不健康"的通路。反过来，超龄**不降**
+    `tampered`："可能已被篡改"是更响的结论，用"判不出来"把它盖掉等于替攻击者消音
+    （失效方向偏安全：宁可留一个陈旧告警，不可把告警洗成中性）。两种情形都如实回
+    `snapshot_stale=true`，页面据此标注数据时刻已超龄。
     """
-    m = _appmod()
-    snapshot = _audit_chain.read_audit_health_snapshot()
-    if not isinstance(snapshot, dict):
-        read_audit_trace()("audit_status_read", "无体检快照")
-        return jsonify(_no_snapshot_payload())
     health = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else {}
     verdict = snapshot.get("verdict")
     if not isinstance(verdict, dict):
         verdict = _audit_chain.audit_verdict(health)
     state = str(verdict.get("state") or "")
+    reason = str(verdict.get("reason") or "")
     if state not in _audit_chain.VERDICT_STATES:
         # 快照里存了一个不认识的状态：按"无法定论"处置，绝不放行成健康
         state = _audit_chain.VERDICT_INDETERMINATE
+    stale = _audit_chain.audit_health_snapshot_stale(snapshot)
+    if stale and state == _audit_chain.VERDICT_HEALTHY:
+        state = _audit_chain.VERDICT_INDETERMINATE
+        reason = (f"体检快照已超龄（数据时刻 {snapshot.get('at') or '未知'}，"
+                  f"阈值 {_audit_chain.AUDIT_HEALTH_SNAPSHOT_MAX_AGE_SEC // 3600} 小时）"
+                  "——自检可能已停摆，本次无法定论，不等于健康。")
     anchor = snapshot.get("anchor")
     anchor = ({k: anchor.get(k) for k in _PRESENT_ANCHOR_KEYS}
               if isinstance(anchor, dict) else None)
     debt = snapshot.get("known_debt")
     debt = [d for d in debt if isinstance(d, dict)] if isinstance(debt, list) else []
-    read_audit_trace()("audit_status_read", f"结论 {state}")
-    return jsonify({
+    return {
         "ok": True,
         "state": state,
         "verdict_code": _audit_chain.VERDICT_EXIT_CODES[state],
-        "reason": str(verdict.get("reason") or ""),
+        "reason": reason,
         "cached": True,
         "data_at": str(snapshot.get("at") or "") or None,
+        "snapshot_stale": bool(stale),
         "chain_ok": health.get("chain_ok"),
         "broken": health.get("broken"),
         "anchor_status": health.get("anchor_status"),
         "anchor": anchor,
         "indeterminate": {"present": state == _audit_chain.VERDICT_INDETERMINATE,
-                          "reason": str(verdict.get("reason") or "")},
+                          "reason": reason},
         "known_debt": [
             {"code": str(d.get("code") or ""),
              "label": m._nl_safe(str(d.get("label") or ""))[:120],
@@ -215,4 +223,40 @@ def api_audit_status():
         "write_failures": health.get("write_failures"),
         "empty_hash_rows": health.get("empty_hash_rows"),
         "note": m._nl_safe(str(health.get("note") or ""))[:200],
-    })
+    }
+
+
+def api_audit_status():
+    """审计链自洽状态块（巡检面第二刀 ⑤，工单 vjy9）。
+
+    **只读体检快照**（`app_meta.audit_health_snapshot`，由 web 每日线程写入）：
+    本端点不重算全表哈希（v1 大表全扫会把库跑满），也不写 `.env`/锚点文件。
+    快照缺失、损坏到读不出、或**超龄**时一律答"无法定论"，绝不当成健康。
+
+    返回三态之一，与 `scripts/audit_verify.py` 的退出码同源（`audit_verdict`）：
+    `healthy`(0) / `tampered`(1) / `indeterminate`(2)。另给：
+    · `data_at`：这份结果是什么时候跑出来的（数据时刻；不标时刻的缓存会被当成当下结论）；
+    · `snapshot_stale`：数据时刻是否超龄（端点侧判；超龄的"健康"已降级为无法定论）；
+    · `anchor`：校验到哪个锚点（行数、定点 `max_id`/`max_ts`、老格式行数）；
+    · `indeterminate`：有没有"判不出来"的区间（present + reason）；
+    · `known_debt`：**已知欠账**逐条（单独一行显示，不与"篡改"混色）。
+    隐私：只出计数与时刻，不出账号明细。
+
+    装配整体包在 try/except 里：本端点自己的威胁模型就是"快照可能被篡改或损坏"，
+    一条坏字段（如 `count` 不是整数）就把这面镜子打成 500，既不假绿也不诚实回答。
+    """
+    m = _appmod()
+    snapshot = _audit_chain.read_audit_health_snapshot()
+    if not isinstance(snapshot, dict):
+        read_audit_trace()("audit_status_read", "无体检快照")
+        return jsonify(_no_snapshot_payload())
+    try:
+        payload = _payload_from_snapshot(m, snapshot)
+    except Exception as e:
+        m.logger.warning("审计体检快照装配失败（按无法定论回答）: %s", e)
+        read_audit_trace()("audit_status_read", "快照不可读")
+        return jsonify(_unavailable_payload(
+            "体检快照无法解析（可能被篡改或损坏）——本次无法定论，不等于健康。",
+            "体检快照无法解析"))
+    read_audit_trace()("audit_status_read", f"结论 {payload['state']}")
+    return jsonify(payload)

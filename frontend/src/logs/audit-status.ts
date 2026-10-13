@@ -39,6 +39,8 @@ export interface AuditStatusPayload {
   reason: string;
   cached: boolean;
   data_at: string | null;
+  /** 数据时刻是否**超龄**（自检可能已停摆）。端点侧判定；超龄的"健康"已降级为无法定论 */
+  snapshot_stale: boolean;
   chain_ok: boolean | null;
   broken: number | null;
   anchor_status: string | null;
@@ -82,9 +84,14 @@ export function anchorText(p: Pick<AuditStatusPayload, "anchor">): string {
   return `校验到锚点：${a.max_ts || "时刻未知"}（第 ${a.max_id} 行，共 ${a.lines} 行）`;
 }
 
-/** 数据时刻一行：缓存结果必须自报"这份结论是什么时候跑出来的"。 */
-export function dataAtText(p: Pick<AuditStatusPayload, "cached" | "data_at">): string {
+/** 数据时刻一行：缓存结果必须自报"这份结论是什么时候跑出来的"，超龄要写出来。 */
+export function dataAtText(
+  p: Pick<AuditStatusPayload, "cached" | "data_at" | "snapshot_stale">,
+): string {
   if (!p.cached || !p.data_at) return "数据时刻：无（尚无体检结果）";
+  if (p.snapshot_stale) {
+    return `数据时刻：${p.data_at}（每日自检结果，已超龄——自检可能停摆，结论按「无法定论」处置）`;
+  }
   return `数据时刻：${p.data_at}（每日自检结果）`;
 }
 

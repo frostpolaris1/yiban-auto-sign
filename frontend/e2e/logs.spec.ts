@@ -276,7 +276,10 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await expect(auditBadge).toHaveClass(/badge--ok/);
   await expect(page.locator("#audit-anchor")).toContainText("2026-09-01 00:00:31");
   await expect(page.locator("#audit-anchor")).toContainText("第 3 行");
-  await expect(page.locator("#audit-data-at")).toContainText("2026-10-13 00:00:07");
+  // 数据时刻取业务钟的当下（种子不写死日期，否则第二天过期降级、假红）；
+  // 同时没有"已超龄"字样——超龄降级由 pytest 与 vitest 两侧钉住。
+  await expect(page.locator("#audit-data-at")).toContainText(businessDay(0));
+  await expect(page.locator("#audit-data-at")).not.toContainText("已超龄");
   await expect(page.locator("#audit-indeterminate")).toHaveCount(0);
   const debt = page.locator("#audit-known-debt");
   await expect(debt.locator("li")).toHaveCount(1);
