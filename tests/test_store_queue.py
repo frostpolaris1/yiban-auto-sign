@@ -4,7 +4,7 @@
 标签：B · 调度：领取/队列/执行体
 覆盖：sign_tasks 的批量领取（分片集过滤、limit 截断、priority + run_at
    排序、不改动不相关行、领到的行落 state
-   与任务级短租约、二次领取为空、空分片集不碰库）、表缺失与「只是没到期行」的告警分档、settle_tasks
+   与 owner、二次领取为空、空分片集不碰库）、表缺失与「只是没到期行」的告警分档、settle_tasks
    的 owner 作用域与 result 截断、requeue_task 的 priority/attempts
    递增、day_counts 与直接 SQL 的一致口径及派生键。
 对应实现：yiban/store/queue_store.py（claim_batch、settle_tasks、requeue_task、day_counts）、scripts/db.py
@@ -17,7 +17,7 @@
    假时间戳助手；无网络请求、不起应用。整文件在本机执行，无 skip。
 
 覆盖 claim_batch 的四条边界（分片集过滤、limit 截断、priority+run_at 排序、
-不改动不相关行）、领取后的 state 与任务级短租约、settle_tasks 的 owner 作用域与
+不改动不相关行）、领取后的 state 与 owner（`lease_until` 零写入）、settle_tasks 的 owner 作用域与
 result 截断、requeue_task 的 priority/attempts 递增，以及 day_counts 与直接 SQL
 计数的一致口径（空 day 不抛）。
 """
@@ -134,7 +134,7 @@ class _Base(unittest.TestCase):
 
 
 class ClaimBatchTest(_Base):
-    def test_returns_only_my_shards_and_respects_limit(self):
+    def test_returns_only_my_shards_and_defaults_to_one(self):
         conn = db.get_conn()
         rows = []
         for i in range(40):
@@ -150,12 +150,19 @@ class ClaimBatchTest(_Base):
         conn.commit()
 
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts())
-        self.assertEqual(len(got), 32, "limit 缺省 32 = 通道数 × 预取系数")
+        self.assertEqual(len(got), 1, "claim-at-dispatch：缺省只领一行")
         for r in got:
             self.assertEqual(set(r), {"phone", "run_at", "attempts", "epoch"})
             self.assertIn(self._row(r["phone"])["vshard"], MY_SHARDS)
         mine = {p for p, r in self._all().items() if r["state"] == "claimed"}
         self.assertEqual(mine, {r["phone"] for r in got}, "领到的恰好是返回的那些行")
+
+    def test_limit_is_honoured_but_production_never_batches(self):
+        """`limit` 只在测试/迁移场景用；生产调用点（executor 的 `_claim_one`）只领一行。"""
+        for i in range(5):
+            self._add_task(_phone(i))
+        got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts(), limit=3)
+        self.assertEqual(len(got), 3)
 
     def test_selection_prefers_low_priority(self):
         """limit 截断时先领 priority 小的（0 最高）——`UPDATE ... RETURNING` 的行序不保证
@@ -172,18 +179,16 @@ class ClaimBatchTest(_Base):
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts(), limit=1)
         self.assertEqual([r["phone"] for r in got], [_phone(2)])
 
-    def test_claimed_rows_get_state_and_short_lease(self):
+    def test_claimed_row_has_state_owner_and_no_lease(self):
+        """claim-at-dispatch：领取写 state/owner/epoch，**不再写任务级租约**（`lease_until`
+        零写入，工单 `l1rx`）——持有时间由"领取即执行"保证有界，不靠时间戳回收。"""
         self._add_task(_phone(1))
-        before = clock.now()
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts())
         self.assertEqual([r["phone"] for r in got], [_phone(1)])
         row = self._row(_phone(1))
         self.assertEqual(row["state"], "claimed")
         self.assertEqual(row["owner"], OWNER)
-        lease = datetime.datetime.strptime(row["lease_until"], "%Y-%m-%d %H:%M:%S.%f")
-        expected = before + datetime.timedelta(seconds=60)
-        self.assertLess(abs((lease - expected).total_seconds()), 2,
-                        "任务级短租约应为 now+60s（±2s）")
+        self.assertEqual(row["lease_until"], "", "领取不得写租约（租约族已删）")
 
     def test_untouched_rows_keep_original_values(self):
         self._add_task(_phone(1))                                    # 我的：会被领
@@ -215,7 +220,7 @@ class ClaimBatchTest(_Base):
         conn.commit()
         with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
             self.assertIsNone(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()))
-        self.assertIn("批量领取签到任务失败", "\n".join(cm.output))
+        self.assertIn("领取签到任务失败", "\n".join(cm.output))
 
     def test_no_due_rows_is_silent(self):
         """表在、只是没有到期行 ⇒ 空返回但**不告警**：与"库坏了"必须是两件事。"""
@@ -238,7 +243,6 @@ class SettleTasksTest(_Base):
         for i in range(33):
             row = self._row(_phone(i))
             self.assertEqual(row["state"], "done")
-            self.assertEqual(row["lease_until"], "")
             self.assertNotEqual(row["result"], "")
         self.assertEqual(len(self._row(_phone(32))["result"]), 200, "result 截断 200 字")
         foreign = self._row(_phone(900))
@@ -263,7 +267,6 @@ class RequeueTaskTest(_Base):
         self.assertEqual(row["priority"], 6, "priority 恰好 +1")
         self.assertEqual(row["attempts"], 3, "attempts 恰好 +1")
         self.assertEqual(row["state"], "pending")
-        self.assertEqual(row["lease_until"], "")
 
     def test_priority_delta_is_honoured(self):
         self._add_task(_phone(1), state="pending", priority=5)
@@ -283,7 +286,6 @@ class ReclaimTasksTest(_Base):
             row = self._row(p)
             self.assertEqual(row["state"], "pending")
             self.assertEqual(row["owner"], "")
-            self.assertEqual(row["lease_until"], "")
             self.assertGreater(row["epoch"], 0, "翻态必须换一代 token（fence 迟到旧代写）")
 
     def test_inflight_and_failed_rows_are_not_state_changed(self):

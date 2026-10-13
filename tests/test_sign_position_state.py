@@ -392,17 +392,22 @@ class _V3Base(unittest.TestCase):
             calls.append(acc.phone)
             return verdict
 
-        async def _refill(queue, shards, ctx):
-            queue.put_nowait((executor_v3.PRIORITY_ORDER_BASE, _ts(seconds=-1), PHONE,
-                              0, 1))
-            for _ in range(ctx.m):
-                queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
+        # claim-at-dispatch：领取由通道自己做，用例用假 `_claim_one` 按序吐一条、
+        # 假协调循环在吐完且没有通道在飞时置停止（不推进假时钟）。
+        box = [{"phone": PHONE, "run_at": _ts(seconds=-1), "attempts": 0, "epoch": 1}]
+
+        async def _keep(ctx):
+            while box or ctx.claiming:
+                await asyncio.sleep(0)
+            ctx.stop.set()
 
         acc = SimpleNamespace(phone=PHONE, user_paused=False, owner="u@" + PHONE)
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                side_effect=_fake_attempt), \
                 mock.patch.object(executor_v3, "_persist_loop", _never), \
-                mock.patch.object(executor_v3, "_refiller", _refill), \
+                mock.patch.object(executor_v3, "_claim_one",
+                                  lambda ctx: [box.pop(0)] if box else []), \
+                mock.patch.object(executor_v3, "_dispatch_keeper", _keep), \
                 mock.patch.object(executor_v3, "_make_limiter",
                                   lambda channels, shares=1: _PermissiveLimiter()), \
                 mock.patch.object(executor_v3, "_make_global_limiter",
