@@ -51,6 +51,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from datetime import datetime
 
 from yiban import clock
 from yiban.infra import env_io, env_lock
@@ -1597,3 +1598,186 @@ def audit_health(path=None):
             chain_ok and anchor_ok and write_failures == 0 and not empty_hash_rows
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# 巡检面「审计链自洽状态块」（第二刀 ⑤，工单 vjy9）
+# ---------------------------------------------------------------------------
+# 三态与取证 CLI 退出码的同源映射。为什么必须只有一份：`scripts/audit_verify.py`
+# 的退出码是运维与部署流水线的判据（backup.sh 恢复件双验按非 0 判"不可信"），
+# 而巡检页要把同一结论显示给人看。两处各写一份映射，任一处调整就会让"页面说健康、
+# CLI 说无法定论"这种最危险的假绿静默出现。
+VERDICT_HEALTHY = "healthy"
+VERDICT_TAMPERED = "tampered"
+VERDICT_INDETERMINATE = "indeterminate"
+#: 三态全集的唯一登记处（读方据此校验快照里的状态值，不认识的值一律按"无法定论"）。
+VERDICT_STATES = (VERDICT_HEALTHY, VERDICT_TAMPERED, VERDICT_INDETERMINATE)
+#: 三态 → 退出码（健康 0 / 检出篡改 1 / 无法定论 2）。
+VERDICT_EXIT_CODES = {
+    VERDICT_HEALTHY: 0,
+    VERDICT_TAMPERED: 1,
+    VERDICT_INDETERMINATE: 2,
+}
+#: 快照落库的 app_meta 键（体检结果的唯一读取面；巡检页只读它，不重算）。
+_AUDIT_HEALTH_SNAPSHOT_KEY = "audit_health_snapshot"
+#: 快照里保留的体检字段（白名单：告警签名用的那几项 + 诊断文本）。
+#: `note` 必须在列——它是 `audit_health` 的附加诊断（空 hash 行、锚点无法定论的原文），
+#: 读方要把它显示给人看；漏掉它会让端点顶层 `note` 恒为空串（本注释原先就写着"诊断文本"，
+#: 实现与注释不符）。
+_SNAPSHOT_HEALTH_KEYS = (
+    "chain_ok", "broken", "anchor_ok", "anchor_status", "anchor_msg",
+    "write_failures", "empty_hash_rows", "note", "healthy",
+)
+
+
+def audit_verdict(health):
+    """体检结果 → 三态裁决 `{"code", "state", "reason"}`（唯一映射处）。
+
+    判据次序即优先级，"无法定论"必须排在"不健康"之前：
+      * `broken == -1`：链校验过程异常或密钥缺失 ⇒ 本次没验成 ⇒ 无法定论（2）；
+      * `anchor_status == "indeterminate"`：锚点自检无法定论 ⇒ 无法定论（2）；
+      * `anchor_status == "none"`：从未写过锚点 ⇒ "未查"，不等于"通过" ⇒ 无法定论（2）；
+      * `healthy`：链自洽 + 锚点一致 + 无欠账 + 无空 hash 行 ⇒ 健康（0）；
+      * 其余 ⇒ 检出篡改（1）。
+
+    `scripts/audit_verify.py` 的退出码与本函数同源（`VERDICT_EXIT_CODES`），
+    巡检页显示的三态即 CLI 的退出码。返回的 `code` **一律从那张表查**——本函数里
+    再手写一遍数字，就又是"两处各写一份映射"。
+    """
+    if health.get("broken") == -1:
+        state, reason = VERDICT_INDETERMINATE, "哈希链校验过程异常或未配置审计密钥——本次校验未完成"
+    elif health.get("anchor_status") == "indeterminate":
+        state = VERDICT_INDETERMINATE
+        reason = "锚点自检无法定论：" + str(health.get("anchor_msg") or "")
+    elif health.get("anchor_status") == "none":
+        state, reason = VERDICT_INDETERMINATE, "从未记录过锚点——本次未做锚点比对，'未查'不等于'通过'"
+    elif health.get("healthy"):
+        state, reason = VERDICT_HEALTHY, ""
+    else:
+        state = VERDICT_TAMPERED
+        reason = str(health.get("note") or "审计记录可能被篡改/删除，或存在未留痕的管理操作")
+    return {"code": VERDICT_EXIT_CODES[state], "state": state, "reason": reason}
+
+
+def audit_anchor_summary(path=None):
+    """锚点文件的只读摘要（**不碰数据库**）：行数、定点、老格式行数。
+
+    回答巡检面的"校验到哪个锚点"：`max_id` / `max_ts` 是当前**定点基准**（`_max_anchor_of`
+    取 max_id 最大的真行），`old_format_lines` 是没有行间链的 2026-08-28 前存量行数。
+    不可解析的行照实计数（它们会被 `_parse_anchor_lines` 丢弃，差值就是它们）。
+    文件缺失/不可读按 `path_state` 如实标记，各计数为 0——本函数不代替 `_anchor_status`
+    下结论，只把"锚点文件长什么样"摊开。
+    """
+    path = path or audit_anchor_path()
+    lines, read_state = _read_anchor_lines_ex(path)
+    lines = lines or []   # missing/io-error/decode-error 时是 None：计数按 0，状态照实标
+    parsed = _parse_anchor_lines(lines)
+    anchor = _max_anchor_of(lines)
+    return {
+        "path_state": read_state,
+        "lines": len(lines),
+        "old_format_lines": sum(1 for p in parsed if int(p.get("version") or 0) == 0),
+        "unparsable_lines": len(lines) - len(parsed),
+        "max_id": (anchor or {}).get("max_id"),
+        "max_ts": (anchor or {}).get("ts"),
+    }
+
+
+def audit_known_debt(path=None):
+    """**已知欠账**清单：已经知道并接受的客观缺口（不是失败结论）。
+
+    如今只有一条：2026-08-28 之前写入的**老格式（三字段）锚点行**不带行间链字段，
+    故这些行彼此之间没有行间链保护——它们的完整性由行数三支与末行哈希承担。jswn 的
+    裁定即"已知边界，沿用"（改锚点文件属应用写入之外的动作，会真破坏取证链）。
+    它既不是篡改、也不是"无法定论"，故在界面上单独成一条、与三态分开显示。
+
+    返回 `[{"code", "label", "count", "reason"}]`；无欠账回空列表。
+    """
+    summary = audit_anchor_summary(path)
+    debt = []
+    if summary["old_format_lines"]:
+        debt.append({
+            "code": "old_format_anchor_lines",
+            "label": "锚点老格式行（2026-08-28 前）",
+            "count": summary["old_format_lines"],
+            "reason": "这些行不带行间链字段，彼此之间不受链保护；"
+                      "其完整性由行数三支与末行哈希承担，属已知边界，非篡改。",
+        })
+    return debt
+
+
+#: 体检快照的**超龄阈值**（秒）。依据：每日线程按业务日换日自检一次（进程启动后 60 秒
+#: 也会跑一次），故健康快照的正常年龄 ≤ 24 小时。取 36 小时＝一天余量：再老就说明
+#: "自检没在跑"，页面上的绿色"健康"是陈旧结论，必须降级——这是本块唯一一条
+#: "界面说健康、现场可能不健康"的通路。
+AUDIT_HEALTH_SNAPSHOT_MAX_AGE_SEC = 36 * 3600
+
+
+def audit_health_snapshot_stale(snapshot, now=None):
+    """快照是否**超龄**（自检停摆）→ True。
+
+    时刻缺失/读不出/格式不对一律按超龄：判不出年龄就是判不出"最近有没有验过"，
+    此时宁可按"无法定论"处置，不得当作新鲜（失效方向偏安全）。
+    """
+    at = (snapshot or {}).get("at") if isinstance(snapshot, dict) else None
+    stamp = None
+    if isinstance(at, str) and at:
+        try:
+            stamp = datetime.strptime(at, _TS_FMT)  # noqa: DTZ007 解析业务本地 naive 时刻串
+        except ValueError:
+            stamp = None
+    if stamp is None:
+        return True
+    now = now or clock.now()
+    return (now - stamp).total_seconds() > AUDIT_HEALTH_SNAPSHOT_MAX_AGE_SEC
+
+
+def _snapshot_at_text(at):
+    """快照的数据时刻文本：`datetime` 按唯一格式串格式化；字符串原样；None 取业务钟。"""
+    if at is None:
+        return clock.now().strftime(_TS_FMT)
+    if hasattr(at, "strftime"):
+        return at.strftime(_TS_FMT)
+    return str(at)
+
+
+def write_audit_health_snapshot(health, path=None, at=None):
+    """把一次体检结果落成**只读快照**（app_meta），供巡检页读而不重算。
+
+    为什么必须落快照：`audit_health` 要跑整条链的 HMAC 校验（v1 大表全扫），
+    巡检页每刷新一次就重算一次会把库跑满（判据 3）。写方是每日线程（它本来就每天
+    算一次），读方是巡检端点。
+
+    `at` 是**数据时刻**（这次体检是什么时候跑的），读方必须原样显示——"可读缓存结果
+    但须标数据时刻"是判据的一部分：不标时刻的缓存会让人把陈旧结论当成当下的结论。
+
+    `at` 可传 `datetime`（按模块内唯一的格式串落库）或现成字符串；两者都不传时取当前
+    业务钟。**调用方已有"当下"时应传入它**：多调一次 `clock.now()` 会让按次分发的
+    时钟打桩（tests/test_health_report_schedule_e2e.py）多消耗一格。
+    """
+    verdict = audit_verdict(health)
+    snapshot = {
+        # 时刻格式取模块内**唯一**的格式串常量（不得再手抄一份字面量：
+        # tests/test_audit_hash_golden.py 的 TsFormatSingleSourceTest 会红）
+        "at": _snapshot_at_text(at),
+        "verdict": verdict,
+        "health": {k: health.get(k) for k in _SNAPSHOT_HEALTH_KEYS},
+        "anchor": audit_anchor_summary(path),
+        "known_debt": audit_known_debt(path),
+    }
+    _facade().set_meta(_AUDIT_HEALTH_SNAPSHOT_KEY,
+                       json.dumps(snapshot, ensure_ascii=False))
+    return snapshot
+
+
+def read_audit_health_snapshot():
+    """读最近一次体检快照；没有/损坏回 None（读方据此答"无法定论"，不得当健康）。"""
+    raw = _facade().get_meta(_AUDIT_HEALTH_SNAPSHOT_KEY, "")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.warning("审计体检快照损坏（按'尚无体检结果'处理）")
+        return None
+    return data if isinstance(data, dict) else None

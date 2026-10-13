@@ -709,6 +709,49 @@ def worker_alive_path(index, role=None):
     return os.path.join(_state_dir(), f"{WORKER_ALIVE_FILE_PREFIX}{key}.json")
 
 
+def worker_alive_identity(path):
+    """心跳文件名 → 身份档位 `(role, index)`；不认识的文件名回 None。
+
+    身份的唯一事实源是**文件名**（`worker_alive_key` 的逆函数）：记录体里的
+    `role` / `index` 不可信。`_alive_record` 把 `role` 写死 `"worker"`、`index`
+    写成调用方传入的槽位号，而 `single` / `fallback` 的槽位号在
+    `executor_v3._worker_slot` 里都被折成 0——于是生产实测的兜底心跳文件
+    内容自称 `{"role": "worker", "index": 0}`（工单 ba-p03-09，OPEN）。
+    凡按身份展示或归因的读者一律走本函数，
+    不得读记录体字段。
+
+    `path` 可取完整路径、文件名或身份键三者的任一种形态（都按 basename 与
+    前缀/后缀剥壳）。
+    """
+    base = os.path.basename(str(path or ""))
+    if not base.startswith(WORKER_ALIVE_FILE_PREFIX):
+        return None
+    if not base.endswith(".json"):
+        return None
+    key = base[len(WORKER_ALIVE_FILE_PREFIX):-len(".json")]
+    if key.isascii() and key.isdigit():
+        slot = int(key)
+        return (egress.ROLE_WORKER, slot) if slot >= 0 else None
+    if key in (egress.ROLE_SINGLE, egress.ROLE_FALLBACK):
+        return (key, 0)
+    return None
+
+
+def iter_worker_alive_files(state_dir=None):
+    """状态目录里现存的心跳文件完整路径（按文件名升序，顺序稳定）。
+
+    巡检面据此列出"真在写心跳的执行体"——包括清单里没有的（孤儿）：那些恰恰是
+    "配置说没有、机器上却在跑"的信号。目录不可读按空列表（展示面不抛）。
+    """
+    directory = state_dir or _state_dir()
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    return [os.path.join(directory, n) for n in sorted(names)
+            if worker_alive_identity(n) is not None]
+
+
 def mark_worker_started(index, now=None, role=None):
     """记录"该槽位本轮已启动"（覆盖写，旧记录连同收尾标记一起被替换）。
 
@@ -776,24 +819,58 @@ def worker_presence(index, now=None, role=None):
     None）。**为什么不回 alive 布尔**：短命进程"没在跑"多数时候是正常的，只有
     `stale` 才需要用户注意；把四态判定放在后端一处，前端不必自己拼（也不用知道
     心跳周期这种部署细节）。本函数只回与身份串无关的槽位事实，不含 pid/主机名。
+
+    本函数是 `worker_alive_facts` 的二值投影：四态与新鲜度的判据只有那一份实现。
+    """
+    facts = worker_alive_facts(index, now=now, role=role)
+    return facts["state"], facts["last_seen_at"]
+
+
+def worker_alive_facts(index, now=None, role=None):
+    """该槽位/角色此刻的心跳事实（四态 + 新鲜度）→ dict；判据的唯一实现处。
+
+    `worker_presence` 是本函数的 `(state, last_seen_at)` 投影（既有调用面不变）。
+    巡检面的健康卡要"心跳新鲜度 + 最后活动时刻"，两者都由本函数给出，免得前端
+    或第二个读点各算一遍超时。
+
+    返回键：
+      `state`        四态之一（`WORKER_STATE_*`）
+      `heartbeat_at` 最近一次心跳的时刻串（收尾态取 `ended_at`；无记录为 None）
+      `age_sec`      心跳年龄（秒，`now - heartbeat_at`）；无记录/时刻读不出为 None
+      `fresh`        是否为**活**心跳：`running` 为 True、`stale` 为 False，
+                     收尾态与无记录为 None（新鲜度对它们无从说起，不编 0/False）
+      `last_seen_at` 最后一次见到它活着（与 `heartbeat_at` 同值；无记录为 None）
+      `day`          记录所属业务日（无记录为 None）
     """
     now = now or clock.now()
     data = _read_worker_alive(index, role)
+    idle = {
+        "state": WORKER_STATE_IDLE, "heartbeat_at": None, "age_sec": None,
+        "fresh": None, "last_seen_at": None, "day": None,
+    }
     # 无记录，或记录属于**别的业务日**（昨天的"已跑完"不等于今天已跑）→ 今天还没跑
     if not data or str(data.get("day") or "") != now.strftime("%Y-%m-%d"):
-        return WORKER_STATE_IDLE, None
+        return idle
+    day = str(data.get("day") or "") or None
     if data.get("ended_at"):
         stamp = _parse_stamp(data.get("ended_at"))
-        return WORKER_STATE_FINISHED, stamp.strftime(_TS_FMT) if stamp else None
-    seen = _parse_stamp(data.get("ts") or data.get("started_at"))
-    if seen is None:
+        seen = stamp.strftime(_TS_FMT) if stamp else None
+        return {"state": WORKER_STATE_FINISHED, "heartbeat_at": seen,
+                "age_sec": (now - stamp).total_seconds() if stamp else None,
+                "fresh": None, "last_seen_at": seen, "day": day}
+    seen_dt = _parse_stamp(data.get("ts") or data.get("started_at"))
+    if seen_dt is None:
         # 有记录却读不出时间：新鲜度无从判定。宁可提示"异常"也不静默当在线
         # （页面把 stale 提示成"可能被杀"，比漏报一个卡住的槽位安全）。
-        return WORKER_STATE_STALE, None
-    last_seen = seen.strftime(_TS_FMT)
-    if (now - seen).total_seconds() <= 2 * WORKER_HEARTBEAT_SEC:
-        return WORKER_STATE_RUNNING, last_seen
-    return WORKER_STATE_STALE, last_seen
+        return {"state": WORKER_STATE_STALE, "heartbeat_at": None, "age_sec": None,
+                "fresh": False, "last_seen_at": None, "day": day}
+    age = (now - seen_dt).total_seconds()
+    last_seen = seen_dt.strftime(_TS_FMT)
+    if age <= 2 * WORKER_HEARTBEAT_SEC:
+        return {"state": WORKER_STATE_RUNNING, "heartbeat_at": last_seen,
+                "age_sec": age, "fresh": True, "last_seen_at": last_seen, "day": day}
+    return {"state": WORKER_STATE_STALE, "heartbeat_at": last_seen,
+            "age_sec": age, "fresh": False, "last_seen_at": last_seen, "day": day}
 
 
 def _read_worker_alive(index, role=None):
