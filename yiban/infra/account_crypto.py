@@ -225,7 +225,11 @@ def has_key(env_file=None):
     """环境中（环境变量或 .env 文件）是否已有密钥，供明文兼容/降级判定。"""
     if os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip():
         return True
-    # 故意不查 _KEY_CACHE：本函数每次读盘答"这个来源有没有钥"，load_key 允许走缓存答"本轮用哪把钥"
+    # 故意不查 _KEY_CACHE：本函数答"这个来源**现在**有没有钥"，load_key 允许走缓存答
+    # "本轮用哪把钥"。二者不可混——按 _KEY_CACHE 作答会把"钥已从 .env 删掉"说成"还有"，
+    # 正是"删钥后仍登录"的判据（本批只把**调用点**从字段循环里挪出一次，不动本语义）。
+    # 下面 `.env` 解析带按 (mtime_ns,size,ino) 失效的进程内缓存（env_io._PARSE_CACHE）：
+    # 文件一变即重解析，故"现在有没有钥"这一语义不变，只是不再逐次读同一份未变的盘。
     return bool(_parse_env_file(env_file or DEFAULT_ENV_FILE).get("YIBAN_ACCOUNTS_KEY", "").strip())
 
 
