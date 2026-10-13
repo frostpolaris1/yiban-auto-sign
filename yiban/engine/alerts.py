@@ -35,11 +35,14 @@
 变化会影响用户收到的邮件/推送。
 跨模块一律走模块属性访问。
 """
+import atexit
 import contextlib
 import json
 import logging
 import os
 import sys
+import threading
+import time
 
 from yiban import clock, notify, window
 from yiban import mail as mailer
@@ -317,8 +320,23 @@ def _flush_mail_on_sigterm(signum, frame):
     签到轮被超时击杀时进程内 _mail_summary 随进程死亡——整轮已收集的告警
     （含部分成功的汇总）一并消失。信号处理器在退出前冲刷一次；汇总为空时
     不产生任何发送（不重复告警），正常收尾路径已清空收集器。
+
+    同一信号路径还冲刷**进程内累积的状态文件缓冲**（按日状态与失败提醒额度）：
+    二者默认按界落盘，被 SIGTERM 击杀时最后一个落盘界之后的尾部条目会随进程消失，
+    故在此同步冲刷（崩溃语义的网络，见 state_io 的"写放大治理"段）。
+
+    **两个冲刷一律 `blocking=False`**：本处理器跑在主线程上，而两个缓冲锁都是**不可
+    重入**的 `threading.Lock`。主线程若正在临界区内，处理器再取同名锁＝同线程自杀式
+    阻塞（`contextlib.suppress(Exception)` 兜不住死锁，它是阻塞不是异常），进程从此不再
+    响应任何信号，宿主 `timeout` 只能升级成 SIGKILL ⇒ 缓冲真丢。取不到锁就跳过：
+    紧随其后的 `sys.exit`（SystemExit）会展开调用栈，`batch_sign_state` /
+    `batch_user_fail_mail` 的退出分支与 `atexit` 会完成真正的落盘。
     """
     # 冲刷失败不改变退出码：SIGTERM 路径的首要契约是尽快退出
+    with contextlib.suppress(Exception):
+        state_io.flush_sign_state(blocking=False)
+    with contextlib.suppress(Exception):
+        flush_user_fail_mail_state(blocking=False)
     with contextlib.suppress(Exception):
         _flush_admin_mail_summary(phase="签到超时终止")
     sys.exit(128 + int(signum or 15))
@@ -335,6 +353,165 @@ def _user_fail_mail_state_path(today_str):
     return os.path.join(state_dir, f"mail-user-fail-{today_str}.json")
 
 
+# ---------------------------------------------------------------------------
+# 失败提醒额度文件的写放大治理：与按日状态同一形态（进程内累积 ＋ 整批落盘）
+# ---------------------------------------------------------------------------
+# 与 `state_io` 的按日状态文件**同一形状、同一不变式**：原实现每次预占/归还都做
+# "整体持锁＋读整个文件＋改一键＋全量写回"，一轮失败数 F 时写盘量 ∝ F²。
+# 落盘触发、崩溃语义与可见性口径与 `state_io` 完全一致（见该模块"写放大治理"段）：
+# 待写条数 ≥ `_QUOTA_FLUSH_MAX`、距上次落盘 ≥ `_QUOTA_FLUSH_SEC`、或批量上下文退出。
+# **与按日状态唯一的语义差别**：本文件的读改写是**跨进程额度 CAS**（"每账号每天最多
+# 1 封"）。批量区内，另一个进程在本区落盘前看不到本区已占的额度 ⇒ 同一账号在
+# 一个落盘窗口内被两个进程同时判定"可发"。窗口的**实际上界不是严格的 `_QUOTA_FLUSH_SEC`**：
+# 检查是事件驱动（每次预占/归还时比对），写入停顿时窗口可以更长，直到下一次操作或
+# 上下文退出才收口。触发还需两个进程在窗口内同时失败同一账号；代价是多一封提醒邮件，
+# 不触及"并发真实登录"红线。要彻底避免须把额度计数挪进库（另批，不在本批范围）。
+_QUOTA_BUFFERS = {}       # mail-user-fail 路径 -> _QuotaBuf
+_QUOTA_GATE = threading.Lock()
+_QUOTA_BATCH_DEPTH = 0    # 批量上下文嵌套层数；0 = 逐条立即落盘（既有行为）
+
+#: 待写条数上界；达到即落盘。
+_QUOTA_FLUSH_MAX = config_check.parse_env_int("YIBAN_QUOTA_STATE_FLUSH_MAX", 64)
+#: 落盘间隔上界（秒）；默认＝最快读者轮询周期（见 state_io 同名字段）。
+_QUOTA_FLUSH_SEC = config_check.parse_env_int("YIBAN_QUOTA_STATE_FLUSH_SEC", 10)
+
+
+class _QuotaBuf:
+    """一个额度文件的进程内缓冲：待写操作序列 ＋ 累积视图。"""
+
+    __slots__ = ("last_flush", "ops", "view")
+
+    def __init__(self):
+        self.ops = []          # list[("reserve"|"release", phone)]
+        self.view = None
+        self.last_flush = time.monotonic()
+
+
+@contextlib.contextmanager
+def batch_user_fail_mail():
+    """进入额度文件的"进程内累积"区；退出时整批落盘（可重入，最外层退出才落盘）。"""
+    global _QUOTA_BATCH_DEPTH
+    with _QUOTA_GATE:
+        _QUOTA_BATCH_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _QUOTA_GATE:
+            _QUOTA_BATCH_DEPTH -= 1
+            outermost = _QUOTA_BATCH_DEPTH <= 0
+        if outermost:
+            flush_user_fail_mail_state()
+            with _QUOTA_GATE:
+                _QUOTA_BUFFERS.clear()
+
+
+def flush_user_fail_mail_state(blocking=True):
+    """把进程内累积的额度操作整批落盘（幂等；无待写操作时为空操作）。
+
+    `blocking=False` 供**信号处理器**使用：`_QUOTA_GATE` 不可重入，主线程正在临界区内
+    时处理器必须立即返回而不是等锁（否则同线程自杀式阻塞、进程不再响应任何信号）。
+    取不到锁就跳过，交给异常展开（上下文退出）与 `atexit` 兜底。
+    """
+    if not _QUOTA_GATE.acquire(blocking=blocking):
+        return
+    try:
+        paths = list(_QUOTA_BUFFERS)
+    finally:
+        _QUOTA_GATE.release()
+    for path in paths:
+        _flush_quota_path(path, blocking=blocking)
+
+
+def _flush_quota_path(path, blocking=True):
+    if not _QUOTA_GATE.acquire(blocking=blocking):
+        return
+    try:
+        buf = _QUOTA_BUFFERS.get(path)
+        if buf is None:
+            return
+        ops = buf.ops
+        buf.ops = []
+        buf.last_flush = time.monotonic()
+    finally:
+        _QUOTA_GATE.release()
+    if not ops:
+        return
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with cli_support._state_file_lock(path):
+            data = _read_quota_file(path)
+            changed = False
+            for kind, phone in ops:
+                _ok, did = _apply_quota(data, kind, phone)
+                changed = changed or did
+            if changed:
+                state_io._write_private_json(path, data)
+    except OSError as e:
+        _requeue_quota(path, ops)
+        logger.warning("写入失败提醒额度文件失败（不影响签到）: %s", e)
+        return
+    except BaseException:
+        # 信号/中断打断落盘：先还原条目再让异常继续展开，不丢已占的额度
+        _requeue_quota(path, ops)
+        raise
+    if not changed:
+        return
+    with _QUOTA_GATE:
+        buf = _QUOTA_BUFFERS.get(path)
+        if buf is not None:
+            buf.view = data
+
+
+def _requeue_quota(path, ops):
+    """把一批未落盘的额度操作放回队首（保序），交给下一次落盘重试。"""
+    with _QUOTA_GATE:
+        buf = _QUOTA_BUFFERS.get(path)
+        if buf is not None:
+            buf.ops = ops + buf.ops
+
+
+def _read_quota_file(path):
+    """读额度文件；缺失/损坏/非 dict 一律按空数据（与旧实现同口径，不告警）。"""
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except (OSError, ValueError, TypeError):
+            data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _apply_quota(data, kind, phone):
+    """就地并入一次额度操作，返回 `(返回值, 是否改动 data)`——逐字复刻旧实现的判定。
+
+    旧实现的三处口径逐条保留：`cap<=0` 直接放行且不记账；预占时计数非数字按 0；
+    归还时账号不在记录里或计数非数字**一律不产生写入**（不无中生有建文件/不改写坏值）。
+    """
+    cap = USER_FAIL_MAIL_DAILY_CAP
+    if kind == "reserve":
+        if cap <= 0:
+            return True, False
+        try:
+            used = int(data.get(phone, 0))
+        except (TypeError, ValueError):
+            # 状态文件被手工改成非数字时不得冒泡中断整轮签到
+            used = 0
+        if used >= cap:
+            return False, False
+        data[phone] = used + 1
+        return True, True
+    # release：账号不在记录里、或计数非数字，一律不动数据（旧实现的两处提前 return）
+    if phone not in data:
+        return True, False
+    try:
+        used = int(data.get(phone, 0))
+    except (TypeError, ValueError):
+        return True, False
+    data[phone] = max(0, used - 1)
+    return True, True
+
+
 def _user_fail_mail_reserve(phone, today_str):
     """预占该账号今日失败提醒额度：允许则占位并返回 True，超额返回 False。
 
@@ -344,33 +521,46 @@ def _user_fail_mail_reserve(phone, today_str):
     **调用约定**：占位后若邮件实际未发出（未启用 / SMTP 失败），必须调
     `_user_fail_mail_release` 归还，否则一次 SMTP 抖动就会吞掉该账号当天
     唯一的提醒机会。
+
+    批量区（`batch_user_fail_mail()`）内：本调用只并入进程内缓冲，返回值对着累积
+    视图判定（同一进程内与逐条落盘完全一致）；状态目录不可写的 fail-open 退让
+    改由落盘时承接（不再在本调用处返回）。
     """
-    cap = USER_FAIL_MAIL_DAILY_CAP
-    if cap <= 0:
+    if USER_FAIL_MAIL_DAILY_CAP <= 0:
+        # 与旧实现同口径：不限频时不碰文件、不建目录（也不进缓冲）
         return True
     path = _user_fail_mail_state_path(today_str)
+    with _QUOTA_GATE:
+        buf = None
+        if _QUOTA_BATCH_DEPTH > 0:
+            buf = _QUOTA_BUFFERS.get(path)
+            if buf is None:
+                buf = _QuotaBuf()
+                _QUOTA_BUFFERS[path] = buf
+        if buf is not None:
+            if buf.view is None:
+                buf.view = _read_quota_file(path)
+            ok, _changed = _apply_quota(buf.view, "reserve", phone)
+            buf.ops.append(("reserve", phone))
+            due = (len(buf.ops) >= _QUOTA_FLUSH_MAX
+                   or (time.monotonic() - buf.last_flush) >= _QUOTA_FLUSH_SEC)
+    if buf is not None:
+        if due:
+            _flush_quota_path(path)
+        return ok
+    return _user_fail_mail_reserve_now(path, phone)
+
+
+def _user_fail_mail_reserve_now(path, phone):
+    """逐条立即落盘（批量区外）：旧 `_user_fail_mail_reserve` 的读改写路径原样保留。"""
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with cli_support._state_file_lock(path):
-            data = {}
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding="utf-8-sig") as f:
-                        data = json.load(f)
-                except (OSError, ValueError, TypeError):
-                    data = {}
-            if not isinstance(data, dict):
-                data = {}
-            try:
-                used = int(data.get(phone, 0))
-            except (TypeError, ValueError):
-                # 状态文件被手工改成非数字时不得冒泡中断整轮签到
-                used = 0
-            if used >= cap:
-                return False
-            data[phone] = used + 1
-            state_io._write_private_json(path, data)
-        return True
+            data = _read_quota_file(path)
+            ok, changed = _apply_quota(data, "reserve", phone)
+            if changed:
+                state_io._write_private_json(path, data)
+        return ok
     except OSError:
         # 状态目录不可写：退回不限频（不因限频设施故障吞掉真实失败告警）
         return True
@@ -382,25 +572,43 @@ def _user_fail_mail_release(phone, today_str):
     状态目录不可写时与 reserve 同口径静默放行（限频设施故障不得放大成业务故障）。
     """
     path = _user_fail_mail_state_path(today_str)
+    with _QUOTA_GATE:
+        buf = None
+        if _QUOTA_BATCH_DEPTH > 0:
+            buf = _QUOTA_BUFFERS.get(path)
+            if buf is None:
+                buf = _QuotaBuf()
+                _QUOTA_BUFFERS[path] = buf
+        if buf is not None:
+            if buf.view is None:
+                buf.view = _read_quota_file(path)
+            _apply_quota(buf.view, "release", phone)
+            buf.ops.append(("release", phone))
+            due = (len(buf.ops) >= _QUOTA_FLUSH_MAX
+                   or (time.monotonic() - buf.last_flush) >= _QUOTA_FLUSH_SEC)
+    if buf is not None:
+        if due:
+            _flush_quota_path(path)
+        return
+    _user_fail_mail_release_now(path, phone)
+
+
+def _user_fail_mail_release_now(path, phone):
+    """逐条立即落盘（批量区外）：旧 `_user_fail_mail_release` 的读改写路径原样保留。"""
     try:
         with cli_support._state_file_lock(path):
             if not os.path.exists(path):
                 return
-            try:
-                with open(path, encoding="utf-8-sig") as f:
-                    data = json.load(f)
-            except (OSError, ValueError, TypeError):
-                return
-            if not isinstance(data, dict) or phone not in data:
-                return
-            try:
-                used = int(data.get(phone, 0))
-            except (TypeError, ValueError):
-                return
-            data[phone] = max(0, used - 1)
-            state_io._write_private_json(path, data)
+            data = _read_quota_file(path)
+            _ok, changed = _apply_quota(data, "release", phone)
+            if changed:
+                state_io._write_private_json(path, data)
     except OSError as e:
         logger.warning("归还失败提醒额度失败（不影响签到）: %s", e)
+
+
+# 进程退出兜底：与 state_io 同口径（正常/异常退出均冲刷缓冲）。
+atexit.register(flush_user_fail_mail_state)
 
 
 def send_user_fail_mail(owner, phone, message, scenario="signin"):
