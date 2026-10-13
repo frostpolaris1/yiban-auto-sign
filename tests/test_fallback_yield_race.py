@@ -4,7 +4,7 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：`yiban/engine/workers.py`（让位判据与让位粒度）、
-     `yiban/engine/executor_v3.py`（执行体运行期的让位复检 `yield_probe`）、
+     `yiban/engine/executor_v3.py`（兜底腿的肘界领取谓词）、
      `yiban/store/connection.py`（`pool_db_declared` 语义）的**消费面**。
 
 **故障现场（2026-10-07 生产 v0.5.1）**：兜底常驻被宿主脚本拉起（异步、不持锁）后先于
@@ -12,12 +12,16 @@
 长跑 58 分钟；两个并行执行体到点领不到自己的行，汇总成大量假失败。兜底开局进入执行的
 铁证是源日志第 7 行；全文件"整段让位" 0 次（10-05/10-06 分别 112/117 次）。
 
-**本文件钉住的三条**（判据④"字面 + 反例 + 不误伤"）：
-1. 兜底**先起**、主进程**后持锁**：让位必须在锁出现后**生效**——兜底一个分片都不领，
-   当日的计划行原样留给计划执行体（分片不外溢）；
-2. 反向控制：没有轮在跑时兜底照常领取（判据不是"永远让位"）；
-3. 让位判据只认运行时事实：**库被声明且在库**（`pool_db_declared()` 为真，正是生产形状）
-   时照样让位——旧判据在这一刻判成"有池 ⇒ 不让位"，那正是 10-07 的入口。
+**本文件钉住的两条**（判据④"字面 + 反例 + 不误伤"）：
+1. 让位判据只认运行时事实：**库被声明且在库**（`pool_db_declared()` 为真，正是生产形状）
+   时照样整段让位——旧判据在这一刻判成"有池 ⇒ 不让位"，那正是 10-07 的入口；
+2. 反向控制：没有轮在跑时兜底照常领取（判据不是"永远让位"）。
+
+**2026-10-13（工单 l1rx）改动**：轮内让位复检（`executor_v3.run_executor_v3(yield_probe=…)`）
+已删，代之以**肘界谓词**（`elbow_sec=FALLBACK_ELBOW_SEC`）——"谁该做"是行的函数。
+原 `FallbackStartRaceYieldTest` / `ClaimedRowsStillFinishOnFreezeTest` 钉的是轮内复检，
+随机制删除；肘界的不变式由 `tests/test_claim_dispatch_elbow_e2e.py` 承接。循环顶的整段
+让位（本文件其余两例）不变。
 
 **依赖**：临时 SQLite（真迁移链）+ 真执行体补货循环（只替身登录与限速）+ 脚本化锁探测
 + 假时钟。不发任何网络请求；不为 Windows 单开分支（不依赖 flock）。
@@ -318,99 +322,6 @@ class _Harness(unittest.TestCase):
                 (phone, DAY, vshard + i, owner or WORKER0, due, 5, state, 0, "", "", 0,
                  stamp))
         conn.commit()
-
-
-class FallbackStartRaceYieldTest(_Harness):
-    """判据④（正文）：兜底先起、主进程后持锁 ⇒ 兜底让位，分片不外溢。"""
-
-    def test_fallback_claims_nothing_once_round_takes_lock(self):
-        """**先红后绿的主角**：兜底首个探测为假（它先起），其余为真（主进程随后持锁）。
-
-        断言三件：① 兜底一个分片都没领（当日计划行原样待领）；
-        ② 计划行的归属仍是计划执行体（没有一行被兜底"吸收"）；
-        ③ 兜底下一轮在循环顶整段让位（不再进执行体）。
-        """
-        self._init_db()
-        # 兜底先起：它自己建当日计划（`_ensure_plan`）——生产 06:31:02 的第一行日志即此形态。
-        # 主进程随后持锁 ⇒ 从第 2 次探测起恒为真。
-        rc, sleeps, beats, _calls = self._drive_fallback(
-            [False, True], expect_calls=1)
-
-        rows = self._rows()
-        self.assertTrue(rows, "前置：兜底应当已经建出当日计划行（_ensure_plan）")
-        claimed = [r for r in rows if r["state"] != "pending"]
-        self.assertEqual(
-            claimed, [],
-            "兜底在轮在飞期间领走了当日计划行——分片外溢（10-07 生产故障形状）")
-        self.assertEqual(self._claimed_by("fallback"), [],
-                         "兜底名下的领取行必须为空（它应当一个分片都不领）")
-        self.assertEqual(self._attempts, [], "让位期间不得发起任何真实登录")
-        self.assertIn(workers._YIELD_POLL_SEC, sleeps,
-                      "兜底下一轮必须在循环顶整段让位（睡让位轮询间隔）")
-        self.assertEqual(rc, 0)
-        self.assertTrue(beats, "前置：兜底确实进过一轮（写过心跳）")
-
-    def test_plan_rows_keep_planned_owner(self):
-        """分片不外溢的可读面：计划行归属＝计划执行体（不是兜底）。"""
-        self._init_db()
-        self._drive_fallback([False, True], accounts=self._accounts(), expect_calls=1)
-        rows = self._rows()
-        self.assertTrue(rows, "前置：兜底应当已经建出当日计划行（_ensure_plan）")
-        owners = {r["owner"] for r in rows}
-        self.assertNotIn(FALLBACK, owners, "计划行的归属被兜底改写")
-        self.assertTrue(owners <= {WORKER0, WORKER1},
-                        f"计划行归属不是计划执行体（HRW 口径漂移）: {sorted(owners)}")
-
-    def test_yields_though_queue_present_and_declared(self):
-        """判据不是配置声明：库路径已声明、库已初始化 ⇒ `pool_db_declared()` 为真，照样让位。
-
-        旧判据 `not db.pool_db_declared() and _run_lock_held()` 在**这一刻**答"有池 ⇒
-        不让位"，于是兜底与全量轮并发领取——账号级仲裁只防重复登录，不防吸收全量。
-        """
-        self._init_db()
-        self.assertTrue(db.pool_db_declared(),
-                        "前置：本次部署声明了库路径（生产形状：默认库 + 未写声明键亦为真）")
-        _rc, sleeps, _beats, calls = self._drive_fallback([True], expect_calls=0)
-        self.assertIn(workers._YIELD_POLL_SEC, sleeps, "有队列时也必须整段让位")
-        self.assertEqual(calls, [], "有队列 + 轮在飞 ⇒ 兜底不得进执行体")
-
-
-class ClaimedRowsStillFinishOnFreezeTest(_Harness):
-    """守卫 F2-③：让位**冻结领取**之后，已领的那批必须照常收尾，不留 `claimed` 残留。
-
-    这是设计取舍的守卫面：让位只冻结"继续领取"，不动在飞行——半路丢弃会留下没人收的
-    租约（行卡在 `claimed` 直到租约+宽限被回收，其间该账号当天无人再签）。突变验证：
-    在冻结分支前加一句 `queue_store.reap_abandoned(ctx.runtime_id, ctx.day)`（把"自己的
-    在飞行"也弃权掉）⇒ 本用例的"已领行落 done"断言变红。
-    """
-
-    DUE = 3      # 到点的行：会被领走、执行、收尾
-    FUTURE = 3   # 未到点的行：本轮不该被领
-
-    def test_claimed_rows_settle_and_none_left_claimed(self):
-        def _ok(_acc):
-            return (True, "签到成功", False, "success")
-
-        self._init_db()
-        phones = [a.phone for a in self._accounts(self.DUE + self.FUTURE)]
-        due, future = phones[:self.DUE], phones[self.DUE:]
-        self._plan_rows(due)
-        self._plan_rows(future, run_at=START + datetime.timedelta(hours=1))
-        # 探测序列：循环顶假（兜底先起）→ 执行体第 1 次复检假（照常领取）→ 之后恒真（冻结）。
-        rc, _sleeps, _beats, _calls = self._drive_fallback(
-            [False, False, True], accounts=self._accounts(self.DUE + self.FUTURE),
-            attempt=_ok, expect_calls=1)
-
-        states = {r["phone"]: r["state"] for r in self._rows()}
-        self.assertEqual(sorted(self._attempts), sorted(due),
-                         "到点的行没被领走执行（前置不成立，本用例失去守卫力）")
-        self.assertEqual([states[p] for p in due], ["done"] * self.DUE,
-                         "已领的行没有照常收尾——让位把在飞行也丢了")
-        self.assertEqual([states[p] for p in future], ["pending"] * self.FUTURE,
-                         "未到点的行不该被领走")
-        self.assertNotIn("claimed", set(states.values()),
-                         "让位后留下 claimed 残留（租约空转、当天无人再签）")
-        self.assertEqual(rc, 0)
 
 
 class FallbackRunsWhenNoRoundTest(_Harness):

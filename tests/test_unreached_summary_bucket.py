@@ -423,13 +423,14 @@ class RetryRequeuedIsNotUnreachedTest(_Harness):
         real_claim = queue_store.claim_batch
         seen = {"n": 0}
 
-        def _once_then_unreadable(*a, **k):
-            # 第一拍照常领取（每个账号真的被跑一次并回炉成 `retry:` 档），其后模拟读不通：
-            # 轮次以"读不通"收尾时窗口仍开着、回炉行留在 `pending`——这正是"跑过但没收尾"。
+        def _due_then_unreadable(*a, **k):
+            # 前 ACCOUNTS 次照常领取（claim-at-dispatch：每次一行，每个账号真被跑一次并
+            # 回炉成 `retry:` 档）；其后模拟读不通。轮次以"读不通"收尾时窗口仍开着、回炉
+            # 行留在 `pending`——这正是"跑过但没收尾"的形状。
             seen["n"] += 1
-            return real_claim(*a, **k) if seen["n"] == 1 else None
+            return real_claim(*a, **k) if seen["n"] <= self.ACCOUNTS else None
 
-        rc, log = self._run(attempt=_retryable, claim_batch=_once_then_unreadable)
+        rc, log = self._run(attempt=_retryable, claim_batch=_due_then_unreadable)
         summary = next(ln for ln in log.splitlines() if "==== 签到汇总" in ln)
         self.assertGreater(seen["n"], 1, "前置：补货循环应当反复尝试领取（本用例的收尾条件）")
         self.assertIn(f"❌ {self.ACCOUNTS} 失败", summary,

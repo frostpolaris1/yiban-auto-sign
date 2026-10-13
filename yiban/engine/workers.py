@@ -96,8 +96,10 @@ def _round_in_flight():
     被声明"，与"有没有可仲裁的工作在跑"是两件事（10-07 生产用默认库、没声明键，被判成
     纯状态文件部署）。队列在场与否不改变让位结论，它只决定兜底能领到什么。
 
-    让位与执行体的让位复检（`executor_v3.run_executor_v3(yield_probe=…)`）共用本函数：
-    进入一轮时的判据与轮内复检**必须是同一份事实**，否则两处会各判各的。
+    让位与执行体的让位复检曾共用本函数（`executor_v3.run_executor_v3(yield_probe=…)`）；
+    工单 `l1rx` 后**轮内复检形参已删**，让位改由兜底腿的**肘界谓词**承担（结构上不抢新鲜
+    工作）。本函数只剩"循环顶的整段让位"这一个用途——省掉全量轮在跑时兜底的无谓空转，
+    不再是正确性依赖。
     """
     return cli_support._run_lock_held()
 
@@ -417,8 +419,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     （都由 `schedule.day_off` 判定，与定时轮同源）→ 直接退出；签到时段**尚未开始**
     → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
     **全量轮正在运行** → 整段让位（判据见 `_round_in_flight`：只看运行时事实，不看
-    配置声明）。让位期间不复检就不放行——执行体每次领取前再问一次（`yield_probe`），
-    故"赢下启动竞态的亚秒窗口"不会被放大成吸收全天工作量。
+    配置声明）。轮内不再复检——工单 `l1rx` 把"让位"改成了**肘界谓词**：兜底只领
+    "已过期超过肘界"的行（`elbow_sec=FALLBACK_ELBOW_SEC`），故即便循环顶让位漏判
+    （"赢下启动竞态的亚秒窗口"），它结构上也只能捡到计划轮此刻不碰的陈旧行，
+    抢跑不再被放大成吸收全天工作量。循环顶让位因此降为省空转的粗粒度入场券。
     全量轮收工后兜底照常接手：`claim_all` 的宽范围在**没有轮在飞**时才用得上（有轮
     在飞时那正是"抢走别人计划工作"的那条路，见 `_round_in_flight`）。扫空后的等待是
     **事件驱动**的：短轮询领取池"默认可接手未了结"签名（`_await_pool_event`），别的
@@ -547,9 +551,13 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   路径"（补签轮/手动才传）——每 ~60s 重扫一遍的循环若把预算耗尽/风控档
         #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
         #   第二次机会只留给一次性补签轮与手动。
-        # - `yield_probe=_round_in_flight`：**轮内让位复检**。循环顶那次让位判据只是
-        #   进入这一轮的入场券；一轮扫描可能跑满整个窗口（10-07 生产 58 分钟），故
-        #   执行体每次领取前再问一次同一份事实，轮一出现就停止领取（已领的照常收尾）。
+        # - `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`：**肘界谓词取代轮内让位探针**
+        #   （工单 `l1rx`；`docs/refactor/130` §3.3）。兜底只领"已过期超过肘界"的行，
+        #   故它**结构上**不可能抢走计划轮此刻该领的新鲜工作——那个 10-07 型启动竞态
+        #   （兜底赢下亚秒窗口后吸收整轮 84/100）从机制上消失。原先的 `yield_probe`
+        #   （每领取前问一次全局锁）已删：它是轮内止损，起跑胜负未变；肘界是**行的函数**，
+        #   零协调。循环顶那次整段让位（`_round_in_flight`）保留为粗粒度入场券——它省掉
+        #   "全量轮在跑时兜底还去查库"的无谓空转，正确性不再依赖它。
         # - `event_sink`：**兜底的工作必须落 `sign_events`**。此前不传 sink，兜底签成的
         #   84 个账号在事件表里零记录（10-07 生产 `sign_events` 当日只有 16 条 success
         #   = 两个 worker 的），数据侧看不出"谁做的"，判因留痕也随之丢失。攒一轮批量落库
@@ -571,7 +579,8 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
             cred_state=cred_state, delegated=delegated,
             claim_all=True, requeue_during_run=True,
-            yield_probe=_round_in_flight, event_sink=event_rows.append,
+            elbow_sec=executor_v3.FALLBACK_ELBOW_SEC,
+            event_sink=event_rows.append,
             unreached=unreached, round_no=round_no)
         if event_rows:
             db.add_sign_events_batch(event_rows)
