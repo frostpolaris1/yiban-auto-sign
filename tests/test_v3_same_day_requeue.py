@@ -129,9 +129,19 @@ async def _never(_ctx):
     await asyncio.Event().wait()
 
 
-def _item(phone, run_at=None, attempts=0, epoch=1,
-          priority=executor_v3.PRIORITY_ORDER_BASE):
-    return (priority, run_at or _ts(seconds=-1), phone, attempts, epoch)
+def _item(phone, run_at=None, attempts=0, epoch=1):
+    """一条"被领到"的行——`claim_batch` 返回的行形状（claim-at-dispatch 下每次一行）。"""
+    return {"phone": phone, "run_at": run_at or _ts(seconds=-1),
+            "attempts": attempts, "epoch": epoch}
+
+
+def _keeper_watch(box):
+    """假协调循环：给定条目吐完、且没有通道在飞时置停止（**不推进假时钟**）。"""
+    async def _keep(ctx):
+        while box or ctx.claiming:
+            await asyncio.sleep(0)
+        ctx.stop.set()
+    return _keep
 
 
 class _Base(unittest.TestCase):
@@ -227,12 +237,11 @@ class _Base(unittest.TestCase):
         gate = gate if gate is not None else _PermissiveGate()
         patches = [mock.patch.object(executor_v3, "_persist_loop", _never)]
         if items is not None:
-            async def _refill(queue, shards, ctx):
-                for it in items:
-                    queue.put_nowait(it)
-                for _ in range(ctx.m):
-                    queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
-            patches.append(mock.patch.object(executor_v3, "_refiller", _refill))
+            box = list(items)
+            patches.append(mock.patch.object(
+                executor_v3, "_claim_one", lambda ctx: [box.pop(0)] if box else []))
+            patches.append(mock.patch.object(
+                executor_v3, "_dispatch_keeper", _keeper_watch(box)))
         patches += [
             mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: limiter),
             mock.patch.object(executor_v3, "_make_global_limiter",
@@ -569,32 +578,24 @@ class SessionRequeueTest(_Base):
                               phones=phones))
             return flips[-1]
 
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                if (await queue.get())[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-
-        # `held` 是补货循环登记"在途"的集合（M17）：周期回收按它豁免，防止仍躺在
-        # 通道队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
-        # 替身必须带真字段——getattr 兜底会让豁免在缺字段时静默失效。
+        # 协调循环的替身必须带**全部真字段**（claim-at-dispatch 后收干看 `claiming`）。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
-                              runtime_id=RUNTIME_OWNER, m=1, inflight=0, busy=0,
-                              slot=0, shards=tuple(range(8)), v=8,
-                              requeue_during_run=True, held=set())
-        queue = asyncio.PriorityQueue()
+                              runtime_id=RUNTIME_OWNER, m=1, inflight=0, claiming=0,
+                              claim_unreadable=False, slot=0, shards=tuple(range(8)), v=8,
+                              requeue_during_run=True, reclaim=False, allowed_phones=None,
+                              queue_unreadable=False, log_tag="[single]",
+                              stop=asyncio.Event())
         with mock.patch.object(executor_v3.queue_store, "requeue_failed", spy), \
-             mock.patch.object(executor_v3, "_lane", fake_lane), \
              mock.patch.object(executor_v3, "_persist_loop", _never):
-            asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
+            asyncio.run(executor_v3._dispatch_keeper(ctx))
         self.assertTrue(seen, "requeue_during_run 的会话必须按恢复周期回炉")
         self.assertTrue(all(c["include_final"] is False for c in seen),
                         "会话内周期只回炉默认档——final: 档的第二次机会只留给有界显式路径")
         self.assertIn(1, flips, "刚弃权的 retry: 档必须在恢复周期被翻回 pending")
-        # 回炉的目的地是"本轮就被领走"：本用例没起通道（claimed 行无消费者、不会
-        # 落库了结），行翻回 pending 后会被下一次 claim_batch 领成 claimed，租约
-        # 到期又由 reap_expired 放回来——终态停在 pending/claimed 之一都是"已回炉
-        # 且在本轮领取集里"。断言"永远 pending"反而要求"回炉了但绝不接手"，与
-        # requeue_during_run 的存在意义相反。
+        # 回炉的目的地是"本轮就被领走"：本用例没起通道（行无消费者、不会落库了结），
+        # 行翻回 pending 后停在 pending 即"已回炉且在本轮领取集里"（claim-at-dispatch
+        # 下没人领它就一直是 pending；租约族已删，不再有"租约到期放回来"这一说）。
+        # 断言"永远 failed"才是反的。
         self.assertIn(self._row(phone)["state"], ("pending", "claimed"),
                       "回炉=当日接手：不得停留在 failed")
 

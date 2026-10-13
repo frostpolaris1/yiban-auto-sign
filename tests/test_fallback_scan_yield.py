@@ -118,16 +118,6 @@ async def _never(_ctx):
     await asyncio.Event().wait()
 
 
-def _sentinel_only(items):
-    """假补货：只把给定条目与 M 条哨兵一次性投进队列（时序确定，不真实轮询）。"""
-    async def _refill(queue, shards, ctx):
-        for it in items:
-            queue.put_nowait(it)
-        for _ in range(ctx.m):
-            queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
-    return _refill
-
-
 class _Harness(unittest.TestCase):
     """真库 + 真 `run_executor_v3`（反复调用即兜底常驻的扫描形态）。"""
 
@@ -235,7 +225,6 @@ class _Harness(unittest.TestCase):
 
         patches = [
             mock.patch.object(executor_v3, "_persist_loop", _never),
-            mock.patch.object(executor_v3, "_refiller", _sentinel_only([])),
             mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: _Limiter()),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: _Gate()),
             mock.patch.object(executor_v3, "_now", self.fc.now),

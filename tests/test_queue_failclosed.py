@@ -4,7 +4,7 @@
 标签：A · 调度：领取失败判定
 覆盖：`queue_store` 五枚影响「退出/了结」判定的读点（`claim_batch`、`pending_count`、
    `open_count`、`day_counts`、`requeue_failed`）在库读不通时回**可判的失败值**——`None`
-   哨兵。哨兵沿用同文件 `claimed_owners`→`reap_expired` 的既有惯例，不新造第三种形状。
+   哨兵。哨兵沿用同文件 读取面的 `None` 哨兵惯例，不新造第三种形状。
    「空（真的没活）」与「坏（读不出来）」两条路径的返回值必须不同形。执行体补货循环
    不把「坏」当「收干」；连续 N 轮读不通后有界停止并留下响亮痕迹。`open_count` 跨载体
    读者链（`queue_store.open_count` → `db.task_open_count` 门面别名 →
@@ -13,13 +13,13 @@
    不装作全 0。
 对应实现：yiban/store/queue_store.py（claim_batch、pending_count、open_count、
    day_counts、requeue_failed）、yiban/store/db.py（task_open_count / task_stats 别名）、
-   yiban/engine/executor_v3.py（`_refiller` 收干判据、`QUEUE_UNREADABLE_MAX_ROUNDS`、
+   yiban/engine/executor_v3.py（`_dispatch_keeper` 收干判据、`QUEUE_UNREADABLE_MAX_ROUNDS`、
    `_alert_queue_unreadable`）、yiban/engine/state_io.py（has_undone_accounts_today）、
    web/routes/settings_api.py（api_scheduler_executors_progress）。
 关键断言：库读不通 ⇒ 执行体**不**进入「完成」分支。修前是第一轮就 break——全天零签到、
    现场只有两条 WARNING。修后必须连续读满 N 轮才停（不许无限空转），并同时留下一条
    ERROR 与一条管理员告警；中途只要有一轮读通，计数归零、不得告警。通向 `break` 的
-   那条收干判据里，`rows` 与 `pending` 两个闸门值都必须先被 `is not None` 排除过哨兵。
+   那条收干判据里，`pending`（待办面）与 `rows`（领取面）两个闸门值都必须显式区分哨兵与空值。
    这条是结构守卫：判据退回「按真假取闸门值」当场红。`open_count` 链逐环可判：别名与源
    函数同一身份；「状态文件说都签完了 + 库读不通」必须答「仍有未了结」（修前答「没有」
    ＝补签轮不跑＝漏签）。降级口径的**例外名册**也是判据：`queue_store` 里任何异常分支
@@ -157,7 +157,7 @@ class FailClosedSentinelTest(_DbBase):
                                                  "WARNING") as cm:
             got = queue_store.claim_batch(RUNTIME_OWNER, DAY, SHARDS)
         self.assertIsNone(got, "返回 [] 与「表在、但无到期行」同形，调用方无从区分")
-        self.assertIn("批量领取签到任务失败", "\n".join(cm.output))
+        self.assertIn("领取签到任务失败", "\n".join(cm.output))
 
     def test_pending_count_读不通返回哨兵而不是零(self):
         with self._unreadable(), self.assertLogs("yiban.store.queue_store",
@@ -243,8 +243,13 @@ class _SpinGuard:
         await asyncio.sleep(0)
 
 
-class RefillerFailClosedTest(_DbBase):
-    """补货循环的收干判据：坏值不得被折叠成「活已了结」，也不得无限空转。"""
+class KeeperFailClosedTest(_DbBase):
+    """派发协调循环的收干判据：坏值不得被折叠成「活已了结」，也不得无限空转。
+
+    claim-at-dispatch（工单 `l1rx`）后，领取在通道里、**收干判定在 `_dispatch_keeper`**。
+    本组用例驱动真协调循环；通道领取面的读不通通过 `ctx.claim_unreadable` 记号喂进来
+    （通道只如实登记"这一拍读到读不通"，闸门计数与告警由协调循环一处裁决）。
+    """
 
     def setUp(self):
         super().setUp()
@@ -252,19 +257,20 @@ class RefillerFailClosedTest(_DbBase):
         self.errors = []
 
     def _ctx(self, **over):
-        # 替身必须带**全部真字段**（含 `queue_unreadable` 与归因前缀 `log_tag`）：用 getattr
-        # 兜底会让缺字段静默通过，正是「豁免在缺字段时静默失效」那一类错
+        # 替身必须带**全部真字段**（含 `queue_unreadable` / `claim_unreadable` / `stop` 与
+        # 归因前缀 `log_tag`）：用 getattr 兜底会让缺字段静默通过，正是「豁免在缺字段时
+        # 静默失效」那一类错。
         base = dict(cfg=_cfg(), day=DAY, executor_id=OWNER, runtime_id=RUNTIME_OWNER,
-                    m=2, inflight=0, busy=0, slot=0, held=set(), v=8,
-                    reclaim=True, allowed_phones=None, requeue_during_run=False,
-                    queue_unreadable=False, log_tag="[single]")
+                    m=2, inflight=0, claiming=0, claim_unreadable=False, slot=0, v=8,
+                    shards=SHARDS, reclaim=True, allowed_phones=None,
+                    requeue_during_run=False, queue_unreadable=False, log_tag="[single]",
+                    stop=asyncio.Event())
         base.update(over)
         return SimpleNamespace(**base)
 
     def _run(self, ctx, extra=(), mono_step=0.0):
-        """跑真实 `_refiller`，返回（走了多少拍, 管理员告警主题, ERROR 文案, 哨兵条数）。"""
+        """跑真实 `_dispatch_keeper`，返回（走了多少拍, 管理员告警主题, ERROR 文案, 是否已停）。"""
         guard = _SpinGuard(mono_step=mono_step)
-        queue = asyncio.PriorityQueue()
         patches = [
             mock.patch.object(executor_v3, "_now", lambda: START),
             mock.patch.object(executor_v3, "_sleep", guard.sleep),
@@ -284,99 +290,85 @@ class RefillerFailClosedTest(_DbBase):
         with contextlib.ExitStack() as st:
             for p in patches:
                 st.enter_context(p)
-            asyncio.run(executor_v3._refiller(queue, SHARDS, ctx))
-        sentinels = 0
-        while not queue.empty():
-            if queue.get_nowait()[0] >= executor_v3.SENTINEL_PRIORITY:
-                sentinels += 1
-        return guard.n, self.collected, self.errors, sentinels
+            asyncio.run(executor_v3._dispatch_keeper(ctx))
+        return guard.n, self.collected, self.errors, ctx.stop.is_set()
 
     def test_读通且确实没活时第一轮就退(self):
         """反向基线：真的没活 ⇒ 立刻收干、不发故障告警（不许狼来了）。"""
-        rounds, collected, errors, sentinels = self._run(self._ctx())
-        self.assertEqual(rounds, 0)
-        self.assertEqual(sentinels, 2, "收干仍要放行 M 条通道的哨兵，否则整轮卡死")
+        with mock.patch.object(queue_store, "pending_count", return_value=0):
+            rounds, collected, errors, stopped = self._run(self._ctx())
+        self.assertEqual(rounds, 0, "确实没活 ⇒ 立刻收干，不等一拍")
+        self.assertTrue(stopped, "收干必须置停止信号，否则通道不退出、整轮卡死")
         self.assertEqual(collected, [])
         self.assertEqual(errors, [])
 
-    def test_读不通不进完成分支且有界停止(self):
+    def test_待办面读不通不进完成分支且有界停止(self):
         """修前的行为＝第一轮 break（0 拍、零告警）＝全天零签到而现场只有两条 WARNING。"""
-        rounds, collected, errors, sentinels = self._run(
-            self._ctx(), extra=[mock.patch.object(queue_store, "_queue_conn",
-                                                  side_effect=LOCK_ERR)])
+        with mock.patch.object(queue_store, "pending_count", return_value=None):
+            rounds, collected, errors, stopped = self._run(self._ctx())
         self.assertGreater(rounds, 0, "读不通不得被当成「活已了结」立刻退出")
         self.assertEqual(rounds, executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS - 1,
                          "必须连续读满 N 轮才停：早一轮是提前放弃，晚一轮是空转")
         self.assertLess(rounds, SPIN_CAP, "停止必须有界")
-        self.assertEqual(sentinels, 2)
+        self.assertTrue(stopped)
         self.assertEqual(len(errors), 1, "必须留下一条 ERROR")
         self.assertEqual(len(collected), 1, "必须留下一条管理员告警（响亮，不是静默 spin）")
+
+    def test_通道领取面读不通计入同一闸门(self):
+        """通道领取面读不通（`claim_unreadable`）也是「坏」，必须进同一条闸门。
+
+        记号由通道在每拍领取失败时置位、协调循环读后清空。用例把起点置为已置位，
+        模拟"每拍都有通道读到读不通"。
+        """
+        ctx = self._ctx(claim_unreadable=True)
+
+        def pend(*_a, **_k):
+            ctx.claim_unreadable = True      # 通道本拍又读到读不通
+            return 1
+
+        with mock.patch.object(queue_store, "pending_count", side_effect=pend):
+            rounds, collected, errors, stopped = self._run(ctx)
+        self.assertEqual(rounds, executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS - 1,
+                         "领取面读不通、待办面恒有活：只能走到上界才停")
+        self.assertTrue(stopped)
+        self.assertEqual(len(collected), 1)
+        self.assertEqual(len(errors), 1)
 
     def test_读通一轮即清零不发告警(self):
         """判据是「**连续** N 轮」：中途读通一次，计数归零，不得报故障。"""
         bad = executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS - 1
-        with mock.patch.object(queue_store, "claim_batch",
-                               side_effect=[None] * bad + [[]]), \
-                mock.patch.object(queue_store, "pending_count", return_value=0):
-            rounds, collected, errors, _sent = self._run(self._ctx())
+        with mock.patch.object(queue_store, "pending_count",
+                               side_effect=[None] * bad + [0]):
+            rounds, collected, errors, _stopped = self._run(self._ctx())
         self.assertEqual(rounds, bad, "读通的那一轮应当正常收干")
         self.assertEqual(collected, [])
         self.assertEqual(errors, [])
 
     def test_轮内回炉读不通同样计入上界(self):
-        """`requeue_failed` 是第 5 枚降级点：它的「坏」必须进同一条闸门。
+        """`requeue_failed` 是降级点：它的「坏」必须进同一条闸门。
 
         只改存储层、不改这个消费点，就是「同批只改了一半」。
         """
         ctx = self._ctx(reclaim=False, requeue_during_run=True)
-        with mock.patch.object(queue_store, "claim_batch", return_value=[]), \
-                mock.patch.object(queue_store, "pending_count", return_value=1), \
-                mock.patch.object(queue_store, "requeue_failed", return_value=None), \
-                mock.patch.object(queue_store, "reap_expired", return_value=0), \
-                mock.patch.object(executor_v3, "_live_row_owners", return_value=()):
-            # 每拍推进一个回收周期，保证每一轮都真的走到回炉那一句
-            rounds, collected, errors, _sent = self._run(
+        with mock.patch.object(queue_store, "pending_count", return_value=1), \
+                mock.patch.object(queue_store, "requeue_failed", return_value=None):
+            # 每拍推进一个回炉周期，保证每一轮都真的走到回炉那一句
+            rounds, collected, errors, stopped = self._run(
                 ctx, mono_step=executor_v3.RECOVER_SEC)
         self.assertLess(rounds, SPIN_CAP, "回炉读不通也必须有界停止")
+        self.assertTrue(stopped)
         self.assertEqual(len(collected), 1, "回炉读不通同样要留下一条管理员告警")
         self.assertEqual(len(errors), 1)
 
     def test_轮首回炉读不通计入同一闸门(self):
         """`run_executor_v3` 轮首那次回炉（另一个生产调用点）不得把「坏」当「没行要回炉」。"""
-        rounds, collected, errors, _sent = self._run(
-            self._ctx(queue_unreadable=True),
-            extra=[mock.patch.object(queue_store, "_queue_conn", side_effect=LOCK_ERR)])
+        with mock.patch.object(queue_store, "pending_count", return_value=None):
+            rounds, collected, errors, _stopped = self._run(
+                self._ctx(queue_unreadable=True))
         self.assertEqual(rounds, executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS - 2,
                          "轮首那一轮已经计入，循环里只需再读满 N-1 轮")
         self.assertEqual(len(collected), 1)
         self.assertEqual(len(errors), 1)
-
-    def test_领取失败时不把哨兵当行投进队列(self):
-        """哨兵不可迭代：`for r in rows` 直接 TypeError 会把整轮签到打断。
-
-        工单硬约束「不许把读不通退化成抛异常打断整轮而不加出声」正面钉在这里。
-        """
-        with mock.patch.object(queue_store, "claim_batch", return_value=None), \
-                mock.patch.object(queue_store, "pending_count", return_value=1):
-            rounds, _collected, _errors, sentinels = self._run(self._ctx())
-        self.assertEqual(rounds, executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS - 1,
-                         "领取面读不通而待办面恒为 1：只能走到上界才停")
-        self.assertEqual(sentinels, 2, "停止时只放哨兵，队列里不得有真条目")
-
-    def test_待办面读不通时不得判收干(self):
-        """领取面读通、待办面读不通：不许走收干分支。
-
-        这是本单的原始形状：收干闸门拿 `pending_count` 的 0 当"活已了结"，而它的 0 与
-        `None` 修前同形。两枚闸门值必须各自被排除过哨兵才能收干。
-        """
-        with mock.patch.object(queue_store, "claim_batch", return_value=[]), \
-                mock.patch.object(queue_store, "pending_count", return_value=None):
-            rounds, collected, errors, sentinels = self._run(self._ctx())
-        self.assertEqual(rounds, executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS - 1,
-                         "待办面回哨兵 ⇒ 这一拍不得收干，只能走到上界才停")
-        self.assertEqual(len(collected), 1)
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(sentinels, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -399,33 +391,44 @@ def _names_in(node):
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
 
-def _proven_not_none(test_node):
-    """`X is not None` 里的 X 集合。"""
-    return {c.left.id for c in ast.walk(test_node)
-            if isinstance(c, ast.Compare) and isinstance(c.left, ast.Name)
-            and len(c.ops) == 1 and isinstance(c.ops[0], ast.IsNot)
-            and _is_none_constant(c.comparators[0])}
+def _names_guarded_for_none(tree):
+    """`X is None` / `X is not None` 里的 X 集合——出现即证明哨兵被与空值分开。"""
+    out = set()
+    for c in ast.walk(tree):
+        if (isinstance(c, ast.Compare) and isinstance(c.left, ast.Name)
+                and len(c.ops) == 1
+                and isinstance(c.ops[0], (ast.Is, ast.IsNot))
+                and _is_none_constant(c.comparators[0])):
+            out.add(c.left.id)
+    return out
 
 
 class ExitPredicateShapeTest(unittest.TestCase):
-    """把边界钉成一条静态判据：闸门值必须先排除哨兵，再判空。
+    """把边界钉成静态判据：闸门值必须先排除哨兵，再判空。
 
     行为守卫管「存储层退回 return []/return 0」，本守卫管「执行体端摘掉显式判据」。
-    把 `rows is not None` / `pending is not None` 任一摘掉（退回只按 `not rows` 或只留
-    `== 0`）当场红。
+    工单 `l1rx`（claim-at-dispatch）后判据分住两处：
+      · 收干判定在 `_dispatch_keeper`（待办面 `pending`）；
+      · 领取在 `_lane`（领取面 `rows`）。
+    摘掉 `pending is None`（退回只判 `== 0`）或 `rows is None`（退回只判 `not rows`）当场红。
     """
 
-    def test_收干判据对两个闸门值都显式排除哨兵(self):
-        gate = [t for t in _break_tests(executor_v3._refiller)
-                if {"rows", "pending"} <= _names_in(t)]
+    def test_收干判据显式排除待办面哨兵(self):
+        tree = ast.parse(inspect.getsource(executor_v3._dispatch_keeper))
+        self.assertIn(
+            "pending", _names_guarded_for_none(tree),
+            "待办计数必须先排除哨兵：0 与读不通同形就是本单的根因")
+        gates = [t for t in _break_tests(executor_v3._dispatch_keeper)
+                 if "pending" in _names_in(t)]
         self.assertEqual(
-            len(gate), 1,
-            "补货循环里必须恰有一条同时读领取面（rows）与待办面（pending）的收干判据")
-        proven = _proven_not_none(gate[0])
-        self.assertIn("rows", proven,
-                      "领取结果必须先排除哨兵：哨兵与空列表同形就是本单的根因")
-        self.assertIn("pending", proven,
-                      "待办计数必须先排除哨兵：0 与读不通同形同样是根因")
+            len(gates), 1,
+            "协调循环里必须恰有一条读待办面（pending）的收干判据")
+
+    def test_领取面显式排除哨兵(self):
+        tree = ast.parse(inspect.getsource(executor_v3._lane))
+        self.assertIn(
+            "rows", _names_guarded_for_none(tree),
+            "领取结果必须先排除哨兵：哨兵与空列表同形就是本单的根因")
 
 
 class DegradePolicyShapeTest(unittest.TestCase):
@@ -439,8 +442,8 @@ class DegradePolicyShapeTest(unittest.TestCase):
     #: 不取哨兵的读/写点（补偿动作与纯展示读面）。失败方向是「这一轮少做一次」或
     #: 「页面少显示一块」，不参与任何退出/了结判定；理由逐枚见 `queue_store` 模块头。
     NOT_FAIL_CLOSED = (
-        "settle_tasks", "requeue_task", "reclaim_tasks", "claimed_owners",
-        "reap_expired", "reap_abandoned", "load_egress_state", "save_egress_state",
+        "settle_tasks", "requeue_task", "reclaim_tasks",
+        "reap_abandoned", "load_egress_state", "save_egress_state",
         "purge", "fallback_event", "latest_day", "owners_for_day", "owners_since",
         "activity",
     )

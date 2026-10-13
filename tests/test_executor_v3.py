@@ -38,7 +38,6 @@ import random
 import shutil
 import tempfile
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -178,14 +177,16 @@ class _PermissiveGate:
         self.trace.append(("commit", phone))
 
 
-def _refiller_pushing(items):
-    """假补货：把给定条目与 M 条哨兵一次性投进队列（时序用例用它替代真实轮询）。"""
-    async def _refill(queue, shards, ctx):
-        for it in items:
-            queue.put_nowait(it)
-        for _ in range(ctx.m):
-            queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
-    return _refill
+def _keeper_watch(box):
+    """假协调循环：给定条目吐完、且没有通道在飞时置停止（**不推进假时钟**）。
+
+    时序用例用它替代真协调循环的收干判定；领取由假 `_claim_one` 从 `box` 按序吐出。
+    """
+    async def _keep(ctx):
+        while box or ctx.claiming:
+            await asyncio.sleep(0)
+        ctx.stop.set()
+    return _keep
 
 
 async def _never(_ctx):
@@ -193,9 +194,10 @@ async def _never(_ctx):
     await asyncio.Event().wait()
 
 
-def _item(phone, run_at=None, attempts=0, epoch=1,
-          priority=executor_v3.PRIORITY_ORDER_BASE):
-    return (priority, run_at or _ts(seconds=-1), phone, attempts, epoch)
+def _item(phone, run_at=None, attempts=0, epoch=1):
+    """一条"被领到"的行——`claim_batch` 返回的行形状（claim-at-dispatch 下每次一行）。"""
+    return {"phone": phone, "run_at": run_at or _ts(seconds=-1),
+            "attempts": attempts, "epoch": epoch}
 
 
 class _Base(unittest.TestCase):
@@ -353,8 +355,20 @@ class _Base(unittest.TestCase):
         gate = gate if gate is not None else _PermissiveGate()
         patches = [mock.patch.object(executor_v3, "_persist_loop", _never)]
         if items is not None:
+            box = list(items)
+
+            def _claim(ctx, _box=box):
+                # 吐完即置停止（免得空轮里各通道白睡几拍推着假时钟往前走——那会让
+                # 依赖窗口余量的用例随并行度抖动），但**要等没有通道在飞**才停。
+                if _box:
+                    return [_box.pop(0)]
+                if ctx.claiming == 0:
+                    ctx.stop.set()
+                return []
+
+            patches.append(mock.patch.object(executor_v3, "_claim_one", _claim))
             patches.append(
-                mock.patch.object(executor_v3, "_refiller", _refiller_pushing(items)))
+                mock.patch.object(executor_v3, "_dispatch_keeper", _keeper_watch(box)))
 
         def _mk(channels, shares=1):
             if shares_seen is not None:
@@ -467,33 +481,37 @@ class ManualReclaimIsolationTest(_Base):
                          "别人的 sign-state 不得被改写成 user_cancelled")
         self.assertEqual(self._row(a)["state"], "done", "本轮账号被重签并收尾")
 
-    def test_reap_scoped_to_this_rounds_accounts(self):
-        """起跑回收也必须按允许集收窄：别的账号的陈旧 `claimed` 一行不动，本轮账号自己的
-        陈旧 `claimed` 被回收（**不整段跳过回收**——否则手动账号自己卡住就没人拉回来）。"""
+    def test_stale_claims_are_left_to_supervisor_reaping(self):
+        """租约族删除后（工单 `l1rx`）执行体起跑**不再按时间戳回收** `claimed` 行。
+
+        陈旧 `claimed`（本人或别人的）一律原样留在库里：崩溃遗留由监督进程按进程句柄的
+        `reap_abandoned`（或补签轮）处置，执行体**不在起跑时就地回收**。本用例钉两件：
+        ① 执行体不改任何 `claimed` 行；② 本轮账号自己的陈旧 `claimed` 也不被自动重签
+        （新口径，如实登记）。
+        """
         a, b = _phone(1), _phone(2)
         self._seed_v(self.V)
         sh = self._other_vshard_for(a)
-        # 别人的陈旧 claimed（租约远超宽限期）：修法前起跑那次无条件回收会改它（跨账号写）
         self._add_task(b, vshard=sh, state="claimed", owner="other:1:1",
                        lease_until=_ts(seconds=-600), epoch=5)
-        # 本轮账号自己也是陈旧 claimed：必须被回收 → 重新领取执行
         self._add_task(a, vshard=sh, state="claimed", owner="me:1:1",
                        lease_until=_ts(seconds=-600), epoch=3)
-        before_b = self._row(b)
+        before_a, before_b = self._row(a), self._row(b)
         calls = []
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (calls.append(acc.phone),
                                             (True, "ok", False, "success"))[1]):
             self._run_v3(self._accounts(a), reclaim=True, requeue_final=True)
-        self.assertEqual(self._row(b), before_b,
-                         "别人的陈旧 claimed 不得被跨账号回收（owner/epoch 逐字段不变）")
-        self.assertEqual(calls, [a], "本轮账号自己的陈旧 claimed 被回收后应重新执行")
-        self.assertEqual(self._row(a)["state"], "done")
+        self.assertEqual(calls, [], "陈旧 claimed 不被执行体就地回收/执行")
+        # `reclaim_tasks` 会把到手账号的 `run_at` 刷成"现在"（手动签到的既定语义），
+        # 故这里比对**状态机三列**而不是整行。
+        ra = self._row(a)
+        self.assertEqual((ra["state"], ra["owner"], ra["epoch"]),
+                         (before_a["state"], before_a["owner"], before_a["epoch"]),
+                         "本轮账号自己的陈旧 claimed 也不自动重签（交给监督进程收尸）")
+        self.assertEqual(self._row(b), before_b, "别人的 claimed 行一字不变")
 
 
-# ---------------------------------------------------------------------------
-# 通道数 M：唯一口径
-# ---------------------------------------------------------------------------
 class ChannelCountTest(unittest.TestCase):
     def test_channel_count_exact_values(self):
         self.assertEqual(schedule.channel_count(1.0, 3), 6)
@@ -711,7 +729,7 @@ class LaneTest(_Base):
                 started = []
                 pool_sizes = []
 
-                async def fake_lane(queue, lane_id, ctx, _started=started):
+                async def fake_lane(ctx, lane_id, _started=started):
                     _started.append(lane_id)
 
                 real_pool = executor_v3._new_thread_pool
@@ -757,118 +775,64 @@ class LaneTest(_Base):
         for p in phones:
             self.assertEqual(self._row(p)["state"], "done")
 
-    def test_sleep_until_waits_on_the_live_clock(self):
-        """到点等待非阻塞：三条通道共享同一假时钟，总推进量由最晚落点决定。"""
-        phones = [_phone(i) for i in range(3)]
-        accounts = self._accounts(*phones)
+
+# ---------------------------------------------------------------------------
+# claim-at-dispatch：领取即执行、每次一行、没活时按拍轮询、收干由协调循环裁决
+# ---------------------------------------------------------------------------
+class DispatchTest(_Base):
+    def test_claim_is_one_row_at_a_time(self):
+        """**不许批量预取**（工单 `l1rx`）：执行体每次领取都只领一行。"""
+        phones = [_phone(i) for i in range(5)]
         for p in phones:
-            self._add_claimed(p, run_at=_ts(seconds=0.2))
+            self._add_task(p)
         self._seed_v(8)
-        items = [_item(p, run_at=_ts(seconds=0.2)) for p in phones]
-        before = self.fc.t
-        t_wall = time.monotonic()
+        seen = []
+        real = queue_store.claim_batch
+
+        def spy(owner, day, shards, now=None, limit=queue_store.CLAIM_LIMIT,
+                elbow_sec=0.0, phones=None):
+            rows = real(owner, day, shards, now=now, limit=limit,
+                        elbow_sec=elbow_sec, phones=phones)
+            seen.append({"limit": limit, "elbow_sec": elbow_sec, "n": len(rows or [])})
+            return rows
+
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(accounts, items)
-        advance = (self.fc.t - before).total_seconds()
-        self.assertLess(advance, 0.35,
-                        "各通道只等自己的剩余时间（若每条各睡满 0.2s，总推进会到 0.6s）")
-        self.assertGreaterEqual(advance, 0.2)
-        self.assertLess(time.monotonic() - t_wall, 1.0, "等待必须走 asyncio 而非阻塞睡眠")
+                               lambda acc: (True, "ok", False, "success")),              mock.patch.object(queue_store, "claim_batch", spy):
+            self._run_v3(self._accounts(*phones))
+        self.assertTrue(seen, "执行体必须走 queue_store.claim_batch 领取")
+        self.assertLessEqual(max(s["n"] for s in seen), 1, "每次领取不得超过一行（无批量预取）")
+        for s in seen:
+            self.assertEqual(s["limit"], 1, "领取行数缺省为 1")
+        self.assertEqual({s["elbow_sec"] for s in seen}, {0.0},
+                         "定时执行体的肘界为 0（到期即可领）")
         for p in phones:
             self.assertEqual(self._row(p)["state"], "done")
 
-
-# ---------------------------------------------------------------------------
-# 批量领取与收干判据
-# ---------------------------------------------------------------------------
-class RefillerTest(_Base):
-    def test_claim_batch_is_called_with_batch_and_lease(self):
-        self._add_task(_phone(1), run_at=_ts(seconds=-1))
-        self._seed_v(8)
-        claim_kwargs = []
-
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                if (await queue.get())[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-
-        real_claim = queue_store.claim_batch
-
-        def spy_claim(*a, **kw):
-            claim_kwargs.append(kw)
-            return real_claim(*a, **kw)
-
-        with mock.patch.object(queue_store, "claim_batch", spy_claim), \
-             mock.patch.object(executor_v3, "_lane", fake_lane), \
-             mock.patch.object(executor_v3, "_persist_loop", _never):
-            executor_v3.run_executor_v3(self._accounts(_phone(1)), day=DAY, cfg=_cfg())
-        self.assertTrue(claim_kwargs, "补货必须走 queue_store.claim_batch")
-        for kw in claim_kwargs:
-            self.assertEqual(kw["limit"], queue_store.CLAIM_BATCH_LIMIT)
-            self.assertEqual(kw["lease_sec"], queue_store.LEASE_SECONDS)
-
-    def test_claimed_items_dequeue_by_run_at(self):
-        phones = [_phone(i) for i in range(3)]
-        for i, sec in enumerate((-30, -20, -10)):
-            self._add_claimed(phones[i], run_at=_ts(seconds=sec))
-        self._seed_v(8)
-        order = []
-
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                item = await queue.get()
-                if item[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-                order.append(item[2])
-
-        # 故意乱序投递：出队顺序由 (priority, run_at) 决定，先到点先出队
-        items = [_item(phones[2], run_at=_ts(seconds=-10)),
-                 _item(phones[0], run_at=_ts(seconds=-30)),
-                 _item(phones[1], run_at=_ts(seconds=-20))]
-        with mock.patch.object(executor_v3, "_lane", fake_lane):
-            self._run_v3(self._accounts(*phones), items)
-        self.assertEqual(order, phones, "先到点先出队")
-
-    def test_empty_claim_does_not_end_the_round(self):
-        """首轮 claim 返回空（下次到点在 5s 之后）时补货不得判"收干"。"""
+    def test_row_not_yet_due_is_eventually_claimed(self):
+        """未到点的行不得被领取；到点后必须被领到、不许空转到窗口关闭。"""
         phone = _phone(1)
         self._add_task(phone, run_at=_ts(seconds=5))
         self._seed_v(8)
-        seen = []
-
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                item = await queue.get()
-                if item[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-                seen.append(item[2])
-
-        with mock.patch.object(executor_v3, "_lane", fake_lane):
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone))
-        self.assertEqual(seen, [phone], "未到点的待办行最终必须被领到，不能空转到窗口关闭")
-        self.assertIn(executor_v3.REFILL_SEC, self.fc.sleeps, "补货按 5s 轮询")
-        self.assertGreater(self.fc.t, START, "假时钟被补货轮询推进")
+        self.assertEqual(self._row(phone)["state"], "done")
+        self.assertGreater(self.fc.t, START, "没活时按拍轮询会推进假时钟")
 
-    def test_refiller_drains_when_only_historical_rows_remain(self):
-        """M7/U7：只有 `vshard=-1` 的历史行时判"已收干"，不空转到窗口关闭。"""
+    def test_keeper_drains_when_only_historical_rows_remain(self):
+        """M7/U7：只有 `vshard=-1` 的历史行时判「已收干」，不空转到窗口关闭。"""
         self._add_task(_phone(1), vshard=-1, state="failed")
         self._add_task(_phone(2), vshard=-1, state="pending")
         self._seed_v(8)
-        # `held` 是补货循环登记"在途"的集合（M17）：回收按它豁免，防止仍躺在通道
-        # 队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
-        # 替身必须带上真字段——用 getattr 兜底会让豁免在缺字段时静默失效。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
-                              runtime_id=RUNTIME_OWNER, m=2, inflight=0, busy=0,
-                              slot=0, held=set())
-        queue = asyncio.PriorityQueue()
-        asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
+                              runtime_id=RUNTIME_OWNER, m=2, inflight=0, claiming=0,
+                              claim_unreadable=False, slot=0, v=8,
+                              shards=tuple(range(8)), reclaim=False, allowed_phones=None,
+                              requeue_during_run=False, queue_unreadable=False,
+                              log_tag="[single]", stop=asyncio.Event())
+        asyncio.run(executor_v3._dispatch_keeper(ctx))
         self.assertEqual(self.fc.sleeps, [], "首轮即应判收干，不进入轮询等待")
-        sentinels = 0
-        while not queue.empty():
-            if queue.get_nowait()[0] >= executor_v3.SENTINEL_PRIORITY:
-                sentinels += 1
-        self.assertEqual(sentinels, 2)
+        self.assertTrue(ctx.stop.is_set(), "收干必须置停止信号")
 
 
 # ---------------------------------------------------------------------------
@@ -1535,7 +1499,12 @@ class ProductContractTest(_Base):
                 return (True, "签到成功", False, "success")
             return (False, "e003 风险访问", False, "failed")
 
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", fake_attempt):
+        # 重试落点**钉死**（不依赖假时钟推进多少）：本用例的题目是"每次尝试都物化状态"，
+        # 不是"退避落点算得对"（后者由 test_retry_window_day_boundary 覆盖）。不钉死会让
+        # 本用例随并行度抖动——通道空轮各睡一拍会把假时钟推远，窗口余量不足时退避返回
+        # `None`，状态就落成 failed 而不是 retrying。
+        with mock.patch.object(executor_v3.attempts, "attempt_signin", fake_attempt),                 mock.patch.object(executor_v3, "next_retry_at_v3",
+                                  lambda *a, **k: START + datetime.timedelta(seconds=30)):
             self._run_v3(self._accounts(*phones), [_item(p) for p in phones],
                          event_sink=events.append)
         state = self._read_state()
@@ -1719,154 +1688,6 @@ class RunnerSplitTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 崩溃恢复接线：起跑回收 + 崩溃行被重新领取 + 文件心跳四态
 # ---------------------------------------------------------------------------
-class RecoveryWiringTest(_Base):
-    """v3 的崩溃恢复：回收必须在领取循环里被调用，否则崩溃行永不被重领。
-
-    另外让 v3 写**既有文件心跳**，使 `/api/scheduler/executors*` 的四态判定对 v3
-    也成立（否则单进程路径没有心跳记录，页面把正在跑的 v3 显示成 `idle`）。
-    """
-
-    def test_round_start_reaps_expired_claims(self):
-        phone = _phone(1)
-        self._add_claimed(phone)
-        self._seed_v(8)
-        calls = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            calls.append(kw)
-            return real(*a, **kw)
-
-        with mock.patch.object(queue_store, "reap_expired", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual(len(calls), 1, "每轮起跑必须调用一次回收")
-
-    def test_reap_is_scoped_to_the_business_day(self):
-        """回收只碰本业务日的行：跨日回收会把历史行与跨午夜长轮次的在飞行一起清掉。
-
-        不带 `day` 时，次日进程会把**昨天**的过期 `claimed` 行回退成 `pending`——而
-        `claim_batch` 只按当日领取，历史行只会变成"看着有活、其实无人领"的空转行；
-        跨午夜仍在飞的当日行也会被次日进程重置（同一账号重复真实登录）。
-        """
-        today, stale = _phone(1), _phone(2)
-        self._add_task(today, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
-        self._add_task(stale, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60),
-                       day="2026-09-21")
-        self._seed_v(8)
-        # worker-9 已崩溃（心跳过期 = stale，判死）；"当日无心跳"是 idle、保守侧算活，
-        # 那种行当日不回收，不能用来代表崩溃执行体。
-        self._stale_heartbeat(9)
-        calls = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            calls.append(kw)
-            return real(*a, **kw)
-
-        with mock.patch.object(queue_store, "reap_expired", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(today))
-        self.assertTrue(calls, "本轮必须调用回收")
-        self.assertEqual([c.get("day") for c in calls], [DAY] * len(calls),
-                         "回收必须带本业务日，否则会跨业务日回收历史行")
-        self.assertEqual(self._row(today)["state"], "done", "同日的过期行按宽限期回收")
-        old = self._row(stale, day="2026-09-21")
-        self.assertEqual((old["state"], old["owner"], old["epoch"]),
-                         ("claimed", "worker-9@testhost", 1),
-                         "异日的过期 claimed 行不得被回收")
-
-    def test_refill_loop_reap_is_scoped_to_the_business_day(self):
-        """补货循环里那次回收也必须带 `day`：它是长轮次里唯一的周期回收点。
-
-        起跑回收与补货循环回收是**两处调用**。只钉起跑那处的话，补货那处丢了 `day` 也
-        不会变红（短轮次在补货首轮的计时差恒为 0，真实 `RECOVER_SEC` 下根本走不到），
-        而它正是跨日回收历史行、重置跨午夜在飞行的入口。故把恢复间隔置 0 驱动它执行。
-        """
-        phone = _phone(1)
-        self._add_claimed(phone)
-        self._seed_v(8)
-        calls = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            calls.append(kw)
-            return real(*a, **kw)
-
-        with mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
-             mock.patch.object(queue_store, "reap_expired", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(phone))
-        self.assertGreaterEqual(len(calls), 2,
-                                "起跑与补货循环各调一次回收（置 0 后补货那处必被执行）")
-        self.assertEqual([c.get("day") for c in calls], [DAY] * len(calls),
-                         "两处回收都必须带本业务日，否则会跨业务日回收历史行")
-
-    def test_expired_claim_is_reclaimed_and_completed(self):
-        """崩溃执行体留下的过期 `claimed` 行（已过回收宽限期）必须被回收、重领、跑完。"""
-        phone = _phone(1)
-        self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
-        self._seed_v(8)
-        # worker-9 已崩溃：心跳过期（stale）⇒ 判死 ⇒ 其行可被回收。缺了这条心跳就落到
-        # `idle`（保守侧算活、当日不回收），那是"当日无心跳"而非"崩溃"。
-        self._stale_heartbeat(9)
-        with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            results = self._run_v3(self._accounts(phone))
-        row = self._row(phone)
-        self.assertEqual(row["state"], "done", "崩溃行必须被重新领取并完成")
-        self.assertEqual(row["owner"], RUNTIME_OWNER,
-                         "重领后的持有者是**运行时身份**（含 PID/代次）")
-        self.assertGreater(row["epoch"], 1, "重领同样自增 epoch")
-        self.assertIn(phone, results)
-
-    def test_claim_just_expired_is_not_reclaimed_this_round(self):
-        """租约刚过期（仍在宽限期内）的行**不回收**：持有者可能还在飞。
-
-        若按"过期即回收"，本轮会把它回退 `pending` 再领一次 ⇒ 同一账号两条通道并发
-        登录；`epoch+1` 只挡迟到的结论写回，挡不住这次重复真实登录。
-        """
-        phone = _phone(1)
-        self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-30), epoch=1, run_at=_ts(seconds=-60))
-        self._seed_v(8)
-        with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               mock.MagicMock(return_value=(True, "ok", False,
-                                                            "success"))) as attempt:
-            results = self._run_v3(self._accounts(phone))
-        row = self._row(phone)
-        self.assertEqual((row["state"], row["owner"], row["epoch"]),
-                         ("claimed", "worker-9@testhost", 1), "在飞的行不得被回收重领")
-        self.assertEqual(attempt.call_count, 0, "本轮不得对该账号再发一次真实登录")
-        self.assertNotIn(phone, results)
-
-    def test_heartbeat_reports_running_then_finished(self):
-        phone = _phone(1)
-        self._add_claimed(phone)
-        self._seed_v(8)
-        seen = []
-        real = executor_v3._run_async
-
-        async def spy(ctx):
-            seen.append(state_io.worker_presence(0, role=egress.ROLE_SINGLE))
-            return await real(ctx)
-
-        with mock.patch.object(executor_v3, "_run_async", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
-                         "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
-        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
-                         "收尾正常路径写心跳：判 finished")
-
-
 class WorkerFinishMarkTest(_Base):
     """收尾标记只在**正常返回路径**写：异常/中断不得被记成"正常跑完"。
 
@@ -1923,239 +1744,6 @@ class WorkerFinishMarkTest(_Base):
         self.assertEqual(state_io.worker_presence(0, now=later, role=egress.ROLE_SINGLE)[0],
                          state_io.WORKER_STATE_STALE,
                          "未预期异常不得写收尾：心跳过期后判 stale，而不是 finished")
-
-
-class DeadPeerTakeoverTest(_Base):
-    """死主分片接管的接线：判死按死主的**稳定槽位名**查心跳，并入的是它的分片集。"""
-
-    def test_dead_peer_shards_are_merged_and_rows_untouched(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        shard = peer_shards[0]
-        self._add_task(_phone(1), vshard=shard, state="pending", owner=peer, epoch=1)
-        self._add_task(_phone(2), vshard=shard, state="pending", owner=OWNER, epoch=1)
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ctx = SimpleNamespace(executor_id=OWNER, runtime_id=RUNTIME_OWNER, cfg=cfg,
-                              day=DAY, v=v)
-
-        out = executor_v3._widen_with_dead_peers(ctx, ())
-
-        self.assertEqual(out, tuple(sorted(peer_shards)), "死主分片并入本轮领取范围")
-        # 只并入分片集、不改任何行：行归属改写已裁，行保持原样（归属在领取时落）。
-        self.assertEqual(self._row(_phone(1))["state"], "pending", "死主的行保持原状")
-        self.assertEqual(self._row(_phone(1))["owner"], peer, "死主的行不得被改写归属")
-        self.assertEqual(self._row(_phone(1))["epoch"], 1, "不改行则不得自增 epoch")
-        self.assertEqual(self._row(_phone(2))["owner"], OWNER, "本执行体自己的行不动")
-        self.assertEqual(self._row(_phone(2))["epoch"], 1, "自己的行不得被自增 epoch")
-
-
-class DeadPeerTakeoverChainTest(_Base):
-    """接管链路要一路走到"本轮真的领到"：判死 → 并入领取集 → `claim_batch` 领出。
-
-    行归属改写已裁（原 `steal_shards`），接管只剩并入一跳——但只把死主分片并入领取集
-    之外的地方（比如行改写）都救不了"行能不能被领到"：本执行体不去扫那些分片，行就
-    无人领。故本用例跑**真实补货**（不注入假条目），断言死主的行在本轮被领取并执行，
-    领取后 owner=领取者（行归属在领取时落）。
-
-    `RECOVER_SEC` 置 0 保留：起跑那次接管（`DeadPeerTakeoverOnStartTest`）会在本用例的
-    死主上先命中，但补货循环里的那次接管仍是**长轮次中途死主**的唯一出路，置 0 让它在
-    每次补货迭代都执行到，覆盖"补货循环真的会调接管"这一跳。起跑触发另由
-    `DeadPeerTakeoverOnStartTest` 单独钉住（不 patch `RECOVER_SEC`）。
-    """
-
-    def test_dead_peer_rows_are_claimed_and_executed_this_round(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        phones = [_phone(1), _phone(2)]
-        for i, phone in enumerate(phones):
-            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
-                           state="pending", owner=peer, epoch=1, run_at=_ts(seconds=-30))
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        # 补货循环的恢复间隔置 0：首轮就触发"判死 + 并入"（真实间隔是 60s，用例不真等）
-        with mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            results = self._run_v3(self._accounts(*phones), cfg=cfg)
-        self.assertEqual(sorted(ran), sorted(phones),
-                         "死主的行必须在本轮被领取并执行（并入领取集那一跳不能少）")
-        for phone in phones:
-            row = self._row(phone)
-            self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "领取后 owner 是本执行体（运行时身份）——归属在领取时落")
-            self.assertGreater(row["epoch"], 1, "领取自增 epoch（fencing）")
-            self.assertEqual(row["state"], "done")
-            self.assertIn(phone, results)
-
-
-class DeadPeerTakeoverOnStartTest(_Base):
-    """起跑就接管：短轮次（干完自己的活即收干退出）也必须领到死主分片的 `pending` 行。
-
-    补货循环里的接管要活满 `RECOVER_SEC`（60s）才触发，而补货首轮的计时差恒为 0——
-    本执行体干完自己的活就退出，等不到那一刻；补签轮沿用同一套分片划分，死主的行仍
-    无人领 ⇒ **静默漏签**。故起跑阶段（回收之后、首轮领取之前）就要判死接管。
-    本用例**不 patch `RECOVER_SEC`**：能通过只可能是起跑那次接管生效（补货循环的
-    接管在本轮的时长内根本不会触发）。
-    """
-
-    def test_dead_peer_rows_claimed_this_short_round_without_recover_patch(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        phones = [_phone(1), _phone(2)]
-        for i, phone in enumerate(phones):
-            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
-                           state="pending", owner=peer, epoch=1, run_at=_ts(seconds=-30))
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        # 真实补货（不注入假条目）、真实 RECOVER_SEC：短轮次不等 60s 也要接管
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            results = self._run_v3(self._accounts(*phones), cfg=cfg)
-        self.assertEqual(sorted(ran), sorted(phones),
-                         "死主的行必须在本轮被领取并执行（起跑接管那一跳不能少）")
-        for phone in phones:
-            row = self._row(phone)
-            self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "领取后 owner 是本执行体（运行时身份）——归属在领取时落")
-            self.assertGreater(row["epoch"], 1, "领取自增 epoch（fencing）")
-            self.assertEqual(row["state"], "done")
-            self.assertIn(phone, results)
-
-
-class DeadPeerClaimedOnlyTakeoverTest(_Base):
-    """死主把分片内的待办**全领成 `claimed` 后崩**：判死即并入，与"改到几行"无关。
-
-    `reap_expired` 把过期 `claimed` 行回退成 `pending` 时**清空 `owner`**。行归属改写
-    已裁（原 `steal_shards`），接管只剩并入分片集——本用例钉的正是这条等价链：若把并入
-    挂在任何"改到行"的门上，这些 owner 已清空的行照样救不回来 ⇒ "崩溃即卡死"复现。
-    故并入只看判死（`stale` 四态），行由 `claim_batch` 领取时落到本执行体名下。
-    """
-
-    def test_claimed_only_dead_peer_shards_are_reclaimed_and_executed(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        phones = [_phone(1), _phone(2)]
-        for i, phone in enumerate(phones):
-            # 死主把分片内的行**全领成 `claimed`**（分片内没有 pending），随后崩溃：
-            # 租约早已过回收宽限期，起跑回收会把它们变回 `pending` 并清空 owner。
-            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
-                           state="claimed", owner=peer, epoch=1,
-                           lease_until=_ts(seconds=-180), run_at=_ts(seconds=-60))
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        # 不 patch `RECOVER_SEC`：本用例钉的是**短轮次**里起跑那次接管——真实间隔下补货
-        # 循环的接管在本轮时长内不会触发，能通过只可能是判死即并入生效了。
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            results = self._run_v3(self._accounts(*phones), cfg=cfg)
-        self.assertEqual(sorted(ran), sorted(phones),
-                         "死主分片里被回收的 claimed 行必须在本轮被领取并执行")
-        for phone in phones:
-            row = self._row(phone)
-            self.assertEqual(row["state"], "done", "回收 + 并入后必须跑完，不能留 pending")
-            self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "领取后由本执行体持有（运行时身份）")
-            self.assertIn(phone, results)
-
-
-class DeadPeerTakeoverSkipLiveTest(_Base):
-    """起跑接管不得误伤：只有 `stale`（有开始、无收尾且心跳过期）才算死。
-
-    活着的执行体（`running` / `finished`）与"今日还没跑"（`idle`）都不是死主，其分片
-    集内的 `pending` 行**不得**改归本执行体——否则会把别人的在飞/待办抢过来。
-    """
-
-    def _run_with_peer_state(self, state, peer):
-        """按给定四态准备 peer 心跳后跑一轮，返回 peer 的行与是否执行过。"""
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：peer 必须有分片，否则本用例什么都不测")
-        phone = _phone(1)
-        self._add_task(phone, vshard=peer_shards[0], state="pending", owner=peer,
-                       epoch=1, run_at=_ts(seconds=-30))
-        slot = executor_v3._worker_slot(peer)
-        if state == state_io.WORKER_STATE_RUNNING:
-            state_io.mark_worker_started(slot, now=self.fc.now())
-        elif state == state_io.WORKER_STATE_FINISHED:
-            state_io.mark_worker_started(slot, now=self.fc.now())
-            state_io.mark_worker_finished(slot, now=self.fc.now())
-        # idle：什么都不写（本业务日无该槽位记录）
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            self._run_v3(self._accounts(phone), cfg=cfg)
-        return phone, ran
-
-    def test_running_peer_is_not_taken_over(self):
-        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_RUNNING,
-                                               "worker-2@testhost")
-        row = self._row(phone)
-        self.assertEqual(ran, [], "活着的执行体的待办不得被领取")
-        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
-        self.assertEqual(row["epoch"], 1, "不得自增 epoch")
-        self.assertEqual(row["state"], "pending", "行保持原样")
-
-    def test_finished_peer_is_not_taken_over(self):
-        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_FINISHED,
-                                               "worker-2@testhost")
-        row = self._row(phone)
-        self.assertEqual(ran, [], "正常跑完的执行体的待办不得被领取")
-        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
-        self.assertEqual(row["state"], "pending", "行保持原样")
-
-    def test_idle_peer_is_not_taken_over(self):
-        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_IDLE,
-                                               "worker-2@testhost")
-        row = self._row(phone)
-        self.assertEqual(ran, [], "今日无心跳记录不算死，不得被领取")
-        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
-        self.assertEqual(row["state"], "pending", "行保持原样")
 
 
 class HolderIdentitySplitTest(_Base):
@@ -2353,19 +1941,16 @@ class LogAttributionTest(_Base):
         self.assertIn("[single r1] " + self.BANNER, message, "横幅必须带归因前缀")
 
     #: 复审点名的"可带而未带"行 → `(模块文件, 消息片段, 该条可接受的归因标识)`。
-    #: 这些行触发路径较深（队列连续读不通 / 轮内让位复检 / 判因不可得 / 三条收尾分支 /
-    #: 接管死主 / 出口限速），逐条构造运行场景的成本远高于收益，故按**该条 logger 语句
-    #: 本身**钉住。窗口必须精确到语句本身：早先的实现取消息前后各一段定长窗口，会被相邻
+    #: 这些行触发路径较深（队列连续读不通 / 判因不可得 / 三条收尾分支 / 出口限速），
+    #: 逐条构造运行场景的成本远高于收益，故按**该条 logger 语句本身**钉住。窗口必须精确到语句本身：早先的实现取消息前后各一段定长窗口，会被相邻
     #: 分支的归因标识蒙过（复审实证假绿）——精确度靠下面的括号配对，不靠"取宽一点"。
     TAGGED_CALLS = (
-        ("yiban/engine/executor_v3.py", "让位：检测到全量轮开始运行", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "队列连续 %d 轮读不通", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "未执行判因不可得", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "非法，全局速率上界按不限处理", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 执行体未预期异常", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 窗口收尾失败", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 未执行判因失败", ("log_tag",)),
-        ("yiban/engine/executor_v3.py", "接管心跳过期的执行体", ("owner_tag",)),
         ("yiban/engine/workers.py", "任务队列事件签名变化", ("tag",)),
         ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("outlet_label",)),
         ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("outlet_label",)),

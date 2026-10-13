@@ -331,14 +331,14 @@ class NodeRowsTest(_E2EBase):
         self.assertEqual([r["ts"] for r in rows], sorted(r["ts"] for r in rows),
                          "行序（id）必须与时刻先后一致")
 
-        # 顺序：同账号 领取 → 开始 → 终态
+        # 顺序：同账号 领取 → 开始 → 终态。
+        # **不钉"全部领取行先于全部开始行"**——那是编舞（AGENTS §一 6a）：claim-at-dispatch
+        # 下每条通道各自"领一行、领到即跑"，账号 A 的 start 完全可能落在账号 B 的 claim
+        # 之前，这仍是正确行为。真正的不变式是**逐账号**的 claim 先于它的 start（上一条）。
         for phone, terminal in ((ok, NODE_SUCCESS), (bad, NODE_FAIL)):
             seq = [r["node"] for r in rows if r["phone"] == phone]
             self.assertEqual(seq, [NODE_CLAIM, NODE_START, terminal],
                              f"{phone} 的节点先后必须与实际执行顺序一致: {seq}")
-        # 领取行必须先于任何开始行落地（领取是开始之前的事实）
-        self.assertLess(max(i for i, n in enumerate(nodes) if n == NODE_CLAIM),
-                        min(i for i, n in enumerate(nodes) if n == NODE_START))
 
     def test_run_finalize_row_is_recorded(self):
         ok = _phone(1)
