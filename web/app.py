@@ -245,6 +245,7 @@ from web.services.executor_env import (  # noqa: E402
     # 名字面零损失：执行体清单及其 .env 键已入 web/services/executor_env.py，
     # 本模块已无自用点，保留为 web.app.<名字> 的兼容面（routes 经 m.* 取用）
     _executor_activity,  # noqa: F401
+    _executor_health_cards,  # noqa: F401
     _executor_row_payload,  # noqa: F401
     _last_executors,  # noqa: F401
     _next_executor_slot,  # noqa: F401
@@ -2890,7 +2891,7 @@ def create_app(host=None):
             day = now.strftime("%Y-%m-%d")
             if day != last_cleanup_day:
                 last_cleanup_day = day
-                _run_daily_cleanup_and_audit()
+                _run_daily_cleanup_and_audit(now)
             # 告警通道健康报告（旧称"日报"）——本系统所有安全告警只有邮件 +
             # 手机推送两条出口，两条同时失效时管理员将彻底失明（活体复现的
             # 攻击链正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加
@@ -2924,8 +2925,13 @@ def create_app(host=None):
             time.sleep(max(1.0, grid_origin + (int(elapsed / tick) + 1) * tick
                            - time.monotonic()))
 
-    def _run_daily_cleanup_and_audit():
-        """每日一次的两件事：集中清理、审计链自检与锚点写入（按北京日期换日触发）。"""
+    def _run_daily_cleanup_and_audit(now=None):
+        """每日一次的两件事：集中清理、审计链自检与锚点写入（按北京日期换日触发）。
+
+        `now` 是调用方（循环体）已经取到的当前业务时刻：传进来，这条路径就不必再调
+        `clock.now()`——按次分发的时钟打桩（tests/test_health_report_schedule_e2e.py）
+        按"每轮唤醒消耗一格"记账，多取一次会把时刻分配错位。
+        """
         try:
             # 每日集中清理：审计/事件旧数据 +
             # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
@@ -2944,8 +2950,19 @@ def create_app(host=None):
         try:
             # 显式传入锚点路径——原调用走 db.audit_anchor_path()
             # 默认解析（env 或 cwd），裸机部署下与本进程写锚点的 STATE_DIR 分裂，
-            # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
-            _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
+            # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效。
+            # 路径**只在这一处拼一份**：体检、快照、锚点写入三处必须同源（各拼一份时
+            # 任一处改了目录，就会变成"校验 A 文件、写 B 文件"）。
+            _anchor_file = os.path.join(STATE_DIR, "audit-anchor.log")
+            _health = db.audit_health(path=_anchor_file)
+            # 体检结果落成只读快照（巡检页「审计链自洽」块读它，不重算全表哈希）：
+            # 无论结论健康与否都写——不写就等于让巡检页在异常时"没有数据"，
+            # 而那正是最需要看到的一条。写失败只告警，不影响下面的告警与锚点写入。
+            try:
+                db.write_audit_health_snapshot(_health, path=_anchor_file, at=now)
+            except Exception as snap_err:
+                logger.warning("写入审计体检快照失败（巡检页将显示'尚无体检结果'）: %s",
+                               snap_err)
             if not _health["healthy"]:
                 _facts = _audit_alert_facts(_health)
                 # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
@@ -2967,7 +2984,7 @@ def create_app(host=None):
             # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
             # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
             # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
-            db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
+            db.record_audit_anchor(_anchor_file)
         except Exception as e:
             # 整段自检没执行本身就是安全事件：只落一条 WARNING 管理员看不到，
             # 而一条非法字节/一次读失败就能让"当日校验"从此静默。这里把异常送到与

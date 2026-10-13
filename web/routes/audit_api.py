@@ -126,5 +126,93 @@ def api_audit_logs():
 
 
 def register(app):
-    """在本域注册一条只读路由；endpoint 取函数名。"""
+    """在本域注册两条只读路由；endpoint 取函数名。"""
     app.add_url_rule("/api/audit-logs", view_func=api_audit_logs)
+    app.add_url_rule("/api/admin/audit-status", view_func=api_audit_status)
+
+
+#: 快照里锚点摘要**允许出接口**的键（白名单：只出计数与时刻，不出文件路径）。
+_PRESENT_ANCHOR_KEYS = ("path_state", "lines", "old_format_lines",
+                        "unparsable_lines", "max_id", "max_ts")
+
+
+def _no_snapshot_payload():
+    """无体检快照时的结论：**无法定论**，绝不当成健康，也绝不静默略过。"""
+    return {
+        "ok": True,
+        "state": _audit_chain.VERDICT_INDETERMINATE,
+        "verdict_code": _audit_chain.VERDICT_EXIT_CODES["indeterminate"],
+        "reason": "尚无体检结果（每日自检还没跑过或快照已损坏）——本次无法定论，"
+                  "不等于健康。每日线程在下一次换日自检后写入结果。",
+        "cached": False,
+        "data_at": None,
+        "chain_ok": None,
+        "broken": None,
+        "anchor_status": None,
+        "anchor": None,
+        "indeterminate": {"present": True, "reason": "尚无体检结果"},
+        "known_debt": [],
+        "write_failures": None,
+        "empty_hash_rows": None,
+        "note": "",
+    }
+
+
+def api_audit_status():
+    """审计链自洽状态块（巡检面第二刀 ⑤，工单 vjy9）。
+
+    **只读体检快照**（`app_meta.audit_health_snapshot`，由 web 每日线程写入）：
+    本端点不重算全表哈希（v1 大表全扫会把库跑满），也不写任何东西。快照缺失时
+    答"无法定论 + 尚无体检结果"，绝不当成健康。
+
+    返回三态之一，与 `scripts/audit_verify.py` 的退出码同源（`audit_verdict`）：
+    `healthy`(0) / `tampered`(1) / `indeterminate`(2)。另给：
+    · `data_at`：这份结果是什么时候跑出来的（数据时刻；不标时刻的缓存会被当成当下结论）；
+    · `anchor`：校验到哪个锚点（行数、定点 `max_id`/`max_ts`、老格式行数）；
+    · `indeterminate`：有没有"判不出来"的区间（present + reason）；
+    · `known_debt`：**已知欠账**逐条（单独一行显示，不与"篡改"混色）。
+    隐私：只出计数与时刻，不出账号明细。
+    """
+    m = _appmod()
+    snapshot = _audit_chain.read_audit_health_snapshot()
+    if not isinstance(snapshot, dict):
+        read_audit_trace()("audit_status_read", "无体检快照")
+        return jsonify(_no_snapshot_payload())
+    health = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else {}
+    verdict = snapshot.get("verdict")
+    if not isinstance(verdict, dict):
+        verdict = _audit_chain.audit_verdict(health)
+    state = str(verdict.get("state") or "")
+    if state not in _audit_chain.VERDICT_STATES:
+        # 快照里存了一个不认识的状态：按"无法定论"处置，绝不放行成健康
+        state = _audit_chain.VERDICT_INDETERMINATE
+    anchor = snapshot.get("anchor")
+    anchor = ({k: anchor.get(k) for k in _PRESENT_ANCHOR_KEYS}
+              if isinstance(anchor, dict) else None)
+    debt = snapshot.get("known_debt")
+    debt = [d for d in debt if isinstance(d, dict)] if isinstance(debt, list) else []
+    read_audit_trace()("audit_status_read", f"结论 {state}")
+    return jsonify({
+        "ok": True,
+        "state": state,
+        "verdict_code": _audit_chain.VERDICT_EXIT_CODES[state],
+        "reason": str(verdict.get("reason") or ""),
+        "cached": True,
+        "data_at": str(snapshot.get("at") or "") or None,
+        "chain_ok": health.get("chain_ok"),
+        "broken": health.get("broken"),
+        "anchor_status": health.get("anchor_status"),
+        "anchor": anchor,
+        "indeterminate": {"present": state == _audit_chain.VERDICT_INDETERMINATE,
+                          "reason": str(verdict.get("reason") or "")},
+        "known_debt": [
+            {"code": str(d.get("code") or ""),
+             "label": m._nl_safe(str(d.get("label") or ""))[:120],
+             "count": int(d.get("count") or 0),
+             "reason": m._nl_safe(str(d.get("reason") or ""))[:200]}
+            for d in debt
+        ],
+        "write_failures": health.get("write_failures"),
+        "empty_hash_rows": health.get("empty_hash_rows"),
+        "note": m._nl_safe(str(health.get("note") or ""))[:200],
+    })
