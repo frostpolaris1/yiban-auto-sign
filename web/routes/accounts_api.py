@@ -4,7 +4,8 @@
 
 **功能**
 `GET /api/accounts` 列表（脱敏 + 今日签到状态 + 自选时间片 + 上一业务日执行体归属；
-可选 `limit`/`offset` 分页，不传＝整表，向后兼容）；
+可选 `limit`/`offset` 分页，不传＝整表，向后兼容；可选 `count_only=1` 只回计数、
+不下发列表，供 10 秒轮询的导航徽标取标量）；
 `GET /api/accounts/<idx>/detail` 单号完整信息（列表外唯一回传明文口令与完整手机号的面，
 带会话级限速与聚合读审计）；`POST /api/accounts` 添加（不填邮箱=管理员自有号直接生效，
 填邮箱=归属该用户并回待审核，邮箱未注册则连带创建网站用户）；`PUT /api/accounts/<idx>`
@@ -36,13 +37,15 @@ import os
 import sqlite3
 import time
 
-from flask import jsonify, session
+from flask import jsonify, request, session
 
 from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
 from web.routes import detail_limits as _detail_limits
 from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import page_args as _page_args
+from web.routes import page_meta as _page_meta
+from web.routes import page_window as _page_window
 from web.routes import read_audit_denied_trace as _read_audit_denied_trace
 from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
@@ -55,6 +58,23 @@ from web.services.verify_queue import start_edit_probe as _start_edit_probe
 def api_accounts():
     m = _appmod()
     accounts = m.load_accounts()
+    # 只取计数（`count_only=1`）：只为轮询/徽标算标量时用，不下发整表——5k 账号下
+    # 整表响应约 2.14 MiB，而导航徽标每 10s 只取一个计数（core.js::loadNavBadges）。
+    # 这里在**任何**派生映射之前早退（status 文件 / 计划台账 / 上次执行体都不查）。
+    # 口径与账号管理「待处理账号」组一致：非删除且 status ∈ {pending, rejected}。
+    # `total` 是整表条数（同分页 `total`），故与分页元数据同一事实同一数。
+    if str(request.args.get("count_only", "")).strip() == "1":
+        pending = rejected = 0
+        for a in accounts:
+            if a.get("deleted"):
+                continue
+            _st = a.get("status")
+            if _st == m.ACCOUNT_STATUS_PENDING:
+                pending += 1
+            elif _st == m.ACCOUNT_STATUS_REJECTED:
+                rejected += 1
+        return jsonify({"ok": True, "total": len(accounts),
+                        "pending": pending, "rejected": rejected})
     # 可选分页：不传 limit/offset 时 paged=False，下发整表（与分页前逐字相同）。
     # 传了则只下发 [offset, offset+limit) 一页，并附分页元数据（total/limit/offset/returned）。
     # 目标：消掉 124 §A.5.1 的"5k 整表 ≈2.14 MiB + 每 10s 轮询全量"隐患——轮询只取当前页。
@@ -65,7 +85,7 @@ def api_accounts():
     base_index = offset if paged else 0
     if paged:
         total = len(accounts)
-        accounts = accounts[offset:offset + limit]
+        accounts = _page_window(accounts, limit, offset)
     # 逐账号派生映射的收窄判据：分页时只保留当前页账号的手机号（轮询只取当前页）。
     _page_phones = {a.get("phone", "") for a in accounts} if paged else None
     # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
@@ -153,12 +173,7 @@ def api_accounts():
     }
     if paged:
         # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
-        payload.update({
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "returned": len(payload["accounts"]),
-        })
+        payload.update(_page_meta(total, limit, offset, len(payload["accounts"])))
     return jsonify(payload)
 
 

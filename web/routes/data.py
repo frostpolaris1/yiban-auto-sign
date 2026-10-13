@@ -3,7 +3,8 @@
 """数据组路由：签到日志的查看/导出、签到事件的结构化查询与系统状态探针（管理员面）。
 
 **功能**
-`GET /api/logs` 按天签到日志（检索 q / 全量 all / 探针与签到事件摘要）；
+`GET /api/logs` 按天签到日志（检索 q / 全量 all / 可选 limit+offset 分页 /
+探针与签到事件摘要）；
 `GET /api/logs/export` 某日日志的脱敏导出（与展示层同一条可见性过滤管线）；
 `GET /api/admin/sign-events` 单账号时间线 / 实时事件流 / 按天统计；
 `GET /api/clock` 与 `POST /api/ping` 是数据总览页「系统状态」卡的两条探针
@@ -30,6 +31,8 @@ from flask import Response, jsonify, request, session
 
 from web.routes import appmod as _appmod
 from web.routes import export_limits, read_audit_trace
+from web.routes import page_args as _page_args
+from web.routes import page_window as _page_window
 
 # 全量查看的封顶行数：模块级常量而非分支内局部值——三元组（total/truncated/
 # returned）必须按同一个 cap 判定，"是否还有更多"才只有一份答案。
@@ -80,6 +83,9 @@ def api_logs():
     指定日期时 logs 为该日日志、states 仍为今日状态（账号表格图标语义不随历史日期变化）。
     ?level=warn|all（可选，默认 warn）：warn 只留 WARNING 及以上（巡检口径），
     all 保留可见性口径下的全量；被收起多少行由 `collapsed_lines` 回显。
+    ?limit&offset（可选，见 `web.routes.page_args`）：出现任一参数时按
+    [offset, offset+limit) 切片过滤后的结果集，并回执 `limit`/`offset`；
+    不传时行为与分页前逐字相同（all=1 → 当日全量封顶；缺省 → 最后 80 行）。
     """
     m = _appmod()
     date = str(request.args.get("date", "")).strip()
@@ -111,7 +117,17 @@ def api_logs():
         _ql = q.lower()
         masked_all = [ln for ln in masked_all if _ql in ln.lower()]
     total_lines = len(masked_all)
-    out_lines = masked_all[:_LOG_VIEW_CAP] if show_all else masked_all[-80:]
+    # 分页（可选 `limit`/`offset`，与账号 / 用户列表同一口径，唯一解析点在
+    # `web.routes.page_args`）：出现任一参数时按 [offset, offset+limit) 切片当日
+    # **过滤后**的结果集，次序与 all=1 全量视图逐行一致（不重不漏）。三分支互斥且
+    # 向后兼容：不传参数时走旧口径（all=1 → 当日全量封顶；缺省 → 最后 80 行）。
+    limit, offset, paged = _page_args()
+    if paged:
+        out_lines = _page_window(masked_all, limit, offset)
+    elif show_all:
+        out_lines = masked_all[:_LOG_VIEW_CAP]
+    else:
+        out_lines = masked_all[-80:]
     truncated = len(masked_all) > len(out_lines)
     # 探针结构化事件：stage="probe" 若无 HTTP 出口只落库不可见，故随日志接口
     # 附带当日探测记录（独立字段，不混入签到文本流；手机号打码，条数封顶）。
@@ -167,32 +183,37 @@ def api_logs():
     # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
     # 符号污染。
     read_audit_trace()("logs_read", f"{date} {total_lines} 行")
-    return jsonify(
-        {
-            "ok": True,
-            "logs": out_lines,
-            "total_lines": total_lines,
-            "returned": len(out_lines),
-            "truncated": truncated,
-            # 宽行模型（splitlines）把含裸 NEL/LS/PS 的行劈成两半后，后半行
-            # 过不了解析、原先整块静默消失。不改切行语义，只把丢了多少数出来：
-            # 返回面上 `dropped_lines` > 0 即"另有 N 行没被算进去"。
-            "dropped_lines": _line_stats.get("dropped", 0),
-            "q": q,
-            # 级别档与其结果：前端据此显示「已收起 N 行 INFO」，不静默出空表。
-            "level": level,
-            "collapsed_lines": collapsed_lines,
-            "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
-            "date": date,
-            "is_today": date == m.clock.now().strftime("%Y-%m-%d"),
-            "probe_events": probe_events,
-            "sign_events": sign_events,
-            # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
-            "recent_log_date": recent_log_date,
-            "recent_probe_date": recent_probe_date,
-            "recent_sign_date": recent_sign_date,
-        }
-    )
+    payload = {
+        "ok": True,
+        "logs": out_lines,
+        "total_lines": total_lines,
+        "returned": len(out_lines),
+        "truncated": truncated,
+        # 宽行模型（splitlines）把含裸 NEL/LS/PS 的行劈成两半后，后半行
+        # 过不了解析、原先整块静默消失。不改切行语义，只把丢了多少数出来：
+        # 返回面上 `dropped_lines` > 0 即"另有 N 行没被算进去"。
+        "dropped_lines": _line_stats.get("dropped", 0),
+        "q": q,
+        # 级别档与其结果：前端据此显示「已收起 N 行 INFO」，不静默出空表。
+        "level": level,
+        "collapsed_lines": collapsed_lines,
+        "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
+        "date": date,
+        "is_today": date == m.clock.now().strftime("%Y-%m-%d"),
+        "probe_events": probe_events,
+        "sign_events": sign_events,
+        # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
+        "recent_log_date": recent_log_date,
+        "recent_probe_date": recent_probe_date,
+        "recent_sign_date": recent_sign_date,
+    }
+    if paged:
+        # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
+        # 日志域的总数沿用既有键名 `total_lines`（同一事实不另立第二个名字），
+        # 本处只补 `limit`/`offset` 两个新参数的回执。
+        payload["limit"] = limit
+        payload["offset"] = offset
+    return jsonify(payload)
 
 
 def api_admin_sign_events():
