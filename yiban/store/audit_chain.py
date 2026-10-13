@@ -51,6 +51,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from datetime import datetime
 
 from yiban import clock
 from yiban.infra import env_io, env_lock
@@ -1620,9 +1621,12 @@ VERDICT_EXIT_CODES = {
 #: 快照落库的 app_meta 键（体检结果的唯一读取面；巡检页只读它，不重算）。
 _AUDIT_HEALTH_SNAPSHOT_KEY = "audit_health_snapshot"
 #: 快照里保留的体检字段（白名单：告警签名用的那几项 + 诊断文本）。
+#: `note` 必须在列——它是 `audit_health` 的附加诊断（空 hash 行、锚点无法定论的原文），
+#: 读方要把它显示给人看；漏掉它会让端点顶层 `note` 恒为空串（本注释原先就写着"诊断文本"，
+#: 实现与注释不符）。
 _SNAPSHOT_HEALTH_KEYS = (
     "chain_ok", "broken", "anchor_ok", "anchor_status", "anchor_msg",
-    "write_failures", "empty_hash_rows", "healthy",
+    "write_failures", "empty_hash_rows", "note", "healthy",
 )
 
 
@@ -1696,10 +1700,36 @@ def audit_known_debt(path=None):
             "code": "old_format_anchor_lines",
             "label": "锚点老格式行（2026-08-28 前）",
             "count": summary["old_format_lines"],
-            "reason": "这些行不带行间链（prev_line_hash），彼此之间不受链保护；"
+            "reason": "这些行不带行间链字段，彼此之间不受链保护；"
                       "其完整性由行数三支与末行哈希承担，属已知边界，非篡改。",
         })
     return debt
+
+
+#: 体检快照的**超龄阈值**（秒）。依据：每日线程按业务日换日自检一次（进程启动后 60 秒
+#: 也会跑一次），故健康快照的正常年龄 ≤ 24 小时。取 36 小时＝一天余量：再老就说明
+#: "自检没在跑"，页面上的绿色"健康"是陈旧结论，必须降级——这是本块唯一一条
+#: "界面说健康、现场可能不健康"的通路。
+AUDIT_HEALTH_SNAPSHOT_MAX_AGE_SEC = 36 * 3600
+
+
+def audit_health_snapshot_stale(snapshot, now=None):
+    """快照是否**超龄**（自检停摆）→ True。
+
+    时刻缺失/读不出/格式不对一律按超龄：判不出年龄就是判不出"最近有没有验过"，
+    此时宁可按"无法定论"处置，不得当作新鲜（失效方向偏安全）。
+    """
+    at = (snapshot or {}).get("at") if isinstance(snapshot, dict) else None
+    stamp = None
+    if isinstance(at, str) and at:
+        try:
+            stamp = datetime.strptime(at, _TS_FMT)  # noqa: DTZ007 解析业务本地 naive 时刻串
+        except ValueError:
+            stamp = None
+    if stamp is None:
+        return True
+    now = now or clock.now()
+    return (now - stamp).total_seconds() > AUDIT_HEALTH_SNAPSHOT_MAX_AGE_SEC
 
 
 def _snapshot_at_text(at):
