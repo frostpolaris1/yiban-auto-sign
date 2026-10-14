@@ -57,6 +57,9 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
     '"$py" scripts/check-import-linter.py',
     '"$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly',
+    # 2026-10-13（工单 j06f，复审指定）：依赖同步门的元测试进 CI 子集。
+    # 为什么是元测试而不是门本体：CI 的解释器刚按 lock 装过，门本体在那里是同义反复。
+    '"$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly',
 )
 
 
