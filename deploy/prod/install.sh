@@ -23,6 +23,12 @@
 #   4) 幂等：内容一致的目标跳过覆写；第二轮不产生任何归档。
 #   5) 每个目标安装后输出 sha256 与 mode（"安装后校验和输出"，供人核对/巡检比对）。
 #   6) 属主设置门：非 root 或带 DESTDIR 时跳过 root:root 属主设置（会明确提示，不假装成功）。
+#   7) 依赖同步：执行件落位后，把生产 venv（<检出>/.venv）同步到
+#      requirements.lock，再跑 scripts/check-deps-lock.sh（一致性门，工单 j06f）。
+#      同步前先留 pip freeze 快照；失败即非 0 退出并打印回滚命令。
+#      DESTDIR 暂存或 venv 缺失时跳过本步，并各打一条说明。
+#      本步的三个检出内触点（那枚门脚本、venv 的 pip 或解释器、requirements.lock）
+#      与 M01 判据同批收全——见下方 M01 段。
 # ============================================================
 set -euo pipefail
 
@@ -76,6 +82,15 @@ for row in "${ROWS[@]}"; do
     fi
 done
 
+# 依赖同步步（工单 j06f）要用的 venv 与解释器，口径只此一处。
+# 必须定义在 M01 之前：M01 要 gate 本步将以 root 执行/读取的每个检出内对象，
+# 而那些对象由下面这两个变量决定。
+VENV="$REPO_ROOT/.venv"
+VENV_PY=""
+for cand in "$VENV/bin/python3" "$VENV/bin/python"; do
+    if [ -x "$cand" ]; then VENV_PY="$cand"; break; fi
+done
+
 # 前置门（M01，fail-closed）：以 root 安装时，本脚本会 root 执行检出内的
 # scripts/check-cron-provenance.sh 并把检出件 root:root 落到生产路径。若检出本身对
 # 服务账号可写（典型：/opt/yiban-auto-sign 被 ReadWritePaths 放开给 yiban 写 .env/
@@ -114,10 +129,25 @@ if [ "$(id -u)" -eq 0 ]; then
         for comp in "${comps[@]}"; do
             [ -n "$comp" ] || continue
             cur="$cur/$comp"
-            owner="$(stat -c %u "$cur" 2>/dev/null)" || {
-                echo "yiban-install: 无法 stat 检出内路径：$cur" >&2; return 1; }
-            mode="$(stat -c %a "$cur" 2>/dev/null)" || {
-                echo "yiban-install: 无法读取权限位：$cur" >&2; return 1; }
+            # 符号链接：**解引用后套同一判据**（目标属主 + 目标组/其他写位）。
+            # 两条都不许走：
+            #   · 只看链接自身的权限位 —— 链接的 mode 在 Linux 上恒为 777，判它只会恒红
+            #     （venv 的 bin/python3 就是链接，那样每次干净部署都拒装）；
+            #   · 只看链接自身的属主 —— 那是把改前"目标属主/权限也判"的检查丢掉（判据缩水）。
+            # 断链或目标读不到 ⇒ fail-closed 拒装：读不到目标就不放行。
+            if [ -L "$cur" ]; then
+                owner="$(stat -Lc %u "$cur" 2>/dev/null)" || {
+                    echo "yiban-install: 符号链接解引用失败（断链或目标不可读）：$cur" >&2
+                    echo "                处置：修好或删掉该链接后重跑；读不到目标就不放行。" >&2
+                    return 1; }
+                mode="$(stat -Lc %a "$cur" 2>/dev/null)" || {
+                    echo "yiban-install: 无法读取链接目标的权限位：$cur" >&2; return 1; }
+            else
+                owner="$(stat -c %u "$cur" 2>/dev/null)" || {
+                    echo "yiban-install: 无法 stat 检出内路径：$cur" >&2; return 1; }
+                mode="$(stat -c %a "$cur" 2>/dev/null)" || {
+                    echo "yiban-install: 无法读取权限位：$cur" >&2; return 1; }
+            fi
             if [ "$owner" -ne 0 ] || [ "$(( 8#$mode & 8#022 ))" -ne 0 ]; then
                 echo "yiban-install: 以 root 安装时检出内每个被 root 读取/执行的路径都必须属 root 且非组/其他可写" >&2
                 echo "                违规路径：$cur（owner=$owner mode=$mode）" >&2
@@ -141,6 +171,24 @@ if [ "$(id -u)" -eq 0 ]; then
     done
     gate_path "$MANIFEST" || exit 1
     gate_path "$REPO_ROOT/scripts/check-cron-provenance.sh" || exit 1
+    # 依赖同步步（工单 j06f）另开三个 root 触点，判据必须同批收全：
+    #   ① 它执行检出内的一枚脚本 scripts/check-deps-lock.sh；
+    #   ② 它执行 venv 的 pip（或 venv 解释器，见下 venv_pip 的回退）；
+    #   ③ 它把检出内的 requirements.lock 读给 pip 当输入。
+    # 少收任一条 = 服务账号可写检出根（web/deploy/yiban-web.service 的
+    # ReadWritePaths=/opt/yiban-auto-sign）⇒ 一次 sudo 安装即 root 执行可写文件。
+    # 无 venv 时本步整段不跑（方式 B），故 ② 只在解释器存在时收。
+    gate_path "$REPO_ROOT/scripts/check-deps-lock.sh" || exit 1
+    gate_path "$REPO_ROOT/requirements.lock" || exit 1
+    # venv 的入口按**存在**收件（不看 +x、也看断链）：可写就等于可被替掉，
+    # 而"可执行位/可解析"只是这枚文件当下的属性。断链也收——解引用失败即拒装
+    # （否则一枚坏链接会让本步静默降级成"跳过同步"，那正是本单要修的缺口）。
+    # 存在即收与执行谓词（venv_pip 的 `-x`）**故意不同**：收件要宽，执行要真。
+    for _venv_entry in "$VENV/bin/python3" "$VENV/bin/python" "$VENV/bin/pip"; do
+        if [ -e "$_venv_entry" ] || [ -L "$_venv_entry" ]; then
+            gate_path "$_venv_entry" || exit 1
+        fi
+    done
 fi
 
 # 预检 2：cron 路径来源断言（装前必过；装后同门复查一道，双保险）
@@ -193,6 +241,68 @@ for row in "${ROWS[@]}"; do
     install -m "$mode" ${OWNERSHIP[@]+"${OWNERSHIP[@]}"} "$srcpath" "$destpath"
     echo "installed: $dest mode=$mode sha256=$(sha "$destpath")"
 done
+
+# ------------------------------------------------------------
+# 依赖同步（工单 j06f）：把生产 venv 同步到 requirements.lock。
+#
+# 为什么有本步：本安装器此前只落位执行件与 cron，**不同步依赖**。
+# venv 建好之后就不再更新，lock 后续的安全修复上不了生产。
+# 2026-10-12 实测：生产 venv 落后 lock 两个含 CVE 修复的包
+# （urllib3 2.7.0 对 lock 2.8.0；Werkzeug 3.1.8 对 lock 3.1.9）。
+#
+# 四条口径：
+#   1) 装进**同一个** venv：<检出>/.venv。它与 run.sh、systemd 单元同源。
+#      本步不新建环境，也不引新配置键。
+#   2) 先留回滚点：pip freeze 写 <检出>/deps-snapshot-<时间戳>.txt。
+#      回滚 = 本脚本**当场打印的那条命令**（下面 $ROLLBACK）：venv 有 bin/pip 时是
+#      `<venv>/bin/pip install -r <快照>`；缺 bin/pip 时是
+#      `<venv>/bin/python3 -m pip install -r <快照>`。不要照抄某一支的写法。
+#      回滚命令沿用宿主 pip 配置取包（README 的部署步骤先设了清华镜像）。
+#   3) 同步后立刻跑 scripts/check-deps-lock.sh（venv 与 lock 一致性门）。
+#      门红即非 0 退出："装过"不等于"装对了"。
+#   4) DESTDIR 暂存安装不碰现网 venv，故跳过本步。
+#      找不到 venv 时只告警：方式 B（apt 装 gunicorn、无 .venv）是受支持形态，
+#      它的依赖不由 lock 管辖。
+# ------------------------------------------------------------
+if [ -n "$DESTDIR" ]; then
+    echo "yiban-install: note: DESTDIR 暂存安装——跳过依赖同步（不碰现网 venv）" >&2
+else
+    if [ -z "$VENV_PY" ]; then
+        echo "yiban-install: 警告: 找不到 venv 解释器（$VENV/bin/python3）——跳过依赖同步。" >&2
+        echo "  若本项目该用 venv：先按 README「服务器部署」建 .venv，再重跑本安装器。" >&2
+        echo "  若生产用系统 gunicorn（方式 B）：依赖不由 requirements.lock 管辖，可忽略本条。" >&2
+    else
+        # pip 入口只判一次：执行与"打印给运维的回滚命令"共用同一条判据。
+        # 旧写法把回滚命令硬编码成 <venv>/bin/pip，与下面这条回退自相矛盾：
+        # venv 缺 bin/pip 时同步能跑成，打印出来的回滚命令却跑不了（实测 rc=127）。
+        if [ -x "$VENV/bin/pip" ]; then
+            PIP_CMD=("$VENV/bin/pip")
+        else
+            PIP_CMD=("$VENV_PY" -m pip)
+        fi
+        venv_pip() { "${PIP_CMD[@]}" "$@"; }
+        SNAPSHOT="$REPO_ROOT/deps-snapshot-$TS.txt"
+        # 回滚命令由同一个数组派生：它打印什么，运维就能照样跑什么。
+        ROLLBACK="${PIP_CMD[*]} install -r $SNAPSHOT"
+        if ! venv_pip freeze > "$SNAPSHOT"; then
+            echo "yiban-install: 依赖同步中止——留不下回滚快照（$SNAPSHOT）。venv 未改。" >&2
+            exit 1
+        fi
+        echo "deps snapshot: $SNAPSHOT（回滚：$ROLLBACK）"
+        if ! venv_pip install --no-input --disable-pip-version-check \
+                -r "$REPO_ROOT/requirements.lock" ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}; then
+            echo "yiban-install: 依赖同步失败（pip 非 0）。venv 可能停在中间状态。" >&2
+            echo "  回滚：$ROLLBACK" >&2
+            exit 1
+        fi
+        echo "deps synced: $REPO_ROOT/requirements.lock"
+        if ! bash "$REPO_ROOT/scripts/check-deps-lock.sh" --venv "$VENV"; then
+            echo "yiban-install: venv 与 requirements.lock 仍不一致（见上）。" >&2
+            echo "  回滚：$ROLLBACK" >&2
+            exit 1
+        fi
+    fi
+fi
 
 bash "$REPO_ROOT/scripts/check-cron-provenance.sh" >/dev/null
 echo "yiban-install: complete —— ${#ROWS[@]} 个生产执行件与仓库对账完毕"

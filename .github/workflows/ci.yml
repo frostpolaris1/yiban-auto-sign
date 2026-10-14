@@ -111,7 +111,10 @@ jobs:
         # 两个定义点"就从这里开始漂。2026-10-06（工单 2ula）加入 config-registry。
         # 2026-10-11 加入 mypy（静态类型门禁与它的元测试进 run_ci 子集）。
         # 2026-10-11 加入 import-linter（结构门禁与它的元测试进 run_ci 子集）。
-        run: 'echo "Fast gate active: lint + mypy + security subset + e2e smoke + shared-facts roster + path-env bare reads + config registry + import-linter contracts."'
+        # 2026-10-13（工单 j06f）加入依赖一致性门的**元测试**（门本体不在 CI 跑：
+        #   verify job 的解释器刚按 requirements.lock 装过，跑门本体是同义反复；
+        #   元测试才造得出"venv 落后 lock"的形态）。
+        run: 'echo "Fast gate active: lint + mypy + security subset + e2e smoke + shared-facts roster + path-env bare reads + config registry + import-linter contracts + deps lock meta-tests."'
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
   # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
