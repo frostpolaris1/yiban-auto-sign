@@ -501,16 +501,32 @@ class CrashRecoveryPathsTest(_RoundMixin, _DbBase):
                       if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                       and n.func.id == "_reap_dead_worker"]
         self.assertTrue(reap_calls, "监督进程轮末必须收尸")
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If):
-                names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
-                has_reap = any(
-                    isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
-                    and c.func.id == "_reap_dead_worker"
-                    for c in ast.walk(node))
-                self.assertFalse(
-                    has_reap and "rc" in names,
-                    "收尸不得挂在退出码条件（`rc < 0`）下——rc=1 的子进程同样会留下在飞行")
+        # 不变式：收尸调用**不得受任何条件约束**（不是"不得挂在 `rc` 条件上"）。
+        # 按字面变量名匹配会被一次改名绕过：本提交把循环变量从 `rc` 改成 `_rc` 之后，
+        # `"rc" in names` 对 `if _rc < 0: _reap_dead_worker(...)` 恒为假 ⇒ 门静默放行
+        # （实测绿）。故判据不看变量名，只看"这个调用有没有可能被跳过"。
+        guards = (ast.If, ast.IfExp, ast.While, ast.BoolOp)
+        # 推导式必须在**父节点**判定：`[_reap(...) for x in y if c]` 里 `elt` 与 `comprehension`
+        # 是兄弟节点，先访问 `elt` 时 g 还没置位 ⇒ 只看 `ast.comprehension` 会漏掉这一形状。
+        comprehensions = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        guilty = []
+
+        def _scan(node, guarded):
+            for child in ast.iter_child_nodes(node):
+                g = guarded or isinstance(child, guards)
+                if isinstance(child, comprehensions) and any(gen.ifs for gen in child.generators):
+                    g = True
+                if (g and isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Name)
+                        and child.func.id == "_reap_dead_worker"):
+                    guilty.append(child.lineno)
+                _scan(child, g)
+
+        _scan(tree, False)
+        self.assertEqual(
+            guilty, [],
+            "收尸不得置于任何条件分支（if / if-表达式 / while / and-or）之下："
+            "rc=1 的子进程同样会留下在飞行，判据必须是「进程已退出」而不是退出码")
 
     def test_dead_worker_reaping_releases_claimed_rows(self):
         """行为面：`_reap_dead_worker` 真把该槽位名下的在飞行翻回 `pending` 并换代。"""

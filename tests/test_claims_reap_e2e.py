@@ -106,6 +106,25 @@ with open(os.environ["E2E_OUT"], "w", encoding="utf-8") as f:
 os.kill(os.getpid(), signal.SIGKILL)   # 模拟崩溃：来不及收尾
 """
 
+#: v3 队列的 rc=1 子进程：领到已到期的待领任务后，**未走到自己的收尾**就以退出码 1 收场。
+#: 与 `_CLAIM_TASK_DIE_SRC` 的 SIGKILL 形态互补——前者是信号杀（rc<0），本形态是未预期异常
+#: （rc=1）。监督进程的轮末收尸对两者都必须生效；判据只能是"进程已退出"，不得看退出码。
+_CLAIM_TASK_EXIT1_SRC = r"""
+import json, os, sys
+sys.path.insert(0, os.environ["E2E_REPO"])
+from yiban import egress
+from yiban.store import db, queue_store
+owner = egress.runtime_owner(os.environ["YIBAN_EXECUTOR_ID"])
+db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None,
+           cleanup=False)
+rows = queue_store.claim_batch(owner, os.environ["E2E_DAY"], (0,))
+with open(os.environ["E2E_OUT"], "w", encoding="utf-8") as f:
+    json.dump({"n": len(rows),
+               "epoch": rows[0]["epoch"] if rows else 0,
+               "owner": owner}, f)
+raise RuntimeError("未预期异常：来不及收尾")   # 退出码 1
+"""
+
 
 class _ClaimE2EBase(unittest.TestCase):
     @classmethod
@@ -306,12 +325,18 @@ class SupervisorReapDeadWorkerV3E2ETest(_ClaimE2EBase):
     """
 
     class _RealChildPopen:
-        """替身 Popen：真的拉起一个 v3 领任务子进程，保留 poll 语义。"""
+        """替身 Popen：真的拉起一个 v3 领任务子进程，保留 poll 语义。
+
+        `src_text` 决定子进程以哪种形状"死"——覆盖信号杀（rc<0）与退出码 1（未预期异常）
+        两种。两种都必须被轮末收尸接住，故判据只能是「进程已退出」，不得看退出码。
+        """
+
+        src_text = _CLAIM_TASK_DIE_SRC
 
         def __init__(self, cmd, env=None, cwd=None):
             src = os.path.join(os.environ["E2E_OUT_DIR"], "claim_task_and_die.py")
             with open(src, "w", encoding="utf-8") as f:
-                f.write(_CLAIM_TASK_DIE_SRC)
+                f.write(self.src_text)
             self.proc = _REAL_POPEN([sys.executable, src], env=env, cwd=cwd,
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
@@ -323,8 +348,8 @@ class SupervisorReapDeadWorkerV3E2ETest(_ClaimE2EBase):
         return dict(db.get_conn().execute(
             "SELECT * FROM sign_tasks WHERE phone=? AND day=?", (phone, day)).fetchone())
 
-    def test_round_end_reaps_claimed_task_of_killed_v3_child(self):
-        """被杀子进程在 v3 队列留下的在领任务，轮末必须回退待领（下一次 claim_batch 可领）。"""
+    def _run_supervisor_and_assert_reaped(self, popen_cls):
+        """用给定形态的子进程跑一次监督进程，断言它留下的在领任务被轮末收尸。"""
         out_dir = os.path.join(self.tmp, "child_v3")
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, "claim.json")
@@ -353,8 +378,7 @@ class SupervisorReapDeadWorkerV3E2ETest(_ClaimE2EBase):
                                return_value=None), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
                                   return_value=[acc]), \
-                mock.patch.object(workers.subprocess, "Popen",
-                                  self._RealChildPopen):
+                mock.patch.object(workers.subprocess, "Popen", popen_cls):
             rc = workers.run_worker_supervisor(1, ["--workers", "1"], slots=[0])
         self.assertIn(rc, (0, 1, 2, 3, 10), "退出码必须落在契约内")
         # 前置佐证：子进程确实以运行时身份领到了那条任务（不是它根本没跑起来）
@@ -373,6 +397,20 @@ class SupervisorReapDeadWorkerV3E2ETest(_ClaimE2EBase):
         self.assertEqual([r["phone"] for r in got], [PHONE],
                          "收尸之后下一次 claim_batch 必须能立刻拿到该任务")
         self.assertGreater(got[0]["epoch"], row["epoch"], "再领取换最新一代 fencing token")
+
+    def test_round_end_reaps_claimed_task_of_killed_v3_child(self):
+        """被杀（SIGKILL，rc<0）子进程在 v3 队列留下的在领任务，轮末必须回退待领。"""
+        self._run_supervisor_and_assert_reaped(self._RealChildPopen)
+
+    def test_round_end_reaps_claimed_task_of_exit1_v3_child(self):
+        """rc=1（未预期异常）的子进程同样必须收尸——判据是进程已退出，不是退出码。
+
+        旧实现 `if rc is not None and rc < 0: _reap_dead_worker(...)` 会漏掉本形态：
+        该子进程没走到自己的收尾，留下的在领行当天永久卡死＝漏签。
+        """
+        popen_cls = type("_Exit1Popen", (self._RealChildPopen,),
+                         {"src_text": _CLAIM_TASK_EXIT1_SRC})
+        self._run_supervisor_and_assert_reaped(popen_cls)
 
 
 if __name__ == "__main__":
