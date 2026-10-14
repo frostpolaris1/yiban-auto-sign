@@ -360,8 +360,7 @@ class SingleClaimWriteSiteTest(unittest.TestCase):
         ("yiban/store/queue_store.py", "settle_tasks"),    # 收尾：state 由调用方给（done/failed）
         ("yiban/store/queue_store.py", "requeue_task"),    # 重排回落 pending
         ("yiban/store/queue_store.py", "reclaim_tasks"),   # 显式重签：终态翻回 pending
-        ("yiban/store/queue_store.py", "reap_expired"),    # 回收回落 pending
-        ("yiban/store/queue_store.py", "reap_abandoned"),  # 回收回落 pending
+        ("yiban/store/queue_store.py", "reap_abandoned"),  # 死亡执行体名下在飞行回退 pending
     })
     _CLAIM_SITE = ("yiban/store/queue_store.py", "claim_batch")
 
