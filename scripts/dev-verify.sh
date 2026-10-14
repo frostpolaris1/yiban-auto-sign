@@ -302,6 +302,12 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     echo "DEV-VERIFY(ci) import-linter structure gate"
     "$py" scripts/check-import-linter.py
     "$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) deps lock gate"
+    # 工单 j06f（复审指定）：这里跑的是那道门的**元测试**，不是门本体。
+    # 门本体在 CI 上跑是同义反复——verify job 的解释器上一行刚按 requirements.lock
+    # 装过，它必然"一致"。要判的形态是"venv 落后 lock"，那由该文件的假 dist-info
+    # 与 stub 造出来；门本体在部署点跑（deploy/prod/install.sh 同步后即跑）。
+    "$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly
     echo "DEV-VERIFY(ci) done"
 }
 
