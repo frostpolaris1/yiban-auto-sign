@@ -1162,16 +1162,27 @@ sudo systemctl restart yiban-web.service   # 只改了 .env 也必须重启（�
 cd /opt/yiban-auto-sign
 git pull --ff-only          # 首次用 git clone 部署才有 .git；压缩包部署请重新上传覆盖
 
-# 更新依赖（**每次更新代码后都跑一次**：只更新代码不同步依赖，安全修复上不了生产）
+# 更新依赖（只更新代码不同步依赖，安全修复就上不了生产）
 .venv/bin/pip install -r requirements.lock
 sudo systemctl restart yiban-web.service   # 依赖变更后重启常驻服务
-# 判据：`pip install -r requirements.lock` 报 "Requirement already satisfied" 即已与 lock 一致。
+# 判据（机器可跑）：bash scripts/check-deps-lock.sh
+#   报"venv 与 lock 一致"退 0；任一所锁包版本不符或缺失则退 1 并点名。
+# 手工跑上面那条 pip 时，报 "Requirement already satisfied" 即已与 lock 一致。
 ```
 
-> ⚠️ **依赖同步是部署的必要一步**（2026-10-12 测试机实测的缺口）：本仓的裸机部署流程
-> 只落位执行件与 cron，**不含任何依赖同步**。venv 一旦建好就不再自动更新，lock 后续的
-> 安全修复（如 urllib3 / Werkzeug 的 CVE 修复）永远上不了生产。故更新代码后必须显式跑
-> 上面那条 `.venv/bin/pip install -r requirements.lock`。
+> ✅ **依赖同步已落在裸机流程里**（2026-10-13 补齐，工单 j06f）：2026-10-12 实测到缺口——
+> 流程此前只落位执行件与 cron，**不含任何依赖同步**；venv 一旦建好就不再更新，
+> lock 后续的安全修复（`urllib3` / `Werkzeug` 的 CVE 修复）上不了生产。
+> 现在 `sudo bash deploy/prod/install.sh` 会做这一步，口径三条：
+> ① 以 `requirements.lock` 为参调用 `<检出>/.venv` 的 pip（**同一个** venv，与 run.sh、
+> systemd 单元同源），不新建环境；
+> ② 同步**之前**先落回滚点 `<检出>/deps-snapshot-<时间戳>.txt`（`pip freeze` 输出）；
+> 回滚 ＝ **安装器当场打印的那条命令**：venv 有 `bin/pip` 时是
+> `<检出>/.venv/bin/pip install -r <该快照>`，缺 `bin/pip` 时是
+> `<检出>/.venv/bin/python3 -m pip install -r <该快照>`。别照抄某一支的写法；
+> ③ 同步**之后**跑一致性门 `scripts/check-deps-lock.sh`——门红即安装器非 0 退出并打印
+> 回滚命令，"装过"不等于"装对了"。
+> 只用 crontab 手工运维（不跑安装器）时，仍按上面两条命令手工同步，并手工跑门。
 
 > 面向脚本/agent 的统一入口是 `.venv/bin/python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `egress` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
 

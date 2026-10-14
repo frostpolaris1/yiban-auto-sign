@@ -20,6 +20,12 @@
       读取/执行的每一条路径（顶层合规而 `scripts/` 可写同样拒装——复审点名的绕过）。
       两道门的判据差异另钉三条：root + DESTDIR 拒装、非 root + DESTDIR 照装、
       root + DESTDIR 仍跳过 root:root 属主设置（属主门管写入侧，不看执行来源）。
+      2026-10-13（工单 j06f）起同判据多收四个 root 触点：依赖同步步执行的
+      `scripts/check-deps-lock.sh`、它执行的 venv pip 与解释器、它读的
+      `requirements.lock`（活体反例：任一件组/其他可写 ⇒ 拒装）。
+      符号链接按**解引用后**判（目标属主 + 目标权限位），断链 fail-closed；
+      两侧都有守卫：干净链接（venv 的 bin/python3）不许判红，链接目标不属 root
+      或指向可写目录必须判红（复审 R2-1 的反向守卫）。
     ④ check-deploy-target.sh：本地裸仓 fixture 远端（无网络）——目标提交在远端
       分支 ⇒ 0；不在 ⇒ 非 0 且输出人类可读结论。不做任何 push。
     ⑤ 真名示例门（合法的字面量门——字符串本身就是缺陷）：真实姓名（此处仅以转义
@@ -538,6 +544,22 @@ class InstallRootCheckoutGateTest(_TmpBase):
         self.marker = os.path.join(self.checkout, "provenance-ran")
         _write(os.path.join(self.checkout, "scripts", "check-cron-provenance.sh"),
                '#!/usr/bin/env bash\necho ran >> "%s"\nexit 0\n' % self.marker)
+        # 依赖同步步（工单 j06f）的三个 root 触点在 M01 判据内，故夹具必须备齐：
+        # 该步执行的脚本、该步执行/读取的 venv 入口、该步读给 pip 的锁定清单。
+        # 缺任一件，M01 的 gate_path 会因"stat 不到"而拒装（那是门在正常工作）。
+        _write(os.path.join(self.checkout, "scripts", "check-deps-lock.sh"),
+               "#!/usr/bin/env bash\nexit 0\n")
+        _write(os.path.join(self.checkout, "requirements.lock"), "flask==3.1.3\n")
+        venv_bin = os.path.join(self.checkout, ".venv", "bin")
+        os.makedirs(venv_bin)
+        # 解释器桩件给 +x：依赖同步步的解器解析认可执行位（`[ -x ]`）。
+        _write(os.path.join(venv_bin, "python3"), "#!/bin/sh\nexit 0\n", 0o755)
+        self.venv_pip = os.path.join(venv_bin, "pip")
+        _write(self.venv_pip, "#!/bin/sh\nexit 0\n", 0o755)
+        self.venv_py = os.path.join(venv_bin, "python3")
+        self.venv_dir = os.path.join(self.checkout, ".venv")
+        self.lock = os.path.join(self.checkout, "requirements.lock")
+        self.deps_gate = os.path.join(self.checkout, "scripts", "check-deps-lock.sh")
 
     def _install_from_checkout(self, destroot=None, extra_env=None, prefix=()):
         env = {}
@@ -629,6 +651,136 @@ class InstallRootCheckoutSubPathGateTest(InstallRootCheckoutGateTest):
         out = self._out(r)
         self.assertNotEqual(r.returncode, 0, f"清单源件组/其他可写必须拒装：{out}")
         self.assertIn("payload.sh", out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下")
+
+    def test_group_writable_deps_lock_gate_script_is_refused(self):
+        """活体反例：依赖同步步执行的那枚脚本可写 ⇒ 同样拒装（工单 j06f）。
+
+        依赖同步步（工单 j06f）新开了一个 root 执行点：`scripts/check-deps-lock.sh`。
+        它必须与 `check-cron-provenance.sh` 同判据——脚本可写 = 可改 root 将要跑的
+        那份 venv/lock 对账逻辑。少收这一条就是同族只改一半。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(self.deps_gate, 0o666)
+        self._assert_refused_naming(self.deps_gate, "依赖同步门的脚本")
+
+    def test_group_writable_venv_pip_is_refused(self):
+        """活体反例（复审 F1，必改项）：venv 的 pip 组/其他可写 ⇒ 拒装。
+
+        威胁真实：`web/deploy/yiban-web.service` 的 `ReadWritePaths=/opt/yiban-auto-sign`
+        让服务账号可写检出根 ⇒ `.venv/bin/pip` 随之可写。root 要拿这枚 pip 装依赖，
+        故它是 M01 的输入。旧实现只收了门脚本，没收本件——复审实测旧码 `INSTALL_EXIT=0`。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(self.venv_pip, 0o666)
+        self._assert_refused_naming(self.venv_pip, "venv 的 pip 可写")
+
+    def test_group_writable_requirements_lock_is_refused(self):
+        """活体反例（复审 F1，必改项）：锁定清单可写 ⇒ 拒装。
+
+        `requirements.lock` 被读给 `pip install -r`，是 root 的输入之一。可写即
+        等于可换成任意来源清单（复审实测旧码 `INSTALL_EXIT=0`）。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(self.lock, 0o666)
+        self._assert_refused_naming(self.lock, "锁定清单可写")
+
+    def test_group_writable_venv_bin_dir_is_refused(self):
+        """venv/bin 目录可写 ⇒ 拒装：pip 与解释器链接都能被换掉。"""
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(os.path.join(self.venv_dir, "bin"), 0o777)
+        self._assert_refused_naming(os.path.join(self.venv_dir, "bin"), "venv/bin 目录可写")
+
+    def test_symlinked_venv_interpreter_is_not_refused(self):
+        """对侧反例：venv 解释器是符号链接时**不许**判红。
+
+        活体实测（本批 F1 首版）：对符号链接套"组/其他可写"判据会让**每一次**
+        干净 root 部署都拒装——`python3 -m venv` 造的 `bin/python3` 就是一枚链接，
+        而 Linux 上链接的权限位恒为 777、不可改。故判据改为：链接解引用后套同一判据
+        （目标属主 + 目标组/其他写位）。本条钉住"干净链接不许判红"这一侧。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.remove(self.venv_py)
+        try:
+            os.symlink("/bin/true", self.venv_py)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        destroot = os.path.join(self.tmp, "destdir")
+        os.makedirs(destroot, exist_ok=True)
+        r = self._install_from_checkout(destroot=destroot)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0,
+                         f"符号链接被判红 ⇒ 干净部署恒拒装（链接 mode 恒 777）：{out}")
+        self.assertNotIn("违规路径", out, out)
+
+    def test_symlink_to_non_root_owned_target_is_refused(self):
+        """反向守卫（复审 R2-1）：链接解引用后的目标不属 root ⇒ 拒装。
+
+        判"解引用后套同一判据"这半边：只看链接自身属主（首版写法）会放行本例——
+        root 可以建一枚指向他人属主文件的链接，那种链接被 root 读/执行即越过判据。
+        复审实测首版 `rc=0`；本条钉住它必须非 0，且点名该链接。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        target = os.path.join(self.tmp, "foreign-python")
+        _write(target, "#!/bin/sh\nexit 0\n", 0o755)
+        os.chown(target, UNPRIVILEGED_ID, UNPRIVILEGED_ID)
+        os.remove(self.venv_py)
+        try:
+            os.symlink(target, self.venv_py)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        self._assert_refused_naming(self.venv_py, "链接目标不属 root")
+
+    def test_symlink_to_group_writable_dir_is_refused(self):
+        """反向守卫（复审 R2-1）：目录链接解引用后是组/其他可写 ⇒ 拒装。
+
+        判"父分量本身是链接"这半边：只看链接自身属主（首版写法）会跳过该目录的
+        权限位与目标走查，于是"指向可写目录的目录链接"成了免检通道。复审实测
+        首版 `rc=0`；本条钉住它必须非 0，且点名该链接。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        real_bin = os.path.join(self.tmp, "real-venv-bin")
+        os.rename(os.path.join(self.venv_dir, "bin"), real_bin)
+        os.chmod(real_bin, 0o777)          # 目标目录组/其他可写
+        try:
+            os.symlink(real_bin, os.path.join(self.venv_dir, "bin"))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        self._assert_refused_naming(os.path.join(self.venv_dir, "bin"),
+                                    "目录链接指向可写目录")
+
+    def test_broken_symlink_inside_checkout_is_refused(self):
+        """断链 fail-closed：解引用读不到目标 ⇒ 拒装（读不到就不放行）。"""
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.remove(self.venv_py)
+        try:
+            os.symlink(os.path.join(self.tmp, "no-such-target"), self.venv_py)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"断链竟放行：{out}")
+        self.assertIn("解引用失败", out, out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下")
+
+    def _assert_refused_naming(self, token, what):
+        """以 root 跑一次安装器，断言 M01 拒装且点名的路径含 token、未执行检出内脚本。"""
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"{what}必须拒装：{out}")
+        self.assertIn("每个被 root 读取/执行的路径", out,
+                      f"拒绝原因必须来自 M01 门，不是别的检查：{out}")
+        self.assertIn(token, out, f"拒绝信息必须点名违规路径：{out}")
         self.assertFalse(os.path.exists(self.marker),
                          "门必须在执行检出内脚本之前拦下")
 
