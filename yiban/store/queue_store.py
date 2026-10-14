@@ -4,16 +4,19 @@
 
 **算法溯源**
 本表是数据库做任务队列的标准形态，各机制对应如下：
-- Fencing Token（栅栏令牌）：Martin Kleppmann。每次领取 `epoch=epoch+1`，收尾时以
-  `WHERE owner=? AND epoch=?` 双条件结算。它是**租约的必需补充**：租约只保证"不会有两个
-  持有者同时以为自己拥有"，无法保证"旧持有者暂停后复活时写不进去"——进程可在任意点被
-  暂停，醒来时租约可能早已过期。本表靠结算侧的 epoch 比对拒掉迟到写（"拒绝 token 回退的
-  写入"正是 Kleppmann 给存储层的要求）。**改动 claim_batch / settle_tasks 时不得去掉
-  epoch**。
-- Visibility Timeout（可见性超时 / 消息级租约）：Amazon SQS。`lease_until` 到期未结算的
-  行重新可被领取，语义与 SQS「收下但没删则超时重新可见」一致。与 Fencing Token 的分工：
-  前者管"死透了怎么回收"，后者管"没死透的不许写"。
-- SKIP LOCKED（PostgreSQL 9.5 引入）的等价形态：单条 `UPDATE ... WHERE (phone,day) IN
+- **claim-at-dispatch（领取即执行）**：调用方只在通道空闲时领**一行**、领到即执行。
+  领取与执行之间没有进程内排队，故一行的持有时间 = 一次尝试的时间（有界），不再是
+  "领回本地等通道/等令牌/等间隔/等计划时刻"的**无上界**等待。批量预取与进程内
+  `PriorityQueue` 因此退场（`docs/refactor/130` §2.3 S1/S2；工单 `l1rx`）。
+- **elbow（肘界谓词）**：领取谓词可带一个肘界 `run_at <= now - elbow_sec`——兜底常驻
+  只领"已过期超过肘界"的行，"谁该做"是**行的函数**而不是**进程身份的函数**。谓词语义
+  的唯一事实源是 `yiban/core/elbow.py`，本层的 SQL 是它的**下推实现**（见 `claim_batch`）。
+- Fencing Token（栅栏令牌）：Martin Kleppmann。`epoch` 仍是所有权变更的单调计数：每次
+  领取 `epoch=epoch+1`，`settle_tasks` / `requeue_task` 以 `(owner, epoch)` 双条件结算，
+  拒掉迟到写。**注意**：任务级**租约**（`lease_until` / 宽限 / `reap_expired`）已删除
+  （工单 `l1rx`）——真正的持有者死亡由**监督进程按进程句柄**处置（`reap_abandoned`），
+  不靠时间戳判活；`epoch` 只服务"回退重排后原持有者不得再写"这一件事。
+- SKIP LOCKED（PostgreSQL 9.5 引入）的等价形态：单条 `UPDATE ... WHERE phone IN
   (SELECT ...) RETURNING` 在本仓 SQLite 的写者串行语义下天然原子，无需显式 `SKIP LOCKED`
   语法；若迁到 PG/MySQL 这是等价替换点（MySQL 8 无 `UPDATE...RETURNING`，须另写
   `UPDATE...LIMIT` + 回查）。
@@ -21,9 +24,11 @@
   `vshard IN (...)` 让执行体只碰自己名下分片，是「领取零竞争」的来源。
 
 **功能**
-- `claim_batch`：按虚分片批量领取到期任务——单条 `UPDATE ... RETURNING`，在
-  SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）；
-  领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
+- `claim_batch`：按虚分片领取**到期**任务——单条 `UPDATE ... RETURNING`，在
+  SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）。
+  `limit` 缺省 1（claim-at-dispatch：调用方接口在通道空闲时调、领一条执行一条）；
+  `elbow_sec` 是肘界（0 = 到期即可领；正数 = 只领过期达到该时长的行）。领取自增
+  `epoch` 并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；只对
   未了结行生效（终态行不得被重排复活，否则会被重新领取＝当日再登录一次）；
@@ -32,16 +37,10 @@
   没有这条路 v3 的当日失败就无人接手；
 - `reclaim_tasks`：显式重签——把指定账号当日的**终态**行（`done`/`skipped`）翻回
   `pending`，只服务手动 `--only`（终态复活默认是红线，故无缺省调用者）；
-- `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
-  宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；**判活按持有者身份**——调用方本进程
-  通道队列里在途的行（`held`）与心跳仍存活的持有者（`live_owners`）一律豁免，否则同一账号
-  会被原地重领、当天两次真实登录；
-- `claimed_owners`：当日**在途 `claimed` 行**的持有者全集——豁免名册的**唯一来源**。
-  调用方据此逐持有者判活，再把存活者的稳定槽位名交给 `reap_expired(live_owners=...)`；
-  兜底常驻身份从不在执行体清单里，只有这条来源才包得住它（ba-p03-01）。读失败回 `None`
-  （哨兵，与"确实无在途持有者"的空集区分）⇒ 调用方跳过本轮回收（fail-closed）；
-- `reap_abandoned`：监督进程对**已确认死亡**（异常退出）的执行体名下 `claimed` 行立即回退
-  `pending`——证据强于"租约过期"，故不等宽限期；
+- `reap_abandoned`：对**已确认死亡**（进程句柄已消失，异常退出）的执行体名下 `claimed`
+  行立即回退 `pending`——判活靠**进程句柄**而不是心跳文件的时间戳（工单 `l1rx`：心跳降级
+  为纯 UI）。任务级租约（`lease_until`）与按时间戳的 `reap_expired` 已删除；不再有
+  "租约过期即回收"这条路；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
   闸门，见该函数说明）；
 - `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
@@ -79,12 +78,12 @@
 **降级口径（全模块唯一一条，ba-p01-01）**
 读不通（库异常/表未落地/锁等待超时）**一律回 `None` 哨兵**，绝不回"空"值：`[]`、`0`、
 全 0 字典、`0` 翻回数都只用来回答"真的没有这一类行"。沿用同文件既有惯例
-（`claimed_owners` 回 `None`、`reap_expired` 见 `None` 即跳过本轮），不另造第二种形状。
+（各读取面回 `None` 哨兵的口径统一，不另造第二种形状）。
 理由：**一次读库失败，永远不得被任何读者解释成"今天没有待办了 / 活已了结"**——把"坏"
 折叠成"空"就是全天零签到而现场只有两条 WARNING。执行体侧的有界退避与响亮告警见
 `yiban/engine/executor_v3.QUEUE_UNREADABLE_MAX_ROUNDS`。
 `vshards=()` / 空允许集**不是**故障（本轮不该领活，与库无关），照旧回空值且不取连接。
-补偿动作与纯展示读面（`settle_tasks`、`requeue_task`、`reclaim_tasks`、`reap_expired`、
+补偿动作与纯展示读面（`settle_tasks`、`requeue_task`、`reclaim_tasks`、
 `reap_abandoned`、`load_egress_state`、`save_egress_state`、`purge`、`fallback_event`、
 `latest_day`、`owners_for_day`、`owners_since`、`activity`）不在这条口径内：它们的失败
 方向是"这一轮少做一次"或"页面少显示一块"，不参与任何"退出/了结"判定，改动只会扩大面。
@@ -100,28 +99,15 @@ from yiban.store import claims as claims_mod
 
 logger = logging.getLogger("yiban.store.queue_store")
 
-#: 任务级短租约（秒）：通道崩溃后到期即被回收重排——比账号级 900s 租约快一个量级，
-#: 崩溃的账号不必等到窗口结束才有人接手。
-LEASE_SECONDS = 60
-
-#: 回收宽限期（秒）：租约到期只是"持有者**可能**已死"，不等于真死。单次尝试可能比租约
-#: 还慢（项目既有"慢签到"告警阈值 30s，超 60s 的尝试并非不可能），此时回收并重领会
-#: 让同一账号被两条通道并发登录——`epoch+1` 只挡迟到的结论写回，挡不住这次重复真实
-#: 登录。宽限期把"在飞被回收"的窗口压到可忽略；要收紧响应速度，真正的旋钮是租约时长
-#: 而不是这里。取 ≥ 2× 租约留出余量。
-REAP_GRACE_SEC = 120
-
-#: 批领缺省行数 = 通道数 × 预取系数。
-CLAIM_BATCH_LIMIT = 32
+#: 领取行数缺省 = 1（**claim-at-dispatch**）：调用方只在通道空闲时领取一行、领到即执行。
+#: 批量预取已退场（`docs/refactor/130` §2.3 S1；工单 `l1rx`）——预取让行的持有时间变成
+#: "排队等待时间"，无上界，正是租约族复杂度的根源。
+CLAIM_LIMIT = 1
 
 #: 单条 SQL 的绑定变量分块大小。SQLite 的 `SQLITE_MAX_VARIABLE_NUMBER` 老版本是 999
-#: （新版本 32766），而 `reap_expired` 的在途豁免要把整个通道队列的手机号逐个展开成
-#: `NOT IN` 占位符——大站一个补货循环就能攒出上千条。整段拼一条会在变量数超限时直接
-#: 抛 `sqlite3.ProgrammingError`，而回收失败只告警 ⇒ 回收静默退化成"什么都不回收"，
-#: 崩溃即卡死。取 900：给 day/允许集等其余占位留出余量。**不承诺**永远稳在变量上限内：
-#: `phones`（手动 `--only` 的允许集）与 `live_owners` 不分块，条目极多时仍可能超限——
-#: 届时 `reap_expired` 捕获异常 → 告警 → 本轮不回收，失败模式有界（现代 SQLite 上限
-#: 32766，实际难以触到；真触到说明队列已异常，该看的是队列而不是这个常数）。
+#: （新版本 32766），而 `row_owners` 的 `IN` 与手动 `--only` 的允许集要把手机号逐个展开
+#: 成占位符——大站一个补货循环就能攒出上千条。整段拼一条会在变量数超限时直接抛
+#: `sqlite3.ProgrammingError`。取 900：给 day 等其余占位留出余量。
 SQL_VAR_CHUNK = 900
 
 #: 一个 result 字段最多保留的字符数（与 `claims.settle` 同口径）。
@@ -158,24 +144,15 @@ def _queue_conn() -> tuple[Any, Any]:
     return connection.get_conn(), connection._conn_lock
 
 
-def _lease_until(lease_sec: float) -> str:
-    """租约到期时刻（毫秒精度、与 `run_at` 同格式的可比字符串）。
-
-    **不用 SQL 的 `strftime(..., 'now')`**：SQLite 的 `'now'` 是 UTC，而全库时间串是
-    北京时间（`yiban.clock`），直接用会写出早 8 小时的租约 ⇒ 在飞任务被误判为过期。
-    """
-    t = clock.now() + datetime.timedelta(seconds=lease_sec)
-    return t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-
 def _shift_stamp(stamp: object, sec: float) -> str:
     """时间串平移 `sec` 秒，返回毫秒精度、与 `run_at` 同格式的可比字符串。
 
     本库的时间串一律北京时间（`yiban.clock`），**不能用 SQL 的 `datetime(..., '-N seconds')`
     代替**：它的输出**没有毫秒**（`datetime('2026-09-22 06:40:00','-120 seconds')` 得
-    `'2026-09-22 06:38:00'`），而 `lease_until` 是毫秒格式；`'…06:38:00' < '…06:38:00.000'`
+    `'2026-09-22 06:38:00'`），而 `run_at` 是毫秒格式；`'…06:38:00' < '…06:38:00.000'`
     为真，拿它跟毫秒串做字符串比较会在同一秒内错位。**不是时区问题**：纯秒平移下把北京时间
-    当 UTC 解释只差一个常量偏移，平移量不变（`_lease_until` 不能用 SQL `'now'` 才是时区坑）。
+    当 UTC 解释只差一个常量偏移，平移量不变（真正的时区坑在 SQL 的 `'now'`：它是 UTC）。
+    `claim_batch` 的肘界下推用本函数把 `now` 平移成 `now - elbow`。
     """
     text = str(stamp)
     for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
@@ -202,18 +179,30 @@ def _chunks(items: Iterable[Any], size: int = SQL_VAR_CHUNK) -> Iterator[list[An
 
 
 def claim_batch(owner: str, day: str, vshards: Iterable[int], now: str | None = None,
-                limit: int = CLAIM_BATCH_LIMIT, lease_sec: float = LEASE_SECONDS,
+                limit: int = CLAIM_LIMIT, elbow_sec: float = 0.0,
                 phones: Iterable[str] | None = None) -> list[dict[str, Any]] | None:
-    """按分片（`vshard`）批量领取到期任务。返回
-    `[{"phone","run_at","attempts","epoch"}, ...]`。
+    """按分片（`vshard`）领取**到期**任务。返回
+    `[{"phone","run_at","attempts","epoch"}, ...]`（`limit` 缺省 1）。
 
-    单事务 `UPDATE ... WHERE (phone, day) IN (SELECT ...) RETURNING`：返回的行即被本
-    执行体占住的行（`state='claimed'` + 写入 owner）。`SET owner` 是必需的——`owner`
-    一列同时是"计划 owner"与"当前持有者"，收尾路径按 owner 做作用域校验，
-    不写它则接管换不了手。
+    单事务 `UPDATE ... WHERE phone IN (SELECT ...) RETURNING`：返回的行即被本执行体占住
+    的行（`state='claimed'` + 写入 owner）。`SET owner` 是必需的——`owner` 一列同时是
+    "计划 owner"与"当前持有者"，收尾路径按 owner 做作用域校验，不写它则接管换不了手。
+
+    **claim-at-dispatch（工单 `l1rx`）**：调用方（执行体的通道）**只在空闲时**调用本函数，
+    领到即执行；`limit` 缺省 1。领取与执行之间不再有进程内排队，故一行的持有时间 =
+    一次尝试的时间（有界）。批量预取已退场——正是"先领一大批、再在本地慢慢等"造出了
+    "租约过期被判死、原地重领会双登录"的整族复杂度。
+
+    `elbow_sec` 是**肘界**（秒，见 `yiban/core/elbow.py`）：只领 `run_at <= now - elbow_sec`
+    的行。0 = 到期即可领（定时执行体 / 手动 / 补签轮的语义）；正数 = 只领"已经过期达到
+    该时长"的行——兜底常驻用它避免与计划轮抢新到点的活，"谁该做"于是成为**行的函数**，
+    10-07 型启动竞态从机制上消失（工单 `l1rx`；`docs/refactor/130` §3.3）。本层的 SQL 是
+    `elbow.may_claim` 的**下推实现**：两者的等价由 `tests/test_claim_dispatch_elbow_e2e.py`
+    对拍钉住。
 
     `epoch` 是本次领取的 fencing token（**每次领取自增**，单调）：调用方收尾时必须把它
-    原样传回 `settle_tasks` / `requeue_task`。没有它，被接管者迟到的写会覆盖接管者的结论。
+    原样传回 `settle_tasks` / `requeue_task`。没有它，被回退重排后的原持有者迟到的写会
+    覆盖新持有者的结论。
 
     `phones` 是本轮**允许领取的账号允许集**（`None` = 不限，保持既有调用点语义）：
     手动 `--only` 轮只该领取"本轮传进来的那几个账号"，宽分片集不得把当日别人的
@@ -236,9 +225,18 @@ def claim_batch(owner: str, day: str, vshards: Iterable[int], now: str | None = 
             return []
         phone_filter = f"AND phone IN ({','.join('?' for _ in allowed)}) "
         phone_params = list(allowed)
+    # 肘界下推：到期判据从"run_at <= now"平移成"run_at <= now - elbow"。now 与 run_at 同
+    # 域（北京时间毫秒串），用 `_shift_stamp` 做**同域平移**（不能用 SQL 的 datetime 算术，
+    # 它丢毫秒，见 `_shift_stamp`）。
+    try:
+        cutoff = _shift_stamp(now or clock.ts(), -float(elbow_sec or 0.0))
+    except ValueError:
+        # now 不可解析是**调用方入参问题**：按"读不通"处置（回 `None` 哨兵，fail-closed），
+        # 让调用方的有界放弃闸门计数——回 `[]` 会被当"本轮无到期行"，把整轮静默空转。
+        logger.warning("领取到期任务的时刻参数不可解析（读不通，本轮不领取）: %r", now)
+        return None
     sql = (
-        "UPDATE sign_tasks SET state='claimed', owner=?, lease_until=?, "
-        "epoch=epoch + 1 "
+        "UPDATE sign_tasks SET state='claimed', owner=?, epoch=epoch + 1 "
         "WHERE (phone, day) IN ("
         "SELECT phone, day FROM sign_tasks "
         f"WHERE day=? AND vshard IN ({placeholders}) "
@@ -247,15 +245,14 @@ def claim_batch(owner: str, day: str, vshards: Iterable[int], now: str | None = 
         "ORDER BY priority, run_at LIMIT ?"
         ") RETURNING phone, run_at, attempts, epoch"
     )
-    params = (owner, _lease_until(lease_sec), day, *shards, now or clock.ts(),
-              *phone_params, int(limit))
+    params = (owner, day, *shards, cutoff, *phone_params, int(limit))
     try:
         conn, lock = _queue_conn()
         with lock:
             rows = conn.execute(sql, params).fetchall()
             conn.commit()
     except Exception as e:
-        logger.warning("批量领取签到任务失败（读不通，不等于无可领）: %s", e)
+        logger.warning("领取签到任务失败（读不通，不等于无可领）: %s", e)
         return None
     return [{"phone": r["phone"], "run_at": r["run_at"], "attempts": r["attempts"],
              "epoch": r["epoch"]} for r in rows]
@@ -279,7 +276,7 @@ def settle_tasks(owner: str, day: str, outcomes: Iterable[tuple[str, str]] | Non
     if not items:
         return 0
     tokens = epochs or {}
-    sql = ("UPDATE sign_tasks SET state=?, result=?, lease_until='' "
+    sql = ("UPDATE sign_tasks SET state=?, result=? "
            "WHERE day=? AND phone=? AND owner=? AND (? IS NULL OR epoch=?)")
     params = [(state, (result or "")[:RESULT_MAX], day, phone, owner,
                tokens.get(phone), tokens.get(phone)) for phone, result in items]
@@ -313,7 +310,7 @@ def requeue_task(phone: str, day: str, run_at: str, priority_delta: int = 1, res
     生产调用方（执行体）必须传它；缺省 `None` 只为迁移期调用方与既有测试保留。
     """
     sql = ("UPDATE sign_tasks SET state=?, run_at=?, priority=priority+?, "
-           "attempts=attempts+1, lease_until='', result=? "
+           "attempts=attempts+1, result=? "
            f"WHERE phone=? AND day=? AND state IN ({','.join('?' for _ in REQUEUEABLE_STATES)})")
     params = [STATE_PENDING, run_at, int(priority_delta),
               (result or "")[:RESULT_MAX], phone, day, *REQUEUEABLE_STATES]
@@ -353,7 +350,7 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     一代，写被 fence 拒（0 行不计入）；`done`/`skipped` 终态行不在 SELECT 里、又被
     `REQUEUEABLE_STATES` 挡第二道——绝不复活（复活 = 当日重复真实登录，第一红线）。
     `vshard=-1` 的历史行不属于任何分片集，回收成 pending 只会变成永不被领取的空转行，
-    一律不碰（与 `reap_expired`/`pending_count` 同界）。
+    一律不碰（与 `reap_abandoned`/`pending_count` 同界）。
 
     `run_at` 缺省取"现在"（毫秒格式与 `run_at` 同型，字符串序比较不出偏）：回炉行
     立刻可领，与 v2"后续轮次马上接得动"同拍；`priority` 仍按 `requeue_task` 递增一档，
@@ -402,41 +399,47 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
 
 
 def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
-    """显式重签：把指定账号当日**终态**行（`done` / `skipped`）翻回 `pending`，并把
-    这些账号的 `run_at` 一概置为"现在"（让手动签到不必等到计划时刻），返回行数。
+    """显式重签：把指定账号当日的行翻回 `pending`，并把它们的 `run_at` 一概置为"现在"
+    （让手动签到不必等到计划时刻），返回行数。
 
-    只服务手动 `--only`（"用户主动点的那一下应当照做"）这条有界显式路径：终态复活默认
-    是红线（复活回 `pending` 会被 `claim_batch` 重新领取 ⇒ 同一账号当日再真实登录一次），
-    故本函数没有缺省调用者，必须显式传具体 `phones`；且只翻 `done`/`skipped` 两类——
-    `failed` 走当日回炉口（`requeue_failed`），`claimed`（他人在飞）不改状态。
+    只服务手动 `--only`（"用户主动点的那一下应当照做"）这条有界显式路径：复活默认是红线
+    （复活回 `pending` 会被 `claim_batch` 重新领取 ⇒ 同一账号当日再真实登录一次），故本
+    函数没有缺省调用者，必须显式传具体 `phones`。翻三类行：
 
-    `run_at` 置"现在"对两类行都做：`pending` 行（当日计划尚未到点）也要能被立刻领到，
-    否则手动签到会睡到计划时刻（窗口外更会一直等）。`epoch` 只在**翻态**的行上自增
-    （在飞 `claimed` 行不动 token，免得打断当前持有者的收尾）；清 `owner`/`lease_until`
-    同理只对翻态行做。`vshard < 0` 的历史行不属于任何分片集，一律不碰（与 `reap_expired`
-    / `pending_count` 同界）。空 `phones` → 0 且不取连接；库异常 → 0 + warning。
+    - `done` / `skipped`（终态）：用户主动触发即重签；
+    - `claimed`（**在飞行**）：这是**卡死行的逃生口**（工单 `l1rx` 必修 R2）。任务级租约
+      删除后，"持有者已死"不再由时间戳判定，故本口对所有 `claimed` 一律翻回——用户点的
+      那一下对卡死行必须有效。翻动**换代**（`epoch+1`）并清 `owner`，故原持有者迟到的
+      `settle_tasks` / `requeue_task` 仍被 fence 住、写不回去。
+      **代价（登记为残余）**：原持有者若仍存活（只有兜底腿能与本口并存——手动轮持全局
+      运行锁，全量轮起不来），会有一次同账号并发登录。这是"逃生口"换来的风险，方向由
+      用户在管理面上显式选择。
+    - `failed` 走当日回炉口（`requeue_failed`），不在此翻。
+
+    `run_at` 置"现在"对全部在册行都做：`pending` 行（当日计划尚未到点）也要能被立刻领到，
+    否则手动签到会睡到计划时刻（窗口外更会一直等）。`vshard < 0` 的历史行不属于任何分片集，
+    一律不碰（与 `reap_abandoned` / `pending_count` 同界）。空 `phones` → 0 且不取连接；
+    库异常 → 0 + warning。
     """
     items = tuple(phones or ())
     if not items:
         return 0
     placeholders = ",".join("?" for _ in items)
     stamp = clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把终态行翻回 pending，
-    # 非终态行只刷新 run_at，一次 UPDATE 完成两件事。
+    # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把可翻态翻回 pending，
+    # 其余行只刷新 run_at，一次 UPDATE 完成两件事。
     sql = (
         "UPDATE sign_tasks SET "
-        "state=CASE WHEN state IN (?, ?) THEN ? ELSE state END, "
-        "owner=CASE WHEN state IN (?, ?) THEN '' ELSE owner END, "
-        "lease_until=CASE WHEN state IN (?, ?) THEN '' ELSE lease_until END, "
-        "epoch=epoch + CASE WHEN state IN (?, ?) THEN 1 ELSE 0 END, "
+        "state=CASE WHEN state IN (?, ?, ?) THEN ? ELSE state END, "
+        "owner=CASE WHEN state IN (?, ?, ?) THEN '' ELSE owner END, "
+        "epoch=epoch + CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END, "
         "run_at=? "
         "WHERE day=? AND vshard >= 0 "
         f"AND phone IN ({placeholders})"
     )
-    params = (STATE_DONE, STATE_SKIPPED, STATE_PENDING,
-              STATE_DONE, STATE_SKIPPED,
-              STATE_DONE, STATE_SKIPPED,
-              STATE_DONE, STATE_SKIPPED,
+    params = (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED, STATE_PENDING,
+              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
+              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
               stamp, day, *items)
     try:
         conn, lock = _queue_conn()
@@ -449,167 +452,35 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
         return 0
 
 
-def claimed_owners(day: str | None = None) -> list[str] | None:
-    """当日**在途 `claimed` 行**的持有者全集（去重、非空、升序）——回收豁免名册的输入。
-
-    豁免的**唯一来源是队列本身**：谁真的握着 `claimed` 行，谁才需要判活。按执行体清单
-    （`cfg["executors"]`）枚举会漏掉清单外的身份——兜底常驻的运行时串（`fallback@host`）
-    从不在清单里，它手上的行于是整段落在豁免之外（ba-p03-01：兜底与定时轮并发可致同一
-    账号当天两次真实登录）。调用方对每个持有者判活后，把仍存活者的稳定槽位名传给
-    `reap_expired(live_owners=...)`。
-
-    `vshard < 0` 的历史行不属于任何分片集（`reap_expired` 同界不回收），不计入；`owner`
-    为空的行无法判活，也不计入（它们本来就不被任何豁免盖住）。`day` 给了就只取该业务日
-    ——回收只碰当日，名册同样只该看当日。
-
-    **库异常 → `None`（不是空集）**：`None` 是"读不到"的哨兵，"确实没有在途持有者"回
-    `[]`。两者必须区分——空集意味着"所有超期行都不豁免"，拿它去回收会把活持有者的行
-    判死（同账号二次登录）。调用方把 `None` 直接传给 `reap_expired`，后者据此**跳过本轮
-    回收**（fail-closed）；宁可这一轮不回收，也不放宽回收面。
-    """
-    sql = ("SELECT DISTINCT owner FROM sign_tasks "
-           "WHERE state=? AND owner != '' AND vshard >= 0")
-    params = [STATE_CLAIMED]
-    if day is not None:
-        sql += " AND day=?"
-        params.append(day)
-    try:
-        conn, lock = _queue_conn()
-        with lock:
-            rows = conn.execute(sql, tuple(params)).fetchall()
-    except Exception as e:
-        logger.warning("读取在途持有者名单失败（本轮跳过回收）: %s", e)
-        return None
-    return sorted({str(r[0]) for r in rows if r[0]})
-
-
-def reap_expired(now: str | None = None, day: str | None = None, grace_sec: float = REAP_GRACE_SEC,
-                 phones: Iterable[str] | None = None, held: Iterable[str] = (),
-                 live_owners: Iterable[str] | None = ()) -> int:
-    """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
-    `lease_until < now - grace_sec` 的行回退为 `pending`（清 `owner`/`lease_until`、
-    `epoch = epoch + 1`）。返回受影响行数。
-
-    **为什么必须做**：`claim_batch` 只取 `state='pending'` 的行，崩溃/被杀的通道留下的
-    `claimed` 行**永远不会被重新领取**——不做回收就是"崩溃即卡死"，该账号当天不再有人签。
-
-    **判活按持有者身份，不只看 `lease_until`（M17）**：租约到期只说明持有者"**可能**已死"，
-    不等于真死。宽限期（`REAP_GRACE_SEC`）是这道闸的第一层，但它**兜不住"在途等待"**——
-    执行体把行领回 `pending` 之前的排队时间不受租约约束：条目躺在本进程的通道队列里等
-    通道、等限速额度、等逐账号 gap、等计划时刻，都可能把 `lease_until` 拖过
-    「租约 + 宽限」（60s + 120s）。此刻本进程明明还在正常干活，行却被回收器判死、回退
-    `pending`，**下一次 `claim_batch` 又把它原地领回来**——同一账号当天两次真实登录
-    （`epoch+1` 只挡迟到的结论写回，挡不住第二次登录；易班侧会因此锁号）。
-    故本函数有两道**持有者身份**豁免，两者都是"判活"而不是"改租约"：
-
-    - `held`：**调用方本进程通道队列里在途的 phone 集合**（已领、尚未收尾/重排的条目）。
-      这些行一律跳过——它们的持有者就是调用方自己，且正在被处理。
-      集合随领取增、随条目处理完减（见 `executor_v3._Ctx.held`），所以本进程真正泄漏的
-      行（已领却没进集合）仍会被回收自愈，不会永久卡死。
-    - `live_owners`：调用方判定**仍存活**的持有者稳定名（跨进程用；心跳未过期）。持有者
-      身份存的是运行时串 `{稳定名}:{进程号}:{代次}`（`yiban.egress.runtime_owner`），故
-      与 `reap_abandoned` 同口径按「等值 + `instr` 前缀」匹配，不用 `LIKE`
-      （主机名里可能有 `_`，那是 LIKE 的通配符）。心跳过期的死主不在此集合里 → 仍按租约
-      + 宽限回收，崩溃恢复链不受影响。**传 `None` 表示名册来源读失败**（`claimed_owners`
-      的哨兵）⇒ 本函数**跳过本轮回收**（fail-closed）：空名册会放宽回收面、把活持有者的
-      行判死，故读不到时不回收。
-
-    **为什么不用"把 `lease_until` 加长"糊过去**：续租只是把同一道判据的阈值调大，等待
-    时间没有上界（积压时队列里的条目能等任意久），阈值迟早被跨过；而且续租会让"崩溃即
-    卡死"的行一直续下去。豁免按"谁持有、是否在途"判定才是根因口径。
-
-    `held` 逐行展开成 `NOT IN` 子句并按 `SQL_VAR_CHUNK` 分块：SQLite 的绑定变量上限
-    （老版本 999）远小于一个大队列可能的手机号数，整段拼一条会在大站上直接报错、
-    回收静默退化成"什么都不回收"。
-
-    **`epoch + 1` 是 fencing 红线**：回退后原持有者可能迟到提交 `settle_tasks`，自增
-    token 让它的旧 epoch 写被拒（`settle_tasks(..., epochs=...)` 已支持），否则迟到的旧
-    结论会覆盖接手者的结论。
-
-    **必须排除 `vshard = -1` 的历史行**（v18 平移 / v20 补账写入）：它们不属于任何分片集，
-    回收成 `pending` 只会变成永不被领取的行（`claim_batch` 的 `vshard IN (...)` 挡着），
-    白白制造"看着有活、其实无人领"的假象。`day` 给了就只回收该业务日。
-
-    `phones` 是回收的**账号允许集**（`None` = 不限，既有调用点语义不变）：手动 `--only`
-    轮只该回收"本轮账号自己"的陈旧 `claimed` 行——回收别人的行是跨账号写，还会 `epoch+1`
-    fence 掉一个仍存活但慢的持有者的迟到收尾。**不整段跳过回收**：手动账号自身若是陈旧
-    `claimed`，正需要这条路径把它拉回来（`reclaim_tasks` 只翻 `done`/`skipped`）。
-
-    幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常 → 0 + warning（回收是补偿动作，
-    失败不该打断签到；下一轮会再试）；`now` 不可解析是**调用方入参问题**，单独一条
-    warning（不与库异常共用文案，免得把排查方向带到存储层）。`live_owners=None`（名册
-    来源读失败哨兵）→ 0 + warning，**不做任何回收**（fail-closed）。
-    """
-    if live_owners is None:
-        # 名册来源读失败（`claimed_owners` 的哨兵）：跳过本轮回收，不放宽回收面。
-        logger.warning("豁免名册不可用（来源读取失败），跳过本轮回收（fail-closed）")
-        return 0
-    sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
-           "WHERE state=? AND lease_until != '' AND lease_until < ? AND vshard >= 0")
-    try:
-        cutoff = _shift_stamp(now or _lease_until(0), -grace_sec)
-    except ValueError as e:
-        logger.warning("回收过期签到任务的时刻参数不可解析（按无可回收处理）: %s", e)
-        return 0
-    try:
-        params = [STATE_PENDING, STATE_CLAIMED, cutoff]
-        if day is not None:
-            sql += " AND day=?"
-            params.append(day)
-        if phones is not None:
-            allowed = tuple(phones)
-            if not allowed:
-                return 0
-            sql += f" AND phone IN ({','.join('?' for _ in allowed)})"
-            params.extend(allowed)
-        # 在途豁免（M17）：本进程通道队列里还在的条目不回收。与上面 `phones` 允许集
-        # 取**与**关系——允许集管"能碰哪些账号"，在途集管"哪些行持有者还活着"。
-        for chunk in _chunks(tuple(held or ())):
-            sql += f" AND phone NOT IN ({','.join('?' for _ in chunk)})"
-            params.extend(chunk)
-        # 存活持有者豁免（M17）：心跳未过期的执行体手上的行不回收（跨进程同一类重复登录）。
-        for owner in tuple(live_owners or ()):
-            owner = str(owner or "").strip()
-            if not owner:
-                continue
-            sql += " AND owner <> ? AND instr(owner, ?) <> 1"
-            params.extend((owner, owner + ":"))
-        conn, lock = _queue_conn()
-        with lock:
-            cur = conn.execute(sql, tuple(params))
-            conn.commit()
-            return cur.rowcount
-    except Exception as e:
-        logger.warning("回收过期签到任务失败（按无可回收处理）: %s", e)
-        return 0
-
-
 def reap_abandoned(owner: str, day: str | None = None) -> int:
     """显式回收某个**已确认死亡**的执行体名下仍 `claimed` 的任务：回退 `pending`，
-    清 `owner`/`lease_until`、`epoch = epoch + 1`。返回受影响行数。
+    清 `owner`、`epoch = epoch + 1`。返回受影响行数。
 
     `owner` 是**稳定槽位名**（`worker-3@{主机名}` 之类）。持有者列存的是运行时身份
     （`{稳定名}:{进程号}:{代次}`，见 `yiban.egress.runtime_owner`），故按前缀匹配：
     `owner = ?` 覆盖计划行写入的裸稳定名，`instr(owner, ?) = 1` 匹配运行时身份。
     **不用 `LIKE`**——主机名里可能出现 `_`，那是 LIKE 的通配符，会把别的槽位一起吃掉。
 
-    与 `reap_expired` 的分工：后者按"租约过期 ⇒ 可能死了"回收（须过宽限期，见
-    `REAP_GRACE_SEC`）；本函数给**监督进程**用——子进程被信号杀死时它直接观测到了异常
-    退出（返回码为负），这比心跳过期更强，故不必等宽限期即可回收。不做这一步，被杀执行体
-    留下的在领任务只能等 `reap_expired` 的租约 + 宽限期（合计可达数十分钟），期间该账号
-    当天无人再签。
+    **这是任务级租约删除后的唯一"崩溃自愈"路径（工单 `l1rx`）**：判活不再看心跳文件的
+    时间戳（心跳降级为纯 UI），而是**监督进程按进程句柄**——子进程被信号杀死时它直接
+    观测到异常退出（返回码为负），比"心跳过期 ⇒ 可能死了"更强的证据。不做这一步，被杀
+    执行体留下的在领任务永远停在 `claimed`，当天该账号无人再签。
+
+    **未走这条路的崩溃（进程内未预期异常、未被杀）不被自动回收**：留下的 `claimed` 行由
+    `crash_semantics.report_unknown_outcomes`（写前标记 `start` 无终态）识别并告警，
+    **不自动重签**（l1rx 的裁决；修复留给后续批次）。这不是漏项，是删除租约族的既定口径。
 
     只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；`pending`
-    重排行与终态行也不该动。回退后的行 `pending` 且租约已放开，下一次 `claim_batch` 即可
-    领取。`epoch + 1` 与 `reap_expired` 同一条红线——让原持有者迟到的旧代结论被
-    `settle_tasks` 的 `epochs` fence。`vshard >= 0` 与 `reap_expired` 同界：排除 v18 平移 /
-    v20 补账的历史行，免得把它们回退成永不被领取（`claim_batch` 的 `vshard IN (...)` 挡着）
-    的假待办。`day` 给了就只回收该业务日。
+    重排行与终态行也不该动。回退后的行 `pending`，下一次 `claim_batch` 即可领取。
+    `epoch + 1` 是 fencing 红线——让原持有者迟到的旧代结论被 `settle_tasks` 的 `epochs`
+    fence。`vshard >= 0` 与 `claim_batch` 同界：排除 v18 平移 / v20 补账的历史行，免得把
+    它们回退成永不被领取（`claim_batch` 的 `vshard IN (...)` 挡着）的假待办。`day` 给了就
+    只回收该业务日。
 
-    库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
+    库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一次监督进程轮末会再试）。
     """
     prefix = owner + ":"
-    sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
+    sql = ("UPDATE sign_tasks SET state=?, owner='', epoch=epoch + 1 "
            "WHERE state=? AND vshard >= 0 AND (owner = ? OR instr(owner, ?) = 1)")
     params = [STATE_PENDING, STATE_CLAIMED, owner, prefix]
     if day is not None:
@@ -932,7 +803,7 @@ def row_owners(day: str, phones: Iterable[str] | None = None) -> dict[str, tuple
     账号可能上百个，逐账号查会把一次收尾变成上百次查询），按 `SQL_VAR_CHUNK` 分块拼
     `IN`。只回原串，**不解析角色、不脱敏**——角色与脱敏是展示层的事。
 
-    **读不通回 `None`（哨兵）+ warning**（与 `claimed_owners` / `pending_count` 同口径）：
+    **读不通回 `None`（哨兵）+ warning**（与 `pending_count` 同口径）：
     折成空映射会让判因把"读不出来"当成"没有行"——被领走的账号于是被认成"没人接手"，
     方向不可控。调用方按"判因不可得"处置（见 `executor_v3._mark_unreached`）。
     """
