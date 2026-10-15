@@ -79,6 +79,12 @@ NON_STATE_FIXED_NAME = {
                      "证据目录，不进状态目录）",
     "run.json": "scripts/drill_multi_exec.py 的演练本轮结果摘要：同上（调用方指定的证据目录，"
                 "不进状态目录）",
+    "supervisor.log": "scripts/drill_multi_exec.py 捕获的演练监督进程 stdout+stderr：落**临时**"
+                      "目录（`tempfile.mkdtemp`），演练结束随目录消失；不落状态目录、不进"
+                      "清理/备份名册。**必须落文件而不是挂管道**——监督进程与执行体输出过管道"
+                      "缓冲即阻塞写，表现为'演练卡住'且真因不可见",
+    "supervisor-recover.log": "scripts/drill_multi_exec.py 恢复轮监督进程输出：同上（同一临时目录，"
+                              "按轮分文件以免两轮互相覆盖）",
 }
 #: 固定名状态件的枚举判据：抓"小写 token + 状态件扩展名"的字面量。
 #: 与 `tests/test_state_gc.py` 的按日扫描互补——非按日件从原理上逃过按日正则。
