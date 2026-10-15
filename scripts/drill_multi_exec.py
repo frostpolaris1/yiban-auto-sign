@@ -396,6 +396,33 @@ def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
     return False, None
 
 
+def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str) -> dict:
+    """屏障不就绪时**当场取证**：两条前提各报事实，供一眼定位。
+
+    就绪需要同时满足两件事，修法完全不同：
+      ① 目标执行体写下了就绪标记（＝注入真的贴上了、且它确实领到了行）；
+      ② 库里能看见"目标持有某一行"（＝双方对 owner 身份的口径一致）。
+    """
+    diag: dict = {"ready_file": ready_file, "target_id": target_id,
+                  "target_prefix": target_id + ":"}
+    try:
+        diag["ready_exists"] = os.path.exists(ready_file)
+        if diag["ready_exists"]:
+            with open(ready_file, encoding="utf-8", errors="replace") as fh:
+                diag["ready_content"] = fh.read().strip()
+    except OSError as e:
+        diag["ready_error"] = "%s: %s" % (type(e).__name__, e)
+    try:
+        rows = _rows(dbfile, day)
+        diag["rows"] = {p: {"state": r["state"], "owner": r["owner"]} for p, r in rows.items()}
+        diag["claimed_owners"] = sorted({r["owner"] for r in rows.values()
+                                         if r["state"] == "claimed"})
+        diag["pids_for_target"] = find_child_pids(target_id)
+    except Exception as e:                                  # 取证不许再抛
+        diag["rows_error"] = "%s: %s" % (type(e).__name__, e)
+    return diag
+
+
 def _run_probe(childenv: dict, tmp: str, mutate: str, info: dict,
                monitor: "Monitor", timeout_sec: float,
                target_phone: str | None = None) -> dict:
@@ -671,10 +698,21 @@ def _wait_supervisor(proc: subprocess.Popen, monitor: Monitor, kill_plan: dict,
     return proc.returncode
 
 
-def _spawn_supervisor(childenv: dict) -> subprocess.Popen:
-    return subprocess.Popen([sys.executable, "-m", "yiban.cli", "sign"],
+def _spawn_supervisor(childenv: dict, log_path: str | None = None) -> subprocess.Popen:
+    """拉起监督进程（真 `yiban.cli sign`）。
+
+    **输出必须落文件，不能挂 PIPE**：监督进程与它拉起的执行体每次演练会打不少行
+    （迁移 INFO、逐账号日志、注入异常回溯），量过管道缓冲即**阻塞写**——写不进就
+    不再前进，表现为"演练卡住"，而真因（谁卡在写）反而看不见。落文件同时把
+    诊断材料留了下来（见 `barrier_diag`）。
+    """
+    fh = open(log_path, "wb") if log_path else subprocess.DEVNULL
+    proc = subprocess.Popen([sys.executable, "-m", "yiban.cli", "sign"],
                             env=childenv, cwd=REPO,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            stdout=fh, stderr=subprocess.STDOUT)
+    if log_path:
+        fh.close()          # 父进程这份可以关：子进程持有自己的 dup
+    return proc
 
 
 def _probe_elbow(dbfile: str, day: str, held_phone: str, slow_owner: str) -> dict:
@@ -815,7 +853,8 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             def on_hold(phone, _res=elbow_probe):
                 _res.update({"ran": True})
                 _res.update(_probe_elbow(info["dbfile"], day, phone, target_id + ":"))
-        sup = _spawn_supervisor(childenv)
+        sup_log = os.path.join(tmp, "supervisor.log")
+        sup = _spawn_supervisor(childenv, sup_log)
         result["supervisor_pid"] = sup.pid
 
         # ① 等屏障：目标执行体持着在飞行（同时采样，让 I1 的"换手前样本"落定）。
@@ -826,6 +865,12 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             ready, target_phone = _await_barrier(hold_ready, HOLD_MAX_SEC, monitor,
                                                  target_id + ":")
             result["barrier_ready"] = ready
+            if not ready:
+                # 不就绪时**当场取证**：是"就绪标记没写出来"（注入没贴上）还是
+                # "写了但库里看不到目标持有者"（身份对不上）——两者的修法完全不同，
+                # 不许靠猜（CI 上已因猜错方向白跑一轮）。
+                result["barrier_diag"] = _barrier_diag(
+                    hold_ready, info["dbfile"], day, target_id)
             result["barrier_phone"] = target_phone
 
         # ② 变异**哨兵**：先证明变异真的贴上了，再谈不变式红不红。claim-steal 的哨兵
@@ -888,7 +933,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
                        if k not in ("DRILL_SLOW_ID", "DRILL_SLOW_SEC",
                                     "DRILL_HOLD_SLOT", "DRILL_HOLD_READY",
                                     "DRILL_HOLD_RELEASE", "DRILL_HOLD_MAX")}
-            sup2 = _spawn_supervisor(rec_env)
+            sup2 = _spawn_supervisor(rec_env, os.path.join(tmp, "supervisor-recover.log"))
             rc2 = _wait_supervisor(sup2, monitor, {"armed": False},
                                    time.time() + timeout_sec)
             result["recover_rc"] = rc2
@@ -1023,7 +1068,7 @@ def _cli() -> int:
         "mock_requests", "mock_signin_count", "signin_excess", "i1_ok", "i2_ok",
         "i1_violations", "i2_claimed_left", "terminal_or_pending", "first_round_pending",
         "kill", "stale_write", "elbow_probe", "mutate", "barrier", "barrier_ready",
-        "mutation_applied", "mutation_probe") if k in res}
+        "mutation_applied", "mutation_probe", "barrier_diag") if k in res}
     shown["checks"] = checks
     print(json.dumps(shown, ensure_ascii=False, indent=2))
     print("PASS" if ok else "FAIL")
