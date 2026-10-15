@@ -89,7 +89,14 @@ SAMPLE_SEC = 0.02
 #: 2. `DRILL_MUTATE` / `DRILL_SLOW_*` 非空时，按名对协调层做变异或让位
 #:    注入（只服务有牙证明，不参与生产）。
 SHIM_SRC = r'''# -*- coding: utf-8 -*-
-"""sitecustomize：把子进程的 https 钉回回环假上游 ＋ 可选协调层变异。"""
+"""sitecustomize：把子进程的 https 钉回回环假上游 ＋ 可选协调层变异 ＋ 持有闸门。
+
+注入面只服务靶场的**有牙证明**，不参与生产。每处变异都打 `_drill` 标记，供
+哨兵进程断言"变异真的贴上了"——红的时候必须先分清"变异没贴"还是"不变式没破"。
+
+持有闸门（`DRILL_HOLD_*`）：命中目标执行体在**领到一行之后**写就绪标记、再等放行
+标记。驱动侧据此确定性地制造"持有者在飞"这一状态，不靠调度运气。
+"""
 import os
 
 _port = os.environ.get("DRILL_MOCK_PORT")
@@ -128,35 +135,80 @@ if _port:
     requests.Session = _Session
 
 
+def _slot_of_self():
+    eid = os.environ.get("YIBAN_EXECUTOR_ID", "")
+    if not eid.startswith("worker-"):
+        return None
+    return eid.split("-", 1)[1].split("@", 1)[0]
+
+
+def _hold_target():
+    want = os.environ.get("DRILL_HOLD_SLOT", "")
+    if not want:
+        return False
+    if want == "*":
+        return True
+    return _slot_of_self() == want
+
+
 def _apply_injections():
+    import time
     slow_id = os.environ.get("DRILL_SLOW_ID", "")
     slow_sec = float(os.environ.get("DRILL_SLOW_SEC", "0") or 0)
     mutate = os.environ.get("DRILL_MUTATE", "")
-    # `*` = 对所有执行体生效（teeth 用：让"被抢的持有者"卡住，双持有才可被观测到）。
-    if slow_id and slow_sec and not (slow_id == "*"
-                                     or os.environ.get("YIBAN_EXECUTOR_ID") == slow_id):
-        slow_sec = 0
-    if not slow_sec and not mutate:
+    hold = _hold_target()
+    if not slow_sec and not mutate and not hold:
         return
-    import time
-    if slow_sec:
-        import yiban.store.queue_store as qs
-        _real_claim = qs.claim_batch
+    import yiban.store.queue_store as qs
+
+    chain = qs.claim_batch
+
+    if slow_sec and (slow_id == "*" or os.environ.get("YIBAN_EXECUTOR_ID") == slow_id):
+        _inner = chain
 
         def _slow_claim(owner, day, vshards, now=None, limit=1, elbow_sec=0.0, phones=None):
-            rows = _real_claim(owner, day, vshards, now=now, limit=limit,
-                               elbow_sec=elbow_sec, phones=phones)
+            rows = _inner(owner, day, vshards, now=now, limit=limit,
+                          elbow_sec=elbow_sec, phones=phones)
             if rows:
                 time.sleep(slow_sec)   # 持有在飞行，卡住——"上一个持有者还活着"
             return rows
 
-        qs.claim_batch = _slow_claim
+        _slow_claim._drill = "slow"
+        chain = _slow_claim
+
+    if hold:
+        _inner_h = chain
+        _ready = os.environ.get("DRILL_HOLD_READY", "")
+        _release = os.environ.get("DRILL_HOLD_RELEASE", "")
+        _max = float(os.environ.get("DRILL_HOLD_MAX", "60") or 60)
+
+        def _hold_claim(owner, day, vshards, now=None, limit=1, elbow_sec=0.0, phones=None):
+            rows = _inner_h(owner, day, vshards, now=now, limit=limit,
+                            elbow_sec=elbow_sec, phones=phones)
+            if rows:
+                # 领到了：先让外界知道"我持着在飞行"，再等放行——确定性屏障。
+                try:
+                    with open(_ready, "w") as fh:
+                        fh.write("%s\n" % os.environ.get("YIBAN_EXECUTOR_ID", ""))
+                except OSError:
+                    pass
+                deadline = time.monotonic() + _max
+                while _release and not os.path.exists(_release) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+            return rows
+
+        _hold_claim._drill = "hold"
+        chain = _hold_claim
+
+    qs.claim_batch = chain
+
     if mutate == "reap-off":
         from yiban.engine import workers
-        workers._reap_dead_worker = lambda slot: 0
+        _noop = lambda slot: 0  # noqa: E731
+        _noop._drill = "reap-off"
+        workers._reap_dead_worker = _noop
     elif mutate == "claim-steal":
-        import yiban.store.queue_store as qs
-        _orig_claim = qs.claim_batch
+        _orig_claim = chain
         _stole = []            # 一次性：每个进程只抢一次，造一次干净的并发双持有
 
         def _steal_claim(owner, day, vshards, now=None, limit=1, elbow_sec=0.0, phones=None):
@@ -164,22 +216,39 @@ def _apply_injections():
                                elbow_sec=elbow_sec, phones=phones)
             if rows or _stole:
                 return rows
-            # 变异：无视分片与 state 门，抢任何"在飞行"的行——模拟"两台执行体都认为该行
-            # 归自己"（如兜底 claim_all 与计划轮并发）。这是 I1 的反面：同一行被第二台
-            # 执行体在持有者在飞时抢走（owner 变、epoch 只增一代），并因此多发一次真登录。
+            # 变异**只放门一处**：把领取 SQL 的 `state='pending'` 放宽成
+            # `state IN ('pending','claimed')`——分片与账号允许集照旧honored。于是
+            # "在飞行（claimed）的行也能被再领走"，即两台执行体同时持有同一行。
+            # 只改这一处是有意的：变异与真码的差**只有互斥判据**，别的一律逐字一致
+            # （否则"变异生效"就混进了别的行为改变，哨兵判不出到底改了哪一条）。
+            shards = tuple(vshards or ())
+            if not shards:
+                return rows
+            ph = ",".join("?" for _ in shards)
+            phone_filter, phone_params = "", []
+            if phones is not None:
+                allowed = tuple(phones)
+                if not allowed:
+                    return rows
+                phone_filter = "AND phone IN (%s) " % ",".join("?" for _ in allowed)
+                phone_params = list(allowed)
             try:
                 cutoff = qs._shift_stamp(now or qs.clock.ts(), -float(elbow_sec or 0.0))
             except ValueError:
                 return None
             sql = ("UPDATE sign_tasks SET state='claimed', owner=?, epoch=epoch+1 "
-                   "WHERE (phone, day) IN (SELECT phone, day FROM sign_tasks "
-                   "WHERE day=? AND state='claimed' AND run_at<=? "
+                   "WHERE (phone, day) IN ("
+                   "SELECT phone, day FROM sign_tasks "
+                   "WHERE day=? AND vshard IN (" + ph + ") "
+                   "AND state IN ('pending','claimed') AND run_at<=? "
+                   + phone_filter +
                    "ORDER BY priority, run_at LIMIT ?) "
                    "RETURNING phone, run_at, attempts, epoch")
             try:
                 conn, lock = qs._queue_conn()
                 with lock:
-                    got = conn.execute(sql, (owner, day, cutoff, int(limit))).fetchall()
+                    got = conn.execute(sql, (owner, day, *shards, cutoff,
+                                             *phone_params, int(limit))).fetchall()
                     conn.commit()
             except Exception:
                 return None
@@ -187,6 +256,7 @@ def _apply_injections():
             return [{"phone": r["phone"], "run_at": r["run_at"], "attempts": r["attempts"],
                      "epoch": r["epoch"]} for r in got]
 
+        _steal_claim._drill = "claim-steal"
         qs.claim_batch = _steal_claim
 
 
@@ -195,6 +265,77 @@ try:
 except Exception:
     import traceback
     traceback.print_exc()
+'''
+
+
+#: 哨兵/同伴子进程脚本：**证明变异真的贴上了**（不证明不变式）。放进临时目录、以
+#: 与执行体**同一套 env**（含 shim 的 PYTHONPATH）拉起，故它看到的是执行体看到的那份
+#: 已注入代码。两种变异各给一个**行为**判据，不只看标记：
+#: - `claim-steal`：在**本次演练的库**上，用同伴身份对"已被持有的那一行"再领一次。
+#:   真码回空（state 非 pending）；变异抢到 ⇒ 互斥判据已不在。这一发同时就是 I1 的
+#:   触发（被抢的那行 owner 变、epoch 只增一代）。
+#: - `reap-off`：在**独立的 scratch 库**上领一行、调收尸、看它是否被回退。
+#:   真码回退（pending）；变异留 claimed ⇒ 收尸已成空操作。
+PROBE_SRC = r'''# -*- coding: utf-8 -*-
+"""哨兵：断言变异已生效（行为面）。"""
+import json
+import os
+
+out = {"mutate": os.environ.get("DRILL_MUTATE", "")}
+from yiban.store import db
+import yiban.store.queue_store as qs
+from yiban.engine import workers
+
+out["claim_marker"] = getattr(qs.claim_batch, "_drill", None)
+out["reap_marker"] = getattr(workers._reap_dead_worker, "_drill", None)
+mutate = out["mutate"]
+
+if mutate == "claim-steal":
+    db.init_db(os.environ["DRILL_PROBE_DB"], env_file=os.environ.get("DRILL_PROBE_ENV") or None,
+               cleanup=False, migrate=True)
+    day = os.environ["DRILL_PROBE_DAY"]
+    phone = os.environ["DRILL_PROBE_PHONE"]
+    conn = db.get_conn()
+    before = conn.execute("SELECT state, owner, epoch FROM sign_tasks WHERE phone=? AND day=?",
+                          (phone, day)).fetchone()
+    out["target_phone"] = phone
+    out["state_before_peer_claim"] = before[0] if before else None
+    out["owner_before_peer_claim"] = before[1] if before else None
+    rows = qs.claim_batch(os.environ["DRILL_PROBE_OWNER"], day,
+                          tuple(json.loads(os.environ["DRILL_PROBE_SHARDS"])),
+                          phones=[phone], limit=1)
+    out["peer_claim_rows"] = [r["phone"] for r in (rows or [])]
+    # 行为判据必须**限定在"被抢的行本来就是 claimed"**：否则同伴只是合法地领了一条
+    # pending 行（真码也会返回它），那不是"互斥已不在"的证据（实测踩到：6 账号下探针
+    # 随手抢了一条屏障之后才被领的行，假绿）。
+    out["behavioral_steal"] = bool(before is not None and before[0] == "claimed" and rows)
+
+if mutate == "reap-off":
+    scratch = os.environ["DRILL_PROBE_SCRATCH_DB"]
+    db.init_db(scratch, env_file=os.environ.get("DRILL_PROBE_ENV") or None,
+               cleanup=False, migrate=True)
+    day = os.environ["DRILL_PROBE_DAY"]
+    phone = "19900000002"
+    past = "2000-01-01 00:00:00.000"
+    conn = db.get_conn()
+    conn.execute(
+        "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, state, "
+        "attempts, lease_until, result, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (phone, day, 0, "", past, 5, "pending", 0, "", "", past))
+    conn.commit()
+    stable = os.environ["DRILL_PROBE_STABLE"]
+    qs.claim_batch(stable + ":sentinel", day, (0,), phones=[phone], limit=1)
+    before = conn.execute("SELECT state FROM sign_tasks WHERE phone=? AND day=?",
+                          (phone, day)).fetchone()
+    workers._reap_dead_worker(0)
+    after = conn.execute("SELECT state FROM sign_tasks WHERE phone=? AND day=?",
+                         (phone, day)).fetchone()
+    out["state_before_reap"] = before[0] if before else None
+    out["state_after_reap"] = after[0] if after else None
+    out["behavioral_reap_noop"] = bool(after and after[0] == "claimed")
+
+with open(os.environ["DRILL_PROBE_OUT"], "w", encoding="utf-8") as fh:
+    json.dump(out, fh, ensure_ascii=False)
 '''
 
 
@@ -212,6 +353,91 @@ def write_shim(shimdir: str) -> None:
     os.makedirs(shimdir, exist_ok=True)
     with open(os.path.join(shimdir, "sitecustomize.py"), "w", encoding="utf-8", newline="\n") as f:
         f.write(SHIM_SRC)
+
+
+def write_probe(tmp: str) -> str:
+    """把哨兵脚本落盘，返回路径（以**同一套含 shim 的 env** 拉起它）。"""
+    path = os.path.join(tmp, "drill_probe.py")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(PROBE_SRC)
+    return path
+
+
+def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
+                   target_prefix: str) -> tuple[bool, str | None]:
+    """等屏障就绪，**同时持续采样**：让 I1 的"换手前样本"（目标持有者）先落定。
+
+    返回 `(就绪?, 被观测到的那一行 phone)`。**必须把这一行回传**：探针只能抢"已经
+    被采样为 claimed 的那一行"，抢别的行会让 I1 的"换手前样本"停在 pending（实测：
+    6 账号时槽位 0 的其它通道在屏障之后又领了几行，探针随手抢了其中一行，监控看到
+    的前一态仍是 pending ⇒ 假绿）。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        monitor.sample()
+        held = sorted(p for p, r in _rows(monitor.dbfile, monitor.day).items()
+                      if r["state"] == "claimed" and r["owner"].startswith(target_prefix))
+        if os.path.exists(ready_file) and held:
+            monitor.sample()          # 让"目标持这一行"这态确实进过采样
+            return True, held[0]
+        time.sleep(SAMPLE_SEC)
+    return False, None
+
+
+def _run_probe(childenv: dict, tmp: str, mutate: str, info: dict,
+               monitor: "Monitor", timeout_sec: float,
+               target_phone: str | None = None) -> dict:
+    """拉起哨兵/同伴子进程（同一套含 shim 的 env）：证明变异已生效，并（claim-steal）
+    在本次演练的库上以同伴身份**抢那一行已被目标持有的行**——这一发就是 I1 的触发。"""
+    probe_path = write_probe(tmp)
+    out = os.path.join(tmp, "probe.out.json")
+    # 哨兵要看到**变异**，但**不得**继承持有闸门／慢注入：否则它领到行后卡在闸门上
+    # 等一个永不来的放行标记（它本身就是"领取者"）。剥掉这几键。
+    env = {k: v for k, v in childenv.items()
+           if k not in ("DRILL_HOLD_SLOT", "DRILL_HOLD_READY", "DRILL_HOLD_RELEASE",
+                        "DRILL_HOLD_MAX", "DRILL_SLOW_ID", "DRILL_SLOW_SEC")}
+    env.update({
+        "DRILL_PROBE_OUT": out,
+        "DRILL_PROBE_DAY": info["day"],
+        "DRILL_PROBE_ENV": info["env_file"],
+        "DRILL_PROBE_STABLE": _worker_id(0),
+        "DRILL_MUTATE": mutate,      # 变异只进哨兵/同伴进程（见 childenv 处注释）
+    })
+    if mutate == "claim-steal":
+        phone = target_phone or ""
+        env.update({
+            "DRILL_PROBE_DB": info["dbfile"],
+            "DRILL_PROBE_OWNER": _worker_id(1) + ":peer",
+            "DRILL_PROBE_SHARDS": json.dumps(
+                list(range(_max_shard(info["dbfile"], info["day"]) + 1))),
+            "DRILL_PROBE_PHONE": phone,
+        })
+    if mutate == "reap-off":
+        env["DRILL_PROBE_SCRATCH_DB"] = os.path.join(tmp, "scratch.db")
+    try:
+        r = subprocess.run([sys.executable, probe_path], env=env, cwd=REPO,
+                           capture_output=True, timeout=timeout_sec)
+    except Exception as e:
+        return {"error": "%s: %s" % (type(e).__name__, e)}
+    if os.path.exists(out):
+        try:
+            with open(out, encoding="utf-8") as f:
+                return json.load(f)
+        except ValueError as e:
+            return {"error": "哨兵输出非 JSON: %s" % e}
+    return {"error": "哨兵无输出", "rc": r.returncode,
+            "stderr": (r.stderr or b"").decode("utf-8", "replace")[-500:]}
+
+
+def _mutation_applied(mutate: str, probe: dict) -> bool:
+    """变异是否真的生效：**标记 ＋ 行为**双判据（行为优先）。"""
+    if mutate == "claim-steal":
+        return (probe.get("claim_marker") == "claim-steal"
+                and bool(probe.get("behavioral_steal")))
+    if mutate == "reap-off":
+        return (probe.get("reap_marker") == "reap-off"
+                and bool(probe.get("behavioral_reap_noop")))
+    return True
 
 
 def start_mock(tmp: str) -> tuple[subprocess.Popen, int]:
@@ -313,9 +539,10 @@ def _rows(dbfile: str, day: str) -> dict[str, dict]:
 class Monitor:
     """连续采样 `sign_tasks`，按两条不变式判红。
 
-    I1：一行的 `state` 连续为 `claimed` 而 `owner` 变了、且 `epoch` 只增一代 ⇒
-    发生了"没经释放的换手"。合法换手必先回 `pending`（收尸换代）再被领（再换代），
-    故 `epoch` 至少增两代；只增一代的换手意味着另一个执行体在持有者还在飞时把它抢了。
+    I1：一行的 `state` 连续两次采样都是 `claimed`，而 `owner` 变了 ⇒ 发生了"没经释放的
+    换手"——持有者还在飞，另一个执行体把它抢走了（合法换手必先回 `pending` 或进终态）。
+    **不用** `epoch` 增量当判据：一次抢占只增一代、两代连抢会增两代，"只增一代"会漏判
+    多代连抢（实测踩到：执行体自己的腿先抢一次、同伴哨兵再抢一次，`epoch` 1→3）。
     I2：一轮结束后不得留下 `state='claimed'` 的行；留下的就是死执行体的在飞行。
     """
 
@@ -332,8 +559,7 @@ class Monitor:
         for phone, row in _rows(self.dbfile, self.day).items():
             cur = (row["state"], row["owner"], int(row["epoch"]))
             prev = self.last.get(phone)
-            if prev and prev[0] == "claimed" and cur[0] == "claimed" \
-                    and cur[1] != prev[1] and cur[2] - prev[2] == 1:
+            if prev and prev[0] == "claimed" and cur[0] == "claimed" and cur[1] != prev[1]:
                 self.i1.append({"phone": phone, "prev": prev, "cur": cur,
                                 "at_sample": self._n})
             if prev != cur:
@@ -512,8 +738,13 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             "PYTHONPATH": shimdir + os.pathsep + REPO,
             "DRILL_MOCK_PORT": str(port),
         })
-        if mutate:
+        if mutate == "reap-off":
+            # 收尸在**监督进程**里发生，故这条变异要进整棵进程树（监督 ＋ 子执行体）。
             childenv["DRILL_MUTATE"] = mutate
+        # claim-steal **不进执行体进程**：它只在哨兵/同伴进程里贴（见 `_run_probe`）。
+        # 理由：变异若同时贴进真执行体的腿，执行体会互相抢自己分片里的在飞行行、
+        # 造出一串与本次断言无关的换手（6 账号时实测把目标行淹掉、I1 假绿）。
+        # 只让"同伴"带上放宽后的领取谓词去抢真执行体持有的那一行，场景干净且确定。
         # slow / kill 目标：默认第 0 槽执行体；`all`/`*` = 对所有执行体生效。
         target_id = _worker_id(0)
         slow_sec = 0.0
@@ -527,13 +758,25 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
                 target_id = _worker_id(int(ident))
             slow_sec = float(sec)
         kill_plan: dict = {"armed": False}
+        # **确定性屏障**：杀注入与 claim-steal 牙齿都要"目标执行体确实持着在飞行"。
+        # 靠轮询 claimed 行是**概率**的（CI 负载下会输），故让目标执行体领到后**卡在
+        # 闸门上**等放行：驱动侧见到就绪标记才动手，不靠调度运气。
+        need_barrier = bool(kill_at == "claim" or mutate == "claim-steal")
+        hold_ready = os.path.join(tmp, "hold.ready")
+        hold_release = os.path.join(tmp, "hold.release")
+        if need_barrier:
+            childenv.update({
+                "DRILL_HOLD_SLOT": "0",
+                "DRILL_HOLD_READY": hold_ready,
+                "DRILL_HOLD_RELEASE": hold_release,
+                "DRILL_HOLD_MAX": str(max(30.0, timeout_sec)),
+            })
         if kill_at:
             kill_plan = {"armed": True, "executor_id": target_id,
                          "owner_prefix": target_id + ":", "killed_pid": None,
                          "killed_phone": None}
             if kill_at == "claim":
                 kill_plan["when"] = "claim"
-                slow_sec = slow_sec or 20.0    # 让目标持住在飞行，杀点在"claim 被观测到"时可命中
             else:
                 kill_plan["when"] = "sec"
                 kill_plan["at"] = time.time() + float(kill_at)
@@ -542,19 +785,46 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             childenv["DRILL_SLOW_SEC"] = str(slow_sec)
         result["target_executor"] = target_id
         result["slow_sec"] = slow_sec
+        result["barrier"] = need_barrier
 
         # 驱动进程自己的 env 也带上（供子进程继承），且驱动不加载 shim（不加 shimdir）。
         os.environ.update(childenv)
 
-        # 慢执行体持有期探针（肘界让位判向）：有慢、无变异时跑一次（可与杀注入同场）。
+        # 持有期探针（肘界让位判向）：只要"目标确实持着在飞行"就跑一次——慢执行体或
+        # 屏障持有都算；变异轮不跑（变异会把判据本身改掉）。
         elbow_probe: dict = {"ran": False}
         on_hold = None
-        if slow_sec and not mutate:
+        if (slow_sec or need_barrier) and not mutate:
             def on_hold(phone, _res=elbow_probe):
                 _res.update({"ran": True})
                 _res.update(_probe_elbow(info["dbfile"], day, phone, target_id + ":"))
         sup = _spawn_supervisor(childenv)
         result["supervisor_pid"] = sup.pid
+
+        # ① 等屏障：目标执行体持着在飞行（同时采样，让 I1 的"换手前样本"落定）。
+        target_phone = None
+        if need_barrier:
+            ready, target_phone = _await_barrier(hold_ready, timeout_sec, monitor,
+                                                 target_id + ":")
+            result["barrier_ready"] = ready
+            result["barrier_phone"] = target_phone
+
+        # ② 变异**哨兵**：先证明变异真的贴上了，再谈不变式红不红。claim-steal 的哨兵
+        #    同时在**本次演练的库**上以同伴身份抢那一行（**屏障观测到的那一行**）——
+        #    这一发就是 I1 的触发。
+        if mutate:
+            probe = _run_probe(childenv, tmp, mutate, info, monitor, timeout_sec,
+                               target_phone=target_phone)
+            result["mutation_probe"] = probe
+            result["mutation_applied"] = _mutation_applied(mutate, probe)
+            monitor.sample()
+
+        # ③ 杀注入：屏障保证此刻目标确实持着在飞行，`_wait_supervisor` 的第一拍即可命中。
+        # ④ claim-steal：抢完之后放行目标，让它走完（其收尾会被 epoch fence 拒）。
+        if need_barrier and mutate == "claim-steal":
+            with contextlib.suppress(OSError):
+                open(hold_release, "w").close()
+
         rc = _wait_supervisor(sup, monitor, kill_plan, time.time() + timeout_sec,
                               on_hold=on_hold, on_hold_owner=target_id + ":")
         result["supervisor_rc"] = rc
@@ -589,8 +859,12 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
 
         # 恢复轮：杀注入后是否再跑一轮，验"被收尸的账号下一轮被领走"（不丢）。
         if (recover is True) or (recover is None and kill_at):
+            # 恢复轮**必须去掉注入键**：留着 `DRILL_HOLD_*` 会让它的槽位 0 领到后再等
+            # 一个永不出现的放行标记（杀注入那一轮不放行），恢复轮被自己拖死。
             rec_env = {k: v for k, v in childenv.items()
-                       if k not in ("DRILL_SLOW_ID", "DRILL_SLOW_SEC")}
+                       if k not in ("DRILL_SLOW_ID", "DRILL_SLOW_SEC",
+                                    "DRILL_HOLD_SLOT", "DRILL_HOLD_READY",
+                                    "DRILL_HOLD_RELEASE", "DRILL_HOLD_MAX")}
             sup2 = _spawn_supervisor(rec_env)
             rc2 = _wait_supervisor(sup2, monitor, {"armed": False},
                                    time.time() + timeout_sec)
@@ -704,6 +978,9 @@ def _cli() -> int:
         "not_timed_out": not res.get("timed_out"),
         "no_extra_signin": (res.get("signin_excess", 1) <= 0),
     }
+    if args.mutate:
+        # 变异run 的判据是「变异生效 ＋ 不变式被打破」，两条分开报。
+        checks["mutation_applied"] = res.get("mutation_applied")
     kill = res.get("kill") or {}
     if args.kill_executor_at:
         checks["kill_fired"] = kill.get("killed_pid") is not None
@@ -715,12 +992,15 @@ def _cli() -> int:
         probe = res.get("elbow_probe") or {}
         checks["elbow_probe_ran"] = bool(probe.get("ran"))
         checks["elbow_no_yield_violation"] = bool(probe.get("no_yield_violation"))
-    ok = all(bool(v) for v in checks.values())
+    # 变异run 期望"红"：这里只报事实，不当失败（牙齿测试断言"红"）。
+    ok = (bool(checks["mutation_applied"]) if args.mutate
+          else all(bool(v) for v in checks.values()))
     shown = {k: res[k] for k in (
         "executors", "accounts", "supervisor_rc", "recover_rc", "done_count",
         "mock_requests", "mock_signin_count", "signin_excess", "i1_ok", "i2_ok",
         "i1_violations", "i2_claimed_left", "terminal_or_pending", "first_round_pending",
-        "kill", "stale_write", "elbow_probe", "mutate") if k in res}
+        "kill", "stale_write", "elbow_probe", "mutate", "barrier", "barrier_ready",
+        "mutation_applied", "mutation_probe") if k in res}
     shown["checks"] = checks
     print(json.dumps(shown, ensure_ascii=False, indent=2))
     print("PASS" if ok else "FAIL")

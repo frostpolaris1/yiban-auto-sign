@@ -16,12 +16,13 @@
    yiban/engine/executor_v3.py（领取/收尾/肘界）。
 关键断言（**不变式**，不是编舞）：
    I1 —— 同一账号在同一时刻不得被两个执行体持有。判据：`sign_tasks` 一行的 `state`
-   连续为 `claimed` 而 `owner` 变了、且 `epoch` 只增一代（合法换手必先回 `pending`，
-   epoch 至少增两代）。
+   连续两次采样都是 `claimed`，而 `owner` 变了（持有者还在飞，另一个执行体把它抢走）。
    I2 —— 任何时刻都不该有"无人持有且不可再领"的账号（那等于漏签）。判据：一轮结束后
    不得留下 `state='claimed'` 的行。
-   有牙证明对协调逻辑做**变异**（`reap-off` 去掉收尸、`claim-steal` 去掉领取互斥），
-   证明两条不变式会红——只写不变式不验牙等于没做。
+   有牙证明分两段、**顺序不可换**：先由**哨兵**断言变异真的贴上了（标记 ＋ 行为），
+   再断言不变式因此变红——否则红的时候分不清"变异没贴"还是"不变式没破"（CI 实测过）。
+   确定性来自**屏障 ＋ 同伴**：目标执行体领到后卡在可注入的持有闸门上等放行，驱动侧
+   见到就绪标记才动手（杀它／让同伴抢它那一行），不靠调度运气。
 依赖：临时 sqlite ＋ 真子进程（POSIX：SIGKILL ／ `/proc` 查进程环境）；本地假上游；
    传输层改写结构性保证零外联。非 POSIX 平台整组 skip。
 """
@@ -46,8 +47,6 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
     #: 用例规模压到最小：2 执行体 × 4 账号，判据不变、墙钟最短。
     EXECUTORS = 2
     ACCOUNTS = 4
-    #: 杀点用的短持有（秒）：让"在飞行"可被观测到，又不拖长用例。
-    HOLD_SEC = 4
 
     def _run(self, **kw):
         kw.setdefault("executors", self.EXECUTORS)
@@ -69,7 +68,7 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
 
     def test_kill_reaps_recovers_stale_write_and_yields(self):
         """SIGKILL 在飞行持有者：收尸（回退待领＋epoch+1）、旧代写被 fence、恢复轮不丢。"""
-        res = self._run(kill_at="claim", slow="0:%d" % self.HOLD_SEC, stale_write=True)
+        res = self._run(kill_at="claim", stale_write=True)
         kill = res["kill"]
         self.assertIsNotNone(kill.get("killed_pid"), "杀点必须真的命中一个执行体子进程")
         phone = kill["killed_phone"]
@@ -100,12 +99,17 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         self.assertTrue(probe["no_yield_violation"])
 
     # ---- 有牙证明：对协调逻辑变异，两条不变式必须红 ----
+    #
+    # 两段断言**分开**，顺序不可换：
+    # ① 哨兵：变异真的贴上并改变了行为——不过就报"**变异未生效**"，与不变式无关；
+    # ② 不变式：因此变红。
+    # 这样红的时候一眼可分"变异没贴"与"不变式没被打破"（CI 实测过这两种被混成一条）。
 
     def test_teeth_i2_reap_off_leaves_claimed_row(self):
         """变异①：去掉轮末收尸 ⇒ 被杀执行体的在飞行留在 claimed ⇒ I2 红。"""
-        res = self._run(kill_at="claim", slow="0:%d" % self.HOLD_SEC,
-                        mutate="reap-off", recover=False)
-        self.assertFalse(res["i2_ok"], "去掉收尸后 I2 必须红")
+        res = self._run(kill_at="claim", mutate="reap-off", recover=False)
+        self._assert_mutation_applied(res, "reap-off")
+        self.assertFalse(res["i2_ok"], "收尸已成空操作，I2 必须红")
         self.assertTrue(res["i2_claimed_left"],
                         "必须留下 state='claimed' 的行（漏签形态）")
         self.assertFalse(res["terminal_or_pending"],
@@ -115,12 +119,32 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
                       "留下的必须正是被杀执行体那一行")
 
     def test_teeth_i1_claim_steal_double_holds(self):
-        """变异②：去掉领取互斥（可抢在飞行）⇒ 同一账号被两个执行体持有 ⇒ I1 红。"""
-        res = self._run(slow="all:%d" % self.HOLD_SEC, mutate="claim-steal")
-        self.assertFalse(res["i1_ok"], "去掉领取互斥后 I1 必须红；违规=%s" % res["i1_violations"])
-        self.assertTrue(res["i1_violations"], "必须观测到'没经释放的换手'样本")
-        self.assertGreater(res["signin_excess"], 0,
-                           "并发双持有必然多发一次真登录（超额=%s）" % res["signin_excess"])
+        """变异②：去掉领取互斥（可抢在飞行）⇒ 同一账号被两个执行体持有 ⇒ I1 红。
+
+        确定性来自**屏障 ＋ 同伴**：屏障让真执行体 A 持着在飞行并卡住；同伴进程（带
+        放宽后的领取谓词、用执行体 B 的身份）去抢**A 正持有的那一行**。同伴抢成功后
+        监控必然看到 `claimed(A)` → `claimed(B)` 的换手——不再指望两条腿恰好撞上。
+        """
+        res = self._run(mutate="claim-steal")
+        self._assert_mutation_applied(res, "claim-steal")
+        probe = res["mutation_probe"]
+        self.assertEqual(probe.get("state_before_peer_claim"), "claimed",
+                         "哨兵前提：目标行在同伴动手前**本就被持有**（否则'抢'只是合法领取）")
+        self.assertFalse(res["i1_ok"], "领取互斥已不在，I1 必须红；违规=%s"
+                         % res["i1_violations"])
+        viol_phones = {v["phone"] for v in res["i1_violations"]}
+        self.assertIn(res.get("barrier_phone"), viol_phones,
+                      "违规必须落在屏障观测到的那一行（确定性：同伴抢的就是这一行）")
+
+    def _assert_mutation_applied(self, res, mutate):
+        """哨兵断言：变异已生效。不过则报**变异未生效**（与不变式红与否无关）。"""
+        probe = res.get("mutation_probe") or {}
+        self.assertIn("mutation_applied", res, "靶场未回哨兵结论（mutation_applied 缺失）")
+        self.assertTrue(
+            res["mutation_applied"],
+            "变异未生效：DRILL_MUTATE=%s 未真正改变被测函数（哨兵结论=%s）——"
+            "此时不变式绿是**假绿**，与'不变式没被打破'是两件事"
+            % (mutate, probe))
 
 
 if __name__ == "__main__":
