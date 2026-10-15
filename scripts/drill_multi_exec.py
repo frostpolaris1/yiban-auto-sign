@@ -277,6 +277,16 @@ def _apply_injections():
         _steal_claim._drill = "claim-steal"
         qs.claim_batch = _steal_claim
 
+    elif mutate == "window-off":
+        # 把窗口门钉成"永远已关"。执行体的通道（`_lane`）与协调循环都在**领取之前**
+        # 判它（`schedule._window_closed`）⇒ 本轮零领取、零真登录、监督进程 rc=2。
+        # 用途只有一个：给"确实发生过"守卫造一个**确定性的"什么都没跑"**场景，
+        # 证明该守卫真的会红（它不是被测性质，是守卫的牙）。
+        from yiban.engine import schedule as _sched
+        _closed = lambda *_a, **_k: True  # noqa: E731
+        _closed._drill = "window-off"
+        _sched._window_closed = _closed
+
 
 try:
     _apply_injections()
@@ -352,14 +362,32 @@ if mutate == "reap-off":
     out["state_after_reap"] = after[0] if after else None
     out["behavioral_reap_noop"] = bool(after and after[0] == "claimed")
 
+if mutate == "window-off":
+    # 行为判据：本轮的窗口是**整日开着**的（见 `seed`），真码下 `_window_closed` 必为假；
+    # 哨兵看到真 ⇒ 变异确已把窗口门钉死。这是"什么都没跑"的**原因**证据，与"跑没跑"的
+    # 事实（零真登录）分开报。
+    from yiban import clock as _clock
+    from yiban.engine import schedule as _sched
+    out["window_marker"] = getattr(_sched._window_closed, "_drill", None)
+    out["window_closed_forced"] = bool(
+        _sched._window_closed(_sched._schedule_config(), _clock.now()))
+
 with open(os.environ["DRILL_PROBE_OUT"], "w", encoding="utf-8") as fh:
     json.dump(out, fh, ensure_ascii=False)
 '''
 
 
 def now_dt() -> datetime.datetime:
-    # 业务本地时间（naive）：与引擎 `yiban.clock` 同一口径，窗口/业务日都按北京时间。
-    return datetime.datetime.now()  # noqa: DTZ005
+    """业务时间（naive）：与引擎 `yiban.clock` **同一口径**（固定 +8 北京时间）。
+
+    **不得用 `datetime.datetime.now()`**：那是宿主本地时区。CI（ubuntu runner）是 UTC，
+    而引擎一律按北京时间判窗口，两者差 8 小时。用宿主本地时区写出的窗口，在引擎看来
+    永远"已结束"：执行体零领取、零真登录、监督进程 rc=2，两条不变式天然全绿（假绿），
+    牙齿测试红得与"被测性质"无关。本地之所以看起来正常，只因本机时区恰好是北京时间
+    （与 `clock` 逐秒相等）——不是靶场做对了什么（实测：把宿主时区设成 UTC 即复现）。
+    """
+    from yiban import clock
+    return clock.now()
 
 
 def make_manifest(n: int) -> str:
@@ -409,13 +437,19 @@ def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
 
 
 def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
-                  sup_log: str = "", proc: "subprocess.Popen | None" = None) -> dict:
+                  sup_log: str = "", proc: "subprocess.Popen | None" = None,
+                  engine_log: str = "") -> dict:
     """屏障不就绪时**当场取证**：两条前提各报事实，供一眼定位。
 
     就绪需要同时满足两件事，修法完全不同：
       ① 目标执行体写下了就绪标记（＝注入真的贴上了、且它确实领到了行）；
       ② 库里能看见"目标持有某一行"（＝双方对 owner 身份的口径一致）。
-    再加一样**头号证据**：监督进程的输出去向（执行体起不来会在那里留回溯）。
+    再加两样**头号证据**：监督进程的输出去向与**引擎自己的按天日志**。
+
+    为什么必须带 `engine_log`：引擎把日志写进 `YIBAN_LOG_FILE` 派生的按天文件
+    （`sign-<日期>.log`），**不写 stdout**。故 `supervisor_log_tail` 为空是**常态**，
+    不构成"没跑"的证据（实测踩到：把空 stdout 读成"什么都没发生"）。真证据在
+    `engine_log_tail`（窗口关闭时那里有"签到时段已结束，跳过执行"与子进程退出码）。
     """
     diag: dict = {"ready_file": ready_file, "target_id": target_id,
                   "target_prefix": target_id + ":"}
@@ -444,6 +478,12 @@ def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
                 diag["supervisor_log_tail"] = fh.read()[-3000:]
         except OSError as e:
             diag["supervisor_log_error"] = "%s: %s" % (type(e).__name__, e)
+    if engine_log and os.path.exists(engine_log):
+        try:
+            with open(engine_log, encoding="utf-8", errors="replace") as fh:
+                diag["engine_log_tail"] = fh.read()[-3000:]
+        except OSError as e:
+            diag["engine_log_error"] = "%s: %s" % (type(e).__name__, e)
     return diag
 
 
@@ -500,6 +540,10 @@ def _mutation_applied(mutate: str, probe: dict) -> bool:
     if mutate == "reap-off":
         return (probe.get("reap_marker") == "reap-off"
                 and bool(probe.get("behavioral_reap_noop")))
+    if mutate == "window-off":
+        # 标记在窗口门上（不是 `claim_batch` 上），故标记与行为**都要**判。
+        return (probe.get("window_marker") == "window-off"
+                and bool(probe.get("window_closed_forced")))
     return True
 
 
@@ -534,8 +578,13 @@ def seed(tmp: str, accounts: int, executors: int, manifest: str) -> dict:
         "YIBAN_DB_FILE": dbfile,
         "YIBAN_STATE_DIR": state,
         "YIBAN_LOG_FILE": os.path.join(tmp, "sign.log"),
-        "YIBAN_SIGN_START": (t - datetime.timedelta(minutes=2)).strftime("%H:%M"),
-        "YIBAN_SIGN_END": (t + datetime.timedelta(minutes=40)).strftime("%H:%M"),
+        # 窗口取**当天整日**（00:00~23:59，北京时间）。靶场只要求"窗口开着"——它验的是
+        # 协调层（领取/收尾/收尸/换代/肘界），不验窗口边界。为什么不用 `now±delta`：
+        # ① 那会把窗口绑在"宿主本地时区"上（见 `now_dt` 的说明；CI 上直接判窗口已结束）；
+        # ② `now±delta` 在临近午夜时跨零点，`window.parse_window` 判非法并回退默认窗口
+        #    （06:30~07:50），窗口随即关闭。整日窗口对任何取时都合法且开着，两坑一起消掉。
+        "YIBAN_SIGN_START": "00:00",
+        "YIBAN_SIGN_END": "23:59",
         "YIBAN_SATURDAY_SIGN": "1", "YIBAN_SUNDAY_SIGN": "1", "YIBAN_GLOBAL_PAUSE": "0",
         "YIBAN_ACCOUNT_GAP_MAX": "0", "YIBAN_SIGN_ORDER": "sequence",
         "YIBAN_SIGN_DIST": "front", "YIBAN_WINDOW_EDGE_FRONT_SEC": "0",
@@ -812,8 +861,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             "PYTHONPATH": shimdir + os.pathsep + REPO,
             "DRILL_MOCK_PORT": str(port),
         })
-        if mutate == "reap-off":
-            # 收尸在**监督进程**里发生，故这条变异要进整棵进程树（监督 ＋ 子执行体）。
+        if mutate in ("reap-off", "window-off"):
+            # 这两条变异必须进整棵进程树：收尸在**监督进程**里发生（reap-off）；
+            # 窗口门在**执行体**的领取之前判（window-off）。claim-steal 反之（见下）。
             childenv["DRILL_MUTATE"] = mutate
         # claim-steal **不进执行体进程**：它只在哨兵/同伴进程里贴（见 `_run_probe`）。
         # 理由：变异若同时贴进真执行体的腿，执行体会互相抢自己分片里的在飞行行、
@@ -878,6 +928,12 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
                 _res.update({"ran": True})
                 _res.update(_probe_elbow(info["dbfile"], day, phone, target_id + ":"))
         sup_log = os.path.join(tmp, "supervisor.log")
+        # 引擎自己的**按天日志**路径：格式的唯一事实源在 `cli_support._signin_log_path`
+        # （按 `YIBAN_LOG_FILE` 派生），此处不重抄一遍 `sign-<日期>.log`。重抄一份既是
+        # shared-facts 名册「sign-<day>.log」键要抓的重复，也会在格式改版后指向空气。
+        # 此刻 `os.environ` 已并进 childenv（含 `YIBAN_LOG_FILE`）。
+        from yiban.engine import cli_support as _cli_support
+        engine_log = _cli_support._signin_log_path()
         sup = _spawn_supervisor(childenv, sup_log)
         result["supervisor_pid"] = sup.pid
 
@@ -892,10 +948,12 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             if not ready:
                 # 不就绪时**当场取证**：是"就绪标记没写出来"（注入没贴上 / 执行体没起来）
                 # 还是"写了但库里看不到目标持有者"（身份对不上）——两者的修法完全不同，
-                # 不许靠猜（CI 上已因猜错方向白跑两轮）。监督进程的输出是这里的头号证据：
-                # 执行体起不来会留下回溯。
+                # 不许靠猜（CI 上已因猜错方向白跑两轮）。头号证据有两处：监督进程的
+                # stdout（回溯）与**引擎自己的按天日志**（窗口关闭等业务判定的唯一落点，
+                # stdout 上没有）。
                 result["barrier_diag"] = _barrier_diag(
-                    hold_ready, info["dbfile"], day, target_id, sup_log, sup)
+                    hold_ready, info["dbfile"], day, target_id, sup_log, sup,
+                    engine_log=engine_log)
             result["barrier_phone"] = target_phone
 
         # ② 变异**哨兵**：先证明变异真的贴上了，再谈不变式红不红。claim-steal 的哨兵
@@ -973,6 +1031,13 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         result["mock_signin_count"] = sum(
             1 for r in trace if r.get("path", "").endswith("/signIn"))
         result["done_count"] = sum(1 for r in rows.values() if r["state"] == "done")
+        # **"到底跑了没有"的事实字段**（供测试的"确实发生过"守卫）：真领取行数与真签到
+        # 次数。两者都为 0 就是"靶场什么都没跑"——此时两条不变式天然全绿（假绿），
+        # 只断言"不变式红"会把"没跑"误报成"有牙"。
+        # `claimed_rows_seen`：监控采样期间**确实进过 claimed** 的行（领取真的发生过的证据）；
+        # `mock_signin_count`：假上游收到的 `/signIn` 真登录次数（零外联，只可能是子进程发的）。
+        result["claimed_rows_seen"] = sorted({t["phone"] for t in monitor.trace
+                                              if t["state"] == "claimed"})
         # 假上游按隐私口径**不记手机号**（见 fake_yiban_server 的 record）：故"同一账号
         # 被签了几次"不能按行分账号数。用**总次数 − 账号数**当超额重复登录的观测量：
         # 正常一轮（＋恢复轮）每账号恰好一次 ⇒ 超额 ≤ 0；变异放行并发双持有 ⇒ 超额 > 0。
@@ -1050,7 +1115,8 @@ def _cli() -> int:
     ap.add_argument("--kill-executor-at", default="", metavar="claim|SEC")
     ap.add_argument("--slow-executor", default="", metavar="IDENTITY:SEC")
     ap.add_argument("--stale-write", action="store_true")
-    ap.add_argument("--mutate", default="", choices=["", "reap-off", "claim-steal"])
+    ap.add_argument("--mutate", default="", choices=["", "reap-off", "claim-steal",
+                                                     "window-off"])
     ap.add_argument("--timeout-sec", type=float, default=120)
     ap.add_argument("--evidence-dir", default="")
     ap.add_argument("--keep-tree", action="store_true")
@@ -1091,7 +1157,8 @@ def _cli() -> int:
     shown = {k: res[k] for k in (
         "executors", "accounts", "supervisor_rc", "recover_rc", "done_count",
         "mock_requests", "mock_signin_count", "signin_excess", "i1_ok", "i2_ok",
-        "i1_violations", "i2_claimed_left", "terminal_or_pending", "first_round_pending",
+        "claimed_rows_seen", "i1_violations", "i2_claimed_left", "terminal_or_pending",
+        "first_round_pending",
         "kill", "stale_write", "elbow_probe", "mutate", "barrier", "barrier_ready",
         "mutation_applied", "mutation_probe", "barrier_diag") if k in res}
     shown["checks"] = checks

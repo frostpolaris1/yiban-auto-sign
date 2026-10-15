@@ -19,8 +19,12 @@
    连续两次采样都是 `claimed`，而 `owner` 变了（持有者还在飞，另一个执行体把它抢走）。
    I2 —— 任何时刻都不该有"无人持有且不可再领"的账号（那等于漏签）。判据：一轮结束后
    不得留下 `state='claimed'` 的行。
-   有牙证明分两段、**顺序不可换**：先由**哨兵**断言变异真的贴上了（标记 ＋ 行为），
-   再断言不变式因此变红——否则红的时候分不清"变异没贴"还是"不变式没破"（CI 实测过）。
+   断言顺序**三段不可换**：① **"确实发生过"**（`_assert_round_ran`：真登录次数与真签成
+   行数达阈）→ ② **变异贴上**（哨兵断言标记 ＋ 行为）→ ③ **不变式因此变红**。
+   少了①，"靶场什么都没跑"会让两条不变式**天然全绿**，此时"不变式必须红"的红/绿都与
+   被测性质无关（CI 实测：`TZ=UTC` 时窗口被宿主本地时区写错，执行体零领取）。
+   ①的**牙**由 `test_did_run_guard_has_teeth_when_nothing_runs` 证明：变异 `window-off`
+   让靶场确定性地什么都不跑，①必须红。
    确定性来自**屏障 ＋ 同伴**：目标执行体领到后卡在可注入的持有闸门上等放行，驱动侧
    见到就绪标记才动手（杀它／让同伴抢它那一行），不靠调度运气。
 依赖：临时 sqlite ＋ 真子进程（POSIX：SIGKILL ／ `/proc` 查进程环境）；本地假上游；
@@ -59,6 +63,8 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
     def test_baseline_two_executors_invariants_green(self):
         """两个执行体领同一批账号：I1／I2 绿、全部了结、无多余真登录。"""
         res = self._run()
+        # **先断言"确实发生过"**：不然"什么都没跑"也会让两条不变式天然全绿。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
         self.assertTrue(res["i1_ok"], "I1 必须绿：无并发双持有；违规=%s" % res["i1_violations"])
         self.assertTrue(res["i2_ok"], "I2 必须绿：无残留 claimed；残留=%s" % res["i2_claimed_left"])
         self.assertEqual(res["done_count"], self.ACCOUNTS, "每个账号都应签成")
@@ -69,6 +75,8 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
     def test_kill_reaps_recovers_stale_write_and_yields(self):
         """SIGKILL 在飞行持有者：收尸（回退待领＋epoch+1）、旧代写被 fence、恢复轮不丢。"""
         res = self._run(kill_at="claim", stale_write=True)
+        # **先断言"确实发生过"**：杀点命中与全量签成都以"靶场真跑起来"为前提。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
         self._assert_barrier_ready(res)
         kill = res["kill"]
         self.assertIsNotNone(kill.get("killed_pid"), "杀点必须真的命中一个执行体子进程")
@@ -109,6 +117,10 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
     def test_teeth_i2_reap_off_leaves_claimed_row(self):
         """变异①：去掉轮末收尸 ⇒ 被杀执行体的在飞行留在 claimed ⇒ I2 红。"""
         res = self._run(kill_at="claim", mutate="reap-off", recover=False)
+        # 顺序不可换：先"确实发生过"，再"变异贴上"，最后"不变式红"。
+        # I2 的变异轮**不会**全量签成（被杀者的行本就要留在 claimed），故"确实发生过"
+        # 只要求"至少一次真登录 ＋ 至少一行真签成"——它挡的是"什么都没跑"。
+        self._assert_round_ran(res, min_signins=1, min_done=1)
         self._assert_barrier_ready(res)
         self._assert_mutation_applied(res, "reap-off")
         self.assertFalse(res["i2_ok"], "收尸已成空操作，I2 必须红")
@@ -128,6 +140,8 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         监控必然看到 `claimed(A)` → `claimed(B)` 的换手——不再指望两条腿恰好撞上。
         """
         res = self._run(mutate="claim-steal")
+        # 顺序不可换：先"确实发生过"，再"变异贴上"，最后"不变式红"。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
         self._assert_barrier_ready(res)
         self._assert_mutation_applied(res, "claim-steal")
         probe = res["mutation_probe"]
@@ -150,6 +164,52 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
             "屏障未就绪：目标执行体没能在 %s 秒内'领到一行并持着在飞行'——"
             "本组断言的确定性前提不成立，后面每条断言都不作数。取证=%s"
             % (drill.BARRIER_WAIT_SEC, res.get("barrier_diag")))
+
+    def _assert_round_ran(self, res, *, min_signins, min_done):
+        """**"到底跑了没有"守卫**：靶场必须真的跑起来，再谈不变式红不红。
+
+        为什么必须排在"不变式必须红"之前：靶场**什么都没跑**时，两条不变式**天然全绿**
+        （无领取 ⇒ 无并发双持有、无残留 claimed）。此时"不变式必须红"的断言照样会失败，
+        但红的原因**不是**被测性质——把"靶场没跑"误报成"有牙"，这比没有断言更坏
+        （CI 实测：`TZ=UTC` 时窗口判关，执行体零领取，两条不变式全绿）。
+
+        口径（**事实字段**，都来自 `drill.run_drill`）：
+        - `mock_signin_count`：假上游收到的 `/signIn` **真登录**次数。靶场零外联，这些
+          请求只可能是执行体子进程发的；
+        - `done_count`：库内终态为 `done` 的行数（真签成的账号数）。
+        """
+        self.assertGreaterEqual(
+            res.get("mock_signin_count", 0), min_signins,
+            "'确实发生过'守卫：本轮真登录 %s 次 < %d 次——靶场没跑起来，"
+            "后面'不变式红'不作数（此刻不变式绿是**假绿**）"
+            % (res.get("mock_signin_count"), min_signins))
+        self.assertGreaterEqual(
+            res.get("done_count", 0), min_done,
+            "'确实发生过'守卫：本轮真签成 %s 行 < %d 行——靶场没跑起来，"
+            "后面'不变式红'不作数（此刻不变式绿是**假绿**）"
+            % (res.get("done_count"), min_done))
+
+    def test_did_run_guard_has_teeth_when_nothing_runs(self):
+        """守卫的**牙**：让靶场确定性地"什么都不跑"，`_assert_round_ran` 必须红。
+
+        造法＝变异 `window-off`：把窗口门钉成"永远已关"。执行体在**领取之前**就判窗口，
+        于是零领取、零真登录、监督进程 rc=2——正是 CI 上真实发生过的形状
+        （见 `now_dt` 的说明：`TZ=UTC` 时窗口被宿主本地时区写错，引擎判其已结束）。
+        靶场回 `mutation_probe.window_closed_forced=True` 证明变异确已贴上（与"跑没跑"
+        分开报）。本用例证明：这条守卫在"什么都没跑"时**真的会红**，不是永远绿的摆设。
+        """
+        res = self._run(mutate="window-off", recover=False)
+        self.assertTrue(res.get("mutation_applied"),
+                        "变异 window-off 必须真的贴上；哨兵=%s" % res.get("mutation_probe"))
+        # "什么都没跑"的事实形状：零真登录、零签成、零领取，而两条不变式天然全绿。
+        self.assertEqual(res["mock_signin_count"], 0, "窗口门恒关时不该有任何真登录")
+        self.assertEqual(res["done_count"], 0)
+        self.assertEqual(res["claimed_rows_seen"], [], "不该有行被领取")
+        self.assertTrue(res["i1_ok"] and res["i2_ok"],
+                        "无领取时两条不变式天然全绿——这正是'假绿'的形状")
+        # 守卫必须红（用与牙齿测试同一套口径与阈值）：
+        with self.assertRaises(AssertionError):
+            self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
 
     def _assert_mutation_applied(self, res, mutate):
         """哨兵断言：变异已生效。不过则报**变异未生效**（与不变式红与否无关）。"""
