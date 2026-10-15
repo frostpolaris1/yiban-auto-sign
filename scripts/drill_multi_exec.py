@@ -80,6 +80,12 @@ MOCK = os.path.join(REPO, "tests", "fake_yiban_server.py")
 #: 采样间隔（秒）：I1 的"没经释放的换手"要求采样足够密才不误判为合法换手。
 SAMPLE_SEC = 0.02
 
+#: 持有闸门的硬上限（秒）。闸门是"等驱动动手"的：正常一两拍就放行。给个上限是**兜底**——
+#: 驱动那一手若没落地（最典型：`find_child_pids` 没找到 pid ⇒ 杀注入放空枪），持有者不能
+#: 一直卡到用例超时。**与用例的 `timeout_sec` 无关**：卡满一次就会吃掉 CI 作业的整份预算，
+#: 表现成"作业被取消"，真因被藏住（实测踩到）。
+HOLD_MAX_SEC = 45.0
+
 #: 传输层改写 ＋ 可选变异的 shim。作为 `sitecustomize.py` 落到 shim 目录、
 #: 进 `PYTHONPATH`，被监督进程与每个执行体子进程在**解释器启动时**导入。
 #:
@@ -181,11 +187,17 @@ def _apply_injections():
         _ready = os.environ.get("DRILL_HOLD_READY", "")
         _release = os.environ.get("DRILL_HOLD_RELEASE", "")
         _max = float(os.environ.get("DRILL_HOLD_MAX", "60") or 60)
+        _held = []             # **一次性**：只卡第一行（见下）
 
         def _hold_claim(owner, day, vshards, now=None, limit=1, elbow_sec=0.0, phones=None):
             rows = _inner_h(owner, day, vshards, now=now, limit=limit,
                             elbow_sec=elbow_sec, phones=phones)
-            if rows:
+            # **只卡一次**：屏障的用途是"让驱动有机会在**某一刻**动手"（杀它 / 让同伴
+            # 抢它）。若每次领取都卡，一个 N 账号的用例就要等 N × 上限——实测 4 账号
+            # 一轮 146 秒，把 CI 作业预算吃光（真因被藏进"作业被取消"）。一次性即可：
+            # 驱动要观测的"持有者在飞"这一态，第一行就给了。
+            if rows and not _held:
+                _held.append(True)
                 # 领到了：先让外界知道"我持着在飞行"，再等放行——确定性屏障。
                 try:
                     with open(_ready, "w") as fh:
@@ -769,7 +781,12 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
                 "DRILL_HOLD_SLOT": "0",
                 "DRILL_HOLD_READY": hold_ready,
                 "DRILL_HOLD_RELEASE": hold_release,
-                "DRILL_HOLD_MAX": str(max(30.0, timeout_sec)),
+                # **持有必须有硬上限**：闸门是"等驱动动手"的，正常一两拍就放行。若驱动
+                # 那一手没落地（如 `find_child_pids` 没找到 pid ⇒ 杀注入放空枪），**不能**
+                # 让它一直卡到用例超时——实测：卡满一次就把 CI 的 10 分钟作业预算吃光，
+                # 表现成"作业被取消"，看不出真因。故上限取 HOLD_MAX_SEC（秒），与用例
+                # 超时无关。
+                "DRILL_HOLD_MAX": str(HOLD_MAX_SEC),
             })
         if kill_at:
             kill_plan = {"armed": True, "executor_id": target_id,
@@ -802,9 +819,11 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         result["supervisor_pid"] = sup.pid
 
         # ① 等屏障：目标执行体持着在飞行（同时采样，让 I1 的"换手前样本"落定）。
+        #    等待上限＝持有闸门的硬上限：持有者 45 秒后自行放行，那之后 `held` 必然空，
+        #    再等就是白等（且会把用例拖到超时，把真因藏进"作业被取消"）。
         target_phone = None
         if need_barrier:
-            ready, target_phone = _await_barrier(hold_ready, timeout_sec, monitor,
+            ready, target_phone = _await_barrier(hold_ready, HOLD_MAX_SEC, monitor,
                                                  target_id + ":")
             result["barrier_ready"] = ready
             result["barrier_phone"] = target_phone
@@ -813,7 +832,11 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         #    同时在**本次演练的库**上以同伴身份抢那一行（**屏障观测到的那一行**）——
         #    这一发就是 I1 的触发。
         if mutate:
-            probe = _run_probe(childenv, tmp, mutate, info, monitor, timeout_sec,
+            # 哨兵的超时上限＝持有闸门上限：claim-steal 的同伴必须**在目标还持着的时候**
+            # 抢那一行，而目标最多持 HOLD_MAX_SEC 就自行放行。给哨兵超过这个数的预算，
+            # 只会让"放行后再抢"变成合法领取——判据失效，且白等。
+            probe = _run_probe(childenv, tmp, mutate, info, monitor,
+                               min(timeout_sec, HOLD_MAX_SEC),
                                target_phone=target_phone)
             result["mutation_probe"] = probe
             result["mutation_applied"] = _mutation_applied(mutate, probe)

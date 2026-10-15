@@ -69,6 +69,7 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
     def test_kill_reaps_recovers_stale_write_and_yields(self):
         """SIGKILL 在飞行持有者：收尸（回退待领＋epoch+1）、旧代写被 fence、恢复轮不丢。"""
         res = self._run(kill_at="claim", stale_write=True)
+        self._assert_barrier_ready(res)
         kill = res["kill"]
         self.assertIsNotNone(kill.get("killed_pid"), "杀点必须真的命中一个执行体子进程")
         phone = kill["killed_phone"]
@@ -108,6 +109,7 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
     def test_teeth_i2_reap_off_leaves_claimed_row(self):
         """变异①：去掉轮末收尸 ⇒ 被杀执行体的在飞行留在 claimed ⇒ I2 红。"""
         res = self._run(kill_at="claim", mutate="reap-off", recover=False)
+        self._assert_barrier_ready(res)
         self._assert_mutation_applied(res, "reap-off")
         self.assertFalse(res["i2_ok"], "收尸已成空操作，I2 必须红")
         self.assertTrue(res["i2_claimed_left"],
@@ -126,6 +128,7 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         监控必然看到 `claimed(A)` → `claimed(B)` 的换手——不再指望两条腿恰好撞上。
         """
         res = self._run(mutate="claim-steal")
+        self._assert_barrier_ready(res)
         self._assert_mutation_applied(res, "claim-steal")
         probe = res["mutation_probe"]
         self.assertEqual(probe.get("state_before_peer_claim"), "claimed",
@@ -135,6 +138,18 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         viol_phones = {v["phone"] for v in res["i1_violations"]}
         self.assertIn(res.get("barrier_phone"), viol_phones,
                       "违规必须落在屏障观测到的那一行（确定性：同伴抢的就是这一行）")
+
+    def _assert_barrier_ready(self, res):
+        """屏障必须就绪：它是本组确定性断言的**前提**。
+
+        不就绪时不许继续往下断言——那时"不变式绿"或"杀点没命中"都不是被测性质
+        的结论，而是前提没搭起来。**先报这一条**，红的时候一眼看出卡在哪。
+        """
+        self.assertTrue(
+            res.get("barrier_ready"),
+            "屏障未就绪：目标执行体没能在 %s 秒内'领到一行并持着在飞行'——"
+            "本组断言的确定性前提不成立，后面每条断言都不作数"
+            % drill.HOLD_MAX_SEC)
 
     def _assert_mutation_applied(self, res, mutate):
         """哨兵断言：变异已生效。不过则报**变异未生效**（与不变式红与否无关）。"""
