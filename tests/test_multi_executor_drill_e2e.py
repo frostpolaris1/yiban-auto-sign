@@ -58,7 +58,18 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         # 全量并发跑测（-n auto）时机器争用重：靶场拉起的是**真子进程**，超时给足，
         # 否则夹具被饿死会让"注入没跑到"伪装成"不变式没红"。
         kw.setdefault("timeout_sec", 300)
-        return drill.run_drill(**kw)
+        # **搭建失败的有界重试**（只重试"什么都没跑"，不重试任何断言）。
+        #
+        # 为什么需要：靶场是**真子进程**（监督进程 ＋ 执行体 ＋ 假上游），CI 上它与
+        # 约 1000 条用例同抢 2~4 核。实测（CI 北京时间 00:31 那轮）偶发整轮零真登录——
+        # `mock_signin_count=0`。那是**搭建**没起来，不是被测性质出了问题。
+        # 判据严格限定在"零真登录"这一个事实上：一旦有真登录发生，绝不重试，
+        # 断言照旧全跑（所以这不会把任何"不变式没红"洗成绿）。
+        # 重试上限 1 次：再多会把 CI 作业的墙钟推过它的上限（见工单 `i9gl`）。
+        res = drill.run_drill(**kw)
+        if not res.get("mock_signin_count"):
+            res = drill.run_drill(**kw)
+        return res
 
     def test_baseline_two_executors_invariants_green(self):
         """两个执行体领同一批账号：I1／I2 绿、全部了结、无多余真登录。"""
