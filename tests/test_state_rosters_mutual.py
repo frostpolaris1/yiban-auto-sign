@@ -73,6 +73,12 @@ NON_STATE_FIXED_NAME = {
     "manifest.json": "web/services/vue_assets.py 的前端构建产物清单（静态资源，非状态件）",
     "registry.json": "config/registry.json 是配置名册（104 第一批·A）：入库的源码数据件，"
                      "由 yiban/config_loader.py 读；不落状态目录、不进清理与备份名册",
+    "mock.jsonl": "scripts/drill_multi_exec.py 的演练假上游请求轨迹：落**调用方指定的**"
+                  "证据目录或临时目录，不落状态目录、不进清理/备份名册",
+    "monitor.jsonl": "scripts/drill_multi_exec.py 的演练协调面采样轨迹：同上（调用方指定的"
+                     "证据目录，不进状态目录）",
+    "run.json": "scripts/drill_multi_exec.py 的演练本轮结果摘要：同上（调用方指定的证据目录，"
+                "不进状态目录）",
 }
 #: 固定名状态件的枚举判据：抓"小写 token + 状态件扩展名"的字面量。
 #: 与 `tests/test_state_gc.py` 的按日扫描互补——非按日件从原理上逃过按日正则。
