@@ -141,7 +141,17 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         """
         res = self._run(mutate="claim-steal")
         # 顺序不可换：先"确实发生过"，再"变异贴上"，最后"不变式红"。
-        self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
+        #
+        # **口径为什么是 `ACCOUNTS - 1` 而不是 `ACCOUNTS`**（`AGENTS.md §一.6a` 测不变式不测编舞）：
+        # 这一齿**故意**让同伴抢走一行、且同伴只领不签 ⇒ 那一行的收尾会被 epoch fence 掉。
+        # 它最终成不成 `done`，取决于"是否恰好被某个真执行体接手"，**那是一场比赛**——
+        # 全量并发下实测同一参数 `done_count` 在 3 与 4 之间摆动。把"必须 4"钉成判据，
+        # 钉的就不是被测性质，而是这场比赛的偶然结果（会假红）。
+        # 真正的不变式只有两条：① 4 个账号**都真登录过**（`mock_signin_count`，这一齿强制
+        # 多发一次真登录）；② 同伴**只抢一次**（`_stole` 一次性）⇒ 被孤儿化的行**至多一行**，
+        # 其余账号必须全部签成。故 `min_done = ACCOUNTS - 1`。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS,
+                               min_done=self.ACCOUNTS - 1)
         self._assert_barrier_ready(res)
         self._assert_mutation_applied(res, "claim-steal")
         probe = res["mutation_probe"]
