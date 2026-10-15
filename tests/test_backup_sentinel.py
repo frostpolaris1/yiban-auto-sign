@@ -277,6 +277,30 @@ class DeliveryFailureTest(_Base):
             self.assertEqual(self.mod.main([]), 1)
 
 
+class NeverCreatesDbTest(_Base):
+    """r4 复审 MEDIUM-1：哨兵以 root 跑（排期件 /etc/cron.d/yiban-backup-sentinel 的身份列
+    = root）。库缺失时**绝不建库**——否则 root 属主的空库会顶掉 yiban 属主的真库，
+    yiban 侧 web 随后打不开它。"""
+
+    def test_missing_db_is_not_created_and_env_recipients_are_used(self):
+        db_path = os.environ["YIBAN_DB_FILE"]
+        self.assertFalse(os.path.exists(db_path), "夹具的库路径本应不存在")
+        captured = {}
+
+        def _capture(title, mail, to=None, **_kw):
+            captured["to"] = to
+            return True
+
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ADMIN_TO": "ops@example.com"}), \
+                mock.patch.object(self.mod.mailer, "send_admin_alert", side_effect=_capture):
+            ok = self.mod._send_admin_alert(self.mod.ALERT_TITLE, mock.Mock())
+        self.assertTrue(ok, "库缺失时仍应能用 .env 收件人把告警发出去")
+        self.assertFalse(os.path.exists(db_path),
+                         "库缺失时 _send_admin_alert 竟就地建库（root 属主空库会顶掉真库）")
+        self.assertEqual("ops@example.com", captured.get("to"),
+                         "库缺失时收件人必须退到 .env 的 ADMIN_TO（与库查询失败同一降级结论）")
+
+
 class AuditAnchorBroadcastTest(_Base):
     """M28：当日审计链头哈希**随备份外发**——备份与锚点同包同盘时无法证明没被回滚。
 
