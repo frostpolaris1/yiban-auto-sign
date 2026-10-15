@@ -51,9 +51,12 @@
 #   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
 #   # 上一条的退出码 1 = 检出篡改/删除，2 = 无法定论（密钥缺失等）；0 才是健康。
 #   # 想让 cron 直接告警，可包一层：|| mail -s 'yiban 审计校验失败' root@localhost
+#   # 权威件 deploy/prod/cron.d/yiban-audit（身份 yiban）里 `cd` 目标带**尾斜杠**
+#   # `/opt/yiban-auto-sign/`——承重：check-cron-provenance.sh 只认 `$APP_ROOT/*` 可回指仓库，
+#   # 去掉即判红。上面的手工命令不带尾斜杠（等价），别照抄进 cron.d。
 #   # 备份哨兵——本脚本的加密配置一旦失效会 fail-closed 不产出任何归档，cron 拿不到
 #   # 任何信号：08:05 的哨兵就是替这里发声的那一步（详见 scripts/yiban-backup-sentinel.sh）
-#   5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+#   5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 #
 # 依赖：
 #   - 本地打包：tar / find / sqlite3（系统自带）
