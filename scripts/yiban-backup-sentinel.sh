@@ -11,11 +11,16 @@
 # 那封邮件才是外部参照（恢复后与该包日期当天的哈希比对即可）。
 # 锚点外发**每天必发**（失败时 stderr 留一行，不改退出码）；失败告警仍只在异常时发。
 #
-# 安装（08:05 排期在 02:00 备份之后，留足打包与异机同步的时间）：
+# 安装与排期（08:05 在 02:00 备份之后，留足打包与异机同步的时间）：
+#   **权威载体在仓库，走一键安装器落位**：
+#   sudo bash deploy/prod/install.sh         # 落位本包装 + cron 表（见 install.sh 头注释）
+#   手工等价（仅 install.sh 不可用时；mode/属主与 manifest.tsv 一致）：
 #   sudo install -m 0700 -o root -g root scripts/yiban-backup-sentinel.sh \
 #       /usr/local/sbin/yiban-backup-sentinel.sh
-#   sudo crontab -e
-#   5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+#   排期件 = deploy/prod/cron.d/yiban-backup-sentinel（装到 /etc/cron.d/，0644 root:root）。
+#   身份列 = **root**（与 02:00 备份同链）：root 要读 0700 root:root 的已装
+#   yiban-backup.sh 做防漂移比对，yiban 读不到会每日误报。命令逐字：
+#   5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 #   # 退出码 0 = 检查完成（含"缺失但告警已发出"、含"锚点外发没成功"）；1 = 检查本身失败或告警发不出去。
 #   ⚠ 上面这行把 stderr 并进了 backup.log，所以 cron 不会发报错邮件（全仓无 MAILTO
 #   设置）：退出码 1 只在有人翻日志时才看得见，别把它当成告警。要它自己响，得去掉
@@ -28,8 +33,10 @@
 #   YIBAN_DB_FILE（本脚本**不设**这枚键。库路径由 store 侧 `resolve_path` 三档解析：
 #     进程环境 → .env → 默认 "yiban.db"。默认值按 cwd 解析，而本脚本已 cd 到
 #     APP_DIR，所以缺省档就是 <APP_DIR>/yiban.db。本脚本插一手就会顶掉 .env 的声明）、
-#   YIBAN_STATE_DIR（默认 .env 所在目录，即 <APP_DIR>：节流表落
-#   <APP_DIR>/notify-throttle.json）——后两个给收件人算法与节流表定位；
+#   YIBAN_STATE_DIR（排期件**显式设为 root 私有目录** /var/lib/yiban-backup-sentinel：
+#   节流表落 <该目录>/notify-throttle.json。**不可**沿用 yiban 属主的共享状态目录——
+#   哨兵以 root 跑，首家写入即留下 root 属主文件，yiban 侧（web/signin）随即拿不到
+#   跨进程锁、节流表被判损坏。该目录由 deploy/prod/tmpfiles.d/yiban.conf 声明为 0700 root:root）、
 #   未配置推送/邮件时告警只落日志（退出码 1），锚点外发同样落 stderr。
 #
 # 工作目录：本脚本自己 cd 到 APP_DIR，**这是哨兵能出声的前提**。cron 的 cwd 是
@@ -37,7 +44,8 @@
 # ".env"、`yiban/store/connection.py` 的 DB_DEFAULT "yiban.db"）都以 cwd 为基准：
 # 不 cd 就读不到 .env，收件人解析为空 ⇒ 告警发不出去（退出码 1，恰是本脚本要消灭的
 # 那种静默），并在 $HOME 就地新建一份野 yiban.db。
-# 部署：以 yiban 用户运行（与 run.sh 同属主），日志**不要**写 sign-*.log。
+# 部署：以 **root** 运行（与 02:00 备份同链；排期件 /etc/cron.d/yiban-backup-sentinel
+# 的身份列 = root）。日志**不要**写 sign-*.log。
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
 
