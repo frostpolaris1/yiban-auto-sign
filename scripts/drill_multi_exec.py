@@ -86,6 +86,12 @@ SAMPLE_SEC = 0.02
 #: 表现成"作业被取消"，真因被藏住（实测踩到）。
 HOLD_MAX_SEC = 45.0
 
+#: 等"目标执行体领到第一行"的预算（秒）。这个等的是**执行体启动**，不是驱动——
+#: CI 里 4 个 pytest 工作进程同抢 2~4 核，执行体起来并走到第一次领取可以很慢
+#: （实测 45 秒不够：取证显示 45 秒时全部行仍是 `pending`、连执行体进程都还没出现）。
+#: 故这一档给足；真正的"防卡死"由 HOLD_MAX_SEC（一次性、45 秒）负责。
+BARRIER_WAIT_SEC = 150.0
+
 #: 传输层改写 ＋ 可选变异的 shim。作为 `sitecustomize.py` 落到 shim 目录、
 #: 进 `PYTHONPATH`，被监督进程与每个执行体子进程在**解释器启动时**导入。
 #:
@@ -376,13 +382,17 @@ def write_probe(tmp: str) -> str:
 
 
 def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
-                   target_prefix: str) -> tuple[bool, str | None]:
+                   target_prefix: str, proc: "subprocess.Popen | None" = None
+                   ) -> tuple[bool, str | None]:
     """等屏障就绪，**同时持续采样**：让 I1 的"换手前样本"（目标持有者）先落定。
 
     返回 `(就绪?, 被观测到的那一行 phone)`。**必须把这一行回传**：探针只能抢"已经
     被采样为 claimed 的那一行"，抢别的行会让 I1 的"换手前样本"停在 pending（实测：
     6 账号时槽位 0 的其它通道在屏障之后又领了几行，探针随手抢了其中一行，监控看到
     的前一态仍是 pending ⇒ 假绿）。
+
+    `proc`：监督进程。它一旦退出就**没有**"目标会在飞"可言了，立刻停等——否则会把
+    预算全烧在一个已经死掉的场景上（诊断还会少一条"进程已退"的事实）。
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -392,19 +402,27 @@ def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
         if os.path.exists(ready_file) and held:
             monitor.sample()          # 让"目标持这一行"这态确实进过采样
             return True, held[0]
+        if proc is not None and proc.poll() is not None:
+            return False, None        # 监督进程已退：再等不会出现持有者
         time.sleep(SAMPLE_SEC)
     return False, None
 
 
-def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str) -> dict:
+def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
+                  sup_log: str = "", proc: "subprocess.Popen | None" = None) -> dict:
     """屏障不就绪时**当场取证**：两条前提各报事实，供一眼定位。
 
     就绪需要同时满足两件事，修法完全不同：
       ① 目标执行体写下了就绪标记（＝注入真的贴上了、且它确实领到了行）；
       ② 库里能看见"目标持有某一行"（＝双方对 owner 身份的口径一致）。
+    再加一样**头号证据**：监督进程的输出去向（执行体起不来会在那里留回溯）。
     """
     diag: dict = {"ready_file": ready_file, "target_id": target_id,
                   "target_prefix": target_id + ":"}
+    try:
+        diag["supervisor_rc"] = None if proc is None else proc.poll()
+    except Exception as e:                                  # 取证不许再抛
+        diag["supervisor_rc_error"] = "%s: %s" % (type(e).__name__, e)
     try:
         diag["ready_exists"] = os.path.exists(ready_file)
         if diag["ready_exists"]:
@@ -420,6 +438,12 @@ def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str) -> dic
         diag["pids_for_target"] = find_child_pids(target_id)
     except Exception as e:                                  # 取证不许再抛
         diag["rows_error"] = "%s: %s" % (type(e).__name__, e)
+    if sup_log and os.path.exists(sup_log):
+        try:
+            with open(sup_log, encoding="utf-8", errors="replace") as fh:
+                diag["supervisor_log_tail"] = fh.read()[-3000:]
+        except OSError as e:
+            diag["supervisor_log_error"] = "%s: %s" % (type(e).__name__, e)
     return diag
 
 
@@ -862,15 +886,16 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         #    再等就是白等（且会把用例拖到超时，把真因藏进"作业被取消"）。
         target_phone = None
         if need_barrier:
-            ready, target_phone = _await_barrier(hold_ready, HOLD_MAX_SEC, monitor,
-                                                 target_id + ":")
+            ready, target_phone = _await_barrier(hold_ready, BARRIER_WAIT_SEC, monitor,
+                                                 target_id + ":", sup)
             result["barrier_ready"] = ready
             if not ready:
-                # 不就绪时**当场取证**：是"就绪标记没写出来"（注入没贴上）还是
-                # "写了但库里看不到目标持有者"（身份对不上）——两者的修法完全不同，
-                # 不许靠猜（CI 上已因猜错方向白跑一轮）。
+                # 不就绪时**当场取证**：是"就绪标记没写出来"（注入没贴上 / 执行体没起来）
+                # 还是"写了但库里看不到目标持有者"（身份对不上）——两者的修法完全不同，
+                # 不许靠猜（CI 上已因猜错方向白跑两轮）。监督进程的输出是这里的头号证据：
+                # 执行体起不来会留下回溯。
                 result["barrier_diag"] = _barrier_diag(
-                    hold_ready, info["dbfile"], day, target_id)
+                    hold_ready, info["dbfile"], day, target_id, sup_log, sup)
             result["barrier_phone"] = target_phone
 
         # ② 变异**哨兵**：先证明变异真的贴上了，再谈不变式红不红。claim-steal 的哨兵
