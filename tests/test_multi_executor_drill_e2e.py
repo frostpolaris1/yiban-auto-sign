@@ -202,13 +202,38 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         self.assertGreaterEqual(
             res.get("mock_signin_count", 0), min_signins,
             "'确实发生过'守卫：本轮真登录 %s 次 < %d 次——靶场没跑起来，"
-            "后面'不变式红'不作数（此刻不变式绿是**假绿**）"
-            % (res.get("mock_signin_count"), min_signins))
+            "后面'不变式红'不作数（此刻不变式绿是**假绿**）。取证=%s"
+            % (res.get("mock_signin_count"), min_signins, self._round_diag(res)))
         self.assertGreaterEqual(
             res.get("done_count", 0), min_done,
             "'确实发生过'守卫：本轮真签成 %s 行 < %d 行——靶场没跑起来，"
-            "后面'不变式红'不作数（此刻不变式绿是**假绿**）"
-            % (res.get("done_count"), min_done))
+            "后面'不变式红'不作数（此刻不变式绿是**假绿**）。取证=%s"
+            % (res.get("done_count"), min_done, self._round_diag(res)))
+
+    @staticmethod
+    def _round_diag(res):
+        """一轮"没跑起来"时的**紧凑取证**：只取能分辨"哪一环断了"的事实。
+
+        没有它就只能看到"真登录 0 次"这一个数——而零真登录可能是执行体没起来、
+        屏障没就绪、假上游没起、或窗口没开，**四种修法完全不同**（CI 上已因缺取证
+        白跑两轮）。刻意**不含**完整 `barrier_diag`（它带逐行 owner，太长会淹掉日志）。
+        """
+        d = res.get("barrier_diag") or {}
+        rows = d.get("rows") or {}
+        states = {}
+        for r in rows.values():
+            states[r.get("state")] = states.get(r.get("state"), 0) + 1
+        return {
+            "barrier_ready": res.get("barrier_ready"),
+            "ready_exists": d.get("ready_exists"),
+            "row_states": states,               # 空 = 一行都没建；全 pending = 没被领
+            "claimed_owners": d.get("claimed_owners"),
+            "pids_for_target": d.get("pids_for_target"),
+            "supervisor_rc": d.get("supervisor_rc"),
+            "mock_requests": res.get("mock_requests"),
+            "supervisor_log_tail": (d.get("supervisor_log_tail") or "")[-600:],
+            "engine_log_tail": (d.get("engine_log_tail") or "")[-600:],
+        }
 
     def test_did_run_guard_has_teeth_when_nothing_runs(self):
         """守卫的**牙**：让靶场确定性地"什么都不跑"，`_assert_round_ran` 必须红。
