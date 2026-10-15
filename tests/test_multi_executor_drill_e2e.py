@@ -149,7 +149,7 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
             res.get("barrier_ready"),
             "屏障未就绪：目标执行体没能在 %s 秒内'领到一行并持着在飞行'——"
             "本组断言的确定性前提不成立，后面每条断言都不作数。取证=%s"
-            % (drill.HOLD_MAX_SEC, res.get("barrier_diag")))
+            % (drill.BARRIER_WAIT_SEC, res.get("barrier_diag")))
 
     def _assert_mutation_applied(self, res, mutate):
         """哨兵断言：变异已生效。不过则报**变异未生效**（与不变式红与否无关）。"""
