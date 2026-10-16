@@ -165,3 +165,33 @@ git branch -f main <已达标提交> && git push origin main && git push gitee m
 
 每批在当批文稿里留一段"门禁证据"：四条通用门禁各自的命令与结果、非生产演练形态、
 **以及有效轮次台账**。没有这段证据，等同于没通过门禁。
+
+## 8. README 裸机步骤的步级覆盖名册（工单 c9uz）
+
+README「服务器部署（分步详解）」的 7 个编号步骤（折叠标题写作 6 组：环境准备／上传代码／
+账号与 .env／run.sh／crontab／手动测试），逐步骤的**载体**与**守卫**如下。本名册回答普查
+§八-4 的"零覆盖"：哪几步有仓库载体与门、哪几步只有文字。
+
+| 步 | 内容 | 仓库载体 | 守卫（门／测试） |
+|----|------|----------|------------------|
+| 1 | 服务器环境准备（`apt install python3 python3-venv python3-pip`；时区） | **无**（宿主操作，不落仓库） | **无**（依赖 `docker/Dockerfile` 的镜像面另有其门，但裸机 apt 面无） |
+| 2 | 上传项目代码（打包／解压／`python3 -m venv .venv`／`pip install -r requirements.lock`） | `deploy/prod/install.sh` 的**依赖同步步**（j06f：pip freeze 快照 → 装 lock → 跑门） | `scripts/check-deps-lock.sh`；`tests/test_deploy_deps_sync.py`；install.sh 的 venv 触点收进 M01 门 |
+| 3 | 账号数据（网页后台／`YIBAN_ACCOUNTS_JSON` 注入） | `yiban/store/accounts.py` 等 | 既有账号面测试（不在本名册的发布判据面内） |
+| 4 | 配置 `.env`（落 `data/.env`） | `deploy/prod/install.sh` 建 `data/`（**唯一建立点**，属服务账号 0700） | `tests/test_runtime_data_layout.py`；`web/deploy/yiban-web.service` 的 `ReadWritePaths` 与 `User=` 同值用例 |
+| 5 | `run.sh`（`chmod +x`、`mkdir -p /var/log/yiban`、锁/状态目录 0700） | `run.sh`；锁目录**权威件** `deploy/prod/tmpfiles.d/yiban.conf` | `run.sh` 的 M07 状态/锁目录门；tmpfiles 件随 `deploy/prod/manifest.tsv` 逐件 sha256 对账 |
+| 6 | crontab（`31 6`／`12 7` 两行 sign） | `deploy/prod/cron.d/yiban-sign`（另有 cleanup／probe／audit／backup-sentinel 四表） | `scripts/check-cron-provenance.sh`（cron 路径必须能回指仓库原件）；manifest 逐件对账 |
+| 7 | 手动测试（`bash run.sh`） | **无**（操作步骤） | **无**（需真实平台；非生产环境用 `tests/test_login_e2e_mock.py` 的假上游 smoke 代替） |
+
+**结论两条**：
+
+- **有载体且有守卫的步**：2、4、5、6。它们由 `deploy/prod/install.sh` ＋ `manifest.tsv` ＋
+  `check-cron-provenance.sh` ＋ 各步自己的用例共同守；干净容器内实测 9 件逐件 sha256 对账一致、
+  M01 门通过、依赖同步步执行且一致性门绿（见工单 c9uz 交付报告）。
+- **无载体的步**：1、3、7。步 1（apt／时区）与步 7（手动测试）是宿主操作，不落仓库；
+  步 3（账号）由既有账号面测试覆盖，不属本发布判据面。这三步的"零覆盖"是**如实登记**，
+  不作为"已达标"的证据。
+
+**已知未覆盖（登记，不称已达标）**：README 步 2 的"换目录部署要同步改 run.sh／systemd 单元／
+crontab"（工单 6wjd）——`web/deploy/yiban-web.service` 与 `deploy/prod/cron.d/*` 硬写
+`/opt/yiban-auto-sign`，换目录需手改多处，与 §1「零手动调整」相冲。6wjd 为独立设计批，
+未并入本批。
