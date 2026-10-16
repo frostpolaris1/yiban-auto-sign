@@ -163,13 +163,17 @@ class EnvGetMatchesRunShTest(unittest.TestCase):
         return r.stdout.splitlines()
 
     def test_backup_env_get_matches_run_sh_parsing(self):
-        os.makedirs(os.path.join(self.tmp, "app"), exist_ok=True)
-        shutil.copy2(self.env_file, os.path.join(self.tmp, "app", ".env"))
+        # .env 在检出内的 data/ 下（工单 ybg8）：env_get 按 ${APP_DIR}/data/.env 取。
+        os.makedirs(os.path.join(self.tmp, "app", "data"), exist_ok=True)
+        shutil.copy2(self.env_file, os.path.join(self.tmp, "app", "data", ".env"))
         key_tail = ("printf '%s\\n' \"$(env_get YIBAN_STATE_DIR)\"\n"
                     "printf '%s\\n' \"$(env_get YIBAN_LOG_FILE)\"")
         var_tail = ("printf '%s\\n' \"${YIBAN_STATE_DIR:-}\"\n"
                     "printf '%s\\n' \"${YIBAN_LOG_FILE:-}\"")
-        backup_script = self._harness("backup", 'APP_DIR="$1"',
+        # env_get 引用的 `ENV_FILE` 变量也取自 backup.sh 原文——本用例比的是**解析口径**
+        # （BOM／空白／strip），不是路径本身；harness 里自己再写一遍路径会引入第二处定义。
+        env_file_line = next(ln for ln in _read().splitlines() if ln.startswith("ENV_FILE="))
+        backup_script = self._harness("backup", 'APP_DIR="$1"\n' + env_file_line,
                                       self._backup_env_get_body(), key_tail)
         run_script = self._harness("runsh", 'ENV_PATH="$1"',
                                    self._run_sh_parse_body(), var_tail)

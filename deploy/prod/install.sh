@@ -29,6 +29,9 @@
 #      DESTDIR 暂存或 venv 缺失时跳过本步，并各打一条说明。
 #      本步的三个检出内触点（那枚门脚本、venv 的 pip 或解释器、requirements.lock）
 #      与 M01 判据同批收全——见下方 M01 段。
+#   8) 运行数据目录：root 且无 DESTDIR 时建立/修复 <检出>/data（属服务账号、0700）。
+#      它是 `.env` 与 SQLite 库的落点，也是检出根能被 M01 门收成 root 只读的前提。
+#      本步是**唯一建立点**（服务不得自建：检出根变只读后 mkdir 会失败）。
 # ============================================================
 set -euo pipefail
 
@@ -102,9 +105,10 @@ done
 # ⇒ 改掉将被 root 执行的 check-cron-provenance.sh）。现改为**逐级**校验 root 真正
 # 会读取或执行的那几条路径（清单本身、cron 断言脚本、manifest 里的每个源件），
 # 沿途每一个目录分量都要 root 属主且非组/其他可写。
-# 为什么不是全树 find -perm：生产检出下面还有 .env / yiban.db / 日志这些**本来就归
-# 服务账号**的运行数据，把它们纳入门会把一次正常升级变成拒装。门只管"root 会拿它做
-# 决定"的那几条路径。
+# 为什么不是全树 find -perm：生产检出下面还有 data/（.env / yiban.db / 服务写下的
+# 运行数据）这些**本来就归服务账号**的东西，把它们纳入门会把一次正常升级变成拒装。
+# 门只管"root 会拿它做决定"的那几条路径；运行数据收在检出内一个子目录（`data/`），
+# 由下面那段单独建立并属服务账号（见「运行数据目录」段）。
 #
 # ba-p12-02（2026-10-06）修正门的作用域：判据只看 uid，去掉原判据多带的 `-z "$DESTDIR"`。
 # 本门防的是"root 执行检出内的文件"。这与把文件装到哪里无关。
@@ -213,6 +217,43 @@ if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
     OWNERSHIP=(-o root -g root)
 else
     echo "yiban-install: note: 非 root 或 DESTDIR 暂存安装——跳过 root:root 属主设置" >&2
+fi
+
+# ------------------------------------------------------------
+# 运行数据目录（检出内 `data/`）：**唯一建立点**（工单 ybg8 / ddok）。
+#
+# 为什么有本步：M01 前置门要求检出根属 root 且组/其他不可写，而服务要往检出里写
+# `.env` 与 SQLite 库。`.env` 的原子写把临时文件建在 `.env` **同目录**
+# （yiban/infra/env_io.py 的 _atomic_replace_env），目录不给服务账号写就写不进。
+# 两条要求在旧布局下互斥，生产因此只能手工拷贝执行件（哨兵脚本漂移、两条 cron
+# 从未装上）。修法：把运行数据收进检出内的 `data/`，属服务账号、模式 0700。
+#
+# 口径四条：
+#   1) 唯一建立点 = 本步。服务**不得**自建：检出根变 root 只读后 mkdir 会失败。
+#   2) 本步同时是**幂等修复点**：`chown -R root:root` 会把 data/ 一起带走，
+#      重跑本安装器即改回服务账号（README 的部署顺序因此是"先 chown、再 install"）。
+#   3) 只在本机会真落位时做（root 且无 DESTDIR）：暂存安装不该在源检出里造目录。
+#   4) 服务账号＝yiban:yiban（与 `web/deploy/yiban-web.service` 的 User=/Group= 同值）。
+#      两条不许分叉：由 tests/test_runtime_data_layout.py::RuntimeDataCarriersTest
+#      ::test_installer_service_account_matches_unit 钉住（先例同
+#      deploy/prod/tmpfiles.d/yiban.conf：字面量 + 用例钉住与单元文件相等）。
+#      换登录名时这几处一起改（README「换目录部署」同口径）。该账号在本机不存在时
+#      install 会非 0 退出——那是配置错，不该静默跳过；不改名则不需要任何配置键。
+# ------------------------------------------------------------
+SERVICE_USER="yiban"
+SERVICE_GROUP="yiban"
+DATA_DIR="$REPO_ROOT/data"
+if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
+    if ! install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$DATA_DIR"; then
+        echo "yiban-install: 无法建立运行数据目录 $DATA_DIR（属主 $SERVICE_USER:$SERVICE_GROUP）。" >&2
+        echo "  处置：确认该服务账号在本机存在（与 web/deploy/yiban-web.service 的 User=/Group= 同值）。" >&2
+        exit 1
+    fi
+    # 模式可能被上一轮的 chmod 放宽（例如部署者手工 chmod -R 755），显式收紧。
+    chmod 0700 "$DATA_DIR"
+    echo "runtime data dir ready: $DATA_DIR owner=$SERVICE_USER:$SERVICE_GROUP mode=0700"
+else
+    echo "yiban-install: note: 非 root 或 DESTDIR 暂存安装——跳过运行数据目录 $DATA_DIR 的建立" >&2
 fi
 
 TS=$(date +%Y%m%d%H%M%S)

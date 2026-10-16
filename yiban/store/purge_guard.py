@@ -134,7 +134,9 @@ def write_purge_audit(action, target, detail, db_file=None, env_file=None):
     """
     from yiban.infra import env_io
     if db_file is None:
-        db_file = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
+        # 默认值取 `env_io` 的单点常量（`data/yiban.db`，相对检出根）——不另抄字面量，
+        # 否则库搬进 `data/` 后这里会静默指向检出根下并不存在的旧路径。
+        db_file = env_io.resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)
     if not os.path.exists(os.path.abspath(db_file)):
         return False
     try:

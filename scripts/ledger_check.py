@@ -236,7 +236,7 @@ def _reconcile(args):
     if not os.path.isdir(state_dir):
         print(f"对账无法定论：状态目录不存在 {state_dir}")
         return 2
-    db_path = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
+    db_path = env_io.resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)
     # 库文件必须已存在：sqlite3.connect 缺库即建空库，空库上三项检查全部"通过"，
     # 对"台账对不对"什么都没说（路径写错时静默误报平账）。
     if not os.path.exists(db_path):
