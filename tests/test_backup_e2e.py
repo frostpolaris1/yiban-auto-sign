@@ -279,7 +279,7 @@ class PlaintextGuardTest(_BackupRunBase):
             # 锚点外发（M28）要读审计链：把库路径钉到临时区，且**直接打桩掉
             # `_anchor_snapshot`**——它会走 `db.init_db()`，那是**进程级单例连接**的
             # 初始化，在测试进程里做会把同 worker 后续所有用例的库指走
-            # （同文件跑时 test_scheduler_gate 的 SignEventWriteTest 即因此读到空表）。
+            # （本仓已有先例：同 worker 后来的用例因此读到空表）。
             # 锚点读库路径另有专测：tests/test_backup_sentinel.py::AuditAnchorBroadcastTest。
             "YIBAN_DB_FILE": os.path.join(self.tmp, "sentinel-readonly.db"),
         }), mock.patch.object(mod, "_send_admin_alert",

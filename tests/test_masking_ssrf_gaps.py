@@ -27,6 +27,12 @@ fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自
 改由 `tests/test_provenance_guard.py` 与 `tests/test_waf_failure_tier.py` 覆盖。）
 依赖：无网络（`__new__` 绕过构造，不发请求）、无 skip；
 `YIBAN_STATE_DIR` 用临时目录覆盖后在 tearDown 还原。
+
+2026-10-16 饮食批：`SigninFixes021Test` 的 5 条 `test_retry_wait_*` / `test_manual_queue_*` /
+`test_gap_max_*` 已删。它们驱动的是**冻结的** `signin.run_queue_retry`，且把
+`attempt_signin` / `classify_failure` / `random` / `time.sleep` / `_write_sign_state` /
+`_update_cred_state` / `send_notification` 全部打桩后断言 `sleeps == [10.0]` 一类的**精确调用序**
+（编舞）。限速与账号间隔的活判据在 `tests/test_token_bucket.py`（`BucketTest` / `GapGateTest` / `GlobalTest`）。
 """
 import json
 import os
@@ -238,124 +244,7 @@ class SigninFixes021Test(unittest.TestCase):
         self.assertEqual(status, signin.STATUS_FAILED)
 
     # ---- M13 ----
-    def test_retry_wait_never_below_retry_min_interval(self):
-        acc = signin.Account(phone="13800138000", password="p")
-        sleeps = []
 
-        def fake_sleep(seconds):
-            sleeps.append(seconds)
-
-        with mock.patch.object(signin, "attempt_signin",
-                               return_value=(False, "网络超时", False, signin.STATUS_FAILED)), \
-             mock.patch.object(signin, "classify_failure", return_value=2), \
-             mock.patch.object(signin, "random") as rnd, \
-             mock.patch.object(signin.time, "sleep", side_effect=fake_sleep), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin, "send_notification"):
-            # 重试打散项 random.uniform(0, RETRY_GAP_MAX) 统一返回 0：排除随机抖动后
-            # 精确断言下限
-            rnd.uniform.return_value = 0.0
-            signin.run_queue_retry([acc], "", 0, 30)
-        self.assertTrue(sleeps, "应发生重试等待")
-        self.assertGreaterEqual(sleeps[0], signin.RETRY_MIN_INTERVAL,
-                                "重试总间隔不得小于 RETRY_MIN_INTERVAL")
-        # 重试回队的间隔对齐只补残差（elapsed 已含原地等待），不得二次等待：
-        # 总次数=原地等待+对齐残差，且合计仍 ≥ RETRY_MIN_INTERVAL
-        self.assertEqual(len(sleeps), 2)
-        self.assertLessEqual(sleeps[1], 30)
-        self.assertGreaterEqual(sleeps[0] + sleeps[1], signin.RETRY_MIN_INTERVAL)
-
-    def test_manual_queue_honors_account_gap_floor(self):
-        """手动队列（schedule=None）相邻请求间隔必须 ≥ 账号间隔设置（下限语义）。
-
-        手动路径与自动调度、容量预估 (avg+gap) 共用「最小间隔」口径；
-        原实现此处为 U(0, gap) 随机打散：期望仅 gap/2、下界 0，违背
-        「自动与手动签到均生效的最小间隔」承诺。"""
-        accs = [signin.Account(phone=f"1380000000{i}", password="p") for i in (1, 2)]
-        sleeps = []
-        with mock.patch.object(signin, "attempt_signin",
-                               return_value=(True, "已签到", False, "already")), \
-             mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
-             mock.patch.object(signin.time, "monotonic", return_value=1000.0), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"):
-            signin.run_queue_retry(accs, "", 0, 10, schedule=None, cred_state={})
-        # monotonic 冻结 → 账号 2 弹出时距上次尝试 elapsed=0，应补足整段间隔 10s；
-        # 首个账号不等待
-        self.assertEqual(sleeps, [10.0])
-
-    def test_manual_queue_gap_zero_no_wait(self):
-        """账号间隔 0=关闭：手动队列不得引入额外等待。"""
-        accs = [signin.Account(phone=f"1380000000{i}", password="p") for i in (3, 4)]
-        sleeps = []
-        with mock.patch.object(signin, "attempt_signin",
-                               return_value=(True, "已签到", False, "already")), \
-             mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
-             mock.patch.object(signin.time, "monotonic", return_value=1000.0), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"):
-            signin.run_queue_retry(accs, "", 0, 0, schedule=None, cred_state={})
-        self.assertEqual(sleeps, [])
-
-    def test_gap_max_clamped_to_3600(self):
-        """.env 直配超大值不得把队列睡死（与网页设置侧 3600 上限同口径）。"""
-        accs = [signin.Account(phone=f"1380000000{i}", password="p") for i in (5, 6)]
-        sleeps = []
-        with mock.patch.object(signin, "attempt_signin",
-                               return_value=(True, "已签到", False, "already")), \
-             mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
-             mock.patch.object(signin.time, "monotonic", return_value=1000.0), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"):
-            signin.run_queue_retry(accs, "", 0, 86400, schedule=None, cred_state={})
-        self.assertTrue(sleeps and max(sleeps) <= 3600)
-
-    def test_retry_wait_schedule_branch_respects_sch_cfg_retry_min_interval(self):
-        """P4（2026-08-27）：schedule 分支重试改为非阻塞重插——重试落点 ≥ now + retry_min_interval，
-        不再原地 sleep ≥5s 阻塞整条队列。"""
-        from random import Random as _R
-        acc = signin.Account(phone="13800138000", password="p")
-        sleeps = []
-        scheduled_at = signin.clock.now()
-        captured = {}
-        orig_next = signin._next_retry_at
-
-        def spy(now_dt, sch_cfg, rng=None):
-            captured["nxt"] = orig_next(now_dt, sch_cfg, rng=_R(1))
-            return captured["nxt"]
-
-        with mock.patch.dict(
-            os.environ,
-            {
-                "YIBAN_RETRY_MIN_INTERVAL": "5",
-                "YIBAN_SIGN_START": "00:00",
-                "YIBAN_SIGN_END": "23:59",
-                "YIBAN_WINDOW_EDGE_SEC": "0",
-            },
-            clear=False,
-        ), \
-             mock.patch.object(signin, "attempt_signin",
-                               return_value=(False, "网络超时", False, signin.STATUS_FAILED)), \
-             mock.patch.object(signin, "classify_failure", return_value=2), \
-             mock.patch.object(signin.time, "sleep", side_effect=lambda s: sleeps.append(s)), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin, "send_notification"), \
-             mock.patch.object(signin, "_next_retry_at", side_effect=spy):
-            signin.run_queue_retry(
-                [acc], "", 0, 0, schedule={acc.phone: scheduled_at}
-            )
-        self.assertIn("nxt", captured, "schedule 分支应计算重试落点")
-        # 落点距失败时刻 ≥ retry_min_interval（5s，容差 2s），且不超出窗口末端（eff_hi=23:59）
-        self.assertGreaterEqual(
-            captured["nxt"] - signin.clock.now(),
-            __import__("datetime").timedelta(seconds=3),
-            "重试落点不得早于 now + retry_min_interval",
-        )
-        # 落点 ≤ eff_hi = sign_end - edge_back = 23:59（当日）
-        eff_hi = signin.clock.now().replace(hour=23, minute=59, second=0, microsecond=0)
-        self.assertLessEqual(captured["nxt"], eff_hi, "重试落点不得越过窗口末端")
 
     # ---- 通知组件化（2026-08-29）----
     def test_send_notification_delegates_to_notify_component(self):
