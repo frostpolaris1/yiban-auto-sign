@@ -7,7 +7,7 @@
      落在配置区间内、跨天变化）与非法区间的既有回退语义；`hrw.u01` 是 `planner._u`
       的归一化单源；`planner._density` 与 `schedule.build_schedule` 取同一业务日键
 对应实现：`yiban/engine/schedule.py` 的 `day_mu_sigma_pct` / `build_schedule`；
-      `yiban/engine/planner.py` 的 `_u` / `_density`；`yiban/engine/hrw.py` 的 `u01`
+      `yiban/engine/planner.py` 的 `_u` / `_density`；`yiban/core/hrw.py` 的 `u01`
 关键断言：μ/σ 定义的是区间，落在区间的哪一点只由 `day` 决定——计划（06:31 生成）与
       实际执行必须取到同一个点；执行层不得再用 `rng.uniform` 重采样（那会与计划层的
       确定性推导分叉，让"计划时刻"与"签到时刻"对不上，峰值速率整形也作用在错值上）。

@@ -9,8 +9,8 @@
    对齐的放弃通知/日志、令牌桶三件接线、产品契约（每次尝试写
    sign-state、dry_run
    零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
-对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reclaim_tasks、reap_abandoned）、yiban/engine/runner.py
-   的执行调用点、yiban/engine/hrw.py 与 token_bucket.py。
+对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/adapters/persistence/queue_store.py（pending_count、claim_batch、reclaim_tasks、reap_abandoned）、yiban/app/runner.py
+   的执行调用点、yiban/core/hrw.py 与 token_bucket.py。
 关键断言：单池后 `runner` 恒定转调 `run_executor_v3`（`--only` 走显式路径：reclaim +
    claim_all + requeue_final），`round.run_queue_retry` 无生产调用点。写进
    sign_tasks.vshard 的 V 必须与执行体分片集同源且当日稳定：V

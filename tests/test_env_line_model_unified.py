@@ -25,7 +25,7 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`.env` 行模型单源（web 服务层无第二份 splitlines）、10 分隔符实测清单、含 U+0085 潜伏注释的 V2 实体化反例（GLOBAL_PAUSE 与 ADMIN_PASSWORD_HASH 两变体）、两侧同一句拒绝、8 分隔符单载荷两侧同拒、写入前后键集合 diff 强制与 BOM/CRLF 字节级回滚审计、值长度上限、路由级拒绝钉死 409（设置与公告两写点）、内置管理员脏 .env 登录降级非 500、notify/mail 保存路径密钥自动生成写拒统一 409（不伪装成"加密失败 500"）+ 干净 .env 阳性对照、读取容忍与合法流逐字节回归
-对应实现：`yiban/infra/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`、`web/routes/notify.py`（`EnvWriteRefused` 放行次序）、`yiban/infra/account_crypto.py:load_key`
+对应实现：`yiban/adapters/config/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`、`web/routes/notify.py`（`EnvWriteRefused` 放行次序）、`yiban/adapters/config/account_crypto.py:load_key`
 关键断言：拒绝必须**同时**断"抛错 + .env 字节不变 + 不实体化出未请求的键 + 有审计记录"；只断抛错会漏掉"先实体化再报错"的半生效；两侧同一句拒绝要断言**消息字符串相等**而不是各自含关键词，否则两份校验器可以各写一句都过
 依赖：临时 `.env` + Flask test client + 临时 DB，无网络、无 skip；分隔符按码位逐个枚举
 

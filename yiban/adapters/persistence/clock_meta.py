@@ -39,7 +39,7 @@ def _facade():
 
     为何按属性取而非 from-import：见模块说明「通信」。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     return db
 
 

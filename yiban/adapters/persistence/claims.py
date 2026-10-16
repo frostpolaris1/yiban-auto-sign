@@ -56,8 +56,8 @@ import logging
 import os
 import socket
 
-from yiban import clock, masking
-from yiban import status as yiban_status
+from yiban.core import clock, masking
+from yiban.core import status as yiban_status
 
 logger = logging.getLogger("yiban.store.claims")
 
@@ -129,7 +129,7 @@ def notify_pool_down(reason):
     logger.error("领取签到账号失败（fail-closed 拒跑）: %s", reason)
     # 局部导入：alerts 经引擎入口反向依赖本模块所在的数据层，模块级互引会成环
     # （与 yiban/engine/schedule.py 取 alerts 同一手法）。
-    from yiban.engine import alerts
+    from yiban.adapters.notifier import report as alerts
     alerts._collect_admin_mail(
         "签到领取池不可用",
         f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{reason}",
@@ -196,7 +196,7 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     语义：多执行体下"按可执行处理"会让两个执行体同时放行同一账号 ⇒ 两次真实登录，
     踩上游风控红线；故改拒跑，由调用方按"本轮空转"处理。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
     retry_prefix_len = len(yiban_status.RESULT_RETRY_PREFIX)
@@ -256,7 +256,7 @@ def touch(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, epoch=None):
     `lease_sec` 只用于保持既有调用签名：租约判据在领取侧按心跳时间串比较（见 try_claim），
     续租只是把心跳写成"现在"。`epoch=None` 时不校验 token（迁移期调用方与既有测试）。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     ts = _now_str(now)
     sql = ("UPDATE sign_claims SET heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=? AND state=?")
@@ -282,7 +282,7 @@ def _explain_fenced_write(phone, day, what):
     ① 行已被收尾（`done`）——本次写是幂等重入（Stripe 幂等键语义），按 info 记；
     ② 行仍无终态——本执行体拿着作废的 token 在写，按 warning 记。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     try:
         with db._conn_lock:
             row = db.get_conn().execute(
@@ -307,7 +307,7 @@ def settle(phone, day, owner, state=STATE_DONE, result="", epoch=None):
     `epoch` 传领取时拿到的 fencing token，被接管者的迟到写由存储端拒绝；写 0 行且传了
     epoch 时回读一次以区分"幂等重入"与"真被接管"（见 `_explain_fenced_write`）。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     if state not in SETTLED_STATES:
         raise ValueError(f"非法终态: {state!r}")
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
@@ -351,7 +351,7 @@ def give_up(phone, day, owner, result="", epoch=None, retryable=False):
     `epoch` 的语义同 `settle`（弃权同样是终态写：被接管者不得把接管者的在飞记录改成 failed）。
     返回是否写成功（被接管 / token 落后时为 False）。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=?")
     expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
@@ -430,7 +430,7 @@ def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退
     "不可再领"，崩溃账号当天再也签不上。
     库异常 → 0 + warning（收尸是补偿动作，失败不该打断调用方；下一轮起租约接管兜住）。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     prefix = owner + ":"
     expired = _utc_offset_str(LEASE_SECONDS)   # 与 give_up 同口径：立刻放开租约
     sql = ("UPDATE sign_claims SET state=?, result=?, "
@@ -458,7 +458,7 @@ def _day_column(day, column):
     它是拼进 SQL 的，这是本函数不对外暴露的原因。
     按 `day` 过滤走主键前缀 `(phone, day)`/`(day, state)`，一次取全不分页。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     try:
         with db._conn_lock:
             return db.get_conn().execute(
@@ -477,7 +477,7 @@ def states_for_day(day):
 
 def in_flight_phones(day, lease_sec=LEASE_SECONDS):
     """当日仍在飞（`claimed` 且租约未过期）的账号——诊断"谁卡住了"用。"""
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     expired_before = _utc_offset_str(lease_sec)
     try:
         with db._conn_lock:
@@ -496,7 +496,7 @@ def in_flight_phones(day, lease_sec=LEASE_SECONDS):
 
 def stats(day):
     """当日各状态计数——供设置页/CLI 展示"了结进度"。"""
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     try:
         with db._conn_lock:
             rows = db.get_conn().execute(
@@ -528,7 +528,7 @@ def activity(day):
     返回 `[{"owner":…, "claimed":n, "failed":n, "done":n, "total":n}, …]`
     （按 owner 升序，顺序稳定；空库/库未初始化 → `[]`，与 `stats` 同口径不抛）。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     out = {}
     try:
         with db._conn_lock:
@@ -556,7 +556,7 @@ def activity(day):
 
 def latest_claims_day():
     """`sign_claims` 里最近一次有记录的业务日（`MAX(day)`）；表空 / 库不可用返回 None。"""
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     try:
         with db._conn_lock:
             # 「上次实领」取最近一次有记录的日、不是"昨天"：周末停签后按"昨天"取会让整列
@@ -591,7 +591,7 @@ def owners_since(days=RETENTION_DAYS):
 
     库不可用时返回 `[]`（调用方退回"只按清单最大值 +1"，不影响追加本身）。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         with db._conn_lock:
@@ -615,7 +615,7 @@ def purge(days=RETENTION_DAYS):
     守卫在越界路径上也推进参照点，下一轮（≤24h 后）即恢复正常清理。
     守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作 DELETE 的事务边界。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         conn = db.get_conn()

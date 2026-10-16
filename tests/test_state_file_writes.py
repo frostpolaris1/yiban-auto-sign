@@ -10,8 +10,8 @@
     流程门禁整族裁撤，2026-09 缩减批 6a）；0600 行为面仍由下方站点矩阵全量钉住——
     任何绕过单通道的 `open(tmp, "w")` 会因模式押回 umask 在此现形。
 对应实现：容器侧在 `docker/scheduler.py`（`_mark_slot`/`_slot_done`/`_slot_marker`/
-    `_touch_heartbeat`），引擎侧写入按 `yiban/engine/state_io.py`、`yiban/engine/probe.py`、
-    `yiban/engine/alerts.py`、`yiban/engine/runner.py`、`yiban/cred_state.py`、
+    `_touch_heartbeat`），引擎侧写入按 `yiban/engine/state_io.py`、`yiban/app/probe.py`、
+    `yiban/adapters/notifier/report.py`、`yiban/app/runner.py`、`yiban/adapters/statefiles/cred_state.py`、
     `yiban/adapters/notifier/notify/ledger.py` 落点，单通道实现唯一在 `yiban/infra/private_json.py`
     （`state_io._write_private_json` 为其既有锚点），兼容壳 `scripts/signin.py` 只剩转发。
 关键断言：**失效方向必须是"标记缺失"而不是"文件损坏"**——半截 JSON 会让 `_slot_done`
@@ -115,7 +115,7 @@ class SigninWritesAreAtomicTest(unittest.TestCase):
             return f.read()
 
     def test_cred_state_write_is_delegated(self):
-        """熔断状态文件的原子写归 `yiban/cred_state.py`（唯一读写入库）；
+        """熔断状态文件的原子写归 `yiban/adapters/statefiles/cred_state.py`（唯一读写入库）；
         引擎不得自己再写一份（原子性与并发由 tests/test_breaker.py 钉住）。"""
         src = self._read("yiban/engine/state_io.py")
         # 只取本函数体（到下一个顶层 def 为止）——按字符数截取会把相邻函数一起断言

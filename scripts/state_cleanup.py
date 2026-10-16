@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """**功能**
-按天状态文件清理入口（宿主 cron 调用；策略见 `yiban/state_gc.py`）。
+按天状态文件清理入口（宿主 cron 调用；策略见 `yiban/adapters/statefiles/state_gc.py`）。
 
 宿主 `scripts/yiban-cleanup.sh` 只是本脚本的薄包装：策略与实现在 Python 侧唯一
 （原先规则写在 bash 里，容器侧另写一份，新增一类按日文件没有机制提醒补规则）。
@@ -13,7 +13,7 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 
 **归属**
 部署面脚本（`scripts/`），宿主 cron / 容器调度按文件路径调用；清理策略的**唯一实现**
-在 `yiban/state_gc.py`，本脚本只做入口与退出码。
+在 `yiban/adapters/statefiles/state_gc.py`，本脚本只做入口与退出码。
 
 **复用**
 `state_dir_from_env` / `log_dir_from_env` 是 `yiban.state_gc` 同名函数的保留绑定
@@ -48,7 +48,7 @@ if _REPO_ROOT not in sys.path:
 from yiban import state_gc  # noqa: E402
 
 # 目录解析与 run.sh 同口径（顺序也一致）：YIBAN_STATE_DIR → 默认 /var/log/yiban；
-# 日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir。实现在 `yiban/state_gc.py`
+# 日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir。实现在 `yiban/adapters/statefiles/state_gc.py`
 # ——CLI（`python -m yiban.cli state`）与本脚本共用同一份，免得出现"配置一样、
 # 清理目录不同"；这里保留同名绑定，既有调用方（测试）无需改动。
 state_dir_from_env = state_gc.state_dir_from_env
@@ -76,7 +76,7 @@ def main(argv=None):
     """
     parser = argparse.ArgumentParser(
         prog="state_cleanup.py",
-        description="按天状态文件清理（策略在 yiban/state_gc.py；默认真清理，--dry-run 只报告）",
+        description="按天状态文件清理（策略在 yiban/adapters/statefiles/state_gc.py；默认真清理，--dry-run 只报告）",
     )
     parser.add_argument("--dry-run", action="store_true", help="只报告将清理的条目，不删")
     try:

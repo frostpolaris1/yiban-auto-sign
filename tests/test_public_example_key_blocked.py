@@ -22,7 +22,7 @@ Web 侧不管理这把钥、没有写侧校验点可挂，"读侧启动即崩"�
     （批 6c3-A 注：旧"三条判据抓不住模板"的实算反向钉属判据自证元测试——它自我比较
     弱判据算术，真契约由 test_exact_public_string_blocked 与 load_key 端到端格钉住，
     已按对表裁撤。）
-对应实现：`yiban/infra/account_crypto.py` 的 `_PUBLISHED_EXAMPLE_KEY` 与
+对应实现：`yiban/adapters/config/account_crypto.py` 的 `_PUBLISHED_EXAMPLE_KEY` 与
     `_decode_key` 精确比对分支、`load_key` 两档取值路径；`.env.example` 密钥段占位。
 关键断言：阻断格必须断**抛 ValueError 且消息含"公开示例模板"指引**（只断 raise 会把
     "格式非法"误拦也算过）；零误杀格必须用**足量随机钥**（200 把）而不是单把样本；

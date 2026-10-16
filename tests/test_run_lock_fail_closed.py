@@ -9,7 +9,7 @@
    `_run_lock_held` 探测不出锁状态时按"有人在跑"处置；两个真子进程抢同一把锁时恰一个
    运行、另一个以 rc=3 拒绝且日志有因。
 对应实现：yiban/engine/cli_support.py（`_acquire_run_lock` / `_run_lock_held` /
-   `_RunLockUnavailable`）、yiban/engine/runner.py（三处调用点）、
+   `_RunLockUnavailable`）、yiban/app/runner.py（三处调用点）、
    yiban/engine/workers.py（监督进程的全局锁）。
 关键断言：三条路径都必须**抛**，而不是交出未加锁句柄或静默继续——"拿不到锁就继续"
    在多执行体下等于同一账号被两个进程并发真实登录（本项目第一红线）；只改判据不改状态

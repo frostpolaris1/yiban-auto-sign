@@ -5,7 +5,7 @@
 覆盖：`next_retry_at_v3` 的落点夹取在「已进窗口 / 未进窗口 / 窗口已过」三段的行为，
    以及 `Window.bounds_dt` 把分钟数配成绝对时刻这件事本身。
 
-对应实现：yiban/window.py（`Window.bounds_dt`）、yiban/engine/executor_v3.py
+对应实现：yiban/core/window.py（`Window.bounds_dt`）、yiban/engine/executor_v3.py
    （`next_retry_at_v3`）。
 
 关键断言：**跨零点后重试不得落在窗口之外**。`lo_min` / `hi_min` 是「当天第几分钟」、

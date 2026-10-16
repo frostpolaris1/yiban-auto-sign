@@ -1,7 +1,7 @@
 #!/bin/bash
 # 按天数据清理（cron 每天执行一次，如 `0 3 * * * yiban /bin/bash /opt/yiban-auto-sign/scripts/yiban-cleanup.sh`）。
 #
-# 本脚本只是薄包装：清理**策略与实现**唯一在 `yiban/state_gc.py`
+# 本脚本只是薄包装：清理**策略与实现**唯一在 `yiban/adapters/statefiles/state_gc.py`
 # （清单 = 按天签到日志、按日结构化状态、旧版按日状态、用户失败提醒额度账本、
 #  当日全量收尾标记、容器时段闩锁标记、调度快照；另含写盘中断留下的半成品
 #  与空的熔断状态文件）。原先规则写在本脚本里、容器侧另写一份且只覆盖 3 个模式——
@@ -27,7 +27,7 @@ elif [ -x /usr/bin/python3 ]; then
     # cron 的 PATH 可能极简（/usr/bin:/bin），command -v 也未命中时兜底绝对路径
     PY=/usr/bin/python3
 else
-    echo "找不到 python3，无法执行清理（策略实现在 yiban/state_gc.py）" >&2
+    echo "找不到 python3，无法执行清理（策略实现在 yiban/adapters/statefiles/state_gc.py）" >&2
     exit 1
 fi
 

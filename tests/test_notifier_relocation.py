@@ -11,7 +11,7 @@
        （`is`），子模块也同一（`yiban.notify.ledger is
        yiban.adapters.notifier.notify.ledger`）。判据是对象同一，不是"输出看着一样"。
     ③ **新坐标真能用**：从新坐标取配置与通道状态，判据与旧坐标逐值相同。
-    ④ **告警编排没跟着搬**：`yiban/engine/alerts.py` 留在原地
+    ④ **告警编排没跟着搬**：`yiban/adapters/notifier/report.py` 留在原地
        （执行核冻结名单里的 `round` / `executor_v3` 都 import 它）。
 对应实现：`yiban/adapters/notifier/mail/`、`yiban/adapters/notifier/notify/`、
     `yiban/mail/__init__.py` 与 `yiban/notify/__init__.py`（转发壳）。
@@ -61,16 +61,20 @@ class NotifierRelocationTest(unittest.TestCase):
                         os.path.isfile(os.path.join(BASE, old, sub + ".py")),
                         f"{old}/{sub}.py 仍在：那是第二份实现（改一处不会同步另一处）")
 
-    def test_alert_orchestration_stayed_put(self):
-        """告警编排（`yiban/engine/alerts.py`）不得随本片搬走。
+    def test_alert_orchestration_has_one_implementation(self):
+        """告警编排只有一份实现，旧坐标是转发壳（仓库结构整理批 B 重锚）。
 
-        理由：执行核冻结名单里的 `round` / `executor_v3` 都 import 它。
-        搬它就要改冻结文件的 import 行——那条边界本批不许碰。
+        批 A4 的边界是"告警编排留在 `yiban/engine/alerts.py`"（执行核冻结期
+        不许改冻结文件的 import 行）。批 B 时冻结令已解除，编排搬进
+        `yiban/adapters/notifier/report.py`，旧坐标只剩壳。
+        不变式不变：**只有一份实现**；旧坐标取到的必须是实现本身（同一对象）。
         """
-        self.assertTrue(os.path.isfile(os.path.join(BASE, "yiban", "engine", "alerts.py")),
-                        "yiban/engine/alerts.py 不见了：告警编排属批 B")
+        import yiban.adapters.notifier.report as new
+        import yiban.engine.alerts as old
+        self.assertIs(old, new,
+                      "yiban/engine/alerts.py 必须是转发壳（同一对象），不是第二份实现")
         self.assertFalse(os.path.exists(os.path.join(BASE, NEW_MAIL, "alerts.py")),
-                         "告警编排被搬进了 notifier/mail：那会牵动冻结文件")
+                         "告警编排不得住进 notifier/mail")
 
 
 class NotifierShellTest(unittest.TestCase):

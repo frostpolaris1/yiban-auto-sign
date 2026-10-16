@@ -7,7 +7,7 @@
     ② `POST /api/my-accounts` 异步校验路径：配额已扣而 `_start_verify_job` 抛
     `VerifyGateBusy` 时，响应不得静默 `ok:true` 装作无事发生——如实给
     `status=verify_deferred` 并在 msg 交代"本次未排上在线校验"。
-对应实现：`yiban/store/accounts.py::replace_accounts`；
+对应实现：`yiban/adapters/persistence/accounts.py::replace_accounts`；
     `web/routes/my_api.py::api_my_account_add` 的 VerifyGateBusy 分支。
 关键断言：①含引擎选号面（`_load_accounts_from_file` 只跳 pending/rejected/deleted，
     pending 的行必须缺席）；②账号仍入库待审核（拒绝的是"假装在验证"，不是提交本身）。

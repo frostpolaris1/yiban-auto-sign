@@ -6,7 +6,7 @@
     signin 即时告警门控从已废弃的 `YIBAN_NOTIFY_URL` 死键改判 `is_configured`；
     `_flush_admin_mail_summary` 收件人集为空时的整卷兜底。
 对应实现：通道判定在 `yiban/notify/`（配置解析与 `is_configured`），门控调用点在
-    `yiban/engine/alerts.py`（壳 `scripts/signin.py` 转发），邮件汇总在 web 侧。
+    `yiban/adapters/notifier/report.py`（壳 `scripts/signin.py` 转发），邮件汇总在 web 侧。
 关键断言：源级断言不再出现 `if notify_url:` 那类死键门（生产不配旧键 → 账号级失败与
     耗时推送此前永不发出）；收件人为空时推送已配置 → 同一份汇总改走推送**恰好一次**
     （urgent+force），未配置 → 仅 warning 留痕（不得静默丢弃整卷）。
@@ -151,17 +151,18 @@ class SigninAlertGateTest(unittest.TestCase):
     def test_no_dead_notify_url_gate_remains_in_source(self):
         """源级断言：即时告警门不得再挂在 YIBAN_NOTIFY_URL 死键上。
 
-        门随执行码迁进了引擎（`yiban/engine/round.py` 的放弃分支、`alerts.py` 的耗时
+        门随执行码迁进了引擎（`yiban/app/round.py` 的放弃分支、`alerts.py` 的耗时
         告警），兼容壳 `scripts/signin.py` 只剩转发——因此扫整个引擎目录加壳，
         而不是只看旧入口文件。
         """
         src = ""
-        engine_dir = os.path.join(BASE, "yiban", "engine")
-        for name in sorted(os.listdir(engine_dir)):
-            if not name.endswith(".py"):
-                continue
-            with open(os.path.join(engine_dir, name), encoding="utf-8") as f:
-                src += f.read()
+        for rel in ("engine", "app", os.path.join("adapters", "notifier")):
+            d = os.path.join(BASE, "yiban", rel)
+            for name in sorted(os.listdir(d)):
+                if not name.endswith(".py"):
+                    continue
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    src += f.read()
         with open(os.path.join(BASE, "scripts", "signin.py"), encoding="utf-8") as f:
             src += f.read()
         self.assertNotIn("if notify_url:", src,

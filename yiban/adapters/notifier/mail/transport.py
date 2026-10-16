@@ -16,9 +16,9 @@ from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from yiban.infra.env_io import escape_line_breaks
-from yiban.masking import sanitize_text
-from yiban.store import db
+from yiban.adapters.config.env_io import escape_line_breaks
+from yiban.adapters.persistence import db
+from yiban.core.masking import sanitize_text
 
 from . import config, layout
 

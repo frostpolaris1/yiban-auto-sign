@@ -18,7 +18,7 @@
 与两个领取回收索引）、`sign_claims` **不平移**（旧表原行保留、幂等零插入）、
 迁移后 `PRAGMA synchronous` 为 FULL、登记表可选档条目的通用失败语义（打桩条目，
 不阻断、不提版本）。
-对应实现：`yiban/store/` 的 v18 迁移函数与 `sign_tasks` 定义点、
+对应实现：`yiban/adapters/persistence/` 的 v18 迁移函数与 `sign_tasks` 定义点、
 `yiban/engine/state_io.py::worker_presence`（执行体存活走文件心跳，不走表）。
 关键断言：`test_synchronous_is_full_after_migration` 与"存活不走表"这两条看着像洁癖，
 实际各守一格——前者丢的是断电后的终态（等于重复真实登录），后者多建一张表就让

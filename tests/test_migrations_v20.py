@@ -20,7 +20,7 @@
 不覆盖已有行（`INSERT OR IGNORE`）、某日损坏或目录缺失只跳过不抛（目录**在而读不动**
 ⇒ 延后不提版本，反例见 `tests/test_migrations_fail_closed.py`）、`run_at` 时间回退
 与批量提交不丢行；另钉映射表与 `ALL_STATUSES` 的键绑定。
-对应实现：`yiban/store/` 的 v20 backfill 与 `yiban/status.py::ALL_STATUSES`、
+对应实现：`yiban/adapters/persistence/` 的 v20 backfill 与 `yiban/core/status.py::ALL_STATUSES`、
 `yiban/engine/state_io.py` 写出的状态文件形状。
 关键断言：`TerminalMapGuardTest` 是**防静默失效**的一条——映射表少一格时两侧都不报错、
 只是那一类的终态永远补不进账本，故断"键集合 = 全词表减在途集合"而不是逐条抽查；

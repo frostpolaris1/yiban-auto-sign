@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 
-from ..store import verify_jobs as store
+from yiban.adapters.persistence import verify_jobs as store
 
 logger = logging.getLogger("yiban.attempt.jobs")
 
@@ -112,7 +112,7 @@ def run(job_id, clean, username, account_id, prev_status, fails, limits):
     if expired.is_set():
         return
     if verify_err:
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         fail_kind = _hooks["record_failure"](fails, clean["phone"], verify_err, time.time())
         db.audit(username or "?", "account_verify_job_fail", mask(clean["phone"]),
                  f"异步校验未通过（{fail_kind}）")

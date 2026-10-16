@@ -2,10 +2,10 @@
 """清库/删除入口的状态侧防线：备份副本保护、state 清理 argv/dry-run、CLI --yes 门。
 
 标签：D · 状态词汇与账号生命周期
-覆盖：`yiban/state_gc.py` 的清理迭代器跳过 SQLite 备份副本（按内容识别，非文件名）；
+覆盖：`yiban/adapters/statefiles/state_gc.py` 的清理迭代器跳过 SQLite 备份副本（按内容识别，非文件名）；
     `scripts/state_cleanup.py` 的 `--dry-run` 真不删与未知参数报错；
     `yiban.cli` 的 `state --yes` 需要指纹回显、留痕写不进去即拒绝（fail-closed）。
-对应实现：`yiban/state_gc.py`（`_iter_expired` 的 SQLite 跳过）与
+对应实现：`yiban/adapters/statefiles/state_gc.py`（`_iter_expired` 的 SQLite 跳过）与
     `yiban/entry/cli/__init__.py` 的 `_cmd_state`（`--fingerprint` + `write_purge_audit` 门）。
 关键断言：`db --backup` 落在状态目录的副本**不得按文件名被 state 清理掉**——副本是
     SQLite 库（内容判据），文件名叫得像按日状态文件也不行；`state --yes` 单独不构成

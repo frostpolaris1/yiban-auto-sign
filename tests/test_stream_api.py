@@ -16,7 +16,7 @@
 7. 审计：只读面留痕只在建连时一次，长连接生命周期内审计行数不随拍增长；
 8. 配置名册：9 枚新键在册且缺省与代码读取口径一致。
 
-契约来源：`yiban/store/run_events.py`（读取面，节点值域唯一出处）、
+契约来源：`yiban/adapters/persistence/run_events.py`（读取面，节点值域唯一出处）、
 `web/services/run_stream.py`（广播器）、`web/routes/stream_api.py`（端点）、
 `config/registry.json`（配置键唯一定义点）。
 依赖：临时 SQLite（真实迁移链）+ Flask test client（流式响应 `buffered=False`）；

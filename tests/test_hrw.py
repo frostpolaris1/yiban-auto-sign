@@ -5,8 +5,8 @@
 覆盖：虚分片层（vshard_of 确定性、值域、吃 day、blake2b 编码定值、v_for 定档
    64）与归属层（owner_of / shards_of / assignment
    三方一致、换天重排、增删执行体的迁移量、均衡度包络、平局字典序、空执行体）共十一条契约。
-对应实现：yiban/engine/hrw.py（vshard_of、v_for、owner_of、shards_of、assignment、V_DEFAULT）；取值写进
-   yiban/store/queue_store 的 sign_tasks.vshard。
+对应实现：yiban/core/hrw.py（vshard_of、v_for、owner_of、shards_of、assignment、V_DEFAULT）；取值写进
+   yiban/adapters/persistence/queue_store 的 sign_tasks.vshard。
 关键断言：分片归属必须跨进程一致：判据靠两个全新解释器互验，并且同时钉住「内置 hash()
    每进程不同」——陷阱没 armed 时这条用例是空转。vshard 层也必须吃
    day（它要落库，只在 owner

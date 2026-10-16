@@ -39,10 +39,11 @@ import sys
 import time
 from contextlib import contextmanager, suppress
 
-from yiban import clock
-from yiban.infra import env_io, locks
+from yiban.adapters.config import env_io
+from yiban.core import clock
+from yiban.core.masking import mask_phones_in_text, sanitize_text
+from yiban.infra import locks
 from yiban.logging_ext import FlockFileHandler, MaskingFormatter
-from yiban.masking import mask_phones_in_text, sanitize_text
 
 logger = logging.getLogger("yiban")
 

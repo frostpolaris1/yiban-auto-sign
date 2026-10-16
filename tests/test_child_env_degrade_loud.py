@@ -28,7 +28,7 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 告警通道：与 `yiban/infra/env_io.py` 的 .env 解析告警同通道（调度器与 web 两侧
+# 告警通道：与 `yiban/adapters/config/env_io.py` 的 .env 解析告警同通道（调度器与 web 两侧
 # 都把 "yiban" 放开到 INFO 且挂在 root 之下，故 WARNING 必然到达各自处理器）
 CHANNEL = "yiban"
 

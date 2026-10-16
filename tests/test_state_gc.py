@@ -7,7 +7,7 @@
     日志目录与状态目录分开、环境变量覆盖保留期且非法值响亮失败、空凭据态只在真空时删；
     元测试：仓库里每个"带日期后缀"的文件名必须落在策略表或 `ALLOWED_NON_STATE`；
     宿主 CLI 与容器调度共用同一策略且目录键与 run.sh 同口径；清理残留与账号事件的连带。
-对应实现：策略在 `yiban/state_gc.py`（`sweep`），调用点 `scripts/state_cleanup.py`
+对应实现：策略在 `yiban/adapters/statefiles/state_gc.py`（`sweep`），调用点 `scripts/state_cleanup.py`
     与 `docker/scheduler.py`；bash 包装只做委托。
 关键断言：根因不是"漏了某几个模式"，而是**规则写在 bash 里、容器侧另写一份**——
     所以钉的是"新增一类按日文件必须有交代"这条元测试，而不是逐条列举文件；

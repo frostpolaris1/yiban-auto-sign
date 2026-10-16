@@ -73,7 +73,7 @@ ACCOUNTS = [
     ("陈十四（待删除）", "13800138012", "Nothing Phone 2", "active", False, True),
 ]
 
-# 签到状态码（唯一事实源 yiban/status.py）：success/already/no_task/failed/
+# 签到状态码（唯一事实源 yiban/core/status.py）：success/already/no_task/failed/
 # retrying/skipped_window/skipped_norange/paused/user_cancelled
 EVENT_STATUSES = ["success", "already", "no_task", "failed", "retrying", "skipped_window", "skipped_norange"]
 

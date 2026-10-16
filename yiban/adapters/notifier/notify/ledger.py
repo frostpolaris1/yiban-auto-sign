@@ -16,7 +16,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 
-from yiban import clock
+from yiban.core import clock
 from yiban.infra import locks, private_json
 
 from . import config

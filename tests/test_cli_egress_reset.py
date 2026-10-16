@@ -11,7 +11,7 @@
 对应实现：yiban/engine/egress_admin.py（实现）、yiban/entry/cli/__init__.py（子命令注册
    与分派；yiban/cli.py 是转发壳）、
    yiban/engine/token_bucket.py（速率域名与出厂速率唯一真值源）、
-   yiban/store/queue_store.py（`egress_state` 唯一持久化路径）、yiban/clock.py（时间域）、
+   yiban/adapters/persistence/queue_store.py（`egress_state` 唯一持久化路径）、yiban/core/clock.py（时间域）、
    yiban/egress.py（出口标识口径 `outlet_label` / `is_outlet_identity`）。
 关键断言：复位把被误判砍过的出口速率写回**引擎出厂速率**（或 `--rate` 显式值），且只改
    `rate` 一列（`burst`/`tat` 逐字保留）；不加 `--yes` 时逐字不动；两条速率来源过**同一道**

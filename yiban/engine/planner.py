@@ -49,10 +49,10 @@ import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
-from yiban import clock, window
-from yiban.engine import hrw, schedule
-from yiban.masking import mask_phone
-from yiban.store import clock_meta, queue_store
+from yiban.adapters.persistence import clock_meta, queue_store
+from yiban.core import clock, hrw, window
+from yiban.core.masking import mask_phone
+from yiban.engine import schedule
 
 logger = logging.getLogger("yiban")
 
@@ -284,7 +284,7 @@ def _stamp_at(base: datetime.datetime, eff_lo: float, k: int, j: int, phase: flo
 
 def _read_prefs() -> dict[str, Any]:
     """读全量自选片（总开关开启时才读）；读失败按"无人自选"继续，不阻断计划。"""
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     try:
         return db.get_time_prefs()
     except Exception as e:

@@ -3,7 +3,7 @@
 
 标签：性能 · 状态词汇与账号生命周期
 覆盖：`yiban/engine/state_io.py::_write_sign_state` 与
-    `yiban/engine/alerts.py::_user_fail_mail_reserve/_user_fail_mail_release` 两条
+    `yiban/adapters/notifier/report.py::_user_fail_mail_reserve/_user_fail_mail_release` 两条
     "整体持锁＋读整个文件＋改一键＋全量写回"路径。二者在轮内**每账号调用一次**，
     代价随账号数平方增长（N 次调用 × 每次 O(N) 字节）。
 
@@ -20,7 +20,7 @@
 4. **写放大有界**：一批 M 次更新的**写盘字节**不得随 M 平方增长（回归即红——
    这正是本批要修的形状）。
 
-对应实现：批量缓冲在 `yiban/engine/state_io.py` 与 `yiban/engine/alerts.py`；
+对应实现：批量缓冲在 `yiban/engine/state_io.py` 与 `yiban/adapters/notifier/report.py`；
 禁用开关（不设该上下文即逐条写盘）由调用方持有（`runner.main`）。
 依赖：临时 `YIBAN_STATE_DIR`、进程内打桩 `private_json.write_private_json` 计数与
     字节记账、真子进程（崩溃用例）；不触网、不需要库。

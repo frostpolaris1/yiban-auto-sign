@@ -12,11 +12,11 @@
     web 侧 `_day_off_reason` 与日历页内联上下文（day_off/图例/状态表载荷）与引擎判定同源；
     活体反例：伪造 web 读源（read_env 桩成空）或只翻文件一侧 ⇒ 同源性判据必须变红
 对应实现：run.sh（`.env` 装载、`_write_status_from_exit` 判码契约）、
-    yiban/engine/runner.py（`_day_off_skip`→2、取锁争抢→3）、
+    yiban/app/runner.py（`_day_off_skip`→2、取锁争抢→3）、
     yiban/engine/cli_support.py（`_acquire_run_lock`：忙/无锁后端一律 fail-closed）、
     yiban/engine/schedule.py（`day_off`
     三道门的唯一实现）、web/app.py（`_day_off_reason` 现读注入）、
-    web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/status.py
+    web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/core/status.py
     （`DISPLAY`/`legend_items`/`display_payload`）、yiban/adapters/protocol_fake/__init__.py（假上游记账）
 关键断言：rc 契约本单**只钉不改**：暂停命中 ⇒ 引擎 rc=2 且 run.sh 状态文件为
     GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）。注（f7va，2026-10-12）：
@@ -525,7 +525,7 @@ class GlobalPauseChainTest(_ChainBase):
 
         rc=3（队列忙）族的唯一产线源头：引擎进程级运行锁 `signin-run.lock` 的争抢
         ——`_RunLockHeld`/`_RunLockUnavailable`（等待超时、无锁后端、锁件不可开）
-        一律 fail-closed 返 3（yiban/engine/runner.py）。run.sh 对 rc=3 落盘 **BUSY**
+        一律 fail-closed 返 3（yiban/app/runner.py）。run.sh 对 rc=3 落盘 **BUSY**
         （`_EXIT_KINDS` 把 3 定名为 `locked`＝队列忙，**本轮没跑**）：真意是"不得写
         SUCCESS"，且**不得写 FAILED**——本轮没跑≠账号签到失败（本项目栽过"领不到任务
         被上报成批假失败"，10-07）。旧断言用"statuses 为空"当"非 SUCCESS"的代理，

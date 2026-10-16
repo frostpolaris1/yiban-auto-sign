@@ -32,10 +32,10 @@ import datetime
 import os
 import sqlite3
 
+from yiban.adapters.persistence import accounts as store_accounts
+from yiban.adapters.persistence import db as store_db
+from yiban.adapters.persistence import purge_guard
 from yiban.engine.cli_support import _emit_json, _fail, _say
-from yiban.store import accounts as store_accounts
-from yiban.store import db as store_db
-from yiban.store import purge_guard
 
 
 # ---------------------------------------------------------------------------

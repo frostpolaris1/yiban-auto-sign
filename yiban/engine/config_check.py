@@ -10,8 +10,8 @@ import logging
 import os
 import sys
 
-from yiban.infra import env_io
-from yiban.masking import mask_phone as _mask_phone
+from yiban.adapters.config import env_io
+from yiban.core.masking import mask_phone as _mask_phone
 
 logger = logging.getLogger("yiban")
 

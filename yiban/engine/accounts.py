@@ -34,12 +34,12 @@ import logging
 import os
 from dataclasses import dataclass
 
+from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.persistence import db
+from yiban.core.masking import mask_phone as _mask_phone
+from yiban.core.masking import sanitize_text as _sanitize_text
 from yiban.engine import config_check
-from yiban.infra import account_crypto, env_io
 from yiban.mail.config import _mask_addr
-from yiban.masking import mask_phone as _mask_phone
-from yiban.masking import sanitize_text as _sanitize_text
-from yiban.store import db
 
 logger = logging.getLogger("yiban")
 

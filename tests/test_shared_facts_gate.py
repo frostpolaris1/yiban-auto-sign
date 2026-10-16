@@ -472,7 +472,7 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         for d in ("yiban", "scripts", "tests"):
             os.makedirs(os.path.join(root, d))
         # 每个 scope 组至少要有一个可扫文件，否则会先撞上 D1 的"贡献 0 个文件"
-        for stub in ("yiban/state_gc.py", "tests/test_state_gc.py"):
+        for stub in ("yiban/adapters/statefiles/state_gc.py", "tests/test_state_gc.py"):
             with io.open(os.path.join(root, stub), "w",
                          encoding="utf-8", newline="\n") as f:
                 f.write("# meta-test stub：只为占住 scope 面，不含任何判定模式\n")

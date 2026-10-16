@@ -8,7 +8,7 @@
 东西**——两把**进程内锁**先把同进程的并发串行化了。
 
 **根因（两条都必须成立，门才立得住）**：
-  ① `yiban/store/connection.py` 的 `_conn_lock` 是模块级 `threading.RLock`；所有
+  ① `yiban/adapters/persistence/connection.py` 的 `_conn_lock` 是模块级 `threading.RLock`；所有
      库读写经它串行化。同进程两线程调 `claim_batch` 因此**排队**，不构成争用。
   ② `yiban/infra/locks.py` 每路径一把进程内 `RLock`（`_LOCKS`），`file_lock` 在
      `_acquire`（真 `flock`）**之前**先取它。同进程两线程取同一路径的锁因此先在
@@ -23,8 +23,8 @@
 **B 组的牙**：把某条已点名用例从 `NAMED_SMOKE` 摘掉，或往表里塞一条假条目，
 `ConcurrencyFidelityGateTest` 转红。
 
-对应实现：yiban/store/connection.py（`_conn_lock`）、yiban/infra/locks.py（`_LOCKS`
-   每路径 RLock 与 `file_lock` 的取锁次序）、yiban/store/queue_store.py（`claim_batch`
+对应实现：yiban/adapters/persistence/connection.py（`_conn_lock`）、yiban/infra/locks.py（`_LOCKS`
+   每路径 RLock 与 `file_lock` 的取锁次序）、yiban/adapters/persistence/queue_store.py（`claim_batch`
    在 `_conn_lock` 下执行）。
 关键断言：门钉**任何时刻都不该被违反的性质**——"进程内锁把同进程线程串行化"与
    "宣称跨进程的用例要么真起进程、要么被显式点名为冒烟"；不钉任何调用顺序。
