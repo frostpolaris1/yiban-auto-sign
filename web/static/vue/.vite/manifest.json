@@ -3,8 +3,8 @@
     "file": "assets/_plugin-vue_export-helper-BDNMzG2s.js",
     "name": "_plugin-vue_export-helper"
   },
-  "_accountform-C_UU9qDD.js": {
-    "file": "assets/accountform-C_UU9qDD.js",
+  "_accountform-CCYHt1qz.js": {
+    "file": "assets/accountform-CCYHt1qz.js",
     "name": "accountform"
   },
   "_api-CuwwJJDA.js": {
@@ -63,7 +63,7 @@
     "name": "vendor-vue"
   },
   "accounts.html": {
-    "file": "assets/accounts-BiQdhD-l.js",
+    "file": "assets/accounts-BVSm7gtG.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -75,7 +75,7 @@
       "_ep-theme-DbVVdlGb.js",
       "_shell-dGJbQ6eu.js",
       "_status-vocab-DDwGXPz2.js",
-      "_accountform-C_UU9qDD.js"
+      "_accountform-CCYHt1qz.js"
     ]
   },
   "audit.html": {
@@ -168,7 +168,7 @@
     ]
   },
   "myaccounts.html": {
-    "file": "assets/myaccounts-BsqL51XY.js",
+    "file": "assets/myaccounts-DX2msxSh.js",
     "name": "myaccounts",
     "src": "myaccounts.html",
     "isEntry": true,
@@ -179,7 +179,7 @@
       "_vendor-element-plus-GBebhdpN.js",
       "_ep-theme-DbVVdlGb.js",
       "_shell-dGJbQ6eu.js",
-      "_accountform-C_UU9qDD.js"
+      "_accountform-CCYHt1qz.js"
     ]
   },
   "settings.html": {

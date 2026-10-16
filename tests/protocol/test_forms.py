@@ -92,8 +92,9 @@ def test_sign_in_body_reconstructs_from_plain_fixture(read_fixture):
 def test_sign_info_json_is_byte_identical():
     """SignInfo 的 JSON 序列化逐字节同构（键序、分隔符、浮点短表示）。"""
     built = build_sign_in_body(lnglat=(118.10389401234568, 32.0078387654321), address="A")
-    # 用字面分隔符切出 SignInfo，避免 parse_qsl 改变 + 的语义。
-    raw = built.split("&SignInfo=", 1)[1].rsplit("&OutState=", 1)[0]
+    # `SignInfo` 是顶层最后一个字段（参考客户端定序），切出其后半段即可；
+    # 用字面分隔符切，避免 parse_qsl 改变 + 的语义。
+    raw = built.split("&SignInfo=", 1)[1]
     assert unquote_plus(raw) == (
         '{"Reason": "", "AttachmentFileName": "", '
         '"LngLat": "118.10389401234568,32.0078387654321", "Address": "A"}'
@@ -110,9 +111,11 @@ def test_sign_in_body_honours_optional_fields():
         code="c",
         phone_model="m",
     )
-    assert built.startswith("Code=c&PhoneModel=m&SignInfo=")
-    assert built.endswith("&OutState=2")
-    sign_info = unquote_plus(built.split("&SignInfo=", 1)[1].rsplit("&OutState=", 1)[0])
+    # 顶层五字段、顺序对齐参考客户端（2026-10-16 订正：原只发四字段）
+    assert built.startswith(
+        "AttachmentFileName=a.jpg&OutState=2&Code=c&PhoneModel=m&SignInfo="
+    )
+    sign_info = unquote_plus(built.split("&SignInfo=", 1)[1])
     assert json.loads(sign_info)["Reason"] == "r"
     assert json.loads(sign_info)["AttachmentFileName"] == "a.jpg"
     assert json.loads(sign_info)["LngLat"] == "1.0,2.0"

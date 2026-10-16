@@ -19,8 +19,10 @@
     GET  /iapp7463                                    -> 302 到 iframe/index
     GET  /iframe/index                                -> 302 Location 带 verify_request
     GET  /base/c/auth/yiban（带 verifyRequest）        -> JSON {"code": 0}
-  签到（2 步）
+  签到（3 步）
     GET  /nightAttendance/student/index/signPosition  -> JSON 点位 + 时间窗口
+    GET  /device/student/index/getState               -> JSON 该账号已登记设备
+                                                         {authorize, Code, PhoneModel, UpdateTime}
     POST /nightAttendance/student/index/signIn        -> JSON {"code": 0, "data": {...}}
   探针入口
     GET  /nightAttendance/student/index/signPosition  -> 只读探针（verify/--probe 复用）
@@ -65,6 +67,11 @@ rWLs/4OSBrj57z0KDgqI2dvq7/iKq6CZg/Xp2GvS5RufTg2d3L4A2fvW+EMeH5y2
 LRkfPxBheozagMaKWfgd+IkdI/CBqvOFS6m/tvzOHnn3fx0TyrhwqId/I3WrHIKX
 ZO2F/jOXAwpzw0UKTwIDAQAB
 -----END PUBLIC KEY-----"""
+
+#: 假上游登记的合成设备（`/device/student/index/getState` 的返回）。
+#: 真值是设备指纹，不入仓库；长度取 64 位（生产实测存在该形态）。
+MOCK_DEVICE_CODE = "e" * 64
+MOCK_DEVICE_MODEL = "Example-EX1000"
 
 # 失败注入可选点（与 signin 实际调用的接口一一对应）。全部**默认关闭**
 # （none）——不开时对引擎零变化。故障注入旋钮 = login / signIn / waf /
@@ -456,6 +463,16 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                     if not injected:
                         self._send_redirect(
                             "https://c.uyiban.com/iframe/index?act=iapp7463")
+                elif p == "/device/student/index/getState":
+                    # 设备登记读回（平台 2026-10-16 起签到强制校验设备绑定）。
+                    # 客户端取不到设备码时会**拒签**（本地拦截），故假上游必须能应答
+                    # 这一问，否则签到链在本替身上根本走不完。
+                    self._send_json({"code": 0, "msg": "", "data": {
+                        "authorize": True,
+                        "Code": MOCK_DEVICE_CODE,
+                        "PhoneModel": MOCK_DEVICE_MODEL,
+                        "UpdateTime": 1761517844,
+                    }})
                 elif p == "/nightAttendance/student/index/signPosition":
                     injected = self._should_fail(cfg, "signPosition")
                     if injected:
