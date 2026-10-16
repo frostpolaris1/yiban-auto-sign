@@ -392,7 +392,8 @@ class RunShLockDirTest(unittest.TestCase):
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
                      encoding="utf-8") as f:
             f.write(_STUB_SIGNIN)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         py = os.path.join(self.app, ".venv", "bin", "python3")
         with io.open(py, "w", encoding="utf-8", newline="\n") as f:
@@ -570,7 +571,7 @@ class RunShHostTimezoneTest(unittest.TestCase):
                   os.path.join(self.app, ".venv", "bin"), self.state):
             os.makedirs(d, exist_ok=True)
         self._write(os.path.join(self.app, "scripts", "signin.py"), _STUB_SIGNIN_SECOND)
-        self._write(os.path.join(self.app, ".env"), "YIBAN_SIGN_END=07:50\n")
+        self._write(os.path.join(self.app, "data", ".env"), "YIBAN_SIGN_END=07:50\n")
         py = os.path.join(self.app, ".venv", "bin", "python3")
         self._write(py, '#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"), 0o755)
         self.bin = os.path.join(self.tmp, "bin")
@@ -584,6 +585,8 @@ class RunShHostTimezoneTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write(self, path, text, mode=None):
+        # 父目录按需建：`.env` 现在落 `<app>/data/` 下，夹具不必各自记得先建它。
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with io.open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
         if mode is not None:
@@ -674,7 +677,8 @@ class RunProbeLockDirTest(unittest.TestCase):
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
                      encoding="utf-8") as f:
             f.write(_STUB_SIGNIN_PROBE)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("")
         py = os.path.join(self.app, ".venv", "bin", "python3")
         with io.open(py, "w", encoding="utf-8", newline="\n") as f:

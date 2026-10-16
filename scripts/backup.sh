@@ -48,12 +48,15 @@
 #   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
-#   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+#   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
 #   # 上一条的退出码 1 = 检出篡改/删除，2 = 无法定论（密钥缺失等）；0 才是健康。
 #   # 想让 cron 直接告警，可包一层：|| mail -s 'yiban 审计校验失败' root@localhost
+#   # 权威件 deploy/prod/cron.d/yiban-audit（身份 yiban）里 `cd` 目标带**尾斜杠**
+#   # `/opt/yiban-auto-sign/`——承重：check-cron-provenance.sh 只认 `$APP_ROOT/*` 可回指仓库，
+#   # 去掉即判红。上面的手工命令不带尾斜杠（等价），别照抄进 cron.d。
 #   # 备份哨兵——本脚本的加密配置一旦失效会 fail-closed 不产出任何归档，cron 拿不到
 #   # 任何信号：08:05 的哨兵就是替这里发声的那一步（详见 scripts/yiban-backup-sentinel.sh）
-#   5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+#   5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 #
 # 依赖：
 #   - 本地打包：tar / find / sqlite3（系统自带）
@@ -79,6 +82,10 @@ umask 077
 # 配置（按需调整；也可通过环境变量覆盖）
 # ------------------------------------------------------------
 APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"          # 项目部署目录
+# `.env` 的绝对路径：**单点定义**（工单 ybg8——运行数据与代码分离，`.env` 与库都在
+# 检出内的 data/ 下，检出根才能属 root 且组/其他不可写）。下面多处引用它，不各写一遍：
+# 同一路径写 N 遍就是"同一事实多处定义"，改一处必漏一处。
+ENV_FILE="${APP_DIR}/data/.env"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups}"            # 本地备份目录
 RETENTION_DAYS="${RETENTION_DAYS:-30}"              # 保留天数
 REMOTE_BACKUP="${REMOTE_BACKUP:-}"                  # 异机目标，如 user@host:/backup/yiban；留空 = 仅本地
@@ -116,7 +123,7 @@ if [ "${YIBAN_READ_PASSPHRASE_STDIN:-0}" = "1" ]; then
 fi
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
-DATA_FILES=(.env)
+DATA_FILES=(data/.env)
 # SQLite 数据库的取值在下面的 env_get 之后（同一套双源口径，见 DB_FILE 段）
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
@@ -127,11 +134,11 @@ DATA_FILES=(.env)
 # cron / systemd 直接跑本脚本时进程环境里没有这些键（它们不读 .env），只按环境变量取会
 # 让备份**抓错目录**：自定义状态或日志目录的部署会去抓 /var/log/yiban——同一台机器上
 # 第二份部署的日志与状态就此混进别人的归档。故 .env 是第二来源，键名与 .env.example 一致。
-env_get() {  # $1=键名；进程环境优先，回退 ${APP_DIR}/.env（剥 BOM + 两侧 strip，与 run.sh/env_io 同口径）
+env_get() {  # $1=键名；进程环境优先，回退 ${ENV_FILE}（剥 BOM + 两侧 strip，与 run.sh/env_io 同口径）
     local v
     v="$(printenv "$1" 2>/dev/null || true)"
-    if [ -z "${v}" ] && [ -f "${APP_DIR}/.env" ]; then
-        v="$(sed -n "s/^\xEF\xBB\xBF//;s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${APP_DIR}/.env" \
+    if [ -z "${v}" ] && [ -f "${ENV_FILE}" ]; then
+        v="$(sed -n "s/^\xEF\xBB\xBF//;s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${ENV_FILE}" \
             | head -1 | tr -d '\r')"
         # 两侧 strip：与 run.sh 的 key/value strip 及 env_io.parse_env_file 同口径。
         # 旧实现只认行首 `KEY=`（不剥 BOM、不认键名前导空格、不 strip），带 BOM 或
@@ -150,19 +157,20 @@ SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sig
 # ------------------------------------------------------------
 # SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 # 键名与引擎同一枚：YIBAN_DB_FILE。
-# 取值口径三档：进程环境 → ${APP_DIR}/.env → 默认值。
+# 取值口径三档：进程环境 → ${ENV_FILE} → 默认值。
 # 上面的 env_get 就是这三档的本文件实现。
 # 本文件不再另写第二套 `.env` 读法。
 # 引擎侧的同一口径在 `yiban/store/db.py` 的 `init_db`，它经
 # `env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)`。
-# 过去的写法是 `${DB_FILE:-yiban.db}`：键名没有前缀，也从不查 `.env`。
-# 部署把库放在自定义路径时，备份抓的是 `${APP_DIR}/yiban.db`。
+# 过去的写法是 `${DB_FILE:-<无前缀默认>}`：键名没有前缀，也从不查 `.env`。
+# 部署把库放在自定义路径时，备份抓的是检出根下的库。
 # 归档里没有现役库，脚本照旧收工——静默丢数据。
 # 无前缀的 `DB_FILE` 留作旧部署回退，与 SIGN_STATE_DIR 同一处置。
 # 值可为绝对路径：绝对值原样用，相对值按 APP_DIR 拼接。
 # 引擎侧相对值按 cwd 拼接；cron 的形态是先 cd 到 APP_DIR，两者同形。
 YIBAN_DB_FILE="${YIBAN_DB_FILE:-$(env_get YIBAN_DB_FILE)}"
-DB_PATH="${YIBAN_DB_FILE:-${DB_FILE:-yiban.db}}"
+# 缺省值取引擎侧同一口径（`env_io.DEFAULT_DB_FILE` = "data/yiban.db"，检出内 data/）。
+DB_PATH="${YIBAN_DB_FILE:-${DB_FILE:-data/yiban.db}}"
 case "${DB_PATH}" in
     /*) DB_SRC="${DB_PATH}" ;;
     *)  DB_SRC="${APP_DIR}/${DB_PATH}" ;;
@@ -450,7 +458,7 @@ restore() {
     find "$dest" -type f -exec ls -l {} \;
     log "落位说明（生产路径按 APP_DIR / YIBAN_STATE_DIR 调整）："
     log "  - data/${DB_FILE} → ${DB_SRC}"
-    log "  - data/.env       → ${APP_DIR}/.env"
+    log "  - data/.env       → ${ENV_FILE}"
     log "  - keys/           → ${KEY_FILE}（或与 .env 合并）"
     log "  - state/          → \${YIBAN_STATE_DIR}（含 sched-run-*/sched-slot-*/sched-snapshot-*/"
     log "                      notify-ledger.json/notify-throttle.json/cred-state.json）"
@@ -706,18 +714,18 @@ if [ -f "${KEY_FILE}" ]; then
     # YIBAN_SECRET_KEY 写进了该文件——校验内容，缺数据密钥时从 .env 兜底提取
     if ! grep -qE '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${KEY_FILE}"; then
         log "警告：${KEY_FILE} 内未找到 YIBAN_ACCOUNTS_KEY（疑似旧清单写入的会话密钥），尝试从 .env 兜底提取"
-        if [ -f "${APP_DIR}/.env" ]; then
-            grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/accounts-key.env" \
-                && log "已从 ${APP_DIR}/.env 兜底提取 YIBAN_ACCOUNTS_KEY（keys/accounts-key.env）" \
+        if [ -f "${ENV_FILE}" ]; then
+            grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/accounts-key.env" \
+                && log "已从 ${ENV_FILE} 兜底提取 YIBAN_ACCOUNTS_KEY（keys/accounts-key.env）" \
                 || log "警告：.env 中也未找到 YIBAN_ACCOUNTS_KEY，数据密钥未备份！恢复时 yiban.db 密文将不可解！"
         fi
     fi
 else
     # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（账号密码 AES-GCM 数据加密密钥，
     # 见 yiban/infra/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
-    if [ -f "${APP_DIR}/.env" ]; then
-        grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/secret-key.env" \
-            && log "密钥来源：${APP_DIR}/.env 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
+    if [ -f "${ENV_FILE}" ]; then
+        grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/secret-key.env" \
+            && log "密钥来源：${ENV_FILE} 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
             || log "警告：.env 中未找到 YIBAN_ACCOUNTS_KEY，密钥未备份！"
     else
         log "警告：未找到密钥文件（${KEY_FILE}）与 .env，密钥未备份！"

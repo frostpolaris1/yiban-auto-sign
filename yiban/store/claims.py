@@ -423,7 +423,8 @@ def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退
     退出（返回码为负），这比"心跳过期 ⇒ 可能死了"更强，故不必等满租约。
 
     只动 `state='claimed'` 的行：已被别人接管的行 owner 已换、前缀不再命中；终态行更
-    不该动。`epoch + 1` 与 `reap_expired` 同一条红线——让任何迟到的旧代写被 fence。
+    不该动。`epoch + 1` 是**换代红线**——让任何迟到的旧代写被 fence（v3 侧的同一红线
+    见 `queue_store.reap_abandoned`；任务级租约已随工单 `l1rx` 删除）。
     结果里写 `retry:` 档（**覆盖**旧值）：死亡执行体没产出结论，不是"预算耗尽"，这行
     默认就该能被下一轮接手。保留旧 result 会让上一轮遗留的 `final:` 前缀把这行判成
     "不可再领"，崩溃账号当天再也签不上。

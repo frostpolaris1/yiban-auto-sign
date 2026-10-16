@@ -35,8 +35,8 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance / eg
 
 | 变量 | 作用 | 默认 |
 |------|------|------|
-| `YIBAN_ENV_FILE` | `.env` 文件路径（加密密钥 / 审计密钥来源） | `.env`（当前目录） |
-| `YIBAN_DB_FILE` | SQLite 库文件路径 | `yiban.db` |
+| `YIBAN_ENV_FILE` | `.env` 文件路径（加密密钥 / 审计密钥来源） | `data/.env`（相对检出根） |
+| `YIBAN_DB_FILE` | SQLite 库文件路径 | `data/yiban.db`（相对检出根） |
 | `YIBAN_STATE_DIR` | 状态目录（状态文件 / 锁 / 库外锚点） | `/var/log/yiban` |
 | `YIBAN_LOG_FILE` | 日志文件路径（按天文件按它的目录落） | `<YIBAN_STATE_DIR>/sign.log` |
 

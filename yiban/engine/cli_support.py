@@ -16,7 +16,7 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
-`GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。
+`GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。`_run_lock_held` 目前**无生产调用点**（让位的锁探测随工单 `l1rx` R4 删除），保留为带 fail-closed 校验者的锁原语。
 运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
 互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
 输出收口供 `yiban/cli.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
@@ -60,7 +60,7 @@ _RUN_LOCK_WAIT_DEFAULT = 600
 
 #: **全局轮次锁**的文件名（"此刻是否有一轮全量/多执行体在跑"的唯一判据）。
 #: 多执行体形态下只有监督进程持它、各子进程用各自的 `signin-run.lock.w{i}`；
-#: 兜底常驻靠探测它决定是否让位（见 `_run_lock_held`）。
+#: 多执行体子进程用各自的锁名（`YIBAN_RUN_LOCK_NAME`）；全局锁由监督进程持有。
 GLOBAL_RUN_LOCK_NAME = "signin-run.lock"
 
 #: 迁移完整性拒启的专用退出码（MF-40）。`docs/dev/cli.md` §3 的 0/1/2/3/10 家族
@@ -101,7 +101,7 @@ class _RunLockUnavailable(RuntimeError):
     """
 
 
-#: `_run_lock_held` 的"探测不出"告警去重标记：兜底常驻每 `_YIELD_POLL_SEC` 探一次，
+#: `_run_lock_held` 的"探测不出"告警去重标记：每次探测失败只报一次，
 #: 不去重会把同一条平台缺陷刷满日志。
 _PROBE_UNAVAILABLE_WARNED = False
 
@@ -182,10 +182,13 @@ def _run_lock_held(name=None):
     """此刻是否**有一支全量轮在跑**——兜底让位的唯一事实源。
 
     判据与部署形态无关：**锁被持有 = 有一轮在飞**（监督进程持它覆盖整轮，含全部子执行体）。
-    调用方 `workers._round_in_flight` 据它决定整段让位；同一份事实也交给执行体做**轮内
-    复检**（`run_executor_v3(yield_probe=…)`），故让位不依赖"进入这一轮那一刻"的锁状态。
-    2026-10-07 之前，让位判据写成"有没有声明领取池"——那判的是配置键，生产用默认库时
-    被判成"纯状态文件部署"，判据退化成"此刻能否探到锁"，兜底先起飞、锁后持有即抢跑成功。
+
+    **当前无生产调用点**：它曾是兜底腿"整段让位"与轮内复检（`yield_probe`）的事实源，
+    两者随工单 `l1rx` R4 删除——让位改由兜底腿的**肘界谓词**承担
+    （`run_executor_v3(elbow_sec=FALLBACK_ELBOW_SEC)`），"谁该做"成为行的函数、零协调。
+    本函数保留为**带 fail-closed 校验者的锁探测原语**（`tests/test_run_lock_fail_closed.py`
+    钉住"探测不出 ⇒ 按有人在跑处置"）；删它要连该门与另三处测试同批动，属独立一刀，
+    本批只如实登记"无调用点"。
 
     做法就是"拿一下立刻放"：flock 只能靠尝试获取来问，拿到说明没人跑、当场释放。
     `name` 缺省即**全局轮次锁名**（取值见 `_acquire_run_lock`：它**不读**

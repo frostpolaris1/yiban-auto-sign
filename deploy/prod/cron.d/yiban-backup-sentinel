@@ -1,0 +1,15 @@
+# /etc/cron.d/yiban-backup-sentinel —— 每日 08:05 备份哨兵 + 审计锚点离机外发
+# 仓库源：deploy/prod/cron.d/yiban-backup-sentinel（install.sh 装到 /etc/cron.d/，0644 root:root）
+# 谁调用：/usr/local/sbin/yiban-backup-sentinel.sh（manifest 收编的薄包装；实现在 scripts/backup_sentinel.py）
+# 身份：root——哨兵防漂移比对要读 0700 root:root 的已装 /usr/local/sbin/yiban-backup.sh；
+#   yiban 读不到会把它判成"读取失败"漂移、每日误报（见 scripts/backup_sentinel.py::_drift_report）。
+# 状态目录：显式指向 root 私有目录 /var/lib/yiban-backup-sentinel（tmpfiles 件声明其属主与模式）。
+#   为什么必须另给：哨兵的节流表落 $YIBAN_STATE_DIR；若沿用 yiban 属主的共享状态目录，
+#   以 root 首建即留下 0600 root:root 的 notify-throttle.json 与其 .lock，yiban 侧
+#   （web/signin）随即拿不到跨进程锁、节流表被判损坏。建库那条路已在
+#   scripts/backup_sentinel.py::_send_admin_alert 收口为"库缺失即绝不建库"。
+# 排期在 02:00 备份之后，留足打包与异机同步时间（详见 scripts/yiban-backup-sentinel.sh 头部）。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1

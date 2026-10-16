@@ -5,7 +5,7 @@
   },
   "YIBAN_ENV_FILE": {
     "type": "path",
-    "default": ".env",
+    "default": "data/.env",
     "group": [
       "路径"
     ],
@@ -17,7 +17,7 @@
   },
   "YIBAN_DB_FILE": {
     "type": "path",
-    "default": "yiban.db",
+    "default": "data/yiban.db",
     "group": [
       "路径"
     ],

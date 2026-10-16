@@ -237,7 +237,14 @@ class KnownDebtTest(_AuditFixtureBase):
 class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
     """J4/J5/J6：端点读快照、标数据时刻、只出计数与时刻。"""
 
-    def _write_snapshot(self, health, at="2026-10-13 00:00:07"):
+    def _write_snapshot(self, health, at=None):
+        """写一份体检快照。`at=None` = 取当前业务钟（写方语义），**不得写死字面时刻**。
+
+        本默认值一度是字面日期 `"2026-10-13 00:00:07"`。写入当天它新鲜；实现加入
+        "快照超龄降级"（健康快照超 36 小时判 `indeterminate`）后，隔一天凡不显式传
+        `at` 的用例集体转红（工单 5f9q）。夹具的"现在"必须是相对于 `yiban.clock`
+        取出的当下，不能是常量——由 `tests/test_no_literal_date_in_fixtures.py` 钉住。
+        """
         import db
         return db.write_audit_health_snapshot(health, path=self.anchor, at=at)
 
@@ -403,12 +410,16 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
             self.assertNotIn("/", item["label"] + item["reason"], "不得回文件路径")
 
     def test_snapshot_carries_data_time(self):
+        from datetime import timedelta
+
+        from yiban import clock
+        at = (clock.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
         self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
                               "anchor_status": "ok", "anchor_msg": "",
                               "write_failures": 0, "empty_hash_rows": 0,
-                              "healthy": True}, at="2026-10-13 00:00:07")
+                              "healthy": True}, at=at)
         body = self._status()
-        self.assertEqual(body["data_at"], "2026-10-13 00:00:07")
+        self.assertEqual(body["data_at"], at)
         self.assertTrue(body["cached"])
 
     def test_snapshot_note_reaches_the_endpoint(self):

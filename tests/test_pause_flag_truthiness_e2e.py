@@ -125,7 +125,9 @@ class RunProbeShTruthinessTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run(self, value, tag):
-        env_file = os.path.join(self.app, ".env")
+        # .env 在检出内的 data/ 下（工单 ybg8）：run_probe.sh 按 $APP_DIR/data/.env 取。
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        env_file = os.path.join(self.app, "data", ".env")
         with io.open(env_file, "w", encoding="utf-8", newline="\n") as f:
             f.write("YIBAN_PROBE_ENABLE=%s\n" % value)
         lock = os.path.join(self.tmp, "lock-" + tag)
@@ -215,7 +217,9 @@ class GlobalPauseRedLineE2ETest(unittest.TestCase):
         with io.open(os.path.join(cls.app, "scripts", "signin.py"), "w",
                      encoding="utf-8", newline="\n") as f:
             f.write(_CHAIN_SHIM % 2)
-        cls.env_file = os.path.join(cls.app, ".env")
+        # .env 在检出内的 data/ 下（工单 ybg8）：run.sh 按 $APP_DIR/data/.env 取。
+        os.makedirs(os.path.join(cls.app, "data"), exist_ok=True)
+        cls.env_file = os.path.join(cls.app, "data", ".env")
         with io.open(cls.env_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(_BASE_ENV)
         cls.db_file = os.path.join(cls.tmp, "yiban.db")

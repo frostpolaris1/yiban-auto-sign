@@ -277,6 +277,30 @@ class DeliveryFailureTest(_Base):
             self.assertEqual(self.mod.main([]), 1)
 
 
+class NeverCreatesDbTest(_Base):
+    """r4 复审 MEDIUM-1：哨兵以 root 跑（排期件 /etc/cron.d/yiban-backup-sentinel 的身份列
+    = root）。库缺失时**绝不建库**——否则 root 属主的空库会顶掉 yiban 属主的真库，
+    yiban 侧 web 随后打不开它。"""
+
+    def test_missing_db_is_not_created_and_env_recipients_are_used(self):
+        db_path = os.environ["YIBAN_DB_FILE"]
+        self.assertFalse(os.path.exists(db_path), "夹具的库路径本应不存在")
+        captured = {}
+
+        def _capture(title, mail, to=None, **_kw):
+            captured["to"] = to
+            return True
+
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ADMIN_TO": "ops@example.com"}), \
+                mock.patch.object(self.mod.mailer, "send_admin_alert", side_effect=_capture):
+            ok = self.mod._send_admin_alert(self.mod.ALERT_TITLE, mock.Mock())
+        self.assertTrue(ok, "库缺失时仍应能用 .env 收件人把告警发出去")
+        self.assertFalse(os.path.exists(db_path),
+                         "库缺失时 _send_admin_alert 竟就地建库（root 属主空库会顶掉真库）")
+        self.assertEqual("ops@example.com", captured.get("to"),
+                         "库缺失时收件人必须退到 .env 的 ADMIN_TO（与库查询失败同一降级结论）")
+
+
 class AuditAnchorBroadcastTest(_Base):
     """M28：当日审计链头哈希**随备份外发**——备份与锚点同包同盘时无法证明没被回滚。
 
@@ -413,8 +437,8 @@ class WrapperWorkingDirTest(unittest.TestCase):
     """薄包装必须自己把 cwd 与 .env 路径摆正——cron 的 cwd 是 $HOME。
 
     这条只能按**行为**钉，不能只看源码里有没有 `cd`：cwd 是哨兵侧所有 cwd 相对回落的
-    基准（`yiban/infra/env_io.py` 的 env_path() 默认 ".env"、`yiban/store/connection.py`
-    的 DB_DEFAULT "yiban.db"）。落在 $HOME 就读不到 .env ⇒ 收件人解析为空 ⇒ 告警发不
+    基准（`yiban/infra/env_io.py` 的 env_path() 默认 "data/.env"、`yiban/store/connection.py`
+    的 DB_DEFAULT "data/yiban.db"）。落在 $HOME 就读不到 .env ⇒ 收件人解析为空 ⇒ 告警发不
     出去（退出码 1，恰是哨兵要消灭的那种静默），并在 $HOME 就地新建一份野 yiban.db。
 
     假哨兵只回报"进程落在哪、拿到哪个 .env 路径"：本用例钉的是包装脚本的职责，判据
@@ -455,7 +479,7 @@ class WrapperWorkingDirTest(unittest.TestCase):
         return os.path.normcase(str(path).replace("\\", "/"))
 
     def test_wrapper_moves_to_app_dir_and_exports_env_file(self):
-        """cwd 必须是 APP_DIR；YIBAN_ENV_FILE 默认导出为 <APP_DIR>/.env。"""
+        """cwd 必须是 APP_DIR；YIBAN_ENV_FILE 默认导出为 <APP_DIR>/data/.env。"""
         r = self._run()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(self.app_dir, "sentinel-cwd")),
@@ -464,11 +488,11 @@ class WrapperWorkingDirTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.home, "sentinel-cwd")),
                          "$HOME 下不得落下任何哨兵进程的痕迹")
         self.assertEqual(self._slashed(r.stdout.strip()),
-                         self._slashed(os.path.join(self.app_dir, ".env")),
-                         "YIBAN_ENV_FILE 必须默认导出为 <APP_DIR>/.env")
+                         self._slashed(os.path.join(self.app_dir, "data", ".env")),
+                         "YIBAN_ENV_FILE 必须默认导出为 <APP_DIR>/data/.env")
 
     def test_explicit_env_file_is_kept(self):
-        """部署方显式给出 YIBAN_ENV_FILE 时沿用其值，不覆盖成 <APP_DIR>/.env。"""
+        """部署方显式给出 YIBAN_ENV_FILE 时沿用其值，不覆盖成默认路径。"""
         custom = os.path.join(self.tmp, "custom.env")
         r = self._run({"YIBAN_ENV_FILE": custom})
         self.assertEqual(r.returncode, 0, r.stderr)

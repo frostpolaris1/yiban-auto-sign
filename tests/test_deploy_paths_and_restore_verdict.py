@@ -247,7 +247,9 @@ class BackupLogDirTest(unittest.TestCase):
         self.marker = "sign-2026-01-01.log"
         with io.open(os.path.join(self.logs, self.marker), "w", encoding="utf-8") as f:
             f.write("本轮签到日志\n")
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        # .env 在检出内的 data/ 下（工单 ybg8）：backup.sh 按 ${APP_DIR}/data/.env 取。
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\n"
                     f"YIBAN_LOG_FILE={self.logs}/sign.log\n")
         self.backups = os.path.join(self.tmp, "backups")
