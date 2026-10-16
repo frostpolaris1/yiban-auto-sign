@@ -46,6 +46,8 @@ RESERVE_SINGLE = schedule.capacity_accounts(REST_SEC, 36, 3)
 K2_OVER_N = 1000
 #: 出口预算不足告警的主题（与 runner 的实现逐字一致）
 BUDGET_TITLE = "易班签到出口预算不足"
+#: 出口天花板告警的主题（账号档：N > 出口标识数 × λ × 剩余窗口）
+CEILING_TITLE = "易班签到出口天花板"
 
 
 class _FakeClock:
@@ -431,6 +433,42 @@ class RunnerPrecheckScaleByKE2ETest(unittest.TestCase):
         r_distinct = self._run(n=1200, k=6, rate=0.1, proxies=distinct)
         self.assertEqual(r_distinct.titles(), [],
                          "6 行各一个出口 ⇒ 6 ≥ 5，不得多报")
+
+    # -- 出口天花板告警（账号档，工单 r9ro；与出口预算告警互斥：预算够时兜底）---
+
+    def test_egress_ceiling_field_value_matches_inputs(self):
+        """天花板告警必须钉**带标签字段的值**＝由同一组输入现算，不被同正文的"剩余 Ns"满足。
+
+        两个出口标识（k=2、两条不同代理）⇒ 天花板 = `egress_n × λ × 剩余窗口` = 2×1.0×REST_SEC。
+        N=9000 越过它。此形状必须让四个突变各自变红（有牙证明见本用例 docstring 的判据）：
+          - **判据反向**（`active_n > _ceiling` 改 `<`）：不触发 ⇒ `titles` 断言红；
+          - **天花板数减半**（正文值 `_ceiling` 改 `_ceiling/2`）：字段值断言红；
+          - **窗口减半**（`_rest_sec` 改 `_rest_sec/2`）：字段值 4140 ≠ 8280 ⇒ 红；
+          - **去掉 `_egress_n` 因子**（`_ceiling` 改 `λ×W`）：字段值 4140 ≠ 8280 ⇒ 红。
+        为什么不用 N=5000/单出口：那时 `egress_n=1`，去掉因子前后同值 ⇒ 钉不住该因子。
+        """
+        egress_n, lam = 2, 1.0
+        expect = egress_n * lam * REST_SEC
+        r = self._run(n=9000, k=2, proxies=["http://a:1", "http://b:1"])
+        self.assertIn(CEILING_TITLE, r.titles(), "N 超出口天花板必须报")
+        _a, kw = next((a, kw) for a, kw in r.notifies if a[0] == CEILING_TITLE)
+        self.assertIs(kw.get("level"), runner_mod.alerts.ALERT_LEVEL_CRITICAL)
+        fields = dict(_a[1])
+        field = fields.get("出口天花板", "")
+        # 期望值现算（不是字面量）：只有"出口天花板"这一项参与，同正文的"剩余 Ns"不满足它
+        self.assertTrue(field.startswith(f"{expect:.0f} 个"),
+                        f"出口天花板字段值须以现算值 {expect:.0f} 个 开头，实得 {field!r}")
+        self.assertIn(f"{egress_n} 个出口标识", field, "字段须写明出口标识数因子")
+        self.assertIn("出口标识", fields.get("口径", ""), "口径必须写明限速单元是出口标识")
+        self.assertIn("物理 IP", fields.get("口径", ""), "口径必须写明与物理 IP 不一一对应（34gf）")
+        lines = [w for w in r.warnings if "出口天花板" in w]
+        self.assertEqual(len(lines), 1, "日志必须留下同一条判据")
+
+    def test_egress_ceiling_silent_when_budget_short(self):
+        """预算不足优先：出口预算告警在场时不再叠一条天花板（同一次约束，不重复报）。"""
+        r = self._run(n=5000, k=6, rate=0.1)
+        self.assertIn(BUDGET_TITLE, r.titles(), "6 执行体 × 0.2 速率 ⇒ 预算不足")
+        self.assertNotIn(CEILING_TITLE, r.titles(), "预算已不足时不得叠报天花板")
 
 
 if __name__ == "__main__":
