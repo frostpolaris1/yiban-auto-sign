@@ -316,6 +316,13 @@ def main():
     _deleted_id = db.add_account({"name": "e2e-deleted-acct", "phone": "13500135005",
                                   "password": "p5", "status": "active", "owner": ADMIN_USER})
     db.set_account_deleted(_deleted_id, 1, deleted_at="2026-09-30 10:00:00", deleted_by="admin")
+    # 规模种子（工单 p37f 验收）：`YB_E2E_BULK_ACCOUNTS=N` 时再灌 N 个 active 账号，
+    # 供分页控件在 5k 规模下量首屏 DOM 节点数。默认 0 = 不灌，其余 spec 不受影响。
+    # 手机号造在 1 号段且长度 11 位（与真实号同形，前端遮罩/搜索按真形状走）。
+    bulk = int(os.environ.get("YB_E2E_BULK_ACCOUNTS", "0"))
+    for i in range(bulk):
+        db.add_account({"name": f"bulk-{i:05d}", "phone": f"1{i:010d}", "password": "p",
+                        "status": "active", "owner": ADMIN_USER})
     _seed_events()
     _seed_run_events()
     _seed_run_events_crowded()
