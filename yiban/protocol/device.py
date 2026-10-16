@@ -63,7 +63,7 @@ def _to_int(value: Any) -> int | None:
     return None
 
 
-def _opt_str(data: dict, key: str) -> str:
+def _opt_str(data: dict[str, Any], key: str) -> str:
     """取可选字符串字段：缺失/``None`` → 空串；非字符串 → ``ParseError``。"""
     if key not in data or data[key] is None:
         return ""

@@ -223,12 +223,21 @@ def build_sign_in_body(
 ) -> str
 ```
 
-- 产出 `Code=&PhoneModel=&SignInfo=<json>&OutState=<int>` 形态。
-- **`SignInfo` 的 JSON 序列化必须与观测逐字节同构**：
+- 产出**五字段**形态（字段集与顺序对齐参考客户端，2026-10-16 订正）：
+  `AttachmentFileName=&OutState=<数字串>&Code=&PhoneModel=&SignInfo=<json>`。
+  订正前的四字段形态（顶层缺 `AttachmentFileName`）按本站 2026-10-03 自身流量实拍定，
+  现以 H5 SPA 的实拍为准。
+- **`SignInfo` 的 JSON 序列化**：
   `json.dumps(obj, separators=(", ", ": "), ensure_ascii=False)`，
   键序固定 `Reason, AttachmentFileName, LngLat, Address`；
   `LngLat` 值为 `f"{lng},{lat}"`，**浮点用 `str(float)` 全精度短表示**
   （合成等精度示例 `118.10389401234568,32.0078387654321`）。
+- **编码形态与参考客户端不同**（2026-10-16 实测 SPA 资产）。事实对照：
+  SPA 用自写的 `key=encodeURIComponent(value)` 拼接（空格→`%20`，键名不转义），
+  `SignInfo` 用 `JSON.stringify`（紧凑，无空格）；本站用
+  `urllib.parse.urlencode`（`quote_plus`，空格→`+`），`SignInfo` 用带空格的
+  `json.dumps`。两种形态服务端都接受（2026-10-03 至 10-15 生产可用即为证）。
+  故本站的"逐字节同构"只成立于本站自己的夹具，不声称与 SPA 逐字节相同。
 - 整体经 `urlencode`（`quote_plus`）：JSON 的 `{}`/`"`/空格 → `%7B%22…`/`+`。
 - 与夹具 `sign_in_body_urlencoded.txt` **整串相等**（该夹具即按此规则从
   `sign_in_body.txt` 编码而来——测试以两者互证）。
@@ -269,6 +278,9 @@ def parse_device_state(data: Any) -> DeviceState
 - 用途：签到前**读回**服务端登记的设备码，作为签到时 `Code`/`PhoneModel` 的来源；
   这是"照实回传"而非伪造（真实客户端用原生桥 `window.yiban.getUUID()` 生成一次并
   登记，之后各处都是回传同一个值）。
+- **读回不是可选项**（2026-10-16 起）：平台对无登记设备的签到提交一律回
+  「请使用授权设备进行签到」。故取不到 `Code` 时调用方应**拒签**，不得提交，
+  也不得凭空造一个码。落到账号表里的登记值走既有加密字段，不新增落盘面。
 - 夹具：`tests/protocol/fixtures/device_state.json`。
 
 ## 3. 容错规则（全部来自实拍差异）
