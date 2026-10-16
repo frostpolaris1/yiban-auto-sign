@@ -18,7 +18,10 @@ _err() {
 # 生产行为完全不变（默认值仍是 /opt/yiban-auto-sign）。
 APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
 cd "$APP_DIR" 2>/dev/null || { _err "致命: 无法进入应用目录 $APP_DIR"; exit 1; }
-ENV_PATH="$APP_DIR/.env"
+# .env 在检出内的 data/ 下（工单 ybg8）：运行数据与代码分离，检出根才能属 root
+# 且组/其他不可写（install.sh 的 M01 门要求）。data/ 由 install.sh 建立（属服务
+# 账号、0700）——本脚本不自建：检出根变只读后 mkdir 会失败。
+ENV_PATH="$APP_DIR/data/.env"
 
 # Python 解释器：优先项目虚拟环境，缺失时回退系统 Python（须在按天文件名之前定好：
 # 业务日取时经它走 yiban.clock，与引擎同源）
@@ -59,7 +62,8 @@ business_day() {
 # 排程却照跑这种两处同时为真的状态，排查时没人说得清算哪个生效了。
 #
 # `.env` 路径**不受这条口径约束**（它是"读哪个文件"的指针，不是被管的配置）：
-# 一律 $APP_DIR/.env，与 run_probe.sh / 容器调度器一致。
+# 一律 $APP_DIR/data/.env，与 run_probe.sh / 容器调度器（/data/.env）同口径；
+# 可由 YIBAN_ENV_FILE 覆盖（上面已 export）。
 #
 # 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
 # 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
@@ -105,7 +109,12 @@ else
     fi
 fi
 
-# 状态/日志根目录：优先 YIBAN_STATE_DIR
+# 指针与库路径**显式导出给子进程**（本脚本读的是上面那个固定 `$APP_DIR/data/.env`，
+# 子进程不得与它分叉：一侧读 data/.env、另一侧读别处 = 引擎与 cron 用两份配置）。
+# 位置约束：必须排在**上面 .env 装载之后**——装载会把 `.env` 里的 YIBAN_* 键
+# 无条件 export（M27 口径），包括万一写在 `.env` 里的这两枚指针键；排在它之前会被
+# 那一步顶掉，出现"本脚本读 A、子进程读 B"。排在这里则两者恒为同一个值。
+export YIBAN_ENV_FILE="$ENV_PATH"
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 # MF-81：状态目录承载全部"跑/不跑"判定件（RUN_MARKER / 状态文件 / 收尾标记），
 # 它的可用性必须显式校验，对齐下面锁目录的既有做法——旧实现 `mkdir -p || true`
@@ -257,9 +266,12 @@ STATUS_FILE="$STATE_DIR/sign-status-$(business_day).txt"
 # 没有本标记它会因为状态非 SUCCESS 再跑一轮（幂等但多一轮真实登录请求）。
 SECOND_DONE_MARKER="$STATE_DIR/yiban-settled-$(business_day).marker"
 # sign-status 采信的交叉核对源库（MF-82）：与引擎同一个键 YIBAN_DB_FILE、同一
-# 默认值口径（引擎 resolve_path = 进程环境 → .env → 默认 "yiban.db"；此处 .env
-# 已 export，cwd 即 APP_DIR，与引擎子进程的相对路径基准一致）。
-DB_FILE="${YIBAN_DB_FILE:-yiban.db}"
+# 默认值口径（引擎 resolve_path = 进程环境 → .env → env_io.DEFAULT_DB_FILE
+# "data/yiban.db"；此处 .env 已 export，cwd 即 APP_DIR，与引擎子进程的相对路径
+# 基准一致）。库与 .env 同住检出内的 data/（工单 ybg8）。
+DB_FILE="${YIBAN_DB_FILE:-data/yiban.db}"
+# 库路径显式导出：与上面的 .env 指针同理——子进程按同一份库取数，不靠默认值对齐。
+export YIBAN_DB_FILE="$DB_FILE"
 
 # ---------------------------------------------------------------------------
 # 进程内补签轮（2026-09-10 批次20 B3，用户裁决方案一）

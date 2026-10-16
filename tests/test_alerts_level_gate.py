@@ -44,6 +44,7 @@ PASSTHROUGH = "passthrough"  # 转发调用方声明的级别
 #: 调用点所在的生产文件（量具自证用）：扫描空转时下面那条断言会红，而不是恒绿
 ROSTER_FILES = (
     "yiban/engine/alerts.py",
+    "yiban/engine/crash_semantics.py",
     "yiban/engine/executor_v3.py",
     "yiban/engine/probe.py",
     "yiban/engine/round.py",
@@ -93,6 +94,10 @@ ROSTER = {
         CRITICAL, "有效窗口被压缩到窗口宽度的 80%：与配置不符，且重试空间随之减少"),
     ("yiban/store/claims.py", "签到领取池不可用"): (
         CRITICAL, "领取池不可用 ⇒ 本执行体拒绝执行签到，一轮至多一条"),
+    ("yiban/engine/crash_semantics.py", "易班签到：崩溃遗留的未定论尝试"): (
+        CRITICAL, "崩溃遗留的 unknown_outcome：可能已发出请求未拿结果，"
+                  "当天该账号结局未定，须当机处置（读平台 State 定论或人工核对）；"
+                  "协调器启动识别一次，一轮至多一条（崩溃语义批新增，同批定级）"),
 }
 
 

@@ -7,6 +7,8 @@
   **唯一 reporter 接口**，调用方不拼 SQL；
 - 读取：`summarize`（轮级摘要）、`timeline`（单轮时间线）、`day_bounds`（窗口边界）
   ——巡检面的**唯一读取接口**，调用方不拼 SQL；
+- 崩溃语义读取：`unresolved_starts`（当日"有开始、无终态"的行）——引擎侧 V-S3 识别面，
+  与巡检面的读者分开；它回原值（`phone` 不遮罩），遮罩由引擎侧调用方在输出时做；
 - 保留期：`purge`（删除超期事件行，同事务写清理留痕）。
 
 **读取面（巡检）**
@@ -94,6 +96,11 @@ NODE_FAIL = "fail"
 NODE_PAUSE = "pause"
 NODE_FINALIZE = "finalize"
 NODES = (NODE_CLAIM, NODE_START, NODE_SUCCESS, NODE_FAIL, NODE_PAUSE, NODE_FINALIZE)
+
+#: 一次尝试的**终态节点**：`start` 行之后出现其中任一个，即该次尝试已有结论。
+#: 崩溃语义（V-S3）的"未定论"读取面（`unresolved_starts`）按它判定；`claim` 是
+#: 尝试之前的事实、`finalize` 是运行级事实（无账号），都不算终态。
+TERMINAL_NODES = (NODE_SUCCESS, NODE_FAIL, NODE_PAUSE)
 
 #: 节点 → 中文标签。读取面与前端共用这一份，前端不另抄一张表。
 NODE_LABELS = {
@@ -350,6 +357,34 @@ def _rows_on(day):
             "SELECT id, ts, day, node, executor, phone, message FROM run_events "
             "WHERE day = ? AND day >= ? AND day <= ? ORDER BY id ASC",
             (str(day), lo, hi))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def unresolved_starts(day):
+    """→ 当日"未定论的开始"行（按 id 升序）：有 `start`、其后无任何终态节点。只读。
+
+    **判据**：对每一条 `start` 行，若同一 (业务日, 账号) 在该行之后**没有**任何终态节点
+    （`TERMINAL_NODES`），该行即"可能已开始、结果未定"——崩溃可能发生在发出真实请求之后、
+    拿到结果之前。为什么按"其后无终态"而不是"从未有终态"：同一账号当日在崩溃后会被重新
+    领到、重新落 `start` 与终态；先前那条 `start` 于是有了后续终态，不再是未定论——这正是
+    "崩溃遗留已被后续一轮收口"的如实口径。
+
+    返回 `[{id, ts, executor, phone}]`。**不做遮罩**：消费方是引擎（日志/告警），遮罩由
+    调用方在输出时做（与 `summarize` 一类公开读取面的口径分开）。日筛选在 SQL 侧完成。
+    """
+    terminal = "(" + ",".join("?" for _ in TERMINAL_NODES) + ")"
+    sql = (
+        "SELECT s.id, s.ts, s.executor, s.phone FROM run_events s "
+        "WHERE s.day = ? AND s.node = ? AND s.phone <> '' "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM run_events t "
+        "WHERE t.day = s.day AND t.phone = s.phone AND t.id > s.id "
+        f"AND t.node IN {terminal}"
+        ") ORDER BY s.id ASC"
+    )
+    db = _facade()
+    with db._conn_lock:
+        cur = db.get_conn().execute(sql, (str(day), NODE_START, *TERMINAL_NODES))
         return [dict(r) for r in cur.fetchall()]
 
 

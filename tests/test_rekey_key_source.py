@@ -213,6 +213,18 @@ def _close_db():
         db._conn = None
 
 
+def _stray_env_in(cwd):
+    """cwd 下**实现会去写**的那个 .env 路径上有没有残留（`.env*` 全部列出）。
+
+    判据必须等于实现会写的路径：默认值已从 cwd/.env 改到 cwd/data/.env（工单 ybg8）。
+    只查旧路径会让本条变成空转（写没写都绿）——那正是"门看的东西≠改的东西"。
+    """
+    d = os.path.join(cwd, "data")
+    if not os.path.isdir(d):
+        return []
+    return [n for n in os.listdir(d) if n.startswith(".env")]
+
+
 def _run_cli(script, cli, cwd, extra_env=None):
     """在指定 cwd 下运行 scripts/ 工具；子进程输出固定 UTF-8（Windows 默认 GBK 会乱码）。
 
@@ -251,7 +263,10 @@ class _B14Fixture(unittest.TestCase):
         cls.work = tempfile.mkdtemp(prefix="b14-work-")     # 模拟"应用根之外的任意 cwd"
         cls.keydir = tempfile.mkdtemp(prefix="b14-env-")    # 模拟真正的部署目录
         cls.env_file = os.path.join(cls.work if cls.ENV_IN_CWD else cls.keydir, ".env")
-        cls.db_file = os.path.join(cls.work, "yiban.db")
+        # 库落在 cwd 的**默认路径** `data/yiban.db`（工单 ybg8）：audit_verify 的
+        # "是不是本部署的库"判据按同一默认值比路径，两侧必须同基。
+        os.makedirs(os.path.join(cls.work, "data"), exist_ok=True)
+        cls.db_file = os.path.join(cls.work, "data", "yiban.db")
 
     @classmethod
     def tearDownClass(cls):
@@ -270,7 +285,7 @@ class _B14Fixture(unittest.TestCase):
             p = self.db_file + suffix
             if os.path.exists(p):
                 os.remove(p)
-        for p in (self.env_file, os.path.join(self.work, ".env")):
+        for p in (self.env_file, os.path.join(self.work, "data", ".env")):
             if os.path.exists(p):
                 os.remove(p)
         # 锚点文件随类只建一份且只追加：留到下一用例，文件里就有属于上一个库化身
@@ -374,7 +389,10 @@ class KeySourceFallbackB14Test(unittest.TestCase):
                                     "YIBAN_TRACK_SALT=salt-via-init-db"])
         _write_env(cls.f_env_var, [f"YIBAN_AUDIT_KEY={KEY_VIA_ENV_VAR}",
                                    "YIBAN_TRACK_SALT=salt-via-env-var"])
-        _write_env(os.path.join(cls.cwd_dir, ".env"),
+        # cwd 兜底档的 .env 落在**默认路径**（`data/.env`，相对 cwd）——工单 ybg8 把
+        # 运行数据收进检出内 data/，密钥来源的第三档随之改到那里。
+        os.makedirs(os.path.join(cls.cwd_dir, "data"), exist_ok=True)
+        _write_env(os.path.join(cls.cwd_dir, "data", ".env"),
                    [f"YIBAN_AUDIT_KEY={KEY_VIA_CWD}", "YIBAN_TRACK_SALT=salt-via-cwd"])
 
     @classmethod
@@ -400,7 +418,7 @@ class KeySourceFallbackB14Test(unittest.TestCase):
                 self.assertEqual(db._audit_key(), bytes.fromhex(KEY_VIA_ENV_VAR))
             # 两者皆无：靠 cwd 兜底——文件存在时行为完全不变（仍读到旧钥）
             with _db_env_file(None), _os_env(YIBAN_ENV_FILE=None):
-                self.assertEqual(db._resolve_key_env_file(), (".env", True))
+                self.assertEqual(db._resolve_key_env_file(), ("data/.env", True))
                 self.assertEqual(db._audit_key(), bytes.fromhex(KEY_VIA_CWD))
 
     def test_track_salt_uses_same_fallback(self):
@@ -423,12 +441,14 @@ class KeySourceFallbackB14Test(unittest.TestCase):
                 str(cm.exception),
                 "审计密钥来源不确定，拒绝生成新密钥；请用 --env 或 YIBAN_ENV_FILE 指定 .env 路径",
             )
-            self.assertFalse(os.path.exists(os.path.join(stray_dir, ".env")),
+            # 判据必须等于**实现会去写的那个路径**（默认值 `data/.env`，相对 cwd）：
+            # 查错路径会让本条变成空转（写没写都绿）。
+            self.assertFalse(os.path.exists(os.path.join(stray_dir, "data", ".env")),
                              "拒绝生成就必须真的什么都不写——游离 .env 正是本次要治的病")
             with self.assertRaises(ValueError) as cm2:
                 db._track_salt()
             self.assertIn("追踪盐来源不确定", str(cm2.exception))
-            self.assertFalse(os.path.exists(os.path.join(stray_dir, ".env")))
+            self.assertFalse(os.path.exists(os.path.join(stray_dir, "data", ".env")))
 
     def test_readonly_verify_path_still_returns_none(self):
         """create=False（校验路径）在同样场景仍返回 None：只读工具不得被新检查打断。"""
@@ -449,10 +469,11 @@ class KeySourceFallbackB14Test(unittest.TestCase):
     def test_existing_env_without_key_still_generates(self):
         """cwd 有 .env 但没配密钥：照常就地生成（判据只看文件是否存在，行为不变）。"""
         d = tempfile.mkdtemp(prefix="b14-exists-", dir=self.tmp)
-        _write_env(os.path.join(d, ".env"), ["YIBAN_OTHER=1"])
+        os.makedirs(os.path.join(d, "data"), exist_ok=True)
+        _write_env(os.path.join(d, "data", ".env"), ["YIBAN_OTHER=1"])
         with _cwd(d), _db_env_file(None), _os_env(YIBAN_ENV_FILE=None):
             key = db._audit_key()
-        content = _read_env(os.path.join(d, ".env"))
+        content = _read_env(os.path.join(d, "data", ".env"))
         self.assertEqual(len(key), 32)
         self.assertIn("YIBAN_AUDIT_KEY=", content)
         self.assertIn("YIBAN_OTHER=1", content, "生成不得丢掉 .env 里的其它配置")
@@ -495,14 +516,14 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
                      cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("校验通过", r.stdout)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
+        self.assertEqual(_stray_env_in(self.work), [])
 
     def test_list_duplicate_owners_reads_key_from_env_flag(self):
         """list_duplicate_owners 会跑迁移（v3 审计链回填要用审计密钥）：同样不得依赖 cwd。"""
         r = _run_cli("list_duplicate_owners.py",
                      ["--db", self.db_file, "--env", self.env_file], cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
+        self.assertEqual(_stray_env_in(self.work), [])
         ok, broken, first = self.verify_chain_with_prod_env()
         self.assertTrue(ok, f"只读清点改动了审计链：broken={broken} first={first}")
 
@@ -513,7 +534,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
                      extra_env={"YIBAN_ENV_FILE": self.env_file})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("校验通过", r.stdout)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
+        self.assertEqual(_stray_env_in(self.work), [])
 
     def test_cli_with_no_env_source_at_all_refuses_generation(self):
         """修复轮1⑤：什么都不传 + cwd 下没有 .env → 拒绝生成密钥，且不落游离 .env。
@@ -530,7 +551,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         for script, cli in cases:
             with self.subTest(script=script):
                 r = _run_cli(script, cli, cwd=empty)
-                residues = [n for n in os.listdir(empty) if n.startswith(".env")]
+                residues = _stray_env_in(empty)
                 self.assertEqual(
                     residues, [],
                     f"{script} 在来源不确定时仍落了游离 .env: {residues}\n"

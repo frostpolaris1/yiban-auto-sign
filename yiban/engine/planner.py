@@ -274,8 +274,8 @@ def _stamp_at(base: datetime.datetime, eff_lo: float, k: int, j: int, phase: flo
               slot_sec: float) -> str:
     """`(分片, 微槽, 相位)` → `YYYY-MM-DD HH:MM:SS.mmm`（毫秒精度，字符串可直接比较）。
 
-    与 `queue_store._lease_until` 同格式：计划列 `run_at`、租约列与领取比较都是
-    字符串序，格式不一致会让"到点"判定静默错位。
+    与 `queue_store._shift_stamp` 的输出同格式：计划列 `run_at` 与领取比较（含肘界下推的
+    `now - elbow` 截断点）都是字符串序，格式不一致会让"到点"判定静默错位。
     """
     t = base + datetime.timedelta(minutes=eff_lo,
                                   seconds=k * SLICE_SEC + j * slot_sec + phase)

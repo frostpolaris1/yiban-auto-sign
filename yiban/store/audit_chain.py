@@ -119,16 +119,17 @@ def _decode_audit_key(raw):
 
 
 def _resolve_key_env_file():
-    """解析密钥来源 .env 路径：connection._env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
+    """解析密钥来源 .env 路径：connection._env_file → 环境变量 YIBAN_ENV_FILE（去空白）→
+    `env_io.DEFAULT_ENV_FILE`（`data/.env`，相对检出根）。
 
     密钥来源不能绑在 cwd 上（不能写成 `env_file = _env_file or ".env"`）：
     取证/清点类 CLI（audit_verify / list_duplicate_owners）未传 env_file 时，在应用根
     之外运行会读不到旧钥，进而就地生成新钥落盘，同时产出"游离在错误目录的 .env"和
     "用错密钥签的审计行"（真实审计链随即判破，而这正是取证要用的工具）。
 
-    返回 (path, from_cwd_default)：from_cwd_default=True 表示该路径纯粹靠 cwd 默认
-    ".env" 兜底（既无 init_db(env_file=...) 也无 YIBAN_ENV_FILE）——此时文件不存在
-    意味着密钥来源不确定，调用方须拒绝生成新密钥。
+    返回 (path, from_cwd_default)：from_cwd_default=True 表示该路径纯粹靠**默认值**
+    兜底（既无 init_db(env_file=...) 也无 YIBAN_ENV_FILE）——此时文件不存在意味着密钥
+    来源不确定，调用方须拒绝生成新密钥。默认值取自 `env_io` 的单点常量，不另抄字面量。
     """
     explicit = (_connection._env_file or "").strip()
     if explicit:
@@ -138,7 +139,7 @@ def _resolve_key_env_file():
     env_var = env_io.env_path(default=None)
     if env_var:
         return env_var, False
-    return ".env", True
+    return env_io.DEFAULT_ENV_FILE, True
 
 
 def _write_audit_key_to_env_file(env_file, key):
@@ -159,15 +160,15 @@ def _write_audit_key_to_env_file(env_file, key):
 
 
 def _assert_key_source_certain(what, env_file, from_cwd):
-    """密钥来源只能靠 cwd 默认 ".env" 兜底且该文件不存在时拒绝生成。
+    """密钥来源只能靠默认 `.env` 兜底且该文件不存在时拒绝生成。
 
-    文件存在时行为完全不变（正常首启在应用根生成）；只有"来源不确定"（既无
-    显式 env_file 也无 YIBAN_ENV_FILE，且当前目录没有 .env）才抛错——宁可不写
+    文件存在时行为完全不变（正常首启在 `data/` 下生成）；只有"来源不确定"（既无
+    显式 env_file 也无 YIBAN_ENV_FILE，且默认路径没有 .env）才抛错——宁可不写
     也不要在错误目录留下第二个密钥源。
     """
     if from_cwd and not os.path.exists(env_file):
         logger.error(
-            "%s生成中止：当前工作目录无 .env，且调用方未指定密钥来源"
+            "%s生成中止：默认 .env 路径不存在，且调用方未指定密钥来源"
             "（既未传 init_db(env_file=…) 也未设 YIBAN_ENV_FILE）——"
             "此时就地生成会在错误目录留下游离密钥，并使审计链/追踪哈希从此不可复现",
             what,
@@ -178,11 +179,11 @@ def _assert_key_source_certain(what, env_file, from_cwd):
 def _audit_key(create=True):
     """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env。
 
-    .env 路径按 init_db(env_file=…) → YIBAN_ENV_FILE → 当前目录 ".env" 有序回落
-    （不再无条件依赖 cwd）。
+    .env 路径按 init_db(env_file=…) → YIBAN_ENV_FILE → `env_io.DEFAULT_ENV_FILE`
+    （`data/.env`，相对检出根）有序回落（不再无条件依赖 cwd 的字面 `.env`）。
     create=True（默认）时缺失会生成并写入 .env；create=False 供只读校验，
     密钥缺失返回 None，由调用方按 fail-closed 处理。生成前
-    若判定密钥来源只能靠 cwd 兜底且文件不存在，则拒绝生成并抛 ValueError。
+    若判定密钥来源只能靠默认兜底且文件不存在，则拒绝生成并抛 ValueError。
     """
     global _AUDIT_KEY_CACHE
     env_file, from_cwd = _resolve_key_env_file()

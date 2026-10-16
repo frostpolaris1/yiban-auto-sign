@@ -20,6 +20,12 @@
       读取/执行的每一条路径（顶层合规而 `scripts/` 可写同样拒装——复审点名的绕过）。
       两道门的判据差异另钉三条：root + DESTDIR 拒装、非 root + DESTDIR 照装、
       root + DESTDIR 仍跳过 root:root 属主设置（属主门管写入侧，不看执行来源）。
+      2026-10-13（工单 j06f）起同判据多收四个 root 触点：依赖同步步执行的
+      `scripts/check-deps-lock.sh`、它执行的 venv pip 与解释器、它读的
+      `requirements.lock`（活体反例：任一件组/其他可写 ⇒ 拒装）。
+      符号链接按**解引用后**判（目标属主 + 目标权限位），断链 fail-closed；
+      两侧都有守卫：干净链接（venv 的 bin/python3）不许判红，链接目标不属 root
+      或指向可写目录必须判红（复审 R2-1 的反向守卫）。
     ④ check-deploy-target.sh：本地裸仓 fixture 远端（无网络）——目标提交在远端
       分支 ⇒ 0；不在 ⇒ 非 0 且输出人类可读结论。不做任何 push。
     ⑤ 真名示例门（合法的字面量门——字符串本身就是缺陷）：真实姓名（此处仅以转义
@@ -37,6 +43,7 @@
 测试夹具里的口令全部是明显的假值（"e2e-"前缀），不含任何真实凭据。
 """
 import io
+import json
 import os
 import shutil
 import stat
@@ -58,6 +65,12 @@ MANIFEST = os.path.join(BASE, "deploy", "prod", "manifest.tsv")
 CHECK_CRON = os.path.join(BASE, "scripts", "check-cron-provenance.sh")
 CHECK_TARGET = os.path.join(BASE, "scripts", "check-deploy-target.sh")
 BACKUP_SH = os.path.join(BASE, "scripts", "backup.sh")
+
+#: r4 批新增 cron 表 → (仓库内脚本名, 排期字段, 期望运行身份；"yiban" = 服务账号)
+R4_NEW_CRON_TABLES = {
+    "yiban-audit": ("scripts/audit_verify.py", "30 2 * * *", "yiban"),
+    "yiban-backup-sentinel": ("yiban-backup-sentinel.sh", "5 8 * * *", "root"),
+}
 
 SYNTH_PASSPHRASE = "e2e-fd0-single-hop-passphrase"  # 合成假口令
 # 真实姓名（待裁决 #6②）：只用转义拼，本文件自身永远不命中扫描门
@@ -538,6 +551,22 @@ class InstallRootCheckoutGateTest(_TmpBase):
         self.marker = os.path.join(self.checkout, "provenance-ran")
         _write(os.path.join(self.checkout, "scripts", "check-cron-provenance.sh"),
                '#!/usr/bin/env bash\necho ran >> "%s"\nexit 0\n' % self.marker)
+        # 依赖同步步（工单 j06f）的三个 root 触点在 M01 判据内，故夹具必须备齐：
+        # 该步执行的脚本、该步执行/读取的 venv 入口、该步读给 pip 的锁定清单。
+        # 缺任一件，M01 的 gate_path 会因"stat 不到"而拒装（那是门在正常工作）。
+        _write(os.path.join(self.checkout, "scripts", "check-deps-lock.sh"),
+               "#!/usr/bin/env bash\nexit 0\n")
+        _write(os.path.join(self.checkout, "requirements.lock"), "flask==3.1.3\n")
+        venv_bin = os.path.join(self.checkout, ".venv", "bin")
+        os.makedirs(venv_bin)
+        # 解释器桩件给 +x：依赖同步步的解器解析认可执行位（`[ -x ]`）。
+        _write(os.path.join(venv_bin, "python3"), "#!/bin/sh\nexit 0\n", 0o755)
+        self.venv_pip = os.path.join(venv_bin, "pip")
+        _write(self.venv_pip, "#!/bin/sh\nexit 0\n", 0o755)
+        self.venv_py = os.path.join(venv_bin, "python3")
+        self.venv_dir = os.path.join(self.checkout, ".venv")
+        self.lock = os.path.join(self.checkout, "requirements.lock")
+        self.deps_gate = os.path.join(self.checkout, "scripts", "check-deps-lock.sh")
 
     def _install_from_checkout(self, destroot=None, extra_env=None, prefix=()):
         env = {}
@@ -629,6 +658,136 @@ class InstallRootCheckoutSubPathGateTest(InstallRootCheckoutGateTest):
         out = self._out(r)
         self.assertNotEqual(r.returncode, 0, f"清单源件组/其他可写必须拒装：{out}")
         self.assertIn("payload.sh", out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下")
+
+    def test_group_writable_deps_lock_gate_script_is_refused(self):
+        """活体反例：依赖同步步执行的那枚脚本可写 ⇒ 同样拒装（工单 j06f）。
+
+        依赖同步步（工单 j06f）新开了一个 root 执行点：`scripts/check-deps-lock.sh`。
+        它必须与 `check-cron-provenance.sh` 同判据——脚本可写 = 可改 root 将要跑的
+        那份 venv/lock 对账逻辑。少收这一条就是同族只改一半。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(self.deps_gate, 0o666)
+        self._assert_refused_naming(self.deps_gate, "依赖同步门的脚本")
+
+    def test_group_writable_venv_pip_is_refused(self):
+        """活体反例（复审 F1，必改项）：venv 的 pip 组/其他可写 ⇒ 拒装。
+
+        威胁真实：`web/deploy/yiban-web.service` 的 `ReadWritePaths=/opt/yiban-auto-sign`
+        让服务账号可写检出根 ⇒ `.venv/bin/pip` 随之可写。root 要拿这枚 pip 装依赖，
+        故它是 M01 的输入。旧实现只收了门脚本，没收本件——复审实测旧码 `INSTALL_EXIT=0`。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(self.venv_pip, 0o666)
+        self._assert_refused_naming(self.venv_pip, "venv 的 pip 可写")
+
+    def test_group_writable_requirements_lock_is_refused(self):
+        """活体反例（复审 F1，必改项）：锁定清单可写 ⇒ 拒装。
+
+        `requirements.lock` 被读给 `pip install -r`，是 root 的输入之一。可写即
+        等于可换成任意来源清单（复审实测旧码 `INSTALL_EXIT=0`）。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(self.lock, 0o666)
+        self._assert_refused_naming(self.lock, "锁定清单可写")
+
+    def test_group_writable_venv_bin_dir_is_refused(self):
+        """venv/bin 目录可写 ⇒ 拒装：pip 与解释器链接都能被换掉。"""
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.chmod(os.path.join(self.venv_dir, "bin"), 0o777)
+        self._assert_refused_naming(os.path.join(self.venv_dir, "bin"), "venv/bin 目录可写")
+
+    def test_symlinked_venv_interpreter_is_not_refused(self):
+        """对侧反例：venv 解释器是符号链接时**不许**判红。
+
+        活体实测（本批 F1 首版）：对符号链接套"组/其他可写"判据会让**每一次**
+        干净 root 部署都拒装——`python3 -m venv` 造的 `bin/python3` 就是一枚链接，
+        而 Linux 上链接的权限位恒为 777、不可改。故判据改为：链接解引用后套同一判据
+        （目标属主 + 目标组/其他写位）。本条钉住"干净链接不许判红"这一侧。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.remove(self.venv_py)
+        try:
+            os.symlink("/bin/true", self.venv_py)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        destroot = os.path.join(self.tmp, "destdir")
+        os.makedirs(destroot, exist_ok=True)
+        r = self._install_from_checkout(destroot=destroot)
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0,
+                         f"符号链接被判红 ⇒ 干净部署恒拒装（链接 mode 恒 777）：{out}")
+        self.assertNotIn("违规路径", out, out)
+
+    def test_symlink_to_non_root_owned_target_is_refused(self):
+        """反向守卫（复审 R2-1）：链接解引用后的目标不属 root ⇒ 拒装。
+
+        判"解引用后套同一判据"这半边：只看链接自身属主（首版写法）会放行本例——
+        root 可以建一枚指向他人属主文件的链接，那种链接被 root 读/执行即越过判据。
+        复审实测首版 `rc=0`；本条钉住它必须非 0，且点名该链接。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        target = os.path.join(self.tmp, "foreign-python")
+        _write(target, "#!/bin/sh\nexit 0\n", 0o755)
+        os.chown(target, UNPRIVILEGED_ID, UNPRIVILEGED_ID)
+        os.remove(self.venv_py)
+        try:
+            os.symlink(target, self.venv_py)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        self._assert_refused_naming(self.venv_py, "链接目标不属 root")
+
+    def test_symlink_to_group_writable_dir_is_refused(self):
+        """反向守卫（复审 R2-1）：目录链接解引用后是组/其他可写 ⇒ 拒装。
+
+        判"父分量本身是链接"这半边：只看链接自身属主（首版写法）会跳过该目录的
+        权限位与目标走查，于是"指向可写目录的目录链接"成了免检通道。复审实测
+        首版 `rc=0`；本条钉住它必须非 0，且点名该链接。
+        """
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        real_bin = os.path.join(self.tmp, "real-venv-bin")
+        os.rename(os.path.join(self.venv_dir, "bin"), real_bin)
+        os.chmod(real_bin, 0o777)          # 目标目录组/其他可写
+        try:
+            os.symlink(real_bin, os.path.join(self.venv_dir, "bin"))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        self._assert_refused_naming(os.path.join(self.venv_dir, "bin"),
+                                    "目录链接指向可写目录")
+
+    def test_broken_symlink_inside_checkout_is_refused(self):
+        """断链 fail-closed：解引用读不到目标 ⇒ 拒装（读不到就不放行）。"""
+        self._require_root_and_modes()
+        os.chmod(self.checkout, 0o755)
+        os.remove(self.venv_py)
+        try:
+            os.symlink(os.path.join(self.tmp, "no-such-target"), self.venv_py)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("宿主不支持建符号链接：%s" % exc)
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"断链竟放行：{out}")
+        self.assertIn("解引用失败", out, out)
+        self.assertFalse(os.path.exists(self.marker),
+                         "门必须在执行检出内脚本之前拦下")
+
+    def _assert_refused_naming(self, token, what):
+        """以 root 跑一次安装器，断言 M01 拒装且点名的路径含 token、未执行检出内脚本。"""
+        r = self._install_from_checkout()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"{what}必须拒装：{out}")
+        self.assertIn("每个被 root 读取/执行的路径", out,
+                      f"拒绝原因必须来自 M01 门，不是别的检查：{out}")
+        self.assertIn(token, out, f"拒绝信息必须点名违规路径：{out}")
         self.assertFalse(os.path.exists(self.marker),
                          "门必须在执行检出内脚本之前拦下")
 
@@ -834,6 +993,169 @@ class DeployTextNewlineGateTest(unittest.TestCase):
             f.write(data.rstrip(b"\n"))
         self.assertTrue(_missing_final_newline(stripped),
                         "扫描器抓不住缺结尾换行，门是假的")
+
+
+# ------------------------------------------- r4 批：锁目录 tmpfiles + 审计/哨兵 cron
+@unittest.skipIf(BASH is None, "需要 bash")
+class R4ProdArtifactsTest(_TmpBase):
+    """r4 批新增载体：锁目录 tmpfiles 件 + 审计/哨兵两张 cron 表。
+
+    现象（有步骤、没载体）：锁目录"属主为本用户且 0700"由 run.sh 强制、README 承诺，
+    但没有 tmpfiles 件（/run 是 tmpfs，重启即空）；审计 02:30 与哨兵 08:05 两条 cron
+    只写在 scripts/backup.sh 与 README 的注释里，deploy/prod/cron.d/ 无对应表。
+    三件都装不出来。
+
+    钉的是**不变式**（非编舞）：
+      ① 锁目录件的属主 = 服务账号（yiban-web.service 的 User=/Group=）、模式 0700
+         （run.sh 的 `chmod 700 "$LOCK_DIR"` 与 README 的 `chmod 700 /var/lock/yiban`）；
+      ② 两张 cron 表与既有表同形（SHELL/PATH/MAILTO 三行头 + 单条调度行 + 重定向到
+         /var/log/yiban/ + 命令行指向仓库内脚本），排期 02:30/08:05；
+      ③ 三件都在 manifest.tsv 里（mode 0644 → /etc/{cron.d,tmpfiles.d}/）——install.sh
+         据此落位（落位本身由 InstallScriptTest 对全部 manifest 行覆盖）；
+      ④ 运行身份按证据定：审计=yiban（服务账号，只读自有数据）、哨兵=root
+         （防漂移比对须读 0700 root:root 的已装 backup.sh）；
+      ⑤ 哨兵以 root 跑，故其 YIBAN_STATE_DIR 必须是 tmpfiles 声明为 root:root 的**私有**
+         目录，且不同于 yiban 属主的状态目录——否则 root 会在 yiban 属主目录里留下属主
+         文件，yiban 侧（web/signin）拿不到跨进程锁（r4 独立复审 MEDIUM-1）；
+      ⑥ shared-facts 的锁目录键必须覆盖 tmpfiles 的**真路径**写法 /run/lock/yiban——
+         否则是未登记的锁目录定义点，门看的东西≠实际改的东西（复审 MEDIUM-2）。
+    """
+
+    TMPFILES = os.path.join(PROD_DIR, "tmpfiles.d", "yiban.conf")
+    SERVICE = os.path.join(BASE, "web", "deploy", "yiban-web.service")
+
+    def _service_account(self):
+        """服务账号 (User, Group)：锁目录属主的唯一事实源（yiban-web.service）。"""
+        user = group = None
+        with io.open(self.SERVICE, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("User="):
+                    user = line.split("=", 1)[1].strip()
+                elif line.startswith("Group="):
+                    group = line.split("=", 1)[1].strip()
+        self.assertTrue(user and group, "yiban-web.service 缺 User=/Group=")
+        return user, group
+
+    def _manifest_map(self):
+        m = {}
+        with io.open(MANIFEST, encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                mode, src, dest = line.split("\t")
+                m[dest] = (mode, src)
+        return m
+
+    @staticmethod
+    def _job_lines(text):
+        """调度行：排除空行、注释行与表级 env 行（SHELL=/bin/sh、MAILTO="" 等）。"""
+        jobs = []
+        for raw in text.splitlines():
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            first = s.split(None, 1)[0]
+            if "=" in first and first[0] not in "*0123456789":
+                continue
+            jobs.append(s)
+        return jobs
+
+    def _tmpfiles_dirs(self):
+        """tmpfiles 件的每条 d 行 → {路径: (模式, 用户, 组)}（d 行 = 声明，注释不算）。"""
+        dirs = {}
+        with io.open(self.TMPFILES, encoding="utf-8") as f:
+            for line in f:
+                if line.split(None, 1)[:1] != ["d"]:
+                    continue
+                _typ, path, mode, user, group = line.split()[:5]
+                dirs[path] = (mode, user, group)
+        self.assertTrue(dirs, "tmpfiles 件没有任何 d 行")
+        return dirs
+
+    def test_tmpfiles_declares_lock_dir_owner_and_mode(self):
+        self.assertTrue(os.path.isfile(self.TMPFILES),
+                        "缺 tmpfiles 件：deploy/prod/tmpfiles.d/yiban.conf")
+        dirs = self._tmpfiles_dirs()
+        self.assertIn("/run/lock/yiban", dirs, f"缺锁目录声明：{dirs}")
+        mode, user, group = dirs["/run/lock/yiban"]
+        self.assertEqual("0700", mode, "锁目录模式必须是 0700（run.sh chmod 700）")
+        svc_user, svc_group = self._service_account()
+        self.assertEqual(svc_user, user, "锁目录属主必须是服务账号（run.sh 的 -O 检查）")
+        self.assertEqual(svc_group, group, "锁目录属组必须是服务账号组")
+        mode, src = self._manifest_map().get("/etc/tmpfiles.d/yiban.conf", (None, None))
+        self.assertEqual(("0644", "deploy/prod/tmpfiles.d/yiban.conf"), (mode, src),
+                         "tmpfiles 件必须在 manifest 里（0644 → /etc/tmpfiles.d/）")
+
+    def test_new_cron_tables_are_well_formed_and_wired(self):
+        manifest = self._manifest_map()
+        for name, (script_hint, sched, _user) in R4_NEW_CRON_TABLES.items():
+            path = os.path.join(CRON_DIR, name)
+            self.assertTrue(os.path.isfile(path), f"缺 cron 表：deploy/prod/cron.d/{name}")
+            with io.open(path, encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("SHELL=/bin/sh", text, f"{name} 缺 SHELL 头")
+            self.assertIn('MAILTO=""', text, f"{name} 缺 MAILTO 头")
+            self.assertIn("PATH=/usr/local/sbin:", text, f"{name} 缺 PATH 头")
+            jobs = self._job_lines(text)
+            self.assertEqual(1, len(jobs), f"{name} 应恰有一条调度行：{jobs}")
+            job = jobs[0]
+            self.assertTrue(job.startswith(sched), f"{name} 排期应为 {sched}：{job}")
+            self.assertIn("/var/log/yiban/", job, f"{name} 输出须重定向到 /var/log/yiban/")
+            self.assertIn(script_hint, job, f"{name} 命令行须指向仓库内脚本 {script_hint}")
+            mode, src = manifest.get(f"/etc/cron.d/{name}", (None, None))
+            self.assertEqual(("0644", f"deploy/prod/cron.d/{name}"), (mode, src),
+                             f"{name} 必须在 manifest 里（0644 → /etc/cron.d/）")
+
+    def test_cron_run_identities_match_evidence(self):
+        """运行身份按证据定：审计=yiban（服务账号）、哨兵=root（读 0700 root 备份脚本）。"""
+        user, _group = self._service_account()
+        for name, (_script, _sched, expect_user) in R4_NEW_CRON_TABLES.items():
+            if expect_user == "yiban":
+                expect_user = user
+            with io.open(os.path.join(CRON_DIR, name), encoding="utf-8") as f:
+                job = self._job_lines(f.read())[0]
+            # 第 6 列即运行身份（SHELL/PATH/MAILTO 是表级 env 行，已排除）
+            self.assertEqual(expect_user, job.split()[5],
+                             f"{name} 运行身份应为 {expect_user}：{job}")
+
+    def test_sentinel_writes_only_to_private_root_state_dir(self):
+        """MEDIUM-1：哨兵以 root 跑 ⇒ 其 YIBAN_STATE_DIR 必须是 tmpfiles 声明为 root:root 的
+        **私有**目录，且不同于 yiban 属主的状态目录。否则 root 会在 yiban 属主目录里留下
+        属主文件，yiban 侧（web/signin）随即拿不到跨进程锁、节流表被判损坏。
+        """
+        with io.open(os.path.join(CRON_DIR, "yiban-backup-sentinel"), encoding="utf-8") as f:
+            job = self._job_lines(f.read())[0]
+        env = {}
+        for tok in job.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                env[k] = v
+        state_dir = env.get("YIBAN_STATE_DIR")
+        self.assertTrue(state_dir, f"哨兵 cron 行必须显式设 YIBAN_STATE_DIR（隔离 root 写入）：{job}")
+        # yiban 属主的状态目录：取配置名册的唯一默认值，不另抄一份字面量
+        with io.open(os.path.join(BASE, "config", "registry.json"), encoding="utf-8") as f:
+            yiban_state = json.load(f)["YIBAN_STATE_DIR"]["default"]
+        self.assertNotEqual(yiban_state, state_dir,
+                            "哨兵不得把 root 的写入落进 yiban 属主的共享状态目录")
+        dirs = self._tmpfiles_dirs()
+        self.assertIn(state_dir, dirs, "哨兵私有状态目录必须由 tmpfiles 件声明属主/模式")
+        self.assertEqual(("0700", "root", "root"), dirs[state_dir],
+                         "哨兵私有状态目录必须 0700 root:root（root 只写自己的目录）")
+
+    def test_lock_dir_shared_fact_key_covers_tmpfiles_literal(self):
+        """MEDIUM-2：tmpfiles 件用**真路径** /run/lock/yiban 声明锁目录；shared-facts 的
+        锁目录键必须收得住这个写法。收不住 = 未登记的锁目录定义点（门看的东西≠实际改的
+        东西）。本用例钉住"判定模式命中该写法 + 扫描范围含 deploy"。
+        """
+        with io.open(os.path.join(BASE, "scripts", "gate", "shared-facts.tsv"),
+                     encoding="utf-8") as f:
+            row = next(line for line in f if line.startswith("路径配置\tYIBAN_LOCK_DIR"))
+        _fam, _key, _st, pattern, scope, _max, _note = row.rstrip("\n").split("\t")
+        self.assertRegex("/run/lock/yiban", pattern,
+                         "锁目录键的判定模式必须命中真路径写法 /run/lock/yiban")
+        self.assertIn("deploy", scope.split(),
+                      "锁目录键的扫描范围必须含 deploy（tmpfiles 件在 deploy/prod/ 下）")
 
 
 # -------------------------------------------------------------------⑤ 真名示例门

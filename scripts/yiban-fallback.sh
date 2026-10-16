@@ -13,7 +13,7 @@
 #   3. 日志要与 run.sh 同源（`sign-<业务日>.log`），否则运维要在两个地方找日志。
 #
 # 环境变量（与 run.sh 同口径）：
-#   YIBAN_ENV_FILE（默认 <APP_DIR>/.env）—— 开关与状态/日志目录都从这里读
+#   YIBAN_ENV_FILE（默认 <APP_DIR>/data/.env）—— 开关与状态/日志目录都从这里读
 #   YIBAN_STATE_DIR（默认 /var/log/yiban）、YIBAN_LOG_FILE（默认 <state>/sign.log）
 #   YIBAN_FALLBACK_ENABLE —— 真值（1/true/on/yes，大小写不敏感）才起进程；
 #     未设/0/false —— 静默 exit 0（不写日志、不取锁、不启进程）
@@ -37,7 +37,7 @@ umask 077
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-ENV_PATH="${YIBAN_ENV_FILE:-$APP_DIR/.env}"
+ENV_PATH="${YIBAN_ENV_FILE:-$APP_DIR/data/.env}"
 
 # 加载 `.env`：**`.env` 覆盖进程环境**，进程环境只补 `.env` 里没有的键（M27）。
 # 安全说明与 run.sh 同源：绝不能使用 `source`/`.` 加载 .env——网页可写公告等文本，
