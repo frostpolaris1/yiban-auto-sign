@@ -1,0 +1,1 @@
+var e=[20,50,100];function t(e,t){let n=Math.max(0,Math.floor(Number(e)||0)),r=Math.max(1,Math.floor(Number(t)||1));return Math.ceil(n/r)}function n(e,n,r){let i=Math.floor(Number(e));return!Number.isFinite(i)||i<1?1:Math.min(i,Math.max(1,t(n,r)))}function r(e,t,r){let i=Math.max(1,Math.floor(Number(r)||1)),a=(n(t,e.length,i)-1)*i;return e.slice(a,a+i)}export{n,r,e as t};
