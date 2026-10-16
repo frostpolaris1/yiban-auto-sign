@@ -87,6 +87,18 @@ describe("buildAccountPayload（校验顺序与文案）", () => {
     expect(buildAccountPayload(input({ phoneCode: "  deadbeef  " }), { editing: true }).payload?.phone_code).toBe("deadbeef");
   });
 
+  it("用户面（allowDeviceFields=false）不带设备型号/识别码：一个键都不许出现", () => {
+    // 不变式：用户面**没有**这两个字段的写入面（2026-10-16 裁决）。用键缺席而非空串——
+    // 空串在后端是"显式清空"，会把自动补全填进去的值冲掉。
+    const r = buildAccountPayload(
+      input({ phoneModel: "M", phoneCode: "c0de", clearCode: true }),
+      { editing: true, allowDeviceFields: false },
+    );
+    expect(r.payload).toEqual({ name: "A1", phone: "13800138001", password: "pw" });
+    expect(r.payload && "phone_model" in r.payload).toBe(false);
+    expect(r.payload && "phone_code" in r.payload).toBe(false);
+  });
+
   it("绑定用户（新增）：选已注册用户 → 带 email，不带手填校验", () => {
     const r = buildAccountPayload(input({ email: "u@example.com" }), {
       editing: false,

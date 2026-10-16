@@ -143,10 +143,11 @@ export interface AccountFormInput {
   /** 管理端编辑时来自列表项的完整号（仅内存，不回显） */
   phoneFull?: string | null;
   password: string;
-  phoneModel: string;
-  phoneCode: string;
-  /** 是否处于"清除已配置识别码"态 */
-  clearCode: boolean;
+  /** 设备字段：只有管理面（`allowDeviceFields` 为真）会读，自助面不再提供输入框 */
+  phoneModel?: string;
+  phoneCode?: string;
+  /** 是否处于"清除已配置识别码"态（同上，只有管理面读） */
+  clearCode?: boolean;
   /** 绑定用户下拉的当前值（仅 allowEmail 且非编辑时有意义） */
   email?: string;
   /** 手填邮箱（下拉选 __manual__ 时生效） */
@@ -158,8 +159,9 @@ export interface AccountPayload {
   name: string;
   phone: string;
   password: string;
-  phone_model: string;
-  phone_code: string;
+  /** 仅管理面携带（`opts.allowDeviceFields`）；用户面不收这两个字段（2026-10-16 裁决）。 */
+  phone_model?: string;
+  phone_code?: string;
   email?: string;
   initial_password?: string;
   _snapshot?: string;
@@ -188,6 +190,12 @@ export function buildAccountPayload(
     requiresSnapshot?: boolean;
     policyOk?: (pw: string) => boolean;
     policyHint?: string;
+    /**
+     * 是否携带设备型号/识别码。**默认 true（管理面）**；用户面传 false ——
+     * 这两个字段由签到前自动补全填入，或由管理面手工填，用户面不留写入面
+     * （用户 2026-10-16 裁决：不给用户任何编辑这两个字段的入口）。
+     */
+    allowDeviceFields?: boolean;
   },
 ): BuildResult {
   // 口径 2：要求快照却没拿到 → 不得提交（防基于过期视图覆盖别人的改动）
@@ -207,9 +215,13 @@ export function buildAccountPayload(
     name: String(input.name || "").trim(),
     phone: phone.value,
     password: input.password || "",
-    phone_model: String(input.phoneModel || "").trim(),
-    phone_code: input.clearCode ? CODE_CLEAR : String(input.phoneCode || "").trim(),
   };
+
+  if (opts.allowDeviceFields !== false) {
+    // 键缺席时后端不动该列，库里的既有值（自动补全填的）因此不会被空值冲掉
+    payload.phone_model = String(input.phoneModel || "").trim();
+    payload.phone_code = input.clearCode ? CODE_CLEAR : String(input.phoneCode || "").trim();
+  }
 
   if (opts.allowEmail && !opts.editing) {
     const manual = input.email === "__manual__";

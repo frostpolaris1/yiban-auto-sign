@@ -485,11 +485,11 @@ def api_my_account_add():
     """
     m = _appmod()
     data = m._json_body()
-    err, clean = m.validate_account(data, require_password=True)
+    # 用户面不收设备型号/识别码：这两列由签到前自动补全写、或由管理面手工填
+    # （用户 2026-10-16 裁决）。手工构造请求同样写不进。
+    err, clean = m.validate_account(data, require_password=True, allow_device_fields=False)
     if err:
         return jsonify({"error": err}), 400
-    # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
-    m.fold_phone_code(clean)
     # 预筛：资格校验全部前置到网络验证之前，杜绝「先向易班发起真实登录、再发现
     # 根本没资格」的凭据试探滥用面。权威校验仍保留在下方写入临界区
     # （预筛通过≠最终名额，双检以锁内为准）。
@@ -796,7 +796,10 @@ def api_my_account_update(idx):
         # 软删除账号禁止编辑（防编辑流程绕过软删除；恢复由管理员操作）
         if old.get("deleted"):
             return jsonify({"error": "账号已删除，请先恢复"}), 400
-        err, clean = m.validate_account(data, require_password=False)
+        # 用户面不收设备型号/识别码：键不进 clean ⇒ UPDATE 不动这两列，库里既有值
+        # （自动补全填的）保持原样（用户 2026-10-16 裁决）。故此处也没有"改写识别码"
+        # 这一支，编辑探针与熔断清除只认口令变更。
+        err, clean = m.validate_account(data, require_password=False, allow_device_fields=False)
         if err:
             return jsonify({"error": err}), 400
         if (
@@ -806,10 +809,6 @@ def api_my_account_update(idx):
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         if not clean["password"]:
             clean["password"] = old.get("password", "")
-        # 设备识别码：__clear__ 折算为 "" 随 UPDATE 进 SET（真清空）；留空 = 保持不变
-        # （与 /api/accounts/<idx> 及两条添加路径共用同一折算）
-        _old_code = old.get("phone_code") or ""
-        code_written = m.fold_phone_code(clean, _old_code) != _old_code
         clean["owner"] = old.get("owner", "")
         # 改绑手机号一律回待审核重审——否则 ACTIVE 号可被改绑成任意新号免审生效，
         # 历史审核结论不再可信。无论原状态（含 ACTIVE）；REJECTED 本就回 pending。
@@ -836,19 +835,19 @@ def api_my_account_update(idx):
             m._mask_phone(clean["phone"]),
             "用户编辑 改绑回审" if rebind else "用户编辑",
         )
-        # 用户改密码/改绑手机号/改写识别码（凭据变更）才清除熔断暂停；
+        # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
         # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
-                                    old.get("phone_code") or "")
+        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
         m.logger.info("用户 %s 编辑账号 %s", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
-        # 编辑路径的**异步探针**：口令或识别码实际变更后，后台复核新凭据是否可用。
+        # 编辑路径的**异步探针**：口令实际变更后，后台复核新凭据是否可用。
         # 易班口令对本地口令策略豁免，前提正是"真实登录探针兜底"；缺它时用户填错口令
         # 会被静默接受，直到签到日才暴露（账号处于暂停态时错误凭据可无限期潜伏）。
         # 一律异步：同步会占住请求线程与外呼席位，而编辑已落盘、不能回滚。
         # 探针失败只留可查记录，**不改账号可用状态语义**（见 verify_queue.start_edit_probe）。
         # 经 run_after_file_lock 登记：探针建任务（DB 写）并入队外呼，按锁纪律挪到出锁后。
-        # 触发口径只认口令/识别码变更，不认改绑手机号——改绑已回待审核重审。
-        if bool(str(data.get("password", "")).strip()) or code_written:
+        # 触发口径只认口令变更，不认改绑手机号（改绑已回待审核重审）与识别码
+        # （用户面已不收该字段）。
+        if bool(str(data.get("password", "")).strip()):
             _probe_user = str(session.get("username", ""))
             _probe_limits = verify_limits()
             _probe_fails = verify_fails()
