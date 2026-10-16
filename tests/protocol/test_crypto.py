@@ -12,8 +12,8 @@ import sys
 
 import pytest
 
-from yiban.protocol import parse_authorize_page
-from yiban.protocol.crypto import encrypt_password
+from yiban.adapters.protocol_yiban import parse_authorize_page
+from yiban.adapters.protocol_yiban.crypto import encrypt_password
 
 # 一次性测试用私钥（仅为本测试文件生成；非真实凭据）。
 _TEST_PRIVATE_KEY_PEM = """-----BEGIN RSA PRIVATE KEY-----
@@ -70,14 +70,14 @@ def test_invalid_pem_raises_value_error():
 
 def test_missing_dependency_guidance(monkeypatch):
     """无 pycryptodome 时导入本模块 → ImportError，且文案含安装指引。"""
-    monkeypatch.delitem(sys.modules, "yiban.protocol.crypto", raising=False)
+    monkeypatch.delitem(sys.modules, "yiban.adapters.protocol_yiban.crypto", raising=False)
     for name in [n for n in list(sys.modules) if n == "Crypto" or n.startswith("Crypto.")]:
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setitem(sys.modules, "Crypto", None)
 
     with pytest.raises(ImportError, match="pycryptodome"):
-        importlib.import_module("yiban.protocol.crypto")
+        importlib.import_module("yiban.adapters.protocol_yiban.crypto")
 
     monkeypatch.undo()
     # 恢复正常模块，避免影响后续用例。
-    importlib.import_module("yiban.protocol.crypto")
+    importlib.import_module("yiban.adapters.protocol_yiban.crypto")

@@ -1,7 +1,7 @@
-"""协议库测试（`yiban/protocol/`）的共享辅助。
+"""协议库测试（`yiban/adapters/protocol_yiban/`）的共享辅助。
 
 **来源**：本目录与 `fixtures/` 随 2026-10-07 换核从独立库仓库的测试套件整体迁入，
-import 一律改写为 `yiban.protocol`。
+import 一律改写为 `yiban.adapters.protocol_yiban`。
 
 **来源与脱敏（如实）**：夹具源自**运营者自有账号**的旁路实拍。已替换为合成值的是
 姓名 / 学号（`PersonId`）/ 学校名 / 电话 / 会话令牌；**坐标保留实拍值**（其合成性无法

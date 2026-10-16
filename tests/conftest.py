@@ -158,7 +158,7 @@ def _restore_environ_around_class():
 def _restore_process_umask():
     """逐用例还原进程 umask：本仓有在**进程内**直调生产入口的用例，而那些入口会改 umask。
 
-    `yiban/engine/runner.py:207` 与 `yiban/cli.py:633` 都把进程 umask 收到 `077`
+    `yiban/engine/runner.py` 与 `yiban/entry/cli/__init__.py` 都把进程 umask 收到 `077`
     （生产入口的既定行为，自己不还原）。进程内调用它们的用例（`runner.main` /
     `cli.main`）因此把 077 泄漏给同 worker 的后续用例：那些用例 `os.makedirs` 建出的
     目录变 `0700`、`_write` 建出的文件变 `0600`，凡带降权（setpriv 到 nobody）或按

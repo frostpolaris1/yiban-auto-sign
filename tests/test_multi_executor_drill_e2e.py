@@ -5,7 +5,7 @@
 覆盖：本靶场（`scripts/drill_multi_exec.py`）在**本地、零外联**的环境里拉起真实的
    监督进程与真实执行体子进程（真值路径 `workers.run_worker_supervisor` →
    `executor_v3` → `signin`），子进程的全部 https 请求经传输层改写钉回回环假上游
-   （`tests/fake_yiban_server.py --no-tls`）。四条：
+   （`yiban/adapters/protocol_fake/__init__.py --no-tls`）。四条：
    ① 两个执行体领同一批账号时 I1／I2 绿、账号全部了结、无多余真登录；
    ② 在某执行体的在飞行上 SIGKILL 后，它的在飞行被收尸（回退待领 ＋ `epoch+1`），
       其余账号不重不丢，且**恢复轮**能把被收尸的账号领走签成；

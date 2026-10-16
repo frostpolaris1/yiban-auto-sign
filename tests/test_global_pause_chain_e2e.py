@@ -17,7 +17,7 @@
     yiban/engine/schedule.py（`day_off`
     三道门的唯一实现）、web/app.py（`_day_off_reason` 现读注入）、
     web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/status.py
-    （`DISPLAY`/`legend_items`/`display_payload`）、tests/fake_yiban_server.py（假上游记账）
+    （`DISPLAY`/`legend_items`/`display_payload`）、yiban/adapters/protocol_fake/__init__.py（假上游记账）
 关键断言：rc 契约本单**只钉不改**：暂停命中 ⇒ 引擎 rc=2 且 run.sh 状态文件为
     GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）。注（f7va，2026-10-12）：
     run.sh 的**状态文件落盘判码**本批改为"每个跑过一轮的码都落盘文本"，且**逐码派生**
@@ -62,7 +62,8 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 #: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）
-MOCK_YIBAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_yiban_server.py")
+MOCK_YIBAN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "yiban", "adapters", "protocol_fake", "__init__.py")
 _HAS_BASH = shutil.which("bash") is not None
 # 运行锁争抢的构造件（忙态反例要真的"持住"锁）。注意判据必须落在 fcntl **模块本身**
 # （与引擎同源，见 yiban/engine/cli_support.py 的 try-import）：旧版在此写

@@ -84,7 +84,8 @@ flowchart TD
 ```text
 yiban/
 ├── entry/                 # 入口层：只翻译参数 + 鉴权
-│   ├── cli/               #   七子命令（现 yiban/cli.py）
+│   ├── cli/               #   命令行入口。✅ 已落地（批 A1，2026-10-16）：
+│   │                      #      现 yiban/cli.py 是转发壳，待读者迁完再删
 │   └── （web 管理端独立于本包；docker/scheduler 为容器接线）
 ├── app/                   # 应用层：用例编排，无算法无 SQL
 │   ├── round.py           #   run_round 跑一轮（现 engine/round）
@@ -111,8 +112,11 @@ yiban/
 │   │   ├── migrations/    #     迁移账（含方言差异）
 │   │   └── audit.py       #     哈希链审计
 │   ├── config/            #   env_io + 配置名册加载器 + secrets
-│   ├── protocol_yiban/    #   现 yiban/protocol
-│   ├── protocol_fake/     #   测试假服务器
+│   ├── protocol_yiban/    #   ✅ 已落地（批 A2，2026-10-16）：洁净室协议库
+│   ├── protocol_fake/     #   测试假服务器。✅ 已落地（批 A3，2026-10-16）：
+│   │                      #      原 tests/fake_yiban_server.py
+│   ├── notifier/          #   ✅ 已落地（批 A4，2026-10-16）：mail/ 与 notify/
+│   │                      #      告警编排（engine/alerts.py）留在原地，属批 B
 │   └── statefiles/        #   状态文件 I/O（现 state_io）
 └── workers/               # 签名工作体（slim；进程模型由测量决定）
 web/                       # HTTP 适配（独立包；routes 只翻译 + 鉴权）
@@ -137,9 +141,9 @@ frontend/                  # Vue（独立构建）
 | `store/*`（除 migrations/audit） | `adapters/persistence/` | 移动 |
 | `store/migrations.py` | `adapters/persistence/migrations/` | 移动 |
 | `store/audit_chain.py` | `adapters/persistence/audit.py` | 移动 |
-| `mail/` `notify/` | `adapters/notifier/` | 移动 |
+| `mail/` `notify/` | `adapters/notifier/` | 移动（批 A4 已移动；旧路径留转发壳。告警编排 `engine/alerts.py` 留在原地——执行核冻结名单里的 `round`/`executor_v3` 都 import 它） |
 | `yiban/infra/`（env_io 等） | `adapters/config/` | 移动（＋名册加载器） |
-| `yiban/cli.py` | `entry/cli/` | 移动；收掉对存储层的直接引用 |
+| `yiban/cli.py` | `entry/cli/` | 移动（批 A1 已移动；旧路径留转发壳）。收掉对存储层的直接引用属批 B |
 | `web/app.py` 再导出表 | 打桩面迁移完成后删除 | 拆解（与测试定型同批） |
 | `web/routes/` `services/` | `entry`（HTTP）／`app`（用例） | 归层 |
 | `docker/scheduler.py` | 容器入口 | 保持 |
