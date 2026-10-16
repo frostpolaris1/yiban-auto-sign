@@ -113,6 +113,9 @@ OAUTH_USERSURE_URL = "https://oauth.yiban.cn/code/usersure"
 IFRAME_INDEX_URL = "https://f.yiban.cn/iframe/index"
 SIGN_POSITION_URL = "https://api.uyiban.com/nightAttendance/student/index/signPosition"
 SIGN_IN_URL = "https://api.uyiban.com/nightAttendance/student/index/signIn"
+#: 设备登记读取：返回该账号**已登记设备**的 {authorize, Code, PhoneModel, UpdateTime}。
+#: 平台 2026-10-16 起对签到强制校验设备绑定；签到时须回传这里的 Code/PhoneModel。
+DEVICE_STATE_URL = "https://api.uyiban.com/device/student/index/getState"
 
 #: 单请求超时（秒）：登录链与签到链一致
 REQUEST_TIMEOUT = 15
@@ -258,8 +261,11 @@ def build_sign_info(lng, lat, address):
 def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     """把 `sign_info` 字典还原为库 `build_sign_in_body` 的入参并构造提交体。
 
-    与实拍流量逐字节同构的保证在库侧（键序 Reason/AttachmentFileName/LngLat/Address、
-    JSON 默认分隔符、整串 urlencode）。
+    请求体的形状保证在库侧：顶层五字段序、`SignInfo` 键序
+    `Reason/AttachmentFileName/LngLat/Address`、JSON 默认分隔符、整串 urlencode。
+    该形态与**本站自己的夹具**逐字节相等；与官方 SPA 的编码形态不同（SPA 走
+    `encodeURIComponent` 与紧凑 `JSON.stringify`），服务端两种都解——口径见
+    `yiban/protocol/SPEC.md` §2.6。
     """
     lng_text, _, lat_text = str(sign_info.get("LngLat", "")).partition(",")
     return build_sign_in_body(
@@ -574,6 +580,26 @@ def fetch_sign_position(session, csrf, policy):
     data = _parse_api_body(resp)
     _validate_sign_position(data)
     return SignResponse(data=data)
+
+
+def fetch_device_state(session, csrf, policy):
+    """读回服务端登记的设备（`device/student/index/getState`）。返回 `SignResponse`。
+
+    这是**读回**不是生成：真实客户端用原生桥 `window.yiban.getUUID()` 生成设备码一次
+    并登记到服务端，此后各处（含签到提交）都回传同一个值。我们读回登记值照实回传，
+    既不需要原生桥，也不涉及任何伪造。
+
+    与 `fetch_sign_position` 同口径：WAF 拦截降级为 `blocked`；信封解析走库
+    （`code == 999` → 会话失效）。**语义解析（`parse_device_state`）由调用方做**——
+    本层只负责"取回信封"。
+    """
+    resp = session.get(
+        DEVICE_STATE_URL, params={"CSRF": csrf},
+        allow_redirects=False, timeout=REQUEST_TIMEOUT,
+    )
+    if policy.is_blocked(resp):
+        return SignResponse(data=None, blocked=True)
+    return SignResponse(data=_parse_api_body(resp))
 
 
 def submit_sign_in(session, csrf, *, phone_code, phone_model, sign_info, out_state, policy):

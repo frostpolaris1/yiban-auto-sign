@@ -28,7 +28,8 @@ from yiban import masking, security
 from yiban import platform as yiban_platform
 from yiban import status as yiban_status
 from yiban.geo import generate_position_in_polygon
-from yiban.store.accounts import account_still_signable
+from yiban.protocol import ParseError, parse_device_state
+from yiban.store.accounts import account_still_signable, update_account
 
 logger = logging.getLogger("yiban.client")
 
@@ -232,9 +233,14 @@ class YibanClient:
             logger.debug(
                 f"[{account.phone}] 未配置代理，如遇 WAF 拦截可配置 YIBAN_PROXY"
             )
-        # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
+        # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码。
+        # 账号本地配置为空时，签到前会**读回**服务端登记的设备（`_device_identity`）。
         self.phone_model = account.phone_model
         self.phone_code = account.phone_code
+        self._registered_device = None      # 服务端登记设备（DeviceState）；None=未读或读失败
+        self._registered_device_read = False
+        self._registered_device_problem = ""  # 设备缺失的原因分类（供拒签文案；不含异常原文）
+        self._registered_device_blocked = False  # 设备登记读回被 WAF 拦截（走既有 WAF 文案）
         self.logged_in = False
 
     @property
@@ -244,6 +250,119 @@ class YibanClient:
         if store is None:
             store = self._store = _SessionCache(self)
         return store
+
+    def _device_identity(self):
+        """本次签到回传的设备身份 `(code, model)`。
+
+        优先级：**账号本地配置 > 服务端登记（读回）**。本地已配置齐全时不读服务端
+        （显式配置优先，也省一次请求）；单边配置时用登记值补另一边。
+        """
+        if self.phone_code and self.phone_model:
+            return self.phone_code, self.phone_model
+        # getattr 兜底：用 `__new__` 构造的轻量实例（测试/探针路径）没有 __init__ 的字段，
+        # 与 `_session_store` 同一惯例——轻量实例也要能直接走这条路径。
+        if not getattr(self, "_registered_device_read", False):
+            self._registered_device_read = True
+            self._registered_device = self._read_registered_device()
+        state = getattr(self, "_registered_device", None)
+        code = self.phone_code or (state.code if state else "")
+        model = self.phone_model or (state.phone_model if state else "")
+        return code, model
+
+    def _device_missing_message(self):
+        """设备识别码缺失时的拒签说明（`signin()` 是唯一消费点）。
+
+        平台 2026-10-16 起对无登记设备的提交一律回「请使用授权设备进行签到」。
+        提交一次必然失败一次，还多留一条服务端失败计数，故本地直接拒签。
+        文案只点名**可执行**的补救动作，且在允许来源之内（不伪造设备指纹）：
+        用户在易班 App 内完成本机登记与授权；本站侧由签到前自动补全把登记值写进账号，
+        故**不再**教用户手填——用户面已无这两个字段的编辑入口（2026-10-16 裁决）。
+        """
+        cause = getattr(self, "_registered_device_problem", "") or "该账号未登记设备"
+        return (
+            f"本账号没有可用的设备识别码（{cause}），已拒绝提交——平台对无登记设备的"
+            "签到一律回「请使用授权设备进行签到」。补救：请在易班 App 的「设备识别」"
+            "页完成本机登记与授权（登记后本程序会在下次签到前自动补全，不必手工填写）。"
+        )
+
+    def _read_registered_device(self):
+        """读服务端登记的设备。读不到返回 `None`，并记下**原因分类**供拒签文案用。
+
+        设备读取**不是**诊断性前置：平台 10-16 起把设备绑定作为签到前置，读不到
+        就没有可回传的 `Code`，提交必然被拒（见 `_device_missing_message`）。
+        故"读不到"一律返回 `None`，由 `signin()` 一处裁决是否拒签。
+        记下的只是**分类名**（如 `设备登记读取失败`），不含异常原文：异常消息内嵌
+        完整 URL（可能带 CSRF）。
+
+        两个例外**必须外溢**，不得降级成"设备缺失"：
+        * 网络级异常只收 `requests.RequestException`（连接/超时/非 JSON 响应）；
+          其余异常是**我们自己**的缺陷，吞掉它等于把缺陷伪装成"账号没设备"。
+        * 信封 `code=999` 抛的 `RuntimeError` 表示**会话已失效**，吞掉它会把
+          "清缓存后真重登"那条既有处置路径换成本地拒签——失败分类因此走错档。
+        """
+        try:
+            resp = yiban_platform.fetch_device_state(self.session, self.csrf, self._policy)
+        except requests.RequestException as exc:  # 网络级：不在此处抛出，交 signin() 统一拒签
+            self._registered_device_problem = "设备登记读取失败"
+            logger.debug(
+                f"[{self.account.phone}] 设备登记读回失败：{type(exc).__name__}"
+            )
+            return None
+        if resp.blocked:
+            # WAF 拦截是环境问题，不是"账号没设备"——文案与档位都走既有单一真源
+            self._registered_device_blocked = True
+            self._registered_device_problem = "设备登记接口被风控拦截"
+            return None
+        if not isinstance(resp.data, dict) or resp.data.get("code") != 0:
+            self._registered_device_problem = "设备登记接口未正常应答"
+            return None
+        try:
+            state = parse_device_state(resp.data.get("data"))
+        except ParseError as exc:
+            self._registered_device_problem = f"设备登记响应不合契约（字段 {exc.field}）"
+            return None
+        if not state.code:
+            self._registered_device_problem = "该账号未登记设备"
+        if state.code and not state.authorized:
+            # 已登记但未授权：上游可能据此拒签，点名**真正的**补救动作。
+            logger.warning(
+                f"[{self.account.phone}] 账号设备未授权（登记机型 "
+                f"{masking.sanitize_text(state.phone_model) or '未知'}）——请在易班 App 的"
+                "「设备识别」页完成本机授权，否则可能被上游拒签"
+            )
+        self._persist_registered_device(state)
+        return state
+
+    def _persist_registered_device(self, state):
+        """把读回的设备登记值落到本地账号行——**注册一次、长期复用**。
+
+        落库后各轮签到直接走账号本地配置（`_device_identity` 的第一个分支），
+        不再发 `getState` 请求。若只是"每轮都读回"，等于把一次登记变成每次上线，
+        既多一次请求，又让设备身份随上游变动而漂移。
+
+        账号行 id 为 0（非库来源：JSON/环境变量）时无处可落，跳过；落库失败
+        **fail-open**：拿不到持久化不阻断签到，本轮仍用读回值。
+        """
+        if not state.code or not state.phone_model:
+            return
+        account_id = getattr(self.account, "account_id", 0)
+        if not account_id:
+            return
+        try:
+            update_account(account_id, {
+                "phone_model": state.phone_model,
+                "phone_code": state.code,
+            })
+        except Exception as exc:  # 诊断性持久化：失败不影响本轮签到
+            logger.debug(
+                f"[{self.account.phone}] 设备登记落库失败（fail-open，本轮仍用读回值）："
+                f"{type(exc).__name__}"
+            )
+            return
+        # 内存副本同步：同进程后续轮次（重试/多任务）不再重复读
+        self.phone_model = state.phone_model
+        self.phone_code = state.code
+        logger.info(f"[{self.account.phone}] 设备登记已落到本地账号，后续轮次直接复用")
 
     def _wipe_credentials(self):
         """凭据内存尽力清零：单次签到尝试结束（成败均然）由 attempt_signin 调用。
@@ -384,6 +503,29 @@ class YibanClient:
         # 多任务通常是「同一打卡的多个点位，任取其一即可」：先随机打乱任务顺序
         # （避免固定只签第一个点位形成行为指纹），然后任一任务成功即停（下方 break）。
         random.shuffle(position_list)
+
+        # 设备身份（平台 2026-10-16 起对签到强制校验设备绑定）：
+        # 本地未配置时**读回**服务端登记的设备码/机型，签到时照实回传。
+        # 取不到设备码则**拒签**（不伪造设备指纹）：平台对无登记设备的提交一律回
+        # 「请使用授权设备进行签到」，提交一次必然失败一次，还多留一条失败计数。
+        device_code, device_model = self._device_identity()
+        if not device_code:
+            if getattr(self, "_registered_device_blocked", False):
+                # 与 signPosition 被拦截同口径：WAF 是环境问题，文案与档位走既有单一真源
+                logger.warning(
+                    f"[{self.account.phone}] 设备登记读取被拦截：{security.WAF_BLOCKED_MESSAGE}"
+                )
+                return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
+            message = self._device_missing_message()
+            logger.warning(f"[{self.account.phone}] {message}")
+            return False, message, False, yiban_status.STATUS_FAILED
+        if not device_model:
+            # 机型缺失不影响设备码这条硬前置，服务端自会裁决；留痕以便定位。
+            logger.warning(
+                f"[{self.account.phone}] 设备机型为空（账号未填写且服务端未登记）"
+                "——签到时 PhoneModel 回传空串，学校若校验机型会被拒"
+            )
+
         results_tasks = []  # [(task_name, ok, err_msg)]
         for position in position_list:
             task_name = str(position.get("Name", "") or f"任务{len(results_tasks) + 1}")
@@ -409,15 +551,10 @@ class YibanClient:
 
             # 5. 构建签到数据并提交
             sign_info = yiban_platform.build_sign_info(lng, lat, position.get("Address", ""))
-            if not self.phone_model or not self.phone_code:
-                logger.warning(
-                    f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
-                    "如学校开启了设备绑定，签到将失败"
-                )
             # KillYiBan 的 MINI_VERSION 是 "1"，旧流程是 "1.0"（`out_state` 传参）
             submitted = yiban_platform.submit_sign_in(
                 self.session, self.csrf,
-                phone_code=self.phone_code, phone_model=self.phone_model,
+                phone_code=device_code, phone_model=device_model,
                 sign_info=sign_info,
                 out_state="1" if self.use_killyiban else "1.0",
                 policy=self._policy,
@@ -437,7 +574,8 @@ class YibanClient:
             else:
                 err_msg = masking.sanitize_text(result.get("msg", "未知错误"))
                 if "授权设备" in err_msg:
-                    err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
+                    # 设备身份已改为"读回服务端登记并回传"，此时再教用户配环境变量是错的补救
+                    err_msg += "（本账号设备未授权：请在易班 App 的「设备识别」页完成本机授权）"
                 results_tasks.append((task_name, False, f"签到失败: {err_msg}"))
 
         # 6. 汇总各任务结果：命中任一任务即视为当日已签；仅全部失败才判失败
