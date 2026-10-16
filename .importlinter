@@ -60,8 +60,14 @@ forbidden_modules =
 ;
 ; 坐标（批 A2，2026-10-16）：本契约的源从 `yiban.protocol` 改为
 ;   `yiban.adapters.protocol_yiban`（契约 docs/dev/architecture-target.md 第 3 节）。
-;   旧坐标不留转发壳——壳自己就要引 `yiban.adapters.protocol_yiban`，
-;   那正是本契约要禁的边，壳会把这条判据自己弄红。
+;   旧坐标不留转发壳。理由两条，都是可核对的事实：
+;     ① 本批守卫 `tests/test_protocol_yiban_relocation.py` 的
+;        `test_old_coordinate_is_gone` 要求旧目录不存在；留壳即该守卫红。
+;     ② 留壳会制造第二条 import 路径（`yiban.protocol.X` 与新坐标同时可用），
+;        而"整包独立复用"只认一条坐标。
+;   机制记录（2026-10-16 审查方反事实实测，只作留痕）：若留壳，则取决于契约源在哪：
+;     源＝新坐标（本批实际写法）⇒ 契约 KEPT；源＝旧坐标 ⇒ 才 BROKEN。
+;   即"壳会把本条判据弄红"只在**源未搬**时成立。故本处的取舍不许引用那句推断。
 ;
 ; 为什么 forbidden_modules 写 `yiban.*`，不写 `yiban`
 ;   import-linter 的 forbidden 契约跳过重叠对。源与目标同属一棵包树时该对不参与判定。

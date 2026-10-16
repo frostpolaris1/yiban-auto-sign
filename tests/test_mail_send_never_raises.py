@@ -5,7 +5,7 @@
 覆盖：正文/主题携带**孤立代理对**（utf-8 编码必然失败）时 `_send` 只记日志、返回
     False，绝不抛异常；构造级失败**不**逐条目重试（换条目重投的是同一封，必然同样
     失败）；运输级失败（连接/SMTP 异常）的主备 failover 行为逐字不变。
-对应实现：`yiban/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
+对应实现：`yiban/adapters/notifier/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
     Exception 收口分支）。
 关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/mail/__init__.py` 模块
     头）此前对 UnicodeEncodeError 不成立——排版/构造在 try 外，一次坏字符会沿

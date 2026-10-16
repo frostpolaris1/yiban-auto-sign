@@ -7,8 +7,8 @@
     不同标题互不干扰；cooldown=0 关闭节流且不产生磁盘文件；损坏节流文件归档留证 +
     warning 并按空表处理；写盘顺带清过期条目；冻结时钟下并发同刻恰好一次放行；
     走完整 `send()` 路径时跨进程节流对真实推送生效、force 仍绕过。
-对应实现：`yiban/notify/ledger.py`（`_throttle_due`、`_throttle_ts`）与
-    `yiban/notify/transport.py`（`send`）。
+对应实现：`yiban/adapters/notifier/notify/ledger.py`（`_throttle_due`、`_throttle_ts`）与
+    `yiban/adapters/notifier/notify/transport.py`（`send`）。
 关键断言：**磁盘是唯一事实源**——修复前只维护进程内字典，web 与 signin 各持一份，
     同一告警在窗口内可各放行一条（第三方配额被双份刷、管理员手机收两条），
     且进程重启即清零。

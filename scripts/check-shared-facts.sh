@@ -61,8 +61,15 @@ DEFAULT_SCOPE="yiban scripts web docker deploy .github run.sh run_probe.sh docke
 
 # 只扫代码/配置类文件（名册是 .tsv，天然落在这张白名单外——否则名册自己会把
 # 每条判定模式都命中一遍，门禁当场自杀）。
+#
+# `protocol_fake` 排除在扫描面外（2026-10-16，批 A3）：它是**测试假上游**，
+#   批 A3 从 tests/ 搬进 `yiban/adapters/protocol_fake/`。它不属生产树。
+#   不排除的代价是实测到的：假响应体里的字段名（`OutState` / `LngLat`）与
+#   一处 docstring 会顶高"签到请求体逐字节形状"族 3 处，处置只有"抬上限"——
+#   而本名册另一行写着拒绝这么做的理由（"会把上限抬高，新增的生产绕过点落进
+#   虚高余量里不被发现"）。故按根因处置：把夹具排除出生产扫描面，上限保持实测。
 EXT_RE='\.(py|sh|bash|js|html|htm|j2|css|conf|cfg|ini|service|yml|yaml|toml|example)$|(^|/)(Dockerfile|cron\.d/[^/]+)$'
-EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|vendor|\.pytest_cache|\.ruff_cache|web/static/vue/assets)(/|$)'
+EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|vendor|\.pytest_cache|\.ruff_cache|web/static/vue/assets|protocol_fake)(/|$)'
 
 while [ $# -gt 0 ]; do
     case "$1" in

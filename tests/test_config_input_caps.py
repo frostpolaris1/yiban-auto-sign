@@ -14,7 +14,7 @@
 Server 酱 Key 与自定义 URL 的长度上限、管理员收件人条数与 SMTP 主机条数上限、
 SMTP 主机写侧的网段门禁（回环/保留段/私网 + 显式放行开关）。
 对应实现：`web/app.py` 的推送配置与邮件配置写接口，校验落点在
-`yiban/notify/config.py`（`is_safe_url`）与 `yiban/mail/config.py` 的写侧。
+`yiban/adapters/notifier/notify/config.py`（`is_safe_url`）与 `yiban/adapters/notifier/mail/config.py` 的写侧。
 关键断言：`{"type": "", "secret": "http://内网/x"}` 必须被拒——这条守的是"请求里说的类型"
 与"落盘后解析出的类型"不是同一个**这一格**绕过，加载侧把空类型解析成 custom 才成立；
 上限类用例一律配一条"恰好等于上限仍可写入"的正向对照，否则把 cap 调成 0 也能全绿；

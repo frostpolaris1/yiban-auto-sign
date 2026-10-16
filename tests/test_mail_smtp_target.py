@@ -7,7 +7,7 @@
     开关为 1/true/ON 时放行；公网域名与公网 IP 放行；方括号 IPv6 与 IPv4-mapped
     解析；`localhost` 与非标准 IPv4 字面量（十进制/0x/短式）拒。发送失败日志的
     粗分类与内网目标 WARNING 的进程内一次性。
-对应实现：`yiban/mail/config.py`（`check_smtp_host`）、`yiban/mail/transport.py`
+对应实现：`yiban/adapters/notifier/mail/config.py`（`check_smtp_host`）、`yiban/adapters/notifier/mail/transport.py`
     （发送与日志）。
 关键断言：日志回显"连接失败/认证失败"文案但**不含原始异常类型名**
     （`ConnectionRefusedError`、`SMTPAuthenticationError`）；内网目标的 WARNING

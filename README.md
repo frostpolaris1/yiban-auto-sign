@@ -1255,7 +1255,8 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
    ├── scripts/signin.py        兼容壳 → yiban/engine/（签到引擎）
    ├── scripts/db.py            兼容壳 → yiban/store/db.py（SQLite 连接与迁移）
    └── yiban/                   共享包（web 与签到引擎共用）
-            ├── cli.py           统一命令行入口（`python -m yiban.cli <子命令>`）
+            ├── entry/cli/       统一命令行入口（`python -m yiban.cli <子命令>`）
+            │                     ← 旧坐标 `yiban/cli.py` 是转发壳，行为同源
             ├── clock.py         业务时间唯一入口（北京时间）
             ├── window.py        签到窗口唯一事实源（排计划/判关闭/算容量同源）
             ├── status.py        签到状态词汇表
@@ -1266,7 +1267,10 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             ├── state_gc.py      按日状态文件的保留期策略与清理
             ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
             ├── platform.py      易班平台事实（端点/请求头/版本）+ 登录与签到编排
-            ├── protocol/        ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+            ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+            ├── adapters/protocol_fake/  测试假上游（e2e 与演练用；生产链路不引）
+            ├── adapters/notifier/       通知适配：`notify/`（推送）与 `mail/`（邮件）
+            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 是转发壳
             ├── geo.py           多边形内定位点采样（偶奇射线法 + 拒绝采样 + 显式兜底）
             ├── challenge.py     风控挑战检测（只检测不求解）
             ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
@@ -1275,9 +1279,10 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             │                     / alerts 告警与邮件 / state_io 状态文件 / accounts 装载
             │                     / workers 多执行体
             ├── store/           表级数据访问（db.py 连接与迁移、claims 签到分工记录表）
-            ├── notify/          通知推送（配置 / 额度账本 / 发送）
-            ├── mail/            告警邮件（配置 / 发送）
             └── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
+
+（另有一组目标分层目录 entry / app / core / ports / adapters / workers：
+成员按 `docs/dev/architecture-target.md` 第 3 节逐批搬入，未搬入的仍在原坐标。）
 ```
 
 > 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
