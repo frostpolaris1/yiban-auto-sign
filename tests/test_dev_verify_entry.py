@@ -46,8 +46,12 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
     '"$py" -m mypy',
     '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
-    '"$py" -m pytest tests/ -q -n 4 --dist loadfile -k '
+    '"$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4 --dist loadfile -k '
     '"security or mask or audit or login or private or csrf or ratelimit or claim or queue"',
+    # 2026-10-16（工单 zdvd）：多执行体靶场走**串行**单独轨——它拉起 mock 服务 ＋
+    # 监督进程 ＋ 执行体进程树，与上面 1034 条用例同抢 runner 的 4 个核时跑不起来
+    # （真登录 0 次）。判据未放松：它仍在 CI 里跑，只是不再与别的用例抢核。
+    '"$py" -m pytest tests/test_multi_executor_drill_e2e.py -q -p no:randomly',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
     "bash scripts/check-shared-facts.sh",
     '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
