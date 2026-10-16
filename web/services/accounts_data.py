@@ -226,8 +226,17 @@ def _owner_has_other_live(accounts, acc):
     )
 
 
-def validate_account(data, require_password):
-    """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。"""
+def validate_account(data, require_password, allow_device_fields=True):
+    """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。
+
+    `allow_device_fields=False`（**用户面**：`/api/my-accounts*`）时**丢弃**请求体里的
+    设备型号与设备识别码：这两个字段由签到前自动补全写入（`yiban/client.py`）或由
+    **管理面**手工填写，用户面不留写入面（用户 2026-10-16 裁决）。
+
+    丢弃而不是报错：旧前端仍会发这两个键，报错会把整张表单变成 400。丢弃是**写口
+    级的**收口——手工构造的请求同样写不进；键不存在时 `update_account` 不动该列，
+    库里的既有值（自动补全填的）不会被空值冲掉。
+    """
     name = str(data.get("name", "")).strip()
     if len(name) > 50:
         return "名称过长（最多 50 字）", None
@@ -239,19 +248,21 @@ def validate_account(data, require_password):
         return "手机号格式不正确（应为 1 开头的 11 位数字）", None
     if require_password and not password:
         return "密码为必填项", None
-    phone_model = str(data.get("phone_model", "")).strip()
-    if len(phone_model) > 50:
-        return "设备型号过长（最多 50 字）", None
-    phone_code = str(data.get("phone_code", "")).strip()
-    if len(phone_code) > 128:
-        return "设备识别码过长", None
-    return None, {
+    clean = {
         "name": name,
         "phone": phone,
         "password": password,
-        "phone_model": phone_model,
-        "phone_code": phone_code,
     }
+    if allow_device_fields:
+        phone_model = str(data.get("phone_model", "")).strip()
+        if len(phone_model) > 50:
+            return "设备型号过长（最多 50 字）", None
+        phone_code = str(data.get("phone_code", "")).strip()
+        if len(phone_code) > 128:
+            return "设备识别码过长", None
+        clean["phone_model"] = phone_model
+        clean["phone_code"] = phone_code
+    return None, clean
 
 
 def fold_phone_code(clean, old_code=None):
