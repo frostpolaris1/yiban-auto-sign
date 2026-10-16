@@ -3073,6 +3073,19 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-row-actions .btn--icon { width: var(--ctl-h-md); height: var(--ctl-h-md); padding: 0; justify-content: center; }
 .acct-row-actions .btn--sm { min-height: var(--ctl-h-md); }
 
+/* 客户端分页控件（账号页 / 用户页）：贴在表格下方，窄屏允许换行不横滚。
+   控件本体走 EP el-pagination（原生 select/range 弹出层样式不可控，属既有禁令）。 */
+.acct-pager,
+.usr-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--sp-3);
+}
+@media (max-width: 720px) {
+  .acct-pager,
+  .usr-pager { justify-content: center; }
+}
+
 /* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变）。
    is-swapping 是退出方向 → ease-in-strong；基类 ease-out-strong 留给进入。 */
 #accounts-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
