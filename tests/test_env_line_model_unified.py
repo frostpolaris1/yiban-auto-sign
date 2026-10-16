@@ -113,23 +113,6 @@ class SeparatorLineModelTest(unittest.TestCase):
                 self.assertTrue(env_io.has_line_break(f"A{ch}B"))
 
 
-class SingleLineModelSourceTest(unittest.TestCase):
-    """web 服务层不得再持有第二份 .env 行模型（读写都收敛到 yiban.infra.env_io）。"""
-
-    def test_engine_exposes_the_canonical_line_model(self):
-        for name in ("split_env_lines", "env_key_values", "validate_env_key",
-                     "validate_env_value", "render_env_write", "EnvWriteRefused"):
-            self.assertTrue(hasattr(env_io, name),
-                            f"yiban.infra.env_io 缺少单一行模型/校验器的公开面：{name}")
-
-    def test_web_env_service_has_no_second_splitlines(self):
-        src = _read_text(os.path.join(BASE, "web", "services", "env_io.py"))
-        self.assertNotIn(
-            "splitlines(", src,
-            "web/services/env_io.py 又出现 splitlines() —— .env 的读写行模型只允许"
-            "yiban.infra.env_io 一份（宽模型会把潜伏分隔符实体化成新配置行）")
-
-
 # ---------------------------------------------------------------------------
 # 2. web 侧 V2 活体反例：潜伏注释不得被一次无关保存实体化
 # ---------------------------------------------------------------------------

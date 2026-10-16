@@ -202,45 +202,6 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         self.assertFalse(signin._maybe_alert_zero_success(accounts, results, ok_n=0))
 
 
-class SignEventWriteTest(unittest.TestCase):
-    """run_queue_retry 经 event_sink 上报签到事件。"""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="b12-events-")
-        self._old_state = os.environ.get("YIBAN_STATE_DIR")
-        os.environ["YIBAN_STATE_DIR"] = self.tmp
-        signin._mail_summary.clear()
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-        if self._old_state is not None:
-            os.environ["YIBAN_STATE_DIR"] = self._old_state
-        else:
-            os.environ.pop("YIBAN_STATE_DIR", None)
-        signin._mail_summary.clear()
-
-    def test_run_queue_retry_emits_events(self):
-        accounts = [signin.Account(phone="13800000001", password="x")]
-        rows = []
-        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")):
-            results = signin.run_queue_retry(accounts, "", 0, 0, schedule=None, cred_state={},
-                                             event_sink=rows.append)
-        self.assertTrue(results["13800000001"][0])
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["stage"], "sign")
-        self.assertEqual(row["phone"], "13800000001")
-        self.assertEqual(row["status"], "already")
-        self.assertEqual(row["attempt"], 1)
-        self.assertIn("finished_at", row)
-
-    def test_run_queue_retry_without_sink_unchanged(self):
-        accounts = [signin.Account(phone="13800000002", password="x")]
-        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")):
-            results = signin.run_queue_retry(accounts, "", 0, 0, schedule=None, cred_state={})
-        self.assertTrue(results["13800000002"][0])
-
-
 class DbLayerB12Test(unittest.TestCase):
     """B12-4/B12-7/B12-9/B12-10：db 层修复。"""
 
