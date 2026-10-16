@@ -52,7 +52,10 @@ COLUMNS = ("族", "键", "状态", "判定模式", "扫描范围", "允许上限
 #: 来把上限做小"。
 TICKET_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_BASE_PATH")
 #: 垃圾目录：计数时跳过（执行器必须用同一份，见 test_scanned_file_count_matches）
-JUNK_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git", "node_modules"}
+# `protocol_fake` 必须与执行器的排除面逐字同口径：本条断言"门扫到的文件数 ==
+# 独立数出来的文件数"，两侧清单不一致就会把口径漂移报成红。
+JUNK_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git",
+             "node_modules", "protocol_fake"}
 #: run_ci 里必须逐字出现的两步（与本文件同 B0.5 那一对的先例：门 + 门的元测试）
 CI_GATE_CMD = '"$py" scripts/check-path-env-reads.py'
 CI_META_CMD = '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'

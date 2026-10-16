@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""邮件排版层 `yiban/mail/layout.py` 的专属测试。
+"""邮件排版层 `yiban/adapters/notifier/mail/layout.py` 的专属测试。
 
 标签：H · 通知：邮件与推送
 覆盖：主动断行按**显示宽度**（全角算 2 列）在标点边界切；纯文本不靠等宽列对齐、
     结构只靠缩进与项目符；HTML 出口对用户可控字段转义；推送变体裁剪条目与字段值。
-对应实现：`yiban/mail/layout.py`。
+对应实现：`yiban/adapters/notifier/mail/layout.py`。
 关键断言：不把英文词与括号补充劈成两半；**裁剪必须如实标注被裁掉多少**，不静默丢——
     发信与推送的测试只验"正文里有没有某句话"，排版本身的这四条纪律只有本文件守。
 依赖：纯字符串断言（直接 import layout），无 SMTP、无文件读写、无网络。

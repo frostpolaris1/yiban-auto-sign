@@ -47,5 +47,9 @@ def __getattr__(name):
 
 
 def __dir__():
-    """`dir(yiban.notify)` 与 `dir(yiban.adapters.notifier.notify)` 同面。"""
+    """`dir()` 覆盖实现模块的全部名字。
+
+    并集里另有本壳自己的私有名（`_impl` / `_sys` / `_importlib`）。
+    故口径是"同面（外加壳自身私有名）"，不是逐名相等。
+    """
     return sorted(set(globals()) | set(dir(_impl)))

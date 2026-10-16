@@ -4,7 +4,7 @@
 标签：H · 通知：邮件与推送
 覆盖：未配置不启用/不发送；`SMTP_SSL` 成功发送；发送异常静默且日志脱敏（不泄露授权码、
     不回显完整发件地址）；多收件人逗号分隔；邮箱打码。
-对应实现：`yiban/mail/config.py`（配置与启用判定）、`yiban/mail/transport.py`
+对应实现：`yiban/adapters/notifier/mail/config.py`（配置与启用判定）、`yiban/adapters/notifier/mail/transport.py`
     （实际发送与日志）。
 关键断言：失败必须**静默**（发信失败不能把签到主流程带崩），但日志要留下可判定的
     分类——"静默"只针对异常传播，不针对记录。
