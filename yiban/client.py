@@ -28,6 +28,7 @@ from yiban import masking, security
 from yiban import platform as yiban_platform
 from yiban import status as yiban_status
 from yiban.geo import generate_position_in_polygon
+from yiban.protocol import ParseError, parse_device_state
 from yiban.store.accounts import account_still_signable
 
 logger = logging.getLogger("yiban.client")
@@ -232,9 +233,12 @@ class YibanClient:
             logger.debug(
                 f"[{account.phone}] 未配置代理，如遇 WAF 拦截可配置 YIBAN_PROXY"
             )
-        # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
+        # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码。
+        # 账号本地配置为空时，签到前会**读回**服务端登记的设备（`_device_identity`）。
         self.phone_model = account.phone_model
         self.phone_code = account.phone_code
+        self._registered_device = None      # 服务端登记设备（DeviceState）；None=未读或读失败
+        self._registered_device_read = False
         self.logged_in = False
 
     @property
@@ -244,6 +248,56 @@ class YibanClient:
         if store is None:
             store = self._store = _SessionCache(self)
         return store
+
+    def _device_identity(self):
+        """本次签到回传的设备身份 `(code, model)`。
+
+        优先级：**账号本地配置 > 服务端登记（读回）**。本地已配置齐全时不读服务端
+        （显式配置优先，也省一次请求）；单边配置时用登记值补另一边；两边都缺则返回
+        空串——由服务端裁决，我们不自作主张。
+        """
+        if self.phone_code and self.phone_model:
+            return self.phone_code, self.phone_model
+        # getattr 兜底：用 `__new__` 构造的轻量实例（测试/探针路径）没有 __init__ 的字段，
+        # 与 `_session_store` 同一惯例——轻量实例也要能直接走这条路径。
+        if not getattr(self, "_registered_device_read", False):
+            self._registered_device_read = True
+            self._registered_device = self._read_registered_device()
+        state = getattr(self, "_registered_device", None)
+        code = self.phone_code or (state.code if state else "")
+        model = self.phone_model or (state.phone_model if state else "")
+        return code, model
+
+    def _read_registered_device(self):
+        """读服务端登记的设备；任何失败都返回 `None`（**fail-open**）。
+
+        设备读取是**诊断性前置**：读不到时签到照跑（上游自会裁决并给出原因），
+        绝不让一次诊断请求把整个签到拖死。
+        """
+        try:
+            resp = yiban_platform.fetch_device_state(self.session, self.csrf, self._policy)
+        except Exception as exc:  # 诊断性前置：任何异常都不外溢到签到主流程
+            logger.debug(
+                f"[{self.account.phone}] 设备登记读回失败（fail-open）：{type(exc).__name__}"
+            )
+            return None
+        if resp.blocked or not isinstance(resp.data, dict) or resp.data.get("code") != 0:
+            return None
+        try:
+            state = parse_device_state(resp.data.get("data"))
+        except ParseError as exc:
+            logger.debug(
+                f"[{self.account.phone}] 设备登记响应不合契约（fail-open）：字段 {exc.field}"
+            )
+            return None
+        if state.code and not state.authorized:
+            # 已登记但未授权：上游可能据此拒签，点名**真正的**补救动作。
+            logger.warning(
+                f"[{self.account.phone}] 账号设备未授权（登记机型 "
+                f"{masking.sanitize_text(state.phone_model) or '未知'}）——请在易班 App 的"
+                "「设备识别」页完成本机授权，否则可能被上游拒签"
+            )
+        return state
 
     def _wipe_credentials(self):
         """凭据内存尽力清零：单次签到尝试结束（成败均然）由 attempt_signin 调用。
@@ -384,6 +438,17 @@ class YibanClient:
         # 多任务通常是「同一打卡的多个点位，任取其一即可」：先随机打乱任务顺序
         # （避免固定只签第一个点位形成行为指纹），然后任一任务成功即停（下方 break）。
         random.shuffle(position_list)
+
+        # 设备身份（平台 2026-10-16 起对签到强制校验设备绑定）：
+        # 本地未配置时**读回**服务端登记的设备码/机型，签到时照实回传。
+        device_code, device_model = self._device_identity()
+        if not device_code or not device_model:
+            logger.warning(
+                f"[{self.account.phone}] 本账号在服务端没有登记设备，且本地未配置"
+                "——学校开启设备绑定时签到会被拒；请在易班 App 的「设备识别」页"
+                "完成本机登记与授权"
+            )
+
         results_tasks = []  # [(task_name, ok, err_msg)]
         for position in position_list:
             task_name = str(position.get("Name", "") or f"任务{len(results_tasks) + 1}")
@@ -409,15 +474,10 @@ class YibanClient:
 
             # 5. 构建签到数据并提交
             sign_info = yiban_platform.build_sign_info(lng, lat, position.get("Address", ""))
-            if not self.phone_model or not self.phone_code:
-                logger.warning(
-                    f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
-                    "如学校开启了设备绑定，签到将失败"
-                )
             # KillYiBan 的 MINI_VERSION 是 "1"，旧流程是 "1.0"（`out_state` 传参）
             submitted = yiban_platform.submit_sign_in(
                 self.session, self.csrf,
-                phone_code=self.phone_code, phone_model=self.phone_model,
+                phone_code=device_code, phone_model=device_model,
                 sign_info=sign_info,
                 out_state="1" if self.use_killyiban else "1.0",
                 policy=self._policy,
@@ -437,7 +497,8 @@ class YibanClient:
             else:
                 err_msg = masking.sanitize_text(result.get("msg", "未知错误"))
                 if "授权设备" in err_msg:
-                    err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
+                    # 设备身份已改为"读回服务端登记并回传"，此时再教用户配环境变量是错的补救
+                    err_msg += "（本账号设备未授权：请在易班 App 的「设备识别」页完成本机授权）"
                 results_tasks.append((task_name, False, f"签到失败: {err_msg}"))
 
         # 6. 汇总各任务结果：命中任一任务即视为当日已签；仅全部失败才判失败

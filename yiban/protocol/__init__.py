@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .device import DeviceState, parse_device_state
 from .envelopes import (
     Envelope,
     UsersureResult,
@@ -40,6 +41,7 @@ __version__ = "0.1.0"
 __all__ = [
     "App",
     "AuthorizePage",
+    "DeviceState",
     "Envelope",
     "Identity",
     "ParseError",
@@ -56,6 +58,7 @@ __all__ = [
     "looks_like_challenge",
     "parse_api_envelope",
     "parse_authorize_page",
+    "parse_device_state",
     "parse_identity",
     "parse_sign_position",
     "parse_usersure_response",
