@@ -4,7 +4,7 @@
 
 **功能**
 `GET /api/users` 用户列表（含内置管理员信息与账号计数；可选 `limit`/`offset`
-分页，不传＝整表，向后兼容）；`GET /api/users/deleted`
+分页，不传＝整表，向后兼容；可选 `count_only=1` 只回计数、不下发列表）；`GET /api/users/deleted`
 已注销用户与剩余宽限期；`POST /api/users/deleted/purge` 主管理员物理清除；
 `POST /api/users/batch` 批量重置密码/删除；`POST /api/users/<int:id>/role`
 设置/取消管理员；`POST /api/users/<int:id>/password` 重置密码；
@@ -29,11 +29,13 @@ send_notification / write_env_batch / ENV_FILE 等）必须继续生效。删除
 import contextlib
 import secrets
 
-from flask import jsonify, session
+from flask import jsonify, request, session
 
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate, read_audit_trace
 from web.routes import page_args as _page_args
+from web.routes import page_meta as _page_meta
+from web.routes import page_window as _page_window
 
 
 def _builtin_admin_display():
@@ -48,15 +50,17 @@ def api_users():
 
     可选分页：不传 `limit`/`offset` 时下发整表（与分页前逐字相同，向后兼容）；
     传了则只下发 [offset, offset+limit) 一页并附分页元数据（total/limit/offset/returned）。
+    可选 `count_only=1`：只回 `total` 与 `review`（名下有 pending/rejected 账号的用户数），
+    不下发整表——供 10 秒轮询的导航徽标取标量，消除"每拍拉全量 payload"。
     """
     m = _appmod()
     users = m.load_users()
     accounts = m.load_accounts()
     limit, offset, paged = _page_args()
     total = len(users)
-    if paged:
-        users = users[offset:offset + limit]
-    # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)
+    # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)。
+    # 分页与 count_only 两条分支共用**同一次**遍历，"review 口径 = 待处理账号数"
+    # 因此只有这一份定义（不另起一份只算 review 的重复循环）。
     owner_account_count = {}
     owner_pending_count = {}
     owner_review_count = {}
@@ -71,6 +75,14 @@ def api_users():
         # （仅算待审核时，只有已拒绝账号的用户不会出现在待处理栏）
         if a.get("status") in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED):
             owner_review_count[owner] = owner_review_count.get(owner, 0) + 1
+    # 只取计数（count_only=1）：早退，不下发 `users` 列表（含明文邮箱与 display）。
+    # `review` 是"有待处理账号的用户数"，与徽标口径逐字一致。
+    if str(request.args.get("count_only", "")).strip() == "1":
+        review = sum(
+            1 for u in users if owner_review_count.get(u.get("email", ""), 0) > 0)
+        return jsonify({"ok": True, "total": total, "review": review})
+    if paged:
+        users = _page_window(users, limit, offset)
     result = [
         {
             # id 是单条操作（角色/重置口令/删除）的**不透明定位符**：URL path 不再编
@@ -100,12 +112,7 @@ def api_users():
     }
     if paged:
         # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
-        payload.update({
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "returned": len(result),
-        })
+        payload.update(_page_meta(total, limit, offset, len(result)))
     return jsonify(payload)
 
 
