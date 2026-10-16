@@ -1,44 +1,29 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""store 层拆分边界：门面读写转发 + 表级 CRUD 真实可用。
+"""store 层拆分后的**行为**回归：经 db 门面走一遍各域的真实读写。
 
-`yiban/store/db.py` 从「唯一实现」退成门面：各域定义点在同包 `accounts` / `clock_meta` /
-`connection` / `session_cache` / `time_prefs` / `tracking` 等模块，db 用**模块级读写转发**
-（`_FORWARDED_STATE`）暴露它们，而不是快照式再导出。本文件把各域拆分契约并到一处，钉住：
+`yiban/store/db.py` 是门面：各域定义点在同包 `accounts` / `clock_meta` / `connection` /
+`session_cache` / `time_prefs` / `tracking` 等模块。本文件钉住的是**经门面能真用**：
 
-1. **同一对象**：`db.<名字> is <域模块>.<名字>`，且 db 自己的 `__dict__` 里不再持有该绑定。
-2. **写转发落真定义点**：`db.<名字> = 替身` 必须改到域模块上，只换门面那一份就是打桩静默失效。
-3. **打桩可见于模块内部调用点**：域模块内部互相调用也要看到门面上的替身（否则测试仍绿、
-   打桩点却不是它以为的那一个）。
-4. **delattr 隐藏名语义**：`del db.<名字>` 只把名字从门面摘下，撤销时 `setattr` 能恢复，
-   `mock.patch.object` / `monkeypatch.delattr` 依赖这条。
-5. **真实可用**：经门面走一遍该域的读/写/改绑/删除，确认跨域助手仍通。
-6. **布局记账**：`yiban/store/db.py` 行数与裸导入（`import db` 一类）不得回潮。
-7. **机制总账（6c3-B）**：上述 ①②④ 里逐域复制的桩机制断言（原 45 条）收敛为
-   `StoreForwardingMechanismLedgerTest` 的 8 条参数化——新域登记 `_MECH_DOMAINS`
-   即被同一组机制钉住；各域**行为**用例（FacadeBehaviourTest_* 等）一字未动。
-
-功能：store 层各行级模块与 db 门面之间的读写转发契约与端到端可用性。
-归属：`yiban/store/` 数据层的测试。
-复用：`BASE` / `TEST_KEY` / 各域 `MOVED_*` 名字清单、`_import_shell()` 兼容壳装载助手。
-通信：导入 `yiban.store.db` 与各域模块，读写临时 SQLite 与临时 `.env`；由 pytest 收集
-`unittest.TestCase`。
+- 各域 CRUD 往返（accounts 账号、clock_meta 单键、session_cache 作废、time_prefs 统计与
+  冷却、tracking 加盐哈希与盐缓存）；
+- `init_db` 各分支语义、`YIBAN_DB_FILE` 只写进 `.env` 时的库路径解析；
+- 解密在锁外完成（A2）；
+- web 侧行为：用户侧写端点的错位请求守卫、同号去重、`--check-config` 摘要脱敏；
+- 包内不得裸 `import db/mailer/notify/signin`（依赖 `scripts/` 在 `sys.path` 的旧写法）。
 
 标签：C · 存储：迁移与库完整性
-覆盖：`yiban/store/db.py` 退成门面后各域（accounts / clock_meta / connection /
-session_cache / time_prefs / tracking 等）的五项契约——同一对象、写转发落真定义点、
-打桩对模块内部调用点可见、`delattr` 隐藏名可撤销、经门面的真实 CRUD；
-外加"行数与裸导入不得回潮"的布局记账。
-对应实现：`yiban/store/db.py` 的 `_FORWARDED_STATE` 读写转发与各域模块的定义点。
-关键断言：本文件几乎不测数据，它测的是**打桩打在哪**——`SameObjectTest` 断 `is` 同一性、
-`WriteForwardingTest` 断赋值落到域模块，两者缺一就会出现"测试绿但替身根本没生效"
-（门面与定义点各持一份绑定）。布局那组是 AST/源码级断言，只保证行数与导入形状，
-不保证行为。迁移与库语义本身不在这里，见 `test_db_migrations.py` 与
-`test_migration_compat.py`（两个升级方向分工说明在那两处）。
-依赖：临时库 + 临时 `.env`，无网络、无 skip；各域用 `_import_shell_*` 另装一份模块实例，
-新增用例别复用 `sys.modules` 里的那份，否则打桩会串。
+对应实现：`yiban/store/*` 各域模块与 `yiban/store/db.py` 门面。
+依赖：临时库 + 临时 `.env`，无网络、无 skip。
+
+2026-10-16 饮食批：原五项**转发机制**契约（`SameObjectTest_*` 的 `is` 同一性、
+`WriteForwardingTest_*` 的赋值落点、`DeleteHidingTest_*` 的 delattr 语义、
+`ReExportNamesTest` / `PatchAndDeleteRoundTripTest` / `ConnectionIdentityTest`、以及
+`ForwardedStateLedgerTest` / `FacadeDocstringLedgerTest` / `StoreForwardingMechanismLedgerTest`
+三张名册）整族删除。理由：它们钉的是"名字面在哪、赋值是否转发、补丁是否穿透"——
+**实现长相**，不是行为；门面若改成直接导入，行为一字不变而它们集体转红（判据见
+AGENTS §一.6a：测不变式，不测编舞）。门面的可用性由本文件保留的行为用例承担。
 """
-import ast
 import contextlib
 import datetime
 import importlib
@@ -62,14 +47,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from yiban import clock  # noqa: E402
-from yiban.store import accounts as accounts_mod  # noqa: E402
-from yiban.store import clock_meta as meta_mod  # noqa: E402
 from yiban.store import connection as conn_mod  # noqa: E402
 from yiban.store import db as impl  # noqa: E402
-from yiban.store import events as events_mod  # noqa: E402
-from yiban.store import migrations as migrations_mod  # noqa: E402
-from yiban.store import session_cache as cache_mod  # noqa: E402
-from yiban.store import time_prefs as prefs_mod  # noqa: E402
 from yiban.store import tracking as track_mod  # noqa: E402
 
 TEST_KEY = "a" * 64
@@ -101,12 +80,6 @@ MOVED_NAMES_ACC = (
     "batch_account_ops",
     "update_account_status_if",
 )
-
-
-def _import_shell_ACC():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _AccountsSplitBase(unittest.TestCase):
@@ -208,12 +181,6 @@ MOVED_NAMES_CLOCK = (
     "get_meta",
     "set_meta",
 )
-
-
-def _import_shell_CLOCK():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _ClockMetaSplitBase(unittest.TestCase):
@@ -336,12 +303,6 @@ class FacadeBehaviourTest_CLOCK(_ClockMetaSplitBase):
             self.assertEqual(impl.get_meta("boom-key", "fallback"), "fallback",
                              "读失败回退 default（兜底路径不得变成新故障点）")
         self.assertIn("读取 app_meta[boom-key] 失败", "\n".join(captured.output))
-
-
-def _import_shell_CONN():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    import importlib
-    return importlib.import_module("db")
 
 
 class _ConnStateBase(unittest.TestCase):
@@ -518,9 +479,6 @@ BARE_IMPORT_RE = re.compile(
 )
 
 
-SHELL_MAX_LINES = 300
-
-
 def _iter_py(root):
     for dirpath, dirnames, filenames in os.walk(os.path.join(BASE, root)):
         dirnames[:] = [d for d in dirnames if d != "__pycache__"]
@@ -532,10 +490,6 @@ def _iter_py(root):
 def _read(path):
     with io.open(path, encoding="utf-8") as f:
         return f.read()
-
-
-def _count_lines(path):
-    return sum(1 for _ in io.open(path, encoding="utf-8"))
 
 
 class StoreDbLayoutTest(unittest.TestCase):
@@ -556,61 +510,9 @@ class StoreDbLayoutTest(unittest.TestCase):
 DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
 
 
-EXPECTED_MODULE_FUNCS = {
-    "__getattr__",
-    "init_db",
-    "resolve_env_file",
-    "require_existing_env_file",
-    "_begin_immediate",
-    "_clock_jump_guard",
-    "_record_purge_event",
-    "_table_min_max",
-    "_cascade_phone_owned",
-    "_clear_session_cache_by_phones",
-}
-
-
-EXPECTED_MODULE_CLASSES = {"_StateForwardingModule"}
-
-
 def _source():
     with open(DB_PATH, encoding="utf-8") as f:
         return f.read()
-
-
-def _module_defs():
-    """db.py 顶层函数名与类名（不含 import 与赋值）。"""
-    funcs, classes = set(), set()
-    for node in ast.parse(_source()).body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            funcs.add(node.name)
-        elif isinstance(node, ast.ClassDef):
-            classes.add(node.name)
-    return funcs, classes
-
-
-def _reexported_store_modules():
-    """`from yiban.store import X as _X`（顶层）收集到的子模块名。"""
-    mods = set()
-    for node in ast.parse(_source()).body:
-        if isinstance(node, ast.ImportFrom) and node.module == "yiban.store":
-            for alias in node.names:
-                mods.add(alias.name)
-    return mods
-
-
-def _docstring_listed_modules():
-    """模块 docstring 中「再导出的同包模块」清单里的反引号模块名。"""
-    return set(re.findall(r"(?m)^- `([a-z_]+)`：", impl.__doc__ or ""))
-
-
-def _docstring_retained_names():
-    """「本模块自身仍持有」段里点名的裸标识符（反引号包裹、无点无括号）。"""
-    doc = impl.__doc__ or ""
-    idx = doc.find("本模块自身仍持有")
-    if idx < 0:
-        return set()
-    return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", doc[idx:]))
 
 
 PHONE = "13800001234"
@@ -624,20 +526,6 @@ MOVED_NAMES_SESSION = (
     "set_session_cache",
     "clear_session_cache",
 )
-
-
-MOVED_CONSTANTS = (
-    "SESSION_CACHE_TTL_HOURS_DEFAULT",
-    "SESSION_CACHE_TTL_HOURS_MIN",
-    "SESSION_CACHE_TTL_HOURS_MAX",
-    "SESSION_CACHE_HKDF_INFO",
-)
-
-
-def _import_shell_SESSION():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _SessionCacheSplitBase(unittest.TestCase):
@@ -762,15 +650,6 @@ MOVED_TO_EVENTS = (
     "last_pause_at",
     "pause_count_since",
 )
-
-
-MOVED_NAMES_PREFS = MOVED_TO_TIME_PREFS + MOVED_TO_EVENTS
-
-
-def _import_shell_PREFS():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _TimePrefsSplitBase(unittest.TestCase):
@@ -923,18 +802,6 @@ MOVED_TO_MIGRATIONS = (
     "_maybe_migrate",
     "_rename_backup",
 )
-
-
-MOVED_NAMES_TRACK = MOVED_TO_TRACKING + MOVED_TO_MIGRATIONS
-
-
-FORWARDED_STATE_NAME = "_TRACK_SALT_CACHE"
-
-
-def _import_shell_TRACK():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _TrackingSplitBase(unittest.TestCase):
@@ -1397,75 +1264,13 @@ class ConfigSummaryMaskingTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 6c3-B 机制总账
+# 笔记：原「6c3-B 机制总账」段已随饮食批删除
 # ---------------------------------------------------------------------------
-# 原六域类（SameObjectTest_* / WriteForwardingTest_* / DeleteHidingTest_*）逐域复制的
-# 45 条桩机制断言收敛为下面 8 条参数化用例：钉的是 db 门面（`_FORWARDED_STATE` +
-# `_StateForwardingModule`）的**通用**正确性——同一身份、可导入、写转发落真定义点
-# （patch/delattr/undo 往返）。各域**行为**测试（FacadeBehaviourTest_*、
-# plain_assignment、shell_write_forwarding、晚解析、日志通道）仍留在原域类一字未动。
-# 新增域只需往 `_MECH_DOMAINS` 登记一行。
-
-_MECH_DOMAINS = (
-    {
-        "tag": "accounts", "home": accounts_mod,
-        "names": (*MOVED_NAMES_ACC, "DuplicatePhoneError"),
-        "names2": (),
-        "extra_import": (),
-        "patch_obj": ("_decrypt_row",),
-        "patch_str": "load_accounts", "patch_str_db": False,
-        "shell_patch": ("_decrypt_row", "decrypt_account_rows", accounts_mod),
-        "hides": "add_account",
-        "monkey": ("read_accounts", False),
-    },
-    {
-        "tag": "clock_meta", "home": meta_mod, "names": MOVED_NAMES_CLOCK,
-        "names2": (), "extra_import": (),
-        "patch_obj": MOVED_NAMES_CLOCK,
-        "patch_str": "get_meta", "patch_str_db": False,
-        "shell_patch": ("set_meta", None, None),
-        "hides": "get_meta", "monkey": ("set_meta", False),
-    },
-    {
-        "tag": "connection", "home": conn_mod,
-        "names": ("get_conn", "is_initialized", "DB_DEFAULT"),
-        "names2": (),
-        "extra_import": ("_conn", "_conn_lock", "_db_file", "_env_file"),
-        # connection 侧的 patch/shell-patch 真状态语义由 PatchAndDeleteRoundTripTest
-        # 的 `_real_state` 组逐点钉住（需要活连接，非通用属性机制），不进本总账。
-        "patch_obj": (),
-        "patch_str": "_conn", "patch_str_db": True,
-        "shell_patch": None, "hides": None,
-        "monkey": ("_conn", True),
-    },
-    {
-        "tag": "session_cache", "home": cache_mod, "names": MOVED_NAMES_SESSION,
-        "names2": (), "extra_import": (),
-        "patch_obj": ("_session_cache_now",),
-        "patch_str": "get_session_cache", "patch_str_db": False,
-        "shell_patch": ("_session_cache_now", "get_session_cache", cache_mod),
-        "hides": "clear_session_cache",
-        "monkey": ("_session_cache_key", False),
-    },
-    {
-        "tag": "time_prefs", "home": prefs_mod, "names": MOVED_TO_TIME_PREFS,
-        "names2": ((events_mod, MOVED_TO_EVENTS),), "extra_import": (),
-        "patch_obj": ("get_time_prefs",),
-        "patch_str": "clear_time_pref", "patch_str_db": False,
-        "shell_patch": ("get_time_pref", "last_pause_at", events_mod),
-        "hides": "clear_time_pref",
-        "monkey": ("last_time_pref_set_at", False),
-    },
-    {
-        "tag": "tracking", "home": track_mod,
-        "names": (*MOVED_TO_TRACKING, "_TRACK_SALT_CACHE"),
-        "names2": ((migrations_mod, MOVED_TO_MIGRATIONS),), "extra_import": (),
-        "patch_obj": ("hash_ip",),
-        "patch_str": "hash_phone", "patch_str_db": False,
-        "shell_patch": ("_track_salt", None, None),
-        "hides": "hash_ip",
-        "monkey": ("_track_salt", False),
-    },
-)
+# 该段（`StoreForwardingMechanismLedgerTest` 的 8 条参数化 + `_MECH_DOMAINS` 登记表，
+# 以及更早六域各自的 SameObjectTest_* / WriteForwardingTest_* / DeleteHidingTest_*）
+# 钉的是 db 门面 `_FORWARDED_STATE` 的**转发机制**：同一身份、可导入、写转发落真定义点、
+# patch/delattr/undo 往返。它属"测实现长相"——门面若改成直接导入，行为一字不变而它集体
+# 转红。2026-10-16 整族删除，判据见 AGENTS §一.6a。门面的**可用性**由本文件保留的
+# `FacadeBehaviourTest_*`（各域 CRUD 往返）与 `UserIndexDriftGuardTest` 等行为用例承担。
 
 
