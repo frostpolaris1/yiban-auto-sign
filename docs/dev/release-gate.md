@@ -186,10 +186,24 @@ README「服务器部署（分步详解）」的 7 个编号步骤（折叠标�
 
 - **有载体且有守卫的步**：2、4、5、6。它们由 `deploy/prod/install.sh` ＋ `manifest.tsv` ＋
   `check-cron-provenance.sh` ＋ 各步自己的用例共同守；干净容器内实测 9 件逐件 sha256 对账一致、
-  M01 门通过、依赖同步步执行且一致性门绿（见工单 c9uz 交付报告）。
+  M01 门通过、依赖同步步执行且一致性门绿。**证据落点＝工单 `c9uz` 的 2026-10-16 评论**（含
+  drill 的完整 S1–S8 输出与 sha256）；本仓不复制那段输出（它会漂）。
 - **无载体的步**：1、3、7。步 1（apt／时区）与步 7（手动测试）是宿主操作，不落仓库；
   步 3（账号）由既有账号面测试覆盖，不属本发布判据面。这三步的"零覆盖"是**如实登记**，
   不作为"已达标"的证据。
+
+### 8.1 发布判据的守卫与其已知边界（工单 c9uz）
+
+- **守卫**：`.github/workflows/deploy-gate.yml` 跑 `bash scripts/deploy_gate.sh`（README 默认
+  索引形态）；`tests/test_deploy_gate_wiring.py` 钉住该接线（有 workflow 真调用闸门、缺省索引
+  为空、跑 `dc build`＋`dc up -d`、`bash -n`）。闸门坏了 ⇒ 该 job 红。
+- **L-2（登记，不称已达标）**：该守卫**不命中** `dev-verify.sh --ci` 的关键词子集（实测 0 条）
+  ⇒ **删掉 `deploy-gate.yml` 的 PR 可以过 PR CI 绿**，只由 dev-verify 全量与 nightly 兜
+  （nightly 经 `ref: develop` 间接在轨）。按 §2 的可接受性：守卫仍在自动轨上，但"删除接线"
+  这一形态在 PR 时刻不红。要收掉需把该用例接进 `--ci` 子集（改 `dev-verify.sh` 的 `run_ci`
+  与其冻结清单，属另一笔）。
+- **L-4（登记，不改）**：`wait_healthy` 在 `restart: unless-stopped` 且容器长期 `starting` 时
+  要烧满 `GATE_TIMEOUT`（默认 600s）才红——响亮但慢。属已知行为，本批不改（改它属另一笔）。
 
 **已知未覆盖（登记，不称已达标）**：README 步 2 的"换目录部署要同步改 run.sh／systemd 单元／
 crontab"（工单 6wjd）——`web/deploy/yiban-web.service` 与 `deploy/prod/cron.d/*` 硬写
