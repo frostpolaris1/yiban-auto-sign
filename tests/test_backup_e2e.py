@@ -179,7 +179,10 @@ class _BackupRunBase(unittest.TestCase):
         self.logs = os.path.join(self.tmp, "logs")
         for d in (self.app, self.backups, self.state, self.logs):
             os.makedirs(d, exist_ok=True)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8", newline="\n") as f:
+        # .env 在检出内的 data/ 下（工单 ybg8）：backup.sh 按 ${APP_DIR}/data/.env 取。
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w",
+                     encoding="utf-8", newline="\n") as f:
             # 假密钥/假口令哈希：只为让打包路径完整走通，无任何真实凭据
             f.write("YIBAN_ACCOUNTS_KEY=" + "f" * 64 + "\n"
                     "YIBAN_SECRET_KEY=e2e-not-a-real-secret\n"

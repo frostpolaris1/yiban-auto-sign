@@ -10,8 +10,11 @@ APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
 cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 
 # 加载环境变量（安全逐行解析，仅导出 YIBAN_* 前缀键；与 run.sh 一致，绝不用 source）
+# .env 在检出内的 data/ 下（工单 ybg8）：运行数据与代码分离，检出根才能属 root
+# 且组/其他不可写（install.sh 的 M01 门）。data/ 由 install.sh 建立。
+_ENV_PATH="$APP_DIR/data/.env"
 _ENV_WARNINGS=""
-if [ -r "$APP_DIR/.env" ]; then
+if [ -r "$_ENV_PATH" ]; then
     while IFS='=' read -r key value || [ -n "$key$value" ]; do
         value=${value%$'\r'}
         # BOM 剥离：Windows 记事本保存的 .env 首行键名会带 BOM 前缀，被键名校验拒掉，
@@ -36,7 +39,7 @@ if [ -r "$APP_DIR/.env" ]; then
             continue
         fi
         export "$key=$value"
-    done < "$APP_DIR/.env"
+    done < "$_ENV_PATH"
 fi
 
 # 状态/日志根目录

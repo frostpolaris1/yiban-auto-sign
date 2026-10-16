@@ -89,7 +89,13 @@ def _state_dir():
     """状态目录解析唯一口径：YIBAN_STATE_DIR 环境变量优先，回退 .env 同键，
     最后回落 .env 所在目录（与 signin 的状态目录口径一致）——web（常驻，经 .env 读）
     与 signin（cron，经 run.sh 注入环境变量）两侧必须指向同一目录，否则跨进程共享
-    额度/节流窗口的目标落空。"""
+    额度/节流窗口的目标落空。
+
+    第三档的落点随 `.env` 的默认位置走：工单 ybg8 把 `.env` 收进检出内的 `data/`
+    （`env_io.DEFAULT_ENV_FILE`），故这一档现在落到 `<检出>/data/`。这是**有意的**：
+    旧布局下它落到检出根，而检出根在新布局里属 root 且组/其他不可写 ⇒ 台账与节流表
+    会写不进去。生产上该键两处都有值（`run.sh` 与 web 装载 `.env` 都给出状态目录默认
+    值），故本档只在极退化场景生效。"""
     state_dir = os.environ.get("YIBAN_STATE_DIR", "").strip()
     if not state_dir:
         state_dir = config._read_env_file().get("YIBAN_STATE_DIR", "").strip()

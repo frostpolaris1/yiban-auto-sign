@@ -60,7 +60,8 @@ _CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
 
 
 def _env_path():
-    """本模块解析 .env 的唯一口径：YIBAN_ENV_FILE 优先（去空白），否则当前目录 .env。"""
+    """本模块解析 .env 的唯一口径：YIBAN_ENV_FILE 优先（去空白），否则 `env_io.env_path()`
+    的默认值（检出根下的 `data/.env`）。"""
     return env_io.env_path()
 
 

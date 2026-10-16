@@ -396,9 +396,12 @@ def _cmd_state(args, view):
                     retention_days=retention, candidates=candidates, removed=0,
                     detail=detail, fingerprint=fp)
             # 留痕先于不可逆删除；写不进去即拒绝（fail-closed），零删除。
+            # 库路径**显式传入**（`_paths` 的同一份口径）：不传就让被调方自行解析默认值，
+            # 库搬进 `data/` 后那条路径会与 CLI 报告/清点用的库不是同一个。
             if not purge_guard.write_purge_audit(
                     "state_purge", fp,
-                    f"清理状态目录 {state_dir}：{candidates} 个过期文件"):
+                    f"清理状态目录 {state_dir}：{candidates} 个过期文件",
+                    db_file=_paths(view)["db_file"]):
                 return _fail("state", 1, [
                     "清库留痕写入失败（审计不可写），按 fail-closed 拒绝清理（未删除任何文件）",
                 ], args.json, error_kind="runtime_error",
