@@ -1206,26 +1206,23 @@
     // 徽标只算一次会让待处理数长期停在首屏值（工单 vff0：60s 缓存 + 外壳只取一次）。
     // 现按 10 秒节拍重取，与 /work/users 列表同一拍；TTL 与节拍同长，
     // 周期刷新前先 cacheDrop 掉这两个 key，保证每一拍都真发一次网络请求。
-    apiCached("nav-accounts", NAV_BADGE_TTL, function () { return api("GET", "/api/accounts"); }).then(function (data) {
-      var list = (data && data.accounts) || [];
-      // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。
-      // 只数 pending 会让徽标数小于页面里的待处理条数，同一条目两处不一致。
-      setNavBadge("work-accounts", list.filter(function (a) {
-        return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
-      }).length);
+    // 只取计数：`count_only=1` 让服务端早退，不下发整表。5k 账号下整表响应约 2.14 MiB，
+    // 而徽标每 10s 只用一个标量（工单 p37f / 123 审查实测的 5k 卡顿根因之一）。
+    apiCached("nav-accounts", NAV_BADGE_TTL, function () {
+      return api("GET", "/api/accounts?count_only=1");
+    }).then(function (data) {
+      // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。服务端已按同一口径
+      // 算好 pending/rejected 两个标量（同一事实同一数），前端不再自数整表。
+      setNavBadge("work-accounts", Number(data && data.pending || 0) + Number(data && data.rejected || 0));
     }).catch(function () {});
-    // 徽标只用到「有待处理的用户数」这一个计数，缓存**投影后的标量**而非整表：
-    // /api/users 全量含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
+    // 徽标只用到「有待处理的用户数」这一个计数，故服务端只回标量：
+    // /api/users 整表含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
     // 敏感字段不入磁盘可见存储）。apiCached 仍在 10s 窗口内把同页重复请求收敛成一次，
-    // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变。
+    // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变（`review` 同口径）。
     apiCached("nav-users", NAV_BADGE_TTL, function () {
-      return api("GET", "/api/users").then(function (data) {
-        var list = (data && data.users) || [];
-        // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
-        return list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
-      });
-    }).then(function (review) {
-      setNavBadge("work-users", review);
+      return api("GET", "/api/users?count_only=1");
+    }).then(function (data) {
+      setNavBadge("work-users", Number(data && data.review || 0));
     }).catch(function () {});
   }
   // 周期刷新：先丢两个 key 再重取（TTL 与节拍同长，不丢会命中缓存跳过网络）。

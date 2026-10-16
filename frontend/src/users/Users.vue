@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { api, maskEmail, openPasswordModal, passwordHint, shellBase, swapOut, toast } from "../lib/shell";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES, clampPage, pageSlice } from "../lib/pager";
 import "./ops.js"; // 注册 window.YB.userOps（MF-49 出口面：纯 JS，由 Python 侧 node 真跑钉住）
 import {
   GROUPS,
@@ -73,6 +74,12 @@ const loadError = ref(false);
 const busy = ref(false);
 const tab = ref<Group>("pending");
 const search = ref<Record<string, string>>({ pending: "", normal: "", vacant: "", deleted: "" });
+// 分页状态（每组各持一页；页大小四组共用一个值）。客户端分页：后端 /api/users 的
+// limit/offset 切整表，而本页按角色/状态在前端分四组——直接对整表分页会把同组拆到不同页。
+// 故一次取全、每组只渲染当前页，使 5k 用户下首屏 DOM 与页大小同阶。
+const pages = ref<Record<string, number>>({ pending: 1, normal: 1, vacant: 1, deleted: 1 });
+const pageSize = ref(DEFAULT_PAGE_SIZE);
+const PAGE_SIZE_OPTS: number[] = [...PAGE_SIZES];
 /** 选择态：按组持有邮箱（仅内存；键不进 DOM） */
 const sel = ref<Record<string, string[]>>({ pending: [], normal: [], vacant: [], deleted: [] });
 
@@ -96,6 +103,25 @@ function totalOf(group: Group): number {
   if (group === "deleted") return deleted.value.length;
   const base = listOf(users.value, group).length;
   return group === "normal" ? base + 1 : base; // 正式组首行固定为内置主管理员
+}
+/** 当前页的渲染行（客户端分页：行集是整组的切片；选中/计数/空态仍按整组口径）。 */
+function pageRowsOf<T extends { email: string }>(group: Group, rows: T[]): T[] {
+  return pageSlice(rows, pages.value[group] ?? 1, pageSize.value);
+}
+function onPageChange(group: Group, p: number): void {
+  pages.value = { ...pages.value, [group]: p };
+}
+/** 改页大小后各组回到第 1 页（否则原页码可能越界）。 */
+function onPageSizeChange(): void {
+  pages.value = { pending: 1, normal: 1, vacant: 1, deleted: 1 };
+}
+/** 数据或筛选变化后把每组页码夹回有效区间（轮询后行数可能变小）。 */
+function clampPages(): void {
+  const next: Record<string, number> = {};
+  for (const g of TAB_KEYS) {
+    next[g] = clampPage(pages.value[g] ?? 1, rowsOf(g).length, pageSize.value);
+  }
+  pages.value = next;
 }
 function shownOf(group: Group): number {
   if (group === "deleted") return deleted.value.length;
@@ -195,6 +221,7 @@ async function load(animate = false): Promise<void> {
     builtin.value = mapped.builtin;
     deleted.value = mapDeleted(d);
     pruneSelection();
+    clampPages();
     loading.value = false;
     loadError.value = false;
     if (!deleted.value.length && tab.value === "deleted") tab.value = "pending";
@@ -267,6 +294,10 @@ function syncTabUrl(next: Group): void {
   }
 }
 watch(tab, syncTabUrl);
+// 检索条件变化即回到第 1 页（否则筛完停在旧页码上、可能落在越界空页）。
+watch(search, () => {
+  pages.value = { pending: 1, normal: 1, vacant: 1, deleted: 1 };
+}, { deep: true });
 
 /* ---------------- 轮询 / 可见性 ----------------
    与 `accounts/Accounts.vue` 同一节拍（10 秒）。用户列表变化低频，但外部提交的
@@ -466,7 +497,7 @@ onUnmounted(() => {
 
                       <!-- 已注销组：另一套列与徽标 -->
                       <template v-else-if="g.key === 'deleted'">
-                        <tr v-for="row in deleted" :key="'d:' + row.email">
+                        <tr v-for="row in pageRowsOf('deleted', deleted)" :key="'d:' + row.email">
                           <td class="usr-cell-check">
                             <label class="usr-check">
                               <input
@@ -514,7 +545,7 @@ onUnmounted(() => {
                           <td class="usr-cell-time usr-col-md">—</td>
                           <td class="usr-cell-actions"><span class="usr-muted">不可改</span></td>
                         </tr>
-                        <tr v-for="row in userRows(g.key)" :key="'u:' + row.email">
+                        <tr v-for="row in pageRowsOf(g.key, userRows(g.key))" :key="'u:' + row.email">
                           <td class="usr-cell-check">
                             <label class="usr-check">
                               <input
@@ -561,6 +592,21 @@ onUnmounted(() => {
                       </template>
                     </tbody>
                   </table>
+                </div>
+
+                <!-- 客户端分页控件（每页大小 × 组）：只渲染当前页。控件走 EP
+                     （不是原生 select/range：原生弹出层样式不可控）。 -->
+                <div v-if="rowsOf(g.key).length > pageSize" class="usr-pager" :data-usr-pager="g.key">
+                  <el-pagination
+                    :current-page="pages[g.key]"
+                    :page-size="pageSize"
+                    :total="rowsOf(g.key).length"
+                    :page-sizes="PAGE_SIZE_OPTS"
+                    layout="sizes, prev, pager, next"
+                    background
+                    @current-change="(p: number) => onPageChange(g.key, p)"
+                    @size-change="onPageSizeChange"
+                  />
                 </div>
 
                 <!-- 空态：真·空给「下一步」（跨分组跳转）；筛出来的空给「清除筛选」
