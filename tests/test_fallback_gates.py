@@ -407,17 +407,17 @@ class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
     耗尽/风控档账号在领取池里默认被拦住，正是靠它防住"当日每轮重领一遍"。兜底是**常驻
     无界循环**（每 ~60s 扫一遍、窗口内可上百轮），把它当成显式路径会让这类账号在窗口内
     每轮重登一次——一轮扫描 = 一次真实登录。故兜底腿只领 `retry:` 档（窗口外/无点位）
-    与从未被领过的账号；`final:` 档的第二次机会留给一次性补签轮与手动。判据分两层：
-    先取兜底**实际**传的关键字，再把它喂给真领取池，证明 final 档领不到而 retry 档领得到
-    （领取/弃权形状与 `tests/test_claims_cross_round.py` 一致）。
+    与从未被领过的账号；`final:` 档的第二次机会留给一次性补签轮与手动。判据 = 取兜底
+    **实际**传给执行体的关键字，断言它没有打开显式重领口子。
+
+    2026-10-16 饮食批：原判据第二层"把该关键字喂给真领取池（`db.claim_sign_account`/
+    `claim_give_up`）证明 final 档领不到"已删——那一层的被测对象是**冻结的** `sign_claims`
+    旧领取池（生产零写入，工单 `77s2`）。口径分档的不变式现由 v3 侧钉住：
+    `tests/test_v3_same_day_requeue.py::SessionRequeueTest`（`retry:` 档可回炉、`final:`
+    档只走显式路径）与 `tests/test_executor_v3.py::TerminalStateTest`。
     """
 
-    FINAL_PHONE = "13800000001"
-    RETRY_PHONE = "13800000002"
-    DAY = "2026-09-02"   # 与 _at(WED, …) 的业务日一致
-
     def test_fallback_leg_reclaims_retry_tier_but_not_final_tier(self):
-        # ① 取兜底腿真实传给 run_queue_retry 的关键字（窗口内扫一轮即记录）
         _rc, _sleeps, _beats, scans = self._run([_at(WED, (6, 35)), _at(WED, (8, 30))])
         self.assertEqual(len(scans), 1, "前置：窗口内应扫一轮以记录调用参数")
         allow_failed = bool(self.retry_kwargs.get("retry_failed")
@@ -426,56 +426,6 @@ class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
             allow_failed,
             "兜底是无界常驻循环，不得作为显式重领路径：传 retry_failed/requeue_final=True "
             "会让预算耗尽/风控档账号在窗口内每轮重领重登")
-
-        # ② 把该关键字喂给真领取池：final 档领不到、retry 档领得到
-        tmp = tempfile.mkdtemp(prefix="yiban-fallback-claim-")
-        self.addCleanup(shutil.rmtree, tmp, True)
-        env_file = os.path.join(tmp, ".env")
-        with open(env_file, "w", encoding="utf-8") as f:
-            f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\n")
-        keys = ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
-                "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
-        saved = {k: os.environ.get(k) for k in keys}
-        os.environ.update({
-            "YIBAN_ACCOUNTS_KEY": "a" * 64,
-            "YIBAN_ENV_FILE": env_file,
-            "YIBAN_DB_FILE": os.path.join(tmp, "yiban.db"),
-            "YIBAN_STATE_DIR": tmp,
-            "YIBAN_LOG_FILE": os.path.join(tmp, "sign.log"),
-        })
-        try:
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
-            db.init_db(os.environ["YIBAN_DB_FILE"], env_file=env_file, cleanup=False)
-
-            ok, e1 = db.claim_sign_account(self.FINAL_PHONE, self.DAY, "seed:1:090000")
-            self.assertTrue(ok, "前置：final 档行先被领到")
-            db.claim_give_up(self.FINAL_PHONE, self.DAY, "seed:1:090000", "failed", epoch=e1)
-
-            ok_r, e_r = db.claim_sign_account(self.RETRY_PHONE, self.DAY, "seed:2:090000")
-            self.assertTrue(ok_r, "前置：retry 档行先被领到")
-            db.claim_give_up(self.RETRY_PHONE, self.DAY, "seed:2:090000", "skipped_window",
-                             epoch=e_r, retryable=True)
-
-            got_final, _ = db.claim_sign_account(self.FINAL_PHONE, self.DAY,
-                                                 "fallback:9:090100", allow_failed=allow_failed)
-            self.assertFalse(got_final,
-                             "预算耗尽(final)档不得被兜底腿重领——旧行为每轮重登一次")
-            got_retry, _ = db.claim_sign_account(self.RETRY_PHONE, self.DAY,
-                                                 "fallback:9:090100", allow_failed=allow_failed)
-            self.assertTrue(got_retry, "窗口外(retry)档在兜底腿下仍应可接手")
-        finally:
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
 
 
 class FallbackEventDrivenWakeTest(_FallbackHarness):
