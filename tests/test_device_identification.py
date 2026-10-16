@@ -94,9 +94,10 @@ class _RoutingSession:
         return {}
 
 
-def _make_client(session, *, phone_code="", phone_model=""):
+def _make_client(session, *, phone_code="", phone_model="", account_id=0):
     client = signin.YibanClient.__new__(signin.YibanClient)  # 绕过 __init__：要一个已登录的壳
-    client.account = signin.Account(phone="13800138000", password="secret")
+    client.account = signin.Account(phone="13800138000", password="secret",
+                                    account_id=account_id)
     client.logged_in = True
     client.use_killyiban = False
     client.csrf = "csrf"
@@ -153,6 +154,47 @@ class DeviceRegistryReadTest(unittest.TestCase):
         fields = _submitted_form_fields(session.post_bodies[-1])
         self.assertEqual(fields.get("Code"), "L" * 64)
         self.assertEqual(fields.get("PhoneModel"), "Local-Model")
+
+
+class DeviceRegistrationPersistenceTest(unittest.TestCase):
+    """行为 6（用户 2026-10-16 追加）：**注册一次、长期本地保存**，不每轮拉取。"""
+
+    def test_first_run_persists_and_second_run_skips_registry(self):
+        """首轮读回并落库；同实例第二轮不再发请求（内存副本已复用）。"""
+        session = _RoutingSession(_device_state_body())
+        client = _make_client(session, account_id=42)
+        with mock.patch.object(signin.yiban_client, "update_account") as upd:
+            _run(client)
+        self.assertEqual(upd.call_count, 1, "读回后应落库一次")
+        _args, kwargs = upd.call_args
+        fields = _args[1] if len(_args) > 1 else kwargs
+        self.assertEqual(fields.get("phone_code"), REGISTERED_CODE)
+        self.assertEqual(fields.get("phone_model"), REGISTERED_MODEL)
+        # 第二轮：账号副本已就绪，不得再读服务端登记（签到本身仍会取 signPosition）
+        def _state_reads():
+            return [u for u in session.get_urls if u.endswith("/device/student/index/getState")]
+
+        self.assertEqual(len(_state_reads()), 1, "首轮只读一次登记")
+        _run(client)
+        self.assertEqual(len(_state_reads()), 1, "落库复用后不应再发 getState")
+
+    def test_no_account_row_skips_persist(self):
+        """非库来源账号（account_id=0）无处可落 → 不尝试落库，签到照常。"""
+        session = _RoutingSession(_device_state_body())
+        client = _make_client(session)  # account_id 默认 0
+        with mock.patch.object(signin.yiban_client, "update_account") as upd:
+            ok, _m, _s, _st = _run(client)
+        self.assertTrue(ok)
+        upd.assert_not_called()
+
+    def test_persist_failure_is_fail_open(self):
+        """落库失败不得中断签到（诊断性持久化）。"""
+        session = _RoutingSession(_device_state_body())
+        client = _make_client(session, account_id=42)
+        with mock.patch.object(signin.yiban_client, "update_account",
+                              side_effect=RuntimeError("库锁了")):
+            ok, _m, _s, _st = _run(client)
+        self.assertTrue(ok, "落库失败应 fail-open，本轮仍用读回值")
 
 
 class DeviceRegistryFailOpenTest(unittest.TestCase):
