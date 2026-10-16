@@ -545,7 +545,8 @@ def main(argv=None):
                 max(0.0, _rest_sec), gap=gap_max, avg=_avg_warn,
                 retry_reserve=True, enabled=False)
         # 出口预算（K× 口径的**高估方向**兜底）：K 个执行体各按 1/(avg+gap) 产出尝试，
-        # 出口级速率 λ 决定需要几个物理出口。声明出口数 < 需要数 ⇒ 实际吞吐受出口限制。
+        # 出口级速率 λ 决定需要几个**限速单元（出口标识）**。声明出口数 < 需要数 ⇒ 实际
+        # 吞吐受出口限制。（出口标识与物理 IP 不一一对应，口径见下方归一注释。）
         # 声明出口数按**真实 worker 行**取出口：清单的槽位号**可以不连续**（生产是
         # slot0 worker / slot1 fallback / slot2 worker），按 0..K-1 枚举槽位会把占位槽
         # 当直连多算一个 ⇒ 声明数虚高 ⇒ 漏报。清单缺失时旧口径就是按下标取
@@ -562,9 +563,25 @@ def main(argv=None):
         # λ 必须与令牌桶同域（`clamp_rate` 是桶的公开夹取口径）：名册域 [0.01, 100] 比
         # 桶域 [0.2, 4.0] 宽，不夹取会让结论偏一个方向（λ > 4 漏报、λ < 0.2 多报）。
         # caveat：平台侧按 IP 限速未测，λ 只用配置值，不含 AIMD 实时档位。
+        # 口径归一（工单 34gf）：限速单元是**出口标识**（`egress.egress_identity`），不是
+        # 物理 IP——两者不一一对应（生产 squid 行与直连行是两个标识、一个物理 IP）。故
+        # "声明出口 N 个"读作"N 个限速单元"，不读作"N 张网卡/N 个公网 IP"。
         _lam = token_bucket.clamp_rate(schedule_mod.egress_rate())
         _need_egress = max(1, math.ceil(_k / (_avg_warn + gap_max) / _lam))
         _budget_short = _egress_n < _need_egress
+        # 出口天花板（**账号档**，工单 r9ro）：一个限速单元在窗口内最多放行 λ×W 个账号
+        # 尝试。该数只随出口标识数线性，**与 K、avg、调度密度都无关**（λ 单位＝账号尝试/s）。
+        # 与 `_budget_short` 不是同一件：那条按 K 的需求算，本条直接比账号档。两处都**不夹**
+        # K——`_k` 取自 `egress.effective_worker_count()`（数清单行数/旧 worker 键，不做
+        # `[1, 出口数]` 夹取；被点名的 `schedule.executor_count` 全仓无生产调用点）。
+        # **真实贡献＝诊断与处置口径**：独立触发面**窄而非零**——真 `runner.main` 探针 108 组中
+        # 仅 4 组单独触发，全部落在 `K = 出口标识数 × λ × (avg+gap)` 的窄带（实测 K=13/1 标识/
+        # N=4141–4147；K=26/2 标识/N=8281–8294），其余情形与「容量超载」重复或被「出口预算
+        # 不足」抑制。它多给的是"出口受限 ⇒ 加窗口/缩间隔无用，该加出口标识或抬 λ"这条处置
+        # 方向，以及账号档的可见天花板数。
+        # 这是"要不要加第二个出口标识"的二次决策点（r9ro：天花板 < 5,000 时须回到用户面前）。
+        _ceiling = _egress_n * _lam * max(0, int(_rest_sec))
+        _ceiling_short = active_n > _ceiling
         if _rest_sec <= 0:
             logger.warning(
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
@@ -627,7 +644,22 @@ def main(argv=None):
                     ("测算", f"{_k} 个执行体 × 单账号周期 {_avg_warn + gap_max}s ⇒ "
                              f"{_k / (_avg_warn + gap_max):.2f} 尝试/s；"
                              f"声明出口 {_egress_n} 个 × 出口速率 {_lam:g} 尝试/s"),
-                    ("处置", "为执行体清单声明更多物理出口，或加大窗口 / 减少账号数"),
+                    ("处置", "为执行体清单声明更多限速单元（出口标识），或加大窗口 / 减少账号数"),
+                    ("口径", "限速单元是出口标识，与物理 IP 不一一对应；平台侧按 IP 限速未测"),
+                ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
+            elif _ceiling_short:
+                logger.warning(
+                    "容量预检: 账号数 %d 超过出口天花板 %.0f（%d 个出口标识 × 速率 %s 尝试/s "
+                    "× 剩余 %ds）；加执行体不增总吞吐，须加第二个出口标识或抬 λ",
+                    active_n, _ceiling, _egress_n, f"{_lam:g}", int(_rest_sec),
+                )
+                alerts.notify_admin_entry("易班签到出口天花板", [
+                    ("当前账号", f"{active_n} 个"),
+                    ("出口天花板", f"{_ceiling:.0f} 个（{_egress_n} 个出口标识 × 速率 "
+                                    f"{_lam:g} 尝试/s × 剩余 {int(_rest_sec)}s）"),
+                    ("口径", "限速单元是出口标识，与物理 IP 不一一对应；平台侧按 IP 限速未测"),
+                    ("处置", "加第二个出口标识（另一出口 IP 或另一代理入口）"
+                             " / 抬 YIBAN_EGRESS_RATE / 缩短单账号周期"),
                 ], push=False, level=alerts.ALERT_LEVEL_CRITICAL)
         # 执行时按时间点排序（**保留**：本序经 v3 计划的 sequence 间接影响 run_at，
         # 其口径收敛属 Phase 2/D3，见工单 m9bi）。展示不再写状态文件：计划时刻的唯一
