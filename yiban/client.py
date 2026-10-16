@@ -27,8 +27,8 @@ from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 from yiban import masking, security
 from yiban import platform as yiban_platform
 from yiban import status as yiban_status
+from yiban.adapters.protocol_yiban import ParseError, parse_device_state
 from yiban.geo import generate_position_in_polygon
-from yiban.protocol import ParseError, parse_device_state
 from yiban.store.accounts import account_still_signable, update_account
 
 logger = logging.getLogger("yiban.client")
@@ -67,7 +67,7 @@ def _as_state_int(raw):
     """把 `State` 收敛为 int；收敛失败（缺失/空串/"None"/非数字）返回 None。
 
     上游数值字段可能发数字也可能发数字字符串（协议库 SPEC §3.1），故这里按同一容忍度
-    收敛。不复用 `yiban.protocol.position` 的收敛：那要经 `parse_sign_position`，而它对
+    收敛。不复用 `yiban.adapters.protocol_yiban.position` 的收敛：那要经 `parse_sign_position`，而它对
     候选点是**严格**的（缺必填键即抛 ParseError），会把"点位形状不标准"变成"State 读不到"
     （同一条理由见 `yiban/platform._validate_sign_position`）。
     """

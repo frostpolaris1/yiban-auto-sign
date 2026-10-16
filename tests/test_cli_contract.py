@@ -6,7 +6,8 @@
     `state` 默认不动手（dry-run）、`db --status` 只读且带 `user_version`、
     `db backup/integrity` 需 `--yes` 且拒绝目标等于源、`version` 与 `yiban.__version__`
     同源、`capacity` 建议值与网页同公式、未知/空子命令退 2 且 stdout 为空、不读 stdin。
-对应实现：`yiban/cli.py`（转发到 `yiban/store/migrations.py`、`yiban/engine` 等）。
+对应实现：`yiban/entry/cli/__init__.py`（实现；转发到 `yiban/store/migrations.py`、
+    `yiban/engine` 等）。`yiban/cli.py` 是转发壳（批 A1 后）。
 关键断言：退出码、stdout/stderr 分流、"默认不动手"三条都是进程级契约——断的是真实
     子进程的行为，不是 `main()` 的返回值。
 依赖：起 `sys.executable -m yiban.cli` 子进程（纯 Python，不需 bash/docker/网络）；

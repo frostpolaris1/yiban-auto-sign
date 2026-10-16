@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """邮件与推送正文的排版层：调用点只声明"有哪些内容"，"长什么样"集中在这里。
 
-发送路径（`transport._send`）与推送路径（`yiban.notify`）本身只收字符串，本模块不判
+发送路径（`transport._send`）与推送路径（`yiban.adapters.notifier.notify`）本身只收字符串，本模块不判
 配置、不碰网络、不改任何调用点的业务分支。一处声明、三条出口：
 
 - `to_plain()`：纯文本，邮件的 fallback 部分与所有 SMTP 失败降级路径共用；

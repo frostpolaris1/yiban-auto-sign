@@ -124,7 +124,10 @@ class NotifyLedgerDiskTest(unittest.TestCase):
         不同日期，断言账本落盘用的是 clock 那个。
         """
         os.environ["YIBAN_NOTIFY_DAILY_MAX"] = "5"
-        with mock.patch("yiban.notify.ledger.clock.today", return_value="2026-09-17"), \
+        # 打桩目标＝批 A4 后的新坐标。旧坐标（`yiban.notify.ledger`）是转发壳，
+        # 两条路径指向同一模块对象，故两种写法等价；新坐标是唯一权威。
+        with mock.patch("yiban.adapters.notifier.notify.ledger.clock.today",
+                        return_value="2026-09-17"), \
                 mock.patch.object(self.notify.time, "strftime",
                                   return_value="2026-09-16"):
             ticket = self.notify._consume_daily_budget("general")
