@@ -1189,9 +1189,13 @@
   }
 
   /* ---------- 导航徽标（仅管理员） ---------- */
-  // 徽标节拍：与 /work/users 列表同一拍（10 秒），使待处理数随列表同步更新。
+  // **外壳节拍（全站唯一一份 10 秒定义）**：导航徽标刷新、账号/用户列表、总览 KPI
+  // 三处"待审核"取数点共用这一个数（工单 vff0：同一件事只许一个数）。
+  // 前端模块侧经 `YB.POLL_MS` 读它（见 frontend/src/lib/polling.ts 的 usePolling），
+  // 页面不得再写数字节拍——节拍分叉会让徽标与列表不再同拍。
+  // 守卫：tests/test_review_refresh_cadence_single_source.py。
+  var POLL_MS = 10000;
   // 身份只取一次（外壳首屏），后续刷新复用；非管理员整段短路。
-  var NAV_BADGE_TTL = 10000;
   var navBadgeIdentity = null;
   function setNavBadge(key, count) {
     forEach(document.querySelectorAll('[data-nav-badge="' + cssEscape(key) + '"]'), function (node) {
@@ -1204,11 +1208,11 @@
     var who = navBadgeIdentity;
     if (!who || who.role !== "admin") return;
     // 徽标只算一次会让待处理数长期停在首屏值（工单 vff0：60s 缓存 + 外壳只取一次）。
-    // 现按 10 秒节拍重取，与 /work/users 列表同一拍；TTL 与节拍同长，
+    // 现按 POLL_MS 节拍重取，与 /work/users 列表同一拍；TTL 与节拍同长，
     // 周期刷新前先 cacheDrop 掉这两个 key，保证每一拍都真发一次网络请求。
     // 只取计数：`count_only=1` 让服务端早退，不下发整表。5k 账号下整表响应约 2.14 MiB，
     // 而徽标每 10s 只用一个标量（工单 p37f / 123 审查实测的 5k 卡顿根因之一）。
-    apiCached("nav-accounts", NAV_BADGE_TTL, function () {
+    apiCached("nav-accounts", POLL_MS, function () {
       return api("GET", "/api/accounts?count_only=1");
     }).then(function (data) {
       // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。服务端已按同一口径
@@ -1219,7 +1223,7 @@
     // /api/users 整表含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
     // 敏感字段不入磁盘可见存储）。apiCached 仍在 10s 窗口内把同页重复请求收敛成一次，
     // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变（`review` 同口径）。
-    apiCached("nav-users", NAV_BADGE_TTL, function () {
+    apiCached("nav-users", POLL_MS, function () {
       return api("GET", "/api/users?count_only=1");
     }).then(function (data) {
       setNavBadge("work-users", Number(data && data.review || 0));
@@ -1492,8 +1496,8 @@
     // /api/clock 对匿名请求返回 401；跳过可避免登录页每次加载产生无谓的失败请求。
     if (document.body.getAttribute("data-page") === "auth") return;
     identity().then(function (data) { if (data) loadNavBadges(data); });
-    // 徽标按 10 秒节拍刷新（非管理员在 loadNavBadges 里短路）；切回可见立刻补一次。
-    setInterval(refreshNavBadges, NAV_BADGE_TTL);
+    // 徽标按 POLL_MS 节拍刷新（非管理员在 loadNavBadges 里短路）；切回可见立刻补一次。
+    setInterval(refreshNavBadges, POLL_MS);
     document.addEventListener("visibilitychange", refreshNavBadges);
     calibrateClock();
     renderClock();
@@ -1689,6 +1693,7 @@
   var YB = {
     __ready: true,
     BASE: APP_BASE,
+    POLL_MS: POLL_MS,
     url: url,
     api: api,
     apiCached: apiCached,
