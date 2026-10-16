@@ -202,14 +202,24 @@ def _alert_due(title):
 def _send_admin_alert(title, mail):
     """发一封管理员告警邮件（收件人算法与 A 线告警同一份）。
 
-    已知残余（ba-p11-02 盘查所获，本批不改）：库文件不存在时，`_alert_mail_recipients()`
-    里的 `db.admin_mail_recipients()` 会经 `connection.get_conn()` 的隐式 `init_db()`
-    （缺省 `create=True`）把库就地建出来——与本函数上方 `_anchor_snapshot` 刚收口的
-    那条路同形，但收件人读法不是取证类调用，收口它要动引擎侧或让收件人算法分叉。
-    故本批只把哨兵的**链头读取**收成只读；哨兵整进程"绝不建库"尚不成立。
+    **绝不建库**（2026-10-13 r4 批）：哨兵以 root 跑（排期件
+    `deploy/prod/cron.d/yiban-backup-sentinel` 的身份列 = root）。而
+    `_alert_mail_recipients()` 经 `connection.get_conn()` 的隐式 `init_db(create=True)`
+    会在库缺失时就地建一份 **root 属主** 的库，顶掉 yiban 属主的真库——yiban 侧的 web
+    随后打不开它。故库文件不存在时**不走数据库收件人读法**，改取 .env 的 ADMIN_TO；
+    这与 `db.admin_mail_recipients` 在库查询失败时的降级**同结论**（`filter_mail_notify`
+    对 `find_user` 失败原样保留收件人，拿掉库读不改变结果）。库存在时走同一份共享算法，
+    行为逐字不变。
     """
-    from web.services.notify_mail import _alert_mail_recipients
-    recipients = _alert_mail_recipients()
+    from yiban.infra import env_io
+    from yiban.store import db
+    if os.path.isfile(env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT)):
+        from web.services.notify_mail import _alert_mail_recipients
+        recipients = _alert_mail_recipients()
+    else:
+        # 库缺失：只取 .env 的 ADMIN_TO（与 db 查询失败同一降级结论），绝不触发建库
+        recipients = (sorted(set(mailer.admin_recipients()))
+                      if mailer.admin_notify_enabled() else [])
     if not recipients:
         # 空收件人不静默当成功：本脚本的意义就是"不允许静默"，"没人收得到"必须让上层
         # 看见（退出码 1；它能否真的被看见，见模块头部对 `2>&1` 的那段提醒）

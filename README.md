@@ -163,6 +163,10 @@ python3 -m venv .venv
 
 > `mkdir -p /opt/yiban-auto-sign` 是生产默认目录，run.sh、systemd 单元模板与 crontab
 > 都默认用它；换目录部署要同步改这几处（见「网页管理后台」的 systemd 单元说明）。
+>
+> 解压完后按第 6 节的顺序做两步：`sudo chown -R root:root . && sudo chmod -R go-w .`，
+> 再 `sudo bash deploy/prod/install.sh`（后者建 `data/` 并归 `yiban:yiban`）。见下方
+> 「运行数据在检出内的 `data/` 子目录」。
 
 #### 3. 账号数据
 
@@ -177,7 +181,9 @@ YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"你的密码","phone_mo
 #### 4. 配置环境变量（`.env`）
 
 ```bash
-cat > /opt/yiban-auto-sign/.env << 'EOF'
+# 目录须先由 install.sh 建好（属 yiban:yiban、0700）：见「运行数据在检出内的 data/ 子目录」。
+# 也可让服务首启自行生成（缺键时自动补齐密钥）。
+sudo -u yiban tee /opt/yiban-auto-sign/data/.env >/dev/null << 'EOF'
 YIBAN_PROXY=http://127.0.0.1:8888
 # YIBAN_ACCOUNT_GAP_MAX=10   # 账号间隔：相邻请求最小间隔秒数（默认 10）
 EOF
@@ -200,6 +206,12 @@ mkdir -p /var/log/yiban
 > 「状态目录/锁目录不安全」，执行
 > `sudo chown yiban: /var/log/yiban /var/lock/yiban && sudo chmod 700 /var/log/yiban /var/lock/yiban`
 > 后重跑。
+>
+> 锁目录的**权威件**是 `deploy/prod/tmpfiles.d/yiban.conf`（`install.sh` 装到
+> `/etc/tmpfiles.d/`）：它声明 `/run/lock/yiban` 属主 `yiban:yiban`、模式 `0700`
+> （`/var/lock` 是 `/run/lock` 的符号链接，故声明真路径）。按 `install.sh` 部署的主机重启后
+> 由 systemd-tmpfiles 自动重建该目录，无需手工 `chown`/`chmod`；上面那条手工命令只在
+> 未装 tmpfiles 件的旧主机上需要。
 
 > ⚠️ 不要用"导出 .env 再跑 signin.py"的简化版覆盖它：那会丢掉锁、防重复与超时保护，两次 cron 并发登录同一批账号会触发易班风控。
 
@@ -230,11 +242,23 @@ mkdir -p /var/log/yiban
 > 以 root 执行检出内的脚本，故**只要以 root 跑（带不带 `DESTDIR` 都一样）检出必须属
 > root 且组/其他不可写**，否则拒装（`以 root 安装时检出必须属 root 且非组/其他可写`，
 > exit 1）。`DESTDIR` 只改写入目标，不改 root 读取与执行的来源，所以它不豁免这道门；
-> 想彻底绕开它只能用**非 root** 跑（无特权暂存安装）。若部署目录对服务账号 `yiban`
-> 组可写（旧 README 为让 web 写 `.env`/`yiban.db` 而放开），安装前先
-> `sudo chown -R root:root /opt/yiban-auto-sign && sudo chmod -R go-w /opt/yiban-auto-sign`，
-> 并把运行期可写数据（`.env`/`yiban.db`/状态目录）移出检出（如放到 `/var/lib/yiban` 后
-> 在 `.env` 里指 `YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。
+> 想彻底绕开它只能用**非 root** 跑（无特权暂存安装）。
+>
+> 🔑 **运行数据在检出内的 `data/` 子目录（工单 `ybg8`）**：服务要写的 `.env` 与
+> `yiban.db`（连同 `-wal`/`-shm`，以及通知账本/节流表）都落在 `data/` 下，属
+> `yiban:yiban`、模式 `0700`；检出根只放代码。`data/` 由 **`install.sh` 建立**（唯一
+> 建立点）——服务不自建：检出根变 root 只读后 `mkdir` 会失败。
+> ⇒ 以 `install.sh` 部署时的**正确顺序**是：
+> ```bash
+> cd /opt/yiban-auto-sign
+> sudo chown -R root:root . && sudo chmod -R go-w .   # ① 检出归 root、去组/其他写位
+> sudo bash deploy/prod/install.sh                    # ② 落位执行件，并建/修复 data/（属 yiban、0700）
+> ```
+> ② 会把 `data/` 的属主改回 `yiban:yiban`（步骤①的 `chown -R root:root` 会把它一起
+> 带走），且**幂等**：重跑一次安装器即修复。`data/` 已在持久盘上，重启不需要重建。
+> 服务账号名与 `web/deploy/yiban-web.service` 的 `User=`/`Group=` 同值（本仓
+> `yiban:yiban`；两处同值由用例钉住）。
+> 状态/日志目录（`/var/log/yiban`）与锁目录（`/var/lock/yiban`）**不在**检出内。
 > 另注：是否把产物设成 `root:root` 属主，看的仍是「root 且未设 `DESTDIR`」——那是写入
 > 侧的不变量，与上面那条判据不同，两条门不许"统一"。
 >
@@ -404,7 +428,7 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
 
 **场景 A：密码被攻击者改掉/泄露**
 
-1. SSH 登录服务器，编辑 `.env`（Docker：`/data/.env`；systemd：`/opt/yiban-auto-sign/.env`）：
+1. SSH 登录服务器，编辑 `.env`（Docker：`/data/.env`；systemd：`/opt/yiban-auto-sign/data/.env`）：
    - **删除/清空 `YIBAN_ADMIN_PASSWORD_HASH` 行**（不删则旧哈希仍优先生效，等于没改；**删 HASH 行与保留旧 HASH 行现在等价，都会吊销会话**——重启迁移一改哈希就递增 PW_VERSION 并换发内置会话凭据）；
    - 写入新密码（至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类，弱口令会拒绝启动）：`YIBAN_ADMIN_PASSWORD=新强密码`；
    - `YIBAN_ADMIN_PW_VERSION` 若已存在则 +1（不存在则忽略，重启迁移会自动处理）；
@@ -448,7 +472,7 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
 > import json, os, sqlite3
 > from yiban.infra import account_crypto as ac, env_io
 > old, new = bytes.fromhex(os.environ["OLD_KEY"]), bytes.fromhex(os.environ["NEW_KEY"])
-> conn = sqlite3.connect(os.environ.get("YIBAN_DB_FILE", "yiban.db"))
+> conn = sqlite3.connect(os.environ.get("YIBAN_DB_FILE", "data/yiban.db"))
 > for pid, pwd, code in conn.execute("SELECT phone, password, phone_code FROM accounts"):
 >     for col, v in (("password", pwd), ("phone_code", code)):
 >         if v:
@@ -481,7 +505,7 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
 > **不要**删断言或绕过它——它是这套流程唯一的自证面。
 > 旧密钥一律视为已泄露：若攻击者拷走过数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
 
-**事后取证**（容器形态在容器内执行；裸机部署把 `--db` 换成宿主的库路径）：`python3 scripts/audit_verify.py --db data/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log`
+**事后取证**（容器形态在容器内执行；裸机部署把 `--db` 换成宿主的库路径）：`python3 scripts/audit_verify.py --db data/yiban.db --env data/.env --anchor /var/log/yiban/audit-anchor.log`
 一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防**锚点覆盖区内**的删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
 退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
 审计（登录失败阈值/越权 403/数据导出同样留痕）。
@@ -660,7 +684,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_PW_GATE` | 危险操作（改他人凭据 / 物理清除 / 删用户 / 重置他人口令 / 改角色 / 改告警通道 / 破坏性设置 / 发公告 / 执行体写 / 急停）要口令的档位：`risk`（默认，仅换环境才要——本次出口 IP 与本会话已验证 IP 不一致，无记录视为未知不触发；验证通过即记住该出口）/ `full`（每个操作都当次要口令）/ `off`（永不要求）。非 `full` 档下不可逆操作还要求请求体带 `confirm_delay_ack`，改他人凭据 / 清空用户账号 / 执行体写三类在操作成功后补一封管理员告警（其余管理操作只留审计）；门禁失败告警与档位无关：任何实际要求了口令并失败的路径都发；非法值回退 `risk` | 可选 |
 | `YIBAN_ACCOUNTS_KEY` / `YIBAN_AUDIT_KEY` / `YIBAN_TRACK_SALT` | 账号密文密钥 / 审计链 HMAC 密钥 / 访问统计盐：**按需自动生成**并写入 `.env`（分别在首次加解密账号、首次写入审计行、首次记录访问时），一般无需手填。注意：刚装好还没加过账号时，`​.env` 里可能只有管理员哈希与会话密钥——别把这一刻的 `.env` 当成「密钥齐全」归档 | 自动 |
 | `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` | 状态文件目录（默认 `/var/log/yiban`）与日志路径（按天分文件） | 可选 |
-| `YIBAN_DB_FILE` / `YIBAN_ENV_FILE` | 数据库与 `.env` 路径（默认相对路径） | 可选 |
+| `YIBAN_DB_FILE` / `YIBAN_ENV_FILE` | 数据库与 `.env` 路径（默认相对检出根：`data/yiban.db` / `data/.env`） | 可选 |
 | `YIBAN_BASE_PATH` | Web 挂载前缀，仅在自动识别切错时兜底（见 [部署形态](#部署形态)） | 可选 |
 
 > 调度 v2 的其余内部参数（正态 μ/σ 范围、重试最小间隔等）见代码 `yiban/engine/schedule.py` 的 `_schedule_config()`，网页不展示的项一般无需调整。
@@ -979,11 +1003,16 @@ sudo bash deploy/prod/install.sh
 #   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 # 手工/恢复场景仍可环境变量注入（会给整棵子进程树带上口令，用完即散）：
 sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh --require-encrypt
-# 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
-30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+# 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）。
+# 权威件 deploy/prod/cron.d/yiban-audit（身份 yiban）里的 `cd` 目标带**尾斜杠**
+# `/opt/yiban-auto-sign/`——承重：check-cron-provenance.sh 只认 `$APP_ROOT/*` 形态可回指
+# 仓库，去掉尾斜杠会让来源断言判红。下面手工执行这条不带尾斜杠，与那份等价，但别照抄进 cron.d：
+30 2 * * * yiban cd /opt/yiban-auto-sign/ && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
 # 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
-# 管理员告警；正常路径零输出（安装与排期见 scripts/yiban-backup-sentinel.sh 头部）
-5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+# 管理员告警；正常路径零输出。**以 root 运行**（须读 0700 root:root 的已装 yiban-backup.sh
+# 做防漂移比对；yiban 读不到会每日误报）；状态目录另给 root 私有目录，避免 root 在 yiban
+# 属主的共享状态目录里留下属主文件。权威件 deploy/prod/cron.d/yiban-backup-sentinel：
+5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 # 恢复演练 / 真实恢复（支持 .tar.gz / .gpg / .age）
 sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
   bash scripts/backup.sh --restore <备份包> <目标目录>
@@ -1005,7 +1034,7 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
 **取证与排障工具**：
 
 ```bash
-.venv/bin/python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log
+.venv/bin/python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/data/yiban.db --env data/.env --anchor /var/log/yiban/audit-anchor.log
     # 链自洽 + 库外锚点比对 + 审计写入欠账三件一起跑；0=健康 1=检出删除/篡改 2=无法定论
 .venv/bin/python3 scripts/list_duplicate_owners.py                   # 列出"同一用户多个未删除账号"（人工清理后自动恢复一人一号约束）
 .venv/bin/python3 scripts/db_export.py --out /tmp/export             # 导出回 JSON（降级/迁移用）
@@ -1162,16 +1191,27 @@ sudo systemctl restart yiban-web.service   # 只改了 .env 也必须重启（�
 cd /opt/yiban-auto-sign
 git pull --ff-only          # 首次用 git clone 部署才有 .git；压缩包部署请重新上传覆盖
 
-# 更新依赖（**每次更新代码后都跑一次**：只更新代码不同步依赖，安全修复上不了生产）
+# 更新依赖（只更新代码不同步依赖，安全修复就上不了生产）
 .venv/bin/pip install -r requirements.lock
 sudo systemctl restart yiban-web.service   # 依赖变更后重启常驻服务
-# 判据：`pip install -r requirements.lock` 报 "Requirement already satisfied" 即已与 lock 一致。
+# 判据（机器可跑）：bash scripts/check-deps-lock.sh
+#   报"venv 与 lock 一致"退 0；任一所锁包版本不符或缺失则退 1 并点名。
+# 手工跑上面那条 pip 时，报 "Requirement already satisfied" 即已与 lock 一致。
 ```
 
-> ⚠️ **依赖同步是部署的必要一步**（2026-10-12 测试机实测的缺口）：本仓的裸机部署流程
-> 只落位执行件与 cron，**不含任何依赖同步**。venv 一旦建好就不再自动更新，lock 后续的
-> 安全修复（如 urllib3 / Werkzeug 的 CVE 修复）永远上不了生产。故更新代码后必须显式跑
-> 上面那条 `.venv/bin/pip install -r requirements.lock`。
+> ✅ **依赖同步已落在裸机流程里**（2026-10-13 补齐，工单 j06f）：2026-10-12 实测到缺口——
+> 流程此前只落位执行件与 cron，**不含任何依赖同步**；venv 一旦建好就不再更新，
+> lock 后续的安全修复（`urllib3` / `Werkzeug` 的 CVE 修复）上不了生产。
+> 现在 `sudo bash deploy/prod/install.sh` 会做这一步，口径三条：
+> ① 以 `requirements.lock` 为参调用 `<检出>/.venv` 的 pip（**同一个** venv，与 run.sh、
+> systemd 单元同源），不新建环境；
+> ② 同步**之前**先落回滚点 `<检出>/deps-snapshot-<时间戳>.txt`（`pip freeze` 输出）；
+> 回滚 ＝ **安装器当场打印的那条命令**：venv 有 `bin/pip` 时是
+> `<检出>/.venv/bin/pip install -r <该快照>`，缺 `bin/pip` 时是
+> `<检出>/.venv/bin/python3 -m pip install -r <该快照>`。别照抄某一支的写法；
+> ③ 同步**之后**跑一致性门 `scripts/check-deps-lock.sh`——门红即安装器非 0 退出并打印
+> 回滚命令，"装过"不等于"装对了"。
+> 只用 crontab 手工运维（不跑安装器）时，仍按上面两条命令手工同步，并手工跑门。
 
 > 面向脚本/agent 的统一入口是 `.venv/bin/python3 -m yiban.cli <子命令>`（`sign` / `probe` / `config` / `capacity` / `state` / `egress` / `db` / `version`，支持 `--json`、非交互、稳定退出码）；`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是部署面的兼容壳，行为同源。完整契约见 [`docs/dev/cli.md`](docs/dev/cli.md)——本文只给人类用法，不重复契约细节。
 

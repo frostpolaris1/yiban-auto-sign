@@ -35,7 +35,9 @@ bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_
 / `key_line_pattern` / `count_key_lines` / `find_env_key_collisions` 与写入口共用同一套
 行模型；`resolve_path` 是路径类配置（STATE_DIR / LOG_FILE / DB_FILE）的解析口径，
 `web/app.py`、`yiban.cred_state`、`yiban.engine.alerts`、`yiban.engine.cli_support`、
-`scripts/ledger_check.py` 共用。
+`scripts/ledger_check.py` 共用。运行数据的**默认落点**（`RUNTIME_DATA_DIR` /
+`DEFAULT_ENV_FILE` / `DEFAULT_DB_FILE`）也只定义在本模块：`.env` 与库默认落在
+`<检出>/data/` 下，使检出根本身可属 root 且组/其他不可写（见 `RUNTIME_DATA_DIR`）。
 
 **通信**
 输入：`.env` 路径、键名与值、`strict` 错误策略、解析/写入的调用方参数。
@@ -237,7 +239,23 @@ def parse_env_file(path, *, strict=False):
     return dict(result)
 
 
-def env_path(default=".env"):
+#: 运行数据子目录名（相对检出根）。`.env` 与 SQLite 库都落在 `<检出>/data/` 下。
+#: 为什么必须移出检出根：`deploy/prod/install.sh` 的 M01 前置门要求检出根属 root
+#: 且组/其他不可写，而 `.env` 的原子写把临时文件建在 `.env` **同目录**
+#: （`_atomic_replace_env` 的 `os.replace`）——目录不给服务账号写就写不进。
+#: 两条要求在旧布局下互斥。`data/` 由安装器建立（属服务账号、模式 0700）。
+#: **就地编辑仍有效**：`data/` 归服务账号可写，部署者用编辑器或 `sed -i` 改
+#: `<检出>/data/.env` 与改旧路径无差别（不引入符号链接，故 `sed -i` 的
+#: 替换-重命名不会把写入引向别处）。
+RUNTIME_DATA_DIR = "data"
+
+#: `.env` 与库的默认相对路径（相对进程 cwd = 检出根）。两枚都是**默认值单点**：
+#: 引擎侧与 web 侧一律引用这里，不另抄字面量。
+DEFAULT_ENV_FILE = f"{RUNTIME_DATA_DIR}/.env"
+DEFAULT_DB_FILE = f"{RUNTIME_DATA_DIR}/yiban.db"
+
+
+def env_path(default=DEFAULT_ENV_FILE):
     """解析 .env 路径的统一口径：环境变量 YIBAN_ENV_FILE 优先（去空白），回退默认值。
 
     与 web/signin 子进程约定一致（web/app.py 写入 YIBAN_ENV_FILE 传给子进程）。
@@ -245,8 +263,11 @@ def env_path(default=".env"):
     本函数是全仓读这枚指针的唯一位置：过去 6 处各自重抄一遍，本批连根收进这里。
     它刻意只读进程环境、不读 `.env`：指针还没定位时，任何 `.env` 都读不到，
     回落到哪份文件只能由 `default` 参数决定，不能靠 `.env` 自己说自己在哪。
+    默认值是 `DEFAULT_ENV_FILE`（`data/.env`，相对检出根）——旧默认 `.env` 落在
+    检出根，与 M01 门的"检出根不可写"互斥（见 `RUNTIME_DATA_DIR`）。
     `yiban/notify/ledger.py` 的 `_state_dir()` 第三档回落 `dirname(env_path)`，
-    与本函数的第三档（回落 `default`）不同形，收口它须单独裁决。
+    与本函数的第三档（回落 `default`）不同形，收口它须单独裁决；本批它随指针
+    一起落到 `data/`（见该处注释）。
 
     `default=None` 是给"密钥来源"那一族的：调用方要靠 None 区分"操作员没指定"与
     "指定了某个路径"（`config_check._key_env_file`、`db.resolve_env_file`、

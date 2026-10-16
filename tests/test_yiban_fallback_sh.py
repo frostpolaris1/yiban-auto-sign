@@ -68,7 +68,9 @@ class YibanFallbackShTest(unittest.TestCase):
         self.state = os.path.join(self.tmp, "state")
         os.makedirs(self.state)
         self.calls = os.path.join(self.tmp, "calls.log")
-        self.env_file = os.path.join(self.tmp, ".env")
+        # .env 在检出内的 data/ 下（工单 ybg8）：脚本按 ${APP_DIR}/data/.env 取。
+        os.makedirs(os.path.join(self.tmp, "data"))
+        self.env_file = os.path.join(self.tmp, "data", ".env")
         self._write_env("")
         for name, body in (("python3", STUB_PY),):
             path = os.path.join(self.venv_bin, name)

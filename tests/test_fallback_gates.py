@@ -5,7 +5,7 @@
 覆盖：day_off
    判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、让位为**整段**（有一轮在飞时兜底一轮都不扫，与部署有没有领取池无关）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、全局锁探测、定时轮与兜底共用同一份门。
 对应实现：yiban/engine/schedule.py（day_off 与 DAY_OFF_*
-   常量）、yiban/engine/runner.py（兜底常驻分支与派发前的门）、yiban/engine/cli_support.py（_run_lock_held）、yiban/engine/schedule.py
+   常量）、yiban/engine/runner.py（兜底常驻分支与派发前的门）、yiban/engine/schedule.py
    的窗口判定与 state_io 心跳。
 关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
    run_queue_retry
@@ -168,11 +168,10 @@ class DayOffGateTest(_WeekdayGuard):
 class _FallbackHarness(_WeekdayGuard):
     """主循环测试骨架：把循环跑起来并记录"睡过几次、扫了几次、写没写心跳"。"""
 
-    def _run(self, times, env=None, accounts=None, results=None, lock_held=None,
+    def _run(self, times, env=None, accounts=None, results=None,
              mutate_cred=None, pool=False, events=None, on_scan=None):
         """跑一次兜底常驻主循环，返回 (退出码, 睡过的秒数, 心跳时刻, 扫描次数)。
 
-        `lock_held`：全局锁探测的返回序列（缺省全 False = 没有全量轮在跑）。
         必须显式打桩：真探测会去读宿主 `YIBAN_STATE_DIR`，测试之间会互相串味。
         `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
         `self.saves`（(data, touched) 列表）。
@@ -186,7 +185,6 @@ class _FallbackHarness(_WeekdayGuard):
         self.saves = saves
         #: 兜底腿**真实**传给 run_queue_retry 的关键字（供判定"是不是显式重领路径"）
         self.retry_kwargs = {}
-        held = list(lock_held) if lock_held else []
         evs = list(events) if events else [("sig", "t0")]
 
         def _sig(*a, **k):
@@ -207,8 +205,7 @@ class _FallbackHarness(_WeekdayGuard):
         with mock.patch.dict(os.environ, {**BASE_ENV, **(env or {})}, clear=False), \
                 mock.patch.object(workers, "time", SimpleNamespace(sleep=sleeps.append)), \
                 mock.patch.object(workers.clock, "now", _ClockSeq(*times)), \
-                mock.patch.object(workers.cli_support, "_run_lock_held",
-                                  lambda *a, **k: held.pop(0) if held else False), \
+\
                 mock.patch.object(workers.state_io, "_write_fallback_alive",
                                   lambda now: beats.append(now)), \
                 mock.patch.object(workers.state_io, "_clear_fallback_alive", lambda: None), \
@@ -481,33 +478,6 @@ class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
                     os.environ[k] = v
 
 
-class YieldWholeRoundTest(_FallbackHarness):
-    """让位是**整段**：只要有一轮在飞，兜底一轮都不扫（与部署有没有领取池无关）。
-
-    旧形态把让位收窄到"同一账号"（有池 ⇒ 全量轮持锁期间照常扫，靠池仲裁"谁做谁"）。
-    10-07 生产证明那条前提不成立：**账号级仲裁只防重复登录，不防吸收全量**——兜底是宽
-    范围领取（`claim_all`），它把那一轮计划给执行体的行先领走（64 个分片 = 两个执行体
-    全集、84/100 个账号），两个执行体到点只剩空扫，汇总出一堆假失败。故判据改成一条
-    运行时事实：**锁被持有 = 有一轮在飞 ⇒ 整段让位**（`workers._round_in_flight`），
-    并与执行体运行期的让位复检同一份事实。
-
-    两种部署形态都必须让位，是本类的主断言——判据不看 `pool_db_declared()`。
-    """
-
-    def test_yields_whole_round_regardless_of_pool(self):
-        for pool in (True, False):
-            with self.subTest(pool=pool):
-                rc, sleeps, beats, scans = self._run(
-                    [_at(WED, (6, 35))] * 3 + [_at(WED, (8, 30))],
-                    lock_held=[True] * 3, pool=pool)
-                self.assertEqual(scans, [],
-                                 "轮在飞时兜底仍在扫账号——它会把那一轮的活领走")
-                self.assertEqual(beats, [], "让位期间不该写存活心跳（它没在干活）")
-                self.assertEqual(sleeps, [workers._YIELD_POLL_SEC] * 3,
-                                 "让位期间的轮询间隔不对")
-                self.assertEqual(rc, 0)
-
-
 class FallbackEventDrivenWakeTest(_FallbackHarness):
     """兜底的"失败即入队"读取端：扫空后不再盲睡满间隔，而是短轮询池事件签名。
 
@@ -589,7 +559,8 @@ class FallbackOwnLockTest(unittest.TestCase):
 
 
 class RunLockProbeTest(unittest.TestCase):
-    """`cli_support._run_lock_held`：全局锁探测（让位判据的事实源）。"""
+    """`cli_support._run_lock_held`：全局锁探测原语（**当前无生产调用点**——让位改由
+    肘界谓词承担，工单 `l1rx` R4；本类钉住它的 fail-closed 探测语义）。"""
 
     def test_probe_sees_held_lock_and_frees_after(self):
         if cli_support.fcntl is None:

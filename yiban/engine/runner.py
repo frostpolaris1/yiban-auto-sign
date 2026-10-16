@@ -56,6 +56,7 @@ from yiban.engine import (
     attempts,
     cli_support,
     config_check,
+    crash_semantics,
     executor_v3,
     probe,
     state_io,
@@ -433,6 +434,18 @@ def main(argv=None):
     if args.check_config:
         config_check.print_config_summary(accounts)
         return 0
+
+    # 崩溃语义（V-S3）：协调器启动识别"有写前标记、无终态结果"的账号并告警，**不自动重签**。
+    # 放在此处：库已就绪（load_accounts 已迁移）、门已判（check-config / probe 已返回）、
+    # 尚未发起任何真实请求。多执行体形态由监督进程单点识别，子进程带 `YIBAN_EXECUTOR_ID`
+    # （`_already_child` 为真）⇒ 跳过，杜绝 N 份重复告警。识别失败不得阻断启动（观测面
+    # 语义）：只记 warning。--only 手动轮同样识别（它也是当日的协调器）。
+    if not _already_child:
+        try:
+            crash_semantics.report_unknown_outcomes(
+                clock.now().strftime("%Y-%m-%d"), notify_url=notify_url)
+        except Exception as e:
+            logger.warning("崩溃遗留识别失败（不影响签到）: %s", type(e).__name__)
 
     # 启动延迟已废弃：旧领取池的实现仍收该形参，但生产执行已不读取它
     # 账号间隔：缺省与 web 设置页「默认开启」口径同源（web 端 DEFAULT_ACCOUNT_GAP_MAX

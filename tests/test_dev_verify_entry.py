@@ -46,8 +46,12 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
     '"$py" -m mypy',
     '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
-    '"$py" -m pytest tests/ -q -n 4 --dist loadfile -k '
-    '"security or mask or audit or login or private or csrf or ratelimit"',
+    '"$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4 --dist loadfile -k '
+    '"security or mask or audit or login or private or csrf or ratelimit or claim or queue"',
+    # 2026-10-16（工单 zdvd）：多执行体靶场走**串行**单独轨——它拉起 mock 服务 ＋
+    # 监督进程 ＋ 执行体进程树，与上面 1034 条用例同抢 runner 的 4 个核时跑不起来
+    # （真登录 0 次）。判据未放松：它仍在 CI 里跑，只是不再与别的用例抢核。
+    '"$py" -m pytest tests/test_multi_executor_drill_e2e.py -q -p no:randomly',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
     "bash scripts/check-shared-facts.sh",
     '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
@@ -57,6 +61,9 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
     '"$py" scripts/check-import-linter.py',
     '"$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly',
+    # 2026-10-13（工单 j06f，复审指定）：依赖同步门的元测试进 CI 子集。
+    # 为什么是元测试而不是门本体：CI 的解释器刚按 lock 装过，门本体在那里是同义反复。
+    '"$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly',
 )
 
 

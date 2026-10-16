@@ -73,7 +73,7 @@ Planner（planner.build_plan）
    │  按 (phone, day) HRW 算 vshard，按窗口/模式算 run_at
    │  首次建计划时把当日虚分片数 V 落库（app_meta 键 scheduler_v3_v_<day>）
    ▼
-sign_tasks（唯一事实源：state / vshard / owner / run_at / epoch / lease_until）
+sign_tasks（唯一事实源：state / vshard / owner / run_at / epoch；`lease_until` 列冻结保留、零写入）
    │
    ▼
 claim_batch(owner, day, 我的分片集)      ← 只取 state='pending' 且 run_at<=now
@@ -96,12 +96,15 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 不小于它（说明有行在范围外）时，按最大分片号放宽并留 error——放宽不会改变既有索引的
 归属（`hrw.owner_of` 与 V 无关），只把扫描范围撑到盖住已写行。
 
-**崩溃恢复**（本轮补齐）：**起跑**按「回收 → 死主接管 → 首轮领取」的顺序做一次
-`queue_store.reap_expired`（租约过期**并超过宽限期**后回收本业务日的 `claimed` 行）
-与死主分片接管，此后补货循环按 `RECOVER_SEC`（60s）周期重复这两件事。起跑必须接管：
-补货循环那次按 `RECOVER_SEC` 节流，而短轮次干完自己的活即收干退出，等不到 60s，死主
-分片的 `pending` 行会整轮无人领（补签轮沿用同一分片划分仍无人领 ⇒ 静默漏签）。执行体
-起跑/存活期/收尾写文件心跳（见 §6）。
+**崩溃恢复**（2026-10-13 工单 `l1rx` 改版，**判活＝进程句柄**）：执行体**起跑**先按
+**本稳定名**收一次尸（`queue_store.reap_abandoned(executor_id, day=…)`）——判据不是
+时间戳，是**本进程持有本稳定名的运行锁**：拿到锁 ⇒ 同稳定名的上一个持有者必然已不在
+⇒ 它留下的 `claimed` 行是尸体，翻回 `pending` 并 `epoch+1`（原持有者的迟到写仍被
+`settle_tasks(..., epochs=…)` fence）。多执行体形态另有**监督进程轮末**对**每个**已退出
+槽位收尸（判据是子进程已经不在，不挂退出码条件）。任务级**租约**（`lease_until`）、
+宽限期、按时间戳的 `reap_expired`、心跳四态判活与死主分片接管**整族已删除**；心跳只服务
+执行体页的存活展示（见 §6）。崩溃后不自动重签的残留（进程内未预期异常、兜底服务永久停摆）
+由写前标记 + `crash_semantics` 识别告警，登记为残余。
 
 ---
 
@@ -170,8 +173,8 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 
 | state | 含义 | 谁能动它 |
 |-------|------|----------|
-| `pending` | 待办（未到点/被重排/租约过期并超过宽限期后被回收） | `claim_batch` 领取；`requeue_task` 重排；`reap_expired` 回收 |
-| `claimed` | 已被某执行体持有（带 `owner`/`lease_until`/`epoch`） | `settle_tasks` 收尾；租约过期**并超过宽限期**后由 `reap_expired` 回退 |
+| `pending` | 待办（未到点/被重排/持有者进程已不在后被收尸） | `claim_batch` 领取；`requeue_task` 重排；`reap_abandoned` 收尸 |
+| `claimed` | 已被某执行体持有（带 `owner`/`epoch`；**不再有 `lease_until`**） | `settle_tasks` 收尾；持有者进程已不在时由 `reap_abandoned` 回退 |
 | `done` | 了结（签到成功/已签/今日无任务） | 终态 |
 | `failed` | 了结（失败/跳过类终态） | 终态 |
 | `skipped` | 了结（窗口外跳过） | 终态 |
@@ -181,7 +184,7 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 
 **`vshard = -1` 惰性行**：v18 平移与 v20 补账写入的行不属于任何分片集
 （`hrw.shards_of` 只产出 `0..V-1`）。它们既不被 `claim_batch` 领取，也不被分片级接管，
-`reap_expired` 也**必须排除**（回收成 `pending` 只会变成永不被领的行）。这是"升级不会
+`reap_abandoned` 也**必须排除**（回退成 `pending` 只会变成永不被领的行）。这是"升级不会
 导致重复真实登录"的关键性质。
 
 **epoch fencing**：每次领取 `epoch = epoch + 1`，收尾时把领取时的 epoch 原样传回
@@ -382,7 +385,7 @@ bash scripts/backup.sh
 
 | 现象 | 判定 | 处置 |
 |------|------|------|
-| 某些账号当天一直不签，库里是 `claimed` 且 `lease_until` 已过 | 崩溃/被杀的通道留下的行，未被回收 | 正常应在 `租约 60s + 宽限 120s + 回收间隔 60s`（最坏约 4 分钟）内回收；宽限期存在是因为**租约到期 ≠ 持有者已死**（慢尝试可能比租约还长，立即回收会让同一账号被重领、重复真实登录）。若仍卡住，查 `reap_expired` 是否报 warning（库异常），必要时手工跑一轮或重启执行体 |
+| 某些账号当天一直不签，库里是 `claimed` 且 `owner` 指向一个**已不存在的进程** | 崩溃/被杀的执行体留下的行，未被收尸 | 收尸判据是**进程句柄**（本稳定名的运行锁在自己手里 ⇒ 上一个持有者已不在），不是时间戳。单进程/worker 的尸由**下一次起跑**收（`reap_abandoned`），多执行体的尸由**监督进程轮末**收；兜底腿的尸由它下一次起跑收。若仍卡住：查 `reap_abandoned` 是否报 warning（库异常）→ 手工 `--only` 那批账号（手工路径会翻 `claimed`），或重启该执行体 |
 | 页面执行体行显示 `stale` | 有开始、无收尾（心跳过期）：被强杀 / 超时；**单进程直跑**时内部未预期异常也不写收尾（受监督路径下子进程正常退出、含失败，会写收尾判 `finished`，不在此列） | 查进程与宿主 `timeout`、日志里的"v3 执行体未预期异常"；长轮次若仍 `stale` 说明心跳刷新没走（补货循环未运行） |
 | 页面执行体行一直 `idle` | 当日无该槽位心跳：v3 未起跑或心跳写失败 | 确认本轮真的起跑（无开关：cron 是否触发 `run.sh`、执行体清单是否解析出 worker 行）；看日志有无心跳写失败 debug |
 | 某日闸门永不了结、补签轮反复空跑 | 用 `day_counts` 的 `open` 当闸门，把 `vshard=-1` 历史行算进去了 | 改用 `pending_count(day, 分片集)`；历史行按设计保持原样 |
@@ -407,3 +410,34 @@ bash scripts/backup.sh
 | 分片级接管的 owner 改写（§2 崩溃恢复、§6 接管日志） | 删 owner 改写，**分片并入保留**——死主分片被回收出来的行仍能被活着的执行体领到；§6 那条"改归本执行体"的日志文案随机制一并去掉 | 展示页需要「死主行归属修正」（页面 owner 仍指向已死执行体） |
 | 离线压测/容量探测工具族 | 整族删除；`YIBAN_CAPACITY_MEASURED` 的**人工录入**与页面展示保留（实测值改由部署者量取后录入） | 需要恢复可复现的离线容量实测工具链来支撑定档 |
 | 出口限速分片（每出口一桶 / 预算均分） | **不裁**：持久键=出口标识、运行期按出口预算均分，删掉会让同出口的多个执行体各吃一份 λ（该出口速率叠加为 K×λ） | 不适用；仅当出口形态变化时按 §3 限速三件重评 |
+
+
+---
+
+## 8. 回退闸门（工单 `l1rx` 第二刀，2026-10-13）
+
+**为什么需要**：本批删除任务级租约族、改 claim-at-dispatch、接入肘界谓词——执行核行为改变。
+`l3a4` 要求"影子期 ＋ 回退闸门"。
+
+**运行时降级开关（`l3a4` G5 的 `YIBAN_FLOW=new|old`）做不到**：旧流程代码本体已删，没有
+"old"可切。故回退＝**回滚到本批的父提交**（回滚点 `700672cc`），开关面留空并登记。
+
+**回退判据仍要数字**，取 `l3a4` G1 的三项：
+
+| 指标 | 取数 | 阈值 | 状态 |
+|---|---|---|---|
+| 漏签率 ＝ 当日未了结 ÷ 当日应签 | `queue_store.open_count(day)` ÷ 当日 `sign_tasks` 行数 | > 基线 + Δ1 | Δ1 **待定档** |
+| unknown_outcome 条数 ＝ "有 `start` 无终态"的 attempt 行数 | `run_events` 的 NODE_START 与终态节点之差 | > 0 告警；> N1 回退 | N1 **待定档** |
+| 单日管理员告警条目数 | `alerts` 汇总 | > 近 14 日均值 + 3σ | σ **待定档** |
+
+**定档口径**：2026-10-17 部署后用 `scripts/elbow_shadow.py` 对**每天的兜底领取**算"提前量"
+分布（`docs/refactor/133` §五.1 的正向观测窗口），并与 2026-09-14 容量基线合算 Δ1／N1／σ。
+**定档前**闸门只有方向可用：`unknown_outcome > 0` 即告警并人工复核；漏签率上升即人工复核。
+
+**肘界 T 值同步复算**：`executor_v3.FALLBACK_ELBOW_SEC` 现值 60 秒是**估算**（P99 未测，
+见 `docs/refactor/133` §六）。同一窗口用 `elbow_shadow.py` 的输出重定。
+
+**结构性缺口（登记，不许静默消失）**：本批之前可以做"新旧流程逐账号对拍"（领取集合／分片
+归属／计划 `run_at`），因为旧流程代码在场。本批删除了旧流程本体（`_refiller`、进程内
+`PriorityQueue`、租约回收、`yield_probe`、`_round_in_flight`），**流程面的新旧对拍此后无法
+再做**。残余的可比对面只剩"结果面"：`sign_tasks` 行状态、`sign_events`、`run_events`、退出码。
