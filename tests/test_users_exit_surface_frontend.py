@@ -136,8 +136,11 @@ class CoreCacheLifecycleTest(unittest.TestCase):
         assert decl, "core.js 的 CACHE_PREFIX 声明找不到：抽取环境失效（红不是假绿）"
         # 徽标节拍常量随源码抽取（工单 vff0 把它从 60s 降到与列表同拍 10s）：
         # 硬编在测试里会与实现漂移，抽取则跟着实现走、由下面的行为断言钉口径。
-        ttl_decl = re.search(r'var NAV_BADGE_TTL = \d+;', src)
-        assert ttl_decl, "core.js 的 NAV_BADGE_TTL 声明找不到：抽取环境失效"
+        # 2026-10-16 重锚：退役账「轮询收编」把 `NAV_BADGE_TTL` 收敛成全站唯一节拍
+        # `POLL_MS`（前端经 lib/shell.ts::pollMs() 读同一个数）。抽取名随之改，
+        # 判据不变（10s 窗口的请求收敛语义 + 缓存里只许躺标量投影）。
+        ttl_decl = re.search(r'var POLL_MS = \d+;', src)
+        assert ttl_decl, "core.js 的 POLL_MS 声明找不到：抽取环境失效"
         cls.fns = decl.group(0) + "\n" + ttl_decl.group(0) + "\n" + "\n".join(
             _extract_js_function(src, name)
             for name in ("forEach", "cacheGet", "cacheSet", "cacheClearAll", "cacheDrop",
