@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { ApiError, apiGet } from "../lib/api";
+import { api, errorMessage } from "../lib/shell";
 import {
   DEFAULT_PAGE_SIZE,
   EMPTY_FILTERS,
@@ -38,10 +38,10 @@ async function fetchPage(page: number, append: boolean): Promise<void> {
   loading.value = true;
   errorText.value = "";
   try {
-    const resp = await apiGet<AuditPageResponse>(buildAuditQuery(filters.value, page, pageSize.value));
+    const resp = await api<AuditPageResponse>(buildAuditQuery(filters.value, page, pageSize.value));
     state.value = mergePage(state.value, resp, append);
   } catch (err) {
-    errorText.value = err instanceof ApiError ? err.message : "网络错误，请重试";
+    errorText.value = errorMessage(err, "网络错误，请重试");
   } finally {
     loading.value = false;
   }
