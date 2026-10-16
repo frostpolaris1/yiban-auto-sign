@@ -4,7 +4,8 @@
 加上登录握手与签到两接口的请求顺序与会话簿记。
 
 **纯解析/构造不在本文件**：授权页解析、usersure 表单构造、verify_request 提取、签到体
-构造、响应信封解析都在洁净室协议库 `yiban.protocol`（契约见其 `SPEC.md`）；本文件只保留
+构造、响应信封解析都在洁净室协议库 `yiban.adapters.protocol_yiban`（契约见其 `SPEC.md`）；
+本文件只保留
 **编排层**——请求顺序、端点、注入策略与重试/会话语义。
 
 **来源按事实分类**（三类，逐条见下方注释标注）：
@@ -32,12 +33,13 @@
 端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、平台请求头常量（`HEADERS` /
 `KILLYIBAN_HEADERS` / `APP_SIGN_HEADERS` / `YIBAN_APP_VERSION`）、`RequestPolicy` /
 `SessionStore` 协议与登录/签到函数是本层的对外接口；解析与构造一律委托
-`yiban.protocol`，本文件不得再内联一份正则或表单字段表。
+`yiban.adapters.protocol_yiban`，本文件不得再内联一份正则或表单字段表。
 
 **通信**
 输入：`requests.Session`、注入的 `policy` 与 `session_store`、账号/密码与点位参数。
 输出：签到结果与会话；每一步跳转都过 `policy.require_*` 校验，本层不自算裁决。
-调用谁：`requests`、`yiban.protocol`、`yiban.challenge`、注入的 `policy` / `session_store`。
+调用谁：`requests`、`yiban.adapters.protocol_yiban`、`yiban.challenge`、
+注入的 `policy` / `session_store`。
 谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
 前端调用点：无直接调用点。
 """
@@ -51,7 +53,7 @@ from Crypto.PublicKey import RSA
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
 from yiban import challenge
-from yiban.protocol import (
+from yiban.adapters.protocol_yiban import (
     ParseError,
     SessionExpired,
     build_sign_in_body,
@@ -61,7 +63,7 @@ from yiban.protocol import (
     parse_authorize_page,
     parse_sign_position,
 )
-from yiban.protocol import crypto as _lib_crypto
+from yiban.adapters.protocol_yiban import crypto as _lib_crypto
 
 logger = logging.getLogger("yiban.platform")
 
@@ -203,7 +205,7 @@ class SignResponse(NamedTuple):
 def encrypt_password(password, public_key_pem):
     """RSA-1024 + PKCS1_v1_5 加密密码，返回 base64 密文（str，与 urlencode 兼容）。
 
-    委托 `yiban.protocol.crypto.encrypt_password`（输入 PEM 文本）。本层保留发送前的
+    委托 `yiban.adapters.protocol_yiban.crypto.encrypt_password`（输入 PEM 文本）。本层保留发送前的
     长度守卫：RSA-1024 单次最多 117 字节，超长时库底层的 pycryptodome 异常难以理解，
     这里换成可执行的处置建议。
     """
@@ -265,7 +267,7 @@ def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     `Reason/AttachmentFileName/LngLat/Address`、JSON 默认分隔符、整串 urlencode。
     该形态与**本站自己的夹具**逐字节相等；与官方 SPA 的编码形态不同（SPA 走
     `encodeURIComponent` 与紧凑 `JSON.stringify`），服务端两种都解——口径见
-    `yiban/protocol/SPEC.md` §2.6。
+    `yiban/adapters/protocol_yiban/SPEC.md` §2.6。
     """
     lng_text, _, lat_text = str(sign_info.get("LngLat", "")).partition(",")
     return build_sign_in_body(

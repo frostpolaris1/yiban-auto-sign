@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from yiban.protocol import ParseError, parse_authorize_page
+from yiban.adapters.protocol_yiban import ParseError, parse_authorize_page
 
 _HEX = set("0123456789abcdef")
 

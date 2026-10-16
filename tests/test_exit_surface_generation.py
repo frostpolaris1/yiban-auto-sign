@@ -8,7 +8,7 @@
     落进当天日志的那份）、`signin_api._launch_signin_proc` 的 argv/env 面清点钉、
     `run.sh` 自身文本不 echo 凭据键的静态实证。
 对应实现：`yiban/engine/cli_support.py::report_fatal_error`、
-    `yiban/cli.py::_cmd_sign/_cmd_probe`（消费 `last_fatal_error`）、
+    `yiban/entry/cli/__init__.py::_cmd_sign/_cmd_probe`（消费 `last_fatal_error`）、
     `web/routes/signin_api.py::_launch_signin_proc`、`run.sh`。
 关键断言：生成点遮——同一份原语（`sanitize_text` + `mask_phones_in_text`），不新造
     第二套口径；摘要"一行"契约不破；argv 只允许承载标识符（裸号=已登记残余，

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**功能**
-结构门禁：跑 `.importlinter` 的四条依赖方向契约，只对**基线之外的新增违规**判红。
+结构门禁：跑 `.importlinter` 的依赖方向契约，只对**基线之外的新增违规**判红。
 
 用法：
     scripts/check-import-linter.py [--root DIR] [--config FILE] [--baseline FILE]
@@ -272,7 +272,7 @@ def _build_parser():
     """
     ap = argparse.ArgumentParser(
         prog="scripts/check-import-linter.py",
-        description="import-linter 四条依赖方向契约门（基线外新增违规即红）")
+        description="import-linter 依赖方向契约门（基线外新增违规即红）")
     ap.add_argument("--root", default=REPO_ROOT)
     ap.add_argument("--config", default=None, help="默认 <root>/.importlinter")
     ap.add_argument("--baseline", default=None,
@@ -334,7 +334,7 @@ def main(argv=None):
               "要么改代码消除它，要么按流程把基线收紧后重开一条工单登记豁免。")
         sys.exit(1)
 
-    print("import-linter ok: 四条依赖方向契约没有基线之外的新增违规")
+    print("import-linter ok: 依赖方向契约没有基线之外的新增违规")
     return 0
 
 

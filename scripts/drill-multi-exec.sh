@@ -4,7 +4,7 @@
 # ============================================================
 # 用途：
 #   在**本地 WSL**里验"多个执行体怎么协调"这类性质，不必依赖真平台、不必 docker。
-#   它起一个本地假易班上游（tests/fake_yiban_server.py --no-tls），拉起**真实的监督
+#   它起一个本地假易班上游（yiban/adapters/protocol_fake/__init__.py --no-tls），拉起**真实的监督
 #   进程 ＋ 真实执行体子进程**（python -m yiban.cli sign → workers.run_worker_supervisor
 #   → executor_v3 → signin），并用传输层改写把子进程的全部 https 请求钉回回环假上游。
 #   协调逻辑（领取/收尾/收尸/换代/肘界）走真码，只有"网络去往哪里"被改写。

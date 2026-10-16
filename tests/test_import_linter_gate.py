@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""结构门禁（import-linter 四条依赖方向契约）的守卫测试。
+"""结构门禁（import-linter 依赖方向契约）的守卫测试。
 
 标签：J · 运维：部署/备份/发布
 覆盖对象是一对产物：`.importlinter`（契约本体）与 `scripts/check-import-linter.py`
 （执行器）。本文件钉四条不变量：
-① **契约本体在位**：四条契约的 id、类型、模块集合与 `docs/refactor/128` 三节一致。
+① **契约本体在位**：契约的 id、类型、模块集合与 `docs/refactor/128` 三节一致。
+   批 A0（2026-10-16）为新层补了三条（契约 5–7，单一来源＝本文件的 CONTRACT_IDS）。
    契约 2 的目标模块写成 `yiban.*` 而不是 `yiban`——写后者会被 import-linter 的
    "重叠对跳过"规则整条吃掉，本文件把这条陷阱钉死（改回 `yiban` 即红）。
 ② **门禁被真执行**：`ci.yml` 装 import-linter，`scripts/dev-verify.sh` 的 `run_ci`
@@ -35,15 +36,30 @@ BASELINE = os.path.join(BASE, "scripts", "gate", "import-linter-baseline.txt")
 ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 CI_YML = os.path.join(BASE, ".github", "workflows", "ci.yml")
 
-#: 四条契约的 id（与 `.importlinter` 逐字一致）。少一条即红：契约被删等于门被拆。
+#: 契约的 id（与 `.importlinter` 逐字一致）。少一条即红：契约被删等于门被拆。
+#: 前四条＝128 三节的 P0 批。后三条＝批 A0 为新层（core/ports/adapters）补的向上依赖线。
 CONTRACT_IDS = (
     "yiban-no-web",
     "protocol-clean-room",
     "no-reverse-import-of-scripts",
     "core-layer-independence",
+    "core-no-upward",
+    "ports-no-upward",
+    "adapters-no-upward",
 )
 #: 契约 4 的 core 级模块（128 二节 L0）。四个都必须在册。
 CORE_MODULES = ("yiban.clock", "yiban.window", "yiban.status", "yiban.masking")
+#: 批 A0 三条新契约的目标层：每条的 source 与 forbidden 逐字钉住。
+#: 目标里不许出现 `yiban.engine` / `yiban.store`：那两个坐标属迁移期，
+#: 批 B 拆完后它们会消失，写进契约会让契约变成"零命中空转"。
+UPWARD_LAYER_CONTRACTS = {
+    "core-no-upward": ("yiban.core",
+                       ["yiban.app", "yiban.entry", "yiban.workers", "yiban.adapters"]),
+    "ports-no-upward": ("yiban.ports",
+                        ["yiban.app", "yiban.entry", "yiban.workers", "yiban.adapters"]),
+    "adapters-no-upward": ("yiban.adapters",
+                           ["yiban.app", "yiban.entry", "yiban.workers"]),
+}
 #: run_ci 里必须逐字出现的两步（门 + 门的元测试）。
 CI_GATE_CMD = '"$py" scripts/check-import-linter.py'
 CI_META_CMD = '"$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly'
@@ -103,16 +119,27 @@ def _load_gate_module():
 
 
 class ContractConfigTest(unittest.TestCase):
-    """① 契约本体：四条契约的类型与模块集合。"""
+    """① 契约本体：契约的类型与模块集合。"""
 
     def setUp(self):
         self.text = _read(CONFIG)
 
-    def test_four_contracts_are_declared(self):
+    def test_all_contracts_are_declared(self):
         for cid in CONTRACT_IDS:
             with self.subTest(contract=cid):
                 self.assertNotEqual(_section(self.text, cid), "",
                                     f"`.importlinter` 里缺契约 {cid}（契约被删等于门被拆）")
+
+    def test_config_declares_no_contract_beyond_the_frozen_set(self):
+        """配置里的契约 id 集合必须**恰等于** CONTRACT_IDS。
+
+        只判"每条在册"会放过配置里私自加的一条：那条新契约不在本文件的钉住面内，
+        改它的模块集合不会有任何红。本仓既有毛病形状就是"约束只在散文里"。
+        """
+        ids = re.findall(r"^\[importlinter:contract:([^\]]+)\]\s*$", self.text, re.M)
+        self.assertEqual(sorted(ids), sorted(CONTRACT_IDS),
+                         "`.importlinter` 的契约 id 集合与 CONTRACT_IDS 不一致："
+                         "要么配置多了未登记的一条，要么登记少了配置有的一条")
 
     def test_root_packages_cover_backend_frontend_and_shell(self):
         # root_packages 少一个，对应的契约就判不到东西（图里没有那个包）。
@@ -129,10 +156,12 @@ class ContractConfigTest(unittest.TestCase):
             "no-reverse-import-of-scripts": "forbidden",
             "core-layer-independence": "independence",
         }
+        # 批 A0 三条新契约：类型一律 forbidden（判"不得 import"）。
+        want.update({cid: "forbidden" for cid in UPWARD_LAYER_CONTRACTS})
         for cid, ctype in want.items():
             with self.subTest(contract=cid):
                 self.assertIn(f"type = {ctype}", _section(self.text, cid),
-                              f"{cid} 的契约类型变了：128 三节定的是 {ctype}")
+                              f"{cid} 的契约类型变了：定的类型是 {ctype}")
 
     def test_contract_one_direction(self):
         sec = _section(self.text, "yiban-no-web")
@@ -142,12 +171,17 @@ class ContractConfigTest(unittest.TestCase):
     def test_protocol_contract_uses_wildcard_not_bare_package(self):
         """契约 2 的目标模块必须是 `yiban.*`，不是 `yiban`。
 
-        import-linter 的 forbidden 契约会**跳过重叠对**：源 `yiban.protocol` 与目标
+        import-linter 的 forbidden 契约会**跳过重叠对**：源 `yiban.adapters.protocol_yiban` 与目标
         `yiban` 同属一棵包树，该对被跳过，整条契约静默失效（实测：写 `yiban` 时
         契约恒 KEPT，连真违规都不报）。写 `yiban.*` 才展开成互不重叠的兄弟，判定生效。
+
+        批 A2（2026-10-16）搬迁后的**已知弱化点**：源现在嵌在 `yiban.adapters` 里，
+        故目标 `yiban.adapters` 与源重叠、被跳过——"洁净室直接 import 父包"这一对判不到。
+        该缺口由 `tests/test_protocol_yiban_relocation.py` 的 AST 判据兜住
+        （它按顶层包名判，`import yiban.adapters` 也命中）。两条判据机制不同，互补。
         """
         sec = _section(self.text, "protocol-clean-room")
-        self.assertEqual(_field(sec, "source_modules"), ["yiban.protocol"])
+        self.assertEqual(_field(sec, "source_modules"), ["yiban.adapters.protocol_yiban"])
         forbidden = _field(sec, "forbidden_modules")
         self.assertIn("yiban.*", forbidden, "契约 2 的目标模块必须写 `yiban.*`")
         self.assertNotIn("yiban", forbidden,
@@ -155,7 +189,7 @@ class ContractConfigTest(unittest.TestCase):
         for other in ("web", "scripts"):
             with self.subTest(module=other):
                 self.assertIn(other, forbidden,
-                              f"契约 2 要覆盖 protocol → {other}，不能只靠别的契约替它兜")
+                              f"契约 2 要覆盖洁净室 → {other}，不能只靠别的契约替它兜")
 
     def test_scripts_contract_forbids_reverse_import_only(self):
         sec = _section(self.text, "no-reverse-import-of-scripts")
@@ -167,6 +201,28 @@ class ContractConfigTest(unittest.TestCase):
         got = _field(sec, "modules")
         self.assertEqual(sorted(got), sorted(CORE_MODULES),
                          "core 级模块集合变了：128 二节 L0 定的是这四个")
+
+    def test_upward_layer_contracts_pin_source_and_targets(self):
+        """批 A0 三条新契约的 source 与 forbidden 逐字钉住。
+
+        为什么不能只判"契约在册"：契约在册但目标列表被改窄（例如把 `yiban.adapters`
+        从 core 的目标里删掉）不会有任何红——门看着还在，管的范围已经缩了。
+        为什么目标里不许出现 `yiban.engine` / `yiban.store`：那两个坐标属迁移期形态，
+        批 B 拆完后它们在图里消失，门会判"契约空转"退 2（那时门整套红，与真违规同码）。
+        """
+        for cid, (source, forbidden) in UPWARD_LAYER_CONTRACTS.items():
+            with self.subTest(contract=cid):
+                sec = _section(self.text, cid)
+                self.assertEqual(_field(sec, "source_modules"), [source],
+                                 f"{cid} 的 source_modules 变了")
+                self.assertEqual(sorted(_field(sec, "forbidden_modules")),
+                                 sorted(forbidden),
+                                 f"{cid} 的 forbidden_modules 变了")
+                for stale in ("yiban.engine", "yiban.store", "yiban.masking",
+                              "yiban.clock", "yiban.window", "yiban.status"):
+                    self.assertNotIn(stale, _field(sec, "forbidden_modules"),
+                                     f"{cid} 的目标里有迁移期坐标 {stale}："
+                                     "它消失后契约会变成零命中空转")
 
 
 class GateWiringTest(unittest.TestCase):
@@ -531,7 +587,8 @@ class CurrentTreeTest(unittest.TestCase):
             self.fail("测试解释器里没有 import-linter：本门不许静默跳过。"
                       f"装上再跑：{sys.executable} -m pip install {PINNED_TOOL}\n{out}")
         self.assertEqual(rc, 0, f"真树跑执行器必须退 0：\n{out}")
-        self.assertIn("契约数 4", out, "四条契约必须全部被跑（少一条等于门被拆）")
+        self.assertIn(f"契约数 {len(CONTRACT_IDS)}", out,
+                      "配置里的契约必须全部被跑（少一条等于门被拆）")
 
     def test_committed_baseline_equals_current_violation_set(self):
         """入库基线正文必须 == 真树当前违规集（按 `--write-baseline` 重生成后比对）。

@@ -63,7 +63,7 @@ docker/                       容器：Dockerfile / entrypoint / supervisord / s
 web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`yiban` 不得裸名导入 scripts/ 模块）
 ```
 
-- `yiban/infra/`、`yiban/protocol/` 与 `yiban/geo.py` **不得导入业务模块**（`tests/test_infra_layer.py`、
+- `yiban/infra/`、`yiban/adapters/protocol_yiban/` 与 `yiban/geo.py` **不得导入业务模块**（`tests/test_infra_layer.py`、
   `tests/test_provenance_guard.py`）；
 - `yiban/platform.py` 的安全策略必须由调用方**注入**（协议层不自算白名单与拦截判定）；
 - `scripts/*.py` 直接运行时**必须先引导 `sys.path`**，且引导要早于任何 `yiban` 导入

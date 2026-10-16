@@ -2,7 +2,7 @@
 """邮箱通知的配置层：`.env` / 环境变量读取、发信条目解析、收件人算法与脱敏展示。
 
 只读配置（`YIBAN_MAIL_*`）与判定通道状态（ok/broken/off），不发送；发信在
-`transport` 层。SMTP 目标地址判据（`check_smtp_host`）复用 `yiban.notify.config`
+`transport` 层。SMTP 目标地址判据（`check_smtp_host`）复用 `yiban.adapters.notifier.notify.config`
 的不可路由段判据，是该口径在邮件侧的单一实现，供 web 设置页与库层共用。
 """
 import ipaddress
@@ -10,8 +10,8 @@ import json
 import logging
 import os
 
+from yiban.adapters.notifier.notify import config as notify_config
 from yiban.infra import account_crypto, env_io
-from yiban.notify import config as notify_config
 
 logger = logging.getLogger("mailer")
 

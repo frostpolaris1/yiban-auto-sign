@@ -42,7 +42,7 @@ SCRIPT = os.path.join(BASE, "scripts", "drill-container.sh")
 
 # P0 断言的四件树形文件（缺任一即"不在演练树根目录"）
 TREE_FILES = ("docker/Dockerfile", "yiban/__init__.py", "docker/scheduler.py",
-              "tests/fake_yiban_server.py")
+              "yiban/adapters/protocol_fake/__init__.py")
 # 红线要拦的三件名字：检出根一份（宿主形态）、`data/` 下一份（容器形态）
 CRED_NAMES = (".env", "yiban.db", "accounts.json")
 # 红线拒绝文案的公共片段（两处红线共用）
@@ -101,7 +101,8 @@ class _TmpBase(unittest.TestCase):
                                 ignore=shutil.ignore_patterns("__pycache__"))
             _write(os.path.join(tree, "docker", "Dockerfile"), "")
             _write(os.path.join(tree, "docker", "scheduler.py"), "")
-            _write(os.path.join(tree, "tests", "fake_yiban_server.py"), "")
+            _write(os.path.join(tree, "yiban", "adapters", "protocol_fake",
+                                "__init__.py"), "")
         else:
             for rel in TREE_FILES:
                 _write(os.path.join(tree, rel), "")
