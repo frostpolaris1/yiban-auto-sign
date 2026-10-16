@@ -3,7 +3,8 @@
 
 钉的出口（每条都是**真函数体在 node 里执行**，桩只给浏览器环境）：
   ② `core.js::hydrateIdentity`——/api/me 不再经 apiCached：真跑后 sessionStorage 必须零写入；
-  ② `core.js::loadNavBadges`——nav-users 缓存的是**标量投影**（计数），整表明文邮箱
+  ② `core.js::loadNavBadges`——nav-users/nav-accounts 走 `count_only=1` 只取计数
+     （工单 p37f：不再拉整表）；缓存的是**标量投影**（计数），整表明文邮箱
      不落 sessionStorage；10s 窗口（工单 vff0：从 60s 降到与列表同拍）的请求收敛语义不变；
   ② `core.js::refreshNavBadges`——周期刷新先丢缓存再重取：每一拍都真发网络（不被缓存吞掉）；
   ② `core.js::doLogout`——退出**无条件先清**外壳缓存：logout 请求失败（catch 路径）
@@ -75,6 +76,13 @@ function setText(sel, v) { domTexts.push([sel, String(v)]); }
 function setNavBadge(k, v) { badges.push([k, v]); }
 function api(method, path) {
   apiCalls.push([method, path]);
+  // 徽标只取计数（工单 p37f）：count_only 通路只回标量，不下发整表。
+  if (path === "/api/users?count_only=1") {
+    return Promise.resolve({ok: true, total: 2, review: 1});
+  }
+  if (path === "/api/accounts?count_only=1") {
+    return Promise.resolve({ok: true, total: 0, pending: 0, rejected: 0});
+  }
   if (path === "/api/users") {
     return Promise.resolve({users: [
       {id: 1, email: "13800000000@qq.com", display: "138****0000", role: "user",
@@ -156,8 +164,14 @@ class CoreCacheLifecycleTest(unittest.TestCase):
                   "setTimeout(function(){ loadNavBadges({role: 'admin'}); }, 20);\n")
         out = _run_node(_HARNESS + "\n" + self.fns + "\n" + driver + _flush(
             "{store: store, calls: apiCalls, badges: badges}"), "nav-users")
-        users_calls = [c for c in out["calls"] if c[1] == "/api/users"]
+        users_calls = [c for c in out["calls"] if c[1].startswith("/api/users")]
         self.assertEqual(len(users_calls), 1, "10s 窗口内两次装载只许发一次请求")
+        # 工单 p37f：徽标只取计数——请求必须带 count_only=1，不得拉整表（5k 下整表 2.14 MiB）。
+        self.assertEqual(users_calls[0][1], "/api/users?count_only=1",
+                         "徽标必须走 count_only 通路，不得拉用户整表")
+        self.assertTrue(all("count_only=1" in c[1] for c in out["calls"]
+                            if c[1].startswith("/api/accounts") or c[1].startswith("/api/users")),
+                        "徽标两类请求都必须带 count_only=1")
         cached = out["store"].get("yiban-cache:nav-users")
         self.assertIsNotNone(cached, "计数缓存语义保留（否则切页重新打表）")
         self.assertNotIn("@", json.dumps(out["store"]), "sessionStorage 不得出现邮箱形态")
@@ -172,7 +186,7 @@ class CoreCacheLifecycleTest(unittest.TestCase):
                   "setTimeout(function(){ refreshNavBadges(); }, 20);\n")
         out = _run_node(_HARNESS + "\n" + self.fns + "\n" + driver + _flush(
             "{calls: apiCalls, badges: badges}"), "nav-refresh")
-        users_calls = [c for c in out["calls"] if c[1] == "/api/users"]
+        users_calls = [c for c in out["calls"] if c[1].startswith("/api/users")]
         self.assertEqual(len(users_calls), 2, "周期刷新必须绕过缓存、每拍真重取一次")
         # 一次 loadNavBadges 写两类徽标（work-accounts + work-users），两拍共四次。
         self.assertEqual(
