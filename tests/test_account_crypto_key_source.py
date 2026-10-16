@@ -60,18 +60,23 @@ class KeySourceGuardTest(unittest.TestCase):
         finally:
             os.chdir(os.path.dirname(os.path.abspath(__file__)))
         self.assertIn("来源不确定", str(ctx.exception))
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".env")),
+        # 判据 = 实现会写的那个路径（默认 `data/.env`，相对 cwd）。查旧路径会空转。
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "data", ".env")),
                          "拒绝生成时不得在错误目录落 .env")
 
     def test_existing_cwd_dotenv_still_generates(self):
-        """cwd 已有 .env（来源确定）→ 行为不变（正常首启在应用根生成）。"""
+        """cwd 的**默认 .env 路径**已有文件（来源确定）→ 行为不变（就近生成）。
+
+        默认路径已是 `data/.env`（工单 ybg8：运行数据收进检出内 data/）。
+        """
         os.chdir(self.tmp)
         try:
-            with open(".env", "w", encoding="utf-8") as f:
+            os.makedirs("data", exist_ok=True)
+            with open(os.path.join("data", ".env"), "w", encoding="utf-8") as f:
                 f.write("OTHER_KEY=1\n")
             key = account_crypto.load_key()
             self.assertEqual(len(key), 32)
-            with open(".env", encoding="utf-8") as f:
+            with open(os.path.join("data", ".env"), encoding="utf-8") as f:
                 self.assertIn("YIBAN_ACCOUNTS_KEY=", f.read())
         finally:
             os.chdir(os.path.dirname(os.path.abspath(__file__)))

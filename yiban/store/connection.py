@@ -9,7 +9,7 @@
 - `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
 - `_db_file` / `_env_file`：最近一次 `init_db(...)` 的库路径 / .env 路径
 - `DB_DEFAULT`：库路径默认值（按 `env_io.resolve_path` 解析：进程环境 → `.env` →
-  `"yiban.db"`）
+  `env_io.DEFAULT_DB_FILE`，即 `<检出>/data/yiban.db`）
 - `get_conn()` / `is_initialized()` / `current_db_file()` / `pool_db_declared()`
 
 **为什么 `init_db` 不在这里**：`tests/test_store_db_move.py` 钉住"真正的 `init_db` 定义
@@ -31,7 +31,9 @@ import threading
 from yiban.infra import env_io
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
-DB_DEFAULT = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
+# 默认值单点在 `env_io.DEFAULT_DB_FILE`（`data/yiban.db`，相对检出根）——库与 .env
+# 同住检出内的 `data/`，检出根因此可属 root 且组/其他不可写（install.sh 的 M01 门）。
+DB_DEFAULT = env_io.resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)
 
 _conn = None
 # RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
@@ -39,8 +41,9 @@ _conn = None
 _conn_lock = threading.RLock()
 _db_file = DB_DEFAULT
 # .env 路径（加密密钥来源）：None = 未显式指定，由 _resolve_key_env_file 按
-# YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（此时若回落值来自 cwd
-# 且文件不存在，生成新密钥会被 _assert_key_source_certain 拒绝，避免游离密钥）
+# YIBAN_ENV_FILE → env_io.DEFAULT_ENV_FILE（`data/.env`，相对检出根）回落
+# （此时若回落值来自 cwd 且文件不存在，生成新密钥会被 _assert_key_source_certain
+# 拒绝，避免游离密钥）
 _env_file = None
 
 
@@ -171,7 +174,7 @@ def pool_db_declared(env=None, env_file=None):
 
     为什么判据不是别的：
     - "磁盘上有没有库文件"会被开发机/旧部署留在工作目录里的 `yiban.db` 误判成池部署
-      （默认路径恰是 `yiban.db`），把纯状态文件部署打成拒跑；
+      （默认路径是检出根下的 `data/yiban.db`），把纯状态文件部署打成拒跑；
     - "本进程曾连上过库"分不开"连接被人为关闭"与"库真的不可用"，而后者才需要拒跑。
 
     只做一次只读解析（**不传 default**，故未声明时得到空串），不建连接、不建库、不建表。

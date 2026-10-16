@@ -196,8 +196,9 @@ class _ChainBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ctmp = tempfile.mkdtemp(prefix="yiban-chain-e2e-cls-")
-        # APP_DIR 与 `.env` 是类级的：run.sh 按契约只认 `$APP_DIR/.env`，web 的 ENV_FILE
-        # 也指到这同一个文件——**两侧读的就是这一个文件**（同源性判据的物质基础）。
+        # APP_DIR 与 `.env` 是类级的：run.sh 按契约只认 `$APP_DIR/data/.env`（工单 ybg8，
+        # 运行数据收进检出内 data/），web 的 ENV_FILE 也指到这同一个文件——**两侧读的
+        # 就是这一个文件**（同源性判据的物质基础）。
         # 每轮只隔离 state/lock 目录，run.sh 的标记与状态文件按轮互不沾染。
         cls.app = os.path.join(cls.ctmp, "app")
         os.makedirs(os.path.join(cls.app, "scripts"), exist_ok=True)
@@ -209,7 +210,8 @@ class _ChainBase(unittest.TestCase):
         with io.open(py_wrap, "w", encoding="utf-8", newline="\n") as f:
             f.write(_PY_WRAPPER % _posix(sys.executable))
         os.chmod(py_wrap, os.stat(py_wrap).st_mode | stat.S_IEXEC)
-        cls.env_file = os.path.join(cls.app, ".env")
+        os.makedirs(os.path.join(cls.app, "data"), exist_ok=True)
+        cls.env_file = os.path.join(cls.app, "data", ".env")
         cls.db_file = os.path.join(cls.ctmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.ctmp, "accounts.json")
         with io.open(cls.accounts_file, "w", encoding="utf-8") as f:

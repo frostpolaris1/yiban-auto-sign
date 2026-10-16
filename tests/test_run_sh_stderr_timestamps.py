@@ -99,7 +99,9 @@ class StderrTimestampBehaviorTest(unittest.TestCase):
         os.makedirs(app)
         os.makedirs(state)
         # 非法键名（含空格）+ 合法键名但非 YIBAN_ 前缀：各触发一条 stderr 警告
-        with io.open(os.path.join(app, ".env"), "w", encoding="utf-8", newline="\n") as f:
+        # .env 在检出内的 data/ 下（工单 ybg8）：run.sh 按 $APP_DIR/data/.env 取。
+        os.makedirs(os.path.join(app, "data"))
+        with io.open(os.path.join(app, "data", ".env"), "w", encoding="utf-8", newline="\n") as f:
             f.write("bad key=1\nNOTYIBAN=2\n")
         r = self._run({"YIBAN_APP_DIR": app, "YIBAN_STATE_DIR": state})
         err = r.stderr.decode("utf-8", "replace")

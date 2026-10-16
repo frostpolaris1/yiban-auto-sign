@@ -29,10 +29,11 @@
 # 环境变量（与 backup.sh / run.sh 同口径）：
 #   BACKUP_DIR（默认 /var/backups）、APP_DIR（默认 /opt/yiban-auto-sign）、
 #   YIBAN_BACKUP_INSTALLED（默认 /usr/local/sbin/yiban-backup.sh，防漂移比对对象）、
-#   YIBAN_ENV_FILE（默认 <APP_DIR>/.env，由本脚本导出）、
+#   YIBAN_ENV_FILE（默认 <APP_DIR>/data/.env，由本脚本导出）、
 #   YIBAN_DB_FILE（本脚本**不设**这枚键。库路径由 store 侧 `resolve_path` 三档解析：
-#     进程环境 → .env → 默认 "yiban.db"。默认值按 cwd 解析，而本脚本已 cd 到
-#     APP_DIR，所以缺省档就是 <APP_DIR>/yiban.db。本脚本插一手就会顶掉 .env 的声明）、
+#     进程环境 → .env → env_io.DEFAULT_DB_FILE "data/yiban.db"。默认值按 cwd 解析，
+#     而本脚本已 cd 到 APP_DIR，所以缺省档就是 <APP_DIR>/data/yiban.db。本脚本插一手
+#     就会顶掉 .env 的声明）、
 #   YIBAN_STATE_DIR（排期件**显式设为 root 私有目录** /var/lib/yiban-backup-sentinel：
 #   节流表落 <该目录>/notify-throttle.json。**不可**沿用 yiban 属主的共享状态目录——
 #   哨兵以 root 跑，首家写入即留下 root 属主文件，yiban 侧（web/signin）随即拿不到
@@ -41,7 +42,7 @@
 #
 # 工作目录：本脚本自己 cd 到 APP_DIR，**这是哨兵能出声的前提**。cron 的 cwd 是
 # $HOME，而哨兵侧所有 cwd 相对的回落（`yiban/infra/env_io.py` 的 env_path() 默认
-# ".env"、`yiban/store/connection.py` 的 DB_DEFAULT "yiban.db"）都以 cwd 为基准：
+# "data/.env"、`yiban/store/connection.py` 的 DB_DEFAULT "data/yiban.db"）都以 cwd 为基准：
 # 不 cd 就读不到 .env，收件人解析为空 ⇒ 告警发不出去（退出码 1，恰是本脚本要消灭的
 # 那种静默），并在 $HOME 就地新建一份野 yiban.db。
 # 部署：以 **root** 运行（与 02:00 备份同链；排期件 /etc/cron.d/yiban-backup-sentinel
@@ -58,16 +59,16 @@ export APP_DIR
 cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 # .env 路径显式导出：哨兵的收件人算法与节流表都按 YIBAN_ENV_FILE 定位 .env（缺省
 # 回落 cwd 相对 ".env"，那正是上面 cd 要治的病症）；已由部署方给出时沿用其值。
-export YIBAN_ENV_FILE="${YIBAN_ENV_FILE:-$APP_DIR/.env}"
+export YIBAN_ENV_FILE="${YIBAN_ENV_FILE:-$APP_DIR/data/.env}"
 # 库路径**不在这里给值**（工单 ba-p02-02 订正）。库路径的唯一解析器在 Python 侧。
 # `env_io.resolve_path` 的三档是：进程环境 → .env → 默认值。第一档压过第二档。
-# 这里原先写的是 `export YIBAN_DB_FILE="${YIBAN_DB_FILE:-$APP_DIR/yiban.db}"`。
+# 这里原先用 `${YIBAN_DB_FILE:-<旧默认>}` 现造一个值（键名带前缀，但把缺省值塞进第一档）。
 # 部署方没设进程环境时，它会造出一个值，并把该值放进第一档。
 # 于是 `.env` 里声明的自定义库路径被顶掉——哨兵读到另一份（通常不存在的）库。
 # 头注释当时写的理由是"免得锚点悄悄读到一个空库"。这与代码的实际行为相反，
 # 属假担保，同批订正。
-# 不设这行之后，缺省档仍落在 <APP_DIR>/yiban.db：本脚本已 cd 到 APP_DIR，
-# 默认值 "yiban.db" 按 cwd 解析就是它（与上面 cd 段的口径同一条）。
+# 不设这行之后，缺省档仍落在 <APP_DIR>/data/yiban.db：本脚本已 cd 到 APP_DIR，
+# 默认值 "data/yiban.db" 按 cwd 解析就是它（与上面 cd 段的口径同一条）。
 
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
