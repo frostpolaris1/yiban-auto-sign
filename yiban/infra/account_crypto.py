@@ -70,7 +70,10 @@ KID_CONTEXT = b"yiban-accounts-kid-v1"
 # kid 取 HMAC-SHA256 前 8 字节（16 位 hex）：肉眼可比对、日志可打印，8 字节截断
 # 只影响碰撞概率，不影响"由 kid 反推密钥"的不可能性。
 KID_HEX_LEN = 16
-DEFAULT_ENV_FILE = ".env"
+# .env 缺省落点的**单点定义**在 `env_io.DEFAULT_ENV_FILE`（`data/.env`，相对检出根）：
+# 本模块只引用它，不另抄字面量——两处各写一遍会让 `_assert_source_certain` 的
+# "来源是否确定"判定与真实默认值漂移。
+DEFAULT_ENV_FILE = env_io.DEFAULT_ENV_FILE
 
 # 进程内密钥缓存：dict[env_file] -> key（bytes），**按来源分开存**。
 # 共用一个槽位就会串钥——load_key(a) 之后再 load_key(b) 既不读 b 的盘也不打缓存，

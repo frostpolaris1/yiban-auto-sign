@@ -12,8 +12,9 @@
 
 **归属**
 追踪盐与审计密钥同住一个 .env、共用同一条路径回落链（`init_db(env_file=…)` →
-`YIBAN_ENV_FILE` → 当前目录 `.env`，含"来源只能靠 cwd 兜底且文件不存在时拒绝生成"的
-防游离落盘判据），故密钥来源解析仍由 `yiban/store/audit_chain.py` 提供、本模块经门面按
+`YIBAN_ENV_FILE` → `env_io.DEFAULT_ENV_FILE`，即 `data/.env`，相对检出根；含"来源只能靠
+默认值兜底且文件不存在时拒绝生成"的防游离落盘判据），故密钥来源解析仍由
+`yiban/store/audit_chain.py` 提供、本模块经门面按
 属性取；本模块只负责盐的取用与两个哈希口径。加盐哈希是**库内关联键与限速键**的共同
 来源，换盐会使全部存量关联失效，故 `hash_phone` 的口径刻意与 `hash_ip` 不同并已在函数
 说明中记录理由。
@@ -78,7 +79,8 @@ def _track_salt():
     """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。
 
     .env 路径回落顺序与审计密钥一致：init_db(env_file=…) →
-    YIBAN_ENV_FILE → 当前目录 ".env"；来源只能靠 cwd 兜底且文件不存在时拒绝生成。
+    YIBAN_ENV_FILE → `env_io.DEFAULT_ENV_FILE`（`data/.env`，相对检出根）；来源只能靠
+    该默认值兜底且文件不存在时拒绝生成。
     """
     global _TRACK_SALT_CACHE
     db = _facade()

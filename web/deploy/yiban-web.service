@@ -12,7 +12,7 @@
 #   2. /etc/yiban/accounts-key 为密钥文件（0600，属主 root:yiban），
 #      由 systemd 注入为环境变量（web/app.py 会通过 .env / 环境变量读取）。
 #      若服务器不使用该密钥文件，可删除 EnvironmentFile 一行，
-#      并确保 /opt/yiban-auto-sign/.env 中 YIBAN_SECRET_KEY 已配置。
+#      并确保 /opt/yiban-auto-sign/data/.env 中 YIBAN_SECRET_KEY 已配置。
 #      ⚠️ 轮换 YIBAN_ACCOUNTS_KEY 时必须同步改这份 EnvironmentFile 与 .env——
 #      启动断言"两侧读到同一把钥"，不一致即拒绝启动（fail-closed，日志报两侧
 #      kid），不再允许 env 静默压住 .env 造成 web/engine 分叉。见 README 处置节。
@@ -53,6 +53,10 @@ Restart=always
 RestartSec=3
 ProtectSystem=strict
 ProtectHome=true
+# 写入面：检出根仍需在 ReadWritePaths 里（ProtectSystem=strict 会把其余路径整个只读），
+# 但**有效的**可写面只有检出内的 data/——检出根属 root 且组/其他不可写（install.sh 的
+# M01 门要求），服务账号只能写 data/（属 yiban、0700，由 install.sh 建立）。运行数据
+# （.env / yiban.db / 通知账本与节流表）都落在 data/ 下。
 ReadWritePaths=/opt/yiban-auto-sign /var/log/yiban /var/lock/yiban
 NoNewPrivileges=true
 PrivateTmp=true

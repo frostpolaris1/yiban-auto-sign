@@ -556,7 +556,8 @@ class RunshSecondRoundTest(unittest.TestCase):
         # 应用脚本（桩）+ .env
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w", encoding="utf-8") as f:
             f.write(STUB_SIGNIN)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         # .venv/bin/python3 包装器（run.sh 优先用它）
         py_wrap = os.path.join(self.app, ".venv", "bin", "python3")

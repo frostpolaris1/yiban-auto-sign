@@ -511,8 +511,8 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
-    None 时按 YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（CLI/取证类
-    调用方应显式传入，勿让密钥来源依赖 cwd）。
+    None 时按 YIBAN_ENV_FILE → `env_io.DEFAULT_ENV_FILE`（`data/.env`，相对检出根）
+    回落（CLI/取证类调用方应显式传入，勿让密钥来源靠默认值兜底）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
     migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会回填审计链
