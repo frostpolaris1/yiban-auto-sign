@@ -217,6 +217,17 @@ guard_copy_git() { # 副本必须是一个"能用的 git 仓库"：可 rev-parse
     echo "DEV-VERIFY copy-git: HEAD=$h tracked=$n"
 }
 
+guard_copy_pruned() { # 副本内不得有 gitignore 内容：副本形状必须等于 CI 检出（只有跟踪文件）
+    # 判据不是"文件数少"而是"ignored 集为空"：文件数会随源树变化，ignored 集恒为空才是
+    # 这条不变式本身。来源：CI 是全新 clone，只有跟踪文件；本地副本多带 gitignore 内容
+    # 既不是 CI 的形状，又让 rsync -c 每次多付数百秒（2026-10-16 实测 36116 个文件 200.1s）。
+    local dest=$1 hits n
+    hits=$(cd "$dest" && git ls-files --others --ignored --exclude-standard 2>/dev/null | head -5)
+    [ -z "$hits" ] || die "副本含 gitignore 内容（rsync 剪枝失效）：$(printf '%s' "$hits" | tr '\n' ' ')——副本形状必须等于 CI 检出，拒绝以此跑测"
+    n=$(cd "$dest" && git ls-files | wc -l)
+    echo "DEV-VERIFY copy-prune: 副本无 gitignore 内容（跟踪 $n 个文件）"
+}
+
 normalize_lf() { # 副本内文本一律转 LF（只动行尾 CR，行内 CR 不动；二进制跳过）
     local dest=$1 f n=0
     while IFS= read -r f; do
@@ -659,7 +670,8 @@ fi
 PY="$FIXED_VENV/bin/python"
 [ -x "$PY" ] || die "固定 venv 不可用：$PY（不许退化成 PATH 上的任意 python）"
 TMPOUT=$(mktemp)
-trap 'rm -f "$TMPOUT"' EXIT
+IGNORE_LIST=
+trap 'rm -f "$TMPOUT" "$IGNORE_LIST"' EXIT
 
 echo "DEV-VERIFY log: ${LOG:-<未落盘>}"
 echo "DEV-VERIFY repo: $REPO"
@@ -702,26 +714,41 @@ fi
 if [ "$MODE" = fast ] && [ -d "$DEST" ]; then
     # fast 复用上一份副本、走增量同步：不变的文件不再重传，把"提交前自查"的固定开销
     # 从"整树重建"降到"只同步改动"。不变式仍是"副本 = 当前工作树"——靠 rsync --delete
-    # 删掉源里已不存在的文件（**不加** --delete-excluded，故副本自带的 .git 存活）。
+    # 删掉源里已不存在的文件。
     echo "DEV-VERIFY(fast): 增量同步已有副本（$DEST）"
 else
     rm -rf "$DEST"
     mkdir -p "$DEST"
 fi
-# 只排除 .git 与工具缓存目录：副本 = 当前工作树的可跑形态，不带 VCS 元数据与缓存残渣。
 # -c 是"副本 = 当前工作树"这条不变式的守卫本体：默认快检只看尺寸 + 整秒 mtime，
 # 同一秒内改完且尺寸不变的改动会被判成"没变"而跳过，副本陈旧后跑出来的是旧代码，
 # 可能报绿。加了 -c 就按内容校验，rsync 非 0 退出即 die，故不变式由 rsync 承重。
-# 代价实测（本树 rsync 面内约 750 个文件，2026-10-07）：副本已同步时 rsync -a 约 0.65s，
-# 加 -c 约 1.4s，多付约 0.7s；--fast-scoped 整跑墙钟 9~11s（含选中用例自身的执行）。
-rsync -a -c --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
-    --exclude='.ruff_cache' --exclude='.mypy_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
+#
+# 剪枝：副本只带"CI 检出会有"的内容。CI 是全新 clone，只有跟踪文件；本地副本若把
+# gitignore 内容一并搬进去，既不是 CI 的形状，又让 rsync -c 逐文件校验这些与跑测无关的
+# 字节。代价实测（2026-10-16，本树）：rsync 面 36116 个文件（work/ 21000、
+# frontend/node_modules/ 16133、.venv/ 4795、余），单这一步 200.1s；剪掉后 814 个文件，
+# 同一步 5.5s。被剪掉的量随本机 work/ 增长而增长，故按 git 的 ignored 名册剪，不写死目录名。
+# --delete-excluded 是必须的：排除项不参与传输，不加它，旧副本里的历史残留永远清不掉。
+# 代价是 .git 也在删除面内，故用 P（protect）规则保住它（build_copy_git 会在其后重建）。
+PRUNE_ARGS=()
+# dev-verify-mutant-begin: copy-prune
+IGNORE_LIST=$(mktemp)
+git --git-dir="$GITDIR" --work-tree="$REPO" ls-files --others --ignored --exclude-standard --directory \
+    >"$IGNORE_LIST" || die "gitignore 名册取不到（$REPO）：副本剪枝不可信，拒绝跑测"
+PRUNE_ARGS=(--delete-excluded --filter='P .git' --exclude-from="$IGNORE_LIST")
+# dev-verify-mutant-end: copy-prune
+rsync -a -c --delete --exclude='.git' ${PRUNE_ARGS[@]+"${PRUNE_ARGS[@]}"} "$REPO/" "$DEST/" ||
+    die "rsync 复制失败：$REPO -> $DEST"
 echo "DEV-VERIFY copy: $DEST"
 
 # dev-verify-mutant-begin: copy-git
 build_copy_git "$DEST" "$GITDIR" "$SHA"
 guard_copy_git "$DEST" "$SHA"
 # dev-verify-mutant-end: copy-git
+# dev-verify-mutant-begin: copy-prune-guard
+guard_copy_pruned "$DEST"
+# dev-verify-mutant-end: copy-prune-guard
 # dev-verify-mutant-begin: lf
 normalize_lf "$DEST"
 guard_lf "$DEST"
