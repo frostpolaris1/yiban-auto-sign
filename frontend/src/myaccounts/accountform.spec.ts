@@ -233,6 +233,18 @@ describe("口令字段文案（两套凭据必须读得出区别）", () => {
       expect(FORM_TEXTS[variant].passwordHelp).toContain("本站");
     }
   });
+
+  it("设备字段文案只有管理面有：自助面留一份就是随包发的死文本", () => {
+    // 自助面已不收这两个字段（2026-10-16 裁决）。把"仅在提示「请使用授权设备」时填写"
+    // 这类文案留在 user 变体里，等于包内还挂着一份教用户手填的说明——而入口已不存在。
+    // 渲染点本身另有编译器兜底：`MyAccounts.vue` 的 T 是两变体的联合类型，user 缺键
+    // 时 `T.modelLabel` 直接类型报错。这里钉的是**文案是否还在包里**。
+    const userTexts = formTexts("user") as unknown as Record<string, unknown>;
+    for (const key of ["modelLabel", "modelHelp", "codeLabel", "codeHelp"]) {
+      expect(key in userTexts).toBe(false);
+      expect(key in (formTexts("admin") as unknown as Record<string, unknown>)).toBe(true);
+    }
+  });
 });
 
 describe("占位符必须写成真实形状（不得用说明式）", () => {
