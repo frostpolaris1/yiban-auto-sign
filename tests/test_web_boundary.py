@@ -1,41 +1,35 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""web 层拆分边界：名字面完整 + 转发落到 app 模块级真状态。
+"""web 应用工厂与各域服务层的**行为**回归。
 
 标签：F · 前端与界面守卫
-覆盖：`web/app.py` 拆分后的边界——各域名字面完整（含 `web/app.py` 收尾总账）、转发必须在调用时刻现取 app 模块级真状态、拆分模块不得 `import web.app`
-对应实现：`web/app.py` 的名字面与 `web/routes/*`、`web/services/*`、`web/render.py`、`web/security.py`
-关键断言：routes 里经 `m.<名字>` 或 `sys.modules[current_app.import_name].<名字>` 晚查找的名字，在 app 与真源两侧都必须可达；测试对 app 模块级常量（`.env` 路径与读取器、窗口解析器、告警出口、原子落盘、状态目录）打桩或直接赋值之后，服务层必须看到新值——服务层另存一份绑定就会**静默**失效；发现拆分模块导入 `web.app` 即判红
-依赖：纯本地——importlib 装载 `web/app.py` 与各真源模块，另起 `subprocess` 验证别名加载安全；不起常驻服务器、无需 node、不联网
+对应实现：`web/routes/*`、`web/services/*`、`web/render.py`、`web/security.py`。
+依赖：纯本地——importlib 装载 `web/app.py` 与各真源模块；不起常驻服务器、无需 node、不联网。
 
-`web/app.py` 把实现按域拆入 `web/routes/`、`web/services/`、`web/render.py`、`web/security.py`
-后只剩「应用工厂 + 跨域中间件 + 名字面（再导出与转发包装）」。本文件把各域拆分契约并到一处，
-逐域钉住同一组边界：
+各域类保留的是**行为**用例，例如：账号域的口径（脱敏、口令策略文案、席位/配额闸门、
+`_reject_account` 的 CAS 写回、席位句柄取用）；env 域的 `.env` 往返（注释与无关行保留、
+整数读写、密钥一次生成、清单迁移写回）；logs 域的解析（日期校验、倒读、按日过滤、
+旧版符号回查、`sign_status` 三段端点切换与文案）；notify 域的容量公式与手动签到收尾
+语义、子进程等待；security 域的信任代理取 IP、口令策略阈值、会话绝对过期、计数器语义；
+以及 `StaleIdxGuardE2ETest` 的 fail-closed 409。
 
-1. **名字面完整**：routes 经 `m.<名字>` 或 `sys.modules[current_app.import_name].<名字>`
-   晚查找取用的名字，在 app 模块与真源模块上都可达；`web/app.py` 收尾契约另钉名字面总账
-   （`web/routes/*.py` 命中总数与兼容名面计数）。
-2. **转发注入 app 模块级状态**：`.env` 路径与读取器、窗口解析器、告警出口、原子落盘、
-   状态目录等留在 app 且会被测试打桩或直接赋值改写；服务层若另存一份绑定，改写会**静默**
-   失效——故转发必须在调用时刻现取后传入。
-3. **别名加载安全**：拆分模块不得导入 `web.app`（普通 import 会在别名加载的测试进程里
-   造出第二份 app），发现即红。
-4. **机制总账（6c3-B）**：上述三条里逐域复制的机制头（原 38 条）收敛为
-   `BoundaryMechanismLedgerTest` 的 8 条参数化（六域别名副本共用一套判据）；
-   各域**行为**用例（*_stub_reaches_* 等）与 security/render 的别名安全变体一字未动。
-
-功能：web 应用拆分后的边界回归（名字面 / 转发注入 / 别名加载）。
-归属：`web/` 应用层测试；被测真源为 `web/services/*`、`web/render.py`、`web/security.py`。
-复用：各域 `MOVED_*` 名字面清单、`_load_webapp()` 装载助手、`BASE` / `TEST_KEY` 公共常量。
-通信：导入 `web.app` 与各真源模块，并另起 subprocess 验证别名加载；由 pytest 收集
-`unittest.TestCase`，不启动常驻服务器。
+2026-10-16 饮食批：原四大块**拆分机制**断言整族删除——
+① `*_stub_reaches_*` / `*_assignment_reaches_*`：把 `web.app` 的模块级属性打桩或赋值后
+断言服务层"看到新值"。这钉的是**转发写法**（晚查找 `m.<名字>` 而非直接导入），不是行为：
+服务层改成直接导入则行为一字不变而它们集体转红。
+② `AppNameSurfaceContractTest` 的名字面清单、`web/routes/*` 不得 `import web.app` 的正则、
+别名加载后 `sys.modules` 的检查。
+③ `BoundaryMechanismLedgerTest` 的"复制头通用正确性"总账（`is` 同对象、转发器 arity）。
+④ `WebRenderSplitContractTest` 的同类面。
+理由见 AGENTS §一.6a（测不变式，不测编舞）。本批删除的断言原本钉住的性质，
+凡属行为者已有其它判据：窗口端点切换、脱敏、口令阈值等由本文件保留用例钉住
+（已用突变抽验：把 `sign_status` 的窗口端点判据改坏 ⇒ 保留用例转红）。
 """
 import contextlib
 import importlib.util
 import io
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -62,136 +56,6 @@ PHONE = "13800138000"
 
 
 OTHER = "13900139000"
-
-
-MOVED_ACCOUNTS = (
-    "load_accounts",
-    "load_accounts_raw",
-    "load_users",
-    "mask_account",
-    "find_account_index",
-    "_duplicate_phone_error",
-    "_owner_has_other_live",
-    "validate_account",
-    "_as_signin_account",
-    "_verify_account_clean",
-    "_stale_idx_guard",
-    "_delete_grace_remaining",
-    "_slot_to_label",
-    "_estimate_slot",
-    "_owner_display_of",
-    "_password_policy_error",
-    "_admin_password_policy_error",
-    "_mask_email",
-    # 只被迁出族使用的常量，随所属域搬
-    "ACCOUNT_STATUS_PENDING",
-    "ACCOUNT_STATUS_ACTIVE",
-    "ACCOUNT_STATUS_REJECTED",
-    "PHONE_RE",
-    "DELETE_GRACE_DAYS",
-    "PASSWORD_MIN_LEN",
-    "_PASSWORD_CLASS_PATTERNS",
-    "_PASSWORD_CLASS_LABELS",
-    "_PASSWORD_MIN_CLASSES",
-    "_PASSWORD_CLASS_HINT",
-    "_PASSWORD_POLICY_HINT",
-    "ADMIN_PASSWORD_MIN_LEN",
-    "ADMIN_PASSWORD_MIN_CLASSES",
-)
-
-
-MOVED_VERIFY = (
-    "VerifyGateBusy",
-    "VerifyQuotaExceeded",
-    "run_verify_with_gate",
-    "_reject_account",
-    "_reclaim_stale_verify_jobs",
-    "_verify_queue_full",
-    "_start_verify_job",
-    "verify_async_enabled",
-    "_account_verify_enabled",
-    # 只被迁出族使用，随所属域搬
-    "VERIFY_JOBS_MAX_PENDING",
-)
-
-
-MOVED_MEASURE = (
-    "_measure_state_path",
-    "_read_measure_state",
-    "_write_measure_state",
-    "_measure_cooldown_remaining",
-    "_pick_measure_account",
-    # 只被迁出族使用，随所属域搬
-    "MEASURE_STATE_FILE",
-)
-
-
-PURE_REEXPORTS_ACCOUNTS = (
-    "load_accounts",
-    "load_accounts_raw",
-    "load_users",
-    "mask_account",
-    "find_account_index",
-    "_duplicate_phone_error",
-    "_owner_has_other_live",
-    "validate_account",
-    "_as_signin_account",
-    "_verify_account_clean",
-    "_stale_idx_guard",
-    "_delete_grace_remaining",
-    "_owner_display_of",
-    "_password_policy_error",
-    "_admin_password_policy_error",
-    "_mask_email",
-)
-
-
-PURE_REEXPORTS_VERIFY = (
-    "VerifyGateBusy",
-    "VerifyQuotaExceeded",
-    "_reject_account",
-    "_reclaim_stale_verify_jobs",
-    "_verify_queue_full",
-    "_start_verify_job",
-)
-
-
-PURE_REEXPORTS_MEASURE = (
-    "_read_measure_state",
-    "_measure_cooldown_remaining",
-    "_pick_measure_account",
-)
-
-
-FORWARDED_ACCOUNTS = ("_slot_to_label", "_estimate_slot")
-
-
-FORWARDED_VERIFY = ("run_verify_with_gate", "verify_async_enabled", "_account_verify_enabled")
-
-
-FORWARDED_MEASURE = ("_measure_state_path", "_write_measure_state")
-
-
-APP_HELD_STATE_ACC = {
-    "web/services/accounts_data.py": (
-        "ENV_FILE", "LOG_FILE", "STATE_DIR", "_atomic_write", "_verify_sem",
-        "_verify_attempt_allowed", "_rate_lock", "send_notification", "verify_jobs",
-    ),
-    "web/services/verify_queue.py": (
-        "ENV_FILE", "STATE_DIR", "_atomic_write", "_verify_sem",
-        "_verify_attempt_allowed", "_file_lock", "verify_jobs", "_sign_window",
-    ),
-    "web/services/measure.py": (
-        "ENV_FILE", "LOG_FILE", "STATE_DIR", "_atomic_write", "_file_lock", "verify_jobs",
-    ),
-}
-
-
-SERVICE_SOURCES_ACC = (
-    "web/services/accounts_data.py",
-    "web/services/verify_queue.py",
-    "web/services/measure.py",
-)
 
 
 class WebServicesAccountsSplitContractTest(unittest.TestCase):
@@ -551,107 +415,6 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
                                      f"{env} 不得改变预计时段来源")
 
 
-MOVED_ENV_IO = (
-    "read_env",
-    "load_env_int",
-    "write_env_int",
-    "write_env_key",
-    "write_env_batch",
-    "ensure_secret_key",
-    "_env_write_lock",
-    "_settings_label",
-    "_settings_value_text",
-    "_settings_effective_values",
-    "_is_http_proxy_url",
-    "_report_env_key_collisions",
-    "_parse_announcement_meta",
-    # 随解析器搬迁的格式常量（公告元数据形态的唯一真源）
-    "ANNOUNCEMENT_DRAFT_META_SEP",
-    "ANNOUNCEMENT_DRAFT_META_FMT",
-    # 只被迁出的两个展示函数使用，随所属域搬
-    "_SETTINGS_KEY_LABELS",
-    "_BOOL_SETTINGS_KEYS",
-)
-
-
-MOVED_EXECUTOR_ENV = (
-    "_executor_rows",
-    "_mutate_executor_rows",
-    "_next_executor_slot",
-    "_save_row_egress",
-    "_save_fallback_egress",
-    "_save_slot_egress",
-    "_validated_proxy_value",
-    "_validated_name",
-    "_executors_window",
-    "_last_executors",
-    "_executor_row_payload",
-    "_executor_activity",
-)
-
-
-PURE_REEXPORTS_ENV_IO = (
-    "read_env",
-    "load_env_int",
-    "_env_write_lock",
-    "_settings_label",
-    "_settings_value_text",
-    "_is_http_proxy_url",
-    "_parse_announcement_meta",
-    "_SETTINGS_KEY_LABELS",
-    "_BOOL_SETTINGS_KEYS",
-    "ANNOUNCEMENT_DRAFT_META_SEP",
-    "ANNOUNCEMENT_DRAFT_META_FMT",
-)
-
-
-PURE_REEXPORTS_EXECUTOR_ENV = (
-    "_next_executor_slot",
-    "_validated_proxy_value",
-    "_validated_name",
-    "_last_executors",
-    "_executor_row_payload",
-    "_executor_activity",
-)
-
-
-FORWARDED_ENV_IO = (
-    "write_env_batch",
-    "write_env_key",
-    "write_env_int",
-    "ensure_secret_key",
-    "_settings_effective_values",
-    "_report_env_key_collisions",
-)
-
-
-FORWARDED_EXECUTOR_ENV = (
-    "_executor_rows",
-    "_mutate_executor_rows",
-    "_save_row_egress",
-    "_save_fallback_egress",
-    "_save_slot_egress",
-    "_executors_window",
-)
-
-
-APP_HELD_STATE_ENV = (
-    "ENV_FILE",
-    "_REPO_ROOT",
-    "_doc_cache",
-    "_atomic_write",
-    "_env_flag",
-    "_sign_window",
-    "send_notification",
-    "_file_lock",
-    "_rate_lock",
-)
-
-
-SERVICE_SOURCES_ENV = ("web/services/env_io.py", "web/services/executor_env.py",
-                   "web/services/locks.py")
-
-
 class WebServicesEnvSplitContractTest(unittest.TestCase):
     """以别名加载的 app 副本为靶子（routes 与测试实际看到的那一份）。"""
 
@@ -881,96 +644,6 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-MOVED_LOGS = (
-    "_log_line_visible",
-    "_cred_paused_phones",
-    "clear_fuse_pause",
-    "clear_fuse_on_cred_change",
-    "load_sign_state",
-    "_tail_lines",
-    "parse_sign_log",
-    "_is_valid_date_str",
-    "log_path_for",
-    "_log_lines_for",
-    "_today_has_logs",
-    "_most_recent_log_date",
-    "_mask_log_phones",
-    "_LOG_TAIL_BYTES",
-    # 只被迁出族使用，随所属域搬（行正则与最近日期缓存）
-    "SIGN_LOG_RE",
-    "_most_recent_log_cache",
-)
-
-
-MOVED_SIGNSTATUS = (
-    "_sign_window",
-    "_env_flag",
-    "_in_sign_window",
-    "_in_run_period",
-    "_day_off_reason",
-    "sign_status",
-    "check_connectivity",
-    # 只被迁出的开关解析器使用，随所属域搬
-    "_TRUTHY_LITERALS",
-)
-
-
-PURE_REEXPORTS_LOGS = (
-    "_log_line_visible",
-    "_cred_paused_phones",
-    "clear_fuse_pause",
-    "clear_fuse_on_cred_change",
-    "_tail_lines",
-    "_is_valid_date_str",
-    "_mask_log_phones",
-    "_LOG_TAIL_BYTES",
-    "SIGN_LOG_RE",
-    "_most_recent_log_cache",
-)
-
-
-PURE_REEXPORTS_SIGNSTATUS = (
-    "_env_flag",
-    "_in_sign_window",
-    "check_connectivity",
-    "_TRUTHY_LITERALS",
-)
-
-
-FORWARDED_LOGS = (
-    "parse_sign_log",
-    "log_path_for",
-    "_log_lines_for",
-    "_today_has_logs",
-    "_most_recent_log_date",
-    "load_sign_state",
-)
-
-
-FORWARDED_SIGNSTATUS = (
-    "_sign_window",
-    "_in_run_period",
-    "sign_status",
-    # 注入型（非纯再导出）：调用时刻现读 `.env` 真值后交给同一份门判定——门语义未改，
-    # 改的只是"读到的是哪份值"（原先落回 os.environ，`.env` 的急停/周末在 web 侧恒不生效）
-    "_day_off_reason",
-)
-
-
-APP_HELD_STATE_LOGS = (
-    "ENV_FILE",
-    "LOG_FILE",
-    "STATE_DIR",
-    "_REPO_ROOT",
-    "_doc_cache",
-    "_atomic_write",
-    "_file_lock",
-    "_rate_lock",
-    "send_notification",
-)
-
-
-SERVICE_SOURCES_LOGS = ("web/services/logs.py", "web/services/signstatus.py")
 
 
 class WebServicesLogsSplitContractTest(unittest.TestCase):
@@ -1321,91 +994,6 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-MOVED_NOTIFY = (
-    "_nl_safe",
-    "_audit_actor",
-    "_audit_alert_facts",
-    "_last_cleanup_text",
-    "_change_mail",
-    "_review_reject_mail",
-    "_alert_mail_recipients",
-    "send_notification",
-    "_push_ever_configured",
-    # 只被迁出族使用、随所属域搬的常量
-    "_NOTIFY_LEDGER_LABELS",
-    "_MAIL_FLAG_NAMES",
-    "_PUSH_CONFIG_ENV_KEYS",
-)
-
-
-MOVED_CHANNEL = (
-    "_alert_channel_status",
-    "_channel_health_degraded",
-    "_channel_status_lines",
-    "_daily_budget_desc",
-    "_health_report_sent_today",
-    "_channel_health_facts",
-    "_audit_channel_health_degraded",
-    "_send_channel_health_report",
-    "_HEALTH_REPORT_META_KEY",
-)
-
-
-MOVED_CAPACITY = (
-    "_capacity_account_count",
-    "_capacity_audit_count",
-    "_capacity_estimate",
-    "_accounts_at_capacity",
-    "_registration_paused",
-    "_users_at_capacity",
-    "_mail_alert_due",
-    "_notify_capacity_once",
-    # 随域搬的节流状态与缺省窗口
-    "DEFAULT_MAIL_ALERT_COOLDOWN",
-    "_mail_alert_ts",
-    "_mail_alert_lock",
-    "_capacity_alerts",
-)
-
-
-MOVED_MANUAL = (
-    "_wait_signin_proc",
-    "_batch_wait_timeout",
-    "_manual_sign_failure_reason",
-    "_log_manual_sign_exit",
-    "_SIGNIN_EXIT_REASONS",
-)
-
-
-PURE_REEXPORTS_NOTIFY = {
-    "notify_mail": (
-        "_nl_safe", "_audit_actor", "_audit_alert_facts", "_last_cleanup_text",
-        "_change_mail", "_review_reject_mail", "_alert_mail_recipients",
-        "_NOTIFY_LEDGER_LABELS", "_MAIL_FLAG_NAMES", "_PUSH_CONFIG_ENV_KEYS",
-    ),
-    "channel_health": (
-        "_channel_health_degraded", "_daily_budget_desc", "_health_report_sent_today",
-        "_channel_health_facts", "_audit_channel_health_degraded", "_HEALTH_REPORT_META_KEY",
-    ),
-    "capacity": (
-        "_capacity_account_count", "_capacity_audit_count",
-        "DEFAULT_MAIL_ALERT_COOLDOWN", "_mail_alert_ts", "_mail_alert_lock", "_capacity_alerts",
-    ),
-    "manual_sign": (
-        "_wait_signin_proc", "_batch_wait_timeout", "_manual_sign_failure_reason",
-        "_SIGNIN_EXIT_REASONS",
-    ),
-}
-
-
-FORWARDED_NOTIFY = {
-    "notify_mail": ("send_notification", "_push_ever_configured"),
-    "channel_health": ("_alert_channel_status", "_channel_status_lines",
-                       "_send_channel_health_report"),
-    "capacity": ("_capacity_estimate", "_accounts_at_capacity", "_registration_paused",
-                 "_users_at_capacity", "_mail_alert_due", "_notify_capacity_once"),
-    "manual_sign": ("_log_manual_sign_exit",),
-}
 
 
 COMMON_APP_STATE = (
@@ -1423,9 +1011,6 @@ APP_HELD_STATE_NOTIFY = {
         *COMMON_APP_STATE, "send_notification", "DEFAULT_MAX_ACCOUNTS", "DEFAULT_MAX_USERS"),
     "web/services/manual_sign.py": COMMON_APP_STATE,
 }
-
-
-SERVICE_SOURCES_NOTIFY = tuple(APP_HELD_STATE_NOTIFY)
 
 
 class WebServicesNotifySplitContractTest(unittest.TestCase):
@@ -1621,88 +1206,6 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-MOVED_SECURITY = (
-    "_new_admin_sid",
-    "_issue_admin_sid",
-    "_admin_session_facts",
-    "_builtin_admin_email",
-    "_is_builtin_admin_session",
-    "_effective_role",
-    "_current_role",
-    "migrate_admin_password_to_hash",
-    "_constant_time_dummy",
-    "reject_default_admin_password",
-    "_client_ip",
-    "_ip_store_trim",
-    "_bump_window_count",
-    "_bump_login_failure",
-    "_sensitive_gate_params",
-    "_verify_attempt_allowed",
-    "_verify_fail_cooldown_remaining",
-    "_record_verify_failure",
-    "check_admin_configured",
-    "_builtin_admin_loginable",
-    "verify_admin",
-    "_atomic_write",
-    "_replace_with_retry",
-    # 只被迁出族使用、随所属域搬的常量；另加同域的策略/口径常量
-    "SCRYPT_METHOD",
-    "ADMIN_SID_ENV_KEY",
-    "LOGIN_LOCK_SECONDS",
-    "_is_loopback_addr",
-    "_IP_STORE_LIMIT",
-    "_IP_STORE_MAX_AGE",
-    "VERIFY_MAX",
-    "VERIFY_WINDOW",
-    "VERIFY_FAIL_MAX",
-    "VERIFY_FAIL_WINDOW",
-    "VERIFY_FAIL_COOLDOWN",
-    "VERIFY_FAIL_AUTH_KEYWORDS",
-    "PW_CONFIRM_TTL_DEFAULT",
-    "PW_CONFIRM_TTL_MAX",
-    "PW_CONFIRM_COOLDOWN_DEFAULT",
-    "_DEFAULT_ADMIN_LITERALS",
-    "_REPLACE_RETRY_ATTEMPTS",
-    "_REPLACE_RETRY_BASE_SEC",
-)
-
-
-PURE_REEXPORTS_SEC = (
-    "_new_admin_sid",
-    "_constant_time_dummy",
-    "_client_ip",
-    "_ip_store_trim",
-    "_bump_window_count",
-    "_bump_login_failure",
-    "_verify_attempt_allowed",
-    "_verify_fail_cooldown_remaining",
-    "_record_verify_failure",
-    "_atomic_write",
-    "_replace_with_retry",
-)
-
-
-FORWARDED_SEC = (
-    "_issue_admin_sid",
-    "_admin_session_facts",
-    "_builtin_admin_email",
-    "_is_builtin_admin_session",
-    "_effective_role",
-    "_current_role",
-    "migrate_admin_password_to_hash",
-    "reject_default_admin_password",
-    "_sensitive_gate_params",
-    "check_admin_configured",
-    "_builtin_admin_loginable",
-    "verify_admin",
-)
-
-
-APP_HELD_STATE_SEC = (
-    "ENV_FILE", "LOG_FILE", "STATE_DIR", "read_env", "write_env_key",
-    "write_env_batch", "load_env_int", "_count_env_key_lines", "send_notification",
-    "SESSION_ABS_TTL_SECONDS", "verify_jobs", "_verify_sem", "_file_lock",
-)
 
 
 class WebSecuritySplitContractTest(unittest.TestCase):
@@ -1933,8 +1436,6 @@ class WebSecuritySplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
 
 
-M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
-
 # （名字面计数钉已随流程门禁整族裁撤，缩减批 6a：名字面漂移的可见性由
 # test_every_m_route_name_reachable_on_app_module 的可达性断言承接。）
 
@@ -1955,34 +1456,6 @@ SPLIT_MODULES = (
     "web.render",
     "web.security",
 )
-
-
-SPLIT_SOURCES = tuple(m.replace(".", "/") + ".py" for m in SPLIT_MODULES)
-
-
-MOVED_NAMES = (
-    "_inline_md",
-    "_render_md",
-    "_read_doc_html",
-    "_doc_page",
-    "_DOC_FILES",
-    "_SAFE_LINK_SCHEMES",
-    "_LINK_RE",
-    "email_domain_error",
-    "icp_info",
-    "police_info",
-    "police_link",
-    "site_description",
-    "site_image",
-    "edge_config",
-    "edge_front_sec",
-)
-
-
-PURE_REEXPORTS_RENDER = ("_inline_md", "_render_md", "_DOC_FILES", "_SAFE_LINK_SCHEMES", "_LINK_RE")
-
-
-APP_HELD_STATE_RENDER = ("ENV_FILE", "_REPO_ROOT", "_doc_cache")
 
 
 class WebRenderSplitContractTest(unittest.TestCase):

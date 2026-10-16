@@ -13,6 +13,11 @@
     在单键取值上表现为"配置改了不生效"，正是本模块存在的理由。
 依赖：无网络；临时 `.env` 文件 + 注入的 registry 映射。**一处子进程**——"零配置启动"
     那条起一次 `python -c "import yiban.engine..."`，证明 `.env` 缺失时引擎照旧可导入。
+
+2026-10-16 饮食批：`RegistryValidationTest` 整类删除——它逐条（域无序、缺省在域外、
+未知类型、缺 group/doc…）断言 `CL.validate_registry`，而同一实现的负例已由 CI 门
+`scripts/check-config-registry.py` 的元测试 `tests/test_config_registry_gate.py::GateRegistrySelfCheckTest`
+与 `GateDefaultLiteralMutationTest` 覆盖（门禁脚本与加载器共用同一份校验）。留着＝同一判据两份载体。
 """
 import ast
 import logging

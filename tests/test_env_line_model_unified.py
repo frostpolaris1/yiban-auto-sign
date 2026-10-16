@@ -33,6 +33,11 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 > 10 分隔符实测清单三条并一条；V2 潜伏注释两目标键并一条；引擎值内分隔符全循环与
 > 「两侧同句」两条并一条（宽分隔符支逐字符保留两侧文案相等断言）。
 > 主 owner `test_env_line_break_injection.py`（CRITICAL 活体回归执行器）一字未动。
+
+2026-10-16 饮食批：`SingleLineModelSourceTest` 整类删除——两条都是**源码文本**断言
+（`hasattr` 名字面在场 + 读 `web/services/env_io.py` 断言其中不出现 `splitlines(`）。
+"行模型只许一份"这条约束的行为面由本文件其余用例承担（同一入参两侧同一句拒绝、
+写入前后键集合 diff 等）；剩下的只是"文本里不许出现某个 token"，属实现长相。
 """
 import contextlib
 import importlib.util

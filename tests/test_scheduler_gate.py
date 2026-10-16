@@ -25,6 +25,11 @@
 
 用法（项目根目录）：
     py -m pytest tests/test_scheduler_gate.py -v
+
+2026-10-16 饮食批：`SignEventWriteTest` 整类删除——两条用例驱动的是**冻结的**
+`signin.run_queue_retry` 的 `event_sink`（生产零调用点，工单 `77s2`）。签到事件的活判据在
+`tests/test_executor_v3.py::EmitEventAttemptNotNullTest` 与
+`tests/test_progress_events_e2e.py`（`sign_events` 列约束与节点值域）。
 """
 import contextlib
 import importlib.util

@@ -27,6 +27,12 @@
 用法（项目根目录）：
     py -m pytest tests/test_time_prefs.py -v
     py tests/test_time_prefs.py
+
+2026-10-16 饮食批：`TimePrefsTest` 的 `test_run_queue_retry_skips_paused` 与
+`test_run_queue_retry_window_over_zero_request` 两条已删——它们驱动的是**冻结的**
+`signin.run_queue_retry`（生产零调用点，工单 `77s2`）。同一性质在 v3 侧有活判据：
+暂停账号不发起请求见 `tests/test_executor_v3.py::TerminalStateTest::test_paused_credential_skips_without_request`，
+窗口外零请求见同文件 `ProductContractTest` 与 `tests/test_effective_window.py::WindowClosedExitCodeTest`。
 """
 import contextlib
 import datetime as _datetime_TPREF
