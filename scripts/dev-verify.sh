@@ -298,7 +298,18 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # 基线 762 条。首版注释写 929/1039，差的 10 条正是本文件自带用例——那时新文件还没计
     # 入收集。以复审实测值为准）；新增文件全是
     # claim/queue/fallback/执行体面，无无关重测被捞。
-    "$py" -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit or claim or queue"
+    # 2026-10-16（工单 zdvd）：多执行体靶场**从关键词子集里摘出来**，见下面那条单独轨。
+    # 摘法是 `--ignore` 而不是往 -k 里加 `and not drill`：-k 按子串匹配用例 ID，`drill`
+    # 会连带命中 `test_drill_redline_e2e.py` 等另外两个文件（那是轻量的、该留在子集里）。
+    # `--ignore` 只针对这一个文件，作用面明确。
+    "$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit or claim or queue"
+    # 重活单独一条**串行**轨（2026-10-16 立）。多执行体靶场会拉起 mock 服务 ＋ 监督进程 ＋
+    # 执行体进程树，需要独占机器。它与上面 1034 条用例同抢 runner 的 4 个核时，实测在
+    # ubuntu runner 上**跑不起来**（真登录 0 次，见工单 zdvd）；而本机 24 核上把整个子集
+    # 限到 4 个核跑仍 1034 passed——差异是**机器**，不是代码。故给它一条不带 -n 的轨。
+    # 这不放松判据：它照样在 CI 里跑，只是不再与别的用例抢核。
+    echo "DEV-VERIFY(ci) drill lane（串行，独占机器）"
+    "$py" -m pytest tests/test_multi_executor_drill_e2e.py -q -p no:randomly
     echo "DEV-VERIFY(ci) e2e smoke"
     "$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
     echo "DEV-VERIFY(ci) shared facts gate"
