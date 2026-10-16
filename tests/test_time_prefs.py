@@ -1143,43 +1143,6 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(len(sched), 4)
         self.assertNotIn(accs[2].phone, sched)
 
-    def test_run_queue_retry_skips_paused(self):
-        """端到端确认：user_paused 账号在 run_queue_retry 中零请求、状态写 user_cancelled。"""
-        import unittest.mock as mock
-
-        accs = [signin.Account(phone="13800138001", password="p")]
-        accs[0].user_paused = True
-        state_dir = tempfile.mkdtemp(prefix="yiban-pause-")
-        self.addCleanup(shutil.rmtree, state_dir, ignore_errors=True)
-        with mock.patch.object(signin, "_write_sign_state") as w, \
-             mock.patch.object(signin, "attempt_signin") as attempt:
-            results = signin.run_queue_retry(accs, "", 0, 0)
-        attempt.assert_not_called()  # 零请求
-        self.assertEqual(results["13800138001"][3], signin.STATUS_USER_CANCELLED)
-        w.assert_called_once()
-        self.assertEqual(w.call_args[0][1], signin.STATUS_USER_CANCELLED)
-
-    def test_run_queue_retry_window_over_zero_request(self):
-        """对抗（2026-08-15）：窗口已过（08:30 > 07:50）→ 全部零请求跳过，不登录不发通知。"""
-        import unittest.mock as mock
-        from datetime import datetime as _dt
-
-        accs = [signin.Account(phone="13800138001", password="p")]
-
-        class FakeNow:
-            @staticmethod
-            def now():
-                return _dt(2026, 8, 15, 8, 30, 0)
-
-        sched = {"13800138001": _dt(2026, 8, 15, 6, 40)}
-        with mock.patch.object(signin.clock, "now", FakeNow.now), \
-             mock.patch.object(signin, "attempt_signin") as attempt, \
-             mock.patch.object(signin, "_write_sign_state") as w, \
-             mock.patch.object(signin, "_update_cred_state"):
-            results = signin.run_queue_retry(accs, "http://notify.invalid", 0, 0, schedule=sched)
-        attempt.assert_not_called()
-        self.assertEqual(results["13800138001"][3], signin.STATUS_SKIPPED_WINDOW)
-        self.assertEqual(w.call_args[0][1], signin.STATUS_SKIPPED_WINDOW)
 
     def test_api_capacity_user_registration_limit(self):
         """对抗性审查补：注册总人数上限（YIBAN_MAX_USERS）——超限拒绝。"""

@@ -78,12 +78,12 @@ NAMED_SMOKE = {
     # `locks.file_lock` 的每路径 RLock 串行化（根因②），该契约未被真跨进程验证。
     "tests/test_notify_throttle.py::test_concurrent_same_title_only_one_passes":
         "线程被每路径 RLock 串行化；跨进程节流契约无真载体，只作冒烟",
-    # 两线程抢同一行，`claim_batch` 在 `_conn_lock` 下执行（根因①）⇒ 被串行化。
-    # 用例 docstring 自陈"改成先查后写时本用例仍绿"。真跨进程争用判据见
-    # `tests/test_live_claim_cross_process_contention_e2e.py`（本批 1b）。
-    "tests/test_vs1_claim_atomicity.py::Axis1AtomicityTest::test_两线程并发只有一个赢家":
-        "线程被 _conn_lock 串行化；真跨进程争用判据见 1b 的行为用例，只作冒烟",
 }
+# 2026-10-16 饮食批：原表第 4 条
+# `tests/test_vs1_claim_atomicity.py::Axis1AtomicityTest::test_两线程并发只有一个赢家`
+# 整文件已删（S1 冻结载体：该文件的其余轴钉的是已冻结的 `sign_tasks` 老写口形状，
+# 且真跨进程争用判据住在 `tests/test_live_claim_cross_process_contention_e2e.py`）。
+# 删掉被点名用例 ⇒ 本门按"不许留假条目"报 stale，属预期红；同批摘掉该条目。
 
 
 # ---- 源码分析助手 ----
