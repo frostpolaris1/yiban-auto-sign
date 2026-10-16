@@ -29,7 +29,7 @@ from yiban import platform as yiban_platform
 from yiban import status as yiban_status
 from yiban.geo import generate_position_in_polygon
 from yiban.protocol import ParseError, parse_device_state
-from yiban.store.accounts import account_still_signable
+from yiban.store.accounts import account_still_signable, update_account
 
 logger = logging.getLogger("yiban.client")
 
@@ -297,7 +297,40 @@ class YibanClient:
                 f"{masking.sanitize_text(state.phone_model) or '未知'}）——请在易班 App 的"
                 "「设备识别」页完成本机授权，否则可能被上游拒签"
             )
+        self._persist_registered_device(state)
         return state
+
+    def _persist_registered_device(self, state):
+        """把读回的设备登记值落到本地账号行——**注册一次、长期复用**。
+
+        落库后各轮签到直接走账号本地配置（`_device_identity` 的第一个分支），
+        不再发 `getState` 请求。若只是"每轮都读回"，等于把一次登记变成每次上线，
+        既多一次请求，又让设备身份随上游变动而漂移。
+
+        账号行 id 为 0（非库来源：JSON/环境变量）时无处可落，跳过；落库失败
+        **fail-open**：拿不到持久化不阻断签到，本轮仍用读回值。
+        """
+        if not state.code or not state.phone_model:
+            return
+        account_id = getattr(self.account, "account_id", 0)
+        if not account_id:
+            return
+        try:
+            update_account(account_id, {
+                "phone_model": state.phone_model,
+                "phone_code": state.code,
+            })
+        except Exception as exc:  # 诊断性持久化：失败不影响本轮签到
+            logger.debug(
+                f"[{self.account.phone}] 设备登记落库失败（fail-open，本轮仍用读回值）："
+                f"{type(exc).__name__}"
+            )
+            return
+        # 内存副本同步：同进程后续轮次（重试/多任务）不再重复读
+        self.phone_model = state.phone_model
+        self.phone_code = state.code
+        logger.info(f"[{self.account.phone}] 设备登记已落到本地账号，后续轮次直接复用")
+
 
     def _wipe_credentials(self):
         """凭据内存尽力清零：单次签到尝试结束（成败均然）由 attempt_signin 调用。
