@@ -37,6 +37,7 @@ import {
   stateCell,
   statsOf,
 } from "./model.js";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES, clampPage, pageSlice } from "../lib/pager";
 import {
   availableUserItems,
   buildAccountPayload,
@@ -116,6 +117,13 @@ const me = ref<{ time_pref_allowed?: boolean } | null>(null);
 const timePrefOn = computed(() => me.value?.time_pref_allowed === true);
 const tab = ref("pending");
 const search = ref<Record<string, string>>({ pending: "", active: "", deleted: "" });
+// 分页状态（每组各持一页；页大小三组共用一个值）。
+// 后端 /api/accounts 的 limit/offset 切的是**整表**，而本页按 status 在**前端分组**——
+// 直接对整表分页会把同一组拆到不同页。故本页用客户端分页：一次取全、每组只渲染当前页，
+// 使 5k 账号下首屏 DOM 与页大小同阶（而非 11 万节点）。详见交付报告"分页口径"。
+const pages = ref<Record<string, number>>({ pending: 1, active: 1, deleted: 1 });
+const pageSize = ref(DEFAULT_PAGE_SIZE);
+const PAGE_SIZE_OPTS: number[] = [...PAGE_SIZES];
 const sel = ref<Record<string, Record<string, boolean>>>({ pending: {}, active: {}, deleted: {} });
 const busy = ref(false);
 const menuOpen = ref(false);
@@ -139,6 +147,26 @@ function totalOf(group: string): number {
 }
 function groupCount(group: string): string {
   return countLabel(totalOf(group), rowsOf(group).length, search.value[group] ?? "");
+}
+/** 当前页的渲染行（客户端分页：行集是 rowsOf 的切片，选中/计数/空态仍按整组口径）。 */
+function pageRows(group: string): AccountRecord[] {
+  return pageSlice(rowsOf(group), pages.value[group] ?? 1, pageSize.value);
+}
+function pageTotal(group: string): number {
+  return rowsOf(group).length;
+}
+function onPageChange(group: string, p: number): void {
+  pages.value = { ...pages.value, [group]: p };
+}
+/** 改页大小后各组回到第 1 页（否则原页码可能越界）。 */
+function onPageSizeChange(): void {
+  pages.value = { pending: 1, active: 1, deleted: 1 };
+}
+/** 数据或筛选变化后把每组页码夹回有效区间（轮询后行数可能变小）。 */
+function clampPages(): void {
+  const next: Record<string, number> = {};
+  for (const g of GROUP_LIST) next[g] = clampPage(pages.value[g] ?? 1, rowsOf(g).length, pageSize.value);
+  pages.value = next;
 }
 
 /**
@@ -256,6 +284,8 @@ async function load(animate = false): Promise<void> {
     stateMsgs.value = data.state_msgs ?? {};
     stateDurs.value = data.state_durs ?? {};
     sel.value = pruneSelection(accounts.value, sel.value);
+    // 轮询后行数可能变化（审核/删除/搜索）：把每组页码夹回有效区间。
+    clampPages();
     // 服务端真实状态已到，撤掉「待签中」的乐观标记（同 legacy：刷新后由真实状态覆盖）。
     signingIndex.value = null;
   };
@@ -307,6 +337,10 @@ function syncTabUrl(next: string): void {
   }
 }
 watch(tab, syncTabUrl);
+// 检索条件变化即回到第 1 页（否则筛完停在旧页码上、可能落在越界空页）。
+watch(search, () => {
+  pages.value = { pending: 1, active: 1, deleted: 1 };
+}, { deep: true });
 
 // WAI-ARIA tabs 键盘导航。本页已脱离 core.js 的 data-tab-group 契约（那套方向键只认
 // `.tab[data-tab-target]`，够不到这里的页签），且非活动页签 tabindex=-1 不可 Tab 到达，
@@ -745,7 +779,7 @@ const M = {
                       <!-- key 用 index（服务端唯一位置键）而非脱敏 phone：脱敏号前 3 后 4 相同
                           的两个账号会撞成同一个 key（138****8000），导致 Vue diff 错配。 -->
                       <tr
-                        v-for="row in rowsOf(g)"
+                        v-for="row in pageRows(g)"
                         :key="g + ':' + row.index"
                         :data-acct-idx="row.index"
                         :class="{ 'acct-row-flash': flashIndex === row.index }"
@@ -842,6 +876,21 @@ const M = {
                       </tr>
                     </tbody>
                   </table>
+                </div>
+
+                <!-- 客户端分页控件（每页大小 × 组）：只渲染当前页，5k 账号下首屏 DOM 与
+                     页大小同阶。控件走 EP（不是原生 select/range：原生弹出层样式不可控）。 -->
+                <div v-if="pageTotal(g) > pageSize" class="acct-pager" :data-acct-pager="g">
+                  <el-pagination
+                    :current-page="pages[g]"
+                    :page-size="pageSize"
+                    :total="pageTotal(g)"
+                    :page-sizes="PAGE_SIZE_OPTS"
+                    layout="sizes, prev, pager, next"
+                    background
+                    @current-change="(p: number) => onPageChange(g, p)"
+                    @size-change="onPageSizeChange"
+                  />
                 </div>
 
                 <p class="empty" :id="GROUPS[g].empty" :hidden="rowsOf(g).length > 0">
