@@ -1,0 +1,10 @@
+{
+ "code": 0,
+ "msg": "",
+ "data": {
+  "authorize": false,
+  "Code": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "PhoneModel": "Example-EX1000",
+  "UpdateTime": 1761517844
+ }
+}
