@@ -6,7 +6,7 @@
     `yiban.mail.layout.Mail` 构造点的正文遮罩收口（邮件 to_plain/to_html 与推送
     三条出口共享同一构造，故一处收口覆盖三条）。
 对应实现：`yiban/engine/accounts.py::Account.__repr__`、
-    `yiban/mail/layout.py::Mail.__init__` / `_masked_tree`。
+    `yiban/adapters/notifier/mail/layout.py::Mail.__init__` / `_masked_tree`。
 关键断言：脱敏口径复用单一原语——号码 `mask_phone`/`mask_phones_in_text`（与
     `MaskingFormatter` 同规则），邮箱 `_mask_addr`（与告警收件人 MF-51 同口径），
     不新造第二套；已遮文本**幂等**通过（二次遮不变形）。

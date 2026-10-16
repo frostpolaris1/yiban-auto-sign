@@ -512,7 +512,7 @@ def _is_loopback_addr(host):
     `ipaddress` 不认 glibc 的缩写 IPv4（`127.1` / `0x7f000001` / `2130706433`），
     故解析失败时再过 `socket.inet_aton` 归一；两处都解析不出来即判否。
     本函数只答"是否回环"这一件事：可路由性、私网、组播、保留段归出站 SSRF
-    判据（`yiban/notify/config.py` 与 `yiban/mail/config.py`），不在此处。
+    判据（`yiban/adapters/notifier/notify/config.py` 与 `yiban/adapters/notifier/mail/config.py`），不在此处。
     """
     h = str(host or "").strip().lower()
     if not h:
@@ -545,7 +545,7 @@ def _forwarded_trust_enabled():
 def _resolve_forwarded_trust(env_path, read_env):
     """解析转发头信任开关，返回 `(是否信任, 是否显式配置)`——唯一解析处。
 
-    口径与 `yiban/mail/config.py` 的 `_allow_private_host` 同源：`.env` 优先、
+    口径与 `yiban/adapters/notifier/mail/config.py` 的 `_allow_private_host` 同源：`.env` 优先、
     进程环境补缺（M27）。三态：显式开 → 信任；显式关 → 不信任；未设或非法值 →
     信任（向后兼容）。非法值另发一条可 grep 的告警，让运维看见自己的笔误。
     缺省与非法值都回退"信任"：本键翻转默认会让全站客户端塌进同一个回环桶、

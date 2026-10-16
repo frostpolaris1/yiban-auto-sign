@@ -40,6 +40,7 @@ flowchart TD
         GATE["持久化门关<br/>命令面 + 查询面<br/>SQL 后端 + 配置后端"]
         PYI["protocol_yiban"]
         PFAKE["protocol_fake"]
+        NOTIF["notifier"]
     end
 
     DB[("SQLite")]
