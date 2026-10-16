@@ -191,7 +191,11 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
-可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
+可用 `DEV_VERIFY_PY` 覆盖。**WSL 内必须显式给**：WSL 里没有 `python` 这个名字（只有
+`python3` 或门禁 venv 的绝对路径），不给就退 2 并点名——那条红是**环境错误**，不是用例红。
+习惯写法：`DEV_VERIFY_PY=/root/.venv-yiban-wsl/bin/python bash scripts/dev-verify.sh --ci`。
+（2026-10-16 实测踩到：不给这个变量时人容易误判成"`--ci` 没跑成功"。）
+任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
 静态检查的 mypy 版本由 CI 的 `pip install mypy==1.19.0`（`ci.yml`）与本地 WSL 门禁 venv 提供；
 **从未进 `requirements.lock`**（生产镜像不背门禁工具），先例同 ruff 与 pytest。
 结构门禁的 import-linter 版本同理，由 CI 的 `pip install import-linter==2.15 grimp==3.17`
