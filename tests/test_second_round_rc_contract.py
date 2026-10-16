@@ -363,7 +363,8 @@ class _RunShHarness(unittest.TestCase):
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
                      encoding="utf-8", newline="\n") as f:
             f.write(STUB_SIGNIN_RC)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         py_wrap = os.path.join(self.app, ".venv", "bin", "python3")
         with io.open(py_wrap, "w", encoding="utf-8", newline="\n") as f:

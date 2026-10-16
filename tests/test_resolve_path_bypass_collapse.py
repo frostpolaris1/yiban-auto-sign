@@ -243,7 +243,8 @@ class EnvFilePointerFromEnvFileTest(_ProbeBase):
     """`.env` 里写的 YIBAN_ENV_FILE 指针必须对 web 与容器调度器生效。
 
     自举：定位"要读哪一个 .env"按约定 = 进程环境的 YIBAN_ENV_FILE，否则 cwd 下的
-    `.env`。本用例刻意不在进程环境设该键，让基线落在 cwd。
+    **默认路径**（`env_io.DEFAULT_ENV_FILE` = `data/.env`）。本用例刻意不在进程环境设
+    该键，让基线落在 cwd 的默认路径上。
     """
 
     def test_pointer_in_bootstrap_env_file_is_honoured(self):
@@ -251,9 +252,11 @@ class EnvFilePointerFromEnvFileTest(_ProbeBase):
         os.makedirs(os.path.dirname(pointer))
         with io.open(pointer, "w", encoding="utf-8", newline="\n") as f:
             f.write("YIBAN_ADMIN_USER=whoever\n")
-        # 基线 .env 落在探针的 cwd（不是 self.env_file），才走得到 env_path() 的回落
-        with io.open(os.path.join(self.cwd, ".env"), "w",
-                     encoding="utf-8", newline="\n") as f:
+        # 基线 .env 落在探针 cwd 的**默认路径**（不是 self.env_file），才走得到
+        # env_path() 的回落。默认路径 = `data/.env`（运行数据收进检出内 data/）。
+        baseline = os.path.join(self.cwd, "data", ".env")
+        os.makedirs(os.path.dirname(baseline))
+        with io.open(baseline, "w", encoding="utf-8", newline="\n") as f:
             f.write(f"YIBAN_ENV_FILE={pointer}\n")
         env = _clean_env()
 
@@ -331,7 +334,14 @@ class CleanupSweepFollowsEnvFileTest(_ProbeBase):
 
 
 class DefaultsDoNotDriftTest(_ProbeBase):
-    """两处都没有该键时，默认值必须与收口前逐字相同（默认值差是部署形态差）。"""
+    """两处都没有该键时，宿主形态的默认值必须是**检出内 data/** 下的路径。
+
+    本类原先钉"默认值逐字与收口前相同"（收口只统一读法，不许顺手统一默认值）。
+    2026-10-15 运行数据外置批（bd ybg8 / ddok）**有意改变宿主形态的部署布局**：
+    `.env` 与库从检出根移进 `<检出>/data/`，检出根才能属 root 且组/其他不可写
+    （install.sh 的 M01 门要求）。故宿主形态的两枚默认值随布局一起改；容器形态
+    （`/data/...`）不变——容器里 data 卷本就与代码分离。改的是布局，不是"顺手统一"。
+    """
 
     def test_every_default_literal_is_unchanged(self):
         env = _clean_env()  # 无 YIBAN_* ；cwd 下不建 .env
@@ -339,10 +349,10 @@ class DefaultsDoNotDriftTest(_ProbeBase):
         got = _probe(["constants"], self.cwd, env)
 
         expected = {
-            "web.ENV_DEFAULT": ".env",
-            "web.DB_DEFAULT": "yiban.db",
-            "connection.DB_DEFAULT": "yiban.db",
-            "db.DB_DEFAULT": "yiban.db",
+            "web.ENV_DEFAULT": "data/.env",
+            "web.DB_DEFAULT": "data/yiban.db",
+            "connection.DB_DEFAULT": "data/yiban.db",
+            "db.DB_DEFAULT": "data/yiban.db",
             "web.ACCOUNTS_DEFAULT": "accounts.json",
             "scheduler.STATEDIR": "/data/state",
             "scheduler.ENV_FILE": "/data/.env",
@@ -407,11 +417,11 @@ class PointerReadersTakeValuesFromProcessEnvOnlyTest(unittest.TestCase):
         """`.env` 里写的指针、以及进程环境的空白值：三处一律算"来源未指定"。"""
         os.environ.pop("YIBAN_ENV_FILE", None)
         self.assertEqual(self._readers(),
-                         (None, None, (".env", True)),
-                         "密钥来源三处不再等于（未指定, 未指定, cwd 兜底且 from_cwd=True）"
+                         (None, None, ("data/.env", True)),
+                         "密钥来源三处不再等于（未指定, 未指定, 默认兜底且 from_cwd=True）"
                          "——落点或 fail-closed 判定被改动")
         os.environ["YIBAN_ENV_FILE"] = "   "
-        self.assertEqual(self._readers(), (None, None, (".env", True)),
+        self.assertEqual(self._readers(), (None, None, ("data/.env", True)),
                          "进程环境写了空白值必须算未设（与改前的 strip 语义逐格相同）")
 
     def test_process_env_pointer_is_taken_verbatim_after_strip(self):
