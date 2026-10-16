@@ -18,7 +18,9 @@ CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 `verify_limits()` / `verify_fails()` 是账号验证配额与冷却的唯一取用点（管理员添加与
 用户自助提交共用同一份账），`detail_limits()` 是账号详情读取限速表，`export_limits()`
 是日志导出限速表，`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕
-的两个入口；`page_args()` 是列表接口（账号 / 用户）可选分页参数的唯一解析点。
+的两个入口；`page_args()` 是列表接口（账号 / 用户 / 日志）可选分页参数的唯一解析点，
+`page_window()` 是列表三域共用的唯一分页切片点，`page_meta()` 是账号 / 用户两域
+分页元数据的唯一取用点（日志域的总数沿用既有键名 `total_lines`，故不走它）。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
@@ -79,6 +81,27 @@ def page_args():
         offset = 0
     offset = max(offset, 0)
     return limit, offset, True
+
+
+def page_window(items, limit, offset):
+    """列表分页的唯一切片点：返回 `[offset, offset+limit)`。
+
+    账号 / 用户 / 日志三域共用本函数。切片表达式只有一处，故"任一 offset 都不许
+    返回越界行或重复行"这条不变式只有一份承重实现。`offset` 已由 `page_args()`
+    夹到 >= 0；`limit` 已由 `page_args()` 夹到 [1, 200]。切片超出末尾返回空列表
+    （不报错），与"空页/越界"的常规工程语义一致。
+    """
+    return items[offset:offset + limit]
+
+
+def page_meta(total, limit, offset, returned):
+    """分页元数据四键（`total`/`limit`/`offset`/`returned`，账号 / 用户两域同形）。
+
+    日志域的总数沿用既有键名 `total_lines`，不另立 `total`，故不走本函数。
+    只在分页时下发；不传分页参数时不得出现（向后兼容，旧调用方不受影响）。
+    `total` 是**整表**条数（不随页窗口变化），`returned` 是本页实际条数。
+    """
+    return {"total": total, "limit": limit, "offset": offset, "returned": returned}
 
 
 def login_fails():
