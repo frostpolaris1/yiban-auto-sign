@@ -102,15 +102,15 @@ def probe_engine_round_load():
     return "drill-e2e-%s-accounts" % (m.group(1) if m else "?")
 
 
-def probe_deploy_gate_carrier():
-    """§六-9：`scripts/deploy_gate.sh` 有几个库内**载体**（不含自己、台账与本登记表）。
+def probe_deploy_gate_real_carriers():
+    """§六-9：闸门的**真载体**在不在跟踪面里（CI 作业 ＋ 接线元测试）。
 
-    "载体"＝会真的把它跑起来的 CI 作业或测试。本登记表只是提到它的名字，不算载体。
+    "真载体"＝会真的把它跑起来的东西：`.github/workflows/deploy-gate.yml`（CI 作业，
+    README 默认索引形态）与 `tests/test_deploy_gate_wiring.py`（10 用例接线守卫，
+    dev-verify 全量与 nightly 也在跑）。文档里提到它的名字不算载体。
     """
-    hits = _grep_tracked("deploy_gate",
-                         exclude=("scripts/deploy_gate.sh", "scripts/gate/shared-facts.tsv",
-                                  "tests/test_unguarded_surface_registry.py"))
-    return len(hits)
+    return bool(_tracked(".github/workflows/deploy-gate.yml")
+                and _tracked("tests/test_deploy_gate_wiring.py"))
 
 
 def probe_rate_limit_concurrency():
@@ -194,12 +194,13 @@ REGISTRY = {
         "本批新建",
         lambda: _tracked("tests/test_fake_upstream_fault_knobs_gate.py") != [],
         True),
-    9: (OPEN,
-        "按 README 从零干净部署：`scripts/deploy_gate.sh` 在 CI 与测试里**零载体**"
-        "（本门探针现量复核为 0）。本批不建门：接入 CI 要改 `.github/workflows/ci.yml`、"
-        "让它跑 README 的默认命令要改 `scripts/deploy_gate.sh`，两者都在本批硬边界外",
-        "140 §五 S10；建议单独成批首项（它守的是'可发布'这个判据本身）",
-        probe_deploy_gate_carrier, 0),
+    9: (COVERED,
+        "按 README 从零干净部署：PR #120（2026-10-16 合入）已把闸门接进 CI——"
+        "真载体＝`.github/workflows/deploy-gate.yml`（跑 README 默认索引形态）＋ "
+        "`tests/test_deploy_gate_wiring.py`（10 用例接线守卫，dev-verify 全量与 nightly "
+        "也在跑）；干净环境验收 29 项 FAIL=0、零手动调整。普查写'零载体'已过期",
+        "工单 c9uz；PR #120（独立审查两轮：首轮不放行守卫两洞，复审放行）",
+        probe_deploy_gate_real_carriers, True),
     10: (COVERED,
          "32 线程共享一份进程内限速状态：已有真 HTTP 载体"
          "（`tests/test_web_rate_limit_concurrency_e2e.py`，gunicorn `-w 1 --threads 32` "
