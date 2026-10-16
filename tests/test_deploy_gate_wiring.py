@@ -32,10 +32,28 @@ WORKFLOWS = os.path.join(BASE, ".github", "workflows")
 GATE = os.path.join(BASE, "scripts", "deploy_gate.sh")
 BASH = shutil.which("bash")
 
-#: 闸门的**真调用**形态：前面是 shell 解释器（`bash`/`sh`）或 `./`，即它真的被当命令
-#: 执行。`echo "scripts/deploy_gate.sh"` 这类"只是提一句名字"不得算命中——否则删掉真
-#: 调用、留一句回显也能骗过守卫（突变验证实测抓到过这一形态）。
-_GATE_INVOCATION = re.compile(r"(?:^|\s)(?:bash\s+|sh\s+|\./)(?:\./)?scripts/deploy_gate\.sh(?:\s|$)")
+#: 从一行 workflow 文本里取出**命令本体**：剥掉 YAML 的 `- ` / `run:` 前缀与包裹引号。
+#: `run: |` 块里的命令行没有前缀，取不出就按整行算——那正是命令本体。
+_RUN_KEY = re.compile(r"^-?\s*run:\s*(?P<cmd>.*)$")
+
+
+def _command_text(line):
+    s = line.strip()
+    m = _RUN_KEY.match(s)
+    if m:
+        s = m.group("cmd").strip()
+    return s.strip("'\"").strip()
+
+
+#: 闸门的**真调用**判据：命令本体**以** shell 解释器（`bash`/`sh`，可带 `sudo `）或 `./`
+#: **开头**，紧接闸门路径。
+#:
+#: 判据钉"开头"而不是"行内出现"：`echo bash scripts/deploy_gate.sh`（**无引号**）里 `bash `
+#: 前恰是空格，用"行内出现"会被它骗过——workflow 根本不执行闸门，守卫却绿（假绿）。带引号
+#: 与不带引号两种回显形态都由突变验证实测抓到过，故判据必须钉命令开头。
+_GATE_INVOCATION = re.compile(
+    r"^(?:sudo\s+)?(?:bash|sh)\s+(?:\./)?scripts/deploy_gate\.sh(?:\s|$)"
+    r"|^\./(?:\./)?scripts/deploy_gate\.sh(?:\s|$)")
 
 
 def _read(path):
@@ -50,9 +68,10 @@ def _workflow_files(workflow_dir):
 def _workflows_invoking_the_gate(workflow_dir):
     """返回**真的调用**了部署闸门的 workflow 文件名列表。
 
-    判据两跳：① 该行不是注释行（`#` 开头）；② 该行把脚本当命令执行（前面是 bash/sh 或
-    `./`）。只出现脚本名（注释里、或 `echo "…"` 里）不算"被引用"——那是废断言（先例同
-    tests/test_shared_facts_gate.py 的两跳审）。
+    判据三跳：① 该行不是注释行（`#` 开头）；② 取出命令本体（剥 `- `/`run:`/引号）；
+    ③ 命令本体**以** `bash`/`sh`/`./` 开头且紧接闸门路径。只出现脚本名（注释里，或
+    `echo "…"`／`echo …` 里）不算"被引用"——那是废断言（先例同 tests/test_shared_facts_gate.py
+    的两跳审）。
     """
     hits = []
     for name in _workflow_files(workflow_dir):
@@ -60,7 +79,7 @@ def _workflows_invoking_the_gate(workflow_dir):
         for line in text.splitlines():
             if line.lstrip().startswith("#"):
                 continue
-            if _GATE_INVOCATION.search(line):
+            if _GATE_INVOCATION.search(_command_text(line)):
                 hits.append(name)
                 break
     return hits
@@ -88,10 +107,18 @@ class DeployGateWiringTest(unittest.TestCase):
             "镜像地址 = 闸门跑的是另一条同义命令，不再是 README 那条")
 
     def test_gate_runs_the_readme_docker_compose_command(self):
-        """闸门必须跑 docker compose 的 build+up——README「一键部署」第 4 步那条命令。"""
+        """闸门必须跑 docker compose 的 **build ＋ up -d** 两段实际命令——README「一键部署」
+        第 4 步那条命令（`docker compose up -d --build`）。
+
+        钉**实际命令文本**（`dc build` / `dc up -d`），不钉裸词：裸词 `build` 在本文件出现
+        11 次（函数名 `dc_up_build`、注释、`--build-arg`），钉它恒真——把两处
+        `dc build … && dc up -d` 改成只 `dc up -d`（不再构建镜像）也照样绿。
+        """
         text = _read(GATE)
-        self.assertIn("up -d", text, "闸门必须跑 docker compose up -d（README 的部署命令）")
-        self.assertIn("build", text, "闸门必须跑 docker compose build（README 首次部署含构建）")
+        self.assertRegex(text, r"\bdc build\b",
+                         "闸门必须跑 `dc build`（README 首次部署含构建镜像）")
+        self.assertRegex(text, r"\bdc up -d\b",
+                         "闸门必须跑 `dc up -d`（README 的启动命令）")
 
     @unittest.skipIf(BASH is None, "bash 不在 PATH")
     def test_gate_script_is_syntactically_valid(self):
@@ -124,12 +151,21 @@ class WiringCheckerLiveCounterExampleTest(unittest.TestCase):
             "# 见 scripts/deploy_gate.sh\njobs:\n  x:\n    steps:\n      - run: echo hi\n")
         self.assertEqual(got, [], "注释行不算被引用（两跳审）")
 
-    def test_checker_is_not_fooled_by_an_echo_of_the_name(self):
+    def test_checker_is_not_fooled_by_a_quoted_echo_of_the_name(self):
         """`echo "…deploy_gate.sh"` 只提一句名字，不是执行——不得算命中（突变实测抓到）。"""
         got = self._run(
             "g.yml",
             'jobs:\n  x:\n    steps:\n      - run: echo "see scripts/deploy_gate.sh"\n')
-        self.assertEqual(got, [], "回显脚本名不算被引用：闸门没被真正执行")
+        self.assertEqual(got, [], "带引号回显不算被引用：闸门没被真正执行")
+
+    def test_checker_is_not_fooled_by_an_unquoted_echo_prefix(self):
+        """**无引号** `echo bash scripts/deploy_gate.sh`：`bash ` 前恰是空格，按"行内出现"
+        判据会被它骗过（假绿：workflow 根本不执行闸门，守卫却绿）。判据必须钉命令**开头**，
+        故本条必须判空。"""
+        got = self._run(
+            "g.yml",
+            "jobs:\n  x:\n    steps:\n      - run: echo bash scripts/deploy_gate.sh\n")
+        self.assertEqual(got, [], "无引号回显不算被引用：命令不是以 bash 开头")
 
     def test_checker_accepts_the_canonical_forms(self):
         """合法调用形态：`bash …` / `sh …` / `./…` 都算；`run: |` 块里的缩进行也算。"""
