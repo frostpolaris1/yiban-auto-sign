@@ -261,8 +261,11 @@ def build_sign_info(lng, lat, address):
 def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     """把 `sign_info` 字典还原为库 `build_sign_in_body` 的入参并构造提交体。
 
-    与实拍流量逐字节同构的保证在库侧（键序 Reason/AttachmentFileName/LngLat/Address、
-    JSON 默认分隔符、整串 urlencode）。
+    请求体的形状保证在库侧：顶层五字段序、`SignInfo` 键序
+    `Reason/AttachmentFileName/LngLat/Address`、JSON 默认分隔符、整串 urlencode。
+    该形态与**本站自己的夹具**逐字节相等；与官方 SPA 的编码形态不同（SPA 走
+    `encodeURIComponent` 与紧凑 `JSON.stringify`），服务端两种都解——口径见
+    `yiban/protocol/SPEC.md` §2.6。
     """
     lng_text, _, lat_text = str(sign_info.get("LngLat", "")).partition(",")
     return build_sign_in_body(

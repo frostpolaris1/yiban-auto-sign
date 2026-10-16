@@ -10,8 +10,8 @@
    （`Code`/`PhoneModel`）照实回传——**读回不是伪造**：真实客户端用原生桥生成一次
    并登记，此后各处回传同一个值；
 2. 本地已配置设备时**以本地为准且不读服务端**（显式配置优先；省一次请求）；
-3. 读回失败（网络异常/非 0 信封/畸形）**fail-open**：诊断性前置不得中断签到，
-   服务端自会裁决；
+3. 取不到设备码（读失败 / 非 0 信封 / 该账号未登记设备）**拒签**：不提交、不伪造，
+   文案点名两条补救动作（易班 App 内登记授权、或账号里手工填写）；
 4. `authorize=False`（已登记未授权）仍提交，并留下点名真实补救动作的告警；
 5. 上游回「授权设备」时的提示必须指向**真正的补救动作**（在易班 App 内完成设备授权），
    不得再教用户去配环境变量（读回之后那不是缺配置）。
@@ -24,6 +24,8 @@ import datetime as _dt
 import os
 import unittest
 from unittest import mock
+
+import requests
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -56,10 +58,11 @@ def _sign_position_data():
 
 
 class _Resp:
-    def __init__(self, json_data, status_code=200):
+    def __init__(self, json_data, status_code=200, text=""):
         self._json = json_data
         self.status_code = status_code
-        self.text = ""
+        # `text` 是 WAF 与信封两条判据的输入面（`policy.is_blocked` 与 `parse_api_envelope` 都读它）
+        self.text = text
         self.headers = {}
 
     def json(self):
@@ -69,9 +72,11 @@ class _Resp:
 class _RoutingSession:
     """按 URL 路由的会话桩：记录每次请求，便于断言"读没读服务端登记"。"""
 
-    def __init__(self, device_state=None, device_error=None):
+    def __init__(self, device_state=None, device_error=None, device_text=""):
         self.device_state = device_state
         self.device_error = device_error
+        # `device_text` 只喂给 getState 的响应体：WAF 判据与信封 `code=999` 都从它读
+        self.device_text = device_text
         self.get_urls = []
         self.post_bodies = []
 
@@ -82,7 +87,7 @@ class _RoutingSession:
         if url.endswith("/device/student/index/getState"):
             if self.device_error is not None:
                 raise self.device_error
-            return _Resp(self.device_state)
+            return _Resp(self.device_state, text=self.device_text)
         raise AssertionError("未预期的 GET: " + url)
 
     def post(self, url, **kwargs):
@@ -197,28 +202,58 @@ class DeviceRegistrationPersistenceTest(unittest.TestCase):
         self.assertTrue(ok, "落库失败应 fail-open，本轮仍用读回值")
 
 
-class DeviceRegistryFailOpenTest(unittest.TestCase):
-    """行为 3：读回失败不得中断签到。"""
+class DeviceMissingCodeRefusalTest(unittest.TestCase):
+    """行为 3（2026-10-16 修订）：取不到设备码就**拒签**——不提交，也不伪造。
 
-    def test_read_failure_still_signs(self):
-        session = _RoutingSession(device_error=RuntimeError("网络炸了"))
+    口径变更的根因：设备读取从"诊断性前置"变成**签到前置**。平台对无登记设备的提交
+    一律回「请使用授权设备进行签到」，提交一次必然失败一次，还多留一条服务端失败计数。
+    故三条取不到码的路径（读失败 / 非 0 信封 / 该账号未登记设备）一律本地拦截。
+    """
+
+    def test_read_failure_refuses_and_never_submits(self):
+        session = _RoutingSession(
+            device_error=requests.exceptions.ConnectionError("网络炸了"))
         client = _make_client(session)
-        ok, _msg, _skip, _status = _run(client)
-        self.assertTrue(ok, "设备登记读回失败属诊断性前置，不能把签到一起拖死")
+        ok, msg, _skip, status = _run(client)
+        self.assertFalse(ok, "取不到设备码必须拒签")
+        self.assertEqual(session.post_bodies, [], "拒签时不得提交签到（明知必被拒）")
+        self.assertEqual(status, signin.STATUS_FAILED)
+        self.assertIn("设备识别", msg, "文案必须点名易班 App 内的设备识别页")
+        self.assertIn("手工填写", msg, "第二条补救动作：允许人填（唯一合法的本地来源）")
 
-    def test_non_zero_envelope_still_signs(self):
+    def test_non_zero_envelope_refuses(self):
         session = _RoutingSession({"code": 500, "msg": "服务端错误", "data": None})
         client = _make_client(session)
         ok, _msg, _skip, _status = _run(client)
-        self.assertTrue(ok, "非 0 信封同样 fail-open")
+        self.assertFalse(ok, "非 0 信封同样取不到码 ⇒ 拒签")
+        self.assertEqual(session.post_bodies, [])
 
-    def test_unregistered_device_still_signs_with_empty_code(self):
+    def test_unregistered_device_refuses(self):
         session = _RoutingSession(_device_state_body(authorize=False, code="", model=""))
         client = _make_client(session)
-        ok, _msg, _skip, _status = _run(client)
-        self.assertTrue(ok, "账号没有登记设备时仍按现状提交（服务端裁决）")
-        fields = _submitted_form_fields(session.post_bodies[-1])
-        self.assertEqual(fields.get("Code", ""), "")
+        ok, msg, _skip, _status = _run(client)
+        self.assertFalse(ok, "账号没有登记设备时拒签")
+        self.assertEqual(session.post_bodies, [])
+        self.assertIn("未登记设备", msg, "文案要说清是哪一类缺失")
+
+    def test_missing_code_is_never_fabricated(self):
+        """红线：任何取不到码的路径都不许凭空造一个设备码。
+
+        判据是**不变式**——提交体里的 `Code` 只有两个允许来源：服务端登记值，
+        或账号里人填的值。取不到就没有提交体可查（拒签）。
+        """
+        session = _RoutingSession(
+            device_error=requests.exceptions.ConnectionError("网络炸了"))
+        client = _make_client(session)
+        _run(client)
+        self.assertEqual(session.post_bodies, [], "取不到码时不存在提交体")
+        self.assertEqual(client.phone_code, "", "不得凭空写入设备码")
+        # 反面：登记值存在时，提交体里的 Code 必须**逐字**等于登记值
+        session2 = _RoutingSession(_device_state_body(code="f" * 64))
+        client2 = _make_client(session2)
+        _run(client2)
+        self.assertEqual(_submitted_form_fields(session2.post_bodies[-1]).get("Code"),
+                         "f" * 64, "唯一合法的码来源是登记值本身，不做任何加工")
 
 
 class DeviceAuthorizationWarningTest(unittest.TestCase):
@@ -250,6 +285,39 @@ class DeviceRejectionHintTest(unittest.TestCase):
         self.assertNotIn("YIBAN_PHONE_CODE", msg,
                          "读回机制落地后，再教用户配环境变量就是错的补救动作")
         self.assertIn("设备识别", msg, "提示应指向易班 App 内的设备识别页")
+
+
+class DeviceReadLoudFailureTest(unittest.TestCase):
+    """行为 7（2026-10-16 独立审查整改）：读取失败必须**分类正确**，不许一律降级成"设备缺失"。
+
+    两条不变式：环境问题（WAF 拦截）与会话失效各有**既有的**处置路径
+    （WAF 文案与风控重试档、清缓存后真重登）。把这两类吞进"设备缺失"会静默换掉
+    处置动作——那是比"没读到设备"严重得多的错。
+    """
+
+    def test_waf_blocked_read_uses_the_single_waf_message(self):
+        """getState 被 WAF 拦截 → 走既有 WAF 文案（单一真源），不是设备缺失文案。"""
+        session = _RoutingSession({"code": 0, "data": {}},
+                                  device_text="您的访问存在风险访问，已被拦截")
+        client = _make_client(session)
+        ok, msg, _skip, status = _run(client)
+        self.assertFalse(ok)
+        self.assertEqual(msg, signin.security.WAF_BLOCKED_MESSAGE,
+                         "WAF 拦截必须复用 security 的单一文案，不得自造第二份")
+        self.assertEqual(session.post_bodies, [], "被拦截时不得提交签到")
+        self.assertEqual(status, signin.STATUS_FAILED)
+
+    def test_session_expired_read_stays_loud(self):
+        """getState 回 code=999（会话失效）→ 必须外溢，交既有"清缓存后真重登"路径。
+
+        判据是**不变式**：会话失效在任何一层都不许被吞成"设备缺失"——那会把
+        「清缓存重登」换成「本地拒签」，失败分类与处置动作一起走错。
+        """
+        session = _RoutingSession({"code": 999, "msg": "", "data": None},
+                                  device_text='{"code": 999, "msg": "", "data": null}')
+        client = _make_client(session)
+        with self.assertRaisesRegex(RuntimeError, "会话失效"):
+            _run(client)
 
 
 if __name__ == "__main__":
