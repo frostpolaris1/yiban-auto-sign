@@ -110,7 +110,7 @@ def parse_env_flag(value, *, default=False, key=None, log=None):
     **作用域（本函数不是"全仓唯一"）**：它收口本批登记的开关（急停/暂停类 + 两枚同键曾
     在 bash 与 Python 两侧分叉的开关）。以下同形态副本今日未收口，逐条登记归属
     （改这些键的人必须知道这里不是唯一入口）：
-    - `yiban/mail/config.py`（`_TRUTHY_LITERALS`：`YIBAN_MAIL_ALLOW_PRIVATE_HOST` /
+    - `yiban/adapters/notifier/mail/config.py`（`_TRUTHY_LITERALS`：`YIBAN_MAIL_ALLOW_PRIVATE_HOST` /
       邮件 `ENABLE` / `ADMIN_NOTIFY`）与读同一份邮件配置的
       `web/services/channel_health.py:88`、`web/routes/notify.py:138,220`：邮件族自持
       一张表、四个读者今日口径一致、无分歧；归 B2 合并。
@@ -265,7 +265,7 @@ def env_path(default=DEFAULT_ENV_FILE):
     回落到哪份文件只能由 `default` 参数决定，不能靠 `.env` 自己说自己在哪。
     默认值是 `DEFAULT_ENV_FILE`（`data/.env`，相对检出根）——旧默认 `.env` 落在
     检出根，与 M01 门的"检出根不可写"互斥（见 `RUNTIME_DATA_DIR`）。
-    `yiban/notify/ledger.py` 的 `_state_dir()` 第三档回落 `dirname(env_path)`，
+    `yiban/adapters/notifier/notify/ledger.py` 的 `_state_dir()` 第三档回落 `dirname(env_path)`，
     与本函数的第三档（回落 `default`）不同形，收口它须单独裁决；本批它随指针
     一起落到 `data/`（见该处注释）。
 

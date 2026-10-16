@@ -7,7 +7,7 @@
     平台事实常量 / 协议端点）各自单点定义、`signin` 只做同名转发（同一对象）、
     客户端外观层不重写协议步骤、风控挑战检测归属与委托、协议层不自算安全裁决、
     自交与求解器不复活、根许可以及"无 AGPL 声明指向已退役代码"。
-对应实现：yiban/geo.py、yiban/platform.py、yiban/challenge.py、yiban/protocol/、
+对应实现：yiban/geo.py、yiban/platform.py、yiban/challenge.py、yiban/adapters/protocol_yiban/、
     scripts/signin.py（同名转发）、yiban/security.py（被注入的白名单）。
 关键断言：退役的隔离层（`yiban/fyiban/`）与 vendored 层（`yiban/_vendor/`）**都不能
     回来**——它们的存在本身就是本批要消除的"同步税 + 派生面"。判据是**文本级 grep**：
@@ -108,7 +108,7 @@ class ScanSurfaceIsAliveTest(unittest.TestCase):
         """扫描面必须走到本批新建的核心模块（否则禁断只是在扫空气）。"""
         files = set(_production_files())
         for rel in ("yiban/geo.py", "yiban/platform.py", "yiban/challenge.py",
-                    "yiban/protocol/__init__.py", "yiban/protocol/SPEC.md"):
+                    "yiban/adapters/protocol_yiban/__init__.py", "yiban/adapters/protocol_yiban/SPEC.md"):
             with self.subTest(rel=rel):
                 self.assertIn(rel, files, "扫描面没走到本批新建的核心文件")
 
@@ -134,7 +134,7 @@ class RetiredLayerRevivalTest(unittest.TestCase):
     def test_vendored_layer_path_does_not_revive(self):
         """`yiban/_vendor/` 与 `yiban._vendor` 引用都不得复活。
 
-        洁净室协议库已提升为一等模块 `yiban/protocol/`，不再有"跟库 re-vendor"的
+        洁净室协议库已提升为一等模块 `yiban/adapters/protocol_yiban/`，不再有"跟库 re-vendor"的
         同步税；任何一份 `_vendor` 路径都说明同步纪律又回来了。
         """
         self.assertFalse(os.path.exists(os.path.join(BASE, "yiban", "_vendor")),
@@ -148,7 +148,7 @@ class RetiredLayerRevivalTest(unittest.TestCase):
         self.assertEqual(hits, [], "生产树出现 vendored 路径引用：" + "; ".join(hits))
 
     def test_agpl_declaration_does_not_point_at_retired_code(self):
-        """退役后不得留下指向已删除代码的 AGPL 声明（许可文本只在 `yiban/protocol/`）。"""
+        """退役后不得留下指向已删除代码的 AGPL 声明（许可文本只在 `yiban/adapters/protocol_yiban/`）。"""
         self.assertFalse(os.path.exists(os.path.join(BASE, "yiban", "fyiban")),
                          "yiban/fyiban/ 隔离层必须整体退役")
         licences = []
@@ -158,7 +158,7 @@ class RetiredLayerRevivalTest(unittest.TestCase):
                 if name in ("LICENSE", "PROVENANCE.md", "COPYING"):
                     licences.append(
                         os.path.relpath(os.path.join(dirpath, name), BASE).replace(os.sep, "/"))
-        self.assertEqual(licences, ["yiban/protocol/LICENSE"],
+        self.assertEqual(licences, ["yiban/adapters/protocol_yiban/LICENSE"],
                          "yiban/ 下只允许洁净室协议库的 MIT 许可文本：" + "; ".join(licences))
 
     def test_root_license_stays_agpl(self):
@@ -170,19 +170,19 @@ class ProtocolLibraryTest(unittest.TestCase):
     """洁净室协议库：一等模块，MIT 许可随代码，隔离层只引用不复制。"""
 
     def test_library_is_located_with_its_license(self):
-        for rel in ("yiban/protocol/__init__.py", "yiban/protocol/LICENSE",
-                    "yiban/protocol/position.py", "yiban/protocol/forms.py",
-                    "yiban/protocol/crypto.py", "yiban/protocol/envelopes.py"):
+        for rel in ("yiban/adapters/protocol_yiban/__init__.py", "yiban/adapters/protocol_yiban/LICENSE",
+                    "yiban/adapters/protocol_yiban/position.py", "yiban/adapters/protocol_yiban/forms.py",
+                    "yiban/adapters/protocol_yiban/crypto.py", "yiban/adapters/protocol_yiban/envelopes.py"):
             with self.subTest(rel=rel):
                 self.assertTrue(os.path.isfile(os.path.join(BASE, rel)), f"缺文件: {rel}")
-        self.assertIn("MIT License", _source("yiban/protocol/LICENSE"))
-        self.assertNotIn("AFFERO", _source("yiban/protocol/LICENSE"))
+        self.assertIn("MIT License", _source("yiban/adapters/protocol_yiban/LICENSE"))
+        self.assertNotIn("AFFERO", _source("yiban/adapters/protocol_yiban/LICENSE"))
 
     def test_consumers_import_the_library_instead_of_reimplementing(self):
-        """消费方一律 `from yiban.protocol import …`，不再内联页面正则或表单字段表。"""
+        """消费方一律 `from yiban.adapters.protocol_yiban import …`，不再内联页面正则或表单字段表。"""
         for rel in ("yiban/platform.py", "yiban/challenge.py"):
             with self.subTest(rel=rel):
-                self.assertIn("yiban.protocol", _source(rel))
+                self.assertIn("yiban.adapters.protocol_yiban", _source(rel))
 
 
 OWNERS = {
@@ -192,7 +192,7 @@ OWNERS = {
     r"(?m)^HEADERS = \{": {"yiban/platform.py"},
     r"(?m)^KILLYIBAN_HEADERS = \{": {"yiban/platform.py"},
     r"(?m)^def looks_like_challenge\(": {"yiban/challenge.py",
-                                        "yiban/protocol/envelopes.py"},
+                                        "yiban/adapters/protocol_yiban/envelopes.py"},
     r"(?m)^CHALLENGE_DETECTED_MESSAGE = \(": {"yiban/challenge.py"},
 }
 
@@ -201,7 +201,7 @@ class SingleOwnerTest(unittest.TestCase):
     """每个核心事实只许在**指定的文件**里定义（换个目录再抄一份就是第二份实现）。
 
     `looks_like_challenge` 有两个合法定义点，各司其职：协议库提供**检测本体**
-    （`yiban/protocol/envelopes.py`），本项目的适配层在 `yiban/challenge.py` 追加
+    （`yiban/adapters/protocol_yiban/envelopes.py`），本项目的适配层在 `yiban/challenge.py` 追加
     本项目观察到的特征并转调库——第三处出现即判红。
     """
 
@@ -310,7 +310,7 @@ class ChallengeDetectionTest(unittest.TestCase):
                           "allow_url"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, src)
-        self.assertIn("yiban.protocol", src)
+        self.assertIn("yiban.adapters.protocol_yiban", src)
 
 
 class ProtocolLayerTest(unittest.TestCase):

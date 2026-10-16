@@ -6,7 +6,7 @@
    流程的演练、usersure
    与登录页两种被风控位置的表现差异、签到最后一步被服务端拒绝的业务层判定、按落盘
    JSONL 断言握手**不变式**（签到只提交一次、提交前先取到设备码、登录链四步在先、无 4xx）。
-对应实现：tests/fake_yiban_server.py（假服务端）、yiban/platform.py 与
+对应实现：`yiban/adapters/protocol_fake/__init__.py`（假服务端）、yiban/platform.py 与
    client 外观、scripts/signin.py 的登录与签到编排。
 关键断言：端到端跑的是真 HTTP
    往返：脚本化响应的单测只能证明「我们发的确实是这个形状」，证明不了「这套形状能跑完一整条链」。因此必须响亮失败地确认回环流量没被本机加速器/TUN
@@ -44,7 +44,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 #: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）：按 __file__ 相对
 #: 路径装载，不依赖 sys.path 里的 `loadtest.*` 命名空间包。
-_FAKE_YIBAN = os.path.join(_HERE, "fake_yiban_server.py")
+_FAKE_YIBAN = os.path.join(_ROOT, "yiban", "adapters", "protocol_fake", "__init__.py")
 _spec = importlib.util.spec_from_file_location("_fake_yiban_server", _FAKE_YIBAN)
 mock_yiban = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mock_yiban)

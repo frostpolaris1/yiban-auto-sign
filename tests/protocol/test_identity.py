@@ -6,7 +6,7 @@ import copy
 
 import pytest
 
-from yiban.protocol import ParseError, parse_identity
+from yiban.adapters.protocol_yiban import ParseError, parse_identity
 
 
 @pytest.fixture()

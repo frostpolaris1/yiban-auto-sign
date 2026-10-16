@@ -38,7 +38,7 @@
 #   2. 本机时钟必须已过 06:31（见下方"为什么窗口起点只留 60s 余量"）。
 #   3. 宿主可用 docker；证书由 openssl 直产（CA 一张 + 服务器证书，SAN 含五域名）。
 #   4. 宿主 python 需能 import db（脚本走仓库内 scripts/db.py 兼容壳，复用宿主 venv）。
-#   5. mock = tests/fake_yiban_server.py。镜像按 M84 不含 tests/，用 docker cp 注入
+#   5. mock = yiban/adapters/protocol_fake/__init__.py（随 `COPY yiban/` 已进镜像；
 #      后 docker exec -d 拉起（scripts/loadtest/ 工具族已裁撤，此为现状适配）。
 #
 # 为什么窗口起点只留 60s 余量（2026-10-02 实测修正了操作单的 +4min）：
@@ -199,7 +199,7 @@ done
 [ -f "$ROOT/docker/Dockerfile" ]  || pre "不在演练树根目录（缺 docker/Dockerfile）"
 [ -f "$ROOT/yiban/__init__.py" ] || pre "缺 yiban/__init__.py"
 [ -f "$ROOT/docker/scheduler.py" ] || pre "缺 docker/scheduler.py"
-[ -f "$ROOT/tests/fake_yiban_server.py" ] || pre "缺 tests/fake_yiban_server.py"
+[ -f "$ROOT/yiban/adapters/protocol_fake/__init__.py" ] || pre "缺 yiban/adapters/protocol_fake/__init__.py"
 command -v docker >/dev/null || pre "docker 不可用"
 [ -x "$HOST_PYTHON" ] || pre "宿主解释器不可用：$HOST_PYTHON"
 command -v openssl >/dev/null || pre "openssl 不可用"
@@ -414,7 +414,7 @@ docker port "$CTR" > "$EV/c4-ports.txt"
 
 # ---- C5 mock 上游 + 判据（web / sched / RestartCount / 自签负向 / 出口） ---
 step "C5 mock 上游 + 容器判据"
-docker cp tests/fake_yiban_server.py "$CTR:/tmp/fake_yiban_server.py"
+docker cp yiban/adapters/protocol_fake/__init__.py "$CTR:/tmp/fake_yiban_server.py"
 docker exec -d "$CTR" python3 /tmp/fake_yiban_server.py \
   --host 127.0.0.1 --port 443 --no-ipv6 \
   --cert /data/loadtest/ca/server.pem --key /data/loadtest/ca/server.key \

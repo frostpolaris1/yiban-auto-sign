@@ -9,7 +9,7 @@
     child_env 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
     递增、批量端点单次 10 上限、settings 部分更新不清空延迟字段、
     `start_delay_max`/`gap_max` 收归主管理员、登录成功写审计（IP 匿名化）。
-对应实现：`yiban/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
+对应实现：`yiban/adapters/notifier/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
     `scripts/audit_verify.py`、`yiban/infra/child_env.py`、`web/app.py` 批量与设置端点。
 关键断言：TLS 必须带证书校验（不接受"能连上就算对"）；只读工具不得顺手跑迁移；
     白名单之外的环境变量不得被子进程继承。

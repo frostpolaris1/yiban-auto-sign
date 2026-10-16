@@ -26,9 +26,11 @@ python3 -m yiban.cli <子命令> [选项]
 （`run.sh`、cron、容器调度器、本文档 §4 的写法）继续可用并与新入口同退出码。
 `scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连 `yiban.notify` / `yiban.mail`。
 
-模块落位：引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
+模块落位：入口实现在 `yiban/entry/cli/`（`yiban/cli.py` 是转发壳，二者行为同源），
+引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
 state_io / accounts / workers / config_check / cli_support / db_maintenance / egress_admin），SQLite 层在
 `yiban/store/db.py`。入口一律 `python3 -m yiban.cli`（以文件路径直接跑既不支持也不需要）；
+`python3 -m yiban.entry.cli` 等价，但**本文件记载的调用形态是前者**；
 开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.cli`（cwd 为仓库根）。
 
 ## 1.1 路径相关环境变量（四个，与 run.sh 同源）

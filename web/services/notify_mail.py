@@ -216,7 +216,7 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
     return mail_sent or push_sent
 
 
-# 账本中文名表与 `yiban/notify/ledger.py` 的 `_LEDGER_IDS` 同集合：新账本进表，
+# 账本中文名表与 `yiban/adapters/notifier/notify/ledger.py` 的 `_LEDGER_IDS` 同集合：新账本进表，
 # 日报与耗尽告知的文案才不会对未知账本退化成裸键名
 _NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急",
                          "login_fail": "登录失败告警", "admin_change": "管理变更回执"}

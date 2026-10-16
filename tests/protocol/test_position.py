@@ -6,7 +6,7 @@ import copy
 
 import pytest
 
-from yiban.protocol import ParseError, TimeWindow, parse_sign_position
+from yiban.adapters.protocol_yiban import ParseError, TimeWindow, parse_sign_position
 
 
 @pytest.fixture()

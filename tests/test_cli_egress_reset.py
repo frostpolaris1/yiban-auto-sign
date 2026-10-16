@@ -8,7 +8,8 @@
    同名多行拒绝与逐字键逃生口；`--json` 的每条退出路径都是一整行对象；库不存在时只读面不
    失败；旧格式（执行体身份键）行**不回含主机名的原串**。另钉"哪些行可能被活进程覆盖"的
    事实在输出里在场。
-对应实现：yiban/engine/egress_admin.py（实现）、yiban/cli.py（子命令注册与分派）、
+对应实现：yiban/engine/egress_admin.py（实现）、yiban/entry/cli/__init__.py（子命令注册
+   与分派；yiban/cli.py 是转发壳）、
    yiban/engine/token_bucket.py（速率域名与出厂速率唯一真值源）、
    yiban/store/queue_store.py（`egress_state` 唯一持久化路径）、yiban/clock.py（时间域）、
    yiban/egress.py（出口标识口径 `outlet_label` / `is_outlet_identity`）。
