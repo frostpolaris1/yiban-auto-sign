@@ -59,7 +59,7 @@ jobs:
           # pytest-xdist = 并发跑测试（-n 按 CI 核数分发；单测各自隔离临时目录）
           # mypy 1.19.0 = 静态类型门禁（dev-verify 的 mypy 步；与本地 WSL 门禁 venv 同版号；
           #   不进 requirements.lock——生产 Docker 镜像不背门禁工具，先例同 ruff/pytest）
-          # import-linter 2.15 = 结构门禁（.importlinter 四条依赖方向契约，P0 批
+          # import-linter 2.15 = 结构门禁（.importlinter 依赖方向契约；P0 批四条，批 A0 补三条
           #   docs/refactor/128 三节；同 ruff/mypy 先例只钉在本行，不进 requirements.lock。
           #   本地 WSL 门禁 venv 单独装同版号。升版须同批改 tests/test_import_linter_gate.py
           #   的 PINNED_TOOL——门走 import-linter 的非公开 API，升版可能改元数据形态）
@@ -92,7 +92,7 @@ jobs:
       #   除这两步之外 CI 结果与改前等价；命令原文仍只住 run_ci 一份，漂移由
       #   tests/test_dev_verify_entry.py 的冻结清单钉住。
       # 2026-10-11 起又多了一步：import-linter 结构门（scripts/check-import-linter.py）
-      #   与它的元测试（P0 批，四条依赖方向契约）。同上，命令原文只住 run_ci 一份。
+      #   与它的元测试（P0 批四条，批 A0 补三条）。同上，命令原文只住 run_ci 一份。
       - name: Gate subset (scripts/dev-verify.sh --ci)
         run: bash scripts/dev-verify.sh --ci
 

@@ -5,7 +5,7 @@
 **做什么**
 把"多执行体怎么协调"这类性质放进一个**本地、零后果**的环境里验掉。
 靶场不起 docker、不碰生产、不连真平台：它起一个本地假易班上游
-（`tests/fake_yiban_server.py --no-tls`），拉起**真实的监督进程 ＋ 真实执行体子进程**
+（`yiban/adapters/protocol_fake/__init__.py --no-tls`），拉起**真实的监督进程 ＋ 真实执行体子进程**
 （`python -m yiban.cli sign`，即 `workers.run_worker_supervisor` →
 `executor_v3` → `signin`），并用一条**传输层改写**把子进程的全部 https 请求钉回回环
 假上游。协调逻辑（领取 / 收尾 / 收尸 / 换代 / 肘界）走的是真码，只有"网络去往哪里"
@@ -45,7 +45,7 @@
 输入：命令行旋钮与环境（解释器路径由 `scripts/drill-multi-exec.sh` 固定）。
 输出：证据目录（`run.json` / `monitor.jsonl` / `mock.jsonl` / 子进程日志）与退出码
 （0 = 全部判据通过；1 = 有不变式或断言失败；2 = 前提不满足）。
-调用谁：`tests/fake_yiban_server.py`（假上游）、`yiban.engine.executor_v3`
+调用谁：`yiban/adapters/protocol_fake/__init__.py`（假上游）、`yiban.engine.executor_v3`
 （建计划）、`yiban.egress`（执行体身份）、`yiban.store.queue_store`（库直读）与
 `yiban.store.db`。
 谁调用：`scripts/drill-multi-exec.sh` 与 `tests/test_multi_executor_drill_e2e.py`。
@@ -75,7 +75,7 @@ for _p in (REPO, os.path.join(REPO, "scripts")):
 #: 每次演练现生成的随机账号密钥（64 hex）：既不是仓库示例钥、也不是单字节重复钥，
 #: 故不会命中 `account_crypto` 的两道拒绝/告警判据。
 KEY = secrets.token_hex(32)
-MOCK = os.path.join(REPO, "tests", "fake_yiban_server.py")
+MOCK = os.path.join(REPO, "yiban", "adapters", "protocol_fake", "__init__.py")
 
 #: 采样间隔（秒）：I1 的"没经释放的换手"要求采样足够密才不误判为合法换手。
 SAMPLE_SEC = 0.02
@@ -1038,7 +1038,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         # `mock_signin_count`：假上游收到的 `/signIn` 真登录次数（零外联，只可能是子进程发的）。
         result["claimed_rows_seen"] = sorted({t["phone"] for t in monitor.trace
                                               if t["state"] == "claimed"})
-        # 假上游按隐私口径**不记手机号**（见 fake_yiban_server 的 record）：故"同一账号
+        # 假上游按隐私口径**不记手机号**（见 `yiban/adapters/protocol_fake/__init__.py` 的 record）：故"同一账号
         # 被签了几次"不能按行分账号数。用**总次数 − 账号数**当超额重复登录的观测量：
         # 正常一轮（＋恢复轮）每账号恰好一次 ⇒ 超额 ≤ 0；变异放行并发双持有 ⇒ 超额 > 0。
         result["signin_excess"] = result["mock_signin_count"] - len(rows)

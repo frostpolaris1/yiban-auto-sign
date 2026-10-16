@@ -5,7 +5,7 @@
 标签：H · 通知：邮件与推送
 覆盖：账本磁盘状态机的读写（损坏文件归档后重启、首跑缺文件属正常）、跨天归零、
     只读路径不重写磁盘、多线程与"无进程内锁"情形下并发消费不丢更新不超支。
-对应实现：`yiban/notify/ledger.py`（`_consume_daily_budget`、`_general_daily`、
+对应实现：`yiban/adapters/notifier/notify/ledger.py`（`_consume_daily_budget`、`_general_daily`、
     `_urgent_daily`）；跨进程互斥复用 `yiban/infra/locks.py`（`lock_kind`）。
 关键断言：额度记在磁盘上、跨进程共享——web（常驻）与 signin（每次 cron 新进程）
     各持一份内存计数就会双发；剥掉进程内锁后仍必须靠**单次文件锁临界区**串行化
@@ -15,7 +15,7 @@
     Windows/Linux 本机正常执行；不发真实推送、不触网。
 
 功能：通知账本的持久化与并发正确性回归。
-归属：`yiban/notify/ledger.py` 的测试。
+归属：`yiban/adapters/notifier/notify/ledger.py` 的测试。
 复用：`BASE` / `KEY` 常量与临时目录隔离助手。
 通信：直接调用账本 API，读写临时账本 JSON 并另起线程/进程并发消费。
 """
@@ -124,7 +124,10 @@ class NotifyLedgerDiskTest(unittest.TestCase):
         不同日期，断言账本落盘用的是 clock 那个。
         """
         os.environ["YIBAN_NOTIFY_DAILY_MAX"] = "5"
-        with mock.patch("yiban.notify.ledger.clock.today", return_value="2026-09-17"), \
+        # 打桩目标＝批 A4 后的新坐标。旧坐标（`yiban.notify.ledger`）是转发壳，
+        # 两条路径指向同一模块对象，故两种写法等价；新坐标是唯一权威。
+        with mock.patch("yiban.adapters.notifier.notify.ledger.clock.today",
+                        return_value="2026-09-17"), \
                 mock.patch.object(self.notify.time, "strftime",
                                   return_value="2026-09-16"):
             ticket = self.notify._consume_daily_budget("general")

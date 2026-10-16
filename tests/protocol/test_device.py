@@ -12,7 +12,7 @@ import copy
 
 import pytest
 
-from yiban.protocol import DeviceState, ParseError, parse_device_state
+from yiban.adapters.protocol_yiban import DeviceState, ParseError, parse_device_state
 
 
 @pytest.fixture()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from yiban.protocol import (
+from yiban.adapters.protocol_yiban import (
     Envelope,
     ParseError,
     SessionExpired,

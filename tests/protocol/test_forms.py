@@ -6,7 +6,7 @@ import base64
 import json
 from urllib.parse import parse_qsl, unquote, unquote_plus
 
-from yiban.protocol import build_sign_in_body, build_usersure_form
+from yiban.adapters.protocol_yiban import build_sign_in_body, build_usersure_form
 
 _SIGN_ADDRESS = "示例省示例市示例区示例大学示例校区-示例苑·公共教学组团"
 _SIGN_LNGLAT = (118.101837, 32.003954)

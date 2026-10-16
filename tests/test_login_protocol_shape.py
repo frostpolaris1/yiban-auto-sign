@@ -19,7 +19,7 @@
    &）也必须提取——曾因此全站登录失败。已登录标志必须同时认主机与路径，子域伪装
    f.yiban.cn.evil.com 不得命中。断言走真实 requests.Session（只换
    send），Origin 置 None 这类删头手法只有真实 prepare_request 才观察得到。
-依赖：真实 requests.Session + 脚本化 send 替身、`tests/fake_yiban_server.py` 里固定的
+依赖：真实 requests.Session + 脚本化 send 替身、`yiban/adapters/protocol_fake/__init__.py` 里固定的
    1024 位测试公钥（不现场生成，跨进程同值）、会话缓存用例走真 db 门面 + 临时库/临时 .env（测试密钥）；
    不发任何真实网络请求。整文件在本机执行，无 skip。
 
@@ -48,9 +48,9 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 import signin
-from fake_yiban_server import DEFAULT_PUBKEY_PEM, waf_challenge_body
 
 from yiban import security
+from yiban.adapters.protocol_fake import DEFAULT_PUBKEY_PEM, waf_challenge_body
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,7 +58,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #
 # 夹具必须是**仓内固定字节**，不靠现场生成：随机 PEM 的 base64 正文能撞出 ASCII 词元
 # `WAF`，抽中它的那个 xdist worker 里所有嵌这枚 PEM 的用例全被判成"被风控拦截"
-# （工单 `yiban-auto-sign-u21x`）。名册只有一处定义——`tests/fake_yiban_server.py` 的
+# （工单 `yiban-auto-sign-u21x`）。名册只有一处定义——`yiban/adapters/protocol_fake/__init__.py` 的
 # `DEFAULT_PUBKEY_PEM`，本文件与 `tests/test_protocol_masking.py` 共用它。
 def _pubkey_pem():
     """测试公钥 PEM（固定常量：同进程重复调用同值、跨进程同值）。"""
@@ -185,7 +185,7 @@ def _run(recorder, fn):
 
 def _killyiban_happy_responses():
     """默认流四步的成功脚本。最终认证载荷带**签发回执**（`data` 存在，可为空容器）：
-    形状对照 `tests/fake_yiban_server.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
+    形状对照 `yiban/adapters/protocol_fake/__init__.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
     return [
         _resp(text=_KILLYIBAN_PAGE % _pubkey_pem(),
               url="https://oauth.yiban.cn/code/html"),

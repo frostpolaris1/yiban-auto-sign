@@ -36,7 +36,7 @@
 不在本文件范围内：`YIBAN_LOG_FILE` / `YIBAN_ACCOUNTS_FILE` 在 bash 侧的读法。
    `run.sh` / `run_probe.sh` / `scripts/yiban-fallback.sh` 先 export `.env` 再算路径，
    `scripts/backup.sh` 走 `env_get` 回落——四处本已认 `.env`。
-   登记路径键里那些仍带 `.env` 回落的裸 `os.environ.get`（`yiban/notify/ledger.py` 的
+   登记路径键里那些仍带 `.env` 回落的裸 `os.environ.get`（`yiban/adapters/notifier/notify/ledger.py` 的
    `_state_dir()`、`scripts/audit_verify.py` 的库路径取值）不是本刀的病发点：它们读得到
    `.env`，只是读法二手。哪些处仍未收、为什么允许，一律以名册
    `env_io.resolve_path 唯一入口与绕过点` 那一行的白名单为准（AST 门禁

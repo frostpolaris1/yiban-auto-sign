@@ -39,7 +39,7 @@
 **复用**
 收件人算法复用 `web/services/notify_mail.py` 的 `_alert_mail_recipients`（与 A 线告警
 邮件同一份：ADMIN_TO 按个人开关过滤 + 开启接收的管理员），发送出口复用
-`yiban.mail.send_admin_alert`；节流复用 `yiban/notify/transport.py` 的 `_throttle_due`
+`yiban.mail.send_admin_alert`；节流复用 `yiban/adapters/notifier/notify/transport.py` 的 `_throttle_due`
 （`$YIBAN_STATE_DIR/notify-throttle.json`，跨进程磁盘表——cron 每次新进程，进程内节流表
 在这里等于没有节流，故不新造）；链头与记录数读 `yiban.store.db` 的
 `audit_head_hash_ex` / `audit_row_count`（只读；不读、不改锚点文件）。

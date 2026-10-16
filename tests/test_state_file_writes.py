@@ -12,7 +12,7 @@
 对应实现：容器侧在 `docker/scheduler.py`（`_mark_slot`/`_slot_done`/`_slot_marker`/
     `_touch_heartbeat`），引擎侧写入按 `yiban/engine/state_io.py`、`yiban/engine/probe.py`、
     `yiban/engine/alerts.py`、`yiban/engine/runner.py`、`yiban/cred_state.py`、
-    `yiban/notify/ledger.py` 落点，单通道实现唯一在 `yiban/infra/private_json.py`
+    `yiban/adapters/notifier/notify/ledger.py` 落点，单通道实现唯一在 `yiban/infra/private_json.py`
     （`state_io._write_private_json` 为其既有锚点），兼容壳 `scripts/signin.py` 只剩转发。
 关键断言：**失效方向必须是"标记缺失"而不是"文件损坏"**——半截 JSON 会让 `_slot_done`
     的 `json.load` 恒失败而判定成"本时段没跑过"，配合无-upper-bound 的 `hm >= FIRST`

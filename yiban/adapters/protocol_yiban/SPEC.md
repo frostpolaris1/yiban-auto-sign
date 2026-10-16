@@ -20,7 +20,7 @@
 
 设计约束：核心**仅依赖标准库**（`dataclasses`/`re`/`json`/`urllib.parse`/`base64`/`math`）；
 `crypto.py` 为可选附加件（`pycryptodome`），其余模块不得 import 它。
-本包是主仓的**一等模块** `yiban/protocol/`，不再是外部库的逐字节副本。
+本包是主仓的**一等模块** `yiban/adapters/protocol_yiban/`，不再是外部库的逐字节副本。
 
 ## 1. 错误分类法（`errors.py`）
 
@@ -301,7 +301,7 @@ def parse_device_state(data: Any) -> DeviceState
 ## 4. 包结构
 
 ```
-yiban/protocol/
+yiban/adapters/protocol_yiban/
   __init__.py     # 仅 re-export 公共 API 与 __version__ = "0.1.0"
   errors.py  page.py  location.py  envelopes.py
   identity.py  position.py  device.py  forms.py  crypto.py
