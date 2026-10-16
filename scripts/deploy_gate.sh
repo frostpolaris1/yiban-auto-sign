@@ -23,8 +23,13 @@
 #   GATE_HTTP_PORT / GATE_HTTPS_PORT   A 阶段宿主端口（默认 18080/18443；
 #                   B/C 阶段各 +1/+2，避免与本机既有实例抢 80/443）
 #   GATE_SEED_N     合成账号数（默认 5000；只计数，不做逐账号断言）
-#   GATE_ADMIN_USER / GATE_ADMIN_PASSWORD   .env 显式管理员（默认见下）
-#   GATE_PIP_INDEX_URL  构建期 pip 索引（默认 aliyun 镜像；国内主机直连 pypi 不可达）
+#   GATE_ADMIN_USER / GATE_ADMIN_PASSWORD   .env 显式管理员（默认见下）。闸门按 README
+#                   的形态把两键**写进 data/.env**（README「一键部署」第 2 步：cp 模板后
+#                   填写管理员），写完当场断言两键就位。
+#   GATE_PIP_INDEX_URL  构建期 pip 索引。**默认不传**——与 README 的
+#                   `docker compose up -d --build` 同形态（走默认索引）。国内主机直连
+#                   pypi 不可达时由 caller 显式传镜像旁路，例如
+#                   GATE_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 #   GATE_OLD_REF    迁移演练的旧版本 ref（默认 release/0.6.2）
 #   GATE_TIMEOUT    健康等待上限秒数（默认 600）
 #   GATE_OLD_TREE   B 阶段旧版代码树路径（预导出）。默认走 `git archive $GATE_OLD_REF`；
@@ -56,7 +61,7 @@ GATE_HTTPS_PORT="${GATE_HTTPS_PORT:-18443}"
 GATE_SEED_N="${GATE_SEED_N:-5000}"
 GATE_ADMIN_USER="${GATE_ADMIN_USER:-gateadmin}"
 GATE_ADMIN_PASSWORD="${GATE_ADMIN_PASSWORD:-XwxfGate2026Ab}"
-GATE_PIP_INDEX_URL="${GATE_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
+GATE_PIP_INDEX_URL="${GATE_PIP_INDEX_URL:-}"
 GATE_OLD_REF="${GATE_OLD_REF:-release/0.6.2}"
 GATE_TIMEOUT="${GATE_TIMEOUT:-600}"
 KEEP=0
@@ -93,9 +98,16 @@ CUR_OVERRIDE=""
 dc() { docker compose -p "$CUR_PROJ" -f "$BASE/docker-compose.yml" -f "$CUR_OVERRIDE" \
         --project-directory "$BASE" "$@"; }
 
-# 先 build（up 不接受 --build-arg）再 up；日志由调用方重定向
+# 先 build（up 不接受 --build-arg）再 up；日志由调用方重定向。
+# 默认**不传** PIP_INDEX_URL：与 README 的 `docker compose up -d --build` 同形态
+# （docker/Dockerfile 的 `${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}` 缺省即走默认索引）。
+# 国内主机由 caller 显式传 GATE_PIP_INDEX_URL 走镜像旁路（见脚本头）。
 dc_up_build() {
-    dc build --build-arg "PIP_INDEX_URL=$GATE_PIP_INDEX_URL" && dc up -d
+    if [ -n "$GATE_PIP_INDEX_URL" ]; then
+        dc build --build-arg "PIP_INDEX_URL=$GATE_PIP_INDEX_URL" && dc up -d
+    else
+        dc build && dc up -d
+    fi
 }
 
 cleanup_proj() {
@@ -143,6 +155,9 @@ wait_healthy() {
 }
 
 # prepare_env <data_dir> : 造数据目录 + .env + 证书
+# 管理员两键按 README「一键部署」第 2 步的形态（`cp .env.docker.example data/.env` 后由
+# 部署者填写 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD）写进 data/.env；写入是否生效由
+# 调用方（phase_A 的 A0）断言。
 prepare_env() {
     local data="$1" certs="$2"
     rm -rf "$data" "$certs"
@@ -195,6 +210,14 @@ phase_A() {
     local ov="$GATE_TMP/override-a.yml" log="$LOG_DIR/phase-a.log"
     CUR_PROJ="$proj"; CUR_OVERRIDE="$ov"
     prepare_env "$data" "$certs"
+    # A0：README「一键部署」第 2 步（填写管理员）确实生效——缺则当场停，不拿模板里的
+    # 占位口令（YIBAN_ADMIN_PASSWORD=请修改为强密码）当部署者的口令继续跑。
+    if grep -qxF "YIBAN_ADMIN_USER=${GATE_ADMIN_USER}" "$data/.env" &&
+        grep -qxF "YIBAN_ADMIN_PASSWORD=${GATE_ADMIN_PASSWORD}" "$data/.env"; then
+        pass "A0 管理员按 README 填入 data/.env" "两键就位"
+    else
+        fail "A0 管理员填入 data/.env" "README 的填写步骤未生效"; cleanup_proj "$proj" "$ov"; return
+    fi
     write_override "$ov" "$proj" "$data" "$certs" "$GATE_HTTP_PORT" "$GATE_HTTPS_PORT"
     : > "$log"
 
@@ -256,9 +279,18 @@ phase_B() {
             fail "B0 旧版代码树" "GATE_OLD_TREE 无 docker/Dockerfile: $old_tree"; return
         fi
     else
+        # 解析旧版 ref：CI 检出（actions/checkout）通常只带 origin/* 远程跟踪引用，没有
+        # 同名本地分支，故 `git archive release/0.6.2` 在 CI 上会失败。先试给定 ref，
+        # 失败再试 origin/<ref>；两处都不在才报错（并提示可设 GATE_OLD_TREE 预导出）。
+        local old_ref="$GATE_OLD_REF"
+        if ! git rev-parse --verify --quiet "${old_ref}^{commit}" >/dev/null 2>&1; then
+            if git rev-parse --verify --quiet "origin/${old_ref}^{commit}" >/dev/null 2>&1; then
+                old_ref="origin/${old_ref}"
+            fi
+        fi
         rm -rf "$old_tree"; mkdir -p "$old_tree"
-        if ! git archive "$GATE_OLD_REF" | tar -x -C "$old_tree"; then
-            fail "B0 导出旧版代码树" "git archive $GATE_OLD_REF 失败（可设 GATE_OLD_TREE 预导出）"; return
+        if ! git archive "$old_ref" | tar -x -C "$old_tree"; then
+            fail "B0 导出旧版代码树" "git archive $GATE_OLD_REF（试过 origin/$GATE_OLD_REF）失败（可设 GATE_OLD_TREE 预导出）"; return
         fi
     fi
 
@@ -505,7 +537,9 @@ for p in "${PHASE_LIST[@]}"; do
         A) phase_A ;;
         B) phase_B ;;
         C) phase_C ;;
-        *) echo "未知阶段: $p" >&2 ;;
+        # 未知阶段名必须判红，不得静默跳过：`--phase Q` 若只打一行提示、退出码仍为 0，
+        # 就是一次"什么都没跑却报 PASS"的假绿（发布判据的守卫不许有这种口子）。
+        *) fail "阶段名未知（--phase $p）" "允许值 A/B/C" ;;
     esac
 done
 phase_info
