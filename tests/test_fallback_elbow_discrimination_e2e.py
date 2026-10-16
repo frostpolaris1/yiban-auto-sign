@@ -27,7 +27,7 @@
 
 对应实现：yiban/engine/workers.py（兜底常驻的 `run_executor_v3` 调用）、
     yiban/engine/executor_v3.py（`FALLBACK_ELBOW_SEC`、`_claim_one` 的肘界下推）、
-    yiban/store/queue_store.py（`claim_batch` 的 `run_at <= now - elbow` 判据）、
+    yiban/adapters/persistence/queue_store.py（`claim_batch` 的 `run_at <= now - elbow` 判据）、
     yiban/core/elbow.py（谓词的唯一事实源）。
 关键断言：钉"新鲜工作不被兜底领走""计划轮领得走新鲜工作""接线用的是那个常量"；
     不钉任何调用顺序。

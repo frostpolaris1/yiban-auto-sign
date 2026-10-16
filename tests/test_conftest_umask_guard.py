@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """conftest 的「逐用例还原进程 umask」保险必须真的合上。
 
-**来历（2026-10-07 实测）**：`yiban/engine/runner.py` 与 `yiban/entry/cli/__init__.py` 把进程
+**来历（2026-10-07 实测）**：`yiban/app/runner.py` 与 `yiban/entry/cli/__init__.py` 把进程
 umask 收到 `077`（生产入口的既定行为，自己不还原）。有若干用例在**进程内**直调
 `runner.main` / `cli.main`，于是把 `077` 泄漏给同 worker 的后续用例：那些用例
 `os.makedirs` 建出的目录变 `0700`、`_write` 建出的文件变 `0600`，凡带降权（setpriv 到

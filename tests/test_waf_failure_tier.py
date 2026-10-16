@@ -12,7 +12,7 @@
    风控信号（`executor_v3._is_risk_signal`）只共用 WAF 族那一半；凭据族文案在那里必须为假
    （工单 `yiban-auto-sign-zggs`）。
 对应实现：yiban/security.py（档位判据唯一真值源）、yiban/engine/attempts.py（档位与清缓存联动）、
-   yiban/engine/probe.py（硬失败判据同源构造）、yiban/engine/executor_v3.py（风控信号的第二个
+   yiban/app/probe.py（硬失败判据同源构造）、yiban/engine/executor_v3.py（风控信号的第二个
    读者）、yiban/challenge.py（挑战失败文案与形态判据的来源）与
    yiban/platform.py（检测命中即用该文案 raise）。
 关键断言：waf 的挑战失败文案（`CHALLENGE_DETECTED_MESSAGE`）逐条过档位判据，且协议层

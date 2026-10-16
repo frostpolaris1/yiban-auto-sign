@@ -6,7 +6,7 @@
     id 不透明（16 hex 且无数字自增 id）、脱敏单出口（actor 遮罩 / detail 换行转义）、
     错误一律 JSON（未登录 401 / 普通用户 403 / 未知过滤键 400）。
 对应实现：`web/routes/audit_api.py`（`api_audit_logs` / `_serialize_audit_row`）与
-    `yiban/store/audit_chain.py`（`read_audit_rows` / `public_row_id`）。
+    `yiban/adapters/persistence/audit_chain.py`（`read_audit_rows` / `public_row_id`）。
 关键断言：只读接口不触发 `verify_audit_chain` 全表哈希（由 test_audit_chain 侧钉链状态），
     且响应体里既无明文邮箱、也无 `audit_logs.id`。
 依赖：进程内加载 `web/app.py`（importlib 隔离）+ Flask test client；临时 `.env`/SQLite，

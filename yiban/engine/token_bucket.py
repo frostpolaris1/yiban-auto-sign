@@ -66,9 +66,9 @@ import logging
 import os
 from typing import Any, Callable
 
-from yiban import config_loader
 from yiban import egress as yb_egress  # 别名必需：本模块的形参就叫 `egress`（桶键）
-from yiban.store import queue_store
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.persistence import queue_store
 
 logger = logging.getLogger("yiban.engine.token_bucket")
 

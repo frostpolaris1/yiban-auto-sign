@@ -10,7 +10,7 @@
 sign-status"必然看到 0 字节。本文件把 owner 钉成单一来源：
 
 1. `web/deploy/logrotate-yiban.conf` 不得出现 `sign-status` 的**非注释**命中（段）。
-2. `yiban/state_gc.py` 的 `ARTIFACTS` 必须仍登记 `sign-status-`（唯一清理者）。
+2. `yiban/adapters/statefiles/state_gc.py` 的 `ARTIFACTS` 必须仍登记 `sign-status-`（唯一清理者）。
 
 任一被复活即红。口径与 `scripts/check-shared-facts.sh` 一致：**注释一律不算**——
 守卫钉的是"不得再有这个段"（边界），不是禁止在 conf 头注释里说明它为什么归 state_gc

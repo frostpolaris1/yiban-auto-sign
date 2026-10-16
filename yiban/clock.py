@@ -1,35 +1,28 @@
 # -*- coding: utf-8 -*-
-"""时间基准：全系统的"业务时间"一律按**北京时间**（UTC+8）计算。
+# SPDX-License-Identifier: AGPL-3.0-only
+"""兼容壳：`yiban.clock` → `yiban.core.clock`（仓库结构整理批 B）。
 
-签到窗口、"今天"（按日状态文件 / 签到事件 / 容量口径 / 日志保留期）、周末门禁、
-注销与保留期都定义在北京时间上，而 `datetime.now()` 取的是**宿主本地时区**。
-部署在 UTC 主机（GitHub Actions runner、多数海外 VPS）时，北京时间 06:40 在宿主
-看来是前一日 22:40——窗口闸门会把"还没开始"判成"已结束"，当天全部账号零请求，
-按日文件与日统计也会落到错的日期上。故取时点一律走本模块。
+**为什么有本件**
+clock（北京时间基准）在批 B 搬进目标层（目标架构契约 `docs/dev/architecture-target.md`
+第 3 节）。读者面里有 `web/**`、`scripts/**`、`tests/**`。`web/app.py` 的再导出墙
+与测试面本批**不动**（那是另一笔账）。故旧坐标留转发壳。
 
-固定 +8 偏移而非 zoneinfo：中国自 1991 年起无夏令时、全国单一时区，固定偏移与
-tzdata 等价且省掉一项依赖——Windows 无系统 tz 数据库，缺 `tzdata` 时 `zoneinfo`
-会直接抛 ZoneInfoNotFoundError。
+**本件不是第二份实现**
+本件把 `sys.modules` 里本坐标的条目替换为 `yiban.core.clock` 的**同一模块对象**。
+故属性访问（`yiban.clock.X`）与 `mock.patch("yiban.clock.X")` 都落到实现的那一份，不会静默打空。
+判据是**对象同一**，验证者＝`tests/test_batch_b_relocation.py`。
 
-`now()` 返回 **naive** 时间（与既有全部 naive datetime 运算兼容）；宿主本就运行
-在 Asia/Shanghai 时它与 `datetime.now()` 逐秒相等，故对现有部署零行为变更。
+**为什么用 `sys.modules` 替换，不用 `__getattr__` 转发**
+`__getattr__` 转发会造出第二个模块对象；`mock.patch("yiban.clock.X")` 只改壳的属性，
+不改实现被真调用的那份——那正是本仓实证过的"搬家后打桩静默失效"形状。
+替换 `sys.modules` 条目后旧坐标**就是**实现模块本身。
+
+**退役条件**
+读者面（`web/**`、`scripts/**`、`tests/**`）改到新坐标后删除本件。
+工单见本批交付报告。
 """
-import datetime
+import sys as _sys
 
-TZ = datetime.timezone(datetime.timedelta(hours=8), name="CST")
-TZ_NAME = "Asia/Shanghai"
+import yiban.core.clock as _impl
 
-
-def now() -> datetime.datetime:
-    """当前北京时间（naive datetime，秒级精度与 datetime.now() 一致）。"""
-    return datetime.datetime.now(TZ).replace(tzinfo=None)
-
-
-def today() -> str:
-    """当前北京日期（YYYY-MM-DD）。"""
-    return now().strftime("%Y-%m-%d")
-
-
-def ts() -> str:
-    """当前北京时间戳串（YYYY-MM-DD HH:MM:SS，全库统一的字符串时间格式）。"""
-    return now().strftime("%Y-%m-%d %H:%M:%S")
+_sys.modules[__name__] = _impl

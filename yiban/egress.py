@@ -80,7 +80,7 @@ import socket
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 from yiban.security import url_desc
 
 #: 告警通道：与 `scripts/child_env.py`、`yiban/engine/*` 同一条 "yiban"（root 之下），

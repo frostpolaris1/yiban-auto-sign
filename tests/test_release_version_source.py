@@ -5,7 +5,7 @@
 覆盖：版本字面量只在 `yiban/__init__.py` 出现（CHANGELOG 除外）、web 侧从包引用版本、
     CHANGELOG 顶部条目与包版本一致、引擎轮次横幅与汇总行确实打了版本号、
     用的是本项目版本而非易班 App 版本。
-对应实现：`yiban/__init__.py`（唯一来源）、`web/app.py`、`yiban/engine/runner.py`
+对应实现：`yiban/__init__.py`（唯一来源）、`web/app.py`、`yiban/app/runner.py`
     （横幅/汇总行，兼容壳 `scripts/signin.py` 只剩转发）。
 关键断言：版本号一旦分叉，"日志里写的版本"就不再等于"代码的版本"，台账失效且无人察觉
     ——所以钉的是"只有一处定义"，不是"值等于某个字面量"。
@@ -79,9 +79,9 @@ class EngineLogsReleaseVersionTest(unittest.TestCase):
     """引擎轮次横幅/汇总行必须带版本号——台账的唯一对齐依据。"""
 
     def setUp(self):
-        # 轮次横幅与汇总行随"执行一轮"的入口一起迁进了引擎（`yiban/engine/runner.py`），
+        # 轮次横幅与汇总行随"执行一轮"的入口一起迁进了引擎（`yiban/app/runner.py`），
         # 兼容壳 `scripts/signin.py` 只剩转发：两处一起读，迁移前后都成立。
-        self.src = _read("yiban/engine/runner.py") + _read("scripts/signin.py")
+        self.src = _read("yiban/app/runner.py") + _read("scripts/signin.py")
 
     def test_round_banner_carries_version(self):
         m = re.search(r"开始执行签到（v\{RELEASE_VERSION\}）", self.src)

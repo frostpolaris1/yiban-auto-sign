@@ -13,7 +13,7 @@
 标签：C · 存储：迁移与库完整性
 覆盖：`sign_claims.epoch` 的加列（NOT NULL DEFAULT 0、存量行取默认）、整段重跑的幂等、
 `sign_tasks` 缺列时的兜底补齐，以及 v19（核心）/v20（可选）在迁移登记里的档位。
-对应实现：`yiban/store/` 的 v19 迁移函数与迁移登记表（`_registry_up_to` 按它取前缀）。
+对应实现：`yiban/adapters/persistence/` 的 v19 迁移函数与迁移登记表（`_registry_up_to` 按它取前缀）。
 关键断言：`epoch` 必须 NOT NULL——领取路径要拿它做 `epoch = epoch + 1` 的算术，
 NULL 会让整行静默变 NULL 而不是报错，这类"约束缺失"比"列缺失"更难发现，所以
 `test_existing_rows_default_to_zero` 断的是存量行的实际值而非表定义文本；

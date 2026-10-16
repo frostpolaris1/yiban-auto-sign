@@ -13,7 +13,7 @@
 
 对应实现：`yiban/egress.py`（`outlet_executor_count` / `egress_identity`）、
 `yiban/engine/token_bucket.py`（`EgressLimiter.shares` / `share_rate` / `limiter_from_env`）、
-`yiban/engine/executor_v3.py`（`_Ctx` 传 `shares`）、`yiban/engine/probe.py`（`shares`）。
+`yiban/engine/executor_v3.py`（`_Ctx` 传 `shares`）、`yiban/app/probe.py`（`shares`）。
 
 依赖：`sys.executable` 起真子进程；`now` 由固定网格注入（不依赖真实时钟），故合计数是确定的。
 """

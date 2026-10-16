@@ -6,7 +6,7 @@
    清单在场）；`--only` 的门豁免与退出码契约不变（拿不到锁仍返回 3）；一条 `--only`
    真进程树整轮 `attempt_signin` 调用数 == 1、引擎侧 `Popen` 记录 == 0、成功 rc ∈ {0}；
    web 侧 `terminate()` 杀**整个进程组**（进程组 kill，子进程随监督进程退出、不留孤儿）。
-对应实现：yiban/engine/runner.py（`_dispatch` 的 `--only` 收敛判据）、
+对应实现：yiban/app/runner.py（`_dispatch` 的 `--only` 收敛判据）、
    web/services/manual_sign.py（`_terminate_signin_proc`）、
    web/routes/signin_api.py（终止旧子进程走进程树 kill）、
    web/services/manual_sign.py::_launch_signin_proc（`start_new_session=True`）。
@@ -279,7 +279,7 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
         """把**进程级单例连接**切到本轮自己的库再取连接（用例自身隔离）。
 
         为什么必须显式切：`store_db.init_db(path)` 在进程已有连接时是**空操作**——
-        `yiban/store/db.py` 的 `if conn is not None: return conn` 直接返回旧连接
+        `yiban/adapters/persistence/db.py` 的 `if conn is not None: return conn` 直接返回旧连接
         （只刷新路径元数据，句柄没换）。同一 pytest 进程里前一个用例/文件留下的连接
         会让本用例的种子行与 V 元数据写进**别人的库**，随后 `_read_other` 打开自己的
         空库读回 `None` ⇒ `tuple(None)` 抛 `TypeError`（实测复现）。`-n auto

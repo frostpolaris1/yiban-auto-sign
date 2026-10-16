@@ -11,7 +11,7 @@ db 依赖本模块不能反向 import，故判定就地复刻）。
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：自动建钥的四个来源分支——三者全缺（拒绝）／cwd 已有 `.env`／显式 `env_file`／
 `YIBAN_ENV_FILE`（这三条照常生成），外加只读解密路径一条。
-对应实现：`yiban/infra/account_crypto.py` 的 `load_key` 自动建钥分支、`has_key`、
+对应实现：`yiban/adapters/config/account_crypto.py` 的 `load_key` 自动建钥分支、`has_key`、
 模块级密钥缓存 `_KEY_CACHE`。
 关键断言：拒绝时抛 ValueError 且消息含"来源不确定"，**并且**临时空目录里不得出现新建的
 `.env`——只断"抛了"不够，落盘和抛出是两个独立动作，守卫失效的典型形态正是"照样落盘"。

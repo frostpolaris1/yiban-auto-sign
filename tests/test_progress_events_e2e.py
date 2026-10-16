@@ -18,10 +18,10 @@
 4. 打点写入异常被隔离，签到主流程照常跑完（打点是观测面，不是业务面）。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：`yiban/store/run_events.py`（表写入与保留期清理）、`yiban/store/migrations.py`
-    的 v21 建表与产物登记、`yiban/engine/executor_v3.py` 与 `yiban/engine/runner.py`
-    的打点调用点、`yiban/store/cleanup.py` 的每日清理编排。
-对应实现：同覆盖清单；事件表列序见 `yiban/store/run_events.py`。
+覆盖：`yiban/adapters/persistence/run_events.py`（表写入与保留期清理）、`yiban/adapters/persistence/migrations.py`
+    的 v21 建表与产物登记、`yiban/engine/executor_v3.py` 与 `yiban/app/runner.py`
+    的打点调用点、`yiban/adapters/persistence/cleanup.py` 的每日清理编排。
+对应实现：同覆盖清单；事件表列序见 `yiban/adapters/persistence/run_events.py`。
 关键断言：节点值集合与逐节点行数、每行身份/账号/业务日/时刻非空、同账号的
     领取→开始→终态先后、旧行退役新行保留、缺表时迁移完整性拒启、
     以及删表后签到仍了结（主流程不被观测面拖垮）。

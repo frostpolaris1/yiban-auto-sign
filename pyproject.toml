@@ -5,12 +5,12 @@
 # 清单（改一行 = 收编一个模块），也不依赖"谁把某个模块 import 进来"这种隐式路径。
 python_version = "3.10"
 files = [
-    "yiban/clock.py",
-    "yiban/status.py",
+    "yiban/core/clock.py",
+    "yiban/core/status.py",
     "yiban/egress.py",
     "yiban/engine/schedule.py",
     "yiban/engine/planner.py",
-    "yiban/store/queue_store.py",
+    "yiban/adapters/persistence/queue_store.py",
     "yiban/engine/token_bucket.py",
 ]
 # 被导入模块的类型信息照常取用，但不报它们的错：收编模块可引用尚未收编的模块，
@@ -39,9 +39,9 @@ warn_unused_configs = true
 # ---- 名单外豁免清单（本轮不检查；显式登记，防止"以为在管其实没管"）----
 # 其余 `yiban/**`、`web/**`、`scripts/**`、`docker/**`、`tests/**` 全部豁免。
 # 收编路线（按"判据/契约轻重"排序，逐批推进）：
-#   批次 2：`yiban/window.py`、`yiban/engine/hrw.py`、`yiban/masking.py`、`yiban/config_loader.py`
+#   批次 2：`yiban/core/window.py`、`yiban/core/hrw.py`、`yiban/core/masking.py`、`yiban/adapters/config/loader.py`
 #           （被收编模块直接依赖的判据件，收编后本批的 Any 可收窄）
-#   批次 3：`yiban/store/**`（connection/migrations/clock_meta）、`yiban/engine/executor_v3.py`
+#   批次 3：`yiban/adapters/persistence/**`（connection/migrations/clock_meta）、`yiban/engine/executor_v3.py`
 #   批次 4：`web/**`（路由与展示层）
 # 收编一个新模块 = 把它的路径加进 `files`，并就地修完它的红。
 

@@ -67,12 +67,15 @@ import threading
 import time
 from datetime import datetime
 
-from yiban import clock, cred_state, egress
-from yiban import status as yiban_status
+from yiban import egress
+from yiban.adapters.config import env_io
+from yiban.adapters.persistence import db
+from yiban.adapters.statefiles import cred_state
+from yiban.core import clock
+from yiban.core import status as yiban_status
+from yiban.core.masking import sanitize_text as _sanitize_text
 from yiban.engine import cli_support, config_check, schedule
-from yiban.infra import env_io, private_json
-from yiban.masking import sanitize_text as _sanitize_text
-from yiban.store import db
+from yiban.infra import private_json
 
 logger = logging.getLogger("yiban")
 

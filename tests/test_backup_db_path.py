@@ -9,7 +9,7 @@
     ③ 同一条输入，bash 选中的库与 Python 侧 `env_io.resolve_path` 解析出的库必须
     是同一份文件（两侧各测一次）。
 对应实现：`scripts/backup.sh` 的 `env_get`（进程环境 → `${APP_DIR}/data/.env`）与
-    `yiban/infra/env_io.py:resolve_path`（进程环境 → .env → 默认值）。
+    `yiban/adapters/config/env_io.py:resolve_path`（进程环境 → .env → 默认值）。
 关键断言：判据全部是**行为断言**——跑真脚本、解真归档、读归档里那份 sqlite 的表名、
     真跑一次 `--restore` 演练。唯一的源码断言是下面那条边界守卫，它钉的是"实现形态"
     而非行为，没有可观察的行为形状。

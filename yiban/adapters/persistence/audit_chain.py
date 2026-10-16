@@ -53,10 +53,11 @@ import threading
 import time
 from datetime import datetime
 
-from yiban import clock
-from yiban.infra import env_io, env_lock
-from yiban.masking import mask_email
-from yiban.store import connection as _connection
+from yiban.adapters.config import env_io
+from yiban.adapters.persistence import connection as _connection
+from yiban.core import clock
+from yiban.core.masking import mask_email
+from yiban.infra import env_lock
 
 
 def actor_tag(username):
@@ -85,7 +86,7 @@ def _facade():
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     return db
 
 

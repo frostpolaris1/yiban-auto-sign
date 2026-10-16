@@ -12,7 +12,7 @@
 `0/1/2` 三档、全窗口与单日窗口同结论、第三方写入者破坏计数、零覆盖与空状态文件
 都算 2、白名单补项，以及异常消息落 stdout 前必须脱敏。
 对应实现：`scripts/ledger_check.py`（含 `ALLOWED_TABLES` 白名单）与它读的
-`sign_tasks` / 状态文件；状态词表口径来自 `yiban/status.py` 的 `ALL_STATUSES`。
+`sign_tasks` / 状态文件；状态词表口径来自 `yiban/core/status.py` 的 `ALL_STATUSES`。
 关键断言：退出码是**契约**不是实现细节——"缺行"回 1（数据不一致）、"跑不动"回 2
 （环境不可用），两者混成同一个码会让运维把环境问题当数据丢失处理；
 `test_unexpected_exception_message_is_sanitized` 钉的是对账工具自己把异常打出来时
