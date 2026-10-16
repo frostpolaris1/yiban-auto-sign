@@ -110,9 +110,12 @@ def test_sign_in_body_honours_optional_fields():
         code="c",
         phone_model="m",
     )
-    assert built.startswith("Code=c&PhoneModel=m&SignInfo=")
-    assert built.endswith("&OutState=2")
-    sign_info = unquote_plus(built.split("&SignInfo=", 1)[1].rsplit("&OutState=", 1)[0])
+    # 顶层五字段、顺序对齐参考客户端（2026-10-16 订正：原只发四字段）
+    assert built.startswith(
+        "AttachmentFileName=a.jpg&OutState=2&Code=c&PhoneModel=m&SignInfo="
+    )
+    assert "&OutState=2&" in built, "OutState 仍须发送（位置随参考客户端前移）"
+    sign_info = unquote_plus(built.split("&SignInfo=", 1)[1])
     assert json.loads(sign_info)["Reason"] == "r"
     assert json.loads(sign_info)["AttachmentFileName"] == "a.jpg"
     assert json.loads(sign_info)["LngLat"] == "1.0,2.0"
