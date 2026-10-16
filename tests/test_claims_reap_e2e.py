@@ -1,22 +1,20 @@
 # -*- coding: utf-8 -*-
-"""领取面两步显式处置的 e2e：心跳停摆后的租约接管，与轮末对死亡执行体的收尸。
+"""轮末收尸的 e2e：被杀子进程留在 `sign_tasks` 里的在领任务必须被回退待领。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：真子进程领取后**持续心跳**的在领行不可被接管；心跳停摆（真进程被 kill）后
-   租约到期，接管方成功拿到更大的 epoch，原主用旧 epoch 的收尾/续租/弃权全被 fence；
-   监督进程存活而执行体子进程异常死亡的场景下，轮末按"已知死亡"显式收尸（置 failed +
-   放开租约），下一轮可立刻接手；**v3 队列的对称收尸**——被杀子进程在 `sign_tasks` 里留下的
-   `claimed` 行同样在轮末回退 `pending`、放开租约、`epoch+1`，下一次 `claim_batch` 即可领取。
-对应实现：yiban/store/claims.py（try_claim 的租约判据 / touch / reap_unreported /
-   reap_abandoned）、yiban/store/queue_store.py（reap_abandoned）、
-   yiban/engine/workers.py（_await_workers 后的轮末收尸）、
-   yiban/engine/round.py（心跳与轮末收尸的调用点）。
-关键断言：两条路径都必须**显式**——活执行体持续心跳时接管者必须被拒（不是"也许没
-   过期"），停心跳后必须恰好经由"租约过期 + epoch fencing"接手（不是静默并发双领取）。
-   "无静默双登录"的判据是记账：活体期间 attempts 不增、接管后旧主的终态写被拒、库里
-   只可能留下接管方的结论。
-依赖：临时 sqlite + 两个/三个真子进程（POSIX：SIGKILL 模拟崩溃）；组 3 在非 POSIX
-   平台 skip（无 SIGKILL）；无网络请求。
+覆盖：真子进程用 `claim_batch` 领取任务后自杀；监督进程判它异常退出，轮末把该任务
+   回退 `pending`、放开租约、`epoch+1`，下一次 `claim_batch` 即可领取。不这样做，
+   被杀执行体的在领任务没人回退，该账号当天无人再签（漏签）。
+对应实现：yiban/store/queue_store.py（`reap_abandoned`）、
+   yiban/engine/workers.py（`_await_workers` 后的轮末收尸）。
+关键断言：判据只能是「进程已退出」——覆盖信号杀（rc<0）与退出码 1（未预期异常）两种
+   形状，两种都必须被收住；看退出码的写法会漏掉其中一种。
+依赖：临时 sqlite + 真子进程（POSIX：SIGKILL 模拟崩溃）；非 POSIX 平台整类 skip。
+
+2026-10-16 饮食批：原组 2/组 3（心跳停摆后的**租约**接管、旧表 `sign_claims` 的轮末
+收尸）已删——任务级租约随工单 `l1rx` 删除，`sign_claims` 随单池化冻结、生产零写入
+（工单 `77s2`）。真跨进程争用与收尸判据现由
+`tests/test_live_claim_cross_process_contention_e2e.py` 承担。
 """
 import contextlib
 import datetime
@@ -47,45 +45,12 @@ _REAL_POPEN = subprocess.Popen
 TEST_KEY = "a" * 64
 DAY = "2026-09-25"
 PHONE = "13800138000"
-OWNER_A = "worker-0@testhost:111:090000"
 OWNER_B = "worker-1@testhost:222:090000"
 
 
 def _ts(**kw):
     return (clock.now() + datetime.timedelta(**kw)).strftime("%Y-%m-%d %H:%M:%S")
 
-
-_CLAIM_HOLD_SRC = r"""
-import json, os, signal, sys, time
-sys.path.insert(0, os.environ["E2E_REPO"])
-from yiban.store import db
-owner = os.environ["E2E_OWNER"]
-db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None,
-           cleanup=False)
-ok, epoch = db.claim_sign_account(os.environ["E2E_PHONE"], os.environ["E2E_DAY"], owner)
-with open(os.environ["E2E_OUT"], "w", encoding="utf-8") as f:
-    json.dump({"ok": bool(ok), "epoch": int(epoch), "owner": owner}, f)
-if os.environ.get("E2E_MODE") == "beat":
-    while True:
-        # 持续心跳：这正是"活执行体"的定义——它的在领行永不过期。
-        db.claim_touch(os.environ["E2E_PHONE"], os.environ["E2E_DAY"], owner, epoch=epoch)
-        time.sleep(0.2)
-time.sleep(600)
-"""
-
-_CLAIM_DIE_SRC = r"""
-import json, os, signal, sys
-sys.path.insert(0, os.environ["E2E_REPO"])
-from yiban import egress
-from yiban.store import db
-owner = egress.runtime_owner(os.environ["YIBAN_EXECUTOR_ID"])
-db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None,
-           cleanup=False)
-ok, epoch = db.claim_sign_account(os.environ["E2E_PHONE"], os.environ["E2E_DAY"], owner)
-with open(os.environ["E2E_OUT"], "w", encoding="utf-8") as f:
-    json.dump({"ok": bool(ok), "epoch": int(epoch), "owner": owner}, f)
-os.kill(os.getpid(), signal.SIGKILL)   # 模拟崩溃：来不及收尾
-"""
 
 #: v3 队列（`sign_tasks`）的被杀子进程：用 claim_batch 领一条已到期的待领任务后自杀。
 #: owner 与旧表路径同源（稳定槽位名拼 PID/代次），故监督进程用同一稳定名前缀即可收尸。
@@ -168,23 +133,6 @@ class _ClaimE2EBase(unittest.TestCase):
 
     def tearDown(self):
         self._close()
-
-    def _row(self, phone=PHONE):
-        return dict(db.get_conn().execute(
-            "SELECT * FROM sign_claims WHERE phone=? AND day=?", (phone, DAY)).fetchone())
-
-    def _child_env(self, owner):
-        env = dict(os.environ)
-        env.update({
-            "E2E_REPO": BASE,
-            "E2E_DB": self.db_file,
-            "E2E_ENV_FILE": self.env_file,
-            "E2E_PHONE": PHONE,
-            "E2E_DAY": DAY,
-            "E2E_OWNER": owner,
-            "E2E_OUT": os.path.join(self.tmp, "claim.json"),
-        })
-        return env
 
 
 # ---------------------------------------------------------------------------

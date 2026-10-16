@@ -27,6 +27,12 @@ fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自
 改由 `tests/test_provenance_guard.py` 与 `tests/test_waf_failure_tier.py` 覆盖。）
 依赖：无网络（`__new__` 绕过构造，不发请求）、无 skip；
 `YIBAN_STATE_DIR` 用临时目录覆盖后在 tearDown 还原。
+
+2026-10-16 饮食批：`SigninFixes021Test` 的 5 条 `test_retry_wait_*` / `test_manual_queue_*` /
+`test_gap_max_*` 已删。它们驱动的是**冻结的** `signin.run_queue_retry`，且把
+`attempt_signin` / `classify_failure` / `random` / `time.sleep` / `_write_sign_state` /
+`_update_cred_state` / `send_notification` 全部打桩后断言 `sleeps == [10.0]` 一类的**精确调用序**
+（编舞）。限速与账号间隔的活判据在 `tests/test_token_bucket.py`（`BucketTest` / `GapGateTest` / `GlobalTest`）。
 """
 import json
 import os
