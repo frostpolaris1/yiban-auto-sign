@@ -93,9 +93,9 @@ import datetime
 import logging
 from typing import Any, Iterable, Iterator, Mapping
 
-from yiban import clock
-from yiban import status as yiban_status
-from yiban.store import claims as claims_mod
+from yiban.adapters.persistence import claims as claims_mod
+from yiban.core import clock
+from yiban.core import status as yiban_status
 
 logger = logging.getLogger("yiban.store.queue_store")
 
@@ -140,7 +140,7 @@ def _queue_conn() -> tuple[Any, Any]:
     当前与业务表同库同连接（`sign_tasks` 落在 yiban.db）；按属性取而不是模块级
     from-import，独立队列库或打桩才切得动。
     """
-    from yiban.store import connection
+    from yiban.adapters.persistence import connection
     return connection.get_conn(), connection._conn_lock
 
 
@@ -554,7 +554,7 @@ def purge(days: int = claims_mod.RETENTION_DAYS) -> int:
     （≤24h 后）即恢复正常清理。守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，
     兼作 DELETE 的事务边界。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         conn, lock = _queue_conn()

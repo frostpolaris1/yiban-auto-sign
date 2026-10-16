@@ -20,10 +20,10 @@
 import logging
 import os
 
+from yiban.core.masking import mask_credentials_in_text, mask_phones_in_text
 from yiban.infra import locks
-from yiban.masking import mask_credentials_in_text, mask_phones_in_text
 
-from . import clock
+from .core import clock
 
 
 class MaskingFormatter(logging.Formatter):

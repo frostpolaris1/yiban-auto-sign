@@ -8,18 +8,18 @@
 `LOGDIR` 落在缺省目录时，`.env` 声明的那个目录永不清理。
 
 范围：读侧不认 `.env` 的绕过点共 7 处，分两刀收口。第一刀（PR #39）改 5 处——`web/app.py` 的
-`ENV_DEFAULT` 与 `DB_DEFAULT`、`yiban/store/connection.py` 的 `DB_DEFAULT`、
+`ENV_DEFAULT` 与 `DB_DEFAULT`、`yiban/adapters/persistence/connection.py` 的 `DB_DEFAULT`、
 `docker/scheduler.py` 的 `STATEDIR` 与 `ENV_FILE`。第二刀的前一半改余下 2 处——
 `docker/scheduler.py` 的 `LOGDIR` 与 `web/app.py` 的 `ACCOUNTS_DEFAULT`。
 本文件的用例逐处钉住"读 `.env`"这件事。
 
 标签：J · 运维：部署/备份/发布
-覆盖：上述 7 处绕过点的读法；再导出入口 `yiban/store/db.py` 的 `DB_DEFAULT` 与定义点
+覆盖：上述 7 处绕过点的读法；再导出入口 `yiban/adapters/persistence/db.py` 的 `DB_DEFAULT` 与定义点
    同值；进程环境与 `.env` 都没有该键时各处默认值的字面值（默认值由部署形态决定，
    收口只统一读法，不许顺手统一默认值）；`_cleanup_state()` 递给 `state_gc.sweep`
    的日志目录。
-对应实现：`yiban/infra/env_io.py` 的 `resolve_path` 与 `env_path`；
-   `yiban/state_gc.py` 的 `sweep`；`docker/scheduler.py` 的 `_cleanup_state`。
+对应实现：`yiban/adapters/config/env_io.py` 的 `resolve_path` 与 `env_path`；
+   `yiban/adapters/statefiles/state_gc.py` 的 `sweep`；`docker/scheduler.py` 的 `_cleanup_state`。
 关键断言：① 引擎侧与 web 侧实际打开的是同一个库文件（主断言）；② `.env` 里的
    `YIBAN_STATE_DIR` 对容器调度器生效；③ `.env` 里的 `YIBAN_ENV_FILE` 对 web 与容器
    调度器生效；④ `db.DB_DEFAULT` 与 `connection.DB_DEFAULT` 同值；⑤ 默认值逐字不变；

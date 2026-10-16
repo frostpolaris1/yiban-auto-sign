@@ -15,7 +15,7 @@
 `_audit_cleanup` 不再重建哈希链、统计排除已删账号）、批量操作的事务回滚与软跳过、
 删除/改绑后的会话缓存残留清理、`executescript` 原子性与"源码不再出现 executescript"、
 备份明文策略、以及一整套加密/迁移/鉴权 smoke。
-对应实现：`yiban/store/`（accounts / users / time_prefs / audit_chain / session_cache 各域）
+对应实现：`yiban/adapters/persistence/`（accounts / users / time_prefs / audit_chain / session_cache 各域）
 与 `db` 门面、`scripts/backup.sh`。
 关键断言：`test_audit_cleanup_keeps_chain_and_detects_tamper` 与
 `tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
@@ -806,7 +806,8 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
         DDL（CREATE/ALTER/DROP）随迁移域拆入 `migrations.py`，扫描面必须同时覆盖两文件
         ——只扫 db.py 会让迁移 DDL 脱离 P3-1 的绊线保护。
         """
-        for rel in ("yiban", "store", "db.py"), ("yiban", "store", "migrations.py"):
+        for rel in (("yiban", "adapters", "persistence", "db.py"),
+                    ("yiban", "adapters", "persistence", "migrations.py")):
             path = os.path.join(BASE, *rel)
             with open(path, encoding="utf-8") as f:
                 src = f.read()

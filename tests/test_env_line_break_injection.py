@@ -34,7 +34,7 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
 认得全 10 个字符）、② 告警正文落盘前的行安全化、③ `write_env_batch` 的值/键注入拒绝
 与键名白名单、④ 公告→设置的端到端杀链不再生效，外加"同键空白影子行折叠"与
 `verify_admin` 对哈希行歧义的 fail-closed。
-对应实现：`yiban/infra/env_io.py` 的 `has_line_break` / `write_env_keys` / `parse_env_file`、
+对应实现：`yiban/adapters/config/env_io.py` 的 `has_line_break` / `write_env_keys` / `parse_env_file`、
 web 的公告与设置写接口、`verify_admin` 的主凭据判定。
 关键断言：`test_predicate_matches_splitlines_over_whole_charspace` 是**成对核对**的锚点——
 它拿 `str.splitlines()` 的真行为去校验收口函数，改任何一侧的字符集都会红；

@@ -3,9 +3,9 @@
 """崩溃语义（V-S3 写前标记 ＋ V-S2 定论路径）的校验者。
 
 标签：B · 调度：领取/队列/执行体（执行核）
-覆盖：`yiban/store/run_events.py` 的未定论读取面（`unresolved_starts`）、
+覆盖：`yiban/adapters/persistence/run_events.py` 的未定论读取面（`unresolved_starts`）、
      `yiban/engine/crash_semantics.py`（识别与告警、标记策略、定论判据）、
-     `yiban/engine/executor_v3.py` 的写前标记调用点、`yiban/engine/runner.py` 的
+     `yiban/engine/executor_v3.py` 的写前标记调用点、`yiban/app/runner.py` 的
      协调器启动识别接线。
 
 本文件钉的**不变式**（任何时刻都不该被违反，不钉调用顺序）：
@@ -19,8 +19,8 @@
   ⑤ V-S2 定论判据逐值成立：State ∈ {3,4}→只回填 already；==2→no_task；∈ {0,1}→可签；
      ==5→未定论；读不到（None/未知）→维持 unknown_outcome。
 
-对应实现：`yiban/engine/crash_semantics.py`（本批新增）、`yiban/store/run_events.py`
-     （读取面）、`yiban/engine/runner.py`（接线）、`yiban/engine/workers.py`（多执行体监督
+对应实现：`yiban/engine/crash_semantics.py`（本批新增）、`yiban/adapters/persistence/run_events.py`
+     （读取面）、`yiban/app/runner.py`（接线）、`yiban/engine/workers.py`（多执行体监督
      进程接线）。定论判据的**单一事实源**是 `yiban/client.py` 的
      `SIGN_POSITION_STATE_STATUS`：本文件断言它被复用（改平台枚举即红）。
 依赖：临时 SQLite（真实迁移链）+ 假时钟 + 限速替身 + `attempt_signin` 替身；

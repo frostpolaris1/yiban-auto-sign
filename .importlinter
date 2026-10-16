@@ -116,7 +116,11 @@ forbidden_modules =
 ; 契约 4：core 级模块两两独立
 ;
 ; 128 二节把 L0 core 定为 clock/window/status/masking。它们是纯常量与纯函数。
-; 这四个今天仍是 yiban/ 根级散文件。故按现坐标登记。P0 不搬文件。
+;
+; 坐标（批 B，2026-10-16）：这批模块已从 `yiban/` 根级搬进 `yiban/core/`
+;   （契约 docs/dev/architecture-target.md 第 3 节）。故本契约的坐标随片迁到
+;   `yiban.core.*`。旧根级坐标（`yiban.clock` 等）此时只剩转发壳（各引自己的实现），
+;   已不是判据对象。不变式不变：这一组模块之间没有任何依赖。
 ;
 ; 契约类型为什么选 independence，不选 acyclic_siblings
 ;   L0 内部没有先后次序。它们是并列的纯件。
@@ -126,13 +130,13 @@ forbidden_modules =
 ;   代价：这四个模块若要共享数据，必须显式抽出新模块。那正是想要的信号。
 ; ---------------------------------------------------------------------------
 [importlinter:contract:core-layer-independence]
-name = core 级模块两两独立（clock/window/status/masking 互不依赖）
+name = core 级模块两两独立（core.{clock,window,status,masking} 互不依赖）
 type = independence
 modules =
-    yiban.clock
-    yiban.window
-    yiban.status
-    yiban.masking
+    yiban.core.clock
+    yiban.core.window
+    yiban.core.status
+    yiban.core.masking
 
 ; ---------------------------------------------------------------------------
 ; 契约 5–7：新层的单向依赖（仓库结构整理批 A0，2026-10-16）

@@ -6,7 +6,7 @@
     `UNDONE_STATUSES` 是**同一对象**；web 侧常量与 `STATUS_ICON`/`STATUS_TEXT` 同为
     别名；未了结集合的成员口径；两张展示映射刻意不合并；**前端三页的状态中文已收敛为
     唯一事实源 `frontend/src/lib/status-vocab.js`**（键集合 == ALL_STATUSES，三页 import 它）。
-对应实现：权威定义 = `yiban/status.py`（`STATUS_*`、`SYMBOL`、`ICON`、`TEXT`、
+对应实现：权威定义 = `yiban/core/status.py`（`STATUS_*`、`SYMBOL`、`ICON`、`TEXT`、
     `UNDONE_STATUSES`）；`scripts/signin.py` 与 `web/app.py` 里的同名符号是引用别名；
     前端词表 = `frontend/src/lib/status-vocab.js` 的 `STATUS_VOCAB`。
 关键断言：用 `assertIs` 而不是 `assertEqual`——值相等也可能是各复制一份，那正是曾经
@@ -50,7 +50,7 @@ NODE = shutil.which("node")
 #:   前端 `STATUS_VOCAB[*].tone` 服务三个前端页面（日志徽标 / 账号表 / 图表短名），
 #:   档位集 = `logs/format.ts` 的 `StatusTone`：{ok, bad, warn, info, muted}；
 #:   服务端 `DISPLAY[*].tone` 服务月历日期格与「我的账号」状态行（经 `ctx.by_code` 下发），
-#:   档位集 = `yiban/status.py` 的 `_LEGEND_TONES`：{ok, bad, muted, warn, busy}。
+#:   档位集 = `yiban/core/status.py` 的 `_LEGEND_TONES`：{ok, bad, muted, warn, busy}。
 #: 所以本册登记的是**语境对照台账**，不是缺陷豁免单：没有这一列理由，下一个人看到两个不同
 #: 的字母就分不清该保留还是该修。`frontend/src/lib/status-vocab.js` 文件头那节
 #: 「与服务端 DISPLAY 的关系（语境不同，非逐项对拍）」是同一件事的散文版。

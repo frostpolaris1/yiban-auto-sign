@@ -19,7 +19,7 @@
    `masking.mask_credentials_in_text` 的接线同源、真实日志行的形状不变、已知过遮面
    登记、调用点面（`sanitize_text`）贪心取值不回退。
 对应实现：`yiban/logging_ext.py` 的 `MaskingFormatter.format`、
-   `yiban/masking.py` 的 `mask_credentials_in_text` / `_mask_credential_literals` /
+   `yiban/core/masking.py` 的 `mask_credentials_in_text` / `_mask_credential_literals` /
    `sanitize_text`。
 关键断言：**遮蔽发生在"最终成文之后"这一层**（覆写 `Formatter.format` 的返回串），
    且用的是与调用点面**同一个** `mask_credentials_in_text` 对象（换成自备的第二份

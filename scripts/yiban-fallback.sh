@@ -69,7 +69,7 @@ if [ -r "$ENV_PATH" ]; then
     done < "$ENV_PATH"
 fi
 
-# 真值判定。字面量口径的**单一事实源**在 yiban/infra/env_io.py 的
+# 真值判定。字面量口径的**单一事实源**在 yiban/adapters/config/env_io.py 的
 # ENV_TRUTHY_LITERALS（Python 侧 parse_env_flag 用它）；bash 无法 import，此处逐字
 # 复刻同一份（1/true/yes/on，大小写不敏感、两侧空白忽略）。两边结论一致性由
 # tests/test_pause_flag_truthiness_e2e.py 真跑本函数与 Python 逐值比对钉住。

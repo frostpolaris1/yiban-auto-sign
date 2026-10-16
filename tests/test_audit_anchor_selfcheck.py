@@ -17,7 +17,7 @@
 （ok/none/tampered/indeterminate）、`audit_health` 对"无法定论"的汇总与事实清单呈现、
 `record_audit_anchor` 对不可解析文件的拒绝续写、三字段（v0）历史锚点行的兼容与
 兼容不得放掉篡改检测、以及 `scripts/audit_verify.py` 对"无法定论"的 exit 2。
-对应实现：`yiban/store/audit_chain.py`（`_anchor_status` / `_anchor_file_state_ex` /
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`_anchor_status` / `_anchor_file_state_ex` /
 `audit_health`）、`web/services/notify_mail.py` 的 `_audit_alert_facts`、
 `scripts/audit_verify.py`。
 关键断言：**"无法定论"必须与"无异常"和"确证篡改"两个结论都不同**——混进任一侧，

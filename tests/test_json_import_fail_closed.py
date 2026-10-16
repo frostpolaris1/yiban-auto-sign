@@ -5,7 +5,7 @@
 覆盖：`_maybe_migrate` 的逐文件计数口径、丢行时保留源文件原样 + 审计留痕、
    不丢行时照常改名 .bak，以及审计行与已导入行同事务。
 
-对应实现：yiban/store/migrations.py（`_maybe_migrate`、`_dropped_source_keys`、
+对应实现：yiban/adapters/persistence/migrations.py（`_maybe_migrate`、`_dropped_source_keys`、
    `_audit_json_import_loss`、`_mask_key_sample`、`_in_chunks`）。
 
 关键断言：`INSERT OR IGNORE` 撞唯一约束时**不报错、不留痕**，行被静默丢掉。若随后仍把

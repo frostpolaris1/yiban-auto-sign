@@ -437,7 +437,7 @@ class WrapperWorkingDirTest(unittest.TestCase):
     """薄包装必须自己把 cwd 与 .env 路径摆正——cron 的 cwd 是 $HOME。
 
     这条只能按**行为**钉，不能只看源码里有没有 `cd`：cwd 是哨兵侧所有 cwd 相对回落的
-    基准（`yiban/infra/env_io.py` 的 env_path() 默认 "data/.env"、`yiban/store/connection.py`
+    基准（`yiban/adapters/config/env_io.py` 的 env_path() 默认 "data/.env"、`yiban/adapters/persistence/connection.py`
     的 DB_DEFAULT "data/yiban.db"）。落在 $HOME 就读不到 .env ⇒ 收件人解析为空 ⇒ 告警发不
     出去（退出码 1，恰是哨兵要消灭的那种静默），并在 $HOME 就地新建一份野 yiban.db。
 

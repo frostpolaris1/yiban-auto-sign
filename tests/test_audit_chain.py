@@ -14,7 +14,7 @@
 （定点 / 稠密 / 留痕）对"删尾后追加""删前缀无留痕""膨胀留痕"的取舍；升级回填
 （migrate_v3 对残缺旧库）；写债务（write debt）持久化；`scripts/audit_verify.py` 的退出码；备份脚本的取证契约；
 以及审计**读侧**的聚合与出站不携裸号。
-对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`audit` / `verify_audit_chain` /
 `record_audit_anchor` / `verify_audit_anchor` / `audit_health`）、
 `scripts/audit_verify.py`、`scripts/backup.sh` 与 `docker/backup-docker.sh`、
 读侧聚合在 web 的审计查询服务。

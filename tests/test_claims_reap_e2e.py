@@ -5,7 +5,7 @@
 覆盖：真子进程用 `claim_batch` 领取任务后自杀；监督进程判它异常退出，轮末把该任务
    回退 `pending`、放开租约、`epoch+1`，下一次 `claim_batch` 即可领取。不这样做，
    被杀执行体的在领任务没人回退，该账号当天无人再签（漏签）。
-对应实现：yiban/store/queue_store.py（`reap_abandoned`）、
+对应实现：yiban/adapters/persistence/queue_store.py（`reap_abandoned`）、
    yiban/engine/workers.py（`_await_workers` 后的轮末收尸）。
 关键断言：判据只能是「进程已退出」——覆盖信号杀（rc<0）与退出码 1（未预期异常）两种
    形状，两种都必须被收住；看退出码的写法会漏掉其中一种。

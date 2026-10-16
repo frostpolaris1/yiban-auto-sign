@@ -25,7 +25,7 @@ import logging
 import os
 from urllib.parse import urlparse
 
-from yiban.infra import account_crypto, env_io
+from yiban.adapters.config import account_crypto, env_io
 from yiban.security import url_desc
 
 logger = logging.getLogger("notify")

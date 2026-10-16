@@ -51,37 +51,35 @@ import types
 # 里；这里仍补一次仓库根，作为"被以任意 sys.path 形状导入"的兜底（如容器里从
 # `/app/scripts` 起手的老入口）。**必须先于任何 yiban 导入**（含下面的 infra 导入，
 # 以及函数内的延迟导入）。
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 仓库根：本模块批 B 从 `yiban/store/db.py` 搬来 `yiban/adapters/persistence/db.py`，深一层。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # 表级数据访问按表拆在 yiban/store/*，本模块只做门面：多数域按原名再导出，`claims` 与
 # `verify_jobs` 两域是重命名别名（逐条见各自绑定处的行尾注释）。依赖方向单向 db → store
 # （store 只在函数内延迟取连接），旧调用方（web/app.py、测试）继续用 db.xxx。
-from yiban import clock  # noqa: E402
-
 # account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
 # `db.account_crypto` 仍被测试直接取用（test_db_residue / test_account_plaintext_patch
 # 取 load_key / encrypt_password），删除即取用面损失。
-from yiban.infra import (  # noqa: E402
-    account_crypto,  # noqa: F401
-    env_io,
-)
-from yiban.store import accounts as _accounts  # noqa: E402
-from yiban.store import audit_chain as _audit_chain  # noqa: E402
-from yiban.store import claims as _claims  # noqa: E402
-from yiban.store import cleanup as _cleanup  # noqa: E402
-from yiban.store import clock_meta as _clock_meta  # noqa: E402
-from yiban.store import connection as _connection  # noqa: E402
-from yiban.store import events as _events  # noqa: E402
-from yiban.store import migrations as _migrations  # noqa: E402
-from yiban.store import queue_store as _queue_store  # noqa: E402
-from yiban.store import run_events as _run_events  # noqa: E402
-from yiban.store import session_cache as _session_cache  # noqa: E402
-from yiban.store import time_prefs as _time_prefs  # noqa: E402
-from yiban.store import tracking as _tracking  # noqa: E402
-from yiban.store import users as _users  # noqa: E402
-from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
+from yiban.adapters.config import account_crypto, env_io  # noqa: E402, F401
+from yiban.adapters.persistence import accounts as _accounts  # noqa: E402
+from yiban.adapters.persistence import audit_chain as _audit_chain  # noqa: E402
+from yiban.adapters.persistence import claims as _claims  # noqa: E402
+from yiban.adapters.persistence import cleanup as _cleanup  # noqa: E402
+from yiban.adapters.persistence import clock_meta as _clock_meta  # noqa: E402
+from yiban.adapters.persistence import connection as _connection  # noqa: E402
+from yiban.adapters.persistence import events as _events  # noqa: E402
+from yiban.adapters.persistence import migrations as _migrations  # noqa: E402
+from yiban.adapters.persistence import queue_store as _queue_store  # noqa: E402
+from yiban.adapters.persistence import run_events as _run_events  # noqa: E402
+from yiban.adapters.persistence import session_cache as _session_cache  # noqa: E402
+from yiban.adapters.persistence import time_prefs as _time_prefs  # noqa: E402
+from yiban.adapters.persistence import tracking as _tracking  # noqa: E402
+from yiban.adapters.persistence import users as _users  # noqa: E402
+from yiban.adapters.persistence import verify_jobs as _verify_jobs  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 account_is_signable = _accounts.is_signable
 account_signs_in = _accounts.signs_in

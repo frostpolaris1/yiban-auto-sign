@@ -140,7 +140,7 @@ class AnchorLineGoldenTest(unittest.TestCase):
         """门面必须再导出老格式的 token 常数；删掉再导出这一行，本用例必红。
 
         V2 的再导出已由上面那条断言钉住。v0/v1 此前没有任何守卫：实测删掉
-        `yiban/store/db.py` 的 `_ANCHOR_V0_TOKENS` 再导出后，全量 4353 条仍全绿——
+        `yiban/adapters/persistence/db.py` 的 `_ANCHOR_V0_TOKENS` 再导出后，全量 4353 条仍全绿——
         那行 diff 没人看着。本用例补上这一对，它就是那两行的校验者。
         """
         self.assertEqual(

@@ -8,7 +8,7 @@
    为空）的逐账号窗口钳制、补签轮对 no_task 的「已了结」判定、业务钟（北京
    +8，与宿主 TZ 无关）驱动窗口判定与按日留痕、非 5
    分钟整数倍窗口的自选尾片。
-对应实现：yiban/window.py（Window、bounds、from_env、remaining_sec、full_sec）、yiban/clock.py（beijing_now、today、ts）、scripts/signin.py（_schedule_config、_schedule_blocks、_window_closed、capacity_accounts、run_queue_retry
+对应实现：yiban/core/window.py（Window、bounds、from_env、remaining_sec、full_sec）、yiban/core/clock.py（beijing_now、today、ts）、scripts/signin.py（_schedule_config、_schedule_blocks、_window_closed、capacity_accounts、run_queue_retry
    的窗口收尾、main 的退出码）、yiban/db 会话缓存时钟。
 关键断言：窗口只准算一次：排计划与判关闭必须取自同一份有效窗口，两条入口（env /
    cfg）必须逐值相等——否则有完整计划却整轮判「时段已结束」。缓冲吃空时保留管理员的窗口、只收缩缓冲，容量不得显示
@@ -30,7 +30,7 @@
 - 补签轮起跑时窗口已关闭 → 整轮零请求，却把首轮已记录的
   failed/no_position 无条件改写成 skipped_window（真实原因与失败告警一起丢掉）。
 
-**修法**：`yiban/window.py` 为唯一事实源，引擎与网页共用。
+**修法**：`yiban/core/window.py` 为唯一事实源，引擎与网页共用。
 """
 import datetime as _dt
 import json

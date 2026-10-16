@@ -15,7 +15,7 @@
 保留段与 IPv4-mapped IPv6 写法）、收件人逗号列表逐项遮罩、通知密钥定宽遮罩、
 URL query 手机号按名/按值两条口径、URL fragment 与 query 同口径打码（不透明
 fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自愈、队列等待语义）。
-对应实现：`yiban/masking.py` 的 `sanitize_text` / `sanitize_url`（`_CRED_KEY`、
+对应实现：`yiban/core/masking.py` 的 `sanitize_text` / `sanitize_url`（`_CRED_KEY`、
 `_QUOTED_OR_BARE`）、`yiban/adapters/notifier/notify/config.py` 的 `is_safe_url` 与 `_mask_secret`、
 `yiban/adapters/notifier/mail/config.py` 的 `_mask_addr`；末尾一组走 `signin` 门面（仓库根的旧名 shim），
 真实现在 `yiban/engine/state_io.py::_write_sign_state` 与 `yiban/engine/attempts.py`。

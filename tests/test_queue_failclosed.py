@@ -11,8 +11,8 @@
    `state_io.has_undone_accounts_today` → 宿主 run.sh / 容器调度器）逐环不把「读不到」
    当「已了结」。`day_counts` 的展示读者（签到进度端点）读不通时 200 + 标未知，不 500、
    不装作全 0。
-对应实现：yiban/store/queue_store.py（claim_batch、pending_count、open_count、
-   day_counts、requeue_failed）、yiban/store/db.py（task_open_count / task_stats 别名）、
+对应实现：yiban/adapters/persistence/queue_store.py（claim_batch、pending_count、open_count、
+   day_counts、requeue_failed）、yiban/adapters/persistence/db.py（task_open_count / task_stats 别名）、
    yiban/engine/executor_v3.py（`_dispatch_keeper` 收干判据、`QUEUE_UNREADABLE_MAX_ROUNDS`、
    `_alert_queue_unreadable`）、yiban/engine/state_io.py（has_undone_accounts_today）、
    web/routes/settings_api.py（api_scheduler_executors_progress）。
