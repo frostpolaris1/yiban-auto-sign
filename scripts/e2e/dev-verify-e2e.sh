@@ -19,6 +19,8 @@
 #             变异（摘掉归一化）必须让 CRLF 造成的伪红重现
 #   T5 全量绿（--full）真仓全量 0 失败
 #   T6 日志保留       --keep N 只留最近 N 份
+#   T9 副本剪枝       副本形状 = CI 检出（无 gitignore 内容）；
+#             变异（摘掉剪枝）必须让剪枝守卫响亮失败
 #
 # 变异机制：dev-verify.sh 内以
 #   `# dev-verify-mutant-begin: <名>` … `# dev-verify-mutant-end: <名>`
@@ -166,10 +168,16 @@ gitify() { # $1 = 目录：建成一个真 git 仓库
         git -c user.email=e2e@local -c user.name=e2e commit -qm e2e-scratch >/dev/null)
 }
 
-scratch() { # $1 = 名字：复制真仓工作树（不含 .git）到 WSL 原生盘
-    local d="$TMP/src-$1"
+scratch() { # $1 = 名字：复制真仓工作树（不含 .git，也不含 gitignore 内容）到 WSL 原生盘
+    # 剪掉 gitignore 内容：样本仓只用于跑门，与 dev-verify.sh 的副本同形。
+    # 不剪的话每次样本都搬 3 万余个与跑测无关的文件（实测 work/ 2.1 万 + node_modules 1.6 万）。
+    local d="$TMP/src-$1" list="$TMP/scratch-ignore.txt"
     mkdir -p "$d"
-    rsync -a --exclude='.git' "$REPO/" "$d/"
+    if [ ! -s "$list" ]; then
+        git -C "$REPO" ls-files --others --ignored --exclude-standard --directory >"$list" ||
+            printf '%s\n' "取 gitignore 名册失败：$REPO" >&2
+    fi
+    rsync -a --exclude='.git' --exclude-from="$list" "$REPO/" "$d/"
     printf '%s\n' "$d"
 }
 
@@ -262,9 +270,13 @@ expect_rc_nonzero
 expect_log_has "源仓库不是可用的 git 仓库"
 expect_log_lacks "DEV-VERIFY summary:"
 # 变异：摘掉副本 git 守卫 ⇒ 伪红必须真的出现（证明守卫承重）
+# 三处一起摘：source-git（解析 GITDIR/SHA）、copy-git（建/校验副本 .git）、
+# copy-prune ＋ copy-prune-guard（按 git 名册剪枝与它的守卫）。三者都依赖 git 可用，
+# 只摘前两处的话，后两处会先 die（退出码 2）——脚本死在 pytest 之前，就复现不出
+# "无 .git 的伪红"，本用例钉的"守卫承重"也就无从证明（2026-10-16 实测踩到）。
 m="$TMP/dev-verify.mutant-copy-git.sh"
-if make_mutant "$m" source-git copy-git && [ -s "$m" ] && ! cmp -s "$SCRIPT" "$m"; then
-    pass "变异体已摘掉 source-git / copy-git 段"
+if make_mutant "$m" source-git copy-git copy-prune copy-prune-guard && [ -s "$m" ] && ! cmp -s "$SCRIPT" "$m"; then
+    pass "变异体已摘掉 source-git / copy-git / copy-prune 段"
     run_dv "$m" --repo "$d" --target "$GIT_TESTS" --log-dir "$LOGS"
     expect_rc_nonzero
     expect_log_has "DEV-VERIFY summary:"
@@ -304,8 +316,38 @@ else
 fi
 
 # ============================================================
-say "T7 --ci 就地跑：跟踪文件含 CRLF 时必须响亮拒绝（不许伪红）"
+say "T9 副本剪枝：gitignore 内容不得进副本；摘掉剪枝必须让守卫红"
 # ============================================================
+# 判据（不变式）：副本形状 = CI 检出 = 跟踪文件。CI 是全新 clone，本地副本若多带
+# gitignore 内容，跑的就**不是 CI 的形状**，且 rsync -c 每次为这些无关字节多付数百秒
+# （2026-10-16 实测：36116 个文件 200.1s → 814 个文件 5.5s）。
+# 变量名不叫 d：T4 建的 CRLF 样本仓被 T7 复用，用同一个 d 会把 T7 的样本换掉
+# （实测：T7 当场报"样本仓不是 CRLF 仓"，钉错了对象）。
+d9=$(scratch prune)
+# 样本自检：必须真有一个被忽略的文件，否则"剪掉了"与"本来就没有"分不开，
+# 变异体也不会红——测的就不是剪枝这件事。
+mkdir -p "$d9/.tmp"
+printf 'e2e-prune-canary\n' >"$d9/.tmp/e2e-prune-canary.txt"
+gitify "$d9"
+if git -C "$d9" check-ignore -q .tmp/e2e-prune-canary.txt 2>/dev/null; then
+    pass "T9 样本自检：canary 确实被 gitignore 忽略"
+else
+    fail "T9 样本 canary 不被忽略（.gitignore 被动过？）：本用例钉错了对象"
+fi
+run_dv "$SCRIPT" --repo "$d9" --target "$TARGET_FAST" --log-dir "$LOGS"
+expect_rc 0
+expect_log_re '^DEV-VERIFY copy-prune: 副本无 gitignore 内容'
+m="$TMP/dev-verify.mutant-copy-prune.sh"
+if make_mutant "$m" copy-prune && [ -s "$m" ] && ! cmp -s "$SCRIPT" "$m"; then
+    pass "变异体已摘掉 copy-prune 段"
+    run_dv "$m" --repo "$d9" --target "$TARGET_FAST" --log-dir "$LOGS"
+    expect_rc_nonzero
+    expect_log_has "副本含 gitignore 内容"
+else
+    fail "变异体不可信（标记不成对 / 为空 / 与真脚本相同）：变异点不再被 e2e 钉住"
+fi
+
+
 # T7 复用 T4 建的 CRLF 样本仓（$d）。先自检样本真是 CRLF 仓：否则一旦 T4 被改动或重排，
 # T7 会静默对着别的仓断言（"测错了对象"也是伪绿的一种）。
 if grep -qU $'\r' "$d/scripts/check-shared-facts.sh"; then
