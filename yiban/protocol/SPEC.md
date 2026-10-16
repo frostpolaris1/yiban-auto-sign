@@ -246,6 +246,31 @@ def encrypt_password(password: str, public_key_pem: str) -> str
 - 测试：用夹具页面的公钥加密任意密码，断言密文 base64 长度 == 172 且能解回
   （测试内自带 RSA-1024 测试私钥做 round-trip；**不得**把任何真实密文写进仓库）。
 
+### 2.8 `device.py` — 设备登记解析（`device/student/index/getState` 的 `data`）
+
+```python
+@dataclass(frozen=True)
+class DeviceState:
+    authorized: bool          # 上游 authorize；"已登记但未授权" 为 False
+    code: str                 # 设备唯一码；空串 = 该账号没有登记设备
+    phone_model: str          # 机型；空串 = 未登记
+    update_time: int | None   # epoch 秒（数值双态收敛，§3.1）
+
+def parse_device_state(data: Any) -> DeviceState
+```
+
+- **未登记设备是正常状态，不是畸形响应**：四个字段全部"缺省即默认"
+  （`authorized=False`、`code=""`、`phone_model=""`、`update_time=None`）。
+- **类型不符才是畸形**：字段存在但非字符串（`Code`/`PhoneModel`）→ `ParseError(字段名)`；
+  `data` 本身不是对象 → `ParseError("data")`。
+- `authorize` 收敛为 bool（实测为 JSON 布尔；并容 `"1"/"true"/"on"/"yes"` 与数值）。
+- **`authorize=False` 合法**：表示"设备已登记但尚未授权"。拦截与否由服务端在签到
+  接口上裁决，解析层不得越权判定。
+- 用途：签到前**读回**服务端登记的设备码，作为签到时 `Code`/`PhoneModel` 的来源；
+  这是"照实回传"而非伪造（真实客户端用原生桥 `window.yiban.getUUID()` 生成一次并
+  登记，之后各处都是回传同一个值）。
+- 夹具：`tests/protocol/fixtures/device_state.json`。
+
 ## 3. 容错规则（全部来自实拍差异）
 
 1. **数值字段双态**：`Range/MapType/State/CreateTime` 等上游可能发数字
@@ -267,7 +292,7 @@ def encrypt_password(password: str, public_key_pem: str) -> str
 yiban/protocol/
   __init__.py     # 仅 re-export 公共 API 与 __version__ = "0.1.0"
   errors.py  page.py  location.py  envelopes.py
-  identity.py  position.py  forms.py  crypto.py
+  identity.py  position.py  device.py  forms.py  crypto.py
   LICENSE         # MIT 许可全文（随包分发）
   SPEC.md         # 本文件
 tests/protocol/
@@ -291,6 +316,7 @@ tests/protocol/
 | 身份 | 夹具 → 逐字段相等；删掉 `PersonName` → `ParseError`；`Apps` 缺失 → 空列表 |
 | 签到点 | 夹具 → **2** 个 Position；字符串 `"110"` 收敛为 int；`"None"` → None；points 全为 tuple |
 | 表单构造 | `build_usersure_form` 与夹具字段对逐一相等；`build_sign_in_body` 与 urlencoded 夹具**整串相等** |
+| 设备登记 | 夹具 → 逐字段相等；四字段全缺 → 默认值（不抛错）；`Code` 为数字 → `ParseError`；`authorize` 数值/字符串形态收敛 |
 | 挑战检测 | 全部正常夹具 → False；含 `ydclearance`/`acw_sc` 的合成页 → True |
 | 加密 | 附加件 round-trip（测试自带测试用私钥）；无依赖时 import 报错文案可读 |
 
