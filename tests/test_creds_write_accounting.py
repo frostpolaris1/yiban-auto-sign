@@ -11,20 +11,21 @@
 必须有事后告警，full 档豁免只适用于真被门拦过的密码/改绑动作）。
 
 背景二：`__clear__` 哨兵原在进 SET 前被 `pop` 掉 ⇒ "清除设备识别码"是静默空操作而接口
-回 200。现在 4 个消费点（管理端编辑 / 用户端编辑 / 两条添加路径）统一经
-`fold_phone_code` 折算——哨兵 ⇒ `""` 随 UPDATE 进 SET，库行真被清空；正常值与留空
-（保持不变）路径零回归。
+回 200。**管理面**两条写口（添加/编辑）统一经 `fold_phone_code` 折算——哨兵 ⇒ `""`
+随 UPDATE 进 SET，库行真被清空；正常值与留空（保持不变）路径零回归。
+**用户面**整条写口不再收这两个字段（用户 2026-10-16 裁决：设备型号/识别码只读不可改），
+故那里连折算调用都没有——判据是"库行既有值原样保留"，见 UserSideDeviceFieldsReadOnlyTest。
 
 标签：E · Web：认证/权限/API
 覆盖：fold_phone_code 折算纯函数、清熔断口径（识别码变更清/未变与未带不清）、管理端
     哨兵清空（行断言+返回如实+审计标位+当事人信+事后告警）、full 档只改/只清识别码
-    必过门、risk 缺省档免口令但标位发信、只改无关字段零误报、用户端与两条添加路径
-    的哨兵折算、grep 级"哨兵折算单点、无进 SET 前 pop"
-对应实现：`web/services/accounts_data.py` 的 `CLEAR_SENTINEL`/`fold_phone_code`、
+    必过门、risk 缺省档免口令但标位发信、只改无关字段零误报、用户面两列只读（PUT/POST
+    都改不动）、grep 级"折算只在管理面两条写口、无进 SET 前 pop"
+对应实现：`web/services/accounts_data.py` 的 `CLEAR_SENTINEL`/`fold_phone_code`/`validate_account`、
     `web/routes/accounts_api.py` 的 api_account_update/api_account_add、
     `web/routes/my_api.py` 的 api_my_account_update/api_my_account_add、
     `web/services/logs.py` 的 clear_fuse_on_cred_change
-关键断言：`__clear__` ⇒ 库行 `phone_code` 变 `""` 且响应 `has_phone_code` 如实为假；
+关键断言：管理面 `__clear__` ⇒ 库行 `phone_code` 变 `""` 且响应 `has_phone_code` 如实为假；
     哨兵绝不作为字面量落库；只改识别码在任何档位都 200 放行（门收窄）且当次审计
     必含"改写凭据"、当事人信含识别码条目、管理员紧急告警必发（含 full 档）；只改
     name 一律不标位不发信不过门；告警只出 `138****0000` 不出完整号
@@ -296,8 +297,12 @@ class AdminSentinelClearTest(_CredsBase):
         self.assertEqual(self._row()["phone_code"], "")
 
 
-class UserSideClearTest(_CredsBase):
-    """用户端编辑与提交口：同一折算，哨兵清空是真、哨兵永不落字面量。"""
+class UserSideDeviceFieldsReadOnlyTest(_CredsBase):
+    """用户面**没有**设备型号/识别码的写入面（用户 2026-10-16 裁决：只读不可改）。
+
+    判据是不变式：用户面任何写口都改不动这两列。键**缺席**（不是空串）才是对的——
+    空串在 `update_account` 里是"显式清空"，会把签到前自动补全填进去的值冲掉。
+    """
 
     def _user_client(self, email=OWNER):
         import db
@@ -308,29 +313,37 @@ class UserSideClearTest(_CredsBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         return c, c.get("/api/me").get_json()["csrf_token"]
 
-    def test_用户侧哨兵真清空且返回如实(self):
+    def test_用户编辑送设备字段也改不动库行(self):
+        """用户端 PUT 带上这两个字段：库行既有值原样保留（"清除"哨兵同样不生效）。"""
         self._seed_account()
         c, t = self._user_client()
         mine = c.get("/api/my-accounts").get_json()["accounts"]
         self.assertEqual(len(mine), 1)
         r = c.put(f"/api/my-accounts/{mine[0]['index']}",
-                  json={"name": "n", "phone": PHONE, "phone_code": SENTINEL},
+                  json={"name": "n", "phone": PHONE,
+                        "phone_model": "Submitted-Model", "phone_code": SENTINEL},
                   headers={"X-CSRF-Token": t})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["msg"], "已保存")
-        self.assertEqual(self._row()["phone_code"], "", "清除必须是真清空，不是空操作")
+        row = self._row()
+        self.assertEqual(row["phone_code"], CODE,
+                         "用户面不许改识别码：自动补全填的值必须原样保留")
+        self.assertEqual(row["phone_model"], "", "用户面不许改机型")
 
-    def test_用户提交哨兵不落字面量(self):
+    def test_用户提交设备字段不落库(self):
+        """用户端 POST 带上这两个字段：新行两列仍为空（校验层丢弃这两个键）。"""
         c, t = self._user_client()
         r = c.post("/api/my-accounts",
                    json={"name": "n", "phone": PHONE, "password": "pw",
-                         "phone_code": SENTINEL},
+                         "phone_model": "Submitted-Model", "phone_code": SENTINEL},
                    headers={"X-CSRF-Token": t})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(self._row()["phone_code"], "",
-                         "协议令牌绝不允许当设备码落库")
+        row = self._row()
+        self.assertEqual(row["phone_code"], "",
+                         "自填值与协议令牌都不许落库：用户面根本不该收这两个字段")
+        self.assertEqual(row["phone_model"], "")
 
     def test_管理添加口哨兵不落字面量(self):
+        """管理面保留写入面：哨兵仍折算为真清空（不只是"不发字面量"）。"""
         c, t = self._admin_client()
         r = c.post("/api/accounts",
                    json={"name": "A", "phone": PHONE2, "password": "pw",
@@ -457,14 +470,21 @@ class SentinelSingleSourceTest(unittest.TestCase):
         self.assertEqual([os.path.basename(p) for p in hits], ["accounts_data.py"],
                          "多处定义会漂移；前端 JS 字面量由折算单点在 Python 侧收敛语义")
 
-    def test_四个消费点全部接入折算(self):
-        route_dir = os.path.join(BASE, "web", "routes")
-        n = 0
-        for fn in os.listdir(route_dir):
-            if fn.endswith(".py"):
-                n += io.open(os.path.join(route_dir, fn), encoding="utf-8").read(
-                    ).count("fold_phone_code(")
-        self.assertEqual(n, 4, "管理端编辑/用户端编辑/两条添加路径各一处，缺一处即一处空操作")
+    def test_折算只接在管理面两条写口上(self):
+        """设备字段的折算只许出现在管理面（2026-10-16 用户裁决后的新形状）。
+
+        用户面（`web/routes/my_api.py`）**一处都不许有**——它整条写口都不收这两个
+        字段；管理面（`accounts_api.py` 的添加/编辑）各一处，缺一处即一处空操作。
+        """
+        routes = os.path.join(BASE, "web", "routes")
+
+        def _count(fn):
+            return io.open(os.path.join(routes, fn), encoding="utf-8").read().count(
+                "fold_phone_code(")
+
+        self.assertEqual(_count("accounts_api.py"), 2, "管理面添加/编辑各一处")
+        self.assertEqual(_count("my_api.py"), 0,
+                         "用户面不许有折算调用——它的整条写口都不收这两个字段")
 
 
 if __name__ == "__main__":

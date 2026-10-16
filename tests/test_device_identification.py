@@ -11,7 +11,7 @@
    并登记，此后各处回传同一个值；
 2. 本地已配置设备时**以本地为准且不读服务端**（显式配置优先；省一次请求）；
 3. 取不到设备码（读失败 / 非 0 信封 / 该账号未登记设备）**拒签**：不提交、不伪造，
-   文案点名两条补救动作（易班 App 内登记授权、或账号里手工填写）；
+   文案只点名 App 内登记授权这条可执行动作（本站侧靠自动补全 · 用户面无可编辑入口）；
 4. `authorize=False`（已登记未授权）仍提交，并留下点名真实补救动作的告警；
 5. 上游回「授权设备」时的提示必须指向**真正的补救动作**（在易班 App 内完成设备授权），
    不得再教用户去配环境变量（读回之后那不是缺配置）。
@@ -219,7 +219,9 @@ class DeviceMissingCodeRefusalTest(unittest.TestCase):
         self.assertEqual(session.post_bodies, [], "拒签时不得提交签到（明知必被拒）")
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("设备识别", msg, "文案必须点名易班 App 内的设备识别页")
-        self.assertIn("手工填写", msg, "第二条补救动作：允许人填（唯一合法的本地来源）")
+        self.assertIn("自动补全", msg,
+                      "补救动作只能指向 App 内登记；本站侧靠自动补全，不再教用户手填"
+                      "（用户面已无这两个字段的编辑入口）")
 
     def test_non_zero_envelope_refuses(self):
         session = _RoutingSession({"code": 500, "msg": "服务端错误", "data": None})

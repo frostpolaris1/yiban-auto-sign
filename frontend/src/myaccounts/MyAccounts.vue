@@ -15,7 +15,7 @@ import {
   shellBase,
   toast,
 } from "../lib/shell";
-import { buildAccountPayload, CODE_CLEAR, CODE_CLEAR_BTN, CODE_CLEAR_CANCEL_BTN, CODE_CLEARED_PLACEHOLDER, CODE_PLACEHOLDER, CODE_UNCHANGED_PLACEHOLDER, CREDS_GATE_DESC, PASSWORD_UNCHANGED_PLACEHOLDER, availableUserItems, credsWritten, formSubtitle, formTexts, formTitle, makeSnapshot, submitLabel, type AccountPayload, type SelectItem } from "./accountform";
+import { buildAccountPayload, CREDS_GATE_DESC, PASSWORD_UNCHANGED_PLACEHOLDER, availableUserItems, credsWritten, formSubtitle, formTexts, formTitle, makeSnapshot, submitLabel, type AccountPayload, type SelectItem } from "./accountform";
 import { accountActions, accountIcon, accountMeta, auditAriaText, deletedNote, passwordAlertText, passwordAlertVisible, pendingHintText, pendingHintVisible, rejectedAlertText, statusBadge, submitButtonVisible, todayStateText, type MyAccount } from "./model";
 import { adminGateDesc, adminSaveFailedTip, adminTip, needsGate, TIP_TTL_MS, userSaveFailedTip, userTip } from "./mailnotify";
 import { DISABLED_HINT, LOAD_ERROR_TEXT, SLOT_FULL_PCT, collapseLabel, collapsedByDefault, edgeTip, estimateText, slotClass, slotPctText, slotTitle, type TimePrefData } from "./timepref";
@@ -169,8 +169,7 @@ const formBusy = ref(false);
 const formDetailLoading = ref(false);
 /** 管理端编辑的乐观锁快照（用户端编辑自己的账号无需：不走 detail） */
 const formSnapshot = ref<string | null>(null);
-const f = ref({ name: "", phone: "", password: "", model: "", code: "" });
-const clearCode = ref(false);
+const f = ref({ name: "", phone: "", password: "" });
 const emailItems = ref<SelectItem[]>([]);
 const formEmail = ref("");
 const formManualEmail = ref("");
@@ -181,7 +180,6 @@ function openForm(index: number | null): void {
   formIndex.value = index;
   formError.value = "";
   formSnapshot.value = null;
-  clearCode.value = false;
   formEmail.value = "";
   formManualEmail.value = "";
   formInitialPassword.value = "";
@@ -190,8 +188,6 @@ function openForm(index: number | null): void {
     name: a?.display_name ?? "",
     phone: a?.phone ?? "",
     password: "",
-    model: a?.phone_model ?? "",
-    code: "",
   };
   formOpen.value = true;
   if (isAdmin.value && index !== null) void loadDetail(index);
@@ -247,9 +243,6 @@ async function submitForm(): Promise<void> {
       phoneVisible: f.value.phone,
       phoneFull: fullPhone.value,
       password: f.value.password,
-      phoneModel: f.value.model,
-      phoneCode: f.value.code,
-      clearCode: clearCode.value,
       email: isAdmin.value && !formEditing.value ? formEmail.value : undefined,
       manualEmail: formManualEmail.value,
       initialPassword: formInitialPassword.value,
@@ -261,6 +254,11 @@ async function submitForm(): Promise<void> {
       snapshot: formSnapshot.value,
       policyOk: passwordPolicyOk,
       policyHint: passwordHint(false),
+      // 本页两条变体都**写 `/api/my-accounts`**（自助面），而该写口已不收设备型号/
+      // 识别码（2026-10-16 裁决）。故这里恒为 false——否则管理变体会渲染出输入框、
+      // 提交却什么也没写进库：正是"看到已保存、库里没变"那类静默空操作。
+      // 需要手填/清除这两个字段请到「账号管理」页（`/api/accounts`，管理面，仍保留写入面）。
+      allowDeviceFields: false,
     },
   );
   if (built.error || !built.payload) {
@@ -787,24 +785,10 @@ onMounted(async () => {
           <span class="field-help">{{ T.passwordHelp }}</span>
         </label>
 
-        <label class="field">
-          <span class="field-label">{{ T.modelLabel }}</span>
-          <input v-model="f.model" class="input" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写" />
-          <span class="field-help">{{ T.modelHelp }}</span>
-        </label>
-
-        <label class="field">
-          <span class="field-label">{{ T.codeLabel }}</span>
-          <input
-            v-model="f.code"
-            class="input"
-            type="text"
-            maxlength="100"
-            :readonly="clearCode"
-            :placeholder="clearCode ? CODE_CLEARED_PLACEHOLDER : formEditing ? CODE_UNCHANGED_PLACEHOLDER : CODE_PLACEHOLDER"
-          />
-          <span class="field-help">{{ T.codeHelp }}</span>
-        </label>
+        <!-- 设备型号/识别码在本页**两个变体都不渲染**（2026-10-16 裁决：这两个字段由
+             签到前自动补全写入）。本页两条变体都写 `/api/my-accounts`（自助面），而该
+             写口不收这两个字段——渲染出来只会是"提交后库里没变"的静默空操作。
+             要手填/清除请去「账号管理」页（管理面 `/api/accounts`，那里保留输入框）。 -->
       </div>
       <template #footer>
         <button type="button" class="btn btn--ghost" @click="formOpen = false">取消</button>
