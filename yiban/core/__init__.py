@@ -7,4 +7,8 @@
 形参注入。层准入判据见契约第 2 节。
 
 当前成员：`elbow`（领取肘界谓词）。
+
+目标成员（契约第 3 节目标树）：`policy`、`plan`、`rate`、`classify`、
+`idempotency`、`masking`、`security_policy`。它们当前仍在 `yiban/` 根级与
+`yiban/engine/`。那批搬迁属批 B，本层今天不搬它们。
 """

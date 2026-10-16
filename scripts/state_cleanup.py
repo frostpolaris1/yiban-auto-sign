@@ -30,8 +30,8 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 时区属预期，见 README 部署章节的时区说明）；日志行里的"截止 X"自 MF-109 统一起
 与 `state_gc._cutoff`（删除判据，北京时间）**同钟**——此前"截止"用宿主本地钟，
 UTC 主机上会与实际生效的截止日差一天（只差文案，不差删除结果）。
-谁调用：宿主 `scripts/yiban-cleanup.sh`（cron）、容器调度器；`yiban/cli.py state`
-子命令与之同源。
+谁调用：宿主 `scripts/yiban-cleanup.sh`（cron）、容器调度器；
+`yiban/entry/cli/__init__.py state` 子命令与之同源。
 前端调用点：无直接调用点；容器调度器的清理结果与保留期设置经 `/api/settings`
 （`web/static/js/components/settings-quota.js` 等设置页）暴露给运维。
 """

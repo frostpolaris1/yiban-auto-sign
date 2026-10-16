@@ -187,7 +187,8 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
 `check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
 缺省值字面量在代码内清零、未登记键不得出现在生产代码），`check-import-linter.py` 跑
-`.importlinter` 的四条依赖方向契约（P0 观测模式：只对基线之外的新增违规红）。名册门禁的
+`.importlinter` 的依赖方向契约（P0 批四条；批 A0 为新层补三条。观测模式：只对基线之外
+的新增违规红）。名册门禁的
 元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），

@@ -44,7 +44,7 @@ DEFAULT_URGENT_DAILY_MAX = 3
 # 「仅推送重要告警」默认开：推送日额度有限（Server酱免费版 5 条/天），默认就该留给
 # 安全与系统级告警，日常改密、签到结果类只走邮件。`.env` 写 YIBAN_NOTIFY_URGENT_ONLY=0
 # 即显式关闭，恢复"全部告警都推手机"。
-# 发送期判定（yiban/notify/transport.py）与上报值（本模块 get_config 的 urgent_only
+# 发送期判定（yiban/adapters/notifier/notify/transport.py）与上报值（本模块 get_config 的 urgent_only
 # 字段）必须取同一个默认常量——两处各写一个字面量，设置页显示与实际行为就会分叉。
 DEFAULT_URGENT_ONLY = 1
 # 登录失败告警独立账本的日额度默认值；该键无 NOTIFY_ 前缀（独立命名），但读取口径

@@ -162,7 +162,7 @@ class FileLockNoNetworkTest(unittest.TestCase):
             "    with ledger_mod._state_file_lock('notify-throttle.json'):\n"
             "        ledger_mod.send('t', 'c')\n"
         )
-        self.assertEqual(scan_lock_regions("yiban/notify/ledger.py", src), [])
+        self.assertEqual(scan_lock_regions("yiban/adapters/notifier/notify/ledger.py", src), [])
 
 
 if __name__ == "__main__":

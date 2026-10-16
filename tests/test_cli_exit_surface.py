@@ -6,7 +6,8 @@
     `config` 失败/成功两态、`capacity`/`state`/`db`/`version` 四个维护子命令的
     `--json`+stderr 出口、维护子命令入口的日志装配（`logging.lastResort` 裸写旁路
     必须被 `MaskingFormatter` 装配堵掉）。
-对应实现：`yiban/cli.py`（`_say`、`_emit_json`、`_masked_tree`、`main` 装配点）与
+对应实现：`yiban/entry/cli/__init__.py`（`_say`、`_emit_json`、`_masked_tree`、`main`
+    装配点；`yiban/cli.py` 是转发壳）与
     `yiban/engine/cli_support.py::_setup_cli_logging`（复用，不新造）。
 关键断言：登记原文的验收不变量——构造含裸号/明文邮箱的记录 ⇒ 每个出口都是遮罩形态：
     断"遮罩形态在场"且"裸形态缺席"两侧；只断缺席会放过"字段整个消失"的假绿。

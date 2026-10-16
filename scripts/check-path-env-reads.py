@@ -59,7 +59,11 @@ KNOWN_RULES = ("bare_environ_read",)
 COLUMNS = ("族", "键", "状态", "判定模式", "扫描范围", "允许上限", "口径备注")
 #: 只认这两枚宿主名（模块级 `environ` 来自 `from os import environ`）
 ENV_HOSTS = ("os.environ", "environ")
-JUNK_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git", "node_modules"}
+# `protocol_fake` 同 check-shared-facts.sh 的 EXCL_RE：它是测试假上游，不属生产扫描面。
+# 两个门共用名册的"扫描范围"列，故排除面必须同口径——否则同一枚键在两个引擎下
+# 的"生产面"定义不一致（一个算它、一个不算它）。
+JUNK_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git",
+             "node_modules", "protocol_fake"}
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

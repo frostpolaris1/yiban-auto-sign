@@ -1255,7 +1255,8 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
    ├── scripts/signin.py        兼容壳 → yiban/engine/（签到引擎）
    ├── scripts/db.py            兼容壳 → yiban/store/db.py（SQLite 连接与迁移）
    └── yiban/                   共享包（web 与签到引擎共用）
-            ├── cli.py           统一命令行入口（`python -m yiban.cli <子命令>`）
+            ├── entry/cli/       统一命令行入口（`python -m yiban.cli <子命令>`）
+            │                     ← 旧坐标 `yiban/cli.py` 是转发壳，行为同源
             ├── clock.py         业务时间唯一入口（北京时间）
             ├── window.py        签到窗口唯一事实源（排计划/判关闭/算容量同源）
             ├── status.py        签到状态词汇表
@@ -1266,7 +1267,10 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             ├── state_gc.py      按日状态文件的保留期策略与清理
             ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
             ├── platform.py      易班平台事实（端点/请求头/版本）+ 登录与签到编排
-            ├── protocol/        ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+            ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+            ├── adapters/protocol_fake/  测试假上游（e2e 与演练用；生产链路不引）
+            ├── adapters/notifier/       通知适配：`notify/`（推送）与 `mail/`（邮件）
+            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 是转发壳
             ├── geo.py           多边形内定位点采样（偶奇射线法 + 拒绝采样 + 显式兜底）
             ├── challenge.py     风控挑战检测（只检测不求解）
             ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
@@ -1275,9 +1279,10 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             │                     / alerts 告警与邮件 / state_io 状态文件 / accounts 装载
             │                     / workers 多执行体
             ├── store/           表级数据访问（db.py 连接与迁移、claims 签到分工记录表）
-            ├── notify/          通知推送（配置 / 额度账本 / 发送）
-            ├── mail/            告警邮件（配置 / 发送）
             └── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
+
+（另有一组目标分层目录 entry / app / core / ports / adapters / workers：
+成员按 `docs/dev/architecture-target.md` 第 3 节逐批搬入，未搬入的仍在原坐标。）
 ```
 
 > 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
@@ -1524,7 +1529,7 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 | 请求头字段值与 App 版本（`Yiban` / `AppVersion` / `Origin` / iOS UA） | `yiban/platform.py` | **平台事实**：字段值取自平台客户端实拍请求与官方安装包清单 |
 | 端点、`client_id` / `redirect_uri`、`scope` / `display` 取值、成功标志 `s200` | `yiban/platform.py` | **平台事实**：平台接口的固定取值 |
 | 六跳登录链路的**顺序与跳转形态** | `yiban/platform.py` | **本项目实拍**：逐端点抓包记录（TASK-C）；顺序是本项目的实现产物 |
-| 授权页 / 响应信封 / 表单 / 签到体的解析与构造 | `yiban/protocol/` | **洁净室库**（MIT）：唯一规格来源是第一手旁路实拍，见其 `SPEC.md` 与 `LICENSE` |
+| 授权页 / 响应信封 / 表单 / 签到体的解析与构造 | `yiban/adapters/protocol_yiban/` | **洁净室库**（MIT）：唯一规格来源是第一手旁路实拍，见其 `SPEC.md` 与 `LICENSE` |
 | 调度错峰、重试预算与失败分级、账密熔断、通知告警、账号与数据库、Web 管理后台、多执行体并行 | `yiban/engine/` 等 | **本项目原创** |
 
 > 历史沿革（如实记录）：早期版本曾把上游派生代码圈在一个独立隔离层目录内（目录名取自
@@ -1536,8 +1541,8 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 > 项目无代码关系。
 
 **许可**：本项目整体以 **AGPL-3.0** 分发（根 `LICENSE`），与上游项目同一许可版本；
-`yiban/protocol/` 是 **MIT** 许可的洁净室库，其许可全文随包分发
-（`yiban/protocol/LICENSE`）——MIT 与 AGPL 兼容，两段许可各自约束自己的文件。
+`yiban/adapters/protocol_yiban/` 是 **MIT** 许可的洁净室库，其许可全文随包分发
+（`yiban/adapters/protocol_yiban/LICENSE`）——MIT 与 AGPL 兼容，两段许可各自约束自己的文件。
 
 </details>
 
@@ -1588,9 +1593,9 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 | App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `yiban/platform.py` | **平台事实**：字段值取自平台客户端实拍与安装包清单（版本值随官方客户端更新） |
 | CSRF 随机令牌 | `Core/SchoolBased.kt` | `yiban/platform.py` | **平台事实** + 本地加固（每次实例重生成，用密码学安全随机源） |
 | 校本化 OAuth 五步登录与全部请求常量 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` + `yiban/client.py` | **平台事实（端点/参数取值）** + **本项目实拍（六跳顺序）**；另加本地特性：会话缓存分支、URL 白名单、风控识别、脱敏 |
-| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` → `yiban/protocol/crypto.py` | **平台事实（协议形态）**；实现属洁净室库（MIT），另加本地长度守卫 |
+| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` → `yiban/adapters/protocol_yiban/crypto.py` | **平台事实（协议形态）**；实现属洁净室库（MIT），另加本地长度守卫 |
 | 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` | **平台事实**（响应取值） |
-| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `yiban/platform.py` + `yiban/protocol/forms.py` | **平台事实（字段与编码形态，取自实拍）**；构造由洁净室库承担，多任务遍历/容错分支为本项目实现 |
+| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `yiban/platform.py` + `yiban/adapters/protocol_yiban/forms.py` | **平台事实（字段与编码形态，取自实拍）**；构造由洁净室库承担，多任务遍历/容错分支为本项目实现 |
 | 定位点算法（缩放质心 + 射线法） | `tool/Point.kt` | `yiban/geo.py` | **洁净室自研**（2026-10-07 重写）：射线法按教科书偶奇定义重写、取点改外接矩形拒绝采样、兜底语义本项目自定；缩放质心骨架已退役 |
 | **定位采样分布** | Box-Muller 正态分布 | 围栏内**精确均匀**（拒绝采样） | 本地原创 |
 | **调度与错峰**（时间窗分块、锚点/σ、重试落点） | 无 | `yiban/engine/schedule.py` + `yiban/engine/round.py` | 本地原创 |

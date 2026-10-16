@@ -48,7 +48,7 @@ warn_unused_configs = true
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# 无 lint 排除项：洁净室协议库 `yiban/protocol/` 已是本仓一等模块（不再 vendored），
+# 无 lint 排除项：洁净室协议库 `yiban/adapters/protocol_yiban/` 已是本仓一等模块（不再 vendored），
 # 与本仓其余部分同口径受检。
 exclude = [".git", "__pycache__"]
 
@@ -76,6 +76,17 @@ ignore = [
     "RUF002",
     "RUF003",
 ]
+
+[tool.ruff.lint.isort]
+# `known-first-party` 必须显式给 `yiban`（2026-10-16 批 A1/A4 加）。
+# 为什么：ruff 按**文件是否存在**判定 first-party。批 A1/A4 给旧坐标留了转发壳
+# （`yiban/cli.py`、`yiban/mail/`、`yiban/notify/`），子模块文件已搬走。
+# 于是 `from yiban.mail.layout import …` 被判成 third-party，与同文件的
+# `from yiban.engine import …`（first-party）排进不同段，I001 假红。
+# 这些名字**运行期是有效的**（壳把它们登记进 sys.modules），故分类也要照此钉住。
+# 覆盖面只有 `yiban` 一个顶层名：`web/` 与 `scripts/` 的模块文件都在原位，
+# 按存在性判定已经正确。
+known-first-party = ["yiban"]
 
 [tool.ruff.lint.per-file-ignores]
 # tests/ 整体豁免 DTZ：测试大量用 naive datetime 构造业务本地时间做断言与打桩，

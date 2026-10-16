@@ -134,7 +134,11 @@ def _now_epoch_ms() -> float:
 
 
 def _iso_ms(ts: float) -> str:
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+    # 假上游的 JSONL 记账时间戳按**宿主本地时区**写（与它搬进 yiban/ 之前逐字一致）。
+    # 它只用于测试机回环演练的日志对照，不参与任何业务日判定。
+    # 逐处 noqa 而非文件级豁免：本仓口径是"生产面每一处 DTZ 命中逐处处置"。
+    return datetime.fromtimestamp(  # noqa: DTZ006
+        ts).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
 
 
 class MockConfig:
