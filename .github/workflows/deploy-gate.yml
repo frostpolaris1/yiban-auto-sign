@@ -10,7 +10,8 @@ name: Deploy gate
 # `docker compose up -d --build`）。国内镜像旁路只供本机用（GATE_PIP_INDEX_URL=...），
 # 不在 CI 里设——否则跑的就是另一条同义命令，不再是 README 那条（工单 c9uz 关闭条件 2）。
 #
-# fetch-depth: 0 是必须的：B 阶段迁移演练要 `git archive release/0.6.2` 起旧库。
+# fetch-depth: 0 是必须的：B 阶段迁移演练要 `git archive v0.6.2` 起旧库。
+# 钉不可变 tag 而不是分支：分支会被删（`release/0.6.2` 于 2026-10-17 被删，B0 无法解析）。
 on:
   workflow_dispatch:
   pull_request:
@@ -34,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout (full history — phase B archives release/0.6.2)
+      - name: Checkout (full history — phase B archives v0.6.2)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
