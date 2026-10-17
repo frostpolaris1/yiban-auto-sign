@@ -262,6 +262,24 @@ mkdir -p /var/log/yiban
 > 另注：是否把产物设成 `root:root` 属主，看的仍是「root 且未设 `DESTDIR`」——那是写入
 > 侧的不变量，与上面那条判据不同，两条门不许"统一"。
 >
+> 🔄 **升级既有安装：旧布局的运行数据由 `install.sh` 迁入 `data/`**。`data/` 落点是
+> 后加的：在那之前的安装把 `.env` 与 `yiban.db` 放在检出根。升级时服务按新默认值去
+> `data/` 找——找不到就自建一份**空库**、读不到 `.env` 的密钥与管理员口令（页面显示
+> 零账号）。故 `install.sh` 在同一步把旧件**迁入**：`.env`、`yiban.db` 连同
+> `yiban.db-wal`/`yiban.db-shm`（本项目统一 WAL 模式）。迁移的判据三条：
+> ① **旧位置不留第二份权威**（是 `mv` 不是 `cp`）；迁入件改属服务账号，服务接着写；
+> ② **幂等**：已是新布局时重跑没有任何可迁的件；
+> ③ **同名件同时在检出根与 `data/` ⇒ 拒装**（权威未知，不猜、不覆盖）——按提示人工
+> `diff` 两份、删掉旧的那份再重跑。
+> ⇒ 升级的**正确顺序**（务必先停服：库被搬迁时若服务仍在跑，它会按旧路径另建一份空库）：
+> ```bash
+> sudo systemctl stop yiban-web
+> cd /opt/yiban-auto-sign && git pull --ff-only
+> sudo chown -R root:root . && sudo chmod -R go-w .   # ①
+> sudo bash deploy/prod/install.sh                    # ② 落位执行件、迁入运行数据、同步依赖
+> sudo systemctl start yiban-web
+> ```
+>
 > 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
 > `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
 > （只 fetch 比对，**永不 push**；红 = 按现流程 `git pull gitee server-web` 部署不到这份
@@ -1197,6 +1215,9 @@ sudo systemctl restart yiban-web.service   # 依赖变更后重启常驻服务
 # 判据（机器可跑）：bash scripts/check-deps-lock.sh
 #   报"venv 与 lock 一致"退 0；任一所锁包版本不符或缺失则退 1 并点名。
 # 手工跑上面那条 pip 时，报 "Requirement already satisfied" 即已与 lock 一致。
+# 更省事的等价走法（推荐）：`sudo bash deploy/prod/install.sh` 一条命令做完三件事——
+#   落位执行件、把旧布局的运行数据迁入 `data/`、再把 venv 同步到 lock 并跑上面那道门。
+#   见「运行数据在检出内的 `data/` 子目录」的升级小节。
 ```
 
 > ✅ **依赖同步已落在裸机流程里**（2026-10-13 补齐，工单 j06f）：2026-10-12 实测到缺口——

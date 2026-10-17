@@ -17,6 +17,9 @@
   ② **写入面与检出根分离**：服务账号写不进检出根，写得到 `data/` 下的 `.env` 与库。
   ③ **载体不落单**：生产树里指向 `.env` / 库的每个载体都落在 `data/`。漏一个 = 它
      静默读到空库或默认配置（界面显示零账号、备份把空库当成功）。
+  ④ **升级不丢数据**：既有安装（旧件在检出根）被 `install.sh` 迁入 `data/` 后，服务
+     解析到的仍是同一份 `.env` 与库（逐字节相同），旧位置不留第二份权威。
+     `LegacyRuntimeDataAdoptionTest` 钉这一条。
 
 对应实现：`deploy/prod/install.sh`（建目录）、`yiban/infra/env_io.py`（默认值单点）、
 `yiban/store/connection.py`、`web/app.py`、`config/registry.json`、`run.sh`、
@@ -30,6 +33,7 @@ Windows 开发机则该条 skip）；setpriv（缺它则该条 skip）。无网�
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -413,6 +417,153 @@ print(json.dumps(out))
             planted = f.read()
         hits = [b for b in FORBIDDEN_SHAPES if b in planted]
         self.assertTrue(hits, "扫描器抓不住旧形态 = 门是空的")
+
+
+#: 旧布局留在检出根的运行数据。集合由搬迁提交（a5bc16b7）的默认值改动决定：
+#: 只有 `YIBAN_ENV_FILE` 与 `YIBAN_DB_FILE` 两枚默认值从检出根改到 data/，
+#: 故旧件就是 `.env` 与库本体连同 SQLite 的同目录 `-wal`/`-shm`。
+#: `accounts.json` 的默认值**未动**（仍是检出根的 `accounts.json`），不属本集合。
+LEGACY_RUNTIME_FILES = (".env", "yiban.db", "yiban.db-wal", "yiban.db-shm")
+
+
+class LegacyRuntimeDataAdoptionTest(DataDirCreatedByInstallerTest):
+    """升级既有安装：旧布局（检出根）的运行数据必须由 install.sh 迁入 data/。
+
+    现象：布局搬迁把 `.env`/库的默认值改到 `data/` 下，但**既有安装**的这两件仍在
+    检出根。升级后服务按新默认值去 `data/` 找——找不到就自建一份空库、读不到 `.env`
+    里的密钥与管理员口令，页面显示零账号、备份把空库当成功。故升级路径必须把旧件
+    迁入，且迁入幂等。
+
+    钉住的不变式（任何时刻都不该被违反）：
+      ① **数据同一性**：升级后 `data/` 下的 `.env` 与库＝升级前检出根那一份（逐字节
+         相同），且旧位置不再有它（否则权威分叉：服务读 data/，运维改检出根）；
+      ② **迁入件属服务账号**：服务要接着写这两件（含 SQLite 的 `-wal`/`-shm`）；
+      ③ **幂等**：已是新布局时重跑不改任何数据；
+      ④ **两侧并存即拒**：同名件同时存在于检出根与 data/ 时权威未知 ⇒ fail-closed，
+         且不覆盖任何一侧（先例同 manifest 的校验和漂移拒装）。
+    """
+
+    def _seed_legacy(self, bodies=None):
+        bodies = bodies or {
+            ".env": "YIBAN_ADMIN_USER=admin\nYIBAN_SECRET_KEY=legacy-key\n",
+            "yiban.db": "SQLite format 3\x00 legacy-db body\n",
+            "yiban.db-wal": "legacy-wal body\n",
+            "yiban.db-shm": "legacy-shm body\n",
+        }
+        for name, text in bodies.items():
+            _write(os.path.join(self.checkout, name), text)
+        return bodies
+
+    def _read_text(self, *parts):
+        with io.open(os.path.join(*parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_root_install_adopts_legacy_env_and_db(self):
+        want_uid, want_gid = self._skip_unless_usable()
+        bodies = self._seed_legacy()
+        r = self._install()
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, f"升级安装必须放行：{out}")
+        for name, text in bodies.items():
+            new = os.path.join(self.data, name)
+            self.assertTrue(os.path.exists(new), f"data/{name} 未迁入：{out}")
+            self.assertEqual(self._read_text(new), text, f"data/{name} 内容被改动")
+            self.assertFalse(os.path.exists(os.path.join(self.checkout, name)),
+                             f"旧位置的 {name} 必须已迁走（否则权威分叉）")
+            st = os.stat(new)
+            self.assertEqual((st.st_uid, st.st_gid), (want_uid, want_gid),
+                             f"data/{name} 属主必须是服务账号")
+
+    def test_adoption_is_idempotent(self):
+        self._skip_unless_usable()
+        bodies = self._seed_legacy()
+        r1 = self._install()
+        self.assertEqual(r1.returncode, 0, self._out(r1))
+        r2 = self._install()
+        self.assertEqual(r2.returncode, 0, f"第二轮必须照旧通过：{self._out(r2)}")
+        for name, text in bodies.items():
+            self.assertEqual(self._read_text(self.data, name), text,
+                             f"重跑改动了 data/{name}")
+
+    def test_both_copies_present_is_refused_without_overwriting(self):
+        if not self._root_ok():
+            self.skipTest("需要 root（WSL）+ 保留 POSIX mode 的文件系统")
+        if self._service_ids() is None:
+            self.skipTest("本机没有单元文件声明的服务账号（install -o 会失败）")
+        legacy = self._seed_legacy({".env": "legacy\n"})
+        os.makedirs(self.data)
+        live = "live\n"
+        _write(os.path.join(self.data, ".env"), live)
+        r = self._install()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"两侧并存必须拒装：{out}")
+        self.assertEqual(self._read_text(self.checkout, ".env"), legacy[".env"],
+                         "拒装时不得改动检出根那一份")
+        self.assertEqual(self._read_text(self.data, ".env"), live,
+                         "拒装时不得覆盖 data/ 那一份")
+
+    def test_refusal_leaves_no_partial_migration(self):
+        """不变式：冲突拒装时**一件都不许搬走**（先全量判冲突、再搬）。
+
+        反例形状：一次循环里边走边搬时，冲突落在后一个名字（`yiban.db`）上，前一个
+        名字（`.env`）就已经进了 `data/` —— 拒装却留下"半搬"状态，而下次重跑会因为
+        `data/.env` 已存在而再判成冲突，部署者面对的是一个自锁的死结。
+        """
+        if not self._root_ok():
+            self.skipTest("需要 root（WSL）+ 保留 POSIX mode 的文件系统")
+        if self._service_ids() is None:
+            self.skipTest("本机没有单元文件声明的服务账号（install -o 会失败）")
+        bodies = self._seed_legacy({".env": "legacy-env\n", "yiban.db": "legacy-db\n"})
+        os.makedirs(self.data)
+        _write(os.path.join(self.data, "yiban.db"), "live-db\n")
+        r = self._install()
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"冲突必须拒装：{out}")
+        self.assertEqual(self._read_text(self.checkout, ".env"), bodies[".env"],
+                         "拒装时 .env 不得已搬走（半搬状态）")
+        self.assertFalse(os.path.exists(os.path.join(self.data, ".env")),
+                         "拒装时 data/ 下不得出现半搬来的 .env")
+        self.assertEqual(self._read_text(self.data, "yiban.db"), "live-db\n",
+                         "拒装时不得覆盖 data/yiban.db")
+
+    def test_dangling_legacy_symlink_is_adopted_not_silently_skipped(self):
+        """断链也是"旧位置留着东西"：迁它，不得静默跳过。
+
+        判据用 `-e || -L` 而不是只看 `-e`：只看 `-e` 时一枚断链会被判成"这里没有东西"
+        而静默留在检出根——正是"静默"这一族缺陷的形状。迁入后它仍是链接（`chown -h`
+        只改链接自身），故断言用 `islink` 而不是 `exists`。
+        """
+        self._skip_unless_usable()
+        link = os.path.join(self.checkout, "yiban.db-wal")
+        os.symlink("/nonexistent/yiban.db-wal", link)
+        r = self._install()
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, f"断链不该让安装失败：{out}")
+        self.assertFalse(os.path.lexists(link), "旧位置的断链必须已迁走")
+        self.assertTrue(os.path.islink(os.path.join(self.data, "yiban.db-wal")),
+                        f"断链必须原样迁入 data/（仍是指向原目标的链接）：{out}")
+
+    def test_legacy_set_is_derived_from_the_relocated_defaults(self):
+        """旧件集合必须与「默认值已落到 data/ 的配置键」同源（防"再搬迁时只改一半"）。
+
+        推导规则：`config/registry.json` 里每个默认值形如 `data/<名字>` 的键，它在旧
+        布局的落点就是检出根的 `<名字>`；库还要带上 SQLite 的同目录 `-wal`/`-shm`
+        （本项目统一 WAL 模式）。日后新增第三个落到 `data/` 的默认值时本用例红——
+        那时 `install.sh` 的 `LEGACY_RUNTIME_FILES` 必须同批跟上，否则升级会静默
+        读空（本次修的正是这个形状的缺口）。
+        """
+        reg = json.loads(_read(REGISTRY))
+        relocated = [v["default"] for v in reg.values()
+                     if isinstance(v, dict) and isinstance(v.get("default"), str)
+                     and v["default"].startswith(DATA_DIR + "/")]
+        want = {os.path.basename(p) for p in relocated}
+        db_name = os.path.basename(reg["YIBAN_DB_FILE"]["default"])
+        want |= {db_name + "-wal", db_name + "-shm"}
+        text = _read(os.path.join("deploy", "prod", "install.sh"))
+        m = re.search(r"LEGACY_RUNTIME_FILES=\(([^)]*)\)", text)
+        self.assertIsNotNone(m, "install.sh 里找不到 LEGACY_RUNTIME_FILES 数组")
+        self.assertEqual(set(m.group(1).split()), want,
+                         "install.sh 的旧件集合与「默认值已落 data/ 的键」不同源")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@
 #   8) 运行数据目录：root 且无 DESTDIR 时建立/修复 <检出>/data（属服务账号、0700）。
 #      它是 `.env` 与 SQLite 库的落点，也是检出根能被 M01 门收成 root 只读的前提。
 #      本步是**唯一建立点**（服务不得自建：检出根变只读后 mkdir 会失败）。
+#      同一个门内把旧布局的运行数据（`.env` 与库本体连同 `-wal`/`-shm`）从检出根
+#      **迁入** data/（升级既有安装；迁入件改属服务账号）。同名件两侧并存 ⇒ 拒装。
 # ============================================================
 set -euo pipefail
 
@@ -228,7 +230,7 @@ fi
 # 两条要求在旧布局下互斥，生产因此只能手工拷贝执行件（哨兵脚本漂移、两条 cron
 # 从未装上）。修法：把运行数据收进检出内的 `data/`，属服务账号、模式 0700。
 #
-# 口径四条：
+# 口径六条：
 #   1) 唯一建立点 = 本步。服务**不得**自建：检出根变 root 只读后 mkdir 会失败。
 #   2) 本步同时是**幂等修复点**：`chown -R root:root` 会把 data/ 一起带走，
 #      重跑本安装器即改回服务账号（README 的部署顺序因此是"先 chown、再 install"）。
@@ -239,10 +241,25 @@ fi
 #      deploy/prod/tmpfiles.d/yiban.conf：字面量 + 用例钉住与单元文件相等）。
 #      换登录名时这几处一起改（README「换目录部署」同口径）。该账号在本机不存在时
 #      install 会非 0 退出——那是配置错，不该静默跳过；不改名则不需要任何配置键。
+#   5) 本步还**接管旧布局的运行数据**（`LEGACY_RUNTIME_FILES`，升级既有安装用）。
+#      默认值改到 data/ 之后，既有安装的 `.env` 与库仍留在检出根；服务按新默认值
+#      去 data/ 找，找不到就自建空库、读不到密钥与管理员口令（页面显示零账号）。
+#      故本步把旧件**迁入** data/（不是复制：旧位置不得留下第二份权威）。
+#      迁入件随后 chown 给服务账号——服务要接着写这两件（含 SQLite 的 -wal/-shm）。
+#   6) 迁移只做"目标不存在"的情形。同名件同时在检出根与 data/ 时**权威未知**，
+#      本步 fail-closed 拒装并打印两侧路径，绝不猜、绝不覆盖（先例同 manifest 的
+#      校验和漂移拒装）。拒装前**先全量判冲突、再搬**：一趟内边走边搬会在中途拒装时
+#      留下"半搬"状态（`.env` 已进 data/、库还在检出根），那正是本仓主导缺陷形状
+#      "同批只改了一半"。幂等：迁完之后重跑没有任何可迁的件。
 # ------------------------------------------------------------
 SERVICE_USER="yiban"
 SERVICE_GROUP="yiban"
 DATA_DIR="$REPO_ROOT/data"
+# 旧布局的运行数据。集合与搬迁提交（a5bc16b7）改动的默认值同源：只有 YIBAN_ENV_FILE
+# 与 YIBAN_DB_FILE 两枚默认值从检出根改到 data/，故旧件就是 `.env` 与库本体连同
+# SQLite 的同目录 `-wal`/`-shm`（本项目统一 WAL 模式，见 yiban/store/db.py）。
+# `accounts.json` 的默认值未动（仍是检出根），不属本集合。
+LEGACY_RUNTIME_FILES=(.env yiban.db yiban.db-wal yiban.db-shm)
 if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
     if ! install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$DATA_DIR"; then
         echo "yiban-install: 无法建立运行数据目录 $DATA_DIR（属主 $SERVICE_USER:$SERVICE_GROUP）。" >&2
@@ -252,6 +269,32 @@ if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
     # 模式可能被上一轮的 chmod 放宽（例如部署者手工 chmod -R 755），显式收紧。
     chmod 0700 "$DATA_DIR"
     echo "runtime data dir ready: $DATA_DIR owner=$SERVICE_USER:$SERVICE_GROUP mode=0700"
+    # 迁移分两趟：**先全量判冲突，再搬**。一趟内边走边判会在中途拒装时留下"半搬"
+    # 状态（.env 已进 data/、库还在检出根）——那正是本仓主导缺陷形状"同批只改了一半"。
+    for _name in "${LEGACY_RUNTIME_FILES[@]}"; do
+        _legacy="$REPO_ROOT/$_name"
+        _target="$DATA_DIR/$_name"
+        # 存在即收（断链也收）：一枚坏链接同样是"旧位置留着东西"，要报不要跳。
+        if [ ! -e "$_legacy" ] && [ ! -L "$_legacy" ]; then continue; fi
+        if [ -e "$_target" ] || [ -L "$_target" ]; then
+            echo "yiban-install: 旧布局运行数据与 data/ 下同名件并存，权威未知，拒绝继续：" >&2
+            echo "  旧布局: $_legacy" >&2
+            echo "  新布局: $_target" >&2
+            echo "  处置：人工 diff 两份，删掉旧布局那一份（保留 data/ 下的），再重跑本安装器。" >&2
+            exit 1
+        fi
+    done
+    for _name in "${LEGACY_RUNTIME_FILES[@]}"; do
+        _legacy="$REPO_ROOT/$_name"
+        _target="$DATA_DIR/$_name"
+        if [ ! -e "$_legacy" ] && [ ! -L "$_legacy" ]; then continue; fi
+        # 同文件系统内 mv = rename：不复制、不留旧件（旧位置的第二份权威必须消失）。
+        mv -- "$_legacy" "$_target"
+        # `chown -h`：迁入件若是符号链接（把数据指到别的盘是合法部署形态），只改链接
+        # 自身，不跟随到目标——跟随会把链接指向的那个外部文件改属主。
+        chown -h "$SERVICE_USER:$SERVICE_GROUP" "$_target"
+        echo "adopted legacy runtime data: $_name -> data/$_name"
+    done
 else
     echo "yiban-install: note: 非 root 或 DESTDIR 暂存安装——跳过运行数据目录 $DATA_DIR 的建立" >&2
 fi
