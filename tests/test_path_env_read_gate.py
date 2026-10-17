@@ -491,10 +491,20 @@ class GateCiWiringTest(unittest.TestCase):
         body = _func_body(_read(ENTRY), "run_ci")
         self.assertGreater(len(body), 100, "抽不出 run_ci 函数体——本条会因此变废断言")
         lines = [ln.strip() for ln in body.splitlines()]
-        for cmd in (CI_GATE_CMD, CI_META_CMD):
-            self.assertIn(cmd, lines,
-                          f"run_ci 必须**执行**这一行（写在注释里不算）：{cmd}")
-        self.assertLess(lines.index(CI_GATE_CMD), lines.index(CI_META_CMD),
+
+        # 按"行首前缀"匹配而非整行相等：命令行可能带续行（行尾反斜杠接剔除参数，vckk 2-a
+        # 给元测试步加了 FAST_DESELECT_ARGS）。"必须真的执行、写在注释里不算"的性质不变——
+        # 注释行剥掉空白后以 '#' 开头，前缀匹配不到。
+        def _first_line_with(prefix):
+            return next((i for i, ln in enumerate(lines) if ln.startswith(prefix)), None)
+
+        gate_i = _first_line_with(CI_GATE_CMD)
+        meta_i = _first_line_with(CI_META_CMD)
+        self.assertIsNotNone(
+            gate_i, f"run_ci 必须**执行**这一行（写在注释里不算）：{CI_GATE_CMD}")
+        self.assertIsNotNone(
+            meta_i, f"run_ci 必须**执行**这一行（写在注释里不算）：{CI_META_CMD}")
+        self.assertLess(gate_i, meta_i,
                         "门禁脚本必须先跑，元测试随后（与 B0.5 那一对同序）")
 
 
