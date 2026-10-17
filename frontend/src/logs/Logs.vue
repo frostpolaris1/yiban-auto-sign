@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, shellBase, toast } from "../lib/shell";
+import { api, pollMs, shellBase, toast } from "../lib/shell";
+import { usePolling } from "../lib/polling";
 import { isValidDate } from "./date-guard.js";
 import {
   ALL_LOG_LEVEL,
@@ -94,7 +95,6 @@ import {
    · 「回到今天」清空 = 回到跟随态。
    运行巡检块跟随同一个日期，故两块内容始终同一天。 */
 
-const POLL_MS = 10000;
 const AUTO_KEY = "yiban-logs-autorefresh";
 
 interface TableState {
@@ -151,13 +151,11 @@ const liveFallback = ref(false);
 const liveLastRxMs = ref(0);
 const liveNowMs = ref(Date.now());
 let stream: EventSource | null = null;
-let liveAgeTimer: ReturnType<typeof setInterval> | null = null;
 
 let busy = false;
 let runBusy = false;
 /** 在途巡检请求期间到达的请求（合并：后到覆盖先到），不许静默丢弃 */
 let runPending: { day: string; executor: string; keepSelection: boolean } | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
 let firstLoad = true;
 
 const info = computed(() => (payload.value ? infoText(payload.value) : ""));
@@ -639,6 +637,13 @@ function tick(): void {
     void load("poll");
   }
 }
+/* 日志列表轮询：机制（节拍 / 可见性 / 卸载清理）在 `lib/polling.ts`，
+   本页只给策略（`shouldPoll`：自动刷新开、处于跟随态、无在途请求、无浮层）。
+   节拍取外壳唯一来源 `pollMs()` —— 收编前这里自带一份节拍常量，
+   与账号页/用户页/总览 KPI 是四处独立常量。 */
+usePolling(tick, { intervalMs: pollMs() });
+// 进度流的"最近收到事件"年龄：每秒推进本地钟，走同一机制（1 秒档）。
+usePolling(() => { liveNowMs.value = Date.now(); }, { intervalMs: 1000 });
 
 const tabParam = new URLSearchParams(location.search).get("tab");
 function syncTabUrl(next: TabKey): void {
@@ -662,17 +667,12 @@ onMounted(() => {
     dateInput.value = urlDate;
   }
   void load();
-  timer = setInterval(tick, POLL_MS);
-  // 实时流与年龄心跳分开计时：轮询 10 秒，流自带 1 秒节拍、年龄每秒刷新。
+  // 实时流自带重连节拍；年龄心跳走 usePolling（与冷却倒计时同一个机制），
+  // 故本页不再自带任何定时器。
   startStream();
-  liveAgeTimer = setInterval(() => {
-    liveNowMs.value = Date.now();
-  }, 1000);
 });
 
 onBeforeUnmount(() => {
-  if (timer !== null) clearInterval(timer);
-  if (liveAgeTimer !== null) clearInterval(liveAgeTimer);
   stopStream();
 });
 </script>
