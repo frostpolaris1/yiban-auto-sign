@@ -289,9 +289,13 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
 
     钉住的不变式（任何时刻都不该被违反）：
       ① **在跑即拒**：能判定服务在跑时，安装器非 0 退出；
-      ② **拒装即零改动**：判据排在写入之前——`data/` 不建、旧布局的件原地不动；
-      ③ **处置可执行**：拒装输出给出"先停服"的可复制命令（裸机 ＋ 容器两形态）。
-    探测量层：`systemctl is-active`（裸机权威）与 `/proc` 进程扫描（无 systemd 时兜底）。
+      ② **本门拒装即零写入**：判据排在 data/ 段之前——`data/` 不建、旧布局的件原地不动；
+      ③ **处置可执行**：拒装输出给出可复制的停服命令。
+    覆盖边界（不许夸大）：本门只管**裸机形态**。容器内的服务进程 argv 不含宿主检出
+    路径（`docker/supervisord.conf` 的 command 是 `/usr/local/bin/gunicorn ...
+    "web.app:create_app()"`，`directory=/app`），进程扫描判不出；容器形态也不走
+    `install.sh`（容器升级 = `git pull && docker compose up -d --build`）。故拒装输出
+    不得印容器停服命令——那会宣称一个本门做不到的覆盖。
     """
 
     def _stub_bin(self, state):
@@ -323,15 +327,13 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
                              f"拒装时不得动旧布局的 {name}")
 
     def test_running_process_from_checkout_is_refused(self):
-        """无 systemd（容器形态）时兜底：命令行含本检出的活进程 ⇒ 拒装。
+        """systemd 层判不出时，兜底层仍要拒：argv 指向本检出的活进程。
 
-        这一层是给"裸机"与"容器"两形态共用的：容器里没有 systemd，进程扫描仍有效。
+        这一层是给裸机的非 systemd 场景（含 cron 触发的 `run.sh`）用的。
         """
         self._skip_unless_usable()
         bodies = self._seed_root_files()
-        holder = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)", self.checkout],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        holder = self._spawn_holder([self.checkout])
         self.addCleanup(lambda: holder.wait(timeout=30))
         self.addCleanup(holder.kill)
         self._wait_for_cmdline(holder.pid, self.checkout)
@@ -344,8 +346,29 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
         for name, text in bodies.items():
             self.assertEqual(self._read_root(name), text, f"拒装时不得动 {name}")
 
-    def test_refusal_gives_runnable_remedy_for_both_forms(self):
-        """拒装输出必须给出可执行的处置（裸机 systemctl 与容器 compose 各一条）。"""
+    def test_sibling_directory_is_not_mistaken_for_the_checkout(self):
+        """路径边界：兄弟目录 `<检出>-backup` 不是本检出 ⇒ 不得拒装。
+
+        纯子串匹配会把兄弟目录判进来。方向虽是 fail-closed，但拒装提示语断言的
+        "argv 指向本检出"就成了假事实——提示语说的事实必须成立。
+        """
+        self._skip_unless_usable()
+        sibling = self.checkout + "-backup"
+        os.makedirs(sibling, exist_ok=True)
+        _write(os.path.join(sibling, "yiban.db"), "other\n")
+        holder = self._spawn_holder([os.path.join(sibling, "yiban.db")])
+        self.addCleanup(lambda: holder.wait(timeout=30))
+        self.addCleanup(holder.kill)
+        self._wait_for_cmdline(holder.pid, sibling)
+        stub = self._stub_bin("inactive")
+        r = self._install(extra_env={"PATH": stub + os.pathsep + os.environ["PATH"],
+                                     "STUB_UNIT_STATE": "inactive"})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0,
+                         f"兄弟目录被误判成本检出了（提示语会说假事实）：{out}")
+
+    def test_refusal_gives_runnable_remedy_and_no_container_claim(self):
+        """拒装输出必须给出可复制的裸机停服命令，且不得宣称覆盖容器形态。"""
         self._skip_unless_usable()
         self._seed_root_files()
         stub = self._stub_bin("active")
@@ -354,7 +377,10 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
         out = self._out(r)
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("systemctl stop yiban-web", out, f"缺裸机处置命令：{out}")
-        self.assertIn("docker compose stop yiban", out, f"缺容器处置命令：{out}")
+        self.assertNotIn("docker compose stop yiban", out,
+                         f"本门判不出容器形态，不得印容器停服命令（假覆盖）：{out}")
+        self.assertIn("docker compose up -d --build", out,
+                      f"必须写明容器形态不走本安装器：{out}")
 
     def test_staged_install_is_exempt(self):
         """`DESTDIR` 暂存安装不碰现网运行数据，故不受本门约束（显式豁免，有门钉住）。
@@ -389,6 +415,12 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
     def _read_root(self, name):
         with io.open(os.path.join(self.checkout, name), encoding="utf-8") as f:
             return f.read()
+
+    def _spawn_holder(self, argv_tail):
+        """起一个 argv 尾部为 argv_tail 的活进程（模拟"检出里还有东西在跑"）。"""
+        return subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)", *argv_tail],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _wait_for_cmdline(self, pid, needle):
         """等子进程 exec 完（/proc/<pid>/cmdline 出现 needle），超时即失败。"""
