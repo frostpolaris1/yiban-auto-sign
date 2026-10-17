@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from test_deploy_prod_artifacts import (
@@ -90,6 +91,16 @@ FORBIDDEN_SHAPES = (
     "--env .env",
     "--db yiban.db",
 )
+
+#: `systemctl` 桩：只回答安装器探测服务状态时用到的那一问。
+#: `STUB_UNIT_STATE` 控制回答；非 `active` 时按 systemctl 的约定退 3（不是 0）。
+SYSTEMCTL_STUB = """#!/usr/bin/env bash
+state="${STUB_UNIT_STATE:-inactive}"
+case "${1:-}" in
+    is-active) echo "$state"; [ "$state" = "active" ] && exit 0 || exit 3 ;;
+    *) exit 0 ;;
+esac
+"""
 
 
 def _read(rel):
@@ -220,6 +231,43 @@ class DataDirCreatedByInstallerTest(_LayoutBase):
                          (want_uid, want_gid, 0o700),
                          f"data/ 属主/模式未被修复：{oct(st.st_mode)}")
 
+    def test_root_install_repairs_wrong_data_owner_of_contents(self):
+        """幂等修复必须覆盖 `data/` 的**内容**，不只是目录本身。
+
+        现象（本批 F1）：README 的部署/升级顺序先 `chown -R root:root .`，会把 `data/`
+        连同其下的 `.env` 与库一起带走（文件仍是 `root:root 644`）。安装器此前只修目录
+        ⇒ 服务写库报 `attempt to write a readonly database`，而安装器照旧 `rc=0` 报
+        `complete`（静默假成功）；README 那句"重跑一次安装器即修复"对**文件内容**为假。
+        容器形态的同一件事由 `docker/entrypoint.sh` 的 `chown -R yiban:yiban /data`
+        承担，故裸机侧也必须递归到内容——两个形态同形。
+
+        含一层子目录：`data/` 下不只有四个顶层文件（容器形态还会用 `data/state`、
+        `data/logs`），故判据钉的是"递归到子树"，不是"逐个顶层文件"。
+        """
+        want_uid, want_gid = self._skip_unless_usable()
+        seeded = (".env", "yiban.db", "yiban.db-wal", "yiban.db-shm",
+                  os.path.join("state", "sched-run-20260101"))
+        for rel in seeded:
+            path = os.path.join(self.data, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _write(path, "x\n")
+            os.chown(path, 0, 0)
+            os.chmod(path, 0o644)
+        os.chown(self.data, 0, 0)
+        os.chmod(self.data, 0o755)
+        r = self._install()
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, out)
+        self.assertEqual((os.stat(self.data).st_uid, os.stat(self.data).st_gid),
+                         (want_uid, want_gid), "data/ 目录本身未被修复")
+        for rel in seeded:
+            path = os.path.join(self.data, rel)
+            st = os.stat(path)
+            self.assertEqual((st.st_uid, st.st_gid), (want_uid, want_gid),
+                             f"data/{rel} 属主未被修复（服务写库会 readonly）：{out}")
+            self.assertTrue(st.st_mode & 0o200,
+                            f"data/{rel} 服务账号不可写（mode={oct(st.st_mode)}）")
+
     def test_group_writable_checkout_is_refused_and_data_not_created(self):
         """门拒装时不得在检出里留下任何新目录（fail-closed，别把执行点搬门外）。"""
         if not self._root_ok():
@@ -230,6 +278,162 @@ class DataDirCreatedByInstallerTest(_LayoutBase):
         self.assertNotEqual(r.returncode, 0, f"组可写检出必须拒装：{out}")
         self.assertFalse(os.path.exists(self.data),
                          "M01 拒装时不得建 data/（门必须整段在前）")
+
+
+class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
+    """服务在跑时安装器必须拒装（本批 F2）。
+
+    现象：`install.sh` 此前完全不看服务是否在跑（README 只写"务必先停服"，无门）。
+    违反后：旧代码服务按旧路径另建空库；下一次 `install.sh` 因"两侧并存"拒装，并建议
+    "删掉旧布局那一份（保留 `data/` 下的）" ⇒ 按提示做就丢掉跑飞服务刚写的新数据。
+
+    钉住的不变式（任何时刻都不该被违反）：
+      ① **在跑即拒**：能判定服务在跑时，安装器非 0 退出；
+      ② **本门拒装即零写入**：判据排在 data/ 段之前——`data/` 不建、旧布局的件原地不动；
+      ③ **处置可执行**：拒装输出给出可复制的停服命令。
+    覆盖边界（不许夸大）：本门只管**裸机形态**。容器内的服务进程 argv 不含宿主检出
+    路径（`docker/supervisord.conf` 的 command 是 `/usr/local/bin/gunicorn ...
+    "web.app:create_app()"`，`directory=/app`），进程扫描判不出；容器形态也不走
+    `install.sh`（容器升级 = `git pull && docker compose up -d --build`）。故拒装输出
+    不得印容器停服命令——那会宣称一个本门做不到的覆盖。
+    """
+
+    def _stub_bin(self, state):
+        """造一个只回答 `is-active` 的 systemctl 桩目录（PATH 前置用）。"""
+        d = os.path.join(self.tmp, "stub-bin-%s" % state)
+        os.makedirs(d, exist_ok=True)
+        _write(os.path.join(d, "systemctl"), SYSTEMCTL_STUB, 0o755)
+        return d
+
+    def _seed_root_files(self):
+        bodies = {".env": "YIBAN_SECRET_KEY=legacy\n", "yiban.db": "legacy-db\n"}
+        for name, text in bodies.items():
+            _write(os.path.join(self.checkout, name), text)
+        return bodies
+
+    def test_service_active_is_refused_before_any_mutation(self):
+        """systemd 说服务在跑 ⇒ 拒装，且 `data/` 不建、旧布局的件不动。"""
+        self._skip_unless_usable()
+        bodies = self._seed_root_files()
+        stub = self._stub_bin("active")
+        r = self._install(extra_env={"PATH": stub + os.pathsep + os.environ["PATH"],
+                                     "STUB_UNIT_STATE": "active"})
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"服务在跑必须拒装：{out}")
+        self.assertFalse(os.path.exists(self.data),
+                         f"拒装时不得建 data/（判据必须在写入之前）：{out}")
+        for name, text in bodies.items():
+            self.assertEqual(self._read_root(name), text,
+                             f"拒装时不得动旧布局的 {name}")
+
+    def test_running_process_from_checkout_is_refused(self):
+        """systemd 层判不出时，兜底层仍要拒：argv 指向本检出的活进程。
+
+        这一层是给裸机的非 systemd 场景（含 cron 触发的 `run.sh`）用的。
+        """
+        self._skip_unless_usable()
+        bodies = self._seed_root_files()
+        holder = self._spawn_holder([self.checkout])
+        self.addCleanup(lambda: holder.wait(timeout=30))
+        self.addCleanup(holder.kill)
+        self._wait_for_cmdline(holder.pid, self.checkout)
+        stub = self._stub_bin("inactive")
+        r = self._install(extra_env={"PATH": stub + os.pathsep + os.environ["PATH"],
+                                     "STUB_UNIT_STATE": "inactive"})
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, f"检出内仍有活进程时必须拒装：{out}")
+        self.assertFalse(os.path.exists(self.data), f"拒装时不得建 data/：{out}")
+        for name, text in bodies.items():
+            self.assertEqual(self._read_root(name), text, f"拒装时不得动 {name}")
+
+    def test_sibling_directory_is_not_mistaken_for_the_checkout(self):
+        """路径边界：兄弟目录 `<检出>-backup` 不是本检出 ⇒ 不得拒装。
+
+        纯子串匹配会把兄弟目录判进来。方向虽是 fail-closed，但拒装提示语断言的
+        "argv 指向本检出"就成了假事实——提示语说的事实必须成立。
+        """
+        self._skip_unless_usable()
+        sibling = self.checkout + "-backup"
+        os.makedirs(sibling, exist_ok=True)
+        _write(os.path.join(sibling, "yiban.db"), "other\n")
+        holder = self._spawn_holder([os.path.join(sibling, "yiban.db")])
+        self.addCleanup(lambda: holder.wait(timeout=30))
+        self.addCleanup(holder.kill)
+        self._wait_for_cmdline(holder.pid, sibling)
+        stub = self._stub_bin("inactive")
+        r = self._install(extra_env={"PATH": stub + os.pathsep + os.environ["PATH"],
+                                     "STUB_UNIT_STATE": "inactive"})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0,
+                         f"兄弟目录被误判成本检出了（提示语会说假事实）：{out}")
+
+    def test_refusal_gives_runnable_remedy_and_no_container_claim(self):
+        """拒装输出必须给出可复制的裸机停服命令，且不得宣称覆盖容器形态。"""
+        self._skip_unless_usable()
+        self._seed_root_files()
+        stub = self._stub_bin("active")
+        r = self._install(extra_env={"PATH": stub + os.pathsep + os.environ["PATH"],
+                                     "STUB_UNIT_STATE": "active"})
+        out = self._out(r)
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("systemctl stop yiban-web", out, f"缺裸机处置命令：{out}")
+        self.assertNotIn("docker compose stop yiban", out,
+                         f"本门判不出容器形态，不得印容器停服命令（假覆盖）：{out}")
+        self.assertIn("docker compose up -d --build", out,
+                      f"必须写明容器形态不走本安装器：{out}")
+
+    def test_staged_install_is_exempt(self):
+        """`DESTDIR` 暂存安装不碰现网运行数据，故不受本门约束（显式豁免，有门钉住）。
+
+        豁免的理由是结构性的：带 `DESTDIR` 时 `data/` 段与依赖同步段整段跳过，安装器
+        不写任何现网运行数据 ⇒ F2 那条危害（搬动库时服务另建空库）不可能发生。
+        """
+        self._skip_unless_usable()
+        self._seed_root_files()
+        stub = self._stub_bin("active")
+        r = self._install(extra_env={"PATH": stub + os.pathsep + os.environ["PATH"],
+                                     "STUB_UNIT_STATE": "active",
+                                     "DESTDIR": os.path.join(self.tmp, "stage")})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 0, f"DESTDIR 暂存安装必须照旧放行：{out}")
+
+    def test_installer_service_unit_matches_shipped_unit_template(self):
+        """安装器探测的单元名必须等于仓内随附的单元模板文件名。
+
+        同一事实（单元名）写在两处就是"同一事实多处定义"——权威件是模板文件名，
+        字面量由用例钉住相等（先例同 `SERVICE_USER`/`SERVICE_GROUP` 那条）。
+        """
+        want = os.path.basename(SERVICE_UNIT)
+        text = _read(os.path.join("deploy", "prod", "install.sh"))
+        m = re.search(r'^SERVICE_UNIT="([^"]+)"', text, re.M)
+        self.assertIsNotNone(m, "install.sh 里找不到 SERVICE_UNIT 字面量")
+        self.assertEqual(m.group(1), want,
+                         "install.sh 探测的单元名与 web/deploy/ 下的模板文件名不同")
+
+    # ---- 辅助 ----
+
+    def _read_root(self, name):
+        with io.open(os.path.join(self.checkout, name), encoding="utf-8") as f:
+            return f.read()
+
+    def _spawn_holder(self, argv_tail):
+        """起一个 argv 尾部为 argv_tail 的活进程（模拟"检出里还有东西在跑"）。"""
+        return subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)", *argv_tail],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _wait_for_cmdline(self, pid, needle):
+        """等子进程 exec 完（/proc/<pid>/cmdline 出现 needle），超时即失败。"""
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                with io.open("/proc/%d/cmdline" % pid, "rb") as f:
+                    if needle.encode() in f.read():
+                        return
+            except OSError:
+                pass
+            time.sleep(0.05)
+        self.fail("子进程 %d 的 cmdline 未出现 %s（兜底层无法被测到）" % (pid, needle))
 
 
 class ServiceWritableSurfaceTest(_LayoutBase):
