@@ -32,8 +32,14 @@
 #   8) 运行数据目录：root 且无 DESTDIR 时建立/修复 <检出>/data（属服务账号、0700）。
 #      它是 `.env` 与 SQLite 库的落点，也是检出根能被 M01 门收成 root 只读的前提。
 #      本步是**唯一建立点**（服务不得自建：检出根变只读后 mkdir 会失败）。
+#      修复是**递归**的（`chown -Rh`）：README 的部署顺序先 `chown -R root:root .`，
+#      会把 data/ 连同其下的 `.env` 与库一起带走；只修目录会让服务写库报
+#      `attempt to write a readonly database` 而本安装器照旧报 complete（静默假成功）。
 #      同一个门内把旧布局的运行数据（`.env` 与库本体连同 `-wal`/`-shm`）从检出根
 #      **迁入** data/（升级既有安装；迁入件改属服务账号）。同名件两侧并存 ⇒ 拒装。
+#   9) 服务在跑门（F2）：无 DESTDIR 时，装前探测服务是否在跑，在跑即拒装。
+#      探测两层：`systemctl is-active <单元>` 与 /proc 里命令行含本检出的活进程。
+#      拒装输出给出裸机与容器两条可复制的停服命令。带 DESTDIR 的暂存安装豁免本门。
 # ============================================================
 set -euo pipefail
 
@@ -222,6 +228,72 @@ else
 fi
 
 # ------------------------------------------------------------
+# 预检 3：服务在跑就拒装（工单 F2）。
+#
+# 为什么必须拒：本安装器要搬动/改属 data/ 下的库与 `.env`。服务若仍在跑：
+#   ① 它按旧路径另建空库（旧代码的默认值在检出根）⇒ 那份新数据随后被「两侧并存」
+#      拒装挡在门外，而拒装提示让人删掉旧布局那一份 ⇒ 按提示做就丢掉刚写的新数据；
+#   ② 它持着旧库的 fd ⇒ 搬迁后仍写旧 inode。
+# README 只写"务必先停服"（散文约束），本段把它变成门。
+#
+# 探测两层（裸机与容器两种形态都覆盖）：
+#   ① systemd 权威层：`systemctl` 可用时问 `is-active`（生产单元 = SERVICE_UNIT）。
+#   ② /proc 兜底层：命令行含本检出的活进程（排除本安装器自身及其 sudo 父进程）。
+#      systemd 缺席（容器）时这一层仍有效；cron 触发的 run.sh 也在这里被抓住。
+# 两层都跑不成（无 systemctl 且 /proc 不可读）时**显性告警**——跳过不得当绿（AGENTS §30）。
+#
+# 豁免：带 DESTDIR 的暂存安装不碰现网运行数据（data/ 段与依赖同步段整段跳过），
+# 故不受本门约束。豁免由用例钉住：tests/test_runtime_data_layout.py
+# ::ServiceRunningGuardTest::test_staged_install_is_exempt
+# ------------------------------------------------------------
+SERVICE_UNIT="yiban-web.service"
+if [ -z "$DESTDIR" ]; then
+    _svc_why=""
+    _sysd_ok=0
+    if command -v systemctl >/dev/null 2>&1; then
+        _sysd_ok=1
+        if systemctl is-active --quiet "$SERVICE_UNIT" 2>/dev/null; then
+            _svc_why="systemctl is-active $SERVICE_UNIT 报告 active"
+        fi
+    fi
+    _scan_ran=0
+    if [ -z "$_svc_why" ]; then
+        for _pid in /proc/[0-9]*; do
+            [ -d "$_pid" ] || continue
+            [ -r "$_pid/cmdline" ] || continue
+            _scan_ran=1
+            _self=0
+            _hit=0
+            while IFS= read -r -d '' _arg; do
+                case "$_arg" in
+                    *install.sh*) _self=1; break ;;
+                esac
+                case "$_arg" in
+                    *"$REPO_ROOT"*) _hit=1 ;;
+                esac
+            done < "$_pid/cmdline"
+            if [ "$_self" -eq 0 ] && [ "$_hit" -eq 1 ]; then
+                _svc_why="进程 ${_pid#/proc/} 的命令行含本检出"
+                break
+            fi
+        done
+    fi
+    if [ -n "$_svc_why" ]; then
+        echo "yiban-install: 检测到服务仍在运行（$_svc_why）——拒绝安装。" >&2
+        echo "  原因：本安装器要搬动/改属 data/ 下的库与 .env；服务在跑会按旧路径另建空库，" >&2
+        echo "        随后重跑会因「两侧并存」拒装，按提示删旧件就丢掉服务刚写的新数据。" >&2
+        echo "  处置（先停服，再重跑本安装器）：" >&2
+        echo "    裸机： sudo systemctl stop yiban-web" >&2
+        echo "    容器： docker compose stop yiban" >&2
+        exit 1
+    fi
+    if [ "$_sysd_ok" -eq 0 ] && [ "$_scan_ran" -eq 0 ]; then
+        echo "yiban-install: 警告: 无法探测服务是否在跑（无 systemctl 且 /proc 不可读）——本门被跳过。" >&2
+        echo "  处置：安装前自行确认服务已停（裸机 sudo systemctl stop yiban-web）。" >&2
+    fi
+fi
+
+# ------------------------------------------------------------
 # 运行数据目录（检出内 `data/`）：**唯一建立点**（工单 ybg8 / ddok）。
 #
 # 为什么有本步：M01 前置门要求检出根属 root 且组/其他不可写，而服务要往检出里写
@@ -284,6 +356,18 @@ if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
             exit 1
         fi
     done
+    # 幂等修复必须覆盖 data/ 的**内容**，不只是目录本身（工单 F1）。
+    # README 的部署/升级顺序先 `chown -R root:root .`，会把 data/ 连同其下的 `.env` 与库
+    # 一起带走（文件仍 root:root 644）。只修目录 ⇒ 服务写库报
+    # `attempt to write a readonly database`，而本安装器照旧 rc=0 报 complete
+    # （静默假成功）；README 那句"重跑一次安装器即修复"对**文件内容**为假。
+    # 容器形态的同一件事由 docker/entrypoint.sh 的 `chown -R yiban:yiban /data` 承担
+    # ——两个形态同形，裸机侧也必须递归到子树（data/ 下还会有 data/state 等子目录）。
+    # `-R -h`：递归但**不解引用**——data/ 下的符号链接（把库指到别的盘是合法部署形态）
+    # 只改链接自身，不跟随到外部目标（与下方迁移段的 `chown -h` 同口径）。
+    # 判据排在冲突检查**之后**：拒装路径不得改动任何东西（含属主）。
+    chown -Rh "$SERVICE_USER:$SERVICE_GROUP" "$DATA_DIR"
+    echo "runtime data ownership repaired: $DATA_DIR (recursive)"
     for _name in "${LEGACY_RUNTIME_FILES[@]}"; do
         _legacy="$REPO_ROOT/$_name"
         _target="$DATA_DIR/$_name"

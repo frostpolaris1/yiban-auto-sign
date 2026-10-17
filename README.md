@@ -136,7 +136,15 @@ bash run.sh && tail -20 /var/log/yiban/sign-$(date +%F).log
 ```bash
 apt update
 apt install -y python3 python3-venv python3-pip
+useradd -r -s /usr/sbin/nologin yiban   # 服务账号：下一步的 install.sh 要 `-o yiban`
 ```
+
+> 🔑 **服务账号 `yiban` 必须先存在**（本步是它的唯一建立点）。下一步的 `install.sh`
+> 要把运行数据目录 `data/` 设成 `yiban:yiban`（`install -d -o yiban -g yiban`）；
+> 账号不存在时它以 `install: invalid user 'yiban'` 退 1，部署中断。`useradd -r` 建的是
+> 系统账号、无登录 shell。第 4 步写 `.env` 也用它（`sudo -u yiban tee`）。
+> 该账号与 `web/deploy/yiban-web.service` 的 `User=`/`Group=` 同值（换名要一起改，
+> 见「网页管理后台」的 systemd 单元说明）。
 
 > **时区建议**：把服务器时区设为 `Asia/Shanghai`（`sudo timedatectl set-timezone Asia/Shanghai`）。
 > 不设也**不影响签到功能**——签到窗口、"今天"的判定、状态/日志/备份的按天文件名都固定按北京时间
@@ -254,8 +262,10 @@ mkdir -p /var/log/yiban
 > sudo chown -R root:root . && sudo chmod -R go-w .   # ① 检出归 root、去组/其他写位
 > sudo bash deploy/prod/install.sh                    # ② 落位执行件，并建/修复 data/（属 yiban、0700）
 > ```
-> ② 会把 `data/` 的属主改回 `yiban:yiban`（步骤①的 `chown -R root:root` 会把它一起
-> 带走），且**幂等**：重跑一次安装器即修复。`data/` 已在持久盘上，重启不需要重建。
+> ② 会把 `data/` **及其下运行数据**的属主改回 `yiban:yiban`（步骤①的
+> `chown -R root:root` 会把它们一起带走），且**幂等**：重跑一次安装器即修复。
+> 递归到内容是承重的：只修目录时服务写库报 `attempt to write a readonly database`，
+> 而安装器照旧报 `complete`（静默假成功）。`data/` 已在持久盘上，重启不需要重建。
 > 服务账号名与 `web/deploy/yiban-web.service` 的 `User=`/`Group=` 同值（本仓
 > `yiban:yiban`；两处同值由用例钉住）。
 > 状态/日志目录（`/var/log/yiban`）与锁目录（`/var/lock/yiban`）**不在**检出内。
@@ -271,7 +281,8 @@ mkdir -p /var/log/yiban
 > ② **幂等**：已是新布局时重跑没有任何可迁的件；
 > ③ **同名件同时在检出根与 `data/` ⇒ 拒装**（权威未知，不猜、不覆盖）——按提示人工
 > `diff` 两份、删掉旧的那份再重跑。
-> ⇒ 升级的**正确顺序**（务必先停服：库被搬迁时若服务仍在跑，它会按旧路径另建一份空库）：
+> ⇒ 升级的**正确顺序**（必须先停服：库被搬迁时若服务仍在跑，它会按旧路径另建一份空库，
+> 随后重跑会因「两侧并存」拒装，按提示删旧件就丢掉服务刚写的新数据）：
 > ```bash
 > sudo systemctl stop yiban-web
 > cd /opt/yiban-auto-sign && git pull --ff-only
@@ -279,6 +290,10 @@ mkdir -p /var/log/yiban
 > sudo bash deploy/prod/install.sh                    # ② 落位执行件、迁入运行数据、同步依赖
 > sudo systemctl start yiban-web
 > ```
+> ② 自己也会**探测服务是否在跑**（`systemctl is-active yiban-web`，外加 /proc 进程扫描
+> 兜底容器形态）：在跑即拒装，并打印两条可复制的停服命令（裸机 `systemctl stop yiban-web`
+> ／容器 `docker compose stop yiban`）。故"忘了停服"不会静默走完。带 `DESTDIR` 的暂存
+> 安装不碰现网运行数据，豁免本门。
 >
 > 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
 > `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
@@ -890,7 +905,7 @@ EOF
 #
 # 装单元前先备齐模板里引用的三样东西（缺任一样 systemd 会以 "Failed at step NAMESPACE"
 # 或 EnvironmentFile 报错启动失败）：
-#   useradd -r -s /usr/sbin/nologin yiban                     # 模板的 User=yiban
+#   useradd -r -s /usr/sbin/nologin yiban                     # 模板的 User=yiban（上面「服务器部署」第 1 步已建过则跳过）
 #   install -d -m 0750 -o yiban -g yiban /etc/yiban           # .env 分盘存放目录（可选）
 #   grep '^YIBAN_ACCOUNTS_KEY=' .env >/tmp/yiban-accounts-key && \
 #     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
