@@ -512,8 +512,15 @@ class RunShMarkerTest(unittest.TestCase):
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root 无视权限位")
     def test_env_unreadable_warns_but_continues(self):
-        """.env 存在但不可读 ⇒ 显式告警并继续用默认值。"""
-        env_file = os.path.join(self.tmp, ".env")
+        """.env 存在但不可读 ⇒ 显式告警并继续用默认值。
+
+        路径必须是 run.sh 现行的 `<APP_DIR>/data/.env`（ybg8 把运行数据搬出检出根）。
+        本用例此前写 `<tmp>/.env`：本地 root 被 skipIf 跳过、CI 旧 `-k` 词集不含它
+        ⇒ 布局搬迁后从未真正跑过；车道分层把它带进快集才现形（CI 实测红：警告打成
+        「不存在」而非「不可读」）。
+        """
+        env_file = os.path.join(self.tmp, "data", ".env")
+        os.makedirs(os.path.dirname(env_file), exist_ok=True)
         with io.open(env_file, "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         try:

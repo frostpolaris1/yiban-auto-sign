@@ -42,21 +42,33 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 
 #: `run_ci` 里必须逐字出现、且按此顺序执行的关键子集命令。
 #: `"$py"` = `--ci` 解析出的解释器绝对路径（CI 上是 setup-python 那个）。
+#: 2026-10-17（工单 vckk 阶段 2-a）：第 4 条从 `-k` 关键词子集换成**车道名册推导的快集**——
+#: 旧子集是关键词命中面，改动落在命中面之外时子集绿、全量红且**不重合本身静默**
+#: （AGENTS.md §十三 第 29 条）。改前原文：
+#:   "$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4
+#:     --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit or claim or queue"
+#: 同批另两处：靶场的串行专轨（第 5 条）从**硬编码文件名**改成名册的 serial 行；
+#: shared-facts / path-env-reads 两个元测试步补 `FAST_DESELECT_ARGS`（那 4 条全仓扫描在 CI 上
+#: 实测占该两步 162s / 60s，剔掉后只剩十几秒；它们已由全量与 nightly 覆盖）。
 EXPECTED_CI_COMMANDS = (
     '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
     '"$py" -m mypy',
     '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
-    '"$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4 --dist loadfile -k '
-    '"security or mask or audit or login or private or csrf or ratelimit or claim or queue"',
-    # 2026-10-16（工单 zdvd）：多执行体靶场走**串行**单独轨——它拉起 mock 服务 ＋
-    # 监督进程 ＋ 执行体进程树，与上面 1034 条用例同抢 runner 的 4 个核时跑不起来
-    # （真登录 0 次）。判据未放松：它仍在 CI 里跑，只是不再与别的用例抢核。
-    '"$py" -m pytest tests/test_multi_executor_drill_e2e.py -q -p no:randomly',
+    # 快集：目标 tests/，排除项全部由名册/名单**数组**装配（不许在这里写死文件名）。
+    # 下面的期望值写成**续行已拼合**的形态（行尾反斜杠在拼合时被吃掉）——抽出口径见
+    # test_ci_subset_commands_are_frozen_byte_for_byte 的注释。
+    '"$py" -m pytest tests/ -q -n 4 --dist loadfile'
+    ' ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"}'
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
+    # 串行专轨：文件名来自名册的 serial 行，不带 -n（需独占 runner 的核，工单 zdvd）。
+    '"$py" -m pytest ${LANE_SERIAL_FILES[@]} -q -p no:randomly',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
     "bash scripts/check-shared-facts.sh",
-    '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
+    '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly'
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
     '"$py" scripts/check-path-env-reads.py',
-    '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly',
+    '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
     '"$py" scripts/check-config-registry.py',
     '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
     '"$py" scripts/check-import-linter.py',
@@ -177,8 +189,21 @@ class DevVerifyEntryTest(unittest.TestCase):
                            "抽不出 run_ci 函数体——结构改了？本条会因此变废断言")
         # 抽"执行行"的口径必须盖住全部三种调用形态：`-m 模块`、`bash 脚本`、
         # `"$py" 脚本路径`（B1 的 AST 门是第三种）。漏一种 = 那一步不进冻结清单。
-        got = [line.strip() for line in self.ci_body.splitlines()
-               if line.strip().startswith(('"$py" ', "bash scripts/"))]
+        # 续行必须**拼进上一条**（2026-10-17 补）：不拼时，写在续行上的参数
+        # （`${LANE_IGNORE_ARGS[@]}` / `${FAST_DESELECT_ARGS[@]}`）根本不进冻结清单，
+        # 于是"把排除项从命令行里删掉"这类改动**静默通过**——那正是本条要挡的形状
+        # （AGENTS.md §十三 第 29 条：门看的东西 ≠ 实际改的东西，且不重合是静默的）。
+        got = []
+        for raw in self.ci_body.splitlines():
+            line = raw.strip()
+            if got and got[-1].endswith("\\"):
+                # 续行链还没结束：这一行是上一条命令的续行，**不看前缀**也要拼进去
+                # （续行常以 `${ARR[@]}` 这种非命令开头，按前缀过滤会把参数整段丢掉）
+                got[-1] = got[-1][:-1].rstrip() + " " + line
+                continue
+            if not line.startswith(('"$py" ', "bash scripts/")):
+                continue
+            got.append(line)
         self.assertEqual(
             got, list(EXPECTED_CI_COMMANDS),
             "CI 关键子集命令漂了：命令原文只应存在 scripts/dev-verify.sh 一份。"
@@ -352,6 +377,10 @@ class DevVerifyFastModeTest(unittest.TestCase):
         自查墙钟从 57s 回到 146s，且绿色是假象。本条钉住"拼接承重"：抽真跑命令
         （执行行 + 续行，不含 echo 回显）断言数组拼接在场。
         突变验证：删掉该段 ⇒ 本条红（见 work/m3-mutant.log）。
+
+        2026-10-17（工单 vckk 阶段 2-a）：装配点从 fast 模式的一行内联循环搬进
+        `build_fast_deselect_args`（快集与 CI 的各门步骤**共用**同一份 `--deselect`，
+        内联会把同一判据写成两处），故这里改钉"装配点仍只有一处 + 真跑命令仍拼它"。
         """
         cmd = _pytest_exec_command(self.text)
         self.assertGreater(len(cmd), 50, "抽不出真跑 pytest 命令——结构改了？本条会因此变废断言")
@@ -359,10 +388,18 @@ class DevVerifyFastModeTest(unittest.TestCase):
             cmd, r"\$\{DESELECT\[@\]",
             "真跑 pytest 命令没拼 DESELECT 数组：--deselect 不会生效，长尾静默溜回 --fast。"
             "只留 echo 回显不算——回显不是跑测命令")
+        # 装配点：`FAST_DESELECT_ARGS` 只许由 FAST_KNOWN_SLOW 逐条装配，且只有一处。
         build = [ln for ln in self.text.splitlines()
-                 if "DESELECT+=(" in ln and "--deselect" in ln]
+                 if "FAST_DESELECT_ARGS+=(" in ln and "--deselect" in ln]
         self.assertEqual(len(build), 1,
-                         "DESELECT 数组必须由 FAST_KNOWN_SLOW 逐条装配 --deselect（装配点应只有一处）")
+                         "FAST_DESELECT_ARGS 必须由 FAST_KNOWN_SLOW 逐条装配 --deselect（装配点应只有一处）")
+        # 拼接点：fast 模式真跑命令必须引用装配出来的数组（引用被删即红）。
+        self.assertIn('FAST_DESELECT_ARGS[@]', self.text,
+                      "真跑命令没引用 FAST_DESELECT_ARGS：装配了但没拼进去")
+        splices = [ln for ln in self.text.splitlines()
+                   if ln.strip().startswith("DESELECT+=(") and "FAST_DESELECT_ARGS[@]" in ln]
+        self.assertEqual(len(splices), 1,
+                         "fast 模式的 DESELECT 拼接点应只有一处（拼两次会让同一判据有两个定义点）")
 
     # ---- F4：空覆盖必须与"真覆盖"可区分 ----
 
