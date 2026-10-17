@@ -171,7 +171,11 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 python -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
 python -m mypy
 python -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
-python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
+# 快集 = tests/lane-roster.tsv 的 fast 行（2026-10-17 vckk 2-a 起取代 -k 关键词子集；
+#   改动落在关键词命中面之外时子集照样绿、全量红——静默的不重合，AGENTS §十三 第 29 条）
+python -m pytest tests/ -q -n 4 --dist loadfile --ignore=<slow ∪ serial 行> --deselect=<长尾 nodeid>
+# 串行专轨 = 名册的 serial 行（本树＝多执行体靶场；与快集同抢 4 核时跑不起来，工单 zdvd）
+python -m pytest tests/test_multi_executor_drill_e2e.py -q -p no:randomly
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 bash scripts/check-shared-facts.sh
 python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
@@ -182,6 +186,16 @@ python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
 python scripts/check-import-linter.py
 python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 ```
+
+**车道名册（`tests/lane-roster.tsv`）是目标集的唯一事实源**（2026-10-17 vckk 2-a 立）。
+每行 `车道<TAB>测试文件`，三种车道：`fast`（进快集，本地 `--fast` 与 CI verify 同集）／
+`slow`（只在全量与 CI 的 `slow-lane` 作业跑；判据＝墙钟真按"等外面"计费）／
+`serial`（CI 单独一条串行轨，独占 runner 的核）。本地 `--fast` 与 `--slow`、CI 的
+`verify` 与 `slow-lane` 作业**全部由它推导**，没有任何一处另写名单。
+名册漏归类（新增测试文件没登记）由 `tests/test_gate_lane_roster.py` 对真实文件系统扫描
+＋真实 pytest 收集对账，红得出来；该守卫本身登记在快集，不会被自己漏掉。
+慢集的自动轨＝CI 的 `slow-lane` 作业（`bash scripts/dev-verify.sh --slow`，串行跑 slow 行），
+与 verify 并行、每次 push 都跑——**slow 行不再只靠本地全量覆盖**。
 
 四道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
@@ -213,7 +227,9 @@ grimp 的 `X.*` 通配语义（空转守卫），不钉版会让判定随 grimp 
 CI 接线由 `tests/test_shared_facts_gate.py::SharedFactsCiWiringTest` 两跳审
 （verify job 调入口脚本 + 入口脚本的 `run_ci` 真调门禁脚本）。
 
-`nightly.yml` 的全量轨**不在本入口内**：它是独立轨（含时区专项子集），本批不动它。
+全量轨不在本入口内：默认模式（无模式标志）在本地 WSL 跑全量；CI 侧的自动覆盖由
+`verify`（fast ＋ serial）与 `slow-lane`（slow）两个作业合起来给出——每个 push 都覆盖
+名册全部文件。历史上的独立 `nightly.yml` 已删（structure extinct），不要再按它理解。
 
 ## 4. 守卫与"守卫承重"的可执行证明
 
