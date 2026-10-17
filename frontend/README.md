@@ -48,7 +48,7 @@ npm run test:e2e   # Playwright 端到端：自动拉起 e2e/server.py 的临时
 
 ```
 src/
-  lib/api.ts        薄 GET 客户端（BASE 感知；CSRF/401 重试层随第一个迁移页补齐）
+  lib/shell.ts     外壳桥接：**全前端唯一的请求实现**（`api()` 委托 core.js 的 YB.api）
   lib/theme.ts      EP html.dark ↔ 外壳 data-theme 同步
   styles/ep-theme.css  EP → Adminator token 映射
   pilot/            试点页（/work/pilot，管线验证用，不进侧栏）
