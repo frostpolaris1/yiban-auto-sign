@@ -139,9 +139,9 @@ frontend/                  # Vue（独立构建）
 | 现在的位置 | 目标层 | 处置 |
 |---|---|---|
 | `yiban/clock.py` `yiban/status.py` `yiban/window.py` `yiban/masking.py` `engine/hrw.py` | `core/` | ✅ 已移动（批 B）。旧坐标留转发壳 |
-| `engine/planner.py` `engine/schedule.py` `engine/token_bucket.py` | `core/`（`plan` / `rate`） | **未移动**。实测三者直接 import `yiban.adapters.*`（有 I/O）。整文件搬入会造出 `core → adapters` 边，`core-no-upward` 判红（基线为空 ⇒ 新增违规即红）。须先切开纯算法与 I/O，属第三刀 |
+| `engine/planner.py` `engine/schedule.py` `engine/token_bucket.py` | `core/`（`plan` / `rate`） | **未移动**。实测三者直接 import `yiban.adapters.*`（有 I/O）。**搬入 `core/`** 会造出 `core → adapters` 边，`core-no-upward` 判红（基线为空 ⇒ 新增违规即红）。阻塞只对 `core/` 成立：实测搬去 `app/` 过门（违规 0），但那违反本表给它们定的目标层。须先切开纯算法与 I/O，属第三刀 |
 | `engine/attempts.py` | `core/classify.py` + `core/policy.py` | 拆分移动（未做，第三刀） |
-| `yiban/security.py` | `core/security_policy.py` | **未移动**。实测经 `yiban.challenge` 间接到 `adapters.protocol_yiban`，同上判红。须先切开，属第三刀 |
+| `yiban/security.py` | `core/security_policy.py` | **未移动**。实测经 `yiban.challenge` 间接到 `adapters.protocol_yiban`，**搬入 `core/`** 同样判红（同上，阻塞只对该目标层成立）。须先切开，属第三刀 |
 | `engine/round.py` `engine/alerts.py` | `app/` | ✅ 已移动（批 B）。`alerts` 落点＝`adapters/notifier/report.py` |
 | `engine/runner.py` | `app/` | ✅ 已移动（批 B） |
 | `engine/probe.py` | `app/`（探针＝一类用例） | ✅ 已移动（批 B） |
