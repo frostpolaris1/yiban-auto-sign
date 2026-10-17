@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MF-49 出口面（一）：`yiban.cli` 维护类子命令的 stdout/stderr 遮罩收口。
+"""MF-49 出口面（一）：`yiban.entry.cli` 维护类子命令的 stdout/stderr 遮罩收口。
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`_say`/`_emit_json` 两个出口收口的遮罩（含"字符串叶子遮、数字叶子不遮"的分型）、
@@ -11,7 +11,7 @@
     `yiban/engine/cli_support.py::_setup_cli_logging`（复用，不新造）。
 关键断言：登记原文的验收不变量——构造含裸号/明文邮箱的记录 ⇒ 每个出口都是遮罩形态：
     断"遮罩形态在场"且"裸形态缺席"两侧；只断缺席会放过"字段整个消失"的假绿。
-依赖：起 `sys.executable -m yiban.cli` / `python -c` 子进程（纯 Python）；全部用
+依赖：起 `sys.executable -m yiban.entry.cli` / `python -c` 子进程（纯 Python）；全部用
     临时 STATE/LOG/DB/ENV 与随机假钥，不碰真实 .env；无 bash/node/网络。
 
 出口形态沿用 `tests/test_cli_contract.py` 的进程级口径（stdout 单行 JSON 可解析、
@@ -51,7 +51,7 @@ def _cli_env(tmp_path, env_extra=None):
 
 
 def _run_cli(argv, env, timeout=120):
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=BASE,
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=BASE,
                           env=env, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
 

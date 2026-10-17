@@ -107,12 +107,12 @@ class YibanFallbackShTest(unittest.TestCase):
 
         按天命名取业务日（`yiban.clock`）后，脚本会先调一次 `python -c`，
         再拉起 CLI；那一次是实现细节。本类断言的是「恰好以 --fallback 起过
-        一次签到 CLI」，所以只数含 `yiban.cli` 的调用。
+        一次签到 CLI」，所以只数含 `yiban.entry.cli` 的调用。
         """
         if not os.path.exists(self.calls):
             return []
         with io.open(self.calls, encoding="utf-8", errors="replace") as f:
-            return [ln for ln in f.read().splitlines() if "yiban.cli" in ln]
+            return [ln for ln in f.read().splitlines() if "yiban.entry.cli" in ln]
 
     def _sign_log(self):
         """按天日志文件：文件名取业务日（与脚本/引擎同源），宿主时区不参与。"""
