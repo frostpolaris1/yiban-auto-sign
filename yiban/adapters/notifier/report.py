@@ -48,11 +48,12 @@ from yiban import mail as mailer
 from yiban import notify
 from yiban.adapters.config import env_io
 from yiban.adapters.persistence import db
+from yiban.adapters.statefiles import state_io
 from yiban.core import clock, window
 from yiban.core import status as yiban_status
 from yiban.core.masking import mask_phone as _mask_phone
 from yiban.core.masking import sanitize_text as _sanitize_text
-from yiban.engine import cli_support, config_check, schedule, state_io
+from yiban.engine import cli_support, config_check, schedule
 from yiban.mail import layout
 
 logger = logging.getLogger("yiban")

@@ -20,7 +20,7 @@
      ==5→未定论；读不到（None/未知）→维持 unknown_outcome。
 
 对应实现：`yiban/engine/crash_semantics.py`（本批新增）、`yiban/adapters/persistence/run_events.py`
-     （读取面）、`yiban/app/runner.py`（接线）、`yiban/engine/workers.py`（多执行体监督
+     （读取面）、`yiban/app/runner.py`（接线）、`yiban/workers/workers.py`（多执行体监督
      进程接线）。定论判据的**单一事实源**是 `yiban/client.py` 的
      `SIGN_POSITION_STATE_STATUS`：本文件断言它被复用（改平台枚举即红）。
 依赖：临时 SQLite（真实迁移链）+ 假时钟 + 限速替身 + `attempt_signin` 替身；

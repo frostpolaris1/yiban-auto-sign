@@ -47,7 +47,7 @@
 
 对应实现：yiban/adapters/persistence/queue_store.py（`claim_batch` 的 `UPDATE … RETURNING`）、
     yiban/engine/executor_v3.py（`_claim_one` 是执行体唯一领取点）、
-    yiban/app/runner.py（调度器与手动两条入口）、yiban/engine/workers.py（兜底常驻入口）。
+    yiban/app/runner.py（调度器与手动两条入口）、yiban/workers/workers.py（兜底常驻入口）。
 关键断言：钉"领取写入全仓一处""三条入口发同一条领取语句""抢不到＝回空不抛错"三条性质；
     不钉任何调用顺序。
 依赖：临时 sqlite ＋ 真执行体 ＋ 打桩上游尝试函数与限速三件；无网络、无子进程。

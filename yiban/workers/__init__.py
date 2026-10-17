@@ -5,7 +5,12 @@
 本层按目标架构契约（docs/dev/architecture-target.md 第 1、2、3 节）落位。
 本层的存活判据＝进程句柄。本层一次只处理一个账号。
 
-目标成员来源＝`yiban/engine/workers.py`（监督进程 ＋ 兜底常驻执行体）与
-`yiban/engine/executor_v3.py`（v3 执行体）的切面。两者都要求"一个文件拆成编排面
-（`app/coord`）与工作体面（本层）"，属第三刀。故本层今天只有地图，没有成员。
+成员来自批 B 搬迁：
+- `workers`：多执行体监督进程与兜底常驻执行体（原 `yiban/engine/workers.py`）。
+  旧坐标 `yiban/engine/workers.py` 是转发壳。
+
+**层归属张力（如实登记，属第三刀）**：契约第 1 节的 APP 子图把「协调 · 派发与工作体池」
+画在应用层（`app/coord`），而 `workers.py` 里监督进程与派发是**编排**。本批按第 3 节
+映射表"移到 `workers/`"整文件搬入，未做拆分（本批不改行为）。第三刀须把编排面拆去
+`app/coord.py`、并切出 `yiban/engine/executor_v3.py` 的工作体面。
 """

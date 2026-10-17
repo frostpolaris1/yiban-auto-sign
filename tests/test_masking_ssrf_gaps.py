@@ -18,7 +18,7 @@ fragment 不改写）；末尾另有一组 signin 修复用例（状态文件自
 对应实现：`yiban/core/masking.py` 的 `sanitize_text` / `sanitize_url`（`_CRED_KEY`、
 `_QUOTED_OR_BARE`）、`yiban/adapters/notifier/notify/config.py` 的 `is_safe_url` 与 `_mask_secret`、
 `yiban/adapters/notifier/mail/config.py` 的 `_mask_addr`；末尾一组走 `signin` 门面（仓库根的旧名 shim），
-真实现在 `yiban/engine/state_io.py::_write_sign_state` 与 `yiban/engine/attempts.py`。
+真实现在 `yiban/adapters/statefiles/state_io.py::_write_sign_state` 与 `yiban/engine/attempts.py`。
 关键断言：段覆盖用例逐个网段列举（含 `100.64.0.0/10` 这段 `ipaddress.is_private`
 **不含**的 CGNAT），配 `test_public_https_targets_still_allowed` 一条正向对照——
 只有负例的话"一律拒绝"也算过。密钥遮罩断的是**星数不随长度变化**（否则等于把密钥

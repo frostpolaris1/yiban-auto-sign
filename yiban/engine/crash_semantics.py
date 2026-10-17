@@ -40,7 +40,7 @@
 **归属**
 `yiban/engine/crash_semantics.py`（本模块，引擎侧）＋ `yiban/store/run_events.py` 的
 读取面 `unresolved_starts`（数据层）。调用点：`yiban/engine/runner.py`（单执行体/手动）
-与 `yiban/engine/workers.py`（多执行体监督进程）的启动路径。定论判据的**平台枚举事实源**
+与 `yiban/workers/workers.py`（多执行体监督进程）的启动路径。定论判据的**平台枚举事实源**
 是 `yiban/client.py`，本模块只 import 复用、不另抄一张表。
 
 **告警去重：当前不去重（有意，已登记）**

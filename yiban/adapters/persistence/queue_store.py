@@ -69,7 +69,7 @@
 数据源连接与进程内写锁暂取 `yiban.store.connection` 的单例 `get_conn()` / `_conn_lock`
 （`_queue_conn()` 是唯一取点：将来本表迁到独立库文件、换独立连接时只改这一处）。
 设计上的调用方是执行入口 `yiban/engine/executor_v3.py`（批量领取/收尾/重排/待办计数/
-重签/桶状态落库）与展示侧 `yiban/engine/state_io.py`、`web/services/executor_env.py`
+重签/桶状态落库）与展示侧 `yiban/adapters/statefiles/state_io.py`、`web/services/executor_env.py`
 （经路由 `web/routes/accounts_api.py` 暴露）——单池后两条路径读写的是**同一张表**
 `sign_tasks`。
 `egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /

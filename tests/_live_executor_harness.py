@@ -43,7 +43,7 @@ OTHER_OWNER = "other@host:1:a"
 #: 三条写入口的角色参数（真调用点逐字对齐）：
 #: · 调度器：`yiban/app/runner.py` 的定时全量分支（`requeue_final=_second_run`）；
 #: · 网页手动：`runner` 的 `--only` 分支（`reclaim=True, requeue_final=True`）；
-#: · 兜底常驻：`yiban/engine/workers.py` 的 `run_fallback` 循环体（`claim_all` ＋
+#: · 兜底常驻：`yiban/workers/workers.py` 的 `run_fallback` 循环体（`claim_all` ＋
 #:   `requeue_during_run` ＋ `elbow_sec=FALLBACK_ELBOW_SEC`）。
 ENTRIES = {
     "scheduler": dict(requeue_final=False),

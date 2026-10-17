@@ -50,13 +50,13 @@ from yiban import egress
 from yiban.adapters.notifier import report as alerts
 from yiban.adapters.persistence import claims as claims_mod
 from yiban.adapters.persistence import db
+from yiban.adapters.statefiles import state_io
 from yiban.core import clock, window
 from yiban.core import status as yiban_status
 from yiban.core.masking import mask_phone as _mask_phone
 from yiban.core.masking import sanitize_text as _sanitize_text
 from yiban.engine import attempts as attempts_mod
 from yiban.engine import schedule as schedule_mod
-from yiban.engine import state_io
 
 logger = logging.getLogger("yiban")
 
@@ -209,7 +209,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     # （全新系统：状态文件不存在 → read() 返回 {}）重新绑定，轮内账密失败计数
     # 全写进新对象，调用方保存的仍是空 dict——熔断计数永不落盘、"连续失败达
     # 阈值暂停"（3 天）永不触发，错密码账号被每日无限次真实登录（易班侧照实
-    # 计数，加重风控）。契约见 yiban/engine/workers.py 收尾处的持有引用注释。
+    # 计数，加重风控）。契约见 yiban/workers/workers.py 收尾处的持有引用注释。
     cred_state = cred_state if cred_state is not None else {}
     # .env 直配超大值不得把队列睡死——与网页设置侧 3600 上限同口径
     # （该保护原先内置于共享随机延迟 helper，间隔改为确定性对齐后收口到入参处）

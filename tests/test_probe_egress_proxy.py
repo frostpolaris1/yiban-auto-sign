@@ -77,7 +77,7 @@ class EgressEnvTest(_Base):
     def test_process_env_wins_so_per_slot_injected_egress_is_not_flattened(self):
         """执行体子进程被注入的出口必须压过 `.env`（否则每槽位出口被同一个值抹平）。
 
-        `yiban/engine/workers.py` 按槽位把出口写进子进程环境；`YIBAN_PROXY_LIST` /
+        `yiban/workers/workers.py` 按槽位把出口写进子进程环境；`YIBAN_PROXY_LIST` /
         清单形态下 `.env` 里那个 `YIBAN_PROXY` 只对 `single` 档有意义。
         """
         self._write_env(f"YIBAN_PROXY={PROXY}\n")

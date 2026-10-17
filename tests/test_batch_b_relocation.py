@@ -11,7 +11,7 @@
        `mock.patch("yiban.adapters.persistence.db.X")` 打到同一个对象上。
        这是本批最大的技术风险面（`tests/` 里约 1,491 处打桩，搬调用点后按旧模块名
        打桩会**静默失效**）。
-对应实现：`yiban/clock.py` 等 14 个模块壳 ＋ `yiban/store/__init__.py` 包壳。
+对应实现：`yiban/clock.py` 等 16 个模块壳 ＋ `yiban/store/__init__.py` 包壳。
 关键断言：进程内 `importlib.import_module(旧)` `is` `importlib.import_module(新)`；
     `mock.patch` 经旧坐标后，实现模块的属性就是那个替身。
 依赖：只做 import 与 mock；不碰网络、不碰 DB、不读磁盘。
@@ -36,6 +36,8 @@ SHELLS = (
     ("yiban.config_loader", "yiban.adapters.config.loader"),
     ("yiban.state_gc", "yiban.adapters.statefiles.state_gc"),
     ("yiban.cred_state", "yiban.adapters.statefiles.cred_state"),
+    ("yiban.engine.state_io", "yiban.adapters.statefiles.state_io"),
+    ("yiban.engine.workers", "yiban.workers.workers"),
     ("yiban.infra.env_io", "yiban.adapters.config.env_io"),
     ("yiban.infra.account_crypto", "yiban.adapters.config.account_crypto"),
 )
@@ -53,6 +55,8 @@ PATCH_PROBES = (
     ("yiban.store.db", "__name__"),
     ("yiban.store.queue_store", "__name__"),
     ("yiban.engine.round", "__name__"),
+    ("yiban.engine.state_io", "__name__"),
+    ("yiban.engine.workers", "__name__"),
     ("yiban.infra.env_io", "__name__"),
 )
 
