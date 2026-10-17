@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""配置名册加载器 `yiban/config_loader.py` 的行为契约（104 第一批·A）。
+"""配置名册加载器 `yiban/adapters/config/loader.py` 的行为契约（104 第一批·A）。
 
 标签：A · 配置：名册与加载器
 覆盖：① **优先级链**——进程环境 → `.env` → 名册缺省（F18 / 工单 71z7 裁决口径，
@@ -8,7 +8,7 @@
     越界值原样返回，不夹取、不回退默认；③ **未知键告警不静默**；④ **零配置启动**：
     空 `.env` + 空进程环境不炸，取值恒等于名册缺省（本单验收"现有部署零改动启动"）；
     ⑤ `reload` 字段**仅声明**，不改变既有重启语义（本批不实现热重载）。
-对应实现：`yiban/config_loader.py`、`config/registry.json`。
+对应实现：`yiban/adapters/config/loader.py`、`config/registry.json`。
 关键断言：优先级链的方向由测试钉住，不许由实现自述——顺序写反（名册缺省压过 `.env`）
     在单键取值上表现为"配置改了不生效"，正是本模块存在的理由。
 依赖：无网络；临时 `.env` 文件 + 注入的 registry 映射。**一处子进程**——"零配置启动"
@@ -452,7 +452,7 @@ class InternalComponentTest(unittest.TestCase):
         """包根不导入也不导出它（`from yiban import config_loader` 是子模块绑定，
         不是"暴露为使用者概念"——判据看包根的源码文本与 `__all__`）。"""
         import yiban
-        base = os.path.dirname(os.path.dirname(os.path.abspath(CL.__file__)))
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(base, "yiban", "__init__.py"), encoding="utf-8") as f:
             init_src = f.read()
         self.assertNotIn("config_loader", init_src,
@@ -515,8 +515,9 @@ class PriorityWiringTest(unittest.TestCase):
                          "CLI 容量命令的账号间隔缺省没走名册")
 
         # ② 引擎入口（runner.py）：其默认值必须是名册访问器的调用，不是字面量
-        runner_src = os.path.join(os.path.dirname(os.path.abspath(CL.__file__)),
-                                  "engine", "runner.py")
+        runner_src = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "yiban", "app", "runner.py")
         with open(runner_src, encoding="utf-8") as f:
             tree = ast.parse(f.read())
         accessor_calls = [

@@ -6,8 +6,8 @@
 覆盖：`yiban/engine/executor_v3.py` 的收尾两处出口
    —— `_prescan`（用户自暂停账号的登记）与 `_mark_unreached`（轮末"本执行体未执行"判因）。
 对应实现：`yiban/engine/executor_v3.py`（`_prescan` / `_mark_unreached`）、
-   `yiban/engine/workers.py`（兜底常驻把 `run_executor_v3` 反复调用，故收尾产出按**轮**累积）、
-   `yiban/store/events.py`（摘要行 `phone=''` 不进账号聚合）。
+   `yiban/workers/workers.py`（兜底常驻把 `run_executor_v3` 反复调用，故收尾产出按**轮**累积）、
+   `yiban/adapters/persistence/events.py`（摘要行 `phone=''` 不进账号聚合）。
 
 **故障现场（2026-10-13 生产，工单 81xt ＋ uuqb）**：`run.sh` 07:28:35 收工后，常驻兜底
 每约 5.2 秒扫一遍，直到窗口关闭（07:44:57）共约 188 轮。每轮：

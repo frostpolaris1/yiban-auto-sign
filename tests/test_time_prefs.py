@@ -13,7 +13,7 @@
    读写、purge/delete_user_with_accounts/replace_accounts
    的连带清理）、scripts/signin.py（build_schedule
    的自选分支、run_queue_retry）、web/app.py（my-time-pref、stats、accounts、settings、capacity、pause
-   各接口）、web.services 与 yiban/window.py 的共用几何。
+   各接口）、web.services 与 yiban/core/window.py 的共用几何。
 关键断言：自选是硬约束但有溢出语义：选中的片内 100% 落点，超容量的晚者按 updated_at
    就近顺延而不是丢号。用户侧只许看到已选百分比（10% 粗粒度、未满封顶
    90、满员恰好

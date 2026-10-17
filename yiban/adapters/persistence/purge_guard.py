@@ -132,7 +132,7 @@ def write_purge_audit(action, target, detail, db_file=None, env_file=None):
     `cleanup=False, migrate=False`：留痕是只读之外的最小写入，不得顺带跑启动清理
     或重写审计链（否则"记录这次删除"本身会改动目标库）。
     """
-    from yiban.infra import env_io
+    from yiban.adapters.config import env_io
     if db_file is None:
         # 默认值取 `env_io` 的单点常量（`data/yiban.db`，相对检出根）——不另抄字面量，
         # 否则库搬进 `data/` 后这里会静默指向检出根下并不存在的旧路径。
@@ -140,7 +140,7 @@ def write_purge_audit(action, target, detail, db_file=None, env_file=None):
     if not os.path.exists(os.path.abspath(db_file)):
         return False
     try:
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         if env_file is None:
             env_file = env_io.env_path()
         store_db.init_db(db_file=db_file, env_file=env_file, cleanup=False, migrate=False)
@@ -159,7 +159,7 @@ def write_purge_audit(action, target, detail, db_file=None, env_file=None):
 
 def _conn_points_at(db_file):
     """当前单例连接实际指向的库是否就是 db_file（realpath + normcase 归一）。"""
-    from yiban.store import connection
+    from yiban.adapters.persistence import connection
     actual = connection.current_db_file()
     if not actual:
         return False

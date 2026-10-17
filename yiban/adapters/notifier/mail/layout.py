@@ -26,9 +26,9 @@ import html as _html
 import re
 import unicodedata
 
-from yiban import clock
-from yiban.infra.env_io import escape_line_breaks
-from yiban.masking import mask_phones_in_text
+from yiban.adapters.config.env_io import escape_line_breaks
+from yiban.core import clock
+from yiban.core.masking import mask_phones_in_text
 
 # 正文行宽（显示列，全角算 2）。72 列是保守值：主流客户端按 76~80 列折行，留出缩进
 # 与引号后仍在安全区；再宽会让手机端的被动折行重新出现。

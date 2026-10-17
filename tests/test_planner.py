@@ -7,7 +7,7 @@
    跨天重排、小 N 前载、自暂停零占位、重复号折叠、自选硬约束与双层溢出（先到先得）、
    分布三态与正态密度/削峰、压缩模式与元数据、plan_stats 摘要与直方图基点、
    capacity_accounts_v3 取值、幂等落库与降级信号。
-对应实现：yiban/engine/planner.py（build_plan、write_plan、has_plan、plan_stats）、yiban/engine/schedule.py（capacity_accounts_v3、planner_config）、yiban/window.py、yiban/store/queue_store
+对应实现：yiban/engine/planner.py（build_plan、write_plan、has_plan、plan_stats）、yiban/engine/schedule.py（capacity_accounts_v3、planner_config）、yiban/core/window.py、yiban/adapters/persistence/queue_store
    与 clock_meta（计划行与元数据的落库处）。
 关键断言：`uniform`/`normal` 下计划层与执行体数无关：改 executors 只改 owner，一个 run_at
    都不许动——否则换一台机器重排会把当天已跑完的账号再排一遍。`front`（默认）**有意**依赖

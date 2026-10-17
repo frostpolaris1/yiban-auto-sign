@@ -10,8 +10,8 @@ import json
 import logging
 import os
 
+from yiban.adapters.config import account_crypto, env_io
 from yiban.adapters.notifier.notify import config as notify_config
-from yiban.infra import account_crypto, env_io
 
 logger = logging.getLogger("mailer")
 

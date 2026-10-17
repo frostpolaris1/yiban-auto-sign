@@ -9,7 +9,7 @@
    的「相对窗口起点」语义、web 侧 _pref_slots
    的置灰与基点、web.app.sign_window_bounds 只做转发。
 对应实现：scripts/signin.py（_slot_to_bi、_schedule_blocks、build_schedule）、yiban/engine/planner.py（v3
-   自选候选分片）、yiban/window.py（bounds）、web/routes/my_api.py 与
+   自选候选分片）、yiban/core/window.py（bounds）、web/routes/my_api.py 与
    web/services/accounts_data.py（_pref_slots、_slot_to_label）。
 关键断言：片号只有一份准绳：调度侧的 _slot_to_bi、块数、web
    侧的可点片与标签必须同时变化，任何一处另算一套就会出现「网页能选、调度判落窗外」的错位回退。缓冲收缩时基点仍是窗口起点（07:00

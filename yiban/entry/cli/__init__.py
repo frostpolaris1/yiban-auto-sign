@@ -71,9 +71,16 @@ import sqlite3
 import sys
 
 from yiban import __version__ as RELEASE_VERSION
-from yiban import config_loader, state_gc, window
+from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.persistence import db as store_db
+from yiban.adapters.persistence import purge_guard
+from yiban.adapters.statefiles import state_gc
+from yiban.app import runner
+from yiban.core import window
+from yiban.core.masking import mask_phone
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import cli_support, db_maintenance, egress_admin, runner
+from yiban.engine import cli_support, db_maintenance, egress_admin
 from yiban.engine import schedule as schedule_mod
 from yiban.engine.cli_support import (
     _emit_json,
@@ -85,10 +92,6 @@ from yiban.engine.cli_support import (
     _UsageError,
     exit_kind,
 )
-from yiban.infra import env_io
-from yiban.masking import mask_phone
-from yiban.store import db as store_db
-from yiban.store import purge_guard
 
 USAGE = (
     "用法: python -m yiban.cli <子命令> [选项]\n"

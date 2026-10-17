@@ -28,7 +28,7 @@ import pathlib
 import sqlite3
 import threading
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 # 默认值单点在 `env_io.DEFAULT_DB_FILE`（`data/yiban.db`，相对检出根）——库与 .env
@@ -58,7 +58,7 @@ def get_conn():
         # 反向取一次 db.init_db。按**属性**取而不是模块级 from-import：既有的
         # `mock.patch.object(db, "init_db", …)`（如 test_scheduler_gate 的 db_export
         # 用例）必须在隐式初始化路径上仍然生效。
-        from yiban.store import db as _db
+        from yiban.adapters.persistence import db as _db
         _db.init_db()
     return _conn
 

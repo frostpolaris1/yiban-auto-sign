@@ -9,7 +9,7 @@
 再把其余各册逐枚对照过去。任一册漂移即红，并点名"哪一册、缺/多了哪一枚"。
 
 **被对照的各册（逐枚归属）**
-- R1 清理名册 `yiban/state_gc.py` 的 `ARTIFACTS`（按日件，会被清理）。
+- R1 清理名册 `yiban/adapters/statefiles/state_gc.py` 的 `ARTIFACTS`（按日件，会被清理）。
 - R2 备份收录名册 `scripts/backup.sh` 的 `state_files` + `log_files`。
 - R4 测试侧负名册 `tests/test_state_gc.py` 的 `ALLOWED_NON_STATE`。
 - R6 文档固定名表 `docs/dev/README.md` 的"运行期状态文件"表。
@@ -72,7 +72,7 @@ NON_STATE_FIXED_NAME = {
     "users.json": "scripts/db_export.py 导出的用户清单（仓外产物，不在状态目录）",
     "manifest.json": "web/services/vue_assets.py 的前端构建产物清单（静态资源，非状态件）",
     "registry.json": "config/registry.json 是配置名册（104 第一批·A）：入库的源码数据件，"
-                     "由 yiban/config_loader.py 读；不落状态目录、不进清理与备份名册",
+                     "由 yiban/adapters/config/loader.py 读；不落状态目录、不进清理与备份名册",
     "mock.jsonl": "scripts/drill_multi_exec.py 的演练假上游请求轨迹：落**调用方指定的**"
                   "证据目录或临时目录，不落状态目录、不进清理/备份名册",
     "monitor.jsonl": "scripts/drill_multi_exec.py 的演练协调面采样轨迹：同上（调用方指定的"
@@ -140,8 +140,8 @@ def _registered(token):
 
 
 def _artifacts_prefixes():
-    """R1：`yiban/state_gc.py` 的 `ARTIFACTS` 元组里的前缀（按定义顺序）。"""
-    src = _read(os.path.join(BASE, "yiban", "state_gc.py"))
+    """R1：`yiban/adapters/statefiles/state_gc.py` 的 `ARTIFACTS` 元组里的前缀（按定义顺序）。"""
+    src = _read(os.path.join(BASE, "yiban", "adapters", "statefiles", "state_gc.py"))
     body = src.split("ARTIFACTS = (", 1)[1].split("\n)", 1)[0]
     return re.findall(r'Artifact\(\s*"([^"]+)"', body)
 

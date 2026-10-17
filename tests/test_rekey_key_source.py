@@ -73,10 +73,10 @@ logout_ok。三元组口径与既有 forbidden_path 逐字同构（target 只存
 至多一封、通道不可用先落审计痕迹）、通道健康播报的降级判据取结构化字段而非正文符号；
 ③ 账号侧物理清除的三层加固（口令二次鉴权 / 冷却 / 节流）与 PUT 防错位 409；
 ④ 登录/登出/恢复的审计三元组留痕；⑤ 口令策略前后端与文案对拍。
-对应实现：`yiban/store/audit_chain.py`（`_audit_key` / `_track_salt`）、
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`_audit_key` / `_track_salt`）、
 `scripts/audit_verify.py` 与 `scripts/list_duplicate_owners.py`、
 `web/app.py` 的高危门禁与 `_alert_channel_status`、`web/routes/*` 的账号删除与 PUT 路由、
-`yiban/engine/state_io.py` 的冷却账本。
+`yiban/adapters/statefiles/state_io.py` 的冷却账本。
 关键断言：负例一律断"零副作用"（行未删、额度未耗、`.env` 未被新建），只断状态码等于
 放过"先动手后回 403"；`test_wrong_password_tries_do_not_consume_budget` 与
 `test_mail_budget_still_enforced_after_auth` 是一对方向相反的钉（前者防运维 DoS、

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""兼容壳：`import db` 的旧导入路径继续可用（实现已迁入 `yiban/store/db.py`）。
+"""兼容壳：`import db` 的旧导入路径继续可用（实现已迁入 `yiban/adapters/persistence/db.py`）。
 
 两条转发纪律（都为"行为零变化"服务）：
 

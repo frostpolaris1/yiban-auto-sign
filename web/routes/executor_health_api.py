@@ -38,7 +38,7 @@
 **复用**
 卡片装配住在 `web/services/executor_env.py` 的 `_executor_health_cards`（执行体展示
 族的同一份实现）；窗口口径复用 `_executors_window`（与容量换算同一份）；四态与
-新鲜度复用 `yiban.engine.state_io`。
+新鲜度复用 `yiban.adapters.statefiles.state_io`。
 
 **通信**
 视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger`、

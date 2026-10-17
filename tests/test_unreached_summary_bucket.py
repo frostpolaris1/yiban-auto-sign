@@ -3,9 +3,9 @@
 """q1to 校验者：汇总把「未执行」计为「失败」+ 执行层零留痕。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：`yiban/engine/runner.py`（轮末汇总的计数桶与汇总文本、退出码）、
+覆盖：`yiban/app/runner.py`（轮末汇总的计数桶与汇总文本、退出码）、
      `yiban/engine/executor_v3.py`（轮末"未执行"判因与事件留痕）、
-     `yiban/store/queue_store.py`（当日行的 `state`/`owner` 读取）。
+     `yiban/adapters/persistence/queue_store.py`（当日行的 `state`/`owner` 读取）。
 
 **故障现场（2026-10-07 生产 v0.5.1）**：兜底把两个执行体的任务领走（84/100），两个
 worker 到点领不到自己的行、`results` 里没有条目，汇总把它们记成"失败"（07:16 一行

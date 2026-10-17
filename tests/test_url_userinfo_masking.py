@@ -10,10 +10,10 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`mask_url_userinfo` 的四种写法（带 scheme / 裸 `user:pass@host` / 混在异常整句里 /
 已遮形态幂等）。
-对应实现：`yiban/masking.py` 的 `mask_url_userinfo`（`_URL_USERINFO_RE`）。
+对应实现：`yiban/core/masking.py` 的 `mask_url_userinfo`（`_URL_USERINFO_RE`）。
 关键断言：脱敏函数本身按"整串等值"断（`assertEqual(..., "http://***@host:8080")`）。
 另注：`mask_url_userinfo` 的调用点不止一处——引擎 `yiban/engine/attempts.py` /
-`yiban/engine/probe.py` 的异常消息组装、web 侧 `web/routes/settings_api.py` 与
+`yiban/app/probe.py` 的异常消息组装、web 侧 `web/routes/settings_api.py` 与
 `web/services/executor_env.py` 的回显也过它；这些**接线**的行为面由
 `test_users_exit_surface` 与 `test_masking_ssrf_gaps` 在真实出口上钉住脱敏值。
 依赖：无网络、无 skip。

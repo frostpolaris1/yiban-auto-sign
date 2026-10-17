@@ -8,7 +8,7 @@
    hi、收缩结果喂回不再生效（幂等）、窗口宽度 <= 0
    的防御分支回退默认、两个标记缺省为假、_schedule_blocks
    的两条告警与邮件去重。
-对应实现：yiban/window.py（Window、bounds 的 fell_back / edges_clamped
+对应实现：yiban/core/window.py（Window、bounds 的 fell_back / edges_clamped
    分支）、scripts/signin.py（_schedule_blocks 的告警与 _mail_summary
    并入、_window_clamped_notified / _window_fallback_notified 去重标记）。
 关键断言：窗口是管理员意图、缓冲只是精修：缓冲吃满时只等比收缩缓冲（有效窗口 =

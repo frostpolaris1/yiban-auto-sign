@@ -5,8 +5,8 @@
 覆盖：用户先自删账号再注销这一路径下，账号行的到期时刻与用户反悔窗口是否一致；
     `restore_user` 恢复哪一行；`_purge_expired_deleted` 对"owner 已注销但仍 in
     窗口"的账号的豁免。
-对应实现：`yiban/store/users.py`（`restore_user`、`purge_deleted_users`）与
-    `yiban/store/cleanup.py`（`_purge_expired_deleted`、`purge_expired_deleted_accounts`）；
+对应实现：`yiban/adapters/persistence/users.py`（`restore_user`、`purge_deleted_users`）与
+    `yiban/adapters/persistence/cleanup.py`（`_purge_expired_deleted`、`purge_expired_deleted_accounts`）；
     触发入口在 `web/app.py` 的注销与恢复端点。
 关键断言：两条路径各自的触发条件必须分清——**软删可恢复**（本人撤销/管理员恢复，
     按时刻等值匹配会漏行）与**到期物理清除**（按 deleted_at 独立到期）；

@@ -7,7 +7,7 @@
    与出口数无关的总量上界及取整/非法值分档、配置面（YIBAN_MIN_EXEC_GAP
    映射突发、人工接管只封上探不封回退）、每账号 gap
    安全件、速率单位断言、egress_state 落库往返与跨时钟域恢复。
-对应实现：yiban/engine/token_bucket.py（EgressBucket、EgressLimiter、GlobalLimiter、AccountGapGate、apply_ewma、burst_from_env、limiter_from_env、模块常量）、yiban/store/queue_store.py（egress_state
+对应实现：yiban/engine/token_bucket.py（EgressBucket、EgressLimiter、GlobalLimiter、AccountGapGate、apply_ewma、burst_from_env、limiter_from_env、模块常量）、yiban/adapters/persistence/queue_store.py（egress_state
    的读写）。
 关键断言：速率单位一律是账号尝试/s：退回「1 req/s」的字面实现会让实际请求量只有设计的
    1/6。tat = max(now, tat) +

@@ -4,7 +4,7 @@
 
 现象（工单 ybg8，2026-10-09 生产实测）：`deploy/prod/install.sh` 的 M01 前置门要求
 检出根属 root 且组/其他不可写；而服务账号要往检出根写 `.env` 与 `yiban.db`——`.env`
-的原子写把临时文件建在 `.env` **同目录**（`yiban/infra/env_io.py` 的 `_atomic_replace_env`）。
+的原子写把临时文件建在 `.env` **同目录**（`yiban/adapters/config/env_io.py` 的 `_atomic_replace_env`）。
 两条要求在旧布局下互斥 ⇒ 生产只能手工拷贝执行件，哨兵脚本漂移、两条 cron 从未装上。
 
 修法：检出内建 `data/`（属服务账号、0700），`.env` 与 SQLite 库移入其下；检出根改
@@ -21,11 +21,11 @@
      解析到的仍是同一份 `.env` 与库（逐字节相同），旧位置不留第二份权威。
      `LegacyRuntimeDataAdoptionTest` 钉这一条。
 
-对应实现：`deploy/prod/install.sh`（建目录）、`yiban/infra/env_io.py`（默认值单点）、
-`yiban/store/connection.py`、`web/app.py`、`config/registry.json`、`run.sh`、
+对应实现：`deploy/prod/install.sh`（建目录）、`yiban/adapters/config/env_io.py`（默认值单点）、
+`yiban/adapters/persistence/connection.py`、`web/app.py`、`config/registry.json`、`run.sh`、
 `run_probe.sh`、`scripts/backup.sh`、`scripts/yiban-fallback.sh`、
 `scripts/yiban-backup-sentinel.sh`、`deploy/prod/cron.d/yiban-audit`、
-`scripts/ledger_check.py`、`yiban/store/purge_guard.py`。
+`scripts/ledger_check.py`、`yiban/adapters/persistence/purge_guard.py`。
 
 依赖：bash（`skipIf` 整文件）；root + 保留 POSIX mode 的文件系统（WSL，非 root 或
 Windows 开发机则该条 skip）；setpriv（缺它则该条 skip）。无网络、不碰生产路径。
@@ -55,7 +55,7 @@ SERVICE_UNIT = os.path.join(BASE, "web", "deploy", "yiban-web.service")
 REGISTRY = os.path.join(BASE, "config", "registry.json")
 UNPRIVILEGED_ID = 65534
 
-#: `data/` 子目录名与两枚默认相对路径（与 `yiban/infra/env_io.py` 的常量同口径；
+#: `data/` 子目录名与两枚默认相对路径（与 `yiban/adapters/config/env_io.py` 的常量同口径；
 #: 测试只在此处写一份，避免三处漂移）。
 DATA_DIR = "data"
 DEFAULT_ENV = "data/.env"
@@ -73,7 +73,7 @@ CARRIER_EXPECT = {
     "scripts/backup.sh": ("${APP_DIR}/data/.env", "data/yiban.db"),
     "deploy/prod/cron.d/yiban-audit": ("--db data/yiban.db", "--env data/.env"),
     "scripts/ledger_check.py": ('resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)',),
-    "yiban/store/purge_guard.py": (
+    "yiban/adapters/persistence/purge_guard.py": (
         'resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)',),
     # 清库留痕的**唯一生产调用点**：必须把 CLI 自己解析出的库路径显式传下去，否则
     # 被调方另解析一次默认值——两者一旦分叉，"拒绝删除"的判据看的是另一个库。
@@ -572,7 +572,7 @@ print(json.dumps(out))
         self.assertEqual(got["web.ENV_DEFAULT"], DEFAULT_ENV, f"web .env 默认值：{got}")
         self.assertEqual(got["web.DB_DEFAULT"], DEFAULT_DB, f"web 库默认值：{got}")
         # 两个在役读者：台账对账（scripts/ledger_check.py）与清库留痕
-        # （yiban/store/purge_guard.py）各持一份默认值，必须与单点同值。
+        # （yiban/adapters/persistence/purge_guard.py）各持一份默认值，必须与单点同值。
         self.assertEqual(got["ledger_check.db_default"], DEFAULT_DB,
                          f"ledger_check 库默认值：{got}")
         self.assertEqual(got["purge_guard.db_default"], DEFAULT_DB,

@@ -6,7 +6,7 @@
     STATUS_GLOBAL_PAUSED 的取值与符号映射。
 对应实现：状态码与符号的**权威定义**在 `yiban.status`（`STATUS_GLOBAL_PAUSED`、
     `SYMBOL`），`scripts/signin.py` 里只是别名转发；暂停判定发生在签到入口
-    `signin.main()`（引擎实现 `yiban/engine/runner.py`）。
+    `signin.main()`（引擎实现 `yiban/app/runner.py`）。
 关键断言：暂停只对自动路径生效——手动路径若也被 exit 2 挡住，管理员就无法在暂停期间
     单独补签；状态码字面量 "global_paused" 与符号 ⏸ 一并锁死。
 依赖：进程内 mock（`load_accounts`/`run_queue_retry`/`_save_cred_state`）+ 临时

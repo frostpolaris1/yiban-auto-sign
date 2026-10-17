@@ -17,7 +17,7 @@
 
 对应实现：`yiban/egress.py`（`DIRECT_EGRESS` / `egress_identity` / `is_outlet_identity` /
 `outlet_label` / `outlet_executor_count`）、`yiban/engine/token_bucket.py`（`EgressLimiter`
-的 `shares` / `share_rate`）、`yiban/store/queue_store.py`、`yiban/store/migrations.py`。
+的 `shares` / `share_rate`）、`yiban/adapters/persistence/queue_store.py`、`yiban/adapters/persistence/migrations.py`。
 
 依赖：临时 sqlite（真 schema）+ 迁移函数；全部注入浮点秒 `now`，不真实 sleep、不联网。
 """

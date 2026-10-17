@@ -8,7 +8,7 @@
     audit_logs 清零之后，故存活到最终状态）；审计写入失败必须让清库失败（fail-closed、
     业务表零删除）；未知参数报错退出。
 对应实现：`scripts/generate_demo_data.py`（`main` 的 `--dry-run` / `--yes` /
-    `--fingerprint` 分支）与 `yiban/store/purge_guard.py`。
+    `--fingerprint` 分支）与 `yiban/adapters/persistence/purge_guard.py`。
 关键断言：`--yes` 单独不构成放行（指纹回显是前置）；"dry-run" 必须真的不删；
     审计失败 ⇒ 清库一并失败——这三条分别用"行数前后对照"与"审计桩返回 False"活体反例钉住。
 依赖：临时目录 + 数据层真 schema 库；无网络、无 bash/docker；手机号用演示号段。

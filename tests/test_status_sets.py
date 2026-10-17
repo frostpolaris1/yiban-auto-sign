@@ -10,10 +10,10 @@
     `state_io.has_undone_accounts_today`（池与状态文件两个事实源取并集，任一有活即
     未了结；池当日无行时状态文件才是唯一源）；
     窗口外跳过预筛不得改写未知状态。
-对应实现：集合与判定的**权威定义全在 `yiban/status.py`**（`ALL_STATUSES`、
+对应实现：集合与判定的**权威定义全在 `yiban/core/status.py`**（`ALL_STATUSES`、
     `CONCLUDED_JSON_STATUSES`、`UNDONE_STATUSES`、`CLAIM_DONE_STATUSES`、
     `TASKS_OPEN_STATES`/`TASKS_SETTLED_STATES`、`is_concluded_status`）；领取池词表在
-    `yiban/store/queue_store.py`（`STATE_DONE`/`STATE_SKIPPED`/`SETTLED_STATES`/
+    `yiban/adapters/persistence/queue_store.py`（`STATE_DONE`/`STATE_SKIPPED`/`SETTLED_STATES`/
     `OPEN_STATES`）；当日未了结判定在 `state_io.has_undone_accounts_today`。
     本文件不持有第二份集合定义。
 关键断言：**集合成员逐字不变**（实现可换、成员不许变）——补签轮剔除谁、领取池把谁记
@@ -22,7 +22,7 @@
 依赖：纯进程内（临时状态文件 + 字典构造），不触网、不起子进程、不需 bash/docker。
 
 集合定义分散时，改一处忘一处表现为**漏签**或**同一账号被真实登录两次**（后者踩上游
-风控红线），故收口到 `yiban/status.py` 一处。
+风控红线），故收口到 `yiban/core/status.py` 一处。
 """
 import contextlib
 import json

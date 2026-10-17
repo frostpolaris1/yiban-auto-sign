@@ -45,9 +45,9 @@
 **已知挡不住**（静态面之限，如实登记）：名册内的写点若被喂进一个静态不可见的 `"claimed"`
 值，本门不报。故名册只登记本仓既有的收尾/回收写点。
 
-对应实现：yiban/store/queue_store.py（`claim_batch` 的 `UPDATE … RETURNING`）、
+对应实现：yiban/adapters/persistence/queue_store.py（`claim_batch` 的 `UPDATE … RETURNING`）、
     yiban/engine/executor_v3.py（`_claim_one` 是执行体唯一领取点）、
-    yiban/engine/runner.py（调度器与手动两条入口）、yiban/engine/workers.py（兜底常驻入口）。
+    yiban/app/runner.py（调度器与手动两条入口）、yiban/workers/workers.py（兜底常驻入口）。
 关键断言：钉"领取写入全仓一处""三条入口发同一条领取语句""抢不到＝回空不抛错"三条性质；
     不钉任何调用顺序。
 依赖：临时 sqlite ＋ 真执行体 ＋ 打桩上游尝试函数与限速三件；无网络、无子进程。
@@ -96,14 +96,14 @@ _PROD_DIRS = ("yiban", "web", "scripts")
 #: 只登记本仓既有的收尾/回收写点：它们写 pending/done/failed，值由调用方给或走 CASE。
 #: 新增任何 state 写点都必须在此显式登记——值不在判定面内即红。
 _ALLOWED_STATE_WRITERS = frozenset({
-    ("yiban/store/queue_store.py", "settle_tasks"),    # 收尾：state 由调用方给（done/failed）
-    ("yiban/store/queue_store.py", "requeue_task"),    # 重排回落 pending
-    ("yiban/store/queue_store.py", "reclaim_tasks"),   # 显式重签：终态翻回 pending
-    ("yiban/store/queue_store.py", "reap_abandoned"),  # 死亡执行体名下在飞行回退 pending
+    ("yiban/adapters/persistence/queue_store.py", "settle_tasks"),    # 收尾：state 由调用方给（done/failed）
+    ("yiban/adapters/persistence/queue_store.py", "requeue_task"),    # 重排回落 pending
+    ("yiban/adapters/persistence/queue_store.py", "reclaim_tasks"),   # 显式重签：终态翻回 pending
+    ("yiban/adapters/persistence/queue_store.py", "reap_abandoned"),  # 死亡执行体名下在飞行回退 pending
 })
 
 #: 唯一的领取写点。
-_CLAIM_SITE = ("yiban/store/queue_store.py", "claim_batch")
+_CLAIM_SITE = ("yiban/adapters/persistence/queue_store.py", "claim_batch")
 
 #: 以**字符串常量**形态存在的第二写路径（故障注入复刻），按 (文件, 常量名) 登记。
 #: 靶场的用途就是"复刻一条变异领取"来证明它有牙，故必须复刻；但它**不得**静默存在。

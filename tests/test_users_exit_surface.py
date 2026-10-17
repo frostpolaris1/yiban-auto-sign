@@ -19,8 +19,8 @@ node 真跑另钉）：
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：上述 ①③④⑤⑥⑦ 各出口至少一条"遮罩形态"断言 + 一条"明文不得出现"反例断言
-对应实现：`yiban/masking.py`、`yiban/store/audit_chain.py::actor_tag`、
-`yiban/store/events.py::_actor_forms`、`yiban/store/users.py::find_user_by_id/purge_deleted_users_hard`、
+对应实现：`yiban/core/masking.py`、`yiban/adapters/persistence/audit_chain.py::actor_tag`、
+`yiban/adapters/persistence/events.py::_actor_forms`、`yiban/adapters/persistence/users.py::find_user_by_id/purge_deleted_users_hard`、
 `web/routes/users_api.py`、`web/routes/notify.py::_bounded_audit_json`、
 `web/services/accounts_data.py::_owner_display_of`
 关键断言：所有断言打的是**真函数/真路由**的输出（test client + 真 SQLite 审计行），
