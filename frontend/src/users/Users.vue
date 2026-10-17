@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { api, maskEmail, openPasswordModal, passwordHint, shellBase, swapOut, toast } from "../lib/shell";
+import { api, maskEmail, openPasswordModal, passwordHint, pollMs, shellBase, swapOut, toast } from "../lib/shell";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, clampPage, pageSlice } from "../lib/pager";
+import { usePolling } from "../lib/polling";
 import "./ops.js"; // 注册 window.YB.userOps（MF-49 出口面：纯 JS，由 Python 侧 node 真跑钉住）
 import {
   GROUPS,
@@ -300,24 +301,24 @@ watch(search, () => {
 }, { deep: true });
 
 /* ---------------- 轮询 / 可见性 ----------------
-   与 `accounts/Accounts.vue` 同一节拍（10 秒）。用户列表变化低频，但外部提交的
-   待审核账号必须自动出现，故不能再"只在写操作后重拉"（工单 vff0）。
-   节拍只打 /api/users 与 /api/users/deleted 两张小表；管理端 1~3 人。
+   机制（节拍 / 可见性 / 卸载清理）在 `lib/polling.ts`；本页只给**策略**。
+   用户列表变化低频，但外部提交的待审核账号必须自动出现，故不能再"只在写操作后重拉"
+   （工单 vff0）。节拍取外壳唯一来源 `pollMs()`（与 accounts 页、总览 KPI 同拍）。
    弹窗或行下拉打开时不刷新：重渲染会打断在途操作与选择态。 */
-let timer: ReturnType<typeof setInterval> | null = null;
 const menuOpen = ref(false);
+const pollingOn = ref(false);
 function onMenuVisible(v: boolean): void {
   menuOpen.value = v;
 }
-function pollTick(): void {
-  if (document.visibilityState !== "visible") return;
-  if (busy.value || loading.value || menuOpen.value) return;
-  if (document.querySelector(".pm-backdrop, .el-overlay")) return;
-  void load(true).catch(() => undefined);
+function pollGate(): boolean {
+  if (busy.value || loading.value || menuOpen.value) return false;
+  return !document.querySelector(".pm-backdrop, .el-overlay");
 }
-function onVisibility(): void {
-  pollTick();
-}
+usePolling(() => void load(true).catch(() => undefined), {
+  intervalMs: pollMs(),
+  gate: pollGate,
+  active: () => pollingOn.value,
+});
 
 onMounted(async () => {
   const wanted = new URLSearchParams(location.search).get("tab");
@@ -330,13 +331,7 @@ onMounted(async () => {
     return;
   }
   await startLoad();
-  timer = setInterval(pollTick, 10000);
-  document.addEventListener("visibilitychange", onVisibility);
-});
-
-onUnmounted(() => {
-  if (timer) clearInterval(timer);
-  document.removeEventListener("visibilitychange", onVisibility);
+  pollingOn.value = true;   // 首屏取数完成后才开始轮询
 });
 </script>
 
