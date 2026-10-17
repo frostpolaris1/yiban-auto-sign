@@ -6,7 +6,7 @@
    回退 `pending`、放开租约、`epoch+1`，下一次 `claim_batch` 即可领取。不这样做，
    被杀执行体的在领任务没人回退，该账号当天无人再签（漏签）。
 对应实现：yiban/adapters/persistence/queue_store.py（`reap_abandoned`）、
-   yiban/engine/workers.py（`_await_workers` 后的轮末收尸）。
+   yiban/workers/workers.py（`_await_workers` 后的轮末收尸）。
 关键断言：判据只能是「进程已退出」——覆盖信号杀（rc<0）与退出码 1（未预期异常）两种
    形状，两种都必须被收住；看退出码的写法会漏掉其中一种。
 依赖：临时 sqlite + 真子进程（POSIX：SIGKILL 模拟崩溃）；非 POSIX 平台整类 skip。

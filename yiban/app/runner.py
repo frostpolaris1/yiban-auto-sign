@@ -53,6 +53,7 @@ from yiban.adapters.config import loader as config_loader
 # `schedule` 本轮时间表），同名会互相遮蔽。
 from yiban.adapters.notifier import report as alerts
 from yiban.adapters.persistence import db, run_events
+from yiban.adapters.statefiles import state_io
 from yiban.app import probe
 from yiban.core import clock, window
 from yiban.core import status as yiban_status
@@ -64,11 +65,10 @@ from yiban.engine import (
     config_check,
     crash_semantics,
     executor_v3,
-    state_io,
     token_bucket,
-    workers,
 )
 from yiban.engine import schedule as schedule_mod
+from yiban.workers import workers
 
 logger = logging.getLogger("yiban")
 

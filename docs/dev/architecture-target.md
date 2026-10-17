@@ -92,8 +92,10 @@ yiban/
 │   ├── round.py           #   run_round 跑一轮（现 engine/round）
 │   ├── sign_one.py        #   sign_one（现 executor_v3 主流程）
 │   ├── ingest.py          #   结果入库（现 executor_v3 落库段）
-│   ├── report.py          #   汇总与告警（现 alerts）
-│   └── coord.py           #   派发与工作体池（现 workers）
+│   ├── report.py          #   汇总与告警（现 alerts）。✅ 已落地（批 B，2026-10-16）：落点是
+│   │                      #      adapters/notifier/report.py，本行保留为目标名
+│   └── coord.py           #   派发与工作体池（现 workers）。**未落地**：`engine/workers.py`
+│                          #      批 B 已整文件搬入 workers/（见下）；把它的编排面拆上来属第三刀
 ├── core/                  # 领域核心：纯函数，无 I/O 无时钟无随机
 │   ├── policy.py          #   该不该签（现 attempts/window 判定）
 │   ├── plan.py            #   分片/抖动/密度（现 planner）
@@ -117,9 +119,13 @@ yiban/
 │   ├── protocol_fake/     #   测试假服务器。✅ 已落地（批 A3，2026-10-16）：
 │   │                      #      原 tests/fake_yiban_server.py
 │   ├── notifier/          #   ✅ 已落地（批 A4，2026-10-16）：mail/ 与 notify/
-│   │                      #      告警编排（engine/alerts.py）留在原地，属批 B
-│   └── statefiles/        #   状态文件 I/O（现 state_io）
+│   │                      #      告警编排（engine/alerts.py）→ report.py，批 B 已搬入
+│   └── statefiles/        #   状态文件 I/O（现 state_io）。✅ 已落地（批 B，2026-10-16）：
+│                          #      state_io ＋ state_gc ＋ cred_state
 └── workers/               # 签名工作体（slim；进程模型由测量决定）
+                           #   ✅ 已落地（批 B，2026-10-16）：workers.py（原 engine/workers.py）。
+                           #   已知张力：该文件一半是编排（派发与池），按第 1 节应属 app/coord；
+                           #   拆分属第三刀
 web/                       # HTTP 适配（独立包；routes 只翻译 + 鉴权）
 frontend/                  # Vue（独立构建）
 ```
@@ -128,23 +134,28 @@ frontend/                  # Vue（独立构建）
 
 ### 每模块的演进映射
 
+> 状态列以**代码为准**刷新（2026-10-16 批 B 交付）。批 B 是搬迁批，只搬坐标、不改行为。
+
 | 现在的位置 | 目标层 | 处置 |
 |---|---|---|
-| `engine/planner.py` `schedule.py` `window.py` `token_bucket.py` `hrw.py` | `core/` | 移动（纯函数，改 import） |
-| `engine/attempts.py` | `core/classify.py` + `core/policy.py` | 拆分移动 |
-| `yiban/masking.py` `yiban/security.py` | `core/` | 移动 |
-| `engine/round.py` `alerts.py` | `app/` | 移动 |
-| `engine/runner.py` | `app/` | 移动 |
-| `engine/probe.py` | `app/`（探针＝一类用例） | 移动 |
-| `engine/workers.py` | `workers/` | 移动 |
-| `engine/executor_v3.py` | `app/sign_one` + `app/coord` + `workers/` | 拆分（切面评估后进行） |
-| `engine/state_io.py` | `adapters/statefiles/` | 移动（I/O 面） |
-| `store/*`（除 migrations/audit） | `adapters/persistence/` | 移动 |
-| `store/migrations.py` | `adapters/persistence/migrations/` | 移动 |
-| `store/audit_chain.py` | `adapters/persistence/audit.py` | 移动 |
-| `mail/` `notify/` | `adapters/notifier/` | 移动（批 A4 已移动；旧路径留转发壳。告警编排 `engine/alerts.py` 留在原地——执行核冻结名单里的 `round`/`executor_v3` 都 import 它） |
-| `yiban/infra/`（env_io 等） | `adapters/config/` | 移动（＋名册加载器） |
-| `yiban/cli.py` | `entry/cli/` | 移动（批 A1 已移动；旧路径留转发壳）。收掉对存储层的直接引用属批 B |
+| `yiban/clock.py` `yiban/status.py` `yiban/window.py` `yiban/masking.py` `engine/hrw.py` | `core/` | ✅ 已移动（批 B）。旧坐标留转发壳 |
+| `engine/planner.py` `engine/schedule.py` `engine/token_bucket.py` | `core/`（`plan` / `rate`） | **未移动**。实测三者直接 import `yiban.adapters.*`（有 I/O）。整文件搬入会造出 `core → adapters` 边，`core-no-upward` 判红（基线为空 ⇒ 新增违规即红）。须先切开纯算法与 I/O，属第三刀 |
+| `engine/attempts.py` | `core/classify.py` + `core/policy.py` | 拆分移动（未做，第三刀） |
+| `yiban/security.py` | `core/security_policy.py` | **未移动**。实测经 `yiban.challenge` 间接到 `adapters.protocol_yiban`，同上判红。须先切开，属第三刀 |
+| `engine/round.py` `engine/alerts.py` | `app/` | ✅ 已移动（批 B）。`alerts` 落点＝`adapters/notifier/report.py` |
+| `engine/runner.py` | `app/` | ✅ 已移动（批 B） |
+| `engine/probe.py` | `app/`（探针＝一类用例） | ✅ 已移动（批 B） |
+| `engine/workers.py` | `workers/` | ✅ 已移动（批 B，保留原名 ⇒ `workers/workers.py`）。已知张力：该文件一半是编排，按第 1 节应属 `app/coord`；拆分属第三刀 |
+| `engine/executor_v3.py` | `app/sign_one` + `app/ingest` + `workers/` | 拆分（未做，第三刀） |
+| `engine/state_io.py` | `adapters/statefiles/` | ✅ 已移动（批 B，I/O 面）。已知遗留向后边：导入 `yiban.engine.{cli_support,config_check,schedule}`，反转属第三刀 |
+| `store/*`（除 migrations/audit） | `adapters/persistence/` | ✅ 已移动（批 B，保留原名） |
+| `store/migrations.py` | `adapters/persistence/migrations/` | ✅ 已移动（批 B）。**保留原名** `migrations.py`，未建子包 |
+| `store/audit_chain.py` | `adapters/persistence/audit.py` | ✅ 已移动（批 B）。**保留原名** `audit_chain.py` |
+| `mail/` `notify/` | `adapters/notifier/` | ✅ 已移动（批 A4） |
+| `yiban/infra/`（env_io / account_crypto） | `adapters/config/` | ✅ 已移动（批 B，保留原名） |
+| `yiban/config_loader.py` | `adapters/config/loader.py` | ✅ 已移动（批 B） |
+| `yiban/state_gc.py` `yiban/cred_state.py` | `adapters/statefiles/` | ✅ 已移动（批 B，保留原名） |
+| `yiban/cli.py` | `entry/cli/` | ✅ 已移动（批 A1） |
 | `web/app.py` 再导出表 | 打桩面迁移完成后删除 | 拆解（与测试定型同批） |
 | `web/routes/` `services/` | `entry`（HTTP）／`app`（用例） | 归层 |
 | `docker/scheduler.py` | 容器入口 | 保持 |

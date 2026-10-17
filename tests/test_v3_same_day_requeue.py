@@ -11,7 +11,7 @@
    `runner` 补签轮把 `requeue_final` 透传给 v3。
 对应实现：yiban/adapters/persistence/queue_store.py（requeue_failed）、yiban/engine/executor_v3.py
    （_tier_prefix、run_executor_v3 的 requeue_final/claim_all/requeue_during_run/slot）、
-   yiban/engine/workers.py（run_fallback_worker 的分流）、yiban/app/runner.py（分流点透传）。
+   yiban/workers/workers.py（run_fallback_worker 的分流）、yiban/app/runner.py（分流点透传）。
 关键断言：`retry:` 档 failed 必须当日被普通轮回炉（`claim_batch` 只取 pending，不回炉
    就是"当日无人接手"）；`final:` 档与普通 unprefixed 历史行绝不自动复活——复活等于
    风控账号每轮重登，只有显式路径（`requeue_final=True`，对齐补签轮的 `retry_failed`）

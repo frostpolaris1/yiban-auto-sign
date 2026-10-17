@@ -212,7 +212,7 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
                    "落在仓库外的日志目录，不是状态文件；保留由该脚本的 --keep 自己轮转"
                    "（默认最近 5 份）",
     "worker-alive-": "并行执行体心跳文件名（固定名覆盖写，非按日）——"
-                     "常量 WORKER_ALIVE_FILE_PREFIX 定义在 yiban/engine/state_io.py，"
+                     "常量 WORKER_ALIVE_FILE_PREFIX 定义在 yiban/adapters/statefiles/state_io.py，"
                      "故被常量拼接检测器命中；它不是按日件，不进按日清理名册"
                      "（该事实已登记在 shared-facts.tsv 状态件族）",
     # 邮件排版层的 HTML 内联样式：扫描正则只看"引号 + 小写 token + '-' + 后接 {表达式}"，

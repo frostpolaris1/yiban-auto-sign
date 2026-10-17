@@ -3,7 +3,7 @@
 
 标签：E · Web：认证/权限/API
 覆盖：`GET /api/admin/executor-health`（只读巡检端点）与它消费的两个口径——
-     `yiban.engine.state_io` 的**心跳身份解析**与 `web.services.executor_env` 的卡片装配。
+     `yiban.adapters.statefiles.state_io` 的**心跳身份解析**与 `web.services.executor_env` 的卡片装配。
 
 本文件钉**不变式**，不钉调用顺序：
   I1 身份只认**心跳文件名**，不认记录体自称的 `role`/`index`（ba-p03-09：生产实测
@@ -15,7 +15,7 @@
      分子不等于该执行体的总行数（claimed/failed 不进分子）。
   I6 响应不含身份原串（主机名/进程号）与逐账号明细。
 
-对应实现：yiban/engine/state_io.py（worker_alive_identity / worker_alive_facts）、
+对应实现：yiban/adapters/statefiles/state_io.py（worker_alive_identity / worker_alive_facts）、
      web/services/executor_env.py（_executor_health_cards）、
      web/routes/executor_health_api.py。
 """

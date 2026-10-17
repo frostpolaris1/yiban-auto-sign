@@ -1959,7 +1959,7 @@ class LogAttributionTest(_Base):
         ("yiban/engine/executor_v3.py", "v3 执行体未预期异常", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 窗口收尾失败", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 未执行判因失败", ("log_tag",)),
-        ("yiban/engine/workers.py", "任务队列事件签名变化", ("tag",)),
+        ("yiban/workers/workers.py", "任务队列事件签名变化", ("tag",)),
         ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("outlet_label",)),
         ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("outlet_label",)),
     )
