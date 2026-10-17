@@ -170,6 +170,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipIf",
    "bash 不在 PATH：仅 bash -n 语法检查那条跳过（CI/WSL 有 bash）"
+  ],
+  [
+   "skipIf",
+   "bash 不在 PATH：口令交接判据跳过（CI/WSL 有 bash）"
   ]
  ],
  "tests/test_deploy_paths_and_restore_verdict.py": [
