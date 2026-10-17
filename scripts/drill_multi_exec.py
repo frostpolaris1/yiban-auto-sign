@@ -34,6 +34,15 @@
 - `--stale-write`：在该执行体被收尸后，用**旧 owner ＋ 旧 epoch** 发一条收尾写，
   断言被 `settle_tasks` fence 掉（0 行命中、行不变）。
 
+**一条前提（缺了它，上面几条都测不到东西）**
+账号集必须**铺满每个执行体**。账号归谁由 HRW 纯函数 `H(手机号 ‖ 日期 ‖ 执行体名)`
+决定，而执行体名含**主机名**，故"哪个执行体分到账号"随 (主机名, 日期) 变。实测
+（口径：200 个合成 runner 主机名 × 31 天 ＝ 6200 对）**14.69% 的对会让某个执行体一件活
+都没有**，其中 7.21% 是"槽位 0 零活"、7.48% 是"槽位 0 全包"。2026-10-17 本机实测即前
+者：4 个固定号的虚分片 32/38/52/56 全落在槽位 1 的 31 个分片里，槽位 0 零领取 ⇒ 屏障
+恒不就绪 ⇒ 用例红在"前提没搭起来"。故造号由 `spread_phones` 按**同一日的 HRW 归属
+反查**，不挑号碰运气（红绿随主机名与日期漂移 = 日历/主机敏感，与负载无关）。
+
 **边界（必须如实说明）**
 假上游的响应**是我们的模型**，不是平台事实。靶场全绿只证明"协调层自洽"，
 **不产生任何协议证据**。协议正确性由别的证据面负责。
@@ -565,13 +574,75 @@ def start_mock(tmp: str) -> tuple[subprocess.Popen, int]:
     raise RuntimeError("假上游 30s 内未就绪")
 
 
+#: 造号基数：`138` ＋ 8 位序号 ⇒ 11 位，与真手机号同形。
+PHONE_PREFIX = "138"
+
+#: `spread_phones` 的候选扫描上限。分片集非空（约 V/2 个片）时命中期望在几十次以内；
+#: 给个硬上限是把"哈希退化导致死循环"变成响亮失败，而不是把用例挂住。
+_PHONE_SCAN_MAX = 200000
+
+
+def spread_phones(executors: list[str], day: str, n: int) -> list[str]:
+    """选 n 个手机号，使**每个执行体名下都至少有一个账号**（确定性，不靠运气）。
+
+    **为什么要保这条**：本靶场的被测性质是"多执行体怎么协调"。账号归谁由 HRW 纯函数
+    `H(手机号 ‖ 日期 ‖ 执行体名)` 决定（`yiban.core.hrw`）。若固定用一批手机号，某些
+    日期会把全部账号算给同一个执行体——2026-10-17 实测：4 个固定号的虚分片 32/38/52/56
+    全落在槽位 1 的 31 个分片里，槽位 0 一件活都领不到。那时"多执行体"只剩一个在跑，
+    屏障（"目标执行体持着在飞行"）**恒不就绪**，三条用例红在"前提没搭起来"，与被测性质
+    无关；且红绿随 (主机名, 日期) 漂移（**日历/主机敏感**，不是负载敏感）。
+
+    **做法**：按**同一个纯函数**反查输入，而不是碰运气挑号。先给每个执行体各挑一个落在
+    它分片集里的号，再补足到 n 个。日期一变选的号跟着变；同一日期内结果完全确定
+    （纯函数 ⇒ 可重放、可缓存）。
+
+    `n < len(executors)` 时无解（一个账号只归一个执行体）⇒ 抛 `ValueError`。响亮拒绝，
+    不许悄悄退化成"只有一部分执行体在跑"。
+    """
+    from yiban.core import hrw
+
+    if n < len(executors):
+        raise ValueError(
+            "账号数 %d 少于执行体数 %d：无法让每个执行体都有活，本靶场测不到多执行体协调"
+            % (n, len(executors)))
+    v = hrw.v_for(n)
+    own = {e: set(hrw.shards_of(e, executors, day, v)) for e in executors}
+    empty = sorted(e for e, s in own.items() if not s)
+    if empty:
+        raise ValueError(
+            "执行体 %s 在 %s 名下零分片（不在 HRW 候选集 %s 内？）" % (empty, day, executors))
+    chosen: list[str] = []
+    taken: set[str] = set()
+
+    def _scan(accept):
+        for k in range(_PHONE_SCAN_MAX):
+            cand = PHONE_PREFIX + "%08d" % k
+            if cand in taken:
+                continue
+            if accept(hrw.vshard_of(cand, day, v)):
+                taken.add(cand)
+                return cand
+        raise ValueError("扫过 %d 个候选仍没找到满足条件的号（哈希退化？）" % _PHONE_SCAN_MAX)
+
+    for e in executors:
+        chosen.append(_scan(lambda shard, _own=own[e]: shard in _own))
+    while len(chosen) < n:
+        chosen.append(_scan(lambda shard: True))
+    return chosen
+
+
 def seed(tmp: str, accounts: int, executors: int, manifest: str) -> dict:
-    """造数：自造账号 ＋ 真计划（走 `executor_v3._ensure_plan`）＋ 全部行置为立即可领。"""
+    """造数：自造账号 ＋ 真计划（走 `executor_v3._ensure_plan`）＋ 全部行置为立即可领。
+
+    账号的手机号由 `spread_phones` 按当日 HRW 归属反查，保证**每个执行体都有活**
+    （见该函数的说明：这是"多执行体协调"这条被测性质的前提）。
+    """
     env_file = os.path.join(tmp, ".env")
     dbfile = os.path.join(tmp, "yiban.db")
     state = os.path.join(tmp, "state")
     os.makedirs(state, exist_ok=True)
     t = now_dt()
+    day = t.strftime("%Y-%m-%d")
     cfg_env = {
         "YIBAN_ACCOUNTS_KEY": KEY,
         "YIBAN_ENV_FILE": env_file,
@@ -611,20 +682,23 @@ def seed(tmp: str, accounts: int, executors: int, manifest: str) -> dict:
         db._conn.close()
         db._conn = None
     db.init_db(dbfile, env_file=env_file, cleanup=False, migrate=True)
-    for i in range(accounts):
+    # 执行体身份串的**唯一构造处**仍是 `egress`（经 `schedule._executor_ids` 按清单取）。
+    # 这里不自己拼 `worker-<i>@<主机>`：计划里的 owner 必须与执行体算出的名字逐字一致，
+    # 否则分片归属对不上（`_executor_ids` 的 docstring 即此纪律）。
+    phones = spread_phones(sched._executor_ids(cfg_env), day, accounts)
+    for i, phone in enumerate(phones):
         email = "drill%05d@mock.invalid" % i
         with contextlib.suppress(Exception):
             db.create_user(email, "mock-hash", role="user")
         with contextlib.suppress(Exception):
             db.add_account({
-                "name": "drill%05d" % i, "phone": "138001380%03d" % i,
+                "name": "drill%05d" % i, "phone": phone,
                 "password": "drill-pass-%d" % i, "phone_model": "MockPhone",
                 "phone_code": "", "owner": email, "status": "active", "reject_reason": "",
             })
     accounts_obj = db.load_accounts()
     cfg = sched.planner_config()
-    executor_v3._ensure_plan(accounts_obj, cfg["day"] if "day" in cfg else t.strftime("%Y-%m-%d"), cfg)
-    day = t.strftime("%Y-%m-%d")
+    executor_v3._ensure_plan(accounts_obj, cfg.get("day", day), cfg)
     due = (t - datetime.timedelta(seconds=2)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     conn = db.get_conn()
     with db._conn_lock:
