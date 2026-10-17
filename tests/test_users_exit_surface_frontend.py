@@ -16,6 +16,23 @@
      （`accountform.spec.ts`），Python 侧只钉结构面；
   ③ `work_users.js::fetchUsers`——state 记录携带 id（单条定位链路的起点）。
 
+## 2026-10-16 重锚：节拍常量的抽取名（工单 vff0 节拍收敛的余波）
+
+**原锚点** → `CoreCacheLifecycleTest.setUpClass` 用正则抽 `var NAV_BADGE_TTL = <n>;`。
+**新锚点** → 同一处声明改名成 `var POLL_MS = <n>;`。名字变了，位置与语义没变。
+**为何改** → 退役账「手写轮询收编」（提交 2de33c1e）把节拍收敛成全站唯一一份 `POLL_MS`。
+旧名 `NAV_BADGE_TTL` 随之下线。旧锚点在新结构下抽不到，`setUpClass` 会红。
+
+**所钉不变式（一句话）** → 徽标缓存的 10 秒窗口收敛语义，以及缓存里只许躺标量投影。
+
+**为何未削弱** → 抽取的仍是节拍常量的那一处声明。下面每条行为断言一字未改。
+`loadNavBadges` 用这个常量当 `apiCached` 的 TTL。抽不到它，被抽的代码在 node 里就抛
+`ReferenceError`。所以这条抽取断言承重，不是装饰。
+
+**有牙（2026-10-16 实测一次突变）** → 删掉 `core.js` 的 `var POLL_MS = 10000;` 之后，
+本类五个用例全红。报文是 `AssertionError: core.js 的 POLL_MS 声明找不到：抽取环境失效`。
+本门不是恒真，也不是空转。
+
 标签：F · 前端与界面守卫
 覆盖：上述 ①②③ 各前端口径一个真跑用例
 （批 6c3-C C-2 注：旧 `StaticNoSecondSplitTest` 静态防回潮断言为「精确源码 grep」

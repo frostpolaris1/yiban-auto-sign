@@ -23,10 +23,11 @@ core.js 会抛错（**响亮失败**，不是静默降级：主题点了没反�
   3. core.js **不再**自己定义这些能力（避免两份实现各自漂移）；
   4. core.js 在缺分片时抛错（不许静默降级成空操作）。
 
-守卫自证（2026-10-16 实测，三次突变）：
-  · 把模板里的 shell-chrome 标签删掉 ⇒ 红（点名该模板）；
-  · 把两个标签的顺序对调（core 先于 shell-chrome）⇒ 红；
-  · 从 shell-chrome.js 的出口清单里删掉 `swapOut` ⇒ 红（core.js 公开面会拿到 undefined）。
+守卫自证（2026-10-16 实测，四次突变）：
+  · 把模板里的 shell-chrome 标签删掉 ⇒ 红（点名「未载入 shell-chrome.js」）；
+  · 把两个标签的顺序对调（core 先于 shell-chrome）⇒ 红（点名「顺序反了」）；
+  · 从 shell-chrome.js 的出口清单里删掉 `swapOut` ⇒ 红（core.js 公开面会拿到 undefined）；
+  · 把 core.js 的缺分片判据改成 `if (false)`（撤掉响亮失败）⇒ 红。
 """
 import os
 import re
