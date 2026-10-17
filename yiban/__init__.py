@@ -6,16 +6,19 @@
 - `entry/cli/`：命令行入口。旧坐标 `yiban/cli.py` 是转发壳。
 - `app/`：用例编排（`round` / `runner` / `probe`）。旧坐标 `yiban.engine.{round,runner,probe}`
   是转发壳。`engine/` 尚未搬完的编排件（`executor_v3` / `attempts` / `planner` /
-  `schedule` / `token_bucket` / `state_io` / `workers` / `alerts` 之外的支撑件）仍在原地。
+  `schedule` / `token_bucket` / `workers` / `alerts` 之外的支撑件）仍在原地。
 - `core/`：纯函数层（`clock` / `status` / `window` / `masking` / `hrw` / `elbow`）。
   旧坐标 `yiban.{clock,status,window,masking}`、`yiban.engine.hrw` 是转发壳。
 - `ports/`：端口声明。
 - `adapters/`：唯一 I/O 面。`protocol_yiban/`（洁净室协议库：纯解析/构造；MIT，许可见其
   LICENSE）、`protocol_fake/`（测试假上游）、`notifier/`（邮件、推送与告警编排
-  `report`）、`persistence/`（原 `yiban/store/`）、`statefiles/`、`config/`。
+  `report`）、`persistence/`（原 `yiban/store/`）、`statefiles/`（含原
+  `yiban/engine/state_io.py`）、`config/`。
   旧坐标 `yiban.store.*`、`yiban.{state_gc,cred_state}`、`yiban.infra.{env_io,account_crypto}`、
-  配置名册加载器与 `yiban.engine.alerts` 是转发壳。
-- `workers/`：签名工作体（目标层，成员待第三刀搬入）。
+  配置名册加载器、`yiban.engine.alerts` 与 `yiban.engine.state_io` 是转发壳。
+- `workers/`：签名工作体（`workers`＝多执行体监督进程与兜底常驻，原
+  `yiban/engine/workers.py`；旧坐标是转发壳。其编排面按契约第 1 节应属 `app/coord`，
+  拆分属第三刀）。
 - `engine/`、`store/`、`infra/`：迁移期形态。`store/` 已成转发壳；`engine/` 与 `infra/`
   仍有未搬成员（见各包 docstring）。
 

@@ -16,8 +16,8 @@
    下「打出来的秒数 = 实际睡掉的秒数」、以及「窗口内不因 settled 提前退出」的评估结论钉
    （用项目自己的 `state_io.has_undone_accounts_today` 证明「已判 settled」，再证明它照旧
    继续扫）。
-对应实现：`yiban/engine/workers.py` 的 `run_fallback_worker`（轮次行、等待选择、
-   `_await_pool_event`）、`yiban/engine/state_io.py` 的了结判据。
+对应实现：`yiban/workers/workers.py` 的 `run_fallback_worker`（轮次行、等待选择、
+   `_await_pool_event`）、`yiban/adapters/statefiles/state_io.py` 的了结判据。
 关键断言：**空转轮的 INFO 条数有上界**（事实不变即不产），而「有活 / 状态变化」仍出声
    （反向控制同权重——把降噪做成「永远不打」会让排障失去轮次可见性）；轮次行里的秒数必须
    等于本轮真实睡掉的秒数，不然就是「文案在声称代码没做的事」。

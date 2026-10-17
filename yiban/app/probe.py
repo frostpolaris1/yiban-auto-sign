@@ -54,12 +54,13 @@ from yiban.adapters.config import env_io
 from yiban.adapters.notifier import report as alerts
 from yiban.adapters.persistence import accounts as accounts_store
 from yiban.adapters.persistence import db
+from yiban.adapters.statefiles import state_io
 from yiban.core import clock
 from yiban.core.masking import mask_phone as _mask_phone
 from yiban.core.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.core.masking import sanitize_text as _sanitize_text
 from yiban.core.masking import sanitize_url as _sanitize_url
-from yiban.engine import cli_support, schedule, state_io, token_bucket
+from yiban.engine import cli_support, schedule, token_bucket
 
 logger = logging.getLogger("yiban")
 
@@ -103,7 +104,7 @@ def _egress_env():
     """取出口用的环境映射：进程环境打底，`.env` **只补缺**（不覆盖进程环境）。
 
     为什么两个源都要（处境同 `env_io.resolve_path`，但优先级相反）：执行体由监督进程
-    拉起，出口是**按进程注入**的（`yiban/engine/workers.py` 把该槽位的出口写进子进程
+    拉起，出口是**按进程注入**的（`yiban/workers/workers.py` 把该槽位的出口写进子进程
     的 `YIBAN_PROXY`）——进程环境必须压过 `.env`，否则每槽位的出口会被 `.env` 里那一个
     值抹平；而 **web 进程不是被 `run.sh` 带着 export 起来的**，进程环境里往往没有这个
     键，只读 `os.environ` 就等于"这条出网不受 `YIBAN_PROXY` 管控"。`.env` 补缺正好

@@ -153,10 +153,11 @@ class SigninAlertGateTest(unittest.TestCase):
 
         门随执行码迁进了引擎（`yiban/app/round.py` 的放弃分支、`alerts.py` 的耗时
         告警），兼容壳 `scripts/signin.py` 只剩转发——因此扫整个引擎目录加壳，
-        而不是只看旧入口文件。
+        而不是只看旧入口文件。批 B 把 `workers.py` 搬去 `yiban/workers/`，故扫描面
+        同批补上该目录（否则该文件静默脱离本门的覆盖面）。
         """
         src = ""
-        for rel in ("engine", "app", os.path.join("adapters", "notifier")):
+        for rel in ("engine", "app", "workers", os.path.join("adapters", "notifier")):
             d = os.path.join(BASE, "yiban", rel)
             for name in sorted(os.listdir(d)):
                 if not name.endswith(".py"):

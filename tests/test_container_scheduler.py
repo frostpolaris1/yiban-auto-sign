@@ -9,7 +9,7 @@
    与闸门谓词的一致性（探针周期尝试照常触发）、兜底常驻的四道关判定与拉起/回收/不叠进程、主循环接线、web
    层会话与锚点修复回归、签到子进程挂起时循环留痕继续。
 对应实现：docker/scheduler.py（_full_run_done_today、_has_undone_today、main_loop、build_child_env、_fallback_should_run、_tick_fallback、_run_signin_child）、web/app.py
-   的会话/锚点路径、yiban/engine/workers.py。
+   的会话/锚点路径、yiban/workers/workers.py。
 关键断言：闸门判据必须是「当日全量是否收尾」而不是「任一账号是否成功」——旧语义下用户手动签到或首签部分成功都会压制
    06:31 首签与 07:10
    补签，让失败账号失去当日兜底。标记缺失或损坏一律按「未跑过」放行（宁可重跑，不可漏签；signin

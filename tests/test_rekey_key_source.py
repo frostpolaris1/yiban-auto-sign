@@ -76,7 +76,7 @@ logout_ok。三元组口径与既有 forbidden_path 逐字同构（target 只存
 对应实现：`yiban/adapters/persistence/audit_chain.py`（`_audit_key` / `_track_salt`）、
 `scripts/audit_verify.py` 与 `scripts/list_duplicate_owners.py`、
 `web/app.py` 的高危门禁与 `_alert_channel_status`、`web/routes/*` 的账号删除与 PUT 路由、
-`yiban/engine/state_io.py` 的冷却账本。
+`yiban/adapters/statefiles/state_io.py` 的冷却账本。
 关键断言：负例一律断"零副作用"（行未删、额度未耗、`.env` 未被新建），只断状态码等于
 放过"先动手后回 403"；`test_wrong_password_tries_do_not_consume_budget` 与
 `test_mail_budget_still_enforced_after_auth` 是一对方向相反的钉（前者防运维 DoS、

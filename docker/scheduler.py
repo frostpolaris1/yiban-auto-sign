@@ -611,7 +611,7 @@ def _fallback_should_run(env, now=None):
 def _start_fallback_child():
     """拉起兜底常驻子进程：与宿主**同一入口**（`sign --fallback`）、同一把独立锁。
 
-    入口唯一在 `yiban.engine.workers.run_fallback_worker`（它把锁名落成
+    入口唯一在 `yiban.workers.workers.run_fallback_worker`（它把锁名落成
     `signin-run.lock.fallback`，与宿主 cron 完全一致，故容器内的兜底不占用也不影响
     宿主/定时轮的那把全局锁）。这里显式把锁名写进子进程环境，使"独立锁"成为容器
     路径的显式契约，而不依赖别人的默认值。

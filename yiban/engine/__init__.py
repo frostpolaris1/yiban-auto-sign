@@ -8,10 +8,8 @@
 - `schedule`：容量预估与调度 v2（统一填充框架）、签到窗口判定（含 I/O，见下）；
 - `planner`：每日计划生成器（双粒度时间分片 + HRW 分工 + 幂等落库）（含 I/O）；
 - `token_bucket`：出口令牌桶（GCRA/TAT）+ AIMD 自适应 + 全局速率上界 Λ（含 I/O）；
-- `state_io`：状态文件读写与判定（含上层依赖：cli_support / config_check / schedule）；
 - `config_check`：配置读取与脱敏打印；
 - `attempts`：单账号一次尝试（登录 + 签到）、失败分级、账密熔断计数（携带整条客户端链）；
-- `workers`：多执行体监督进程与兜底常驻执行体（要求拆编排面/工作体面）；
 - `executor_v3`：调度 v3 的执行体（要求拆 `app/sign_one` ＋ `app/ingest`）；
 - `crash_semantics`、`db_maintenance`、`egress_admin`：崩溃语义、库维护、出口管理。
 
@@ -19,7 +17,11 @@
 - `hrw` → `yiban/core/hrw.py`；
 - `round` → `yiban/app/round.py`；`probe` → `yiban/app/probe.py`；
   `runner` → `yiban/app/runner.py`；
-- `alerts` → `yiban/adapters/notifier/report.py`。
+- `alerts` → `yiban/adapters/notifier/report.py`；
+- `state_io` → `yiban/adapters/statefiles/state_io.py`（本包导入 `cli_support` /
+  `config_check` / `schedule`，如实登记为遗留向后边，反转属第三刀）；
+- `workers` → `yiban/workers/workers.py`（其编排面按契约第 1 节应属 `app/coord`，
+  拆分属第三刀）。
 
 命令行入口是 `yiban/entry/cli/`（`python -m yiban.cli sign [...]`，旧坐标 `yiban/cli.py`
 是转发壳），旧路径 `scripts/signin.py` 只剩兼容壳（引导 + 全量转发 + `sys.exit`）。
