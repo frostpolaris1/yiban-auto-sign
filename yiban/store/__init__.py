@@ -13,7 +13,7 @@
 判据是**对象同一**，验证者＝`tests/test_batch_b_relocation.py`。
 
 **子模块为什么登记进 `sys.modules`**
-读者面里有 `from yiban.store import ledger`、`import yiban.store.db` 与
+读者面里有 `from yiban.store import db`、`import yiban.store.db` 与
 `mock.patch("yiban.store.db.X")` 三种写法。登记同一对象后三者都落到位。
 
 **退役条件**
