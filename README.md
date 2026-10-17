@@ -290,10 +290,12 @@ mkdir -p /var/log/yiban
 > sudo bash deploy/prod/install.sh                    # ② 落位执行件、迁入运行数据、同步依赖
 > sudo systemctl start yiban-web
 > ```
-> ② 自己也会**探测服务是否在跑**（`systemctl is-active yiban-web`，外加 /proc 进程扫描
-> 兜底容器形态）：在跑即拒装，并打印两条可复制的停服命令（裸机 `systemctl stop yiban-web`
-> ／容器 `docker compose stop yiban`）。故"忘了停服"不会静默走完。带 `DESTDIR` 的暂存
-> 安装不碰现网运行数据，豁免本门。
+> ② 自己也会**探测服务是否在跑**（`systemctl is-active yiban-web`，外加 /proc 里 argv
+> 指向本检出的活进程兜底）：在跑即拒装，并打印可复制的停服命令
+> （`sudo systemctl stop yiban-web`）。故"忘了停服"不会静默走完。
+> 本门**只管裸机形态**：容器内的服务进程 argv 不含宿主检出路径，进程扫描判不出；
+> 容器形态也不走本安装器（容器升级 = `git pull && docker compose up -d --build`，
+> 见「Docker 部署」）。带 `DESTDIR` 的暂存安装不碰现网运行数据，豁免本门。
 >
 > 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
 > `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
