@@ -1,19 +1,65 @@
 # -*- coding: utf-8 -*-
-"""`yiban.store`：数据访问层（SQLite 表级 CRUD）。
+# SPDX-License-Identifier: AGPL-3.0-only
+"""兼容壳：`yiban.store` → `yiban.adapters.persistence`（仓库结构整理批 B）。
 
-每张表的**唯一定义点在本包对应的域模块**；`yiban.store.db` 是门面，只自持连接编排
-（`init_db`）、写事务入口与时钟守卫等跨域助手，并把各域名字再导出以兼容旧调用方
-（`db.load_accounts()` 一类调用继续可用）——**依赖方向是 db → 域模块**，不是域模块迁进 db。
-再导出多数按原名，`claims` / `verify_jobs` 两域按重命名别名（逐条别名见 `yiban.store.db`
-绑定处的行尾注释，故 `db.try_claim` 一类原名不存在）。`scripts/db.py` 只是指向门面的兼容壳。
-当前分工：`connection` 管连接单例与路径，`migrations` 管 schema 版本迁移与建表，
-`audit_chain` 管审计哈希链，`events` 管签到事件表与 audit_logs
-上的暂停冷却查询，`accounts` 管
-账号表 CRUD、行加解密与有效性判定，`session_cache` 管会话凭据缓存的读写与有效期判定，
-`time_prefs` 管自选时间片表的读写、拥挤度统计与保存冷却查询，
-`clock_meta` 管时钟守卫告警的留痕与读取、app_meta 通用单键读写，
-`tracking` 管追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希，
-`verify_jobs` 管在线校验任务表的状态机，`queue_store` 管持久化任务队列
-（`sign_tasks`）的批量领取/收尾/重排与当日计数，`users` 管用户表
-与注销生命周期，`cleanup` 管每日清理编排。
+**为什么有本件**
+数据访问层在批 B 整包搬进适配器层（目标架构契约 `docs/dev/architecture-target.md`
+第 3 节）。读者面里有 `web/**`、`scripts/**`、`tests/**`。故旧坐标留转发壳。
+
+**本件不是第二份实现**
+各子模块在 `sys.modules` 里登记为实现的**同一模块对象**，且属性访问转发给实现包。
+故 `from yiban.store import db`、`import yiban.store.db` 与
+`mock.patch("yiban.store.db.X")` 都落到实现的那一份。
+判据是**对象同一**，验证者＝`tests/test_batch_b_relocation.py`。
+
+**子模块为什么登记进 `sys.modules`**
+读者面里有 `from yiban.store import db`、`import yiban.store.db` 与
+`mock.patch("yiban.store.db.X")` 三种写法。登记同一对象后三者都落到位。
+
+**退役条件**
+读者面（`web/**`、`scripts/**`、`tests/**`）改到新坐标后删除本件。
+工单见本批交付报告。
 """
+import importlib as _importlib
+import sys as _sys
+
+from yiban.adapters import persistence as _impl
+
+_SUBMODULES = (
+    "accounts",
+    "audit_chain",
+    "claims",
+    "cleanup",
+    "clock_meta",
+    "connection",
+    "db",
+    "events",
+    "migrations",
+    "purge_guard",
+    "queue_store",
+    "run_events",
+    "session_cache",
+    "time_prefs",
+    "tracking",
+    "users",
+    "verify_jobs",
+)
+
+for _name in _SUBMODULES:
+    _sys.modules[__name__ + "." + _name] = _importlib.import_module(
+        "yiban.adapters.persistence." + _name)
+
+
+def __getattr__(name):
+    """把属性访问转发给实现包（同一个对象）。"""
+    try:
+        return getattr(_impl, name)
+    except AttributeError:
+        raise AttributeError(
+            f"module {__name__!r} has no attribute {name!r}"
+            f"（本件是转发壳，实现里也没有这个名字）") from None
+
+
+def __dir__():
+    """`dir()` 覆盖实现包的模块名，外加本壳自己的私有名。"""
+    return sorted(set(globals()) | set(dir(_impl)))

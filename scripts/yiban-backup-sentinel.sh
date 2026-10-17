@@ -41,8 +41,8 @@
 #   未配置推送/邮件时告警只落日志（退出码 1），锚点外发同样落 stderr。
 #
 # 工作目录：本脚本自己 cd 到 APP_DIR，**这是哨兵能出声的前提**。cron 的 cwd 是
-# $HOME，而哨兵侧所有 cwd 相对的回落（`yiban/infra/env_io.py` 的 env_path() 默认
-# "data/.env"、`yiban/store/connection.py` 的 DB_DEFAULT "data/yiban.db"）都以 cwd 为基准：
+# $HOME，而哨兵侧所有 cwd 相对的回落（`yiban/adapters/config/env_io.py` 的 env_path() 默认
+# "data/.env"、`yiban/adapters/persistence/connection.py` 的 DB_DEFAULT "data/yiban.db"）都以 cwd 为基准：
 # 不 cd 就读不到 .env，收件人解析为空 ⇒ 告警发不出去（退出码 1，恰是本脚本要消灭的
 # 那种静默），并在 $HOME 就地新建一份野 yiban.db。
 # 部署：以 **root** 运行（与 02:00 备份同链；排期件 /etc/cron.d/yiban-backup-sentinel

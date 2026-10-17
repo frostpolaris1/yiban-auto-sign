@@ -14,7 +14,7 @@
 覆盖：`sign_events` 的建表迁移（含删掉旧统计表）、写入函数在表缺失时降级不抛、
 过期清理、按手机/按时间的读回形状、v6 字段与批量写入、WebUI 统计的计数口径、
 `hash_ip` 加盐稳定性，以及可视化表格对同一批事件的解读。
-对应实现：`yiban/store/` 的 sign_events 域（写入/聚合）与 `web/` 侧统计与可视化取数、
+对应实现：`yiban/adapters/persistence/` 的 sign_events 域（写入/聚合）与 `web/` 侧统计与可视化取数、
 `hash_ip` 的盐取自追踪盐。
 关键断言：**计数按 distinct 手机而非行数**是这里最容易改错的一格——同一账号一天内多次
 事件会把统计抬高，故 `test_stats_count_distinct_phone_not_rows` 与

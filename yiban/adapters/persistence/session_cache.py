@@ -39,10 +39,10 @@ import os
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
 
-from yiban import clock
-from yiban.infra import account_crypto
-from yiban.masking import mask_phone as _mask_phone
-from yiban.store import connection as _connection
+from yiban.adapters.config import account_crypto
+from yiban.adapters.persistence import connection as _connection
+from yiban.core import clock
+from yiban.core.masking import mask_phone as _mask_phone
 
 logger = logging.getLogger("yiban.store.session_cache")
 
@@ -53,7 +53,7 @@ def _facade():
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     return db
 
 

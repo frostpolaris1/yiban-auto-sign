@@ -7,7 +7,7 @@
     `/api/settings` 的 GET 默认 0、POST 显式写 0/1、部分更新不清空其他延迟字段、
     普通管理员可改（非主管理员专属）。
 对应实现：开关常量与分支在签到入口（`scripts/signin.py` →
-    `yiban/engine/runner.py`），文案在 `web/app.py` 的 `sign_status`，读写走
+    `yiban/app/runner.py`），文案在 `web/app.py` 的 `sign_status`，读写走
     `/api/settings` 与 `.env`。
 关键断言：**默认语义是关闭**——反转前"周六默认也签"会让学校在无任务的周六白打一次；
     部分更新不得把未提交的字段清空。

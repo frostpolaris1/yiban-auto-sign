@@ -17,7 +17,7 @@
 覆盖：升级兼容的两条硬门——**旧代码打开新库**（`user_version` 高于本进程迁移顶时整链
 跳过：不抛、不执行任何迁移项、不降版本）与 **新代码打开旧库后的既有表零变更**
 （完整链 0→22 跑完，既有 10 张表逐表行数相等，`sign_claims` 只多出 `epoch` 列）。
-对应实现：`yiban/store/db.py` 的 `_run_migrations` 版本判定与各 `migrate_v*`。
+对应实现：`yiban/adapters/persistence/db.py` 的 `_run_migrations` 版本判定与各 `migrate_v*`。
 关键断言：反向（新代码打开旧库）由 `tests/test_db_migrations.py` 与三个
 `test_migrations_v18/19/20.py` 分工守；本文件只守"旧代码遇新库必须完全不动手"，
 回滚部署（换回旧代码、库不回滚）成立在这条性质上。"不降版本"要与"不抛异常"分开断——

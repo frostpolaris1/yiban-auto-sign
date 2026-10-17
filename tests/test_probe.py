@@ -6,7 +6,7 @@
     未到时间、当天已跑、每 N 天频率、once 单次；`run_probe` 的预警收集（管理员合并 +
     用户个人）、落库 stage=probe、once 跑完自动关闭；`.env` 自动关闭时写临时文件
     权限 0600 且无残留；web 侧 `_account_verify_enabled`/`_verify_account_clean`。
-对应实现：探针与账号验证的实现在 `yiban/engine/probe.py`（兼容壳
+对应实现：探针与账号验证的实现在 `yiban/app/probe.py`（兼容壳
     `scripts/signin.py` 转发），web 侧入口在 `web/app.py`。
 关键断言：探针只在"到期"时才跑、once 必须自我关闭（否则每天重复验证同一账号）；
     关闭开关写 .env 属敏感文件，必须 0600 且不留下半成品。

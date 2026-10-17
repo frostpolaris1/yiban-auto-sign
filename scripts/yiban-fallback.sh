@@ -1,7 +1,7 @@
 #!/bin/bash
 # 兜底常驻执行体（cron 每条窗口开始时拉起一次）。
 #
-# 本脚本只是**薄包装**：真正的逻辑唯一在 `yiban/engine/workers.py` 的
+# 本脚本只是**薄包装**：真正的逻辑唯一在 `yiban/workers/workers.py` 的
 # `run_fallback_worker`（窗口内反复扫"还没了结"的账号并接手，窗口关闭即自己退出）。
 # 这里只做两件事：**判开关**、**把日志重定向到当日签到日志**。
 #
@@ -69,7 +69,7 @@ if [ -r "$ENV_PATH" ]; then
     done < "$ENV_PATH"
 fi
 
-# 真值判定。字面量口径的**单一事实源**在 yiban/infra/env_io.py 的
+# 真值判定。字面量口径的**单一事实源**在 yiban/adapters/config/env_io.py 的
 # ENV_TRUTHY_LITERALS（Python 侧 parse_env_flag 用它）；bash 无法 import，此处逐字
 # 复刻同一份（1/true/yes/on，大小写不敏感、两侧空白忽略）。两边结论一致性由
 # tests/test_pause_flag_truthiness_e2e.py 真跑本函数与 Python 逐值比对钉住。
@@ -103,7 +103,7 @@ elif [ -x /usr/bin/python3 ]; then
     # cron 的 PATH 可能极简（/usr/bin:/bin），command -v 也未命中时兜底绝对路径
     PY=/usr/bin/python3
 else
-    echo "找不到 python3，无法启动兜底执行体（实现见 yiban/engine/workers.py）" >&2
+    echo "找不到 python3，无法启动兜底执行体（实现见 yiban/workers/workers.py）" >&2
     exit 1
 fi
 

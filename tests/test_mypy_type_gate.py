@@ -32,12 +32,12 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 
 #: 收编名单（第一批）：与 `[tool.mypy]` 的 `files` 逐字对齐。
 ADOPTED = (
-    "yiban/clock.py",
-    "yiban/status.py",
+    "yiban/core/clock.py",
+    "yiban/core/status.py",
     "yiban/egress.py",
     "yiban/engine/schedule.py",
     "yiban/engine/planner.py",
-    "yiban/store/queue_store.py",
+    "yiban/adapters/persistence/queue_store.py",
     "yiban/engine/token_bucket.py",
 )
 

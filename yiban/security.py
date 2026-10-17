@@ -55,7 +55,7 @@ import re
 from urllib.parse import urlsplit
 
 from yiban import challenge as yiban_challenge
-from yiban import masking
+from yiban.core import masking
 
 logger = logging.getLogger("yiban.security")
 

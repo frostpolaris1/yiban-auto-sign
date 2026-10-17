@@ -5,7 +5,7 @@
 覆盖：有子进程身份时 runner.main 不再派发监督进程：父进程照旧派发（反向控制）、带
    YIBAN_EXECUTOR_ID 的子进程不派发、显式 --workers 与 --workers=2
    两种写法都挡、兜底常驻身份同样挡。
-对应实现：yiban/engine/runner.py（子进程身份短路）、yiban/engine/workers.py（run_worker_supervisor
+对应实现：yiban/app/runner.py（子进程身份短路）、yiban/workers/workers.py（run_worker_supervisor
    的调用点）、yiban/egress.py（worker_owner / fallback_owner 注入的
    YIBAN_EXECUTOR_ID 取值）。
 关键断言：清单是环境变量，子进程原样继承，故「给子进程 argv 去掉

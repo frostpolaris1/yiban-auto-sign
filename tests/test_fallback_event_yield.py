@@ -7,8 +7,8 @@
    不进子集、他人重领 `retry:` 行同样动签名、库不可用返回 None），以及同一轮内队列级的
    三条反例（全量轮在飞的账号兜底领不到、轮中途弃权到 `retry:` 档的账号兜底（回炉后）
    立刻领得到、轮把账号收尾成 `done` 后兜底不再重领；此外从未被碰过的账号默认可接手）。
-对应实现：yiban/store/queue_store.py（fallback_event 与 claim_batch/requeue_failed/settle_tasks
-   的既有条款）、yiban/engine/workers.py（唤醒判据取队列事件签名，不自建第二套；**让位判据**
+对应实现：yiban/adapters/persistence/queue_store.py（fallback_event 与 claim_batch/requeue_failed/settle_tasks
+   的既有条款）、yiban/workers/workers.py（唤醒判据取队列事件签名，不自建第二套；**让位判据**
    另取运行时事实"有一轮在飞"作为让位判据（工单 `l1rx` 后该判据已删，让位改由肘界谓词
    承担；见 `docs/dev/scheduler-v3.md` §8）——本文件断的是队列条款本身，
    不覆盖让位判据）。

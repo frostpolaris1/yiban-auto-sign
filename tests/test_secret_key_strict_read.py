@@ -28,7 +28,7 @@
 覆盖：一次性读窗口垫片下的新旧判定形状对照（换钥顶盘 vs 零写盘降级）、空/仅注释
     文件的建钥折叠（键行数=1 不并存）、AST 同源单读判据、既有密钥原样返回零落盘。
 对应实现：`web/services/env_io.py` 的 `ensure_secret_key`（`parse_env_file(strict=True)`
-    单源判定 + 读败降级不写盘）；折叠口径在 `yiban/infra/env_io.py` 的
+    单源判定 + 读败降级不写盘）；折叠口径在 `yiban/adapters/config/env_io.py` 的
     `render_env_write`/`key_line_pattern`（影子行折叠单一实现）。
 关键断言：降级格必须**同时**断"返回随机钥 + 落盘打桩零调用 + 磁盘字节不变 + WARNING
     点名 YIBAN_SECRET_KEY"——只断返回值会漏"照样写盘顶掉旧钥"；反例对必须用**同一枚**

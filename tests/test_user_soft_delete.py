@@ -8,7 +8,7 @@
     宽限期内重提同一手机号 400 带撤销提示；超期软删行仍被每日清理物理清除；
     批量删除（`batch_account_ops` 的 set_deleted）留痕 `'admin'`。
 对应实现：端点在 `web/app.py`，`deleted_by` 列来自迁移 v10，
-    超期软删行的每日物理清除走 `yiban/store/cleanup.py`
+    超期软删行的每日物理清除走 `yiban/adapters/persistence/cleanup.py`
     （`purge_expired_deleted_accounts`）。
 关键断言：两条路径的触发条件不合并——**软删可恢复**只对
     `deleted_by`=本人邮箱的行开放（管理员删除/系统连带行用户不可自撤）；

@@ -6,7 +6,7 @@
    属了结、真失败优先 → 1、全员窗口外 → 2、暂停与用户取消不触发 2）、sched-run
    标记区分首签/补签轮、混合场景仍写全量完成标记、告警抑制的事实判定（窗口开着
    + 后面还有人接着跑才抑制）、兜底心跳的新鲜度三档。
-对应实现：yiban/engine/runner.py（汇总各状态算退出码；`scripts/signin.py` 的 `main` 只转发它）、yiban/engine/state_io.py（`_write_sched_done`）、yiban/engine/alerts.py（`_maybe_alert_zero_success`）、run.sh 对这些退出码的消费、state_io 的 fallback 心跳文件。
+对应实现：yiban/app/runner.py（汇总各状态算退出码；`scripts/signin.py` 的 `main` 只转发它）、yiban/adapters/statefiles/state_io.py（`_write_sched_done`）、yiban/adapters/notifier/report.py（`_maybe_alert_zero_success`）、run.sh 对这些退出码的消费、state_io 的 fallback 心跳文件。
 关键断言：「有未了结的窗口外账号」必须让宿主写 SKIPPED 从而触发 07:10
    补签，即使本轮有成功——部分成功不是全量完成。真失败优先于窗口跳过（exit
    1），暂停/用户取消是有意状态不得拉成

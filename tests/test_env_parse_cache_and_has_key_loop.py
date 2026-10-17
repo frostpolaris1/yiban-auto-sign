@@ -2,7 +2,7 @@
 """工单 dnox ④：`.env` 解析进程内缓存 + `has_key` 循环内调用（e2e）。
 
 **被测缺陷（两条，独立）**
-1. `has_key` 在 `yiban/store/accounts.py::_decrypt_row` 的字段循环里被逐字段调用。
+1. `has_key` 在 `yiban/adapters/persistence/accounts.py::_decrypt_row` 的字段循环里被逐字段调用。
    每个账号行有 password / phone_code 两枚密文字段 ⇒ 每行判定两次。
    进程环境没有 `YIBAN_ACCOUNTS_KEY`（密钥写在 `.env`，README 教的就是这条）时，
    每次判定都把整份 `.env` 读盘解析一遍 ⇒ 一次全量装载读盘 **2N 次**。

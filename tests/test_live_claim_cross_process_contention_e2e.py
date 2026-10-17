@@ -25,8 +25,8 @@
 （真监督进程 + 真执行体 + 假上游）验同一批性质。本文件在**原语级**（直接调
 `queue_store`）验，粒度更细、墙钟更短、且不依赖假上游；两者互补，非替代。
 
-对应实现：yiban/store/queue_store.py（`claim_batch` / `reap_abandoned`）、
-   yiban/store/connection.py（`_conn_lock` 根因）。
+对应实现：yiban/adapters/persistence/queue_store.py（`claim_batch` / `reap_abandoned`）、
+   yiban/adapters/persistence/connection.py（`_conn_lock` 根因）。
 关键断言：钉"同一账号不得被并发持有""持有中不得被抢""死者名下行必须回退待领"三条
    不变式；不钉任何调用顺序。
 依赖：真子进程（POSIX：SIGKILL）＋ 临时 sqlite；无网络。非 POSIX 整组 skip。

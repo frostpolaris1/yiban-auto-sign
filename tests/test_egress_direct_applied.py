@@ -14,7 +14,7 @@
    ⑤非空出口照旧生效——本单不得把另一头改成直连；什么都没配时不得凭空长出代理；
    ⑥边界守卫：生产树里把出口写进环境的地方只许有一处（`yiban/egress.py` 的单点
       `apply_egress`），两个调用点都必须调它。
-对应实现：`yiban/egress.py::apply_egress`（唯一落实点）、`yiban/engine/workers.py`
+对应实现：`yiban/egress.py::apply_egress`（唯一落实点）、`yiban/workers/workers.py`
    （两处调用点：并行执行体按槽位、兜底常驻按角色）。
 关键断言：改前①②③④⑥红——旧代码只在解析出**非空**串时写键，空出口那一格什么都不做，
    继承来的父级代理原地留存，配置被静默吞掉。④单独钉"显示直连、实际走代理"这个最危险
@@ -251,7 +251,7 @@ class EgressEnvWriteSinglePointTest(unittest.TestCase):
 
     def test_supervisor_and_fallback_call_the_single_point(self):
         """两个调用点必须经单点，不得各自保留一份 if/else 写法。"""
-        with io.open(os.path.join(BASE, "yiban", "engine", "workers.py"),
+        with io.open(os.path.join(BASE, "yiban", "workers", "workers.py"),
                      encoding="utf-8") as fh:
             text = fh.read()
         self.assertEqual(text.count("egress.apply_egress("), 2,

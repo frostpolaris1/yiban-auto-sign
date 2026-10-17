@@ -7,9 +7,9 @@
    同一个 `egress_state` 行（桶键 = 出口标识，工单 2cwd），并写回以便执行体重启后装回；
    等待总时长有界。
 
-对应实现：yiban/engine/probe.py（`run_probe`、`verify_account`、`_apply_egress_proxy`、
+对应实现：yiban/app/probe.py（`run_probe`、`verify_account`、`_apply_egress_proxy`、
    `_resolve_egress`、`_executor_identity`）、yiban/engine/token_bucket.py（EgressLimiter /
-   GlobalLimiter / AccountGapGate）、yiban/store/queue_store.py（egress_state 读写）。
+   GlobalLimiter / AccountGapGate）、yiban/adapters/persistence/queue_store.py（egress_state 读写）。
 
 关键断言（通用工程语义，不为本项目特性豁免）：
 1. 探针是"服务器向平台发起的真实登录"，与签到同一风控暴露面；因此它必须与执行体受

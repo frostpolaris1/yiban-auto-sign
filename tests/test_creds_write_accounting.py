@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """凭据写入记账：`phone_code` 读侧计入 `creds_written`，`__clear__` 哨兵折算为清空语义。
 
-背景一：写侧（`yiban/store/accounts.py`）把 `phone_code` 与 `password` 同档加密、改绑
+背景一：写侧（`yiban/adapters/persistence/accounts.py`）把 `phone_code` 与 `password` 同档加密、改绑
 时同档重加密；读侧的改写判定却只认 password+phone——"只改写设备识别码"既不标审计
 "改写凭据"位、也不给当事人/管理员发信，静默改写无感。本文件把三者钉成一体：只改
 `phone_code` ⇒ 必标位必发信；只改无关字段 ⇒ 零误报。口令门收窄（缩减批 6a）后，

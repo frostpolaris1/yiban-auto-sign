@@ -5,7 +5,7 @@
 覆盖：`_flush_admin_mail_summary` 的条数封顶与字符封顶。
 对应缺陷：`ba-p04-02`——封顶原按插入顺序切片；逐账号条目在轮中收集、
     轮级关键告警在轮末收集并落在列表尾部，恰好在全量失败日被挤出正文。
-对应实现：`yiban/engine/alerts.py`（壳 `scripts/signin.py` 转发）。
+对应实现：`yiban/adapters/notifier/report.py`（壳 `scripts/signin.py` 转发）。
 关键断言：201 条普通 + 1 条高级别 ⇒ 高级别必在正文内；尾部说明必须点名
     被丢的主题与条数；正文超字符额度时尾部说明仍须在，被截的只能是明细。
 依赖：进程内 mock（`mailer.send_admin_alert` / `db.admin_mail_recipients`）；

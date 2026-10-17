@@ -51,7 +51,7 @@
    租约过期或由心跳/回收机制处置。
 2. **代价**：**同一个槽位名不得有两台机器同时跑**。`@{主机名}` 后缀保证跨主机不同名；
    同一台机器上的同名进程并存由既有锁挡住（并行执行体持全局锁 `signin-run.lock`、
-   兜底持 `signin-run.lock.fallback`，见 `yiban/engine/workers.py`）。故**不要**去掉
+   兜底持 `signin-run.lock.fallback`，见 `yiban/workers/workers.py`）。故**不要**去掉
    这两个锁，也**不要**去掉 `@{主机名}` 后缀。
 
 `parse_owner` **同时认识新旧两种格式**：旧格式（含 `:workers:` / `fallback-` /
@@ -80,7 +80,7 @@ import socket
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 from yiban.security import url_desc
 
 #: 告警通道：与 `scripts/child_env.py`、`yiban/engine/*` 同一条 "yiban"（root 之下），

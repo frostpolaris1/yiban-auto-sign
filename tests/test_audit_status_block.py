@@ -13,7 +13,7 @@
   J5 快照必须带数据时刻；无快照 ⇒ 无法定论 + 明说"尚无体检结果"。
   J6 只出计数与时刻，不出账号明细。
 
-对应实现：yiban/store/audit_chain.py（audit_verdict / audit_anchor_summary /
+对应实现：yiban/adapters/persistence/audit_chain.py（audit_verdict / audit_anchor_summary /
      audit_known_debt / write_audit_health_snapshot / read_audit_health_snapshot）、
      web/routes/audit_api.py（api_audit_status）、web/app.py（每日线程写快照）。
 """

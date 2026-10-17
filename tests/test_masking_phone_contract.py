@@ -16,7 +16,7 @@
 覆盖：`mask_phones_in_text` / `mask_phone` / `sanitize_url` 的号码形态口径；
       `/api/logs` 与 `/api/accounts` 的响应出口；前端遮罩公式的**定义点门禁**
       （core.js / frontend/src / 已入库 Vue 产物）。
-对应实现：`yiban/masking.py`（唯一号码口径）、`web/services/logs.py`、
+对应实现：`yiban/core/masking.py`（唯一号码口径）、`web/services/logs.py`、
       `web/routes/data.py`、`web/services/accounts_data.py`；
       被删除方：`web/static/js/core.js::maskPhone`、`frontend/src/lib/shell.ts::maskPhone`。
 关键断言：号码形态用真函数跑；前端公式门禁是**已知形态的黑名单**（6 条形状正则 × 产品
@@ -41,7 +41,7 @@ PHONE = "13800138001"
 MASKED = "138****8001"
 
 #: 号码遮罩公式的"指纹"正则：任何一处出现即代表又长出一个公式定义点。
-#: 只允许命中 `yiban/masking.py`（唯一真源）。
+#: 只允许命中 `yiban/core/masking.py`（唯一真源）。
 FORMULA_RES = (
     re.compile(r"\[\s*:\s*3\s*\]\s*\+\s*[\"'`]\*{4}"),            # p[:3] + "****"
     re.compile(r"\[\s*:\s*3\s*\]\s*\}\*{4}"),                      # f"{p[:3]}****"
@@ -188,7 +188,7 @@ class NoFrontendMaskFormulaTest(unittest.TestCase):
     """
 
     def test_no_phone_mask_formula_outside_the_single_source(self):
-        allowed = os.path.join("yiban", "masking.py")
+        allowed = os.path.join("yiban", "core", "masking.py")
         offenders = []
         for path in _iter_scan_files():
             rel = os.path.relpath(path, BASE)

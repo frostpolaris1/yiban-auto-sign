@@ -9,7 +9,7 @@
     两枚是同一条链的两个环：路径解析口径 + 只读取证初始化。
 对应实现：`scripts/yiban-backup-sentinel.sh`（薄包装只该导出 `.env` 指针与 cwd）、
     `scripts/backup_sentinel.py::_anchor_snapshot`（经 `db.init_db(create=False)`）、
-    `yiban/infra/env_io.py:resolve_path`（进程环境 → .env → 默认值的唯一解析口径）。
+    `yiban/adapters/config/env_io.py:resolve_path`（进程环境 → .env → 默认值的唯一解析口径）。
 关键断言：全部经**子进程**跑真脚本 / 真解析器，按行为判（归档里选了哪条路径、磁盘上
     多出哪些文件、外发的正文写的是"读不到"还是"空链"）。不在测试进程里调
     `db.init_db`——那是**进程级单例连接**的初始化，会把同 worker 后续用例的库指走

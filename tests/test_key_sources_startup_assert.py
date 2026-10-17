@@ -9,8 +9,8 @@
 把"另一侧静默解不开"换成"本侧启动即崩 + 日志带两侧 kid"。
 
 功能：两侧同钥断言的判据矩阵与两侧进程启动接线回归。
-归属：`yiban/infra/account_crypto.py`（断言本体）、`web/app.py` create_app 与
-`yiban/engine/runner.py` main（两侧启动接线）。
+归属：`yiban/adapters/config/account_crypto.py`（断言本体）、`web/app.py` create_app 与
+`yiban/app/runner.py` main（两侧启动接线）。
 复用：`assert_key_sources_agree`、`load_key`、`key_fingerprint`。
 
 标签：G · 安全：脱敏/审计/配置注入
@@ -228,7 +228,7 @@ class StartupWiringSourceGuardTest(unittest.TestCase):
         self.assertIn("account_crypto.assert_key_sources_agree(",
                       self._read("web/app.py"))
         self.assertIn("account_crypto.assert_key_sources_agree(",
-                      self._read("yiban/engine/runner.py"))
+                      self._read("yiban/app/runner.py"))
 
 
 if __name__ == "__main__":

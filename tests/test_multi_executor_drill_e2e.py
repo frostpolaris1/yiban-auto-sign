@@ -11,8 +11,8 @@
       其余账号不重不丢，且**恢复轮**能把被收尸的账号领走签成；
    ③ 以旧 owner ＋ 旧 epoch 发收尾写被 `settle_tasks` fence（0 行命中、行不变）；
    ④ 慢执行体持有在飞行时，兜底身份带 60s 肘界领不到该行（让位判向）。
-对应实现：yiban/engine/workers.py（run_worker_supervisor、_reap_dead_worker）、
-   yiban/store/queue_store.py（claim_batch / settle_tasks / reap_abandoned）、
+对应实现：yiban/workers/workers.py（run_worker_supervisor、_reap_dead_worker）、
+   yiban/adapters/persistence/queue_store.py（claim_batch / settle_tasks / reap_abandoned）、
    yiban/engine/executor_v3.py（领取/收尾/肘界）。
 关键断言（**不变式**，不是编舞）：
    I1 —— 同一账号在同一时刻不得被两个执行体持有。判据：`sign_tasks` 一行的 `state`
