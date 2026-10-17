@@ -15,7 +15,7 @@
 #   bash scripts/deploy_gate.sh                 # 跑 A+B+C
 #   bash scripts/deploy_gate.sh --phase A       # 只跑某阶段（可多次/逗号分隔）
 #   bash scripts/deploy_gate.sh --keep          # 结束不销毁容器（排障）
-#   bash scripts/deploy_gate.sh --old-ref release/0.6.2
+#   bash scripts/deploy_gate.sh --old-ref v0.6.2
 #
 # 可调环境变量（默认值见下）：
 #   GATE_TMP        运行产物根目录（默认 <repo>/work/deploy-gate）
@@ -30,7 +30,9 @@
 #                   `docker compose up -d --build` 同形态（走默认索引）。国内主机直连
 #                   pypi 不可达时由 caller 显式传镜像旁路，例如
 #                   GATE_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-#   GATE_OLD_REF    迁移演练的旧版本 ref（默认 release/0.6.2）
+#   GATE_OLD_REF    迁移演练的旧版本 ref（默认 tag v0.6.2）。用不可变 tag 而不是
+#                   分支：分支会被删（实测 `release/0.6.2` 于 2026-10-17 被删，
+#                   B0 随即无法解析），tag 的内容与 v0.6.2 发布树一致（schema v21）。
 #   GATE_TIMEOUT    健康等待上限秒数（默认 600）
 #   GATE_OLD_TREE   B 阶段旧版代码树路径（预导出）。默认走 `git archive $GATE_OLD_REF`；
 #                   若当前检出无法跑 git archive（典型：WSL 下 worktree 的 `.git` 是
@@ -47,12 +49,24 @@
 #   * 全部凭据自造，写进 $GATE_TMP，不入库、不进日志明文。
 #   * 造数/检查一律以容器内业务用户 uid 10001 执行（与 supervisord 同身份）；以 root
 #     执行会把 /data/.env 写成 root:0600，业务用户随即读不到（备份脚本据此正当拒绝）。
+#   * 宿主侧权限模型跟随 README：交接口令文件用 `scripts/gate/handoff.sh`。root 直调
+#     chown，非 root 走免密 sudo（GitHub 托管 runner 的形态）。两者都不行时 C 阶段
+#     的备份项显性 SKIP，不当绿。
 # ============================================================
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$BASE"
+
+# 交接口令文件的权限逻辑住在 gate/handoff.sh（判据跑同一份真函数）。
+# 源不到就当场停：缺函数时 C 阶段会退化成 SKIP，那是一次"跳过冒充通过"。
+# shellcheck source=gate/handoff.sh
+. "$SCRIPT_DIR/gate/handoff.sh"
+command -v handoff_to_uid10001 >/dev/null 2>&1 || {
+    echo "deploy_gate: 缺少 scripts/gate/handoff.sh 或其中未定义 handoff_to_uid10001" >&2
+    exit 2
+}
 
 GATE_TMP="${GATE_TMP:-$BASE/work/deploy-gate}"
 GATE_PROJECT="${GATE_PROJECT:-yiban-gate}"
@@ -62,7 +76,7 @@ GATE_SEED_N="${GATE_SEED_N:-5000}"
 GATE_ADMIN_USER="${GATE_ADMIN_USER:-gateadmin}"
 GATE_ADMIN_PASSWORD="${GATE_ADMIN_PASSWORD:-XwxfGate2026Ab}"
 GATE_PIP_INDEX_URL="${GATE_PIP_INDEX_URL:-}"
-GATE_OLD_REF="${GATE_OLD_REF:-release/0.6.2}"
+GATE_OLD_REF="${GATE_OLD_REF:-v0.6.2}"
 GATE_TIMEOUT="${GATE_TIMEOUT:-600}"
 KEEP=0
 PHASES="A,B,C"
@@ -280,7 +294,7 @@ phase_B() {
         fi
     else
         # 解析旧版 ref：CI 检出（actions/checkout）通常只带 origin/* 远程跟踪引用，没有
-        # 同名本地分支，故 `git archive release/0.6.2` 在 CI 上会失败。先试给定 ref，
+        # 同名本地分支，故 `git archive <分支名>` 在 CI 上会失败。先试给定 ref，
         # 失败再试 origin/<ref>；两处都不在才报错（并提示可设 GATE_OLD_TREE 预导出）。
         local old_ref="$GATE_OLD_REF"
         if ! git rev-parse --verify --quiet "${old_ref}^{commit}" >/dev/null 2>&1; then
@@ -407,13 +421,23 @@ phase_C() {
     local http=$((GATE_HTTP_PORT + 2)) https=$((GATE_HTTPS_PORT + 2))
     CUR_PROJ="$proj"; CUR_OVERRIDE="$ov"
     prepare_env "$data" "$certs"
+    # 先清日志：下面的交接若失败，错误详情要留下来（后面不再截断）。
+    : > "$log"
+    # 先删旧文件：上一轮的归属是 uid 10001（0600），本用户写不进去。
+    # 目录属主是调用者，unlink 不需要提权。
+    rm -f "$pass"
     printf 'gate-backup-pass\n' > "$pass"
     chmod 600 "$pass"
     # README 口径：口令文件必须对容器内 yiban（uid 10001）可读。调度器以该身份调备份脚本，
     # 这里按同一身份、同一权限模型演练（否则会在 root 身份下"假通过"）。
-    chown 10001:10001 "$pass" 2>>"$log" || echo "  (warn) 口令文件 chown 10001 失败（宿主文件系统不支持？）" >&2
+    # README 第 6 节的原命令带 sudo；交付走 handoff.sh，覆盖 root 与非 root 两种模型。
+    local own_ok=1 own_why=""
+    if ! handoff_to_uid10001 "$pass" 2>>"$log"; then
+        own_ok=0
+        own_why="宿主 uid=$(id -u) 既非 root 也无免密 sudo，无法按 README 第 6 节把口令文件交给 uid 10001"
+        echo "  (skip) $own_why" >&2
+    fi
     write_override "$ov" "$proj" "$data" "$certs" "$http" "$https" "$pass"
-    : > "$log"
 
     if dc_up_build >>"$log" 2>&1 && wait_healthy "$proj"; then
         pass "C1 起全栈（启用容器备份口令挂载）" "healthy"
@@ -421,7 +445,10 @@ phase_C() {
         fail "C1 起全栈" "见 $log"; cleanup_proj "$proj" "$ov"; return
     fi
     # 口令文件以 uid 10001 身份可读（README 启用两步的验收面）
-    if dc exec -T -u 10001 yiban sh -c 'test -r /run/yiban-secrets/backup-passphrase' >>"$log" 2>&1; then
+    if [ "$own_ok" != 1 ]; then
+        # 跳过 ≠ 绿（AGENTS §十三 第 30 条）：SKIP 行进摘要表，理由写明。
+        skip "C1b 口令文件对 uid 10001 可读" "$own_why（判据未执行）"
+    elif dc exec -T -u 10001 yiban sh -c 'test -r /run/yiban-secrets/backup-passphrase' >>"$log" 2>&1; then
         pass "C1b 口令文件对 uid 10001 可读" "可读"
     else
         fail "C1b 口令文件对 uid 10001 可读" "不可读（README 启用步骤未生效）"
@@ -431,6 +458,13 @@ phase_C() {
         pass "C1c 数据卷对 uid 10001 可读写" "/data/.env 可读"
     else
         fail "C1c 数据卷对 uid 10001 可读写" "/data/.env 不可读或 /data 不可写"
+    fi
+    if [ "$own_ok" != 1 ]; then
+        # 口令读不到，容器内备份脚本必然 rc=2。后续每一项都测不到，整段显性 SKIP，
+        # 不拿"环境不支持"去冒充产品缺陷。
+        skip "C2–C8 容器备份/恢复演练" "口令文件权限未建立，容器内备份脚本读不到口令（同 C1b）"
+        cleanup_proj "$proj" "$ov"
+        return
     fi
     c_in_py "$proj" "$ov" "$(seed_sql_py plain)" >>"$log" 2>&1
     # 落一次审计链外部锚点（README 承诺备份含 audit-anchor.log）：锚点由每日线程/事件写，
