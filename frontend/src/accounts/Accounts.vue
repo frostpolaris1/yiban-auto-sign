@@ -8,10 +8,12 @@ import {
   ownerEmailVisible,
   passwordHint,
   passwordPolicyOk,
+  pollMs,
   shellBase,
   swapOut,
   toast,
 } from "../lib/shell";
+import { usePolling } from "../lib/polling";
 import "./ops.js"; // 注册 window.YB.accountOps（纯 JS，被 Python 侧 node 真跑钉住）
 import {
   GROUP_KEYS,
@@ -514,21 +516,24 @@ async function submitForm(): Promise<void> {
   }
 }
 
-/* ---------------- 轮询 / 断点 ---------------- */
-let timer: ReturnType<typeof setInterval> | null = null;
+/* ---------------- 轮询 / 断点 ----------------
+   机制（节拍 / 可见性 / 卸载清理）在 `lib/polling.ts`；本页只给**策略**：
+   弹窗或行菜单打开时不刷新（重渲染会打断在途操作与选择态）。节拍取外壳唯一来源
+   `pollMs()`（core.js 的 POLL_MS）。 */
 let mq: MediaQueryList | null = null;
-function pollTick(): void {
-  if (document.visibilityState !== "visible") return;
-  if (busy.value || menuOpen.value) return;
-  if (document.querySelector(".pm-backdrop, .el-overlay")) return;
-  void load(true).catch(() => undefined);
-}
-function onVisibility(): void {
-  pollTick();
+const pollingOn = ref(false);
+function pollGate(): boolean {
+  if (busy.value || menuOpen.value) return false;
+  return !document.querySelector(".pm-backdrop, .el-overlay");
 }
 function onBreak(e: MediaQueryListEvent): void {
   narrow.value = e.matches;
 }
+usePolling(() => void load(true).catch(() => undefined), {
+  intervalMs: pollMs(),
+  gate: pollGate,
+  active: () => pollingOn.value,
+});
 
 onMounted(async () => {
   const wanted = new URLSearchParams(location.search).get("tab");
@@ -545,13 +550,10 @@ onMounted(async () => {
     return;
   }
   await startLoad();
-  timer = setInterval(pollTick, 10000);
-  document.addEventListener("visibilitychange", onVisibility);
+  pollingOn.value = true;   // 首屏取数完成后才开始轮询
 });
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer);
-  document.removeEventListener("visibilitychange", onVisibility);
   if (mq) mq.removeEventListener("change", onBreak);
 });
 

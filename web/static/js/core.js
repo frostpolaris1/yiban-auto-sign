@@ -1,15 +1,33 @@
 // 全局外壳交互层（Adminator 4.3.0 外壳）：请求层（CSRF / 401 重试 / 超时中止 / 并发 GET 去重 / 外壳数据缓存）、
-// toast、模态、口令与倒计时门禁、时钟、身份、导航徽标、主题、tab 深链。classic script（非 module）。
+// toast、模态、口令与倒计时门禁、身份、导航徽标、分区 tab 深链。classic script（非 module）。
 // 归属与复用：全站唯一一份外壳行为层，layout_admin / layout_user / layout_auth 三个外壳模板共用；页面与组件脚本一律
 //   经 window.YB.*（或本文件末尾为内联 onclick 保留的裸全局出口）复用，不再各自实现请求与弹窗。
-// 通信（入）：partials/theme_boot.html 先定义全局 BASE 作路径前缀；本文件必须排在 pages/*.js 之前载入（顺序契约见
-//   tests/test_web_js_modules.py）。通信（出）：外壳只读端点 GET /api/me、/api/clock、/api/announcement、
-//   /api/accounts、/api/users、/api/changelog 与会话端点 POST /api/logout，实现见 web/routes/ 下各 blueprint。
+// 拆壳（退役账「core.js 拆壳」，第一刀）：外壳**外观**族（主题 / 抽屉 / 服务器时钟 / 慢请求交换 /
+//   显示偏好）已搬到 `web/static/js/shell-chrome.js`，该文件**必须先于本文件载入**。本文件在入口
+//   捕获它的命名空间（`window.YB.__chrome`），并把基础工具经 `window.YB_INTERNALS` 借给它用。
+// 通信（入）：partials/theme_boot.html 先定义全局 BASE 作路径前缀；本文件必须排在页面脚本之前载入
+//   （顺序契约见 tests/test_web_js_modules.py）。通信（出）：外壳只读端点 GET /api/me、/api/clock、
+//   /api/announcement、/api/accounts、/api/users、/api/changelog 与会话端点 POST /api/logout，
+//   实现见 web/routes/ 下各 blueprint。
 (function () {
   "use strict";
   if (window.YB && window.YB.__ready) return; // 外壳与页面可能各引一次
 
   var APP_BASE = (typeof BASE === "string") ? BASE : "";
+
+  // 拆壳的分片契约（见文件头）：外壳外观层先载入并挂 `window.YB.__chrome`。
+  // 缺它就是模板漏了 script 标签——外观能力（主题/时钟/抽屉/偏好）会整体失效，
+  // 且这种失效是静默的（点主题没反应），故此处直接响亮失败。
+  var CHROME = (window.YB && window.YB.__chrome) || null;
+  if (!CHROME) {
+    throw new Error("shell-chrome.js 未载入：它必须排在 core.js 之前（见 layout_*.html）");
+  }
+  // 借给外壳外观层的基础工具（它先于本文件执行，只能**调用时**读）。
+  // 不承诺对外：只有 shell-chrome.js 允许消费，页面脚本一律走 window.YB.*。
+  window.YB_INTERNALS = {
+    forEach: forEach, svgUse: svgUse, el: el, setText: setText,
+    reducedMotion: reducedMotion, api: api, apiCached: apiCached
+  };
 
   /* ---------- 基础工具 ---------- */
   function forEach(list, fn) { Array.prototype.forEach.call(list || [], fn); }
@@ -869,26 +887,9 @@
     });
   }
 
-  /* ---------- 主题 ---------- */
-  function currentTheme() { return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"; }
-  function updateThemeIcons(theme) {
-    var name = (theme || currentTheme()) === "dark" ? "sun" : "moon";
-    forEach(document.querySelectorAll("#themeToggle, [data-theme-btn]"), function (btn) { btn.innerHTML = svgUse(name); });
-  }
-  function applyTheme(theme, persist) {
-    theme = theme === "dark" ? "dark" : "light";
-    document.documentElement.setAttribute("data-theme", theme);
-    if (persist !== false) { try { localStorage.setItem("yiban-theme", theme); } catch (e) {} }
-    updateThemeIcons(theme);
-    try { document.dispatchEvent(new CustomEvent("yiban:theme", { detail: { theme: theme } })); } catch (e) {}
-  }
-  function toggleTheme() { applyTheme(currentTheme() === "dark" ? "light" : "dark"); }
-
-  /* ---------- 抽屉 ---------- */
-  function toggleDrawer(open) {
-    if (open === undefined) open = !document.body.classList.contains("has-drawer-open");
-    document.body.classList.toggle("has-drawer-open", !!open);
-  }
+  /* ---------- 主题 / 抽屉 / 服务器时钟 / 慢请求交换 / 显示偏好 ----------
+     已搬到 web/static/js/shell-chrome.js（拆壳第一刀，本文件载入时捕获为 CHROME）。
+     本文件只保留调用点与公开面转挂。 */
 
   /* ---------- 下拉菜单 ---------- */
   function closeDropdowns(except) {
@@ -1129,69 +1130,18 @@
     }
     return mePending;
   }
-  /* ---------- 服务器时钟 ---------- */
-  var clock = { offset: 0, tz: 0, status: "", color: "", ready: false };
-  // 浏览器相对 UTC 的分钟偏移（东八区 = +480）。
-  function browserTzMin() { return -new Date().getTimezoneOffset(); }
-  // 服务器墙上时钟：由本地 getter（getFullYear/getMonth/getDate/getHours…）读出的值必须
-  // 等于服务器当地时间。Date.now() 是 UTC 时刻，加 offset 得到服务器真实时刻；再叠加
-  // 「服务器时区 − 浏览器时区」才能让本地 getter 落在服务器墙上时间上。
-  // 旧实现只加服务器时区：UTC+8 浏览器会再叠一次 +8h，16:00 后 getDate() 直接跳到次日，
-  // 造成数据总览「今日」KPI 与热力图取不到当天键（两侧取日都必须用同一个时刻源）。
-  // 未校准前退回浏览器本地时钟，避免把未加时区的 UTC 当成服务器墙上时间。
-  function serverNow() {
-    if (!clock.ready) return new Date();
-    var epoch = Math.floor(Date.now() / 1000) + clock.offset + (clock.tz - browserTzMin()) * 60;
-    return new Date(epoch * 1000);
-  }
-  function two(n) { return (n < 10 ? "0" : "") + n; }
-  // 必须用本地 getter 重建：serverNow() 的本地字段即服务器墙上时间；若再走 toISOString
-  //（UTC 表示）会把服务器时区重复扣一次。格式与旧实现同为 "YYYY-MM-DD HH:MM:SS"。
-  function clockString() {
-    var d = serverNow();
-    return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) + " " +
-      two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
-  }
-  function renderClock() {
-    var s = clockString();
-    setText("[data-clock-text]", s);
-    setText("[data-clock-now]", s);
-  }
-  function reflectSignStatus() {
-    if (!clock.status) return;
-    forEach(document.querySelectorAll("[data-sign-status]"), function (n) {
-      n.textContent = clock.status;
-      if (clock.color) n.style.color = clock.color;
-    });
-  }
-  function clockInfo() {
-    // server_ts 用真实服务器 epoch（Date.now()+offset），不是上面那个已按墙上时间平移过的时刻
-    return { now: clockString(), server_ts: Math.floor(Date.now() / 1000) + clock.offset, tz_offset_min: clock.tz, sign_status: clock.status, color: clock.color };
-  }
-  // 时钟：外壳每次加载校准一次即可（offset 不随时间衰减），用 10s 短 TTL 缓存——
-  // 快速切页（<10s）不再每页都拉 /api/clock；页面停留期间由 30s 定时器 force 拉取
-  // 刷新 sign_status/颜色。需要更实时状态的页面语义不受影响（各自定时刷新）。
-  function calibrateClock(opts) {
-    var force = !!(opts && opts.force);
-    var doFetch = function () { return api("GET", "/api/clock"); };
-    return (force ? doFetch() : apiCached("clock", 10000, doFetch)).then(function (data) {
-      if (!data) return null;
-      var ts = Number(data.server_ts);
-      if (isFinite(ts)) clock.offset = ts - Math.floor(Date.now() / 1000);
-      clock.tz = Number(data.tz_offset_min) || 0;
-      clock.status = data.sign_status || "";
-      clock.color = /^#[0-9a-f]{6}$/i.test(String(data.color || "")) ? data.color : "";
-      clock.ready = true;   // 校准完成：serverNow() 起按服务器墙上时间解释本地字段
-      renderClock(); reflectSignStatus();
-      try { document.dispatchEvent(new CustomEvent("yiban:clock", { detail: clockInfo() })); } catch (e) {}
-      return data;
-    }).catch(function () { return null; });
-  }
+  /* ---------- 服务器时钟 ----------
+     已搬到 shell-chrome.js（CHROME.calibrateClock / renderClock / serverNow /
+     clockString / clockInfo）。 */
 
   /* ---------- 导航徽标（仅管理员） ---------- */
-  // 徽标节拍：与 /work/users 列表同一拍（10 秒），使待处理数随列表同步更新。
+  // **外壳节拍（全站唯一一份 10 秒定义）**：导航徽标刷新、账号/用户列表、总览 KPI
+  // 三处"待审核"取数点共用这一个数（工单 vff0：同一件事只许一个数）。
+  // 前端模块侧经 `YB.POLL_MS` 读它（见 frontend/src/lib/polling.ts 的 usePolling），
+  // 页面不得再写数字节拍——节拍分叉会让徽标与列表不再同拍。
+  // 守卫：tests/test_review_refresh_cadence_single_source.py。
+  var POLL_MS = 10000;
   // 身份只取一次（外壳首屏），后续刷新复用；非管理员整段短路。
-  var NAV_BADGE_TTL = 10000;
   var navBadgeIdentity = null;
   function setNavBadge(key, count) {
     forEach(document.querySelectorAll('[data-nav-badge="' + cssEscape(key) + '"]'), function (node) {
@@ -1204,11 +1154,11 @@
     var who = navBadgeIdentity;
     if (!who || who.role !== "admin") return;
     // 徽标只算一次会让待处理数长期停在首屏值（工单 vff0：60s 缓存 + 外壳只取一次）。
-    // 现按 10 秒节拍重取，与 /work/users 列表同一拍；TTL 与节拍同长，
+    // 现按 POLL_MS 节拍重取，与 /work/users 列表同一拍；TTL 与节拍同长，
     // 周期刷新前先 cacheDrop 掉这两个 key，保证每一拍都真发一次网络请求。
     // 只取计数：`count_only=1` 让服务端早退，不下发整表。5k 账号下整表响应约 2.14 MiB，
     // 而徽标每 10s 只用一个标量（工单 p37f / 123 审查实测的 5k 卡顿根因之一）。
-    apiCached("nav-accounts", NAV_BADGE_TTL, function () {
+    apiCached("nav-accounts", POLL_MS, function () {
       return api("GET", "/api/accounts?count_only=1");
     }).then(function (data) {
       // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。服务端已按同一口径
@@ -1219,7 +1169,7 @@
     // /api/users 整表含明文邮箱与 display，不得进 sessionStorage（MF-49 出口面——
     // 敏感字段不入磁盘可见存储）。apiCached 仍在 10s 窗口内把同页重复请求收敛成一次，
     // 计数语义与"待处理 = 名下有 pending/rejected 账号的用户数"完全不变（`review` 同口径）。
-    apiCached("nav-users", NAV_BADGE_TTL, function () {
+    apiCached("nav-users", POLL_MS, function () {
       return api("GET", "/api/users?count_only=1");
     }).then(function (data) {
       setNavBadge("work-users", Number(data && data.review || 0));
@@ -1337,7 +1287,7 @@
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") {
         if (modalStack.length) { e.preventDefault(); closeModal(); return; }
-        if (document.body.classList.contains("has-drawer-open")) { toggleDrawer(false); return; }
+        if (document.body.classList.contains("has-drawer-open")) { CHROME.toggleDrawer(false); return; }
         closeDropdowns();
         return;
       }
@@ -1348,10 +1298,10 @@
       var t = e.target;
       if (!t || !t.closest) return;
       var drawerOpen = t.closest("[data-drawer-open]");
-      if (drawerOpen) { e.preventDefault(); toggleDrawer(true); return; }
-      if (t.closest("[data-drawer-close]")) { toggleDrawer(false); return; }
+      if (drawerOpen) { e.preventDefault(); CHROME.toggleDrawer(true); return; }
+      if (t.closest("[data-drawer-close]")) { CHROME.toggleDrawer(false); return; }
       var drawerLink = t.closest(".d-sidebar a[href]");
-      if (drawerLink && !drawerLink.hasAttribute("data-nav-toggle") && window.innerWidth <= 720) toggleDrawer(false);
+      if (drawerLink && !drawerLink.hasAttribute("data-nav-toggle") && window.innerWidth <= 720) CHROME.toggleDrawer(false);
 
       var ddTrigger = t.closest("[data-dropdown]");
       if (ddTrigger) { e.preventDefault(); toggleDropdown(ddTrigger); return; }
@@ -1451,7 +1401,7 @@
       else if (e.key === "End") { e.preventDefault(); focusItem(items, items.length - 1); }
     });
 
-    window.addEventListener("resize", function () { relayoutRail(); clampOpenDropdowns(); if (window.innerWidth > 720) toggleDrawer(false); });
+    window.addEventListener("resize", function () { relayoutRail(); clampOpenDropdowns(); if (window.innerWidth > 720) CHROME.toggleDrawer(false); });
     window.addEventListener("scroll", relayoutRail, true);
   }
 
@@ -1484,48 +1434,26 @@
     initNavProgress();
     initBackToTop();
     var themeBtn = $("themeToggle");
-    if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
-    updateThemeIcons();
+    if (themeBtn) themeBtn.addEventListener("click", CHROME.toggleTheme);
+    CHROME.updateThemeIcons();
     // 公告是公开只读接口，认证页也要显示，故放在提前返回之前。
     initAnnouncement();
     // 认证页（layout_auth.html 的 data-page="auth"）没有身份/时钟需求，而 /api/me 与
     // /api/clock 对匿名请求返回 401；跳过可避免登录页每次加载产生无谓的失败请求。
     if (document.body.getAttribute("data-page") === "auth") return;
     identity().then(function (data) { if (data) loadNavBadges(data); });
-    // 徽标按 10 秒节拍刷新（非管理员在 loadNavBadges 里短路）；切回可见立刻补一次。
-    setInterval(refreshNavBadges, NAV_BADGE_TTL);
+    // 徽标按 POLL_MS 节拍刷新（非管理员在 loadNavBadges 里短路）；切回可见立刻补一次。
+    setInterval(refreshNavBadges, POLL_MS);
     document.addEventListener("visibilitychange", refreshNavBadges);
-    calibrateClock();
-    renderClock();
-    setInterval(renderClock, 1000);
+    CHROME.calibrateClock();
+    CHROME.renderClock();
+    setInterval(CHROME.renderClock, 1000);
     // 30s 强制刷新一次校准（force 绕过 10s 缓存，拿到最新 sign_status/颜色）
-    setInterval(function () { calibrateClock({ force: true }); }, 30000);
+    setInterval(function () { CHROME.calibrateClock({ force: true }); }, 30000);
   });
 
   /* ---------- 慢请求的「整体淡出 → 换内容 → 淡入」 ----------
-     统一口径：加 is-swapping → 等退出过渡跑完（主元素的 transitionend 或 SWAP_MS
-     兜底，先到者）→ 执行 render 回调 → 再移除 is-swapping 走进入过渡。
-     为什么不能同帧/单帧移除：移除类会立刻取消 opacity 过渡，内容在 opacity 只掉到
-     0.4–0.7 时就被拉回，看起来只是闪一下。主元素取数组首项（其 160ms 过渡即交换窗口），
-     其余元素只同步切换类名，避免较短的过渡（如月份标题 120ms）提前打断主元素淡出。 */
-  var SWAP_MS = 160;
-  function swapOut(el, cb) {
-    var els = [].concat(el || []).filter(Boolean);
-    if (!els.length) { cb(); return; }
-    var primary = els[0];
-    var done = false;
-    function finish() {
-      if (done) return;
-      done = true;
-      primary.removeEventListener("transitionend", onEnd);
-      if (cb) cb();
-      els.forEach(function (n) { n.classList.remove("is-swapping"); });
-    }
-    function onEnd(e) { if (e.target === primary) finish(); }
-    primary.addEventListener("transitionend", onEnd);
-    els.forEach(function (n) { n.classList.add("is-swapping"); });
-    setTimeout(finish, SWAP_MS);
-  }
+     已搬到 shell-chrome.js（CHROME.swapOut / CHROME.SWAP_MS）。 */
 
   /* ---------- 顶部导航进度条（MPA 页面切换） ----------
      多页应用没有前端路由，点内部链接即整页跳转；浏览器自身不提供任何"正在导航"
@@ -1628,19 +1556,7 @@
   }
 
   /* ---------- 浏览器级显示偏好（localStorage） ----------
-     仅影响本机显示密度，不涉及任何后端策略，故与 yiban-theme 同层使用 localStorage。
-     归属邮箱开关：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
-     默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在账号管理页的
-     frontend/src/accounts/Accounts.vue 一处（经本函数的 YB.prefs.ownerEmailVisible
-     桥接），改后下次渲染即生效（无需后端往返）。 */
-  var PREF_OWNER_EMAIL = "yiban-owner-email";
-  function ownerEmailVisible() {
-    try { return localStorage.getItem(PREF_OWNER_EMAIL) !== "0"; } catch (e) { return true; }
-  }
-  function setOwnerEmailVisible(v) {
-    try { localStorage.setItem(PREF_OWNER_EMAIL, v ? "1" : "0"); } catch (e) {}
-    try { document.dispatchEvent(new CustomEvent("yiban:owner-email-pref", { detail: { visible: !!v } })); } catch (e) {}
-  }
+     已搬到 shell-chrome.js（CHROME.ownerEmailVisible / setOwnerEmailVisible）。 */
 
   /* ---------- .env 写拒绝的定位/清理模态（写拒绝定位） ----------
      409 的 problems 由后端组装（行号/键名 + 脱敏片段，值已隐去）。这里只做展示与
@@ -1689,6 +1605,7 @@
   var YB = {
     __ready: true,
     BASE: APP_BASE,
+    POLL_MS: POLL_MS,
     url: url,
     api: api,
     apiCached: apiCached,
@@ -1724,10 +1641,10 @@
     hasEnvLineBreak: hasEnvLineBreak,
     applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
-    toggleTheme: toggleTheme,
-    applyTheme: applyTheme,
-    currentTheme: currentTheme,
-    toggleDrawer: toggleDrawer,
+    toggleTheme: CHROME.toggleTheme,
+    applyTheme: CHROME.applyTheme,
+    currentTheme: CHROME.currentTheme,
+    toggleDrawer: CHROME.toggleDrawer,
     switchTab: switchTab,
     selectTab: selectTab,
     tabFromUrl: tabFromUrl,
@@ -1737,20 +1654,21 @@
     doLogout: doLogout,
     openChangelog: openChangelog,
     identity: identity,
-    calibrateClock: calibrateClock,
-    renderClock: renderClock,
-    getServerNow: serverNow,
-    clockString: clockString,
-    clockInfo: clockInfo,
+    calibrateClock: CHROME.calibrateClock,
+    renderClock: CHROME.renderClock,
+    getServerNow: CHROME.serverNow,
+    clockString: CHROME.clockString,
+    clockInfo: CHROME.clockInfo,
     setNavBadge: setNavBadge,
     loadNavBadges: loadNavBadges,
-    SWAP_MS: SWAP_MS,
-    swapOut: swapOut,
+    SWAP_MS: CHROME.SWAP_MS,
+    swapOut: CHROME.swapOut,
     prefs: {
-      ownerEmailVisible: ownerEmailVisible,
-      setOwnerEmailVisible: setOwnerEmailVisible
+      ownerEmailVisible: CHROME.ownerEmailVisible,
+      setOwnerEmailVisible: CHROME.setOwnerEmailVisible
     }
   };
+  YB.__chrome = CHROME;   // 外观层命名空间随公开面一起交出去（同一对象）
   window.YB = YB;
   // 兼容内联 onclick / 既有页面脚本引用的裸全局名
   window.api = api;
@@ -1780,11 +1698,11 @@
   window.openPwModal = openPwModal;
   window.openDelayAckModal = openDelayAckModal;
   window.dangerousSubmit = dangerousSubmit;
-  window.toggleTheme = toggleTheme;
-  window.toggleSidebar = toggleDrawer;
+  window.toggleTheme = CHROME.toggleTheme;
+  window.toggleSidebar = CHROME.toggleDrawer;
   window.switchTab = switchTab;
   window.doLogout = doLogout;
   window.openChangelog = openChangelog;
-  window.calibrateClock = calibrateClock;
-  window.getServerNow = serverNow;
+  window.calibrateClock = CHROME.calibrateClock;
+  window.getServerNow = CHROME.serverNow;
 })();
