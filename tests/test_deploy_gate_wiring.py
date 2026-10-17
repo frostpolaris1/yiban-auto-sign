@@ -11,13 +11,18 @@
       ① 部署闸门被某条 CI workflow 引用（删掉那条 job ⇒ 本文件红）；
       ② 闸门的默认 pip 索引是**空**（走 README 的默认索引），且它跑的是 docker compose
          的 build+up（README「一键部署」那条命令的形态）——不是另一条同义命令；
-      ③ 闸门脚本本身语法有效（`bash -n`）。
+      ③ 闸门脚本本身语法有效（`bash -n`）；
+      ④ 口令文件交接按 README 第 6 节的**权限模型**执行（非 root 走 sudo）——
+         GitHub 托管 runner 以非 root 的 runner 用户执行，裸 `chown` 必然失败，
+         文件留在 runner 名下（0600）⇒ 容器内 uid 10001 读不到 ⇒ C1b/C2 恒红
+         （工单 g828）。判据跑**真函数**、换受控 PATH，不读源码措辞。
     本文件另在 dev-verify 全量与 nightly 里跑：workflow 被删掉时那条独立轨仍会红。
-对应实现：`scripts/deploy_gate.sh`、`.github/workflows/deploy-gate.yml`。
-关键断言：读文本 + `bash -n`（**不跑 docker、不调 GitHub API**；PyYAML 不在运行依赖里，
-    门禁不为一条注释引入新依赖）。活体反例：对同一检查器喂"没有引用闸门"与"只在注释里
-    提一句"的合成 workflow，必须判空。
-依赖：bash（仅 `bash -n` 那条用 `skipIf`）；其余为纯文件读取、无网络、无 skip。
+对应实现：`scripts/deploy_gate.sh`、`scripts/gate/handoff.sh`、
+    `.github/workflows/deploy-gate.yml`。
+关键断言：读文本 + `bash -n` + 跑真函数（**不跑 docker、不调 GitHub API**；PyYAML
+    不在运行依赖里，门禁不为一条注释引入新依赖）。活体反例：对同一检查器喂"没有引用
+    闸门"与"只在注释里提一句"的合成 workflow，必须判空。
+依赖：bash（`bash -n` 与口令交接那一族用 `skipIf`）；其余为纯文件读取、无网络。
 """
 import io
 import os
@@ -30,6 +35,7 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(BASE, ".github", "workflows")
 GATE = os.path.join(BASE, "scripts", "deploy_gate.sh")
+HANDOFF = os.path.join(BASE, "scripts", "gate", "handoff.sh")
 BASH = shutil.which("bash")
 
 #: 从一行 workflow 文本里取出**命令本体**：剥掉 YAML 的 `- ` / `run:` 前缀与包裹引号。
@@ -120,6 +126,19 @@ class DeployGateWiringTest(unittest.TestCase):
         self.assertRegex(text, r"\bdc up -d\b",
                          "闸门必须跑 `dc up -d`（README 的启动命令）")
 
+    def test_gate_delegates_handoff_and_keeps_no_bare_chown(self):
+        """闸门必须调用交接函数，且**自己不再裸 chown 10001:10001**。
+
+        裸 chown 是 g828 的缺陷本体：非 root 宿主上它一定失败。把它留在闸门里
+        （哪怕同时保留了交接函数）就还能被误用，故本条一并钉死。
+        """
+        text = _read(GATE)
+        self.assertIn("handoff_to_uid10001", text,
+                      "闸门必须调用 handoff_to_uid10001 交接口令文件属主")
+        self.assertIsNone(
+            re.search(r"(?m)^\s*chown\s+10001:10001\b", text),
+            "闸门不得再有裸 chown 10001:10001（非 root 宿主必失败，工单 g828）")
+
     @unittest.skipIf(BASH is None, "bash 不在 PATH：仅 bash -n 语法检查那条跳过（CI/WSL 有 bash）")
     def test_gate_script_is_syntactically_valid(self):
         """语法坏了闸门跑不起来——CI job 会红，这里给出更早、更响的信号。"""
@@ -184,6 +203,81 @@ class WiringCheckerLiveCounterExampleTest(unittest.TestCase):
                     f.write(content)
                 self.assertEqual(_workflows_invoking_the_gate(tmp), ["g.yml"],
                                  "合法调用形态 %r 必须被抓住" % body)
+
+
+@unittest.skipIf(BASH is None, "bash 不在 PATH：口令交接判据跳过（CI/WSL 有 bash）")
+class PassphraseHandoffTest(unittest.TestCase):
+    """④ 口令文件交接必须按 README 的权限模型：非 root 走 sudo（工单 g828）。
+
+    README 第 6 节的原命令是 `sudo chown 10001:10001 backup-passphrase`——部署者以
+    普通用户操作、chown 要提权。GitHub 托管 runner 以非 root 的 `runner` 用户执行，
+    裸 `chown` 一定失败：文件留在 runner 名下（0600），容器内 uid 10001 读不到，
+    C1b 与 C2 连红。判据跑**真函数**：用受控 PATH 给出假 `id`/`chown`/`sudo`，
+    断言选中哪条分支、返回码是什么。摘掉 sudo 分支 ⇒ 本条红。
+    """
+
+    def _run_handoff(self, uid, sudo_mode):
+        """在受控 PATH 下跑真函数。sudo_mode: "ok" | "absent" | "deny"。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = os.path.join(tmp, "bin")
+            os.makedirs(bin_dir)
+            calls = os.path.join(tmp, "calls")
+            target = os.path.join(tmp, "pass")
+            with io.open(target, "w", encoding="utf-8") as f:
+                f.write("gate-backup-pass\n")
+
+            def script(name, body):
+                p = os.path.join(bin_dir, name)
+                with io.open(p, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("#!/bin/sh\n" + body)
+                os.chmod(p, 0o755)
+
+            script("id", "echo %d\n" % uid)
+            script("chown", 'printf "chown %s\\n" "$*" >> "$HANDOFF_CALLS"\n')
+            if sudo_mode == "ok":
+                script("sudo", 'printf "sudo %s\\n" "$*" >> "$HANDOFF_CALLS"\n')
+            elif sudo_mode == "deny":
+                script("sudo", "exit 1\n")
+
+            env = dict(os.environ)
+            env["PATH"] = bin_dir
+            env["HANDOFF_CALLS"] = calls
+            # 98/99 是判据自检码：源不到文件或函数不存在时，**任何**用例都必须红。
+            # 少了这层，缺文件时 rc=127 会让"必须非零"的负例假绿。
+            r = subprocess.run(
+                [BASH, "-c",
+                 '. "%s" || exit 98; command -v handoff_to_uid10001 >/dev/null || exit 99; '
+                 'handoff_to_uid10001 "%s"' % (HANDOFF, target)],
+                env=env, capture_output=True, text=True, timeout=60)
+            spilled = ""
+            if os.path.exists(calls):
+                with io.open(calls, encoding="utf-8") as f:
+                    spilled = f.read()
+            return r.returncode, spilled
+
+    def test_root_chowns_directly_without_sudo(self):
+        """root 宿主直调 chown：这就是本机既有的绿路径，不许被改坏。"""
+        rc, calls = self._run_handoff(uid=0, sudo_mode="ok")
+        self.assertEqual(rc, 0, "root 下交接必须成功")
+        self.assertIn("chown 10001:10001", calls, "root 必须直接 chown 10001:10001")
+        self.assertNotIn("sudo", calls, "root 不需要 sudo，不该多绕一层")
+
+    def test_non_root_uses_sudo(self):
+        """非 root 宿主（GitHub 托管 runner）必须走 `sudo -n chown`——裸 chown 必失败。"""
+        rc, calls = self._run_handoff(uid=1001, sudo_mode="ok")
+        self.assertEqual(rc, 0, "有免密 sudo 时交接必须成功")
+        self.assertIn("sudo -n chown 10001:10001", calls,
+                      "非 root 必须经 sudo 执行 chown（README 第 6 节的形态）")
+
+    def test_non_root_without_usable_sudo_fails_loudly(self):
+        """既非 root 也没有可用 sudo ⇒ 必须返回非零，由闸门显性 SKIP（跳过 ≠ 绿）。"""
+        for mode in ("absent", "deny"):
+            with self.subTest(sudo=mode):
+                rc, calls = self._run_handoff(uid=1001, sudo_mode=mode)
+                self.assertEqual(
+                    rc, 1, "权限模型不允许时必须返回 1（闸门据此显性 SKIP）；"
+                           "98/99 说明交接函数本身缺失")
+                self.assertEqual(calls, "", "交接未成立时不得留下 chown 调用痕迹")
 
 
 if __name__ == "__main__":
