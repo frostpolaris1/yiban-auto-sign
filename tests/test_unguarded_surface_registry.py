@@ -124,7 +124,7 @@ def probe_rate_limit_concurrency():
 
 def probe_fake_window_always_true():
     """§六-11：假上游把 `signPosition` 的时间窗写死成恒真？"""
-    body = _read("tests/fake_yiban_server.py")
+    body = _read("yiban/adapters/protocol_fake/__init__.py")
     return ("now - 3600" in body and "now + 3600" in body)
 
 
@@ -210,7 +210,7 @@ REGISTRY = {
     11: (OPEN,
          "窗口外不签／边界让位：假上游把 `signPosition` 的 `Range` 窗写死成 `now±3600`"
          "（恒真）⇒ 以它为上游的 e2e 里'窗口外'这一维被短路。本批不建门："
-         "改假上游属硬边界（`tests/fake_yiban_server.py` 不许动），"
+         "改假上游属硬边界（`yiban/adapters/protocol_fake/__init__.py` 不许动），"
          "而只建一条'这条硬编码还在'的登记门不增加判别力",
          "140 §五 S12；与 §六-12 同根（编造被当证据）",
          probe_fake_window_always_true, True),

@@ -31,7 +31,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEW_DIR = "yiban/adapters/protocol_fake"
 OLD_REL = os.path.join("tests", "fake_yiban_server.py")
 
-#: 引假上游的文件（读者面）。前三个是演练驱动，后六个是依赖它的用例。
+#: 引假上游的文件（读者面）。前三个是演练驱动，后八个是依赖它的用例。
+#: 后增的两条（故障旋钮门、无门面登记表）读假上游**源码**做 AST/文本解析。
+#: 它们是读者，但初版名册漏了它们，所以对"还有读者指旧路径"这件事假绿。
+#: 本批补齐名册：任一读者回退到旧路径，本文件必须变红。
 READERS = (
     "scripts/drill_multi_exec.py",
     "scripts/drill-multi-exec.sh",
@@ -42,6 +45,8 @@ READERS = (
     "tests/test_global_pause_chain_e2e.py",
     "tests/test_multi_executor_drill_e2e.py",
     "tests/test_drill_redline_e2e.py",
+    "tests/test_fake_upstream_fault_knobs_gate.py",
+    "tests/test_unguarded_surface_registry.py",
 )
 
 
