@@ -166,6 +166,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash"
   ]
  ],
+ "tests/test_deploy_gate_wiring.py": [
+  [
+   "skipIf",
+   "bash 不在 PATH：仅 bash -n 语法检查那条跳过（CI/WSL 有 bash）"
+  ]
+ ],
  "tests/test_deploy_paths_and_restore_verdict.py": [
   [
    "skipIf",

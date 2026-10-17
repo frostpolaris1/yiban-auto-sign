@@ -3,7 +3,7 @@
 
 标签：A · 判据：覆盖显性化
 
-**本门挡的缺陷形状**：`tests/fake_yiban_server.py` 提供了故障注入面（失败阶段、
+**本门挡的缺陷形状**：`yiban/adapters/protocol_fake/__init__.py` 提供了故障注入面（失败阶段、
 人工延迟、失败概率、表单严格度…），而**没人开的旋钮等于不存在的替身能力**——140 §五
 S12 现量：6 枚故障旋钮里 5 枚无人消费。这比"没有这个能力"更坏：能力在、文档在、
 看着像覆盖了，实际没有任何用例走过那条路。
@@ -15,7 +15,7 @@ S12 现量：6 枚故障旋钮里 5 枚无人消费。这比"没有这个能力"
 **为什么按旋钮而不按"某条用例"**：旋钮是**能力**的边界（`add_argument` 是唯一
 定义点）。按用例记账会随用例改名而漂移。
 
-**消费面口径**：库内全部被 git 跟踪的文本件，**排除** `tests/fake_yiban_server.py`
+**消费面口径**：库内全部被 git 跟踪的文本件，**排除** `yiban/adapters/protocol_fake/__init__.py`
 自己（它当然"提到"自己声明的旋钮）。故 `scripts/e2e/`、`frontend/e2e/`、
 `.github/workflows/` 里的用法都算消费。两条消费形态都认：**CLI 字面量**
 （`--delay-ms`，驱动脚本/文档用）与**进程内关键字**（`delay_ms=`，用例直接起假服务端
@@ -28,9 +28,9 @@ S12 现量：6 枚故障旋钮里 5 枚无人消费。这比"没有这个能力"
     工具（如 `scripts/check-import-linter.py` 的同名旗标）里命中，从而被误判成"有人用"。
     短而通用的旗标上本门偏宽——宁可漏判不误判。
 
-对应实现：`tests/fake_yiban_server.py` 的 `argparse` 旋钮面与 `FAIL_STAGES`。
+对应实现：`yiban/adapters/protocol_fake/__init__.py` 的 `argparse` 旋钮面与 `FAIL_STAGES`。
 关键断言：钉"每枚旋钮有主"这一性质；不钉任何用例行为。
-依赖：纯静态——AST 解析 `fake_yiban_server.py` ＋ `git ls-files` 枚举跟踪面 ＋ 文本检索。
+依赖：纯静态——AST 解析 `yiban/adapters/protocol_fake/__init__.py` ＋ `git ls-files` 枚举跟踪面 ＋ 文本检索。
     不跑服务、不触网。整文件在本机执行，无 skip。
 """
 import ast
@@ -39,8 +39,8 @@ import subprocess
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FAKE = os.path.join(BASE, "tests", "fake_yiban_server.py")
-FAKE_REL = "tests/fake_yiban_server.py"
+FAKE = os.path.join(BASE, "yiban", "adapters", "protocol_fake", "__init__.py")
+FAKE_REL = "yiban/adapters/protocol_fake/__init__.py"
 
 #: 被检索的文本件后缀（消费面的载体形态）。
 _TEXT_SUFFIXES = (".py", ".sh", ".bash", ".yml", ".yaml", ".md", ".ts", ".js", ".json",

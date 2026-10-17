@@ -120,7 +120,7 @@ class DeployGateWiringTest(unittest.TestCase):
         self.assertRegex(text, r"\bdc up -d\b",
                          "闸门必须跑 `dc up -d`（README 的启动命令）")
 
-    @unittest.skipIf(BASH is None, "bash 不在 PATH")
+    @unittest.skipIf(BASH is None, "bash 不在 PATH：仅 bash -n 语法检查那条跳过（CI/WSL 有 bash）")
     def test_gate_script_is_syntactically_valid(self):
         """语法坏了闸门跑不起来——CI job 会红，这里给出更早、更响的信号。"""
         r = subprocess.run([BASH, "-n", GATE], capture_output=True, text=True, timeout=60)
