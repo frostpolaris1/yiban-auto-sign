@@ -12,8 +12,10 @@
 退出码怎么汇总（取最严重者，但补签轮判定的「需要补跑」原样透出）。清单里的拉起列表由
 `runner` 取 `egress.launch_slots` 后按槽位传进来，故**停用行不会被拉起**。
 
-**子进程入口是 `python -m yiban.cli sign`**：本模块是包内模块，不再能按文件路径直接
-执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
+**子进程入口是 `python -m yiban.entry.cli sign`**：本模块是包内模块，不再能按文件路径
+直接执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
+坐标取**入口层**（`yiban/entry/cli/`）；旧坐标 `yiban/cli.py` 是待退役的转发壳，
+本模块不得依赖它。
 
 **归属**
 `yiban.engine` 的进程编排层；`runner` 在"多执行体监督"分支调用它。
@@ -88,7 +90,7 @@ STATUS_FAILED = yiban_status.STATUS_FAILED
 
 #: 仓库根（`yiban/engine/<模块>.py` 上溯三层）。**不是**导入引导（包内模块本就靠
 #: `python -m` / 测试的 pythonpath 找到包）：这里只用来给拉起的子进程设 cwd 与
-#: PYTHONPATH——`python -m yiban.cli` 要求仓库根在导入路径上。
+#: PYTHONPATH——`python -m yiban.entry.cli` 要求仓库根在导入路径上。
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 #: 等待子进程退出的轮询粒度（秒）。取 1s：子进程一退出就补收尾标记（页面立刻从
@@ -217,7 +219,7 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
             child_argv.append(a)
         # 子进程入口：模块方式执行同一个 CLI（cwd=仓库根 + PYTHONPATH 含仓库根，
         # `python -m` 才能找到 yiban 包）。子进程收到的命令行参数与旧版逐字相同。
-        cmd = [sys.executable, "-m", "yiban.cli", "sign", *child_argv]
+        cmd = [sys.executable, "-m", "yiban.entry.cli", "sign", *child_argv]
         logger.info("执行体 %d/%d 启动（槽位 %d，出口: %s）",
                     i + 1, n, slot, egress.describe(proxy))
         try:
@@ -225,7 +227,7 @@ def run_worker_supervisor(n, argv, slots=None, migrate=True):
                 cmd, env=_child_env_with_repo_root(env), cwd=_REPO_DIR,
             )
         except OSError as e:
-            # 解释器丢失 / fork 资源耗尽等：**不得穿透**——runner.main 与 yiban.cli 只兜
+            # 解释器丢失 / fork 资源耗尽等：**不得穿透**——runner.main 与 yiban.entry.cli 只兜
             # SystemExit，穿透就是未捕获 traceback 收场；而本进程此时可能已拉起兄弟
             # 执行体，异常展开会让它们失去 `wait()`、进程内全局运行锁随之提前释放
             # （散落的另一轮全量就能与本轮幸存执行体并发）。与 docker/scheduler.py 的

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""`yiban.cli` 的契约用例（`docs/dev/cli.md` §2/§3 的可执行版本）。
+"""`yiban.entry.cli` 的契约用例（`docs/dev/cli.md` §2/§3 的可执行版本）。
 
 标签：J · 运维：部署/备份/发布
 覆盖：子命令与 `--help`、`--json` 单行可解析、致命错误的 stderr+JSON 双通道、
@@ -10,7 +10,7 @@
     `yiban/engine` 等）。`yiban/cli.py` 是转发壳（批 A1 后）。
 关键断言：退出码、stdout/stderr 分流、"默认不动手"三条都是进程级契约——断的是真实
     子进程的行为，不是 `main()` 的返回值。
-依赖：起 `sys.executable -m yiban.cli` 子进程（纯 Python，不需 bash/docker/网络）；
+依赖：起 `sys.executable -m yiban.entry.cli` 子进程（纯 Python，不需 bash/docker/网络）；
     全部用临时 STATE/LOG/DB/ENV，不碰本机真实 .env。
 
 口径（为什么全部起子进程）：退出码、stdout/stderr 分流、stdin 行为在测试进程里调
@@ -52,7 +52,7 @@ def _cli_env(tmp_path, env_extra=None):
         "YIBAN_ENV_FILE": str(tmp_path / ".env"),
         "YIBAN_ACCOUNTS_KEY": "a" * 64,   # 免得某条路径顺手生成密钥写盘
         "YIBAN_MAIL_ENABLE": "0",
-        "PYTHONPATH": BASE,               # `python -m yiban.cli` 需要仓库根在导入路径上
+        "PYTHONPATH": BASE,               # `python -m yiban.entry.cli` 需要仓库根在导入路径上
         "PYTHONIOENCODING": "utf-8",      # JSON 里的中文在任意平台都可解码
     })
     env.update(env_extra or {})
@@ -61,7 +61,7 @@ def _cli_env(tmp_path, env_extra=None):
 
 def _run(argv, env, stdin=subprocess.DEVNULL, timeout=120):
     """跑一次 CLI（cwd=仓库根）；返回 CompletedProcess。"""
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=BASE, env=env,  #-m 而非脚本路径：直跑文件会绕过包导入引导，与真实部署跑法不同
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=BASE, env=env,  #-m 而非脚本路径：直跑文件会绕过包导入引导，与真实部署跑法不同
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=stdin, timeout=timeout)
 
@@ -408,7 +408,7 @@ class CliContractTest(unittest.TestCase):
             with self.subTest(command=cmd):
                 # 关掉的 stdin（写端立刻关闭）：若真去读会 EOF 后继续，若等待输入则卡住
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "yiban.cli", cmd], cwd=BASE, env=self.env,
+                    [sys.executable, "-m", "yiban.entry.cli", cmd], cwd=BASE, env=self.env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, encoding="utf-8")
                 proc.stdin.close()
