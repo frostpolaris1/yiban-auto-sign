@@ -331,7 +331,7 @@ KNOWN_SKIP_SITES = json.loads(r"""
  "tests/test_multi_executor_drill_e2e.py": [
   [
    "skipTest",
-   "CI runner 上靶场跑不起来（真登录 0 次）：同族 4 条全过、串行独占仍复现、本机全绿 ⇒ 差异在 runner 环境，未定论。见工单 zdvd。"
+   "真因（账号集没铺满执行体）已修；本挂起只为不推高 CI 墙钟（i9gl）而留，删本 if ＋ 名册条目即恢复。见工单 zdvd。"
   ],
   [
    "skipUnless",
