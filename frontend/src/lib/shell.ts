@@ -278,6 +278,19 @@ export function swapMs(): number {
   return typeof v === "number" ? v : 160;
 }
 
+/**
+ * 外壳节拍（毫秒）——**全站唯一的 10 秒定义**在 `web/static/js/core.js` 的 `POLL_MS`。
+ *
+ * 导航徽标刷新、账号/用户列表、总览 KPI 三处"待审核"取数点必须同拍（工单 vff0）。
+ * 页面一律经 `usePolling(fn, { intervalMs: pollMs() })` 取节拍，**不得**再写数字
+ * （同一件事两个数就是两处漂移）。守卫见
+ * `tests/test_review_refresh_cadence_single_source.py`。
+ */
+export function pollMs(): number {
+  const v = (raw() as { POLL_MS?: number }).POLL_MS;
+  return typeof v === "number" ? v : 10000;
+}
+
 export interface ShellApiError extends Error {
   status?: number;
   data?: unknown;
