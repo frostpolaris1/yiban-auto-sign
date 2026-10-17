@@ -38,8 +38,10 @@
 #      同一个门内把旧布局的运行数据（`.env` 与库本体连同 `-wal`/`-shm`）从检出根
 #      **迁入** data/（升级既有安装；迁入件改属服务账号）。同名件两侧并存 ⇒ 拒装。
 #   9) 服务在跑门（F2）：无 DESTDIR 时，装前探测服务是否在跑，在跑即拒装。
-#      探测两层：`systemctl is-active <单元>` 与 /proc 里命令行含本检出的活进程。
-#      拒装输出给出裸机与容器两条可复制的停服命令。带 DESTDIR 的暂存安装豁免本门。
+#      本门只管**裸机形态**：探测用 `systemctl is-active <单元>` 与 /proc 里 argv
+#      指向本检出的活进程。容器形态**不走本安装器**（容器升级 = `git pull` ＋
+#      `docker compose up -d --build`），其进程 argv 也不含宿主检出路径，故本门不宣称
+#      覆盖它。拒装输出给出可复制的停服命令。带 DESTDIR 的暂存安装豁免本门。
 # ============================================================
 set -euo pipefail
 
@@ -236,11 +238,19 @@ fi
 #   ② 它持着旧库的 fd ⇒ 搬迁后仍写旧 inode。
 # README 只写"务必先停服"（散文约束），本段把它变成门。
 #
-# 探测两层（裸机与容器两种形态都覆盖）：
+# 本门只管**裸机形态**（systemd 单元）。容器形态不走本安装器——容器升级是
+# `git pull && docker compose up -d --build`（见 README「Docker 部署」）。
+# 容器内的服务进程 argv 不含宿主检出路径（`docker/supervisord.conf` 的 command 是
+# `/usr/local/bin/gunicorn ... "web.app:create_app()"`，`directory=/app`），故进程扫描
+# 在容器形态下判不出。本门不宣称覆盖它，也不为兑现声明去加更弱的探测。
+#
+# 探测两层（都针对裸机）：
 #   ① systemd 权威层：`systemctl` 可用时问 `is-active`（生产单元 = SERVICE_UNIT）。
-#   ② /proc 兜底层：命令行含本检出的活进程（排除本安装器自身及其 sudo 父进程）。
-#      systemd 缺席（容器）时这一层仍有效；cron 触发的 run.sh 也在这里被抓住。
-# 两层都跑不成（无 systemctl 且 /proc 不可读）时**显性告警**——跳过不得当绿（AGENTS §30）。
+#   ② /proc 兜底层：argv 指向本检出的活进程（排除本安装器自身及其 sudo 父进程）。
+#      systemd 缺席时这一层仍有效；cron 触发的 run.sh 也在这里被抓住。
+# 没有"两层都探测不了"的静默路径：/proc 不可读时本脚本在更早那一步读 manifest
+# （`mapfile < <(...)`，依赖 /dev/fd）就已非 0 退出，到不了这里。故不设空告警分支
+# ——"看着有防御、其实永远跑不到"是 AGENTS §十三.30 同族。
 #
 # 豁免：带 DESTDIR 的暂存安装不碰现网运行数据（data/ 段与依赖同步段整段跳过），
 # 故不受本门约束。豁免由用例钉住：tests/test_runtime_data_layout.py
@@ -249,31 +259,29 @@ fi
 SERVICE_UNIT="yiban-web.service"
 if [ -z "$DESTDIR" ]; then
     _svc_why=""
-    _sysd_ok=0
     if command -v systemctl >/dev/null 2>&1; then
-        _sysd_ok=1
         if systemctl is-active --quiet "$SERVICE_UNIT" 2>/dev/null; then
             _svc_why="systemctl is-active $SERVICE_UNIT 报告 active"
         fi
     fi
-    _scan_ran=0
     if [ -z "$_svc_why" ]; then
         for _pid in /proc/[0-9]*; do
-            [ -d "$_pid" ] || continue
             [ -r "$_pid/cmdline" ] || continue
-            _scan_ran=1
             _self=0
             _hit=0
             while IFS= read -r -d '' _arg; do
                 case "$_arg" in
                     *install.sh*) _self=1; break ;;
                 esac
+                # 匹配必须带**路径边界**：整串等于检出根，或检出根后紧跟 `/`。
+                # 纯子串匹配会把兄弟目录（`<检出>-backup`）判进来，那时提示语断言的
+                # "argv 指向本检出"就是假的（方向虽 fail-closed，事实仍不成立）。
                 case "$_arg" in
-                    *"$REPO_ROOT"*) _hit=1 ;;
+                    "$REPO_ROOT"|*"$REPO_ROOT"/*) _hit=1 ;;
                 esac
             done < "$_pid/cmdline"
             if [ "$_self" -eq 0 ] && [ "$_hit" -eq 1 ]; then
-                _svc_why="进程 ${_pid#/proc/} 的命令行含本检出"
+                _svc_why="进程 ${_pid#/proc/} 的 argv 指向本检出"
                 break
             fi
         done
@@ -283,13 +291,10 @@ if [ -z "$DESTDIR" ]; then
         echo "  原因：本安装器要搬动/改属 data/ 下的库与 .env；服务在跑会按旧路径另建空库，" >&2
         echo "        随后重跑会因「两侧并存」拒装，按提示删旧件就丢掉服务刚写的新数据。" >&2
         echo "  处置（先停服，再重跑本安装器）：" >&2
-        echo "    裸机： sudo systemctl stop yiban-web" >&2
-        echo "    容器： docker compose stop yiban" >&2
+        echo "    sudo systemctl stop yiban-web" >&2
+        echo "  本门只管裸机（systemd 单元）。容器形态不走本安装器——" >&2
+        echo "    容器升级 = git pull && docker compose up -d --build（见 README「Docker 部署」）。" >&2
         exit 1
-    fi
-    if [ "$_sysd_ok" -eq 0 ] && [ "$_scan_ran" -eq 0 ]; then
-        echo "yiban-install: 警告: 无法探测服务是否在跑（无 systemctl 且 /proc 不可读）——本门被跳过。" >&2
-        echo "  处置：安装前自行确认服务已停（裸机 sudo systemctl stop yiban-web）。" >&2
     fi
 fi
 
@@ -365,7 +370,10 @@ if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
     # ——两个形态同形，裸机侧也必须递归到子树（data/ 下还会有 data/state 等子目录）。
     # `-R -h`：递归但**不解引用**——data/ 下的符号链接（把库指到别的盘是合法部署形态）
     # 只改链接自身，不跟随到外部目标（与下方迁移段的 `chown -h` 同口径）。
-    # 判据排在冲突检查**之后**：拒装路径不得改动任何东西（含属主）。
+    # 判据排在冲突检查**之后**：冲突拒装时本步不改任何**内容件**。
+    # 注意措辞边界：`data/` **目录本身**在冲突判定之前就可能已被建/修正
+    # （`install -d -o` 与 `chmod 0700` 排在那之前，属既有行为）；内容件那条
+    # "先全量判冲突、再搬"不变，故拒装不会留下半搬状态。
     chown -Rh "$SERVICE_USER:$SERVICE_GROUP" "$DATA_DIR"
     echo "runtime data ownership repaired: $DATA_DIR (recursive)"
     for _name in "${LEGACY_RUNTIME_FILES[@]}"; do
