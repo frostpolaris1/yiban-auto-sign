@@ -27,9 +27,18 @@
    让靶场确定性地什么都不跑，①必须红。
    确定性来自**屏障 ＋ 同伴**：目标执行体领到后卡在可注入的持有闸门上等放行，驱动侧
    见到就绪标记才动手（杀它／让同伴抢它那一行），不靠调度运气。
+   还有一条**前提**：账号集必须**铺满每个执行体**。账号归谁由 HRW 纯函数
+   `H(手机号 ‖ 日期 ‖ 执行体名)` 决定，而执行体名含**主机名** ⇒ 固定一批手机号时，
+   "哪个执行体分到账号"随 (主机名, 日期) 变（实测 6200 对里 14.69% 会让某个执行体一件
+   活都没有）。那时"多执行体"只剩一个在跑、屏障恒不就绪，用例红在**前提没搭起来**。
+   故造号由 `spread_phones` 按当日 HRW 归属**反查**（同一条纯函数），不挑号碰运气；
+   这条前提由 `test_spread_phones_covers_every_executor` 钉住。
 依赖：临时 sqlite ＋ 真子进程（POSIX：SIGKILL ／ `/proc` 查进程环境）；本地假上游；
    传输层改写结构性保证零外联。非 POSIX 平台整组 skip。
 """
+import ast
+import datetime
+import inspect
 import os
 import sys
 import unittest
@@ -38,6 +47,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import drill_multi_exec as drill  # noqa: E402
+
+from yiban import egress  # noqa: E402
+from yiban.core import hrw  # noqa: E402
 
 _POSIX = (os.name == "posix"
           and hasattr(__import__("signal"), "SIGKILL")
@@ -58,18 +70,14 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         # 全量并发跑测（-n auto）时机器争用重：靶场拉起的是**真子进程**，超时给足，
         # 否则夹具被饿死会让"注入没跑到"伪装成"不变式没红"。
         kw.setdefault("timeout_sec", 300)
-        # **搭建失败的有界重试**（只重试"什么都没跑"，不重试任何断言）。
-        #
-        # 为什么需要：靶场是**真子进程**（监督进程 ＋ 执行体 ＋ 假上游），CI 上它与
-        # 约 1000 条用例同抢 2~4 核。实测（CI 北京时间 00:31 那轮）偶发整轮零真登录——
-        # `mock_signin_count=0`。那是**搭建**没起来，不是被测性质出了问题。
-        # 判据严格限定在"零真登录"这一个事实上：一旦有真登录发生，绝不重试，
-        # 断言照旧全跑（所以这不会把任何"不变式没红"洗成绿）。
-        # 重试上限 1 次：再多会把 CI 作业的墙钟推过它的上限（见工单 `i9gl`）。
-        res = drill.run_drill(**kw)
-        if not res.get("mock_signin_count"):
-            res = drill.run_drill(**kw)
-        return res
+        # **不重试**（工单 `zdvd`）：删掉的是"零真登录就重跑一次"那条。它的来历是
+        # "CI 偶发整轮零真登录"，而该症状的根因已查明并连根修掉——**账号集没铺满每个
+        # 执行体**（见 `test_spread_phones_covers_every_executor`）：目标槽位一件活都领
+        # 不到 ⇒ 零真登录，与被测性质无关，且随 (主机名, 日期) 漂移。修后"零真登录"只剩
+        # 两种**确定性**来源：① 变异 `window-off`（按设计什么都不跑）；② 靶场真坏了。
+        # 前者不需要重跑，后者重跑也只是把同一份坏再跑一遍——按 `AGENTS.md §一`，不许
+        # 留"复跑就绿"的重试来掩盖。故直接跑一次，断言看这一份结果。
+        return drill.run_drill(**kw)
 
     def test_baseline_two_executors_invariants_green(self):
         """两个执行体领同一批账号：I1／I2 绿、全部了结、无多余真登录。"""
@@ -127,17 +135,21 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
 
     def test_teeth_i2_reap_off_leaves_claimed_row(self):
         """变异①：去掉轮末收尸 ⇒ 被杀执行体的在飞行留在 claimed ⇒ I2 红。"""
-        # CI 上挂起（2026-10-16，工单 zdvd）。**不是放松判据，是把它从 CI 移开**：
-        # 本用例在 CI runner 上恒报"真登录 0 次"，而三条对照都指向 runner 环境而非代码——
-        # ① 同一台 runner 上同族另外 4 条 drill 用例全过（含阈值更严的 i1：min_signins=ACCOUNTS）；
-        # ② 给它一条串行独占机器的轨仍复现（故不是与 1034 条用例抢核）；
-        # ③ 本机把整个 -k 子集限到 4 个核跑，1034 passed / 1 skipped。
-        # 首要嫌疑＝runner 的 Python 3.11（本机 3.14），**未定论**。
-        # 本用例在**本机**（dev-verify 全量档）照跑，故覆盖不丢，只是不在 CI 上跑。
+        # **旧理由已证伪，挂起只剩"墙钟"这一条。**
+        # 2026-10-16 记的理由是"runner 环境差异（首要嫌疑 Python 3.11），未定论"。真因＝
+        # **账号集没铺满每个执行体**：本用例的"确实发生过"口径是 `min_signins=1`，它要求
+        # **非目标**执行体真登录一次；那个执行体若一件活都没有（槽位全被另一个占走），就
+        # 必然报"真登录 0 次"。该形态由 (主机名, 日期) 决定（执行体名含主机名）：实测 6200
+        # 对里 7.48% 是"槽位 0 全包"（＝本用例独红、同族另外 4 条全过，与 CI 的观察逐条
+        # 对上，且不依赖负载 ⇒ 解释了"串行独占仍复现"），7.21% 是"槽位 0 零活"（＝本机
+        # 2026-10-17 的形态，三条一起红）。两者同源，本批已由造号反查（`spread_phones`）
+        # 连根修掉，判据一字未动。
+        # **为什么仍挂**：本批不得推高 CI 墙钟（工单 `i9gl`）——靶场这条轨在 CI 上是串行
+        # 单跑的，放它回来约 +10 秒。恢复覆盖＝删掉下面这个 `if`，并同批删
+        # `tests/test_skip_visibility_gate.py` 名册里对应那条（否则门判陈旧）。
         if os.environ.get("CI"):
             self.skipTest(
-                "CI runner 上靶场跑不起来（真登录 0 次）：同族 4 条全过、串行独占仍复现、"
-                "本机全绿 ⇒ 差异在 runner 环境，未定论。见工单 zdvd。"
+                "真因（账号集没铺满执行体）已修；本挂起只为不推高 CI 墙钟（i9gl）而留，删本 if ＋ 名册条目即恢复。见工单 zdvd。"
             )
         res = self._run(kill_at="claim", mutate="reap-off", recover=False)
         # 顺序不可换：先"确实发生过"，再"变异贴上"，最后"不变式红"。
@@ -268,6 +280,53 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
         # 守卫必须红（用与牙齿测试同一套口径与阈值）：
         with self.assertRaises(AssertionError):
             self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
+
+    def test_spread_phones_covers_every_executor(self):
+        """**造号前提的守卫**：每个执行体都必须分到账号（工单 `zdvd` 的根因钉住）。
+
+        被测性质是"多执行体怎么协调"。账号归谁由 HRW 纯函数
+        `H(手机号 ‖ 日期 ‖ 执行体名)` 决定，而执行体名含**主机名**（`egress.worker_owner`）
+        ⇒ "哪个执行体分到账号"随 (主机名, 日期) 变。实测 6200 个 (主机名, 日期) 对：
+        14.69% 会让某个执行体一件活都没有——7.21% 是"槽位 0 零活"（本机 2026-10-17，
+        屏障恒不就绪 ⇒ kill／i1／i2 三条一起红），7.48% 是"槽位 0 全包"（CI 2026-10-16，
+        非目标执行体零活 ⇒ i2 的 `min_signins=1` 报"真登录 0 次"，同族另外 4 条全过）。
+        两种形态同源：**账号集没铺满执行体** ⇒ 多执行体退化成单执行体。
+
+        本用例对多台（合成）主机 × 多日扫一遍，钉住"造号按当日 HRW 归属反查"这条不变式：
+        `spread_phones` 一旦退回"写死一批手机号"，这里必然红（不是可能红）——扫描面
+        3 主机 × 120 日 ＝ 360 个样本，写死号的实现要在 360 个样本上全部侥幸铺满，
+        而单样本退化率实测 14.69% ⇒ 侥幸概率约 10⁻²⁵。
+        另附**在场性**断言：只测 helper 的输出不闭"helper 留着不用"这个洞——`seed` 必须
+        真的调它（`AGENTS.md §十三.29`：门看的东西要＝实际改的东西）。
+        """
+        # 在场性用 **AST** 判"真有调用"，不用文本 grep：`seed` 的 docstring 本身就写着
+        # `spread_phones`，文本匹配会被文档骗过（假绿）。AST 只认真正的 `Call`。
+        calls = [n for n in ast.walk(ast.parse(inspect.getsource(drill.seed)))
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "spread_phones"]
+        self.assertEqual(
+            len(calls), 1,
+            "在场性：`seed` 必须真的调 `spread_phones` 一次；实际 %d 处"
+            "（留着函数不用 ⇒ 造号可能退回写死）" % len(calls))
+        v = hrw.v_for(self.ACCOUNTS)
+        # 合成主机名走 `worker_owner` 的显式 hostname 参数（真实路径同一条构造）；
+        # 与 `_owner_host` 的规范化无关的写法不影响结论——本用例只要求"跨主机都成立"。
+        for host in ("drill-guard-a", "drill-guard-b", "drill-guard-c"):
+            executors = [egress.worker_owner(i, hostname=host)
+                         for i in range(self.EXECUTORS)]
+            for offset in range(120):
+                day = (datetime.date(2026, 1, 1)
+                       + datetime.timedelta(days=offset)).isoformat()
+                phones = drill.spread_phones(executors, day, self.ACCOUNTS)
+                self.assertEqual(len(set(phones)), self.ACCOUNTS,
+                                 "手机号必须互不相同：%s %s %s" % (host, day, phones))
+                shards = {e: set(hrw.shards_of(e, executors, day, v)) for e in executors}
+                for e in executors:
+                    owned = [p for p in phones if hrw.vshard_of(p, day, v) in shards[e]]
+                    self.assertTrue(
+                        owned,
+                        "执行体 %s 在 %s(%s) 名下零账号 ⇒ 多执行体退化成单执行体：%s"
+                        % (e, day, host, phones))
 
     def _assert_mutation_applied(self, res, mutate):
         """哨兵断言：变异已生效。不过则报**变异未生效**（与不变式红与否无关）。"""
