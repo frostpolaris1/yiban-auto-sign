@@ -129,15 +129,20 @@ def probe_fake_window_always_true():
 
 
 def probe_ci_wordset_drift():
-    """§六-15：`--ci` 的 `-k` 词集是否有两个定义点且已漂移。"""
+    """§六-15：`--ci` 的目标集是否单源（`-k` 词集已退役，车道名册是唯一事实源）。
+
+    2026-10-17 vckk 阶段 2-a 之前：`--ci` 用 `-k "security or …"` 关键词子集，脚本与
+    入库契约文档各写一份、已漂移（故本项当年登记 BLOCKED）。现在子集整体换成
+    `tests/lane-roster.tsv`，`-k` 词集不应再出现在任何一面；本探针判两件事——
+    旧词集确已退役 ＋ 名册被脚本与文档共同引用。
+    """
     script = _read("scripts/dev-verify.sh")
     doc = _read("docs/dev/dev-verify.md")
-    m_s = re.search(r'-k "(security[^"]*)"', script)
-    m_d = re.search(r'-k "(security[^"]*)"', doc)
-    if not (m_s and m_d):
-        return "wordset-not-found"
-    return (m_s.group(1) != m_d.group(1),
-            "claim" in m_s.group(1), "claim" in m_d.group(1))
+    legacy = re.search(r'-k "(security[^"]*)"', script) or re.search(r'-k "(security[^"]*)"', doc)
+    if legacy:
+        return "legacy-wordset-still-present"
+    return ('LANE_ROSTER_REL="tests/lane-roster.tsv"' in script,
+            "车道名册" in doc)
 
 
 #: 逐项登记：`项号 -> (判定, 处置说明, 工单/理由, 探针, 期望观察值)`。
@@ -235,13 +240,13 @@ REGISTRY = {
          "本批新建",
          lambda: _tracked("tests/test_skip_visibility_gate.py") != [],
          True),
-    15: (BLOCKED,
-         "`--ci` 词集的单一真源：脚本与入库契约文档两份定义已漂移"
-         "（`scripts/dev-verify.sh` 有 `claim`/`queue`，`docs/dev/dev-verify.md` 没有）。"
-         "**本批不能做**：两个载体（`scripts/dev-verify.sh`、`docs/dev/dev-verify.md`）"
-         "都在本批硬边界内不许动",
-         "140 §五 S13 M8-m2；边界解除后与 drqw／plo2 同批",
-         probe_ci_wordset_drift, (True, True, False)),
+    15: (COVERED,
+         "`--ci` 目标集的单一真源：原 `--ci` 用 `-k` 关键词子集，脚本与入库契约文档"
+         "两份定义已漂移（原登记 BLOCKED）。2026-10-17 vckk 阶段 2-a 把子集整体换成"
+         " `tests/lane-roster.tsv`（车道名册），`-k` 词集退役；名册漏归类/漂移由"
+         " `tests/test_gate_lane_roster.py` 对真实扫描与 pytest 收集对账，红得出来",
+         "本批（vckk 2-a）",
+         probe_ci_wordset_drift, (True, True)),
 }
 
 
