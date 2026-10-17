@@ -5,8 +5,8 @@
 
 - `entry/cli/`：命令行入口。旧坐标 `yiban/cli.py` 是转发壳。
 - `app/`：用例编排（`round` / `runner` / `probe`）。旧坐标 `yiban.engine.{round,runner,probe}`
-  是转发壳。`engine/` 尚未搬完的编排件（`executor_v3` / `attempts` / `planner` /
-  `schedule` / `token_bucket` / `workers` / `alerts` 之外的支撑件）仍在原地。
+  是转发壳。`engine/` 尚未搬完的件（`executor_v3` / `attempts` / `planner` / `schedule` /
+  `token_bucket` 与 `cli_support` / `config_check` / `accounts` 等支撑件）仍在原地。
 - `core/`：纯函数层（`clock` / `status` / `window` / `masking` / `hrw` / `elbow`）。
   旧坐标 `yiban.{clock,status,window,masking}`、`yiban.engine.hrw` 是转发壳。
 - `ports/`：端口声明。
