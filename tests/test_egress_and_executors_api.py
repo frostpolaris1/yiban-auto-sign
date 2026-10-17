@@ -8,7 +8,7 @@
    last_executor 的口径、限频实测端点的冷却与窗口判据、校验失败文案不回填凭据。
 对应实现：yiban/egress.py（resolve、describe、assignments、replace_slot、worker_owner/fallback_owner/single_owner/parse_owner/role_label、worker_presence）、web/app.py
    的 /api/scheduler/executors* 与
-   /api/accounts、yiban/store/claims.py（activity、owners_since）、scripts/state_io
+   /api/accounts、yiban/adapters/persistence/claims.py（activity、owners_since）、scripts/state_io
    的心跳文件。
 关键断言：分配规则唯一：拉起执行体的一方与展示接口必须得到同一答案（列表按序取、不足循环、空位=直连、未配列表退回单出口）。任何响应与审计都不得出现代理凭据或含主机名的身份原串，只许
    scheme://host[:port] 与角色 + 1-based

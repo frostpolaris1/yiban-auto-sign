@@ -17,7 +17,7 @@ r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉
     ①（正向）真实键 `KEY=value` 三处读到同一值；
     ②（反向）`export KEY=value` 三处都读不到 `KEY`，且不与真实键串台。
 
-对应实现：`yiban/infra/env_io.py`（`parse_env_file` / `key_line_pattern` /
+对应实现：`yiban/adapters/config/env_io.py`（`parse_env_file` / `key_line_pattern` /
     `env_key_values` / `render_env_write`）、`scripts/child_env.py`、
     `run.sh` / `run_probe.sh` 的加载循环（文本逐字一致性由
     `tests/test_runsh_env_parse.py` 钉住，本文件钉行为面收敛）。

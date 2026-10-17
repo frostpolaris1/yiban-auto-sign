@@ -44,7 +44,7 @@ def _facade():
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     return db
 
 

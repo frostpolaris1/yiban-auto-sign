@@ -47,8 +47,8 @@ import time
 
 import requests
 
-from yiban import masking
-from yiban.clock import now
+from yiban.core import masking
+from yiban.core.clock import now
 
 logger = logging.getLogger(__name__)
 

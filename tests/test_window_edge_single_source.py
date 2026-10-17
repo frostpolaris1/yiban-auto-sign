@@ -6,11 +6,11 @@
     新键越界 / 旧键取到上界 600 / 三键全缺）；四个读者（`window.parse_edges`、
     `window.from_env`、`web.render.edge_config`、`schedule._schedule_config`）在同一份
     env 输入下必须给出同一个 (front, back)；生产树的 Python 代码里按键名读这三个 env 键的
-    语句只准出现在 `yiban/window.py::parse_edges` 内；`parse_edges` 的 docstring 主张的
+    语句只准出现在 `yiban/core/window.py::parse_edges` 内；`parse_edges` 的 docstring 主张的
     先后次序与两条合法域必须与实测一致；取值被拒（越界或无法解析）必须出一条 WARNING，
     点名键、原值、合法域与实际采用的值；合法值与缺席必须不出声；旧键 0~600、新键 0~300
     的域分叉必须留在具名常量、docstring 与 web 侧口径注释里（工单 yz90）。
-对应实现：yiban/window.py（parse_edges、from_env、_int_or_none、EDGE_MAX_SEC、
+对应实现：yiban/core/window.py（parse_edges、from_env、_int_or_none、EDGE_MAX_SEC、
     LEGACY_EDGE_MAX_SEC）、web/render.py（edge_config）、
     yiban/engine/schedule.py（_schedule_config）。
 关键断言：窗口边界只有一个 env 解析入口。第二份解析接进任何读者 ⇒ 取值表当场对不上；
@@ -37,7 +37,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EDGE_KEYS = ("YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC",
              "YIBAN_WINDOW_EDGE_SEC")
 #: 唯一许可的 env 解析入口：（相对路径，函数名）。越界判据以此为轴。
-SINGLE_ENTRY = ("yiban/window.py", "parse_edges")
+SINGLE_ENTRY = ("yiban/core/window.py", "parse_edges")
 #: AST 扫描的生产树目录，与 `scripts/check-shared-facts.sh` 的 DEFAULT_SCOPE 同族。
 SCAN_DIRS = ("yiban", "web", "docker", "scripts")
 SKIP_DIRS = ("__pycache__",)  # vendored 目录已退役：生产树整体受扫，不再有豁免面
@@ -221,7 +221,7 @@ class SingleParseEntryTest(unittest.TestCase):
                            for r, fn, ln, k in outside)
         self.assertEqual(
             [], outside,
-            "窗口边界的 env 键只准在 yiban/window.py::parse_edges 里读；"
+            "窗口边界的 env 键只准在 yiban/core/window.py::parse_edges 里读；"
             "以下位置各算各的：" + detail)
 
     def test_the_fixture_second_entry_gets_named(self):
@@ -402,7 +402,7 @@ class DomainDivergenceTest(unittest.TestCase):
         self.assertEqual(300, window.EDGE_MAX_SEC)
         self.assertEqual(600, window.LEGACY_EDGE_MAX_SEC,
                          "旧键上界 600 被改了：统一新旧合法域是产品决定，先裁 yz90")
-        with open(os.path.join(BASE, "yiban", "window.py"), encoding="utf-8") as fh:
+        with open(os.path.join(BASE, "yiban", "core", "window.py"), encoding="utf-8") as fh:
             body = fh.read()
         self.assertIn("LEGACY_EDGE_MAX_SEC",
                       body.split("def parse_edges", 1)[1].split("def retry_hm", 1)[0],

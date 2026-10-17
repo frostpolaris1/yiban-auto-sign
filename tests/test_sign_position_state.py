@@ -14,8 +14,8 @@
      且**不许**退回旧的文本判据；
   ⑥ 突变验证：把源码里 `4: STATUS_ALREADY` 那一行删掉，本文件的守卫断言必须翻面。
 对应实现：`yiban/client.py`（`SIGN_POSITION_STATE_STATUS` / `_as_state_int` /
-    `_judge_by_state` / `YibanClient.signin`）、`yiban/status.py`（词表与三处集合口径）、
-    `yiban/engine/executor_v3.py`（`_tier_prefix` / 了结收尾）、`yiban/store/queue_store.py`
+    `_judge_by_state` / `YibanClient.signin`）、`yiban/core/status.py`（词表与三处集合口径）、
+    `yiban/engine/executor_v3.py`（`_tier_prefix` / 了结收尾）、`yiban/adapters/persistence/queue_store.py`
     （`requeue_failed` 的档位过滤）。
 关键断言：`State=4` 是 2026-10-08 只读采集的实拍形态（`Msg="已更改"`、`Position` 空）。
     旧实现按 `"已签到" in Msg` 判，两个文本判据都不命中，于是这个**已签到**的账号落进

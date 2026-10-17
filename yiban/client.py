@@ -24,12 +24,13 @@ from datetime import datetime
 import requests
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
-from yiban import masking, security
 from yiban import platform as yiban_platform
-from yiban import status as yiban_status
+from yiban import security
+from yiban.adapters.persistence.accounts import account_still_signable, update_account
 from yiban.adapters.protocol_yiban import ParseError, parse_device_state
+from yiban.core import masking
+from yiban.core import status as yiban_status
 from yiban.geo import generate_position_in_polygon
-from yiban.store.accounts import account_still_signable, update_account
 
 logger = logging.getLogger("yiban.client")
 
@@ -137,7 +138,7 @@ class _SessionCache:
         任何缓存读失败都按未命中处理，绝不阻断正常登录。会话是否仍有效由
         `login_killyiban` 第 1 步的 OAuth 探针判定。
         """
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         client = self._client
         if not db.is_initialized():
             return None
@@ -160,7 +161,7 @@ class _SessionCache:
 
     def save(self, session, csrf):
         """完整登录成功后保存 cookie jar + csrf（密文落库）；失败仅告警不影响签到。"""
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         client = self._client
         if not db.is_initialized():
             return
@@ -180,7 +181,7 @@ class _SessionCache:
 
     def clear(self):
         """清除本账号会话缓存（探针判死 / 风控类失败联动清除）。"""
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         client = self._client
         if not db.is_initialized():
             return

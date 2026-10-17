@@ -15,7 +15,7 @@
 cookies 密文存储且绑 phone 作 AAD、作废日志的调用点脱敏、时钟守卫下的清理跳一轮后续跑、
 `/api/me/restore` 的会话恢复与被盗 Cookie 失效、purge 的权限档位与通知覆盖面、
 签到 stale 分类的尝试预算。
-对应实现：`yiban/store/session_cache.py`（读写与 TTL 判定）、`yiban/infra/account_crypto.py`
+对应实现：`yiban/adapters/persistence/session_cache.py`（读写与 TTL 判定）、`yiban/adapters/config/account_crypto.py`
 的加解密（AAD 用手机号）、web 的 restore / purge 路由与 `alerts` 的清理闸门。
 关键断言：**TTL 与跨业务日是两道独立的门**——`test_ttl_env_override_extends_validity`
 放宽前者、`test_cross_day_row_dies_even_with_seventy_two_hour_ttl` 必须仍然判死后者；

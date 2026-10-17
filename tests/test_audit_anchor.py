@@ -22,9 +22,9 @@
 覆盖：审计写入失败的可见性（返回值 + 失败计数 + 重试）、库外锚点对「删尾 / 清空整表 /
 无留痕删前缀 / 链尾内容篡改」四种破坏的检出、合法保留期清理不得误报、
 `update_account` 读-改-写的跨线程互斥与换绑重加密。
-对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`audit` / `verify_audit_chain` /
 `record_audit_anchor` / `verify_audit_anchor` / `audit_health` / `_audit_cleanup` /
-`_backfill_audit_hashes`）与 `yiban/store/accounts.py` 的 `update_account`。
+`_backfill_audit_hashes`）与 `yiban/adapters/persistence/accounts.py` 的 `update_account`。
 关键断言：锚点类用例都是"破坏后必须 False"**成对**配一条"合法清理必须 True"——只留一边
 就会把告警调成常亮或常灭而无人发现。锚点只比 min_id/max_id/head_hash 三元组，**内容篡改
 由 `verify_audit_chain` 的逐行哈希负责**（见 `test_anchor_detects_tail_tamper` 里为什么

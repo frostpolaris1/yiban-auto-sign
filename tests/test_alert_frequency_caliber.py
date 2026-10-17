@@ -11,14 +11,14 @@
 对应实现：`scripts/child_env.py::parse_env_file`（上界口径块）、
    `run.sh` 的「告警频次口径」段（口径正文）、`docker/scheduler.py`（两枚周期常量的
    定义点与到点判法、兜底闸门 `_fallback_gate_env` 的读盘）、
-   `yiban/engine/workers.py`（常驻扫描间隔的键与缺省域）、
+   `yiban/workers/workers.py`（常驻扫描间隔的键与缺省域）、
    `web/routes/signin_api.py`（web 手动签到每请求一次）。
 关键断言：九条，缺一即红——
    ① 上界块按常量名引用三个周期来源，且每名在 `child_env.py` 内只出现一次；
    ② 上界块位于 `try:` 之上（同批管住两个 except 分支，不是只管 `OSError`）；
    ③ 注释里没有任何常量值或"数字 次/日"（本单要消灭的正是这种会过期的假话）；
    ④ 两枚周期常量仍是 `docker/scheduler.py` 的定义点并参与到点判法，值锚在本测试；
-   ⑤ 常驻扫描间隔的键与缺省域仍是 `yiban/engine/workers.py` 的那一处；
+   ⑤ 常驻扫描间隔的键与缺省域仍是 `yiban/workers/workers.py` 的那一处；
    ⑥ 三个周期来源今日仍有出处（兜底闸门读盘 / web 每请求 / 兜底外壳在场）；
    ⑦ 口径正文住在 `run.sh`，且点名两类的承载者；
    ⑧ 口径正文与 `child_env` 的上界块逐字同名同锚；
@@ -39,7 +39,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CHILD_ENV = os.path.join(BASE, "scripts", "child_env.py")
 SCHEDULER = os.path.join(BASE, "docker", "scheduler.py")
-WORKERS = os.path.join(BASE, "yiban", "engine", "workers.py")
+WORKERS = os.path.join(BASE, "yiban", "workers", "workers.py")
 RUN_SH = os.path.join(BASE, "run.sh")
 SIGNIN_API = os.path.join(BASE, "web", "routes", "signin_api.py")
 FALLBACK_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
@@ -57,7 +57,7 @@ PERIODIC_VALUES = {
     "FALLBACK_TRY_SECONDS": ("docker/scheduler.py", 60),
 }
 # 常驻扫描间隔：键名 + 缺省值 + 合法域（唯一出处是 workers.run_fallback_worker）
-RESIDENT_KEY = ("yiban/engine/workers.py", "YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
+RESIDENT_KEY = ("yiban/workers/workers.py", "YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
 
 
 def _text(path):

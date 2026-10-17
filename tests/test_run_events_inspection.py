@@ -7,7 +7,7 @@
 读它。排障时"谁签的、走到哪一步"只能靠文件日志猜。本文件钉住新开的读取面。
 
 覆盖的三件交付（逐件一组）：
-1. 读取层 + 轮级摘要：`yiban/store/run_events.py::summarize`（每轮一行——领取数 /
+1. 读取层 + 轮级摘要：`yiban/adapters/persistence/run_events.py::summarize`（每轮一行——领取数 /
    成功数 / 失败数 / 未执行数 / 耗时）；
 2. 事件时间线：`run_events.py::timeline`（按轮展开 claim → start → success/fail →
    finalize）与 `GET /api/admin/run-events` 的 `events` 字段；
@@ -22,7 +22,7 @@
   页面据此给"跨月回溯请走审计日志页"的指引，不静默出空表。
 
 标签：A · 内核：队列/领取/执行体
-覆盖：`yiban/store/run_events.py`（读取层）、`web/routes/run_events_api.py`（新端点）、
+覆盖：`yiban/adapters/persistence/run_events.py`（读取层）、`web/routes/run_events_api.py`（新端点）、
     `web/app.py` 的登录守卫（默认拒绝）。
 对应实现：同覆盖清单；节点值域唯一出处仍是 `run_events.NODES`。
 关键断言：轮级计数与"领取未开始"的口径、耗时来自时刻差、时间线按写入序、掩码与

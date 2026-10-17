@@ -127,7 +127,7 @@ DATA_FILES=(data/.env)
 # SQLite 数据库的取值在下面的 env_get 之后（同一套双源口径，见 DB_FILE 段）
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
-# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、yiban/store/db.py、
+# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、yiban/adapters/persistence/db.py、
 #     .env.example），原 SIGN_STATE_DIR 与其脱钩——自定义状态目录时
 #     sign-daily/sign-state/cred-state 静默不入备份包（影响"当天是否已签"的
 #     判定恢复）。现以 YIBAN_STATE_DIR 优先，SIGN_STATE_DIR 仅作旧部署回退。
@@ -160,7 +160,7 @@ SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sig
 # 取值口径三档：进程环境 → ${ENV_FILE} → 默认值。
 # 上面的 env_get 就是这三档的本文件实现。
 # 本文件不再另写第二套 `.env` 读法。
-# 引擎侧的同一口径在 `yiban/store/db.py` 的 `init_db`，它经
+# 引擎侧的同一口径在 `yiban/adapters/persistence/db.py` 的 `init_db`，它经
 # `env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)`。
 # 过去的写法是 `${DB_FILE:-<无前缀默认>}`：键名没有前缀，也从不查 `.env`。
 # 部署把库放在自定义路径时，备份抓的是检出根下的库。
@@ -722,7 +722,7 @@ if [ -f "${KEY_FILE}" ]; then
     fi
 else
     # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（账号密码 AES-GCM 数据加密密钥，
-    # 见 yiban/infra/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
+    # 见 yiban/adapters/config/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
     if [ -f "${ENV_FILE}" ]; then
         grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/secret-key.env" \
             && log "密钥来源：${ENV_FILE} 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \

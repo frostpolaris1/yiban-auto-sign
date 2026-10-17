@@ -10,8 +10,8 @@
    兜底轮；判定不可得时不封存 + 双声音 + 本轮成功则退出码升 1）、
    `YIBAN_FALLBACK_ENABLE` 置 1 而无进程时 run.sh 启动即告警并拉起、
    **真信号杀演练**（opt-in：真 run.sh + 真监督进程 + 真子进程 + 真 SIGKILL 的整链收场）。
-对应实现：yiban/engine/workers.py（汇总与单点标记）、yiban/engine/runner.py（子执行体
-   不写标记）、yiban/engine/state_io.py（`has_undone_accounts_today`）、run.sh
+对应实现：yiban/workers/workers.py（汇总与单点标记）、yiban/app/runner.py（子执行体
+   不写标记）、yiban/adapters/statefiles/state_io.py（`has_undone_accounts_today`）、run.sh
    （封存前置与兜底接线）。
 关键断言：补签判定与 SUCCESS 必须消费同一份真实 rc——被 SIGKILL 的子执行体若被归 0，
    run.sh 就写 SUCCESS、封存收尾标记，"进程消失后的当日恢复腿"被同一条坏 rc 弹开。

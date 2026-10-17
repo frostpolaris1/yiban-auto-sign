@@ -38,9 +38,9 @@ import json
 import logging
 import sqlite3
 
-from yiban.infra import account_crypto
-from yiban.masking import mask_phone as _mask_phone
-from yiban.store import connection as _connection
+from yiban.adapters.config import account_crypto
+from yiban.adapters.persistence import connection as _connection
+from yiban.core.masking import mask_phone as _mask_phone
 
 logger = logging.getLogger("yiban.store.accounts")
 
@@ -55,7 +55,7 @@ def _facade():
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     return db
 
 
@@ -117,7 +117,7 @@ def account_still_signable(account):
     try:
         return _facade().account_is_signable(account_id)
     except Exception as e:
-        from yiban import masking
+        from yiban.core import masking
         logger.debug(f"[{getattr(account, 'phone', '')}] 账号有效性复核失败（按有效处理）: "
                      f"{masking.sanitize_text(e)}")
         return True

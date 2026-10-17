@@ -82,9 +82,9 @@ import contextlib
 import datetime
 import logging
 
-from yiban import clock
-from yiban.masking import mask_phone as _mask_phone
-from yiban.masking import sanitize_text as _sanitize_text
+from yiban.core import clock
+from yiban.core.masking import mask_phone as _mask_phone
+from yiban.core.masking import sanitize_text as _sanitize_text
 
 logger = logging.getLogger("yiban.store.run_events")
 
@@ -135,7 +135,7 @@ def _facade():
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     return db
 
 

@@ -8,7 +8,7 @@
    与权限脱敏、单行写入不影响他行、拉起列表与槽位号贯穿身份/锁/心跳、派发监督进程前的周末/暂停/补签轮闸门。
 对应实现：yiban/egress.py（manifest
    读写、legacy_rows、apply_legacy_config、manifest_state、SLOT_MAX）、web/app.py
-   的执行体行接口、yiban/store/claims.py（owners_since）、yiban/engine/runner.py
+   的执行体行接口、yiban/adapters/persistence/claims.py（owners_since）、yiban/app/runner.py
    与 workers.py（拉起列表、槽位透传、派发前的门）。
 关键断言：迁移必须逐字等价（顺序、空位=直连、兜底位置、worker
    数量），旧键在写回后再留一个版本周期——不一致的表现是「升级后出口串了」。槽位只增不复用，且删掉的号若真出现在领取历史里就不得再发出去（否则新执行体顶用死执行体的身份，归属统计串人）；从没用过的号照旧复用。disabled

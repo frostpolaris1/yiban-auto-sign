@@ -8,7 +8,7 @@
     最后一个注册管理员 400、成功路径的软删标记 + 账号清除 + 会话失效 + 审计留痕 +
     邮箱可重新注册；以及超期 purge 对活跃用户的跳过。
 对应实现：`web/app.py` 的注销端点与冷却/口令校验，数据层落
-    `yiban/store/users.py`（`restore_user`、`purge_deleted_users`）。
+    `yiban/adapters/persistence/users.py`（`restore_user`、`purge_deleted_users`）。
 关键断言：429 的响应**不得回显剩余秒数**（那是给枚举者免费的探测器）；
     "最后一个注册管理员"必须拒（否则自助注销能把管理面注销空）。
 依赖：Flask test client + 临时 sqlite/.env，冷却表与失败计数在进程内/临时目录；

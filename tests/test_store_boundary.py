@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """store 层拆分后的**行为**回归：经 db 门面走一遍各域的真实读写。
 
-`yiban/store/db.py` 是门面：各域定义点在同包 `accounts` / `clock_meta` / `connection` /
+`yiban/adapters/persistence/db.py` 是门面：各域定义点在同包 `accounts` / `clock_meta` / `connection` /
 `session_cache` / `time_prefs` / `tracking` 等模块。本文件钉住的是**经门面能真用**：
 
 - 各域 CRUD 往返（accounts 账号、clock_meta 单键、session_cache 作废、time_prefs 统计与
@@ -13,7 +13,7 @@
 - 包内不得裸 `import db/mailer/notify/signin`（依赖 `scripts/` 在 `sys.path` 的旧写法）。
 
 标签：C · 存储：迁移与库完整性
-对应实现：`yiban/store/*` 各域模块与 `yiban/store/db.py` 门面。
+对应实现：`yiban/adapters/persistence/*` 各域模块与 `yiban/adapters/persistence/db.py` 门面。
 依赖：临时库 + 临时 `.env`，无网络、无 skip。
 
 2026-10-16 饮食批：原五项**转发机制**契约（`SameObjectTest_*` 的 `is` 同一性、
@@ -104,7 +104,7 @@ class _AccountsSplitBase(unittest.TestCase):
 
     def setUp(self):
         # 连接层的 .env / 库路径是**模块级全局**，`init_db(env_file=…)` 无条件改写
-        # （见 yiban/store/connection.py 的 set_env_file / set_db_file）。子类
+        # （见 yiban/adapters/persistence/connection.py 的 set_env_file / set_db_file）。子类
         # （如 FacadeBehaviourTest）用 setUpClass 临时目录里的 .env 初始化，而
         # tearDownClass 会 rmtree 掉该目录——不还原就留下悬空的全局路径，污染后续
         # 用例（当前全绿是碰巧）。收尾手法与 test_store_connection_split 一致。
@@ -507,7 +507,7 @@ class StoreDbLayoutTest(unittest.TestCase):
         )
 
 
-DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
+DB_PATH = os.path.join(BASE, "yiban", "adapters", "persistence", "db.py")
 
 
 def _source():

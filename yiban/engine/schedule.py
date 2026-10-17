@@ -20,10 +20,10 @@ import random
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping
 
-from yiban import clock, config_loader, window
-from yiban.engine import hrw
-from yiban.infra import env_io as _env_io
-from yiban.store import db
+from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.persistence import db
+from yiban.core import clock, hrw, window
 
 logger = logging.getLogger("yiban")
 
@@ -364,7 +364,7 @@ def _schedule_config(now: datetime | None = None) -> dict[str, Any]:
     reset_daily_alerts(now)
     # 局部导入：alerts 反向依赖本模块的窗口判定（告警要判"窗口是否还开着"），
     # 模块级互引会成环；本函数每天只调用几次，局部导入的开销可忽略。
-    from yiban.engine import alerts
+    from yiban.adapters.notifier import report as alerts
 
     mode = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
     order = os.environ.get("YIBAN_SIGN_ORDER", "").strip().lower()
@@ -511,7 +511,7 @@ def _schedule_blocks(cfg: Mapping[str, Any]) -> tuple[list[tuple[float, float]],
     缓冲过大时 `window.bounds` 只收缩缓冲、保留窗口（`edges_clamped`）；窗口本身不可用
     （宽度 <= 0）才回退默认窗口（`fell_back`）——两种退化各告警一次，块列表永不空。
     """
-    from yiban.engine import alerts  # 局部导入的理由同 _schedule_config
+    from yiban.adapters.notifier import report as alerts  # 局部导入的理由同 _schedule_config
 
     win = window.bounds(cfg)
     start_min, end_min = win.start_min, win.end_min

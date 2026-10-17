@@ -16,7 +16,7 @@
 覆盖：`mask_phones_in_text` 的文本口径（裸号/方括号/多号/幂等/不误伤）与
 `MaskingFormatter` 的输出面兜底（成文行、异常文本、临时文件 handler 落盘结果），
 再加两条"同一实现"的接线断言。
-对应实现：`yiban/masking.py` 的 `mask_phones_in_text` / `mask_phone`、
+对应实现：`yiban/core/masking.py` 的 `mask_phones_in_text` / `mask_phone`、
 `yiban/logging_ext.py` 的 `MaskingFormatter.format`，展示层 `_mask_log_phones` 复用同一实现。
 关键断言：**遮罩发生在"最终成文之后"这一层**——`format()` 覆写的是
 `Formatter.format` 的返回串，所以 `%s` 插值后的号和 traceback 里的号都在射程内

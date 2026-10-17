@@ -48,7 +48,9 @@ CONTRACT_IDS = (
     "adapters-no-upward",
 )
 #: 契约 4 的 core 级模块（128 二节 L0）。四个都必须在册。
-CORE_MODULES = ("yiban.clock", "yiban.window", "yiban.status", "yiban.masking")
+#: 坐标随批 B 迁到 `yiban.core.*`（模块从 `yiban/` 根级搬进 `yiban/core/`）。
+CORE_MODULES = ("yiban.core.clock", "yiban.core.window", "yiban.core.status",
+                "yiban.core.masking")
 #: 批 A0 三条新契约的目标层：每条的 source 与 forbidden 逐字钉住。
 #: 目标里不许出现 `yiban.engine` / `yiban.store`：那两个坐标属迁移期，
 #: 批 B 拆完后它们会消失，写进契约会让契约变成"零命中空转"。

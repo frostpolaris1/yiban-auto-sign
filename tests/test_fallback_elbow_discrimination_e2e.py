@@ -4,7 +4,7 @@
 标签：B · 调度：领取/队列/执行体
 
 **本门补哪一维**：`docs/refactor/140` §五 S4 的变异对照已证死——把
-`yiban/engine/workers.py` 兜底腿接线里的 `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`
+`yiban/workers/workers.py` 兜底腿接线里的 `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`
 改成 `elbow_sec=0.0`，四个肘界族文件（`test_claim_dispatch_elbow_e2e.py` 19 passed、
 `test_fallback_gates.py` 27 passed、`test_elbow_predicate.py` 16 passed、
 `test_elbow_shadow.py` 9 passed）**全绿**。⇒ 肘界取值大小在整个时序族里**无判别力**，
@@ -25,9 +25,9 @@
 **牙**：把 `elbow_sec` 传成 `0.0`（普查用的同一条变异）⇒ 行为半的新鲜行被兜底领走 ⇒ 红；
 把接线改成 `elbow_sec=0.0` ⇒ 静态半红；把 `FALLBACK_ELBOW_SEC` 改成 0 ⇒ 两半都红。
 
-对应实现：yiban/engine/workers.py（兜底常驻的 `run_executor_v3` 调用）、
+对应实现：yiban/workers/workers.py（兜底常驻的 `run_executor_v3` 调用）、
     yiban/engine/executor_v3.py（`FALLBACK_ELBOW_SEC`、`_claim_one` 的肘界下推）、
-    yiban/store/queue_store.py（`claim_batch` 的 `run_at <= now - elbow` 判据）、
+    yiban/adapters/persistence/queue_store.py（`claim_batch` 的 `run_at <= now - elbow` 判据）、
     yiban/core/elbow.py（谓词的唯一事实源）。
 关键断言：钉"新鲜工作不被兜底领走""计划轮领得走新鲜工作""接线用的是那个常量"；
     不钉任何调用顺序。
@@ -59,7 +59,7 @@ FRESH_OFFSET = -1
 #: 过期行的偏移：比肘界再早 60 秒，故"已过期超过肘界"成立。
 STALE_OFFSET = -(executor_v3.FALLBACK_ELBOW_SEC + 60)
 
-WORKERS_PY = os.path.join(BASE, "yiban", "engine", "workers.py")
+WORKERS_PY = os.path.join(BASE, "yiban", "workers", "workers.py")
 
 
 def _fallback_claim_elbow_arg(path=WORKERS_PY):

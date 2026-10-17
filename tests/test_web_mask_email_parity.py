@@ -3,7 +3,7 @@
 
 ## 为什么要对拍
 
-两端各有一份邮箱脱敏：`yiban/masking.py` 的 `mask_email`（Task 2-9b 起的唯一真源，
+两端各有一份邮箱脱敏：`yiban/core/masking.py` 的 `mask_email`（Task 2-9b 起的唯一真源，
 展示面与审计 `actor` 列共用；`accounts_data._mask_email` / `web.app` 只是名字转发）
 与 `web/static/js/core.js` 的 `maskEmail`（渲染层幂等
 脱敏）。二者是同一口径的**两份实现**，
@@ -25,7 +25,7 @@ node 不可用时跳过（本套件其余部分不引入硬性 node 依赖）。
 覆盖：前后端两份 `mask_email` / `maskEmail` 的**行为对拍**（11 组输入 + 幂等一条）
 + web 侧转发 `_mask_email` 与真源同值一条，
 另含两组与本标签无关的用例（站点描述/OG、占位字体），见下方注意。
-对应实现：`yiban/masking.py::mask_email`（唯一真源；`accounts_data._mask_email` 与
+对应实现：`yiban/core/masking.py::mask_email`（唯一真源；`accounts_data._mask_email` 与
 `web.app` 只是转发）与 `web/static/js/core.js` 的 `maskEmail`。
 关键断言：对拍跑的是真函数体（前端按花括号配对抽 JS 交给 node、后端抽 `def` 体 `exec`），
 不是"文件里有这个函数名"；`test_mask_is_idempotent_on_both_sides` 单独钉一层，
@@ -54,10 +54,10 @@ from yiban.infra import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
-# 后端邮箱脱敏的唯一真源：Task 2-9b 起 `mask_email` 住 `yiban/masking.py`
+# 后端邮箱脱敏的唯一真源：Task 2-9b 起 `mask_email` 住 `yiban/core/masking.py`
 # （展示面与审计 actor 共用），`accounts_data._mask_email` / `web.app` 只是名字转发。
 # 对拍必须从真源抽函数体——转发层接没接线由 `WebForwarderParityTest` 另钉。
-APP_PY = os.path.join(BASE, "yiban", "masking.py")
+APP_PY = os.path.join(BASE, "yiban", "core", "masking.py")
 WEB_ACCOUNTS_PY = os.path.join(BASE, "web", "services", "accounts_data.py")
 NODE = shutil.which("node")
 

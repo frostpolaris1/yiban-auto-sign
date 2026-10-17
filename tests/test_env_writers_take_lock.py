@@ -22,10 +22,10 @@
 覆盖：write_env_keys 内部取锁（钩子计数、锁文件创建）、同线程嵌套放行、跨线程互斥
     等待、运行时目录 grep 级"无不持锁 .env 写入方"、`_atomic_replace_env`/
     `_restore_env_bytes` 仅 write_env_keys 可达、新建 .env 全程锁内。
-对应实现：`yiban/infra/env_io.py` 的 `write_env_keys`（内持 `env_lock.env_write_lock`）
+对应实现：`yiban/adapters/config/env_io.py` 的 `write_env_keys`（内持 `env_lock.env_write_lock`）
     与 `_atomic_replace_env`/`_restore_env_bytes`；`yiban/infra/env_lock.py`、
     `yiban/infra/locks.py`（可重入与互斥语义）；`web/services/env_io.py` 的
-    `write_env_batch`（外层锁去重）；`yiban/engine/probe.py` 的 `_env_update_probe`
+    `write_env_batch`（外层锁去重）；`yiban/app/probe.py` 的 `_env_update_probe`
     （自写读-改-写并入单一写入口）。
 关键断言：grep 断言必须**两向钉**——列出全部违例（新写点漏锁即红），同时钉"底层
     助手引用恰好 1 处且在 write_env_keys 内"（豁免面失守即红）；只断"锁函数被调用过"
@@ -54,8 +54,8 @@ RUNTIME_DIRS = ("web", "yiban", "scripts", "docker")
 #: 唯一豁免：`env_io` 的原子落盘助手，只能由**已持锁**的 `write_env_keys` 调用
 #: （"只能被 write_env_keys 可达"由引用计数断言单独钉死）
 SANCTIONED_WRITERS = {
-    ("yiban/infra/env_io.py", "_atomic_replace_env"),
-    ("yiban/infra/env_io.py", "_restore_env_bytes"),
+    ("yiban/adapters/config/env_io.py", "_atomic_replace_env"),
+    ("yiban/adapters/config/env_io.py", "_restore_env_bytes"),
 }
 
 #: 函数源码里出现任一标记即视为"该函数已把锁责任交给/落在 write_env_keys 一侧"
@@ -164,7 +164,7 @@ class NoUnlockedEnvWriterTest(unittest.TestCase):
     def test_low_level_rewriters_only_reachable_from_write_env_keys(self):
         """豁免面不失控：两个原子写助手在 env_io 内各**只剩一处**引用，且在
         `write_env_keys` 函数体里（引用计数漂移 = 出现第二个调用方 = 锁被旁路）。"""
-        with io.open(os.path.join(BASE, "yiban", "infra", "env_io.py"),
+        with io.open(os.path.join(BASE, "yiban", "adapters", "config", "env_io.py"),
                      encoding="utf-8") as f:
             src = f.read()
         tree = ast.parse(src)

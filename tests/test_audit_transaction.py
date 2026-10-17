@@ -20,12 +20,12 @@
 （`audit_write_failures_unnotified` / `audit_alert_needs_attention`）、
 `_backfill_audit_hashes` 的单事务回滚，以及 `scripts/audit_verify.py` 的退出码映射
 （0 通过 / 1 篡改 / 2 未查·锁住·无法定论）。
-对应实现：`yiban/store/audit_chain.py`（`audit` / `audit_unit` / `record_in_txn` /
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`audit` / `audit_unit` / `record_in_txn` /
 `audit_or_refuse` / `audit_head_hash_ex` / `_backfill_audit_hashes` / 欠账基线 /
 `new_request_scope_id` 与 `_process_scope` 的切段形状）、
-`yiban/store/accounts.py`（`add_account` / `update_account` /
+`yiban/adapters/persistence/accounts.py`（`add_account` / `update_account` /
 `delete_accounts_by_owner` 的 `audit_spec`）、
-`yiban/store/users.py`（`purge_deleted_users_hard` 的 `audit_spec`：清除清单事务内产出）、
+`yiban/adapters/persistence/users.py`（`purge_deleted_users_hard` 的 `audit_spec`：清除清单事务内产出）、
 `scripts/audit_verify.py`。
 关键断言：**"未查"与"通过"必须是两个不同返回值，"锁住"与"检出篡改"必须不同码**；
 业务效果可见 ⇒ 审计行必在（kill 注入后两者同在或同不在）；回填失败必须回滚到原链。

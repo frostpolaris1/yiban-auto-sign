@@ -18,6 +18,7 @@
 同时锁住"只有一份实现"：四个模块原先散在 `scripts/` 下，迁移后旧路径必须消失
 （留同名文件会让人 import 到另一份，正是本项目反复踩过的"两份实现"坑）。
 """
+import importlib
 import io
 import os
 import re
@@ -36,8 +37,16 @@ FORBIDDEN = (
 
 class InfraLayerTest(unittest.TestCase):
     def _src(self, name):
-        with io.open(os.path.join(BASE, "yiban", "infra", name + ".py"),
-                     encoding="utf-8") as f:
+        """读该模块的**真实源文件**（按其模块坐标解析）。
+
+        批 B 把 `env_io` / `account_crypto` 搬出 `yiban/infra/`
+        （→ `yiban/adapters/config/`），旧坐标只剩转发壳。硬编码
+        `yiban/infra/<name>.py` 会读到壳，使"不导入业务层"判据退化为空转。
+        故锚点改为按坐标取真实源文件：不变式不变，成员搬家后仍生效
+        （壳会被 importlib 换成实现模块，`__file__` 指实现）。
+        """
+        mod = importlib.import_module("yiban.infra." + name)
+        with io.open(mod.__file__, encoding="utf-8") as f:
             return f.read()
 
     def test_old_paths_are_gone(self):
@@ -47,9 +56,10 @@ class InfraLayerTest(unittest.TestCase):
                     os.path.exists(os.path.join(BASE, "scripts", name + ".py")),
                     f"scripts/{name}.py 仍在：会出现第二份实现",
                 )
+                mod = importlib.import_module(f"yiban.infra.{name}")
                 self.assertTrue(
-                    os.path.exists(os.path.join(BASE, "yiban", "infra", name + ".py")),
-                    f"yiban/infra/{name}.py 缺失",
+                    os.path.isfile(mod.__file__),
+                    f"yiban.infra.{name} 解析不到真实源文件（{mod.__file__!r}）",
                 )
 
     def test_importable_as_package(self):
