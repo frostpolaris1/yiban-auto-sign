@@ -37,7 +37,7 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from yiban import clock
+from yiban.core import clock
 from yiban.masking import mask_phone
 from yiban.store import migrations
 

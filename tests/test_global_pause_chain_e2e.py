@@ -399,7 +399,7 @@ class _ChainBase(unittest.TestCase):
     # ---- web 显示侧读法（与既有日历用例同源口径） ----
     def _engine_truth_reason(self, now):
         """引擎侧事实判定：喂**同一份 .env** 的门唯一实现（子进程内引擎读的是它）。"""
-        from yiban import clock
+        from yiban.core import clock
         from yiban.engine import schedule as yb_schedule
         from yiban.infra import env_io
         return yb_schedule.day_off(now or clock.now(),
@@ -431,8 +431,8 @@ class GlobalPauseChainTest(_ChainBase):
     """.env 急停 → run.sh 真链 → rc/状态文件/页面显示三处一致。"""
 
     def test_pause_full_chain_rc2_and_display_same_source(self):
-        from yiban import clock
         from yiban import status as yiban_status
+        from yiban.core import clock
 
         run = self._run_chain()
         # ① 判码契约（只钉不改）：引擎在 main 的门处 return 2，run.sh 原样透传退出。
@@ -495,7 +495,7 @@ class GlobalPauseChainTest(_ChainBase):
         的既有语义不再在本用例分支，改由 `test_release_run_lock_busy_is_rejected_rc3`
         对照用例钉住（构造持锁 ⇒ 无锁后端平台同码），平台差异只留这段注记，不留死分支。
         """
-        from yiban import clock
+        from yiban.core import clock
         self._write_env(pause="0", user_paused="true")
         self._zero_test_account_ledger()
         self.assertFalse(os.path.exists(self._engine_run_lock_path()),
@@ -566,7 +566,7 @@ class GlobalPauseChainTest(_ChainBase):
     def test_same_source_equality_bites_on_forged_display_side(self):
         """活体反例：把 web 读源伪造掉（旧病灶 `env=None` 落回 os.environ 的形状），
         同源性等式两侧必须不等——证明上一条用例的 assertEqual 不是恒真。"""
-        from yiban import clock
+        from yiban.core import clock
         now = clock.now()
         truth = self._engine_truth_reason(now)
         self.assertEqual(truth, "paused")            # 本轮 .env 写着急停（setUp 默认）
@@ -585,7 +585,7 @@ class GlobalPauseChainTest(_ChainBase):
         """活体反例（事实侧）：引擎事实与显示各自独立地现读**同一份文件**；
         改写文件 ⇒ 两侧同时翻转，而上一轮 run.sh 落盘的 GLOBAL_PAUSED 仍是历史事实——
         显示跟的是源，不是旧 rc。"""
-        from yiban import clock
+        from yiban.core import clock
         now = clock.now()
         self.assertEqual(self._engine_truth_reason(now), "paused")
         self.assertEqual(self.webapp._day_off_reason(now), "paused")
