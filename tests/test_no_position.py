@@ -381,13 +381,14 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
 class NoPositionPhotoRequirementTest(unittest.TestCase):
     """平台要求上传签到照片时，无点位失败必须自解释（日志与 message 两处）。
 
-    事实形状：`signPosition` 返回 `Position: []` 且 `IsNeedPhoto` 非零（或 `Remark`
-    含"照片"）。本组钉住三条不变式：
+    事实形状：`signPosition` 返回 `Position: []` 且 `Remark` 含"照片"。本组钉住三条不变式：
     ① 状态仍是 `no_position`——零行为变化，不得改判、不得加跳过或重试；
     ② 「照片」事实同时出现在日志与结果 message——后者进 `sign_events.message`
        与状态文件（executor_v3 的既有载体）；
-    ③ 无照片信号时不得声称需要照片（防误报）。
-    `IsNeedPhoto` 取值语义未证；本组只钉"原值可见"，不钉"2 等于需要照片"。
+    ③ 照片提示**只认平台散文（`Remark`）**，`IsNeedPhoto` 非零而 `Remark` 不提照片时
+       **不得**声称需要照片——实拍只观测到取值 2、语义未证，拿"非零"当判据会在平台
+       恒发 2 时对每个无点位账号系统性误报（比沉默更坏）。
+    原值两条都照常留证（`IsNeedPhoto=<原值>`），判据留给人看。
     """
 
     PHOTO_REMARK = "因受不可抗力因素影响导致定位有误，允许在范围之外签到，但需上传签到地点的照片"
@@ -444,8 +445,8 @@ class NoPositionPhotoRequirementTest(unittest.TestCase):
             "照片附注不得改变无点位的重试预算或缓存处置",
         )
 
-    def test_remark_alone_is_enough_and_zero_flag_is_not(self):
-        """`IsNeedPhoto=0` 但 Remark 含"照片" ⇒ 仍点名；两者都没有 ⇒ 不得声称需要照片。"""
+    def test_remark_drives_the_claim_flag_never_does(self):
+        """`Remark` 是唯一判据：含"照片"就点名；非零标记单独出现**不得**点名。"""
         with self.subTest("remark-only"):
             client = self._client(is_need_photo=0, remark=self.PHOTO_REMARK)
             with self.assertLogs("yiban.client", level="WARNING") as logs:
@@ -454,7 +455,18 @@ class NoPositionPhotoRequirementTest(unittest.TestCase):
             self.assertIn("照片", message)
             self.assertIn("照片", "\n".join(logs.output))
 
-        with self.subTest("no-photo-signal"):
+        with self.subTest("nonzero-flag-without-remark"):
+            # 实拍观测值就是 2；若拿"非零"当判据，这条会误报"平台要求照片"。
+            client = self._client(is_need_photo=2, remark="")
+            with self.assertLogs("yiban.client", level="WARNING") as logs:
+                _ok, message, _skip, status = client.signin()
+            self.assertEqual(status, signin.STATUS_NO_POSITION)
+            self.assertNotIn("照片", message, "非零标记单独出现不得声称平台要求照片")
+            self.assertNotIn("照片", "\n".join(logs.output))
+            self.assertIn("IsNeedPhoto=2", message, "原值仍须留证")
+            self.assertIn("IsNeedPhoto=2", "\n".join(logs.output))
+
+        with self.subTest("no-signal"):
             client = self._client(is_need_photo=0, remark="")
             with self.assertLogs("yiban.client", level="WARNING") as logs:
                 _ok, message, _skip, status = client.signin()

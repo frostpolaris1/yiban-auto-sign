@@ -26,8 +26,10 @@
 失败 / 指定手机号未找到）；2 = 环境或凭据来源不可用（账号装载失败或装载到 0 个账号）。
 
 **已知边界**
-`IsNeedPhoto` 的取值语义**未证**（实拍只观测到 2）。脚本按原值输出，并用"照片"字样
-与"非零"两条启发式给出提示；提示**不是平台契约**，也不改变任何签到判定。
+`IsNeedPhoto` 的取值语义**未证**（实拍只观测到 2）。脚本按原值输出，照片提示只用
+`Remark` 含"照片"这一条启发式（平台自己的散文）；提示**不是平台契约**，也不改变任何
+签到判定。刻意不拿 `IsNeedPhoto` 非零当判据——平台若在正常响应里恒发 2，那会对每个
+无点位账号系统性误报"要照片"，比沉默更坏。
 """
 import argparse
 import logging
@@ -125,9 +127,14 @@ def _read_device(client):
 
 
 def _verdict(positions, state, is_need_photo, remark):
-    """结论行：**展示用启发式**，不参与任何签到判定。"""
+    """结论行：**展示用启发式**，不参与任何签到判定。
+
+    照片判据只看平台自己的散文（`Remark` 含"照片"），**不看 `IsNeedPhoto`**——
+    实拍只有取值 2、语义未证，拿"非零"当判据会在平台恒发 2 时对每个无点位账号系统性
+    误报。原值由调用方照常逐行打印，判据留给人看。
+    """
     if positions == 0:
-        if _looks_like_photo_required(is_need_photo, remark):
+        if _looks_like_photo_required(remark):
             return "无点位；平台要求上传照片（启发式）⇒ 本程序不实现，今日无法签成"
         return "无点位；未观察到照片信号（请结合 State/Msg 判断）"
     if _as_state_int(state) in (0, 1):
