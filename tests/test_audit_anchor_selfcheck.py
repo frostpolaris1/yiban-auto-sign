@@ -566,7 +566,15 @@ class LegacyPrefixIdentityTest(_Fixture):
                 self.assertEqual(h["anchor_status"], expect, h["anchor_msg"])
                 self.assertFalse(h["healthy"], h["anchor_msg"])
                 self.assertEqual(db.audit_verdict(h)["state"], expect)
-                self.assertNotIn("及更早", [d["label"] for d in db.audit_known_debt(self.anchor)])
+                # 边界用**计数**钉：前缀外三字段行不得抬高老格式行数（它不属历史前缀）。
+                # 不得改回断言 label 不存在——合法前缀本来就会产出那条 label，
+                # `assertNotIn(<label 全文>, [label])` 这类写法恒真，等于不守。
+                self.assertEqual(
+                    db.audit_anchor_summary(self.anchor)["old_format_lines"], 3,
+                    "前缀外三字段行不得被算进老格式行数")
+                self.assertEqual(
+                    [d["count"] for d in db.audit_known_debt(self.anchor)], [3],
+                    "已知欠账的计数与摘要同源，也不得被前缀外行抬高")
 
     def test_prefix_line_after_cutoff_is_not_legacy(self):
         """开头连续但日期晚于截止日的三字段行不是历史行 ⇒ 无法定论。"""
