@@ -53,6 +53,8 @@ from datetime import datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+from werkzeug.security import generate_password_hash  # noqa: E402
+
 from yiban import status as yiban_status  # noqa: E402
 
 #: 日历前端口径（**刻意保留纯 JS**，Node 对拍用例按字面量抽函数——见该文件头部说明）。
@@ -406,7 +408,7 @@ class _WebAppMixin:
         email = "cal-state-user@example.com"
         user = self._db.find_user(email)
         if user is None:
-            self._db.create_user(email, self.webapp.generate_password_hash("UserPass123!"))
+            self._db.create_user(email, generate_password_hash("UserPass123!"))
             user = self._db.find_user(email)
         c = self.webapp.create_app().test_client()
         with c.session_transaction() as s:

@@ -59,6 +59,8 @@ import time
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 #: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）
@@ -238,7 +240,7 @@ class _ChainBase(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
         cls.user = _db.find_user(USER_EMAIL)
         if cls.user is None:
-            _db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PW))
+            _db.create_user(USER_EMAIL, generate_password_hash(USER_PW))
             cls.user = _db.find_user(USER_EMAIL)
 
     @classmethod

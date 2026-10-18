@@ -26,6 +26,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -108,7 +110,7 @@ class CountOnlyTest(unittest.TestCase):
         })
 
     def _seed_users(self, n):
-        h = self.webapp.generate_password_hash("secret1")
+        h = generate_password_hash("secret1")
         for i in range(n):
             db.create_user(f"user{i:03d}@test.local", h)
 

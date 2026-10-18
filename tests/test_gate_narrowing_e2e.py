@@ -33,6 +33,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "e" * 64
@@ -134,7 +136,7 @@ class _GateNarrowBase(unittest.TestCase):
         create_app 工厂局部状态，换实例等于换一张空表，同测试内的 429 断言
         必须全程走同一实例。结束清空 alerts（注册送审的待审核提醒不算被测面）。
         """
-        db.create_user(email, self.webapp.generate_password_hash("NarrowPass1!"))
+        db.create_user(email, generate_password_hash("NarrowPass1!"))
         uc = self.webapp.create_app().test_client()
         r = uc.post("/api/login", json={"username": email, "password": "NarrowPass1!"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -400,7 +402,7 @@ class EnvWriteRefusedOperationalE2ETest(_GateNarrowBase):
         c, t = self._admin_client()
         hdr = {"X-CSRF-Token": t}
         self._inject_poison()
-        db.create_user("ra@test.local", self.webapp.generate_password_hash("Radmin#1234"),
+        db.create_user("ra@test.local", generate_password_hash("Radmin#1234"),
                        role="admin")
         rc = self.webapp.create_app().test_client()
         r = rc.post("/api/login", json={"username": "ra@test.local", "password": "Radmin#1234"})

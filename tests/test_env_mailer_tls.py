@@ -31,6 +31,7 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 from yiban.store.audit_chain import actor_tag  # noqa: E402
 
@@ -332,7 +333,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         return c, t
 
     def _reg_admin(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user("reg-admin@test.local", h(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "reg-admin@test.local", USER_PASS)

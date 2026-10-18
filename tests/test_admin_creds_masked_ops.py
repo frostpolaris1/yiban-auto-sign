@@ -31,6 +31,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -261,7 +263,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
     # ---- 3. my-accounts 日志出站脱敏（P3 修复）----
     def test_my_accounts_logs_masked(self):
         self._reset_db()
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user("u1@test.local", h(USER_PASS), role="user")
         db.add_account({"name": "Mine", "phone": "13800138000", "password": "p1",
                         "status": "active", "owner": "u1@test.local"})

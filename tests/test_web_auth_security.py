@@ -35,6 +35,7 @@ from unittest import mock
 
 from _mail_body import render_body
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
 # 单条端点改不透明 id 后，"不存在用户"用例用一个不会撞上的数字 id 表达。
 GHOST_ID = 987654321
@@ -117,7 +118,7 @@ class SecurityFixes021Test(unittest.TestCase):
 
     # ---- S1 ----
     def test_login_as_user_with_builtin_admin_email_returns_user_role(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user(BUILTIN_EMAIL, h(USER_PASS), role="user")
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": BUILTIN_EMAIL, "password": USER_PASS})
@@ -128,7 +129,7 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertFalse(me["admin"])
 
     def test_registered_admin_with_builtin_email_is_not_builtin_session(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user(BUILTIN_EMAIL, h(USER_PASS), role="admin")
         db.add_account({
             "name": "内置共享号", "phone": "13800138000", "password": "p1",
@@ -530,7 +531,7 @@ class SecurityFixes021Test(unittest.TestCase):
 
     # ---- H14 ----
     def test_account_add_auto_register_blocks_during_delete_cooldown(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user("cool@test.local", h(USER_PASS), role="user")
         self.assertTrue(db.soft_delete_user_with_accounts("cool@test.local"))
         c = self.webapp.create_app().test_client()
@@ -547,7 +548,7 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertEqual(db.load_accounts(), [], "冷却期内不应新增账号")
 
     def test_account_add_auto_register_blocks_when_users_capacity_reached(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user("exist@test.local", h(USER_PASS), role="user")
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", "1")
         c = self.webapp.create_app().test_client()
@@ -592,7 +593,7 @@ class SecurityFixes021Test(unittest.TestCase):
 
     # ---- M7 ----
     def test_my_account_delete_soft_deleted_returns_400_not_purge(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         user_email = "user@test.local"
         db.create_user(user_email, h(USER_PASS), role="user")
         acc_id = db.add_account({
@@ -937,7 +938,7 @@ class RoleHardeningTest(unittest.TestCase):
 
     def _make_formal_user(self, email, phone):
         """构造「正式用户」：注册 + 提交账号 + 管理员审核通过。"""
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/my-accounts", json={"name": "n", "phone": phone, "password": "p"},
@@ -1016,7 +1017,7 @@ class RoleHardeningTest(unittest.TestCase):
 
     def test_regular_admin_cannot_change_role(self):
         self._make_formal_user("u5@test.local", "13800138005")
-        db.create_user("reg-admin@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("reg-admin@test.local", generate_password_hash(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "reg-admin@test.local", USER_PASS)
         r = c.post(user_path(db, "u5@test.local", "/role"),
@@ -1051,7 +1052,7 @@ class RoleHardeningTest(unittest.TestCase):
             f.write(self._env_content)
 
     def test_registered_user_policy_unchanged(self):
-        db.create_user("plain@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("plain@test.local", generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, "plain@test.local", USER_PASS)
         # 10 位两类对注册用户仍然合法（不被主管理员提档策略误伤）
@@ -1085,7 +1086,7 @@ class RoleHardeningTest(unittest.TestCase):
         原先"至少保留 1 个管理员"只看 `YIBAN_ADMIN_USER` 非空，而 verify_admin 对
         下面三种态都 fail-closed 拒绝——三种态都必须在两侧同时判 False。
         """
-        good = self.webapp.generate_password_hash(ADMIN_PASS_ROLE, self.webapp.SCRYPT_METHOD)
+        good = generate_password_hash(ADMIN_PASS_ROLE, self.webapp.SCRYPT_METHOD)
         head = (f"YIBAN_ACCOUNTS_KEY={TEST_KEY_ROLE}\nYIBAN_ADMIN_USER=admin\n")
         states = (
             (f"{head}YIBAN_ADMIN_PASSWORD_HASH={good}\n", True, "哈希恰一行"),

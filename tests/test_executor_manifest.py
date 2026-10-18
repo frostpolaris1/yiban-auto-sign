@@ -38,6 +38,8 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+from werkzeug.security import generate_password_hash  # noqa: E402
+
 from yiban import clock, egress  # noqa: E402
 
 logging.getLogger("yiban").addHandler(logging.NullHandler())
@@ -705,7 +707,7 @@ class RowPermissionTest(_WebBase):
         from yiban.store import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         store_db.create_user("admin2@test.local",
-                             self.webapp.generate_password_hash("UserPass1234!"),
+                             generate_password_hash("UserPass1234!"),
                              role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={

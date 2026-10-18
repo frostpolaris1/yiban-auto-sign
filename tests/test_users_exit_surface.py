@@ -38,6 +38,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -170,7 +172,7 @@ class OwnerDisplayTest(_Base):
     def test_api_users_row_has_masked_display(self):
         """/api/users 每行带不透明 id 与遮罩 display（前端禁止再算第二套）。"""
         db.create_user(PHONE_LOCAL_EMAIL,
-                       self.webapp.generate_password_hash("UserPass#123"))
+                       generate_password_hash("UserPass#123"))
         c, hdr = self._master_client()
         users = c.get("/api/users", headers=hdr).get_json()["users"]
         row = [u for u in users if u["email"] == PHONE_LOCAL_EMAIL]
@@ -208,7 +210,7 @@ class OpaqueIdRoutingTest(_Base):
 
     def test_role_change_by_id_works_and_url_has_no_email(self):
         """真 id 定位：设为/取消管理员生效，且审计/响应面不含操作目标邮箱明文。"""
-        db.create_user(PLAIN_EMAIL, self.webapp.generate_password_hash("UserPass#123"))
+        db.create_user(PLAIN_EMAIL, generate_password_hash("UserPass#123"))
         db.add_account({"name": "A", "phone": "13900139001", "password": "pw",
                         "status": "active", "owner": PLAIN_EMAIL})
         uid = db.find_user(PLAIN_EMAIL)["id"]
@@ -256,7 +258,7 @@ class ActorSurfaceTest(_Base):
 
     def test_purge_target_masked_per_address(self):
         """purge 的 target 逐条遮罩（旧形态整表明文），计数与 detail 语义不变。"""
-        db.create_user(PLAIN_EMAIL, self.webapp.generate_password_hash("UserPass#123"))
+        db.create_user(PLAIN_EMAIL, generate_password_hash("UserPass#123"))
         db.soft_delete_user_with_accounts(PLAIN_EMAIL)
         purged = db.purge_deleted_users_hard(
             [PLAIN_EMAIL], audit_spec={"username": "admin", "action": "user_deleted_purge"})

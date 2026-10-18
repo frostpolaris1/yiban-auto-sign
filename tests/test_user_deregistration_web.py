@@ -24,6 +24,8 @@ import tempfile
 import unittest
 from datetime import timedelta
 
+from werkzeug.security import generate_password_hash
+
 from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -86,8 +88,8 @@ class UserDeregistrationWebTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("admin@test.local", self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("admin@test.local", generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
         db.add_account({"name": "U1", "phone": "13800138001", "password": "p1",
                         "status": "active", "owner": "user1@test.local"})
 

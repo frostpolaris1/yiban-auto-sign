@@ -49,6 +49,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 from yiban.infra import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -202,7 +204,7 @@ class _WebBase(unittest.TestCase):
         return [r[0] for r in conn.execute("SELECT detail FROM audit_logs")]
 
     def _sub_admin_client(self):
-        self.db.create_user(SUB_ADMIN, self.webapp.generate_password_hash(SUB_PASS),
+        self.db.create_user(SUB_ADMIN, generate_password_hash(SUB_PASS),
                             role="admin")
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": SUB_ADMIN, "password": SUB_PASS})
@@ -290,7 +292,7 @@ class BuiltinAdminDirtyEnvLoginTest(_WebBase):
     """
 
     def test_builtin_admin_login_degrades_on_dirty_env(self):
-        real_hash = self.webapp.generate_password_hash(
+        real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         env = self.base_env.replace(
             "YIBAN_ADMIN_PASSWORD_HASH=scrypt:frozen-hash-not-used-in-login",
@@ -326,7 +328,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
     """
 
     def _dirty_env_without_accounts_key(self):
-        real_hash = self.webapp.generate_password_hash(
+        real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         lines = []
         for ln in self.base_env.split("\n"):
@@ -392,7 +394,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
     def test_clean_env_auto_key_generation_still_succeeds(self):
         """阳性对照：干净 .env 上自动生成写回照常 200（本清扫不改这条路径）。"""
         from yiban.infra import account_crypto
-        real_hash = self.webapp.generate_password_hash(
+        real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         lines = []
         for ln in self.base_env.split("\n"):

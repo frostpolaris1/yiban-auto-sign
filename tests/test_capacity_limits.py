@@ -31,6 +31,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -200,7 +202,7 @@ class MaxLimitsSettingsTest(_Base):
 
     def test_non_master_admin_forbidden(self):
         self.db.create_user("admin2@test.local",
-                            self.webapp.generate_password_hash(USER_PASS), role="admin")
+                            generate_password_hash(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={
             "username": "admin2@test.local", "password": USER_PASS}).status_code, 200)

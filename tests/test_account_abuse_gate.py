@@ -30,6 +30,7 @@ import unittest
 from unittest import mock
 
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -120,7 +121,7 @@ class _B13WebBase(unittest.TestCase):
         return {"X-CSRF-Token": token}
 
     def _make_user(self, email, password=None):
-        db.create_user(email, self.webapp.generate_password_hash(password or USER_PASS))
+        db.create_user(email, generate_password_hash(password or USER_PASS))
         return email
 
 
@@ -243,7 +244,7 @@ class HighRiskDeleteTest(_B13WebBase):
 
     def test_registered_admin_uses_own_password(self):
         db.create_user("radmin@test.local",
-                       self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
+                       generate_password_hash(ADMIN_PASS), role="admin")
         self._make_user("ru1@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "radmin@test.local", ADMIN_PASS)

@@ -29,6 +29,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -115,7 +117,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
 
     def _mk_admin(self, email="admin@test.local"):
         if db.find_user(email) is None:
-            db.create_user(email, self.webapp.generate_password_hash(USER_PASS),
+            db.create_user(email, generate_password_hash(USER_PASS),
                            role="admin")
 
     # ---- 注册开关 ----
@@ -149,7 +151,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
     def test_paused_registration_does_not_block_login(self):
         """暂停注册期间已注册用户照常登录（用户裁决：仅关注册入口）。"""
         db.create_user("u1@test.local",
-                       self.webapp.generate_password_hash(USER_PASS))
+                       generate_password_hash(USER_PASS))
         self._set_pause_env("1")
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={
