@@ -174,8 +174,8 @@ python -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
 # 快集 = tests/lane-roster.tsv 的 fast 行（2026-10-17 vckk 2-a 起取代 -k 关键词子集；
 #   改动落在关键词命中面之外时子集照样绿、全量红——静默的不重合，AGENTS §十三 第 29 条）
 python -m pytest tests/ -q -n 4 --dist loadfile --ignore=<slow ∪ serial 行> --deselect=<长尾 nodeid>
-# 串行专轨 = 名册的 serial 行（本树＝多执行体靶场；与快集同抢 4 核时跑不起来，工单 zdvd）
-python -m pytest tests/test_multi_executor_drill_e2e.py -q -p no:randomly
+# 串行专轨 = 名册的 serial 行（2026-10-18 起＝真起 gunicorn 打并发的限速用例；独占核才稳）
+python -m pytest tests/test_web_rate_limit_concurrency_e2e.py -q -p no:randomly
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 bash scripts/check-shared-facts.sh
 python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
@@ -196,6 +196,15 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 ＋真实 pytest 收集对账，红得出来；该守卫本身登记在快集，不会被自己漏掉。
 慢集的自动轨＝CI 的 `slow-lane` 作业（`bash scripts/dev-verify.sh --slow`，串行跑 slow 行），
 与 verify 并行、每次 push 都跑——**slow 行不再只靠本地全量覆盖**。
+
+**现量口径（2026-10-18，PR #138 后）**：全量 301 个文件 ＝ 快集 286 ＋ 慢集 14 ＋ 串行轨 1；
+用例数口径 4813 ＝ 4639 ＋ 172 ＋ 2。**`slow` 与 `serial` 都是串行执行**（slow 由 `run_slow`
+不带 `-n`，serial 由 verify 里的单独一步），故真进程树类用例在两条道上都独占核；区别只在
+**跑在哪个作业**：`slow` 在并行的 `slow-lane` 作业（不占 verify 关键路径），`serial` 在
+verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，别放 `serial`。
+墙钟现量：CI verify **7m55s**（上限 10m）、`slow-lane` **4m2s**、本机 `--fast` **62s**。
+把重活从 `fast` 挪到 `slow` 的判据始终是那条：**墙钟真按"等外面"计费**（真实进程树／
+真实定时等待／全仓扫描）；纯计算重（bcrypt 重算等）**不挪**——那会破坏快集的覆盖口径。
 
 四道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
