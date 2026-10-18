@@ -653,8 +653,8 @@ class RunShRealSigkillDrillTest(_RunShHarness):
             victim = [m for ident, m in exes.items() if ident.startswith("worker-0")]
             self.assertTrue(victim, "两个执行体身份应以 worker-0/worker-1 区分: %s"
                             % sorted(exes))
-            # 真实命令行由监督进程构造（`-m yiban.cli sign`），演练只换了本体程序
-            self.assertEqual(victim[0]["cmd"][1:4], ["-m", "yiban.cli", "sign"],
+            # 真实命令行由监督进程构造（`-m yiban.entry.cli sign`），演练只换了本体程序
+            self.assertEqual(victim[0]["cmd"][1:4], ["-m", "yiban.entry.cli", "sign"],
                              "子执行体必须是监督进程真实命令行拉起的进程")
             os.kill(victim[0]["pid"], signal.SIGKILL)   # 真信号，不是打桩的假退出码
             rc = proc.wait(timeout=180)

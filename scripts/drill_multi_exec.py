@@ -6,7 +6,7 @@
 把"多执行体怎么协调"这类性质放进一个**本地、零后果**的环境里验掉。
 靶场不起 docker、不碰生产、不连真平台：它起一个本地假易班上游
 （`yiban/adapters/protocol_fake/__init__.py --no-tls`），拉起**真实的监督进程 ＋ 真实执行体子进程**
-（`python -m yiban.cli sign`，即 `workers.run_worker_supervisor` →
+（`python -m yiban.entry.cli sign`，即 `workers.run_worker_supervisor` →
 `executor_v3` → `signin`），并用一条**传输层改写**把子进程的全部 https 请求钉回回环
 假上游。协调逻辑（领取 / 收尾 / 收尸 / 换代 / 肘界）走的是真码，只有"网络去往哪里"
 被改写。
@@ -846,7 +846,7 @@ def _wait_supervisor(proc: subprocess.Popen, monitor: Monitor, kill_plan: dict,
 
 
 def _spawn_supervisor(childenv: dict, log_path: str | None = None) -> subprocess.Popen:
-    """拉起监督进程（真 `yiban.cli sign`）。
+    """拉起监督进程（真 `yiban.entry.cli sign`）。
 
     **输出必须落文件，不能挂 PIPE**：监督进程与它拉起的执行体每次演练会打不少行
     （迁移 INFO、逐账号日志、注入异常回溯），量过管道缓冲即**阻塞写**——写不进就
@@ -854,7 +854,7 @@ def _spawn_supervisor(childenv: dict, log_path: str | None = None) -> subprocess
     诊断材料留了下来（见 `barrier_diag`）。
     """
     fh = open(log_path, "wb") if log_path else subprocess.DEVNULL
-    proc = subprocess.Popen([sys.executable, "-m", "yiban.cli", "sign"],
+    proc = subprocess.Popen([sys.executable, "-m", "yiban.entry.cli", "sign"],
                             env=childenv, cwd=REPO,
                             stdout=fh, stderr=subprocess.STDOUT)
     if log_path:

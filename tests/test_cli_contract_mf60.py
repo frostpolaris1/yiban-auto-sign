@@ -11,7 +11,7 @@
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
     人类可读 usage/摘要仍走 stderr。
-依赖：起 `sys.executable -m yiban.cli` 子进程（纯 Python）；临时 STATE/LOG/DB/ENV，
+依赖：起 `sys.executable -m yiban.entry.cli` 子进程（纯 Python）；临时 STATE/LOG/DB/ENV，
     不碰本机真实 .env；无网络/bash/docker。
 """
 import json
@@ -53,7 +53,7 @@ def _cli_env(tmp_path):
 
 
 def _run(argv, env, timeout=120, cwd=BASE):
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=cwd, env=env,
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=cwd, env=env,
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
 

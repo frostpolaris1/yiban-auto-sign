@@ -612,7 +612,7 @@ _log "Python版本: $("$PY" --version 2>&1)"
 # 拿到锁、确实要跑本轮时核对一次。存活判定复用唯一口径 `state_io.fallback_alive`
 # （心跳文件新鲜度 ≤ 2×扫描间隔；以文件内时间戳而非"文件在不在"为准——被 kill -9
 # 的进程不会清心跳）。不在跑 ⇒ 双声音告警 + 后台拉起与 cron 件**同一条入口**
-# （`-m yiban.cli sign --fallback`）。周末/暂停/窗口门不在此重复实现：引擎每轮自
+# （`-m yiban.entry.cli sign --fallback`）。周末/暂停/窗口门不在此重复实现：引擎每轮自
 # 重判并自行退出，误拉起一个"该休息"的进程只会立刻安静结束；独立锁
 # `signin-run.lock.fallback` 保证撞上已在跑的兜底以退出码 3 结束，绝不叠进程。
 # 子进程不得继承 fd 9（本轮持有的全局运行锁）：兜底与全量轮并存靠让位+领取池，
@@ -631,8 +631,8 @@ PYEOF
         return 0
     fi
     _err "警告: YIBAN_FALLBACK_ENABLE=1 但未检测到兜底执行体在跑（心跳缺失或已过期），本轮启动即拉起"
-    _log "警告: 兜底开关置 1 而无兜底进程（心跳缺失/过期），拉起兜底常驻执行体（-m yiban.cli sign --fallback）"
-    nohup "$PY" -m yiban.cli sign --fallback < /dev/null >> "$LOG_FILE" 2>&1 9<&- &
+    _log "警告: 兜底开关置 1 而无兜底进程（心跳缺失/过期），拉起兜底常驻执行体（-m yiban.entry.cli sign --fallback）"
+    nohup "$PY" -m yiban.entry.cli sign --fallback < /dev/null >> "$LOG_FILE" 2>&1 9<&- &
     return 0
 }
 _check_fallback_wiring

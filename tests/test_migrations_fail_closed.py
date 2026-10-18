@@ -699,7 +699,7 @@ class StartupExitCodeTest(unittest.TestCase):
         return env
 
     def _run(self, argv):
-        return subprocess.run([sys.executable, "-m", "yiban.cli", *argv],
+        return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv],
                               cwd=BASE, env=self._env(), capture_output=True,
                               text=True, encoding="utf-8", errors="replace",
                               timeout=180)
