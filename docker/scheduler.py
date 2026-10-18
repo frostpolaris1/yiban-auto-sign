@@ -113,9 +113,10 @@ from yiban.core import (  # noqa: E402
     clock,
     window,
 )
-from yiban.engine import schedule, workers  # noqa: E402
+from yiban.engine import schedule  # noqa: E402
 from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 LOGDIR = os.path.dirname(env_io.resolve_path("YIBAN_LOG_FILE", "/data/logs/sign.log"))
 # LOGDIR 不借 state_gc.log_dir_from_env()：它未设键时回落到 state_dir，会把容器

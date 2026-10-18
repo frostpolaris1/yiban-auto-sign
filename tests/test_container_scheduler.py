@@ -51,7 +51,7 @@ from werkzeug.security import generate_password_hash
 
 from web.routes import me_api as web_routes_me_api
 from yiban.core import clock
-from yiban.engine import workers
+from yiban.workers import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

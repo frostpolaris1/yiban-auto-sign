@@ -57,8 +57,8 @@ if BASE not in sys.path:
 
 import signin  # noqa: E402  兼容壳：打桩口径与既有监督测试一致（转发到实现模块）
 
-from yiban.engine import runner as runner_mod  # noqa: E402
-from yiban.engine import state_io  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.app import runner as runner_mod  # noqa: E402
 
 
 def _acc(phone):
@@ -312,8 +312,8 @@ sys.path.insert(0, "%s")
 sys.path.insert(0, os.path.join("%s", "scripts"))
 _REAL_POPEN = subprocess.Popen
 from unittest import mock  # noqa: E402
-from yiban.engine import workers  # noqa: E402
-import signin  # noqa: E402  仓库里的真兼容壳（转发到 yiban.engine.runner）
+from yiban.workers import workers  # noqa: E402
+import signin  # noqa: E402  仓库里的真兼容壳（转发到 yiban.app.runner）
 
 _BODY = ("import json,os,sys,time;"
          "m=json.loads(sys.argv[1]);"

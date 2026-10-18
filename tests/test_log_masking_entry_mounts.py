@@ -222,7 +222,7 @@ class CliEntryMountTest(_MountHarness):
         """CLI 真实入口是 `runner.main`（scripts/signin.py 与 yiban.cli 都转交它）。"""
         import inspect
 
-        from yiban.engine import runner
+        from yiban.app import runner
         src = inspect.getsource(runner.main)
         self.assertIn("_setup_cli_logging()", src,
                       "runner.main 未装配 CLI 日志——防线在 CLI 形态缺席")

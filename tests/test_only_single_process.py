@@ -38,8 +38,9 @@ if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
 from web.services import manual_sign  # noqa: E402
+from yiban.app import runner  # noqa: E402
 from yiban.core import status as yiban_status  # noqa: E402
-from yiban.engine import runner, workers  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 PHONE = "13800138000"
 TEST_KEY = "a" * 64
@@ -165,7 +166,7 @@ except Exception:
 _DRIVER_SRC = r'''
 import os, sys
 sys.path.insert(0, os.environ["M74_REPO"])
-from yiban.engine import runner
+from yiban.app import runner
 
 rc = runner.main(["--only", os.environ["M74_PHONE"], "--workers", "2"])
 with open(os.environ["M74_REC"], "a", encoding="utf-8") as f:
@@ -305,7 +306,9 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
 
     def _seed_other_rows(self):
         """把当日 V 钉死，并在**实际会采用的 V** 下的同一分片里种别人的行。"""
-        from yiban.engine import executor_v3, hrw, state_io
+        from yiban.adapters.statefiles import state_io
+        from yiban.core import hrw
+        from yiban.engine import executor_v3
         from yiban.store import clock_meta, connection
         from yiban.store import db as store_db
         conn = self._bind_test_db()
