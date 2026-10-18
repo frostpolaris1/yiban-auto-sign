@@ -543,6 +543,10 @@ class RunShStatusTextContractTest(_RunShHarness):
 class RunShFallbackBootTest(_RunShHarness):
     """`YIBAN_FALLBACK_ENABLE` 的文档语义兑现：开关置 1 而无进程 ⇒ 启动即告警并拉起。"""
 
+    #: 兜底子进程落盘的等待上限（秒）。判据是"最终会拉起"，不是"立刻已拉起"；
+    #: 有界等待把调度运气从判据里去掉，超时仍红（不放过真缺陷）。
+    _SPAWN_BOOT_TIMEOUT_SEC = 10.0
+
     def _spawns(self):
         p = os.path.join(self.state, "spawns.log")
         if not os.path.exists(p):
@@ -556,9 +560,18 @@ class RunShFallbackBootTest(_RunShHarness):
         self.assertIn("兜底", log, "开关置 1 而探测不到进程 ⇒ 启动即告警（日志留痕）")
         self.assertIn("兜底", r.stderr.decode("utf-8", "replace"),
                       "告警必须双声音（stderr 也有一份）")
+        # 拉起是**后台子进程**（`nohup … &`）：spawns.log 由子进程写，run.sh 返回时它
+        # 可能还没落盘。读一次就断言＝把调度运气当判据（CI 实测红、本机连跑 5 次全过）。
+        # 改**等待式**（工单 nvno 同法）：有界轮询到出现即通过，超时才红；不靠固定睡眠。
         spawns = self._spawns()
+        deadline = time.monotonic() + self._SPAWN_BOOT_TIMEOUT_SEC
+        while (not any("sign --fallback" in s for s in spawns)
+               and time.monotonic() < deadline):
+            time.sleep(0.05)
+            spawns = self._spawns()
         self.assertTrue(any("sign --fallback" in s for s in spawns),
-                        "开关置 1 必须真的拉起兜底进程：%s" % spawns)
+                        "开关置 1 必须真的拉起兜底进程（等待 %.1fs 后仍无）：%s"
+                        % (self._SPAWN_BOOT_TIMEOUT_SEC, spawns))
 
     def test_enabled_with_process_stays_quiet(self):
         _r, log = self._run(check_exit=0, extra_env={"YIBAN_FALLBACK_ENABLE": "1",
