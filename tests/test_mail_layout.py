@@ -231,7 +231,7 @@ class ChannelEntryPointsTest(unittest.TestCase):
 
     def test_default_timestamp_is_beijing_time(self):
         """默认时间戳走 clock.ts()（北京时间），宿主时区为 UTC 时也不能写成 UTC 时刻。"""
-        from yiban import clock
+        from yiban.core import clock
         got = layout.Mail(summary="s").time
         self.assertRegex(got, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertLess(abs((clock.now() - __import__("datetime").datetime.strptime(

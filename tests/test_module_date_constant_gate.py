@@ -50,7 +50,7 @@ _DATE = re.compile(r"^20\d\d-\d\d-\d\d")
 
 #: 日期常量名 → 类别判定。三类：固定业务日夹具 / 刻意的过去时刻 / 其它已核项。
 #: 新增一个名字之前先问一句："它是固定的某一天，还是把'现在'写死了？"
-#: 后者必须改成从时钟取（`yiban.clock.now()`），不许登记。
+#: 后者必须改成从时钟取（`yiban.core.clock.now()`），不许登记。
 DATE_CONSTANT_KINDS = {
     "DAY": "固定业务日夹具（周二/周三等，避开周末门）——它本来就指某一天，不随真实今天漂移",
     "DAY2": "同上，第二个业务日（跨日/相邻日对照）",
@@ -131,7 +131,7 @@ class ModuleDateConstantTest(unittest.TestCase):
             unknown, [],
             "这些模块级日期常量的名字没登记过：%s。\n"
             "先问一句：它是**固定的某一天**（业务日夹具，不随真实今天漂移），还是"
-            "**把'现在'写死了**？后者必须改成从时钟取（`yiban.clock.now()`），"
+            "**把'现在'写死了**？后者必须改成从时钟取（`yiban.core.clock.now()`），"
             "不许登记——`TODAY`/`NOW` 这类名字正是隔夜腐坏的形状（AGENTS.md §十三 形状④）。"
             "确认是前者，再加进 `DATE_CONSTANT_KINDS`。" % unknown)
 

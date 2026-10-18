@@ -35,7 +35,7 @@ import os
 import signal
 import subprocess
 
-from yiban import clock
+from yiban.core import clock
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

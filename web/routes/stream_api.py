@@ -65,7 +65,7 @@ from flask import Response, jsonify, request, session, stream_with_context
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
 from web.services import run_stream as _run_stream
-from yiban import clock
+from yiban.core import clock
 from yiban.store import run_events as _run_events
 
 

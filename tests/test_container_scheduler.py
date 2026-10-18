@@ -50,7 +50,7 @@ from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-
 from werkzeug.security import generate_password_hash
 
 from web.routes import me_api as web_routes_me_api
-from yiban import clock
+from yiban.core import clock
 from yiban.engine import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

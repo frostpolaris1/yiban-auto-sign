@@ -37,8 +37,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban import clock, egress
+from yiban import egress
 from yiban import status as yiban_status
+from yiban.core import clock
 from yiban.engine import executor_v3, hrw, planner, schedule
 from yiban.store import clock_meta, db
 from yiban.store import connection as store_conn

@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 import db  # noqa: E402
 import signin  # noqa: E402
 
-from yiban import clock  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 #: 固定业务时间（周三 06:40，落在默认签到窗口内）：窗口判定与"当日"都因此确定，
 #: 也让领取池的 day 键稳定（否则跨午夜跑测会落到两天上）

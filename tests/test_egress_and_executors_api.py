@@ -41,10 +41,8 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban import (  # noqa: E402
-    clock,
-    egress,
-)
+from yiban import egress  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 ADMIN_PASS = "TestPass1234!"
 

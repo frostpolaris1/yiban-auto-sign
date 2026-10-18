@@ -260,7 +260,7 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
     OTHER_FAILED = "13900000078"
 
     def _today(self):
-        from yiban import clock
+        from yiban.core import clock
         return clock.now().strftime("%Y-%m-%d")
 
     def _parent_env(self):

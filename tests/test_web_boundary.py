@@ -45,8 +45,8 @@ from unittest import mock
 import flask
 from werkzeug.security import generate_password_hash
 
-from yiban import clock
 from yiban import status as yiban_status
+from yiban.core import clock
 from yiban.masking import mask_email_local
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

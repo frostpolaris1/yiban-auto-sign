@@ -108,7 +108,8 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 import signin  # noqa: E402
 from child_env import build_child_env, parse_env_file  # noqa: E402
 
-from yiban import clock, state_gc, window  # noqa: E402
+from yiban import state_gc, window  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.engine import schedule, workers  # noqa: E402
 from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
