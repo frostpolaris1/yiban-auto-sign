@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Vue 翻新试点页契约测试（P0 管线守卫，docs/refactor/29-frontend-vue-refactor-plan.md）。
+"""Vue 翻新试点页契约测试（P0 管线守卫）。
 
 标签：F · 前端与界面守卫（Vue 线新增，33 文件处置表之外的第一个新范式测试）
 覆盖：/work/pilot 渲染契约（挂载点、manifest 解析出的哈希资产真实在盘、模块脚本形态、
