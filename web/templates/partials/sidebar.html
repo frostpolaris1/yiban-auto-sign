@@ -43,8 +43,12 @@
   <nav class="nav-section" aria-label="{{ group_label }}">
     <div class="nav-label">{{ group_label }}</div>
     {% for key, href, ico, text in items %}
+    {# title/aria-label 是 721–1100px 图标栏的必需品：该断点下 vendor 会 display:none
+       文字 span，图标宏又自带 aria-hidden，没有这两个属性时链接名称与悬停提示都为空。
+       与用户端 sidebar_user.html 同写法。 #}
     <a class="nav-link{% if nav_active == key %} is-active{% endif %}"
        href="{{ request.script_root }}{{ href }}"
+       title="{{ text }}" aria-label="{{ text }}"
        {% if nav_active == key %}aria-current="page"{% endif %}>
       {{ icon(ico) }}
       <span>{{ text }}</span>
@@ -68,7 +72,8 @@
       </div>
     </div>
     <div class="sidebar-actions">
-      <button type="button" class="btn btn--ghost btn--sm" onclick="doLogout()">
+      <button type="button" class="btn btn--ghost btn--sm" onclick="doLogout()"
+              title="退出登录" aria-label="退出登录">
         {{ icon('log-out') }}<span>退出登录</span>
       </button>
     </div>

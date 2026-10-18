@@ -1783,10 +1783,9 @@ _WALL_APP_ALIASES_WIDE = _WALL_APP_ALIASES | frozenset(("w", "web", "mod", "impl
 _WALL_DEAD_F401_EXEMPT = {
     "generate_password_hash": (
         "145-B T1 已迁走**自有面**（tests/web/scripts）全部读者；墙名待 145-E 删除。"
-        "面外仍有 1 处**活读者**：`frontend/e2e/server.py` 的 Playwright e2e 夹具"
-        "（前端 2026-10-18 起归用户独立完成，本批不得改）——145-E 删墙名前须先处置它；"
-        "该残留的登记与对账在 `tests/test_deploy_entry_imports.py` 的 "
-        "`_PWHASH_OUT_OF_FACE_REGISTRY`。"),
+        "**面外读者 0 处**：原 1 处（`frontend/e2e/server.py` 的 Playwright e2e 夹具）"
+        "已于 2026-10-18 经用户授权由主会话处置——该夹具改直连 `werkzeug.security`，"
+        "`_PWHASH_OUT_OF_FACE_REGISTRY` 同批清空。"),
     "check_password_hash": "145-B T1 已迁走自有面全部读者；墙名待 145-E 删除",
 }
 

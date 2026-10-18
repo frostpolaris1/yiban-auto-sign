@@ -17,7 +17,7 @@
 import unittest
 from unittest import mock
 
-from yiban.engine import alerts
+from yiban.adapters.notifier import report as alerts
 from yiban.engine.accounts import Account
 from yiban.mail.layout import Mail
 

@@ -30,6 +30,7 @@
 依赖：bash（`skipIf` 整文件）；root + 保留 POSIX mode 的文件系统（WSL，非 root 或
 Windows 开发机则该条 skip）；setpriv（缺它则该条 skip）。无网络、不碰生产路径。
 """
+import contextlib
 import io
 import json
 import os
@@ -396,6 +397,119 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
                                      "DESTDIR": os.path.join(self.tmp, "stage")})
         out = self._out(r)
         self.assertEqual(r.returncode, 0, f"DESTDIR 暂存安装必须照旧放行：{out}")
+
+    #: 造竞态的短命进程工厂（工单 9dks）：并发 fork，子进程立即 `_exit`。
+    #: 它们与"服务在跑"无关——argv 不含检出路径，也不含 `install.sh`——只用来让
+    #: `/proc` 里不断有进程"刚出现即消失"，逼出扫描的检查/打开竞态。
+    #:
+    #: 每批 fork 后往 `beat` 追加 1 字节：**这是"真的在 churn"的证据**。没有它时，
+    #: `os.fork()` 若因资源限制失败，churner 会带 traceback 静默死掉（stderr 进
+    #: DEVNULL），守卫强度随之下降而**毫无信号**——AGENTS §30「跳过 ≠ 绿」的同族
+    #: （2026-10-18 独立审查 D2）。父进程据此断言心跳非零。
+    _CHURN_CODE = (
+        "import os,time\n"
+        "end=time.time()+{secs}\n"
+        "beat=open({beat!r},'ab',buffering=0)\n"
+        "while time.time()<end:\n"
+        "    for _ in range(64):\n"
+        "        p=os.fork()\n"
+        "        if p==0: os._exit(0)\n"
+        "    beat.write(b'.')\n"
+        "    for _ in range(64):\n"
+        "        try: os.waitpid(-1,os.WNOHANG)\n"
+        "        except ChildProcessError: pass\n"
+    )
+    #: churner 进程数。单进程 fork 速率约 5k/s，命中率随并发近似线性上升。
+    _CHURN_N = 32
+    #: install.sh 重复跑的轮数。单轮命中概率约 15%（实测），故多跑压漏检。
+    _SCAN_ITERS = 20
+
+    def test_scan_is_silent_when_processes_vanish_mid_scan(self):
+        """兜底层扫描 /proc 期间进程消失，不得让安装伪失败、也不得留伪错误（工单 9dks）。
+
+        现象：install.sh 的服务探测段用"先 `[ -r ]` 后 `< 重定向`"两次触达
+        `$_pid/cmdline`。检查与 open 之间进程退出 ⇒ bash 打一行
+        `/proc/<pid>/cmdline: No such file or directory`；进程在 read 期间退出 ⇒
+        打 `read: <fd>: read error: No such process`。该脚本带 `set -e`（第 46 行），
+        故重定向失败还会**中断安装**（rc=1）——不只是噪声。
+
+        钉住的不变式：**扫描期间有进程消失时，install.sh 既不失败、也不留 /proc 噪声。**
+        这里没有服务、argv 不指向检出，故正常结果＝安装成功（rc=0）且 stderr 干净。
+        脚本带 `set -e`（见 install.sh 第 46 行）：`done < "$_pid/cmdline"` 的重定向失败
+        会让整个扫描**中断**，安装随即非 0 退出——所以本用例同时钉 rc 与 stderr，
+        两个症状同源（同一行代码）。
+
+        造竞态的手段＝并发 fork 大量"刚出现即退出"的短命进程（真实进程真实消失，
+        与线上成因同源，见 AGENTS §32）。这一维是**概率性**的：检查与 open 之间的
+        窗口约 1-2µs，黑盒无法确定性命中。故重复 `_SCAN_ITERS` 轮，把漏检概率压到
+        可忽略；未修脚本下单轮命中概率约 15%（实测），漏检概率约 0.85^20 ≈ 4%。
+        """
+        self._skip_unless_usable()
+        # stderr 哨兵：拆掉 venv ⇒ 安装器在扫描**之后**必须往 stderr 打一行告警
+        # （「找不到 venv 解释器」）。若扫描把 stderr 永久改道（例如误用
+        # `exec {_fd}< f 2>/dev/null`——`exec` 无命令时其重定向作用于当前 shell 且持久），
+        # 这行会消失，本条即红。这道哨兵钉的是"扫描不得把脚本的 stderr 弄没"。
+        shutil.rmtree(os.path.join(self.checkout, ".venv"), ignore_errors=True)
+        procs, beat = self._spawn_churners(self._CHURN_N, 120)
+        self.addCleanup(self._reap_churners, procs)
+        time.sleep(0.5)  # 让 churner 起量：先有短命进程在消失
+        self._assert_churners_alive(procs, beat)  # 先证"竞态真被造出来"，再看结论
+        bad = []
+        for _ in range(self._SCAN_ITERS):
+            r = self._install()
+            err = (r.stderr or b"").decode("utf-8", errors="replace")
+            if (r.returncode != 0 or "cmdline" in err or "read error" in err
+                    or "找不到 venv 解释器" not in err):
+                bad.append("rc=%d stderr=%r" % (r.returncode, err))
+        # 尾检（复审 D2b）：首检只是 t=0.5s 的**一次快照**。churner 若在循环**中途**才死
+        # （例如 32×64 进程逐步逼近 pid 限额、0.5s 后才触顶），首检放行、后续十几秒无
+        # churn ⇒ 在未修代码上会**假绿**。死进程不会复活，故"结束仍全活"即证明全程无人
+        # 退出。首检保"竞态真被造出"，尾检保"全程维持"，两问都答才算证据。
+        self._assert_churners_alive(procs, beat)
+        self.assertEqual(bad, [], "扫描期间进程消失时 install.sh 出现伪失败/伪错误，"
+                         "或扫描把 stderr 弄没了（%d/%d 轮）：\n%s"
+                         % (len(bad), self._SCAN_ITERS, "\n".join(bad[:3])))
+
+    # ---- 竞态 churner（工单 9dks 用） ----
+
+    def _spawn_churners(self, count, secs):
+        """起 `count` 个 churner，每个在 `secs` 秒内不停 fork 短命子进程。
+
+        返回 `(procs, beat)`：`beat` 是心跳文件，churner 每批 fork 后追加 1 字节。
+        调用方必须用 `_assert_churners_alive` 断言"存活 **且** 心跳非零"——
+        只有存活不够：churner 可能已经因 fork 失败而死，而用例照样读到"stderr 干净"
+        的假绿。
+        """
+        beat = os.path.join(self.tmp, "churn-beat")
+        code = self._CHURN_CODE.format(secs=secs, beat=beat)
+        procs = [subprocess.Popen([sys.executable, "-c", code],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                 for _ in range(count)]
+        return procs, beat
+
+    def _assert_churners_alive(self, procs, beat):
+        """断言竞态发生器**真的在工作**（AGENTS §30：跳过 ≠ 绿）。
+
+        两问都答才算绿：① 有没有 churner 已经死了（fork 失败会立即死）；
+        ② 有没有任何心跳（证明 `os.fork()` 真的成功过）。任一不满足即红——
+        否则本用例会在"根本没造成竞态"的情况下报绿，那是比红更危险的假绿。
+        """
+        dead = [p.pid for p in procs if p.poll() is not None]
+        self.assertEqual(
+            dead, [], "churner 提前退出（多半是 os.fork() 撞资源限制）⇒ "
+            "本轮没有造成竞态，用例的绿不构成证据（AGENTS §32）")
+        beat_bytes = os.path.getsize(beat) if os.path.exists(beat) else 0
+        self.assertGreater(
+            beat_bytes, 0, "未观测到任何 churn 心跳 ⇒ 竞态没被造出来，"
+            "用例的绿不构成证据（AGENTS §30）")
+
+    @staticmethod
+    def _reap_churners(procs):
+        for p in procs:
+            p.kill()
+        for p in procs:
+            with contextlib.suppress(Exception):
+                p.wait(timeout=30)
 
     def test_installer_service_unit_matches_shipped_unit_template(self):
         """安装器探测的单元名必须等于仓内随附的单元模板文件名。

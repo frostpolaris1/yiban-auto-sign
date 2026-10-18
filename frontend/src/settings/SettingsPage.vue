@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { api, errorMessage, openModal, shellBase, toast } from "../lib/shell";
+import { useTabIndicator } from "../lib/tab-indicator";
 import "./ops.js"; // 注册 window.YB.settingsOps（纯 JS，写链被 Python 守卫真跑/钉点）
 import ScheduleCard from "./ScheduleCard.vue";
 import AnnouncementCard from "./AnnouncementCard.vue";
@@ -37,6 +38,8 @@ const ADMIN_TABS = [
 const isMaster = ref(false);
 const ready = ref(false);
 const tab = ref("schedule");
+const tabsEl = ref<HTMLElement | null>(null);
+const { style: tabIndicatorStyle, ready: tabIndicatorReady } = useTabIndicator(tabsEl, tab);
 const settings = ref<Record<string, unknown>>({});
 const status = ref<{ tone: string; text: string; retry: boolean } | null>(null);
 const announcement = ref<Record<string, unknown>>({});
@@ -355,7 +358,8 @@ onUnmounted(() => {
          会先于本页的未保存改动守卫切换分区（legacy 的守卫因此形同虚设）。本页自管页签。 -->
     <div data-settings-tabs>
       <div class="tabs-scroll">
-        <div class="tabs" role="tablist" aria-label="设置分区">
+        <div ref="tabsEl" class="tabs tabs--indicator" role="tablist" aria-label="设置分区">
+          <span class="tabs-indicator" :class="{ 'is-ready': tabIndicatorReady }" :style="tabIndicatorStyle" aria-hidden="true"></span>
           <a
             v-for="t in visibleTabs"
             :key="t.key"

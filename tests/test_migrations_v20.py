@@ -38,8 +38,7 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from yiban.core import clock, status
-from yiban.engine import hrw
+from yiban.core import clock, hrw, status
 from yiban.store import connection, migrations, queue_store
 
 PHONE_A = "13800000001"
