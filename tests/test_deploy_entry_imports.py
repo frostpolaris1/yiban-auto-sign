@@ -734,6 +734,9 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
 #   `tests/test_import_linter_gate.py`——`yiban.clock` 是它的**禁字面量**：该用例断言
 #     import-linter 契约的 `forbidden_modules` **不许**列出迁移期坐标（列了契约会空转
 #     退 2）。把这条字面量改成新坐标会**反转语义**（新坐标是永久坐标，契约列它是合法的）。
+#   `tests/test_provenance_guard.py`——`yiban.clock` 是它的**禁前缀**（`145-T3` 审查 F2
+#     把它补回前缀表，与 `yiban.core.clock` 并列）：壳 `yiban/clock.py` 仍在，只留新坐标
+#     会让该常驻守卫漏拦旧路径。删壳后是否收窄归 `145-E`。
 #   `tests/test_deploy_entry_imports.py`——本文件，`_T2_OLD_MODULE` 是禁字面量，
 #     夹具字符串用于自证本门有牙。
 _T2_OLD_MODULE = "yiban.clock"
@@ -747,6 +750,7 @@ _T2_SKIP_REL_PREFIX = ("web/static/",)
 _T2_FACE_EXEMPT = frozenset((
     "tests/test_batch_b_relocation.py",
     "tests/test_import_linter_gate.py",
+    "tests/test_provenance_guard.py",
     "tests/test_deploy_entry_imports.py",
 ))
 #: 面外（`frontend/**`）仍读旧坐标的**待销账登记**。键＝(相对路径, 名字)，值＝(次数, 说明)。
@@ -961,10 +965,19 @@ class ClockCoordinateGateTest(unittest.TestCase):
             + "\n".join(bad))
 
     def test_exempt_files_still_exist(self):
-        """豁免清单不得腐烂：登记的文件必须还在（否则豁免面静默变大）。"""
+        """豁免清单不得腐烂：登记的文件必须还在，且**必须仍命中本门**。
+
+        `145-T3` 审查 F2 把 `tests/test_provenance_guard.py` 加进本清单（该文件补回
+        `yiban.clock` 禁前缀）。加清单这一动作本身需要守卫：豁免一旦失去理由（文件里
+        已无 `yiban.clock`），留着它会静默放开该文件的扫描面。故同时钉"仍命中"。
+        """
         for rel in sorted(_T2_FACE_EXEMPT):
-            self.assertTrue(os.path.isfile(os.path.join(BASE, rel)),
+            path = os.path.join(BASE, rel)
+            self.assertTrue(os.path.isfile(path),
                             f"豁免清单登记了不存在的文件 {rel}")
+            self.assertTrue(
+                t2_old_coordinate_hits(path),
+                f"豁免文件 {rel} 已不再命中本门——豁免失去理由，须同批删除该豁免")
 
     def test_out_of_face_registry_reconciles(self):
         """面外（`frontend/**`）的残留与登记表逐条对账，两侧都不许静默。"""
