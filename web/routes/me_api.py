@@ -214,7 +214,7 @@ def api_me_password():
 def api_me_delete():
     """用户自助注销（软删除 + 7 天宽限期，数据库 v5）。
 
-    安全设计（docs/design/plan-frontend-user-deregistration.md）：
+    安全设计：
     - 登录要求 + CSRF：全局写请求校验（X-CSRF-Token）自动覆盖；
     - 防 IDOR：只从 session 取当前用户，请求体任何目标参数一律忽略；
     - 密码确认：防"离开电脑被恶意页面直接注销"；
@@ -502,7 +502,7 @@ def api_me():
             "mail_notify": mail_notify,  # B 线：用户签到失败邮件开关
             "is_builtin_admin": m._is_builtin_admin_session(),  # 仅 .env 主管理员会话为 True
             "csrf_token": get_csrf_token(),
-            # 调度 v2（docs/design/plan-scheduler-v2.md 2.1/2.2）
+            # 调度 v2（自选时间片）
             "sign_order": sign_order,
             "sign_dist": sign_dist,
             "time_pref_allowed": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
