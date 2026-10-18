@@ -47,8 +47,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 
 from yiban import egress  # noqa: E402
+from yiban.adapters.notifier import report as alerts  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
 from yiban.core import clock  # noqa: E402
-from yiban.engine import alerts, executor_v3, state_io  # noqa: E402
+from yiban.engine import executor_v3  # noqa: E402
 from yiban.store import queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64

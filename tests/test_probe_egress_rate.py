@@ -35,7 +35,7 @@ from unittest import mock
 import db
 
 from yiban import egress
-from yiban.engine import probe
+from yiban.app import probe
 from yiban.store import queue_store
 
 TEST_KEY = "a" * 64

@@ -36,8 +36,9 @@ import db
 from yiban import egress
 from yiban.core import clock
 from yiban.core import elbow as elbow_pred
-from yiban.engine import executor_v3, workers
+from yiban.engine import executor_v3
 from yiban.store import clock_meta, queue_store
+from yiban.workers import workers
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二，避开周末门

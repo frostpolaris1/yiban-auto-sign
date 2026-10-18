@@ -181,7 +181,8 @@ class CliContractTest(unittest.TestCase):
         """
         import unittest.mock as mock
 
-        from yiban.engine import cli_support, runner
+        from yiban.app import runner
+        from yiban.engine import cli_support
         with mock.patch.object(runner.accounts_mod, "load_accounts",
                                side_effect=RuntimeError("boom")), \
                 mock.patch.object(runner.cli_support, "_setup_cli_logging"):

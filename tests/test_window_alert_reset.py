@@ -72,12 +72,12 @@ class WindowAlertResetTest(_ResetBase):
     def test_invalid_window_alert_fires_again_on_the_next_business_day(self):
         """窗口配置非法：翻页前一次、翻页后**再**一次（当前红：永久无声）。"""
         os.environ.update(INVALID_WINDOW)
-        with mock.patch("yiban.engine.alerts._collect_admin_mail") as m_mail, \
+        with mock.patch("yiban.adapters.notifier.report._collect_admin_mail") as m_mail, \
                 mock.patch.object(schedule.clock, "now", return_value=DAY1):
             schedule._schedule_config()
             schedule._schedule_config()      # 同一业务日的多轮：只并入一次
             self.assertEqual(m_mail.call_count, 1)
-        with mock.patch("yiban.engine.alerts._collect_admin_mail") as m_mail, \
+        with mock.patch("yiban.adapters.notifier.report._collect_admin_mail") as m_mail, \
                 mock.patch.object(schedule.clock, "now", return_value=DAY2):
             schedule._schedule_config()
             self.assertEqual(m_mail.call_count, 1,
@@ -85,13 +85,13 @@ class WindowAlertResetTest(_ResetBase):
 
     def test_clamped_buffer_alert_fires_again_on_the_next_business_day(self):
         """缓冲被收缩：同一业务日一次、第二天再一次。"""
-        with mock.patch("yiban.engine.alerts._collect_admin_mail") as m_mail, \
+        with mock.patch("yiban.adapters.notifier.report._collect_admin_mail") as m_mail, \
                 mock.patch.object(schedule.clock, "now", return_value=DAY1):
             schedule._schedule_config()
             schedule._schedule_blocks(_overflow_cfg())
             schedule._schedule_blocks(_overflow_cfg())
             self.assertEqual(m_mail.call_count, 1)
-        with mock.patch("yiban.engine.alerts._collect_admin_mail") as m_mail, \
+        with mock.patch("yiban.adapters.notifier.report._collect_admin_mail") as m_mail, \
                 mock.patch.object(schedule.clock, "now", return_value=DAY2):
             schedule._schedule_config()
             schedule._schedule_blocks(_overflow_cfg())
@@ -99,12 +99,12 @@ class WindowAlertResetTest(_ResetBase):
 
     def test_fallback_alert_fires_again_on_the_next_business_day(self):
         """窗口不可用被回退：同一业务日一次、第二天再一次。"""
-        with mock.patch("yiban.engine.alerts._collect_admin_mail") as m_mail, \
+        with mock.patch("yiban.adapters.notifier.report._collect_admin_mail") as m_mail, \
                 mock.patch.object(schedule.clock, "now", return_value=DAY1):
             schedule._schedule_config()
             schedule._schedule_blocks(_degenerate_cfg())
             self.assertEqual(m_mail.call_count, 1)
-        with mock.patch("yiban.engine.alerts._collect_admin_mail") as m_mail, \
+        with mock.patch("yiban.adapters.notifier.report._collect_admin_mail") as m_mail, \
                 mock.patch.object(schedule.clock, "now", return_value=DAY2):
             schedule._schedule_config()
             schedule._schedule_blocks(_degenerate_cfg())

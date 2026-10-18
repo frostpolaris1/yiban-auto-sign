@@ -33,7 +33,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from yiban import egress  # noqa: E402
-from yiban.engine import runner, workers  # noqa: E402
+from yiban.app import runner  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 MANIFEST = egress.dump_manifest([
     {"slot": 0, "type": "worker", "proxy": ""},
