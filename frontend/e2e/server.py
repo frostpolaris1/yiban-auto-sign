@@ -33,10 +33,10 @@ for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
 # 业务钟：读取面（`web` / `yiban`）一律按北京时间取"今天"。种子若用宿主钟
 # （`datetime.now()`），宿主时区 > UTC+8 时种子的"今天"行会变成未来业务日，
 # 被新上界排除，前端用例随即数不到那两轮（潜伏形状，CST / UTC 都不触发）。
-# 故种子的每一处日期都走 `yiban.clock.now()`，与读取面同一个钟。
+# 故种子的每一处日期都走 `yiban.core.clock.now()`，与读取面同一个钟。
 # 导入必须在本文件把 ROOT 加进 sys.path 之后：直接跑 `python e2e/server.py` 时
 # `yiban` 不在默认导入路径上。
-from yiban import clock  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
@@ -215,7 +215,7 @@ def _seed_heartbeats() -> None:
       已过期」——心跳过期不许留白，也不许显示成 0。
     """
     from yiban import egress
-    from yiban.engine import state_io
+    from yiban.adapters.statefiles import state_io
 
     now = clock.now().replace(microsecond=0)
     state_io.mark_worker_started(0, now=now, role=egress.ROLE_FALLBACK)
@@ -300,7 +300,12 @@ def main():
     )
     # 一个普通用户 + 两个生效账号：用户侧页面（/user/account、/user/calendar）与
     # 账号列表的"有数据"形态需要它；主管理员名下也放一个，便于对照 /my/account。
-    db.create_user(E2E_USER_EMAIL, webapp.generate_password_hash(USER_PASS))
+    # 口令哈希走 werkzeug 本体，不经 `webapp`（`web/app.py`）的转发名——那个名字随
+    # 145-E 删壳消失。`webapp.generate_password_hash` 本就是 werkzeug 的同名函数
+    # （`web/app.py:64` 只做再导出），故本替换零行为变化。
+    from werkzeug.security import generate_password_hash
+
+    db.create_user(E2E_USER_EMAIL, generate_password_hash(USER_PASS))
     db.add_account({"name": "e2e-user-acct", "phone": "13800138001", "password": "p1",
                     "status": "active", "owner": E2E_USER_EMAIL})
     db.add_account({"name": "e2e-admin-acct", "phone": "13900139002", "password": "p2",

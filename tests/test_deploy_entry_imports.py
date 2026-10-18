@@ -451,14 +451,11 @@ _PWHASH_WALL_MODULE = "web.app"
 #: ——那正是"门看的东西 ≠ 实际改的东西"（AGENTS §29）。按次数对账已能覆盖三件事：
 #: 未登记的新读者 ⇒ 红；登记处多一处/少一处 ⇒ 红；整条消失 ⇒ 红（防腐烂）。
 #: 红时消息里给出当前 `文件:行`，便于人定位。
-_PWHASH_OUT_OF_FACE_REGISTRY = {
-    ("frontend/e2e/server.py", "generate_password_hash"): (
-        1,
-        "Playwright e2e 夹具（frontend/README.md 的 `npm run test:e2e` 拉起）仍读墙名；"
-        "前端归用户独立完成，本批不得改。**145-E 删墙名前须先处置这一行**"
-        "（前端侧改 `from werkzeug.security import` 或由主会话与用户协同），处置后同批删本登记。",
-    ),
-}
+#: 面外残留登记表。**2026-10-18 已清空**：唯一一条登记（`frontend/e2e/server.py` 读
+#: `generate_password_hash`）经用户授权由主会话就地处置——该文件改直连 `werkzeug.security`。
+#: 按判据第 3 条（"登记整条消失 ⇒ 红"），处置与销账必须同批，故同批清空。
+#: **表空 ≠ 面空**：扫描面仍由 `_out_of_face_found` 断言非空（AGENTS §30 扫空不得当绿）。
+_PWHASH_OUT_OF_FACE_REGISTRY = {}
 
 
 def _pwhash_real_coordinate_bases(tree):
@@ -754,14 +751,10 @@ _T2_FACE_EXEMPT = frozenset((
     "tests/test_deploy_entry_imports.py",
 ))
 #: 面外（`frontend/**`）仍读旧坐标的**待销账登记**。键＝(相对路径, 名字)，值＝(次数, 说明)。
-_T2_OUT_OF_FACE_REGISTRY = {
-    ("frontend/e2e/server.py", "yiban.clock"): (
-        1,
-        "Playwright e2e 夹具（`frontend/README.md` 的 `npm run test:e2e` 拉起）仍以旧坐标"
-        "导入 clock；前端归用户独立完成，本批不得改。**145-E 删壳前须先处置这一行**"
-        "（前端侧改 `from yiban.core import clock` 或由主会话与用户协同），处置后同批删本登记。",
-    ),
-}
+#: **2026-10-18 已清空**：唯一一条登记（`frontend/e2e/server.py` 以旧坐标导入 clock）经用户
+#: 授权由主会话就地处置——该文件改 `from yiban.core import clock`。按判据"登记整条消失 ⇒ 红"，
+#: 处置与销账必须同批，故同批清空。**表空 ≠ 面空**：扫描面仍由用例断言非空（§30）。
+_T2_OUT_OF_FACE_REGISTRY = {}
 
 #: 旧坐标的字面量判据：`yiban.clock` 后面不得紧跟标识符字符。
 #: 故 `yiban.clock` / `yiban.clock.now` / `*yiban.clock*` 命中；
@@ -784,8 +777,9 @@ def _t2_import_hits(tree):
 
     三种写法：`import yiban.clock`、`from yiban.clock import X`、
     `from yiban import clock`（别名形态，是主流形态）。
-    口径（同一底本现量）：别名形态在**自有面** 71 处；含面外 `frontend/e2e/server.py`
-    共 72 处。`import yiban.clock` 0 处、`from yiban.clock import X` 3 处。
+    口径（同一底本现量）：别名形态在**自有面** 71 处、面外 **0 处**（2026-10-18 前
+    `frontend/e2e/server.py` 那 1 处已随本批处置，故全仓 71 处）。`import yiban.clock`
+    0 处、`from yiban.clock import X` 3 处。
     第四种：`import yiban` 后按属性访问 `yiban.clock.now()`——字面量判据抓不到它
     （那判据只看字符串），故在此按 `ast.Attribute` 认。
     """
@@ -1448,8 +1442,9 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
 # 口径（2026-10-18 在 `3f658c4d` 上现量，AST 逐项判名，不用点号字面 grep）：
 # 自有面运行期读者 **48 文件**（py 47 ＋ `run.sh` 1）：46 个待迁读者 ＋ 2 个按设计必须
 # 写出坐标字面量的登记/验证文件（`tests/test_batch_b_relocation.py`、
-# `tests/test_notifier_relocation.py`，两者在 `_T4_FACE_EXEMPT`）。另有 1 个面外读者
-# `frontend/e2e/server.py`，登记在 `_T4_OUT_OF_FACE_REGISTRY`。
+# `tests/test_notifier_relocation.py`，两者在 `_T4_FACE_EXEMPT`）。**面外读者 0 个**：
+# `frontend/e2e/server.py` 那 1 个已由 2026-10-18 本批就地处置（改直连新坐标），
+# `_T4_OUT_OF_FACE_REGISTRY` 同批清空。
 # **点号字面只命中 9 个读者，漏掉 39 个（81%）**——那 39 个只能经
 # `from yiban.engine import <短名>` 别名到达（AGENTS §7.1"扫描口径有洞"；
 # 本门按 import 列表逐项判名，不按裸词界）。
@@ -1531,21 +1526,17 @@ _T4_OUT_OF_FACE_DIRS = ("frontend",)
 #: ——那正是"门看的东西 ≠ 实际改的东西"（AGENTS §29）。按行数对账已能覆盖三件事：
 #: 未登记的新读者 ⇒ 红；登记处多一行/少一行 ⇒ 红；整条消失 ⇒ 红（防腐烂）。
 #:
-#: 同族登记：`frontend/e2e/server.py` 是**已知的面外消费者**，`145-E` 删壳前必须整文件处置。
+#: 同族登记：`frontend/e2e/server.py` 曾是**已知的面外消费者**（三片各占一键）。该文件的
+#: 三处旧坐标已于 2026-10-18 由用户授权主会话就地处置 ⇒ 三张表同批清空。
 #: 三片各扫各的坐标键（表不跨片共享，避免改别人的门）：
 #:   - `T1`：`generate_password_hash` → `_PWHASH_OUT_OF_FACE_REGISTRY`
 #:   - `T2`：`yiban.clock` → `_T2_OUT_OF_FACE_REGISTRY`
 #:   - `T4`：`yiban.engine.state_io` → 本表
-_T4_OUT_OF_FACE_REGISTRY = {
-    ("frontend/e2e/server.py", "yiban.engine.state_io"): (
-        3,
-        "Playwright e2e 夹具（`frontend/README.md` 的 `npm run test:e2e` 拉起）仍以旧坐标"
-        "导入 state_io（1 条 import ＋ 2 处 mark_worker_started 调用）。前端归用户独立完成，"
-        "本批不得改。**145-E 删 `yiban/engine/state_io.py` 壳前须先处置这个文件**"
-        "（前端侧改 `from yiban.adapters.statefiles import state_io`，或由主会话与用户协同），"
-        "处置后同批删本登记。",
-    ),
-}
+#: **2026-10-18 已清空**：唯一一条登记（`frontend/e2e/server.py` 以旧坐标导入 state_io）
+#: 经用户授权由主会话就地处置——该文件改 `from yiban.adapters.statefiles import state_io`。
+#: 按判据"登记整条消失 ⇒ 红"，处置与销账必须同批，故同批清空。
+#: **表空 ≠ 面空**：扫描面仍由用例断言非空（§30）。
+_T4_OUT_OF_FACE_REGISTRY = {}
 
 #: 旧坐标的字面量判据：模块名后不得紧跟标识符字符（`yiban.engine.runner` 命中；
 #: `yiban.engine.runner_extra` 这类同前缀他模块不命中）。
