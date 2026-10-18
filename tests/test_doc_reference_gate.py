@@ -30,8 +30,9 @@
     AGENTS §30）；③ 形态定义自证：目录形态／通配／可解引用都不误红，注释行要命中；
     ④ 旧坐标清单非空且逐条是 `yiban/` 下的路径。
 依赖：只读跟踪面文本 + `git ls-files` 子进程。不起服务、无网络、无第三方库。
-    本文件自身不得出现真实 doc 路径字面量（否则本门会扫到自己）。
-    突变夹具因此按片段拼装，见 `_FAKE_DOC`。
+    本文件自身不得出现**悬空**的 doc 路径字面量（否则本门会扫到自己）。
+    可解的路径字面量（例如 `docs/dev/cli.md`）照旧允许——形态定义放行它们。
+    悬空夹具因此按片段拼装，见 `_FAKE_DOC`。
 """
 import ast
 import io
@@ -45,15 +46,18 @@ import warnings
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: 扫描面下限（AGENTS §30：扫空不得当绿）。
-#: 取值理由：本树实测 **756** 个入库文本件。下限取 400 远低于实测值。
+#: 取值理由：本树实测 **757** 个入库文本件（面内 644 ＋ 面外 113）。下限取 400 远低于实测值。
 #: 扫描根写错、树被移走、`git ls-files` 失活都会让面掉到个位数或 0。
 #: 真实回归不会让面掉到 400 以下——面只随跟踪集增减，而跟踪集在千件量级。
 MIN_TEXT_FILES = 400
 
 #: `docs` 引用数下限（同上，扫空不得当绿的另一半）。
-#: 取值理由：本批收口后实测 **128** 条（收口前 195 条：71 条是悬空引用，已逐条处置）。
+#: **口径**（写清，免跨数比较出错——AGENTS §十三 第 31 条）：一条＝一个 `docs/…` 形态匹配；
+#:   含注释与 docstring；负向断言的禁字面量不算；本门文件自身也算。
+#: 取值理由：本树实测 **面内 127 ＋ 面外 4 ＝ 131**（其中本门自身 4 条，是注释里的示例与夹具）。
+#:   收口前同口径 面内 66 ＋ 面外 4 ＝ 70（悬空引用，已逐条处置）。
 #: 形态定义写错（正则退回空匹配）会掉到 0。下限取 80 远高于任何"形态写错"的残值，
-#: 又留出 37% 的余量给合法的入库文档增删。
+#: 又留出约 39% 的余量给合法的入库文档增删。
 MIN_DOC_REFS = 80
 
 #: 文档引用的形态定义。两条择一：
@@ -63,9 +67,16 @@ MIN_DOC_REFS = 80
 #: 为什么不收结尾斜杠（`docs/`、`docs/dev/`）：那也是目录。
 #: 为什么不收通配（`docs/dev/*`）：那是模式，不是路径。`.gitignore` 靠这条不误红。
 #: 段首字符限 `[A-Za-z0-9_]`：`docs/...`（省略号）与 `docs/<占位>` 因此不命中。
+#: 左边界 `(?<![\w./\-])`：`docs/` 之前不许紧跟标识符字符、点或斜杠。
+#: 为什么必须有：没有它，`mydocs/dev/x.md`、`out/docs/dev/x.md`、`seedocs/dev/x.md`
+#:   与 `https://x.com/docs/dev/x.md` 都会命中——那些不是库内路径引用，是**假红源**。
+#: 实证（本仓真树）：`tests/README.md` 的反向 markdown 链接
+#:   `` [`docs/dev/dev-verify.md`](../docs/dev/dev-verify.md) `` 里，`../docs/…` 那半边
+#:   前一个字符是 `/`，故被排除；反引号那半边照旧命中（它确是引用）。口径因此收紧 1 条。
 _DOC_REF = re.compile(
-    r"docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)+"
-    r"|docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*\.md")
+    r"(?<![\w./\-])"
+    r"(?:docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)+"
+    r"|docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*\.md)")
 
 #: 20 件兼容壳的**现行形态**（工单 `1229` 的壳清单 + `yiban/cli.py` 等）。
 #: 这些路径今天都在库内。`145-E` 退役这批壳之后，指向它们的引用即悬空。
@@ -231,12 +242,13 @@ def text_files_of(root, tracked):
     return out
 
 
-def doc_refs_in(text):
+def doc_refs_in(text, skip=None):
     """该文本里的全部文档引用：`[(行号, 路径)]`。含注释行与 docstring。
 
     负向断言的字符串操作数不算引用（见 `_negated_literal_lines`）。
+    `skip` 可传入预先算好的行号集合，避免同一文本重复做 AST 解析。
     """
-    skip = _negated_literal_lines(text)
+    skip = _negated_literal_lines(text) if skip is None else skip
     out = []
     for i, line in enumerate(text.splitlines(), 1):
         if i in skip:
@@ -246,14 +258,15 @@ def doc_refs_in(text):
     return out
 
 
-def scan_text(text, tracked):
+def scan_text(text, tracked, skip=None):
     """纯函数：返回该文本里的悬空引用 `[(行号, 路径, 说明)]`。
 
     单独成函数是为了能被**突变自证**调用。判据只有一条：引用的路径不在跟踪集里。
     不排除注释行、不排除 docstring——那正是本门要管的面。
     负向断言的字符串操作数不算引用（见 `_negated_literal_lines`）。
+    `skip` 可传入预先算好的行号集合，避免同一文本重复做 AST 解析。
     """
-    skip = _negated_literal_lines(text)
+    skip = _negated_literal_lines(text) if skip is None else skip
     out = []
     for i, line in enumerate(text.splitlines(), 1):
         if i in skip:
@@ -271,6 +284,7 @@ def scan_face(root, tracked, files):
     """扫描面 → `(逐条命中, docs 引用总数)`。
 
     命中＝`(相对路径, 行号, 引用路径, 说明)`。读不到的文件进命中（响亮，不静默）。
+    AST 解析每文件只做一次（`skip` 预先算好再传给两个扫描函数）。
     """
     hits, n_refs = [], 0
     for rel in files:
@@ -281,8 +295,9 @@ def scan_face(root, tracked, files):
         except OSError as exc:
             hits.append((rel, 0, "", "读不到（%s）" % exc))
             continue
-        n_refs += len(doc_refs_in(text))
-        for line, ref, why in scan_text(text, tracked):
+        skip = _negated_literal_lines(text)
+        n_refs += len(doc_refs_in(text, skip))
+        for line, ref, why in scan_text(text, tracked, skip):
             hits.append((rel, line, ref, why))
     return hits, n_refs
 
@@ -341,14 +356,34 @@ def out_of_face_problems(found, registry=None, where=None):
     return problems
 
 
+def face_plan(root, tracked):
+    """扫描计划 → `(全部文本件, 面内文件, 面外文件)`。**扫描面的唯一推导点。**
+
+    脚本面**不**由调用点传入，故"把某个文件从面里剔除"必须改这里——
+    改这里会被 `test_this_gate_file_is_scanned` 抓到（审查 N1）。
+    若把面做成调用点参数，剔除只是 `[f for f in in_face if f != rel]` 一行，守卫就钉不住。
+    """
+    files = text_files_of(root, tracked)
+    in_face, out_face = split_face(files)
+    return files, in_face, out_face
+
+
+def scanned_face(root, tracked):
+    """**主门实际扫描的（面内）文件清单**与其结果 → `(面内文件, 命中, 引用数, 全部文本件)`。
+
+    面内清单经 `face_plan` 唯一推导；本函数不另写推导。
+    """
+    files, in_face, _out_face = face_plan(root, tracked)
+    hits, n_refs = scan_face(root, tracked, in_face)
+    return in_face, hits, n_refs, files
+
+
 class DocReferenceGateTest(unittest.TestCase):
     """主门：入库文本件里不得有悬空引用（面外 `frontend/**` 与登记表对账）。"""
 
     def test_no_dangling_reference_in_tracked_text_files(self):
         tracked = _ls_tracked(BASE)
-        files = text_files_of(BASE, tracked)
-        in_face, _out_face = split_face(files)
-        hits, n_refs = scan_face(BASE, tracked, in_face)
+        _in_face, hits, n_refs, files = scanned_face(BASE, tracked)
         problems = ["%s:%d: %s（%s）" % h for h in hits]
         problems += face_bounds_problems(len(files), n_refs)
         self.assertEqual(
@@ -358,8 +393,7 @@ class DocReferenceGateTest(unittest.TestCase):
     def test_out_of_face_residue_reconciles_with_registry(self):
         """面外（`frontend/**`）残留与登记表逐条对账，两侧都不许静默。"""
         tracked = _ls_tracked(BASE)
-        files = text_files_of(BASE, tracked)
-        _in_face, out_face = split_face(files)
+        _files, _in_face, out_face = face_plan(BASE, tracked)
         self.assertGreaterEqual(
             len(out_face), 10,
             "面外扫描面过小（%d 个文件）——扫描根写错或前端被移走（扫空不得当绿）"
@@ -433,19 +467,35 @@ class DocReferenceGateTest(unittest.TestCase):
         pos = 'self.assertIn("' + _FAKE_DOC + '", src)\n'
         self.assertTrue(scan_text(pos, tracked),
                         "正向断言里的悬空引用未命中：本门没有牙")
+        # ⑦ 左边界：`docs/` 之前紧跟标识符字符、点或斜杠的，不算库内路径引用
+        for line in ("mydocs/dev/x.md\n", "out/docs/dev/x.md\n",
+                     "seedocs/dev/x.md\n", "https://x.com/docs/dev/x.md\n",
+                     "见 ../docs/dev/cli.md\n"):
+            self.assertEqual(scan_text(line, tracked), [],
+                             "左边界缺失：非库内路径被误判成引用（假红源）：%r" % line)
 
     def test_this_gate_file_is_scanned(self):
         """本门**不得豁免自己**：本文件也是入库文本件，注释与 docstring 同受本门管。
 
         为什么钉这条：登记表天然要写出被登记的路径。最容易的"修法"是豁免本文件——
         那正是**加宽豁免表**（AGENTS §十四 明令禁止）。本文件靠**按片段拼装**路径
-        （`_FAKE_DOC` / `_PLAN_DOC`）避免自锁。谁改成豁免本文件，这条即红。
+        （`_FAKE_DOC` / `_PLAN_DOC`）避免自锁。
+
+        三条逃逸路径都要挡（审查 N1：旧版只挡前两条，第三条是全绿逃逸）：
+          ① 移出跟踪集；② 当二进制跳过；③ **在扫描面里剔除本文件**。
+        前两条是"本文件在不在面内"这一**代理**；第三条才是"本文件真被扫"这一**性质**。
+        故本条断言的是 `scanned_face`（主门实际用的那一份清单）含本文件，
+        不是另写一份等价清单（AGENTS §十三 第 29 条：守卫看的东西要 == 实际扫的东西）。
         """
         rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
         tracked = _ls_tracked(BASE)
         self.assertIn(rel, tracked, "本门文件必须入库（否则它自己逃出扫描面）")
         self.assertIn(rel, text_files_of(BASE, tracked),
-                      "本门文件必须落在扫描面内（不得被豁免或当二进制跳过）")
+                      "本门文件不得被当二进制跳过")
+        in_face, _hits, _n_refs, _files = scanned_face(BASE, tracked)
+        self.assertIn(rel, in_face,
+                      "本门文件必须落在**主门实际扫描的清单**里"
+                      "（谁把扫描面剔除本文件，这条即红）")
         self.assertEqual(scan_text("见 " + _PLAN_DOC + "。\n", tracked),
                          [(1, _PLAN_DOC, "文档引用未入库")],
                          "本门的形态一在本文件身上失效（夹具串没被当真引用扫）")
