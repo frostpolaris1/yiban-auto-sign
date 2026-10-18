@@ -3,7 +3,7 @@
 
 标签：B · 调度：领取/队列/执行体
 
-**本门补哪一维**：`docs/refactor/140` §五 S4 的变异对照已证死——把
+**本门补哪一维**：变异对照已证死——把
 `yiban/workers/workers.py` 兜底腿接线里的 `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`
 改成 `elbow_sec=0.0`，四个肘界族文件（`test_claim_dispatch_elbow_e2e.py` 19 passed、
 `test_fallback_gates.py` 27 passed、`test_elbow_predicate.py` 16 passed、

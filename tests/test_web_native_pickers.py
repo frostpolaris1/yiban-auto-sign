@@ -6,12 +6,12 @@
 一律换 Element Plus 组件或仓内既有控件形态。
 
 判据演进：
-· 旧口径（`docs/refactor/67` B1）只扫 `web/templates/`，Vue 侧从未纳入 ⇒ 回归漏网
+· 旧口径（B1）只扫 `web/templates/`，Vue 侧从未纳入 ⇒ 回归漏网
   （工单 yiban-auto-sign-1euo：`Audit.vue` 原生 select、`DistViz.vue` 原生 time）。
 · 本单把扫描面扩到 `frontend/src/**` ＋ `web/templates/**` ＋ `web/static/vue/assets/*.js`
   （三面合一，web/templates 旧口径所辖面不再掉出自动判据）。
 · 2026-10-10 用户裁决：`date`/`datetime-local` 同类也换。原「保留原生 date 做无 JS
-  退化」的理由（`docs/refactor/33` §六）对 Vue 页已不成立——整页都由 JS 渲染，无 JS
+  退化」的理由对 Vue 页已不成立——整页都由 JS 渲染，无 JS
   时本来就空白。故 `date`/`datetime-local` 由「登记放行」改为**禁令内、无例外**
   （`Audit.vue` 两处 + `Logs.vue` 一处同日改 `el-date-picker`）。
 
@@ -163,7 +163,7 @@ class NativePickerSourceTest(unittest.TestCase):
         )
 
     def test_web_templates_have_no_native_pickers(self):
-        """`web/templates`（旧口径 docs/refactor/67 B1 所辖面）不得出现原生控件。"""
+        """`web/templates`（旧口径 B1 所辖面）不得出现原生控件。"""
         violations = _scan_source_tree(TEMPLATES_DIR, (".html",))
         self.assertEqual(
             violations, [],

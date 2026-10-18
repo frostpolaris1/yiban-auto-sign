@@ -28,7 +28,7 @@ from yiban.core import clock, hrw, window
 logger = logging.getLogger("yiban")
 
 # ---------------------------------------------------------------------------
-# 调度 v2 配置默认值（设计文档：docs/design/plan-scheduler-v2.md）
+# 调度 v2 配置默认值
 # ---------------------------------------------------------------------------
 _DEFAULT_SIGN_START = (6, 30)
 _DEFAULT_SIGN_END = (7, 50)
