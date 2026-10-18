@@ -224,6 +224,12 @@ _AUDIT_RETRY_BASE_DELAY = _audit_chain._AUDIT_RETRY_BASE_DELAY
 _ANCHOR_V0_TOKENS = _audit_chain._ANCHOR_V0_TOKENS
 _ANCHOR_V1_TOKENS = _audit_chain._ANCHOR_V1_TOKENS
 _ANCHOR_V2_TOKENS = _audit_chain._ANCHOR_V2_TOKENS
+# 老格式（三字段）历史前缀的识别：截止日常量与判据函数。`_legacy_prefix_end` 同时是
+# `audit_anchor_summary.old_format_lines` 与 `_anchor_file_state_ex` 的输入——两处各写
+# 一份判据就会让"已知欠账计数"与"无法定论判据"对不上。
+LEGACY_ANCHOR_LAST_DAY = _audit_chain.LEGACY_ANCHOR_LAST_DAY
+_legacy_prefix_end = _audit_chain._legacy_prefix_end
+_is_legacy_ts = _audit_chain._is_legacy_ts
 _ANCHOR_META_KEY = _audit_chain._ANCHOR_META_KEY
 _AUDIT_PURGE_TOTAL_KEY = _audit_chain._AUDIT_PURGE_TOTAL_KEY
 _AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
