@@ -116,7 +116,7 @@ def main(argv=None):
     if removed > 0:
         # 日志"截止"与 state_gc._cutoff 的删除判据同钟（MF-109：单一业务日源）：
         # 此前这里用宿主本地钟，UTC 主机上会与实际生效的截止日差一天（只差文案）。
-        from yiban.clock import now as _clock_now
+        from yiban.core.clock import now as _clock_now
         cutoff = (_clock_now() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
         _append_log(
             log_path,

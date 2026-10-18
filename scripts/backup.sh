@@ -183,14 +183,14 @@ DB_FILE="${DB_PATH##*/}"
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
 
-# 业务日唯一来源（MF-109）：yiban.clock 的北京钟，与引擎/web 同一事实源——备份包名
+# 业务日唯一来源（MF-109）：yiban.core.clock 的北京钟，与引擎/web 同一事实源——备份包名
 # 与保留期"当天件"判定必须落在引擎业务日上（宿主时区≠北京时差一天，会把"当天归档
-# 失踪"误报或漏报）。取不到 yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
+# 失踪"误报或漏报）。取不到 yiban.core.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
 business_day() {
     # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
     # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
     local _d
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
     case "$_d" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
     esac

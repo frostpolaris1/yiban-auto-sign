@@ -111,7 +111,7 @@ class NoLiteralDateFixtureDefaultTest(unittest.TestCase):
             offenders, [],
             "测试夹具的默认参数写死了字面日期/时刻。默认值是夹具对'现在'的替身，"
             "写死即把当前时刻冻成常量，随墙钟推进必然腐坏（工单 5f9q）。"
-            "改用 `yiban.clock.now()` 相对取值，或在用例里显式传参。违例：\n  "
+            "改用 `yiban.core.clock.now()` 相对取值，或在用例里显式传参。违例：\n  "
             + "\n  ".join(offenders))
 
 

@@ -693,5 +693,349 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
                              "（两者不是同一模块）")
 
 
+# ---------------------------------------------------------------------------
+# 拆墙/壳退役 T2：`yiban.clock` 的读者必须迁到 `yiban.core.clock`
+# ---------------------------------------------------------------------------
+# 来历（145-B `T2` 片）：`yiban/clock.py` 是 `sys.modules` 替换型转发壳，实现已搬
+# `yiban/core/clock.py`（批 B）。`yiban/**` 的 28 个生产件**当时就迁完了**，剩下
+# 自有面 **77 个文件**仍走旧坐标：`tests/**` 58 ＋ `web/**` 9 ＋ `scripts/**` 8
+# （5 个 .py ＋ 3 个 .sh）＋ `docker/**` 1 ＋ `run.sh` 1。
+# 口径（2026-10-18 本片接手时在 `2f2709b0` 上现量）：**含 import 路径或运行期代码串
+# 的文件数**，不含只在 docstring／注释里提旧坐标的文件（那些不计入，见下"注释不算"）。
+# 另一口径（同一底本，现量）：import 路径**处数** 74（`from yiban import clock` 71 ＋
+# `from yiban.clock import X` 3）；shell 非注释行 4；串内旧坐标 12（其中**串内别名**
+# 2 处是首版判据漏检的形态，见不变式①末段）。
+#
+# **本片只迁坐标，不动任何取时逻辑。** clock 是业务时间唯一来源（固定 +8）：宿主是
+# UTC 时若某处改走 `datetime.now()`，窗口闸门会把"还没开始"判成"已结束"，当天全部
+# 账号零请求（历史缺陷）。故本门只钉"坐标不得是旧的那个"，不碰 `now()` 的实现。
+#
+# 本门钉三条不变式：
+#   ① **自有面零命中**：面＝`yiban/**`、`web/**`（非 `web/static/**`）、`scripts/**`、
+#      `docker/**`、`run.sh`、`tests/**`。旧坐标 `yiban.clock` 不得再以 import 路径、
+#      别名形态 `from yiban import clock`、属性访问 `yiban.clock.X`、或非 docstring
+#      字符串常量（含打桩目标 `mock.patch("yiban.clock.now")`、`python -c` 代码串
+#      里的 `"from yiban import clock"`）出现。
+#      为什么必须钉：壳仍在，故 `from yiban import clock` **能跑**、字符串打桩
+#      **能成功**；但 `145-E` 删壳后 import 直接 `ModuleNotFoundError`，而字符串打桩
+#      目标会**静默失效**（不报错，只不再控制被测路径）。
+#      为什么单列"串内别名"：首版判据只按字面量 `yiban.clock` 扫串，漏掉
+#      `"from yiban import clock;print(clock.ts())"` 这类**运行期代码串**——本片接手
+#      实测两处真实残留（`scripts/drill_multi_exec.py` 的子进程哨兵串、
+#      `tests/test_cli_egress_reset.py` 的 `-c` 串）正是此形态，而门当时是绿的。
+#      ⇒ 门的覆盖面必须等于改动面（AGENTS §十三 形状③）。
+#   ② **非 Python 载体的非注释行同样零命中**：`run.sh` 与 `scripts/*.sh` 里的
+#      `python -c "… from yiban.clock import today …"` 是**运行期硬依赖**（业务日唯一
+#      来源，MF-109）。壳删后这四处会让按天文件名静默错位。
+#   ③ **面外读者逐条登记**（面＝`frontend/**`，2026-10-18 起归用户独立完成）。
+#
+# 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
+#   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
+#   `tests/test_import_linter_gate.py`——`yiban.clock` 是它的**禁字面量**：该用例断言
+#     import-linter 契约的 `forbidden_modules` **不许**列出迁移期坐标（列了契约会空转
+#     退 2）。把这条字面量改成新坐标会**反转语义**（新坐标是永久坐标，契约列它是合法的）。
+#   `tests/test_deploy_entry_imports.py`——本文件，`_T2_OLD_MODULE` 是禁字面量，
+#     夹具字符串用于自证本门有牙。
+_T2_OLD_MODULE = "yiban.clock"
+_T2_NEW_MODULE = "yiban.core.clock"
+#: 自有面（不含面外 `frontend/**`）。
+_T2_OWN_FACE_PY_DIRS = ("yiban", "web", "scripts", "docker", "tests")
+_T2_OWN_FACE_SHELL = ("run.sh",)
+_T2_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist", "build"))
+#: 自有面里不归本批改的子树（`web/static` 是前端产物，2026-10-18 起归用户）。
+_T2_SKIP_REL_PREFIX = ("web/static/",)
+_T2_FACE_EXEMPT = frozenset((
+    "tests/test_batch_b_relocation.py",
+    "tests/test_import_linter_gate.py",
+    "tests/test_deploy_entry_imports.py",
+))
+#: 面外（`frontend/**`）仍读旧坐标的**待销账登记**。键＝(相对路径, 名字)，值＝(次数, 说明)。
+_T2_OUT_OF_FACE_REGISTRY = {
+    ("frontend/e2e/server.py", "yiban.clock"): (
+        1,
+        "Playwright e2e 夹具（`frontend/README.md` 的 `npm run test:e2e` 拉起）仍以旧坐标"
+        "导入 clock；前端归用户独立完成，本批不得改。**145-E 删壳前须先处置这一行**"
+        "（前端侧改 `from yiban.core import clock` 或由主会话与用户协同），处置后同批删本登记。",
+    ),
+}
+
+#: 旧坐标的字面量判据：`yiban.clock` 后面不得紧跟标识符字符。
+#: 故 `yiban.clock` / `yiban.clock.now` / `*yiban.clock*` 命中；
+#: `yiban.clock_meta`（`yiban.store` 的另一模块）、`yiban.client` 不命中。
+_T2_OLD_LITERAL = re.compile(r"(?<![\w.])" + re.escape(_T2_OLD_MODULE) + r"(?![\w])")
+
+#: 别名形态**在文本里**的判据：`from yiban import … clock …`。
+#: 为什么单列：字面量判据要求串里出现 `yiban.clock` 这个点号形态，抓不到
+#: `"from yiban import clock;print(clock.ts())"` 这类**运行期代码串**（`python -c`
+#: 的实参、子进程脚本常量）。这类串在壳退役后同样 `ModuleNotFoundError`，且
+#: 字符串打桩不覆盖它们——本片实测两处真实残留正是此形态（首版判据漏检）。
+#: `\bclock\b` 不误命中 `clock_meta`（`k` 与 `_` 之间无词边界）。
+#: `[^\n#]` 限制在同一行且不跨注释，`from yiban.core import clock` 因 `yiban` 后
+#: 不是空白而不命中。
+_T2_OLD_ALIAS_IN_TEXT = re.compile(r"\bfrom\s+yiban\s+import\s+[^\n#]*\bclock\b")
+
+
+def _t2_import_hits(tree):
+    """该文件里以旧坐标作 import 路径的位置：`(行号, 说明)` 列表。
+
+    三种写法：`import yiban.clock`、`from yiban.clock import X`、
+    `from yiban import clock`（别名形态，是主流形态）。
+    口径（同一底本现量）：别名形态在**自有面** 71 处；含面外 `frontend/e2e/server.py`
+    共 72 处。`import yiban.clock` 0 处、`from yiban.clock import X` 3 处。
+    第四种：`import yiban` 后按属性访问 `yiban.clock.now()`——字面量判据抓不到它
+    （那判据只看字符串），故在此按 `ast.Attribute` 认。
+    """
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == _T2_OLD_MODULE or a.name.startswith(_T2_OLD_MODULE + "."):
+                    hits.append((node.lineno, "import 旧坐标 " + a.name))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == _T2_OLD_MODULE or mod.startswith(_T2_OLD_MODULE + "."):
+                hits.append((node.lineno, "from 旧坐标 import " + mod))
+            elif mod == "yiban":
+                for a in node.names:
+                    if a.name == "clock":
+                        hits.append((node.lineno, "from yiban import clock（旧坐标别名）"))
+        elif isinstance(node, ast.Attribute) and node.attr == "clock":
+            root = node.value
+            if isinstance(root, ast.Name) and root.id == "yiban":
+                hits.append((node.lineno, "属性访问 yiban.clock（旧坐标）"))
+    return hits
+
+
+def t2_old_coordinate_hits(path):
+    """返回该文件里引用旧坐标的位置：`(行号, 说明)` 列表。
+
+    Python：① 旧坐标 import（四种写法，含 `yiban.clock.X` 属性访问）；
+    ② 非 docstring 字符串常量含旧坐标（覆盖打桩目标 `"yiban.clock.now"`、
+    `-c` 代码串、`*yiban.clock*` 形态）；③ 字符串里的别名形态
+    `"from yiban import clock…"`（运行期代码串，首版判据漏检的形态）。
+    Shell：**非注释行**含旧坐标（字面量或别名形态）。
+    注释与 docstring 不算（任务口径：历史叙述不误红）。
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if path.endswith((".sh", ".bash")) or path.endswith("Dockerfile"):
+        hits = []
+        for i, line in enumerate(text.splitlines(), 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if _T2_OLD_LITERAL.search(s):
+                hits.append((i, "shell/文本非注释行含 " + _T2_OLD_MODULE))
+            elif _T2_OLD_ALIAS_IN_TEXT.search(s):
+                hits.append((i, "shell/文本非注释行含 from yiban import clock"))
+        return hits
+    tree = ast.parse(text)
+    docs = _docstring_const_ids(tree)
+    hits = list(_t2_import_hits(tree))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docs):
+            continue
+        if _T2_OLD_LITERAL.search(node.value):
+            hits.append((node.lineno, "非 docstring 字符串常量 " + node.value[:60]))
+        elif _T2_OLD_ALIAS_IN_TEXT.search(node.value):
+            hits.append((node.lineno, "非 docstring 字符串含别名形态 "
+                         + node.value[:60]))
+    return sorted(set(hits))
+
+
+def t2_own_face_files(root):
+    """自有面的扫描文件清单（.py ＋ .sh ＋ Dockerfile*），按 §7.2 的范围。"""
+    out = []
+    for d in _T2_OWN_FACE_PY_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x not in _T2_SKIP_DIRS]
+            for name in sorted(files):
+                if not name.endswith((".py", ".sh", ".bash")) and not name.startswith("Dockerfile"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace("\\", "/")
+                if rel.startswith(_T2_SKIP_REL_PREFIX):
+                    continue
+                out.append(os.path.join(dirpath, name))
+    for name in _T2_OWN_FACE_SHELL:
+        path = os.path.join(root, name)
+        if os.path.exists(path):
+            out.append(path)
+    return out
+
+
+def t2_out_of_face_files(root):
+    """面外（`frontend/**`）的扫描文件清单（.py ＋ .ts）。"""
+    out = []
+    for dirpath, dirs, files in os.walk(os.path.join(root, "frontend")):
+        dirs[:] = [x for x in dirs if x not in _T2_SKIP_DIRS]
+        for name in sorted(files):
+            if name.endswith(".py"):
+                out.append(os.path.join(dirpath, name))
+    return out
+
+
+def t2_out_of_face_problems(found, registry=None, where=None):
+    """面外残留与登记表对账（纯函数，便于突变自证）：返回问题清单（空＝一致）。
+
+    与 `pwhash_out_of_face_problems` 同口径：未登记 ⇒ 红；次数不符 ⇒ 红；整条消失 ⇒ 红。
+    """
+    registry = _T2_OUT_OF_FACE_REGISTRY if registry is None else registry
+    where = where or {}
+    problems = []
+    for key, n in sorted(found.items()):
+        entry = registry.get(key)
+        if entry is None:
+            problems.append(
+                f"{key[0]}:{where.get(key)} 出现未登记的面外旧坐标读者 {key[1]}（{n} 处）——"
+                "要么迁到 `yiban.core.clock`，要么在 _T2_OUT_OF_FACE_REGISTRY 登记")
+        elif n != entry[0]:
+            problems.append(
+                f"{key[0]}:{where.get(key)} 的旧坐标读者实测 {n} 处、登记 {entry[0]} 处"
+                "——两侧必须一致（新增残留不许漏登记；已处置的必须同批销账）")
+    for key, (n, _why) in sorted(registry.items()):
+        if key not in found:
+            problems.append(
+                f"登记 {key[0]} 的 {key[1]}（{n} 处）已不在代码里——"
+                "前端那边已处置，请同批删掉这条登记（防登记变成僵尸）")
+    return problems
+
+
+class ClockCoordinateGateTest(unittest.TestCase):
+    """T2：`yiban.clock` 的自有面读者清零；非 Python 载体零命中；面外残留须登记。"""
+
+    def _found_in(self, paths):
+        found, where = {}, {}
+        for path in paths:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            hits = t2_old_coordinate_hits(path)
+            if hits:
+                found[(rel, _T2_OLD_MODULE)] = len(hits)
+                where[(rel, _T2_OLD_MODULE)] = [ln for ln, _ in hits]
+        return found, where
+
+    def test_own_face_has_no_old_coordinate(self):
+        files = t2_own_face_files(BASE)
+        self.assertGreaterEqual(
+            len(files), 400,
+            f"自有面扫描面过小（{len(files)} 个文件）——扫描根写错或树被移走（扫空不得当绿）")
+        bad = []
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if rel in _T2_FACE_EXEMPT:
+                continue
+            for line, why in t2_old_coordinate_hits(path):
+                bad.append(f"{rel}:{line}: {why}")
+        self.assertEqual(
+            bad, [],
+            "自有面仍以旧坐标 `yiban.clock` 作 import 路径或字符串目标"
+            "（壳退役后 import 会断、字符串打桩会静默失效）：\n" + "\n".join(bad))
+
+    def test_no_patch_target_uses_old_coordinate(self):
+        """打桩面单列一条：`mock.patch("<旧坐标>.…")` 是静默失效的典型形态。"""
+        bad = []
+        files = t2_own_face_files(BASE)
+        self.assertGreaterEqual(len(files), 400, f"扫描面过小（{len(files)}）")
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if not rel.endswith(".py") or rel in _T2_FACE_EXEMPT:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            tree = ast.parse(text)
+            docs = _docstring_const_ids(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if fname not in ("patch", "object"):
+                    continue
+                for a in node.args:
+                    if (isinstance(a, ast.Constant) and isinstance(a.value, str)
+                            and id(a) not in docs
+                            and _T2_OLD_LITERAL.search(a.value)):
+                        bad.append(f"{rel}:{node.lineno}: 打桩目标 {a.value}")
+        self.assertEqual(
+            bad, [],
+            "打桩目标仍指旧坐标 `yiban.clock`——壳退役后会静默失效（打桩成功但不控被测路径）：\n"
+            + "\n".join(bad))
+
+    def test_exempt_files_still_exist(self):
+        """豁免清单不得腐烂：登记的文件必须还在（否则豁免面静默变大）。"""
+        for rel in sorted(_T2_FACE_EXEMPT):
+            self.assertTrue(os.path.isfile(os.path.join(BASE, rel)),
+                            f"豁免清单登记了不存在的文件 {rel}")
+
+    def test_out_of_face_registry_reconciles(self):
+        """面外（`frontend/**`）的残留与登记表逐条对账，两侧都不许静默。"""
+        files = t2_out_of_face_files(BASE)
+        self.assertGreaterEqual(
+            len(files), 1,
+            f"面外扫描面为空（{len(files)} 个文件）——扫描根写错或前端被移走（扫空不得当绿）")
+        found, where = self._found_in(files)
+        problems = t2_out_of_face_problems(found, where=where)
+        self.assertEqual(problems, [], "面外旧坐标残留与登记表不一致：\n" + "\n".join(problems))
+
+    def test_scanner_has_teeth(self):
+        """突变验证：塞回八种形态 ⇒ 红；docstring/注释/同前缀他模块 ⇒ 不误红。"""
+        with tempfile.TemporaryDirectory(prefix="clock-gate-") as tmp:
+            py = os.path.join(tmp, "fake_test.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write('"""docstring 提 yiban.clock 不算命中。"""\n'
+                        'from yiban import clock\n'                    # ① 别名 ⇒ 命中
+                        'from yiban.clock import today\n'              # ② 旧坐标 ⇒ 命中
+                        'from unittest import mock\n'
+                        'mock.patch("yiban.clock.now")\n'              # ③ 打桩串 ⇒ 命中
+                        'P = "*yiban.clock*"\n'                        # ④ 嵌入形态 ⇒ 命中
+                        'CODE = "from yiban import clock;print(clock.ts())"\n'  # ⑤ 串内别名 ⇒ 命中
+                        'PROBE = """from yiban import clock as _c"""\n'  # ⑥ 多行串内别名 ⇒ 命中
+                        'import yiban\n'
+                        'yiban.clock.now()\n'                          # ⑦ 属性访问 ⇒ 命中
+                        '# 注释里的 yiban.clock 不算\n'
+                        'import yiban.clock_meta\n')                   # ⑧ 同前缀他模块 ⇒ 不命中
+            hits = t2_old_coordinate_hits(py)
+            lines = sorted({ln for ln, _ in hits})
+            for want in (2, 3, 5, 6, 7, 8, 10):
+                self.assertIn(want, lines, f"第 {want} 行应命中：{hits}")
+            self.assertNotIn(12, lines,
+                             f"第 12 行 `yiban.clock_meta` 不该命中（同前缀他模块）：{hits}")
+
+            clean = os.path.join(tmp, "clean.py")
+            with open(clean, "w", encoding="utf-8") as f:
+                f.write('"""历史叙述：yiban.clock 迁到 yiban.core.clock。"""\n'
+                        'from yiban.core import clock\n'
+                        'from yiban.core.clock import now\n'
+                        'import yiban.store.clock_meta as cm\n'
+                        'from yiban import client\n'
+                        'A = "yiban.core.clock.now"\n'
+                        'B = "yiban.clock_meta"\n'
+                        'C = "yiban.client"\n'
+                        'D = "from yiban.core import clock"\n'
+                        'E = "from yiban import clock_meta"\n')
+            self.assertEqual(
+                t2_old_coordinate_hits(clean), [],
+                "新坐标、`yiban.clock_meta`、`yiban.client`、docstring 被误判成旧坐标")
+
+            sh = os.path.join(tmp, "fake.sh")
+            with open(sh, "w", encoding="utf-8") as f:
+                f.write('#!/usr/bin/env bash\n'
+                        '# 注释里的 yiban.clock 不算\n'
+                        'from yiban.clock import today\n'
+                        '_d="$(python3 -c \'from yiban import clock;print(clock.ts())\')"\n')
+            self.assertEqual([ln for ln, _ in t2_old_coordinate_hits(sh)], [3, 4],
+                             "shell 非注释行未命中（字面量或别名形态）或注释被误判")
+
+            reg = {("frontend/e2e/server.py", _T2_OLD_MODULE): (1, "理由")}
+            key = ("frontend/e2e/server.py", _T2_OLD_MODULE)
+            self.assertEqual(t2_out_of_face_problems({key: 1}, reg), [],
+                             "登记与实际一致却判红：本门没有牙")
+            self.assertTrue(t2_out_of_face_problems({key: 2}, reg),
+                            "命中次数多于登记未判红：新增残留会被静默放过")
+            self.assertTrue(t2_out_of_face_problems({("frontend/x.py", _T2_OLD_MODULE): 1}, reg),
+                            "未登记的新读者未判红：本门没有牙")
+            self.assertTrue(t2_out_of_face_problems({}, reg),
+                            "登记已消失（用户那边改掉了）未判红：登记会变成僵尸")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

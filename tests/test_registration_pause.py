@@ -242,7 +242,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         """create_app 后 root logger 挂 DailyFlockFileHandler 且 INFO 落入 sign-*.log。"""
         import logging
 
-        from yiban import clock  # 按天日志 handler 按业务钟取日期：宿主 TZ 下须同源
+        from yiban.core import clock  # 按天日志 handler 按业务钟取日期：宿主 TZ 下须同源
         c = self.webapp.create_app().test_client()
         c.get("/api/registration_paused")  # 触发一条请求级日志路径
         root = logging.getLogger()

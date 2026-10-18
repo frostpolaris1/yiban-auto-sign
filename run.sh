@@ -24,23 +24,23 @@ cd "$APP_DIR" 2>/dev/null || { _err "致命: 无法进入应用目录 $APP_DIR";
 ENV_PATH="$APP_DIR/data/.env"
 
 # Python 解释器：优先项目虚拟环境，缺失时回退系统 Python（须在按天文件名之前定好：
-# 业务日取时经它走 yiban.clock，与引擎同源）
+# 业务日取时经它走 yiban.core.clock，与引擎同源）
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
 else
     PY=/usr/bin/python3
 fi
 
-# 业务日唯一来源（MF-109）：yiban.clock 的北京钟，与引擎/web 同一事实源。宿主时区
+# 业务日唯一来源（MF-109）：yiban.core.clock 的北京钟，与引擎/web 同一事实源。宿主时区
 # ≠北京（UTC 16:00-24:00 窗口）时宿主 `date` 的"当天"与引擎业务日差一天——状态文件、
-# 日志、触发标记、收尾标记与库内"当日事实"查询一律取这里。取不到 yiban.clock
+# 日志、触发标记、收尾标记与库内"当日事实"查询一律取这里。取不到 yiban.core.clock
 # （python 缺失/损坏）时退化 `TZ=Asia/Shanghai date`（需宿主 tzdata），再退化宿主
 # `date`（保持可运行的降级形态，此时与引擎业务日可能差一天）。
 business_day() {
     # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
     # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
     local _d
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
     case "$_d" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
     esac
