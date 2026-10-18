@@ -240,6 +240,7 @@ class YibanClient:
         self.phone_code = account.phone_code
         self._registered_device = None      # 服务端登记设备（DeviceState）；None=未读或读失败
         self._registered_device_read = False
+        self._registered_device_persisted = False  # 登记值是否已写进账号行（供按需补全端点如实回报）
         self._registered_device_problem = ""  # 设备缺失的原因分类（供拒签文案；不含异常原文）
         self._registered_device_blocked = False  # 设备登记读回被 WAF 拦截（走既有 WAF 文案）
         self.logged_in = False
@@ -300,6 +301,9 @@ class YibanClient:
           其余异常是**我们自己**的缺陷，吞掉它等于把缺陷伪装成"账号没设备"。
         * 信封 `code=999` 抛的 `RuntimeError` 表示**会话已失效**，吞掉它会把
           "清缓存后真重登"那条既有处置路径换成本地拒签——失败分类因此走错档。
+
+        成功路径把落库结果记进 `self._registered_device_persisted`（见
+        `_persist_registered_device` 的返回值），供按需补全端点如实回报"已保存/未保存"。
         """
         try:
             resp = yiban_platform.fetch_device_state(self.session, self.csrf, self._policy)
@@ -331,11 +335,11 @@ class YibanClient:
                 f"{masking.sanitize_text(state.phone_model) or '未知'}）——请在易班 App 的"
                 "「设备识别」页完成本机授权，否则可能被上游拒签"
             )
-        self._persist_registered_device(state)
+        self._registered_device_persisted = self._persist_registered_device(state)
         return state
 
     def _persist_registered_device(self, state):
-        """把读回的设备登记值落到本地账号行——**注册一次、长期复用**。
+        """把读回的设备登记值落到本地账号行——**注册一次、长期复用**。返回是否**已落库**。
 
         落库后各轮签到直接走账号本地配置（`_device_identity` 的第一个分支），
         不再发 `getState` 请求。若只是"每轮都读回"，等于把一次登记变成每次上线，
@@ -343,12 +347,16 @@ class YibanClient:
 
         账号行 id 为 0（非库来源：JSON/环境变量）时无处可落，跳过；落库失败
         **fail-open**：拿不到持久化不阻断签到，本轮仍用读回值。
+
+        返回值只报"这一对值是否已写进账号行"：`True`=写入成功（含 `update_account`
+        的无变化更新）；`False`=跳过（缺一半/无库行）或写失败。按需补全端点据此如实
+        回"已保存/未取到"，故返回值**不得**与"读到过值"混为一谈。
         """
         if not state.code or not state.phone_model:
-            return
+            return False
         account_id = getattr(self.account, "account_id", 0)
         if not account_id:
-            return
+            return False
         try:
             update_account(account_id, {
                 "phone_model": state.phone_model,
@@ -359,11 +367,12 @@ class YibanClient:
                 f"[{self.account.phone}] 设备登记落库失败（fail-open，本轮仍用读回值）："
                 f"{type(exc).__name__}"
             )
-            return
+            return False
         # 内存副本同步：同进程后续轮次（重试/多任务）不再重复读
         self.phone_model = state.phone_model
         self.phone_code = state.code
         logger.info(f"[{self.account.phone}] 设备登记已落到本地账号，后续轮次直接复用")
+        return True
 
     def _wipe_credentials(self):
         """凭据内存尽力清零：单次签到尝试结束（成败均然）由 attempt_signin 调用。
