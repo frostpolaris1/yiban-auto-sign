@@ -234,6 +234,7 @@ defineExpose({ isDirty: () => dirty.value, save });
             class="btn btn--ghost btn--sm"
             id="ss-edit"
             data-sched-edit
+            title="只控制滑杆与分布拖拽；下拉、输入框和开关不受影响"
             :aria-pressed="editing ? 'true' : 'false'"
             :disabled="!isMaster"
             @click="editing = !editing"

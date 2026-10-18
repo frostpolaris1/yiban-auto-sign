@@ -8,7 +8,7 @@ const SEED_ROWS = Number(process.env.YB_E2E_SEED_ROWS ?? 60);
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "TestPass1234!";
 
-test("登录 → 审计页：首屏一页、加载更多补齐、动作过滤收窄", async ({ page }) => {
+test("登录 → 审计页：首屏一页、翻页、动作过滤收窄", async ({ page }) => {
   // 1) 会话建立走 API 登录：真实登录**表单**由 e2e/logs.spec.ts 覆盖一处即可——
   //    同 IP 10 秒内第 4 次访问 /login 会被服务端的「登录页访问循环」守卫打断
   //    （那是给真实用户的保护，测试不该反复撞），故整个 e2e 套件只保留一次表单登录。
@@ -24,14 +24,15 @@ test("登录 → 审计页：首屏一页、加载更多补齐、动作过滤收
   const total = Number(/共\s*(\d+)\s*条/.exec(await page.locator(".audit-meta").innerText())![1]);
   expect(total).toBeGreaterThanOrEqual(SEED_ROWS);
 
-  // 3) has_more 驱动翻页（契约第 2 条）：加载更多 → 补齐到底、按钮转"已到末尾"
-  const more = page.getByRole("button", { name: "加载更多" });
-  await expect(more).toBeEnabled();
-  await more.click();
-  await expect(page.getByRole("button", { name: "已到末尾" })).toBeDisabled();
-  const shown = Number(/已显示\s*(\d+)/.exec(await page.locator(".audit-meta").innerText())![1]);
-  expect(shown).toBeGreaterThan(50);
-  await expect(rows).toHaveCount(shown);
+  // 3) 翻页：与账号/用户/日志页同一套 el-pagination；第 2 页整页替换首批。
+  const pager = page.locator(".audit-foot .el-pagination");
+  await expect(pager).toBeVisible();
+  const page2 = pager.locator(".el-pager li", { hasText: "2" });
+  await expect(page2).toHaveCount(1);
+  await page2.click();
+  await expect.poll(async () => Number(await rows.count())).toBeLessThan(50);
+  await expect.poll(async () => Number(await rows.count())).toBeGreaterThan(0);
+  await expect(pager.locator(".el-pager li.is-active")).toHaveText("2");
 
   // 4) 等值过滤收窄（服务端白名单键 action；读取留痕的 action 是 audit_logs_read，不会混入）
   await page.fill('input[placeholder="如 login_success"]', "e2e_seed_3");
@@ -64,7 +65,7 @@ test("登录 → 审计页：首屏一页、加载更多补齐、动作过滤收
   // 5) 重置回到首屏一页
   await page.getByRole("button", { name: "重置" }).click();
   await expect(rows).toHaveCount(50);
-  await expect(more).toBeEnabled();
+  await expect(pager.locator(".el-pager li.is-active")).toHaveText("1");
 
   // 5b) 每页条数由原生 <select> 换成 EP el-select（原生控件禁令）：控件换形，取值与提交
   //     口径不变——选 100 后新查询带 page_size=100，行数随之补齐（旧 select 同一行为）。
