@@ -2612,10 +2612,14 @@ html[data-theme="dark"] {
   color: var(--t-base);
   white-space: nowrap;
 }
-/* 换月键 30×30 且只隔 2px：低于桌面指针 32px 下限，两键又紧挨着，点错只静默跳月、
-   无法撤销。抬到 36px 并把键距拉到 8px（触屏档另在 @media (hover: none) 抬到 44px）。 */
+/* 换月键原为 30×30 且只隔 2px：低于桌面指针 32px 下限，两键又紧挨着，点错只静默跳月、
+   无法撤销。故取**工具行标准档 32**（--ctl-h-md）并把键距拉到 8px；触屏档另在
+   @media (hover: none) 抬到 44px。
+   为什么是 32 而不是比它更大的自定值：控件高只有三档（32/40/44，门禁 test_web_style_tokens
+   钉死），而「今天」与换月键同属 .sc-toolbar 这条 flex 行——行内控件必须同高，否则换月键
+   中心比「今天」低 2px（实测 36 vs 32）。取 32 让整行落在工具行档上，与全站其它工具行同高。 */
 .sc-nav { display: flex; gap: 8px; }
-.sc-nav-btn { width: 36px; height: 36px; padding: 0; justify-content: center; }
+.sc-nav-btn { width: var(--ctl-h-md); height: var(--ctl-h-md); padding: 0; justify-content: center; }
 .sc-nav-btn svg { width: 17px; height: 17px; }
 .sc-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 
@@ -2777,7 +2781,9 @@ html[data-theme="dark"] {
 }
 @media (max-width: 720px) {
   .sc-grid { --sc-row: 44px; --sc-gap: 2px; }
-  .sc-nav-btn { width: 40px; height: 40px; }
+  .sc-nav-btn { width: var(--ctl-h-lg); height: var(--ctl-h-lg); }
+  /* 换月键在本档抬到 40，同行「今天」跟着抬，否则行内参差 */
+  .sc-toolbar .btn--sm { min-height: var(--ctl-h-lg); }
   /* 竖屏：操作按钮必须在同一行——收窄内距与字号并禁止换行（宽度已实测放得下） */
   .account-actions { flex-wrap: nowrap; gap: 6px; }
   .account-actions .btn--sm { padding: 5px 8px; font-size: 11px; min-height: 32px; }
@@ -4754,6 +4760,8 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   .auth-agree-text button { display: inline-flex; align-items: center; padding: 0 6px; }
   /* 窄屏弹窗按钮已是整宽；这里只补高度，不重排 */
   .pm-panel .modal-foot .btn { min-height: 44px; }
+  /* 换月键在本档抬到 44 命中区，同行「今天」跟着抬，否则行内参差 12px */
+  .sc-toolbar .btn--sm { min-height: var(--ctl-h-touch); }
 }
 
 /* ==========================================================================

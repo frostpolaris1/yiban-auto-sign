@@ -210,3 +210,103 @@ test("竖屏账号表：无横向滚动，手机号与审核状态行内可见",
   await expect(page.locator(".acct-audit-inline").first()).toBeVisible();
   await expect(page.locator(".acct-cell-phone").first()).toBeHidden();
 });
+
+// ---------------------------------------------------------------------------
+// 同排控件同高（形状守卫）
+//
+// 用户点名过两次"各处控件高度不一致"（工具条输入框/日期框 40 与 32 参差、日期框与文本框
+// 不同高）。这里钉的不是某页某控件，而是那条**任何实现下都不该被违反**的性质：
+// **同一视觉行内的可见控件，高度差不得超过 2px**。做法是把可见控件按中心 y 聚类成行，
+// 再逐行比最大最小高——换实现、加页面都不会让它假红，而"某处悄悄长出一档高度"会。
+//
+// 排除面：`/work/pilot` 是"旧栈 .btn vs EP el-button"对照页，同排混放两套按钮是它的**目的**，
+// 不是参差。除它之外，全站页面都在覆盖内。
+// ---------------------------------------------------------------------------
+const ROW_PAGES_ADMIN = [
+  "/data/dashboard",
+  "/data/audit",
+  "/data/logs",
+  "/work/accounts",
+  "/work/users",
+  "/work/settings",
+];
+const ROW_PAGES_USER = ["/my/calendar", "/my/account"];
+
+// 只取**控件本体**，不取 EP 的内部 input（.el-input__inner / .el-select__input /
+// .el-range-input 都是 wrapper 的子孙，高度天然小于 wrapper，混进来会造出假参差）。
+const CONTROL_SEL = [
+  "button.btn",
+  "button.el-button",
+  ".el-select__wrapper",
+  ".el-date-editor",
+  "input.input",
+].join(",");
+
+type RowMismatch = { y: number; min: number; max: number; what: string };
+
+async function rowMismatches(page: import("@playwright/test").Page): Promise<RowMismatch[]> {
+  return page.evaluate((sel) => {
+    const items: { y: number; h: number; what: string }[] = [];
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === "hidden" || cs.display === "none") continue;
+      const what = (el.getAttribute("aria-label") || el.textContent || el.className || "")
+        .toString()
+        .trim()
+        .slice(0, 16);
+      items.push({ y: Math.round(r.y + r.height / 2), h: Math.round(r.height * 10) / 10, what });
+    }
+    items.sort((a, b) => a.y - b.y);
+    const rows: { y: number; items: { y: number; h: number; what: string }[] }[] = [];
+    for (const it of items) {
+      const last = rows[rows.length - 1];
+      if (last && Math.abs(last.y - it.y) <= 3) last.items.push(it);
+      else rows.push({ y: it.y, items: [it] });
+    }
+    return rows
+      .map((row) => {
+        const hs = row.items.map((i) => i.h);
+        const min = Math.min(...hs);
+        const max = Math.max(...hs);
+        return {
+          y: row.y,
+          min,
+          max,
+          what: row.items.map((i) => `${i.h}:${i.what}`).join(" | "),
+        };
+      })
+      .filter((row) => row.max - row.min > 2);
+  }, CONTROL_SEL);
+}
+
+test("管理端：各页工具行内控件同高（高度差 ≤2px）", async ({ page }) => {
+  const resp = await page.request.post("/api/login", {
+    data: { username: ADMIN_USER, password: ADMIN_PASS },
+  });
+  expect(resp.ok()).toBeTruthy();
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  for (const path of ROW_PAGES_ADMIN) {
+    await page.goto(path);
+    const bad = await rowMismatches(page);
+    expect(bad, `${path} 同排控件参差：\n${bad.map((b) => `  y=${b.y} ${b.min}..${b.max}  ${b.what}`).join("\n")}`)
+      .toEqual([]);
+  }
+});
+
+test("用户端：各页工具行内控件同高（高度差 ≤2px）", async ({ page }) => {
+  const resp = await page.request.post("/api/login", {
+    data: { username: "e2e-user@example.com", password: "UserPass123!" },
+  });
+  expect(resp.ok()).toBeTruthy();
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  for (const path of ROW_PAGES_USER) {
+    await page.goto(path);
+    const bad = await rowMismatches(page);
+    expect(bad, `${path} 同排控件参差：\n${bad.map((b) => `  y=${b.y} ${b.min}..${b.max}  ${b.what}`).join("\n")}`)
+      .toEqual([]);
+  }
+});
