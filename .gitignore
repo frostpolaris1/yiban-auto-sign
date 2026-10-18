@@ -111,6 +111,7 @@ docs/*
 !docs/dev/
 docs/dev/*
 !docs/dev/README.md
+!docs/dev/api-contract.md
 !docs/dev/api-executors.md
 !docs/dev/cli.md
 !docs/dev/dev-verify.md
@@ -145,6 +146,10 @@ web/static/vendor/logo.png
 .claude/
 agent/
 skills-lock.json
+# 审查工具（mimosa）在本仓库落下的运行台账：finding-ledger/v1、history、hook-state、
+# hook-status、reports。2026-10-11 一次批量审查的遗留，与运行时/部署/文档都无关，
+# 不入版本控制（原样保留在本地，不删——工具自身可能还要读它）。
+.mimosa/
 web/static/vendor/favicon.png
 # 页脚备案图标（备案号对应官方图标，部署者自放；缺失时页脚 onerror 隐藏，不入库）
 web/static/vendor/gongan-beian.png
