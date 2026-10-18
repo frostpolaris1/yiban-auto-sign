@@ -53,11 +53,13 @@ MIN_TEXT_FILES = 400
 
 #: `docs` 引用数下限（同上，扫空不得当绿的另一半）。
 #: **口径**（写清，免跨数比较出错——AGENTS §十三 第 31 条）：一条＝一个 `docs/…` 形态匹配；
-#:   含注释与 docstring；负向断言的禁字面量不算；本门文件自身也算。
-#: 取值理由：本树实测 **面内 127 ＋ 面外 4 ＝ 131**（其中本门自身 4 条，是注释里的示例与夹具）。
-#:   收口前同口径 面内 66 ＋ 面外 4 ＝ 70（悬空引用，已逐条处置）。
+#:   含注释与 docstring；负向断言的禁字面量不算；本门文件自身也算；同一行同一路径计多次。
+#: **本下限只比面内引用数**（主门只把面内那一面交给扫描）。实测面内 **135**。
+#:   全树引用总数 **139**（＝面内 135 ＋ 面外 4）。
+#:   收口前**悬空引用**（另一件事，别混）＝面内 66 ＋ 面外 4 ＝ **70**。
+#:   注：面内数会随**本文件自身注释里的示例**小幅漂移（本文件也算入库文本件）。
 #: 形态定义写错（正则退回空匹配）会掉到 0。下限取 80 远高于任何"形态写错"的残值，
-#: 又留出约 39% 的余量给合法的入库文档增删。
+#:   又留出约 41% 的余量给合法的入库文档增删。
 MIN_DOC_REFS = 80
 
 #: 文档引用的形态定义。两条择一：
@@ -67,16 +69,23 @@ MIN_DOC_REFS = 80
 #: 为什么不收结尾斜杠（`docs/`、`docs/dev/`）：那也是目录。
 #: 为什么不收通配（`docs/dev/*`）：那是模式，不是路径。`.gitignore` 靠这条不误红。
 #: 段首字符限 `[A-Za-z0-9_]`：`docs/...`（省略号）与 `docs/<占位>` 因此不命中。
-#: 左边界 `(?<![\w./\-])`：`docs/` 之前不许紧跟标识符字符、点或斜杠。
+#:
+#: 左边界（审查 NB3 后收窄）。两类写法：
+#:   ① `./docs/…`：显式相对引用，与裸 `docs/…` 指向同一处，**放行**
+#:      （匹配时剥掉 `./` 前缀，见 `_doc_ref_of`）。
+#:   ② `docs/…`：前一字符不得是 `[A-Za-z0-9_./\-]`。
 #: 为什么必须有：没有它，`mydocs/dev/x.md`、`out/docs/dev/x.md`、`seedocs/dev/x.md`
 #:   与 `https://x.com/docs/dev/x.md` 都会命中——那些不是库内路径引用，是**假红源**。
+#: 为什么用 `[A-Za-z0-9_]` 而不是 `\w`：Python 的 `\w` **含中日韩字符**。
+#:   写 `\w` 会让 `见docs/dev/cli.md`（中文紧贴）这类引用**静默漏检**（审查 NB3）。
 #: 实证（本仓真树）：`tests/README.md` 的反向 markdown 链接
-#:   `` [`docs/dev/dev-verify.md`](../docs/dev/dev-verify.md) `` 里，`../docs/…` 那半边
-#:   前一个字符是 `/`，故被排除；反引号那半边照旧命中（它确是引用）。口径因此收紧 1 条。
+#:   `` [`docs/dev/dev-verify.md`](../docs/dev/dev-verify.md) `` 两半边都命中
+#:   （`../docs/…` 经 `./` 形态归一到同一路径）。故同一路径在同一条里计 2 次。
+_DOC_PATH = (r"docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)+"
+             r"|docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*\.md")
 _DOC_REF = re.compile(
-    r"(?<![\w./\-])"
-    r"(?:docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)+"
-    r"|docs/[A-Za-z0-9_][A-Za-z0-9_.\-]*\.md)")
+    r"(?<![A-Za-z0-9_])\./(?P<rel>" + _DOC_PATH + r")"
+    r"|(?<![A-Za-z0-9_./\-])(?P<abs>" + _DOC_PATH + r")")
 
 #: 20 件兼容壳的**现行形态**（工单 `1229` 的壳清单 + `yiban/cli.py` 等）。
 #: 这些路径今天都在库内。`145-E` 退役这批壳之后，指向它们的引用即悬空。
@@ -123,7 +132,8 @@ OUT_OF_FACE_PREFIX = "frontend/"
 #: 四处都是"前端翻新计划稿"的溯源引用（过程稿，不入库）。用户处置后须同批删本登记。
 #:
 #: 登记表天然要写出被登记的路径，而本文件**也是入库文本件**、本门会扫到它自己。
-#: 故这两个路径按片段拼装（同 `_FAKE_DOC` 的手法），源码里因此没有真实 doc 路径字面量。
+#: 故这两个路径按片段拼装（同 `_FAKE_DOC` 的手法），源码里因此没有**悬空**的
+#: doc 路径字面量。可解的字面量（如 `docs/dev/cli.md`）照旧允许。
 #: 为什么不用"豁免本文件"：那会**加宽豁免表**（AGENTS §十四 明令禁止），
 #: 且本文件自己的注释与 docstring 也该受本门管。
 _PLAN_DOC = "docs/" + "refactor/" + "29-frontend-vue-refactor-plan.md"
@@ -150,10 +160,14 @@ OUT_OF_FACE_REGISTRY = {
 
 #: 旧坐标的字面量判据。前后都不许紧跟标识符字符。
 #: 故 `yiban/clock.py` 命中；`xyiban/clock.py`、`yiban/clock.pyc` 不命中。
+#: 左边界用 `[A-Za-z0-9_]` 而不是 `\w`（同 `_DOC_REF`，审查 NB3）：
+#: `\w` 含中日韩字符，会让 `见yiban/clock.py`（中文紧贴）静默漏检。
 _OLD_COORD_RE = re.compile("|".join(
-    r"(?<![\w./\-])" + re.escape(p) + r"(?![\w])" for p in OLD_COORD_PATHS))
+    r"(?<![A-Za-z0-9_./\-])" + re.escape(p) + r"(?![A-Za-z0-9_])"
+    for p in OLD_COORD_PATHS))
 
-#: 突变夹具的文档路径，按片段拼装。本文件里因此没有真实 doc 路径字面量。
+#: 突变夹具的文档路径，按片段拼装。本文件里因此没有**悬空**的 doc 路径字面量。
+#: 可解的字面量（如 `docs/dev/cli.md`）照旧允许，由形态定义放行。
 #: 否则本门会扫到本文件自己（本文件也是入库文本件）。
 _FAKE_DOC = "docs/" + "refactor/" + "999-v35f-mutation-probe.md"
 
@@ -242,6 +256,15 @@ def text_files_of(root, tracked):
     return out
 
 
+def _doc_ref_of(match):
+    """一次 `_DOC_REF` 匹配 → 库内相对路径。
+
+    `./docs/…` 形态命中在 `rel` 组（已剥掉 `./`）；裸 `docs/…` 形态命中在 `abs` 组。
+    两者归一到同一条相对路径，故 `./docs/dev/cli.md` 与 `docs/dev/cli.md` 的可解性判据一致。
+    """
+    return match.group("rel") or match.group("abs")
+
+
 def doc_refs_in(text, skip=None):
     """该文本里的全部文档引用：`[(行号, 路径)]`。含注释行与 docstring。
 
@@ -254,7 +277,7 @@ def doc_refs_in(text, skip=None):
         if i in skip:
             continue
         for m in _DOC_REF.finditer(line):
-            out.append((i, m.group(0)))
+            out.append((i, _doc_ref_of(m)))
     return out
 
 
@@ -272,12 +295,36 @@ def scan_text(text, tracked, skip=None):
         if i in skip:
             continue
         for m in _DOC_REF.finditer(line):
-            if m.group(0) not in tracked:
-                out.append((i, m.group(0), "文档引用未入库"))
+            ref = _doc_ref_of(m)
+            if ref not in tracked:
+                out.append((i, ref, "文档引用未入库"))
         for m in _OLD_COORD_RE.finditer(line):
             if m.group(0) not in tracked:
                 out.append((i, m.group(0), "旧坐标路径已不存在"))
     return sorted(set(out))
+
+
+def face_guard_problems(root, files):
+    """**扫描原语的不变量**：主门那一面必须含本门文件（AGENTS §十三 第 29 条）。
+
+    为什么钉在**原语**里而不另写一条用例（审查 B2）：另写一条只能钉某个**调用点**，
+    钉不住"调用方重建扫描面再剔除本文件"。钉在原语里，则**调用点过滤与
+    `scanned_face` 内过滤都会红**——钉的是性质（本文件真被扫），不是代理（它在面内）。
+
+    只在"这是主门那一面"时生效。三条合法的窄面调用因此不误红：
+      · 空面（`test_empty_face_is_red` 传 `[]`）；
+      · 面外全 `frontend/**`（`test_out_of_face_residue_reconciles_with_registry`）；
+      · 别的 root（临时目录夹具 `test_gate_reports_a_temp_dangling_file`）。
+    """
+    if root != BASE or not files:
+        return []
+    if any(f.startswith(OUT_OF_FACE_PREFIX) for f in files):
+        return []
+    rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
+    if rel not in files:
+        return ["扫描面不含本门文件 %s——本门不得豁免自己（AGENTS §十四）；"
+                "要收窄扫描面请另写函数，不要改本原语的调用参数" % rel]
+    return []
 
 
 def scan_face(root, tracked, files):
@@ -285,7 +332,11 @@ def scan_face(root, tracked, files):
 
     命中＝`(相对路径, 行号, 引用路径, 说明)`。读不到的文件进命中（响亮，不静默）。
     AST 解析每文件只做一次（`skip` 预先算好再传给两个扫描函数）。
+    **不变量**：主门那一面必须含本门文件——见 `face_guard_problems`（审查 B2）。
     """
+    guard = face_guard_problems(root, files)
+    if guard:
+        raise AssertionError("；".join(guard))
     hits, n_refs = [], 0
     for rel in files:
         try:
@@ -467,12 +518,24 @@ class DocReferenceGateTest(unittest.TestCase):
         pos = 'self.assertIn("' + _FAKE_DOC + '", src)\n'
         self.assertTrue(scan_text(pos, tracked),
                         "正向断言里的悬空引用未命中：本门没有牙")
-        # ⑦ 左边界：`docs/` 之前紧跟标识符字符、点或斜杠的，不算库内路径引用
+        # ⑦ 左边界：`docs/` 之前紧跟标识符字符或斜杠的，不算库内路径引用（假红源）。
+        #    注意样本用**未入库**路径（审查 NB4）：用 tracked 的真路径时，旧正则也返回 []，
+        #    样本就分不出"有边界"与"无边界"——那样的样本没有牙。
         for line in ("mydocs/dev/x.md\n", "out/docs/dev/x.md\n",
-                     "seedocs/dev/x.md\n", "https://x.com/docs/dev/x.md\n",
-                     "见 ../docs/dev/cli.md\n"):
+                     "seedocs/dev/x.md\n", "https://x.com/docs/dev/x.md\n"):
             self.assertEqual(scan_text(line, tracked), [],
                              "左边界缺失：非库内路径被误判成引用（假红源）：%r" % line)
+        # ⑧ 左边界不得**过宽**（审查 NB3）：中文紧贴与 `./` 形态都是真引用，必须命中。
+        self.assertEqual(scan_text("见docs/dev/cli.md。\n", tracked), [],
+                         "中文紧贴的可解引用被误判成悬空（`\\w` 含中日韩字符的后果）")
+        self.assertEqual(
+            scan_text("见" + _FAKE_DOC + "。\n", tracked),
+            [(1, _FAKE_DOC, "文档引用未入库")],
+            "中文紧贴的**悬空**引用被漏检：`\\w` 左边界过宽")
+        self.assertEqual(
+            scan_text("见 ./" + _FAKE_DOC + "。\n", tracked),
+            [(1, _FAKE_DOC, "文档引用未入库")],
+            "`./` 形态的悬空引用被漏检（且应归一到不带 `./` 的路径）")
 
     def test_this_gate_file_is_scanned(self):
         """本门**不得豁免自己**：本文件也是入库文本件，注释与 docstring 同受本门管。
@@ -481,11 +544,14 @@ class DocReferenceGateTest(unittest.TestCase):
         那正是**加宽豁免表**（AGENTS §十四 明令禁止）。本文件靠**按片段拼装**路径
         （`_FAKE_DOC` / `_PLAN_DOC`）避免自锁。
 
-        三条逃逸路径都要挡（审查 N1：旧版只挡前两条，第三条是全绿逃逸）：
-          ① 移出跟踪集；② 当二进制跳过；③ **在扫描面里剔除本文件**。
-        前两条是"本文件在不在面内"这一**代理**；第三条才是"本文件真被扫"这一**性质**。
-        故本条断言的是 `scanned_face`（主门实际用的那一份清单）含本文件，
-        不是另写一份等价清单（AGENTS §十三 第 29 条：守卫看的东西要 == 实际扫的东西）。
+        三条逃逸路径都要挡（审查 N1 立、审查 B2 补齐）：
+          ① 移出跟踪集；② 当二进制跳过；③ **把本文件从扫描面剔除**。
+        ①②是"本文件在不在跟踪集/文本件里"这一**代理**。
+        ③才是"本文件真被扫"这一**性质**，而它有两个位置：
+          · `face_plan` / `scanned_face` 内 —— 由本条的 `assertIn` 挡；
+          · **调用点重建扫描面再剔除** —— 由**扫描原语** `scan_face` 里的
+            `face_guard_problems` 挡（钉性质不钉代理，AGENTS §十三 第 29 条）。
+        `face_guard_problems` 自己的牙由 `test_face_guard_has_teeth` 钉住。
         """
         rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
         tracked = _ls_tracked(BASE)
@@ -495,10 +561,33 @@ class DocReferenceGateTest(unittest.TestCase):
         in_face, _hits, _n_refs, _files = scanned_face(BASE, tracked)
         self.assertIn(rel, in_face,
                       "本门文件必须落在**主门实际扫描的清单**里"
-                      "（谁把扫描面剔除本文件，这条即红）")
+                      "（谁在 `face_plan`/`scanned_face` 里剔除它，这条即红）")
         self.assertEqual(scan_text("见 " + _PLAN_DOC + "。\n", tracked),
                          [(1, _PLAN_DOC, "文档引用未入库")],
                          "本门的形态一在本文件身上失效（夹具串没被当真引用扫）")
+
+    def test_face_guard_has_teeth(self):
+        """扫描原语的不变量（审查 B2）：窄面调用不误红，剔除本文件即红。
+
+        `face_guard_problems` 是**纯函数**，故三条合法窄面与一条逃逸都能直接喂：
+          · 空面 / 面外全 `frontend/**` / 别的 root ⇒ 不误红（三种真实调用形态）；
+          · `BASE` 上非空、不含 `frontend/`、又缺本门文件 ⇒ 红（正是"调用点剔除"）。
+        """
+        rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
+        self.assertEqual(face_guard_problems(BASE, []), [],
+                         "空面被误红：`test_empty_face_is_red` 会假红")
+        self.assertEqual(face_guard_problems(BASE, ["frontend/a.js"]), [],
+                         "面外全 `frontend/**` 被误红：面外用例会假红")
+        self.assertEqual(face_guard_problems("/tmp/some-other-root", ["tests/a.py"]), [],
+                         "别的 root 被误红：临时目录夹具会假红")
+        self.assertEqual(face_guard_problems(BASE, [rel]), [],
+                         "本文件在面内时不该报问题（否则这条判据可能恒真）")
+        self.assertTrue(
+            face_guard_problems(BASE, ["tests/test_other.py", "yiban/core/clock.py"]),
+            "调用点重建扫描面并剔除本文件未判红：审查 B2 的逃逸仍成立")
+        # 端到端那一半：原语本身要真抛，而不是只有纯函数会判。
+        with self.assertRaises(AssertionError):
+            scan_face(BASE, set(), ["tests/test_other.py"])
 
     def test_empty_face_is_red(self):
         """扫空不得当绿：空面必须判红（两条下限都要挡）。"""
