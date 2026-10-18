@@ -82,9 +82,9 @@ export const FORM_TEXTS = {
     namePlaceholder: "如：电力123张三",
     nameHelp: "会显示给管理员，便于审核。",
     phoneLabel: "易班手机号",
-    phonePlaceholder: "登录易班的手机号",
+    phonePlaceholder: "11 位手机号",
     passwordLabel: "易班密码",
-    passwordNewPlaceholder: "用于自动登录签到",
+    passwordNewPlaceholder: "易班登录密码",
     // 本站也有自己的登录密码（本页的「修改密码」改的是它）。缺这一行区分说明时，用户与
     // 管理员都会把本字段当成本站密码——生产实证：管理员据此改错凭据，账号归属人登不上。
     passwordHelp: "用于自动登录易班签到，不是本站登录密码。",
@@ -94,22 +94,22 @@ export const FORM_TEXTS = {
   },
   admin: {
     nameLabel: "名称（选填）",
-    namePlaceholder: "如：电力123示例站",
-    nameHelp: "留空时在列表里按顺序显示为「账号1」「账号2」，便于区分。",
+    namePlaceholder: "如：电力123张三",
+    nameHelp: "留空时按「账号1」「账号2」显示。",
     phoneLabel: "手机号",
-    phonePlaceholder: "易班登录手机号",
+    phonePlaceholder: "11 位手机号",
     // 限定词不可省：管理端丢了「易班」二字时，管理员会把它读成"用户在本站的登录密码"。
     // 该字段是易班凭据，**有意不做本地口令策略校验**（必须与易班平台逐字一致），
     // 故标签一旦误导，错误凭据会被静默接受。
     passwordLabel: "易班密码",
     passwordNewPlaceholder: "易班登录密码",
-    passwordHelp: "用于自动登录易班签到，不是本站登录密码（改它不影响该用户登录本站）。",
+    passwordHelp: "用于自动登录易班签到，不是本站登录密码。",
     modelLabel: "设备型号（选填）",
     modelHelp: "学校开启设备绑定时建议填写；不确定就留空。",
     codeLabel: "设备识别码（选填）",
-    codeHelp: "64 位十六进制串；学校开启设备绑定时建议填写。",
+    codeHelp: "学校开启设备绑定时建议填写。",
     phoneEditHelp:
-      "为保护隐私，手机号已打码显示；如需修改请填写完整新号码。若这条账号在你编辑期间被别人改过，保存时会先提示你确认。",
+      "已打码显示；修改请填完整号码。若期间被他人改动，保存前会提示确认。",
   },
 } as const;
 
@@ -305,11 +305,11 @@ export function formTitle(opts: { editing: boolean; variant: FormVariant; index:
 
 export function formSubtitle(opts: { editing: boolean; variant: FormVariant }): string {
   if (opts.editing) {
-    return opts.variant === "user" ? "修改后需重新提交审核。" : "手机号已打码显示；不改动则按原号提交。";
+    return opts.variant === "user" ? "修改后需重新提交审核。" : "手机号已打码；不改则按原号提交。";
   }
   return opts.variant === "user"
-    ? "提交后等待管理员审核，通过即自动签到。"
-    : "不绑定用户＝管理员自有账号，保存后立即生效；绑定用户＝进入待审核队列。";
+    ? "提交后等待审核，通过即自动签到。"
+    : "不绑定＝管理员自有；绑定＝待审核。";
 }
 
 export const PASSWORD_UNCHANGED_PLACEHOLDER = "留空表示不修改密码";

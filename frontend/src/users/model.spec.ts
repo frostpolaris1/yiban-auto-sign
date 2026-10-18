@@ -5,6 +5,7 @@ import {
   countLabel,
   deletedActions,
   deletedBadge,
+  deletedInlineMeta,
   groupOf,
   groupSpec,
   inlineMeta,
@@ -133,12 +134,19 @@ describe("展示", () => {
     expect(remainText(0, "cooling")).toBe("不足一天");
   });
 
-  it("窄屏补充信息：只在有内容时出现，且不含邮箱", () => {
-    expect(inlineMeta(user({ review_count: 2 }), "pending")).toBe("待处理 2");
-    expect(inlineMeta(user({ account_count: 3 }), "normal")).toBe("账号 3");
-    expect(inlineMeta(user({ account_count: 3 }), "vacant")).toBe("账号 3");
-    expect(inlineMeta(user({ account_count: 0 }), "vacant")).toBe("");
-    expect(inlineMeta(user({ review_count: 1 }), "normal")).toBe("");
+  it("窄屏补充信息：计数与注册时间合并，且不含邮箱", () => {
+    expect(inlineMeta(user({ review_count: 2 }), "pending")).toBe("待处理 2 · 注册 2026-10-01 08:00");
+    expect(inlineMeta(user({ account_count: 3 }), "normal")).toBe("账号 3 · 注册 2026-10-01 08:00");
+    expect(inlineMeta(user({ account_count: 3 }), "vacant")).toBe("账号 3 · 注册 2026-10-01 08:00");
+    expect(inlineMeta(user({ account_count: 0 }), "vacant")).toBe("注册 2026-10-01 08:00");
+    expect(inlineMeta(user({ review_count: 1, created_at: "" }), "normal")).toBe("");
+  });
+
+  it("已注销行窄屏补充信息：注销时间与剩余天数都不丢", () => {
+    expect(deletedInlineMeta({ email: "a@test.local", deleted_at: "2026-10-10 09:00", remaining_days: 3, status: "cooling" }))
+      .toBe("2026-10-10 09:00 · 剩余 3 天");
+    expect(deletedInlineMeta({ email: "a@test.local", deleted_at: "", remaining_days: 0, status: "purge_pending" }))
+      .toBe("");
   });
 });
 
