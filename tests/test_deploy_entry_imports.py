@@ -1438,6 +1438,13 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
 #      `test_key_sources_startup_assert.py` 1 处（`yiban.engine.runner.*`）——已迁新坐标。
 #   ③ **非 Python 载体的非注释行同样零命中**：`run.sh` 的 heredoc 里
 #      `from yiban.engine import state_io` 是运行期硬依赖，壳删后兜底心跳检测会崩。
+#   ④ **日志通道名不算坐标**：`tests/test_log_masking_entry_mounts.py` 的
+#      `logging.getLogger("yiban.engine.round")` 是**日志通道名**，与模块坐标同名纯属
+#      巧合。本片**刻意沿用旧串**：日志通道名是运维取证面（出现在日志行里，被 grep、
+#      被归属判定用），改名＝改变可观察行为，属语义变更。本批契约是"只许改坐标，不许
+#      改任何语义"（AGENTS §十三 同口径：T3 对 `yiban/window.py` 的 `yiban.window`
+#      原样保留）。该名的去留归 `145-F` 的观测面批次决定，不属坐标迁移。
+#      门只豁免"作为日志通道名"的那一个字面量；同串作为打桩目标仍须命中。
 #
 # 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
 #   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
@@ -1484,6 +1491,13 @@ _T4_OLD_LITERALS = {m: re.compile(r"(?<![\w.])" + re.escape(m) + r"(?![\w])")
 #: **只取 import 列表并按项判名**，不用 `\brunner\b` 这类裸词界（裸词界会误命中普通词）。
 _T4_FROM_ENGINE = re.compile(r"\bfrom\s+yiban\.engine\s+import\s+([^\n#;]*)")
 
+#: 日志通道名（不是坐标）：见不变式④。沿用旧串是**刻意**的，去留归 `145-F`。
+_T4_LOGGER_NAME = "yiban.engine.round"
+#: 以日志通道名为首个实参的调用名。
+_T4_LOGGER_CALLS = frozenset(("getLogger", "assertLogs", "assertNoLogs"))
+#: 该日志通道名的在位锚点文件：豁免防腐（改名/删名即红）。
+_T4_LOGGER_ANCHOR_FILE = "tests/test_log_masking_entry_mounts.py"
+
 
 def _t4_alias_names(text):
     """文本里 `from yiban.engine import …, <短名>, …` 命中的旧坐标列表（按项判名）。"""
@@ -1494,6 +1508,25 @@ def _t4_alias_names(text):
             if name in _T4_SHORT_TO_OLD:
                 out.append(_T4_SHORT_TO_OLD[name])
     return out
+
+
+def _t4_logger_name_ids(tree):
+    """作为日志通道名使用的字符串常量节点 id 集合（`getLogger("yiban.engine.round")` 等）。
+
+    只豁免"确为日志通道名"的那一个字面量：`assertLogs("yiban.engine.round")` 是日志名，
+    而同串作为打桩目标（`mock.patch("yiban.engine.round.X")`）是坐标，仍须命中。
+    """
+    ids = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if fname not in _T4_LOGGER_CALLS:
+            continue
+        for a in node.args:
+            if isinstance(a, ast.Constant) and a.value == _T4_LOGGER_NAME:
+                ids.add(id(a))
+    return ids
 
 
 def _t4_bindings(tree):
@@ -1572,6 +1605,7 @@ def t4_old_coordinate_hits(path):
     Python：① 旧坐标 import（四种写法，含 `Y.engine.runner.X` 属性访问与星号导入）；
     ② 非 docstring 字符串常量含旧坐标（覆盖打桩目标、`importlib.import_module` 串、
     `python -c` 代码串）；③ 字符串里的别名形态 `"from yiban.engine import runner…"`。
+    日志通道名 `yiban.engine.round` 在 `getLogger`/`assertLogs`/`assertNoLogs` 实参位豁免。
     Shell：**非注释行**含旧坐标（字面量或别名形态）。
     注释与 docstring 不算（任务口径：历史叙述不误红）。
     """
@@ -1590,10 +1624,11 @@ def t4_old_coordinate_hits(path):
         return hits
     tree = ast.parse(text)
     docs = _docstring_const_ids(tree)
+    logger_ids = _t4_logger_name_ids(tree)
     hits = list(_t4_import_hits(tree))
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                and id(node) not in docs):
+                and id(node) not in docs and id(node) not in logger_ids):
             continue
         if any(_T4_OLD_LITERALS[m].search(node.value) for m in _T4_OLD_MODULES):
             hits.append((node.lineno, "非 docstring 字符串常量 " + node.value[:60]))
@@ -1683,6 +1718,20 @@ class EngineCoordinateGateTest(unittest.TestCase):
                 t4_old_coordinate_hits(path),
                 f"豁免文件 {rel} 已不再命中本门——豁免失去理由，须同批删除该豁免")
 
+    def test_logger_name_exemption_is_anchored(self):
+        """豁免锚点：日志通道名 `yiban.engine.round` 仍以 logger 名形态在位。
+
+        本片**刻意沿用旧串**做日志通道名（见不变式④）：它是运维取证面，改名属语义变更。
+        若该名被改名或删除，本豁免即失去理由——留着它会静默放开该文件的扫描面。
+        """
+        path = os.path.join(BASE, _T4_LOGGER_ANCHOR_FILE)
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        self.assertTrue(
+            _t4_logger_name_ids(tree),
+            f"{_T4_LOGGER_ANCHOR_FILE} 里已无 getLogger({_T4_LOGGER_NAME!r})："
+            "本门的日志通道名豁免已腐烂，须同批删掉该豁免")
+
     def test_scanner_has_teeth(self):
         """突变验证：塞回十二种形态 ⇒ 红；新坐标/docstring/注释/同前缀他模块 ⇒ 不误红。"""
         with tempfile.TemporaryDirectory(prefix="t4-gate-") as tmp:
@@ -1731,6 +1780,18 @@ class EngineCoordinateGateTest(unittest.TestCase):
             self.assertEqual(
                 t4_old_coordinate_hits(clean), [],
                 "新坐标、`yiban.engine.schedule`（他模块）、docstring 被误判成旧坐标")
+
+            # 日志名豁免必须**只**认"作为日志通道名"的那一个：作为打桩目标/普通串仍须命中。
+            logger_only = os.path.join(tmp, "logger_only.py")
+            with open(logger_only, "w", encoding="utf-8") as f:
+                f.write('import logging\n'
+                        'L = logging.getLogger("yiban.engine.round")\n'
+                        'with self.assertLogs("yiban.engine.round"):\n'
+                        '    pass\n'
+                        'T = "yiban.engine.round.X"\n')
+            got = [ln for ln, _ in t4_old_coordinate_hits(logger_only)]
+            self.assertEqual(got, [5],
+                             f"日志名豁免面过宽或过窄：应只命中第 5 行打桩目标串，实得 {got}")
 
             sh = os.path.join(tmp, "fake.sh")
             with open(sh, "w", encoding="utf-8") as f:
