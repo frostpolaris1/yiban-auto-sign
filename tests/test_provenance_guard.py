@@ -313,6 +313,41 @@ class ChallengeDetectionTest(unittest.TestCase):
         self.assertIn("yiban.adapters.protocol_yiban", src)
 
 
+#: 协议层禁用的 import 前缀。**旧壳路径与新征程必须成对**（见
+#: `ProtocolLayerTest.test_core_prefixes_keep_their_old_shell_path`）。
+#: 为什么不能只列新征程：壳仍在时旧路径仍是**合法 import 路径**。`145-B T2` 曾把
+#: `yiban.clock` **替换**成 `yiban.core.clock`，这道常驻守卫随即漏拦旧 clock 路径
+#: （`145-T3` 审查 F2 实测）。删壳后是否收窄，归 `145-E`。
+#: 本表另收**永久路径**（`yiban.store` / `yiban.security` / `yiban.client`）——它们的
+#: 实现不在 `yiban/core/`，没有 `yiban.core.<同名>` 形态，故**不成对**是正常的。
+FORBIDDEN_IMPORT_PREFIXES = (
+    "yiban.store", "yiban.security", "yiban.client",
+    "yiban.masking", "yiban.core.masking",
+    "yiban.clock", "yiban.core.clock",
+)
+
+
+def _prefix_pair_problems(prefixes, shell_exists):
+    """前缀表的**成对**判据（纯函数，便于突变自证）：返回问题清单（空＝一致）。
+
+    方向是**新→旧**，不是旧→新。为什么：本表同时收着永久路径
+    （`yiban.store` / `yiban.security` / `yiban.client`——无 `yiban.core.<同名>` 形态），
+    故"每个旧坐标都必须有新坐标"在本表**不成立**；成立的是"列了新征程 `yiban.core.X`，
+    只要壳 `yiban/X.py` 仍在，就必须也列 `yiban.X`"。
+    壳已删（`145-E` 之后）⇒ 旧路径不存在 ⇒ 该对不再要求。
+    """
+    problems = []
+    for p in sorted(prefixes):
+        if not p.startswith("yiban.core."):
+            continue
+        short = p[len("yiban.core."):]
+        if not shell_exists(short):
+            continue
+        if ("yiban." + short) not in prefixes:
+            problems.append(f"前缀表有新征程 {p} 但没有旧壳路径 yiban.{short}（壳仍在）")
+    return problems
+
+
 class ProtocolLayerTest(unittest.TestCase):
     """协议编排层（`yiban/platform.py`）的边界：端点单点定义，安全策略只在注入点。"""
 
@@ -375,11 +410,56 @@ class ProtocolLayerTest(unittest.TestCase):
             for m in re.finditer(r"(?m)^\s*(?:import|from)\s+([\w.]+)", src):
                 dotted = m.group(1)
                 if dotted.split(".")[0] in ("db", "signin", "notify", "mailer", "web") or \
-                        dotted.startswith(("yiban.store", "yiban.security", "yiban.client",
-                                           "yiban.masking", "yiban.core.masking",
-                                           "yiban.core.clock")):
+                        dotted.startswith(FORBIDDEN_IMPORT_PREFIXES):
                     bad.append(f"{rel} → {dotted}")
         self.assertEqual(bad, [], "协议层不得依赖业务层/安全层（策略靠注入）：" + "; ".join(bad))
+
+    def test_core_prefixes_keep_their_old_shell_path(self):
+        """成对不变式：列了 `yiban.core.X` 就得列旧壳路径 `yiban.X`（壳仍在时）。
+
+        为什么必须钉：壳仍在时旧路径仍是**合法 import 路径**。只列新征程，这道守卫
+        就漏拦旧路径——`145-B T2` 把 `yiban.clock` **替换**成 `yiban.core.clock` 后
+        就是这个状态（`145-T3` 审查 F2 实测）。判据防的是"替换"这个动作，不是某一条。
+        """
+        shell = os.path.join(BASE, "yiban")
+        problems = _prefix_pair_problems(
+            set(FORBIDDEN_IMPORT_PREFIXES),
+            lambda short: os.path.exists(os.path.join(shell, short + ".py")))
+        self.assertEqual(problems, [], "前缀表成对性被破坏：\n" + "\n".join(problems))
+
+    def test_pair_judge_is_not_an_empty_gate(self):
+        """防废门：表里必须仍有 `yiban.core.*`（判据的扫描面），且现量下确有壳在查。
+
+        现量 2 对（`masking` / `clock`）。壳全删（`145-E`）后 `checked` 归 0 是正常的，
+        故下限钉在"表里有新征程"，不钉"有壳"。
+        """
+        prefixes = set(FORBIDDEN_IMPORT_PREFIXES)
+        self.assertTrue([p for p in prefixes if p.startswith("yiban.core.")],
+                        "前缀表里已无 `yiban.core.*`——成对判据的扫描面为空（AGENTS §30）")
+
+    def test_pair_judge_has_teeth(self):
+        """突变自证：把任一对拆开 ⇒ 红；永久路径不成对 ⇒ 不误红。"""
+
+        def all_shells(short):
+            return True
+
+        # 拆开 masking 对（只留新征程）⇒ 红
+        self.assertTrue(_prefix_pair_problems({"yiban.core.masking"}, all_shells),
+                        "只留新征程未判红：替换动作会被静默放过")
+        # 拆开 clock 对 ⇒ 红
+        self.assertTrue(_prefix_pair_problems({"yiban.core.clock"}, all_shells),
+                        "只留新征程未判红：替换动作会被静默放过")
+        # 成对 ⇒ 不红
+        self.assertEqual(_prefix_pair_problems(
+            {"yiban.masking", "yiban.core.masking"}, all_shells), [],
+            "成对却判红：判据没有牙（误报）")
+        # 永久路径（无 `yiban.core.<同名>`）不成对 ⇒ 不误红
+        self.assertEqual(_prefix_pair_problems(
+            {"yiban.store", "yiban.security", "yiban.client"}, all_shells), [],
+            "永久路径被误判成需要成对：本判据方向写反了")
+        # 壳已删 ⇒ 旧路径不再要求（`145-E` 之后的状态）
+        self.assertEqual(_prefix_pair_problems({"yiban.core.masking"}, lambda s: False), [],
+                         "壳已删却仍要求旧路径：`145-E` 收窄时会被本判据挡住")
 
     def test_signin_forwards_the_same_objects(self):
         """signin 只是转发（**同一对象**）：类、白名单、WAF 判定、账号复核都不是第二份。"""
