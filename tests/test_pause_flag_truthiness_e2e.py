@@ -91,7 +91,7 @@ class EnvFlagParityTest(unittest.TestCase):
 
     @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
     def test_is_truthy_copies_match_python_parse_env_flag(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         for label, path in BASH_FUNC_CARRIERS:
             func = _extract_bash_func(path, "_is_truthy")
             script = func + '\nfor v in "$@"; do _is_truthy "$v" && echo 1 || echo 0; done\n'
@@ -149,7 +149,7 @@ class RunProbeShTruthinessTest(unittest.TestCase):
     def test_gate_matches_python_parse_env_flag(self):
         """run_probe.sh 是第三份 bash 副本（内联门，非函数）：真跑脚本，以"锁目录是否
         创建"为门的物证，逐值与 Python `parse_env_flag` 比对结论。"""
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         for i, v in enumerate(PARITY_VALUES):
             with self.subTest(YIBAN_PROBE_ENABLE=v):
                 r, passed = self._run(v, "m%d" % i)
@@ -169,7 +169,7 @@ class SecondRunFlagParityTest(unittest.TestCase):
             return state_io._is_second_run()
 
     def test_engine_side_matches_parse_env_flag_domain(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         for v in PARITY_VALUES:
             with self.subTest(YIBAN_SECOND_RUN=v):
                 self.assertEqual(self._is_second_run(v),
@@ -252,7 +252,7 @@ class GlobalPauseRedLineE2ETest(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         env_io._env_flag_warned.clear()   # 告警"只喊一次"的进程内闩：每用例归零，避免互相吞
         self.webapp.ENV_FILE = self.env_file
         self._set_env({"YIBAN_GLOBAL_PAUSE": "true"})

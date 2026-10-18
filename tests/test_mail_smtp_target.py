@@ -28,9 +28,9 @@ import unittest
 from typing import ClassVar
 from unittest import mock
 
-from yiban.infra import account_crypto, env_io
-from yiban.mail import config as mailer
-from yiban.mail import transport as mailer_transport
+from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.notifier.mail import config as mailer
+from yiban.adapters.notifier.mail import transport as mailer_transport
 
 TEST_KEY = "c" * 64
 

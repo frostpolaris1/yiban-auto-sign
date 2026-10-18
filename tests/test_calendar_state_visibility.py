@@ -544,7 +544,7 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
 
 def self_env_file():
     """测试期读当前 `.env` 的映射（与 web 侧同一份解析口径）。"""
-    from yiban.infra import env_io
+    from yiban.adapters.config import env_io
     return env_io.parse_env_file(os.environ["YIBAN_ENV_FILE"])
 
 

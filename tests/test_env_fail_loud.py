@@ -27,7 +27,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban.infra import account_crypto  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
 
 
 class EnvParseFailLoudTest(unittest.TestCase):

@@ -32,11 +32,11 @@ import os
 
 from flask import session
 
-from yiban import mail as mailer
-from yiban import notify
+from yiban.adapters.config import env_io
+from yiban.adapters.notifier import mail as mailer
+from yiban.adapters.notifier import notify
+from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.core.masking import mask_email
-from yiban.infra import env_io
-from yiban.mail import layout as mail_layout
 from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤

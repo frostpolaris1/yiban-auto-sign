@@ -15,8 +15,8 @@
 import os
 import tempfile
 
-from yiban.infra import env_io
-from yiban.mail import config as mail_config
+from yiban.adapters.config import env_io
+from yiban.adapters.notifier.mail import config as mail_config
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_ENV = os.path.join(_REPO, ".env")

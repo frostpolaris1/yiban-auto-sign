@@ -110,7 +110,7 @@ if "db_web" in want:
 if "sweep" in want:
     # 真入口 _cleanup_state() + 记录实参的 sweep 替身：只读，不在机器目录上删东西。
     sched = load("sched_probe", os.path.join("docker", "scheduler.py"))
-    from yiban import state_gc
+    from yiban.adapters.statefiles import state_gc
     seen = {}
 
     def _spy(state_dir, log_dir=None, env=None, now=None):

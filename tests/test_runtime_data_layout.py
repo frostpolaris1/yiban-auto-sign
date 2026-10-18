@@ -620,7 +620,7 @@ base = sys.argv[1]
 sys.path.insert(0, base)
 sys.path.insert(0, os.path.join(base, "scripts"))
 import importlib.util
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 from yiban.store import connection, db
 out = {"env_path": env_io.env_path(),
        "connection.DB_DEFAULT": connection.DB_DEFAULT,

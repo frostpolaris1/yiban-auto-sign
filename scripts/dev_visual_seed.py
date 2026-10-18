@@ -41,8 +41,8 @@ if BASE not in sys.path:
 #     os.replace，与 web/引擎侧落盘同一份实现，读者（web 端按天读日志、按日读日历）
 #     永远读不到半写状态。
 from web.security import _atomic_write  # noqa: E402
-from yiban.infra import env_io  # noqa: E402
-from yiban.infra.account_crypto import (  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
+from yiban.adapters.config.account_crypto import (  # noqa: E402
     PUBLISHED_DEMO_ACCOUNTS_KEY as TEST_KEY,
 )
 

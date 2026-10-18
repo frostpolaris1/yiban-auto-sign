@@ -399,9 +399,9 @@ class _ChainBase(unittest.TestCase):
     # ---- web 显示侧读法（与既有日历用例同源口径） ----
     def _engine_truth_reason(self, now):
         """引擎侧事实判定：喂**同一份 .env** 的门唯一实现（子进程内引擎读的是它）。"""
+        from yiban.adapters.config import env_io
         from yiban.core import clock
         from yiban.engine import schedule as yb_schedule
-        from yiban.infra import env_io
         return yb_schedule.day_off(now or clock.now(),
                                    env=env_io.parse_env_file(self.env_file))
 

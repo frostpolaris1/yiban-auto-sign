@@ -77,8 +77,8 @@ class MailerTlsContextTest(unittest.TestCase):
         # 直连实现包（旧的 scripts/mailer.py 兼容壳已删除）：配置名（is_enabled/_get）
         # 打在 config 上（transport 内部正是以 `config.is_enabled()` 读它），
         # 发送名（smtplib / _send）在 transport 上打。
-        from yiban.mail import config as mailer
-        from yiban.mail import transport as mailer_transport
+        from yiban.adapters.notifier.mail import config as mailer
+        from yiban.adapters.notifier.mail import transport as mailer_transport
 
         captured = {}
 
