@@ -7,7 +7,8 @@
     ② 拆墙批的坐标门（同一份"扫描 + 显式豁免 + 突变自证"骨架，逐片加一族）：
       · `T8`：运行期载体不得以旧坐标 `yiban.cli` 起进程；
       · `T8`：`tests/**` 不得以旧坐标 `yiban.cli` 作 import 路径或打桩目标；
-      · `T1`：口令哈希两名不得再经 `web.app` 墙坐标读或被它打桩。
+      · `T1`：口令哈希两名不得再经 `web.app` 墙坐标读或被它打桩（自有面零命中；
+        面外 `frontend/**` 的残留逐条登记并与代码对账，两侧都不许静默）。
 对应实现：`scripts/signin.py`、`docker/scheduler.py`（镜像里被复制为
     `scripts/container_scheduler.py`）及各入口的 `sys.path` 引导块；
     坐标门的实现侧＝`yiban/cli.py` 转发壳与 `web/app.py` 转发墙（删它们归 `145-E`）。
@@ -409,19 +410,28 @@ class TestsFaceCliCoordinateGateTest(unittest.TestCase):
 # `self.webapp.<名字>` 取。T1 把读者迁到真实实现坐标：路由与测试各自
 # `from werkzeug.security import …` 后按**裸名**调用。**墙名本片不删**（删名归 `145-E`）。
 #
-# 本门钉两条不变式（面＝`tests/**`、`web/**`、`scripts/**`）：
-#   ① **无墙坐标属性读**：这两个名字只许以裸名出现，或经真实坐标表达式
-#      `werkzeug.security.<名字>`；其余任何 `<基>.<名字>` 一律红并点名 `文件:行`。
-#   ② **无墙坐标打桩目标**：`mock.patch.object(<webapp 别名>, "<名字>")` 为零。
-# 为什么必须钉 ②：墙名仍在，故打在它上面**会成功、但不控制被测路径**——静默失效
-# （用例看着绿，实际付真实 scrypt 开销、校验结果也不受控）。本片实测修掉了 4 处
-# 这类打桩点（`tests/test_alert_channel_dispatch.py`、`test_container_scheduler.py`、
-# `test_notify_webhook.py`），改打真正读该绑定的模块（`web.routes.auth` /
-# `web.routes.me_api` / `web.security`）。
-# 豁免：无。迁移后读者面里这两个名字只剩裸名读（`web/app.py` 自身的模块全局读不算
-# 属性读；`frontend/**` 不在面内——2026-10-18 起前端由用户独立完成）。
+# 本门钉三条不变式：
+#   ① **自有面无墙坐标读者**（面＝`tests/**`、`web/**`、`scripts/**`）：这两个名字只许
+#      以裸名出现，或经真实坐标表达式 `werkzeug.security.<名字>`；其余任何
+#      `<基>.<名字>` 一律红并点名 `文件:行`。
+#   ② **自有面无墙坐标打桩/读写目标**：`patch.object(<webapp 别名>, "<名字>")`、
+#      `getattr`/`setattr`/`hasattr`/`delattr(<webapp 别名>, "<名字>")`、以及**字符串形态**
+#      `patch("web.app.<名字>")` 一律红。为什么必须钉：墙名仍在，故打在它上面**会成功、
+#      但不控制被测路径**——静默失效（用例看着绿，实际付真实 scrypt 开销、校验结果也不受控）。
+#      本片实测修掉了 4 处这类打桩点（`tests/test_alert_channel_dispatch.py`、
+#      `test_container_scheduler.py`、`test_notify_webhook.py`），改打真正读该绑定的模块
+#      （`web.routes.auth` / `web.routes.me_api` / `web.security`）。
+#   ③ **面外读者逐条登记**（面＝`frontend/**`）：前端 2026-10-18 起归用户独立完成，
+#      本批不得改它，故它的残留**不判红、改为与登记表对账**（见
+#      `_PWHASH_OUT_OF_FACE_REGISTRY`）：未登记 ⇒ 红；登记的次数与实际不符（多一处＝新增
+#      残留、少一处或整条消失＝用户那边改掉了）⇒ 红。这条防的正是"自有面清零了、
+#      面外还有活的读者，`145-E` 删墙名时 AttributeError 而无门会红"。
 _PWHASH_WALL_NAMES = ("generate_password_hash", "check_password_hash")
 _PWHASH_SCAN_DIRS = ("tests", "web", "scripts")
+#: 面外目录：不归本片改，但残留必须登记。
+_PWHASH_OUT_OF_FACE_DIRS = ("frontend",)
+#: 扫描时跳过的目录名（`frontend/node_modules` 有一万六千个文件）。
+_PWHASH_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist", "build"))
 
 #: 真实实现坐标的模块表达式：唯一允许以属性形态出现的基。
 _PWHASH_REAL_COORDINATE = "werkzeug.security"
@@ -429,6 +439,26 @@ _PWHASH_REAL_COORDINATE = "werkzeug.security"
 #: 测试里承载 `web.app` 模块对象的别名形态（`webapp` / `self.webapp` /
 #: `webapp_auditapi` 一族）。与 `tests/test_web_boundary.py` 的墙名对账门同口径。
 _PWHASH_WALL_ALIAS = re.compile(r"(?:^|\.)webapp(?:_[A-Za-z0-9_]+)?$")
+
+#: 墙坐标的模块路径字面量（字符串形态打桩目标 `patch("web.app.<名字>")` 的前缀）。
+_PWHASH_WALL_MODULE = "web.app"
+
+#: `frontend/**` 里仍读墙坐标的**待销账登记**（AGENTS §28：约束要么有门、要么显式豁免）。
+#: 键＝`(相对路径, 名字)`，值＝`(命中次数, 处置说明)`。
+#:
+#: 为什么按 `(路径, 名字, 次数)` 而不把行号钉进判据：前端归用户独立完成，行号会随其
+#: 无关改动漂移。把行号做成判据会让**用户的 PR 因一行位移而红**，而修法却落在我的文件里
+#: ——那正是"门看的东西 ≠ 实际改的东西"（AGENTS §29）。按次数对账已能覆盖三件事：
+#: 未登记的新读者 ⇒ 红；登记处多一处/少一处 ⇒ 红；整条消失 ⇒ 红（防腐烂）。
+#: 红时消息里给出当前 `文件:行`，便于人定位。
+_PWHASH_OUT_OF_FACE_REGISTRY = {
+    ("frontend/e2e/server.py", "generate_password_hash"): (
+        1,
+        "Playwright e2e 夹具（frontend/README.md 的 `npm run test:e2e` 拉起）仍读墙名；"
+        "前端归用户独立完成，本批不得改。**145-E 删墙名前须先处置这一行**"
+        "（前端侧改 `from werkzeug.security import` 或由主会话与用户协同），处置后同批删本登记。",
+    ),
+}
 
 
 def _pwhash_real_coordinate_bases(tree):
@@ -453,52 +483,128 @@ def _pwhash_real_coordinate_bases(tree):
     return out
 
 
+def _pwhash_wall_string_target(value):
+    """字符串形态的墙坐标目标 → 名字；不是该形态则返回 None。
+
+    命中 `web.app.<名字>` 与 `<webapp 别名>.<名字>`（`mock.patch("web.app.check_password_hash")`
+    这一形态旧版扫描器漏掉——两个门都漏，本版补上）。
+    """
+    for name in _PWHASH_WALL_NAMES:
+        suffix = "." + name
+        if not value.endswith(suffix):
+            continue
+        prefix = value[: -len(suffix)]
+        if prefix == _PWHASH_WALL_MODULE or _PWHASH_WALL_ALIAS.search(prefix):
+            return name
+    return None
+
+
 def pwhash_wall_hits(path):
-    """返回该文件里经 web.app 墙坐标引用口令哈希两名的位置：`(行号, 说明)` 列表。
+    """返回该文件里经 web.app 墙坐标引用口令哈希两名的位置：`(行号, 名字, 说明)` 列表。
 
-    两类命中：
+    四类命中：
       ① 属性读 —— `<基>.<名字>`，基表达式不是真实坐标 `werkzeug.security`（含其别名）；
-      ② 打桩目标 —— `patch.object(<webapp 别名>, "<名字>")`。
+      ② 打桩目标 —— `patch.object(<webapp 别名>, "<名字>")`；
+      ③ 读写目标 —— `getattr`/`setattr`/`hasattr`/`delattr(<webapp 别名>, "<名字>")`；
+      ④ 字符串形态 —— 非 docstring 字符串常量形如 `web.app.<名字>` 或 `<webapp 别名>.<名字>`。
 
-    已知盲点：用变量拼接的打桩目标（`patch.object(alias, NAME_VAR)`）不命中——本扫描
-    只看字面量。当前仓内无此形态。
+    已知盲点（显式登记，AGENTS §28）：用变量拼接的目标（`patch.object(alias, NAME_VAR)`、
+    `"web.app." + NAME`）不命中——本扫描只看字面量。当前仓内无此形态。
     """
     with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
     tree = ast.parse(text)
     real_bases = _pwhash_real_coordinate_bases(tree)
+    docs = _docstring_const_ids(tree)
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr in _PWHASH_WALL_NAMES:
             base = ast.unparse(node.value)
             if base not in real_bases:
-                hits.append((node.lineno, f"墙坐标属性读 {base}.{node.attr}"))
-        if isinstance(node, ast.Call):
-            fn = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-            if fn not in ("patch", "object") or not node.args:
-                continue
+                hits.append((node.lineno, node.attr, f"墙坐标属性读 {base}.{node.attr}"))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and id(node) not in docs:
+            name = _pwhash_wall_string_target(node.value)
+            if name is not None:
+                hits.append((node.lineno, name, f"墙坐标字符串目标 {node.value}"))
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        fn = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if fn in ("patch", "object"):
             if not _PWHASH_WALL_ALIAS.search(ast.unparse(node.args[0])):
                 continue
             last = node.args[-1]
             if isinstance(last, ast.Constant) and last.value in _PWHASH_WALL_NAMES:
-                hits.append((node.lineno, f"墙坐标打桩目标 {ast.unparse(node.args[0])}.{last.value}"))
+                hits.append((node.lineno, last.value,
+                             f"墙坐标打桩目标 {ast.unparse(node.args[0])}.{last.value}"))
+        elif fn in ("getattr", "setattr", "hasattr", "delattr") and len(node.args) >= 2:
+            if not _PWHASH_WALL_ALIAS.search(ast.unparse(node.args[0])):
+                continue
+            last = node.args[1]
+            if isinstance(last, ast.Constant) and last.value in _PWHASH_WALL_NAMES:
+                hits.append((node.lineno, last.value,
+                             f"墙坐标 {fn} 目标 {ast.unparse(node.args[0])}.{last.value}"))
     return sorted(set(hits))
 
 
-class PwhashWallCoordinateGateTest(unittest.TestCase):
-    """T1：口令哈希两名在读者面里不得再经 web.app 墙坐标读或被它打桩。"""
+def pwhash_out_of_face_problems(found, registry=None, where=None):
+    """面外残留与登记表对账（纯函数，便于突变自证）：返回问题清单（空＝一致）。
 
-    def _scan_files(self):
+    `found` ＝ `{(相对路径, 名字): 命中次数}`；`where` ＝ 同键的 `[行号]`（仅用于消息）。
+    三条判据（AGENTS §28/§29）：
+      · 未登记的新读者 ⇒ 红（`145-E` 删墙名时会断，而它以为读者已清零）；
+      · 登记的次数与实际不符 ⇒ 红（多一处＝新增残留；少一处＝已处置一半）；
+      · 登记整条消失 ⇒ 红（用户那边已处置，必须同批销账，否则登记变成僵尸）。
+    """
+    registry = _PWHASH_OUT_OF_FACE_REGISTRY if registry is None else registry
+    where = where or {}
+    problems = []
+    for key, n in sorted(found.items()):
+        entry = registry.get(key)
+        if entry is None:
+            problems.append(
+                f"{key[0]}:{where.get(key)} 出现未登记的墙坐标读者 {key[1]}（{n} 处）——"
+                "要么迁到 `werkzeug.security`，要么在 _PWHASH_OUT_OF_FACE_REGISTRY 登记")
+        elif n != entry[0]:
+            problems.append(
+                f"{key[0]}:{where.get(key)} 的墙坐标读者 {key[1]} 实测 {n} 处、登记 {entry[0]} 处"
+                "——两侧必须一致（新增残留不许漏登记；已处置的必须同批销账）")
+    for key, (n, _why) in sorted(registry.items()):
+        if key not in found:
+            problems.append(
+                f"登记 {key[0]} 的 {key[1]}（{n} 处）已不在代码里——"
+                "用户那边已处置，请同批删掉这条登记（防登记变成僵尸）")
+    return problems
+
+
+class PwhashWallCoordinateGateTest(unittest.TestCase):
+    """T1：口令哈希两名在自有面里不得再经 web.app 墙坐标读或被它打桩；面外残留须登记。"""
+
+    def _scan_files(self, dirs=_PWHASH_SCAN_DIRS):
         out = []
-        for d in _PWHASH_SCAN_DIRS:
-            for dirpath, dirs, files in os.walk(os.path.join(BASE, d)):
-                dirs[:] = [x for x in dirs if x != "__pycache__"]
+        for d in dirs:
+            for dirpath, dirs_, files in os.walk(os.path.join(BASE, d)):
+                dirs_[:] = [x for x in dirs_ if x not in _PWHASH_SKIP_DIRS]
                 for name in sorted(files):
                     if name.endswith(".py"):
                         out.append(os.path.join(dirpath, name))
         return out
 
+    def _out_of_face_found(self):
+        files = self._scan_files(_PWHASH_OUT_OF_FACE_DIRS)
+        self.assertGreaterEqual(
+            len(files), 1,
+            f"面外扫描面为空（{len(files)} 个文件）——扫描根写错或前端被移走（扫空不得当绿）")
+        found, where = {}, {}
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            for line, name, _why in pwhash_wall_hits(path):
+                found[(rel, name)] = found.get((rel, name), 0) + 1
+                where.setdefault((rel, name), []).append(line)
+        return found, where
+
     def test_no_wall_coordinate_reader_or_patch_target(self):
+        """不变式 ①②：自有面（`tests`＋`web`＋`scripts`）零命中。"""
         files = self._scan_files()
         self.assertGreaterEqual(
             len(files), 200,
@@ -506,26 +612,54 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
         bad = []
         for path in files:
             rel = os.path.relpath(path, BASE).replace("\\", "/")
-            for line, why in pwhash_wall_hits(path):
+            for line, _name, why in pwhash_wall_hits(path):
                 bad.append(f"{rel}:{line}: {why}")
         self.assertEqual(
             bad, [],
             "口令哈希两名仍经 web.app 墙坐标读或被它打桩（打桩会静默失效）：\n" + "\n".join(bad))
 
+    def test_out_of_face_readers_match_registry(self):
+        """不变式 ③：面外（`frontend/**`）的残留与登记表逐条对账，两侧都不许静默。"""
+        found, where = self._out_of_face_found()
+        self.assertEqual(pwhash_out_of_face_problems(found, where=where), [],
+                         "面外墙坐标残留与登记表不一致：\n"
+                         + "\n".join(pwhash_out_of_face_problems(found, where=where)))
+
+    def test_registry_reconciliation_has_teeth(self):
+        """突变验证（合成输入）：未登记 ⇒ 红；次数不符 ⇒ 红；登记消失 ⇒ 红；一致 ⇒ 绿。"""
+        reg = {("frontend/e2e/server.py", "generate_password_hash"): (1, "登记理由")}
+        key = ("frontend/e2e/server.py", "generate_password_hash")
+        self.assertEqual(pwhash_out_of_face_problems({key: 1}, registry=reg), [],
+                         "一致时不该报问题（否则三条判据可能是一组恒真断言）")
+        extra = {key: 1, ("frontend/e2e/other.py", "check_password_hash"): 1}
+        self.assertTrue(pwhash_out_of_face_problems(extra, registry=reg),
+                        "未登记的墙坐标读者未判红：本门没有牙")
+        self.assertTrue(pwhash_out_of_face_problems({key: 2}, registry=reg),
+                        "命中次数多于登记未判红：新增残留会被静默放过")
+        self.assertTrue(pwhash_out_of_face_problems({}, registry=reg),
+                        "登记已消失（用户那边改掉了）未判红：登记会变成僵尸")
+
     def test_scanner_has_teeth(self):
-        """突变验证：塞回两种墙坐标形态 ⇒ 红；真实坐标/裸名/注释 ⇒ 不误红。"""
+        """突变验证：塞回四种墙坐标形态 ⇒ 红；真实坐标/裸名/注释/`web_security` ⇒ 不误红。"""
         with tempfile.TemporaryDirectory(prefix="pwhash-gate-") as tmp:
             wall = os.path.join(tmp, "fake_wall_reader.py")
             with open(wall, "w", encoding="utf-8") as f:
                 f.write('"""docstring 提 generate_password_hash 不算命中。"""\n'
                         'from unittest import mock\n'
-                        'H = self.webapp.generate_password_hash\n'          # 属性读 ⇒ 命中
-                        'mock.patch.object(self.webapp, "check_password_hash")\n'  # 打桩 ⇒ 命中
+                        'H = self.webapp.generate_password_hash\n'          # ① 属性读 ⇒ 命中
+                        'mock.patch.object(self.webapp, "check_password_hash")\n'  # ② 打桩 ⇒ 命中
+                        'mock.patch("web.app.check_password_hash")\n'      # ④ 字符串 ⇒ 命中
+                        'getattr(self.webapp, "generate_password_hash")\n'  # ③ getattr ⇒ 命中
                         '# 注释里的 self.webapp.check_password_hash 不算\n')
             hits = pwhash_wall_hits(wall)
-            lines = sorted({ln for ln, _ in hits})
-            self.assertIn(3, lines, f"墙坐标属性读那一行应命中：{hits}")
-            self.assertIn(4, lines, f"墙坐标打桩目标那一行应命中：{hits}")
+            lines = sorted({ln for ln, _, _ in hits})
+            for want, what in ((3, "墙坐标属性读"), (4, "墙坐标打桩目标"),
+                               (5, "墙坐标字符串目标"), (6, "墙坐标 getattr 目标")):
+                self.assertIn(want, lines, f"{what}那一行应命中：{hits}")
+            self.assertEqual(
+                sorted({name for _, name, _ in hits}),
+                ["check_password_hash", "generate_password_hash"],
+                f"命中名字应逐条带出：{hits}")
 
             route = os.path.join(tmp, "fake_route.py")
             with open(route, "w", encoding="utf-8") as f:
@@ -541,17 +675,22 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
                         'from werkzeug.security import check_password_hash\n'
                         'A = security.generate_password_hash("p")\n'
                         'B = check_password_hash("h", "p")\n'
+                        'C = "check_password_hash"\n'                        # 裸名常量不算
+                        'mock.patch("werkzeug.security.check_password_hash")\n'  # 真实坐标不算
                         '# self.webapp.generate_password_hash 只是注释\n')
             self.assertEqual(pwhash_wall_hits(clean), [],
-                             "真实坐标 `werkzeug.security.<名字>` 或裸名被误判成墙坐标")
+                             "真实坐标 `werkzeug.security.<名字>`、裸名或裸名常量被误判成墙坐标")
 
             other = os.path.join(tmp, "fake_other.py")
             with open(other, "w", encoding="utf-8") as f:
                 f.write('from unittest import mock\n'
                         'import web.security as web_security\n'
-                        'mock.patch.object(web_security, "check_password_hash")\n')
+                        'mock.patch.object(web_security, "check_password_hash")\n'
+                        'mock.patch("web.security.check_password_hash")\n'
+                        'getattr(web_security, "generate_password_hash")\n')
             self.assertEqual(pwhash_wall_hits(other), [],
-                             "`web_security` 被误判成 web.app 墙别名（两者不是同一模块）")
+                             "`web_security` / `web.security` 被误判成 web.app 墙坐标"
+                             "（两者不是同一模块）")
 
 
 if __name__ == "__main__":
