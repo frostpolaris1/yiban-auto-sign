@@ -40,8 +40,8 @@ export interface LogsPayload {
   recent_sign_date: string;
 }
 
-export type TabKey = "main" | "signev" | "probe";
-export const TAB_KEYS: TabKey[] = ["main", "signev", "probe"];
+export type TabKey = "main" | "inspect" | "signev" | "probe";
+export const TAB_KEYS: TabKey[] = ["main", "inspect", "signev", "probe"];
 
 export const EVENT_PAGE_SIZES = [20, 50, 100];
 

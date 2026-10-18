@@ -70,6 +70,13 @@
     var s = clockString();
     T().setText("[data-clock-text]", s);
     T().setText("[data-clock-now]", s);
+    // 72px 图标栏只能放下时分秒：把同一份时间以 data-clock-time 暴露给 CSS，
+    // 由窄屏样式用 ::after 显示；完整日期+时间仍留在 [data-clock-text] 文本里，
+    // 读屏与宽屏侧栏口径不变。
+    var time = s.slice(11);
+    T().forEach(document.querySelectorAll("[data-clock-text]"), function (n) {
+      n.setAttribute("data-clock-time", time);
+    });
   }
   function reflectSignStatus() {
     if (!clock.status) return;
