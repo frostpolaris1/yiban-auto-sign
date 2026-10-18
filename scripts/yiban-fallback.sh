@@ -130,4 +130,4 @@ LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
 
 # 窗口关闭时引擎自己退出，故无需额外 timeout；本行之后进程被 exec 替换
-exec "$PY" -m yiban.cli sign --fallback >> "$LOG_FILE" 2>&1
+exec "$PY" -m yiban.entry.cli sign --fallback >> "$LOG_FILE" 2>&1

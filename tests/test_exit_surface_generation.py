@@ -126,7 +126,7 @@ class SignJsonErrorExitTest(_JsonEnvFixture):
     def test_sign_json_error_field_masked(self):
         env = self.env()
         env.update(self.broken_accounts_env())
-        r = subprocess.run([sys.executable, "-m", "yiban.cli", "sign", "--json"],
+        r = subprocess.run([sys.executable, "-m", "yiban.entry.cli", "sign", "--json"],
                            cwd=BASE, env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            stdin=subprocess.DEVNULL, timeout=120)

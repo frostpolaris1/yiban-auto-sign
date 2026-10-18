@@ -37,33 +37,26 @@
 """
 
 import argparse
-import calendar  # noqa: F401  # 月历路由已入 web/routes/my_api.py，此处仅为保持 web.app 名字面不变
 import contextlib
-import html  # noqa: F401  # 文档页转义已入 web/render.py，此处仅为保持 web.app 名字面不变
-import json  # noqa: F401  # 通道健康日报已入 web/services/channel_health.py，此处仅为保持 web.app 名字面不变
 import logging
 import os
 import re
 import secrets
-import sqlite3  # noqa: F401  # 个人/数据域路由已迁出，此处仅为保持 web.app 名字面不变
 import subprocess  # noqa: F401  # 手动签到子进程族已入 web/services/manual_sign.py，保留名字面（测试打桩 webapp.subprocess.Popen）
 import sys
 import threading
 import time
 
-# 时间构造已随账号数据 / 日志 / 实测族迁出；测试仍以 `webapp.datetime` 替换 web 侧时钟
-from datetime import datetime, timedelta  # noqa: F401  # 名字面零损失
+# 时间构造：`timedelta` 本模块自用（周报栅格与节拍窗口）。原同一行的 `datetime`
+# 是零读者名字面，已随 W0 删除。
+from datetime import timedelta
 
-import requests  # noqa: F401  # 连通性检测已入 web/services/signstatus.py，此处仅为保持 web.app 名字面不变
 from flask import (
     Flask,
-    Response,  # noqa: F401  # 日志导出已入 web/routes/data.py，此处仅为保持 web.app 名字面不变
     abort,
     jsonify,
-    redirect,  # noqa: F401  # 页面路由已入 web/routes/pages.py，此处仅为保持 web.app 的导入面不变
     render_template,
     request,
-    send_file,  # noqa: F401  # 日志导出已入 web/routes/data.py，保留 web.app.<名字> 可 import（打桩面零损失）
     session,
     url_for,
 )
@@ -79,10 +72,9 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# scripts/ 下的裸模块（同属"共享模块"段）：三者本模块均无自用点，保留供 web.app.<名字>
+# scripts/ 下的裸模块（同属"共享模块"段）：本模块均无自用点，保留供 web.app.<名字>
 # 取用（routes 经 m.* 取用、测试按属性打桩）。位置随包导入引导之后、web./yiban. 之前。
 import child_env  # noqa: E402,F401  # 签到子进程环境注入已入 web/routes/signin_api.py
-import email_policy  # noqa: E402,F401  # 域名审查实现已入 web/render.py
 import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出
 
 # 渲染层实现（web/render.py）：合规文档与站点展示族的真源。本模块只转发，并在转发时
@@ -101,18 +93,10 @@ from web import render as _render  # noqa: E402
 from web import security as _security  # noqa: E402
 from web.render import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
-    _DOC_FILES,  # noqa: F401
-    _LINK_RE,  # noqa: F401
-    _SAFE_LINK_SCHEMES,  # noqa: F401
-    _inline_md,  # noqa: F401
     _render_md,  # noqa: F401
 )
 from web.routes import (  # noqa: E402
     register_all,  # 路由分域装配（各域在 web/routes/）
-    # 账号验证冷却与配额：取用点已收在 web.routes，两条提交路径均已随域迁出，
-    # 此处保留仅为 web.app 名字面零损失（打桩面）
-    verify_fails,  # noqa: F401
-    verify_limits,  # noqa: F401
 )
 from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清单（页面路径唯一登记点）
 
@@ -120,28 +104,17 @@ from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清�
 # 测试按属性读取或替换）。需要本模块模块级状态的入口（`.env` 路径与读取器、写路径、
 # 整数读取器、键行计数、告警出口、会话绝对期）在下方转发包装里调用时刻现取后注入。
 from web.security import (  # noqa: E402
-    _DEFAULT_ADMIN_LITERALS,  # noqa: F401
     _IP_STORE_LIMIT,  # noqa: F401
     _IP_STORE_MAX_AGE,
     _REPLACE_RETRY_ATTEMPTS,  # noqa: F401
-    _REPLACE_RETRY_BASE_SEC,  # noqa: F401
     ADMIN_SID_ENV_KEY,  # noqa: F401
     FORWARDED_TRUST_ENV_KEY,
     LOGIN_LOCK_SECONDS,  # noqa: F401
-    PW_CONFIRM_COOLDOWN_DEFAULT,  # noqa: F401
-    PW_CONFIRM_TTL_DEFAULT,  # noqa: F401
-    PW_CONFIRM_TTL_MAX,  # noqa: F401
-    PW_GATE_DEFAULT,  # noqa: F401
-    PW_GATE_ENV_KEY,  # noqa: F401
     PW_GATE_FULL,
     PW_GATE_OFF,
-    PW_GATE_RISK,  # noqa: F401
-    PW_GATE_TIERS,  # noqa: F401
     SCRYPT_METHOD,  # noqa: F401
-    VERIFY_FAIL_AUTH_KEYWORDS,  # noqa: F401
     VERIFY_FAIL_COOLDOWN,  # noqa: F401
     VERIFY_FAIL_MAX,  # noqa: F401
-    VERIFY_FAIL_WINDOW,  # noqa: F401
     VERIFY_MAX,  # noqa: F401
     VERIFY_WINDOW,  # noqa: F401
     _atomic_write,
@@ -154,7 +127,6 @@ from web.security import (  # noqa: E402
     _is_loopback_addr,
     _new_admin_sid,  # noqa: F401
     _record_verify_failure,
-    _replace_with_retry,  # noqa: F401
     _resolve_forwarded_trust,
     _verify_attempt_allowed,
     _verify_fail_cooldown_remaining,  # noqa: F401
@@ -176,7 +148,6 @@ from web.services import verify_queue as _verify_queue  # noqa: E402
 from web.services.accounts_data import (  # noqa: E402
     # 账号审核态词表、手机号正则、注销宽限期与口令策略常量随账号数据族搬入
     # web/services/accounts_data.py，此处取回保 m.* 名字面
-    _PASSWORD_CLASS_HINT,  # noqa: F401
     _PASSWORD_CLASS_LABELS,  # noqa: F401
     _PASSWORD_CLASS_PATTERNS,  # noqa: F401
     _PASSWORD_MIN_CLASSES,  # noqa: F401
@@ -184,12 +155,7 @@ from web.services.accounts_data import (  # noqa: E402
     ACCOUNT_STATUS_ACTIVE,  # noqa: F401
     ACCOUNT_STATUS_PENDING,  # noqa: F401
     ACCOUNT_STATUS_REJECTED,  # noqa: F401
-    ADMIN_PASSWORD_MIN_CLASSES,  # noqa: F401
-    ADMIN_PASSWORD_MIN_LEN,  # noqa: F401
-    CLEAR_SENTINEL,  # noqa: F401
-    DELETE_GRACE_DAYS,  # noqa: F401
     PASSWORD_MIN_LEN,  # noqa: F401
-    PHONE_RE,  # noqa: F401
     _admin_password_policy_error,  # noqa: F401
     _as_signin_account,  # noqa: F401
     _delete_grace_remaining,  # noqa: F401
@@ -211,26 +177,18 @@ from web.services.accounts_data import (  # noqa: E402
 from web.services.capacity import (  # noqa: E402
     # 名字面零损失：容量族常量与节流状态随族搬入 web/services/capacity.py
     # （routes 经 m.* 取用、测试按属性读取 `_mail_alert_ts` 复位节流），此处再导出
-    DEFAULT_MAIL_ALERT_COOLDOWN,  # noqa: F401
     _capacity_account_count,  # noqa: F401
     _capacity_alerts,  # noqa: F401
-    _capacity_audit_count,  # noqa: F401
-    _mail_alert_lock,  # noqa: F401
     _mail_alert_ts,  # noqa: F401
 )
 from web.services.channel_health import (  # noqa: E402
     # 名字面零损失：通道健康族的纯逻辑与常量（routes/测试按属性读取日报标记键）
     _HEALTH_REPORT_META_KEY,  # noqa: F401
-    _audit_channel_health_degraded,  # noqa: F401
     _channel_health_degraded,
     _channel_health_facts,  # noqa: F401
-    _daily_budget_desc,  # noqa: F401
-    _health_report_sent_today,  # noqa: F401
 )
 from web.services.env_io import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
-    _BOOL_SETTINGS_KEYS,  # noqa: F401
-    _SETTINGS_KEY_LABELS,  # noqa: F401
     ANNOUNCEMENT_DRAFT_META_FMT,  # noqa: F401
     ANNOUNCEMENT_DRAFT_META_SEP,  # noqa: F401
     _env_write_lock,  # noqa: F401
@@ -261,11 +219,9 @@ from web.services.locks import (  # noqa: E402
     run_after_file_lock,  # noqa: F401
 )
 from web.services.logs import (  # noqa: E402
-    _LOG_TAIL_BYTES,  # noqa: F401
     LOG_LEVEL_DEFAULT,  # noqa: F401
-    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     LOG_LEVELS,  # noqa: F401
-    SIGN_LOG_RE,  # noqa: F401
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     _cred_paused_phones,  # noqa: F401
     _filter_log_level,  # noqa: F401
     _is_valid_date_str,  # noqa: F401
@@ -280,7 +236,6 @@ from web.services.manual_sign import (  # noqa: E402
     # 名字面零损失：手动签到子进程族（终止进程树、等待回收、队列超时缩放、退出码词表）
     # 随族搬入 web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
     # `log_path_for`，故在下方转发
-    _SIGNIN_EXIT_REASONS,  # noqa: F401
     _batch_wait_timeout,  # noqa: F401
     _manual_sign_failure_reason,  # noqa: F401
     _terminate_signin_proc,  # noqa: F401
@@ -299,14 +254,9 @@ from web.services.notify_mail import (  # noqa: E402
     # 名字面零损失：通知与告警邮件族随族搬入 web/services/notify_mail.py
     # （`_nl_safe` / `_audit_actor` / `_audit_alert_facts` 本模块自用，其余为 m.* 兼容面）；
     # `send_notification` 与 `_push_ever_configured` 需注入本模块的名字，故在下方转发
-    _MAIL_FLAG_NAMES,  # noqa: F401
-    _NOTIFY_LEDGER_LABELS,  # noqa: F401
-    _PUSH_CONFIG_ENV_KEYS,  # noqa: F401
-    _alert_mail_recipients,  # noqa: F401
     _audit_actor,
     _audit_alert_facts,
     _change_mail,  # noqa: F401
-    _last_cleanup_text,  # noqa: F401
     _nl_safe,
     _review_reject_mail,  # noqa: F401
 )
@@ -314,7 +264,6 @@ from web.services.signstatus import (  # noqa: E402
     # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
     # 保留 web.app.<名字> 的兼容面；
     # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
-    _TRUTHY_LITERALS,  # noqa: F401
     _env_flag,
     _in_sign_window,
     check_connectivity,  # noqa: F401
@@ -333,9 +282,7 @@ from web.services.verify_queue import (  # noqa: E402
     _verify_queue_full,
 )
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
-
-# cred_state 已无自用点，保留供 web.app.<名字> 取用（须在引导之后导入）
-from yiban import clock, cred_state  # noqa: E402,F401
+from yiban import clock  # noqa: E402
 
 # 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
 from yiban import window as yb_window  # noqa: E402
@@ -377,19 +324,14 @@ from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配�
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
 from yiban import mail as mailer  # noqa: E402,F401
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
-
-# 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用
-from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
 from yiban.infra import (  # noqa: E402
     account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
-    env_lock,  # noqa: F401  # 跨进程写锁真源（写路径已入 web/services/env_io.py），保留名字面
 )
 from yiban.mail import (  # noqa: E402
     config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
 )
 from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
-from yiban.platform import API_AUTH_URL  # noqa: E402,F401
 from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
@@ -432,7 +374,8 @@ DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # 已随安全域搬入 web/security.py，此处以导入区再导出保持 m.SCRYPT_METHOD 可达。
 
 # 账号编辑时识别码清空哨兵值与表单折算（CLEAR_SENTINEL / fold_phone_code）唯一真源
-# 在 web/services/accounts_data.py，上方导入区再导出保 m.CLEAR_SENTINEL 名字面；
+# 在 web/services/accounts_data.py：`fold_phone_code` 仍在导入区再导出，`CLEAR_SENTINEL`
+# 的 m.* 名字面已随 W0 删除（零读者）；
 # 折算必须发生在进 SET 之前——哨兵若在进 SET 前被摘掉，"清除"就成了库里无感的空操作。
 
 # 单次批量操作上限：批量通过/删除/设管理员/重置密码
@@ -545,8 +488,8 @@ def _request_is_same_origin():
 # 真实客户端出口（`_client_ip`）见 web/security.py，此处以导入区再导出保持 m.* 可达。
 
 
-# 注销冷却剩余（`_delete_grace_remaining`）与注销宽限期常量（DELETE_GRACE_DAYS）见
-# web/services/accounts_data.py，此处以导入区再导出保持 m.* 可达。
+# 注销冷却剩余（`_delete_grace_remaining`）见 web/services/accounts_data.py，此处以导入区
+# 再导出保持 m.* 可达；注销宽限期常量 `DELETE_GRACE_DAYS` 的 m.* 名字面已随 W0 删除。
 
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
@@ -734,7 +677,7 @@ ADMIN_CREDS_MAX = 20
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐，与 db.purge_deleted_users
 # 默认一致；已注销用户视图按此计算剩余天数。常量本体（取 db.SOFT_DELETE_RETENTION_DAYS
 # ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
-# web/services/accounts_data.py，此处以导入区再导出保持 m.DELETE_GRACE_DAYS 可达。
+# web/services/accounts_data.py；`DELETE_GRACE_DAYS` 的 m.* 名字面已随 W0 删除。
 
 # 容量上限（注册/使用人数超负载兜底）：
 # 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
@@ -813,7 +756,7 @@ PAUSE_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$", re.ASCII)
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）常量已随
-# 账号数据族搬入 web/services/accounts_data.py，此处以导入区再导出保持 m.PHONE_RE 可达。
+# 账号数据族搬入 web/services/accounts_data.py；`PHONE_RE` 的 m.* 名字面已随 W0 删除。
 
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
 SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring
@@ -864,8 +807,9 @@ logger = logging.getLogger("web")
 # ---------------------------------------------------------------------------
 # 签到日志解析
 # ---------------------------------------------------------------------------
-# 实现见 web/services/logs.py：`_LOG_TAIL_BYTES` / `_tail_lines` / `_most_recent_log_cache`
-# 与 `_is_valid_date_str` 在导入区再导出；需要本模块模块级状态的入口（日志目录 LOG_FILE、
+# 实现见 web/services/logs.py：`_tail_lines` / `_most_recent_log_cache`
+# 与 `_is_valid_date_str` 在导入区再导出（`_LOG_TAIL_BYTES` 的 m.* 名字面已随 W0 删除）；
+# 需要本模块模块级状态的入口（日志目录 LOG_FILE、
 # 倒读实现 `_tail_lines`）在下方转发时调用时刻现取后注入——它们会被测试改写（既有测试直接
 # 赋值 `web.app.LOG_FILE`、并在 `web.app` 上打桩 `_tail_lines`），服务层另持一份绑定会让
 # 打桩静默失效。
@@ -1165,9 +1109,10 @@ def migrate_admin_password_to_hash(env_path):
 
 
 # `os.replace` 的瞬态失败重试预算与 `_replace_with_retry` / `_atomic_write` 实现见
-# web/security.py，此处以导入区再导出保持 m.* 可达（`_atomic_write` 必须是**同一个
-# 函数对象**：env_io / measure 的转发包装按调用时刻现取本模块的这个名字注入，
-# patch.object(web.app, "_atomic_write") 才继续被落盘路径看见）。
+# web/security.py：`_atomic_write` 在导入区再导出且必须是**同一个
+# 函数对象**——env_io / measure 的转发包装按调用时刻现取本模块的这个名字注入，
+# patch.object(web.app, "_atomic_write") 才继续被落盘路径看见；
+# `_replace_with_retry` 的 m.* 名字面已随 W0 删除（零读者）。
 
 
 # ---------------------------------------------------------------------------
@@ -1226,9 +1171,9 @@ def _pw_gate_tier(env_path):
 
 
 # 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
-# 退出码原因 `_manual_sign_failure_reason` 与退出码表 `_SIGNIN_EXIT_REASONS`）实现见
-# web/services/manual_sign.py，此处以导入区再导出保持 m.* 可达；只有 `_log_manual_sign_exit`
-# 需要注入本模块持有的入口，故在下方转发。
+# 退出码原因 `_manual_sign_failure_reason`）实现见 web/services/manual_sign.py，此处以
+# 导入区再导出保持 m.* 可达；退出码表 `_SIGNIN_EXIT_REASONS` 的 m.* 名字面已随 W0 删除。
+# 只有 `_log_manual_sign_exit` 需要注入本模块持有的入口，故在下方转发。
 def _log_manual_sign_exit(phone_label, returncode):
     """手动签到退出码留痕（实现见 web/services/manual_sign.py）。
 
@@ -1390,10 +1335,10 @@ def sign_status(now=None):
 
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
-# `_audit_alert_facts` / `_last_cleanup_text`、变更与审核邮件 `_change_mail` /
-# `_review_reject_mail`、收件人算法 `_alert_mail_recipients` 及随族常量）实现见
-# web/services/notify_mail.py，此处以导入区
-# 再导出保持 m.* 可达；`send_notification` 与 `_push_ever_configured` 需要注入本模块
+# `_audit_alert_facts`、变更与审核邮件 `_change_mail` / `_review_reject_mail` 及随族常量）
+# 实现见 web/services/notify_mail.py，此处以导入区
+# 再导出保持 m.* 可达；`_last_cleanup_text` / `_alert_mail_recipients` 的 m.* 名字面已随
+# W0 删除（零读者）。`send_notification` 与 `_push_ever_configured` 需要注入本模块
 # 持有的名字，故在下方转发。
 
 
@@ -1462,11 +1407,11 @@ def _alert_channel_status():
 
 
 # 告警通道健康族（降级判定 `_channel_health_degraded`、状态行 `_channel_status_lines`、
-# 额度描述 `_daily_budget_desc`、日报已播标记读取 `_health_report_sent_today`、事实摘要
-# `_channel_health_facts`、降级痕迹 `_audit_channel_health_degraded` 与日报标记键
-# `_HEALTH_REPORT_META_KEY`）的纯逻辑实现见 web/services/channel_health.py，此处以导入区
-# 再导出保持 m.* 可达；需要现取本模块名字（状态生产者 / 状态行 / 告警出口）的入口在
-# 下方转发。
+# 事实摘要 `_channel_health_facts` 与日报标记键 `_HEALTH_REPORT_META_KEY`）的纯逻辑实现
+# 见 web/services/channel_health.py，此处以导入区
+# 再导出保持 m.* 可达；`_daily_budget_desc` / `_health_report_sent_today` /
+# `_audit_channel_health_degraded` 的 m.* 名字面已随 W0 删除（零读者）。
+# 需要现取本模块名字（状态生产者 / 状态行 / 告警出口）的入口在下方转发。
 
 
 def _channel_status_lines(status=None):
@@ -1641,11 +1586,12 @@ def _channel_health_report_due(status=None, since=None, unconfigured_hm=None):
 
 
 # 容量核计与触顶告警族（账号/用户配额判定 `_capacity_account_count` /
-# `_capacity_audit_count` / `_accounts_at_capacity` / `_users_at_capacity`、容量预估
+# `_accounts_at_capacity` / `_users_at_capacity`、容量预估
 # `_capacity_estimate`、注册暂停 `_registration_paused`、同类型告警邮件节流
 # `_mail_alert_due` 与触顶通知 `_notify_capacity_once`，含去重表 `_capacity_alerts`、
-# 节流表 `_mail_alert_ts` / `_mail_alert_lock` 与缺省窗口常量）实现见
-# web/services/capacity.py，此处以导入区再导出保持 m.* 可达；需要现取本模块名字
+# 节流表 `_mail_alert_ts` 与缺省窗口常量）实现见
+# web/services/capacity.py，此处以导入区再导出保持 m.* 可达；`_capacity_audit_count` /
+# `_mail_alert_lock` 的 m.* 名字面已随 W0 删除（零读者）。需要现取本模块名字
 # （`.env` 路径与读取器、缺省上限、窗口/裁剪口径、告警出口）的入口在下方转发。
 def _capacity_estimate(gap=0):
     """按当前窗口与账号间隔预估可容纳账号数（实现见 web/services/capacity.py）。
@@ -1836,8 +1782,9 @@ class BasePathMiddleware:
 
 
 # 公开模板默认字面量口令表（_DEFAULT_ADMIN_LITERALS）与启动检测
-# reject_default_admin_password 的实现见 web/security.py，此处以导入区再导出 /
-# 转发包装保持 m.* 可达与打桩面。
+# reject_default_admin_password 的实现见 web/security.py；`_DEFAULT_ADMIN_LITERALS` 的
+# m.* 名字面已随 W0 删除（零读者），`reject_default_admin_password` 仍经转发包装保持
+# m.* 可达与打桩面。
 # 主管理员（内置 .env 管理员）口令单独提档：12 位三类——最高权限账号的口令强度要求
 # 高于普通用户原口径，启动 fail-closed 与自助改密（_admin_password_policy_error）共用
 # 同一组常量；常量本体随口令策略搬入 web/services/accounts_data.py，此处以导入区再导出

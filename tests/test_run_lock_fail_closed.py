@@ -205,7 +205,7 @@ class TwoProcessLockContentionE2ETest(_StateDirBase):
             contender_env["YIBAN_RUN_LOCK_NAME"] = workers.FALLBACK_LOCK_NAME
             contender_env["PYTHONPATH"] = BASE
             proc = subprocess.run(
-                [sys.executable, "-m", "yiban.cli", "sign", "--fallback"],
+                [sys.executable, "-m", "yiban.entry.cli", "sign", "--fallback"],
                 env=contender_env, cwd=BASE, capture_output=True, text=True, timeout=120)
             self.assertEqual(proc.returncode, 3,
                              f"抢输的一方必须按'锁忙'退出 3，实际 {proc.returncode}；"
