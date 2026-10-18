@@ -46,6 +46,7 @@ import unittest
 from unittest import mock
 
 from _mail_body import render_body
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -307,7 +308,7 @@ class UserSideDeviceFieldsReadOnlyTest(_CredsBase):
     def _user_client(self, email=OWNER):
         import db
         if db.find_user(email) is None:
-            db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+            db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": email, "password": USER_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))

@@ -30,6 +30,8 @@ import time
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 from yiban.store.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -104,8 +106,8 @@ class DupcheckOracleTest(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file)
-        db.create_user(ACTOR, self.webapp.generate_password_hash(USER_PASS))
-        db.create_user(OTHER, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(ACTOR, generate_password_hash(USER_PASS))
+        db.create_user(OTHER, generate_password_hash(USER_PASS))
         db.add_account({"name": "occupied", "phone": PHONE_TAKEN, "password": "p",
                         "phone_model": "", "phone_code": "", "status": "active",
                         "owner": OWNER_OTHER})

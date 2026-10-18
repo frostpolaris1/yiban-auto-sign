@@ -38,6 +38,7 @@ import sqlite3
 import time
 
 from flask import jsonify, request, session
+from werkzeug.security import generate_password_hash
 
 from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
@@ -281,7 +282,7 @@ def api_account_add():
             pw_err = m._password_policy_error(initial)
             if pw_err:
                 return jsonify({"error": f"初始密码不符合要求：{pw_err}"}), 400
-            initial_hash = m.generate_password_hash(initial, method=m.SCRYPT_METHOD)
+            initial_hash = generate_password_hash(initial, method=m.SCRYPT_METHOD)
     with m._file_lock:
         accounts = m.load_accounts()
         # 容量兜底：账号配额（活跃账号数含裸账号，防无限增长）；

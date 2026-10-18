@@ -50,6 +50,7 @@ from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
 import db  # noqa: E402  # 顶层导入供 user_path(db, …) 与既有局部导入共用
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -220,7 +221,7 @@ class _TierBase(unittest.TestCase):
     def _ensure_user(self, email):
         import db
         if db.find_user(email) is None:
-            db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+            db.create_user(email, generate_password_hash(USER_PASS))
         return email
 
     def _ensure_account(self, deleted=False):
@@ -601,8 +602,8 @@ class RiskTriggerTest(_TierBase):
         email = "restored-admin@test.local"
         self._reset_db()
         # 两个注册管理员：db 的"最后一个注册管理员不可注销"保护会拦住唯一那一个
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS), role="admin")
-        db.create_user("keeper@test.local", self.webapp.generate_password_hash(USER_PASS),
+        db.create_user(email, generate_password_hash(USER_PASS), role="admin")
+        db.create_user("keeper@test.local", generate_password_hash(USER_PASS),
                        role="admin")
         db.soft_delete_user_with_accounts(email)
         c = self.webapp.create_app().test_client()

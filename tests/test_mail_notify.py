@@ -29,6 +29,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一经 body() 渲染成文本
 from _mail_body import render_body  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 from yiban.infra import account_crypto  # noqa: E402
 from yiban.notify import config as notify_config  # noqa: E402
@@ -208,8 +209,8 @@ class MailNotifyApiTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("admin@test.local", self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("admin@test.local", generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
 
     def _login(self, c, username, password):
         r = c.post("/api/login", json={"username": username, "password": password})

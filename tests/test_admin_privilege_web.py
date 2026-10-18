@@ -26,6 +26,7 @@ import tempfile
 import unittest
 
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -90,7 +91,7 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         # 内置管理员 = .env 的 admin；注册管理员两个 + 普通用户一个
         db.create_user("admin2@test.local", h(ADMIN_PASS), role="admin")
         db.create_user("admin3@test.local", h(ADMIN_PASS), role="admin")

@@ -37,6 +37,7 @@ from test_rekey_key_source import (  # noqa: E402  （同目录夹具，须在 s
     _B14AlertGateBase,
     _write_env,
 )
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 from web.services.env_io import (  # noqa: E402
     health_report_time_str,
@@ -439,7 +440,7 @@ class SettingsEntryTest(_HealthScheduleBase):
         before = "\n".join(_read_lines(self.env_file))
         self.webapp.db.create_user(
             "admin2@test.local",
-            self.webapp.generate_password_hash("PlainAdmin#2026x"), role="admin")
+            generate_password_hash("PlainAdmin#2026x"), role="admin")
         c2 = self._client()
         t2 = self._login(c2, "admin2@test.local", "PlainAdmin#2026x")
         for field, value in (("health_report_time", "07:00"),

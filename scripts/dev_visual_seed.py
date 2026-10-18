@@ -25,6 +25,8 @@ import shutil
 import sys
 from datetime import datetime, timedelta
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 直接执行本脚本时 sys.path[0] 是 scripts/，仓库根不在路径上——先补上才能 `from yiban...`。
 if BASE not in sys.path:
@@ -164,9 +166,9 @@ def seed(tmp: str, reset: bool = False) -> dict:
     # 管理员由 .env 提供（check_admin_configured 读它）；普通用户要真实入库
     for email in DEMO_USERS:
         with contextlib.suppress(Exception):
-            db.create_user(email, webapp.generate_password_hash(USER_PASS), role="user")
+            db.create_user(email, generate_password_hash(USER_PASS), role="user")
     with contextlib.suppress(Exception):
-        db.create_user("admin@example.com", webapp.generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("admin@example.com", generate_password_hash(ADMIN_PASS), role="admin")
 
     existing = db.load_accounts()
     if not existing:

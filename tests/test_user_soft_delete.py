@@ -29,6 +29,7 @@ import unittest
 from datetime import timedelta
 
 from _mail_body import render_body
+from werkzeug.security import generate_password_hash
 
 from yiban import clock
 
@@ -91,7 +92,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL, generate_password_hash(USER_PASS))
 
     # ---- 工具 ----
     def _login(self, c, username, password):

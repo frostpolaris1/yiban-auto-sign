@@ -25,6 +25,7 @@ import signin
 from test_rekey_key_source import _B14AlertGateBase
 
 import web.security as web_security
+from web.routes import auth as web_routes_auth
 from yiban import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.infra import account_crypto
 from yiban.masking import mask_email
@@ -220,8 +221,10 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         p1 = mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None)
         p1.start()
         self.addCleanup(p1.stop)
-        # p2 覆盖**注册用户**路径（路由经 `m.check_password_hash` 取 app 侧绑定）。
-        p2 = mock.patch.object(self.webapp, "check_password_hash", lambda h, p: False)
+        # p2 覆盖**注册用户**路径：`web/routes/auth.py` 自 145-B `T1` 片起直接从
+        # `werkzeug.security` 导入 check_password_hash，故打桩点落在该模块
+        # （打 web.app 仍会成功，但不控制它——静默失效）。
+        p2 = mock.patch.object(web_routes_auth, "check_password_hash", lambda h, p: False)
         p2.start()
         self.addCleanup(p2.stop)
         # p3 覆盖**内置管理员**路径：`web/security.py` 的 verify_admin 用的是该模块自己
