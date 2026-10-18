@@ -72,32 +72,60 @@ def test_usersure_form_custom_display():
     assert "display=mobile" in built
 
 
-def test_sign_in_body_equals_urlencoded_fixture_exactly(read_fixture):
-    """build_sign_in_body 与 urlencoded 夹具整串相等。"""
-    expected = read_fixture("sign_in_body_urlencoded.txt")
+def test_sign_in_body_equals_spa_fixture_exactly(read_fixture):
+    """build_sign_in_body 与「按 SPA 变换独立生成」的夹具整串相等（逐字节）。
+
+    `*_spa.txt` 由 `sign_in_body.txt` 的明文值经 `JSON.stringify` ＋
+    `encodeURIComponent` 的等价变换生成，**不经过本仓实现**（避免自我循环）。
+    """
+    expected = read_fixture("sign_in_body_urlencoded_spa.txt")
     built = build_sign_in_body(lnglat=_SIGN_LNGLAT, address=_SIGN_ADDRESS)
     assert built == expected
 
 
-def test_sign_in_body_reconstructs_from_plain_fixture(read_fixture):
-    """从明文夹具反解参数再构造，仍与 urlencoded 夹具整串相等（两夹具互证）。"""
-    expected = read_fixture("sign_in_body_urlencoded.txt")
-    values = dict(_pairs(read_fixture("sign_in_body.txt")))
+def test_sign_in_body_reconstructs_from_spa_plain_fixture(read_fixture):
+    """从 SPA 明文夹具反解参数再构造，仍与 SPA 编码夹具整串相等（两夹具互证）。"""
+    expected = read_fixture("sign_in_body_urlencoded_spa.txt")
+    values = dict(_pairs(read_fixture("sign_in_body_spa.txt")))
     sign_info = json.loads(values["SignInfo"])
     lng, lat = (float(part) for part in sign_info["LngLat"].split(","))
     built = build_sign_in_body(lnglat=(lng, lat), address=sign_info["Address"])
     assert built == expected
 
 
+def test_sign_in_body_differs_from_our_own_2026_10_03_capture_only_in_encoding(read_fixture):
+    """与本站 2026-10-03 旁路实拍相比，差异**只**在两处编码，不在语义。
+
+    那条实拍曾是本项目的参照物（`sign_in_body*.txt`，保留不动）。它证明的是
+    「服务端吃这套编码」，**不是**「这是 SPA 的编码」——这一点 2026-10-18 才分清。
+
+    两处差异，逐条钉住：
+    ① `SignInfo` 内部：本站用 `", "` / `": "`（有空格），SPA 是 `JSON.stringify`（紧凑）；
+    ② 值的空格：本站 `+`，SPA `%20`。
+    """
+    ours_old = read_fixture("sign_in_body_urlencoded.txt")
+    now = build_sign_in_body(lnglat=_SIGN_LNGLAT, address=_SIGN_ADDRESS)
+    assert ours_old != now, "两者相等 ⇒ 本用例的前提已失效（编码已改回或未生效）"
+    assert "%3A+%22" in ours_old and "%3A%22" in now, "① SignInfo 内部分隔符差异消失了"
+    assert json.loads(unquote_plus(ours_old.split("&SignInfo=", 1)[1])) == \
+        json.loads(unquote(now.split("&SignInfo=", 1)[1])), "② 语义不得随编码一起变"
+
+
+def test_sign_in_body_encodes_space_as_percent_20():
+    """值里的空格编成 `%20`（`encodeURIComponent`），不是 `+`（`quote_plus`）。"""
+    built = build_sign_in_body(lnglat=(1.0, 2.0), address="A B")
+    assert "%20" in built and "A+B" not in built
+
+
 def test_sign_info_json_is_byte_identical():
-    """SignInfo 的 JSON 序列化逐字节同构（键序、分隔符、浮点短表示）。"""
+    """SignInfo 的 JSON 序列化逐字节同构（键序、`JSON.stringify` 的紧凑分隔符、浮点短表示）。"""
     built = build_sign_in_body(lnglat=(118.10389401234568, 32.0078387654321), address="A")
-    # `SignInfo` 是顶层最后一个字段（参考客户端定序），切出其后半段即可；
-    # 用字面分隔符切，避免 parse_qsl 改变 + 的语义。
+    # `SignInfo` 是顶层最后一个字段（SPA 定序），切出其后半段即可；
+    # 用字面分隔符切，避免 parse_qsl 改变 `+` 的语义。
     raw = built.split("&SignInfo=", 1)[1]
-    assert unquote_plus(raw) == (
-        '{"Reason": "", "AttachmentFileName": "", '
-        '"LngLat": "118.10389401234568,32.0078387654321", "Address": "A"}'
+    assert unquote(raw) == (
+        '{"Reason":"","AttachmentFileName":"",'
+        '"LngLat":"118.10389401234568,32.0078387654321","Address":"A"}'
     )
 
 
