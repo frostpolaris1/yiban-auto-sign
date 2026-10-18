@@ -262,7 +262,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
     #   在日历上都有出处，"今天"一行也能同时看到七八种色点；
     # - 郑十一/王十二（idx 8/9）近 4 天不写（"无记录"分支）；周末不写（格子显示"休"）；
     # - 赵六（用户暂停）近 10 天记 paused（账密暂停·黄色点有出处）。
-    from yiban.status import DISPLAY as _DISPLAY
+    from yiban.core.status import DISPLAY as _DISPLAY
 
     _sym = {code: e["symbol"] for code, e in _DISPLAY.items()}
     DAILY_CYCLE = ["success", "already", "no_task", "failed", "retrying",

@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 from werkzeug.security import generate_password_hash  # noqa: E402
 
 from yiban.core import clock  # noqa: E402
-from yiban.masking import mask_phone  # noqa: E402
+from yiban.core.masking import mask_phone  # noqa: E402
 from yiban.store import queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64

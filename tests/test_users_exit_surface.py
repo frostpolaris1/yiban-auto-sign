@@ -140,13 +140,13 @@ class _Base(unittest.TestCase):
 class OwnerDisplayTest(_Base):
     def test_mask_email_local_phone_form(self):
         """本地部即手机号 → 号遮罩形态；**不是**整段本地部直出（旧行为）。"""
-        from yiban.masking import mask_email_local
+        from yiban.core.masking import mask_email_local
         self.assertEqual(mask_email_local("13800000000"), MASKED_PHONE_LOCAL)
         # RED 可能性：把号形态也走"前3+***"（138***）会让归属列失去"这是个号"的可辨性，
         # 也钉住"改回整段直出"（泄漏）——两个退化方向都红。
 
     def test_mask_email_local_general_and_idempotent(self):
-        from yiban.masking import mask_email_local
+        from yiban.core.masking import mask_email_local
         self.assertEqual(mask_email_local("alice"), "ali***")
         self.assertEqual(mask_email_local("ab"), "ab***")
         self.assertEqual(mask_email_local("ali***"), "ali***")   # 幂等
@@ -276,7 +276,7 @@ class ActorSurfaceTest(_Base):
 class MF111SanitizeTest(_Base):
     def test_quoted_key_credential_full_table(self):
         """整张凭据名表的**引号键形态**（vars()/json.dumps 调试输出）都要被拦。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         for key in ("access_token", "refresh_token", "api_key", "session_id",
                     "csrf_token", "password", "phone_code", "authorization"):
             samples = (
@@ -291,7 +291,7 @@ class MF111SanitizeTest(_Base):
                     self.assertIn("***", out)
 
     def test_authorization_basic_tail_swallowed(self):
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         out = sanitize_text("req header Authorization: Basic ZGVmOg== sent")
         self.assertNotIn("ZGVmOg", out, "base64 尾巴（含 == ）必须整体收口，不得留尾")
         self.assertIn("authorization=***", out)
@@ -301,7 +301,7 @@ class MF111SanitizeTest(_Base):
     def test_benign_json_not_harmed(self):
         """"不误伤 JSON 正文"判据：非凭据键的值、数字/布尔/null 叶子原样保留；
         凭据键遮罩后仍是合法 JSON（解析/还原能力不丢）。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         benign = ('{"user": "bob", "note": "the token expires soon", '
                   '"count": 42, "ratio": -1.5, "ok": true, "nil": null}')
         self.assertEqual(sanitize_text(benign), benign,
@@ -313,7 +313,7 @@ class MF111SanitizeTest(_Base):
         self.assertEqual(parsed["user"], "bob")
 
     def test_cookie_pairs_still_masked_individually(self):
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         out = sanitize_text("Set-Cookie: session=abc123; path=/; csrf=xy")
         self.assertNotIn("abc123", out)
         self.assertNotIn("xy", out.split("csrf=")[1].split(";")[0])
@@ -322,7 +322,7 @@ class MF111SanitizeTest(_Base):
     def test_numeric_leaf_invariant(self):
         """数字叶子不变量（2-9a 入册）：凭据键后的**数字**不被改写——
         遮罩数字会破坏 JSON 类型契约；裸号只允许以字符串形态进 payload。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         s = '{"password": 123456, "n": true}'
         self.assertEqual(json.loads(sanitize_text(s)), {"password": 123456, "n": True})
 
@@ -383,7 +383,7 @@ class AccountReprSwallowTest(_Base):
     def test_apostrophe_name_repr_swallowed(self):
         """撇号名让 dataclass repr 改用**双引号**包裹——旧吞除正则只配单引号，
         在双引号段前失效整段外泄；2-9b 收口后两种引号各自配对。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         s = "failed for Account(name=\"O'Brien\", password='sup3r-secret!', phone='13800000000')"
         out = sanitize_text(s)
         self.assertNotIn("sup3r-secret", out)

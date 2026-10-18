@@ -27,7 +27,7 @@ token / cookie / session / authorization 字面量被抹值；另钉一条 dict/
 """
 import unittest
 
-from yiban.masking import sanitize_text
+from yiban.core.masking import sanitize_text
 
 
 class TokenMaskingTest(unittest.TestCase):

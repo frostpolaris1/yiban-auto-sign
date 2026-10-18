@@ -43,7 +43,7 @@ import time
 
 from web.services.accounts_data import load_accounts_raw
 from web.services.locks import run_after_file_lock
-from yiban import window as yb_window
+from yiban.core import window as yb_window
 from yiban.engine.schedule import capacity_of
 from yiban.infra.env_io import parse_env_flag
 from yiban.mail import layout as mail_layout

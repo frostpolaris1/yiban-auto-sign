@@ -43,7 +43,7 @@ for _p in (os.path.join(_PACKAGE_ROOT, "scripts"), _PACKAGE_ROOT):
 
 import email_policy  # noqa: E402
 
-from yiban import window as yb_window  # noqa: E402
+from yiban.core import window as yb_window  # noqa: E402
 
 # 与 web.app 同名的日志通道：合规文档渲染失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

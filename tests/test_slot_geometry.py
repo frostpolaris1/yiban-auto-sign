@@ -30,7 +30,7 @@ import signin
 
 from web.routes import my_api
 from web.services import accounts_data
-from yiban import window
+from yiban.core import window
 from yiban.engine import planner, schedule
 
 #: 正常窗口：06:30~07:50，前后各裁 60s（与生产默认一致）

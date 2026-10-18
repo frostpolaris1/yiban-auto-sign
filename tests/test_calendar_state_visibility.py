@@ -55,7 +55,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban import status as yiban_status  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402
 
 #: 日历前端口径（**刻意保留纯 JS**，Node 对拍用例按字面量抽函数——见该文件头部说明）。
 #: 迁移前这里是 legacy 的 components/sign-calendar-view.js 与 js/calendar.js。
@@ -452,7 +452,7 @@ class CalendarPageRendersTableTest(_WebAppMixin, unittest.TestCase):
     def test_payload_carries_every_legend_item_of_the_table(self):
         ctx = self._inline_context(self._calendar_html())
         self.assertEqual(ctx["legend"], yiban_status.legend_items(),
-                         "内联载荷的图例项与 yiban.status.legend_items() 分叉")
+                         "内联载荷的图例项与 yiban.core.status.legend_items() 分叉")
         for item in yiban_status.legend_items():
             with self.subTest(tone=item["tone"]):
                 self.assertTrue(item["label"], "图例条目缺中文短名")

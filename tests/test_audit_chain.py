@@ -1040,7 +1040,7 @@ class ReadAuditTest(unittest.TestCase):
         # MF-49 actor 收口（Task 2-9b）：审计写入口把 actor 统一遮罩（`yiban.masking.
         # mask_email` 口径，与展示面同源），磁盘面上不再有明文邮箱。断言相应钉
         # "遮罩后的真实会话用户名"——actor 丢了、错置成别人的形态照样红，判据不放松。
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         self.assertTrue(all(r["username"] == mask_email(SUB_ADMIN) for r in rows),
                         "actor 必须是真实会话用户名的遮罩形态")
         last = rows[-1]["detail"]

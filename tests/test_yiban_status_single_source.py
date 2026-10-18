@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 
-from yiban import status as yiban_status  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402
 
 TEST_KEY = "a" * 64
 
@@ -436,7 +436,7 @@ class StatusSingleSourceTest(unittest.TestCase):
         """
         self.assertEqual(
             yiban_status.DISPLAY[yiban_status.STATUS_GLOBAL_PAUSED]["tone"], "warn",
-            "权威口径：yiban.status 定急停语气为 warn（非正常）")
+            "权威口径：yiban.core.status 定急停语气为 warn（非正常）")
         # 缺 node 即红：静默跳过等于复现本门要钉的假绿。dev-verify 环境（WSL）与 CI
         # ubuntu 镜像均含 node，且本仓另有 node 真跑先例（test_dashboard_stats_caliber_js）。
         self.assertIsNotNone(

@@ -42,8 +42,8 @@ from unittest import mock
 import db
 
 from yiban import egress
-from yiban import status as yiban_status
 from yiban.core import clock
+from yiban.core import status as yiban_status
 from yiban.engine import (
     executor_v3,
     hrw,

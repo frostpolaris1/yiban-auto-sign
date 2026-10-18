@@ -431,8 +431,8 @@ class GlobalPauseChainTest(_ChainBase):
     """.env 急停 → run.sh 真链 → rc/状态文件/页面显示三处一致。"""
 
     def test_pause_full_chain_rc2_and_display_same_source(self):
-        from yiban import status as yiban_status
         from yiban.core import clock
+        from yiban.core import status as yiban_status
 
         run = self._run_chain()
         # ① 判码契约（只钉不改）：引擎在 main 的门处 return 2，run.sh 原样透传退出。
