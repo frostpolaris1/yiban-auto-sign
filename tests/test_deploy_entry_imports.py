@@ -1129,14 +1129,19 @@ def _t3_alias_names(text):
 
     `from yiban.core import status` 不命中：`yiban` 后是 `.core` 不是空白。
 
-    剥括号**与引号**：shell 的 `python3 -c "from yiban import status"` 与
-    `eval 'from yiban import status'` 会把收尾引号带进列表项，只剥括号时判名落空
-    ⇒ 该形态静默漏检（2026-10-18 独立审查在 T4 抓到同形，本片同批修）。
+    **取首个标识符**，不剥字符集：shell 的 `python3 -c "from yiban import status"`、
+    `eval 'from yiban import status'`、反引号 `` `from yiban import status` `` 与
+    转义引号 `\"from yiban import status\"` 都会把收尾引号／反引号带进列表项。
+    剥字符集（`strip("()\"'")`）会漏掉反引号与转义引号两种形态 ⇒ 静默漏检
+    （2026-10-18 独立审查两轮抓出：先漏引号，再漏反引号／转义）。
+    `re.search` 对 `workers`、`(workers)`、`workers"`、`workers as w` 都给 `workers`；
+    对 `*` 无匹配 ⇒ 返回空串 ⇒ 自然不命中。
     """
     out = []
     for m in _T3_FROM_YIBAN.finditer(text):
         for item in m.group(1).split(","):
-            name = item.strip().strip("()\"'").split(" as ")[0].strip()
+            token = re.search(r"[A-Za-z_]\w*", item)
+            name = token.group(0) if token else ""
             if name in _T3_SHORT:
                 out.append(name)
     return out
@@ -1377,19 +1382,21 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
                 self.assertNotIn(dont, lines,
                                  f"第 {dont} 行不该命中（同前缀他模块／别的坐标的 CLI 旗标）：{hits}")
 
-            # shell 载体：引号内一行式与 T4 同形，同批修（2026-10-18 独立审查在 T4 抓到）。
+            # shell 载体：与 T4 同形，同批修（独立审查两轮分别在 T4 与 T3 各抓出一批）。
             sh = os.path.join(tmp, "fake.sh")
             with open(sh, "w", encoding="utf-8") as f:
                 f.write('#!/bin/bash\n'
                         '# 注释里的 yiban.status 不算\n'
-                        'python3 -c "from yiban import status"\n'          # ① 双引号内一行式 ⇒ 命中
-                        "eval 'from yiban import window'\n"                # ② 单引号内 ⇒ 命中
-                        'python3 -c "from yiban.core import status"\n'     # ③ 新坐标 ⇒ 不命中
-                        'python3 -c "import yiban.masking"\n')             # ④ 引号内点号 ⇒ 命中
+                        'python3 -c "from yiban import status"\n'               # ① 双引号内一行式 ⇒ 命中
+                        "eval 'from yiban import window'\n"                     # ② 单引号内 ⇒ 命中
+                        'python3 -c "from yiban.core import status"\n'          # ③ 新坐标 ⇒ 不命中
+                        'python3 -c "import yiban.masking"\n'                   # ④ 引号内点号 ⇒ 命中
+                        'bt=`python3 -c "from yiban import status"`\n'          # ⑤ 反引号命令替换 ⇒ 命中
+                        'esc="python3 -c \\"from yiban import window\\""\n')     # ⑥ 转义引号 ⇒ 命中
             sh_lines = sorted({ln for ln, _ in t3_old_coordinate_hits(sh)})
-            for want in (3, 4, 6):
+            for want in (3, 4, 6, 7, 8):
                 self.assertIn(want, sh_lines,
-                              f"shell 第 {want} 行应命中（引号内一行式/点号形态）：{sh_lines}")
+                              f"shell 第 {want} 行应命中（引号／反引号／转义／点号形态）：{sh_lines}")
             self.assertNotIn(5, sh_lines,
                              f"shell 第 5 行 `from yiban.core import status` 是新坐标，不该命中：{sh_lines}")
 
@@ -1443,12 +1450,17 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
 # 写出坐标字面量的登记/验证文件（`tests/test_batch_b_relocation.py`、
 # `tests/test_notifier_relocation.py`，两者在 `_T4_FACE_EXEMPT`）。另有 1 个面外读者
 # `frontend/e2e/server.py`，登记在 `_T4_OUT_OF_FACE_REGISTRY`。
-# **点号字面只命中 24 文件，漏掉 24 个**只能经 `from yiban.engine import <短名>`
-# 别名到达（AGENTS §7.1"扫描口径有洞"；本门按 import 列表逐项判名，不按裸词界）。
+# **点号字面只命中 9 个读者，漏掉 39 个（81%）**——那 39 个只能经
+# `from yiban.engine import <短名>` 别名到达（AGENTS §7.1"扫描口径有洞"；
+# 本门按 import 列表逐项判名，不按裸词界）。
 #
-# 复现：import 本文件，对 `t4_own_face_files(root)` 逐个跑 `t4_old_coordinate_hits`，
-# 数非空项。**数必须带口径**——含 docstring／注释字样的文本口径是另一个数
-# （同日实测 24 文件），与本数不许混用、不许相减。
+# 复现（两个数必须**同总体**）：import 本文件，对 `t4_own_face_files(root)` 逐个跑
+# `t4_old_coordinate_hits`，数非空项得 **48**（自有面运行期读者）；再对这同一批 48 个
+# **读者**逐个查文本是否含点号字面，得 **9**；48 − 9 = **39**。
+# ⚠ 另有 **24 个文件**"文本里出现过点号字面"，但那是**全体自有面文件**的数——其中
+# **15 个不是读者**（`yiban/__init__.py`、`yiban/security.py`、七个壳本体等，只有
+# docstring／叙述提及）。**不许拿 48 去减 24**：那是跨口径相减，会得出 24 这个错数。
+# 这一条是 AGENTS §31 的现场实例——本注释的上一版就是这么错的（独立审查抓出）。
 #
 # 本门钉三条不变式：
 #   ① **自有面零命中**：面＝`yiban/**`、`web/**`（非 `web/static/**`）、`scripts/**`、
@@ -1555,14 +1567,16 @@ _T4_LOGGER_ANCHOR_FILE = "tests/test_log_masking_entry_mounts.py"
 def _t4_alias_names(text):
     """文本里 `from yiban.engine import …, <短名>, …` 命中的旧坐标列表（按项判名）。
 
-    剥括号**与引号**：shell 的 `python3 -c "from yiban.engine import workers"` 与
-    `eval 'from yiban.engine import workers'` 会把收尾引号带进列表项，只剥括号时
-    判名落空 ⇒ 该形态静默漏检（2026-10-18 独立审查 F2；T3 的同类解析器同形，同批修）。
+    **取首个标识符**，不剥字符集：shell 的 `python3 -c "from yiban.engine import workers"`、
+    `eval 'from yiban.engine import workers'`、反引号与转义引号形态都会把收尾引号／
+    反引号带进列表项。剥字符集会漏掉反引号与转义引号两种 ⇒ 静默漏检（2026-10-18
+    独立审查两轮抓出：先漏引号，再漏反引号／转义）。T3 的同类解析器同形，同批修。
     """
     out = []
     for m in _T4_FROM_ENGINE.finditer(text):
         for item in m.group(1).split(","):
-            name = item.strip().strip("()\"'").split(" as ")[0].strip()
+            token = re.search(r"[A-Za-z_]\w*", item)
+            name = token.group(0) if token else ""
             if name in _T4_SHORT_TO_OLD:
                 out.append(_T4_SHORT_TO_OLD[name])
     return out
@@ -1923,8 +1937,9 @@ class EngineCoordinateGateTest(unittest.TestCase):
             self.assertNotIn(18, lines,
                              f"第 18 行 `yiban.engine.runner_extra` 不该命中（同前缀他模块）：{hits}")
 
-            # shell 载体：引号内一行式是"按项判名"的解析器最容易漏的形态（独立审查 F2）。
-            # 只剥括号时列表项是 `workers"` ⇒ 判名落空 ⇒ 整行静默漏检。
+            # shell 载体：**按项判名**的解析器最容易漏的是"收尾不是标识符字符"的形态。
+            # 两轮独立审查各抓出一批：先漏引号（列表项成 `workers"`），再漏反引号与
+            # 转义引号（成 `hrw"`＋反引号 / `round\`）。故实现改成"取首个标识符"。
             sh = os.path.join(tmp, "fake.sh")
             with open(sh, "w", encoding="utf-8") as f:
                 f.write('#!/bin/bash\n'
@@ -1933,11 +1948,13 @@ class EngineCoordinateGateTest(unittest.TestCase):
                         "eval 'from yiban.engine import workers'\n"                 # ② 单引号内 ⇒ 命中
                         'python3 -c "import yiban.engine.probe"\n'                  # ③ 引号内点号 ⇒ 命中
                         'python3 -c "from yiban.app import runner"\n'               # ④ 新坐标 ⇒ 不命中
-                        'python3 -c "from yiban.engine import workers;print(1)"\n')  # ⑤ 带分号 ⇒ 命中
+                        'python3 -c "from yiban.engine import workers;print(1)"\n'  # ⑤ 带分号 ⇒ 命中
+                        'bt=`python3 -c "from yiban.engine import hrw"`\n'           # ⑥ 反引号命令替换 ⇒ 命中
+                        'esc="python3 -c \\"from yiban.engine import round\\""\n')   # ⑦ 转义引号 ⇒ 命中
             sh_lines = sorted({ln for ln, _w, _c in t4_old_coordinate_hits(sh)})
-            for want in (3, 4, 5, 7):
+            for want in (3, 4, 5, 7, 8, 9):
                 self.assertIn(want, sh_lines,
-                              f"shell 第 {want} 行应命中（引号内一行式/点号/分号形态）：{sh_lines}")
+                              f"shell 第 {want} 行应命中（引号／反引号／转义／点号／分号形态）：{sh_lines}")
             self.assertNotIn(6, sh_lines,
                              f"shell 第 6 行 `from yiban.app import runner` 是新坐标，不该命中：{sh_lines}")
 
