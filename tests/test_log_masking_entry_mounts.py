@@ -142,7 +142,7 @@ class ContainerEntryMountTest(_MountHarness):
             self.sched._setup_logging()  # 幂等：重复装配不得叠挂
             logging.getLogger("yiban.store.session_cache").info(
                 COMMA_LINE, PHONE_RAW)
-            logging.getLogger("yiban.app.round").info(BRACKET_LINE, PHONE_RAW)
+            logging.getLogger("yiban.engine.round").info(BRACKET_LINE, PHONE_RAW)
             # 调度器自身留痕也在防线内（logger 名即"挂了的链条"上的名字）
             logging.getLogger("scheduler").info(BRACKET_LINE, PHONE_RAW)
             handler.flush()
@@ -195,7 +195,7 @@ class CliEntryMountTest(_MountHarness):
             cli_support._setup_cli_logging()  # 幂等标记：重复调用不叠挂
             self.assertEqual(len(self._new_root_handlers()), 1)
             logging.getLogger("yiban.store.session_cache").info(COMMA_LINE, PHONE_RAW)
-            logging.getLogger("yiban.app.round").info(BRACKET_LINE, PHONE_RAW)
+            logging.getLogger("yiban.engine.round").info(BRACKET_LINE, PHONE_RAW)
             self.root.handlers[0].flush()
             day = clock.now().strftime("%Y-%m-%d")
             with open(os.path.join(self.tmp, f"sign-{day}.log"), encoding="utf-8") as f:
@@ -287,7 +287,7 @@ class WebEntryMountTest(_MountHarness):
         self.assertIsInstance(mounted[0].formatter, MaskingFormatter,
                               "web 入口 handler 上必须是 MaskingFormatter")
         logging.getLogger("yiban.store.session_cache").info(COMMA_LINE, PHONE_RAW)
-        logging.getLogger("yiban.app.round").info(BRACKET_LINE, PHONE_RAW)
+        logging.getLogger("yiban.engine.round").info(BRACKET_LINE, PHONE_RAW)
         mounted[0].flush()
         day = clock.now().strftime("%Y-%m-%d")
         with open(os.path.join(self.tmp, f"sign-{day}.log"), encoding="utf-8") as f:
