@@ -11,7 +11,7 @@
 契约本体住 `.importlinter`（仓库根）。本脚本不复制契约内容。本脚本只做三件事：
 读配置、跑契约、拿当前违规集与基线对账。
 
-**观测模式（P0，docs/refactor/128 三）**
+**观测模式（P0）**
 本批不改结构，只钉"不再变坏"。当前违规落进基线文件。基线只许缩小。
 新增违规即红。存量收紧留给后续批次（P2c 出口＝基线清零或显式豁免清单）。
 
@@ -55,7 +55,7 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE_HEADER = (
-    "# import-linter 违规基线（P0 观测模式，docs/refactor/128 §三）\n"
+    "# import-linter 违规基线（P0 观测模式）\n"
     "# 一行一条：契约 id <TAB> 导入者模块 <TAB> 被导入模块\n"
     "# 契约 id 取配置段名 [importlinter:contract:<id>]，不用人读的 name（改文案不能让基线失效）。\n"
     "# 语义：基线之外的违规即红。基线只许缩小（ratchet）。\n"

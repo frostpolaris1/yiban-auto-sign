@@ -15,7 +15,7 @@
   出自 Netflix *Rethinking Concurrency Control for Microservices*（Mahadut 等），同项
   溯源见 `token_bucket.py`。
 - Claim-at-Dispatch（领取即执行）：调用方只在通道空闲时领**一行**、领到即执行。这是
-  本模块的领取形态（工单 `l1rx`；`docs/refactor/130` §3.2）。批量预取与进程内
+  本模块的领取形态（工单 `l1rx`）。批量预取与进程内
   `asyncio.PriorityQueue` 已退场——"先领一大批再慢慢等"会让行的持有时间无上界，正是
   任务级租约族复杂度的根源。任务排序由台账 `ORDER BY priority, run_at` 承担。
 - Elbow（肘界谓词）：`yiban/core/elbow.py`。领取谓词可带肘界 `run_at <= now - elbow`，
@@ -95,10 +95,10 @@ RETRY_CAP_SEC = 600
 REFILL_SEC = 5
 #: 兜底常驻的**肘界**（秒）：只领 `run_at` 已过期超过该时长的行（`yiban/core/elbow.py`）。
 #: 兜底因此不与计划轮抢新到点的活——"谁该做"是**行的函数**而非进程身份的函数，10-07 型
-#: 启动竞态（兜底抢跑吸收整轮工作量）从机制上消失（工单 `l1rx`；`docs/refactor/130` §3.3）。
+#: 启动竞态（兜底抢跑吸收整轮工作量）从机制上消失（工单 `l1rx`）。
 #:
 #: **取值＝估算，不是实测**（工单 `l1rx` 必修 R10）：设计口径是"≈2× 单次尝试时长 P99"，
-#: 而 P99 **未测**（`docs/refactor/133` §六同款登记），60 秒是拍的。方向安全：偏大只让兜底
+#: 而 P99 **未测**，60 秒是拍的。方向安全：偏大只让兜底
 #: 晚一点捡漏，偏小才可能碰到计划轮要签的行。**残余（部署后复算重定）**：10-17 部署后
 #: `run_events` 在真实轮次上全量可用，用 `scripts/elbow_shadow.py` 对每天的兜底领取算
 #: "提前量"分布重定此值。`elbow` 谓词本体只管算术，取值是应用层的职责。
@@ -787,7 +787,7 @@ async def _lane(ctx, lane_id):
     与批量预取版的差别：通道不再从进程内 `PriorityQueue` 取"早已领回的条目"，而是**自己
     在空闲时**向台账领一行。故一行的持有时间 = 一次尝试的时间（有界），不存在"领回来在
     本地等通道/等令牌/等间隔/等计划时刻"的无上界等待——那正是租约族复杂度的根源
-    （`docs/refactor/130` §2.3 S1；工单 `l1rx`）。领取、执行、收尾串成一条：
+    （工单 `l1rx`）。领取、执行、收尾串成一条：
     `claim → _attempt`，没有中间态。
 
     读不通（`None` 哨兵）时**不判收干**，原地等一拍让协调循环的有界闸门计数（ba-p01-01）。
@@ -822,8 +822,8 @@ async def _lane(ctx, lane_id):
 def _claim_one(ctx):
     """领取**一行**到期任务（claim-at-dispatch）→ `[dict]` / `[]`（无到期行）/ `None`（读不通）。
 
-    执行体唯一的领取点：通道空闲才调它、领到即执行（`docs/refactor/130` §3.2；工单
-    `l1rx`）。`elbow_sec` 由角色决定（定时/手动/补签 0；兜底 `FALLBACK_ELBOW_SEC`），
+    执行体唯一的领取点：通道空闲才调它、领到即执行（工单 `l1rx`）。
+    `elbow_sec` 由角色决定（定时/手动/补签 0；兜底 `FALLBACK_ELBOW_SEC`），
     谓词**下推**到 `queue_store.claim_batch`（SQL 里 `run_at <= now - elbow`）。
 
     领取后**再用 `elbow.may_claim` 复核**一遍（谓词语义的唯一事实源在 `yiban/core/elbow.py`，
@@ -896,7 +896,7 @@ async def _dispatch_keeper(ctx):
       `ctx.claiming`：正被某通道执行的行在库里已是 `claimed`、不在 `pending_count` 里，
       不数进来会在通道还在跑时提前收干，把刚重排回 `pending` 的重试任务留在库里没人领。
       为什么必须带 `pending_count`：`claim_batch` 在"下次到点还没到"时本来就返回空，只看
-      空返回会把还有待办的一轮误判成收干（`docs/refactor/130` §3.2 的收干判据）。
+      空返回会把还有待办的一轮误判成收干（本模块的收干判据）。
     - **心跳刷新**：一轮可能十几分钟，只在起跑/收尾写盘会让长轮次被执行体页判成 `stale`。
       心跳**只服务 UI**（工单 `l1rx`：退出一切正确性判定），故此处写盘是展示动作。
     - **会话内回炉**（只有 `requeue_during_run` 的兜底腿）：每 `RECOVER_SEC` 把本轮刚弃权的
@@ -1298,7 +1298,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     补签 = 0（到期即可领）；兜底常驻 = `FALLBACK_ELBOW_SEC`，只领"已过期超过肘界"的行
     ⇒ 它不与计划轮抢新到点的活，"谁该做"是**行的函数**（工单 `l1rx`）。它**取代了**原先的
     让位探针 `yield_probe`：轮内止损不再靠"每领取前问一次锁状态"，而是靠领取谓词本身
-    （`docs/refactor/130` §3.3；10-07 型启动竞态从机制上消失）。
+    （10-07 型启动竞态从机制上消失）。
 
     `unreached`：调用方传入的 **out-param dict**，本函数在轮末往里填
     `{phone: 判因}`（`UNREACHED_PEER` / `UNREACHED_UNCLAIMED`，见 `_mark_unreached`）——

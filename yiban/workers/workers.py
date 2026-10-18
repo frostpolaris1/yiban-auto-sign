@@ -527,7 +527,7 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
         #   第二次机会只留给一次性补签轮与手动。
         # - `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`：**肘界谓词就是让位机制**
-        #   （工单 `l1rx` R4；`docs/refactor/130` §3.3）。兜底只领"已过期超过肘界"的行，
+        #   （工单 `l1rx` R4）。兜底只领"已过期超过肘界"的行，
         #   故它**结构上**不可能抢走计划轮此刻该领的新鲜工作——那个 10-07 型启动竞态
         #   （兜底赢下亚秒窗口后吸收整轮 84/100）从机制上消失。原先的两道锁探测
         #   （轮内 `yield_probe` 与循环顶 `_round_in_flight`）**都已删**：它们是轮内止损，

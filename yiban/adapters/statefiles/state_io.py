@@ -170,7 +170,7 @@ def _sign_state_path():
 # `_write_private_json` 原子写通道，跨进程读者（网页日历/日志页、宿主 run.sh、容器调度器、
 # v20 迁移、ledger_check、backup.sh）一律不必改。
 #
-# **崩溃语义与可见性（本批必须交代清楚，见 docs/refactor/131 行为补丁账）**：
+# **崩溃语义与可见性（本批必须交代清楚）**：
 # - 落盘触发＝三条任一：① 待写条数 ≥ `_FLUSH_MAX`；② 距上次落盘 ≥ `_FLUSH_SEC`；
 #   ③ 批量上下文退出（轮末）或 `flush_sign_state()` 显式调用。
 # - `_FLUSH_SEC` 默认 10s ＝**跨进程读者最快的轮询周期**（`/api/accounts`、`/api/logs`、

@@ -10,7 +10,7 @@
 > 批 6c3-A 说明：旧 `FontStackClosureTest`（字体栈令牌正确性 / 无旁路 / Adminator
 > 收口对账，共 3 条）为「精确源码 grep」型静态守卫、无行为 owner，按对表裁撤。
 
-> 保真度车道 2026-10-16 订正（`docs/refactor/140` §六-13）：本组原先在 `setUpClass`
+> 保真度车道 2026-10-16 订正：本组原先在 `setUpClass`
 > 里 `raise SkipTest`，而 fonttools 在任何一轨 CI 上都不存在（本地权威 root 轨实测
 > `SKIPPED [3]`）⇒ **这扇门在所有环境上都不执行**，而它挡的是"位置参数 outdir 被整目录
 > `rmtree`"这类删除事故（AGENTS.md §十三.30：跳过 ≠ 绿；整套没跑却报绿等于门不存在）。

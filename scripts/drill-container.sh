@@ -3,8 +3,7 @@
 # drill-container.sh —— 47 号测试机「容器形态 e2e 演练」一键脚本
 # ============================================================
 # 用途：
-#   把 docs/dev/production-isolation-rehearsal-plan-20260925.md §5 的容器形态
-#   操作单（C0~C6）从 1.5 小时手工操作压成一条命令：造数 → 构建 → 起内部网
+#   把容器形态操作单（C0~C6）从 1.5 小时手工操作压成一条命令：造数 → 构建 → 起内部网
 #   容器 → 起 mock 上游 → 整轮真签到 → 逐条自动断言 → 清理，全程证据落 evidence/。
 #   验证的链路是**容器形态的真实签到路径**：
 #     supervisord → scripts/container_scheduler.py → 子进程 scripts/signin.py
@@ -116,7 +115,7 @@ STEP="init"
 CLEANED=0
 EV=""
 
-usage() { sed -n '2,75p' "$SELF"; }
+usage() { sed -n '2,74p' "$SELF"; }
 
 die()  { printf '\n[FAIL] 步骤「%s」失败：%s\n' "$STEP" "$*" >&2; exit 1; }
 pre()  { printf '\n[FAIL] 前提不满足：%s\n' "$*" >&2; exit 2; }
