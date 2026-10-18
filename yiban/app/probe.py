@@ -207,9 +207,10 @@ def _apply_egress_proxy(client):
     """把本进程身份对应的出口套到客户端 session 上（读侧出口管控，M35）。
 
     **为什么这里要再套一次**：`YibanClient.__init__` 只读 `os.environ["YIBAN_PROXY"]`。
-    注册/添加账号的在线校验跑在 **web 进程**里，而该进程的环境通常没有这个键（出口是
-    给执行体子进程注入的），于是这一次"服务器代用户向易班发起真实登录"就**直连出网**
-    ——恰恰是风控暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径，却绕过了管控。
+    注册/添加账号的在线校验与设备登记补全跑在 **web 进程**里，而该进程的环境通常没有
+    这个键（出口是给执行体子进程注入的），于是这一次"服务器代用户向易班发起真实登录"
+    就**直连出网**——恰恰是风控暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径，却绕过
+    了管控。
 
     **出口怎么取**：按**本进程执行体身份**解析（`_resolve_egress`）。web 进程无
     `YIBAN_EXECUTOR_ID` ⇒ 单执行体角色 ⇒ 读 `YIBAN_PROXY`（与改造前逐字一致）；探针在
@@ -240,9 +241,9 @@ def verify_account(account):
     供注册时预处理验证（web 端）与探针模式（--probe）复用。
     返回 (ok, message)：ok=False 表示存在无法自愈的问题；message 已脱敏。
 
-    出口：登录前先按 `_apply_egress_proxy` 套上本进程身份对应的出口——本函数是**唯一**
-    一条在 web 进程里代用户向易班发起的真实登录（探针轮则由执行体注入的出口兜着），
-    两处必须同源，见该函数说明（M35）。
+    出口：登录前先按 `_apply_egress_proxy` 套上本进程身份对应的出口——本函数与
+    `refresh_registered_device` 是 web 进程里代用户向易班发起真实登录的**两条**出口
+    （探针轮则由执行体注入的出口兜着），三处必须同源，见该函数说明（M35）。
     """
     phone = account.phone
     if not account_still_signable(account):
@@ -264,6 +265,97 @@ def verify_account(account):
         safe_err = _sanitize_text(_mask_url_userinfo(_sanitize_url(str(e))))
         logger.warning(f"[{phone}] 健康检查失败: {safe_err}", exc_info=False)
         return False, safe_err
+
+
+def refresh_registered_device(account):
+    """登录一次并**读回**服务端登记的设备（读回即落库）。返回结果 dict。
+
+    用途：把"服务端已登记设备"按需补进账号行。签到轮的惰性补全
+    （`YibanClient._device_identity`）只在**该账号真的开签**时顺带发生；账号在签到前
+    被打开表单、或长期签不上时，设备字段可能一直是空值。本函数给管理端与归属人本人
+    一个显式触发点。
+
+    代价（2026-10-13 实测结论：只读端点也要带会话，会话由登录链铸出）：
+    本函数**会再铸一次会话**（与 `verify_account` 同一条真实登录出口、同一套出口代理）。
+    这不是新增语义——"为该账号再铸一次会话"本就是既有允许动作。
+
+    失败语义：读不到一律**不改库**。`_persist_registered_device` 只在识别码与机型
+    **成对**时才写，故库里既有值不会被空值冲掉。
+
+    返回 dict（键固定，调用方据此回文案与状态码）：
+      ok          读到**并已落库**完整设备对时为 True
+      reason      未成功时的分类：account_inactive / login_failed / session_expired /
+                  read_failed / blocked / not_registered / partial / persist_failed
+      message     已脱敏的用户可见说明（成功时为空串）
+      phone_model 读到的机型（读到就给）
+      authorized  平台 `authorize` 位（读到就给）
+      persisted   是否已写进账号行
+    **绝不回识别码**：连"有没有读到"也不回布尔——`reason` 已区分
+    `partial` / `persist_failed`（读到过但没落库）与 `not_registered` / `read_failed`。
+    """
+    phone = account.phone
+    if not account_still_signable(account):
+        # 与 verify_account 同口径：完整登录（与签到同一风控暴露面），账号已停用则不发起
+        return _refresh_result(False, "account_inactive", "账号已被删除或停用")
+
+    client = None
+    try:
+        client = YibanClient(account)
+        _apply_egress_proxy(client)
+        if client.use_killyiban:
+            client.login_killyiban()
+        else:
+            client.login()
+        state = client._read_registered_device()
+        persisted = bool(getattr(client, "_registered_device_persisted", False))
+        blocked = bool(getattr(client, "_registered_device_blocked", False))
+        problem = getattr(client, "_registered_device_problem", "") or ""
+    except Exception as e:
+        # 同 attempt_signin——异常消息统一过 _sanitize_url + _mask_url_userinfo 打码
+        safe_err = _sanitize_text(_mask_url_userinfo(_sanitize_url(str(e))))
+        logger.warning(f"[{phone}] 设备登记补全失败: {safe_err}", exc_info=False)
+        # 会话失效（上游 code=999）：走既有"清缓存后真重登"的第一步——清缓存；
+        # 重登由下一次触发完成，本函数不自动重试（避免一次触发两次真实登录）
+        if "会话失效" in safe_err and client is not None:
+            with contextlib.suppress(Exception):
+                client._clear_session_cache()
+            return _refresh_result(False, "session_expired",
+                                   f"未取到设备登记：{safe_err}")
+        return _refresh_result(False, "login_failed", f"未取到设备登记：{safe_err}")
+    finally:
+        if client is not None:
+            client._wipe_credentials()
+
+    if state is None:
+        if blocked:
+            return _refresh_result(False, "blocked", security.WAF_BLOCKED_MESSAGE)
+        return _refresh_result(False, "read_failed",
+                               f"未取到设备登记：{problem or '读取失败'}")
+    if not state.code:
+        return _refresh_result(False, "not_registered", "未取到设备登记：该账号未登记设备")
+    if not state.phone_model:
+        return _refresh_result(
+            False, "partial",
+            "未取到设备登记：服务端只登记了识别码、缺少机型，未写入账号")
+    if not persisted:
+        return _refresh_result(False, "persist_failed",
+                               "已读取设备登记，但写入账号失败，请稍后重试")
+    return {
+        "ok": True, "reason": "", "message": "",
+        "phone_model": state.phone_model,
+        "authorized": bool(state.authorized), "persisted": True,
+    }
+
+
+def _refresh_result(ok, reason, message):
+    """`refresh_registered_device` 的失败结果骨架（键固定，成功路径另加设备字段）。
+
+    失败骨架**不含**识别码字段（连"有没有读到"也不回）：`reason` 已区分
+    `partial` / `persist_failed`（读到过但没落库）与 `not_registered` / `read_failed`
+    （没读到），多一个布尔只是同一事实的第二份定义。
+    """
+    return {"ok": ok, "reason": reason, "message": message,
+            "phone_model": "", "authorized": False, "persisted": False}
 
 
 def _probe_state_path():
