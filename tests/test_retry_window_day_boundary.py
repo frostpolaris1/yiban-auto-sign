@@ -26,7 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from yiban import window
+from yiban.core import window
 from yiban.engine import executor_v3
 
 

@@ -734,6 +734,9 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
 #   `tests/test_import_linter_gate.py`——`yiban.clock` 是它的**禁字面量**：该用例断言
 #     import-linter 契约的 `forbidden_modules` **不许**列出迁移期坐标（列了契约会空转
 #     退 2）。把这条字面量改成新坐标会**反转语义**（新坐标是永久坐标，契约列它是合法的）。
+#   `tests/test_provenance_guard.py`——`yiban.clock` 是它的**禁前缀**（`145-T3` 审查 F2
+#     把它补回前缀表，与 `yiban.core.clock` 并列）：壳 `yiban/clock.py` 仍在，只留新坐标
+#     会让该常驻守卫漏拦旧路径。删壳后是否收窄归 `145-E`。
 #   `tests/test_deploy_entry_imports.py`——本文件，`_T2_OLD_MODULE` 是禁字面量，
 #     夹具字符串用于自证本门有牙。
 _T2_OLD_MODULE = "yiban.clock"
@@ -747,6 +750,7 @@ _T2_SKIP_REL_PREFIX = ("web/static/",)
 _T2_FACE_EXEMPT = frozenset((
     "tests/test_batch_b_relocation.py",
     "tests/test_import_linter_gate.py",
+    "tests/test_provenance_guard.py",
     "tests/test_deploy_entry_imports.py",
 ))
 #: 面外（`frontend/**`）仍读旧坐标的**待销账登记**。键＝(相对路径, 名字)，值＝(次数, 说明)。
@@ -961,10 +965,19 @@ class ClockCoordinateGateTest(unittest.TestCase):
             + "\n".join(bad))
 
     def test_exempt_files_still_exist(self):
-        """豁免清单不得腐烂：登记的文件必须还在（否则豁免面静默变大）。"""
+        """豁免清单不得腐烂：登记的文件必须还在，且**必须仍命中本门**。
+
+        `145-T3` 审查 F2 把 `tests/test_provenance_guard.py` 加进本清单（该文件补回
+        `yiban.clock` 禁前缀）。加清单这一动作本身需要守卫：豁免一旦失去理由（文件里
+        已无 `yiban.clock`），留着它会静默放开该文件的扫描面。故同时钉"仍命中"。
+        """
         for rel in sorted(_T2_FACE_EXEMPT):
-            self.assertTrue(os.path.isfile(os.path.join(BASE, rel)),
+            path = os.path.join(BASE, rel)
+            self.assertTrue(os.path.isfile(path),
                             f"豁免清单登记了不存在的文件 {rel}")
+            self.assertTrue(
+                t2_old_coordinate_hits(path),
+                f"豁免文件 {rel} 已不再命中本门——豁免失去理由，须同批删除该豁免")
 
     def test_out_of_face_registry_reconciles(self):
         """面外（`frontend/**`）的残留与登记表逐条对账，两侧都不许静默。"""
@@ -1035,6 +1048,366 @@ class ClockCoordinateGateTest(unittest.TestCase):
                             "未登记的新读者未判红：本门没有牙")
             self.assertTrue(t2_out_of_face_problems({}, reg),
                             "登记已消失（用户那边改掉了）未判红：登记会变成僵尸")
+
+
+# ---------------------------------------------------------------------------
+# 拆墙/壳退役 T3：`yiban.status` / `yiban.window` / `yiban.masking` 的读者迁到 `yiban.core.*`
+# ---------------------------------------------------------------------------
+# 来历（145-B `T3` 片）：`yiban/{status,window,masking}.py` 都是 `sys.modules` 替换型转发壳，
+# 实现在 `yiban/core/{status,window,masking}.py`（批 B）。三坐标各自承载**不得外委**的语义面
+# （AGENTS §十二）：status ＝ 签到状态语义（状态词汇表、12/13 退出码契约）；window ＝ 容量与
+# 调度（窗口、块容量、edge clamp）；masking ＝ 隐私与脱敏（掩码口径）。**本片只改坐标，不动
+# 任何语义**——门只钉"坐标不得是旧的那个"。
+#
+# 口径（2026-10-18 在 `94675773` 上现量）：含 import 路径或运行期代码串的自有面文件 55 个
+# （tests 40 ＋ web 12 ＋ scripts 2 ＋ docker 1）。注释与 docstring 里的旧坐标字样不计入
+# （与 T2 同口径：历史叙述不误红）。
+#
+# 本门钉三条不变式：
+#   ① **自有面零命中**：面＝`yiban/**`、`web/**`（非 `web/static/**`）、`scripts/**`、
+#      `docker/**`、`run.sh`、`tests/**`。三个旧坐标不得再以 import 路径（四种写法）、
+#      别名形态 `from yiban import status`、属性访问 `yiban.status.X`、或非 docstring
+#      字符串常量出现。**字符串常量这一条覆盖串内坐标**：本片实测
+#      `tests/test_result_vocab_home.py` 的 `importlib.import_module("yiban.status")`
+#      正是此形态——壳仍在时它**能跑**，壳删后 `ModuleNotFoundError`；只按字面量扫
+#      import 的判据抓不到它（T2 首版判据漏检的正是同族形态）。⇒ 门的覆盖面必须等于
+#      改动面（AGENTS §十三 形状③）。
+#   ② **打桩面单列**：`mock.patch("<旧坐标>.…")` 在转发壳下**能成功但不控被测路径**
+#      （静默失效）。本片实测三坐标的字符串打桩点 **0 处**，本条是防复发守卫。
+#   ③ **日志出口名不算坐标**：`yiban/core/window.py` 的 `logging.getLogger("yiban.window")`
+#      与 `tests/test_window_edge_single_source.py` 的 `assertLogs("yiban.window")` 是
+#      **同一枚日志通道名**，与模块坐标同名纯属巧合。改名会改动日志可见面（运维按名
+#      grep 告警），属语义变更 ⇒ 本片不得改，本门对它豁免。
+#
+# 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
+#   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
+#   `tests/test_import_linter_gate.py`——三坐标是它的**禁字面量**：该用例断言
+#     import-linter 契约的 `forbidden_modules` **不许**列出迁移期坐标。改成新坐标会
+#     **反转语义**（新坐标是永久坐标，契约列它是合法的）。
+#   `tests/test_provenance_guard.py`——`yiban.masking` 是它的**禁前缀**：该用例断言
+#     协议层不得 import 业务/安全层。**旧路径与新征程必须并列**——壳 `yiban/masking.py`
+#     仍是合法 import 路径，只留新坐标会让这道常驻守卫漏掉旧路径（审查 F2）。
+#     删壳后是否收窄，归 `145-E`。
+#   `tests/test_deploy_entry_imports.py`——本文件，`_T3_OLD_MODULES` 是禁字面量，
+#     夹具字符串用于自证本门有牙。
+# 豁免不得变成万能挡箭牌：`test_exempt_files_still_exist` 另钉"每个豁免文件**必须仍
+# 命中本门**"（豁免一旦失去理由即红，防"顺手把文件加进豁免面来让门变绿"）。
+_T3_OLD_MODULES = ("yiban.status", "yiban.window", "yiban.masking")
+#: 日志出口名（不是坐标）：见不变式③。
+_T3_LOGGER_NAME = "yiban.window"
+#: 以日志通道名为首个实参的调用名。
+_T3_LOGGER_CALLS = frozenset(("getLogger", "assertLogs", "assertNoLogs"))
+#: 自有面（不含面外 `frontend/**`，2026-10-18 起归用户独立完成）。
+_T3_OWN_FACE_PY_DIRS = ("yiban", "web", "scripts", "docker", "tests")
+_T3_OWN_FACE_SHELL = ("run.sh",)
+_T3_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist", "build"))
+#: 自有面里不归本批改的子树（`web/static` 是前端产物）。
+_T3_SKIP_REL_PREFIX = ("web/static/",)
+_T3_FACE_EXEMPT = frozenset((
+    "tests/test_batch_b_relocation.py",
+    "tests/test_import_linter_gate.py",
+    "tests/test_provenance_guard.py",
+    "tests/test_deploy_entry_imports.py",
+))
+_T3_SHORT = tuple(m.split(".")[-1] for m in _T3_OLD_MODULES)
+
+#: 旧坐标的字面量判据：模块名后不得紧跟标识符字符（`yiban.status` 命中；
+#: `yiban.status_ledger` 这类同前缀他模块不命中）。
+_T3_OLD_LITERALS = {m: re.compile(r"(?<![\w.])" + re.escape(m) + r"(?![\w])")
+                    for m in _T3_OLD_MODULES}
+#: 别名形态**在文本里**的判据：`from yiban import …, status, …`。为什么单列：字面量判据
+#: 要求串里出现 `yiban.status` 这个点号形态，抓不到 `"from yiban import status;…"`
+#: 这类运行期代码串（壳删后 `ModuleNotFoundError`）。
+#: **只取 import 列表并按项判名**，不用 `\bstatus\b` 这类裸词界——实测
+#: `scripts/deploy_gate.sh` 的 `cli.main(['egress','--status','--json'])` 里 `--status`
+#: 会被裸词界误判成旧坐标（首版判据的真假红，本片接手时抓到）。列表终止于 `;`、`#` 或换行。
+_T3_FROM_YIBAN = re.compile(r"\bfrom\s+yiban\s+import\s+([^\n#;]*)")
+
+
+def _t3_alias_names(text):
+    """文本里 `from yiban import …, <短名>, …` 命中的短名列表（按项判名，不看裸词）。
+
+    `from yiban.core import status` 不命中：`yiban` 后是 `.core` 不是空白。
+    """
+    out = []
+    for m in _T3_FROM_YIBAN.finditer(text):
+        for item in m.group(1).split(","):
+            name = item.strip().strip("()").split(" as ")[0].strip()
+            if name in _T3_SHORT:
+                out.append(name)
+    return out
+
+
+def _t3_logger_name_ids(tree):
+    """作为日志通道名使用的字符串常量节点 id 集合（`getLogger("yiban.window")` 等）。
+
+    只豁免"确为日志通道名"的那一个字面量：`assertLogs("yiban.window")` 是日志名，
+    而 `mock.patch("yiban.window.retry_hm")` 是坐标（字符串不同，不受影响）。
+    """
+    ids = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if fname not in _T3_LOGGER_CALLS:
+            continue
+        for a in node.args:
+            if isinstance(a, ast.Constant) and a.value == _T3_LOGGER_NAME:
+                ids.add(id(a))
+    return ids
+
+
+def _t3_import_hits(tree):
+    """该文件里以旧坐标作 import 路径的位置：`(行号, 说明)` 列表。
+
+    写法：`import yiban.status`、`from yiban.status import X`、
+    `from yiban import status`（别名形态，是主流形态）、`from yiban import *`、
+    `import yiban` 或 `import yiban as Y` 后按属性访问 `yiban.status.X` / `Y.status.X`。
+
+    **根名集合**：属性访问判据认 `yiban` 以及 `import yiban as Y` 绑定的每个别名。
+    为什么不能只认字面 `yiban`：`import yiban as Y` 后写 `Y.window.X` 是同一处旧坐标
+    读者，只比 `ast.Name.id == "yiban"` 会漏掉它（审查实测的逃逸形态之一）。
+    `from yiban import *` 同理：`a.name == "*"` 也是"经旧坐标取子模块"的形态。
+    """
+    roots = {"yiban"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "yiban":
+                    roots.add(a.asname or "yiban")
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                for m in _T3_OLD_MODULES:
+                    if a.name == m or a.name.startswith(m + "."):
+                        hits.append((node.lineno, "import 旧坐标 " + a.name))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if node.level:
+                continue
+            for m in _T3_OLD_MODULES:
+                if mod == m or mod.startswith(m + "."):
+                    hits.append((node.lineno, "from 旧坐标 import " + mod))
+            if mod == "yiban":
+                for a in node.names:
+                    if a.name in _T3_SHORT or a.name == "*":
+                        hits.append((node.lineno, "from yiban import " + a.name + "（旧坐标别名）"))
+        elif isinstance(node, ast.Attribute) and node.attr in _T3_SHORT:
+            root = node.value
+            if isinstance(root, ast.Name) and root.id in roots:
+                hits.append((node.lineno, "属性访问 " + root.id + "." + node.attr + "（旧坐标）"))
+    return hits
+
+
+def t3_old_coordinate_hits(path):
+    """返回该文件里引用三坐标的位置：`(行号, 说明)` 列表。
+
+    Python：① 旧坐标 import（四种写法，含 `yiban.status.X` 属性访问）；
+    ② 非 docstring 字符串常量含旧坐标（覆盖 `importlib.import_module("yiban.status")`
+    这类串内坐标、打桩目标、`-c` 代码串）；③ 字符串里的别名形态
+    `"from yiban import status…"`（运行期代码串）。
+    日志通道名 `yiban.window` 在 `getLogger`/`assertLogs`/`assertNoLogs` 实参位豁免。
+    Shell：**非注释行**含旧坐标（字面量或别名形态）。
+    注释与 docstring 不算（任务口径：历史叙述不误红）。
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if path.endswith((".sh", ".bash")) or path.endswith("Dockerfile"):
+        hits = []
+        for i, line in enumerate(text.splitlines(), 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if any(_T3_OLD_LITERALS[m].search(s) for m in _T3_OLD_MODULES):
+                hits.append((i, "shell/文本非注释行含旧坐标"))
+            elif _t3_alias_names(s):
+                hits.append((i, "shell/文本非注释行含 from yiban import <旧短名>"))
+        return hits
+    tree = ast.parse(text)
+    docs = _docstring_const_ids(tree)
+    logger_ids = _t3_logger_name_ids(tree)
+    hits = list(_t3_import_hits(tree))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docs and id(node) not in logger_ids):
+            continue
+        if any(_T3_OLD_LITERALS[m].search(node.value) for m in _T3_OLD_MODULES):
+            hits.append((node.lineno, "非 docstring 字符串常量 " + node.value[:60]))
+        elif _t3_alias_names(node.value):
+            hits.append((node.lineno, "非 docstring 字符串含别名形态 " + node.value[:60]))
+    return sorted(set(hits))
+
+
+def t3_own_face_files(root):
+    """自有面的扫描文件清单（.py ＋ .sh ＋ Dockerfile*），按 §7.2 的范围。"""
+    out = []
+    for d in _T3_OWN_FACE_PY_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x not in _T3_SKIP_DIRS]
+            for name in sorted(files):
+                if not name.endswith((".py", ".sh", ".bash")) and not name.startswith("Dockerfile"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace("\\", "/")
+                if rel.startswith(_T3_SKIP_REL_PREFIX):
+                    continue
+                out.append(os.path.join(dirpath, name))
+    for name in _T3_OWN_FACE_SHELL:
+        path = os.path.join(root, name)
+        if os.path.exists(path):
+            out.append(path)
+    return out
+
+
+class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
+    """T3：三坐标的自有面读者清零；打桩面零命中；日志通道名不误红。"""
+
+    def test_own_face_has_no_old_coordinate(self):
+        files = t3_own_face_files(BASE)
+        self.assertGreaterEqual(
+            len(files), 400,
+            f"自有面扫描面过小（{len(files)} 个文件）——扫描根写错或树被移走（扫空不得当绿）")
+        bad = []
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if rel in _T3_FACE_EXEMPT:
+                continue
+            for line, why in t3_old_coordinate_hits(path):
+                bad.append(f"{rel}:{line}: {why}")
+        self.assertEqual(
+            bad, [],
+            "自有面仍以旧坐标 `yiban.{status,window,masking}` 作 import 路径、"
+            "属性访问或字符串目标（壳退役后 import 会断、串内坐标会 `ModuleNotFoundError`）：\n"
+            + "\n".join(bad))
+
+    def test_no_patch_target_uses_old_coordinate(self):
+        """打桩面单列一条：`mock.patch("<旧坐标>.…")` 是静默失效的典型形态。"""
+        bad = []
+        files = t3_own_face_files(BASE)
+        self.assertGreaterEqual(len(files), 400, f"扫描面过小（{len(files)}）")
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if not rel.endswith(".py") or rel in _T3_FACE_EXEMPT:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            tree = ast.parse(text)
+            docs = _docstring_const_ids(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if fname not in ("patch", "object"):
+                    continue
+                for a in node.args:
+                    if (isinstance(a, ast.Constant) and isinstance(a.value, str)
+                            and id(a) not in docs
+                            and any(_T3_OLD_LITERALS[m].search(a.value)
+                                    for m in _T3_OLD_MODULES)):
+                        bad.append(f"{rel}:{node.lineno}: 打桩目标 {a.value}")
+        self.assertEqual(
+            bad, [],
+            "打桩目标仍指旧坐标 `yiban.{status,window,masking}`——壳退役后会静默失效"
+            "（打桩成功但不控被测路径）：\n" + "\n".join(bad))
+
+    def test_logger_name_exemption_is_anchored(self):
+        """豁免锚点：`yiban.window` 确实是实现里的日志通道名（否则豁免会静默腐烂）。"""
+        with open(os.path.join(BASE, "yiban", "core", "window.py"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        found = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "attr", None) == "getLogger":
+                for a in node.args:
+                    if isinstance(a, ast.Constant) and a.value == _T3_LOGGER_NAME:
+                        found = True
+        self.assertTrue(found,
+                        f"实现里不再有 getLogger({_T3_LOGGER_NAME!r})：本门的日志名豁免已腐烂，"
+                        "须同批删掉该豁免")
+
+    def test_exempt_files_still_exist(self):
+        """豁免清单不得腐烂：登记的文件必须还在，且**必须仍命中本门**。
+
+        为什么要"仍命中"：豁免只对"确有禁字面量／转发配对表的守卫"成立。若某个豁免
+        文件已不再含旧坐标（守卫被清理），豁免就失去理由——留着它会静默放开该文件的
+        扫描面。这条同时防"顺手把文件加进豁免面来让门变绿"（AGENTS §14 反面处置③）。
+        """
+        for rel in sorted(_T3_FACE_EXEMPT):
+            path = os.path.join(BASE, rel)
+            self.assertTrue(os.path.isfile(path),
+                            f"豁免清单登记了不存在的文件 {rel}")
+            self.assertTrue(
+                t3_old_coordinate_hits(path),
+                f"豁免文件 {rel} 已不再命中本门——豁免失去理由，须同批删除该豁免")
+
+    def test_scanner_has_teeth(self):
+        """突变验证：塞回八种形态 ⇒ 红；新坐标/docstring/注释/日志名/同前缀他模块 ⇒ 不误红。"""
+        with tempfile.TemporaryDirectory(prefix="t3-gate-") as tmp:
+            py = os.path.join(tmp, "fake_test.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write('"""docstring 提 yiban.status 不算命中。"""\n'
+                        'from yiban import status\n'                       # ① 别名 ⇒ 命中
+                        'from yiban.window import retry_hm\n'              # ② 旧坐标 ⇒ 命中
+                        'from unittest import mock\n'
+                        'mock.patch("yiban.masking.mask_phone")\n'         # ③ 打桩串 ⇒ 命中
+                        'P = "*yiban.status*"\n'                           # ④ 嵌入形态 ⇒ 命中
+                        'CODE = "from yiban import window;print(window.retry_hm())"\n'  # ⑤ 串内别名 ⇒ 命中
+                        'PROBE = """from yiban import masking as _m"""\n'  # ⑥ 多行串内别名 ⇒ 命中
+                        'import importlib\n'
+                        'importlib.import_module("yiban.status")\n'        # ⑦ 串内坐标 ⇒ 命中
+                        'import yiban\n'
+                        'yiban.window.parse_edges({})\n'                   # ⑧ 属性访问 ⇒ 命中
+                        '# 注释里的 yiban.status 不算\n'
+                        'import yiban.status_ledger\n'                    # ⑨ 同前缀他模块 ⇒ 不命中
+                        'FLAG = "from yiban import cli; cli.main([\'egress\',\'--status\'])"\n'  # ⑩ 别的坐标＋CLI 旗标 ⇒ 不命中
+                        'MULTI = "from yiban import store, window"\n'      # ⑪ 混名列表含旧短名 ⇒ 命中
+                        'import yiban as Y\n'
+                        'Y.masking.sanitize_text("x")\n'                  # ⑫ 包别名属性访问 ⇒ 命中
+                        'from yiban import *\n')                          # ⑬ 星号导入 ⇒ 命中
+            hits = t3_old_coordinate_hits(py)
+            lines = sorted({ln for ln, _ in hits})
+            for want in (2, 3, 5, 6, 7, 8, 10, 12, 16, 18, 19):
+                self.assertIn(want, lines, f"第 {want} 行应命中：{hits}")
+            for dont in (14, 15):
+                self.assertNotIn(dont, lines,
+                                 f"第 {dont} 行不该命中（同前缀他模块／别的坐标的 CLI 旗标）：{hits}")
+
+            clean = os.path.join(tmp, "clean.py")
+            with open(clean, "w", encoding="utf-8") as f:
+                f.write('"""历史叙述：yiban.status 迁到 yiban.core.status。"""\n'
+                        'import logging\n'
+                        'from yiban.core import status, window, masking\n'
+                        'from yiban.core.status import STATUS_SUCCESS\n'
+                        'import yiban.store.queue_store as qs\n'
+                        'LOGGER = logging.getLogger("yiban.window")\n'
+                        'A = "yiban.core.status.STATUS_SUCCESS"\n'
+                        'B = "yiban.status_ledger"\n'
+                        'C = "from yiban.core import window"\n')
+            self.assertEqual(
+                t3_old_coordinate_hits(clean), [],
+                "新坐标、`yiban.status_ledger`、docstring、日志通道名被误判成旧坐标")
+
+            # 日志名豁免必须**只**认"作为日志通道名"的那一个：作为打桩目标仍须命中。
+            logger_only = os.path.join(tmp, "logger_only.py")
+            with open(logger_only, "w", encoding="utf-8") as f:
+                f.write('import logging\n'
+                        'L = logging.getLogger("yiban.window")\n'
+                        'with self.assertLogs("yiban.window"):\n'
+                        '    pass\n'
+                        'T = "yiban.window.retry_hm"\n')
+            got = [ln for ln, _ in t3_old_coordinate_hits(logger_only)]
+            self.assertEqual(got, [5],
+                             f"日志名豁免面过宽或过窄：应只命中第 5 行打桩目标串，实得 {got}")
+
+            sh = os.path.join(tmp, "fake.sh")
+            with open(sh, "w", encoding="utf-8") as f:
+                f.write('#!/usr/bin/env bash\n'
+                        '# 注释里的 yiban.masking 不算\n'
+                        'python3 -c "from yiban.masking import mask_phone"\n'
+                        '_s="$(python3 -c \'from yiban import status;print(status.TEXT)\')"\n')
+            self.assertEqual([ln for ln, _ in t3_old_coordinate_hits(sh)], [3, 4],
+                             "shell 非注释行未命中（字面量或别名形态）或注释被误判")
 
 
 if __name__ == "__main__":

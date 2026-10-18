@@ -38,8 +38,8 @@ import tempfile
 import time
 import unittest
 
+from yiban.core.masking import mask_phone, mask_phones_in_text
 from yiban.logging_ext import MaskingFormatter
-from yiban.masking import mask_phone, mask_phones_in_text
 
 FORMAT = "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
 DATEFMT = "%Y-%m-%d %H:%M:%S"

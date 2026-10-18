@@ -23,7 +23,7 @@ class ResultVocabHomeTest(unittest.TestCase):
     """词表唯一家与旧家清零（128-P1 校验者）。"""
 
     def test_status_owns_the_vocabulary(self):
-        status = importlib.import_module("yiban.status")
+        status = importlib.import_module("yiban.core.status")
         self.assertEqual(status.RESULT_RETRY_PREFIX, "retry:")
         self.assertEqual(status.RESULT_FINAL_PREFIX, "final:")
         self.assertEqual(

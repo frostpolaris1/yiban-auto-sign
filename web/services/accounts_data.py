@@ -42,10 +42,10 @@ from datetime import datetime, timedelta
 import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.app 的引导保证）
 
 from web.services.locks import _file_lock
-from yiban import status as yiban_status
 from yiban.core import clock
-from yiban.masking import mask_email, mask_email_local
-from yiban.masking import mask_phone as _mask_phone
+from yiban.core import status as yiban_status
+from yiban.core.masking import mask_email, mask_email_local
+from yiban.core.masking import mask_phone as _mask_phone
 from yiban.store import db
 
 # ---------------------------------------------------------------------------

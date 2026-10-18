@@ -38,7 +38,7 @@ if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
 from web.services import manual_sign  # noqa: E402
-from yiban import status as yiban_status  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402
 from yiban.engine import runner, workers  # noqa: E402
 
 PHONE = "13800138000"

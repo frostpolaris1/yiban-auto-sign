@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import unittest
 
-from yiban import window
+from yiban.core import window
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 设置页迁到 Vue 后，`edgeMaxMin` 从 settings-schedule.js 搬进口径层 model.js；

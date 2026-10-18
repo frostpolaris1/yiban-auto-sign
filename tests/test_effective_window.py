@@ -48,8 +48,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import window  # noqa: E402
-from yiban.core import clock  # noqa: E402
+from yiban.core import (  # noqa: E402
+    clock,
+    window,
+)
 
 PHONE = "13800138000"
 
