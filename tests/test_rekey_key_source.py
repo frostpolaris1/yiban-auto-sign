@@ -1953,7 +1953,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         这里仍按"真实会话用户名的遮罩态"钉死 actor（不是"任意值"），并额外断言整行
         不含完整邮箱明文——防的就是 actor 面回潮。
         """
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         self.assertEqual(row["username"], mask_email(want_username),
                          "actor 必须是真实会话用户名的遮罩形态")
         self.assertLessEqual(len(row["username"]), 64, "username 必须截断到 64")
@@ -2160,7 +2160,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
                          ["login_ok", "logout_ok"] * 2,
                          "起止两端必须成对且按时间顺序可重建")
         # actor 遮罩态（MF-49·2-9b）：同输入同输出，取证仍可聚到同一操作者。
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         want_actor = mask_email(email)
         self.assertTrue(all(r["username"] == want_actor for r in rows))
         ok, broken, first = db.verify_audit_chain()

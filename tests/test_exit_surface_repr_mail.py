@@ -67,7 +67,7 @@ class AccountReprSurfaceTest(unittest.TestCase):
         新 repr 虽已自带遮罩，但 `sanitize_text` 的整对象吞除是"调用点忘了过 repr"
         时的兜底——这条钉住它对新 repr 仍生效，别在改 repr 时把它带崩。
         """
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         out = sanitize_text(f"登录失败 {self._acc()} 请检查")
         self.assertIn("Account(***)", out)
         self.assertNotIn(PHONE_RAW, out)

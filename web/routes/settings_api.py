@@ -45,7 +45,7 @@ from web.services.env_io import (
     health_report_weekday_setting,
 )
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
-from yiban import window as yb_window
+from yiban.core import window as yb_window
 from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
 from yiban.infra.env_io import parse_env_flag as _parse_env_flag
 

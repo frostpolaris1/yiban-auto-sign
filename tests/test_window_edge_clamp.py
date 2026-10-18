@@ -25,7 +25,7 @@ from unittest import mock
 
 import signin
 
-from yiban import window
+from yiban.core import window
 
 
 def _cfg(start, end, front, back):

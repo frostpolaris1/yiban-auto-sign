@@ -54,7 +54,7 @@ import unittest
 from typing import ClassVar
 from unittest import mock
 
-from yiban.masking import mask_email
+from yiban.core.masking import mask_email
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

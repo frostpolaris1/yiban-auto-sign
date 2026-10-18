@@ -34,9 +34,9 @@ from flask import session
 
 from yiban import mail as mailer
 from yiban import notify
+from yiban.core.masking import mask_email
 from yiban.infra import env_io
 from yiban.mail import layout as mail_layout
-from yiban.masking import mask_email
 from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤

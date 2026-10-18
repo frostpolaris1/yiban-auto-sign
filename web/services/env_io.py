@@ -43,7 +43,7 @@ from datetime import datetime
 
 from flask import jsonify
 
-from yiban import window as yb_window
+from yiban.core import window as yb_window
 from yiban.engine import schedule as _schedule
 from yiban.infra import env_io as _env_io
 from yiban.infra import env_lock
@@ -378,7 +378,7 @@ def _env_problem_snippet(env_path, line_no):
     定位，值本身不需要也不应该出现在管理界面。读不到文件/行号越界返回 None
     （409 的其余部分照常可用，定位载荷尽力而为）。
     """
-    from yiban.masking import mask_phones_in_text, sanitize_text
+    from yiban.core.masking import mask_phones_in_text, sanitize_text
     try:
         raw = _env_io._read_env_text(env_path)
         lines = _env_io.split_env_lines(raw)

@@ -48,8 +48,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import window  # noqa: E402
-from yiban.core import clock  # noqa: E402
+from yiban.core import (  # noqa: E402
+    clock,
+    window,
+)
 
 
 class FakeNow:
@@ -306,7 +308,7 @@ class HostRunShContractTest(unittest.TestCase):
         self.assertIsNotNone(m, "run.sh 未按 SECOND_HHMM=\"${YIBAN_SECOND_RUN_TIME:-HH:MM}\" 取补签时刻")
         hh, mm = m.group(1).split(":")
         self.assertEqual((int(hh), int(mm)), window.DEFAULT_RETRY_HM,
-                         "run.sh 默认补签时刻与 yiban.window.DEFAULT_RETRY_HM 漂移")
+                         "run.sh 默认补签时刻与 yiban.core.window.DEFAULT_RETRY_HM 漂移")
 
     def test_exports_key_to_child(self):
         """不导出时子进程读不到 .env 之外的实际取值（signin 会退回默认）。"""

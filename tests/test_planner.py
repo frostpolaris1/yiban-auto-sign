@@ -36,7 +36,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban import window
+from yiban.core import window
 from yiban.engine import planner, schedule
 from yiban.store import clock_meta, queue_store
 

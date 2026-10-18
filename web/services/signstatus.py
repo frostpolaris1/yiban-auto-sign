@@ -34,8 +34,8 @@ import os
 
 import requests
 
-from yiban import window as yb_window
 from yiban.core import clock
+from yiban.core import window as yb_window
 from yiban.engine import schedule as yb_schedule
 from yiban.infra import env_io as _env_io
 from yiban.platform import API_AUTH_URL
