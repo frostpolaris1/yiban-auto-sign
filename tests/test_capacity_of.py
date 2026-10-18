@@ -28,7 +28,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from web.services import capacity as cap_service
-from yiban.engine import runner as runner_mod
+from yiban.app import runner as runner_mod
 from yiban.engine import schedule
 
 DAY = "2026-09-22"

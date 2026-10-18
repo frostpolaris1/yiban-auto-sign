@@ -13,6 +13,7 @@ import {
   passwordPolicyOk,
   setOwnerEmailVisible,
   shellBase,
+  swapOut,
   toast,
 } from "../lib/shell";
 import { buildAccountPayload, CREDS_GATE_DESC, PASSWORD_UNCHANGED_PLACEHOLDER, availableUserItems, credsWritten, formSubtitle, formTexts, formTitle, makeSnapshot, submitLabel, type AccountPayload, type SelectItem } from "./accountform";
@@ -63,12 +64,23 @@ const banner = computed(() => {
 });
 
 /* ---------------- 账号列表 ---------------- */
+const accountListEl = ref<HTMLElement | null>(null);
 async function loadAccounts(): Promise<void> {
+  const t0 = performance.now();
   loading.value = true;
   loadError.value = "";
   try {
     const data = await api<{ accounts?: MyAccount[] }>("GET", "/api/my-accounts");
-    accounts.value = data.accounts ?? [];
+    const apply = (): void => {
+      accounts.value = data.accounts ?? [];
+    };
+    // 与账号/用户页同一口径：只有已有内容、且请求够慢时才淡出换内容；首屏直接落，
+    // 避免空列表先淡出再淡入的假加载。
+    if (accounts.value.length && performance.now() - t0 > 80 && accountListEl.value) {
+      swapOut(accountListEl.value, apply);
+    } else {
+      apply();
+    }
   } catch (e) {
     loadError.value = errorMessage(e, "账号列表加载失败，请检查网络后重试");
   } finally {
@@ -546,7 +558,6 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">我的账号</h2>
-            <p class="panel-sub">审核通过后自动签到。</p>
           </div>
           <button v-if="submitButtonVisible(accounts)" type="button" class="btn btn--primary" @click="openForm(null)">
             <svg aria-hidden="true"><use href="#i-plus" /></svg>提交我的易班账号
@@ -573,7 +584,7 @@ onMounted(async () => {
           <span class="empty__msg">还没有提交账号。审核通过后自动签到。</span>
         </p>
 
-        <div class="account-list">
+        <div ref="accountListEl" class="account-list">
           <div v-for="(a, i) in accounts" :key="`${a.phone}-${i}`" class="account-card">
             <div class="account-head">
               <div class="account-ident">
@@ -745,7 +756,9 @@ onMounted(async () => {
     <el-dialog
       v-model="formOpen"
       :title="formTitle({ editing: formEditing, variant: props.variant, index: formIndex })"
-      width="560px"
+      width="min(560px, calc(100vw - 32px))"
+      modal-class="app-form-overlay"
+      class="app-form-dialog"
       append-to-body
     >
       <p class="panel-sub" style="margin-top: 0">{{ formSubtitle({ editing: formEditing, variant: props.variant }) }}</p>

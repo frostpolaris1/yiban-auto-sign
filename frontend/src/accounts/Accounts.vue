@@ -14,6 +14,7 @@ import {
   toast,
 } from "../lib/shell";
 import { usePolling } from "../lib/polling";
+import { useTabIndicator } from "../lib/tab-indicator";
 import "./ops.js"; // 注册 window.YB.accountOps（纯 JS，被 Python 侧 node 真跑钉住）
 import {
   GROUP_KEYS,
@@ -118,6 +119,8 @@ const stateDurs = ref<Record<string, number | null>>({});
 const me = ref<{ time_pref_allowed?: boolean } | null>(null);
 const timePrefOn = computed(() => me.value?.time_pref_allowed === true);
 const tab = ref("pending");
+const tabsEl = ref<HTMLElement | null>(null);
+const { style: tabIndicatorStyle, ready: tabIndicatorReady } = useTabIndicator(tabsEl, tab);
 const search = ref<Record<string, string>>({ pending: "", active: "", deleted: "" });
 // 分页状态（每组各持一页；页大小三组共用一个值）。
 // 后端 /api/accounts 的 limit/offset 切的是**整表**，而本页按 status 在**前端分组**——
@@ -587,7 +590,8 @@ const M = {
     <div id="accounts-root" ref="rootEl">
       <div data-acct-group>
         <div class="tabs-scroll">
-          <div class="tabs" role="tablist" aria-label="账号管理分区">
+          <div ref="tabsEl" class="tabs tabs--indicator" role="tablist" aria-label="账号管理分区">
+            <span class="tabs-indicator" :class="{ 'is-ready': tabIndicatorReady }" :style="tabIndicatorStyle" aria-hidden="true"></span>
             <a
               v-for="g in GROUP_LIST"
               :key="g"
@@ -743,7 +747,7 @@ const M = {
                     <thead v-if="g === 'pending'">
                       <tr>
                         <th scope="col" class="acct-cell-check"><label class="acct-check"><input type="checkbox" :id="GROUPS.pending.all" aria-label="全选待处理账号" :checked="allState('pending').checked" :indeterminate="allState('pending').indeterminate" @change="onSelectAll('pending', ($event.target as HTMLInputElement).checked)" /></label></th>
-                        <th scope="col">审核</th>
+                        <th scope="col" class="acct-cell-audit">审核</th>
                         <th scope="col" class="acct-cell-name">名称</th>
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
@@ -755,7 +759,7 @@ const M = {
                     <thead v-else-if="g === 'active'">
                       <tr>
                         <th scope="col" class="acct-cell-check"><label class="acct-check"><input type="checkbox" :id="GROUPS.active.all" aria-label="全选正常账号" :checked="allState('active').checked" :indeterminate="allState('active').indeterminate" @change="onSelectAll('active', ($event.target as HTMLInputElement).checked)" /></label></th>
-                        <th scope="col">状态</th><th scope="col" title="账号在账号列表中的位置（含待处理与待删除项），非行号">序号</th>
+                        <th scope="col">状态</th><th scope="col" class="acct-cell-idx" title="账号在账号列表中的位置（含待处理与待删除项），非行号">序号</th>
                         <th scope="col" class="acct-cell-name">名称</th>
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
@@ -772,7 +776,7 @@ const M = {
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
                         <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
-                        <th scope="col">删除时间</th>
+                        <th scope="col" class="acct-col-md">删除时间</th>
                         <th scope="col" class="acct-cell-actions">操作</th>
                       </tr>
                     </thead>
@@ -797,6 +801,8 @@ const M = {
                           <td class="acct-cell-audit"><span class="badge" :class="'badge--' + M.badgeOf(row.status).tone">{{ M.badgeOf(row.status).label }}</span></td>
                           <td class="acct-cell-name">
                             <div class="acct-name-main">{{ row.display_name }}</div>
+                            <span class="acct-audit-inline badge" :class="'badge--' + M.badgeOf(row.status).tone">{{ M.badgeOf(row.status).label }}</span>
+                            <span class="acct-phone-inline">{{ row.phone }}</span>
                             <span v-if="ownerEmailOn" class="acct-owner-inline">{{ M.ownerMailText(row) }}</span>
                           </td>
                           <td class="acct-cell-phone">{{ row.phone }}</td>
@@ -808,12 +814,14 @@ const M = {
                         <template v-else-if="g === 'deleted'">
                           <td class="acct-cell-name">
                             <div class="acct-name-main">{{ row.display_name }}<span class="badge badge--bad">待删除</span></div>
+                            <span class="acct-phone-inline">{{ row.phone }}</span>
+                            <span class="acct-time-inline">{{ M.deletedAtText(row) }}</span>
                             <span v-if="ownerEmailOn" class="acct-owner-inline">{{ M.ownerMailText(row) }}</span>
                           </td>
                           <td class="acct-cell-phone">{{ row.phone }}</td>
                           <td class="acct-cell-lastexec acct-col-lg">{{ M.lastExecText(row) }}</td>
                           <td class="acct-cell-owner acct-col-md">{{ M.ownerText(row) }}</td>
-                          <td class="acct-cell-time">{{ M.deletedAtText(row) }}</td>
+                          <td class="acct-cell-time acct-col-md">{{ M.deletedAtText(row) }}</td>
                         </template>
 
                         <!-- 正常账号行 -->
@@ -826,6 +834,7 @@ const M = {
                           <td class="acct-cell-idx">{{ row.index + 1 }}</td>
                           <td class="acct-cell-name">
                             <div class="acct-name-main">{{ row.display_name }}</div>
+                            <span class="acct-phone-inline">{{ row.phone }}</span>
                             <span v-if="ownerEmailOn" class="acct-owner-inline">{{ M.ownerMailText(row) }}</span>
                           </td>
                           <td class="acct-cell-phone">{{ row.phone }}</td>
@@ -933,7 +942,9 @@ const M = {
     <el-dialog
       v-model="formOpen"
       :title="formTitle({ editing: formEditing, variant: 'admin', index: formIndex })"
-      width="560px"
+      width="min(560px, calc(100vw - 32px))"
+      modal-class="app-form-overlay"
+      class="app-form-dialog"
       append-to-body
       @closed="onFormClosed"
     >

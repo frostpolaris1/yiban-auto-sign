@@ -100,7 +100,9 @@ fast	tests/test_deploy_gate_wiring.py
 fast	tests/test_deploy_paths_and_restore_verdict.py
 fast	tests/test_deploy_prod_artifacts.py
 fast	tests/test_dev_verify_entry.py
+fast	tests/test_device_autofill_api.py
 fast	tests/test_device_identification.py
+fast	tests/test_device_registry_methods.py
 fast	tests/test_doc_reference_gate.py
 fast	tests/test_docker_image_contents.py
 fast	tests/test_docker_image_inputs_gate.py

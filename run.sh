@@ -623,7 +623,7 @@ _check_fallback_wiring() {
 import os
 import sys
 sys.path.insert(0, os.getcwd())
-from yiban.engine import state_io
+from yiban.adapters.statefiles import state_io
 _alive, _age = state_io.fallback_alive()
 sys.exit(0 if _alive else 1)
 PYEOF

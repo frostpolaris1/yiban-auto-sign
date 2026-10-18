@@ -316,25 +316,25 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
 # 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
-from yiban import (  # noqa: E402
-    config_loader,  # 名册缺省唯一来源（104 §5.3）
-    notify,  # 有自用点，原 F401 豁免已失效
-)
 from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
 
 # 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
-from yiban import mail as mailer  # noqa: E402,F401
-from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
-from yiban.infra import (  # noqa: E402
+from yiban.adapters.config import (  # noqa: E402
     account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
 )
-from yiban.mail import (  # noqa: E402
+from yiban.adapters.config import (  # noqa: E402
+    loader as config_loader,  # 名册缺省唯一来源（104 §5.3）
+)
+from yiban.adapters.notifier import mail as mailer  # noqa: E402,F401
+from yiban.adapters.notifier import notify  # noqa: E402  # 有自用点，原 F401 豁免已失效
+from yiban.adapters.notifier.mail import (  # noqa: E402
     config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
 )
-from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
-from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
+from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
+from yiban.adapters.persistence import db  # noqa: E402  # SQLite 数据访问层
+from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
 #: 唯一口径在 `yiban.egress.SLOT_MAX`（清单模型的槽位上限），此处只是别名：
@@ -1260,6 +1260,15 @@ def run_verify_with_gate(clean, username, limits):
         clean, username, limits, _verify_sem, _verify_attempt_allowed, _verify_account_clean)
 
 
+def run_gated_call(action, username, limits):
+    """在同一个外呼闸门（席位 + 每用户配额）下执行任意真实外呼（实现见 verify_queue）。
+
+    设备登记补全走它：两条外呼同为一次真实登录，闸门必须与账号验证同源。
+    """
+    return _verify_queue.run_gated_call(
+        action, username, limits, _verify_sem, _verify_attempt_allowed)
+
+
 # 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
 verify_jobs.configure(
     seat=_verify_sem,
@@ -1354,24 +1363,55 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
         title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
 
 
+def _audit_unhealthy_log(health):
+    """体检不健康时的日志级别与文案前缀：`(级别, 文案)`。
+
+    "无法定论"不是"检出问题"：前者是本次没验成（补密钥/修锚点文件即可），后者是确证
+    异常（按失陷响应）。两者都**必须**外发告警——本函数只分级与措辞，不削弱判据。
+    把"没验成"写成"检出问题"会让运维按错误方向处置，也会让真告警贬值（天天喊同一句
+    的守卫不值钱）。级别判定取三态裁决的**唯一映射**（`db.audit_verdict`），不另排一份。
+    """
+    if db.audit_verdict(health)["state"] == db.VERDICT_INDETERMINATE:
+        return logging.WARNING, "审计链自检未能定论（不等于检出篡改）"
+    return logging.ERROR, "审计链异常告警"
+
+
 def _alert_audit_unhealthy(health):
     """审计链异常告警的一次尝试：按账目变化触发、按**送达**推进基线。
 
     返回本次是否真正外发（任一通道送达）。签名未变（与上次已告警的同一故障态）时只留
-    ERROR 日志、不外发，返回 False。**送达失败时不推进基线**：告警因此保持待发，下一轮
-    （次日或下次进程启动）仍会重试，而不是一次发送失败就被永久静默。
+    一条与结论同级（WARNING/ERROR）的日志、不外发，返回 False。**送达失败时不推进基线**：
+    告警因此保持待发，下一轮（次日或下次进程启动）仍会重试，而不是一次发送失败就被永久
+    静默。
+
+    "无法定论"与"检出问题"走同一通道、同一紧急度，只有标题与结论措辞不同（见
+    `_audit_unhealthy_log`）：前者不能少发，后者不能改说成"没验成"。
     """
     if not db.audit_alert_needs_attention(health):
-        logger.error("审计链异常态与上次已告警的相同，本次不重复外发（结论未变，日志照留）")
+        # 去重行与主日志行是**同一件事**的两处出口：级别与文案必须同源分档，只改一处
+        # 会让"无法定论"仍以 ERROR 出现在日志里（同族漏一处，判据等于没改）。
+        _level, _label = _audit_unhealthy_log(health)
+        logger.log(_level, "%s：与上次已告警的结论相同，本次不重复外发（结论未变，日志照留）",
+                   _label)
         return False
+    indeterminate = db.audit_verdict(health)["state"] == db.VERDICT_INDETERMINATE
+    label = _audit_unhealthy_log(health)[1]
+    if indeterminate:
+        summary = ("审计可追溯性自检未完成（不等于检出篡改，也不等于无异常）："
+                   "本次没有可用的取证结论。")
+        advice = ["先修好审计密钥或锚点文件，再重跑校验",
+                  "本次自检没有结论，勿按「无异常」对待"]
+    else:
+        summary = ("审计可追溯性校验失败：审计记录可能被篡改/删除，"
+                   "或存在未留痕的管理操作。")
+        advice = ["立即核查审计链与库外锚点",
+                  "确认之前不要依赖审计记录做处置结论"]
     delivered = send_notification(
-        "审计链异常告警",
+        label,
         mail_layout.Mail(
-            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
-                    "或存在未留痕的管理操作。",
+            summary=summary,
             fields=_audit_alert_facts(health),
-            advice=["立即核查审计链与库外锚点",
-                    "确认之前不要依赖审计记录做处置结论"],
+            advice=advice,
             level="urgent",
         ),
         urgent=True,
@@ -1380,7 +1420,7 @@ def _alert_audit_unhealthy(health):
         db.mark_audit_alert_sent(health)
         db.mark_audit_write_failures_notified()
     else:
-        logger.error("审计链异常告警未能送达（邮件与推送均未成功），基线不推进，"
+        logger.error("审计链告警未能送达（邮件与推送均未成功），基线不推进，"
                      "下一轮将继续重试")
     return bool(delivered)
 
@@ -2916,13 +2956,16 @@ def create_app(host=None):
                                snap_err)
             if not _health["healthy"]:
                 _facts = _audit_alert_facts(_health)
-                # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
-                logger.error("审计链异常告警: %s",
-                             "；".join(f"{k} {v}" for k, v in _facts))
+                # 日志保持单行可 grep；邮件/推送读下面那份结构化正文。
+                # 级别与文案按结论分档："无法定论"（本次没验成）记 WARNING，确证异常记
+                # ERROR——把"没验成"写成"检出问题"会让运维按错误方向处置，也让真告警贬值。
+                _level, _label = _audit_unhealthy_log(_health)
+                logger.log(_level, "%s: %s", _label,
+                           "；".join(f"{k} {v}" for k, v in _facts))
                 # 告警按"账目变化"触发：同一故障态不逐日重发 urgent——一笔永不
                 # 归零的欠账或一个没修的锚点异常天天吃掉紧急额度，会把真告警挤出去。
                 # 基线只按**送达**推进（见 _alert_audit_unhealthy）：未送达则保持
-                # 待发、下一轮重试；签名不变时仍留 ERROR 日志（可 grep）不外发。
+                # 待发、下一轮重试；签名不变时仍留一条日志（可 grep）不外发。
                 _alert_audit_unhealthy(_health)
             else:
                 if _health["anchor_msg"]:
