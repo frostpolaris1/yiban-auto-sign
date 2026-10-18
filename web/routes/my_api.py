@@ -4,8 +4,9 @@
 
 **功能**
 `GET/POST /api/my-accounts` 与 `PUT/DELETE /api/my-accounts/<idx>`、
-`POST /api/my-accounts/<idx>/restore`、`PUT /api/my-accounts/<idx>/pause`：本人账号的
-提交、列表、编辑、软删与撤销、自暂停；`GET/PUT /api/my-time-pref` 与
+`POST /api/my-accounts/<idx>/restore`、`PUT /api/my-accounts/<idx>/pause`、
+`POST /api/my-accounts/<idx>/device-refresh`：本人账号的
+提交、列表、编辑、软删与撤销、自暂停、设备字段按需补全；`GET/PUT /api/my-time-pref` 与
 `GET /api/time-prefs/stats`：自选时间片的读写、拥挤度与管理员侧逐片人数；
 `GET/DELETE /api/verify-jobs/<job_id>`：在线校验异步任务的查询与取消；
 `GET /api/my-calendar` 与 `GET /api/my-logs`：本人已生效账号的月历与按天日志。
@@ -13,7 +14,7 @@
 **归属**
 `web.app.create_app` 的"个人自助"面（普通用户路径，只读/只写本人数据）。工厂骨架、
 跨域中间件（前置限速、登录守卫、CSRF、同源校验、安全响应头）与库访问层仍留在
-`web/app.py`，本模块只提供十三条视图与本人视图助手。
+`web/app.py`，本模块只提供十四条视图与本人视图助手。
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配；`verify_fails()` / `verify_limits()`
@@ -40,7 +41,10 @@ from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
+from web.services.device_refresh import refresh_account_device as _refresh_account_device
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
+from yiban.adapters.persistence.accounts import signs_in as _signs_in
+from yiban.core.masking import mask_device_code as _mask_device_code
 from yiban.engine import schedule as yb_schedule
 
 
@@ -142,6 +146,8 @@ def _my_account_view(accounts, indices):
                 "display_name": acc.get("name") or f"账号{i + 1}",
                 "phone": phone,
                 "phone_model": acc.get("phone_model", ""),
+                # 设备识别码原文不下发（与 /api/accounts 同口径）：只给掩码供只读展示
+                "phone_code_masked": _mask_device_code(acc.get("phone_code", "")),
                 "status": acc.get("status", m.ACCOUNT_STATUS_ACTIVE),
                 "reject_reason": acc.get("reject_reason", ""),
                 "state_icon": m.STATUS_ICON.get(st_status, "⏳"),
@@ -1035,8 +1041,40 @@ def api_my_account_pause(idx):
         })
 
 
+def api_my_account_device_refresh(idx):
+    """按需补全**本人**账号的设备字段：登录一次读回服务端已登记设备并落库。
+
+    鉴权档：任意已登录（数据范围由归属邮箱收窄）。CSRF：**要**。
+    副作用与失败语义同管理面（见 `web/services/device_refresh`）：会**再铸一次会话**，
+    读不到不改库。
+    """
+    m = _appmod()
+    accounts = m.load_accounts()
+    indices = _my_account_indices_of(accounts)
+    if not 0 <= idx < len(indices):
+        return jsonify({"error": "账号不存在"}), 404
+    acc = accounts[indices[idx]]
+    data = m._json_body()
+    # 防错位：本人视图下标经归属收窄，但渲染后仍可能漂移（管理员删行/本人恢复）。
+    # fail_closed=True：本端点会对目标账号**发起一次真实登录**并写它的行，
+    # 未携带 phone 就等于没人证明"idx 还指向视图里那一行"（新写口，无既有前端依赖默认值）
+    if m._stale_idx_guard(acc, data, fail_closed=True):
+        return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+    if acc.get("deleted"):
+        return jsonify({"error": "账号已删除，请先恢复"}), 400
+    if not _signs_in(acc):
+        # 只有"会签到"的账号才补全（判据复用 `signs_in`，与管理面同源）
+        return jsonify({"error": "账号未生效（待审核或已拒绝），请先通过审核再补全设备"}), 400
+    status, payload = _refresh_account_device(
+        m, acc, session.get("username") or "?", verify_limits(), verify_fails(),
+        "my_account_device_refresh")
+    if status == 503:
+        return jsonify(payload), status, {"Retry-After": "2"}
+    return jsonify(payload), status
+
+
 def register(app):
-    """在本域注册十三条个人自助路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册十四条个人自助路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/my-accounts", view_func=api_my_accounts)
     app.add_url_rule("/api/my-time-pref", view_func=api_my_time_pref)
     app.add_url_rule("/api/my-time-pref", view_func=api_my_time_pref_save, methods=["PUT"])
@@ -1055,3 +1093,5 @@ def register(app):
                      methods=["POST"])
     app.add_url_rule("/api/my-accounts/<int:idx>/pause", view_func=api_my_account_pause,
                      methods=["PUT"])
+    app.add_url_rule("/api/my-accounts/<int:idx>/device-refresh",
+                     view_func=api_my_account_device_refresh, methods=["POST"])

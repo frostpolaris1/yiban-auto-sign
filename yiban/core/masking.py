@@ -19,6 +19,8 @@
   与审计 `actor` 列共用的唯一口径（原 `accounts_data._mask_email` 的实现搬到这里做真源，
   前端 `maskEmail` 与它由对拍测试钉住同口径；口径本身逐字未变）。
   `mask_email_local`：邮箱本地部的安全展示形态（归属展示名用，号形态走 `mask_phone`）。
+- `mask_device_code`：设备识别码 → `前4…后4`（`abcd…wxyz`）——设备识别码展示口径的
+  **唯一一处**（原文从不下发；见 `docs/dev/api-contract.md` §1.4）。
 
 **日志落盘面也脱敏**：日志文件会被转发、导出、截图，故输出面的 formatter 对最终
 消息统一兜底脱敏（`yiban.logging_ext.MaskingFormatter`），不依赖各调用点自觉。
@@ -300,6 +302,32 @@ def mask_email_local(e):
     if _phone_digits_of(s):
         return mask_phone(s)
     return s[:3] + "***"
+
+
+def mask_device_code(code):
+    """设备识别码 → `前4…后4`（如 `abcd…wxyz`），供展示只读字段（**幂等**）。
+
+    **这是设备识别码展示口径的唯一一处**（与手机号 `mask_phone`、邮箱 `mask_email`
+    同族）：出站序列化一律消费本函数的返回值，不得在别处再切一份。
+
+    为什么只保留首尾各 4 位：识别码是设备指纹，学校开启设备绑定时它是签到要素。
+    全文外发会把指纹暴露给任何能读接口的人（含被窃的只读会话），而首尾 4 位足以让
+    用户在页面上**认出**"这条是我那台设备"，不构成可用凭据（中间 56 位不可见）。
+
+    短串（长度 ≤ 8）没有可保留的首尾而不重叠：一律回等长 `*`，绝不产出"看起来遮了、
+    实际每个字符都在"的伪装串（与 `mask_phone` 对非号形态原样返回同一取舍方向）。
+    非号形态不做剥离：整串就是识别码，直接切。
+
+    幂等：已含 `*`（含本函数自身的输出）原样返回，供同一串被多处脱敏时不变形。
+    """
+    s = str(code)
+    if "*" in s:
+        return s
+    if not s:
+        return s
+    if len(s) <= 8:
+        return "*" * len(s)
+    return s[:4] + "…" + s[-4:]
 
 
 def sanitize_url(url):

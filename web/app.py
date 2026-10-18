@@ -316,25 +316,25 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
 # 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
-from yiban import (  # noqa: E402
-    config_loader,  # 名册缺省唯一来源（104 §5.3）
-    notify,  # 有自用点，原 F401 豁免已失效
-)
 from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
 
 # 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
-from yiban import mail as mailer  # noqa: E402,F401
-from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
-from yiban.infra import (  # noqa: E402
+from yiban.adapters.config import (  # noqa: E402
     account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,
 )
-from yiban.mail import (  # noqa: E402
+from yiban.adapters.config import (  # noqa: E402
+    loader as config_loader,  # 名册缺省唯一来源（104 §5.3）
+)
+from yiban.adapters.notifier import mail as mailer  # noqa: E402,F401
+from yiban.adapters.notifier import notify  # noqa: E402  # 有自用点，原 F401 豁免已失效
+from yiban.adapters.notifier.mail import (  # noqa: E402
     config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
 )
-from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
-from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
+from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
+from yiban.adapters.persistence import db  # noqa: E402  # SQLite 数据访问层
+from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
 #: 唯一口径在 `yiban.egress.SLOT_MAX`（清单模型的槽位上限），此处只是别名：
@@ -1258,6 +1258,15 @@ def run_verify_with_gate(clean, username, limits):
     """执行一次外呼校验（实现见 web/services/verify_queue.py），注入本模块现取的席位。"""
     return _verify_queue.run_verify_with_gate(
         clean, username, limits, _verify_sem, _verify_attempt_allowed, _verify_account_clean)
+
+
+def run_gated_call(action, username, limits):
+    """在同一个外呼闸门（席位 + 每用户配额）下执行任意真实外呼（实现见 verify_queue）。
+
+    设备登记补全走它：两条外呼同为一次真实登录，闸门必须与账号验证同源。
+    """
+    return _verify_queue.run_gated_call(
+        action, username, limits, _verify_sem, _verify_attempt_allowed)
 
 
 # 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
