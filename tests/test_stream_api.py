@@ -33,6 +33,8 @@ import threading
 import time
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 from web.services import run_stream
 from yiban import clock
 from yiban.store import run_events
@@ -122,11 +124,11 @@ class StreamCase(unittest.TestCase):
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
         # 注册管理员（users.role=admin，非 .env 内置）：弱档 `_current_role()` 会把它判成
         # admin，强档 `_is_builtin_admin_session()` 不认它。progress 走强档，故本账号是钉
         # 授权面的对照组（见 AuthTest::test_registered_admin_progress_403）。
-        db.create_user(REG_ADMIN_EMAIL, cls.webapp.generate_password_hash(USER_PASS),
+        db.create_user(REG_ADMIN_EMAIL, generate_password_hash(USER_PASS),
                        role="admin")
         db.add_account({"name": "u-acct", "phone": RAW_PHONE, "password": "p1",
                         "status": "active", "owner": USER_EMAIL})

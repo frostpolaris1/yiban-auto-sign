@@ -43,6 +43,7 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import flask
+from werkzeug.security import generate_password_hash
 
 from yiban import clock
 from yiban import status as yiban_status
@@ -1694,7 +1695,7 @@ class StaleIdxGuardE2ETest(unittest.TestCase):
         app = self.webapp.create_app()
         c = app.test_client()
         self.db.create_user("trim@test.local",
-                            self.webapp.generate_password_hash("secret1"))
+                            generate_password_hash("secret1"))
         r = c.post("/api/login", json={"username": "trim@test.local", "password": "secret1"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
@@ -1772,9 +1773,22 @@ _WALL_APP_ALIASES = frozenset(("self.webapp", "cls.webapp", "webapp"))
 #: 宽松别名：再加少数把 app 模块装进局部变量的写法。只用于"零读者"判定。
 _WALL_APP_ALIASES_WIDE = _WALL_APP_ALIASES | frozenset(("w", "web", "mod", "impl"))
 
-#: F401 里"确实零读者但不删"的名字（显式豁免，逐条附理由）。W0 收口后为空：
-#: 现存 93 个 F401 名都有读者。若将来必须留一个零读者名，在这里逐条登记并写明理由。
-_WALL_DEAD_F401_EXEMPT = {}
+#: F401 里"确实零读者但不删"的名字（显式豁免，逐条附理由）。W0 收口时为空
+#: （现存 F401 名都有读者）。留零读者名的唯一合法路径是在这里逐条登记并写明理由。
+#:
+#: 现有两条来自 145-B `T1` 片：该片把口令哈希两名的读者迁到真实实现坐标
+#: `werkzeug.security`（路由与测试各自直导入），于是这两个墙名在本片后**零读者**。
+#: **本片不删墙名**（删名归 `145-E`），故按本门的豁免机制登记。这是**过渡态**：
+#: `145-E` 删名时须同批删掉这两行——`test_exempt_names_are_still_f401` 钉住这一点。
+_WALL_DEAD_F401_EXEMPT = {
+    "generate_password_hash": (
+        "145-B T1 已迁走**自有面**（tests/web/scripts）全部读者；墙名待 145-E 删除。"
+        "面外仍有 1 处**活读者**：`frontend/e2e/server.py` 的 Playwright e2e 夹具"
+        "（前端 2026-10-18 起归用户独立完成，本批不得改）——145-E 删墙名前须先处置它；"
+        "该残留的登记与对账在 `tests/test_deploy_entry_imports.py` 的 "
+        "`_PWHASH_OUT_OF_FACE_REGISTRY`。"),
+    "check_password_hash": "145-B T1 已迁走自有面全部读者；墙名待 145-E 删除",
+}
 
 
 @functools.lru_cache(maxsize=None)
@@ -1909,3 +1923,16 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
                       if n not in read_names and n not in _WALL_DEAD_F401_EXEMPT)
         self.assertEqual(dead, [],
                          "以下带 noqa: F401 的名字没有任何读者（零读者转发名）：" + ", ".join(dead))
+
+    def test_exempt_names_are_still_f401(self):
+        """豁免清单不得腐烂：登记的名字必须仍在 F401 名集里。
+
+        豁免是**过渡态**（名字待删）。名字真被删掉后，这两条登记必须同批删掉——
+        否则清单会悄悄变成"永久豁免"，让后来者以为这两个名字本来就该留着。
+        """
+        _bound, f401 = _wall_app_bindings()
+        stale = sorted(n for n in _WALL_DEAD_F401_EXEMPT if n not in f401)
+        self.assertEqual(
+            stale, [],
+            f"豁免清单登记的名字已不在 F401 名集（名字已删/已不再是转发名）：{stale}；"
+            "请把这些登记从 _WALL_DEAD_F401_EXEMPT 删掉")

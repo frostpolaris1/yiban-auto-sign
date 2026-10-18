@@ -46,6 +46,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+from werkzeug.security import generate_password_hash  # noqa: E402
+
 from yiban import clock  # noqa: E402
 from yiban.store import connection as conn_mod  # noqa: E402
 from yiban.store import db as impl  # noqa: E402
@@ -1154,7 +1156,7 @@ class _WebBase(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL, generate_password_hash(USER_PASS))
         db.add_account({"name": "我的号", "phone": PHONE_D6, "password": "pw",
                         "owner": EMAIL, "status": "active",
                         "phone_model": "", "phone_code": ""})

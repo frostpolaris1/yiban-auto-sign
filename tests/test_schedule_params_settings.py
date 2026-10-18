@@ -26,6 +26,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -119,7 +121,7 @@ class ScheduleParamsSettingsTest(unittest.TestCase):
         return c, self._login(c, "admin@test.local", ADMIN_PASS)
 
     def _reg_admin(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         self.db.create_user("reg-admin@test.local", h(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         return c, self._login(c, "reg-admin@test.local", USER_PASS)

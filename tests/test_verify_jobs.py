@@ -29,6 +29,8 @@ import time
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 from yiban import clock
 from yiban.store.audit_chain import actor_tag
 
@@ -237,7 +239,7 @@ class _WebAppBase(unittest.TestCase):
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file,
                    env_file=self.env_file)
-        db.create_user(EMAIL_COOL, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL_COOL, generate_password_hash(USER_PASS))
         # 每用例全新 app：验证配额/失败冷却/登录限速均为 create_app 内内存态
         self.app = self.webapp.create_app()
         self.c = self.app.test_client()
@@ -647,8 +649,8 @@ class _LifecycleBase(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        db.create_user(EMAIL_LIFE, self.webapp.generate_password_hash(USER_PASS))
-        db.create_user(EMAIL2, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL_LIFE, generate_password_hash(USER_PASS))
+        db.create_user(EMAIL2, generate_password_hash(USER_PASS))
         self.app = self.webapp.create_app()
         self.c = self.app.test_client()
 
@@ -1167,8 +1169,8 @@ class _A4Base(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
-        db.create_user(EMAIL2, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL, generate_password_hash(USER_PASS))
+        db.create_user(EMAIL2, generate_password_hash(USER_PASS))
         self.app = self.webapp.create_app()
         self.c = self.app.test_client()
 

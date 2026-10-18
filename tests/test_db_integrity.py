@@ -42,6 +42,7 @@ import unittest
 from unittest import mock
 
 import db
+from werkzeug.security import generate_password_hash
 
 from yiban import clock
 
@@ -411,8 +412,8 @@ class BatchTransactionTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
-        db.create_user("user2@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
+        db.create_user("user2@test.local", generate_password_hash(USER_PASS))
 
     # ---- 工具 ----
     def _login(self, c, username, password):
