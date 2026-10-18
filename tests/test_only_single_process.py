@@ -381,10 +381,10 @@ class OnlyProcessTreeE2ETest(_OnlyE2EBase):
                          f"stderr={proc.stderr!r}\nrecords={self._records()}")
         records = self._records()
         attempts = [r for r in records if r.startswith("attempt ")]
-        # 只数**引擎自己**拉起的执行体子进程（`yiban.cli sign …`）：解释器/依赖启动期
-        # 可能另有零星的探测性 Popen（与本条无关），不能把它们混进来判 fan-out。
+        # 只数**引擎自己**拉起的执行体子进程（`yiban.entry.cli sign …`）：解释器/依赖
+        # 启动期可能另有零星的探测性 Popen（与本条无关），不能把它们混进来判 fan-out。
         engine_popens = [r for r in records
-                         if r.startswith("popen ") and "yiban.cli sign" in r]
+                         if r.startswith("popen ") and "yiban.entry.cli sign" in r]
         rcs = [r for r in records if r.startswith("rc ")]
         self.assertEqual(len(attempts), 1,
                          f"整轮 attempt_signin 必须恰好 1 次，实际 {records}")

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""出口令牌桶复位的受支持入口：`python -m yiban.cli egress`（工单 `zggs` + `2cwd`）。
+"""出口令牌桶复位的受支持入口：`python -m yiban.entry.cli egress`（工单 `zggs` + `2cwd`）。
 
 标签：J · 运维：部署/备份/发布
 覆盖：`egress --status` 只读列出 `egress_state` 各行（键 = **出口标识**，工单 2cwd）；
@@ -17,7 +17,7 @@
    `rate` 一列（`burst`/`tat` 逐字保留）；不加 `--yes` 时逐字不动；两条速率来源过**同一道**
    引擎域校验（引擎会夹掉的值一律拒绝）；展示标签命中多行时拒绝而不是任选一行。用途是给
    运维一条"受支持的撤销"——否则误报降档只能直接改库，或等约 8 个干净轮让 AIMD 爬回。
-依赖：起 `sys.executable -m yiban.cli` 子进程 + 临时库（真 schema）；不联网。
+依赖：起 `sys.executable -m yiban.entry.cli` 子进程 + 临时库（真 schema）；不联网。
 """
 import json
 import os
@@ -57,7 +57,7 @@ def _cli_env(root, extra=None):
         "YIBAN_DB_FILE": os.path.join(root, "yiban.db"),
         "YIBAN_ENV_FILE": os.path.join(root, ".env"),
         "YIBAN_ACCOUNTS_KEY": "a" * 64,
-        "PYTHONPATH": BASE,             # `python -m yiban.cli` 需要仓库根在导入路径上
+        "PYTHONPATH": BASE,             # `python -m yiban.entry.cli` 需要仓库根在导入路径上
         "PYTHONIOENCODING": "utf-8",    # JSON 里的中文在任意平台都可解码
     })
     env.update(extra or {})
@@ -65,7 +65,7 @@ def _cli_env(root, extra=None):
 
 
 def _run(argv, env, timeout=120):
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=BASE,
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=BASE,
                           env=env, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
 

@@ -25,7 +25,9 @@
 凡属行为者已有其它判据：窗口端点切换、脱敏、口令阈值等由本文件保留用例钉住
 （已用突变抽验：把 `sign_status` 的窗口端点判据改坏 ⇒ 保留用例转红）。
 """
+import ast
 import contextlib
+import functools
 import importlib.util
 import io
 import json
@@ -1740,3 +1742,170 @@ class _TrimProbeStore(dict):
         for k, v in dict.items(self):
             dict.__setitem__(self, "__racing__", (1, 0.0))
             yield k, v
+
+
+# ---------------------------------------------------------------------------
+# 拆墙 W0：`web/app.py` 转发墙名集与真实读者对账
+# ---------------------------------------------------------------------------
+# 来历（工单 `128 P2`，施工方案 `docs/refactor/145` §1.2/§1.3/§3.1）：
+# `web/app.py` 曾把各域实现的名字再导出，供路由经 `web.routes.appmod()` 按属性取用、
+# 供测试按属性打桩。批 A1–A5 把实现迁走后，其中一批名字已**零读者**（纯转发壳），
+# 本批（W0）删除。本门钉两条不变式，防"删了还在用的名"与"零读者名回流"。
+#
+# ① **读者可解析**：路由与测试经 app 别名读到的每个名字，都必须在 `web/app.py` 有绑定。
+#    删掉一个还有读者的名字 ⇒ 红，点名 `文件:行`。
+# ② **无零读者转发名**：带 `noqa: F401` 的每个 import 绑定名，至少要有一个读者。
+#    唯一豁免登记在 `_WALL_DEAD_F401_EXEMPT`（附理由，不许空豁免）。
+# 扫描面非空：绑定名、读者、F401 名集各设下限；扫空即红（AGENTS §30）。
+#
+# 边界：① 的别名取**规范别名**（`self.webapp` 一族），不把 `w`/`mod` 等易与其他模块
+# 撞名的局部变量计入，避免误红；② 的读者面取**宽松别名**（多算读者），故它判出的
+# "零读者"更可靠——漏判只让本门更松，不会误红。测试自身仍是最终兜底：删了在用的名字，
+# 用例会以 `AttributeError` 响亮红。
+_WALL_APP = os.path.join(BASE, "web", "app.py")
+_WALL_ROUTES_DIR = os.path.join(BASE, "web", "routes")
+_WALL_TESTS_DIR = os.path.join(BASE, "tests")
+
+#: 测试里承载 `web.app` 模块对象的规范别名（现量：`self.webapp` 占绝大多数）。
+_WALL_APP_ALIASES = frozenset(("self.webapp", "cls.webapp", "webapp"))
+
+#: 宽松别名：再加少数把 app 模块装进局部变量的写法。只用于"零读者"判定。
+_WALL_APP_ALIASES_WIDE = _WALL_APP_ALIASES | frozenset(("w", "web", "mod", "impl"))
+
+#: F401 里"确实零读者但不删"的名字（显式豁免，逐条附理由）。W0 收口后为空：
+#: 现存 93 个 F401 名都有读者。若将来必须留一个零读者名，在这里逐条登记并写明理由。
+_WALL_DEAD_F401_EXEMPT = {}
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_app_bindings():
+    """`web/app.py` 的模块级绑定名集合与带 `F401` 标注的 import 绑定名集合。"""
+    with open(_WALL_APP, encoding="utf-8") as f:
+        src = f.read()
+    lines = src.splitlines()
+    tree = ast.parse(src)
+    bound, f401 = set(), set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                nm = a.asname or (a.name.split(".")[0] if isinstance(node, ast.Import) else a.name)
+                bound.add(nm)
+                if "F401" in lines[a.lineno - 1]:
+                    f401.add(nm)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+    return bound, f401
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_route_reads():
+    """路由 `m.<名字>` 的读者：`(名字, 文件, 行号)` 列表。"""
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_ROUTES_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            aliases = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                    fn = getattr(node.value.func, "id", None) or getattr(node.value.func, "attr", None)
+                    if fn in ("appmod", "_appmod"):
+                        aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                        and node.value.id in aliases and not node.attr.startswith("__"):
+                    out.append((node.attr, os.path.relpath(path, BASE).replace("\\", "/"),
+                                node.lineno))
+    return out
+
+
+def _wall_declared_app_aliases(tree):
+    """文件里显式声明的 app 模块别名：`import web.app as X` / `from web import app as X`。"""
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "web.app":
+                    out.add(a.asname or "web")
+        elif isinstance(node, ast.ImportFrom) and node.module == "web":
+            for a in node.names:
+                if a.name == "app":
+                    out.add(a.asname or "app")
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_test_reads(aliases):
+    """测试里经 app 别名读属性或打桩的读者：`(名字, 文件, 行号)` 列表。
+
+    除入参的固定别名面外，逐文件并上**显式声明**的别名（`import web.app as w` 之类）——
+    这类别名是精确的（绑定对象就是 app 模块），并上不引入误红。
+    """
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_TESTS_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            # 廉价预筛：没有任何 app 别名字样的测试文件不可能有 app 读者，跳过 AST 解析。
+            # 三种别名来源（`webapp*` / `import web.app as X` / `appmod()`）都含这三个
+            # 子串之一，故预筛不会漏掉任何受支持的别名形态（本门不支持的形态本就不算）。
+            if not any(tok in text for tok in ("webapp", "web.app", "appmod")):
+                continue
+            tree = ast.parse(text)
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            file_aliases = aliases | _wall_declared_app_aliases(tree)
+            for node in ast.walk(tree):
+                # 用 unparse 取基表达式文本：`self.webapp.<名字>` 的基是 Attribute 而非
+                # Name，只认 Name 会漏掉绝大多数读者（现量口径）。
+                if isinstance(node, ast.Attribute) and ast.unparse(node.value) in file_aliases:
+                    out.append((node.attr, rel, node.lineno))
+                if isinstance(node, ast.Call):
+                    fn = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                    if fn in ("patch", "object", "getattr", "setattr", "hasattr") and node.args:
+                        if ast.unparse(node.args[0]) not in file_aliases:
+                            continue
+                        last = node.args[-1]
+                        if isinstance(last, ast.Constant) and isinstance(last.value, str):
+                            out.append((last.value.split(".")[-1], rel, node.lineno))
+    return out
+
+
+class ForwardingWallReaderGateTest(unittest.TestCase):
+    """W0：`web/app.py` 转发墙的名集与真实读者对账（两条不变式，见本段模块注释）。"""
+
+    def test_route_and_test_readers_are_all_bound(self):
+        bound, _f401 = _wall_app_bindings()
+        reads = _wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES)
+        self.assertGreaterEqual(len(bound), 300,
+                                "web/app.py 绑定名过少——解析器或路径失效（扫空不得当绿）")
+        self.assertGreaterEqual(len(reads), 1000,
+                                "读者扫描面过小——别名探测失效（扫空不得当绿）")
+        bad = [f"{rel}:{line}: {name}" for name, rel, line in reads if name not in bound]
+        self.assertEqual(
+            bad, [],
+            "以下读者引用的名字在 web/app.py 已不存在（删了还在用的名字）：\n" + "\n".join(bad))
+
+    def test_no_dead_f401_name_beyond_registered_exemptions(self):
+        _bound, f401 = _wall_app_bindings()
+        reads = _wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES_WIDE)
+        self.assertGreaterEqual(len(f401), 50,
+                                "F401 名集过小——注解解析失效（扫空不得当绿）")
+        self.assertGreaterEqual(len(reads), 1000,
+                                "读者扫描面过小——别名探测失效（扫空不得当绿）")
+        read_names = {name for name, _, _ in reads}
+        dead = sorted(n for n in f401
+                      if n not in read_names and n not in _WALL_DEAD_F401_EXEMPT)
+        self.assertEqual(dead, [],
+                         "以下带 noqa: F401 的名字没有任何读者（零读者转发名）：" + ", ".join(dead))

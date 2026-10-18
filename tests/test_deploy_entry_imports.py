@@ -15,6 +15,7 @@
 共享包 `yiban/` 在仓库根，缺引导就 ModuleNotFoundError（容器 sched 进程反复退出→FATAL，
 本地跑测试与裸机部署都发现不了，它们的 sys.path 里本来就有仓库根）。
 """
+import ast
 import os
 import re
 import subprocess
@@ -123,6 +124,156 @@ class DeployEntryImportTest(unittest.TestCase):
                         line = text[:m_imp.start()].count("\n") + 1
                         bad.append(f"{rel}:{line}")
         self.assertEqual(bad, [], f"以下文件先导入 yiban、后补引导（直接运行会 ImportError）：{bad}")
+
+
+# ---------------------------------------------------------------------------
+# 拆墙/壳退役 T8：运行期载体不得以旧坐标 `yiban.cli` 起进程
+# ---------------------------------------------------------------------------
+# 来历（工单 `1229`，施工方案 `docs/refactor/145` §1.7 与 §4.1 风险 2）：
+# `yiban/cli.py` 是批 A1 留下的转发壳，待退役。`yiban/workers/workers.py` 真起
+# `python -m yiban.cli sign` 作为多执行体的子进程入口。壳一删，生产执行体全起不来——
+# 这是整批唯一的运行期硬依赖。本门钉：运行期载体里旧坐标的**启动点**为零。
+#
+# 面（运行期载体）＝部署时真会被执行的文件：
+#   `yiban/**/*.py`、`scripts/**/*.py`、`docker/**/*.py`、`scripts/**/*.sh`、
+#   `docker/**/*.sh`，以及仓库根的 `run.sh`。
+# 不在面内：`tests/`、`docs/`、`README.md`、注释、docstring，以及用户可见的帮助文本
+#   （`yiban/entry/cli/` 的 `USAGE` / `prog` 写旧坐标是给当前用户的用法指引，不是启动点）。
+#   文档与注释里的历史叙述不算（任务口径）。
+RUNTIME_PY_DIRS = ("yiban", "scripts", "docker")
+RUNTIME_SHELL_NAMES = ("run.sh",)
+OLD_CLI_MODULE = "yiban.cli"
+
+#: 会拉起子进程的函数名（`-m <模块>` 起进程的宿主）。
+_LAUNCH_FUNCS = frozenset((
+    "Popen", "run", "call", "check_call", "check_output", "system",
+    "spawnv", "spawnve", "spawnvp", "spawnl", "spawnle", "spawnlp",
+    "execv", "execve", "execvp", "execl", "execle", "execlp",
+))
+
+
+def _runtime_files(root):
+    """运行期载体文件清单（.py 与 .sh）。"""
+    out = []
+    for d in RUNTIME_PY_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x != "__pycache__"]
+            for name in sorted(files):
+                if name.endswith((".py", ".sh")):
+                    out.append(os.path.join(dirpath, name))
+    for name in RUNTIME_SHELL_NAMES:
+        path = os.path.join(root, name)
+        if os.path.exists(path):
+            out.append(path)
+    return out
+
+
+def _docstring_const_ids(tree):
+    """模块/类/函数首个语句若是字符串常量，记下它的对象 id（docstring 不算启动点）。"""
+    ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", None) or []
+            if body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                ids.add(id(body[0].value))
+    return ids
+
+
+def _command_literals(node):
+    """一次调用里可能作为命令行的字面量字符串（列表/元组元素与裸字符串实参）。"""
+    vals = []
+    for a in list(node.args) + [k.value for k in node.keywords if k.arg in ("args", "cmd")]:
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            vals.append(a.value)
+        elif isinstance(a, (ast.List, ast.Tuple, ast.Set)):
+            for e in a.elts:
+                if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                    vals.append(e.value)
+    return vals
+
+
+def old_coordinate_hits(path):
+    """返回该文件里引用旧坐标的位置：`(行号, 说明)` 列表。
+
+    Python：① 进程拉起调用的命令行字面量含旧模块名；② 非 docstring 的字符串常量
+    恰为旧模块名（覆盖 importlib / 变量间接形态）。
+    Shell：非注释行出现旧模块名。
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    hits = []
+    if path.endswith(".sh"):
+        pat = re.compile(r"(?<![\w.-])" + re.escape(OLD_CLI_MODULE) + r"(?![\w.-])")
+        for i, line in enumerate(text.splitlines(), 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if pat.search(s):
+                hits.append((i, "shell 命令行含 " + OLD_CLI_MODULE))
+        return hits
+    tree = ast.parse(text)
+    docs = _docstring_const_ids(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if fname in _LAUNCH_FUNCS and OLD_CLI_MODULE in _command_literals(node):
+                hits.append((node.lineno, "启动命令含 " + OLD_CLI_MODULE))
+        if isinstance(node, ast.Constant) and node.value == OLD_CLI_MODULE \
+                and id(node) not in docs:
+            hits.append((node.lineno, "非 docstring 字符串常量 " + OLD_CLI_MODULE))
+    return sorted(set(hits))
+
+
+class OldCliCoordinateGateTest(unittest.TestCase):
+    """T8：运行期载体里旧坐标 `yiban.cli` 的启动点为零。"""
+
+    def test_no_runtime_carrier_launches_old_coordinate(self):
+        files = _runtime_files(BASE)
+        self.assertGreaterEqual(
+            len(files), 40,
+            f"扫描面过小（{len(files)} 个文件）——扫描根写错或载体被移走（扫空不得当绿）")
+        bad = []
+        for path in files:
+            for line, why in old_coordinate_hits(path):
+                rel = os.path.relpath(path, BASE).replace("\\", "/")
+                bad.append(f"{rel}:{line}: {why}")
+        self.assertEqual(
+            bad, [],
+            "运行期载体仍以旧坐标起进程（转发壳退役后生产执行体起不来）：\n" + "\n".join(bad))
+
+    def test_scanner_has_teeth(self):
+        """突变验证：塞回一处 ⇒ 红；注释/docstring 提及 ⇒ 不误红。"""
+        with tempfile.TemporaryDirectory(prefix="oldcli-gate-") as tmp:
+            py = os.path.join(tmp, "fake_launcher.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write(
+                    '"""模块 docstring：-m yiban.cli 只是历史叙述，不算启动点。"""\n'
+                    'import subprocess\n'
+                    'import sys\n'
+                    'CMD = "yiban.cli"\n'                       # 裸字符串常量 ⇒ 命中
+                    'subprocess.Popen([sys.executable, "-m", "yiban.cli", "sign"])\n'
+                    '# 注释里的 -m yiban.cli 不算\n')
+            hits = old_coordinate_hits(py)
+            self.assertTrue(hits, "塞回旧坐标启动点却未命中：本门没有牙")
+            lines = sorted({ln for ln, _ in hits})
+            self.assertIn(4, lines, f"裸字符串常量那一行应命中：{hits}")
+
+            sh = os.path.join(tmp, "fake.sh")
+            with open(sh, "w", encoding="utf-8") as f:
+                f.write('# exec "$PY" -m yiban.cli sign\n'
+                        'exec "$PY" -m yiban.cli sign --fallback\n')
+            hits = old_coordinate_hits(sh)
+            self.assertEqual(len(hits), 1, f"shell 面应只命中非注释那一行：{hits}")
+            self.assertEqual(hits[0][0], 2, f"命中行应为第 2 行：{hits}")
+
+            clean = os.path.join(tmp, "clean.py")
+            with open(clean, "w", encoding="utf-8") as f:
+                f.write('"""-m yiban.cli 与 yiban.cli 都只是历史叙述。"""\n'
+                        '# -m yiban.cli\n'
+                        'X = 1\n')
+            self.assertEqual(old_coordinate_hits(clean), [], "注释/docstring 被误判成启动点")
 
 
 if __name__ == "__main__":
