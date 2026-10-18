@@ -42,11 +42,11 @@ from datetime import datetime, timedelta
 import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.app 的引导保证）
 
 from web.services.locks import _file_lock
+from yiban.adapters.persistence import db
 from yiban.core import clock
 from yiban.core import status as yiban_status
-from yiban.core.masking import mask_email, mask_email_local
+from yiban.core.masking import mask_device_code, mask_email, mask_email_local
 from yiban.core.masking import mask_phone as _mask_phone
-from yiban.store import db
 
 # ---------------------------------------------------------------------------
 # 账号审核态词表（与签到状态码 STATUS_* 同名异义，故独立命名空间）
@@ -163,7 +163,9 @@ def mask_account(acc, index, masked=True):
     """账号展示序列化（列表默认脱敏手机号/归属邮箱，网络层不泄露完整 PII）。
 
     masked=False 时返回完整信息（仅详情接口使用，按需取完整号用于编辑/签到等操作）。
-    密码始终不下发（has_password 布尔）；设备识别码始终不下发（has_phone_code 布尔）。
+    密码始终不下发（has_password 布尔）；设备识别码**原文始终不下发**，只给布尔
+    `has_phone_code` 与展示用 `phone_code_masked`（`前4…后4`，掩码口径唯一一处见
+    `yiban.core.masking.mask_device_code`）。
     """
     phone = acc.get("phone", "")
     owner = acc.get("owner", "admin")
@@ -174,6 +176,8 @@ def mask_account(acc, index, masked=True):
         "phone_model": acc.get("phone_model", ""),
         "has_password": bool(acc.get("password")),
         "has_phone_code": bool(acc.get("phone_code")),
+        # 展示只读字段：首尾各 4 位，够用户认出"是我那台设备"，不构成可用凭据
+        "phone_code_masked": mask_device_code(acc.get("phone_code", "")),
         "display_name": acc.get("name") or f"账号{index + 1}",
         # 普通用户体系：owner=提交者邮箱（'admin'=管理员添加），status=待审核/已生效
         "owner": _mask_email(owner) if masked else owner,

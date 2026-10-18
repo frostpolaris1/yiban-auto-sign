@@ -99,7 +99,7 @@
 | 邮箱 | `本地部前3字符 + "***" + "@域名"` | `abc***@example.com` |
 | 归属展示名（`owner_display`） | 本地部为号形态 → 手机号遮罩；否则 `前3字符 + "***"` | `138****0000` / `adm***` |
 | 账号口令 | **从不下发**，只给布尔 `has_password` | — |
-| 设备识别码 | **从不下发**，只给布尔 `has_phone_code` | — |
+| 设备识别码 | **原文从不下发**，只给布尔 `has_phone_code` 与展示用 `phone_code_masked`（`前4…后4`） | `abcd…wxyz` |
 | 代理串（出口） | 只回 `scheme://host[:port]`，去掉 `user:pass@` | `http://1.2.3.4:8080` |
 | 执行体身份 | 只回公开标签（角色 + 槽位序号），不回主机名/进程号 | `worker-1` / `fallback` / `single` / `unknown` |
 | 审计 `actor` | 邮箱遮罩；非邮箱原样（`admin` / `system`） | `abc***@example.com` |
@@ -107,6 +107,13 @@
 | 推送密钥 | **从不下发**，只给 `has_secret` 之类的布尔 | — |
 
 遮罩是幂等的：已含 `*` 的串原样返回。
+
+**设备识别码为什么给掩码而不是继续"零下发"**：识别码是设备指纹，红线是**不伪造**它
+（签到回传的只能是账号行里那个值，或平台登记的原文）。展示面此前只有布尔，用户在页面上
+看不出"这条账号到底绑了哪台设备"，而签到被上游拒时无从自查。首尾各 4 位的掩码够用户
+**认出**自己的设备，中间 56 位不可见、不可逆推，既不伪造指纹也不扩大暴露面（真正要读
+指纹的路径仍只有签到提交那一处，且回传值取自账号行）。原文仍**只**在 `GET /api/accounts`
+与 `GET /api/my-accounts` 之外的零处出现——本表所列是唯一出站口径。
 
 ### §1.5 分页
 
@@ -277,7 +284,8 @@
 - 查询参数：无。
 - 成功响应：`{"ok": true, "accounts": [AccountView…]}`。
 - `AccountView` 字段：`index`（本人视图内下标）、`name`、`display_name`、
-  `phone`（**已遮罩**）、`phone_model`、`status`（`active`/`pending`/`rejected`）、
+  `phone`（**已遮罩**）、`phone_model`、`phone_code_masked`（**已遮罩**，识别码原文
+  不下发）、`status`（`active`/`pending`/`rejected`）、
   `reject_reason`、`state_icon`、`state_status`、`state_message`、`queue_ahead`、
   `logs`（本账号今日最近 5 行，已脱敏）、`deleted`、`deleted_at`、
   `deleted_by_me`、`user_paused`、`pause_forbidden`。
@@ -347,6 +355,24 @@
   `账号不存在`；409 `账号列表已变化，请刷新页面后重试`；429
   `操作过于频繁，请稍后再试`（仅"暂停"方向计冷却）。
 - 副作用：写 `my_account_pause` / `my_account_resume` 审计。
+
+#### `POST /api/my-accounts/<int:idx>/device-refresh`
+
+- 鉴权档：任意已登录（数据范围由归属邮箱收窄）。CSRF：**要**。
+- 请求体：`phone`（**必填**，防错位；缺失或不匹配 → 409，且不发起登录）。
+- 成功响应：`{"ok": true, "msg": "已读取服务端登记设备并保存",
+  "device": {"phone_model": string, "phone_code_masked": string,
+  "authorized": bool, "persisted": true}}`。
+- 主要错误：400 `账号已删除，请先恢复` / `账号未生效（待审核或已拒绝），请先通过审核再补全设备`；
+  404 `账号不存在`；409 `账号列表已变化，请刷新页面后重试`；429
+  `账号验证尝试过于频繁，请稍后再试` / 验证冷却文案；502 `未取到设备登记：…`；503
+  `校验繁忙，请稍后重试`（带 `Retry-After: 2`）；500 `已读取设备登记，但写入账号失败，请稍后重试`。
+- 副作用：**再铸一次会话**（登录，读 `getState` 需要会话）＋ 成功时写账号行的
+  `phone_code` / `phone_model`；写 `my_account_device_refresh` 审计。
+- 不变量：**读不到一律不改库**——库里既有识别码/机型不得被空值冲掉；识别码原文
+  在响应里**从不出现**（只给 `phone_code_masked`）；只有会签到的账号（未软删、审核态生效）
+  才可补全。`reason` 为 `not_registered` / `partial` 时 HTTP 仍为 200（上游正常应答但
+  没有完整设备对），`ok` 为 `false`。
 
 #### `GET /api/my-time-pref`
 
@@ -439,7 +465,8 @@
   "rejected": int}`。
 - 成功响应（默认）：`{"ok": true, "accounts": [{"index": int, "name": string,
   "phone": string（遮罩）, "phone_model": string, "has_password": bool,
-  "has_phone_code": bool, "display_name": string, "owner": string（遮罩）,
+  "has_phone_code": bool, "phone_code_masked": string（遮罩，识别码原文不下发）,
+  "display_name": string, "owner": string（遮罩）,
   "owner_display": string, "status": string, "reject_reason": string,
   "user_paused": bool, "deleted": bool, "deleted_at": string,
   "time_pref": string|null, "time_pref_edge": "first"|"last"|null,
@@ -460,6 +487,23 @@
   （每会话 60 秒 60 次）。
 - 副作用：聚合只读审计 `account_detail_read`；超限另写一行拒绝留痕。
 - 不变量：这是列表外**唯一**回传完整手机号的面。`idx` 可 0 递增枚举，故有限速。
+
+#### `POST /api/accounts/<int:idx>/device-refresh`
+
+- 鉴权档：管理员。CSRF：**要**。
+- 请求体：`phone`（**必填**，防错位，管理面 fail-closed；缺失或不匹配 → 409，且不发起登录）。
+- 成功响应：`{"ok": true, "msg": "已读取服务端登记设备并保存",
+  "device": {"phone_model": string, "phone_code_masked": string,
+  "authorized": bool, "persisted": true}}`。
+- 主要错误：400 `账号已删除，请先恢复` / `账号未生效（待审核或已拒绝），请先通过审核再补全设备`；
+  404 `账号不存在`；409 `账号列表已变化，请刷新页面后重试`；429
+  `账号验证尝试过于频繁，请稍后再试` / 验证冷却文案；502 `未取到设备登记：…`；503
+  `校验繁忙，请稍后重试`（带 `Retry-After: 2`）；500 `已读取设备登记，但写入账号失败，请稍后重试`。
+- 副作用：**再铸一次会话**（登录，读 `getState` 需要会话）＋ 成功时写账号行的
+  `phone_code` / `phone_model`；写 `account_device_refresh` 审计。
+- 不变量：同本人端点——**读不到一律不改库**；识别码原文在响应里从不出现；只有会签到的
+  账号才可补全。本端点与账号验证**共用同一个外呼闸门**（全局席位 + 每用户配额）与
+  **同一份**认证失败冷却账。
 
 #### `POST /api/accounts`
 
