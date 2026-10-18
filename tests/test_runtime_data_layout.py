@@ -461,6 +461,11 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
             if (r.returncode != 0 or "cmdline" in err or "read error" in err
                     or "找不到 venv 解释器" not in err):
                 bad.append("rc=%d stderr=%r" % (r.returncode, err))
+        # 尾检（复审 D2b）：首检只是 t=0.5s 的**一次快照**。churner 若在循环**中途**才死
+        # （例如 32×64 进程逐步逼近 pid 限额、0.5s 后才触顶），首检放行、后续十几秒无
+        # churn ⇒ 在未修代码上会**假绿**。死进程不会复活，故"结束仍全活"即证明全程无人
+        # 退出。首检保"竞态真被造出"，尾检保"全程维持"，两问都答才算证据。
+        self._assert_churners_alive(procs, beat)
         self.assertEqual(bad, [], "扫描期间进程消失时 install.sh 出现伪失败/伪错误，"
                          "或扫描把 stderr 弄没了（%d/%d 轮）：\n%s"
                          % (len(bad), self._SCAN_ITERS, "\n".join(bad[:3])))
