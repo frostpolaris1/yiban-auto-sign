@@ -8,13 +8,15 @@
 #
 # 列（制表符分隔）：lane<TAB>path[<TAB># 理由]
 #   fast —— 进快集：CI 的 `verify` 作业与本地 `--fast` 都跑它
-#   slow —— 进慢集：只在全量（`bash scripts/dev-verify.sh`）与 nightly 全量轨跑
-#   serial —— CI 里单独一条**串行**轨（不进快集）：zdvd 实测它需要独占 runner 的核，
-#             与快集同抢时真登录 0 次。CI 跑它，本地 --fast 不跑（那 66s 会把自查拱到两分钟）。
+#   slow —— 进慢集：只在全量（`bash scripts/dev-verify.sh`）与 CI 的 `slow-lane` 作业
+#             （与 verify 并行、串行独占核）跑
+#   serial —— CI 的 verify 里单独一条**串行**轨（不进快集）：独占 runner 的核——
+#             真起服务/真并发的用例与快集同抢核时会失真（先例 zdvd：真登录 0 次）。
+#             CI 跑它，本地 --fast 不跑。
 # 三条道互斥，且并集必须等于全部测试文件。
 #
-# 快集 = 除 slow 之外的全部文件，故快集**大**（299 个文件里 295 个进快集）。只有墙钟
-# 真按"等外面"计费的用例才进 slow；判据是**形状**、不是口味：用例的时间由真实进程树 /
+# 快集 = 除 slow 之外的全部文件，故快集**大**（本树 301 个文件里 286 个进快集）。只有
+# 墙钟真按"等外面"计费的用例才进 slow；判据是**形状**、不是口味：用例的时间由真实进程树 /
 # 真实定时等待 / 全仓扫描决定，而不是由进程内逻辑决定。逐条理由在行内。
 #
 # 口径与对账数字见 docs/dev/dev-verify.md §1.2；名册与实跑集合的对账由
@@ -52,8 +54,8 @@ fast	tests/test_audit_read_api.py
 fast	tests/test_audit_status_block.py
 fast	tests/test_audit_transaction.py
 fast	tests/test_backup_db_path.py
-fast	tests/test_backup_docker_script.py
-fast	tests/test_backup_e2e.py
+slow	tests/test_backup_docker_script.py	# 真子进程＋遍历：真跑 docker/backup-docker.sh 并扫 DATA_DIR（本机 6.7s）
+slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gpg/tar 回环（本机 4.4s）
 fast	tests/test_backup_flag_parsing.py
 fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
@@ -68,7 +70,7 @@ fast	tests/test_child_env_degrade_loud.py
 fast	tests/test_ci_dependency_audit_gate.py
 fast	tests/test_claim_dispatch_elbow_e2e.py
 fast	tests/test_claim_write_path_single_source.py
-fast	tests/test_claims_reap_e2e.py
+slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
 fast	tests/test_cli_contract.py
 fast	tests/test_cli_contract_mf60.py
 fast	tests/test_cli_egress_reset.py
@@ -83,7 +85,7 @@ fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
 fast	tests/test_crash_semantics.py
 fast	tests/test_creds_write_accounting.py
-fast	tests/test_cross_process_file_lock_e2e.py
+slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
 fast	tests/test_csp_header_contract.py
 fast	tests/test_dashboard_stats_caliber_js.py
 fast	tests/test_db_integrity.py
@@ -112,7 +114,7 @@ fast	tests/test_egress_direct_applied.py
 fast	tests/test_elbow_predicate.py
 fast	tests/test_elbow_shadow.py
 fast	tests/test_email_domain_review.py
-fast	tests/test_entry_cli_relocation.py
+slow	tests/test_entry_cli_relocation.py	# 真子进程：起真子进程比两个 CLI 入口的 rc/stdout（本机 5.3s）
 fast	tests/test_env_export_line_divergence.py
 fast	tests/test_env_fail_loud.py
 fast	tests/test_env_file_precedence.py
@@ -144,7 +146,7 @@ fast	tests/test_gate_manifest_sync.py
 fast	tests/test_gate_narrowing_e2e.py
 fast	tests/test_geo_sampling.py
 fast	tests/test_global_pause.py
-fast	tests/test_global_pause_chain_e2e.py
+slow	tests/test_global_pause_chain_e2e.py	# 真子进程：真跑 run.sh 全链引擎（本机 4.9s）
 fast	tests/test_health_report_schedule_e2e.py
 fast	tests/test_host_exit_semantics.py
 fast	tests/test_hrw.py
@@ -154,7 +156,7 @@ fast	tests/test_json_import_fail_closed.py
 fast	tests/test_key_sources_startup_assert.py
 fast	tests/test_ledger_check.py
 fast	tests/test_list_pagination.py
-fast	tests/test_live_claim_cross_process_contention_e2e.py
+slow	tests/test_live_claim_cross_process_contention_e2e.py	# 真子进程争用：每用例起 3 个独立进程同刻抢同一行＋1.5s 发令等待（本机 64.4s）
 fast	tests/test_locks.py
 fast	tests/test_log_masking_credentials.py
 fast	tests/test_log_masking_entry_mounts.py
@@ -180,13 +182,13 @@ fast	tests/test_masking_phone_contract.py
 fast	tests/test_masking_ssrf_gaps.py
 fast	tests/test_masking_tokens.py
 fast	tests/test_migration_compat.py
-fast	tests/test_migrations_fail_closed.py
+slow	tests/test_migrations_fail_closed.py	# 真子进程：真起子进程验迁移拒启/kill 重跑收敛（本机 3.0s）
 fast	tests/test_migrations_schema_drift.py
 fast	tests/test_migrations_v18.py
 fast	tests/test_migrations_v19.py
 fast	tests/test_migrations_v20.py
 fast	tests/test_module_date_constant_gate.py
-serial	tests/test_multi_executor_drill_e2e.py	# 真进程树+真登录：CI 单独一条串行轨（zdvd：与快集同抢 4 核时跑不起来；本机 66.1s）
+slow	tests/test_multi_executor_drill_e2e.py	# 真进程树＋真登录：慢集专轨本就串行独占核（与 serial 轨同性质），移到并行慢集轨后不再占 verify 关键路径（本机 66.1s）
 fast	tests/test_multi_executor_engine.py
 fast	tests/test_multi_task.py
 fast	tests/test_mypy_type_gate.py
@@ -199,7 +201,7 @@ fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
 fast	tests/test_panel_false_signals.py
 fast	tests/test_path_env_read_gate.py
-fast	tests/test_pause_flag_truthiness_e2e.py
+slow	tests/test_pause_flag_truthiness_e2e.py	# 真子进程：真跑 run.sh/fallback/probe 三份 bash（本机 1.5s）
 fast	tests/test_planner.py
 fast	tests/test_pr_template_gate.py
 fast	tests/test_precheck_scale_by_k_e2e.py
@@ -244,7 +246,7 @@ fast	tests/test_schedule_v2.py
 fast	tests/test_scheduler_env_probe.py
 fast	tests/test_scheduler_exception_surface.py
 fast	tests/test_scheduler_gate.py
-fast	tests/test_second_round_rc_contract.py
+slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
 fast	tests/test_secret_key_strict_read.py
 fast	tests/test_sentinel_db_readonly.py
 fast	tests/test_session.py
@@ -304,7 +306,7 @@ fast	tests/test_web_logs_page.py
 fast	tests/test_web_mask_email_parity.py
 fast	tests/test_web_native_pickers.py
 fast	tests/test_web_page_consistency.py
-fast	tests/test_web_rate_limit_concurrency_e2e.py
+serial	tests/test_web_rate_limit_concurrency_e2e.py	# 真起 gunicorn 服务并打并发请求：串行轨独占核（原在快集，移此保持 serial 道非空且给并发面独占核）（本机 1.2s）
 fast	tests/test_web_render_golden.py
 fast	tests/test_web_security_gates.py
 fast	tests/test_web_settings_page.py
