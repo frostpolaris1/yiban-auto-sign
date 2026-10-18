@@ -791,9 +791,10 @@ STATUS_ICON = yiban_status.ICON
 STATUS_TEXT = yiban_status.TEXT
 
 
-# 账号状态族（`load_sign_state` / `_cred_paused_phones` / `clear_fuse_pause` /
-# `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：前三个与凭据熔断清理族在
-# 导入区再导出，`load_sign_state` 在下方转发（需注入本模块持有的 STATE_DIR）。
+# 账号状态族（`load_sign_state` / `accounts_terminal_summary` / `_cred_paused_phones` /
+# `clear_fuse_pause` / `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：前两个与
+# 凭据熔断清理族在导入区再导出，`load_sign_state` / `accounts_terminal_summary` 在下方转发
+# （需注入本模块持有的 STATE_DIR）。
 
 
 def load_sign_state(date_str=None):
@@ -802,6 +803,14 @@ def load_sign_state(date_str=None):
     状态目录按调用时刻现取本模块的 `STATE_DIR`（可被 `--config` 等参数覆盖）。
     """
     return _logs_svc.load_sign_state(STATE_DIR, date_str)
+
+
+def accounts_terminal_summary(days=30):
+    """窗口内账号终态统计（实现见 web/services/logs.py 的同名函数）。
+
+    状态目录按调用时刻现取本模块的 `STATE_DIR`（与 `load_sign_state` 同一份）。
+    """
+    return _logs_svc.accounts_terminal_summary(STATE_DIR, days)
 
 logger = logging.getLogger("web")
 

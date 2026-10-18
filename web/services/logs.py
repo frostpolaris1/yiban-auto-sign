@@ -9,7 +9,8 @@
 `_LOG_TAIL_BYTES`）、按天文件路径 `log_path_for`、逐行解析 `parse_sign_log` /
 `_log_lines_for`、日期串形状校验 `_is_valid_date_str`、最近有日志的日期
 `_today_has_logs` / `_most_recent_log_date`、出站脱敏 `_mask_log_phones`；以及账号
-状态族的读取与熔断记录清理：按日状态文件 `load_sign_state`、账密故障暂停集合
+状态族的读取与熔断记录清理：按日状态文件 `load_sign_state` / `load_sign_state_ex`、
+看板账号终态统计 `accounts_terminal_summary`、账密故障暂停集合
 `_cred_paused_phones`、凭据变更后清熔断 `clear_fuse_pause` / `clear_fuse_on_cred_change`。
 
 **归属**
@@ -279,15 +280,17 @@ for _code, _sym in yiban_status.SYMBOL.items():
     _SYM_TO_STATUS.setdefault(_sym, _code)
 
 
-def load_sign_state(state_dir, date_str=None):
-    """读取按日结构化状态文件：{phone: {status, message, time, task}}。
+def load_sign_state_ex(state_dir, date_str=None):
+    """读某日终态载体 → `(data, source)`；`source` 说明数据从哪来（判据的唯一实现处）。
 
-    缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
-    覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
-    两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
+    返回 `source` 的理由：**"这一天没有终态载体"与"这一天有载体但内容为空"必须能分开**
+    ——前者若静默按 0 计，看板会把"没跑过/文件没生成"显示成"零账号"（AGENTS §30 跳过
+    不得当绿）。`load_sign_state` 是本函数的投影（既有调用面只关心 data）。
 
-    `state_dir` 由调用方传入（`web.app` 的 `STATE_DIR`）——它是可被参数覆盖、
-    也会随运行方式变化的模块级名字。
+    `source` 取值：
+      `"state"` 按日结构化文件 `sign-state-<date>.json`（非空 dict）；
+      `"daily"` 旧格式 `sign-daily-<date>.json`（符号 → 状态码，部署过渡期/历史日期）；
+      `"none"`  两者都读不到（缺失、损坏、非 dict）——调用方按"无数据"处理。
     """
     date_str = date_str or clock.now().strftime("%Y-%m-%d")
     path = os.path.join(state_dir, f"sign-state-{date_str}.json")
@@ -296,7 +299,7 @@ def load_sign_state(state_dir, date_str=None):
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, dict) and data:
-            return data
+            return data, "state"
     except (OSError, ValueError):
         pass
     # 回退：sign-daily（旧版符号）→ 状态码（反查表见模块级 `_SYM_TO_STATUS`，由 `SYMBOL` 取反）
@@ -305,13 +308,84 @@ def load_sign_state(state_dir, date_str=None):
         with open(daily_path, encoding="utf-8-sig") as f:
             daily = json.load(f)
     except (OSError, ValueError):
-        return {}
+        return {}, "none"
     if not isinstance(daily, dict):
-        return {}
+        return {}, "none"
     return {
         phone: {"status": _SYM_TO_STATUS.get(sym, yiban_status.STATUS_PENDING),
                 "message": "", "task": "default"}
         for phone, sym in daily.items()
+    }, "daily"
+
+
+def load_sign_state(state_dir, date_str=None):
+    """读取按日终态载体：{phone: {status, message, time, task}}。
+
+    缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
+    覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
+    两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
+
+    `state_dir` 由调用方传入（`web.app` 的 `STATE_DIR`）——它是可被参数覆盖、
+    也会随运行方式变化的模块级名字。
+    读取实现在 `load_sign_state_ex`（唯一一份，含来源判定）。
+    """
+    return load_sign_state_ex(state_dir, date_str)[0]
+
+
+# ---------------------------------------------------------------------------
+# 看板账号统计（终态口径）
+# ---------------------------------------------------------------------------
+def accounts_terminal_summary(state_dir, days=30):
+    """窗口内**账号终态**统计——看板 `accounts_stats` 的唯一来源。
+
+    终态载体是**按日状态文件**，不是 `sign_events`。旧实现按"每账号当日最后一条事件
+    （id 最大者）"模拟终态；2026-10-16 生产收尾洪水写了 5,287 条 `pending` 观测
+    （每账号 17 条、`attempt` 不变），把 311 个账号的"最后一条事件"刷成待签，而当日
+    `sign-state-2026-10-16.json` 是 `{failed:233, already:78, user_cancelled:6}`
+    （工单 yiban-auto-sign-v5ty）。过程只留在日志页（`/api/admin/sign-events` 的
+    `events` / `daily_stats`），不进本函数。
+
+    口径（三个字段**全部**从终态推出，不许一半事件一半文件）：
+    - `total`：窗口内**出现过的账号并集**（同一账号跨天只计一次）；
+    - `by_status`：每状态窗口内**去重账号数**（各桶独立去重，桶间可有交集；不得相加当
+      `total`）；
+    - `by_day`：日 × 终态，**日内每号恰一桶**（终态文件里每号恰一个 status）⇒ 桶互斥、
+      当日相加合法。条目缺 `status` 或非 dict 按 `pending`（与日历页"无记录=待签"同口径）；
+    - `days_missing`：窗口内**没有终态载体**的日期（`load_sign_state_ex` 的 `source ==
+      "none"`），升序。看板据此区分"真 0"与"没有数据"。
+
+    窗口 = `[today-(days-1), today]`（含两端）。读取走 `load_sign_state_ex`——与日历页、
+    账号表**同一份**实现（含旧格式回退），故看板与日历页对同一天的判定一致。
+    """
+    try:
+        days = max(1, int(days))
+    except (TypeError, ValueError):
+        days = 30
+    today = clock.now()
+    total_accounts = set()
+    by_status = {}
+    by_day = []
+    days_missing = []
+    for i in range(days - 1, -1, -1):
+        day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        data, source = load_sign_state_ex(state_dir, day)
+        if source == "none":
+            days_missing.append(day)
+            continue
+        counts = {}
+        for phone, entry in data.items():
+            status = entry.get("status") if isinstance(entry, dict) else ""
+            status = str(status or "").strip() or yiban_status.STATUS_PENDING
+            counts[status] = counts.get(status, 0) + 1
+            total_accounts.add(str(phone))
+            by_status.setdefault(status, set()).add(str(phone))
+        for status in sorted(counts):
+            by_day.append({"day": day, "status": status, "accounts": counts[status]})
+    return {
+        "total": len(total_accounts),
+        "by_status": {s: len(ps) for s, ps in sorted(by_status.items())},
+        "by_day": by_day,
+        "days_missing": days_missing,
     }
 
 
