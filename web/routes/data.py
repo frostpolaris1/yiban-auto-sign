@@ -217,10 +217,15 @@ def api_logs():
 
 
 def api_admin_sign_events():
-    """sign_events 结构化查询：单账号时间线 / 实时事件流 / 按天统计。
+    """sign_events 结构化查询：单账号时间线 / 实时事件流 / 按天统计 + 看板账号终态统计。
 
     权限：路径不在普通用户白名单，require_login 统一 403（普通用户越权访问
     会另记 forbidden_path 审计）。手机号一律打码后返回，条数封顶 200。
+
+    `accounts_stats` 是**终态口径**（账号终态统计），来源是按日状态文件
+    （`web/services/logs.py::accounts_terminal_summary`），**不读事件表**；
+    `stage` 只作用于 `events` 与 `daily_stats`（事件表口径），对 `accounts_stats`
+    不适用（用户 2026-10-18 裁定：统计按终态，过程只出现在日志里）。
     """
     m = _appmod()
     phone = str(request.args.get("phone", "")).strip()
@@ -271,7 +276,10 @@ def api_admin_sign_events():
     # 账号数终值：`daily_stats.cnt` 按 (day,status) 各自去重、桶间不互斥，前端拿不到
     # phone 明细也无从自行去重——「涉及多少账号」「按日最终态」只能在这里出权威值
     # （把 cnt 跨天跨状态直加当总数是现网 953 vs 真值 94 的来源，MF-55）。
-    accounts_stats = m.db.sign_event_accounts_summary(days=days, stage=stage or None)
+    # 来源是**按日状态文件**（终态载体），不读事件表——旧实现取"每账号当日最后一条事件"
+    # 当终态，2026-10-16 的收尾 pending 观测把 311 个账号刷成待签（真值是 failed 233 /
+    # already 78），工单 yiban-auto-sign-v5ty。`stage` 对终态口径不适用。
+    accounts_stats = m.accounts_terminal_summary(days=days)
     return jsonify(
         {
             "ok": True,
