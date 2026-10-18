@@ -93,21 +93,23 @@ def _as_state_int(raw):
 
 
 #: 照片要求的文本标记：`Remark` 出现这些字样时按"平台要求照片"留证。
-#: **这是启发式，不是平台契约**——`IsNeedPhoto` 的取值语义未证（实拍只观测到 2），
-#: `Remark` 是平台中文散文。两者只用于日志与结果附注，**不作任何控制流判据**。
+#: **这是启发式，不是平台契约**——`Remark` 是平台中文散文。只用于日志与结果附注，
+#: **不作任何控制流判据**。`IsNeedPhoto` 不参与这条判据，理由见下。
 _PHOTO_REMARK_MARKERS = ("照片",)
 
 
-def _looks_like_photo_required(raw_is_need_photo, remark):
+def _looks_like_photo_required(remark):
     """启发式：本响应是否**可能**要求上传签到照片。仅用于留证，不改变判定。
 
-    判据两条取或：`Remark` 含"照片"类字样；`IsNeedPhoto` 收敛后非零。
-    非零不等于"需要照片"（语义未证），故调用方只把结论写成附注，状态与重试档位不动。
+    判据只有一条：`Remark` 含"照片"类字样——那是平台自己的散文。
+
+    **`IsNeedPhoto` 刻意不参与**：全仓实拍只观测到取值 2（`SPEC.md` §3.1 与拆包报告
+    一致），零与非零的语义**均未证**。若拿"非零"当判据，而平台在正常响应里恒发 2，
+    则每一个 `no_position` 都会被打上"平台要求照片"——那是**系统性误报**，比沉默更坏：
+    运维会把"学校没配围栏"读成"要照片、我们不做"，正是本诊断要消灭的"看不懂"。
+    原值仍由调用方逐条打印（`IsNeedPhoto=<原值>`），判据留给人看。
     """
-    if any(marker in (remark or "") for marker in _PHOTO_REMARK_MARKERS):
-        return True
-    value = _as_state_int(raw_is_need_photo)
-    return value is not None and value != 0
+    return any(marker in (remark or "") for marker in _PHOTO_REMARK_MARKERS)
 
 
 def _judge_by_state(state):
@@ -504,7 +506,7 @@ class YibanClient:
             ) or "None"
             safe_remark = masking.sanitize_text(str(data_obj.get("Remark") or ""))
             photo_fact = ""
-            if _looks_like_photo_required(raw_is_need_photo, data_obj.get("Remark")):
+            if _looks_like_photo_required(data_obj.get("Remark")):
                 photo_fact = (
                     "；平台要求上传签到照片，本程序不实现，该账号今日无法签成"
                     "（IsNeedPhoto 取值语义未证，原值留证，不作判定依据）"
