@@ -681,7 +681,121 @@ onBeforeUnmount(() => {
   <div class="logs">
     <el-tabs v-model="tab">
       <el-tab-pane label="日志" name="main">
-        <!-- 运行巡检：巡检页首块。轮级摘要一眼看完，点某轮展开该轮时间线。 -->
+        <!-- 签到日志：本页第一块。运行巡检降为下一块，避免用户进「签到日志」先看到
+             四段诊断信息、把真正的日志推到第二屏。 -->
+        <div class="card">
+          <div class="logs-head logs-head--log">
+            <h2 class="logs-title">签到日志 <span class="logs-file">{{ payload?.log_file ?? "" }}</span></h2>
+            <div class="logs-tools">
+              <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
+                   （原来只有 @keyup.enter + 裸按钮，那个键按下去什么也不发生）。
+                   回车另有输入框上的 keydown 处理：检索按钮在 loading 期间是 disabled，而
+                   隐式提交要求默认按钮可用——只留表单会在 loading 窗口把回车变成静默无效。
+                   组合输入（中文输入法）期的回车不检索，由 form 上的 composing 标志挡住那次
+                   隐式提交（浏览器不为 isComposing 跳过隐式提交，只挡 keydown 是不够的）。 -->
+              <form
+                class="logs-search"
+                role="search"
+                aria-label="检索日志"
+                @submit.prevent="submitSearch"
+                @compositionstart="composing = true"
+                @compositionend="composing = false"
+              >
+                <label class="sr-only" for="logs-search-input">检索日志关键字</label>
+                <input
+                  id="logs-search-input"
+                  v-model="searchInput"
+                  class="input"
+                  type="search"
+                  placeholder="检索日志关键字"
+                  @keydown.enter="onSearchEnter"
+                />
+                <button type="submit" class="btn btn--ghost btn--sm" :disabled="loading">检索</button>
+              </form>
+              <div class="logs-actions">
+                <button
+                  type="button"
+                  class="btn btn--ghost btn--sm"
+                  :aria-pressed="showAll ? 'true' : 'false'"
+                  @click="toggleAll"
+                >
+                  {{ showAll ? "回到最近日志" : "显示全部日志" }}
+                </button>
+                <a v-if="canExport" class="btn btn--ghost btn--sm" :href="exportHref" :download="exportName" role="button">导出日志</a>
+                <button v-else type="button" class="btn btn--ghost btn--sm" disabled title="尚未加载出可导出的日期">导出日志</button>
+              </div>
+            </div>
+            <!-- 状态文本是「看不见的事实」类文案，不是控件。它独立成次要行、落在控件行之下，
+                 不与按钮抢同一行——否则右组超宽时它折到第二行，标题（align-items:center）
+                 会对齐两行整块，与控件行错位（2026-10-11 结构修）。 -->
+            <span class="logs-info" role="status">{{ loading ? "正在加载日志…" : info }}</span>
+          </div>
+
+          <div class="logs-datebar">
+            <label class="logs-field">
+              <span class="logs-label">查看日期</span>
+              <!-- 日期也走 Element Plus：原生 input[type=date] 的日历弹层由 UA 渲染、样式不可控。
+                   value-format 保持 "YYYY-MM-DD"，与 isValidDate / URL 深链口径逐字一致；
+                   清空得到 null，onDatePick 归一成 ""。 -->
+              <el-date-picker
+                :model-value="dateInput || null"
+                type="date"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                placeholder="选择日期"
+                aria-label="查看日期"
+                class="logs-date"
+                @update:model-value="onDatePick"
+              />
+            </label>
+            <div class="logs-date-actions">
+              <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="viewDateAction">查看该日日志</button>
+              <button v-if="payload && !isToday" type="button" class="btn btn--ghost btn--sm" @click="backToToday">回到今天</button>
+            </div>
+            <!-- 级别档开关：默认收起 INFO（巡检只看 WARN／ERROR）。类名刻意与
+                 `.logs-check`（自动刷新）分开——两处同用一个类会让既有 e2e 选择器命中两个。 -->
+            <div class="logs-filters">
+              <label class="logs-level">
+                <input id="logs-level-warn" v-model="warnOnly" type="checkbox" @change="onLevelChange" />
+                <span>只看告警（收起 INFO）</span>
+              </label>
+              <label class="logs-check">
+                <input v-model="autoRefresh" type="checkbox" @change="onAutoRefreshChange" />
+                <span>自动刷新（10 秒，仅跟随最新时）</span>
+              </label>
+            </div>
+          </div>
+
+          <el-alert v-if="errorText" type="error" :title="errorText" :closable="false" show-icon style="margin: 8px 0" />
+          <div v-if="errorText" class="logs-retry">
+            <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="load()">重试</button>
+          </div>
+          <pre v-show="logText" ref="logBox" class="log-box" role="log" aria-live="off">{{ logText }}</pre>
+          <div v-if="!logText && !loading && !errorText" id="logs-empty" class="logs-empty">
+            <p v-if="keyword">（无匹配日志行）</p>
+            <p v-else-if="collapsed > 0">
+              （当前档只显示 WARN／ERROR，已收起 {{ collapsed }} 行 INFO／DEBUG）
+              <button type="button" class="btn btn--ghost btn--sm" @click="showAllLevels">显示全部级别</button>
+            </p>
+            <p v-else>
+              {{ viewDate ? `（${viewDate} 无签到日志）` : "（暂无签到日志，等待定时任务执行…）" }}
+              <button
+                v-if="payload?.recent_log_date"
+                type="button"
+                class="btn btn--ghost btn--sm"
+                @click="jumpToRecent(payload.recent_log_date)"
+              >
+                查看 {{ payload.recent_log_date }}
+              </button>
+            </p>
+          </div>
+        </div>
+
+
+      </el-tab-pane>
+
+      <el-tab-pane label="运行巡检" name="inspect">
+        <!-- 运行巡检：轮级摘要一眼看完，点某轮展开该轮时间线。 -->
         <div id="run-panel" class="card">
           <div class="logs-head">
             <h2 class="logs-title">运行巡检</h2>
@@ -716,25 +830,38 @@ onBeforeUnmount(() => {
             </div>
             <p v-else class="run-note">等待实时进度流…</p>
             <p class="run-note">注：以上为 run_events 事件计数（不去重），与首页「今日成功账号」（按账号去重）不是同一口径。</p>
-            <el-table v-if="liveExecs.length" id="live-execs" :data="liveExecs" size="small">
-              <el-table-column prop="executor" label="执行体" width="130" />
-              <el-table-column label="最近活动" width="110">
-                <template #default="{ row }">{{ eventTime(row.last_ts) }}</template>
-              </el-table-column>
-              <el-table-column prop="claim" label="领取" width="70" />
-              <el-table-column prop="start" label="开始" width="70" />
-              <el-table-column prop="success" label="成功事件" width="90" />
-              <el-table-column prop="fail" label="失败" width="70" />
-              <el-table-column prop="pause" label="暂停" width="70" />
-              <el-table-column prop="finalize" label="收尾" width="70" />
-              <el-table-column prop="unexecuted" label="未执行" width="80" />
-              <el-table-column label="耗时" width="90">
-                <template #default="{ row }">{{ formatDuration(row.duration_sec) }}</template>
-              </el-table-column>
-              <el-table-column label="状态" min-width="110">
-                <template #default="{ row }">{{ execRowNote(row) }}</template>
-              </el-table-column>
-            </el-table>
+            <div class="run-table-wrap">
+              <el-table v-if="liveExecs.length" id="live-execs" :data="liveExecs" size="small">
+                <el-table-column prop="executor" label="执行体" width="130" />
+                <el-table-column label="最近活动" width="110">
+                  <template #default="{ row }">{{ eventTime(row.last_ts) }}</template>
+                </el-table-column>
+                <el-table-column prop="claim" label="领取" width="70" />
+                <el-table-column prop="start" label="开始" width="70" />
+                <el-table-column prop="success" label="成功事件" width="90" />
+                <el-table-column prop="fail" label="失败" width="70" />
+                <el-table-column prop="pause" label="暂停" width="70" />
+                <el-table-column prop="finalize" label="收尾" width="70" />
+                <el-table-column prop="unexecuted" label="未执行" width="80" />
+                <el-table-column label="耗时" width="90">
+                  <template #default="{ row }">{{ formatDuration(row.duration_sec) }}</template>
+                </el-table-column>
+                <el-table-column label="状态" min-width="110">
+                  <template #default="{ row }">{{ execRowNote(row) }}</template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <div v-if="liveExecs.length" class="run-mobile-cards" aria-label="实时执行体">
+              <article v-for="row in liveExecs" :key="'live-' + row.executor" class="run-mobile-card">
+                <div class="run-mobile-top">
+                  <strong>{{ row.executor }}</strong>
+                  <span class="run-info">{{ eventTime(row.last_ts) }}</span>
+                </div>
+                <div class="run-mobile-meta">领取 {{ row.claim }} · 开始 {{ row.start }} · 成功 {{ row.success }} · 失败 {{ row.fail }}</div>
+                <div class="run-mobile-meta">暂停 {{ row.pause }} · 收尾 {{ row.finalize }} · 未执行 {{ row.unexecuted }} · {{ formatDuration(row.duration_sec) }}</div>
+                <div class="run-mobile-meta">{{ execRowNote(row) }}</div>
+              </article>
+            </div>
             <div id="live-recent" class="live-recent">
               <span class="live-recent-label">最近事件（不含账号）</span>
               <span class="live-recent-text">{{ liveRecentText }}</span>
@@ -749,34 +876,50 @@ onBeforeUnmount(() => {
             <p v-if="execError" class="run-note">{{ execError }}</p>
             <template v-else>
               <p id="exec-health-summary" class="run-info">{{ execSummaryLine }}</p>
-              <el-table v-if="execCards.length" id="exec-health-table" :data="execCards" size="small">
-                <el-table-column label="执行体" min-width="150">
-                  <template #default="{ row }">
-                    <span class="exec-name">{{ cardName(row) }}</span>
-                    <span
-                      v-if="unconfiguredNote(row)"
-                      id="exec-health-unconfigured"
-                      class="exec-flag"
-                    >{{ unconfiguredNote(row) }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="身份" width="120">
-                  <template #default="{ row }"><span class="exec-ident">{{ row.identity }}</span></template>
-                </el-table-column>
-                <el-table-column label="状态" width="110">
-                  <template #default="{ row }">
-                    <span class="badge" :class="`badge--${execStateTone(row.state)}`">
-                      {{ execStateText(row.state) }}
-                    </span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="心跳 / 最后活动" min-width="230">
-                  <template #default="{ row }">{{ heartbeatText(row) }}</template>
-                </el-table-column>
-                <el-table-column label="吞吐" min-width="200">
-                  <template #default="{ row }">{{ throughputText(row) }}</template>
-                </el-table-column>
-              </el-table>
+              <div class="run-table-wrap">
+                <el-table v-if="execCards.length" id="exec-health-table" :data="execCards" size="small">
+                  <el-table-column label="执行体" min-width="150">
+                    <template #default="{ row }">
+                      <span class="exec-name">{{ cardName(row) }}</span>
+                      <span
+                        v-if="unconfiguredNote(row)"
+                        id="exec-health-unconfigured"
+                        class="exec-flag"
+                      >{{ unconfiguredNote(row) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="身份" width="120">
+                    <template #default="{ row }"><span class="exec-ident">{{ row.identity }}</span></template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="110">
+                    <template #default="{ row }">
+                      <span class="badge" :class="`badge--${execStateTone(row.state)}`">
+                        {{ execStateText(row.state) }}
+                      </span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="心跳 / 最后活动" min-width="230">
+                    <template #default="{ row }">{{ heartbeatText(row) }}</template>
+                  </el-table-column>
+                  <el-table-column label="吞吐" min-width="200">
+                    <template #default="{ row }">{{ throughputText(row) }}</template>
+                  </el-table-column>
+                </el-table>
+              </div>
+              <div v-if="execCards.length" class="run-mobile-cards" aria-label="执行体健康">
+                <article v-for="row in execCards" :key="'health-' + row.identity" class="run-mobile-card">
+                  <div class="run-mobile-top">
+                    <strong>{{ cardName(row) }}</strong>
+                    <span class="badge" :class="`badge--${execStateTone(row.state)}`">{{ execStateText(row.state) }}</span>
+                  </div>
+                  <div class="run-mobile-meta">
+                    {{ row.identity }}
+                    <span v-if="unconfiguredNote(row)"> · {{ unconfiguredNote(row) }}</span>
+                  </div>
+                  <div class="run-mobile-meta">{{ heartbeatText(row) }}</div>
+                  <div class="run-mobile-meta">{{ throughputText(row) }}</div>
+                </article>
+              </div>
               <p id="exec-health-caliber" class="run-note">
                 吞吐口径：分子＝当日该执行体名下**已了结**的账号数（任务台账按执行体分组，一账号一行）；
                 分母＝有效签到窗口长度。它与上方「运行进度」的事件计数（不去重）不是同一口径。
@@ -817,190 +960,146 @@ onBeforeUnmount(() => {
           </div>
           <template v-else>
             <div id="run-summary">
-              <el-table :data="runRounds" size="small" @row-click="selectRound">
-                <el-table-column prop="day" label="业务日" width="120" />
-                <el-table-column prop="executor_label" label="执行体" width="130" />
-                <el-table-column prop="claim" label="领取" width="80" />
-                <el-table-column prop="success" label="成功" width="80" />
-                <el-table-column prop="fail" label="失败" width="80" />
-                <el-table-column prop="unexecuted" label="未执行" width="90" />
-                <el-table-column label="耗时" width="110">
-                  <template #default="{ row }">{{ formatDuration(row.duration_sec) }}</template>
-                </el-table-column>
-                <el-table-column label="选中" width="90">
-                  <template #default="{ row }">
+              <div class="run-table-wrap">
+                <el-table :data="runRounds" size="small" @row-click="selectRound">
+                  <el-table-column prop="day" label="业务日" width="120" />
+                  <el-table-column prop="executor_label" label="执行体" width="130" />
+                  <el-table-column prop="claim" label="领取" width="80" />
+                  <el-table-column prop="success" label="成功" width="80" />
+                  <el-table-column prop="fail" label="失败" width="80" />
+                  <el-table-column prop="unexecuted" label="未执行" width="90" />
+                  <el-table-column label="耗时" width="110">
+                    <template #default="{ row }">{{ formatDuration(row.duration_sec) }}</template>
+                  </el-table-column>
+                  <el-table-column label="选中" width="90">
+                    <template #default="{ row }">
+                      <span v-if="roundKey(row) === selectedKey" class="run-current">当前</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+              <div class="run-mobile-cards" aria-label="轮次摘要">
+                <button
+                  v-for="row in runRounds"
+                  :key="'round-' + roundKey(row)"
+                  type="button"
+                  class="run-mobile-card run-mobile-card--button"
+                  :class="{ 'is-current': roundKey(row) === selectedKey }"
+                  @click="selectRound(row)"
+                >
+                  <span class="run-mobile-top">
+                    <strong>{{ row.day }} · {{ row.executor_label }}</strong>
                     <span v-if="roundKey(row) === selectedKey" class="run-current">当前</span>
-                  </template>
-                </el-table-column>
-              </el-table>
+                  </span>
+                  <span class="run-mobile-meta">领取 {{ row.claim }} · 成功 {{ row.success }} · 失败 {{ row.fail }} · 未执行 {{ row.unexecuted }}</span>
+                  <span class="run-mobile-meta">{{ formatDuration(row.duration_sec) }}</span>
+                </button>
+              </div>
             </div>
             <p v-if="runTruncatedLine" id="run-summary-truncated" class="run-note">
               {{ runTruncatedLine }}
             </p>
             <h3 class="run-sub">{{ timelineTitle }}</h3>
             <div id="run-timeline">
-              <el-table :data="runEvents" size="small">
-                <template #empty>
-                  <div id="run-timeline-empty" class="run-empty">该轮没有可展开的事件行</div>
-                </template>
-                <el-table-column label="时刻" width="110">
-                  <template #default="{ row }">{{ eventTime(row.ts) }}</template>
-                </el-table-column>
-                <el-table-column prop="node_label" label="节点" width="90" />
-                <el-table-column prop="phone" label="账号" width="150">
-                  <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
-                  <template #default="{ row }">{{ row.phone || "--" }}</template>
-                </el-table-column>
-                <el-table-column prop="message" label="说明" min-width="260" show-overflow-tooltip />
-              </el-table>
+              <div class="run-table-wrap">
+                <el-table :data="runEvents" size="small">
+                  <template #empty>
+                    <div id="run-timeline-empty" class="run-empty">该轮没有可展开的事件行</div>
+                  </template>
+                  <el-table-column label="时刻" width="110">
+                    <template #default="{ row }">{{ eventTime(row.ts) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="node_label" label="节点" width="90" />
+                  <el-table-column prop="phone" label="账号" width="150">
+                    <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
+                    <template #default="{ row }">{{ row.phone || "--" }}</template>
+                  </el-table-column>
+                  <el-table-column prop="message" label="说明" min-width="260" show-overflow-tooltip />
+                </el-table>
+              </div>
+              <div v-if="runEvents.length" class="run-mobile-cards" aria-label="事件时间线">
+                <article v-for="(row, i) in runEvents" :key="'timeline-' + i" class="run-mobile-card">
+                  <div class="run-mobile-top">
+                    <strong>{{ eventTime(row.ts) }}</strong>
+                    <span class="run-info">{{ row.node_label }}</span>
+                  </div>
+                  <div class="run-mobile-meta">{{ row.phone || "--" }}</div>
+                  <p class="run-mobile-msg">{{ row.message }}</p>
+                </article>
+              </div>
+              <p v-else class="run-empty">该轮没有可展开的事件行</p>
               <p v-if="runPayload?.events_truncated" id="run-timeline-truncated" class="run-note">
                 时间线已截断（本次最多 {{ runPayload.events_limit }} 行）。
               </p>
             </div>
           </template>
         </div>
-
-        <div class="card">
-          <div class="logs-head logs-head--log">
-            <h2 class="logs-title">签到日志 <span class="logs-file">{{ payload?.log_file ?? "" }}</span></h2>
-            <div class="logs-tools">
-              <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
-                   （原来只有 @keyup.enter + 裸按钮，那个键按下去什么也不发生）。
-                   回车另有输入框上的 keydown 处理：检索按钮在 loading 期间是 disabled，而
-                   隐式提交要求默认按钮可用——只留表单会在 loading 窗口把回车变成静默无效。
-                   组合输入（中文输入法）期的回车不检索，由 form 上的 composing 标志挡住那次
-                   隐式提交（浏览器不为 isComposing 跳过隐式提交，只挡 keydown 是不够的）。 -->
-              <form
-                class="logs-search"
-                role="search"
-                aria-label="检索日志"
-                @submit.prevent="submitSearch"
-                @compositionstart="composing = true"
-                @compositionend="composing = false"
-              >
-                <label class="sr-only" for="logs-search-input">检索日志关键字</label>
-                <input
-                  id="logs-search-input"
-                  v-model="searchInput"
-                  class="input"
-                  type="search"
-                  placeholder="检索日志关键字"
-                  @keydown.enter="onSearchEnter"
-                />
-                <button type="submit" class="btn btn--ghost btn--sm" :disabled="loading">检索</button>
-              </form>
-              <button
-                type="button"
-                class="btn btn--ghost btn--sm"
-                :aria-pressed="showAll ? 'true' : 'false'"
-                @click="toggleAll"
-              >
-                {{ showAll ? "回到最近日志" : "显示全部日志" }}
-              </button>
-              <a v-if="canExport" class="btn btn--ghost btn--sm" :href="exportHref" :download="exportName" role="button">导出日志</a>
-              <button v-else type="button" class="btn btn--ghost btn--sm" disabled title="尚未加载出可导出的日期">导出日志</button>
-            </div>
-            <!-- 状态文本是「看不见的事实」类文案，不是控件。它独立成次要行、落在控件行之下，
-                 不与按钮抢同一行——否则右组超宽时它折到第二行，标题（align-items:center）
-                 会对齐两行整块，与控件行错位（2026-10-11 结构修）。 -->
-            <span class="logs-info" role="status">{{ loading ? "正在加载日志…" : info }}</span>
-          </div>
-
-          <div class="logs-datebar">
-            <label class="logs-field">
-              <span class="logs-label">查看日期</span>
-              <!-- 日期也走 Element Plus：原生 input[type=date] 的日历弹层由 UA 渲染、样式不可控。
-                   value-format 保持 "YYYY-MM-DD"，与 isValidDate / URL 深链口径逐字一致；
-                   清空得到 null，onDatePick 归一成 ""。 -->
-              <el-date-picker
-                :model-value="dateInput || null"
-                type="date"
-                format="YYYY-MM-DD"
-                value-format="YYYY-MM-DD"
-                placeholder="选择日期"
-                aria-label="查看日期"
-                class="logs-date"
-                @update:model-value="onDatePick"
-              />
-            </label>
-            <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="viewDateAction">查看该日日志</button>
-            <button v-if="payload && !isToday" type="button" class="btn btn--ghost btn--sm" @click="backToToday">回到今天</button>
-            <!-- 级别档开关：默认收起 INFO（巡检只看 WARN／ERROR）。类名刻意与
-                 `.logs-check`（自动刷新）分开——两处同用一个类会让既有 e2e 选择器命中两个。 -->
-            <label class="logs-level">
-              <input id="logs-level-warn" v-model="warnOnly" type="checkbox" @change="onLevelChange" />
-              <span>只看告警（收起 INFO）</span>
-            </label>
-            <label class="logs-check">
-              <input v-model="autoRefresh" type="checkbox" @change="onAutoRefreshChange" />
-              <span>自动刷新（10 秒，仅跟随最新时）</span>
-            </label>
-          </div>
-
-          <el-alert v-if="errorText" type="error" :title="errorText" :closable="false" show-icon style="margin: 8px 0" />
-          <div v-if="errorText" class="logs-retry">
-            <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="load()">重试</button>
-          </div>
-          <pre v-show="logText" ref="logBox" class="log-box" role="log" aria-live="off">{{ logText }}</pre>
-          <div v-if="!logText && !loading && !errorText" id="logs-empty" class="logs-empty">
-            <p v-if="keyword">（无匹配日志行）</p>
-            <p v-else-if="collapsed > 0">
-              （当前档只显示 WARN／ERROR，已收起 {{ collapsed }} 行 INFO／DEBUG）
-              <button type="button" class="btn btn--ghost btn--sm" @click="showAllLevels">显示全部级别</button>
-            </p>
-            <p v-else>
-              {{ viewDate ? `（${viewDate} 无签到日志）` : "（暂无签到日志，等待定时任务执行…）" }}
-              <button
-                v-if="payload?.recent_log_date"
-                type="button"
-                class="btn btn--ghost btn--sm"
-                @click="jumpToRecent(payload.recent_log_date)"
-              >
-                查看 {{ payload.recent_log_date }}
-              </button>
-            </p>
-          </div>
-        </div>
       </el-tab-pane>
 
       <el-tab-pane name="signev">
         <template #label>签到事件 <span class="logs-count">{{ payload?.sign_events.length ?? 0 }}</span></template>
         <div class="card">
-          <el-table :data="signRows" size="small" @sort-change="onSignSort">
-            <template #empty>
-              <div class="logs-empty">
-                该日无签到事件
-                <button
-                  v-if="payload?.recent_sign_date"
-                  type="button"
-                  class="btn btn--ghost btn--sm"
-                  @click="jumpToRecent(payload.recent_sign_date)"
-                >
-                  查看 {{ payload.recent_sign_date }}
-                </button>
-              </div>
-            </template>
-            <el-table-column prop="time" label="时间" width="110" sortable="custom">
-              <template #default="{ row }">{{ row.time || "--:--:--" }}</template>
-            </el-table-column>
-            <el-table-column prop="phone" label="账号" width="150">
-              <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
-              <template #default="{ row }">{{ row.phone }}</template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="130" sortable="custom">
-              <template #default="{ row }">
-                <span
-                  class="badge"
-                  :class="`badge--${statusLabel('sign', row.status).tone}`"
-                  :title="statusLabel('sign', row.status).raw"
-                >{{ statusLabel("sign", row.status).label }}</span>
+          <div class="logs-table-wrap">
+            <el-table :data="signRows" size="small" @sort-change="onSignSort">
+              <template #empty>
+                <div class="logs-empty">
+                  该日无签到事件
+                  <button
+                    v-if="payload?.recent_sign_date"
+                    type="button"
+                    class="btn btn--ghost btn--sm"
+                    @click="jumpToRecent(payload.recent_sign_date)"
+                  >
+                    查看 {{ payload.recent_sign_date }}
+                  </button>
+                </div>
               </template>
-            </el-table-column>
-            <el-table-column prop="attempt" label="尝试" width="80" sortable="custom" />
-            <el-table-column prop="message" label="说明" min-width="240" show-overflow-tooltip>
-              <template #default="{ row }">{{ eventMessage(row, true) }}</template>
-            </el-table-column>
-          </el-table>
+              <el-table-column prop="time" label="时间" width="110" sortable="custom">
+                <template #default="{ row }">{{ row.time || "--:--:--" }}</template>
+              </el-table-column>
+              <el-table-column prop="phone" label="账号" width="150">
+                <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
+                <template #default="{ row }">{{ row.phone }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="130" sortable="custom">
+                <template #default="{ row }">
+                  <span
+                    class="badge"
+                    :class="`badge--${statusLabel('sign', row.status).tone}`"
+                    :title="statusLabel('sign', row.status).raw"
+                  >{{ statusLabel("sign", row.status).label }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="attempt" label="尝试" width="80" sortable="custom" />
+              <el-table-column prop="message" label="说明" min-width="240" show-overflow-tooltip>
+                <template #default="{ row }">{{ eventMessage(row, true) }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+          <div v-if="signRows.length" class="logs-event-cards" aria-label="签到事件">
+            <article v-for="(row, i) in signRows" :key="'sign-' + i" class="logs-event-card">
+              <div class="logs-event-top">
+                <span class="logs-event-time">{{ row.time || "--:--:--" }}</span>
+                <span class="badge" :class="`badge--${statusLabel('sign', row.status).tone}`" :title="statusLabel('sign', row.status).raw">
+                  {{ statusLabel("sign", row.status).label }}
+                </span>
+              </div>
+              <div class="logs-event-phone">{{ row.phone }}</div>
+              <div class="logs-event-attempt">尝试 {{ row.attempt }} 次</div>
+              <p class="logs-event-msg">{{ eventMessage(row, true) }}</p>
+            </article>
+          </div>
+          <p v-else class="logs-empty logs-event-empty">
+            该日无签到事件
+            <button
+              v-if="payload?.recent_sign_date"
+              type="button"
+              class="btn btn--ghost btn--sm"
+              @click="jumpToRecent(payload.recent_sign_date)"
+            >
+              查看 {{ payload.recent_sign_date }}
+            </button>
+          </p>
           <div v-if="(payload?.sign_events.length ?? 0) > 0" class="logs-pager">
             <span class="logs-pager-total">{{ eventCountText(payload?.sign_events.length ?? 0) }}</span>
             <el-pagination
@@ -1018,41 +1117,66 @@ onBeforeUnmount(() => {
       <el-tab-pane name="probe">
         <template #label>探针记录 <span class="logs-count">{{ payload?.probe_events.length ?? 0 }}</span></template>
         <div class="card">
-          <el-table :data="probeRows" size="small" @sort-change="onProbeSort">
-            <template #empty>
-              <div class="logs-empty">
-                该日无探针记录
-                <button
-                  v-if="payload?.recent_probe_date"
-                  type="button"
-                  class="btn btn--ghost btn--sm"
-                  @click="jumpToRecent(payload.recent_probe_date)"
-                >
-                  查看 {{ payload.recent_probe_date }}
-                </button>
-              </div>
-            </template>
-            <el-table-column prop="time" label="时间" width="110" sortable="custom">
-              <template #default="{ row }">{{ row.time || "--:--:--" }}</template>
-            </el-table-column>
-            <el-table-column prop="phone" label="账号" width="150">
-              <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
-              <template #default="{ row }">{{ row.phone }}</template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="130" sortable="custom">
-              <!-- 探针只有 failed/其它 两态：非 failed 一律「正常」，原始码保留在 title -->
-              <template #default="{ row }">
-                <span
-                  class="badge"
-                  :class="`badge--${statusLabel('probe', row.status).tone}`"
-                  :title="statusLabel('probe', row.status).raw"
-                >{{ statusLabel("probe", row.status).label }}</span>
+          <div class="logs-table-wrap">
+            <el-table :data="probeRows" size="small" @sort-change="onProbeSort">
+              <template #empty>
+                <div class="logs-empty">
+                  该日无探针记录
+                  <button
+                    v-if="payload?.recent_probe_date"
+                    type="button"
+                    class="btn btn--ghost btn--sm"
+                    @click="jumpToRecent(payload.recent_probe_date)"
+                  >
+                    查看 {{ payload.recent_probe_date }}
+                  </button>
+                </div>
               </template>
-            </el-table-column>
-            <el-table-column prop="message" label="说明" min-width="280" show-overflow-tooltip>
-              <template #default="{ row }">{{ eventMessage(row, false) }}</template>
-            </el-table-column>
-          </el-table>
+              <el-table-column prop="time" label="时间" width="110" sortable="custom">
+                <template #default="{ row }">{{ row.time || "--:--:--" }}</template>
+              </el-table-column>
+              <el-table-column prop="phone" label="账号" width="150">
+                <!-- 服务端已遮（唯一出口）；前端不再自遮，直接渲染下发值 -->
+                <template #default="{ row }">{{ row.phone }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="130" sortable="custom">
+                <!-- 探针只有 failed/其它 两态：非 failed 一律「正常」，原始码保留在 title -->
+                <template #default="{ row }">
+                  <span
+                    class="badge"
+                    :class="`badge--${statusLabel('probe', row.status).tone}`"
+                    :title="statusLabel('probe', row.status).raw"
+                  >{{ statusLabel("probe", row.status).label }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="message" label="说明" min-width="280" show-overflow-tooltip>
+                <template #default="{ row }">{{ eventMessage(row, false) }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+          <div v-if="probeRows.length" class="logs-event-cards" aria-label="探针记录">
+            <article v-for="(row, i) in probeRows" :key="'probe-' + i" class="logs-event-card">
+              <div class="logs-event-top">
+                <span class="logs-event-time">{{ row.time || "--:--:--" }}</span>
+                <span class="badge" :class="`badge--${statusLabel('probe', row.status).tone}`" :title="statusLabel('probe', row.status).raw">
+                  {{ statusLabel("probe", row.status).label }}
+                </span>
+              </div>
+              <div class="logs-event-phone">{{ row.phone }}</div>
+              <p class="logs-event-msg">{{ eventMessage(row, false) }}</p>
+            </article>
+          </div>
+          <p v-else class="logs-empty logs-event-empty">
+            该日无探针记录
+            <button
+              v-if="payload?.recent_probe_date"
+              type="button"
+              class="btn btn--ghost btn--sm"
+              @click="jumpToRecent(payload.recent_probe_date)"
+            >
+              查看 {{ payload.recent_probe_date }}
+            </button>
+          </p>
           <div v-if="(payload?.probe_events.length ?? 0) > 0" class="logs-pager">
             <span class="logs-pager-total">{{ eventCountText(payload?.probe_events.length ?? 0) }}</span>
             <el-pagination
@@ -1166,6 +1290,172 @@ onBeforeUnmount(() => {
 .logs-pager-total {
   font-size: 12px;
   color: var(--t-muted);
+}
+/* 页签计数：原先是紧贴标题的裸数字（渲染成「签到事件2」）。给一个小胶囊，
+   既分开标题与数字，也让三档页签的计数在同一基线上可扫读。 */
+.logs-count {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+/* 操作组：桌面与检索框同排；窄屏改为两列等宽按钮，不再右贴留出半行空白。 */
+.logs-actions,
+.logs-date-actions,
+.logs-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 桌面不渲染移动卡片；窄屏媒体块里再显示。 */
+.logs-event-cards,
+.logs-event-empty,
+.run-mobile-cards { display: none; }
+@media (max-width: 720px) {
+  .logs-head { align-items: stretch; gap: 10px; }
+  .logs-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    width: 100%;
+    margin-left: 0;
+  }
+  .logs-search { width: 100%; flex: 1 1 auto; min-width: 0; }
+  .logs-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .logs-actions > * { width: 100%; justify-content: center; }
+  .logs-datebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+  }
+  .logs-field { width: 100%; }
+  /* EP 的 .el-date-editor.el-input 会把宽度锁在 220px；带祖先的 :deep 选择器
+     才压得过它，让日期框与下方「查看该日日志」按钮同宽。 */
+  .logs-field :deep(.logs-date) { width: 100%; }
+  .logs-date-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .logs-date-actions > * { width: 100%; justify-content: center; }
+  .logs-date-actions > :only-child { grid-column: 1 / -1; }
+  .logs-filters {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .logs-level,
+  .logs-check { min-height: 28px; }
+  /* 内容少时不再留 220px 空白；长日志到 320px 后自身滚动。 */
+  .log-box { height: auto; min-height: 140px; max-height: 320px; }
+  /* 4 个页签在 390 下放不下，EP 会显示左右箭头并把第 4 个裁掉；
+     收窄内距与字号让四个页签完整露出，保留日志页原有的滑动活动条。 */
+  :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; }
+  :deep(.el-tabs__header) { margin-bottom: 12px; }
+
+  /* 事件/探针表 5 列在 390 只能看到前 3 列，尝试与说明被裁在视口外；
+     窄屏改为逐条卡片，桌面仍用 el-table。 */
+  .logs-table-wrap { display: none; }
+  .logs-event-cards { display: grid; gap: 10px; }
+  .logs-event-empty { display: block; }
+  .logs-event-card {
+    padding: 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: var(--bg-card);
+    min-width: 0;
+  }
+  .logs-event-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .logs-event-time {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--t-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .logs-event-phone {
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--t-base);
+    overflow-wrap: anywhere;
+  }
+  .logs-event-attempt {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--t-muted);
+  }
+  .logs-event-msg {
+    margin: 8px 0 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--t-sub);
+    overflow-wrap: anywhere;
+  }
+
+  /* 运行巡检的四张 el-table 在 390 下同样只露前 3 列；窄屏换成卡片，
+     保留执行体/心跳/吞吐、轮次摘要与时间线说明。 */
+  .run-table-wrap { display: none; }
+  .run-mobile-cards { display: grid; gap: 10px; }
+  .run-mobile-card {
+    display: block;
+    padding: 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: var(--bg-card);
+    min-width: 0;
+    font-size: 12px;
+  }
+  .run-mobile-card--button {
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+  }
+  .run-mobile-card.is-current {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+  }
+  .run-mobile-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .run-mobile-meta {
+    display: block;
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--t-sub);
+  }
+  .run-mobile-msg {
+    margin: 8px 0 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--t-sub);
+    overflow-wrap: anywhere;
+  }
 }
 .logs-empty {
   padding: 12px 0;

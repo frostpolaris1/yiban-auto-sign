@@ -9,9 +9,7 @@ import {
   type AuditFilters,
 } from "./query";
 import {
-  canLoadMore,
   mergePage,
-  nextPageNumber,
   resetState,
   type AuditPageResponse,
   type AuditState,
@@ -32,7 +30,6 @@ const errorText = ref("");
 
 const rows = computed(() => state.value.rows);
 const total = computed(() => state.value.total);
-const loadMoreAvailable = computed(() => canLoadMore(state.value));
 
 async function fetchPage(page: number, append: boolean): Promise<void> {
   loading.value = true;
@@ -85,10 +82,10 @@ function onSearchEnter(e: KeyboardEvent): void {
   search();
 }
 
-/** 加载更多：追加下一页（页码由 state 推导，避免重复点击翻两页）。 */
-function loadMore(): void {
-  if (loading.value || !loadMoreAvailable.value) return;
-  void fetchPage(nextPageNumber(state.value), true);
+/** 翻页：整页替换（与账号/用户/日志页的 el-pagination 同形，不再用"加载更多"追加）。 */
+function goPage(page: number): void {
+  if (loading.value || page === state.value.page) return;
+  void fetchPage(page, false);
 }
 
 function resetFilters(): void {
@@ -172,8 +169,8 @@ onMounted(search);
           </span>
         </label>
         <div class="audit-actions">
-          <button type="submit" class="btn btn--primary" :disabled="loading">查询</button>
-          <button type="button" class="btn btn--ghost" :disabled="loading" @click="resetFilters">重置</button>
+          <button type="submit" class="btn btn--primary btn--sm" :disabled="loading">查询</button>
+          <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="resetFilters">重置</button>
         </div>
       </form>
     </section>
@@ -215,18 +212,41 @@ onMounted(search);
         style="margin-bottom: 12px"
       />
       <el-skeleton v-if="loading && !rows.length" :rows="6" animated />
-      <el-table v-else :data="rows" size="small" row-key="row_id" empty-text="没有匹配的审计记录">
-        <el-table-column prop="ts" label="时间" width="170" />
-        <el-table-column prop="actor" label="操作者" width="150" />
-        <el-table-column prop="action" label="动作" width="180" />
-        <el-table-column prop="target" label="对象" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="detail" label="详情" min-width="240" show-overflow-tooltip />
-      </el-table>
+      <!-- 窄屏（≤900）用卡片列表：5 列固定宽合计约 900px，在 390/360 只能看到前两列，
+           对象与详情既看不见、也没有 hover 可用的 tooltip。桌面仍用 el-table。 -->
+      <template v-else>
+        <div class="audit-table-wrap">
+          <el-table :data="rows" size="small" row-key="row_id" empty-text="没有匹配的审计记录">
+            <el-table-column prop="ts" label="时间" width="170" />
+            <el-table-column prop="actor" label="操作者" width="150" />
+            <el-table-column prop="action" label="动作" width="180" />
+            <el-table-column prop="target" label="对象" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="detail" label="详情" min-width="240" show-overflow-tooltip />
+          </el-table>
+        </div>
+        <div v-if="rows.length" class="audit-cards" aria-label="审计记录">
+          <article v-for="row in rows" :key="'card:' + row.row_id" class="audit-card">
+            <div class="audit-card-top">
+              <span class="audit-card-time">{{ row.ts }}</span>
+              <span class="audit-card-action">{{ row.action }}</span>
+            </div>
+            <div class="audit-card-line"><span>操作者</span>{{ row.actor }}</div>
+            <div v-if="row.target" class="audit-card-line"><span>对象</span>{{ row.target }}</div>
+            <p v-if="row.detail" class="audit-card-detail">{{ row.detail }}</p>
+          </article>
+        </div>
+        <p v-else class="audit-cards-empty">没有匹配的审计记录</p>
+      </template>
 
-      <div v-if="rows.length" class="audit-foot">
-        <button type="button" class="btn btn--ghost" :disabled="loading || !loadMoreAvailable" @click="loadMore">
-          {{ loadMoreAvailable ? "加载更多" : "已到末尾" }}
-        </button>
+      <div v-if="total > 0" class="audit-foot">
+        <el-pagination
+          :current-page="state.page"
+          :page-size="pageSize"
+          :total="total"
+          layout="prev, pager, next"
+          background
+          @current-change="goPage"
+        />
         <span v-if="loading" class="audit-meta">加载中…</span>
       </div>
     </section>
@@ -242,9 +262,9 @@ onMounted(search);
   gap: 16px;
 }
 .audit-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.55fr) auto;
+  align-items: end;
   gap: 12px;
 }
 .audit-field {
@@ -252,41 +272,52 @@ onMounted(search);
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  width: 100%;
 }
+.audit-field .input { width: 100%; min-width: 0; padding: 4px 10px; }
 .audit-label {
   font-size: 12px;
   color: var(--t-muted);
 }
 .audit-dates {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
-/* 窄屏（≤720px，与全站窄屏段同口径）：两个日期框各占一行，第二个框不再顶出视口
-   （工单 yiban-auto-sign-w26p：360px 实测越界 18px）。
-   换行只许在窄屏段：`.input` 的 width:100% 让 flex 基宽等于行宽，无条件 wrap 会把两个
-   日期框在宽屏也压成两行（1280/1100/1024/900/768 实测两框分行、每框被拉到容器宽）。
-   宽屏维持本批之前的同行布局。 */
+/* 窄屏（≤720px，与全站窄屏段同口径）：字段单列，两个日期框各占一半宽度。
+   （工单 yiban-auto-sign-w26p：360px 实测越界 18px）。 */
 @media (max-width: 720px) {
-  .audit-dates {
-    flex-wrap: wrap;
-  }
+  .audit-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .audit-actions .btn { flex: 1 1 0; }
+}
+@media (min-width: 721px) and (max-width: 1100px) {
+  .audit-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 两列档里「对象」与日期各自独占整行：日期两框在 ~250px 列内会被压到
+     看不清完整日期；整行后每框仍有 ~240px。 */
+  .audit-field:nth-child(3),
+  .audit-field:nth-child(4),
+  .audit-actions { grid-column: 1 / -1; }
 }
 .audit-dash {
   color: var(--t-weak);
 }
-/* 日期选择器宽度：EP .el-date-editor 默认 220px，两枚并排会过宽；收到与工具行同档的紧凑宽度。
-   窄屏仍靠上面的 .audit-dates flex-wrap 规则换行。 */
-.audit-date {
-  width: 152px;
+/* 日期选择器宽度跟随网格列：EP 的 `.el-date-editor.el-input`（0,2,0）会把宽度锁在
+   220px；且 class 落在 EP 子组件根上、不带本组件的 data-v 属性，故必须用 `:deep`。
+   选择器因此是 `.audit-dates[data-v] .audit-date`（0,3,0）。 */
+.audit-dates :deep(.audit-date) {
+  width: 100%;
+  min-width: 0;
 }
 .audit-actions {
   display: flex;
   gap: 8px;
-  margin-left: auto;
+  justify-content: flex-end;
 }
 .audit-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-bottom: 10px;
@@ -320,5 +351,70 @@ onMounted(search);
   align-items: center;
   gap: 10px;
   margin-top: 12px;
+}
+
+/* 窄屏审计记录：桌面表格 5 列合计约 900px，容器不足 900px 时只能看到前两列，
+   且对象/详情依赖 hover tooltip（触屏不可达）。≤1100 已放不下整表，改为逐条卡片。 */
+.audit-cards { display: none; }
+.audit-cards-empty { display: none; }
+@media (max-width: 1100px) {
+  .audit-table-wrap { display: none; }
+  .audit-cards {
+    display: grid;
+    gap: 10px;
+  }
+  .audit-cards-empty {
+    display: block;
+    margin: 20px 0;
+    text-align: center;
+    font-size: 12px;
+    color: var(--t-muted);
+  }
+  .audit-card {
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: var(--bg-card);
+  }
+  .audit-card-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .audit-card-time {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--t-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .audit-card-action {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--t-base);
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+  .audit-card-line {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--t-sub);
+    overflow-wrap: anywhere;
+  }
+  .audit-card-line > span {
+    margin-right: 6px;
+    color: var(--t-muted);
+  }
+  .audit-card-detail {
+    margin: 8px 0 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--t-sub);
+    overflow-wrap: anywhere;
+  }
 }
 </style>
