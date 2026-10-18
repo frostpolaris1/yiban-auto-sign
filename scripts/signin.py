@@ -45,21 +45,12 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # 说明：`round` 模块名与内置函数同名，isort 会把带别名的导入单独成块（见下一条）。
-from yiban.engine import (  # noqa: E402
-    accounts,
-    alerts,
-    attempts,
-    cli_support,
-    config_check,
-    probe,
-    runner,
-    schedule,
-    state_io,
-    workers,
-)
-from yiban.engine import (  # noqa: E402
-    round as round_mod,
-)
+from yiban.adapters.notifier import report as alerts  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.app import probe, runner  # noqa: E402
+from yiban.app import round as round_mod  # noqa: E402
+from yiban.engine import accounts, attempts, cli_support, config_check, schedule  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 兼容壳机制（两条转发纪律见模块说明第 2 条）

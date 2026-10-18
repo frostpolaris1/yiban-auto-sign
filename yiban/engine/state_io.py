@@ -5,8 +5,12 @@
 **为什么有本件**
 state_io（状态文件读写与判定）在批 B 搬进目标层（目标架构契约 `docs/dev/architecture-target.md`
 第 3 节：`engine/state_io.py` → `adapters/statefiles/`）。读者面里有 `web/**`、`scripts/**`、
-`run.sh`、`frontend/e2e/**`、`tests/**`。`web/app.py` 的再导出墙与测试面的旧坐标读者
+`run.sh`、`tests/**`。`web/app.py` 的再导出墙与测试面的旧坐标读者
 本批**不动**（那是另一笔账）。故旧坐标留转发壳。
+
+**读者面清单是退役判据的输入，改坐标时必须同批改它。** `frontend/e2e/**` 曾在本清单里：
+2026-10-18 由 `frontend/e2e/server.py` 改直连 `yiban.adapters.statefiles` 后迁走，故已删。
+留着它会让"退役条件"读起来比实际更宽（2026-10-18 独立审查抓到的同族失实）。
 
 **本件不是第二份实现**
 本件把 `sys.modules` 里本坐标的条目替换为 `yiban.adapters.statefiles.state_io` 的
@@ -20,7 +24,7 @@ state_io（状态文件读写与判定）在批 B 搬进目标层（目标架构
 替换 `sys.modules` 条目后旧坐标**就是**实现模块本身。
 
 **退役条件**
-读者面（`web/**`、`scripts/**`、`run.sh`、`frontend/e2e/**`、`tests/**`）改到新坐标后删除本件。
+读者面（`web/**`、`scripts/**`、`run.sh`、`tests/**`）改到新坐标后删除本件。
 工单见本批交付报告。
 """
 import sys as _sys

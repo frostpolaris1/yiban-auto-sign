@@ -208,8 +208,8 @@ describe("标题/副标题/主按钮文案（两变体 × 新增/编辑）", () 
   });
 
   it("副标题", () => {
-    expect(formSubtitle({ editing: false, variant: "user" })).toBe("提交后等待管理员审核，通过即自动签到。");
-    expect(formSubtitle({ editing: true, variant: "admin" })).toBe("手机号已打码显示；不改动则按原号提交。");
+    expect(formSubtitle({ editing: false, variant: "user" })).toBe("提交后等待审核，通过即自动签到。");
+    expect(formSubtitle({ editing: true, variant: "admin" })).toBe("手机号已打码；不改则按原号提交。");
   });
 
   it("主按钮", () => {

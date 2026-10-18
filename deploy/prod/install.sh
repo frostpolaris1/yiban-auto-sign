@@ -265,11 +265,35 @@ if [ -z "$DESTDIR" ]; then
         fi
     fi
     if [ -z "$_svc_why" ]; then
+        # 探测对象天生短命：`/proc/<pid>` 可能在两步之间消失。**只开一次、拿 fd**，
+        # 让"检查 → open"这一步的竞态在结构上不存在：open 失败即跳过，不再有**第二次
+        # 触达** ⇒ 不会再有重定向失败把 `set -e` 触发成安装中断（伪失败 rc=1）。
+        # ⚠ **不许把这条读成"fd 拿到之后读就不受影响"**：进程退出后读该 fd 仍会报
+        # `read error: No such process`（实测，回收态与僵尸态皆然）。那一族错误由下面
+        # read 上的 `2>/dev/null` 单独抑制——**删掉它噪声立刻回来**。本节的收益是
+        # "少了第二次触达"，不是"读不再出错"；两件事不要混。
+        # 反面（本批修掉的形状）：先 `[ -r "$_pid/cmdline" ]` 再 `done < "$_pid/cmdline"`，
+        # 检查与 open 之间进程退出 ⇒ bash 打一行
+        # `/proc/<pid>/cmdline: No such file or directory`；本脚本带 `set -e`
+        # （见第 46 行），该重定向失败还会**中断安装**（伪失败，rc=1）。
+        # 打开失败只说明该进程已消失，属正常情形 ⇒ 静默跳过。
+        # 抑制写法的两个坑（都实测过）：
+        #   ① `done < file 2>/dev/null` 无效——`<` 先开、报错先于 `2>/dev/null` 生效；
+        #   ② `exec {_fd}< file 2>/dev/null` **不能用**——`exec` 无命令时重定向作用于
+        #      当前 shell 且**持久**，`2>/dev/null` 会把本脚本此后所有 stderr 永久丢进
+        #      /dev/null（实测：后面的告警/拒装理由全消失）。故用**受限的组重定向**
+        #      `{ exec {_fd}< file; } 2>/dev/null`：报错被吞，组外的 stderr 照旧。
         for _pid in /proc/[0-9]*; do
-            [ -r "$_pid/cmdline" ] || continue
+            if ! { exec {_fd}< "$_pid/cmdline"; } 2>/dev/null; then
+                continue
+            fi
             _self=0
             _hit=0
-            while IFS= read -r -d '' _arg; do
+            # 读期间进程仍可能退出 ⇒ `read` 报 `read error: No such process`。
+            # 同样是"该进程已消失"，不是可处置的错误，故同样静默；read 是普通命令，
+            # 其重定向只作用于本条命令、不持久（不会碰组外的 stderr）。read 失败只是
+            # while 条件为假，不触发 `set -e`（不会中断安装）。
+            while IFS= read -r -d '' _arg <&"$_fd" 2>/dev/null; do
                 case "$_arg" in
                     *install.sh*) _self=1; break ;;
                 esac
@@ -279,7 +303,8 @@ if [ -z "$DESTDIR" ]; then
                 case "$_arg" in
                     "$REPO_ROOT"|*"$REPO_ROOT"/*) _hit=1 ;;
                 esac
-            done < "$_pid/cmdline"
+            done
+            exec {_fd}<&-
             if [ "$_self" -eq 0 ] && [ "$_hit" -eq 1 ]; then
                 _svc_why="进程 ${_pid#/proc/} 的 argv 指向本检出"
                 break

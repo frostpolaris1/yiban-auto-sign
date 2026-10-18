@@ -39,7 +39,7 @@ import sys
 import unittest
 from unittest import mock
 
-from yiban.engine import hrw
+from yiban.core import hrw
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,7 +52,7 @@ V = hrw.V_DEFAULT
 _CHILD_SRC = (
     "import json, sys;"
     "sys.path.insert(0, sys.argv[1]);"
-    "from yiban.engine import hrw;"
+    "from yiban.core import hrw;"
     "print(json.dumps({"
     "'pyhash': hash('13800000000'),"
     "'vshard': hrw.vshard_of('13800000000', sys.argv[2]),"

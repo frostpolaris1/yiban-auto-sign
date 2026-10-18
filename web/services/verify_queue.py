@@ -3,8 +3,9 @@
 """账号在线校验的执行闸门、异步任务与失败落库。
 
 **功能**
-外呼校验的两条路径：同步带闸的 `run_verify_with_gate`（全局并发席位 + 每用户配额，
-附异常类型 `VerifyGateBusy` / `VerifyQuotaExceeded`）与异步任务族的建任务
+外呼的两条路径：同步带闸的通用闸门 `run_gated_call`（全局并发席位 + 每用户配额，附异常
+类型 `VerifyGateBusy` / `VerifyQuotaExceeded`）与它在账号验证上的绑定
+`run_verify_with_gate`；异步任务族的建任务
 `_start_verify_job`、待办上限 `_verify_queue_full`、超龄收口 `_reclaim_stale_verify_jobs`、
 失败落库 `_reject_account`、编辑路径的后台探针 `start_edit_probe`（不绑定账号 id，
 失败只留痕）；外加两个开关的解析 `verify_async_enabled` / `_account_verify_enabled`。
@@ -33,10 +34,10 @@ import logging
 import os
 
 from web.services.accounts_data import ACCOUNT_STATUS_REJECTED
+from yiban.adapters.config.env_io import parse_env_flag
+from yiban.adapters.persistence import db
 from yiban.attempt import jobs as attempt_jobs
 from yiban.core.masking import mask_phone as _mask_phone
-from yiban.infra.env_io import parse_env_flag
-from yiban.store import db
 
 # 与 web.app 同名的日志通道：校验队列的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
@@ -55,31 +56,41 @@ class VerifyQuotaExceeded(Exception):
     """该会话用户的验证尝试配额用尽。"""
 
 
-def run_verify_with_gate(clean, username, limits, seat, attempt_allowed, verify_clean):
-    """执行一次外呼校验（全局并发闸包裹）。
+def run_gated_call(action, username, limits, seat, attempt_allowed):
+    """在全局并发席位与每用户配额下执行一次**真实外呼**，返回 `action()` 的结果。
 
-    `limits` 是每用户配额表（`current_app.extensions` 登记，经 `web.routes.verify_limits()`
-    取用；进程内字典，故显式传入）。
+    这是"web 进程代用户外呼"的**唯一闸门**：`run_verify_with_gate`（账号验证）与设备
+    登记补全都经它——两条外呼同为一次真实登录，风控暴露面相同，闸门必须同源；各写一份
+    迟早分叉（一边补了新闸、另一边没有）。
 
     顺序刻意如此：**先抢全局席位、再扣用户配额**——抢不到席位时立即抛
     VerifyGateBusy 且不消耗配额，否则我们自己的饱和会变成对用户的惩罚。
-    席位在 `finally` 中释放，含配额拒绝与校验异常两条路径。
+    席位在 `finally` 中释放，含配额拒绝与 action 异常两条路径。
 
-    返回 verify_err（None 表示验证通过）；并发满/配额尽时抛上述异常，
-    由调用方翻译成 503 / 429。
-
-    席位信号量、配额判定与只读验证都由调用方传入（`web.app` 的 `_verify_sem` /
-    `_verify_attempt_allowed` / `_verify_account_clean`）：三者都是会被测试打桩的
-    模块级名字，本模块另持绑定会让打桩静默失效（席位还必须与异步路径共用同一个）。
+    席位信号量与配额判定都由调用方传入（`web.app` 的 `_verify_sem` /
+    `_verify_attempt_allowed`）：两者都是会被测试打桩的模块级名字，本模块另持绑定会让
+    打桩静默失效（席位还必须与异步路径共用同一个）。
     """
     if not seat.acquire(blocking=False):
         raise VerifyGateBusy()
     try:
         if not attempt_allowed(limits, username):
             raise VerifyQuotaExceeded()
-        return verify_clean(clean)
+        return action()
     finally:
         seat.release()
+
+
+def run_verify_with_gate(clean, username, limits, seat, attempt_allowed, verify_clean):
+    """执行一次外呼校验（全局并发闸包裹）。本函数是 `run_gated_call` 在账号验证上的绑定。
+
+    `limits` 是每用户配额表（`current_app.extensions` 登记，经 `web.routes.verify_limits()`
+    取用；进程内字典，故显式传入）。
+
+    返回 verify_err（None 表示验证通过）；并发满/配额尽时抛上述异常，
+    由调用方翻译成 503 / 429。
+    """
+    return run_gated_call(lambda: verify_clean(clean), username, limits, seat, attempt_allowed)
 
 
 def _reject_account(phone, reason, account_id, expect_status):

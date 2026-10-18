@@ -11,12 +11,14 @@
 填邮箱=归属该用户并回待审核，邮箱未注册则连带创建网站用户）；`PUT /api/accounts/<idx>`
 编辑（改绑手机号一律回待审核）；`POST /api/accounts/batch` 批量
 approve/reject/restore/delete/purge；`DELETE /api/accounts/<idx>` 软删；
-`POST /api/accounts/<idx>/restore|purge|review|move` 恢复/彻底删除/审核/排序。
+`POST /api/accounts/<idx>/restore|purge|review|move` 恢复/彻底删除/审核/排序；
+`POST /api/accounts/<idx>/device-refresh` 设备字段按需补全（登录一次读回服务端已登记
+设备并落库；读不到不改库）。
 
 **归属**
 `web.app.create_app` 的"账号管理"面（管理员专用，路径不在普通用户白名单）。工厂骨架、
 跨域中间件（前置限速、登录守卫、CSRF、同源校验、安全响应头）与库访问层仍留在
-`web/app.py`，本模块只提供十条视图。
+`web/app.py`，本模块只提供十一条视图。
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配。`web.routes.high_risk_gate()` 取回
@@ -53,7 +55,9 @@ from web.routes import verify_fails as _verify_fails
 from web.routes import verify_limits as _verify_limits
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
+from web.services.device_refresh import refresh_account_device as _refresh_account_device
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
+from yiban.adapters.persistence.accounts import signs_in as _signs_in
 
 
 def api_accounts():
@@ -203,6 +207,40 @@ def api_account_detail(idx):
     _read_audit_trace()(
         "account_detail_read", m._mask_phone(str(accounts[idx].get("phone", ""))))
     return jsonify({"ok": True, "account": m.mask_account(accounts[idx], idx, masked=False)})
+
+
+def api_account_device_refresh(idx):
+    """按需补全账号设备字段：登录一次读回服务端已登记设备并落库。
+
+    鉴权档：管理员。CSRF：**要**。
+    副作用：**再铸一次会话**（读 `getState` 需要会话）＋ 成功时写账号行的识别码/机型。
+    读不到一律不改库（见 `web/services/device_refresh`）；详情字段口径见 §1.4。
+
+    为什么单独一条端点：惰性补全（`YibanClient._device_identity`）只在**该账号真的开签**
+    时顺带发生——账号在签到前被打开表单、或长期签不上时，设备字段可能一直是空值。
+    """
+    m = _appmod()
+    accounts = m.load_accounts()
+    if not 0 <= idx < len(accounts):
+        return jsonify({"error": "账号不存在"}), 404
+    acc = accounts[idx]
+    data = m._json_body()
+    # 管理面写口一律 fail-closed（与 update/delete/restore/purge/review/move 同纪律）：
+    # 本端点会对目标账号**发起一次真实登录**并写它的行，错位代价高于让调用方刷新一次
+    if m._stale_idx_guard(acc, data, fail_closed=True):
+        return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+    if acc.get("deleted"):
+        return jsonify({"error": "账号已删除，请先恢复"}), 400
+    if not _signs_in(acc):
+        # 只有"会签到"的账号才补全（判据复用 `signs_in`，与容量/引擎同源）：
+        # pending/rejected 永不签到，为它发起真实登录既无收益又多一次风控暴露面
+        return jsonify({"error": "账号未生效（待审核或已拒绝），请先通过审核再补全设备"}), 400
+    status, payload = _refresh_account_device(
+        m, acc, session.get("username") or "?", _verify_limits(), _verify_fails(),
+        "account_device_refresh")
+    if status == 503:
+        return jsonify(payload), status, {"Retry-After": "2"}
+    return jsonify(payload), status
 
 
 def api_account_add():
@@ -1064,9 +1102,11 @@ def api_account_move(idx):
 
 
 def register(app):
-    """在本域注册十条账号管理路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册十一条账号管理路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/accounts", view_func=api_accounts)
     app.add_url_rule("/api/accounts/<int:idx>/detail", view_func=api_account_detail)
+    app.add_url_rule("/api/accounts/<int:idx>/device-refresh",
+                     view_func=api_account_device_refresh, methods=["POST"])
     app.add_url_rule("/api/accounts", view_func=api_account_add, methods=["POST"])
     app.add_url_rule("/api/accounts/<int:idx>", view_func=api_account_update, methods=["PUT"])
     app.add_url_rule("/api/accounts/batch", view_func=api_accounts_batch, methods=["POST"])

@@ -221,7 +221,7 @@ class ProbeAccountingTest(unittest.TestCase):
     def test_soft_fail_records_failed_not_success(self):
         import signin
 
-        import yiban.engine.probe as probe
+        import yiban.app.probe as probe
 
         recorded = []
         soft_msg = "探测连接不可达 (ECONNREFUSED)"
