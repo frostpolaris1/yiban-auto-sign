@@ -20,7 +20,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.mail import transport  # noqa: E402
+from yiban.adapters.notifier.mail import transport  # noqa: E402
 
 OP_SEC = 15  # 单个 socket 操作的耗时与超时（= 现值，本单不许把它调小）
 BUDGET_SEC = 45  # 契约：整封预算 = 一个条目 3 次 socket 操作 × 15 秒

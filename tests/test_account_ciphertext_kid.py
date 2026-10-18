@@ -29,7 +29,7 @@ import unittest
 
 from Crypto.Cipher import AES
 
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
 
 KEY = bytes(range(1, 33))
 OTHER_KEY = bytes(range(33, 65))

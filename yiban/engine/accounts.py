@@ -35,11 +35,11 @@ import os
 from dataclasses import dataclass
 
 from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.notifier.mail.config import _mask_addr
 from yiban.adapters.persistence import db
 from yiban.core.masking import mask_phone as _mask_phone
 from yiban.core.masking import sanitize_text as _sanitize_text
 from yiban.engine import config_check
-from yiban.mail.config import _mask_addr
 
 logger = logging.getLogger("yiban")
 

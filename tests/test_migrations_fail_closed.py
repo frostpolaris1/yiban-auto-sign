@@ -44,9 +44,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402  (tests/conftest 注入 yiban/store 到 sys.path)
 
+from yiban.adapters.config import account_crypto  # noqa: E402
 from yiban.core import clock  # noqa: E402
 from yiban.engine import cli_support, planner  # noqa: E402
-from yiban.infra import account_crypto  # noqa: E402
 from yiban.store import migrations, queue_store  # noqa: E402
 from yiban.workers import workers  # noqa: E402
 

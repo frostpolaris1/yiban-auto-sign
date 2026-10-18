@@ -55,7 +55,7 @@ for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
 # signin 等重导入链仍在 `--check-health` 之后。这笔开销必须付：状态目录可以只写在
 # `.env` 里。写心跳的一方与探活读的一方要算出同一个目录。读方若只认进程环境，它会去
 # 别的目录找心跳。健康检查于是恒判不健康，容器被反复重启。
-from yiban.infra import env_io  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 活体心跳与探活快路（必须位于业务导入图之前）
@@ -108,7 +108,7 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 import signin  # noqa: E402
 from child_env import build_child_env, parse_env_file  # noqa: E402
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import (  # noqa: E402
     clock,
     window,

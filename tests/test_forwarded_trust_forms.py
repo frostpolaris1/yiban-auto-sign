@@ -160,7 +160,7 @@ class LoopbackPredicateDomainTest(unittest.TestCase):
 
     def test_入站与出站判据不混用(self):
         """入站信任门与出站 SSRF 判据不得互换：两边共用的只有"是否回环"这一层事实。"""
-        from yiban.notify import config as notify_config
+        from yiban.adapters.notifier.notify import config as notify_config
         self.assertIs(self.sec._is_loopback_addr("127.0.0.2"), True)
         # 出站判据对同一地址给的是"不可路由 ⇒ 拒"，两者不是同一个函数、也不互换
         self.assertIsNot(self.sec._is_loopback_addr, notify_config._is_nonroutable_target)

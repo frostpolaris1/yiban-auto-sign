@@ -538,7 +538,9 @@ class MailerPortFallbackTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         global mailer_mod
-        from yiban.mail import config as mailer_mod  # 配置层：get_config/smtp_list
+        from yiban.adapters.notifier.mail import (
+            config as mailer_mod,  # 配置层：get_config/smtp_list
+        )
         # 2026-09-01 修复：_get 在环境变量为空时回退读 .env 文件——本机工作区
         # 若有 .env 含 YIBAN_MAIL_SMTP_PORT，`_cfg_with_port("")` 清掉环境变量后
         # 仍取到文件值 → port_fallback 断言失败（CI 无 .env 反而通过）。隔离到

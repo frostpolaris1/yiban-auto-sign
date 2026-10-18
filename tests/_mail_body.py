@@ -10,7 +10,7 @@
 - `markdown`：Server酱 / 自定义 webhook 收到的正文（短通道会裁剪字段与条目数）；
 - `html`：邮件的 `text/html` 部分（结构化正文才有，普通字符串为 None）。
 """
-from yiban.mail import layout
+from yiban.adapters.notifier.mail import layout
 
 
 def render_body(payload, channel="plain"):

@@ -56,7 +56,7 @@ from unittest import mock
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from yiban.infra import env_io  # pythonpath 已含 scripts/（pyproject.toml）
+from yiban.adapters.config import env_io  # pythonpath 已含 scripts/（pyproject.toml）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

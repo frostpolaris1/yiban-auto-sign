@@ -28,7 +28,7 @@ import sys
 import tempfile
 import unittest
 
-from yiban import config_loader
+from yiban.adapters.config import loader as config_loader
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
