@@ -24,7 +24,7 @@
 """
 import unittest
 
-from yiban.masking import mask_url_userinfo
+from yiban.core.masking import mask_url_userinfo
 
 
 class MaskUrlUserinfoTest(unittest.TestCase):

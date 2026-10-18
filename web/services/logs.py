@@ -37,10 +37,10 @@ import re
 from datetime import datetime, timedelta
 
 from yiban import cred_state
-from yiban import status as yiban_status
 from yiban.core import clock
-from yiban.masking import mask_phone as _mask_phone
-from yiban.masking import mask_phones_in_text as _mask_phones_in_text
+from yiban.core import status as yiban_status
+from yiban.core.masking import mask_phone as _mask_phone
+from yiban.core.masking import mask_phones_in_text as _mask_phones_in_text
 
 # 与 web.app 同名的日志通道：熔断清理失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

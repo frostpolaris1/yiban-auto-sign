@@ -489,7 +489,7 @@ class MessageSanitizationTest(unittest.TestCase):
     """
 
     def test_server_text_is_escaped_and_masked_before_insert(self):
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         raw = "13800000002 登录失败\n第二行 password=abc123"
         self.assertEqual(
             run_events._row(NODE_FAIL, DAY, OWNER, "13800000002", raw)[5],

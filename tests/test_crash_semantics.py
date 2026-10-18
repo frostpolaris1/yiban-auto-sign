@@ -39,8 +39,8 @@ from unittest import mock
 import db  # pyproject.toml 的 pythonpath 把 scripts/ 加进 sys.path
 
 from yiban import client as yiban_client
-from yiban import status as yiban_status
 from yiban.core import clock
+from yiban.core import status as yiban_status
 from yiban.engine import crash_semantics, executor_v3, token_bucket
 from yiban.store import run_events
 

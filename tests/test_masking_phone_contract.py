@@ -85,7 +85,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
     """行为一：`+86` 前缀与空格/连字符分段形态一律遮成同一规范形。"""
 
     def _mask(self, text):
-        from yiban.masking import mask_phones_in_text
+        from yiban.core.masking import mask_phones_in_text
         return mask_phones_in_text(text)
 
     def test_every_written_form_masks_to_canonical_form(self):
@@ -109,7 +109,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
         self.assertEqual(self._mask(once), once, "重复脱敏不得再变形")
 
     def test_masked_value_helper_covers_same_forms(self):
-        from yiban.masking import mask_phone
+        from yiban.core.masking import mask_phone
         for raw in ("13800138000", "+8613800138000", "+86 138 0013 8000", "138 0013 8000"):
             with self.subTest(raw=raw):
                 self.assertEqual(mask_phone(raw), "138****8000")
@@ -124,7 +124,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
         写侧收下的号遮罩侧必须遮得住：只放宽值口径时，次位 0–2 的已入库号会从日志出口
         （`_mask_log_phones` → `mask_phones_in_text`）原样下发，而前端已不再自遮。
         """
-        from yiban.masking import mask_phone, mask_phones_in_text
+        from yiban.core.masking import mask_phone, mask_phones_in_text
         for raw in ("12012345678", "10012345678"):
             want = raw[:3] + "****" + raw[7:]
             with self.subTest(raw=raw, caliber="value"):
@@ -134,7 +134,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
 
     def test_value_form_is_whole_string_only(self):
         """整串必须是号码：带前后缀散文的值不得被剥离出号码段（否则 `_mask_phone` 会吞正文）。"""
-        from yiban.masking import mask_phone
+        from yiban.core.masking import mask_phone
         for raw in ("tel:13800138000", "13800138000 (备用)", "138.0000.8000"):
             with self.subTest(raw=raw):
                 self.assertEqual(mask_phone(raw), raw)
@@ -152,7 +152,7 @@ class SanitizeUrlPhoneTest(unittest.TestCase):
     """出口③：URL 参数值里的号码（含 `+86`）必须与文本同口径。"""
 
     def test_url_value_phone_forms_masked(self):
-        from yiban.masking import sanitize_url
+        from yiban.core.masking import sanitize_url
         for query in (
             "u=13800138000",
             "u=%2B8613800138000",
@@ -168,7 +168,7 @@ class SanitizeUrlPhoneTest(unittest.TestCase):
 
     def test_url_value_with_embedded_phone_masked(self):
         """号码嵌在散文里的值同样遮——只认"整值即号码"时，前后缀一加就整串放行入日志。"""
-        from yiban.masking import sanitize_url
+        from yiban.core.masking import sanitize_url
         for query in ("u=tel:13800138000", "u=13800138000%20(%E5%A4%87%E7%94%A8)"):
             with self.subTest(query=query):
                 out = sanitize_url("https://host/p?" + query)

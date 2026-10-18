@@ -230,7 +230,7 @@ class UnparseableValueTest(unittest.TestCase):
         `1_0:30` / `6:0030`，引擎都收）+ 4 个两边都拒（`99:99` / `abc` / `12:` / `60`）
         + 2 个两边都收（`7:05` / `23:59`）。
         """
-        from yiban import window
+        from yiban.core import window
         sentinel = object()
         samples = ("7:05", "23:59", "006:30", "021:00", "+6:30", "6 :30",
                    "6: 30", "1_0:30", "6:0030", "99:99", "abc", "12:", "60")
@@ -257,7 +257,7 @@ class UnparseableValueTest(unittest.TestCase):
         全部用例仍绿——名册端没有守卫。本用例的期望值同样从引擎现算，13 个样本逐条
         构造名册条目：引擎收的缺省必须通过名册自校验，引擎不收的必须抛 `RegistryError`。
         """
-        from yiban import window
+        from yiban.core import window
         sentinel = object()
         samples = ("7:05", "23:59", "006:30", "021:00", "+6:30", "6 :30",
                    "6: 30", "1_0:30", "6:0030", "99:99", "abc", "12:", "60")
