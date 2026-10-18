@@ -40,8 +40,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 
 from yiban import egress  # noqa: E402
-from yiban import status as yiban_status  # noqa: E402  # 分档词表唯一家（128-P1）
 from yiban.core import clock  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402  # 分档词表唯一家（128-P1）
 from yiban.engine import executor_v3, hrw, token_bucket, workers  # noqa: E402
 from yiban.engine import runner as runner_mod  # noqa: E402
 from yiban.store import clock_meta, queue_store  # noqa: E402

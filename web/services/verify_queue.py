@@ -34,8 +34,8 @@ import os
 
 from web.services.accounts_data import ACCOUNT_STATUS_REJECTED
 from yiban.attempt import jobs as attempt_jobs
+from yiban.core.masking import mask_phone as _mask_phone
 from yiban.infra.env_io import parse_env_flag
-from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
 # 与 web.app 同名的日志通道：校验队列的告警落回既有通道，便于运维沿用同一处过滤

@@ -39,7 +39,7 @@ from flask import (
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
 from web.services import vue_assets as _vue_assets
-from yiban import status as _yiban_status
+from yiban.core import status as _yiban_status
 from yiban.infra import env_io as _env_io
 
 

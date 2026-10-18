@@ -153,7 +153,7 @@ class MaskEmailParityTest(unittest.TestCase):
                 )
         if problems:
             self.fail(
-                "YB.maskEmail 与 yiban.masking.mask_email 脱敏口径不一致（单边改动会导致错位脱敏）：\n"
+                "YB.maskEmail 与 yiban.core.masking.mask_email 脱敏口径不一致（单边改动会导致错位脱敏）：\n"
                 + "\n".join(problems)
             )
 
@@ -179,7 +179,7 @@ class WebForwarderParityTest(unittest.TestCase):
     def setUpClass(cls):
         import types
 
-        from yiban.masking import mask_email as real_mask_email
+        from yiban.core.masking import mask_email as real_mask_email
         with open(WEB_ACCOUNTS_PY, encoding="utf-8") as fh:
             src = fh.read()
         fn = _extract_python_function(src, "_mask_email")
@@ -190,7 +190,7 @@ class WebForwarderParityTest(unittest.TestCase):
             fn.__code__, {"mask_email": real_mask_email}, "_mask_email"))
 
     def test_forwarder_matches_source(self):
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         for label, value in CASES:
             self.assertEqual(self.fwd(value), mask_email(value),
                              f"accounts_data._mask_email 与真源不一致（{label}）")

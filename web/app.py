@@ -282,14 +282,16 @@ from web.services.verify_queue import (  # noqa: E402
     _verify_queue_full,
 )
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
-
-# 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
-from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.core import clock  # noqa: E402
+
+# 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
+from yiban.core import window as yb_window  # noqa: E402
+from yiban.core.masking import mask_phone as _mask_phone  # noqa: E402
+from yiban.core.masking import (  # noqa: E402
+    mask_url_userinfo as _mask_url_userinfo,  # noqa: F401  # 代理脱敏
+)
 from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
-from yiban.masking import mask_phone as _mask_phone  # noqa: E402
-from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402,F401  # 代理脱敏
 
 # 名字面零损失：纯再导出见上方 import；需要注入本模块模块级状态的入口
 # （_read_doc_html / _doc_page / 站点展示族）在下方转发。
@@ -323,7 +325,7 @@ from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配�
 # 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
 from yiban import mail as mailer  # noqa: E402,F401
-from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
+from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 from yiban.infra import (  # noqa: E402
     account_crypto,  # 启动自证两侧同钥（create_app 内 assert_key_sources_agree）；web.app.<名字> 仍可 import
     env_io,

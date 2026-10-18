@@ -849,7 +849,7 @@ class TimePrefsTest(unittest.TestCase):
         """窗口不可用（已回退默认）：设置页拿到可见提示（"已按 X~Y 运行"）。"""
         from unittest import mock
 
-        from yiban import window as yb_window
+        from yiban.core import window as yb_window
         c = self.webapp.create_app().test_client()
         self._login(c, "admin", ADMIN_PASS)
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),

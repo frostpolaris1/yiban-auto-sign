@@ -40,13 +40,14 @@ import sys
 import tempfile
 import unittest
 
-from yiban import logging_ext, masking
-from yiban.logging_ext import MaskingFormatter
-from yiban.masking import (
+from yiban import logging_ext
+from yiban.core import masking
+from yiban.core.masking import (
     mask_credentials_in_text,
     mask_phones_in_text,
     sanitize_text,
 )
+from yiban.logging_ext import MaskingFormatter
 
 FORMAT = "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
 DATEFMT = "%Y-%m-%d %H:%M:%S"
