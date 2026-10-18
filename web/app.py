@@ -285,7 +285,7 @@ from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.core import clock  # noqa: E402
 
-# 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
+# 窗口唯一口径 `yiban.core.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
 from yiban.core import window as yb_window  # noqa: E402
 from yiban.core.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.core.masking import (  # noqa: E402
