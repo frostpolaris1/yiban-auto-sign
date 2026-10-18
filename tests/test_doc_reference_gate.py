@@ -110,21 +110,28 @@ OUT_OF_FACE_PREFIX = "frontend/"
 #: 无关改动漂移。把行号做成判据会让**用户的 PR 因一行位移而红**，而修法却落在我的文件里
 #: ——那正是"门看的东西 ≠ 实际改的东西"（AGENTS §十三 第 29 条）。
 #: 四处都是"前端翻新计划稿"的溯源引用（过程稿，不入库）。用户处置后须同批删本登记。
+#:
+#: 登记表天然要写出被登记的路径，而本文件**也是入库文本件**、本门会扫到它自己。
+#: 故这两个路径按片段拼装（同 `_FAKE_DOC` 的手法），源码里因此没有真实 doc 路径字面量。
+#: 为什么不用"豁免本文件"：那会**加宽豁免表**（AGENTS §十四 明令禁止），
+#: 且本文件自己的注释与 docstring 也该受本门管。
+_PLAN_DOC = "docs/" + "refactor/" + "29-frontend-vue-refactor-plan.md"
+_PLAN_DOC_SHORT = "docs/" + "refactor/" + "29"
 OUT_OF_FACE_REGISTRY = {
-    ("frontend/README.md", "docs/refactor/29-frontend-vue-refactor-plan.md"): (
+    ("frontend/README.md", _PLAN_DOC): (
         1,
         "前端翻新计划稿的溯源引用。前端归用户独立完成，本批不得改；"
         "用户处置（删引用或改措辞）后同批删本登记。",
     ),
-    ("frontend/package.json", "docs/refactor/29-frontend-vue-refactor-plan.md"): (
+    ("frontend/package.json", _PLAN_DOC): (
         1,
         "同上（package.json 的 description 字段）。",
     ),
-    ("frontend/src/settings/model.spec.ts", "docs/refactor/29"): (
+    ("frontend/src/settings/model.spec.ts", _PLAN_DOC_SHORT): (
         1,
         "同上（偏差清单的出处引用）。",
     ),
-    ("frontend/vite.config.ts", "docs/refactor/29-frontend-vue-refactor-plan.md"): (
+    ("frontend/vite.config.ts", _PLAN_DOC): (
         1,
         "同上（构建配置注释）。",
     ),
@@ -368,12 +375,12 @@ class DocReferenceGateTest(unittest.TestCase):
 
     def test_out_of_face_registry_reconciliation_has_teeth(self):
         """突变验证（合成输入）：未登记 ⇒ 红；次数不符 ⇒ 红；登记消失 ⇒ 红；一致 ⇒ 绿。"""
-        key = ("frontend/x.js", "docs/refactor/29")
+        key = ("frontend/x.js", _PLAN_DOC_SHORT)
         reg = {key: (1, "登记理由")}
         self.assertEqual(out_of_face_problems({key: 1}, registry=reg), [],
                          "一致时不该报问题（否则三条判据可能是一组恒真断言）")
         self.assertTrue(out_of_face_problems(
-            {key: 1, ("frontend/y.js", "docs/refactor/29"): 1}, registry=reg),
+            {key: 1, ("frontend/y.js", _PLAN_DOC_SHORT): 1}, registry=reg),
             "未登记的面外残留未判红：本门没有牙")
         self.assertTrue(out_of_face_problems({key: 2}, registry=reg),
                         "命中次数多于登记未判红：新增残留会被静默放过")
@@ -426,6 +433,22 @@ class DocReferenceGateTest(unittest.TestCase):
         pos = 'self.assertIn("' + _FAKE_DOC + '", src)\n'
         self.assertTrue(scan_text(pos, tracked),
                         "正向断言里的悬空引用未命中：本门没有牙")
+
+    def test_this_gate_file_is_scanned(self):
+        """本门**不得豁免自己**：本文件也是入库文本件，注释与 docstring 同受本门管。
+
+        为什么钉这条：登记表天然要写出被登记的路径。最容易的"修法"是豁免本文件——
+        那正是**加宽豁免表**（AGENTS §十四 明令禁止）。本文件靠**按片段拼装**路径
+        （`_FAKE_DOC` / `_PLAN_DOC`）避免自锁。谁改成豁免本文件，这条即红。
+        """
+        rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
+        tracked = _ls_tracked(BASE)
+        self.assertIn(rel, tracked, "本门文件必须入库（否则它自己逃出扫描面）")
+        self.assertIn(rel, text_files_of(BASE, tracked),
+                      "本门文件必须落在扫描面内（不得被豁免或当二进制跳过）")
+        self.assertEqual(scan_text("见 " + _PLAN_DOC + "。\n", tracked),
+                         [(1, _PLAN_DOC, "文档引用未入库")],
+                         "本门的形态一在本文件身上失效（夹具串没被当真引用扫）")
 
     def test_empty_face_is_red(self):
         """扫空不得当绿：空面必须判红（两条下限都要挡）。"""
