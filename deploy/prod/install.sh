@@ -266,7 +266,12 @@ if [ -z "$DESTDIR" ]; then
     fi
     if [ -z "$_svc_why" ]; then
         # 探测对象天生短命：`/proc/<pid>` 可能在两步之间消失。**只开一次、拿 fd**，
-        # 让竞态在结构上不存在——fd 一旦拿到，进程随后退出不影响已打开文件的读取。
+        # 让"检查 → open"这一步的竞态在结构上不存在：open 失败即跳过，不再有**第二次
+        # 触达** ⇒ 不会再有重定向失败把 `set -e` 触发成安装中断（伪失败 rc=1）。
+        # ⚠ **不许把这条读成"fd 拿到之后读就不受影响"**：进程退出后读该 fd 仍会报
+        # `read error: No such process`（实测，回收态与僵尸态皆然）。那一族错误由下面
+        # read 上的 `2>/dev/null` 单独抑制——**删掉它噪声立刻回来**。本节的收益是
+        # "少了第二次触达"，不是"读不再出错"；两件事不要混。
         # 反面（本批修掉的形状）：先 `[ -r "$_pid/cmdline" ]` 再 `done < "$_pid/cmdline"`，
         # 检查与 open 之间进程退出 ⇒ bash 打一行
         # `/proc/<pid>/cmdline: No such file or directory`；本脚本带 `set -e`
