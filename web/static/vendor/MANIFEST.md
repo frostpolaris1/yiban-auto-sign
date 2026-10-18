@@ -43,7 +43,7 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/md-render.js
 | 用途 | 统计页图表（折线/柱状/环形）。仅数据总览页加载 |
 | 来源 | https://www.npmjs.com/package/chart.js（同目录 LICENSE.md，MIT） |
 | 版本 | 4.5.1 |
-| 构建 | 按需注册构建：仅注册 Line/Bar/Doughnut 控制器与 Category/Linear 刻度、Point/Line/Bar/Arc 元素及 Tooltip/Legend/Filler，避免整包（完整版 513075 字节）。构建命令记录于 `docs/refactor/04-asset-research.md` |
+| 构建 | 按需注册构建：仅注册 Line/Bar/Doughnut 控制器与 Category/Linear 刻度、Point/Line/Bar/Arc 元素及 Tooltip/Legend/Filler，避免整包（完整版 513075 字节） |
 | 体积 | 190568 字节（gzip 66327 字节） |
 | SHA-256 | `0817eece20f7f8c1efc44f49f5ac9673828fa9fa4babe14a5a5c9759cb4059fd` |
 
@@ -73,13 +73,11 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/md-render.js
 > Regular/Bold 静态字体按字频重切片，实测本项目界面文本（893 个 CJK/全角码点）
 > 单字重命中 3 片 ≈ **0.121 MiB**（400）/ **0.122 MiB**（700）
 > （旧 Google Fonts 方案 23/101 片 ≈ 1.28 MiB）；覆盖基本区 20,976/20,992、
-> 标点 64/64、全角 224/240、扩展 A 常用 77。来源、构建脚本与覆盖明细见 `fonts/MANIFEST.md`，
-> 换源说明见 `docs/refactor/15-font-source-npm.md`。
+> 标点 64/64、全角 224/240、扩展 A 常用 77。来源、构建脚本与覆盖明细见 `fonts/MANIFEST.md`。
 > 2026-09 评估 npm `noto-sans-sc@37.0.0` 后确认**不换源**：该包实为 Google 网页子集再分发
 > （并集覆盖基本区 12,242/20,992，低于本基线），其余完整字体候选成熟度不更优。
-> 评估明细见 `docs/refactor/16-font-source-mature.md`。
 
-> 体积与 gzip 的测量方法：`gzip -9c <file> | wc -c`（与 `docs/refactor/04-asset-research.md` 一致）。
+> 体积与 gzip 的测量方法：`gzip -9c <file> | wc -c`。
 
 ## 旧栈退役说明（2026-09-13，P4）
 

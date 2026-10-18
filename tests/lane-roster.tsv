@@ -103,6 +103,7 @@ fast	tests/test_dev_verify_entry.py
 fast	tests/test_device_autofill_api.py
 fast	tests/test_device_identification.py
 fast	tests/test_device_registry_methods.py
+fast	tests/test_doc_reference_gate.py
 fast	tests/test_docker_image_contents.py
 fast	tests/test_docker_image_inputs_gate.py
 slow	tests/test_drill_redline_e2e.py	# 真子进程：逐个真跑 scripts/drill-container.sh（本机 10.9s）
