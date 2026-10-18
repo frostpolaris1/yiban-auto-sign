@@ -7,7 +7,7 @@
 - **claim-at-dispatch（领取即执行）**：调用方只在通道空闲时领**一行**、领到即执行。
   领取与执行之间没有进程内排队，故一行的持有时间 = 一次尝试的时间（有界），不再是
   "领回本地等通道/等令牌/等间隔/等计划时刻"的**无上界**等待。批量预取与进程内
-  `PriorityQueue` 因此退场（`docs/refactor/130` §2.3 S1/S2；工单 `l1rx`）。
+  `PriorityQueue` 因此退场（工单 `l1rx`）。
 - **elbow（肘界谓词）**：领取谓词可带一个肘界 `run_at <= now - elbow_sec`——兜底常驻
   只领"已过期超过肘界"的行，"谁该做"是**行的函数**而不是**进程身份的函数**。谓词语义
   的唯一事实源是 `yiban/core/elbow.py`，本层的 SQL 是它的**下推实现**（见 `claim_batch`）。
@@ -100,7 +100,7 @@ from yiban.core import status as yiban_status
 logger = logging.getLogger("yiban.store.queue_store")
 
 #: 领取行数缺省 = 1（**claim-at-dispatch**）：调用方只在通道空闲时领取一行、领到即执行。
-#: 批量预取已退场（`docs/refactor/130` §2.3 S1；工单 `l1rx`）——预取让行的持有时间变成
+#: 批量预取已退场（工单 `l1rx`）——预取让行的持有时间变成
 #: "排队等待时间"，无上界，正是租约族复杂度的根源。
 CLAIM_LIMIT = 1
 
@@ -196,7 +196,7 @@ def claim_batch(owner: str, day: str, vshards: Iterable[int], now: str | None = 
     `elbow_sec` 是**肘界**（秒，见 `yiban/core/elbow.py`）：只领 `run_at <= now - elbow_sec`
     的行。0 = 到期即可领（定时执行体 / 手动 / 补签轮的语义）；正数 = 只领"已经过期达到
     该时长"的行——兜底常驻用它避免与计划轮抢新到点的活，"谁该做"于是成为**行的函数**，
-    10-07 型启动竞态从机制上消失（工单 `l1rx`；`docs/refactor/130` §3.3）。本层的 SQL 是
+    10-07 型启动竞态从机制上消失（工单 `l1rx`）。本层的 SQL 是
     `elbow.may_claim` 的**下推实现**：两者的等价由 `tests/test_claim_dispatch_elbow_e2e.py`
     对拍钉住。
 

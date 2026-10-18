@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """肘界（elbow）影子验证分析器：离线重放生产台账与进度事件，只读、零改线。
 
-**用途**（docs/refactor/132 第 4.2 节「elbow 影子验证」）：在**不接线到引擎**的前提下，
+**用途**（elbow 影子验证）：在**不接线到引擎**的前提下，
 回答"若当时用 elbow 谓词，实际发生的领取会有哪些改判"。判据是 `yiban/core/elbow.py` 的
 同一语义：
 
@@ -59,7 +59,7 @@ def role_of(executor):
 
 
 def elbow_for(role, elbow_sec):
-    """角色 → 肘界（`docs/refactor/130` §3.3 的角色表）。
+    """角色 → 肘界（角色表见本模块的 `_ROLE_ELBOW`）。
 
     **只有兜底常驻**用 T_elbow（= 传入值）；定时执行体 / 手动 / 补签一律 0（到期即可领）。
     对全角色套同一个肘界会把"执行体按计划领到期行"误算成"会拒"——那是口径错误，不是发现。
