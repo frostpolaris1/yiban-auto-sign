@@ -88,7 +88,18 @@ def _rows(sql, params):
 if MODE in ("claim", "hold"):
     start = float(os.environ["PROBE_START"])
     time.sleep(max(0.0, start - time.time()))
-    got = queue_store.claim_batch(OWNER, DAY, (0,), now=NOW)
+    # 有界重试，理由：`claim_batch` 输给 SQLite 写锁竞争时返回空，**不是**并发被放行。
+    # 三进程在 CI 上抢同一行，三个都空手而归是可能的（实测红：won=[] ×3）——那是
+    # **活性**抖动，不违反"同一账号不得被并发持有"这条红线。重试与生产一致（队列本
+    # 就会重试），且**安全断言一点没放松**：一旦谁赢了，行变成 claimed，后来者必然
+    # 拿 0；真出现双赢仍会被父进程抓到。
+    deadline = time.monotonic() + 20.0
+    got = None
+    while True:
+        got = queue_store.claim_batch(OWNER, DAY, (0,), now=NOW)
+        if got or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
     won = [r["phone"] for r in got] if got else []
     emit(mode=MODE, owner=OWNER, won=won)
     if MODE == "hold":
