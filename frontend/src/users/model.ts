@@ -127,6 +127,16 @@ export function inlineMeta(u: UserRecord, group: Group): string {
   const parts: string[] = [];
   if (group === "pending" && u.review_count > 0) parts.push(`待处理 ${u.review_count}`);
   if ((group === "normal" || group === "vacant") && u.account_count > 0) parts.push(`账号 ${u.account_count}`);
+  if (u.created_at) parts.push(`注册 ${u.created_at}`);
+  return parts.join(" · ");
+}
+
+/** 已注销组在窄屏的补充信息：注销时刻与剩余恢复天数（两列在 ≤900 被隐藏）。 */
+export function deletedInlineMeta(d: DeletedRecord): string {
+  const parts: string[] = [];
+  if (d.deleted_at) parts.push(d.deleted_at);
+  const remain = remainText(d.remaining_days, d.status);
+  if (remain && remain !== "—") parts.push(remain);
   return parts.join(" · ");
 }
 

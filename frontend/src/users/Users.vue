@@ -3,12 +3,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { api, maskEmail, openPasswordModal, passwordHint, pollMs, shellBase, swapOut, toast } from "../lib/shell";
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, clampPage, pageSlice } from "../lib/pager";
 import { usePolling } from "../lib/polling";
+import { useTabIndicator } from "../lib/tab-indicator";
 import "./ops.js"; // 注册 window.YB.userOps（MF-49 出口面：纯 JS，由 Python 侧 node 真跑钉住）
 import {
   GROUPS,
   batchActions,
   countLabel,
   deletedBadge,
+  deletedInlineMeta,
   groupSpec,
   inlineMeta,
   listOf,
@@ -74,6 +76,8 @@ const loadError = ref(false);
 /** 写操作在途（ops.js 的 ctx.busy 驱动）；在途时不轮询刷新，避免打断写链路。 */
 const busy = ref(false);
 const tab = ref<Group>("pending");
+const tabsEl = ref<HTMLElement | null>(null);
+const { style: tabIndicatorStyle, ready: tabIndicatorReady } = useTabIndicator(tabsEl, tab);
 const search = ref<Record<string, string>>({ pending: "", normal: "", vacant: "", deleted: "" });
 // 分页状态（每组各持一页；页大小四组共用一个值）。客户端分页：后端 /api/users 的
 // limit/offset 切整表，而本页按角色/状态在前端分四组——直接对整表分页会把同组拆到不同页。
@@ -361,7 +365,8 @@ onMounted(async () => {
     <div id="users-root" ref="rootEl">
       <div class="usr-tabs-root">
         <div class="tabs-scroll">
-          <div class="tabs" role="tablist" aria-label="用户管理分区">
+          <div ref="tabsEl" class="tabs tabs--indicator" role="tablist" aria-label="用户管理分区">
+            <span class="tabs-indicator" :class="{ 'is-ready': tabIndicatorReady }" :style="tabIndicatorStyle" aria-hidden="true"></span>
             <!-- 计数放在标签上：切标签前就能看到各组的量（roving tabindex 由本组件维护） -->
             <a
               v-for="g in visibleGroups"
@@ -503,7 +508,10 @@ onMounted(async () => {
                               />
                             </label>
                           </td>
-                          <td class="usr-cell-mail" :title="row.deleted_at">{{ maskEmail(row.email) }}</td>
+                          <td class="usr-cell-mail" :title="row.deleted_at">
+                            {{ maskEmail(row.email) }}
+                            <span v-if="deletedInlineMeta(row)" class="usr-inline-meta">{{ deletedInlineMeta(row) }}</span>
+                          </td>
                           <td class="usr-cell-time usr-col-md">{{ row.deleted_at || "—" }}</td>
                           <td class="usr-cell-remain usr-col-md">{{ remainText(row.remaining_days, row.status) }}</td>
                           <td class="usr-cell-status">
