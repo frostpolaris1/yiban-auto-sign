@@ -287,9 +287,9 @@ def load_sign_state_ex(state_dir, date_str=None):
     ——前者若静默按 0 计，看板会把"没跑过/文件没生成"显示成"零账号"（AGENTS §30 跳过
     不得当绿）。`load_sign_state` 是本函数的投影（既有调用面只关心 data）。
 
-    `source` 取值：
-      `"state"` 按日结构化文件 `sign-state-<date>.json`（非空 dict）；
-      `"daily"` 旧格式 `sign-daily-<date>.json`（符号 → 状态码，部署过渡期/历史日期）；
+    `source` 取值（两个文件的命名形状不在此重述——各有唯一定义点，见下方读取代码）：
+      `"state"` 按日结构化状态文件（非空 dict）；
+      `"daily"` 旧格式按日文件（符号 → 状态码，部署过渡期/历史日期）；
       `"none"`  两者都读不到（缺失、损坏、非 dict）——调用方按"无数据"处理。
     """
     date_str = date_str or clock.now().strftime("%Y-%m-%d")
@@ -341,7 +341,7 @@ def accounts_terminal_summary(state_dir, days=30):
     终态载体是**按日状态文件**，不是 `sign_events`。旧实现按"每账号当日最后一条事件
     （id 最大者）"模拟终态；2026-10-16 生产收尾洪水写了 5,287 条 `pending` 观测
     （每账号 17 条、`attempt` 不变），把 311 个账号的"最后一条事件"刷成待签，而当日
-    `sign-state-2026-10-16.json` 是 `{failed:233, already:78, user_cancelled:6}`
+    状态文件是 `{failed:233, already:78, user_cancelled:6}`
     （工单 yiban-auto-sign-v5ty）。过程只留在日志页（`/api/admin/sign-events` 的
     `events` / `daily_stats`），不进本函数。
 
