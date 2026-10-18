@@ -1128,8 +1128,8 @@ def _mark_unreached(ctx, accounts):
     - 逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行 `pending`
       事件与 1830 行日志（工单 81xt）；2026-10-13 生产更在 `pending` 档上单日灌入
       49,148 行。批量事件是**摘要行**（`phone=""`，没有单一账号），读者面按摘要行口径
-      排除其账号统计（见 `store.events` 的 sign_event_stats / sign_event_accounts_summary），
-      故它**永不成为某账号当日最后一条事件**（看板终态读的是每账号最后一条）。
+      排除其账号统计（见 `store.events` 的 sign_event_stats）；看板账号终态统计读的是
+      **按日状态文件**（`web/services/logs.py` 的 `accounts_terminal_summary`），不读事件表。
     - 真异常（`UNCLAIMED`）的可查性不靠逐条事件行：**规模与分因**在批量行里（账号数 +
       `{分因文本: 账号数}` 明细），**逐账号判因**经 `unreached` 出参喂运行汇总的独立桶。
       逐账号事实源是台账 `sign_tasks` 的行状态——**仅当台账读得通且该账号当日有行**：
@@ -1197,7 +1197,7 @@ def _mark_unreached(ctx, accounts):
     if peer_n:
         # 跨执行体交接的**一条批量**留痕：日志一行 + 事件一行，带账号数与分因。
         # 事件是摘要行（`phone=""`，没有单一账号），读者面按摘要行口径排除其账号统计
-        # （见 `store.events` 的 sign_event_stats / sign_event_accounts_summary）。
+        # （见 `store.events` 的 sign_event_stats）。
         # 组成去重：签名取 `(执行体, 账号数, 分因明细)`，**不含轮次/时间**——兜底常驻循环
         # 每轮扫描，组成不变就整段跳过（工单 81xt 返修 LOW-1）；组成一变立刻回到留痕。
         # 身份进键：同进程换执行体不得互相压掉（同 `_BANNER_LAST`）。

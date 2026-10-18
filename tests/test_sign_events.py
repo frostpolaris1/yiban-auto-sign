@@ -13,7 +13,9 @@
 标签：C · 存储：迁移与库完整性
 覆盖：`sign_events` 的建表迁移（含删掉旧统计表）、写入函数在表缺失时降级不抛、
 过期清理、按手机/按时间的读回形状、v6 字段与批量写入、WebUI 统计的计数口径、
-`hash_ip` 加盐稳定性，以及可视化表格对同一批事件的解读。
+`hash_ip` 加盐稳定性、可视化表格对同一批事件的解读，以及
+`DashboardTerminalStatsTest`（看板 `accounts_stats` 按终态载体取数，工单
+yiban-auto-sign-v5ty）。
 对应实现：`yiban/adapters/persistence/` 的 sign_events 域（写入/聚合）与 `web/` 侧统计与可视化取数、
 `hash_ip` 的盐取自追踪盐。
 关键断言：**计数按 distinct 手机而非行数**是这里最容易改错的一格——同一账号一天内多次
@@ -28,8 +30,11 @@
 """
 import contextlib
 import datetime
+import importlib.util
+import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -309,8 +314,8 @@ class WebuiStatsDbTest(unittest.TestCase):
 
     def test_stats_same_phone_in_both_status_buckets(self):
         # 语义边界：各状态桶分别去重 ⇒ 先失败后成功的账号同时出现在两个桶，
-        # 各桶相加当"账号总数"仍会偏大（账号终值口径由 sign_event_accounts_summary 出，
-        # 见 test_accounts_summary_emits_final_values——消费方禁止对 cnt 跨维直加）。
+        # 各桶相加当"账号总数"仍会偏大（账号终值口径**不**由事件表出，见
+        # DashboardTerminalStatsTest——消费方禁止对 cnt 跨维直加）。
         db.add_sign_event(_recent(minutes=3), "13800138000", "failed")
         db.add_sign_event(_recent(minutes=2), "13800138000", "success")
         failed = self._stat_for("failed")
@@ -320,76 +325,27 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(failed["cnt"] + success["cnt"], 2,
                          "同一账号在两个桶各计一次（分桶去重的必然结果）")
 
-    # ======== 新增聚焦钉（MF-55 主体：账号数终值由后端出） ========
-    def test_accounts_summary_emits_final_values(self):
-        """`sign_event_accounts_summary` 出账号数终值：窗口去重总数 / 按状态去重 / 按日最终态。
-
-        回退即红的三格：① total 必须是 COUNT(DISTINCT phone)——旧前端把
-        daily_stats.cnt 跨天跨状态直加，现网 953 对真值 94（10.1 倍）；② 探针行
-        （stage=probe）不得混入（防混算的另一半在后端过滤，URL 那 10 个字符已另行钉死）；
-        ③ by_day 是日终态分桶——先败后成的账号只落最终桶，日历染色不再 fail 优先。
-        """
-        def _noon(days_ago, minute=0):
-            # 本地正午时刻：跨 UTC/本地时区双跑时，"日"的切分仍由被测代码自己一致地算，
-            # 避开用数在午夜边缘漂到相邻日
-            return ((clock.now() - datetime.timedelta(days=days_ago))
-                    .replace(hour=12, minute=minute, second=0, microsecond=0)
-                    .strftime("%Y-%m-%d %H:%M:%S"))
-        d2, d1 = _noon(2)[:10], _noon(1)[:10]
-        a, b, c = "13800138000", "13800138001", "13800138002"
-        db.add_sign_event(_noon(2, 0), a, "failed", stage="sign")     # A 先败
-        db.add_sign_event(_noon(2, 30), a, "success", stage="sign")   # 后成 ⇒ 当日终态 success
-        db.add_sign_event(_noon(2, 10), b, "success", stage="sign")   # B 当日成功
-        db.add_sign_event(_noon(1, 0), a, "success", stage="sign")    # A 次日又成功（跨天）
-        db.add_sign_event(_noon(1, 20), c, "success", stage="probe")  # 探针行：不得混入
-        s = db.sign_event_accounts_summary(days=30, stage="sign")
-        # ① 总数 = 窗口去重（A、B 两个账号；A 跨两天、跨两个状态桶都只算一次）
-        self.assertEqual(s["total"], 2, "「签到账号总数」= 窗口 COUNT(DISTINCT phone)")
-        naive = sum(r["cnt"] for r in db.sign_event_stats(days=30, stage="sign"))
-        self.assertGreater(naive, s["total"],
-                           "cnt 跨天跨状态直加必虚增（登记现网 953 vs 94 的机制）")
-        # ② stage 过滤在查询端也成立：不带 stage 时探针账号混进来
-        self.assertEqual(s["by_status"], {"failed": 1, "success": 2},
-                         "success 桶含 A、B（窗口去重），failed 桶含 A——桶间有交集")
-        self.assertGreater(sum(s["by_status"].values()), s["total"],
-                           "桶有交集：桶合计不得当总数（占比只按桶自身计）")
-        no_stage = db.sign_event_accounts_summary(days=30)
-        self.assertEqual(no_stage["total"], 3, "不过滤时探针账号混入——stage 过滤是真防线")
-        # ③ 日终态分桶：每账号当日恰落一桶（桶互斥 ⇒ 日内相加合法）
-        by_day = {(r["day"], r["status"]): r["accounts"] for r in s["by_day"]}
-        self.assertEqual(by_day.get((d2, "failed"), 0), 0,
-                         "A 先败后成 ⇒ 当日终态不再落 failed 桶（日历不再被涂红）")
-        self.assertEqual(by_day[(d2, "success")], 2, "D2：A、B 终态都成功")
-        self.assertEqual(by_day[(d1, "success")], 1, "D1：只有 A（探针 C 已排除）")
-        day_totals = {}
-        for r in s["by_day"]:
-            day_totals[r["day"]] = day_totals.get(r["day"], 0) + r["accounts"]
-        self.assertEqual(day_totals, {d2: 2, d1: 1}, "日终态桶合计 = 当下去重账号数")
-
     def test_summary_rows_do_not_pollute_account_stats(self):
-        """收尾扫描的**批量摘要行**（`phone=''`）不进账号统计——工单 81xt 的读者面。
+        """收尾扫描的**批量摘要行**（`phone=''`）不进按账号聚合——工单 81xt 的读者面。
 
         兜底收尾扫描把「已由他人负责」收成一条批量事件（O(1)）。该行没有单一账号
         （`phone=''`），若照常参与聚合：`sign_event_stats` 会凭空造出一个 `pending`
-        桶、`sign_event_accounts_summary.total` 会把摘要当成第 N+1 个账号——正是
-        2026-10-10 生产「pending 桶 = 全部账号数」的成因形状（MF-55）。
+        桶——正是 2026-10-10 生产「pending 桶 = 全部账号数」的成因形状（MF-55）。
         摘要行仍留在表里、仍可被事件流读出（它是那条 O(1) 留痕本身）。
+
+        **看板账号统计（`accounts_stats`）不读事件表**，故摘要行对它无从污染；
+        本用例只钉日志页那半边（`sign_event_stats` 与事件流）。
         """
         db.add_sign_event(_recent(minutes=2), "13800138000", "success", stage="sign")
         # 摘要行：一条批量结论，不带单一账号
         db.add_sign_event(_recent(minutes=1), "", "pending",
                           "本执行体未领取：任务已由其他执行体领取，共 6 个账号",
                           stage="sign")
-        # ① 聚合：摘要行不得造出 pending 桶、不得计入账号总数
+        # ① 聚合：摘要行不得造出 pending 桶
         stats = {(r["day"], r["status"]): r
                  for r in db.sign_event_stats(days=30, stage="sign")}
         self.assertEqual(set(s for (_d, s) in stats), {"success"},
                          f"摘要行凭空造出了状态桶（生产 pending 桶污染的形状）：{stats}")
-        summary = db.sign_event_accounts_summary(days=30, stage="sign")
-        self.assertEqual(summary["total"], 1,
-                         "摘要行被算成了第 2 个账号——账号总数被污染")
-        self.assertEqual(summary["by_status"], {"success": 1},
-                         "摘要行混进了按状态去重的账号数")
         # ② 留痕：摘要行仍在表内、仍可被事件流读出
         raw = db.get_conn().execute(
             "SELECT phone, status FROM sign_events ORDER BY id").fetchall()
@@ -399,3 +355,146 @@ class WebuiStatsDbTest(unittest.TestCase):
         stream = db.sign_events_since("1970-01-01 00:00:00", limit=10)
         self.assertIn("", [str(r["phone"]) for r in stream],
                       "摘要行必须仍能被事件流读出，不得被静默丢弃")
+
+
+class DashboardTerminalStatsTest(unittest.TestCase):
+    """看板账号统计**按终态取数**（工单 yiban-auto-sign-v5ty，用户 2026-10-18 裁定）。
+
+    覆盖：`GET /api/admin/sign-events` 的 `accounts_stats`。三个字段（`total` /
+        `by_status` / `by_day`）**全部**从终态载体（按日 `sign-state-<day>.json`）
+        推出，不再对 `sign_events` 取「每账号当日最后一条事件」模拟终态。
+    对应实现：`web/services/logs.py::accounts_terminal_summary`（读取复用日历页/账号表
+        同一份 `load_sign_state_ex`）+ `web/routes/data.py::api_admin_sign_events`。
+    关键断言：
+        ① 先失败后成功 ⇒ 当日终态是成功（终态载体说话，事件表不得覆盖）；
+        ② 成功之后又写一条 `pending` 观测（2026-10-16 现网污染形状：收尾洪水每账号写
+           多条 `pending`，把「最后一条事件」刷成待签）⇒ 终态**仍是成功**；
+        两条在「来源换回最后一条事件」的突变下都必须红：②由 `by_day` 桶判定
+        （`pending` 顶掉了 `success`），①由 `by_status` 判定（事件表口径下 `failed`
+        桶留档，终态口径下不留）。
+    依赖：Flask test client + 临时库/临时状态目录；不联网、无需 node。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-dash-terminal-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD=TestPass1234!\n"
+            )
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        cls._old_env = {k: os.environ.get(k) for k in
+                        ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
+                         "YIBAN_STATE_DIR", "YIBAN_ACCOUNTS_FILE", "YIBAN_LOG_FILE")}
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        global db
+        import db
+        spec = importlib.util.spec_from_file_location(
+            "webapp_dash_terminal", os.path.join(BASE, "web", "app.py"))
+        cls.webapp = importlib.util.module_from_spec(spec)
+        sys.modules["webapp_dash_terminal"] = cls.webapp
+        with contextlib.suppress(Exception):
+            spec.loader.exec_module(cls.webapp)
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for k, v in cls._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        with open(self.accounts_file, "w", encoding="utf-8") as f:
+            f.write("[]")
+        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+        self.client = self.webapp.create_app().test_client()
+        r = self.client.post("/api/login", json={"username": "admin",
+                                                 "password": "TestPass1234!"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    # ---- 夹具 ----
+    def _day(self, days_ago):
+        """窗口内的日期串（本地正午口径：跨时区双跑时不会漂到相邻日）。"""
+        return ((clock.now() - datetime.timedelta(days=days_ago))
+                .replace(hour=12, minute=0, second=0, microsecond=0)
+                .strftime("%Y-%m-%d"))
+
+    def _write_state(self, day, entries):
+        """写该日终态载体（`sign-state-<day>.json`）。"""
+        path = os.path.join(self.tmp, f"sign-state-{day}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(entries, f)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+
+    def _entry(self, status, time_str="12:30:00"):
+        return {"status": status, "message": "", "time": time_str, "task": "default"}
+
+    def _fetch(self):
+        r = self.client.get("/api/admin/sign-events?days=30&stage=sign")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        return r.get_json()
+
+    @staticmethod
+    def _buckets(accounts_stats):
+        return {(row["day"], row["status"]): row["accounts"]
+                for row in accounts_stats["by_day"]}
+
+    # ---- ① 先失败后成功 ⇒ 终态是成功 ----
+    def test_failed_then_success_terminal_is_success(self):
+        day = self._day(1)
+        phone = "13800138000"
+        db.add_sign_event(f"{day} 12:00:00", phone, "failed", stage="sign", attempt=1)
+        db.add_sign_event(f"{day} 12:30:00", phone, "success", stage="sign")
+        self._write_state(day, {phone: self._entry("success")})
+        stats = self._fetch()["accounts_stats"]
+        buckets = self._buckets(stats)
+        self.assertEqual(buckets.get((day, "success")), 1, "先败后成 ⇒ 当日终态是成功")
+        self.assertEqual(buckets.get((day, "failed"), 0), 0, "失败不是终态，不进 by_day")
+        self.assertEqual(stats["total"], 1, "窗口内出现过的账号并集")
+        self.assertEqual(stats["by_status"], {"success": 1})
+        self.assertIn("days_missing", stats,
+                      "缺终态载体的日期必须显式可见（AGENTS §30 跳过不得静默算 0）")
+        self.assertNotIn(day, stats["days_missing"], "有终态载体的日期不得报缺")
+
+    # ---- ② 成功之后又写一条观测 ⇒ 终态仍是成功（10-16 污染形状） ----
+    def test_observation_after_success_keeps_success(self):
+        day = self._day(1)
+        phone = "13800138000"
+        db.add_sign_event(f"{day} 12:00:00", phone, "success", stage="sign")
+        # 10-16 现网污染：收尾洪水每账号写多条 pending 观测，attempt 不变（0）
+        db.add_sign_event(f"{day} 12:05:00", phone, "pending", stage="sign", attempt=0)
+        self._write_state(day, {phone: self._entry("success")})
+        data = self._fetch()
+        stats = data["accounts_stats"]
+        buckets = self._buckets(stats)
+        self.assertEqual(buckets.get((day, "success")), 1,
+                         "成功之后的 pending 观测不得改写终态（10-16 把 311 个账号刷成待签）")
+        self.assertEqual(buckets.get((day, "pending"), 0), 0, "观测不是终态，不进 by_day")
+        self.assertEqual(stats["total"], 1)
+        self.assertEqual(stats["by_status"], {"success": 1})
+        # 过程数据仍留在日志页（事件流与按天事件统计不得因本次改动被过滤）
+        daily = {(row["day"], row["status"]) for row in data["daily_stats"]}
+        self.assertIn((day, "pending"), daily, "过程事件仍须在 daily_stats 可见")
+        self.assertIn((day, "success"), daily, "过程事件仍须在 daily_stats 可见")
