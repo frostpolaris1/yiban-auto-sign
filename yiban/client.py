@@ -92,6 +92,24 @@ def _as_state_int(raw):
     return None
 
 
+#: 照片要求的文本标记：`Remark` 出现这些字样时按"平台要求照片"留证。
+#: **这是启发式，不是平台契约**——`IsNeedPhoto` 的取值语义未证（实拍只观测到 2），
+#: `Remark` 是平台中文散文。两者只用于日志与结果附注，**不作任何控制流判据**。
+_PHOTO_REMARK_MARKERS = ("照片",)
+
+
+def _looks_like_photo_required(raw_is_need_photo, remark):
+    """启发式：本响应是否**可能**要求上传签到照片。仅用于留证，不改变判定。
+
+    判据两条取或：`Remark` 含"照片"类字样；`IsNeedPhoto` 收敛后非零。
+    非零不等于"需要照片"（语义未证），故调用方只把结论写成附注，状态与重试档位不动。
+    """
+    if any(marker in (remark or "") for marker in _PHOTO_REMARK_MARKERS):
+        return True
+    value = _as_state_int(raw_is_need_photo)
+    return value is not None and value != 0
+
+
 def _judge_by_state(state):
     """把**已结论**的 `State` 翻成 `signin()` 的返回值；"尚无结论"（0/1）返回 None。
 
@@ -475,13 +493,33 @@ class YibanClient:
             # 必须把 Msg 原文落日志，管理员才能判断是"任务未配置点位"还是"当日任务已关闭"。
             # 状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败告警、不触发补签
             # 重跑（重试预算对 NO_POSITION 只给 1 次，见 engine 的 _retry_budget）。
+            #
+            # 照片要求：`IsNeedPhoto` 与 `Remark` 是"平台要求上传签到照片"这条失败唯一的
+            # 解释来源。全部写进日志与结果 message（后者进 sign_events.message 与状态
+            # 文件），管理员才能一眼分辨"学校没开任务"与"要照片、我们不做"。
+            # **附注不改判定**：状态仍是 no_position，重试预算仍是 1 次、不清会话缓存。
+            raw_is_need_photo = data_obj.get("IsNeedPhoto")
+            need_photo_text = masking.sanitize_text(
+                "" if raw_is_need_photo is None else str(raw_is_need_photo)
+            ) or "None"
+            safe_remark = masking.sanitize_text(str(data_obj.get("Remark") or ""))
+            photo_fact = ""
+            if _looks_like_photo_required(raw_is_need_photo, data_obj.get("Remark")):
+                photo_fact = (
+                    "；平台要求上传签到照片，本程序不实现，该账号今日无法签成"
+                    "（IsNeedPhoto 取值语义未证，原值留证，不作判定依据）"
+                )
             logger.warning(
                 f"[{self.account.phone}] signPosition 无可用点位: "
-                f"Msg={masking.sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"
+                f"State={masking.sanitize_text(str(data_obj.get('State')))!r} "
+                f"Msg={masking.sanitize_text(msg)!r} "
+                f"Range={'有' if data_obj.get('Range') else '无'} "
+                f"IsNeedPhoto={need_photo_text} Remark={safe_remark!r}{photo_fact}"
             )
             return (
                 False,
-                "未找到签到位置数据（易班未返回该账号的签到点位，非账号密码问题）",
+                "未找到签到位置数据（易班未返回该账号的签到点位，非账号密码问题）"
+                f"{photo_fact}；IsNeedPhoto={need_photo_text} Remark={safe_remark!r}",
                 False,
                 yiban_status.STATUS_NO_POSITION,
             )
