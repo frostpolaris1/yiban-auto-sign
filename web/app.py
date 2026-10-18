@@ -1378,7 +1378,11 @@ def _alert_audit_unhealthy(health):
     `_audit_unhealthy_log`）：前者不能少发，后者不能改说成"没验成"。
     """
     if not db.audit_alert_needs_attention(health):
-        logger.error("审计链异常态与上次已告警的相同，本次不重复外发（结论未变，日志照留）")
+        # 去重行与主日志行是**同一件事**的两处出口：级别与文案必须同源分档，只改一处
+        # 会让"无法定论"仍以 ERROR 出现在日志里（同族漏一处，判据等于没改）。
+        _level, _label = _audit_unhealthy_log(health)
+        logger.log(_level, "%s：与上次已告警的结论相同，本次不重复外发（结论未变，日志照留）",
+                   _label)
         return False
     indeterminate = db.audit_verdict(health)["state"] == db.VERDICT_INDETERMINATE
     label = _audit_unhealthy_log(health)[1]

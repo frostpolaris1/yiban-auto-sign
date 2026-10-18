@@ -532,9 +532,14 @@ class LegacyPrefixIdentityTest(_Fixture):
     def test_three_field_line_outside_prefix_is_indeterminate(self):
         """前缀之外的三字段行不是历史行 ⇒ 不得静默放过。
 
-        尾部追加两类（日期晚于截止日的成形行；恰好 3 token 的垃圾行——旧实现把它
+        尾部追加三类（日期晚于截止日的成形行；**日期落在窗口内的 08-28 行**——它证明
+        判据是"位置在前缀之外"而不是"日期越界"；恰好 3 token 的垃圾行——旧实现把它
         解析成 v0 行并判 ok，是同一漏洞的另一形态）判"无法定论"；插在 v1 与 v2 之间的
-        那一条由行间链当场判"篡改"。三条都必须非健康。
+        那一条由行间链当场判"篡改"。四条都必须非健康。
+
+        "窗口内日期"那一支单独在列：只测 08-29 的话，把 `_legacy_prefix_end` 的
+        "开头连续"去掉、或把判据换成"日期越界即非历史行"，都仍会绿——那一支才钉得住
+        "位置"这一维。
 
         已知边界（不在本用例）：插在**老前缀内部**的三字段行无法与真历史行区分——
         老行之间本来就没有行间链保护（该性质 v1 时代已存在，见 `audit_known_debt` 的
@@ -544,6 +549,8 @@ class LegacyPrefixIdentityTest(_Fixture):
         scenarios = (
             ("尾部追加 08-29 的三字段行", "indeterminate",
              lambda ls: [*ls, f"2026-08-29 00:00:59 {'c' * 64}"]),
+            ("尾部追加窗口内日期（08-28）的三字段行", "indeterminate",
+             lambda ls: [*ls, f"2026-08-28 23:59:59 {'e' * 64}"]),
             ("尾部追加恰好 3 token 的垃圾行", "indeterminate",
              lambda ls: [*ls, "totally broken line"]),
             ("插在 v1 与 v2 之间（行间链当场判篡改）", "tampered",
@@ -559,8 +566,7 @@ class LegacyPrefixIdentityTest(_Fixture):
                 self.assertEqual(h["anchor_status"], expect, h["anchor_msg"])
                 self.assertFalse(h["healthy"], h["anchor_msg"])
                 self.assertEqual(db.audit_verdict(h)["state"], expect)
-                self.assertNotIn("老格式行（2026-08-28 前）",
-                                 [d["label"] for d in db.audit_known_debt(self.anchor)])
+                self.assertNotIn("及更早", [d["label"] for d in db.audit_known_debt(self.anchor)])
 
     def test_prefix_line_after_cutoff_is_not_legacy(self):
         """开头连续但日期晚于截止日的三字段行不是历史行 ⇒ 无法定论。"""
@@ -625,6 +631,49 @@ class NewIndeterminateStillAlertsTest(_Fixture):
         self.assertEqual(lvl_ind, _logging.WARNING, label_ind)
         self.assertEqual(lvl_tam, _logging.ERROR, label_tam)
         self.assertNotEqual(label_ind, label_tam)
+
+    def test_dedupe_log_line_uses_the_same_level(self):
+        """去重行与主日志行是同族出口：它也必须按结论分档，不得恒为 ERROR。
+
+        这条钉的是"同批只改了一半"：上一版只把主日志行改成 `_audit_unhealthy_log`，
+        去重行仍是 `logger.error("审计链异常态…")`——indeterminate 只要命中过基线，
+        日志里照样出现一条 ERROR。把去重行改回 `logger.error` 时本用例必红。
+        """
+        import logging as _logging
+        webapp = _load_webapp("legacy_prefix_dedupe_level")
+        self._seed(2)
+        h = self._health()
+        with mock.patch.object(webapp, "send_notification", return_value=True):
+            self.assertTrue(webapp._alert_audit_unhealthy(h), "首次外发（推进基线）")
+        with self.assertLogs(webapp.logger, level=_logging.DEBUG) as cap, \
+             mock.patch.object(webapp, "send_notification", return_value=True) as m2:
+            # 第二次同一结论：走"不重复外发"的去重分支
+            self.assertFalse(webapp._alert_audit_unhealthy(h))
+            self.assertEqual(m2.call_count, 0, "同结论不重复外发")
+        dedupe = [r for r in cap.records if "不重复外发" in r.getMessage()]
+        self.assertEqual(len(dedupe), 1, [r.getMessage() for r in cap.records])
+        self.assertEqual(dedupe[0].levelno, _logging.WARNING,
+                         f"去重行必须与主日志行同级（实测 {dedupe[0].levelname}）")
+        self.assertIn("未能定论", dedupe[0].getMessage())
+        self.assertNotIn("异常", dedupe[0].getMessage())
+
+    def test_dedupe_log_line_is_error_for_tampered(self):
+        """对照：确证篡改的去重行仍是 ERROR（分档是双向的，不是一律降级）。"""
+        import logging as _logging
+        webapp = _load_webapp("legacy_prefix_dedupe_level_tamper")
+        self._seed(2)
+        db.record_audit_anchor(self.anchor)
+        self._raw("DELETE FROM audit_logs WHERE id = 2")     # 删锚点定点行 ⇒ tampered
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
+        with mock.patch.object(webapp, "send_notification", return_value=True):
+            self.assertTrue(webapp._alert_audit_unhealthy(h))
+        with self.assertLogs(webapp.logger, level=_logging.DEBUG) as cap, \
+             mock.patch.object(webapp, "send_notification", return_value=True):
+            self.assertFalse(webapp._alert_audit_unhealthy(h))
+        dedupe = [r for r in cap.records if "不重复外发" in r.getMessage()]
+        self.assertEqual(len(dedupe), 1)
+        self.assertEqual(dedupe[0].levelno, _logging.ERROR, dedupe[0].getMessage())
 
 
 class AnchorPointRowNotExemptTest(_Fixture):
