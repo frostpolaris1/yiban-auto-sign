@@ -33,7 +33,7 @@ import math
 import os
 from datetime import datetime
 
-from yiban import clock
+from yiban.core import clock
 from yiban.store import db
 
 # 与 web.app 同名的日志通道：实测状态文件不可写的告警落回既有通道，便于运维沿用同一处过滤

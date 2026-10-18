@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 
-from yiban import clock  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.engine import workers  # noqa: E402
 from yiban.store import queue_store  # noqa: E402
 

@@ -51,7 +51,7 @@ import db
 import signin
 from werkzeug.security import generate_password_hash
 
-from yiban import clock
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

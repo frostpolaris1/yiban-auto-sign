@@ -33,7 +33,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import clock, state_gc  # noqa: E402
+from yiban import state_gc  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 
 def _day(delta):  #文件名日期是判据，落盘 mtime 不是——所以造文件要连着造名字
@@ -143,7 +144,7 @@ class SweepPolicyTest(unittest.TestCase):
         biz_now = datetime(2026, 9, 17, 6, 0, 0)        # 北京 09-17 06:00
         host_now = datetime(2026, 9, 16, 22, 0, 0)      # 宿主 UTC 09-16 22:00
         with mock.patch("yiban.state_gc.datetime.datetime") as dt, \
-             mock.patch("yiban.clock.now", return_value=biz_now):
+             mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = timedelta
             removed, _ = state_gc.sweep(self.tmp)

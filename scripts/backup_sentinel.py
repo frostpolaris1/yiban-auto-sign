@@ -117,7 +117,7 @@ def _now():
     `yiban.clock.today()`）：两边取不同时钟才会在时区非 +08 的服务器上按天错位、
     天天误报"备份缺失"。宿主时区本就是北京时它与 `datetime.now()` 逐日相等。
     """
-    from yiban.clock import today
+    from yiban.core.clock import today
     return today()
 
 

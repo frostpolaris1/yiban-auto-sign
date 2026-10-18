@@ -46,7 +46,7 @@ def _email(i):
 def _ts(days_ago=0, hour=8, minute=0):
     # 锚定业务钟（MF-109）：演示数据的"最近 N 天"与引擎/web 的业务日同源
     # （yiban.clock 北京钟），宿主时区不再是数据日期的隐变量。
-    from yiban.clock import now as _clock_now
+    from yiban.core.clock import now as _clock_now
     d = _clock_now() - datetime.timedelta(days=days_ago)
     return d.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime(
         "%Y-%m-%d %H:%M:%S"

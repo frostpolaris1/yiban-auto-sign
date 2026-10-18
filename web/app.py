@@ -282,11 +282,11 @@ from web.services.verify_queue import (  # noqa: E402
     _verify_queue_full,
 )
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
-from yiban import clock  # noqa: E402
 
 # 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402,F401  # 代理脱敏
