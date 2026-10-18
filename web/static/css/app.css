@@ -44,6 +44,10 @@
   --ctl-h-lg:    40px;  /* 主操作按钮、原生 .input、EP select */
   --ctl-h-md:    32px;  /* 桌面工具行紧凑控件、EP 表格/开关 */
   --ctl-h-touch: 44px;  /* 粗指针命中区（第 38 节） */
+  /* 当前区域的单行控件高度：默认表单档 40；工具栏容器把它改成 32。
+     原生 .input 与 EP 的 --el-component-size 都消费这一个值，不再各处手写
+     height/min-height（这就是"统一高度"的唯一旋钮）。 */
+  --ctl-h: var(--ctl-h-lg);
 
   /* 圆角：3 档（收掉 4/5/6/7/11/12/16） */
   --r-ctl:   8px;   /* 控件 */
@@ -868,6 +872,23 @@ html {
   border-radius: 10px;
   background: var(--bg-card);
 }
+/* 时段图 0 人时只剩余容量网格，看起来像加载失败；加一句不遮图的说明。 */
+.dash-page .dash-chart-note {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--t-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
 
 /* 签到热力图：窄屏可横向滚动，图例上移到卡头（见下 .dash-cal-legend）、口径说明置底。
    整块限宽 420px ≈ 7×56px + 6×4px，让日期格回到日历页的 ~56px 档位；
@@ -1154,7 +1175,15 @@ html {
 /* 页脚两栏：备案信息靠左、版本与开源入口靠右（Adminator 的 .d-footer 已是 space-between） */
 .footer-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .footer-legal a { display: inline-flex; align-items: center; gap: 4px; }
-.footer-meta { display: inline-flex; align-items: center; gap: 6px; }
+.footer-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+/* 窄屏时两项各自整体换行，不再把「更新日志」「AGPL-3.0）」拆成半句。 */
+.footer-meta > * { white-space: nowrap; }
 
 /* 迁移占位页的功能清单。li 用「负 text-indent + 等量 padding-left」做悬挂缩进：
    项目符号与首行位置不变，中文整句折行按文字起点对齐，不再顶到符号列。 */
@@ -1867,7 +1896,8 @@ body,
     background-color var(--theme-dur) var(--theme-ease),
     border-color var(--theme-dur) var(--theme-ease),
     color var(--theme-dur) var(--theme-ease),
-    box-shadow var(--theme-dur) var(--theme-ease);
+    box-shadow var(--theme-dur) var(--theme-ease),
+    transform 120ms var(--ease-out-strong);
 }
 /* ---- 按钮内联忙碌态 ----
    为什么不用「把文案换成『保存中…』」：换文案会改变按钮宽度 → 同行元素重排，
@@ -2150,12 +2180,24 @@ html[data-theme="dark"] {
 /* 页脚贴底：.main 已是 flex column，但 .content 不撑满时页脚浮在内容下方
    （管理端占位页实测页脚下方留 283–357px 空白）。两个外壳共用这条。 */
 .main > .content { flex: 1; }
+/* ≤720 外壳改为 block（侧栏变抽屉），.main 不再被网格拉伸到视口高：
+   实测 390×844 的短页面 .main 只有 705px，页脚下方留 139px 空白。给 .main 兜底
+   视口高，.content 的 flex:1 才有可分配空间。 */
+@media (max-width: 720px) {
+  .main {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+}
 
 /* 竖屏页脚居中（Adminator 的 .d-footer 在 ≤720 是 flex-start 左对齐） */
 @media (max-width: 720px) {
   .d-footer { align-items: center; justify-content: flex-start; text-align: center; }
   .d-footer .footer-legal,
   .d-footer .footer-meta { justify-content: center; }
+  .d-footer .footer-meta { row-gap: 4px; }
+  /* 两项已各占一行，分隔符没有意义，留着会单独占一行或挂在行尾。 */
+  .d-footer .footer-meta .sep { display: none; }
 }
 
 /* 侧栏品牌区不画分隔线：它与顶栏的分割线不可能对齐（侧栏 padding 与顶栏高度不同），
@@ -2170,13 +2212,71 @@ html[data-theme="dark"] {
    处置：① 把项目新增区块也切成图标态（两个外壳通用）；② 用户端直接不做图标栏，
    721px 以上保持完整侧栏、≤720 走抽屉（只剩"完整/抽屉"两种状态）。 */
 @media (min-width: 721px) and (max-width: 1100px) {
-  /* ① 项目新增区块的图标态：时钟整块隐藏（只留图标无法传达时间），退出按钮只留图标 */
-  .d-sidebar .sidebar-clock { display: none; }
+  /* ① 项目新增区块的图标态：退出按钮只留图标；时钟保留图标 + 时分秒（见下） */
   .d-sidebar .sidebar-actions { display: flex; justify-content: center; }
   .d-sidebar .sidebar-actions .btn { padding: 10px; }
   .d-sidebar .sidebar-actions .btn span { display: none; }
 
-  /* ② 用户端保留完整侧栏（覆盖 Adminator 的图标栏规则；均为 body 作用域，特异性更高） */
+  /* ② 管理端图标栏补三处层级信息（用户端在 721px 以上仍是完整侧栏，故整体排除）：
+     · 三组导航之间画短线：文字分组标签在图标态被隐藏，没有线时图标连成一条；
+     · 待处理徽标改为右上角小胶囊：vendor 在 ≤1100 把 .nav-badge 整颗 display:none，
+       平板上会丢掉"有待审核账号"这个唯一提示；
+     · 时钟改为图标在上、时分秒在下：72px 内 10px 等宽数字刚好放得下，保留"看服务器
+       时间判断签到窗口"的能力。 */
+  body:not([data-page="user"]) .d-sidebar .nav-link { position: relative; }
+  body:not([data-page="user"]) .d-sidebar .nav-section + .nav-section {
+    position: relative;
+    margin-top: 26px;
+  }
+  body:not([data-page="user"]) .d-sidebar .nav-section + .nav-section::before {
+    content: "";
+    position: absolute;
+    top: -13px;
+    left: 50%;
+    width: 28px;
+    height: 1px;
+    transform: translateX(-50%);
+    background: var(--border);
+  }
+  body:not([data-page="user"]) .d-sidebar .nav-link .nav-badge:not([hidden]) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 5px;
+    right: 10px;
+    min-width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0 4px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+  }
+  body:not([data-page="user"]) .d-sidebar .sidebar-clock {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 0 2px;
+  }
+  body:not([data-page="user"]) .d-sidebar .sidebar-clock span {
+    display: block;
+    font-size: 0;          /* 完整“日期+时间”在 72px 里放不下，改由 ::after 只显示时分秒 */
+    line-height: 1.2;
+  }
+  body:not([data-page="user"]) .d-sidebar .sidebar-clock span::after {
+    content: attr(data-clock-time);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.04em;
+    white-space: nowrap;
+  }
+
+  /* ③ 用户端保留完整侧栏（覆盖 Adminator 的图标栏规则；均为 body 作用域，特异性更高） */
   body[data-page="user"] .shell { grid-template-columns: 248px 1fr; }
   body[data-page="user"] .d-sidebar { padding: 22px 16px 18px; }
   body[data-page="user"] .brand { justify-content: flex-start; padding: 4px 10px 0; }
@@ -2208,23 +2308,28 @@ html[data-theme="dark"] {
 .workspace-role { color: var(--t-muted); }
 
 /* ---- 19.5 账号卡片 / 状态行 / 日志块 ---- */
-.account-list { display: flex; flex-direction: column; gap: 12px; }
+.account-list { display: flex; flex-direction: column; gap: 0; }
 /* 「我的账号」列表整段重渲染（保存后 reload / 失败重试）的交换过渡（P23）：
    慢请求才播（JS 侧 80ms 阈值，同 #accounts-root 口径）。只动 opacity/transform；
    is-swapping 是退出方向 → ease-in-strong，基类 ease-out-strong 留给进入。
    reduce 全禁（对齐 #accounts-root 的就地媒询）。 */
-#account-list { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
-#account-list.is-swapping { opacity: 0; transform: translateY(3px); transition-timing-function: var(--ease-in-strong); }
+.account-list { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
+.account-list.is-swapping { opacity: 0; transform: translateY(3px); transition-timing-function: var(--ease-in-strong); }
 @media (prefers-reduced-motion: reduce) {
-  #account-list { transition: none; }
-  #account-list.is-swapping { opacity: 1; transform: none; }
+  .account-list { transition: none; }
+  .account-list.is-swapping { opacity: 1; transform: none; }
 }
+/* 账号行不再逐条套一层带边框的卡片：外层已经是 .card，内层再画边框会形成
+   "卡中卡"、每行左右都有双线。改为分隔线列表，行属于同一张卡。 */
 .account-card {
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-card);
+  padding: 14px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
+.account-card + .account-card { border-top: 1px solid var(--border-soft); }
+/* 单开关行限宽：整卡 1088px 时标签与开关相距近 900px，读不出是同一行。 */
+.myaccounts .set-row { max-width: 680px; }
 .account-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .account-ident { display: flex; align-items: center; gap: 12px; min-width: 0; }
 /* 名称 + 审核徽章同一行（徽章从操作行移出，竖屏才放得下按钮） */
@@ -2302,6 +2407,22 @@ html[data-theme="dark"] {
   --badge-info-fg: #075985;  --badge-info-bg: #E0F2FE;
   --badge-muted-fg: #475569; --badge-muted-bg: #F1F5F9;
 }
+/* 侧栏选中面：Adminator 原厂 --primary-soft #EFF6FF 对白侧栏只有 1.09:1，
+   看起来像"没选中/半透明"。改用同色系更深一档，并把前景压到 AA：
+   浅色 #DCE7FF + #1D4ED8 = 5.4:1；深色 #1B3A6B + #93C5FD = 6.25:1。
+   左 3px 主色条保留（原厂 box-shadow），选中面与左条一起承担识别。 */
+:root {
+  --nav-active-bg: #DCE7FF;
+  --nav-active-fg: #1D4ED8;
+}
+:root[data-theme="dark"] {
+  --nav-active-bg: #1B3A6B;
+  --nav-active-fg: #93C5FD;
+}
+.nav-link.is-active {
+  background: var(--nav-active-bg);
+  color: var(--nav-active-fg);
+}
 html[data-theme="dark"] {
   --badge-ok-fg: #6EE7B7;    --badge-ok-bg: #14342A;
   --badge-bad-fg: #FCA5A5;   --badge-bad-bg: #3A1A1A;
@@ -2314,6 +2435,10 @@ html[data-theme="dark"] {
    （等比影响全站 164 个徽标 + 12 个导航计数，已按 4 档视口复核不溢出、不增行高）。 */
 .badge { font-size: 11px; letter-spacing: 0; }
 .nav-badge { font-size: 11px; letter-spacing: 0; }
+/* 导航待处理徽标：模板用 .nav-badge.danger，但 vendor 只定义了 pro/hot/new 三档，
+   danger 一直是"无底色的裸数字"（桌面截图里只是灰色 2）。补上语义底色，
+   桌面和平板都能一眼看到有待审核账号。 */
+.nav-badge.danger { background: var(--badge-bad-bg); color: var(--badge-bad-fg); }
 
 .badge--ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
 .badge--bad { background: var(--badge-bad-bg); color: var(--badge-bad-fg); }
@@ -2981,18 +3106,14 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 /* 检索组（输入框 + 「搜索」按钮）：同排、可收缩。flex-basis 由输入框给（见下），
    min-width:0 允许整组收缩——窄屏放不下时由本页 media 段改成整行铺满。 */
 .acct-search { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* 同一工具行内的控件统一 34px 控制高度：桌面档 .btn--sm 实际 31.2px（min-height 只在 ≤720
-   才抬到 34），与 34px 的搜索框并排会差 2.8px，肉眼可见参差。 */
+/* 高度由容器上的 --ctl-h=32 统一供给（.input 的 min-height 已消费该变量），
+   本条只负责弹性与内距。 */
 .acct-search .input {
-  height: var(--ctl-h-md);
-  /* 必须再写 min-height：section 29 的 .input{min-height:40px}（0,1,0）会压过本条的 height
-     （同为 0,1,0 但它在后面），实测同一行里搜索框 40px、按钮参差。 */
-  min-height: var(--ctl-h-md);
   /* basis = 加按钮之前的输入框宽度；min-width:0 让它在挤压时先缩，而不是把按钮顶出容器 */
   flex: 1 1 200px;
   min-width: 0;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .acct-tools .btn { min-height: var(--ctl-h-md); }
 
@@ -3083,7 +3204,13 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 }
 @media (max-width: 720px) {
   .acct-pager,
-  .usr-pager { justify-content: center; }
+  .usr-pager,
+  .logs-pager { justify-content: center; }
+  /* EP 分页：sizes 选择器固定 128px、total 文本约 80px，两者与 prev/pager/next 同排时
+     在 390 视口会超出卡片右缘。窄屏只保留翻页本身；页大小仍可在宽屏改。 */
+  .el-pagination { flex-wrap: wrap; justify-content: center; row-gap: 6px; }
+  .el-pagination .el-pagination__total,
+  .el-pagination .el-pagination__sizes { display: none; }
 }
 
 /* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变）。
@@ -3096,6 +3223,11 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
    日后设置页开关只改该取值处）。
    对比度：--t-muted on 白卡 4.76:1，达 AA。 */
 .acct-owner-inline { display: none; }
+/* 窄屏把被隐藏列的关键值补到名称下方：手机号（≤900 隐藏手机号列）、
+   删除时间（≤900 隐藏删除时间列）、审核状态（≤720 隐藏审核列）。 */
+.acct-phone-inline,
+.acct-audit-inline,
+.acct-time-inline { display: none; }
 
 /* 响应式：窄屏优先保留「选择 / 状态 / 名称 / 手机号 / 操作」，其余列按档隐藏 */
 @media (max-width: 1280px) { .acct-col-xl { display: none; } }
@@ -3104,6 +3236,16 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   .acct-col-md { display: none; }
   /* 名称单元格允许两行（默认白列表头/单元格是 nowrap）；行高由内容撑开，不写死 */
   .acct-cell-name { white-space: normal; }
+  .acct-cell-phone { display: none; }
+  .acct-phone-inline,
+  .acct-time-inline {
+    display: block;
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--t-muted);
+  }
   .acct-owner-inline {
     display: block;
     margin-top: 2px;
@@ -3117,6 +3259,15 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   }
 }
 @media (max-width: 720px) {
+  /* 审核列与序号列在竖屏隐藏：审核状态补到名称下方，序号是编辑用的次要信息。
+     列减少后表格在 390 不再横向滚动。 */
+  .acct-cell-audit,
+  .acct-cell-idx { display: none; }
+  .acct-audit-inline {
+    display: inline-flex;
+    margin-top: 4px;
+  }
+  .acct-cell-name { min-width: 120px; }
   /* 竖屏：标题与工具行分两行，工具行（已 width:100%）落到第二行。
      只在本页放开换行——桌面端「标题左、控件右同行」是既定规范，不可全局 wrap。 */
   body[data-page="work-accounts"] .panel-head-row { flex-wrap: wrap; }
@@ -3293,13 +3444,11 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
    .btn--sm 31.2px（min-height 只在 ≤720 才抬到 34）。三者靠 .panel-head-row / 
    .usr-batch-actions 的 align-items:center 居中，不为凑同高去覆写全站的 .icon-btn。 */
 .usr-search .input {
-  height: var(--ctl-h-md);
-  min-height: var(--ctl-h-md);
-  /* basis = 加按钮之前的输入框宽度；min-width:0 让它在挤压时先缩，而不是把按钮顶出容器 */
+  /* 高度由 .usr-search 的 --ctl-h=32 统一供给。 */
   flex: 1 1 200px;
   min-width: 0;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 /* 与搜索框同排的按钮同高（账号页 .acct-tools .btn 已是 34） */
 body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-md); }
@@ -3788,6 +3937,33 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
 /* 说明限宽：整卡宽（953px）下行长过久，扫读困难（教程 #15/#18）；680px 与 .set-row 同刻度 */
 .set-danger-note { margin: 0 0 16px; font-size: 12px; line-height: 1.6; color: var(--state-bad-fg); }
 
+/* ---- 27.6b 自研页签滑动指示条 ----
+   日志页的 EP 页签有一条滑动的 active bar；账号/用户/设置三页的手写页签原先只有
+   border-bottom 的瞬时跳变。这里补同一种反馈：指示条由 useTabIndicator 测量
+   当前 .tab 的 offsetLeft/offsetWidth，切换时只动 transform/width。
+   首次挂载只定位、不播放（.is-ready 之前无 transition）。 */
+.tabs--indicator { position: relative; }
+/* 指示条就绪前保留原生的 active 下划线；就绪后由滑动条接管，避免首屏出现"无下划线"帧。 */
+.tabs--indicator .tabs-indicator.is-ready ~ .tab.is-active { border-bottom-color: transparent; }
+.tabs-indicator {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--primary);
+  pointer-events: none;
+  opacity: 0;
+}
+.tabs-indicator.is-ready {
+  opacity: 1;
+  transition: transform 200ms var(--ease-out-strong), width 200ms var(--ease-out-strong);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tabs-indicator.is-ready { transition: none; }
+}
+
 /* ---- 27.7 动效收敛 ----
    模板 .tab-panel.is-active 自带 keyframes rise-in 320ms ease + 位移 10px，且模板文件里
    `prefers-reduced-motion` 出现 0 次。分区切换属高频操作，项目规矩是 ≤160ms、进入用
@@ -3795,7 +3971,10 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
 @keyframes set-panel-in {
   from { opacity: 0; transform: translateY(6px); }
 }
-[data-tab-group] .tab-panel.is-active {
+[data-tab-group] .tab-panel.is-active,
+[data-acct-group] .tab-panel.is-active,
+.usr-tabs-root .tab-panel.is-active,
+[data-settings-tabs] .tab-panel.is-active {
   animation: set-panel-in 160ms var(--ease-out-strong) both;
 }
 /* 键盘方向键切分区（roving tabindex）是高频操作：跳过进入动效，避免连续切换时面板
@@ -3836,10 +4015,18 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
 
 @media (prefers-reduced-motion: reduce) {
   .info-pop { transition: none; }
-  [data-tab-group] .tab-panel.is-active { animation: none; }
+  [data-tab-group] .tab-panel.is-active,
+  [data-acct-group] .tab-panel.is-active,
+  .usr-tabs-root .tab-panel.is-active,
+  [data-settings-tabs] .tab-panel.is-active { animation: none; }
   .btn-group .btn { transition: none; }
   .set-more > summary,
   .set-more::details-content { transition: none; }
+  /* 抽屉与遮罩是 vendor 的 240ms 位移/淡入；减少动效时直接切状态。 */
+  .d-sidebar,
+  .drawer-backdrop { transition: none; }
+  /* EP 骨架屏在减少动效下仍在 shimmer；内容加载反馈保留，只停动画。 */
+  .el-skeleton.is-animated .el-skeleton__item { animation: none; }
 }
 
 
@@ -3904,6 +4091,22 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
    「说明盒高度一致」在部分卡加载失败的混合态也会破功。 */
 .dash-page .kpi-compare > span { line-height: 20px; }
 
+/* P62 竖屏 KPI：实测 390×844 下 1 列 4 卡高 784px、第一张图在 y≈981（首屏几乎只剩
+   KPI）。改为 2×2 并把卡片压紧后，首图约提前 400px；与账号页 ≤720 的 2×2 也为同一
+   形态。<360px 不参与（320 下两列每卡只剩约 140px，中文标签会挤成多行）。 */
+@media (min-width: 360px) and (max-width: 720px) {
+  .dash-page .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .dash-page .kpi-card { padding: 14px; }
+  .dash-page .kpi-value { font-size: 36px; }
+  .dash-page .kpi-label { font-size: 12px; }
+  /* 成功率卡的「无昨日对比」在 171px 卡宽下会换行并把整卡撑高；全文已在 title 里。 */
+  .dash-page .kpi-pill { display: none; }
+  .dash-page .kpi-compare { margin-top: 8px; }
+}
+
 /* ==========================================================================
    29. 设置页输入刻度与卡片节奏校准（横屏 8 图实测）
    --------------------------------------------------------------------------
@@ -3917,7 +4120,50 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
       不再对「标签 + 多行说明」整块居中（实测偏低 18px）。
    E) 空表体不留底边线：空态行 + .form-actions 上边线会形成「双线夹空带」。
    ========================================================================== */
-.input, .select, .textarea, .input-group { min-height: var(--ctl-h-lg); }
+.input, .select, .textarea, .input-group { min-height: var(--ctl-h); }
+/* 区域级控件高度：工具栏统一 32，表单/弹窗统一 40。原生控件吃 --ctl-h，
+   EP 控件吃 --el-component-size；两者指向同一个局部变量，不再各写一遍。
+   顶部与筛选栏是"看一眼就操作"的紧凑档；表单是"逐项填写"的舒适档。 */
+.acct-tools,
+.usr-search,
+.audit-toolbar,
+.logs-tools,
+.logs-datebar {
+  --ctl-h: var(--ctl-h-md);
+  --el-component-size: var(--ctl-h-md);
+}
+.app-form-dialog,
+.settings-page {
+  --ctl-h: var(--ctl-h-lg);
+  --el-component-size: var(--ctl-h-lg);
+}
+.acct-tools,
+.usr-search,
+.audit,
+.logs-tools,
+.logs-datebar,
+.app-form-dialog,
+.settings-page {
+  /* EP 的 input/select/date 都从 --el-font-size-base 派生；在这些区域把它压到
+     项目控件档 13px。日志页签不在这些区域内，仍保持它自己的 14px（用户点名
+     日志页观感更好，不反向改它）。 */
+  --el-font-size-base: 13px;
+}
+/* EP 单行控件的文字与原生 .input 同档 13px；此前是 EP 14 / 原生 13。 */
+.el-input__inner,
+.el-select__wrapper,
+.el-date-editor,
+.el-date-editor .el-range-input,
+.el-select-dropdown__item { font-size: 13px; }
+/* EP 的 select/date 在这一版里把 32px/14px 写死在组件内部，不认 --el-component-size；
+   这里显式消费区域变量，保证工具栏 32、表单 40 与原生 .input 同高。 */
+.el-date-editor.el-input,
+.el-date-editor .el-input__wrapper { height: var(--ctl-h); min-height: var(--ctl-h); }
+.app-form-dialog .el-select__wrapper,
+.settings-page .el-select__wrapper {
+  min-height: var(--ctl-h);
+  font-size: 13px;
+}
 /* 控件高统一到三档（122 §R2.3.3）：桌面工具行的紧凑控件收 32px（EP default 刻度），
    主操作按钮沿用 40px（EP large，由 vendor .btn 的 padding 9/14 + 13px 字高自然到位）。
    触屏 44px 命中区集中在第 38 节。 */
@@ -4411,6 +4657,61 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
     border-radius: 0;
   }
   .set-exec-overlay .set-exec-dialog .el-dialog__footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+}
+
+/* ---- 账号表单弹窗（/work/accounts 与 /my/account 共用） ----
+   EP 的 el-dialog 只有 width 与 margin-top，不限高、不保证 footer 在视口内。
+   账号表单有 6–8 个字段，实测 560px 固定宽在 390/360 视口横溢出，遮罩层出现横向
+   滚动、右侧字段与取消/保存按钮被裁。这里复用执行体弹窗已经验证过的形状：
+   遮罩 flex 居中 + 弹窗限高 + body 内滚 + footer 常驻；≤720 收成整屏 sheet。
+   ⚠ 选择器带 `.app-form-overlay` 祖先：EP 的 `.el-dialog{margin/padding}` 与本文件
+   同为 (0,1,0)，且 EP CSS 在 app.css 之后加载，裸类名会被反超。 */
+.app-form-overlay .el-overlay-dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.app-form-overlay .app-form-dialog {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  max-height: 100%;
+}
+.app-form-overlay .app-form-dialog .el-dialog__header { padding: 16px 16px 8px; }
+/* 弹窗标题此前是 EP 默认 18px/400，比 16px/700 的卡片标题还轻；权重补到 700。 */
+.app-form-overlay .app-form-dialog .el-dialog__title { font-weight: 700; }
+/* 字段帮助与标签同档 12px：原 11.5px 是 vendor 的拉丁小字档，中文笔画发糊。 */
+.app-form-overlay .app-form-dialog .field-help { font-size: var(--fs-label); }
+/* 单列表单在 1280×720 下 body 只溢出 25px（最后一个字段的帮助被 footer 压住）。
+   收 4px 组间距 + 2px 字段内距，正好在 720 高度内放下，不必滚动即可看到最后一行帮助。 */
+.app-form-overlay .app-form-dialog .form-stack { gap: 12px; }
+.app-form-overlay .app-form-dialog .field { gap: 4px; }
+.app-form-overlay .app-form-dialog .el-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 16px 4px;
+}
+.app-form-overlay .app-form-dialog .el-dialog__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft);
+}
+@media (max-width: 720px) {
+  .app-form-overlay .el-overlay-dialog { padding: 0; }
+  .app-form-overlay .app-form-dialog {
+    width: 100% !important;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+  .app-form-overlay .app-form-dialog .el-dialog__footer {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
 }
 
 /* ---- .env 写拒绝的定位/清理模态：行条目 + 一键清理按钮 ---- */

@@ -132,6 +132,8 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await page.waitForTimeout(120);
 
   // 0) 巡检首块（本批新增）：可见窗口必须显式写明；轮级摘要一行一轮；时间线按轮展开。
+  //    运行巡检已拆成独立页签（日志首屏只留日志），先切过去再断言。
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   //    种子（见 e2e/server.py::_seed_run_events）：**同一业务日两轮**——最新一轮 3 个账号
   //    （1 成一败 1 未开始，耗时 21 秒），较早一轮是并行执行体。两轮是刻意的：下面
   //    「点开较早一轮 + 轮询沿用选择」的行为只有在存在另一轮时才可观测。
@@ -184,6 +186,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   ).toHaveText("当前");
 
   // 1) 日志正文：级别档**默认收起 INFO**（巡检只看 WARN／ERROR），且信息栏如实报出收起数
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
   const box = page.locator(".log-box");
   await expect(page.locator(".logs-info")).toContainText("已收起");
   await expect(box).toBeVisible();
@@ -198,6 +201,8 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   const text = await box.innerText();
   expect(text).toContain("138****8001");
   expect(text).not.toContain("13800138001");
+  // 时间线在「运行巡检」页签里；切回去再读它的 innerText（隐藏页签不渲染文本）。
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   const tlText = await tl.innerText();
   expect(tlText).toContain("138****8001");
   expect(tlText).not.toContain("13800138001");
@@ -228,6 +233,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
     route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "无权限" }) }),
   );
   await page.reload();
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   await expect(page.locator("#live-status")).toContainText("回退");
 
   // 7) 巡检面第二刀 ④⑤ 的**渲染层**守卫（执行体健康卡 + 审计链自洽状态块）。
@@ -300,6 +306,8 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
 });
 
 test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账号管理（复用同一管理员会话）", async ({ page }) => {
+  // 本用例把日志/看板/账号/用户/设置五页串成一条会话，默认 30 秒不够（实测 54.8s）。
+  test.setTimeout(120_000);
   // 会话走 API 登录（表单登录已在上一条覆盖）
   const resp = await page.request.post("/api/login", { data: { username: ADMIN_USER, password: ADMIN_PASS } });
   expect(resp.ok()).toBeTruthy();
@@ -318,13 +326,18 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   const crowded = businessDay(CROWDED_DAY_OFFSET);
   await fillLogDate(page, crowded);
   await page.getByRole("button", { name: "查看该日日志" }).click();
+  // 轮级摘要现在住在「运行巡检」页签；切过去读，读完切回日志页签操作日期栏。
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   const trunc = page.locator("#run-summary-truncated");
   await expect(trunc).toBeVisible();
   await expect(trunc).toContainText("已截断");
   await expect(trunc).toContainText("200"); // 上限数字必须来自服务端 rounds_limit
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
   await page.getByRole("button", { name: "回到今天" }).click();
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   await expect(page.locator("#run-summary .el-table__row")).toHaveCount(2); // 今天两轮，未超限
   await expect(page.locator("#run-summary-truncated")).toHaveCount(0);
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
 
   // 级别档默认收起 INFO：本用例的下文都在核日志正文，先切到全量档（级别档本身
   // 由第一条用例与 tests/test_logs_level_filter.py 钉住）。等到 INFO 行真的出现再往下走：
@@ -564,8 +577,8 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 口令字段的标签必须带「易班」限定词，并有一行区分说明（工单 0h7p 的验收锚点）：
   // 管理端丢限定词时，管理员会把易班凭据读成"用户在本站的登录密码"，据此改错凭据。
   await expect(acctForm.locator(".field-label", { hasText: "易班密码" }).first()).toBeVisible();
-  await expect(acctForm.locator(".field-help", { hasText: "不影响该用户登录本站" }).first()).toBeVisible();
-  await acctForm.getByPlaceholder(/易班登录手机号/).fill("");
+  await expect(acctForm.locator(".field-help", { hasText: "不是本站登录密码" }).first()).toBeVisible();
+  await acctForm.getByPlaceholder(/11 位手机号/).fill("");
   await acctForm.getByRole("button", { name: "添加账号" }).last().click();
   await expect(acctForm.locator(".alert.danger, .el-alert--error").first()).toBeVisible();
   await acctForm.getByRole("button", { name: /取消/ }).first().click();
