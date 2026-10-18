@@ -113,7 +113,7 @@ class CliChokeUnitTest(_CliExitHarness):
 
     def test_say_masks_raw_phone_on_stderr(self):
         """`_say` 的 stderr 行不得带裸号：遮罩形态在场、裸形态缺席。"""
-        from yiban import cli
+        from yiban.entry import cli
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
             cli._say(f"配置加载失败: 账号 {PHONE_RAW} 密码解密失败")
@@ -128,7 +128,7 @@ class CliChokeUnitTest(_CliExitHarness):
         对序列化后的整行打码会把 11 位整数改成 `138****0000` 这种非法 JSON——
         必须按类型放行，数字叶子保持原值、JSON 仍可解析。
         """
-        from yiban import cli
+        from yiban.entry import cli
         buf = io.StringIO()
         payload = {
             "command": "config", "ok": False,
@@ -257,7 +257,7 @@ class CliProbePassthroughWiringTest(_CliExitHarness):
         """结构钉：sign/probe 经 runner.main（装配与生成点遮罩随透传自动生效）。"""
         import inspect
 
-        from yiban import cli
+        from yiban.entry import cli
         for fn in (cli._cmd_sign, cli._cmd_probe):
             src = inspect.getsource(fn)
             self.assertIn("runner.main", src)

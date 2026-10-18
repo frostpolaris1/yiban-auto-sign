@@ -4,14 +4,14 @@
 标签：D · 状态词汇与账号生命周期
 覆盖：`yiban/adapters/statefiles/state_gc.py` 的清理迭代器跳过 SQLite 备份副本（按内容识别，非文件名）；
     `scripts/state_cleanup.py` 的 `--dry-run` 真不删与未知参数报错；
-    `yiban.cli` 的 `state --yes` 需要指纹回显、留痕写不进去即拒绝（fail-closed）。
+    `yiban.entry.cli` 的 `state --yes` 需要指纹回显、留痕写不进去即拒绝（fail-closed）。
 对应实现：`yiban/adapters/statefiles/state_gc.py`（`_iter_expired` 的 SQLite 跳过）与
     `yiban/entry/cli/__init__.py` 的 `_cmd_state`（`--fingerprint` + `write_purge_audit` 门）。
 关键断言：`db --backup` 落在状态目录的副本**不得按文件名被 state 清理掉**——副本是
     SQLite 库（内容判据），文件名叫得像按日状态文件也不行；`state --yes` 单独不构成
     放行；留痕失败必须零删除。三条都用前后对照与活体反例钉住。
 依赖：临时目录写真/伪文件；importlib 加载 `scripts/state_cleanup.py`；CLI 门在进程内
-    调 `yiban.cli.main`（退出码与零删除是可进程内断言的），无子进程、无 bash。
+    调 `yiban.entry.cli.main`（退出码与零删除是可进程内断言的），无子进程、无 bash。
 """
 import contextlib
 import io
@@ -27,7 +27,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import cli, state_gc  # noqa: E402
+from yiban import state_gc  # noqa: E402
+from yiban.entry import cli  # noqa: E402  （旧坐标 `yiban.cli` 是转发壳，打桩目标必须写新坐标）
 
 EXPIRED = "sched-run-2020-01-01.json"
 #: 一个"名字像按日状态文件、内容却是 SQLite 库"的备份副本（`db --backup` 的产物形态）
