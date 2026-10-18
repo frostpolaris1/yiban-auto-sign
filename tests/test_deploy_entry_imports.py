@@ -1482,6 +1482,32 @@ _T4_FACE_EXEMPT = frozenset((
     "tests/test_deploy_entry_imports.py",
 ))
 
+#: 面外目录（`frontend/**`，2026-10-18 起归用户独立完成，本片不得改）。
+_T4_OUT_OF_FACE_DIRS = ("frontend",)
+#: `frontend/**` 里仍读七坐标的**待销账登记**（AGENTS §28：约束要么有门、要么显式豁免）。
+#: 键＝`(相对路径, 旧坐标)`，值＝`(命中行数, 处置说明)`。
+#:
+#: 为什么按 `(路径, 坐标, 行数)` 而不钉行号：前端归用户独立完成，行号会随其无关改动漂移。
+#: 把行号做成判据会让**用户的 PR 因一行位移而红**，而修法却落在我的文件里
+#: ——那正是"门看的东西 ≠ 实际改的东西"（AGENTS §29）。按行数对账已能覆盖三件事：
+#: 未登记的新读者 ⇒ 红；登记处多一行/少一行 ⇒ 红；整条消失 ⇒ 红（防腐烂）。
+#:
+#: 同族登记：`frontend/e2e/server.py` 是**已知的面外消费者**，`145-E` 删壳前必须整文件处置。
+#: 三片各扫各的坐标键（表不跨片共享，避免改别人的门）：
+#:   - `T1`：`generate_password_hash` → `_PWHASH_OUT_OF_FACE_REGISTRY`
+#:   - `T2`：`yiban.clock` → `_T2_OUT_OF_FACE_REGISTRY`
+#:   - `T4`：`yiban.engine.state_io` → 本表
+_T4_OUT_OF_FACE_REGISTRY = {
+    ("frontend/e2e/server.py", "yiban.engine.state_io"): (
+        3,
+        "Playwright e2e 夹具（`frontend/README.md` 的 `npm run test:e2e` 拉起）仍以旧坐标"
+        "导入 state_io（1 条 import ＋ 2 处 mark_worker_started 调用）。前端归用户独立完成，"
+        "本批不得改。**145-E 删 `yiban/engine/state_io.py` 壳前须先处置这个文件**"
+        "（前端侧改 `from yiban.adapters.statefiles import state_io`，或由主会话与用户协同），"
+        "处置后同批删本登记。",
+    ),
+}
+
 #: 旧坐标的字面量判据：模块名后不得紧跟标识符字符（`yiban.engine.runner` 命中；
 #: `yiban.engine.runner_extra` 这类同前缀他模块不命中）。
 _T4_OLD_LITERALS = {m: re.compile(r"(?<![\w.])" + re.escape(m) + r"(?![\w])")
@@ -1561,7 +1587,7 @@ def _t4_dotted(node, bindings):
 
 
 def _t4_import_hits(tree):
-    """该文件里以旧坐标作 import 路径或属性访问的位置：`(行号, 说明)` 列表。
+    """该文件里以旧坐标作 import 路径或属性访问的位置：`(行号, 说明, 坐标)` 列表。
 
     写法：`import yiban.engine.runner`、`from yiban.engine.runner import X`、
     `from yiban.engine import runner`（别名形态，是主流形态）、`from yiban.engine import *`、
@@ -1574,33 +1600,35 @@ def _t4_import_hits(tree):
             for a in node.names:
                 for m in _T4_OLD_MODULES:
                     if a.name == m or a.name.startswith(m + "."):
-                        hits.append((node.lineno, "import 旧坐标 " + a.name))
+                        hits.append((node.lineno, "import 旧坐标 " + a.name, m))
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 continue
             mod = node.module or ""
             for m in _T4_OLD_MODULES:
                 if mod == m or mod.startswith(m + "."):
-                    hits.append((node.lineno, "from 旧坐标 import " + mod))
+                    hits.append((node.lineno, "from 旧坐标 import " + mod, m))
             if mod == "yiban.engine":
                 for a in node.names:
                     if a.name in _T4_SHORT_TO_OLD:
                         hits.append((node.lineno,
-                                     "from yiban.engine import " + a.name + "（旧坐标别名）"))
+                                     "from yiban.engine import " + a.name + "（旧坐标别名）",
+                                     _T4_SHORT_TO_OLD[a.name]))
                     elif a.name == "*":
-                        hits.append((node.lineno, "from yiban.engine import *（旧坐标星号）"))
+                        hits.append((node.lineno, "from yiban.engine import *（旧坐标星号）",
+                                     "yiban.engine"))
         elif isinstance(node, ast.Attribute):
             d = _t4_dotted(node, bindings)
             if not d:
                 continue
             for m in _T4_OLD_MODULES:
                 if d == m or d.startswith(m + "."):
-                    hits.append((node.lineno, "属性访问 " + d + "（旧坐标）"))
+                    hits.append((node.lineno, "属性访问 " + d + "（旧坐标）", m))
     return sorted(set(hits))
 
 
 def t4_old_coordinate_hits(path):
-    """返回该文件里引用七坐标的位置：`(行号, 说明)` 列表。
+    """返回该文件里引用七坐标的位置：`(行号, 说明, 坐标)` 列表。
 
     Python：① 旧坐标 import（四种写法，含 `Y.engine.runner.X` 属性访问与星号导入）；
     ② 非 docstring 字符串常量含旧坐标（覆盖打桩目标、`importlib.import_module` 串、
@@ -1617,11 +1645,12 @@ def t4_old_coordinate_hits(path):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            if any(_T4_OLD_LITERALS[m].search(s) for m in _T4_OLD_MODULES):
-                hits.append((i, "shell/文本非注释行含旧坐标"))
-            elif _t4_alias_names(s):
-                hits.append((i, "shell/文本非注释行含 from yiban.engine import <旧短名>"))
-        return hits
+            for m in _T4_OLD_MODULES:
+                if _T4_OLD_LITERALS[m].search(s):
+                    hits.append((i, "shell/文本非注释行含 " + m, m))
+            for m in _t4_alias_names(s):
+                hits.append((i, "shell/文本非注释行含 from yiban.engine import <旧短名>", m))
+        return sorted(set(hits))
     tree = ast.parse(text)
     docs = _docstring_const_ids(tree)
     logger_ids = _t4_logger_name_ids(tree)
@@ -1630,10 +1659,15 @@ def t4_old_coordinate_hits(path):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
                 and id(node) not in docs and id(node) not in logger_ids):
             continue
-        if any(_T4_OLD_LITERALS[m].search(node.value) for m in _T4_OLD_MODULES):
-            hits.append((node.lineno, "非 docstring 字符串常量 " + node.value[:60]))
-        elif _t4_alias_names(node.value):
-            hits.append((node.lineno, "非 docstring 字符串含别名形态 " + node.value[:60]))
+        for m in _T4_OLD_MODULES:
+            if _T4_OLD_LITERALS[m].search(node.value):
+                hits.append((node.lineno, "非 docstring 字符串常量 " + node.value[:60], m))
+                break
+        else:
+            aliases = _t4_alias_names(node.value)
+            if aliases:
+                hits.append((node.lineno, "非 docstring 字符串含别名形态 "
+                             + node.value[:60], aliases[0]))
     return sorted(set(hits))
 
 
@@ -1657,6 +1691,68 @@ def t4_own_face_files(root):
     return out
 
 
+def t4_out_of_face_files(root):
+    """面外（`frontend/**`，跳过 `node_modules` 等）的 Python 文件清单。"""
+    out = []
+    for d in _T4_OUT_OF_FACE_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x not in _T4_SKIP_DIRS]
+            for name in sorted(files):
+                if name.endswith(".py"):
+                    out.append(os.path.join(dirpath, name))
+    return out
+
+
+def t4_out_of_face_found(files, root):
+    """面外命中的实测值：`({(相对路径, 坐标): 命中行数}, {(相对路径, 坐标): [行号]})`。
+
+    计数单位是**命中行数**（同一条语句上的多个命中只算一行）：链深度或排版变化
+    不改数，新增一处读者才改数。行号只进 `where`，供红时点名，不进判据。
+    """
+    found, where = {}, {}
+    for path in files:
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        by_coord = {}
+        for line, _why, coord in t4_old_coordinate_hits(path):
+            if coord is None:
+                continue
+            by_coord.setdefault(coord, set()).add(line)
+        for coord, lines in by_coord.items():
+            key = (rel, coord)
+            found[key] = len(lines)
+            where[key] = sorted(lines)
+    return found, where
+
+
+def t4_out_of_face_problems(found, registry=None, where=None):
+    """面外残留与登记表对账（纯函数，便于突变自证）：返回问题清单（空＝一致）。
+
+    三条判据（AGENTS §28/§29）：
+      · 未登记的新读者 ⇒ 红（`145-E` 删壳时会断，而它以为读者已清零）；
+      · 登记的行数与实际不符 ⇒ 红（多一行＝新增残留；少一行＝已处置一半）；
+      · 登记整条消失 ⇒ 红（用户那边已处置，必须同批销账，否则登记变成僵尸）。
+    """
+    registry = _T4_OUT_OF_FACE_REGISTRY if registry is None else registry
+    where = where or {}
+    problems = []
+    for key, n in sorted(found.items()):
+        entry = registry.get(key)
+        if entry is None:
+            problems.append(
+                f"{key[0]}:{where.get(key)} 出现未登记的面外旧坐标读者 {key[1]}（{n} 行）——"
+                "要么迁到新坐标，要么在 _T4_OUT_OF_FACE_REGISTRY 登记")
+        elif n != entry[0]:
+            problems.append(
+                f"{key[0]}:{where.get(key)} 的旧坐标读者 {key[1]} 实测 {n} 行、登记 {entry[0]} 行"
+                "——两侧必须一致（新增残留不许漏登记；已处置的必须同批销账）")
+    for key, (n, _why) in sorted(registry.items()):
+        if key not in found:
+            problems.append(
+                f"登记 {key[0]} 的 {key[1]}（{n} 行）已不在代码里——"
+                "前端那边已处置，请同批删掉这条登记（防登记变成僵尸）")
+    return problems
+
+
 class EngineCoordinateGateTest(unittest.TestCase):
     """T4：七坐标的自有面读者清零；打桩面零命中；非 Python 载体零命中。"""
 
@@ -1670,7 +1766,7 @@ class EngineCoordinateGateTest(unittest.TestCase):
             rel = os.path.relpath(path, BASE).replace("\\", "/")
             if rel in _T4_FACE_EXEMPT:
                 continue
-            for line, why in t4_old_coordinate_hits(path):
+            for line, why, _c in t4_old_coordinate_hits(path):
                 bad.append(f"{rel}:{line}: {why}")
         self.assertEqual(
             bad, [],
@@ -1732,6 +1828,37 @@ class EngineCoordinateGateTest(unittest.TestCase):
             f"{_T4_LOGGER_ANCHOR_FILE} 里已无 getLogger({_T4_LOGGER_NAME!r})："
             "本门的日志通道名豁免已腐烂，须同批删掉该豁免")
 
+    def test_out_of_face_readers_match_registry(self):
+        """面外（`frontend/**`）的残留与登记表逐条对账，两侧都不许静默。
+
+        `frontend/**` 归用户独立完成，本片不得改。但它是**活的消费者**：`145-E` 删壳时
+        它会断，而自有面门扫不到它。故残留必须登记；未登记、行数不符、登记消失都判红。
+        """
+        files = t4_out_of_face_files(BASE)
+        self.assertGreaterEqual(
+            len(files), 1,
+            f"面外扫描面为空（{len(files)} 个文件）——扫描根写错或前端被移走（扫空不得当绿）")
+        found, where = t4_out_of_face_found(files, BASE)
+        problems = t4_out_of_face_problems(found, where=where)
+        self.assertEqual(problems, [], "面外旧坐标残留与登记表不一致：\n" + "\n".join(problems))
+
+    def test_registry_reconciliation_has_teeth(self):
+        """突变验证（合成输入）：未登记 ⇒ 红；行数不符 ⇒ 红；登记消失 ⇒ 红；一致 ⇒ 绿。"""
+        reg = {("frontend/e2e/server.py", "yiban.engine.state_io"): (3, "登记理由")}
+        key = ("frontend/e2e/server.py", "yiban.engine.state_io")
+        self.assertEqual(t4_out_of_face_problems({key: 3}, registry=reg), [],
+                         "一致时不该报问题（否则三条判据可能是一组恒真断言）")
+        self.assertTrue(t4_out_of_face_problems({key: 4}, registry=reg),
+                        "行数多于登记未判红：新增残留会被静默放过")
+        self.assertTrue(t4_out_of_face_problems({key: 2}, registry=reg),
+                        "行数少于登记未判红：处置没做完就被当成已清零")
+        self.assertTrue(
+            t4_out_of_face_problems(
+                {("frontend/e2e/other.py", "yiban.engine.state_io"): 1}, registry=reg),
+            "未登记的新读者未判红：本门没有牙")
+        self.assertTrue(t4_out_of_face_problems({}, registry=reg),
+                        "登记已消失（用户那边改掉了）未判红：登记会变成僵尸")
+
     def test_scanner_has_teeth(self):
         """突变验证：塞回十二种形态 ⇒ 红；新坐标/docstring/注释/同前缀他模块 ⇒ 不误红。"""
         with tempfile.TemporaryDirectory(prefix="t4-gate-") as tmp:
@@ -1756,7 +1883,7 @@ class EngineCoordinateGateTest(unittest.TestCase):
                         '# 注释里的 yiban.engine.runner 不算\n'
                         'import yiban.engine.runner_extra\n')                    # ⑫ 同前缀他模块 ⇒ 不命中
             hits = t4_old_coordinate_hits(py)
-            lines = sorted({ln for ln, _ in hits})
+            lines = sorted({ln for ln, _w, _c in hits})
             for want in (2, 3, 5, 6, 7, 8, 10, 12, 14, 15, 16):
                 self.assertIn(want, lines, f"第 {want} 行应命中：{hits}")
             self.assertNotIn(11, lines,
@@ -1789,7 +1916,7 @@ class EngineCoordinateGateTest(unittest.TestCase):
                         'with self.assertLogs("yiban.engine.round"):\n'
                         '    pass\n'
                         'T = "yiban.engine.round.X"\n')
-            got = [ln for ln, _ in t4_old_coordinate_hits(logger_only)]
+            got = [ln for ln, _w, _c in t4_old_coordinate_hits(logger_only)]
             self.assertEqual(got, [5],
                              f"日志名豁免面过宽或过窄：应只命中第 5 行打桩目标串，实得 {got}")
 
@@ -1799,7 +1926,7 @@ class EngineCoordinateGateTest(unittest.TestCase):
                         '# 注释里的 yiban.engine.state_io 不算\n'
                         'python3 -c "from yiban.engine.state_io import fallback_alive"\n'
                         '_s="$(python3 -c \'from yiban.engine import workers;print(1)\')"\n')
-            self.assertEqual([ln for ln, _ in t4_old_coordinate_hits(sh)], [3, 4],
+            self.assertEqual([ln for ln, _w, _c in t4_old_coordinate_hits(sh)], [3, 4],
                              "shell 非注释行未命中（字面量或别名形态）或注释被误判")
 
 
