@@ -49,6 +49,7 @@ from unittest import mock
 
 import db
 import signin
+from werkzeug.security import generate_password_hash
 
 from yiban import clock
 
@@ -122,8 +123,8 @@ class TimePrefsTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("admin@test.local", self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("admin@test.local", generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
         db.add_account({"name": "U1", "phone": "13800138001", "password": "p1",
                         "status": "active", "owner": "user1@test.local"})
 
@@ -997,7 +998,7 @@ class TimePrefsTest(unittest.TestCase):
         self._login(c, "admin", ADMIN_PASS)
         # 管理员无 my-phone（owner=admin 的账号不属于普通用户自选）→ has_account 为 False
         # 管理员本身走内置认证，不查账号；直接用无账号用户验证
-        db.create_user("user2@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user2@test.local", generate_password_hash(USER_PASS))
         c2 = self.webapp.create_app().test_client()
         token = self._login(c2, "user2@test.local", USER_PASS)
         data = c2.get("/api/my-time-pref").get_json()
@@ -1012,7 +1013,7 @@ class TimePrefsTest(unittest.TestCase):
         cases = [("pending", "13600138001"), ("rejected", "13600138002")]
         for status, phone in cases:
             user = f"{status}@test.local"
-            db.create_user(user, self.webapp.generate_password_hash(USER_PASS))
+            db.create_user(user, generate_password_hash(USER_PASS))
             db.add_account({"name": status, "phone": phone, "password": "p",
                             "status": status, "owner": user})
             c = self.webapp.create_app().test_client()
@@ -1047,7 +1048,7 @@ class TimePrefsTest(unittest.TestCase):
         r2 = c.put(f"/api/my-accounts/{acc['index']}/pause", json={"paused": False}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         # 注册管理员自己提交的账号（owner=本人邮箱）仍可暂停——只有系统管理员账号受保护
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         db.add_account({"name": "A2", "phone": "13600999001", "password": "p3",
                         "status": "active", "owner": "admin2@test.local"})
         c2 = self.webapp.create_app().test_client()
@@ -1066,7 +1067,7 @@ class TimePrefsTest(unittest.TestCase):
         db.add_account({"name": "内置管理员", "phone": "13900139099", "password": "p2",
                         "status": "active", "owner": "admin"})
         db.set_time_pref("13900139099", 5, "2026-08-15 10:00:00")
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         db.add_account({"name": "A2", "phone": "13600999001", "password": "p3",
                         "status": "active", "owner": "admin2@test.local"})
         # admin2 保存选片 → 应写入自己的账号（13600999001），不得覆盖内置管理员账号
@@ -1206,7 +1207,7 @@ class TimePrefsTest(unittest.TestCase):
             self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
             self.assertIn("只能提交一个账号", r3.get_json()["error"])
             # 4) 新注册用户提交 → 403
-            db.create_user("capuser@test.local", self.webapp.generate_password_hash(USER_PASS))
+            db.create_user("capuser@test.local", generate_password_hash(USER_PASS))
             c4 = app.test_client()
             token4 = self._login(c4, "capuser@test.local", USER_PASS)
             r4 = c4.post("/api/my-accounts", json={
@@ -1299,7 +1300,7 @@ class TimePrefsTest(unittest.TestCase):
         「影响半径 × 能否造成静默漏签」的判据改判：这里同时钉住改判后的两侧。
         """
         app = self.webapp.create_app()
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         c = app.test_client()
         token = self._login(c, "admin2@test.local", USER_PASS)
         h = self._csrf(token)
@@ -1380,7 +1381,7 @@ class TimePrefsTest(unittest.TestCase):
         而 A 档（周末/窗口/边缘）连口令带过去也不给普通管理员写。
         """
         app = self.webapp.create_app()
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         c = app.test_client()
         token = self._login(c, "admin2@test.local", USER_PASS)
         h = self._csrf(token)

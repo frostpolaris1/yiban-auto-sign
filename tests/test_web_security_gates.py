@@ -36,6 +36,7 @@ from unittest import mock
 
 from _mail_body import render_body
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
 from yiban import clock
 
@@ -132,7 +133,7 @@ class Batch16FixesTest(unittest.TestCase):
 
     def _mk_user(self, email, role="user", password=USER_PASS):
         if db.find_user(email) is None:
-            db.create_user(email, self.webapp.generate_password_hash(password),
+            db.create_user(email, generate_password_hash(password),
                            role=role)
 
     def _pw_version(self, email):
@@ -430,11 +431,11 @@ class _AnnBase(unittest.TestCase):
         return self._login("admin", ADMIN_PASS)
 
     def _reg_admin(self):
-        db.create_user(REG_ADMIN, self.webapp.generate_password_hash(REG_PASS), role="admin")
+        db.create_user(REG_ADMIN, generate_password_hash(REG_PASS), role="admin")
         return self._login(REG_ADMIN, REG_PASS)
 
     def _user(self):
-        db.create_user(USER_EMAIL, self.webapp.generate_password_hash(USER_PASS_ANN))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS_ANN))
         return self._login(USER_EMAIL, USER_PASS_ANN)
 
     def _anon(self):
@@ -886,7 +887,7 @@ class Batch18FixesTest(unittest.TestCase):
 
     def _make_formal_user(self, email, phone):
         """构造「正式用户」：注册 + 提交账号 + 管理员审核通过（active）。"""
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user(email, generate_password_hash(USER_PASS_B18F))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS_B18F)
         r = c.post("/api/my-accounts", json={"name": "n", "phone": phone, "password": "p"},
@@ -1190,7 +1191,7 @@ class Batch18FixesTest(unittest.TestCase):
     def test_my_calendar_hides_pending_history(self):
         """pending 行提交后 my-calendar 不返回该号历史（验收用例）。"""
         self._write_daily_state()
-        db.create_user("m2a@test.local", self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user("m2a@test.local", generate_password_hash(USER_PASS_B18F))
         c = self.webapp.create_app().test_client()
         t = self._login(c, "m2a@test.local", USER_PASS_B18F)
         r = c.post("/api/my-accounts", json={"name": "n", "phone": PHONE, "password": "p"},
@@ -1216,7 +1217,7 @@ class Batch18FixesTest(unittest.TestCase):
     def test_my_logs_hide_pending_and_show_active(self):
         """my-logs 同口径：pending 不回显，active 回显（脱敏形态）。"""
         self._write_date_log()
-        db.create_user("m2c@test.local", self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user("m2c@test.local", generate_password_hash(USER_PASS_B18F))
         c = self.webapp.create_app().test_client()
         t = self._login(c, "m2c@test.local", USER_PASS_B18F)
         r = c.post("/api/my-accounts", json={"name": "n", "phone": PHONE, "password": "p"},
@@ -1285,7 +1286,7 @@ class Batch18FixesTest(unittest.TestCase):
     # =====================================================================
     def test_accounts_only_without_password_400_accounts_intact(self):
         """无口令调 accounts_only → 400，账号原封不动。"""
-        db.create_user("m3@test.local", self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user("m3@test.local", generate_password_hash(USER_PASS_B18F))
         db.add_account({"name": "A", "phone": PHONE, "password": "pw",
                         "status": "active", "owner": "m3@test.local"})
         ac, at = self._admin_client()
@@ -1297,7 +1298,7 @@ class Batch18FixesTest(unittest.TestCase):
 
     def test_accounts_only_with_password_clears_accounts_keeps_user(self):
         """带正确口令 → 200：账号全部清空、用户保留可重新提交（与 full 语义分界）。"""
-        db.create_user("m3b@test.local", self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user("m3b@test.local", generate_password_hash(USER_PASS_B18F))
         db.add_account({"name": "A", "phone": PHONE, "password": "pw",
                         "status": "active", "owner": "m3b@test.local"})
         ac, at = self._admin_client()
@@ -1313,8 +1314,8 @@ class Batch18FixesTest(unittest.TestCase):
     # =====================================================================
     def test_register_cooldown_message_matches_already_registered(self):
         """冷却期分支文案必须与已注册分支逐字一致（不得泄露"近期注销过"信号）。"""
-        db.create_user("live@qq.com", self.webapp.generate_password_hash(USER_PASS_B18F))
-        db.create_user("gone@qq.com", self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user("live@qq.com", generate_password_hash(USER_PASS_B18F))
+        db.create_user("gone@qq.com", generate_password_hash(USER_PASS_B18F))
         db.soft_delete_user_with_accounts("gone@qq.com")  # 刚注销 → 冷却期内
         c = self.webapp.create_app().test_client()
         r_live = c.post("/api/register",
@@ -1331,7 +1332,7 @@ class Batch18FixesTest(unittest.TestCase):
         """对照：仅文案收敛，行为不变——冷却期结束后邮箱正常释放可再注册。"""
         # 注意顺序：先建 client 再回填过期时间（create_app 启动清理会物理清除过期注销用户）
         c = self.webapp.create_app().test_client()
-        db.create_user("old@qq.com", self.webapp.generate_password_hash(USER_PASS_B18F))
+        db.create_user("old@qq.com", generate_password_hash(USER_PASS_B18F))
         db.soft_delete_user_with_accounts("old@qq.com")
         old = (clock.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn = db.get_conn()
@@ -1514,7 +1515,7 @@ class _TierBase(unittest.TestCase):
         return self._client("admin", ADMIN_PASS)
 
     def _reg_admin(self):
-        db.create_user(REG_ADMIN, self.webapp.generate_password_hash(REG_PASS),
+        db.create_user(REG_ADMIN, generate_password_hash(REG_PASS),
                        role="admin")
         return self._client(REG_ADMIN, REG_PASS)
 

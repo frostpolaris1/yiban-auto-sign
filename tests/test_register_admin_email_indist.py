@@ -20,6 +20,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "c" * 64
@@ -73,7 +75,7 @@ class RegisterAdminEmailTest(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file)
-        db.create_user(REGISTERED, self.webapp.generate_password_hash(GOODPW))
+        db.create_user(REGISTERED, generate_password_hash(GOODPW))
 
     def test_builtin_admin_email_indistinguishable_from_duplicate(self):
         c = self.webapp.create_app().test_client()

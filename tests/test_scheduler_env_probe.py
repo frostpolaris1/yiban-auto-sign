@@ -34,6 +34,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
 from _mail_body import render_body  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 # 邮件组件的打桩目标：引擎直连 `yiban.mail`（旧的 scripts/mailer.py 兼容壳已删除），
 # 故打桩打在 `signin.mailer`（即实现包）上——与套件其余调用点同口径。
@@ -253,7 +254,7 @@ class VerifyPrescreenWebTest(unittest.TestCase):
         db.init_db(self.db_file, env_file=self.env_file)
         # 普通注册用户 + 关闭 mail 告警噪音
         db.create_user("u1@test.local",
-                       self.webapp.generate_password_hash(USER_PASS))
+                       generate_password_hash(USER_PASS))
 
     def _login_user(self, c):
         r = c.post("/api/login", json={"username": "u1@test.local", "password": USER_PASS})

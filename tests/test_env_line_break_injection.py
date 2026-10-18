@@ -54,6 +54,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from yiban.infra import env_io  # pythonpath 已含 scripts/（pyproject.toml）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -175,7 +177,7 @@ class _Base(unittest.TestCase):
 
     def _sub_admin(self):
         """注册管理员（普通管理员）会话：主管理员凭据对它不可见，正是攻击者视角。"""
-        self.db.create_user(SUB_ADMIN, self.webapp.generate_password_hash(SUB_PASS),
+        self.db.create_user(SUB_ADMIN, generate_password_hash(SUB_PASS),
                             role="admin")
         c = self.webapp.create_app().test_client()
         return c, self._csrf(self._login(c, SUB_ADMIN, SUB_PASS))
@@ -334,7 +336,7 @@ class EnvInjectionKillChainTest(_Base):
     """活体复现链必须整条死掉（普通管理员发起）。"""
 
     def _attacker_hash(self):
-        return self.webapp.generate_password_hash(
+        return generate_password_hash(
             ATTACK_PASS, method=self.webapp.SCRYPT_METHOD)
 
     def test_announcement_then_settings_write_cannot_take_over_master(self):
@@ -492,7 +494,7 @@ class AmbiguousAdminHashTest(_Base):
     """
 
     def _hash_of(self, password):
-        return self.webapp.generate_password_hash(password, method=self.webapp.SCRYPT_METHOD)
+        return generate_password_hash(password, method=self.webapp.SCRYPT_METHOD)
 
     def _two_hash_lines(self, legal_last=True):
         """写两行主凭据（legal_last=True 时后写生效的正是合法行）。返回生效行哈希。"""
@@ -511,7 +513,7 @@ class AmbiguousAdminHashTest(_Base):
         effective = self._two_hash_lines(legal_last=True)
         self.assertEqual(self._master_hash_line(), effective,
                          "前置条件失败：生效行应是合法哈希（修复前本例应能登录成功）")
-        self.assertTrue(self.webapp.check_password_hash(effective, ADMIN_PASS),
+        self.assertTrue(check_password_hash(effective, ADMIN_PASS),
                         "前置条件失败：口令与生效哈希本身要匹配")
         with mock.patch.object(self.webapp, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR") as logs:
@@ -528,7 +530,7 @@ class AmbiguousAdminHashTest(_Base):
         """注入行排在后面（提权成功态）时同样必须拒绝——两条口令都不给过。"""
         effective = self._two_hash_lines(legal_last=False)
         self.assertEqual(self._master_hash_line(), effective)
-        self.assertTrue(self.webapp.check_password_hash(effective, ATTACK_PASS),
+        self.assertTrue(check_password_hash(effective, ATTACK_PASS),
                         "前置条件失败：修复前正是这一行让攻击者登录成功")
         with mock.patch.object(self.webapp, "send_notification"):
             self.assertFalse(self.webapp.verify_admin("admin@test.local", ATTACK_PASS),

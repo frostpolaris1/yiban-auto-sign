@@ -34,6 +34,7 @@ from unittest import mock
 
 import db
 import signin
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -344,7 +345,7 @@ class _WebBase(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL, generate_password_hash(USER_PASS))
         db.add_account({"name": "我的号", "phone": PHONE, "password": "pw",
                         "owner": EMAIL, "status": "active",
                         "phone_model": "", "phone_code": ""})
