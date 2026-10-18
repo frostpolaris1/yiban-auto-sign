@@ -177,7 +177,7 @@ class TwoProcessLockContentionE2ETest(_StateDirBase):
     """两个真子进程抢同一把锁：恰一个运行，另一个按既定退出码拒绝且日志有因。"""
 
     def _log_path(self):
-        from yiban import clock
+        from yiban.core import clock
         return os.path.join(self.tmp, f"sign-{clock.now():%Y-%m-%d}.log")
 
     def test_second_process_refused_with_recorded_reason(self):

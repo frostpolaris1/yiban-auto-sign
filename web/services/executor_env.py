@@ -37,9 +37,9 @@ from web.services.env_io import (
     _is_http_proxy_url,
     read_env,
 )
-from yiban import clock
 from yiban import egress as yb_egress
 from yiban import window as yb_window
+from yiban.core import clock
 from yiban.infra import env_io as _yiban_env_io
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.store import db

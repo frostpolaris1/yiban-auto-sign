@@ -29,7 +29,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban import clock  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.engine import executor_v3  # noqa: E402
 
 TEST_KEY = "a" * 64

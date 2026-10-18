@@ -310,7 +310,7 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
         """
         from datetime import timedelta
 
-        from yiban import clock
+        from yiban.core import clock
         old_at = (clock.now() - timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
         self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
                               "anchor_status": "ok", "anchor_msg": "",
@@ -327,7 +327,7 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
         """边界另一头：刚刚写的快照不许被误降级（否则本块恒为黄，等于没修）。"""
         from datetime import timedelta
 
-        from yiban import clock
+        from yiban.core import clock
         at = (clock.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
         self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
                               "anchor_status": "ok", "anchor_msg": "",
@@ -341,7 +341,7 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
         """超龄只降"健康"：篡改是确证结论，超龄不得把它洗成"无法定论"。"""
         from datetime import timedelta
 
-        from yiban import clock
+        from yiban.core import clock
         at = (clock.now() - timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
         self._write_snapshot({"chain_ok": False, "broken": 2, "anchor_ok": True,
                               "anchor_status": "ok", "anchor_msg": "",
@@ -412,7 +412,7 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
     def test_snapshot_carries_data_time(self):
         from datetime import timedelta
 
-        from yiban import clock
+        from yiban.core import clock
         at = (clock.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
         self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
                               "anchor_status": "ok", "anchor_msg": "",

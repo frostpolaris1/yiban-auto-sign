@@ -36,8 +36,9 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from yiban import clock, cred_state
+from yiban import cred_state
 from yiban import status as yiban_status
+from yiban.core import clock
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 

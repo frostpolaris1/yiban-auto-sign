@@ -376,7 +376,7 @@ class ProtocolLayerTest(unittest.TestCase):
                 dotted = m.group(1)
                 if dotted.split(".")[0] in ("db", "signin", "notify", "mailer", "web") or \
                         dotted.startswith(("yiban.store", "yiban.security", "yiban.client",
-                                           "yiban.masking", "yiban.clock")):
+                                           "yiban.masking", "yiban.core.clock")):
                     bad.append(f"{rel} → {dotted}")
         self.assertEqual(bad, [], "协议层不得依赖业务层/安全层（策略靠注入）：" + "; ".join(bad))
 

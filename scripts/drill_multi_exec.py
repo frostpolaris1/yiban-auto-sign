@@ -375,7 +375,7 @@ if mutate == "window-off":
     # 行为判据：本轮的窗口是**整日开着**的（见 `seed`），真码下 `_window_closed` 必为假；
     # 哨兵看到真 ⇒ 变异确已把窗口门钉死。这是"什么都没跑"的**原因**证据，与"跑没跑"的
     # 事实（零真登录）分开报。
-    from yiban import clock as _clock
+    from yiban.core import clock as _clock
     from yiban.engine import schedule as _sched
     out["window_marker"] = getattr(_sched._window_closed, "_drill", None)
     out["window_closed_forced"] = bool(
@@ -395,7 +395,7 @@ def now_dt() -> datetime.datetime:
     牙齿测试红得与"被测性质"无关。本地之所以看起来正常，只因本机时区恰好是北京时间
     （与 `clock` 逐秒相等）——不是靶场做对了什么（实测：把宿主时区设成 UTC 即复现）。
     """
-    from yiban import clock
+    from yiban.core import clock
     return clock.now()
 
 
