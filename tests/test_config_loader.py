@@ -509,7 +509,7 @@ class PriorityWiringTest(unittest.TestCase):
         self.assertEqual(gap, 10, "现有部署的账号间隔缺省是 10s，收口不得改值")
 
         # ① CLI：空环境跑一次容量计算，它用的间隔必须就是名册缺省
-        from yiban import cli
+        from yiban.entry import cli
         numbers = cli._capacity_numbers({}, 10)
         self.assertEqual(numbers["gap_sec"], gap,
                          "CLI 容量命令的账号间隔缺省没走名册")

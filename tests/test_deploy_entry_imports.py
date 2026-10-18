@@ -276,5 +276,124 @@ class OldCliCoordinateGateTest(unittest.TestCase):
             self.assertEqual(old_coordinate_hits(clean), [], "注释/docstring 被误判成启动点")
 
 
+# ---------------------------------------------------------------------------
+# 拆墙/壳退役 T8：测试面不得再以旧坐标 `yiban.cli` 作 import 路径或打桩目标
+# ---------------------------------------------------------------------------
+# 来历（壳退役批 `145` 的 `T8` 片）：`yiban/cli.py` 是 `__getattr__` 型
+# 转发壳。经它读属性仍是同一对象，故 `from yiban import cli` 能跑、不报错；但
+# `mock.patch("yiban.cli.X")` 只改壳的属性，**不改实现的模块全局**——打桩成功、
+# 不控被测路径。这是本片最危险的形状：**静默失效**（不报错，但测试不再控制被测路径）。
+# 故测试面必须用新坐标 `yiban.entry.cli`。本门钉：`tests/**` 里旧坐标的 import
+# 路径与打桩目标为零。
+#
+# 豁免（唯一两处，均为**验证壳/禁壳的守卫本身**）：
+#   `tests/test_entry_cli_relocation.py`——验证壳转发同一对象（`145-F2` 删）。
+#   `tests/test_deploy_entry_imports.py`——本文件，`OLD_CLI_MODULE` 是禁字面量，
+#     夹具字符串用于自证本门有牙。
+# 豁免按**文件**给：这两个文件的职责就是引用旧坐标。清单是白名单，不是跳过——
+# 未登记的文件命中即红并点名 `文件:行`。
+TESTS_FACE_EXEMPT = frozenset((
+    "tests/test_entry_cli_relocation.py",
+    "tests/test_deploy_entry_imports.py",
+))
+
+
+def _tests_face_hits(path):
+    """`tests/**` 里引用旧坐标的位置：import 路径 + 非 docstring 字符串常量。
+
+    字符串判据用「前缀 + 非标识符后继」：`yiban.cli` 与 `yiban.cli.main` 都命中，
+    `yiban.client` 不命中（`e` 是标识符后继）。
+
+    已知盲点：用变量拼接的目标（如 `patch(OLD_CLI_MODULE + ".main")`）不命中——
+    本扫描只看 import 语句与字面量。当前仓内无此形态。
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    tree = ast.parse(text)
+    docs = _docstring_const_ids(tree)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == OLD_CLI_MODULE or a.name.startswith(OLD_CLI_MODULE + "."):
+                    hits.append((node.lineno, "import 旧坐标 " + a.name))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == OLD_CLI_MODULE or mod.startswith(OLD_CLI_MODULE + "."):
+                hits.append((node.lineno, "from 旧坐标 import " + mod))
+            elif mod == "yiban":
+                for a in node.names:
+                    if a.name == "cli":
+                        hits.append((node.lineno, "from yiban import cli（旧坐标别名）"))
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+              and id(node) not in docs
+              and (node.value == OLD_CLI_MODULE
+                   or node.value.startswith(OLD_CLI_MODULE + "."))):
+            hits.append((node.lineno, "非 docstring 字符串常量 " + node.value))
+    return sorted(set(hits))
+
+
+class TestsFaceCliCoordinateGateTest(unittest.TestCase):
+    """T8：测试面里旧坐标 `yiban.cli` 的 import 路径与打桩目标为零。"""
+
+    def _tests_py_files(self):
+        out = []
+        for dirpath, dirs, files in os.walk(os.path.join(BASE, "tests")):
+            dirs[:] = [x for x in dirs if x != "__pycache__"]
+            for name in sorted(files):
+                if name.endswith(".py"):
+                    out.append(os.path.join(dirpath, name))
+        return out
+
+    def test_no_tests_face_uses_old_coordinate(self):
+        files = self._tests_py_files()
+        self.assertGreaterEqual(
+            len(files), 100,
+            f"扫描面过小（{len(files)} 个文件）——扫描根写错或测试被移走（扫空不得当绿）")
+        bad = []
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if rel in TESTS_FACE_EXEMPT:
+                continue
+            for line, why in _tests_face_hits(path):
+                bad.append(f"{rel}:{line}: {why}")
+        self.assertEqual(
+            bad, [],
+            "测试面仍以旧坐标 `yiban.cli` 作 import 路径或打桩目标"
+            "（打桩会静默失效、壳退役后 import 会断）：\n" + "\n".join(bad))
+
+    def test_exempt_files_still_exist(self):
+        """豁免清单不得腐烂：登记的文件必须还在（否则豁免面静默变大）。"""
+        for rel in sorted(TESTS_FACE_EXEMPT):
+            self.assertTrue(os.path.isfile(os.path.join(BASE, rel)),
+                            f"豁免清单登记了不存在的文件 {rel}")
+
+    def test_scanner_has_teeth(self):
+        """突变验证：塞回一处旧坐标 ⇒ 红；注释/docstring 提及 ⇒ 不误红。"""
+        with tempfile.TemporaryDirectory(prefix="oldcli-tests-gate-") as tmp:
+            py = os.path.join(tmp, "fake_test.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write('"""历史叙述：-m yiban.cli 不算命中。"""\n'
+                        'from yiban import cli\n')
+            hits = _tests_face_hits(py)
+            self.assertTrue(hits, "塞回旧坐标 import 却未命中：本门没有牙")
+            self.assertEqual(hits[0][0], 2, f"命中行应为第 2 行：{hits}")
+
+            py2 = os.path.join(tmp, "fake_patch.py")
+            with open(py2, "w", encoding="utf-8") as f:
+                f.write('from unittest import mock\n'
+                        'mock.patch("yiban.cli.main")\n')
+            hits = _tests_face_hits(py2)
+            self.assertTrue(hits, "旧坐标打桩目标（带点后缀）未命中：本门没有牙")
+            self.assertEqual(hits[0][0], 2, f"命中行应为第 2 行：{hits}")
+
+            py3 = os.path.join(tmp, "fake_client.py")
+            with open(py3, "w", encoding="utf-8") as f:
+                f.write('from yiban import client\n'
+                        'X = "yiban.client"\n')
+            self.assertEqual(_tests_face_hits(py3), [],
+                             "`yiban.client` 被误判成旧坐标（同前缀不同模块）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

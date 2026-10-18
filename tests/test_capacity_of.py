@@ -199,7 +199,7 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         return spy
 
     def test_cli_capacity_per_executor_value_unchanged(self):
-        from yiban import cli
+        from yiban.entry import cli
         view = {
             "YIBAN_SIGN_START": "06:30", "YIBAN_SIGN_END": "07:50",
             "YIBAN_WINDOW_EDGE_FRONT_SEC": "60", "YIBAN_WINDOW_EDGE_BACK_SEC": "60",
