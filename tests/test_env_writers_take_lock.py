@@ -46,7 +46,8 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-from yiban.infra import env_io, env_lock  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
+from yiban.infra import env_lock  # noqa: E402
 
 #: 与被豁免实现同口径的运行时目录（测试代码不列：那里的写法不构成生产事实）
 RUNTIME_DIRS = ("web", "yiban", "scripts", "docker")

@@ -17,7 +17,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.mail import layout  # noqa: E402
+from yiban.adapters.notifier.mail import layout  # noqa: E402
 
 
 class DisplayWidthTest(unittest.TestCase):
@@ -252,7 +252,7 @@ class FoldLineBreakFamilyTest(unittest.TestCase):
     """
 
     def test_non_lf_breaks_become_visible_literals(self):
-        from yiban.infra.env_io import ENV_LINE_BREAK_CHARS
+        from yiban.adapters.config.env_io import ENV_LINE_BREAK_CHARS
         forged = "真行\u2028伪造A\u0085伪造B\u2029伪造C\x0b\x0c\x1c\x1d\x1e\x0d完"
         plain = layout.Mail(fields=[("用户", forged)]).to_plain()
         for ch in ENV_LINE_BREAK_CHARS - {"\n"}:

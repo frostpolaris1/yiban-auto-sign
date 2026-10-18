@@ -42,9 +42,9 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban import notify  # noqa: E402
+from yiban.adapters.notifier import notify  # noqa: E402
+from yiban.adapters.notifier.notify import ledger as notify_ledger  # noqa: E402
 from yiban.infra import locks  # noqa: E402
-from yiban.notify import ledger as notify_ledger  # noqa: E402
 
 KEY = "f" * 64
 
@@ -57,7 +57,7 @@ class NotifyLedgerDiskTest(unittest.TestCase):
 
     def setUp(self):
         # 内部账本名走子模块（旧的 scripts/notify.py 兼容壳已删除）
-        from yiban.notify import ledger as notify
+        from yiban.adapters.notifier.notify import ledger as notify
         self.notify = notify
         self.tmp = tempfile.mkdtemp(prefix="yiban-ledger-")
         self.env_file = os.path.join(self.tmp, "nope.env")
@@ -162,10 +162,10 @@ class NotifyLedgerDiskTest(unittest.TestCase):
         # 导入方持有的旧模块对象"与"函数内重新解析到的新对象"同时存在，形成两份
         # 账本实例，后续用例的计数与打桩都会落在错的那一份上。
         saved_modules = {k: v for k, v in sys.modules.items()
-                         if k.startswith("yiban.notify")}
+                         if k.startswith("yiban.adapters.notifier.notify")}
 
         def _restore_notify_modules():
-            for k in [k for k in sys.modules if k.startswith("yiban.notify")]:
+            for k in [k for k in sys.modules if k.startswith("yiban.adapters.notifier.notify")]:
                 del sys.modules[k]
             sys.modules.update(saved_modules)
             # 只还原 sys.modules 不够：`from yiban import notify` 取的是**父包上的属性**，
@@ -175,16 +175,16 @@ class NotifyLedgerDiskTest(unittest.TestCase):
             # `mock.patch.object(webapp.notify, "send")` 打不到真正被调用的那一份，
             # 告警用例表现为"0 次调用"（本文件先跑才复现）。
             pkg = sys.modules.get("yiban")
-            if pkg is not None and "yiban.notify" in saved_modules:
-                pkg.notify = saved_modules["yiban.notify"]
+            if pkg is not None and "yiban.adapters.notifier.notify" in saved_modules:
+                pkg.notify = saved_modules["yiban.adapters.notifier.notify"]
                 for k, v in saved_modules.items():
-                    if k.startswith("yiban.notify."):
-                        setattr(saved_modules["yiban.notify"], k.rsplit(".", 1)[1], v)
+                    if k.startswith("yiban.adapters.notifier.notify."):
+                        setattr(saved_modules["yiban.adapters.notifier.notify"], k.rsplit(".", 1)[1], v)
 
         self.addCleanup(_restore_notify_modules)
         for k in list(saved_modules):
             del sys.modules[k]
-        from yiban.notify import ledger as notify_b
+        from yiban.adapters.notifier.notify import ledger as notify_b
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_ENV_FILE"] = self.env_file
         os.environ["YIBAN_ACCOUNTS_KEY"] = KEY

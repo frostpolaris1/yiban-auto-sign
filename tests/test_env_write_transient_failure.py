@@ -170,7 +170,7 @@ class ConcurrentReadWriteTest(unittest.TestCase):
 
     @staticmethod
     def _reader(target, stop, counter, time_mod):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         while not stop.is_set():
             with contextlib.suppress(Exception):
                 env_io.parse_env_file(target)

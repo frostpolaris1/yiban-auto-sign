@@ -21,9 +21,9 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.mail import config as mail_config
-from yiban.notify import config as notify_config
-from yiban.notify import ledger as notify_ledger
+from yiban.adapters.notifier.mail import config as mail_config
+from yiban.adapters.notifier.notify import config as notify_config
+from yiban.adapters.notifier.notify import ledger as notify_ledger
 
 ENV_KEY = "YIBAN_NOTIFY_COOLDOWN"
 MAIL_KEY = "YIBAN_MAIL_ENABLE"

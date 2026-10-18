@@ -301,7 +301,7 @@ class GateLiveCaseTest(unittest.TestCase):
     # -- ⑧ 活体反例：resolve_path 换成裸读 ⇒ 红并点名；换回 ⇒ 绿 ----------------
     def test_resolve_path_swapped_to_bare_read_turns_red_and_back(self):
         good = ('import os\n'
-                'from yiban.infra import env_io\n'
+                'from yiban.adapters.config import env_io\n'
                 'DB = env_io.resolve_path("%s", "yiban.db")\n' % self.key)
         self._write("pkg/a.py", good)
         self._write_roster(0)

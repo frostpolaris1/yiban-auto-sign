@@ -291,7 +291,7 @@ if not os.path.exists(ENV):
         f.write("# 容器演练专用 .env（drill-container.sh 生成，密钥自造，严禁入库）\n")
 
 import db  # noqa: E402  scripts/db.py 兼容壳
-from yiban.infra import env_io  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
 
 db.init_db(DB, env_file=ENV, cleanup=False, migrate=True)
 

@@ -32,7 +32,7 @@ from flask import jsonify, session
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
-from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
+from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
 
 # SMTP 条目的稳定 id：贯穿「前端行 ↔ 落盘条目 ↔ 凭据沿用」的唯一身份，位置不参与身份。
 # 字符集/长度收紧（不透明短标识而非自由文本）：id 一旦能夹带任意内容，就成了绕脱敏

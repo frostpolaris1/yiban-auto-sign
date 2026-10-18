@@ -33,7 +33,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import clock  # noqa: E402
 
 
@@ -143,7 +143,7 @@ class SweepPolicyTest(unittest.TestCase):
         self._touch("sched-run-2026-09-09.json")
         biz_now = datetime(2026, 9, 17, 6, 0, 0)        # 北京 09-17 06:00
         host_now = datetime(2026, 9, 16, 22, 0, 0)      # 宿主 UTC 09-16 22:00
-        with mock.patch("yiban.state_gc.datetime.datetime") as dt, \
+        with mock.patch("yiban.adapters.statefiles.state_gc.datetime.datetime") as dt, \
              mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = timedelta
