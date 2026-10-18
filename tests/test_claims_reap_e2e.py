@@ -35,8 +35,8 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 import db  # noqa: E402
 
 from yiban.core import clock  # noqa: E402
-from yiban.engine import workers  # noqa: E402
 from yiban.store import queue_store  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 #: 真 `subprocess.Popen` 的原始引用：组 3 要把它换成"拉真子进程"的替身，
 #: 替身内部必须用原引用，否则替换会递归。

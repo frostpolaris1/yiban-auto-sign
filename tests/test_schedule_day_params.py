@@ -21,7 +21,8 @@ import random
 import unittest
 from unittest import mock
 
-from yiban.engine import hrw, planner, schedule
+from yiban.core import hrw
+from yiban.engine import planner, schedule
 
 DAY = "2026-09-30"
 DAY_DT = datetime.datetime(2026, 9, 30, 6, 31, 0)

@@ -32,8 +32,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban.engine import cli_support, runner, schedule, workers
+from yiban.app import runner
+from yiban.engine import cli_support, schedule
 from yiban.store import db
+from yiban.workers import workers
 
 #: 2026-09 的三个样例日（下面的 weekday 断言保证它们仍是周三/周六/周日）
 WED = _dt.date(2026, 9, 2) # 这三个日期只是「星期几」的样本，_WeekdayGuard 每次先验证前提仍成立
