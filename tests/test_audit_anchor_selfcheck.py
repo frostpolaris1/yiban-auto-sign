@@ -16,10 +16,12 @@
 覆盖：`_anchor_file_state_ex` 的行数三支与不可解析行、`_anchor_status` 的四态结论
 （ok/none/tampered/indeterminate）、`audit_health` 对"无法定论"的汇总与事实清单呈现、
 `record_audit_anchor` 对不可解析文件的拒绝续写、三字段（v0）历史锚点行的兼容与
-兼容不得放掉篡改检测、以及 `scripts/audit_verify.py` 对"无法定论"的 exit 2。
+兼容不得放掉篡改检测、**老格式前缀的识别锚在可核性质上**（开头连续 + 日期不晚于
+2026-08-28 + 无行间链字段；前缀之外的三字段行判"无法定论"）、"无法定论"与"检出问题"
+的日志级别/文案分档，以及 `scripts/audit_verify.py` 对"无法定论"的 exit 2。
 对应实现：`yiban/adapters/persistence/audit_chain.py`（`_anchor_status` / `_anchor_file_state_ex` /
 `audit_health`）、`web/services/notify_mail.py` 的 `_audit_alert_facts`、
-`scripts/audit_verify.py`。
+`web/app.py` 的 `_audit_unhealthy_log` / `_alert_audit_unhealthy`、`scripts/audit_verify.py`。
 关键断言：**"无法定论"必须与"无异常"和"确证篡改"两个结论都不同**——混进任一侧，
 要么让一条非法字节把当日校验静默掉，要么把编码事故当失陷去响应；"变多"与"变少"
 同等判红（正常写入每加一行都会抬高库内指纹高水位）。
@@ -448,6 +450,181 @@ class LegacyThreeFieldAnchorTest(_Fixture):
                 h = self._health()
                 self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
                 self.assertFalse(h["healthy"], h["anchor_msg"])
+
+
+class LegacyPrefixIdentityTest(_Fixture):
+    """老格式前缀的识别必须锚在**可核性质**上，不是"凡三字段行都算老格式"。
+
+    三条性质缺一不可：
+      1. 文件开头**连续**的一段（锚点文件只增不改，老行只可能留在头部）；
+      2. 时间戳的日期部分成形，且不晚于 `LEGACY_ANCHOR_LAST_DAY`（2026-08-28，含当日）；
+      3. 确实没有行间链字段（v0 形态）。
+
+    缺任一条就不是那批历史行：可能是一次磁盘损坏，也可能是人为写入。三字段行不受
+    行间链约束、也不带 min_id/max_id，若只按 token 数认它，文件任意位置留下的一条
+    三字段行都会被当成"已知欠账"静默放过——那正是本单禁止的"放宽判据去迁就"。
+    """
+
+    def _production_shape(self):
+        """复刻生产锚点文件形状：三字段前缀（08-21..08-28）+ v1 + v2；指纹登记总行数。"""
+        self._seed(6)
+        v0 = [f"2026-08-21 00:00:31 {self._row_hash(1)}",
+              f"2026-08-25 00:00:31 {self._row_hash(2)}",
+              f"2026-08-28 00:00:31 {self._row_hash(3)}"]   # 含边界日：当日仍属老前缀
+        v1 = f"2026-08-28 00:00:41 1 4 {self._row_hash(4)}"
+        v2 = "2026-09-01 00:00:51 1 6 6 0 {} {}".format(
+            self._row_hash(6), db._anchor_line_sha(v1))
+        return [*v0, v1, v2]
+
+    def _write(self, lines):
+        """写文件并同步库内指纹（绕开行数判据，单独考"老格式识别"这一维）。"""
+        self._write_lines(lines)
+        self._set_meta(len(lines), db._anchor_line_sha(lines[-1]))
+
+    @staticmethod
+    def _out(r):
+        enc = locale.getpreferredencoding(False) or "utf-8"
+        try:
+            return r.stdout.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            return r.stdout.decode("utf-8", errors="replace")
+
+    def _run_cli(self):
+        env = dict(os.environ)
+        env["YIBAN_DB_FILE"] = self.db_file
+        env["YIBAN_ENV_FILE"] = self.env_file
+        env["YIBAN_STATE_DIR"] = self.tmp
+        return subprocess.run(
+            [sys.executable, os.path.join(BASE, "scripts", "audit_verify.py"),
+             "--anchor", self.anchor],
+            capture_output=True, env=env, cwd=BASE,
+        )
+
+    def test_production_shape_prefix_is_healthy_and_explained(self):
+        """生产形状 ⇒ 健康、exit 0（该告警 0 次），且老前缀单独成一条已知欠账。
+
+        `audit_known_debt` 就是工单要的"一次性历史说明"：它不是篡改、也不是
+        "无法定论"，在巡检面单独一行显示，不参与告警判据。
+        """
+        lines = self._production_shape()
+        self._write(lines)
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "ok", h["anchor_msg"])
+        self.assertTrue(h["healthy"], h["anchor_msg"])
+        self.assertEqual(db.audit_verdict(h)["state"], "healthy")
+        self.assertEqual(db.audit_verdict(h)["code"], 0, "健康 ⇒ exit 0 ⇒ 每日告警 0 次")
+        self.assertEqual(db._legacy_prefix_end(lines), 3, "含 08-28 当日：边界必须收进前缀")
+        # 可核性质只钉"日期在区间内"这一维：时刻写法变了（历史写入方的分隔符/精度）
+        # 不该把合法历史行判成非历史行；非成形串必须被挡在外面。
+        self.assertTrue(db._is_legacy_ts("2026-08-28T23:59:59"))
+        self.assertTrue(db._is_legacy_ts("2026-08-28 23:59:59"))
+        self.assertFalse(db._is_legacy_ts("2026-08-29 00:00:00"))
+        self.assertFalse(db._is_legacy_ts("totally broken"))
+        self.assertEqual(db.audit_anchor_summary(self.anchor)["old_format_lines"], 3)
+        debt = [d for d in db.audit_known_debt(self.anchor)
+                if d["code"] == "old_format_anchor_lines"]
+        self.assertEqual([d["count"] for d in debt], [3], debt)
+        self.assertTrue(debt[0]["reason"])
+        r = self._run_cli()
+        self.assertEqual(r.returncode, 0, self._out(r))
+        self.assertNotIn("中止", self._out(r))
+
+    def test_three_field_line_outside_prefix_is_indeterminate(self):
+        """前缀之外的三字段行不是历史行 ⇒ 不得静默放过。
+
+        尾部追加两类（日期晚于截止日的成形行；恰好 3 token 的垃圾行——旧实现把它
+        解析成 v0 行并判 ok，是同一漏洞的另一形态）判"无法定论"；插在 v1 与 v2 之间的
+        那一条由行间链当场判"篡改"。三条都必须非健康。
+
+        已知边界（不在本用例）：插在**老前缀内部**的三字段行无法与真历史行区分——
+        老行之间本来就没有行间链保护（该性质 v1 时代已存在，见 `audit_known_debt` 的
+        理由）。补偿判据是行数三支与末行哈希，即本用例夹具必须同步改写库内指纹才能
+        制造出那个形状。
+        """
+        scenarios = (
+            ("尾部追加 08-29 的三字段行", "indeterminate",
+             lambda ls: [*ls, f"2026-08-29 00:00:59 {'c' * 64}"]),
+            ("尾部追加恰好 3 token 的垃圾行", "indeterminate",
+             lambda ls: [*ls, "totally broken line"]),
+            ("插在 v1 与 v2 之间（行间链当场判篡改）", "tampered",
+             lambda ls: [*ls[:4], f"2026-08-27 00:00:59 {'d' * 64}", *ls[4:]]),
+        )
+        for label, expect, mutate in scenarios:
+            with self.subTest(case=label):
+                self._reset_state()
+                lines = mutate(self._production_shape())
+                self.assertNotEqual(lines, self._production_shape(), "前提：本场景真的改了文件")
+                self._write(lines)
+                h = self._health()
+                self.assertEqual(h["anchor_status"], expect, h["anchor_msg"])
+                self.assertFalse(h["healthy"], h["anchor_msg"])
+                self.assertEqual(db.audit_verdict(h)["state"], expect)
+                self.assertNotIn("老格式行（2026-08-28 前）",
+                                 [d["label"] for d in db.audit_known_debt(self.anchor)])
+
+    def test_prefix_line_after_cutoff_is_not_legacy(self):
+        """开头连续但日期晚于截止日的三字段行不是历史行 ⇒ 无法定论。"""
+        lines = self._production_shape()
+        lines[0] = f"2026-09-02 00:00:31 {self._row_hash(1)}"
+        self._write(lines)
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "indeterminate", h["anchor_msg"])
+        self.assertEqual(db._legacy_prefix_end(lines), 0, "首行日期越界 ⇒ 前缀长度 0")
+
+
+class NewIndeterminateStillAlertsTest(_Fixture):
+    """反向：非老格式的"无法定论"必须照旧 exit 2 并外发告警。
+
+    没有这一条，上面的收紧就只是"把告警关掉"的一种写法。
+    """
+
+    def _cli(self):
+        env = dict(os.environ)
+        env["YIBAN_DB_FILE"] = self.db_file
+        env["YIBAN_ENV_FILE"] = self.env_file
+        env["YIBAN_STATE_DIR"] = self.tmp
+        return subprocess.run(
+            [sys.executable, os.path.join(BASE, "scripts", "audit_verify.py"),
+             "--anchor", self.anchor],
+            capture_output=True, env=env, cwd=BASE,
+        )
+
+    def test_corrupt_meta_still_indeterminate_exits_two_and_alerts(self):
+        self._seed(4)
+        db.record_audit_anchor(self.anchor)
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_anchor_meta",
+                   json.dumps({"lines": "x", "last_hash": "", "ts": "x"})))
+        h = self._health()
+        self.assertEqual(db.audit_verdict(h)["state"], "indeterminate", h["anchor_msg"])
+        self.assertEqual(db.audit_verdict(h)["code"], 2)
+        self.assertFalse(h["healthy"])
+        webapp = _load_webapp("legacy_prefix_alert")
+        facts = dict(webapp._audit_alert_facts(h))
+        self.assertIn("无法定论", facts["库外锚点"])
+        with mock.patch.object(webapp, "send_notification", return_value=True) as m:
+            self.assertTrue(webapp._alert_audit_unhealthy(h), "无法定论仍必须外发")
+        self.assertEqual(m.call_count, 1)
+        title, mail = m.call_args[0][0], m.call_args[0][1]
+        self.assertIn("未能定论", str(title), "无法定论必须自报「没验成」")
+        self.assertNotIn("异常告警", str(title), "不得写成「检出问题」的告警标题")
+        self.assertNotIn("篡改/删除", str(mail.summary), "不得把「没验成」写成「被篡改」")
+        r = self._cli()
+        self.assertEqual(r.returncode, 2, r.stdout)
+
+    def test_unhealthy_log_level_separates_indeterminate_from_tamper(self):
+        """日志级别/文案必须分得开：无法定论 → WARNING，检出篡改 → ERROR。"""
+        import logging as _logging
+        webapp = _load_webapp("legacy_prefix_log_level")
+        ind = {"broken": 0, "chain_ok": True, "anchor_status": "indeterminate",
+               "anchor_ok": False, "anchor_msg": "x", "write_failures": 0,
+               "empty_hash_rows": 0, "healthy": False, "note": ""}
+        tam = dict(ind, anchor_status="tampered", anchor_msg="y")
+        lvl_ind, label_ind = webapp._audit_unhealthy_log(ind)
+        lvl_tam, label_tam = webapp._audit_unhealthy_log(tam)
+        self.assertEqual(lvl_ind, _logging.WARNING, label_ind)
+        self.assertEqual(lvl_tam, _logging.ERROR, label_tam)
+        self.assertNotEqual(label_ind, label_tam)
 
 
 class AnchorPointRowNotExemptTest(_Fixture):
