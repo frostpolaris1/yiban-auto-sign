@@ -46,6 +46,8 @@ import time
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -143,7 +145,7 @@ class _ProbeBase(unittest.TestCase):
         with io.open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user(OWNER, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(OWNER, generate_password_hash(USER_PASS))
 
     def tearDown(self):
         mock.patch.stopall()

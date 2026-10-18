@@ -43,6 +43,7 @@ from unittest import mock
 import db
 import signin
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
 from yiban.infra import account_crypto
 
@@ -564,7 +565,7 @@ class Batch11RestoreSidTest(_Batch11WebBase):
 
     def _register_login_delete_restore(self, email):
         """建号→登录→注销→恢复，返回 (注销前 client, 恢复后 client)。"""
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/me/delete", json={"password": USER_PASS}, headers=self._csrf(t))
@@ -582,7 +583,7 @@ class Batch11RestoreSidTest(_Batch11WebBase):
 
     def test_stolen_cookie_dead_after_restore(self):
         email = "n1b@test.local"
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         name, val = self._session_cookie(c)
@@ -603,14 +604,14 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
     """N3：purge 收归主管理员 + N6 即时告警。"""
 
     def _make_victim(self, email):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/me/delete", json={"password": USER_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
 
     def _make_registered_admin(self, email):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         return email
 
     def test_registered_admin_forbidden(self):
@@ -643,7 +644,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
     """N6：受害者安全邮件 + 管理员告警补齐。"""
 
     def _user_with_account(self, email, phone):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/my-accounts", json={"name": "n", "phone": phone, "password": "p"},

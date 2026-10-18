@@ -39,6 +39,8 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+from werkzeug.security import generate_password_hash  # noqa: E402
+
 from yiban import (  # noqa: E402
     clock,
     egress,
@@ -936,7 +938,7 @@ class SlotEgressEndpointTest(_WebBase):
         from yiban.store import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         store_db.create_user("admin2@test.local",
-                             self.webapp.generate_password_hash("UserPass1234!"),
+                             generate_password_hash("UserPass1234!"),
                              role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={
@@ -1291,7 +1293,7 @@ class MeasureEndpointTest(_WebBase):
         # 普通管理员（注册用户）也不许：它真的会用一个真实账号去登录一次
         from yiban.store import db as store_db
         store_db.create_user("admin2@test.local",
-                             self.webapp.generate_password_hash("UserPass1234!"),
+                             generate_password_hash("UserPass1234!"),
                              role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={

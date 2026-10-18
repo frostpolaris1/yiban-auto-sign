@@ -23,6 +23,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -86,7 +88,7 @@ class AdversarialTest(unittest.TestCase):
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
 
     def _new_user(self, email, phone):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         db.add_account({
             "name": "测试账号",
             "phone": phone,

@@ -77,6 +77,8 @@ import tempfile
 import time
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden")
 
@@ -178,7 +180,7 @@ class WebRenderGoldenTest(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
 
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
 
         os.makedirs(GOLDEN_DIR, exist_ok=True)
         cls.update_golden = os.environ.get("UPDATE_GOLDEN") == "1"

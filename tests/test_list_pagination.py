@@ -30,6 +30,8 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
+from werkzeug.security import generate_password_hash  # noqa: E402
+
 from yiban import clock  # noqa: E402
 
 TEST_KEY = "a" * 64
@@ -123,7 +125,7 @@ class ListPaginationTest(unittest.TestCase):
 
     def _seed_users(self, n):
         """造 n 个注册用户；口令哈希只算一次（n 大时避免 n 次 scrypt）。"""
-        h = self.webapp.generate_password_hash(USER_PASS)
+        h = generate_password_hash(USER_PASS)
         for i in range(n):
             db.create_user(f"user{i:03d}@test.local", h)
 

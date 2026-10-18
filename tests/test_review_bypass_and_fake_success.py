@@ -23,6 +23,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "c" * 64
@@ -128,7 +130,7 @@ class VerifyGateBusyHonestTest(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file4a, env_file=self.env_file4a)
-        db.create_user(USER_EMAIL, self.webapp.generate_password_hash(GOODPW))
+        db.create_user(USER_EMAIL, generate_password_hash(GOODPW))
 
     def test_gate_busy_response_is_honest(self):
         c = self.webapp.create_app().test_client()

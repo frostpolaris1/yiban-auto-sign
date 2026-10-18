@@ -22,6 +22,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -106,7 +108,7 @@ class AuditReadApiTest(unittest.TestCase):
         self.assertNotIn("<!DOCTYPE", r.get_data(as_text=True))
 
     def test_normal_user_returns_403_json(self):
-        db.create_user("peon@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("peon@test.local", generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         self._login(c, "peon@test.local", USER_PASS)
         r = c.get("/api/audit-logs")

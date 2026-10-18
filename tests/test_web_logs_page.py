@@ -25,6 +25,8 @@ import tempfile
 import time
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VUE_DIR = os.path.join(BASE, "web", "static", "vue")
 
@@ -87,7 +89,7 @@ class LogsPageTest(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
 
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
 
         # 当天的日志文件与事件：**必须种**——否则 /api/logs 的三元组与事件列表都为空，
         # 契约断言会退化成"对合成字面量校验"（永远为真，既抓不到字段改名也抓不到搬漏）。
