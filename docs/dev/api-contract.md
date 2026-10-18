@@ -966,9 +966,18 @@
   "events": [{"ts": string, "phone": string（遮罩）, "status": string,
   "message": string, "stage": string, "attempt": int, "dur_sec": number|null}],
   "daily_stats": [object], "accounts_stats": object}`。
+  `accounts_stats` = `{"total": int, "by_status": {状态: int},
+  "by_day": [{"day": "YYYY-MM-DD", "status": string, "accounts": int}],
+  "days_missing": ["YYYY-MM-DD", …]}`。
 - 副作用：聚合只读审计 `sign_events_read`。
-- 不变量：手机号一律打码；条数封顶 200。`accounts_stats` 是"涉及多少账号/按日
-  终态"的权威值（前端不得把 `daily_stats.cnt` 跨天跨状态直加）。
+- 不变量：手机号一律打码；条数封顶 200。
+  **`accounts_stats` 是终态口径，来源是按日状态文件 `sign-state-<day>.json`
+  （`web/services/logs.py::accounts_terminal_summary`），不读 `sign_events`**：
+  `total` = 窗口内出现过的账号并集；`by_status` = 每状态窗口内去重账号数
+  （桶间可有交集，不得相加当 `total`）；`by_day` = 日 × 终态，日内每号恰一桶。
+  `days_missing` 列出窗口内**没有终态载体**的日期（不得静默当 0）。
+  `stage` 只作用于 `events` 与 `daily_stats`（事件表口径），对 `accounts_stats` 不适用。
+  前端不得把 `daily_stats.cnt` 跨天跨状态直加。
 
 #### `GET /api/audit-logs`
 

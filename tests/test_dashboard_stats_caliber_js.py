@@ -57,11 +57,12 @@ ROWS = [
     {"day": DAY2, "status": "success", "cnt": 1, "row_cnt": 1},
 ]
 
-#: `accounts_stats`（后端终值，`sign_event_accounts_summary` 的形状）：
-#: - total=2：窗口 COUNT(DISTINCT phone)——「签到账号总数」的唯一来源；
+#: `accounts_stats`（后端终值，来源＝按日状态文件的
+#: `web/services/logs.py::accounts_terminal_summary`，形状与旧事件表口径逐字相同）：
+#: - total=2：窗口内出现过的账号并集——「签到账号总数」的唯一来源；
 #: - by_status：success 桶含 A、B（=2），user_cancelled 桶含 A（=1）——
 #:   **桶间有交集**（A 两个桶都进），桶合计 3 ≠ total 2；
-#: - by_day：DAY 的日终态 = A 当日最后一条是 user_cancelled、B 是 success。
+#: - by_day：DAY 的日终态 = A 是 user_cancelled、B 是 success。
 ACCOUNTS = {
     "total": 2,
     "by_status": {"user_cancelled": 1, "success": 2},
