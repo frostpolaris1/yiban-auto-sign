@@ -777,9 +777,11 @@ def _t2_import_hits(tree):
 
     三种写法：`import yiban.clock`、`from yiban.clock import X`、
     `from yiban import clock`（别名形态，是主流形态）。
-    口径（同一底本现量）：别名形态在**自有面** 71 处、面外 **0 处**（2026-10-18 前
-    `frontend/e2e/server.py` 那 1 处已随本批处置，故全仓 71 处）。`import yiban.clock`
-    0 处、`from yiban.clock import X` 3 处。
+    口径（**同出 T2 迁移前底本 `2f2709b0`**）：别名形态 `from yiban import clock`
+    自有面 **71** 处 ＋ 面外 `frontend/e2e/server.py` **1** 处 ＝ **全仓 72** 处；
+    `import yiban.clock` 0 处、`from yiban.clock import X` 3 处。
+    **当前（2026-10-18 本批后）全仓别名读者 0 处**：自有面早随 T2 迁完，面外那 1 处由
+    本批经用户授权处置。**两组数不许混用、不许相减**（AGENTS §31）。
     第四种：`import yiban` 后按属性访问 `yiban.clock.now()`——字面量判据抓不到它
     （那判据只看字符串），故在此按 `ast.Attribute` 认。
     """
