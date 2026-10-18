@@ -80,6 +80,11 @@ const cov = reactive({ trend: "", dist: "", slots: "" });
 const trendMeta = ref<[string, string][]>([]);
 const distMeta = ref<[string, string][]>([]);
 const slotsMeta = ref<[string, string][]>([]);
+/** 时间片存在但无人自选：图表只剩容量网格，需要一句人话说明。 */
+const slotsEmpty = computed(() => {
+  const v = slotsView(state.slots);
+  return !!v && v.counts.every((n) => n === 0);
+});
 
 /* ---------------- 视图（读口径层） ---------------- */
 // 今日成功/失败账号：账号口径，与容量卡脱钩（原先此处放活跃账号/注册用户，与容量卡同源同数）。
@@ -641,6 +646,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="dash-error-text">{{ overlayMsgs.slots }}</div>
           </div>
+          <p v-if="slotsEmpty && overlays.slots === 'none'" class="dash-chart-note">暂无自选，当前按自动分配</p>
         </div>
         <div class="chart-meta-row" id="slots-meta" :hidden="!slotsMeta.length">
           <div v-for="(pair, i) in slotsMeta" :key="i" class="chart-meta-cell">
