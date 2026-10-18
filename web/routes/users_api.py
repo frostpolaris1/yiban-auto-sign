@@ -30,6 +30,7 @@ import contextlib
 import secrets
 
 from flask import jsonify, request, session
+from werkzeug.security import generate_password_hash
 
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate, read_audit_trace
@@ -222,7 +223,7 @@ def api_users_batch():
         if pw_err:
             return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
         # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
-        reset_hash = m.generate_password_hash(password, method=m.SCRYPT_METHOD)
+        reset_hash = generate_password_hash(password, method=m.SCRYPT_METHOD)
 
     # 删除与批量重置口令都走高危门禁（口令 + 同管理员窗口内限速，防被盗会话快速反复删除
     # 用户并刷告警邮件）。重置口令入门禁的理由：它同为账号控制权转移操作（e2e 实锤：普通
@@ -484,7 +485,7 @@ def api_user_password(user_id):
         if m.db.update_user(
             email,
             {
-                "password_hash": m.generate_password_hash(password, method=m.SCRYPT_METHOD),
+                "password_hash": generate_password_hash(password, method=m.SCRYPT_METHOD),
                 "pw_version": target.get("pw_version", 1) + 1,  # 被重置用户的旧会话随之失效
             },
             # 审计与口令 UPDATE 同事务：管理员重置他人密码是账号控制权转移，

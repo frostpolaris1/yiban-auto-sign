@@ -45,6 +45,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -118,7 +120,7 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.db.init_db(self.db_file, migrate_from=self.accounts_file,
                         env_file=self.env_file)
         self.db.create_user("user1@test.local",
-                            self.webapp.generate_password_hash(USER_PASS))
+                            generate_password_hash(USER_PASS))
         # 清理临时目录中的按天日志文件（跨测试隔离）
         for n in os.listdir(self.tmp):
             if n.startswith("sign-") and n.endswith(".log"):

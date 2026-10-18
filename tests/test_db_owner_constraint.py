@@ -30,6 +30,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -87,7 +89,7 @@ class DbOwnerConstraintTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
 
     def _reset_conn(self):
         if db._conn is not None:

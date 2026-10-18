@@ -22,6 +22,8 @@ import threading
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -136,7 +138,7 @@ class FileLockSendTest(unittest.TestCase):
                   ("u2@test.local", "13800138002"),
                   ("u3@test.local", "13800138003")]
         for email, phone in owners:
-            self.db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+            self.db.create_user(email, generate_password_hash(USER_PASS))
             self._submit(email, phone)
         c, token = self._admin()
         accounts = c.get("/api/accounts").get_json()["accounts"]

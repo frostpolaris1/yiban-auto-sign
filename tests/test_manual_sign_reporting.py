@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import db
+from werkzeug.security import generate_password_hash
 
 from yiban import clock
 
@@ -183,7 +184,7 @@ class FuseResetGateTest(_WebAppMixin, unittest.TestCase):
 
     def test_user_note_only_edit_keeps_fail_days(self):
         """用户侧只改备注：同样不得重置熔断计数。"""
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
         self._account["owner"] = "user1@test.local"
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": "user1@test.local",

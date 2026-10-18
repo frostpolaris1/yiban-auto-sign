@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
-"""部署入口脚本的导入条件：只在 `scripts/` 入 sys.path 时也必须能导入。
+"""部署入口脚本的导入条件 ＋ 拆墙/壳退役批的**坐标门**（145-B 各 `T` 片）。
 
 标签：J · 运维：部署/备份/发布
-覆盖：`scripts/signin.py` 与 `docker/scheduler.py` 在无 PYTHONPATH 下的真实导入、
-    凡导入 `yiban` 的运行时脚本必须自带包导入引导、引导必须**先于**首个 yiban 导入。
+覆盖：① `scripts/signin.py` 与 `docker/scheduler.py` 在无 PYTHONPATH 下的真实导入、
+    凡导入 `yiban` 的运行时脚本必须自带包导入引导、引导必须**先于**首个 yiban 导入；
+    ② 拆墙批的坐标门（同一份"扫描 + 显式豁免 + 突变自证"骨架，逐片加一族）：
+      · `T8`：运行期载体不得以旧坐标 `yiban.cli` 起进程；
+      · `T8`：`tests/**` 不得以旧坐标 `yiban.cli` 作 import 路径或打桩目标；
+      · `T1`：口令哈希两名不得再经 `web.app` 墙坐标读或被它打桩。
 对应实现：`scripts/signin.py`、`docker/scheduler.py`（镜像里被复制为
-    `scripts/container_scheduler.py`）及各入口的 `sys.path` 引导块。
+    `scripts/container_scheduler.py`）及各入口的 `sys.path` 引导块；
+    坐标门的实现侧＝`yiban/cli.py` 转发壳与 `web/app.py` 转发墙（删它们归 `145-E`）。
 关键断言：导入失败以非零码退出、进入主循环则超时——两种情况可区分；空文件/截断文件
-    同样能 import 成功，故额外要求模块真的装配出 `main_loop`。
+    同样能 import 成功，故额外要求模块真的装配出 `main_loop`；每道坐标门都带扫描面
+    下限（扫空不得当绿）、豁免清单防腐与突变自证（塞回一处 ⇒ 红；注释提及 ⇒ 不误红）。
 依赖：起 `sys.executable` 子进程跑仓库内脚本（清空 PYTHONPATH、cwd=仓库根、临时
-    STATE/LOG/DB/ENV）；不需 bash/docker CLI；读的是仓库源文件而非镜像。
+    STATE/LOG/DB/ENV）；坐标门是纯 AST + 文件遍历，不导入 web 应用。不需 bash/docker CLI。
 
 镜像里 `docker/scheduler.py` 由 supervisord 直接执行——`sys.path[0]` 是 `scripts/`，
 共享包 `yiban/` 在仓库根，缺引导就 ModuleNotFoundError（容器 sched 进程反复退出→FATAL，
@@ -393,6 +399,159 @@ class TestsFaceCliCoordinateGateTest(unittest.TestCase):
                         'X = "yiban.client"\n')
             self.assertEqual(_tests_face_hits(py3), [],
                              "`yiban.client` 被误判成旧坐标（同前缀不同模块）")
+
+
+# ---------------------------------------------------------------------------
+# 拆墙/壳退役 T1：口令哈希两名不得再经 web.app 墙坐标读或被它打桩
+# ---------------------------------------------------------------------------
+# 来历（145-B `T1` 片）：`generate_password_hash` / `check_password_hash` 是
+# `web/app.py` 从 `werkzeug.security` 再导出的墙名——路由经 `m.<名字>` 取、测试经
+# `self.webapp.<名字>` 取。T1 把读者迁到真实实现坐标：路由与测试各自
+# `from werkzeug.security import …` 后按**裸名**调用。**墙名本片不删**（删名归 `145-E`）。
+#
+# 本门钉两条不变式（面＝`tests/**`、`web/**`、`scripts/**`）：
+#   ① **无墙坐标属性读**：这两个名字只许以裸名出现，或经真实坐标表达式
+#      `werkzeug.security.<名字>`；其余任何 `<基>.<名字>` 一律红并点名 `文件:行`。
+#   ② **无墙坐标打桩目标**：`mock.patch.object(<webapp 别名>, "<名字>")` 为零。
+# 为什么必须钉 ②：墙名仍在，故打在它上面**会成功、但不控制被测路径**——静默失效
+# （用例看着绿，实际付真实 scrypt 开销、校验结果也不受控）。本片实测修掉了 4 处
+# 这类打桩点（`tests/test_alert_channel_dispatch.py`、`test_container_scheduler.py`、
+# `test_notify_webhook.py`），改打真正读该绑定的模块（`web.routes.auth` /
+# `web.routes.me_api` / `web.security`）。
+# 豁免：无。迁移后读者面里这两个名字只剩裸名读（`web/app.py` 自身的模块全局读不算
+# 属性读；`frontend/**` 不在面内——2026-10-18 起前端由用户独立完成）。
+_PWHASH_WALL_NAMES = ("generate_password_hash", "check_password_hash")
+_PWHASH_SCAN_DIRS = ("tests", "web", "scripts")
+
+#: 真实实现坐标的模块表达式：唯一允许以属性形态出现的基。
+_PWHASH_REAL_COORDINATE = "werkzeug.security"
+
+#: 测试里承载 `web.app` 模块对象的别名形态（`webapp` / `self.webapp` /
+#: `webapp_auditapi` 一族）。与 `tests/test_web_boundary.py` 的墙名对账门同口径。
+_PWHASH_WALL_ALIAS = re.compile(r"(?:^|\.)webapp(?:_[A-Za-z0-9_]+)?$")
+
+
+def _pwhash_real_coordinate_bases(tree):
+    """该文件里绑定到真实坐标模块 `werkzeug.security` 的基表达式集合。
+
+    认三种写法：`import werkzeug.security`（基是 `werkzeug.security`）、
+    `import werkzeug.security as ws`（基是 `ws`）、`from werkzeug import security`
+    （基是 `security`）。按绑定解析而不是按名字猜，故同名的别的东西不会误放行。
+    """
+    out = {_PWHASH_REAL_COORDINATE}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "werkzeug.security":
+                    out.add(a.asname or _PWHASH_REAL_COORDINATE)
+                elif a.name == "werkzeug":
+                    out.add((a.asname or "werkzeug") + ".security")
+        elif isinstance(node, ast.ImportFrom) and node.module == "werkzeug":
+            for a in node.names:
+                if a.name == "security":
+                    out.add(a.asname or "security")
+    return out
+
+
+def pwhash_wall_hits(path):
+    """返回该文件里经 web.app 墙坐标引用口令哈希两名的位置：`(行号, 说明)` 列表。
+
+    两类命中：
+      ① 属性读 —— `<基>.<名字>`，基表达式不是真实坐标 `werkzeug.security`（含其别名）；
+      ② 打桩目标 —— `patch.object(<webapp 别名>, "<名字>")`。
+
+    已知盲点：用变量拼接的打桩目标（`patch.object(alias, NAME_VAR)`）不命中——本扫描
+    只看字面量。当前仓内无此形态。
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    tree = ast.parse(text)
+    real_bases = _pwhash_real_coordinate_bases(tree)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in _PWHASH_WALL_NAMES:
+            base = ast.unparse(node.value)
+            if base not in real_bases:
+                hits.append((node.lineno, f"墙坐标属性读 {base}.{node.attr}"))
+        if isinstance(node, ast.Call):
+            fn = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if fn not in ("patch", "object") or not node.args:
+                continue
+            if not _PWHASH_WALL_ALIAS.search(ast.unparse(node.args[0])):
+                continue
+            last = node.args[-1]
+            if isinstance(last, ast.Constant) and last.value in _PWHASH_WALL_NAMES:
+                hits.append((node.lineno, f"墙坐标打桩目标 {ast.unparse(node.args[0])}.{last.value}"))
+    return sorted(set(hits))
+
+
+class PwhashWallCoordinateGateTest(unittest.TestCase):
+    """T1：口令哈希两名在读者面里不得再经 web.app 墙坐标读或被它打桩。"""
+
+    def _scan_files(self):
+        out = []
+        for d in _PWHASH_SCAN_DIRS:
+            for dirpath, dirs, files in os.walk(os.path.join(BASE, d)):
+                dirs[:] = [x for x in dirs if x != "__pycache__"]
+                for name in sorted(files):
+                    if name.endswith(".py"):
+                        out.append(os.path.join(dirpath, name))
+        return out
+
+    def test_no_wall_coordinate_reader_or_patch_target(self):
+        files = self._scan_files()
+        self.assertGreaterEqual(
+            len(files), 200,
+            f"扫描面过小（{len(files)} 个文件）——扫描根写错或读者被移走（扫空不得当绿）")
+        bad = []
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            for line, why in pwhash_wall_hits(path):
+                bad.append(f"{rel}:{line}: {why}")
+        self.assertEqual(
+            bad, [],
+            "口令哈希两名仍经 web.app 墙坐标读或被它打桩（打桩会静默失效）：\n" + "\n".join(bad))
+
+    def test_scanner_has_teeth(self):
+        """突变验证：塞回两种墙坐标形态 ⇒ 红；真实坐标/裸名/注释 ⇒ 不误红。"""
+        with tempfile.TemporaryDirectory(prefix="pwhash-gate-") as tmp:
+            wall = os.path.join(tmp, "fake_wall_reader.py")
+            with open(wall, "w", encoding="utf-8") as f:
+                f.write('"""docstring 提 generate_password_hash 不算命中。"""\n'
+                        'from unittest import mock\n'
+                        'H = self.webapp.generate_password_hash\n'          # 属性读 ⇒ 命中
+                        'mock.patch.object(self.webapp, "check_password_hash")\n'  # 打桩 ⇒ 命中
+                        '# 注释里的 self.webapp.check_password_hash 不算\n')
+            hits = pwhash_wall_hits(wall)
+            lines = sorted({ln for ln, _ in hits})
+            self.assertIn(3, lines, f"墙坐标属性读那一行应命中：{hits}")
+            self.assertIn(4, lines, f"墙坐标打桩目标那一行应命中：{hits}")
+
+            route = os.path.join(tmp, "fake_route.py")
+            with open(route, "w", encoding="utf-8") as f:
+                f.write('def v():\n'
+                        '    m = _appmod()\n'
+                        '    return m.check_password_hash("h", "p")\n')      # 路由形态 ⇒ 命中
+            self.assertTrue(pwhash_wall_hits(route), "路由 `m.<名字>` 形态未命中：本门没有牙")
+
+            clean = os.path.join(tmp, "clean.py")
+            with open(clean, "w", encoding="utf-8") as f:
+                f.write('"""真实坐标与裸名都合规。"""\n'
+                        'from werkzeug import security\n'
+                        'from werkzeug.security import check_password_hash\n'
+                        'A = security.generate_password_hash("p")\n'
+                        'B = check_password_hash("h", "p")\n'
+                        '# self.webapp.generate_password_hash 只是注释\n')
+            self.assertEqual(pwhash_wall_hits(clean), [],
+                             "真实坐标 `werkzeug.security.<名字>` 或裸名被误判成墙坐标")
+
+            other = os.path.join(tmp, "fake_other.py")
+            with open(other, "w", encoding="utf-8") as f:
+                f.write('from unittest import mock\n'
+                        'import web.security as web_security\n'
+                        'mock.patch.object(web_security, "check_password_hash")\n')
+            self.assertEqual(pwhash_wall_hits(other), [],
+                             "`web_security` 被误判成 web.app 墙别名（两者不是同一模块）")
 
 
 if __name__ == "__main__":

@@ -17,11 +17,15 @@
 CSRF token，供身份接口下发给前端（校验侧仍在 web/app.py 的 check_csrf）。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（ENV_FILE / verify_admin / check_password_hash /
-generate_password_hash / write_env_batch / _env_write_lock / _client_ip / db 等）必须
-继续生效。登录失败计数表经 `web.routes.login_fails()` 取回，与登录/注册路由共用同一份账
-（安全语义依赖同一份计数）；恢复接口的每 IP 聚合窗口挂在 app.extensions，保每 app 实例一份。
+视图体不读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
+`mock.patch.object(web.app, …)` 打桩（ENV_FILE / verify_admin / write_env_batch /
+_env_write_lock / _client_ip / db 等）必须继续生效。登录失败计数表经
+`web.routes.login_fails()` 取回，与登录/注册路由共用同一份账（安全语义依赖同一份计数）；
+恢复接口的每 IP 聚合窗口挂在 app.extensions，保每 app 实例一份。
+唯一例外是口令哈希两个名字（`check_password_hash` / `generate_password_hash`）：
+它们经 145-B `T1` 片改为本模块从 `werkzeug.security` 直接导入，故打桩点须落在
+**本模块**（`mock.patch.object(web.routes.me_api, "check_password_hash", …)`）。
+打在 web.app 上仍会成功，但不控制本模块的调用——静默失效。
 """
 import secrets
 import sqlite3
@@ -29,6 +33,7 @@ import time
 from datetime import timedelta
 
 from flask import current_app, jsonify, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
@@ -114,7 +119,7 @@ def api_me_password():
         # 写锁临界区：写锁同线程可重入（write_env_batch 内部的再次加锁直接
         # 放行），否则读在锁外时两个并发改密都会读到旧版本并写出同一个
         # 递增值——一次递增被吞，本应随版本失效的旧会话继续有效。
-        new_hash = m.generate_password_hash(new_password, method=m.SCRYPT_METHOD)
+        new_hash = generate_password_hash(new_password, method=m.SCRYPT_METHOD)
         with m._env_write_lock(m.ENV_FILE):
             m.write_env_batch(
                 m.ENV_FILE,
@@ -156,12 +161,12 @@ def api_me_password():
     with m._file_lock:
         u = m.db.find_user(username.strip().lower())
         if u is not None:
-            if not m.check_password_hash(u.get("password_hash", ""), old_password):
+            if not check_password_hash(u.get("password_hash", ""), old_password):
                 return _handle_failed_login()
             m.db.update_user(
                 u["email"],
                 {
-                    "password_hash": m.generate_password_hash(new_password, method=m.SCRYPT_METHOD),
+                    "password_hash": generate_password_hash(new_password, method=m.SCRYPT_METHOD),
                     "pw_version": u.get("pw_version", 1) + 1,  # 旧会话随之失效
                 },
                 # 审计与口令 UPDATE 同事务：改密这类凭据变更若"已生效却无痕"，事后
@@ -295,7 +300,7 @@ def api_me_delete():
         u = m.db.find_user(email)
         if u is None:
             return jsonify({"error": "用户不存在"}), 404
-        if not m.check_password_hash(u.get("password_hash", ""), password):
+        if not check_password_hash(u.get("password_hash", ""), password):
             return _handle_failed_login()
         # 最后一个注册管理员不可注销（无内置管理员时会失去全部管理入口）
         if u.get("role") == "admin" and m.db.is_last_registered_admin(email):
@@ -374,7 +379,7 @@ def api_me_restore():
         and u.get("deleted")
         and m._delete_grace_remaining(u.get("deleted_at", "")) > 0
     )
-    verified = in_grace and m.check_password_hash(u.get("password_hash", ""), password)
+    verified = in_grace and check_password_hash(u.get("password_hash", ""), password)
     if not in_grace:
         # 时延拉平：账号不存在/过期时也做等开销 dummy 比对，防时序探测
         m._constant_time_dummy(password)

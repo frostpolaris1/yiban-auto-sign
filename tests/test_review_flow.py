@@ -28,6 +28,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
 from _mail_body import render_body  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -84,8 +85,8 @@ class ReviewFlowTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
-        db.create_user("user2@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
+        db.create_user("user2@test.local", generate_password_hash(USER_PASS))
 
     # ---- 工具 ----
     def _login(self, c, username, password):

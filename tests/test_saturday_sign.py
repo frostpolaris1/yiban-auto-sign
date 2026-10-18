@@ -29,6 +29,7 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import signin  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
@@ -253,7 +254,7 @@ class SaturdaySettingsWebTest(unittest.TestCase):
         return c, t
 
     def _reg_admin(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         self.db.create_user("reg-admin@test.local", h(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "reg-admin@test.local", USER_PASS)

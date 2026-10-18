@@ -23,6 +23,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 from yiban.infra import account_crypto, env_io
 from yiban.mail import config as mailer
 from yiban.mail import transport as mailer_transport
@@ -441,7 +443,7 @@ class AdminToWriteTest(_Base):
         """普通注册管理员不得改收件人（403，不落盘）。"""
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
         self.db.create_user("regadmin@test.local",
-                            self.webapp.generate_password_hash("RegPass#2026"),
+                            generate_password_hash("RegPass#2026"),
                             role="admin", pw_version=1)
         c = self.webapp.create_app().test_client()
         c.post("/api/login", json={"username": "regadmin@test.local", "password": "RegPass#2026"})

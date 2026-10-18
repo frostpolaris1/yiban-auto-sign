@@ -42,6 +42,8 @@ import time
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 from yiban import clock
 from yiban.store import run_events
 
@@ -131,7 +133,7 @@ class InspectionCase(unittest.TestCase):
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
         cls.admin_client = cls.webapp.create_app().test_client()
         r = cls.admin_client.post("/api/login",
                                   json={"username": "admin", "password": ADMIN_PASS})

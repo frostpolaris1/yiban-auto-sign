@@ -111,6 +111,8 @@ from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
+
 from yiban.infra import account_crypto  # noqa: E402
 from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
 
@@ -968,7 +970,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
     def test_registered_admin_still_403_on_both_endpoints(self):
         """权限前置不变：注册管理员（非内置主管理员）连口令带上也仍是 403，且在鉴权之前。"""
         db.create_user("radmin@test.local",
-                       self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
+                       generate_password_hash(ADMIN_PASS), role="admin")
         c = self._client()
         t = self._login(c, "radmin@test.local", ADMIN_PASS)
         before = _read_env(self.env_file)
@@ -1037,7 +1039,7 @@ class HighRiskGateOrderB14Test(_B14AlertGateBase):
         """既有三处高危删除同口径：错口令尝试不得挤占删除额度。"""
         self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         db.create_user("victim@test.local",
-                       self.webapp.generate_password_hash(ADMIN_PASS))
+                       generate_password_hash(ADMIN_PASS))
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         for _ in range(2):
@@ -1793,7 +1795,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         走 users 表 password_hash；两条路径不得互相顶用。
         """
         db.create_user("radmin2@test.local",
-                       self.webapp.generate_password_hash(REG_ADMIN_PASS), role="admin")
+                       generate_password_hash(REG_ADMIN_PASS), role="admin")
         self._one_deleted()
         c = self._client()
         t = self._login(c, "radmin2@test.local", REG_ADMIN_PASS)
@@ -1936,7 +1938,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
     """
 
     def _user(self, email="trail-user@test.local", password=TRAIL_PASS, role="user"):
-        db.create_user(email, self.webapp.generate_password_hash(password), role=role)
+        db.create_user(email, generate_password_hash(password), role=role)
         return email, password
 
     @staticmethod
@@ -2503,7 +2505,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
 
     def test_me_password_endpoint_prefix_unchanged(self):
         email, old = "pwcopyme@test.local", "OldPass#2026"
-        db.create_user(email, self.webapp.generate_password_hash(old))
+        db.create_user(email, generate_password_hash(old))
         c = self._client()
         token = self._login(c, email, old)
         r = c.post("/api/me/password",
@@ -2512,12 +2514,12 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["error"], f"新密码不符合要求：密码需包含{PW_CLASS_SENTENCE}",
                          "端点前缀「新密码不符合要求：」不得随文案订正而变")
-        self.assertTrue(self.webapp.check_password_hash(
+        self.assertTrue(check_password_hash(
             db.find_user(email)["password_hash"], old), "校验失败不得改到存量哈希")
 
     def test_admin_reset_password_endpoint_prefix_unchanged(self):
         email = "pwcopyadmin@test.local"
-        db.create_user(email, self.webapp.generate_password_hash("OldPass#2026"))
+        db.create_user(email, generate_password_hash("OldPass#2026"))
         c = self._client()
         token = self._login(c, "admin", ADMIN_PASS)
         r = c.post(user_path(db, email, "/password"), json={"password": "1234567890"},

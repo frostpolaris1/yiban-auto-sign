@@ -35,6 +35,7 @@ from unittest import mock
 import pytest
 
 import web.security as web_security
+from web.routes import auth as web_routes_auth
 from yiban.notify import ledger as notify_ledger
 from yiban.notify import transport as _notify_K2
 
@@ -1368,13 +1369,14 @@ class Batch18Knife2WebTest(unittest.TestCase):
         """
         c = self.webapp.create_app().test_client()
         threshold = self.webapp.LOGIN_FAIL_NOTIFY
-        # 口令校验的**两份绑定都要打**：`webapp.check_password_hash` 覆盖注册用户路径
-        # （路由经 `m.*` 取 app 侧绑定），`web_security.check_password_hash` 覆盖内置
-        # 管理员路径（`web/security.py` 的 verify_admin 用该模块自己的绑定，app 侧打桩
-        # 到不了它）。本 block 内 verify_admin 已被打成 False 短路内置路径，security 侧
-        # 这一桩是防"日后去掉 verify_admin 桩"时真实 scrypt 悄悄回流的兜底。
+        # 口令校验的**两份绑定都要打**：`web.routes.auth.check_password_hash` 覆盖注册
+        # 用户路径（该路由自 145-B `T1` 片起自己从 werkzeug 导入，打 web.app 会静默
+        # 失效），`web_security.check_password_hash` 覆盖内置管理员路径（`web/security.py`
+        # 的 verify_admin 用该模块自己的绑定，app 侧打桩到不了它）。本 block 内
+        # verify_admin 已被打成 False 短路内置路径，security 侧这一桩是防"日后去掉
+        # verify_admin 桩"时真实 scrypt 悄悄回流的兜底。
         with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
-             mock.patch.object(self.webapp, "check_password_hash", return_value=False), \
+             mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp.notify, "send") as nsend:
@@ -1399,7 +1401,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         long_a, long_b = "a" * 200, "a" * 128 + "b" * 72
         # 两份 check_password_hash 绑定同 test_m8_login_alert_routed_to_loginfail_ledger。
         with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
-             mock.patch.object(self.webapp, "check_password_hash", return_value=False), \
+             mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):

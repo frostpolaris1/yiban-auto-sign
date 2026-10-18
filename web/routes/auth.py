@@ -19,15 +19,20 @@ app 实例一份"（测试进程反复 create_app，进程级共享会跨实例�
 `web.routes.login_fails()` 单点取用，认证/个人域共用同一份账（安全语义依赖同一份计数）。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（ENV_FILE / verify_admin / check_password_hash /
-load_env_int / send_notification / _client_ip / db 等）必须继续生效。
+视图体不读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
+`mock.patch.object(web.app, …)` 打桩（ENV_FILE / verify_admin / load_env_int /
+send_notification / _client_ip / db 等）必须继续生效。
+唯一例外是口令哈希两个名字（`check_password_hash` / `generate_password_hash`）：
+它们经 145-B `T1` 片改为本模块从 `werkzeug.security` 直接导入，故打桩点须落在
+**本模块**（`mock.patch.object(web.routes.auth, "check_password_hash", …)`）。
+打在 web.app 上仍会成功，但不控制本模块的调用——静默失效。
 """
 import secrets
 import sqlite3
 import time
 
 from flask import current_app, jsonify, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
@@ -94,10 +99,10 @@ def api_login():
                 du is not None
                 and du.get("deleted")
                 and m._delete_grace_remaining(du.get("deleted_at", "")) > 0
-                and m.check_password_hash(du.get("password_hash", ""), password)
+                and check_password_hash(du.get("password_hash", ""), password)
             ):
                 recoverable = True
-        elif m.check_password_hash(u.get("password_hash", ""), password):
+        elif check_password_hash(u.get("password_hash", ""), password):
             role = "admin" if u.get("role") == "admin" else "user"
             auth_source = "user"  # 注册用户（含提升的管理员）统一记为 user
             pw_version = u.get("pw_version", 1)
@@ -300,7 +305,7 @@ def api_register():
         try:
             created = m.db.create_user(
                 email,
-                m.generate_password_hash(password, method=m.SCRYPT_METHOD),
+                generate_password_hash(password, method=m.SCRYPT_METHOD),
                 role="user",
                 created_at=m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
