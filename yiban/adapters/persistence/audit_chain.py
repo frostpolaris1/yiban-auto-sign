@@ -47,6 +47,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -820,6 +821,14 @@ def verify_audit_chain():
 _ANCHOR_V0_TOKENS = 3
 _ANCHOR_V1_TOKENS = 5
 _ANCHOR_V2_TOKENS = 8
+#: 老格式（三字段）锚点行的**历史前缀终止日**（含当日）。那一批行只可能写在
+#: 2026-08-28 及之前（生产实测 2026-08-21..08-28）。
+LEGACY_ANCHOR_LAST_DAY = "2026-08-28"
+#: 老格式行时间戳的**日期部分**形状。只校日期、不校时分秒：识别要的是"它属于那个
+#: 有限的历史日期区间"，不是"它的时刻写法与今天一字不差"——历史写入方的分隔符/精度
+#: 一变，严于日期的形状校验就会把合法历史行判成"非历史行"，在真文件上制造每日告警。
+#: 用 `[0-9]` 而非 `\d`：`\d` 收 Unicode 数字，会把非成形串放进前缀。
+_LEGACY_DAY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 #: 库内锚点指纹：{"lines": int, "last_hash": str, "ts": str}
 _ANCHOR_META_KEY = "audit_anchor_meta"
 #: audit_logs 物理删除留痕：累计条数（int）+ 最近若干条事件（JSON 列表）
@@ -1188,6 +1197,40 @@ def _parse_anchor_lines(lines):
     return out
 
 
+def _is_legacy_ts(ts):
+    """时间戳的日期部分是否成形，且不晚于 `LEGACY_ANCHOR_LAST_DAY`。
+
+    这是"老格式行"的**可核性质之二/之三**（之一＝开头连续，见 `_legacy_prefix_end`）：
+    日期成形、且落在那一批历史行的日期区间内。写成 `<=` 是刻意的——生产实测
+    2026-08-28 当日仍有 v0 行写入，用严格小于会把最后一批历史行判成"非历史行"。
+    只取前 10 个字符比对：日期是定宽 `YYYY-MM-DD`，字典序与时间序一致。
+    """
+    return bool(isinstance(ts, str) and _LEGACY_DAY_RE.match(ts[:10])
+                and ts[:10] <= LEGACY_ANCHOR_LAST_DAY)
+
+
+def _legacy_prefix_end(lines):
+    """老格式（三字段）历史前缀的**行数**：文件开头连续、且符合可核性质的老行。
+
+    三条性质缺一不可：
+      1. 从第 1 行起**连续**（锚点文件只增不改，那批老行只可能留在文件头部）；
+      2. 解析为 v0（只有时间戳与链头，确实没有行间链字段）；
+      3. 时间戳的日期部分成形，且不晚于 `LEGACY_ANCHOR_LAST_DAY`。
+
+    返回 0 表示文件不以老格式行开头。本函数只回答"开头这一段是不是那批历史行"，
+    不参与任何"是否篡改"的结论；落在前缀之外的 v0 行由 `_anchor_file_state_ex`
+    判"无法定论"——三字段行不受行间链约束、也不带 min_id/max_id，只按 token 数
+    认它，等于给"在任意位置留一条三字段行"开一个静默通过的后门。
+    """
+    end = 0
+    for ln in lines:
+        parsed = _parse_anchor_line(ln)
+        if parsed is None or parsed["version"] != 0 or not _is_legacy_ts(parsed["ts"]):
+            break
+        end += 1
+    return end
+
+
 def _last_anchor_of(lines):
     """最后一条可解析的锚点行；没有返回 None。"""
     parsed = _parse_anchor_lines(lines)
@@ -1254,6 +1297,12 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
     不可解析的行（合法 UTF-8 但不是锚点行格式）判"无法定论"而非"无异常"：它既可能
     是磁盘损坏也可能是有人在试探判据，处置方向不同，不能压成同一结论；也**不**当
     普通红——那会把一次编码事故误报成确证的篡改。
+
+    **老格式（三字段）行只认开头连续的那一段历史前缀**（判据见 `_legacy_prefix_end`：
+    开头连续 + v0 形态 + 日期不晚于 `LEGACY_ANCHOR_LAST_DAY`）。前缀之外的三字段行
+    判"无法定论"，与"不可解析的行"同档：它不受行间链约束、也不带 min_id/max_id，
+    静默放过等于给"在文件任意位置留一条三字段行"开后门。该判据排在行间链校验之后
+    ——链不符是确证篡改，比"无法定论"更响，先报前者。
     """
     if lines is None:
         lines, status = _read_anchor_lines_ex(path)
@@ -1283,15 +1332,18 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
                 "——应用写入之外被追加了行（仅追加 1 条垃圾行即可同时骗过"
                 "「变少/相等」两支判据，故此处与减少同等判红）",
             )
-    for i, ln in enumerate(lines):
-        if _parse_anchor_line(ln) is None:
+    # 解析一次、三个判据共用：`parsed_lines` 与 `lines` 同长且同序（不可解析处为 None），
+    # 故后面的行间链与老格式判据都能按下标与 `lines` 对齐，不必再解析一遍、也不依赖
+    # "上一段已经排除过 None"这种隐式前提。
+    parsed_lines = [_parse_anchor_line(ln) for ln in lines]
+    for i, parsed in enumerate(parsed_lines):
+        if parsed is None:
             return (
                 "indeterminate",
                 f"锚点文件第 {i + 1} 行不是合法锚点行（内容损坏或被人为写入）"
                 "——校验无法定论，不等于无异常，请人工核查该行",
             )
-    for i, ln in enumerate(lines):
-        parsed = _parse_anchor_line(ln)
+    for i, parsed in enumerate(parsed_lines):
         if parsed["prev_line_hash"] is None:
             continue  # 旧格式行没有行间链字段：作为前驱参与哈希，自身不做链校验
         expect = _anchor_line_sha(lines[i - 1]) if i > 0 else _ANCHOR_GENESIS
@@ -1304,6 +1356,24 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
             )
     if recorded == len(lines) and meta.get("last_hash") and _anchor_line_sha(lines[-1]) != meta["last_hash"]:
         return "tampered", "锚点文件末行与库内指纹不符——末行内容被改写"
+    # 老格式（三字段）行只认**开头连续的那一段历史前缀**（判据见 `_legacy_prefix_end`）。
+    # 前缀之外的三字段行不是那批历史行：可能是一次磁盘损坏，也可能是人为写入。它不受
+    # 行间链约束、也不带 min_id/max_id——静默放过它，等于给"在文件任意位置留一条三字段
+    # 行"开后门（旧实现把 "totally broken line" 这类恰好 3 token 的垃圾行判成 v0 行，
+    # 结论是 ok）。既不是确证篡改也不是无异常，故与"不可解析的行"同判"无法定论"。
+    #
+    # 位置在行间链校验**之后**：链不符是确证篡改，比"无法定论"更响，先报前者。
+    # 链的覆盖面只到"后继行带行间链字段"的那些行，故尾部追加的那类够不到链，
+    # 正是这一支要接住的情形。
+    legacy_prefix = _legacy_prefix_end(lines)
+    for i, parsed in enumerate(parsed_lines):
+        if i >= legacy_prefix and parsed["version"] == 0:
+            return (
+                "indeterminate",
+                f"锚点文件第 {i + 1} 行是三字段老格式，但它不在 "
+                f"{LEGACY_ANCHOR_LAST_DAY} 及更早的连续历史前缀内——它不是那批历史行"
+                "（内容损坏或被人为写入），校验无法定论（不等于无异常），请人工核查该行",
+            )
     return "ok", ""
 
 
@@ -1665,10 +1735,14 @@ def audit_anchor_summary(path=None):
     """锚点文件的只读摘要（**不碰数据库**）：行数、定点、老格式行数。
 
     回答巡检面的"校验到哪个锚点"：`max_id` / `max_ts` 是当前**定点基准**（`_max_anchor_of`
-    取 max_id 最大的真行），`old_format_lines` 是没有行间链的 2026-08-28 前存量行数。
+    取 max_id 最大的真行），`old_format_lines` 是**开头连续那一段**老格式历史前缀的行数
+    （判据见 `_legacy_prefix_end`：开头连续 + v0 形态 + 日期不晚于 2026-08-28）。
     不可解析的行照实计数（它们会被 `_parse_anchor_lines` 丢弃，差值就是它们）。
     文件缺失/不可读按 `path_state` 如实标记，各计数为 0——本函数不代替 `_anchor_status`
     下结论，只把"锚点文件长什么样"摊开。
+
+    前缀之外的三字段行**不计**进 `old_format_lines`：它们不是那批历史行，且必然让
+    `_anchor_status` 判"无法定论"，故不属"已知欠账"（欠账是已接受的历史边界，不是待查）。
     """
     path = path or audit_anchor_path()
     lines, read_state = _read_anchor_lines_ex(path)
@@ -1678,7 +1752,7 @@ def audit_anchor_summary(path=None):
     return {
         "path_state": read_state,
         "lines": len(lines),
-        "old_format_lines": sum(1 for p in parsed if int(p.get("version") or 0) == 0),
+        "old_format_lines": _legacy_prefix_end(lines),
         "unparsable_lines": len(lines) - len(parsed),
         "max_id": (anchor or {}).get("max_id"),
         "max_ts": (anchor or {}).get("ts"),
@@ -1688,10 +1762,14 @@ def audit_anchor_summary(path=None):
 def audit_known_debt(path=None):
     """**已知欠账**清单：已经知道并接受的客观缺口（不是失败结论）。
 
-    如今只有一条：2026-08-28 之前写入的**老格式（三字段）锚点行**不带行间链字段，
-    故这些行彼此之间没有行间链保护——它们的完整性由行数三支与末行哈希承担。jswn 的
-    裁定即"已知边界，沿用"（改锚点文件属应用写入之外的动作，会真破坏取证链）。
-    它既不是篡改、也不是"无法定论"，故在界面上单独成一条、与三态分开显示。
+    如今只有一条：**开头连续那一段**老格式（三字段）锚点行——它们写在 2026-08-28
+    及更早，不带行间链字段，故彼此之间没有行间链保护；其完整性由行数三支与末行哈希
+    承担。jswn 的裁定即"已知边界，沿用"（改锚点文件属应用写入之外的动作，会真破坏
+    取证链）。它既不是篡改、也不是"无法定论"，故在界面上单独成一条、与三态分开显示。
+
+    识别锚在可核性质上（开头连续 + v0 形态 + 日期不晚于 `LEGACY_ANCHOR_LAST_DAY`），
+    不是"凡三字段行都算"：前缀之外的三字段行会被 `_anchor_file_state_ex` 判"无法定论"，
+    不会以"已知欠账"的名义被静默放过。
 
     返回 `[{"code", "label", "count", "reason"}]`；无欠账回空列表。
     """
