@@ -48,8 +48,9 @@ import db  # noqa: E402
 import signin  # noqa: E402
 
 from yiban import client as yiban_client  # noqa: E402
-from yiban import clock, egress  # noqa: E402
+from yiban import egress  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.engine import executor_v3, state_io, token_bucket  # noqa: E402
 from yiban.store import clock_meta, queue_store  # noqa: E402
 

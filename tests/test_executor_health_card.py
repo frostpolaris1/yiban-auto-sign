@@ -34,7 +34,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 sys.path.insert(0, BASE)
 
-from yiban import clock, egress  # noqa: E402
+from yiban import egress  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.engine import state_io  # noqa: E402
 
 ADMIN_PASS = "TestPass1234!"

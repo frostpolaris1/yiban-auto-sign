@@ -52,7 +52,7 @@ _REPO_ROOT = os.path.dirname(_HERE)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from yiban import clock  # noqa: E402
+from yiban.core import clock  # noqa: E402
 from yiban.infra import env_io  # noqa: E402
 from yiban.masking import mask_phone, sanitize_text  # noqa: E402
 from yiban.store import db, migrations, queue_store  # noqa: E402

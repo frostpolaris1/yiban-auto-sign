@@ -31,7 +31,7 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
-from yiban import clock
+from yiban.core import clock
 from yiban.store.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -819,7 +819,7 @@ class StaleJobReclaimTest(_LifecycleBase):
             (created, created, job_id))
         conn.commit()
         with mock.patch("yiban.store.verify_jobs.datetime.datetime") as dt, \
-             mock.patch("yiban.clock.now", return_value=biz_now):
+             mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = datetime.timedelta  # patch 整个类，保留真实 timedelta
             reclaimed = db.reclaim_stale_verify_jobs()
@@ -841,7 +841,7 @@ class StaleJobReclaimTest(_LifecycleBase):
                               (created, job_id))
         db.get_conn().commit()
         with mock.patch("yiban.store.verify_jobs.datetime.datetime") as dt, \
-             mock.patch("yiban.clock.now", return_value=biz_now):
+             mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = datetime.timedelta  # patch 整个类，保留真实 timedelta
             purged = db.purge_verify_jobs(days=7)

@@ -48,7 +48,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import clock, window  # noqa: E402
+from yiban import window  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 
 class FakeNow:
@@ -399,7 +400,7 @@ class ContainerInjectsRetrySlotTest(unittest.TestCase):
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
 #: signin/scheduler 的 sched-run-<date>.json / sign-state-<date>.json 取业务钟
-#: （yiban.clock，北京 +8），跨宿主 TZ 时与 TODAY 可能不同日——这两类消费方必须用 BIZ_TODAY。
+#: （yiban.core.clock，北京 +8），跨宿主 TZ 时与 TODAY 可能不同日——这两类消费方必须用 BIZ_TODAY。
 BIZ_TODAY = clock.today()
 
 
@@ -420,7 +421,7 @@ import json, os, sys
 from datetime import datetime, timedelta
 
 state = os.environ.get("YIBAN_STATE_DIR", ".")
-# 模拟生产 signin 的按日留痕（yiban.clock 北京钟）：固定 +8，不随宿主 TZ 漂移
+# 模拟生产 signin 的按日留痕（yiban.core.clock 北京钟）：固定 +8，不随宿主 TZ 漂移
 today = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
 
 

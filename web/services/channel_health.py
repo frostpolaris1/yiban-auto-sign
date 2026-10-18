@@ -36,8 +36,9 @@ import json
 import logging
 
 from web.services.notify_mail import _NOTIFY_LEDGER_LABELS, _alert_mail_recipients, _nl_safe
-from yiban import clock, notify
 from yiban import mail as mailer
+from yiban import notify
+from yiban.core import clock
 from yiban.mail import layout as mail_layout
 from yiban.store import db
 

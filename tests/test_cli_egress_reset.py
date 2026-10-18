@@ -123,8 +123,8 @@ class _EgressCliCase(unittest.TestCase):
         return json.loads(lines[0])
 
     def _fresh_stamp(self):
-        """当前北京时间戳串——与引擎落库同一时间域（`yiban.clock`）。"""
-        code = "from yiban import clock;print(clock.ts())"
+        """当前北京时间戳串——与引擎落库同一时间域（`yiban.core.clock`）。"""
+        code = "from yiban.core import clock;print(clock.ts())"
         r = subprocess.run([sys.executable, "-c", code], cwd=BASE, env=self.env,
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=60)
