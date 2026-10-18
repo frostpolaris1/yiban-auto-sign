@@ -493,7 +493,7 @@ class ProbeExitFamilyTest(unittest.TestCase):
                         password="p", account_id=0)
 
     def _run_probe_main(self, probe_result, lock_exc=None):
-        from yiban.engine import runner
+        from yiban.app import runner
         lock = (mock.patch.object(runner.cli_support, "_acquire_run_lock",
                                   side_effect=lock_exc) if lock_exc is not None
                 else mock.patch.object(runner.cli_support, "_acquire_run_lock",
@@ -523,7 +523,7 @@ class ProbeExitFamilyTest(unittest.TestCase):
 
     def test_zero_accounts_probe_is_noop_success(self):
         """零账号 = 无需执行（0）；探针分支先于零账号守卫，不落 ERROR。"""
-        from yiban.engine import runner
+        from yiban.app import runner
         with mock.patch.object(runner.cli_support, "_setup_cli_logging"), \
                 mock.patch.object(runner.accounts_mod, "load_accounts", return_value=[]), \
                 mock.patch.object(runner.schedule_mod, "day_off", return_value=None), \

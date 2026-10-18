@@ -163,7 +163,7 @@ class SecondRunFlagParityTest(unittest.TestCase):
     两侧必须同结论：`1/true/on/yes`（含大小写与两侧空白）都算补签轮，旧实现只认 `"1"`（D2）。"""
 
     def _is_second_run(self, value):
-        from yiban.engine import state_io
+        from yiban.adapters.statefiles import state_io
         with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": value}), \
                 mock.patch.object(state_io, "_sched_marker_exists", return_value=False):
             return state_io._is_second_run()

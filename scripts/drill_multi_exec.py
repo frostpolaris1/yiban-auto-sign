@@ -230,7 +230,7 @@ def _apply_injections():
     qs.claim_batch = chain
 
     if mutate == "reap-off":
-        from yiban.engine import workers
+        from yiban.workers import workers
         _noop = lambda slot: 0  # noqa: E731
         _noop._drill = "reap-off"
         workers._reap_dead_worker = _noop
@@ -321,7 +321,7 @@ import os
 out = {"mutate": os.environ.get("DRILL_MUTATE", "")}
 from yiban.store import db
 import yiban.store.queue_store as qs
-from yiban.engine import workers
+from yiban.workers import workers
 
 out["claim_marker"] = getattr(qs.claim_batch, "_drill", None)
 out["reap_marker"] = getattr(workers._reap_dead_worker, "_drill", None)

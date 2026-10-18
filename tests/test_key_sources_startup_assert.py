@@ -37,7 +37,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.engine import runner
+from yiban.app import runner
 from yiban.infra import account_crypto
 
 KEY_A = "a" * 64
@@ -202,7 +202,7 @@ class EngineStartupWiringTest(unittest.TestCase):
 
     def _run_main(self, argv):
         # 打桩账号加载：断言若失效、流程走到加载账号，这里以 AssertionError 暴露
-        with mock.patch("yiban.engine.runner.accounts_mod.load_accounts",
+        with mock.patch("yiban.app.runner.accounts_mod.load_accounts",
                         side_effect=AssertionError("不得走到加载账号")), \
                 contextlib.redirect_stderr(io.StringIO()):
             return runner.main(argv)

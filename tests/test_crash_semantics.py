@@ -488,7 +488,7 @@ class UnknownOutcomeDetectionTest(_Base):
 
     def test_coordinator_startup_identifies_unknown_outcomes(self):
         """协调器启动（`runner.main`）时，有标记无结果的行必被识别（接线存在）。"""
-        from yiban.engine import runner as runner_mod
+        from yiban.app import runner as runner_mod
         phone = _phone(1)
         self._insert_event(NODE_START, phone)
         seen = []
@@ -499,7 +499,7 @@ class UnknownOutcomeDetectionTest(_Base):
 
     def test_multiexecutor_supervisor_identifies_but_skips_readonly_rounds(self):
         """多执行体监督进程（协调器）：签发的轮次识别；只读轮次不识别（不产生推送副作用）。"""
-        from yiban.engine import workers
+        from yiban.workers import workers
         with mock.patch.object(workers.accounts_mod, "load_accounts",
                                return_value=self._accounts(_phone(1))), \
              mock.patch.object(workers.cli_support, "_acquire_run_lock",
@@ -516,7 +516,7 @@ class UnknownOutcomeDetectionTest(_Base):
             det.assert_called_once()
 
     def test_readonly_round_criterion_is_shared(self):
-        from yiban.engine import workers
+        from yiban.workers import workers
         self.assertTrue(workers._is_readonly_round(["--check-config"]))
         self.assertTrue(workers._is_readonly_round(["--probe"]))
         self.assertTrue(workers._is_readonly_round(["--second-run-check"]))
@@ -525,7 +525,7 @@ class UnknownOutcomeDetectionTest(_Base):
 
     # ---- runner 接线夹具（复用 RunLevelNodesTest 的口径）----
     def _run_runner(self):
-        from yiban.engine import runner as runner_mod
+        from yiban.app import runner as runner_mod
         accounts = self._accounts(_phone(1))
         outcome = {_phone(1): (True, "签到成功", False, "success")}
         # 单执行体/手动轮的协调器身份：不带 `YIBAN_EXECUTOR_ID`（`_already_child` 为假，

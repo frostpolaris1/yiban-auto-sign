@@ -36,7 +36,7 @@ from unittest import mock
 import child_env  # scripts/ 在 pytest 的 pythonpath 里
 
 from yiban import egress
-from yiban.engine import workers
+from yiban.workers import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -129,7 +129,7 @@ class DirectSlotChildEnvTest(unittest.TestCase):
         child_env_map = dict(envs[0])
         child_env_map["YIBAN_ENV_FILE"] = env_file
         with mock.patch.dict(os.environ, child_env_map, clear=True):
-            from yiban.engine import probe
+            from yiban.app import probe
             self.assertEqual(
                 egress.resolve(egress.ROLE_SINGLE, env=probe._egress_env()).strip(), "",
                 "子进程里按 `.env` 补缺合并出的出口必须仍是直连")

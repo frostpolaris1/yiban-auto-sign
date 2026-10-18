@@ -39,7 +39,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import scheduler  # noqa: E402  （docker/scheduler.py）
 
 from yiban import cred_state, state_gc  # noqa: E402
-from yiban.engine import alerts, probe, runner, state_io  # noqa: E402
+from yiban.adapters.notifier import report as alerts  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.app import probe, runner  # noqa: E402
 from yiban.notify import ledger  # noqa: E402
 
 

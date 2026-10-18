@@ -45,7 +45,7 @@ if _BASE not in sys.path:  # 同目录夹具（与 test_alert_channel_dispatch �
 
 from test_fallback_gates import WED, _at, _FallbackHarness  # noqa: E402
 
-from yiban.engine import state_io  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
 
 #: 轮次行的识别片段（级别收敛后这句话仍在，只是级别随事实变化）
 ROUND_MARK = "本轮处理"
