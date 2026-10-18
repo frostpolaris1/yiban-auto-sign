@@ -177,7 +177,7 @@ def sign_event_stats(days=30, stage=None):
     1. 各状态桶**分别**去重 ⇒ 同一天"先失败后成功"的账号会**同时出现在两个桶**，把各桶
        `cnt` 相加当"账号总数"仍会偏大；消费方不得对 `cnt` 跨维直加。本表是**事件表口径**，
        只答"过程"；看板「涉及多少账号 / 按日终态」的权威值来自终态载体（按日
-       `sign-state-<day>.json`，见 `web/services/logs.py` 的 `accounts_terminal_summary`），
+       状态文件，见 `web/services/logs.py` 的 `accounts_terminal_summary`），
        不来自本表——用"每账号最后一条事件"模拟终态会被观测行污染（2026-10-16 的
        `pending` 洪水把 311 个账号刷成待签）。
     2. 事件**列表**仍会显示多行——那是各执行体各自的事实；写入侧去重（同一

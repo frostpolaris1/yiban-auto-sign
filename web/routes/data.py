@@ -223,9 +223,9 @@ def api_admin_sign_events():
     会另记 forbidden_path 审计）。手机号一律打码后返回，条数封顶 200。
 
     `accounts_stats` 是**终态口径**（账号终态统计），来源是按日状态文件
-    （`sign-state-<day>.json`），**不读事件表**；`stage` 参数只作用于 `events` 与
-    `daily_stats`（事件表口径），对 `accounts_stats` 不适用（用户 2026-10-18 裁定：
-    统计按终态，过程只出现在日志里）。
+    （`web/services/logs.py::accounts_terminal_summary`），**不读事件表**；
+    `stage` 只作用于 `events` 与 `daily_stats`（事件表口径），对 `accounts_stats`
+    不适用（用户 2026-10-18 裁定：统计按终态，过程只出现在日志里）。
     """
     m = _appmod()
     phone = str(request.args.get("phone", "")).strip()
