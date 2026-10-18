@@ -45,7 +45,7 @@ _REPO_ROOT = os.path.dirname(_HERE)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 
 # 目录解析与 run.sh 同口径（顺序也一致）：YIBAN_STATE_DIR → 默认 /var/log/yiban；
 # 日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir。实现在 `yiban/adapters/statefiles/state_gc.py`

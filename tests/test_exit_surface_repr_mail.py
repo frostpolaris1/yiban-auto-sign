@@ -18,8 +18,8 @@ import unittest
 from unittest import mock
 
 from yiban.adapters.notifier import report as alerts
+from yiban.adapters.notifier.mail.layout import Mail
 from yiban.engine.accounts import Account
-from yiban.mail.layout import Mail
 
 PHONE_RAW = "13800001234"
 PHONE_MASKED = "138****1234"

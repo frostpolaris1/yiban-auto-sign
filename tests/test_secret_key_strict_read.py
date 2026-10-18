@@ -47,7 +47,7 @@ import unittest
 from unittest import mock
 
 from web.services import env_io as svc
-from yiban.infra import env_io as infra_env_io
+from yiban.adapters.config import env_io as infra_env_io
 
 OLD_KEY = "0d" * 32
 LEGACY_FILE = ("YIBAN_ADMIN_USER=admin\n"

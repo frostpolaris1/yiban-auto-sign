@@ -77,7 +77,7 @@ class _CliExitHarness(unittest.TestCase):
 
     def encrypt_password(self):
         """用 key_a 加密一个口令，返回密文对象（JSON 可嵌 dict）。"""
-        code = ("import json,sys;from yiban.infra import account_crypto;"
+        code = ("import json,sys;from yiban.adapters.config import account_crypto;"
                 "print(json.dumps(account_crypto.encrypt_password("
                 "'under-key-a', bytes.fromhex(sys.argv[1]), sys.argv[2])))")
         r = subprocess.run([sys.executable, "-c", code, self.key_a, PHONE_RAW],

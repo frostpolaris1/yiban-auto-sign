@@ -27,7 +27,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.entry import cli  # noqa: E402  （旧坐标 `yiban.cli` 是转发壳，打桩目标必须写新坐标）
 
 EXPIRED = "sched-run-2020-01-01.json"

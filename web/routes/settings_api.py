@@ -45,9 +45,9 @@ from web.services.env_io import (
     health_report_weekday_setting,
 )
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
+from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
+from yiban.adapters.config.env_io import parse_env_flag as _parse_env_flag
 from yiban.core import window as yb_window
-from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
-from yiban.infra.env_io import parse_env_flag as _parse_env_flag
 
 # 与 web 日志同通道：面板读到的非预期开关取值落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

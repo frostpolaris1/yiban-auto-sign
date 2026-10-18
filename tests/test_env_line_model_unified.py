@@ -51,7 +51,7 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -365,7 +365,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
                          "被拒后不得留下半写的新密钥")
 
     def test_notify_secret_save_refused_as_409(self):
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
         self._dirty_env_without_accounts_key()
         before = _read_bytes(self.env_file)
         c, csrf = self._login_master()
@@ -378,7 +378,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
         self._no_key_written(before)
 
     def test_mail_smtps_save_refused_as_409(self):
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
         self._dirty_env_without_accounts_key()
         before = _read_bytes(self.env_file)
         c, csrf = self._login_master()
@@ -393,7 +393,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
 
     def test_clean_env_auto_key_generation_still_succeeds(self):
         """阳性对照：干净 .env 上自动生成写回照常 200（本清扫不改这条路径）。"""
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
         real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         lines = []
