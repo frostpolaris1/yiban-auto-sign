@@ -40,7 +40,8 @@ from datetime import datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
 
-from yiban.engine import alerts, state_io  # noqa: E402
+from yiban.adapters.notifier import report as alerts  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
 
 
 def _read(path):
@@ -238,7 +239,7 @@ class SignStateCrashDurabilityTest(unittest.TestCase):
         code = (
             "import os, sys\n"
             f"sys.path.insert(0, {BASE!r})\n"
-            "from yiban.engine import state_io\n"
+            "from yiban.adapters.statefiles import state_io\n"
             + body
         )
         return subprocess.run([sys.executable, "-c", code], env=env,
@@ -321,7 +322,8 @@ class SignStateSigtermTest(unittest.TestCase):
         code = (
             "import os, signal, sys, time\n"
             f"sys.path.insert(0, {BASE!r})\n"
-            "from yiban.engine import state_io, alerts\n"
+            "from yiban.adapters.statefiles import state_io\n"
+            "from yiban.adapters.notifier import report as alerts\n"
             "signal.signal(signal.SIGTERM, alerts._flush_mail_on_sigterm)\n"
             + body
         )

@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from yiban import egress
-from yiban.engine import runner as runner_mod
+from yiban.app import runner as runner_mod
 from yiban.engine import schedule
 
 DAY = "2026-09-22"

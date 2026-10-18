@@ -33,7 +33,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.engine import cli_support, runner, workers  # noqa: E402
+from yiban.app import runner  # noqa: E402
+from yiban.engine import cli_support  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 
 def _unavailable(reason="锁不可用（测试注入）"):

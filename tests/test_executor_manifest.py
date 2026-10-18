@@ -742,7 +742,8 @@ class LaunchWiringTest(unittest.TestCase):
         self.assertIsNone(egress.launch_slots({"YIBAN_WORKERS": "3"}))
 
     def test_runner_passes_manifest_slots_to_supervisor(self):
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         env = {egress.ENV_MANIFEST: egress.dump_manifest(self.ROWS),
                "YIBAN_GLOBAL_PAUSE": "0"}
         with mock.patch.dict(os.environ, env), \
@@ -756,7 +757,8 @@ class LaunchWiringTest(unittest.TestCase):
         self.assertEqual(kwargs.get("slots"), [0, 3])
 
     def test_runner_falls_back_to_workers_flag_without_manifest(self):
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         env = {"YIBAN_EXECUTORS": "", "YIBAN_GLOBAL_PAUSE": "0"}
         with mock.patch.dict(os.environ, env), \
                 mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
@@ -770,7 +772,10 @@ class LaunchWiringTest(unittest.TestCase):
     def test_runner_dispatches_manifest_with_single_worker_row(self):
         """清单只剩 1 个 worker 行也必须派发：落回单执行体路径会拿到 `single@host`，
         而 HRW 候选集只含 `worker-0@host` ⇒ 分片集恒空、全天零领取（静默零签到）。"""
-        from yiban.engine import hrw, runner, schedule, workers
+        from yiban.app import runner
+        from yiban.core import hrw
+        from yiban.engine import schedule
+        from yiban.workers import workers
         one_row = ({"slot": 0, "type": "worker", "proxy": ""},)
         env = {egress.ENV_MANIFEST: egress.dump_manifest(one_row),
                "YIBAN_EXECUTOR_ID": "", "YIBAN_GLOBAL_PAUSE": "0"}
@@ -793,7 +798,8 @@ class LaunchWiringTest(unittest.TestCase):
 
     def test_runner_does_not_dispatch_when_manifest_has_no_worker_rows(self):
         """反向控制：清单在场但没有 worker 行（全停用/仅兜底）→ 照旧走单执行体路径。"""
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         rows = ({"slot": 0, "type": "disabled", "proxy": ""},
                 {"slot": 1, "type": "fallback", "proxy": ""})
         env = {egress.ENV_MANIFEST: egress.dump_manifest(rows),
@@ -805,7 +811,7 @@ class LaunchWiringTest(unittest.TestCase):
         m.assert_not_called()
 
     def test_supervisor_binds_identity_lock_and_heartbeat_to_slots(self):
-        from yiban.engine import workers
+        from yiban.workers import workers
         tmp = tempfile.mkdtemp(prefix="yiban-manifest-launch-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         spawned = []
@@ -860,7 +866,8 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_day_off_returns_2_before_dispatch(self):
         """周日签到未开启 + 清单 2 槽位 → 返回 2，不派发监督进程、也不加载账号。"""
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         with mock.patch.dict(os.environ, self._manifest_env()), \
                 mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
                 mock.patch.object(runner, "SUNDAY_SIGN", False), \
@@ -873,7 +880,8 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_paused_returns_2_before_dispatch(self):
         """一键暂停命中 → 同样在派发之前返回 2。"""
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         with mock.patch.dict(os.environ, self._manifest_env(YIBAN_GLOBAL_PAUSE="1")), \
                 mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
                 mock.patch.object(workers, "run_worker_supervisor") as m_sup, \
@@ -885,7 +893,8 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_second_run_check_returns_10_before_dispatch(self):
         """补签轮判定 + 清单多槽位 → 返回 10（需要补跑），不派发、不起子进程、不载账号。"""
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         with mock.patch.dict(os.environ, self._manifest_env()), \
                 mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
                 mock.patch.object(runner.state_io, "need_second_run", return_value=True), \
@@ -906,7 +915,8 @@ class DispatchGateTest(unittest.TestCase):
         一路 rc=2 会把成功的点击报成"未实际签到"）。故本用例断言：不派发监督进程、
         走进程内单执行体路径、且**不返回 2**（没被门拦下）。
         """
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         ok = (True, "签到成功", False, "success")
         acc = SimpleNamespace(phone="13800000000", user_paused=False, owner="",
                               password="p", account_id=0)
@@ -942,7 +952,8 @@ class DispatchGateTest(unittest.TestCase):
 
     def test_check_config_and_probe_still_dispatch_on_day_off(self):
         """`--check-config`（部署验证，哪天都要能验）与 `--probe`（自带门、跳过语义是 0）同样不被拦。"""
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         for argv in (["--check-config"], ["--probe"]):
             with self.subTest(argv=argv):
                 with mock.patch.dict(os.environ, self._manifest_env()), \
@@ -961,7 +972,8 @@ class DispatchGateTest(unittest.TestCase):
         init_db、配置错误报 N 份）。若它用 migrate=True，宣称只读的校验仍会把目标库
         改一遍——子进程各自的 migrate=False 就被父进程抢先作废了。
         """
-        from yiban.engine import runner, workers
+        from yiban.app import runner
+        from yiban.workers import workers
         with mock.patch.dict(os.environ, self._manifest_env()), \
                 mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
                 mock.patch.object(runner, "SUNDAY_SIGN", False), \
