@@ -38,8 +38,7 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from yiban import status
-from yiban.core import clock
+from yiban.core import clock, status
 from yiban.engine import hrw
 from yiban.store import connection, migrations, queue_store
 

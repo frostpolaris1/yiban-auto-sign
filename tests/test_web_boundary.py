@@ -45,9 +45,9 @@ from unittest import mock
 import flask
 from werkzeug.security import generate_password_hash
 
-from yiban import status as yiban_status
 from yiban.core import clock
-from yiban.masking import mask_email_local
+from yiban.core import status as yiban_status
+from yiban.core.masking import mask_email_local
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -489,7 +489,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         示例 `.env` 把两个裁剪键注释掉，故这条缺省路径就是生产默认形态：缺省 0 会让
         页面上显示的窗口、容量换算的分母与"窗口内不做实测"的拦截都比引擎宽 1 分钟。
         """
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
             win = self.webapp._executors_window()
@@ -872,7 +872,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 50)))
 
     def test_in_sign_window_minute_bounds(self):
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         bounds = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 0, "edge_back_sec": 0})
         inside = self.webapp._in_sign_window
@@ -883,7 +883,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         self.assertFalse(inside(bounds, datetime(2026, 9, 16, 23, 0, 0)))
 
     def test_in_run_period_combines_window_and_gates(self):
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         bounds = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 0, "edge_back_sec": 0})
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
@@ -950,7 +950,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         此时管理员设的窗口根本没被采用，继续报三段状态等于谎报；这句话也是页面上唯一
         能看见该异常的出口（只写日志+邮件不够）。
         """
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)

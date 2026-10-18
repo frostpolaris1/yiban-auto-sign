@@ -46,8 +46,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban import egress, window  # noqa: E402
-from yiban.core import clock  # noqa: E402
+from yiban import egress  # noqa: E402
+from yiban.core import (  # noqa: E402
+    clock,
+    window,
+)
 from yiban.engine import (  # noqa: E402
     executor_v3,
     hrw,

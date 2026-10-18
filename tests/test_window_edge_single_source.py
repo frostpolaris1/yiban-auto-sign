@@ -2,7 +2,7 @@
 """窗口边界 env 解析的唯一入口守卫。
 
 标签：A · 调度：计划与分片
-覆盖：`yiban.window.parse_edges` 的六格取值（两侧新键齐 / 只有一侧新键 / 只有旧键 /
+覆盖：`yiban.core.window.parse_edges` 的六格取值（两侧新键齐 / 只有一侧新键 / 只有旧键 /
     新键越界 / 旧键取到上界 600 / 三键全缺）；四个读者（`window.parse_edges`、
     `window.from_env`、`web.render.edge_config`、`schedule._schedule_config`）在同一份
     env 输入下必须给出同一个 (front, back)；生产树的 Python 代码里按键名读这三个 env 键的
@@ -29,7 +29,7 @@ import unittest
 from unittest import mock
 
 from web import render
-from yiban import window
+from yiban.core import window
 from yiban.engine import schedule
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -95,8 +95,8 @@ def _via_schedule_config(env):
 
 #: 各读者：同一个 env 映射进，同一个 (front, back) 出。
 READERS = (
-    ("yiban.window.parse_edges", _via_parse_edges),
-    ("yiban.window.from_env", _via_from_env),
+    ("yiban.core.window.parse_edges", _via_parse_edges),
+    ("yiban.core.window.from_env", _via_from_env),
     ("web.render.edge_config", _via_render_edge_config),
     ("yiban.engine.schedule._schedule_config", _via_schedule_config),
 )
