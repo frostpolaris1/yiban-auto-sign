@@ -1410,5 +1410,337 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
                              "shell 非注释行未命中（字面量或别名形态）或注释被误判")
 
 
+# ---------------------------------------------------------------------------
+# 拆墙/壳退役 T4：七个 `yiban.engine.*` 壳坐标的读者迁真实实现层
+# ---------------------------------------------------------------------------
+# 来历（145-B `T4` 片）：`yiban/engine/{hrw,round,runner,probe,alerts,state_io,workers}.py`
+# 都是 `sys.modules` 替换型转发壳（批 B）。七坐标各自迁到真实实现层（见下表）。
+# **本片只改坐标，不动任何语义**——其中 `runner`/`workers`/`round`/`state_io` 是调度与
+# 执行的编排面（AGENTS §三 例外①"执行核"的相邻面）。
+#
+# 口径（2026-10-18 在 `3f658c4d` 上现量，AST 逐项判名，不用点号字面 grep）：
+# 运行期读者 63 文件（py 61 ＋ 非 py 2）。**点号形态只命中 25 文件，漏掉 38 个只能经
+# `from yiban.engine import <短名>` 别名到达的文件**（AGENTS §7.1"扫描口径有洞"；
+# 本门按 import 列表逐项判名，不按裸词界）。
+#
+# 本门钉三条不变式：
+#   ① **自有面零命中**：面＝`yiban/**`、`web/**`（非 `web/static/**`）、`scripts/**`、
+#      `docker/**`、`run.sh`、`tests/**`。七旧坐标不得再以 import 路径（四种写法，含
+#      `import yiban as Y; Y.engine.runner.X` 与 `from yiban.engine import *`）、别名形态
+#      `from yiban.engine import runner`、属性访问 `yiban.engine.runner.X`、或非 docstring
+#      字符串常量（含打桩目标、`importlib.import_module` 串、`python -c` 代码串里的
+#      `"from yiban.engine import …"`）出现。
+#      为什么必须钉：壳仍在，故 `from yiban.engine import runner` **能跑**、字符串打桩
+#      **能成功**；但 `145-E` 删壳后 import 直接 `ModuleNotFoundError`，字符串打桩目标会
+#      **静默失效**（不报错，只不再控制被测路径）。
+#   ② **打桩面单列**：`mock.patch("<旧坐标>.…")` 在转发壳下**能成功但不控被测路径**。
+#      本片实测字符串打桩点：`test_window_alert_reset.py` 6 处（`yiban.engine.alerts.*`）、
+#      `test_key_sources_startup_assert.py` 1 处（`yiban.engine.runner.*`）——已迁新坐标。
+#   ③ **非 Python 载体的非注释行同样零命中**：`run.sh` 的 heredoc 里
+#      `from yiban.engine import state_io` 是运行期硬依赖，壳删后兜底心跳检测会崩。
+#
+# 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
+#   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
+#   `tests/test_notifier_relocation.py`——`test_alert_orchestration_has_one_implementation`
+#     经 `import yiban.engine.alerts as old` 验证壳与实现同一对象（壳仍在时是正当读者）。
+#   `tests/test_deploy_entry_imports.py`——本文件，`_T4_OLD_TO_NEW` 是禁字面量表，
+#     夹具字符串用于自证本门有牙。
+# 豁免不得变成万能挡箭牌：`test_exempt_files_still_exist` 另钉"每个豁免文件**必须仍命中
+# 本门**"（豁免一旦失去理由即红，防"顺手把文件加进豁免面来让门变绿"）。
+#
+# 已知盲点（显式登记，AGENTS §28）：别名形态的文本判据 `_T4_FROM_ENGINE` 止于 `\n`／`#`／`;`，
+# 故**跨行的** `"from yiban.engine import (\n    workers,\n)"` 这种串内多行别名形态扫不到。
+# 仓内无此形态（实测：运行期串内别名均为单行）；真要用多行时，点号形态判据同样不命中，
+# 须靠本表的手工登记发现。
+_T4_OLD_TO_NEW = {
+    "yiban.engine.hrw": "yiban.core.hrw",
+    "yiban.engine.round": "yiban.app.round",
+    "yiban.engine.runner": "yiban.app.runner",
+    "yiban.engine.probe": "yiban.app.probe",
+    "yiban.engine.alerts": "yiban.adapters.notifier.report",
+    "yiban.engine.state_io": "yiban.adapters.statefiles.state_io",
+    "yiban.engine.workers": "yiban.workers.workers",
+}
+_T4_OLD_MODULES = tuple(_T4_OLD_TO_NEW)
+_T4_SHORT_TO_OLD = {m.rsplit(".", 1)[1]: m for m in _T4_OLD_MODULES}
+#: 自有面（不含面外 `frontend/**`，2026-10-18 起归用户独立完成）。
+_T4_OWN_FACE_PY_DIRS = ("yiban", "web", "scripts", "docker", "tests")
+_T4_OWN_FACE_SHELL = ("run.sh",)
+_T4_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist", "build"))
+#: 自有面里不归本批改的子树（`web/static` 是前端产物）。
+_T4_SKIP_REL_PREFIX = ("web/static/",)
+_T4_FACE_EXEMPT = frozenset((
+    "tests/test_batch_b_relocation.py",
+    "tests/test_notifier_relocation.py",
+    "tests/test_deploy_entry_imports.py",
+))
+
+#: 旧坐标的字面量判据：模块名后不得紧跟标识符字符（`yiban.engine.runner` 命中；
+#: `yiban.engine.runner_extra` 这类同前缀他模块不命中）。
+_T4_OLD_LITERALS = {m: re.compile(r"(?<![\w.])" + re.escape(m) + r"(?![\w])")
+                    for m in _T4_OLD_MODULES}
+#: 别名形态**在文本里**的判据：`from yiban.engine import …, runner, …`。
+#: 为什么单列：字面量判据要求串里出现点号形态，抓不到 `"from yiban.engine import runner"`。
+#: **只取 import 列表并按项判名**，不用 `\brunner\b` 这类裸词界（裸词界会误命中普通词）。
+_T4_FROM_ENGINE = re.compile(r"\bfrom\s+yiban\.engine\s+import\s+([^\n#;]*)")
+
+
+def _t4_alias_names(text):
+    """文本里 `from yiban.engine import …, <短名>, …` 命中的旧坐标列表（按项判名）。"""
+    out = []
+    for m in _T4_FROM_ENGINE.finditer(text):
+        for item in m.group(1).split(","):
+            name = item.strip().strip("()").split(" as ")[0].strip()
+            if name in _T4_SHORT_TO_OLD:
+                out.append(_T4_SHORT_TO_OLD[name])
+    return out
+
+
+def _t4_bindings(tree):
+    """该文件里 local 名 → 点号模块路径 的绑定表（供属性链解析别名根）。"""
+    b = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                local = a.asname or a.name.split(".")[0]
+                b[local] = a.name if a.asname else a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                continue
+            mod = node.module or ""
+            for a in node.names:
+                if a.name == "*":
+                    continue
+                b[a.asname or a.name] = (mod + "." + a.name) if mod else a.name
+    return b
+
+
+def _t4_dotted(node, bindings):
+    parts = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(bindings.get(cur.id, cur.id))
+        return ".".join(reversed(parts))
+    return None
+
+
+def _t4_import_hits(tree):
+    """该文件里以旧坐标作 import 路径或属性访问的位置：`(行号, 说明)` 列表。
+
+    写法：`import yiban.engine.runner`、`from yiban.engine.runner import X`、
+    `from yiban.engine import runner`（别名形态，是主流形态）、`from yiban.engine import *`、
+    `import yiban` 或 `import yiban as Y` 后按属性访问 `yiban.engine.runner.X` / `Y.engine.runner.X`。
+    """
+    bindings = _t4_bindings(tree)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                for m in _T4_OLD_MODULES:
+                    if a.name == m or a.name.startswith(m + "."):
+                        hits.append((node.lineno, "import 旧坐标 " + a.name))
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                continue
+            mod = node.module or ""
+            for m in _T4_OLD_MODULES:
+                if mod == m or mod.startswith(m + "."):
+                    hits.append((node.lineno, "from 旧坐标 import " + mod))
+            if mod == "yiban.engine":
+                for a in node.names:
+                    if a.name in _T4_SHORT_TO_OLD:
+                        hits.append((node.lineno,
+                                     "from yiban.engine import " + a.name + "（旧坐标别名）"))
+                    elif a.name == "*":
+                        hits.append((node.lineno, "from yiban.engine import *（旧坐标星号）"))
+        elif isinstance(node, ast.Attribute):
+            d = _t4_dotted(node, bindings)
+            if not d:
+                continue
+            for m in _T4_OLD_MODULES:
+                if d == m or d.startswith(m + "."):
+                    hits.append((node.lineno, "属性访问 " + d + "（旧坐标）"))
+    return sorted(set(hits))
+
+
+def t4_old_coordinate_hits(path):
+    """返回该文件里引用七坐标的位置：`(行号, 说明)` 列表。
+
+    Python：① 旧坐标 import（四种写法，含 `Y.engine.runner.X` 属性访问与星号导入）；
+    ② 非 docstring 字符串常量含旧坐标（覆盖打桩目标、`importlib.import_module` 串、
+    `python -c` 代码串）；③ 字符串里的别名形态 `"from yiban.engine import runner…"`。
+    Shell：**非注释行**含旧坐标（字面量或别名形态）。
+    注释与 docstring 不算（任务口径：历史叙述不误红）。
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if path.endswith((".sh", ".bash")) or path.endswith("Dockerfile"):
+        hits = []
+        for i, line in enumerate(text.splitlines(), 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if any(_T4_OLD_LITERALS[m].search(s) for m in _T4_OLD_MODULES):
+                hits.append((i, "shell/文本非注释行含旧坐标"))
+            elif _t4_alias_names(s):
+                hits.append((i, "shell/文本非注释行含 from yiban.engine import <旧短名>"))
+        return hits
+    tree = ast.parse(text)
+    docs = _docstring_const_ids(tree)
+    hits = list(_t4_import_hits(tree))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docs):
+            continue
+        if any(_T4_OLD_LITERALS[m].search(node.value) for m in _T4_OLD_MODULES):
+            hits.append((node.lineno, "非 docstring 字符串常量 " + node.value[:60]))
+        elif _t4_alias_names(node.value):
+            hits.append((node.lineno, "非 docstring 字符串含别名形态 " + node.value[:60]))
+    return sorted(set(hits))
+
+
+def t4_own_face_files(root):
+    """自有面的扫描文件清单（.py ＋ .sh ＋ Dockerfile*），按 §7.2 的范围。"""
+    out = []
+    for d in _T4_OWN_FACE_PY_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x not in _T4_SKIP_DIRS]
+            for name in sorted(files):
+                if not name.endswith((".py", ".sh", ".bash")) and not name.startswith("Dockerfile"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace("\\", "/")
+                if rel.startswith(_T4_SKIP_REL_PREFIX):
+                    continue
+                out.append(os.path.join(dirpath, name))
+    for name in _T4_OWN_FACE_SHELL:
+        path = os.path.join(root, name)
+        if os.path.exists(path):
+            out.append(path)
+    return out
+
+
+class EngineCoordinateGateTest(unittest.TestCase):
+    """T4：七坐标的自有面读者清零；打桩面零命中；非 Python 载体零命中。"""
+
+    def test_own_face_has_no_old_coordinate(self):
+        files = t4_own_face_files(BASE)
+        self.assertGreaterEqual(
+            len(files), 400,
+            f"自有面扫描面过小（{len(files)} 个文件）——扫描根写错或树被移走（扫空不得当绿）")
+        bad = []
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if rel in _T4_FACE_EXEMPT:
+                continue
+            for line, why in t4_old_coordinate_hits(path):
+                bad.append(f"{rel}:{line}: {why}")
+        self.assertEqual(
+            bad, [],
+            "自有面仍以旧坐标 `yiban.engine.{hrw,round,runner,probe,alerts,state_io,workers}` "
+            "作 import 路径、属性访问或字符串目标（壳退役后 import 会断、字符串打桩会静默失效）：\n"
+            + "\n".join(bad))
+
+    def test_no_patch_target_uses_old_coordinate(self):
+        """打桩面单列一条：`mock.patch("<旧坐标>.…")` 是静默失效的典型形态。"""
+        bad = []
+        files = t4_own_face_files(BASE)
+        self.assertGreaterEqual(len(files), 400, f"扫描面过小（{len(files)}）")
+        for path in files:
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            if not rel.endswith(".py") or rel in _T4_FACE_EXEMPT:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            tree = ast.parse(text)
+            docs = _docstring_const_ids(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if fname not in ("patch", "object"):
+                    continue
+                for a in node.args:
+                    if (isinstance(a, ast.Constant) and isinstance(a.value, str)
+                            and id(a) not in docs
+                            and any(_T4_OLD_LITERALS[m].search(a.value)
+                                    for m in _T4_OLD_MODULES)):
+                        bad.append(f"{rel}:{node.lineno}: 打桩目标 {a.value}")
+        self.assertEqual(
+            bad, [],
+            "打桩目标仍指旧坐标 `yiban.engine.*`——壳退役后会静默失效"
+            "（打桩成功但不控被测路径）：\n" + "\n".join(bad))
+
+    def test_exempt_files_still_exist(self):
+        """豁免清单不得腐烂：登记的文件必须还在，且**必须仍命中本门**。"""
+        for rel in sorted(_T4_FACE_EXEMPT):
+            path = os.path.join(BASE, rel)
+            self.assertTrue(os.path.isfile(path),
+                            f"豁免清单登记了不存在的文件 {rel}")
+            self.assertTrue(
+                t4_old_coordinate_hits(path),
+                f"豁免文件 {rel} 已不再命中本门——豁免失去理由，须同批删除该豁免")
+
+    def test_scanner_has_teeth(self):
+        """突变验证：塞回十二种形态 ⇒ 红；新坐标/docstring/注释/同前缀他模块 ⇒ 不误红。"""
+        with tempfile.TemporaryDirectory(prefix="t4-gate-") as tmp:
+            py = os.path.join(tmp, "fake_test.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write('"""docstring 提 yiban.engine.runner 不算命中。"""\n'
+                        'from yiban.engine import runner\n'                      # ① 别名 ⇒ 命中
+                        'from yiban.engine.runner import main\n'                 # ② 旧坐标 ⇒ 命中
+                        'from unittest import mock\n'
+                        'mock.patch("yiban.engine.alerts._collect_admin_mail")\n'  # ③ 打桩串 ⇒ 命中
+                        'P = "*yiban.engine.workers*"\n'                         # ④ 嵌入形态 ⇒ 命中
+                        'CODE = "from yiban.engine import runner;print(runner.main([]))"\n'  # ⑤ 串内别名 ⇒ 命中
+                        'PROBE = """from yiban.engine import workers as _w"""\n'  # ⑥ 多行串内别名 ⇒ 命中
+                        'import importlib\n'
+                        'importlib.import_module("yiban.engine.state_io")\n'     # ⑦ 串内坐标 ⇒ 命中
+                        'import yiban\n'
+                        'yiban.engine.probe.run_probe()\n'                       # ⑧ 属性访问 ⇒ 命中
+                        'import yiban as Y\n'
+                        'Y.engine.workers.run_fallback_worker([])\n'             # ⑨ 包别名属性访问 ⇒ 命中
+                        'import yiban.engine.hrw as hrw\n'                       # ⑩ import 旧坐标 ⇒ 命中
+                        'from yiban.engine import *\n'                           # ⑪ 星号导入 ⇒ 命中
+                        '# 注释里的 yiban.engine.runner 不算\n'
+                        'import yiban.engine.runner_extra\n')                    # ⑫ 同前缀他模块 ⇒ 不命中
+            hits = t4_old_coordinate_hits(py)
+            lines = sorted({ln for ln, _ in hits})
+            for want in (2, 3, 5, 6, 7, 8, 10, 12, 14, 15, 16):
+                self.assertIn(want, lines, f"第 {want} 行应命中：{hits}")
+            self.assertNotIn(11, lines,
+                             f"第 11 行 `import yiban`（包本身）不该命中：{hits}")
+            self.assertNotIn(18, lines,
+                             f"第 18 行 `yiban.engine.runner_extra` 不该命中（同前缀他模块）：{hits}")
+
+            clean = os.path.join(tmp, "clean.py")
+            with open(clean, "w", encoding="utf-8") as f:
+                f.write('"""历史叙述：yiban.engine.runner 迁到 yiban.app.runner。"""\n'
+                        'from yiban.app import runner\n'
+                        'from yiban.core import hrw\n'
+                        'from yiban.adapters.notifier import report as alerts\n'
+                        'from yiban.adapters.statefiles import state_io\n'
+                        'from yiban.workers import workers\n'
+                        'from yiban.engine import schedule, executor_v3\n'
+                        'import yiban.store.queue_store as qs\n'
+                        'A = "yiban.app.runner.main"\n'
+                        'B = "from yiban.app import runner"\n'
+                        'C = "yiban.engine.runner_extra"\n')
+            self.assertEqual(
+                t4_old_coordinate_hits(clean), [],
+                "新坐标、`yiban.engine.schedule`（他模块）、docstring 被误判成旧坐标")
+
+            sh = os.path.join(tmp, "fake.sh")
+            with open(sh, "w", encoding="utf-8") as f:
+                f.write('#!/usr/bin/env bash\n'
+                        '# 注释里的 yiban.engine.state_io 不算\n'
+                        'python3 -c "from yiban.engine.state_io import fallback_alive"\n'
+                        '_s="$(python3 -c \'from yiban.engine import workers;print(1)\')"\n')
+            self.assertEqual([ln for ln, _ in t4_old_coordinate_hits(sh)], [3, 4],
+                             "shell 非注释行未命中（字面量或别名形态）或注释被误判")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

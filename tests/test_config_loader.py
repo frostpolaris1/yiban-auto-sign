@@ -407,7 +407,8 @@ class ZeroChangeDefaultsTest(unittest.TestCase):
         env["PYTHONPATH"] = base + os.pathsep + env.get("PYTHONPATH", "")
         r = subprocess.run(
             [sys.executable, "-c",
-             "from yiban.engine import runner, schedule, token_bucket;"
+             "from yiban.app import runner;"
+             "from yiban.engine import schedule, token_bucket;"
              "print(token_bucket.RATE_DEFAULT, token_bucket.DEFAULT_ACCOUNT_GAP_SEC,"
              " token_bucket.DEFAULT_MIN_EXEC_GAP_SEC, schedule._DEFAULT_BUCKET_RATE)"],
             cwd=base, env=env, capture_output=True, text=True, timeout=120)

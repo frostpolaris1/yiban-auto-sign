@@ -28,7 +28,7 @@ import signin
 
 from yiban import challenge as yiban_challenge
 from yiban import security
-from yiban.engine import probe
+from yiban.app import probe
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

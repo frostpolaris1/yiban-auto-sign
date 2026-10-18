@@ -23,7 +23,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban.engine import probe
+from yiban.app import probe
 
 PROXY = "http://user:pass@127.0.0.1:8888"
 PROXY_PLAIN = "http://127.0.0.1:8888"

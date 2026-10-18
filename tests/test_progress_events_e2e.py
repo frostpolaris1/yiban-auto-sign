@@ -40,9 +40,9 @@ from unittest import mock
 import db  # pyproject.toml 的 pythonpath 把 scripts/ 加进 sys.path
 
 from yiban import egress
-from yiban.core import clock
-from yiban.engine import executor_v3, hrw, token_bucket
-from yiban.engine import runner as runner_mod
+from yiban.app import runner as runner_mod
+from yiban.core import clock, hrw
+from yiban.engine import executor_v3, token_bucket
 from yiban.store import migrations, run_events
 
 TEST_KEY = "a" * 64
