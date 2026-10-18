@@ -401,13 +401,20 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
     #: 造竞态的短命进程工厂（工单 9dks）：并发 fork，子进程立即 `_exit`。
     #: 它们与"服务在跑"无关——argv 不含检出路径，也不含 `install.sh`——只用来让
     #: `/proc` 里不断有进程"刚出现即消失"，逼出扫描的检查/打开竞态。
+    #:
+    #: 每批 fork 后往 `beat` 追加 1 字节：**这是"真的在 churn"的证据**。没有它时，
+    #: `os.fork()` 若因资源限制失败，churner 会带 traceback 静默死掉（stderr 进
+    #: DEVNULL），守卫强度随之下降而**毫无信号**——AGENTS §30「跳过 ≠ 绿」的同族
+    #: （2026-10-18 独立审查 D2）。父进程据此断言心跳非零。
     _CHURN_CODE = (
         "import os,time\n"
         "end=time.time()+{secs}\n"
+        "beat=open({beat!r},'ab',buffering=0)\n"
         "while time.time()<end:\n"
         "    for _ in range(64):\n"
         "        p=os.fork()\n"
         "        if p==0: os._exit(0)\n"
+        "    beat.write(b'.')\n"
         "    for _ in range(64):\n"
         "        try: os.waitpid(-1,os.WNOHANG)\n"
         "        except ChildProcessError: pass\n"
@@ -443,9 +450,10 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
         # `exec {_fd}< f 2>/dev/null`——`exec` 无命令时其重定向作用于当前 shell 且持久），
         # 这行会消失，本条即红。这道哨兵钉的是"扫描不得把脚本的 stderr 弄没"。
         shutil.rmtree(os.path.join(self.checkout, ".venv"), ignore_errors=True)
-        procs = self._spawn_churners(self._CHURN_N, 120)
+        procs, beat = self._spawn_churners(self._CHURN_N, 120)
         self.addCleanup(self._reap_churners, procs)
         time.sleep(0.5)  # 让 churner 起量：先有短命进程在消失
+        self._assert_churners_alive(procs, beat)  # 先证"竞态真被造出来"，再看结论
         bad = []
         for _ in range(self._SCAN_ITERS):
             r = self._install()
@@ -460,12 +468,35 @@ class ServiceRunningGuardTest(DataDirCreatedByInstallerTest):
     # ---- 竞态 churner（工单 9dks 用） ----
 
     def _spawn_churners(self, count, secs):
-        """起 `count` 个 churner，每个在 `secs` 秒内不停 fork 短命子进程。"""
-        code = self._CHURN_CODE.format(secs=secs)
+        """起 `count` 个 churner，每个在 `secs` 秒内不停 fork 短命子进程。
+
+        返回 `(procs, beat)`：`beat` 是心跳文件，churner 每批 fork 后追加 1 字节。
+        调用方必须用 `_assert_churners_alive` 断言"存活 **且** 心跳非零"——
+        只有存活不够：churner 可能已经因 fork 失败而死，而用例照样读到"stderr 干净"
+        的假绿。
+        """
+        beat = os.path.join(self.tmp, "churn-beat")
+        code = self._CHURN_CODE.format(secs=secs, beat=beat)
         procs = [subprocess.Popen([sys.executable, "-c", code],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                  for _ in range(count)]
-        return procs
+        return procs, beat
+
+    def _assert_churners_alive(self, procs, beat):
+        """断言竞态发生器**真的在工作**（AGENTS §30：跳过 ≠ 绿）。
+
+        两问都答才算绿：① 有没有 churner 已经死了（fork 失败会立即死）；
+        ② 有没有任何心跳（证明 `os.fork()` 真的成功过）。任一不满足即红——
+        否则本用例会在"根本没造成竞态"的情况下报绿，那是比红更危险的假绿。
+        """
+        dead = [p.pid for p in procs if p.poll() is not None]
+        self.assertEqual(
+            dead, [], "churner 提前退出（多半是 os.fork() 撞资源限制）⇒ "
+            "本轮没有造成竞态，用例的绿不构成证据（AGENTS §32）")
+        beat_bytes = os.path.getsize(beat) if os.path.exists(beat) else 0
+        self.assertGreater(
+            beat_bytes, 0, "未观测到任何 churn 心跳 ⇒ 竞态没被造出来，"
+            "用例的绿不构成证据（AGENTS §30）")
 
     @staticmethod
     def _reap_churners(procs):
