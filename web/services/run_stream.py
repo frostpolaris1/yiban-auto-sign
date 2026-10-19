@@ -33,7 +33,7 @@ import threading
 import time
 
 from yiban.adapters.config import loader as config_loader
-from yiban.store import run_events as _run_events
+from yiban.adapters.persistence import run_events as _run_events
 
 logger = logging.getLogger("web.run_stream")
 

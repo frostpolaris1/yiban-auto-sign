@@ -1173,7 +1173,7 @@ def test_recipients_refused_writes_delivery_ledger(monkeypatch, tmp_path):
     """
     import smtplib
 
-    from yiban.store import db as store_db
+    from yiban.adapters.persistence import db as store_db
 
     _isolate_env(monkeypatch, tmp_path)
     _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")

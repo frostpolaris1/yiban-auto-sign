@@ -247,7 +247,7 @@ class AnchorSnapshotReadOnlyTest(_TreeMixin, unittest.TestCase):
         built = os.path.join(self.tmp, "seeded", "audit.db")
         os.makedirs(os.path.dirname(built), exist_ok=True)
         code = ("import os, sys; sys.path.insert(0, os.environ['SENTINEL_REPO']);"
-                "from yiban.store import db;"
+                "from yiban.adapters.persistence import db;"
                 "c = db.init_db(db_file=os.environ['TARGET_DB'],"
                 " env_file=os.environ['YIBAN_ENV_FILE'], cleanup=False);"
                 "c.close()")

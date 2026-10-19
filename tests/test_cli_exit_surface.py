@@ -96,7 +96,7 @@ class _CliExitHarness(unittest.TestCase):
 
     def _add_db_account(self):
         """临时库写一个 active 账号（phone 列即裸号明文；口令按 key_a 加密）。"""
-        code = ("import sys;from yiban.store import db;"
+        code = ("import sys;from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.add_account({'name': 'A', 'phone': sys.argv[3], 'password': 'p1',"
                 " 'status': 'active', 'owner': 'admin'});db.get_conn().close()")

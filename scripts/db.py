@@ -33,7 +33,7 @@ import types
 # yiban/ 下，故入口先补仓库根（与 scripts/signin.py 同口径；包化完成后统一收口）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from yiban.store import db as _impl
+from yiban.adapters.persistence import db as _impl
 
 
 def _forward_all_names(impl):

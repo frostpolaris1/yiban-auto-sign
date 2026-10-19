@@ -22,7 +22,7 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-from yiban.store import purge_guard  # noqa: E402
+from yiban.adapters.persistence import purge_guard  # noqa: E402
 
 
 def _touch_sqlite(path, rows):
@@ -136,17 +136,17 @@ class WritePurgeAuditTest(unittest.TestCase):
 
     @staticmethod
     def _close():
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         conn = connection.current()
         if conn is not None:
             conn.close()
         connection.reset_conn()
 
     def _make_db(self):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(db_file=self.db_file, env_file=self.env_file, cleanup=False)
         store_db.get_conn().close()
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         connection.reset_conn()
 
     def test_missing_db_returns_false(self):
@@ -171,7 +171,7 @@ class WritePurgeAuditTest(unittest.TestCase):
 
     def test_audit_failure_returns_false(self):
         self._make_db()
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         with mock.patch.object(store_db, "audit", return_value=False):
             ok = purge_guard.write_purge_audit(
                 "state_purge", "PURGE-x", "d",
@@ -182,8 +182,8 @@ class WritePurgeAuditTest(unittest.TestCase):
         """单例连接指向别的库时不得把留痕写过去：按实际连接判定，返回 False。"""
         self._make_db()
         other = os.path.join(self.tmp, "other.db")
-        from yiban.store import connection
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import connection
+        from yiban.adapters.persistence import db as store_db
         conn = connection.current()
         if conn is not None:
             conn.close()

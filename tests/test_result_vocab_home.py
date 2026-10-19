@@ -32,21 +32,21 @@ class ResultVocabHomeTest(unittest.TestCase):
         )
 
     def test_claims_no_longer_owns_the_vocabulary(self):
-        claims = importlib.import_module("yiban.store.claims")
+        claims = importlib.import_module("yiban.adapters.persistence.claims")
         for name in ("RESULT_RETRY_PREFIX", "RESULT_FINAL_PREFIX",
                      "RETRYABLE_GIVE_UP_STATUSES"):
             self.assertFalse(
                 hasattr(claims, name),
-                f"词表复活在 yiban.store.claims.{name}——第二份判据会漂移",
+                f"词表复活在 yiban.adapters.persistence.claims.{name}——第二份判据会漂移",
             )
 
     def test_db_facade_no_longer_reexports_the_vocabulary(self):
-        db = importlib.import_module("yiban.store.db")
+        db = importlib.import_module("yiban.adapters.persistence.db")
         for name in ("CLAIM_RESULT_RETRY_PREFIX", "CLAIM_RESULT_FINAL_PREFIX",
                      "CLAIM_RETRYABLE_GIVE_UP_STATUSES"):
             self.assertFalse(
                 hasattr(db, name),
-                f"词表别名复活在 yiban.store.db.{name}——第三条读取路径",
+                f"词表别名复活在 yiban.adapters.persistence.db.{name}——第三条读取路径",
             )
 
 

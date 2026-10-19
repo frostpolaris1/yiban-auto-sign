@@ -23,7 +23,7 @@ import subprocess
 import sys
 import unittest
 
-from yiban.store import migrations
+from yiban.adapters.persistence import migrations
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -68,7 +68,7 @@ def _run(argv, env, stdin=subprocess.DEVNULL, timeout=120):
 
 def _make_db(tmp_path, env):
     """造一个真实 schema 的临时库（走数据层的初始化，绝不碰别的库）。"""
-    code = ("import sys; from yiban.store import db;"
+    code = ("import sys; from yiban.adapters.persistence import db;"
             "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "db.get_conn().close()")
     r = subprocess.run([sys.executable, "-c", code, str(tmp_path / "yiban.db"),
@@ -101,7 +101,7 @@ class CliContractTest(unittest.TestCase):
 
     def _add_account(self):
         """往临时库写一个 active 账号（走数据层，密码按密钥加密）。"""
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.add_account({'name': 'A', 'phone': '13800138000', 'password': 'p1',"
                 " 'status': 'active', 'owner': 'admin'})")
@@ -382,7 +382,7 @@ class CliContractTest(unittest.TestCase):
         # 对照组：真实路径（init_db 缺省 migrate=True）会把这个库迁到当前版本
         r = subprocess.run(
             [sys.executable, "-c",
-             "import sys; from yiban.store import db;"
+             "import sys; from yiban.adapters.persistence import db;"
              "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False)",
              str(self.root / "yiban.db"), str(self.root / ".env")],
             cwd=BASE, env=self.env, capture_output=True, text=True,
