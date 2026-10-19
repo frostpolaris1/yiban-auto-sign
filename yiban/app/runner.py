@@ -4,7 +4,7 @@
 入口与轮次编排：`main(argv=None) -> int`（装载配置 → 分支 → 一轮队列 → 汇总退出码）。
 
 **退出码由本函数返回、不再自己 `sys.exit`**（退出码语义逐字不变，见
-`docs/dev/cli.md` §3）：这样 `yiban/cli.py` 与 `scripts/signin.py` 兼容壳可以统一
+`docs/dev/cli.md` §3）：这样 `yiban/entry/cli/__init__.py` 与 `scripts/signin.py` 兼容壳可以统一
 `sys.exit(main(argv))`，同时保留"返回码"这一可被直接断言的形式。
 
 分支顺序是有意为之，改动前先读注释：兜底常驻 → 补签轮判定（只读本地状态）→
@@ -13,7 +13,7 @@
 一轮队列 → 汇总与退出码。
 
 **归属**
-`yiban.engine` 的编排顶层，也是命令行签到路径的入口实现：`yiban/cli.py` 的
+`yiban.engine` 的编排顶层，也是命令行签到路径的入口实现：`yiban/entry/cli/__init__.py` 的
 `sign` / `probe` 子命令、部署面的 `scripts/signin.py` 兼容壳与 `run.sh`、容器调度器
 都落到这里。真正的签到逻辑在 `round`，进程编排在 `workers`。
 
@@ -27,7 +27,7 @@
 拒启，MF-40）与日志；`--json` 由 `cli.py` 包裹。
 调用谁：`accounts` / `probe` / `workers` / `executor_v3`（唯一执行体） / `state_io` /
 `alerts` / `cli_support`（跨模块一律走模块属性访问）。
-谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
+谁调用：`yiban/entry/cli/__init__.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
 `docker/scheduler.py`。
 前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
 `scripts/signin.py --only`（`web/static/js/components/account-ops.js` 触发），执行体接口

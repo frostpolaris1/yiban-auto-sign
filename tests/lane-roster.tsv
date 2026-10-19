@@ -59,7 +59,6 @@ slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gp
 fast	tests/test_backup_flag_parsing.py
 fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
-fast	tests/test_batch_b_relocation.py
 slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
 fast	tests/test_builtin_admin_sid.py
 fast	tests/test_calendar_state_visibility.py
@@ -117,7 +116,6 @@ fast	tests/test_egress_direct_applied.py
 fast	tests/test_elbow_predicate.py
 fast	tests/test_elbow_shadow.py
 fast	tests/test_email_domain_review.py
-slow	tests/test_entry_cli_relocation.py	# 真子进程：起真子进程比两个 CLI 入口的 rc/stdout（本机 5.3s）
 fast	tests/test_env_export_line_divergence.py
 fast	tests/test_env_fail_loud.py
 fast	tests/test_env_file_precedence.py
@@ -197,7 +195,6 @@ fast	tests/test_multi_task.py
 fast	tests/test_mypy_type_gate.py
 fast	tests/test_no_literal_date_in_fixtures.py
 fast	tests/test_no_position.py
-fast	tests/test_notifier_relocation.py
 fast	tests/test_notify_ledger.py
 fast	tests/test_notify_throttle.py
 fast	tests/test_notify_webhook.py
@@ -329,3 +326,4 @@ fast	tests/test_work_accounts_selection.py
 fast	tests/test_workers_domain_single_source.py
 fast	tests/test_yiban_fallback_sh.py
 fast	tests/test_yiban_status_single_source.py
+fast	tests/test_zero_old_coordinates.py
