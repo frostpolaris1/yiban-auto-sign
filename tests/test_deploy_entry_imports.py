@@ -147,7 +147,7 @@ class DeployEntryImportTest(unittest.TestCase):
 # 不在面内：`tests/`、`docs/`、`README.md`、注释、docstring，以及用户可见的帮助文本
 #   （`yiban/entry/cli/` 的 `USAGE` / `prog` 写旧坐标是给当前用户的用法指引，不是启动点）。
 #   文档与注释里的历史叙述不算（任务口径）。
-RUNTIME_PY_DIRS = ("yiban", "scripts", "docker")
+RUNTIME_PY_DIRS = ("yiban", "scripts", "docker", "web")
 RUNTIME_SHELL_NAMES = ("run.sh",)
 OLD_CLI_MODULE = "yiban.cli"
 
@@ -159,8 +159,32 @@ _LAUNCH_FUNCS = frozenset((
 ))
 
 
+#: 部署时真会被执行、但不以 `.py`/`.sh` 命名的载体（2026-10-19 独立审查补齐）：
+#: 它们含命令行，必须纳入面——否则"看着绿"只因没扫到。
+#: `deploy/prod/` 整目录纳入（install.sh 与备份 wrapper 以 root 执行）；cron.d 的每个
+#: 文件都是一行命令行（无扩展名）；supervisord/Dockerfile/compose/systemd 的
+#: `command=`/`ExecStart=` 同理。
+RUNTIME_EXTRA_PATHS = (
+    "run_probe.sh",
+    "docker/supervisord.conf",
+    "docker/Dockerfile",
+    "docker-compose.yml",
+    "web/deploy/yiban-web.service",
+)
+RUNTIME_EXTRA_DIRS = (
+    "deploy",
+    "docker/cron.d",
+    "web/deploy",
+)
+
+
 def _runtime_files(root):
-    """运行期载体文件清单（.py 与 .sh）。"""
+    """运行期载体文件清单。
+
+    面＝① `RUNTIME_PY_DIRS` 下的 `.py`/`.sh`（含 `web/`——web 服务运行体）；
+    ② 根部的 `RUNTIME_EXTRA_PATHS`；③ `RUNTIME_EXTRA_DIRS` 下的全部文件。
+    非 `.py` 的一律按**文本**扫（命令行载体），不按 AST。
+    """
     out = []
     for d in RUNTIME_PY_DIRS:
         for dirpath, dirs, files in os.walk(os.path.join(root, d)):
@@ -168,10 +192,15 @@ def _runtime_files(root):
             for name in sorted(files):
                 if name.endswith((".py", ".sh")):
                     out.append(os.path.join(dirpath, name))
-    for name in RUNTIME_SHELL_NAMES:
+    for name in RUNTIME_SHELL_NAMES + RUNTIME_EXTRA_PATHS:
         path = os.path.join(root, name)
         if os.path.exists(path):
             out.append(path)
+    for d in RUNTIME_EXTRA_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x != "__pycache__"]
+            for name in sorted(files):
+                out.append(os.path.join(dirpath, name))
     return out
 
 
@@ -224,24 +253,35 @@ def _alias_short_names(text):
 def old_coordinate_hits(path):
     """返回该文件里引用旧坐标的位置：`(行号, 说明)` 列表。
 
+    **非 `.py` 一律按文本扫**（.sh、cron.d 行、supervisord/Dockerfile/compose/systemd
+    的 command 行）：非注释行出现旧模块名**或别名导入**即命中。
+
     Python：① 进程拉起调用的命令行字面量含旧模块名；② 非 docstring 的字符串常量
     恰为旧模块名（覆盖 importlib / 变量间接形态）；③ 非 docstring 字符串常量里含
-    **别名导入** `from yiban import …, cli, …`（`python -c` 形态）。
-    Shell：非注释行出现旧模块名**或别名导入**。
+    **别名导入** `from yiban import …, cli, …`（`python -c` 形态）；
+    ④ **真 import 语句**：`import yiban.cli[.x]`、`from yiban import cli`、
+    `from yiban.cli import …`、属性链 `yiban.cli`。
+    ④ 是 2026-10-19 独立审查抓出的阻塞洞——关掉它，"不对称"才算真正修完：
+    T8 的 tests 面门与 T3 门本来就认 import 语句。
+
+    已知盲点（登记，不假装覆盖）：变量拼接
+    （`"yiban." + "cli"`、`importlib.import_module("yiban."+"cli")`）与
+    `from yiban import *` 不命中——字面量扫描器的固有限制；`yiban/__init__.py`
+    不导出 `cli`，星号导入取不到该名。
     """
     with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
     hits = []
-    if path.endswith(".sh"):
+    if not path.endswith(".py"):
         pat = re.compile(r"(?<![\w.-])" + re.escape(OLD_CLI_MODULE) + r"(?![\w.-])")
         for i, line in enumerate(text.splitlines(), 1):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
             if pat.search(s):
-                hits.append((i, "shell 命令行含 " + OLD_CLI_MODULE))
+                hits.append((i, "命令行含 " + OLD_CLI_MODULE))
             elif "cli" in _alias_short_names(s):
-                hits.append((i, "shell 里的别名导入 from yiban import …, cli, …"))
+                hits.append((i, "别名导入 from yiban import …, cli, …"))
         return hits
     tree = ast.parse(text)
     docs = _docstring_const_ids(tree)
@@ -250,6 +290,22 @@ def old_coordinate_hits(path):
             fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
             if fname in _LAUNCH_FUNCS and OLD_CLI_MODULE in _command_literals(node):
                 hits.append((node.lineno, "启动命令含 " + OLD_CLI_MODULE))
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == OLD_CLI_MODULE or a.name.startswith(OLD_CLI_MODULE + "."):
+                    hits.append((node.lineno, "import 语句 " + a.name))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == OLD_CLI_MODULE or mod.startswith(OLD_CLI_MODULE + "."):
+                hits.append((node.lineno, "from " + mod + " import …"))
+            elif mod == "yiban":
+                for a in node.names:
+                    if a.name == "cli":
+                        hits.append((node.lineno, "from yiban import cli"))
+        elif (isinstance(node, ast.Attribute) and node.attr == "cli"
+              and isinstance(node.value, ast.Name) and node.value.id == "yiban"):
+            # 属性链 yiban.cli[.x]
+            hits.append((node.lineno, "属性链 yiban.cli"))
         if isinstance(node, ast.Constant) and node.value == OLD_CLI_MODULE \
                 and id(node) not in docs:
             hits.append((node.lineno, "非 docstring 字符串常量 " + OLD_CLI_MODULE))
@@ -328,6 +384,25 @@ class OldCliCoordinateGateTest(unittest.TestCase):
                         'from yiban import clogger\n')
             self.assertEqual(old_coordinate_hits(flag), [],
                              "`--cli` 旗标与同前缀他模块（clogger）不得误红")
+
+        # 独立审查抓出的阻塞洞：运行期 `.py` 里的**真 import 语句**也必须被抓到。
+        with tempfile.TemporaryDirectory(prefix="oldcli-import-") as tmp:
+            for name, body, want in (
+                ("imp.py", "import yiban.cli\n", 1),
+                ("fromimp.py", "from yiban import cli\n", 1),
+                ("subimp.py", "from yiban.cli import main\n", 1),
+                ("attr.py", "import yiban\nyiban.cli.main([])\n", 1),
+                ("new.py", "from yiban.entry import cli\ncli.main([])\n", 0),
+                ("other.py", "from yiban import client\n", 0),
+            ):
+                p = os.path.join(tmp, name)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(body)
+                hits = old_coordinate_hits(p)
+                if want:
+                    self.assertTrue(hits, f"{name}：真 import 旧坐标却未命中（门有洞）")
+                else:
+                    self.assertEqual(hits, [], f"{name}：新坐标/同前缀被误红：{hits}")
 
             clean = os.path.join(tmp, "clean.py")
             with open(clean, "w", encoding="utf-8") as f:
