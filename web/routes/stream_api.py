@@ -53,9 +53,10 @@
 `web.routes.register_all`。进程内广播器与帧封装在 `web/services/run_stream.py`。
 
 **通信**
-视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger` / 角色判定与同源判定
-两枚 helper / `read_env` / `ENV_FILE` / `load_accounts` / `ACCOUNT_STATUS_ACTIVE`），
-避免导入环；本人号码集合复用 `web/routes/my_api.py` 的归属口径。
+视图体经 `web.routes.appmod()` 取 web.app 自有的模块级名字（`logger` / 角色判定与同源
+判定两枚 helper / `ENV_FILE`）；A 类转发名（`read_env` / `load_accounts`）经真源模块
+直取（批 3-a 拆墙）。两条路径都不与 `web/app.py` 形成导入环；本人号码集合复用
+`web/routes/my_api.py` 的归属口径。
 """
 import contextlib
 import time
@@ -64,6 +65,10 @@ from flask import Response, jsonify, request, session, stream_with_context
 
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
+
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web.services import accounts_data as _accounts_data
+from web.services import env_io as _env_io_svc
 from web.services import run_stream as _run_stream
 from yiban.adapters.persistence import run_events as _run_events
 from yiban.core import clock
@@ -90,7 +95,7 @@ def _my_phones(m):
     避免"本人是谁"出现第二套定义。管理员会话也按同一归属规则取（其名下账号）。
     """
     from web.routes import my_api as _my
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     indices = _my._my_account_indices_of(accounts)
     return _my._my_active_phones(accounts, indices)
 
@@ -233,7 +238,7 @@ def api_stream_progress():
         return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看实时进度流"}), 403
-    cfg = _run_stream.stream_config(m.ENV_FILE, m.read_env)
+    cfg = _run_stream.stream_config(m.ENV_FILE, _env_io_svc.read_env)
     if not cfg["enabled"]:
         return _end_only("disabled")
     hub = _run_stream.hub()
@@ -266,7 +271,7 @@ def api_stream_my_signin():
         return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
     if m._current_role() is None:
         return jsonify({"error": "未登录"}), 401
-    cfg = _run_stream.stream_config(m.ENV_FILE, m.read_env)
+    cfg = _run_stream.stream_config(m.ENV_FILE, _env_io_svc.read_env)
     if not cfg["enabled"]:
         return _end_only("disabled")
     hub = _run_stream.hub()

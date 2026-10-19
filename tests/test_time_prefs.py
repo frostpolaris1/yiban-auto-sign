@@ -51,6 +51,8 @@ import db
 import signin
 from werkzeug.security import generate_password_hash
 
+from web.services import accounts_data as _accounts_data
+from web.services import env_io as _env_io_svc
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -371,13 +373,13 @@ class TimePrefsTest(unittest.TestCase):
             db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "load_accounts_raw",
+        with mock.patch.object(_accounts_data, "load_accounts_raw",
                                return_value=self._fake_active(300, "136")):
             data = c.get("/api/my-time-pref").get_json()
         slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
         self.assertEqual(slot0["pct"], 80, "16/19=84.2% → 80% 档（不是固定 cap=15 的 100%）")
         # 反证：同样 16 人若 K=15（未压缩）→ 判满 100，证明压缩口径真的在起作用
-        with mock.patch.object(self.webapp, "load_accounts_raw",
+        with mock.patch.object(_accounts_data, "load_accounts_raw",
                                return_value=self._fake_active(16, "136")):
             data2 = c.get("/api/my-time-pref").get_json()
         slot0b = next(s for s in data2["slots"] if s["slot_min"] == 0)
@@ -443,7 +445,7 @@ class TimePrefsTest(unittest.TestCase):
         db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "read_env",
+        with mock.patch.object(_env_io_svc, "read_env",
                                return_value={"YIBAN_BLOCK_CAP": "20",
                                              "YIBAN_ALLOW_TIME_PREF": "1"}):
             data = c.get("/api/my-time-pref").get_json()
@@ -467,12 +469,12 @@ class TimePrefsTest(unittest.TestCase):
         )
         c = self.webapp.create_app().test_client()
         self._login(c, "admin", ADMIN_PASS)
-        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=active + junk):
+        with mock.patch.object(_accounts_data, "load_accounts_raw", return_value=active + junk):
             cap = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
         self.assertEqual(cap, 15, "非 active 行不得计入 n（否则会被压到 19）")
         # 反证：把 junk 也当 active（总量 300）→ cap 压缩为 19，证明是过滤在起作用
         all_active = [dict(a, status="active", deleted=False) for a in (active + junk)]
-        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=all_active):
+        with mock.patch.object(_accounts_data, "load_accounts_raw", return_value=all_active):
             cap2 = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
         self.assertEqual(cap2, 19)
 

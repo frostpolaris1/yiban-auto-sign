@@ -41,14 +41,18 @@
 新鲜度复用 `yiban.adapters.statefiles.state_io`。
 
 **通信**
-视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger`、
-`_executor_health_cards`、`_executors_window`），避免与 `web/app.py` 形成导入环。
+视图体经 `web.routes.appmod()` 取 web.app 自有的模块级名字（`logger`、
+`_executors_window`）；A 类转发名 `_executor_health_cards` 经真源模块直取
+（批 3-a 拆墙）。两条路径都不与 `web/app.py` 形成导入环。
 """
 
 from flask import jsonify, request
 
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
+
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web.services import executor_env as _executor_env
 
 _ALLOWED_QUERY_KEYS: set[str] = set()
 
@@ -64,7 +68,7 @@ def api_executor_health():
         # 窗口口径与容量换算同源（`_executors_window` = `_sign_window` + `window.bounds`）
         bounds = m._executors_window()
         window_sec = bounds.full_sec() if bounds else 0
-        body = m._executor_health_cards(m.ENV_FILE, window_sec)
+        body = _executor_env._executor_health_cards(m.ENV_FILE, window_sec)
     except Exception as e:  # 展示面不得因一个读点失败把整页打成 5xx
         m.logger.warning("执行体健康卡读取失败: %s", e)
         return jsonify({"error": "执行体健康卡读取失败"}), 500
