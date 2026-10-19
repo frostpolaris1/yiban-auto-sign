@@ -20,7 +20,7 @@ SMTP 主机写侧的网段门禁（回环/保留段/私网 + 显式放行开关�
 上限类用例一律配一条"恰好等于上限仍可写入"的正向对照，否则把 cap 调成 0 也能全绿；
 `reserved`（组播/保留段）即使带显式放行开关也要拒，私网段才允许带开关放行——两者不同级。
 依赖：Flask test client + 临时 `.env`（`_master` 现取主管理员口令），无网络、无 skip。
-条数/URL 长度上限从 `webapp.MAIL_ADMIN_TO_MAX` / `MAIL_SMTPS_MAX` / `NOTIFY_URL_MAX_LEN`
+条数/URL 长度上限从 `_limits.MAIL_ADMIN_TO_MAX` / `MAIL_SMTPS_MAX` / `NOTIFY_URL_MAX_LEN`
 取值（与实现同源，改实现会自动跟进）；Server 酱 Key 的 `SCT123` / `"SCT"+"a"*200` 是
 硬编码字面量，实现侧改那两个边界不会让本文件自动变红，需人工对一遍。
 """
@@ -33,6 +33,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+from web.services import limits as _limits
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -185,7 +187,7 @@ class NotifyInputCapsTest(_Base):
 
     def test_custom_url_too_long_rejected(self):
         c, h = self._master()
-        long_url = "https://hooks.test.local/" + "a" * self.webapp.NOTIFY_URL_MAX_LEN
+        long_url = "https://hooks.test.local/" + "a" * _limits.NOTIFY_URL_MAX_LEN
         r = c.put("/api/notify-config",
                   json={"type": "custom", "secret": long_url,
                         "confirm_password": ADMIN_PASS}, headers=h)
@@ -197,7 +199,7 @@ class MailInputCapsTest(_Base):
 
     def test_admin_to_count_capped(self):
         c, h = self._master()
-        addrs = [f"a{i}@test.local" for i in range(self.webapp.MAIL_ADMIN_TO_MAX + 1)]
+        addrs = [f"a{i}@test.local" for i in range(_limits.MAIL_ADMIN_TO_MAX + 1)]
         r = c.put("/api/mail-config",
                   json={"admin_to": ",".join(addrs), "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
@@ -205,7 +207,7 @@ class MailInputCapsTest(_Base):
 
     def test_admin_to_at_cap_accepted(self):
         c, h = self._master()
-        addrs = [f"a{i}@test.local" for i in range(self.webapp.MAIL_ADMIN_TO_MAX)]
+        addrs = [f"a{i}@test.local" for i in range(_limits.MAIL_ADMIN_TO_MAX)]
         r = c.put("/api/mail-config",
                   json={"admin_to": ",".join(addrs), "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -215,7 +217,7 @@ class MailInputCapsTest(_Base):
         c, h = self._master()
         entries = [{"host": f"smtp{i}.test.local", "user": "u@test.local",
                     "pass": "pw", "port": 465}
-                   for i in range(self.webapp.MAIL_SMTPS_MAX + 1)]
+                   for i in range(_limits.MAIL_SMTPS_MAX + 1)]
         r = c.put("/api/mail-config",
                   json={"smtps": entries, "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
@@ -225,7 +227,7 @@ class MailInputCapsTest(_Base):
         c, h = self._master()
         entries = [{"host": f"smtp{i}.test.local", "user": "u@test.local",
                     "pass": "pw", "port": 465}
-                   for i in range(self.webapp.MAIL_SMTPS_MAX)]
+                   for i in range(_limits.MAIL_SMTPS_MAX)]
         r = c.put("/api/mail-config",
                   json={"smtps": entries, "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
