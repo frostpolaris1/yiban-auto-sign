@@ -133,7 +133,7 @@ def api_accounts():
             if yiban_status.is_concluded_status(_prev_status):
                 continue
             states[acc.get("phone", "")] = {
-                "status": m.STATUS_USER_CANCELLED,
+                "status": yiban_status.STATUS_USER_CANCELLED,
                 "message": "用户已取消签到",
             }
     # 自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
@@ -172,7 +172,8 @@ def api_accounts():
         ],
         # states 值压成状态码字符串（前端图标映射用）
         "states": {
-            _masking.mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
+            _masking.mask_phone(k): (v.get("status", yiban_status.STATUS_PENDING)
+                                     if isinstance(v, dict) else yiban_status.STATUS_PENDING)
             for k, v in states.items()
             # 分页时只下发当前页账号的状态；不传参数（paged=False）保持整表口径不变
             if _page_phones is None or k in _page_phones
@@ -912,15 +913,17 @@ def api_account_delete(idx):
             },
         )
         # 软删不再外发即时告警：留痕由上面的审计行承担，且软删可逆
-        # （DELETED_RETENTION_DAYS 天内可在待删除列表恢复）。
+        # （db.SOFT_DELETE_RETENTION_DAYS 天内可在待删除列表恢复）。
         accounts = _accounts_data.load_accounts()
         m.logger.info(
-            "软删除账号 %s（%s 天内可恢复）", _masking.mask_phone(acc.get("phone", "")), m.DELETED_RETENTION_DAYS
+            "软删除账号 %s（%s 天内可恢复）", _masking.mask_phone(acc.get("phone", "")),
+            db.SOFT_DELETE_RETENTION_DAYS,
         )
         return jsonify(
             {
                 "ok": True,
-                "msg": f"已删除「{acc.get('name', '')}」，{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                "msg": (f"已删除「{acc.get('name', '')}」，{db.SOFT_DELETE_RETENTION_DAYS}"
+                        " 天内可在待删除列表恢复"),
                 "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
             }
         )
