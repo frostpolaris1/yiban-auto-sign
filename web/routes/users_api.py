@@ -42,6 +42,8 @@ from web.routes import page_meta as _page_meta
 from web.routes import page_window as _page_window
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import notify_mail as _notify_mail
 from yiban.adapters.persistence import db
@@ -166,12 +168,12 @@ def api_users_deleted_purge():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     emails = data.get("emails") or []
     if not isinstance(emails, list) or not emails:
         return jsonify({"error": "请选择要清除的用户"}), 400
-    if len(emails) > m.BATCH_OP_LIMIT:
-        return jsonify({"error": f"单次最多清除 {m.BATCH_OP_LIMIT} 个用户"}), 400
+    if len(emails) > _limits.BATCH_OP_LIMIT:
+        return jsonify({"error": f"单次最多清除 {_limits.BATCH_OP_LIMIT} 个用户"}), 400
     if any(not isinstance(e, str) or len(e) > 64 for e in emails):
         return jsonify({"error": "邮箱格式不正确"}), 400
     # 物理清除不可逆 → 过口令门禁 + 同管理员限速（顺序恒为"先鉴权、通过了才占额度"）
@@ -209,17 +211,17 @@ def api_users_batch():
     Phase 1：整体事务，失败全部回滚；无效项软跳过。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     action = data.get("action")
     emails = data.get("emails") or []
     if action not in ("reset_password", "delete"):
         return jsonify({"error": "未知操作"}), 400
     if not isinstance(emails, list) or not emails:
         return jsonify({"error": "请选择要操作的用户"}), 400
-    if len(emails) > m.BATCH_OP_LIMIT:
+    if len(emails) > _limits.BATCH_OP_LIMIT:
         # 单次批量上限——否则被盗 admin 会话可用一个请求物理删除全部
         # 用户；与 accounts/batch 共用 BATCH_OP_LIMIT
-        return jsonify({"error": f"单次批量操作最多 {m.BATCH_OP_LIMIT} 个用户"}), 400
+        return jsonify({"error": f"单次批量操作最多 {_limits.BATCH_OP_LIMIT} 个用户"}), 400
     if any(not isinstance(e, str) or len(e) > 64 for e in emails):
         return jsonify({"error": "邮箱格式不正确"}), 400
     password = str(data.get("password", ""))
@@ -373,7 +375,7 @@ def api_user_role(user_id):
     username = (session.get("username") or "").strip().lower()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     # 主管理员专属前置（上方）不变；角色取值校验也不受门禁影响（400 与 403/400 门禁
     # 分属"请求不合法"与"未授权"，先判前者省一次 scrypt）。
     new_role = data.get("role")
@@ -464,7 +466,7 @@ def api_user_password(user_id):
 
     定位走**不透明 id**（口径同 `api_user_role`，明文邮箱不进 URL path）。"""
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     password = str(data.get("password", ""))
     pw_err = _accounts_data._password_policy_error(password)
     if pw_err:
@@ -521,7 +523,7 @@ def api_user_delete(user_id):
 
     定位走**不透明 id**（口径同 `api_user_role`，明文邮箱不进 URL path）。"""
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     mode = data.get("mode", "full")
     if mode not in ("accounts_only", "full"):
         return jsonify({"error": "未知操作"}), 400

@@ -42,6 +42,8 @@ from web.services import accounts_data as _accounts_data
 from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
 from web.services import executor_env as _executor_env
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import logs as _logs_svc
 from web.services import measure as _measure
 from web.services import notify_mail as _notify_mail
@@ -150,7 +152,7 @@ def _reply_slot_egress(env_key, index):
     或 `YIBAN_EXECUTORS[2]`），代理串可能带凭据，绝不进审计链。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     if "egress" not in data:
         # 缺键不给"什么都不改"的歧义：清空必须显式写 null 或空串
         return jsonify({"error": "缺少 egress 字段（该槽位要直连请显式传 null 或空串）"}), 400
@@ -253,15 +255,15 @@ def api_settings():
     _potential = sum(1 for u in _users if u["email"] not in _owners)
     # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
     _est_start = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
-    _est_gap = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX)
+    _est_gap = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
     _est_accounts = m._capacity_estimate(_est_gap)
     return jsonify(
         {
             "ok": True,
             "start_delay_max": _est_start,
             "gap_max": _est_gap,
-            "default_start_delay_max": m.DEFAULT_START_DELAY_MAX,
-            "default_gap_max": m.DEFAULT_ACCOUNT_GAP_MAX,
+            "default_start_delay_max": _limits.DEFAULT_START_DELAY_MAX,
+            "default_gap_max": _limits.DEFAULT_ACCOUNT_GAP_MAX,
             # 容量预估（单档口径）：签到容量按当前账号间隔与有效窗口
             # （已扣掐头去尾）估算；前端已用（或含潜在负载）超容量仅警示变色
             "capacity_estimate": {
@@ -293,9 +295,9 @@ def api_settings():
             # 容量状态：注册用户/计容量账号 当前使用量 vs 上限（管理员知情）
             "capacity": {
                 "users": _cap_users,
-                "users_max": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS),
+                "users_max": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS),
                 "accounts": _cur_accounts,
-                "accounts_max": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS),
+                "accounts_max": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS),
                 # 账号容量拆解（仅展示）：三桶互斥、求和 = accounts。
                 # 定义见 api_settings 顶部注释；配额判定与 accounts 同源。
                 "accounts_breakdown": {
@@ -343,18 +345,18 @@ def api_settings():
 
 def api_settings_save():
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     is_master = m._is_builtin_admin_session()
-    # 本次请求的 A 档键集：`web/app.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
+    # 本次请求的 A 档键集：`web/services/env_io.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
     # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 + 当次口令）
     # 复刻在这里；键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
-    master_only = set(m.MASTER_ONLY_KEYS) | SCHEDULE_DIST_KEYS
+    master_only = set(_env_io_svc.MASTER_ONLY_KEYS) | SCHEDULE_DIST_KEYS
     # 档位判定读单源常量（见 MASTER_ONLY_KEYS 的定义处）：只看"键是否出现"、不看值，
     # 与普通管理员即便提交同值也无从改动这些键的既有 403 语义一致。
     # global_pause 是唯一例外——0→1「急停」任意管理员都能做，1→0「恢复签到」仍仅
     # 主管理员：能把全站停下去是止损，能放开来是权力。
     gp_req = None
-    gp_key = m.GLOBAL_PAUSE_KEY
+    gp_key = _env_io_svc.GLOBAL_PAUSE_KEY
     if gp_key in data:
         gp_req = 1 if _parse_env_flag(data.get(gp_key, ""), default=False,
                                       key=gp_key, log=logger) else 0
@@ -362,7 +364,7 @@ def api_settings_save():
     if not is_master:
         wanted_a = master_only.intersection(data)
         if gp_req == 0:
-            wanted_a.add(m.GLOBAL_PAUSE_KEY)
+            wanted_a.add(_env_io_svc.GLOBAL_PAUSE_KEY)
     if wanted_a:
         return jsonify({"error": "仅主管理员可修改调度设置"}), 403
     # 字段携带才写——若缺省即 0 且无条件写两个键，
@@ -388,7 +390,7 @@ def api_settings_save():
         # 会把预估容量顶到窗口上限，硬门被"乐观上限"整个绕过。现值读法与 GET
         # /api/settings 的 gap_max 展示同源（0 是合法间隔，即不留间隔）。
         gate_gap = gap if has_gap else _env_io_svc.load_env_int(
-            m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX)
+            m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
         est_accounts = m._capacity_estimate(gate_gap)
         cur_accounts = _capacity._capacity_account_count()
         if cur_accounts > est_accounts:
@@ -591,7 +593,7 @@ def api_settings_save():
     # gap 写 0 是删键、生效值回到默认，按 0 比会把"没改"当成"改了"（反之亦然）。
     proposed = {
         "start_delay_max": str(start) if has_start else None,
-        "gap_max": str(gap if gap > 0 else m.DEFAULT_ACCOUNT_GAP_MAX) if has_gap else None,
+        "gap_max": str(gap if gap > 0 else _limits.DEFAULT_ACCOUNT_GAP_MAX) if has_gap else None,
         "sign_window": None if win_start_str is None else f"{win_start_str}~{win_end_str}",
         "edge_front_sec": None if edge_front is None else str(edge_front),
         "edge_back_sec": None if edge_back is None else str(edge_back),
@@ -621,15 +623,15 @@ def api_settings_save():
     # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
     changes = []
     for _k in sorted(set(data).intersection(
-            master_only | m.GATED_KEYS | {m.GLOBAL_PAUSE_KEY})):
+            master_only | _env_io_svc.GATED_KEYS | {_env_io_svc.GLOBAL_PAUSE_KEY})):
         _new, _old = proposed.get(_k), cur_vals.get(_k)
         if _new is not None and _new != _old:
             # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
             # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
             changes.append((_k, _old, _new))
     a_changes = [c for c in changes if c[0] in master_only]
-    b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
-    pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
+    b_changes = [c for c in changes if c[0] in _env_io_svc.GATED_KEYS]
+    pause_change = next((c for c in changes if c[0] == _env_io_svc.GLOBAL_PAUSE_KEY), None)
 
     def _change_text(key, value):
         """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
@@ -1015,7 +1017,7 @@ def api_scheduler_executors_save():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     updates = {}
     if "workers" in data:
         try:
@@ -1162,7 +1164,7 @@ def api_scheduler_executor_row_add():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     rtype = str(data.get("type") or yb_egress.TYPE_WORKER).strip()
     value, err = _executor_env._validated_proxy_value(data.get("proxy"))
     if err:
@@ -1208,7 +1210,7 @@ def api_scheduler_executor_row_update(slot):
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     if "type" not in data and "proxy" not in data and "name" not in data:
         return jsonify({"error": "没有可更新的字段（type / proxy / name 至少给一个）"}), 400
     rtype = str(data["type"] or "").strip() if "type" in data else None
@@ -1263,7 +1265,7 @@ def api_scheduler_executor_row_delete(slot):
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     denied = _executor_write_guard(data, f"{yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
     if denied:
         return denied
@@ -1318,13 +1320,13 @@ def api_scheduler_executors_measure():
     bounds = m._executors_window()
     if _signstatus._in_sign_window(bounds):
         return jsonify({"error": "签到窗口内不做实测（避免抢占本轮资源）"}), 409
-    data = m._json_body()
+    data = _http._json_body()
     acc = _measure._pick_measure_account(_accounts_data.load_accounts(), data.get("phone"))
     if acc is None:
         return jsonify({"error": "没有可用于实测的账号（不存在、未过审、已删除或已被暂停）"}), 404
 
     sample = _masking.mask_phone(acc.get("phone", ""))
-    cooldown_sec = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MEASURE_COOLDOWN", m.MEASURE_COOLDOWN_SEC)
+    cooldown_sec = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MEASURE_COOLDOWN", _limits.MEASURE_COOLDOWN_SEC)
     state_path = m._measure_state_path()
     # 冷却**先占位再联网**：连点/多管理员同时点也只有一次真实登录（占位在锁内
     # 判定并写入，跨进程串行）。代价是登录失败也消耗一次冷却——但这正是想要的：
@@ -1359,7 +1361,7 @@ def api_scheduler_executors_measure():
     # 不是全站总容量。公式走 `capacity_of` 并显式固定 v2 口径（`enabled=False`，逐值不变）。
     per_exec = signin.capacity_of(
         bounds.full_sec(),
-        gap=_env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX),
+        gap=_env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX),
         avg=seconds, k=1, enabled=False)
     # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
     # "换机器/换网络都要重新量"的现实。
@@ -1537,16 +1539,16 @@ def api_announcement():
     env = None
     if m._announcement_cache[0] is None:
         env = _env_io_svc.read_env(m.ENV_FILE)
-        m._announcement_cache[0] = env.get(m.ANNOUNCEMENT_KEY, "").strip()
+        m._announcement_cache[0] = env.get(_env_io_svc.ANNOUNCEMENT_KEY, "").strip()
     body = {"ok": True, "text": m._announcement_cache[0]}
     if m._current_role() == "admin":
         if env is None:
             env = _env_io_svc.read_env(m.ENV_FILE)
         draft_by, draft_at = _env_io_svc._parse_announcement_meta(
-            env.get(m.ANNOUNCEMENT_DRAFT_META_KEY, ""))
+            env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY, ""))
         pub_by, pub_at = _env_io_svc._parse_announcement_meta(
-            env.get(m.ANNOUNCEMENT_PUBLISHED_META_KEY, ""))
-        body["draft"] = env.get(m.ANNOUNCEMENT_DRAFT_KEY, "").strip()
+            env.get(_env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY, ""))
+        body["draft"] = env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_KEY, "").strip()
         body["draft_by"] = draft_by
         body["draft_at"] = draft_at
         body["published_by"] = pub_by
@@ -1572,7 +1574,7 @@ def api_announcement_save():
     （200 字、行分隔符）——草稿与正式同格式单行存进 .env，注入面一分没小。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     text = str(data.get("text", "")).strip()
     if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
         return jsonify({"error": "公告内容过长（最多 200 字）"}), 400
@@ -1584,7 +1586,7 @@ def api_announcement_save():
         # 读写用的 splitlines() 同字符集，故 \v \f \x1c \x1d \x1e \x85 \u2028 \u2029
         # 一并拒——它们会作为"潜伏分隔符"被下一次读-改-写实体化成新配置行。
         return jsonify({"error": "公告内容不能包含换行或行分隔符（单行存储）"}), 400
-    updates = {m.ANNOUNCEMENT_DRAFT_KEY: text}
+    updates = {_env_io_svc.ANNOUNCEMENT_DRAFT_KEY: text}
     if text:
         author = str(session.get("username") or "?").strip().lower()[:64]
         meta = (f"{author}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}"
@@ -1593,9 +1595,9 @@ def api_announcement_save():
             # 用户名走登录侧校验后不该带分隔符，这里是兜底：宁可拒绝保存，也不留
             # 一条作者被截断/污染的草稿——双人发布的全部价值就在于发布人看得见作者。
             return jsonify({"error": "草稿作者标识非法，未能保存"}), 400
-        updates[m.ANNOUNCEMENT_DRAFT_META_KEY] = meta
+        updates[_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY] = meta
     else:
-        updates[m.ANNOUNCEMENT_DRAFT_META_KEY] = ""  # 空草稿 = 两键一起删
+        updates[_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY] = ""  # 空草稿 = 两键一起删
     # 一次批量写：正文与作者/时刻要么同时生效、要么都不生效（不存在"有草稿无作者"）
     m.write_env_batch(m.ENV_FILE, updates)
     db.audit(
@@ -1633,12 +1635,12 @@ def api_announcement_publish():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可发布公告"}), 403
-    denied = sensitive_password_gate()(m._json_body(), "发布全站公告", always_required=True)
+    denied = sensitive_password_gate()(_http._json_body(), "发布全站公告", always_required=True)
     if denied is not None:
         return denied
     env = _env_io_svc.read_env(m.ENV_FILE)
-    draft = env.get(m.ANNOUNCEMENT_DRAFT_KEY, "").strip()
-    before = env.get(m.ANNOUNCEMENT_KEY, "").strip()
+    draft = env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_KEY, "").strip()
+    before = env.get(_env_io_svc.ANNOUNCEMENT_KEY, "").strip()
     who = str(session.get("username") or "?")
     now_ts = clock.now().strftime(_env_io_svc.ANNOUNCEMENT_DRAFT_META_FMT)
     if not draft:
@@ -1649,10 +1651,10 @@ def api_announcement_publish():
         # 空草稿 + 线上有内容 = 下线（用户裁决：不另设 clear 端点，一收一发走同一条
         # 双人发布的后半程，权限档完全一致——主管理员 + 当次口令）
         m.write_env_batch(m.ENV_FILE, {
-            m.ANNOUNCEMENT_KEY: "",
-            m.ANNOUNCEMENT_PUBLISHED_META_KEY: "",
-            m.ANNOUNCEMENT_DRAFT_KEY: "",
-            m.ANNOUNCEMENT_DRAFT_META_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY: "",
         })
         m._announcement_cache[0] = ""
         db.audit(who, "announcement_publish", "announcement",
@@ -1675,13 +1677,13 @@ def api_announcement_publish():
         # 多行。那种内容没被任何人在 UI 上看过，一律拒绝发布而非照抄进正式键。
         return jsonify({"error": "草稿含行分隔符（.env 疑似被手工改动），未能发布"}), 400
     author, _at = _env_io_svc._parse_announcement_meta(
-        env.get(m.ANNOUNCEMENT_DRAFT_META_KEY, ""))
+        env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY, ""))
     # 单批写入 = 一次读-改-写 + 一次原子替换：不存在"正式已被清、草稿还没落"的中间态
     m.write_env_batch(m.ENV_FILE, {
-        m.ANNOUNCEMENT_KEY: draft,
-        m.ANNOUNCEMENT_PUBLISHED_META_KEY: f"{who.strip().lower()}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}{now_ts}",
-        m.ANNOUNCEMENT_DRAFT_KEY: "",
-        m.ANNOUNCEMENT_DRAFT_META_KEY: "",
+        _env_io_svc.ANNOUNCEMENT_KEY: draft,
+        _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: f"{who.strip().lower()}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}{now_ts}",
+        _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
+        _env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY: "",
     })
     m._announcement_cache[0] = draft  # 同步内存缓存（与 PUT 不同：这次真改了对外文本）
     change = "新发布" if not before else "覆盖发布"
@@ -1721,7 +1723,7 @@ def api_env_cleanup():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     try:
         line_no = int(data.get("line"))
     except (TypeError, ValueError):

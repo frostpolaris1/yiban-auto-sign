@@ -3,7 +3,7 @@
 
 标签：E · Web：认证/权限/API
 覆盖：批量/单条重置密码的二次鉴权、`DailyFlockFileHandler` 的目录故障不向调用方传播、`ensure_secret_key` 对空 `.env` 的判定、版本号单源；公告「草稿 / 发布 / 下线」的权限与原子性；备案与隐私页的反射脚本转义、notify/mail 配置的告警口径；设置档位的两向对拍与急停例外
-对应实现：`web/app.py` 的公告路由（PUT 草稿 / publish / 空草稿下线）、`/api/settings` 的档位表（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）、`DailyFlockFileHandler`、`yiban.__version__`
+对应实现：`web/routes/settings_api.py` 的公告路由（PUT 草稿 / publish / 空草稿下线）、`/api/settings` 的档位表（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`，键名单源 web/services/env_io.py）、`DailyFlockFileHandler`、`yiban.__version__`
 关键断言：档位常量与规格表必须互相等齐且**两个方向都对拍**（漏档等于对全体管理员免口令开放）；A 档连「刚复核过」的短时豁免都不吃；急停 0→1 任意管理员可做（当次口令 + 高危额度），1→0 仅主管理员，且先鉴权后占额度（错口令不得刷光合法管理员的预算）；发布=一次原子写（正式=草稿、草稿清空），无草稿发布是 400 而非静默成功；设置变更只留审计、不再外发告警
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；告警与邮件出口打桩。各基类均把 `YIBAN_PW_GATE` 钉成 `full`（默认档 `risk` 下公告发布与 A/B 档写入不再要求当次口令，本文件以「缺口令 / 错口令」为理由的那批 403 断言就都不成立；权限类 403 与业务类 400 与档位无关，哪个档都成立）
 
@@ -318,6 +318,9 @@ class Batch16FixesTest(unittest.TestCase):
 
 
 import unittest.mock  # noqa: E402
+
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import limits as _limits  # noqa: E402
 
 REG_ADMIN = "reg-admin@test.local"
 
@@ -1538,16 +1541,16 @@ class TierTableMetaTest(_TierBase):
     """档位表单源：常量对 == 规格表，且每个档位键的现值都读得回来。"""
 
     def test_tier_sets_match_spec(self):
-        self.assertEqual(set(self.webapp.MASTER_ONLY_KEYS), SPEC_MASTER_ONLY,
+        self.assertEqual(set(_env_io_svc.MASTER_ONLY_KEYS), SPEC_MASTER_ONLY,
                          "A 档表被单方面改动：规格与常量必须同时改")
-        self.assertEqual(set(self.webapp.GATED_KEYS), SPEC_GATED,
+        self.assertEqual(set(_env_io_svc.GATED_KEYS), SPEC_GATED,
                          "B 档表被单方面改动：规格与常量必须同时改")
-        self.assertFalse(set(self.webapp.MASTER_ONLY_KEYS) & set(self.webapp.GATED_KEYS),
+        self.assertFalse(set(_env_io_svc.MASTER_ONLY_KEYS) & set(_env_io_svc.GATED_KEYS),
                          "一个键不可能既是 A 档又是 B 档")
         # 急停靠「按变更方向分流」实现，混进任一张表都会让方向语义失效
-        self.assertNotIn("global_pause", self.webapp.MASTER_ONLY_KEYS)
-        self.assertNotIn("global_pause", self.webapp.GATED_KEYS)
-        self.assertEqual(self.webapp.GLOBAL_PAUSE_KEY, "global_pause")
+        self.assertNotIn("global_pause", _env_io_svc.MASTER_ONLY_KEYS)
+        self.assertNotIn("global_pause", _env_io_svc.GATED_KEYS)
+        self.assertEqual(_env_io_svc.GLOBAL_PAUSE_KEY, "global_pause")
 
     def test_every_tier_key_is_readable_back(self):
         """档位键必须能读回现值：读不回就没法判「这次到底变没变」，门禁会被静默跳过。
@@ -1557,7 +1560,7 @@ class TierTableMetaTest(_TierBase):
         c = self._master()
         payload = c.get("/api/settings", headers=self._hdr(c)).get_json()
         nested = {"max_users": "users_max", "max_accounts": "accounts_max"}
-        for key in set(self.webapp.MASTER_ONLY_KEYS) | set(self.webapp.GATED_KEYS):
+        for key in set(_env_io_svc.MASTER_ONLY_KEYS) | set(_env_io_svc.GATED_KEYS):
             if key in nested:
                 self.assertIn(nested[key], payload["capacity"], f"{key} 现值读不回")
             else:
@@ -1565,11 +1568,11 @@ class TierTableMetaTest(_TierBase):
 
     def test_effective_values_cover_both_tiers(self):
         cur = self.webapp._settings_effective_values(self.env_file)
-        keys = (set(self.webapp.MASTER_ONLY_KEYS) | set(self.webapp.GATED_KEYS)
-                | {self.webapp.GLOBAL_PAUSE_KEY})
+        keys = (set(_env_io_svc.MASTER_ONLY_KEYS) | set(_env_io_svc.GATED_KEYS)
+                | {_env_io_svc.GLOBAL_PAUSE_KEY})
         self.assertEqual(keys - set(cur), set(), "有档位键没有现值口径")
         # 现值必须是「生效值」而不是「键在不在」：未配置的延迟要报默认值
-        self.assertEqual(cur["gap_max"], str(self.webapp.DEFAULT_ACCOUNT_GAP_MAX))
+        self.assertEqual(cur["gap_max"], str(_limits.DEFAULT_ACCOUNT_GAP_MAX))
         self.assertEqual(cur["sign_order"], "sequence")
 
     def test_every_effective_value_key_has_a_tier(self):
@@ -1586,10 +1589,10 @@ class TierTableMetaTest(_TierBase):
         # 不在 app.py 档位表里），故反方向对拍的档位全集要把它们并入——否则新键会被
         # 判成"没档位、任意管理员免口令可写"，而这四键实测是 403。
         from web.services.env_io import SCHEDULE_DIST_KEYS
-        unclassified = set(cur) - (set(self.webapp.MASTER_ONLY_KEYS)
-                                   | set(self.webapp.GATED_KEYS)
+        unclassified = set(cur) - (set(_env_io_svc.MASTER_ONLY_KEYS)
+                                   | set(_env_io_svc.GATED_KEYS)
                                    | set(SCHEDULE_DIST_KEYS)
-                                   | {self.webapp.GLOBAL_PAUSE_KEY})
+                                   | {_env_io_svc.GLOBAL_PAUSE_KEY})
         self.assertEqual(unclassified, set(),
                          f"这些设置键没有档位归属（等于任意管理员免口令可写）："
                          f"{sorted(unclassified)}")
@@ -1770,7 +1773,7 @@ class ChangeAlertTest(_TierBase):
         """误点保存（值一个没变）不该发出任何告警，也不该被口令挡住。"""
         c = self._master()
         r = self._save(c, {"sunday_sign": 0,
-                           "gap_max": self.webapp.DEFAULT_ACCOUNT_GAP_MAX})
+                           "gap_max": _limits.DEFAULT_ACCOUNT_GAP_MAX})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.alerts, [], "无实质变更不得发告警（否则告警成了免费打字机）")
 

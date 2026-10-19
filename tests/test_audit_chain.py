@@ -43,6 +43,8 @@ import sys
 import tempfile
 import unittest
 
+from web.services import limits as _limits
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -1056,7 +1058,7 @@ class ReadAuditTest(unittest.TestCase):
         statuses = [c.get(f"/api/accounts/{i % N_ACCOUNTS}/detail").status_code
                     for i in range(N_ACCOUNTS)]
         self.assertIn(429, statuses, "idx 递增枚举整库必须被限速挡住")
-        limit = self.webapp.DETAIL_MAX
+        limit = _limits.DETAIL_MAX
         self.assertEqual(statuses[:limit], [200] * limit, "限额内不得误伤正常运维")
         self.assertEqual(statuses[limit], 429)
         body = c.get("/api/accounts/0/detail").get_json()["error"]
@@ -1117,7 +1119,7 @@ class ReadAuditTest(unittest.TestCase):
         self.assertEqual(master["quota_visible"], True)
         self.assertEqual(sub["quota_visible"], False,
                          "余量的 null 原意是「不限」，无权查看必须靠这个标记区分")
-        for key in self.webapp._NOTIFY_QUOTA_HIDDEN_KEYS:
+        for key in _limits._NOTIFY_QUOTA_HIDDEN_KEYS:
             self.assertIn(key, sub, "刻意置 null 而非省键：响应形态必须稳定")
             self.assertIsNone(sub[key], f"{key} 属额度勘察字段，普通管理员不该看到")
         self.assertEqual(set(sub), set(master), "两套响应的键集合必须一致")
@@ -1138,7 +1140,7 @@ class ReadAuditTest(unittest.TestCase):
         for key in ("enabled", "admin_notify", "smtp_host", "smtp_port",
                     "user", "admin_to", "smtps"):
             self.assertIn(key, sub, "普通管理员必须看得到邮件通道开没开、配没配")
-        self.assertFalse([k for k in sub if k in self.webapp._NOTIFY_QUOTA_HIDDEN_KEYS],
+        self.assertFalse([k for k in sub if k in _limits._NOTIFY_QUOTA_HIDDEN_KEYS],
                          "邮件侧没有这两个余量键可分层（发送路径不受推送每日条数与节流约束）")
 
 

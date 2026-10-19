@@ -38,6 +38,7 @@ from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-
 from werkzeug.security import generate_password_hash
 
 from web.services import env_io as _env_io_svc
+from web.services import limits as _limits
 
 # 单条端点改不透明 id 后，"不存在用户"用例用一个不会撞上的数字 id 表达。
 GHOST_ID = 987654321
@@ -1274,7 +1275,7 @@ class CooldownTest(_GateBase):
         self.assertEqual(self.webapp.SENSITIVE_PW_FAIL_NOTIFY, 3,
                          "门禁侧阈值必须是 3（门禁侧自己的取值，与登录告警阈值无关）")
         self.assertNotEqual(self.webapp.SENSITIVE_PW_FAIL_NOTIFY,
-                            self.webapp.LOGIN_FAIL_NOTIFY,
+                            _limits.LOGIN_FAIL_NOTIFY,
                             "两个阈值必须是两个常量——值相同同样会随一侧调参一起漂移")
         # 行为面：恰好第 3 次失败布防冷却、第 4 次起 429（与登录侧那个更大的阈值无关）
         c = self._login()
@@ -1396,7 +1397,7 @@ class P18IsolationTest(_GateBase):
         app = self.webapp.create_app()
         c = self._login(app=app)
         # 远超登录锁定阈值（LOGIN_MAX_FAILS）次数的门禁失败
-        codes = self._fail_gate_times(c, self.webapp.LOGIN_MAX_FAILS + 2)
+        codes = self._fail_gate_times(c, _limits.LOGIN_MAX_FAILS + 2)
         self.assertIn(429, codes, "阈值后应进冷却")
         self.assertNotIn(401, codes)
         probe = app.test_client()
@@ -1412,7 +1413,7 @@ class P18IsolationTest(_GateBase):
         于是同出口的登录失败会把主管理员一并锁在**所有高危操作**之外（运维 DoS）；
         现在门禁只看自己的冷却表，登录锁着也照样能用正确口令做高危操作。"""
         c = self._login()
-        for _ in range(self.webapp.LOGIN_MAX_FAILS):
+        for _ in range(_limits.LOGIN_MAX_FAILS):
             r = c.post("/api/login", json={"username": "admin", "password": WRONG_PASS})
         self.assertEqual(r.status_code, 429, "前置：登录侧此刻已锁定")
         # 单条操作按不透明 id 定位（2-9b）：用一个**不存在的数字 id** 复刻旧

@@ -37,6 +37,8 @@ from web import security as _security
 from web.routes import appmod as _appmod
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import manual_sign as _manual_sign
 from yiban.adapters.persistence import db
 from yiban.core import masking as _masking
@@ -261,8 +263,8 @@ def _spawn_signin(m, state, phone, accounts=None):
             return False, _signin_rate_message(m)
     with state["lock"]:  # 原子检查+占位：并发请求不能同时通过防抖
         now = time.time()
-        if phone in state["last_trigger"] and now - state["last_trigger"][phone] < m.SIGN_MIN_INTERVAL:
-            remain = int(m.SIGN_MIN_INTERVAL - (now - state["last_trigger"][phone]))
+        if phone in state["last_trigger"] and now - state["last_trigger"][phone] < _limits.SIGN_MIN_INTERVAL:
+            remain = int(_limits.SIGN_MIN_INTERVAL - (now - state["last_trigger"][phone]))
             return False, f"账号 {phone} 正在签到，请 {remain} 秒后再试"
         old = state["procs"].get(phone)
         if old and old.poll() is None:
@@ -290,7 +292,7 @@ def api_signin():
     """手动签到指定账号：子进程执行 signin.py --only。"""
     m = _appmod()
     state = _signin_state()
-    data = m._json_body()
+    data = _http._json_body()
     phone = str(data.get("phone", "")).strip()
     ok, msg = _spawn_signin(m, state, phone)
     if not ok:
@@ -309,7 +311,7 @@ def api_signin_batch():
     """
     m = _appmod()
     state = _signin_state()
-    data = m._json_body()
+    data = _http._json_body()
     ids = data.get("ids")
     if not isinstance(ids, list) or not ids:
         return jsonify({"error": "请先勾选要签到的账号"}), 400
@@ -354,8 +356,8 @@ def api_signin_batch():
     # 单次批量签到账号数与 /api/accounts/batch 同口径（BATCH_OP_LIMIT）。
     # 队列子进程的等待超时按账号数缩放，无上限的"全选"会把后台队列线程长时间占死；
     # 超出上限 400，管理员分批触发（每批 ≤10 个）。
-    if len(phones) > m.BATCH_OP_LIMIT:
-        return jsonify({"error": f"单次批量签到最多 {m.BATCH_OP_LIMIT} 个账号"}), 400
+    if len(phones) > _limits.BATCH_OP_LIMIT:
+        return jsonify({"error": f"单次批量签到最多 {_limits.BATCH_OP_LIMIT} 个账号"}), 400
     with state["batch_lock"]:
         if state["batch_running"]:
             return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
