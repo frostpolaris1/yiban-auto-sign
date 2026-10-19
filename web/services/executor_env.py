@@ -39,10 +39,10 @@ from web.services.env_io import (
 )
 from yiban import egress as yb_egress
 from yiban.adapters.config import env_io as _yiban_env_io
+from yiban.adapters.persistence import db
 from yiban.core import clock
 from yiban.core import window as yb_window
 from yiban.core.masking import mask_url_userinfo as _mask_url_userinfo
-from yiban.store import db
 
 # 与 web.app 同名的日志通道：清单迁移的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

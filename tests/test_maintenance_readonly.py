@@ -55,7 +55,7 @@ def _run_script(name, argv, env, cwd):
 
 def _make_db(db_file, root, env):
     """造一个真实的空库（init_db 建表 + 迁移后关闭，WAL 已收敛为静默态）。"""
-    code = ("import sys; from yiban.store import db;"
+    code = ("import sys; from yiban.adapters.persistence import db;"
             "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "db.get_conn().close()")
     r = subprocess.run([sys.executable, "-c", code, db_file,
@@ -173,7 +173,7 @@ class InitDbReadonlyTest(unittest.TestCase):
 
     @staticmethod
     def _reset_db_singleton():
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         conn = connection.current()
         if conn is not None:
             conn.close()
@@ -181,7 +181,7 @@ class InitDbReadonlyTest(unittest.TestCase):
 
     def test_create_false_missing_db_raises_without_creating(self):
         missing = os.path.join(self.root, "nope.db")
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         with self.assertRaises(FileNotFoundError):
             db.init_db(db_file=missing, create=False)
         self.assertFalse(os.path.exists(missing), "只读初始化建出了空库")
@@ -193,7 +193,7 @@ class InitDbReadonlyTest(unittest.TestCase):
         before_uv = sqlite3.connect(db_file).execute("PRAGMA user_version").fetchone()[0]
         before_entries = sorted(os.listdir(self.root))
 
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         conn = db.init_db(db_file=db_file, create=False)
         self.assertIsNotNone(conn)
         with self.assertRaises(sqlite3.OperationalError):

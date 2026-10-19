@@ -30,8 +30,8 @@ from unittest import mock
 
 import db
 
+from yiban.adapters.persistence import queue_store
 from yiban.engine import token_bucket
-from yiban.store import queue_store
 
 TEST_KEY = "a" * 64
 

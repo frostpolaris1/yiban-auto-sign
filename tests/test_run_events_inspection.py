@@ -44,8 +44,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from yiban.adapters.persistence import run_events
 from yiban.core import clock
-from yiban.store import run_events
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -680,7 +680,7 @@ class RunEventsApiTest(InspectionCase):
     def test_read_does_not_verify_the_audit_chain(self):
         """只读端点不得触发全表哈希校验（照 audit_api 的先例）。"""
         self._seed_round()
-        from yiban.store import audit_chain
+        from yiban.adapters.persistence import audit_chain
         with mock.patch.object(audit_chain, "verify_audit_chain",
                                side_effect=AssertionError("读接口触发了全表哈希校验")):
             r = self.admin_client.get("/api/admin/run-events")
