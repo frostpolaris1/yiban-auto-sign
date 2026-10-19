@@ -1756,7 +1756,8 @@ class _TrimProbeStore(dict):
 # ① **读者可解析**：路由与测试经 app 别名读到的每个名字，都必须在 `web/app.py` 有绑定。
 #    删掉一个还有读者的名字 ⇒ 红，点名 `文件:行`。
 # ② **无零读者转发名**：带 `noqa: F401` 的每个 import 绑定名，至少要有一个读者。
-#    唯一豁免登记在 `_WALL_DEAD_F401_EXEMPT`（附理由，不许空豁免）。
+#    豁免登记在 `_WALL_DEAD_F401_EXEMPT`（逐名附理由）与 `_WALL_DEAD_F401_BATCH3A`
+#    （批 3-a 的过渡集：路由读者已迁走、墙名待批 3-b 删除），两处都不许空豁免。
 # 扫描面非空：绑定名、读者、F401 名集各设下限；扫空即红（AGENTS §30）。
 #
 # 边界：① 的别名取**规范别名**（`self.webapp` 一族），不把 `w`/`mod` 等易与其他模块
@@ -1788,6 +1789,37 @@ _WALL_DEAD_F401_EXEMPT = {
         "`_PWHASH_OUT_OF_FACE_REGISTRY` 同批清空。"),
     "check_password_hash": "145-B T1 已迁走自有面全部读者；墙名待 145-E 删除",
 }
+
+#: 批 3-a（拆墙：A 类转发名直连真源）迁走路由读者后**暂**零读者的转发名。
+#:
+#: 批 3-a 把 93 个 A 类转发名的路由读取点改为直连真源模块，于是凡是**测试面也不再
+#: 按墙名打桩**的那些名字，在本片后零读者。**本片不删墙名**（墙的退役归批 3-b），
+#: 故按本门的豁免机制登记：这是**过渡态**，批 3-b 删名时须同批删掉本集合——
+#: `test_exempt_names_are_still_f401` 与 `test_batch3a_exemptions_are_still_f401`
+#: 钉住这一点（名字真被删掉后这两条断言即红）。
+_WALL_DEAD_F401_BATCH3A = frozenset({
+    "ACCOUNT_STATUS_REJECTED",
+    "ANNOUNCEMENT_DRAFT_META_FMT",
+    "ANNOUNCEMENT_DRAFT_META_SEP",
+    "LOG_LEVELS",
+    "LOG_LEVEL_DEFAULT",
+    "VerifyQuotaExceeded",
+    "_change_mail",
+    "_executor_activity",
+    "_executor_health_cards",
+    "_executor_row_payload",
+    "_filter_log_level",
+    "_is_http_proxy_url",
+    "_last_executors",
+    "_mask_url_userinfo",
+    "_new_admin_sid",
+    "_next_executor_slot",
+    "_terminate_signin_proc",
+    "child_env",
+    "fold_phone_code",
+    "load_users",
+    "mail_config",
+})
 
 
 @functools.lru_cache(maxsize=None)
@@ -1918,8 +1950,8 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
         self.assertGreaterEqual(len(reads), 1000,
                                 "读者扫描面过小——别名探测失效（扫空不得当绿）")
         read_names = {name for name, _, _ in reads}
-        dead = sorted(n for n in f401
-                      if n not in read_names and n not in _WALL_DEAD_F401_EXEMPT)
+        exempt = set(_WALL_DEAD_F401_EXEMPT) | _WALL_DEAD_F401_BATCH3A
+        dead = sorted(n for n in f401 if n not in read_names and n not in exempt)
         self.assertEqual(dead, [],
                          "以下带 noqa: F401 的名字没有任何读者（零读者转发名）：" + ", ".join(dead))
 
@@ -1935,3 +1967,16 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
             stale, [],
             f"豁免清单登记的名字已不在 F401 名集（名字已删/已不再是转发名）：{stale}；"
             "请把这些登记从 _WALL_DEAD_F401_EXEMPT 删掉")
+
+    def test_batch3a_exemptions_are_still_f401(self):
+        """批 3-a 的过渡豁免同样不得腐烂：登记名必须仍在 F401 名集里。
+
+        与 `test_exempt_names_are_still_f401` 同一纪律：批 3-b 删墙名时，
+        本集合的登记必须同批删掉，否则它会变成永久豁免。
+        """
+        _bound, f401 = _wall_app_bindings()
+        stale = sorted(n for n in _WALL_DEAD_F401_BATCH3A if n not in f401)
+        self.assertEqual(
+            stale, [],
+            f"批 3-a 过渡豁免登记的名字已不在 F401 名集（名字已删）：{stale}；"
+            "请把这些登记从 _WALL_DEAD_F401_BATCH3A 删掉")

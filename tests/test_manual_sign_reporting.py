@@ -27,6 +27,7 @@ from unittest import mock
 import db
 from werkzeug.security import generate_password_hash
 
+from web.services import accounts_data as _accounts_data
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -145,7 +146,7 @@ class FuseResetGateTest(_WebAppMixin, unittest.TestCase):
             "status": "active", "deleted": False,
         }
         patcher = mock.patch.object(
-            self.webapp, "load_accounts",
+            _accounts_data, "load_accounts",
             side_effect=lambda: [dict(self._account)])
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -251,7 +252,7 @@ class ManualSignExitTest(_WebAppMixin, unittest.TestCase):
         proc.poll = lambda: 3
         proc.terminate = lambda: None
         proc.kill = lambda: None
-        with mock.patch.object(self.webapp, "load_accounts",
+        with mock.patch.object(_accounts_data, "load_accounts",
                                return_value=accounts), \
              mock.patch.object(self.webapp.subprocess, "Popen",
                                return_value=proc):
@@ -273,7 +274,7 @@ class ManualSignExitTest(_WebAppMixin, unittest.TestCase):
         proc.poll = lambda: 3
         proc.terminate = lambda: None
         proc.kill = lambda: None
-        with mock.patch.object(self.webapp, "load_accounts",
+        with mock.patch.object(_accounts_data, "load_accounts",
                                return_value=accounts), \
              mock.patch.object(self.webapp.subprocess, "Popen",
                                return_value=proc):
