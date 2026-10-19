@@ -43,11 +43,11 @@ from datetime import datetime
 
 from flask import jsonify
 
+from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.core import window as yb_window
 from yiban.engine import schedule as _schedule
-from yiban.infra import env_io as _env_io
 from yiban.infra import env_lock
-from yiban.mail import layout as mail_layout
 
 # 与 web.app 同名的日志通道：.env 读写与启动检测的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

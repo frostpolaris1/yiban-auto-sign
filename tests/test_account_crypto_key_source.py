@@ -24,7 +24,7 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
 
 TEST_KEY = "a" * 64
 

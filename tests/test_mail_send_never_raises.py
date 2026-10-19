@@ -19,8 +19,8 @@ import contextlib
 import unittest
 from unittest import mock
 
-from yiban.mail import config as mailer
-from yiban.mail import transport as mailer_transport
+from yiban.adapters.notifier.mail import config as mailer
+from yiban.adapters.notifier.mail import transport as mailer_transport
 
 _LONE_SURROGATE = "\ud800"  # 孤立高代理：任何 utf-8 encode 在此必抛 UnicodeEncodeError
 

@@ -25,9 +25,9 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
-from yiban.infra import account_crypto, env_io
-from yiban.mail import config as mailer
-from yiban.mail import transport as mailer_transport
+from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.notifier.mail import config as mailer
+from yiban.adapters.notifier.mail import transport as mailer_transport
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -955,7 +955,7 @@ class SmtpEntryIdentityTest(_Base_FAILOVER):
             {"host": "smtp.b.com", "port": 465, "user": "b@x.com", "pass": "passB"},
         ]
         self._write_legacy_blob(legacy)
-        import yiban.mail as mailer_mod
+        import yiban.adapters.notifier.mail as mailer_mod
         self.assertEqual(mailer_mod.smtp_list(), legacy, "旧配置发送路径读取不得受影响")
         c, h = self._master()
         got = c.get("/api/mail-config", headers=h).get_json()["smtps"]
@@ -1074,7 +1074,7 @@ class SmtpEntryIdentityTest(_Base_FAILOVER):
         self.assertEqual(detail["smtps_to"], [])
 
     def _read_env_all(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         return env_io.parse_env_file(self.env_file)
 
 

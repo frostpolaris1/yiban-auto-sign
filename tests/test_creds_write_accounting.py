@@ -217,7 +217,7 @@ class ClearFuseOnCodeChangeTest(_CredsBase):
     """熔断清理与写侧同档：识别码实际变更才清，未变/没带一律不清。"""
 
     def _pause(self, phone):
-        from yiban import cred_state
+        from yiban.adapters.statefiles import cred_state
         with io.open(cred_state.path(), "w", encoding="utf-8") as f:
             json.dump({phone: {"fail_days": 2, "paused_since": "2026-09-01 00:00:00"}}, f)
 
