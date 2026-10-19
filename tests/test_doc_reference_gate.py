@@ -87,36 +87,45 @@ _DOC_REF = re.compile(
     r"(?<![A-Za-z0-9_])\./(?P<rel>" + _DOC_PATH + r")"
     r"|(?<![A-Za-z0-9_./\-])(?P<abs>" + _DOC_PATH + r")")
 
-#: 20 件兼容壳的**现行形态**（工单 `1229` 的壳清单 + `yiban/cli.py` 等）。
-#: 这些路径今天都在库内。`145-E` 退役这批壳之后，指向它们的引用即悬空。
-#: 本门是**前向守卫**：今天绿，退役那天红并点名残留的读者。
-#: 为什么按路径形态而不按点号模块形态（`yiban.clock`）：任务口径是路径形态。
-#: 点号形态的读者面归 `145-B` 各 `T` 片的坐标门（`tests/test_deploy_entry_imports.py`）。
-OLD_COORD_PATHS = (
-    "yiban/clock.py",
-    "yiban/status.py",
-    "yiban/window.py",
-    "yiban/masking.py",
-    "yiban/config_loader.py",
-    "yiban/state_gc.py",
-    "yiban/cred_state.py",
-    "yiban/engine/hrw.py",
-    "yiban/engine/round.py",
-    "yiban/engine/runner.py",
-    "yiban/engine/probe.py",
-    "yiban/engine/alerts.py",
-    "yiban/engine/state_io.py",
-    "yiban/engine/workers.py",
-    "yiban/infra/env_io.py",
-    "yiban/infra/account_crypto.py",
-    "yiban/store/__init__.py",
-    "yiban/mail/__init__.py",
-    "yiban/notify/__init__.py",
-    "yiban/cli.py",
+#: 20 件已退役兼容壳的**路径形态**（工单 `1229` 的壳清单 + 入口壳）。
+#: `145-E` 已把这批壳删净（批 A1／A4／B 留下的转发壳）。
+#: 本门是**前向守卫**：退役之后，入库文本里再出现这些路径即**悬空引用**——
+#: 读者检出后打不开那个文件。故清单**留驻**，不随退役清空
+#: （AGENTS §十四：不许把该收的对象从判据里拿掉）。
+#: 为什么按路径形态而不按点号模块形态（`yiban.clock`）：本门管的是"读者能不能打开"，
+#: 点号形态的读者面归 `tests/test_zero_old_coordinates.py`（`145-E` 立的总门）。
+#:
+#: 拼装说明：清单必须**写出**这些路径，而本文件**也是入库文本件**、本门会扫到它自己。
+#: 故前缀与后缀分开拼（同 `_PLAN_DOC` / `_FAKE_DOC` 的手法），
+#: 源码里因此没有**悬空**的路径字面量。
+_OLD_COORD_PREFIX = "yiban/"
+_OLD_COORD_SUFFIXES = (
+    "clock.py",
+    "status.py",
+    "window.py",
+    "masking.py",
+    "config_loader.py",
+    "state_gc.py",
+    "cred_state.py",
+    "engine/hrw.py",
+    "engine/round.py",
+    "engine/runner.py",
+    "engine/probe.py",
+    "engine/alerts.py",
+    "engine/state_io.py",
+    "engine/workers.py",
+    "infra/env_io.py",
+    "infra/account_crypto.py",
+    "store/__init__.py",
+    "mail/__init__.py",
+    "notify/__init__.py",
+    "cli.py",
 )
+OLD_COORD_PATHS = tuple(_OLD_COORD_PREFIX + s for s in _OLD_COORD_SUFFIXES)
 
-#: 旧坐标清单的下限。实测 20 条。下限取 15 挡住"清单被误清空"。
-#: 为什么不用 20：清单会随退役批次缩短，钉死 20 会让合法删条目变红。
+#: 旧坐标清单的下限。实测 20 条。
+#: 为什么钉 15 而不是 20：条目只许**增**不许误删；给 5 条余量挡住"清单被误清空"，
+#: 同时不把清单长度变成判据（长度不是不变式，内容是）。
 MIN_OLD_COORD_PATHS = 15
 
 #: 面外目录前缀。`frontend/**` 2026-10-18 起归用户独立完成，本批**不得改**它
@@ -138,6 +147,9 @@ OUT_OF_FACE_PREFIX = "frontend/"
 #: 且本文件自己的注释与 docstring 也该受本门管。
 _PLAN_DOC = "docs/" + "refactor/" + "29-frontend-vue-refactor-plan.md"
 _PLAN_DOC_SHORT = "docs/" + "refactor/" + "29"
+#: `145-E` 新增登记要引用的**已退役**坐标路径（片段拼装，理由同上）。
+_FE_OLD_MASKING = _OLD_COORD_PREFIX + "masking.py"
+_FE_OLD_STATUS = _OLD_COORD_PREFIX + "status.py"
 OUT_OF_FACE_REGISTRY = {
     ("frontend/README.md", _PLAN_DOC): (
         1,
@@ -156,12 +168,24 @@ OUT_OF_FACE_REGISTRY = {
         1,
         "同上（构建配置注释）。",
     ),
+    # `145-E` 新增：前端两件引用**已退役**的旧坐标路径（源流说明）。
+    # 前端归用户独立完成，本批不得改；用户处置后同批删本登记。
+    ("frontend/src/accounts/model.js", _FE_OLD_MASKING): (
+        1,
+        "前端账号模型引用的旧坐标路径（`145-E` 已退役该壳）。前端归用户独立完成，"
+        "本批不得改；用户处置后同批删本登记。",
+    ),
+    ("frontend/src/lib/status-vocab.js", _FE_OLD_STATUS): (
+        2,
+        "前端状态词汇表引用的旧坐标路径（两处，`145-E` 已退役该壳）。理由同上。",
+    ),
 }
 
 #: 旧坐标的字面量判据。前后都不许紧跟标识符字符。
-#: 故 `yiban/clock.py` 命中；`xyiban/clock.py`、`yiban/clock.pyc` 不命中。
+#: 故首条清单项命中；前缀多一个字符（`x` ＋ 该项）、后缀多一个字符
+#: （该项 ＋ `c`）都不命中。
 #: 左边界用 `[A-Za-z0-9_]` 而不是 `\w`（同 `_DOC_REF`，审查 NB3）：
-#: `\w` 含中日韩字符，会让 `见yiban/clock.py`（中文紧贴）静默漏检。
+#: `\w` 含中日韩字符，会让"中文紧贴旧坐标路径"静默漏检。
 _OLD_COORD_RE = re.compile("|".join(
     r"(?<![A-Za-z0-9_./\-])" + re.escape(p) + r"(?![A-Za-z0-9_])"
     for p in OLD_COORD_PATHS))
@@ -170,6 +194,11 @@ _OLD_COORD_RE = re.compile("|".join(
 #: 可解的字面量（如 `docs/dev/cli.md`）照旧允许，由形态定义放行。
 #: 否则本门会扫到本文件自己（本文件也是入库文本件）。
 _FAKE_DOC = "docs/" + "refactor/" + "999-v35f-mutation-probe.md"
+
+#: 突变夹具用的**已退役**坐标路径，按片段拼装。
+#: 理由同上：本文件也是入库文本件，写死字面量会让本门扫到自己。
+_FAKE_OLD = _OLD_COORD_PREFIX + "clock.py"
+_FAKE_OLD_GONE = _OLD_COORD_PREFIX + "window.py"
 
 #: 二进制判据的取样字节数（含 NUL 即跳）。
 _SNIFF = 8192
@@ -487,7 +516,7 @@ class DocReferenceGateTest(unittest.TestCase):
 
         注释行**必须**命中（本门与"注释不算"的坐标门口径相反）。
         """
-        tracked = {"docs/dev/cli.md", "yiban/clock.py"}
+        tracked = {"docs/dev/cli.md", _FAKE_OLD}
         # ① 悬空 doc 引用（在注释行里）⇒ 命中，且行号正确
         bad = scan_text("# 口径见 " + _FAKE_DOC + " 第 3 节\nX = 1\n", tracked)
         self.assertEqual([(b[0], b[1]) for b in bad], [(1, _FAKE_DOC)],
@@ -502,14 +531,15 @@ class DocReferenceGateTest(unittest.TestCase):
             self.assertEqual(scan_text(line, tracked), [],
                              "目录形态／通配被误判成文档引用：%r" % line)
         # ④ 旧坐标路径：在库内 ⇒ 不误红；不在库内 ⇒ 命中
-        self.assertEqual(scan_text("见 `yiban/clock.py` 转发壳。\n", tracked), [],
+        self.assertEqual(scan_text("见 `" + _FAKE_OLD + "` 转发壳。\n", tracked), [],
                          "在库内的旧坐标路径被误判成悬空")
-        gone = scan_text("见 `yiban/window.py` 转发壳。\n", tracked)
-        self.assertEqual([(g[0], g[1]) for g in gone], [(1, "yiban/window.py")],
+        gone = scan_text("见 `" + _FAKE_OLD_GONE + "` 转发壳。\n", tracked)
+        self.assertEqual([(g[0], g[1]) for g in gone], [(1, _FAKE_OLD_GONE)],
                          "已退役的旧坐标路径未命中：形态二没有牙")
         # ⑤ 同前缀异路径不误红
-        self.assertEqual(scan_text("xyiban/clock.py 与 yiban/clock.pyc\n", tracked), [],
-                         "同前缀异路径被误判成旧坐标")
+        self.assertEqual(
+            scan_text("xyiban/" + "clock.py 与 yiban/" + "clock.pyc\n", tracked), [],
+            "同前缀异路径被误判成旧坐标")
         # ⑥ 负向断言的字符串操作数是禁字面量，不算引用；正向断言的算
         neg = ('from unittest import TestCase\n'
                'self.assertNotIn("' + _FAKE_DOC + '", src)\n')

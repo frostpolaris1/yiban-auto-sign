@@ -9,7 +9,7 @@
 
 **通信**
 谁调用：`web/services/notify_mail.py` 的 `notify.send(...)`（告警邮件正文压成纯文本后
-捎带推手机）、`yiban/engine/alerts.py`（失败提醒与汇总降级推送）、
+捎带推手机）、`yiban/adapters/notifier/report.py`（失败提醒与汇总降级推送）、
 `web/routes/notify.py` 的 `api_notify_test` → `send_test()`。
 它调用：`config`（读类型/密钥、`is_safe_url` 白名单）、`ledger`（占额度 / 退还 /
 节流表与跳过日志的去重表）、`requests.post`（两条出口）。

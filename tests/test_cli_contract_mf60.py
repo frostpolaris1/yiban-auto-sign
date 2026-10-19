@@ -7,7 +7,7 @@
     （目标已存在须 `--force`）、`db --restore` 破坏性守卫（默认 dry-run / 指纹回显 /
     覆盖前副本 / 损坏备份拒绝，仅用自造库与自造副本）、`--help` 列明四个路径环境变量。
 对应实现：`yiban/entry/cli/__init__.py`（`_emit_json_error` / `_fail` / `_UsageError` /
-    `main` 解析兜底；`yiban/cli.py` 是转发壳）
+    `main` 解析兜底；旧入口转发壳已于 `145-E` 退役）
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
     人类可读 usage/摘要仍走 stderr。

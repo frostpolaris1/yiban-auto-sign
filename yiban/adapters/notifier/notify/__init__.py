@@ -11,7 +11,7 @@
 失败凭占用凭证退还；自定义 URL 走 SSRF 白名单。
 
 **通信**
-谁调用本组件：`yiban/engine/alerts.py`（告警与失败提醒，判 `is_configured` 后 `send`）、
+谁调用本组件：`yiban/adapters/notifier/report.py`（告警与失败提醒，判 `is_configured` 后 `send`）、
 `web/services/notify_mail.py`（邮件正文的捎带推送）、`web/services/channel_health.py`
 （`pop_exhaustion_notice` 把额度耗尽写进通道健康报告）、`web/app.py`（只读耗尽判据）、
 `web/routes/notify.py`（`get_config` 概览 + `send_test`）。

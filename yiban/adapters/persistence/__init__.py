@@ -3,8 +3,8 @@
 """持久化适配器（adapters/persistence）：命令面 + 查询面（目标架构契约第 3 节）。
 
 本包是 `ports.store` 声明的持久化契约的 SQLite 实现，也是全仓唯一的 SQL 面。
-成员来自批 B 搬迁：原 `yiban/store/` 整包搬入。旧坐标 `yiban.store.*` 留转发壳
-（`yiban/store/__init__.py`），故 `web/**`、`scripts/**`、`tests/**` 的旧坐标读者无需改动。
+成员来自批 B 搬迁：原 `yiban.store` 包整包搬入。批 B 留下的旧坐标转发壳已由
+`145-E` 删净；旧坐标不再是合法 import 路径。
 
 成员：
 - `connection`：连接单例与数据库路径；

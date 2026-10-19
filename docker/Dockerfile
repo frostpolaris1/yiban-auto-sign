@@ -5,7 +5,7 @@
 # 或直接 `docker compose up -d --build`（已配好）。
 # ------------------------------------------------------------
 # 设计约束：
-#   1. 时区设为上海：窗口与日期判定在程序内已统一按北京时间算（yiban/clock.py），
+#   1. 时区设为上海：窗口与日期判定在程序内已统一按北京时间算（yiban/core/clock.py），
 #      这里是双保险，也让日志/依赖工具链的本地时间与业务时间同口径。
 #   2. 数据（SQLite / .env / 日志 / 加密密钥）全部落 /data 外部卷，
 #      保证重启不丢、便于备份与平滑升级，绝不写入镜像层。
@@ -46,13 +46,13 @@ COPY requirements.lock ./
 RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirements.lock
 
 # 应用源码（web 管理端 + 签到脚本 + 共享包 + 合规文档）
-# `yiban/` 是共享包（yiban/status.py 起被 signin/web 导入），漏拷会让容器在
+# `yiban/` 是共享包（yiban/core/status.py 起被 signin/web 导入），漏拷会让容器在
 # import 阶段直接崩——tests/test_docker_image_contents.py 自动比对防复发。
 COPY web/ ./web/
 COPY scripts/ ./scripts/
 COPY yiban/ ./yiban/
 # 配置名册（104 §5.3）：`config/registry.json` 是每个配置键类型/域/缺省的唯一定义点，
-# `yiban/config_loader.py` 在 import 阶段读它取默认常量——漏拷会让容器在 import 阶段
+# `yiban/adapters/config/loader.py` 在 import 阶段读它取默认常量——漏拷会让容器在 import 阶段
 # 直接崩（本地跑测与裸机部署发现不了，它们的 sys.path 里本来就有仓库根）。
 # 守卫：tests/test_config_registry_gate.py 的
 # GateRealRegistryContentTest::test_real_registry_is_tracked_and_shipped 钉这行 COPY 与

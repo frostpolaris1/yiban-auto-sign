@@ -42,7 +42,7 @@
 （SSE 端点、日志页）的契约面，落一个没人认得的取值比丢一条事件更坏。
 
 **归属**
-`yiban/engine/executor_v3.py`（执行体节点）与 `yiban/engine/runner.py`（编排节点）
+`yiban/engine/executor_v3.py`（执行体节点）与 `yiban/app/runner.py`（编排节点）
 共用的一张**观测表**。本表不参与签到正确性：任何一行写不进去都不改变签到结论。
 建表与索引在迁移域（`yiban/store/migrations.py` 的 v21），本模块只读写；
 保留期清理由 `yiban/store/cleanup.py` 的每日编排调用（`purge_run_events`）。
@@ -75,7 +75,7 @@
 按属性取：`mock.patch.object(db, "get_conn", …)` 一类打桩要求打桩点落在 db 门面上，
 直接调本模块同名函数会让打桩静默失效（测试仍绿，但打桩点不再是它以为的那一个）。
 调用谁：`yiban.clock`。
-谁调用：`yiban/engine/executor_v3.py`、`yiban/engine/runner.py`、
+谁调用：`yiban/engine/executor_v3.py`、`yiban/app/runner.py`、
 `yiban/store/cleanup.py`（每日清理）。
 """
 import contextlib
