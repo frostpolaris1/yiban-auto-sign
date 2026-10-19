@@ -464,7 +464,7 @@ class ProtocolLayerTest(unittest.TestCase):
     def test_signin_forwards_the_same_objects(self):
         """signin 只是转发（**同一对象**）：类、白名单、WAF 判定、账号复核都不是第二份。"""
         from yiban import client as yiban_client
-        from yiban.store import accounts
+        from yiban.adapters.persistence import accounts
 
         self.assertIs(signin.YibanClient, yiban_client.YibanClient)
         self.assertIs(signin.is_waf_blocked, yiban_security.is_waf_blocked)

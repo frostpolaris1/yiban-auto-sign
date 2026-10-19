@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 
+from yiban.adapters.persistence import queue_store  # noqa: E402
 from yiban.core import clock  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
 from yiban.workers import workers  # noqa: E402
 
 #: 真 `subprocess.Popen` 的原始引用：组 3 要把它换成"拉真子进程"的替身，
@@ -58,7 +58,7 @@ _CLAIM_TASK_DIE_SRC = r"""
 import json, os, signal, sys
 sys.path.insert(0, os.environ["E2E_REPO"])
 from yiban import egress
-from yiban.store import db, queue_store
+from yiban.adapters.persistence import db, queue_store
 owner = egress.runtime_owner(os.environ["YIBAN_EXECUTOR_ID"])
 db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None,
            cleanup=False)
@@ -77,7 +77,7 @@ _CLAIM_TASK_EXIT1_SRC = r"""
 import json, os, sys
 sys.path.insert(0, os.environ["E2E_REPO"])
 from yiban import egress
-from yiban.store import db, queue_store
+from yiban.adapters.persistence import db, queue_store
 owner = egress.runtime_owner(os.environ["YIBAN_EXECUTOR_ID"])
 db.init_db(os.environ["E2E_DB"], env_file=os.environ.get("E2E_ENV_FILE") or None,
            cleanup=False)

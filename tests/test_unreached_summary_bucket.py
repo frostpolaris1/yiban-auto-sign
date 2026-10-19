@@ -42,6 +42,8 @@ from unittest import mock
 import db
 
 from yiban import egress
+from yiban.adapters.persistence import clock_meta, queue_store
+from yiban.adapters.persistence import connection as store_conn  # current_db_file 的唯一定义点
 from yiban.app import runner
 from yiban.core import clock, hrw
 from yiban.core import status as yiban_status
@@ -51,8 +53,6 @@ from yiban.engine import (
     schedule,
     token_bucket,
 )
-from yiban.store import clock_meta, queue_store
-from yiban.store import connection as store_conn  # current_db_file 的唯一定义点
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二：周末门不拦

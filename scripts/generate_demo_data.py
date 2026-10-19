@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 
-from yiban.store import purge_guard
+from yiban.adapters.persistence import purge_guard
 
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 

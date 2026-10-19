@@ -83,7 +83,7 @@ class _EgressCliCase(unittest.TestCase):
     def _seed(self, rows=()):
         """建真 schema 的临时库并写入若干 `egress_state` 行（走数据层，绝不碰别的库）。"""
         code = (
-            "import sys;from yiban.store import db, queue_store;"
+            "import sys;from yiban.adapters.persistence import db, queue_store;"
             "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "i=3\n"
             "while i < len(sys.argv):\n"

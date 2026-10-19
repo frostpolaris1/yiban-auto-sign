@@ -1014,7 +1014,7 @@ class ClockCoordinateGateTest(unittest.TestCase):
                 f.write('"""历史叙述：yiban.clock 迁到 yiban.core.clock。"""\n'
                         'from yiban.core import clock\n'
                         'from yiban.core.clock import now\n'
-                        'import yiban.store.clock_meta as cm\n'
+                        'import yiban.adapters.persistence.clock_meta as cm\n'
                         'from yiban import client\n'
                         'A = "yiban.core.clock.now"\n'
                         'B = "yiban.clock_meta"\n'
@@ -1366,7 +1366,7 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
                         '# 注释里的 yiban.status 不算\n'
                         'import yiban.status_ledger\n'                    # ⑨ 同前缀他模块 ⇒ 不命中
                         'FLAG = "from yiban import cli; cli.main([\'egress\',\'--status\'])"\n'  # ⑩ 别的坐标＋CLI 旗标 ⇒ 不命中
-                        'MULTI = "from yiban import store, window"\n'      # ⑪ 混名列表含旧短名 ⇒ 命中
+                        'MULTI = "from yiban import egress, window"\n'     # ⑪ 混名列表含旧短名 ⇒ 命中
                         'import yiban as Y\n'
                         'Y.masking.sanitize_text("x")\n'                  # ⑫ 包别名属性访问 ⇒ 命中
                         'from yiban import *\n')                          # ⑬ 星号导入 ⇒ 命中
@@ -1402,7 +1402,7 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
                         'import logging\n'
                         'from yiban.core import status, window, masking\n'
                         'from yiban.core.status import STATUS_SUCCESS\n'
-                        'import yiban.store.queue_store as qs\n'
+                        'import yiban.adapters.persistence.queue_store as qs\n'
                         'LOGGER = logging.getLogger("yiban.window")\n'
                         'A = "yiban.core.status.STATUS_SUCCESS"\n'
                         'B = "yiban.status_ledger"\n'
@@ -1960,7 +1960,7 @@ class EngineCoordinateGateTest(unittest.TestCase):
                         'from yiban.adapters.statefiles import state_io\n'
                         'from yiban.workers import workers\n'
                         'from yiban.engine import schedule, executor_v3\n'
-                        'import yiban.store.queue_store as qs\n'
+                        'import yiban.adapters.persistence.queue_store as qs\n'
                         'A = "yiban.app.runner.main"\n'
                         'B = "from yiban.app import runner"\n'
                         'C = "yiban.engine.runner_extra"\n')
