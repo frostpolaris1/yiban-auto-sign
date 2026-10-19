@@ -9,7 +9,7 @@
   一键暂停挡下**时拉起 `sign --fallback`，窗口结束由进程自己退出（判据全部复用引擎
   实现，见 `_fallback_should_run`；与宿主 cron 的 `scripts/yiban-fallback.sh` 同语义）
 - 每日 03:00 清理 /data/logs 与 /data/state 下过期的按天日志/状态文件
-  （策略唯一在 yiban/state_gc.py，与宿主 cron 共用一张表）
+  （策略唯一在 yiban/adapters/statefiles/state_gc.py，与宿主 cron 共用一张表）
 - 每日 02:00 定时备份（2026-10-01 · M44）：容器形态过去**没有任何备份**——宿主形态有
   cron 那条 02:00 行，而容器部署的用户根本没有宿主 cron，容器调度器也漏了这个挂点，
   等于"看着在跑、其实从没备份过"。这里补上：复用 `docker/backup-docker.sh`（上一批刚
@@ -313,7 +313,7 @@ def healthcheck_main(state_dir=None):
 
 
 def _cleanup_state():
-    """按天状态文件的过期清理（策略唯一在 `yiban/state_gc.py`，与宿主 cron 同一份）。
+    """按天状态文件的过期清理（策略唯一在 `yiban/adapters/statefiles/state_gc.py`，与宿主 cron 同一份）。
 
     原实现只清按天日志（`sign-*.log`）而不管状态目录：容器形态下
     `/data/state` 里的 `sched-run-*` / `sched-slot-*` / `sign-daily-*` /

@@ -23,8 +23,8 @@
 - `workers` → `yiban/workers/workers.py`（其编排面按契约第 1 节应属 `app/coord`，
   拆分属第三刀）。
 
-命令行入口是 `yiban/entry/cli/`（`python -m yiban.cli sign [...]`，旧坐标 `yiban/cli.py`
-是转发壳），旧路径 `scripts/signin.py` 只剩兼容壳（引导 + 全量转发 + `sys.exit`）。
+命令行入口是 `yiban/entry/cli/`（`python -m yiban.entry.cli sign [...]`）；
+旧坐标转发壳已由 `145-E` 删净，`scripts/signin.py` 只剩兼容壳（引导 + 全量转发 + `sys.exit`）。
 
 两条依赖纪律（与 `yiban/` 其它包一致，且直接决定既有测试的打桩是否生效）：
 

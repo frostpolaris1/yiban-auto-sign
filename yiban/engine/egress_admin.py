@@ -6,7 +6,7 @@
 用途是给运维一条**受支持的撤销**：风控信号把某出口砍到 1/4 后，AIMD 要约 8 个干净轮
 才能爬回；此前只能直接改库。复位写的是库里的记忆，进程内的桶不受影响（见下"边界"）。
 
-**为什么单独成模块**：命令行门面 `yiban/cli.py` 的体量已近上限。本族只服务
+**为什么单独成模块**：命令行门面 `yiban/entry/cli/__init__.py` 的体量已近上限。本族只服务
 "限速自适应的人工撤销"一条变更轴，与 `db` 维护族（库文件本身的运维动作）不同，
 故按同族先例（`yiban/engine/db_maintenance.py`）外移。
 
@@ -30,7 +30,7 @@
 （含义见 `docs/dev/cli.md` §3）。
 调用谁：`yiban.engine.token_bucket`、`yiban.engine.schedule`、`yiban.egress`、
 `yiban.store.db`、`yiban.clock`、`yiban.engine.cli_support`。
-谁调用：`yiban/cli.py` 的 `_dispatch`。
+谁调用：`yiban/entry/cli/__init__.py` 的 `_dispatch`。
 
 **四条边界**
 1. 桶键现在是**出口标识**（`direct` 或去 userinfo 的 `scheme://host[:port]`，工单 2cwd）。
