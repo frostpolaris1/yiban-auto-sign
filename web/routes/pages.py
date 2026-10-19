@@ -17,9 +17,10 @@
 
 **通信**
 本模块不持有 app 实例：注册在 `register(app)` 里做，请求期需要 app 自身的东西
-（`static_folder` / `response_class`）走 Flask `current_app`。凡引用 web.app 的模块级
-名字（`_current_role`、渲染助手、版本与备案常量等）一律经 `web.routes.appmod()` 按属性
-取——`mock.patch.object(web.app, …)` 的打桩点必须继续生效（见 `appmod()`）。登录页的
+（`static_folder` / `response_class`）走 Flask `current_app`。A 类转发名
+（`APP_VERSION` / `db` / `_client_ip` / `_rate_lock` / `_ip_store_trim`）经真源模块直取
+（批 3-a 拆墙）；app.py 自有的模块级名字（`_current_role`、渲染助手、备案常量等）仍经
+`web.routes.appmod()` 按属性取。登录页的
 循环计数挂 `current_app.extensions`，保持"每个 app 实例一份"的原工厂局部变量语义。
 """
 import os
@@ -36,10 +37,15 @@ from flask import (
     url_for,
 )
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import security as _security
 from web.routes import appmod as _appmod
+from web.services import locks as _locks
 from web.services import signstatus as _signstatus
 from web.services import vue_assets as _vue_assets
+from yiban import __version__ as APP_VERSION
 from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.persistence import db
 from yiban.core import status as _yiban_status
 
 
@@ -81,7 +87,7 @@ def _render_admin_page(template, nav_key, crumbs, extra=None):
     return render_template(
         template,
         web_version=m.WEB_VERSION,
-        app_version=m.APP_VERSION,
+        app_version=APP_VERSION,
         icp_info=m.icp_info(),
         police_info=m.police_info(),
         police_link=m.police_link(),
@@ -239,7 +245,7 @@ def _render_user_page(template, nav_key, crumbs, extra=None):
     return render_template(
         template,
         web_version=m.WEB_VERSION,
-        app_version=m.APP_VERSION,
+        app_version=APP_VERSION,
         icp_info=m.icp_info(),
         police_info=m.police_info(),
         police_link=m.police_link(),
@@ -281,15 +287,15 @@ def _login_loop():
 def login_page():
     m = _appmod()
     if session.get("auth"):
-        ip = m._client_ip()
+        ip = _security._client_ip()
         now = time.time()
         loop = _login_loop()
         # trim 与随后的读改写必须在同一把 _rate_lock 内：`_ip_store_trim` 会
         # `store.items()` 遍历（本表 > _LOGIN_LOOP_LIMIT=1000 才进入清理分支），
         # 锁外并发插入 `loop[ip]=...` 会让迭代中的 dict 变尺寸 → RuntimeError → 500。
         # 不变量见 locks.py：调用方持锁、trim 自身不取锁。
-        with m._rate_lock:
-            m._ip_store_trim(loop, 60)
+        with _locks._rate_lock:
+            _security._ip_store_trim(loop, 60)
             # 条目上限防护：超出时清理最老的 20%
             if len(loop) > _LOGIN_LOOP_LIMIT:
                 sorted_ips = sorted(loop, key=lambda k: loop[k][1])
@@ -302,7 +308,7 @@ def login_page():
             loop[ip] = (cnt, first)
         if cnt < 4:
             return redirect(url_for("dashboard_page") if m._current_role() == "admin" else url_for("user_calendar_page"))
-        m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", m.db.hash_ip(ip))
+        m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
     return _render_auth_vue_page("login.html", "login.html")
 
 
@@ -320,7 +326,7 @@ def _render_auth_vue_page(entry, template):
     return render_template(
         template,
         web_version=m.WEB_VERSION,
-        app_version=m.APP_VERSION,
+        app_version=APP_VERSION,
         icp_info=m.icp_info(),
         police_info=m.police_info(),
         police_link=m.police_link(),
