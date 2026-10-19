@@ -32,6 +32,7 @@ from unittest import mock
 from werkzeug.security import generate_password_hash
 
 from yiban.adapters.persistence.audit_chain import actor_tag
+from yiban.attempt import jobs as verify_jobs
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -704,7 +705,7 @@ class _LifecycleBase(unittest.TestCase):
         end = time.time() + timeout
         while time.time() < end:
             job = db.get_verify_job(job_id)
-            if job and job["status"] in self.webapp.VERIFY_JOB_TERMINAL:
+            if job and job["status"] in verify_jobs.TERMINAL_STATUSES:
                 return job
             time.sleep(0.05)
         self.fail(f"任务未在 {timeout}s 内落终态: {db.get_verify_job(job_id)}")
@@ -1200,7 +1201,7 @@ class _A4Base(unittest.TestCase):
         end = time.time() + timeout
         while time.time() < end:
             job = db.get_verify_job(job_id)
-            if job and job["status"] in self.webapp.VERIFY_JOB_TERMINAL:
+            if job and job["status"] in verify_jobs.TERMINAL_STATUSES:
                 return job
             time.sleep(0.05)
         return db.get_verify_job(job_id)

@@ -767,10 +767,10 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write('{"13800138000": "✅", "13900139000": "❌", '
                     '"13700137000": "➖", "13600136000": "?"}')
         got = self.webapp.load_sign_state(date)
-        self.assertEqual(got["13800138000"]["status"], self.webapp.STATUS_SUCCESS)
-        self.assertEqual(got["13900139000"]["status"], self.webapp.STATUS_FAILED)
-        self.assertEqual(got["13700137000"]["status"], self.webapp.STATUS_NO_TASK)
-        self.assertEqual(got["13600136000"]["status"], self.webapp.STATUS_PENDING)
+        self.assertEqual(got["13800138000"]["status"], yiban_status.STATUS_SUCCESS)
+        self.assertEqual(got["13900139000"]["status"], yiban_status.STATUS_FAILED)
+        self.assertEqual(got["13700137000"]["status"], yiban_status.STATUS_NO_TASK)
+        self.assertEqual(got["13600136000"]["status"], yiban_status.STATUS_PENDING)
         # 结构化文件优先；为空 dict 时继续回退
         structured = os.path.join(self.tmp, f"sign-state-{date}.json")
         with io.open(structured, "w", encoding="utf-8") as f:
