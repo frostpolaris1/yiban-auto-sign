@@ -999,23 +999,6 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
 
 
-COMMON_APP_STATE = (
-    "ENV_FILE", "LOG_FILE", "STATE_DIR", "read_env", "load_env_int",
-    "_sign_window", "edge_config", "log_path_for", "_atomic_write",
-    "_file_lock", "_rate_lock",
-)
-
-
-APP_HELD_STATE_NOTIFY = {
-    "web/services/notify_mail.py": (*COMMON_APP_STATE, "_mail_alert_due"),
-    "web/services/channel_health.py": (
-        *COMMON_APP_STATE, "send_notification", "_push_ever_configured", "_mail_alert_due"),
-    "web/services/capacity.py": (
-        *COMMON_APP_STATE, "send_notification", "DEFAULT_MAX_ACCOUNTS", "DEFAULT_MAX_USERS"),
-    "web/services/manual_sign.py": COMMON_APP_STATE,
-}
-
-
 class WebServicesNotifySplitContractTest(unittest.TestCase):
     """以别名加载的 app 副本为靶子（routes 与测试实际看到的那一份）。"""
 
@@ -1756,8 +1739,9 @@ class _TrimProbeStore(dict):
 # ① **读者可解析**：路由与测试经 app 别名读到的每个名字，都必须在 `web/app.py` 有绑定。
 #    删掉一个还有读者的名字 ⇒ 红，点名 `文件:行`。
 # ② **无零读者转发名**：带 `noqa: F401` 的每个 import 绑定名，至少要有一个读者。
-#    豁免登记在 `_WALL_DEAD_F401_EXEMPT`（逐名附理由）与 `_WALL_DEAD_F401_BATCH3A`
-#    （批 3-a 的过渡集：路由读者已迁走、墙名待批 3-b 删除），两处都不许空豁免。
+#    豁免登记在 `_WALL_DEAD_F401_EXEMPT`（逐名附理由），不许空豁免。
+#    批 3-a 的过渡集 `_WALL_DEAD_F401_BATCH3A`（21 名）已在批 3-b 与墙名同批删除，
+#    故本门不再有那份过渡登记，也没有对应的腐烂断言（删名与删登记同批做）。
 # 扫描面非空：绑定名、读者、F401 名集各设下限；扫空即红（AGENTS §30）。
 #
 # 边界：① 的别名取**规范别名**（`self.webapp` 一族），不把 `w`/`mod` 等易与其他模块
@@ -1789,37 +1773,6 @@ _WALL_DEAD_F401_EXEMPT = {
         "`_PWHASH_OUT_OF_FACE_REGISTRY` 同批清空。"),
     "check_password_hash": "145-B T1 已迁走自有面全部读者；墙名待 145-E 删除",
 }
-
-#: 批 3-a（拆墙：A 类转发名直连真源）迁走路由读者后**暂**零读者的转发名。
-#:
-#: 批 3-a 把 93 个 A 类转发名的路由读取点改为直连真源模块，于是凡是**测试面也不再
-#: 按墙名打桩**的那些名字，在本片后零读者。**本片不删墙名**（墙的退役归批 3-b），
-#: 故按本门的豁免机制登记：这是**过渡态**，批 3-b 删名时须同批删掉本集合——
-#: `test_exempt_names_are_still_f401` 与 `test_batch3a_exemptions_are_still_f401`
-#: 钉住这一点（名字真被删掉后这两条断言即红）。
-_WALL_DEAD_F401_BATCH3A = frozenset({
-    "ACCOUNT_STATUS_REJECTED",
-    "ANNOUNCEMENT_DRAFT_META_FMT",
-    "ANNOUNCEMENT_DRAFT_META_SEP",
-    "LOG_LEVELS",
-    "LOG_LEVEL_DEFAULT",
-    "VerifyQuotaExceeded",
-    "_change_mail",
-    "_executor_activity",
-    "_executor_health_cards",
-    "_executor_row_payload",
-    "_filter_log_level",
-    "_is_http_proxy_url",
-    "_last_executors",
-    "_mask_url_userinfo",
-    "_new_admin_sid",
-    "_next_executor_slot",
-    "_terminate_signin_proc",
-    "child_env",
-    "fold_phone_code",
-    "load_users",
-    "mail_config",
-})
 
 
 @functools.lru_cache(maxsize=None)
@@ -1869,6 +1822,59 @@ def _wall_route_reads():
                         and node.value.id in aliases and not node.attr.startswith("__"):
                     out.append((node.attr, os.path.relpath(path, BASE).replace("\\", "/"),
                                 node.lineno))
+    return out
+
+
+#: 服务层里可以**经参数**收下 app 模块的形参名。批 3-b 实测：`web/services/device_refresh.py`
+#: 的 `refresh_account_device(m, …)` 在 except 子句里读 `m.VerifyQuotaExceeded`——那种读法
+#: 既不是 `appmod()` 别名（路由面）也不是测试别名，只看 routes/tests 会把它判成"零读者"
+#: 并删掉**还有读者的名字**（删了 429 分支变 500，实测抓到）。故本门把服务层面的读法
+#: 并入读者面：§29「门看的东西 ＝ 实际改的东西」。
+_WALL_HOST_PARAMS = frozenset(("m",))
+#: 服务层面（相对 BASE）。
+_WALL_HOST_DIR = os.path.join(BASE, "web", "services")
+
+
+def host_module_reads_in(src, rel):
+    """一段服务层源码里"经宿主模块参数读 app 属性"的读者：`(名字, rel, 行号)`。
+
+    别名＝`appmod()` 赋值名 ∪ 形参名 ∈ `_WALL_HOST_PARAMS`。纯函数，便于做突变验证。
+    """
+    tree = ast.parse(src)
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn = getattr(node.value.func, "id", None) or getattr(node.value.func, "attr", None)
+            if fn in ("appmod", "_appmod"):
+                aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = (list(node.args.posonlyargs) + list(node.args.args)
+                    + list(node.args.kwonlyargs))
+            aliases.update(a.arg for a in args if a.arg in _WALL_HOST_PARAMS)
+    if not aliases:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in aliases and not node.attr.startswith("__"):
+            out.append((node.attr, rel, node.lineno))
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_host_module_reads():
+    """服务层里经宿主模块参数读 app 属性的读者：`(名字, 文件, 行号)` 列表。"""
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_HOST_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            out.extend(host_module_reads_in(src, rel))
     return out
 
 
@@ -1932,8 +1938,12 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
 
     def test_route_and_test_readers_are_all_bound(self):
         bound, _f401 = _wall_app_bindings()
-        reads = _wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES)
-        self.assertGreaterEqual(len(bound), 300,
+        reads = (_wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES)
+                 + _wall_host_module_reads())
+        # 绑定面下限：用途只是"解析器或路径失效 ⇒ 红"。批 3-a 末（`e5aceb07`）实测 360，
+        # 批 3-b 删 21 个零读者转发名、搬走 47 个真定义（其中 4 名改由新家导入）、
+        # 去掉 2 个已无用的 stdlib 导入 ⇒ 本批实测 294，故下限由 300 下调为 250。
+        self.assertGreaterEqual(len(bound), 250,
                                 "web/app.py 绑定名过少——解析器或路径失效（扫空不得当绿）")
         self.assertGreaterEqual(len(reads), 1000,
                                 "读者扫描面过小——别名探测失效（扫空不得当绿）")
@@ -1944,16 +1954,40 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
 
     def test_no_dead_f401_name_beyond_registered_exemptions(self):
         _bound, f401 = _wall_app_bindings()
-        reads = _wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES_WIDE)
+        reads = (_wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES_WIDE)
+                 + _wall_host_module_reads())
         self.assertGreaterEqual(len(f401), 50,
                                 "F401 名集过小——注解解析失效（扫空不得当绿）")
         self.assertGreaterEqual(len(reads), 1000,
                                 "读者扫描面过小——别名探测失效（扫空不得当绿）")
         read_names = {name for name, _, _ in reads}
-        exempt = set(_WALL_DEAD_F401_EXEMPT) | _WALL_DEAD_F401_BATCH3A
+        exempt = set(_WALL_DEAD_F401_EXEMPT)
         dead = sorted(n for n in f401 if n not in read_names and n not in exempt)
         self.assertEqual(dead, [],
                          "以下带 noqa: F401 的名字没有任何读者（零读者转发名）：" + ", ".join(dead))
+
+    def test_host_module_reader_face_has_teeth(self):
+        """服务层读者面有牙：经形参 `m` 的读法必须命中；无宿主参数的文件不得误命中。
+
+        来历见 `_WALL_HOST_PARAMS` 的注释：批 3-b 删零读者名时，只看 routes/tests 面
+        会把 `m.VerifyQuotaExceeded` 判成零读者并删掉——删了 429 分支变 500（实测抓到）。
+        """
+        n = chr(10)
+        src = n.join(["def go(m, acc):",
+                      "    try:",
+                      "        return m.run_gated_call(acc)",
+                      "    except m.VerifyQuotaExceeded:",
+                      "        return None", ""])
+        got = sorted(host_module_reads_in(src, "web/services/x.py"))
+        self.assertIn(("VerifyQuotaExceeded", "web/services/x.py", 4), got)
+        self.assertIn(("run_gated_call", "web/services/x.py", 3), got)
+        self.assertEqual(
+            host_module_reads_in("def go(acc):" + n + "    return acc.run_gated_call()" + n,
+                                 "web/services/y.py"),
+            [], "没有宿主模块参数却报出读者：本面会误红")
+        self.assertGreaterEqual(
+            len(_wall_host_module_reads()), 10,
+            "服务层读者面过小（实测 14 处，全在 device_refresh）——形参别名探测失效")
 
     def test_exempt_names_are_still_f401(self):
         """豁免清单不得腐烂：登记的名字必须仍在 F401 名集里。
@@ -1967,16 +2001,3 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
             stale, [],
             f"豁免清单登记的名字已不在 F401 名集（名字已删/已不再是转发名）：{stale}；"
             "请把这些登记从 _WALL_DEAD_F401_EXEMPT 删掉")
-
-    def test_batch3a_exemptions_are_still_f401(self):
-        """批 3-a 的过渡豁免同样不得腐烂：登记名必须仍在 F401 名集里。
-
-        与 `test_exempt_names_are_still_f401` 同一纪律：批 3-b 删墙名时，
-        本集合的登记必须同批删掉，否则它会变成永久豁免。
-        """
-        _bound, f401 = _wall_app_bindings()
-        stale = sorted(n for n in _WALL_DEAD_F401_BATCH3A if n not in f401)
-        self.assertEqual(
-            stale, [],
-            f"批 3-a 过渡豁免登记的名字已不在 F401 名集（名字已删）：{stale}；"
-            "请把这些登记从 _WALL_DEAD_F401_BATCH3A 删掉")

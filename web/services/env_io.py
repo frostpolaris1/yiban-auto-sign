@@ -12,7 +12,11 @@
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`；正态 μ/σ 区间四键的映射表 `SCHEDULE_DIST_ENV_KEYS` /
-`SCHEDULE_DIST_DEFAULTS` / `SCHEDULE_DIST_KEYS`（A 档键名单源，读写两侧与前端对拍共用）。
+`SCHEDULE_DIST_DEFAULTS` / `SCHEDULE_DIST_KEYS`（A 档键名单源，读写两侧与前端对拍共用）；
+以及**键名清单**——设置项档位（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）
+与公告四键（`ANNOUNCEMENT_KEY` / `ANNOUNCEMENT_DRAFT_KEY` /
+`ANNOUNCEMENT_DRAFT_META_KEY` / `ANNOUNCEMENT_PUBLISHED_META_KEY`）。
+键名与键的读写同处一模块：改名或增键时只有一处要动。
 
 **归属**
 原 `web/app.py` 的模块级 env 辅助，唯一真源在本模块；`web/app.py` 只保留名字面与转发，
@@ -126,6 +130,50 @@ SCHEDULE_DIST_DEFAULTS = {
 }
 #: 四键的字段名集合（A 档清单；`settings_api` 的 403/口令门禁与前端对拍测试共用一份）。
 SCHEDULE_DIST_KEYS = frozenset(SCHEDULE_DIST_ENV_KEYS)
+
+# ---- 设置项档位（`POST /api/settings` 权限判定的**唯一事实源**）----
+# 分档判据是「影响半径 × 能否造成静默漏签」，不是"看起来危不危险"：
+#   A 档（`MASTER_ONLY_KEYS`）一次改动就波及全站签到或直接拆掉安全闸门——周末开关、
+#     签到窗口与首尾裁切决定"今天到底签不签得到"，随机延迟与容量上限决定"多少账号被
+#     挤出窗口"，account_verify / probe_* 会让服务器对**全站账号**发起真实易班登录。
+#     故仅主管理员可写，且值真变化时必须当次输口令（短时豁免不适用）+ 变更告警。
+#   B 档（`GATED_KEYS`）只改排序风格与自选权，出错有 A 档参数兜底，故任意管理员可写，
+#     值真变化时过同一个口令门禁但允许豁免。
+# 唯一的例外是 `global_pause`：0→1「急停」任意管理员都能做（当次口令 + 占用高危额度 +
+# 紧急告警），1→0 恢复仍仅主管理员——把"先止损"的权力留在在场每个人手里，把"放开"的
+# 权力收在主管理员手里。
+# 新增设置键时必须改这里而不是在路由里再列一遍键名：此前 403 清单只写在 handler 内，
+# 与前端各页自己的收控件清单两处各写一遍、必然漂移（测试里的元测试负责比对这两份）。
+#
+# 逐键复核（2026-09-28 用户判据：**在不当时间——窗口前几秒或窗口内——改它，能不能
+# 静悄悄把签到序列搞炸？能，就留口令门**；不能的仅剩"只增摩擦"的键）：
+#   留门（能静默搞炸，或属安全网本身）：
+#     sign_window / window_edge_sec / edge_front_sec / edge_back_sec
+#       ——窗口改窄或首尾裁切吃光有效窗口 ⇒ 当天整批账号静默跳过；
+#     sunday_sign / saturday_sign —— 当天整天空签且不报错（面板会显示休息，但没人盯着看）；
+#     start_delay_max / gap_max —— 延迟或间隔 × 账号数超出窗口 ⇒ 后段账号排队到最后全落空；
+#     account_verify / registration_pause —— 关验证/重开注册 ⇒ 未验证的批量账号涌入主链
+#       对易班发起真实登录 ⇒ 平台风控封号（§5.2 明列的用户面合规事故）；
+#     probe_enable / probe_time / probe_interval —— 探针是发现账号异常的眼睛，改坏即
+#       静默失去监测（与 SMTP 条目同属"安全网本身"，故同判据留门）；
+#     global_pause 0→1 —— 全站停签（见下）。
+#   仅摩擦、按判据可以放开（本次刻意不动：这三个键半年改一次，放开要连前端面板的收控件
+#   一起改，收益不抵新增面；若日后摩擦真的咬人再动）：
+#     max_users / max_accounts —— 只影响**新提交**的配额判定（有明确报错），
+#       不触碰已排定的签到序列，改小也不会让在册账号掉队。
+MASTER_ONLY_KEYS = frozenset({
+    "sign_window", "window_edge_sec", "edge_front_sec", "edge_back_sec",
+    "sunday_sign", "saturday_sign", "registration_pause",
+    "start_delay_max", "gap_max", "max_users", "max_accounts",
+    "account_verify", "probe_enable", "probe_time", "probe_interval",
+    # 健康报告发送时刻/星期：与探针同属"安全网本身"——把时刻改到没人看的钟点、
+    # 或把星期改到别的一天，报告照发但看不见，静默失去周期性证据（同判据留门）。
+    "health_report_time", "health_report_weekday",
+})
+GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref"})
+# `global_pause` 刻意不进 `MASTER_ONLY_KEYS`：它是 A 档的唯一例外，权限按**变更方向**
+# 分流（0→1 急停人人可做、1→0 恢复仅主管理员），故单独用这个键名判方向。
+GLOBAL_PAUSE_KEY = "global_pause"
 
 # 这些键的生效值是 0/1 开关：写进审计与告警正文时翻成中文，免得运维盯着 "0"→"1" 心算
 _BOOL_SETTINGS_KEYS = frozenset({
@@ -530,10 +578,19 @@ def ensure_secret_key(env_path, atomic_write, audit=None):
 
 
 # ---------------------------------------------------------------------------
-# 公告元数据（草稿与线上公告共用同一形态：`<小写邮箱>|YYYY-MM-DD HH:MM:SS`）
+# 公告：三个 .env 键的键名单源 ＋ 元数据形态（草稿与线上公告共用）
 # ---------------------------------------------------------------------------
-# 该形态存在 .env 的公告键里，故解析器与它的分隔符/时刻格式归本模块；键名本身
-# （ANNOUNCEMENT_*_KEY）仍归公告域所在的 web.app。
+# 公告会出现在**全体学生**的页面顶横幅与登录页上，是内部人/被盗会话最好用的社工面，
+# 故拆成两半：普通管理员只能写草稿，主管理员点"发布"才落成对外可见的那一键。
+# 作者与时刻单独成键（而非塞进草稿正文），为的是发布人批准前就能看见"这是谁、
+# 什么时候写的"——审计表只能事后追，双人发布要的是事前那一眼。
+ANNOUNCEMENT_KEY = "YIBAN_ANNOUNCEMENT"
+ANNOUNCEMENT_DRAFT_KEY = "YIBAN_ANNOUNCEMENT_DRAFT"
+ANNOUNCEMENT_DRAFT_META_KEY = "YIBAN_ANNOUNCEMENT_DRAFT_META"
+# 线上公告的发布人/时刻：前端要同屏显示"草稿是谁写的"与"线上是谁在何时发的"，
+# 否则管理员只能看到一串文本，分不清自己看到的到底是待发布内容还是已生效内容。
+ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
+# 该形态存在 .env 的公告键里，故解析器与它的分隔符/时刻格式也归本模块。
 ANNOUNCEMENT_DRAFT_META_SEP = "|"
 ANNOUNCEMENT_DRAFT_META_FMT = "%Y-%m-%d %H:%M:%S"
 
