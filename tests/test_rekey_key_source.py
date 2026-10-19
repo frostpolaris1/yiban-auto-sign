@@ -113,6 +113,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
+from web.services import limits as _limits  # noqa: E402
 from yiban.adapters.config import account_crypto  # noqa: E402
 from yiban.adapters.notifier.notify import (  # noqa: E402
     ledger as notify_ledger,  # 账本内部态走子模块
@@ -1701,7 +1702,7 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
     def test_batch_param_errors_still_checked_before_gate(self):
         """既有 400 校验优先级不变：未知动作/空选择/超上限都不该被改成交给门禁判。"""
         c, h = self._master()
-        cap = self.webapp.BATCH_OP_LIMIT
+        cap = _limits.BATCH_OP_LIMIT
         for body in ({"action": "nope", "ids": [0]},
                      {"action": "purge", "ids": []},
                      {"action": "purge", "ids": list(range(cap + 1))}):
@@ -2014,7 +2015,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         email, pw = self._user()
         c = self._client()
         bad = "wrong-" + pw
-        th = self.webapp.LOGIN_FAIL_NOTIFY
+        th = _limits.LOGIN_FAIL_NOTIFY
         # 告警阈值与锁定阈值同值：第 th 次既留痕又锁定（429），之前都是 401
         for i in range(th):
             r = c.post("/api/login", json={"username": email, "password": bad})
@@ -2030,7 +2031,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         """红线：留痕不得改动锁定与返回码语义——第 5 次仍 429，其后仍 429 且无成功行。"""
         email, pw = self._user("lockme@test.local")
         c = self._client()
-        for _ in range(self.webapp.LOGIN_MAX_FAILS):
+        for _ in range(_limits.LOGIN_MAX_FAILS):
             r = c.post("/api/login", json={"username": email, "password": "nope-" + pw})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
         r2 = c.post("/api/login", json={"username": email, "password": pw})

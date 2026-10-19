@@ -26,6 +26,7 @@ from test_rekey_key_source import _B14AlertGateBase
 
 import web.security as web_security
 from web.routes import auth as web_routes_auth
+from web.services import limits as _limits
 from yiban.adapters.config import account_crypto
 from yiban.adapters.notifier import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.core.masking import mask_email
@@ -241,14 +242,14 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
 
     def test_below_threshold_sends_nothing(self):
         c = self._client()
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+        for _ in range(_limits.LOGIN_FAIL_NOTIFY - 1):
             c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
         self.assertEqual(self._alerts(), [])
 
     def test_same_user_repeated_mistake_is_not_urgent(self):
         """本人忘密码：连续 3 次输错 → 仍告警（可追溯），但走非紧急账不占手机额度。"""
         c = self._client()
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+        for _ in range(_limits.LOGIN_FAIL_NOTIFY):
             c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
         got = self._alerts()
         self.assertEqual(len(got), 1, f"每轮应只告警一次：{got}")
@@ -263,9 +264,9 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         """
         c = self._client()
         users = ["a1@beta.local", "a2@beta.local", "a3@beta.local"]
-        with mock.patch.object(self.webapp, "LOGIN_FAIL_NOTIFY", 3):
+        with mock.patch.object(_limits, "LOGIN_FAIL_NOTIFY", 3):
             for u in users:
-                for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+                for _ in range(_limits.LOGIN_FAIL_NOTIFY - 1):
                     c.post("/api/login", json={"username": u, "password": "WrongPass#111"})
             # 第 3 个账号的第 3 次失败触发告警：此时该 IP 已试过 3 个不同用户名
             c.post("/api/login", json={"username": users[-1], "password": "WrongPass#111"})
@@ -273,7 +274,7 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         self.assertEqual(len(got), 1, f"仅命中阈值那一次告警：{got}")
         self.assertTrue(got[0][2], "跨账号喷洒必须升级紧急")
         self.assertIn("不同用户名", got[0][1])
-        self.assertIn(f"{self.webapp.LOGIN_SPRAY_USERS} 个", got[0][1],
+        self.assertIn(f"{_limits.LOGIN_SPRAY_USERS} 个", got[0][1],
                       "正文须交代升级依据，否则管理员无从判断是不是误报")
 
     def test_alert_body_masks_the_bruteforced_account_email(self):
@@ -285,7 +286,7 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         """
         c = self._client()
         email = "victim01@qq.com"
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+        for _ in range(_limits.LOGIN_FAIL_NOTIFY):
             c.post("/api/login", json={"username": email, "password": "WrongPass#111"})
         got = self._alerts()
         self.assertEqual(len(got), 1, f"每轮应只告警一次：{got}")
@@ -304,7 +305,7 @@ class LoginAlertRealChannelTest(_B14AlertGateBase):
         """降级只降"推不推手机"的账本归属，不得在应用层就把通知整条跳过。"""
         c = self._client()
         with mock.patch.object(self.webapp.notify, "send") as send_mock:
-            for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+            for _ in range(_limits.LOGIN_FAIL_NOTIFY):
                 c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
             self.assertEqual(send_mock.call_count, 1,
                              "非紧急仍须调用 notify.send（是否推手机由通道侧决定）")

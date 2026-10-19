@@ -26,6 +26,7 @@ from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
 
+from web.services import limits as _limits
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -143,7 +144,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
     def test_failed_password_lockout(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
-        max_fails = self.webapp.LOGIN_MAX_FAILS
+        max_fails = _limits.LOGIN_MAX_FAILS
         for i in range(max_fails - 1):
             r = self._delete(c, token, password="bad")
             self.assertEqual(r.status_code, 400, f"第 {i + 1} 次错误应为 400")
@@ -441,7 +442,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         """2026-08-17 安全审查补齐：恢复接口密码试错必须计入锁定（原可无限爆破冷却期账号）。"""
         db.soft_delete_user_with_accounts("user1@test.local")
         c = self.webapp.create_app().test_client()
-        for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+        for i in range(_limits.LOGIN_MAX_FAILS - 1):
             r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})
             self.assertEqual(r.status_code, 400, f"第 {i + 1} 次错误应为 400")
         r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})
