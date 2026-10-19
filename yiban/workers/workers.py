@@ -14,8 +14,8 @@
 
 **子进程入口是 `python -m yiban.entry.cli sign`**：本模块是包内模块，不再能按文件路径
 直接执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
-坐标取**入口层**（`yiban/entry/cli/`）；旧坐标 `yiban/cli.py` 是待退役的转发壳，
-本模块不得依赖它。
+坐标取**入口层**（`yiban/entry/cli/`）；旧坐标转发壳已由 `145-E` 删净，
+本模块不得依赖旧坐标。
 
 **归属**
 `yiban.engine` 的进程编排层；`runner` 在"多执行体监督"分支调用它。

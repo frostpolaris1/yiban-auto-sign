@@ -29,7 +29,7 @@
 输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与当前日期。
 输出：被删除的过期按日文件与清理结果（供调用方打印/记日志）。
 调用谁：`yiban.clock`、`yiban.infra.env_io`。
-谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/cli.py` 的 `state` 子命令。
+谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/entry/cli/__init__.py` 的 `state` 子命令。
 前端调用点：容器调度器的清理结果与保留期设置经 `/api/settings`
 （`web/static/js/components/settings-quota.js` 等设置页）暴露；登记表或保留期口径变化会改变运维
 在这些页面看到的清理/容量信息。
@@ -215,7 +215,7 @@ def empty_cred_state_path(state_dir):
 def sweep_empty_cred_state(state_dir):
     """删除内容为空（`{}` 或零字节）的 `cred-state.json`。
 
-    熔断状态的**归属方**是 `yiban/cred_state.py`（它的写入路径已保证"空即删文件"），
+    熔断状态的**归属方**是 `yiban/adapters/statefiles/cred_state.py`（它的写入路径已保证"空即删文件"），
     这里是兜底：手工/旧版本留下的空文件会让"无暂停"与"文件缺失"两种语义并存，
     排查时容易误判。有暂停记录则保留。返回是否删除。
     """

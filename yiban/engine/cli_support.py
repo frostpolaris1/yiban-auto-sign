@@ -8,7 +8,7 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 并发登录同一账号）、日志写哪儿（按天文件 handler，装配延迟到入口、导入零副作用）、
 状态文件怎么安全读改写（跨进程文件锁）。输出收口（`_emit_json` / `_say` / `_fail` /
 `_emit_json_error` / `_UsageError` / `_exit_code`）与退出码常量同属"命令行契约"这一
-独立变更轴：调用方（`yiban/cli.py`）按它们解析 stdout 与退出码，引擎侧不碰。
+独立变更轴：调用方（`yiban/entry/cli/__init__.py`）按它们解析 stdout 与退出码，引擎侧不碰。
 
 **归属**
 `yiban.engine` 的进程外壳与命令行契约支撑层（`runner` / `workers` / `round` / `probe`
@@ -19,14 +19,14 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 `GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。`_run_lock_held` 目前**无生产调用点**（让位的锁探测随工单 `l1rx` R4 删除），保留为带 fail-closed 校验者的锁原语。
 运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
 互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
-输出收口供 `yiban/cli.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
+输出收口供 `yiban/entry/cli/__init__.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
 一律 `_emit_json_error` 保证 `--json` 下 stdout 可解析）。
 
 **通信**
 输入：日志级别/路径等环境配置、状态文件路径与加锁范围、结果对象。
 输出：配置好的 logger/handler、被加锁的读改写上下文、stdout 单行 JSON / stderr 人话。
 调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
-谁调用：`yiban/cli.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
+谁调用：`yiban/entry/cli/__init__.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
 `workers`、`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
 页面的"正在跑/存活"判定依赖本模块的全局运行锁。
@@ -278,7 +278,7 @@ def report_fatal_error(summary):
     什么都没有——agent/CI 直调 `python -m yiban.cli sign` 时退出码 1 而 stdout/stderr
     全空，错误只进日志文件。stdout 仍保持"只有结果"
     （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
-    （`yiban/cli.py`）经 `last_fatal_error()` 取用。
+    （`yiban/entry/cli/__init__.py`）经 `last_fatal_error()` 取用。
 
     **脱敏必须在生成本处做，不能指望 formatter**：这条摘要的下游出口全都不经过
     日志装配——stderr 会被 run.sh 的 `2>&1` 与 web 手动签到的 `stdout=log_fh`

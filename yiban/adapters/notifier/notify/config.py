@@ -14,7 +14,7 @@
 `ledger._daily_limit` / `_daily_remaining`、`ipaddress`。
 谁调用：`transport.send` / `send_test`（类型、密钥、白名单）、
 `web/routes/notify.py` 的 `api_notify_config` / `api_notify_config_save`（设置页读概览
-与保存前判定）、`yiban/engine/alerts.py`（`is_configured` 决定要不要走手机通道）。
+与保存前判定）、`yiban/adapters/notifier/report.py`（`is_configured` 决定要不要走手机通道）。
 输出给前端的凭据只有一种形态：`get_config()` 里的 `secret_masked`（`_mask_secret` 的
 前 3 后 2 短指纹）。`get_secret()` 返回的是明文，只被 `transport` 拿去发请求；本层
 `logger` 的三处调用记的是解密/解析异常与 `url_desc(host)`，都不写出密钥本身。
@@ -351,7 +351,7 @@ def channel_usable(ntype, secret):
 
     这是 MF-44 登记的口径分叉的收口：`is_configured()` 曾只看"类型已设且密钥解得出"，
     不看 TYPE 白名单也不看 custom 白名单，而 `send()` 的门①/门⑤遇到未知类型或
-    白名单外地址**必然拒发**——引擎侧（`yiban/engine/alerts.py`）据此判"有推送出口"
+    白名单外地址**必然拒发**——引擎侧（`yiban/adapters/notifier/report.py`）据此判"有推送出口"
     就会少发一封本该走的邮件，告警在两个判定都"正常"的地方静默消失。
     判据从 send() 的行为机械导出：未知类型不猜出口、不安全 URL 不放行。
     """

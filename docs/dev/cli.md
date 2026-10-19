@@ -11,7 +11,7 @@
 统一入口已落地，八个子命令与 `--json` 全部可用：
 
 ```
-python3 -m yiban.cli <子命令> [选项]
+python3 -m yiban.entry.cli <子命令> [选项]
   sign      一轮签到（可 --workers N / --only 手机号 / --fallback / --second-run-check）
   probe     只读健康检查
   config    配置检查（脱敏打印，不联网）
@@ -24,14 +24,15 @@ python3 -m yiban.cli <子命令> [选项]
 
 `scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是**兼容壳**：旧调用方式
 （`run.sh`、cron、容器调度器、本文档 §4 的写法）继续可用并与新入口同退出码。
-`scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连 `yiban.notify` / `yiban.mail`。
+`scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连
+`yiban.adapters.notifier.notify` / `yiban.adapters.notifier.mail`。
 
-模块落位：入口实现在 `yiban/entry/cli/`（`yiban/cli.py` 是转发壳，二者行为同源），
+模块落位：入口实现在 `yiban/entry/cli/`（旧入口转发壳已于 `145-E` 退役），
 引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
 state_io / accounts / workers / config_check / cli_support / db_maintenance / egress_admin），SQLite 层在
-`yiban/store/db.py`。入口一律 `python3 -m yiban.cli`（以文件路径直接跑既不支持也不需要）；
-`python3 -m yiban.entry.cli` 等价，但**本文件记载的调用形态是前者**；
-开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.cli`（cwd 为仓库根）。
+`yiban/adapters/persistence/db.py`。入口一律 `python3 -m yiban.entry.cli`
+（以文件路径直接跑既不支持也不需要）；
+开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.entry.cli`（cwd 为仓库根）。
 
 ## 1.1 路径相关环境变量（四个，与 run.sh 同源）
 
@@ -112,24 +113,24 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance / eg
 新入口（推荐给脚本/agent；`--json` 时 stdout 是**单行** JSON 对象）：
 
 ```bash
-python3 -m yiban.cli version --json
-python3 -m yiban.cli config --json            # 脱敏配置检查（不联网）
-python3 -m yiban.cli db --status --json       # user_version / 表 / 账号数
-python3 -m yiban.cli db --backup /tmp/copy.db --yes          # 写一致性副本（目标不存在）
-python3 -m yiban.cli db --backup /tmp/copy.db --yes --force  # 目标已存在：必须显式 --force
-python3 -m yiban.cli db --restore /tmp/copy.db --json        # 默认 dry-run：只报告计划 + 目标指纹
-python3 -m yiban.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # 覆盖当前库
-python3 -m yiban.cli state                    # 默认 dry-run，只报告
-python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
-python3 -m yiban.cli egress --status --json   # 各出口速率（只读，不回含主机名的旧键）
-python3 -m yiban.cli egress --reset direct --json            # 默认只报告：要写什么、写后速率
-python3 -m yiban.cli egress --reset direct --yes             # 真写：速率回到引擎出厂值
-python3 -m yiban.cli egress --reset http://127.0.0.1:3128 --yes  # 按代理出口标识复位
-python3 -m yiban.cli egress --reset-all --rate 1.5 --yes     # 全体复位到显式速率
-python3 -m yiban.cli capacity --json          # 读实测值给建议
-python3 -m yiban.cli sign --workers 4
-python3 -m yiban.cli sign --fallback
-python3 -m yiban.cli sign --second-run-check  # 退出码 10 = 需要补跑
+python3 -m yiban.entry.cli version --json
+python3 -m yiban.entry.cli config --json            # 脱敏配置检查（不联网）
+python3 -m yiban.entry.cli db --status --json       # user_version / 表 / 账号数
+python3 -m yiban.entry.cli db --backup /tmp/copy.db --yes          # 写一致性副本（目标不存在）
+python3 -m yiban.entry.cli db --backup /tmp/copy.db --yes --force  # 目标已存在：必须显式 --force
+python3 -m yiban.entry.cli db --restore /tmp/copy.db --json        # 默认 dry-run：只报告计划 + 目标指纹
+python3 -m yiban.entry.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # 覆盖当前库
+python3 -m yiban.entry.cli state                    # 默认 dry-run，只报告
+python3 -m yiban.entry.cli state --yes              # 真删（保留期见 .env）
+python3 -m yiban.entry.cli egress --status --json   # 各出口速率（只读，不回含主机名的旧键）
+python3 -m yiban.entry.cli egress --reset direct --json            # 默认只报告：要写什么、写后速率
+python3 -m yiban.entry.cli egress --reset direct --yes             # 真写：速率回到引擎出厂值
+python3 -m yiban.entry.cli egress --reset http://127.0.0.1:3128 --yes  # 按代理出口标识复位
+python3 -m yiban.entry.cli egress --reset-all --rate 1.5 --yes     # 全体复位到显式速率
+python3 -m yiban.entry.cli capacity --json          # 读实测值给建议
+python3 -m yiban.entry.cli sign --workers 4
+python3 -m yiban.entry.cli sign --fallback
+python3 -m yiban.entry.cli sign --second-run-check  # 退出码 10 = 需要补跑
 ```
 
 等价的旧写法（兼容壳，退出码一致；`run.sh` / cron / 容器调度器用的就是这些）：

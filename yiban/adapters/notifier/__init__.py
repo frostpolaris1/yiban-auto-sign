@@ -9,7 +9,7 @@
 - `mail/`：SMTP 邮件（管理员告警、用户签到结果）。原 `yiban/mail/`。
 - `notify/`：Webhook 推送（Server酱 / 自定义 URL）。原 `yiban/notify/`。
 
-**不在本层**：告警**编排**（`yiban/engine/alerts.py`）。
+**不在本层**：告警**编排**（`yiban/adapters/notifier/report.py`）。
 它决定"该不该告警、告警什么"，属应用层的用例编排，不是 I/O 适配。
 它当前仍在 `yiban/engine/`，搬迁属批 B。
 

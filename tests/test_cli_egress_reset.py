@@ -9,7 +9,7 @@
    失败；旧格式（执行体身份键）行**不回含主机名的原串**。另钉"哪些行可能被活进程覆盖"的
    事实在输出里在场。
 对应实现：yiban/engine/egress_admin.py（实现）、yiban/entry/cli/__init__.py（子命令注册
-   与分派；yiban/cli.py 是转发壳）、
+   与分派；旧入口转发壳已于 145-E 退役）、
    yiban/engine/token_bucket.py（速率域名与出厂速率唯一真值源）、
    yiban/adapters/persistence/queue_store.py（`egress_state` 唯一持久化路径）、yiban/core/clock.py（时间域）、
    yiban/egress.py（出口标识口径 `outlet_label` / `is_outlet_identity`）。

@@ -1132,7 +1132,7 @@ def migrate_v21(conn):
     """v21：内核进度事件表 `run_events`（N2a 打点层）。可选迁移，失败只告警不阻断。
 
     **为什么可选**：本表是观测面——`yiban/engine/executor_v3.py` 与
-    `yiban/engine/runner.py` 经 `yiban.store.run_events.report` 写入，写入失败被
+    `yiban/app/runner.py` 经 `yiban.store.run_events.report` 写入，写入失败被
     隔离（只告警），签到结论与退出码都不依赖它。故迁移执行失败不该阻断启动。
 
     **但产物必须在册**：登记进产物登记表后，版本声称过了本档而表不存在

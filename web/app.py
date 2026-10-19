@@ -774,7 +774,7 @@ SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 we
 # 签到状态码与图标/文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
 # 历史上本文件另定义了一份同名常量与 STATUS_ICON/STATUS_TEXT，与 signin 侧各自漂移
 # （实测本侧缺 no_position/global_paused、signin 侧缺 pending）。收口后状态码只有一处
-# 定义；两张映射的差异是**有意的**（不同消费方），合并需前后端协同，见 yiban/status.py。
+# 定义；两张映射的差异是**有意的**（不同消费方），合并需前后端协同，见 yiban/core/status.py。
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
@@ -990,7 +990,7 @@ def write_env_int(env_path, key, value):
     return _env_io_svc.write_env_int(env_path, key, value, write_env_batch)
 
 
-# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 yiban/infra/env_io.py
+# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 yiban/adapters/config/env_io.py
 # （ENV_LINE_BREAK_CHARS / has_line_break / key_line_pattern / count_key_lines /
 # find_env_key_collisions）：读的一半（parse_env_file）本就在那里，写的一半随之
 # 落位，scripts/ 各 .env 写入方无需反向依赖 web 即可共用同一套判定。
