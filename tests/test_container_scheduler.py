@@ -49,6 +49,7 @@ import db
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 from werkzeug.security import generate_password_hash
 
+from web import security as _security
 from web.routes import me_api as web_routes_me_api
 from yiban.core import clock
 from yiban.workers import workers
@@ -872,12 +873,11 @@ class Batch9WebTest(unittest.TestCase):
         # （_constant_time_dummy，安全设计约 0.35s/次）→ 全量串行 14s。mock 掉
         # scrypt 比对为常数时间开销，限速行为判定不受影响（429 来自
         # user_delete_requests 每 IP 计数，与密码校验结果无关）。
-        # 注：patch 对象必须是 self.webapp（模块名 "webapp"，非 "web.app"）——
-        # `_constant_time_dummy` 仍经 `m.*` 取用；而 check_password_hash 自
-        # 145-B `T1` 片起由 `web/routes/me_api.py` 自己从 werkzeug 导入，
-        # 故打桩点落在该模块（打 web.app 会静默失效）。
+        # 注：`_constant_time_dummy` 的打桩点是 `web.security`（批 3-a 起路由直取
+        # 真源，打 web.app 会静默失效）；而 check_password_hash 自 145-B `T1` 片起由
+        # `web/routes/me_api.py` 自己从 werkzeug 导入，故打桩点落在该模块。
         with mock.patch.object(
-                self.webapp, "_constant_time_dummy", lambda pwd: None), \
+                _security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(
                 web_routes_me_api, "check_password_hash", lambda h, p: False):
             c = self.webapp.create_app().test_client()
