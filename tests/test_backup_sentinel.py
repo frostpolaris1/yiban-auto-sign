@@ -406,8 +406,8 @@ class AuditAnchorBroadcastTest(_Base):
             def audit_row_count():
                 return 7
 
-        with (mock.patch.dict("sys.modules", {"yiban.store.db": _FakeDb}),
-              mock.patch("yiban.store.db", _FakeDb)):
+        with (mock.patch.dict("sys.modules", {"yiban.adapters.persistence.db": _FakeDb}),
+              mock.patch("yiban.adapters.persistence.db", _FakeDb)):
             snap = self.mod._anchor_snapshot()
         self.assertEqual(seen["kwargs"].get("cleanup"), False,
                          "只读取证不得触发启动清理")
@@ -428,8 +428,8 @@ class AuditAnchorBroadcastTest(_Base):
             def audit_head_hash_ex():
                 return "error", None
 
-        with (mock.patch.dict("sys.modules", {"yiban.store.db": _FakeDb}),
-              mock.patch("yiban.store.db", _FakeDb)):
+        with (mock.patch.dict("sys.modules", {"yiban.adapters.persistence.db": _FakeDb}),
+              mock.patch("yiban.adapters.persistence.db", _FakeDb)):
             self.assertIsNone(self.mod._anchor_snapshot())
 
 

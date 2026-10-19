@@ -39,10 +39,10 @@ from unittest import mock
 import db  # pyproject.toml 的 pythonpath 把 scripts/ 加进 sys.path
 
 from yiban import client as yiban_client
+from yiban.adapters.persistence import run_events
 from yiban.core import clock
 from yiban.core import status as yiban_status
 from yiban.engine import crash_semantics, executor_v3, token_bucket
-from yiban.store import run_events
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-23"          # 周三：周末门不会拦下用例
@@ -216,7 +216,7 @@ class _Base(unittest.TestCase):
         conn.commit()
 
     def _seed_v(self, v=8, day=DAY):
-        from yiban.store import clock_meta
+        from yiban.adapters.persistence import clock_meta
         clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + day, v)
 
     def _task_state(self, phone, day=DAY):

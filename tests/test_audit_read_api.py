@@ -214,7 +214,7 @@ class AuditReadApiTest(unittest.TestCase):
             "只读审计端点未接 read_audit_trace 访问留痕",
         )
         # 留痕行确实落库（窗口内首读必落一行，见 _read_audit_row_due）
-        from yiban.store import audit_chain
+        from yiban.adapters.persistence import audit_chain
         _rows, total = audit_chain.read_audit_rows(
             action="audit_logs_read", limit=10, offset=0)
         self.assertGreaterEqual(total, 1, "read_audit_trace 未生成留痕行")

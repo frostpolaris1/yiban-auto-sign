@@ -79,7 +79,7 @@ from _live_executor_harness import (  # noqa: E402
     shape,
 )
 
-from yiban.store import queue_store  # noqa: E402
+from yiban.adapters.persistence import queue_store  # noqa: E402
 
 # ---- 归一化模式（静态面）----
 #: `UPDATE sign_tasks SET state`（折叠空白/引号/大小写之后）

@@ -36,9 +36,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+from yiban.adapters.persistence import clock_meta, queue_store
 from yiban.core import window
 from yiban.engine import planner, schedule
-from yiban.store import clock_meta, queue_store
 
 #: 计划用例共用的窗口配置（有效窗口 06:05~07:15，4200s / 70 分片 / 4200 微槽）
 WINDOW_ENV = {
@@ -829,14 +829,14 @@ class _DbBase(unittest.TestCase):
 
     @staticmethod
     def _close_conn():
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         if db._conn is not None:
             with contextlib.suppress(Exception):
                 db._conn.close()
             db._conn = None
 
     def setUp(self):
-        from yiban.store import db
+        from yiban.adapters.persistence import db
         self._close_conn()
         for suffix in ("", "-wal", "-shm"):
             p = self.db_file + suffix

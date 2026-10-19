@@ -220,14 +220,14 @@ class InProcessLockPremiseTest(unittest.TestCase):
     """根因①：`connection._conn_lock` 是进程内锁，把同进程线程串行化。"""
 
     def test_conn_lock_is_in_process_rlock(self):
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         self.assertIsInstance(
             connection._conn_lock, type(threading.RLock()),
             "`_conn_lock` 必须是进程内 RLock：换成任何不串行化同进程线程的锁，"
             "用线程验并发就假绿（这正是本门要挡的形状）")
 
     def test_conn_lock_serializes_same_process_threads(self):
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         peak = _max_concurrent_holders(connection._conn_lock)
         self.assertEqual(
             peak, 1,
@@ -314,7 +314,7 @@ class ConcurrencyFidelityTeethTest(unittest.TestCase):
     """牙：证明两组判据都不是恒绿摆设。"""
 
     def test_premise_has_teeth_when_conn_lock_made_reentrant(self):
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         with mock.patch.object(connection, "_conn_lock", _AlwaysAcquireLock()):
             peak = _max_concurrent_holders(connection._conn_lock)
         self.assertGreater(

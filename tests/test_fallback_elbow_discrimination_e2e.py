@@ -51,8 +51,8 @@ from _live_executor_harness import (  # noqa: E402
     Harness,
 )
 
+from yiban.adapters.persistence import queue_store  # noqa: E402
 from yiban.engine import executor_v3  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
 
 #: 新鲜行的 `run_at` 偏移（秒，相对假时钟）：刚到点，计划轮该领的就是它。
 FRESH_OFFSET = -1

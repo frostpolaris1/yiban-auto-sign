@@ -43,7 +43,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.store.audit_chain import actor_tag
+from yiban.adapters.persistence.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

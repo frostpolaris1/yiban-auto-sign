@@ -200,7 +200,7 @@ c_uv() { # user_version（不过 init_db，只读）
 seed_sql_py() { # 灌合成数据：n 个账号 + 若干审计行 [+ 一条旧出口行]
     cat <<PY
 import sys
-from yiban.store import db, accounts
+from yiban.adapters.persistence import db, accounts
 db.init_db()
 n = $GATE_SEED_N
 rows = [{"name": "seed%05d" % i, "phone": "13%09d" % i,
@@ -349,7 +349,7 @@ phase_B() {
     local out accounts_before head_before
     out="$(c_in_py "$proj" "$ov" "$(seed_sql_py legacy)" 2>>"$log")"; echo "$out" >>"$log"
     accounts_before="$(printf '%s\n' "$out" | sed -n 's/^ACCOUNTS= //p' | head -1)"
-    head_before="$(c_in_py "$proj" "$ov" "from yiban.store import db; db.init_db(cleanup=False, migrate=False); print('HEAD', db.audit_head_hash())" 2>>"$log")"
+    head_before="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(cleanup=False, migrate=False); print('HEAD', db.audit_head_hash())" 2>>"$log")"
     echo "$head_before" >>"$log"
     if [ "${accounts_before:-0}" = "$GATE_SEED_N" ]; then pass "B3 旧版灌数（账号+审计+旧出口行）" "accounts=$accounts_before"; else fail "B3 旧版灌数" "accounts=${accounts_before:-?}"; fi
 
@@ -373,7 +373,7 @@ phase_B() {
     egress_left="$(c_in_py "$proj" "$ov" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute(\"SELECT COUNT(*) FROM egress_state WHERE egress='worker-0@gatehost'\").fetchone()[0])" 2>>"$log")"
     if [ "${egress_left:-1}" = "0" ]; then pass "B7 v22 清空旧出口行（egress_state 重建）" "旧键剩 0 行"; else fail "B7 v22 清空旧出口行" "旧键剩 ${egress_left:-?} 行"; fi
 
-    chain="$(c_in_py "$proj" "$ov" "from yiban.store import db; db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
+    chain="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
     echo "$chain" >>"$log"
     if printf '%s' "$chain" | grep -q 'CHAIN True'; then pass "B8 升级后审计链自洽 chain_ok=True" "True"; else fail "B8 审计链" "$chain"; fi
 
@@ -469,7 +469,7 @@ phase_C() {
     c_in_py "$proj" "$ov" "$(seed_sql_py plain)" >>"$log" 2>&1
     # 落一次审计链外部锚点（README 承诺备份含 audit-anchor.log）：锚点由每日线程/事件写，
     # 全新库"首次备份前"可能尚未存在，故先显式落一次，再断言包内确实含它。
-    c_in_py "$proj" "$ov" "from yiban.store import db; db.init_db(); db.record_audit_anchor()" >>"$log" 2>&1
+    c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(); db.record_audit_anchor()" >>"$log" 2>&1
 
     # 复刻调度器 02:00 的备份调用环境（docker/scheduler.py 的 _backup_env）：
     #   * 身份 = uid 10001（yiban）；
@@ -532,7 +532,7 @@ phase_C() {
 
     local accounts chain
     accounts="$(c_in_py "$proj" "$ov" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute('SELECT COUNT(*) FROM accounts').fetchone()[0])" 2>>"$log")"
-    chain="$(c_in_py "$proj" "$ov" "from yiban.store import db; db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
+    chain="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
     echo "accounts=$accounts $chain" >>"$log"
     if [ "${accounts:-0}" = "$GATE_SEED_N" ] && printf '%s' "$chain" | grep -q 'CHAIN True'; then
         pass "C8 恢复后数据自检（账号数+审计链）" "accounts=$accounts chain_ok=True"

@@ -31,7 +31,7 @@ import unittest
 
 import db
 
-from yiban.store import migrations as migrations_mod
+from yiban.adapters.persistence import migrations as migrations_mod
 
 TEST_KEY = "a" * 64
 

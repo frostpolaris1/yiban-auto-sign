@@ -55,7 +55,7 @@ from flask import jsonify, request
 
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
-from yiban.store import run_events as _run_events
+from yiban.adapters.persistence import run_events as _run_events
 
 _DEFAULT_LIMIT = 200
 _MAX_LIMIT = 500

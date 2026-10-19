@@ -48,10 +48,10 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from yiban.adapters.persistence import connection as conn_mod  # noqa: E402
+from yiban.adapters.persistence import db as impl  # noqa: E402
+from yiban.adapters.persistence import tracking as track_mod  # noqa: E402
 from yiban.core import clock  # noqa: E402
-from yiban.store import connection as conn_mod  # noqa: E402
-from yiban.store import db as impl  # noqa: E402
-from yiban.store import tracking as track_mod  # noqa: E402
 
 TEST_KEY = "a" * 64
 
@@ -504,7 +504,7 @@ class StoreDbLayoutTest(unittest.TestCase):
                 bad.append(f"{rel}: {m.group(0).strip()}")
         self.assertEqual(
             bad, [],
-            "包内代码必须以 `from yiban.store import db`（或 `from yiban import notify`）"
+            "包内代码必须以 `from yiban.adapters.persistence import db`（或 `from yiban import notify`）"
             "的形式导入，不得裸名依赖 scripts/：" + "; ".join(bad),
         )
 
