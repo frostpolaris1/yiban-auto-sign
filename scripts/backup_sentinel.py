@@ -212,7 +212,7 @@ def _send_admin_alert(title, mail):
     行为逐字不变。
     """
     from yiban.adapters.config import env_io
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     if os.path.isfile(env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT)):
         from web.services.notify_mail import _alert_mail_recipients
         recipients = _alert_mail_recipients()
@@ -297,7 +297,7 @@ def _anchor_snapshot():
     （`state="error"`）处置相反，绝不压成同一个"无锚点"。
     库文件不存在或打不开时同样返回 None——那是"读不到"，不是"空链"。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     # 只读取证类调用一律 `create=False`（与 `scripts/audit_verify.py` 同一口径）。
     # `get_conn()` 的隐式 `init_db()` 是**全套缺省**（cleanup/migrate/create 全 True）；
     # 本文件此前显式关了 cleanup 与 migrate，却漏了 create——`init_db` 于是

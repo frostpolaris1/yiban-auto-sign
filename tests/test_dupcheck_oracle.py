@@ -32,7 +32,7 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
-from yiban.store.audit_chain import actor_tag
+from yiban.adapters.persistence.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

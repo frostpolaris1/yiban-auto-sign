@@ -64,7 +64,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 os.environ.update(json.loads(os.environ["PROBE_ENV"]))
 
 import db  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
+from yiban.adapters.persistence import queue_store  # noqa: E402
 
 db.init_db(os.environ["YIBAN_DB_FILE"], env_file=os.environ["YIBAN_ENV_FILE"], cleanup=False)
 MODE = os.environ["PROBE_MODE"]

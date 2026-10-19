@@ -32,9 +32,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from yiban.adapters.persistence import db
 from yiban.app import runner
 from yiban.engine import cli_support, schedule
-from yiban.store import db
 from yiban.workers import workers
 
 #: 2026-09 的三个样例日（下面的 weekday 断言保证它们仍是周三/周六/周日）
