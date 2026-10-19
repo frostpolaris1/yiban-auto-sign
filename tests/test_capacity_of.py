@@ -229,6 +229,8 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         from web.routes import settings_api
         from web.services import accounts_data as _accounts_data
         from web.services import env_io as _env_io_svc
+        from web.services import http_request as _http
+        from web.services import limits as _limits
         from web.services import measure as _measure
         from web.services import notify_mail as _notify_mail
         from web.services import signstatus as _signstatus
@@ -242,16 +244,19 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
             def full_sec():
                 return 4680
 
-        # 假 app 模块只剩 app.py **自有**的名字（A 类转发名已不由转发墙供，见批 3-a）。
+        # 假 app 模块只剩 app.py **自有**的名字（A 类转发名已不由转发墙供，见批 3-a；
+        # 纯常量与纯助手已搬 web/services/*，见批 3-b，故这两类的打桩点落在新家上）。
         m = SimpleNamespace(
-            ENV_FILE=".env", DEFAULT_ACCOUNT_GAP_MAX=10, MEASURE_COOLDOWN_SEC=300,
+            ENV_FILE=".env",
             _is_builtin_admin_session=lambda: True,
             _executors_window=lambda: _Bounds(),
-            _json_body=lambda: {},
             _measure_state_path=lambda: os.path.join(tempfile.gettempdir(), "m.json"),
             _write_measure_state=lambda p, d: None,
         )
         with mock.patch.object(settings_api, "_appmod", lambda: m), \
+                mock.patch.object(_limits, "DEFAULT_ACCOUNT_GAP_MAX", 10), \
+                mock.patch.object(_limits, "MEASURE_COOLDOWN_SEC", 300), \
+                mock.patch.object(_http, "_json_body", lambda: {}), \
                 mock.patch.object(_signstatus, "_in_sign_window", lambda bounds: False), \
                 mock.patch.object(_measure, "_pick_measure_account",
                                   lambda accounts, phone: {"phone": "13800000001"}), \

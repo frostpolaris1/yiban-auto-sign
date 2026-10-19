@@ -36,6 +36,8 @@ from web.routes import reconfirm_admin_password as _reconfirm_admin_password
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
 from web.services import accounts_data as _accounts_data
+from web.services import http_request as _http
+from web.services import limits as _limits
 from yiban.adapters.config import account_crypto
 from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
 from yiban.adapters.notifier import mail as mailer
@@ -205,7 +207,7 @@ def api_mail_config_save():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     # 全量校验通过才统一落盘：边校验边 write_env_key 会在后一个字段非法时
     # 留下"一半已生效"的写入
     flags = {}
@@ -239,10 +241,10 @@ def api_mail_config_save():
             addrs = [a.strip() for a in raw_to.split(",") if a.strip()]
             if not addrs:
                 return jsonify({"error": "告警收件人格式无效"}), 400
-            if len(addrs) > m.MAIL_ADMIN_TO_MAX:
-                return jsonify({"error": f"告警收件人最多 {m.MAIL_ADMIN_TO_MAX} 个"}), 400
+            if len(addrs) > _limits.MAIL_ADMIN_TO_MAX:
+                return jsonify({"error": f"告警收件人最多 {_limits.MAIL_ADMIN_TO_MAX} 个"}), 400
             for a in addrs:
-                if not m.EMAIL_RE.match(a) or len(a) > 64:
+                if not _limits.EMAIL_RE.match(a) or len(a) > 64:
                     return jsonify({"error": f"告警收件人格式无效：{a[:32]}"}), 400
             admin_to_val = ",".join(addrs)
         else:
@@ -253,8 +255,8 @@ def api_mail_config_save():
         raw_list = data["smtps"]
         if not isinstance(raw_list, list):
             return jsonify({"error": "smtps 应为列表"}), 400
-        if len(raw_list) > m.MAIL_SMTPS_MAX:
-            return jsonify({"error": f"SMTP 发信条目最多 {m.MAIL_SMTPS_MAX} 条"}), 400
+        if len(raw_list) > _limits.MAIL_SMTPS_MAX:
+            return jsonify({"error": f"SMTP 发信条目最多 {_limits.MAIL_SMTPS_MAX} 条"}), 400
         # 旧列表取自改动前的解密结果。凭据沿用的身份匹配分两轮认领（见下方
         # smtps_list 组装处），任何一步都不看数组位置——位置一致只是巧合的来源，
         # 不是身份。
@@ -471,7 +473,7 @@ def api_notify_config():
     cfg = notify.get_config()
     quota_visible = m._is_builtin_admin_session()
     if not quota_visible:
-        for key in m._NOTIFY_QUOTA_HIDDEN_KEYS:
+        for key in _limits._NOTIFY_QUOTA_HIDDEN_KEYS:
             cfg[key] = None
     cfg["quota_visible"] = quota_visible
     return jsonify(cfg)
@@ -497,7 +499,7 @@ def api_notify_config_save():
     m = _appmod()
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     ntype = str(data.get("type", "")).strip().lower()
     secret = str(data.get("secret", "")).strip()
     if ntype not in ("serverchan", "custom", ""):
@@ -511,11 +513,11 @@ def api_notify_config_save():
             return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
         # 长度上限：SendKey 是"定长前缀 SCT + 固定宽度主体"（实测 35 字符），
         # 留一倍余量到 64；无上限时超长值会原样加密进 .env 并在每次推送时带出。
-        if not m.NOTIFY_SENDKEY_MIN_LEN <= len(secret) <= m.NOTIFY_SENDKEY_MAX_LEN:
+        if not _limits.NOTIFY_SENDKEY_MIN_LEN <= len(secret) <= _limits.NOTIFY_SENDKEY_MAX_LEN:
             return jsonify({"error": "Server酱 SendKey 长度不合法"}), 400
     elif effective_type == "custom" and secret:
-        if len(secret) > m.NOTIFY_URL_MAX_LEN:
-            return jsonify({"error": f"自定义地址过长（最多 {m.NOTIFY_URL_MAX_LEN} 字符）"}), 400
+        if len(secret) > _limits.NOTIFY_URL_MAX_LEN:
+            return jsonify({"error": f"自定义地址过长（最多 {_limits.NOTIFY_URL_MAX_LEN} 字符）"}), 400
         if not notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
     # ---- 高危判定（收窄后）----

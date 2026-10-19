@@ -43,6 +43,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
 # 打桩必须打在**真正持有并调用该名字**的模块上，否则会静默失效。
+from web.services import limits as _limits  # noqa: E402
 from yiban.adapters.config import account_crypto  # noqa: E402
 from yiban.adapters.notifier import notify  # noqa: E402
 from yiban.adapters.notifier.notify import config as notify_config  # noqa: E402
@@ -1368,7 +1369,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         次是 401。
         """
         c = self.webapp.create_app().test_client()
-        threshold = self.webapp.LOGIN_FAIL_NOTIFY
+        threshold = _limits.LOGIN_FAIL_NOTIFY
         # 口令校验的**两份绑定都要打**：`web.routes.auth.check_password_hash` 覆盖注册
         # 用户路径（该路由自 145-B `T1` 片起自己从 werkzeug 导入，打 web.app 会静默
         # 失效），`web_security.check_password_hash` 覆盖内置管理员路径（`web/security.py`
@@ -1406,7 +1407,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
              mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
             # 前 threshold-1 次在长键 A、B 之间分摊：只有"两键被截成同一个键"才会累计到锁定
-            for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+            for i in range(_limits.LOGIN_MAX_FAILS - 1):
                 name = long_a if i % 2 == 0 else long_b
                 r = c.post("/api/login", json={"username": name, "password": "x"})
                 self.assertEqual(r.status_code, 401)
@@ -1420,7 +1421,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         long_a, long_b = "r" * 200, "r" * 128 + "s" * 72
         with mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
-            for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+            for i in range(_limits.LOGIN_MAX_FAILS - 1):
                 email = long_a if i % 2 == 0 else long_b
                 r = c.post("/api/me/restore", json={"email": email, "password": "x"})
                 self.assertEqual(r.status_code, 400)
@@ -1455,7 +1456,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
              mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
             c.post("/api/me/restore", json={"email": "gone@qq.com", "password": "x"})
-        want = self.webapp.RESTORE_FAIL_WINDOW + self.webapp._IP_STORE_MAX_AGE
+        want = _limits.RESTORE_FAIL_WINDOW + self.webapp._IP_STORE_MAX_AGE
         self.assertIn(want, seen,
                       f"restore 失败路径应以 max_age={want} trim _restore_fail_rate，实际 {seen}")
 

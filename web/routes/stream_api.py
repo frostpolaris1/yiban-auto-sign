@@ -69,14 +69,15 @@ from web.routes import read_audit_trace
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
 from web.services import run_stream as _run_stream
 from yiban.adapters.persistence import run_events as _run_events
 from yiban.core import clock
 
 
 def _same_origin(m):
-    """GET 同源校验：沿用 `web.app._request_is_same_origin` 的单源语义（无 Origin 放行）。"""
-    return m._request_is_same_origin()
+    """GET 同源校验：沿用 `web.services.http_request._request_is_same_origin` 的单源语义。"""
+    return _http._request_is_same_origin()
 
 
 def _last_event_id():
@@ -88,7 +89,7 @@ def _last_event_id():
         return 0
 
 
-def _my_phones(m):
+def _my_phones():
     """当前会话用户的本人手机号集合（生效且未删除）；用户流只推这些号。
 
     归属口径复用 `web/routes/my_api.py`（`_my_account_indices_of` + `_my_active_phones`），
@@ -275,7 +276,7 @@ def api_stream_my_signin():
     if not cfg["enabled"]:
         return _end_only("disabled")
     hub = _run_stream.hub()
-    phones = _my_phones(m)
+    phones = _my_phones()
     sub, reason = hub.try_subscribe(
         _session_key(), kind="user", poll=cfg["poll_sec"] or 1, phones=phones,
         session_max=cfg["session_max"], connections_max=cfg["user_connections_max"])

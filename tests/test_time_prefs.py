@@ -53,6 +53,7 @@ from werkzeug.security import generate_password_hash
 
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import limits as _limits
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1239,8 +1240,8 @@ class TimePrefsTest(unittest.TestCase):
         """2026-09-08 口径修订：用户 = 全部未删除注册用户（含空用户，上限 500）；
         账号 = 全部非删除活跃账号（上限 200，含 admin 直属裸账号——同样参与签到
         占负载），空用户不计入账号。"""
-        self.assertEqual(self.webapp.DEFAULT_MAX_USERS, 500)
-        self.assertEqual(self.webapp.DEFAULT_MAX_ACCOUNTS, 200)
+        self.assertEqual(_limits.DEFAULT_MAX_USERS, 500)
+        self.assertEqual(_limits.DEFAULT_MAX_ACCOUNTS, 200)
         app = self.webapp.create_app()
         c = app.test_client()
         self._login(c, "admin", ADMIN_PASS)
