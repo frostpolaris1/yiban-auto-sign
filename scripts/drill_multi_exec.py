@@ -180,7 +180,7 @@ def _apply_injections():
     hold = _hold_target()
     if not slow_sec and not mutate and not hold:
         return
-    import yiban.store.queue_store as qs
+    import yiban.adapters.persistence.queue_store as qs
 
     chain = qs.claim_batch
 
@@ -319,8 +319,8 @@ import json
 import os
 
 out = {"mutate": os.environ.get("DRILL_MUTATE", "")}
-from yiban.store import db
-import yiban.store.queue_store as qs
+from yiban.adapters.persistence import db
+import yiban.adapters.persistence.queue_store as qs
 from yiban.workers import workers
 
 out["claim_marker"] = getattr(qs.claim_batch, "_drill", None)
@@ -870,7 +870,7 @@ def _probe_elbow(dbfile: str, day: str, held_phone: str, slow_owner: str) -> dic
     正方向由慢执行体自己用 elbow=0 领到的那一行作证。
     """
     from yiban import egress
-    from yiban.store import queue_store
+    from yiban.adapters.persistence import queue_store
     rows = _rows(dbfile, day)
     shards = tuple(range(_max_shard(dbfile, day) + 1))
     fb = egress.fallback_owner()
@@ -1171,7 +1171,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
 
 def _stale_write(dbfile: str, day: str, phone: str, old_owner: str, old_epoch: int) -> dict:
     """用旧 owner ＋ 旧 epoch 发一条收尾写，返回是否被 fence（0 行命中 ＋ 行不变）。"""
-    from yiban.store import queue_store
+    from yiban.adapters.persistence import queue_store
     before = _rows(dbfile, day).get(phone)
     n = queue_store.settle_tasks(old_owner, day, [(phone, "迟到旧代写")],
                                  state=queue_store.STATE_DONE, epochs={phone: old_epoch})

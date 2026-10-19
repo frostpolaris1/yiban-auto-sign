@@ -289,8 +289,8 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
         故先关掉旧连接再 `init_db`，并断言连接确实落在本轮的库文件上：将来若又漂回
         "复用别人的库"，这里会**指名报错**，而不是以 NoneType 的形式哑火。
         """
-        from yiban.store import connection
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import connection
+        from yiban.adapters.persistence import db as store_db
         stale = connection.current()
         if stale is not None:
             with contextlib.suppress(Exception):
@@ -306,11 +306,11 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
 
     def _seed_other_rows(self):
         """把当日 V 钉死，并在**实际会采用的 V** 下的同一分片里种别人的行。"""
+        from yiban.adapters.persistence import clock_meta, connection
+        from yiban.adapters.persistence import db as store_db
         from yiban.adapters.statefiles import state_io
         from yiban.core import hrw
         from yiban.engine import executor_v3
-        from yiban.store import clock_meta, connection
-        from yiban.store import db as store_db
         conn = self._bind_test_db()
         day = self._today()
         # 钉死当日 V：落进 app_meta 的 V 元数据键 ⇒ 真进程 `_plan_v` 只读它（不再按
@@ -345,8 +345,8 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
     def _read_other(self, day):
         import json as _json
 
-        from yiban.store import connection
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import connection
+        from yiban.adapters.persistence import db as store_db
         conn = self._bind_test_db()
         with store_db._conn_lock:
             rows = {p: tuple(conn.execute(

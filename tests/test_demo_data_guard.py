@@ -26,7 +26,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import generate_demo_data  # noqa: E402  （scripts/generate_demo_data.py）
 
-from yiban.store import connection, purge_guard  # noqa: E402
+from yiban.adapters.persistence import connection, purge_guard  # noqa: E402
 
 
 def _counts(db_path):
@@ -70,7 +70,7 @@ class DemoDataGuardTest(unittest.TestCase):
     def _seed(self):
         """建真 schema 库并写少量"旧 demo 数据"（供指纹与前后对照）。"""
         self._reset_conn()
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(db_file=self.db_path, env_file=self.env_file, cleanup=False)
         store_db.create_user("user@demo.local", "demo-hash", role="user",
                              created_at="2026-01-01 08:00:00", pw_version=1)

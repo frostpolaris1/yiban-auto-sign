@@ -496,7 +496,7 @@ class ActivityEndpointTest(_WebBase):
 
     def _seed(self):
         """造三类身份 + 一条历史遗留串的当日队列行（直接写 sign_tasks，单池后唯一台账）。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         day = clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
                          cleanup=False)
@@ -933,7 +933,7 @@ class SlotEgressEndpointTest(_WebBase):
                 r = anon.put(path, json={"egress": "http://x:1"},
                              headers={"X-CSRF-Token": "x"})
                 self.assertIn(r.status_code, (401, 403))
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         store_db.create_user("admin2@test.local",
                              generate_password_hash("UserPass1234!"),
@@ -1122,7 +1122,7 @@ class AccountsLastExecutorTest(_WebBase):
     PHONES = ("13900000011", "13900000012", "13900000013", "13900000014")
 
     def _seed_accounts(self, phones):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         for phone in phones:
             store_db.add_account({
@@ -1135,7 +1135,7 @@ class AccountsLastExecutorTest(_WebBase):
 
     def _seed_task(self, phone, day, owner):
         """在任务队列（单池后的唯一台账）里造一条归属行。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         conn = store_db.get_conn()
         with store_db._conn_lock:
             conn.execute(
@@ -1182,7 +1182,7 @@ class AccountsLastExecutorTest(_WebBase):
                           "label": "故障转移"})
 
     def test_no_record_and_unavailable_db_are_not_errors(self):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         self._seed_accounts(self.PHONES[:1])
         self.assertIsNone(self._last_executor_of()[self.webapp._mask_phone(self.PHONES[0])])
         # 库不存在/未初始化：一次取全的查询必须按空表返回，而不是抛（新部署很正常）
@@ -1245,7 +1245,7 @@ class MeasureEndpointTest(_WebBase):
 
     def _seed_accounts(self, rows):
         """rows = [(phone, status, user_paused)]"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         for phone, status, paused in rows:
             store_db.add_account({
@@ -1289,7 +1289,7 @@ class MeasureEndpointTest(_WebBase):
         anon = self.webapp.create_app().test_client()
         self.assertIn(self._post(anon).status_code, (401, 403))
         # 普通管理员（注册用户）也不许：它真的会用一个真实账号去登录一次
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.create_user("admin2@test.local",
                              generate_password_hash("UserPass1234!"),
                              role="admin")
@@ -1471,7 +1471,7 @@ class _TaskRowMixin:
 
     def _insert_tasks(self, rows, day=None):
         """`rows` = `((phone, owner, state), …)`；返回写入的业务日。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         day = day or clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
                          cleanup=False)

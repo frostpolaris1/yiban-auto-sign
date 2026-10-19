@@ -33,8 +33,8 @@ from unittest import mock
 import db
 
 from yiban import egress
+from yiban.adapters.persistence import migrations, queue_store
 from yiban.engine import token_bucket
-from yiban.store import migrations, queue_store
 
 TEST_KEY = "a" * 64
 

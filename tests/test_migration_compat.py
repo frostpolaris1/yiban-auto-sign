@@ -33,7 +33,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from yiban.store import migrations
+from yiban.adapters.persistence import migrations
 
 #: 旧版本（生产 v0.4.7）的迁移顶——「旧代码」的迁移集就是 ≤ 它的那些项。
 _OLD_CODE_SCHEMA_TOP = 17

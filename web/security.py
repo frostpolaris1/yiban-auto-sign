@@ -75,7 +75,7 @@ from web.services.accounts_data import (  # noqa: E402
 )
 from web.services.locks import _rate_lock  # noqa: E402
 from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
-from yiban.store import db  # noqa: E402
+from yiban.adapters.persistence import db  # noqa: E402
 
 # 与 web.app 同名的日志通道：安全域的日志落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
