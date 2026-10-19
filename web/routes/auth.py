@@ -41,6 +41,8 @@ from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import notify_mail as _notify_mail
 from yiban.adapters.notifier.mail import layout as mail_layout
@@ -63,7 +65,7 @@ def api_login():
     m = _appmod()
     ip = _security._client_ip()
     now = time.time()
-    data = m._json_body()
+    data = _http._json_body()
     username = str(
         data.get("username", "")
     ).strip()  # 管理员用户名保持原样；邮箱仅用户登录时小写
@@ -186,14 +188,14 @@ def api_login():
     # 场景无法从审计还原爆破片段。刻意不在每次失败都写（防爆破刷爆审计表），
     # 与阈值邮件/锁定同节奏：告警阈值与锁定阈值各留痕一条（两值相等时只留一条），
     # IP 经 hash_ip 匿名化（与登录成功审计同口径）。用户名截断防长串刷审计。
-    if fails in (m.LOGIN_FAIL_NOTIFY, m.LOGIN_MAX_FAILS):
+    if fails in (_limits.LOGIN_FAIL_NOTIFY, _limits.LOGIN_MAX_FAILS):
         db.audit(
             (username.lower() or "?")[:64],
             "login_failed",
             db.hash_ip(ip),
             f"连续失败 {fails} 次（阈值留痕）",
         )
-    lock_now = fails >= m.LOGIN_MAX_FAILS
+    lock_now = fails >= _limits.LOGIN_MAX_FAILS
     if lock_now:
         with _locks._rate_lock:
             _login_fails()[fail_key] = (0, now + _security.LOGIN_LOCK_SECONDS, now)
@@ -203,7 +205,7 @@ def api_login():
     # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解。
     # 告警排在锁定之前：两个阈值**同值**时这一刻既要告警也要锁定，若按"先锁定即 return"
     # 的顺序，告警会在锁定分支之后永不执行——等于把唯一的登录失败信号静音。
-    if fails == m.LOGIN_FAIL_NOTIFY:
+    if fails == _limits.LOGIN_FAIL_NOTIFY:
         # 告警级别判据：把"本人输错口令"一律标成紧急，而紧急额度默认只有 3 条/天——
         # 一次常见的忘密码就会挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。
         # 故只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
@@ -222,9 +224,9 @@ def api_login():
                     ("该 IP 试过的不同用户名", f"{distinct_users} 个"),
                 ],
                 advice=["如非本人操作，请检查是否有人尝试暴力破解"],
-                level="urgent" if distinct_users >= m.LOGIN_SPRAY_USERS else "warn",
+                level="urgent" if distinct_users >= _limits.LOGIN_SPRAY_USERS else "warn",
             ),
-            urgent=distinct_users >= m.LOGIN_SPRAY_USERS,
+            urgent=distinct_users >= _limits.LOGIN_SPRAY_USERS,
             # 独立账本 YIBAN_LOGINFAIL_DAILY_MAX（默认 3，0=不限）——
             # 登录失败是公网最高频告警源，不再与 general/urgent 两本账互挤，
             # 喷洒类攻击烧光本账后审计链异常等真紧急告警仍可达手机
@@ -248,16 +250,16 @@ def api_register():
     # （防机器人刷审计表）。
     if m._registration_paused():
         return jsonify({"error": "注册已暂停，请联系管理员添加账号"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     email = str(data.get("email", "")).strip().lower()
     password = str(data.get("password", ""))
     # 后端同意校验：必须显式勾选《用户协议》与《隐私政策》（前端勾选仅为 UX，此处为强制）。
     # 严格布尔判断（is not True）：真值判断会让 "0"/"false"/"no" 等非空字符串绕过同意校验。
     if data.get("agree") is not True:
         return jsonify({"error": "请先阅读并同意《用户协议》和《隐私政策》"}), 400
-    if len(email.split("@")[0]) > m.EMAIL_USER_MAX:
-        return jsonify({"error": f"邮箱用户名部分过长（最多 {m.EMAIL_USER_MAX} 字符）"}), 400
-    if not m.EMAIL_RE.match(email) or len(email) > 64:
+    if len(email.split("@")[0]) > _limits.EMAIL_USER_MAX:
+        return jsonify({"error": f"邮箱用户名部分过长（最多 {_limits.EMAIL_USER_MAX} 字符）"}), 400
+    if not _limits.EMAIL_RE.match(email) or len(email) > 64:
         return jsonify({"error": "请输入有效的邮箱地址"}), 400
     # 邮箱域名审查：占位/一次性域名在写库前排除，防挤占用户池
     dom_err = m.email_domain_error(email)
@@ -276,11 +278,11 @@ def api_register():
     ip = _security._client_ip()
     now = time.time()
     with _locks._rate_lock:
-        _security._ip_store_trim(_register_limits(), m.REGISTER_WINDOW)
+        _security._ip_store_trim(_register_limits(), _limits.REGISTER_WINDOW)
         rcnt, rstart = _register_limits().get(ip, (0, now))
-        if now - rstart > m.REGISTER_WINDOW:
+        if now - rstart > _limits.REGISTER_WINDOW:
             rcnt, rstart = 0, now
-        if rcnt >= m.REGISTER_MAX:
+        if rcnt >= _limits.REGISTER_MAX:
             # 不暴露限速窗口分钟数（防恶意用户据此规划批量注册节奏，信息分层）
             return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
     # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
@@ -288,7 +290,7 @@ def api_register():
         # 容量兜底：用户配额（全部未删除注册用户，含空用户；
         # 防分布式注册无限膨胀 users 表。与账号配额同构，
         # 统一为"再注册 1 人后 > 上限才拒"语义，见 _users_at_capacity）
-        max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS)
+        max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS)
         if m._users_at_capacity():
             m._notify_capacity_once("users", max_users, "注册人数")
             return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
@@ -332,7 +334,7 @@ def api_register():
         if not created:
             return jsonify({"error": "该邮箱已注册"}), 400  # OR IGNORE 未实际创建
     # 成功注册计数：原子重读后递增，避免并发注册丢失计数
-    _security._bump_window_count(_register_limits(), ip, now, m.REGISTER_WINDOW)
+    _security._bump_window_count(_register_limits(), ip, now, _limits.REGISTER_WINDOW)
     m.logger.info("新用户注册: %s", _accounts_data._mask_email(email))
     return jsonify({"ok": True})
 

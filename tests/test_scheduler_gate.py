@@ -57,6 +57,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
 
+from web.services import limits as _limits  # noqa: E402
+
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
 ADMIN_PASS = "MasterPass#2026"
@@ -775,7 +777,7 @@ class WebB12Test(unittest.TestCase):
     # ---- B12-14 登录失败 / 越权审计 ----
     def test_login_failure_threshold_audited(self):
         # 阈值取 app 常量：另抄字面量会在阈值调整后"再也到不了阈值"而静默失测
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+        for _ in range(_limits.LOGIN_FAIL_NOTIFY):
             self.c.post("/api/login", json={"username": EMAIL, "password": "wrong-pass"})
         rows = self._audit_rows("login_failed")
         self.assertGreaterEqual(len(rows), 1, "达到失败阈值必须留痕审计链（B12-14）")

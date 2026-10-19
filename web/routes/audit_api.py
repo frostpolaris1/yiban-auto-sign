@@ -172,7 +172,7 @@ def _no_snapshot_payload():
         "尚无体检结果")
 
 
-def _payload_from_snapshot(m, snapshot):
+def _payload_from_snapshot(snapshot):
     """把体检快照装配成响应体（可能抛：调用方按"无法定论"兜底）。
 
     超龄降级（M2）在这里做，**只降"健康"**：既有的"体检结论"是当时真验过的结果。
@@ -254,7 +254,7 @@ def api_audit_status():
         read_audit_trace()("audit_status_read", "无体检快照")
         return jsonify(_no_snapshot_payload())
     try:
-        payload = _payload_from_snapshot(m, snapshot)
+        payload = _payload_from_snapshot(snapshot)
     except Exception as e:
         m.logger.warning("审计体检快照装配失败（按无法定论回答）: %s", e)
         read_audit_trace()("audit_status_read", "快照不可读")

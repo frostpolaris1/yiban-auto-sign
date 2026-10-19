@@ -42,6 +42,8 @@ from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import notify_mail as _notify_mail
 from yiban.adapters.notifier import mail as mailer
@@ -71,7 +73,7 @@ def api_me_password():
     旧会话失效由 pw_version 递增实现（_effective_role 实时校验）。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     old_password = str(data.get("old_password", ""))
     new_password = str(data.get("new_password", ""))
     if new_password != str(data.get("confirm_password", "")):
@@ -102,12 +104,12 @@ def api_me_password():
         的顺序会让告警永不执行。
         """
         nfails = _security._bump_login_failure(_login_fails(), fail_key, now)
-        lock_now = nfails >= m.LOGIN_MAX_FAILS
+        lock_now = nfails >= _limits.LOGIN_MAX_FAILS
         if lock_now:
             with _locks._rate_lock:
                 _login_fails()[fail_key] = (0, now + _security.LOGIN_LOCK_SECONDS, now)
             m.logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS)
-        if nfails == m.LOGIN_FAIL_NOTIFY:
+        if nfails == _limits.LOGIN_FAIL_NOTIFY:
             m.send_notification(
                 "改密失败告警",
                 mail_layout.Mail(
@@ -240,7 +242,7 @@ def api_me_delete():
     m = _appmod()
     if not session.get("auth") or not session.get("username"):
         return jsonify({"error": "未登录"}), 401
-    data = m._json_body()
+    data = _http._json_body()
     password = str(data.get("password", ""))
     if not password:
         return jsonify({"error": "请输入当前密码"}), 400
@@ -250,7 +252,7 @@ def api_me_delete():
     now = time.time()
     # 防批量冷却：计数基于 user_delete_requests 表（kind=delete，恢复记录不占
     # 注销冷却，允许"恢复后立即再注销"）
-    since_ts = (clock.now() - timedelta(seconds=m.DELETE_COOLDOWN_SEC)).strftime(
+    since_ts = (clock.now() - timedelta(seconds=_limits.DELETE_COOLDOWN_SEC)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     if (
@@ -267,7 +269,7 @@ def api_me_delete():
         db.count_user_delete_requests(
             ip_hash=ip_hash, since_ts=since_ts, kind="delete"
         )
-        >= m.DELETE_MAX_REQUESTS_PER_IP
+        >= _limits.DELETE_MAX_REQUESTS_PER_IP
     ):
         return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
     # 内置管理员（.env 主管理员）不可自助注销：系统兜底账号，不落 users 表；
@@ -287,12 +289,12 @@ def api_me_delete():
         告警排在锁定之前（同阈值时两者都要发生，见 api_me_password 的说明）。
         """
         nfails = _security._bump_login_failure(_login_fails(), fail_key, now)
-        lock_now = nfails >= m.LOGIN_MAX_FAILS
+        lock_now = nfails >= _limits.LOGIN_MAX_FAILS
         if lock_now:
             with _locks._rate_lock:
                 _login_fails()[fail_key] = (0, now + _security.LOGIN_LOCK_SECONDS, now)
             m.logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS)
-        if nfails == m.LOGIN_FAIL_NOTIFY:
+        if nfails == _limits.LOGIN_FAIL_NOTIFY:
             m.send_notification(
                 "注销密码失败告警",
                 mail_layout.Mail(
@@ -347,7 +349,7 @@ def api_me_restore():
     成功后 restore_user（联动恢复易班账号）+ 建立会话 + 审计 user_self_delete_restore。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     email = str(data.get("email", "")).strip().lower()
     password = str(data.get("password", ""))
     ip = _security._client_ip()
@@ -355,7 +357,7 @@ def api_me_restore():
         return jsonify({"error": "邮箱和密码为必填项"}), 400
     # 防批量冷却（与注销同一张计数表，但按 kind 分流——注销动作自身的记录不再
     # 阻断 60s 内的恢复请求，"注销后立即反悔"路径畅通）
-    since_ts = (clock.now() - timedelta(seconds=m.DELETE_COOLDOWN_SEC)).strftime(
+    since_ts = (clock.now() - timedelta(seconds=_limits.DELETE_COOLDOWN_SEC)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     if (
@@ -372,7 +374,7 @@ def api_me_restore():
         db.count_user_delete_requests(
             ip_hash=ip_hash, since_ts=since_ts, kind="restore"
         )
-        >= m.DELETE_MAX_REQUESTS_PER_IP
+        >= _limits.DELETE_MAX_REQUESTS_PER_IP
     ):
         return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
     # 密码失败锁定预检：与登录/注销共用 (ip, email) 计数与锁定窗口。
@@ -405,20 +407,20 @@ def api_me_restore():
         # 完整会话与其易班凭据，须有聚合闸门。恢复失败表写入路径补同口径清理
         # （窗口 + 最大年龄），防无界增长。
         with _locks._rate_lock:
-            _security._ip_store_trim(_restore_fail_rate(), m.RESTORE_FAIL_WINDOW + _security._IP_STORE_MAX_AGE)
+            _security._ip_store_trim(_restore_fail_rate(), _limits.RESTORE_FAIL_WINDOW + _security._IP_STORE_MAX_AGE)
         _rc, _rs, ip_allowed = _security._bump_window_count(
-            _restore_fail_rate(), ip, now2, m.RESTORE_FAIL_WINDOW, limit=m.RESTORE_FAIL_MAX
+            _restore_fail_rate(), ip, now2, _limits.RESTORE_FAIL_WINDOW, limit=_limits.RESTORE_FAIL_MAX
         )
         if not ip_allowed:
             m.logger.warning("恢复密码尝试过于频繁（每 IP 聚合），IP %s 临时限制", db.hash_ip(ip))
             return jsonify({"error": "尝试过于频繁，请稍后再试"}), 429
-        lock_now = nfails >= m.LOGIN_MAX_FAILS
+        lock_now = nfails >= _limits.LOGIN_MAX_FAILS
         if lock_now:
             with _locks._rate_lock:
                 _login_fails()[fail_key] = (0, now2 + _security.LOGIN_LOCK_SECONDS, now2)
             m.logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS)
         # 告警排在锁定之前（同阈值时两者都要发生，见 api_me_password 的说明）
-        if nfails == m.LOGIN_FAIL_NOTIFY:
+        if nfails == _limits.LOGIN_FAIL_NOTIFY:
             m.send_notification(
                 "恢复密码失败告警",
                 mail_layout.Mail(
@@ -534,11 +536,10 @@ def api_my_mail_notify():
 
 def api_my_mail_notify_save():
     """保存当前用户邮箱通知开关：{enabled: bool}。CSRF 由 before_request 统一校验。"""
-    m = _appmod()
     email = session.get("username") or ""
     if not email:
         return jsonify({"error": "未登录"}), 401
-    data = m._json_body()
+    data = _http._json_body()
     enabled = data.get("enabled")
     if not isinstance(enabled, bool):
         return jsonify({"error": "取值无效"}), 400
