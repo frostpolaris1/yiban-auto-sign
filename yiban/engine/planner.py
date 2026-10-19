@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**算法溯源**
-- Rendezvous Hashing（HRW）：Thaler & Ravishankar，同项溯源见 `yiban/engine/hrw.py`。
+- Rendezvous Hashing（HRW）：Thaler & Ravishankar，同项溯源见 `yiban/core/hrw.py`。
   `build_plan` 调 `hrw.vshard_of` 取分片、`hrw.owner_of` 定归属，即其两段式。
 - Stratified Sampling（分层抽样）+ Jitter（抖动 / splay）：把 N 个待办铺进时间窗的经典做法
   是「分层抖动」——按序分层（`i % n_slices`）保证每层等量，再加槽内相位错开，避免同刻齐发；

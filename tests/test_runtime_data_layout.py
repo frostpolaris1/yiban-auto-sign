@@ -78,7 +78,7 @@ CARRIER_EXPECT = {
         'resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)',),
     # 清库留痕的**唯一生产调用点**：必须把 CLI 自己解析出的库路径显式传下去，否则
     # 被调方另解析一次默认值——两者一旦分叉，"拒绝删除"的判据看的是另一个库。
-    # 坐标＝批 A1 后的新落点（`yiban/cli.py` 已改成转发壳，不再承载判据）。
+    # 坐标＝批 A1 后的新落点（旧入口壳已于 145-E 退役，不再承载判据）。
     "yiban/entry/cli/__init__.py": ('db_file=_paths(view)["db_file"]',),
 }
 
