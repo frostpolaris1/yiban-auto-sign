@@ -113,8 +113,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import (  # noqa: E402
+    ledger as notify_ledger,  # 账本内部态走子模块
+)
 
 OLD_KEY = "a" * 64
 NEW_KEY = "b" * 64

@@ -60,7 +60,7 @@ class StatusFileRetentionOwnerTest(unittest.TestCase):
 
     def test_state_gc_still_registers_sign_status(self):
         """删掉 logrotate 段的前提是 state_gc 仍登记它——否则文件永远不被清理。"""
-        from yiban import state_gc
+        from yiban.adapters.statefiles import state_gc
         prefixes = {art.prefix for art in state_gc.ARTIFACTS}
         self.assertIn(
             "sign-status-", prefixes,

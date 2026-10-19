@@ -34,7 +34,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.notify import ledger as notify_ledger
+from yiban.adapters.notifier.notify import ledger as notify_ledger
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "backup_sentinel.py")

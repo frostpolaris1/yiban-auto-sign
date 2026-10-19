@@ -40,8 +40,9 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 
-from yiban.infra import account_crypto, env_lock, locks  # noqa: E402
-from yiban.notify import ledger as notify  # noqa: E402  # 账本实现（旧壳已删除）
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import ledger as notify  # noqa: E402  # 账本实现（旧壳已删除）
+from yiban.infra import env_lock, locks  # noqa: E402
 
 
 class LockPrimitiveTest(unittest.TestCase):

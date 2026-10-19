@@ -57,7 +57,7 @@ GOOD_SOURCE = '''\
 """样本：桶速率默认值只在名册里定义一次。"""
 import logging
 
-from yiban import config_loader
+from yiban.adapters.config import loader as config_loader
 
 RATE_DEFAULT = config_loader.default_of("YIBAN_EGRESS_RATE")
 _DEFAULT_BUCKET_RATE = RATE_DEFAULT

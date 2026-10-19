@@ -39,8 +39,8 @@ from flask import (
 from web.routes import appmod as _appmod
 from web.services import signstatus as _signstatus
 from web.services import vue_assets as _vue_assets
+from yiban.adapters.config import env_io as _env_io
 from yiban.core import status as _yiban_status
-from yiban.infra import env_io as _env_io
 
 
 # `.env` 行分隔符码点：前端"提交前拒含换行族的输入"必须与后端**同一份清单**

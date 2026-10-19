@@ -45,7 +45,7 @@ import signin
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 from werkzeug.security import generate_password_hash
 
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

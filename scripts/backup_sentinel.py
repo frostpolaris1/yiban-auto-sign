@@ -76,8 +76,8 @@ _REPO_ROOT = os.path.dirname(_HERE)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from yiban import mail as mailer  # noqa: E402
-from yiban.mail import layout as mail_layout  # noqa: E402
+from yiban.adapters.notifier import mail as mailer  # noqa: E402
+from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
 
 logger = logging.getLogger("yiban")
 
@@ -195,7 +195,7 @@ def _alert_due(title):
     窗口是 `YIBAN_NOTIFY_COOLDOWN`（默认 60 秒）：它吸收的是"手工连跑几次 / 两个实例
     同时跑"这类重复；跨天的重复由 cron 每日一次的频次天然限制。
     """
-    from yiban.notify import transport
+    from yiban.adapters.notifier.notify import transport
     return transport._throttle_due(title)  # 刻意复用推送组件那份磁盘表：cron 每次新进程
 
 
@@ -211,7 +211,7 @@ def _send_admin_alert(title, mail):
     对 `find_user` 失败原样保留收件人，拿掉库读不改变结果）。库存在时走同一份共享算法，
     行为逐字不变。
     """
-    from yiban.infra import env_io
+    from yiban.adapters.config import env_io
     from yiban.store import db
     if os.path.isfile(env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT)):
         from web.services.notify_mail import _alert_mail_recipients

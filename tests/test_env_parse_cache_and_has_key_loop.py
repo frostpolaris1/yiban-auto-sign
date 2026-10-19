@@ -32,7 +32,7 @@ from unittest import mock
 
 import db
 
-from yiban.infra import account_crypto, env_io
+from yiban.adapters.config import account_crypto, env_io
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
