@@ -37,6 +37,8 @@ from _mail_body import render_body
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 from werkzeug.security import generate_password_hash
 
+from web.services import env_io as _env_io_svc
+
 # 单条端点改不透明 id 后，"不存在用户"用例用一个不会撞上的数字 id 表达。
 GHOST_ID = 987654321
 
@@ -420,8 +422,8 @@ class SecurityFixes021Test(unittest.TestCase):
         try:
             c = self.webapp.create_app().test_client()
             token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
-            with mock.patch.object(self.webapp, "_env_write_lock", spy_lock), \
-                 mock.patch.object(self.webapp, "load_env_int", spy_read):
+            with mock.patch.object(_env_io_svc, "_env_write_lock", spy_lock), \
+                 mock.patch.object(_env_io_svc, "load_env_int", spy_read):
                 r = c.post("/api/me/password", json={
                     "old_password": ADMIN_PASS,
                     "new_password": new_pass,

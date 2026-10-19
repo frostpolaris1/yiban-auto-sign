@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web.services import signstatus as _signstatus  # noqa: E402
 from yiban import egress  # noqa: E402
 from yiban.core import clock  # noqa: E402
 
@@ -1305,7 +1306,7 @@ class MeasureEndpointTest(_WebBase):
     def test_window_inside_is_409_and_costs_no_cooldown(self):
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=True), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=True), \
                 self._no_network_no_sign_writes() as (verify, _audit, spies):
             r = self._post(c, csrf=c.csrf)
             self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
@@ -1318,7 +1319,7 @@ class MeasureEndpointTest(_WebBase):
     def test_cooldown_second_call_is_429_with_remaining(self):
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                 self._no_network_no_sign_writes() as (verify, _audit, spies):
             self.assertEqual(self._post(c, csrf=c.csrf).status_code, 200)
             r2 = self._post(c, csrf=c.csrf)
@@ -1334,7 +1335,7 @@ class MeasureEndpointTest(_WebBase):
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
         env_before = self._read_env()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                 self._no_network_no_sign_writes() as (verify, audit, spies):
             r = self._post(c, csrf=c.csrf, payload={"phone": self.PHONE})
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1388,7 +1389,7 @@ class MeasureEndpointTest(_WebBase):
                       "13800000022",           # 未过审（按设计不产生任何易班请求）
                       "13800000023"):          # 用户自暂停
             with self.subTest(phone=phone), \
-                    mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+                    mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                     self._no_network_no_sign_writes() as (verify, _audit, spies):
                 r = self._post(c, csrf=c.csrf, payload={"phone": phone})
                 self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
@@ -1400,7 +1401,7 @@ class MeasureEndpointTest(_WebBase):
         """登录/拉任务失败 → 502 且回脱敏原因；此时冷却**已消耗**（真实登录已发生）。"""
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                 self._no_network_no_sign_writes(
                     verify_result=(False, "登录失败（账号或密码错误）" + chr(10) + "第二行")
                 ) as (verify, _audit, spies):
