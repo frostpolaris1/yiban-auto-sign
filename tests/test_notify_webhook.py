@@ -1378,7 +1378,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
-             mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp.notify, "send") as nsend:
             for _ in range(threshold - 1):
                 r = c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
@@ -1403,7 +1403,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
-             mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
             # 前 threshold-1 次在长键 A、B 之间分摊：只有"两键被截成同一个键"才会累计到锁定
             for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
@@ -1418,7 +1418,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         """验收：restore 的 200 长邮箱同样截断 [:128]（累计到锁定阈值即锁定）。"""
         c = self.webapp.create_app().test_client()
         long_a, long_b = "r" * 200, "r" * 128 + "s" * 72
-        with mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
+        with mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
             for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
                 email = long_a if i % 2 == 0 else long_b
@@ -1451,8 +1451,8 @@ class Batch18Knife2WebTest(unittest.TestCase):
             seen.append(max_age)
             return real_trim(store, max_age)
 
-        with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy), \
-             mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
+        with mock.patch.object(web_security, "_ip_store_trim", side_effect=spy), \
+             mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
             c.post("/api/me/restore", json={"email": "gone@qq.com", "password": "x"})
         want = self.webapp.RESTORE_FAIL_WINDOW + self.webapp._IP_STORE_MAX_AGE

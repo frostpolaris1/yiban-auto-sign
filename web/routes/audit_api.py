@@ -34,13 +34,17 @@
 `yiban/store/audit_chain.py`（本模块不触 `verify_audit_chain`，读接口不触发全表哈希）。
 
 **通信**
-视图体经 `web.routes.appmod()` 取 web.app 模块级名字（`logger`、`_nl_safe`），避免与
-`web/app.py` 形成导入环；被 `register_all(app)` 一次接入。
+视图体经 `web.routes.appmod()` 取 web.app 自有的模块级名字（`logger`）；A 类转发名
+`_nl_safe` 经真源模块直取（批 3-a 拆墙）。两条路径都不与 `web/app.py` 形成导入环；
+被 `register_all(app)` 一次接入。
 """
 from flask import jsonify, request
 
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
+
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web.services import notify_mail as _notify_mail
 from yiban.adapters.persistence import audit_chain as _audit_chain
 
 _DEFAULT_PAGE_SIZE = 50
@@ -61,14 +65,13 @@ def _serialize_audit_row(row):
     username 经 `actor_tag()` 遮罩（与写入侧同一口径）、target/detail 经 `_nl_safe()`
     净化换行后截断；`row_id` 是不透明定位符（见入库契约第 3 条）。
     """
-    m = _appmod()
     return {
         "row_id": _audit_chain.public_row_id(row["id"]),
         "ts": str(row["ts"] or "")[:32],
         "actor": _audit_chain.actor_tag(row["username"] or ""),
-        "action": m._nl_safe(str(row["action"] or ""))[:_ACTION_MAX],
-        "target": m._nl_safe(str(row["target"] or ""))[:_TARGET_MAX],
-        "detail": m._nl_safe(str(row["detail"] or ""))[:_DETAIL_MAX],
+        "action": _notify_mail._nl_safe(str(row["action"] or ""))[:_ACTION_MAX],
+        "target": _notify_mail._nl_safe(str(row["target"] or ""))[:_TARGET_MAX],
+        "detail": _notify_mail._nl_safe(str(row["detail"] or ""))[:_DETAIL_MAX],
     }
 
 
@@ -215,14 +218,14 @@ def _payload_from_snapshot(m, snapshot):
                           "reason": reason},
         "known_debt": [
             {"code": str(d.get("code") or ""),
-             "label": m._nl_safe(str(d.get("label") or ""))[:120],
+             "label": _notify_mail._nl_safe(str(d.get("label") or ""))[:120],
              "count": int(d.get("count") or 0),
-             "reason": m._nl_safe(str(d.get("reason") or ""))[:200]}
+             "reason": _notify_mail._nl_safe(str(d.get("reason") or ""))[:200]}
             for d in debt
         ],
         "write_failures": health.get("write_failures"),
         "empty_hash_rows": health.get("empty_hash_rows"),
-        "note": m._nl_safe(str(health.get("note") or ""))[:200],
+        "note": _notify_mail._nl_safe(str(health.get("note") or ""))[:200],
     }
 
 
