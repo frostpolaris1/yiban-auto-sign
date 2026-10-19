@@ -623,7 +623,7 @@ def _cred_state_path():
 
 
 def _load_cred_state():
-    """读账密状态文件（唯一入口见 yiban/cred_state.py）。"""
+    """读账密状态文件（唯一入口见 yiban/adapters/statefiles/cred_state.py）。"""
     return cred_state.read()
 
 
