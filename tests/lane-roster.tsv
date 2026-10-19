@@ -279,6 +279,7 @@ fast	tests/test_subpath_deploy.py
 fast	tests/test_supervisor_recursion_guard.py
 fast	tests/test_switch_password_gate.py
 fast	tests/test_t5_t7_relocation.py
+fast	tests/test_t6_relocation.py
 fast	tests/test_time_field_norm.py
 fast	tests/test_time_prefs.py
 fast	tests/test_token_bucket.py
