@@ -199,14 +199,14 @@ class LineBreakPredicateTest(_Base):
 
     def test_predicate_exists_and_rejects_all_breaks(self):
         self.assertTrue(
-            callable(getattr(self.webapp, "_has_line_break", None)),
-            "缺少模块级谓词 _has_line_break（校验与写入口径须单源）")
+            callable(getattr(env_io, "has_line_break", None)),
+            "缺少谓词 env_io.has_line_break（校验与写入口径须单源）")
         for ch in ALL_BREAKS:
             with self.subTest(ch=hex(ord(ch))):
                 self.assertTrue(
-                    self.webapp._has_line_break(f"A{ch}B"),
+                    env_io.has_line_break(f"A{ch}B"),
                     f"U+{ord(ch):04X} 是 splitlines 的行分隔符，谓词必须判 True")
-                self.assertTrue(self.webapp._has_line_break(ch), "单独一个分隔符也要判 True")
+                self.assertTrue(env_io.has_line_break(ch), "单独一个分隔符也要判 True")
 
     def test_predicate_matches_splitlines_over_whole_charspace(self):
         """谓词与 splitlines 逐字符等价（抽样覆盖：其他空白/控制符不得误伤）。
@@ -223,7 +223,7 @@ class LineBreakPredicateTest(_Base):
         for ch in probe:
             expect = len(("A" + ch + "B").splitlines()) > 1
             self.assertEqual(
-                self.webapp._has_line_break("A" + ch + "B"), expect,
+                env_io.has_line_break("A" + ch + "B"), expect,
                 f"U+{ord(ch):04X}：谓词判据与 splitlines 不一致（应为 {expect}）")
 
     def test_constant_is_frozenset_of_the_documented_chars(self):

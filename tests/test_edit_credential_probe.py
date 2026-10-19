@@ -48,6 +48,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from yiban.attempt import jobs as verify_jobs
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -197,7 +199,7 @@ class _ProbeBase(unittest.TestCase):
         end = time.time() + timeout
         while time.time() < end:
             rows = self._jobs()
-            if len(rows) == 1 and rows[0]["status"] in self.webapp.VERIFY_JOB_TERMINAL:
+            if len(rows) == 1 and rows[0]["status"] in verify_jobs.TERMINAL_STATUSES:
                 return rows[0]
             time.sleep(0.05)
         self.fail(f"编辑探针任务未落终态：{self._jobs()}")

@@ -165,14 +165,44 @@ class StatusSingleSourceTest(unittest.TestCase):
                       "符号表必须是同一对象（别名），不是重新构造的副本")
         self.assertIs(self.signin.UNDONE_STATUSES, yiban_status.UNDONE_STATUSES)
 
+    #: 批 3-c S1 已去壳的名字：读者直取真源，`web/app.py` 不得再留第二份面。
+    UNWRAPPED_IN_3C_S1 = (
+        "STATUS_SUCCESS", "STATUS_ALREADY", "STATUS_NO_TASK", "STATUS_USER_CANCELLED",
+        "STATUS_PENDING", "STATUS_ICON",
+    )
+
     def test_web_is_alias_not_duplicate(self):
-        for name in ("STATUS_SUCCESS", "STATUS_ALREADY", "STATUS_NO_TASK", "STATUS_FAILED",
-                     "STATUS_RETRYING", "STATUS_SKIPPED_WINDOW", "STATUS_SKIPPED_NORANGE",
-                     "STATUS_PAUSED", "STATUS_USER_CANCELLED", "STATUS_PENDING"):
+        """状态词汇只有 `yiban/core/status.py` 一处：墙上不再留名，各路径同对象。
+
+        批 3-c S1 把 `STATUS_SUCCESS` / `STATUS_ALREADY` / `STATUS_NO_TASK` /
+        `STATUS_USER_CANCELLED` / `STATUS_PENDING` / `STATUS_ICON` 六个别名从
+        `web/app.py` 删除，读者改直取真源。本用例钉两件事：
+
+          ① 这六个名字不得在 `web/app.py` 上再出现——留一个就是第二份可漂移的面；
+          ② 同一张 `ICON` 经**两条不同导入路径**（`web.app` 的再导出、
+             `/api/my-accounts` 的真实消费者 `web/routes/my_api.py`）取到的
+             必须是**同一个对象**。
+
+        ② 用 `is` 而非 `==`：复制一份内容相同的字典同样能骗过等值断言——这是原判据的
+        原话，也是本用例的"牙齿"。判据只读模块属性、不比较谁先被导入：工单 jmya 记录过
+        满载并行下对导入顺序敏感的对象同一性断言会在全量里假红。
+        """
+        for name in ("STATUS_FAILED", "STATUS_RETRYING", "STATUS_SKIPPED_WINDOW",
+                     "STATUS_SKIPPED_NORANGE", "STATUS_PAUSED"):
             with self.subTest(name=name):
                 self.assertEqual(getattr(self.webapp, name), getattr(yiban_status, name))
-        self.assertIs(self.webapp.STATUS_ICON, yiban_status.ICON)
-        self.assertIs(self.webapp.STATUS_TEXT, yiban_status.TEXT)
+        self.assertIs(self.webapp.STATUS_TEXT, yiban_status.TEXT)  #is 而非 ==：副本同样能骗过等值断言
+        for name in self.UNWRAPPED_IN_3C_S1:
+            self.assertFalse(
+                hasattr(self.webapp, name),
+                f"批 3-c S1 已去壳 {name}：web/app.py 不得再定义或转发它（读者直取真源）")
+        # 第一条路径：web.app 以 `from yiban.core import status as yiban_status` 再导出。
+        self.assertIs(self.webapp.yiban_status.ICON, yiban_status.ICON,  #is 而非 ==：复制一份内容相同的字典同样能骗过等值断言
+                      "符号表必须是同一对象（别名），不是重新构造的副本")
+        # 第二条路径：真正下发 state_icon 的消费方模块。
+        my_api = importlib.import_module("web.routes.my_api")
+        self.assertIs(my_api.yiban_status.ICON, yiban_status.ICON,
+                      "消费方 web/routes/my_api.py 看到的 ICON 必须与真源同对象")
 
     def test_undone_statuses_contents(self):
         """未了结集合的口径（补签闸门依赖它：落此集合即判定本轮未跑完）。"""
