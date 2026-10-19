@@ -547,18 +547,24 @@ class ProgressEndpointUnreadableTest(unittest.TestCase):
         from flask import Flask
 
         from web.routes import settings_api
+        from web.services import executor_env as _executor_env
+        from yiban.adapters.persistence import db as _db
+        from yiban.core import clock as _clock
 
+        # 假 app 模块只剩 app.py **自有**的名字（A 类转发名直取真源，见批 3-a）。
         m = SimpleNamespace(
             _is_builtin_admin_session=lambda: True,
-            clock=SimpleNamespace(today=lambda: DAY),
-            db=SimpleNamespace(task_latest_day=lambda: DAY, task_stats=task_stats),
-            _executor_activity=lambda day: ([], {"claimed": 0, "failed": 0,
-                                                 "done": 0, "total": 0}),
             _executors_window=lambda: ((6, 30), (7, 50)),
             _in_run_period=lambda bounds: False,
         )
         with Flask("probe").test_request_context(), \
-                mock.patch.object(settings_api, "_appmod", return_value=m):
+                mock.patch.object(settings_api, "_appmod", return_value=m), \
+                mock.patch.object(_clock, "today", lambda: DAY), \
+                mock.patch.object(_db, "task_latest_day", lambda: DAY), \
+                mock.patch.object(_db, "task_stats", task_stats), \
+                mock.patch.object(_executor_env, "_executor_activity",
+                                  lambda day: ([], {"claimed": 0, "failed": 0,
+                                                     "done": 0, "total": 0})):
             resp = settings_api.api_scheduler_executors_progress()
         if isinstance(resp, tuple):
             self.fail(f"进度端点读不通不得报错：{resp[1]}")

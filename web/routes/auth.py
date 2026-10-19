@@ -19,9 +19,10 @@ app 实例一份"（测试进程反复 create_app，进程级共享会跨实例�
 `web.routes.login_fails()` 单点取用，认证/个人域共用同一份账（安全语义依赖同一份计数）。
 
 **通信**
-视图体不读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（ENV_FILE / verify_admin / load_env_int /
-send_notification / _client_ip / db 等）必须继续生效。
+A 类转发名（`db` / `clock` / `load_env_int` / `_client_ip` / `_mask_email` 等）经真源
+模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；app.py 自有的模块级名字
+（`ENV_FILE` / `verify_admin` / `send_notification` / 各类窗口常量等）仍经
+`web.routes.appmod()` 按属性取。
 唯一例外是口令哈希两个名字（`check_password_hash` / `generate_password_hash`）：
 它们经 145-B `T1` 片改为本模块从 `werkzeug.security` 直接导入，故打桩点须落在
 **本模块**（`mock.patch.object(web.routes.auth, "check_password_hash", …)`）。
@@ -34,8 +35,17 @@ import time
 from flask import current_app, jsonify, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
+from web.services import accounts_data as _accounts_data
+from web.services import env_io as _env_io_svc
+from web.services import locks as _locks
+from web.services import notify_mail as _notify_mail
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
+from yiban.core import clock
 
 
 def _register_limits():
@@ -51,7 +61,7 @@ def _login_rate():
 def api_login():
     """登录：管理员（.env 配置）或普通用户（users 表注册）。返回 role。"""
     m = _appmod()
-    ip = m._client_ip()
+    ip = _security._client_ip()
     now = time.time()
     data = m._json_body()
     username = str(
@@ -63,17 +73,17 @@ def api_login():
     # username 直接来自请求体、长度无界，fail_key 统一截断 [:128]
     # （防公网扫描器用海量超长用户名打爆 _login_fails 内存表）
     fail_key = (ip, username.lower()[:128])
-    with m._rate_lock:
-        m._ip_store_trim(_login_fails(), m.LOGIN_LOCK_SECONDS + m._IP_STORE_MAX_AGE)
+    with _locks._rate_lock:
+        _security._ip_store_trim(_login_fails(), _security.LOGIN_LOCK_SECONDS + _security._IP_STORE_MAX_AGE)
         _fails, lock_until, _ = _login_fails().get(fail_key, (0, 0, 0))
         if now < lock_until:
             # 不显示剩余秒数：避免向用户暴露锁定窗口参数（信息分层）
             return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
     # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒。
     # 先清理过期条目再按“先判断后递增”的旧语义计数：允许第 10 次，第 11 次 429。
-    with m._rate_lock:
-        m._ip_store_trim(_login_rate(), 60 + m._IP_STORE_MAX_AGE)
-    _lcnt, _lstart, allowed = m._bump_window_count(_login_rate(), ip, now, 60, limit=10)
+    with _locks._rate_lock:
+        _security._ip_store_trim(_login_rate(), 60 + _security._IP_STORE_MAX_AGE)
+    _lcnt, _lstart, allowed = _security._bump_window_count(_login_rate(), ip, now, 60, limit=10)
     if not allowed:
         return jsonify({"error": "登录尝试过于频繁，请稍后再试"}), 429
 
@@ -85,20 +95,20 @@ def api_login():
     if m.verify_admin(username, password):
         role = "admin"
         auth_source = "builtin"
-        pw_version = m.load_env_int(m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)  # 改密后旧会话失效
+        pw_version = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)  # 改密后旧会话失效
     else:
         # 2) 普通用户（users，邮箱登录，不区分大小写；role 支持多管理员）
         email = username.lower()
-        u = m.db.find_user(email)
+        u = db.find_user(email)
         if u is None:
-            m._constant_time_dummy(password)  # 时延拉平：防邮箱枚举（与真实比对等开销）
+            _security._constant_time_dummy(password)  # 时延拉平：防邮箱枚举（与真实比对等开销）
             # 登录即恢复：冷静期（7 天）内密码正确的已注销账号不放行登录，返回
             # recoverable 标记，由前端引导恢复（受冷却限速）
-            du = m.db.find_user_any(email)
+            du = db.find_user_any(email)
             if (
                 du is not None
                 and du.get("deleted")
-                and m._delete_grace_remaining(du.get("deleted_at", "")) > 0
+                and _accounts_data._delete_grace_remaining(du.get("deleted_at", "")) > 0
                 and check_password_hash(du.get("password_hash", ""), password)
             ):
                 recoverable = True
@@ -107,7 +117,7 @@ def api_login():
             auth_source = "user"  # 注册用户（含提升的管理员）统一记为 user
             pw_version = u.get("pw_version", 1)
     if role:
-        with m._rate_lock:
+        with _locks._rate_lock:
             _login_fails().pop(fail_key, None)
         # 登录成功写入审计：成功登录原零留痕，被盗会话无法还原会话何时建立、
         # 来自哪个 IP（IP 经 hash_ip 匿名化，与审计侧口径一致）。
@@ -125,8 +135,8 @@ def api_login():
         # 位置刻意留在校验通过后立即记录，早于 session 重建与下方 set_user_sid：
         # 口令通过校验即一次既成的登录事实，即使后续 sid 落库失败也要留下这次
         # 登录；且此时手上还没有 sid，本行天然不可能写进可重放的凭据。
-        m.db.audit(
-            (username.lower() or "?")[:64], "login_ok", m.db.hash_ip(ip),
+        db.audit(
+            (username.lower() or "?")[:64], "login_ok", db.hash_ip(ip),
             f"登录成功（{auth_source}）",
         )
         # auth_source 记录实际认证来源，不用 role+邮箱反推
@@ -157,7 +167,7 @@ def api_login():
         elif auth_source == "user":
             sid = secrets.token_hex(16)
             session["sid"] = sid
-            m.db.set_user_sid(username.lower(), sid)
+            db.set_user_sid(username.lower(), sid)
         return jsonify({"ok": True, "role": role})
     if recoverable:
         # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）。
@@ -166,29 +176,29 @@ def api_login():
         # nginx 访问日志，不可归因）。动作名与 login_ok 分开：这里没有建立
         # 会话，只是"口令已被验证 + 恢复被引导过"的痕迹；三元组口径同
         # login_ok（username 截 64、IP 经 hash_ip、detail 不落凭据）。
-        m.db.audit(
-            (username.lower() or "?")[:64], "login_recoverable", m.db.hash_ip(ip),
+        db.audit(
+            (username.lower() or "?")[:64], "login_recoverable", db.hash_ip(ip),
             "注销冷静期内口令正确，未建会话（引导恢复）",
         )
         return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
-    fails = m._bump_login_failure(_login_fails(), fail_key, now)
+    fails = _security._bump_login_failure(_login_fails(), fail_key, now)
     # 失败登录留痕审计链：失败原仅内存计数+日志，"被盗号溯源"
     # 场景无法从审计还原爆破片段。刻意不在每次失败都写（防爆破刷爆审计表），
     # 与阈值邮件/锁定同节奏：告警阈值与锁定阈值各留痕一条（两值相等时只留一条），
     # IP 经 hash_ip 匿名化（与登录成功审计同口径）。用户名截断防长串刷审计。
     if fails in (m.LOGIN_FAIL_NOTIFY, m.LOGIN_MAX_FAILS):
-        m.db.audit(
+        db.audit(
             (username.lower() or "?")[:64],
             "login_failed",
-            m.db.hash_ip(ip),
+            db.hash_ip(ip),
             f"连续失败 {fails} 次（阈值留痕）",
         )
     lock_now = fails >= m.LOGIN_MAX_FAILS
     if lock_now:
-        with m._rate_lock:
-            _login_fails()[fail_key] = (0, now + m.LOGIN_LOCK_SECONDS, now)
+        with _locks._rate_lock:
+            _login_fails()[fail_key] = (0, now + _security.LOGIN_LOCK_SECONDS, now)
         m.logger.warning(
-            "登录失败次数过多，IP %s 锁定 %s 秒", m.db.hash_ip(ip), m.LOGIN_LOCK_SECONDS
+            "登录失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS
         )
     # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解。
     # 告警排在锁定之前：两个阈值**同值**时这一刻既要告警也要锁定，若按"先锁定即 return"
@@ -198,17 +208,17 @@ def api_login():
         # 一次常见的忘密码就会挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。
         # 故只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
         # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
-        with m._rate_lock:
+        with _locks._rate_lock:
             distinct_users = sum(1 for (fip, _u) in _login_fails() if fip == ip)
         m.send_notification(
             "登录失败告警",
-            m.mail_layout.Mail(
-                summary=f"IP {m._nl_safe(ip)} 连续 {fails} 次登录失败。",
+            mail_layout.Mail(
+                summary=f"IP {_notify_mail._nl_safe(ip)} 连续 {fails} 次登录失败。",
                 fields=[
                     # 尝试用户名是受害者输入的邮箱（注册用户即邮箱登录）——爆破告警
                     # 正文不得带出被爆破账号明文邮箱（MF-49 展示/告警面同一口径：
                     # `mask_email` 非邮箱原样返回，内置 admin 用户名不受影响）。
-                    ("尝试用户名", m._nl_safe(m._mask_email(username))),
+                    ("尝试用户名", _notify_mail._nl_safe(_accounts_data._mask_email(username))),
                     ("该 IP 试过的不同用户名", f"{distinct_users} 个"),
                 ],
                 advice=["如非本人操作，请检查是否有人尝试暴力破解"],
@@ -222,7 +232,7 @@ def api_login():
         )
     if lock_now:
         return jsonify(
-            {"error": f"密码错误次数过多，已锁定 {m.LOGIN_LOCK_SECONDS // 60} 分钟"}
+            {"error": f"密码错误次数过多，已锁定 {_security.LOGIN_LOCK_SECONDS // 60} 分钟"}
         ), 429
     return jsonify({"error": "用户名或密码错误"}), 401
 
@@ -253,20 +263,20 @@ def api_register():
     dom_err = m.email_domain_error(email)
     if dom_err:
         return jsonify({"error": dom_err}), 400
-    pw_err = m._password_policy_error(password)
+    pw_err = _accounts_data._password_policy_error(password)
     if pw_err:
         return jsonify({"error": pw_err}), 400
     # 内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用。
     # 与"该邮箱已注册"同文案、同补一次 dummy scrypt：独有文案且排在口令散列之前
     # 等于给匿名者一个零成本的超管邮箱探针（注册面 = 公开面）。
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
-        m._constant_time_dummy(password)
+        _security._constant_time_dummy(password)
         return jsonify({"error": "该邮箱已注册"}), 400
     # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
-    ip = m._client_ip()
+    ip = _security._client_ip()
     now = time.time()
-    with m._rate_lock:
-        m._ip_store_trim(_register_limits(), m.REGISTER_WINDOW)
+    with _locks._rate_lock:
+        _security._ip_store_trim(_register_limits(), m.REGISTER_WINDOW)
         rcnt, rstart = _register_limits().get(ip, (0, now))
         if now - rstart > m.REGISTER_WINDOW:
             rcnt, rstart = 0, now
@@ -274,40 +284,40 @@ def api_register():
             # 不暴露限速窗口分钟数（防恶意用户据此规划批量注册节奏，信息分层）
             return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
     # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
-    with m._file_lock:
+    with _locks._file_lock:
         # 容量兜底：用户配额（全部未删除注册用户，含空用户；
         # 防分布式注册无限膨胀 users 表。与账号配额同构，
         # 统一为"再注册 1 人后 > 上限才拒"语义，见 _users_at_capacity）
-        max_users = m.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS)
+        max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS)
         if m._users_at_capacity():
             m._notify_capacity_once("users", max_users, "注册人数")
             return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
-        if m.db.find_user(email) is not None:
+        if db.find_user(email) is not None:
             # 时延拉平：已注册邮箱在此提前返回，跳过了后方的 scrypt 哈希
             #（约百毫秒），响应时序差可被用于批量枚举"哪些邮箱是本站注册用户"。
             # 与登录/恢复的 _constant_time_dummy 惯例对齐。
-            m._constant_time_dummy(password)
+            _security._constant_time_dummy(password)
             return jsonify({"error": "该邮箱已注册"}), 400
         # 冷却期邮箱保护：已注销账号 7 天冷却期内禁止同邮箱注册，
         # 否则恢复权会被新注册抢占（登录即恢复形同虚设）；宽限期结束后邮箱正常释放
-        du = m.db.find_user_any(email)
+        du = db.find_user_any(email)
         if (
             du is not None
             and du.get("deleted")
-            and m._delete_grace_remaining(du.get("deleted_at", "")) > 0
+            and _accounts_data._delete_grace_remaining(du.get("deleted_at", "")) > 0
         ):
-            m._constant_time_dummy(password)  # 时延拉平：同上，防探测"近期注销"邮箱
+            _security._constant_time_dummy(password)  # 时延拉平：同上，防探测"近期注销"邮箱
             # （防枚举文案）：冷却期分支文案与「该邮箱已注册」
             # 逐字一致——专属文案（"正在注销冷却期"）让攻击者批量探测"哪些邮箱近期
             # 注销过"（低警惕期用户是钓鱼高价值目标）。恢复入口仍由登录页提供，
             # 注册侧不给出任何差异信号。
             return jsonify({"error": "该邮箱已注册"}), 400
         try:
-            created = m.db.create_user(
+            created = db.create_user(
                 email,
-                generate_password_hash(password, method=m.SCRYPT_METHOD),
+                generate_password_hash(password, method=_security.SCRYPT_METHOD),
                 role="user",
-                created_at=m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+                created_at=clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
                 # 审计与 INSERT 同事务：注册即建立账号凭据，中间被杀不留"建了却无痕"。
                 audit_spec={
@@ -322,8 +332,8 @@ def api_register():
         if not created:
             return jsonify({"error": "该邮箱已注册"}), 400  # OR IGNORE 未实际创建
     # 成功注册计数：原子重读后递增，避免并发注册丢失计数
-    m._bump_window_count(_register_limits(), ip, now, m.REGISTER_WINDOW)
-    m.logger.info("新用户注册: %s", m._mask_email(email))
+    _security._bump_window_count(_register_limits(), ip, now, m.REGISTER_WINDOW)
+    m.logger.info("新用户注册: %s", _accounts_data._mask_email(email))
     return jsonify({"ok": True})
 
 
@@ -336,8 +346,8 @@ def api_logout():
     # （不落明文、不存 User-Agent）、username 截断 64、detail 只记认证来源，
     # 绝不写入 sid/Cookie/CSRF 值（那些一旦进链就等于把可重放的凭据抄进日志）。
     # 顺序刻意在 session.clear() 之前：清空后就再也取不到 username 与 auth_source。
-    m.db.audit(
-        m._audit_actor(), "logout_ok", m.db.hash_ip(m._client_ip()),
+    db.audit(
+        _notify_mail._audit_actor(), "logout_ok", db.hash_ip(_security._client_ip()),
         f"登出（{session.get('auth_source') or 'builtin'}）",
     )
     # 登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
@@ -357,7 +367,7 @@ def api_logout():
         and session.get("username")
     ):
         try:
-            m.db.set_user_sid(
+            db.set_user_sid(
                 session["username"].strip().lower(), secrets.token_hex(16)
             )
         except Exception as e:

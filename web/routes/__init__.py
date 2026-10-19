@@ -11,7 +11,9 @@
 CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 
 **复用**
-`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；
+`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；批 3-a 拆墙后
+它只承担 app.py **自有**的那批名字（env 句柄、缓存、SID 签发、窗口常量、`_json_body`
+等）；app.py 以 import 形态转发的名字（A 类）已由各域从真源模块直取；
 `login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账；
 `high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包，
 `admin_delete_limited()` 取回同族的"删除/通道变更"限速判定；

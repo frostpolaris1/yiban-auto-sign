@@ -224,8 +224,17 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         import contextlib
 
         import flask
+        import signin
 
         from web.routes import settings_api
+        from web.services import accounts_data as _accounts_data
+        from web.services import env_io as _env_io_svc
+        from web.services import measure as _measure
+        from web.services import notify_mail as _notify_mail
+        from web.services import signstatus as _signstatus
+        from yiban.adapters.persistence import db as _db
+        from yiban.core import clock as _clock
+        from yiban.core import masking as _masking
         seen = []
 
         class _Bounds:
@@ -233,30 +242,35 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
             def full_sec():
                 return 4680
 
+        # 假 app 模块只剩 app.py **自有**的名字（A 类转发名已不由转发墙供，见批 3-a）。
         m = SimpleNamespace(
             ENV_FILE=".env", DEFAULT_ACCOUNT_GAP_MAX=10, MEASURE_COOLDOWN_SEC=300,
-            clock=SimpleNamespace(now=datetime.now),
-            db=SimpleNamespace(audit=lambda *a, **kw: None),
             _is_builtin_admin_session=lambda: True,
             _executors_window=lambda: _Bounds(),
-            _in_sign_window=lambda bounds: False,
             _json_body=lambda: {},
-            load_accounts=lambda: [{"phone": "13800000001"}],
-            _pick_measure_account=lambda accounts, phone: {"phone": "13800000001"},
-            _as_signin_account=lambda acc: SimpleNamespace(),
-            _mask_phone=lambda p: "138****0001",
-            load_env_int=lambda *a: 10,
             _measure_state_path=lambda: os.path.join(tempfile.gettempdir(), "m.json"),
-            _read_measure_state=lambda p: {},
             _write_measure_state=lambda p, d: None,
-            _measure_cooldown_remaining=lambda st, cd: 0,
-            _audit_actor=lambda: "admin",
-            signin=SimpleNamespace(
-                _state_file_lock=lambda p: contextlib.nullcontext(),
-                verify_account=lambda acc: (True, "ok"),
-                capacity_of=self._spy(seen)),
         )
         with mock.patch.object(settings_api, "_appmod", lambda: m), \
+                mock.patch.object(_signstatus, "_in_sign_window", lambda bounds: False), \
+                mock.patch.object(_measure, "_pick_measure_account",
+                                  lambda accounts, phone: {"phone": "13800000001"}), \
+                mock.patch.object(_accounts_data, "load_accounts",
+                                  lambda: [{"phone": "13800000001"}]), \
+                mock.patch.object(_accounts_data, "_as_signin_account",
+                                  lambda acc: SimpleNamespace()), \
+                mock.patch.object(_masking, "mask_phone", lambda p: "138****0001"), \
+                mock.patch.object(_env_io_svc, "load_env_int", lambda *a: 10), \
+                mock.patch.object(_measure, "_read_measure_state", lambda p: {}), \
+                mock.patch.object(_measure, "_measure_cooldown_remaining",
+                                  lambda st, cd: 0), \
+                mock.patch.object(_clock, "now", datetime.now), \
+                mock.patch.object(_db, "audit", lambda *a, **kw: None), \
+                mock.patch.object(_notify_mail, "_audit_actor", lambda: "admin"), \
+                mock.patch.object(signin, "_state_file_lock",
+                                  lambda p: contextlib.nullcontext()), \
+                mock.patch.object(signin, "verify_account", lambda acc: (True, "ok")), \
+                mock.patch.object(signin, "capacity_of", self._spy(seen)), \
                 flask.Flask(__name__).app_context():
             resp = settings_api.api_scheduler_executors_measure()
         self.assertTrue(resp.get_json()["ok"])

@@ -28,11 +28,12 @@ approve/reject/restore/delete/purge；`DELETE /api/accounts/<idx>` 软删；
 读取限速表；`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（db / logger / clock / mailer / mail_layout /
-load_accounts / mask_account / validate_account / send_notification / ENV_FILE 等）必须
-继续生效。对外：JSON 请求体经 `_json_body()`，落库走 `db`，告警经 `send_notification`，
-账号容量闸门经 `_accounts_at_capacity()`；被 `web.app` 的 `register_all(app)` 一次接入。
+A 类转发名（`db` / `clock` / `mailer` / `mail_layout` / `load_accounts` / `mask_account` /
+`validate_account` 等）经真源模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；
+app.py 自有的模块级名字（`logger` / `ENV_FILE` / `send_notification` / `_json_body` 等）
+仍经 `web.routes.appmod()` 按属性取。对外：JSON 请求体经 `_json_body()`，落库走 `db`，
+告警经 `send_notification`，账号容量闸门经 `_accounts_at_capacity()`；
+被 `web.app` 的 `register_all(app)` 一次接入。
 """
 import json
 import os
@@ -42,6 +43,8 @@ import time
 from flask import jsonify, request, session
 from werkzeug.security import generate_password_hash
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import security as _security
 from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
 from web.routes import detail_limits as _detail_limits
@@ -53,16 +56,29 @@ from web.routes import read_audit_denied_trace as _read_audit_denied_trace
 from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
 from web.routes import verify_limits as _verify_limits
+from web.services import accounts_data as _accounts_data
+from web.services import env_io as _env_io_svc
+from web.services import executor_env as _executor_env
+from web.services import locks as _locks
+from web.services import logs as _logs_svc
+from web.services import notify_mail as _notify_mail
+from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
 from web.services.device_refresh import refresh_account_device as _refresh_account_device
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
+from yiban.adapters.notifier import mail as mailer
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
 from yiban.adapters.persistence.accounts import signs_in as _signs_in
+from yiban.core import clock
+from yiban.core import masking as _masking
+from yiban.core import status as yiban_status
 
 
 def api_accounts():
     m = _appmod()
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     # 只取计数（`count_only=1`）：只为轮询/徽标算标量时用，不下发整表——5k 账号下
     # 整表响应约 2.14 MiB，而导航徽标每 10s 只取一个计数（core.js::loadNavBadges）。
     # 这里在**任何**派生映射之前早退（status 文件 / 计划台账 / 上次执行体都不查）。
@@ -74,9 +90,9 @@ def api_accounts():
             if a.get("deleted"):
                 continue
             _st = a.get("status")
-            if _st == m.ACCOUNT_STATUS_PENDING:
+            if _st == _accounts_data.ACCOUNT_STATUS_PENDING:
                 pending += 1
-            elif _st == m.ACCOUNT_STATUS_REJECTED:
+            elif _st == _accounts_data.ACCOUNT_STATUS_REJECTED:
                 rejected += 1
         return jsonify({"ok": True, "total": len(accounts),
                         "pending": pending, "rejected": rejected})
@@ -112,19 +128,19 @@ def api_accounts():
             _prev_status = _prev.get("status", "") if isinstance(_prev, dict) else ""
             # is_concluded_status 是排除法：看不懂的状态串按"已有结论"处理（宁可不
             # 覆盖，也不把真实失败从面板上抹掉）
-            if m.yiban_status.is_concluded_status(_prev_status):
+            if yiban_status.is_concluded_status(_prev_status):
                 continue
             states[acc.get("phone", "")] = {
                 "status": m.STATUS_USER_CANCELLED,
                 "message": "用户已取消签到",
             }
     # 自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
-    prefs = {p: v["slot_min"] for p, v in m.db.get_time_prefs().items()}
+    prefs = {p: v["slot_min"] for p, v in db.get_time_prefs().items()}
     # "上次实领是谁签的"：口径是**最近一次有记录的业务日**——"上次"的字面意即最近一次
     # （按"昨天"取的话，周末停签后会让整列空白到下一个工作日）。
     # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
     # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
-    last_exec = m._last_executors(m.db.task_latest_day())
+    last_exec = _executor_env._last_executors(db.task_latest_day())
     # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
     # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
     _win = m.sign_window_bounds()
@@ -143,7 +159,7 @@ def api_accounts():
         "ok": True,
         "accounts": [
             {
-                **m.mask_account(a, base_index + i),
+                **_accounts_data.mask_account(a, base_index + i),
                 "time_pref": m._slot_to_label(prefs.get(a["phone"])),
                 "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
                 # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
@@ -154,7 +170,7 @@ def api_accounts():
         ],
         # states 值压成状态码字符串（前端图标映射用）
         "states": {
-            m._mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
+            _masking.mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
             for k, v in states.items()
             # 分页时只下发当前页账号的状态；不传参数（paged=False）保持整表口径不变
             if _page_phones is None or k in _page_phones
@@ -164,13 +180,13 @@ def api_accounts():
         # runner 不再为每个账号预写 sign-state 条目。
         # 文案由共享助手唯一裁定，与 /api/my-accounts 同源（accounts_data.plan_state_message）。
         "state_msgs": {
-            m._mask_phone(a.get("phone", "")): _plan_state_message(
+            _masking.mask_phone(a.get("phone", "")): _plan_state_message(
                 a, states.get(a.get("phone", "")), plan_at)
             for a in accounts
         },
         # 单次签到耗时秒数：表格状态 title 展示"耗时 xx s"；无记录为 None
         "state_durs": {
-            m._mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
+            _masking.mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
             for k, v in states.items()
             if _page_phones is None or k in _page_phones
         },
@@ -190,9 +206,9 @@ def api_account_detail(idx):
     限速 + 聚合读审计（超限 429 不逐条留痕，防把审计表当打字机）。
     """
     m = _appmod()
-    with m._rate_lock:
-        m._ip_store_trim(_detail_limits(), m.DETAIL_WINDOW + m._IP_STORE_MAX_AGE)
-    _cnt, _start, allowed = m._bump_window_count(
+    with _locks._rate_lock:
+        _security._ip_store_trim(_detail_limits(), m.DETAIL_WINDOW + _security._IP_STORE_MAX_AGE)
+    _cnt, _start, allowed = _security._bump_window_count(
         _detail_limits(), (session.get("username") or "?")[:64], time.time(),
         m.DETAIL_WINDOW, limit=m.DETAIL_MAX,
     )
@@ -201,12 +217,12 @@ def api_account_detail(idx):
         # 上限排布枚举节奏（信息分层口径，与其余 429 一致）
         _read_audit_denied_trace()("account_detail_denied")
         return jsonify({"error": "查看账号详情过于频繁，请稍后再试"}), 429
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     if not 0 <= idx < len(accounts):
         return jsonify({"error": "账号不存在"}), 404
     _read_audit_trace()(
-        "account_detail_read", m._mask_phone(str(accounts[idx].get("phone", ""))))
-    return jsonify({"ok": True, "account": m.mask_account(accounts[idx], idx, masked=False)})
+        "account_detail_read", _masking.mask_phone(str(accounts[idx].get("phone", ""))))
+    return jsonify({"ok": True, "account": _accounts_data.mask_account(accounts[idx], idx, masked=False)})
 
 
 def api_account_device_refresh(idx):
@@ -220,14 +236,14 @@ def api_account_device_refresh(idx):
     时顺带发生——账号在签到前被打开表单、或长期签不上时，设备字段可能一直是空值。
     """
     m = _appmod()
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     if not 0 <= idx < len(accounts):
         return jsonify({"error": "账号不存在"}), 404
     acc = accounts[idx]
     data = m._json_body()
     # 管理面写口一律 fail-closed（与 update/delete/restore/purge/review/move 同纪律）：
     # 本端点会对目标账号**发起一次真实登录**并写它的行，错位代价高于让调用方刷新一次
-    if m._stale_idx_guard(acc, data, fail_closed=True):
+    if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
         return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
     if acc.get("deleted"):
         return jsonify({"error": "账号已删除，请先恢复"}), 400
@@ -253,16 +269,16 @@ def api_account_add():
     m = _appmod()
     # 操作级锁：手机号唯一/每人限 1/自动注册检查与写入原子（防并发重复添加与覆盖丢失）
     data = m._json_body()
-    err, clean = m.validate_account(data, require_password=True)
+    err, clean = _accounts_data.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
     # 添加口没有旧值可保：哨兵同样折算（协议令牌绝不允许当字面量送去验证或落库）
-    m.fold_phone_code(clean)
+    _accounts_data.fold_phone_code(clean)
     # 预筛（同 api_my_account_add）：容量/手机号占用/内置邮箱先拦，注定失败的
     # 添加不再消耗易班网络验证。权威校验仍在下方写锁内。
-    with m._file_lock:
-        accounts_pre = m.load_accounts()
-        max_accounts_pre = m.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+    with _locks._file_lock:
+        accounts_pre = _accounts_data.load_accounts()
+        max_accounts_pre = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
         email_screen = str(data.get("email", "")).strip().lower()
         # 容量兜底：账号配额 = 活跃账号数（含裸账号）；
         # 本次将新增 1 个非删除账号——归属邮箱已持有活跃账号的重复添加
@@ -272,7 +288,7 @@ def api_account_add():
         if m._accounts_at_capacity(0 if holds_live else 1):
             m._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
             return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
-        if m.find_account_index(accounts_pre, clean["phone"]) is not None:
+        if _accounts_data.find_account_index(accounts_pre, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
         if email_screen and email_screen == m._builtin_admin_email():
             return jsonify({"error": "内置管理员邮箱不可注册"}), 400
@@ -285,30 +301,30 @@ def api_account_add():
     # 验证尝试受每用户配额限制，认证失败另有按手机号冷却（与用户提交路径同口径）
     verify_async_job = False
     if m._account_verify_enabled():
-        if m._verify_fail_cooldown_remaining(_verify_fails(), clean["phone"], time.time()) > 0:
+        if _security._verify_fail_cooldown_remaining(_verify_fails(), clean["phone"], time.time()) > 0:
             return jsonify({"error": m.VERIFY_FAIL_COOLDOWN_MSG}), 429
         _vuser = str(session.get("username", ""))
         if m.verify_async_enabled():
             # 异步：请求线程只**先扣配额**，外呼交给后台任务。
             # 待办队列满 → 503（此时账号尚未落库，拒绝无副作用）。
-            if m._verify_queue_full():
+            if _verify_queue._verify_queue_full():
                 return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-            if not m._verify_attempt_allowed(_verify_limits(), _vuser):
+            if not _security._verify_attempt_allowed(_verify_limits(), _vuser):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_async_job = True
         else:
             try:
                 verify_err = m.run_verify_with_gate(clean, _vuser, _verify_limits())
-            except m.VerifyGateBusy:
+            except _verify_queue.VerifyGateBusy:
                 return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-            except m.VerifyQuotaExceeded:
+            except _verify_queue.VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             if verify_err:
-                fail_kind = m._record_verify_failure(_verify_fails(), clean["phone"], verify_err, time.time())
-                m.db.audit(
+                fail_kind = _security._record_verify_failure(_verify_fails(), clean["phone"], verify_err, time.time())
+                db.audit(
                     session.get("username") or "?",
                     "account_add_verify_fail",
-                    m._mask_phone(clean["phone"]),
+                    _masking.mask_phone(clean["phone"]),
                     f"验证未通过（{fail_kind}）",
                 )
                 return jsonify({"error": verify_err}), 400
@@ -317,20 +333,20 @@ def api_account_add():
     if email:
         initial = str(data.get("initial_password", ""))
         if initial:
-            pw_err = m._password_policy_error(initial)
+            pw_err = _accounts_data._password_policy_error(initial)
             if pw_err:
                 return jsonify({"error": f"初始密码不符合要求：{pw_err}"}), 400
-            initial_hash = generate_password_hash(initial, method=m.SCRYPT_METHOD)
-    with m._file_lock:
-        accounts = m.load_accounts()
+            initial_hash = generate_password_hash(initial, method=_security.SCRYPT_METHOD)
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         # 容量兜底：账号配额（活跃账号数含裸账号，防无限增长）；
         # 归属邮箱已持有活跃账号的重复添加不新增，不计增量（保持原错误优先级）
-        max_accounts = m.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+        max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
         holds_live = email and any(a.get("owner") == email and not a["deleted"] for a in accounts)
         if m._accounts_at_capacity(0 if holds_live else 1):
             m._notify_capacity_once("accounts", max_accounts, "账号数量")
             return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
-        if m.find_account_index(accounts, clean["phone"]) is not None:
+        if _accounts_data.find_account_index(accounts, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
 
         if email:
@@ -349,25 +365,25 @@ def api_account_add():
             if any(a.get("owner") == email and not a.get("deleted") for a in accounts):
                 return jsonify({"error": f"{email} 已有一个账号，无需重复添加"}), 400
             # 自动注册：邮箱未注册则创建网站用户（初始密码由管理员在表单中设置，不生成明文临时密码）
-            if m.db.find_user(email) is None:
+            if db.find_user(email) is None:
                 if initial_hash is None:
                     return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
                 # 自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
-                max_users = m.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS)
+                max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS)
                 if m._users_at_capacity():
                     m._notify_capacity_once("users", max_users, "注册人数")
                     return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
-                du = m.db.find_user_any(email)
+                du = db.find_user_any(email)
                 if (
                     du is not None
                     and du.get("deleted")
-                    and m._delete_grace_remaining(du.get("deleted_at", "")) > 0
+                    and _accounts_data._delete_grace_remaining(du.get("deleted_at", "")) > 0
                 ):
                     return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
                 try:
-                    created = m.db.create_user(
+                    created = db.create_user(
                         email, initial_hash, "user",
-                        m.clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
+                        clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
                         # 与开放注册同口径的注册留痕，且与 INSERT 同事务：注册即建立
                         # 账号凭据，中间被杀不留"建了却无痕"。
                         audit_spec={
@@ -381,60 +397,60 @@ def api_account_add():
                     return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
                 if not created:
                     return jsonify({"error": "该邮箱已注册"}), 400  # OR IGNORE 未实际创建
-                m.logger.info("为邮箱 %s 自动注册用户（管理员设置初始密码）", m._mask_email(email))
+                m.logger.info("为邮箱 %s 自动注册用户（管理员设置初始密码）", _accounts_data._mask_email(email))
             clean["owner"] = email
-            clean["status"] = m.ACCOUNT_STATUS_PENDING
+            clean["status"] = _accounts_data.ACCOUNT_STATUS_PENDING
         else:
             clean["owner"] = "admin"
-            clean["status"] = m.ACCOUNT_STATUS_ACTIVE
+            clean["status"] = _accounts_data.ACCOUNT_STATUS_ACTIVE
         try:
             # 审计与 INSERT 同事务（audit_spec）：账号建了却没有审计行这件事不可能
             # 发生——中间被杀也不会留下"做了无留痕、欠账仍为 0"。
-            new_id = m.db.add_account(clean, audit_spec={
+            new_id = db.add_account(clean, audit_spec={
                 "username": session.get("username") or "?",
                 "action": "account_add",
-                "target": m._mask_phone(clean["phone"]),
-                "detail": f"归属 {m._mask_email(clean['owner'])} 状态 {clean['status']}",
+                "target": _masking.mask_phone(clean["phone"]),
+                "detail": f"归属 {_accounts_data._mask_email(clean['owner'])} 状态 {clean['status']}",
             })
-        except m.db.DuplicatePhoneError:
+        except db.DuplicatePhoneError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-        except m.db.DuplicateOwnerError:
+        except db.DuplicateOwnerError:
             return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发重复兜底
-        accounts = m.load_accounts()  # 重读（含新行，返回前端列表）
+        accounts = _accounts_data.load_accounts()  # 重读（含新行，返回前端列表）
     m.logger.info(
         "添加账号 %s（归属 %s，状态 %s）",
-        m._mask_phone(clean["phone"]),
-        m._mask_email(clean["owner"]),
+        _masking.mask_phone(clean["phone"]),
+        _accounts_data._mask_email(clean["owner"]),
         clean["status"],
     )
     resp = {
         "ok": True,
         "msg": "已添加，等待审核通过后参与签到",
-        "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)],
+        "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
     }
     if verify_async_job:
         # 账号已落库，随后由后台任务校验；响应**增补** job_id/status（不改既有字段）
         try:
-            job_id, _ = m._start_verify_job(
+            job_id, _ = _verify_queue._start_verify_job(
                 clean, str(session.get("username", "")), new_id,
                 _verify_fails(), _verify_limits(),
             )
             resp["job_id"] = job_id
             resp["status"] = "verifying"
-        except m.VerifyGateBusy:
+        except _verify_queue.VerifyGateBusy:
             # 待办队列在扣配额与建任务之间被占满（竞态兜底）：账号已入库，
             # 不因此让请求失败——置为 rejected 并说明原因，由用户重试。
             m.logger.warning("校验任务队列已满，账号 %s 未建校验任务",
-                           m._mask_phone(clean["phone"]))
+                           _masking.mask_phone(clean["phone"]))
     return jsonify(resp)
 
 
 def api_account_update(idx):
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         old = accounts[idx]
@@ -468,15 +484,15 @@ def api_account_update(idx):
             if isinstance(snapshot, dict) and snapshot.get("phone")
             else data
         )
-        if m._stale_idx_guard(old, guard_src, fail_closed=True):
+        if _accounts_data._stale_idx_guard(old, guard_src, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-        err, clean = m.validate_account(data, require_password=False)
+        err, clean = _accounts_data.validate_account(data, require_password=False)
         if err:
             return jsonify({"error": err}), 400
         # 手机号变更时检查冲突（排除自己）
         if (
             clean["phone"] != old.get("phone")
-            and m.find_account_index(accounts, clean["phone"]) is not None
+            and _accounts_data.find_account_index(accounts, clean["phone"]) is not None
         ):
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
         # 设备识别码先折算成将进 SET 的最终值，再进下面的"改写凭据"判定——写侧
@@ -485,7 +501,7 @@ def api_account_update(idx):
         # 的活，读侧记账口径却是零。哨兵/留空的语义与 /my-accounts 及添加路径共用
         # fold_phone_code，任何一侧自行解读都会把"清除"做成空操作。
         old_code = old.get("phone_code") or ""
-        code_written = m.fold_phone_code(clean, old_code) != old_code
+        code_written = _accounts_data.fold_phone_code(clean, old_code) != old_code
         # 凭据改写分两档（按用户拍板清单收窄）：
         # - **过门**：改易班密码 / 改绑手机号（改他人凭据类）——拿到被窃管理员会话的人
         #   一次 PUT 就能把某用户的账号换成自己的凭据，此后签到在攻击者侧完成、真用户
@@ -517,29 +533,29 @@ def api_account_update(idx):
         # 仅密码/识别码变更（phone 不变）维持原状态不变。
         rebind = clean["phone"] != old.get("phone")
         if rebind:
-            clean["status"] = m.ACCOUNT_STATUS_PENDING
+            clean["status"] = _accounts_data.ACCOUNT_STATUS_PENDING
             # 回审即清除旧拒绝理由（与用户侧重新提交同口径，避免 pending 行带旧理由）
             clean["reject_reason"] = ""
         else:
-            clean["status"] = old.get("status", m.ACCOUNT_STATUS_ACTIVE)
+            clean["status"] = old.get("status", _accounts_data.ACCOUNT_STATUS_ACTIVE)
         try:
             # 审计与本次 UPDATE 同事务：改写他人易班凭据必须与留痕共存亡——凭据已改而
             # 审计表无此条，正是"改了凭据但追不到谁改的"的核心症状。
-            result = m.db.update_account(
+            result = db.update_account(
                 old["id"],
                 clean,
                 expect_snapshot=snapshot if isinstance(snapshot, dict) else None,
                 audit_spec={
                     "username": session.get("username") or "?",
                     "action": "account_update",
-                    "target": m._mask_phone(clean["phone"]),
+                    "target": _masking.mask_phone(clean["phone"]),
                     "detail": ("编辑账号" + (" 改绑回审" if rebind else "")
                                + (" 改写凭据" if creds_written else "")),
                 },
             )
-        except m.db.DuplicatePhoneError:
+        except db.DuplicatePhoneError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-        except m.db.DuplicateOwnerError:
+        except db.DuplicateOwnerError:
             return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发改号兜底
@@ -550,10 +566,10 @@ def api_account_update(idx):
         # 手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清，
         # 避免更新失败时误删旧号自选（防孤儿 pref 占容量）
         if clean["phone"] != old.get("phone"):
-            m.db.clear_time_pref(old.get("phone", ""))
+            db.clear_time_pref(old.get("phone", ""))
         # 凭据变更（改密码/改绑手机号/改写识别码）才清除熔断暂停，立即恢复签到；
         # 仅改备注/状态等不动熔断计数（防任意编辑把 fail_days 清零、熔断永不跳闸）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
+        _logs_svc.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean,
                                     old_code)
         # 审计行已随 update_account 同事务写入（见上面 audit_spec）
         # 当事人必须知情（管理员改写他人易班凭据除二次鉴权外，还要绕过
@@ -572,15 +588,15 @@ def api_account_update(idx):
                     if code_written:
                         _what.append("改写或清除了设备识别码"
                                      "（开启设备绑定的学校，签到时提交给易班的验证码随之改变）")
-                    m.run_after_file_lock(
-                        m.mailer.send_user,
+                    _locks.run_after_file_lock(
+                        mailer.send_user,
                         _owner,
                         "【易班签到】您的易班账号信息被管理员修改",
-                        m.mail_layout.Mail(
-                            summary=f"您在本站提交的易班账号 {m._mask_phone(clean['phone'])}"
+                        mail_layout.Mail(
+                            summary=f"您在本站提交的易班账号 {_masking.mask_phone(clean['phone'])}"
                                     " 刚刚被管理员修改。",
                             items=_what,
-                            fields=[("操作者", m._mask_email(
+                            fields=[("操作者", _accounts_data._mask_email(
                                 str(session.get("username") or "?")[:64]))],
                             advice=["如非您本人申请，请立即联系管理员核实"],
                             level="urgent",
@@ -595,21 +611,21 @@ def api_account_update(idx):
         gated_creds = (bool(str(data.get("password", "")).strip())
                        or clean["phone"] != old.get("phone"))
         if (creds_written and not (gated_creds and
-                                   m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL)):
-            m.run_after_file_lock(
+                                   m._pw_gate_tier(m.ENV_FILE) == _security.PW_GATE_FULL)):
+            _locks.run_after_file_lock(
                 m.send_notification,
                 "高危管理操作告警",
-                m._change_mail(
+                _notify_mail._change_mail(
                     "改写他人易班凭据。",
-                    detail=[("目标", m._mask_phone(clean["phone"])),
+                    detail=[("目标", _masking.mask_phone(clean["phone"])),
                             ("归属用户",
-                             m._mask_email(str(clean.get("owner") or "admin")))],
+                             _accounts_data._mask_email(str(clean.get("owner") or "admin")))],
                     advice=["如非本人申请，请立即核实并回滚该账号凭据"],
                 ),
                 urgent=True,
             )
-        accounts = m.load_accounts()
-        m.logger.info("编辑账号 %s", m._mask_phone(clean["phone"]))
+        accounts = _accounts_data.load_accounts()
+        m.logger.info("编辑账号 %s", _masking.mask_phone(clean["phone"]))
         # 编辑路径的**异步探针**：口令或识别码实际变更后，后台复核新凭据是否可用。
         # 豁免（不做本地口令策略）的前提正是"有真实登录探针兜底"。缺它时错误凭据静默
         # 潜伏到下次签到才暴露。一律异步（同步会占住请求线程与外呼席位，而编辑已落盘
@@ -620,16 +636,16 @@ def api_account_update(idx):
             _probe_user = str(session.get("username", ""))
             _probe_limits = _verify_limits()
             _probe_fails = _verify_fails()
-            m.run_after_file_lock(
+            _locks.run_after_file_lock(
                 _start_edit_probe,
-                clean, _probe_user, _probe_fails, _probe_limits, m._start_verify_job,
-                m._account_verify_enabled, m._verify_queue_full,
-                lambda: m._verify_attempt_allowed(_probe_limits, _probe_user),
-                lambda: m._verify_fail_cooldown_remaining(
+                clean, _probe_user, _probe_fails, _probe_limits, _verify_queue._start_verify_job,
+                m._account_verify_enabled, _verify_queue._verify_queue_full,
+                lambda: _security._verify_attempt_allowed(_probe_limits, _probe_user),
+                lambda: _security._verify_fail_cooldown_remaining(
                     _probe_fails, clean["phone"], time.time()),
             )
         return jsonify(
-            {"ok": True, "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)]}
+            {"ok": True, "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)]}
         )
 
 
@@ -664,7 +680,7 @@ def api_accounts_batch():
         return jsonify({"error": f"单次批量操作最多 {m.BATCH_OP_LIMIT} 个账号"}), 400
     # 理由清洗：与单条拒绝同一净化口径（覆盖全部分隔符——理由会落库、进审计详情、
     # 进 sign.log，只压 \r\n 时 U+2028/U+0085 等能一路穿过去伪造行）
-    reason = m._nl_safe(str(data.get("reason", "")).strip()[:100])
+    reason = _notify_mail._nl_safe(str(data.get("reason", "")).strip()[:100])
     if action == "reject" and not reason:
         return jsonify({"error": "批量拒绝需要填写理由"}), 400
     if action == "purge":
@@ -682,8 +698,8 @@ def api_accounts_batch():
     # 口令**（可逆不加口令，加了口令只增误伤），只限制速率（留痕在审计行）。
     if action == "delete" and _admin_delete_limited()():
         return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         # idx 寻址防错位：客户端随 ids 携带对齐的 phones 数组，与服务端当前列表
         # 逐一比对，不一致整体拒绝（409 引导刷新）。另注意 isinstance(True, int)
         # 为真，ids 里的 JSON true 会被当作索引 1，故用 type(i) is int 严格判定。
@@ -707,7 +723,7 @@ def api_accounts_batch():
         # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
         if any(
             i in expect
-            and m._mask_phone(expect[i]) != m._mask_phone(str(accounts[i].get("phone", "")))
+            and _masking.mask_phone(expect[i]) != _masking.mask_phone(str(accounts[i].get("phone", "")))
             for i in valid
         ):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
@@ -721,8 +737,8 @@ def api_accounts_batch():
                 for i in valid
                 if not accounts[i].get("deleted")
                 and accounts[i].get("status") in (
-                    m.ACCOUNT_STATUS_PENDING,
-                    m.ACCOUNT_STATUS_REJECTED,
+                    _accounts_data.ACCOUNT_STATUS_PENDING,
+                    _accounts_data.ACCOUNT_STATUS_REJECTED,
                 )
             )
             if become and m._accounts_at_capacity(become):
@@ -741,8 +757,8 @@ def api_accounts_batch():
                 for i in valid
                 if accounts[i].get("deleted")
                 and accounts[i].get("status") not in (
-                    m.ACCOUNT_STATUS_PENDING,
-                    m.ACCOUNT_STATUS_REJECTED,
+                    _accounts_data.ACCOUNT_STATUS_PENDING,
+                    _accounts_data.ACCOUNT_STATUS_REJECTED,
                 )
             )
             if become and m._accounts_at_capacity(become):
@@ -765,17 +781,17 @@ def api_accounts_batch():
             if action == "approve":
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
                 if not acc.get("deleted") and acc.get("status") in (
-                    m.ACCOUNT_STATUS_PENDING,
-                    m.ACCOUNT_STATUS_REJECTED,
+                    _accounts_data.ACCOUNT_STATUS_PENDING,
+                    _accounts_data.ACCOUNT_STATUS_REJECTED,
                 ):
-                    ops.append(("update_status", acc["id"], m.ACCOUNT_STATUS_ACTIVE, ""))
+                    ops.append(("update_status", acc["id"], _accounts_data.ACCOUNT_STATUS_ACTIVE, ""))
             elif action == "reject":
-                if acc.get("status") in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED):
-                    ops.append(("update_status", acc["id"], m.ACCOUNT_STATUS_REJECTED, reason))
+                if acc.get("status") in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED):
+                    ops.append(("update_status", acc["id"], _accounts_data.ACCOUNT_STATUS_REJECTED, reason))
                     if acc.get("owner"):
                         reject_notify_owners.setdefault(
                             acc["owner"], []
-                        ).append(m._mask_phone(str(acc.get("phone", ""))))
+                        ).append(_masking.mask_phone(str(acc.get("phone", ""))))
             elif action == "purge":
                 # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
                 if acc.get("deleted"):
@@ -795,7 +811,7 @@ def api_accounts_batch():
             elif action == "delete" and not acc.get("deleted"):
                 # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
                 ops.append(
-                    ("set_deleted", acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    ("set_deleted", acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"))
                 )
             # 目标清单与 ops 同源：不满足前置（本行没生成操作）的行不进审计——
             # 此前 `done=len(ops)` 数操作、`batch_targets` 数全部合法下标，
@@ -805,9 +821,9 @@ def api_accounts_batch():
         done = len(ops)
         if ops:
             try:
-                m.db.batch_account_ops(ops)
-            except m.db.DuplicateOwnerError:
-                m.db.audit(
+                db.batch_account_ops(ops)
+            except db.DuplicateOwnerError:
+                db.audit(
                     session.get("username") or "?",
                     "account_batch",
                     action,
@@ -816,7 +832,7 @@ def api_accounts_batch():
                 return jsonify({"error": "批量操作失败，已全部回滚（该用户已有一个账号）"}), 400
             except Exception as e:
                 m.logger.error("批量%s账号失败: %s（已回滚）", action, e)
-                m.db.audit(
+                db.audit(
                     session.get("username") or "?",
                     "account_batch",
                     action,
@@ -830,24 +846,24 @@ def api_accounts_batch():
             # 出锁后按 owner 顺序统一发出（修复前是锁内最多 10 封 × 每封 10 条目 ×
             # 每条 socket 超时）。
             for _owner, _phones in sorted(reject_notify_owners.items()):
-                m.run_after_file_lock(
-                    m.mailer.send_user,
+                _locks.run_after_file_lock(
+                    mailer.send_user,
                     _owner,
                     "【易班签到】您提交的账号未通过审核",
-                    m._review_reject_mail(_phones, reason),
+                    _notify_mail._review_reject_mail(_phones, reason),
                 )
-        m.db.audit(
+        db.audit(
             session.get("username") or "?",
             "account_batch",
             action,
             # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
             (f"处理 {done} 个: " + ",".join(
-                m._mask_phone(str(p)) for p in (batch_targets or [])[:20]
+                _masking.mask_phone(str(p)) for p in (batch_targets or [])[:20]
             ))[:200],
         )
         # 软删与彻底删除不再外发即时告警：留痕由上面的审计行承担（动作 + 目标清单），
         # 软删本身可逆（保留期内可恢复），把它当"事故"逐条发信会让真故障淹没。
-        accounts = m.load_accounts()
+        accounts = _accounts_data.load_accounts()
         m.logger.info("批量%s账号 %d 个", action, done)
         msg = {
             "approve": f"已通过 {done} 个账号",
@@ -860,7 +876,7 @@ def api_accounts_batch():
             {
                 "ok": True,
                 "msg": msg,
-                "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)],
+                "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
             }
         )
 
@@ -877,34 +893,34 @@ def api_account_delete(idx):
     # 放进全局文件锁会白占锁（与批量 purge 的门禁位置同口径）。
     if _admin_delete_limited()():
         return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, m._json_body(), fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, m._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-        m.db.set_account_deleted(
-            acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+        db.set_account_deleted(
+            acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             deleted_by="admin",
             audit_spec={
                 "username": session.get("username") or "?",
                 "action": "account_delete",
-                "target": m._mask_phone(acc.get("phone", "")),
+                "target": _masking.mask_phone(acc.get("phone", "")),
                 "detail": "软删除",
             },
         )
         # 软删不再外发即时告警：留痕由上面的审计行承担，且软删可逆
         # （DELETED_RETENTION_DAYS 天内可在待删除列表恢复）。
-        accounts = m.load_accounts()
+        accounts = _accounts_data.load_accounts()
         m.logger.info(
-            "软删除账号 %s（%s 天内可恢复）", m._mask_phone(acc.get("phone", "")), m.DELETED_RETENTION_DAYS
+            "软删除账号 %s（%s 天内可恢复）", _masking.mask_phone(acc.get("phone", "")), m.DELETED_RETENTION_DAYS
         )
         return jsonify(
             {
                 "ok": True,
                 "msg": f"已删除「{acc.get('name', '')}」，{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
-                "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)],
+                "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
             }
         )
 
@@ -912,17 +928,17 @@ def api_account_delete(idx):
 def api_account_restore(idx):
     """恢复待删除账号：撤销软删除，回到删除前状态。"""
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, m._json_body(), fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, m._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
         # 防呆：归属用户名下已有其他未删除账号则拒绝恢复（每人限 1 个，防恢复后重复）
-        if m._owner_has_other_live(accounts, acc):
+        if _accounts_data._owner_has_other_live(accounts, acc):
             return jsonify(
                 {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
@@ -930,25 +946,25 @@ def api_account_restore(idx):
         # pending 再逐条恢复同样能越界，故单条与批量同一门；仅对会真正计入容量的行
         # （status 已通过审核）判定，pending/rejected 行恢复后仍不签到，不误伤。
         if (
-            acc.get("status") not in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED)
+            acc.get("status") not in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED)
             and m._accounts_at_capacity(1)
         ):
             return jsonify({
                 "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
             }), 403
-        m.db.set_account_deleted(acc["id"], 0, audit_spec={
+        db.set_account_deleted(acc["id"], 0, audit_spec={
             "username": session.get("username") or "?",
             "action": "account_restore",
-            "target": m._mask_phone(acc.get("phone", "")),
+            "target": _masking.mask_phone(acc.get("phone", "")),
             "detail": "撤销软删除",
         })
-        accounts = m.load_accounts()
-        m.logger.info("恢复账号 %s", m._mask_phone(acc.get("phone", "")))
+        accounts = _accounts_data.load_accounts()
+        m.logger.info("恢复账号 %s", _masking.mask_phone(acc.get("phone", "")))
         return jsonify(
             {
                 "ok": True,
                 "msg": f"已恢复「{acc.get('name', '')}」",
-                "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)],
+                "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
             }
         )
 
@@ -969,30 +985,30 @@ def api_account_purge(idx):
         irreversible=True)
     if gate:
         return gate
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data, fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
-        m.db.purge_account(acc["id"])
-        m.db.audit(
+        db.purge_account(acc["id"])
+        db.audit(
             session.get("username") or "?",
             "account_purge",
-            m._mask_phone(acc.get("phone", "")),
+            _masking.mask_phone(acc.get("phone", "")),
             "彻底删除",
         )
         # 彻底删除不再外发即时告警：留痕由上面的审计行承担（谁、删了哪个号）。
-        accounts = m.load_accounts()
-        m.logger.info("彻底删除账号 %s", m._mask_phone(acc.get("phone", "")))
+        accounts = _accounts_data.load_accounts()
+        m.logger.info("彻底删除账号 %s", _masking.mask_phone(acc.get("phone", "")))
         return jsonify(
             {
                 "ok": True,
                 "msg": f"已彻底删除「{acc.get('name', '')}」",
-                "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)],
+                "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
             }
         )
 
@@ -1002,18 +1018,18 @@ def api_account_review(idx):
     approve=生效参与定时签到；reject=标记拒绝并附理由（用户可编辑后重新提交）。
     """
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         data = m._json_body()
         action = data.get("action")
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data, fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if action == "approve":
             # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
-            if acc.get("deleted") or acc.get("status") not in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED):
+            if acc.get("deleted") or acc.get("status") not in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED):
                 return jsonify({"error": "该账号无需审核"}), 400
             # 容量闸门：通过审核 = 让这一行开始产生签到负载。未通过审核的行不计入
             # 账号容量（见 _capacity_account_count），故此处是本口径下唯一的把关点——
@@ -1022,28 +1038,28 @@ def api_account_review(idx):
                 return jsonify({
                     "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
-            m.db.update_account_status(acc["id"], m.ACCOUNT_STATUS_ACTIVE, reject_reason="")
-            m.db.audit(
+            db.update_account_status(acc["id"], _accounts_data.ACCOUNT_STATUS_ACTIVE, reject_reason="")
+            db.audit(
                 session.get("username") or "?",
                 "account_review",
-                m._mask_phone(acc.get("phone", "")),
+                _masking.mask_phone(acc.get("phone", "")),
                 "approve",
             )
-            m.logger.info("审核通过账号 %s（提交者 %s）", m._mask_phone(acc.get("phone", "")), m._mask_email(acc.get("owner", "")))
+            m.logger.info("审核通过账号 %s（提交者 %s）", _masking.mask_phone(acc.get("phone", "")), _accounts_data._mask_email(acc.get("owner", "")))
             # 回显脱敏（与列表口径一致，防响应混入完整 PII；管理员详情页可取完整号）
-            return jsonify({"ok": True, "msg": f"已通过 {m._mask_phone(acc.get('phone', ''))}，将参与定时签到"})
+            return jsonify({"ok": True, "msg": f"已通过 {_masking.mask_phone(acc.get('phone', ''))}，将参与定时签到"})
         if action == "reject":
-            if acc.get("status") not in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED):
+            if acc.get("status") not in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED):
                 return jsonify({"error": "该账号无需拒绝"}), 400
             # 理由清洗：走统一净化 `_nl_safe`（覆盖 `str.splitlines()` 的全部分隔符）。
             # 此前只把 \r\n 压成空格，U+0085/U+2028 等其余分隔符仍能在审计详情与
             # sign.log 里伪造一行（如假造一条"操作者"记录）。
-            reason = m._nl_safe(str(data.get("reason", "")).strip()[:100])
-            m.db.update_account_status(acc["id"], m.ACCOUNT_STATUS_REJECTED, reason)
-            m.db.audit(
+            reason = _notify_mail._nl_safe(str(data.get("reason", "")).strip()[:100])
+            db.update_account_status(acc["id"], _accounts_data.ACCOUNT_STATUS_REJECTED, reason)
+            db.audit(
                 session.get("username") or "?",
                 "account_review",
-                m._mask_phone(acc.get("phone", "")),
+                _masking.mask_phone(acc.get("phone", "")),
                 "reject" + (f" {reason[:60]}" if reason else ""),
             )
             # 拒绝必须主动触达提交者：理由只挂「我的账号」页属被动知情，提交者
@@ -1052,18 +1068,18 @@ def api_account_review(idx):
             # 绕过 mail_notify 开关与「本人知情权」口径一致。
             _owner = acc.get("owner", "")
             if _owner:
-                m.run_after_file_lock(
-                    m.mailer.send_user,
+                _locks.run_after_file_lock(
+                    mailer.send_user,
                     _owner,
                     "【易班签到】您提交的账号未通过审核",
-                    m._review_reject_mail(
-                        [m._mask_phone(str(acc.get("phone", "")))], reason
+                    _notify_mail._review_reject_mail(
+                        [_masking.mask_phone(str(acc.get("phone", "")))], reason
                     ),
                 )
             m.logger.info(
                 "拒绝账号 %s（提交者 %s，理由: %s）",
-                m._mask_phone(acc.get("phone", "")),
-                m._mask_email(acc.get("owner", "")),
+                _masking.mask_phone(acc.get("phone", "")),
+                _accounts_data._mask_email(acc.get("owner", "")),
                 reason or "无",
             )
             return jsonify({"ok": True, "msg": "已拒绝，用户可查看理由并重新提交"})
@@ -1073,13 +1089,13 @@ def api_account_review(idx):
 def api_account_move(idx):
     """上移/下移账号：调整顺序模式下的打卡顺序。body: {"dir": -1|1}"""
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         data = m._json_body()
         acc = accounts[idx]
-        if m._stale_idx_guard(acc, data, fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         try:
             direction = int(data.get("dir", 0))
@@ -1087,17 +1103,17 @@ def api_account_move(idx):
             return jsonify({"error": "无法移动"}), 400
         if direction not in (-1, 1):
             return jsonify({"error": "无法移动"}), 400
-        if not m.db.move_account(acc["id"], direction):
+        if not db.move_account(acc["id"], direction):
             return jsonify({"error": "无法移动"}), 400
-        m.db.audit(
+        db.audit(
             session.get("username") or "?",
             "account_move",
-            m._mask_phone(acc.get("phone", "")),
+            _masking.mask_phone(acc.get("phone", "")),
             f"dir {direction}",
         )
-        accounts = m.load_accounts()
+        accounts = _accounts_data.load_accounts()
         return jsonify(
-            {"ok": True, "accounts": [m.mask_account(a, i) for i, a in enumerate(accounts)]}
+            {"ok": True, "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)]}
         )
 
 
