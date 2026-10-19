@@ -313,7 +313,9 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
 # 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
-from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
+# 出口（代理）分配：唯一口径。本模块已无自用点（EXECUTOR_INDEX_MAX 去壳后读者直取真源），
+# 但仍按名保留导出：web.app.yb_egress 是既有测试的读取面，删掉即改测试。
+from yiban import egress as yb_egress  # noqa: E402,F401
 
 # 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
 # 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
@@ -329,11 +331,6 @@ from yiban.adapters.notifier import notify  # noqa: E402  # 有自用点，原 F
 from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
 from yiban.adapters.persistence import db  # noqa: E402  # SQLite 数据访问层
 from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
-
-#: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
-#: 唯一口径在 `yiban.egress.SLOT_MAX`（清单模型的槽位上限），此处只是别名：
-#: 单槽位出口写接口按"下标 + 当前执行体数"两重判定拒绝未被使用的槽位。
-EXECUTOR_INDEX_MAX = yb_egress.SLOT_MAX
 
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = env_io.resolve_path("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -358,10 +355,6 @@ DB_FILE = DB_DEFAULT
 # 普通用户账号的审核状态（原 STATUS_PENDING/ACTIVE/REJECTED 与签到状态码 STATUS_* 同名
 # 异义（历史遗留），改名为 ACCOUNT_STATUS_* 彻底分离命名空间）实现见
 # web/services/accounts_data.py，此处以导入区再导出保持 m.ACCOUNT_STATUS_* 可达。
-
-# 软删除保留期（天）：管理员删除的账号进入待删除状态，超期自动彻底清除。
-# 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移
-DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
 # 密码策略（至少 10 位且包含大写/小写/数字/符号中至少两类，只对新建/修改生效）及其
 # 主管理员单独提档的两档下限实现见 web/services/accounts_data.py，此处以导入区再导出
@@ -562,8 +555,6 @@ VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 # 这是 503「校验繁忙」在异步模式下的**可达来源**（席位满由后台排队消化，
 # 不拒绝用户；待办队列满才拒绝）。待办上限常量本体已随校验队列搬入
 # web/services/verify_queue.py，此处以导入区再导出保持 m.* 可达。
-# 任务终态（查询/取消端点判定用）
-VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 
 # 注销账号冷却（`DELETE_COOLDOWN_SEC` / `DELETE_MAX_REQUESTS_PER_IP`）已随批 3-b
 # 搬入 web/services/limits.py：超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户
@@ -620,23 +611,19 @@ ADMIN_CREDS_MAX = 20
 # 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）会整行被丢弃，日志页只剩
 # 汇总与结果。
 
-# 签到状态码与图标/文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
-# 历史上本文件另定义了一份同名常量与 STATUS_ICON/STATUS_TEXT，与 signin 侧各自漂移
+# 签到状态码与文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
+# 历史上本文件另定义了一份同名常量与两张映射，与 signin 侧各自漂移
 # （实测本侧缺 no_position/global_paused、signin 侧缺 pending）。收口后状态码只有一处
 # 定义；两张映射的差异是**有意的**（不同消费方），合并需前后端协同，见 yiban/core/status.py。
-STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
-STATUS_ALREADY = yiban_status.STATUS_ALREADY
-STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
+# 批 3-c S1 已去壳 STATUS_SUCCESS / STATUS_ALREADY / STATUS_NO_TASK /
+# STATUS_USER_CANCELLED / STATUS_PENDING 与 ICON：它们的读者直接取真源，故不在此留别名。
 STATUS_FAILED = yiban_status.STATUS_FAILED
 STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 STATUS_PAUSED = yiban_status.STATUS_PAUSED
-STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
-STATUS_PENDING = yiban_status.STATUS_PENDING
 
-# 状态图标（全站统一口径；经 /api/my-accounts 的 state_icon 下发，前端按码渲染）
-STATUS_ICON = yiban_status.ICON
+# 状态文案（经 /api/my-accounts 的 state_text 下发；图标表 ICON 由消费方直取真源）
 STATUS_TEXT = yiban_status.TEXT
 
 
@@ -846,10 +833,9 @@ def write_env_int(env_path, key, value):
 # 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；升级前已埋下的
 # 潜伏载荷不会被回溯改写——由 create_app 启动时的
 # _report_env_key_collisions（yiban.infra.env_io.find_env_key_collisions）报告、运维手工清理。
-# 此处保留模块级别名（本模块已无自用点）：既有调用点与测试的探测口径
-# （webapp._has_line_break / webapp._ENV_LINE_BREAK_CHARS）保持不变。
+# 此处保留常量别名（本模块已无自用点）：测试的探测口径 webapp._ENV_LINE_BREAK_CHARS 不变。
+# 谓词本体已去壳（批 3-c S1），消费方直取 env_io.has_line_break。
 _ENV_LINE_BREAK_CHARS = env_io.ENV_LINE_BREAK_CHARS
-_has_line_break = env_io.has_line_break
 _env_key_line_re = env_io.key_line_pattern
 _count_env_key_lines = env_io.count_key_lines
 
