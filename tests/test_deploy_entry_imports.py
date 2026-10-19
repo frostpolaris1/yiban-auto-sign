@@ -269,10 +269,10 @@ def old_coordinate_hits(path):
     ④ 是 2026-10-19 独立审查抓出的阻塞洞——关掉它，"不对称"才算真正修完：
     T8 的 tests 面门与 T3 门本来就认 import 语句。
 
-    已知盲点（登记，不假装覆盖）：变量拼接
-    （`"yiban." + "cli"`、`importlib.import_module("yiban."+"cli")`）与
-    `from yiban import *` 不命中——字面量扫描器的固有限制；`yiban/__init__.py`
-    不导出 `cli`，星号导入取不到该名。
+    已知盲点（登记，不假装覆盖）：变量间接形态不命中——
+    字符串拼接（`"yiban." + "cli"`）、`importlib.import_module("yiban."+"cli")`、
+    `getattr(yiban, "cli")`，以及 `from yiban import *`。
+    理由＝字面量扫描器的固有限制；`yiban/__init__.py` 不导出 `cli`，星号导入取不到该名。
     """
     with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
