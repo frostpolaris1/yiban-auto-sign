@@ -59,8 +59,10 @@ from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.adapters.persistence import db
 from yiban.adapters.persistence.accounts import signs_in as _signs_in
+from yiban.attempt import jobs as verify_jobs
 from yiban.core import clock
 from yiban.core import masking as _masking
+from yiban.core import status as yiban_status
 from yiban.core.masking import mask_device_code as _mask_device_code
 from yiban.engine import schedule as yb_schedule
 
@@ -133,8 +135,10 @@ def _my_account_view(accounts, indices):
     running = 0
     for a in active_sorted:
         queue_before[a.get("phone", "")] = running
-        st_status = states.get(a.get("phone", ""), {}).get("status", m.STATUS_PENDING)
-        if st_status not in (m.STATUS_SUCCESS, m.STATUS_ALREADY, m.STATUS_NO_TASK):
+        st_status = states.get(a.get("phone", ""), {}).get(
+            "status", yiban_status.STATUS_PENDING)
+        if st_status not in (yiban_status.STATUS_SUCCESS, yiban_status.STATUS_ALREADY,
+                             yiban_status.STATUS_NO_TASK):
             running += 1
     # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
     today_prefix = f"[{clock.now().strftime('%Y-%m-%d')} "
@@ -151,7 +155,8 @@ def _my_account_view(accounts, indices):
         if acc.get("status") == _accounts_data.ACCOUNT_STATUS_ACTIVE and not acc.get("user_paused", False):
             queue_ahead = queue_before.get(phone, 0)
         st = states.get(phone, {})
-        st_status = st.get("status", m.STATUS_PENDING) if isinstance(st, dict) else m.STATUS_PENDING
+        st_status = (st.get("status", yiban_status.STATUS_PENDING) if isinstance(st, dict)
+                     else yiban_status.STATUS_PENDING)
         # 状态文案由共享助手唯一裁定（参与调度的未了结账号按台账 run_at 生成「计划 HH:MM」/
         # 「待生成」，其余保留结论文案）；与 /api/accounts 同源，见 accounts_data.plan_state_message。
         state_message = _plan_state_message(acc, st, plan_at)
@@ -166,7 +171,7 @@ def _my_account_view(accounts, indices):
                 "phone_code_masked": _mask_device_code(acc.get("phone_code", "")),
                 "status": acc.get("status", _accounts_data.ACCOUNT_STATUS_ACTIVE),
                 "reject_reason": acc.get("reject_reason", ""),
-                "state_icon": m.STATUS_ICON.get(st_status, "⏳"),
+                "state_icon": yiban_status.ICON.get(st_status, "⏳"),
                 "state_status": st_status,  # 状态码（前端按码映射文案）
                 "state_message": state_message,
                 "queue_ahead": queue_ahead,
@@ -683,14 +688,13 @@ def api_verify_job_cancel(job_id):
     先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
     "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
     """
-    m = _appmod()
     _verify_queue._reclaim_stale_verify_jobs()
     job = db.get_verify_job(job_id)
     if not job:
         return jsonify({"error": "任务不存在"}), 404
     if not _verify_job_visible(job, session.get("username")):
         return jsonify({"error": "无权限"}), 403
-    if job["status"] in m.VERIFY_JOB_TERMINAL:
+    if job["status"] in verify_jobs.TERMINAL_STATUSES:
         return jsonify({"error": "任务已结束，无法取消"}), 409
     if not db.cancel_verify_job(job_id):
         # 与查询之间被后台线程抢走（进入 running）→ 同样视为已无法取消
@@ -926,7 +930,7 @@ def api_my_account_delete(idx):
             "【易班签到】您的易班账号已删除（7 天内可撤销）",
             mail_layout.Mail(
                 summary=f"您的易班账号（{_masking.mask_phone(removed.get('phone', ''))}）已被删除，"
-                        f"进入 {m.DELETED_RETENTION_DAYS} 天宽限期。",
+                        f"进入 {db.SOFT_DELETE_RETENTION_DAYS} 天宽限期。",
                 advice=["宽限期内可在「我的账号」页自行撤销恢复",
                         "如非本人操作，请立即联系管理员"],
             ),
