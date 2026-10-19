@@ -31,8 +31,11 @@ import 形态转发的、且被路由经 `m.*` 读取的名字；B 名＝同批�
     （`.env` 路径与读取器、`_sign_window`、`_atomic_write`、`send_notification`、
     `_tail_lines` 等）后注入服务层。搬动它们要先重设那层注入接缝，属 3-c。
     `logger` 与 `WEB_VERSION` 归此：前者是进程级日志通道，后者是启动时刻派生值。
-另有 11 个名字留在墙上但不属 A：10 个是 `web/app.py` 自建别名（`X = mod.attr`，
-不是 import 转发）＋ `__file__`（app.py 自身属性）。它们登记在 `ALIAS_NOT_MIGRATED`。
+批 3-c S1（`origin/develop` 的 `46e5f39c`，2026-10-19）：把上述 10 个自建别名去壳
+（读者直取真源、`web/app.py` 的定义行删除），故 `ALIAS_NOT_MIGRATED` 收缩为 2 名：
+`STATUS_TEXT`（不在本片范围）＋ `__file__`（app.py 自身属性）。同时新增判据⑥：
+已去壳名在 `web/app.py` 不得再有赋值 / `def` / `class`——① 管读侧、⑥ 管写侧，
+缺一条就有一半静默。
 """
 import ast
 import io
@@ -121,9 +124,15 @@ B_NAMES = frozenset({
 
 #: 留在墙上、但不属 A 也不属 B 的名字（本批不迁，见模块 docstring 的边界段）。
 ALIAS_NOT_MIGRATED = frozenset({
+    "STATUS_TEXT", "__file__",
+})
+
+#: 批 3-c S1 已去壳的别名：`web/app.py` 里不得再有赋值 / `def` / `class`（判据⑥）。
+#: 它们是 3-c S1 从 `ALIAS_NOT_MIGRATED` 移出的 10 名；再出现即第二份可漂移的面。
+UNWRAPPED_IN_3C_S1 = frozenset({
     "DELETED_RETENTION_DAYS", "EXECUTOR_INDEX_MAX", "STATUS_ALREADY", "STATUS_ICON",
     "STATUS_NO_TASK", "STATUS_PENDING", "STATUS_SUCCESS", "STATUS_USER_CANCELLED",
-    "VERIFY_JOB_TERMINAL", "_has_line_break", "__file__",
+    "VERIFY_JOB_TERMINAL", "_has_line_break",
 })
 
 #: A 名 -> (真源模块, 真源原名)；原名 != 名字时说明该名是改名再导出。
@@ -426,6 +435,12 @@ class WallDirectReadsGateTest(unittest.TestCase):
                          "A 名单与未迁别名名单相交：两份名单已漂移")
         self.assertEqual(sorted(B_NAMES & ALIAS_NOT_MIGRATED), [],
                          "B 名单与未迁别名名单相交：两份名单已漂移")
+        self.assertEqual(sorted(A_NAMES & UNWRAPPED_IN_3C_S1), [],
+                         "已去壳名与 A 名单相交：A 名须直连真源，不得回墙上")
+        self.assertEqual(sorted(B_NAMES & UNWRAPPED_IN_3C_S1), [],
+                         "已去壳名与 B 名单相交：B 名仍在墙上，去壳即名单漂移")
+        self.assertEqual(sorted(ALIAS_NOT_MIGRATED & UNWRAPPED_IN_3C_S1), [],
+                         "已去壳名仍留在未迁名单：两份名单已漂移")
         self.assertGreaterEqual(len(A_NAMES), 140, "A 名单过小：名单被截断")
         self.assertGreaterEqual(len(B_NAMES), 58, "B 名单过小：名单被截断")
         self.assertGreaterEqual(len(BATCH3B_NAMES), 47, "批 3-b 已迁名单过小：名单被截断")
@@ -459,6 +474,34 @@ class WallDirectReadsGateTest(unittest.TestCase):
             dup, [],
             "以下批 3-b 已迁名在 web/app.py 仍有真定义（真源与真定义两处并存）：%s"
             % ", ".join(dup))
+
+    def test_3c_s1_names_have_no_definition_in_app(self):
+        """判据⑥：批 3-c S1 已去壳的 10 名在 `web/app.py` 里不得再有赋值 / `def`。
+
+        它们此前是自建别名（`X = mod.attr`），读者经 `m.*` 取用；本批把读者改直连真源
+        并删掉别名。留一个别名＝真源之外还有第二份可漂移的面，故此判据与①（路由不得墙读）
+        成对：① 管读侧、⑥ 管写侧，缺一条就有一半静默。
+        """
+        with io.open(_APP_PY, encoding="utf-8") as f:
+            defined = app_definition_names(f.read())
+        self.assertGreater(len(defined), 50,
+                           "web/app.py 真定义面过小——路径或解析器失效（扫空不得当绿）")
+        dup = sorted(UNWRAPPED_IN_3C_S1 & defined)
+        self.assertEqual(
+            dup, [],
+            "以下批 3-c S1 已去壳名在 web/app.py 仍有真定义（读者已直取真源，别名是第二份面）：%s"
+            % ", ".join(dup))
+
+    def test_3c_s1_gate_has_teeth(self):
+        """突变验证：塞回一处 `STATUS_ICON = yiban_status.ICON` ⇒ 判据⑥必须命中。"""
+        self.assertIn("STATUS_ICON",
+                      app_definition_names("STATUS_ICON = yiban_status.ICON\n"))
+        self.assertIn("_has_line_break",
+                      app_definition_names("_has_line_break = env_io.has_line_break\n"))
+        self.assertIn("DELETED_RETENTION_DAYS",
+                      app_definition_names("DELETED_RETENTION_DAYS = db.NOPE\n"))
+        self.assertGreaterEqual(len(UNWRAPPED_IN_3C_S1), 10,
+                                "已去壳名单过小：名单被截断")
 
     def test_app_definition_scanner_has_teeth(self):
         """突变验证：塞回一处真定义 ⇒ 判据⑤必须命中；转发别名不算。"""
