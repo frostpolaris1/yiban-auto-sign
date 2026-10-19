@@ -378,7 +378,7 @@ phase_B() {
     if printf '%s' "$chain" | grep -q 'CHAIN True'; then pass "B8 升级后审计链自洽 chain_ok=True" "True"; else fail "B8 审计链" "$chain"; fi
 
     local egrc exits
-    c_in_py "$proj" "$ov" "import sys; from yiban import cli; sys.exit(cli.main(['egress','--status','--json']))" >>"$log" 2>&1
+    c_in_py "$proj" "$ov" "import sys; from yiban.entry import cli; sys.exit(cli.main(['egress','--status','--json']))" >>"$log" 2>&1
     egrc=$?
     # 引擎侧出口身份仍解析得出（"升级后引擎配置仍读得到出口"）：exit 标识来自 .env/配置，
     # 与 egress_state（已被 v22 清空）无关，故两者都要成立。
