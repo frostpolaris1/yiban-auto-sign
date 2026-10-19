@@ -1119,9 +1119,9 @@ def api_scheduler_executor_worker_egress(index):
         # 单执行体"的回退。此前这里另读一次原始值，于是 .env 写 65 时界面按 65 个槽位
         # 放行、引擎只起 1 个执行体（census P1-3 的同一处分叉）。
         configured = yb_egress.legacy_worker_count(env_now)
-        if not (0 <= index <= m.EXECUTOR_INDEX_MAX) or index >= configured:
+        if not (0 <= index <= yb_egress.SLOT_MAX) or index >= configured:
             return jsonify({"error": f"槽位 {index} 未被使用（当前执行体数 {configured}）"}), 400
-    elif not (0 <= index <= m.EXECUTOR_INDEX_MAX) or \
+    elif not (0 <= index <= yb_egress.SLOT_MAX) or \
             yb_egress.row_by_slot(manifest_rows, index) is None:
         return jsonify({"error": f"槽位 {index} 不在执行体清单里"}), 400
     return _reply_slot_egress(yb_egress.ENV_WORKER_LIST, index)
@@ -1578,7 +1578,7 @@ def api_announcement_save():
     text = str(data.get("text", "")).strip()
     if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
         return jsonify({"error": "公告内容过长（最多 200 字）"}), 400
-    if m._has_line_break(text):
+    if env_io.has_line_break(text):
         # 公告存入 .env 单行键值，换行会注入新配置行（如
         # YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
         # 前端为 textarea 但展示端换行本就折叠，直接拒绝而非剥掉（write_env_batch
@@ -1591,7 +1591,7 @@ def api_announcement_save():
         author = str(session.get("username") or "?").strip().lower()[:64]
         meta = (f"{author}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}"
                 f"{clock.now().strftime(_env_io_svc.ANNOUNCEMENT_DRAFT_META_FMT)}")
-        if m._has_line_break(meta):
+        if env_io.has_line_break(meta):
             # 用户名走登录侧校验后不该带分隔符，这里是兜底：宁可拒绝保存，也不留
             # 一条作者被截断/污染的草稿——双人发布的全部价值就在于发布人看得见作者。
             return jsonify({"error": "草稿作者标识非法，未能保存"}), 400
@@ -1672,7 +1672,7 @@ def api_announcement_publish():
             urgent=True, force=True,
         )
         return jsonify({"ok": True, "msg": "线上公告已下线", "text": ""})
-    if m._has_line_break(draft):
+    if env_io.has_line_break(draft):
         # 解析器按行切，正常读不回带分隔符的值；会走到这里只可能是 .env 被手改成
         # 多行。那种内容没被任何人在 UI 上看过，一律拒绝发布而非照抄进正式键。
         return jsonify({"error": "草稿含行分隔符（.env 疑似被手工改动），未能发布"}), 400
