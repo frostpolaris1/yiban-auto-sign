@@ -31,16 +31,18 @@
 **通信**
 入：HTTP 请求 + `.env`（配置与内置管理员凭据）；出：JSON 与渲染页（渲染在 `web/render.py`）、
 `.env` 原子落盘、SQLite、告警邮件与推送。它调用 `web.routes.register_all`、`web.services.*`、
-`web.security`、`yiban.*`；调用方是 `python -m web`（上面的运行段）与 tests/*。路由模块经
-`web.routes.appmod()` 现取本模块的模块级名字、测试按属性打桩它们，所以这些名字的**字面**
-是对外契约的一部分，改名等于改接口。
+`web.security`、`yiban.*`；调用方是 `python -m web`（上面的运行段）与 tests/*。
+路由模块经 `web.routes.appmod()` 现取本模块的模块级名字、测试按属性打桩它们，所以**仍留在
+本模块**的名字，其**字面**是对外契约的一部分，改名等于改接口。批 3-a 已把 import 形态转发的
+名字（A 类）改为路由直连真源；批 3-b 把**纯常量**与**纯助手**搬进 `web/services/*`。
+留在墙上的只剩：env 句柄与进程内缓存、凭据/审核/签到进程族，以及需要现取本模块状态后
+注入服务层的转发包装——名单与逐类理由见 `tests/test_wall_direct_reads.py` 的模块 docstring。
 """
 
 import argparse
 import contextlib
 import logging
 import os
-import re
 import secrets
 import subprocess  # noqa: F401  # 手动签到子进程族已入 web/services/manual_sign.py，保留名字面（测试打桩 webapp.subprocess.Popen）
 import sys
@@ -53,7 +55,6 @@ from datetime import timedelta
 
 from flask import (
     Flask,
-    abort,
     jsonify,
     render_template,
     request,
@@ -72,9 +73,8 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# scripts/ 下的裸模块（同属"共享模块"段）：本模块均无自用点，保留供 web.app.<名字>
+# scripts/ 下的裸模块（同属"共享模块"段）：本模块无自用点，保留供 web.app.<名字>
 # 取用（routes 经 m.* 取用、测试按属性打桩）。位置随包导入引导之后、web./yiban. 之前。
-import child_env  # noqa: E402,F401  # 签到子进程环境注入已入 web/routes/signin_api.py
 import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出
 
 # 渲染层实现（web/render.py）：合规文档与站点展示族的真源。本模块只转发，并在转发时
@@ -82,10 +82,14 @@ import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域�
 # ——它们会被测试改写、也会随运行方式变化，必须调用时刻现取。
 from web import render as _render  # noqa: E402
 
-# 服务层实现（web/services/）：env 读写与执行体清单的真源。本模块只保留名字面，
-# 需要本模块模块级状态的入口（_atomic_write / write_env_batch / _env_flag / 设置缺省值 /
-# send_notification / ENV_FILE / _sign_window）在下方转发时调用时刻现取后注入——它们会被
-# 测试改写、也会随运行方式变化，服务层另持一份绑定会让打桩与 --config 静默失效。
+# 服务层实现（web/services/）：域实现的真源。本模块保留的转发面**只余两族**：
+#   · 需要本模块模块级状态的入口（`_atomic_write` / `write_env_batch` / `_env_flag` /
+#     设置缺省值 / `send_notification` / `ENV_FILE` / `_sign_window`）——它们在下方转发时
+#     调用时刻现取后注入。测试会改写这些名字，服务层另持一份绑定会让打桩与 --config 静默失效；
+#   · 本模块自用、或测试按属性读取的名字（如 `_atomic_write` / `_tail_lines` / `read_env`）。
+# 批 3-b 起，**纯常量**（窗口/上限/键名）与**纯助手**（`_json_body` /
+# `_request_is_same_origin`）已由路由与测试从新家直取（`web/services/limits.py`、
+# `web/services/env_io.py`、`web/services/http_request.py`），本模块不再转出。
 # 安全域实现（web/security.py）同理：它在本模块持有的模块级名字（ENV_FILE / read_env /
 # write_env_key / write_env_batch / load_env_int / _count_env_key_lines /
 # send_notification / SESSION_ABS_TTL_SECONDS / _constant_time_dummy）在下方转发包装里
@@ -125,7 +129,6 @@ from web.security import (  # noqa: E402
     _forwarded_trust_enabled,
     _ip_store_trim,
     _is_loopback_addr,
-    _new_admin_sid,  # noqa: F401
     _record_verify_failure,
     _resolve_forwarded_trust,
     _verify_attempt_allowed,
@@ -154,7 +157,6 @@ from web.services.accounts_data import (  # noqa: E402
     _PASSWORD_POLICY_HINT,  # noqa: F401
     ACCOUNT_STATUS_ACTIVE,  # noqa: F401
     ACCOUNT_STATUS_PENDING,  # noqa: F401
-    ACCOUNT_STATUS_REJECTED,  # noqa: F401
     PASSWORD_MIN_LEN,  # noqa: F401
     _admin_password_policy_error,  # noqa: F401
     _as_signin_account,  # noqa: F401
@@ -167,10 +169,8 @@ from web.services.accounts_data import (  # noqa: E402
     _stale_idx_guard,  # noqa: F401
     _verify_account_clean,
     find_account_index,  # noqa: F401
-    fold_phone_code,  # noqa: F401
     load_accounts,
     load_accounts_raw,  # noqa: F401
-    load_users,  # noqa: F401
     mask_account,  # noqa: F401
     validate_account,  # noqa: F401
 )
@@ -189,10 +189,7 @@ from web.services.channel_health import (  # noqa: E402
 )
 from web.services.env_io import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
-    ANNOUNCEMENT_DRAFT_META_FMT,  # noqa: F401
-    ANNOUNCEMENT_DRAFT_META_SEP,  # noqa: F401
     _env_write_lock,  # noqa: F401
-    _is_http_proxy_url,  # noqa: F401
     _parse_announcement_meta,  # noqa: F401
     _settings_label,  # noqa: F401
     _settings_value_text,  # noqa: F401
@@ -200,15 +197,20 @@ from web.services.env_io import (  # noqa: E402
     read_env,
 )
 from web.services.executor_env import (  # noqa: E402
-    # 名字面零损失：执行体清单及其 .env 键已入 web/services/executor_env.py，
-    # 本模块已无自用点，保留为 web.app.<名字> 的兼容面（routes 经 m.* 取用）
-    _executor_activity,  # noqa: F401
-    _executor_health_cards,  # noqa: F401
-    _executor_row_payload,  # noqa: F401
-    _last_executors,  # noqa: F401
-    _next_executor_slot,  # noqa: F401
+    # 名字面零损失：执行体清单的字段校验两枚名字（routes 经 m.* 取用）
     _validated_name,  # noqa: F401
     _validated_proxy_value,  # noqa: F401
+)
+
+# 批 3-b：本模块**自用**的三枚容量缺省与同源判定改从新家取（真定义已不在本模块）。
+# 其余已迁名（窗口/上限/键名常量）本模块无自用点，路由与测试按域直取新家。
+from web.services.http_request import (  # noqa: E402
+    _request_is_same_origin,
+)
+from web.services.limits import (  # noqa: E402
+    DEFAULT_ACCOUNT_GAP_MAX,
+    DEFAULT_MAX_ACCOUNTS,
+    DEFAULT_MAX_USERS,
 )
 from web.services.locks import (  # noqa: E402
     # 进程内锁真源：`_file_lock`（账号/用户读改写）与 `_rate_lock`（限速/失败计数表）
@@ -219,11 +221,8 @@ from web.services.locks import (  # noqa: E402
     run_after_file_lock,  # noqa: F401
 )
 from web.services.logs import (  # noqa: E402
-    LOG_LEVEL_DEFAULT,  # noqa: F401
-    LOG_LEVELS,  # noqa: F401
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     _cred_paused_phones,  # noqa: F401
-    _filter_log_level,  # noqa: F401
     _is_valid_date_str,  # noqa: F401
     _log_line_visible,  # noqa: F401
     _mask_log_phones,  # noqa: F401
@@ -238,7 +237,6 @@ from web.services.manual_sign import (  # noqa: E402
     # `log_path_for`，故在下方转发
     _batch_wait_timeout,  # noqa: F401
     _manual_sign_failure_reason,  # noqa: F401
-    _terminate_signin_proc,  # noqa: F401
     _wait_signin_proc,  # noqa: F401
 )
 from web.services.measure import (  # noqa: E402
@@ -256,7 +254,6 @@ from web.services.notify_mail import (  # noqa: E402
     # `send_notification` 与 `_push_ever_configured` 需注入本模块的名字，故在下方转发
     _audit_actor,
     _audit_alert_facts,
-    _change_mail,  # noqa: F401
     _nl_safe,
     _review_reject_mail,  # noqa: F401
 )
@@ -275,6 +272,9 @@ from web.services.verify_queue import (  # noqa: E402
     # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
     VERIFY_JOBS_MAX_PENDING,  # noqa: F401
     VerifyGateBusy,  # noqa: F401
+    # 面外读者 1 处（批 3-b 现量核实）：`web/services/device_refresh.py` 的
+    # `refresh_account_device(m, …)` 经宿主参数 `m` 在 except 子句里读本名。
+    # 该读法不在 routes/tests 扫描面内，故删名清单**不收**它（删了会让 429 分支变 500）。
     VerifyQuotaExceeded,  # noqa: F401
     _reclaim_stale_verify_jobs,
     _reject_account,
@@ -288,9 +288,6 @@ from yiban.core import clock  # noqa: E402
 # 窗口唯一口径 `yiban.core.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
 from yiban.core import window as yb_window  # noqa: E402
 from yiban.core.masking import mask_phone as _mask_phone  # noqa: E402
-from yiban.core.masking import (  # noqa: E402
-    mask_url_userinfo as _mask_url_userinfo,  # noqa: F401  # 代理脱敏
-)
 from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 
 # 名字面零损失：纯再导出见上方 import；需要注入本模块模块级状态的入口
@@ -329,9 +326,6 @@ from yiban.adapters.config import (  # noqa: E402
 )
 from yiban.adapters.notifier import mail as mailer  # noqa: E402,F401
 from yiban.adapters.notifier import notify  # noqa: E402  # 有自用点，原 F401 豁免已失效
-from yiban.adapters.notifier.mail import (  # noqa: E402
-    config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
-)
 from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
 from yiban.adapters.persistence import db  # noqa: E402  # SQLite 数据访问层
 from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
@@ -380,10 +374,9 @@ DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # 的 m.* 名字面已随 W0 删除（零读者）；
 # 折算必须发生在进 SET 之前——哨兵若在进 SET 前被摘掉，"清除"就成了库里无感的空操作。
 
-# 单次批量操作上限：批量通过/删除/设管理员/重置密码
-# 与「清除已注销用户」共用同一上限——被盗管理员会话即使一个请求，一次最多影响 10 条，
-# 降低误操作与滥用影响范围。三处接口共用本常量，防单处调整后其他路径遗漏。
-BATCH_OP_LIMIT = 10
+# 单次批量操作上限（`BATCH_OP_LIMIT`）与容量上限族（`DEFAULT_MAX_USERS` /
+# `DEFAULT_MAX_ACCOUNTS` / `DEFAULT_START_DELAY_MAX`）已随批 3-b 搬入
+# web/services/limits.py：本模块不再持有其定义，路由与测试按域直取新家。
 
 
 def _sign_window():
@@ -425,7 +418,7 @@ def _executors_window():
 # 现场实测单账号耗时（仅主管理员；**会真实访问易班一次**）
 # ---------------------------------------------------------------------------
 #: 两次实测之间的全局冷却（秒）；可被 `.env` 的 YIBAN_MEASURE_COOLDOWN 覆盖。
-MEASURE_COOLDOWN_SEC = 600
+#: 常量本体（`MEASURE_COOLDOWN_SEC`）已随批 3-b 搬入 web/services/limits.py。
 # 实测状态文件的路径/读写/冷却判定与可实测账号的挑选实现见 web/services/measure.py；
 # 本模块的 `_measure_state_path` 与 `_write_measure_state` 转发时现取本模块的
 # STATE_DIR 与 _atomic_write（测试会赋值 `web.app.STATE_DIR`、在 `web.app` 上打桩
@@ -452,39 +445,9 @@ def _write_measure_state(path, payload):
 # 再导出保持 m.* 可达。
 
 
-def _json_body():
-    """安全解析 JSON 请求体：
-    - 空 body → {}
-    - 非法 JSON / 非对象 JSON → 400（API 语义清晰，不静默按空请求处理）
-    """
-    if not request.data:
-        return {}
-    data = request.get_json(silent=True)
-    if data is None:
-        abort(400, description="请求体不是合法 JSON")
-    if not isinstance(data, dict):
-        abort(400, description="请求体应为 JSON 对象")
-    return data
-
-
-def _request_is_same_origin():
-    """请求是否同源（`Origin` 与 `(scheme, host)` 一致）。
-
-    **同源语义的单一定义点**：`create_app` 的 `check_csrf` 闭包与 SSE 端点
-    （`web/routes/stream_api.py`）都从这里取同一份判定，避免两处各写一套。
-    `EventSource` 不能自定义请求头，只能靠 Cookie 会话，故它的 GET 也必须过同源校验。
-    无 `Origin` 头（同站导航、curl、同源 GET）放行——与既有登录/注册口径一致。
-    """
-    origin = request.headers.get("Origin")
-    if not origin:
-        return True
-    from urllib.parse import urlparse
-
-    try:
-        o = urlparse(origin)
-    except ValueError:
-        return False
-    return (o.scheme, o.netloc) == (request.scheme, request.host)
+# JSON 请求体解析（`_json_body`）与同源判定（`_request_is_same_origin`）已随批 3-b
+# 搬入 web/services/http_request.py：两者只读 Flask 请求上下文，属纯助手。
+# `_request_is_same_origin` 仍被 `create_app` 的 `check_csrf` 闭包取用，故在上方导入。
 
 
 # 真实客户端出口（`_client_ip`）见 web/security.py，此处以导入区再导出保持 m.* 可达。
@@ -493,22 +456,12 @@ def _request_is_same_origin():
 # 注销冷却剩余（`_delete_grace_remaining`）见 web/services/accounts_data.py，此处以导入区
 # 再导出保持 m.* 可达；注销宽限期常量 `DELETE_GRACE_DAYS` 的 m.* 名字面已随 W0 删除。
 
-# 随机延迟默认上限（与 signin.py 一致）
-DEFAULT_START_DELAY_MAX = 60
-# 账号间隔缺省（秒）：住在 config/registry.json，代码不再写第二份字面量
-DEFAULT_ACCOUNT_GAP_MAX = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
+# 随机延迟默认上限（`DEFAULT_START_DELAY_MAX`）与账号间隔缺省
+# （`DEFAULT_ACCOUNT_GAP_MAX`，取自配置名册）已随批 3-b 搬入 web/services/limits.py。
 
-# 登录失败限速：同一 IP 连续失败超过阈值后锁定（锁定秒数 LOGIN_LOCK_SECONDS 随安全域
-# 搬入 web/security.py，此处以导入区再导出保持 m.LOGIN_LOCK_SECONDS 可达）
-LOGIN_MAX_FAILS = 10
-# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱的失败阈值
-# 只约束单账号，攻击者可换邮箱继续；命中恢复即接管该账号与其易班凭据）
-RESTORE_FAIL_MAX = 30
-RESTORE_FAIL_WINDOW = 600
-# 连续失败告警阈值：达到后通知管理员（每轮锁定只告警一次）。阈值与锁定阈值
-# （LOGIN_MAX_FAILS）同值时，告警恰好落在"锁定"那一刻——本人反复输错口令是最常见的
-# 失败来源，阈值压低只会把误报刷满告警通道；真攻击由边缘限速与逐次 scrypt 时延承担。
-LOGIN_FAIL_NOTIFY = 10
+# 登录失败限速、账号恢复的每 IP 聚合失败窗口、连续失败告警阈值
+# （`LOGIN_MAX_FAILS` / `RESTORE_FAIL_MAX` / `RESTORE_FAIL_WINDOW` / `LOGIN_FAIL_NOTIFY`）
+# 与口令喷洒判定（`LOGIN_SPRAY_USERS`）已随批 3-b 搬入 web/services/limits.py。
 # 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
 # 只用于告警与冷却判定，不锁管理员。
 SENSITIVE_PW_FAIL_WINDOW = 900
@@ -544,9 +497,7 @@ PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
 PW_DELAY_ACK_TEXT = {400: "此操作不可逆，请在倒计时结束后确认，操作已取消",
                      403: "此操作不可逆，请在倒计时结束后确认，操作未执行"}
 PW_DELAY_ACK_REASON = "delay_ack_required"
-# 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
-# （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
-LOGIN_SPRAY_USERS = 3
+# 口令喷洒判定（`LOGIN_SPRAY_USERS`）已随批 3-b 搬入 web/services/limits.py。
 
 # IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留实现见 web/security.py
 # （`_ip_store_trim` 按它们判定），此处以导入区再导出保持 m.* 可达。
@@ -561,30 +512,8 @@ RATE_MAX = 60  # 窗口内最大 API 请求数（正常用户远低于此）
 # 仅放宽「已登录 + GET」：写路径（POST/PUT/DELETE）与匿名请求维持 RATE_MAX，脚本
 # 轰炸主防线不变。
 RATE_MAX_AUTH_GET = 240
-# 注册限速（防邮箱批量注册）：每 IP 窗口内最多 REGISTER_MAX 次成功注册
-REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
-REGISTER_MAX = 5  # 窗口内最大成功注册数
-# 日志导出限速：每 IP 窗口内最多 EXPORT_MAX 次（导出按日期可枚举且整份返回
-# 日志文本，限速防脚本化批量拉取历史日期）
-EXPORT_WINDOW = 60  # 窗口（秒）
-EXPORT_MAX = 6  # 窗口内最大导出次数
-
-# 账号详情读取限速：/api/accounts/<idx>/detail 的 idx 从 0 递增即可整库枚举，
-# 且它是列表接口之外唯一回传明文口令/完整手机号的面。列表侧已脱敏、编辑框每次
-# 只取一行，故取"一个会话一分钟 60 次"——等于每秒点开一次编辑框且整整一分钟
-# 不停，人类运维到不了；对照 EXPORT_WINDOW/EXPORT_MAX 同量级的"整份数据出口"口径。
-DETAIL_WINDOW = 60  # 窗口（秒）
-DETAIL_MAX = 60  # 窗口内最大详情读取次数（超限 429）
-
-# 个人提交预检「号码在册」命中计数限速（每会话 DUPCHECK_MAX 次 / DUPCHECK_WINDOW 秒）。
-# 预检判重打在全站账号表上、且早于任何真实外呼，等于给"已登录且名下无未删账号"的
-# 会话一个零成本零留痕的定向确认面：全局 IP 限速（60 次/10 秒 ≈ 21600 次/时）比
-# 详情/导出等同档面宽几个数量级，压不住定向确认。只计「判重命中」——未重号的正常
-# 提交不吃额度、不写这行审计，400/成功语义与文案不动；超限改答 429，不再继续
-# 确认。按会话计数与详情限速同口径（校园网出口高度共享，按 IP 会把共用出口的正常
-# 用户互相挡死）。
-DUPCHECK_WINDOW = 60  # 窗口（秒）
-DUPCHECK_MAX = 5  # 窗口内最大判重命中数（超限 429）
+# 注册 / 日志导出 / 账号详情 / 判重命中 四族限速窗口与上限（`REGISTER_*` / `EXPORT_*` /
+# `DETAIL_*` / `DUPCHECK_*`）已随批 3-b 搬入 web/services/limits.py。
 
 # 只读面聚合审计：同一管理员对同一资源类在一个窗口内只按档位落几行，detail 带
 # 累计次数与脱敏目标摘要。逐请求一行会把审计表变成"被盗会话的免费打字机"——
@@ -597,23 +526,9 @@ READ_AUDIT_LADDER = (1, 10, 50)  # 窗口内累计次数落在这些档位时各
 READ_AUDIT_EVERY = 200  # 越过最高档后每多少次追加一行
 READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的 detail 本身截 200 字）
 
-# 告警通道 GET 里仅主管理员可读的字段：两本账的**当日余量**。
-# 上限（daily_max / urgent_daily_max）与节流（cooldown）刻意不在此列——它们是规则
-# 配置，注册管理员看不到就无法判断"为什么没收到告警"，而余量才是拆报警器前的勘察面。
-_NOTIFY_QUOTA_HIDDEN_KEYS = ("daily_remaining", "urgent_daily_remaining")
-
-# ---- 推送/邮件配置的输入上限（写侧唯一拦点）----
-# 为什么要有上限：本项在裸机直连形态下没有 nginx 的请求体/头长度兜底，超长值会被
-# 原样加密进 .env，并在每次推送/发信时带出；条数不设限则一次请求就能把 .env 撑大。
-# 取值依据（不是拍脑袋）：Server酱 SendKey 是"定长前缀 SCT + 固定宽度主体"，
-# 实测 35 字符 → 上限取 64（约一倍余量），下限 8 只为挡明显占位串；自定义通知地址
-# 按 URL 的实际长度上限取 2048；告警收件人与 SMTP 备选条目都是"管理员级"的小列表
-# （当前部署各 1~3 条），上限取 10 足够真实使用且不会被误触。
-NOTIFY_SENDKEY_MIN_LEN = 8
-NOTIFY_SENDKEY_MAX_LEN = 64
-NOTIFY_URL_MAX_LEN = 2048
-MAIL_ADMIN_TO_MAX = 10
-MAIL_SMTPS_MAX = 10
+# 告警通道 GET 的隐藏字段（`_NOTIFY_QUOTA_HIDDEN_KEYS`）与推送/邮件配置的输入上限
+# （`NOTIFY_SENDKEY_MIN_LEN` / `NOTIFY_SENDKEY_MAX_LEN` / `NOTIFY_URL_MAX_LEN` /
+# `MAIL_ADMIN_TO_MAX` / `MAIL_SMTPS_MAX`）已随批 3-b 搬入 web/services/limits.py。
 
 # 账号验证尝试限频：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
@@ -650,16 +565,14 @@ VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 # 任务终态（查询/取消端点判定用）
 VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 
-# 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
-# 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
-# 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
-DELETE_COOLDOWN_SEC = 60
+# 注销账号冷却（`DELETE_COOLDOWN_SEC` / `DELETE_MAX_REQUESTS_PER_IP`）已随批 3-b
+# 搬入 web/services/limits.py：超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户
+# 据此规划批量节奏）。
 
 # 会话绝对过期上限默认天数：实际值在 create_app 内按
 # YIBAN_SESSION_ABS_DAYS 解析并钳制到 [1,30]；此处为 create_app 前引用兜底。
 SESSION_ABS_DAYS_DEFAULT = 7
 SESSION_ABS_TTL_SECONDS = SESSION_ABS_DAYS_DEFAULT * 86400
-DELETE_MAX_REQUESTS_PER_IP = 5
 # 高危删除操作冷却：同一管理员在窗口内最多执行
 # ADMIN_DELETE_MAX 次删除类高危操作（批量删除/彻底清除/完全删除），防被盗会话
 # 快速反复删除用户并刷告警邮件。与注销冷却同语义，超限 429 且不暴露冷却参数。
@@ -681,87 +594,23 @@ ADMIN_CREDS_MAX = 20
 # ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
 # web/services/accounts_data.py；`DELETE_GRACE_DAYS` 的 m.* 名字面已随 W0 删除。
 
-# 容量上限（注册/使用人数超负载兜底）：
-# 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
-# 账号 = 至少持有 1 个非删除账号的活跃注册用户，上限默认 200（一人一号 ≈ 200 活跃使用者，
-#   调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
-# 0 = 不限。可用 .env 的 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS 调整。
-DEFAULT_MAX_USERS = 500
-DEFAULT_MAX_ACCOUNTS = 200
+# 容量上限（`DEFAULT_MAX_USERS` / `DEFAULT_MAX_ACCOUNTS`）已随批 3-b 搬入
+# web/services/limits.py：本模块仍自用这两枚缺省（设置项展示与配额判定注入），
+# 故在上方按名导入；取值依据与 .env 键名见该模块。
 
-# ---- 设置项档位（`POST /api/settings` 权限判定的**唯一事实源**）----
-# 分档判据是「影响半径 × 能否造成静默漏签」，不是"看起来危不危险"：
-#   A 档（`MASTER_ONLY_KEYS`）一次改动就波及全站签到或直接拆掉安全闸门——周末开关、
-#     签到窗口与首尾裁切决定"今天到底签不签得到"，随机延迟与容量上限决定"多少账号被
-#     挤出窗口"，account_verify / probe_* 会让服务器对**全站账号**发起真实易班登录。
-#     故仅主管理员可写，且值真变化时必须当次输口令（短时豁免不适用）+ 变更告警。
-#   B 档（`GATED_KEYS`）只改排序风格与自选权，出错有 A 档参数兜底，故任意管理员可写，
-#     值真变化时过同一个口令门禁但允许豁免。
-# 唯一的例外是 `global_pause`：0→1「急停」任意管理员都能做（当次口令 + 占用高危额度 +
-# 紧急告警），1→0 恢复仍仅主管理员——把"先止损"的权力留在在场每个人手里，把"放开"的
-# 权力收在主管理员手里。
-# 新增设置键时必须改这里而不是在路由里再列一遍键名：此前 403 清单只写在 handler 内，
-# 与前端各页自己的收控件清单两处各写一遍、必然漂移（测试里的元测试负责比对这两份）。
-#
-# 逐键复核（2026-09-28 用户判据：**在不当时间——窗口前几秒或窗口内——改它，能不能
-# 静悄悄把签到序列搞炸？能，就留口令门**；不能的仅剩"只增摩擦"的键）：
-#   留门（能静默搞炸，或属安全网本身）：
-#     sign_window / window_edge_sec / edge_front_sec / edge_back_sec
-#       ——窗口改窄或首尾裁切吃光有效窗口 ⇒ 当天整批账号静默跳过；
-#     sunday_sign / saturday_sign —— 当天整天空签且不报错（面板会显示休息，但没人盯着看）；
-#     start_delay_max / gap_max —— 延迟或间隔 × 账号数超出窗口 ⇒ 后段账号排队到最后全落空；
-#     account_verify / registration_pause —— 关验证/重开注册 ⇒ 未验证的批量账号涌入主链
-#       对易班发起真实登录 ⇒ 平台风控封号（§5.2 明列的用户面合规事故）；
-#     probe_enable / probe_time / probe_interval —— 探针是发现账号异常的眼睛，改坏即
-#       静默失去监测（与 SMTP 条目同属"安全网本身"，故同判据留门）；
-#     global_pause 0→1 —— 全站停签（见下）。
-#   仅摩擦、按判据可以放开（本次刻意不动：这三个键半年改一次，放开要连前端面板的收控件
-#   一起改，收益不抵新增面；若日后摩擦真的咬人再动）：
-#     max_users / max_accounts —— 只影响**新提交**的配额判定（有明确报错），
-#       不触碰已排定的签到序列，改小也不会让在册账号掉队。
-MASTER_ONLY_KEYS = frozenset({
-    "sign_window", "window_edge_sec", "edge_front_sec", "edge_back_sec",
-    "sunday_sign", "saturday_sign", "registration_pause",
-    "start_delay_max", "gap_max", "max_users", "max_accounts",
-    "account_verify", "probe_enable", "probe_time", "probe_interval",
-    # 健康报告发送时刻/星期：与探针同属"安全网本身"——把时刻改到没人看的钟点、
-    # 或把星期改到别的一天，报告照发但看不见，静默失去周期性证据（同判据留门）。
-    "health_report_time", "health_report_weekday",
-})
-GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref"})
-# `global_pause` 刻意不进 `MASTER_ONLY_KEYS`：它是 A 档的唯一例外，权限按**变更方向**
-# 分流（0→1 急停人人可做、1→0 恢复仅主管理员），故单独用这个键名判方向。
-GLOBAL_PAUSE_KEY = "global_pause"
+# 设置项档位三枚键名（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）与
+# 逐键复核判据已随批 3-b 搬入 web/services/env_io.py（与 A 档键名清单同处一模块）。
 
-# 自选时间片切换冷却（弹性冷却，非固定节流）：
-# 60 秒窗口内前 TIME_PREF_COOLDOWN_FREE 次切换完全自由（浏览式"全点一遍再定"属正常行为）；
-# 超出后冷却递增：基础 × 2^(超限次数)，封顶 TIME_PREF_COOLDOWN_MAX（持续高频才被压制）。
-# 高频切换本质是自我惩罚（updated_at 变晚 → 先到先得排后），冷却只为防连点/防刷屏噪音。
-# 0 = 关闭。可用 .env 的 YIBAN_TIME_PREF_COOLDOWN_SEC 调整基础值（默认 30）。
-TIME_PREF_COOLDOWN_SEC = 30
-TIME_PREF_COOLDOWN_FREE = 20        # 60 秒窗口内自由切换次数（覆盖"全点一遍"16 片+选定）
-TIME_PREF_COOLDOWN_MAX = 300        # 弹性封顶（秒）
-TIME_PREF_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
+# 自选时间片与暂停的弹性冷却（`TIME_PREF_COOLDOWN_*` / `PAUSE_COOLDOWN_*`）
+# 已随批 3-b 搬入 web/services/limits.py。
 
-# 暂停签到冷却：恢复不受限；暂停采用弹性冷却——
-# 60 秒窗口内前 PAUSE_COOLDOWN_FREE 次完全自由（好奇地暂停/恢复/再暂停不会被误杀），
-# 超出后冷却递增（基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX）。
-# 防脚本刷审计/状态显示抖动，但不惩罚正常手快用户。0=关闭。
-PAUSE_COOLDOWN_SEC = 30
-PAUSE_COOLDOWN_FREE = 3         # 60 秒窗口内自由暂停次数（覆盖"试一下"）
-PAUSE_COOLDOWN_MAX = 120        # 弹性封顶（秒）
-PAUSE_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
-
-# 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
-# re.ASCII——str 模式的 \w 匹配 Unicode 字母，同形字/IDN 域名可绕过
-# 一次性域名黑名单的字面匹配；限 ASCII 后此类注册直接被格式校验拦截
-EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$", re.ASCII)
-EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
+# 普通用户邮箱格式（`EMAIL_RE` / `EMAIL_USER_MAX`）已随批 3-b 搬入
+# web/services/limits.py（正则与 `re.ASCII` 的理由同在该模块）。
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）常量已随
 # 账号数据族搬入 web/services/accounts_data.py；`PHONE_RE` 的 m.* 名字面已随 W0 删除。
 
-# 手动签到防抖：同一账号两次触发的最小间隔（秒）
-SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring
+# 手动签到防抖窗口（`SIGN_MIN_INTERVAL`）已随批 3-b 搬入 web/services/limits.py；
+# 注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring。
 
 # 日志行可见性与行正则（`SIGN_LOG_RE`）的实现见 web/services/logs.py：两者在导入区
 # 再导出，`web.app.<名字>` 的取用面不变。
@@ -1202,19 +1051,9 @@ def _log_manual_sign_exit(phone_label, returncode):
 _changelog_cache = [None]  # [文本]
 _announcement_cache = [None]  # [已发布公告文本]（草稿刻意不进缓存：它要按会话现读）
 
-# ---- 全站公告双人发布：三个 .env 键的键名单源在此 ----
-# 公告会出现在**全体学生**的页面顶横幅与登录页上，是内部人/被盗会话最好用的社工面，
-# 故拆成两半：普通管理员只能写草稿，主管理员点"发布"才落成对外可见的那一键。
-# 作者与时刻单独成键（而非塞进草稿正文），为的是发布人批准前就能看见"这是谁、
-# 什么时候写的"——审计表只能事后追，双人发布要的是事前那一眼。
-ANNOUNCEMENT_KEY = "YIBAN_ANNOUNCEMENT"
-ANNOUNCEMENT_DRAFT_KEY = "YIBAN_ANNOUNCEMENT_DRAFT"
-ANNOUNCEMENT_DRAFT_META_KEY = "YIBAN_ANNOUNCEMENT_DRAFT_META"
-# 线上公告的发布人/时刻：前端要同屏显示"草稿是谁写的"与"线上是谁在何时发的"，
-# 否则管理员只能看到一串文本，分不清自己看到的到底是待发布内容还是已生效内容。
-ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
-# 元数据值的分隔符与时刻格式随解析器（_parse_announcement_meta）留在
-# web/services/env_io.py，此处以导入区再导出保持 m.ANNOUNCEMENT_DRAFT_META_SEP/_FMT 可达。
+# 全站公告双人发布的四个 .env 键名（`ANNOUNCEMENT_KEY` / `ANNOUNCEMENT_DRAFT_KEY` /
+# `ANNOUNCEMENT_DRAFT_META_KEY` / `ANNOUNCEMENT_PUBLISHED_META_KEY`）已随批 3-b
+# 搬入 web/services/env_io.py：键名与公告元数据解析器同处一模块。
 
 
 # 账号 / 用户读取（load_accounts / load_accounts_raw / load_users）、展示序列化

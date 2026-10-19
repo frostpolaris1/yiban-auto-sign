@@ -59,6 +59,8 @@ from web.routes import verify_limits as _verify_limits
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import executor_env as _executor_env
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import notify_mail as _notify_mail
@@ -205,12 +207,11 @@ def api_account_detail(idx):
     枚举——被窃的管理员会话读它零成本、零痕迹，故与日志导出同口径加会话级
     限速 + 聚合读审计（超限 429 不逐条留痕，防把审计表当打字机）。
     """
-    m = _appmod()
     with _locks._rate_lock:
-        _security._ip_store_trim(_detail_limits(), m.DETAIL_WINDOW + _security._IP_STORE_MAX_AGE)
+        _security._ip_store_trim(_detail_limits(), _limits.DETAIL_WINDOW + _security._IP_STORE_MAX_AGE)
     _cnt, _start, allowed = _security._bump_window_count(
         _detail_limits(), (session.get("username") or "?")[:64], time.time(),
-        m.DETAIL_WINDOW, limit=m.DETAIL_MAX,
+        _limits.DETAIL_WINDOW, limit=_limits.DETAIL_MAX,
     )
     if not allowed:
         # 文案不带阈值数字：这些数值对合法运维没有用处，却正好让攻击者贴着
@@ -240,7 +241,7 @@ def api_account_device_refresh(idx):
     if not 0 <= idx < len(accounts):
         return jsonify({"error": "账号不存在"}), 404
     acc = accounts[idx]
-    data = m._json_body()
+    data = _http._json_body()
     # 管理面写口一律 fail-closed（与 update/delete/restore/purge/review/move 同纪律）：
     # 本端点会对目标账号**发起一次真实登录**并写它的行，错位代价高于让调用方刷新一次
     if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
@@ -268,7 +269,7 @@ def api_account_add():
     """
     m = _appmod()
     # 操作级锁：手机号唯一/每人限 1/自动注册检查与写入原子（防并发重复添加与覆盖丢失）
-    data = m._json_body()
+    data = _http._json_body()
     err, clean = _accounts_data.validate_account(data, require_password=True)
     if err:
         return jsonify({"error": err}), 400
@@ -278,7 +279,7 @@ def api_account_add():
     # 添加不再消耗易班网络验证。权威校验仍在下方写锁内。
     with _locks._file_lock:
         accounts_pre = _accounts_data.load_accounts()
-        max_accounts_pre = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+        max_accounts_pre = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         email_screen = str(data.get("email", "")).strip().lower()
         # 容量兜底：账号配额 = 活跃账号数（含裸账号）；
         # 本次将新增 1 个非删除账号——归属邮箱已持有活跃账号的重复添加
@@ -341,7 +342,7 @@ def api_account_add():
         accounts = _accounts_data.load_accounts()
         # 容量兜底：账号配额（活跃账号数含裸账号，防无限增长）；
         # 归属邮箱已持有活跃账号的重复添加不新增，不计增量（保持原错误优先级）
-        max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+        max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         holds_live = email and any(a.get("owner") == email and not a["deleted"] for a in accounts)
         if m._accounts_at_capacity(0 if holds_live else 1):
             m._notify_capacity_once("accounts", max_accounts, "账号数量")
@@ -350,9 +351,9 @@ def api_account_add():
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
 
         if email:
-            if len(email.split("@")[0]) > m.EMAIL_USER_MAX:
-                return jsonify({"error": f"邮箱用户名部分过长（最多 {m.EMAIL_USER_MAX} 字符）"}), 400
-            if not m.EMAIL_RE.match(email) or len(email) > 64:
+            if len(email.split("@")[0]) > _limits.EMAIL_USER_MAX:
+                return jsonify({"error": f"邮箱用户名部分过长（最多 {_limits.EMAIL_USER_MAX} 字符）"}), 400
+            if not _limits.EMAIL_RE.match(email) or len(email) > 64:
                 return jsonify({"error": "用户邮箱格式不正确"}), 400
             # 邮箱域名审查：与开放注册同规则，防自动注册路径绕过
             dom_err = m.email_domain_error(email)
@@ -369,7 +370,7 @@ def api_account_add():
                 if initial_hash is None:
                     return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
                 # 自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
-                max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS)
+                max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS)
                 if m._users_at_capacity():
                     m._notify_capacity_once("users", max_users, "注册人数")
                     return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
@@ -457,7 +458,7 @@ def api_account_update(idx):
         # 软删除账号禁止编辑（防编辑流程绕过软删除，恢复需走 restore 接口）
         if old.get("deleted"):
             return jsonify({"error": "账号已删除，请先恢复"}), 400
-        data = m._json_body()
+        data = _http._json_body()
         # 乐观锁：请求携带编辑打开时的账号快照（JSON 字符串），与库内当前值
         # 不一致 → db 返回 False → 409，防多管理员/多标签页并发编辑互相覆盖
         snapshot = None
@@ -667,7 +668,7 @@ def api_accounts_batch():
     # 参数校验与高危门禁刻意留在 _file_lock 之外（与三处高危删除同口径）：
     # scrypt 口令校验单次数百毫秒，放进全局文件锁里会让一次鉴权阻塞全进程的
     # 账号读写（该锁同时护着 JSON 与 SQLite 侧的读-改-写）。
-    data = m._json_body()
+    data = _http._json_body()
     action = data.get("action")
     ids = data.get("ids") or []
     if action not in ("approve", "reject", "purge", "restore", "delete"):
@@ -676,8 +677,8 @@ def api_accounts_batch():
         return jsonify({"error": "请选择要操作的账号"}), 400
     # 单次批量上限：没有它，一个请求即可清空全部账号；与
     # /api/users/deleted/purge 共用 BATCH_OP_LIMIT
-    if len(ids) > m.BATCH_OP_LIMIT:
-        return jsonify({"error": f"单次批量操作最多 {m.BATCH_OP_LIMIT} 个账号"}), 400
+    if len(ids) > _limits.BATCH_OP_LIMIT:
+        return jsonify({"error": f"单次批量操作最多 {_limits.BATCH_OP_LIMIT} 个账号"}), 400
     # 理由清洗：与单条拒绝同一净化口径（覆盖全部分隔符——理由会落库、进审计详情、
     # 进 sign.log，只压 \r\n 时 U+2028/U+0085 等能一路穿过去伪造行）
     reason = _notify_mail._nl_safe(str(data.get("reason", "")).strip()[:100])
@@ -898,7 +899,7 @@ def api_account_delete(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if _accounts_data._stale_idx_guard(acc, m._json_body(), fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, _http._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         db.set_account_deleted(
             acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -933,7 +934,7 @@ def api_account_restore(idx):
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[idx]
-        if _accounts_data._stale_idx_guard(acc, m._json_body(), fail_closed=True):
+        if _accounts_data._stale_idx_guard(acc, _http._json_body(), fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
@@ -979,7 +980,7 @@ def api_account_purge(idx):
     m = _appmod()
     # 门禁放在 _file_lock 之外（同 api_accounts_batch 与三处高危删除）：
     # 口令校验耗时数百毫秒，放进全局锁里会凭一次尝试卡住全进程账号读写
-    data = m._json_body()
+    data = _http._json_body()
     gate = _high_risk_gate()(
         data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
         irreversible=True)
@@ -1022,7 +1023,7 @@ def api_account_review(idx):
         accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
-        data = m._json_body()
+        data = _http._json_body()
         action = data.get("action")
         acc = accounts[idx]
         if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
@@ -1088,12 +1089,11 @@ def api_account_review(idx):
 
 def api_account_move(idx):
     """上移/下移账号：调整顺序模式下的打卡顺序。body: {"dir": -1|1}"""
-    m = _appmod()
     with _locks._file_lock:
         accounts = _accounts_data.load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
-        data = m._json_body()
+        data = _http._json_body()
         acc = accounts[idx]
         if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409

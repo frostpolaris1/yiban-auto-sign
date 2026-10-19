@@ -45,6 +45,8 @@ from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import notify_mail as _notify_mail
@@ -381,7 +383,7 @@ def api_my_time_pref_save():
             if has_submitted:
                 return jsonify({"error": "账号审核通过后即可选择签到时间"}), 400
             return jsonify({"error": "请先提交易班账号"}), 400
-        data = m._json_body()
+        data = _http._json_body()
         slot = data.get("slot_min")
         if slot is None:
             db.clear_time_pref(phone)
@@ -412,16 +414,16 @@ def api_my_time_pref_save():
         # 超出后冷却随超限次数递增（30s→60s→120s→…封顶 300s），持续高频才被压制。
         # 按被选账号计价（多管理员共享全局生效；新号豁免）。
         # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC 基础值，默认 30；0=关闭）
-        base_cd = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", m.TIME_PREF_COOLDOWN_SEC)
+        base_cd = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", _limits.TIME_PREF_COOLDOWN_SEC)
         if base_cd > 0:
             now_ts = clock.now()
-            since = (now_ts - timedelta(seconds=m.TIME_PREF_COOLDOWN_WINDOW)
+            since = (now_ts - timedelta(seconds=_limits.TIME_PREF_COOLDOWN_WINDOW)
                      ).strftime("%Y-%m-%d %H:%M:%S")
             count = db.time_pref_set_count_since(phone, since)
-            if count >= m.TIME_PREF_COOLDOWN_FREE:
+            if count >= _limits.TIME_PREF_COOLDOWN_FREE:
                 # 弹性冷却 = 基础 × 2^(超限次数)，封顶
-                cooldown = min(base_cd * (2 ** (count - m.TIME_PREF_COOLDOWN_FREE + 1)),
-                               m.TIME_PREF_COOLDOWN_MAX)
+                cooldown = min(base_cd * (2 ** (count - _limits.TIME_PREF_COOLDOWN_FREE + 1)),
+                               _limits.TIME_PREF_COOLDOWN_MAX)
                 last_ts = db.last_time_pref_set_at(phone)
                 if last_ts:
                     try:
@@ -501,7 +503,7 @@ def api_my_account_add():
     操作级锁：单账号限制与手机号唯一检查 + 写入原子（防并发双提交互相覆盖）。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     # 用户面不收设备型号/识别码：这两列由签到前自动补全写、或由管理面手工填
     # （用户 2026-10-16 裁决）。手工构造请求同样写不进。
     err, clean = _accounts_data.validate_account(data, require_password=True, allow_device_fields=False)
@@ -513,7 +515,7 @@ def api_my_account_add():
     email_pre = str(session.get("username", "")).lower()
     with _locks._file_lock:
         accounts_pre = _accounts_data.load_accounts()
-        max_accounts_pre = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+        max_accounts_pre = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         # 容量兜底：账号配额 = 活跃账号数（含裸账号）；
         # 提交者已持有未删除账号时不新增（随后 400 拦截），不计增量，保持原错误优先级
         holds_live = any(a.get("owner") == email_pre and not a["deleted"] for a in accounts_pre)
@@ -533,10 +535,10 @@ def api_my_account_add():
             # 清理分支），锁外并发插入会让迭代中的 dict 变尺寸 → RuntimeError → 500。
             # locks.py 不变量：调用方持锁、trim 自身不取锁。
             with _locks._rate_lock:
-                _security._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + _security._IP_STORE_MAX_AGE)
+                _security._ip_store_trim(dupcheck_limits(), _limits.DUPCHECK_WINDOW + _security._IP_STORE_MAX_AGE)
             _dup_cnt, _dup_start, dup_allowed = _security._bump_window_count(
                 dupcheck_limits(), email_pre[:64], time.time(),
-                m.DUPCHECK_WINDOW, limit=m.DUPCHECK_MAX,
+                _limits.DUPCHECK_WINDOW, limit=_limits.DUPCHECK_MAX,
             )
             if not dup_allowed:
                 read_audit_denied_trace()("my_account_add_dup_denied")
@@ -590,7 +592,7 @@ def api_my_account_add():
         accounts = _accounts_data.load_accounts()
         # 容量兜底：账号配额（活跃账号数含裸账号；用户提交同样受限）；
         # 提交者已持有未删除账号时不新增，不计增量（保持原错误优先级）
-        max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+        max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         email = session.get("username", "").lower()
         # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
         has_live = any(a.get("owner") == email and not a["deleted"] for a in accounts)
@@ -794,7 +796,7 @@ def api_my_account_update(idx):
             return jsonify({"error": "账号不存在"}), 404
         real_idx = indices[idx]
         old = accounts[real_idx]
-        data = m._json_body()
+        data = _http._json_body()
         # 防错位（与 /api/accounts/* 同口径）：本人视图的 idx 在渲染后可能因
         # 管理员删除/清除而漂移，不校验会静默改到本人另一行。
         # 比对基准优先取编辑表单的乐观锁快照 phone——本端点允许"填写完整新号码"
@@ -898,7 +900,7 @@ def api_my_account_delete(idx):
             return jsonify({"error": "该账号已在待删除状态，可在本页撤销恢复"}), 400
         # 防错位（同 /api/accounts/*）：软删虽可逆（7 天宽限 + 本页可自助恢复），
         # 但视图漂移时删错本人另一行的代价远大于让用户刷新一次
-        if _accounts_data._stale_idx_guard(removed, m._json_body()):
+        if _accounts_data._stale_idx_guard(removed, _http._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         db.set_account_deleted(
             removed["id"],
@@ -955,7 +957,7 @@ def api_my_account_restore(idx):
             return jsonify(
                 {"error": "你已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
-        if _accounts_data._stale_idx_guard(acc, m._json_body()):
+        if _accounts_data._stale_idx_guard(acc, _http._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         db.set_account_deleted(acc["id"], 0)
         db.audit(
@@ -992,7 +994,7 @@ def api_my_account_pause(idx):
         acc = accounts[indices[idx]]
         if acc.get("deleted"):
             return jsonify({"error": "账号已删除，请先恢复"}), 400
-        data = m._json_body()
+        data = _http._json_body()
         # 防错位（同 /api/accounts/*）：视图漂移时不得改到本人另一行
         if _accounts_data._stale_idx_guard(acc, data):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
@@ -1007,20 +1009,20 @@ def api_my_account_pause(idx):
         # 按用户计价（多管理员共享账号各自独立，可接受）。时长可配
         # （YIBAN_PAUSE_COOLDOWN_SEC，默认 30；0=关闭）。不暴露时长（信息分层）。
         if paused:
-            base_cd = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", m.PAUSE_COOLDOWN_SEC)
+            base_cd = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", _limits.PAUSE_COOLDOWN_SEC)
             if base_cd > 0:
                 # 弹性冷却：60s 窗口内前 PAUSE_COOLDOWN_FREE 次完全自由，
                 # 超出后冷却 = 基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX。
                 now_ts = clock.now()
-                since = (now_ts - timedelta(seconds=m.PAUSE_COOLDOWN_WINDOW)
+                since = (now_ts - timedelta(seconds=_limits.PAUSE_COOLDOWN_WINDOW)
                          ).strftime("%Y-%m-%d %H:%M:%S")
                 pause_count = db.pause_count_since(
                     session.get("username", "") or "", since
                 )
-                if pause_count >= m.PAUSE_COOLDOWN_FREE:
+                if pause_count >= _limits.PAUSE_COOLDOWN_FREE:
                     cooldown = min(
-                        base_cd * (2 ** (pause_count - m.PAUSE_COOLDOWN_FREE + 1)),
-                        m.PAUSE_COOLDOWN_MAX,
+                        base_cd * (2 ** (pause_count - _limits.PAUSE_COOLDOWN_FREE + 1)),
+                        _limits.PAUSE_COOLDOWN_MAX,
                     )
                     last_ts = db.last_pause_at(session.get("username", "") or "")
                     if last_ts:
@@ -1064,7 +1066,7 @@ def api_my_account_device_refresh(idx):
     if not 0 <= idx < len(indices):
         return jsonify({"error": "账号不存在"}), 404
     acc = accounts[indices[idx]]
-    data = m._json_body()
+    data = _http._json_body()
     # 防错位：本人视图下标经归属收窄，但渲染后仍可能漂移（管理员删行/本人恢复）。
     # fail_closed=True：本端点会对目标账号**发起一次真实登录**并写它的行，
     # 未携带 phone 就等于没人证明"idx 还指向视图里那一行"（新写口，无既有前端依赖默认值）

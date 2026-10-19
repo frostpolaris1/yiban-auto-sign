@@ -453,7 +453,7 @@ class CapacitySettingsTest(_Base_B19):
     def test_delay_requires_confirm_password(self):
         """随机延迟属 A 档：缺口令/错口令都由设置路由统一的 403 拒绝（不落盘）。
 
-        留门口径（见 web/app.py 的 MASTER_ONLY_KEYS 逐键复核）：在不当时间改它**能静默搞炸
+        留门口径（见 web/services/env_io.py 的 MASTER_ONLY_KEYS 逐键复核）：在不当时间改它**能静默搞炸
         签到序列**——大延迟叠加窄窗口会把后段账号整体推出窗口，且不会当场报错。
         """
         c, h = self._master()
