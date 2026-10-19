@@ -292,6 +292,7 @@ fast	tests/test_v3_same_day_requeue.py
 fast	tests/test_verify_jobs.py
 fast	tests/test_vue_build_reproducible.py
 fast	tests/test_waf_failure_tier.py
+fast	tests/test_wall_direct_reads.py
 fast	tests/test_web_accounts_page.py
 fast	tests/test_web_api_security.py
 fast	tests/test_web_audit_page.py
