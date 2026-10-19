@@ -20,7 +20,7 @@
   (SELECT ...) RETURNING` 在本仓 SQLite 的写者串行语义下天然原子，无需显式 `SKIP LOCKED`
   语法；若迁到 PG/MySQL 这是等价替换点（MySQL 8 无 `UPDATE...RETURNING`，须另写
   `UPDATE...LIMIT` + 回查）。
-- 分片领取围栏：Rendezvous Hashing（Thaler & Ravishankar，见 `yiban/engine/hrw.py`）。
+- 分片领取围栏：Rendezvous Hashing（Thaler & Ravishankar，见 `yiban/core/hrw.py`）。
   `vshard IN (...)` 让执行体只碰自己名下分片，是「领取零竞争」的来源。
 
 **功能**

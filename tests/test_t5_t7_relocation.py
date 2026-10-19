@@ -37,16 +37,12 @@
 文件（T5 65 ＋ T7 31，重叠 15）＋ 1 个 `.sh` 文件。
 
 **豁免（按文件给，不是跳过；未登记的文件命中即红并点名 `文件:行`）**：
-  七个旧壳本体（`yiban/config_loader.py`、`yiban/cred_state.py`、`yiban/state_gc.py`、
-    `yiban/infra/env_io.py`、`yiban/infra/account_crypto.py`、`yiban/mail/**`、
-    `yiban/notify/**`）——它们**按设计必须写出旧坐标**（`sys.modules` 替换与子模块登记）。
-    `145-E` 删它们，本门随之收窄。
-  `tests/test_batch_b_relocation.py`、`tests/test_notifier_relocation.py`——两件守卫的职责
-    就是验证旧坐标是壳、且与实现**同一对象**，故必须写出旧坐标配对表。
   本文件自身——`OLD_MODULES` 是禁字面量，夹具样本用于自证本门有牙（与 T3 门的
     自豁免同形）。
   `test_exempt_files_still_exist_and_are_hit` 另钉"每个豁免文件**必须仍命中本门**"，
   防"顺手把文件加进豁免面来让门变绿"（AGENTS 第 14 条反面处置③）。
+  `145-E` 已把七个旧壳删净，故 `SHELL_RELS`／`SHELL_DIRS` 两条豁免随之删除；
+  全仓总门（`tests/test_zero_old_coordinates.py`）另钉"壳本体不存在"。
 
 **日志通道名豁免（不是坐标）**：`yiban.config_loader` 与 `yiban.cred_state` 同时是
     `logging.getLogger(...)` 的**通道名**（实现在 `yiban/adapters/config/loader.py` 与
@@ -91,21 +87,14 @@ LOGGER_CHANNELS = ("yiban.config_loader", "yiban.cred_state")
 #: 以日志通道名为首个实参的调用名。
 LOGGER_CALLS = frozenset(("getLogger", "assertLogs", "assertNoLogs"))
 
-#: 七个旧壳本体：按设计必须写出旧坐标，本批不改（`145-E` 删）。
-SHELL_RELS = (
-    "yiban/config_loader.py",
-    "yiban/cred_state.py",
-    "yiban/state_gc.py",
-    "yiban/infra/env_io.py",
-    "yiban/infra/account_crypto.py",
-)
-SHELL_DIRS = ("yiban/mail/", "yiban/notify/")
-
-#: 职责就是验证旧坐标是壳、或夹具自证本门有牙的文件：必须写出旧坐标。
+#: 职责就是夹具自证本门有牙的文件：必须写出旧坐标。
+#: `145-E` 删了旧壳与两件"壳＝实现同一对象"守卫（`test_batch_b_relocation.py`、
+#: `test_notifier_relocation.py`），故它们从本表移除。
+#: `tests/test_zero_old_coordinates.py` 是 `145-E` 立的**全仓总门**，它的
+#: `OLD_MODULES` 是 20 条禁字面量（含本族的七条），故必须登记。
 FACE_EXEMPT = frozenset((
-    "tests/test_batch_b_relocation.py",
-    "tests/test_notifier_relocation.py",
     "tests/test_t5_t7_relocation.py",
+    "tests/test_zero_old_coordinates.py",
 ))
 
 #: 自有面目录（不含面外 `frontend/**` 与 `web/static/**`：归用户独立完成）。
@@ -344,12 +333,11 @@ def t57_own_face_files(root):
 
 
 def _is_exempt(rel):
-    """该文件是否按设计必须写出旧坐标（壳本体或旧坐标配对守卫／本门自身）。"""
-    if rel in FACE_EXEMPT:
-        return True
-    if rel in SHELL_RELS:
-        return True
-    return any(rel.startswith(d) for d in SHELL_DIRS)
+    """该文件是否按职责必须写出旧坐标（旧坐标门自身）。
+
+    `145-E` 之后只剩本门自身：旧壳已删，`SHELL_RELS`／`SHELL_DIRS` 两条豁免已随之移除。
+    """
+    return rel in FACE_EXEMPT
 
 
 class T57OwnFaceTest(unittest.TestCase):
@@ -465,9 +453,6 @@ class T57ExemptionAnchorTest(unittest.TestCase):
                 self.assertTrue(os.path.isfile(os.path.join(BASE, rel)), f"豁免文件 {rel} 不在了")
                 self.assertTrue(t57_old_coordinate_hits(os.path.join(BASE, rel)),
                                 f"{rel} 已不再含旧坐标：豁免失去理由，须从豁免面移除")
-        for rel in SHELL_RELS:
-            with self.subTest(rel=rel):
-                self.assertTrue(os.path.isfile(os.path.join(BASE, rel)), f"壳 {rel} 不在了")
 
 
 class T57GateHasTeethTest(unittest.TestCase):

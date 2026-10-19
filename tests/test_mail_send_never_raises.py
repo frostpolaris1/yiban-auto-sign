@@ -7,7 +7,7 @@
     失败）；运输级失败（连接/SMTP 异常）的主备 failover 行为逐字不变。
 对应实现：`yiban/adapters/notifier/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
     Exception 收口分支）。
-关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/mail/__init__.py` 模块
+关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/adapters/notifier/mail/__init__.py` 模块
     头）此前对 UnicodeEncodeError 不成立——排版/构造在 try 外，一次坏字符会沿
     `send_user`/`send_notification` 抛回**持 `_file_lock` 同步发信**的路由（锁内 500，
     且把排在其后的审计留痕一起带走；`ba-p05-01` 起锁内发信改走 `run_after_file_lock`，

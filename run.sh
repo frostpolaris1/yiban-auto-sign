@@ -73,7 +73,7 @@ if [ -r "$ENV_PATH" ]; then
         # 兼容 CRLF 编辑产生的行尾 CR
         value=${value%$'\r'}
         # 兼容 UTF-8 BOM 开头的 .env（Windows 记事本保存常见）：否则首行键名带 BOM
-        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 yiban/infra/env_io.py）
+        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 yiban/adapters/config/env_io.py）
         # 对同一文件读出不同配置（2026-09-08）
         key="${key#$'\xEF\xBB\xBF'}"
         # key/value 首尾空白去除（与 env_io.parse_env_file 的两侧 strip 同口径；
@@ -287,13 +287,13 @@ export YIBAN_DB_FILE="$DB_FILE"
 # 缺省值必须与 yiban/window.DEFAULT_RETRY_HM 一致（signin 的告警抑制按该值判断
 # "是否还有下一轮兜底"；tests/test_retry_slot_time.py 会比对两处字面量）。
 SECOND_HHMM="${YIBAN_SECOND_RUN_TIME:-07:12}"
-# 导出给子进程：signin 从环境读同一键（见 yiban.window.retry_hm），
+# 导出给子进程：signin 从环境读同一键（见 yiban.core.window.retry_hm），
 # 使"改了补签时刻"在所有取用点同时生效
 export YIBAN_SECOND_RUN_TIME="$SECOND_HHMM"
 # 逃生开关：显式置 0 可关闭进程内补签轮（仅调试/特殊运维场景用）
 SECOND_ROUND_ENABLED="${YIBAN_HOST_SECOND_ROUND:-1}"
 
-# 开关真值判定。字面量口径的**单一事实源**在 yiban/infra/env_io.py 的
+# 开关真值判定。字面量口径的**单一事实源**在 yiban/adapters/config/env_io.py 的
 # ENV_TRUTHY_LITERALS（Python 侧 parse_env_flag 用它）；bash 无法 import，此处逐字
 # 复刻同一份（1/true/yes/on，大小写不敏感、两侧空白忽略）。两边结论一致性由
 # tests/test_pause_flag_truthiness_e2e.py 真跑本函数与 Python 逐值比对钉住。
