@@ -39,8 +39,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
 sys.path.insert(0, os.path.join(BASE, "tests"))
 
+from yiban.adapters.config import env_io  # noqa: E402
 from yiban.adapters.statefiles import state_io  # noqa: E402
-from yiban.infra import env_io  # noqa: E402
 
 
 class ResolvePathTest(unittest.TestCase):

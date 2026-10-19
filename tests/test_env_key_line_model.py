@@ -44,7 +44,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.infra import account_crypto, env_io
+from yiban.adapters.config import account_crypto, env_io
 from yiban.store import audit_chain, tracking
 
 KEY_A = "1" * 64

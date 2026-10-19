@@ -60,7 +60,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 # 路径键的唯一解析器；repo root 由 scripts/db.py 壳放上 sys.path
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 #: "无法定论"的退出码。取自三态→退出码的**唯一映射**（巡检面显示的三态与这里的
 #: 退出码是同一份：页面说"无法定论"就必须是 2，不许各写一份数）。

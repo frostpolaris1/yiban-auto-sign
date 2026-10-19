@@ -162,7 +162,7 @@ class ProbeSigninTest(unittest.TestCase):
         并存成影子行（解析器后写覆盖先写，"自动关闭"可能被旧行悄悄顶掉）。
         单一行模型的 key_line_pattern 认两种写法。
         """
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         env_path = os.path.join(self._state_dir, "probe-shadow.env")
         with open(env_path, "w", encoding="utf-8") as f:
             f.write("YIBAN_PROBE_ENABLE = 1\n")

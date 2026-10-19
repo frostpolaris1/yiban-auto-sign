@@ -162,7 +162,7 @@ class BackupDbPathTest(unittest.TestCase):
     def _python_side_choice(self):
         """Python 侧唯一解析器对同一输入的答案（子进程，与 web/引擎同形态）。"""
         code = ("import sys; sys.path.insert(0, sys.argv[1]);"
-                "from yiban.infra import env_io;"
+                "from yiban.adapters.config import env_io;"
                 "print(env_io.resolve_path('YIBAN_DB_FILE', 'data/yiban.db'))")
         r = subprocess.run([sys.executable, "-c", code, BASE], capture_output=True,
                            env=self.env, cwd=self.app, timeout=120, text=True)

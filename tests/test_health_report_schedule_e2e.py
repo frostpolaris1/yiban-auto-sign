@@ -43,7 +43,7 @@ from web.services.env_io import (  # noqa: E402
     health_report_time_str,
     health_report_weekday_setting,
 )
-from yiban import config_loader  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 
 TIME_KEY = "YIBAN_HEALTH_REPORT_TIME"
 WEEKDAY_KEY = "YIBAN_HEALTH_REPORT_WEEKDAY"

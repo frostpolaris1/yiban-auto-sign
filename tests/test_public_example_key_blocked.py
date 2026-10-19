@@ -38,7 +38,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
 
 PUBLISHED_HEX = "0123456789abcdef" * 4          # 仓库历史模板内置示例钥（本文件钉它被拦）
 TEST_KEY = "a" * 64                              # 形状合法但非公开串：三条弱判据全过、不拦

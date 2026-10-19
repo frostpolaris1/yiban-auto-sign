@@ -50,7 +50,7 @@ import unittest
 
 from _frontend_src import frontend_source
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
