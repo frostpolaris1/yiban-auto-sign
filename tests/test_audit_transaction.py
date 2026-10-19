@@ -462,7 +462,7 @@ class RequestScopeTest(_Fixture):
             rid = db.new_request_scope_id()
             self.assertRegex(rid, r"^web-[0-9a-f]{8}-[0-9a-f]{8}$")
             self.assertIsNone(re.search(r"\d{11}", rid), rid)
-        from yiban.store import audit_chain
+        from yiban.adapters.persistence import audit_chain
         old = dict(audit_chain._PROCESS_SCOPE_SEEN)
         try:
             for day in range(1, 29):

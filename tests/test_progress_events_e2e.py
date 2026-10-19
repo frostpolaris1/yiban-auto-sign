@@ -40,10 +40,10 @@ from unittest import mock
 import db  # pyproject.toml 的 pythonpath 把 scripts/ 加进 sys.path
 
 from yiban import egress
+from yiban.adapters.persistence import migrations, run_events
 from yiban.app import runner as runner_mod
 from yiban.core import clock, hrw
 from yiban.engine import executor_v3, token_bucket
-from yiban.store import migrations, run_events
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二：周末门不会拦下用例
@@ -247,7 +247,7 @@ class _E2EBase(unittest.TestCase):
         conn.commit()
 
     def _seed_v(self, v=8, day=DAY):
-        from yiban.store import clock_meta
+        from yiban.adapters.persistence import clock_meta
         clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + day, v)
 
     def _task_state(self, phone, day=DAY):

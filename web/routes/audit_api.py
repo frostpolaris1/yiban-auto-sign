@@ -41,7 +41,7 @@ from flask import jsonify, request
 
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
-from yiban.store import audit_chain as _audit_chain
+from yiban.adapters.persistence import audit_chain as _audit_chain
 
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200

@@ -226,7 +226,7 @@ class ThroughputTest(_HealthBase):
 
     def _seed_tasks(self):
         """造当日 sign_tasks 行：worker-0 名下了结 3 个、在飞 1 个、失败 1 个。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         day = clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         owner = egress.worker_owner(0, SECRET_HOST)
@@ -273,7 +273,7 @@ class PrivacyTest(_HealthBase):
             self.assertNotIn(f'"{key}"', text, f"响应不得携带 {key} 字段")
 
     def _seed_owner_with_secret(self):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         day = clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         conn = store_db.get_conn()

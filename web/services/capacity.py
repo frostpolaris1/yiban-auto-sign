@@ -45,9 +45,9 @@ from web.services.accounts_data import load_accounts_raw
 from web.services.locks import run_after_file_lock
 from yiban.adapters.config.env_io import parse_env_flag
 from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
 from yiban.core import window as yb_window
 from yiban.engine.schedule import capacity_of
-from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

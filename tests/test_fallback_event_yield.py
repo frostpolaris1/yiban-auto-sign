@@ -30,8 +30,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from yiban.adapters.persistence import db, queue_store
 from yiban.core import status as yiban_status  # 分档词表唯一家（128-P1）
-from yiban.store import db, queue_store
 
 #: 测试业务日与三方身份：全量轮执行体（worker）与兜底（fallback）
 DAY = "2026-09-02"

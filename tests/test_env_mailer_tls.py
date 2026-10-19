@@ -33,7 +33,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban.store.audit_chain import actor_tag  # noqa: E402
+from yiban.adapters.persistence.audit_chain import actor_tag  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"

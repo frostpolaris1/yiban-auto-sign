@@ -49,11 +49,11 @@ import signin  # noqa: E402
 
 from yiban import client as yiban_client  # noqa: E402
 from yiban import egress  # noqa: E402
+from yiban.adapters.persistence import clock_meta, queue_store  # noqa: E402
 from yiban.adapters.statefiles import state_io  # noqa: E402
 from yiban.core import clock  # noqa: E402
 from yiban.core import status as yiban_status  # noqa: E402
 from yiban.engine import executor_v3, token_bucket  # noqa: E402
-from yiban.store import clock_meta, queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
 PHONE = "13800000001"
