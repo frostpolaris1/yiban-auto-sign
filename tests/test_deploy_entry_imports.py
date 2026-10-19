@@ -170,10 +170,15 @@ RUNTIME_EXTRA_PATHS = (
     "docker/Dockerfile",
     "docker-compose.yml",
     "web/deploy/yiban-web.service",
+    # nginx 两处口径对齐（审查残留二）：`web/deploy/nginx.conf.example` 已随目录入面，
+    # 同类 `docker/nginx.conf` 也必须入面，否则"为什么一个扫一个不扫"是静默的。
+    # 二者都不含 python 启动点，入面是零成本的一致性。
+    "docker/nginx.conf",
 )
 RUNTIME_EXTRA_DIRS = (
     "deploy",
-    "docker/cron.d",
+    # `docker/cron.d` 曾列在此处——**该目录不存在**（真实 cron 在 `deploy/prod/cron.d/`，
+    # 已被 `deploy` 整目录覆盖）。审查残留一：死条目必须删，不是留着"以防万一"。
     "web/deploy",
 )
 
@@ -285,6 +290,15 @@ def old_coordinate_hits(path):
         return hits
     tree = ast.parse(text)
     docs = _docstring_const_ids(tree)
+    # 属性链的根：`yiban` 与 `import yiban as X` 绑定的每个别名
+    # （审查 delta 抓出的轻阻塞：原判据写死 id=="yiban"，`import yiban as yb; yb.cli`
+    #  既未覆盖也未登记。T3／T5+T7／T6 三个门都认别名根，T8 是唯一不认的。）
+    roots = {"yiban"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "yiban" and a.asname:
+                    roots.add(a.asname)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
@@ -303,9 +317,9 @@ def old_coordinate_hits(path):
                     if a.name == "cli":
                         hits.append((node.lineno, "from yiban import cli"))
         elif (isinstance(node, ast.Attribute) and node.attr == "cli"
-              and isinstance(node.value, ast.Name) and node.value.id == "yiban"):
-            # 属性链 yiban.cli[.x]
-            hits.append((node.lineno, "属性链 yiban.cli"))
+              and isinstance(node.value, ast.Name) and node.value.id in roots):
+            # 属性链 yiban.cli[.x] ／ <别名>.cli[.x]
+            hits.append((node.lineno, "属性链 …cli"))
         if isinstance(node, ast.Constant) and node.value == OLD_CLI_MODULE \
                 and id(node) not in docs:
             hits.append((node.lineno, "非 docstring 字符串常量 " + OLD_CLI_MODULE))
@@ -332,8 +346,23 @@ class OldCliCoordinateGateTest(unittest.TestCase):
             bad, [],
             "运行期载体仍以旧坐标起进程（转发壳退役后生产执行体起不来）：\n" + "\n".join(bad))
 
+    def test_face_entries_exist(self):
+        """扫描面的每条登记都必须真实存在（§29：门看的东西 ≠ 实际改的东西，且不重合是静默的）。
+
+        审查 delta 抓到 `docker/cron.d` 是死条目：`os.path.exists` 与 `os.walk` 都会
+        静默跳过不存在的路径 ⇒ 某天真正想扫的目录被删或改名，门照绿。
+        """
+        missing = []
+        for rel in RUNTIME_EXTRA_PATHS + RUNTIME_SHELL_NAMES:
+            if not os.path.exists(os.path.join(BASE, rel)):
+                missing.append(rel)
+        for rel in RUNTIME_EXTRA_DIRS + RUNTIME_PY_DIRS:
+            if not os.path.isdir(os.path.join(BASE, rel)):
+                missing.append(rel + "/")
+        self.assertEqual(missing, [],
+                         f"扫描面登记了不存在的路径（死条目会静默跳过）：{missing}")
+
     def test_scanner_has_teeth(self):
-        """突变验证：塞回一处 ⇒ 红；注释/docstring 提及 ⇒ 不误红。"""
         with tempfile.TemporaryDirectory(prefix="oldcli-gate-") as tmp:
             py = os.path.join(tmp, "fake_launcher.py")
             with open(py, "w", encoding="utf-8") as f:
@@ -392,6 +421,7 @@ class OldCliCoordinateGateTest(unittest.TestCase):
                 ("fromimp.py", "from yiban import cli\n", 1),
                 ("subimp.py", "from yiban.cli import main\n", 1),
                 ("attr.py", "import yiban\nyiban.cli.main([])\n", 1),
+                ("aliasroot.py", "import yiban as yb\nyb.cli.main([])\n", 1),
                 ("new.py", "from yiban.entry import cli\ncli.main([])\n", 0),
                 ("other.py", "from yiban import client\n", 0),
             ):
