@@ -829,7 +829,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     def test_cred_paused_phones_and_clear_fuse_pause(self):
         import json
 
-        from yiban import cred_state
+        from yiban.adapters.statefiles import cred_state
         p1, p2 = "13800138000", "13900139000"
         with io.open(cred_state.path(), "w", encoding="utf-8") as f:
             json.dump({p1: {"fail_days": 3, "paused_since": "2026-09-01 00:00:00"},

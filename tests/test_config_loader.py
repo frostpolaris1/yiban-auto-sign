@@ -25,7 +25,7 @@ import os
 import tempfile
 import unittest
 
-from yiban import config_loader as CL
+from yiban.adapters.config import loader as CL
 
 # 合成名册：故意与真实 config/registry.json 解耦，让行为断言不受名册内容漂移影响。
 # 真实名册的**结构合法性**由 scripts/check-config-registry.py 判（见 gate 自测）。

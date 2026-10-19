@@ -71,7 +71,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from yiban import config_loader as CL  # noqa: E402  （引导块必须在 import 之前）
+from yiban.adapters.config import loader as CL  # noqa: E402  （引导块必须在 import 之前）
 
 #: 本门不扫自己：判据文本里必然出现键名形状的示例。
 SELF = os.path.join("scripts", "check-config-registry.py")

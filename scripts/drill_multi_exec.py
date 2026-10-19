@@ -668,9 +668,9 @@ def seed(tmp: str, accounts: int, executors: int, manifest: str) -> dict:
 
     import db  # scripts/db.py 兼容壳
 
+    from yiban.adapters.config import env_io
     from yiban.engine import executor_v3
     from yiban.engine import schedule as sched
-    from yiban.infra import env_io
 
     # `.env` 由**持锁的写入口**建档与写入（`env_io.write_env_keys`）：裸 `open(...,"w")`
     # 会绕开 `env_write_lock`，被 `test_env_writers_take_lock` 的 grep 格判红。

@@ -43,10 +43,10 @@ import unittest.mock as mock
 
 import signin
 
+from yiban.adapters.notifier.mail import config as mail_config
+from yiban.adapters.notifier.notify import config as notify_config
 from yiban.core.masking import sanitize_text, sanitize_url
 from yiban.engine.accounts import Account
-from yiban.mail import config as mail_config
-from yiban.notify import config as notify_config
 
 # 口令样本刻意覆盖：单引号、括号、双引号、空格
 PASSWORDS = ["p@ss'w0rd)1", "abc'def'ghi", 'x"y"z', "a b c'd", "plain-123"]

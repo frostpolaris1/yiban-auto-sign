@@ -36,17 +36,17 @@ import pytest
 
 import web.security as web_security
 from web.routes import auth as web_routes_auth
-from yiban.notify import ledger as notify_ledger
-from yiban.notify import transport as _notify_K2
+from yiban.adapters.notifier.notify import ledger as notify_ledger
+from yiban.adapters.notifier.notify import transport as _notify_K2
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
 # 打桩必须打在**真正持有并调用该名字**的模块上，否则会静默失效。
-from yiban import notify  # noqa: E402
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import config as notify_config  # noqa: E402
-from yiban.notify import transport as notify_transport  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier import notify  # noqa: E402
+from yiban.adapters.notifier.notify import config as notify_config  # noqa: E402
+from yiban.adapters.notifier.notify import transport as notify_transport  # noqa: E402
 
 KEY = "f" * 64
 SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"

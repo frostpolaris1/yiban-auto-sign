@@ -108,7 +108,7 @@ class _JsonEnvFixture(unittest.TestCase):
         return env
 
     def broken_accounts_env(self):
-        code = ("import json,sys;from yiban.infra import account_crypto;"
+        code = ("import json,sys;from yiban.adapters.config import account_crypto;"
                 "print(json.dumps([{'phone': sys.argv[1],"
                 "'password': account_crypto.encrypt_password("
                 "sys.argv[3], bytes.fromhex(sys.argv[2]), sys.argv[1])}]))")

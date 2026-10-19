@@ -18,8 +18,8 @@ from unittest import mock
 
 import requests
 
-from yiban import state_gc
 from yiban.adapters import protocol_yiban as yiban_protocol
+from yiban.adapters.statefiles import state_gc
 from yiban.infra import wire_dump
 
 #: 真实登录体形态里的手机号与密码密文（本文件的红线对象）

@@ -505,7 +505,7 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
 > OLD_KEY='<旧钥64hex>' NEW_KEY='<新钥64hex>' YIBAN_ENV_FILE=.env \
 > "$PY" - <<'PY'
 > import json, os, sqlite3
-> from yiban.infra import account_crypto as ac, env_io
+> from yiban.adapters.config import account_crypto as ac, env_io
 > old, new = bytes.fromhex(os.environ["OLD_KEY"]), bytes.fromhex(os.environ["NEW_KEY"])
 > conn = sqlite3.connect(os.environ.get("YIBAN_DB_FILE", "data/yiban.db"))
 > for pid, pwd, code in conn.execute("SELECT phone, password, phone_code FROM accounts"):

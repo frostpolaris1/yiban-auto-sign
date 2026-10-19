@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 
 def main():
