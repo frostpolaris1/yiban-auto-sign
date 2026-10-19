@@ -25,6 +25,7 @@ import os
 import tempfile
 import unittest
 
+from web.services import limits as _limits
 from yiban.adapters.config import loader as CL
 
 # 合成名册：故意与真实 config/registry.json 解耦，让行为断言不受名册内容漂移影响。
@@ -544,7 +545,7 @@ class PriorityWiringTest(unittest.TestCase):
             spec.loader.exec_module(webapp)
         except ImportError as exc:   # 只有依赖缺失才跳过；缺省缺失等错误必须响亮失败
             self.skipTest("web/app.py 的依赖不可用：%s" % exc)
-        self.assertEqual(webapp.DEFAULT_ACCOUNT_GAP_MAX, gap)
+        self.assertEqual(_limits.DEFAULT_ACCOUNT_GAP_MAX, gap)
 
 
 if __name__ == "__main__":

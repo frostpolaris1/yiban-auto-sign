@@ -37,6 +37,7 @@ from web.routes import appmod as _appmod
 from web.routes import export_limits, read_audit_trace
 from web.routes import page_args as _page_args
 from web.routes import page_window as _page_window
+from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import signstatus as _signstatus
@@ -65,9 +66,9 @@ def api_logs_export():
     ip = _security._client_ip()
     now = time.time()
     with _locks._rate_lock:
-        _security._ip_store_trim(export_limits(), m.EXPORT_WINDOW + _security._IP_STORE_MAX_AGE)
+        _security._ip_store_trim(export_limits(), _limits.EXPORT_WINDOW + _security._IP_STORE_MAX_AGE)
     _cnt, _start, allowed = _security._bump_window_count(
-        export_limits(), ip, now, m.EXPORT_WINDOW, limit=m.EXPORT_MAX
+        export_limits(), ip, now, _limits.EXPORT_WINDOW, limit=_limits.EXPORT_MAX
     )
     if not allowed:
         return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
