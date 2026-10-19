@@ -30,7 +30,7 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.store import audit_chain, db
+from yiban.adapters.persistence import audit_chain, db
 
 # 固定审计密钥：bytes(range(32))。任何环境都能复现。
 AUDIT_KEY_HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"

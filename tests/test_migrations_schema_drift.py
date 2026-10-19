@@ -36,7 +36,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402  (tests/conftest 注入 yiban/store 到 sys.path)
 
-from yiban.store import migrations  # noqa: E402
+from yiban.adapters.persistence import migrations  # noqa: E402
 
 TEST_KEY = "a" * 64
 PHONE = "13800000001"

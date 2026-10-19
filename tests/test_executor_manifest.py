@@ -705,7 +705,7 @@ class RowPermissionTest(_WebBase):
 
     def test_plain_admin_is_rejected(self):
         self._env()
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         store_db.create_user("admin2@test.local",
                              generate_password_hash("UserPass1234!"),

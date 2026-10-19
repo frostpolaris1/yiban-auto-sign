@@ -39,8 +39,8 @@ from web.services.notify_mail import _NOTIFY_LEDGER_LABELS, _alert_mail_recipien
 from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier import notify
 from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
 from yiban.core import clock
-from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

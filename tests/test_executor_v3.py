@@ -47,6 +47,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 
 from yiban import egress  # noqa: E402
+from yiban.adapters.persistence import clock_meta, queue_store  # noqa: E402
 from yiban.adapters.statefiles import state_io  # noqa: E402
 from yiban.app import runner as runner_mod  # noqa: E402
 from yiban.core import (  # noqa: E402
@@ -60,7 +61,6 @@ from yiban.engine import (  # noqa: E402
     schedule,
     token_bucket,
 )
-from yiban.store import clock_meta, queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二，避开周末门

@@ -36,8 +36,8 @@ import unittest
 from werkzeug.security import generate_password_hash
 
 from web.services import run_stream
+from yiban.adapters.persistence import run_events
 from yiban.core import clock
-from yiban.store import run_events
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

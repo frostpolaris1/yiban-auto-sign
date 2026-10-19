@@ -248,7 +248,7 @@ class ActorSurfaceTest(_Base):
     def test_pause_cooldown_dual_form_across_upgrade(self):
         """冷却查询双形态：新行 actor 是遮罩态，但按**明文邮箱**查仍命中
         （升级边界历史行为明文形态，两套同查，暂停冷却在升级前后都成立）。"""
-        from yiban.store import events
+        from yiban.adapters.persistence import events
         db.audit(PLAIN_EMAIL, "my_account_pause", "", "")   # 写入即遮罩
         ts = events.last_pause_at(PLAIN_EMAIL)             # 传入明文
         self.assertIsNotNone(ts, "遮罩收口后冷却不得哑火")
