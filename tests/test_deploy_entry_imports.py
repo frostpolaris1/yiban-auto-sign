@@ -201,12 +201,33 @@ def _command_literals(node):
     return vals
 
 
+#: 别名导入形态：`from yiban import …, cli, …`（**无点号**，点号判据看不见它）。
+#: 同 T3 的 `_T3_FROM_YIBAN` 形状——T3 早就有，T8 一直缺，属"同一判据两处实现不对称"
+#: （AGENTS §27）。145-D 实测踩到：`scripts/deploy_gate.sh:381` 的
+#: `python -c "from yiban import cli; cli.main(...)"` 不被任何门看见，删壳后必断。
+#: **按 import 列表逐项判名**，不用裸词界：裸 `\bcli\b` 会误伤 `--cli` 这类旗标
+#: （同 T3 的 `--status` 假红）。
+_FROM_YIBAN = re.compile(r"\bfrom\s+yiban\s+import\s+([^\n#;]*)")
+
+
+def _alias_short_names(text):
+    """文本里 `from yiban import …` 命中的短名（逐项取首个标识符，不剥引号）。"""
+    names = []
+    for m in _FROM_YIBAN.finditer(text):
+        for item in m.group(1).split(","):
+            token = re.search(r"[A-Za-z_]\w*", item)
+            if token:
+                names.append(token.group(0))
+    return names
+
+
 def old_coordinate_hits(path):
     """返回该文件里引用旧坐标的位置：`(行号, 说明)` 列表。
 
     Python：① 进程拉起调用的命令行字面量含旧模块名；② 非 docstring 的字符串常量
-    恰为旧模块名（覆盖 importlib / 变量间接形态）。
-    Shell：非注释行出现旧模块名。
+    恰为旧模块名（覆盖 importlib / 变量间接形态）；③ 非 docstring 字符串常量里含
+    **别名导入** `from yiban import …, cli, …`（`python -c` 形态）。
+    Shell：非注释行出现旧模块名**或别名导入**。
     """
     with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
@@ -219,6 +240,8 @@ def old_coordinate_hits(path):
                 continue
             if pat.search(s):
                 hits.append((i, "shell 命令行含 " + OLD_CLI_MODULE))
+            elif "cli" in _alias_short_names(s):
+                hits.append((i, "shell 里的别名导入 from yiban import …, cli, …"))
         return hits
     tree = ast.parse(text)
     docs = _docstring_const_ids(tree)
@@ -230,6 +253,9 @@ def old_coordinate_hits(path):
         if isinstance(node, ast.Constant) and node.value == OLD_CLI_MODULE \
                 and id(node) not in docs:
             hits.append((node.lineno, "非 docstring 字符串常量 " + OLD_CLI_MODULE))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and id(node) not in docs and "cli" in _alias_short_names(node.value):
+            hits.append((node.lineno, "字符串里的别名导入 from yiban import …, cli, …"))
     return sorted(set(hits))
 
 
@@ -274,6 +300,34 @@ class OldCliCoordinateGateTest(unittest.TestCase):
             hits = old_coordinate_hits(sh)
             self.assertEqual(len(hits), 1, f"shell 面应只命中非注释那一行：{hits}")
             self.assertEqual(hits[0][0], 2, f"命中行应为第 2 行：{hits}")
+
+        # 145-D 的缺口：**别名导入**（无点号）必须也能被看见。
+        with tempfile.TemporaryDirectory(prefix="oldcli-alias-") as tmp:
+            sh = os.path.join(tmp, "alias.sh")
+            with open(sh, "w", encoding="utf-8") as f:
+                f.write('# 注释里的 from yiban import cli 不算\n'
+                        'run_py "from yiban import cli; cli.main([\'egress\'])"\n'
+                        'run_py "from yiban.entry import cli; cli.main([\'egress\'])"\n')
+            hits = old_coordinate_hits(sh)
+            self.assertEqual([ln for ln, _ in hits], [2],
+                             f"只应命中旧坐标别名导入那一行（新坐标不算）：{hits}")
+
+            py = os.path.join(tmp, "alias.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write('"""docstring 里的 from yiban import cli 不算启动点。"""\n'
+                        'CMD = "import sys; from yiban import cli; sys.exit(0)"\n'
+                        'OK = "import sys; from yiban.entry import cli; sys.exit(0)"\n'
+                        '# 注释里的 from yiban import cli 不算\n')
+            hits = old_coordinate_hits(py)
+            self.assertEqual([ln for ln, _ in hits], [2],
+                             f"只应命中字符串常量里的旧坐标别名导入：{hits}")
+
+            flag = os.path.join(tmp, "flag.sh")
+            with open(flag, "w", encoding="utf-8") as f:
+                f.write('egress --cli status\n'
+                        'from yiban import clogger\n')
+            self.assertEqual(old_coordinate_hits(flag), [],
+                             "`--cli` 旗标与同前缀他模块（clogger）不得误红")
 
             clean = os.path.join(tmp, "clean.py")
             with open(clean, "w", encoding="utf-8") as f:
