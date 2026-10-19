@@ -150,7 +150,7 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
   自己的问题，不是平台限速；见 `executor_v3._is_risk_signal`）。**显式写了
   `YIBAN_EGRESS_RATE` 即人工接管**：上探变 no-op，但风控的乘性回退照做（安全反应不随
   接管停）。被误判降档后的受支持撤销入口是
-  `python -m yiban.cli egress --reset <出口> --yes`（默认只报告；活执行体会在 10s 内
+  `python -m yiban.entry.cli egress --reset <出口> --yes`（默认只报告；活执行体会在 10s 内
   用内存态覆盖库里的复位，故稳妥做法是先停执行体、复位后重启）。
 - **全局上界 Λ**：`YIBAN_GLOBAL_RATE`（attempt/s，缺省空=不限）。**它是「每个执行体
   进程各自一份」的计数**——限速器是进程内对象（`yiban/engine/token_bucket.py` 的
@@ -178,7 +178,7 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 | `skipped` | 了结（窗口外跳过） | 终态 |
 | `stolen` | 未了结（被接管标记） | 保留字 |
 
-了结态集合是 `yiban.status.TASKS_SETTLED_STATES` 的**同一对象**（`done`+`skipped`）。
+了结态集合是 `yiban.core.status.TASKS_SETTLED_STATES` 的**同一对象**（`done`+`skipped`）。
 
 **`vshard = -1` 惰性行**：v18 平移与 v20 补账写入的行不属于任何分片集
 （`hrw.shards_of` 只产出 `0..V-1`）。它们既不被 `claim_batch` 领取，也不被分片级接管，
@@ -218,8 +218,8 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 python scripts/ledger_check.py --day 2026-09-23 [--all-days 7]
 
 # 巡检：容量建议与执行体数（只读，不联网）
-python -m yiban.cli capacity --json
-python -m yiban.cli config --json
+python -m yiban.entry.cli capacity --json
+python -m yiban.entry.cli config --json
 
 # 备份门（任何改库/迁移前先备份；脚本内含一致性快照 + 加密 + 保留策略）
 bash scripts/backup.sh
@@ -246,7 +246,7 @@ bash scripts/backup.sh
   `MaskingFormatter` 两族兜底，见 `yiban/logging_ext.py`）。
 - **事件**：每次尝试经 `event_sink` 落 `sign_events`（`stage='sign'`，含 `attempt`/`dur_sec`），
   任务结束后单事务批量落库。
-- **进度事件表**：执行体与编排层把关键节点经 `yiban.store.run_events.report` 落
+- **进度事件表**：执行体与编排层把关键节点经 `yiban.adapters.persistence.run_events.report` 落
   `run_events`（v21）——节点值域 `claim` 领取 / `start` 开始 / `success` 成功 /
   `fail` 失败 / `pause` 暂停 / `finalize` 收尾，一节点一行，字段为节点、执行体身份
   （稳定槽位名）、账号、业务日、时刻。`message` 入表前过 `masking.sanitize_text`
@@ -297,7 +297,7 @@ bash scripts/backup.sh
 
 **不要打**
 
-- 凭据、手机号、邮箱的明文。脱敏只有一个出口（`yiban/masking.py`）。
+- 凭据、手机号、邮箱的明文。脱敏只有一个出口（`yiban/core/masking.py`）。
 - 逐账号的重复成功明细。成功是常规态，逐条打会冲走故障痕。
 - 每条推送事件。推送走账本（`notify/ledger.py`），不逐条落日志。
 - SSE 心跳。心跳是保活流量，不是业务事件。
@@ -351,7 +351,7 @@ bash scripts/backup.sh
 - **`outcome_buffer` / `shadow:` 影子行 / `ledger_days` 日写者表**：未引入。
 - **`downgrade_all` 的恢复入口**：站点级熔断的"恢复"入口未接（降档入口在
   `token_bucket.downgrade_all`，另批处理）。**单出口的速率复位已有受支持入口**
-  （2026-10-09）：`python -m yiban.cli egress --reset <出口> --yes`。
+  （2026-10-09）：`python -m yiban.entry.cli egress --reset <出口> --yes`。
 - **`_alert_slow_sign`（慢签到告警）**：v3 未接入（v2 有）。
 - **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径。
   引擎预检的**总阈值**按**生效执行体数 K** 缩放（`egress.effective_worker_count`：清单拉起
@@ -404,7 +404,7 @@ bash scripts/backup.sh
 
 | 机制 | 处置 | 重启条件（满足才请回来） |
 |------|------|--------------------------|
-| 分片档位多档选择（<500→64、<3000→128、否则 256，见 §2） | 删多档选择器，V **定档 64**；§2 的 V 落库与"已写行兜底放宽"不变；**恢复方法与选档公式见 `yiban/engine/hrw.py` 的 `v_for` docstring** | 账号规模显著增长（数万级），且固定档的均衡实证不够用 |
+| 分片档位多档选择（<500→64、<3000→128、否则 256，见 §2） | 删多档选择器，V **定档 64**；§2 的 V 落库与"已写行兜底放宽"不变；**恢复方法与选档公式见 `yiban/core/hrw.py` 的 `v_for` docstring** | 账号规模显著增长（数万级），且固定档的均衡实证不够用 |
 | 分片级接管的 owner 改写（§2 崩溃恢复、§6 接管日志） | 删 owner 改写，**分片并入保留**——死主分片被回收出来的行仍能被活着的执行体领到；§6 那条"改归本执行体"的日志文案随机制一并去掉 | 展示页需要「死主行归属修正」（页面 owner 仍指向已死执行体） |
 | 离线压测/容量探测工具族 | 整族删除；`YIBAN_CAPACITY_MEASURED` 的**人工录入**与页面展示保留（实测值改由部署者量取后录入） | 需要恢复可复现的离线容量实测工具链来支撑定档 |
 | 出口限速分片（每出口一桶 / 预算均分） | **不裁**：持久键=出口标识、运行期按出口预算均分，删掉会让同出口的多个执行体各吃一份 λ（该出口速率叠加为 K×λ） | 不适用；仅当出口形态变化时按 §3 限速三件重评 |

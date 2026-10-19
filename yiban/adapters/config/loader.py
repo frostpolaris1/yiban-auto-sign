@@ -38,8 +38,8 @@
 `parse_env_file` / `env_path`（`.env` 的行模型与指针口径）、`ENV_TRUTHY_LITERALS` /
 `ENV_FALSY_LITERALS`（开关键真值表，不再抄第二份）、`window.parse_hhmm`（时刻判据，
 本模块不另写一套：引擎收的写法加载器也必须收）。谁调用：本批的生产消费点只有
-`yiban/engine/token_bucket.py`、`yiban/engine/schedule.py`、`yiban/engine/runner.py`、
-`yiban/cli.py`、`web/app.py`，**一律取 `default_required(...)`**——代码里的默认常量
+`yiban/engine/token_bucket.py`、`yiban/engine/schedule.py`、`yiban/app/runner.py`、
+`yiban/entry/cli/__init__.py`、`web/app.py`，**一律取 `default_required(...)`**——代码里的默认常量
 必须响亮失败，不许把缺省缺失静默变成 `None`。`default_of(...)` **不做生产默认常量的
 取值入口**：它只给"本键可以没有缺省"的读取口径用（含测试与门禁）。读路径全量切换
 归后续批次。
@@ -75,7 +75,7 @@ _REQUIRED = ("group", "doc", "sensitive", "reload", "tier")
 _WEB_FORBIDDEN_SUFFIXES = ("_DIR", "_FILE", "_PATH", "_PROXY")
 #: 名册文件相对包根的路径（104 §5.3 指定 `config/registry.json`）。
 REGISTRY_RELATIVE_PATH = os.path.join("config", "registry.json")
-# 仓库根：本模块批 B 从 `yiban/config_loader.py` 搬来 `yiban/adapters/config/loader.py`，
+# 仓库根：本模块批 B 从旧坐标 `yiban.config_loader` 搬来本路径，
 # 深两层。这里按**当前位置**上溯到仓库根（`config/` 与 `yiban/` 同级）。
 REGISTRY_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(
@@ -115,7 +115,7 @@ def _is_hhmm(value):
     **范围（勿越界）**：本函数只收口"加载器自己的"时刻判据。全仓其余时刻判据另有五处，
     都不走 `parse_hhmm`。收口它们属**解析口径**轴（与优先级轴工单 71z7 不是同一条轴），
     归读路径收口批次 —— 本模块不越界改，但逐处留痕，防止"假一致"扩散：
-    - `yiban/engine/probe.py`：探针时刻判定，就地 `int(x)` 拆解；
+    - `yiban/app/probe.py`：探针时刻判定，就地 `int(x)` 拆解；
     - `web/routes/settings_api.py`：窗口时刻与探针时刻校验（两处），同样就地 `int(x)`；
     - `docker/scheduler.py`：`YIBAN_SIGN_END` 校验自带正则
       `([01]?\d|2[0-3]):[0-5]\d`。实测（7 个分叉样本逐条比对）它拒收引擎收的写法，

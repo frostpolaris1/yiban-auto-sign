@@ -42,12 +42,8 @@
 扣除豁免面后本批改动 81 个文件。
 
 **豁免（按文件或按实参位给，不是跳过；未登记的文件命中即红并点名 `文件:行`）**：
-  ① 壳本体 `yiban/store/__init__.py`——它**按设计必须写出旧坐标**（`sys.modules`
-     登记与属性转发）。`145-E` 删它，本门随之收窄。
-  ② `tests/test_batch_b_relocation.py`——批 B 搬迁守卫，职责就是断言旧坐标是壳、
-     且与实现**同一对象**，故必须写出旧坐标配对表。
-  ③ 本文件自身——`OLD_MODULE` 是禁字面量，夹具样本用于自证本门有牙。
-  ④ **日志通道名豁免（不是坐标）**：十四处 `logging.getLogger("yiban.store.<名>")`
+  ① 本文件自身——`OLD_MODULE` 是禁字面量，夹具样本用于自证本门有牙。
+  ② **日志通道名豁免（不是坐标）**：十四处 `logging.getLogger("yiban.store.<名>")`
      住在 `yiban/adapters/persistence/*.py`，`tests/` 里另有 `assertLogs` 用同名。
      改名会改动**运维可见的日志出口名**，属语义变更 ⇒ 本批不改。
      T3／T4／T5T7 先例同此（日志名保留）。判据是"实参位**逐字等于**通道名"，
@@ -80,7 +76,7 @@ OLD_MODULE = "yiban.store"
 #: 本族新坐标（同名平移）。
 NEW_MODULE = "yiban.adapters.persistence"
 
-#: 十七个子模块（与壳 `yiban/store/__init__.py` 的 `_SUBMODULES` 同名）。
+#: 十七个子模块（与旧坐标包登记的 `_SUBMODULES` 同名；旧壳已由 `145-E` 删净）。
 STORE_SUBMODULES = (
     "accounts", "audit_chain", "claims", "cleanup", "clock_meta", "connection",
     "db", "events", "migrations", "purge_guard", "queue_store", "run_events",
@@ -110,13 +106,13 @@ POLICY_TOKEN_FILES = frozenset((
 #: 策略表里当作层名／坐标名枚举的那个裸串。
 POLICY_TOKEN_VALUE = OLD_MODULE
 
-#: 壳本体：按设计必须写出旧坐标，本批不改（`145-E` 删）。
-SHELL_REL = "yiban/store/__init__.py"
-
-#: 职责就是验证旧坐标是壳、或夹具自证本门有牙的文件：必须写出旧坐标。
+#: 职责就是夹具自证本门有牙的文件：必须写出旧坐标。
+#: `145-E` 删了旧壳与批 B 守卫（`tests/test_batch_b_relocation.py`），故它从本表移除。
+#: `tests/test_zero_old_coordinates.py` 是 `145-E` 立的**全仓总门**，它的
+#: `OLD_MODULES` 是 20 条禁字面量（含 `yiban.store`），故必须登记。
 FACE_EXEMPT = frozenset((
-    "tests/test_batch_b_relocation.py",
     "tests/test_t6_relocation.py",
+    "tests/test_zero_old_coordinates.py",
 ))
 
 #: 自有面目录（不含面外 `frontend/**` 与 `web/static/**`：归用户独立完成）。
@@ -187,10 +183,13 @@ def _rel_of(path):
 
 
 def _is_exempt_file(rel):
-    """该文件是否整体豁免（壳本体／旧坐标配对守卫／本门自身）。"""
+    """该文件是否整体豁免（本门自身）。
+
+    `145-E` 之后只剩本门自身：旧壳已删，`SHELL_REL` 那条豁免随之移除。
+    """
     if rel is None:
         return False
-    return rel in FACE_EXEMPT or rel == SHELL_REL
+    return rel in FACE_EXEMPT
 
 
 def _is_old(dotted):
@@ -536,18 +535,6 @@ class T6NewCoordinateTest(unittest.TestCase):
                 self.assertIn(new_parent, _read(os.path.join(BASE, rel)),
                               f"{rel} 没有引用新坐标父包 {new_parent}")
 
-    def test_shell_submodule_list_matches_the_mapping(self):
-        """壳的 `_SUBMODULES` 与本门的名册必须逐字一致（壳加成员即红）。"""
-        tree = _ast_of(os.path.join(BASE, SHELL_REL))
-        found = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                    and getattr(node.targets[0], "id", None) == "_SUBMODULES":
-                found = tuple(ast.literal_eval(node.value))
-        self.assertEqual(
-            found, STORE_SUBMODULES,
-            "壳的子模块名册与本门映射不一致——新成员漏登记会让本门判据出现盲区")
-
     def test_every_old_coordinate_has_a_new_home(self):
         """映射表自洽：十七个子模块各有新坐标，且新旧不同。"""
         self.assertEqual(len(NEW_OF), len(STORE_SUBMODULES) + 1)
@@ -621,18 +608,6 @@ class T6ExemptionAnchorTest(unittest.TestCase):
                                 f"豁免文件 {rel} 不在了")
                 self.assertTrue(_scan(os.path.join(BASE, rel)),
                                 f"{rel} 已不再含旧坐标：豁免失去理由，须从豁免面移除")
-        self.assertTrue(os.path.isfile(os.path.join(BASE, SHELL_REL)), "壳本体不在了")
-
-    def test_batch_b_guard_still_covers_this_family(self):
-        """批 B 守卫仍把本族十七个子模块登记成对（否则"旧坐标＝实现"这条链断）。"""
-        tree = _ast_of(os.path.join(BASE, "tests/test_batch_b_relocation.py"))
-        found = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                    and getattr(node.targets[0], "id", None) == "STORE_SUBMODULES":
-                found = tuple(ast.literal_eval(node.value))
-        self.assertEqual(found, STORE_SUBMODULES,
-                         "批 B 守卫的子模块名册与本门不一致")
 
 
 class T6GateHasTeethTest(unittest.TestCase):

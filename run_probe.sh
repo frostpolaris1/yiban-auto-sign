@@ -48,7 +48,7 @@ LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
 # 探针未开启时完全静默退出：不产生任何日志、不获取锁、不调用签到程序。
-# 开关真值判定与 run.sh 的 _is_truthy 同口径（字面量单一事实源在 yiban/infra/env_io.py
+# 开关真值判定与 run.sh 的 _is_truthy 同口径（字面量单一事实源在 yiban/adapters/config/env_io.py
 # 的 ENV_TRUTHY_LITERALS）：去首尾空白 + 转小写后再比对，**大小写与两侧空白都不敏感**
 # （旧实现 `=~(1|true|on|yes)` 大写敏感，`.env` 写 `YIBAN_PROBE_ENABLE=True`/`ON`/`TRUE`
 # 时容器与引擎认为已开启、裸机这里却判未开启）。

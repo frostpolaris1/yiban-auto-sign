@@ -103,7 +103,7 @@ def _judge_by_state(state):
       保守档收尾：`supplementing` 不在 `yiban.status.RETRYABLE_GIVE_UP_STATUSES` ⇒ 写 `final:`
       前缀（默认档不自动回炉）。**注意 `final:` 不是"当日绝不回炉"**：补签轮把回炉口的
       `include_final` 开关置真（见 `queue_store.requeue_failed`），仍会把它翻回 `pending`
-      再领一次；见 `yiban/status.py` 该状态码的说明与 `runner.main` 的补签闸门注释。
+      再领一次；见 `yiban/core/status.py` 该状态码的说明与 `runner.main` 的补签闸门注释。
     """
     status = SIGN_POSITION_STATE_STATUS[state]
     if status is None:
