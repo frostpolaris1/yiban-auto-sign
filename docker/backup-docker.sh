@@ -58,15 +58,59 @@ if [ "$RETAIN_DAYS" -lt 1 ]; then
     echo "错误：RETAIN_DAYS=0 等于删掉除当天外全部历史备份，拒绝执行（要更短保留请显式设为 >=1 的合理值）" >&2
     exit 2
 fi
-PASSPHRASE="${YIBAN_BACKUP_PASSPHRASE:-${BACKUP_GPG_PASSPHRASE:-}}"
-if [ -z "$PASSPHRASE" ] && [ -n "${YIBAN_BACKUP_PASSPHRASE_FILE:-}" ]; then
+
+# 参数解析：扫**全部**参数（顺序无关、未知即拒绝）。
+# 旧实现只看 `$1` 的 `--restore`：旗标不在第一位（多一个前缀参数、写错顺序、拼错）
+# 时直接落到下面的备份模式，用生产口令做出一份新备份并 rc=0 报「备份完成」——
+# 操作者以为在做恢复演练，实际做的是备份（P12-08；同 scripts/backup.sh 的既有处置）。
+MODE="backup"
+RESTORE_ARCHIVE=""
+RESTORE_DEST=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --restore)
+            MODE="restore"
+            shift
+            if [ $# -lt 2 ]; then
+                echo "错误：用法 backup-docker.sh --restore <备份包.tar.gz.gpg> <目标目录>" >&2
+                exit 2
+            fi
+            RESTORE_ARCHIVE="$1"
+            RESTORE_DEST="$2"
+            shift 2
+            ;;
+        -h|--help)
+            sed -n '2,40p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "错误：未知参数：$1（用法：backup-docker.sh [--restore <包> <目标目录>]）" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# 口令来源（P12-09）：**优先 YIBAN_BACKUP_PASSPHRASE_FILE**（0600 文件），环境变量
+# 形态只作兼容回退，且会打印提示。旧实现的优先级与头注释相反：环境变量先取，
+# `_FILE` 只在环境为空时才读——两处注释都把 `_FILE` 说成唯一通道，读者据此以为
+# 环境变量形态已不存在。选 `_FILE` 时同批把两个口令环境键从本进程摘掉，避免
+# 已经导出的口令继续随 tar/gpg/find/sha256sum 子进程树传播。
+if [ -n "${YIBAN_BACKUP_PASSPHRASE_FILE:-}" ]; then
     if [ ! -r "${YIBAN_BACKUP_PASSPHRASE_FILE}" ]; then
         echo "错误：YIBAN_BACKUP_PASSPHRASE_FILE 不可读: ${YIBAN_BACKUP_PASSPHRASE_FILE}" >&2
         exit 2
     fi
     PASSPHRASE="$(cat "${YIBAN_BACKUP_PASSPHRASE_FILE}")"
-elif [ -n "$PASSPHRASE" ]; then
+    if [ -n "${YIBAN_BACKUP_PASSPHRASE:-}" ] || [ -n "${BACKUP_GPG_PASSPHRASE:-}" ]; then
+        echo "提示：_FILE 与环境变量同时配置，按头注释口径使用 _FILE（环境形态未采用）" >&2
+    fi
+    unset YIBAN_BACKUP_PASSPHRASE BACKUP_GPG_PASSPHRASE
+elif [ -n "${YIBAN_BACKUP_PASSPHRASE:-}" ] || [ -n "${BACKUP_GPG_PASSPHRASE:-}" ]; then
+    PASSPHRASE="${YIBAN_BACKUP_PASSPHRASE:-${BACKUP_GPG_PASSPHRASE:-}}"
     echo "警告：口令经环境变量注入，会暴露给 tar/gpg/find/sha256sum 全部子进程；建议改用 YIBAN_BACKUP_PASSPHRASE_FILE（0600 文件）" >&2
+    unset YIBAN_BACKUP_PASSPHRASE BACKUP_GPG_PASSPHRASE
+else
+    PASSPHRASE=""
 fi
 
 if [ -z "$PASSPHRASE" ]; then
@@ -87,9 +131,9 @@ trap cleanup_tmp EXIT
 # 原 README 恢复指引是一条裸 gpg|tar 管道：口令上命令行、且无 scripts/backup.sh
 # --restore 已有的三重安全校验——被篡改的备份包在 root 解包时可借 ../ 路径穿越、
 # 符号链接或设备节点逃逸出目标目录。现统一走本校验路径。
-if [ "${1:-}" = "--restore" ]; then
-    ARCHIVE="${2:-}"
-    DEST="${3:-}"
+if [ "$MODE" = "restore" ]; then
+    ARCHIVE="$RESTORE_ARCHIVE"
+    DEST="$RESTORE_DEST"
     if [ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE" ]; then
         echo "错误：用法 backup-docker.sh --restore <备份包.tar.gz.gpg> <目标目录>" >&2
         exit 1
@@ -301,6 +345,11 @@ else
     echo "      常见成因：YIBAN_STATE_DIR 被指到 ${DATA_DIR} 之外（容器默认为 /data/state）。" >&2
     echo "      处置：把状态目录改回 DATA_DIR 内，或另行把 <YIBAN_STATE_DIR>/audit-anchor.log" >&2
     echo "      与备份同批次离机保存（每日日报邮件里也带一条链头锚点）。" >&2
+    # P12-21：这是**断言**，不是提示。自动化只看退出码；只打警告会让缺锚点的那天
+    # 与正常备份同色，而调度器当天已落槽位标记、不再重试。删产物并 rc=1，让重试语义接住。
+    rm -f "$OUT" "$OUT.sha256"
+    echo "错误：审计链外部锚点未入包，本次备份不可用于取证恢复，产物已删除" >&2
+    exit 1
 fi
 
 chmod 600 "$OUT"
@@ -317,7 +366,7 @@ while IFS= read -r _old; do
     [ -n "$_old" ] || continue
     echo "removing: $_old"
     rm -f -- "$_old"
-done <<< "$(find "$BACKUP_DIR" -name '*.sha256' -mtime "+$RETAIN_DAYS" 2>/dev/null || true)"
+done <<< "$(find "$BACKUP_DIR" -name 'yiban-data-*.tar.gz.gpg.sha256' -mtime "+$RETAIN_DAYS" 2>/dev/null || true)"
 
 echo "备份完成: $OUT"
 echo "校验值 : $(cat "$OUT.sha256")"

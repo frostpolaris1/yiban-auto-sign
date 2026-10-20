@@ -1,0 +1,13 @@
+# /etc/cron.d/yiban-backup —— 每日 02:00 加密备份（生产 cron 执行件，MF-42 收编）
+# 仓库来源：deploy/prod/cron.d/yiban-backup（install.sh 装到 /etc/cron.d/，0644 root:root）
+# 谁调用：/usr/local/sbin/yiban-backup-wrapper.sh（manifest 收编的 root 入口；实现在
+#   scripts/backup.sh）。wrapper 把口令经 stdin fd 0 单跳注入，并钉死 --require-encrypt：
+#   加密配置失效时宁可不产出归档，也不留含全库凭据的明文。
+# 身份：root——备份要读 ./data（yiban 属主 0700）与 /etc/yiban/accounts-key；yiban 读不到。
+# 为什么入库：旧形态只活在 scripts/backup.sh 头注释里，check-cron-provenance.sh 的扫描面
+#   （deploy/prod/cron.d）覆盖不到它，漂移无门可检（ba-p12-20）。
+# 排期：02:00 备份，02:30 审计校验（yiban-audit）在其后核对当日备份前的库与锚点。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+0 2 * * * root /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1

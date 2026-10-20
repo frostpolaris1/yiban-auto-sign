@@ -42,11 +42,6 @@ if [ -r "$_ENV_PATH" ]; then
     done < "$_ENV_PATH"
 fi
 
-# 状态/日志根目录
-STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
-
 # 探针未开启时完全静默退出：不产生任何日志、不获取锁、不调用签到程序。
 # 开关真值判定与 run.sh 的 _is_truthy 同口径（字面量单一事实源在 yiban/adapters/config/env_io.py
 # 的 ENV_TRUTHY_LITERALS）：去首尾空白 + 转小写后再比对，**大小写与两侧空白都不敏感**
@@ -65,6 +60,45 @@ esac
 if [ -n "$_ENV_WARNINGS" ]; then
     printf '%s' "$_ENV_WARNINGS" >&2
 fi
+
+# Python 解释器：优先项目虚拟环境，缺失时回退系统 Python（须在按天文件名之前定好：
+# 业务日取时经它走 yiban.core.clock，与引擎同源）
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    PY="$APP_DIR/.venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif [ -x /usr/bin/python3 ]; then
+    # cron 的 PATH 可能极简（/usr/bin:/bin），command -v 也未命中时兜底绝对路径
+    PY=/usr/bin/python3
+else
+    echo "致命: 找不到 python3，无法运行探针" >&2
+    exit 1
+fi
+
+# 业务日唯一来源（MF-109 / P12-11）：与 run.sh / scripts/yiban-fallback.sh 同口径。
+# 探针按天写 sign-<业务日>.log；取宿主 date（UTC 16:00-24:00 = 北京 00:00-08:00
+# 签到窗口）会把结果写进与引擎/web 不同名号的文件，web 日志页当天看到空文件。
+business_day() {
+    local _d _tz
+    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
+    case "$_d" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
+    esac
+    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码（缺 tzdata 时 GNU date
+    # 按 UTC 处理并返回 0）。
+    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
+    if [ "$_tz" = "+0800" ]; then
+        TZ=Asia/Shanghai date +%F
+        return 0
+    fi
+    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
+    date +%F
+}
+
+# 状态/日志根目录（业务日与引擎同源）
+STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
+LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
+LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
 
 # 与签到共用单实例锁：探针与签到进程互斥，防止并发操作同一批账号
 # fail-closed 与 run.sh 同一纪律：建不成主锁目录就拒绝运行（rc=1）——旧回退分支把锁
@@ -91,11 +125,5 @@ flock -n 9 || {
     exit 0
 }
 
-# Python 解释器：优先项目虚拟环境，缺失时回退系统 Python
-if [ -x "$APP_DIR/.venv/bin/python3" ]; then
-    PY="$APP_DIR/.venv/bin/python3"
-else
-    PY=/usr/bin/python3
-fi
-
+# Python 解释器已在按天文件名之前解析（business_day 用它取业务日）。
 "$PY" scripts/signin.py --probe >> "$LOG_FILE" 2>&1

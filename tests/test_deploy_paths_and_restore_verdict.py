@@ -629,7 +629,7 @@ class PullProdBackupInjectionTest(_PullRunBase):
 
     def test_valid_values_still_pass_whitelist(self):
         """护栏不得误伤合法配置：默认值与嵌套路径都要放行（行为=整轮 rc 0）。"""
-        for good in ("/var/backups", self._u(self.remote), self._u(self.remote) + "/"):
+        for good in ("/var/backups/yiban", self._u(self.remote), self._u(self.remote) + "/"):
             rc, out = self._run(("--status",), extra_env={"REMOTE_BACKUP_DIR": good})
             self.assertNotEqual(rc, 3, "合法值 %r 被误拒：%s" % (good, out))
         for good in ("1", "30"):
