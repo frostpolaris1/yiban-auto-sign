@@ -62,7 +62,8 @@
 本脚本头部）都带 `>> /var/log/yiban/backup.log 2>&1`，stderr 被并进日志文件、cron 不发
 报错邮件（全仓也没有任何 `MAILTO` 设置）⇒ 退出码 1 实际只在有人翻 backup.log 时才看得见。
 真要让"发不出去"这件事自己响，得去掉 `2>&1` 并配 `MAILTO`，或把退出码接进监控。
-调用谁：`yiban.mail`、`web.services.notify_mail`、`yiban.notify.transport`、`yiban.store.db`。
+调用谁：`yiban.adapters.notifier.mail`、`web.services.notify_mail`、
+`yiban.adapters.notifier.notify.transport`、`yiban.adapters.persistence.db`。
 谁调用：cron（每日一次）；无其它调用点。
 """
 import logging

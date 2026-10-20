@@ -339,7 +339,8 @@ class StateDirKeyDualSourceTest(unittest.TestCase):
 
     def test_app_side_reader_uses_the_unified_key(self):
         """应用侧读者用统一键：账本解析器读 `YIBAN_STATE_DIR`，不读旧键。"""
-        # 坐标＝批 A4 后的新落点（`yiban/notify/` 已改成转发壳，不再承载判据）。
+        # 坐标＝批 A4 后的新落点；`yiban/notify/` 转发壳已于 145-E 退役，现只有
+        # `yiban/adapters/notifier/notify/` 承载判据。
         ledger = _read(os.path.join(BASE, "yiban", "adapters", "notifier",
                                     "notify", "ledger.py"))
         self.assertIn(STATE_DIR_KEY, ledger,
