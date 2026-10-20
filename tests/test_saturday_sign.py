@@ -31,6 +31,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import signin  # noqa: E402
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web.services import signstatus as _signstatus  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
 USER_PASS = "secret1"
@@ -159,7 +161,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
         """周六 + 缺省（默认关闭）→ 「今日无需打卡（周六）」（v0.29.0 语义反转）。"""
         self._env("")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
-            text, color = self.webapp.sign_status(now=_weekday_dt(5))
+            text, color = _signstatus.sign_status(now=_weekday_dt(5))
         self.assertEqual(text, "今日无需打卡（周六）")
         self.assertEqual(color, "#a1a1aa")
 
@@ -167,7 +169,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
         """周六 + 显式开启 → 走正常窗口逻辑（此时 10:00 已过 07:50 → 已结束）。"""
         self._env("YIBAN_SATURDAY_SIGN=1\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
-            text, _ = self.webapp.sign_status(now=_weekday_dt(5))
+            text, _ = _signstatus.sign_status(now=_weekday_dt(5))
         self.assertNotEqual(text, "今日无需打卡（周六）")
         self.assertIn("已结束", text)
 
@@ -180,7 +182,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
         """
         self._env("YIBAN_SATURDAY_SIGN=true\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
-            text, _ = self.webapp.sign_status(now=_weekday_dt(5))
+            text, _ = _signstatus.sign_status(now=_weekday_dt(5))
         self.assertNotEqual(text, "今日无需打卡（周六）")
         self.assertIn("已结束", text)
 

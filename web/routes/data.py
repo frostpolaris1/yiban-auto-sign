@@ -309,8 +309,7 @@ def api_ping():
 
 
 def api_clock():
-    m = _appmod()
-    text, color = m.sign_status()
+    text, color = _signstatus.sign_status()
     try:
         tz_offset_min = int(clock.now().astimezone().utcoffset().total_seconds() // 60)
     except Exception:

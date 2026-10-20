@@ -47,6 +47,7 @@ from web.services import http_request as _http
 from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import notify_mail as _notify_mail
+from web.services import signstatus as _signstatus
 from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.adapters.persistence import db
@@ -504,7 +505,7 @@ def api_me():
     # 窗口展示取**有效**窗口端点（`window.bounds`，含裁剪吃空时的回退）：与同页自选片
     # 卡片同一份几何——直读原始配置会在回退时让两处显示两个钟点（片卡 06:30~07:50、
     # 这里 07:00~07:10）。
-    win = m.sign_window_bounds()
+    win = _signstatus.sign_window_bounds()
     return jsonify(
         {
             "ok": True,

@@ -40,6 +40,7 @@ import signin
 from flask import jsonify, request, session
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
@@ -51,6 +52,7 @@ from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import notify_mail as _notify_mail
+from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
@@ -325,7 +327,7 @@ def api_my_time_pref():
     偏好标签与保存提示都以它为基准，直读原始配置会在回退时让同一页面出现两个钟点。
     """
     m = _appmod()
-    win = m.sign_window_bounds()
+    win = _signstatus.sign_window_bounds()
     phone = _my_phone()
     pref = db.get_time_pref(phone) if phone else None
     stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
@@ -347,11 +349,11 @@ def api_my_time_pref():
             "disabled": s["disabled"],     # 完全在裁剪区 → 灰色不可选
             "edge_note": s["edge_note"],   # 部分裁剪提示（如"开头 2 分钟保留"）
         })
-    estimated, estimate_note = m._estimate_slot(phone) if phone else (None, "")
-    front_sec, back_sec = m.edge_config()
+    estimated, estimate_note = _accounts_data._estimate_slot(phone) if phone else (None, "")
+    front_sec, back_sec = _render.edge_config()
     return jsonify({
         "ok": True,
-        "pref": m._slot_to_label(pref["slot_min"]) if pref else None,
+        "pref": _accounts_data._slot_to_label(pref["slot_min"]) if pref else None,
         "pref_slot": pref["slot_min"] if pref else None,
         "slots": slots,
         "allowed": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
@@ -403,7 +405,7 @@ def api_my_time_pref_save():
         # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
         # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
         # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
-        win = m.sign_window_bounds()
+        win = _signstatus.sign_window_bounds()
         span = win.end_min - win.start_min
         front_min = win.front_sec / 60.0
         back_min = win.back_sec / 60.0
@@ -458,7 +460,7 @@ def api_my_time_pref_save():
         # updated_at 带微秒：同秒保存的"先到先得"可区分先后，
         # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
         db.set_time_pref(phone, slot, clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
-        db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), m._slot_to_label(slot))
+        db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), _accounts_data._slot_to_label(slot))
         # 生效分界（卡点缓冲）：
         # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
         # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
@@ -485,14 +487,14 @@ def api_my_time_pref_save():
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
             boundary = midnight + timedelta(seconds=win.lo_min * 60)
         when = "今日生效" if now < boundary else "明日生效"
-        return jsonify({"ok": True, "msg": f"已保存自选 {m._slot_to_label(slot)}，{when}{full_notice}"})
+        return jsonify({"ok": True, "msg": f"已保存自选 {_accounts_data._slot_to_label(slot)}，{when}{full_notice}"})
 
 
 def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
     stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
-    slots = _pref_slots(m.sign_window_bounds())
+    slots = _pref_slots(_signstatus.sign_window_bounds())
     cap = _engine_block_cap(m, _accounts_data.load_accounts_raw(), slots)
     return jsonify({
         "ok": True,
