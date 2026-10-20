@@ -137,8 +137,11 @@ def _my_account_view(accounts, indices):
     running = 0
     for a in active_sorted:
         queue_before[a.get("phone", "")] = running
-        st_status = states.get(a.get("phone", ""), {}).get(
-            "status", yiban_status.STATUS_PENDING)
+        # 值形态守卫与下面 st_status 同口径：load_sign_state 只校验顶层是 dict，
+        # 外部工具手写/半写坏的值会让 .get 抛 AttributeError → 整页 500（ba-p05-06）。
+        _st = states.get(a.get("phone", ""))
+        st_status = (_st.get("status", yiban_status.STATUS_PENDING)
+                     if isinstance(_st, dict) else yiban_status.STATUS_PENDING)
         if st_status not in (yiban_status.STATUS_SUCCESS, yiban_status.STATUS_ALREADY,
                              yiban_status.STATUS_NO_TASK):
             running += 1

@@ -16,6 +16,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 
+from yiban.adapters.config import env_io
 from yiban.core import clock
 from yiban.infra import locks, private_json
 
@@ -86,22 +87,17 @@ _LEDGERS = {"general": _general_daily, "urgent": _urgent_daily,
 # ---------------------------------------------------------------------------
 
 def _state_dir():
-    """状态目录解析唯一口径：YIBAN_STATE_DIR 环境变量优先，回退 .env 同键，
-    最后回落 .env 所在目录（与 signin 的状态目录口径一致）——web（常驻，经 .env 读）
-    与 signin（cron，经 run.sh 注入环境变量）两侧必须指向同一目录，否则跨进程共享
-    额度/节流窗口的目标落空。
+    """状态目录解析：与全仓路径类配置**同一口径**（`env_io.resolve_path`）。
 
-    第三档的落点随 `.env` 的默认位置走：工单 ybg8 把 `.env` 收进检出内的 `data/`
-    （`env_io.DEFAULT_ENV_FILE`），故这一档现在落到 `<检出>/data/`。这是**有意的**：
-    旧布局下它落到检出根，而检出根在新布局里属 root 且组/其他不可写 ⇒ 台账与节流表
-    会写不进去。生产上该键两处都有值（`run.sh` 与 web 装载 `.env` 都给出状态目录默认
-    值），故本档只在极退化场景生效。"""
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "").strip()
-    if not state_dir:
-        state_dir = config._read_env_file().get("YIBAN_STATE_DIR", "").strip()
-    if not state_dir:
-        state_dir = os.path.dirname(config._env_path()) or "."
-    return state_dir
+    优先级：进程环境 → `.env` → 全仓缺省状态目录。缺省与 `run.sh`、`web/app.py`
+    的 `STATE_DIR_DEFAULT`、`audit_chain` 一致——web（常驻）与 signin（cron）
+    因此总指向同一目录，跨进程共享额度与节流窗口的目标才成立。
+
+    旧实现自造了第三档 `dirname(_env_path())`：`.env` 缺省是相对路径 `data/.env`
+    时它落到 **cwd 的 data/**，随两侧 cwd 不同而分叉（双份额度、双份告警），
+    账本也不在备份链归档的状态目录内（ba-p09-05）。
+    """
+    return env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
 
 
 def _ledger_path():
@@ -181,11 +177,19 @@ def _archive_corrupt_state_file(path):
 
 
 def _save_ledger_file(data):
-    """原子写磁盘账本（单通道私有写，tmp 名含 pid+线程 id），失败仅告警不影响发送主流程。"""
+    """原子写磁盘账本（单通道私有写，tmp 名含 pid+线程 id）；返回是否成功。
+
+    写盘失败**必须由调用方 fail-closed**（拒绝本次额度占用）。旧注释声称「额度仍按
+    内存计数」是假的：`_with_ledger_locked` 每次都在文件锁内重读磁盘，并用磁盘 count
+    覆盖内存——内存计数活不过一次调用。状态目录不可写时 count 恒读回 0，会无声烧穿
+    第三方全局日配额（ba-p09-04）。
+    """
     try:
         private_json.write_private_json(_ledger_path(), data)
+        return True
     except OSError as e:
-        logger.warning("写入推送额度账本失败（额度仍按内存计数）: %s", e)
+        logger.error("写入推送额度账本失败，本次按 fail-closed 拒绝占用（不会放行）: %s", e)
+        return False
 
 
 def _ensure_ledger_structure(disk):
@@ -294,11 +298,12 @@ def _loginfail_daily_limit(envs=None):
         # 键上是有含义的"不限额"——误写负数等于静默放开上限（MF-44 登记项；本函数
         # docstring 一直写着"负值回退默认"，代码与注释相矛盾，以改代码对齐判据）。
         # 需要不限额就显式写 0。
-        if "LOGINFAIL_DAILY_MAX" not in config._bad_value_warned:
-            config._bad_value_warned.add("LOGINFAIL_DAILY_MAX")
-            logger.warning("%s=%r 为负值（非法键值），本次按缺省 %d 处理；需要不限额请显式写 0",
-                           config.LOGINFAIL_DAILY_MAX_KEY, value,
-                           config.DEFAULT_LOGINFAIL_DAILY_MAX)
+        # 告警闩与文案统一走 config._warn_bad_value，键名用**真实 .env 键**
+        # （YIBAN_LOGINFAIL_DAILY_MAX）；不再往 notify 的短名闩里塞自造名（ba-p09-10）。
+        config._warn_bad_value(
+            "int", config.LOGINFAIL_DAILY_MAX_KEY,
+            "%s=%r 为负值（非法键值），本次按缺省 %d 处理；需要不限额请显式写 0",
+            config.LOGINFAIL_DAILY_MAX_KEY, value, config.DEFAULT_LOGINFAIL_DAILY_MAX)
         return config.DEFAULT_LOGINFAIL_DAILY_MAX
     return parsed
 
@@ -331,8 +336,9 @@ def _daily_remaining(ledger_id, limit=None):
     led = _ledger(ledger_id)
     with led["lock"]:
         # 单次文件锁临界区：读盘 → 跨日对齐 → 读剩余，纯读不写盘
-        return _with_ledger_locked(
+        remaining, _saved = _with_ledger_locked(
             ledger_id, lambda led_, disk_: max(0, limit - led_["state"]["count"]))
+        return remaining
 
 
 def _roll_locked_inner(ledger_id, disk, today):
@@ -386,7 +392,8 @@ def _with_ledger_locked(ledger_id, fn):
     调用方必须已持有该账本的进程内 lock（获取顺序保持"进程内锁 → 文件锁"不变，避免
     与其它路径反向嵌套造成死锁）。磁盘是唯一事实源：读-改-写合并为一次文件锁持有，
     消除跨进程在两次文件锁之间被插入完整操作导致的丢失更新/额度超发。
-    fn 在锁内执行，其返回值原样返回；fn 对 led 内存态的修改随本次写回原子落盘。
+    fn 在锁内执行；返回 `(fn 的返回值, 是否成功落盘)`。后一项供占用路径 fail-closed：
+    本次改动写不进磁盘时不得按「已记账」继续放行（ba-p09-04）。
     仅当本账本实际发生变化时才写盘（跨日归零/占用/退还/取走），纯读路径零写盘。
     """
     led = _LEDGERS[ledger_id]
@@ -396,9 +403,8 @@ def _with_ledger_locked(ledger_id, fn):
         result = fn(led, disk)
         before = disk.get(ledger_id)
         _merge_ledger_into_disk(disk, ledger_id, led)
-        if before != disk.get(ledger_id):
-            _save_ledger_file(disk)
-        return result
+        saved = (_save_ledger_file(disk) if before != disk.get(ledger_id) else True)
+        return result, saved
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +478,12 @@ def _consume_daily_budget(ledger_id):
     with led["lock"]:
         # 读盘-判定/修改-写回合并为单次文件锁临界区：占用即落盘，另一进程
         # （web 常驻 vs signin cron）读到最新计数，不再各自持一份进程内额度
-        allowed, charged, first_warning = _with_ledger_locked(
+        (allowed, charged, first_warning), saved = _with_ledger_locked(
             ledger_id, lambda led_, disk_: _consume_budget_locked(led_, ledger_id, limit))
+    if allowed and not saved:
+        # 账本写不进磁盘 ⇒ 本次占用无法被跨进程看见，继续放行会烧穿第三方全局配额。
+        # fail-closed：拒绝本次推送（错误日志已在 _save_ledger_file 落 ERROR）。
+        allowed, charged, first_warning = False, None, False
     if first_warning:  # 锁外落日志：logger 可能触发文件 I/O，不持锁执行
         _log_exhaustion_warning(ledger_id)
     return BudgetTicket(allowed, charged, today)
@@ -622,8 +632,9 @@ def has_pending_exhaustion_notice():
         led = _ledger(ledger_id)
         with led["lock"]:
             # 经文件锁读盘刷新内存（与 _daily_remaining 同路径）：进程重启后内存态是空的
-            if _with_ledger_locked(
-                    ledger_id, lambda led_, disk_: bool(led_["notice"]["pending"])):
+            pending, _saved = _with_ledger_locked(
+                ledger_id, lambda led_, disk_: bool(led_["notice"]["pending"]))
+            if pending:
                 return True
     return False
 
@@ -657,6 +668,7 @@ def pop_exhaustion_notice():
         with led["lock"]:
             # 取走即落盘，且在单次文件锁临界区内完成——已交付标记跨进程一致，
             # 防双进程各发一封耗尽告知邮件
-            if _with_ledger_locked(ledger_id, _pop_notice_locked):
+            popped, _saved = _with_ledger_locked(ledger_id, _pop_notice_locked)
+            if popped:
                 kinds.append(ledger_id)
     return kinds
