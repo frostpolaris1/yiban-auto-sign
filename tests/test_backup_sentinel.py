@@ -9,7 +9,7 @@
     **审计链头哈希随备份离机外发**（M28：每天必发、与备份成败无关、分标题分节流、
     链头完整且独占一行、只读不写库、读失败与发不出都不吞结论）。
 对应实现：`scripts/backup_sentinel.py`（判定与外发）、`scripts/yiban-backup-sentinel.sh`
-    （cron 入口）；节流复用 `yiban.notify.ledger`。
+    （cron 入口）；节流复用 `yiban.adapters.notifier.notify.ledger`。
 关键断言：① 缺包/缺清单/漂移 → 恰好一封管理员告警且正文带排查路径；② 正常路径
     （都在且一致）**零失败告警**——哨兵自己不许变成噪音源（M28 起这条只约束"失败
     告警"；当天仍会**另外**外发一封锚点外发，断言在 `self.anchor_mails` 分账里）；
