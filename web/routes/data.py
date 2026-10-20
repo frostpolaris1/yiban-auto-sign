@@ -59,7 +59,6 @@ def api_logs_export():
     _mask_log_phones 脱敏，任何登录身份都无法经 HTTP 取得未脱敏号码。
     成功导出写 logs_export 审计留痕（400/404 不写），并受每 IP 窗口限速。
     """
-    m = _appmod()
     date = str(request.args.get("date", "")).strip()
     if not _logs_svc._is_valid_date_str(date):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
@@ -72,9 +71,9 @@ def api_logs_export():
     )
     if not allowed:
         return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
-    if not os.path.exists(m.log_path_for(date)):
+    if not os.path.exists(_logs_svc.log_path_for(date)):
         return jsonify({"error": f"{date} 无签到日志"}), 404
-    text = "".join(_logs_svc._mask_log_phones(ln) + "\n" for ln in m._log_lines_for(date))
+    text = "".join(_logs_svc._mask_log_phones(ln) + "\n" for ln in _logs_svc._log_lines_for(date))
     db.audit(
         session.get("username") or "?",
         "logs_export",
@@ -103,9 +102,9 @@ def api_logs():
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
     # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
     if not date:
-        date = m._most_recent_log_date()
+        date = _logs_svc._most_recent_log_date()
     _line_stats = {}
-    logs = m._log_lines_for(date, _line_stats)
+    logs = _logs_svc._log_lines_for(date, _line_stats)
     # 检索与全量查看。q=子串过滤（大小写不敏感，作用于当日全量行）；
     # all=1 返回当日全部行（封顶 _LOG_VIEW_CAP 防拖垮浏览器）；
     # 缺省仍返回最后 80 行（轮询口径不变，靠前日志经 all=1 或导出获取）。
@@ -176,7 +175,7 @@ def api_logs():
     recent_probe_date = ""
     recent_sign_date = ""
     if not logs and not q:
-        candidate = m._most_recent_log_date()
+        candidate = _logs_svc._most_recent_log_date()
         if candidate and candidate != date:
             recent_log_date = candidate
     if not probe_events:
@@ -237,7 +236,6 @@ def api_admin_sign_events():
     `stage` 只作用于 `events` 与 `daily_stats`（事件表口径），对 `accounts_stats`
     不适用（用户 2026-10-18 裁定：统计按终态，过程只出现在日志里）。
     """
-    m = _appmod()
     phone = str(request.args.get("phone", "")).strip()
     try:
         days = min(max(int(request.args.get("days", 7)), 1), 90)
@@ -289,7 +287,7 @@ def api_admin_sign_events():
     # 来源是**按日状态文件**（终态载体），不读事件表——旧实现取"每账号当日最后一条事件"
     # 当终态，2026-10-16 的收尾 pending 观测把 311 个账号刷成待签（真值是 failed 233 /
     # already 78），工单 yiban-auto-sign-v5ty。`stage` 对终态口径不适用。
-    accounts_stats = m.accounts_terminal_summary(days=days)
+    accounts_stats = _logs_svc.accounts_terminal_summary(days=days)
     return jsonify(
         {
             "ok": True,

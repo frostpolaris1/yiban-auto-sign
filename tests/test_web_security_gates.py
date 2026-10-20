@@ -321,6 +321,7 @@ import unittest.mock  # noqa: E402
 
 from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services import limits as _limits  # noqa: E402
+from web.services import logs as _logs_svc  # noqa: E402
 from web.services import startup_cache as _startup_cache  # noqa: E402
 
 REG_ADMIN = "reg-admin@test.local"
@@ -932,7 +933,7 @@ class Batch18FixesTest(unittest.TestCase):
 
     def _write_date_log(self):
         """构造当日按天日志文件（my-logs 数据源），测试后清理。"""
-        path = self.webapp.log_path_for(CAL_DATE)
+        path = _logs_svc.log_path_for(CAL_DATE)
         with io.open(path, "w", encoding="utf-8") as f:
             f.write(LOG_LINE + "\n")
         self.addCleanup(lambda: os.path.exists(path) and os.remove(path))

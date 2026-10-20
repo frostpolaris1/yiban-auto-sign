@@ -30,6 +30,7 @@ from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
 
+from web.services import logs as _logs_svc
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -124,11 +125,11 @@ class LogsByDateTest(unittest.TestCase):
     def test_log_path_for_today_and_hist(self):
         today = clock.today()
         self.assertEqual(
-            self.webapp.log_path_for(),
+            _logs_svc.log_path_for(),
             os.path.join(self.tmp, f"sign-{today}.log"),
         )
         self.assertEqual(
-            self.webapp.log_path_for(HIST_DATE),
+            _logs_svc.log_path_for(HIST_DATE),
             os.path.join(self.tmp, f"sign-{HIST_DATE}.log"),
         )
 
@@ -144,7 +145,7 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(HIST_DATE, "INFO", "werkzeug", '127.0.0.1 - - "GET /api/logs HTTP/1.1" 200 -'),
             "无格式行（run.sh 直接 echo）",
         ])
-        out = self.webapp._log_lines_for(HIST_DATE)
+        out = _logs_svc._log_lines_for(HIST_DATE)
         joined = "\n".join(out)
         self.assertIn("签到成功", joined)
         self.assertIn("开始执行签到", joined)
@@ -161,12 +162,12 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(HIST_DATE, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
             _log_line("2026-08-16", "INFO", "yiban", "[13800138001] ✅ 签到成功"),  # 残留
         ])
-        out = self.webapp._log_lines_for(HIST_DATE)
+        out = _logs_svc._log_lines_for(HIST_DATE)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].startswith(f"[{HIST_DATE} "))
 
     def test_log_lines_for_missing_file(self):
-        self.assertEqual(self.webapp._log_lines_for("2026-08-01"), [])
+        self.assertEqual(_logs_svc._log_lines_for("2026-08-01"), [])
 
     # ---- 3. parse_sign_log 兼容按天文件（0.19.6 起仅返回 recent 行，states 语义已移除）----
     def test_parse_sign_log_returns_recent_only(self):
@@ -178,7 +179,7 @@ class LogsByDateTest(unittest.TestCase):
             _log_line(today, "INFO", "yiban.client", "[13800138001] 生成定位: (118.8, 31.9)"),
             _log_line(today, "INFO", "werkzeug", "GET /api/logs"),  # 非 yiban INFO 仍应滤掉
         ])
-        recent = self.webapp.parse_sign_log(self.webapp.log_path_for())
+        recent = _logs_svc.parse_sign_log(_logs_svc.log_path_for())
         self.assertEqual(len(recent), 3, "yiban 家族全收；非 yiban 的 INFO 不收")
         self.assertIn("✅ 签到成功", recent[0])
         self.assertIn("内部细节", recent[1])

@@ -115,7 +115,7 @@ def api_accounts():
     # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
     # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
     # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
-    states = m.load_sign_state()
+    states = _logs_svc.load_sign_state()
     # 今日计划时刻的唯一事实源：台账 run_at（执行体 claim_batch 的领取依据）。读不通回
     # None 哨兵 → 当作"今日无计划"展示「待生成」，绝不回退旧的派生算法。一次取全。
     _run_at = _today_plan_map()

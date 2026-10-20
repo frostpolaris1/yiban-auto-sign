@@ -14,9 +14,10 @@
 `_cred_paused_phones`、凭据变更后清熔断 `clear_fuse_pause` / `clear_fuse_on_cred_change`。
 
 **归属**
-原 `web/app.py` 的模块级日志与状态辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——日志文件路径 `LOG_FILE`、状态目录
-`STATE_DIR`、倒读实现 `_tail_lines`——在调用时刻现取后注入。
+原 `web/app.py` 的模块级日志与状态辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。本模块需要的宿主状态——日志文件路径 `LOG_FILE`、
+状态目录 `STATE_DIR`、倒读实现 `_tail_lines`——经 `configure(...)` 登记进 `_hooks`，
+按调用时刻解析。
 
 **复用**
 `parse_sign_log` 与 `_log_lines_for` 共用同一条可见性规则（`_log_line_visible`）与同一份
@@ -25,10 +26,9 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。日志目录、状态目录与倒读实现都作为显式参数接收：它们在 `web.app` 上是会被测试
-改写、也会随运行方式变化的模块级名字（既有测试直接赋值 `web.app.LOG_FILE` 来换日志目录，
-又在 `web.app` 上打桩 `_tail_lines` 来替换解析输入），本模块另持一份绑定会让这些改写静默
-失效。熔断状态文件的读写一律走 `yiban.cred_state` 的唯一入口，不自建第二套。
+模块）。宿主依赖经 `configure(...)` 登记，登记的是 lambda 而不是值：测试赋值
+`LOG_FILE` / `STATE_DIR`、打桩 `_tail_lines` 都在调用时刻生效。未登记即 `RuntimeError`
+（fail-closed）。熔断状态文件的读写一律走 `yiban.cred_state` 的唯一入口，不自建第二套。
 """
 
 import json
@@ -45,6 +45,44 @@ from yiban.core.masking import mask_phones_in_text as _mask_phones_in_text
 
 # 与 web.app 同名的日志通道：熔断清理失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：测试赋值 `LOG_FILE` / `STATE_DIR`、打桩 `_tail_lines` 都在
+# 调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(state_dir=None, log_file=None, tail_lines=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if state_dir is not None:
+        _hooks["state_dir"] = state_dir
+    if log_file is not None:
+        _hooks["log_file"] = log_file
+    if tail_lines is not None:
+        _hooks["tail_lines"] = tail_lines
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.logs 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾"
+            "调用了 web.services.logs.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 # ---------------------------------------------------------------------------
@@ -133,16 +171,16 @@ def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
     return raw.decode("utf-8", errors="replace").splitlines()
 
 
-def parse_sign_log(path, tail_lines):
+def parse_sign_log(path):
     """解析签到日志：返回最近日志行列表（可见性口径见 `_log_line_visible`）。
 
     只返回日志行，不返回"日志符号 → 图标"这类派生状态：账号状态的事实源是 sign-state
     文件（`load_sign_state`，`/api/accounts`），日志符号与前端状态码语义不符，透传会把
     前端图标/统计卡污染。
 
-    倒读实现由调用方传入（`web.app` 的 `_tail_lines`）：它是本函数的既有打桩点，
-    测试以它替换解析输入。
+    倒读实现从宿主取（`_tail_lines` 是既有打桩点，测试以它替换解析输入）。
     """
+    tail_lines = _host("tail_lines")
     recent = []
     for line in tail_lines(path):
         m = SIGN_LOG_RE.match(line.strip())
@@ -164,23 +202,24 @@ def _is_valid_date_str(s):
         return False
 
 
-def log_path_for(log_file, date_str=None):
+def log_path_for(date_str=None):
     """按天日志文件路径：{log_file 目录}/sign-YYYY-MM-DD.log（date_str 缺省=今天）。
 
     日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
     run.sh / signin.py / 手动签到子进程均写入当天文件（保留 `LOG_FILE` 配置的目录）。
 
-    参数注入口径见模块头「通信」（`LOG_FILE` 可被测试直接赋值改写）。
+    日志路径从宿主取（`LOG_FILE` 可被测试直接赋值改写）。
     """
+    log_file = _host("log_file")
     date_str = date_str or clock.now().strftime("%Y-%m-%d")
     return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
 
 
-def _log_lines_for(date_str, path_for, tail_lines, stats=None):
+def _log_lines_for(date_str, stats=None):
     """读取指定日期日志的行（行首日期过滤防跨天残留；可见性口径见 `_log_line_visible`）。
 
     文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
-    路径与倒读实现由调用方传入，故日志目录切到别处的既有打桩面继续生效。
+    路径与倒读实现都从宿主取，故日志目录切到别处的既有打桩面继续生效。
 
     `stats`：可选 dict，读入 `stats["dropped"]` = 被丢弃的**无法解析**行数。
     上游按宽行模型（`splitlines()`）切文本，行内裸 NEL/LS/PS 会把一条逻辑行
@@ -190,10 +229,11 @@ def _log_lines_for(date_str, path_for, tail_lines, stats=None):
     归属），只把丢掉多少数出来给调用方回显（MF-99）。收录行的集合与原
     口径逐字一致；可见性过滤只是**设计内**的隐藏，不算丢弃。
     """
+    tail_lines = _host("tail_lines")
     prefix = f"[{date_str} "
     out = []
     dropped = 0
-    for line in tail_lines(path_for(date_str)):
+    for line in tail_lines(log_path_for(date_str)):
         if line.startswith(prefix):
             m = SIGN_LOG_RE.match(line.strip())
             if not m:
@@ -217,23 +257,23 @@ def _log_lines_for(date_str, path_for, tail_lines, stats=None):
 _most_recent_log_cache = {"history_date": None, "checked_day": ""}
 
 
-def _today_has_logs(path_for, tail_lines):
+def _today_has_logs():
     """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
 
     """
     # 整读而不倒读：尾部被其他 logger（如 web 每日清理循环的 yiban.db 告警）刷屏时，
     # 只看尾部会得出「今天无日志」而回退到历史日期；按天文件体积有限，整读开销可忽略
-    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d"), path_for, tail_lines))
+    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d")))
 
 
-def _most_recent_log_date(max_days, path_for, tail_lines):
+def _most_recent_log_date(max_days=30):
     """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD。
 
     每次先检查今天（开销小，今天有新日志立即生效）；无日志时用历史缓存（每天只扫一次）。
     """
     today = clock.now().strftime("%Y-%m-%d")
     # 今天有日志 → 直接返回今天（并更新缓存）
-    if _today_has_logs(path_for, tail_lines):
+    if _today_has_logs():
         _most_recent_log_cache["history_date"] = today
         return today
     # 今天无日志：跨天重置缓存，重新扫描历史
@@ -244,7 +284,7 @@ def _most_recent_log_date(max_days, path_for, tail_lines):
             d = (clock.now() - timedelta(days=i)).strftime("%Y-%m-%d")
             # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
             # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
-            if _log_lines_for(d, path_for, tail_lines):
+            if _log_lines_for(d):
                 _most_recent_log_cache["history_date"] = d
                 break
     return _most_recent_log_cache["history_date"] or today
@@ -318,24 +358,23 @@ def load_sign_state_ex(state_dir, date_str=None):
     }, "daily"
 
 
-def load_sign_state(state_dir, date_str=None):
+def load_sign_state(date_str=None):
     """读取按日终态载体：{phone: {status, message, time, task}}。
 
     缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
     覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
     两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
 
-    `state_dir` 由调用方传入（`web.app` 的 `STATE_DIR`）——它是可被参数覆盖、
-    也会随运行方式变化的模块级名字。
+    状态目录从宿主取（`STATE_DIR` 可被参数覆盖、也会随运行方式变化）。
     读取实现在 `load_sign_state_ex`（唯一一份，含来源判定）。
     """
-    return load_sign_state_ex(state_dir, date_str)[0]
+    return load_sign_state_ex(_host("state_dir"), date_str)[0]
 
 
 # ---------------------------------------------------------------------------
 # 看板账号统计（终态口径）
 # ---------------------------------------------------------------------------
-def accounts_terminal_summary(state_dir, days=30):
+def accounts_terminal_summary(days=30):
     """窗口内**账号终态**统计——看板 `accounts_stats` 的唯一来源。
 
     终态载体是**按日状态文件**，不是 `sign_events`。旧实现按"每账号当日最后一条事件
@@ -366,6 +405,7 @@ def accounts_terminal_summary(state_dir, days=30):
     by_status = {}
     by_day = []
     days_missing = []
+    state_dir = _host("state_dir")
     for i in range(days - 1, -1, -1):
         day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
         data, source = load_sign_state_ex(state_dir, day)
