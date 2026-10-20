@@ -358,8 +358,9 @@ def api_mail_config_save():
     # 旧收件人值必须在落盘**之前**取——写后再读只会读到刚写进去的新值，
     # "从哪改到哪"就塌成"从哪改到哪自己"。
     admin_to_old = mail_config._get("ADMIN_TO") if admin_to_val is not None else None
-    # SMTP 凭据变更（中继/授权码 = 换钥类）要当次口令；admin_to 是可逆路由改动，
-    # 免口令（不拖累同请求的 smtps 一起免——两字段分别判定）
+    # SMTP 凭据变更（中继/授权码 = 换钥类）要当次口令；admin_to 改道不是普通可逆
+    # 改动——它在下方单独过统一高危门（quota="creds"、risk_always=True）。两字段
+    # 分别判定，互不替代。
     if smtps_list is not None:
         # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组；
         # 第一个参数是整个请求体（门禁还要看 confirm_delay_ack 之类的同请求字段）
@@ -370,8 +371,8 @@ def api_mail_config_save():
     if not flags and smtps_list is None and admin_to_val is None:
         return jsonify({"error": "缺少有效配置项"}), 400
     # 关闭邮件通道过统一高危门禁：先口令、通过后才占凭据额度（与 notify-config 的
-    # 「关闭消息推送通道」共用同一道门与同一本账）。开启方向、admin_notify（个人
-    # 接收偏好）与 admin_to（可逆路由改动）仍免门免额度，留痕靠落盘后的审计行。
+    # 「关闭消息推送通道」共用同一道门与同一本账）。开启方向与 admin_notify（个人
+    # 接收偏好）免门免额度；admin_to 改道在下方单独过同一道门（本分支只管关通道）。
     if closing_mail_channel:
         gate = _high_risk_gate()(data, "关闭邮件告警通道", quota="creds",
                                   risk_always=True)
