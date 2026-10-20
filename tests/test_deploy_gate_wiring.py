@@ -29,6 +29,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -278,6 +279,187 @@ class PassphraseHandoffTest(unittest.TestCase):
                     rc, 1, "权限模型不允许时必须返回 1（闸门据此显性 SKIP）；"
                            "98/99 说明交接函数本身缺失")
                 self.assertEqual(calls, "", "交接未成立时不得留下 chown 调用痕迹")
+
+
+def _func_body(text, func):
+    """切出 bash 脚本里某个函数（列 1 的 `func() {` 起、到列 1 的 `}`）。空串=没抽到。"""
+    m = re.search(r"^%s\(\) \{\s*(?:#.*)?$" % re.escape(func), text, re.M)
+    if m is None:
+        return ""
+    rest = text[m.end():]
+    end = re.search(r"^\}$", rest, re.M)
+    return rest[:end.start()] if end else ""
+
+
+def _func_source(text, func):
+    body = _func_body(text, func)
+    return "" if not body else "%s() {\n%s\n}\n" % (func, body)
+
+
+_FAKE_DB = '''\
+class _Cursor:
+    def __init__(self, sql):
+        self.sql = sql
+
+    def fetchone(self):
+        if "COUNT(*) FROM accounts" in self.sql:
+            return (2,)
+        if "COUNT(*) FROM audit_logs" in self.sql:
+            return (20,)
+        return (0,)
+
+
+class _Conn:
+    def execute(self, sql, *args):
+        return _Cursor(sql)
+
+    def commit(self):
+        pass
+
+
+def init_db(*args, **kwargs):
+    pass
+
+
+def audit(*args, **kwargs):
+    pass
+
+
+def get_conn():
+    return _Conn()
+
+
+def audit_head_hash():
+    return "h"
+
+
+def record_audit_anchor():
+    pass
+'''
+
+_FAKE_ACCOUNTS = '''\
+def replace_accounts(rows):
+    pass
+'''
+
+
+@unittest.skipIf(BASH is None, "bash 不在 PATH：两代镜像灌数脚本的活体模拟跳过（CI/WSL 有 bash）")
+class DeploySeedTwoGenerationTest(unittest.TestCase):
+    """工单 e0ro：灌数脚本同时在**旧镜像**（v0.6.2）与**新镜像**（本树）里执行。
+
+    T6 迁移把 import 从 `yiban.store` 单向改成 `yiban.adapters.persistence`，而
+    `seed_sql_py` 在 Phase B 的旧容器里运行 ⇒ ImportError ⇒ B3/B6/B8/B11 连锁红。
+    本类钉三条不变量：
+      ① 两代模块路径都只有**一个定义点**（`store_module`），灌数脚本按代次取；
+      ② 调用点必须写明所在镜像的代次（A/C=new，B3=old）；
+      ③ 活体：用两棵只有一侧模块的假包真跑灌数脚本 ⇒ 两代都能导入；把代次与
+         包配错必须 ImportError（证明两条路径不可互换）。
+    """
+
+    def setUp(self):
+        self.text = _read(GATE)
+
+    def _store_module(self, gen):
+        src = _func_source(self.text, "store_module")
+        self.assertIn("store_module() {", src, "抽不出 store_module")
+        r = subprocess.run([BASH, "-c", "%s\nstore_module %s" % (src, gen)],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, "store_module %s 失败：%s" % (gen, r.stderr))
+        return r.stdout.strip()
+
+    def test_both_module_paths_exist_and_are_not_inlined_elsewhere(self):
+        mod = _func_body(self.text, "store_module")
+        self.assertTrue(mod, "抽不出 store_module：代次→模块路径的单一事实源缺失")
+        new_mod, old_mod = self._store_module("new"), self._store_module("old")
+        self.assertEqual(new_mod, "yiban.adapters.persistence", "新树模块路径漂了")
+        self.assertTrue(old_mod, "旧镜像模块路径为空")
+        self.assertNotEqual(new_mod, old_mod, "两代模块路径不能相同")
+        inline = re.findall(r"from yiban\.(?:store|adapters\.persistence) import db", self.text)
+        self.assertEqual(inline, [],
+                         "裸 `from yiban.… import db` 只许经 store_module/py_db_import 生成；"
+                         "散落的内联 db import 就是第二个定义点")
+
+    def test_seed_requests_a_generation_and_prints_the_actual_module(self):
+        body = _func_body(self.text, "seed_sql_py")
+        self.assertTrue(body, "抽不出 seed_sql_py")
+        self.assertRegex(body, r'\{2:\?|local\s+gen=.*\$\{?2',
+                         "seed_sql_py 必须要求调用方给镜像代次（缺省不许猜）")
+        self.assertIn("STORE_MODULE", body,
+                      "灌数脚本必须打印实际导入到的模块名（门据此断言代次）")
+
+    def test_each_call_site_names_the_generation_of_its_container(self):
+        cases = (("phase_A", "seed_sql_py plain new"),
+                 ("phase_B", "seed_sql_py legacy old"),
+                 ("phase_C", "seed_sql_py plain new"))
+        for func, expect in cases:
+            body = _func_body(self.text, func)
+            self.assertTrue(body, "抽不出 %s" % func)
+            self.assertIn(expect, body,
+                          "%s 的灌数调用必须写明镜像代次：期望 %r" % (func, expect))
+        phase_b = _func_body(self.text, "phase_B")
+        self.assertIn("py_db_import old", phase_b,
+                      "B3 在旧镜像里读审计头，必须用旧代次 import")
+        self.assertIn("py_db_import new", phase_b,
+                      "B4 升级后的 B8 在新镜像里，必须用新代次 import")
+
+    def _harness(self, mode, gen):
+        defs = "".join(_func_source(self.text, f)
+                       for f in ("store_module", "py_db_import", "seed_sql_py"))
+        self.assertIn("store_module() {", defs, "抽不出 store_module")
+        self.assertIn("seed_sql_py() {", defs, "抽不出 seed_sql_py")
+        harness = ("GATE_SEED_N=2\n%s\nrun() { seed_sql_py %s %s; }\nrun\n"
+                   % (defs, mode, gen))
+        return subprocess.run([BASH, "-c", harness], capture_output=True, text=True,
+                              timeout=60)
+
+    def _fake_tree(self, module_path):
+        root = tempfile.mkdtemp(prefix="deploy-seed-fake-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        pkg = os.path.join(root, *module_path.split("."))
+        os.makedirs(pkg)
+        # 父级 __init__.py：让 `from yiban.x import db` 走真包语义
+        parts = module_path.split(".")
+        for i in range(1, len(parts)):
+            init = os.path.join(root, *parts[:i], "__init__.py")
+            if not os.path.exists(init):
+                with io.open(init, "w", encoding="utf-8") as f:
+                    f.write("")
+        with io.open(os.path.join(pkg, "__init__.py"), "w", encoding="utf-8") as f:
+            f.write("from . import db, accounts\n")
+        with io.open(os.path.join(pkg, "db.py"), "w", encoding="utf-8") as f:
+            f.write(_FAKE_DB)
+        with io.open(os.path.join(pkg, "accounts.py"), "w", encoding="utf-8") as f:
+            f.write(_FAKE_ACCOUNTS)
+        return root
+
+    def _run_seed(self, mode, gen, tree):
+        code = self._harness(mode, gen).stdout
+        self.assertIn("from yiban.", code, "灌数脚本里没有 import")
+        env = dict(os.environ, PYTHONPATH=tree)
+        # cwd=假树：`-c` 的 sys.path[0] 是 cwd，须让它命中假包而不是真仓的 yiban/
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, env=env, cwd=tree, timeout=60)
+
+    def test_new_generation_imports_the_new_tree_module(self):
+        new_mod = self._store_module("new")
+        r = self._run_seed("plain", "new", self._fake_tree(new_mod))
+        self.assertEqual(r.returncode, 0, "新镜像形态必须能导入：\n" + r.stderr)
+        self.assertIn("STORE_MODULE %s.db" % new_mod, r.stdout)
+        self.assertIn("ACCOUNTS= 2", r.stdout)
+
+    def test_old_generation_imports_the_legacy_module(self):
+        old_mod = self._store_module("old")
+        r = self._run_seed("legacy", "old", self._fake_tree(old_mod))
+        self.assertEqual(r.returncode, 0, "旧镜像形态必须能导入：\n" + r.stderr)
+        self.assertIn("STORE_MODULE %s.db" % old_mod, r.stdout)
+        self.assertIn("ACCOUNTS= 2", r.stdout)
+
+    def test_generation_and_image_must_match(self):
+        """突变：代次与镜像配错必须 ImportError——两条路径不可互换。"""
+        r = self._run_seed("plain", "old", self._fake_tree(self._store_module("new")))
+        self.assertNotEqual(r.returncode, 0,
+                            "旧代次在新树上居然导入成功：两条路径被弄成了同一条？\n" + r.stdout)
+        self.assertIn("ModuleNotFoundError", r.stderr)
 
 
 if __name__ == "__main__":
