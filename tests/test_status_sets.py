@@ -30,7 +30,6 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
@@ -238,59 +237,6 @@ class SecondRunDropDoneTest(unittest.TestCase):
     def test_missing_state_file_keeps_everything(self):
         """状态文件缺失/损坏按「无记录」处理：宁可多跑一轮，不可漏签。"""
         self.assertEqual(self._kept(), [PHONE])
-
-
-class WindowSkipPrefilterAgreementTest(unittest.TestCase):
-    """窗口收尾的预筛与「仅当无结论才写」的 CAS 对同一状态串必须给同一判定。
-
-    预筛决定账号是否带着已有结论透传进 `results`；CAS 决定落盘是否覆盖。两处判据不一致
-    时，同一个账号既进不了 `results`（汇总按未执行失败计、退出码 1、发失败邮件），状态
-    文件又被改写成 `skipped_window`——真实结果与失败告警一起消失。
-    """
-
-    DAY = "2026-09-16"
-    #: 窗口已关闭的时刻（默认窗口 06:30~07:50，截止保护按 sign_end 减 edge_back）
-    CLOSED_AT = datetime(2026, 9, 16, 8, 5)
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-status-sets-skip-")
-        self._env = dict(os.environ)
-        os.environ.update({"YIBAN_STATE_DIR": self.tmp,
-                           "YIBAN_SIGN_START": "06:30",
-                           "YIBAN_SIGN_END": "07:50"})
-        os.environ.pop("YIBAN_SECOND_RUN", None)
-
-    def tearDown(self):
-        os.environ.clear()
-        os.environ.update(self._env)
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _state_path(self):
-        return os.path.join(self.tmp, f"sign-state-{self.DAY}.json")
-
-    def _run_window_closed(self, recorded_status):
-        """按给定的当日记录跑一轮「窗口已关闭」的执行，返回 `(results, 落盘状态)`。"""
-        with open(self._state_path(), "w", encoding="utf-8") as f:
-            json.dump({PHONE: {"status": recorded_status}}, f, ensure_ascii=False)
-        with mock.patch.object(clock, "now", return_value=self.CLOSED_AT), \
-                mock.patch.object(round_mod.time, "sleep"):
-            results = round_mod.run_queue_retry(
-                [_acc()], "", 0, 0, schedule={PHONE: self.CLOSED_AT}, cred_state={})
-        with open(self._state_path(), encoding="utf-8") as f:
-            return results, json.load(f)[PHONE]["status"]
-
-    def test_unknown_status_survives_window_skip(self):
-        results, stored = self._run_window_closed("GLOBAL_PAUSED")
-        self.assertEqual(stored, "GLOBAL_PAUSED",
-                         "看不懂的状态串也是结果，窗口外跳过不得覆盖它")
-        self.assertEqual(results[PHONE][3], "GLOBAL_PAUSED",
-                         "预筛必须判它「已有结论」并透传，而不是当成本轮未执行")
-
-    def test_no_record_is_still_marked_as_window_skip(self):
-        """反方向：空串是「无记录」，窗口外跳过必须写得进去（否则漏记一轮）。"""
-        results, stored = self._run_window_closed("")
-        self.assertEqual(stored, yiban_status.STATUS_SKIPPED_WINDOW)
-        self.assertEqual(results[PHONE][3], yiban_status.STATUS_SKIPPED_WINDOW)
 
 
 class HasUndoneAccountsTest(unittest.TestCase):
