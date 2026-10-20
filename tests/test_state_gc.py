@@ -380,7 +380,8 @@ class CleanupEntryPointsTest(unittest.TestCase):
     def test_container_scheduler_uses_shared_policy(self):
         with open(os.path.join(BASE, "docker", "scheduler.py"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("state_gc.sweep(STATEDIR, LOGDIR)", src)
+        self.assertIn("state_gc.sweep(STATEDIR, LOGDIR, env=cleanup_env)", src,
+                      "容器清理必须调共享策略，并把 .env 口径的保留期传下去（ba-p10-03）")
         self.assertNotIn("_cleanup_logs", src, "旧的只清日志实现应已被替换")
 
     def test_state_dir_resolution_matches_run_sh(self):
