@@ -209,7 +209,14 @@ def attempt_signin(account):
     统一通知一次。
     """
     phone = account.phone
-    if not account_still_signable(account):
+    still_signable = account_still_signable(account)
+    if still_signable is None:
+        # 复核**查询本身失败**（DB 错/锁超时）：fail-closed 不发起登录，但归因必须与
+        # "账号确实不可签"分开（工单 ba-p02-06 同族残余）。落 failed 而不是
+        # user_cancelled/paused：这是环境故障，不是账号结论；文案不得说"已删除"。
+        return (False, "账号状态复核失败（数据库查询异常），本次不发起登录",
+                True, STATUS_FAILED)
+    if not still_signable:
         # 运行期复核：账号在本轮执行期间被删除/停用 → 不发起任何请求。
         # 只在启动时筛一次的话，被删账号仍会被完整登录并签退，还会把会话缓存
         # 写回一个已不存在的账号（孤儿行，见 db.account_is_signable 的说明）。

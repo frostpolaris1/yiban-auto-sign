@@ -231,7 +231,12 @@ def has_key(env_file=None):
     # 正是"删钥后仍登录"的判据（本批只把**调用点**从字段循环里挪出一次，不动本语义）。
     # 下面 `.env` 解析带按 (mtime_ns,size,ino) 失效的进程内缓存（env_io._PARSE_CACHE）：
     # 文件一变即重解析，故"现在有没有钥"这一语义不变，只是不再逐次读同一份未变的盘。
-    return bool(_parse_env_file(env_file or DEFAULT_ENV_FILE).get("YIBAN_ACCOUNTS_KEY", "").strip())
+    # 显式参数 → `YIBAN_ENV_FILE` → 默认 .env，三级口径与 `load_key` /
+    # `assert_key_sources_agree` 同源（统一走 `env_io.env_path`）。旧实现只解析两级，
+    # 容器里（cwd 没有 .env、YIBAN_ENV_FILE 指向 /data/.env）裸调本函数会答"没有钥"，
+    # 与 `load_key` 的分歧把同一份部署说成一个有钥一个没钥（工单 ba-p08-13）。
+    path = env_file or env_io.env_path(default=DEFAULT_ENV_FILE)
+    return bool(_parse_env_file(path).get("YIBAN_ACCOUNTS_KEY", "").strip())
 
 
 def is_encrypted(value):
