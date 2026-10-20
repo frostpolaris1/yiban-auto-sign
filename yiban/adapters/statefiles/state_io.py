@@ -88,6 +88,8 @@ STATUS_PENDING = yiban_status.STATUS_PENDING
 #: 兜底执行体的心跳文件（刷新时间戳；退出时删除）。用途：让"还有没有下一轮兜底"
 #: 变成可查的**事实**，而不是靠猜时刻——告警抑制与网页展示都用它。
 FALLBACK_ALIVE_FILE = "fallback-alive.json"
+#: 心跳写失败只告警一次（每进程）：本函数每轮扫描都调，逐次告警会变成噪声。
+_FALLBACK_ALIVE_WARNED = False
 
 # 并行执行体心跳（写侧：监督进程；读侧：`worker_presence`）。
 # 语义前提：并行执行体是**一轮就退出的短命进程**，不是常驻服务——"没在跑"在多数时间
@@ -123,6 +125,18 @@ def _has_conclusion(entry):
     return yiban_status.is_concluded_status(entry.get("status", ""))
 
 
+def sched_run_path(day=None, state_dir=None):
+    """`sched-run-<day>.json` 的**唯一路径定义点**（census-P2-sched-run）。
+
+    写入（`_write_sched_done`）、存在性（`_sched_marker_exists`）与 completed 真值
+    （`full_run_done_today`）三处过去各手写一遍 f-string；改形状时只有一处被带上，
+    其余静默读旧路径。现在全部引用本函数。
+    """
+    directory = state_dir or _state_dir()
+    today = day or clock.now().strftime("%Y-%m-%d")
+    return os.path.join(directory, f"sched-run-{today}.json")
+
+
 def _sched_marker_exists():
     """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
@@ -133,9 +147,7 @@ def _sched_marker_exists():
     去理解这条告警。标记本身在首签轮收尾写入（_write_sched_done），与容器 scheduler.py 的
     _full_run_done_today() 是同一事实源。
     """
-    state_dir = _state_dir()
-    path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
-    return os.path.exists(path)
+    return os.path.exists(sched_run_path())
 
 
 def _is_second_run():
@@ -152,10 +164,21 @@ def _is_second_run():
     return schedule._env_flag("YIBAN_SECOND_RUN") or _sched_marker_exists()
 
 
+def sign_state_path(day=None, state_dir=None):
+    """`sign-state-<day>.json` 的**唯一路径定义点**（census-P2-sign-state）。
+
+    写侧（`_sign_state_path` / `_write_sign_state`）与清理名册（`state_gc.ARTIFACTS`
+    的前后缀）都从这里取形状；其他进程（网页日志页、ledger_check、backup.sh）
+    仍各有读取点，收口它们须单独裁决（本函数先让写入侧不再各手写 f-string）。
+    """
+    directory = state_dir or _state_dir()
+    today = day or clock.now().strftime("%Y-%m-%d")
+    return os.path.join(directory, f"sign-state-{today}.json")
+
+
 def _sign_state_path():
     """当日 sign-state 状态文件路径（状态目录缺失/不可写由调用方处理）。"""
-    state_dir = _state_dir()
-    return os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
+    return sign_state_path()
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +526,7 @@ def _write_sched_done(counts=None):
     - 补签：标记不存在，或存在未了结账号（failed/retrying/pending）→ 执行。
     """
     state_dir = _state_dir()
-    path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
+    path = sched_run_path(state_dir=state_dir)
     try:
         os.makedirs(state_dir, exist_ok=True)
         payload = {
@@ -547,11 +570,10 @@ def _state_dir():
 
 def full_run_done_today(state_dir=None, day=None):
     """当日全量签到是否已收尾（sched-run-<date>.json 的 completed 标记）。"""
-    d = state_dir or _state_dir()
-    today = day or clock.now().strftime("%Y-%m-%d")
+    path = sched_run_path(day=day, state_dir=state_dir)
     try:
         # utf-8-sig：容错 Windows 手工/工具写入的 BOM（与 _load_cred_state 同口径）
-        with open(os.path.join(d, f"sched-run-{today}.json"), encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return False
@@ -657,11 +679,21 @@ def _fallback_alive_path():
 
 
 def _write_fallback_alive(at=None):
-    """刷新兜底执行体心跳（每轮扫描写一次）。失败静默——心跳不该影响签到。"""
+    """刷新兜底执行体心跳（每轮扫描写一次）。
+
+    census-P2-fallback-alive：写失败**不能零留痕**——心跳缺失会让告警抑制把
+    "后面还有人接着跑"判成假，进而吞掉当天应有的告警。失败按进程节流打一条
+    warning（每进程至多一条；本函数每轮扫描都调，逐次告警会变成噪声）。
+    """
+    global _FALLBACK_ALIVE_WARNED
     path = _fallback_alive_path()
-    with contextlib.suppress(OSError):
+    try:
         _write_private_json(path, {"at": (at or clock.now()).strftime(_TS_FMT),
                                    "pid": os.getpid()})
+    except OSError as e:
+        if not _FALLBACK_ALIVE_WARNED:
+            _FALLBACK_ALIVE_WARNED = True
+            logger.warning("写入兜底心跳失败（告警抑制可能误判）: %s", _sanitize_text(e))
 
 
 def _clear_fallback_alive():

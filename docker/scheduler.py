@@ -218,6 +218,10 @@ def _slot_marker(kind):
     追加一轮必然 skipped_window 的全站负载并覆盖当日已 success 的状态。
     落盘标记使「同一时段二次触发不重跑」跨重启成立；标记不可写时退化为
     既有闩锁语义。按日命名，跨日自动失效。"""
+    # census-P2-sched-slot-kind：kind 段有枚举（state_gc.SCHED_SLOT_KINDS），写侧与
+    # 清理侧共用；未知拼写直接拒绝，不许生成一个永远不会被清理的按日文件。
+    if kind not in state_gc.SCHED_SLOT_KINDS:
+        raise ValueError(f"未知的调度槽位 kind：{kind!r}（允许：{state_gc.SCHED_SLOT_KINDS}）")
     return os.path.join(STATEDIR, f"sched-slot-{kind}-{clock.now():%Y-%m-%d}.json")
 
 
@@ -322,7 +326,12 @@ def _cleanup_state():
     清理失败仅记日志：它是后台维护动作，不该影响调度循环。
     """
     try:
-        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR)
+        # ba-p10-03：保留期必须按 `.env` 口径解析（M27：`.env` 优先、进程环境补缺）。
+        # 旧调用不传 env，`retention_days()` 落回 os.environ——写在 `.env` 里的
+        # YIBAN_RETENTION_DAYS / YIBAN_SNAPSHOT_RETENTION_DAYS 对容器清理恒不生效。
+        cleanup_env = dict(os.environ)
+        cleanup_env.update(parse_env_file(ENV_FILE))
+        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR, env=cleanup_env)
         if removed:
             logger.info("已清理 %d 个过期状态/日志文件", removed)
     except (OSError, ValueError) as e:
