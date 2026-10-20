@@ -157,7 +157,7 @@ fast	tests/test_json_import_fail_closed.py
 fast	tests/test_key_sources_startup_assert.py
 fast	tests/test_ledger_check.py
 fast	tests/test_list_pagination.py
-slow	tests/test_live_claim_cross_process_contention_e2e.py	# 真子进程争用：每用例起 3 个独立进程同刻抢同一行＋1.5s 发令等待（本机 64.4s）
+slow	tests/test_live_claim_cross_process_contention_e2e.py	# 真子进程争用：每用例起 3 个独立进程，全部就绪后统一发令抢同一行（本树单文件 5.8s；2026-10-20 实测）
 fast	tests/test_locks.py
 fast	tests/test_log_masking_credentials.py
 fast	tests/test_log_masking_entry_mounts.py
