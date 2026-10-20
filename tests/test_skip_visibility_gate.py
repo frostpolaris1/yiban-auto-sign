@@ -100,6 +100,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "无 bash 环境"
   ]
  ],
+ "tests/test_backup_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 sqlite3"
+  ]
+ ],
  "tests/test_backup_require_encrypt.py": [
   [
    "skipTest",
