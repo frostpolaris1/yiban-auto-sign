@@ -25,5 +25,6 @@
      data-empty-href="{{ empty_href }}"></div>
 <noscript><p class="panel-sub">本页动态内容需要 JavaScript。</p></noscript>
 
-<script>window.YB_CALENDAR_STATE = {{ calendar_state | tojson }};</script>
+{# 动态数据块无法外置（内容随请求变化）；CSP 用逐请求 nonce 授权，不放开 unsafe-inline #}
+<script nonce="{{ csp_nonce }}">window.YB_CALENDAR_STATE = {{ calendar_state | tojson }};</script>
 {% endmacro %}
