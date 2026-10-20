@@ -2,18 +2,22 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**功能**
-结构门禁：跑 `.importlinter` 的依赖方向契约，只对**基线之外的新增违规**判红。
+结构门禁：跑 `.importlinter` 的依赖方向契约，对**任何**违规判红。
 
 用法：
     scripts/check-import-linter.py [--root DIR] [--config FILE] [--baseline FILE]
-                                   [--min-modules N] [--write-baseline]
+                                   [--min-modules N]
 
 契约本体住 `.importlinter`（仓库根）。本脚本不复制契约内容。本脚本只做三件事：
-读配置、跑契约、拿当前违规集与基线对账。
+读配置、跑契约、把违规判红。
 
-**观测模式（P0）**
-本批不改结构，只钉"不再变坏"。当前违规落进基线文件。基线只许缩小。
-新增违规即红。存量收紧留给后续批次（P2c 出口＝基线清零或显式豁免清单）。
+**豁免口径（工单 jlmv）**
+基线机制**已退役**：import-linter 的 forbidden 契约把整条契约聚成一个模块对
+（源码 `_modules_overlap` 的聚合粒度是 `(source_pkg, forbidden_pkg)`），故登记一行
+基线等于放行该方向**全部**边——"新增即红"失效。确需接受的边一律写进
+`.importlinter` 对应契约的 `ignore_imports`，**逐边列名**；import-linter 对
+无匹配的豁免条目报错（退 2），生命周期自证。`scripts/gate/import-linter-baseline.txt`
+成为墓碑文件：只允许文件头，任何数据行都判环境错误。
 
 **为什么用 import-linter 而不是自己写 AST 扫描**
 依赖方向判定要处理相对导入、包与模块的包含关系、间接依赖、重叠对跳过等边界。
@@ -30,11 +34,9 @@ import-linter 2.15 的 CLI 没有机器可读输出格式。解析人读文本�
 二、契约空转：声明的模块表达式在图里零命中即退 2。import-linter 对"目标模块不在图里"
     不报错，契约会恒 KEPT（实测 2026-10-11）。故本门自己查每条契约的命中数。
 
-**违规的身份（基线的行格式）**
-一行一条，制表符分三列：`契约 id <TAB> 导入者模块 <TAB> 被导入模块`。
-身份用**契约 id**，不用契约的 `name`。`name` 是人读散句，改一次文案就让整份基线失效；
-`id` 是配置段名 `[importlinter:contract:<id>]`，稳定。
-行内的文件与行号不进身份。同一条违规换行不产生新条目。按此口径基线才对得上。
+**违规的身份**
+报告元数据里的 `(导入者, 被导入者)` 对逐条打印。身份不再进基线文件，故不需要
+稳定 id 映射；契约 id 仍用于输出定位。
 
 **已知弱化点（如实登记，别当"已完全覆盖"）**
 字符串拼接的 import（`importlib.import_module("web.x")`）不在判定面内。
@@ -55,17 +57,15 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE_HEADER = (
-    "# import-linter 违规基线（P0 观测模式）\n"
-    "# 一行一条：契约 id <TAB> 导入者模块 <TAB> 被导入模块\n"
-    "# 契约 id 取配置段名 [importlinter:contract:<id>]，不用人读的 name（改文案不能让基线失效）。\n"
-    "# 语义：基线之外的违规即红。基线只许缩小（ratchet）。\n"
-    "# 收紧基线：修掉违规后跑 scripts/check-import-linter.py --write-baseline。\n"
-    "# 本文件不许手工加宽：加宽等于放水，须在 PR 描述里逐条写理由。\n"
+    "# import-linter 基线墓碑（机制已退役，工单 jlmv）\n"
+    "# 本文件只允许文件头。基线按模块对放行 = 放行整条方向，\"新增即红\"会失明。\n"
+    "# 确需接受的边写进 .importlinter 对应契约的 ignore_imports（逐边列名）；\n"
+    "# import-linter 对无匹配的豁免条目报错退 2，生命周期自证。\n"
 )
 
 
 def _die(msg, code=2):
-    """环境/参数错误：点名问题并退 2。与"有新增违规"（1）严格分开。"""
+    """环境/参数错误：点名问题并退 2。与"有违规"（1）严格分开。"""
     print("check-import-linter: %s" % msg, file=sys.stderr)
     sys.exit(code)
 
@@ -101,17 +101,20 @@ def _extract_violations(metadata):
     return found
 
 
-def _parse_baseline(text, path):
-    """读基线行。返回 (契约名, 导入者, 被导入者) 的集合。列数不对即硬失败。"""
-    out = set()
+def _assert_baseline_is_empty(text, path):
+    """基线文件只允许注释；任何数据行都判环境错误（工单 jlmv）。
+
+    为什么拒绝而不是忽略：留着数据行会让人以为"这里有豁免"，而门其实按任何违规
+    判红——两套口径并存必然误判。豁免的唯一出口是 `.importlinter` 的
+    `ignore_imports`（逐边列名，无匹配条目会被 import-linter 自己拒绝）。
+    """
     for num, raw in enumerate(text.splitlines(), 1):
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        cells = raw.rstrip("\r").split("\t")
-        if len(cells) != 3 or not all(c.strip() for c in cells):
-            _die("基线 %s 第 %d 行列数应为 3 且各列非空: %r" % (path, num, raw))
-        out.add((cells[0].strip(), cells[1].strip(), cells[2].strip()))
-    return out
+        _die("基线文件 %s 第 %d 行仍有数据行 %r。基线机制已退役（工单 jlmv）："
+             "按模块对登记会放行整条方向。请把确需接受的边逐条写进 `.importlinter` "
+             "对应契约的 `ignore_imports`，并把本文件恢复为只有文件头"
+             % (path, num, raw))
 
 
 def _load_importlinter():
@@ -239,31 +242,6 @@ def _build_report(use_cases, config, root, min_modules):
     return report, sorted(violations)
 
 
-def _ratchet_blocks_write(baseline_path, current):
-    """棘轮判定：基线已存在时，只许收紧（新违规集 ⊆ 旧基线集）。
-
-    返回要新增的条目（加宽集）。为空即允许写入。
-    基线文件不存在 ⇒ 首次生成，允许全量写入。此判定是"基线只许缩小"这条语义的
-    机械守卫——`--write-baseline` 曾能一个开关把红变绿（审查 M1）。
-    """
-    if not os.path.isfile(baseline_path):
-        return []
-    old = _parse_baseline(_read_text(baseline_path, "基线文件"), baseline_path)
-    return sorted(set(current) - old)
-
-
-def _write_baseline(path, violations):
-    """把当前违规集写成基线文件（含文件头）。返回写入条数。"""
-    body = "".join("%s\t%s\t%s\n" % row for row in violations)
-    try:
-        with io.open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(BASELINE_HEADER)
-            f.write(body)
-    except OSError as exc:
-        _die("基线写不进去: %s（%s）" % (path, exc))
-    return len(violations)
-
-
 def _build_parser():
     """构建参数解析器。独立成函数：元测试正面钉住 `--min-modules` 的默认下限（M3）。
 
@@ -272,16 +250,16 @@ def _build_parser():
     """
     ap = argparse.ArgumentParser(
         prog="scripts/check-import-linter.py",
-        description="import-linter 依赖方向契约门（基线外新增违规即红）")
+        description="import-linter 依赖方向契约门（任何违规即红；豁免走 ignore_imports）")
     ap.add_argument("--root", default=REPO_ROOT)
     ap.add_argument("--config", default=None, help="默认 <root>/.importlinter")
     ap.add_argument("--baseline", default=None,
-                    help="默认 <root>/scripts/gate/import-linter-baseline.txt")
+                    help="墓碑文件：只允许文件头（默认 <root>/scripts/gate/import-linter-baseline.txt）")
     # 128-P0 定值：实测 131 模块，取下限 100 防图塌。跌破 100 必须同批重定并在 PR 写理由。
     ap.add_argument("--min-modules", type=int, default=100,
                     help="分析到的模块数下限；低于它判环境错误（防图塌后假绿）")
     ap.add_argument("--write-baseline", action="store_true",
-                    help="把当前违规集写回基线（只许收紧；加宽即退 2）")
+                    help="已退役：基线按模块对放行会失明，改用 .importlinter 的 ignore_imports")
     return ap
 
 
@@ -291,50 +269,27 @@ def main(argv=None):
 
     if not os.path.isdir(args.root):
         _die("根目录不存在: %s" % args.root)
+    if args.write_baseline:
+        _die("--write-baseline 已退役（工单 jlmv）：基线按模块对登记会放行整条方向。"
+             "确需接受的边请写进 `.importlinter` 对应契约的 `ignore_imports`（逐边列名）")
     root = os.path.abspath(args.root)
     config = args.config or os.path.join(root, ".importlinter")
     baseline_path = args.baseline or os.path.join(root, "scripts/gate/import-linter-baseline.txt")
+    _assert_baseline_is_empty(_read_text(baseline_path, "基线文件"), baseline_path)
 
     use_cases = _load_importlinter()
     _report, violations = _build_report(use_cases, config, root, args.min_modules)
-    current = set(violations)
 
-    if args.write_baseline:
-        # 棘轮：基线已存在时只许收紧。加宽 = 放水，退 2 并保持文件原样（审查 M1）。
-        added = _ratchet_blocks_write(baseline_path, current)
-        if added:
-            print("拒绝写入基线：基线只许缩小（ratchet）。本次要新增 %d 条：" % len(added))
-            for name, importer, imported in added:
-                print("    新增 %s: %s -> %s" % (name, importer, imported))
-            print("先修掉这些违规再收紧；或在 PR 描述里逐条写理由后手工登记。"
-                  "本开关不许用来加宽基线。")
-            return 2
-        n = _write_baseline(baseline_path, violations)
-        print("%s ok: 已写入 %d 条违规为基线（%s）" % (ap.prog, n, baseline_path))
-        return 0
-
-    baseline = _parse_baseline(_read_text(baseline_path, "基线文件"), baseline_path)
-    new = sorted(current - baseline)
-    gone = sorted(baseline - current)
-
-    print("当前违规 %d 条，基线 %d 条" % (len(current), len(baseline)))
-    for name, importer, imported in sorted(current):
+    print("当前违规 %d 条（基线机制已退役：任何违规即红）" % len(violations))
+    for name, importer, imported in sorted(violations):
         print("    违规 %s: %s -> %s" % (name, importer, imported))
-    if gone:
-        print("降档: 基线里有 %d 条已不再出现——同批把基线收紧到当前集：" % len(gone))
-        for name, importer, imported in gone:
-            print("    已消失 %s: %s -> %s" % (name, importer, imported))
-        print("    收紧命令: scripts/check-import-linter.py --write-baseline")
+    if violations:
+        print("这些依赖方向违反结构契约。要么改代码消除它；确需接受时在 `.importlinter` "
+              "对应契约的 `ignore_imports` 里逐边列名（无匹配条目会被 import-linter 拒绝）。",
+              file=sys.stderr)
+        return 1
 
-    if new:
-        print("新增违规 %d 条（不在基线内）：" % len(new))
-        for name, importer, imported in new:
-            print("    %s: %s -> %s" % (name, importer, imported))
-        print("这些依赖方向违反 128 的结构约定。"
-              "要么改代码消除它，要么按流程把基线收紧后重开一条工单登记豁免。")
-        sys.exit(1)
-
-    print("import-linter ok: 依赖方向契约没有基线之外的新增违规")
+    print("import-linter ok: 依赖方向契约零违规")
     return 0
 
 

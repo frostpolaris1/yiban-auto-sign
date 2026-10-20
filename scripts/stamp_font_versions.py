@@ -31,7 +31,9 @@ URL 不变，30 天缓存继续生效；内容/文件名一变 URL 即变，永�
 
 幂等性：处理前先剥掉 url 中已有的 `?v=…` 再重新计算哈希 —— 分片内容未变时二次
 运行零 diff（哈希对文件内容收敛，与历史查询串无关）。`--check` 模式不写盘，
-存在待更新内容时以退出码 1 报告（供 CI / 验证脚本调用）。
+存在待更新内容时以退出码 1 报告；**目录里没有 CSS 或没有可打标的本地 woff2 时
+以退出码 2 报告**（量具没跑过不等于"0 命中"——AGENTS §十三 第 30 条）。
+CI 调用方：`tests/test_generated_artifacts_gate.py`（快集常跑，含突变自证）。
 
 只处理相对路径的本地资源；`data:`、绝对路径与外网 URL 一律跳过。
 用法：
@@ -69,8 +71,13 @@ def _strip_version(url):
     return url.split("?", 1)[0].split("#", 1)[0]
 
 
-def stamp_fonts_dir(root, check=False):
-    """对 root 下所有 CSS 里引用的 woff2 分片打内容哈希。返回 {文件相对路径: 是否(将)更新}。"""
+def stamp_fonts_dir(root, check=False, stats=None):
+    """对 root 下所有 CSS 里引用的 woff2 分片打内容哈希。返回 {文件相对路径: 是否(将)更新}。
+
+    `stats` 非 None 时回填扫描面计数：`css_files`（扫到几份 CSS）、`urls`（几处本地
+    相对 URL 进入打标面）、`missing`（引用落空、无法打标的数量）。调用方据此区分
+    "真的 0 命中"与"量具没跑"。
+    """
     css_files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
@@ -78,6 +85,7 @@ def stamp_fonts_dir(root, check=False):
             if name.endswith(".css"):
                 css_files.append(os.path.join(dirpath, name))
     results = {}
+    counts = {"css_files": len(css_files), "urls": 0, "missing": 0}
 
     for css_path in css_files:
         base = os.path.dirname(css_path)
@@ -87,14 +95,17 @@ def stamp_fonts_dir(root, check=False):
             quote, url = m.group(1), m.group(2)
             if not _is_local_relative(url):
                 return m.group(0)
+            counts["urls"] += 1
             target = os.path.normpath(os.path.join(base, _strip_version(url)))
             if not os.path.isfile(target):
                 # 引用落空：打不了内容哈希，保留原样（缺文件是另一类问题，不在此掩盖）
+                counts["missing"] += 1
                 return m.group(0)
             stamped = "%s?v=%s" % (_strip_version(url), _short_hash(target))
             return "url(%s%s%s)" % (quote, stamped, quote)
 
-        text = open(css_path, encoding="utf-8").read()
+        with open(css_path, encoding="utf-8") as fh:
+            text = fh.read()
         new_text = _URL_RE.sub(_font_url, text)
         rel = os.path.relpath(css_path, root)
         results[rel] = new_text != text
@@ -102,6 +113,8 @@ def stamp_fonts_dir(root, check=False):
             with open(css_path, "w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
         # 未变化不重写（保 mtime）
+    if stats is not None:
+        stats.update(counts)
     return results
 
 
@@ -110,12 +123,24 @@ def main(argv=None):
     args = [a for a in (argv if argv is not None else sys.argv[1:]) if a != "--check"]
     root = os.path.abspath(args[0]) if args else DEFAULT_FONTS_DIR
     if not os.path.isdir(root):
-        sys.exit("错误：目录不存在 %s" % root)
-    results = stamp_fonts_dir(root, check=check)
+        print("错误：目录不存在 %s" % root, file=sys.stderr)
+        return 2
+    stats = {}
+    results = stamp_fonts_dir(root, check=check, stats=stats)
     for rel, changed in sorted(results.items()):
         print("%s %s" % ("已更新" if changed else "无变化", rel))
+    if stats["css_files"] == 0:
+        print("错误：目录下没有任何 CSS 文件，量具未运行: %s" % root, file=sys.stderr)
+        return 2
+    if stats["urls"] == 0:
+        print("错误：目录下没有引用本地 woff2 的 CSS，量具未运行: %s" % root, file=sys.stderr)
+        return 2
+    print("扫描面：css=%d urls=%d missing=%d"
+          % (stats["css_files"], stats["urls"], stats["missing"]))
     if check and any(results.values()):
-        sys.exit(1)
+        print("存在待更新内容：分片内容已变但 URL 未打标（重新运行本脚本打标）",
+              file=sys.stderr)
+        return 1
     return 0
 
 
