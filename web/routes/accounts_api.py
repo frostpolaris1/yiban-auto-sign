@@ -133,7 +133,7 @@ def api_accounts():
             if yiban_status.is_concluded_status(_prev_status):
                 continue
             states[acc.get("phone", "")] = {
-                "status": m.STATUS_USER_CANCELLED,
+                "status": yiban_status.STATUS_USER_CANCELLED,
                 "message": "用户已取消签到",
             }
     # 自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
@@ -172,7 +172,8 @@ def api_accounts():
         ],
         # states 值压成状态码字符串（前端图标映射用）
         "states": {
-            _masking.mask_phone(k): (v.get("status", m.STATUS_PENDING) if isinstance(v, dict) else m.STATUS_PENDING)
+            _masking.mask_phone(k): (v.get("status", yiban_status.STATUS_PENDING)
+                                     if isinstance(v, dict) else yiban_status.STATUS_PENDING)
             for k, v in states.items()
             # 分页时只下发当前页账号的状态；不传参数（paged=False）保持整表口径不变
             if _page_phones is None or k in _page_phones
@@ -291,7 +292,7 @@ def api_account_add():
             return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
         if _accounts_data.find_account_index(accounts_pre, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-        if email_screen and email_screen == m._builtin_admin_email():
+        if email_screen and email_screen == _security._builtin_admin_email():
             return jsonify({"error": "内置管理员邮箱不可注册"}), 400
         # 域名预筛：注定被拒的占位/一次性域名不消耗易班验证配额
         if email_screen:
@@ -301,23 +302,23 @@ def api_account_add():
     # 添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
     # 验证尝试受每用户配额限制，认证失败另有按手机号冷却（与用户提交路径同口径）
     verify_async_job = False
-    if m._account_verify_enabled():
+    if _verify_queue._account_verify_enabled():
         if _security._verify_fail_cooldown_remaining(_verify_fails(), clean["phone"], time.time()) > 0:
-            return jsonify({"error": m.VERIFY_FAIL_COOLDOWN_MSG}), 429
+            return jsonify({"error": _verify_queue.VERIFY_FAIL_COOLDOWN_MSG}), 429
         _vuser = str(session.get("username", ""))
-        if m.verify_async_enabled():
+        if _verify_queue.verify_async_enabled():
             # 异步：请求线程只**先扣配额**，外呼交给后台任务。
             # 待办队列满 → 503（此时账号尚未落库，拒绝无副作用）。
             if _verify_queue._verify_queue_full():
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
             if not _security._verify_attempt_allowed(_verify_limits(), _vuser):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_async_job = True
         else:
             try:
-                verify_err = m.run_verify_with_gate(clean, _vuser, _verify_limits())
+                verify_err = _verify_queue.run_verify_with_gate(clean, _vuser, _verify_limits())
             except _verify_queue.VerifyGateBusy:
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
             except _verify_queue.VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             if verify_err:
@@ -360,7 +361,7 @@ def api_account_add():
             if dom_err:
                 return jsonify({"error": dom_err}), 400
             # 内置管理员邮箱不可被自动注册占用
-            if email.strip().lower() == m._builtin_admin_email().strip().lower():
+            if email.strip().lower() == _security._builtin_admin_email().strip().lower():
                 return jsonify({"error": "内置管理员邮箱不可注册"}), 400
             # 该用户已有账号（每人限 1 个）则拒绝（软删除的不占名额，与用户端一致）
             if any(a.get("owner") == email and not a.get("deleted") for a in accounts):
@@ -612,7 +613,7 @@ def api_account_update(idx):
         gated_creds = (bool(str(data.get("password", "")).strip())
                        or clean["phone"] != old.get("phone"))
         if (creds_written and not (gated_creds and
-                                   m._pw_gate_tier(m.ENV_FILE) == _security.PW_GATE_FULL)):
+                                   _security._pw_gate_tier() == _security.PW_GATE_FULL)):
             _locks.run_after_file_lock(
                 m.send_notification,
                 "高危管理操作告警",
@@ -640,7 +641,7 @@ def api_account_update(idx):
             _locks.run_after_file_lock(
                 _start_edit_probe,
                 clean, _probe_user, _probe_fails, _probe_limits, _verify_queue._start_verify_job,
-                m._account_verify_enabled, _verify_queue._verify_queue_full,
+                _verify_queue._account_verify_enabled, _verify_queue._verify_queue_full,
                 lambda: _security._verify_attempt_allowed(_probe_limits, _probe_user),
                 lambda: _security._verify_fail_cooldown_remaining(
                     _probe_fails, clean["phone"], time.time()),
@@ -912,15 +913,17 @@ def api_account_delete(idx):
             },
         )
         # 软删不再外发即时告警：留痕由上面的审计行承担，且软删可逆
-        # （DELETED_RETENTION_DAYS 天内可在待删除列表恢复）。
+        # （db.SOFT_DELETE_RETENTION_DAYS 天内可在待删除列表恢复）。
         accounts = _accounts_data.load_accounts()
         m.logger.info(
-            "软删除账号 %s（%s 天内可恢复）", _masking.mask_phone(acc.get("phone", "")), m.DELETED_RETENTION_DAYS
+            "软删除账号 %s（%s 天内可恢复）", _masking.mask_phone(acc.get("phone", "")),
+            db.SOFT_DELETE_RETENTION_DAYS,
         )
         return jsonify(
             {
                 "ok": True,
-                "msg": f"已删除「{acc.get('name', '')}」，{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                "msg": (f"已删除「{acc.get('name', '')}」，{db.SOFT_DELETE_RETENTION_DAYS}"
+                        " 天内可在待删除列表恢复"),
                 "accounts": [_accounts_data.mask_account(a, i) for i, a in enumerate(accounts)],
             }
         )

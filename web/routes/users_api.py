@@ -40,6 +40,7 @@ from web.routes import high_risk_gate, read_audit_trace
 from web.routes import page_args as _page_args
 from web.routes import page_meta as _page_meta
 from web.routes import page_window as _page_window
+from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
@@ -166,7 +167,7 @@ def api_users_deleted_purge():
     同步即时告警。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
     data = _http._json_body()
     emails = data.get("emails") or []
@@ -256,10 +257,10 @@ def api_users_batch():
 
     with _locks._file_lock:
         users = _accounts_data.load_users()
-        builtin = m._builtin_admin_email()
+        builtin = _security._builtin_admin_email()
         # `builtin` 是"这一行就是内置管理员，别当普通用户批量操作"的身份比对；
         # "还有没有兜底入口"是另一件事，必须用可登录判据（两个变量别混用一个）
-        builtin_ok = m._builtin_admin_loginable()
+        builtin_ok = _security._builtin_admin_loginable()
 
         # 内存模拟用户表，保持动态管理员数量判断
         sim_users = {u["email"]: dict(u) for u in users}
@@ -272,7 +273,7 @@ def api_users_batch():
             if (
                 action in ("reset_password", "delete")
                 and target.get("role") == "admin"
-                and not m._is_builtin_admin_session()
+                and not _security._is_builtin_admin_session()
             ):
                 # 普通管理员不可重置/删除其他管理员（与单条 403 同口径；
                 # 批量沿用"无效项软跳过"惯例，与内置管理员跳过一致）
@@ -373,7 +374,7 @@ def api_user_role(user_id):
     m = _appmod()
     # 权限：仅主管理员（普通管理员无管理员权限变更权）
     username = (session.get("username") or "").strip().lower()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = _http._json_body()
     # 主管理员专属前置（上方）不变；角色取值校验也不受门禁影响（400 与 403/400 门禁
@@ -386,7 +387,7 @@ def api_user_role(user_id):
         return jsonify({"error": "用户不存在"}), 404
     email = row["email"]
     # 内置管理员（.env）不可修改角色
-    if email.strip().lower() == m._builtin_admin_email().strip().lower():
+    if email.strip().lower() == _security._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可修改角色"}), 400
     # 口令门禁放在 _file_lock 之外（与同域其它高危写口同口径）：scrypt 校验单次数百毫秒，
     # 放进全局锁会让一次鉴权阻塞全进程的用户读写。
@@ -428,13 +429,13 @@ def api_user_role(user_id):
             admins = [u for u in _accounts_data.load_users() if u.get("role") == "admin"]
             # 内置管理员也可登录时才算"还有人兜底"——只配置了用户名不算（失能态
             # 下把最后一个注册管理员也降级，Web 面就一个入口都不剩）
-            if len(admins) <= 1 and not m._builtin_admin_loginable():
+            if len(admins) <= 1 and not _security._builtin_admin_loginable():
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
         # 改走事务内复核的 set_user_role——进程内预检挡不住
         # 跨进程并发（多实例）同时把最后一个注册管理员降权
         try:
             changed = db.set_user_role(
-                email, new_role, allow_last_admin=m._builtin_admin_loginable(),
+                email, new_role, allow_last_admin=_security._builtin_admin_loginable(),
                 # 审计与角色 UPDATE 同事务：权限面变更必须与生效同事务落库，
                 # 中间被杀不留"权限改了却无痕"。
                 audit_spec={
@@ -473,7 +474,7 @@ def api_user_password(user_id):
         return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
     # 管理员重置他人密码 = 账号控制权转移 → 与批量重置同口径过高危门禁（口令 + 同管理员限速）；
     # 普通用户自改密码走 /api/me/password（验当前旧密码），不落本门禁。
-    if m._current_role() == "admin":
+    if _security._current_role(_session_abs_ttl()) == "admin":
         gate = high_risk_gate()(
             data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试",
             quota="creds", risk_always=True)
@@ -483,7 +484,7 @@ def api_user_password(user_id):
     if not row:
         return jsonify({"error": "用户不存在"}), 404
     email = row["email"]
-    is_master = m._is_builtin_admin_session()
+    is_master = _security._is_builtin_admin_session()
     with _locks._file_lock:
         target = db.find_user(email)
         if not target:
@@ -531,9 +532,9 @@ def api_user_delete(user_id):
     email = row["email"] if row else ""
     # 「不存在」的 404 排在口令门禁**之后**（沿用邮箱时代既有次序）：存在性不是
     # 免复核的理由——不存在的 id 同样先被门禁拦下，防探测枚举的行为与改路由前一致。
-    if email.strip().lower() and email.strip().lower() == m._builtin_admin_email().strip().lower():
+    if email.strip().lower() and email.strip().lower() == _security._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可删除"}), 400
-    is_master = m._is_builtin_admin_session()
+    is_master = _security._is_builtin_admin_session()
     # accounts_only 也进门禁的理由：一次请求就把该用户**全部**易班凭据清零，滥用面与
     # full 同级；两种模式的响应语义对齐（口令错 400 / 未登录 401 / 超限与冷却 429）。
     gate = high_risk_gate()(  # 完全删除 = 高危不可逆：先过口令门禁（要口令随档位），通过了才占限速额度
@@ -556,7 +557,7 @@ def api_user_delete(user_id):
         if mode == "full" and target.get("role") == "admin":
             admins = [u for u in _accounts_data.load_users() if u.get("role") == "admin"]
             # 内置管理员可登录时才算"还有兜底入口"（判据见 _builtin_admin_loginable）
-            if len(admins) <= 1 and not m._builtin_admin_loginable():
+            if len(admins) <= 1 and not _security._builtin_admin_loginable():
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
         # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
         # 审计随业务写同事务：删除不可逆，且一次请求即可清空该用户全部易班凭据，
@@ -572,7 +573,7 @@ def api_user_delete(user_id):
             # 内置管理员确实进得来时允许删掉 users 表最后一个注册管理员）
             try:
                 db.delete_user_with_accounts(
-                    email, allow_last_admin=m._builtin_admin_loginable(),
+                    email, allow_last_admin=_security._builtin_admin_loginable(),
                     audit_spec=delete_spec,
                 )
             except db.LastAdminError:

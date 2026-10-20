@@ -43,6 +43,7 @@ from flask import jsonify, request, session
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
@@ -59,8 +60,10 @@ from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.adapters.persistence import db
 from yiban.adapters.persistence.accounts import signs_in as _signs_in
+from yiban.attempt import jobs as verify_jobs
 from yiban.core import clock
 from yiban.core import masking as _masking
+from yiban.core import status as yiban_status
 from yiban.core.masking import mask_device_code as _mask_device_code
 from yiban.engine import schedule as yb_schedule
 
@@ -79,9 +82,8 @@ def _my_account_indices_of(accounts):
     YIBAN_ADMIN_USER 设为管理员本人邮箱以分开两义。
     普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
     """
-    m = _appmod()
     email = session.get("username", "").lower()
-    if m._current_role() == "admin":
+    if _security._current_role(_session_abs_ttl()) == "admin":
         return [
             i for i, a in enumerate(accounts) if a.get("owner") == email and not a.get("deleted")
         ]
@@ -133,8 +135,10 @@ def _my_account_view(accounts, indices):
     running = 0
     for a in active_sorted:
         queue_before[a.get("phone", "")] = running
-        st_status = states.get(a.get("phone", ""), {}).get("status", m.STATUS_PENDING)
-        if st_status not in (m.STATUS_SUCCESS, m.STATUS_ALREADY, m.STATUS_NO_TASK):
+        st_status = states.get(a.get("phone", ""), {}).get(
+            "status", yiban_status.STATUS_PENDING)
+        if st_status not in (yiban_status.STATUS_SUCCESS, yiban_status.STATUS_ALREADY,
+                             yiban_status.STATUS_NO_TASK):
             running += 1
     # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
     today_prefix = f"[{clock.now().strftime('%Y-%m-%d')} "
@@ -151,7 +155,8 @@ def _my_account_view(accounts, indices):
         if acc.get("status") == _accounts_data.ACCOUNT_STATUS_ACTIVE and not acc.get("user_paused", False):
             queue_ahead = queue_before.get(phone, 0)
         st = states.get(phone, {})
-        st_status = st.get("status", m.STATUS_PENDING) if isinstance(st, dict) else m.STATUS_PENDING
+        st_status = (st.get("status", yiban_status.STATUS_PENDING) if isinstance(st, dict)
+                     else yiban_status.STATUS_PENDING)
         # 状态文案由共享助手唯一裁定（参与调度的未了结账号按台账 run_at 生成「计划 HH:MM」/
         # 「待生成」，其余保留结论文案）；与 /api/accounts 同源，见 accounts_data.plan_state_message。
         state_message = _plan_state_message(acc, st, plan_at)
@@ -166,7 +171,7 @@ def _my_account_view(accounts, indices):
                 "phone_code_masked": _mask_device_code(acc.get("phone_code", "")),
                 "status": acc.get("status", _accounts_data.ACCOUNT_STATUS_ACTIVE),
                 "reject_reason": acc.get("reject_reason", ""),
-                "state_icon": m.STATUS_ICON.get(st_status, "⏳"),
+                "state_icon": yiban_status.ICON.get(st_status, "⏳"),
                 "state_status": st_status,  # 状态码（前端按码映射文案）
                 "state_message": state_message,
                 "queue_ahead": queue_ahead,
@@ -285,8 +290,7 @@ def _verify_job_visible(job, username):
     "同为管理员"就能做的；按 `role == "admin"` 放行等于任意注册管理员都能读/取消
     别人的任务，故按"权限歧义取窄侧"收窄为：本人 + 内置主管理员。
     """
-    m = _appmod()
-    if m._is_builtin_admin_session():
+    if _security._is_builtin_admin_session():
         return True
     return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
 
@@ -559,22 +563,22 @@ def api_my_account_add():
     # 认证失败另有按手机号的冷却（密码错误反复重交会把易班账号打锁定，
     # 冷却同时给用户明确提示）
     verify_async_job = False
-    if m._account_verify_enabled():
+    if _verify_queue._account_verify_enabled():
         if _security._verify_fail_cooldown_remaining(verify_fails(), clean["phone"], time.time()) > 0:
-            return jsonify({"error": m.VERIFY_FAIL_COOLDOWN_MSG}), 429
-        if m.verify_async_enabled():
+            return jsonify({"error": _verify_queue.VERIFY_FAIL_COOLDOWN_MSG}), 429
+        if _verify_queue.verify_async_enabled():
             # 异步：请求线程只**先扣配额**，外呼交给后台任务。
             # 待办队列满 → 503（账号尚未落库，拒绝无副作用）。
             if _verify_queue._verify_queue_full():
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
             if not _security._verify_attempt_allowed(verify_limits(), email_pre):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_async_job = True
         else:
             try:
-                verify_err = m.run_verify_with_gate(clean, email_pre, verify_limits())
+                verify_err = _verify_queue.run_verify_with_gate(clean, email_pre, verify_limits())
             except _verify_queue.VerifyGateBusy:
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
             except _verify_queue.VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             if verify_err:
@@ -683,14 +687,13 @@ def api_verify_job_cancel(job_id):
     先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
     "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
     """
-    m = _appmod()
     _verify_queue._reclaim_stale_verify_jobs()
     job = db.get_verify_job(job_id)
     if not job:
         return jsonify({"error": "任务不存在"}), 404
     if not _verify_job_visible(job, session.get("username")):
         return jsonify({"error": "无权限"}), 403
-    if job["status"] in m.VERIFY_JOB_TERMINAL:
+    if job["status"] in verify_jobs.TERMINAL_STATUSES:
         return jsonify({"error": "任务已结束，无法取消"}), 409
     if not db.cancel_verify_job(job_id):
         # 与查询之间被后台线程抢走（进入 running）→ 同样视为已无法取消
@@ -872,7 +875,7 @@ def api_my_account_update(idx):
             _locks.run_after_file_lock(
                 _start_edit_probe,
                 clean, _probe_user, _probe_fails, _probe_limits, _verify_queue._start_verify_job,
-                m._account_verify_enabled, _verify_queue._verify_queue_full,
+                _verify_queue._account_verify_enabled, _verify_queue._verify_queue_full,
                 lambda: _security._verify_attempt_allowed(_probe_limits, _probe_user),
                 lambda: _security._verify_fail_cooldown_remaining(
                     _probe_fails, clean["phone"], time.time()),
@@ -926,7 +929,7 @@ def api_my_account_delete(idx):
             "【易班签到】您的易班账号已删除（7 天内可撤销）",
             mail_layout.Mail(
                 summary=f"您的易班账号（{_masking.mask_phone(removed.get('phone', ''))}）已被删除，"
-                        f"进入 {m.DELETED_RETENTION_DAYS} 天宽限期。",
+                        f"进入 {db.SOFT_DELETE_RETENTION_DAYS} 天宽限期。",
                 advice=["宽限期内可在「我的账号」页自行撤销恢复",
                         "如非本人操作，请立即联系管理员"],
             ),

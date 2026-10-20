@@ -40,6 +40,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
+from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
@@ -81,7 +82,7 @@ def api_me_password():
     # 主管理员（内置 .env 管理员）口令走 12 位三类提档策略；注册用户维持原口径
     pw_err = (
         _accounts_data._admin_password_policy_error(new_password)
-        if m._is_builtin_admin_session()
+        if _security._is_builtin_admin_session()
         else _accounts_data._password_policy_error(new_password)
     )
     if pw_err:
@@ -125,8 +126,8 @@ def api_me_password():
         return jsonify({"error": "当前密码不正确"}), 400
 
     # 内置管理员：验证 .env 当前口令后更新（同邮箱注册用户不进入此分支）
-    if m._is_builtin_admin_session():
-        if not m.verify_admin(username, old_password):
+    if _security._is_builtin_admin_session():
+        if not _security.verify_admin(username, old_password):
             return _handle_failed_login()
         # 哈希在锁外先算（scrypt 不该占住写锁）；现值读取必须与落盘同处一把
         # 写锁临界区：写锁同线程可重入（write_env_batch 内部的再次加锁直接
@@ -274,7 +275,7 @@ def api_me_delete():
         return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
     # 内置管理员（.env 主管理员）不可自助注销：系统兜底账号，不落 users 表；
     # 同邮箱注册用户不受此限制（可正常自助注销）
-    if m._is_builtin_admin_session():
+    if _security._is_builtin_admin_session():
         return jsonify({"error": "当前账号不可注销"}), 400
     # 密码确认 + 失败锁定（与登录/改密共用登录失败表计数，达阈值锁定）
     fail_key = (ip, email)
@@ -486,7 +487,7 @@ def api_me():
     m = _appmod()
     # admin 字段为旧版前端兼容（早期前端检查 me.admin；新版用 role）——
     # 防止浏览器缓存旧页面时误判未登录导致刷新循环
-    role = m._current_role()
+    role = _security._current_role(_session_abs_ttl())
     username = session.get("username") or ""
     # 邮箱通知开关（B 线：用户签到失败提醒，默认开；用户端可关）
     _me = db.find_user(username) if username else None
@@ -513,7 +514,7 @@ def api_me():
             "email": username,  # 普通用户顶部显示邮箱前缀（管理员为用户名）
             "admin": role == "admin",
             "mail_notify": mail_notify,  # B 线：用户签到失败邮件开关
-            "is_builtin_admin": m._is_builtin_admin_session(),  # 仅 .env 主管理员会话为 True
+            "is_builtin_admin": _security._is_builtin_admin_session(),  # 仅 .env 主管理员会话为 True
             "csrf_token": get_csrf_token(),
             # 调度 v2（自选时间片）
             "sign_order": sign_order,
