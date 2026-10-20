@@ -447,7 +447,7 @@ def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
 
 def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
                   sup_log: str = "", proc: "subprocess.Popen | None" = None,
-                  engine_log: str = "") -> dict:
+                  engine_log: str = "", instance_token: str = "") -> dict:
     """屏障不就绪时**当场取证**：两条前提各报事实，供一眼定位。
 
     就绪需要同时满足两件事，修法完全不同：
@@ -478,7 +478,8 @@ def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
         diag["rows"] = {p: {"state": r["state"], "owner": r["owner"]} for p, r in rows.items()}
         diag["claimed_owners"] = sorted({r["owner"] for r in rows.values()
                                          if r["state"] == "claimed"})
-        diag["pids_for_target"] = find_child_pids(target_id)
+        diag["pids_for_target"] = find_child_pids(target_id,
+                                                  instance_token=instance_token or None)
     except Exception as e:                                  # 取证不许再抛
         diag["rows_error"] = "%s: %s" % (type(e).__name__, e)
     if sup_log and os.path.exists(sup_log):
@@ -758,19 +759,40 @@ class Monitor:
                 if r["state"] == "claimed"]
 
 
-def find_child_pids(executor_id: str) -> list[int]:
-    """按 `/proc/<pid>/environ` 找持有该执行体身份的子进程（同 uid，无需 root）。"""
+#: 本次演练实例的唯一标记的环境变量名。`run_drill` 每次生成一个值并注入整棵
+#: 子进程树；pid 查找按它隔离，同机并发演练才不会互指对方的同名槽位。
+INSTANCE_TOKEN_ENV = "DRILL_INSTANCE_TOKEN"
+
+
+def find_child_pids(executor_id: str, proc_root: str = "/proc",
+                    instance_token: str | None = None) -> list[int]:
+    """按 `/proc/<pid>/environ` 找**本次演练**启动的执行体子进程（同 uid，无需 root）。
+
+    匹配两个完整的 env 条目：执行体身份（`YIBAN_EXECUTOR_ID=<executor_id>`）与
+    实例标记（`DRILL_INSTANCE_TOKEN=<token>`）。同机并发演练的执行体名相同
+    （`worker-0@<host>`），只按身份匹配会互杀对方的槽位 0（工单 wkx8）。
+
+    无 token（老进程 / 非本次演练）一律不命中：杀注入放空枪由持有闸门的硬上限
+    兜住，比误杀别人的 worker 安全。
+    """
+    token = instance_token
+    if token is None:
+        token = os.environ.get(INSTANCE_TOKEN_ENV, "")
+    if not token:
+        return []
     target = ("YIBAN_EXECUTOR_ID=" + executor_id).encode()
+    mark = (INSTANCE_TOKEN_ENV + "=" + token).encode()
     out = []
-    for path in glob.glob("/proc/[0-9]*/environ"):
+    for path in glob.glob(os.path.join(proc_root, "[0-9]*", "environ")):
         try:
             with open(path, "rb") as f:
                 blob = f.read()
         except OSError:
             continue
-        if target in blob.split(b"\x00"):
+        entries = blob.split(b"\x00")
+        if target in entries and mark in entries:
             with contextlib.suppress(ValueError):
-                out.append(int(path.split("/")[2]))
+                out.append(int(os.path.basename(os.path.dirname(path))))
     return out
 
 
@@ -812,7 +834,8 @@ def _wait_supervisor(proc: subprocess.Popen, monitor: Monitor, kill_plan: dict,
                                if r["state"] == "claimed"
                                and r["owner"].startswith(kill_plan["owner_prefix"])]
                 if target_rows:
-                    pids = find_child_pids(kill_plan["executor_id"])
+                    pids = find_child_pids(kill_plan["executor_id"],
+                                           instance_token=kill_plan["instance_token"])
                     if pids:
                         phone, row = target_rows[0]
                         os.kill(pids[0], signal.SIGKILL)
@@ -822,7 +845,8 @@ def _wait_supervisor(proc: subprocess.Popen, monitor: Monitor, kill_plan: dict,
                         kill_plan["killed_epoch"] = int(row["epoch"])
                         kill_plan["killed_owner"] = row["owner"]
             elif time.time() >= kill_plan["at"]:
-                pids = find_child_pids(kill_plan["executor_id"])
+                pids = find_child_pids(kill_plan["executor_id"],
+                                       instance_token=kill_plan["instance_token"])
                 if pids:
                     # 与 claim 形态同口径：记下此刻该执行体名下的在飞行（供收尸/旧代写断言）。
                     held = [(p, r) for p, r in _rows(monitor.dbfile, monitor.day).items()
@@ -930,10 +954,13 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
 
         childenv = dict(os.environ)
         childenv.update(info["cfg_env"])
+        instance_token = secrets.token_hex(8)
         childenv.update({
             "YIBAN_EXECUTORS": manifest,
             "PYTHONPATH": shimdir + os.pathsep + REPO,
             "DRILL_MOCK_PORT": str(port),
+            # 本次演练的唯一标记：pid 查找只命中自己的子树（工单 wkx8）。
+            INSTANCE_TOKEN_ENV: instance_token,
         })
         if mutate in ("reap-off", "window-off"):
             # 这两条变异必须进整棵进程树：收尸在**监督进程**里发生（reap-off）；
@@ -976,8 +1003,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             })
         if kill_at:
             kill_plan = {"armed": True, "executor_id": target_id,
-                         "owner_prefix": target_id + ":", "killed_pid": None,
-                         "killed_phone": None}
+                         "owner_prefix": target_id + ":",
+                         "instance_token": instance_token,
+                         "killed_pid": None, "killed_phone": None}
             if kill_at == "claim":
                 kill_plan["when"] = "claim"
             else:
@@ -1027,7 +1055,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
                 # stdout 上没有）。
                 result["barrier_diag"] = _barrier_diag(
                     hold_ready, info["dbfile"], day, target_id, sup_log, sup,
-                    engine_log=engine_log)
+                    engine_log=engine_log, instance_token=instance_token)
             result["barrier_phone"] = target_phone
 
         # ② 变异**哨兵**：先证明变异真的贴上了，再谈不变式红不红。claim-steal 的哨兵
