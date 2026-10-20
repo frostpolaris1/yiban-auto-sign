@@ -131,6 +131,7 @@ STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_PAUSED = yiban_status.STATUS_PAUSED
 STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
+STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 STATUS_NO_POSITION = yiban_status.STATUS_NO_POSITION
 
 #: `run_at` 的两种精度：计划与重排都写毫秒精度，v17 平移的存量行只有秒精度
@@ -761,6 +762,17 @@ async def _attempt(ctx, item):
     logger.info("%s [%s] %s", ctx.log_tag, _mask_phone(phone),
                 (_sym + " " if _sym else "") + _sanitize_text(message))
     attempts._update_cred_state(ctx.cred_state, phone, success, message, today)
+    # 半开试探「凭据健康」判定（工单 `77s2` 从冻结载体迁入时补上）：签到成功，或已成功
+    # 登录但被签到时段规则跳过（`skipped_window` / `skipped_norange` 发生在登录并拉取
+    # 任务之后，凭据已被证实可用）。只看 `success` 会把窗口跳过误判成试探失败：
+    # `probe_date` 停在过去 ⇒ `_probe_due` 每天为真 ⇒ 密码确实错的账号被每天真实登录
+    # 一次（本项目第一红线是并发登录，这里的形态是**串行重复登录**，同样加重风控）。
+    # `success=True` 时 `_update_cred_state` 已清除，这里只补"登录成功但签到被跳过"。
+    if not success and skip and status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE) \
+            and cred.get("paused_since"):
+        ctx.cred_state.pop(phone, None)
+        logger.info("%s [%s] ✅ 半开试探确认账密可用，解除暂停",
+                    ctx.log_tag, _mask_phone(phone))
     if status in yiban_status.CLAIM_DONE_STATUSES:
         ctx.limiter.on_success(ctx.egress)
         ctx.results[phone] = (success, message, skip, status)

@@ -192,6 +192,18 @@ class CliStateGuardTest(unittest.TestCase):
     def test_correct_fingerprint_cleans_and_audits(self):
         fp = self._fingerprint()
         rc, text = self._run(["state", "--yes", "--fingerprint", fp, "--json"])
+        if rc != 0:
+            # 复发诊断（工单 h0yh）：首跑假红只留了 "2 != 0"，没有两次指纹值。
+            # 本用例的判据不变；这里在失败时把 **dry-run 指纹** 与 **--yes 重算值**
+            # 一起写进断言正文，下次复发可直接定性（计划变了？时钟变了？状态目录变了？）。
+            try:
+                computed = json.loads(text).get("fingerprint")
+            except ValueError:
+                computed = "<非 JSON 输出>"
+            self.fail(
+                "state --yes 的确认门拒绝了首跑指纹：dry-run 指纹=%r，"
+                "--yes 重算=%r，rc=%r，输出=%r。两值不同 ⇒ 两次调用之间的将删清单/"
+                "目录/时钟发生了变化（见工单 h0yh）。" % (fp, computed, rc, text))
         self.assertEqual(rc, 0, text)
         self.assertFalse(os.path.exists(self.expired))
         conn = sqlite3.connect(self.db_file)
