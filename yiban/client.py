@@ -227,8 +227,13 @@ class YibanClient:
         # 协议核验诊断（默认关闭）：YIBAN_WIRE_DUMP 指向可写目录时挂载线路落盘
         from yiban.infra import wire_dump
         wire_dump.maybe_mount(self.session, account.phone)
-        # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截
-        proxy = os.environ.get("YIBAN_PROXY", "").strip()
+        # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截。
+        # **只经 egress.resolve(ROLE_SINGLE) 取值**（census-P2-yiban-proxy）：这是
+        # "单执行体出口"的唯一解析口径，`apply_egress` 会把它写回环境。此处若再裸读
+        # `os.environ["YIBAN_PROXY"]`，就多出第二套读取——解析规则一变（清单/兜底/
+        # 空位直连），这条路径静默用旧值。
+        from yiban import egress as _egress
+        proxy = _egress.resolve(_egress.ROLE_SINGLE).strip()
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
             # 日志只记录 scheme://host:port，绝不落 userinfo（账号密码）明文

@@ -101,8 +101,10 @@ class _TmpBase(unittest.TestCase):
                                 ignore=shutil.ignore_patterns("__pycache__"))
             _write(os.path.join(tree, "docker", "Dockerfile"), "")
             _write(os.path.join(tree, "docker", "scheduler.py"), "")
+            # 假上游是桩（本用例不真起服务），但**接口契约**要照真件给：drill 的
+            # 预检从 protocol_fake 取轨迹基名（census-P2-fake-server），缺它即退 2。
             _write(os.path.join(tree, "yiban", "adapters", "protocol_fake",
-                                "__init__.py"), "")
+                                "__init__.py"), 'TRACE_BASENAME = "mock.jsonl"\n')
         else:
             for rel in TREE_FILES:
                 _write(os.path.join(tree, rel), "")

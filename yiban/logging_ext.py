@@ -20,10 +20,9 @@
 import logging
 import os
 
+from yiban.adapters.config import env_io
 from yiban.core.masking import mask_credentials_in_text, mask_phones_in_text
 from yiban.infra import locks
-
-from .core import clock
 
 
 class MaskingFormatter(logging.Formatter):
@@ -71,25 +70,25 @@ class DailyFlockFileHandler(FlockFileHandler):
 
     def __init__(self, log_dir):
         self._log_dir = log_dir
-        self._day = clock.now().strftime("%Y-%m-%d")
+        # 滚动判据是**文件名**（`sign-<业务日>.log`），不是另存一份日期：
+        # 名字的唯一来源是 `env_io.day_log_name`，跨天时名字变了就重开。
+        self._name = env_io.day_log_name()
         super().__init__(
-            os.path.join(log_dir, f"sign-{self._day}.log"), encoding="utf-8"
+            os.path.join(log_dir, self._name), encoding="utf-8"
         )
 
     def emit(self, record):
         # 滚动分支（close/baseFilename 更新/_open）整体 try 兜底——跨天滚动 +
         # 日志目录故障（如目录被删）时，FileNotFoundError 不得传播到业务请求线程
-        # 引发 500；失败仅 handleError（降级不阻断业务），且 _day/stream 状态保证
+        # 引发 500；失败仅 handleError（降级不阻断业务），且 _name/stream 状态保证
         # 下一条日志仍会重试 _open（stream 置 None → 重新打开）。
         try:
-            today = clock.now().strftime("%Y-%m-%d")
-            if today != self._day:
-                self._day = today
+            name = env_io.day_log_name()
+            if name != self._name:
+                self._name = name
                 self.close()  # 关闭旧日期文件句柄
                 # 换目标文件：FileHandler 在 stream 为 None 时按 baseFilename 惰性重开
-                self.baseFilename = os.path.abspath(
-                    os.path.join(self._log_dir, f"sign-{today}.log")
-                )
+                self.baseFilename = os.path.abspath(os.path.join(self._log_dir, name))
                 self.stream = None
             if self.stream is None:
                 # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream
