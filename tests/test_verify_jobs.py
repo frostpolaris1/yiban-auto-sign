@@ -31,6 +31,7 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import verify_queue as _verify_queue
 from yiban.adapters.persistence.audit_chain import actor_tag
 from yiban.attempt import jobs as verify_jobs
 from yiban.core import clock
@@ -407,7 +408,7 @@ class VerifyConcurrencyGateTest(_WebAppBase):
             self.assertGreater(held, 0)
             r = self._submit(PHONE1, token)
             self.assertEqual(r.status_code, 503, r.get_data(as_text=True))
-            self.assertEqual(r.get_json()["error"], self.webapp.VERIFY_BUSY_MSG)
+            self.assertEqual(r.get_json()["error"], _verify_queue.VERIFY_BUSY_MSG)
             self.assertEqual(r.headers.get("Retry-After"), "2")
         finally:
             self._release(held)
@@ -447,7 +448,7 @@ class VerifyConcurrencyGateTest(_WebAppBase):
         def _worker():
             gate.wait(timeout=20)
             try:
-                self.webapp.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
+                _verify_queue.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
                 results.append("done")
             except self.webapp.VerifyGateBusy:
                 results.append("busy")
@@ -471,7 +472,7 @@ class VerifyConcurrencyGateTest(_WebAppBase):
         # 席位必须全部归还：再串行跑一轮应全部成功
         with mock.patch.object(self.webapp, "_verify_account_clean", return_value=None):
             for _ in range(self.webapp.VERIFY_CONCURRENCY_MAX):
-                self.webapp.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
+                _verify_queue.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
 
     def test_semaphore_not_leaked_when_quota_exceeded(self):
         """配额拒绝路径不得漏掉席位。"""
@@ -1366,7 +1367,7 @@ class VerifyAsyncSubmitTest(_A4Base):
                                return_value=self.webapp.VERIFY_JOBS_MAX_PENDING):
             r = self._submit(token)
         self.assertEqual(r.status_code, 503, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["error"], self.webapp.VERIFY_BUSY_MSG)
+        self.assertEqual(r.get_json()["error"], _verify_queue.VERIFY_BUSY_MSG)
         self.assertEqual(self._jobs(), [], "队列满时不得建任务（账号也不得落库）")
 
     def test_sync_kill_switch_keeps_gate_semantics(self):

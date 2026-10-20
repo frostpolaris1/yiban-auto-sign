@@ -37,6 +37,7 @@ from _mail_body import render_body
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 from werkzeug.security import generate_password_hash
 
+from web import security as _security
 from web.services import env_io as _env_io_svc
 from web.services import limits as _limits
 
@@ -1102,9 +1103,9 @@ class RoleHardeningTest(unittest.TestCase):
             for body, expect, name in states:
                 with self.subTest(state=name):
                     self._rewrite_env(body)
-                    self.assertEqual(self.webapp._builtin_admin_loginable(), expect, name)
+                    self.assertEqual(_security._builtin_admin_loginable(), expect, name)
                     self.assertEqual(
-                        self.webapp.verify_admin("admin", ADMIN_PASS_ROLE), expect,
+                        _security.verify_admin("admin", ADMIN_PASS_ROLE), expect,
                         f"{name}：兜底判据与 verify_admin 漂移")
         finally:
             self._rewrite_env(self._env_content)

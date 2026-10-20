@@ -321,6 +321,7 @@ import unittest.mock  # noqa: E402
 
 from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services import limits as _limits  # noqa: E402
+from web.services import startup_cache as _startup_cache  # noqa: E402
 
 REG_ADMIN = "reg-admin@test.local"
 
@@ -403,7 +404,8 @@ class _AnnBase(unittest.TestCase):
             )
         self.webapp.ENV_FILE = self.env_file
         # 公告缓存是模块级全局：不清零会把上一例的已发布文本带进本例
-        self.webapp._announcement_cache[0] = None
+        # 批 3-c S2 起真源在 web/services/startup_cache.py，故打桩点落在新家
+        _startup_cache._announcement_cache[0] = None
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         self.alerts = []
         patcher = mock.patch.object(
@@ -423,6 +425,24 @@ class _AnnBase(unittest.TestCase):
         self.addCleanup(wp.stop)
 
     # ---- 会话与探针 ----
+    def test_web_app_no_longer_owns_the_two_startup_caches(self):
+        """批 3-c S2：两个进程内缓存的真源只有一个，`web.app` 上不得再留同名属性。
+
+        本文件与本树其它用例都把缓存接缝写在 `web/services/startup_cache` 上。
+        若 `web.app` 仍留着同名列表（旧读者又改回 `m.*`），打桩就会落到**一个
+        路由不再读的对象**上——测试照样绿，缓存语义已经静默失效。本判据钉住
+        "旧名不许回来"，与 `tests/test_wall_direct_reads.py` 的去壳名判据成对。
+        """
+        for name in ("_changelog_cache", "_announcement_cache"):
+            with self.subTest(name=name):
+                self.assertFalse(
+                    hasattr(self.webapp, name),
+                    f"批 3-c S2 已去壳 {name}：web/app.py 不得再定义或转发它"
+                    "（真源在 web/services/startup_cache.py）")
+                self.assertTrue(
+                    hasattr(_startup_cache, name),
+                    f"{name} 必须在新家 web/services/startup_cache.py 上可达")
+
     def _login(self, username, password):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": username, "password": password})
@@ -484,13 +504,13 @@ class DraftWriteTest(_AnnBase):
         m = self._master()
         self._put_draft(m, "旧公告")
         self.assertEqual(self._publish(m).status_code, 200)
-        published_cache_before = self.webapp._announcement_cache[0]
+        published_cache_before = _startup_cache._announcement_cache[0]
         sub = self._reg_admin()
         self.assertEqual(self._put_draft(sub, "新公告").status_code, 200)
         # 已发布键、公告缓存、匿名可见文本三者都必须仍是旧公告
         self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "旧公告")
-        self.assertEqual(self.webapp._announcement_cache[0], published_cache_before)
-        self.assertEqual(self.webapp._announcement_cache[0], "旧公告")
+        self.assertEqual(_startup_cache._announcement_cache[0], published_cache_before)
+        self.assertEqual(_startup_cache._announcement_cache[0], "旧公告")
         self.assertEqual(self._anon().get("/api/announcement").get_json()["text"], "旧公告")
 
     def test_put_validation_still_rejects_too_long_and_breaks(self):
@@ -651,7 +671,7 @@ class PublishEffectTest(_AnnBase):
         self.assertNotIn("YIBAN_ANNOUNCEMENT_DRAFT_META", env)
         self.assertEqual(self._anon().get("/api/announcement").get_json()["text"],
                          "今晚 23:00 维护")
-        self.assertEqual(self.webapp._announcement_cache[0], "今晚 23:00 维护")
+        self.assertEqual(_startup_cache._announcement_cache[0], "今晚 23:00 维护")
 
     def test_publish_overwrites_previous_and_draft_gone_afterwards(self):
         m = self._master()
