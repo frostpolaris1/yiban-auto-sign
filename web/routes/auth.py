@@ -36,6 +36,7 @@ from flask import current_app, jsonify, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
@@ -213,7 +214,7 @@ def api_login():
         # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
         with _locks._rate_lock:
             distinct_users = sum(1 for (fip, _u) in _login_fails() if fip == ip)
-        m.send_notification(
+        _notify_mail.send_notification(
             "登录失败告警",
             mail_layout.Mail(
                 summary=f"IP {_notify_mail._nl_safe(ip)} 连续 {fails} 次登录失败。",
@@ -263,7 +264,7 @@ def api_register():
     if not _limits.EMAIL_RE.match(email) or len(email) > 64:
         return jsonify({"error": "请输入有效的邮箱地址"}), 400
     # 邮箱域名审查：占位/一次性域名在写库前排除，防挤占用户池
-    dom_err = m.email_domain_error(email)
+    dom_err = _render.email_domain_error(email)
     if dom_err:
         return jsonify({"error": dom_err}), 400
     pw_err = _accounts_data._password_policy_error(password)

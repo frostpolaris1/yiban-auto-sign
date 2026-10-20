@@ -322,6 +322,7 @@ import unittest.mock  # noqa: E402
 from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services import limits as _limits  # noqa: E402
 from web.services import logs as _logs_svc  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 from web.services import startup_cache as _startup_cache  # noqa: E402
 
 REG_ADMIN = "reg-admin@test.local"
@@ -410,7 +411,7 @@ class _AnnBase(unittest.TestCase):
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         self.alerts = []
         patcher = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
             self.alerts.append((t, render_body(c), urgent, force)))
         patcher.start()
@@ -603,7 +604,7 @@ class GetShapeTest(_AnnBase):
         for bad in ("", "no-pipe", "a|b|c", "x@y.local|2026-13-45 99:99:99",
                     "x@y.local|昨天", "\x00|x"):
             with self.subTest(bad=bad):
-                self.webapp.write_env_batch(
+                _env_io_svc.write_env_batch(
                     self.env_file, {"YIBAN_ANNOUNCEMENT_DRAFT_META": bad})
                 r = c.get("/api/announcement", headers=self._hdr(c))
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -986,7 +987,7 @@ class Batch18FixesTest(unittest.TestCase):
         """收窄（缩减批 6a）：无 confirm_password 调 PUT notify-config
         {"cooldown":90000} → 200 落盘（可逆参数免门免额度）、零告警、留审计。"""
         ac, at = self._admin_client()
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             r = ac.put("/api/notify-config", json={"cooldown": 90000},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1018,14 +1019,14 @@ class Batch18FixesTest(unittest.TestCase):
         """
         ac, at = self._admin_client()
         order = []
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
 
         def _write_spy(env_path, updates):
             order.append("write")
             return real_write(env_path, updates)
 
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
-             mock.patch.object(self.webapp, "write_env_batch", _write_spy):
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
+             mock.patch.object(_env_io_svc, "write_env_batch", _write_spy):
             r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1037,8 +1038,8 @@ class Batch18FixesTest(unittest.TestCase):
         """落盘失败（磁盘错）→ 500、零告警、零审计：告警与留痕只能描述已生效的变更。"""
         ac, at = self._admin_client()
         before = self.webapp.read_env(self.env_file)
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
-             mock.patch.object(self.webapp, "write_env_batch",
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
+             mock.patch.object(_env_io_svc, "write_env_batch",
                                side_effect=RuntimeError("disk full")):
             r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
@@ -1053,14 +1054,14 @@ class Batch18FixesTest(unittest.TestCase):
         """mail-config 变更只落盘，不再外发告警（关通道这个"拔线"动作也一视同仁）。"""
         ac, at = self._admin_client()
         order = []
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
 
         def _write_spy(env_path, updates):
             order.append("write")
             return real_write(env_path, updates)
 
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
-             mock.patch.object(self.webapp, "write_env_batch", _write_spy):
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
+             mock.patch.object(_env_io_svc, "write_env_batch", _write_spy):
             r = ac.put("/api/mail-config", json={"enabled": False, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1072,7 +1073,7 @@ class Batch18FixesTest(unittest.TestCase):
         """收窄（缩减批 6a）：mail-config 开关关闭（可逆）未带口令 → 200 落盘、
         零告警（通道变更只留审计）。"""
         ac, at = self._admin_client()
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             r = ac.put("/api/mail-config", json={"enabled": False},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1505,7 +1506,7 @@ class _TierBase(unittest.TestCase):
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         # 每例回到「全部档位键未配置 = 生效值即默认」的基线
-        self.webapp.write_env_batch(self.env_file, {
+        _env_io_svc.write_env_batch(self.env_file, {
             "YIBAN_GLOBAL_PAUSE": "", "YIBAN_REGISTRATION_PAUSE": "",
             "YIBAN_SUNDAY_SIGN": "", "YIBAN_SATURDAY_SIGN": "",
             "YIBAN_SIGN_ORDER": "", "YIBAN_SIGN_DIST": "", "YIBAN_SIGN_MODE": "",
@@ -1521,7 +1522,7 @@ class _TierBase(unittest.TestCase):
         })
         self.alerts = []
         patcher = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
             self.alerts.append((t, render_body(c), urgent, force)))
         patcher.start()
@@ -1588,7 +1589,7 @@ class TierTableMetaTest(_TierBase):
                 self.assertIn(key, payload, f"{key} 现值读不回")
 
     def test_effective_values_cover_both_tiers(self):
-        cur = self.webapp._settings_effective_values(self.env_file)
+        cur = _env_io_svc._settings_effective_values(self.env_file)
         keys = (set(_env_io_svc.MASTER_ONLY_KEYS) | set(_env_io_svc.GATED_KEYS)
                 | {_env_io_svc.GLOBAL_PAUSE_KEY})
         self.assertEqual(keys - set(cur), set(), "有档位键没有现值口径")
@@ -1605,7 +1606,7 @@ class TierTableMetaTest(_TierBase):
         不进 403 名单、不发变更告警，静默向所有管理员开放。常量定义处那句
         "新增设置键时必须改档位表"要防的正是这件事，这里把它变成会报红的检查。
         """
-        cur = self.webapp._settings_effective_values(self.env_file)
+        cur = _env_io_svc._settings_effective_values(self.env_file)
         # 正态 μ/σ 区间四键的 A 档判定复刻在 `settings_api`（键名单源 `env_io`，本轮
         # 不在 app.py 档位表里），故反方向对拍的档位全集要把它们并入——否则新键会被
         # 判成"没档位、任意管理员免口令可写"，而这四键实测是 403。
@@ -1734,7 +1735,7 @@ class EmergencyStopTest(_TierBase):
 
     def test_same_value_pause_needs_no_password(self):
         """已处于急停态时再交一次 1：值未变 → 不进门禁、不占额度。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
         c = self._reg_admin()
         self.assertEqual(self._save(c, {"global_pause": 1}).status_code, 200)
 
@@ -1759,7 +1760,7 @@ class EmergencyStopTest(_TierBase):
         """先鉴权后占额度：不知口令的被盗会话刷不光合法管理员的急停预算。"""
         # 冷却窗口关成 0（运维降级旋钮）：本例要钉的是「额度不被错口令吃掉」，
         # 留着冷却的话第 4 次起就是 429 而不是 403，测不到额度这一层
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
         c = self._master()
         for _ in range(self.webapp.ADMIN_DELETE_MAX + 3):
             self._save(c, {"global_pause": 1, "confirm_password": "WrongPass999!"})
