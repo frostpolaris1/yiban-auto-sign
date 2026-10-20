@@ -38,13 +38,24 @@
      `"https://" + "app.uyiban.com"`、循环里逐字符构造。理由：那属于刻意规避，
      不是本项目实际发生过的回归形态（历史三份副本都写完整常量名/域名）。
      本门要抓的是"照抄一段代码"。
-  ② 本门是**静态**判据：运行时 `exec`/`eval` 构造的切换看不到；这类写法在
+  ② **间接传递**：写入语句的实参是**局部变量、预建 dict、comprehension 或
+     helper 参数**时，判据不跟数据流。例：
+     `h = APP_SIGN_HEADERS; s.headers.update(h)`、
+     `hdrs = {"Origin": APP_ORIGIN}; s.headers.update(hdrs)`、
+     `def _apply(headers, origin): headers.update({"Origin": origin})`。
+     理由：静态判据不做数据流推断；把它做进本门需要完整的数据流分析，
+     成本远高于它要防的回归。这类形态若出现，应在代码审查里拦。
+  ③ **散文经变量承载**：`msg = "...APP_SIGN_HEADERS..."; raise RuntimeError(msg)`
+     仍会被算成引用（本门只豁免**直接写在** raise/print/assert/log 实参里的串）。
+     理由：同上，跟变量赋值需要数据流；代价是极少数消息常量会红，改写文案即可。
+  ④ 本门是**静态**判据：运行时 `exec`/`eval` 构造的切换看不到；这类写法在
      本仓不存在，出现即为独立缺陷，应由代码审查拦。
 
 新增入口必须复用 `YibanClient._ensure_sign_session()`，不许复制这两行。
 """
 import ast
 import os
+import re
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -132,22 +143,37 @@ def _mentions_name(node):
     return False
 
 
+#: 名字在字符串里的**整词**边界：`_HEADERS` 不得命中 `HEADERS`，
+#: `KILLYIBAN_HEADERS` 也不得被当成 `HEADERS`（它是另一个常量）。
+_NAME_IN_TEXT = tuple(
+    (n, re.compile(r"(?<![\w.])" + re.escape(n) + r"(?![\w])"))
+    for n in SIGN_DOMAIN_NAMES
+)
+
+
+def _text_mentions_sign_domain(text):
+    """字符串里是否**整词**出现签到域名字或完整域名。"""
+    if APP_DOMAIN_LITERAL in text:
+        return True
+    return any(pat.search(text) for _n, pat in _NAME_IN_TEXT)
+
+
 def _mentions_sign_domain(node):
-    """`node` 子树是否携带签到域头（名字、常量名或 App 域字面量）。"""
+    """`node` 子树是否**直接**携带签到域头（名字、常量名或 App 域字面量）。
+
+    只看写入语句自身的表达式：局部变量、预建 dict、comprehension 或 helper
+    参数里的间接引用不在面内（见文件头"已知面外"第 2 条）。
+    """
     for sub in ast.walk(node):
         if isinstance(sub, ast.Attribute) and sub.attr in SIGN_DOMAIN_NAMES:
             return True
         if isinstance(sub, ast.Name) and sub.id in SIGN_DOMAIN_NAMES:
             return True
-        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-            if APP_DOMAIN_LITERAL in sub.value:
-                return True
-            if any(n in sub.value for n in SIGN_DOMAIN_NAMES):
-                return True
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str)                 and _text_mentions_sign_domain(sub.value):
+            return True
         if isinstance(sub, ast.JoinedStr) and any(
                 isinstance(v, ast.Constant) and isinstance(v.value, str)
-                and (APP_DOMAIN_LITERAL in v.value
-                     or any(n in v.value for n in SIGN_DOMAIN_NAMES))
+                and _text_mentions_sign_domain(v.value)
                 for v in sub.values):
             return True
     return False
@@ -391,6 +417,26 @@ class DetectorHasTeethTest(unittest.TestCase):
             with self.subTest(src=src):
                 self.assertEqual(self._offenders(src), [],
                                  "合法形态被误红：%r" % (src,))
+
+    def test_registered_out_of_face_forms_stay_out(self):
+        """文件头登记的面外形态必须与行为一致（否则登记就是谎言）。
+
+        三条登记：①运行时拼接；②间接传递（变量/预建 dict/helper 参数）；
+        ③散文经变量承载（仍算引用，属已知代价）。
+        """
+        # ① 运行时拼接：不判
+        self.assertEqual(
+            self._offenders("def f(s):\n"
+                            "    s.headers.update({'Origin': 'https://' + 'app.uyiban.com'})"),
+            [], "面外①失效：运行时拼接被误判")
+        # ② 间接传递：不判
+        self.assertEqual(
+            self._offenders("def f(s):\n    h = APP_SIGN_HEADERS\n    s.headers.update(h)"),
+            [], "面外②失效：间接传递被误判")
+        # ③ 散文经变量：仍算引用（已知代价），此处只钉"登记文字与行为一致"
+        self.assertTrue(
+            _refs_of_source("msg = 'APP_SIGN_HEADERS missing'\nraise RuntimeError(msg)"),
+            "面外③登记为'仍会红'，但实际不红了——请更新文件头登记")
 
     def test_literal_must_be_the_single_definition(self):
         ok = ('APP_ORIGIN = "https://app.uyiban.com"\n'
