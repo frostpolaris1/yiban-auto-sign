@@ -25,6 +25,7 @@ from .device import DeviceState, parse_device_state
 from .envelopes import (
     Envelope,
     UsersureResult,
+    code_is_ok,
     looks_like_challenge,
     parse_api_envelope,
     parse_usersure_response,
@@ -54,6 +55,7 @@ __all__ = [
     "__version__",
     "build_sign_in_body",
     "build_usersure_form",
+    "code_is_ok",
     "extract_verify_request",
     "looks_like_challenge",
     "parse_api_envelope",

@@ -55,6 +55,7 @@ from yiban.core import (  # noqa: E402
     hrw,
     window,
 )
+from yiban.core import status as yiban_status  # noqa: E402
 from yiban.engine import (  # noqa: E402
     executor_v3,
     planner,
@@ -615,6 +616,31 @@ class VInvariantTest(_Base):
             covered |= set(hrw.shards_of(ex, cfg["executors"], DAY, v))
         self.assertEqual(covered, set(range(v)), "每个分片都要有执行体认领，否则该行无人领")
 
+    def test_plan_covers_chunks_large_account_set(self):
+        """1000 账号（> `SQL_VAR_CHUNK`）仍能正确判覆盖：按块查询并汇总 DISTINCT 计数。
+
+        整段拼 `IN (...)` 在 1~2 千账号（项目目标规模）下会越过 SQLite 老版本的 999 个
+        绑定变量上限，异常被吞成"未覆盖"⇒ 每轮重写计划并刷 warning，覆盖面判据在大站
+        永久失明（工单 ba-p03-10）。
+        """
+        phones = [_phone(i) for i in range(1000)]
+        accounts = [SimpleNamespace(phone=p, user_paused=False, owner="u@" + p)
+                    for p in phones]
+        self.assertGreater(len(phones), queue_store.SQL_VAR_CHUNK)
+        conn = db.get_conn()
+        conn.executemany(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+            "state, attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(p, DAY, 0, "", _ts(seconds=-1), 5, "pending", 0, "", "", 0,
+              _ts(seconds=-60)) for p in phones])
+        conn.commit()
+        self.assertTrue(executor_v3._plan_covers(DAY, accounts))
+        conn.execute("DELETE FROM sign_tasks WHERE phone=? AND day=?", (phones[-1], DAY))
+        conn.commit()
+        self.assertFalse(executor_v3._plan_covers(DAY, accounts),
+                         "少一个账号就必须判未覆盖（否则其余账号当天没有计划行）")
+
     def test_stored_v_wins_over_recomputed_v(self):
         """V 落库后只读：行索引在 `v_for(当日账号数)` 之外也必须仍被领取（反例）。
 
@@ -873,22 +899,24 @@ class TerminalStateTest(_Base):
 
     def test_skip_and_exhausted_settle_failed(self):
         cases = (
-            ("skipped_window", True, "签到时段已结束", 0),
-            ("user_cancelled", True, "用户已取消签到", 0),
+            # 窗口外：还该再试 → 未了结的 failed（默认档）
+            ("skipped_window", True, "签到时段已结束", 0, "failed"),
+            # 用户取消：管理侧当日结论 → 终态 skipped（与 JSON 终态映射同口径）
+            ("user_cancelled", True, "用户已取消签到", 0, "skipped"),
             # 无点位：预算 1 次，首试即终态
-            ("no_position", False, "未找到签到位置数据", 0),
+            ("no_position", False, "未找到签到位置数据", 0, "failed"),
             # 其它失败：预算 3 次，已试 3 次 → 终态
-            ("failed", False, "网络抖动", 2),
+            ("failed", False, "网络抖动", 2, "failed"),
         )
-        for status, skip, message, attempts in cases:
+        for status, skip, message, attempts, expected in cases:
             with self.subTest(status=status):
                 phone, results, settled = self._run_one(
                     status, skip=skip, message=message, attempts=attempts)
-                self.assertEqual(self._row(phone)["state"], "failed")
-                self.assertEqual(settled[0][1], "failed")
+                self.assertEqual(self._row(phone)["state"], expected)
+                self.assertEqual(settled[0][1], expected)
                 self.assertEqual(results[phone][2], skip, "skip 原样回传，不重排")
 
-    def test_account_missing_from_round_settles_done_without_request(self):
+    def test_account_missing_from_round_settles_skipped_without_request(self):
         phone = _phone(9)
         self._add_claimed(phone)
         self._seed_v(8)
@@ -898,7 +926,8 @@ class TerminalStateTest(_Base):
                                                                        "success")):
             results = self._run_v3(self._accounts(_phone(1)), [_item(phone)])
         self.assertEqual(calls, [], "账号已不在本轮配置时不得发起请求")
-        self.assertEqual(self._row(phone)["state"], "done", "该行必须被了结，否则永远 pending")
+        self.assertEqual(self._row(phone)["state"], "skipped",
+                         "该行必须被了结（否则永远 pending），终态与 user_cancelled 的映射同口径")
         self.assertEqual(results[phone][3], "user_cancelled")
 
     def test_paused_credential_skips_without_request(self):
@@ -914,7 +943,9 @@ class TerminalStateTest(_Base):
                                    cred_state=cred_state)
         self.assertEqual(calls, [])
         self.assertEqual(results[phone][3], "paused")
-        self.assertEqual(self._row(phone)["state"], "failed")
+        # 账密暂停是管理侧当日结论 → 终态 skipped（工单 48b9/vqmb）：落 failed 会让
+        # 补签闸门的队列腿判"未了结"，补签轮再真实登录一次。
+        self.assertEqual(self._row(phone)["state"], "skipped")
 
     def test_cred_state_is_mutated_in_place(self):
         phone = _phone(1)
@@ -956,6 +987,25 @@ class TerminalStateTest(_Base):
                          "一次性轮缺席 results ⇒ 汇总按「未执行」计失败（退出码 1）")
         self.assertEqual(events, [],
                          f"当日已有结论不得重复落事件（一次性轮同样只登记一次）：{events}")
+
+    def test_user_paused_concurrent_first_sight_writes_and_emits_once(self):
+        """两个执行体同时首见同一暂停号（都读到"无结论"）时，只落一次状态与一条事件。
+
+        宽分片（`claim_all`）下分片集判据挡不住兜底与归属执行体同时登记，故"当日只
+        登记一次"必须靠 `_write_sign_state(only_if_absent=True)` 的写侧 CAS（工单
+        ba-p03-05）。本用例把两次预扫的读侧快照都钉成空，模拟"两边都还没看到结论"。
+        """
+        paused = SimpleNamespace(phone=_phone(1), user_paused=True)
+        self._seed_v(8)
+        events = []
+        with mock.patch.object(state_io, "_daily_statuses", return_value={}):
+            self._run_v3([paused], [], event_sink=events.append)
+            second = self._run_v3([paused], [], event_sink=events.append)
+        self.assertEqual([e["phone"] for e in events], [_phone(1)],
+                         "CAS 输的一侧不得再发 user_cancelled 事件")
+        self.assertEqual(second[_phone(1)],
+                         (False, "用户已取消签到", True, "user_cancelled"),
+                         "一次性轮仍必须登记结果（汇总口径不变）")
 
     def test_other_shard_accounts_are_delegated(self):
         other = "worker-1@testhost"
@@ -1059,6 +1109,29 @@ class RetryTest(_Base):
         self.assertEqual(self._row(phone)["state"], "failed")
         self.assertIn(phone, results)
 
+    def test_no_room_makes_a_retryable_status_final(self):
+        """窗口容不下最小间隔时，默认可回炉的状态也必须用保守档收尾。
+
+        否则默认回炉口会把 `retry:` 行立刻翻回 pending，下一拍重新领取——真实登录
+        间隔只剩 gap 门（默认 10s），正是 `YIBAN_RETRY_MIN_INTERVAL` 要防的连击
+        （工单 ba-p03-04）。`skipped_norange` 在档位词表里默认可回炉（retry:）。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=0, epoch=1)
+        self._seed_v(8)
+        cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=110,
+                   edge_front_sec=0)  # 有效窗口至 06:40:10，剩余 10s
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "窗口缺失", False,
+                                            yiban_status.STATUS_SKIPPED_NORANGE)):
+            self._run_v3(self._accounts(phone), [_item(phone)], cfg=cfg)
+        row = self._row(phone)
+        self.assertEqual(row["state"], "failed")
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
+                        "当日无落点 ⇒ 保守档；retry: 会立刻被回炉口复活")
+        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=False), 0,
+                         "默认回炉口不得复活它（复活即绕开最小间隔）")
+
     def test_next_retry_at_is_bounded_and_reproducible(self):
         cfg = _cfg()
         a = executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(3))
@@ -1070,12 +1143,18 @@ class RetryTest(_Base):
         self.assertLessEqual(delay, executor_v3.RETRY_CAP_SEC)
 
     def test_next_retry_at_shrinks_with_remaining_window(self):
-        # 有效窗口至 06:41:40（剩余 100s）→ cap = 30s
+        # 有效窗口至 06:41:40（剩余 100s）→ cap = 30s < base 60s ⇒ 放弃重试（None）：
+        # 窗口尾段放不下一个合法的最小间隔，宁可当日放弃，也不把间隔压到配置值之下
+        # （工单 ba-p03-04）。
         cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=20,
                    edge_front_sec=0)
         self.assertAlmostEqual(_remaining(cfg, START), 100, delta=1)
-        delay = (executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(5))
+        self.assertIsNone(executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(5)))
+        # 把最小间隔降到 20s 后，落点仍被 cap（30s）约束且 >= base。
+        cfg_low = dict(cfg, retry_min_interval=20)
+        delay = (executor_v3.next_retry_at_v3(START, cfg_low, 60, random.Random(5))
                  - START).total_seconds()
+        self.assertGreaterEqual(delay, 20)
         self.assertLessEqual(delay, 30)
 
     def test_next_retry_at_caps_at_retry_cap(self):
@@ -1090,18 +1169,20 @@ class RetryTest(_Base):
     def test_next_retry_at_never_passes_window_end(self):
         """落点恒在有效窗口内（`cap = 剩余 × 0.3` 给出结构性保证，再夹一次窗口结束）。
 
-        这条是**契约护栏**：`cap` 与窗口结束必须同时成立，任一处被改坏（例如 cap 不再
-        按剩余窗口收缩）都会让落点越过窗口——那时本断言会红。
+        窗口只剩 10s ⇒ cap=3s 小于最小间隔 60s，函数返回 None（放弃重试），绝不出窗；
+        把最小间隔降到 1s 后才能给出落点，且落点仍必须落在窗内。
         """
         cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=110,
                    edge_front_sec=0)
         self.assertAlmostEqual(_remaining(cfg, START), 10, delta=1)
+        self.assertIsNone(executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(5)))
+        cfg_low = dict(cfg, retry_min_interval=1)
         window_end = window.to_dt(START.replace(hour=0, minute=0, second=0),
                                   window.bounds(cfg).hi_min)
         for last_delay in (60, 600, 10 ** 6):
             with self.subTest(last_delay=last_delay):
                 target = executor_v3.next_retry_at_v3(
-                    START, cfg, last_delay, random.Random(5))
+                    START, cfg_low, last_delay, random.Random(5))
                 self.assertGreater(target, START)
                 self.assertLessEqual(target, window_end)
 

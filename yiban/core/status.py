@@ -103,9 +103,11 @@ TEXT = {
 # `signin --second-run-check` 的退出码判定（该脚本内部亦用本集合）。
 # `supplementing`（补签中）**刻意不在本集合**：它结果未定、平台正在处理，我们再跑一轮
 # 既改不了结果、又多一次真实登录（与 paused / user_cancelled 同一条取舍）。
-# 注意这只管**本集合的消费者**（状态文件那条腿）：补签闸门另有一条读**任务队列**的腿
-# （`state_io.has_undone_accounts_today` → `db.task_open_count`），而 `supplementing` 在
-# 队列里落 `failed`（`TASKS_OPEN_STATES` 之一）⇒ 补签轮仍会重领它一次。彻底不重试需定策。
+# **两条腿必须同口径**：补签闸门另有一条读**任务队列**的腿
+# （`state_io.has_undone_accounts_today` → `db.task_open_count`）。执行体对
+# supplementing / user_cancelled / paused 一律落终态 `skipped`（不在
+# `TASKS_OPEN_STATES`、也不在 `REQUEUEABLE_STATES`），故队列腿同样判"已了结"
+# （工单 48b9 / vqmb：旧实现落 failed，补签轮据此重领一次）。
 UNDONE_STATUSES = frozenset((
     STATUS_FAILED, STATUS_RETRYING, STATUS_PENDING,
     STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
@@ -220,9 +222,12 @@ def display_payload() -> dict[str, Any]:
         code: {"symbol": e["symbol"], "text": e["text"], "tone": e["tone"]}
         for code, e in DISPLAY.items()
     }
-    #: 共享符号按**最严重档**取代表（⛔ 同时被 skipped_window/norange 与急停使用）：
-    #: 先到先得会让「急停」被排在前面的日常态吞掉——日历上急停日显示成
-    #: 「未在签到时段」的灰档，恰恰是最不能看错的状态。
+    #: 共享符号按**最严重档**取代表：同一个符号若被多个状态共用，先到先得会让高语气档
+    #: 的状态被低档吞掉。**当前没有任何符号跨语气档共享**（⛔ 只被 skipped_window /
+    #: skipped_norange 两个同属 muted 的状态共用；急停 global_paused 是 ⏸，与 paused 的
+    #: ⏸️ 是两个不同串）——故本防吞逻辑当前不触发（工单 ba-p10-05）。急停日的显示由
+    #: 日历"当日无记录 + .env 门真值"合成，不依赖这张按符号表；若将来给急停注入真实
+    #: 日状态行，再按这里的严重档取代表。
     severity = {"ok": 0, "muted": 1, "busy": 2, "warn": 3, "bad": 4}
     by_symbol: dict[str, dict[str, str]] = {}
     for e in DISPLAY.values():
