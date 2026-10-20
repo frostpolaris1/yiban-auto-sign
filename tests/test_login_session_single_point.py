@@ -133,10 +133,10 @@ class SignSessionSingleDefinitionPointTest(unittest.TestCase):
         self.assertIn(PLATFORM_REL, files)
 
     def test_docker_face_is_scanned(self):
-        """容器入口是生产载体：`docker/` 必须在面内（兄弟门同口径）。"""
+        """容器入口是生产载体：`docker/` 必须在面内且真的扫到文件（兄弟门同口径）。"""
+        self.assertTrue(os.path.isdir(os.path.join(REPO_ROOT, "docker")),
+                        "docker/ 目录不存在——面登记与树不符，判据会静默变窄")
         docker_files = [f for f in _iter_python_files() if f.startswith("docker/")]
-        if not os.path.isdir(os.path.join(REPO_ROOT, "docker")):
-            self.skipTest("本树没有 docker/ 目录（面登记见 SCAN_DIRS）")
         self.assertGreater(len(docker_files), 0,
                            "docker/ 在面里但一个 .py 都没扫到——面写法失效")
 
