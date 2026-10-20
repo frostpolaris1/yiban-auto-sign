@@ -1308,7 +1308,7 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
             ├── adapters/protocol_fake/  测试假上游（e2e 与演练用；生产链路不引）
             ├── adapters/notifier/       通知适配：`notify/`（推送）与 `mail/`（邮件）
-            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 是转发壳
+            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 的转发壳已于 145-E 退役
             ├── geo.py           多边形内定位点采样（偶奇射线法 + 拒绝采样 + 显式兜底）
             ├── challenge.py     风控挑战检测（只检测不求解）
             ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
