@@ -105,6 +105,7 @@ fast	tests/test_dev_verify_entry.py
 fast	tests/test_device_autofill_api.py
 fast	tests/test_device_identification.py
 fast	tests/test_device_registry_methods.py
+fast	tests/test_doc_numbering_gate.py	# 文档编号唯一性巡检（只读 docs 树）
 fast	tests/test_doc_reference_gate.py
 fast	tests/test_docker_image_contents.py
 fast	tests/test_docker_image_inputs_gate.py
