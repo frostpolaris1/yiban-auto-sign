@@ -48,7 +48,10 @@ from werkzeug.security import generate_password_hash
 from web import render as _render
 from web import security as _security
 from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import executor_env as _executor_env
 from web.services import logs as _logs_svc
+from web.services import measure as _measure
 from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from yiban.core import clock
@@ -363,14 +366,14 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         path = os.path.join(self.tmp, "state", "capacity-measure.json")
         self.assertEqual(self.webapp._read_measure_state(path), {}, "缺失按从未实测")
         # 先让写入路径建目录，再逐形态覆盖内容
-        self.webapp._write_measure_state(path, {"at": ""})
+        _measure._write_measure_state(path, {"at": ""})
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("不是 JSON")
         self.assertEqual(self.webapp._read_measure_state(path), {})
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("[1, 2]")
         self.assertEqual(self.webapp._read_measure_state(path), {}, "非 dict 按从未实测")
-        self.webapp._write_measure_state(path, {"at": "2026-09-19 06:00:00", "seconds": 1.5,
+        _measure._write_measure_state(path, {"at": "2026-09-19 06:00:00", "seconds": 1.5,
                                                 "sample": "138****8000"})
         self.assertEqual(self.webapp._read_measure_state(path),
                          {"at": "2026-09-19 06:00:00", "seconds": 1.5,
@@ -498,7 +501,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         import yiban.core.window as yb_window
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            win = self.webapp._executors_window()
+            win = _executor_env._executors_window()
         engine = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertEqual((win.front_sec, win.back_sec), (60, 60))
@@ -564,7 +567,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self._write_raw("YIBAN_WORKERS=2\n"
                         "YIBAN_PROXY_LIST=http://a:1,http://b:2\n"
                         "YIBAN_PROXY_FALLBACK=http://f:1\n")
-        rows = self.webapp._executor_rows()
+        rows = _executor_env._executor_rows()
         self.assertEqual([r["proxy"] for r in egress.worker_rows(rows)],
                          ["http://a:1", "http://b:2"])
         env = self.webapp.read_env(self.env_file)
@@ -573,7 +576,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         # 迁移只发生一次：清单已在，第二次读不再落盘
         real = self.webapp._atomic_write
         with mock.patch.object(self.webapp, "_atomic_write", side_effect=real) as spy:
-            self.webapp._executor_rows()
+            _executor_env._executor_rows()
         spy.assert_not_called()
 
     def test_executor_manifest_write_round_trip_preserves_other_lines(self):
@@ -581,11 +584,11 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         rows = egress.add_row([], egress.TYPE_WORKER, "http://a:1", name="机一")
         self._write_raw(f"# 保留我\n{egress.ENV_MANIFEST}={egress.dump_manifest(rows)}\n")
         # 追加兜底行（清单里没有则新增）
-        self.assertEqual(self.webapp._save_fallback_egress(self.env_file, "http://fb:9"),
+        self.assertEqual(_executor_env._save_fallback_egress(self.env_file, "http://fb:9"),
                          (None, None))
         # 单行出口改写：其余行逐字保留
         self.assertEqual(
-            self.webapp._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2"),
+            _executor_env._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2"),
             (None, None))
         with io.open(self.env_file, encoding="utf-8") as f:
             text = f.read()
@@ -599,15 +602,15 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     def test_save_slot_egress_replaces_one_segment_only(self):
         self._write_raw("YIBAN_PROXY_LIST=http://a:1,http://b:2,http://c:3\n")
         self.assertEqual(
-            self.webapp._save_slot_egress(self.env_file, "YIBAN_PROXY_LIST", 1, "http://d:4"),
+            _executor_env._save_slot_egress(self.env_file, "YIBAN_PROXY_LIST", 1, "http://d:4"),
             (None, None))
         self.assertEqual(
             self.webapp.read_env(self.env_file)["YIBAN_PROXY_LIST"],
             "http://a:1,http://d:4,http://c:3", "其余段必须逐字保留")
-        err, code = self.webapp._save_slot_egress(
+        err, code = _executor_env._save_slot_egress(
             self.env_file, "YIBAN_PROXY_LIST", 1, "不是代理\n")
         self.assertEqual((err, code), ("代理配置不能包含换行", 400))
-        err, code = self.webapp._save_slot_egress(
+        err, code = _executor_env._save_slot_egress(
             self.env_file, "YIBAN_PROXY_LIST", 1, "http://u:p@h:1/x 备注")
         self.assertEqual(code, 400)
         self.assertIn("代理地址格式不正确", err)
@@ -1079,14 +1082,14 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
                                return_value=((6, 30), (7, 50))), \
                 mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
-            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            self.assertEqual(_capacity._capacity_estimate(3600), 2)
         # 退化窗口（起止同点）回退默认窗口 06:30~07:50（与引擎同源，故不为 0）
         with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
                 mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+            self.assertEqual(_capacity._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_manual_sign_exit_semantics_verbatim(self):
         f = self.webapp._manual_sign_failure_reason
@@ -1951,7 +1954,9 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
         # 绑定面下限：用途只是"解析器或路径失效 ⇒ 红"。批 3-a 末（`e5aceb07`）实测 360，
         # 批 3-b 删 21 个零读者转发名、搬走 47 个真定义（其中 4 名改由新家导入）、
         # 去掉 2 个已无用的 stdlib 导入 ⇒ 本批实测 294，故下限由 300 下调为 250。
-        self.assertGreaterEqual(len(bound), 250,
+        # 批 3-d 删 39 个转发包装 + 其导入后，绑定面实测 238 个（ref=工作树 S3 末）。
+        # 下限只保"解析器没失效"，不表达"绑定越多越好"。
+        self.assertGreaterEqual(len(bound), 180,
                                 "web/app.py 绑定名过少——解析器或路径失效（扫空不得当绿）")
         self.assertGreaterEqual(len(reads), 1000,
                                 "读者扫描面过小——别名探测失效（扫空不得当绿）")
