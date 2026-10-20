@@ -115,6 +115,7 @@ docs/dev/*
 !docs/dev/api-executors.md
 !docs/dev/cli.md
 !docs/dev/dev-verify.md
+!docs/dev/constraints.tsv
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
 !docs/dev/architecture-target.md

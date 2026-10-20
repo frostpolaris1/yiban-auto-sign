@@ -79,10 +79,12 @@ fast	tests/test_concurrency_fidelity_gate.py
 fast	tests/test_config_input_caps.py
 fast	tests/test_config_loader.py
 fast	tests/test_config_registry_gate.py
+fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
 fast	tests/test_conftest_mail_guard.py
 fast	tests/test_conftest_umask_guard.py
 fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
+fast	tests/test_coverage_ledger_gate.py	# 覆盖面对账门：改动集 vs 名册/登记表（只读文本）
 fast	tests/test_crash_semantics.py
 fast	tests/test_creds_write_accounting.py
 slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
