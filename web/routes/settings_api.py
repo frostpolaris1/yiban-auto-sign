@@ -379,9 +379,12 @@ def api_settings_save():
         gap = int(data.get("gap_max", 0))
     except (TypeError, ValueError):
         return jsonify({"error": "延迟秒数必须是整数"}), 400
-    # 上限 1 小时：防止误填超大值破坏签到随机延迟
-    start = min(max(start, 0), 3600)
-    gap = min(max(gap, 0), 3600)
+    # 区间校验（0~3600 秒）。不静默夹取：管理员提交 99999 却看到 200、实际存 3600，
+    # 会以为保存坏了；与同函数 edge/μ/σ/max_* 的显式区间范式一致（ba-p05-07）。
+    if not 0 <= start <= 3600:
+        return jsonify({"error": "启动延迟应为 0~3600 秒"}), 400
+    if not 0 <= gap <= 3600:
+        return jsonify({"error": "账号间隔应为 0~3600 秒"}), 400
     # 随机延迟影响自动+手动签到节奏，且新设置预估容量不足（当前活跃账号
     # 超过预估值）时拒绝保存。口令复核按档位收在下面的统一门禁块里（不在这里各判一次），
     # 本段只留"就算口令对也不该落盘"的容量硬门。
@@ -533,8 +536,10 @@ def api_settings_save():
                 n = int(pi)
             except (TypeError, ValueError):
                 return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
-            if n <= 0:
-                return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
+            # 上界 3650 天（约 10 年）：无上界时 100000 会以 200 落盘、探针从此不再
+            # 触发，凭据失效/被风控这类事实静默失去监测（ba-p05-07）。
+            if not 1 <= n <= 3650:
+                return jsonify({"error": "探针触发频率应为 1~3650 天，或 once（单次）"}), 400
             probe_interval = str(n)
     # 容量上限（主管理员专属；0=不限，钳位 0~100000）：
     # 字段携带才写——部分更新不得把未携带的 max_* 静默清零
@@ -622,144 +627,149 @@ def api_settings_save():
     # 正态 μ/σ 区间四键：与 GET 回显同形（整数字符串），未携带的键不进变更判定
     for _k in SCHEDULE_DIST_KEYS:
         proposed[_k] = None if _k not in dist_params else str(dist_params[_k])
-    cur_vals = _env_io_svc._settings_effective_values(m.ENV_FILE)
-    # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
-    changes = []
-    for _k in sorted(set(data).intersection(
-            master_only | _env_io_svc.GATED_KEYS | {_env_io_svc.GLOBAL_PAUSE_KEY})):
-        _new, _old = proposed.get(_k), cur_vals.get(_k)
-        if _new is not None and _new != _old:
-            # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
-            # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
-            changes.append((_k, _old, _new))
-    a_changes = [c for c in changes if c[0] in master_only]
-    b_changes = [c for c in changes if c[0] in _env_io_svc.GATED_KEYS]
-    pause_change = next((c for c in changes if c[0] == _env_io_svc.GLOBAL_PAUSE_KEY), None)
+    # 变更判定与落盘必须同持 .env 写锁：判据是「值真变了才要口令」，若比对用的是
+    # 旧版、写入时覆盖了并发改动，方向上恰好 fail-open（ba-p05-09）。同域执行体
+    # 写口已把比对搬进写锁内（见 write_env_batch 段上方注释）。锁可重入，
+    # write_env_batch 内部的写锁不会与外层重复获取。
+    with _env_io_svc._env_write_lock(m.ENV_FILE):
+        cur_vals = _env_io_svc._settings_effective_values(m.ENV_FILE)
+        # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
+        changes = []
+        for _k in sorted(set(data).intersection(
+                master_only | _env_io_svc.GATED_KEYS | {_env_io_svc.GLOBAL_PAUSE_KEY})):
+            _new, _old = proposed.get(_k), cur_vals.get(_k)
+            if _new is not None and _new != _old:
+                # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
+                # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
+                changes.append((_k, _old, _new))
+        a_changes = [c for c in changes if c[0] in master_only]
+        b_changes = [c for c in changes if c[0] in _env_io_svc.GATED_KEYS]
+        pause_change = next((c for c in changes if c[0] == _env_io_svc.GLOBAL_PAUSE_KEY), None)
 
-    def _change_text(key, value):
-        """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
-        翻成人话），再兜底 `-`（值本来就空、又不在那张表里的键，别印出半个等号）。
+        def _change_text(key, value):
+            """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
+            翻成人话），再兜底 `-`（值本来就空、又不在那张表里的键，别印出半个等号）。
 
-        两处消费点（变更明细、口令门禁留痕）共用本函数——各写一份必然再漂移一次。
-        """
-        return _env_io_svc._settings_value_text(key, value) or "-"
+            两处消费点（变更明细、口令门禁留痕）共用本函数——各写一份必然再漂移一次。
+            """
+            return _env_io_svc._settings_value_text(key, value) or "-"
 
-    def _tier_gate(action_label, always_required, attempted, irreversible=False):
-        """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
+        def _tier_gate(action_label, always_required, attempted, irreversible=False):
+            """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
 
-        `irreversible=True`（0→1 急停）在非 `full` 档还要求请求体带倒计时确认凭据；
-        `always_required` 只在 `full` 档区分 A/B 档，其余档由门禁按档位自行决定
-        （见 `_sensitive_password_gate`）。
-        """
-        denied = sensitive_password_gate()(data, action_label,
-                                          always_required=always_required,
-                                          irreversible=irreversible)
-        if denied is not None:
-            db.audit(
-                session.get("username") or "?",
-                "settings_switch_pw_fail",
-                "settings",
-                f"「{action_label}」口令复核未通过（尝试变更："
-                + "、".join(f"{_env_io_svc._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
-                            for k, o, n in attempted)
-                + "）",
-            )
-        return denied
-
-    if a_changes or pause_change:
-        # A 档**不吃豁免**：豁免给的是"刚复核过的同一出口不必再输一次"，而 A 档
-        # 要防的恰是持被窃会话者改一次配好手感、再连改全站停摆项。
-        _action = "、".join(
-            ([f"破坏性设置（{('、'.join(_env_io_svc._settings_label(k) for k, _, _ in a_changes))}）"]
-             if a_changes else [])
-            + (["系统开关"] if pause_change else []))
-        denied = _tier_gate(_action, True,
-                            (a_changes or []) + ([pause_change] if pause_change else []),
-                            # 0→1 急停不可逆（当场把全站停下来）；1→0 恢复可逆
-                            irreversible=bool(pause_change and pause_change[2] == "1"))
-        if denied is not None:
+            `irreversible=True`（0→1 急停）在非 `full` 档还要求请求体带倒计时确认凭据；
+            `always_required` 只在 `full` 档区分 A/B 档，其余档由门禁按档位自行决定
+            （见 `_sensitive_password_gate`）。
+            """
+            denied = sensitive_password_gate()(data, action_label,
+                                              always_required=always_required,
+                                              irreversible=irreversible)
+            if denied is not None:
+                db.audit(
+                    session.get("username") or "?",
+                    "settings_switch_pw_fail",
+                    "settings",
+                    f"「{action_label}」口令复核未通过（尝试变更："
+                    + "、".join(f"{_env_io_svc._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
+                                for k, o, n in attempted)
+                    + "）",
+                )
             return denied
-    if pause_change and pause_change[2] == "1" and admin_delete_limited()():
-        # 急停与"删数据/拆报警器"同属一次点击即全站停摆，故共用同一套高危额度
-        # （判定即占用，必须排在口令复核之后——否则不知口令者能用错口令刷光额度）。
-        return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-    if b_changes:
-        denied = _tier_gate("调度配置", False, b_changes)
-        if denied is not None:
-            return denied
-    # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
-    # 仅请求携带的字段才写入（缺失不重置）
-    updates = {}
-    if has_start:
-        updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
-    if has_gap:
-        updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
-    if sign_mode:
-        updates["YIBAN_SIGN_MODE"] = sign_mode
-    if sign_order:
-        updates["YIBAN_SIGN_ORDER"] = sign_order
-    if sign_dist:
-        updates["YIBAN_SIGN_DIST"] = sign_dist
-    if edge_front is not None or edge_back is not None:
-        # 写入新键并删除旧键（迁移）；未携带的一侧已在门禁块前按现值补齐
-        updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
-        updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
-        updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
-    if pref is not None:
-        updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
-    if win_start_str is not None:
-        updates["YIBAN_SIGN_START"] = win_start_str
-        updates["YIBAN_SIGN_END"] = win_end_str
-    if sunday_sign is not None:
-        updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
-    if saturday_sign is not None:
-        # 显式写 0/1（默认已是 0，显式落盘自文档化；不改写 sunday 的删键风格以保持各自历史口径）
-        updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
-    if global_pause is not None:
-        updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
-    if registration_pause is not None:
-        # ""=开放（删键，读侧默认 0），与 global_pause 同口径；"1"=暂停
-        updates["YIBAN_REGISTRATION_PAUSE"] = "1" if registration_pause else ""
-    if account_verify is not None:
-        updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
-    if probe_enable is not None:
-        updates["YIBAN_PROBE_ENABLE"] = "1" if probe_enable else ""
-    if probe_time is not None:
-        updates["YIBAN_PROBE_TIME"] = probe_time
-    if probe_interval is not None:
-        updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
-    if health_report_time is not None:
-        # "" = 删键（回落到"唤醒即发"），与其它设置键的"空值=删键"同口径
-        updates["YIBAN_HEALTH_REPORT_TIME"] = health_report_time
-    if health_report_weekday is not None:
-        updates["YIBAN_HEALTH_REPORT_WEEKDAY"] = health_report_weekday
-    if max_users_val is not None:
-        # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
-        updates["YIBAN_MAX_USERS"] = str(max_users_val)
-    if max_accounts_val is not None:
-        updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
-    # 正态 μ/σ 区间四键：携带才写（缺失不重置），环境键名取自 env_io 的映射表
-    for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
-        if _k in dist_params:
-            updates[_env_key] = str(dist_params[_k])
-    try:
-        _env_io_svc.write_env_batch(m.ENV_FILE, updates)
-    except _EnvWriteRefused as e:
-        # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
-        # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
-        # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
-        m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
-        return _env_write_refused_response(e, m.ENV_FILE)
-    except ValueError as e:
-        # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
-        # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
-        # 区分。"行分隔符"这类值错误与"潜伏分隔符"文件态是两回事，故文案分开。
-        m.logger.error("设置写入值非法: %s", e)
-        return jsonify({
-            "error": "配置值不合法（键名非法，或值包含行分隔符/超出长度上限），未写入；"
-                     "请修正后重试",
-            "reason": "invalid_value",
-        }), 400
+
+        if a_changes or pause_change:
+            # A 档**不吃豁免**：豁免给的是"刚复核过的同一出口不必再输一次"，而 A 档
+            # 要防的恰是持被窃会话者改一次配好手感、再连改全站停摆项。
+            _action = "、".join(
+                ([f"破坏性设置（{('、'.join(_env_io_svc._settings_label(k) for k, _, _ in a_changes))}）"]
+                 if a_changes else [])
+                + (["系统开关"] if pause_change else []))
+            denied = _tier_gate(_action, True,
+                                (a_changes or []) + ([pause_change] if pause_change else []),
+                                # 0→1 急停不可逆（当场把全站停下来）；1→0 恢复可逆
+                                irreversible=bool(pause_change and pause_change[2] == "1"))
+            if denied is not None:
+                return denied
+        if pause_change and pause_change[2] == "1" and admin_delete_limited()():
+            # 急停与"删数据/拆报警器"同属一次点击即全站停摆，故共用同一套高危额度
+            # （判定即占用，必须排在口令复核之后——否则不知口令者能用错口令刷光额度）。
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        if b_changes:
+            denied = _tier_gate("调度配置", False, b_changes)
+            if denied is not None:
+                return denied
+        # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
+        # 仅请求携带的字段才写入（缺失不重置）
+        updates = {}
+        if has_start:
+            updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
+        if has_gap:
+            updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
+        if sign_mode:
+            updates["YIBAN_SIGN_MODE"] = sign_mode
+        if sign_order:
+            updates["YIBAN_SIGN_ORDER"] = sign_order
+        if sign_dist:
+            updates["YIBAN_SIGN_DIST"] = sign_dist
+        if edge_front is not None or edge_back is not None:
+            # 写入新键并删除旧键（迁移）；未携带的一侧已在门禁块前按现值补齐
+            updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
+            updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
+            updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
+        if pref is not None:
+            updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
+        if win_start_str is not None:
+            updates["YIBAN_SIGN_START"] = win_start_str
+            updates["YIBAN_SIGN_END"] = win_end_str
+        if sunday_sign is not None:
+            updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
+        if saturday_sign is not None:
+            # 显式写 0/1（默认已是 0，显式落盘自文档化；不改写 sunday 的删键风格以保持各自历史口径）
+            updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
+        if global_pause is not None:
+            updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
+        if registration_pause is not None:
+            # ""=开放（删键，读侧默认 0），与 global_pause 同口径；"1"=暂停
+            updates["YIBAN_REGISTRATION_PAUSE"] = "1" if registration_pause else ""
+        if account_verify is not None:
+            updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
+        if probe_enable is not None:
+            updates["YIBAN_PROBE_ENABLE"] = "1" if probe_enable else ""
+        if probe_time is not None:
+            updates["YIBAN_PROBE_TIME"] = probe_time
+        if probe_interval is not None:
+            updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
+        if health_report_time is not None:
+            # "" = 删键（回落到"唤醒即发"），与其它设置键的"空值=删键"同口径
+            updates["YIBAN_HEALTH_REPORT_TIME"] = health_report_time
+        if health_report_weekday is not None:
+            updates["YIBAN_HEALTH_REPORT_WEEKDAY"] = health_report_weekday
+        if max_users_val is not None:
+            # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
+            updates["YIBAN_MAX_USERS"] = str(max_users_val)
+        if max_accounts_val is not None:
+            updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
+        # 正态 μ/σ 区间四键：携带才写（缺失不重置），环境键名取自 env_io 的映射表
+        for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
+            if _k in dist_params:
+                updates[_env_key] = str(dist_params[_k])
+        try:
+            _env_io_svc.write_env_batch(m.ENV_FILE, updates)
+        except _EnvWriteRefused as e:
+            # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
+            # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
+            # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
+            m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+            return _env_write_refused_response(e, m.ENV_FILE)
+        except ValueError as e:
+            # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
+            # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
+            # 区分。"行分隔符"这类值错误与"潜伏分隔符"文件态是两回事，故文案分开。
+            m.logger.error("设置写入值非法: %s", e)
+            return jsonify({
+                "error": "配置值不合法（键名非法，或值包含行分隔符/超出长度上限），未写入；"
+                         "请修正后重试",
+                "reason": "invalid_value",
+            }), 400
     sunday_display = "不变" if sunday_sign is None else sunday_sign
     saturday_display = "不变" if saturday_sign is None else saturday_sign
     pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
@@ -787,11 +797,20 @@ def api_settings_save():
     changes_desc = "、".join(
         f"{_env_io_svc._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
         for k, o, n in changes) or "无实质变更"
+    # 原始请求值只用于判定；日志与审计一律写**规范化后的生效值**（ba-p05-05）。
+    # pref_raw / win 可携带内嵌换行（int() 容忍首尾空白），按原值写入按天日志与审计
+    # 正文就等于允许伪造行结构。
+    pref_display = "不变" if pref is None else pref
+    win_display = ("不变" if win_start_str is None
+                   else f"{win_start_str}~{win_end_str}")
+    pref_audit = "-" if pref is None else pref
+    win_audit = ("-" if win_start_str is None
+                 else f"{win_start_str}~{win_end_str}")
     m.logger.info(
         "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 健康报告=%s 容量上限=%s",
         start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
-        edge_display, pref_raw if pref_raw is not None else "不变",
-        win or "不变", sunday_display, saturday_display, pause_display,
+        edge_display, pref_display,
+        win_display, sunday_display, saturday_display, pause_display,
         reg_pause_display,
         "不变" if account_verify is None else ("开" if account_verify else "关"),
         probe_display, health_report_display, cap_limits_display,
@@ -803,7 +822,7 @@ def api_settings_save():
         "settings",
         f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
         f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
-        f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
+        f"自选={pref_audit} 窗口={win_audit} 周日={sunday_display} "
         f"周六={saturday_display} "
         f"全局暂停={pause_display} 注册={reg_pause_display} "
         f"账号验证={'开' if account_verify else '关'} "

@@ -13,8 +13,10 @@
 #   3. 日志要与 run.sh 同源（`sign-<业务日>.log`），否则运维要在两个地方找日志。
 #
 # 环境变量（与 run.sh 同口径）：
-#   YIBAN_ENV_FILE（默认 <APP_DIR>/data/.env）—— 开关与状态/日志目录都从这里读
 #   YIBAN_STATE_DIR（默认 /var/log/yiban）、YIBAN_LOG_FILE（默认 <state>/sign.log）
+#   .env 路径**不受环境变量控制**：一律 <APP_DIR>/data/.env（与 run.sh / run_probe.sh
+#   同源）。YIBAN_ENV_FILE 是"读哪个文件"的指针，不是被管的配置；cron 行前缀一次即
+#   常驻，会让兜底开关、状态目录、日志目录读到另一份文件。
 #   YIBAN_FALLBACK_ENABLE —— 真值（1/true/on/yes，大小写不敏感）才起进程；
 #     未设/0/false —— 静默 exit 0（不写日志、不取锁、不启进程）
 #   **`.env` 优先，进程环境只补缺**（M27，与 run.sh / docker-compose / 引擎
@@ -37,7 +39,10 @@ umask 077
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-ENV_PATH="${YIBAN_ENV_FILE:-$APP_DIR/data/.env}"
+# `.env` 指针唯一口径：一律 $APP_DIR/data/.env（工单 p12-13）。
+# 与 run.sh / run_probe.sh 同源；**不读 YIBAN_ENV_FILE**——旧写法让 cron 行前缀一次
+# 就常驻，兜底开关/状态目录/日志目录会读到另一份文件（页面显示关闭、cron 却天天拉起）。
+ENV_PATH="$APP_DIR/data/.env"
 
 # 加载 `.env`：**`.env` 覆盖进程环境**，进程环境只补 `.env` 里没有的键（M27）。
 # 安全说明与 run.sh 同源：绝不能使用 `source`/`.` 加载 .env——网页可写公告等文本，
@@ -110,12 +115,19 @@ fi
 business_day() {
     # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
     # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d
+    local _d _tz
     _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
     case "$_d" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
     esac
-    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
+    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
+    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
+    if [ "$_tz" = "+0800" ]; then
+        TZ=Asia/Shanghai date +%F
+        return 0
+    fi
+    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
     date +%F
 }
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"

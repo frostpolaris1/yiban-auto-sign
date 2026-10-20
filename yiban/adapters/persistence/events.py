@@ -41,6 +41,7 @@ db.py 的时钟守卫与清理留痕写入侧（`_clock_jump_guard` / `_table_mi
 import contextlib
 import datetime
 import logging
+import math
 
 from yiban.core import clock
 from yiban.core.masking import mask_email
@@ -359,7 +360,11 @@ def attempt_dur_quantile(pct=0.95, days=7, min_samples=20):
     vals = [float(r[0]) for r in rows if r[0] is not None]
     if len(vals) < max(1, int(min_samples)):
         return None
-    idx = max(0, min(len(vals) - 1, int(pct * len(vals))))  # 升序第 ⌈pct×n⌉ 个（0 基）
+    # nearest-rank：升序第 ⌈pct×n⌉ 个（1 基）→ 下标 ⌈pct×n⌉-1（0 基）。
+    # 旧实现用 int(pct*n)（向下取整）再夹到末元素：n=20、pct=0.95 时得到 index 19，
+    # 返回的是**最大值**而不是 p95（工单 ba-p02-08）。容量告警拿它当实测输入，
+    # 小样本时长期偏保守。
+    idx = max(0, min(len(vals) - 1, math.ceil(pct * len(vals)) - 1))
     return vals[idx]
 
 

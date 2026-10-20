@@ -33,7 +33,14 @@
 
 `mask_email`（展示/审计面口径）与邮件收件人侧的 `_mask_addr`（MF-51 定案）是**两张不同
 用途的公式**：前者"前缀+完整域名"保住可比对性（列表/actor 列要能认出同一人），后者逐项
-打码服务告警正文。刻意不合并——合并会改变其中一面的用户可见输出。
+打码服务告警正文。刻意不合并——合并会改变其中一面的用户可见输出。两处规则差异由
+`tests/test_masking_tree_parity.py` 钉住（同输入必须给出**不同**结果，防有人误合并）。
+
+**内容树递归遮罩只有这一份** `mask_tree_strings`：`yiban/engine/cli_support.py` 的
+`_masked_tree`（stdout JSON）与 `yiban/adapters/notifier/mail/layout.py` 的 `_masked_tree`
+（邮件内容树）是两处历史副本。工单 g88j 的裁决是"保留两份、但必须真跑对拍"——
+两条调用面各自的容器类型处理略有差异（邮件树不含 dict，CLI JSON 含 dict），
+由 `tests/test_masking_tree_parity.py` 对共同形状逐枚对拍；改任一份不改另一份即红。
 """
 import re
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
@@ -264,6 +271,28 @@ def mask_phones_in_text(text):
     已遮形态（含 `*`）不匹配号码数字串，故重复调用不再变形。
     """
     return _PHONE_IN_TEXT_RE.sub(lambda m: mask_phone(m.group(0)), str(text))
+
+
+def mask_tree_strings(node):
+    """内容树里**所有字符串叶子**过 `mask_phones_in_text`，容器结构原样保留。
+
+    **只动 str 叶子、不动数字**：对序列化后的整行打码会连 11 位整数字段值一起改写
+    （产出非法 JSON）。键名不承载用户数据，不处理。
+
+    这是"内容树递归遮罩"的单源实现（工单 g88j）。两处历史副本
+    `yiban/engine/cli_support.py::_masked_tree` 与
+    `yiban/adapters/notifier/mail/layout.py::_masked_tree` 保留（各自的调用面不同），
+    但共同形状必须与本函数逐枚等价，由 `tests/test_masking_tree_parity.py` 真跑对拍。
+    """
+    if isinstance(node, str):
+        return mask_phones_in_text(node)
+    if isinstance(node, dict):
+        return {k: mask_tree_strings(v) for k, v in node.items()}
+    if isinstance(node, tuple):
+        return tuple(mask_tree_strings(v) for v in node)
+    if isinstance(node, list):
+        return [mask_tree_strings(v) for v in node]
+    return node
 
 
 def mask_email(e):

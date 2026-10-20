@@ -7,8 +7,8 @@
      5 补签中 → `supplementing`；0 可签到 / 1 未签到 → 照常取点位并提交；
   ② `State=4` **落了结**：真队列（`sign_tasks`）跑一轮后该账号记 `done`，且状态文件里
      记 `already` 时补签轮定向剔除去掉它；
-  ③ `State=5` 的口径：不进了结、不进未了结、弃权落 `final:` 保守档（默认回炉口不复活，
-     只有显式路径放行），且**绝不提交签到**；
+  ③ `State=5` 的口径：不进了结、不进未了结；队列落终态 `skipped`（与 JSON 终态映射
+     同口径），任何回炉路径都不复活它，且**绝不提交签到**；
   ④ `Msg` 文本不再作判据：`Msg` 与 `State` 冲突时以 `State` 为准；
   ⑤ 未知/缺失 `State`：出声（WARN 带 `State` 与 `Msg` 原文）+ 按 `Position` 保守回退，
      且**不许**退回旧的文本判据；
@@ -95,9 +95,10 @@ def _sign_position_payload(*, state=None, msg="", positions=None):
 
 
 def _stub_response(envelope):
-    """响应桩：`is_blocked` 与信封解析都只读 `.text`。"""
+    """响应桩：`is_blocked` 与信封解析都只读 `.text`；降级分支会调 `.json()`。"""
+    text = json.dumps(envelope, ensure_ascii=False)
     return SimpleNamespace(
-        text=json.dumps(envelope, ensure_ascii=False), status_code=200, headers={}
+        text=text, status_code=200, headers={}, json=lambda: json.loads(text)
     )
 
 
@@ -115,15 +116,43 @@ def _new_client(cls):
     return client
 
 
-def _run_signin(payload, *, cls=None):
+def _run_signin(payload, *, cls=None, post_envelope=None):
     """用响应桩跑一次真 `signin()`，返回 `(verdict 四元组, 是否提交过签到)`。"""
     client = _new_client(cls or signin.YibanClient)
     client.session.get = mock.Mock(return_value=_stub_response(payload))
     client.session.post = mock.Mock(return_value=_stub_response(
-        {"code": 0, "data": {"Id": "1"}}))
+        post_envelope if post_envelope is not None else {"code": 0, "data": {"Id": "1"}}))
     with mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
         verdict = client.signin()
     return verdict, bool(client.session.post.called)
+
+
+class EnvelopeCodeAndPayloadGuardTest(unittest.TestCase):
+    """`code` 的数字/字符串双态与"成功码但无载荷"的守卫（工单 ba-p08-05 / ba-p08-07）。"""
+
+    def test_string_zero_code_is_success_on_both_legs(self):
+        payload = _sign_position_payload(state=0)
+        payload["code"] = "0"  # 上游把数字发成字符串（协议库 SPEC §3.1 已承认的形态）
+        verdict, posted = _run_signin(
+            payload, post_envelope={"code": "0", "data": {"Id": "1"}})
+        self.assertTrue(posted)
+        self.assertTrue(verdict[0], f"字符串 '0' 必须与 0 同判成功：{verdict}")
+        self.assertEqual(verdict[3], yiban_status.STATUS_SUCCESS)
+
+    def test_missing_data_object_is_a_hard_failure(self):
+        """`code=0` 但 `data` 缺失：必须有 HARD_FAIL 词元，落 1 次尝试档而不是通用档重试。"""
+        with self.assertRaises(RuntimeError) as cm:
+            _run_signin({"code": 0})
+        message = str(cm.exception)
+        self.assertIn("无签发方回执", message)
+        self.assertTrue(yiban_client.security.is_hard_fail_message(message),
+                        "缺载荷必须命中 HARD_FAIL_TOKENS（否则会打满 3 次真实登录）")
+
+    def test_non_object_envelope_is_a_hard_failure(self):
+        """降级分支可返回 `null`（None）：同样按"无签发方回执"处理，不许抛 AttributeError。"""
+        with self.assertRaises(RuntimeError) as cm:
+            _run_signin(None)
+        self.assertIn("无签发方回执", str(cm.exception))
 
 
 class StateJudgementTest(unittest.TestCase):
@@ -447,44 +476,41 @@ class State4SettlesForTheDayTest(_V3Base):
 
 
 class SupplementingTierTest(_V3Base):
-    """`State=5` 的后果：弃权落 `final:` 保守档，默认回炉口不复活它。"""
+    """`State=5` 的后果：平台已定结论 → 终态 `skipped`，补签轮不得重领它。
 
-    def test_supplementing_verdict_settles_as_final_tier(self):
+    旧实现落 `failed` + `final:` 前缀：队列侧 `failed ∈ TASKS_OPEN_STATES`，补签闸门的
+    队列腿（`db.task_open_count`）因此判"未了结"，补签轮把该账号再真实登录一次
+    （工单 48b9 / vqmb）。`skipped` 是终态、不在 `REQUEUEABLE_STATES`，与 JSON 终态
+    映射 `supplementing → skipped` 同口径。
+    """
+
+    def test_supplementing_verdict_settles_skipped(self):
         verdict, posted = _run_signin(
             _sign_position_payload(state=5, msg="补签中", positions=[]))
         self.assertFalse(posted, "补签中不许提交签到")
         self._add_claimed()
         self._run_round(verdict)
         row = self._row()
-        self.assertEqual(row["state"], "failed", "补签中不是了结：队列不记 done")
-        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
-                        "补签中属保守档：默认不自动回炉，只有显式路径才可再领")
+        self.assertEqual(row["state"], "skipped",
+                         "补签中是平台侧已定结论：终态 skipped（不是可回炉的 failed）")
+        self.assertFalse(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
+                         "skipped 不进回炉口，不需要档位前缀")
         self.assertEqual(executor_v3._tier_prefix(yiban_status.STATUS_SUPPLEMENTING),
-                         yiban_status.RESULT_FINAL_PREFIX)
+                         yiban_status.RESULT_FINAL_PREFIX,
+                         "档位词表不变：_tier_prefix 只服务 failed 行")
 
-    def test_default_round_cannot_reclaim_it(self):
-        """默认轮（含兜底常驻）不得把补签中当成"可自由再签"：回炉口不放行。
-
-        `claim_batch` 只取 `pending`，故"默认档不复活 `final:` 行"就是"默认轮领不到它"
-        的全部依据（见 `queue_store.requeue_failed` 的说明）；本用例直接问回炉口。
-        """
+    def test_no_requeue_path_reopens_it(self):
+        """默认轮与显式路径都不得把补签中翻回 `pending`，队列也不得再有"未了结"。"""
         self._add_claimed()
         self._run_round((False, "补签申请处理中（结果未定）", True,
                          yiban_status.STATUS_SUPPLEMENTING))
-        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=False), 0,
-                         "final: 档不得被默认回炉口复活")
-        row = self._row()
-        self.assertEqual(row["state"], "failed")
-        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
-
-    def test_explicit_path_is_the_documented_boundary(self):
-        """本行钉的是 `final:` 档的**既有语义**（显式路径放行），不是对 `State=5` 策略的
-        拍板：补签轮（`requeue_final=True`）会把它翻回 `pending` 再领一次。该残留已写进
-        交付报告，等用户拍板"补签中要不要彻底不重试"。"""
-        self._add_claimed()
-        self._run_round((False, "补签申请处理中（结果未定）", True,
-                         yiban_status.STATUS_SUPPLEMENTING))
-        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=True), 1)
+        for include_final in (False, True):
+            with self.subTest(include_final=include_final):
+                self.assertEqual(
+                    queue_store.requeue_failed(DAY, (0,), include_final=include_final), 0,
+                    "skipped 是终态：默认档与补签轮的显式口子都不得复活它")
+        self.assertEqual(queue_store.open_count(DAY), 0,
+                         "队列侧不得再有未了结行（补签闸门的队列腿据此判当日已了结）")
 
 
 class StateMappingMutationTest(unittest.TestCase):
