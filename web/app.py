@@ -86,7 +86,7 @@ from web import render as _render  # noqa: E402
 # 服务层实现（web/services/）：域实现的真源。批 3-d 后本模块**不再保留状态注入包装**：
 # 各服务模块自带 `configure(...)` ＋ `_host`，本模块在 import 末尾登记 lambda（见下方
 # "宿主依赖登记区"），故测试改写本模块名字、`--config` 改写路径仍在调用时刻生效。
-# 本模块仍转出的只有两类：本模块自用的名字，以及测试按属性读取的名字面
+# 本模块仍转出的只剩本模块自用的名字，以及测试按属性读取的名字面
 # （如 `_atomic_write` / `_tail_lines` / `read_env`）。
 # 批 3-b 起，**纯常量**（窗口/上限/键名）与**纯助手**（`_json_body` /
 # `_request_is_same_origin`）已由路由与测试从新家直取（`web/services/limits.py`、
