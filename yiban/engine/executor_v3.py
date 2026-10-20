@@ -577,10 +577,11 @@ def _settle(ctx, phone, epoch, state, message):
 def _finish(ctx, phone, epoch, result, state_message, state):
     """零请求收尾（暂停 / 账号已不在配置）：写状态、事件、结果并了结该行。
 
-    以 `failed` 了结时带档位前缀（账密暂停属**管理侧当日结论**，故落终态 `skipped`，
-    与 `migrations._JSON_TERMINAL_TO_TASK_STATE` 同口径；落 `failed` 会让补签闸门的
-    队列腿把它算成"未了结"，补签轮再真实登录一次，工单 48b9 / vqmb）。`done` 同样是
-    了结态，不带前缀。
+    两个调用点都落终态 `skipped`——它们都是**管理侧或配置侧的当日结论**，与
+    `migrations._JSON_TERMINAL_TO_TASK_STATE`（paused/user_cancelled → skipped）同口径。
+    落 `failed` 会让补签闸门的队列腿（`db.task_open_count`）判"未了结"，补签轮再真实
+    登录一次（工单 48b9）；落 `done` 会让逐日对账报不一致（工单 vqmb）。`skipped` 不带
+    档位前缀——它不经过回炉口。
 
     进度打点按状态取节点：账密暂停落 `pause`，其余非成功终态落 `fail`。本函数是
     **所有零请求收尾的唯一出口**，故打点挂在这里而不是两个调用点各写一遍。
@@ -591,8 +592,6 @@ def _finish(ctx, phone, epoch, result, state_message, state):
     _emit_event(ctx, phone, status, state_message)
     _report(ctx, run_events.NODE_PAUSE if status == STATUS_PAUSED
             else run_events.NODE_FAIL, phone, state_message)
-    if state == queue_store.STATE_FAILED:
-        state_message = _tier_prefix(status) + state_message
     _settle(ctx, phone, epoch, state, state_message)
 
 
@@ -709,15 +708,17 @@ async def _attempt(ctx, item):
         if getattr(ctx, "reclaim", False):
             # 手动 `--only` 的保险：本轮允许集已把它挡在领取/回炉之外，正常不会到达这里。
             # 真到了也**绝不了结**它——既不 `_finish`（会在执行体里被当成"本轮账号已不在
-            # 配置"记 `done`/`user_cancelled`）、也不写 sign-state；留给下一轮/别的执行体。
+            # 配置"记 `user_cancelled`/`skipped`）、也不写 sign-state；留给下一轮/别的执行体。
             logger.warning("%s 手动轮遇到不在本轮账号集里的行，"
                            "跳过不动（不改状态/不写了结）: %s",
                            ctx.log_tag, _mask_phone(phone))
             return
-        # 运行期被删/停用：不发请求，但必须了结该行——否则它永远 pending，本轮收不干
+        # 运行期被删/停用：不发请求，但必须了结该行——否则它永远 pending，本轮收不干。
+        # 终态取 `skipped`（与 JSON 终态映射 user_cancelled → skipped 同口径，工单 vqmb）；
+        # `done` 也是了结态，但会让逐日对账把这一格报成不一致。
         _finish(ctx, phone, epoch, (False, "账号已不在本轮配置", True,
                                     STATUS_USER_CANCELLED),
-                "账号已不在本轮配置", queue_store.STATE_DONE)
+                "账号已不在本轮配置", queue_store.STATE_SKIPPED)
         return
     cred = ctx.cred_state.get(phone, {})
     if cred.get("paused_since") and not attempts._probe_due(cred, today):
