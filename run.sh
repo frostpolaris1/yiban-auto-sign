@@ -39,12 +39,19 @@ fi
 business_day() {
     # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
     # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d
+    local _d _tz
     _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
     case "$_d" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
     esac
-    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
+    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
+    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
+    if [ "$_tz" = "+0800" ]; then
+        TZ=Asia/Shanghai date +%F
+        return 0
+    fi
+    _err "警告: 宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天"
     date +%F
 }
 
@@ -63,7 +70,8 @@ business_day() {
 #
 # `.env` 路径**不受这条口径约束**（它是"读哪个文件"的指针，不是被管的配置）：
 # 一律 $APP_DIR/data/.env，与 run_probe.sh / 容器调度器（/data/.env）同口径；
-# 可由 YIBAN_ENV_FILE 覆盖（上面已 export）。
+# 该指针**没有环境变量覆盖面**（旧注释声称可由 YIBAN_ENV_FILE 覆盖，实现从未读该键；
+# 与 scripts/yiban-fallback.sh 同批订正，见工单 p12-13）。
 #
 # 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
 # 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
