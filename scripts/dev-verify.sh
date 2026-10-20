@@ -92,7 +92,8 @@
 #   11. 两档都必须打印"选了什么、依据是什么、没覆盖什么"——防止把 fast 的绿读成门禁的绿。
 #      另：本脚本只跑 pytest。**前端改动**（frontend/ 下的 vitest / playwright）不在本脚本面内，
 #      范围档遇到 frontend/ 改动会如实说"未反查到用例"，不要读成"有人覆盖"。
-#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff/mypy 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**。
+#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff/mypy、pytest 非 0，或全量下有未登记的
+#      运行期跳过）；2 = 环境错误；3 = **空覆盖**。
 #      3 的语义是"没测到东西"，不是"测了但失败"：范围档没测到任何真实用例、只跑了入口自检。
 #      只有改动集反查零命中才是 3（改 docs/dev/dev-verify.md 本身会命中入口自检与文档相关
 #      用例，不属零命中）。推送前仍要跑全量。两种 fast 档都打印 covered=<用例数>
@@ -277,12 +278,115 @@ guard_worktree_crlf() { # --ci 就地跑不做归一化：工作树真有 CRLF �
         die "跟踪文件含 CRLF 行尾：$(printf '%s' "$hits" | tr '\n' ' ')——--ci 就地跑不做归一化（CI runner 的新检出按 .gitattributes 是 LF）；本地请用默认全量模式（它会先归一化），或先把工作树修成 LF"
 }
 
+#: 运行期跳过豁免（工单 1ffr / AGENTS §十三.30"跳过 ≠ 绿"）。
+#: 全量/--ci 下，未登记的跳过判红；这里登记的是**已知且正当**的跳过来源。
+#: 与 tests/test_skip_visibility_gate.py 的 NEVER_RUNS_IN_CI 对账：那张表登记
+#: "任何一轨都不跑"的族，这张表登记"运行期允许跳过"的来源。新增跳过要么修掉，
+#: 要么在此登记并写明理由（守卫：RuntimeSkipPolicyTest）。
+SKIP_EXEMPT_PATHS=(
+    # M01 归属门族：CI 非 root 恒跳（1ffr）
+    "tests/test_deploy_prod_artifacts.py"
+    # 状态目录不可写族：非 root 恒跳（1ffr）
+    "tests/test_run_sh_workers.py"
+    # 锁目录属主族：非 root 恒跳（1ffr）
+    "tests/test_scheduler_exception_surface.py"
+    # 生产机防呆族：CI 特征不成立（1ffr）
+    "tests/test_deploy_paths_and_restore_verdict.py"
+    # 真 SIGKILL 族：opt-in（plo2）
+    "tests/test_second_round_rc_contract.py"
+    # root 下 chmod 反例不成立（平台条件）
+    "tests/test_migrations_fail_closed.py"
+    # 真占写锁演练 opt-in（9×busy_timeout）
+    "tests/test_audit_transaction.py"
+)
+SKIP_EXEMPT_REASONS=(
+    # unittest SkipTest 丢失用例文件，按理由认（plo2）
+    "真信号杀演练为 opt-in"
+)
+
+skip_policy_check() { # $1 = junit xml；$2 = strict(1/0)；$3 = python（默认 python3）
+    local xml="$1" strict="${2:-0}" py="${3:-python3}" cls msg total=0 shown=0 badn=0
+    local exempt p r dotted line out
+    local badlines=()
+    local ENTRIES=()
+    if [ ! -s "$xml" ]; then
+        # 报告缺失 = 跳过面不可见。strict 档必须红（§30），fast 档只警告。
+        echo "DEV-VERIFY skip policy: 未产出跳过报告（$xml）——跳过面不可见"
+        [ "$strict" = "1" ] && return 1
+        return 0
+    fi
+    # junit XML 不是一行一条 testcase（pytest 会把多个 testcase 写在同一行），
+    # 按行 grep 会把相邻条目的 classname/message 拼错。用 XML 解析器逐条取。
+    out="$(mktemp)"
+    if ! "$py" - "$xml" > "$out" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except Exception:
+    sys.exit(2)
+for tc in root.iter("testcase"):
+    for sk in tc.findall("skipped"):
+        msg = (sk.get("message") or "").replace("\t", " ").replace("\n", " ")
+        print("%s\t%s" % (tc.get("classname") or "", msg))
+PY
+    then
+        rm -f "$out"
+        echo "DEV-VERIFY skip policy: 报告解析失败（$xml）——跳过面不可见"
+        [ "$strict" = "1" ] && return 1
+        return 0
+    fi
+    mapfile -t ENTRIES < "$out"
+    rm -f "$out"
+    total="${#ENTRIES[@]}"
+    echo "DEV-VERIFY skip list: total=$total（最多列 5 条；全量明细见日志）"
+    if [ "$total" -gt 0 ]; then
+        for line in "${ENTRIES[@]}"; do
+            cls="${line%%$'\t'*}"
+            msg="${line#*$'\t'}"
+            shown=$((shown + 1))
+            if [ "$shown" -le 5 ]; then
+                echo "  - ${cls:-?} :: ${msg:-?}"
+            fi
+            exempt=0
+            for p in ${SKIP_EXEMPT_PATHS[@]+"${SKIP_EXEMPT_PATHS[@]}"}; do
+                dotted="${p%.py}"
+                dotted="${dotted//\//.}"
+                case "$cls" in "$dotted"|"$dotted".*) exempt=1; break ;; esac
+            done
+            if [ "$exempt" = "0" ]; then
+                for r in ${SKIP_EXEMPT_REASONS[@]+"${SKIP_EXEMPT_REASONS[@]}"}; do
+                    case "$msg" in *"$r"*) exempt=1; break ;; esac
+                done
+            fi
+            if [ "$exempt" = "0" ]; then
+                badn=$((badn + 1))
+                [ "$badn" -le 20 ] && badlines+=("${cls:-?} :: ${msg:-?}")
+            fi
+        done
+    fi
+    if [ "$shown" -gt 5 ]; then
+        echo "  …（另 $((shown - 5)) 条）"
+    fi
+    if [ "$badn" -eq 0 ]; then
+        echo "DEV-VERIFY skip policy: OK（$shown 条跳过全部已登记）"
+        return 0
+    fi
+    echo "DEV-VERIFY skip policy: FAIL（未登记的跳过 $badn 条）"
+    for line in "${badlines[@]}"; do echo "  ! $line"; done
+    if [ "$badn" -gt 20 ]; then echo "  …（其余 $((badn - 20)) 条省略）"; fi
+    [ "$strict" = "1" ] && return 1
+    return 0
+}
+
 run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 tests/test_dev_verify_entry.py，加一步必须同批改那份清单
     local py
     # 隔离缓存（工单 dq2n）：mypy 在 (path,size,mtime) 相同时不校验内容哈希，会信任
     # 上一轮缓存里的错误。就地跑最容易踩到脏 .mypy_cache，故每次新建缓存目录。
     CI_MYPY_CACHE=""
-    trap 'rc=$?; if [ -n "${CI_MYPY_CACHE:-}" ]; then rm -rf "$CI_MYPY_CACHE"; fi; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
+    CI_SKIP_XML=""
+    trap 'rc=$?; if [ -n "${CI_MYPY_CACHE:-}" ]; then rm -rf "$CI_MYPY_CACHE"; fi; if [ -n "${CI_SKIP_XML:-}" ]; then rm -f "$CI_SKIP_XML"; fi; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
     py=${DEV_VERIFY_PY:-python}
     command -v "$py" >/dev/null 2>&1 || die "找不到解释器：$py"
     py=$(command -v "$py")
@@ -305,9 +409,16 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # FAST_KNOWN_SLOW 的 5 条 nodeid 一并剔除：它们是"等锁超时 / 全仓扫描"型，本机单点
     # 32.32s / 25.25s / 22.84s / 30.80s（第 5 条已是 opt-in，恒 skip）。不剔，快集的临界
     # 路径就由这 4 条决定（同一文件内串行 ⇒ ≥82s），再叠固定开销即破 90s。
+    # 跳过面（工单 1ffr）：快集产出 junit 报告，运行期跳过逐条点名；未登记即红。
+    CI_SKIP_XML="$(mktemp)"
     "$py" -m pytest tests/ -q -n 4 --dist loadfile \
         ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"} \
-        ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}
+        ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"} \
+        --junitxml="$CI_SKIP_XML"
+    if ! skip_policy_check "$CI_SKIP_XML" 1 "$py"; then
+        echo "DEV-VERIFY(ci): 未登记的跳过 ⇒ 判红（AGENTS §十三.30；豁免登记见 SKIP_EXEMPT_PATHS）" >&2
+        exit 1
+    fi
     # 串行专轨：车道名册的 serial 行（本树＝多执行体靶场）。它拉起 mock 服务 ＋ 监督进程 ＋
     # 执行体进程树，需要独占 runner 的核——与快集同抢 4 核时实测在 ubuntu runner 上**跑不起来**
     # （真登录 0 次，工单 zdvd）。沿用 zdvd 的处置，但**从硬编码步骤改成名册的一行数据**：
@@ -840,8 +951,10 @@ TMPOUT=$(mktemp)
 # **不校验内容哈希**，会信任上一轮记录的错误 ⇒ 同一份代码旧缓存红、新缓存绿。
 # 每次运行新建目录，把上一轮（含 Windows 侧）的缓存排除在判定之外。
 MYPY_CACHE=$(mktemp -d)
+# 跳过面报告（工单 1ffr）：pytest 的 junit 报告给运行期跳过名单；路径每次新建。
+SKIP_XML=$(mktemp)
 IGNORE_LIST=
-trap 'rm -f "$TMPOUT" "$IGNORE_LIST"; rm -rf "$MYPY_CACHE"' EXIT
+trap 'rm -f "$TMPOUT" "$IGNORE_LIST" "$SKIP_XML"; rm -rf "$MYPY_CACHE"' EXIT
 
 echo "DEV-VERIFY log: ${LOG:-<未落盘>}"
 echo "DEV-VERIFY repo: $REPO"
@@ -977,7 +1090,7 @@ echo "DEV-VERIFY mypy_exit=$mypy_rc"
 echo "DEV-VERIFY pytest: pytest $TARGET -q -p no:randomly -n auto --dist loadfile ${DESELECT[*]:-}"
 set +e
 "$PY" -m pytest $TARGET -q -p no:randomly -n auto --dist loadfile \
-    ${DESELECT[@]+"${DESELECT[@]}"} 2>&1 | tee "$TMPOUT"
+    ${DESELECT[@]+"${DESELECT[@]}"} --junitxml="$SKIP_XML" 2>&1 | tee "$TMPOUT"
 py_rc=${PIPESTATUS[0]}
 set -e
 echo "DEV-VERIFY pytest_exit=$py_rc"
@@ -999,7 +1112,15 @@ else
     echo "DEV-VERIFY summary: 无（pytest 未产出汇总行）"
 fi
 
-# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff/mypy 或 pytest 非 0）；
+# 运行期跳过名单（工单 1ffr）：全量判红，fast 只要求可见（它不是门禁）。
+skip_strict=0
+[ "$MODE" = full ] && skip_strict=1
+skip_extra=0
+if ! skip_policy_check "$SKIP_XML" "$skip_strict" "$PY"; then
+    skip_extra=1
+fi
+
+# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff/mypy、pytest 非 0，或全量下未登记的跳过）；
 # 2 = 环境错误（die）；3 = 空覆盖（没测到真实用例）。
 # 原始码不丢：ruff_exit= / mypy_exit= / pytest_exit= 已逐行打印在上面。
 resolve_exit_code() { # $1 = 静态检查退出码（ruff 与 mypy 归一后）；$2 = pytest 退出码；$3 = 空覆盖(1/0)
@@ -1022,10 +1143,11 @@ note_fast_empty_coverage() { # $1 = 空覆盖标记（1/0）；$2 = 最终退出
     fi
 }
 
-# 静态检查（ruff + mypy）任一非 0 即归一到 lint 码：统一裁决点只认一个"静态检查"入参。
-# 原始码已在上面逐行打印（ruff_exit= / mypy_exit=），此处只做归一，不覆盖原始输出。
+# 静态检查（ruff + mypy）与运行期跳过策略任一非 0 即归一到 lint 码：统一裁决点只认
+# 一个"静态检查"入参。原始码已在上面逐行打印（ruff_exit= / mypy_exit=），此处只做归一。
 lint_rc=$ruff_rc
 [ "$mypy_rc" = "0" ] || lint_rc=1
+[ "$skip_extra" = "0" ] || lint_rc=1
 rc=$(resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}")
 note_fast_empty_coverage "${FAST_EMPTY:-0}" "$rc"
 echo "DEV-VERIFY exit_code=$rc"
