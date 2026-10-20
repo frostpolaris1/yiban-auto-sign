@@ -113,17 +113,31 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 # 配置视图与路径（与 run.sh 同源）
 # ---------------------------------------------------------------------------
+#: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
+#: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
+_ENV_FIRST_PATH_KEYS = (
+    "YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE",
+)
+
+
 def _env_view():
-    """.env 文件 + 进程环境变量 → 配置视图（**环境变量优先**，只读、不写盘）。
+    """.env 文件 + 进程环境变量 → 配置视图（**`.env` 优先、进程环境只补缺**；只读、不写盘）。
+
+    优先级（M27，2026-10-01 起全仓统一，`README.md` 部署章节）：`.env` 里的键压过
+    进程环境；`.env` 没有的键才由进程环境补缺。四个**路径键**例外——它们按
+    `docs/dev/cli.md` §1.1 保持"进程环境优先"，因为 run.sh 会先 `cd` 再 export，
+    显式 export 的路径必须压过 `.env`（否则同一条命令会被 `.env` 改道）。
 
     为什么两者都读：run.sh 先把 `.env` 逐键导出为环境变量，引擎读的正是那套值；
     而 agent/CI 直接调用 CLI 时没有宿主导出，此时 `.env` 就是部署配置的载体。
-    两者取并集后，同一个键在两条路径下解析到同一个值——不会出现"配置一样、
-    清理目录不同"（`docs/dev/cli.md` §2 第 8 条）。`.env` 缺失 = 未配置（不是错误）。
+    两者按上面的优先级取并集后，同一个键在两条路径下解析到同一个值——不会出现
+    "配置一样、清理目录不同"（`docs/dev/cli.md` §2 第 8 条）。`.env` 缺失 = 未配置。
     """
-    view = dict(env_io.parse_env_file(env_io.env_path()))
-    for key, value in os.environ.items():
-        if key.startswith("YIBAN_"):
+    view = {k: v for k, v in os.environ.items() if k.startswith("YIBAN_")}
+    view.update(env_io.parse_env_file(env_io.env_path()))
+    for key in _ENV_FIRST_PATH_KEYS:
+        value = os.environ.get(key)
+        if value is not None and str(value).strip():
             view[key] = value
     return view
 
