@@ -58,6 +58,21 @@ mkdir -p "$EV"
 [ -e "$ROOT/.venv" ] || ln -s "$ROOT/.venv-bare" "$ROOT/.venv"
 WORK="$ROOT/bare-data"          # 状态 / 日志 / 备份落点（`<APP_DIR>/data/.env` 与
                                 # `<APP_DIR>/data/yiban.db` 是 backup.sh 的固定读取位置）
+
+# 路径形状只认 bash 侧定义点 `scripts/lib/host_paths.sh`（census-P2-log-file /
+# repo-root）：本演练按生产布局摆盘，故 APP_DIR 就是演练树根。导出三个环境键，
+# 让下面的函数与 run.sh 看到同一份事实（此前这里手写了 `sign-<date>.log` 与
+# `mock.jsonl`，与刚立的单一定义点相撞）。
+APP_DIR="$ROOT"
+export YIBAN_APP_DIR="$ROOT"
+export YIBAN_LOG_FILE="$WORK/logs/sign.log"
+export YIBAN_STATE_DIR="$WORK/state"
+# shellcheck source=scripts/lib/host_paths.sh
+source "$ROOT/scripts/lib/host_paths.sh"
+if ! TRACE_BASENAME="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from yiban.adapters.protocol_fake import TRACE_BASENAME; print(TRACE_BASENAME)' "$ROOT")"; then
+  die "无法从 protocol_fake 取得轨迹基名（TRACE_BASENAME）"
+fi
+[ -n "$TRACE_BASENAME" ] || die "protocol_fake.TRACE_BASENAME 为空"
 rm -rf "$WORK"; mkdir -p "$WORK/state" "$WORK/logs" "$WORK/backups" "$ROOT/data"
 rm -f "$ROOT/data/.env" "$ROOT/data/yiban.db"
 
@@ -202,7 +217,7 @@ openssl verify -CAfile "$CADIR/ca.pem" "$CADIR/server.pem" >> "$EV/b6-certs.log"
 
 "$PY" yiban/adapters/protocol_fake/__init__.py --host 127.0.0.1 --port 443 --no-ipv6 \
   --cert "$CADIR/server.pem" --key "$CADIR/server.key" \
-  --log "$WORK/logs/mock.jsonl" --ready-file "$WORK/mock.ready" \
+  --log "$WORK/logs/$TRACE_BASENAME" --ready-file "$WORK/mock.ready" \
   > "$EV/b6-mock.log" 2>&1 &
 MOCK_PID=$!
 for _ in $(seq 1 20); do [ -f "$WORK/mock.ready" ] && break; sleep 1; done
@@ -217,7 +232,6 @@ done
 restore_hosts() { cp "$HOSTS_BAK" /etc/hosts; }
 trap 'kill "$MOCK_PID" 2>/dev/null || true; restore_hosts' EXIT
 
-TODAY="$(date +%F)"
 set +e
 REQUESTS_CA_BUNDLE="$CADIR/ca.pem" SSL_CERT_FILE="$CADIR/ca.pem" CURL_CA_BUNDLE="$CADIR/ca.pem" \
   YIBAN_APP_DIR="$ROOT" \
@@ -227,14 +241,14 @@ REQUESTS_CA_BUNDLE="$CADIR/ca.pem" SSL_CERT_FILE="$CADIR/ca.pem" CURL_CA_BUNDLE=
   bash run.sh > "$EV/b6-run.log" 2>&1
 RUN_RC=$?
 set -e
-LOG="$WORK/logs/sign-$TODAY.log"
+LOG="$(yiban_day_log_file "$WORK/state")"
 [ -f "$LOG" ] || { ls -la "$WORK/logs" >&2; cat "$EV/b6-run.log" >&2; die "未生成当日日志 $LOG"; }
 cp -f "$LOG" "$EV/b6-sign.log"
 grep -qE '==== 开始执行签到（v[0-9.]+）' "$LOG" || { tail -30 "$LOG" >&2; die "缺带版本号的轮次横幅"; }
 grep -qF '==== 签到汇总' "$LOG" || { tail -30 "$LOG" >&2; die "缺签到汇总行"; }
 grep -qF '❌ 0 失败' "$LOG" || { tail -30 "$LOG" >&2; die "汇总不是 ❌ 0 失败"; }
 [ "$RUN_RC" -eq 0 ] || die "run.sh 退出码 $RUN_RC（有效轮次要求 0）"
-cp -f "$WORK/logs/mock.jsonl" "$EV/b6-mock.jsonl" 2>/dev/null || true
+cp -f "$WORK/logs/$TRACE_BASENAME" "$EV/b6-mock.jsonl" 2>/dev/null || true
 note "横幅带版本 / 汇总 ❌ 0 失败 / run.sh 退出码 0"
 
 restore_hosts
