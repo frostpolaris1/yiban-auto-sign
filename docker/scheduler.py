@@ -365,11 +365,16 @@ def _backup_env():
     已经这么判（`_fallback_gate_env` 的注释），备份的路径类参数必须同口径，否则
     compose 里显式注入的 `YIBAN_BACKUP_*` 会被 Web 设置页/`.env` 里的同名键悄悄顶掉。
     口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
-    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。
+    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。`.env` 里若残留
+    `YIBAN_BACKUP_PASSPHRASE`，`parse_env_file` 会把它并进 `src`——这里**显式剔除**
+    两个口令键，子进程拿不到口令，`/proc/<pid>/environ` 也就没有它（P12-09）。
     """
     src = dict(os.environ)
     src.update(parse_env_file(ENV_FILE))   # `.env` 优先；它只认 YIBAN_ 前缀的键
     env = dict(src)
+    for _secret_key in ("YIBAN_BACKUP_PASSPHRASE", "BACKUP_GPG_PASSPHRASE"):
+        env.pop(_secret_key, None)
+        src.pop(_secret_key, None)
     # 调度器的 YIBAN_BACKUP_* → backup-docker.sh 自己的参数名（后者才是脚本认的）。
     # 显式设了 YIBAN_BACKUP_* 就**压住**同名的进程环境变量（否则 compose 注入的
     # BACKUP_DIR 会反过来盖掉 .env —— 正是 M27 要消灭的那种"两处打架"）。
