@@ -14,11 +14,9 @@
 以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`。
 
 **归属**
-原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——有效窗口视图 `sign_window_bounds`、
-`.env` 路径与读取器、账号读入口 `load_accounts`——在调用
-时刻现取后注入。账号审核态词表、口令策略常量、手机号正则与注销宽限期随本族搬入本模块，
-`web/app.py` 再导出以免 `m.*` 名字面损失。
+原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。账号审核态词表、口令策略常量、手机号正则与注销
+宽限期随本族搬入本模块。
 
 **复用**
 `mask_account` 只经 `_mask_email` / `_owner_display_of` 出站脱敏，不各自实现一份；读取族
@@ -28,12 +26,10 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。有效窗口视图、`.env` 路径与读取器、账号读入口都作为显式参数接收：它们在
-`web.app` 上是会被测试打桩或赋值改写的模块级名字（`_sign_window` / `edge_config` /
-`read_env` / `load_accounts` 在既有测试里被打桩，`ENV_FILE` 被直接赋值；窗口打桩经
-`sign_window_bounds` 现取后穿透到本模块），本模块另持一份绑定会让这些改写静默失效。
-只读验证复用 `scripts/signin.py` 的 `signin.verify_account` 真源（登录 + 拉任务，
-不提交签到），不自建第二套探针。
+模块）。有效窗口视图按调用时刻从 `web.services.signstatus` 取（模块属性读法，故
+`_sign_window` / `edge_config` / `sign_window_bounds` 的打桩继续穿透）。只读验证复用
+`scripts/signin.py` 的 `signin.verify_account` 真源（登录 + 拉任务，不提交签到），
+不自建第二套探针。
 """
 
 import re
@@ -41,6 +37,7 @@ from datetime import datetime, timedelta
 
 import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.app 的引导保证）
 
+from web.services import signstatus as _signstatus
 from web.services.locks import _file_lock
 from yiban.adapters.persistence import db
 from yiban.core import clock
@@ -367,18 +364,18 @@ def _admin_password_policy_error(password):
 # ---------------------------------------------------------------------------
 # 自选时间片展示与预计时段
 # ---------------------------------------------------------------------------
-def _slot_to_label(slot_min, sign_window_bounds):
+def _slot_to_label(slot_min):
     """自选片相对**有效窗口起点**的分钟偏移 → "HH:MM"（偏移 0 = 窗口起点，与调度侧同号）。
 
     基准必须是有效窗口起点：片号是相对窗口起点的偏移，而裁剪把有效窗口吃空时
     `window.bounds` 回退默认窗口——直读原始窗口起点会让片卡（按有效窗口）显示 06:30、
     而偏好标签与保存提示（按原始窗口）说 07:00，同一页面出现两个钟点。
 
-    参数注入口径见模块头「通信」（`sign_window_bounds` 是既有打桩点）。
+    有效窗口视图按调用时刻从 `web.services.signstatus` 取（模块属性读法，打桩穿透）。
     """
     if slot_min is None:
         return None  # 没选片就没有偏移：不出"07:00"这种假默认值
-    win = sign_window_bounds()
+    win = _signstatus.sign_window_bounds()
     m = win.start_min + int(slot_min)
     return f"{m // 60:02d}:{m % 60:02d}"
 
@@ -440,7 +437,7 @@ def today_plan_map():
     return db.task_run_at_by_phone(clock.now().strftime("%Y-%m-%d"))
 
 
-def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds):
+def _estimate_slot(phone):
     """预计签到时段 = **当日台账计划时刻**（`sign_tasks.run_at`，唯一事实源）。
 
     显示与执行必须同源。本函数曾自抄调度 v2 的线性填块算法，与真正执行的 v3 计划
@@ -451,9 +448,7 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds)
     时没有真值可比，编造钟点只会再次分叉。库读不通同样走"待生成"（`None` 哨兵与无行同一
     失败方向，fail-closed）。自选（pinned）与重试/重签改写过的行一并读台账当前值。
 
-    参数 `load_accounts` / `read_env` / `env_file` / `sign_window_bounds` 保留原签名：
-    `web/app.py` 的转发包装按原参数调用，本函数不再消费它们。账号有效性由调用方
-    `_my_phone()` 已保证（仅 active 账号可查）。
+    账号有效性由调用方 `_my_phone()` 已保证（仅 active 账号可查）。
     """
     run_at = today_plan_map()
     plan_clock = _plan_clock((run_at or {}).get(phone))

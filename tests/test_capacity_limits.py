@@ -33,6 +33,9 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web import render as _render
+from web.services import signstatus as _signstatus
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -522,9 +525,9 @@ class CapacityFormulaTest(_Base_B19):
     """
 
     def test_formula_single_tier(self):
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             # 4800s 窗口、无间隔：(4800-8)/8+1 = 600（单档返回单值 int）
             self.assertEqual(self.webapp._capacity_estimate(0), 600)
@@ -535,12 +538,12 @@ class CapacityFormulaTest(_Base_B19):
 
     def test_edge_shrinks_capacity(self):
         # 掐头去尾计入有效窗口：前后各裁 60s → 有效 4680s，容量较 4800s 变小
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            with mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)):
+            with mock.patch.object(_render, "edge_config", return_value=(0, 0)):
                 full = self.webapp._capacity_estimate(10)
-            with mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+            with mock.patch.object(_render, "edge_config", return_value=(60, 60)):
                 trimmed = self.webapp._capacity_estimate(10)
             self.assertEqual(full, (4800 - 8) // 18 + 1)
             self.assertEqual(trimmed, (4680 - 8) // 18 + 1)
@@ -551,9 +554,9 @@ class CapacityFormulaTest(_Base_B19):
         # 一致地回退默认窗口（06:30~07:50、默认裁剪各 60s），故容量**不是** 0。
         # 原实现网页内联算"原始窗口 − 裁剪"、引擎按回退窗口排计划 → 出现
         # "引擎有完整计划、网页容量显示 0"的自相矛盾。
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
@@ -564,18 +567,18 @@ class CapacityFormulaTest(_Base_B19):
         有效窗口 ≈48s；容量 = (47 - 8) / 8 + 1 = 5（**不是** 0，也不是回退默认窗口；
         47 是 `capacity_accounts` 对窗口秒数取整的结果）。
         """
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 0), (7, 1))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(300, 300)), \
+             mock.patch.object(_render, "edge_config", return_value=(300, 300)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             self.assertEqual(self.webapp._capacity_estimate(0), 5)
 
     def test_engine_and_web_share_one_formula(self):
         """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
         import signin
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+             mock.patch.object(_render, "edge_config", return_value=(60, 60)):
             for gap in (0, 10, 60):
                 self.assertEqual(
                     self.webapp._capacity_estimate(gap),
@@ -600,9 +603,9 @@ class CapacityFormulaTest(_Base_B19):
             with io.open(env2, "w", encoding="utf-8") as f:
                 f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AVG_ATTEMPT_SEC={avg}\n")
 
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {}, clear=False), \
              mock.patch.object(self.webapp, "ENV_FILE", env2):
             os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)

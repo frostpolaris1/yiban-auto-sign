@@ -8,8 +8,8 @@
 备案信息、分享摘要/配图、签到窗口前后裁剪秒数，以及注册邮箱域名的可用性审查。
 
 **归属**
-`web/app.py` 的原模块级渲染与展示辅助，唯一真源在本模块；`web/app.py` 只保留
-转发（`# noqa: F401` 名字面 + 少量注入胶水），不再持有实现。
+`web/app.py` 的原模块级渲染与展示辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。
 
 **复用**
 Markdown 渲染子集只被合规文档族共用（`_inline_md` 是 `_render_md` 的行内格式唯一入口）；
@@ -18,9 +18,9 @@ Markdown 渲染子集只被合规文档族共用（`_inline_md` 是 `_render_md`
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份
-副本模块）。读 `web.app` 模块级状态的三项——`.env` 路径、文档根 `_REPO_ROOT`、渲染缓存
-`_doc_cache`——以显式参数接收：它们可被测试改写、也会随运行方式不同而不同，本模块
-另持一份绑定会让改写静默失效，故一律由调用方在调用时刻现取后传入。
+副本模块）。读宿主模块级状态的各项——`.env` 路径与读取器、文档根、渲染缓存、默认简介
+文案——经 `configure(...)` 登记，本模块按调用时刻从 `_hooks` 取。登记 lambda 而不是值：
+测试改写与 `--config` 都在调用时刻生效。未登记即 `RuntimeError`（fail-closed）。
 """
 
 import html
@@ -47,6 +47,54 @@ from yiban.core import window as yb_window  # noqa: E402
 
 # 与 web.app 同名的日志通道：合规文档渲染失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：`--env-file` 改写 `ENV_FILE`、测试打桩 `read_env` 与替换
+# `_doc_cache` 都必须在调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(env_file=None, read_env=None, repo_root=None, doc_cache=None,
+              site_description_default=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if read_env is not None:
+        _hooks["read_env"] = read_env
+    if repo_root is not None:
+        _hooks["repo_root"] = repo_root
+    if doc_cache is not None:
+        _hooks["doc_cache"] = doc_cache
+    if site_description_default is not None:
+        _hooks["site_description_default"] = site_description_default
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.render 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾调用了 "
+            "web.render.configure(...)" % (key,)
+        ) from None
+    return fn()
+
+
+def _env():
+    """按调用时刻现读 `.env` 键值（路径与读取器都从宿主取）。"""
+    return _host("read_env")(_host("env_file"))
 
 # 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
 # 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
@@ -332,18 +380,25 @@ def site_image(env):
 # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
 # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
 # 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
-def edge_config(env):
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.window.parse_edges）。"""
+def _edge_config_from(env):
+    """`edge_config` 的取值入口：返回 (front_sec, back_sec)（解析见 yiban.window.parse_edges）。"""
     return yb_window.parse_edges(env)
 
 
-def edge_front_sec(env):
-    """前裁秒数的便捷入口（等价 `edge_config(env)[0]`），**本仓无生产调用点**。
+def edge_config(env=None):
+    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.window.parse_edges）。
 
-    要取前裁秒数的地方都直接调 `edge_config()`：`web/routes/my_api.py`、
-    `web/routes/settings_api.py:225-227`、`web/services/capacity.py:85`、`web/app.py:889`。
-    现存唯一消费者是 `web/app.py:875` 的同名转发；那条转发存在只为保留拆分前的模块级名字
-    （`tests/test_web_boundary.py` 的再导出清单与 `edge_front_sec() == 90` 的取值断言在守它），
-    不代表还有旧调用方在跑。函数本身按要求保留。
+    跨进程写锁与 `--config` 都会改写 `.env` 路径，故键值在 `env` 缺省时按调用时刻现读。
+    显式传 `env` 保留给"同一份键值喂多个读者"的对拍用例（单源口径不变）。
     """
-    return edge_config(env)[0]
+    return _edge_config_from(_env() if env is None else env)
+
+
+def edge_front_sec(env):
+    """前裁秒数的便捷入口（等价 `edge_config()[0]`），**本仓无生产调用点**。
+
+    要取前裁秒数的地方都直接调 `edge_config()`。现存唯一消费者是 `web/app.py` 的同名
+    转发；那条转发存在只为保留拆分前的模块级名字（`tests/test_web_boundary.py` 的再导出
+    清单与取值断言在守它），不代表还有旧调用方在跑。参数 `env` 是调用方现读的键值。
+    """
+    return _edge_config_from(env)[0]

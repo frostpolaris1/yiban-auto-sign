@@ -45,7 +45,10 @@ from unittest import mock
 import flask
 from werkzeug.security import generate_password_hash
 
+from web import render as _render
 from web import security as _security
+from web.services import accounts_data as _accounts_data
+from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from yiban.core import clock
 from yiban.core import status as yiban_status
@@ -122,12 +125,12 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         day = clock.now().strftime("%Y-%m-%d")
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
                                return_value={PHONE: f"{day} 07:20:00"}) as spy:
-            got = self.webapp._estimate_slot(PHONE)
+            got = _accounts_data._estimate_slot(PHONE)
         self.assertEqual(spy.call_count, 1, "转发必须现取台账（服务层不自持一份快照）")
         self.assertEqual(got[0], "07:20", "estimated 必须等于台账 run_at 的时分")
         # 打桩换成"台账没有这个号" → （当日无计划行）返回「待生成」，不回退任何钟点
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value={}):
-            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, "待生成"))
+            self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
 
     def test_estimate_slot_no_plan_returns_pending_generation(self):
@@ -136,7 +139,7 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         `None` 与空映射同一失败方向——页面标"未知"，不得编造钟点，也不得回退 v2 派生。
         """
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value=None):
-            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, "待生成"))
+            self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
 
     def test_os_environ_wins_over_env_file_for_async_switch(self):
@@ -412,11 +415,11 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
                 {"YIBAN_SIGN_ORDER": "random"})
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
                                return_value={PHONE: f"{day} 06:41:00"}):
-            want = self.webapp._estimate_slot(PHONE)
+            want = _accounts_data._estimate_slot(PHONE)
             self.assertEqual(want[0], "06:41")
             for env in envs:
                 with mock.patch.object(self.webapp, "read_env", return_value=env):
-                    self.assertEqual(self.webapp._estimate_slot(PHONE), want,
+                    self.assertEqual(_accounts_data._estimate_slot(PHONE), want,
                                      f"{env} 不得改变预计时段来源")
 
 
@@ -866,12 +869,12 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
 
     def test_sign_window_reads_env_and_falls_back(self):
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:30\n")
-        self.assertEqual(self.webapp._sign_window(), ((7, 0), (7, 30)))
+        self.assertEqual(_signstatus._sign_window(), ((7, 0), (7, 30)))
         self._write_raw("YIBAN_SIGN_START=bad\nYIBAN_SIGN_END=07:30\n")
-        self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 30)),
+        self.assertEqual(_signstatus._sign_window(), ((6, 30), (7, 30)),
                          "非法起点回退默认、终点照取 .env（与引擎同一份逐字段解析）")
         self._write_raw("")
-        self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 50)))
+        self.assertEqual(_signstatus._sign_window(), ((6, 30), (7, 50)))
 
     def test_in_sign_window_minute_bounds(self):
         import yiban.core.window as yb_window
@@ -890,10 +893,10 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                                    "edge_front_sec": 0, "edge_back_sec": 0})
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         # 周六/周日默认关闭 → 钟点在窗口内也不算"本应运行"
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 19, 6, 40)))
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 20, 6, 40)))
-        self.assertTrue(self.webapp._in_run_period(bounds, datetime(2026, 9, 16, 6, 40)))
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 16, 9, 0)),
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 19, 6, 40)))
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 20, 6, 40)))
+        self.assertTrue(_signstatus._in_run_period(bounds, datetime(2026, 9, 16, 6, 40)))
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 16, 9, 0)),
                          "窗口外一律不算本应运行")
 
     def test_sign_status_texts_and_weekend_short_circuit(self):
@@ -904,7 +907,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         与引擎 06:31 开、07:49 停手分叉 1 分钟）。
         """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 0)),
                          ("未到签到时间（06:31 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 0)),
@@ -926,7 +929,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=60\nYIBAN_WINDOW_EDGE_BACK_SEC=60\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30))[0], "未到签到时间（06:31 开始）")
         self.assertEqual(status(datetime(2026, 9, 16, 6, 31))[0], "签到窗口进行中（~07:49 结束）")
         self.assertEqual(status(datetime(2026, 9, 16, 7, 49))[0], "签到窗口进行中（~07:49 结束）")
@@ -940,7 +943,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30)),
                          ("未到签到时间（07:01 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 5)),
@@ -956,8 +959,8 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
-            text, color = self.webapp.sign_status(datetime(2026, 9, 16, 7, 0))
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=dead):
+            text, color = _signstatus.sign_status(datetime(2026, 9, 16, 7, 0))
         self.assertEqual(text, "配置异常：签到窗口不可用，已按 06:31~07:49 运行")
         self.assertEqual(color, "#e0af68")
 
@@ -1071,16 +1074,16 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
     # 3. 行为逐字不变
     # ------------------------------------------------------------------
     def test_capacity_formula_verbatim(self):
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
             self.assertEqual(self.webapp._capacity_estimate(3600), 2)
         # 退化窗口（起止同点）回退默认窗口 06:30~07:50（与引擎同源，故不为 0）
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
 

@@ -133,7 +133,6 @@ from web.security import (  # noqa: E402
     _verify_attempt_allowed,
     _verify_fail_cooldown_remaining,  # noqa: F401
 )
-from web.services import accounts_data as _accounts_data  # noqa: E402
 from web.services import capacity as _capacity  # noqa: E402
 from web.services import channel_health as _channel_health  # noqa: E402
 from web.services import env_io as _env_io_svc  # noqa: E402
@@ -168,7 +167,7 @@ from web.services.accounts_data import (  # noqa: E402
     _stale_idx_guard,  # noqa: F401
     _verify_account_clean,
     find_account_index,  # noqa: F401
-    load_accounts,
+    load_accounts,  # noqa: F401
     load_accounts_raw,  # noqa: F401
     mask_account,  # noqa: F401
     validate_account,  # noqa: F401
@@ -261,7 +260,7 @@ from web.services.signstatus import (  # noqa: E402
     # 保留 web.app.<名字> 的兼容面；
     # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
     _env_flag,
-    _in_sign_window,
+    _in_sign_window,  # noqa: F401
     check_connectivity,  # noqa: F401
 )
 from web.services.verify_queue import (  # noqa: E402
@@ -371,39 +370,12 @@ DB_FILE = DB_DEFAULT
 # web/services/limits.py：本模块不再持有其定义，路由与测试按域直取新家。
 
 
-def _sign_window():
-    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认，实现见 web/services/signstatus.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
-    """
-    return _signstatus._sign_window(ENV_FILE, read_env)
-
-
-def _in_run_period(bounds, now=None):
-    """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
-
-    门与钟点判定的口径见 web/services/signstatus.py；两个判定都按调用时刻现取本模块的
-    （`_in_sign_window` 与 `_day_off_reason` 在既有测试中被直接打桩）。
-    """
-    return _signstatus._in_run_period(bounds, _in_sign_window, _day_off_reason, now)
-
-
-def _day_off_reason(now=None):
-    """今天此刻是否被周末门/一键暂停挡下 → 原因串（实现见 web/services/signstatus.py）。
-
-    与引擎读**同一份 `.env` 真值**：`.env` 的键值按调用时刻现读后注入（原先落回
-    `os.environ`，`.env` 里的急停/周末开关在 web 进程里恒不生效——引擎真暂停、界面说
-    "排队待签"）。`.env` 路径与读取器都会被测试与 `--config` 改写，故按调用时刻现取。
-    """
-    return _signstatus._day_off_reason(read_env(ENV_FILE), now)
-
-
 def _executors_window():
     """执行体接口口径的**有效签到窗口**（实现见 web/services/executor_env.py）。
 
-    `.env` 路径与窗口解析器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
+    `.env` 路径与窗口解析器按调用时刻现取（测试与 `--config` 都改写 `ENV_FILE`）。
     """
-    return _executor_env._executors_window(ENV_FILE, _sign_window)
+    return _executor_env._executors_window(ENV_FILE, _signstatus._sign_window)
 
 
 # ---------------------------------------------------------------------------
@@ -744,9 +716,8 @@ def site_image():
 # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
 # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
 # 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
-def edge_config():
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（实现见 web/render.py）。"""
-    return _render.edge_config(read_env(ENV_FILE))
+# `edge_config` 已随批 3-d 去壳：读者直取 web/render.py，`.env` 读取经该模块的
+# configure 登记。本模块只保留 `edge_front_sec` 的既有名字面（测试按属性读取）。
 
 
 def edge_front_sec():
@@ -754,22 +725,8 @@ def edge_front_sec():
     return _render.edge_front_sec(read_env(ENV_FILE))
 
 
-def sign_window_bounds():
-    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
-
-    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
-    几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
-    配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪两个取值点按调用
-    时刻现取本模块的（测试会打桩 `web.app._sign_window` / `web.app.edge_config`）。
-    """
-    start, end = _sign_window()
-    front_sec, back_sec = edge_config()
-    return yb_window.bounds({
-        "sign_start": start,
-        "sign_end": end,
-        "edge_front_sec": front_sec,
-        "edge_back_sec": back_sec,
-    })
+# 有效窗口视图 `sign_window_bounds` 已随批 3-d 搬入 web/services/signstatus.py：
+# 路由与测试直取该模块，本模块不再保留转发包装。唯一口径仍在 `yiban.window.bounds`。
 
 
 # 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
@@ -1002,24 +959,8 @@ def _log_manual_sign_exit(phone_label, returncode):
 # （_as_signin_account / _verify_account_clean）实现见 web/services/accounts_data.py；
 # 审核态词表、手机号正则、注销宽限期与口令策略常量也随该族搬入，此处一律以导入区再导出
 # 保持 m.* 可达。
-def _slot_to_label(slot_min):
-    """自选片窗口内分钟数 → "HH:MM"（实现见 web/services/accounts_data.py）。
-
-    有效窗口视图按调用时刻现取本模块的（测试会打桩 `web.app._sign_window` /
-    `web.app.edge_config`，`sign_window_bounds` 现取后穿透到服务层）。
-    """
-    return _accounts_data._slot_to_label(slot_min, sign_window_bounds)
-
-
-def _estimate_slot(phone):
-    """预计签到时段（实现见 web/services/accounts_data.py）。
-
-    转发包装保留原有参数签名；实现已改读台账 `sign_tasks.run_at`，**不再消费**这几个
-    注入名（`load_accounts` / `read_env` / `ENV_FILE` / `sign_window_bounds`）。取数来源
-    经 `web.services.accounts_data.today_plan_map` → `db.task_run_at_by_phone`，打桩它即可。
-    """
-    return _accounts_data._estimate_slot(
-        phone, load_accounts, read_env, ENV_FILE, sign_window_bounds)
+# 自选片展示与预计时段（`_slot_to_label` / `_estimate_slot`）已随批 3-d 搬入
+# web/services/accounts_data.py：读者直取该模块，不再经本模块转发。
 
 
 # 账号展示序列化（mask_account）、定位与字段校验（find_account_index /
@@ -1077,17 +1018,8 @@ def check_admin_configured():
 # ---------------------------------------------------------------------------
 # 系统信息
 # ---------------------------------------------------------------------------
-def sign_status(now=None):
-    """基于服务器时间计算签到状态（实现见 web/services/signstatus.py）。
-
-    `.env` 路径、整数配置读取器与有效窗口视图都按调用时刻现取本模块的
-    （测试会打桩 `web.app._sign_window` / `web.app.edge_config`，窗口打桩经
-    `sign_window_bounds` 现取后穿透）。
-    """
-    # file_env 现读传入：周末门判定走引擎同一份解析，且必须读到 web 的这份 .env
-    #（web 进程环境里未必有这些键——口径见 _day_off_reason 的说明）。
-    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now,
-                                   file_env=read_env(ENV_FILE))
+# 系统信息 `sign_status` 已随批 3-d 搬入 web/services/signstatus.py：路由与测试直取
+# 该模块；`.env` 路径与读取器经该模块的 configure 登记。
 
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
@@ -1391,7 +1323,7 @@ def _capacity_estimate(gap=0):
     gap 按 `.env` 读，一次估算就跨两层、按缺省 avg 高估容量（MF-93）。
     """
     return _capacity._capacity_estimate(
-        gap, sign_window=_sign_window, edge_config=edge_config,
+        gap, sign_window=_signstatus._sign_window, edge_config=_render.edge_config,
         env={**os.environ, **read_env(ENV_FILE)})
 
 
@@ -1447,8 +1379,20 @@ def _notify_capacity_once(kind, limit, label):
 
 
 # ---------------------------------------------------------------------------
-# 服务层宿主依赖登记（批 3-c S3）
+# 服务层宿主依赖登记（批 3-c S3 起；批 3-d 扩到本批搬走的各域）
 # ---------------------------------------------------------------------------
+# 批 3-d 拆除 `web/app.py` 的转发包装后，服务层不再收显式注入参数，改由本段登记
+# lambda。登记的是 lambda 而不是值：调用时刻才解析，故 `--env-file` 改写 `ENV_FILE`、
+# 测试赋值与打桩都仍然生效。
+_signstatus.configure(
+    env_file=lambda: ENV_FILE,
+    read_env=lambda: read_env,
+    load_env_int=lambda: load_env_int,
+)
+_render.configure(
+    env_file=lambda: ENV_FILE,
+    read_env=lambda: read_env,
+)
 # 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
 # `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
 # `_verify_attempt_allowed` / `_verify_sem`）都在本模块**之后**才定义，import 区里
