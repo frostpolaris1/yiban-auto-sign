@@ -99,11 +99,22 @@ def _purge_expired_deleted(conn):
                 (cutoff, cutoff),
             ).fetchall()
         ]
-        conn.execute(
+        # 账号清除的留痕（工单 ba-p02-10）：本函数是唯一不写 `_record_purge_event` 的
+        # 物理删除路径——审计/事件/校验任务/用户/注销请求五类都写。缺了它，"这一轮
+        # 物理删掉了几个账号、删除前后 max_id 是多少"事后无从核对，凭据清理次数只能靠
+        # 日志重建。留痕与 DELETE 同事务（`_record_purge_event` 写失败即上抛，由外层
+        # 回滚）：宁可本轮不删，也不留"删了却无留痕"的删除。
+        before = _facade()._table_min_max(conn, "accounts")
+        cur = conn.execute(
             "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
             + skip,
             (cutoff, cutoff),
         )
+        if cur.rowcount:
+            _facade()._record_purge_event(
+                conn, "accounts", "account_cleanup", cutoff, cur.rowcount,
+                before, _facade()._table_min_max(conn, "accounts"),
+            )
         _facade()._cascade_phone_owned(conn, phones)
         conn.commit()
     except Exception as e:

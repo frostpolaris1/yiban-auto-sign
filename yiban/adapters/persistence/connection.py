@@ -159,10 +159,27 @@ def open_readonly(db_file, immutable=None):
     return conn
 
 
-#: "部署是否声明了领取池库路径"的解析结果缓存：键 = 解析出的路径串（空串=未声明）。
-#: 为什么要缓存：`round._claim` 每个账号每次尝试都会问一次，而解析要读 .env；缓存使
-#: "同一条配置每次问一遍"变成一次。键取实际值，故 .env 改路径后下一次即重算。
+#: "部署是否声明了领取池库路径"的解析结果缓存：键 = (进程环境取值, .env 路径, .env 指纹)。
+#: 为什么要缓存：workers 的兜底轮询每 `_YIELD_POLL_SEC` 问一次，而解析要读 .env；
+#: 缓存使"同一条配置每次问一遍"变成一次。键必须在解析**之前**就能算出（工单
+#: ba-p02-07：旧实现先 resolve_path 再查缓存，注释宣称的收益没有兑现）。指纹取
+#: (mtime_ns, size, ino)，与 `env_io.parse_env_file` 的缓存失效口径同源——.env 改
+#: 路径后下一次即重算。只做 stat，不打开/解析文件。
 _pool_declared_cache = {}
+_POOL_DECLARED_CACHE_MAX = 8
+
+
+def _pool_declared_cache_key(env, env_file):
+    """`pool_db_declared` 的缓存键；全部为进程内数据 + 一次 stat，不读 .env 内容。"""
+    source = os.environ if env is None else env
+    raw = str(source.get("YIBAN_DB_FILE", "")).strip()
+    path = env_io.env_path() if env_file is None else env_file
+    try:
+        st = os.stat(path)
+        stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        stamp = None
+    return (raw, str(path), stamp)
 
 
 def pool_db_declared(env=None, env_file=None):
@@ -178,8 +195,13 @@ def pool_db_declared(env=None, env_file=None):
     - "本进程曾连上过库"分不开"连接被人为关闭"与"库真的不可用"，而后者才需要拒跑。
 
     只做一次只读解析（**不传 default**，故未声明时得到空串），不建连接、不建库、不建表。
+    缓存键先于解析计算，命中时不触碰 .env（见 `_pool_declared_cache_key`）。
     """
-    path = env_io.resolve_path("YIBAN_DB_FILE", "", env=env, env_file=env_file)
-    if path not in _pool_declared_cache:
-        _pool_declared_cache[path] = bool(path)
-    return _pool_declared_cache[path]
+    key = _pool_declared_cache_key(env, env_file)
+    cached = _pool_declared_cache.get(key)
+    if cached is None:
+        cached = bool(env_io.resolve_path("YIBAN_DB_FILE", "", env=env, env_file=env_file))
+        if len(_pool_declared_cache) >= _POOL_DECLARED_CACHE_MAX:
+            _pool_declared_cache.clear()
+        _pool_declared_cache[key] = cached
+    return cached
