@@ -490,6 +490,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "宿主文件系统不保留 POSIX mode（Windows 开发机）"
   ]
  ],
+ "tests/test_scripts_gate_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 git 判断忽略规则"
+  ]
+ ],
  "tests/test_second_round_rc_contract.py": [
   [
    "SkipTest",
