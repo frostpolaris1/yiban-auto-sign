@@ -34,9 +34,10 @@
 `web.security`、`yiban.*`；调用方是 `python -m web`（上面的运行段）与 tests/*。
 路由模块经 `web.routes.appmod()` 现取本模块的模块级名字、测试按属性打桩它们，所以**仍留在
 本模块**的名字，其**字面**是对外契约的一部分，改名等于改接口。批 3-a 已把 import 形态转发的
-名字（A 类）改为路由直连真源；批 3-b 把**纯常量**与**纯助手**搬进 `web/services/*`。
-留在墙上的只剩：env 句柄与进程内缓存、凭据/审核/签到进程族，以及需要现取本模块状态后
-注入服务层的转发包装——名单与逐类理由见 `tests/test_wall_direct_reads.py` 的模块 docstring。
+名字（A 类）改为路由直连真源；批 3-b 把**纯常量**与**纯助手**搬进 `web/services/*`；
+批 3-d 把最后 39 个"状态注入包装"也搬走，注入改由各服务模块的 `configure(...)` 承担。
+留在墙上**只剩组合根自身状态 5 名**（三个路径句柄、启动时派生的版本号、进程级日志通道）
+——名单与冻结判据见 `tests/test_wall_direct_reads.py` 的模块 docstring。
 """
 
 import argparse
@@ -77,23 +78,22 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
 # 取用（routes 经 m.* 取用、测试按属性打桩）。位置随包导入引导之后、web./yiban. 之前。
 import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出
 
-# 渲染层实现（web/render.py）：合规文档与站点展示族的真源。本模块只转发，并在转发时
-# 注入本模块持有的模块级状态（`_REPO_ROOT` / `_doc_cache` / `ENV_FILE` / `read_env`）
-# ——它们会被测试改写、也会随运行方式变化，必须调用时刻现取。
+# 渲染层实现（web/render.py）：合规文档与站点展示族的真源。批 3-d 后本模块不再转发：
+# 它需要的宿主状态（`_REPO_ROOT` / `_doc_cache` / `ENV_FILE` / `read_env`）由本模块在
+# import 末尾登记 lambda，该模块按调用时刻解析。
 from web import render as _render  # noqa: E402
 
-# 服务层实现（web/services/）：域实现的真源。本模块保留的转发面**只余两族**：
-#   · 需要本模块模块级状态的入口（`_atomic_write` / `write_env_batch` / `_env_flag` /
-#     设置缺省值 / `send_notification` / `ENV_FILE` / `_sign_window`）——它们在下方转发时
-#     调用时刻现取后注入。测试会改写这些名字，服务层另持一份绑定会让打桩与 --config 静默失效；
-#   · 本模块自用、或测试按属性读取的名字（如 `_atomic_write` / `_tail_lines` / `read_env`）。
+# 服务层实现（web/services/）：域实现的真源。批 3-d 后本模块**不再保留状态注入包装**：
+# 各服务模块自带 `configure(...)` ＋ `_host`，本模块在 import 末尾登记 lambda（见下方
+# "宿主依赖登记区"），故测试改写本模块名字、`--config` 改写路径仍在调用时刻生效。
+# 本模块仍转出的只有两类：本模块自用的名字，以及测试按属性读取的名字面
+# （如 `_atomic_write` / `_tail_lines` / `read_env`）。
 # 批 3-b 起，**纯常量**（窗口/上限/键名）与**纯助手**（`_json_body` /
 # `_request_is_same_origin`）已由路由与测试从新家直取（`web/services/limits.py`、
 # `web/services/env_io.py`、`web/services/http_request.py`），本模块不再转出。
-# 安全域实现（web/security.py）同理：它在本模块持有的模块级名字（ENV_FILE / read_env /
-# write_env_key / write_env_batch / load_env_int / _count_env_key_lines /
-# send_notification / SESSION_ABS_TTL_SECONDS / _constant_time_dummy）在下方转发包装里
-# 调用时刻现取后注入，另持一份绑定会让打桩与 --env-file 静默失效。
+# 安全域实现（web/security.py）同理：它需要的宿主依赖（`ENV_FILE` / `read_env` /
+# `write_env_key` / `_count_env_key_lines` / `send_notification`）经该模块的
+# `configure(...)` 登记，本模块只在 import 末尾登记 lambda。
 from web import security as _security  # noqa: E402
 from web.render import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
@@ -104,9 +104,9 @@ from web.routes import (  # noqa: E402
 )
 from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清单（页面路径唯一登记点）
 
-# 安全域（web/security.py）：纯再导出保持 web.app.<名字> 可达（routes 经 m.* 取用、
-# 测试按属性读取或替换）。需要本模块模块级状态的入口（`.env` 路径与读取器、写路径、
-# 整数读取器、键行计数、告警出口、会话绝对期）在下方转发包装里调用时刻现取后注入。
+# 安全域（web/security.py）：纯再导出保持 web.app.<名字> 可达（测试按属性读取或替换）。
+# 该模块需要的宿主状态（`.env` 路径与读取器、写路径、键行计数、告警出口）经它的
+# `configure(...)` 登记，本模块在 import 末尾登记 lambda。
 from web.security import (  # noqa: E402
     _IP_STORE_LIMIT,  # noqa: F401
     _IP_STORE_MAX_AGE,
@@ -226,8 +226,8 @@ from web.services.logs import (  # noqa: E402
 )
 from web.services.manual_sign import (  # noqa: E402
     # 名字面零损失：手动签到子进程族（终止进程树、等待回收、队列超时缩放、退出码词表）
-    # 随族搬入 web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
-    # `log_path_for`，故在下方转发
+    # 随族搬入 web/services/manual_sign.py；`_log_manual_sign_exit` 的日志路径经该模块
+    # 的 hook 解析（批 3-d）
     _batch_wait_timeout,  # noqa: F401
     _manual_sign_failure_reason,  # noqa: F401
     _wait_signin_proc,  # noqa: F401
@@ -235,7 +235,8 @@ from web.services.manual_sign import (  # noqa: E402
 from web.services.measure import (  # noqa: E402
     # 名字面零损失：现场实测的状态文件与冷却判定已入 web/services/measure.py，
     # 保留 web.app.<名字> 的兼容面；
-    # `_measure_state_path` / `_write_measure_state` 另被本模块的转发包装注入
+    # `_measure_state_path` / `_write_measure_state` 所需的状态目录与原子写经该模块的
+    # hook 解析（批 3-d）
     MEASURE_STATE_FILE,  # noqa: F401
     _measure_cooldown_remaining,  # noqa: F401
     _pick_measure_account,  # noqa: F401
@@ -244,7 +245,8 @@ from web.services.measure import (  # noqa: E402
 from web.services.notify_mail import (  # noqa: E402
     # 名字面零损失：通知与告警邮件族随族搬入 web/services/notify_mail.py
     # （`_nl_safe` / `_audit_actor` / `_audit_alert_facts` 本模块自用，其余为 m.* 兼容面）；
-    # `send_notification` 与 `_push_ever_configured` 需注入本模块的名字，故在下方转发
+    # `send_notification` 与 `_push_ever_configured` 所需的节流判定经该模块的 hook
+    # 解析（批 3-d）
     _audit_actor,
     _audit_alert_facts,
     _nl_safe,
@@ -253,7 +255,7 @@ from web.services.notify_mail import (  # noqa: E402
 from web.services.signstatus import (  # noqa: E402
     # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
     # 保留 web.app.<名字> 的兼容面；
-    # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
+    # `.env` 路径与读取经该模块的 hook 解析（批 3-d）
     _env_flag,
     _in_sign_window,  # noqa: F401
     check_connectivity,  # noqa: F401
@@ -261,8 +263,7 @@ from web.services.signstatus import (  # noqa: E402
 from web.services.verify_queue import (  # noqa: E402
     # 名字面零损失：在线校验的执行闸门、异步任务与失败落库已入
     # web/services/verify_queue.py，保留 web.app.<名字> 的兼容面；
-    # `run_verify_with_gate` / `verify_async_enabled` / `_account_verify_enabled`
-    # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
+    # 席位、配额判定与 `.env` 读取经该模块的 hook 解析（批 3-c S3）
     VERIFY_JOBS_MAX_PENDING,  # noqa: F401
     VerifyGateBusy,  # noqa: F401
     # 批 3-c S3：`VerifyQuotaExceeded` 的墙名已删。批 3-b 时它的面外读者是
@@ -283,13 +284,13 @@ from yiban.core import window as yb_window  # noqa: E402
 from yiban.core.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 
-# 名字面零损失：纯再导出见上方 import；需要注入本模块模块级状态的入口
-# （_read_doc_html / _doc_page / 站点展示族）在下方转发。
+# 名字面零损失：纯再导出见上方 import；`_read_doc_html` / `_doc_page` 与站点展示族
+# 已随批 3-d 去壳，读者直取 web/render.py。
 
 
 # 合规文档渲染缓存：登录页为公开高频入口，每次请求读盘+全量正则渲染会放大 I/O 与 DoS 面。
-# 按 (mtime_ns, size) 缓存，部署者更新文件后自动失效；转发的 `_read_doc_html` 在本模块
-# 调用时刻现取本字典，故测试清空/读取 `web.app._doc_cache` 仍是同一份。
+# 按 (mtime_ns, size) 缓存，部署者更新文件后自动失效；本字典经 `web/render.configure(...)`
+# 登记给 `_read_doc_html`，故测试清空/读取 `web.app._doc_cache` 仍是同一份。
 _doc_cache = {}  # filename -> ((mtime_ns, size), html)
 
 
@@ -375,7 +376,7 @@ DB_FILE = DB_DEFAULT
 
 # 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
 # web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、
-# 注册等路径经 m.* 取用；本模块的 verify_admin 转发包装在服务层内部按同一函数取用）。
+# 注册等路径经 m.* 取用）。
 
 # 回环谓词（`_is_loopback_addr`）、转发头信任开关（`_forwarded_trust_enabled`）与真实
 # 客户端出口（`_client_ip`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达。
@@ -599,8 +600,9 @@ def _today_has_logs():
 # ---------------------------------------------------------------------------
 # .env 读写
 # ---------------------------------------------------------------------------
-# 读（read_env / load_env_int）在导入区再导出；写与设置项展示族的转发在下方
-# （它们需要注入本模块持有的 _atomic_write / write_env_batch / _env_flag / 设置缺省值）。
+# 读（read_env / load_env_int）在导入区再导出。批 3-d 已删掉写入与设置项展示族的
+# 转发包装：`write_env_batch` / `_settings_effective_values` 的宿主依赖经
+# `web/services/env_io.py` 的 configure 登记。
 
 
 # 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py。
@@ -741,8 +743,8 @@ def migrate_admin_password_to_hash(env_path):
 
 # `os.replace` 的瞬态失败重试预算与 `_replace_with_retry` / `_atomic_write` 实现见
 # web/security.py：`_atomic_write` 在导入区再导出且必须是**同一个
-# 函数对象**——env_io / measure 的转发包装按调用时刻现取本模块的这个名字注入，
-# patch.object(web.app, "_atomic_write") 才继续被落盘路径看见；
+# 函数对象**——env_io / measure 经各自 configure 登记的 lambda 在调用时刻取本模块的
+# 这个名字，patch.object(web.app, "_atomic_write") 才继续被落盘路径看见；
 # `_replace_with_retry` 的 m.* 名字面已随 W0 删除（零读者）。
 
 
@@ -767,8 +769,8 @@ _purge_loop_lock = threading.Lock()
 # `_record_verify_failure`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达
 # （路由在 m._rate_lock 下调用这些计数助手，同一把锁真源在 web/services/locks.py）。
 # 批 3-c S3：`_pw_gate_tier` 已去壳（读者直取 web/security.py，`.env` 路径与读取器
-# 经该模块的 configure 登记）；`_sensitive_gate_params` 仍留转发包装——它注入的是
-# `load_env_int`，属 app 状态注入包装类（f），不在本片范围。
+# 经该模块的 configure 登记）；`_sensitive_gate_params` 仍留本模块包装——它注入的是
+# `load_env_int`，属双源债务集（`_WALL_RESIDUAL_DEBT`），批 3-d 未纳入 39 名。
 
 
 def _read_audit_row_due(cnt):
@@ -795,7 +797,6 @@ def _sensitive_gate_params(env_path):
 # 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
 # 退出码原因 `_manual_sign_failure_reason`）实现见 web/services/manual_sign.py，此处以
 # 导入区再导出保持 m.* 可达；退出码表 `_SIGNIN_EXIT_REASONS` 的 m.* 名字面已随 W0 删除。
-# 只有 `_log_manual_sign_exit` 需要注入本模块持有的入口，故在下方转发。
 # 手动签到退出码留痕 `_log_manual_sign_exit` 已随批 3-d 去壳：读者直取
 # web/services/manual_sign.py，日志路径经该模块的 configure 登记。
 
@@ -827,9 +828,9 @@ def _sensitive_gate_params(env_path):
 
 # 账号展示序列化（mask_account）、定位与字段校验（find_account_index /
 # _duplicate_phone_error / _owner_has_other_live / validate_account）、即时验证开关
-# （_account_verify_enabled，转发见下方）与只读验证（_as_signin_account /
+# （_account_verify_enabled）与只读验证（_as_signin_account /
 # _verify_account_clean）实现见 web/services/accounts_data.py，此处以导入区再导出保持
-# m.* 可达；`_verify_account_clean` 另被本模块的转发包装与 verify_jobs 回调现取注入。
+# m.* 可达；批 3-c S3 起，这两个开关的实现直取真源，本模块不再保留包装。
 
 
 # 外呼校验的闸门与异步任务族（`VerifyGateBusy` / `VerifyQuotaExceeded` /
@@ -837,8 +838,8 @@ def _sensitive_gate_params(env_path):
 # `_verify_queue_full` / `_start_verify_job` / `verify_async_enabled` /
 # `_account_verify_enabled`）实现见 web/services/verify_queue.py。
 # 两个异常类型、失败落库、超龄收口、待办上限与建任务以导入区再导出保持 m.* 可达；
-# 带闸校验与两个开关在下方转发时现取本模块的席位 / 配额判定 / 只读验证 / .env
-# 路径与读取器（它们会被测试打桩或赋值改写）。
+# 带闸校验与两个开关已随批 3-c S3 去壳：席位、配额判定与 `.env` 读取经该模块的
+# configure 登记（它们会被测试打桩或赋值改写）。
 # A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。席位留在本模块：
 # 静/异步两条路径共用同一个（异步侧经 verify_jobs.configure 登记）。
 _verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
