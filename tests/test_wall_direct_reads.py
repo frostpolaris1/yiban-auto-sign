@@ -1,48 +1,42 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""拆墙门（批 3-a ＋ 批 3-b）：路由模块不得经 `web.app` 转发墙读 A 类名字。
+"""拆墙门（批 3-a 起；批 3-d 收口）：路由模块不得经 `web.app` 转发墙读 A 类名字。
 
 **判据**
 ① 扫 `web/routes/*.py` 的 `m.<名字>` 读取：A 类名字必须 0 处。
 ② A 名一律从真源取：每个 A 名的读取点必须落在真源模块上（属性访问的基底或裸名导入）。
-③ B 类名字不受本门约束：B 名仍在墙上，属批 3-c。本门对 B 名的 `m.<名字>` 不做断言。
-④ 名单冻结：A ∩ B = ∅；墙上剩余名字必须 ⊆ B 名单；扫描面 < 11 文件即红；0 处读取即红。
+③ B 类名字不受本门约束：B 名是**永驻墙名**（组合根自身状态），批 3-d 后只剩 5 名。
+④ 名单冻结：A ∩ B = ∅；扫描面 < 11 文件即红；0 处读取即红。
 ⑤ 批 3-b 已迁名（`BATCH3B_NAMES`）在 `web/app.py` 里不得再有**真定义**
    （`def` / `class` / 赋值）。真定义与真源两处同时存在即为双源。
+⑥ 已去壳名（`UNWRAPPED_IN_3C_S1` / `_S2` / `_S3`）在 `web/app.py` 不得再有模块级绑定。
+⑦ 批 3-d 已迁名（`BATCH3D_NAMES`，39 名）在 `web/app.py` 不得再有**任何绑定**
+   （含 import）：它们的目的地只有 `web/services/*` 与 `web/render.py`。
+⑧ 墙上剩余名字必须**恰好等于**永驻名单（5 名）＋ `__file__`——不是"⊆"。
 
 **来源与日期**
 批 3-a 名单取自 `origin/develop` 的 `5823c48e`（2026-10-19）：A 名＝`web/app.py` 以
 import 形态转发的、且被路由经 `m.*` 读取的名字；B 名＝同批读取里 `web/app.py` 自有
-定义的名字。`__file__` 是 app.py 自身属性，两名单都不收。
+定义的名字。
 批 3-b 名单取自 `origin/develop` 的 `e5aceb07`（2026-10-19）：从 B 名里挑出**纯常量**
 与**纯助手函数**两类，搬进 `web/services/*`，故并入 A 侧判据。
+批 3-c S1（`origin/develop` 的 `46e5f39c`，2026-10-19）：把 10 个自建别名去壳。
+批 3-c S2（`origin/develop` 的 `86d06f5c`，2026-10-19）：两个进程内缓存搬
+`web/services/startup_cache.py`。
+批 3-c S3（`refactor/3c-cred-state` 末）：凭据/审核/校验进程族 15 名去壳，接缝交给
+`web.security.configure(...)` 与 `web.services.verify_queue.configure(...)`。
 
-**边界（B 名单为何还剩 56 名）**
-本门只管读取形态，不管 `_appmod()` 本身。批 3-b 只迁两类，其余按域缓迁，逐类理由如下：
-  · (c) 进程内状态对象（`_announcement_cache` / `_changelog_cache`）：批 3-c S2 已搬
-    `web/services/startup_cache.py`，故从 B 名移出并归入 `UNWRAPPED_IN_3C_S2`；
-    它们仍是**进程内**对象（web 固定 `-w 1`），未改成跨进程共享。
-  · (d) env 句柄（`STATE_DIR` / `ENV_FILE` / `DB_FILE` / `LOG_FILE`）：`web/app.py` 是
-    组合根，测试靠改 `web.app.STATE_DIR` 换环境，这是既有接缝。
-  · (e) 凭据 / 审核 / 签到进程族（`verify_admin` / `_current_role` / `_pw_gate_tier` /
-    `run_verify_with_gate` / `VERIFY_*_MSG` / `_account_verify_enabled` /
-    `_issue_admin_sid` / `_builtin_admin_*` / `_is_builtin_admin_session` /
-    `verify_async_enabled`）：凭据与执行核近邻，须独立审查。
-  · (f) app 状态注入包装（其余 42 名）：每个都在调用时刻现取 `web/app.py` 的模块级名字
-    （`.env` 路径与读取器、`_sign_window`、`_atomic_write`、`send_notification`、
-    `_tail_lines` 等）后注入服务层。搬动它们要先重设那层注入接缝，属 3-c。
-    `logger` 与 `WEB_VERSION` 归此：前者是进程级日志通道，后者是启动时刻派生值。
-批 3-c S1（`origin/develop` 的 `46e5f39c`，2026-10-19）：把上述 10 个自建别名去壳
-（读者直取真源、`web/app.py` 的定义行删除），故 `ALIAS_NOT_MIGRATED` 收缩为 2 名：
-`STATUS_TEXT`（不在本片范围）＋ `__file__`（app.py 自身属性）。同时新增判据⑥：
-已去壳名在 `web/app.py` 不得再有赋值 / `def` / `class`——① 管读侧、⑥ 管写侧，
-缺一条就有一半静默。
-批 3-c S2（`origin/develop` 的 `86d06f5c`，2026-10-19）：把两个进程内缓存
-`_announcement_cache` / `_changelog_cache` 搬进 `web/services/startup_cache.py`，
-故从 B 名移出 2 名并归入新集合 `UNWRAPPED_IN_3C_S2`，由判据⑥ 钉住。
-`B_NAMES` 的下限随之由 58 降到 56（`86d06f5c` 实测 58 − 本片移出 2）；
-同批的 S3 片再移出 12 名，下限最终由该片收口时统一重定。`Origin/develop` 的
-`86d06f5c` 是本批的派单底本 ref。
+**边界（批 3-d 收口后）**
+本门只管读取形态，不管 `_appmod()` 本身。批 3-d 把剩余的 39 个"app 状态注入包装"搬进
+服务层，并把注入改为各服务模块的 `configure(...)` ＋ `_hooks`（登记 lambda，调用时刻
+解析）。墙上因此只剩组合根自身状态：
+  · `ENV_FILE` / `STATE_DIR` / `DB_FILE`：路径句柄，`--config` 与测试都改写它们，
+    组合根是唯一定义处；
+  · `WEB_VERSION`：启动时刻派生值，每次进程启动变化；
+  · `logger`：进程级日志通道。
+`LOG_FILE` 已不属墙名（`web.app` 无定义，路由直取服务层 hook）。`__file__` 是 app.py
+自身属性，无法搬走，故留在 `ALIAS_NOT_MIGRATED`；`STATUS_TEXT` 同理保留（无路由读者）。
+本门对永驻 5 名的 `m.<名字>` 不做迁移断言，但 ⑧ 钉住"墙上不会多出别的名字"。
 """
 import ast
 import io
@@ -192,26 +186,29 @@ BATCH3B_NAMES = frozenset({
     "_json_body", "_request_is_same_origin",
 })
 
-#: 本门约束的 A 名单＝批 3-a 的转发名 ∪ 批 3-b 已迁名。
-A_NAMES = A_NAMES_BATCH3A | BATCH3B_NAMES
+#: 批 3-d 已迁名：原"app 状态注入包装"39 名。它们现在住在服务层；注入改由各模块的
+#: `configure(...)` ＋ `_hooks` 承担。判据⑦ 钉住 `web/app.py` 不得再有**任何绑定**。
+BATCH3D_NAMES = frozenset({
+    "_accounts_at_capacity", "_capacity_estimate", "_day_off_reason", "_doc_page",
+    "_estimate_slot", "_executor_rows", "_executors_window", "_in_run_period",
+    "_log_lines_for", "_log_manual_sign_exit", "_measure_state_path",
+    "_most_recent_log_date", "_mutate_executor_rows", "_notify_capacity_once",
+    "_read_doc_html", "_registration_paused", "_save_fallback_egress",
+    "_save_row_egress", "_save_slot_egress", "_settings_effective_values",
+    "_sign_window", "_slot_to_label", "_users_at_capacity", "_write_measure_state",
+    "accounts_terminal_summary", "edge_config", "email_domain_error", "icp_info",
+    "load_sign_state", "log_path_for", "parse_sign_log", "police_info", "police_link",
+    "send_notification", "sign_status", "sign_window_bounds", "site_description",
+    "site_image", "write_env_batch",
+})
 
-#: B 类名字：`web/app.py` 自有定义、且被路由经 `m.*` 读取的名字（批 3-b 缓迁，见模块 docstring 边界段）。
+#: 本门约束的 A 名单＝批 3-a 的转发名 ∪ 批 3-b 已迁名 ∪ 批 3-d 已迁名。
+A_NAMES = A_NAMES_BATCH3A | BATCH3B_NAMES | BATCH3D_NAMES
+
+#: 永驻墙名：`web/app.py` 是组合根，这 5 名是它自身状态，路由经 `m.*` 读取是既有接缝。
+#: 批 3-d 后本集合即墙上**全部**名字（另加 `__file__`，见判据⑧）。
 B_NAMES = frozenset({
-    "DB_FILE", "ENV_FILE", "STATE_DIR",
-    "WEB_VERSION", "_accounts_at_capacity",
-    "_capacity_estimate",
-    "_day_off_reason", "_doc_page", "_estimate_slot",
-    "_executor_rows", "_executors_window", "_in_run_period",
-    "_log_lines_for", "_log_manual_sign_exit",
-    "_measure_state_path", "_most_recent_log_date", "_mutate_executor_rows",
-    "_notify_capacity_once", "_read_doc_html", "_registration_paused",
-    "_save_fallback_egress", "_save_row_egress",
-    "_save_slot_egress", "_settings_effective_values", "_sign_window", "_slot_to_label",
-    "_users_at_capacity", "_write_measure_state", "accounts_terminal_summary", "edge_config",
-    "email_domain_error", "icp_info", "load_sign_state", "log_path_for", "logger",
-    "parse_sign_log", "police_info", "police_link",
-    "send_notification", "sign_status", "sign_window_bounds", "site_description", "site_image",
-    "write_env_batch",
+    "DB_FILE", "ENV_FILE", "STATE_DIR", "WEB_VERSION", "logger",
 })
 
 #: 批 3-c S3 已去壳的凭据 / 审核 / 校验进程族：`web/app.py` 里不得再有模块级绑定。
@@ -404,6 +401,60 @@ BATCH3B_TRUE_SOURCE = {
     "_request_is_same_origin": ("web.services.http_request", "_request_is_same_origin"),
 }
 TRUE_SOURCE.update(BATCH3B_TRUE_SOURCE)
+
+#: 批 3-d 已迁名的真源：新家模块 → 原名（不改名，故逐条同形）。
+BATCH3D_TRUE_SOURCE = {
+    # 签到窗口/状态族 → web/services/signstatus.py
+    "_sign_window": ("web.services.signstatus", "_sign_window"),
+    "_in_run_period": ("web.services.signstatus", "_in_run_period"),
+    "_day_off_reason": ("web.services.signstatus", "_day_off_reason"),
+    "sign_window_bounds": ("web.services.signstatus", "sign_window_bounds"),
+    "sign_status": ("web.services.signstatus", "sign_status"),
+    # 渲染/站点展示族 → web/render.py
+    "edge_config": ("web.render", "edge_config"),
+    "_read_doc_html": ("web.render", "_read_doc_html"),
+    "_doc_page": ("web.render", "_doc_page"),
+    "email_domain_error": ("web.render", "email_domain_error"),
+    "icp_info": ("web.render", "icp_info"),
+    "police_info": ("web.render", "police_info"),
+    "police_link": ("web.render", "police_link"),
+    "site_description": ("web.render", "site_description"),
+    "site_image": ("web.render", "site_image"),
+    # 日志/状态文件族 → web/services/logs.py
+    "load_sign_state": ("web.services.logs", "load_sign_state"),
+    "accounts_terminal_summary": ("web.services.logs", "accounts_terminal_summary"),
+    "parse_sign_log": ("web.services.logs", "parse_sign_log"),
+    "log_path_for": ("web.services.logs", "log_path_for"),
+    "_log_lines_for": ("web.services.logs", "_log_lines_for"),
+    "_most_recent_log_date": ("web.services.logs", "_most_recent_log_date"),
+    # 手动签到留痕 → web/services/manual_sign.py
+    "_log_manual_sign_exit": ("web.services.manual_sign", "_log_manual_sign_exit"),
+    # 自选片展示 → web/services/accounts_data.py
+    "_slot_to_label": ("web.services.accounts_data", "_slot_to_label"),
+    "_estimate_slot": ("web.services.accounts_data", "_estimate_slot"),
+    # 执行体族 → web/services/executor_env.py
+    "_executors_window": ("web.services.executor_env", "_executors_window"),
+    "_executor_rows": ("web.services.executor_env", "_executor_rows"),
+    "_mutate_executor_rows": ("web.services.executor_env", "_mutate_executor_rows"),
+    "_save_slot_egress": ("web.services.executor_env", "_save_slot_egress"),
+    "_save_row_egress": ("web.services.executor_env", "_save_row_egress"),
+    "_save_fallback_egress": ("web.services.executor_env", "_save_fallback_egress"),
+    # 实测族 → web/services/measure.py
+    "_measure_state_path": ("web.services.measure", "_measure_state_path"),
+    "_write_measure_state": ("web.services.measure", "_write_measure_state"),
+    # 容量族 → web/services/capacity.py
+    "_capacity_estimate": ("web.services.capacity", "_capacity_estimate"),
+    "_accounts_at_capacity": ("web.services.capacity", "_accounts_at_capacity"),
+    "_registration_paused": ("web.services.capacity", "_registration_paused"),
+    "_users_at_capacity": ("web.services.capacity", "_users_at_capacity"),
+    "_notify_capacity_once": ("web.services.capacity", "_notify_capacity_once"),
+    # 告警出口 → web/services/notify_mail.py
+    "send_notification": ("web.services.notify_mail", "send_notification"),
+    # .env 写入与设置项展示 → web/services/env_io.py
+    "write_env_batch": ("web.services.env_io", "write_env_batch"),
+    "_settings_effective_values": ("web.services.env_io", "_settings_effective_values"),
+}
+TRUE_SOURCE.update(BATCH3D_TRUE_SOURCE)
 
 #: 名字本身是模块对象（按名字导入，不做属性访问）。
 MODULE_TYPED = frozenset({
@@ -613,12 +664,20 @@ class WallDirectReadsGateTest(unittest.TestCase):
                                   ("3-c S2 已去壳", UNWRAPPED_IN_3C_S2)):
             self.assertEqual(sorted(UNWRAPPED_IN_3C_S3 & other), [],
                              "3-c S3 已去壳名与 %s 名单相交：两份名单已漂移" % other_name)
+        # 批 3-d：39 名并入 A 侧（故不与 A 判相交），与其余五个名单必须互斥。
+        for other_name, other in (("B", B_NAMES),
+                                  ("未迁别名", ALIAS_NOT_MIGRATED),
+                                  ("3-c S1 已去壳", UNWRAPPED_IN_3C_S1),
+                                  ("3-c S2 已去壳", UNWRAPPED_IN_3C_S2),
+                                  ("3-c S3 已去壳", UNWRAPPED_IN_3C_S3)):
+            self.assertEqual(sorted(BATCH3D_NAMES & other), [],
+                             "批 3-d 已迁名与 %s 名单相交：两份名单已漂移" % other_name)
         self.assertGreaterEqual(len(A_NAMES), 140, "A 名单过小：名单被截断")
-        # 下限 58 → 56（S2 移出 2 名缓存）→ 40（S3 移出 12 名凭据/审核族）。
-        # 现量口径：ref=refactor/3c-cred-state 的 S3 末，len(B_NAMES)==44
-        # ＝ 58（ref=origin/develop 的 86d06f5c 实测）− 2 − 12。下限留 4 处余量。
-        self.assertGreaterEqual(len(B_NAMES), 40, "B 名单过小：名单被截断")
+        # 批 3-d 收口：B 名单只剩永驻 5 名。用等号而不是下限——多一名就是新的墙名，
+        # 少一名就是有人把组合根状态删了；两种都必须有人看见并改这里的名单。
+        self.assertEqual(len(B_NAMES), 5, "永驻墙名必须恰好 5 名（批 3-d 收口口径）")
         self.assertGreaterEqual(len(BATCH3B_NAMES), 47, "批 3-b 已迁名单过小：名单被截断")
+        self.assertEqual(len(BATCH3D_NAMES), 39, "批 3-d 已迁名单过小：名单被截断")
         self.assertGreaterEqual(len(UNWRAPPED_IN_3C_S2), 2,
                                 "批 3-c S2 已去壳名单过小：名单被截断")
 
@@ -719,6 +778,54 @@ class WallDirectReadsGateTest(unittest.TestCase):
             dup, [],
             "以下批 3-c S3 已去壳名在 web/app.py 仍有模块级绑定（读者已直取真源，"
             "该名是第二份可漂移的面）：%s" % ", ".join(dup))
+
+    def test_3d_names_have_no_binding_in_app(self):
+        """判据⑦：批 3-d 已迁的 39 名在 `web/app.py` 不得再有**任何绑定**。
+
+        口径比判据⑤更严：含 `import` 绑定。这 39 名的目的地只有服务层，
+        连"再导出一份同名 import"都不允许——那会让 `web.app.<名>` 重新可用。
+        """
+        with io.open(_APP_PY, encoding="utf-8") as f:
+            bound = app_binding_names(f.read())
+        self.assertGreater(len(bound), 100,
+                           "web/app.py 模块级绑定面过小——路径或解析器失效（扫空不得当绿）")
+        dup = sorted(BATCH3D_NAMES & bound)
+        self.assertEqual(
+            dup, [],
+            "以下批 3-d 已迁名在 web/app.py 仍有模块级绑定：%s" % ", ".join(dup))
+
+    def test_wall_names_are_exactly_permanent(self):
+        """判据⑧：墙上剩余名字必须恰好＝永驻 5 名 ＋ `__file__`（不是 ⊆）。
+
+        "⊆" 会让"少了一个永驻名"静默通过；等号把删名与新增名都变成可见事件。
+        `__file__` 是 app.py 自身属性，搬不走，故显式并入本断言而不是塞进 B_NAMES。
+        """
+        remaining = set()
+        for fn in _route_files():
+            remaining.update(name for name, _line in scan(_read(fn))[0])
+        self.assertGreater(len(remaining), 0, "扫到 0 个墙名：扫描器失效")
+        self.assertEqual(
+            sorted(remaining), sorted(set(B_NAMES) | {"__file__"}),
+            "墙上名字与永驻名单不一致：多出的名字要么迁走、要么登记进 B_NAMES；"
+            "少掉的名字要有人看见")
+
+    def test_3d_gate_has_teeth(self):
+        """突变验证：塞回 3-d 已迁名的 `def` / `import` / `m.<名>` ⇒ 判据⑦ 必须命中。"""
+        for src in ("def send_notification(t, c):\n    pass\n",
+                    'write_env_batch = _env_io_svc.write_env_batch\n',
+                    "from web.services.logs import log_path_for\n",
+                    "import web.render as site_image\n"):
+            with self.subTest(src=src.strip()):
+                name = ("send_notification" if "def send_notification" in src
+                        else "write_env_batch" if "write_env_batch =" in src
+                        else "log_path_for" if "log_path_for" in src else "site_image")
+                self.assertIn(name, app_binding_names(src),
+                              "塞回 3-d 已迁名的绑定未被判据⑦命中：本门没有牙")
+        src = ("def view():\n"
+               "    m = _appmod()\n"
+               "    return m.sign_window_bounds()\n")
+        self.assertEqual([n for n, _l in a_wall_reads(src)], ["sign_window_bounds"],
+                         "`m.<3-d 已迁名>` 未被判据①命中：本门没有牙")
 
     def test_3c_s3_gate_has_teeth(self):
         """突变验证：塞回一处 S3 已去壳名的定义 ⇒ 判据⑧必须命中。"""
