@@ -46,6 +46,7 @@ fast	tests/test_alerts_summary_level.py
 fast	tests/test_api_contract_coverage.py
 fast	tests/test_audit_anchor.py
 fast	tests/test_audit_anchor_field_source.py
+fast	tests/test_audit_anchor_hardening.py
 fast	tests/test_audit_anchor_selfcheck.py
 fast	tests/test_audit_chain.py
 fast	tests/test_audit_cleanup_visibility.py
@@ -80,6 +81,7 @@ fast	tests/test_config_loader.py
 fast	tests/test_config_registry_gate.py
 fast	tests/test_conftest_mail_guard.py
 fast	tests/test_conftest_umask_guard.py
+fast	tests/test_connection_pool_declared.py
 fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
 fast	tests/test_crash_semantics.py
@@ -87,6 +89,7 @@ fast	tests/test_creds_write_accounting.py
 slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
 fast	tests/test_csp_header_contract.py
 fast	tests/test_dashboard_stats_caliber_js.py
+fast	tests/test_db_init_selfheal.py
 fast	tests/test_db_integrity.py
 fast	tests/test_db_migrations.py
 fast	tests/test_db_owner_constraint.py
@@ -269,8 +272,13 @@ fast	tests/test_state_rosters_mutual.py
 fast	tests/test_state_write_batching.py
 fast	tests/test_static_routes.py
 fast	tests/test_status_sets.py
+fast	tests/test_store_accounts_hardening.py
 fast	tests/test_store_boundary.py
+fast	tests/test_store_cleanup_accounts.py
+fast	tests/test_store_events_quantile.py
 fast	tests/test_store_queue.py
+fast	tests/test_store_users_hard_purge.py
+fast	tests/test_store_verify_jobs_purge.py
 fast	tests/test_stream_api.py
 fast	tests/test_subpath_deploy.py
 fast	tests/test_supervisor_recursion_guard.py
