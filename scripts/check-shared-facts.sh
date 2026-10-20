@@ -4,7 +4,19 @@
 #
 # 用法：
 #   scripts/check-shared-facts.sh [--root DIR] [--roster FILE] [--min-files N]
+#                                 [--tracked-list FILE | --assume-all-tracked]
 #   默认：--root = 仓库根；--roster = scripts/gate/shared-facts.tsv；--min-files = 50
+#
+# 扫描面 = 跟踪集（工单 t5ck，2026-10-20）：
+#   门启动时用 `git ls-tree -r HEAD` 求跟踪集（相对 --root）。扫描面与它取交集：
+#     · 本地未跟踪残留不进判定（旧行为把它们计入 ⇒ 假红）；
+#     · 跟踪集里的文件缺失 ⇒ 退出码 2 并点名（旧行为少扫即更绿 ⇒ 假绿）。
+#   报告打印『跟踪 N / 实扫 M』。`git archive` 解出的树没有 .git：必须显式给
+#   `--tracked-list FILE`（由源头 `git ls-tree -r --name-only HEAD` 导出，路径相对
+#   --root），否则退出码 2——没有跟踪集就没有"扫描面完整"的证据，不许报绿。
+#   `--assume-all-tracked` 只给合成树（元测试）用：显式声明"非 git 树，全部文件视为
+#   跟踪"，报告会写明这个口径，防止它被当成生产判据。
+#   两者互斥；同时给即参数错误（退出码 2）。
 #
 # 存在的原因（现象）：census 把全仓 84 枚"共享事实"（同一个事实在多个地方各自
 # 定义一遍）编成名册，其中三族最脏——路径配置 / 状态件 / 语义常量——没有任何
@@ -34,13 +46,16 @@
 #
 # 退出码：0 全部在册内；1 有键超标；2 门禁自身参数/环境错误（名册或根目录不存在、
 #   --min-files 非整数、选项后缺值、名册落在扫描白名单里、扫到的文件数不足
-#   --min-files、**某行声明的扫描范围在 --root 下贡献 0 个文件**）。
-#   最后两条都是**防废门**：前者不许因为"一个文件都没扫到"而零命中即通过；后者
-#   不许因为某键的 scope 路径打错/文件已改名而让它静默变成恒零命中的废键。
+#   --min-files、**某行声明的扫描范围在 --root 下贡献 0 个文件**、**求不出跟踪集**
+#   、**扫描面缺跟踪文件**）。
+#   最后几条都是**防废门**：前者不许因为"一个文件都没扫到"而零命中即通过；后者
+#   不许因为某键的 scope 路径打错/文件已改名而让它静默变成恒零命中的废键；跟踪集
+#   两条不许"少扫即更绿"（工单 t5ck）。
 #
 # 活体反例（tests/test_shared_facts_gate.py 里真跑子进程）：合成树里加一处定义点
 #   ⇒ 必红并点名 文件:行；把该处改成注释 ⇒ 又绿；删到不足上限 ⇒ 仍绿；scope 指向
-#   不存在的路径 ⇒ 退出码 2 并点名键与 scope；真名册 + 真文件加一处真定义点 ⇒ 必红。
+#   不存在的路径 ⇒ 退出码 2 并点名键与 scope；真名册 + 真文件加一处真定义点 ⇒ 必红；
+#   未跟踪残留不改变结论、跟踪文件缺失 ⇒ 退出码 2、archive 树无跟踪集 ⇒ 退出码 2。
 #   其余已知盲点（跨行的 `${`、here-doc 内的 `#`）登记在名册文件头。
 #
 # 名册事实源：D:/code/_census/out/{ROSTER,POINTS}.csv（仓外、只读，一次性裁进
@@ -52,6 +67,10 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ROOT="$REPO_ROOT"
 ROSTER="$REPO_ROOT/scripts/gate/shared-facts.tsv"
 MIN_FILES=50
+# 跟踪集来源（见文件头「扫描面 = 跟踪集」）：默认走 git ls-tree；archive 树用
+# --tracked-list；合成树（元测试）用 --assume-all-tracked。两者互斥。
+TRACKED_LIST=""
+ASSUME_ALL_TRACKED=0
 # 引擎路由标记：名册"判定模式"列以此开头的行交给 AST 门计数（约定见文件头与名册文件头）
 ENGINE_PREFIX="ast:"
 
@@ -73,15 +92,17 @@ EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|vendor|\.pytest_c
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --root|--roster|--min-files)
+        --root|--roster|--min-files|--tracked-list)
             # 缺值时是"用错参数"（2），不是"有键超标"（1）——两者混码会被误读
             [ $# -ge 2 ] || { echo "check-shared-facts: 参数 $1 缺取值" >&2; exit 2; }
             case "$1" in
-                --root)      ROOT="$2" ;;
-                --roster)    ROSTER="$2" ;;
-                --min-files) MIN_FILES="$2" ;;
+                --root)         ROOT="$2" ;;
+                --roster)       ROSTER="$2" ;;
+                --min-files)    MIN_FILES="$2" ;;
+                --tracked-list) TRACKED_LIST="$2" ;;
             esac
             shift 2 ;;
+        --assume-all-tracked) ASSUME_ALL_TRACKED=1; shift ;;
         *) echo "check-shared-facts: 未知参数: $1" >&2; exit 2 ;;
     esac
 done
@@ -285,6 +306,87 @@ case "$ROSTER" in
         echo "check-shared-facts: 名册扩展名落在扫描白名单内，会自命中: $ROSTER" >&2; exit 2 ;;
 esac
 
+# ---- 跟踪集：扫描面 = 跟踪集（工单 t5ck） --------------------------------
+# 三条来源，互斥：
+#   · 默认：`git ls-tree -r HEAD`（相对 --root；worktree 的 .git 文件也认）；
+#   · --tracked-list FILE：archive 树（无 .git）由源头导出跟踪集；
+#   · --assume-all-tracked：合成树（元测试）显式声明"全部磁盘文件视为跟踪"。
+if [ -n "$TRACKED_LIST" ] && [ "$ASSUME_ALL_TRACKED" = 1 ]; then
+    echo "check-shared-facts: --tracked-list 与 --assume-all-tracked 互斥" >&2; exit 2
+fi
+TRACKED_RAW="$TMP/tracked.raw"
+TRACKED_MODE=""
+: > "$TRACKED_RAW"
+if [ -n "$TRACKED_LIST" ]; then
+    [ -f "$TRACKED_LIST" ] || {
+        echo "check-shared-facts: --tracked-list 文件不存在: $TRACKED_LIST" >&2; exit 2; }
+    cp "$TRACKED_LIST" "$TRACKED_RAW"
+    TRACKED_MODE="--tracked-list $TRACKED_LIST"
+elif [ "$ASSUME_ALL_TRACKED" = 1 ]; then
+    TRACKED_MODE="--assume-all-tracked（非 git 树：全部磁盘文件视为跟踪）"
+else
+    # 先让 git 自己解析：`git -C` 同时认 `.git` 目录与 worktree 的 `.git` 文件，
+    # 且不需要把 gitdir 文本里的 Windows 盘符翻成 /mnt/<盘>（那是 WSL 口径，
+    # Git Bash 里没有 /mnt/d，硬翻会把标准 worktree 误判成"无 git"——2026-10-20
+    # 主会话实测：work/gate-trust 直跑 rc=2）。只有 git 也解析不出时才走手写解析。
+    if GD=$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null) && [ -d "$GD" ]; then
+        :
+    else
+        GD="$ROOT/.git"
+        if [ ! -d "$GD" ] && [ -f "$ROOT/.git" ]; then
+            # 兜底：相对路径按 --root 解析；Windows 盘符路径按 /mnt/<盘>/... 翻。
+            G=$(sed -n 's/^gitdir: *//p' "$ROOT/.git" | head -1 | tr -d '\r')
+            G=${G//\\//}
+            case "$G" in
+                /mnt/[a-z]/*) GD="$G" ;;
+                [A-Za-z]:/*)
+                    DRV=$(printf '%s' "${G:0:1}" | tr 'A-Z' 'a-z')
+                    GD="/mnt/${DRV}${G:2}" ;;
+                /*) GD="$G" ;;
+                *)  GD="$ROOT/$G" ;;
+            esac
+        fi
+    fi
+    if [ ! -d "$GD" ] || ! git --git-dir="$GD" --work-tree="$ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+        echo "check-shared-facts: 求不出跟踪集（--root=$ROOT 无 git 元数据）。" \
+             "没有跟踪集就没有\"扫描面完整\"的证据——archive 树请用 --tracked-list 传源头跟踪集" >&2
+        exit 2
+    fi
+    PREFIX=$( cd "$ROOT" && git --git-dir="$GD" --work-tree="$ROOT" rev-parse --show-prefix ) || {
+        echo "check-shared-facts: git rev-parse --show-prefix 失败" >&2; exit 2; }
+    git --git-dir="$GD" --work-tree="$ROOT" ls-tree -r --name-only HEAD > "$TMP/tracked.git" || {
+        echo "check-shared-facts: git ls-tree 失败（--root=$ROOT）" >&2; exit 2; }
+    if [ -n "$PREFIX" ]; then
+        awk -v p="$PREFIX" 'index($0, p) == 1 { print substr($0, length(p) + 1) }' \
+            "$TMP/tracked.git" > "$TRACKED_RAW"
+    else
+        cp "$TMP/tracked.git" "$TRACKED_RAW"
+    fi
+    TRACKED_MODE="git ls-tree -r HEAD"
+fi
+
+# 跟踪集先过与扫描面同一套扩展名/排除白名单，避免「跟踪 N」把不可扫文件算进来。
+declare -a TRACKED_FILES=()
+declare -A TRACKED_SET=()
+if [ "$ASSUME_ALL_TRACKED" = 0 ]; then
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        TRACKED_SET["$t"]=1
+        TRACKED_FILES+=("$t")
+    done < <(grep -E "$EXT_RE" "$TRACKED_RAW" | grep -v -E "$EXCL_RE" || true)
+fi
+
+tracked_in_scope() {  # $1 = 已展开的 scope（空格分隔）；输出落在该 scope 的跟踪文件
+    local t tok
+    for t in "${TRACKED_FILES[@]+"${TRACKED_FILES[@]}"}"; do
+        for tok in $1; do
+            case "$t" in
+                "$tok"|"$tok"/*) printf '%s\n' "$t"; break ;;
+            esac
+        done
+    done
+}
+
 # ---- 收集文件、分组跑 awk 内核 --------------------------------------------
 collect_files() {  # $@ = 相对路径列表
     local p
@@ -299,9 +401,12 @@ collect_files() {  # $@ = 相对路径列表
 
 : > "$TMP/allfiles"
 : > "$TMP/hits"
+: > "$TMP/expected"
+: > "$TMP/extra"
 for i in $(seq 1 "$n_groups"); do
     scope="${GROUP_SCOPE[$i]}"
     mapfile -t files < <(collect_files $scope)
+    mapfile -t want < <(tracked_in_scope "$scope" | sort -u)
     if [ "${#files[@]}" -eq 0 ]; then
         # 某行声明了非空 scope，但它在这棵树下贡献 0 个文件 ⇒ 该键必然恒零命中。
         # 静默跳过 = "看着有门其实是废门"，正是本门最该防的失效模式 ⇒ 硬失败。
@@ -312,11 +417,60 @@ for i in $(seq 1 "$n_groups"); do
         echo "check-shared-facts: 上面的扫描范围在 --root=$ROOT 下贡献 0 个文件——键会静默变成废键（路径打错 / 文件已改名 / 无可扫文件）" >&2
         exit 2
     fi
-    printf '%s\n' "${files[@]}" >> "$TMP/allfiles"
-    ( cd "$ROOT" && awk -v patfile="$TMP/pat_$i" -f "$TMP/strip.awk" "${files[@]}" ) >> "$TMP/hits"
+    # 扫描面取交集：未跟踪残留不参与计数（假红方向），但逐条点名。
+    mapfile -t kept < <(
+        for f in "${files[@]}"; do
+            if [ "$ASSUME_ALL_TRACKED" = 1 ]; then
+                printf '%s\n' "$f"
+            elif [ -n "${TRACKED_SET[$f]:-}" ]; then
+                printf '%s\n' "$f"
+            else
+                printf '%s\n' "$f" >> "$TMP/extra"
+            fi
+        done
+    )
+    # 缺文件（假绿方向）：跟踪集里有、磁盘上没有 ⇒ 没有"扫描面完整"的证据。
+    missing=()
+    if [ "$ASSUME_ALL_TRACKED" = 0 ]; then
+        declare -A kept_set=()
+        for f in "${kept[@]+"${kept[@]}"}"; do kept_set["$f"]=1; done
+        for w in "${want[@]+"${want[@]}"}"; do
+            [ -n "${kept_set[$w]:-}" ] || missing+=("$w")
+        done
+    fi
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "check-shared-facts: 扫描面缺跟踪文件（--root=$ROOT，scope='$scope'）——" \
+             "少扫即更绿，拒绝放行；缺口 ${#missing[@]} 个：" >&2
+        i_m=0
+        for w in "${missing[@]}"; do
+            i_m=$((i_m + 1))
+            [ "$i_m" -le 20 ] && echo "    缺: $w" >&2
+        done
+        [ "$i_m" -gt 20 ] && echo "    …（其余 $((i_m - 20)) 个省略）" >&2
+        exit 2
+    fi
+    if [ "${#kept[@]}" -eq 0 ]; then
+        echo "check-shared-facts: scope='$scope' 在跟踪集内贡献 0 个文件——该键会静默变成废键" >&2
+        exit 2
+    fi
+    [ "${#want[@]}" -eq 0 ] || printf '%s\n' "${want[@]}" >> "$TMP/expected"
+    printf '%s\n' "${kept[@]}" >> "$TMP/allfiles"
+    ( cd "$ROOT" && awk -v patfile="$TMP/pat_$i" -f "$TMP/strip.awk" "${kept[@]}" ) >> "$TMP/hits"
 done
 
 NFILES="$(sort -u "$TMP/allfiles" | wc -l | tr -d ' ')"
+NTRACKED="$NFILES"
+if [ "$ASSUME_ALL_TRACKED" = 0 ]; then
+    NTRACKED="$(sort -u "$TMP/expected" | wc -l | tr -d ' ')"
+fi
+# 诊断行先打（即使后面因 --min-files 失败，读者也看得到口径）。
+echo "扫描面：跟踪 $NTRACKED / 实扫 $NFILES（口径：$TRACKED_MODE）"
+if [ -s "$TMP/extra" ]; then
+    N_EXTRA="$(sort -u "$TMP/extra" | wc -l | tr -d ' ')"
+    echo "警告：扫描面含 $N_EXTRA 个未跟踪文件，未计入判定（跟踪集才是指标）："
+    sort -u "$TMP/extra" | head -20 | sed 's/^/    未跟踪: /'
+    [ "$N_EXTRA" -gt 20 ] && echo "    …（其余 $((N_EXTRA - 20)) 个省略）"
+fi
 if [ "$NFILES" -lt "$MIN_FILES" ]; then
     echo "check-shared-facts: 只扫到 $NFILES 个文件（< --min-files $MIN_FILES）——拒绝零命中即通过" >&2
     exit 2
