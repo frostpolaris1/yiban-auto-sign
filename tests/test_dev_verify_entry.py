@@ -52,14 +52,18 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 #: 实测占该两步 162s / 60s，剔掉后只剩十几秒；它们已由全量与 nightly 覆盖）。
 EXPECTED_CI_COMMANDS = (
     '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
-    '"$py" -m mypy',
+    # 工单 dq2n（2026-10-20）：mypy 用隔离缓存目录。mypy 在 (path,size,mtime) 相同时
+    # 不校验内容哈希，会信任上一轮缓存里的错误；--ci 就地跑，最容易被脏 .mypy_cache
+    # 影响。缓存目录每次 mktemp -d 新建（见 run_ci），故同一代码同一结论。
+    '"$py" -m mypy --cache-dir "$CI_MYPY_CACHE"',
     '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
     # 快集：目标 tests/，排除项全部由名册/名单**数组**装配（不许在这里写死文件名）。
     # 下面的期望值写成**续行已拼合**的形态（行尾反斜杠在拼合时被吃掉）——抽出口径见
     # test_ci_subset_commands_are_frozen_byte_for_byte 的注释。
     '"$py" -m pytest tests/ -q -n 4 --dist loadfile'
     ' ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"}'
-    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}'
+    ' --junitxml="$CI_SKIP_XML"',
     # 串行专轨：文件名来自名册的 serial 行，不带 -n（需独占 runner 的核，工单 zdvd）。
     '"$py" -m pytest ${LANE_SERIAL_FILES[@]} -q -p no:randomly',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',

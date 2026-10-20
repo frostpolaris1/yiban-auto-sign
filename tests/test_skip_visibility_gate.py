@@ -31,8 +31,14 @@ skip 点、53 文件、350 条用例、23 族**，其中 6 族**在任何一轨�
 依赖：只读文件文本与 AST；不跑子进程、不触网、不改任何落点。整文件在本机执行，无 skip。
 """
 import ast
+import io
 import json
 import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -174,6 +180,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipIf",
    "bash 不在 PATH：口令交接判据跳过（CI/WSL 有 bash）"
+  ],
+  [
+   "skipIf",
+   "bash 不在 PATH：两代镜像灌数脚本的活体模拟跳过（CI/WSL 有 bash）"
   ]
  ],
  "tests/test_deploy_paths_and_restore_verdict.py": [
@@ -494,6 +504,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipUnless",
    "需要 bash（Git Bash / WSL）"
+  ],
+  [
+   "skipUnless",
+   "需要 bash 与 git（Git Bash / WSL）"
+  ]
+ ],
+ "tests/test_skip_visibility_gate.py": [
+  [
+   "skipUnless",
+   "需要 bash（Git Bash / WSL）"
   ]
  ],
  "tests/test_sign_round_guards.py": [
@@ -759,6 +779,139 @@ class NeverRunsRegisteredTest(unittest.TestCase):
         self.assertNotIn(
             rel, scan_tests()[0],
             "该族不该再有跳过点：它现在缺 fonttools 时挂替身包，任何轨都真的跑")
+
+
+ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
+
+
+def _func_source(text, name):
+    """切出 bash 函数完整定义（列 1 的 `name() {` 起、到列 1 的 `}`）。空串=没抽到。"""
+    m = re.search(r"^%s\(\) \{\s*(?:#.*)?$" % re.escape(name), text, re.M)
+    if m is None:
+        return ""
+    rest = text[m.end():]
+    end = re.search(r"^\}$", rest, re.M)
+    return "" if end is None else "%s() {\n%s\n}\n" % (name, rest[:end.start()])
+
+
+def _bash_array_items(text, name):
+    """抽出 `name=(...)` 的条目（去引号、跳过注释/空行）。空列表=没抽到。"""
+    m = re.search(r"^%s=\(\s*$" % re.escape(name), text, re.M)
+    if m is None:
+        return []
+    rest = text[m.end():]
+    end = re.search(r"^\)\s*$", rest, re.M)
+    if end is None:
+        return []
+    out = []
+    for line in rest[:end.start()].splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s.strip('"').strip("'"))
+    return out
+
+
+@unittest.skipUnless(shutil.which("bash"), "需要 bash（Git Bash / WSL）")
+class RuntimeSkipPolicyTest(unittest.TestCase):
+    """工单 1ffr：运行期跳过必须**点名**，安全类跳过不得静默计入绿。
+
+    静态门 `SkipSurfaceRegisteredTest` 只看"源码里有几个跳过点"；它回答不了
+    "这一轮**实际**跳过了哪些用例"。本类钉运行期那一半：
+      ① 汇总必须列出跳过的 classname / 理由（最多 5 条 + 总数）；
+      ② `--ci`/全量模式下未登记的跳过判红，登记过的（NEVER_RUNS_IN_CI 族与
+         opt-in 平台条件）显式豁免；
+      ③ 豁免表与 `NEVER_RUNS_IN_CI` 对账——两张表各说各话时红。
+    """
+
+    def setUp(self):
+        self.text = open(ENTRY, encoding="utf-8").read()
+        self.paths = _bash_array_items(self.text, "SKIP_EXEMPT_PATHS")
+        self.reasons = _bash_array_items(self.text, "SKIP_EXEMPT_REASONS")
+
+    def _run_policy(self, xml, strict):
+        fn = _func_source(self.text, "skip_policy_check")
+        self.assertIn("skip_policy_check() {", fn, "抽不出 skip_policy_check")
+        arr = ["SKIP_EXEMPT_PATHS=("] + ["    '%s'" % p for p in self.paths] + [")"]
+        arr += ["SKIP_EXEMPT_REASONS=("] + ["    '%s'" % r for r in self.reasons] + [")"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "report.xml")
+            with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+                # 真实 pytest 报告有 testsuites/testsuite 根；这里补上同一形状，
+                # 否则多个 testcase 会构成非法 XML（解析器拒绝，判据测不到）。
+                f.write("<testsuites><testsuite>%s</testsuite></testsuites>\n" % xml)
+            script = "\n".join(arr) + "\n" + fn + '\nskip_policy_check "$1" "$2" "$3"\n'
+            return subprocess.run([shutil.which("bash"), "-c", script, "x", path,
+                                   "1" if strict else "0", sys.executable],
+                                  capture_output=True, text=True, timeout=60)
+
+    @staticmethod
+    def _case(classname, reason):
+        return ('<testcase classname="%s" name="t" time="0.1">'
+                '<skipped type="pytest.skip" message="%s"/></testcase>\n'
+                % (classname, reason))
+
+    def test_exemptions_cover_every_never_running_family(self):
+        missing = sorted(set(NEVER_RUNS_IN_CI) - set(self.paths))
+        self.assertEqual(
+            missing, [],
+            "这些族登记为'永不运行'，但 dev-verify 的运行期豁免表没有它们：%s\n"
+            "运行期策略会把它们判红（或反之静默放过）——两张表必须自洽" % missing)
+        self.assertTrue(self.paths, "SKIP_EXEMPT_PATHS 为空：豁免表没抽到或已删")
+
+    def test_unregistered_skip_is_named_and_fails_in_strict_mode(self):
+        xml = self._case("tests.test_whatever.Cls", "环境不满足，悄悄跳过")
+        r = self._run_policy(xml, strict=True)
+        self.assertNotEqual(r.returncode, 0, "未登记的跳过在全量/--ci 必须判红")
+        out = r.stdout + r.stderr
+        self.assertIn("tests.test_whatever.Cls", out, "必须点名跳过的用例")
+        self.assertIn("环境不满足，悄悄跳过", out, "必须点名跳过理由")
+        non_strict = self._run_policy(xml, strict=False)
+        self.assertEqual(non_strict.returncode, 0,
+                         "fast 档只要求可见，不判红（它不是门禁）")
+
+    def test_registered_skip_is_exempt(self):
+        for py in sorted(NEVER_RUNS_IN_CI):
+            cls = py[:-3].replace("/", ".")
+            with self.subTest(py=py):
+                r = self._run_policy(self._case(cls + ".Cls", "已登记的平台条件"), True)
+                self.assertEqual(r.returncode, 0,
+                                 "已登记的族不得判红：%s\n%s" % (py, r.stdout))
+        r = self._run_policy(
+            self._case("_pytest.unittest", "真信号杀演练为 opt-in：设 X=1 按需运行"), True)
+        self.assertEqual(r.returncode, 0, "按理由登记的 opt-in 跳过必须豁免：\n" + r.stdout)
+
+    def test_the_summary_lists_at_most_five_names_plus_total(self):
+        xml = "".join(self._case("tests.test_whatever.C%d" % i, "r%d" % i)
+                      for i in range(8))
+        r = self._run_policy(xml, strict=False)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("total=8", r.stdout, "汇总必须给总数")
+        self.assertIn("另 3 条", r.stdout, "超过 5 条时只列表并报剩余数")
+        self.assertEqual(r.stdout.count("  - tests.test_whatever."), 5,
+                         "最多列 5 条")
+
+    def test_missing_report_is_not_green_in_strict_mode(self):
+        """报告缺失 = 跳过面不可见（§30）：strict 档必须红，不许当"没有跳过"。"""
+        fn = _func_source(self.text, "skip_policy_check")
+        script = "SKIP_EXEMPT_PATHS=()\nSKIP_EXEMPT_REASONS=()\n" + fn + \
+                 '\nskip_policy_check /nonexistent/report.xml 1\n'
+        r = subprocess.run([shutil.which("bash"), "-c", script],
+                           capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0, "报告缺失在 strict 档必须判红")
+
+    def test_both_modes_write_a_skip_report(self):
+        """接线：全量/fast 与 --ci 的 pytest 都必须产出可解析的跳过报告。"""
+        self.assertIn('--junitxml="$SKIP_XML"', self.text,
+                      "全量/fast 的 pytest 没有产出跳过报告")
+        self.assertIn('SKIP_XML=$(mktemp)', self.text,
+                      "全量/fast 的报告路径必须每次新建（不落仓库）")
+        m = re.search(r"^run_ci\(\) \{(.*?)^\}", self.text, re.M | re.S)
+        self.assertIsNotNone(m, "抽不出 run_ci")
+        self.assertIn('--junitxml="$CI_SKIP_XML"', m.group(1),
+                      "--ci 的快集也必须产出跳过报告")
+        self.assertIn('skip_policy_check "$CI_SKIP_XML" 1 "$py"', m.group(1),
+                      "--ci 必须对未登记跳过判红")
 
 
 if __name__ == "__main__":
