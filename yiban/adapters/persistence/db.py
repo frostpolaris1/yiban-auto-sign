@@ -569,7 +569,15 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
         if conn is None:
             raise FileNotFoundError(f"数据库文件不存在: {db_path}（只读初始化不建库）")
         _connection.set_conn(conn)
-        conn.execute("PRAGMA busy_timeout=15000")
+        # 与读写分支同一条自愈边界（工单 ba-p02-03 的同形状调用点）：登记之后的
+        # PRAGMA 失败也必须关连接、清单例，否则重试会复用一条半初始化连接。
+        try:
+            conn.execute("PRAGMA busy_timeout=15000")
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            _connection.reset_conn()
+            raise
         return conn
     conn = _connection.current()
     if conn is not None:
@@ -580,18 +588,23 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
             return conn
         conn = sqlite3.connect(db_path, check_same_thread=False)
         # 先登记再配置：建表/迁移函数内部会经 get_conn() 取"当前连接"，故连接必须先
-        # 入册，其后才逐条 PRAGMA/DDL
+        # 入册，其后才逐条 PRAGMA/DDL。
         _connection.set_conn(conn)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
-        # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
-        conn.execute("PRAGMA busy_timeout=15000")
-        conn.execute("PRAGMA foreign_keys=OFF")
-        _create_tables(conn)
+        # 登记之后的**全部**初始化动作必须在同一个自愈边界内（工单 ba-p02-03）：
+        # row_factory / PRAGMA / 建表任一失败（磁盘满、并发启动锁超时、schema 损坏）
+        # 都必须关连接并重置单例。否则这条半初始化连接会留在原处，此后任何重试都在
+        # 上面的 `conn is not None: return conn` 直接复用它——没有表，整个进程永久
+        # "no such table"（web 全站 500、signin 整轮静默不签）。
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
         # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败继续后续迁移但不提升版本。
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
+            # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
+            conn.execute("PRAGMA busy_timeout=15000")
+            conn.execute("PRAGMA foreign_keys=OFF")
+            _create_tables(conn)
             if migrate:
                 _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）

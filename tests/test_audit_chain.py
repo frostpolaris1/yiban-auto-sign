@@ -23,8 +23,9 @@
 是成对的正负对照：后者才是真缺口（旧判据只在 `cur_max == 锚点 max_id` 时才比链头，
 删尾后只要再写一条就整套静默）。锚点文件自身的截断/删行由 `AnchorFileIntegrityTest`
 负责，跨库误比与本机时钟防不住的情况见 `tests/test_audit_cleanup_visibility.py`。
-`test_missing_meta_fingerprint_does_not_false_alarm` 钉的是"缺指纹降级为链校验、
-不得误报"，别把它读成"缺指纹也算通过校验"。
+`test_missing_meta_fingerprint_is_indeterminate` 钉的是"缺指纹 ⇒ 无法定论"（工单
+ba-p01-04）：缺指纹时行数三支与末行哈希支无从执行，判 ok 会把锚点防线悄悄降级；
+它既不是篡改也不是通过，下一次成功写锚点补回指纹即自愈。
 依赖：临时库 + 临时锚点文件；`BackupScriptContractTest` 是**源码文本级**断言
 （脚本含中文，Windows 子进程按 GBK 解码 stdout 会误报，故不起子进程）——
 它只保证那段文本还在原位，不执行脚本行为；其余用例无网络、无 skip。
@@ -274,8 +275,13 @@ class AnchorLineFormatTest(_DbFixture):
         )
         self.assertEqual(got["count"], 5)
 
-    def test_legacy_five_token_line_still_parses_and_no_false_alarm(self):
-        """存量生产锚点文件（4 段 / 5 token，无 count、无行间链）必须能读且不报错。"""
+    def test_legacy_five_token_line_parses_and_needs_fingerprint(self):
+        """存量生产锚点文件（4 段 / 5 token，无 count、无行间链）必须能读。
+
+        旧格式行本身不报篡改，但它没有库内指纹时**无法定论**（工单 ba-p01-04）：
+        缺指纹时行数三支与末行哈希支全部无从执行，返回 ok 会让锚点防线静默降级。
+        下一次成功写锚点补回指纹后即恢复 ok。
+        """
         self._seed(4)
         head = db.audit_head_hash()
         legacy = f"2026-08-28 18:50:00 1 4 {head}"
@@ -285,8 +291,13 @@ class AnchorLineFormatTest(_DbFixture):
         self.assertIsNotNone(got, "旧格式行必须可读（升级后不得致盲）")
         self.assertEqual((got["min_id"], got["max_id"], got["head"]), (1, 4, head))
         self.assertIsNone(got["count"], "旧行没有 count，稠密性判据须降级而非误报")
+        status, msg = db._anchor_status()
+        self.assertEqual(status, "indeterminate",
+                         f"缺库内指纹时必须判无法定论（≠ 篡改）：{msg}")
+        self.assertNotIn("篡改", msg)
+        db.record_audit_anchor()
         ok, msg = db.verify_audit_anchor()
-        self.assertTrue(ok, f"仅有旧格式锚点时不得误报：{msg}")
+        self.assertTrue(ok, f"补回指纹后不得误报：{msg}")
 
     def test_legacy_line_then_v2_line_chains_from_legacy_text(self):
         """新旧行混排：v2 行的 prev_line_hash 取前一行原文（可为旧格式行）。"""
@@ -357,13 +368,25 @@ class AnchorFileIntegrityTest(_DbFixture):
         ok, msg = db.verify_audit_anchor()
         self.assertFalse(ok, f"删掉中间锚点行必须被行间链检出：{msg}")
 
-    def test_missing_meta_fingerprint_does_not_false_alarm(self):
-        """存量部署（app_meta 里没有锚点指纹）不得凭空判失败。"""
+    def test_missing_meta_fingerprint_is_indeterminate(self):
+        """缺库内指纹 ⇒ 无法定论（工单 ba-p01-04），不得判篡改、也不得判通过。
+
+        `_record_anchor_trace` 写 app_meta 失败只记 WARNING；此后行数三支与末行哈希支
+        全部无从执行。"缺指纹降级为行间链校验"是旧口径：行间链只保证历史行彼此自洽，
+        对"截掉末行再补一条自洽的新末行"无效——降级后锚点强度回到没有指纹之前。
+        下一次成功写锚点补回指纹即自愈。
+        """
         self._seed(3)
         db.record_audit_anchor()
         self._raw("DELETE FROM app_meta WHERE key='audit_anchor_meta'")
         ok, msg = db.verify_audit_anchor()
-        self.assertTrue(ok, f"缺指纹时降级为行间链校验，不得误报：{msg}")
+        self.assertFalse(ok, f"缺指纹不是通过：{msg}")
+        self.assertTrue(msg.startswith("无法定论："), msg)
+        self.assertNotIn("篡改", msg, "缺指纹是「没验成」，不是「确证篡改」")
+        self.assertFalse(db.audit_health()["healthy"])
+        db.record_audit_anchor()
+        ok, msg = db.verify_audit_anchor()
+        self.assertTrue(ok, f"补回指纹后必须自愈：{msg}")
 
 
 class AnchorJudgmentTest(_DbFixture):
@@ -566,11 +589,22 @@ class AnchorJudgmentTest(_DbFixture):
         self.assertIn("不符", h["anchor_msg"])
 
     def test_v1_anchor_does_not_false_alarm_on_min_jump(self):
-        """存量 v1 锚点没有 count 字段：稠密性判据降级，但定点判据仍生效。"""
+        """存量 v1 锚点没有 count 字段：稠密性判据降级，但定点判据仍生效。
+
+        缺库内指纹时按工单 ba-p01-04 判"无法定论"；本用例补上指纹（存量部署下一次
+        成功写锚点即会补）后，才检验 v1 的稠密性降级语义。
+        """
         self._seed(5)
         head = db.audit_head_hash()
+        line = f"2026-08-28 18:50:00 1 5 {head}"
         with open(self.anchor, "w", encoding="utf-8") as f:
-            f.write(f"2026-08-28 18:50:00 1 5 {head}\n")
+            f.write(line + "\n")
+        status, msg = db._anchor_status()
+        self.assertEqual(status, "indeterminate",
+                         f"缺指纹时必须判无法定论而不是无异常：{msg}")
+        payload = json.dumps({"lines": 1, "last_hash": db._anchor_line_sha(line), "ts": "x"})
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) "
+                  "VALUES ('audit_anchor_meta', ?)", (payload,))
         self._raw("DELETE FROM audit_logs WHERE id <= 2")  # 无留痕的前缀删除
         ok, msg = db.verify_audit_anchor()
         self.assertTrue(ok, f"v1 锚点无法承载稠密性判据，降级为不报错：{msg}")
