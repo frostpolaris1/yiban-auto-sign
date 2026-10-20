@@ -147,16 +147,23 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
             self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
 
-    def test_os_environ_wins_over_env_file_for_async_switch(self):
+    def test_env_file_wins_over_os_environ_for_async_switch(self):
+        """M27：两个验证开关同口径——`.env` 优先，进程环境只补缺。"""
         self._write_raw("YIBAN_VERIFY_ASYNC=1\n")
         os.environ["YIBAN_VERIFY_ASYNC"] = "0"
         try:
-            self.assertFalse(_verify_queue.verify_async_enabled(),
-                             "os.environ 优先（便于临时覆盖）")
+            self.assertTrue(_verify_queue.verify_async_enabled(),
+                            "`.env` 优先（与 M27 全仓口径一致）")
         finally:
             os.environ.pop("YIBAN_VERIFY_ASYNC", None)
         self.assertTrue(_verify_queue.verify_async_enabled(), "未设环境变量时读 .env")
         self._write_raw("")
+        os.environ["YIBAN_VERIFY_ASYNC"] = "1"
+        try:
+            self.assertTrue(_verify_queue.verify_async_enabled(),
+                            "`.env` 没有该键时进程环境补缺（docker run -e / systemd）")
+        finally:
+            os.environ.pop("YIBAN_VERIFY_ASYNC", None)
         self.assertFalse(_verify_queue.verify_async_enabled(), "默认关")
 
 
@@ -1373,8 +1380,13 @@ class WebSecuritySplitContractTest(unittest.TestCase):
             self.assertEqual(len(flask.session), 0, "超限必须清空会话（视为未登录）")
 
     def test_client_ip_trusted_proxy_and_fallback(self):
-        """回环首跳采信 XFF；非回环首跳丢弃；无 XFF 时回落 remote_addr。"""
+        """显式信任档（反代形态）：回环首跳采信 XFF；非回环首跳丢弃；无 XFF 回落。
+
+        选项默认已翻转为"不信任"（ba-p07-01），故本用例显式打开开关，测的才是
+        "反代部署"那条分支；缺省档由 `test_client_ip_default_trust_is_off` 钉住。
+        """
         app = self.flask_app
+        app.config[self.webapp.FORWARDED_TRUST_ENV_KEY] = True
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
                                       headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9")
@@ -1388,6 +1400,15 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                              "非可信首跳的 XFF 必须被忽略（不可伪造）")
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"}):
             self.assertEqual(self.webapp._client_ip(), "::1")
+        app.config[self.webapp.FORWARDED_TRUST_ENV_KEY] = False
+
+    def test_client_ip_default_trust_is_off(self):
+        """缺省档（未设开关）：回环首跳也不采信 XFF——客户端自报值不得成为 IP 桶。"""
+        app = self.flask_app
+        app.config.pop(self.webapp.FORWARDED_TRUST_ENV_KEY, None)
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
+                                      headers={"X-Forwarded-For": "203.0.113.9"}):
+            self.assertEqual(self.webapp._client_ip(), "127.0.0.1")
 
     def test_atomic_write_roundtrip_and_reparse(self):
         target = os.path.join(self.tmp, "aw-security.txt")
