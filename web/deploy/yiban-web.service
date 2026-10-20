@@ -38,6 +38,12 @@ WorkingDirectory=/opt/yiban-auto-sign
 EnvironmentFile=/etc/yiban/accounts-key
 # 生产环境经 nginx HTTPS 反代，强制会话 Cookie 仅经 HTTPS 发送（H6）。
 Environment=YIBAN_COOKIE_SECURE=1
+# 转发头信任开关（M12 / 工单 ba-p07-01）：应用只在"来源是回环 + 本开关为开"时采信
+# X-Forwarded-For。本单元的前提就是 nginx 反代（见文件头"前提 1"），nginx→应用恒为
+# 回环并覆盖式重写 XFF——**必须置 1**，否则全站客户端会塌进 127.0.0.1 这一个桶：
+# 限速、登录爆破计数、审计 IP 全部失真。缺省不信任（fail-closed）是给"回环直连 /
+# ssh -L 隧道"那两种形态的，不是给生产反代的。
+Environment=YIBAN_TRUST_FORWARDED_HEADERS=1
 # 注意：必须保持 -w 1（单 worker 多线程）。限速/爆破锁定/签到防抖等状态存于进程内存，
 # 多 worker 各自持有独立副本会导致阈值被轮换请求绕过（安全审查 S2）。如需提升并发，
 # 请调整 --threads 而非 --workers（gthread 线程共享进程内存）。
