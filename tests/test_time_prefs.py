@@ -54,6 +54,7 @@ from werkzeug.security import generate_password_hash
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import limits as _limits
+from web.services import signstatus as _signstatus
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -858,7 +859,7 @@ class TimePrefsTest(unittest.TestCase):
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=dead):
             data = c.get("/api/settings").get_json()
         self.assertTrue(data["window_fallback"])
         self.assertIn("配置异常", data["window_fallback_text"])
