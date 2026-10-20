@@ -56,6 +56,19 @@ def appmod():
     return mod
 
 
+def session_abs_ttl():
+    """会话绝对过期秒数（`web.app.SESSION_ABS_TTL_SECONDS` 的唯一路由侧取用点）。
+
+    必须按调用时刻现取，不能 `from web.app import SESSION_ABS_TTL_SECONDS`：后者固化
+    导入期值，而 `create_app` 依 `YIBAN_SESSION_ABS_DAYS` 把它重新解析后回写模块全局。
+    取错了不会报错，只会让"被盗 Cookie 最多续命 N 天"的硬上限静默失准。
+
+    与 `appmod()` 同源（按 `current_app.import_name` 认领本尊模块），理由见该函数：
+    测试以别名加载 `app.py`，`import web.app` 会再执行一份副本。
+    """
+    return appmod().SESSION_ABS_TTL_SECONDS
+
+
 def page_args():
     """解析列表接口的可选分页参数 `limit` / `offset`（唯一取用点）。
 

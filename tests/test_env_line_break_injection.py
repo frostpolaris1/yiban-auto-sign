@@ -56,6 +56,8 @@ from unittest import mock
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from web import security as _security
+from web.services import startup_cache as _startup_cache
 from yiban.adapters.config import env_io  # pythonpath 已含 scripts/（pyproject.toml）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -162,7 +164,9 @@ class _Base(unittest.TestCase):
         with io.open(self.env_file, "w", encoding="utf-8") as f:
             f.write(self._pristine_env)
         self.webapp.ENV_FILE = self.env_file
-        self.webapp._announcement_cache[0] = None
+        # 公告缓存是进程内全局：不清零会把上一例的已发布文本带进本例。
+        # 批 3-c S2 起真源在 web/services/startup_cache.py，故打桩点落在新家。
+        _startup_cache._announcement_cache[0] = None
         self.db.init_db(self.db_file, migrate_from=self.accounts_file,
                         env_file=self.env_file)
 
@@ -199,14 +203,14 @@ class LineBreakPredicateTest(_Base):
 
     def test_predicate_exists_and_rejects_all_breaks(self):
         self.assertTrue(
-            callable(getattr(self.webapp, "_has_line_break", None)),
-            "缺少模块级谓词 _has_line_break（校验与写入口径须单源）")
+            callable(getattr(env_io, "has_line_break", None)),
+            "缺少谓词 env_io.has_line_break（校验与写入口径须单源）")
         for ch in ALL_BREAKS:
             with self.subTest(ch=hex(ord(ch))):
                 self.assertTrue(
-                    self.webapp._has_line_break(f"A{ch}B"),
+                    env_io.has_line_break(f"A{ch}B"),
                     f"U+{ord(ch):04X} 是 splitlines 的行分隔符，谓词必须判 True")
-                self.assertTrue(self.webapp._has_line_break(ch), "单独一个分隔符也要判 True")
+                self.assertTrue(env_io.has_line_break(ch), "单独一个分隔符也要判 True")
 
     def test_predicate_matches_splitlines_over_whole_charspace(self):
         """谓词与 splitlines 逐字符等价（抽样覆盖：其他空白/控制符不得误伤）。
@@ -223,7 +227,7 @@ class LineBreakPredicateTest(_Base):
         for ch in probe:
             expect = len(("A" + ch + "B").splitlines()) > 1
             self.assertEqual(
-                self.webapp._has_line_break("A" + ch + "B"), expect,
+                env_io.has_line_break("A" + ch + "B"), expect,
                 f"U+{ord(ch):04X}：谓词判据与 splitlines 不一致（应为 {expect}）")
 
     def test_constant_is_frozenset_of_the_documented_chars(self):
@@ -518,7 +522,7 @@ class AmbiguousAdminHashTest(_Base):
         with mock.patch.object(self.webapp, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR") as logs:
             self.assertFalse(
-                self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+                _security.verify_admin("admin@test.local", ADMIN_PASS),
                 "主凭据歧义时不得判定认证成功（生效行是谁由写入顺序决定，不可信）")
         self.assertTrue(any("YIBAN_ADMIN_PASSWORD_HASH" in m for m in logs.output),
                         f"ERROR 日志应点名该键，实际: {logs.output}")
@@ -533,9 +537,9 @@ class AmbiguousAdminHashTest(_Base):
         self.assertTrue(check_password_hash(effective, ATTACK_PASS),
                         "前置条件失败：修复前正是这一行让攻击者登录成功")
         with mock.patch.object(self.webapp, "send_notification"):
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ATTACK_PASS),
+            self.assertFalse(_security.verify_admin("admin@test.local", ATTACK_PASS),
                              "歧义态下攻击者哈希不得带来认证成功")
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
 
     def test_padded_duplicate_line_counts_as_ambiguous(self):
         """`KEY = v` 写法与紧凑写法重复 = 同一处歧义（折叠口径与检测口径须一致）。"""
@@ -546,7 +550,7 @@ class AmbiguousAdminHashTest(_Base):
         self.assertEqual(self._master_hash_line(), good,
                          "前置条件失败：紧凑写法一行应是生效行")
         with mock.patch.object(self.webapp, "send_notification"):
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
 
     def test_latent_u2028_payload_counts_as_ambiguous(self):
         """升级前埋下的潜伏载荷：解析器仍取到合法哈希（证明潜伏），宽模型计数照样数出第二行。
@@ -568,7 +572,7 @@ class AmbiguousAdminHashTest(_Base):
         with mock.patch.object(self.webapp, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR"):
             self.assertFalse(
-                self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+                _security.verify_admin("admin@test.local", ADMIN_PASS),
                 "潜伏分隔符撑出的第二行哈希 = 主凭据歧义，必须 fail-closed")
         self.assertTrue(sn.called, "潜伏载荷构成的歧义同样要发紧急告警")
 
@@ -579,7 +583,7 @@ class AmbiguousAdminHashTest(_Base):
                         "# YIBAN_ADMIN_PASSWORD_HASH=scrypt:old-rotated-out",
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
         with mock.patch.object(self.webapp, "send_notification") as sn:
-            self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS))
         self.assertFalse(sn.called)
 
     def test_single_hash_still_authenticates(self):
@@ -588,8 +592,8 @@ class AmbiguousAdminHashTest(_Base):
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
         with mock.patch.object(self.webapp, "send_notification") as sn:
-            self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ATTACK_PASS),
+            self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertFalse(_security.verify_admin("admin@test.local", ATTACK_PASS),
                              "口令不匹配仍应照常拒绝")
         self.assertFalse(sn.called, "正常单行配置不得触发歧义告警")
 
@@ -597,14 +601,14 @@ class AmbiguousAdminHashTest(_Base):
         """「不 brick」的另一半：把 .env 折叠成唯一一行即恢复登录（无需重启/改代码）。"""
         effective = self._two_hash_lines(legal_last=True)
         with mock.patch.object(self.webapp, "send_notification"):
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
         # 旧行折叠（同一处修复）保证一次写入就能清掉重复行
         self.webapp.write_env_batch(self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": effective})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
         self.assertEqual(len(hits), 1, f"折叠后仍有多行主凭据: {hits}")
         with mock.patch.object(self.webapp, "send_notification") as sn:
-            self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+            self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS),
                             "修成唯一一行后应恢复正常认证能力")
         self.assertFalse(sn.called, "恢复后不得继续告警")
 

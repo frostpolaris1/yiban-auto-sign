@@ -17,10 +17,11 @@ import 形态转发的、且被路由经 `m.*` 读取的名字；B 名＝同批�
 批 3-b 名单取自 `origin/develop` 的 `e5aceb07`（2026-10-19）：从 B 名里挑出**纯常量**
 与**纯助手函数**两类，搬进 `web/services/*`，故并入 A 侧判据。
 
-**边界（B 名单为何还剩 58 名）**
+**边界（B 名单为何还剩 56 名）**
 本门只管读取形态，不管 `_appmod()` 本身。批 3-b 只迁两类，其余按域缓迁，逐类理由如下：
-  · (c) 进程内状态对象（`_announcement_cache` / `_changelog_cache`）：限速与启动缓存存
-    进程内存是明文设计不变量（web 固定 `-w 1`），搬动必须连打桩面一起设计。
+  · (c) 进程内状态对象（`_announcement_cache` / `_changelog_cache`）：批 3-c S2 已搬
+    `web/services/startup_cache.py`，故从 B 名移出并归入 `UNWRAPPED_IN_3C_S2`；
+    它们仍是**进程内**对象（web 固定 `-w 1`），未改成跨进程共享。
   · (d) env 句柄（`STATE_DIR` / `ENV_FILE` / `DB_FILE` / `LOG_FILE`）：`web/app.py` 是
     组合根，测试靠改 `web.app.STATE_DIR` 换环境，这是既有接缝。
   · (e) 凭据 / 审核 / 签到进程族（`verify_admin` / `_current_role` / `_pw_gate_tier` /
@@ -31,13 +32,25 @@ import 形态转发的、且被路由经 `m.*` 读取的名字；B 名＝同批�
     （`.env` 路径与读取器、`_sign_window`、`_atomic_write`、`send_notification`、
     `_tail_lines` 等）后注入服务层。搬动它们要先重设那层注入接缝，属 3-c。
     `logger` 与 `WEB_VERSION` 归此：前者是进程级日志通道，后者是启动时刻派生值。
-另有 11 个名字留在墙上但不属 A：10 个是 `web/app.py` 自建别名（`X = mod.attr`，
-不是 import 转发）＋ `__file__`（app.py 自身属性）。它们登记在 `ALIAS_NOT_MIGRATED`。
+批 3-c S1（`origin/develop` 的 `46e5f39c`，2026-10-19）：把上述 10 个自建别名去壳
+（读者直取真源、`web/app.py` 的定义行删除），故 `ALIAS_NOT_MIGRATED` 收缩为 2 名：
+`STATUS_TEXT`（不在本片范围）＋ `__file__`（app.py 自身属性）。同时新增判据⑥：
+已去壳名在 `web/app.py` 不得再有赋值 / `def` / `class`——① 管读侧、⑥ 管写侧，
+缺一条就有一半静默。
+批 3-c S2（`origin/develop` 的 `86d06f5c`，2026-10-19）：把两个进程内缓存
+`_announcement_cache` / `_changelog_cache` 搬进 `web/services/startup_cache.py`，
+故从 B 名移出 2 名并归入新集合 `UNWRAPPED_IN_3C_S2`，由判据⑥ 钉住。
+`B_NAMES` 的下限随之由 58 降到 56（`86d06f5c` 实测 58 − 本片移出 2）；
+同批的 S3 片再移出 12 名，下限最终由该片收口时统一重定。`Origin/develop` 的
+`86d06f5c` 是本批的派单底本 ref。
 """
 import ast
 import io
 import os
+import shutil
+import tempfile
 import unittest
+from typing import ClassVar
 
 #: 路由目录（本门只扫这里；`__init__.py` 是装配件，不算路由体）。
 _ROUTES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -46,6 +59,88 @@ _ROUTES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 _MIN_FILES = 11
 #: `web/app.py` 路径（判据⑤：已迁名不得再有真定义）。
 _APP_PY = os.path.join(os.path.dirname(_ROUTES_DIR), "app.py")
+#: 服务层目录（判据⑨：派生债务集要真源侧的定义面）。
+_WEB_DIR = os.path.dirname(_ROUTES_DIR)
+
+
+#: 残留双源债务集（判据⑨）：既不在 B_NAMES 、也不在 ALIAS_NOT_MIGRATED ，
+#: 但 `web/app.py` 与服务层**同时**有模块级定义的名字。
+#:
+#: 为何存在：批 3-c 只迁了凭据 / 审核 / 校验族。剩下的转发包装仍有真读者在
+#: `web/app.py` 内部（启动路径、日志 handler、create_app 内的接线），
+#: 不是零读者，不能一次性删。它们是车道 C（墙残余收敛）的活。
+#:
+#: **本集只可缩。** 新增一项就是新的双源。每一项必须真仍然双源，
+#: 否则 `test_residual_debt_entries_are_really_duplicated` 会红。
+_WALL_RESIDUAL_DEBT = frozenset({
+    "_SCRIPTS_DIR",
+    "_alert_channel_status",
+    "_channel_status_lines",
+    "_mail_alert_due",
+    "_push_ever_configured",
+    "_report_env_key_collisions",
+    "_send_channel_health_report",
+    "_sensitive_gate_params",
+    "_today_has_logs",
+    "check_admin_configured",
+    "ensure_secret_key",
+    "migrate_admin_password_to_hash",
+    "reject_default_admin_password",
+    "write_env_int",
+    "write_env_key",
+})
+#: 债务集规模上限（阶梯式闸，只许降）。
+_WALL_RESIDUAL_DEBT_MAX = 15
+
+
+def _read_abs(path):
+    """读绝对路径的文本件。"""
+    with io.open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _toplevel_definitions(src):
+    """一段源码里的**模块级**真定义名（`def` / `class` / 赋值目标）。
+
+    与 `app_definition_names` 的差别：只看 `tree.body`，不收函数体内的局部名。
+    为什么必须分开：判据⑨是跨文件求交集，若把局部变量算进来（实测多出 21 个假
+    命中，如 `path` / `raw` / `result` / `ts`），交集立刻被噪声淹没，判据失去分辨力。
+    """
+    tree = ast.parse(src)
+    out = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(node.name)
+        elif isinstance(node, ast.Assign):
+            out.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            out.add(node.target.id)
+    return out
+
+
+def _service_modules():
+    """服务层模块路径列表：`web/security.py` ＋ `web/services/*.py`（排除 `__init__`）。"""
+    out = [os.path.join(_WEB_DIR, "security.py")]
+    svc_dir = os.path.join(_WEB_DIR, "services")
+    for fn in sorted(os.listdir(svc_dir)):
+        if fn.endswith(".py") and fn != "__init__.py":
+            out.append(os.path.join(svc_dir, fn))
+    return out
+
+
+def _route_files_in(root):
+    """在给定目录下**递归**取路由模块相对路径（排除 `__init__.py`）。
+
+    抽成带 `root` 参数的函数，是为了让递归本身可被实测（造临时子目录验）。
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+        for fn in sorted(filenames):
+            if not fn.endswith(".py") or fn == "__init__.py":
+                continue
+            out.append(os.path.relpath(os.path.join(dirpath, fn), root))
+    return sorted(out)
 
 #: 批 3-a 的 A 类名字：`web/app.py` 以 import 形态转发的转发名（该批迁走）。
 A_NAMES_BATCH3A = frozenset({
@@ -102,28 +197,59 @@ A_NAMES = A_NAMES_BATCH3A | BATCH3B_NAMES
 
 #: B 类名字：`web/app.py` 自有定义、且被路由经 `m.*` 读取的名字（批 3-b 缓迁，见模块 docstring 边界段）。
 B_NAMES = frozenset({
-    "DB_FILE", "ENV_FILE", "STATE_DIR", "VERIFY_BUSY_MSG", "VERIFY_FAIL_COOLDOWN_MSG",
-    "WEB_VERSION", "_account_verify_enabled", "_accounts_at_capacity", "_announcement_cache",
-    "_builtin_admin_email", "_builtin_admin_loginable", "_capacity_estimate",
-    "_changelog_cache", "_current_role", "_day_off_reason", "_doc_page", "_estimate_slot",
-    "_executor_rows", "_executors_window", "_in_run_period", "_is_builtin_admin_session",
-    "_issue_admin_sid", "_log_lines_for", "_log_manual_sign_exit",
+    "DB_FILE", "ENV_FILE", "STATE_DIR",
+    "WEB_VERSION", "_accounts_at_capacity",
+    "_capacity_estimate",
+    "_day_off_reason", "_doc_page", "_estimate_slot",
+    "_executor_rows", "_executors_window", "_in_run_period",
+    "_log_lines_for", "_log_manual_sign_exit",
     "_measure_state_path", "_most_recent_log_date", "_mutate_executor_rows",
-    "_notify_capacity_once", "_pw_gate_tier", "_read_doc_html", "_registration_paused",
+    "_notify_capacity_once", "_read_doc_html", "_registration_paused",
     "_save_fallback_egress", "_save_row_egress",
     "_save_slot_egress", "_settings_effective_values", "_sign_window", "_slot_to_label",
     "_users_at_capacity", "_write_measure_state", "accounts_terminal_summary", "edge_config",
     "email_domain_error", "icp_info", "load_sign_state", "log_path_for", "logger",
-    "parse_sign_log", "police_info", "police_link", "run_verify_with_gate",
+    "parse_sign_log", "police_info", "police_link",
     "send_notification", "sign_status", "sign_window_bounds", "site_description", "site_image",
-    "verify_admin", "verify_async_enabled", "write_env_batch",
+    "write_env_batch",
+})
+
+#: 批 3-c S3 已去壳的凭据 / 审核 / 校验进程族：`web/app.py` 里不得再有模块级绑定。
+#: 它们是本批从 `B_NAMES` 移出的 15 名；再出现即第二份可漂移的面（判据⑧钉住）。
+#: 判据① 管读侧（路由不得经墙读），判据⑧ 管写侧（墙上不得再绑定），缺一条静默一半。
+#:
+#: **名单完整性由 `test_residual_debt_is_frozen` 从代码侧反查兜底。** 本名单是按
+#: 实现时手工枚举的，漏一个就静默一格（2026-10-20 独立审查实测抓到 3 个漏登：
+#: `_admin_session_facts` / `_effective_role` / `run_gated_call`，均已补入）。
+#: 手工枚举只能保证“已想到的不回来”，保证不了“没想到的进不来”——故必须有派生判据。
+UNWRAPPED_IN_3C_S3 = frozenset({
+    "_account_verify_enabled", "_admin_session_facts", "_builtin_admin_email",
+    "_builtin_admin_loginable", "_current_role", "_effective_role",
+    "_is_builtin_admin_session", "_issue_admin_sid", "_pw_gate_tier",
+    "run_gated_call", "run_verify_with_gate", "verify_admin", "verify_async_enabled",
+    "VERIFY_BUSY_MSG", "VERIFY_FAIL_COOLDOWN_MSG",
 })
 
 #: 留在墙上、但不属 A 也不属 B 的名字（本批不迁，见模块 docstring 的边界段）。
 ALIAS_NOT_MIGRATED = frozenset({
+    "STATUS_TEXT", "__file__",
+})
+
+#: 批 3-c S1 已去壳的别名：`web/app.py` 里不得再有赋值 / `def` / `class`（判据⑥）。
+#: 它们是 3-c S1 从 `ALIAS_NOT_MIGRATED` 移出的 10 名；再出现即第二份可漂移的面。
+UNWRAPPED_IN_3C_S1 = frozenset({
     "DELETED_RETENTION_DAYS", "EXECUTOR_INDEX_MAX", "STATUS_ALREADY", "STATUS_ICON",
     "STATUS_NO_TASK", "STATUS_PENDING", "STATUS_SUCCESS", "STATUS_USER_CANCELLED",
-    "VERIFY_JOB_TERMINAL", "_has_line_break", "__file__",
+    "VERIFY_JOB_TERMINAL", "_has_line_break",
+})
+
+#: 批 3-c S2 已去壳的进程内缓存名：`web/app.py` 里不得再有赋值 / `def` / `class`（判据⑥）。
+#: 它们从 `B_NAMES` 移出（本片口径：`ref=origin/develop` 的 `86d06f5c` 实测
+#: `len(B_NAMES)==58`，移出这 2 名即 56；同批 S3 片另移出 12 名，故当前下限见
+#: `test_lists_are_disjoint_and_frozen`）。真源在 `web/services/startup_cache.py`；
+#: 读者（路由 9 处 ＋ 测试 7 处）已改直取新家。
+UNWRAPPED_IN_3C_S2 = frozenset({
+    "_announcement_cache", "_changelog_cache",
 })
 
 #: A 名 -> (真源模块, 真源原名)；原名 != 名字时说明该名是改名再导出。
@@ -290,9 +416,20 @@ DIRECT_NAME = frozenset({"APP_VERSION"})
 
 
 def _route_files():
-    """路由目录下的模块文件名（排除装配件 `__init__.py`）。"""
-    return sorted(fn for fn in os.listdir(_ROUTES_DIR)
-                  if fn.endswith(".py") and fn != "__init__.py")
+    """路由目录下（**递归**）的模块文件相对路径，排除装配件 `__init__.py`。
+
+    为什么递归：`os.listdir` 只看一层，子目录里的路由完全不被扫。本仓同级门
+    `test_web_boundary.py` 用的是 `os.walk`（见其 `_WALL_ROUTES_DIR` 扫描），两门
+    扫描面口径必须一致，否则同一处泄漏在一门里红、在另一门里静默绿。
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(_ROUTES_DIR):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+        for fn in sorted(filenames):
+            if not fn.endswith(".py") or fn == "__init__.py":
+                continue
+            out.append(os.path.relpath(os.path.join(dirpath, fn), _ROUTES_DIR))
+    return sorted(out)
 
 
 def _top_level_imports(tree):
@@ -390,6 +527,37 @@ def _read(fn):
         return f.read()
 
 
+def app_binding_names(src):
+    """一段源码里的**模块级绑定**名：`def` / `class` / 赋值目标 / `import` 绑定。
+
+    与 `app_definition_names` 的差别只有一条：包含 `import` 绑定。
+    为什么判据⑥/⑧ 必须用这一版：去壳名要防的是"经 `m.<名>` 还能取到东西"。
+    `from yiban.core.status import ICON as STATUS_ICON` 不是真定义，却让
+    `web.app.STATUS_ICON` 重新可用——真定义口径看不见它（实测漏 5 种形态，
+    `import-as` 是其中可用且真实可达的一种）。
+
+    仍不覆盖的动态形态（`__getattr__` / `globals()[k]=` / `setattr`）由
+    `test_wall_no_dynamic_forwarding` 单独钉住。
+    """
+    tree = ast.parse(src)
+    out = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(node.name)
+        elif isinstance(node, ast.Assign):
+            out.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            out.add(node.target.id)
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name != "*":
+                    out.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                out.add(a.asname or a.name.split(".")[0])
+    return out
+
+
 def app_definition_names(src):
     """一段源码里的**真定义**名：`def` / `class` / 赋值目标。
 
@@ -426,9 +594,33 @@ class WallDirectReadsGateTest(unittest.TestCase):
                          "A 名单与未迁别名名单相交：两份名单已漂移")
         self.assertEqual(sorted(B_NAMES & ALIAS_NOT_MIGRATED), [],
                          "B 名单与未迁别名名单相交：两份名单已漂移")
+        self.assertEqual(sorted(A_NAMES & UNWRAPPED_IN_3C_S1), [],
+                         "已去壳名与 A 名单相交：A 名须直连真源，不得回墙上")
+        self.assertEqual(sorted(B_NAMES & UNWRAPPED_IN_3C_S1), [],
+                         "已去壳名与 B 名单相交：B 名仍在墙上，去壳即名单漂移")
+        self.assertEqual(sorted(ALIAS_NOT_MIGRATED & UNWRAPPED_IN_3C_S1), [],
+                         "已去壳名仍留在未迁名单：两份名单已漂移")
+        # 批 3-c S2 的新集合与其余三个名单必须互斥（含 A 侧：S2 名已直取真源）。
+        for other_name, other in (("A", A_NAMES), ("B", B_NAMES),
+                                  ("未迁别名", ALIAS_NOT_MIGRATED),
+                                  ("3-c S1 已去壳", UNWRAPPED_IN_3C_S1)):
+            self.assertEqual(sorted(UNWRAPPED_IN_3C_S2 & other), [],
+                             "3-c S2 已去壳名与 %s 名单相交：两份名单已漂移" % other_name)
+        # 批 3-c S3：12 名凭据 / 审核 / 校验进程族与其余五个名单必须互斥。
+        for other_name, other in (("A", A_NAMES), ("B", B_NAMES),
+                                  ("未迁别名", ALIAS_NOT_MIGRATED),
+                                  ("3-c S1 已去壳", UNWRAPPED_IN_3C_S1),
+                                  ("3-c S2 已去壳", UNWRAPPED_IN_3C_S2)):
+            self.assertEqual(sorted(UNWRAPPED_IN_3C_S3 & other), [],
+                             "3-c S3 已去壳名与 %s 名单相交：两份名单已漂移" % other_name)
         self.assertGreaterEqual(len(A_NAMES), 140, "A 名单过小：名单被截断")
-        self.assertGreaterEqual(len(B_NAMES), 58, "B 名单过小：名单被截断")
+        # 下限 58 → 56（S2 移出 2 名缓存）→ 40（S3 移出 12 名凭据/审核族）。
+        # 现量口径：ref=refactor/3c-cred-state 的 S3 末，len(B_NAMES)==44
+        # ＝ 58（ref=origin/develop 的 86d06f5c 实测）− 2 − 12。下限留 4 处余量。
+        self.assertGreaterEqual(len(B_NAMES), 40, "B 名单过小：名单被截断")
         self.assertGreaterEqual(len(BATCH3B_NAMES), 47, "批 3-b 已迁名单过小：名单被截断")
+        self.assertGreaterEqual(len(UNWRAPPED_IN_3C_S2), 2,
+                                "批 3-c S2 已去壳名单过小：名单被截断")
 
     def test_a_names_are_not_read_through_the_wall(self):
         bad = []
@@ -449,7 +641,11 @@ class WallDirectReadsGateTest(unittest.TestCase):
         self.assertEqual(bad, [], "以下 A 名的读法不在真源上：\n" + "\n".join(bad))
 
     def test_batch3b_names_have_no_true_definition_in_app(self):
-        """判据⑤：批 3-b 已迁名在 `web/app.py` 里不得再有真定义（真源只许一处）。"""
+        """判据⑤：批 3-b 已迁名在 `web/app.py` 里不得再有真定义（真源只许一处）。
+
+        口径：本判据用 `app_definition_names`（不含 `import` 绑定）。批 3-b 迁的是
+        常量与纯助手，`from P import X` 的再导出不算第二份定义——本判据不把它判红。
+        """
         with io.open(_APP_PY, encoding="utf-8") as f:
             defined = app_definition_names(f.read())
         self.assertGreater(len(defined), 50,
@@ -459,6 +655,117 @@ class WallDirectReadsGateTest(unittest.TestCase):
             dup, [],
             "以下批 3-b 已迁名在 web/app.py 仍有真定义（真源与真定义两处并存）：%s"
             % ", ".join(dup))
+
+    def test_3c_s1_names_have_no_binding_in_app(self):
+        """判据⑥：批 3-c S1 已去壳的 10 名在 `web/app.py` 里不得再有**模块级绑定**。
+
+        它们此前是自建别名（`X = mod.attr`），读者经 `m.*` 取用；本批把读者改直连真源
+        并删掉别名。留一个别名＝真源之外还有第二份可漂移的面，故此判据与①（路由不得墙读）
+        成对：① 管读侧、⑥ 管写侧，缺一条就有一半静默。
+
+        **口径为何是绑定而非真定义**：去壳名要防的是"经 `m.<名>` 还能取到东西"。
+        `from yiban.core.status import ICON as STATUS_ICON` 不是真定义，却让
+        `web.app.STATUS_ICON` 重新可用（实测：真定义口径漏此形态，且它真实可达）。
+        绑定口径覆盖赋值 / `def` / `class` / `import` / `import ... as`。
+        """
+        with io.open(_APP_PY, encoding="utf-8") as f:
+            bound = app_binding_names(f.read())
+        self.assertGreater(len(bound), 100,
+                           "web/app.py 模块级绑定面过小——路径或解析器失效（扫空不得当绿）")
+        dup = sorted(UNWRAPPED_IN_3C_S1 & bound)
+        self.assertEqual(
+            dup, [],
+            "以下批 3-c S1 已去壳名在 web/app.py 仍有模块级绑定（读者已直取真源，"
+            "该名是第二份面）：%s" % ", ".join(dup))
+
+    def test_3c_s2_names_have_no_binding_in_app(self):
+        """判据⑥（S2 片）：批 3-c S2 已去壳的两个缓存名在 `web/app.py` 不得再有绑定。
+
+        它们此前是 `web/app.py` 的模块级单格列表（`[None]`），被
+        `web/routes/settings_api.py` 经 `m.*` 读写。本批把读者改为直取
+        `web/services/startup_cache`，并删掉 app.py 的定义行。留一处赋值＝
+        真源之外还有第二份可漂移的面，且路由不再读它。口径同 S1 判据（绑定，含 import）。
+        """
+        with io.open(_APP_PY, encoding="utf-8") as f:
+            bound = app_binding_names(f.read())
+        self.assertGreater(len(bound), 100,
+                           "web/app.py 模块级绑定面过小——路径或解析器失效（扫空不得当绿）")
+        dup = sorted(UNWRAPPED_IN_3C_S2 & bound)
+        self.assertEqual(
+            dup, [],
+            "以下批 3-c S2 已去壳名在 web/app.py 仍有模块级绑定（读者已直取真源，"
+            "旧名是第二份面）：%s" % ", ".join(dup))
+
+    def test_3c_s3_names_have_no_binding_in_app(self):
+        """判据⑧：批 3-c S3 已去壳的 15 名在 `web/app.py` 里不得再有模块级绑定。
+
+        它们此前是转发包装（`def verify_admin(...): return _security.verify_admin(...)`），
+        存在的唯一理由是按调用时刻现取 app 侧模块级名字后注入。本批把该接缝交给
+        `web.security.configure(...)` / `web.services.verify_queue.configure(...)` 登记
+        lambda，读者直取真源，故墙上不得再留任何形态的绑定。
+
+        与判据①成对：① 管读侧（路由不得经墙读），⑧ 管写侧（墙上不得再绑定）。
+        缺一条就有一半静默——只删读者而留别名，别名仍可被新代码读走。
+
+        **名册必须是"本批实际删掉的每一个名字"**：本判据与判据①按名单做判断，
+        名单漏一个就静默一格。由 `test_residual_debt_is_frozen` 从代码侧反查兜底。
+        """
+        with io.open(_APP_PY, encoding="utf-8") as f:
+            bound = app_binding_names(f.read())
+        self.assertGreater(len(bound), 100,
+                           "web/app.py 模块级绑定面过小——路径或解析器失效（扫空不得当绿）")
+        dup = sorted(UNWRAPPED_IN_3C_S3 & bound)
+        self.assertEqual(
+            dup, [],
+            "以下批 3-c S3 已去壳名在 web/app.py 仍有模块级绑定（读者已直取真源，"
+            "该名是第二份可漂移的面）：%s" % ", ".join(dup))
+
+    def test_3c_s3_gate_has_teeth(self):
+        """突变验证：塞回一处 S3 已去壳名的定义 ⇒ 判据⑧必须命中。"""
+        self.assertIn("verify_admin",
+                      app_definition_names("def verify_admin(u, p):\n    pass\n"))
+        self.assertIn("VERIFY_BUSY_MSG",
+                      app_definition_names('VERIFY_BUSY_MSG = "x"\n'))
+        self.assertIn("_is_builtin_admin_session",
+                      app_definition_names("def _is_builtin_admin_session():\n    pass\n"))
+        self.assertGreaterEqual(len(UNWRAPPED_IN_3C_S3), 15,
+                                "S3 已去壳名单过小：名单被截断")
+        self.assertEqual(
+            app_binding_names("from web import security as _security\n"),
+            {"_security"}, "import 绑定被误判：判据⑧口径应与 m.<名> 可达面一致")
+
+    def test_3c_s3_gate_catches_import_as(self):
+        """突变验证：`import ... as <已去壳名>` 必须被判据⑧ 命中。
+
+        为什么单独验这个形态：它不是真定义，但让 `web.app.<名>` 重新可用
+        （实测 `hasattr(web.app, 'STATUS_ICON')` 从 False 变 True）。真定义口径看不见它。
+        """
+        for src in ("from yiban.core import status as STATUS_ICON\n",
+                    "from yiban.core.status import ICON as STATUS_ICON\n"):
+            with self.subTest(src=src.strip()):
+                self.assertIn("STATUS_ICON", app_binding_names(src),
+                              "import-as 形态未被判据⑧命中：去壳名可经它重新上岗")
+
+    def test_3c_s2_gate_has_teeth(self):
+        """突变验证：塞回一处缓存赋值 ⇒ 判据⑥（S2 片）必须命中。"""
+        for src in ("_changelog_cache = [None]\n",
+                    "_announcement_cache = [None]  # [已发布公告文本]\n",
+                    "_announcement_cache: list = [None]\n"):
+            with self.subTest(src=src.strip()):
+                self.assertIn(src.split(" =")[0].split(":")[0],
+                              app_definition_names(src),
+                              "塞回旧名赋值未被判据命中：本门没有牙")
+
+    def test_3c_s1_gate_has_teeth(self):
+        """突变验证：塞回一处 `STATUS_ICON = yiban_status.ICON` ⇒ 判据⑥必须命中。"""
+        self.assertIn("STATUS_ICON",
+                      app_definition_names("STATUS_ICON = yiban_status.ICON\n"))
+        self.assertIn("_has_line_break",
+                      app_definition_names("_has_line_break = env_io.has_line_break\n"))
+        self.assertIn("DELETED_RETENTION_DAYS",
+                      app_definition_names("DELETED_RETENTION_DAYS = db.NOPE\n"))
+        self.assertGreaterEqual(len(UNWRAPPED_IN_3C_S1), 10,
+                                "已去壳名单过小：名单被截断")
 
     def test_app_definition_scanner_has_teeth(self):
         """突变验证：塞回一处真定义 ⇒ 判据⑤必须命中；转发别名不算。"""
@@ -507,6 +814,227 @@ class WallDirectReadsGateTest(unittest.TestCase):
                      "    return db.load_users()\n")
         self.assertEqual([n for n, _b, _l in a_reads_off_true_source(wrong_mod)],
                          ["db"], "模块型名字从错源导入未判红：本门没有牙")
+
+
+class WallResidualDebtTest(unittest.TestCase):
+    """判据⑨：派生债务集——不依赖任何手工名册的兵底。
+
+    **为什么需要这一条**：判据①/⑤/⑥/⑧ 全靠手工名册。名册只能保证"已想到的不回来"，
+    保证不了"没想到的进不来"。2026-10-20 独立审查实测抓到 3 个漏登
+    （`_admin_session_facts` / `_effective_role` / `run_gated_call`）：把它们的 `def`
+    塞回 `web/app.py`，两门仍全绿——而 `verify_admin` 等 14 名会红。同类形状还会再发。
+
+    本判据不枚举名字，而是**从两边各自算出**：
+        app 侧模块级真定义  ∩  服务层（web/security.py ＋ web/services/*.py）真定义
+    同一名字在两边都有 `def`/`class`/赋值 ⇔ 真源之外还有一份可漂移的定义。
+    墙上有定义而服务层也有同名定义，就是双源。
+
+    **允许集**＝仍有意的墙上包装（B_NAMES ∪ ALIAS_NOT_MIGRATED）＋ 冻结的残留债务
+    `_WALL_RESIDUAL_DEBT`。债务集**只许缩**：新增一律红。
+    """
+
+    def test_residual_debt_is_frozen(self):
+        """派生判据：跨层重复定义必须 ⊆ 允许集，且债务集不得变大。"""
+        app = _toplevel_definitions(_read_abs(_APP_PY))
+        svc = set()
+        for path in _service_modules():
+            svc |= _toplevel_definitions(_read_abs(path))
+        self.assertGreater(len(app), 100, "app.py 定义面过小：解析器失效")
+        self.assertGreater(len(svc), 50, "服务层定义面过小：扫描面失效")
+        allowed = set(B_NAMES) | set(ALIAS_NOT_MIGRATED) | set(_WALL_RESIDUAL_DEBT)
+        unexpected = sorted((app & svc) - allowed)
+        self.assertEqual(
+            unexpected, [],
+            "以下名字在 web/app.py 与服务层**同时**有模块级定义（双源），且未登记：%s\n"
+            "处置：要么把 web/app.py 里那份删掉（读者直取真源），要么确定它确实必须留在墙上"
+            "并加进 B_NAMES；确实迁移不完的，加进 _WALL_RESIDUAL_DEBT 并写明理由。"
+            % ", ".join(unexpected))
+
+    def test_residual_debt_shrinks_monotonically(self):
+        """债务集长度不得回升：删掉的条目不得加回来。"""
+        self.assertLessEqual(
+            len(_WALL_RESIDUAL_DEBT), _WALL_RESIDUAL_DEBT_MAX,
+            "残留债务集变大了（%d > %d）：本集只许缩。新增的双源定义应直接删掉，"
+            "而不是登记成债务。" % (len(_WALL_RESIDUAL_DEBT), _WALL_RESIDUAL_DEBT_MAX))
+
+    def test_residual_debt_entries_are_really_duplicated(self):
+        """债务集的每一项必须仍真是双源。已不存在的项要删——只可缩。"""
+        app = _toplevel_definitions(_read_abs(_APP_PY))
+        svc = set()
+        for path in _service_modules():
+            svc |= _toplevel_definitions(_read_abs(path))
+        stale = sorted(n for n in _WALL_RESIDUAL_DEBT if n not in (app & svc))
+        self.assertEqual(
+            stale, [],
+            "以下残留债务项已经不构成双源（%s）：删掉它们，本集只可缩。"
+            % ", ".join(stale))
+
+    def test_derived_gate_has_teeth(self):
+        """突变验证：把本批漏登的 3 名 def 塞回 app.py ⇒ 派生判据必须红。"""
+        base = _read_abs(_APP_PY)
+        stubs = (
+            "\n\ndef _admin_session_facts():\n    return (1, \"\")\n"
+            "\n\ndef _effective_role(username, pw_version=None):\n    return None\n"
+            "\n\ndef run_gated_call(action, username, limits):\n    return None\n"
+        )
+        app = _toplevel_definitions(base + stubs)
+        svc = set()
+        for path in _service_modules():
+            svc |= _toplevel_definitions(_read_abs(path))
+        allowed = set(B_NAMES) | set(ALIAS_NOT_MIGRATED) | set(_WALL_RESIDUAL_DEBT)
+        unexpected = (app & svc) - allowed
+        for name in ("_admin_session_facts", "_effective_role", "run_gated_call"):
+            self.assertIn(
+                name, unexpected,
+                "漏登名 %s 塞回后派生判据未命中：这条兜底没有牙" % name)
+
+
+class RouteScanRecursionTest(unittest.TestCase):
+    """判据⑩：路由扫描必须递归，与 `test_web_boundary` 同口径。
+
+    为什么单独钉：本门原用 `os.listdir` 只看一层，而同批 `test_web_boundary.py`
+    用 `os.walk`。子目录里的 `m.*` 读取完全不被拆墙门看见（实测：放
+    `web/routes/sub/extra.py` 里一句 `m.load_accounts()`，本门仍绿）。
+    两门扫描面口径不一致＝同一处泄漏在一门里红、在另一门里静默绿（§29）。
+    """
+
+    def test_route_scan_is_recursive(self):
+        """扫描面必须递归：构造子目录读取器，验证命中。"""
+        self.assertTrue(hasattr(os, "walk"))
+        files = _route_files()
+        self.assertGreaterEqual(len(files), _MIN_FILES,
+                                "路由扫描面过小（%d）：路径或解析器失效" % len(files))
+        # 扫描面必须能看见子目录——用临时子目录实测，不靠读代码断言。
+        tmp = tempfile.mkdtemp(prefix="routescan-")
+        try:
+            sub = os.path.join(tmp, "sub")
+            os.makedirs(sub)
+            with io.open(os.path.join(sub, "extra.py"), "w", encoding="utf-8") as f:
+                f.write("def view():\n    m = _appmod()\n    return m.load_accounts()\n")
+            found = _route_files_in(tmp)
+            self.assertEqual(found, [os.path.join("sub", "extra.py")],
+                             "路由扫描不递归：子目录里的读取完全不被看见")
+            self.assertTrue(
+                a_wall_reads(_read_abs(os.path.join(sub, "extra.py"))),
+                "子目录读取器未被扫描器命中")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_scan_face_matches_test_web_boundary_face(self):
+        """两门的路由扫描面口径必须一致（同一 leak 不得在一门里绿）。"""
+        self.assertTrue(os.path.isdir(_ROUTES_DIR))
+        recursive_count = len(_route_files())
+        flat_count = len([fn for fn in os.listdir(_ROUTES_DIR)
+                          if fn.endswith(".py") and fn != "__init__.py"])
+        self.assertEqual(
+            recursive_count, flat_count,
+            "当前路由目录没有子包（%d 递归 vs %d 平铺）——但扫描器必须递归，"
+            "否则新建子包即静默失效" % (recursive_count, flat_count))
+
+
+class HookRegistrationContractTest(unittest.TestCase):
+    """契约：宿主注入登记点（`_hooks`）的已知行为，写成断言而不是只活在注释里。
+
+    **为什么需要这个类**：批 3-c S3 引入了模块级 `_hooks`（`web/security.py` /
+    `web/services/verify_queue.py`），它是一块**原来不存在的进程级状态**。它的语义：
+
+      · 单份 `web/app.py`：打得上的桩经 `_hooks` 在调用时刻生效（本批要保的性质）；
+      · **同进程第二份 `app.py` 副本载入后**：`_hooks` 改归后一份，先建副本上的桩
+        **静默失效**（读到后建副本的真 `.env`）。
+
+    第二句是本节要钉住的已知行为。它为何可达：仓内多个测试文件用
+    `spec_from_file_location` 加载 `web/app.py` 成独立模块。当前编排下每个
+    `setUpClass` 建完副本立刻用完、类间不交错，所以实测失效数为 0
+    （口径：全量 `-n 4 --dist loadfile` ＋ 逐例探针，2026-10-20）。
+    但"现在没撞上"不等于"结构上不可能"——下一个人写多副本用例时会以
+    “桩生效”为前提。**本类把该前提写成可执行的约束**。
+
+    **多副本用例的约束**：若你的用例需要在持有副本上打桩，必须在自己的例内
+    重新调用 `configure(...)`，不能假定 `setUpClass` 那次登记仍有效。
+    """
+
+    _FEATURES: ClassVar = [
+        ("web.security", ("env_file", "read_env", "write_env_key",
+                          "count_env_key_lines", "send_notification")),
+        ("web.services.verify_queue", ("env_file", "read_env", "seat",
+                                       "attempt_allowed", "verify_clean")),
+    ]
+
+    def test_every_hook_is_registered_after_app_import(self):
+        """导入 `web.app` 后，两个登记点的每一个键都必须已登记。
+
+        漏登一个＝该依赖调用时抛 `RuntimeError`（fail-closed），
+        属“忘登记”而不是“静谧降级”。本断言把它变成启动即错。
+        """
+        import importlib
+
+        importlib.import_module("web.app")
+        for mod_name, keys in self._FEATURES:
+            mod = importlib.import_module(mod_name)
+            missing = sorted(k for k in keys if k not in mod._hooks)
+            self.assertEqual(
+                missing, [],
+                "%s 未登记以下宿主依赖：%s（读者调用时会抛 RuntimeError）"
+                % (mod_name, ", ".join(missing)))
+
+    def test_hooks_bind_to_the_last_loaded_app_copy(self):
+        """已登记契约：同进程载入第二份 `app.py` 副本后，`_hooks` 归后一份。
+
+        这不是期望行为，而是**已知行为**；写成断言是为了让改动它的人看见代价。
+        若日后改成 per-instance 登记（挂到 `app.extensions`），本用例会红——
+        那时应连同本类 docstring 一起更新，而不是删掉断言。
+        """
+        import sys
+
+        app_py = _APP_PY
+        first = _load_app_copy("wallhook_first", app_py)
+        import web.security as _sec
+
+        self.assertIs(_sec._host("env_file"), first.ENV_FILE,
+                      "单副本时 _hooks 应归它")
+        second = _load_app_copy("wallhook_second", app_py)
+        try:
+            self.assertIs(_sec._host("env_file"), second.ENV_FILE,
+                          "已登记契约变了：_hooks 不再归最后载入的副本。"
+                          "若这是有意的（改成 per-instance 登记），请同批更新"
+                          "HookRegistrationContractTest 的 docstring。")
+        finally:
+            # 复原：把登记指回第一份，避免污染后续用例。
+            _reconfigure_to(first)
+            sys.modules.pop("wallhook_second", None)
+
+
+def _load_app_copy(tag, app_py):
+    """以独立别名加载一份 `web/app.py`（与既有 Web 测试同形）。"""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(tag, app_py)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[tag] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _reconfigure_to(app_mod):
+    """把两个登记点重新指回给定副本（测试收尾用）。"""
+    import web.security as _sec
+    from web.services import verify_queue as _vq
+
+    _sec.configure(
+        env_file=lambda: app_mod.ENV_FILE,
+        read_env=lambda: app_mod.read_env,
+        write_env_key=lambda: app_mod.write_env_key,
+        count_env_key_lines=lambda: app_mod._count_env_key_lines,
+        send_notification=lambda: app_mod.send_notification,
+    )
+    _vq.configure(
+        seat=lambda: app_mod._verify_sem,
+        attempt_allowed=lambda: app_mod._verify_attempt_allowed,
+        verify_clean=lambda: app_mod._verify_account_clean,
+        env_file=lambda: app_mod.ENV_FILE,
+        read_env=lambda: app_mod.read_env,
+    )
 
 
 if __name__ == "__main__":
