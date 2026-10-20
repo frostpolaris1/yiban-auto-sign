@@ -7,7 +7,7 @@
    _schedule_blocks 的块数一一对应、v2 与 v3
    两条链路在收缩配置下都尊重用户所选片且不告警、slot_min
    的「相对窗口起点」语义、web 侧 _pref_slots
-   的置灰与基点、web.app.sign_window_bounds 只做转发。
+   的置灰与基点、web.services.signstatus.sign_window_bounds 只做组合。
 对应实现：scripts/signin.py（_slot_to_bi、_schedule_blocks、build_schedule）、yiban/engine/planner.py（v3
    自选候选分片）、yiban/core/window.py（bounds）、web/routes/my_api.py 与
    web/services/accounts_data.py（_pref_slots、_slot_to_label）。
@@ -246,8 +246,8 @@ class WebPrefSlotsYardstickTest(unittest.TestCase):
         self.assertEqual(
             slots[1], {"slot_min": 5, "label": "06:35", "disabled": False, "edge_note": ""})
 
-    def test_app_forward_hands_window_over_to_bounds(self):
-        """`web.app.sign_window_bounds` 只转发：起止与前后裁剪交给 `yiban.window.bounds`。"""
+    def test_sign_window_bounds_composes_window_and_edges(self):
+        """`web.services.signstatus.sign_window_bounds` 只做组合：起止与前后裁剪交给 `yiban.window.bounds`。"""
         with mock.patch.object(_signstatus, "_sign_window", return_value=((6, 30), (6, 40))), \
                 mock.patch.object(_render, "edge_config", return_value=(300, 300)):
             win = _signstatus.sign_window_bounds()

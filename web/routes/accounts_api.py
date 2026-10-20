@@ -29,9 +29,10 @@ approve/reject/restore/delete/purge；`DELETE /api/accounts/<idx>` 软删；
 
 **通信**
 A 类转发名（`db` / `clock` / `mailer` / `mail_layout` / `load_accounts` / `mask_account` /
-`validate_account` 等）经真源模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；
-app.py 自有的模块级名字（`logger` / `ENV_FILE` / `send_notification` / `_json_body` 等）
-仍经 `web.routes.appmod()` 按属性取。对外：JSON 请求体经 `_json_body()`，落库走 `db`，
+`validate_account` 等）经真源模块直取（批 3-a 拆墙）；批 3-d 后 `_json_body`、
+`send_notification` 与容量族同样直取服务层真源，测试打桩点一律落在**真源**上。
+仍经 `web.routes.appmod()` 按属性取的只有组合根自身的状态名（`logger` / `ENV_FILE` /
+`DB_FILE`）。对外：JSON 请求体经 `_json_body()`，落库走 `db`，
 告警经 `send_notification`，账号容量闸门经 `_accounts_at_capacity()`；
 被 `web.app` 的 `register_all(app)` 一次接入。
 """

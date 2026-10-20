@@ -44,7 +44,7 @@ from yiban.platform import API_AUTH_URL
 logger = logging.getLogger("web")
 
 #: 开关类 .env 值的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
-#: （与 run.sh 的 `_is_truthy` 同一套口径）；此处只留别名供 `web.app._TRUTHY_LITERALS` 再导出。
+#: （与 run.sh 的 `_is_truthy` 同一套口径）；此处只留本模块别名。
 _TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 
 # ---------------------------------------------------------------------------
