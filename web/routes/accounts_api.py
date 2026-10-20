@@ -29,9 +29,10 @@ approve/reject/restore/delete/purge；`DELETE /api/accounts/<idx>` 软删；
 
 **通信**
 A 类转发名（`db` / `clock` / `mailer` / `mail_layout` / `load_accounts` / `mask_account` /
-`validate_account` 等）经真源模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；
-app.py 自有的模块级名字（`logger` / `ENV_FILE` / `send_notification` / `_json_body` 等）
-仍经 `web.routes.appmod()` 按属性取。对外：JSON 请求体经 `_json_body()`，落库走 `db`，
+`validate_account` 等）经真源模块直取（批 3-a 拆墙）；批 3-d 后 `_json_body`、
+`send_notification` 与容量族同样直取服务层真源，测试打桩点一律落在**真源**上。
+仍经 `web.routes.appmod()` 按属性取的只有组合根自身的状态名（`logger` / `ENV_FILE` /
+`DB_FILE`）。对外：JSON 请求体经 `_json_body()`，落库走 `db`，
 告警经 `send_notification`，账号容量闸门经 `_accounts_at_capacity()`；
 被 `web.app` 的 `register_all(app)` 一次接入。
 """
@@ -44,6 +45,7 @@ from flask import jsonify, request, session
 from werkzeug.security import generate_password_hash
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
@@ -57,6 +59,7 @@ from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
 from web.routes import verify_limits as _verify_limits
 from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
 from web.services import executor_env as _executor_env
 from web.services import http_request as _http
@@ -64,6 +67,7 @@ from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import notify_mail as _notify_mail
+from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
@@ -114,7 +118,7 @@ def api_accounts():
     # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
     # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
     # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
-    states = m.load_sign_state()
+    states = _logs_svc.load_sign_state()
     # 今日计划时刻的唯一事实源：台账 run_at（执行体 claim_batch 的领取依据）。读不通回
     # None 哨兵 → 当作"今日无计划"展示「待生成」，绝不回退旧的派生算法。一次取全。
     _run_at = _today_plan_map()
@@ -145,7 +149,7 @@ def api_accounts():
     last_exec = _executor_env._last_executors(db.task_latest_day())
     # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
     # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
-    _win = m.sign_window_bounds()
+    _win = _signstatus.sign_window_bounds()
     _span_min = _win.end_min - _win.start_min
 
     def _edge_mark(slot):
@@ -162,7 +166,7 @@ def api_accounts():
         "accounts": [
             {
                 **_accounts_data.mask_account(a, base_index + i),
-                "time_pref": m._slot_to_label(prefs.get(a["phone"])),
+                "time_pref": _accounts_data._slot_to_label(prefs.get(a["phone"])),
                 "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
                 # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
                 # 误以为"有归属但字段缺失"）
@@ -287,8 +291,8 @@ def api_account_add():
         # 不会新增（随后 400 拦截），不计增量，保持原错误优先级
         holds_live = email_screen and any(
             a.get("owner") == email_screen and not a["deleted"] for a in accounts_pre)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
             return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
         if _accounts_data.find_account_index(accounts_pre, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
@@ -296,7 +300,7 @@ def api_account_add():
             return jsonify({"error": "内置管理员邮箱不可注册"}), 400
         # 域名预筛：注定被拒的占位/一次性域名不消耗易班验证配额
         if email_screen:
-            dom_err = m.email_domain_error(email_screen)
+            dom_err = _render.email_domain_error(email_screen)
             if dom_err:
                 return jsonify({"error": dom_err}), 400
     # 添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
@@ -345,8 +349,8 @@ def api_account_add():
         # 归属邮箱已持有活跃账号的重复添加不新增，不计增量（保持原错误优先级）
         max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         holds_live = email and any(a.get("owner") == email and not a["deleted"] for a in accounts)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts, "账号数量")
             return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
         if _accounts_data.find_account_index(accounts, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
@@ -357,7 +361,7 @@ def api_account_add():
             if not _limits.EMAIL_RE.match(email) or len(email) > 64:
                 return jsonify({"error": "用户邮箱格式不正确"}), 400
             # 邮箱域名审查：与开放注册同规则，防自动注册路径绕过
-            dom_err = m.email_domain_error(email)
+            dom_err = _render.email_domain_error(email)
             if dom_err:
                 return jsonify({"error": dom_err}), 400
             # 内置管理员邮箱不可被自动注册占用
@@ -372,8 +376,8 @@ def api_account_add():
                     return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
                 # 自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
                 max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS)
-                if m._users_at_capacity():
-                    m._notify_capacity_once("users", max_users, "注册人数")
+                if _capacity._users_at_capacity():
+                    _capacity._notify_capacity_once("users", max_users, "注册人数")
                     return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
                 du = db.find_user_any(email)
                 if (
@@ -615,7 +619,7 @@ def api_account_update(idx):
         if (creds_written and not (gated_creds and
                                    _security._pw_gate_tier() == _security.PW_GATE_FULL)):
             _locks.run_after_file_lock(
-                m.send_notification,
+                _notify_mail.send_notification,
                 "高危管理操作告警",
                 _notify_mail._change_mail(
                     "改写他人易班凭据。",
@@ -743,7 +747,7 @@ def api_accounts_batch():
                     _accounts_data.ACCOUNT_STATUS_REJECTED,
                 )
             )
-            if become and m._accounts_at_capacity(become):
+            if become and _capacity._accounts_at_capacity(become):
                 return jsonify({
                     "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
@@ -763,7 +767,7 @@ def api_accounts_batch():
                     _accounts_data.ACCOUNT_STATUS_REJECTED,
                 )
             )
-            if become and m._accounts_at_capacity(become):
+            if become and _capacity._accounts_at_capacity(become):
                 return jsonify({
                     "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
@@ -951,7 +955,7 @@ def api_account_restore(idx):
         # （status 已通过审核）判定，pending/rejected 行恢复后仍不签到，不误伤。
         if (
             acc.get("status") not in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED)
-            and m._accounts_at_capacity(1)
+            and _capacity._accounts_at_capacity(1)
         ):
             return jsonify({
                 "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
@@ -1038,7 +1042,7 @@ def api_account_review(idx):
             # 容量闸门：通过审核 = 让这一行开始产生签到负载。未通过审核的行不计入
             # 账号容量（见 _capacity_account_count），故此处是本口径下唯一的把关点——
             # 不放这道门就等于"提交时受限、审批时任意越界"，容量上限失去意义。
-            if m._accounts_at_capacity(1):
+            if _capacity._accounts_at_capacity(1):
                 return jsonify({
                     "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
                 }), 403

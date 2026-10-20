@@ -30,6 +30,7 @@ import unittest
 from unittest import mock
 
 import web.app as web
+from web import render as _render
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -155,7 +156,7 @@ def render_with_timeout(doc_name, seconds=5):
     box = {}
 
     def _worker():
-        box["html"] = web._read_doc_html(doc_name)
+        box["html"] = _render._read_doc_html(doc_name)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -211,7 +212,7 @@ class LegalDocRenderTest(unittest.TestCase):
             self.assertNotIn("<!--", html, doc)
 
     def test_read_unknown_doc_returns_fallback(self):
-        html = web._read_doc_html("未知.md")
+        html = _render._read_doc_html("未知.md")
         self.assertIn("<p>未知文档。</p>", html)
 
     def test_render_link_scheme_whitelist(self):
@@ -246,7 +247,7 @@ class LegalDocRenderTest(unittest.TestCase):
         self.assertIn("14 周岁", html)
 
     def test_doc_page_wrapper(self):
-        page = web._doc_page("用户协议", "<p>正文</p>")
+        page = _render._doc_page("用户协议", "<p>正文</p>")
         self.assertIn("<h1>用户协议</h1>", page)
         self.assertIn("<p>正文</p>", page)
         self.assertIn('href="/login"', page)
@@ -267,12 +268,12 @@ class LegalDocRenderTest(unittest.TestCase):
 
     def test_doc_page_icp_block(self):
         # 0.21.2 审查修复：#7 独立协议页显示备案信息（配置时）；f8e5676 起备案号带工信部超链接
-        page = web._doc_page("隐私政策", "<p>正文</p>", "京ICP备00000000号-1")
+        page = _render._doc_page("隐私政策", "<p>正文</p>", "京ICP备00000000号-1")
         self.assertIn(
             '<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">京ICP备00000000号-1</a>',
             page,
         )
-        page_empty = web._doc_page("隐私政策", "<p>正文</p>", "")
+        page_empty = _render._doc_page("隐私政策", "<p>正文</p>", "")
         self.assertNotIn('class="doc-icp"', page_empty)
 
     def test_doc_html_cached_and_invalidated(self):
@@ -287,17 +288,20 @@ class LegalDocRenderTest(unittest.TestCase):
             shutil.copyfile(os.path.join(BASE, "USER_AGREEMENT.md"),
                             os.path.join(tmp, "USER_AGREEMENT.md"))
             target = os.path.join(tmp, "USER_AGREEMENT.md")
-            with mock.patch.object(web, "_REPO_ROOT", tmp):
+            # 批 3-d：文档根与缓存改由 hook 接缝解析，用例直接换这两个宿主依赖。
+            with mock.patch.dict(_render._hooks, {
+                    "repo_root": lambda: tmp,
+                    "doc_cache": lambda: web._doc_cache}):
                 web._doc_cache.clear()
-                web._read_doc_html("USER_AGREEMENT.md")
+                _render._read_doc_html("USER_AGREEMENT.md")
                 self.assertIn("USER_AGREEMENT.md", web._doc_cache, "首次渲染应写入缓存")
                 key1 = web._doc_cache["USER_AGREEMENT.md"][0]
-                web._read_doc_html("USER_AGREEMENT.md")
+                _render._read_doc_html("USER_AGREEMENT.md")
                 self.assertEqual(web._doc_cache["USER_AGREEMENT.md"][0], key1,
                                  "未变更时应命中缓存")
                 with open(target, "a", encoding="utf-8") as f:
                     f.write("\n<!-- 临时增量注释 -->\n")
-                web._read_doc_html("USER_AGREEMENT.md")
+                _render._read_doc_html("USER_AGREEMENT.md")
                 key2 = web._doc_cache["USER_AGREEMENT.md"][0]
                 self.assertNotEqual(key1, key2, "文件变更后缓存 key 应变化并重新渲染")
         web._doc_cache.clear()

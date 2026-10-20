@@ -36,10 +36,12 @@ from flask import current_app, jsonify, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import login_fails as _login_fails
 from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
 from web.services import limits as _limits
@@ -212,7 +214,7 @@ def api_login():
         # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
         with _locks._rate_lock:
             distinct_users = sum(1 for (fip, _u) in _login_fails() if fip == ip)
-        m.send_notification(
+        _notify_mail.send_notification(
             "登录失败告警",
             mail_layout.Mail(
                 summary=f"IP {_notify_mail._nl_safe(ip)} 连续 {fails} 次登录失败。",
@@ -248,7 +250,7 @@ def api_register():
     # 暂停注册时最先拦截——全局开关状态本身即公开信息（登录页
     # 同步提示），早返回不产生枚举/时延侧信道；不占注册限速计数，不写审计
     # （防机器人刷审计表）。
-    if m._registration_paused():
+    if _capacity._registration_paused():
         return jsonify({"error": "注册已暂停，请联系管理员添加账号"}), 403
     data = _http._json_body()
     email = str(data.get("email", "")).strip().lower()
@@ -262,7 +264,7 @@ def api_register():
     if not _limits.EMAIL_RE.match(email) or len(email) > 64:
         return jsonify({"error": "请输入有效的邮箱地址"}), 400
     # 邮箱域名审查：占位/一次性域名在写库前排除，防挤占用户池
-    dom_err = m.email_domain_error(email)
+    dom_err = _render.email_domain_error(email)
     if dom_err:
         return jsonify({"error": dom_err}), 400
     pw_err = _accounts_data._password_policy_error(password)
@@ -291,8 +293,8 @@ def api_register():
         # 防分布式注册无限膨胀 users 表。与账号配额同构，
         # 统一为"再注册 1 人后 > 上限才拒"语义，见 _users_at_capacity）
         max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS)
-        if m._users_at_capacity():
-            m._notify_capacity_once("users", max_users, "注册人数")
+        if _capacity._users_at_capacity():
+            _capacity._notify_capacity_once("users", max_users, "注册人数")
             return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
         if db.find_user(email) is not None:
             # 时延拉平：已注册邮箱在此提前返回，跳过了后方的 scrypt 哈希

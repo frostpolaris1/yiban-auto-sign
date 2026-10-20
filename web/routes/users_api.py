@@ -590,7 +590,7 @@ def api_user_delete(user_id):
         # 非 full 档下"无当次口令"的补偿信号，与 irreversible 的声明配套。
         # 锁内登记、出锁后发（工单 ba-p05-01）。
         _locks.run_after_file_lock(
-            m.send_notification,
+            _notify_mail.send_notification,
             "高危管理操作告警",
             _notify_mail._change_mail(
                 f"清空用户 {_accounts_data._mask_email(email)} 的全部易班账号。",
