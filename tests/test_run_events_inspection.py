@@ -35,7 +35,6 @@ import importlib.util
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 import time
@@ -65,20 +64,6 @@ db = None  # setUpClass 装载（裸模块名，pyproject pythonpath 已含 scri
 
 def _ts(day, hhmmss):
     return f"{day} {hhmmss}"
-
-
-def _reset_db_singleton():
-    """清掉进程级库单例连接。
-
-    机制：`db.init_db` 在 `db._conn` 非空时**复用旧连接**、跳过 JSON→SQLite 迁移
-    （根因单 `yiban-auto-sign-mgq5`）。本文件与 `test_masking_phone_contract.py` 的
-    夹具先清库单例是**绕过**，不是根因修法。mgq5 修好后应删除本函数、它的调用点
-    与校验用例 `LeftoverConnectionFixtureGuardTest`，让根因修法自己承担这条保证。
-    """
-    if db._conn is not None:
-        with contextlib.suppress(Exception):
-            db._conn.close()
-        db._conn = None
 
 
 class InspectionCase(unittest.TestCase):
@@ -122,10 +107,9 @@ class InspectionCase(unittest.TestCase):
 
         global db
         import db
-        # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
-        # `init_db` 的既有语义——已存在连接时它复用旧连接、只刷新"声明的路径"，
-        # 于是本夹具的库根本没被打开、迁移被跳过。机制与根因单见 `_reset_db_singleton`。
-        _reset_db_singleton()
+        # 库单例由 `tests/conftest.py::_fresh_db_connection_per_class` 在类边界丢弃
+        # （工单 mgq5 的根因修法：`init_db` 拒绝在已有连接上静默换库）。本夹具不再
+        # 自己清连接——那只是绕过，且会让"根因是否真修好"不可见。
         spec = importlib.util.spec_from_file_location(
             "webapp_runevents", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
@@ -745,36 +729,5 @@ class InspectionPageWiringTest(InspectionCase):
 
 
 # ---------------------------------------------------------------------------
-# 夹具加固的校验者：留下连接的模块之后本类仍按预期装载
-# ---------------------------------------------------------------------------
-class LeftoverConnectionFixtureGuardTest(InspectionCase):
-    """夹具加固的校验者：在留下连接的模块之后，本类仍按预期装载。
-
-    机制：`db.init_db` 在 `db._conn` 非空时**复用旧连接**、跳过 JSON→SQLite 迁移
-    （根因单 `yiban-auto-sign-mgq5`）。本类 `setUpClass` 先清库单例是**绕过**，
-    不是根因修法。根因修好后应删除 `_reset_db_singleton` 与本类。
-    """
-
-    def test_reset_db_singleton_restores_the_class_load(self):
-        # ① 机制：留下活连接时 init_db 复用旧连接，本类的库根本没被打开
-        stale = sqlite3.connect(os.path.join(self.tmp, "leftover.db"))
-        db._conn = stale
-        reused = db.init_db(self.db_file, migrate_from=self.accounts_file,
-                            env_file=self.env_file)
-        self.assertIs(reused, stale, "机制：init_db 在已有连接时复用旧连接")
-        # ② 加固：按本类口径清连接后，装载按预期
-        try:
-            _reset_db_singleton()
-            db.init_db(self.db_file, migrate_from=self.accounts_file,
-                       env_file=self.env_file)
-            self.assertIsNot(db.get_conn(), stale,
-                             "清连接后必须打开本类自己的库，而不是复用遗留连接")
-            self.assertIsNotNone(db.find_user(USER_EMAIL),
-                                 "清连接后本类的用户必须按预期装载")
-        finally:
-            with contextlib.suppress(Exception):
-                stale.close()
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)
