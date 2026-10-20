@@ -30,6 +30,7 @@ import uuid
 
 from flask import jsonify, session
 
+from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
@@ -205,7 +206,7 @@ def api_mail_config_save():
     smtps 与 admin_to 同请求提交时口令只按 smtps 需要（admin_to 免门，不拖累）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
     data = _http._json_body()
     # 全量校验通过才统一落盘：边校验边 write_env_key 会在后一个字段非法时
@@ -469,9 +470,8 @@ def api_notify_config():
     隐藏时对应键置 null 并**恒定**下发 `quota_visible` 布尔：remaining 的 null 原本
     表示"不限"，只靠 null 表达"无权查看"会让前端把两者读成同一个意思。
     """
-    m = _appmod()
     cfg = notify.get_config()
-    quota_visible = m._is_builtin_admin_session()
+    quota_visible = _security._is_builtin_admin_session()
     if not quota_visible:
         for key in _limits._NOTIFY_QUOTA_HIDDEN_KEYS:
             cfg[key] = None
@@ -497,7 +497,7 @@ def api_notify_config_save():
     当次口令**（此前"risk 档同出口免口令"被本次口径覆盖）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
     data = _http._json_body()
     ntype = str(data.get("type", "")).strip().lower()
@@ -617,8 +617,7 @@ def api_notify_config_save():
 
 def api_notify_test():
     """主管理员：发送一条测试消息验证推送配置。"""
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
     ok = notify.send_test()
     # 每次外呼必留一条含操作者的审计：send(force=True) 跳过节流与两本每日额度，

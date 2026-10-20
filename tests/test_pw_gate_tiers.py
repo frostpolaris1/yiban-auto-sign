@@ -52,6 +52,8 @@ sys.path.insert(0, BASE)
 import db  # noqa: E402  # 顶层导入供 user_path(db, …) 与既有局部导入共用
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web import security as _security  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "UserPass123!"
@@ -648,12 +650,12 @@ class TierResolutionTest(_TierBase):
     TIER = None
 
     def test_缺省档位是risk(self):
-        self.assertEqual(self.webapp._pw_gate_tier(self.env_file), "risk")
+        self.assertEqual(_security._pw_gate_tier(), "risk")
 
     def test_非法值回退risk并告警(self):
         self._set_tier("bogus")
         with self.assertLogs("web", level="WARNING") as cm:
-            tier = self.webapp._pw_gate_tier(self.env_file)
+            tier = _security._pw_gate_tier()
         self.assertEqual(tier, "risk")
         self.assertTrue(any("YIBAN_PW_GATE" in line for line in cm.output),
                         f"非法档位必须留一条可 grep 的告警，实际 {cm.output}")
@@ -662,11 +664,11 @@ class TierResolutionTest(_TierBase):
         for tier in ("off", "risk", "full"):
             with self.subTest(tier=tier):
                 self._set_tier(tier)
-                self.assertEqual(self.webapp._pw_gate_tier(self.env_file), tier)
+                self.assertEqual(_security._pw_gate_tier(), tier)
 
     def test_大小写与空白归一(self):
         self._set_tier("  FULL  ")
-        self.assertEqual(self.webapp._pw_gate_tier(self.env_file), "full")
+        self.assertEqual(_security._pw_gate_tier(), "full")
 
 
 class DelayAckTest(_TierBase):
