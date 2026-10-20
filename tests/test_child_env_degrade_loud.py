@@ -26,6 +26,8 @@ import types
 import unittest
 from unittest import mock
 
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 告警通道：与 `yiban/adapters/config/env_io.py` 的 .env 解析告警同通道（调度器与 web 两侧
@@ -193,7 +195,6 @@ class ChildEnvConsumerVisibilityTest(unittest.TestCase):
             ENV_FILE=self.missing,
             DB_FILE=os.path.join(self.tmp, "yiban.db"),
             child_env=child_env,
-            log_path_for=lambda: os.path.join(self.tmp, "sign.log"),
         )
         spawned = {}
 
@@ -202,6 +203,8 @@ class ChildEnvConsumerVisibilityTest(unittest.TestCase):
             return types.SimpleNamespace(pid=os.getpid())
 
         with mock.patch.object(signin_api.subprocess, "Popen", fake_popen), \
+                mock.patch.object(_logs_svc, "log_path_for",
+                                  lambda: os.path.join(self.tmp, "sign.log")), \
                 _capture_from_root() as cap:
             signin_api._launch_signin_proc(m, "13800000000")
         warns = cap.warnings()
