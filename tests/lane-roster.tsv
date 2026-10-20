@@ -72,16 +72,19 @@ fast	tests/test_claim_write_path_single_source.py
 slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
 fast	tests/test_cli_contract.py
 fast	tests/test_cli_contract_mf60.py
+fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
 fast	tests/test_cli_egress_reset.py
 fast	tests/test_cli_exit_surface.py
 fast	tests/test_concurrency_fidelity_gate.py
 fast	tests/test_config_input_caps.py
 fast	tests/test_config_loader.py
 fast	tests/test_config_registry_gate.py
+fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
 fast	tests/test_conftest_mail_guard.py
 fast	tests/test_conftest_umask_guard.py
 fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
+fast	tests/test_coverage_ledger_gate.py	# 覆盖面对账门：改动集 vs 名册/登记表（只读文本）
 fast	tests/test_crash_semantics.py
 fast	tests/test_creds_write_accounting.py
 slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
@@ -102,6 +105,7 @@ fast	tests/test_dev_verify_entry.py
 fast	tests/test_device_autofill_api.py
 fast	tests/test_device_identification.py
 fast	tests/test_device_registry_methods.py
+fast	tests/test_doc_numbering_gate.py	# 文档编号唯一性巡检（只读 docs 树）
 fast	tests/test_doc_reference_gate.py
 fast	tests/test_docker_image_contents.py
 fast	tests/test_docker_image_inputs_gate.py
@@ -145,6 +149,7 @@ fast	tests/test_frontend_paging_wiring.py
 fast	tests/test_gate_lane_roster.py
 fast	tests/test_gate_manifest_sync.py
 fast	tests/test_gate_narrowing_e2e.py
+fast	tests/test_generated_artifacts_gate.py	# 子进程跑 --check：字体打标与 Lucide 精灵图
 fast	tests/test_geo_sampling.py
 fast	tests/test_global_pause.py
 slow	tests/test_global_pause_chain_e2e.py	# 真子进程：真跑 run.sh 全链引擎（本机 4.9s）
@@ -247,6 +252,7 @@ fast	tests/test_scheduler_env_probe.py
 fast	tests/test_scheduler_exception_surface.py
 fast	tests/test_scheduler_gate.py
 slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
+fast	tests/test_script_safety_guards.py	# 四个运维脚本的破坏性动作守卫（子进程跑脚本，秒级）
 fast	tests/test_secret_key_strict_read.py
 fast	tests/test_sentinel_db_readonly.py
 fast	tests/test_session.py
@@ -290,6 +296,7 @@ fast	tests/test_users_exit_surface.py
 fast	tests/test_users_exit_surface_frontend.py
 fast	tests/test_v3_same_day_requeue.py
 fast	tests/test_verify_jobs.py
+fast	tests/test_visual_seed_generation.py	# 子进程真跑 seed()：随机钥、状态覆盖、导入失败不静默
 fast	tests/test_vue_build_reproducible.py
 fast	tests/test_waf_failure_tier.py
 fast	tests/test_wall_direct_reads.py
