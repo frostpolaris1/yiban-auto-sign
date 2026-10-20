@@ -831,8 +831,10 @@ def main(argv=None):
     # is_second_run：run.sh 补签轮导出的 YIBAN_SECOND_RUN=1 优先（首签子进程被 timeout
     # 击杀、未写 sched-run 标记时标记兜底失效，必须靠该环境变量识别）；容器调度器
     # 补签时段同样注入它；sched-run 标记作为兜底（手动/其他启动路径）。
+    # **复用轮首的 `_second_run`**（工单 ba-p03-11）：注释承诺"只读一次、两处共用同一个
+    # 判定"，这里再取一次会在跨午夜的长轮次上读到不同的日期标记，与轮首判定分叉。
     alerts._maybe_alert_zero_success(
-        accounts, results, ok_n, is_second_run=state_io._is_second_run()
+        accounts, results, ok_n, is_second_run=_second_run
     )
 
     # 签到事件落库：每次尝试与状态迁移落一行（stage="sign"，探针沿用 stage="probe"），

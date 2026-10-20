@@ -152,10 +152,17 @@ def _is_second_run():
     return schedule._env_flag("YIBAN_SECOND_RUN") or _sched_marker_exists()
 
 
-def _sign_state_path():
-    """当日 sign-state 状态文件路径（状态目录缺失/不可写由调用方处理）。"""
+def _sign_state_path(day=None):
+    """当日 sign-state 状态文件路径（状态目录缺失/不可写由调用方处理）。
+
+    `day` 是**业务日**（`YYYY-MM-DD`）：执行体在入口定一次，写入侧原样传下来。缺省取
+    业务钟日期，供一次性工具与既有单测沿用。跨午夜的长轮次必须传 `ctx.day`——否则
+    队列按启动日 settle/requeue，状态文件却按新日期新建，两个事实源指向不同的一天
+    （工单 ba-p03-07）。
+    """
     state_dir = _state_dir()
-    return os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
+    date_text = day or clock.now().strftime("%Y-%m-%d")
+    return os.path.join(state_dir, f"sign-state-{date_text}.json")
 
 
 # ---------------------------------------------------------------------------
@@ -372,15 +379,18 @@ def _apply_sign_state(data, phone, status, message, scheduled, dur, only_if_abse
 atexit.register(flush_sign_state)
 
 
-def _daily_statuses():
+def _daily_statuses(day=None):
     """当日按日状态文件的 {phone: status}；缺失/损坏返回 {}（调用方按"无记录"处理）。
+
+    `day` 是业务日；缺省取业务钟日期。执行体跨午夜时必须传 `ctx.day`，与写入侧
+    （`_sign_state_path(day=...)`）同源。
 
     条目缺 `status` 键按空串——与 `_has_conclusion` 同口径（"无记录"，而非"一条
     状态为 None 的结论"）：窗口收尾拿本快照预筛、落盘再走 `_has_conclusion` 的
     CAS，两处口径必须一致，否则预筛判"已有结论"而 CAS 判"可以写"。
     批量区内的进程内待写条目也计入（否则同进程的预筛与 CAS 会各判一套）。
     """
-    path = _sign_state_path()
+    path = _sign_state_path(day)
     with _STATE_GATE:
         buf = _STATE_BUFFERS.get(path)
         data = buf.view if (buf is not None and buf.view is not None) else None
@@ -391,7 +401,7 @@ def _daily_statuses():
     return {p: (v.get("status", "") if isinstance(v, dict) else "") for p, v in data.items()}
 
 
-def _second_run_drop_done(accounts):
+def _second_run_drop_done(accounts, day=None):
     """补签轮定向重跑：剔除当日已了结（success/already）的账号。
 
     依据当日 sign-state 状态文件（与容器调度器 _has_undone_today 同一事实源）：
@@ -399,7 +409,7 @@ def _second_run_drop_done(accounts):
     再次完整登录（风控暴露）。文件缺失/损坏时按「无记录」处理返回全量
     （宁可多跑，不可漏签）。
     """
-    recorded = _daily_statuses()
+    recorded = _daily_statuses(day)
     if not recorded:
         return accounts
     # 已了结 = `yiban.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
@@ -420,10 +430,10 @@ def _second_run_drop_done(accounts):
 
 
 def _write_sign_state(phone, status, message, scheduled=None, dur=None,
-                      only_if_absent=False):
+                      only_if_absent=False, day=None):
     """写按日结构化状态文件（web 状态显示的事实源，原子替换防半截文件）。
 
-    文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
+    文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json（`day` 缺省取业务钟日期）
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
     dur：单次签到尝试耗时秒数（慢响应可据此判断网络/接口问题）。
@@ -443,7 +453,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     本路径已有条目（让盘上含本轮结论），再走原子读改写。代价是该路径回到逐条写盘，
     但调用点只有窗口收尾那两处，且只对"本轮没轮到"的账号发。
     """
-    path = _sign_state_path()
+    path = _sign_state_path(day)
     if only_if_absent:
         _flush_sign_state_path(path)  # 让盘上含本轮已有结论，CAS 才看得见它们
         return _write_sign_state_now(path, phone, status, message, scheduled, dur, True)
