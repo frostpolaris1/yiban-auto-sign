@@ -1332,8 +1332,8 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
     "历史行彼此自洽"，对"截掉末行再补一条自洽的新末行"无效——兜住这一形态的只有
     库内行数高水位。`_record_anchor_trace` 的 app_meta 写失败只记一条 WARNING
     （并明说"不影响锚点本身"），故缺指纹并不罕见；此时若按"没有指纹可比，跳过
-    三支判据"返回 ok，锚点防线会悄悄回到没有指纹之前的强度。下一次成功写锚点
-    （`record_audit_anchor` → `_record_anchor_trace`）会补回指纹，本判定自愈。
+    三支判据"返回 ok，锚点防线会悄悄回到没有指纹之前的强度。下一次成功写锚点会
+    补回指纹，本判定自愈。
     """
     if lines is None:
         lines, status = _read_anchor_lines_ex(path)
