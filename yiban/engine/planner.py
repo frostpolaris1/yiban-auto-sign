@@ -138,7 +138,9 @@ def slot_width_ms(n: int, cfg: Mapping[str, Any] | None = None) -> int:
     """计划的槽宽（毫秒）：N 超过槽位总容量（分片数 × 每片槽数）时 1s → 0.5s。
 
     容量 = 分片数 × 每片槽数（1s 时 60）。超过就把槽宽减半、槽数翻倍，而不是落一条
-    "压缩告警"了事；实际槽宽由 `write_plan` 写进 `app_meta`，执行体读它即可。
+    "压缩告警"了事；实际槽宽由 `write_plan` 写进 `app_meta` 作**落库元数据**。
+    **生产侧暂无读取方**（工单 ba-p04-05）：执行体按 `ctx.cfg` 现算的通道数放行，不读
+    这条元数据；改本函数只改落库值，不改执行节奏。
     """
     cfg = cfg or schedule.planner_config()
     return _slot_width_ms(n, _slice_count(cfg))
@@ -455,7 +457,8 @@ def write_plan(rows: Iterable[dict[str, Any]], day: str | None = None) -> int:
     同 `(phone, day)` 的标记行（先删后插），否则被补账账号的当日计划会被标记行永久
     挤占（MF-40 修法 4；历史日标记行作为台账证据保留）；同时把槽宽写进
     `app_meta`——槽宽由 `(行数, 当前配置)` 经 `slot_width_ms` 重新判定（与 `build_plan`
-    同一判定函数，不另存一份口径），执行体读它即可知道是否处于压缩模式。库不可用时
+    同一判定函数，不另存一份口径）。该元数据**暂无生产读取方**（工单 ba-p04-05）：
+    执行体按 `ctx.cfg` 现算的通道数放行，不读它；改这里不会改变执行节奏。库不可用时
     **抛异常**——失败语义必须显式，调用方据此降级（计划层故障不得影响签到）。
     """
     items = list(rows or ())
