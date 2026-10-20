@@ -42,7 +42,10 @@
 """
 
 import contextlib
+import hashlib
+import hmac
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -75,6 +78,7 @@ from web.services.accounts_data import (  # noqa: E402
 )
 from web.services.locks import _rate_lock  # noqa: E402
 from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
+from yiban.adapters.persistence import audit_chain as _audit_chain  # noqa: E402
 from yiban.adapters.persistence import db  # noqa: E402
 
 # 与 web.app 同名的日志通道：安全域的日志落回既有通道，便于运维沿用同一处过滤
@@ -93,10 +97,13 @@ LOGIN_LOCK_SECONDS = 60
 
 # 转发头信任开关（`YIBAN_TRUST_FORWARDED_HEADERS`）：
 #   显式开（1/true/on/yes）= 采信转发头；显式关（0/false/off/no）= 一律丢弃；
-#   未设或非法值 = 按"信任"执行。唯一解析处是 `create_app`，唯一读点是
-#   `_forwarded_trust_enabled`。
-# 缺省保持信任的理由：现网升级若忘设开关，翻转默认会让全站客户端塌进同一个
-# 回环桶、限速与登录锁定互相打死——那是生产事故。翻转留给下一版。
+#   未设或非法值 = 按"**不信任**"执行（fail-closed）。唯一解析处是 `create_app`，
+#   唯一读点是 `_forwarded_trust_enabled`。
+# 为什么缺省不信任：`remote_addr` 是回环并不能区分"反代"与"任何能在回环上发连接的
+# 客户"（回环直连、ssh -L 隧道、同主机非特权用户）。缺省信任时客户端自报的 XFF 直接
+# 成为限速桶、登录锁定键、审计来源与「换环境」判据的输入——可逐请求换桶绕过限速，
+# 也可把受害者 IP 填进去反向投毒。经 nginx 的部署必须显式置 1（compose 已置）；
+# 直连/隧道部署保持缺省即安全。非法值同样回退不信任（安全件的失败方向）。
 FORWARDED_TRUST_ENV_KEY = "YIBAN_TRUST_FORWARDED_HEADERS"
 _TRUSTY_LITERALS = ("1", "true", "on", "yes")
 _FALSEY_LITERALS = ("0", "false", "off", "no")
@@ -281,12 +288,31 @@ def _admin_session_facts():
 
     `.env` 路径与读取器按调用时刻取自宿主登记的 lambda（见 `configure`）。
     """
+    version, sid, _email = _admin_session_state()
+    return version, sid
+
+
+def _admin_session_state():
+    """一次 `.env` 读取取全内置管理员的**三项**会话判据：(版本, sid, 小写邮箱)。
+
+    `_effective_role` 同时需要"当前邮箱是不是内置管理员"与"两项凭据是什么"。
+    分成 `_builtin_admin_email()` + `_admin_session_facts()` 两次调用会对同一文件
+    做两遍解析（每个已认证请求一次；`_replace_with_retry` 的注释也说明 `.env` 是
+    高频读文件，多读一遍就多一倍撞写窗）。本函数是那条热路径的**唯一一次**读取；
+    另外两个函数保留为投影，供其他调用面按需取用。
+    """
     env = _host("read_env")(_host("env_file"))
+    # 版本键与 `load_env_int` 的生效配置层同口径（`.env` 优先、进程环境补缺）：
+    # 登录路径用 load_env_int 取版本写进 session，本处若只读 .env，键只配在进程环境
+    # 的部署里两侧会得到不同版本 ⇒ 登录成功后的下一次请求即 401。
+    raw_version = str(env.get("YIBAN_ADMIN_PW_VERSION", "") or "").strip() \
+        or str(os.environ.get("YIBAN_ADMIN_PW_VERSION", "") or "").strip()
     try:
-        version = max(0, int(env.get("YIBAN_ADMIN_PW_VERSION", "")))
+        version = max(0, int(raw_version))
     except (TypeError, ValueError):
         version = 1
-    return version, (env.get(ADMIN_SID_ENV_KEY) or "").strip()
+    return version, (env.get(ADMIN_SID_ENV_KEY) or "").strip(), \
+        env.get("YIBAN_ADMIN_USER", "").strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -327,14 +353,16 @@ def _effective_role(username, pw_version):
     # 所有会话都必须带 auth_source；旧会话（无该字段）一律视为未登录
     if not session.get("auth_source"):
         return None
+    # 一次 .env 读取取全三项（邮箱 + 口令版本 + sid）：本函数每个已认证请求都跑，
+    # 分成 `_builtin_admin_email()` + `_admin_session_facts()` 会解析两遍同一文件。
+    cur, admin_sid, builtin_email = _admin_session_state()
     if (
-        username.strip().lower() == _builtin_admin_email()
+        username.strip().lower() == builtin_email
         and session.get("auth_source") == "builtin"
     ):
         # 内置管理员：必须是 builtin 登录来源，且 session 里的两项凭据都与当前
         # .env 一致（口令版本 + 会话 sid）；auth_source == "user" 的同名注册用户
         # 继续按普通用户判定，不借内置邮箱提权
-        cur, admin_sid = _admin_session_facts()
         if pw_version != cur:
             return None
         # 与上面注册用户的 users.sid 逐字同口径：空 = 未签发（升级日存量会话兼容，
@@ -517,19 +545,26 @@ def _replace_with_retry(tmp, path):
 
     失败时**必须删掉临时文件**：它是一份完整的 `.env` 副本（含密钥、口令哈希），
     留在磁盘上既是不该有的凭据副本，也会越攒越多（实测残留 256 个）。
+    **任何**异常出口都删（不只 PermissionError 重试耗尽那一支）：EXDEV/EISDIR/EROFS/
+    EDQUOT 等非 PermissionError 的 OSError 同样会留下副本，写阶段异常由
+    `_atomic_write` 的 finally 兜底。
     """
     delay = _REPLACE_RETRY_BASE_SEC
-    for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if attempt >= _REPLACE_RETRY_ATTEMPTS:
-                with contextlib.suppress(OSError):
-                    os.remove(tmp)
-                raise
-            time.sleep(delay)
-            delay *= 2
+    try:
+        for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt >= _REPLACE_RETRY_ATTEMPTS:
+                    raise
+                time.sleep(delay)
+                delay *= 2
+    except BaseException:
+        # 替换失败 = 目标文件仍是旧内容，临时副本不再有用；删掉再原样上抛
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 
 def _atomic_write(path, content, chmod_priv=False):
@@ -543,14 +578,26 @@ def _atomic_write(path, content, chmod_priv=False):
     收尾的 os.chmod 保留（对既有 0644 旧文件幂等收紧，无害）。
 
     替换这一步走 `_replace_with_retry`（Windows 上并发读者会让 `os.replace` 瞬态失败）。
+
+    临时文件的清理覆盖**全部**失败路径：写阶段（write/flush/fsync 抛磁盘满、EIO、
+    配额）与替换阶段（任何 OSError）都会走 finally 删掉 `path.tmp*`。只有"进程在
+    写临时文件与替换之间被强杀"无法清理，那属无法捕获的窗口。
     """
     tmp = f"{path}.tmp{secrets.token_hex(4)}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
-    _replace_with_retry(tmp, path)
+    replaced = False
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
+        _replace_with_retry(tmp, path)
+        replaced = True
+    finally:
+        if not replaced:
+            # 写阶段异常/替换失败：临时文件是一份完整 .env 副本，必须删掉
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
     if chmod_priv:
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
@@ -594,10 +641,10 @@ def _forwarded_trust_enabled():
     """本次请求是否采信转发头（XFF 与转发协议头）——唯一读点。
 
     值由 `create_app` 按 `.env` 的 `FORWARDED_TRUST_ENV_KEY` 解析后写进
-    `app.config`。读不到该键时按信任执行：裸 Flask 应用（测试的
+    `app.config`。读不到该键时按**不信任**执行：裸 Flask 应用（测试的
     `test_request_context` 靶子）与未走 `create_app` 的调用都走这条，与缺省口径一致。
     """
-    return bool(current_app.config.get(FORWARDED_TRUST_ENV_KEY, True))
+    return bool(current_app.config.get(FORWARDED_TRUST_ENV_KEY, False))
 
 
 def _resolve_forwarded_trust(env_path, read_env):
@@ -605,9 +652,9 @@ def _resolve_forwarded_trust(env_path, read_env):
 
     口径与 `yiban/adapters/notifier/mail/config.py` 的 `_allow_private_host` 同源：`.env` 优先、
     进程环境补缺（M27）。三态：显式开 → 信任；显式关 → 不信任；未设或非法值 →
-    信任（向后兼容）。非法值另发一条可 grep 的告警，让运维看见自己的笔误。
-    缺省与非法值都回退"信任"：本键翻转默认会让全站客户端塌进同一个回环桶、
-    限速与登录锁定互相打死，那是比"多信一个转发头"更重的生产事故。
+    **不信任**（fail-closed）。非法值另发一条可 grep 的告警，让运维看见自己的笔误。
+    缺省不信任：回环来源分不出反代与直连/隧道，后者能自报 XFF 伪造限速桶与审计
+    来源。经 nginx 的部署必须显式置 1（`docker-compose.yml` 已置）。
     """
     raw = (read_env(env_path).get(FORWARDED_TRUST_ENV_KEY, "").strip()
            or os.environ.get(FORWARDED_TRUST_ENV_KEY, "").strip()).lower()
@@ -617,11 +664,11 @@ def _resolve_forwarded_trust(env_path, read_env):
         return True, True
     if raw:
         logger.warning(
-            "%s 的 %s=%r 非法（开：%s；关：%s），按缺省「信任」执行",
+            "%s 的 %s=%r 非法（开：%s；关：%s），按缺省「不信任」执行",
             env_path, FORWARDED_TRUST_ENV_KEY, raw,
             "/".join(_TRUSTY_LITERALS), "/".join(_FALSEY_LITERALS),
         )
-    return True, False
+    return False, False
 
 
 def _client_ip():
@@ -643,12 +690,15 @@ def _client_ip():
 
 
 def _ip_store_trim(store, max_age):
-    """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
+    """IP 计数 dict 超限时回收条目：先按年龄，仍超限再按末位时间戳淘汰到上限内。
 
     各 store 的值为二元/三元组，末位统一是时间戳；防止公网扫描器用海量
-    不同 IP 打爆内存（无界增长 DoS）。
+    **新** IP 打爆内存（无界增长 DoS）。只按年龄回收挡不住"新键喷洒"：所有条目
+    都未满龄 ⇒ 一条也清不掉、表继续无界增长，`_IP_STORE_LIMIT` 形同不存在。
+    故超限时追加数量淘汰（按末位时间戳升序丢最老的），保证长度**收口到上限内**。
     由 create_app 内嵌套函数上提为模块级——_verify_attempt_allowed
     等模块级写入路径也要在同一口径下 trim，嵌套作用域够不到。
+    调用方持 `_rate_lock`（见 locks.py 的锁内不变量）。
     """
     if len(store) <= _IP_STORE_LIMIT:
         return
@@ -656,6 +706,12 @@ def _ip_store_trim(store, max_age):
     stale = [k for k, v in store.items() if now - v[-1] > max_age]
     for k in stale:
         store.pop(k, None)
+    overflow = len(store) - _IP_STORE_LIMIT
+    if overflow > 0:
+        # 年龄清理无效（全是新键）时的最后一道数量上限：丢最老的溢出部分
+        oldest = sorted(store, key=lambda k: store[k][-1])[:overflow]
+        for k in oldest:
+            store.pop(k, None)
 
 
 def _bump_window_count(store, key, now, window, limit=None):
@@ -784,12 +840,10 @@ def _record_verify_failure(store, phone, message, now):
             cooldown_until = now + VERIFY_FAIL_COOLDOWN
             fails, window_start = 0, now
         store[phone] = (fails, window_start, cooldown_until)
-        # 防御性清理（同 _ip_store_trim 思路）：窗口与冷却均已过期的条目可回收，
-        # 判定用 window_start（冷却至多再延 VERIFY_FAIL_COOLDOWN，已并入 max_age）
-        if len(store) > _IP_STORE_LIMIT:
-            max_age = VERIFY_FAIL_WINDOW + VERIFY_FAIL_COOLDOWN + _IP_STORE_MAX_AGE
-            for k in [k for k, v in store.items() if now - v[1] > max_age]:
-                store.pop(k, None)
+        # 防御性清理（与其余 IP 计数表同口径）：年龄 + 数量上限双淘汰。
+        # 判定用末位（cooldown_until，可能为 0/未来时刻），max_age 已并入窗口与冷却。
+        _ip_store_trim(
+            store, VERIFY_FAIL_WINDOW + VERIFY_FAIL_COOLDOWN + _IP_STORE_MAX_AGE)
     return "认证失败"
 
 
@@ -921,3 +975,70 @@ def verify_admin(username, password):
     # 能走到这 = 哈希与明文都为空（配置在两次 read_env 之间被清空的极端竞态），
     # 原 compare_digest 行在该态对空密码恒真，属理论上的失效盲区，显式拒绝。
     return False
+
+
+# ---------------------------------------------------------------------------
+# 审计体检快照验签（工单 ums7）
+# ---------------------------------------------------------------------------
+# 快照（app_meta.audit_health_snapshot）是**应用身份可写**的展示缓存：能改
+# app_meta 的人可以把 verdict 改成 {"state":"healthy"}，巡检页就显示绿色。
+# 防法：每日线程写快照后，用**审计 HMAC 密钥**对落库原文签一个 HMAC，存到独立
+# app_meta 键；读端验签失败即答"无法定论"（保留更响的 tampered 原态，不洗成中性）。
+# 这把密钥与审计链同源——能自己算 HMAC 的攻击者已经能重写整条链，那已超出本块
+# 的威胁模型（该模型本来就是"能写 app_meta、但拿不到密钥"）。
+AUDIT_SNAPSHOT_SIG_KEY = "audit_health_snapshot_sig"
+
+
+def _audit_snapshot_hmac(raw):
+    """对快照原文算 HMAC；审计密钥不可用（只读部署）时返回 None。"""
+    try:
+        key = _audit_chain._audit_key(create=False)
+    except Exception:
+        key = None
+    if not key:
+        return None
+    return hmac.new(key, str(raw).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_audit_health_snapshot():
+    """给当前落库的体检快照签名（每日线程写完后调用）。返回是否已签名。
+
+    读**落库原文**再签（不在内存里另序列化一份）：验签端拿到的也是同一段原文，
+    不会因 dict 序列化细节产生假红。
+    """
+    raw = db.get_meta(_audit_chain._AUDIT_HEALTH_SNAPSHOT_KEY, "")
+    if not raw:
+        return False
+    sig = _audit_snapshot_hmac(raw)
+    if sig is None:
+        logger.warning("审计密钥不可用，体检快照无法签名（巡检页将答'无法定论'）")
+        return False
+    return bool(db.set_meta(AUDIT_SNAPSHOT_SIG_KEY, sig))
+
+
+def verify_audit_health_snapshot():
+    """校验体检快照签名，返回 `(状态, 落库原文)`。
+
+    状态：`missing`（无快照）/ `ok`（验签通过）/ `unsigned`（无签名记录）/
+    `key-unavailable`（拿不到审计密钥，判不了）/ `bad`（签名不匹配）。
+    只有 `ok` 的原文可以进展示装配；其余状态一律按"无法定论"处置（不得显示健康）。
+    """
+    raw = db.get_meta(_audit_chain._AUDIT_HEALTH_SNAPSHOT_KEY, "")
+    if not raw:
+        return "missing", ""
+    want = db.get_meta(AUDIT_SNAPSHOT_SIG_KEY, "")
+    got = _audit_snapshot_hmac(raw)
+    if got is None:
+        return "key-unavailable", raw
+    if not want:
+        return "unsigned", raw
+    return ("ok" if hmac.compare_digest(str(want), got) else "bad"), raw
+
+
+def raw_audit_health_snapshot(raw):
+    """把落库原文解析成 dict；损坏/非对象返回 None（不抛）。"""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None

@@ -40,6 +40,7 @@
 """
 from flask import jsonify, request
 
+from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
 
@@ -172,6 +173,35 @@ def _no_snapshot_payload():
         "尚无体检结果")
 
 
+def _tampered_payload(snapshot, reason):
+    """保留**更响**的 `tampered` 原态（不把篡改洗成中性的"无法定论"）。
+
+    快照的 verdict 可能是坏的（装配抛异常）或签名不匹配。若它自己说的是
+    `tampered`，那是比"判不出来"更严重的结论——按 M2 的口径，不得用中性结论
+    把它盖掉（否则等于替攻击者消音）。只对**已知状态**保留，未知状态仍回中性。
+    """
+    base = _unavailable_payload(reason, reason)
+    base.update({
+        "state": _audit_chain.VERDICT_TAMPERED,
+        "verdict_code": _audit_chain.VERDICT_EXIT_CODES[_audit_chain.VERDICT_TAMPERED],
+        "cached": isinstance(snapshot, dict),
+        "data_at": (str(snapshot.get("at") or "") or None)
+        if isinstance(snapshot, dict) else None,
+    })
+    return base
+
+
+def _snapshot_state(snapshot):
+    """从（可能损坏的）快照里取原始 verdict 状态，取不到返回空串。"""
+    if not isinstance(snapshot, dict):
+        return ""
+    verdict = snapshot.get("verdict")
+    if not isinstance(verdict, dict):
+        return ""
+    state = str(verdict.get("state") or "")
+    return state if state in _audit_chain.VERDICT_STATES else ""
+
+
 def _payload_from_snapshot(snapshot):
     """把体检快照装配成响应体（可能抛：调用方按"无法定论"兜底）。
 
@@ -247,9 +277,31 @@ def api_audit_status():
 
     装配整体包在 try/except 里：本端点自己的威胁模型就是"快照可能被篡改或损坏"，
     一条坏字段（如 `count` 不是整数）就把这面镜子打成 500，既不假绿也不诚实回答。
+
+    **验签（ums7）**：快照住在应用身份可写的 app_meta，光凭内容无法区分"每日线程写的"
+    与"有人改成 healthy 的"。每日线程写快照后用审计 HMAC 密钥签名（独立 app_meta 键），
+    本端点先验签再看内容：签名缺失/不匹配/密钥不可用一律答"无法定论"；若快照自称
+    `tampered`，保留该更响的状态（不得洗成中性）。
     """
     m = _appmod()
-    snapshot = _audit_chain.read_audit_health_snapshot()
+    sig_state, raw = _security.verify_audit_health_snapshot()
+    if sig_state == "missing":
+        read_audit_trace()("audit_status_read", "无体检快照")
+        return jsonify(_no_snapshot_payload())
+    snapshot = _security.raw_audit_health_snapshot(raw)
+    if sig_state != "ok":
+        # 无法确认这份快照是每日线程写的：不得显示健康。
+        # 伪造者若写 "tampered" 只是让结论更响，保留它不会制造假绿。
+        reason = {
+            "unsigned": "体检快照缺少签名（无法确认来源）",
+            "bad": "体检快照验签失败（内容已被改写）",
+            "key-unavailable": "审计密钥不可用，体检快照无法验签",
+        }.get(sig_state, "体检快照无法验签")
+        read_audit_trace()("audit_status_read", f"验签失败（{sig_state}）")
+        if _snapshot_state(snapshot) == _audit_chain.VERDICT_TAMPERED:
+            return jsonify(_tampered_payload(snapshot, reason))
+        return jsonify(_unavailable_payload(
+            f"{reason}——本次无法定论，不等于健康。", reason))
     if not isinstance(snapshot, dict):
         read_audit_trace()("audit_status_read", "无体检快照")
         return jsonify(_no_snapshot_payload())
@@ -258,6 +310,9 @@ def api_audit_status():
     except Exception as e:
         m.logger.warning("审计体检快照装配失败（按无法定论回答）: %s", e)
         read_audit_trace()("audit_status_read", "快照不可读")
+        if _snapshot_state(snapshot) == _audit_chain.VERDICT_TAMPERED:
+            return jsonify(_tampered_payload(
+                snapshot, "体检快照无法解析（可能被篡改或损坏）"))
         return jsonify(_unavailable_payload(
             "体检快照无法解析（可能被篡改或损坏）——本次无法定论，不等于健康。",
             "体检快照无法解析"))

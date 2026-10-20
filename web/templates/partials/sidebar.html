@@ -5,10 +5,11 @@
 <aside class="d-sidebar">
   <div class="brand">
     {# 品牌图：优先 web/static/vendor/logo.png（部署者自行放入，开源仓库不含该文件）；
-       缺失时 onerror 回退到内联占位方块，不会出现裂图 #}
+       缺失时由 theme-boot.js 的捕获阶段 error 监听回退到内联占位方块，不会出现裂图。
+       CSP 已去掉 script-src 的 'unsafe-inline'，不能再写 onerror 属性。 #}
     <div class="brand-logo">
       <img src="{{ request.script_root }}/static/vendor/logo.png?v=2" alt=""
-           onerror="this.style.display='none';var f=document.getElementById('brand-fallback');if(f){f.style.display='grid'}">
+           data-img-fallback="brand">
       <span id="brand-fallback" class="brand-fallback" style="display:none">签</span>
     </div>
     <div class="brand-text">
@@ -72,7 +73,7 @@
       </div>
     </div>
     <div class="sidebar-actions">
-      <button type="button" class="btn btn--ghost btn--sm" onclick="doLogout()"
+      <button type="button" class="btn btn--ghost btn--sm" data-action="logout"
               title="退出登录" aria-label="退出登录">
         {{ icon('log-out') }}<span>退出登录</span>
       </button>
