@@ -5,8 +5,10 @@ umask 077
 #       自行判断是否到触发时间/频率（含 once 单次执行后自动关闭）。
 #       实际执行时刻由 YIBAN_PROBE_TIME 决定（每天该时刻后的第一个调度周期）；
 #       在「系统设置」修改探针时间后无需再改动 cron。
-# 应用目录：与 run.sh 同口径，可用 YIBAN_APP_DIR 覆盖（非 /opt 部署不必再改脚本本体）
-APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
+# 应用目录：与 run.sh 同口径（唯一环境键 YIBAN_APP_DIR，未设时按检出反推，
+# 见 `scripts/lib/host_paths.sh`）。
+. "$(dirname "${BASH_SOURCE[0]}")/scripts/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 
 # 加载环境变量（安全逐行解析，仅导出 YIBAN_* 前缀键；与 run.sh 一致，绝不用 source）
@@ -75,30 +77,14 @@ else
     exit 1
 fi
 
-# 业务日唯一来源（MF-109 / P12-11）：与 run.sh / scripts/yiban-fallback.sh 同口径。
-# 探针按天写 sign-<业务日>.log；取宿主 date（UTC 16:00-24:00 = 北京 00:00-08:00
-# 签到窗口）会把结果写进与引擎/web 不同名号的文件，web 日志页当天看到空文件。
-business_day() {
-    local _d _tz
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码（缺 tzdata 时 GNU date
-    # 按 UTC 处理并返回 0）。
-    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
-    if [ "$_tz" = "+0800" ]; then
-        TZ=Asia/Shanghai date +%F
-        return 0
-    fi
-    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
-    date +%F
-}
+# 业务日（`business_day`）与按天日志名（`yiban_day_log_file`）来自
+# `scripts/lib/host_paths.sh`：宿主脚本的唯一 bash 定义点。探针按天写
+# sign-<业务日>.log；取宿主 date（UTC 16:00-24:00 = 北京 00:00-08:00 窗口）会把结果
+# 写进与引擎/web 不同名号的文件，web 日志页当天看到空文件。
 
 # 状态/日志根目录（业务日与引擎同源）
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
+LOG_FILE="$(yiban_day_log_file "$STATE_DIR")"
 
 # 与签到共用单实例锁：探针与签到进程互斥，防止并发操作同一批账号
 # fail-closed 与 run.sh 同一纪律：建不成主锁目录就拒绝运行（rc=1）——旧回退分支把锁

@@ -40,7 +40,6 @@ import time
 from contextlib import contextmanager, suppress
 
 from yiban.adapters.config import env_io
-from yiban.core import clock
 from yiban.core.masking import mask_phones_in_text, sanitize_text
 from yiban.infra import locks
 from yiban.logging_ext import FlockFileHandler, MaskingFormatter
@@ -222,11 +221,10 @@ def _run_lock_held(name=None):
     return False
 
 
-# 按天日志文件路径（与 web/app.py log_path_for 一致）
+# 按天日志文件路径（形状唯一在 `env_io.day_log_path`：与 web 的 `log_path_for`、
+# 宿主脚本同一事实源，census-P2-sign-day-log）
 def _signin_log_path():
-    date_str = clock.now().strftime("%Y-%m-%d")
-    log_file = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
-    return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
+    return env_io.day_log_path()
 
 
 def _make_log_handler():

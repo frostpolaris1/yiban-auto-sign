@@ -41,6 +41,7 @@ from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import signstatus as _signstatus
+from yiban.adapters.config import env_io
 from yiban.adapters.persistence import db
 from yiban.core import clock
 
@@ -92,7 +93,7 @@ def api_logs_export():
         f"导出 {date} 签到日志（脱敏；丢弃 {dropped} 行）",
     )
     return Response(text, mimetype="text/plain", headers={
-        "Content-Disposition": f"attachment; filename=sign-{date}.log",
+        "Content-Disposition": f"attachment; filename={env_io.day_log_name(date)}",
         # 0 也显式回执：下游无需区分"字段缺失"与"没有丢行"
         "X-Yiban-Dropped-Lines": str(dropped),
     })
@@ -219,7 +220,7 @@ def api_logs():
         # 级别档与其结果：前端据此显示「已收起 N 行 INFO」，不静默出空表。
         "level": level,
         "collapsed_lines": collapsed_lines,
-        "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
+        "log_file": env_io.day_log_name(date),  # 只暴露文件名，不暴露服务器路径
         "date": date,
         "is_today": date == clock.now().strftime("%Y-%m-%d"),
         "probe_events": probe_events,
