@@ -57,6 +57,8 @@ from unittest import mock
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from web import security as _security
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
 from web.services import startup_cache as _startup_cache
 from yiban.adapters.config import env_io  # pythonpath 已含 scripts/（pyproject.toml）
 
@@ -84,7 +86,7 @@ def _load_webapp(tag):
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     # 加载失败不能静默滑过去：届时报的是后文的 AttributeError，与真因隔了十万八千里
-    assert hasattr(mod, "write_env_batch"), "web/app.py 加载失败（exec_module 异常被抑制）"
+    assert callable(getattr(mod, "create_app", None)), "web/app.py 加载失败（exec_module 异常被抑制）"
     return _db, mod
 
 
@@ -283,7 +285,7 @@ class WriteEnvBatchInjectionTest(_Base):
                 before = _read(self.env_file)
                 payload = f"notify{ch}YIBAN_ADMIN_PASSWORD_HASH=scrypt:attacker"
                 with self.assertRaises(ValueError) as cm:
-                    self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": payload})
+                    _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": payload})
                 self.assertIn("YIBAN_ANNOUNCEMENT", str(cm.exception))
                 self.assertEqual(_read(self.env_file), before,
                                  "拒绝就必须零写盘（不能留下半成品配置）")
@@ -295,7 +297,7 @@ class WriteEnvBatchInjectionTest(_Base):
                 self._poisoned_env()
                 before = _read(self.env_file)
                 with self.assertRaises(ValueError):
-                    self.webapp.write_env_batch(
+                    _env_io_svc.write_env_batch(
                         self.env_file, {f"YIBAN_X{ch}Y": "1"})
                 self.assertEqual(_read(self.env_file), before)
 
@@ -311,25 +313,25 @@ class WriteEnvBatchInjectionTest(_Base):
         for bad in ("yiban_x", "YIBAN X", "YIBAN_X=1", "#YIBAN_X", "1YIBAN",
                     "", "YIBAN-KEY", "YIBAN_Ö"):
             with self.subTest(key=bad), self.assertRaises(ValueError):
-                self.webapp.write_env_batch(self.env_file, {bad: "1"})
+                _env_io_svc.write_env_batch(self.env_file, {bad: "1"})
         self.assertEqual(_read(self.env_file), before, "拒绝必须零写盘")
         # 反向：不得把规则写成只认 YIBAN_ 前缀之类的过窄判定（正常键要能存）
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_OK_2"], "1")
 
     def test_ordinary_values_still_write(self):
         """不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。"""
         self._poisoned_env()
         val = "维护通知 https://example.com/a?b=1#c\t尾注 空格"
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": val})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": val})
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_ANNOUNCEMENT"], val)
         self.assertEqual(_physical_lines(self.env_file), 4)
 
     def test_empty_value_still_deletes_key(self):
         """.env 删除语义（空值=删行）不得被新校验改掉。"""
         self._poisoned_env()
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": "abc"})
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": "abc"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": ""})
         self.assertNotIn("YIBAN_ANNOUNCEMENT", _read(self.env_file))
 
 
@@ -458,7 +460,7 @@ class EnvDuplicateKeyFoldingTest(_Base):
             "YIBAN_MAX_USERS  =  3",
             "YIBAN_KEEP=1",
         )
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_MAX_USERS"]
         self.assertEqual(len(hits), 1, f"旧行未被折叠，留下重复行: {hits}")
@@ -469,7 +471,7 @@ class EnvDuplicateKeyFoldingTest(_Base):
 
     def test_similar_longer_key_is_not_folded(self):
         self._write_env("YIBAN_MAX_USERS=3", "YIBAN_MAX_USERS_EXTRA=9")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
         env = self.webapp.read_env(self.env_file)
         self.assertEqual(env["YIBAN_MAX_USERS"], "5")
         self.assertEqual(env["YIBAN_MAX_USERS_EXTRA"], "9",
@@ -480,7 +482,7 @@ class EnvDuplicateKeyFoldingTest(_Base):
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         "YIBAN_ADMIN_PASSWORD_HASH = scrypt:old",
                         "YIBAN_SECRET_KEY=x")
-        self.webapp.write_env_batch(
+        _env_io_svc.write_env_batch(
             self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": "scrypt:new"})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
@@ -519,7 +521,7 @@ class AmbiguousAdminHashTest(_Base):
                          "前置条件失败：生效行应是合法哈希（修复前本例应能登录成功）")
         self.assertTrue(check_password_hash(effective, ADMIN_PASS),
                         "前置条件失败：口令与生效哈希本身要匹配")
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR") as logs:
             self.assertFalse(
                 _security.verify_admin("admin@test.local", ADMIN_PASS),
@@ -536,7 +538,7 @@ class AmbiguousAdminHashTest(_Base):
         self.assertEqual(self._master_hash_line(), effective)
         self.assertTrue(check_password_hash(effective, ATTACK_PASS),
                         "前置条件失败：修复前正是这一行让攻击者登录成功")
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             self.assertFalse(_security.verify_admin("admin@test.local", ATTACK_PASS),
                              "歧义态下攻击者哈希不得带来认证成功")
             self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
@@ -549,7 +551,7 @@ class AmbiguousAdminHashTest(_Base):
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
         self.assertEqual(self._master_hash_line(), good,
                          "前置条件失败：紧凑写法一行应是生效行")
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
 
     def test_latent_u2028_payload_counts_as_ambiguous(self):
@@ -569,7 +571,7 @@ class AmbiguousAdminHashTest(_Base):
         self.assertEqual(self._master_hash_line(), good,
                          "前置条件失败：潜伏态下解析器应仍取到合法哈希")
         # 宽模型计数已能看到它：任何一次实体化之前认证就被拒
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR"):
             self.assertFalse(
                 _security.verify_admin("admin@test.local", ADMIN_PASS),
@@ -582,7 +584,7 @@ class AmbiguousAdminHashTest(_Base):
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         "# YIBAN_ADMIN_PASSWORD_HASH=scrypt:old-rotated-out",
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS))
         self.assertFalse(sn.called)
 
@@ -591,7 +593,7 @@ class AmbiguousAdminHashTest(_Base):
         good = self._hash_of(ADMIN_PASS)
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS))
             self.assertFalse(_security.verify_admin("admin@test.local", ATTACK_PASS),
                              "口令不匹配仍应照常拒绝")
@@ -600,14 +602,14 @@ class AmbiguousAdminHashTest(_Base):
     def test_ambiguity_recovery_is_one_write_away(self):
         """「不 brick」的另一半：把 .env 折叠成唯一一行即恢复登录（无需重启/改代码）。"""
         effective = self._two_hash_lines(legal_last=True)
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
         # 旧行折叠（同一处修复）保证一次写入就能清掉重复行
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": effective})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": effective})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
         self.assertEqual(len(hits), 1, f"折叠后仍有多行主凭据: {hits}")
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS),
                             "修成唯一一行后应恢复正常认证能力")
         self.assertFalse(sn.called, "恢复后不得继续告警")
@@ -669,7 +671,7 @@ class StartupCollisionReportTest(_Base):
         )
         self.webapp._env_collision_reported = False   # 类内其他用例可能已置位
         with self.assertLogs("web", level="ERROR") as logs, \
-                mock.patch.object(self.webapp, "send_notification") as sn:
+                mock.patch.object(_notify_mail, "send_notification") as sn:
             self.webapp.create_app().test_client()
         self.assertTrue(any("YIBAN_AUDIT_KEY" in m for m in logs.output),
                         f"ERROR 日志应点名歧义键: {logs.output}")
@@ -679,7 +681,7 @@ class StartupCollisionReportTest(_Base):
 
     def test_clean_env_startup_sends_no_collision_alert(self):
         self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             self.webapp.create_app().test_client()
         for call in sn.call_args_list:
             self.assertNotIn("歧义", call.args[0],

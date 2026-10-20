@@ -27,6 +27,8 @@ import unittest
 
 from werkzeug.security import generate_password_hash
 
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VUE_DIR = os.path.join(BASE, "web", "static", "vue")
 
@@ -96,7 +98,7 @@ class LogsPageTest(unittest.TestCase):
         from datetime import datetime
 
         today = datetime.now().strftime("%Y-%m-%d")
-        with open(cls.webapp.log_path_for(today), "w", encoding="utf-8") as fh:
+        with open(_logs_svc.log_path_for(today), "w", encoding="utf-8") as fh:
             fh.write(chr(10).join([
                 f"[{today} 06:31:01] [INFO] yiban: [13800138001] 签到成功",
                 f"[{today} 06:31:02] [WARNING] yiban: [13800138001] 单次尝试耗时偏长",

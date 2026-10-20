@@ -35,19 +35,19 @@ from unittest import mock
 import pytest
 
 import web.security as web_security
-from web.routes import auth as web_routes_auth
-from yiban.adapters.notifier.notify import ledger as notify_ledger
-from yiban.adapters.notifier.notify import transport as _notify_K2
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
 # 打桩必须打在**真正持有并调用该名字**的模块上，否则会静默失效。
+# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from web import security as _security  # noqa: E402
+from web.routes import auth as web_routes_auth  # noqa: E402
 from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 from yiban.adapters.config import account_crypto  # noqa: E402
 from yiban.adapters.notifier import notify  # noqa: E402
 from yiban.adapters.notifier.notify import config as notify_config  # noqa: E402
+from yiban.adapters.notifier.notify import ledger as notify_ledger  # noqa: E402
+from yiban.adapters.notifier.notify import transport as _notify_K2  # noqa: E402
 from yiban.adapters.notifier.notify import transport as notify_transport  # noqa: E402
 
 KEY = "f" * 64
@@ -1406,7 +1406,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
-             mock.patch.object(self.webapp, "send_notification"):
+             mock.patch.object(_notify_mail, "send_notification"):
             # 前 threshold-1 次在长键 A、B 之间分摊：只有"两键被截成同一个键"才会累计到锁定
             for i in range(_limits.LOGIN_MAX_FAILS - 1):
                 name = long_a if i % 2 == 0 else long_b
@@ -1421,7 +1421,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         long_a, long_b = "r" * 200, "r" * 128 + "s" * 72
         with mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
-             mock.patch.object(self.webapp, "send_notification"):
+             mock.patch.object(_notify_mail, "send_notification"):
             for i in range(_limits.LOGIN_MAX_FAILS - 1):
                 email = long_a if i % 2 == 0 else long_b
                 r = c.post("/api/me/restore", json={"email": email, "password": "x"})
@@ -1455,7 +1455,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
 
         with mock.patch.object(web_security, "_ip_store_trim", side_effect=spy), \
              mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
-             mock.patch.object(self.webapp, "send_notification"):
+             mock.patch.object(_notify_mail, "send_notification"):
             c.post("/api/me/restore", json={"email": "gone@qq.com", "password": "x"})
         want = _limits.RESTORE_FAIL_WINDOW + self.webapp._IP_STORE_MAX_AGE
         self.assertIn(want, seen,

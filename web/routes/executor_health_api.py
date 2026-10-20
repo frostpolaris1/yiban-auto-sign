@@ -66,7 +66,7 @@ def api_executor_health():
 
     try:
         # 窗口口径与容量换算同源（`_executors_window` = `_sign_window` + `window.bounds`）
-        bounds = m._executors_window()
+        bounds = _executor_env._executors_window()
         window_sec = bounds.full_sec() if bounds else 0
         body = _executor_env._executor_health_cards(m.ENV_FILE, window_sec)
     except Exception as e:  # 展示面不得因一个读点失败把整页打成 5xx

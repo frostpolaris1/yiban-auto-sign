@@ -34,9 +34,10 @@
 `web.security`、`yiban.*`；调用方是 `python -m web`（上面的运行段）与 tests/*。
 路由模块经 `web.routes.appmod()` 现取本模块的模块级名字、测试按属性打桩它们，所以**仍留在
 本模块**的名字，其**字面**是对外契约的一部分，改名等于改接口。批 3-a 已把 import 形态转发的
-名字（A 类）改为路由直连真源；批 3-b 把**纯常量**与**纯助手**搬进 `web/services/*`。
-留在墙上的只剩：env 句柄与进程内缓存、凭据/审核/签到进程族，以及需要现取本模块状态后
-注入服务层的转发包装——名单与逐类理由见 `tests/test_wall_direct_reads.py` 的模块 docstring。
+名字（A 类）改为路由直连真源；批 3-b 把**纯常量**与**纯助手**搬进 `web/services/*`；
+批 3-d 把最后 39 个"状态注入包装"也搬走，注入改由各服务模块的 `configure(...)` 承担。
+留在墙上**只剩组合根自身状态 5 名**（三个路径句柄、启动时派生的版本号、进程级日志通道）
+——名单与冻结判据见 `tests/test_wall_direct_reads.py` 的模块 docstring。
 """
 
 import argparse
@@ -77,23 +78,22 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
 # 取用（routes 经 m.* 取用、测试按属性打桩）。位置随包导入引导之后、web./yiban. 之前。
 import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出
 
-# 渲染层实现（web/render.py）：合规文档与站点展示族的真源。本模块只转发，并在转发时
-# 注入本模块持有的模块级状态（`_REPO_ROOT` / `_doc_cache` / `ENV_FILE` / `read_env`）
-# ——它们会被测试改写、也会随运行方式变化，必须调用时刻现取。
+# 渲染层实现（web/render.py）：合规文档与站点展示族的真源。批 3-d 后本模块不再转发：
+# 它需要的宿主状态（`_REPO_ROOT` / `_doc_cache` / `ENV_FILE` / `read_env`）由本模块在
+# import 末尾登记 lambda，该模块按调用时刻解析。
 from web import render as _render  # noqa: E402
 
-# 服务层实现（web/services/）：域实现的真源。本模块保留的转发面**只余两族**：
-#   · 需要本模块模块级状态的入口（`_atomic_write` / `write_env_batch` / `_env_flag` /
-#     设置缺省值 / `send_notification` / `ENV_FILE` / `_sign_window`）——它们在下方转发时
-#     调用时刻现取后注入。测试会改写这些名字，服务层另持一份绑定会让打桩与 --config 静默失效；
-#   · 本模块自用、或测试按属性读取的名字（如 `_atomic_write` / `_tail_lines` / `read_env`）。
+# 服务层实现（web/services/）：域实现的真源。批 3-d 后本模块**不再保留状态注入包装**：
+# 各服务模块自带 `configure(...)` ＋ `_host`，本模块在 import 末尾登记 lambda（见下方
+# "宿主依赖登记区"），故测试改写本模块名字、`--config` 改写路径仍在调用时刻生效。
+# 本模块仍转出的只剩本模块自用的名字，以及测试按属性读取的名字面
+# （如 `_atomic_write` / `_tail_lines` / `read_env`）。
 # 批 3-b 起，**纯常量**（窗口/上限/键名）与**纯助手**（`_json_body` /
 # `_request_is_same_origin`）已由路由与测试从新家直取（`web/services/limits.py`、
 # `web/services/env_io.py`、`web/services/http_request.py`），本模块不再转出。
-# 安全域实现（web/security.py）同理：它在本模块持有的模块级名字（ENV_FILE / read_env /
-# write_env_key / write_env_batch / load_env_int / _count_env_key_lines /
-# send_notification / SESSION_ABS_TTL_SECONDS / _constant_time_dummy）在下方转发包装里
-# 调用时刻现取后注入，另持一份绑定会让打桩与 --env-file 静默失效。
+# 安全域实现（web/security.py）同理：它需要的宿主依赖（`ENV_FILE` / `read_env` /
+# `write_env_key` / `_count_env_key_lines` / `send_notification`）经该模块的
+# `configure(...)` 登记，本模块只在 import 末尾登记 lambda。
 from web import security as _security  # noqa: E402
 from web.render import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
@@ -104,9 +104,9 @@ from web.routes import (  # noqa: E402
 )
 from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清单（页面路径唯一登记点）
 
-# 安全域（web/security.py）：纯再导出保持 web.app.<名字> 可达（routes 经 m.* 取用、
-# 测试按属性读取或替换）。需要本模块模块级状态的入口（`.env` 路径与读取器、写路径、
-# 整数读取器、键行计数、告警出口、会话绝对期）在下方转发包装里调用时刻现取后注入。
+# 安全域（web/security.py）：纯再导出保持 web.app.<名字> 可达（测试按属性读取或替换）。
+# 该模块需要的宿主状态（`.env` 路径与读取器、写路径、键行计数、告警出口）经它的
+# `configure(...)` 登记，本模块在 import 末尾登记 lambda。
 from web.security import (  # noqa: E402
     _IP_STORE_LIMIT,  # noqa: F401
     _IP_STORE_MAX_AGE,
@@ -133,7 +133,6 @@ from web.security import (  # noqa: E402
     _verify_attempt_allowed,
     _verify_fail_cooldown_remaining,  # noqa: F401
 )
-from web.services import accounts_data as _accounts_data  # noqa: E402
 from web.services import capacity as _capacity  # noqa: E402
 from web.services import channel_health as _channel_health  # noqa: E402
 from web.services import env_io as _env_io_svc  # noqa: E402
@@ -168,7 +167,7 @@ from web.services.accounts_data import (  # noqa: E402
     _stale_idx_guard,  # noqa: F401
     _verify_account_clean,
     find_account_index,  # noqa: F401
-    load_accounts,
+    load_accounts,  # noqa: F401
     load_accounts_raw,  # noqa: F401
     mask_account,  # noqa: F401
     validate_account,  # noqa: F401
@@ -206,11 +205,6 @@ from web.services.executor_env import (  # noqa: E402
 from web.services.http_request import (  # noqa: E402
     _request_is_same_origin,
 )
-from web.services.limits import (  # noqa: E402
-    DEFAULT_ACCOUNT_GAP_MAX,
-    DEFAULT_MAX_ACCOUNTS,
-    DEFAULT_MAX_USERS,
-)
 from web.services.locks import (  # noqa: E402
     # 进程内锁真源：`_file_lock`（账号/用户读改写）与 `_rate_lock`（限速/失败计数表）
     # 都与 m.<名字> 是同一把，供路由取用；`run_after_file_lock` 是"锁内不得有网络
@@ -232,8 +226,8 @@ from web.services.logs import (  # noqa: E402
 )
 from web.services.manual_sign import (  # noqa: E402
     # 名字面零损失：手动签到子进程族（终止进程树、等待回收、队列超时缩放、退出码词表）
-    # 随族搬入 web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
-    # `log_path_for`，故在下方转发
+    # 随族搬入 web/services/manual_sign.py；`_log_manual_sign_exit` 的日志路径经该模块
+    # 的 hook 解析（批 3-d）
     _batch_wait_timeout,  # noqa: F401
     _manual_sign_failure_reason,  # noqa: F401
     _wait_signin_proc,  # noqa: F401
@@ -241,7 +235,8 @@ from web.services.manual_sign import (  # noqa: E402
 from web.services.measure import (  # noqa: E402
     # 名字面零损失：现场实测的状态文件与冷却判定已入 web/services/measure.py，
     # 保留 web.app.<名字> 的兼容面；
-    # `_measure_state_path` / `_write_measure_state` 另被本模块的转发包装注入
+    # `_measure_state_path` / `_write_measure_state` 所需的状态目录与原子写经该模块的
+    # hook 解析（批 3-d）
     MEASURE_STATE_FILE,  # noqa: F401
     _measure_cooldown_remaining,  # noqa: F401
     _pick_measure_account,  # noqa: F401
@@ -250,7 +245,8 @@ from web.services.measure import (  # noqa: E402
 from web.services.notify_mail import (  # noqa: E402
     # 名字面零损失：通知与告警邮件族随族搬入 web/services/notify_mail.py
     # （`_nl_safe` / `_audit_actor` / `_audit_alert_facts` 本模块自用，其余为 m.* 兼容面）；
-    # `send_notification` 与 `_push_ever_configured` 需注入本模块的名字，故在下方转发
+    # `send_notification` 与 `_push_ever_configured` 所需的节流判定经该模块的 hook
+    # 解析（批 3-d）
     _audit_actor,
     _audit_alert_facts,
     _nl_safe,
@@ -259,16 +255,15 @@ from web.services.notify_mail import (  # noqa: E402
 from web.services.signstatus import (  # noqa: E402
     # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
     # 保留 web.app.<名字> 的兼容面；
-    # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
+    # `.env` 路径与读取经该模块的 hook 解析（批 3-d）
     _env_flag,
-    _in_sign_window,
+    _in_sign_window,  # noqa: F401
     check_connectivity,  # noqa: F401
 )
 from web.services.verify_queue import (  # noqa: E402
     # 名字面零损失：在线校验的执行闸门、异步任务与失败落库已入
     # web/services/verify_queue.py，保留 web.app.<名字> 的兼容面；
-    # `run_verify_with_gate` / `verify_async_enabled` / `_account_verify_enabled`
-    # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
+    # 席位、配额判定与 `.env` 读取经该模块的 hook 解析（批 3-c S3）
     VERIFY_JOBS_MAX_PENDING,  # noqa: F401
     VerifyGateBusy,  # noqa: F401
     # 批 3-c S3：`VerifyQuotaExceeded` 的墙名已删。批 3-b 时它的面外读者是
@@ -289,25 +284,19 @@ from yiban.core import window as yb_window  # noqa: E402
 from yiban.core.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 
-# 名字面零损失：纯再导出见上方 import；需要注入本模块模块级状态的入口
-# （_read_doc_html / _doc_page / 站点展示族）在下方转发。
+# 名字面零损失：纯再导出见上方 import；`_read_doc_html` / `_doc_page` 与站点展示族
+# 已随批 3-d 去壳，读者直取 web/render.py。
 
 
 # 合规文档渲染缓存：登录页为公开高频入口，每次请求读盘+全量正则渲染会放大 I/O 与 DoS 面。
-# 按 (mtime_ns, size) 缓存，部署者更新文件后自动失效；转发的 `_read_doc_html` 在本模块
-# 调用时刻现取本字典，故测试清空/读取 `web.app._doc_cache` 仍是同一份。
+# 按 (mtime_ns, size) 缓存，部署者更新文件后自动失效；本字典经 `web/render.configure(...)`
+# 登记给 `_read_doc_html`，故测试清空/读取 `web.app._doc_cache` 仍是同一份。
 _doc_cache = {}  # filename -> ((mtime_ns, size), html)
 
 
-def _read_doc_html(filename):
-    """读取并渲染合规文档（实现见 web/render.py）；注入本模块现取的文档根与渲染缓存。"""
-    return _render._read_doc_html(filename, _REPO_ROOT, _doc_cache)
-
-
-def _doc_page(title, body_html, icp_text="", police_text="", base_path="", police_link="https://beian.mps.gov.cn/", description=""):
-    """合规文档独立页（实现见 web/render.py）；摘要留空时取本模块现读的站点简介默认文案。"""
-    return _render._doc_page(title, body_html, icp_text, police_text, base_path, police_link,
-                             description or site_description())
+# `_read_doc_html` / `_doc_page` 已随批 3-d 去壳：读者直取 web/render.py。
+# 文档根（`_REPO_ROOT`）与渲染缓存（`_doc_cache`）经该模块的 configure 登记，
+# 故测试清空/读取 `web.app._doc_cache` 仍是同一份缓存。
 
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
@@ -371,39 +360,8 @@ DB_FILE = DB_DEFAULT
 # web/services/limits.py：本模块不再持有其定义，路由与测试按域直取新家。
 
 
-def _sign_window():
-    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认，实现见 web/services/signstatus.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
-    """
-    return _signstatus._sign_window(ENV_FILE, read_env)
-
-
-def _in_run_period(bounds, now=None):
-    """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
-
-    门与钟点判定的口径见 web/services/signstatus.py；两个判定都按调用时刻现取本模块的
-    （`_in_sign_window` 与 `_day_off_reason` 在既有测试中被直接打桩）。
-    """
-    return _signstatus._in_run_period(bounds, _in_sign_window, _day_off_reason, now)
-
-
-def _day_off_reason(now=None):
-    """今天此刻是否被周末门/一键暂停挡下 → 原因串（实现见 web/services/signstatus.py）。
-
-    与引擎读**同一份 `.env` 真值**：`.env` 的键值按调用时刻现读后注入（原先落回
-    `os.environ`，`.env` 里的急停/周末开关在 web 进程里恒不生效——引擎真暂停、界面说
-    "排队待签"）。`.env` 路径与读取器都会被测试与 `--config` 改写，故按调用时刻现取。
-    """
-    return _signstatus._day_off_reason(read_env(ENV_FILE), now)
-
-
-def _executors_window():
-    """执行体接口口径的**有效签到窗口**（实现见 web/services/executor_env.py）。
-
-    `.env` 路径与窗口解析器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
-    """
-    return _executor_env._executors_window(ENV_FILE, _sign_window)
+# 执行体窗口 `_executors_window` 已随批 3-d 去壳：读者直取
+# web/services/executor_env.py，`.env` 路径与窗口解析器经该模块的 configure 登记。
 
 
 # ---------------------------------------------------------------------------
@@ -412,22 +370,13 @@ def _executors_window():
 #: 两次实测之间的全局冷却（秒）；可被 `.env` 的 YIBAN_MEASURE_COOLDOWN 覆盖。
 #: 常量本体（`MEASURE_COOLDOWN_SEC`）已随批 3-b 搬入 web/services/limits.py。
 # 实测状态文件的路径/读写/冷却判定与可实测账号的挑选实现见 web/services/measure.py；
-# 本模块的 `_measure_state_path` 与 `_write_measure_state` 转发时现取本模块的
-# STATE_DIR 与 _atomic_write（测试会赋值 `web.app.STATE_DIR`、在 `web.app` 上打桩
-# `_atomic_write`），其余三个名字以导入区再导出保持 m.* 可达。
-def _measure_state_path():
-    """实测冷却状态文件路径（实现见 web/services/measure.py）。"""
-    return _measure._measure_state_path(STATE_DIR)
-
-
-def _write_measure_state(path, payload):
-    """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
-    return _measure._write_measure_state(path, payload, _atomic_write)
+# `_measure_state_path` / `_write_measure_state` 已随批 3-d 去壳，读者直取该模块
+# （STATE_DIR 与 `_atomic_write` 经该模块的 configure 登记）。
 
 
 # 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
 # web/security.py，此处以导入区再导出保持 m._constant_time_dummy 可达（登录、恢复、
-# 注册等路径经 m.* 取用；本模块的 verify_admin 转发包装在服务层内部按同一函数取用）。
+# 注册等路径经 m.* 取用）。
 
 # 回环谓词（`_is_loopback_addr`）、转发头信任开关（`_forwarded_trust_enabled`）与真实
 # 客户端出口（`_client_ip`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达。
@@ -624,25 +573,8 @@ STATUS_TEXT = yiban_status.TEXT
 
 
 # 账号状态族（`load_sign_state` / `accounts_terminal_summary` / `_cred_paused_phones` /
-# `clear_fuse_pause` / `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：前两个与
-# 凭据熔断清理族在导入区再导出，`load_sign_state` / `accounts_terminal_summary` 在下方转发
-# （需注入本模块持有的 STATE_DIR）。
-
-
-def load_sign_state(date_str=None):
-    """读取按日结构化状态文件（实现见 web/services/logs.py）。
-
-    状态目录按调用时刻现取本模块的 `STATE_DIR`（可被 `--config` 等参数覆盖）。
-    """
-    return _logs_svc.load_sign_state(STATE_DIR, date_str)
-
-
-def accounts_terminal_summary(days=30):
-    """窗口内账号终态统计（实现见 web/services/logs.py 的同名函数）。
-
-    状态目录按调用时刻现取本模块的 `STATE_DIR`（与 `load_sign_state` 同一份）。
-    """
-    return _logs_svc.accounts_terminal_summary(STATE_DIR, days)
+# `clear_fuse_pause` / `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：
+# 读者直取该模块（批 3-d 删除了本模块的转发包装）。
 
 logger = logging.getLogger("web")
 
@@ -651,102 +583,46 @@ logger = logging.getLogger("web")
 # 签到日志解析
 # ---------------------------------------------------------------------------
 # 实现见 web/services/logs.py：`_tail_lines` / `_most_recent_log_cache`
-# 与 `_is_valid_date_str` 在导入区再导出（`_LOG_TAIL_BYTES` 的 m.* 名字面已随 W0 删除）；
-# 需要本模块模块级状态的入口（日志目录 LOG_FILE、
-# 倒读实现 `_tail_lines`）在下方转发时调用时刻现取后注入——它们会被测试改写（既有测试直接
-# 赋值 `web.app.LOG_FILE`、并在 `web.app` 上打桩 `_tail_lines`），服务层另持一份绑定会让
-# 打桩静默失效。
-
-
-def parse_sign_log(path):
-    """解析签到日志（实现见 web/services/logs.py）；倒读实现现取本模块的 `_tail_lines`。"""
-    return _logs_svc.parse_sign_log(path, _tail_lines)
-
-
-def log_path_for(date_str=None):
-    """按天日志文件路径（实现见 web/services/logs.py）；日志目录现取本模块的 `LOG_FILE`。"""
-    return _logs_svc.log_path_for(LOG_FILE, date_str)
-
-
-def _log_lines_for(date_str, stats=None):
-    """读取指定日期日志的行（实现见 web/services/logs.py）。
-
-    路径与倒读实现都按调用时刻现取本模块的（`LOG_FILE` 可被测试直接赋值改写）。
-    `stats` 可选 dict：服务层把解析不出而被丢弃的行数写进 `stats["dropped"]`。
-    """
-    return _logs_svc._log_lines_for(date_str, log_path_for, _tail_lines, stats)
+# 与 `_is_valid_date_str` 在导入区再导出（`_LOG_TAIL_BYTES` 的 m.* 名字面已随 W0 删除）。
+# 批 3-d 删除了 `parse_sign_log` / `log_path_for` / `_log_lines_for` /
+# `_most_recent_log_date` 的转发包装：读者直取服务层，日志目录与倒读实现经 hook 解析。
+# `_today_has_logs` 仍留本模块（另有读者按属性读取），它直调服务层真源。
 
 
 def _today_has_logs():
     """今天是否有 yiban 签到日志行（实现见 web/services/logs.py）。
 
-    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
+    日志路径与倒读实现经服务层的 hook 解析（`LOG_FILE` / `_tail_lines` 的既有改写有效）。
     """
-    return _logs_svc._today_has_logs(log_path_for, _tail_lines)
-
-
-def _most_recent_log_date(max_days=30):
-    """查找最近有日志的日期（实现见 web/services/logs.py）。
-
-    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
-    """
-    return _logs_svc._most_recent_log_date(max_days, log_path_for, _tail_lines)
+    return _logs_svc._today_has_logs()
 
 
 # ---------------------------------------------------------------------------
 # .env 读写
 # ---------------------------------------------------------------------------
-# 读（read_env / load_env_int）在导入区再导出；写与设置项展示族的转发在下方
-# （它们需要注入本模块持有的 _atomic_write / write_env_batch / _env_flag / 设置缺省值）。
+# 读（read_env / load_env_int）在导入区再导出。批 3-d 已删掉写入与设置项展示族的
+# 转发包装：`write_env_batch` / `_settings_effective_values` 的宿主依赖经
+# `web/services/env_io.py` 的 configure 登记。
 
 
-# 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py，本模块只转发。
-# `.env` 一律经本模块的 `read_env(ENV_FILE)` 调用时刻现读，保持既有打桩面（测试与
-# `--env` 都会改写 ENV_FILE，由转发处取用才不会被 render 层的副本绑定架空）。
-def email_domain_error(email):
-    """邮箱域名可用性审查（实现见 web/render.py）。"""
-    return _render.email_domain_error(email, read_env(ENV_FILE))
-
-
-def icp_info():
-    """网站 ICP 备案信息（可选，实现见 web/render.py）。"""
-    return _render.icp_info(read_env(ENV_FILE))
-
-
-def police_info():
-    """公安备案信息（可选，实现见 web/render.py）。"""
-    return _render.police_info(read_env(ENV_FILE))
-
-
-def police_link():
-    """公安备案查询链接（实现见 web/render.py；scheme 白名单与回落同在其中）。"""
-    return _render.police_link(read_env(ENV_FILE))
-
+# 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py。
+# 批 3-d 删除了本模块的转发包装（`email_domain_error` / `icp_info` / `police_info` /
+# `police_link` / `site_description` / `site_image`）：路由与测试直取该模块，
+# `.env` 路径与读取器经该模块的 configure 登记。
 
 # 站点简介默认文案（分享预览用；措辞取自 README 项目介绍，勿写成营销语）。
-# 部署方可经 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。
+# 部署方可经 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。本常量仍留本模块并登记给 render。
 SITE_DESCRIPTION_DEFAULT = (
     "易班自动签到辅助工具：配置一次后每天定时自动完成易班早操签到，"
     "无需手动操作；提供网页管理后台，支持多账号管理、失败重试与告警通知。"
 )
 
 
-def site_description():
-    """站点简介（实现见 web/render.py）；留空时用本模块的默认文案。"""
-    return _render.site_description(read_env(ENV_FILE), SITE_DESCRIPTION_DEFAULT)
-
-
-def site_image():
-    """分享预览配图绝对地址（可选，实现见 web/render.py）。"""
-    return _render.site_image(read_env(ENV_FILE))
-
-
 # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
 # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
 # 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
-def edge_config():
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（实现见 web/render.py）。"""
-    return _render.edge_config(read_env(ENV_FILE))
+# `edge_config` 已随批 3-d 去壳：读者直取 web/render.py，`.env` 读取经该模块的
+# configure 登记。本模块只保留 `edge_front_sec` 的既有名字面（测试按属性读取）。
 
 
 def edge_front_sec():
@@ -754,34 +630,13 @@ def edge_front_sec():
     return _render.edge_front_sec(read_env(ENV_FILE))
 
 
-def sign_window_bounds():
-    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
-
-    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
-    几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
-    配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪两个取值点按调用
-    时刻现取本模块的（测试会打桩 `web.app._sign_window` / `web.app.edge_config`）。
-    """
-    start, end = _sign_window()
-    front_sec, back_sec = edge_config()
-    return yb_window.bounds({
-        "sign_start": start,
-        "sign_end": end,
-        "edge_front_sec": front_sec,
-        "edge_back_sec": back_sec,
-    })
+# 有效窗口视图 `sign_window_bounds` 已随批 3-d 搬入 web/services/signstatus.py：
+# 路由与测试直取该模块，本模块不再保留转发包装。唯一口径仍在 `yiban.window.bounds`。
 
 
-# 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
-# 三个容量缺省值与开关解析器 `_env_flag` 由本模块现取注入（它们是本模块的名字，会被测试改写）。
-def _settings_effective_values(env_file):
-    """A/B 档设置项的当前生效值（实现见 web/services/env_io.py）。"""
-    return _env_io_svc._settings_effective_values(
-        env_file, _env_flag,
-        gap_max_default=DEFAULT_ACCOUNT_GAP_MAX,
-        max_users_default=DEFAULT_MAX_USERS,
-        max_accounts_default=DEFAULT_MAX_ACCOUNTS,
-    )
+# 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py。
+# 批 3-d 删除了 `_settings_effective_values` 的转发包装：路由与测试直取该模块；
+# 开关解析器 `_env_flag` 与容量缺省值分别经该模块的 configure 与 limits 取得。
 
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 允许 1~64 → 下标 0~63）；
@@ -790,36 +645,14 @@ def _settings_effective_values(env_file):
 
 
 # 执行体清单的写入与校验（`YIBAN_EXECUTORS`）实现见 web/services/executor_env.py。
-# 写回一律经本模块的 `write_env_batch` 现取注入：它既是"每一次 .env 落盘"的观测点
-# （测试在此打桩），也负责把落盘交给本模块的 `_atomic_write`。
-def _save_slot_egress(env_path, key, index, value):
-    """读-改-写 `.env` 里一段出口（实现见 web/services/executor_env.py）。"""
-    return _executor_env._save_slot_egress(env_path, key, index, value, write_env_batch)
-
-
-def _executor_rows(env_path=ENV_FILE):
-    """读执行体清单，必要时按旧三键迁移写回（实现见 web/services/executor_env.py）。"""
-    return _executor_env._executor_rows(env_path, write_env_batch)
-
-
-def _mutate_executor_rows(mutator, env_path=ENV_FILE):
-    """`.env` 写锁内读清单 → 应用 mutator → 写回（实现见 web/services/executor_env.py）。"""
-    return _executor_env._mutate_executor_rows(mutator, env_path, write_env_batch)
-
-
-def _save_row_egress(env_path, slot, value):
-    """清单模式下只改该行的出口（实现见 web/services/executor_env.py）。"""
-    return _executor_env._save_row_egress(env_path, slot, value, write_env_batch)
-
-
-def _save_fallback_egress(env_path, value):
-    """清单模式下改兜底行的出口（实现见 web/services/executor_env.py）。"""
-    return _executor_env._save_fallback_egress(env_path, value, write_env_batch)
+# 批 3-d 删除了本模块的 5 个转发包装（`_save_slot_egress` / `_executor_rows` /
+# `_mutate_executor_rows` / `_save_row_egress` / `_save_fallback_egress`）：读者直取
+# 该模块；清单写回经 `write_env_batch` hook 解析（仍是"每一次 .env 落盘"的观测点）。
 
 
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入（实现见 web/services/env_io.py）。"""
-    return _env_io_svc.write_env_int(env_path, key, value, write_env_batch)
+    return _env_io_svc.write_env_int(env_path, key, value)
 
 
 # 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 yiban/adapters/config/env_io.py
@@ -839,7 +672,7 @@ _count_env_key_lines = env_io.count_key_lines
 def _env_write_refuse_audit(code, detail):
     """.env 写入被拒的 fail-closed 审计回调（写入与业务无法同事务，见 audit_or_refuse）。
 
-    注入给 `write_env_batch` 与 `ensure_secret_key`：任何"写入被拒"都必须留痕，否则一次
+    登记给服务层写入路径（`write_env_batch` / `ensure_secret_key`）：任何"写入被拒"都必须留痕，否则一次
     被拒的注入尝试在审计链上等于没发生。detail 已由 env_io 保证只含键名/行号，绝不回带
     值原文（口令/明文代理串不进审计）。审计失败也不把拒绝变成放行——写入本来就已经被拒，
     本回调只吞异常并记日志，绝不向上抛（抛错会盖住真正的拒绝原因）。
@@ -857,30 +690,23 @@ def _env_write_refuse_audit(code, detail):
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
-    实现见 web/services/env_io.py；写回落在本模块的 `write_env_batch` 上（同一观测点）。
+    实现见 web/services/env_io.py；落盘观测点 `write_env_batch` 现取该模块的真源。
     """
-    return _env_io_svc.write_env_key(env_path, key, value, write_env_batch)
+    return _env_io_svc.write_env_key(env_path, key, value)
 
 
-def write_env_batch(env_path, updates):
-    """批量写入多个键值（原子操作，实现见 web/services/env_io.py）。
-
-    落盘交给本模块现取的 `_atomic_write`：它是"每一次 .env 落盘"的观测点（测试在此
-    打桩快照全文），且 Windows 上的替换重试策略在那里；服务层另持绑定会让打桩静默失效。
-    行模型/校验/键集合 diff 单源在 `yiban.infra.env_io.write_env_keys`；写入被拒时经
-    `_env_write_refuse_audit` 强制留痕。
-    """
-    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write,
-                                       _env_write_refuse_audit)
+# `write_env_batch` 已随批 3-d 去壳：读者直取 web/services/env_io.py。
+# `_atomic_write` 与 `_env_write_refuse_audit` 经该模块的 configure 登记，故测试在
+# `web.app` 上的打桩仍经 hook 生效；`.env` 落盘的观测点改为
+# `web.services.env_io.write_env_batch`。
 
 
 def ensure_secret_key(env_path):
     """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值，实现见 web/services/env_io.py）。
 
-    落盘同样交本模块现取的 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
+    落盘经该模块的 hook 取 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
     """
-    return _env_io_svc.ensure_secret_key(env_path, _atomic_write,
-                                         _env_write_refuse_audit)
+    return _env_io_svc.ensure_secret_key(env_path)
 
 
 # 内置主管理员（.env 账号）的会话凭据族（_new_admin_sid / _issue_admin_sid /
@@ -912,13 +738,13 @@ def migrate_admin_password_to_hash(env_path):
     参数、不读请求上下文。
     """
     return _security.migrate_admin_password_to_hash(
-        env_path, read_env, load_env_int, write_env_batch)
+        env_path, read_env, load_env_int, _env_io_svc.write_env_batch)
 
 
 # `os.replace` 的瞬态失败重试预算与 `_replace_with_retry` / `_atomic_write` 实现见
 # web/security.py：`_atomic_write` 在导入区再导出且必须是**同一个
-# 函数对象**——env_io / measure 的转发包装按调用时刻现取本模块的这个名字注入，
-# patch.object(web.app, "_atomic_write") 才继续被落盘路径看见；
+# 函数对象**——env_io / measure 经各自 configure 登记的 lambda 在调用时刻取本模块的
+# 这个名字，patch.object(web.app, "_atomic_write") 才继续被落盘路径看见；
 # `_replace_with_retry` 的 m.* 名字面已随 W0 删除（零读者）。
 
 
@@ -943,8 +769,8 @@ _purge_loop_lock = threading.Lock()
 # `_record_verify_failure`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达
 # （路由在 m._rate_lock 下调用这些计数助手，同一把锁真源在 web/services/locks.py）。
 # 批 3-c S3：`_pw_gate_tier` 已去壳（读者直取 web/security.py，`.env` 路径与读取器
-# 经该模块的 configure 登记）；`_sensitive_gate_params` 仍留转发包装——它注入的是
-# `load_env_int`，属 app 状态注入包装类（f），不在本片范围。
+# 经该模块的 configure 登记）；`_sensitive_gate_params` 仍留本模块包装——它注入的是
+# `load_env_int`，属双源债务集（`_WALL_RESIDUAL_DEBT`），批 3-d 未纳入 39 名。
 
 
 def _read_audit_row_due(cnt):
@@ -971,14 +797,8 @@ def _sensitive_gate_params(env_path):
 # 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
 # 退出码原因 `_manual_sign_failure_reason`）实现见 web/services/manual_sign.py，此处以
 # 导入区再导出保持 m.* 可达；退出码表 `_SIGNIN_EXIT_REASONS` 的 m.* 名字面已随 W0 删除。
-# 只有 `_log_manual_sign_exit` 需要注入本模块持有的入口，故在下方转发。
-def _log_manual_sign_exit(phone_label, returncode):
-    """手动签到退出码留痕（实现见 web/services/manual_sign.py）。
-
-    日志路径按调用时刻现取本模块的 `log_path_for`（它再现取 `LOG_FILE`）：测试会赋值
-    `webapp.LOG_FILE` 换日志目录，转发处不现取就会被服务层的副本绑定架空。
-    """
-    return _manual_sign._log_manual_sign_exit(phone_label, returncode, log_path_for)
+# 手动签到退出码留痕 `_log_manual_sign_exit` 已随批 3-d 去壳：读者直取
+# web/services/manual_sign.py，日志路径经该模块的 configure 登记。
 
 
 # `.env` 写互斥与公告元数据解析的实现见 web/services/env_io.py：
@@ -1002,31 +822,15 @@ def _log_manual_sign_exit(phone_label, returncode):
 # （_as_signin_account / _verify_account_clean）实现见 web/services/accounts_data.py；
 # 审核态词表、手机号正则、注销宽限期与口令策略常量也随该族搬入，此处一律以导入区再导出
 # 保持 m.* 可达。
-def _slot_to_label(slot_min):
-    """自选片窗口内分钟数 → "HH:MM"（实现见 web/services/accounts_data.py）。
-
-    有效窗口视图按调用时刻现取本模块的（测试会打桩 `web.app._sign_window` /
-    `web.app.edge_config`，`sign_window_bounds` 现取后穿透到服务层）。
-    """
-    return _accounts_data._slot_to_label(slot_min, sign_window_bounds)
-
-
-def _estimate_slot(phone):
-    """预计签到时段（实现见 web/services/accounts_data.py）。
-
-    转发包装保留原有参数签名；实现已改读台账 `sign_tasks.run_at`，**不再消费**这几个
-    注入名（`load_accounts` / `read_env` / `ENV_FILE` / `sign_window_bounds`）。取数来源
-    经 `web.services.accounts_data.today_plan_map` → `db.task_run_at_by_phone`，打桩它即可。
-    """
-    return _accounts_data._estimate_slot(
-        phone, load_accounts, read_env, ENV_FILE, sign_window_bounds)
+# 自选片展示与预计时段（`_slot_to_label` / `_estimate_slot`）已随批 3-d 搬入
+# web/services/accounts_data.py：读者直取该模块，不再经本模块转发。
 
 
 # 账号展示序列化（mask_account）、定位与字段校验（find_account_index /
 # _duplicate_phone_error / _owner_has_other_live / validate_account）、即时验证开关
-# （_account_verify_enabled，转发见下方）与只读验证（_as_signin_account /
+# （_account_verify_enabled）与只读验证（_as_signin_account /
 # _verify_account_clean）实现见 web/services/accounts_data.py，此处以导入区再导出保持
-# m.* 可达；`_verify_account_clean` 另被本模块的转发包装与 verify_jobs 回调现取注入。
+# m.* 可达；批 3-c S3 起，这两个开关的实现直取真源，本模块不再保留包装。
 
 
 # 外呼校验的闸门与异步任务族（`VerifyGateBusy` / `VerifyQuotaExceeded` /
@@ -1034,8 +838,8 @@ def _estimate_slot(phone):
 # `_verify_queue_full` / `_start_verify_job` / `verify_async_enabled` /
 # `_account_verify_enabled`）实现见 web/services/verify_queue.py。
 # 两个异常类型、失败落库、超龄收口、待办上限与建任务以导入区再导出保持 m.* 可达；
-# 带闸校验与两个开关在下方转发时现取本模块的席位 / 配额判定 / 只读验证 / .env
-# 路径与读取器（它们会被测试打桩或赋值改写）。
+# 带闸校验与两个开关已随批 3-c S3 去壳：席位、配额判定与 `.env` 读取经该模块的
+# configure 登记（它们会被测试打桩或赋值改写）。
 # A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。席位留在本模块：
 # 静/异步两条路径共用同一个（异步侧经 verify_jobs.configure 登记）。
 _verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
@@ -1077,35 +881,16 @@ def check_admin_configured():
 # ---------------------------------------------------------------------------
 # 系统信息
 # ---------------------------------------------------------------------------
-def sign_status(now=None):
-    """基于服务器时间计算签到状态（实现见 web/services/signstatus.py）。
-
-    `.env` 路径、整数配置读取器与有效窗口视图都按调用时刻现取本模块的
-    （测试会打桩 `web.app._sign_window` / `web.app.edge_config`，窗口打桩经
-    `sign_window_bounds` 现取后穿透）。
-    """
-    # file_env 现读传入：周末门判定走引擎同一份解析，且必须读到 web 的这份 .env
-    #（web 进程环境里未必有这些键——口径见 _day_off_reason 的说明）。
-    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now,
-                                   file_env=read_env(ENV_FILE))
+# 系统信息 `sign_status` 已随批 3-d 搬入 web/services/signstatus.py：路由与测试直取
+# 该模块；`.env` 路径与读取器经该模块的 configure 登记。
 
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
 # `_audit_alert_facts`、变更与审核邮件 `_change_mail` / `_review_reject_mail` 及随族常量）
 # 实现见 web/services/notify_mail.py，此处以导入区
 # 再导出保持 m.* 可达；`_last_cleanup_text` / `_alert_mail_recipients` 的 m.* 名字面已随
-# W0 删除（零读者）。`send_notification` 与 `_push_ever_configured` 需要注入本模块
-# 持有的名字，故在下方转发。
-
-
-def send_notification(title, content, urgent=False, force=False, ledger=None):
-    """发送告警通知（A 线邮件 + Webhook 双通道，实现见 web/services/notify_mail.py）。
-
-    同类型告警邮件节流 `_mail_alert_due` 按调用时刻现取本模块的（测试会打桩
-    `webapp._mail_alert_due`，服务层另持绑定会让这个桩静默失效）。
-    """
-    return _notify_mail.send_notification(
-        title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
+# W0 删除（零读者）。`send_notification` 已随批 3-d 去壳：读者直取该模块，
+# `_mail_alert_due` 经该模块的 configure 登记。`_push_ever_configured` 仍留本模块转发。
 
 
 def _audit_unhealthy_log(health):
@@ -1151,7 +936,7 @@ def _alert_audit_unhealthy(health):
                    "或存在未留痕的管理操作。")
         advice = ["立即核查审计链与库外锚点",
                   "确认之前不要依赖审计记录做处置结论"]
-    delivered = send_notification(
+    delivered = _notify_mail.send_notification(
         label,
         mail_layout.Mail(
             summary=summary,
@@ -1223,7 +1008,8 @@ def _send_channel_health_report(force=False):
     """
     return _channel_health._send_channel_health_report(
         force, alert_channel_status=_alert_channel_status,
-        status_lines=_channel_status_lines, send_notification=send_notification)
+        status_lines=_channel_status_lines,
+        send_notification=_notify_mail.send_notification)
 
 
 # 告警通道健康报告的例行播报日（0=周一）。日报的价值在"通道被关掉这件事看得见"，
@@ -1378,51 +1164,11 @@ def _channel_health_report_due(status=None, since=None, unconfigured_hm=None):
 # `_mail_alert_due` 与触顶通知 `_notify_capacity_once`，含去重表 `_capacity_alerts`、
 # 节流表 `_mail_alert_ts` 与缺省窗口常量）实现见
 # web/services/capacity.py，此处以导入区再导出保持 m.* 可达；`_capacity_audit_count` /
-# `_mail_alert_lock` 的 m.* 名字面已随 W0 删除（零读者）。需要现取本模块名字
-# （`.env` 路径与读取器、缺省上限、窗口/裁剪口径、告警出口）的入口在下方转发。
-def _capacity_estimate(gap=0):
-    """按当前窗口与账号间隔预估可容纳账号数（实现见 web/services/capacity.py）。
-
-    窗口解析器与掐头去尾口径按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`
-    与 `web.app.edge_config`），故转发必须现取后传入。
-
-    `env` 传**生效配置层**（进程环境为底、`.env` 覆盖，与 run.sh 起引擎前的 export
-    同一优先级）：web 进程从不把 `.env` 装进环境，avg/开关若按 os.environ 读而
-    gap 按 `.env` 读，一次估算就跨两层、按缺省 avg 高估容量（MF-93）。
-    """
-    return _capacity._capacity_estimate(
-        gap, sign_window=_sign_window, edge_config=edge_config,
-        env={**os.environ, **read_env(ENV_FILE)})
-
-
-def _accounts_at_capacity(extra_accounts=0):
-    """账号配额判定（实现见 web/services/capacity.py）。
-
-    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
-    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
-    """
-    return _capacity._accounts_at_capacity(
-        extra_accounts, env_file=ENV_FILE, load_env_int=load_env_int,
-        max_accounts_default=DEFAULT_MAX_ACCOUNTS)
-
-
-def _registration_paused():
-    """注册是否处于暂停状态（实现见 web/services/capacity.py）。
-
-    `.env` 路径与宽松读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
-    `read_env`），故转发必须现取后传入。
-    """
-    return _capacity._registration_paused(ENV_FILE, read_env)
-
-
-def _users_at_capacity():
-    """用户配额判定（实现见 web/services/capacity.py）。
-
-    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
-    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
-    """
-    return _capacity._users_at_capacity(
-        env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
+# `_mail_alert_lock` 的 m.* 名字面已随 W0 删除（零读者）。`_mail_alert_due` 仍留本模块
+# （测试按属性打桩的既有面），它直调服务层真源。
+# 容量判定与预估、触顶通知的 5 个转发包装已随批 3-d 删除：
+# `_capacity_estimate` / `_accounts_at_capacity` / `_registration_paused` /
+# `_users_at_capacity` / `_notify_capacity_once` 的读者直取 web/services/capacity.py。
 
 
 def _mail_alert_due(title, level=None):
@@ -1436,43 +1182,95 @@ def _mail_alert_due(title, level=None):
         title, ENV_FILE, load_env_int, level=level)
 
 
-def _notify_capacity_once(kind, limit, label):
-    """容量触顶通知（实现见 web/services/capacity.py）。
+# 容量触顶通知 `_notify_capacity_once` 已随批 3-d 去壳：读者直取
+# web/services/capacity.py，告警出口经该模块的 configure 登记。
 
-    告警出口按调用时刻现取本模块的 `send_notification`（测试会打桩
-    `webapp.send_notification`），服务层另持绑定会让那些桩静默失效。
+
+# ---------------------------------------------------------------------------
+# 服务层宿主依赖登记（批 3-c S3 起；批 3-d 扩到本批搬走的各域）
+# ---------------------------------------------------------------------------
+# 批 3-d 拆除 `web/app.py` 的转发包装后，服务层不再收显式注入参数，改由本段登记
+# lambda。登记的是 lambda 而不是值：调用时刻才解析，故 `--env-file` 改写 `ENV_FILE`、
+# 测试赋值与打桩都仍然生效。
+def _register_host_hooks():
+    """把本模块持有的依赖登记给各服务模块（宿主接缝，见上方说明）。
+
+    **为何是函数而不是纯模块级调用**：测试会用 importlib 另载一份 `web/app.py` 副本，
+    再靠重调本函数把登记指回该副本（`tests/test_wall_direct_reads.py` 的
+    `HookRegistrationContractTest`）。写成函数，登记只有一份定义，不会在测试里
+    抄出第二份会漂移的名单。
     """
-    return _capacity._notify_capacity_once(
-        kind, limit, label, send_notification=send_notification)
+    _signstatus.configure(
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+        load_env_int=lambda: load_env_int,
+    )
+    _render.configure(
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+        repo_root=lambda: _REPO_ROOT,
+        doc_cache=lambda: _doc_cache,
+        site_description_default=lambda: SITE_DESCRIPTION_DEFAULT,
+    )
+    _notify_mail.configure(
+        mail_alert_due=lambda: _mail_alert_due,
+    )
+    _env_io_svc.configure(
+        atomic_write=lambda: _atomic_write,
+        env_write_refuse_audit=lambda: _env_write_refuse_audit,
+        env_flag=lambda: _env_flag,
+    )
+    _logs_svc.configure(
+        state_dir=lambda: STATE_DIR,
+        log_file=lambda: LOG_FILE,
+        tail_lines=lambda: _tail_lines,
+    )
+    _manual_sign.configure(
+        log_path_for=lambda: _logs_svc.log_path_for,
+    )
+    _executor_env.configure(
+        env_file=lambda: ENV_FILE,
+        write_env_batch=lambda: _env_io_svc.write_env_batch,
+        sign_window=lambda: _signstatus._sign_window,
+    )
+    _measure.configure(
+        state_dir=lambda: STATE_DIR,
+        atomic_write=lambda: _atomic_write,
+    )
+    _capacity.configure(
+        env_file=lambda: ENV_FILE,
+        load_env_int=lambda: load_env_int,
+        read_env=lambda: read_env,
+        sign_window=lambda: _signstatus._sign_window,
+        edge_config=lambda: _render.edge_config,
+        send_notification=lambda: _notify_mail.send_notification,
+    )
+    # 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
+    # `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
+    # `_verify_attempt_allowed` / `_verify_sem`）都在本模块**之后**才定义，import 区里
+    # 它们还不存在。登记的是 lambda 而不是值：调用时刻才解析，故后续赋值
+    # （`--env-file` 改写 `ENV_FILE`、create_app 回写 `SESSION_ABS_TTL_SECONDS`）与测试打桩
+    # 都仍然生效——这正是搬到服务层之前那批转发包装提供的性质，本段是它的等价替代。
+    #
+    # 未登记即 fail-closed（`web.security._host` / `web.services.verify_queue._host` 抛
+    # RuntimeError 并点名键）。不静默回退默认值：静默回退会让"忘记登记"表现为
+    # "管理员永远登不进"或"校验永远放行"，属最坏的假绿方向。
+    _security.configure(
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+        write_env_key=lambda: write_env_key,
+        count_env_key_lines=lambda: _count_env_key_lines,
+        send_notification=lambda: _notify_mail.send_notification,
+    )
+    _verify_queue.configure(
+        seat=lambda: _verify_sem,
+        attempt_allowed=lambda: _verify_attempt_allowed,
+        verify_clean=lambda: _verify_account_clean,
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+    )
 
-
-# ---------------------------------------------------------------------------
-# 服务层宿主依赖登记（批 3-c S3）
-# ---------------------------------------------------------------------------
-# 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
-# `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
-# `_verify_attempt_allowed` / `_verify_sem`）都在本模块**之后**才定义，import 区里
-# 它们还不存在。登记的是 lambda 而不是值：调用时刻才解析，故后续赋值
-# （`--env-file` 改写 `ENV_FILE`、create_app 回写 `SESSION_ABS_TTL_SECONDS`）与测试打桩
-# 都仍然生效——这正是搬到服务层之前那批转发包装提供的性质，本段是它的等价替代。
-#
-# 未登记即 fail-closed（`web.security._host` / `web.services.verify_queue._host` 抛
-# RuntimeError 并点名键）。不静默回退默认值：静默回退会让"忘记登记"表现为
-# "管理员永远登不进"或"校验永远放行"，属最坏的假绿方向。
-_security.configure(
-    env_file=lambda: ENV_FILE,
-    read_env=lambda: read_env,
-    write_env_key=lambda: write_env_key,
-    count_env_key_lines=lambda: _count_env_key_lines,
-    send_notification=lambda: send_notification,
-)
-_verify_queue.configure(
-    seat=lambda: _verify_sem,
-    attempt_allowed=lambda: _verify_attempt_allowed,
-    verify_clean=lambda: _verify_account_clean,
-    env_file=lambda: ENV_FILE,
-    read_env=lambda: read_env,
-)
+_register_host_hooks()
 
 
 
@@ -1501,7 +1299,8 @@ def _report_env_key_collisions(env_path):
     if _env_collision_reported:
         return
     _env_collision_reported = True
-    return _env_io_svc._report_env_key_collisions(env_path, send_notification)
+    return _env_io_svc._report_env_key_collisions(
+        env_path, _notify_mail.send_notification)
 
 
 # ---------------------------------------------------------------------------
@@ -2103,10 +1902,10 @@ def create_app(host=None):
         base = dict(
             web_version=WEB_VERSION,
             app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            site_description=site_description(),
+            icp_info=_render.icp_info(),
+            police_info=_render.police_info(),
+            police_link=_render.police_link(),
+            site_description=_render.site_description(),
             err_code=code,
             err_title=title,
             err_message=message,
@@ -2384,7 +2183,7 @@ def create_app(host=None):
         if cnt == SENSITIVE_PW_FAIL_NOTIFY:
             # 告警按 `== 阈值`只发一条（同一窗口不刷屏，运维口径）。判据不能换成"是否已
             # 布防"：冷却可被 .env 配成 0，那种部署下这就是唯一的管理员侧信号。
-            send_notification(
+            _notify_mail.send_notification(
                 "高危操作二次鉴权失败告警",
                 mail_layout.Mail(
                     summary=f"IP {_nl_safe(key[0])} 对「{action}」连续 {cnt} 次口令验证失败。",
@@ -2762,7 +2561,7 @@ def create_app(host=None):
             # 绝不能让它看起来像一次通过。
             logger.error("审计链每日校验/锚点写入失败: %s", e)
             with contextlib.suppress(Exception):
-                send_notification(
+                _notify_mail.send_notification(
                     "审计链自检未执行",
                     mail_layout.Mail(
                         summary="审计可追溯性每日自检未能执行（不等于通过）："

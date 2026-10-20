@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web.services import executor_env as _executor_env  # noqa: E402
 from web.services import signstatus as _signstatus  # noqa: E402
 from yiban import egress  # noqa: E402
 from yiban.core import clock  # noqa: E402
@@ -1350,7 +1351,7 @@ class MeasureEndpointTest(_WebBase):
         self.assertEqual(body["next_allowed_in"], 0, "本次已实测，不必再等")
         # 容量 = 文档公式（有效窗口 ÷ 单账号周期），不复用别的口径；
         # 建议值含余量：int(容量 × 2/3) 且严格小于容量
-        win_sec = self.webapp._executors_window().full_sec()
+        win_sec = _executor_env._executors_window().full_sec()
         expected = (win_sec - 1) // (1 + self.DOC_GAP) + 1
         self.assertEqual(body["per_executor_capacity"], expected)
         self.assertEqual(body["recommended_per_executor"], int(expected * 2 / 3))

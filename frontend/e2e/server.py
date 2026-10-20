@@ -37,6 +37,10 @@ for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
 # 导入必须在本文件把 ROOT 加进 sys.path 之后：直接跑 `python e2e/server.py` 时
 # `yiban` 不在默认导入路径上。
 from yiban.core import clock  # noqa: E402
+# 日志路径直接取服务层真源：批 3-d 已删除 `web/app.py` 的 `log_path_for` 转发包装，
+# 旧写法 `webapp.log_path_for(...)` 会让本启动器在建种子时 `AttributeError`（pytest
+# 全绿、CI 不跑 Playwright ⇒ 静默断点）。宿主 hook 由 `webapp` 载入时登记，调用时刻已就绪。
+from web.services import logs as _logs_svc  # noqa: E402
 
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
@@ -90,7 +94,7 @@ def _seed_log_file(webapp):
     probe = _probe_day()
 
     def write_day(date_str: str, marker: str) -> None:
-        path = Path(webapp.log_path_for(date_str))
+        path = Path(_logs_svc.log_path_for(date_str))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "\n".join([
