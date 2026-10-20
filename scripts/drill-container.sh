@@ -208,6 +208,17 @@ done
 [ -f "$ROOT/yiban/adapters/protocol_fake/__init__.py" ] || pre "缺 yiban/adapters/protocol_fake/__init__.py"
 command -v docker >/dev/null || pre "docker 不可用"
 [ -x "$HOST_PYTHON" ] || pre "宿主解释器不可用：$HOST_PYTHON"
+# 宿主脚本的路径事实（业务日 / 按天日志名）与宿主入口同源：scripts/lib/host_paths.sh。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+PY="$HOST_PYTHON"
+# 容器形态的日志基名（compose 的 YIBAN_LOG_FILE=/data/logs/sign.log；宿主侧 bind 到
+# ./data/logs）。只在本脚本内使用，不导出。
+YIBAN_LOG_FILE="data/logs/sign.log"
+# 假上游轨迹的固定基名唯一在 protocol_fake（census-P2-fake-server）：容器里写、
+# 宿主读，两端必须同名。取不到即无可依据的落点，直接拒绝开跑。
+MOCK_TRACE_BASENAME="$("$HOST_PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); from yiban.adapters.protocol_fake import TRACE_BASENAME; print(TRACE_BASENAME)' "$ROOT")" \
+  || pre "无法从 protocol_fake 取得轨迹基名（TRACE_BASENAME）"
+[ -n "$MOCK_TRACE_BASENAME" ] || pre "protocol_fake.TRACE_BASENAME 为空"
 command -v openssl >/dev/null || pre "openssl 不可用"
 # 调度器首签闩锁是无上界判定（容器被强制 TZ=Asia/Shanghai），本机时钟未过 06:31
 # 则整轮永不触发。判据必须按**北京钟**取，不能取宿主本地钟（P12-24）。
@@ -432,7 +443,7 @@ docker cp yiban/adapters/protocol_fake/__init__.py "$CTR:/tmp/fake_yiban_server.
 docker exec -d "$CTR" python3 /tmp/fake_yiban_server.py \
   --host 127.0.0.1 --port 443 --no-ipv6 \
   --cert /data/loadtest/ca/server.pem --key /data/loadtest/ca/server.key \
-  --log /data/logs/mock.jsonl --ready-file /data/mock.ready
+  --log "/data/logs/$MOCK_TRACE_BASENAME" --ready-file /data/mock.ready
 for _ in $(seq 1 30); do
   if [ -f data/mock.ready ]; then break; fi
   sleep 1
@@ -511,13 +522,14 @@ note "web=200（容器内回环）、sched 进程在位、RestartCount=0、心�
 
 # ---- C6 整轮签到 -----------------------------------------------------------
 step "C6 整轮签到（等窗口开闸 → 真签到链 → 汇总）"
-TODAY="$(TZ=Asia/Shanghai date +%F)"
+TODAY="$(business_day)"
+DAY_LOG="$(yiban_day_log_file data/state)"
 LOG=""
 DEADLINE=$(( $(date +%s) + TIMEOUT_SEC ))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  if [ -f "data/logs/sign-$TODAY.log" ] \
-     && grep -qF '==== 签到汇总' "data/logs/sign-$TODAY.log" 2>/dev/null; then
-    LOG="data/logs/sign-$TODAY.log"
+  if [ -f "$DAY_LOG" ] \
+     && grep -qF '==== 签到汇总' "$DAY_LOG" 2>/dev/null; then
+    LOG="$DAY_LOG"
     break
   fi
   sleep 5
@@ -533,7 +545,7 @@ note "签到整轮完成：✅ $ACCOUNTS 成功，❌ 0 失败"
 
 # ---- C7 mock 轨迹 + 宿主零副作用 + 清理对账 --------------------------------
 step "C7 mock 请求轨迹 / 宿主零副作用 / 清理对账"
-cp -f data/logs/mock.jsonl "$EV/c7-mock.jsonl" 2>/dev/null || true
+cp -f "data/logs/$MOCK_TRACE_BASENAME" "$EV/c7-mock.jsonl" 2>/dev/null || true
 if ! "$HOST_PYTHON" - "$ACCOUNTS" "$EV/c7-mock.jsonl" > "$EV/c7-mock-trace.txt" 2>&1 <<'PY'
 import json, sys
 from collections import Counter

@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import random
 import socket
 import socketserver
@@ -201,6 +202,18 @@ class MockConfig:
         if cfg["fail_stage"] not in FAIL_STAGES:
             cfg["fail_stage"] = "none"
         return cfg
+
+
+#: 逐请求 JSONL 轨迹的**固定基名**（census-P2-fake-server）。
+#: 调用方（靶场驱动、容器演练）一律引用它，不各写一份字面量：名字分散时
+#: "清理哪些文件""校验读哪个文件"两端无从对齐，改一处必漏一处。
+TRACE_BASENAME = "mock.jsonl"
+
+
+def trace_path(directory):
+    """缺省落点：`<directory>/mock.jsonl`（调用方仍可显式给 `--log` 覆盖）。"""
+    return os.path.join(directory, TRACE_BASENAME)
+
 
 class MockState:
     """跨请求共享计数（线程安全）。"""

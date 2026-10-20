@@ -1014,7 +1014,7 @@ def _read_sign_state(state_dir, day):
     "无记录"与"这一日跳过"，以便把扫描账目记准。**不得**读 `sign-daily-<day>.json`
     ——那是 `{phone: 符号}` 的符号表，没有 `status`/`time`。
     """
-    path = os.path.join(state_dir, f"sign-state-{day}.json")
+    path = env_io.sign_state_path(day, state_dir=state_dir)
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
