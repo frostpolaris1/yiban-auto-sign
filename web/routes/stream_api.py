@@ -63,8 +63,10 @@ import time
 
 from flask import Response, jsonify, request, session, stream_with_context
 
+from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
+from web.routes import session_abs_ttl as _session_abs_ttl
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
 from web.services import accounts_data as _accounts_data
@@ -208,7 +210,7 @@ def _stream_generator(m, hub, cfg, last_id, sub, phones):
                 return
             if cfg["recheck_sec"] and now - last_check >= cfg["recheck_sec"]:
                 last_check = now
-                if m._current_role() is None:
+                if _security._current_role(_session_abs_ttl()) is None:
                     yield _run_stream.sse_frame("end", {"reason": "session_expired"})
                     return
     finally:
@@ -237,7 +239,7 @@ def api_stream_progress():
     m = _appmod()
     if not _same_origin(m):
         return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看实时进度流"}), 403
     cfg = _run_stream.stream_config(m.ENV_FILE, _env_io_svc.read_env)
     if not cfg["enabled"]:
@@ -270,7 +272,7 @@ def api_stream_my_signin():
     m = _appmod()
     if not _same_origin(m):
         return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
-    if m._current_role() is None:
+    if _security._current_role(_session_abs_ttl()) is None:
         return jsonify({"error": "未登录"}), 401
     cfg = _run_stream.stream_config(m.ENV_FILE, _env_io_svc.read_env)
     if not cfg["enabled"]:

@@ -43,6 +43,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
 # 打桩必须打在**真正持有并调用该名字**的模块上，否则会静默失效。
+from web import security as _security  # noqa: E402
 from web.services import limits as _limits  # noqa: E402
 from yiban.adapters.config import account_crypto  # noqa: E402
 from yiban.adapters.notifier import notify  # noqa: E402
@@ -1376,7 +1377,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         # 的 verify_admin 用该模块自己的绑定，app 侧打桩到不了它）。本 block 内
         # verify_admin 已被打成 False 短路内置路径，security 侧这一桩是防"日后去掉
         # verify_admin 桩"时真实 scrypt 悄悄回流的兜底。
-        with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
+        with mock.patch.object(_security, "verify_admin", return_value=False), \
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
@@ -1401,7 +1402,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         long_a, long_b = "a" * 200, "a" * 128 + "b" * 72
         # 两份 check_password_hash 绑定同 test_m8_login_alert_routed_to_loginfail_ledger。
-        with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
+        with mock.patch.object(_security, "verify_admin", return_value=False), \
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \

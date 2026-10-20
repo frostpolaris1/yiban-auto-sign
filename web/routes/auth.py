@@ -94,7 +94,7 @@ def api_login():
     auth_source = None
     recoverable = False
     # 1) 内置管理员（.env，兜底超级管理员）
-    if m.verify_admin(username, password):
+    if _security.verify_admin(username, password):
         role = "admin"
         auth_source = "builtin"
         pw_version = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)  # 改密后旧会话失效
@@ -165,7 +165,7 @@ def api_login():
         # users 行可存，它的"那一行"就是 .env：同一条吊销面落在
         # YIBAN_ADMIN_SID 上（只在登录/登出/改密/追回时写，频率极低）。
         if auth_source == "builtin":
-            session["sid"] = m._issue_admin_sid(m.ENV_FILE)
+            session["sid"] = _security._issue_admin_sid()
         elif auth_source == "user":
             sid = secrets.token_hex(16)
             session["sid"] = sid
@@ -271,7 +271,7 @@ def api_register():
     # 内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用。
     # 与"该邮箱已注册"同文案、同补一次 dummy scrypt：独有文案且排在口令散列之前
     # 等于给匿名者一个零成本的超管邮箱探针（注册面 = 公开面）。
-    if email.strip().lower() == m._builtin_admin_email().strip().lower():
+    if email.strip().lower() == _security._builtin_admin_email().strip().lower():
         _security._constant_time_dummy(password)
         return jsonify({"error": "该邮箱已注册"}), 400
     # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
@@ -359,7 +359,7 @@ def api_logout():
     if session.get("auth_source") == "builtin":
         # 必须在 session.clear() 之前判：清空后取不到 auth_source
         try:
-            m._issue_admin_sid(m.ENV_FILE)
+            _security._issue_admin_sid()
         except Exception as e:
             # 与注册用户分支同口径：失败意味着"被盗 cookie 在登出后仍有效"这一
             # 服务端吊销机制未生效，而对外仍返回 {"ok": true}，只能靠日志追。

@@ -125,7 +125,6 @@ from web.security import (  # noqa: E402
     _bump_login_failure,  # noqa: F401
     _bump_window_count,
     _client_ip,
-    _constant_time_dummy,
     _forwarded_trust_enabled,
     _ip_store_trim,
     _is_loopback_addr,
@@ -272,10 +271,10 @@ from web.services.verify_queue import (  # noqa: E402
     # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
     VERIFY_JOBS_MAX_PENDING,  # noqa: F401
     VerifyGateBusy,  # noqa: F401
-    # 面外读者 1 处（批 3-b 现量核实）：`web/services/device_refresh.py` 的
-    # `refresh_account_device(m, …)` 经宿主参数 `m` 在 except 子句里读本名。
-    # 该读法不在 routes/tests 扫描面内，故删名清单**不收**它（删了会让 429 分支变 500）。
-    VerifyQuotaExceeded,  # noqa: F401
+    # 批 3-c S3：`VerifyQuotaExceeded` 的墙名已删。批 3-b 时它的面外读者是
+    # `web/services/device_refresh.py` 经宿主参数 `m` 在 except 子句里读；该文件
+    # 本批改为直取 `web.services.verify_queue.VerifyQuotaExceeded` 后本名零读者，
+    # 按 W0 判据②（无零读者转发名）删名——不是给它加豁免。
     _reclaim_stale_verify_jobs,
     _reject_account,
     _start_verify_job,  # noqa: F401
@@ -536,10 +535,8 @@ READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的
 # 三个阈值与失败特征词本体（VERIFY_FAIL_MAX / VERIFY_FAIL_WINDOW /
 # VERIFY_FAIL_COOLDOWN / VERIFY_FAIL_AUTH_KEYWORDS）随安全域搬入 web/security.py
 # （判定在 `_record_verify_failure`），此处以导入区再导出保持 m.* 可达。
-VERIFY_FAIL_COOLDOWN_MSG = (
-    "该手机号验证失败次数过多，已被临时限制验证，请约 10 分钟后再试；"
-    "连续密码错误会导致易班账号被锁定，如密码有误请先在易班 APP 重置。"
-)
+# 批 3-c S3：`VERIFY_FAIL_COOLDOWN_MSG` / `VERIFY_BUSY_MSG` 两条文案已搬入
+# web/services/verify_queue.py（与消费点同处一模块：429/503 的响应体就在那里生成）。
 
 # 外呼校验的**全局**并发上限：上面两条配额都是「按会话用户」与
 # 「按手机号」，覆盖不到"多个账号同时校验"这个维度。实测 8 个并发校验即占满
@@ -547,7 +544,6 @@ VERIFY_FAIL_COOLDOWN_MSG = (
 # 这里限制同时在跑的外呼条数，**超出立即失败而非排队**——排队会把线程继续钉住，
 # 正是要避免的情形。
 VERIFY_CONCURRENCY_MAX = 2
-VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 
 # 异步校验任务（A4 第二段）：实现已收进 yiban/attempt/jobs.py（调度核心行为）。
 # 待办（pending + running）上限说明：每个任务占一个后台线程，而外呼席位只有
@@ -887,59 +883,24 @@ def ensure_secret_key(env_path):
                                          _env_write_refuse_audit)
 
 
-# 内置主管理员（.env 账号）的会话凭据键名与会话凭据族（_new_admin_sid /
-# _issue_admin_sid / _admin_session_facts）实现见 web/security.py；键名以导入区再导出
-# 保持 m.ADMIN_SID_ENV_KEY 可达（改密路径经 m.* 取用它写 .env）。
-def _issue_admin_sid(env_path):
-    """换发内置主管理员会话凭据（实现见 web/security.py）。
+# 内置主管理员（.env 账号）的会话凭据族（_new_admin_sid / _issue_admin_sid /
+# _admin_session_facts / _builtin_admin_email / _is_builtin_admin_session /
+# _effective_role / _current_role / verify_admin / _builtin_admin_loginable）实现见
+# web/security.py；键名以导入区再导出保持 m.ADMIN_SID_ENV_KEY 可达（改密路径经 m.*
+# 取用它写 .env）。
+#
+# 批 3-c S3 去壳：这 9 个转发包装已删，读者直取 web/security.py 本身。它们原先存在的
+# 唯一理由就是"按调用时刻现取本模块的 ENV_FILE / read_env / _count_env_key_lines /
+# send_notification"——该接缝已由 web/security.configure(...) 承担（登记 lambda，
+# 见下方登记区与 web/security.py 的"_host"说明）。于是本模块不再需要这层包装，
+# 而测试打在 web.app 上的 read_env / write_env_key 打桩仍经 _hooks 生效。
+def _admin_ttl_seconds():
+    """会话绝对期秒数（供 web/security._current_role 按调用时刻取用）。
 
-    `.env` 写路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`，
-    `--env-file` 也会改写 `ENV_FILE`）——服务层另持一份绑定会让改写静默失效。
+    单独成函数而不是直接登记 `SESSION_ABS_TTL_SECONDS` 的值：后者在 create_app 里按
+    `YIBAN_SESSION_ABS_DAYS` 重新解析后回写模块全局，登记成值会固化启动前的默认值。
     """
-    return _security._issue_admin_sid(env_path, write_env_key, read_env)
-
-
-def _admin_session_facts(env_path):
-    """内置主管理员的两项会话吊销凭据 (口令版本, sid)（实现见 web/security.py）。
-
-    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。
-    """
-    return _security._admin_session_facts(env_path, read_env)
-
-
-def _builtin_admin_email():
-    """内置管理员（.env）标识（小写）（实现见 web/security.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的（测试与 `--env-file` 都会改写）。
-    """
-    return _security._builtin_admin_email(ENV_FILE, read_env)
-
-
-def _is_builtin_admin_session():
-    """当前会话是否确实是内置管理员（.env）登录（实现见 web/security.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的；本函数与 `_effective_role` 都在
-    请求期调用（盘点确认无调度线程/启动路径调用）。
-    """
-    return _security._is_builtin_admin_session(ENV_FILE, read_env)
-
-
-def _effective_role(username, pw_version=None):
-    """实时角色判定（实现见 web/security.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的。注册用户侧按 `yiban.store.db` 的
-    真源查表（本模块的 `db` 即那一份）。
-    """
-    return _security._effective_role(username, pw_version, ENV_FILE, read_env)
-
-
-def _current_role():
-    """当前登录会话的实时角色（实现见 web/security.py）。
-
-    会话绝对期按调用时刻现取本模块的 `SESSION_ABS_TTL_SECONDS`：它在 create_app 里
-    按 `YIBAN_SESSION_ABS_DAYS` 重新解析后回写模块全局，转发必须取到新值。
-    """
-    return _security._current_role(SESSION_ABS_TTL_SECONDS, ENV_FILE, read_env)
+    return SESSION_ABS_TTL_SECONDS
 
 
 def migrate_admin_password_to_hash(env_path):
@@ -977,13 +938,13 @@ _purge_loop_lock = threading.Lock()
 
 
 # IP 计数表的回收与窗口/失败计数（`_ip_store_trim` / `_bump_window_count` /
-# `_bump_login_failure`）、敏感口令门禁档位与旋钮（`_pw_gate_tier` /
-# `_sensitive_gate_params`）、账号校验配额与冷却（`_verify_attempt_allowed` /
-# `_verify_fail_cooldown_remaining` / `_record_verify_failure`）实现见 web/security.py，
-# 此处以导入区再导出保持 m.* 可达（路由在 m._rate_lock 下调用这些计数助手，同一把锁
-# 真源在 web/services/locks.py）。
-# 两个解析器要注入本模块的读取器（`_pw_gate_tier` 注入 `read_env`、
-# `_sensitive_gate_params` 注入 `load_env_int`），故各自带一个转发包装见下方。
+# `_bump_login_failure`）、敏感口令门禁旋钮（`_sensitive_gate_params`）、账号校验配额与
+# 冷却（`_verify_attempt_allowed` / `_verify_fail_cooldown_remaining` /
+# `_record_verify_failure`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达
+# （路由在 m._rate_lock 下调用这些计数助手，同一把锁真源在 web/services/locks.py）。
+# 批 3-c S3：`_pw_gate_tier` 已去壳（读者直取 web/security.py，`.env` 路径与读取器
+# 经该模块的 configure 登记）；`_sensitive_gate_params` 仍留转发包装——它注入的是
+# `load_env_int`，属 app 状态注入包装类（f），不在本片范围。
 
 
 def _read_audit_row_due(cnt):
@@ -1007,15 +968,6 @@ def _sensitive_gate_params(env_path):
     return _security._sensitive_gate_params(env_path, load_env_int)
 
 
-def _pw_gate_tier(env_path):
-    """敏感口令门禁档位（`YIBAN_PW_GATE`）的唯一解析处（实现见 web/security.py）。
-
-    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。路由侧
-    需要它判断"非 full 档才补发事后告警"，故在模块级留一个可 `m.*` 取用的名字。
-    """
-    return _security._pw_gate_tier(env_path, read_env)
-
-
 # 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
 # 退出码原因 `_manual_sign_failure_reason`）实现见 web/services/manual_sign.py，此处以
 # 导入区再导出保持 m.* 可达；退出码表 `_SIGNIN_EXIT_REASONS` 的 m.* 名字面已随 W0 删除。
@@ -1033,9 +985,10 @@ def _log_manual_sign_exit(phone_label, returncode):
 # `_env_write_lock` 是纯再导出（跨进程写锁沿用 yiban.infra.env_lock 真源）；
 # `_parse_announcement_meta` 与其分隔符/时刻格式常量同在导入区再导出。
 
-# 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告**发布**时同步更新
-_changelog_cache = [None]  # [文本]
-_announcement_cache = [None]  # [已发布公告文本]（草稿刻意不进缓存：它要按会话现读）
+# 启动缓存（更新日志全文与公告已发布文本）已随批 3-c S2 搬入
+# web/services/startup_cache.py：读者 `web/routes/settings_api.py` 直取新家，
+# 本模块不再持有这两个名字。缓存仍是**进程内**对象（web 固定 `-w 1`）；
+# 两条语义不变：公告草稿刻意不进缓存（按会话现读），更新日志启动后缓存、重启失效。
 
 # 全站公告双人发布的四个 .env 键名（`ANNOUNCEMENT_KEY` / `ANNOUNCEMENT_DRAFT_KEY` /
 # `ANNOUNCEMENT_DRAFT_META_KEY` / `ANNOUNCEMENT_PUBLISHED_META_KEY`）已随批 3-b
@@ -1088,20 +1041,9 @@ def _estimate_slot(phone):
 _verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
 
 
-def run_verify_with_gate(clean, username, limits):
-    """执行一次外呼校验（实现见 web/services/verify_queue.py），注入本模块现取的席位。"""
-    return _verify_queue.run_verify_with_gate(
-        clean, username, limits, _verify_sem, _verify_attempt_allowed, _verify_account_clean)
-
-
-def run_gated_call(action, username, limits):
-    """在同一个外呼闸门（席位 + 每用户配额）下执行任意真实外呼（实现见 verify_queue）。
-
-    设备登记补全走它：两条外呼同为一次真实登录，闸门必须与账号验证同源。
-    """
-    return _verify_queue.run_gated_call(
-        action, username, limits, _verify_sem, _verify_attempt_allowed)
-
+# 批 3-c S3：`run_verify_with_gate` / `run_gated_call` 的转发包装已删（读者直取
+# web/services/verify_queue.py 的 `run_verify_with_gate` / `run_gated_call`）。席位、
+# 配额判定与只读验证改由 `verify_queue.configure(...)` 登记（见下方登记区）。
 
 # 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
 verify_jobs.configure(
@@ -1114,21 +1056,10 @@ verify_jobs.configure(
 )
 
 
-def verify_async_enabled():
-    """在线校验异步开关（实现见 web/services/verify_queue.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`，
-    也会赋值 `ENV_FILE`）——本函数须用**本进程的** ENV_FILE，它可被 --env-file 改写。
-    """
-    return _verify_queue.verify_async_enabled(read_env, ENV_FILE)
-
-
-def _account_verify_enabled():
-    """注册/添加账号时是否做即时验证（实现见 web/services/verify_queue.py）。
-
-    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。
-    """
-    return _verify_queue._account_verify_enabled(read_env, ENV_FILE)
+# 批 3-c S3：`verify_async_enabled` / `_account_verify_enabled` 的转发包装已删，
+# 读者直取 web/services/verify_queue.py 本身。它们原先存在的唯一理由同上——按调用
+# 时刻现取本模块的 `.env` 路径与读取器；该接缝现由 `verify_queue.configure(...)`
+# 承担（登记 lambda，见下方登记区）。
 
 
 # ---------------------------------------------------------------------------
@@ -1141,26 +1072,6 @@ def check_admin_configured():
     `--env-file` 也会改写 `ENV_FILE`）。
     """
     return _security.check_admin_configured(ENV_FILE, read_env)
-
-
-def _builtin_admin_loginable():
-    """内置（.env）主管理员此刻是否真的进得来（实现见 web/security.py）。
-
-    判据与 `verify_admin` 的三道 fail-closed 逐条对齐，一致性由用例对拍（防两侧漂移）。
-    `.env` 路径、读取器与键行计数按调用时刻现取本模块的。
-    """
-    return _security._builtin_admin_loginable(ENV_FILE, read_env, _count_env_key_lines)
-
-
-def verify_admin(username, password):
-    """校验管理员账号（实现见 web/security.py；每次登录实时读 .env，修改立即生效）。
-
-    `.env` 路径与读取器、键行计数、告警出口、时延拉平都按调用时刻现取本模块的
-    （这些名字会被测试打桩或赋值改写，服务层另持绑定会让打桩静默失效）。
-    """
-    return _security.verify_admin(
-        username, password, ENV_FILE, read_env, _count_env_key_lines,
-        send_notification, _constant_time_dummy)
 
 
 # ---------------------------------------------------------------------------
@@ -1533,6 +1444,36 @@ def _notify_capacity_once(kind, limit, label):
     """
     return _capacity._notify_capacity_once(
         kind, limit, label, send_notification=send_notification)
+
+
+# ---------------------------------------------------------------------------
+# 服务层宿主依赖登记（批 3-c S3）
+# ---------------------------------------------------------------------------
+# 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
+# `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
+# `_verify_attempt_allowed` / `_verify_sem`）都在本模块**之后**才定义，import 区里
+# 它们还不存在。登记的是 lambda 而不是值：调用时刻才解析，故后续赋值
+# （`--env-file` 改写 `ENV_FILE`、create_app 回写 `SESSION_ABS_TTL_SECONDS`）与测试打桩
+# 都仍然生效——这正是搬到服务层之前那批转发包装提供的性质，本段是它的等价替代。
+#
+# 未登记即 fail-closed（`web.security._host` / `web.services.verify_queue._host` 抛
+# RuntimeError 并点名键）。不静默回退默认值：静默回退会让"忘记登记"表现为
+# "管理员永远登不进"或"校验永远放行"，属最坏的假绿方向。
+_security.configure(
+    env_file=lambda: ENV_FILE,
+    read_env=lambda: read_env,
+    write_env_key=lambda: write_env_key,
+    count_env_key_lines=lambda: _count_env_key_lines,
+    send_notification=lambda: send_notification,
+)
+_verify_queue.configure(
+    seat=lambda: _verify_sem,
+    attempt_allowed=lambda: _verify_attempt_allowed,
+    verify_clean=lambda: _verify_account_clean,
+    env_file=lambda: ENV_FILE,
+    read_env=lambda: read_env,
+)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2001,7 +1942,8 @@ def create_app(host=None):
         now = time.time()
         # 分级：已登录 GET 走放宽的独立桶（页面首屏并发 + 快速切页），写路径与匿名
         # 请求走严格桶（脚本轰炸主防线）。两桶独立计数，正常浏览不会互相挤占。
-        relaxed = request.method == "GET" and _current_role() is not None
+        relaxed = request.method == "GET" and _security._current_role(
+            _admin_ttl_seconds()) is not None
         if relaxed:
             with _rate_lock:
                 _ip_store_trim(_rate_limits_get, _IP_STORE_MAX_AGE)
@@ -2028,7 +1970,7 @@ def create_app(host=None):
             return
         if request.path == "/api/registration_paused" and request.method == "GET":
             return
-        role = _current_role()
+        role = _security._current_role(_admin_ttl_seconds())
         if role is None:
             return jsonify({"error": "未登录"}), 401
         if role == "admin":
@@ -2156,7 +2098,7 @@ def create_app(host=None):
         管理端外壳要读更多上下文（导航/公告等），**错误路径本身可能是坏的**，故渲染失败
         （任何异常）一律退回认证外壳，绝不让 404/500 再抛一次。
         """
-        role = _current_role()
+        role = _security._current_role(_admin_ttl_seconds())
         endpoint, label = _home_endpoint_for(role)
         base = dict(
             web_version=WEB_VERSION,
@@ -2389,8 +2331,8 @@ def create_app(host=None):
         冷却；本函数自己不动任何计数表。
         """
         username = session.get("username", "")
-        if _is_builtin_admin_session():
-            return verify_admin(username, password)
+        if _security._is_builtin_admin_session():
+            return _security.verify_admin(username, password)
         u = db.find_user(username.strip().lower())
         return bool(u) and check_password_hash(u.get("password_hash", ""), password)
 
@@ -2523,7 +2465,7 @@ def create_app(host=None):
         ttl, cooldown = _sensitive_gate_params(ENV_FILE)
         key = (_client_ip(), (session.get("username") or "?").strip().lower()[:64])
         now = time.time()
-        tier = _pw_gate_tier(ENV_FILE)  # 档位解析唯一入口；非法值已在 web/security.py 侧回退成 risk
+        tier = _security._pw_gate_tier()  # 档位解析唯一入口；非法值已在 web/security.py 侧回退成 risk
         if tier != PW_GATE_FULL:  # full = 旧行为：三段判定逐条走完，档位在此是唯一分叉点
             # 软摩擦排在 off 早退**之前**，所以 `off` 档下不可逆操作照样要前端先跑完倒计时、
             # 回 `confirm_delay_ack: true`，缺了就拒。它是软摩擦不是防线：挡手滑不挡攻击者

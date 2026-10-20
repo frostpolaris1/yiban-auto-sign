@@ -46,6 +46,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
+from web import security as _security  # noqa: E402
 from yiban import egress  # noqa: E402
 from yiban.adapters.notifier import report as alerts  # noqa: E402
 from yiban.adapters.persistence import queue_store  # noqa: E402
@@ -553,11 +554,15 @@ class ProgressEndpointUnreadableTest(unittest.TestCase):
 
         # 假 app 模块只剩 app.py **自有**的名字（A 类转发名直取真源，见批 3-a）。
         m = SimpleNamespace(
-            _is_builtin_admin_session=lambda: True,
             _executors_window=lambda: ((6, 30), (7, 50)),
             _in_run_period=lambda bounds: False,
         )
+        # 批 3-c S3：`_is_builtin_admin_session` 已从 app.py 的转发墙搬走，读者直取
+        # `web.security`。原先打在假 app 模块上的那个桩因此失效——端点会转而调用真源，
+        # 在无会话的 request context 里判成"非主管理员"并返回 403（本用例三条当场红）。
+        # 故打桩点改到真源上，与被测调用链一致。
         with Flask("probe").test_request_context(), \
+                mock.patch.object(_security, "_is_builtin_admin_session", lambda: True), \
                 mock.patch.object(settings_api, "_appmod", return_value=m), \
                 mock.patch.object(_clock, "today", lambda: DAY), \
                 mock.patch.object(_db, "task_latest_day", lambda: DAY), \
