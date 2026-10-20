@@ -915,7 +915,7 @@ class TerminalStateTest(_Base):
                 self.assertEqual(settled[0][1], expected)
                 self.assertEqual(results[phone][2], skip, "skip 原样回传，不重排")
 
-    def test_account_missing_from_round_settles_done_without_request(self):
+    def test_account_missing_from_round_settles_skipped_without_request(self):
         phone = _phone(9)
         self._add_claimed(phone)
         self._seed_v(8)
@@ -925,7 +925,8 @@ class TerminalStateTest(_Base):
                                                                        "success")):
             results = self._run_v3(self._accounts(_phone(1)), [_item(phone)])
         self.assertEqual(calls, [], "账号已不在本轮配置时不得发起请求")
-        self.assertEqual(self._row(phone)["state"], "done", "该行必须被了结，否则永远 pending")
+        self.assertEqual(self._row(phone)["state"], "skipped",
+                         "该行必须被了结（否则永远 pending），终态与 user_cancelled 的映射同口径")
         self.assertEqual(results[phone][3], "user_cancelled")
 
     def test_paused_credential_skips_without_request(self):
