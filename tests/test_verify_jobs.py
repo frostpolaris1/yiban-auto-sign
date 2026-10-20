@@ -938,7 +938,7 @@ class AdminDecisionWinsTest(_LifecycleBase):
         with mock.patch.object(self.webapp, "_verify_account_clean",
                                return_value="账号验证异常：读超时"):
             self.webapp.verify_jobs.run(job_id, {"phone": PHONE}, EMAIL_LIFE, acc,
-                                        "pending", {}, {})
+                                        "pending", {})
         self.assertEqual(db.get_verify_job(job_id)["status"], "rejected",
                          "任务本身照常落终态")
         row = self._acct(acc)
@@ -951,7 +951,7 @@ class AdminDecisionWinsTest(_LifecycleBase):
         with mock.patch.object(self.webapp, "_verify_account_clean",
                                return_value="账号验证异常：读超时"):
             self.webapp.verify_jobs.run(job_id, {"phone": PHONE}, EMAIL_LIFE, acc,
-                                        "pending", {}, {})
+                                        "pending", {})
         row = self._acct(acc)
         self.assertEqual(row["status"], "rejected")
         self.assertIn("读超时", row["reject_reason"])
@@ -1414,7 +1414,7 @@ class SeatHandleCapturedTest(unittest.TestCase):
         fake_store = SimpleNamespace(claim=lambda jid: True, finish=lambda *a, **k: True)
         with mock.patch.object(jobs, "_hooks", hooks), \
                 mock.patch.object(jobs, "store", fake_store):
-            jobs.run(1, {"phone": PHONE}, EMAIL, 0, "pending", {}, {})
+            jobs.run(1, {"phone": PHONE}, EMAIL, 0, "pending", {})
         self.assertEqual(seat_a._value, 2, "取到的席位必须还回它自己")
         self.assertEqual(seat_b._value, 2, "别人的信号量不得被释放（超发会直接抛）")
 

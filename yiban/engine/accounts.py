@@ -220,12 +220,17 @@ def _load_accounts_from_legacy_env():
                 f"{_sanitize_text(_mask_phone(item) if item.isdigit() else item)}")
             continue
         phone, pwd = item.split(":", 1)
-        accounts.append(Account(phone.strip(), pwd.strip()))
+        # 与数据库 / JSON 两条来源共用**同一个必填校验**（`_parse_account_dict`）：
+        # 旧格式漏写口令（`13800000000:`）会产出空口令账号，装载阶段零告警，随后每轮
+        # 拿空密码打一次真实登录；失败文案落在凭据档后，三天把账号推进熔断（工单
+        # ba-p04-06）。空 phone/password 在这里直接抛 ValueError，错误在装载期暴露。
+        accounts.append(_parse_account_dict({"phone": phone.strip(),
+                                             "password": pwd.strip()}))
     if not accounts:
         phone = os.environ.get("YIBAN_PHONE", "").strip()
         pwd = os.environ.get("YIBAN_PASSWORD", "").strip()
         if phone and pwd:
-            accounts.append(Account(phone, pwd))
+            accounts.append(_parse_account_dict({"phone": phone, "password": pwd}))
     return accounts
 
 

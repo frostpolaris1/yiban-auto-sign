@@ -34,7 +34,10 @@ def write_private_json(path, payload, ensure_dir=True):
     "复活"，目录不存在时让它自然失败在 `os.open` 上。
     """
     if ensure_dir:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # 目录也按 0700 收权：`os.makedirs` 不带 mode 时是 0777 & ~umask，umask 非 0077
+        # 的镜像/unit 下同机其他用户可以列举状态目录（暴露日期、文件名与部署节律）。
+        # 同包 `wire_dump` 的落盘目录用的是同一条口径（工单 ba-p08-09）。
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
     tmp = f"{path}.tmp{os.getpid()}-{threading.get_ident()}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
