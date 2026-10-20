@@ -985,31 +985,34 @@ class Batch18FixesTest(unittest.TestCase):
     # =====================================================================
     def test_notify_cooldown_without_password_200_and_audited(self):
         """收窄（缩减批 6a）：无 confirm_password 调 PUT notify-config
-        {"cooldown":90000} → 200 落盘（可逆参数免门免额度）、零告警、留审计。"""
+        {"cooldown":86400} → 200 落盘（可逆参数免门免额度）、零告警、留审计。
+
+        86400 是 ba-p05-10 定下的上界（1 天）；旧用例取 90000，超出该区间后应 400。
+        """
         ac, at = self._admin_client()
         with mock.patch.object(_notify_mail, "send_notification") as sn:
-            r = ac.put("/api/notify-config", json={"cooldown": 90000},
+            r = ac.put("/api/notify-config", json={"cooldown": 86400},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
-        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "90000")
+        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "86400")
         sn.assert_not_called()
         detail = json.loads(self._last_audit_detail("notify_config"))
         detail.pop("_req", None)
-        self.assertEqual(detail.get("cooldown"), 90000, "免门不等于免痕")
+        self.assertEqual(detail.get("cooldown"), 86400, "免门不等于免痕")
 
     def test_notify_cooldown_with_password_200_and_audited(self):
         """带 confirm_password 字段 → 200、落盘、留痕（字段免门后被忽略，仅为
         兼容既有前端载荷；审计口径与免门路径一致）。"""
         ac, at = self._admin_client()
-        r = ac.put("/api/notify-config", json={"cooldown": 90000, "confirm_password": ADMIN_PASS_B18F},
+        r = ac.put("/api/notify-config", json={"cooldown": 86400, "confirm_password": ADMIN_PASS_B18F},
                    headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
-        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "90000")
+        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "86400")
         detail = self._last_audit_detail("notify_config")
         self.assertIsNotNone(detail)
-        self.assertEqual(json.loads(detail)["cooldown"], 90000)
+        self.assertEqual(json.loads(detail)["cooldown"], 86400)
 
     def test_notify_config_change_sends_no_alert(self):
         """notify-config 变更只落盘 + 留审计，不再外发告警。
@@ -1740,7 +1743,14 @@ class EmergencyStopTest(_TierBase):
         self.assertEqual(self._save(c, {"global_pause": 1}).status_code, 200)
 
     def test_stop_shares_high_risk_quota(self):
-        """急停与「删数据 / 拆报警器」共用同一套高危额度（默认 5 次/60 秒）。"""
+        """急停与「删数据 / 拆报警器」共用同一套高危额度（默认 5 次/60 秒）。
+
+        窗口显式拉到 3600s（工单 qzj2）：并行档下 6 轮"恢复+急停"可能超过 60s，
+        最早几次会自然过期，第 6 次于是拿到 200 而不是 429——那是墙钟走时，不是
+        额度机制变了。窗口内"前 MAX 次放行、第 MAX+1 次 429"的判据不变。
+        """
+        _env_io_svc.write_env_batch(
+            self.env_file, {"YIBAN_ADMIN_DELETE_COOLDOWN_SEC": "3600"})
         c = self._master()
         codes = []
         for _ in range(self.webapp.ADMIN_DELETE_MAX + 1):

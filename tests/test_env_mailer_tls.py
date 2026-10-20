@@ -104,8 +104,13 @@ class MailerTlsContextTest(unittest.TestCase):
             "USER": "a@example.com",
             "PASS": "secret",
         }
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "_get", lambda k: cfg.get(k)), \
+        entry = {"host": cfg["SMTP_HOST"], "port": 465,
+                 "user": cfg["USER"], "pass": cfg["PASS"]}
+        # `_send` 现在一轮只取一份 .env 快照并复用已解析条目（ba-p09-07），
+        # 故打桩点从 `_get` 改到 `smtp_list`（与 is_enabled 一起接收 envs 参数）。
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: [entry]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FakeSMTP):
             mailer_transport._send("标题", "正文", "to@example.com")
         ctx = captured.get("context")

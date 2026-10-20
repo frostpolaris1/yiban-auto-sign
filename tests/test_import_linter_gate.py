@@ -12,8 +12,9 @@
 ② **门禁被真执行**：`ci.yml` 装 import-linter，`scripts/dev-verify.sh` 的 `run_ci`
    真跑本门与本文件。写在注释里不算。
 ③ **门禁承重（活体反例）**：合成树上真跑执行器。干净树退 0；植入违规退 1 并点名
-   导入者与被导入者；违规进基线后退 0；基线条目消失时报"降档"。
-④ **反空转**：配置缺失、基线列数不对、root_packages 指空、配置里零契约——一律退 2。
+   导入者与被导入者；基线机制退役（数据行退 2）；`ignore_imports` **逐边**生效
+   （豁免 a 后 b 仍红；无匹配条目退 2）。
+④ **反空转**：配置缺失、基线有数据行、root_packages 指空、配置里零契约——一律退 2。
    退 2 与"有违规"（1）严格分开。不许把门自己的错读成通过。
 关键断言：① ② 只读文本；③ ④ 真跑子进程，树是临时目录里的三文件合成包。
 依赖：需要测试解释器里装有 import-linter。它由 CI 的
@@ -276,20 +277,18 @@ class GateWiringTest(unittest.TestCase):
                 self.assertTrue(os.path.isfile(os.path.join(BASE, path)),
                                 f"缺产物 {path}")
 
-    def test_committed_baseline_matches_the_writer(self):
-        """入库基线正文必须逐字等于执行器写它的形态（头 + 违规行）。
+    def test_committed_baseline_is_a_tombstone(self):
+        """入库基线只允许文件头（工单 jlmv：基线按模块对放行会放行整条方向）。
 
-        头里写着"契约 id 还是契约 name"这条身份口径。两处漂移过一次（改了口径忘了
-        重生成文件），基线读起来就与判据不符。真树当前零违规，故入库基线正文必须
-        恰为文件头——只 `startswith` 会放过手工追加的加宽行（审查 M1）。
-        正文 == 当前违规集这条由 CurrentTreeTest 用 `--write-baseline` 重生成后比对。
+        墓碑必须写明唯一豁免出口是 `.importlinter` 的 `ignore_imports`，否则下一个
+        读者会重新把它当豁免名单用。
         """
         mod = _load_gate_module()
         body = _read(BASELINE)
         self.assertEqual(body, mod.BASELINE_HEADER,
-                         "入库基线正文必须恰为文件头（真树当前零违规）："
-                         "多出的行等于未走流程的手工加宽")
-        self.assertIn("契约 id", mod.BASELINE_HEADER, "身份口径必须是契约 id")
+                         "入库基线必须恰为文件头（任何数据行都等于放行整条方向）")
+        self.assertIn("ignore_imports", mod.BASELINE_HEADER,
+                      "墓碑必须指向唯一豁免出口")
 
 
 class GateLiveTest(unittest.TestCase):
@@ -363,41 +362,87 @@ class GateLiveTest(unittest.TestCase):
         self._require_tool(out)
         self.assertEqual(rc, 1, f"植入违规必须退 1：\n{out}")
         self.assertIn("pkg.core -> pkg.gateway", out, "必须点名导入者与被导入者")
-        self.assertIn("新增违规", out)
+        self.assertIn("当前违规 1 条", out)
 
-    def test_baselined_violation_is_green(self):
-        self._plant()
+    def test_nonempty_baseline_is_refused(self):
+        """基线机制已退役（jlmv）：数据行等于"按模块对放行整条方向"，必须退 2。"""
         self._write_baseline(["no-upward\tpkg.core\tpkg.gateway"])
         rc, out = _run_gate(self.root, self.config, self.baseline)
-        self._require_tool(out)
-        self.assertEqual(rc, 0, f"已登记进基线的违规不许再红：\n{out}")
+        self.assertEqual(rc, 2, f"非空基线必须退 2：\n{out}")
+        self.assertIn("基线机制已退役", out)
+        self.assertIn("ignore_imports", out, "拒绝信息必须给出唯一豁免出口")
 
-    def test_stale_baseline_entry_is_reported_for_ratchet(self):
-        """基线多余条目：不红（门只对新增违规红），但必须报出来要求收紧。"""
-        self._write_baseline(["no-upward\tpkg.core\tpkg.gateway"])
-        rc, out = _run_gate(self.root, self.config, self.baseline)
-        self._require_tool(out)
-        self.assertEqual(rc, 0, f"基线多余条目不该判红（ratchet 提示而已）：\n{out}")
-        self.assertIn("降档", out, "基线条目已消失必须报出来，否则基线只长不缩")
-        self.assertIn("--write-baseline", out, "必须给出收紧命令")
-
-    def test_write_baseline_records_the_current_set(self):
-        self._plant()
+    def test_write_baseline_is_retired(self):
         rc, out = _run_gate(self.root, self.config, self.baseline,
                             extra=("--write-baseline",))
-        self._require_tool(out)
-        self.assertEqual(rc, 0, f"--write-baseline 必须成功：\n{out}")
-        body = _read(self.baseline)
-        self.assertIn("no-upward\tpkg.core\tpkg.gateway", body)
-        self.assertIn("#", body, "基线必须带文件头（语义写在头里）")
-        # 写完之后再跑一遍必须绿（收紧过的基线对得上当前违规）。
-        rc2, out2 = _run_gate(self.root, self.config, self.baseline)
-        self.assertEqual(rc2, 0, f"收紧后的基线必须与当前违规集一致：\n{out2}")
+        self.assertEqual(rc, 2, f"--write-baseline 必须退 2：\n{out}")
+        self.assertIn("已退役", out)
+        self.assertIn("ignore_imports", out)
 
     def test_malformed_baseline_row_is_an_environment_error(self):
         self._write_baseline(["no-upward\tpkg.core"])
         rc, out = _run_gate(self.root, self.config, self.baseline)
-        self.assertEqual(rc, 2, f"基线列数不对必须退 2（门自己的错）：\n{out}")
+        self.assertEqual(rc, 2, f"基线数据行必须退 2（门自己的错）：\n{out}")
+
+    # ---- 逐边豁免（jlmv 的正解）：ignore_imports 只放行列名的那条边 ----
+    def _add_sink_package(self):
+        d = os.path.join(self.root, "pkg", "sink")
+        os.makedirs(d, exist_ok=True)
+        for name in ("__init__.py", "a.py", "b.py"):
+            with io.open(os.path.join(d, name), "w",
+                         encoding="utf-8", newline="\n") as f:
+                f.write("# synthetic\n")
+
+    def _plant_sink_imports(self, names=("a", "b")):
+        with io.open(os.path.join(self.root, "pkg", "core.py"), "a",
+                     encoding="utf-8", newline="\n") as f:
+            for name in names:
+                f.write(f"from pkg.sink import {name}  # noqa: F401\n")
+
+    def _per_edge_config(self, ignores):
+        body = ("[importlinter]\nroot_packages =\n    pkg\n\n"
+                "[importlinter:contract:no-sink]\n"
+                "name = pkg.core must not import pkg.sink\n"
+                "type = forbidden\n"
+                "source_modules =\n    pkg.core\n"
+                "forbidden_modules =\n    pkg.sink.*\n")
+        if ignores:
+            body += "ignore_imports =\n" + "".join(f"    {x}\n" for x in ignores)
+        return self._write_config("per-edge.ini", body)
+
+    def test_ignore_imports_is_per_edge(self):
+        """豁免一条边不得放行同方向的另一条边（jlmv 的根因）。"""
+        self._add_sink_package()
+        self._plant_sink_imports(("a", "b"))
+        cfg = self._per_edge_config(["pkg.core -> pkg.sink.a"])
+        self._write_baseline([])
+        rc, out = _run_gate(self.root, cfg, self.baseline)
+        self._require_tool(out)
+        self.assertEqual(rc, 1, f"只豁免 a 时 b 仍须红：\n{out}")
+        self.assertIn("pkg.core -> pkg.sink.b", out)
+        self.assertNotIn("pkg.core -> pkg.sink.a", out,
+                         "已豁免的边不得再报（否则豁免没生效）")
+
+    def test_all_edges_ignored_is_green(self):
+        self._add_sink_package()
+        self._plant_sink_imports(("a", "b"))
+        cfg = self._per_edge_config(["pkg.core -> pkg.sink.a",
+                                     "pkg.core -> pkg.sink.b"])
+        self._write_baseline([])
+        rc, out = _run_gate(self.root, cfg, self.baseline)
+        self._require_tool(out)
+        self.assertEqual(rc, 0, f"两条边都逐条豁免后必须绿：\n{out}")
+
+    def test_unmatched_ignore_is_an_environment_error(self):
+        """豁免条目没有匹配的边 ⇒ import-linter 报错 ⇒ 本门退 2（生命周期自证）。"""
+        self._add_sink_package()
+        self._plant_sink_imports(("a",))
+        cfg = self._per_edge_config(["pkg.core -> pkg.sink.c"])
+        self._write_baseline([])
+        rc, out = _run_gate(self.root, cfg, self.baseline)
+        self._require_tool(out)
+        self.assertEqual(rc, 2, f"无匹配的 ignore_imports 必须退 2：\n{out}")
+        self.assertIn("No matches for ignored import", out)
 
     def test_missing_config_is_an_environment_error(self):
         self._write_baseline([])
@@ -526,46 +571,17 @@ class GateLiveTest(unittest.TestCase):
         self.assertEqual(rc, 1, f"independence 被破必须退 1：\n{out}")
         self.assertIn("pkg.a -> pkg.b", out, "必须点名导入者与被导入者")
 
-    def test_write_baseline_refuses_widening_and_keeps_the_file(self):
-        """棘轮：基线已存在时加宽被拒（退 2），基线文件保持原样（审查 M1）。"""
-        self._write_baseline([])          # 基线已存在（只有文件头）
+    def test_write_baseline_never_touches_the_file(self):
+        """退役后的 `--write-baseline` 必须退 2，且基线文件一个字节不动。"""
+        self._write_baseline([])
         before = _read(self.baseline)
-        self._plant()                     # 当前有一条违规 ⇒ 相对旧基线是加宽
-        rc, out = _run_gate(self.root, self.config, self.baseline,
-                            extra=("--write-baseline",))
-        self._require_tool(out)
-        self.assertEqual(rc, 2, f"加宽基线必须退 2（棘轮：基线只许缩小）：\n{out}")
-        self.assertIn("pkg.core -> pkg.gateway", out, "必须点名要新增的条目")
-        self.assertEqual(_read(self.baseline), before,
-                         "拒绝加宽时基线文件必须一个字节不动")
-
-    def test_write_baseline_allows_tightening_and_matches_the_current_set(self):
-        """收紧被允许：新集 ⊆ 旧集。写入正文必须 == 当前违规集（含文件头）。"""
-        self._write_baseline([
-            "no-upward\tpkg.core\tpkg.gateway",
-            "no-upward\tpkg.gateway\tpkg.core",   # 已消失的存量条目
-        ])
-        self._plant()                             # 当前集 ⊆ 旧基线
-        rc, out = _run_gate(self.root, self.config, self.baseline,
-                            extra=("--write-baseline",))
-        self._require_tool(out)
-        self.assertEqual(rc, 0, f"收紧基线必须被允许：\n{out}")
-        self.assertEqual(_read(self.baseline),
-                         _load_gate_module().BASELINE_HEADER
-                         + "no-upward\tpkg.core\tpkg.gateway\n",
-                         "收紧后的基线正文必须恰为当前违规集")
-
-    def test_write_baseline_first_generation_is_allowed(self):
-        """基线文件不存在（首次生成）⇒ 允许全量写入。"""
         self._plant()
-        self.assertFalse(os.path.exists(self.baseline), "前提：基线尚不存在")
         rc, out = _run_gate(self.root, self.config, self.baseline,
                             extra=("--write-baseline",))
         self._require_tool(out)
-        self.assertEqual(rc, 0, f"首次生成基线必须被允许：\n{out}")
-        self.assertEqual(_read(self.baseline),
-                         _load_gate_module().BASELINE_HEADER
-                         + "no-upward\tpkg.core\tpkg.gateway\n")
+        self.assertEqual(rc, 2, f"退役开关必须退 2：\n{out}")
+        self.assertEqual(_read(self.baseline), before,
+                         "退役开关不得改写基线文件")
 
     def test_broken_root_package_is_an_environment_error(self):
         bad = os.path.join(self.root, "bad.ini")
@@ -592,27 +608,15 @@ class CurrentTreeTest(unittest.TestCase):
         self.assertIn(f"契约数 {len(CONTRACT_IDS)}", out,
                       "配置里的契约必须全部被跑（少一条等于门被拆）")
 
-    def test_committed_baseline_equals_current_violation_set(self):
-        """入库基线正文必须 == 真树当前违规集（按 `--write-baseline` 重生成后比对）。
-
-        只 `startswith(文件头)` 会放过手工追加的加宽行。重生成到临时文件再逐字节比对，
-        才能钉住"基线 == 当前违规集"这条 ratchet 前提（审查 M1）。
-        """
-        tmp = tempfile.mkdtemp(prefix="yiban-implinter-regen-")
-        try:
-            fresh = os.path.join(tmp, "baseline.txt")
-            rc, out = _run_gate(BASE, CONFIG, fresh, extra=("--write-baseline",),
-                                timeout=300)
-            if "import-linter 不可用" in out:
-                self.fail("测试解释器里没有 import-linter：本门不许静默跳过。"
-                          f"装上再跑：{sys.executable} -m pip install {PINNED_TOOL}\n{out}")
-            self.assertEqual(rc, 0, f"按当前树重生成基线必须成功：\n{out}")
-            self.assertEqual(_read(BASELINE), _read(fresh),
-                             "入库基线正文与当前违规集不一致："
-                             "跑 scripts/check-import-linter.py --write-baseline 重生成它")
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
+    def test_committed_baseline_is_empty(self):
+        """入库基线必须只有文件头：数据行一律判环境错误（jlmv）。"""
+        rc, out = _run_gate(BASE, CONFIG, BASELINE, timeout=300)
+        if "import-linter 不可用" in out:
+            self.fail("测试解释器里没有 import-linter：本门不许静默跳过。"
+                      f"装上再跑：{sys.executable} -m pip install {PINNED_TOOL}\n{out}")
+        self.assertEqual(rc, 0, f"真树 + 空基线必须退 0：\n{out}")
+        self.assertIn("基线机制已退役", out)
+        self.assertEqual(_read(BASELINE), _load_gate_module().BASELINE_HEADER)
 
 
 if __name__ == "__main__":

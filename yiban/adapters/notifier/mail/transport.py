@@ -12,6 +12,7 @@ import logging
 import smtplib
 import ssl
 import time
+from contextlib import suppress
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -38,8 +39,27 @@ _TOTAL_BUDGET_SEC = 3 * _OP_TIMEOUT_SEC
 _entry_port_warned = False
 
 # SMTP 目标为内网/保留地址的发送侧一次性告警旗：进程内只记一次，不阻断发送（写侧硬拦
-# 由设置页负责，库层只提示）。
+# 由设置页负责，库层只提示）。**只由「内网/保留」类 reason 置位**；空主机、方括号不闭合、
+# 非标准 IPv4 字面量等配置错误另记 `_target_reason_warned`（按 reason 各提示一次），
+# 否则一条无关的配置错误就把这面唯一的安全提示永久静音（ba-p09-09）。
 _private_target_warned = False
+#: 其余配置类拒绝原因 → 已提示过的 reason 集合（不同病因分开喊，互不吞声）。
+_target_reason_warned = set()
+
+
+def _quiet_quit(server):
+    """关闭已建立的 SMTP 连接；quit/close 的异常一律吞掉。
+
+    只在 sendmail 已返回（成功路径）或异常收口处调用。**QUIT 失败不改变送达结论**：
+    旧实现把 `quit()` 留在 `with server:` 的 try 内，服务器收信后掉线会让已 ACK 的
+    邮件被记成失败并换条目重投（ba-p09-02）。
+    """
+    try:
+        server.quit()
+    except Exception:
+        with suppress(Exception):
+            server.close()
+
 
 
 def _classify_send_error(e):
@@ -124,11 +144,16 @@ def _send(subject, text, to, deadline=None):
     """
     global _private_target_warned
     to = str(to or "").strip()
-    if not to or not config.is_enabled():
+    if not to:
+        return False
+    # 一轮发信只取一份 .env 快照、只解密一次条目（ba-p09-07）：is_enabled() 会再走一遍
+    # smtp_channel_state → smtp_list，等于第二次 AES-GCM；判据用已解析条目复算即可。
+    envs = config._read_env_file()
+    entries = config.smtp_list(envs)
+    if not config.is_enabled(envs, entries):
         return False
     if deadline is None:
         deadline = time.monotonic() + _TOTAL_BUDGET_SEC
-    entries = config.smtp_list()
     # 正文在条目循环**之外**定稿：同封 failover 的每一条都必须是同一封——同
     # plain/html、同 Message-ID（键含正文，哈希跟着正文走，正文若在循环内二次
     # 排版，幂等键就白造）。
@@ -158,15 +183,24 @@ def _send(subject, text, to, deadline=None):
         op_timeout = min(_OP_TIMEOUT_SEC, remaining)
         host = str(entry.get("host") or "").strip()
         port = entry.get("port", 465)
-        if not _private_target_warned:
-            reason = config.check_smtp_host(host)
-            if reason:
-                _private_target_warned = True
+        reason = config.check_smtp_host(host)
+        if reason:
+            if config.is_private_target_reason(reason):
+                if not _private_target_warned:
+                    _private_target_warned = True
+                    logger.warning(
+                        "邮件通知 SMTP 目标 %s（条目 %d/%d）属内网/保留地址：%s。"
+                        "仍会尝试发送；如需保留该目标，请在 .env 显式开启 "
+                        "YIBAN_MAIL_ALLOW_PRIVATE_HOST",
+                        host or "?", idx + 1, len(entries), reason,
+                    )
+            elif reason not in _target_reason_warned:
+                # 空主机 / 方括号不闭合 / 非标准字面量等配置错误：按 reason 各提示一次。
+                # 与内网旗分开记，任何一条病因都不许吞掉别的病因的告警。
+                _target_reason_warned.add(reason)
                 logger.warning(
-                    "邮件通知 SMTP 目标 %s（条目 %d/%d）属内网/保留地址：%s。"
-                    "仍会尝试发送；如需保留该目标，请在 .env 显式开启 "
-                    "YIBAN_MAIL_ALLOW_PRIVATE_HOST",
-                    host or "?", idx + 1, len(entries), reason,
+                    "邮件通知 SMTP 目标配置无效（条目 %d/%d host=%s）：%s；本条仍会尝试发送",
+                    idx + 1, len(entries), host or "?", reason,
                 )
         try:
             port = int(port)
@@ -207,14 +241,20 @@ def _send(subject, text, to, deadline=None):
             # verify_mode=CERT_NONE 不校验服务器证书，SMTP 授权码可被中间人窃取后
             # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
             ctx = ssl.create_default_context()
-            if port == 465:
-                server = smtplib.SMTP_SSL(host, port, timeout=op_timeout, context=ctx)
-            else:
-                server = smtplib.SMTP(host, port, timeout=op_timeout)
-                server.starttls(context=ctx)
-            with server:
+            server = None
+            try:
+                if port == 465:
+                    server = smtplib.SMTP_SSL(host, port, timeout=op_timeout, context=ctx)
+                else:
+                    server = smtplib.SMTP(host, port, timeout=op_timeout)
+                    server.starttls(context=ctx)
                 server.login(user, password)
                 accepted = server.sendmail(user, [to], msg.as_string())
+            finally:
+                # QUIT/close 失败不属于投递结论：sendmail 返回即已 ACK（ba-p09-02）。
+                # 关连接的异常在这里被吞掉，不进入下面的失败分支。
+                if server is not None:
+                    _quiet_quit(server)
             if accepted:
                 # sendmail 的返回 dict 是"其余收件人收下、这些被拒"的结构化结果，
                 # 与下面的 SMTPRecipientsRefused 同一本账，此前同样零消费者。
