@@ -95,6 +95,30 @@ class GateManifestSyncTest(unittest.TestCase):
         self.assertFalse(missing,
                          f"以下端点实际调用了高危门禁却不在清单上: {missing}")
 
+    def test_mail_config_doc_matches_gated_actions(self):
+        """清单与 `/api/mail-config` 视图 docstring 必须写明两道门（ba-p05-08）。
+
+        代码事实：关通道与**收件人改道**分别过 `_high_risk_gate`（后者
+        quota="creds"、risk_always=True）。两处文档曾把收件人改道写成"可逆、
+        免门免额度"；按注释做审计会误判存在一条免门的告警静音通道。
+        """
+        manifest = self.app.extensions["yiban_high_risk_gate"].__doc__
+        view = None
+        for rule in self.app.url_map.iter_rules():
+            if rule.rule == "/api/mail-config" and "PUT" in rule.methods:
+                view = self.app.view_functions.get(rule.endpoint)
+                break
+        self.assertIsNotNone(view, "/api/mail-config 未注册")
+        sources = (("门禁清单", manifest),
+                   ("视图 docstring", inspect.getdoc(view) or ""))
+        for label, text in sources:
+            self.assertIn("收件人改道", text,
+                          f"{label}必须写明收件人改道要过门")
+            self.assertNotIn("收件人变更免门", text,
+                             f"{label}不得再说收件人变更免门")
+        self.assertIn("改道告警收件人", inspect.getsource(view),
+                      "视图必须仍为收件人改道单独过门（文档描述的正是这条代码事实）")
+
 
 if __name__ == "__main__":
     unittest.main()
