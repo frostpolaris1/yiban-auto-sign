@@ -1352,11 +1352,11 @@
   },
   "YIBAN_TRUST_FORWARDED_HEADERS": {
     "type": "bool",
-    "default": true,
+    "default": false,
     "group": [
       "安全"
     ],
-    "doc": "转发头信任开关（未设或非法值按信任执行）",
+    "doc": "转发头信任开关（缺省与非法值均按不信任执行；反代部署须显式置 1）",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
