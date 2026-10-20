@@ -72,6 +72,7 @@ fast	tests/test_claim_write_path_single_source.py
 slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
 fast	tests/test_cli_contract.py
 fast	tests/test_cli_contract_mf60.py
+fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
 fast	tests/test_cli_egress_reset.py
 fast	tests/test_cli_exit_surface.py
 fast	tests/test_concurrency_fidelity_gate.py
@@ -145,6 +146,7 @@ fast	tests/test_frontend_paging_wiring.py
 fast	tests/test_gate_lane_roster.py
 fast	tests/test_gate_manifest_sync.py
 fast	tests/test_gate_narrowing_e2e.py
+fast	tests/test_generated_artifacts_gate.py	# 子进程跑 --check：字体打标与 Lucide 精灵图
 fast	tests/test_geo_sampling.py
 fast	tests/test_global_pause.py
 slow	tests/test_global_pause_chain_e2e.py	# 真子进程：真跑 run.sh 全链引擎（本机 4.9s）
