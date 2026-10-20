@@ -52,20 +52,11 @@
   <div class="progress thin"><div class="progress-fill boot-fill"></div></div>
   <span class="sr-only">正在加载页面…</span>
 </div>
-<script>
-  (function () {
-    var el = document.getElementById("boot-loader");
-    if (!el) return;
-    var t1 = setTimeout(function () { if (!el.classList.contains("is-ready")) el.classList.add("is-visible"); }, 120);
-    function done() { clearTimeout(t1); el.classList.remove("is-visible"); el.classList.add("is-ready"); }
-    window.addEventListener("load", done);
-    var t2 = setInterval(function () { if (window.YB && window.YB.__ready) { clearInterval(t2); done(); } }, 60);
-    setTimeout(function () { clearInterval(t2); done(); }, 5000);   // 兜底：异常时不常驻
-  })();
-</script>
+<script defer src="{{ request.script_root }}/static/js/boot-loader.js?v={{ web_version }}"></script>
 {# 外部脚本一律 defer：按文档顺序在解析完成后执行，不阻塞 HTML 解析。
-   内联引导脚本（上方 boot-loader）只轮询 window.YB，不依赖同步加载的全局。
-   defer 保序 ⇒ md-render → shell-chrome → core → 页面/组件 的执行序不变。
+   首屏指示脚本（上方 boot-loader）只轮询 window.YB，不依赖同步加载的全局；
+   CSP 加固后它也是外置静态文件（工单 56ed）。
+   defer 保序 ⇒ boot-loader → md-render → shell-chrome → core → 页面/组件 的执行序不变。
    **shell-chrome 必须紧邻排在 core 之前**：core 载入时要捕获它的命名空间
    （window.YB.__chrome），缺了就抛错（拆壳第一刀，见 core.js 文件头）。 #}
 <script defer src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>

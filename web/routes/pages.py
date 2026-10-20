@@ -102,15 +102,44 @@ def _render_admin_page(template, nav_key, crumbs, extra=None):
 
 
 def _admin_page_redirect():
-    """管理端页面守卫：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
+    """管理端页面守卫（弱档）：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
 
     返回而非装饰，是因为三处守卫各自需要不同模板/导航键，装饰器会增加一层间接。
+
+    **档位配对普查（工单 tklp）**——页面守卫必须与该页**主要 API** 的档位一致，
+    否则会出现"页面弱 API 强"（能打开页面但数据全 403，界面像坏了）或
+    "页面强 API 弱"（被页面挡住、但直接调 API 仍可读）：
+      · `/data/dashboard` → clock / accounts / sign-events：弱档（role=admin）⇒ 弱档
+      · `/data/logs`      → `/api/stream/progress`：**强档**（仅 builtin，见
+        `web/routes/stream_api.py`）⇒ 本页改用 `_builtin_admin_page_redirect`
+      · `/data/audit`     → `/api/audit-logs`：弱档 ⇒ 弱档
+      · `/work/accounts`、`/work/users` → accounts/users 读接口：弱档 ⇒ 弱档
+      · `/work/settings`  → GET 设置：弱档（写接口按 A/B 档逐端点判）⇒ 弱档；
+        页面只是个壳，主管理员专属控件由服务端 403 拒绝，不构成页面越权
+      · `/my/*`           → 本人数据：弱档 ⇒ 弱档
     """
     role = _security._current_role(_session_abs_ttl())
     if role is None:
         return redirect(url_for("login_page"))
     if role != "admin":
         return redirect(url_for("user_calendar_page"))
+    return None
+
+
+def _builtin_admin_page_redirect():
+    """强档页面守卫：在弱档之上再要求**内置主管理员**会话（与强档 API 配对）。
+
+    只用于宿主页面里挂着"仅主管理员"API 的页（当前只有 `/data/logs` 的
+    `/api/stream/progress`）。注册管理员（`users.role=admin`）不再是跳转到
+    他自己的用户页——与 `_user_page_redirect` 对管理员的处置同形。
+    """
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    if not _security._is_builtin_admin_session():
+        # 注册管理员仍是管理员：回管理端首页（不回 /user/calendar——那页会再把
+        # 管理员转回 dashboard，白多一跳）
+        return redirect(url_for("dashboard_page"))
     return None
 
 
@@ -154,7 +183,9 @@ _MOVED_PAGES = {
 
 def _moved_page_view(endpoint):
     def view():
-        # 保留查询串：theme_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
+        # 保留旧路径书签/分享链接上的查询串（真实调用面：用户收藏的历史 URL
+        # 可能带 ?date= 等参数）。theme_boot 的版本兜底跳的是 `/?v=`，而 `/` 不在
+        # `_MOVED_PAGES` 里、走 root_page——那条路径不放行本函数，故不能拿它当理由。
         qs = request.query_string.decode("utf-8", "ignore")
         return redirect(url_for(endpoint) + (("?" + qs) if qs else ""), code=302)
     return view
@@ -365,7 +396,9 @@ def accounts_page():
 
 
 def logs_page():
-    blocked = _admin_page_redirect()
+    # 强档：本页宿主 `/api/stream/progress`（仅主管理员）。页面弱档会让注册管理员
+    # 看到"页面能开、数据全 403"的半坏界面（tklp 的分权错配）。
+    blocked = _builtin_admin_page_redirect()
     if blocked:
         return blocked
     return _render_vue_page("logs.html", "pages/data_logs.html", "data-logs", ["数据", "签到日志"])
