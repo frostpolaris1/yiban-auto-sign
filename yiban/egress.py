@@ -184,9 +184,11 @@ def single_owner(hostname: str | None = None) -> str:
     return f"{OWNER_SINGLE_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
-#: 本进程的"代次"标记：进程启动时刻（HMMSS）。进程号会被系统复用（重启后拿到上一轮
-#: 的号并非不可能），配上启动时刻才能让每一次进程启动都得到独一无二的身份串。
-_RUNTIME_GEN = datetime.datetime.now().strftime("%H%M%S")  # noqa: DTZ005 进程代次标记，只求同机唯一，与业务钟无关
+#: 本进程的"代次"标记：进程启动时刻（**日期 + 时分秒**）。进程号会被系统复用（重启后
+#: 拿到上一轮的号并非不可能，容器里更是每次重启都是 pid 1），只有"日期 + 时分秒"才让
+#: 每一次进程启动都可能得到独一无二的身份串；只到时分秒时，跨天同秒同 pid 仍会重合
+#: （工单 ba-p08-15）。
+_RUNTIME_GEN = datetime.datetime.now().strftime("%Y%m%d%H%M%S")  # noqa: DTZ005 进程代次标记，只求同机唯一，与业务钟无关
 
 
 def runtime_owner(stable: str, pid: int | None = None, gen: str | None = None) -> str:
@@ -289,11 +291,13 @@ def owner_tag(owner: str | None, round_no: int | None = None) -> str:
 
 
 def parse_list(raw: str | None) -> list[str]:
-    """解析 `YIBAN_PROXY_LIST`：逗号或空白分隔，**保留空位**（空位=该执行体直连）。
+    """解析 `YIBAN_PROXY_LIST`：**逗号或换行**分隔，段内不按空白切，**保留空位**（空位=该执行体直连）。
 
     只去首尾空白、**不过滤空元素**——否则"第 3 个执行体直连"这种配置无法表达。
     注意：末尾多写一个逗号会多出一个空位（`"a,"` = 执行体 0 用 a、执行体 1 直连），
-    这是刻意的字面语义，比"悄悄丢掉"更容易向部署者解释。
+    这是刻意的字面语义，比"悄悄丢掉"更容易向部署者解释。段内空白**不是**分隔符：
+    `"http://a http://b"` 是一段（且是非法代理串），不是两段——与 `replace_slot` 的
+    切分口径逐字一致（工单 ba-p08-14）。
     """
     if raw is None:
         return []
@@ -799,8 +803,10 @@ def apply_legacy_config(rows: Sequence[dict[str, Any]],
     for r in ordered:
         if r["type"] == TYPE_WORKER:
             if r["slot"] in kept:
-                out.append({"slot": r["slot"], "type": TYPE_WORKER,
-                            "proxy": kept[r["slot"]]})
+                # **保留行内全部字段**（尤其 `name`），只覆盖旧键表达的那一列出口：
+                # 重建三字段会静默抹掉管理员给行起的名字，界面随即退回通用标签
+                # （工单 ba-p08-08）。对照：下面的非 worker 行本就 `dict(r)`。
+                out.append({**r, "proxy": kept[r["slot"]]})
             continue                       # 多余的 worker 行：本次写入要求减少执行体数
         out.append(dict(r))
     # 新增的 worker 行用"本次操作前的最大槽位 + 1"起步：只增不复用，也不会占用刚删掉的号
