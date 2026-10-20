@@ -526,5 +526,22 @@ class LogsPageTierTest(_WebFixture):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
 
+class ShippedSystemdUnitTrustsForwardedHeadersTest(unittest.TestCase):
+    """出厂 systemd 单元必须打开转发头信任（工单 ba-p07-01 的部署面）。
+
+    应用缺省**不信任** `X-Forwarded-For`（fail-closed）是给"回环直连 / ssh -L 隧道"
+    的；而本仓出厂的 `web/deploy/yiban-web.service` 前提就是 nginx 反代——nginx→应用
+    恒为回环并覆盖式重写 XFF。单元若不置 1，生产全站客户端会塌进 `127.0.0.1` 一个桶，
+    限速/爆破计数/审计 IP 全部失真。这条钉住"出厂模板与代码缺省配套"。
+    """
+
+    def test_unit_sets_the_trust_flag(self):
+        unit = os.path.join(BASE, "web", "deploy", "yiban-web.service")
+        with io.open(unit, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("Environment=YIBAN_TRUST_FORWARDED_HEADERS=1", text,
+                      "systemd 模板必须显式信任 nginx 写入的 XFF（缺省不信任）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
