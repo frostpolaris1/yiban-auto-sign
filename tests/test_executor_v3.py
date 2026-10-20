@@ -55,6 +55,7 @@ from yiban.core import (  # noqa: E402
     hrw,
     window,
 )
+from yiban.core import status as yiban_status  # noqa: E402
 from yiban.engine import (  # noqa: E402
     executor_v3,
     planner,
@@ -1107,6 +1108,29 @@ class RetryTest(_Base):
             results = self._run_v3(self._accounts(phone), [_item(phone)], cfg=cfg)
         self.assertEqual(self._row(phone)["state"], "failed")
         self.assertIn(phone, results)
+
+    def test_no_room_makes_a_retryable_status_final(self):
+        """窗口容不下最小间隔时，默认可回炉的状态也必须用保守档收尾。
+
+        否则默认回炉口会把 `retry:` 行立刻翻回 pending，下一拍重新领取——真实登录
+        间隔只剩 gap 门（默认 10s），正是 `YIBAN_RETRY_MIN_INTERVAL` 要防的连击
+        （工单 ba-p03-04）。`skipped_norange` 在档位词表里默认可回炉（retry:）。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=0, epoch=1)
+        self._seed_v(8)
+        cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=110,
+                   edge_front_sec=0)  # 有效窗口至 06:40:10，剩余 10s
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "窗口缺失", False,
+                                            yiban_status.STATUS_SKIPPED_NORANGE)):
+            self._run_v3(self._accounts(phone), [_item(phone)], cfg=cfg)
+        row = self._row(phone)
+        self.assertEqual(row["state"], "failed")
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
+                        "当日无落点 ⇒ 保守档；retry: 会立刻被回炉口复活")
+        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=False), 0,
+                         "默认回炉口不得复活它（复活即绕开最小间隔）")
 
     def test_next_retry_at_is_bounded_and_reproducible(self):
         cfg = _cfg()
