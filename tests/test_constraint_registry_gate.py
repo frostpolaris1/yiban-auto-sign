@@ -188,7 +188,7 @@ def _parse_registry(text):
         if len(cells) != len(COLUMNS):
             bad.append(f"第 {lineno} 行应有 {len(COLUMNS)} 列，实得 {len(cells)}: {line[:80]!r}")
             continue
-        rows.append(dict(zip(COLUMNS, cells)))
+        rows.append(dict(zip(COLUMNS, cells, strict=True)))
     return rows, bad
 
 
@@ -308,7 +308,7 @@ class ConstraintRegistryMutationTest(unittest.TestCase):
         self.assertTrue(any("重复 id" in x for x in _validate(rows, CHECKERS)))
 
     def test_malformed_row_is_red(self):
-        rows, bad = _parse_registry(self.GOOD + "e\t少列\n")
+        _rows, bad = _parse_registry(self.GOOD + "e\t少列\n")
         self.assertTrue(bad)
 
     def test_empty_table_is_red(self):

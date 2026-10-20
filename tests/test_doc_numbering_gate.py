@@ -13,7 +13,6 @@ import contextlib
 import importlib.util
 import io
 import os
-import sys
 import tempfile
 import unittest
 
