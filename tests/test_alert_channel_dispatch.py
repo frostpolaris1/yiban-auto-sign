@@ -305,7 +305,16 @@ class LoginAlertRealChannelTest(_B14AlertGateBase):
     def test_login_failure_still_reaches_the_notification_layer(self):
         """降级只降"推不推手机"的账本归属，不得在应用层就把通知整条跳过。"""
         c = self._client()
-        with mock.patch.object(self.webapp.notify, "send") as send_mock:
+        # 打桩点必须与生产调用点解引用同一个对象：`send_notification` 调的是
+        # `_notify_mail.notify.send`。改打 `self.webapp.notify`（app.py 副本重新
+        # 导入得到的名字）时，进程里一旦出现两份 notify 模块对象，桩就会落在没人
+        # 调用的那一份上，本用例以 call_count==0 误红。
+        # 下面这条恒等式是同一形状的守卫：两份对象一旦分叉，先修测试隔离，
+        # 不许把"恰好一次"放宽成"至少一次"。
+        self.assertIs(self.webapp.notify, _notify_mail.notify,
+                      "进程里出现两份 notify 模块对象（摘除/重导入未还原），"
+                      "打桩会落空；先修隔离面")
+        with mock.patch.object(_notify_mail.notify, "send") as send_mock:
             for _ in range(_limits.LOGIN_FAIL_NOTIFY):
                 c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
             self.assertEqual(send_mock.call_count, 1,
@@ -390,8 +399,8 @@ class MailAlertThrottleKeyTest(_B14AlertGateBase):
              mock.patch.object(self.webapp.mailer, "admin_notify_enabled",
                                return_value=True), \
              mock.patch.object(self.webapp.mailer, "send_admin_alert", side_effect=send), \
-             mock.patch.object(self.webapp.notify, "send", return_value=False), \
-             mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
+             mock.patch.object(_notify_mail.notify, "send", return_value=False), \
+             mock.patch.object(_notify_mail.notify, "pop_exhaustion_notice",
                                return_value=None):
             self.webapp._mail_alert_ts.clear()
             _notify_mail.send_notification("账号安全事件告警", "用户自助改密")
@@ -408,8 +417,8 @@ class MailAlertThrottleKeyTest(_B14AlertGateBase):
              mock.patch.object(self.webapp.mailer, "admin_notify_enabled",
                                return_value=True), \
              mock.patch.object(self.webapp.mailer, "send_admin_alert", side_effect=send), \
-             mock.patch.object(self.webapp.notify, "send", return_value=False), \
-             mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
+             mock.patch.object(_notify_mail.notify, "send", return_value=False), \
+             mock.patch.object(_notify_mail.notify, "pop_exhaustion_notice",
                                return_value=None):
             self.webapp._mail_alert_ts.clear()
             _notify_mail.send_notification("高危管理操作告警", "第一次")
