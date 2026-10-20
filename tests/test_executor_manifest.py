@@ -730,6 +730,26 @@ class RowPermissionTest(_WebBase):
 class LaunchWiringTest(unittest.TestCase):
     """拉起路径：清单的拉起列表排除停用/兜底行；槽位号贯穿身份/锁/心跳（不拉起停用槽位）。"""
 
+    def setUp(self):
+        """给每例一个自己的临时库（工单 mgq5）。
+
+        `runner.main()` 会按 `YIBAN_DB_FILE` 装载账号。类边界已丢弃继承连接，
+        若沿用环境里指向已删除目录的旧路径，`sqlite3.connect` 会以 "unable to
+        open database file" 失败——旧行为靠继承连接掩盖了这一点。
+        """
+        tmp = tempfile.mkdtemp(prefix="yiban-manifest-launch-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        old = os.environ.get("YIBAN_DB_FILE")
+        os.environ["YIBAN_DB_FILE"] = os.path.join(tmp, "yiban.db")
+
+        def _restore():
+            if old is None:
+                os.environ.pop("YIBAN_DB_FILE", None)
+            else:
+                os.environ["YIBAN_DB_FILE"] = old
+
+        self.addCleanup(_restore)
+
     ROWS = ({"slot": 0, "type": "worker", "proxy": "http://w0:1"},
             {"slot": 1, "type": "disabled", "proxy": "http://w1:2"},
             {"slot": 2, "type": "fallback", "proxy": "http://fb:3"},

@@ -353,15 +353,26 @@ class InitDbSemanticsTest(_ConnStateBase):
         self.assertEqual(row[0], 1, "get_conn() 必须给出能跑 SQL 的真连接")
         self.assertIs(impl.get_conn(), c)
 
-    def test_second_init_returns_same_conn_but_refreshes_paths(self):
-        """连接复用，但 `_db_file`/`_env_file` **无条件刷新**（既有语义，原 db.py:169-170）。"""
+    def test_init_db_same_path_is_idempotent_and_path_switch_fails_closed(self):
+        """同路径幂等复用；**换路径必须显式收尾**（工单 mgq5）。
+
+        旧语义是"换路径也返回旧连接、只刷新声明值"——那会让后续写入静默落到旧库
+        （测试夹具因此失去隔离，表现为"单跑绿、全量红"）。新语义：
+        同路径 → 同一连接；不同路径 → `RuntimeError`；关连接后 → 打开新库。
+        """
         first = self._temp_db()
         c = impl.init_db(db_file=first, env_file="a.env", cleanup=False)
-        again = impl.init_db(db_file=os.path.join(os.path.dirname(first), "other.db"),
-                             env_file="b.env", cleanup=False)
-        self.assertIs(again, c, "第二次 init_db 必须复用同一连接")
-        self.assertEqual(conn_mod._db_file, os.path.join(os.path.dirname(first), "other.db"))
-        self.assertEqual(conn_mod._env_file, "b.env")
+        again = impl.init_db(db_file=first, env_file="b.env", cleanup=False)
+        self.assertIs(again, c, "同路径重复初始化必须复用同一连接")
+        self.assertEqual(conn_mod._env_file, "b.env", "同路径时 env_file 仍刷新")
+        other = os.path.join(os.path.dirname(first), "other.db")
+        with self.assertRaises(RuntimeError):
+            impl.init_db(db_file=other, cleanup=False)
+        self._close_current()
+        fresh = impl.init_db(db_file=other, cleanup=False)
+        self.assertIsNot(fresh, c, "显式收尾后必须打开新库")
+        self.assertEqual(conn_mod.current_db_file(),
+                         os.path.realpath(other), "新连接必须指向声明的库")
 
     def test_implicit_init_via_get_conn_uses_env_and_honours_patch(self):
         """裸 `get_conn()` 的隐式初始化走 `db.init_db`（拆到 connection 后仍可打桩）。
@@ -1227,6 +1238,18 @@ class AccountDedupeTest(unittest.TestCase):
         os.environ.pop("YIBAN_ACCOUNTS", None)
         os.environ.pop("YIBAN_PHONE", None)
         os.environ["YIBAN_DB_FILE"] = os.path.join(tempfile.mkdtemp(prefix="yiban-dedupe-"), "x.db")
+        # 本用例每例换库；`init_db` 现在拒绝在已有连接上静默换库（工单 mgq5），
+        # 故必须先丢弃继承来的连接，否则 `load_accounts()` 会以 RuntimeError 失败。
+        # （旧行为是复用旧连接 ⇒ 本用例其实一直跑在别的类的库上。）
+        def _drop_conn():
+            conn = conn_mod.current()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+            impl._conn = None
+
+        _drop_conn()
+        self.addCleanup(_drop_conn)
 
     def tearDown(self):
         os.environ.clear()

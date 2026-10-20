@@ -509,6 +509,12 @@ class _StateForwardingModule(types.ModuleType):
 sys.modules[__name__].__class__ = _StateForwardingModule
 
 
+def _same_store_path(a, b):
+    """两个库路径是否指向同一个文件（realpath + normcase，Windows 大小写不敏感）。"""
+    return (os.path.normcase(os.path.realpath(os.path.abspath(str(a))))
+            == os.path.normcase(os.path.realpath(os.path.abspath(str(b)))))
+
+
 def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True,
             create=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
@@ -538,6 +544,21 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     # 看到的根本不是同一个库（2026-09-21 测试机 47 E2E 实测）。
     db_path = db_file or env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)
     _connection.set_db_file(db_path)
+    # 已有连接时**不许静默换库**（工单 mgq5）：旧行为只刷新 `_db_file` 元数据、返回旧
+    # 连接，于是 `init_db(别的库)` 之后的写入会落到旧库（测试夹具因此静默失去隔离，
+    # 表现为"单跑绿、全量红"的假红）。切库必须由调用方显式收尾（关连接 →
+    # `connection.reset_conn()`），这里 fail-closed 并点名两侧路径。
+    # `:memory:` 连接按连接独立，跳过比较（PRAGMA 报的路径不可比）。
+    _existing = _connection.current()
+    if _existing is not None:
+        _actual = _connection.current_db_file()
+        if (_actual and ":memory:" not in _actual
+                and ":memory:" not in str(db_path)
+                and not _same_store_path(_actual, db_path)):
+            raise RuntimeError(
+                "init_db 拒绝在已有连接上切换库：当前连接指向 %r，本次声明 %r。"
+                "切库前请关闭旧连接并调用 connection.reset_conn()——"
+                "否则写入会落到旧库（工单 mgq5）" % (_actual, db_path))
     if not create:
         # 只读初始化：已初始化过就直接复用（只读入口只在进程首次打开库时有意义，
         # 不能把既有连接静默换成另一条只读连接）。
