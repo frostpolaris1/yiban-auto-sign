@@ -3,7 +3,7 @@
 # backup.sh —— 易班自动签到数据每日备份脚本
 # ============================================================
 # 功能：
-#   1. 本地打包数据文件 → /var/backups/yiban-YYYY-MM-DD.tar.gz（0600）
+#   1. 本地打包数据文件 → /var/backups/yiban/yiban-YYYY-MM-DD.tar.gz（0600）
 #      - yiban.db（SQLite：账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 #      - .env（管理员口令 / YIBAN_ACCOUNTS_KEY 等敏感配置）
 #      - 密钥文件：/etc/yiban/accounts-key（存在则单独置于 keys/ 子目录）
@@ -38,11 +38,14 @@
 #   M3 批次0 起生产执行件收编在 deploy/prod/（校验和对账 + 一键安装）：
 #   sudo DESTDIR= bash deploy/prod/install.sh    # 本脚本→/usr/local/sbin/yiban-backup.sh
 #   （或手工：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
-#   sudo crontab -e
+#   权威件 deploy/prod/cron.d/yiban-backup（install.sh 落位；内容即下一行）；手工安装时才
+#   需要 `sudo crontab -e` 抄同一行。
 #   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
 #   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
 #   # 口令经 wrapper 的 stdin fd 0 单跳注入（见 deploy/prod/yiban-backup-wrapper.sh），
 #   # 别再往 crontab 行/env 里写 BACKUP_GPG_PASSPHRASE——那会把口令带进整棵子进程树。
+#   # 备份目录默认 /var/backups/yiban：与 pull-prod-backup.sh 的 REMOTE_BACKUP_DIR、
+#   # backup_sentinel.py 的 DEFAULT_BACKUP_DIR 同值，改一处必须三处同改（有门钉住）。
 #   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 异机副本走 REMOTE_BACKUP：放 wrapper 之后的同一行 env 前缀即可（非机密主机名）：
 #   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
