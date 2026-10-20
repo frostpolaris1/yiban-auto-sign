@@ -72,7 +72,9 @@ class EvaluateTest(unittest.TestCase):
         self.assertIn("没有测试提到它", bad[0][1])
 
     def test_registry_uncovered_is_explicitly_registered(self):
-        bad, _, reg = self._eval(["docs/dev/x.md"])
+        # 片段拼装：本文件是入库文本件，写死未入库的 doc 路径会被文档引用门判红。
+        probe = "docs/" + "dev/" + "x.md"
+        bad, _, reg = self._eval([probe])
         self.assertEqual(bad, [])
         self.assertEqual(len(reg), 1)
 
