@@ -55,8 +55,9 @@ class SendNeverRaisesTest(unittest.TestCase):
         _NeverReachedSMTP.calls = 0
 
     def _send_with_body(self, subject, body):
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "smtp_list", lambda: [_entry()]), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: [_entry()]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _NeverReachedSMTP):
             return mailer_transport._send(subject, body, "to@example.com")
 
@@ -80,8 +81,9 @@ class SendNeverRaisesTest(unittest.TestCase):
                 seen.append(host)
                 raise UnicodeEncodeError("utf-8", host, 0, 1, "simulated 构造级失败")
 
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "smtp_list", lambda: entries), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: entries), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _ExplodingSMTP):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertFalse(ok)
@@ -110,9 +112,10 @@ class SendNeverRaisesTest(unittest.TestCase):
             def sendmail(self, f, t, msg):
                 payload["msg"] = msg
 
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
              mock.patch.object(mailer, "smtp_list",
-                               lambda: [_entry("first.example"), _entry("second.example")]), \
+                               lambda *a, **k: [_entry("first.example"), _entry("second.example")]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FlakySMTP):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertTrue(ok)
