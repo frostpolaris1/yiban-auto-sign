@@ -40,7 +40,9 @@ import ast
 import datetime
 import inspect
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -337,6 +339,54 @@ class MultiExecutorDrillInvariantsTest(unittest.TestCase):
             "变异未生效：DRILL_MUTATE=%s 未真正改变被测函数（哨兵结论=%s）——"
             "此时不变式绿是**假绿**，与'不变式没被打破'是两件事"
             % (mutate, probe))
+
+
+class FindChildPidsInstanceIsolationTest(unittest.TestCase):
+    """wkx8：pid 查找按演练实例隔离，同机两个演练不得互指对方的 `worker-0`。
+
+    假 `/proc` 树即可：被测性质是"匹配键"，与真实进程无关（不需要真起进程）。
+    """
+
+    EID = "worker-0@drill-host"
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="yiban-fakeproc-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _proc(self, pid, **env):
+        d = os.path.join(self.root, str(pid))
+        os.makedirs(d)
+        with open(os.path.join(d, "environ"), "wb") as f:
+            f.write(b"\x00".join(("%s=%s" % kv).encode() for kv in env.items()) + b"\x00")
+
+    def test_each_drill_only_matches_its_own_worker(self):
+        self._proc(101, YIBAN_EXECUTOR_ID=self.EID, DRILL_INSTANCE_TOKEN="drill-a")
+        self._proc(102, YIBAN_EXECUTOR_ID=self.EID, DRILL_INSTANCE_TOKEN="drill-b")
+        self._proc(103, YIBAN_EXECUTOR_ID="worker-1@drill-host",
+                   DRILL_INSTANCE_TOKEN="drill-a")
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-a"), [101],
+            "drill-a 只能命中自己的 worker-0")
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-b"), [102],
+            "drill-b 只能命中自己的 worker-0")
+
+    def test_worker_without_instance_token_is_not_matched(self):
+        """无 token 的进程不能算"本次演练的子树"——宁可杀注入放空枪，也不误杀。"""
+        self._proc(201, YIBAN_EXECUTOR_ID=self.EID)
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-a"), [])
+
+    def test_token_inside_another_value_is_not_a_match(self):
+        """匹配的是完整 env 条目，token 只出现在别的变量值里不算数。"""
+        self._proc(301, YIBAN_EXECUTOR_ID=self.EID,
+                   OTHER="DRILL_INSTANCE_TOKEN=drill-a")
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-a"), [])
 
 
 if __name__ == "__main__":
