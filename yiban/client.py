@@ -165,10 +165,13 @@ class _SessionCache:
         client = self._client
         if not db.is_initialized():
             return
-        if not account_still_signable(client.account):
-            # 账号在登录过程中被删除/停用：不落库。session_cache 的清理全按现存账号行
+        still = account_still_signable(client.account)
+        if not still:
+            # 账号在登录过程中被删除/停用，或状态查询本身失败（None，fail-closed）：
+            # 两种情况都不落库。session_cache 的清理全按现存账号行
             # 的 phone 驱动，为已消失的账号写入会留下**永久孤儿**凭据缓存。
-            logger.debug(f"[{client.account.phone}] 账号已删除/停用，不保存会话缓存")
+            reason = "状态复核失败" if still is None else "已删除/停用"
+            logger.debug(f"[{client.account.phone}] 账号{reason}，不保存会话缓存")
             return
         cookies = dict_from_cookiejar(session.cookies)
         if not cookies:

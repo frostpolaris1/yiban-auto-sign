@@ -784,6 +784,7 @@ async def _attempt(ctx, item):
     max_attempts, clear_cache = attempts._retry_budget(message)
     if clear_cache:
         attempts.clear_session_cache_quiet(phone)
+    no_room_today = False
     if attempts_n + 1 < max_attempts:
         base = max(1, int(ctx.cfg["retry_min_interval"]))
         nxt = next_retry_at_v3(_now(), ctx.cfg, ctx.last_delay.get(phone, base), ctx.rng,
@@ -797,6 +798,12 @@ async def _attempt(ctx, item):
             _emit_event(ctx, phone, STATUS_RETRYING, retry_msg, attempt_no=attempts_n + 1)
             logger.warning("%s [%s] ⏳ %s", ctx.log_tag, _mask_phone(phone), retry_msg)
             return
+        # 当天没有可用落点（窗口已过 / 余量放不下最小间隔）：这是"当日放弃"，不是
+        # "该类失败可再试"。收尾必须用保守档——否则默认回炉口（`requeue_failed`）
+        # 会把 skipped_window/no_position 这类默认可回炉的行立刻翻回 pending，
+        # 下一拍重新领取 ⇒ 真实登录间隔只剩 gap 门（默认 10s），正是
+        # `YIBAN_RETRY_MIN_INTERVAL` 要防的连击（工单 ba-p03-04）。
+        no_room_today = True
         logger.error("%s [%s] ❌ 窗口剩余不足，不再重试: %s",
                      ctx.log_tag, _mask_phone(phone), _sanitize_text(message))
     else:
@@ -806,8 +813,10 @@ async def _attempt(ctx, item):
     # 弃权收尾带档位前缀：这是回炉口唯一的判据（窗口外/无点位→默认档当日自动回炉，
     # 预算耗尽/风控→保守档，只由显式路径放行）。不带前缀的 failed 行会被当作
     # 保守档——判不清原因的宁可要求显式路径，也不要无上限重复真实登录。
-    _settle(ctx, phone, epoch, queue_store.STATE_FAILED,
-            _tier_prefix(status) + message)
+    # `no_room_today` 例外见上：当日已无落点 ⇒ 保守档，回炉会绕开最小间隔。
+    prefix = (yiban_status.RESULT_FINAL_PREFIX if no_room_today
+              else _tier_prefix(status))
+    _settle(ctx, phone, epoch, queue_store.STATE_FAILED, prefix + message)
 
 
 async def _lane(ctx, lane_id):
