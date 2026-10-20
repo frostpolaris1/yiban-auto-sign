@@ -59,6 +59,11 @@ services:
       - YIBAN_LOG_FILE=/data/logs/sign.log
       # 经容器内 nginx HTTPS 反代，强制会话 Cookie 仅经 HTTPS 发送
       - YIBAN_COOKIE_SECURE=1
+      # 转发头信任：容器内 nginx 以覆盖式重写 XFF（proxy_set_header X-Forwarded-For
+      # $remote_addr），应用必须显式采信才能按真实客户端 IP 分桶。缺省已翻转为
+      # 「不信任」（ba-p07-01）：不置这一行，全部客户端会塌进回环桶。
+      # 若 /data/.env 里同名键为空串，M27 的"补缺"会让本行生效。
+      - YIBAN_TRUST_FORWARDED_HEADERS=1
       # ---- 每日 02:00 定时备份（M44）----
       # 路径类参数由调度器在子进程 env 里给 backup-docker.sh；**口令不入环境**，
       # 只给口令文件路径（脚本读它，不把它带进 tar/gpg 的子进程树）。

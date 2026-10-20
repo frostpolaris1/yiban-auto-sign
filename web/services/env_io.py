@@ -114,10 +114,35 @@ def read_env(env_path):
     return _env_io.parse_env_file(env_path)
 
 
-def load_env_int(env_path, key, default):
-    """读取 .env 中的整数配置，缺失/非法回退默认值。"""
+def effective_env(env_path):
+    """**生效配置层**：进程环境为底、`.env` 覆盖（M27 全仓口径，唯一实现）。
+
+    为什么需要它：`.env` 与进程环境是两层真值域，而仓库口径只承认一套——
+    `.env` 优先、进程环境只补缺（`docker-compose.yml` 的 M27 注释）。本包此前
+    有 `.env`-only（`load_env_int` / `read_env`）与 overlay（`capacity` /
+    `signstatus` 由调用方注入 overlay）两种读法：同一个"这次判定看哪份值"的概念
+    两套实现，键只配在进程环境（systemd `Environment=`、`docker run -e`）时
+    容量/口令门禁旋钮会静默读成缺省值。
+    `.env` 里写了空值仍按"未配置"处理，让进程环境补缺（与 notify 侧 `_env_str` 同语义）。
+    """
+    env = {k: v for k, v in os.environ.items() if k.startswith("YIBAN_")}
+    for key, value in read_env(env_path).items():
+        if str(value or "").strip():
+            env[key] = value
+    return env
+
+
+def load_env_int(env_path, key, default, overlay=True):
+    """读取整数配置，缺失/非法回退默认值。
+
+    `overlay=True`（缺省）按 `effective_env` 的生效配置层取值：`.env` 优先、
+    进程环境补缺（M27）。容量上限、口令门禁 TTL/冷却、暂停位这类键在"只配进程
+    环境"的部署里因此不再静默读成缺省值。需要严格只读 `.env` 的调用面显式传
+    `overlay=False`。
+    """
     try:
-        return max(0, int(read_env(env_path).get(key, "")))
+        source = effective_env(env_path) if overlay else read_env(env_path)
+        return max(0, int(source.get(key, "")))
     except (TypeError, ValueError):
         return default
 
@@ -527,10 +552,15 @@ def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
     那是行模型歧义的唯一现场；普通配置行/注释行一律拒绝（本端点不是 .env
     编辑器，不存在借道删配置的口子）。写路径与写入口同一套纪律：跨进程写锁、
     写前字节快照、失败按原字节回滚、审计留痕（片段走同一脱敏原语链）。
+
+    **落盘必须走 `_atomic_write`**（本包声明的"每一次 .env 落盘"唯一实现）：
+    `open(env_path, "w")` 先截断成 0 字节，并发读者（run.sh 逐行 export、
+    引擎子进程、其他线程的 `read_env`）在这个窗口里会拿到空/半份 `.env`——
+    读到空配置不会报错，只会按默认值行事。原子写让读者只见旧内容或新内容，
+    失败时目标文件保持旧内容，故不再需要就地把原字节写回（那会二次制造窗口）。
     返回 (ok, message, remaining)：ok=False 时 message 说明为什么拒绝。
     """
     with env_lock.env_write_lock(env_path):
-        raw_bytes = _env_io._read_env_bytes(env_path)
         lines = _env_io.split_env_lines(_env_io._read_env_text(env_path))
         if not 1 <= line_no <= len(lines):
             return False, f"行号越界（文件共 {len(lines)} 行）", None
@@ -543,15 +573,11 @@ def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
         still_bad = [i + 1 for i, ln in enumerate(remaining)
                      if _env_io.has_line_break(ln)]
         try:
-            with open(env_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(new_text)
-            os.chmod(env_path, 0o600)
-        except OSError as e:
-            # 写失败按写前原字节回滚（与 write_env_keys 的回滚同一立场）
-            if raw_bytes is not None:
-                with contextlib.suppress(OSError), open(env_path, "wb") as f:
-                    f.write(raw_bytes)
-            return False, f"清理写入失败（已回滚）：{e}", None
+            _host("atomic_write")(env_path, new_text, chmod_priv=True)
+        except (OSError, ValueError) as e:
+            # 原子写失败时目标文件仍是旧内容（临时文件由 _atomic_write 清理），
+            # 不存在"半份 .env"需要回滚；如实报错让运维处置。
+            return False, f"清理写入失败（原文件未改动）：{e}", None
         if audit is not None:
             with contextlib.suppress(Exception):
                 audit("env_line_cleanup", f"移除第 {line_no} 行（含潜伏行分隔符），"

@@ -5,7 +5,8 @@
 // 拆壳（退役账「core.js 拆壳」，第一刀）：外壳**外观**族（主题 / 抽屉 / 服务器时钟 / 慢请求交换 /
 //   显示偏好）已搬到 `web/static/js/shell-chrome.js`，该文件**必须先于本文件载入**。本文件在入口
 //   捕获它的命名空间（`window.YB.__chrome`），并把基础工具经 `window.YB_INTERNALS` 借给它用。
-// 通信（入）：partials/theme_boot.html 先定义全局 BASE 作路径前缀；本文件必须排在页面脚本之前载入
+// 通信（入）：partials/theme_boot.html 引入的 `theme-boot.js` 先定义全局 BASE 作路径前缀
+//   （CSP 加固后内联脚本外置，仍由 theme_boot 在 <head> 同步加载）；本文件必须排在页面脚本之前载入
 //   （顺序契约见 tests/test_web_js_modules.py）。通信（出）：外壳只读端点 GET /api/me、/api/clock、
 //   /api/announcement、/api/accounts、/api/users、/api/changelog 与会话端点 POST /api/logout，
 //   实现见 web/routes/ 下各 blueprint。

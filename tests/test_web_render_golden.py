@@ -4,7 +4,7 @@
 标签：F · 前端与界面守卫
 覆盖：登录页、管理端总览 `/`、用户端 `/user` 与 `/user/calendar` 的渲染结构指纹，以及静态资源引用清单的金标准
 对应实现：`web/app.py` 的页面路由与 `web/templates/**`；快照在 `tests/golden/*.rendered.html` 与 `tests/golden/assets.json`
-关键断言：归一化只允许 N1–N4（清 script/style 内容、`?v=` 归一、空白压平），**不要为了让测试通过而新增规则**；资源清单单独存在是因为「CSS/JS 外提」会被结构指纹悄悄抹平；清单里的每个 `/static/` 资源都必须真实存在于磁盘；快照缺失时报错并给出重建命令，而不是自动重建
+关键断言：归一化只允许 N1–N6（清 script/style 内容、`?v=` 归一、逐请求 nonce 归一、版本 meta 归一、空白压平），**不要为了让测试通过而新增规则**；资源清单单独存在是因为「CSS/JS 外提」会被结构指纹悄悄抹平；清单里的每个 `/static/` 资源都必须真实存在于磁盘；快照缺失时报错并给出重建命令，而不是自动重建
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node（真渲染页面，故临时库里要预置主管理员与一个 role=user 的账号——`_current_role` 会回查数据库）。更新快照靠 `UPDATE_GOLDEN=1`
 
 ## 为什么需要它
@@ -50,6 +50,8 @@ P4（Tailwind v4）、U1（类名解耦）、V1–V4（daisyUI 视觉替换）�
 | N2 | `<style ...>…</style>` 同理 | CSS 外提同上 |
 | N3 | `?v=<任意非空白/引号内容>` → `?v=*` | `web_version` 每次发版都变；它不表达任何结构信息，参与比对会在每次发版时误报 |
 | N4 | 连续空白（含换行）压成单个空格并去首尾 | Jinja `include` 拆分与 `base.html` 引入会改变缩进与换行，属排版噪音。真正的结构变化仍会被捕获——标签序列变了 |
+| N5 | `nonce="<任意非空白/引号内容>"` → `nonce="*"` | CSP 逐请求 nonce（工单 56ed）每次请求都变；它不表达任何结构信息，参与比对会在每次渲染时误报。与 N3 同一理由：非确定性凭据不是结构 |
+| N6 | `<meta name="yiban-web-version" content="…">` 的 content → `*` | 外置引导脚本消费的版本戳（工单 56ed）：与 `?v=` 是**同一个** `WEB_VERSION`，构建时刻变化；结构信息由标签本身承载 |
 
 **不要为了让测试通过而新增归一化规则。** 新增规则前先证明该差异是"非确定性/排版噪音"
 而非"结构变化"，并在本表补一条含理由的记录。
@@ -92,16 +94,23 @@ _SCRIPT_CONTENT_RE = re.compile(r"(<script\b[^>]*>).*?(</script\s*>)", re.I | re
 _STYLE_CONTENT_RE = re.compile(r"(<style\b[^>]*>).*?(</style\s*>)", re.I | re.S)
 # ---- N3 ----
 _VERSION_QUERY_RE = re.compile(r"\?v=[^\"'&\s>]*")
+# ---- N5 ----
+_NONCE_ATTR_RE = re.compile(r"\bnonce\s*=\s*\"[^\"]*\"", re.I)
+# ---- N6 ----
+_WEB_VERSION_META_RE = re.compile(
+    r"(<meta\s+name=\"yiban-web-version\"\s+content=\")[^\"]*(\")", re.I)
 # ---- 资源清单抽取 ----
 _ASSET_TAG_RE = re.compile(r"<(?:script|link)\b[^>]*>", re.I)
 _ATTR_RE = re.compile(r"\b(src|href|rel)\s*=\s*\"([^\"]*)\"")
 
 
 def normalize(html):
-    """按模块 docstring 的 N1–N4 归一化；规则增减必须同步更新那张表。"""
+    """按模块 docstring 的 N1–N6 归一化；规则增减必须同步更新那张表。"""
     html = _SCRIPT_CONTENT_RE.sub(r"\1\2", html)
     html = _STYLE_CONTENT_RE.sub(r"\1\2", html)
     html = _VERSION_QUERY_RE.sub("?v=*", html)
+    html = _NONCE_ATTR_RE.sub('nonce="*"', html)
+    html = _WEB_VERSION_META_RE.sub(r"\1*\2", html)
     html = re.sub(r"\s+", " ", html)
     return html.strip()
 
