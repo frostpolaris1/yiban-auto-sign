@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
 
 from yiban.adapters.persistence import purge_guard
+from yiban.core.status import ALL_STATUSES
 
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 
@@ -243,10 +244,10 @@ def main(argv=None):
         )
 
     print("生成签到事件 ...")
-    # 取值必须与 scripts/signin.py 的 STATUS_* 常量、以及 stage 的两种口径对齐，
-    # 否则前端的分类统计会得到与真实运行不符的演示结果（stage 只有 sign/probe 两种）。
-    statuses = ["success", "already", "no_task", "failed", "retrying",
-                "skipped_window", "no_position", "paused", "user_cancelled"]
+    # 取值直接取自唯一事实源 `yiban.core.status.ALL_STATUSES`（工单 ba-p11-08）：
+    # 手抄清单会随新增状态码静默漂移（此前缺 skipped_norange / pending /
+    # global_paused）。stage 只有 sign/probe 两种（与 scripts/signin.py 口径一致）。
+    statuses = list(ALL_STATUSES)
     for day in range(args.days):
         for _ in range(args.events_per_day):
             db.add_sign_event(
