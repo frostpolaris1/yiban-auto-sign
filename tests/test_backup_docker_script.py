@@ -94,6 +94,10 @@ class ContainerBackupScriptTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.data = os.path.join(self.tmp, "data")
         os.makedirs(os.path.join(self.data, "logs"))
+        # P12-21：审计锚点是备份产物的硬前提（缺它恢复后取证判据失效，脚本删产物并 rc=1）。
+        # 夹具按生产形态在 DATA_DIR 内放一份锚点。
+        os.makedirs(os.path.join(self.data, "state"))
+        self._write(os.path.join(self.data, "state", "audit-anchor.log"), "anchor\n")
         self.backup_dir = os.path.join(self.tmp, "backups")
         os.makedirs(self.backup_dir)
         self.gnupg = os.path.join(self.tmp, "gnupg")

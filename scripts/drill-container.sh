@@ -114,6 +114,12 @@ DRILL_ENV_HEAD="# 容器演练专用 .env"
 STEP="init"
 CLEANED=0
 EV=""
+# P12-25：探测脚本落私有临时目录（0700、mktemp 随机名），不用世界可写的
+# /tmp/drill_*.py 固定名——同机其他本地用户可预建同名文件/符号链接，替换掉
+# "隔离红线破了没破"的判据本身。目录纳入 cleanup 与 C7 残留对账。
+DRILL_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yiban-drill.XXXXXX")" \
+  || { printf '\n[FAIL] 前提不满足：无法创建私有临时目录（mktemp -d 失败）\n' >&2; exit 2; }
+chmod 700 "$DRILL_TMP"
 
 usage() { sed -n '2,74p' "$SELF"; }
 
@@ -142,6 +148,7 @@ drill_owned_data() {
 
 cleanup() {
   rc=$?
+  rm -rf "$DRILL_TMP" 2>/dev/null || true
   if [ "$CLEANED" -eq 0 ]; then
     CLEANED=1
     docker rm -f "$CTR" >/dev/null 2>&1 || true
@@ -202,8 +209,9 @@ done
 command -v docker >/dev/null || pre "docker 不可用"
 [ -x "$HOST_PYTHON" ] || pre "宿主解释器不可用：$HOST_PYTHON"
 command -v openssl >/dev/null || pre "openssl 不可用"
-# 调度器首签闩锁是无上界判定，本机时钟未过 06:31 则整轮永不触发
-NOW_HM="$(date +%H:%M)"
+# 调度器首签闩锁是无上界判定（容器被强制 TZ=Asia/Shanghai），本机时钟未过 06:31
+# 则整轮永不触发。判据必须按**北京钟**取，不能取宿主本地钟（P12-24）。
+NOW_HM="$(TZ=Asia/Shanghai date +%H:%M)"
 if [ "$NOW_HM" \< "$FIRST_LATCH" ]; then
   pre "本机时钟 $NOW_HM 未过容器调度器首签闩锁 $FIRST_LATCH，本轮不会自动触发；请稍后再跑"
 fi
@@ -266,7 +274,10 @@ rm -f data/mock.ready
 NOW_S=$(date +%s)
 WIN_S=$((NOW_S + LEAD_SEC))
 WIN_E=$((NOW_S + LEAD_SEC + SPAN_SEC))
-[ "$((WIN_S / 86400))" -eq "$((WIN_E / 86400))" ] || pre "合成窗口跨日历日，请调小 --window-span-sec"
+# 跨日判定按**北京业务日**（容器被强制 TZ=Asia/Shanghai；UTC 日界会在北京
+# 00:00-08:00 把同一业务日的窗口误判成跨日，或反之）——P12-24。
+[ "$(((WIN_S + 8 * 3600) / 86400))" -eq "$(((WIN_E + 8 * 3600) / 86400))" ] \
+  || pre "合成窗口跨日历日（北京业务日），请调小 --window-span-sec"
 export DRILL_TREE="$ROOT" DRILL_N="$ACCOUNTS" DRILL_WS="$WIN_S" DRILL_WE="$WIN_E"
 "$HOST_PYTHON" - > "$EV/c2-seed.log" 2>&1 <<'PY' || { cat "$EV/c2-seed.log" >&2; die "造数失败（c2-seed.log）"; }
 import contextlib, datetime, os, sys
@@ -282,8 +293,12 @@ os.umask(0o77)
 os.makedirs(TREE + "/data/state", exist_ok=True)
 os.makedirs(TREE + "/data/logs", exist_ok=True)
 
-start = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WS"]))
-end = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WE"]))
+start = datetime.datetime.fromtimestamp(
+    int(os.environ["DRILL_WS"]),
+    datetime.timezone(datetime.timedelta(hours=8)))
+end = datetime.datetime.fromtimestamp(
+    int(os.environ["DRILL_WE"]),
+    datetime.timezone(datetime.timedelta(hours=8)))
 assert start.date() == end.date(), "合成窗口不得跨日历日"
 
 if not os.path.exists(ENV):
@@ -424,7 +439,7 @@ for _ in $(seq 1 30); do
 done
 [ -f data/mock.ready ] || die "mock 未在 30s 内就绪"
 
-cat > /tmp/drill_tls_pos.py <<'PY'
+cat > "$DRILL_TMP/drill_tls_pos.py" <<'PY'
 import sys, requests
 try:
     r = requests.get("https://oauth.yiban.cn/__health", timeout=5)
@@ -434,7 +449,7 @@ except Exception as e:
     print("POS-FAIL", type(e).__name__, e)
     sys.exit(4)
 PY
-cat > /tmp/drill_tls_neg.py <<'PY'
+cat > "$DRILL_TMP/drill_tls_neg.py" <<'PY'
 import sys, requests
 try:
     r = requests.get("https://oauth.yiban.cn/__health", timeout=5)
@@ -447,7 +462,7 @@ except Exception as e:
     print("NEG-OTHER", type(e).__name__, e)
     sys.exit(6)
 PY
-cat > /tmp/drill_egress.py <<'PY'
+cat > "$DRILL_TMP/drill_egress.py" <<'PY'
 import socket, sys
 # RFC 5737 文档地址；--internal 网络里必须连不通（结构性隔离的实证）
 try:
@@ -459,9 +474,9 @@ except OSError as e:
     print("EGRESS-BLOCKED", type(e).__name__, e)
     sys.exit(0)
 PY
-docker cp /tmp/drill_tls_pos.py "$CTR:/tmp/pos.py"
-docker cp /tmp/drill_tls_neg.py "$CTR:/tmp/neg.py"
-docker cp /tmp/drill_egress.py "$CTR:/tmp/egress.py"
+docker cp "$DRILL_TMP/drill_tls_pos.py" "$CTR:/tmp/pos.py"
+docker cp "$DRILL_TMP/drill_tls_neg.py" "$CTR:/tmp/neg.py"
+docker cp "$DRILL_TMP/drill_egress.py" "$CTR:/tmp/egress.py"
 
 {
   echo "== 挂 CA 时 mock 必须可达 =="
@@ -496,7 +511,7 @@ note "web=200（容器内回环）、sched 进程在位、RestartCount=0、心�
 
 # ---- C6 整轮签到 -----------------------------------------------------------
 step "C6 整轮签到（等窗口开闸 → 真签到链 → 汇总）"
-TODAY="$(date +%F)"
+TODAY="$(TZ=Asia/Shanghai date +%F)"
 LOG=""
 DEADLINE=$(( $(date +%s) + TIMEOUT_SEC ))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -571,6 +586,9 @@ note "宿主 ss -ltnp 与 /etc/hosts md5 前后零变化"
 docker rm -f "$CTR" >/dev/null
 docker network rm "$NET" >/dev/null
 CLEANED=1
+# P12-25：临时探测目录也纳入残留对账（与容器/网络同等对待），删后自检。
+rm -rf "$DRILL_TMP"
+[ ! -e "$DRILL_TMP" ] || die "私有临时目录残留（$DRILL_TMP）"
 docker ps -a --filter "name=^${CTR}$" --format '{{.Names}}' > "$EV/c7-leftover-ctr.txt"
 docker network ls --filter "name=^${NET}$" --format '{{.Name}}' > "$EV/c7-leftover-net.txt"
 [ ! -s "$EV/c7-leftover-ctr.txt" ] || die "容器残留（见 c7-leftover-ctr.txt）"
@@ -582,7 +600,8 @@ note "容器与网络已清理、无残留；镜像 $IMAGE 保留供复跑"
 # ---- 汇总 ------------------------------------------------------------------
 step "演练结论"
 printf 'window=%s~%s\nfinished=%s\nresult=PASS\n' \
-  "$(date -d "@$WIN_S" +%H:%M:%S)" "$(date -d "@$WIN_E" +%H:%M:%S)" "$(date -Is)" >> "$EV/run.meta"
+  "$(TZ=Asia/Shanghai date -d "@$WIN_S" +%H:%M:%S)" \
+  "$(TZ=Asia/Shanghai date -d "@$WIN_E" +%H:%M:%S)" "$(date -Is)" >> "$EV/run.meta"
 
 cat <<EOF
 

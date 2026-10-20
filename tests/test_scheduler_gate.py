@@ -444,6 +444,12 @@ fi
         env["DATA_DIR"] = "data"
         env["BACKUP_DIR"] = "backups"
         env["FAKEBIN"] = fakebin
+        # P12-21：缺审计锚点即失败；夹具按生产形态造一份（DATA_DIR/state 内）。
+        os.makedirs(os.path.join(tmp, "data", "state"), exist_ok=True)
+        anchor = os.path.join(tmp, "data", "state", "audit-anchor.log")
+        if not os.path.exists(anchor):
+            with io.open(anchor, "w", encoding="utf-8") as f:
+                f.write("anchor\n")
         if extra_env:
             env.update(extra_env)
         # PATH 注入假 gpg（Git Bash 需 POSIX 路径；无 cygpath 时做朴素转换）
@@ -599,6 +605,11 @@ fi
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("YIBAN_", "BACKUP_"))}
         env.update({"DATA_DIR": "data", "BACKUP_DIR": "backups", "FAKEBIN": fakebin})
+        os.makedirs(os.path.join(tmp, "data", "state"), exist_ok=True)
+        anchor = os.path.join(tmp, "data", "state", "audit-anchor.log")
+        if not os.path.exists(anchor):
+            with io.open(anchor, "w", encoding="utf-8") as f:
+                f.write("anchor\n")
         env.update(extra or {})
         env["PATH"] = fakebin + os.pathsep + env.get("PATH", "")
         return env
