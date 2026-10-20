@@ -912,6 +912,28 @@ class SharedFactsTrackedFaceTest(unittest.TestCase):
         self.assertIn("跟踪 2 / 实扫 2", r.stdout,
                       "报告必须打印跟踪集大小与实扫文件数（口径可见）")
 
+    def test_worktree_gitdir_file_is_resolved(self):
+        """worktree 形态：`.git` 是**文件**（gitdir 指针），门必须照样求出跟踪集。
+
+        这是本门第一版的实际缺陷（2026-10-20 主会话在 `work/gate-trust` 直跑实测
+        rc=2）：旧代码把指针里的 `D:/…` 硬翻成 `/mnt/d/…`（WSL 口径），Git Bash
+        里没有该路径 ⇒ 标准工作区被误判成"无 git"。修法是先让 `git -C` 自己解析。
+        """
+        wt = os.path.join(self.tmp, "wt")
+        p = subprocess.run(["git", "-C", self.root, "worktree", "add", "--detach", wt, "HEAD"],
+                           capture_output=True, timeout=120)
+        self.assertEqual(p.returncode, 0,
+                         "git worktree 创建失败：%s" % p.stderr.decode("utf-8", "replace"))
+        self.addCleanup(subprocess.run,
+                        ["git", "-C", self.root, "worktree", "remove", "--force", wt],
+                        capture_output=True)
+        self.assertTrue(os.path.isfile(os.path.join(wt, ".git")),
+                        "前置不成立：worktree 的 .git 应是文件")
+        r = self._gate(wt)
+        self.assertEqual(r.returncode, 0,
+                         f"worktree 形态必须求得出跟踪集：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("跟踪 2 / 实扫 2", r.stdout)
+
     def test_untracked_residue_does_not_change_the_verdict_and_is_named(self):
         """假红方向：未跟踪残留不得进入计数；门必须点名它（而不是静默忽略）。"""
         self._write("src/zz_residue.py",
