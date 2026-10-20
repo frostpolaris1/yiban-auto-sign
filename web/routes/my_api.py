@@ -111,9 +111,8 @@ def _my_account_view(accounts, indices):
     排队说明：开启签到调度时按当日计划时间执行，否则按账号列表顺序（队列重试）；
     queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
     """
-    m = _appmod()
-    recent = m.parse_sign_log(m.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
-    states = m.load_sign_state()  # 今日状态事实源（signin.py 写入）
+    recent = _logs_svc.parse_sign_log(_logs_svc.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
+    states = _logs_svc.load_sign_state()  # 今日状态事实源（signin.py 写入）
     # 今日计划时刻的唯一事实源是台账 `sign_tasks.run_at`（执行体 claim_batch 的领取依据）；
     # 读不通回 None 哨兵 → 当作"今日无计划"，展示「待生成」，绝不回退旧的派生算法。
     run_at = _today_plan_map()
@@ -767,13 +766,12 @@ def api_my_logs():
     读按天文件（sign-YYYY-MM-DD.log）：历史日期同样可查（只读当前 sign.log 时，
     轮转后历史日期恒为空）。
     """
-    m = _appmod()
     date = str(request.args.get("date", "")).strip()
     if date and not _logs_svc._is_valid_date_str(date):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
     # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
     if not date:
-        date = m._most_recent_log_date()
+        date = _logs_svc._most_recent_log_date()
     accounts = _accounts_data.load_accounts()
     indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
     # 日志仅回显已生效账号的历史（pending/rejected/软删除不回显）
@@ -783,7 +781,7 @@ def api_my_logs():
     # 落 `[遮罩号]`。过滤必须两种形态同时认，只认完整号会让加固纪元的日志
     # 在日历"我的日志"面板恒为空（历史日期照常可读）。
     needles = [(f"[{p}]", f"[{signin._mask_phone(p)}]") for p in phones]
-    for line in m._log_lines_for(date):
+    for line in _logs_svc._log_lines_for(date):
         if any(full in line or masked in line for full, masked in needles):
             out.append(line.strip())
     # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）
