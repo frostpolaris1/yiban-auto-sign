@@ -224,6 +224,12 @@ _AUDIT_RETRY_BASE_DELAY = _audit_chain._AUDIT_RETRY_BASE_DELAY
 _ANCHOR_V0_TOKENS = _audit_chain._ANCHOR_V0_TOKENS
 _ANCHOR_V1_TOKENS = _audit_chain._ANCHOR_V1_TOKENS
 _ANCHOR_V2_TOKENS = _audit_chain._ANCHOR_V2_TOKENS
+# 老格式（三字段）历史前缀的识别：截止日常量与判据函数。`_legacy_prefix_end` 同时是
+# `audit_anchor_summary.old_format_lines` 与 `_anchor_file_state_ex` 的输入——两处各写
+# 一份判据就会让"已知欠账计数"与"无法定论判据"对不上。
+LEGACY_ANCHOR_LAST_DAY = _audit_chain.LEGACY_ANCHOR_LAST_DAY
+_legacy_prefix_end = _audit_chain._legacy_prefix_end
+_is_legacy_ts = _audit_chain._is_legacy_ts
 _ANCHOR_META_KEY = _audit_chain._ANCHOR_META_KEY
 _AUDIT_PURGE_TOTAL_KEY = _audit_chain._AUDIT_PURGE_TOTAL_KEY
 _AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
@@ -239,7 +245,6 @@ _normalize_limit = _events._normalize_limit
 add_sign_event = _events.add_sign_event
 add_sign_events_batch = _events.add_sign_events_batch
 sign_event_stats = _events.sign_event_stats
-sign_event_accounts_summary = _events.sign_event_accounts_summary
 sign_events_by_phone = _events.sign_events_by_phone
 sign_events_since = _events.sign_events_since
 probe_events_on = _events.probe_events_on
@@ -504,6 +509,12 @@ class _StateForwardingModule(types.ModuleType):
 sys.modules[__name__].__class__ = _StateForwardingModule
 
 
+def _same_store_path(a, b):
+    """两个库路径是否指向同一个文件（realpath + normcase，Windows 大小写不敏感）。"""
+    return (os.path.normcase(os.path.realpath(os.path.abspath(str(a))))
+            == os.path.normcase(os.path.realpath(os.path.abspath(str(b)))))
+
+
 def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True,
             create=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
@@ -533,6 +544,21 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     # 看到的根本不是同一个库（2026-09-21 测试机 47 E2E 实测）。
     db_path = db_file or env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)
     _connection.set_db_file(db_path)
+    # 已有连接时**不许静默换库**（工单 mgq5）：旧行为只刷新 `_db_file` 元数据、返回旧
+    # 连接，于是 `init_db(别的库)` 之后的写入会落到旧库（测试夹具因此静默失去隔离，
+    # 表现为"单跑绿、全量红"的假红）。切库必须由调用方显式收尾（关连接 →
+    # `connection.reset_conn()`），这里 fail-closed 并点名两侧路径。
+    # `:memory:` 连接按连接独立，跳过比较（PRAGMA 报的路径不可比）。
+    _existing = _connection.current()
+    if _existing is not None:
+        _actual = _connection.current_db_file()
+        if (_actual and ":memory:" not in _actual
+                and ":memory:" not in str(db_path)
+                and not _same_store_path(_actual, db_path)):
+            raise RuntimeError(
+                "init_db 拒绝在已有连接上切换库：当前连接指向 %r，本次声明 %r。"
+                "切库前请关闭旧连接并调用 connection.reset_conn()——"
+                "否则写入会落到旧库（工单 mgq5）" % (_actual, db_path))
     if not create:
         # 只读初始化：已初始化过就直接复用（只读入口只在进程首次打开库时有意义，
         # 不能把既有连接静默换成另一条只读连接）。
@@ -543,7 +569,15 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
         if conn is None:
             raise FileNotFoundError(f"数据库文件不存在: {db_path}（只读初始化不建库）")
         _connection.set_conn(conn)
-        conn.execute("PRAGMA busy_timeout=15000")
+        # 与读写分支同一条自愈边界（工单 ba-p02-03 的同形状调用点）：登记之后的
+        # PRAGMA 失败也必须关连接、清单例，否则重试会复用一条半初始化连接。
+        try:
+            conn.execute("PRAGMA busy_timeout=15000")
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            _connection.reset_conn()
+            raise
         return conn
     conn = _connection.current()
     if conn is not None:
@@ -554,18 +588,23 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
             return conn
         conn = sqlite3.connect(db_path, check_same_thread=False)
         # 先登记再配置：建表/迁移函数内部会经 get_conn() 取"当前连接"，故连接必须先
-        # 入册，其后才逐条 PRAGMA/DDL
+        # 入册，其后才逐条 PRAGMA/DDL。
         _connection.set_conn(conn)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
-        # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
-        conn.execute("PRAGMA busy_timeout=15000")
-        conn.execute("PRAGMA foreign_keys=OFF")
-        _create_tables(conn)
+        # 登记之后的**全部**初始化动作必须在同一个自愈边界内（工单 ba-p02-03）：
+        # row_factory / PRAGMA / 建表任一失败（磁盘满、并发启动锁超时、schema 损坏）
+        # 都必须关连接并重置单例。否则这条半初始化连接会留在原处，此后任何重试都在
+        # 上面的 `conn is not None: return conn` 直接复用它——没有表，整个进程永久
+        # "no such table"（web 全站 500、signin 整轮静默不签）。
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
         # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败继续后续迁移但不提升版本。
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
+            # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
+            conn.execute("PRAGMA busy_timeout=15000")
+            conn.execute("PRAGMA foreign_keys=OFF")
+            _create_tables(conn)
             if migrate:
                 _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）

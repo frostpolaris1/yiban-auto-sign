@@ -122,6 +122,49 @@ class _AuditFixtureBase(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         return r.get_json()
 
+    # ---- 快照夹具（工单 ums7：写快照后必须签名）----
+    def _write_snapshot(self, health, at=None):
+        """写一份体检快照。`at=None` = 取当前业务钟（写方语义），**不得写死字面时刻**。
+
+        本默认值一度是字面日期 `"2026-10-13 00:00:07"`。写入当天它新鲜；实现加入
+        "快照超龄降级"（健康快照超 36 小时判 `indeterminate`）后，隔一天凡不显式传
+        `at` 的用例集体转红（工单 5f9q）。夹具的"现在"必须是相对于 `yiban.clock`
+        取出的当下，不能是常量——由 `tests/test_no_literal_date_in_fixtures.py` 钉住。
+        """
+        import db
+        snapshot = db.write_audit_health_snapshot(health, path=self.anchor, at=at)
+        # 工单 ums7：快照必须带签名，否则端点按"无法定论"处置（不得显示健康）。
+        from web import security as security_mod
+        self.assertTrue(security_mod.sign_audit_health_snapshot(),
+                        "夹具写快照后必须能签名（审计密钥在临时 .env 里）")
+        return snapshot
+
+    def _corrupt_snapshot(self, mutate):
+        """把已落库的快照 JSON 改坏（模拟"快照被篡改或损坏"——本端点自述的威胁模型）。"""
+        import db
+        snapshot = db.read_audit_health_snapshot()
+        mutate(snapshot)
+        with db._conn_lock:
+            conn = db.get_conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+                ("audit_health_snapshot", json.dumps(snapshot, ensure_ascii=False)))
+            conn.commit()
+        # 重新签名：这些用例打的是**装配路径**（签名有效、内容坏）；
+        # "签名不匹配"另由 `ForgedSnapshotTest` 单独钉住。
+        from web import security as security_mod
+        self.assertTrue(security_mod.sign_audit_health_snapshot())
+
+    def _forge_snapshot(self, snapshot):
+        """模拟"能写 app_meta、但拿不到审计密钥"的伪造者：只改内容、不更新签名。"""
+        import db
+        with db._conn_lock:
+            conn = db.get_conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+                ("audit_health_snapshot", json.dumps(snapshot, ensure_ascii=False)))
+            conn.commit()
+
 
 class VerdictEqualsCliExitCodeTest(_AuditFixtureBase):
     """J1/J2：三态互斥，且端点裁决码 ≡ 取证 CLI 退出码（同一份裁决）。"""
@@ -236,29 +279,6 @@ class KnownDebtTest(_AuditFixtureBase):
 
 class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
     """J4/J5/J6：端点读快照、标数据时刻、只出计数与时刻。"""
-
-    def _write_snapshot(self, health, at=None):
-        """写一份体检快照。`at=None` = 取当前业务钟（写方语义），**不得写死字面时刻**。
-
-        本默认值一度是字面日期 `"2026-10-13 00:00:07"`。写入当天它新鲜；实现加入
-        "快照超龄降级"（健康快照超 36 小时判 `indeterminate`）后，隔一天凡不显式传
-        `at` 的用例集体转红（工单 5f9q）。夹具的"现在"必须是相对于 `yiban.clock`
-        取出的当下，不能是常量——由 `tests/test_no_literal_date_in_fixtures.py` 钉住。
-        """
-        import db
-        return db.write_audit_health_snapshot(health, path=self.anchor, at=at)
-
-    def _corrupt_snapshot(self, mutate):
-        """把已落库的快照 JSON 改坏（模拟"快照被篡改或损坏"——本端点自述的威胁模型）。"""
-        import db
-        snapshot = db.read_audit_health_snapshot()
-        mutate(snapshot)
-        with db._conn_lock:
-            conn = db.get_conn()
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
-                ("audit_health_snapshot", json.dumps(snapshot, ensure_ascii=False)))
-            conn.commit()
 
     def test_corrupt_snapshot_answers_200_and_indeterminate(self):
         """M1：快照损坏时端点**不得 500**——它正是用来显示"有没有被篡改"的那一面。
@@ -451,6 +471,63 @@ class SnapshotReadOnlyEndpointTest(_AuditFixtureBase):
     def test_requires_login(self):
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.get("/api/admin/audit-status").status_code, 401)
+
+
+class ForgedSnapshotTest(_AuditFixtureBase):
+    """工单 ums7：能写 app_meta 的伪造者不得让巡检页显示"健康"。
+
+    快照是展示缓存、事实源是审计链；但本块的全部价值就是"显示诚实"。签名用审计
+    HMAC 密钥——伪造者改内容却算不出签名，端点必须答"无法定论"，不得显示绿色。
+    """
+
+    def test_forged_healthy_snapshot_is_not_green(self):
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True})
+        self._forge_snapshot({
+            "at": "2099-01-01 00:00:00",
+            "verdict": {"state": "healthy", "reason": "", "code": 0},
+            "health": {"chain_ok": True, "broken": 0, "anchor_status": "ok"},
+            "anchor": None,
+            "known_debt": [],
+        })
+        body = self._status()
+        self.assertNotEqual(body["state"], "healthy",
+                            "伪造快照不得显示健康（签名不匹配）")
+        self.assertEqual(body["verdict_code"], 2)
+
+    def test_forged_snapshot_without_signature_is_not_green(self):
+        """签名键被删同样不行：unsigned 也要答"无法定论"。"""
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True})
+        import db
+        with db._conn_lock:
+            conn = db.get_conn()
+            conn.execute("DELETE FROM app_meta WHERE key='audit_health_snapshot_sig'")
+            conn.commit()
+        body = self._status()
+        self.assertNotEqual(body["state"], "healthy")
+        self.assertEqual(body["verdict_code"], 2)
+
+    def test_forged_tampered_is_kept_not_washed_to_neutral(self):
+        """更响的结论不得被洗成中性：伪造/坏签名下的 `tampered` 原样保留。"""
+        self._write_snapshot({"chain_ok": True, "broken": 0, "anchor_ok": True,
+                              "anchor_status": "ok", "anchor_msg": "",
+                              "write_failures": 0, "empty_hash_rows": 0,
+                              "healthy": True})
+        self._forge_snapshot({
+            "at": "2099-01-01 00:00:00",
+            "verdict": {"state": "tampered", "reason": "链断", "code": 1},
+            "health": {"chain_ok": False, "broken": 3},
+            "anchor": None,
+            "known_debt": [],
+        })
+        body = self._status()
+        self.assertEqual(body["state"], "tampered")
+        self.assertEqual(body["verdict_code"], 1)
 
 
 if __name__ == "__main__":

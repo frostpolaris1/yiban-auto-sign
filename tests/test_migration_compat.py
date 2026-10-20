@@ -3,7 +3,7 @@
 
 两条主张各一个用例：
 
-1. **旧代码无感**（`docs/dev/m1-task-rearrangement-20260923.md` §7 的 I-5）：库的
+1. **旧代码无感**（I-5）：库的
    `user_version` 高于本进程迁移顶时，`_run_migrations` 整链跳过——不抛异常、不执行
    任何迁移项、不降版本。回滚路径（换回旧代码、库不动）就建立在这条性质上。
 2. **既有表零变更**：完整迁移链（0→22）跑完后，升级前既有的 **10 张表**逐表行数相等
@@ -33,7 +33,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from yiban.store import migrations
+from yiban.adapters.persistence import migrations
 
 #: 旧版本（生产 v0.4.7）的迁移顶——「旧代码」的迁移集就是 ≤ 它的那些项。
 _OLD_CODE_SCHEMA_TOP = 17

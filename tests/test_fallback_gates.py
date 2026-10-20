@@ -3,16 +3,19 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：day_off
-   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、让位为**整段**（有一轮在飞时兜底一轮都不扫，与部署有没有领取池无关）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、全局锁探测、定时轮与兜底共用同一份门。
+   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、**让位由肘界谓词承担**（兜底只领 `run_at` 已过期超过 `FALLBACK_ELBOW_SEC` 的行；旧的"整段让位"与轮内锁探测已随工单 `l1rx` R4 删除）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、全局锁探测原语（**无生产调用点**，只钉 fail-closed 语义）、定时轮与兜底共用同一份门。
 对应实现：yiban/engine/schedule.py（day_off 与 DAY_OFF_*
    常量）、yiban/app/runner.py（兜底常驻分支与派发前的门）、yiban/engine/schedule.py
    的窗口判定与 state_io 心跳。
 关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
    run_queue_retry
-   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据只有一条**运行时事实**：全局轮次锁被持有 = 有一轮在飞（旧判据把它写成 "有没有声明库路径"，与现场事实脱节；10-07 生产还证明"有池就不让位"会让兜底把那一轮计划的活整批领走）。探测**显式用全局锁名**，兜底自己的环境变量里放的是它自己的。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
+   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据是**行的函数**：兜底只领已过期超过肘界的行（`elbow_sec`），不再探测"有没有一轮在飞"——旧的整段让位与轮内锁探测随 `l1rx` R4 删除。`_run_lock_held` 仍保留为带 fail-closed 校验者的锁原语（**当前无生产调用点**，见 `cli_support` 模块头）。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
 依赖：临时状态目录 + clock.now 替身（按序列返回、超过 max_calls
    抛错以暴露死循环）+ 打桩 run_queue_retry / 锁探测 /
-   心跳写盘 / 领取池在场判定（`pool=True` 时 `pool_db_declared`、`is_initialized` 同为真）/ 池事件签名（按 `events` 序列返回，用尽重复末值）。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上 self.skipTest（flock 仅 POSIX），其余全跑。
+   心跳写盘 / 领取池在场判定（只打桩 `is_initialized`——`workers` 只读它；旧夹具还
+   打了 `pool_db_declared`，那处 patch 空转，工单 uob1 X7）/ 池事件签名（按 `events`
+   序列返回，用尽重复末值）。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上
+   self.skipTest（flock 仅 POSIX），其余全跑。
 
 钉的四条：
 1. 周末门未开时，兜底一轮都不扫（也不写心跳）；
@@ -32,9 +35,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from yiban.adapters.persistence import db
 from yiban.app import runner
 from yiban.engine import cli_support, schedule
-from yiban.store import db
 from yiban.workers import workers
 
 #: 2026-09 的三个样例日（下面的 weekday 断言保证它们仍是周三/周六/周日）
@@ -177,8 +180,8 @@ class _FallbackHarness(_WeekdayGuard):
         必须显式打桩：真探测会去读宿主 `YIBAN_STATE_DIR`，测试之间会互相串味。
         `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
         `self.saves`（(data, touched) 列表）。
-        `pool`：领取池在场判定（`pool_db_declared` 与 `is_initialized` 一起给）——
-        池在场才走事件唤醒 + 盲间隔退路，本夹具只用于这一处判定。
+        `pool`：领取池在场判定（只给 `is_initialized`——`workers` 只读它；
+        `round.py` 消费的 `pool_db_declared` 不在这条路径上，打桩它是空转）。
         `events`：池事件签名的返回序列（用尽后重复末值；缺省一个恒定签名 = 无新事件）。
         `on_scan`：每次扫描（`run_queue_retry` 被调用）时回调，供用例在**运行中**改
         `.env`（模拟管理员从网页写配置）后断言下一轮的门看到新值。
@@ -214,7 +217,6 @@ class _FallbackHarness(_WeekdayGuard):
                 mock.patch.object(workers.state_io, "_load_cred_state", lambda: {}), \
                 mock.patch.object(workers.state_io, "_save_cred_state",
                                   lambda data, touched=None: saves.append((data, touched))), \
-                mock.patch.object(workers.db, "pool_db_declared", lambda: pool), \
                 mock.patch.object(workers.db, "is_initialized", lambda: pool), \
                 mock.patch.object(workers.queue_store, "fallback_event", _sig), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
@@ -319,6 +321,12 @@ class FallbackEnvReloadWhitelistTest(_FallbackHarness):
             "YIBAN_GLOBAL_PAUSE=1\n"
             "YIBAN_SIGN_START=07:10\n"
             "YIBAN_FALLBACK_INTERVAL=15\n"
+            "YIBAN_SCHEDULE_MU_MIN_PCT=35\n"
+            "YIBAN_SCHEDULE_SIGMA_MAX_PCT=30\n"
+            "YIBAN_BLOCK_CAP=77\n"
+            "YIBAN_ALLOW_TIME_PREF=1\n"
+            "YIBAN_EGRESS_RATE=0.75\n"
+            "YIBAN_EXECUTORS=[]\n"
             "YIBAN_DB_FILE=Z:/evil/other.db\n"
             "YIBAN_STATE_DIR=Z:/evil/state\n")
         keep = {"YIBAN_DB_FILE": os.path.join(tmp, "keep.db"),
@@ -334,6 +342,19 @@ class FallbackEnvReloadWhitelistTest(_FallbackHarness):
                              "窗口起点必须在白名单内")
             self.assertEqual(os.environ["YIBAN_FALLBACK_INTERVAL"], "15",
                              "兜底间隔必须在白名单内")
+            # 配置面以 `_schedule_config` / `planner_config` 实际读取的键为准
+            # （工单 ba-p03-08）：这些键漏在白名单外时，运行期降速/改执行体清单
+            # 对唯一跨整个窗口的兜底进程不生效。
+            for key, want in (
+                    ("YIBAN_SCHEDULE_MU_MIN_PCT", "35"),
+                    ("YIBAN_SCHEDULE_SIGMA_MAX_PCT", "30"),
+                    ("YIBAN_BLOCK_CAP", "77"),
+                    ("YIBAN_ALLOW_TIME_PREF", "1"),
+                    ("YIBAN_EGRESS_RATE", "0.75"),
+                    ("YIBAN_EXECUTORS", "[]")):
+                with self.subTest(key=key):
+                    self.assertEqual(os.environ[key], want,
+                                     f"{key} 是调度/限速配置，必须在热更新白名单内")
             for key, want in keep.items():
                 with self.subTest(key=key):
                     self.assertEqual(os.environ[key], want,

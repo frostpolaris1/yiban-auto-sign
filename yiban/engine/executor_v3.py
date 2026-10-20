@@ -15,7 +15,7 @@
   出自 Netflix *Rethinking Concurrency Control for Microservices*（Mahadut 等），同项
   溯源见 `token_bucket.py`。
 - Claim-at-Dispatch（领取即执行）：调用方只在通道空闲时领**一行**、领到即执行。这是
-  本模块的领取形态（工单 `l1rx`；`docs/refactor/130` §3.2）。批量预取与进程内
+  本模块的领取形态（工单 `l1rx`）。批量预取与进程内
   `asyncio.PriorityQueue` 已退场——"先领一大批再慢慢等"会让行的持有时间无上界，正是
   任务级租约族复杂度的根源。任务排序由台账 `ORDER BY priority, run_at` 承担。
 - Elbow（肘界谓词）：`yiban/core/elbow.py`。领取谓词可带肘界 `run_at <= now - elbow`，
@@ -95,10 +95,10 @@ RETRY_CAP_SEC = 600
 REFILL_SEC = 5
 #: 兜底常驻的**肘界**（秒）：只领 `run_at` 已过期超过该时长的行（`yiban/core/elbow.py`）。
 #: 兜底因此不与计划轮抢新到点的活——"谁该做"是**行的函数**而非进程身份的函数，10-07 型
-#: 启动竞态（兜底抢跑吸收整轮工作量）从机制上消失（工单 `l1rx`；`docs/refactor/130` §3.3）。
+#: 启动竞态（兜底抢跑吸收整轮工作量）从机制上消失（工单 `l1rx`）。
 #:
 #: **取值＝估算，不是实测**（工单 `l1rx` 必修 R10）：设计口径是"≈2× 单次尝试时长 P99"，
-#: 而 P99 **未测**（`docs/refactor/133` §六同款登记），60 秒是拍的。方向安全：偏大只让兜底
+#: 而 P99 **未测**，60 秒是拍的。方向安全：偏大只让兜底
 #: 晚一点捡漏，偏小才可能碰到计划轮要签的行。**残余（部署后复算重定）**：10-17 部署后
 #: `run_events` 在真实轮次上全量可用，用 `scripts/elbow_shadow.py` 对每天的兜底领取算
 #: "提前量"分布重定此值。`elbow` 谓词本体只管算术，取值是应用层的职责。
@@ -237,38 +237,44 @@ def scheduler_v3_enabled(env=None):
     return True
 
 
-def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None):
-    """装订式抖动退避的落点 → datetime；`None` = 有效窗口放不下，放弃重试。
+def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None, day=None):
+    """装订式抖动退避的落点 → datetime；`None` = 窗口放不下 / 守不住最小间隔，放弃重试。
 
     `delay = min(cap, uniform(base, max(base, last_delay × 3)))`，其中
     `cap = min(RETRY_CAP_SEC, 剩余有效窗口 × 0.3)`：下界是 `YIBAN_RETRY_MIN_INTERVAL`
     （防连击），上界随剩余窗口收缩（不在尾端扎堆），落点再夹到有效窗口结束——**绝不让
-    重试越过窗口**，放不下就返回 `None`。窗口几何一律走 `window.bounds`（排计划、判
-    关闭、容量预估的同一准绳）。`last_delay` 是上一次的 delay（进程内记账、无持久化）：
-    换执行体接手或首次重试时未知，调用方传 `base` 即可——保守且收敛。
+    重试越过窗口**。`cap < base` 时**返回 `None`**：窗口尾段放不下一个合法间隔，宁可
+    当日放弃重试，也不把间隔压到配置的最小值之下（工单 ba-p03-04；旧实现取
+    `min(cap, ...)`，把 60s 下限压到 10s 甚至秒级，正是该安全键要防的行为）。
+    窗口几何一律走 `window.bounds`（排计划、判关闭、容量预估的同一准绳）。`last_delay`
+    是上一次的 delay（进程内记账、无持久化）：换执行体接手或首次重试时未知，调用方传
+    `base` 即可——保守且收敛。
 
-    **落点用绝对时刻夹取，不拿「当天第几分钟」配零点**（M16）：`win.hi_min` 是不含
-    日期的分钟数，用 `to_dt(now 的零点, hi_min)` 当上界，在长轮次跨过午夜后算的是
-    **次日**的窗口结束；而 `remaining_sec` 同样只看分钟数，00:10 被算成"今天还剩一整
-    窗"，于是 `now + delay` 小于上界而原样胜出——落点变成 00:1x，**窗口之前**。
-    通道只判"窗口没关"（`_window_closed` 对 00:10 为假），那条行遂在窗口外被真实登录，
-    还会被记成 `skipped_window`。故：
+    **日基准是业务日，不是墙钟日期**（工单 ba-p03-06）：`day` 传调用方的 `ctx.day`，
+    窗口两端用 `bounds_dt(业务日)` 取绝对时刻，剩余窗口按
+    `(hi_dt − now_dt)` 算。跨过午夜后业务日仍是启动日，窗口已过 ⇒ 返回 `None`，绝不把
+    落点写进次日窗口而让行留在启动日的 `day` 上（那种行按日领取、永远没人领 = 静默漏签）。
+    `day` 缺省取 `now_dt` 的日期，与既有一次性调用点同语义。
 
     - 已经进窗口（正常路径）：`min(now + delay, hi_dt)`，与旧实现逐字同值；
-    - 还没进窗口（跨零点的长轮次、或提前拉起的执行体）：落点钉进**同一时间窗**内的
-      绝对时刻（`min(lo_dt + delay, hi_dt)`），而不是窗口外的 `now + delay`。
+    - 还没进窗口（提前拉起的执行体）：落点钉进**同一时间窗**内的绝对时刻
+      （`min(lo_dt + delay, hi_dt)`），而不是窗口外的 `now + delay`。
 
-    窗口已过（`remaining <= 0`）仍返回 `None`：当天不再重试。
+    业务日窗口已过（`remaining <= 0`）返回 `None`：当天不再重试。
     """
     rng = rng or random.Random()
     base = max(1, int(sch_cfg["retry_min_interval"]))
     win = window.bounds(sch_cfg)
-    remaining = win.remaining_sec(now_dt)
+    day_date = (datetime.date.fromisoformat(day) if day is not None
+                else now_dt.date())
+    lo_dt, hi_dt = win.bounds_dt(day_date)
+    remaining = (hi_dt - now_dt).total_seconds()
     if remaining <= 0:
         return None
     cap = min(RETRY_CAP_SEC, remaining * 0.3)
-    delay = min(cap, rng.uniform(base, max(base, float(last_delay) * 3)))
-    lo_dt, hi_dt = win.bounds_dt(now_dt)
+    if cap < base:
+        return None
+    delay = max(base, min(cap, rng.uniform(base, max(base, float(last_delay) * 3))))
     if now_dt < lo_dt:
         target = min(lo_dt + datetime.timedelta(seconds=delay), hi_dt)
     else:
@@ -356,22 +362,30 @@ def _plan_covers(day, accounts):
     根本没有行 ⇒ 全天零签到。`write_plan` 是 `INSERT OR IGNORE`，补建不会覆盖 manual
     行（也不会复活 `vshard = -1` 的历史惰性行——本函数只对 `vshard >= 0` 计数，与
     `_max_vshard` 同界）。
+
+    `IN (...)` 按 `queue_store.SQL_VAR_CHUNK` 分块（与 `row_owners` / `reap_expired`
+    同一纪律）：目标规模 1~2 千账号，整段拼进一条 SQL 会越过 SQLite 老版本的 999 个
+    绑定变量上限，异常被本函数吞成"未覆盖"⇒ 每轮重写计划并刷 warning，覆盖面判据在
+    大站永久失明（工单 ba-p03-10）。各块手机号互不重叠，故 DISTINCT 计数可按块累加。
     """
     phones = planner._phones(accounts)
     if not phones:
         return True
+    covered = 0
     try:
         conn, lock = queue_store._queue_conn()
         with lock:
-            placeholders = ",".join("?" for _ in phones)
-            row = conn.execute(
-                "SELECT COUNT(DISTINCT phone) FROM sign_tasks "
-                f"WHERE day=? AND vshard >= 0 AND phone IN ({placeholders})",
-                (day, *phones)).fetchone()
+            for chunk in queue_store._chunks(phones):
+                placeholders = ",".join("?" for _ in chunk)
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT phone) FROM sign_tasks "
+                    f"WHERE day=? AND vshard >= 0 AND phone IN ({placeholders})",
+                    (day, *chunk)).fetchone()
+                covered += int(row[0] or 0)
     except Exception as e:
         logger.warning("读取当日计划覆盖面失败（按未覆盖处理）: %s", e)
         return False
-    return int(row[0] or 0) == len(phones)
+    return covered == len(phones)
 
 
 def _ensure_plan(accounts, day, cfg, force=False):
@@ -563,20 +577,21 @@ def _settle(ctx, phone, epoch, state, message):
 def _finish(ctx, phone, epoch, result, state_message, state):
     """零请求收尾（暂停 / 账号已不在配置）：写状态、事件、结果并了结该行。
 
-    以 `failed` 了结时同样带档位前缀（账密暂停属保守档，只有显式路径可回炉——
-    自动回炉等于绕开凭据熔断反复真实登录）；`done` 是了结态，不带前缀。
+    两个调用点都落终态 `skipped`——它们都是**管理侧或配置侧的当日结论**，与
+    `migrations._JSON_TERMINAL_TO_TASK_STATE`（paused/user_cancelled → skipped）同口径。
+    落 `failed` 会让补签闸门的队列腿（`db.task_open_count`）判"未了结"，补签轮再真实
+    登录一次（工单 48b9）；落 `done` 会让逐日对账报不一致（工单 vqmb）。`skipped` 不带
+    档位前缀——它不经过回炉口。
 
     进度打点按状态取节点：账密暂停落 `pause`，其余非成功终态落 `fail`。本函数是
     **所有零请求收尾的唯一出口**，故打点挂在这里而不是两个调用点各写一遍。
     """
     _ok, _msg, _skip, status = result
     ctx.results[phone] = result
-    state_io._write_sign_state(phone, status, state_message)
+    state_io._write_sign_state(phone, status, state_message, day=ctx.day)
     _emit_event(ctx, phone, status, state_message)
     _report(ctx, run_events.NODE_PAUSE if status == STATUS_PAUSED
             else run_events.NODE_FAIL, phone, state_message)
-    if state == queue_store.STATE_FAILED:
-        state_message = _tier_prefix(status) + state_message
     _settle(ctx, phone, epoch, state, state_message)
 
 
@@ -693,22 +708,27 @@ async def _attempt(ctx, item):
         if getattr(ctx, "reclaim", False):
             # 手动 `--only` 的保险：本轮允许集已把它挡在领取/回炉之外，正常不会到达这里。
             # 真到了也**绝不了结**它——既不 `_finish`（会在执行体里被当成"本轮账号已不在
-            # 配置"记 `done`/`user_cancelled`）、也不写 sign-state；留给下一轮/别的执行体。
+            # 配置"记 `user_cancelled`/`skipped`）、也不写 sign-state；留给下一轮/别的执行体。
             logger.warning("%s 手动轮遇到不在本轮账号集里的行，"
                            "跳过不动（不改状态/不写了结）: %s",
                            ctx.log_tag, _mask_phone(phone))
             return
-        # 运行期被删/停用：不发请求，但必须了结该行——否则它永远 pending，本轮收不干
+        # 运行期被删/停用：不发请求，但必须了结该行——否则它永远 pending，本轮收不干。
+        # 终态取 `skipped`（与 JSON 终态映射 user_cancelled → skipped 同口径，工单 vqmb）；
+        # `done` 也是了结态，但会让逐日对账把这一格报成不一致。
         _finish(ctx, phone, epoch, (False, "账号已不在本轮配置", True,
                                     STATUS_USER_CANCELLED),
-                "账号已不在本轮配置", queue_store.STATE_DONE)
+                "账号已不在本轮配置", queue_store.STATE_SKIPPED)
         return
     cred = ctx.cred_state.get(phone, {})
     if cred.get("paused_since") and not attempts._probe_due(cred, today):
-        # 熔断判定排在取额度之后、发请求之前：这里必须把行了结成 failed 而不是丢着不管，
-        # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）
+        # 熔断判定排在取额度之后、发请求之前：这里必须把行了结成终态而不是丢着不管，
+        # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）。
+        # 落 `skipped` 而**不是** `failed`：账密暂停是管理侧当日结论，队列侧的
+        # "未了结"判据（`db.task_open_count`）只看 OPEN_STATES，落 failed 会让补签轮
+        # 再真实登录一次（工单 48b9 / vqmb；与 JSON 终态映射同口径）。
         _finish(ctx, phone, epoch, (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED),
-                "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_FAILED)
+                "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_SKIPPED)
         logger.info("%s [%s] ⏸️ 账密异常已暂停，请修改密码", ctx.log_tag, _mask_phone(phone))
         return
     ctx.gap_gate.commit(phone, _mono())  # 走到这才是"真要发请求"：gap 的推进点必须与尝试一一对应
@@ -727,7 +747,7 @@ async def _attempt(ctx, item):
         ctx.inflight -= 1
     dur = _mono() - t0
     # 每次尝试结束即物化状态：v2 是逐账号增量写，v3 只在收尾物化会让当天网页日历空窗
-    state_io._write_sign_state(phone, status, message, dur=dur)
+    state_io._write_sign_state(phone, status, message, dur=dur, day=ctx.day)
     _emit_event(ctx, phone, status, message, dur=dur, attempt_no=attempts_n + 1)
     # 进度打点「成功/失败」：一次尝试的结论，与上一行的 sign_events 同一时刻、同一判据
     # （了结态集合 `CLAIM_DONE_STATUSES`）。重试中的尝试同样落 fail——那是这次尝试的
@@ -750,24 +770,40 @@ async def _attempt(ctx, item):
         ctx.limiter.on_risk_signal(ctx.egress, _mono())
     if skip:
         ctx.results[phone] = (False, message, True, status)
-        _settle(ctx, phone, epoch, queue_store.STATE_FAILED,
-                _tier_prefix(status) + message)
+        # 暂停/取消/补签中都是**管理侧或平台侧已定的当日结论**：队列按终态 `skipped`
+        # 收尾（与 `migrations._JSON_TERMINAL_TO_TASK_STATE` 同口径）。落 `failed` 会让
+        # 补签闸门的队列腿（`db.task_open_count`）判"未了结"，补签轮于是把该账号再
+        # 真实登录一次（工单 48b9 / vqmb）。窗口外仍落 `failed`——那是"还该再试"。
+        state = (queue_store.STATE_SKIPPED
+                 if status in (yiban_status.STATUS_SUPPLEMENTING, STATUS_USER_CANCELLED)
+                 else queue_store.STATE_FAILED)
+        _settle(ctx, phone, epoch, state,
+                message if state == queue_store.STATE_SKIPPED
+                else _tier_prefix(status) + message)
         return
     max_attempts, clear_cache = attempts._retry_budget(message)
     if clear_cache:
         attempts.clear_session_cache_quiet(phone)
+    no_room_today = False
     if attempts_n + 1 < max_attempts:
         base = max(1, int(ctx.cfg["retry_min_interval"]))
-        nxt = next_retry_at_v3(_now(), ctx.cfg, ctx.last_delay.get(phone, base), ctx.rng)
+        nxt = next_retry_at_v3(_now(), ctx.cfg, ctx.last_delay.get(phone, base), ctx.rng,
+                               day=ctx.day)
         if nxt is not None:
             ctx.last_delay[phone] = (nxt - _now()).total_seconds()
             queue_store.requeue_task(phone, ctx.day, _stamp_ms(nxt), priority_delta=1,
                                      result=message, epoch=epoch)
             retry_msg = f"待重试（已 {attempts_n + 1} 次）: {_sanitize_text(message)}"
-            state_io._write_sign_state(phone, STATUS_RETRYING, retry_msg)
+            state_io._write_sign_state(phone, STATUS_RETRYING, retry_msg, day=ctx.day)
             _emit_event(ctx, phone, STATUS_RETRYING, retry_msg, attempt_no=attempts_n + 1)
             logger.warning("%s [%s] ⏳ %s", ctx.log_tag, _mask_phone(phone), retry_msg)
             return
+        # 当天没有可用落点（窗口已过 / 余量放不下最小间隔）：这是"当日放弃"，不是
+        # "该类失败可再试"。收尾必须用保守档——否则默认回炉口（`requeue_failed`）
+        # 会把 skipped_window/no_position 这类默认可回炉的行立刻翻回 pending，
+        # 下一拍重新领取 ⇒ 真实登录间隔只剩 gap 门（默认 10s），正是
+        # `YIBAN_RETRY_MIN_INTERVAL` 要防的连击（工单 ba-p03-04）。
+        no_room_today = True
         logger.error("%s [%s] ❌ 窗口剩余不足，不再重试: %s",
                      ctx.log_tag, _mask_phone(phone), _sanitize_text(message))
     else:
@@ -777,8 +813,10 @@ async def _attempt(ctx, item):
     # 弃权收尾带档位前缀：这是回炉口唯一的判据（窗口外/无点位→默认档当日自动回炉，
     # 预算耗尽/风控→保守档，只由显式路径放行）。不带前缀的 failed 行会被当作
     # 保守档——判不清原因的宁可要求显式路径，也不要无上限重复真实登录。
-    _settle(ctx, phone, epoch, queue_store.STATE_FAILED,
-            _tier_prefix(status) + message)
+    # `no_room_today` 例外见上：当日已无落点 ⇒ 保守档，回炉会绕开最小间隔。
+    prefix = (yiban_status.RESULT_FINAL_PREFIX if no_room_today
+              else _tier_prefix(status))
+    _settle(ctx, phone, epoch, queue_store.STATE_FAILED, prefix + message)
 
 
 async def _lane(ctx, lane_id):
@@ -787,7 +825,7 @@ async def _lane(ctx, lane_id):
     与批量预取版的差别：通道不再从进程内 `PriorityQueue` 取"早已领回的条目"，而是**自己
     在空闲时**向台账领一行。故一行的持有时间 = 一次尝试的时间（有界），不存在"领回来在
     本地等通道/等令牌/等间隔/等计划时刻"的无上界等待——那正是租约族复杂度的根源
-    （`docs/refactor/130` §2.3 S1；工单 `l1rx`）。领取、执行、收尾串成一条：
+    （工单 `l1rx`）。领取、执行、收尾串成一条：
     `claim → _attempt`，没有中间态。
 
     读不通（`None` 哨兵）时**不判收干**，原地等一拍让协调循环的有界闸门计数（ba-p01-01）。
@@ -822,8 +860,8 @@ async def _lane(ctx, lane_id):
 def _claim_one(ctx):
     """领取**一行**到期任务（claim-at-dispatch）→ `[dict]` / `[]`（无到期行）/ `None`（读不通）。
 
-    执行体唯一的领取点：通道空闲才调它、领到即执行（`docs/refactor/130` §3.2；工单
-    `l1rx`）。`elbow_sec` 由角色决定（定时/手动/补签 0；兜底 `FALLBACK_ELBOW_SEC`），
+    执行体唯一的领取点：通道空闲才调它、领到即执行（工单 `l1rx`）。
+    `elbow_sec` 由角色决定（定时/手动/补签 0；兜底 `FALLBACK_ELBOW_SEC`），
     谓词**下推**到 `queue_store.claim_batch`（SQL 里 `run_at <= now - elbow`）。
 
     领取后**再用 `elbow.may_claim` 复核**一遍（谓词语义的唯一事实源在 `yiban/core/elbow.py`，
@@ -896,7 +934,7 @@ async def _dispatch_keeper(ctx):
       `ctx.claiming`：正被某通道执行的行在库里已是 `claimed`、不在 `pending_count` 里，
       不数进来会在通道还在跑时提前收干，把刚重排回 `pending` 的重试任务留在库里没人领。
       为什么必须带 `pending_count`：`claim_batch` 在"下次到点还没到"时本来就返回空，只看
-      空返回会把还有待办的一轮误判成收干（`docs/refactor/130` §3.2 的收干判据）。
+      空返回会把还有待办的一轮误判成收干（本模块的收干判据）。
     - **心跳刷新**：一轮可能十几分钟，只在起跑/收尾写盘会让长轮次被执行体页判成 `stale`。
       心跳**只服务 UI**（工单 `l1rx`：退出一切正确性判定），故此处写盘是展示动作。
     - **会话内回炉**（只有 `requeue_during_run` 的兜底腿）：每 `RECOVER_SEC` 把本轮刚弃权的
@@ -1000,10 +1038,12 @@ def _prescan(ctx, accounts):
       就会在汇总里变成"未执行"（按失败计），与 v2 的"跳过"口径不符。由**归属执行体**
       登记一次。
 
-    登记当日**只做一次**（判据＝当日状态文件里已是 `user_cancelled`）：兜底常驻每 ~5s
+    登记当日**只做一次**（判据＝当日状态文件里已是 `user_cancelled`，并由
+    `_write_sign_state(..., only_if_absent=True)` 的 CAS 收口并发）：兜底常驻每 ~5s
     重扫、窗口内可上百轮，重复登记会按轮灌 `user_cancelled` 事件与 `pause` 进度行
     （2026-10-13 生产单日 752+752，工单 uuqb），并把"本轮有活"喂给紧循环（`own` 恒 > 0
-    ⇒ 扫描间隔从 60s 掉到 5s）。两个调用形态的差异必须保留：
+    ⇒ 扫描间隔从 60s 掉到 5s）。宽分片（`claim_all`）下分片集判据挡不住兜底与归属
+    执行体同时登记，故"只登记一次"必须靠写侧 CAS，不能靠分片集（工单 ba-p03-05）。两个调用形态的差异必须保留：
 
     - **一次性轮**（`round_no` 为 `None`：定时全量、手动 `--only`）即便状态文件已有该
       结论**仍登记进 `results`**——汇总按 `results` 计"跳过"，不登记就会被算成"未执行"
@@ -1024,17 +1064,27 @@ def _prescan(ctx, accounts):
             ctx.user_paused.add(phone)
             if recorded is None:
                 # 当日状态快照按需取一次：没暂停账号的部署（常态）不必每轮多读一次盘。
-                recorded = state_io._daily_statuses()
+                recorded = state_io._daily_statuses(ctx.day)
             already = str(recorded.get(phone, "")).strip() == STATUS_USER_CANCELLED
             if already and ctx.round_no is not None:
                 # 常驻重复轮：当日结论已在，本轮无活可做（见 docstring）。
                 continue
             if not already:
-                state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
-                _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
-                # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
-                # claim/start 行——进度流里只出现这一行 pause 是正确形态。
-                _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
+                # **CAS**：两个进程同时首见该号时只有一个能写成功，也只有它发事件/
+                # 进度行。读状判断再写会让两边都读到 already=False，各写一次状态、
+                # 各发一条 user_cancelled（工单 ba-p03-05：宽分片下 delegated 恒空，
+                # 分片集判据挡不住兜底与归属执行体同时登记）。
+                wrote = state_io._write_sign_state(
+                    phone, STATUS_USER_CANCELLED, "用户已取消签到",
+                    only_if_absent=True, day=ctx.day)
+                if wrote:
+                    _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                    # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
+                    # claim/start 行——进度流里只出现这一行 pause 是正确形态。
+                    _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
+                elif ctx.round_no is not None:
+                    # 并发对手已登记同一结论：本常驻轮无活可做（与 already 分支同口径）。
+                    continue
             ctx.results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
 
 
@@ -1049,7 +1099,7 @@ def _mark_window_skips(ctx, accounts):
     """
     if getattr(ctx, "reclaim", False) or not schedule._window_closed(ctx.cfg, _now()):
         return
-    recorded = state_io._daily_statuses()
+    recorded = state_io._daily_statuses(ctx.day)
     for acc in accounts:
         phone = acc.phone
         if phone in ctx.results:
@@ -1061,7 +1111,7 @@ def _mark_window_skips(ctx, accounts):
             ctx.results[phone] = (False, "已有当日结论", False, rec)
             continue
         if not state_io._write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束",
-                                          only_if_absent=True):
+                                          only_if_absent=True, day=ctx.day):
             continue
         ctx.results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
         _emit_event(ctx, phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
@@ -1128,8 +1178,8 @@ def _mark_unreached(ctx, accounts):
     - 逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行 `pending`
       事件与 1830 行日志（工单 81xt）；2026-10-13 生产更在 `pending` 档上单日灌入
       49,148 行。批量事件是**摘要行**（`phone=""`，没有单一账号），读者面按摘要行口径
-      排除其账号统计（见 `store.events` 的 sign_event_stats / sign_event_accounts_summary），
-      故它**永不成为某账号当日最后一条事件**（看板终态读的是每账号最后一条）。
+      排除其账号统计（见 `store.events` 的 sign_event_stats）；看板账号终态统计读的是
+      **按日状态文件**（`web/services/logs.py` 的 `accounts_terminal_summary`），不读事件表。
     - 真异常（`UNCLAIMED`）的可查性不靠逐条事件行：**规模与分因**在批量行里（账号数 +
       `{分因文本: 账号数}` 明细），**逐账号判因**经 `unreached` 出参喂运行汇总的独立桶。
       逐账号事实源是台账 `sign_tasks` 的行状态——**仅当台账读得通且该账号当日有行**：
@@ -1197,7 +1247,7 @@ def _mark_unreached(ctx, accounts):
     if peer_n:
         # 跨执行体交接的**一条批量**留痕：日志一行 + 事件一行，带账号数与分因。
         # 事件是摘要行（`phone=""`，没有单一账号），读者面按摘要行口径排除其账号统计
-        # （见 `store.events` 的 sign_event_stats / sign_event_accounts_summary）。
+        # （见 `store.events` 的 sign_event_stats）。
         # 组成去重：签名取 `(执行体, 账号数, 分因明细)`，**不含轮次/时间**——兜底常驻循环
         # 每轮扫描，组成不变就整段跳过（工单 81xt 返修 LOW-1）；组成一变立刻回到留痕。
         # 身份进键：同进程换执行体不得互相压掉（同 `_BANNER_LAST`）。
@@ -1298,7 +1348,7 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     补签 = 0（到期即可领）；兜底常驻 = `FALLBACK_ELBOW_SEC`，只领"已过期超过肘界"的行
     ⇒ 它不与计划轮抢新到点的活，"谁该做"是**行的函数**（工单 `l1rx`）。它**取代了**原先的
     让位探针 `yield_probe`：轮内止损不再靠"每领取前问一次锁状态"，而是靠领取谓词本身
-    （`docs/refactor/130` §3.3；10-07 型启动竞态从机制上消失）。
+    （10-07 型启动竞态从机制上消失）。
 
     `unreached`：调用方传入的 **out-param dict**，本函数在轮末往里填
     `{phone: 判因}`（`UNREACHED_PEER` / `UNREACHED_UNCLAIMED`，见 `_mark_unreached`）——

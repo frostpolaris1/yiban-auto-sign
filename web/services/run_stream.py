@@ -32,8 +32,8 @@ import logging
 import threading
 import time
 
-from yiban import config_loader
-from yiban.store import run_events as _run_events
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.persistence import run_events as _run_events
 
 logger = logging.getLogger("web.run_stream")
 
@@ -248,7 +248,7 @@ def _flag(raw, default):
     """`.env` 开关值 → 布尔（认 1/true/on/yes）；未设/空用名册缺省。"""
     if raw is None or not str(raw).strip():
         return bool(default)
-    from yiban.infra import env_io as _env_io
+    from yiban.adapters.config import env_io as _env_io
     return _env_io.parse_env_flag(raw, default=False)
 
 

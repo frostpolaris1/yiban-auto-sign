@@ -86,7 +86,7 @@ flowchart TD
 yiban/
 ├── entry/                 # 入口层：只翻译参数 + 鉴权
 │   ├── cli/               #   命令行入口。✅ 已落地（批 A1，2026-10-16）：
-│   │                      #      现 yiban/cli.py 是转发壳，待读者迁完再删
+│   │                      #      旧入口转发壳已于 145-E 退役
 │   └── （web 管理端独立于本包；docker/scheduler 为容器接线）
 ├── app/                   # 应用层：用例编排，无算法无 SQL
 │   ├── round.py           #   run_round 跑一轮（现 engine/round）
@@ -138,8 +138,8 @@ frontend/                  # Vue（独立构建）
 
 | 现在的位置 | 目标层 | 处置 |
 |---|---|---|
-| `yiban/clock.py` `yiban/status.py` `yiban/window.py` `yiban/masking.py` `engine/hrw.py` | `core/` | ✅ 已移动（批 B）。旧坐标留转发壳 |
-| `engine/planner.py` `engine/schedule.py` `engine/token_bucket.py` | `core/`（`plan` / `rate`） | **未移动**。实测三者直接 import `yiban.adapters.*`（有 I/O）。**搬入 `core/`** 会造出 `core → adapters` 边，`core-no-upward` 判红（基线为空 ⇒ 新增违规即红）。阻塞只对 `core/` 成立：实测搬去 `app/` 过门（违规 0），但那违反本表给它们定的目标层。须先切开纯算法与 I/O，属第三刀 |
+| `clock.py` `status.py` `window.py` `masking.py` `engine/hrw.py`（原 `yiban/` 顶层坐标） | `core/` | ✅ 已移动（批 B）。旧坐标转发壳已于 `145-E` 退役 |
+| `engine/planner.py` `engine/schedule.py` `engine/token_bucket.py` | `core/`（`plan` / `rate`） | **未移动**。实测三者直接 import `yiban.adapters.*`（有 I/O）。**搬入 `core/`** 会造出 `core → adapters` 边，`core-no-upward` 判红（基线为空、门禁对任何违规红）。阻塞只对 `core/` 成立：实测搬去 `app/` 过门（违规 0），但那违反本表给它们定的目标层。须先切开纯算法与 I/O，属第三刀 |
 | `engine/attempts.py` | `core/classify.py` + `core/policy.py` | 拆分移动（未做，第三刀） |
 | `yiban/security.py` | `core/security_policy.py` | **未移动**。实测经 `yiban.challenge` 间接到 `adapters.protocol_yiban`，**搬入 `core/`** 同样判红（同上，阻塞只对该目标层成立）。须先切开，属第三刀 |
 | `engine/round.py` `engine/alerts.py` | `app/` | ✅ 已移动（批 B）。`alerts` 落点＝`adapters/notifier/report.py` |
@@ -153,9 +153,9 @@ frontend/                  # Vue（独立构建）
 | `store/audit_chain.py` | `adapters/persistence/audit.py` | ✅ 已移动（批 B）。**保留原名** `audit_chain.py` |
 | `mail/` `notify/` | `adapters/notifier/` | ✅ 已移动（批 A4） |
 | `yiban/infra/`（env_io / account_crypto） | `adapters/config/` | ✅ 已移动（批 B，保留原名） |
-| `yiban/config_loader.py` | `adapters/config/loader.py` | ✅ 已移动（批 B） |
-| `yiban/state_gc.py` `yiban/cred_state.py` | `adapters/statefiles/` | ✅ 已移动（批 B，保留原名） |
-| `yiban/cli.py` | `entry/cli/` | ✅ 已移动（批 A1） |
+| `config_loader.py`（原 `yiban/` 顶层坐标） | `adapters/config/loader.py` | ✅ 已移动（批 B）。旧壳已于 `145-E` 退役 |
+| `state_gc.py` `cred_state.py`（原 `yiban/` 顶层坐标） | `adapters/statefiles/` | ✅ 已移动（批 B，保留原名）。旧壳已于 `145-E` 退役 |
+| `cli.py`（原 `yiban/` 顶层坐标） | `entry/cli/` | ✅ 已移动（批 A1）。旧壳已于 `145-E` 退役 |
 | `web/app.py` 再导出表 | 打桩面迁移完成后删除 | 拆解（与测试定型同批） |
 | `web/routes/` `services/` | `entry`（HTTP）／`app`（用例） | 归层 |
 | `docker/scheduler.py` | 容器入口 | 保持 |

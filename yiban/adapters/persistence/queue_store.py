@@ -7,7 +7,7 @@
 - **claim-at-dispatch（领取即执行）**：调用方只在通道空闲时领**一行**、领到即执行。
   领取与执行之间没有进程内排队，故一行的持有时间 = 一次尝试的时间（有界），不再是
   "领回本地等通道/等令牌/等间隔/等计划时刻"的**无上界**等待。批量预取与进程内
-  `PriorityQueue` 因此退场（`docs/refactor/130` §2.3 S1/S2；工单 `l1rx`）。
+  `PriorityQueue` 因此退场（工单 `l1rx`）。
 - **elbow（肘界谓词）**：领取谓词可带一个肘界 `run_at <= now - elbow_sec`——兜底常驻
   只领"已过期超过肘界"的行，"谁该做"是**行的函数**而不是**进程身份的函数**。谓词语义
   的唯一事实源是 `yiban/core/elbow.py`，本层的 SQL 是它的**下推实现**（见 `claim_batch`）。
@@ -20,7 +20,7 @@
   (SELECT ...) RETURNING` 在本仓 SQLite 的写者串行语义下天然原子，无需显式 `SKIP LOCKED`
   语法；若迁到 PG/MySQL 这是等价替换点（MySQL 8 无 `UPDATE...RETURNING`，须另写
   `UPDATE...LIMIT` + 回查）。
-- 分片领取围栏：Rendezvous Hashing（Thaler & Ravishankar，见 `yiban/engine/hrw.py`）。
+- 分片领取围栏：Rendezvous Hashing（Thaler & Ravishankar，见 `yiban/core/hrw.py`）。
   `vshard IN (...)` 让执行体只碰自己名下分片，是「领取零竞争」的来源。
 
 **功能**
@@ -100,7 +100,7 @@ from yiban.core import status as yiban_status
 logger = logging.getLogger("yiban.store.queue_store")
 
 #: 领取行数缺省 = 1（**claim-at-dispatch**）：调用方只在通道空闲时领取一行、领到即执行。
-#: 批量预取已退场（`docs/refactor/130` §2.3 S1；工单 `l1rx`）——预取让行的持有时间变成
+#: 批量预取已退场（工单 `l1rx`）——预取让行的持有时间变成
 #: "排队等待时间"，无上界，正是租约族复杂度的根源。
 CLAIM_LIMIT = 1
 
@@ -196,7 +196,7 @@ def claim_batch(owner: str, day: str, vshards: Iterable[int], now: str | None = 
     `elbow_sec` 是**肘界**（秒，见 `yiban/core/elbow.py`）：只领 `run_at <= now - elbow_sec`
     的行。0 = 到期即可领（定时执行体 / 手动 / 补签轮的语义）；正数 = 只领"已经过期达到
     该时长"的行——兜底常驻用它避免与计划轮抢新到点的活，"谁该做"于是成为**行的函数**，
-    10-07 型启动竞态从机制上消失（工单 `l1rx`；`docs/refactor/130` §3.3）。本层的 SQL 是
+    10-07 型启动竞态从机制上消失（工单 `l1rx`）。本层的 SQL 是
     `elbow.may_claim` 的**下推实现**：两者的等价由 `tests/test_claim_dispatch_elbow_e2e.py`
     对拍钉住。
 
@@ -598,7 +598,10 @@ def fallback_event(day: str, exclude_owner: str = "") -> tuple[int, int] | None:
     tail, ex = "", []
     if exclude_owner:
         tail = " AND owner<>? AND instr(owner, ?)<>1"
-        ex = [exclude_owner, exclude_owner]
+        # 前缀必须带分隔符：稳定槽位名 worker-1 与 worker-12:... 互为字节前缀，
+        # 裸名匹配会把别人名下的行一起剔出唤醒签名（工单 ba-p01-06）。与
+        # reap_expired / reap_abandoned / requeue_failed 的 `owner + ":"` 同源。
+        ex = [exclude_owner, exclude_owner + ":"]
     sql = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
            "WHERE day=? AND state=? AND vshard >= 0 AND substr(result, 1, ?)=?" + tail)
     probe = [day, STATE_FAILED, len(yiban_status.RESULT_RETRY_PREFIX),

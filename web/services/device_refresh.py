@@ -29,6 +29,8 @@ import time
 
 import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.app 的引导保证）
 
+from web import security as _security
+from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import _as_signin_account
 from yiban.core.masking import mask_device_code as _mask_device_code
 
@@ -73,16 +75,19 @@ def refresh_account_device(m, acc, username, limits, fails, audit_action):
     actor = username or "?"
     # 冷却与账号验证共用同一份按手机号的认证失败账：同一账号反复登录（含读设备）会加速
     # 平台侧锁定，冷却账必须同源，否则一边拦、另一边放。
-    if m._verify_fail_cooldown_remaining(fails, phone, time.time()) > 0:
+    if _security._verify_fail_cooldown_remaining(fails, phone, time.time()) > 0:
         return 429, {"ok": False, "reason": "cooldown",
-                     "error": m.VERIFY_FAIL_COOLDOWN_MSG}
+                     "error": _verify_queue.VERIFY_FAIL_COOLDOWN_MSG}
     account = _as_signin_account(acc)
     try:
-        result = m.run_gated_call(
-            lambda: signin.refresh_registered_device(account), username, limits)
-    except m.VerifyGateBusy:
-        return 503, {"ok": False, "reason": "busy", "error": m.VERIFY_BUSY_MSG}
-    except m.VerifyQuotaExceeded:
+        result = _verify_queue.run_gated_call(
+            lambda: signin.refresh_registered_device(account), username, limits,
+            # 同账号互斥（cgx6）：设备补全与账号验证共用一把按手机号的 in-flight 权，
+            # 两次 device-refresh 不再重叠两次真实登录
+            subject=phone)
+    except _verify_queue.VerifyGateBusy:
+        return 503, {"ok": False, "reason": "busy", "error": _verify_queue.VERIFY_BUSY_MSG}
+    except _verify_queue.VerifyQuotaExceeded:
         return 429, {"ok": False, "reason": "quota",
                      "error": "账号验证尝试过于频繁，请稍后再试"}
 

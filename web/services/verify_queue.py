@@ -32,6 +32,8 @@
 
 import logging
 import os
+import threading
+import time
 
 from web.services.accounts_data import ACCOUNT_STATUS_REJECTED
 from yiban.adapters.config.env_io import parse_env_flag
@@ -47,50 +49,183 @@ logger = logging.getLogger("web")
 #: **可达来源**（席位满由后台排队消化、不拒绝用户；待办队列满才拒绝）。
 VERIFY_JOBS_MAX_PENDING = attempt_jobs.MAX_PENDING
 
+#: 异步模式待办队列已满时的 503 文案（`/api/verify-jobs` 与账号添加路径共用）。
+VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
+#: 账号验证认证失败冷却中的 429 文案。按「被锁定对象 = 易班账号 = 手机号」设冷却；
+#: 仅限 web 验证路径，探针与 cron 签到不受影响。
+VERIFY_FAIL_COOLDOWN_MSG = (
+    "该手机号验证失败次数过多，已被临时限制验证，请约 10 分钟后再试；"
+    "连续密码错误会导致易班账号被锁定，如密码有误请先在易班 APP 重置。"
+)
+
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-c S3）
+# ---------------------------------------------------------------------------
+# 本模块需要的宿主侧状态有三项，且都必须是**组合根持有、可被测试替换**的：
+#   · 外呼席位信号量 `seat`——**必须与异步路径共用同一个**（`yiban.attempt.jobs`
+#     经 `configure(seat=...)` 拿的是同一枚）；
+#   · 每用户配额判定 `attempt_allowed` 与只读验证 `verify_clean`；
+#   · `.env` 路径与读取器——路径可被 `--env-file` 与测试赋值改写，自持绑定会读到旧值。
+# 沿用 `yiban/attempt/jobs.py` 已在用的形态：宿主在 import 末尾登记 lambda，本模块按
+# 调用时刻取。未登记即 fail-closed（抛 `RuntimeError`，不静默回退默认值）——
+# 静默回退会让"忘记登记"表现为"校验永远放行/永远关闭"，属最坏的假绿方向。
+_hooks = {}
+
+
+def configure(seat=None, attempt_allowed=None, verify_clean=None, env_file=None,
+              read_env=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。"""
+    if seat is not None:
+        _hooks["seat"] = seat
+    if attempt_allowed is not None:
+        _hooks["attempt_allowed"] = attempt_allowed
+    if verify_clean is not None:
+        _hooks["verify_clean"] = verify_clean
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if read_env is not None:
+        _hooks["read_env"] = read_env
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主登记 lambda 内部抛的 `KeyError` 是真实
+    业务错误，必须原样传出（旧写法会把它改写成"尚未登记宿主依赖"，抹掉故障位置）。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.verify_queue 尚未登记宿主依赖 %r：请确认 web/app.py 的 import "
+            "末尾调用了 web.services.verify_queue.configure(...)" % (key,)
+        ) from None
+    return fn()
+
 
 class VerifyGateBusy(Exception):
-    """外呼校验的全局并发席位已满（**未消耗**每用户配额）。"""
+    """外呼校验的并发闸已满（全局席位满，或同一账号已有一次外呼在飞）。"""
 
 
 class VerifyQuotaExceeded(Exception):
     """该会话用户的验证尝试配额用尽。"""
 
 
-def run_gated_call(action, username, limits, seat, attempt_allowed):
-    """在全局并发席位与每用户配额下执行一次**真实外呼**，返回 `action()` 的结果。
+#: 同一账号的 in-flight 外呼（工单 cgx6）。形状不是实例：**"同一账号不得被并发持有"
+#: 是本仓已确立的不变式**（引擎侧靠单条 CAS 判据）；web 侧此前只有全局席位 + 每用户
+#: 配额，两者都不阻止"同一手机号同时跑两次真实登录"——账号验证与设备补全各点一次
+#: 即可重叠。故守卫放在**两条外呼共用的闸门**上，不逐点打补丁。
+#:
+#: 键取手机号（易班账号的唯一标识）；空键不守卫（没有可互斥的对象）。
+#: gunicorn 单进程多线程形态下进程内集合即足够；跨进程（多 worker）形态不在本仓
+#: 生产口径内（`-w 1 --threads 32` 是明文不变量）。
+_in_flight_accounts = set()
+_in_flight_cv = threading.Condition()
+
+
+def _account_key(phone):
+    return str(phone or "").strip()
+
+
+def acquire_account(phone, timeout=None):
+    """占用某账号的外呼权。返回 True=已占用，False=超时/已被占用。
+
+    `timeout=0` 是非阻塞（同步请求路径用：同账号已在飞时立刻回"校验繁忙"，
+    不把请求线程挂住）；`timeout=None` 无限等待（异步任务路径用：后台线程可以排队，
+    但**绝不会与另一次外呼重叠**）。
+    """
+    key = _account_key(phone)
+    if not key:
+        return True
+    with _in_flight_cv:
+        if timeout is None:
+            while key in _in_flight_accounts:
+                _in_flight_cv.wait()
+        else:
+            deadline = time.monotonic() + max(0.0, timeout)
+            while key in _in_flight_accounts:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    return False
+                _in_flight_cv.wait(remain)
+        _in_flight_accounts.add(key)
+        return True
+
+
+def release_account(phone):
+    """释放某账号的外呼权（与 `acquire_account` 成对；空键为 no-op）。"""
+    key = _account_key(phone)
+    if not key:
+        return
+    with _in_flight_cv:
+        _in_flight_accounts.discard(key)
+        _in_flight_cv.notify_all()
+
+
+def run_account_exclusive(phone, action, timeout=None):
+    """在"同一账号互斥"下执行 `action()`；占用不到时抛 VerifyGateBusy。
+
+    异步任务路径（`yiban.attempt.jobs` 经宿主登记的 `verify_one`）用它把
+    "同账号两次真实登录"排成串行：后到者等待前一次结束再跑（`timeout=None`）。
+    同步请求路径不经过这里——`run_gated_call` 直接做非阻塞占用。
+    """
+    if not acquire_account(phone, timeout=timeout):
+        raise VerifyGateBusy()
+    try:
+        return action()
+    finally:
+        release_account(phone)
+
+
+def run_gated_call(action, username, limits, subject=None):
+    """在全局并发席位、账号互斥与每用户配额下执行一次**真实外呼**，返回结果。
 
     这是"web 进程代用户外呼"的**唯一闸门**：`run_verify_with_gate`（账号验证）与设备
     登记补全都经它——两条外呼同为一次真实登录，风控暴露面相同，闸门必须同源；各写一份
     迟早分叉（一边补了新闸、另一边没有）。
 
-    顺序刻意如此：**先抢全局席位、再扣用户配额**——抢不到席位时立即抛
-    VerifyGateBusy 且不消耗配额，否则我们自己的饱和会变成对用户的惩罚。
-    席位在 `finally` 中释放，含配额拒绝与 action 异常两条路径。
+    `subject` 是被操作账号的手机号：非空时占用"同一账号互斥"权（工单 cgx6）。
+    非阻塞占用——同账号已有外呼在飞时立即抛 VerifyGateBusy，不排队（请求线程等不起）。
 
-    席位信号量与配额判定都由调用方传入（`web.app` 的 `_verify_sem` /
-    `_verify_attempt_allowed`）：两者都是会被测试打桩的模块级名字，本模块另持绑定会让
-    打桩静默失效（席位还必须与异步路径共用同一个）。
+    顺序：**先抢全局席位、再抢账号权、最后扣用户配额**——任何一步失败都不消耗
+    用户配额（自己的饱和不该变成对用户的惩罚）。席位与账号权在 `finally` 中释放，
+    含配额拒绝与 action 异常两条路径。
+
+    席位信号量与配额判定按调用时刻取自宿主登记的 lambda（见 `configure`）：两者都是
+    会被测试打桩的模块级名字，本模块另持绑定会让打桩静默失效（席位还必须与异步路径
+    共用同一个）。
     """
+    seat = _host("seat")
+    attempt_allowed = _host("attempt_allowed")
     if not seat.acquire(blocking=False):
         raise VerifyGateBusy()
     try:
-        if not attempt_allowed(limits, username):
-            raise VerifyQuotaExceeded()
-        return action()
+        if not acquire_account(subject, timeout=0):
+            raise VerifyGateBusy()
+        try:
+            if not attempt_allowed(limits, username):
+                raise VerifyQuotaExceeded()
+            return action()
+        finally:
+            release_account(subject)
     finally:
         seat.release()
 
 
-def run_verify_with_gate(clean, username, limits, seat, attempt_allowed, verify_clean):
+def run_verify_with_gate(clean, username, limits):
     """执行一次外呼校验（全局并发闸包裹）。本函数是 `run_gated_call` 在账号验证上的绑定。
 
     `limits` 是每用户配额表（`current_app.extensions` 登记，经 `web.routes.verify_limits()`
     取用；进程内字典，故显式传入）。
 
-    返回 verify_err（None 表示验证通过）；并发满/配额尽时抛上述异常，
+    返回 verify_err（None 表示验证通过）；并发满/同账号已在飞/配额尽时抛上述异常，
     由调用方翻译成 503 / 429。
     """
-    return run_gated_call(lambda: verify_clean(clean), username, limits, seat, attempt_allowed)
+    return run_gated_call(
+        lambda: _host("verify_clean")(clean), username, limits,
+        subject=clean.get("phone"),
+    )
 
 
 def _reject_account(phone, reason, account_id, expect_status):
@@ -207,35 +342,46 @@ def start_edit_probe(clean, username, fails, limits, start_job,
     return job_id
 
 
-def verify_async_enabled(read_env, env_file):
+def _effective_switch(key):
+    """两个验证开关**共用**的 overlay 读取器：`.env` 优先、进程环境只补缺（M27）。
+
+    原实现两个相邻开关各读一层且优先级相反：`verify_async_enabled` 先读
+    `os.environ`、缺键才读 `.env`（进程环境优先，与 M27 反了），
+    `_account_verify_enabled` 只读 `.env`（`docker run -e` / systemd
+    `Environment=` 形态下开关打不开）。两者还都自称"同口径"。
+    这里按仓库口径统一：`.env` 有非空值就取它，否则回退进程环境。
+    `.env` 路径与读取器按调用时刻取自宿主登记的 lambda（见 `configure`）。
+    """
+    file_env = _host("read_env")(_host("env_file"))
+    value = file_env.get(key, "")
+    if str(value or "").strip():
+        return str(value)
+    return os.environ.get(key, "")
+
+
+def verify_async_enabled():
     """在线校验异步开关：**默认关**，显式置 `YIBAN_VERIFY_ASYNC=1` 才启用。
 
     异步路径把外呼交给后台任务、请求线程不再被占用（长任务不拖垮整站），
     但**结果需要前端轮询 `/api/verify-jobs/<id>` 才能展示**——当前前端尚未实现该轮询，
     故默认走同步带闸路径：用户提交账号时当场得到校验结论（与界面现状一致）。
-    前端就绪后把默认值改为开即可（两侧契约已在 `yiban/attempt/jobs.py` 与
+    前端就绪后把默认值改为开即可（两侧契约已在 `yiban.attempt/jobs.py` 与
     `/api/verify-jobs` 端点就位，测试也按显式开关覆盖了两条路径）。
 
-    与 `YIBAN_ACCOUNT_VERIFY` 同口径读 `.env`（`os.environ` 优先，便于临时覆盖）——
-    只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。`.env` 路径与读取器由
-    调用方传入（`web.app` 的 `ENV_FILE` / `read_env`）：本函数须用**本进程的**路径，
-    它可被 `--env-file` 改写，两者也都是会被测试改写的模块级名字。
+    与 `YIBAN_ACCOUNT_VERIFY` **同口径**（同一 overlay 读取器 `_effective_switch`）：
+    `.env` 优先、进程环境补缺（M27）。
     """
-    raw = os.environ.get("YIBAN_VERIFY_ASYNC")
-    if raw is None:
-        raw = read_env(env_file).get("YIBAN_VERIFY_ASYNC", "")
-    return str(raw).strip().lower() in ("1", "true", "on", "yes")
+    return _effective_switch("YIBAN_VERIFY_ASYNC").strip().lower() in (
+        "1", "true", "on", "yes")
 
 
-def _account_verify_enabled(read_env, env_file):
+def _account_verify_enabled():
     """注册/添加账号时是否做即时验证（YIBAN_ACCOUNT_VERIFY=1，任意管理员可开关）。
 
-    `.env` 路径与读取器由调用方传入（`web.app` 的 `ENV_FILE` / `read_env`）：
-    两者都是会被测试改写、也会随 `--config` 变化的模块级名字。
+    与 `verify_async_enabled` 共用 `_effective_switch`（`.env` 优先、进程环境补缺）。
 
     真值口径单源在 `yiban.infra.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白
     不敏感），与面板 `GET /api/settings` 的 account_verify 同口径。
     """
-    env = read_env(env_file)
-    return parse_env_flag(env.get("YIBAN_ACCOUNT_VERIFY", ""), default=False,
+    return parse_env_flag(_effective_switch("YIBAN_ACCOUNT_VERIFY"), default=False,
                           key="YIBAN_ACCOUNT_VERIFY", log=logger)

@@ -17,9 +17,10 @@ CSRF、同源校验、安全响应头）与共享安全门实现仍留在 `web/a
 模块侧面取到，create_app 按 app 实例登记在 extensions）。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（ENV_FILE / mailer / notify / mail_config /
-account_crypto / write_env_batch / send_notification / db / _json_body 等）必须继续生效。
+A 类转发名（`db` / `mailer` / `notify` / `mail_config` / `mail_layout` / `account_crypto` /
+`_mask_email` 等）经真源模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；
+app.py 自有的模块级名字（`ENV_FILE` / `write_env_batch` / `send_notification` /
+`_json_body` 等）仍经 `web.routes.appmod()` 按属性取。
 配置落盘走 `write_env_batch` 一次原子写；通道变更只留审计行（不外发告警——见视图内注释），
 `POST /api/notify-test` 的测试消息经 `send_notification` 发出。
 """
@@ -29,10 +30,23 @@ import uuid
 
 from flask import jsonify, session
 
+from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
-from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
+
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
+from web.services import notify_mail as _notify_mail
+from yiban.adapters.config import account_crypto
+from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
+from yiban.adapters.notifier import mail as mailer
+from yiban.adapters.notifier import notify
+from yiban.adapters.notifier.mail import config as mail_config
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
 
 # SMTP 条目的稳定 id：贯穿「前端行 ↔ 落盘条目 ↔ 凭据沿用」的唯一身份，位置不参与身份。
 # 字符集/长度收紧（不透明短标识而非自由文本）：id 一旦能夹带任意内容，就成了绕脱敏
@@ -133,8 +147,7 @@ def api_mail_config():
     不受每日条数上限与同类节流约束（额度只有推送那两本账，见 notify/ledger），
     本接口返回的其余键全是"通道开没开、发往何处"，属普通管理员运维必读信息。
     """
-    m = _appmod()
-    cfg = m.mailer.get_config()
+    cfg = mailer.get_config()
     enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
     return jsonify({
         "ok": True,
@@ -151,10 +164,10 @@ def api_mail_config():
                 "id": e.get("id") if _smtp_id_ok(e.get("id")) else None,
                 "host": str(e.get("host", "")),
                 "port": e.get("port", 465),
-                "user": m.mail_config._mask_addr(e.get("user")),
+                "user": mail_config._mask_addr(e.get("user")),
                 "has_pass": bool(e.get("pass")),
             }
-            for e in m.mailer.smtp_list()
+            for e in mailer.smtp_list()
         ],
     })
 
@@ -184,19 +197,23 @@ def api_mail_config_save():
     邮件通道是全部安全告警的最后一条送达路径，故**关闭它**不是普通可逆改动：
     静默关掉后签到序列再出事就没有任何告警出口，与推送侧「关闭消息推送通道」同族，
     走同一道高危门禁、占同一本凭据额度（用户拍板：把告警装回去免门，把它拆掉要
-    口令）。其余口径：admin_notify（个人接收偏好，不影响其他管理员）与 admin_to
-    （可逆路由改动）免门免额度；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令
+    口令）。其余口径：admin_notify（个人接收偏好，不影响其他管理员）免门免额度；
+    admin_to（收件人改道）自 2026-10-02 起单独过统一高危门（quota="creds"、
+    risk_always=True）——把全部告警改发别处正是静音手法，须当次口令并占 creds
+    额度（与「关闭邮件通道」同账；同一请求同时关通道时不再重复占）。SMTP 凭据变更
+    （中继/授权码 = 换钥类）仍要当次口令
     （直连 _reconfirm_admin_password，不占高危额度；用户 2026-10-01 拍板后
     `risk_always=True`，即缺省 `risk` 档下同出口也不吃"同出口免口令"）。开关的判据是
     「值真变化」——已是关的重复提交、或只改 admin_to 的保存不再被这门连坐。留痕统一交给
     落盘后的审计行（谁、把哪路从哪改到哪）；告警通道自身无法可靠通报自己的变更（见下方
     落盘处注释）。
-    smtps 与 admin_to 同请求提交时口令只按 smtps 需要（admin_to 免门，不拖累）。
+    smtps 与 admin_to 同请求提交时分别过各自的门（凭据重确认 + 改道高危门）：
+    admin_to 改道占 creds 额度，不由 smtps 的口令确认替代（ba-p05-08）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     # 全量校验通过才统一落盘：边校验边 write_env_key 会在后一个字段非法时
     # 留下"一半已生效"的写入
     flags = {}
@@ -216,7 +233,7 @@ def api_mail_config_save():
     # 读取面）。
     closing_mail_channel = False
     if flags.get("YIBAN_MAIL_ENABLE") is False:
-        _cur_enable = str(m.mail_config._get("ENABLE") or "").strip().lower()
+        _cur_enable = str(mail_config._get("ENABLE") or "").strip().lower()
         closing_mail_channel = _cur_enable in ("1", "true", "on", "yes")
     # ---- 告警收件人（admin_to）：校验通过后才做口令二次确认 ----
     # 键存在 = 本次以提交值为准（空串 = 显式清空）；键缺失 = 不改动。
@@ -230,10 +247,10 @@ def api_mail_config_save():
             addrs = [a.strip() for a in raw_to.split(",") if a.strip()]
             if not addrs:
                 return jsonify({"error": "告警收件人格式无效"}), 400
-            if len(addrs) > m.MAIL_ADMIN_TO_MAX:
-                return jsonify({"error": f"告警收件人最多 {m.MAIL_ADMIN_TO_MAX} 个"}), 400
+            if len(addrs) > _limits.MAIL_ADMIN_TO_MAX:
+                return jsonify({"error": f"告警收件人最多 {_limits.MAIL_ADMIN_TO_MAX} 个"}), 400
             for a in addrs:
-                if not m.EMAIL_RE.match(a) or len(a) > 64:
+                if not _limits.EMAIL_RE.match(a) or len(a) > 64:
                     return jsonify({"error": f"告警收件人格式无效：{a[:32]}"}), 400
             admin_to_val = ",".join(addrs)
         else:
@@ -244,12 +261,12 @@ def api_mail_config_save():
         raw_list = data["smtps"]
         if not isinstance(raw_list, list):
             return jsonify({"error": "smtps 应为列表"}), 400
-        if len(raw_list) > m.MAIL_SMTPS_MAX:
-            return jsonify({"error": f"SMTP 发信条目最多 {m.MAIL_SMTPS_MAX} 条"}), 400
+        if len(raw_list) > _limits.MAIL_SMTPS_MAX:
+            return jsonify({"error": f"SMTP 发信条目最多 {_limits.MAIL_SMTPS_MAX} 条"}), 400
         # 旧列表取自改动前的解密结果。凭据沿用的身份匹配分两轮认领（见下方
         # smtps_list 组装处），任何一步都不看数组位置——位置一致只是巧合的来源，
         # 不是身份。
-        old_entries = m.mailer.smtp_list()
+        old_entries = mailer.smtp_list()
         parsed = []
         seen_ids = set()
         for i, e in enumerate(raw_list):
@@ -265,7 +282,7 @@ def api_mail_config_save():
             # 日志当成内网端口扫描器用（连接被拒/超时/无路由互不相同）。默认拒内网
             # 与不可路由段；确需本地/内网 MTA 的部署用 YIBAN_MAIL_ALLOW_PRIVATE_HOST
             # 显式开启——存量配置不受影响（不改 smtps 就不经过这里）。
-            _host_reason = m.mail_config.check_smtp_host(host)
+            _host_reason = mail_config.check_smtp_host(host)
             if _host_reason:
                 return jsonify({"error": f"smtps 第 {i + 1} 条：{_host_reason}"}), 400
             try:
@@ -340,7 +357,7 @@ def api_mail_config_save():
             })
     # 旧收件人值必须在落盘**之前**取——写后再读只会读到刚写进去的新值，
     # "从哪改到哪"就塌成"从哪改到哪自己"。
-    admin_to_old = m.mail_config._get("ADMIN_TO") if admin_to_val is not None else None
+    admin_to_old = mail_config._get("ADMIN_TO") if admin_to_val is not None else None
     # SMTP 凭据变更（中继/授权码 = 换钥类）要当次口令；admin_to 是可逆路由改动，
     # 免口令（不拖累同请求的 smtps 一起免——两字段分别判定）
     if smtps_list is not None:
@@ -364,9 +381,9 @@ def api_mail_config_save():
     smtps_enc = None
     if smtps_list is not None:
         try:
-            enc = m.account_crypto.encrypt_text(
+            enc = account_crypto.encrypt_text(
                 json.dumps(smtps_list, ensure_ascii=False),
-                m.account_crypto.load_key(m.ENV_FILE),
+                account_crypto.load_key(m.ENV_FILE),
             )
         except _EnvWriteRefused:
             # load_key 的"缺钥自动生成写回"被写入口 fail-closed 拒绝（脏 .env）：
@@ -400,12 +417,15 @@ def api_mail_config_save():
         # 必须在落盘**之前**发：此刻 send_notification 读到的 ADMIN_TO 还是旧值，
         # 告警才能到**原收件人**手里——落盘后再发只能进新收件人，改道若出于恶意
         # 恰好等于报给攻击者。SMTP 中继本请求未动，通道此刻是活的，送达可靠。
-        m.send_notification(
+        _notify_mail.send_notification(
             "告警收件人被改道",
-            m.mail_layout.Mail(
+            mail_layout.Mail(
                 summary="邮件告警收件人即将变更；本告警发给原收件人，非本人操作请立即核查。",
-                fields=[("原收件人", m._mask_email(admin_to_old) if admin_to_old else "（未配置）"),
-                        ("新收件人", m._mask_email(admin_to_val))],
+                # 收件人是逗号分隔多地址（MAIL_ADMIN_TO_MAX=10），必须用逐项打码的
+                # `mail_config._mask_addr`；`_mask_email` 只在第一个 @ 处切段，会把
+                # 第 2 个及之后的地址原样留在告警正文（ba-p05-03）。
+                fields=[("原收件人", mail_config._mask_addr(admin_to_old) if admin_to_old else "（未配置）"),
+                        ("新收件人", mail_config._mask_addr(admin_to_val))],
                 notes=["本告警在落盘前发出；落盘后的审计行记打码后的「从哪 → 到哪」。",
                        "若本次保存最终失败，以审计与设置页当前值为准。"],
                 advice=["非本人操作：立即核查近期会话与管理员账号，并按追回手册处理。"],
@@ -413,7 +433,7 @@ def api_mail_config_save():
             ),
             urgent=True,
         )
-    m.write_env_batch(m.ENV_FILE, updates)
+    _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     # 通道变更不再外发告警（开关 / SMTP 条目两处；收件人改道自 2026-10-02 起在
     # 落盘前向**原**收件人发预警，见上）：改告警通道本身就
     # 是"把报警器拆掉"的动作，用它自己那条通道去通报"通道被改了"只在通道还活着时
@@ -433,11 +453,11 @@ def api_mail_config_save():
     if admin_to_val is not None:
         # 审计记打码值：留痕要能回答"收件人被谁改到哪个域名"，但不落完整地址；
         # 旧值同口径打码一并留下（"从哪改到哪"的"从哪"）。
-        detail["admin_to"] = m.mail_config._mask_addr(admin_to_val)
-        detail["admin_to_from"] = m.mail_config._mask_addr(admin_to_old)
+        detail["admin_to"] = mail_config._mask_addr(admin_to_val)
+        detail["admin_to_from"] = mail_config._mask_addr(admin_to_old)
     resp = {"ok": True}
     resp.update(detail)
-    m.db.audit(
+    db.audit(
         session.get("username") or "?",
         "mail_config", "mail_config",
         _bounded_audit_json(detail),
@@ -458,11 +478,10 @@ def api_notify_config():
     隐藏时对应键置 null 并**恒定**下发 `quota_visible` 布尔：remaining 的 null 原本
     表示"不限"，只靠 null 表达"无权查看"会让前端把两者读成同一个意思。
     """
-    m = _appmod()
-    cfg = m.notify.get_config()
-    quota_visible = m._is_builtin_admin_session()
+    cfg = notify.get_config()
+    quota_visible = _security._is_builtin_admin_session()
     if not quota_visible:
-        for key in m._NOTIFY_QUOTA_HIDDEN_KEYS:
+        for key in _limits._NOTIFY_QUOTA_HIDDEN_KEYS:
             cfg[key] = None
     cfg["quota_visible"] = quota_visible
     return jsonify(cfg)
@@ -486,9 +505,9 @@ def api_notify_config_save():
     当次口令**（此前"risk 档同出口免口令"被本次口径覆盖）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     ntype = str(data.get("type", "")).strip().lower()
     secret = str(data.get("secret", "")).strip()
     if ntype not in ("serverchan", "custom", ""):
@@ -502,12 +521,12 @@ def api_notify_config_save():
             return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
         # 长度上限：SendKey 是"定长前缀 SCT + 固定宽度主体"（实测 35 字符），
         # 留一倍余量到 64；无上限时超长值会原样加密进 .env 并在每次推送时带出。
-        if not m.NOTIFY_SENDKEY_MIN_LEN <= len(secret) <= m.NOTIFY_SENDKEY_MAX_LEN:
+        if not _limits.NOTIFY_SENDKEY_MIN_LEN <= len(secret) <= _limits.NOTIFY_SENDKEY_MAX_LEN:
             return jsonify({"error": "Server酱 SendKey 长度不合法"}), 400
     elif effective_type == "custom" and secret:
-        if len(secret) > m.NOTIFY_URL_MAX_LEN:
-            return jsonify({"error": f"自定义地址过长（最多 {m.NOTIFY_URL_MAX_LEN} 字符）"}), 400
-        if not m.notify.is_safe_url(secret):
+        if len(secret) > _limits.NOTIFY_URL_MAX_LEN:
+            return jsonify({"error": f"自定义地址过长（最多 {_limits.NOTIFY_URL_MAX_LEN} 字符）"}), 400
+        if not notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
     # ---- 高危判定（收窄后）----
     # 触碰**密钥**（type 或 secret 任一在场：换钥 / 清钥 / 关闭随钥清）→ 仍过高危
@@ -527,14 +546,21 @@ def api_notify_config_save():
     numeric = {}
     if "type" in data:
         updates["YIBAN_NOTIFY_TYPE"] = ntype
-        if not secret:
-            # 空 = 删除键（关闭或换型不留旧钥）；带密钥时由闸门之后的加密段填
-            updates["YIBAN_NOTIFY_SECRET_ENC"] = ""
+    if not secret and ("type" in data or "secret" in data):
+        # 空 = 删除键：type 置空/换型不留旧钥；**单独提交 {"secret": ""}** 也走这里。
+        # 旧实现把删键只挂在 type 分支内：仅带 secret 的清钥请求 updates 为空 ⇒
+        # 200 但密钥照旧外发，还白占一格 creds 额度（ba-p05-04）。
+        # 带密钥时由闸门之后的加密段填。
+        updates["YIBAN_NOTIFY_SECRET_ENC"] = ""
     if "cooldown" in data:
         try:
-            cd = max(0, int(data["cooldown"]))
+            cd = int(data["cooldown"])
         except (TypeError, ValueError):
             return jsonify({"error": "冷却参数无效"}), 400
+        # 上界与 cooldown 的用途绑死：它决定同类告警的静音窗口，天文数字等于永久
+        # 关闭同类告警（ba-p05-10）。0 仍合法（关闭节流）。
+        if not 0 <= cd <= 86400:
+            return jsonify({"error": "冷却参数应为 0~86400 秒"}), 400
         # 0 也必须显式落盘：0 → 删键 → 回落 DEFAULT_COOLDOWN=60，设置页
         # "关闭节流"就成了"被节流 60 秒"，与 .env.example 里"0=关闭"的承诺相反。
         updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd)
@@ -547,19 +573,28 @@ def api_notify_config_save():
         numeric["urgent_only"] = bool(data["urgent_only"])
     if "daily_max" in data:
         try:
-            dm = max(0, int(data["daily_max"]))
+            dm = int(data["daily_max"])
         except (TypeError, ValueError):
             return jsonify({"error": "每日上限参数无效"}), 400
-        updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)  # 0 = 不限（显式写 0）
+        # 0 = 不限（显式写 0）；越界值会让额度失去意义（ba-p05-10）
+        if not 0 <= dm <= 100000:
+            return jsonify({"error": "每日上限应为 0~100000（0=不限）"}), 400
+        updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)
         numeric["daily_max"] = dm
     if "urgent_daily_max" in data:
         # 紧急账也要能从设置页管理：分账后两本账必须能同时管
         try:
-            udm = max(0, int(data["urgent_daily_max"]))
+            udm = int(data["urgent_daily_max"])
         except (TypeError, ValueError):
             return jsonify({"error": "紧急每日上限参数无效"}), 400
+        if not 0 <= udm <= 100000:
+            return jsonify({"error": "紧急每日上限应为 0~100000（0=不限）"}), 400
         updates["YIBAN_NOTIFY_URGENT_DAILY_MAX"] = "0" if udm == 0 else str(udm)
         numeric["urgent_daily_max"] = udm
+    if not updates and not secret:
+        # 没有任何可更新字段（如空 body）：不得先过口令门/占 creds 额度，再写一个空批次。
+        # 带非空 secret 时更新在闸门之后由加密段补上，不在此列（ba-p05-04）。
+        return jsonify({"error": "没有可更新的字段"}), 400
     if need_reconfirm:
         # 高危动作（换钥/清钥/关闭通道）通过后才占用高危额度
         # 三类互斥且并集恰为 touches_channel（额度/节流键已在上面被排除），无第四种情形。
@@ -579,13 +614,13 @@ def api_notify_config_save():
     # 零写入"的口径相反（加密失败仍返回 500 且不落任何配置）。
     if secret:
         try:
-            enc = m.account_crypto.encrypt_text(secret, m.account_crypto.load_key(m.ENV_FILE))
+            enc = account_crypto.encrypt_text(secret, account_crypto.load_key(m.ENV_FILE))
             updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
         except _EnvWriteRefused:
             raise  # 同上：自动生成密钥的写回被拒走统一 409，不伪装成加密失败
         except ValueError as e:
             return jsonify({"error": f"加密失败：{e}"}), 500
-    m.write_env_batch(m.ENV_FILE, updates)
+    _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     # 通道变更不再外发告警：改告警通道就是"把报警器拆掉"的动作，用它自己那条通道
     # 通报"通道被改了"只在通道还活着时成立；留痕统一交给下面的审计行（类型/密钥
     # 去向/各限额的新值逐键落盘），运维按审计页即可还原完整动作。
@@ -596,26 +631,25 @@ def api_notify_config_save():
         detail["type"] = ntype or "off"
     if "YIBAN_NOTIFY_SECRET_ENC" in updates:
         detail["secret"] = "updated" if updates["YIBAN_NOTIFY_SECRET_ENC"] else "cleared"
-    m.db.audit(
+    db.audit(
         session.get("username") or "?",
         "notify_config", "notify_config",
         json.dumps(detail, ensure_ascii=False),
     )
-    return jsonify(m.notify.get_config())
+    return jsonify(notify.get_config())
 
 
 def api_notify_test():
     """主管理员：发送一条测试消息验证推送配置。"""
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    ok = m.notify.send_test()
+    ok = notify.send_test()
     # 每次外呼必留一条含操作者的审计：send(force=True) 跳过节流与两本每日额度，
     # 这是唯一一条管理员会话可直接驱动对外 HTTPS POST 的入口。失败结果同样落
     # 一行——对被拒/异常的尝试，请求往往已经发出，只记成功会漏掉真外呼。
     # 刻意不加会话配额：管理员自用排障按钮，强防护只会挡住日常（全站限速
     # + CSRF + 前端入口已把滥用面压在"会话被盗"这一前提上，那时审计更值钱）。
-    m.db.audit(
+    db.audit(
         session.get("username") or "?", "notify_test", "notify_test",
         "测试推送已发送" if ok else "测试推送未送达（未配置或推送被拒，详见服务日志）",
     )

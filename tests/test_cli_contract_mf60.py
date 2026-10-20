@@ -7,7 +7,7 @@
     （目标已存在须 `--force`）、`db --restore` 破坏性守卫（默认 dry-run / 指纹回显 /
     覆盖前副本 / 损坏备份拒绝，仅用自造库与自造副本）、`--help` 列明四个路径环境变量。
 对应实现：`yiban/entry/cli/__init__.py`（`_emit_json_error` / `_fail` / `_UsageError` /
-    `main` 解析兜底；`yiban/cli.py` 是转发壳）
+    `main` 解析兜底；旧入口转发壳已于 `145-E` 退役）
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
     人类可读 usage/摘要仍走 stderr。
@@ -171,11 +171,11 @@ class ReadOnlyPromiseTest(unittest.TestCase):
 
     def test_readonly_commands_leave_existing_db_untouched(self):
         """已有库：mtime、user_version、文件集合全不变（连 WAL 的 -shm/-wal 都不新增）。"""
-        from yiban.store import migrations
+        from yiban.adapters.persistence import migrations
         work = os.path.join(self.root, "hasdb")
         os.makedirs(work)
         db_file = os.path.join(work, "yiban.db")
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.get_conn().close()")
         env = dict(self.db_env, YIBAN_DB_FILE=db_file)
@@ -224,7 +224,7 @@ class BackupOverwriteGuardTest(unittest.TestCase):
         self._init_db()
 
     def _init_db(self):
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.get_conn().close()")
         r = subprocess.run([sys.executable, "-c", code, self.db_file,
@@ -282,7 +282,7 @@ class RestoreGuardTest(unittest.TestCase):
         self.backup = os.path.join(self.root, "copy.db")
         self.env = dict(_cli_env(self.root), YIBAN_DB_FILE=self.db_file)
         self._sqlite(self.db_file,
-                     "import sys; from yiban.store import db;"
+                     "import sys; from yiban.adapters.persistence import db;"
                      "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                      "db.get_conn().close()", os.path.join(self.root, ".env"))
         self.assertEqual(

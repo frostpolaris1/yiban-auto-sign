@@ -11,7 +11,7 @@
     `web.routes.dupcheck_limits()`（app 实例 extensions，键为会话用户名）；配额原语
     `web.security._bump_window_count` / `_ip_store_trim`；被拒留痕复用
     `web.app` 的 `_read_audit_denied_trace`（limit=1）；常量 `DUPCHECK_WINDOW` /
-    `DUPCHECK_MAX` 在 `web/app.py`。
+    `DUPCHECK_MAX` 在 `web/services/limits.py`（批 3-b 由 web/app.py 搬入）。
 关键断言：预检命中是"该号码在册"的对外确认——可达者拿它零成本、零留痕地定向探号
     等于免检预言机；配额只计命中（不伤正常路径），留痕必须可归因（actor + 遮罩号），
     拒绝面不能反过来把审计表刷成打字机（2 次 429 只许 1 行被拒审计）。
@@ -32,7 +32,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
-from yiban.store.audit_chain import actor_tag
+from web.services import limits as _limits
+from yiban.adapters.persistence.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -168,7 +169,7 @@ class DupcheckOracleTest(unittest.TestCase):
         app = self._app()
         c = app.test_client()
         token = self._login(c, ACTOR)
-        quota = self.webapp.DUPCHECK_MAX
+        quota = _limits.DUPCHECK_MAX
         codes = [_post_account(c, token, PHONE_TAKEN).status_code
                  for _ in range(quota)]
         self.assertEqual(codes, [400] * quota, "前 DUPCHECK_MAX 次命中维持原 400")
@@ -199,8 +200,8 @@ class DupcheckOracleTest(unittest.TestCase):
         c2 = app.test_client()
         token2 = self._login(c2, OTHER)
         codes = [_post_account(c2, token2, PHONE_TAKEN).status_code
-                 for _ in range(self.webapp.DUPCHECK_MAX)]
-        self.assertEqual(codes, [400] * self.webapp.DUPCHECK_MAX,
+                 for _ in range(_limits.DUPCHECK_MAX)]
+        self.assertEqual(codes, [400] * _limits.DUPCHECK_MAX,
                          "计数按会话隔离")
         self.assertEqual(_post_account(c2, token2, PHONE_TAKEN).status_code, 429)
 
@@ -208,7 +209,7 @@ class DupcheckOracleTest(unittest.TestCase):
         app = self._app()
         c = app.test_client()
         token = self._login(c, ACTOR)
-        quota = self.webapp.DUPCHECK_MAX
+        quota = _limits.DUPCHECK_MAX
         t0 = time.time()
         with mock.patch("web.routes.my_api.time.time", side_effect=lambda: t0):
             for _ in range(quota):
@@ -216,7 +217,7 @@ class DupcheckOracleTest(unittest.TestCase):
             self.assertEqual(_post_account(c, token, PHONE_TAKEN).status_code, 429)
         # 拨过 DUPCHECK_WINDOW 后额度复位：回到 400 契约并继续留痕
         with mock.patch("web.routes.my_api.time.time",
-                        side_effect=lambda: t0 + self.webapp.DUPCHECK_WINDOW + 1):
+                        side_effect=lambda: t0 + _limits.DUPCHECK_WINDOW + 1):
             r = _post_account(c, token, PHONE_TAKEN)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         hits = self._audit(DUP_HIT)

@@ -25,6 +25,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import verify_queue as _verify_queue
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "c" * 64
@@ -137,8 +139,8 @@ class VerifyGateBusyHonestTest(unittest.TestCase):
         r = c.post("/api/login", json={"username": USER_EMAIL, "password": GOODPW})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
-        with mock.patch.object(self.webapp, "_verify_queue_full", return_value=False), \
-             mock.patch.object(self.webapp, "_start_verify_job",
+        with mock.patch.object(_verify_queue, "_verify_queue_full", return_value=False), \
+             mock.patch.object(_verify_queue, "_start_verify_job",
                                side_effect=self.webapp.VerifyGateBusy()):
             r = c.post("/api/my-accounts", json={
                 "name": "验证竞态", "phone": VERIFY_PHONE, "password": "pw12345678",

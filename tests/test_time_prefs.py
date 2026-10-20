@@ -51,6 +51,11 @@ import db
 import signin
 from werkzeug.security import generate_password_hash
 
+from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
+from web.services import limits as _limits
+from web.services import signstatus as _signstatus
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -371,13 +376,13 @@ class TimePrefsTest(unittest.TestCase):
             db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "load_accounts_raw",
+        with mock.patch.object(_accounts_data, "load_accounts_raw",
                                return_value=self._fake_active(300, "136")):
             data = c.get("/api/my-time-pref").get_json()
         slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
         self.assertEqual(slot0["pct"], 80, "16/19=84.2% → 80% 档（不是固定 cap=15 的 100%）")
         # 反证：同样 16 人若 K=15（未压缩）→ 判满 100，证明压缩口径真的在起作用
-        with mock.patch.object(self.webapp, "load_accounts_raw",
+        with mock.patch.object(_accounts_data, "load_accounts_raw",
                                return_value=self._fake_active(16, "136")):
             data2 = c.get("/api/my-time-pref").get_json()
         slot0b = next(s for s in data2["slots"] if s["slot_min"] == 0)
@@ -443,7 +448,7 @@ class TimePrefsTest(unittest.TestCase):
         db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "read_env",
+        with mock.patch.object(_env_io_svc, "read_env",
                                return_value={"YIBAN_BLOCK_CAP": "20",
                                              "YIBAN_ALLOW_TIME_PREF": "1"}):
             data = c.get("/api/my-time-pref").get_json()
@@ -467,12 +472,12 @@ class TimePrefsTest(unittest.TestCase):
         )
         c = self.webapp.create_app().test_client()
         self._login(c, "admin", ADMIN_PASS)
-        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=active + junk):
+        with mock.patch.object(_accounts_data, "load_accounts_raw", return_value=active + junk):
             cap = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
         self.assertEqual(cap, 15, "非 active 行不得计入 n（否则会被压到 19）")
         # 反证：把 junk 也当 active（总量 300）→ cap 压缩为 19，证明是过滤在起作用
         all_active = [dict(a, status="active", deleted=False) for a in (active + junk)]
-        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=all_active):
+        with mock.patch.object(_accounts_data, "load_accounts_raw", return_value=all_active):
             cap2 = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
         self.assertEqual(cap2, 19)
 
@@ -855,7 +860,7 @@ class TimePrefsTest(unittest.TestCase):
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=dead):
             data = c.get("/api/settings").get_json()
         self.assertTrue(data["window_fallback"])
         self.assertIn("配置异常", data["window_fallback_text"])
@@ -1237,8 +1242,8 @@ class TimePrefsTest(unittest.TestCase):
         """2026-09-08 口径修订：用户 = 全部未删除注册用户（含空用户，上限 500）；
         账号 = 全部非删除活跃账号（上限 200，含 admin 直属裸账号——同样参与签到
         占负载），空用户不计入账号。"""
-        self.assertEqual(self.webapp.DEFAULT_MAX_USERS, 500)
-        self.assertEqual(self.webapp.DEFAULT_MAX_ACCOUNTS, 200)
+        self.assertEqual(_limits.DEFAULT_MAX_USERS, 500)
+        self.assertEqual(_limits.DEFAULT_MAX_ACCOUNTS, 200)
         app = self.webapp.create_app()
         c = app.test_client()
         self._login(c, "admin", ADMIN_PASS)
@@ -1276,21 +1281,21 @@ class TimePrefsTest(unittest.TestCase):
         cur = len(db.load_users())
         # 0 = 不限：永不触发
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", "0")
-        self.assertFalse(self.webapp._users_at_capacity())
+        self.assertFalse(_capacity._users_at_capacity())
         # 上限 = 当前用户数：已满，再注册将超限 → 拒绝
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur))
-        self.assertTrue(self.webapp._users_at_capacity())
+        self.assertTrue(_capacity._users_at_capacity())
         # 上限 = 当前用户数 + 1：再注册 1 人恰好到顶（<= 上限）→ 放行
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur + 1))
-        self.assertFalse(self.webapp._users_at_capacity())
+        self.assertFalse(_capacity._users_at_capacity())
         # 上限 = 当前用户数 + 2：余位更足 → 放行
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur + 2))
-        self.assertFalse(self.webapp._users_at_capacity())
+        self.assertFalse(_capacity._users_at_capacity())
         # 与旧内联判定逐值等价（0 为不限需单独处理）
         for maxv in (cur, cur + 1, cur + 2, 0):
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(maxv))
             expect = (maxv > 0 and len(db.load_users()) >= maxv)
-            self.assertEqual(self.webapp._users_at_capacity(), expect,
+            self.assertEqual(_capacity._users_at_capacity(), expect,
                              f"max={maxv} 时语义必须与旧判定一致")
 
     def test_api_settings_sched_tier_split(self):

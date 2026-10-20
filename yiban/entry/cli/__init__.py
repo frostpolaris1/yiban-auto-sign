@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 """**功能**
-`python -m yiban.cli <子命令> [选项]`：agent 侧统一入口（契约见 `docs/dev/cli.md`）。
+`python -m yiban.entry.cli <子命令> [选项]`：agent 侧统一入口（契约见 `docs/dev/cli.md`）。
 
 本模块是命令行**唯一入口**，`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py`
 是部署面（run.sh / cron / 容器调度器按文件路径调用）的兼容壳，二者行为同源。
@@ -9,9 +9,8 @@
 **坐标**
 本模块是入口层（`yiban/entry/`）的 `cli` 条目
 （目标架构契约 `docs/dev/architecture-target.md` 第 3 节）。
-`yiban/cli.py` 是转发壳，它 re-export 本模块的名字。
-两个坐标的 `-m` 都可跑：`python -m yiban.cli` 与 `python -m yiban.entry.cli`。
-`--help` 与用法错误里的 `prog` 一律写 `python -m yiban.cli`。
+批 A1 留下的旧坐标转发壳已由 `145-E` 删净，旧坐标不再是合法 import 路径。
+入口一律 `python -m yiban.entry.cli`；`--help` 与用法错误里的 `prog` 也写它。
 理由：那是契约文档 `docs/dev/cli.md` 记载的调用形态。
 壳退役后本段与 `prog` 一并改成新坐标。
 
@@ -94,9 +93,9 @@ from yiban.engine.cli_support import (
 )
 
 USAGE = (
-    "用法: python -m yiban.cli <子命令> [选项]\n"
+    "用法: python -m yiban.entry.cli <子命令> [选项]\n"
     "子命令: sign | probe | config | capacity | state | egress | db | version\n"
-    "（见 `python -m yiban.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
+    "（见 `python -m yiban.entry.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
 )
 
 #: 路径相关环境变量的说明：根 `--help` 与 `config` / `db` 子命令描述共用同一份，避免
@@ -114,17 +113,31 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 # 配置视图与路径（与 run.sh 同源）
 # ---------------------------------------------------------------------------
+#: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
+#: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
+_ENV_FIRST_PATH_KEYS = (
+    "YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE",
+)
+
+
 def _env_view():
-    """.env 文件 + 进程环境变量 → 配置视图（**环境变量优先**，只读、不写盘）。
+    """.env 文件 + 进程环境变量 → 配置视图（**`.env` 优先、进程环境只补缺**；只读、不写盘）。
+
+    优先级（M27，2026-10-01 起全仓统一，`README.md` 部署章节）：`.env` 里的键压过
+    进程环境；`.env` 没有的键才由进程环境补缺。四个**路径键**例外——它们按
+    `docs/dev/cli.md` §1.1 保持"进程环境优先"，因为 run.sh 会先 `cd` 再 export，
+    显式 export 的路径必须压过 `.env`（否则同一条命令会被 `.env` 改道）。
 
     为什么两者都读：run.sh 先把 `.env` 逐键导出为环境变量，引擎读的正是那套值；
     而 agent/CI 直接调用 CLI 时没有宿主导出，此时 `.env` 就是部署配置的载体。
-    两者取并集后，同一个键在两条路径下解析到同一个值——不会出现"配置一样、
-    清理目录不同"（`docs/dev/cli.md` §2 第 8 条）。`.env` 缺失 = 未配置（不是错误）。
+    两者按上面的优先级取并集后，同一个键在两条路径下解析到同一个值——不会出现
+    "配置一样、清理目录不同"（`docs/dev/cli.md` §2 第 8 条）。`.env` 缺失 = 未配置。
     """
-    view = dict(env_io.parse_env_file(env_io.env_path()))
-    for key, value in os.environ.items():
-        if key.startswith("YIBAN_"):
+    view = {k: v for k, v in os.environ.items() if k.startswith("YIBAN_")}
+    view.update(env_io.parse_env_file(env_io.env_path()))
+    for key in _ENV_FIRST_PATH_KEYS:
+        value = os.environ.get(key)
+        if value is not None and str(value).strip():
             view[key] = value
     return view
 
@@ -374,7 +387,7 @@ def _state_fingerprint(state_dir, log_dir, candidates, detail):
 def _cmd_state(args, view):
     """状态文件清理：**默认只报告不删**，`--yes` 才真删（`docs/dev/cli.md` §2 第 6 条）。
 
-    路径与保留期口径全在 `yiban/state_gc.py`（宿主 `scripts/state_cleanup.py` 与容器
+    路径与保留期口径全在 `yiban/adapters/statefiles/state_gc.py`（宿主 `scripts/state_cleanup.py` 与容器
     调度器共用同一份），本子命令只做"报告 / 执行"与退出码翻译：
     0 正常（没有过期文件也是 0）/ 1 保留期配置非法或状态目录不可用。
     `--yes` 是删除类入口，必须回显目标指纹（`--fingerprint`）并写一条审计留痕；
@@ -503,7 +516,7 @@ def _cmd_version(args, view):
 def _build_parser():
     """构造根解析器与子解析器（每个子命令都有 `--help`；根解析器带用法错误处理）。"""
     parser = argparse.ArgumentParser(
-        prog="python -m yiban.cli",
+        prog="python -m yiban.entry.cli",
         description="易班自动签到统一入口（agent 侧；契约见 docs/dev/cli.md）",
         epilog=("stdout 只放结果（--json 时是一整行 JSON 对象），人类可读汇总走 stderr；"
                 "本命令不读 stdin、不做交互确认。 " + _PATHS_HELP),
@@ -554,7 +567,7 @@ def _build_parser():
 
     p = _sub(
         "state", help="状态文件清理（默认 dry-run）",
-        description=("清理过期的按日状态文件（策略在 yiban/state_gc.py，与宿主清理脚本、"
+        description=("清理过期的按日状态文件（策略在 yiban/adapters/statefiles/state_gc.py，与宿主清理脚本、"
                      "容器调度共用）。默认只报告不删；--yes 才真删。"),
     )
     p.add_argument("--yes", action="store_true", help="真的删除（默认只报告）")

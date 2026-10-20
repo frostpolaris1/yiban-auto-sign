@@ -33,6 +33,8 @@ import sys
 import tempfile
 import unittest
 
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -267,18 +269,9 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         global db
         import db  # 裸模块名：pyproject 的 pythonpath 已含 scripts
 
-        # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
-        # `init_db` 的既有语义——已存在连接时它复用旧连接、跳过 JSON→SQLite 迁移，
-        # 于是本类的 accounts.json→SQLite 迁移被整段跳过、`/api/accounts` 回空表
-        # （判据见 test_accounts_response_has_no_plaintext_phone 的"账号未按预期装载"断言）。
-        # 这是**绕过**，不是根因修法：根因单 `yiban-auto-sign-mgq5` 修好后应删除本段。
-        # 口径是「机制复现 ＋ 加固」：机制用已知留下连接的模块确定性复现（旧树红、新树绿），
-        # 不是"全量实测伪红"。加固的校验者见
-        # tests/test_run_events_inspection.py::LeftoverConnectionFixtureGuardTest。
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
+        # 库单例是**进程级**的：由 `tests/conftest.py::_fresh_db_connection_per_class`
+        # 在每个测试类开始时丢弃继承来的连接（工单 mgq5）。本类不再自己清——
+        # 根因修法（`init_db` 拒绝静默换库）已经承担这条保证。
 
         spec = importlib.util.spec_from_file_location(
             "webapp_mask_contract", os.path.join(BASE, "web", "app.py"))
@@ -293,7 +286,7 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         cls.today = datetime.now().strftime("%Y-%m-%d")
         # 日志文本里放四种未遮形态：裸号、次位 0–2 的已入库号（写侧校验收、旧 `1[3-9]` 口径漏）、
         # `+86` 前缀、空格分段。写入**按天文件名**（`log_path_for` 的派生规则），故用它的返回值。
-        with open(cls.webapp.log_path_for(cls.today), "w", encoding="utf-8") as fh:
+        with open(_logs_svc.log_path_for(cls.today), "w", encoding="utf-8") as fh:
             fh.write("\n".join([
                 f"[{cls.today} 06:31:01] [INFO] yiban: [{PHONE}] 签到成功",
                 f"[{cls.today} 06:31:02] [WARNING] yiban: 上游回显 +8613800138000 与 138 0013 8000",
@@ -326,7 +319,7 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         unittest 直跑则落真实部署路径，故仍须自设。
         隔离一旦被改回，这条红；`tearDownClass` 删整个临时目录，故植入行不残留。
         """
-        path = self.webapp.log_path_for(self.today)
+        path = _logs_svc.log_path_for(self.today)
         self.assertEqual(os.path.dirname(path), self.tmp,
                          f"日志路径未隔离到临时目录：{path}")
         self.assertTrue(os.path.isfile(path), "临时按天日志未按夹具写入")

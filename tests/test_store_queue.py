@@ -34,8 +34,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
+from yiban.adapters.persistence import queue_store  # noqa: E402
 from yiban.core import clock  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
 
@@ -422,6 +422,32 @@ class DayCountsTest(_Base):
         self.assertEqual(got["open"], 0)
         self.assertEqual(got["total"], 0)
         self.assertTrue(all(n == 0 for n in got.values()), got)
+
+
+class FallbackEventOwnerPrefixTest(_Base):
+    """兜底事件签名剔除自己时，前缀必须带分隔符（工单 ba-p01-06）。
+
+    `worker-1` 与 `worker-12:...` 互为字节前缀：旧实现把不带冒号的稳定名塞进
+    `instr(owner, ?)`，于是 `worker-1` 会把别人名下的行一起剔出唤醒签名——兜底
+    漏掉一次「变化即接手」，最坏退化为等满扫描间隔。同仓其余三处同族匹配
+    （reap_expired / reap_abandoned / requeue_failed）一律按 `owner + ":"` 前缀。
+    """
+
+    def test_prefix_named_owner_does_not_hide_other_owner_rows(self):
+        from yiban.core import status as yiban_status
+
+        retry = yiban_status.RESULT_RETRY_PREFIX + "skipped_window"
+        self._add_task("13900009001", state="failed", owner="worker-1:111:090000",
+                       result=retry)
+        self._add_task("13900009002", state="failed", owner="worker-12:222:090000",
+                       result=retry)
+
+        sig = queue_store.fallback_event(DAY, "worker-1")
+        self.assertEqual(
+            sig[0], 1,
+            "剔除自己的槽位只能按 `worker-1:` 前缀；按裸名匹配会把 worker-12 的行"
+            "一起剔掉，兜底漏掉一次唤醒",
+        )
 
 
 class NoHardcodedDateTest(unittest.TestCase):

@@ -31,9 +31,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from _mail_body import render_body  # noqa: E402
 from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import config as notify_config  # noqa: E402
-from yiban.notify import transport as notify_transport  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import config as notify_config  # noqa: E402
+from yiban.adapters.notifier.notify import transport as notify_transport  # noqa: E402
 
 TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"

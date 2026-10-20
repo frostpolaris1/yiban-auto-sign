@@ -52,6 +52,10 @@ sys.path.insert(0, BASE)
 import db  # noqa: E402  # 顶层导入供 user_path(db, …) 与既有局部导入共用
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web import security as _security  # noqa: E402
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "UserPass123!"
@@ -163,7 +167,7 @@ class _TierBase(unittest.TestCase):
         self._reset_db()
         self.alerts = []
         p = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
                 self.alerts.append((t, render_body(c), urgent)),
         )
@@ -177,6 +181,11 @@ class _TierBase(unittest.TestCase):
             "YIBAN_ADMIN_USER=admin",
             f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}",
             "YIBAN_MAIL_ADMIN_TO=admin@test.local",
+            # 显式声明"反代形态"：本文件用 X-Forwarded-For 换出口 IP 验证「换环境」
+            # 判据。转发头信任缺省已翻转为"不信任"（ba-p07-01），不写这一行时
+            # `_client_ip` 会退回回环 remote_addr，全部请求落进同一个桶、换桶断言
+            # 退化成自证。
+            "YIBAN_TRUST_FORWARDED_HEADERS=1",
             # 发公告那一路要有草稿，否则它先报"没有待发布草稿"
             "YIBAN_ANNOUNCEMENT_DRAFT=测试公告草稿",
         ]
@@ -191,7 +200,7 @@ class _TierBase(unittest.TestCase):
 
     def _set_tier(self, value):
         """把档位写进 `.env`（空值 = 删键，用于钉缺省档）。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_GATE": value or ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_GATE": value or ""})
 
     def _reset_db(self):
         import db
@@ -612,7 +621,7 @@ class RiskTriggerTest(_TierBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
         # 两次都必须是**真变更**：无变更的保存根本不进门禁，那样断言会假绿
-        cur = self.webapp._settings_effective_values(self.env_file).get("sign_order") or "sequential"
+        cur = _env_io_svc._settings_effective_values(self.env_file).get("sign_order") or "sequential"
         other = "sequential" if cur == "random" else "random"
 
         def save(order, xff):
@@ -648,12 +657,12 @@ class TierResolutionTest(_TierBase):
     TIER = None
 
     def test_缺省档位是risk(self):
-        self.assertEqual(self.webapp._pw_gate_tier(self.env_file), "risk")
+        self.assertEqual(_security._pw_gate_tier(), "risk")
 
     def test_非法值回退risk并告警(self):
         self._set_tier("bogus")
         with self.assertLogs("web", level="WARNING") as cm:
-            tier = self.webapp._pw_gate_tier(self.env_file)
+            tier = _security._pw_gate_tier()
         self.assertEqual(tier, "risk")
         self.assertTrue(any("YIBAN_PW_GATE" in line for line in cm.output),
                         f"非法档位必须留一条可 grep 的告警，实际 {cm.output}")
@@ -662,11 +671,11 @@ class TierResolutionTest(_TierBase):
         for tier in ("off", "risk", "full"):
             with self.subTest(tier=tier):
                 self._set_tier(tier)
-                self.assertEqual(self.webapp._pw_gate_tier(self.env_file), tier)
+                self.assertEqual(_security._pw_gate_tier(), tier)
 
     def test_大小写与空白归一(self):
         self._set_tier("  FULL  ")
-        self.assertEqual(self.webapp._pw_gate_tier(self.env_file), "full")
+        self.assertEqual(_security._pw_gate_tier(), "full")
 
 
 class DelayAckTest(_TierBase):
@@ -698,24 +707,18 @@ class DelayAckTest(_TierBase):
 
 
 class PostHocAlertTest(_TierBase):
-    """非 full 档的软摩擦兜底：改他人凭据成功后补一封管理员告警（脱敏）。"""
+    """非 full 档的事后告警兜底：抑制判据随「门是否真索要口令」走（ba-p05-02）。"""
 
     TIER = "risk"
 
-    def test_risk_档改写凭据成功后有告警(self):
+    def test_risk_档带口令改写凭据不再发事后告警(self):
         c, hdr = self._fresh()
-        # risk 档下改写他人凭据已转入四类（同出口也要当次口令，见 RISK_ALWAYS），
-        # 故这里必须带对口令；告警断言本身（事后补偿信号）口径不变。
+        # risk_always=True：risk 档下改写他人凭据同样当次要口令。口令门已经拦过一次，
+        # 事后告警就是重复信号——旧实现只认 full 档，缺省档每次合法改写都多发一封
+        # urgent，抢 DEFAULT_URGENT_DAILY_MAX=3 的紧急日账。
         r = self._call("creds", c, hdr, confirm_password=ADMIN_PASS)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        titles = [t for t, _b, _u in self.alerts]
-        self.assertIn("高危管理操作告警", titles, f"实际告警 {titles}")
-        body = "\n".join(b for _t, b, _u in self.alerts)
-        self.assertIn("改写他人易班凭据", body)
-        self.assertIn(MASKED_PHONE, body, "目标手机号必须脱敏")
-        self.assertNotIn(PHONE, body, "告警不得含完整手机号")
-        self.assertIn("admin", body, "告警要能看出是谁做的")
-        self.assertTrue(all(u for _t, _b, u in self.alerts), "必须走紧急通道")
+        self.assertEqual(self.alerts, [], "门已当次索要口令并通过，不得重复发事后告警")
 
     def test_off_档改写凭据成功后有告警(self):
         self._set_tier("off")
@@ -723,6 +726,12 @@ class PostHocAlertTest(_TierBase):
         r = self._call("creds", c, hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("高危管理操作告警", [t for t, _b, _u in self.alerts])
+        body = "\n".join(b for _t, b, _u in self.alerts)
+        self.assertIn("改写他人易班凭据", body)
+        self.assertIn(MASKED_PHONE, body, "目标手机号必须脱敏")
+        self.assertNotIn(PHONE, body, "告警不得含完整手机号")
+        self.assertIn("admin", body, "告警要能看出是谁做的")
+        self.assertTrue(all(u for _t, _b, u in self.alerts), "必须走紧急通道")
 
     def test_full_档不新增该告警(self):
         self._set_tier("full")

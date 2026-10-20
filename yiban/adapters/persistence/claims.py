@@ -68,7 +68,7 @@ logger = logging.getLogger("yiban.store.claims")
 LEASE_SECONDS = 900
 
 #: 心跳周期（秒）：执行侧对**在领账号**周期续租的间隔（`touch` 的生产调用者见
-#: `yiban/engine/round.py` 的 `_ClaimHeartbeat`）。
+#: `yiban/app/round.py` 的 `_ClaimHeartbeat`）。
 #: 为什么必须显著小于 `LEASE_SECONDS`：一轮里每个账号的尝试之间隔着间隔对齐与重试等待，
 #: 那些等待可达数分钟，期间账号已被领取但没有任何请求；若心跳周期接近租约，一次正常的
 #: 长等待就会让在领行过期，被别的执行体按"崩溃自愈"接管 ⇒ 同一账号两次真实登录。

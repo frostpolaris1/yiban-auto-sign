@@ -40,11 +40,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 
 from yiban import egress  # noqa: E402
+from yiban.adapters.persistence import clock_meta, queue_store  # noqa: E402
 from yiban.app import runner as runner_mod  # noqa: E402
 from yiban.core import clock, hrw  # noqa: E402
 from yiban.core import status as yiban_status  # noqa: E402  # 分档词表唯一家（128-P1）
 from yiban.engine import executor_v3, token_bucket  # noqa: E402
-from yiban.store import clock_meta, queue_store  # noqa: E402
 from yiban.workers import workers  # noqa: E402
 
 TEST_KEY = "a" * 64
@@ -306,7 +306,13 @@ class TierPrefixSettleTest(_Base):
         phone, _res = self._settle_one("failed", message="网络抖动", attempts=2)
         self.assertTrue(self._row(phone)["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
 
-    def test_paused_zero_request_carries_final_prefix(self):
+    def test_paused_zero_request_settles_skipped(self):
+        """账密暂停落终态 `skipped`（与 JSON 终态映射同口径），不是可回炉的 `failed`。
+
+        落 `failed` 会让补签闸门的队列腿（`task_open_count`）判"未了结"，补签轮把该
+        账号再真实登录一次（工单 48b9/vqmb）。`skipped` 不在 `REQUEUEABLE_STATES`，
+        也不需要档位前缀——它不会进回炉口。
+        """
         phone = _phone(1)
         self._add_claimed_one(phone)
         self._seed_v(8)
@@ -315,9 +321,10 @@ class TierPrefixSettleTest(_Base):
                                lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone), [_item(phone)], cred_state=cred_state)
         row = self._row(phone)
-        self.assertEqual(row["state"], "failed")
-        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
-                        "账密暂停不是默认档：自动回炉会绕开熔断（保守档）")
+        self.assertEqual(row["state"], "skipped")
+        self.assertFalse(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
+        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=True), 0,
+                         "skipped 是终态：显式路径也不得把它翻回 pending")
 
     def test_done_result_has_no_prefix(self):
         phone, _res = self._settle_one("success", success=True, message="签到成功")

@@ -76,11 +76,16 @@ class WireDumpAdapter(requests.adapters.HTTPAdapter):
         resp = self._inner.send(request, **kwargs)
         try:
             self._dump(request, resp, time.monotonic() - t0)
-        except Exception as e:  # 落盘失败绝不影响签到主流程（仅警告一次）
+        except Exception as e:  # 落盘失败绝不影响签到主流程（首次 WARNING，其后 DEBUG）
             global _warned
             if not _warned:
                 _warned = True
-                logger.debug("线路落盘失败（仅警告一次）: %s", e)
+                # 首次必须 WARNING：本模块唯一用途是协议核验取证，"文件写不出来"必须比
+                # "没有请求"更容易发现——DEBUG 在生产 INFO 级别下完全不可见，缺页会被
+                # 读成"该端点从未被调用"（工单 ba-p08-16）。后续只 DEBUG 防刷屏。
+                logger.warning("线路落盘失败（首次告警，后续同因失败降为 debug）: %s", e)
+            else:
+                logger.debug("线路落盘失败: %s", e)
         return resp
 
     # requests 兼容：证书校验等参数透传给内层；close 同步关闭内层

@@ -44,10 +44,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402  (tests/conftest 注入 yiban/store 到 sys.path)
 
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.persistence import migrations, queue_store  # noqa: E402
 from yiban.core import clock  # noqa: E402
 from yiban.engine import cli_support, planner  # noqa: E402
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.store import migrations, queue_store  # noqa: E402
 from yiban.workers import workers  # noqa: E402
 
 TEST_KEY = "a" * 64
@@ -716,7 +716,7 @@ class StartupExitCodeTest(unittest.TestCase):
         绝不是迁移拒启），库被提升到链顶。"""
         self._build_db(
             "import sys;"
-            "from yiban.store import db;"
+            "from yiban.adapters.persistence import db;"
             "db._MIGRATIONS=[m for m in db._MIGRATIONS if m[0]<=17];"
             "conn=db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "conn.close()")
@@ -737,7 +737,7 @@ class StartupExitCodeTest(unittest.TestCase):
         """不变量①进程级：user_version 声称过 v19 但 epoch 缺失 ⇒ 拒启 rc=4 + 点名。"""
         self._build_db(
             "import sys;"
-            "from yiban.store import db;"
+            "from yiban.adapters.persistence import db;"
             "db._MIGRATIONS=[m for m in db._MIGRATIONS if m[0]<=18];"
             "conn=db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "conn.execute('PRAGMA user_version = 19');conn.commit();conn.close()")

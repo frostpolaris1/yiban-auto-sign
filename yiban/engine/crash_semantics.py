@@ -39,7 +39,7 @@
 
 **归属**
 `yiban/engine/crash_semantics.py`（本模块，引擎侧）＋ `yiban/store/run_events.py` 的
-读取面 `unresolved_starts`（数据层）。调用点：`yiban/engine/runner.py`（单执行体/手动）
+读取面 `unresolved_starts`（数据层）。调用点：`yiban/app/runner.py`（单执行体/手动）
 与 `yiban/workers/workers.py`（多执行体监督进程）的启动路径。定论判据的**平台枚举事实源**
 是 `yiban/client.py`，本模块只 import 复用、不另抄一张表。
 
@@ -47,7 +47,7 @@
 识别只在**协调器启动**跑一次（单执行体/手动轮在 `runner.main`，多执行体在监督进程），
 故上界约等于每日协调器启动次数（约 2–5 次）；`alerts.notify_admin_entry` 自身也不去重。
 本批**不**为它新增手写状态文件——"用进程内/文件状态回答一个跨进程跨日的问题"正是
-`docs/refactor/137` 与单 `hkew` 要退役的形状。去重（收成"每账号每日一次"）按 137/hkew 的
+**自研状态去重**要退役的形状（单 `hkew`）。去重（收成"每账号每日一次"）按单 `hkew` 的
 机制做，不在此另起一套。**兜底常驻未接线**（见下），故那条 ~5s 一拍的高频循环不产生重复
 告警 ⇒ 不是 81xt/uuqb 式的洪水源。
 

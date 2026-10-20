@@ -33,7 +33,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import clock  # noqa: E402
 
 
@@ -143,7 +143,7 @@ class SweepPolicyTest(unittest.TestCase):
         self._touch("sched-run-2026-09-09.json")
         biz_now = datetime(2026, 9, 17, 6, 0, 0)        # 北京 09-17 06:00
         host_now = datetime(2026, 9, 16, 22, 0, 0)      # 宿主 UTC 09-16 22:00
-        with mock.patch("yiban.state_gc.datetime.datetime") as dt, \
+        with mock.patch("yiban.adapters.statefiles.state_gc.datetime.datetime") as dt, \
              mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = timedelta
@@ -207,7 +207,7 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "signin-": "多执行体子进程各自的运行锁文件名（workers.py 的 signin-run.lock.w<slot>，"
               "由 YIBAN_RUN_LOCK_NAME 指到状态目录，不是按日状态文件）",
     "verify-job-": "校验任务的线程名（不是文件）",
-    "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups）——不在状态目录里，"
+    "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups/yiban）——不在状态目录里，"
               "由 backup.sh 自己的 30 天保留策略轮转；backup_sentinel.py 只是读它的名字",
     "dev-verify-": "scripts/dev-verify.sh 的跑测日志文件名（dev-verify-<时间戳>.log）——"
                    "落在仓库外的日志目录，不是状态文件；保留由该脚本的 --keep 自己轮转"
@@ -380,7 +380,8 @@ class CleanupEntryPointsTest(unittest.TestCase):
     def test_container_scheduler_uses_shared_policy(self):
         with open(os.path.join(BASE, "docker", "scheduler.py"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("state_gc.sweep(STATEDIR, LOGDIR)", src)
+        self.assertIn("state_gc.sweep(STATEDIR, LOGDIR, env=cleanup_env)", src,
+                      "容器清理必须调共享策略，并把 .env 口径的保留期传下去（ba-p10-03）")
         self.assertNotIn("_cleanup_logs", src, "旧的只清日志实现应已被替换")
 
     def test_state_dir_resolution_matches_run_sh(self):

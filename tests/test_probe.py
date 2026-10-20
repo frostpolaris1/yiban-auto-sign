@@ -20,6 +20,8 @@ import unittest
 from datetime import datetime
 from unittest import mock
 
+from web.services import verify_queue as _verify_queue
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -162,7 +164,7 @@ class ProbeSigninTest(unittest.TestCase):
         并存成影子行（解析器后写覆盖先写，"自动关闭"可能被旧行悄悄顶掉）。
         单一行模型的 key_line_pattern 认两种写法。
         """
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         env_path = os.path.join(self._state_dir, "probe-shadow.env")
         with open(env_path, "w", encoding="utf-8") as f:
             f.write("YIBAN_PROBE_ENABLE = 1\n")
@@ -204,10 +206,14 @@ class WebVerifyTest(unittest.TestCase):
         self.assertNotIn("\n", err)
 
     def test_account_verify_enabled(self):
+        # 批 3-c S3：`_account_verify_enabled` 已从 app.py 的转发墙搬走，读者直取
+        # `web.services.verify_queue`。原写法打在 `self.w`（app 模块）上的 `read_env`
+        # 桩经 `verify_queue.configure` 登记的 lambda 仍然生效，故打桩点保留；
+        # 只把承接模块换成真源。
         with mock.patch.object(self.w, "read_env", return_value={"YIBAN_ACCOUNT_VERIFY": "1"}):
-            self.assertTrue(self.w._account_verify_enabled())
+            self.assertTrue(_verify_queue._account_verify_enabled())
         with mock.patch.object(self.w, "read_env", return_value={}):
-            self.assertFalse(self.w._account_verify_enabled())
+            self.assertFalse(_verify_queue._account_verify_enabled())
 
 
 class ProbeAccountingTest(unittest.TestCase):

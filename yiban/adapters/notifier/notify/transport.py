@@ -9,7 +9,7 @@
 
 **通信**
 谁调用：`web/services/notify_mail.py` 的 `notify.send(...)`（告警邮件正文压成纯文本后
-捎带推手机）、`yiban/engine/alerts.py`（失败提醒与汇总降级推送）、
+捎带推手机）、`yiban/adapters/notifier/report.py`（失败提醒与汇总降级推送）、
 `web/routes/notify.py` 的 `api_notify_test` → `send_test()`。
 它调用：`config`（读类型/密钥、`is_safe_url` 白名单）、`ledger`（占额度 / 退还 /
 节流表与跳过日志的去重表）、`requests.post`（两条出口）。
@@ -33,15 +33,24 @@ logger = logging.getLogger("notify")
 SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"  # 出口一：Server酱，SendKey 拼在 URL 的 path 段里
 
 
-# 也是自定义地址指向域名时的 DNS rebinding 唯一兜底（白名单对域名目标是放行的），别随手调大
+# 自定义地址的请求超时。**不是** DNS rebinding 的兜底：超时只限制请求在客户端停留
+# 多久，拦不住"域名解析到内网地址"本身；那道防线在 `config.is_safe_url_resolved`
+# （发送前解析并逐 IP 复核，ba-p09-06）。
 DEFAULT_URL_TIMEOUT = 10
 MAX_TITLE_CHARS = 32  # Server酱服务端对 title 的长度上限，超了会被拒
 # 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
 SKIP_LOG_WINDOW = 60
+# 节流状态文件名：判定占位与失败回滚共用同一个常量，锁的落点只有一处定义。
+_THROTTLE_STATE_FILE = "notify-throttle.json"
 
 
-def _throttle_due(title):
-    """同类型告警节流：窗口内已发过返回 False（本次跳过）。0 = 关闭。
+def _throttle_acquire(title):
+    """同类型告警节流：命中返回 False，否则返回本次占位凭证。
+
+    返回三种值，调用方必须按身份区分：
+    - ``False``：窗口内已放行过，本次跳过；
+    - ``True``：COOLDOWN=0（节流关闭），没有占位可回滚；
+    - ``float``：本次写入节流表的时间戳，供失败时精确回滚（见 `_throttle_release`）。
 
     磁盘表（$YIBAN_STATE_DIR/notify-throttle.json，文件锁互斥）是权威：web（常驻）与
     signin（cron 新进程）共享同一窗口，不再各持一份进程内节流表、各放行一条。
@@ -50,7 +59,7 @@ def _throttle_due(title):
     """
     cooldown = config._env_int("COOLDOWN", config.DEFAULT_COOLDOWN)
     if cooldown <= 0:
-        return True  # True = 放行本次发送（名字像在问"到点没"，读调用点时最容易反着看懂）
+        return True  # 节流关闭：不占位，也就没有失败回滚
     now = time.time()
     with ledger_mod._throttle_lock:
         # 内存快速路径：本进程刚放行过，窗口内直接跳过（不读磁盘）
@@ -58,7 +67,7 @@ def _throttle_due(title):
             return False  # False = 节流命中，调用方据此跳过
         # 磁盘权威：单次文件锁临界区内 读盘 → 判定 → 更新 → 写回。
         # 与账本同构——另一进程放行过的窗口内标题会被这里拦下，双进程不双发。
-        with ledger_mod._state_file_lock("notify-throttle.json"):
+        with ledger_mod._state_file_lock(_THROTTLE_STATE_FILE):
             disk = ledger_mod._load_throttle_file()
             if now - disk.get(title, 0.0) < cooldown:
                 return False
@@ -66,7 +75,32 @@ def _throttle_due(title):
             ledger_mod._prune_throttle_entries(disk, now, cooldown)
             ledger_mod._save_throttle_file(disk)
         ledger_mod._throttle_ts[title] = now
-        return True
+        return now
+
+
+def _throttle_due(title):
+    """布尔形态的节流判定（兼容既有调用点/用例）：True = 放行本次。"""
+    return bool(_throttle_acquire(title))
+
+
+def _throttle_release(title, token):
+    """发送失败时回滚本次节流占位（ba-p09-03）。
+
+    只删除**自己写入的那个时间戳**：窗口过期后另一进程可能已写入更新的放行时刻，
+    按标题裸删会把别人的占位一起抹掉。浮点等值在这里是**身份判据**（凭证就是当初
+    写盘的那个 double，JSON 往返对 IEEE-754 双精度是精确的），不是数值比较。
+    凭证不是 float（节流关闭/未占位）时是空操作。
+    """
+    if not isinstance(token, float):
+        return
+    with ledger_mod._throttle_lock:
+        if ledger_mod._throttle_ts.get(title) == token:
+            ledger_mod._throttle_ts.pop(title, None)
+        with ledger_mod._state_file_lock(_THROTTLE_STATE_FILE):
+            disk = ledger_mod._load_throttle_file()
+            if disk.get(title) == token:
+                del disk[title]
+                ledger_mod._save_throttle_file(disk)
 
 
 def _log_skip(reason, msg, *args):
@@ -143,8 +177,10 @@ def _custom_receipt_refuses(r, url):
         except (TypeError, ValueError):
             continue  # 非数值回执读不出结论：不定罪也不放行，继续看 HTTP 口径
         if refused:
-            logger.warning("自定义推送被接收端拒绝（HTTP %s，%s=%s）: %s",
-                           r.status_code, key, payload[key], url_desc(url))
+            # 与 HTTP 失败同口径：只记业务码与脱敏 host，不回显 HTTP 状态码（探测指纹，
+            # ba-p09-06）。
+            logger.warning("自定义推送被接收端拒绝（%s=%s）: %s",
+                           key, payload[key], url_desc(url))
             return True
     return False
 
@@ -164,7 +200,9 @@ def _send_custom(url, title, content):
         # 旧判据 `<400`：3xx 同样放行——但发送明确 allow_redirects=False，3xx 意味着
         # 信根本没有投递到对端处理逻辑（只是被转走，而跳转目标从未经过白名单），把它
         # 记成"已送达"并扣额是拿假回执销账。成功判据收成 2xx 一档。
-        logger.warning("通知推送失败（状态码 %s）: %s", r.status_code, url_desc(url))
+        # 状态码**不进日志**：持被窃管理员会话者可把目标指向内网主机，再从管理员可读
+        # 日志里读回「端口开没开」——与 mail/transport 的粗分类收口同一口径（ba-p09-06）。
+        logger.warning("通知推送失败（非 2xx 响应）: %s", url_desc(url))
         return False
     if _custom_receipt_refuses(r, url):
         return False
@@ -204,18 +242,23 @@ def send(title, content, force=False, urgent=False, ledger=None):
     # 四本日额度互不挤占：具名账优先于紧急账，紧急账优先于普通账
     ledger_id = ledger or ("urgent" if urgent else "general")
     ticket = None  # None = 本次没占额度（force 路径），退还动作对它就是空操作
+    throttle_token = None  # False/True/float：见 _throttle_acquire；失败时只回滚 float
     if not force:
         # ①~④ 全排在 ⑤ 之前：这几道闸门一个不过就不该发出请求、更不该花额度
         if config._env_flag("URGENT_ONLY", config.DEFAULT_URGENT_ONLY, envs) and not urgent:
             _log_skip("urgent_only",
                       "非紧急告警未推手机（YIBAN_NOTIFY_URGENT_ONLY 未显式置 0）: %s", title)
             return False  # 门②仅重要告警：非紧急跳过（因此也不消耗预算）
-        if not _throttle_due(title):
+        throttle_token = _throttle_acquire(title)
+        if throttle_token is False:
             _log_skip("throttle", "推送节流命中（YIBAN_NOTIFY_COOLDOWN 窗口内同类已推）: %s", title)
             return False  # 门③节流命中
         # 门④必须在发送之前占：两个进程同时判定的话，占晚了就会双发
         ticket = ledger_mod._consume_daily_budget(ledger_id)
         if not ticket.allowed:
+            # 额度没占成：本次不会发送，节流占位也必须回滚（否则一次被额度挡下的尝试
+            # 反而把同类告警静音一个窗口）
+            _throttle_release(title, throttle_token)
             _log_skip("budget_exhausted_" + ledger_id,
                       "今日推送额度（%s 账）已用尽，本次不推手机: %s", ledger_id, title)
             return False  # 门④今日额度用尽
@@ -230,6 +273,9 @@ def send(title, content, force=False, urgent=False, ledger=None):
     if not sent:
         # "先占再发"的补偿边：不退还的话失败会把额度磨光，真要报警的那天反而推不出
         ledger_mod._refund_daily_budget(ticket)
+        # 节流与额度同源：额度只在真发出去后才算花掉，节流窗口同理（ba-p09-03）。
+        # 不回滚的话，服务端瞬断/配额被拒的那一次会把同类告警静音一个窗口。
+        _throttle_release(title, throttle_token)
     return sent
 
 
@@ -241,8 +287,12 @@ def _dispatch(ntype, secret, title, content):
         # 白名单只校验"你给的这一个 URL"。若目标回 3xx 把客户端引向内网或云元数据地址，
         # 跟随跳转等于绕过白名单——所以 _send_custom 里必须 allow_redirects=False。
         # 两者是一对，拆开了各自都只剩一半效力。
-        if not config.is_safe_url(secret):
-            logger.warning("自定义通知地址未通过白名单校验，已拒发: host=%s", url_desc(secret))
+        # 域名目标在发请求前过一次解析复核：解析到内网/保留段或解析失败都拒发
+        # （ba-p09-06）。静态白名单对域名一律放行，超时兜不住 rebinding。
+        if not config.is_safe_url_resolved(secret):
+            logger.warning(
+                "自定义通知地址未通过白名单校验或解析到内网/保留地址，已拒发: host=%s",
+                url_desc(secret))
             return False
         return _send_custom(secret, title, content)
     logger.warning("未知通知类型: %s", ntype)

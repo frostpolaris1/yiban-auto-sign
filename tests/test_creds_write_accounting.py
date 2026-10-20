@@ -48,6 +48,8 @@ from unittest import mock
 from _mail_body import render_body
 from werkzeug.security import generate_password_hash
 
+from web.services import notify_mail as _notify_mail
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -116,7 +118,7 @@ class _CredsBase(unittest.TestCase):
         self.alerts = []
         self.user_mails = []
         p1 = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
                 self.alerts.append((t, render_body(c), urgent)),
         )
@@ -217,7 +219,7 @@ class ClearFuseOnCodeChangeTest(_CredsBase):
     """熔断清理与写侧同档：识别码实际变更才清，未变/没带一律不清。"""
 
     def _pause(self, phone):
-        from yiban import cred_state
+        from yiban.adapters.statefiles import cred_state
         with io.open(cred_state.path(), "w", encoding="utf-8") as f:
             json.dump({phone: {"fail_days": 2, "paused_since": "2026-09-01 00:00:00"}}, f)
 

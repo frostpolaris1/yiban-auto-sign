@@ -17,7 +17,7 @@
 对应实现：`yiban/infra/locks.py` 的 `lock_kind` / `file_lock`、
 `yiban/infra/env_lock.py` 的 `env_write_lock`、
 `yiban/engine/cli_support._state_file_lock`（signin 侧经它）与
-`yiban/notify/ledger._state_file_lock`。
+`yiban/adapters/notifier/notify/ledger._state_file_lock`。
 关键断言：`lock_kind()` 非 None 这条守的是"静默退化成 no-op"这个具体失效面——
 Windows 上原先两份实现直接什么都不做，锁住了也判不出来；同理 `test_lock_file_created_0600`
 与"等待而非立即降级"各钉一格（权限泄漏、拿不到锁就并发写）。
@@ -40,8 +40,9 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 
-from yiban.infra import account_crypto, env_lock, locks  # noqa: E402
-from yiban.notify import ledger as notify  # noqa: E402  # 账本实现（旧壳已删除）
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import ledger as notify  # noqa: E402  # 账本实现（旧壳已删除）
+from yiban.infra import env_lock, locks  # noqa: E402
 
 
 class LockPrimitiveTest(unittest.TestCase):

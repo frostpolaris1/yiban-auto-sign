@@ -27,7 +27,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.entry import cli  # noqa: E402  （旧坐标 `yiban.cli` 是转发壳，打桩目标必须写新坐标）
 
 EXPIRED = "sched-run-2020-01-01.json"
@@ -146,7 +146,7 @@ class CliStateGuardTest(unittest.TestCase):
 
     def tearDown(self):
         self._env.stop()
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         conn = connection.current()
         if conn is not None:
             conn.close()
@@ -154,10 +154,10 @@ class CliStateGuardTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _make_db(self):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(db_file=self.db_file, env_file=self.env_file, cleanup=False)
         store_db.get_conn().close()
-        from yiban.store import connection
+        from yiban.adapters.persistence import connection
         connection.reset_conn()
 
     def _run(self, argv):

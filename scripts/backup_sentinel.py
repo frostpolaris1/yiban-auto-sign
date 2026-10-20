@@ -11,7 +11,7 @@
 坏掉、备份脚本自身逻辑错都不在它视野内；它自己没被 cron 调起时同样没人知道。
 
 三项检查：
-1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups}/yiban-<今天>.tar.gz.gpg` 与它的
+1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups/yiban}/yiban-<今天>.tar.gz.gpg` 与它的
    `.sha256` 旁挂件都在（age 密文形态也认，见 `_archive_candidates`）。
    **明文包（裸 `.tar.gz`）不计入健康**（M3 批次0 · MF-79）：backup.sh 只在加密配置
    失效或显式 BACKUP_PLAINTEXT=1 时才产出明文包，把它当"当日备份完成"正是曾经
@@ -76,13 +76,13 @@ _REPO_ROOT = os.path.dirname(_HERE)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from yiban import mail as mailer  # noqa: E402
-from yiban.mail import layout as mail_layout  # noqa: E402
+from yiban.adapters.notifier import mail as mailer  # noqa: E402
+from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
 
 logger = logging.getLogger("yiban")
 
 #: 备份目录默认值（与 `scripts/backup.sh` 的 `BACKUP_DIR` 默认一致）
-DEFAULT_BACKUP_DIR = "/var/backups"
+DEFAULT_BACKUP_DIR = "/var/backups/yiban"
 #: 项目部署目录默认值（与 `scripts/backup.sh` 的 `APP_DIR` 默认一致）
 DEFAULT_APP_DIR = "/opt/yiban-auto-sign"
 #: 安装拷贝的默认落点（`backup.sh` 头部的安装命令写的就是这个路径）
@@ -195,7 +195,7 @@ def _alert_due(title):
     窗口是 `YIBAN_NOTIFY_COOLDOWN`（默认 60 秒）：它吸收的是"手工连跑几次 / 两个实例
     同时跑"这类重复；跨天的重复由 cron 每日一次的频次天然限制。
     """
-    from yiban.notify import transport
+    from yiban.adapters.notifier.notify import transport
     return transport._throttle_due(title)  # 刻意复用推送组件那份磁盘表：cron 每次新进程
 
 
@@ -211,8 +211,8 @@ def _send_admin_alert(title, mail):
     对 `find_user` 失败原样保留收件人，拿掉库读不改变结果）。库存在时走同一份共享算法，
     行为逐字不变。
     """
-    from yiban.infra import env_io
-    from yiban.store import db
+    from yiban.adapters.config import env_io
+    from yiban.adapters.persistence import db
     if os.path.isfile(env_io.resolve_path("YIBAN_DB_FILE", db.DB_DEFAULT)):
         from web.services.notify_mail import _alert_mail_recipients
         recipients = _alert_mail_recipients()
@@ -297,7 +297,7 @@ def _anchor_snapshot():
     （`state="error"`）处置相反，绝不压成同一个"无锚点"。
     库文件不存在或打不开时同样返回 None——那是"读不到"，不是"空链"。
     """
-    from yiban.store import db
+    from yiban.adapters.persistence import db
     # 只读取证类调用一律 `create=False`（与 `scripts/audit_verify.py` 同一口径）。
     # `get_conn()` 的隐式 `init_db()` 是**全套缺省**（cleanup/migrate/create 全 True）；
     # 本文件此前显式关了 cleanup 与 migrate，却漏了 create——`init_db` 于是

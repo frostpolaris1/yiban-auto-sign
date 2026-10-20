@@ -13,8 +13,8 @@
   （窗口内保存次数）读 audit_logs 里 action='time_pref_set' 的行。
 
 **归属**
-time_prefs 表以 phone 为键，服务调度 v2 的「用户自选时间片」
-（docs/design/plan-scheduler-v2.md 2.2）：签到前每人选一个窗口内的分钟数，
+time_prefs 表以 phone 为键，服务调度 v2 的「用户自选时间片」：
+签到前每人选一个窗口内的分钟数，
 拥挤度用于错峰提示。冷却查询按**被选账号**计价而非按操作管理员计价
 （审计 target=hash_phone(phone)，匿名稳定键）：多管理员共享 admin 账号时冷却全局生效
 （管理员 A 保存后 B 立即改选也被拦截）；改手机号/删号重提交新号后，新 phone 无历史审计，
@@ -91,7 +91,7 @@ def time_pref_set_count_since(phone, since_ts):
 
 
 # ---------------------------------------------------------------------------
-# 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）
+# 用户自选时间片（调度 v2）
 # ---------------------------------------------------------------------------
 def get_time_prefs():
     """全量自选 {phone: {"slot_min": int, "updated_at": str}}（build_schedule 每次启动读一次）。"""

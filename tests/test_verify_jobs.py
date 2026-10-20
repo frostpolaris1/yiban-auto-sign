@@ -31,8 +31,10 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import verify_queue as _verify_queue
+from yiban.adapters.persistence.audit_chain import actor_tag
+from yiban.attempt import jobs as verify_jobs
 from yiban.core import clock
-from yiban.store.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -406,7 +408,7 @@ class VerifyConcurrencyGateTest(_WebAppBase):
             self.assertGreater(held, 0)
             r = self._submit(PHONE1, token)
             self.assertEqual(r.status_code, 503, r.get_data(as_text=True))
-            self.assertEqual(r.get_json()["error"], self.webapp.VERIFY_BUSY_MSG)
+            self.assertEqual(r.get_json()["error"], _verify_queue.VERIFY_BUSY_MSG)
             self.assertEqual(r.headers.get("Retry-After"), "2")
         finally:
             self._release(held)
@@ -446,7 +448,7 @@ class VerifyConcurrencyGateTest(_WebAppBase):
         def _worker():
             gate.wait(timeout=20)
             try:
-                self.webapp.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
+                _verify_queue.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
                 results.append("done")
             except self.webapp.VerifyGateBusy:
                 results.append("busy")
@@ -470,7 +472,7 @@ class VerifyConcurrencyGateTest(_WebAppBase):
         # 席位必须全部归还：再串行跑一轮应全部成功
         with mock.patch.object(self.webapp, "_verify_account_clean", return_value=None):
             for _ in range(self.webapp.VERIFY_CONCURRENCY_MAX):
-                self.webapp.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
+                _verify_queue.run_verify_with_gate({"phone": PHONE1}, EMAIL_COOL, limits)
 
     def test_semaphore_not_leaked_when_quota_exceeded(self):
         """配额拒绝路径不得漏掉席位。"""
@@ -704,7 +706,7 @@ class _LifecycleBase(unittest.TestCase):
         end = time.time() + timeout
         while time.time() < end:
             job = db.get_verify_job(job_id)
-            if job and job["status"] in self.webapp.VERIFY_JOB_TERMINAL:
+            if job and job["status"] in verify_jobs.TERMINAL_STATUSES:
                 return job
             time.sleep(0.05)
         self.fail(f"任务未在 {timeout}s 内落终态: {db.get_verify_job(job_id)}")
@@ -818,7 +820,7 @@ class StaleJobReclaimTest(_LifecycleBase):
             "UPDATE verify_jobs SET created_at=?, status='running', started_at=? WHERE id=?",
             (created, created, job_id))
         conn.commit()
-        with mock.patch("yiban.store.verify_jobs.datetime.datetime") as dt, \
+        with mock.patch("yiban.adapters.persistence.verify_jobs.datetime.datetime") as dt, \
              mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = datetime.timedelta  # patch 整个类，保留真实 timedelta
@@ -840,7 +842,7 @@ class StaleJobReclaimTest(_LifecycleBase):
         db.get_conn().execute("UPDATE verify_jobs SET created_at=? WHERE id=?",
                               (created, job_id))
         db.get_conn().commit()
-        with mock.patch("yiban.store.verify_jobs.datetime.datetime") as dt, \
+        with mock.patch("yiban.adapters.persistence.verify_jobs.datetime.datetime") as dt, \
              mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = datetime.timedelta  # patch 整个类，保留真实 timedelta
@@ -936,7 +938,7 @@ class AdminDecisionWinsTest(_LifecycleBase):
         with mock.patch.object(self.webapp, "_verify_account_clean",
                                return_value="账号验证异常：读超时"):
             self.webapp.verify_jobs.run(job_id, {"phone": PHONE}, EMAIL_LIFE, acc,
-                                        "pending", {}, {})
+                                        "pending", {})
         self.assertEqual(db.get_verify_job(job_id)["status"], "rejected",
                          "任务本身照常落终态")
         row = self._acct(acc)
@@ -949,7 +951,7 @@ class AdminDecisionWinsTest(_LifecycleBase):
         with mock.patch.object(self.webapp, "_verify_account_clean",
                                return_value="账号验证异常：读超时"):
             self.webapp.verify_jobs.run(job_id, {"phone": PHONE}, EMAIL_LIFE, acc,
-                                        "pending", {}, {})
+                                        "pending", {})
         row = self._acct(acc)
         self.assertEqual(row["status"], "rejected")
         self.assertIn("读超时", row["reject_reason"])
@@ -1200,7 +1202,7 @@ class _A4Base(unittest.TestCase):
         end = time.time() + timeout
         while time.time() < end:
             job = db.get_verify_job(job_id)
-            if job and job["status"] in self.webapp.VERIFY_JOB_TERMINAL:
+            if job and job["status"] in verify_jobs.TERMINAL_STATUSES:
                 return job
             time.sleep(0.05)
         return db.get_verify_job(job_id)
@@ -1365,7 +1367,7 @@ class VerifyAsyncSubmitTest(_A4Base):
                                return_value=self.webapp.VERIFY_JOBS_MAX_PENDING):
             r = self._submit(token)
         self.assertEqual(r.status_code, 503, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["error"], self.webapp.VERIFY_BUSY_MSG)
+        self.assertEqual(r.get_json()["error"], _verify_queue.VERIFY_BUSY_MSG)
         self.assertEqual(self._jobs(), [], "队列满时不得建任务（账号也不得落库）")
 
     def test_sync_kill_switch_keeps_gate_semantics(self):
@@ -1412,7 +1414,7 @@ class SeatHandleCapturedTest(unittest.TestCase):
         fake_store = SimpleNamespace(claim=lambda jid: True, finish=lambda *a, **k: True)
         with mock.patch.object(jobs, "_hooks", hooks), \
                 mock.patch.object(jobs, "store", fake_store):
-            jobs.run(1, {"phone": PHONE}, EMAIL, 0, "pending", {}, {})
+            jobs.run(1, {"phone": PHONE}, EMAIL, 0, "pending", {})
         self.assertEqual(seat_a._value, 2, "取到的席位必须还回它自己")
         self.assertEqual(seat_b._value, 2, "别人的信号量不得被释放（超发会直接抛）")
 

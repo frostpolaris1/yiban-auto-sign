@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 
-from yiban.store import purge_guard
+from yiban.adapters.persistence import purge_guard
+from yiban.core.status import ALL_STATUSES
 
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 
@@ -51,6 +52,49 @@ def _ts(days_ago=0, hour=8, minute=0):
     return d.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+
+
+def _current_schema_version():
+    """当前代码期望的 schema 版本（迁移登记表的最大目标版本）。"""
+    return max(target for target, _name, _fn, _core in db._MIGRATIONS)
+
+
+def _open_target_db(args):
+    """初始化目标库：**新库**迁移到位，**既有库**只校验、绝不迁移。
+
+    返回 `(ok, 错误消息)`。
+
+    为什么既有库不迁移（工单 ba-p11-03）：`migrate_v3` 会用当前密钥对整条审计链
+    重新回填哈希。本脚本随后要清空 `audit_logs`，若迁移先跑，等于在删除前把
+    "这条链曾经被动过"的证据抹平。既有库因此必须已经处于当前 schema（否则
+    `db.audit` 需要的 `prev_hash`/`hash` 列不可用），否则响亮拒绝。
+
+    为什么新库必须迁移：基线 `_create_tables` 不含 v3 加的审计链列。新库
+    `audit_logs` 为空，迁移不会改写任何既有证据；不迁移则本脚本写不了清库留痕。
+    """
+    path = args.db
+    existing = os.path.isfile(path) and os.path.getsize(path) > 0
+    if not existing:
+        db.init_db(path, env_file=args.env, cleanup=False, migrate=True)
+        return True, ""
+    conn = db.open_readonly(path)
+    if conn is None:
+        return False, f"无法只读打开目标库: {path}"
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(audit_logs)")}
+    finally:
+        conn.close()
+    need = _current_schema_version()
+    if version < need or not {"prev_hash", "hash"} <= columns:
+        return False, (
+            f"目标库 schema 版本 {version}（当前 {need}）或审计链列缺失。"
+            "本工具不在清空前执行迁移——迁移会用当前密钥回填审计链，"
+            "抹平「这条链曾经被动过」的证据（工单 ba-p11-03）。"
+            "请先用配套版本工具迁移该库，或换一个 --db 指向新库。"
+        )
+    db.init_db(path, env_file=args.env, cleanup=False, migrate=False)
+    return True, ""
 
 
 def main(argv=None):
@@ -98,8 +142,12 @@ def main(argv=None):
     os.makedirs(os.path.dirname(os.path.abspath(args.db)), exist_ok=True)
     random.seed(args.seed)
 
-    # 与 db_export 同理——demo 脚本不得在初始化时触发破坏性清理
-    db.init_db(args.db, env_file=args.env, cleanup=False)
+    # 与 db_export 同理——demo 脚本不得在初始化时触发破坏性清理；迁移口径见
+    # `_open_target_db`：新库迁移到当前 schema，既有库只校验、绝不迁移。
+    ok, problem = _open_target_db(args)
+    if not ok:
+        print(f"拒绝执行：{problem}", file=sys.stderr)
+        return 2
 
     conn = db.get_conn()
     print(f"将清空目标数据库: {args.db}（指纹 {fingerprint}）")
@@ -196,10 +244,10 @@ def main(argv=None):
         )
 
     print("生成签到事件 ...")
-    # 取值必须与 scripts/signin.py 的 STATUS_* 常量、以及 stage 的两种口径对齐，
-    # 否则前端的分类统计会得到与真实运行不符的演示结果（stage 只有 sign/probe 两种）。
-    statuses = ["success", "already", "no_task", "failed", "retrying",
-                "skipped_window", "no_position", "paused", "user_cancelled"]
+    # 取值直接取自唯一事实源 `yiban.core.status.ALL_STATUSES`（工单 ba-p11-08）：
+    # 手抄清单会随新增状态码静默漂移（此前缺 skipped_norange / pending /
+    # global_paused）。stage 只有 sign/probe 两种（与 scripts/signin.py 口径一致）。
+    statuses = list(ALL_STATUSES)
     for day in range(args.days):
         for _ in range(args.events_per_day):
             db.add_sign_event(

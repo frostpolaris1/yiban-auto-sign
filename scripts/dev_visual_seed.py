@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import importlib.util
 import json
 import os
 import random
+import secrets
 import shutil
 import sys
 from datetime import datetime, timedelta
@@ -41,13 +41,15 @@ if BASE not in sys.path:
 #     os.replace，与 web/引擎侧落盘同一份实现，读者（web 端按天读日志、按日读日历）
 #     永远读不到半写状态。
 from web.security import _atomic_write  # noqa: E402
-from yiban.infra import env_io  # noqa: E402
-from yiban.infra.account_crypto import (  # noqa: E402
-    PUBLISHED_DEMO_ACCOUNTS_KEY as TEST_KEY,
-)
+from yiban.adapters.config import env_io  # noqa: E402
+from yiban.core.status import ALL_STATUSES  # noqa: E402
+from yiban.core.status import DISPLAY as _DISPLAY  # noqa: E402
 
-# 演示钥与 `account_crypto` 的公开钥黑名单是**同一个常量**（单一事实源）：避免两处各写
-# 一份、下次换钥只改一处导致黑名单漂移。它随仓库公开，照抄进真实 .env 会被启动拒绝。
+# 演示钥不再使用随仓库公开的固定串（工单 sjem）：`account_crypto` 已把
+# `PUBLISHED_DEMO_ACCOUNTS_KEY` 精确拉黑——用它写 .env 会让 `db.add_account`
+# 在加密第一步就抛 ValueError。改为**每个演示环境生成随机钥并持久化**：
+# 首次运行生成、重跑复用同一个 `.env` 里的钥（否则旧库里的密文再也解不开）。
+# 这正是生产路径（`account_crypto.load_key` 缺失时生成并持久化）的同形做法。
 
 ADMIN_USER = "admin"
 ADMIN_PASS = "VisualPass1234!"
@@ -75,22 +77,45 @@ ACCOUNTS = [
     ("陈十四（待删除）", "13800138012", "Nothing Phone 2", "active", False, True),
 ]
 
-# 签到状态码（唯一事实源 yiban/core/status.py）：success/already/no_task/failed/
-# retrying/skipped_window/skipped_norange/paused/user_cancelled
-EVENT_STATUSES = ["success", "already", "no_task", "failed", "retrying", "skipped_window", "skipped_norange"]
+# 签到状态码取自唯一事实源（`yiban/core/status.py` 的 ALL_STATUSES），不另抄一份：
+# 手写清单会随新增状态码静默漂移（工单 ba-p11-08 的形态）。
+EVENT_STATUSES = list(ALL_STATUSES)
 
 # 生成日志的时间跨度（天）
 LOG_DAYS = 12
 
+#: 已随仓库公开、且被 `account_crypto` 精确拉黑的演示钥（只用于识别"旧 .env 里
+#: 还是那把钥"，识别到就换新钥；不写进新 .env）。
+_PUBLISHED_DEMO_KEY = "7f3a9c1e5b2d8046af17c3e9b5d2084c6ea93f7b1d5c8042a6e93f1b7d5c2084"
 
-def _write_env(env_file: str) -> None:
+
+def _demo_key(env_file: str) -> str:
+    """取演示环境密钥：复用既有 .env 的合法钥，否则生成随机 32 字节 hex。
+
+    复用是必须的：重跑（不带 --reset）时库里的密文只能用上次那把钥解开。
+    公开演示钥与非法形态一律丢弃并换新钥（工单 sjem）。
+    """
+    existing = env_io.parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
+    if existing and existing != _PUBLISHED_DEMO_KEY:
+        try:
+            valid = len(bytes.fromhex(existing)) == 32
+        except ValueError:
+            valid = False
+        if valid:
+            return existing
+    return secrets.token_hex(32)
+
+
+def _write_env(env_file: str) -> str:
     """建演示实例的 .env——走生产唯一写入口（内持跨进程写锁 + 原子 0600 替换）。
 
     空值键（`YIBAN_GLOBAL_PAUSE=` / `YIBAN_REGISTRATION_PAUSE=`）保持"键在、值为空"
     的形态：它们是设置页的开关位，留空即"未暂停"，删掉整行会让回显面失准。
+    返回本次使用的账号密钥（调用方据此设置进程环境）。
     """
+    key = _demo_key(env_file)
     env_io.write_env_keys(env_file, {
-        "YIBAN_ACCOUNTS_KEY": TEST_KEY,
+        "YIBAN_ACCOUNTS_KEY": key,
         "YIBAN_ADMIN_USER": ADMIN_USER,
         "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
         "YIBAN_SIGN_START": "06:30",
@@ -107,10 +132,14 @@ def _write_env(env_file: str) -> None:
         "YIBAN_PROBE_TIME": "08:00",
         "YIBAN_PROBE_INTERVAL_DAYS": "3",
     })
+    return key
 
 
 def _log_line(ts: datetime, idx: int, name: str, phone: str, status: str) -> str:
-    """造一行与生产同格式的签到日志（按天文件，见 run.sh 的 sign-YYYY-MM-DD.log）。"""
+    """造一行与生产同格式的签到日志（按天文件，见 run.sh 的 sign-YYYY-MM-DD.log）。
+
+    `status` 覆盖 `ALL_STATUSES` 全部取值；缺一条即 KeyError（词表漂移必须响亮）。
+    """
     model = {
         "success": f"签到成功 | {name}({phone}) 第一阶段完成，耗时 12.4s",
         "already": f"今日已签到 | {name}({phone}) 无需重复操作",
@@ -119,6 +148,12 @@ def _log_line(ts: datetime, idx: int, name: str, phone: str, status: str) -> str
         "retrying": f"重试中 | {name}({phone}) 第 2 次尝试",
         "skipped_window": f"已过窗口 | {name}({phone}) 超过签到截止时间",
         "skipped_norange": f"不在偏好内 | {name}({phone}) 当前时间不在自选时段",
+        "no_position": f"无签到点位 | {name}({phone}) 当日任务未开放",
+        "supplementing": f"补签中 | {name}({phone}) 平台正在处理补签申请",
+        "paused": f"已暂停 | {name}({phone}) 账号连续凭据失败",
+        "user_cancelled": f"已取消 | {name}({phone}) 用户暂停了自己的签到",
+        "pending": f"待签 | {name}({phone}) 尚未执行",
+        "global_paused": f"全局暂停 | {name}({phone}) 管理员暂停了自动签到",
     }[status]
     return f"{ts.strftime('%Y-%m-%d %H:%M:%S')} [{status.upper()}] {model}"
 
@@ -136,10 +171,18 @@ def seed(tmp: str, reset: bool = False) -> dict:
     log_dir = os.path.join(state_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
 
-    _write_env(env_file)
+    # 先把 web/app.py 完整执行完，再写任何落盘（工单 ba-p11-07）：导入期异常若被
+    # 吞掉，脚本会继续留下半套种子环境，真正的根因要到 main() 的 create_app 才以
+    # AttributeError 冒出来。此处失败立刻抛，且此刻只建了 tmp 目录。
+    spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
+    webapp = importlib.util.module_from_spec(spec)
+    sys.modules["webapp"] = webapp
+    spec.loader.exec_module(webapp)
+
+    demo_key = _write_env(env_file)
     _atomic_write(accounts_file, "[]")
 
-    os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+    os.environ["YIBAN_ACCOUNTS_KEY"] = demo_key
     os.environ["YIBAN_ENV_FILE"] = env_file
     os.environ["YIBAN_ACCOUNTS_FILE"] = accounts_file
     os.environ["YIBAN_USERS_FILE"] = users_file
@@ -153,21 +196,18 @@ def seed(tmp: str, reset: bool = False) -> dict:
     sys.path.insert(0, os.path.join(BASE, "scripts"))
     import db
 
-    spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
-    webapp = importlib.util.module_from_spec(spec)
-    sys.modules["webapp"] = webapp
-    with contextlib.suppress(Exception):
-        spec.loader.exec_module(webapp)
-
     if reset and os.path.exists(db_file):
         os.remove(db_file)
     db.init_db(db_file, migrate_from=accounts_file, env_file=env_file)
 
-    # 管理员由 .env 提供（check_admin_configured 读它）；普通用户要真实入库
+    # 管理员由 .env 提供（check_admin_configured 读它）；普通用户要真实入库。
+    # 已存在的用户跳过（重跑幂等），其余创建失败必须抛出——半套种子会让后续截图
+    # 被当成"完整实拍环境"（工单 ba-p11-07）。
+    known_users = {u["email"] for u in db.load_users()}
     for email in DEMO_USERS:
-        with contextlib.suppress(Exception):
+        if email not in known_users:
             db.create_user(email, generate_password_hash(USER_PASS), role="user")
-    with contextlib.suppress(Exception):
+    if "admin@example.com" not in known_users:
         db.create_user("admin@example.com", generate_password_hash(ADMIN_PASS), role="admin")
 
     existing = db.load_accounts()
@@ -176,29 +216,25 @@ def seed(tmp: str, reset: bool = False) -> dict:
             # 业务约束：一个用户只能有一个未删除账号（db.DuplicateOwnerError）。
             # 故只有第 1 条挂到演示用户，其余归内置管理员，否则每第 3 条都会被拒。
             owner = DEMO_USERS[0] if idx == 0 else "admin"
-            with contextlib.suppress(Exception):
-                aid = db.add_account(
-                    {
-                        "name": name,
-                        "phone": phone,
-                        "password": "DemoPass123!",
-                        "phone_model": model,
-                        "phone_code": f"C{idx:04d}",
-                        "owner": owner,
-                        "status": "pending",
-                    }
+            aid = db.add_account(
+                {
+                    "name": name,
+                    "phone": phone,
+                    "password": "DemoPass123!",
+                    "phone_model": model,
+                    "phone_code": f"C{idx:04d}",
+                    "owner": owner,
+                    "status": "pending",
+                }
+            )
+            if status != "pending":
+                db.update_account_status(
+                    aid, status, reject_reason=("识别码与机型不匹配" if status == "rejected" else None)
                 )
-                if status != "pending":
-                    with contextlib.suppress(Exception):
-                        db.update_account_status(
-                            aid, status, reject_reason=("识别码与机型不匹配" if status == "rejected" else None)
-                        )
-                if user_paused:
-                    with contextlib.suppress(Exception):
-                        db.set_user_paused(aid, True)
-                if deleted:
-                    with contextlib.suppress(Exception):
-                        db.set_account_deleted(aid, True, deleted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), deleted_by="admin")  # noqa: DTZ005 开发演示种子数据，非判定路径
+            if user_paused:
+                db.set_user_paused(aid, True)
+            if deleted:
+                db.set_account_deleted(aid, True, deleted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), deleted_by="admin")  # noqa: DTZ005 开发演示种子数据，非判定路径
 
     # 签到事件 + 按天日志
     rng = random.Random(20260921)
@@ -228,14 +264,19 @@ def seed(tmp: str, reset: bool = False) -> dict:
                         # 此前写"重试中（第 2 次）"，与前端 attempt 标注叠加成双份
                         "retrying": "待重试（已 2 次）: 登录态失效", "skipped_window": "已过签到窗口",
                         "skipped_norange": "不在时间偏好内",
+                        "no_position": "无签到点位",
+                        "supplementing": "补签中",
+                        "paused": "账号已暂停",
+                        "user_cancelled": "用户已取消",
+                        "pending": "待签",
+                        "global_paused": "全局暂停",
                     }[status],
                     "stage": rng.choice(["", "probe", "sign"]),
                     "attempt": rng.randint(0, 2),
                 }
             )
-    with contextlib.suppress(Exception):
-        if not db.sign_events_since("1970-01-01 00:00:00", limit=1):
-            db.add_sign_events_batch(rows)
+    if not db.sign_events_since("1970-01-01 00:00:00", limit=1):
+        db.add_sign_events_batch(rows)
 
     # 日志文件按天写（web 端按日期直接读文件）
     txt_by_day: dict[str, list[str]] = {}
@@ -258,16 +299,14 @@ def seed(tmp: str, reset: bool = False) -> dict:
     # 这族文件、日历格一直空白。
     # 覆盖策略（色彩语义定版后图例按语气档收敛）：
     # - **全状态轮转** DAILY_CYCLE：账号 idx 在第 day 天取 (day + idx*7) % len——
-    #   纯随机会漏掉低频码（无点位/已取消/待签），轮转保证近 35 天内 12 个状态码
+    #   纯随机会漏掉低频码（无点位/已取消/待签），轮转保证近 35 天内**全部**状态码
     #   在日历上都有出处，"今天"一行也能同时看到七八种色点；
+    #   轮转表**直接取自** `DISPLAY` 的键，不另抄清单（手抄清单必随新增状态码漂移，
+    #   工单 ba-p11-08 的形态：漏 `global_paused`）；
     # - 郑十一/王十二（idx 8/9）近 4 天不写（"无记录"分支）；周末不写（格子显示"休"）；
     # - 赵六（用户暂停）近 10 天记 paused（账密暂停·黄色点有出处）。
-    from yiban.core.status import DISPLAY as _DISPLAY
-
     _sym = {code: e["symbol"] for code, e in _DISPLAY.items()}
-    DAILY_CYCLE = ["success", "already", "no_task", "failed", "retrying",
-                   "skipped_window", "skipped_norange", "no_position",
-                   "supplementing", "user_cancelled", "pending"]
+    DAILY_CYCLE = list(_DISPLAY)
     for day in range(35):
         base_day = now - timedelta(days=day)
         if base_day.weekday() >= 5:
@@ -281,9 +320,8 @@ def seed(tmp: str, reset: bool = False) -> dict:
                 code = "paused"
             else:
                 code = DAILY_CYCLE[(day + idx * 7) % len(DAILY_CYCLE)]
-            sym = _sym.get(code)
-            if sym:
-                day_data[phone] = sym
+            # 直接下标：码不在 DISPLAY 里必须 KeyError（词表漂移不许静默跳过）。
+            day_data[phone] = _sym[code]
         if not day_data:
             continue
         _atomic_write(os.path.join(state_dir, f"sign-daily-{date}.json"),

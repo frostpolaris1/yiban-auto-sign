@@ -14,7 +14,7 @@
 `ledger._daily_limit` / `_daily_remaining`、`ipaddress`。
 谁调用：`transport.send` / `send_test`（类型、密钥、白名单）、
 `web/routes/notify.py` 的 `api_notify_config` / `api_notify_config_save`（设置页读概览
-与保存前判定）、`yiban/engine/alerts.py`（`is_configured` 决定要不要走手机通道）。
+与保存前判定）、`yiban/adapters/notifier/report.py`（`is_configured` 决定要不要走手机通道）。
 输出给前端的凭据只有一种形态：`get_config()` 里的 `secret_masked`（`_mask_secret` 的
 前 3 后 2 短指纹）。`get_secret()` 返回的是明文，只被 `transport` 拿去发请求；本层
 `logger` 的三处调用记的是解密/解析异常与 `url_desc(host)`，都不写出密钥本身。
@@ -23,6 +23,7 @@ import ipaddress
 import json
 import logging
 import os
+import socket
 from urllib.parse import urlparse
 
 from yiban.adapters.config import account_crypto, env_io
@@ -93,15 +94,31 @@ def _env_str(key, envs=None):
     return os.environ.get(_PREFIX + key, "").strip()
 
 
-# 非法值告警的一次性旗标（键名集合）：同一键在进程生命周期内只喊一次，不刷屏
+# 非法值告警的一次性旗标：按 `(读取函数, 真实 .env 键名)` 去重，进程生命周期内只喊一次。
+# 不能按短名去重：`_env_int` 与 `_env_flag` 对同一个键的词汇表不同，共用短名会让一个
+# 读取路径的告警永久吞掉另一个（ba-p09-10）。
 _bad_value_warned = set()
 # 布尔开关键的取值口径。**单一事实源**在 `yiban.infra.env_io` 的
 # `ENV_TRUTHY_LITERALS` / `ENV_FALSY_LITERALS`（与引擎 `schedule._env_flag`、面板读侧、
 # bash `run.sh._is_truthy` 同一套字面量）；本处只引用不再另抄一份。
-# 本模块的 `_env_flag` 因契约不同（读 `YIBAN_NOTIFY_*` 键 + 带缺省值 + 与 `_env_int`
-# 共用"只喊一次"闩）未并入 `env_io.parse_env_flag`，但**口径同源**——字面量表来自它。
+# 本模块的 `_env_flag` 因契约不同（读 `YIBAN_NOTIFY_*` 键 + 带缺省值 + 自己一类"只喊一次"
+# 闩）未并入 `env_io.parse_env_flag`，但**口径同源**——字面量表来自它。
 _FLAG_TRUE = env_io.ENV_TRUTHY_LITERALS
 _FLAG_FALSE = env_io.ENV_FALSY_LITERALS
+
+
+def _warn_bad_value(kind, env_key, template, *args):
+    """非法值告警的「只喊一次」统一入口。
+
+    kind 区分读取函数（int/flag），env_key 是**真实 .env 键名**（含前缀）——
+    日志因此能直接定位要改哪一行；两个命名空间互不吞声（ba-p09-10）。
+    """
+    token = f"{kind}:{env_key}"
+    if token in _bad_value_warned:
+        return False
+    _bad_value_warned.add(token)
+    logger.warning(template, *args)
+    return True
 
 
 def _env_int(key, default, envs=None):
@@ -118,10 +135,10 @@ def _env_int(key, default, envs=None):
     except (TypeError, ValueError):
         return default
     if value < 0:
-        if key not in _bad_value_warned:
-            _bad_value_warned.add(key)
-            logger.warning("YIBAN_NOTIFY_%s=%r 为负值（非法键值），本次按缺省 %d 处理；"
-                           "需要放开上限/关闭节流请显式写 0", key, raw, default)
+        _warn_bad_value(
+            "int", _PREFIX + key,
+            "YIBAN_NOTIFY_%s=%r 为负值（非法键值），本次按缺省 %d 处理；"
+            "需要放开上限/关闭节流请显式写 0", key, raw, default)
         return default
     return value
 
@@ -141,10 +158,10 @@ def _env_flag(key, default, envs=None):
         return 0
     if not raw:
         return default
-    if key not in _bad_value_warned:
-        _bad_value_warned.add(key)
-        logger.warning("YIBAN_NOTIFY_%s=%r 不是可辨认的开关写法，本次按缺省 %d 处理；"
-                       "可写 1/true/on/yes 或 0/false/off/no", key, raw, default)
+    _warn_bad_value(
+        "flag", _PREFIX + key,
+        "YIBAN_NOTIFY_%s=%r 不是可辨认的开关写法，本次按缺省 %d 处理；"
+        "可写 1/true/on/yes 或 0/false/off/no", key, raw, default)
     return default
 
 
@@ -188,8 +205,10 @@ def _is_nonroutable_target(ip):
 def is_safe_url(url):
     """自定义通知地址的 SSRF 白名单：https + 非回环/内网/链路本地/未指定/CGNAT/组播/保留。
 
-    防 http 明文外泄与拿推送地址当 SSRF 跳板。域名目标放行（DNS rebinding 由发送
-    超时兜底）。本函数是该口径的唯一实现，web 设置页与发送层共用。
+    防 http 明文外泄与拿推送地址当 SSRF 跳板。**域名目标放行到静态层**，但发送前
+    必须再过 `is_safe_url_resolved`：解析结果逐 IP 复核（否则「解析到 169.254.169.254
+    的域名」直接放行，超时兜底不了任何东西，ba-p09-06）。本函数是该口径的唯一实现，
+    web 设置页与发送层共用。
 
     **白名单外写法收严**：`localhost.`（尾点）、纯数字/十六进制/前导零
     IPv4 字面量（`2130706433` = 127.0.0.1）、短式回环（`127.1`）等非 `ipaddress`
@@ -221,6 +240,61 @@ def is_safe_url(url):
         # 前导零/短式）→ 拒掉；只有真域名（含点号且非全数字组件）放行。
         return not _is_ipv4_literal_like(host)
     return not _is_nonroutable_target(ip)
+
+
+def _resolve_host_ips(host):
+    """把主机名解析为 IP 字符串列表（发送期复核的**测试注入点**）。
+
+    解析失败返回空列表（调用方按 fail-closed 处理）。`AI_ADDRCONFIG` 让没有配置
+    IPv6 的机器不返回不可用的 v6 地址。
+    """
+    try:
+        infos = socket.getaddrinfo(
+            host, None, flags=getattr(socket, "AI_ADDRCONFIG", 0))
+    except (OSError, ValueError):
+        return []
+    ips = []
+    for info in infos:
+        addr = info[4][0]
+        if addr not in ips:
+            ips.append(addr)
+    return ips
+
+
+def is_safe_url_resolved(url):
+    """发送期复核：静态白名单 + 域名解析后逐 IP 判不可路由段。
+
+    静态 `is_safe_url` 对域名一律放行；超时**限制不了**请求打出去，因此「DNS
+    rebinding 由超时兜底」不成立。这里在发请求前把 host 解析一遍，任一地址落在
+    回环/内网/链路本地/CGNAT/保留段即拒；解析失败同样拒（fail-closed）。
+
+    残余边界（如实写明，不当成已解决）：解析与连接之间仍有 DNS rebinding 的 TOCTOU
+    窗口；本层把「域名指向内网地址」这条现实攻击路径拦掉，但不声称能防主动时序攻击。
+    """
+    if not is_safe_url(url):
+        return False
+    try:
+        host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
+    except ValueError:
+        return False
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True  # 字面量：静态层已判过，无需解析
+    except ValueError:
+        pass
+    ips = _resolve_host_ips(host)
+    if not ips:
+        return False
+    for raw in ips:
+        try:
+            ip = ipaddress.ip_address(str(raw).split("%", 1)[0])
+        except ValueError:
+            return False
+        if _is_nonroutable_target(ip):
+            return False
+    return True
 
 
 def _is_ipv4_literal_like(host):
@@ -351,7 +425,7 @@ def channel_usable(ntype, secret):
 
     这是 MF-44 登记的口径分叉的收口：`is_configured()` 曾只看"类型已设且密钥解得出"，
     不看 TYPE 白名单也不看 custom 白名单，而 `send()` 的门①/门⑤遇到未知类型或
-    白名单外地址**必然拒发**——引擎侧（`yiban/engine/alerts.py`）据此判"有推送出口"
+    白名单外地址**必然拒发**——引擎侧（`yiban/adapters/notifier/report.py`）据此判"有推送出口"
     就会少发一封本该走的邮件，告警在两个判定都"正常"的地方静默消失。
     判据从 send() 的行为机械导出：未知类型不猜出口、不安全 URL 不放行。
     """

@@ -113,8 +113,12 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
+from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import (  # noqa: E402
+    ledger as notify_ledger,  # 账本内部态走子模块
+)
 
 OLD_KEY = "a" * 64
 NEW_KEY = "b" * 64
@@ -669,7 +673,7 @@ class _B14AlertGateBase(unittest.TestCase):
         self.alerts = []
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
-                self.webapp, "send_notification",
+                _notify_mail, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
                 # 返回 True = "送达"：MF-44 后日报的去重标记只在 send_notification 返回
@@ -884,7 +888,8 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                          "0=不限 → 剩余应为 None（get_config 口径）")
         r2 = c.put("/api/notify-config",
                    json={"urgent_daily_max": -5, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))  # max(0,…) 与 daily_max 一致
+        # ba-p05-10：负值不再 max(0,·) 钳成「不限额」，而是越界 400、零落盘
+        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=0", _read_env(self.env_file))
         r3 = c.put("/api/notify-config", json={"urgent_daily_max": "many"}, headers=self._csrf(t))
         self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
@@ -1218,7 +1223,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
             "type": "", "confirm_password": ADMIN_PASS}).status_code, 200)
         self.alerts.clear()
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp, "send_notification",
+             mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("模拟两条通道同时失效")), \
              self.assertRaises(RuntimeError):
             self.webapp._send_channel_health_report()
@@ -1305,7 +1310,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         """
         meta_key = self.webapp._HEALTH_REPORT_META_KEY
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp, "send_notification",
+             mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("模拟 SMTP 瞬断")), \
              self.assertRaises(RuntimeError):
             self.webapp._send_channel_health_report()
@@ -1567,7 +1572,7 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
              mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
              mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警一", "正文一")
+            _notify_mail.send_notification("测试告警一", "正文一")
             ns.assert_called_once()
         self.assertEqual([m[0] for m in mails], ["测试告警一"],
                          f"告警路径不该再补发耗尽告知，实际 {[m[0] for m in mails]}")
@@ -1699,7 +1704,7 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
     def test_batch_param_errors_still_checked_before_gate(self):
         """既有 400 校验优先级不变：未知动作/空选择/超上限都不该被改成交给门禁判。"""
         c, h = self._master()
-        cap = self.webapp.BATCH_OP_LIMIT
+        cap = _limits.BATCH_OP_LIMIT
         for body in ({"action": "nope", "ids": [0]},
                      {"action": "purge", "ids": []},
                      {"action": "purge", "ids": list(range(cap + 1))}):
@@ -2012,7 +2017,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         email, pw = self._user()
         c = self._client()
         bad = "wrong-" + pw
-        th = self.webapp.LOGIN_FAIL_NOTIFY
+        th = _limits.LOGIN_FAIL_NOTIFY
         # 告警阈值与锁定阈值同值：第 th 次既留痕又锁定（429），之前都是 401
         for i in range(th):
             r = c.post("/api/login", json={"username": email, "password": bad})
@@ -2028,7 +2033,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         """红线：留痕不得改动锁定与返回码语义——第 5 次仍 429，其后仍 429 且无成功行。"""
         email, pw = self._user("lockme@test.local")
         c = self._client()
-        for _ in range(self.webapp.LOGIN_MAX_FAILS):
+        for _ in range(_limits.LOGIN_MAX_FAILS):
             r = c.post("/api/login", json={"username": email, "password": "nope-" + pw})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
         r2 = c.post("/api/login", json={"username": email, "password": pw})

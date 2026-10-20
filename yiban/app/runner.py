@@ -4,7 +4,7 @@
 入口与轮次编排：`main(argv=None) -> int`（装载配置 → 分支 → 一轮队列 → 汇总退出码）。
 
 **退出码由本函数返回、不再自己 `sys.exit`**（退出码语义逐字不变，见
-`docs/dev/cli.md` §3）：这样 `yiban/cli.py` 与 `scripts/signin.py` 兼容壳可以统一
+`docs/dev/cli.md` §3）：这样 `yiban/entry/cli/__init__.py` 与 `scripts/signin.py` 兼容壳可以统一
 `sys.exit(main(argv))`，同时保留"返回码"这一可被直接断言的形式。
 
 分支顺序是有意为之，改动前先读注释：兜底常驻 → 补签轮判定（只读本地状态）→
@@ -13,7 +13,7 @@
 一轮队列 → 汇总与退出码。
 
 **归属**
-`yiban.engine` 的编排顶层，也是命令行签到路径的入口实现：`yiban/cli.py` 的
+`yiban.engine` 的编排顶层，也是命令行签到路径的入口实现：`yiban/entry/cli/__init__.py` 的
 `sign` / `probe` 子命令、部署面的 `scripts/signin.py` 兼容壳与 `run.sh`、容器调度器
 都落到这里。真正的签到逻辑在 `round`，进程编排在 `workers`。
 
@@ -27,7 +27,7 @@
 拒启，MF-40）与日志；`--json` 由 `cli.py` 包裹。
 调用谁：`accounts` / `probe` / `workers` / `executor_v3`（唯一执行体） / `state_io` /
 `alerts` / `cli_support`（跨模块一律走模块属性访问）。
-谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
+谁调用：`yiban/entry/cli/__init__.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
 `docker/scheduler.py`。
 前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
 `scripts/signin.py --only`（`web/static/js/components/account-ops.js` 触发），执行体接口
@@ -831,8 +831,10 @@ def main(argv=None):
     # is_second_run：run.sh 补签轮导出的 YIBAN_SECOND_RUN=1 优先（首签子进程被 timeout
     # 击杀、未写 sched-run 标记时标记兜底失效，必须靠该环境变量识别）；容器调度器
     # 补签时段同样注入它；sched-run 标记作为兜底（手动/其他启动路径）。
+    # **复用轮首的 `_second_run`**（工单 ba-p03-11）：注释承诺"只读一次、两处共用同一个
+    # 判定"，这里再取一次会在跨午夜的长轮次上读到不同的日期标记，与轮首判定分叉。
     alerts._maybe_alert_zero_success(
-        accounts, results, ok_n, is_second_run=state_io._is_second_run()
+        accounts, results, ok_n, is_second_run=_second_run
     )
 
     # 签到事件落库：每次尝试与状态迁移落一行（stage="sign"，探针沿用 stage="probe"），

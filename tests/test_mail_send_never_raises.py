@@ -7,7 +7,7 @@
     失败）；运输级失败（连接/SMTP 异常）的主备 failover 行为逐字不变。
 对应实现：`yiban/adapters/notifier/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
     Exception 收口分支）。
-关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/mail/__init__.py` 模块
+关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/adapters/notifier/mail/__init__.py` 模块
     头）此前对 UnicodeEncodeError 不成立——排版/构造在 try 外，一次坏字符会沿
     `send_user`/`send_notification` 抛回**持 `_file_lock` 同步发信**的路由（锁内 500，
     且把排在其后的审计留痕一起带走；`ba-p05-01` 起锁内发信改走 `run_after_file_lock`，
@@ -19,8 +19,8 @@ import contextlib
 import unittest
 from unittest import mock
 
-from yiban.mail import config as mailer
-from yiban.mail import transport as mailer_transport
+from yiban.adapters.notifier.mail import config as mailer
+from yiban.adapters.notifier.mail import transport as mailer_transport
 
 _LONE_SURROGATE = "\ud800"  # 孤立高代理：任何 utf-8 encode 在此必抛 UnicodeEncodeError
 
@@ -55,8 +55,9 @@ class SendNeverRaisesTest(unittest.TestCase):
         _NeverReachedSMTP.calls = 0
 
     def _send_with_body(self, subject, body):
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "smtp_list", lambda: [_entry()]), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: [_entry()]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _NeverReachedSMTP):
             return mailer_transport._send(subject, body, "to@example.com")
 
@@ -80,8 +81,9 @@ class SendNeverRaisesTest(unittest.TestCase):
                 seen.append(host)
                 raise UnicodeEncodeError("utf-8", host, 0, 1, "simulated 构造级失败")
 
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "smtp_list", lambda: entries), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: entries), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _ExplodingSMTP):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertFalse(ok)
@@ -110,9 +112,10 @@ class SendNeverRaisesTest(unittest.TestCase):
             def sendmail(self, f, t, msg):
                 payload["msg"] = msg
 
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
              mock.patch.object(mailer, "smtp_list",
-                               lambda: [_entry("first.example"), _entry("second.example")]), \
+                               lambda *a, **k: [_entry("first.example"), _entry("second.example")]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FlakySMTP):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertTrue(ok)

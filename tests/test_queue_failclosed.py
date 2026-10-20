@@ -46,12 +46,13 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
+from web import security as _security  # noqa: E402
 from yiban import egress  # noqa: E402
 from yiban.adapters.notifier import report as alerts  # noqa: E402
+from yiban.adapters.persistence import queue_store  # noqa: E402
 from yiban.adapters.statefiles import state_io  # noqa: E402
 from yiban.core import clock  # noqa: E402
 from yiban.engine import executor_v3  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二，避开周末门
@@ -547,18 +548,30 @@ class ProgressEndpointUnreadableTest(unittest.TestCase):
         from flask import Flask
 
         from web.routes import settings_api
+        from web.services import executor_env as _executor_env
+        from web.services import signstatus as _signstatus
+        from yiban.adapters.persistence import db as _db
+        from yiban.core import clock as _clock
 
-        m = SimpleNamespace(
-            _is_builtin_admin_session=lambda: True,
-            clock=SimpleNamespace(today=lambda: DAY),
-            db=SimpleNamespace(task_latest_day=lambda: DAY, task_stats=task_stats),
-            _executor_activity=lambda day: ([], {"claimed": 0, "failed": 0,
-                                                 "done": 0, "total": 0}),
-            _executors_window=lambda: ((6, 30), (7, 50)),
-            _in_run_period=lambda bounds: False,
-        )
+        # 假 app 模块只剩 app.py **自有**的名字（A 类转发名直取真源，见批 3-a）。
+        # 批 3-d：`_in_run_period` 的读者已直取 web.services.signstatus，故桩打在真源上。
+        m = SimpleNamespace()
+        # 批 3-c S3：`_is_builtin_admin_session` 已从 app.py 的转发墙搬走，读者直取
+        # `web.security`。原先打在假 app 模块上的那个桩因此失效——端点会转而调用真源，
+        # 在无会话的 request context 里判成"非主管理员"并返回 403（本用例三条当场红）。
+        # 故打桩点改到真源上，与被测调用链一致。
         with Flask("probe").test_request_context(), \
-                mock.patch.object(settings_api, "_appmod", return_value=m):
+                mock.patch.object(_security, "_is_builtin_admin_session", lambda: True), \
+                mock.patch.object(settings_api, "_appmod", return_value=m), \
+                mock.patch.object(_executor_env, "_executors_window",
+                                  lambda: ((6, 30), (7, 50))), \
+                mock.patch.object(_signstatus, "_in_run_period", lambda bounds: False), \
+                mock.patch.object(_clock, "today", lambda: DAY), \
+                mock.patch.object(_db, "task_latest_day", lambda: DAY), \
+                mock.patch.object(_db, "task_stats", task_stats), \
+                mock.patch.object(_executor_env, "_executor_activity",
+                                  lambda day: ([], {"claimed": 0, "failed": 0,
+                                                     "done": 0, "total": 0})):
             resp = settings_api.api_scheduler_executors_progress()
         if isinstance(resp, tuple):
             self.fail(f"进度端点读不通不得报错：{resp[1]}")

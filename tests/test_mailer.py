@@ -25,9 +25,11 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
-from yiban.infra import account_crypto, env_io
-from yiban.mail import config as mailer
-from yiban.mail import transport as mailer_transport
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
+from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.notifier.mail import config as mailer
+from yiban.adapters.notifier.mail import transport as mailer_transport
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -251,6 +253,85 @@ def test_get_config_never_exposes_password(monkeypatch, tmp_path):
     cfg = mailer.get_config()
     assert "topsecret" not in str(cfg), "get_config 不得泄露授权码"
     assert cfg["user"] == "s*****@qq.com"
+
+
+def test_get_config_reports_entry_host_and_port(monkeypatch, tmp_path):
+    """ba-p09-08：SMTPS_ENC 配置时，host/port 回显必须取第一条真实发信条目。
+
+    旧实现 user 已按条目回显，host/port 仍读旧单条键——设置页恒显示
+    smtp.qq.com:465，管理员无法核对「告警实际发往哪个中继」。
+    """
+    entries = [{"host": "smtp.real.example", "port": 587, "user": "sender@real.example",
+                "pass": "p1"}, {"host": "backup.real.example", "port": 465,
+                                "user": "sender2@real.example", "pass": "p2"}]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    _set_mail(monkeypatch, ENABLE="1", SMTP_HOST="smtp.qq.com", SMTP_PORT="465")
+    cfg = mailer.get_config()
+    assert cfg["host"] == "smtp.real.example", "host 必须回显第一条真实条目"
+    assert cfg["port"] == 587, "port 必须回显第一条真实条目"
+    assert cfg["port_fallback"] is False, "条目端口合法时不得报 fallback"
+
+
+def test_get_config_flags_invalid_entry_port(monkeypatch, tmp_path):
+    """ba-p09-08：条目 port 非法时 port_fallback 必须为真（不能只描述旧键）。"""
+    entries = [{"host": "smtp.real.example", "port": "abc", "user": "a@x.com",
+                "pass": "p1"}]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    _set_mail(monkeypatch, ENABLE="1")
+    cfg = mailer.get_config()
+    assert cfg["host"] == "smtp.real.example"
+    assert cfg["port"] == 465, "非法条目端口按发送路径同口径回退 465"
+    assert cfg["port_fallback"] is True, "非法条目端口必须让设置页看得见"
+
+
+def test_smtp_list_reads_env_once_and_decrypts_once(monkeypatch, tmp_path):
+    """ba-p09-07：一轮 smtp_list 只读一份 .env 快照、只做一次 AES-GCM 解密。"""
+    entries = [{"host": "smtp.a.example", "port": 465, "user": "a@x.com", "pass": "p1"},
+               {"host": "smtp.b.example", "port": 465, "user": "b@x.com", "pass": "p2"}]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    _set_mail(monkeypatch, ENABLE="1")
+    reads, decrypts = [], []
+    real_read = mailer._read_env_file
+    real_decrypt = account_crypto.decrypt_text
+    monkeypatch.setattr(mailer, "_read_env_file",
+                        lambda: reads.append(1) or real_read())
+    monkeypatch.setattr(account_crypto, "decrypt_text",
+                        lambda *a, **k: decrypts.append(1) or real_decrypt(*a, **k))
+    got = mailer.smtp_list()
+    assert len(got) == 2
+    assert len(reads) == 1, f"smtp_list 应只读一份 .env 快照，实际 {len(reads)} 次"
+    assert len(decrypts) == 1, f"一次发信轮次只应解密一次，实际 {len(decrypts)} 次"
+
+
+def test_send_decrypts_entries_once(monkeypatch, tmp_path):
+    """ba-p09-07：`_send` 不得为 is_enabled 与 smtp_list 各解密一次。"""
+    entries = [{"host": "smtp.a.example", "port": 465, "user": "a@x.com", "pass": "p1"}]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    _set_mail(monkeypatch, ENABLE="1")
+    decrypts = []
+    real_decrypt = account_crypto.decrypt_text
+    monkeypatch.setattr(account_crypto, "decrypt_text",
+                        lambda *a, **k: decrypts.append(1) or real_decrypt(*a, **k))
+
+    class FakeServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            pass
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", FakeServer)
+    assert mailer_transport.send_user("to@x.com", "s", "b") is True
+    assert len(decrypts) == 1, f"一封邮件只应解密一次条目，实际 {len(decrypts)} 次"
 
 
 def test_channel_state_off_when_disabled(monkeypatch, tmp_path):
@@ -511,7 +592,7 @@ class AdminToWriteTest(_Base):
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
-                mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
+                mock.patch.object(_notify_mail, "send_notification", return_value=None) as sn:
             r0 = c.put("/api/mail-config", json={"admin_to": "new@test.local"}, headers=h)
             self.assertEqual(r0.status_code, 400, r0.get_data(as_text=True))
             self.assertEqual(r0.get_json().get("reason"), "password_required")
@@ -523,17 +604,39 @@ class AdminToWriteTest(_Base):
         self.assertTrue(sn.call_args.kwargs.get("urgent"), "改道预警必须 urgent")
         mail = sn.call_args.args[1]
         flat = " | ".join(str(getattr(mail, a, "")) for a in ("summary", "fields", "notes", "advice"))
-        self.assertIn(self.webapp._mask_email("old@test.local"), flat,
-                      "预警正文必须带上旧收件人（打码形态）口径")
+        self.assertIn(mailer._mask_addr("old@test.local"), flat,
+                      "预警正文必须带上旧收件人（逐项打码形态，ba-p05-03）口径")
         self.assertEqual(m.call_args_list, [], "send_notification 已打桩，mailer 不应被直接触达")
         self.assertEqual(self._env_admin_to(), "new@test.local", "改收件人本身必须照旧生效")
+
+    def test_recipient_alert_masks_every_address_in_list(self):
+        """ba-p05-03：多地址名单进告警正文时逐项打码，不得只处理第一个地址。
+
+        `mask_email` 只在第一个 @ 处切段；对 "a@x,b@y" 这种逗号列表，第 2 个及之后
+        的地址会原样留在正文里，而同一请求的审计行早已用逐项打码的 `_mask_addr`。
+        """
+        old = "old1@test.local,old2@test.local"
+        new = "new1@test.local,new2@test.local"
+        self._reset_env_file(f"YIBAN_MAIL_ADMIN_TO={old}\n")
+        c, h = self._master()
+        with mock.patch.object(_notify_mail, "send_notification", return_value=None) as sn:
+            r = c.put("/api/mail-config",
+                      json={"admin_to": new, "confirm_password": ADMIN_PASS}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        mail = sn.call_args.args[1]
+        flat = " | ".join(str(getattr(mail, a, "")) for a in ("summary", "fields", "notes", "advice"))
+        for addr in ("old1@test.local", "old2@test.local", "new1@test.local", "new2@test.local"):
+            self.assertNotIn(addr, flat, f"告警正文不得含完整地址：{addr}")
+        for addr in ("old1@test.local", "old2@test.local", "new1@test.local", "new2@test.local"):
+            self.assertIn(mailer._mask_addr(addr), flat,
+                          f"每个收件人都必须以打码形态出现：{addr}")
 
     def test_recipient_unchanged_writes_no_alert(self):
         """地址没变（同值提交）不产生任何外发。"""
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=same@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
-                mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
+                mock.patch.object(_notify_mail, "send_notification", return_value=None) as sn:
             r = c.put("/api/mail-config",
                       json={"admin_to": "same@test.local", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -955,7 +1058,7 @@ class SmtpEntryIdentityTest(_Base_FAILOVER):
             {"host": "smtp.b.com", "port": 465, "user": "b@x.com", "pass": "passB"},
         ]
         self._write_legacy_blob(legacy)
-        import yiban.mail as mailer_mod
+        import yiban.adapters.notifier.mail as mailer_mod
         self.assertEqual(mailer_mod.smtp_list(), legacy, "旧配置发送路径读取不得受影响")
         c, h = self._master()
         got = c.get("/api/mail-config", headers=h).get_json()["smtps"]
@@ -1074,7 +1177,7 @@ class SmtpEntryIdentityTest(_Base_FAILOVER):
         self.assertEqual(detail["smtps_to"], [])
 
     def _read_env_all(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         return env_io.parse_env_file(self.env_file)
 
 
@@ -1092,7 +1195,7 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
 
     def _spy_write(self):
         """记录含 YIBAN_MAIL_* 键的 write_env_batch 调用，其余照常透传。"""
-        real = self.webapp.write_env_batch
+        real = _env_io_svc.write_env_batch
         calls = []
 
         def spy(env_path, updates):
@@ -1100,7 +1203,7 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
                 calls.append(dict(updates))
             return real(env_path, updates)
 
-        return mock.patch.object(self.webapp, "write_env_batch", side_effect=spy), calls
+        return mock.patch.object(_env_io_svc, "write_env_batch", side_effect=spy), calls
 
     def test_smtps_and_flags_in_one_atomic_write(self):
         self._reset_env_file()
@@ -1140,11 +1243,11 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
         c, h = self._master()
         alerts = []
         with mock.patch.object(
-                self.webapp, "send_notification",
+                _notify_mail, "send_notification",
                 side_effect=lambda t, c_, urgent=False, force=False, ledger=None:
                 alerts.append(t)):
             # 写入失败（模拟磁盘错）：不得外发，也不得在 .env 上留半个键
-            with mock.patch.object(self.webapp, "write_env_batch",
+            with mock.patch.object(_env_io_svc, "write_env_batch",
                                    side_effect=RuntimeError("disk full")):
                 r = c.put("/api/mail-config",
                           json={"enabled": True, "smtps": self.smtps(),
@@ -1173,7 +1276,7 @@ def test_recipients_refused_writes_delivery_ledger(monkeypatch, tmp_path):
     """
     import smtplib
 
-    from yiban.store import db as store_db
+    from yiban.adapters.persistence import db as store_db
 
     _isolate_env(monkeypatch, tmp_path)
     _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")
@@ -1226,37 +1329,27 @@ def test_recipients_refused_writes_delivery_ledger(monkeypatch, tmp_path):
     store_db._conn = None
 
 
-def test_failover_resends_identical_message_id_and_logs_retry(monkeypatch, tmp_path, caplog):
-    """C7+C8（MF-90）：QUIT 抛异常换条目重投的是同一封——同确定性 Message-ID，重投可见。
+def test_quit_failure_after_ack_is_not_a_resend(monkeypatch, tmp_path, caplog):
+    """ba-p09-02：sendmail 已 ACK ⇒ QUIT 失败不得把本封算成失败、更不得换条目重投。
 
-    机制：`smtplib.SMTP.__exit__` 的 QUIT 抛 SMTPResponseException ⇒ 捕获后换下一条
-    重投；旧构造无 `Message-ID`，接收端无从去重 ⇒ 同一封最多可送达 10 次（条目上限）。
-    现在 10 次尝试携带同一个由内容哈希出的键（非随机 nonce），且每次换条目留一行
-    "同封重投"记录——上界从 10 降到 1 的机制基础 + 有界可观测。
+    旧实现把 `quit()` 留在同一条 try 内（`with server:` 退出时执行）。服务器收信后
+    掉线时 QUIT 抛异常 ⇒ 记「发送失败」并换下一条，同一封最多投满条目数；收件人侧
+    被重复轰炸，日志却显示失败。判据：已 ACK 是终态，关连接的异常只能被吞掉。
     """
     import logging
-    import re
     import smtplib
 
     entries = [{"host": f"smtp{i}.example.test", "port": 465,
-                "user": f"sender{i}@qq.com", "pass": "secret"} for i in range(10)]
+                "user": f"sender{i}@qq.com", "pass": "secret"} for i in range(3)]
     _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
     monkeypatch.setenv("YIBAN_MAIL_ENABLE", "1")
     captured = []
 
     class QuitBadServer:
-        """login/sendmail 都"成功"，__exit__ 的 QUIT 抛——前 9 条炸，第 10 条放行。"""
+        """login/sendmail 都成功，QUIT 抛——已送达的邮件不得因此被重投。"""
 
         def __init__(self, host, port, **k):
             self.host = host
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            if self.host != "smtp9.example.test":
-                raise smtplib.SMTPResponseException(421, b"server busy, quitting later")
-            return False
 
         def login(self, u, p):
             pass
@@ -1264,15 +1357,64 @@ def test_failover_resends_identical_message_id_and_logs_retry(monkeypatch, tmp_p
         def sendmail(self, frm, to, msg):
             captured.append(msg)
 
+        def quit(self):
+            raise smtplib.SMTPServerDisconnected("server went away after DATA")
+
+        def close(self):
+            pass
+
     monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", QuitBadServer)
     with caplog.at_level(logging.INFO, logger="mailer"):
         assert mailer_transport.send_admin_alert("同一封告警", "正文", to="admin@qq.com") is True
-    assert len(captured) == 10, "QUIT 炸 9 次 + 第 10 条成功 = 恰好投了 10 次（有界）"
-    ids = re.findall(r"(?m)^Message-ID: (.*)$", "\n".join(captured))
-    assert len(ids) == 10 and set(ids) == {ids[0]}, \
-        f"跨条目重投必须同幂等键（同封可辨识）：{set(ids)}"
-    assert re.fullmatch(r"<[0-9a-f]{32}@yiban>", ids[0]), f"幂等键须确定性可辨：{ids[0]}"
-    assert caplog.text.count("同封重投") == 9, "换条目重投每条都要有结构化记录"
+    assert len(captured) == 1, f"已 ACK 的邮件只允许投递一次，实际 {len(captured)} 次"
+    assert "同封重投" not in caplog.text, "QUIT 失败不构成重投理由"
+    assert "邮件通知发送失败" not in caplog.text, "已送达的邮件不得记成失败（账实不一致）"
+
+
+def test_failover_on_send_failure_reuses_message_id(monkeypatch, tmp_path, caplog):
+    """C7+C8（MF-90）：真·发送失败换条目重投的是同一封——同确定性 Message-ID，重投可见。
+
+    机制：第一条 sendmail 抛 SMTPResponseException ⇒ 换下一条重投；同一封携带同一个
+    由内容哈希出的键（非随机 nonce），且每次换条目留一行"同封重投"记录。
+    """
+    import logging
+    import re
+    import smtplib
+
+    entries = [{"host": f"smtp{i}.example.test", "port": 465,
+                "user": f"sender{i}@qq.com", "pass": "secret"} for i in range(2)]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    monkeypatch.setenv("YIBAN_MAIL_ENABLE", "1")
+    captured = []
+
+    class FirstEntryFails:
+        """第一条 sendmail 抛；第二条正常投递。QUIT 一律正常。"""
+
+        def __init__(self, host, port, **k):
+            self.host = host
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            if self.host == "smtp0.example.test":
+                raise smtplib.SMTPResponseException(451, b"try again later")
+            captured.append(msg)
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", FirstEntryFails)
+    with caplog.at_level(logging.INFO, logger="mailer"):
+        assert mailer_transport.send_admin_alert("同一封告警", "正文", to="admin@qq.com") is True
+    assert len(captured) == 1, "第一条失败后才由第二条接手"
+    ids = re.findall(r"(?m)^Message-ID: (.*)$", captured[0])
+    assert len(ids) == 1 and re.fullmatch(r"<[0-9a-f]{32}@yiban>", ids[0]), \
+        f"跨条目重投必须带确定性幂等键：{ids}"
+    assert caplog.text.count("同封重投") == 1, "换条目重投要留结构化记录"
     # 确定性：同告警同键；换了内容/收件人即换键（不许撞车）
     mid = mailer_transport._message_id
     assert mid("a", "b", "c") == mid("a", "b", "c")

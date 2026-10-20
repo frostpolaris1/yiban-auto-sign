@@ -328,7 +328,7 @@ fi
 #
 # 为什么有本步：M01 前置门要求检出根属 root 且组/其他不可写，而服务要往检出里写
 # `.env` 与 SQLite 库。`.env` 的原子写把临时文件建在 `.env` **同目录**
-# （yiban/infra/env_io.py 的 _atomic_replace_env），目录不给服务账号写就写不进。
+# （yiban/adapters/config/env_io.py 的 _atomic_replace_env），目录不给服务账号写就写不进。
 # 两条要求在旧布局下互斥，生产因此只能手工拷贝执行件（哨兵脚本漂移、两条 cron
 # 从未装上）。修法：把运行数据收进检出内的 `data/`，属服务账号、模式 0700。
 #

@@ -34,12 +34,12 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
+from yiban.adapters.persistence import claims as claims_mod
+from yiban.adapters.persistence import db, queue_store
 from yiban.adapters.statefiles import state_io
 from yiban.app import round as round_mod
 from yiban.core import clock
 from yiban.core import status as yiban_status
-from yiban.store import claims as claims_mod
-from yiban.store import db, queue_store
 
 #: 用例里的固定手机号（本文件不碰库，仅作状态文件的键）
 PHONE = "13800000001"

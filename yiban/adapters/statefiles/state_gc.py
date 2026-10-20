@@ -29,7 +29,7 @@
 输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与当前日期。
 输出：被删除的过期按日文件与清理结果（供调用方打印/记日志）。
 调用谁：`yiban.clock`、`yiban.infra.env_io`。
-谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/cli.py` 的 `state` 子命令。
+谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/entry/cli/__init__.py` 的 `state` 子命令。
 前端调用点：容器调度器的清理结果与保留期设置经 `/api/settings`
 （`web/static/js/components/settings-quota.js` 等设置页）暴露；登记表或保留期口径变化会改变运维
 在这些页面看到的清理/容量信息。
@@ -44,6 +44,12 @@ from yiban.core import clock
 # 保留期档位（默认值；调用方可用环境变量覆盖）
 RETENTION_DAYS = 365
 SNAPSHOT_RETENTION_DAYS = 7
+
+#: `sched-slot-<kind>-<day>.json` 的 kind 段枚举（census-P2-sched-slot-kind）。
+#: 写侧（docker/scheduler.py `_slot_marker`）与清理侧（本模块 `match`）共用：
+#: 未知 kind 既不许写入，也不许被当成按日文件匹配——旧实现按 `core[-10:]` 取日期，
+#: kind 里带日期形状时会误判，且任意拼写都能被清理。
+SCHED_SLOT_KINDS = ("first", "second", "backup")
 
 # 状态文件名里的日期：一律是"去掉前后缀后"的最后 10 个字符
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -128,6 +134,14 @@ def match(name):
         if not (base.startswith(art.prefix) and base.endswith(art.suffix)):
             continue
         core = base[len(art.prefix):len(base) - len(art.suffix)]
+        if art.prefix == "sched-slot-":
+            # 三段名：sched-slot-<kind>-<date>。kind 必须来自枚举；日期取 kind 之后
+            # 的整段（不是 core[-10:]）——kind 自带日期形状时才不会误判。
+            for kind in SCHED_SLOT_KINDS:
+                rest = core[len(kind) + 1:]
+                if core.startswith(kind + "-") and _DATE_RE.fullmatch(rest):
+                    return art, rest
+            continue
         if len(core) < 10:
             continue
         date = core[-10:]
@@ -215,7 +229,7 @@ def empty_cred_state_path(state_dir):
 def sweep_empty_cred_state(state_dir):
     """删除内容为空（`{}` 或零字节）的 `cred-state.json`。
 
-    熔断状态的**归属方**是 `yiban/cred_state.py`（它的写入路径已保证"空即删文件"），
+    熔断状态的**归属方**是 `yiban/adapters/statefiles/cred_state.py`（它的写入路径已保证"空即删文件"），
     这里是兜底：手工/旧版本留下的空文件会让"无暂停"与"文件缺失"两种语义并存，
     排查时容易误判。有暂停记录则保留。返回是否删除。
     """
@@ -254,7 +268,13 @@ def _iter_expired(state_dir, log_dir, cutoffs, now=None):
         target_dir = log_dir if art.where == "log" else state_dir
         if not os.path.isdir(target_dir):
             continue
-        for name in sorted(os.listdir(target_dir)):
+        # 目录存在但不可读（属主/权限位被改、SELinux、NFS 抖动）时跳过并继续：
+        # 清理是后台维护动作，一次抖动不该让整轮零交付（ba-p10-04）。
+        try:
+            names = sorted(os.listdir(target_dir))
+        except OSError:
+            continue
+        for name in names:
             got, date = match(name)
             if got is not art or date >= cutoffs[art.bucket]:
                 continue
@@ -270,7 +290,11 @@ def _iter_expired(state_dir, log_dir, cutoffs, now=None):
     # （与 client.py 比对服务端时间戳那处同属刻意例外，见 clock 模块头注）。
     threshold = ((now or datetime.datetime.now()) - datetime.timedelta(  # noqa: DTZ005 与文件 mtime 比对的物理时刻，刻意留宿主钟（见上方注释）
         seconds=_TMP_MAX_AGE_SEC)).timestamp()
-    for name in sorted(os.listdir(state_dir)):
+    try:
+        names = sorted(os.listdir(state_dir))
+    except OSError:
+        return
+    for name in names:
         if _TMP_MARK not in name:
             continue
         path = os.path.join(state_dir, name)

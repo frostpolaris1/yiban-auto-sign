@@ -10,10 +10,10 @@
 与 `check_connectivity`（不登录的可达性探测）。
 
 **归属**
-原 `web/app.py` 的模块级窗口与系统信息辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——`.env` 路径 `ENV_FILE`、整数配置读取器
-`load_env_int`、窗口解析器 `_sign_window`、有效窗口视图 `sign_window_bounds`、钟点判定
-`_in_sign_window`——在调用时刻现取后注入。
+原 `web/app.py` 的模块级窗口与系统信息辅助，唯一真源在本模块。`web/app.py` 不再保留
+转发包装（批 3-d）：路由与测试直取本模块。本模块需要的宿主状态——`.env` 路径
+`ENV_FILE` 与读取器 `read_env`、整数配置读取器 `load_env_int`——由宿主登记进 `_hooks`，
+本模块按调用时刻解析。
 
 **复用**
 窗口解析委托 `yiban.window.parse_window`、有效窗口委托 `yiban.window.bounds`、运行时段委托
@@ -23,10 +23,9 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。`.env` 路径、读取器与窗口/钟点判定都作为显式参数接收：它们在 `web.app` 上是会被
-测试改写、也会随 `--config` 与运行方式变化的模块级名字（既有测试在 `web.app` 上打桩
-`_sign_window` / `edge_config` / `_in_sign_window` 来固定窗口与时段，窗口打桩经
-`sign_window_bounds` 现取后穿透到本模块），本模块另持一份绑定会让这些改写静默失效。
+模块）。宿主依赖经 `configure(...)` 登记，登记的是 lambda 而不是值：`--config` 改写
+`ENV_FILE`、测试打桩 `read_env` / `load_env_int` 都在调用时刻生效。未登记即
+`RuntimeError`（fail-closed），不静默回退默认值。
 """
 
 import logging
@@ -34,18 +33,57 @@ import os
 
 import requests
 
+from web import render as _render
+from yiban.adapters.config import env_io as _env_io
 from yiban.core import clock
 from yiban.core import window as yb_window
 from yiban.engine import schedule as yb_schedule
-from yiban.infra import env_io as _env_io
 from yiban.platform import API_AUTH_URL
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
 
 #: 开关类 .env 值的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
-#: （与 run.sh 的 `_is_truthy` 同一套口径）；此处只留别名供 `web.app._TRUTHY_LITERALS` 再导出。
+#: （与 run.sh 的 `_is_truthy` 同一套口径）；此处只留本模块别名。
 _TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：`--env-file` 改写 `ENV_FILE`、测试打桩 `read_env` /
+# `load_env_int` 都必须在调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(env_file=None, read_env=None, load_env_int=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if read_env is not None:
+        _hooks["read_env"] = read_env
+    if load_env_int is not None:
+        _hooks["load_env_int"] = load_env_int
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.signstatus 尚未登记宿主依赖 %r：请确认 web/app.py 的 import "
+            "末尾调用了 web.services.signstatus.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 def _env_flag(value):
@@ -58,12 +96,14 @@ def _env_flag(value):
     return _env_io.parse_env_flag(value, default=False)
 
 
-def _sign_window(env_file, read_env):
+def _sign_window():
     """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认）。
 
     与引擎同一份口径（委托 `yiban.window.parse_window`）的原因见模块头「复用」。
-    参数注入口径见模块头「通信」。
+    宿主注入口径见模块头「通信」。
     """
+    env_file = _host("env_file")
+    read_env = _host("read_env")
     start, end, _invalid = yb_window.parse_window(read_env(env_file))
     return start, end
 
@@ -81,8 +121,8 @@ def _in_sign_window(bounds, now=None):
     return bounds.lo_min <= now_min <= bounds.hi_min
 
 
-def _day_off_reason(file_env, now=None):
-    """今天此刻是否被周末门/一键暂停挡下 → 原因串；空串=照常（与引擎同一实现）。
+def _day_off_reason_from(file_env, now=None):
+    """`_day_off_reason` 的取值入口：吃**已现读**的 `.env` 键值。
 
     真值来源必须是**引擎读的同一份 `.env`**：引擎进程由 `run.sh` 把 `.env` 灌进进程
     环境，而 web 进程未必有这些键——原先直接调 `day_off(now)`（落回 `os.environ`），
@@ -90,9 +130,6 @@ def _day_off_reason(file_env, now=None):
     "待签到 · 前方排队 N 人"。这里把 `.env` 的键值叠在进程环境之上（`.env` 有键即以
     `.env` 为准）后交给**同一个** `schedule.day_off`——判定实现、播出文案与门语义一行
     未改，只把"读到的是哪份值"对齐（显示与真值同源 ≠ 改门）。
-
-    `file_env` 由调用方在调用时刻现读（`web.app.read_env(ENV_FILE)`）：`.env` 路径会被
-    测试与 `--config` 改写，本模块另持一份绑定会让改写静默失效。
     """
     # 只此一处组合口径（yiban.engine.schedule.day_off）：页面提示与引擎行为必须看同一个
     # 判据，否则就是"页面说会跑、进程其实不跑"
@@ -102,6 +139,14 @@ def _day_off_reason(file_env, now=None):
         return yb_schedule.day_off(now, env=src)
     except Exception:   # 读不到配置就按"照常"：宁可多显示一次窗口内，也不谎报今天跳过
         return ""
+
+
+def _day_off_reason(now=None):
+    """今天此刻是否被周末门/一键暂停挡下 → 原因串；空串=照常（与引擎同一实现）。
+
+    `.env` 路径与读取器按调用时刻从宿主取（`--config` 与测试赋值都会改写它们）。
+    """
+    return _day_off_reason_from(_host("read_env")(_host("env_file")), now)
 
 
 #: 门原因（`yiban.engine.schedule.day_off` 的返回值）→ 日历页文案与语气档。
@@ -128,17 +173,35 @@ def day_off_payload(reason):
             "tone": "warn" if reason == yb_schedule.DAY_OFF_PAUSED else "muted"}
 
 
-def _in_run_period(bounds, in_sign_window, day_off_reason, now=None):
+def _in_run_period(bounds, now=None):
     """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
 
     执行体接口的 `in_window` 用这个（`in_window` 的含义是"兜底现在该不该在跑"，不新增字段）。
-    参数注入口径见模块头「通信」（`_in_sign_window` / `_day_off_reason` 都可被打桩）。
+    两个判定按模块名取（`_in_sign_window` / `_day_off_reason`），故既有的打桩面继续生效。
     """
     now = now or clock.now()
     # 必须含门：兜底常驻在"周末签到关闭/一键暂停"时会直接退出，而这两天的钟点明明落在
     # 窗口内——只按钟点算，页面会在每个周末与每次暂停期间报"兜底开了却没跑起来"。
     # 含门后前端不必改判断：in_window=false 就是"现在本不该有兜底在跑"的完整答案
-    return in_sign_window(bounds, now) and not day_off_reason(now)
+    return _in_sign_window(bounds, now) and not _day_off_reason(now)
+
+
+def sign_window_bounds():
+    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
+
+    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
+    几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
+    配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪都按调用时刻取值：
+    `_sign_window` 取宿主 `.env`，`edge_config` 现读同一份 `.env`。
+    """
+    start, end = _sign_window()
+    front_sec, back_sec = _render.edge_config()
+    return yb_window.bounds({
+        "sign_start": start,
+        "sign_end": end,
+        "edge_front_sec": front_sec,
+        "edge_back_sec": back_sec,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +227,7 @@ def window_fallback_text(bounds):
     return (f"配置异常：签到窗口不可用，已按 {_hm(bounds.lo_min)}~{_hm(bounds.hi_min)} 运行")
 
 
-def sign_status(env_file, load_env_int, sign_window_bounds, now=None, file_env=None):
+def sign_status(now=None):
     """基于服务器时间计算签到状态。
 
     返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
@@ -176,18 +239,19 @@ def sign_status(env_file, load_env_int, sign_window_bounds, now=None, file_env=N
     窗口本身不可用时（`fell_back`，防御分支）改出"配置异常、已按 X~Y 运行"整句：
     此时管理员设的窗口根本没被采用，继续报三段状态等于谎报。
 
-    `file_env` 是**现读的 `.env` 键值**（与 `_day_off_reason` 同一口径）：周末门的
-    判定走引擎同一份解析，缺省 None 时退回进程环境（生产调用方必须现读传入，否则
-    `.env` 里的周末开关在面板上不生效）。
+    `.env` 键值在本函数内现读一次（与 `_day_off_reason` 同一口径）：周末门的判定走
+    引擎同一份解析。`.env` 路径与读取器从宿主取，故 `--config` 与测试赋值仍生效。
 
-    参数注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `sign_window_bounds`）。
+    宿主注入口径见模块头「通信」。
     """
     now = now or clock.now()
+    env_file = _host("env_file")
+    file_env = _host("read_env")(env_file)
     # 周末门判定与引擎**同源**（`_day_off_reason` = `schedule.day_off`，值域含
     # true/on/yes）：原先这里各自用整数解析，`=true` 时引擎照签而面板标休——
     # 两套值域的分叉点。文案与分支语义不变（只认周日/周六两档原因，暂停档仍由
     # 日历与运行期门负责），改的只是"读到的是哪套判据"。
-    day_reason = _day_off_reason(file_env, now)
+    day_reason = _day_off_reason_from(file_env, now)
     if day_reason == yb_schedule.DAY_OFF_SUNDAY:
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
         return "今日无需打卡（周日）", "#a1a1aa"

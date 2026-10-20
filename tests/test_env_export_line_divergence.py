@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 import unittest
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASH = shutil.which("bash")

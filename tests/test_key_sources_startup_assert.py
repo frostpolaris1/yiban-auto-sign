@@ -37,8 +37,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from yiban.adapters.config import account_crypto
 from yiban.app import runner
-from yiban.infra import account_crypto
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64

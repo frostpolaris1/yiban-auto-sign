@@ -8,6 +8,9 @@
 说明：
 - 只统计 deleted=0 且 owner 非空、非 admin 的账号。
 - 输出重复 owner 及其账号 id/手机号/状态/名称，方便管理员决定保留哪个。
+- **手机号与 owner 邮箱脱敏**（工单 ba-p11-10）：本输出是"邮箱 + 名称 + 手机号"的
+  PII 名单，运维会把它粘进工单或重定向进日志。脱敏口径复用全项目唯一实现
+  `yiban.core.masking`（`mask_phone` / `mask_email`），不在这里另写一套。
 - **只读**：走 `db.open_readonly`（不建库/不建表/不迁移/不切 WAL）——此前经
   `db.init_db` 会在空目录当场建库、并执行 v3 迁移（用审计 HMAC 密钥重写哈希链），
   一次"查看哪里有重复"会改动取证对象。
@@ -22,7 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
+from yiban.core.masking import mask_email, mask_phone
 
 
 def main():
@@ -63,7 +67,7 @@ def main():
         print(f"发现 {len(rows)} 个重复 owner：")
         for r in rows:
             owner = r["owner"]
-            print(f"\nowner: {owner}（{r['cnt']} 个未删除账号）")
+            print(f"\nowner: {mask_email(owner)}（{r['cnt']} 个未删除账号）")
             accs = conn.execute(
                 "SELECT id, name, phone, status, deleted_at FROM accounts "
                 "WHERE owner=? AND deleted=0 ORDER BY id",
@@ -71,7 +75,7 @@ def main():
             ).fetchall()
             for a in accs:
                 print(
-                    f"  id={a['id']} 手机号={a['phone']} 状态={a['status']} 名称={a['name']}"
+                    f"  id={a['id']} 手机号={mask_phone(a['phone'])} 状态={a['status']} 名称={a['name']}"
                 )
 
         print("\n请人工决定保留哪个账号，把多余的账号软删除或彻底删除后再重启系统。")

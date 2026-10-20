@@ -11,7 +11,7 @@
         面外 `frontend/**` 的残留逐条登记并与代码对账，两侧都不许静默）。
 对应实现：`scripts/signin.py`、`docker/scheduler.py`（镜像里被复制为
     `scripts/container_scheduler.py`）及各入口的 `sys.path` 引导块；
-    坐标门的实现侧＝`yiban/cli.py` 转发壳与 `web/app.py` 转发墙（删它们归 `145-E`）。
+    坐标门的实现侧＝`yiban/entry/cli/` 与 `web/app.py` 转发墙（旧入口壳已于 `145-E` 退役）。
 关键断言：导入失败以非零码退出、进入主循环则超时——两种情况可区分；空文件/截断文件
     同样能 import 成功，故额外要求模块真的装配出 `main_loop`；每道坐标门都带扫描面
     下限（扫空不得当绿）、豁免清单防腐与突变自证（塞回一处 ⇒ 红；注释提及 ⇒ 不误红）。
@@ -136,18 +136,19 @@ class DeployEntryImportTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 拆墙/壳退役 T8：运行期载体不得以旧坐标 `yiban.cli` 起进程
 # ---------------------------------------------------------------------------
-# 来历（工单 `1229`，施工方案 `docs/refactor/145` §1.7 与 §4.1 风险 2）：
-# `yiban/cli.py` 是批 A1 留下的转发壳，待退役。`yiban/workers/workers.py` 真起
+# 来历（工单 `1229`，施工方案 §1.7 与 §4.1 风险 2）：
+# 旧入口壳（批 A1 留下）已于 `145-E` 退役。`yiban/workers/workers.py` 曾起
 # `python -m yiban.cli sign` 作为多执行体的子进程入口。壳一删，生产执行体全起不来——
 # 这是整批唯一的运行期硬依赖。本门钉：运行期载体里旧坐标的**启动点**为零。
 #
 # 面（运行期载体）＝部署时真会被执行的文件：
 #   `yiban/**/*.py`、`scripts/**/*.py`、`docker/**/*.py`、`scripts/**/*.sh`、
 #   `docker/**/*.sh`，以及仓库根的 `run.sh`。
-# 不在面内：`tests/`、`docs/`、`README.md`、注释、docstring，以及用户可见的帮助文本
-#   （`yiban/entry/cli/` 的 `USAGE` / `prog` 写旧坐标是给当前用户的用法指引，不是启动点）。
+# 不在面内：`tests/`、`docs/`、`README.md`、注释、docstring。
 #   文档与注释里的历史叙述不算（任务口径）。
-RUNTIME_PY_DIRS = ("yiban", "scripts", "docker")
+#   （`145-E` 前这里另有一条豁免：`yiban/entry/cli/` 的 `USAGE` / `prog` 写旧坐标属
+#    用户可见帮助文本、不是启动点。壳已删、`prog` 与 `USAGE` 已改新坐标，该豁免随之删除。）
+RUNTIME_PY_DIRS = ("yiban", "scripts", "docker", "web")
 RUNTIME_SHELL_NAMES = ("run.sh",)
 OLD_CLI_MODULE = "yiban.cli"
 
@@ -159,8 +160,37 @@ _LAUNCH_FUNCS = frozenset((
 ))
 
 
+#: 部署时真会被执行、但不以 `.py`/`.sh` 命名的载体（2026-10-19 独立审查补齐）：
+#: 它们含命令行，必须纳入面——否则"看着绿"只因没扫到。
+#: `deploy/prod/` 整目录纳入（install.sh 与备份 wrapper 以 root 执行）；cron.d 的每个
+#: 文件都是一行命令行（无扩展名）；supervisord/Dockerfile/compose/systemd 的
+#: `command=`/`ExecStart=` 同理。
+RUNTIME_EXTRA_PATHS = (
+    "run_probe.sh",
+    "docker/supervisord.conf",
+    "docker/Dockerfile",
+    "docker-compose.yml",
+    "web/deploy/yiban-web.service",
+    # nginx 两处口径对齐（审查残留二）：`web/deploy/nginx.conf.example` 已随目录入面，
+    # 同类 `docker/nginx.conf` 也必须入面，否则"为什么一个扫一个不扫"是静默的。
+    # 二者都不含 python 启动点，入面是零成本的一致性。
+    "docker/nginx.conf",
+)
+RUNTIME_EXTRA_DIRS = (
+    "deploy",
+    # `docker/cron.d` 曾列在此处——**该目录不存在**（真实 cron 在 `deploy/prod/cron.d/`，
+    # 已被 `deploy` 整目录覆盖）。审查残留一：死条目必须删，不是留着"以防万一"。
+    "web/deploy",
+)
+
+
 def _runtime_files(root):
-    """运行期载体文件清单（.py 与 .sh）。"""
+    """运行期载体文件清单。
+
+    面＝① `RUNTIME_PY_DIRS` 下的 `.py`/`.sh`（含 `web/`——web 服务运行体）；
+    ② 根部的 `RUNTIME_EXTRA_PATHS`；③ `RUNTIME_EXTRA_DIRS` 下的全部文件。
+    非 `.py` 的一律按**文本**扫（命令行载体），不按 AST。
+    """
     out = []
     for d in RUNTIME_PY_DIRS:
         for dirpath, dirs, files in os.walk(os.path.join(root, d)):
@@ -168,10 +198,15 @@ def _runtime_files(root):
             for name in sorted(files):
                 if name.endswith((".py", ".sh")):
                     out.append(os.path.join(dirpath, name))
-    for name in RUNTIME_SHELL_NAMES:
+    for name in RUNTIME_SHELL_NAMES + RUNTIME_EXTRA_PATHS:
         path = os.path.join(root, name)
         if os.path.exists(path):
             out.append(path)
+    for d in RUNTIME_EXTRA_DIRS:
+        for dirpath, dirs, files in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if x != "__pycache__"]
+            for name in sorted(files):
+                out.append(os.path.join(dirpath, name))
     return out
 
 
@@ -201,35 +236,97 @@ def _command_literals(node):
     return vals
 
 
+#: 别名导入形态：`from yiban import …, cli, …`（**无点号**，点号判据看不见它）。
+#: 同 T3 的 `_T3_FROM_YIBAN` 形状——T3 早就有，T8 一直缺，属"同一判据两处实现不对称"
+#: （AGENTS §27）。145-D 实测踩到：`scripts/deploy_gate.sh:381` 的
+#: `python -c "from yiban import cli; cli.main(...)"` 不被任何门看见，删壳后必断。
+#: **按 import 列表逐项判名**，不用裸词界：裸 `\bcli\b` 会误伤 `--cli` 这类旗标
+#: （同 T3 的 `--status` 假红）。
+_FROM_YIBAN = re.compile(r"\bfrom\s+yiban\s+import\s+([^\n#;]*)")
+
+
+def _alias_short_names(text):
+    """文本里 `from yiban import …` 命中的短名（逐项取首个标识符，不剥引号）。"""
+    names = []
+    for m in _FROM_YIBAN.finditer(text):
+        for item in m.group(1).split(","):
+            token = re.search(r"[A-Za-z_]\w*", item)
+            if token:
+                names.append(token.group(0))
+    return names
+
+
 def old_coordinate_hits(path):
     """返回该文件里引用旧坐标的位置：`(行号, 说明)` 列表。
 
+    **非 `.py` 一律按文本扫**（.sh、cron.d 行、supervisord/Dockerfile/compose/systemd
+    的 command 行）：非注释行出现旧模块名**或别名导入**即命中。
+
     Python：① 进程拉起调用的命令行字面量含旧模块名；② 非 docstring 的字符串常量
-    恰为旧模块名（覆盖 importlib / 变量间接形态）。
-    Shell：非注释行出现旧模块名。
+    恰为旧模块名（覆盖 importlib / 变量间接形态）；③ 非 docstring 字符串常量里含
+    **别名导入** `from yiban import …, cli, …`（`python -c` 形态）；
+    ④ **真 import 语句**：`import yiban.cli[.x]`、`from yiban import cli`、
+    `from yiban.cli import …`、属性链 `yiban.cli`。
+    ④ 是 2026-10-19 独立审查抓出的阻塞洞——关掉它，"不对称"才算真正修完：
+    T8 的 tests 面门与 T3 门本来就认 import 语句。
+
+    已知盲点（登记，不假装覆盖）：变量间接形态不命中——
+    字符串拼接（`"yiban." + "cli"`）、`importlib.import_module("yiban."+"cli")`、
+    `getattr(yiban, "cli")`，以及 `from yiban import *`。
+    理由＝字面量扫描器的固有限制；`yiban/__init__.py` 不导出 `cli`，星号导入取不到该名。
     """
     with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
     hits = []
-    if path.endswith(".sh"):
+    if not path.endswith(".py"):
         pat = re.compile(r"(?<![\w.-])" + re.escape(OLD_CLI_MODULE) + r"(?![\w.-])")
         for i, line in enumerate(text.splitlines(), 1):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
             if pat.search(s):
-                hits.append((i, "shell 命令行含 " + OLD_CLI_MODULE))
+                hits.append((i, "命令行含 " + OLD_CLI_MODULE))
+            elif "cli" in _alias_short_names(s):
+                hits.append((i, "别名导入 from yiban import …, cli, …"))
         return hits
     tree = ast.parse(text)
     docs = _docstring_const_ids(tree)
+    # 属性链的根：`yiban` 与 `import yiban as X` 绑定的每个别名
+    # （审查 delta 抓出的轻阻塞：原判据写死 id=="yiban"，`import yiban as yb; yb.cli`
+    #  既未覆盖也未登记。T3／T5+T7／T6 三个门都认别名根，T8 是唯一不认的。）
+    roots = {"yiban"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "yiban" and a.asname:
+                    roots.add(a.asname)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fname = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
             if fname in _LAUNCH_FUNCS and OLD_CLI_MODULE in _command_literals(node):
                 hits.append((node.lineno, "启动命令含 " + OLD_CLI_MODULE))
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == OLD_CLI_MODULE or a.name.startswith(OLD_CLI_MODULE + "."):
+                    hits.append((node.lineno, "import 语句 " + a.name))
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == OLD_CLI_MODULE or mod.startswith(OLD_CLI_MODULE + "."):
+                hits.append((node.lineno, "from " + mod + " import …"))
+            elif mod == "yiban":
+                for a in node.names:
+                    if a.name == "cli":
+                        hits.append((node.lineno, "from yiban import cli"))
+        elif (isinstance(node, ast.Attribute) and node.attr == "cli"
+              and isinstance(node.value, ast.Name) and node.value.id in roots):
+            # 属性链 yiban.cli[.x] ／ <别名>.cli[.x]
+            hits.append((node.lineno, "属性链 …cli"))
         if isinstance(node, ast.Constant) and node.value == OLD_CLI_MODULE \
                 and id(node) not in docs:
             hits.append((node.lineno, "非 docstring 字符串常量 " + OLD_CLI_MODULE))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and id(node) not in docs and "cli" in _alias_short_names(node.value):
+            hits.append((node.lineno, "字符串里的别名导入 from yiban import …, cli, …"))
     return sorted(set(hits))
 
 
@@ -250,8 +347,23 @@ class OldCliCoordinateGateTest(unittest.TestCase):
             bad, [],
             "运行期载体仍以旧坐标起进程（转发壳退役后生产执行体起不来）：\n" + "\n".join(bad))
 
+    def test_face_entries_exist(self):
+        """扫描面的每条登记都必须真实存在（§29：门看的东西 ≠ 实际改的东西，且不重合是静默的）。
+
+        审查 delta 抓到 `docker/cron.d` 是死条目：`os.path.exists` 与 `os.walk` 都会
+        静默跳过不存在的路径 ⇒ 某天真正想扫的目录被删或改名，门照绿。
+        """
+        missing = []
+        for rel in RUNTIME_EXTRA_PATHS + RUNTIME_SHELL_NAMES:
+            if not os.path.exists(os.path.join(BASE, rel)):
+                missing.append(rel)
+        for rel in RUNTIME_EXTRA_DIRS + RUNTIME_PY_DIRS:
+            if not os.path.isdir(os.path.join(BASE, rel)):
+                missing.append(rel + "/")
+        self.assertEqual(missing, [],
+                         f"扫描面登记了不存在的路径（死条目会静默跳过）：{missing}")
+
     def test_scanner_has_teeth(self):
-        """突变验证：塞回一处 ⇒ 红；注释/docstring 提及 ⇒ 不误红。"""
         with tempfile.TemporaryDirectory(prefix="oldcli-gate-") as tmp:
             py = os.path.join(tmp, "fake_launcher.py")
             with open(py, "w", encoding="utf-8") as f:
@@ -275,6 +387,54 @@ class OldCliCoordinateGateTest(unittest.TestCase):
             self.assertEqual(len(hits), 1, f"shell 面应只命中非注释那一行：{hits}")
             self.assertEqual(hits[0][0], 2, f"命中行应为第 2 行：{hits}")
 
+        # 145-D 的缺口：**别名导入**（无点号）必须也能被看见。
+        with tempfile.TemporaryDirectory(prefix="oldcli-alias-") as tmp:
+            sh = os.path.join(tmp, "alias.sh")
+            with open(sh, "w", encoding="utf-8") as f:
+                f.write('# 注释里的 from yiban import cli 不算\n'
+                        'run_py "from yiban import cli; cli.main([\'egress\'])"\n'
+                        'run_py "from yiban.entry import cli; cli.main([\'egress\'])"\n')
+            hits = old_coordinate_hits(sh)
+            self.assertEqual([ln for ln, _ in hits], [2],
+                             f"只应命中旧坐标别名导入那一行（新坐标不算）：{hits}")
+
+            py = os.path.join(tmp, "alias.py")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write('"""docstring 里的 from yiban import cli 不算启动点。"""\n'
+                        'CMD = "import sys; from yiban import cli; sys.exit(0)"\n'
+                        'OK = "import sys; from yiban.entry import cli; sys.exit(0)"\n'
+                        '# 注释里的 from yiban import cli 不算\n')
+            hits = old_coordinate_hits(py)
+            self.assertEqual([ln for ln, _ in hits], [2],
+                             f"只应命中字符串常量里的旧坐标别名导入：{hits}")
+
+            flag = os.path.join(tmp, "flag.sh")
+            with open(flag, "w", encoding="utf-8") as f:
+                f.write('egress --cli status\n'
+                        'from yiban import clogger\n')
+            self.assertEqual(old_coordinate_hits(flag), [],
+                             "`--cli` 旗标与同前缀他模块（clogger）不得误红")
+
+        # 独立审查抓出的阻塞洞：运行期 `.py` 里的**真 import 语句**也必须被抓到。
+        with tempfile.TemporaryDirectory(prefix="oldcli-import-") as tmp:
+            for name, body, want in (
+                ("imp.py", "import yiban.cli\n", 1),
+                ("fromimp.py", "from yiban import cli\n", 1),
+                ("subimp.py", "from yiban.cli import main\n", 1),
+                ("attr.py", "import yiban\nyiban.cli.main([])\n", 1),
+                ("aliasroot.py", "import yiban as yb\nyb.cli.main([])\n", 1),
+                ("new.py", "from yiban.entry import cli\ncli.main([])\n", 0),
+                ("other.py", "from yiban import client\n", 0),
+            ):
+                p = os.path.join(tmp, name)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(body)
+                hits = old_coordinate_hits(p)
+                if want:
+                    self.assertTrue(hits, f"{name}：真 import 旧坐标却未命中（门有洞）")
+                else:
+                    self.assertEqual(hits, [], f"{name}：新坐标/同前缀被误红：{hits}")
+
             clean = os.path.join(tmp, "clean.py")
             with open(clean, "w", encoding="utf-8") as f:
                 f.write('"""-m yiban.cli 与 yiban.cli 都只是历史叙述。"""\n'
@@ -286,22 +446,23 @@ class OldCliCoordinateGateTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 拆墙/壳退役 T8：测试面不得再以旧坐标 `yiban.cli` 作 import 路径或打桩目标
 # ---------------------------------------------------------------------------
-# 来历（壳退役批 `145` 的 `T8` 片）：`yiban/cli.py` 是 `__getattr__` 型
+# 来历（壳退役批 `145` 的 `T8` 片）：旧入口壳曾是 `__getattr__` 型
 # 转发壳。经它读属性仍是同一对象，故 `from yiban import cli` 能跑、不报错；但
 # `mock.patch("yiban.cli.X")` 只改壳的属性，**不改实现的模块全局**——打桩成功、
 # 不控被测路径。这是本片最危险的形状：**静默失效**（不报错，但测试不再控制被测路径）。
 # 故测试面必须用新坐标 `yiban.entry.cli`。本门钉：`tests/**` 里旧坐标的 import
 # 路径与打桩目标为零。
 #
-# 豁免（唯一两处，均为**验证壳/禁壳的守卫本身**）：
-#   `tests/test_entry_cli_relocation.py`——验证壳转发同一对象（`145-F2` 删）。
+# 豁免（唯一一处，为**禁壳门自身**）：
 #   `tests/test_deploy_entry_imports.py`——本文件，`OLD_CLI_MODULE` 是禁字面量，
 #     夹具字符串用于自证本门有牙。
-# 豁免按**文件**给：这两个文件的职责就是引用旧坐标。清单是白名单，不是跳过——
+#   原先另登记 `tests/test_entry_cli_relocation.py`（验证壳转发同一对象），
+#   `145-E` 删了那件守卫，本表随之收窄。
+# 豁免按**文件**给：本文件的职责就是引用旧坐标。清单是白名单，不是跳过——
 # 未登记的文件命中即红并点名 `文件:行`。
 TESTS_FACE_EXEMPT = frozenset((
-    "tests/test_entry_cli_relocation.py",
     "tests/test_deploy_entry_imports.py",
+    "tests/test_zero_old_coordinates.py",
 ))
 
 
@@ -693,7 +854,7 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 拆墙/壳退役 T2：`yiban.clock` 的读者必须迁到 `yiban.core.clock`
 # ---------------------------------------------------------------------------
-# 来历（145-B `T2` 片）：`yiban/clock.py` 是 `sys.modules` 替换型转发壳，实现已搬
+# 来历（145-B `T2` 片）：旧 clock 壳曾是 `sys.modules` 替换型转发壳，实现已搬
 # `yiban/core/clock.py`（批 B）。`yiban/**` 的 28 个生产件**当时就迁完了**，剩下
 # 自有面 **77 个文件**仍走旧坐标：`tests/**` 58 ＋ `web/**` 9 ＋ `scripts/**` 8
 # （5 个 .py ＋ 3 个 .sh）＋ `docker/**` 1 ＋ `run.sh` 1。
@@ -727,12 +888,11 @@ class PwhashWallCoordinateGateTest(unittest.TestCase):
 #   ③ **面外读者逐条登记**（面＝`frontend/**`，2026-10-18 起归用户独立完成）。
 #
 # 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
-#   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
 #   `tests/test_import_linter_gate.py`——`yiban.clock` 是它的**禁字面量**：该用例断言
 #     import-linter 契约的 `forbidden_modules` **不许**列出迁移期坐标（列了契约会空转
 #     退 2）。把这条字面量改成新坐标会**反转语义**（新坐标是永久坐标，契约列它是合法的）。
 #   `tests/test_provenance_guard.py`——`yiban.clock` 是它的**禁前缀**（`145-T3` 审查 F2
-#     把它补回前缀表，与 `yiban.core.clock` 并列）：壳 `yiban/clock.py` 仍在，只留新坐标
+#     把它补回前缀表，与 `yiban.core.clock` 并列）：当时壳仍在，只留新坐标
 #     会让该常驻守卫漏拦旧路径。删壳后是否收窄归 `145-E`。
 #   `tests/test_deploy_entry_imports.py`——本文件，`_T2_OLD_MODULE` 是禁字面量，
 #     夹具字符串用于自证本门有牙。
@@ -745,10 +905,10 @@ _T2_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist
 #: 自有面里不归本批改的子树（`web/static` 是前端产物，2026-10-18 起归用户）。
 _T2_SKIP_REL_PREFIX = ("web/static/",)
 _T2_FACE_EXEMPT = frozenset((
-    "tests/test_batch_b_relocation.py",
     "tests/test_import_linter_gate.py",
     "tests/test_provenance_guard.py",
     "tests/test_deploy_entry_imports.py",
+    "tests/test_zero_old_coordinates.py",
 ))
 #: 面外（`frontend/**`）仍读旧坐标的**待销账登记**。键＝(相对路径, 名字)，值＝(次数, 说明)。
 #: **2026-10-18 已清空**：唯一一条登记（`frontend/e2e/server.py` 以旧坐标导入 clock）经用户
@@ -1014,7 +1174,7 @@ class ClockCoordinateGateTest(unittest.TestCase):
                 f.write('"""历史叙述：yiban.clock 迁到 yiban.core.clock。"""\n'
                         'from yiban.core import clock\n'
                         'from yiban.core.clock import now\n'
-                        'import yiban.store.clock_meta as cm\n'
+                        'import yiban.adapters.persistence.clock_meta as cm\n'
                         'from yiban import client\n'
                         'A = "yiban.core.clock.now"\n'
                         'B = "yiban.clock_meta"\n'
@@ -1076,12 +1236,11 @@ class ClockCoordinateGateTest(unittest.TestCase):
 #      grep 告警），属语义变更 ⇒ 本片不得改，本门对它豁免。
 #
 # 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
-#   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
 #   `tests/test_import_linter_gate.py`——三坐标是它的**禁字面量**：该用例断言
 #     import-linter 契约的 `forbidden_modules` **不许**列出迁移期坐标。改成新坐标会
 #     **反转语义**（新坐标是永久坐标，契约列它是合法的）。
 #   `tests/test_provenance_guard.py`——`yiban.masking` 是它的**禁前缀**：该用例断言
-#     协议层不得 import 业务/安全层。**旧路径与新征程必须并列**——壳 `yiban/masking.py`
+#     协议层不得 import 业务/安全层。**旧路径与新征程必须并列**——当时壳
 #     仍是合法 import 路径，只留新坐标会让这道常驻守卫漏掉旧路径（审查 F2）。
 #     删壳后是否收窄，归 `145-E`。
 #   `tests/test_deploy_entry_imports.py`——本文件，`_T3_OLD_MODULES` 是禁字面量，
@@ -1100,10 +1259,10 @@ _T3_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist
 #: 自有面里不归本批改的子树（`web/static` 是前端产物）。
 _T3_SKIP_REL_PREFIX = ("web/static/",)
 _T3_FACE_EXEMPT = frozenset((
-    "tests/test_batch_b_relocation.py",
     "tests/test_import_linter_gate.py",
     "tests/test_provenance_guard.py",
     "tests/test_deploy_entry_imports.py",
+    "tests/test_zero_old_coordinates.py",
 ))
 _T3_SHORT = tuple(m.split(".")[-1] for m in _T3_OLD_MODULES)
 
@@ -1366,7 +1525,7 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
                         '# 注释里的 yiban.status 不算\n'
                         'import yiban.status_ledger\n'                    # ⑨ 同前缀他模块 ⇒ 不命中
                         'FLAG = "from yiban import cli; cli.main([\'egress\',\'--status\'])"\n'  # ⑩ 别的坐标＋CLI 旗标 ⇒ 不命中
-                        'MULTI = "from yiban import store, window"\n'      # ⑪ 混名列表含旧短名 ⇒ 命中
+                        'MULTI = "from yiban import egress, window"\n'     # ⑪ 混名列表含旧短名 ⇒ 命中
                         'import yiban as Y\n'
                         'Y.masking.sanitize_text("x")\n'                  # ⑫ 包别名属性访问 ⇒ 命中
                         'from yiban import *\n')                          # ⑬ 星号导入 ⇒ 命中
@@ -1402,7 +1561,7 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
                         'import logging\n'
                         'from yiban.core import status, window, masking\n'
                         'from yiban.core.status import STATUS_SUCCESS\n'
-                        'import yiban.store.queue_store as qs\n'
+                        'import yiban.adapters.persistence.queue_store as qs\n'
                         'LOGGER = logging.getLogger("yiban.window")\n'
                         'A = "yiban.core.status.STATUS_SUCCESS"\n'
                         'B = "yiban.status_ledger"\n'
@@ -1443,8 +1602,8 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
 #
 # 口径（2026-10-18 在 `3f658c4d` 上现量，AST 逐项判名，不用点号字面 grep）：
 # 自有面运行期读者 **48 文件**（py 47 ＋ `run.sh` 1）：46 个待迁读者 ＋ 2 个按设计必须
-# 写出坐标字面量的登记/验证文件（`tests/test_batch_b_relocation.py`、
-# `tests/test_notifier_relocation.py`，两者在 `_T4_FACE_EXEMPT`）。**面外读者 0 个**：
+# 写出坐标字面量的登记/验证文件（`145-E` 已把那两件守卫删净，`_T4_FACE_EXEMPT`
+# 现只剩本门自身）。**面外读者 0 个**：
 # `frontend/e2e/server.py` 那 1 个已由 2026-10-18 本批就地处置（改直连新坐标），
 # `_T4_OUT_OF_FACE_REGISTRY` 同批清空。
 # **点号字面只命中 9 个读者，漏掉 39 个（81%）**——那 39 个只能经
@@ -1478,14 +1637,11 @@ class StatusWindowMaskingCoordinateGateTest(unittest.TestCase):
 #      `logging.getLogger("yiban.engine.round")` 是**日志通道名**，与模块坐标同名纯属
 #      巧合。本片**刻意沿用旧串**：日志通道名是运维取证面（出现在日志行里，被 grep、
 #      被归属判定用），改名＝改变可观察行为，属语义变更。本批契约是"只许改坐标，不许
-#      改任何语义"（AGENTS §十三 同口径：T3 对 `yiban/window.py` 的 `yiban.window`
+#      改任何语义"（AGENTS §十三 同口径：T3 对旧 window 路径的 `yiban.window`
 #      原样保留）。该名的去留归 `145-F` 的观测面批次决定，不属坐标迁移。
 #      门只豁免"作为日志通道名"的那一个字面量；同串作为打桩目标仍须命中。
 #
 # 豁免（按**文件**给，不是跳过；未登记的文件命中即红并点名 `文件:行`）：
-#   `tests/test_batch_b_relocation.py`——它的职责就是验证壳转发同一对象（`145-F2` 删）。
-#   `tests/test_notifier_relocation.py`——`test_alert_orchestration_has_one_implementation`
-#     经 `import yiban.engine.alerts as old` 验证壳与实现同一对象（壳仍在时是正当读者）。
 #   `tests/test_deploy_entry_imports.py`——本文件，`_T4_OLD_TO_NEW` 是禁字面量表，
 #     夹具字符串用于自证本门有牙。
 # 豁免不得变成万能挡箭牌：`test_exempt_files_still_exist` 另钉"每个豁免文件**必须仍命中
@@ -1513,9 +1669,8 @@ _T4_SKIP_DIRS = frozenset(("node_modules", "__pycache__", ".venv", "venv", "dist
 #: 自有面里不归本批改的子树（`web/static` 是前端产物）。
 _T4_SKIP_REL_PREFIX = ("web/static/",)
 _T4_FACE_EXEMPT = frozenset((
-    "tests/test_batch_b_relocation.py",
-    "tests/test_notifier_relocation.py",
     "tests/test_deploy_entry_imports.py",
+    "tests/test_zero_old_coordinates.py",
 ))
 
 #: 面外目录（`frontend/**`，2026-10-18 起归用户独立完成，本片不得改）。
@@ -1960,7 +2115,7 @@ class EngineCoordinateGateTest(unittest.TestCase):
                         'from yiban.adapters.statefiles import state_io\n'
                         'from yiban.workers import workers\n'
                         'from yiban.engine import schedule, executor_v3\n'
-                        'import yiban.store.queue_store as qs\n'
+                        'import yiban.adapters.persistence.queue_store as qs\n'
                         'A = "yiban.app.runner.main"\n'
                         'B = "from yiban.app import runner"\n'
                         'C = "yiban.engine.runner_extra"\n')

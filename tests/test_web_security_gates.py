@@ -3,7 +3,7 @@
 
 标签：E · Web：认证/权限/API
 覆盖：批量/单条重置密码的二次鉴权、`DailyFlockFileHandler` 的目录故障不向调用方传播、`ensure_secret_key` 对空 `.env` 的判定、版本号单源；公告「草稿 / 发布 / 下线」的权限与原子性；备案与隐私页的反射脚本转义、notify/mail 配置的告警口径；设置档位的两向对拍与急停例外
-对应实现：`web/app.py` 的公告路由（PUT 草稿 / publish / 空草稿下线）、`/api/settings` 的档位表（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）、`DailyFlockFileHandler`、`yiban.__version__`
+对应实现：`web/routes/settings_api.py` 的公告路由（PUT 草稿 / publish / 空草稿下线）、`/api/settings` 的档位表（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`，键名单源 web/services/env_io.py）、`DailyFlockFileHandler`、`yiban.__version__`
 关键断言：档位常量与规格表必须互相等齐且**两个方向都对拍**（漏档等于对全体管理员免口令开放）；A 档连「刚复核过」的短时豁免都不吃；急停 0→1 任意管理员可做（当次口令 + 高危额度），1→0 仅主管理员，且先鉴权后占额度（错口令不得刷光合法管理员的预算）；发布=一次原子写（正式=草稿、草稿清空），无草稿发布是 400 而非静默成功；设置变更只留审计、不再外发告警
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；告警与邮件出口打桩。各基类均把 `YIBAN_PW_GATE` 钉成 `full`（默认档 `risk` 下公告发布与 A/B 档写入不再要求当次口令，本文件以「缺口令 / 错口令」为理由的那批 403 断言就都不成立；权限类 403 与业务类 400 与档位无关，哪个档都成立）
 
@@ -319,6 +319,12 @@ class Batch16FixesTest(unittest.TestCase):
 
 import unittest.mock  # noqa: E402
 
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import limits as _limits  # noqa: E402
+from web.services import logs as _logs_svc  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+from web.services import startup_cache as _startup_cache  # noqa: E402
+
 REG_ADMIN = "reg-admin@test.local"
 
 
@@ -400,11 +406,12 @@ class _AnnBase(unittest.TestCase):
             )
         self.webapp.ENV_FILE = self.env_file
         # 公告缓存是模块级全局：不清零会把上一例的已发布文本带进本例
-        self.webapp._announcement_cache[0] = None
+        # 批 3-c S2 起真源在 web/services/startup_cache.py，故打桩点落在新家
+        _startup_cache._announcement_cache[0] = None
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         self.alerts = []
         patcher = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
             self.alerts.append((t, render_body(c), urgent, force)))
         patcher.start()
@@ -420,6 +427,24 @@ class _AnnBase(unittest.TestCase):
         self.addCleanup(wp.stop)
 
     # ---- 会话与探针 ----
+    def test_web_app_no_longer_owns_the_two_startup_caches(self):
+        """批 3-c S2：两个进程内缓存的真源只有一个，`web.app` 上不得再留同名属性。
+
+        本文件与本树其它用例都把缓存接缝写在 `web/services/startup_cache` 上。
+        若 `web.app` 仍留着同名列表（旧读者又改回 `m.*`），打桩就会落到**一个
+        路由不再读的对象**上——测试照样绿，缓存语义已经静默失效。本判据钉住
+        "旧名不许回来"，与 `tests/test_wall_direct_reads.py` 的去壳名判据成对。
+        """
+        for name in ("_changelog_cache", "_announcement_cache"):
+            with self.subTest(name=name):
+                self.assertFalse(
+                    hasattr(self.webapp, name),
+                    f"批 3-c S2 已去壳 {name}：web/app.py 不得再定义或转发它"
+                    "（真源在 web/services/startup_cache.py）")
+                self.assertTrue(
+                    hasattr(_startup_cache, name),
+                    f"{name} 必须在新家 web/services/startup_cache.py 上可达")
+
     def _login(self, username, password):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": username, "password": password})
@@ -481,13 +506,13 @@ class DraftWriteTest(_AnnBase):
         m = self._master()
         self._put_draft(m, "旧公告")
         self.assertEqual(self._publish(m).status_code, 200)
-        published_cache_before = self.webapp._announcement_cache[0]
+        published_cache_before = _startup_cache._announcement_cache[0]
         sub = self._reg_admin()
         self.assertEqual(self._put_draft(sub, "新公告").status_code, 200)
         # 已发布键、公告缓存、匿名可见文本三者都必须仍是旧公告
         self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "旧公告")
-        self.assertEqual(self.webapp._announcement_cache[0], published_cache_before)
-        self.assertEqual(self.webapp._announcement_cache[0], "旧公告")
+        self.assertEqual(_startup_cache._announcement_cache[0], published_cache_before)
+        self.assertEqual(_startup_cache._announcement_cache[0], "旧公告")
         self.assertEqual(self._anon().get("/api/announcement").get_json()["text"], "旧公告")
 
     def test_put_validation_still_rejects_too_long_and_breaks(self):
@@ -579,7 +604,7 @@ class GetShapeTest(_AnnBase):
         for bad in ("", "no-pipe", "a|b|c", "x@y.local|2026-13-45 99:99:99",
                     "x@y.local|昨天", "\x00|x"):
             with self.subTest(bad=bad):
-                self.webapp.write_env_batch(
+                _env_io_svc.write_env_batch(
                     self.env_file, {"YIBAN_ANNOUNCEMENT_DRAFT_META": bad})
                 r = c.get("/api/announcement", headers=self._hdr(c))
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -648,7 +673,7 @@ class PublishEffectTest(_AnnBase):
         self.assertNotIn("YIBAN_ANNOUNCEMENT_DRAFT_META", env)
         self.assertEqual(self._anon().get("/api/announcement").get_json()["text"],
                          "今晚 23:00 维护")
-        self.assertEqual(self.webapp._announcement_cache[0], "今晚 23:00 维护")
+        self.assertEqual(_startup_cache._announcement_cache[0], "今晚 23:00 维护")
 
     def test_publish_overwrites_previous_and_draft_gone_afterwards(self):
         m = self._master()
@@ -909,7 +934,7 @@ class Batch18FixesTest(unittest.TestCase):
 
     def _write_date_log(self):
         """构造当日按天日志文件（my-logs 数据源），测试后清理。"""
-        path = self.webapp.log_path_for(CAL_DATE)
+        path = _logs_svc.log_path_for(CAL_DATE)
         with io.open(path, "w", encoding="utf-8") as f:
             f.write(LOG_LINE + "\n")
         self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
@@ -960,31 +985,34 @@ class Batch18FixesTest(unittest.TestCase):
     # =====================================================================
     def test_notify_cooldown_without_password_200_and_audited(self):
         """收窄（缩减批 6a）：无 confirm_password 调 PUT notify-config
-        {"cooldown":90000} → 200 落盘（可逆参数免门免额度）、零告警、留审计。"""
+        {"cooldown":86400} → 200 落盘（可逆参数免门免额度）、零告警、留审计。
+
+        86400 是 ba-p05-10 定下的上界（1 天）；旧用例取 90000，超出该区间后应 400。
+        """
         ac, at = self._admin_client()
-        with mock.patch.object(self.webapp, "send_notification") as sn:
-            r = ac.put("/api/notify-config", json={"cooldown": 90000},
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
+            r = ac.put("/api/notify-config", json={"cooldown": 86400},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
-        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "90000")
+        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "86400")
         sn.assert_not_called()
         detail = json.loads(self._last_audit_detail("notify_config"))
         detail.pop("_req", None)
-        self.assertEqual(detail.get("cooldown"), 90000, "免门不等于免痕")
+        self.assertEqual(detail.get("cooldown"), 86400, "免门不等于免痕")
 
     def test_notify_cooldown_with_password_200_and_audited(self):
         """带 confirm_password 字段 → 200、落盘、留痕（字段免门后被忽略，仅为
         兼容既有前端载荷；审计口径与免门路径一致）。"""
         ac, at = self._admin_client()
-        r = ac.put("/api/notify-config", json={"cooldown": 90000, "confirm_password": ADMIN_PASS_B18F},
+        r = ac.put("/api/notify-config", json={"cooldown": 86400, "confirm_password": ADMIN_PASS_B18F},
                    headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
-        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "90000")
+        self.assertEqual(env.get("YIBAN_NOTIFY_COOLDOWN"), "86400")
         detail = self._last_audit_detail("notify_config")
         self.assertIsNotNone(detail)
-        self.assertEqual(json.loads(detail)["cooldown"], 90000)
+        self.assertEqual(json.loads(detail)["cooldown"], 86400)
 
     def test_notify_config_change_sends_no_alert(self):
         """notify-config 变更只落盘 + 留审计，不再外发告警。
@@ -994,14 +1022,14 @@ class Batch18FixesTest(unittest.TestCase):
         """
         ac, at = self._admin_client()
         order = []
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
 
         def _write_spy(env_path, updates):
             order.append("write")
             return real_write(env_path, updates)
 
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
-             mock.patch.object(self.webapp, "write_env_batch", _write_spy):
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
+             mock.patch.object(_env_io_svc, "write_env_batch", _write_spy):
             r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1013,8 +1041,8 @@ class Batch18FixesTest(unittest.TestCase):
         """落盘失败（磁盘错）→ 500、零告警、零审计：告警与留痕只能描述已生效的变更。"""
         ac, at = self._admin_client()
         before = self.webapp.read_env(self.env_file)
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
-             mock.patch.object(self.webapp, "write_env_batch",
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
+             mock.patch.object(_env_io_svc, "write_env_batch",
                                side_effect=RuntimeError("disk full")):
             r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
@@ -1029,14 +1057,14 @@ class Batch18FixesTest(unittest.TestCase):
         """mail-config 变更只落盘，不再外发告警（关通道这个"拔线"动作也一视同仁）。"""
         ac, at = self._admin_client()
         order = []
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
 
         def _write_spy(env_path, updates):
             order.append("write")
             return real_write(env_path, updates)
 
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
-             mock.patch.object(self.webapp, "write_env_batch", _write_spy):
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
+             mock.patch.object(_env_io_svc, "write_env_batch", _write_spy):
             r = ac.put("/api/mail-config", json={"enabled": False, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1048,7 +1076,7 @@ class Batch18FixesTest(unittest.TestCase):
         """收窄（缩减批 6a）：mail-config 开关关闭（可逆）未带口令 → 200 落盘、
         零告警（通道变更只留审计）。"""
         ac, at = self._admin_client()
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             r = ac.put("/api/mail-config", json={"enabled": False},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1481,7 +1509,7 @@ class _TierBase(unittest.TestCase):
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         # 每例回到「全部档位键未配置 = 生效值即默认」的基线
-        self.webapp.write_env_batch(self.env_file, {
+        _env_io_svc.write_env_batch(self.env_file, {
             "YIBAN_GLOBAL_PAUSE": "", "YIBAN_REGISTRATION_PAUSE": "",
             "YIBAN_SUNDAY_SIGN": "", "YIBAN_SATURDAY_SIGN": "",
             "YIBAN_SIGN_ORDER": "", "YIBAN_SIGN_DIST": "", "YIBAN_SIGN_MODE": "",
@@ -1497,7 +1525,7 @@ class _TierBase(unittest.TestCase):
         })
         self.alerts = []
         patcher = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
             self.alerts.append((t, render_body(c), urgent, force)))
         patcher.start()
@@ -1538,16 +1566,16 @@ class TierTableMetaTest(_TierBase):
     """档位表单源：常量对 == 规格表，且每个档位键的现值都读得回来。"""
 
     def test_tier_sets_match_spec(self):
-        self.assertEqual(set(self.webapp.MASTER_ONLY_KEYS), SPEC_MASTER_ONLY,
+        self.assertEqual(set(_env_io_svc.MASTER_ONLY_KEYS), SPEC_MASTER_ONLY,
                          "A 档表被单方面改动：规格与常量必须同时改")
-        self.assertEqual(set(self.webapp.GATED_KEYS), SPEC_GATED,
+        self.assertEqual(set(_env_io_svc.GATED_KEYS), SPEC_GATED,
                          "B 档表被单方面改动：规格与常量必须同时改")
-        self.assertFalse(set(self.webapp.MASTER_ONLY_KEYS) & set(self.webapp.GATED_KEYS),
+        self.assertFalse(set(_env_io_svc.MASTER_ONLY_KEYS) & set(_env_io_svc.GATED_KEYS),
                          "一个键不可能既是 A 档又是 B 档")
         # 急停靠「按变更方向分流」实现，混进任一张表都会让方向语义失效
-        self.assertNotIn("global_pause", self.webapp.MASTER_ONLY_KEYS)
-        self.assertNotIn("global_pause", self.webapp.GATED_KEYS)
-        self.assertEqual(self.webapp.GLOBAL_PAUSE_KEY, "global_pause")
+        self.assertNotIn("global_pause", _env_io_svc.MASTER_ONLY_KEYS)
+        self.assertNotIn("global_pause", _env_io_svc.GATED_KEYS)
+        self.assertEqual(_env_io_svc.GLOBAL_PAUSE_KEY, "global_pause")
 
     def test_every_tier_key_is_readable_back(self):
         """档位键必须能读回现值：读不回就没法判「这次到底变没变」，门禁会被静默跳过。
@@ -1557,19 +1585,19 @@ class TierTableMetaTest(_TierBase):
         c = self._master()
         payload = c.get("/api/settings", headers=self._hdr(c)).get_json()
         nested = {"max_users": "users_max", "max_accounts": "accounts_max"}
-        for key in set(self.webapp.MASTER_ONLY_KEYS) | set(self.webapp.GATED_KEYS):
+        for key in set(_env_io_svc.MASTER_ONLY_KEYS) | set(_env_io_svc.GATED_KEYS):
             if key in nested:
                 self.assertIn(nested[key], payload["capacity"], f"{key} 现值读不回")
             else:
                 self.assertIn(key, payload, f"{key} 现值读不回")
 
     def test_effective_values_cover_both_tiers(self):
-        cur = self.webapp._settings_effective_values(self.env_file)
-        keys = (set(self.webapp.MASTER_ONLY_KEYS) | set(self.webapp.GATED_KEYS)
-                | {self.webapp.GLOBAL_PAUSE_KEY})
+        cur = _env_io_svc._settings_effective_values(self.env_file)
+        keys = (set(_env_io_svc.MASTER_ONLY_KEYS) | set(_env_io_svc.GATED_KEYS)
+                | {_env_io_svc.GLOBAL_PAUSE_KEY})
         self.assertEqual(keys - set(cur), set(), "有档位键没有现值口径")
         # 现值必须是「生效值」而不是「键在不在」：未配置的延迟要报默认值
-        self.assertEqual(cur["gap_max"], str(self.webapp.DEFAULT_ACCOUNT_GAP_MAX))
+        self.assertEqual(cur["gap_max"], str(_limits.DEFAULT_ACCOUNT_GAP_MAX))
         self.assertEqual(cur["sign_order"], "sequence")
 
     def test_every_effective_value_key_has_a_tier(self):
@@ -1581,15 +1609,15 @@ class TierTableMetaTest(_TierBase):
         不进 403 名单、不发变更告警，静默向所有管理员开放。常量定义处那句
         "新增设置键时必须改档位表"要防的正是这件事，这里把它变成会报红的检查。
         """
-        cur = self.webapp._settings_effective_values(self.env_file)
+        cur = _env_io_svc._settings_effective_values(self.env_file)
         # 正态 μ/σ 区间四键的 A 档判定复刻在 `settings_api`（键名单源 `env_io`，本轮
         # 不在 app.py 档位表里），故反方向对拍的档位全集要把它们并入——否则新键会被
         # 判成"没档位、任意管理员免口令可写"，而这四键实测是 403。
         from web.services.env_io import SCHEDULE_DIST_KEYS
-        unclassified = set(cur) - (set(self.webapp.MASTER_ONLY_KEYS)
-                                   | set(self.webapp.GATED_KEYS)
+        unclassified = set(cur) - (set(_env_io_svc.MASTER_ONLY_KEYS)
+                                   | set(_env_io_svc.GATED_KEYS)
                                    | set(SCHEDULE_DIST_KEYS)
-                                   | {self.webapp.GLOBAL_PAUSE_KEY})
+                                   | {_env_io_svc.GLOBAL_PAUSE_KEY})
         self.assertEqual(unclassified, set(),
                          f"这些设置键没有档位归属（等于任意管理员免口令可写）："
                          f"{sorted(unclassified)}")
@@ -1710,12 +1738,19 @@ class EmergencyStopTest(_TierBase):
 
     def test_same_value_pause_needs_no_password(self):
         """已处于急停态时再交一次 1：值未变 → 不进门禁、不占额度。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
         c = self._reg_admin()
         self.assertEqual(self._save(c, {"global_pause": 1}).status_code, 200)
 
     def test_stop_shares_high_risk_quota(self):
-        """急停与「删数据 / 拆报警器」共用同一套高危额度（默认 5 次/60 秒）。"""
+        """急停与「删数据 / 拆报警器」共用同一套高危额度（默认 5 次/60 秒）。
+
+        窗口显式拉到 3600s（工单 qzj2）：并行档下 6 轮"恢复+急停"可能超过 60s，
+        最早几次会自然过期，第 6 次于是拿到 200 而不是 429——那是墙钟走时，不是
+        额度机制变了。窗口内"前 MAX 次放行、第 MAX+1 次 429"的判据不变。
+        """
+        _env_io_svc.write_env_batch(
+            self.env_file, {"YIBAN_ADMIN_DELETE_COOLDOWN_SEC": "3600"})
         c = self._master()
         codes = []
         for _ in range(self.webapp.ADMIN_DELETE_MAX + 1):
@@ -1735,7 +1770,7 @@ class EmergencyStopTest(_TierBase):
         """先鉴权后占额度：不知口令的被盗会话刷不光合法管理员的急停预算。"""
         # 冷却窗口关成 0（运维降级旋钮）：本例要钉的是「额度不被错口令吃掉」，
         # 留着冷却的话第 4 次起就是 429 而不是 403，测不到额度这一层
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
         c = self._master()
         for _ in range(self.webapp.ADMIN_DELETE_MAX + 3):
             self._save(c, {"global_pause": 1, "confirm_password": "WrongPass999!"})
@@ -1770,7 +1805,7 @@ class ChangeAlertTest(_TierBase):
         """误点保存（值一个没变）不该发出任何告警，也不该被口令挡住。"""
         c = self._master()
         r = self._save(c, {"sunday_sign": 0,
-                           "gap_max": self.webapp.DEFAULT_ACCOUNT_GAP_MAX})
+                           "gap_max": _limits.DEFAULT_ACCOUNT_GAP_MAX})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.alerts, [], "无实质变更不得发告警（否则告警成了免费打字机）")
 

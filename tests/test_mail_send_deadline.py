@@ -20,7 +20,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.mail import transport  # noqa: E402
+from yiban.adapters.notifier.mail import transport  # noqa: E402
 
 OP_SEC = 15  # 单个 socket 操作的耗时与超时（= 现值，本单不许把它调小）
 BUDGET_SEC = 45  # 契约：整封预算 = 一个条目 3 次 socket 操作 × 15 秒
@@ -64,8 +64,8 @@ class MailTotalBudgetTest(unittest.TestCase):
         self.addCleanup(lambda: self.logger.removeHandler(handler))
         for p in (
             mock.patch.object(transport, "time", self.clock, create=True),
-            mock.patch.object(transport.config, "is_enabled", lambda: True),
-            mock.patch.object(transport.config, "smtp_list", lambda: _entries(10)),
+            mock.patch.object(transport.config, "is_enabled", lambda *a, **k: True),
+            mock.patch.object(transport.config, "smtp_list", lambda *a, **k: _entries(10)),
             mock.patch.object(transport.smtplib, "SMTP_SSL", _half_open),
         ):
             p.start()
@@ -130,8 +130,8 @@ class MailTotalBudgetTest(unittest.TestCase):
                 return {}
 
         with mock.patch.object(transport, "time", clock), \
-                mock.patch.object(transport.config, "is_enabled", lambda: True), \
-                mock.patch.object(transport.config, "smtp_list", lambda: _entries(10)), \
+                mock.patch.object(transport.config, "is_enabled", lambda *a, **k: True), \
+                mock.patch.object(transport.config, "smtp_list", lambda *a, **k: _entries(10)), \
                 mock.patch.object(transport.smtplib, "SMTP_SSL", _Good):
             ok = transport._send("主题", "正文", "admin@example.test")
         self.assertTrue(ok, "健康端点必须仍然发得出去，且不换条目")

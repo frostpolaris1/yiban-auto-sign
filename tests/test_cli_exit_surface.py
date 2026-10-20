@@ -7,7 +7,7 @@
     `--json`+stderr 出口、维护子命令入口的日志装配（`logging.lastResort` 裸写旁路
     必须被 `MaskingFormatter` 装配堵掉）。
 对应实现：`yiban/entry/cli/__init__.py`（`_say`、`_emit_json`、`_masked_tree`、`main`
-    装配点；`yiban/cli.py` 是转发壳）与
+    装配点；旧入口转发壳已于 `145-E` 退役）与
     `yiban/engine/cli_support.py::_setup_cli_logging`（复用，不新造）。
 关键断言：登记原文的验收不变量——构造含裸号/明文邮箱的记录 ⇒ 每个出口都是遮罩形态：
     断"遮罩形态在场"且"裸形态缺席"两侧；只断缺席会放过"字段整个消失"的假绿。
@@ -77,7 +77,7 @@ class _CliExitHarness(unittest.TestCase):
 
     def encrypt_password(self):
         """用 key_a 加密一个口令，返回密文对象（JSON 可嵌 dict）。"""
-        code = ("import json,sys;from yiban.infra import account_crypto;"
+        code = ("import json,sys;from yiban.adapters.config import account_crypto;"
                 "print(json.dumps(account_crypto.encrypt_password("
                 "'under-key-a', bytes.fromhex(sys.argv[1]), sys.argv[2])))")
         r = subprocess.run([sys.executable, "-c", code, self.key_a, PHONE_RAW],
@@ -96,7 +96,7 @@ class _CliExitHarness(unittest.TestCase):
 
     def _add_db_account(self):
         """临时库写一个 active 账号（phone 列即裸号明文；口令按 key_a 加密）。"""
-        code = ("import sys;from yiban.store import db;"
+        code = ("import sys;from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.add_account({'name': 'A', 'phone': sys.argv[3], 'password': 'p1',"
                 " 'status': 'active', 'owner': 'admin'});db.get_conn().close()")

@@ -22,9 +22,10 @@
 个人提交判重预检的命中限速表，`read_audit_denied_trace()` 是超限拒绝的聚合留痕口。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（db / clock / logger / load_accounts /
-validate_account / send_notification / mailer / mail_layout / ENV_FILE 等）必须继续生效。
+A 类转发名（`db` / `clock` / `signin` / `load_accounts` / `load_accounts_raw` /
+`validate_account` / `mailer` / `mail_layout` 等）经真源模块直取（批 3-a 拆墙），
+故测试打桩点落在**真源**上；app.py 自有的模块级名字（`logger` / `ENV_FILE` /
+`send_notification` 等）仍经 `web.routes.appmod()` 按属性取。
 本人身份一律取 `session["username"]`，数据范围由 `_my_account_indices_of()` 按归属邮箱
 收窄；被 `web.app` 的 `register_all(app)` 一次接入。
 """
@@ -35,15 +36,37 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 
+import signin
 from flask import jsonify, request, session
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
+from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from web.routes import session_abs_ttl as _session_abs_ttl
+from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
+from web.services import http_request as _http
+from web.services import limits as _limits
+from web.services import locks as _locks
+from web.services import logs as _logs_svc
+from web.services import notify_mail as _notify_mail
+from web.services import signstatus as _signstatus
+from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
 from web.services.device_refresh import refresh_account_device as _refresh_account_device
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
+from yiban.adapters.notifier import mail as mailer
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
 from yiban.adapters.persistence.accounts import signs_in as _signs_in
+from yiban.attempt import jobs as verify_jobs
+from yiban.core import clock
+from yiban.core import masking as _masking
+from yiban.core import status as yiban_status
 from yiban.core.masking import mask_device_code as _mask_device_code
 from yiban.engine import schedule as yb_schedule
 
@@ -62,9 +85,8 @@ def _my_account_indices_of(accounts):
     YIBAN_ADMIN_USER 设为管理员本人邮箱以分开两义。
     普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
     """
-    m = _appmod()
     email = session.get("username", "").lower()
-    if m._current_role() == "admin":
+    if _security._current_role(_session_abs_ttl()) == "admin":
         return [
             i for i, a in enumerate(accounts) if a.get("owner") == email and not a.get("deleted")
         ]
@@ -76,11 +98,10 @@ def _my_active_phones(accounts, indices):
     （status=active）且未软删除账号——待审核/已拒绝/软删除行不参与签到，
     其历史日历/日志也不再回显，防"提交个 pending 号就翻到该号全部历史"。
     /api/my-accounts 列表展示口径不变（仍含 pending/deleted，展示状态用）。"""
-    m = _appmod()
     return [
         str(accounts[i].get("phone", ""))
         for i in indices
-        if accounts[i].get("status") == m.ACCOUNT_STATUS_ACTIVE
+        if accounts[i].get("status") == _accounts_data.ACCOUNT_STATUS_ACTIVE
         and not accounts[i].get("deleted")
     ]
 
@@ -91,9 +112,8 @@ def _my_account_view(accounts, indices):
     排队说明：开启签到调度时按当日计划时间执行，否则按账号列表顺序（队列重试）；
     queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
     """
-    m = _appmod()
-    recent = m.parse_sign_log(m.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
-    states = m.load_sign_state()  # 今日状态事实源（signin.py 写入）
+    recent = _logs_svc.parse_sign_log(_logs_svc.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
+    states = _logs_svc.load_sign_state()  # 今日状态事实源（signin.py 写入）
     # 今日计划时刻的唯一事实源是台账 `sign_tasks.run_at`（执行体 claim_batch 的领取依据）；
     # 读不通回 None 哨兵 → 当作"今日无计划"，展示「待生成」，绝不回退旧的派生算法。
     run_at = _today_plan_map()
@@ -101,7 +121,7 @@ def _my_account_view(accounts, indices):
     # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除、未自暂停
     active = [
         a for a in accounts
-        if a.get("status") == m.ACCOUNT_STATUS_ACTIVE and not a.get("deleted")
+        if a.get("status") == _accounts_data.ACCOUNT_STATUS_ACTIVE and not a.get("deleted")
         and not a.get("user_paused", False)
     ]
     # 执行顺序：按当日台账计划时刻（run_at）排序——与执行体领取顺序同源（覆盖自选/
@@ -117,11 +137,16 @@ def _my_account_view(accounts, indices):
     running = 0
     for a in active_sorted:
         queue_before[a.get("phone", "")] = running
-        st_status = states.get(a.get("phone", ""), {}).get("status", m.STATUS_PENDING)
-        if st_status not in (m.STATUS_SUCCESS, m.STATUS_ALREADY, m.STATUS_NO_TASK):
+        # 值形态守卫与下面 st_status 同口径：load_sign_state 只校验顶层是 dict，
+        # 外部工具手写/半写坏的值会让 .get 抛 AttributeError → 整页 500（ba-p05-06）。
+        _st = states.get(a.get("phone", ""))
+        st_status = (_st.get("status", yiban_status.STATUS_PENDING)
+                     if isinstance(_st, dict) else yiban_status.STATUS_PENDING)
+        if st_status not in (yiban_status.STATUS_SUCCESS, yiban_status.STATUS_ALREADY,
+                             yiban_status.STATUS_NO_TASK):
             running += 1
     # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
-    today_prefix = f"[{m.clock.now().strftime('%Y-%m-%d')} "
+    today_prefix = f"[{clock.now().strftime('%Y-%m-%d')} "
     result = []
     for i, real_idx in enumerate(indices):
         acc = accounts[real_idx]
@@ -132,10 +157,11 @@ def _my_account_view(accounts, indices):
         ]
         # 排队：按今日计划时间排序的队列中，自己之前未了结的账号数（含自暂停排除）
         queue_ahead = 0
-        if acc.get("status") == m.ACCOUNT_STATUS_ACTIVE and not acc.get("user_paused", False):
+        if acc.get("status") == _accounts_data.ACCOUNT_STATUS_ACTIVE and not acc.get("user_paused", False):
             queue_ahead = queue_before.get(phone, 0)
         st = states.get(phone, {})
-        st_status = st.get("status", m.STATUS_PENDING) if isinstance(st, dict) else m.STATUS_PENDING
+        st_status = (st.get("status", yiban_status.STATUS_PENDING) if isinstance(st, dict)
+                     else yiban_status.STATUS_PENDING)
         # 状态文案由共享助手唯一裁定（参与调度的未了结账号按台账 run_at 生成「计划 HH:MM」/
         # 「待生成」，其余保留结论文案）；与 /api/accounts 同源，见 accounts_data.plan_state_message。
         state_message = _plan_state_message(acc, st, plan_at)
@@ -148,16 +174,16 @@ def _my_account_view(accounts, indices):
                 "phone_model": acc.get("phone_model", ""),
                 # 设备识别码原文不下发（与 /api/accounts 同口径）：只给掩码供只读展示
                 "phone_code_masked": _mask_device_code(acc.get("phone_code", "")),
-                "status": acc.get("status", m.ACCOUNT_STATUS_ACTIVE),
+                "status": acc.get("status", _accounts_data.ACCOUNT_STATUS_ACTIVE),
                 "reject_reason": acc.get("reject_reason", ""),
-                "state_icon": m.STATUS_ICON.get(st_status, "⏳"),
+                "state_icon": yiban_status.ICON.get(st_status, "⏳"),
                 "state_status": st_status,  # 状态码（前端按码映射文案）
                 "state_message": state_message,
                 "queue_ahead": queue_ahead,
                 # 出站脱敏：与 /api/my-logs、/api/logs
                 # 统一口径——当前 signin.py 日志每行仅含本人手机号，但口径不设防时，
                 # 未来出现一行多号的日志格式会把他人号码原样下发普通用户
-                "logs": [m._mask_log_phones(ln) for ln in my_logs[-5:]],
+                "logs": [_logs_svc._mask_log_phones(ln) for ln in my_logs[-5:]],
                 "deleted": bool(acc.get("deleted")),
                 "deleted_at": acc.get("deleted_at", ""),
                 # 用户删除可撤销：仅本人自删行（deleted_by=本人）前端展示撤销入口
@@ -183,11 +209,10 @@ def _my_phone():
     仅 status=active（正式进入签到列表）才算——pending/rejected 的"注册但未生效"
     用户不可查看/选择时间片（GET 返回 has_account=False → 前端整卡隐藏；PUT 400 兜底）。
     """
-    m = _appmod()
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     for idx in _my_account_indices_of(accounts):
         acc = accounts[idx]
-        if not acc.get("deleted") and acc.get("status") == m.ACCOUNT_STATUS_ACTIVE:
+        if not acc.get("deleted") and acc.get("status") == _accounts_data.ACCOUNT_STATUS_ACTIVE:
             return acc.get("phone", "")
     return None
 
@@ -195,8 +220,8 @@ def _my_phone():
 def _pref_slots(win):
     """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
 
-    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.app.sign_window_bounds` 现取
-    后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
+    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.services.signstatus.sign_window_bounds`
+    现取后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
     会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口排期，网页却把片全置灰）。
     掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
     disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
@@ -250,17 +275,17 @@ def _engine_active_count(accounts):
 def _engine_block_cap(m, accounts, slots):
     """引擎对齐的单块容量 K：人数用三重过滤后的活跃数，块数用**非 disabled** 片数。
 
-    只读 `deleted/status/user_paused` 三个明文列 → 调用方传 `m.load_accounts_raw()`
+    只读 `deleted/status/user_paused` 三个明文列 → 调用方传 `_accounts_data.load_accounts_raw()`
     （不解密，避免为算分母触发全表逐行 AES-GCM；raw 行与解密行在这三列上同构，
     旧数据缺 status 时二者都判"已过审"）。
 
-    env 必须取 `.env` 层（`m.read_env(m.ENV_FILE)`，与 `weekend_flags(env=...)` 同一
+    env 必须取 `.env` 层（`_env_io_svc.read_env(m.ENV_FILE)`，与 `weekend_flags(env=...)` 同一
     模式）——web 进程环境里没有 `.env` 的键，不传会落到默认 15（MF-93）。片数以
     `_pref_slots` 的 `disabled` 标记计（裁剪吃空的片不占块，直接循环总次数会多算）。
     """
     n_blocks = sum(1 for s in slots if not s["disabled"])
     return yb_schedule.block_capacity(
-        _engine_active_count(accounts), n_blocks, env=m.read_env(m.ENV_FILE))
+        _engine_active_count(accounts), n_blocks, env=_env_io_svc.read_env(m.ENV_FILE))
 
 
 def _verify_job_visible(job, username):
@@ -270,19 +295,17 @@ def _verify_job_visible(job, username):
     "同为管理员"就能做的；按 `role == "admin"` 放行等于任意注册管理员都能读/取消
     别人的任务，故按"权限歧义取窄侧"收窄为：本人 + 内置主管理员。
     """
-    m = _appmod()
-    if m._is_builtin_admin_session():
+    if _security._is_builtin_admin_session():
         return True
     return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
 
 
 def _job_payload(job):
-    m = _appmod()
     return {
         "job_id": job["id"],
         "status": job["status"],
         "error": job.get("error") or "",
-        "phone": m._mask_phone(job.get("phone", "")),
+        "phone": _masking.mask_phone(job.get("phone", "")),
         "created_at": job.get("created_at"),
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
@@ -290,10 +313,9 @@ def _job_payload(job):
 
 
 def api_my_accounts():
-    m = _appmod()
     # 单快照：下标与视图必须基于同一份账号列表——两次读取之间其他线程的物理删除
     # 会让下标套错行，极端时短暂展示他人账号（含完整手机号）
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     indices = _my_account_indices_of(accounts)
     return jsonify({"ok": True, "accounts": _my_account_view(accounts, indices)})
 
@@ -308,13 +330,13 @@ def api_my_time_pref():
     偏好标签与保存提示都以它为基准，直读原始配置会在回退时让同一页面出现两个钟点。
     """
     m = _appmod()
-    win = m.sign_window_bounds()
+    win = _signstatus.sign_window_bounds()
     phone = _my_phone()
-    pref = m.db.get_time_pref(phone) if phone else None
-    stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
+    pref = db.get_time_pref(phone) if phone else None
+    stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
     slots_src = _pref_slots(win)
     # 分母与引擎实际容量同源（块容 `block_capacity`）：人数=三重过滤活跃数，块数=非 disabled 片数
-    k = _engine_block_cap(m, m.load_accounts_raw(), slots_src)
+    k = _engine_block_cap(m, _accounts_data.load_accounts_raw(), slots_src)
     slots = []
     for s in slots_src:
         count = stats.get(s["slot_min"], 0)
@@ -330,14 +352,14 @@ def api_my_time_pref():
             "disabled": s["disabled"],     # 完全在裁剪区 → 灰色不可选
             "edge_note": s["edge_note"],   # 部分裁剪提示（如"开头 2 分钟保留"）
         })
-    estimated, estimate_note = m._estimate_slot(phone) if phone else (None, "")
-    front_sec, back_sec = m.edge_config()
+    estimated, estimate_note = _accounts_data._estimate_slot(phone) if phone else (None, "")
+    front_sec, back_sec = _render.edge_config()
     return jsonify({
         "ok": True,
-        "pref": m._slot_to_label(pref["slot_min"]) if pref else None,
+        "pref": _accounts_data._slot_to_label(pref["slot_min"]) if pref else None,
         "pref_slot": pref["slot_min"] if pref else None,
         "slots": slots,
-        "allowed": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
+        "allowed": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
         "window": (f"{win.start_min // 60:02d}:{win.start_min % 60:02d} ~ "
                    f"{win.end_min // 60:02d}:{win.end_min % 60:02d}"),
         "edge_sec": front_sec,                    # 兼容旧前端（=前裁）
@@ -355,14 +377,14 @@ def api_my_time_pref_save():
     # read-check-write 整段持 _file_lock 原子化（防 TOCTOU）：
     # 并发 purge 删号时不再重新插入孤儿 pref（已删 phone 残留→重占号被新账号继承泄漏）；
     # 冷却检查与写入原子化（防并发双请求绕过冷却）；满员统计与写入原子化（防超容写入）
-    with m._file_lock:
+    with _locks._file_lock:
         phone = _my_phone()
         if not phone:
             # 非正式用户不可选时间片——区分"未提交"与"已提交未生效"，提示不给待审核
             # 用户误导（信息分层，不暴露审核细节）
             # has_submitted 与「我的账号」同口径（_my_account_indices_of），避免双口径漂移；
             # 单快照读取消除双读间列表漂移的越界/错判窗口
-            _accounts_now = m.load_accounts()
+            _accounts_now = _accounts_data.load_accounts()
             has_submitted = any(
                 not _accounts_now[i].get("deleted")
                 for i in _my_account_indices_of(_accounts_now)
@@ -370,11 +392,11 @@ def api_my_time_pref_save():
             if has_submitted:
                 return jsonify({"error": "账号审核通过后即可选择签到时间"}), 400
             return jsonify({"error": "请先提交易班账号"}), 400
-        data = m._json_body()
+        data = _http._json_body()
         slot = data.get("slot_min")
         if slot is None:
-            m.db.clear_time_pref(phone)
-            m.db.audit(session.get("username", "?"), "time_pref_clear", m.db.hash_phone(phone), "")
+            db.clear_time_pref(phone)
+            db.audit(session.get("username", "?"), "time_pref_clear", db.hash_phone(phone), "")
             return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
         # 严格类型校验——bool（False→0）与小数（5.9→5）截断不得误入合法槽位
         if isinstance(slot, bool) or (isinstance(slot, float) and not slot.is_integer()):
@@ -386,7 +408,7 @@ def api_my_time_pref_save():
         # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
         # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
         # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
-        win = m.sign_window_bounds()
+        win = _signstatus.sign_window_bounds()
         span = win.end_min - win.start_min
         front_min = win.front_sec / 60.0
         back_min = win.back_sec / 60.0
@@ -401,17 +423,17 @@ def api_my_time_pref_save():
         # 超出后冷却随超限次数递增（30s→60s→120s→…封顶 300s），持续高频才被压制。
         # 按被选账号计价（多管理员共享全局生效；新号豁免）。
         # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC 基础值，默认 30；0=关闭）
-        base_cd = m.load_env_int(m.ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", m.TIME_PREF_COOLDOWN_SEC)
+        base_cd = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", _limits.TIME_PREF_COOLDOWN_SEC)
         if base_cd > 0:
-            now_ts = m.clock.now()
-            since = (now_ts - timedelta(seconds=m.TIME_PREF_COOLDOWN_WINDOW)
+            now_ts = clock.now()
+            since = (now_ts - timedelta(seconds=_limits.TIME_PREF_COOLDOWN_WINDOW)
                      ).strftime("%Y-%m-%d %H:%M:%S")
-            count = m.db.time_pref_set_count_since(phone, since)
-            if count >= m.TIME_PREF_COOLDOWN_FREE:
+            count = db.time_pref_set_count_since(phone, since)
+            if count >= _limits.TIME_PREF_COOLDOWN_FREE:
                 # 弹性冷却 = 基础 × 2^(超限次数)，封顶
-                cooldown = min(base_cd * (2 ** (count - m.TIME_PREF_COOLDOWN_FREE + 1)),
-                               m.TIME_PREF_COOLDOWN_MAX)
-                last_ts = m.db.last_time_pref_set_at(phone)
+                cooldown = min(base_cd * (2 ** (count - _limits.TIME_PREF_COOLDOWN_FREE + 1)),
+                               _limits.TIME_PREF_COOLDOWN_MAX)
+                last_ts = db.last_time_pref_set_at(phone)
                 if last_ts:
                     try:
                         last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（时间偏好冷却判定）
@@ -426,11 +448,11 @@ def api_my_time_pref_save():
         # 满员提示（可继续选+提示会顺延）：
         # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
         # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
-        accounts_raw = m.load_accounts_raw()
+        accounts_raw = _accounts_data.load_accounts_raw()
         k = _engine_block_cap(m, accounts_raw, _pref_slots(win))
-        stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
         count = stats.get(slot, 0)
-        cur = m.db.get_time_pref(phone)
+        cur = db.get_time_pref(phone)
         # 排除自己已占的位（换片/保留不误报）；但 stats 已排除 user_paused 账号，
         # 自暂停者自身占位本就不在 count 里，再减会漏报满员——非暂停才扣。
         self_paused = any(a.get("phone") == phone and a.get("user_paused")
@@ -440,13 +462,13 @@ def api_my_time_pref_save():
         full_notice = "，该时段已选满，将就近安排到附近时段" if count >= k else ""
         # updated_at 带微秒：同秒保存的"先到先得"可区分先后，
         # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
-        m.db.set_time_pref(phone, slot, m.clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
-        m.db.audit(session.get("username", "?"), "time_pref_set", m.db.hash_phone(phone), m._slot_to_label(slot))
+        db.set_time_pref(phone, slot, clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
+        db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), _accounts_data._slot_to_label(slot))
         # 生效分界（卡点缓冲）：
         # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
         # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
         # 标记不存在（当日 cron 未运行/自选未激活）回退"有效窗口起点"兜底
-        now = m.clock.now()
+        now = clock.now()
         boundary = None
         try:
             snap_path = os.path.join(m.STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
@@ -468,15 +490,15 @@ def api_my_time_pref_save():
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
             boundary = midnight + timedelta(seconds=win.lo_min * 60)
         when = "今日生效" if now < boundary else "明日生效"
-        return jsonify({"ok": True, "msg": f"已保存自选 {m._slot_to_label(slot)}，{when}{full_notice}"})
+        return jsonify({"ok": True, "msg": f"已保存自选 {_accounts_data._slot_to_label(slot)}，{when}{full_notice}"})
 
 
 def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
-    stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
-    slots = _pref_slots(m.sign_window_bounds())
-    cap = _engine_block_cap(m, m.load_accounts_raw(), slots)
+    stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+    slots = _pref_slots(_signstatus.sign_window_bounds())
+    cap = _engine_block_cap(m, _accounts_data.load_accounts_raw(), slots)
     return jsonify({
         "ok": True,
         "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
@@ -490,29 +512,29 @@ def api_my_account_add():
     操作级锁：单账号限制与手机号唯一检查 + 写入原子（防并发双提交互相覆盖）。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     # 用户面不收设备型号/识别码：这两列由签到前自动补全写、或由管理面手工填
     # （用户 2026-10-16 裁决）。手工构造请求同样写不进。
-    err, clean = m.validate_account(data, require_password=True, allow_device_fields=False)
+    err, clean = _accounts_data.validate_account(data, require_password=True, allow_device_fields=False)
     if err:
         return jsonify({"error": err}), 400
     # 预筛：资格校验全部前置到网络验证之前，杜绝「先向易班发起真实登录、再发现
     # 根本没资格」的凭据试探滥用面。权威校验仍保留在下方写入临界区
     # （预筛通过≠最终名额，双检以锁内为准）。
     email_pre = str(session.get("username", "")).lower()
-    with m._file_lock:
-        accounts_pre = m.load_accounts()
-        max_accounts_pre = m.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+    with _locks._file_lock:
+        accounts_pre = _accounts_data.load_accounts()
+        max_accounts_pre = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         # 容量兜底：账号配额 = 活跃账号数（含裸账号）；
         # 提交者已持有未删除账号时不新增（随后 400 拦截），不计增量，保持原错误优先级
         holds_live = any(a.get("owner") == email_pre and not a["deleted"] for a in accounts_pre)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
             # 不向普通用户暴露容量数字（信息分层）
             return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
         if holds_live:
             return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-        if m.find_account_index(accounts_pre, clean["phone"]) is not None:
+        if _accounts_data.find_account_index(accounts_pre, clean["phone"]) is not None:
             # 预检命中即向调用方确认"该号码在册"——这是个可定向确认的出口，按详情/
             # 导出等同档面收口：命中才计会话额度（未重号的正常提交不占额、不留这行
             # 审计），每次命中落一条审计（目标为遮罩号，不泄露归属口径不变），超限
@@ -521,23 +543,23 @@ def api_my_account_add():
             # `_ip_store_trim` 会 store.items() 遍历（本表超 _IP_STORE_LIMIT 才进入
             # 清理分支），锁外并发插入会让迭代中的 dict 变尺寸 → RuntimeError → 500。
             # locks.py 不变量：调用方持锁、trim 自身不取锁。
-            with m._rate_lock:
-                m._ip_store_trim(dupcheck_limits(), m.DUPCHECK_WINDOW + m._IP_STORE_MAX_AGE)
-            _dup_cnt, _dup_start, dup_allowed = m._bump_window_count(
+            with _locks._rate_lock:
+                _security._ip_store_trim(dupcheck_limits(), _limits.DUPCHECK_WINDOW + _security._IP_STORE_MAX_AGE)
+            _dup_cnt, _dup_start, dup_allowed = _security._bump_window_count(
                 dupcheck_limits(), email_pre[:64], time.time(),
-                m.DUPCHECK_WINDOW, limit=m.DUPCHECK_MAX,
+                _limits.DUPCHECK_WINDOW, limit=_limits.DUPCHECK_MAX,
             )
             if not dup_allowed:
                 read_audit_denied_trace()("my_account_add_dup_denied")
                 # 文案不带阈值数字（信息分层，与其余 429 一致）
                 return jsonify({"error": "账号提交过于频繁，请稍后再试"}), 429
-            m.db.audit(
+            db.audit(
                 email_pre,
                 "my_account_add_dup_hit",
-                m._mask_phone(clean["phone"]),
+                _masking.mask_phone(clean["phone"]),
                 f"窗口内第 {_dup_cnt} 次在册确认命中",
             )
-            err = m._duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
+            err = _accounts_data._duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
             if err:
                 return jsonify({"error": err}), 400
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
@@ -546,51 +568,51 @@ def api_my_account_add():
     # 认证失败另有按手机号的冷却（密码错误反复重交会把易班账号打锁定，
     # 冷却同时给用户明确提示）
     verify_async_job = False
-    if m._account_verify_enabled():
-        if m._verify_fail_cooldown_remaining(verify_fails(), clean["phone"], time.time()) > 0:
-            return jsonify({"error": m.VERIFY_FAIL_COOLDOWN_MSG}), 429
-        if m.verify_async_enabled():
+    if _verify_queue._account_verify_enabled():
+        if _security._verify_fail_cooldown_remaining(verify_fails(), clean["phone"], time.time()) > 0:
+            return jsonify({"error": _verify_queue.VERIFY_FAIL_COOLDOWN_MSG}), 429
+        if _verify_queue.verify_async_enabled():
             # 异步：请求线程只**先扣配额**，外呼交给后台任务。
             # 待办队列满 → 503（账号尚未落库，拒绝无副作用）。
-            if m._verify_queue_full():
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-            if not m._verify_attempt_allowed(verify_limits(), email_pre):
+            if _verify_queue._verify_queue_full():
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+            if not _security._verify_attempt_allowed(verify_limits(), email_pre):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_async_job = True
         else:
             try:
-                verify_err = m.run_verify_with_gate(clean, email_pre, verify_limits())
-            except m.VerifyGateBusy:
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-            except m.VerifyQuotaExceeded:
+                verify_err = _verify_queue.run_verify_with_gate(clean, email_pre, verify_limits())
+            except _verify_queue.VerifyGateBusy:
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+            except _verify_queue.VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             if verify_err:
-                fail_kind = m._record_verify_failure(verify_fails(), clean["phone"], verify_err, time.time())
+                fail_kind = _security._record_verify_failure(verify_fails(), clean["phone"], verify_err, time.time())
                 # 验证失败同样留痕审计：否则无法还原
                 # 「某账号被反复试错锁定」事件的提交者与次数；detail 只记类别不记原始消息
-                m.db.audit(
+                db.audit(
                     email_pre,
                     "my_account_add_verify_fail",
-                    m._mask_phone(clean["phone"]),
+                    _masking.mask_phone(clean["phone"]),
                     f"验证未通过（{fail_kind}）",
                 )
                 return jsonify({"error": verify_err}), 400
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         # 容量兜底：账号配额（活跃账号数含裸账号；用户提交同样受限）；
         # 提交者已持有未删除账号时不新增，不计增量（保持原错误优先级）
-        max_accounts = m.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS)
+        max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         email = session.get("username", "").lower()
         # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
         has_live = any(a.get("owner") == email and not a["deleted"] for a in accounts)
-        if m._accounts_at_capacity(0 if has_live else 1):
-            m._notify_capacity_once("accounts", max_accounts, "账号数量")
+        if _capacity._accounts_at_capacity(0 if has_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts, "账号数量")
             # 不向普通用户暴露容量数字（信息分层）
             return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
         if has_live:
             return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-        if m.find_account_index(accounts, clean["phone"]) is not None:
-            err = m._duplicate_phone_error(accounts, clean["phone"], email)
+        if _accounts_data.find_account_index(accounts, clean["phone"]) is not None:
+            err = _accounts_data._duplicate_phone_error(accounts, clean["phone"], email)
             if err:
                 return jsonify({"error": err}), 400
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
@@ -604,31 +626,31 @@ def api_my_account_add():
         # 管理员给自己邮箱代管的入口没被堵死：/api/accounts/<idx>/review 的
         # approve 对任意 pending 行开放（不看提交者是谁），管理员自己点一次通过
         # 即生效，并且这一步会单独留 account_review 审计（隐式置 ACTIVE 不留任何痕迹）。
-        clean["status"] = m.ACCOUNT_STATUS_PENDING
+        clean["status"] = _accounts_data.ACCOUNT_STATUS_PENDING
         try:
             # 审计与 INSERT 同事务：用户提交的是易班凭据，落库即"账号已建"这一事实
             # 必须在同一事务留痕，中间被杀不会留下"凭据已存、审计表无此条"。
-            new_id = m.db.add_account(clean, audit_spec={
+            new_id = db.add_account(clean, audit_spec={
                 "username": clean["owner"],
                 "action": "my_account_add",
-                "target": m._mask_phone(clean["phone"]),
+                "target": _masking.mask_phone(clean["phone"]),
                 "detail": f"用户提交 状态 {clean['status']}",
             })
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发提交兜底
-        m.logger.info("用户 %s 提交账号 %s（待审核）", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
+        m.logger.info("用户 %s 提交账号 %s（待审核）", _accounts_data._mask_email(clean["owner"]), _masking.mask_phone(clean["phone"]))
         # 申请入库后管理员侧零通知，只能靠主动打开后台发现，于是出现"用户说交了
         # 申请、管理员说没收到"。补一条非紧急告警：邮件必达，手机推送受「仅推送
         # 重要告警」与当日非紧急额度约束（不挤占紧急账）。整段兜异常——账号已入库，
         # 通知失败不得把提交结果带崩成 500。
         try:
-            m.run_after_file_lock(
-                m.send_notification,
+            _locks.run_after_file_lock(
+                _notify_mail.send_notification,
                 "新账号申请待审核",
-                m.mail_layout.Mail(
+                mail_layout.Mail(
                     summary="有新提交的易班账号待审核。",
-                    fields=[("提交者", m._nl_safe(str(clean["owner"]))),
-                            ("账号", m._mask_phone(clean["phone"])),
+                    fields=[("提交者", _notify_mail._nl_safe(str(clean["owner"]))),
+                            ("账号", _masking.mask_phone(clean["phone"])),
                             ("处理入口", "管理台「待审核」列表")],
                     level="info",
                 ),
@@ -639,16 +661,16 @@ def api_my_account_add():
         if verify_async_job:
             # 账号已落库，随后由后台任务校验；响应**增补** job_id/status（不改既有字段）
             try:
-                job_id, _ = m._start_verify_job(
+                job_id, _ = _verify_queue._start_verify_job(
                     clean, clean["owner"], new_id, verify_fails(), verify_limits())
                 resp["job_id"] = job_id
                 resp["status"] = "verifying"
-            except m.VerifyGateBusy:
+            except _verify_queue.VerifyGateBusy:
                 # 配额已扣而任务没建成本次真实提交的一部分事实：不能静默回
                 # "ok" 当无事发生（用户以为在验证、且尝试额度已消耗），如实报——
                 # status 明示"未排上在线校验"，msg 交代后续动作由用户重试触发。
                 m.logger.warning("校验任务队列已满，账号 %s 未建校验任务",
-                               m._mask_phone(clean["phone"]))
+                               _masking.mask_phone(clean["phone"]))
                 resp["status"] = "verify_deferred"
                 resp["msg"] = "已提交，等待管理员审核后参与签到（校验队列繁忙，本次未排上在线校验，请稍后重试）"
         return jsonify(resp)
@@ -656,8 +678,7 @@ def api_my_account_add():
 
 def api_verify_job_get(job_id):
     """查询校验任务状态与结果（仅本人；内置主管理员可读）。"""
-    m = _appmod()
-    job = m.db.get_verify_job(job_id)
+    job = db.get_verify_job(job_id)
     if not job:
         return jsonify({"error": "任务不存在"}), 404
     if not _verify_job_visible(job, session.get("username")):
@@ -671,19 +692,18 @@ def api_verify_job_cancel(job_id):
     先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
     "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
     """
-    m = _appmod()
-    m._reclaim_stale_verify_jobs()
-    job = m.db.get_verify_job(job_id)
+    _verify_queue._reclaim_stale_verify_jobs()
+    job = db.get_verify_job(job_id)
     if not job:
         return jsonify({"error": "任务不存在"}), 404
     if not _verify_job_visible(job, session.get("username")):
         return jsonify({"error": "无权限"}), 403
-    if job["status"] in m.VERIFY_JOB_TERMINAL:
+    if job["status"] in verify_jobs.TERMINAL_STATUSES:
         return jsonify({"error": "任务已结束，无法取消"}), 409
-    if not m.db.cancel_verify_job(job_id):
+    if not db.cancel_verify_job(job_id):
         # 与查询之间被后台线程抢走（进入 running）→ 同样视为已无法取消
         return jsonify({"error": "任务已开始执行，无法取消"}), 409
-    return jsonify({"ok": True, "job": _job_payload(m.db.get_verify_job(job_id))})
+    return jsonify({"ok": True, "job": _job_payload(db.get_verify_job(job_id))})
 
 
 def api_my_calendar():
@@ -696,7 +716,7 @@ def api_my_calendar():
             raise ValueError
     except Exception:
         return jsonify({"error": "月份格式不正确，应为 YYYY-MM"}), 400
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
     # 日历仅回显已生效账号的历史（pending/rejected/软删除不回显）
     phones = _my_active_phones(accounts, indices)
@@ -732,7 +752,7 @@ def api_my_calendar():
             "ok": False,
             "error": "无法读取签到状态目录，请稍后重试或联系管理员",
         }), 500
-    _sat_sign, _sun_sign = yb_schedule.weekend_flags(env=m.read_env(m.ENV_FILE))
+    _sat_sign, _sun_sign = yb_schedule.weekend_flags(env=_env_io_svc.read_env(m.ENV_FILE))
     return jsonify({
         "ok": True,
         "month": month,
@@ -750,14 +770,13 @@ def api_my_logs():
     读按天文件（sign-YYYY-MM-DD.log）：历史日期同样可查（只读当前 sign.log 时，
     轮转后历史日期恒为空）。
     """
-    m = _appmod()
     date = str(request.args.get("date", "")).strip()
-    if date and not m._is_valid_date_str(date):
+    if date and not _logs_svc._is_valid_date_str(date):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
     # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
     if not date:
-        date = m._most_recent_log_date()
-    accounts = m.load_accounts()
+        date = _logs_svc._most_recent_log_date()
+    accounts = _accounts_data.load_accounts()
     indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
     # 日志仅回显已生效账号的历史（pending/rejected/软删除不回显）
     phones = _my_active_phones(accounts, indices)
@@ -765,26 +784,26 @@ def api_my_logs():
     # 行内手机号有两种纪元：加固前文件落完整号 `[完整号]`，加固后文件本身脱敏、
     # 落 `[遮罩号]`。过滤必须两种形态同时认，只认完整号会让加固纪元的日志
     # 在日历"我的日志"面板恒为空（历史日期照常可读）。
-    needles = [(f"[{p}]", f"[{m.signin._mask_phone(p)}]") for p in phones]
-    for line in m._log_lines_for(date):
+    needles = [(f"[{p}]", f"[{signin._mask_phone(p)}]") for p in phones]
+    for line in _logs_svc._log_lines_for(date):
         if any(full in line or masked in line for full, masked in needles):
             out.append(line.strip())
     # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）
-    return jsonify({"ok": True, "date": date, "logs": [m._mask_log_phones(ln) for ln in out[-50:]]})
+    return jsonify({"ok": True, "date": date, "logs": [_logs_svc._mask_log_phones(ln) for ln in out[-50:]]})
 
 
 def api_my_account_update(idx):
     """编辑自己提交的账号：密码/识别码留空=保留；改绑手机号一律回待审核重审
     仅密码/识别码变更不影响已生效状态。"""
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         indices = _my_account_indices_of(accounts)
         if not 0 <= idx < len(indices):
             return jsonify({"error": "账号不存在"}), 404
         real_idx = indices[idx]
         old = accounts[real_idx]
-        data = m._json_body()
+        data = _http._json_body()
         # 防错位（与 /api/accounts/* 同口径）：本人视图的 idx 在渲染后可能因
         # 管理员删除/清除而漂移，不校验会静默改到本人另一行。
         # 比对基准优先取编辑表单的乐观锁快照 phone——本端点允许"填写完整新号码"
@@ -797,7 +816,7 @@ def api_my_account_update(idx):
                 _snap = None
         guard_src = ({"phone": _snap["phone"]}
                      if isinstance(_snap, dict) and _snap.get("phone") else data)
-        if m._stale_idx_guard(old, guard_src):
+        if _accounts_data._stale_idx_guard(old, guard_src):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         # 软删除账号禁止编辑（防编辑流程绕过软删除；恢复由管理员操作）
         if old.get("deleted"):
@@ -805,12 +824,12 @@ def api_my_account_update(idx):
         # 用户面不收设备型号/识别码：键不进 clean ⇒ UPDATE 不动这两列，库里既有值
         # （自动补全填的）保持原样（用户 2026-10-16 裁决）。故此处也没有"改写识别码"
         # 这一支，编辑探针与熔断清除只认口令变更。
-        err, clean = m.validate_account(data, require_password=False, allow_device_fields=False)
+        err, clean = _accounts_data.validate_account(data, require_password=False, allow_device_fields=False)
         if err:
             return jsonify({"error": err}), 400
         if (
             clean["phone"] != old.get("phone")
-            and m.find_account_index(accounts, clean["phone"]) is not None
+            and _accounts_data.find_account_index(accounts, clean["phone"]) is not None
         ):
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         if not clean["password"]:
@@ -821,30 +840,30 @@ def api_my_account_update(idx):
         # 仅密码/识别码变更（phone 不变）→ 状态不变。
         rebind = clean["phone"] != old.get("phone")
         clean["status"] = (
-            m.ACCOUNT_STATUS_PENDING
-            if rebind or old.get("status") == m.ACCOUNT_STATUS_REJECTED
-            else old.get("status", m.ACCOUNT_STATUS_PENDING)
+            _accounts_data.ACCOUNT_STATUS_PENDING
+            if rebind or old.get("status") == _accounts_data.ACCOUNT_STATUS_REJECTED
+            else old.get("status", _accounts_data.ACCOUNT_STATUS_PENDING)
         )
-        if clean["status"] == m.ACCOUNT_STATUS_PENDING:
+        if clean["status"] == _accounts_data.ACCOUNT_STATUS_PENDING:
             # 显式置空（clean.pop 对不存在的键是空操作，会残留旧拒绝理由），随 update 落库
             clean["reject_reason"] = ""
         try:
-            m.db.update_account(old["id"], clean)
+            db.update_account(old["id"], clean)
         except sqlite3.IntegrityError:
             return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发改号兜底
         # 手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清
         if rebind:
-            m.db.clear_time_pref(old.get("phone", ""))
-        m.db.audit(
+            db.clear_time_pref(old.get("phone", ""))
+        db.audit(
             clean["owner"],
             "my_account_update",
-            m._mask_phone(clean["phone"]),
+            _masking.mask_phone(clean["phone"]),
             "用户编辑 改绑回审" if rebind else "用户编辑",
         )
         # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
         # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
-        m.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
-        m.logger.info("用户 %s 编辑账号 %s", m._mask_email(clean["owner"]), m._mask_phone(clean["phone"]))
+        _logs_svc.clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
+        m.logger.info("用户 %s 编辑账号 %s", _accounts_data._mask_email(clean["owner"]), _masking.mask_phone(clean["phone"]))
         # 编辑路径的**异步探针**：口令实际变更后，后台复核新凭据是否可用。
         # 易班口令对本地口令策略豁免，前提正是"真实登录探针兜底"；缺它时用户填错口令
         # 会被静默接受，直到签到日才暴露（账号处于暂停态时错误凭据可无限期潜伏）。
@@ -857,15 +876,15 @@ def api_my_account_update(idx):
             _probe_user = str(session.get("username", ""))
             _probe_limits = verify_limits()
             _probe_fails = verify_fails()
-            m.run_after_file_lock(
+            _locks.run_after_file_lock(
                 _start_edit_probe,
-                clean, _probe_user, _probe_fails, _probe_limits, m._start_verify_job,
-                m._account_verify_enabled, m._verify_queue_full,
-                lambda: m._verify_attempt_allowed(_probe_limits, _probe_user),
-                lambda: m._verify_fail_cooldown_remaining(
+                clean, _probe_user, _probe_fails, _probe_limits, _verify_queue._start_verify_job,
+                _verify_queue._account_verify_enabled, _verify_queue._verify_queue_full,
+                lambda: _security._verify_attempt_allowed(_probe_limits, _probe_user),
+                lambda: _security._verify_fail_cooldown_remaining(
                     _probe_fails, clean["phone"], time.time()),
             )
-        if rebind or old.get("status") == m.ACCOUNT_STATUS_REJECTED:
+        if rebind or old.get("status") == _accounts_data.ACCOUNT_STATUS_REJECTED:
             return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
         return jsonify({"ok": True, "msg": "已保存"})
 
@@ -878,8 +897,8 @@ def api_my_account_delete(idx):
     管理员删除的账号仍由管理员恢复/清除，防清退账号被用户一键复活。
     """
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         indices = _my_account_indices_of(accounts)
         if not 0 <= idx < len(indices):
             return jsonify({"error": "账号不存在"}), 404
@@ -888,33 +907,33 @@ def api_my_account_delete(idx):
             return jsonify({"error": "该账号已在待删除状态，可在本页撤销恢复"}), 400
         # 防错位（同 /api/accounts/*）：软删虽可逆（7 天宽限 + 本页可自助恢复），
         # 但视图漂移时删错本人另一行的代价远大于让用户刷新一次
-        if m._stale_idx_guard(removed, m._json_body()):
+        if _accounts_data._stale_idx_guard(removed, _http._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-        m.db.set_account_deleted(
+        db.set_account_deleted(
             removed["id"],
             1,
-            m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+            clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             deleted_by=(session.get("username", "") or "").strip().lower(),
         )
-        m.db.audit(
+        db.audit(
             session.get("username", "") or "?",
             "my_account_delete",
-            m._mask_phone(removed.get("phone", "")),
+            _masking.mask_phone(removed.get("phone", "")),
             "用户删除（软删除，宽限期内可撤销）",
         )
         m.logger.info(
             "用户 %s 删除账号 %s（软删除）",
             session.get("username", ""),
-            m._mask_phone(removed.get("phone", "")),
+            _masking.mask_phone(removed.get("phone", "")),
         )
         # 删号（软删）给本人留痕邮件（绕过 mail_notify 开关）；锁内登记、出锁后发
-        m.run_after_file_lock(
-            m.mailer.send_user,
+        _locks.run_after_file_lock(
+            mailer.send_user,
             session.get("username", ""),
             "【易班签到】您的易班账号已删除（7 天内可撤销）",
-            m.mail_layout.Mail(
-                summary=f"您的易班账号（{m._mask_phone(removed.get('phone', ''))}）已被删除，"
-                        f"进入 {m.DELETED_RETENTION_DAYS} 天宽限期。",
+            mail_layout.Mail(
+                summary=f"您的易班账号（{_masking.mask_phone(removed.get('phone', ''))}）已被删除，"
+                        f"进入 {db.SOFT_DELETE_RETENTION_DAYS} 天宽限期。",
                 advice=["宽限期内可在「我的账号」页自行撤销恢复",
                         "如非本人操作，请立即联系管理员"],
             ),
@@ -931,8 +950,8 @@ def api_my_account_restore(idx):
     - 「每人限 1」防呆与管理员侧同源（_owner_has_other_live）。
     """
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         indices = _my_account_indices_of(accounts)
         if not 0 <= idx < len(indices):
             return jsonify({"error": "账号不存在"}), 404
@@ -941,24 +960,24 @@ def api_my_account_restore(idx):
             return jsonify({"error": "该账号不在待删除状态"}), 400
         if acc.get("deleted_by", "") != (session.get("username", "") or "").strip().lower():
             return jsonify({"error": "该账号由管理员删除，如需恢复请联系管理员"}), 403
-        if m._owner_has_other_live(accounts, acc):
+        if _accounts_data._owner_has_other_live(accounts, acc):
             return jsonify(
                 {"error": "你已有生效账号，无法恢复（每人限 1 个）"}
             ), 400
-        if m._stale_idx_guard(acc, m._json_body()):
+        if _accounts_data._stale_idx_guard(acc, _http._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-        m.db.set_account_deleted(acc["id"], 0)
-        m.db.audit(
+        db.set_account_deleted(acc["id"], 0)
+        db.audit(
             session.get("username") or "?",
             "my_account_restore",
-            m._mask_phone(acc.get("phone", "")),
+            _masking.mask_phone(acc.get("phone", "")),
             "用户撤销删除",
         )
-        accounts = m.load_accounts()
+        accounts = _accounts_data.load_accounts()
         m.logger.info(
             "用户 %s 撤销删除账号 %s",
             session.get("username", ""),
-            m._mask_phone(acc.get("phone", "")),
+            _masking.mask_phone(acc.get("phone", "")),
         )
         return jsonify(
             {
@@ -974,17 +993,17 @@ def api_my_account_restore(idx):
 def api_my_account_pause(idx):
     """用户自暂停/恢复签到（调度 v2）：暂停后主程序自动跳过，状态显示红底"已取消"。"""
     m = _appmod()
-    with m._file_lock:
-        accounts = m.load_accounts()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
         indices = _my_account_indices_of(accounts)
         if not 0 <= idx < len(indices):
             return jsonify({"error": "账号不存在"}), 404
         acc = accounts[indices[idx]]
         if acc.get("deleted"):
             return jsonify({"error": "账号已删除，请先恢复"}), 400
-        data = m._json_body()
+        data = _http._json_body()
         # 防错位（同 /api/accounts/*）：视图漂移时不得改到本人另一行
-        if m._stale_idx_guard(acc, data):
+        if _accounts_data._stale_idx_guard(acc, data):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
         # 用户确认：管理员不能暂停自己账号（owner=admin 为系统/管理员账号；暂停是
@@ -997,22 +1016,22 @@ def api_my_account_pause(idx):
         # 按用户计价（多管理员共享账号各自独立，可接受）。时长可配
         # （YIBAN_PAUSE_COOLDOWN_SEC，默认 30；0=关闭）。不暴露时长（信息分层）。
         if paused:
-            base_cd = m.load_env_int(m.ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", m.PAUSE_COOLDOWN_SEC)
+            base_cd = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", _limits.PAUSE_COOLDOWN_SEC)
             if base_cd > 0:
                 # 弹性冷却：60s 窗口内前 PAUSE_COOLDOWN_FREE 次完全自由，
                 # 超出后冷却 = 基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX。
-                now_ts = m.clock.now()
-                since = (now_ts - timedelta(seconds=m.PAUSE_COOLDOWN_WINDOW)
+                now_ts = clock.now()
+                since = (now_ts - timedelta(seconds=_limits.PAUSE_COOLDOWN_WINDOW)
                          ).strftime("%Y-%m-%d %H:%M:%S")
-                pause_count = m.db.pause_count_since(
+                pause_count = db.pause_count_since(
                     session.get("username", "") or "", since
                 )
-                if pause_count >= m.PAUSE_COOLDOWN_FREE:
+                if pause_count >= _limits.PAUSE_COOLDOWN_FREE:
                     cooldown = min(
-                        base_cd * (2 ** (pause_count - m.PAUSE_COOLDOWN_FREE + 1)),
-                        m.PAUSE_COOLDOWN_MAX,
+                        base_cd * (2 ** (pause_count - _limits.PAUSE_COOLDOWN_FREE + 1)),
+                        _limits.PAUSE_COOLDOWN_MAX,
                     )
-                    last_ts = m.db.last_pause_at(session.get("username", "") or "")
+                    last_ts = db.last_pause_at(session.get("username", "") or "")
                     if last_ts:
                         try:
                             last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（暂停冷却判定）
@@ -1022,17 +1041,17 @@ def api_my_account_pause(idx):
                         except ValueError:
                             # ts 格式异常（写坏）：保守按冷却生效拦截
                             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        m.db.set_user_paused(acc["id"], paused)
-        m.db.audit(
+        db.set_user_paused(acc["id"], paused)
+        db.audit(
             session.get("username", "") or "?",
             "my_account_pause" if paused else "my_account_resume",
-            m._mask_phone(acc.get("phone", "")),
+            _masking.mask_phone(acc.get("phone", "")),
             "用户自暂停" if paused else "用户恢复",
         )
         m.logger.info(
             "用户 %s %s 账号 %s",
             session.get("username", ""), "暂停" if paused else "恢复",
-            m._mask_phone(acc.get("phone", "")),
+            _masking.mask_phone(acc.get("phone", "")),
         )
         return jsonify({
             "ok": True,
@@ -1049,16 +1068,16 @@ def api_my_account_device_refresh(idx):
     读不到不改库。
     """
     m = _appmod()
-    accounts = m.load_accounts()
+    accounts = _accounts_data.load_accounts()
     indices = _my_account_indices_of(accounts)
     if not 0 <= idx < len(indices):
         return jsonify({"error": "账号不存在"}), 404
     acc = accounts[indices[idx]]
-    data = m._json_body()
+    data = _http._json_body()
     # 防错位：本人视图下标经归属收窄，但渲染后仍可能漂移（管理员删行/本人恢复）。
     # fail_closed=True：本端点会对目标账号**发起一次真实登录**并写它的行，
     # 未携带 phone 就等于没人证明"idx 还指向视图里那一行"（新写口，无既有前端依赖默认值）
-    if m._stale_idx_guard(acc, data, fail_closed=True):
+    if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
         return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
     if acc.get("deleted"):
         return jsonify({"error": "账号已删除，请先恢复"}), 400

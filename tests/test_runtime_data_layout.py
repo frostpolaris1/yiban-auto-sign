@@ -78,7 +78,7 @@ CARRIER_EXPECT = {
         'resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)',),
     # 清库留痕的**唯一生产调用点**：必须把 CLI 自己解析出的库路径显式传下去，否则
     # 被调方另解析一次默认值——两者一旦分叉，"拒绝删除"的判据看的是另一个库。
-    # 坐标＝批 A1 后的新落点（`yiban/cli.py` 已改成转发壳，不再承载判据）。
+    # 坐标＝批 A1 后的新落点（旧入口壳已于 145-E 退役，不再承载判据）。
     "yiban/entry/cli/__init__.py": ('db_file=_paths(view)["db_file"]',),
 }
 
@@ -620,8 +620,8 @@ base = sys.argv[1]
 sys.path.insert(0, base)
 sys.path.insert(0, os.path.join(base, "scripts"))
 import importlib.util
-from yiban.infra import env_io
-from yiban.store import connection, db
+from yiban.adapters.config import env_io
+from yiban.adapters.persistence import connection, db
 out = {"env_path": env_io.env_path(),
        "connection.DB_DEFAULT": connection.DB_DEFAULT,
        "db.DB_DEFAULT": db.DB_DEFAULT}
@@ -658,7 +658,7 @@ import ledger_check
 out["ledger_check.db_default"] = _observed_db_default(
     lambda: ledger_check._reconcile(
         types.SimpleNamespace(day="2000-01-01", all_days=None)))
-from yiban.store import purge_guard
+from yiban.adapters.persistence import purge_guard
 out["purge_guard.db_default"] = _observed_db_default(
     lambda: purge_guard.write_purge_audit("probe", "t", "d"))
 print(json.dumps(out))

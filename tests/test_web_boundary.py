@@ -45,6 +45,16 @@ from unittest import mock
 import flask
 from werkzeug.security import generate_password_hash
 
+from web import render as _render
+from web import security as _security
+from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
+from web.services import executor_env as _executor_env
+from web.services import logs as _logs_svc
+from web.services import measure as _measure
+from web.services import signstatus as _signstatus
+from web.services import verify_queue as _verify_queue
 from yiban.core import clock
 from yiban.core import status as yiban_status
 from yiban.core.masking import mask_email_local
@@ -120,12 +130,12 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         day = clock.now().strftime("%Y-%m-%d")
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
                                return_value={PHONE: f"{day} 07:20:00"}) as spy:
-            got = self.webapp._estimate_slot(PHONE)
+            got = _accounts_data._estimate_slot(PHONE)
         self.assertEqual(spy.call_count, 1, "转发必须现取台账（服务层不自持一份快照）")
         self.assertEqual(got[0], "07:20", "estimated 必须等于台账 run_at 的时分")
         # 打桩换成"台账没有这个号" → （当日无计划行）返回「待生成」，不回退任何钟点
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value={}):
-            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, "待生成"))
+            self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
 
     def test_estimate_slot_no_plan_returns_pending_generation(self):
@@ -134,20 +144,27 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         `None` 与空映射同一失败方向——页面标"未知"，不得编造钟点，也不得回退 v2 派生。
         """
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value=None):
-            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, "待生成"))
+            self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
 
-    def test_os_environ_wins_over_env_file_for_async_switch(self):
+    def test_env_file_wins_over_os_environ_for_async_switch(self):
+        """M27：两个验证开关同口径——`.env` 优先，进程环境只补缺。"""
         self._write_raw("YIBAN_VERIFY_ASYNC=1\n")
         os.environ["YIBAN_VERIFY_ASYNC"] = "0"
         try:
-            self.assertFalse(self.webapp.verify_async_enabled(),
-                             "os.environ 优先（便于临时覆盖）")
+            self.assertTrue(_verify_queue.verify_async_enabled(),
+                            "`.env` 优先（与 M27 全仓口径一致）")
         finally:
             os.environ.pop("YIBAN_VERIFY_ASYNC", None)
-        self.assertTrue(self.webapp.verify_async_enabled(), "未设环境变量时读 .env")
+        self.assertTrue(_verify_queue.verify_async_enabled(), "未设环境变量时读 .env")
         self._write_raw("")
-        self.assertFalse(self.webapp.verify_async_enabled(), "默认关")
+        os.environ["YIBAN_VERIFY_ASYNC"] = "1"
+        try:
+            self.assertTrue(_verify_queue.verify_async_enabled(),
+                            "`.env` 没有该键时进程环境补缺（docker run -e / systemd）")
+        finally:
+            os.environ.pop("YIBAN_VERIFY_ASYNC", None)
+        self.assertFalse(_verify_queue.verify_async_enabled(), "默认关")
 
 
     # ------------------------------------------------------------------
@@ -357,14 +374,14 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         path = os.path.join(self.tmp, "state", "capacity-measure.json")
         self.assertEqual(self.webapp._read_measure_state(path), {}, "缺失按从未实测")
         # 先让写入路径建目录，再逐形态覆盖内容
-        self.webapp._write_measure_state(path, {"at": ""})
+        _measure._write_measure_state(path, {"at": ""})
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("不是 JSON")
         self.assertEqual(self.webapp._read_measure_state(path), {})
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("[1, 2]")
         self.assertEqual(self.webapp._read_measure_state(path), {}, "非 dict 按从未实测")
-        self.webapp._write_measure_state(path, {"at": "2026-09-19 06:00:00", "seconds": 1.5,
+        _measure._write_measure_state(path, {"at": "2026-09-19 06:00:00", "seconds": 1.5,
                                                 "sample": "138****8000"})
         self.assertEqual(self.webapp._read_measure_state(path),
                          {"at": "2026-09-19 06:00:00", "seconds": 1.5,
@@ -410,11 +427,11 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
                 {"YIBAN_SIGN_ORDER": "random"})
         with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
                                return_value={PHONE: f"{day} 06:41:00"}):
-            want = self.webapp._estimate_slot(PHONE)
+            want = _accounts_data._estimate_slot(PHONE)
             self.assertEqual(want[0], "06:41")
             for env in envs:
                 with mock.patch.object(self.webapp, "read_env", return_value=env):
-                    self.assertEqual(self.webapp._estimate_slot(PHONE), want,
+                    self.assertEqual(_accounts_data._estimate_slot(PHONE), want,
                                      f"{env} 不得改变预计时段来源")
 
 
@@ -492,7 +509,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         import yiban.core.window as yb_window
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            win = self.webapp._executors_window()
+            win = _executor_env._executors_window()
         engine = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertEqual((win.front_sec, win.back_sec), (60, 60))
@@ -505,7 +522,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_env_write_round_trip_keeps_comments_and_other_lines(self):
         self._write_raw("# 手工注释\nYIBAN_A = 1\nYIBAN_B=2\n")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_A": "9", "YIBAN_C": "3"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_A": "9", "YIBAN_C": "3"})
         with io.open(self.env_file, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("# 手工注释", text, "注释行必须保留")
@@ -514,13 +531,13 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self.assertIn("YIBAN_C=3", text)
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_A"], "9")
         # 空值 = 删键
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_B": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_B": ""})
         self.assertNotIn("YIBAN_B", self.webapp.read_env(self.env_file))
         # 注入校验：值与键名两处都不放行行分隔符
         with self.assertRaises(ValueError):
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_D": "x\ny"})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_D": "x\ny"})
         with self.assertRaises(ValueError):
-            self.webapp.write_env_batch(self.env_file, {"yiban_d": "x"})
+            _env_io_svc.write_env_batch(self.env_file, {"yiban_d": "x"})
 
     def test_write_env_int_and_load_env_int_semantics(self):
         self.webapp.write_env_int(self.env_file, "YIBAN_NUM", 5)
@@ -558,7 +575,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self._write_raw("YIBAN_WORKERS=2\n"
                         "YIBAN_PROXY_LIST=http://a:1,http://b:2\n"
                         "YIBAN_PROXY_FALLBACK=http://f:1\n")
-        rows = self.webapp._executor_rows()
+        rows = _executor_env._executor_rows()
         self.assertEqual([r["proxy"] for r in egress.worker_rows(rows)],
                          ["http://a:1", "http://b:2"])
         env = self.webapp.read_env(self.env_file)
@@ -567,7 +584,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         # 迁移只发生一次：清单已在，第二次读不再落盘
         real = self.webapp._atomic_write
         with mock.patch.object(self.webapp, "_atomic_write", side_effect=real) as spy:
-            self.webapp._executor_rows()
+            _executor_env._executor_rows()
         spy.assert_not_called()
 
     def test_executor_manifest_write_round_trip_preserves_other_lines(self):
@@ -575,11 +592,11 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         rows = egress.add_row([], egress.TYPE_WORKER, "http://a:1", name="机一")
         self._write_raw(f"# 保留我\n{egress.ENV_MANIFEST}={egress.dump_manifest(rows)}\n")
         # 追加兜底行（清单里没有则新增）
-        self.assertEqual(self.webapp._save_fallback_egress(self.env_file, "http://fb:9"),
+        self.assertEqual(_executor_env._save_fallback_egress(self.env_file, "http://fb:9"),
                          (None, None))
         # 单行出口改写：其余行逐字保留
         self.assertEqual(
-            self.webapp._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2"),
+            _executor_env._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2"),
             (None, None))
         with io.open(self.env_file, encoding="utf-8") as f:
             text = f.read()
@@ -593,15 +610,15 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     def test_save_slot_egress_replaces_one_segment_only(self):
         self._write_raw("YIBAN_PROXY_LIST=http://a:1,http://b:2,http://c:3\n")
         self.assertEqual(
-            self.webapp._save_slot_egress(self.env_file, "YIBAN_PROXY_LIST", 1, "http://d:4"),
+            _executor_env._save_slot_egress(self.env_file, "YIBAN_PROXY_LIST", 1, "http://d:4"),
             (None, None))
         self.assertEqual(
             self.webapp.read_env(self.env_file)["YIBAN_PROXY_LIST"],
             "http://a:1,http://d:4,http://c:3", "其余段必须逐字保留")
-        err, code = self.webapp._save_slot_egress(
+        err, code = _executor_env._save_slot_egress(
             self.env_file, "YIBAN_PROXY_LIST", 1, "不是代理\n")
         self.assertEqual((err, code), ("代理配置不能包含换行", 400))
-        err, code = self.webapp._save_slot_egress(
+        err, code = _executor_env._save_slot_egress(
             self.env_file, "YIBAN_PROXY_LIST", 1, "http://u:p@h:1/x 备注")
         self.assertEqual(code, 400)
         self.assertIn("代理地址格式不正确", err)
@@ -730,12 +747,12 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f"[{today} 06:40:08] [DEBUG] yiban: 探针跳过",
             "不是日志行",
         ]
-        path = self.webapp.log_path_for(today)
+        path = _logs_svc.log_path_for(today)
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        got = self.webapp.parse_sign_log(path)
+        got = _logs_svc.parse_sign_log(path)
         self.assertEqual(got, [lines[0], lines[1], lines[2], lines[4]])
-        self.assertEqual(self.webapp._log_lines_for(today), got,
+        self.assertEqual(_logs_svc._log_lines_for(today), got,
                          "两条路径必须共用同一条可见性规则")
 
     def test_is_valid_date_str_is_calendar_strict(self):
@@ -766,23 +783,23 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                      encoding="utf-8") as f:
             f.write('{"13800138000": "✅", "13900139000": "❌", '
                     '"13700137000": "➖", "13600136000": "?"}')
-        got = self.webapp.load_sign_state(date)
-        self.assertEqual(got["13800138000"]["status"], self.webapp.STATUS_SUCCESS)
-        self.assertEqual(got["13900139000"]["status"], self.webapp.STATUS_FAILED)
-        self.assertEqual(got["13700137000"]["status"], self.webapp.STATUS_NO_TASK)
-        self.assertEqual(got["13600136000"]["status"], self.webapp.STATUS_PENDING)
+        got = _logs_svc.load_sign_state(date)
+        self.assertEqual(got["13800138000"]["status"], yiban_status.STATUS_SUCCESS)
+        self.assertEqual(got["13900139000"]["status"], yiban_status.STATUS_FAILED)
+        self.assertEqual(got["13700137000"]["status"], yiban_status.STATUS_NO_TASK)
+        self.assertEqual(got["13600136000"]["status"], yiban_status.STATUS_PENDING)
         # 结构化文件优先；为空 dict 时继续回退
         structured = os.path.join(self.tmp, f"sign-state-{date}.json")
         with io.open(structured, "w", encoding="utf-8") as f:
             f.write('{"13800138000": {"status": "success"}}')
-        self.assertEqual(self.webapp.load_sign_state(date),
+        self.assertEqual(_logs_svc.load_sign_state(date),
                          {"13800138000": {"status": "success"}})
         with io.open(structured, "w", encoding="utf-8") as f:
             f.write("{}")
-        self.assertEqual(len(self.webapp.load_sign_state(date)), 4, "空结构化文件回退旧格式")
+        self.assertEqual(len(_logs_svc.load_sign_state(date)), 4, "空结构化文件回退旧格式")
         for name in (structured, os.path.join(self.tmp, f"sign-daily-{date}.json")):
             os.remove(name)
-        self.assertEqual(self.webapp.load_sign_state(date), {})
+        self.assertEqual(_logs_svc.load_sign_state(date), {})
 
     def test_legacy_daily_symbols_all_decode_to_a_real_status(self):
         """`SYMBOL` 全表的**每个**符号，回退反查都必须解出同符的状态码（不得落 `pending`）。
@@ -807,7 +824,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         with io.open(os.path.join(self.tmp, f"sign-daily-{date}.json"), "w",
                      encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
-        got = self.webapp.load_sign_state(date)
+        got = _logs_svc.load_sign_state(date)
         self.assertEqual(len(got), len(rows), "每个符号都要解出一条记录")
         for phone, sym in rows.items():
             # 漏格时该符号解成 `pending`，而 `pending` 只同符 ⏳ ⇒ 除 ⏳ 外一律当场翻红
@@ -829,7 +846,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     def test_cred_paused_phones_and_clear_fuse_pause(self):
         import json
 
-        from yiban import cred_state
+        from yiban.adapters.statefiles import cred_state
         p1, p2 = "13800138000", "13900139000"
         with io.open(cred_state.path(), "w", encoding="utf-8") as f:
             json.dump({p1: {"fail_days": 3, "paused_since": "2026-09-01 00:00:00"},
@@ -864,12 +881,12 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
 
     def test_sign_window_reads_env_and_falls_back(self):
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:30\n")
-        self.assertEqual(self.webapp._sign_window(), ((7, 0), (7, 30)))
+        self.assertEqual(_signstatus._sign_window(), ((7, 0), (7, 30)))
         self._write_raw("YIBAN_SIGN_START=bad\nYIBAN_SIGN_END=07:30\n")
-        self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 30)),
+        self.assertEqual(_signstatus._sign_window(), ((6, 30), (7, 30)),
                          "非法起点回退默认、终点照取 .env（与引擎同一份逐字段解析）")
         self._write_raw("")
-        self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 50)))
+        self.assertEqual(_signstatus._sign_window(), ((6, 30), (7, 50)))
 
     def test_in_sign_window_minute_bounds(self):
         import yiban.core.window as yb_window
@@ -888,10 +905,10 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                                    "edge_front_sec": 0, "edge_back_sec": 0})
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         # 周六/周日默认关闭 → 钟点在窗口内也不算"本应运行"
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 19, 6, 40)))
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 20, 6, 40)))
-        self.assertTrue(self.webapp._in_run_period(bounds, datetime(2026, 9, 16, 6, 40)))
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 16, 9, 0)),
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 19, 6, 40)))
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 20, 6, 40)))
+        self.assertTrue(_signstatus._in_run_period(bounds, datetime(2026, 9, 16, 6, 40)))
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 16, 9, 0)),
                          "窗口外一律不算本应运行")
 
     def test_sign_status_texts_and_weekend_short_circuit(self):
@@ -902,7 +919,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         与引擎 06:31 开、07:49 停手分叉 1 分钟）。
         """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 0)),
                          ("未到签到时间（06:31 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 0)),
@@ -924,7 +941,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=60\nYIBAN_WINDOW_EDGE_BACK_SEC=60\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30))[0], "未到签到时间（06:31 开始）")
         self.assertEqual(status(datetime(2026, 9, 16, 6, 31))[0], "签到窗口进行中（~07:49 结束）")
         self.assertEqual(status(datetime(2026, 9, 16, 7, 49))[0], "签到窗口进行中（~07:49 结束）")
@@ -938,7 +955,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30)),
                          ("未到签到时间（07:01 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 5)),
@@ -954,8 +971,8 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
-            text, color = self.webapp.sign_status(datetime(2026, 9, 16, 7, 0))
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=dead):
+            text, color = _signstatus.sign_status(datetime(2026, 9, 16, 7, 0))
         self.assertEqual(text, "配置异常：签到窗口不可用，已按 06:31~07:49 运行")
         self.assertEqual(color, "#e0af68")
 
@@ -981,8 +998,8 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write("[2020-01-02 06:40:00] [INFO] yiban: 签到\n")
         with mock.patch.object(self.webapp.clock, "now",
                                return_value=datetime(2020, 1, 5, 9, 0)):
-            self.assertEqual(self.webapp._most_recent_log_date(30), "2020-01-02")
-            self.assertEqual(self.webapp._most_recent_log_date(1), "2020-01-02",
+            self.assertEqual(_logs_svc._most_recent_log_date(30), "2020-01-02")
+            self.assertEqual(_logs_svc._most_recent_log_date(1), "2020-01-02",
                              "同日命中缓存：不因本次的扫描范围更窄而改写答案")
             self.assertEqual(self.webapp._most_recent_log_cache["checked_day"], "2020-01-05")
         # 今天有日志时立即返回今天（并刷新缓存）
@@ -992,28 +1009,11 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write("[2020-01-05 06:40:00] [INFO] yiban: 签到\n")
         with mock.patch.object(self.webapp.clock, "now",
                                return_value=datetime(2020, 1, 5, 9, 0)):
-            self.assertEqual(self.webapp._most_recent_log_date(30), "2020-01-05")
+            self.assertEqual(_logs_svc._most_recent_log_date(30), "2020-01-05")
 
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-
-
-COMMON_APP_STATE = (
-    "ENV_FILE", "LOG_FILE", "STATE_DIR", "read_env", "load_env_int",
-    "_sign_window", "edge_config", "log_path_for", "_atomic_write",
-    "_file_lock", "_rate_lock",
-)
-
-
-APP_HELD_STATE_NOTIFY = {
-    "web/services/notify_mail.py": (*COMMON_APP_STATE, "_mail_alert_due"),
-    "web/services/channel_health.py": (
-        *COMMON_APP_STATE, "send_notification", "_push_ever_configured", "_mail_alert_due"),
-    "web/services/capacity.py": (
-        *COMMON_APP_STATE, "send_notification", "DEFAULT_MAX_ACCOUNTS", "DEFAULT_MAX_USERS"),
-    "web/services/manual_sign.py": COMMON_APP_STATE,
-}
 
 
 class WebServicesNotifySplitContractTest(unittest.TestCase):
@@ -1086,18 +1086,18 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
     # 3. 行为逐字不变
     # ------------------------------------------------------------------
     def test_capacity_formula_verbatim(self):
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
-            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            self.assertEqual(_capacity._capacity_estimate(3600), 2)
         # 退化窗口（起止同点）回退默认窗口 06:30~07:50（与引擎同源，故不为 0）
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+            self.assertEqual(_capacity._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_manual_sign_exit_semantics_verbatim(self):
         f = self.webapp._manual_sign_failure_reason
@@ -1269,7 +1269,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
     # 3. 行为逐字不变
     # ------------------------------------------------------------------
     def test_migrate_admin_password_to_hash_roundtrip(self):
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
         with mock.patch.object(self.webapp, "read_env",
                                return_value={"YIBAN_ADMIN_PASSWORD": "Strong#1234"}):
             self.webapp.migrate_admin_password_to_hash(self.env_file)
@@ -1277,7 +1277,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
         self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", text)
         self.assertNotIn("Strong#1234", text, "明文必须被清空（值空 → 删行）")
         self.assertNotIn("YIBAN_ADMIN_PASSWORD=", text)
-        self.assertIs(real_write, self.webapp.write_env_batch)
+        self.assertIs(real_write, _env_io_svc.write_env_batch)
 
     def test_reject_default_admin_password_verbatim_thresholds(self):
         weak = os.path.join(self.tmp, "weak.env")
@@ -1348,38 +1348,45 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                         mock.patch.object(self.webapp.db, "find_user", return_value=None), \
                         self.flask_app.test_request_context():
                     flask.session.update(data)
-                    got = self.webapp._effective_role(data.get("username"), pwv)
+                    got = _security._effective_role(data.get("username"), pwv)
                 self.assertEqual(got, want)
         # 升级日存量部署兼容：.env 尚未签发 sid（空）时不强制重登
         with mock.patch.object(self.webapp, "read_env",
                                return_value={"YIBAN_ADMIN_USER": "admin"}), \
                 self.flask_app.test_request_context():
             flask.session.update({"auth_source": "builtin", "username": "admin"})
-            self.assertEqual(self.webapp._effective_role("admin", 1), "admin")
+            self.assertEqual(_security._effective_role("admin", 1), "admin")
         with mock.patch.object(self.webapp, "read_env", return_value=env), \
                 mock.patch.object(self.webapp.db, "find_user",
                                   return_value={"role": "admin", "sid": "s", "pw_version": 2}), \
                 self.flask_app.test_request_context():
             flask.session.update({"auth_source": "user", "username": "u@x.io", "sid": "s"})
-            self.assertEqual(self.webapp._effective_role("u@x.io", 2), "admin")
-            self.assertEqual(self.webapp._effective_role("u@x.io", 1), None,
+            self.assertEqual(_security._effective_role("u@x.io", 2), "admin")
+            self.assertEqual(_security._effective_role("u@x.io", 1), None,
                              "pw_version 不匹配即失效")
 
     def test_current_role_absolute_expiry_clears_session(self):
         env = {"YIBAN_ADMIN_USER": "admin"}
         with mock.patch.object(self.webapp, "read_env", return_value=env), \
                 self.flask_app.test_request_context():
-            self.assertIsNone(self.webapp._current_role(), "无 auth 即未登录")
+            self.assertIsNone(_security._current_role(
+            self.webapp.SESSION_ABS_TTL_SECONDS), "无 auth 即未登录")
             flask.session["auth"] = True
             flask.session["username"] = "u@x.io"
             flask.session["login_ts"] = int(time.time()) - self.webapp.SESSION_ABS_TTL_SECONDS - 5
             with mock.patch.object(self.webapp.db, "find_user", return_value=None):
-                self.assertIsNone(self.webapp._current_role())
+                self.assertIsNone(_security._current_role(
+            self.webapp.SESSION_ABS_TTL_SECONDS))
             self.assertEqual(len(flask.session), 0, "超限必须清空会话（视为未登录）")
 
     def test_client_ip_trusted_proxy_and_fallback(self):
-        """回环首跳采信 XFF；非回环首跳丢弃；无 XFF 时回落 remote_addr。"""
+        """显式信任档（反代形态）：回环首跳采信 XFF；非回环首跳丢弃；无 XFF 回落。
+
+        选项默认已翻转为"不信任"（ba-p07-01），故本用例显式打开开关，测的才是
+        "反代部署"那条分支；缺省档由 `test_client_ip_default_trust_is_off` 钉住。
+        """
         app = self.flask_app
+        app.config[self.webapp.FORWARDED_TRUST_ENV_KEY] = True
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
                                       headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9")
@@ -1393,6 +1400,15 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                              "非可信首跳的 XFF 必须被忽略（不可伪造）")
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"}):
             self.assertEqual(self.webapp._client_ip(), "::1")
+        app.config[self.webapp.FORWARDED_TRUST_ENV_KEY] = False
+
+    def test_client_ip_default_trust_is_off(self):
+        """缺省档（未设开关）：回环首跳也不采信 XFF——客户端自报值不得成为 IP 桶。"""
+        app = self.flask_app
+        app.config.pop(self.webapp.FORWARDED_TRUST_ENV_KEY, None)
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
+                                      headers={"X-Forwarded-For": "203.0.113.9"}):
+            self.assertEqual(self.webapp._client_ip(), "127.0.0.1")
 
     def test_atomic_write_roundtrip_and_reparse(self):
         target = os.path.join(self.tmp, "aw-security.txt")
@@ -1418,7 +1434,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "read_env") as re_:
             re_.return_value = {"YIBAN_ADMIN_USER": "admin",
                                 "YIBAN_ADMIN_PASSWORD_HASH": "not-a-hash"}
-            self.assertFalse(self.webapp.verify_admin("admin", "pw"))
+            self.assertFalse(_security.verify_admin("admin", "pw"))
 
     def test_builtin_admin_loginable_three_states(self):
         cases = [
@@ -1432,7 +1448,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                     mock.patch.object(self.webapp, "read_env", return_value=env), \
                     mock.patch.object(self.webapp, "_count_env_key_lines",
                                       return_value=lines):
-                self.assertEqual(self.webapp._builtin_admin_loginable(), want)
+                self.assertEqual(_security._builtin_admin_loginable(), want)
 
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
@@ -1510,7 +1526,7 @@ class WebRenderSplitContractTest(unittest.TestCase):
     def test_site_image_rejects_non_https_round_trip(self):
         self._write_env("YIBAN_SITE_IMAGE=http://img.example.com/a.png\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            self.assertEqual(self.webapp.site_image(), "")
+            self.assertEqual(_render.site_image(), "")
 
 
     # ------------------------------------------------------------------
@@ -1748,7 +1764,7 @@ class _TrimProbeStore(dict):
 # ---------------------------------------------------------------------------
 # 拆墙 W0：`web/app.py` 转发墙名集与真实读者对账
 # ---------------------------------------------------------------------------
-# 来历（工单 `128 P2`，施工方案 `docs/refactor/145` §1.2/§1.3/§3.1）：
+# 来历（工单 `128 P2`，施工方案 §1.2/§1.3/§3.1）：
 # `web/app.py` 曾把各域实现的名字再导出，供路由经 `web.routes.appmod()` 按属性取用、
 # 供测试按属性打桩。批 A1–A5 把实现迁走后，其中一批名字已**零读者**（纯转发壳），
 # 本批（W0）删除。本门钉两条不变式，防"删了还在用的名"与"零读者名回流"。
@@ -1756,7 +1772,9 @@ class _TrimProbeStore(dict):
 # ① **读者可解析**：路由与测试经 app 别名读到的每个名字，都必须在 `web/app.py` 有绑定。
 #    删掉一个还有读者的名字 ⇒ 红，点名 `文件:行`。
 # ② **无零读者转发名**：带 `noqa: F401` 的每个 import 绑定名，至少要有一个读者。
-#    唯一豁免登记在 `_WALL_DEAD_F401_EXEMPT`（附理由，不许空豁免）。
+#    豁免登记在 `_WALL_DEAD_F401_EXEMPT`（逐名附理由），不许空豁免。
+#    批 3-a 的过渡集 `_WALL_DEAD_F401_BATCH3A`（21 名）已在批 3-b 与墙名同批删除，
+#    故本门不再有那份过渡登记，也没有对应的腐烂断言（删名与删登记同批做）。
 # 扫描面非空：绑定名、读者、F401 名集各设下限；扫空即红（AGENTS §30）。
 #
 # 边界：① 的别名取**规范别名**（`self.webapp` 一族），不把 `w`/`mod` 等易与其他模块
@@ -1840,6 +1858,59 @@ def _wall_route_reads():
     return out
 
 
+#: 服务层里可以**经参数**收下 app 模块的形参名。批 3-b 实测：`web/services/device_refresh.py`
+#: 的 `refresh_account_device(m, …)` 在 except 子句里读 `m.VerifyQuotaExceeded`——那种读法
+#: 既不是 `appmod()` 别名（路由面）也不是测试别名，只看 routes/tests 会把它判成"零读者"
+#: 并删掉**还有读者的名字**（删了 429 分支变 500，实测抓到）。故本门把服务层面的读法
+#: 并入读者面：§29「门看的东西 ＝ 实际改的东西」。
+_WALL_HOST_PARAMS = frozenset(("m",))
+#: 服务层面（相对 BASE）。
+_WALL_HOST_DIR = os.path.join(BASE, "web", "services")
+
+
+def host_module_reads_in(src, rel):
+    """一段服务层源码里"经宿主模块参数读 app 属性"的读者：`(名字, rel, 行号)`。
+
+    别名＝`appmod()` 赋值名 ∪ 形参名 ∈ `_WALL_HOST_PARAMS`。纯函数，便于做突变验证。
+    """
+    tree = ast.parse(src)
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn = getattr(node.value.func, "id", None) or getattr(node.value.func, "attr", None)
+            if fn in ("appmod", "_appmod"):
+                aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = (list(node.args.posonlyargs) + list(node.args.args)
+                    + list(node.args.kwonlyargs))
+            aliases.update(a.arg for a in args if a.arg in _WALL_HOST_PARAMS)
+    if not aliases:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in aliases and not node.attr.startswith("__"):
+            out.append((node.attr, rel, node.lineno))
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_host_module_reads():
+    """服务层里经宿主模块参数读 app 属性的读者：`(名字, 文件, 行号)` 列表。"""
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_HOST_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            out.extend(host_module_reads_in(src, rel))
+    return out
+
+
 def _wall_declared_app_aliases(tree):
     """文件里显式声明的 app 模块别名：`import web.app as X` / `from web import app as X`。"""
     out = set()
@@ -1900,8 +1971,15 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
 
     def test_route_and_test_readers_are_all_bound(self):
         bound, _f401 = _wall_app_bindings()
-        reads = _wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES)
-        self.assertGreaterEqual(len(bound), 300,
+        reads = (_wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES)
+                 + _wall_host_module_reads())
+        # 绑定面下限：用途只是"解析器或路径失效 ⇒ 红"。批 3-a 末（`e5aceb07`）实测 360，
+        # 批 3-b 删 21 个零读者转发名、搬走 47 个真定义（其中 4 名改由新家导入）、
+        # 去掉 2 个已无用的 stdlib 导入 ⇒ 本批实测 294，故下限由 300 下调为 250。
+        # 批 3-d 删 39 个转发包装 + 其导入后，绑定面实测 225 个（ref=`0423b225`＋批 3-d
+        # 收口树，2026-10-20 主会话与独立审查各测一次，值相同；含 `_register_host_hooks`）。
+        # 下限只保"解析器没失效"，不表达"绑定越多越好"。
+        self.assertGreaterEqual(len(bound), 180,
                                 "web/app.py 绑定名过少——解析器或路径失效（扫空不得当绿）")
         self.assertGreaterEqual(len(reads), 1000,
                                 "读者扫描面过小——别名探测失效（扫空不得当绿）")
@@ -1912,16 +1990,46 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
 
     def test_no_dead_f401_name_beyond_registered_exemptions(self):
         _bound, f401 = _wall_app_bindings()
-        reads = _wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES_WIDE)
+        reads = (_wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES_WIDE)
+                 + _wall_host_module_reads())
         self.assertGreaterEqual(len(f401), 50,
                                 "F401 名集过小——注解解析失效（扫空不得当绿）")
         self.assertGreaterEqual(len(reads), 1000,
                                 "读者扫描面过小——别名探测失效（扫空不得当绿）")
         read_names = {name for name, _, _ in reads}
-        dead = sorted(n for n in f401
-                      if n not in read_names and n not in _WALL_DEAD_F401_EXEMPT)
+        exempt = set(_WALL_DEAD_F401_EXEMPT)
+        dead = sorted(n for n in f401 if n not in read_names and n not in exempt)
         self.assertEqual(dead, [],
                          "以下带 noqa: F401 的名字没有任何读者（零读者转发名）：" + ", ".join(dead))
+
+    def test_host_module_reader_face_has_teeth(self):
+        """服务层读者面有牙：经形参 `m` 的读法必须命中；无宿主参数的文件不得误命中。
+
+        来历见 `_WALL_HOST_PARAMS` 的注释：批 3-b 删零读者名时，只看 routes/tests 面
+        会把 `m.VerifyQuotaExceeded` 判成零读者并删掉——删了 429 分支变 500（实测抓到）。
+        """
+        n = chr(10)
+        src = n.join(["def go(m, acc):",
+                      "    try:",
+                      "        return m.run_gated_call(acc)",
+                      "    except m.VerifyQuotaExceeded:",
+                      "        return None", ""])
+        got = sorted(host_module_reads_in(src, "web/services/x.py"))
+        self.assertIn(("VerifyQuotaExceeded", "web/services/x.py", 4), got)
+        self.assertIn(("run_gated_call", "web/services/x.py", 3), got)
+        self.assertEqual(
+            host_module_reads_in("def go(acc):" + n + "    return acc.run_gated_call()" + n,
+                                 "web/services/y.py"),
+            [], "没有宿主模块参数却报出读者：本面会误红")
+        self.assertGreaterEqual(
+            len(_wall_host_module_reads()), 6,
+            "服务层读者面过小——形参别名探测失效（扫空不得当绿）。"
+            "现量口径：批 3-c S3 末（refactor/3c-cred-state）实测 8 处，全在 device_refresh"
+            "（db 4 处 ＋ _mask_phone 3 处 ＋ _record_verify_failure 1 处）。"
+            "批 3-b 时是 14 处；差额来自 S3 把该文件的 m.VerifyQuotaExceeded / "
+            "m.VerifyGateBusy / m._verify_fail_cooldown_remaining / m.run_gated_call / "
+            "m.VERIFY_*_MSG 五族改为直取真源——分母缩小，那些名字本身仍被本门覆盖。"
+            "下限按实测值留 2 处余量，不是估算。")
 
     def test_exempt_names_are_still_f401(self):
         """豁免清单不得腐烂：登记的名字必须仍在 F401 名集里。

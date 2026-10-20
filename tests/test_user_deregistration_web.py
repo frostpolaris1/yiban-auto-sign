@@ -2,7 +2,7 @@
 """用户自助注销的 Web/API 层（对接 v5 软删除）。
 
 标签：L · 注销与软删
-覆盖：`docs/design/plan-frontend-user-deregistration.md` 第 3 章 API 契约——登录要求
+覆盖：注销 API 契约——登录要求
     401、CSRF 缺失 403、密码错误 400、连续失败达阈值锁定 429、防批量冷却
     （用户维度 60s 1 次 / IP 维度 60s 5 次 → 429 且不暴露秒数）、内置管理员与
     最后一个注册管理员 400、成功路径的软删标记 + 账号清除 + 会话失效 + 审计留痕 +
@@ -26,6 +26,7 @@ from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
 
+from web.services import limits as _limits
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -143,7 +144,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
     def test_failed_password_lockout(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
-        max_fails = self.webapp.LOGIN_MAX_FAILS
+        max_fails = _limits.LOGIN_MAX_FAILS
         for i in range(max_fails - 1):
             r = self._delete(c, token, password="bad")
             self.assertEqual(r.status_code, 400, f"第 {i + 1} 次错误应为 400")
@@ -441,7 +442,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         """2026-08-17 安全审查补齐：恢复接口密码试错必须计入锁定（原可无限爆破冷却期账号）。"""
         db.soft_delete_user_with_accounts("user1@test.local")
         c = self.webapp.create_app().test_client()
-        for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+        for i in range(_limits.LOGIN_MAX_FAILS - 1):
             r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})
             self.assertEqual(r.status_code, 400, f"第 {i + 1} 次错误应为 400")
         r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})

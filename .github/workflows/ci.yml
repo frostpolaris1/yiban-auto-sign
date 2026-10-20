@@ -26,6 +26,12 @@ on:
   push:
     branches: [develop, server-web, main, 'feature/**']
 
+# 同一 ref 的连续推送只保留最新一次：旧 run 排队/占 runner 会直接顶掉快轨 ≤3min 目标，
+# 且"最新一次绿"会被旧 run 的结果干扰（P13-10）。与 deploy-gate.yml 同口径。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 # 最小权限：仅读取代码与 PR 元数据
 permissions:
   contents: read
@@ -59,8 +65,8 @@ jobs:
           # pytest-xdist = 并发跑测试（-n 按 CI 核数分发；单测各自隔离临时目录）
           # mypy 1.19.0 = 静态类型门禁（dev-verify 的 mypy 步；与本地 WSL 门禁 venv 同版号；
           #   不进 requirements.lock——生产 Docker 镜像不背门禁工具，先例同 ruff/pytest）
-          # import-linter 2.15 = 结构门禁（.importlinter 依赖方向契约；P0 批四条，批 A0 补三条
-          #   docs/refactor/128 三节；同 ruff/mypy 先例只钉在本行，不进 requirements.lock。
+          # import-linter 2.15 = 结构门禁（.importlinter 依赖方向契约；P0 批四条，批 A0 补三条；
+          #   同 ruff/mypy 先例只钉在本行，不进 requirements.lock。
           #   本地 WSL 门禁 venv 单独装同版号。升版须同批改 tests/test_import_linter_gate.py
           #   的 PINNED_TOOL——门走 import-linter 的非公开 API，升版可能改元数据形态）
           # grimp 3.17 = import-linter 的图引擎。import-linter 2.15 对 grimp 只给下限

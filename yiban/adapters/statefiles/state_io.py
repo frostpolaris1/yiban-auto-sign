@@ -88,6 +88,8 @@ STATUS_PENDING = yiban_status.STATUS_PENDING
 #: 兜底执行体的心跳文件（刷新时间戳；退出时删除）。用途：让"还有没有下一轮兜底"
 #: 变成可查的**事实**，而不是靠猜时刻——告警抑制与网页展示都用它。
 FALLBACK_ALIVE_FILE = "fallback-alive.json"
+#: 心跳写失败只告警一次（每进程）：本函数每轮扫描都调，逐次告警会变成噪声。
+_FALLBACK_ALIVE_WARNED = False
 
 # 并行执行体心跳（写侧：监督进程；读侧：`worker_presence`）。
 # 语义前提：并行执行体是**一轮就退出的短命进程**，不是常驻服务——"没在跑"在多数时间
@@ -123,6 +125,18 @@ def _has_conclusion(entry):
     return yiban_status.is_concluded_status(entry.get("status", ""))
 
 
+def sched_run_path(day=None, state_dir=None):
+    """`sched-run-<day>.json` 的**唯一路径定义点**（census-P2-sched-run）。
+
+    写入（`_write_sched_done`）、存在性（`_sched_marker_exists`）与 completed 真值
+    （`full_run_done_today`）三处过去各手写一遍 f-string；改形状时只有一处被带上，
+    其余静默读旧路径。现在全部引用本函数。
+    """
+    directory = state_dir or _state_dir()
+    today = day or clock.now().strftime("%Y-%m-%d")
+    return os.path.join(directory, f"sched-run-{today}.json")
+
+
 def _sched_marker_exists():
     """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
@@ -133,9 +147,7 @@ def _sched_marker_exists():
     去理解这条告警。标记本身在首签轮收尾写入（_write_sched_done），与容器 scheduler.py 的
     _full_run_done_today() 是同一事实源。
     """
-    state_dir = _state_dir()
-    path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
-    return os.path.exists(path)
+    return os.path.exists(sched_run_path())
 
 
 def _is_second_run():
@@ -152,10 +164,26 @@ def _is_second_run():
     return schedule._env_flag("YIBAN_SECOND_RUN") or _sched_marker_exists()
 
 
-def _sign_state_path():
-    """当日 sign-state 状态文件路径（状态目录缺失/不可写由调用方处理）。"""
-    state_dir = _state_dir()
-    return os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
+def sign_state_path(day=None, state_dir=None):
+    """`sign-state-<day>.json` 的**唯一路径定义点**（census-P2-sign-state）。
+
+    写侧（`_sign_state_path` / `_write_sign_state`）与清理名册（`state_gc.ARTIFACTS`
+    的前后缀）都从这里取形状；其他进程（网页日志页、ledger_check、backup.sh）
+    仍各有读取点，收口它们须单独裁决（本函数先让写入侧不再各手写 f-string）。
+
+    `day` 是**业务日**（`YYYY-MM-DD`）：执行体在入口定一次，写入侧原样传下来。缺省取
+    业务钟日期，供一次性工具与既有单测沿用。跨午夜的长轮次必须传 `ctx.day`——否则
+    队列按启动日 settle/requeue，状态文件却按新日期新建，两个事实源指向不同的一天
+    （工单 ba-p03-07）。
+    """
+    directory = state_dir or _state_dir()
+    today = day or clock.now().strftime("%Y-%m-%d")
+    return os.path.join(directory, f"sign-state-{today}.json")
+
+
+def _sign_state_path(day=None):
+    """兼容名：当日 sign-state 状态文件路径；`day` 语义见 `sign_state_path`。"""
+    return sign_state_path(day)
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +198,7 @@ def _sign_state_path():
 # `_write_private_json` 原子写通道，跨进程读者（网页日历/日志页、宿主 run.sh、容器调度器、
 # v20 迁移、ledger_check、backup.sh）一律不必改。
 #
-# **崩溃语义与可见性（本批必须交代清楚，见 docs/refactor/131 行为补丁账）**：
+# **崩溃语义与可见性（本批必须交代清楚）**：
 # - 落盘触发＝三条任一：① 待写条数 ≥ `_FLUSH_MAX`；② 距上次落盘 ≥ `_FLUSH_SEC`；
 #   ③ 批量上下文退出（轮末）或 `flush_sign_state()` 显式调用。
 # - `_FLUSH_SEC` 默认 10s ＝**跨进程读者最快的轮询周期**（`/api/accounts`、`/api/logs`、
@@ -372,15 +400,18 @@ def _apply_sign_state(data, phone, status, message, scheduled, dur, only_if_abse
 atexit.register(flush_sign_state)
 
 
-def _daily_statuses():
+def _daily_statuses(day=None):
     """当日按日状态文件的 {phone: status}；缺失/损坏返回 {}（调用方按"无记录"处理）。
+
+    `day` 是业务日；缺省取业务钟日期。执行体跨午夜时必须传 `ctx.day`，与写入侧
+    （`_sign_state_path(day=...)`）同源。
 
     条目缺 `status` 键按空串——与 `_has_conclusion` 同口径（"无记录"，而非"一条
     状态为 None 的结论"）：窗口收尾拿本快照预筛、落盘再走 `_has_conclusion` 的
     CAS，两处口径必须一致，否则预筛判"已有结论"而 CAS 判"可以写"。
     批量区内的进程内待写条目也计入（否则同进程的预筛与 CAS 会各判一套）。
     """
-    path = _sign_state_path()
+    path = _sign_state_path(day)
     with _STATE_GATE:
         buf = _STATE_BUFFERS.get(path)
         data = buf.view if (buf is not None and buf.view is not None) else None
@@ -391,7 +422,7 @@ def _daily_statuses():
     return {p: (v.get("status", "") if isinstance(v, dict) else "") for p, v in data.items()}
 
 
-def _second_run_drop_done(accounts):
+def _second_run_drop_done(accounts, day=None):
     """补签轮定向重跑：剔除当日已了结（success/already）的账号。
 
     依据当日 sign-state 状态文件（与容器调度器 _has_undone_today 同一事实源）：
@@ -399,7 +430,7 @@ def _second_run_drop_done(accounts):
     再次完整登录（风控暴露）。文件缺失/损坏时按「无记录」处理返回全量
     （宁可多跑，不可漏签）。
     """
-    recorded = _daily_statuses()
+    recorded = _daily_statuses(day)
     if not recorded:
         return accounts
     # 已了结 = `yiban.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
@@ -420,10 +451,10 @@ def _second_run_drop_done(accounts):
 
 
 def _write_sign_state(phone, status, message, scheduled=None, dur=None,
-                      only_if_absent=False):
+                      only_if_absent=False, day=None):
     """写按日结构化状态文件（web 状态显示的事实源，原子替换防半截文件）。
 
-    文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
+    文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json（`day` 缺省取业务钟日期）
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
     dur：单次签到尝试耗时秒数（慢响应可据此判断网络/接口问题）。
@@ -441,9 +472,10 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     "返回 True 而盘上已是别的结论"的分歧：调用方（`_mark_window_skips`）按返回值把该号
     记成 `skipped_window`，而日历/状态行按盘上结论——两个事实源不一致。故本路径先冲刷
     本路径已有条目（让盘上含本轮结论），再走原子读改写。代价是该路径回到逐条写盘，
-    但调用点只有窗口收尾那两处，且只对"本轮没轮到"的账号发。
+    但调用点只有窗口收尾与 `_prescan` 自暂停登记两处，且只对"本轮没轮到 / 尚无当日
+    结论"的账号发。
     """
-    path = _sign_state_path()
+    path = _sign_state_path(day)
     if only_if_absent:
         _flush_sign_state_path(path)  # 让盘上含本轮已有结论，CAS 才看得见它们
         return _write_sign_state_now(path, phone, status, message, scheduled, dur, True)
@@ -503,7 +535,7 @@ def _write_sched_done(counts=None):
     - 补签：标记不存在，或存在未了结账号（failed/retrying/pending）→ 执行。
     """
     state_dir = _state_dir()
-    path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
+    path = sched_run_path(state_dir=state_dir)
     try:
         os.makedirs(state_dir, exist_ok=True)
         payload = {
@@ -547,11 +579,10 @@ def _state_dir():
 
 def full_run_done_today(state_dir=None, day=None):
     """当日全量签到是否已收尾（sched-run-<date>.json 的 completed 标记）。"""
-    d = state_dir or _state_dir()
-    today = day or clock.now().strftime("%Y-%m-%d")
+    path = sched_run_path(day=day, state_dir=state_dir)
     try:
         # utf-8-sig：容错 Windows 手工/工具写入的 BOM（与 _load_cred_state 同口径）
-        with open(os.path.join(d, f"sched-run-{today}.json"), encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return False
@@ -623,7 +654,7 @@ def _cred_state_path():
 
 
 def _load_cred_state():
-    """读账密状态文件（唯一入口见 yiban/cred_state.py）。"""
+    """读账密状态文件（唯一入口见 yiban/adapters/statefiles/cred_state.py）。"""
     return cred_state.read()
 
 
@@ -657,11 +688,21 @@ def _fallback_alive_path():
 
 
 def _write_fallback_alive(at=None):
-    """刷新兜底执行体心跳（每轮扫描写一次）。失败静默——心跳不该影响签到。"""
+    """刷新兜底执行体心跳（每轮扫描写一次）。
+
+    census-P2-fallback-alive：写失败**不能零留痕**——心跳缺失会让告警抑制把
+    "后面还有人接着跑"判成假，进而吞掉当天应有的告警。失败按进程节流打一条
+    warning（每进程至多一条；本函数每轮扫描都调，逐次告警会变成噪声）。
+    """
+    global _FALLBACK_ALIVE_WARNED
     path = _fallback_alive_path()
-    with contextlib.suppress(OSError):
+    try:
         _write_private_json(path, {"at": (at or clock.now()).strftime(_TS_FMT),
                                    "pid": os.getpid()})
+    except OSError as e:
+        if not _FALLBACK_ALIVE_WARNED:
+            _FALLBACK_ALIVE_WARNED = True
+            logger.warning("写入兜底心跳失败（告警抑制可能误判）: %s", _sanitize_text(e))
 
 
 def _clear_fallback_alive():

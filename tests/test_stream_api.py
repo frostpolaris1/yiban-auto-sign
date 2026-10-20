@@ -36,8 +36,8 @@ import unittest
 from werkzeug.security import generate_password_hash
 
 from web.services import run_stream
+from yiban.adapters.persistence import run_events
 from yiban.core import clock
-from yiban.store import run_events
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -627,13 +627,13 @@ class RegistryKeysTest(unittest.TestCase):
     )
 
     def test_keys_registered_with_expected_defaults(self):
-        from yiban import config_loader
+        from yiban.adapters.config import loader as config_loader
         for key, default in self.EXPECTED:
             self.assertEqual(config_loader.default_of(key), default, key)
 
     def test_heartbeat_below_gunicorn_timeout(self):
         """125 §3.4：心跳必须 < gunicorn `--timeout 60`（丢一拍不触发读超时）。"""
-        from yiban import config_loader
+        from yiban.adapters.config import loader as config_loader
         self.assertLess(config_loader.default_of("YIBAN_SSE_HEARTBEAT_SEC"), 60)
 
 

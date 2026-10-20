@@ -31,6 +31,8 @@ from unittest import mock
 
 from _frontend_src import frontend_source
 
+from web import render as _render
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -83,7 +85,7 @@ class PoliceLinkSchemeTest(unittest.TestCase):
             if value is not None:
                 f.write(f"YIBAN_POLICE_LINK={value}\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            return self.webapp.police_link()
+            return _render.police_link()
 
     def test_https_passthrough(self):
         self.assertEqual(self._link("https://beian.example.gov.cn/?q=123"),
@@ -124,16 +126,24 @@ class TemplateInlineContextTest(unittest.TestCase):
         cls.user_accounts = frontend_source(os.path.join("pages", "user_account.html"))
         cls.user_calendar = frontend_source(os.path.join("pages", "user_calendar.html"))
 
-    def test_base_uses_tojson_in_all_templates(self):
+    def test_base_is_delivered_via_escaped_meta(self):
+        """工单 56ed：BASE 的唯一下发点改为 `<meta name="yiban-base">` + 外置脚本。
+
+        `<script>` 内联字面量已全部外置（CSP 不再放行 'unsafe-inline'）；meta 的
+        content 走 Jinja 的 HTML 属性转义，故 `script_root` 里的引号/反斜杠不会
+        变成 JS 语法错误（原 `tojson` 要防的正是这个形状）。
+        """
         for name, tpl in (
             ("login", self.login),
             ("pages/user_account", self.user_accounts),
             ("pages/user_calendar", self.user_calendar),
         ):
-            self.assertIn("const BASE = {{ request.script_root | tojson }};", tpl,
-                          f"{name}.html 的 BASE 须经 tojson 转义")
+            self.assertIn('<meta name="yiban-base" content="{{ request.script_root }}">',
+                          tpl, f"{name} 的 BASE 须经 yiban-base meta 下发")
+            self.assertIn("static/js/theme-boot.js", tpl,
+                          f"{name} 未引用外置引导脚本")
             self.assertNotIn("const BASE = '{{ request.script_root }}'", tpl,
-                             f"{name}.html 的 BASE 裸插入仍存在")
+                             f"{name} 的 BASE 裸插入仍存在")
 
     def test_delegated_data_attribute_form_present(self):
         # 正确形态：data-* 属性（普通 HTML 转义即安全）+ 事件委托读 dataset，属性值不进

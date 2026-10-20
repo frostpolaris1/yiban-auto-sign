@@ -6,6 +6,7 @@
 竞争，导致 Windows fatal exception access violation。生产环境不设置该变量，
 因此默认行为不受影响；仅测试进程通过 conftest 在导入任何测试模块前启用。
 """
+import contextlib
 import logging
 import os
 
@@ -130,6 +131,31 @@ def _reset_sign_claim_pool():
     """
     yield
     _clear_sign_claim_pool()
+
+
+@pytest.fixture(autouse=True, scope="class")
+def _fresh_db_connection_per_class():
+    """类边界丢弃继承来的 SQLite 单例连接（工单 mgq5）。
+
+    `init_db(另一个路径)` 现在 fail-closed；本夹具让每个测试类从"无连接"开始，
+    于是类内的 `init_db(...)` 一定打开自己的库，不会复用上一个类/上一个文件留下的
+    连接。旧行为下这种继承是**静默**的：用例绿，但读写其实落在上一个类的临时库。
+    （2026-10-20 实测：打开该检查后 38 个用例立刻暴露这个继承面。）
+
+    放在 `try/except ImportError` 里：`tests/test_conftest_umask_guard.py` 会把本文件
+    复制到一个**没有 yiban 包**的临时目录里跑子会话，那时导入失败是预期环境，不是缺陷。
+    """
+    try:
+        from yiban.adapters.persistence import connection
+    except ImportError:
+        yield
+        return
+    conn = connection.current()
+    if conn is not None:
+        with contextlib.suppress(Exception):
+            conn.close()
+        connection.reset_conn()
+    yield
 
 
 @pytest.fixture(autouse=True, scope="class")

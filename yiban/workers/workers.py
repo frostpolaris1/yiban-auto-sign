@@ -14,8 +14,8 @@
 
 **子进程入口是 `python -m yiban.entry.cli sign`**：本模块是包内模块，不再能按文件路径
 直接执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
-坐标取**入口层**（`yiban/entry/cli/`）；旧坐标 `yiban/cli.py` 是待退役的转发壳，
-本模块不得依赖它。
+坐标取**入口层**（`yiban/entry/cli/`）；旧坐标转发壳已由 `145-E` 删净，
+本模块不得依赖旧坐标。
 
 **归属**
 `yiban.engine` 的进程编排层；`runner` 在"多执行体监督"分支调用它。
@@ -352,13 +352,21 @@ def _reap_dead_worker(slot):
         logger.warning("执行体槽位 %d 已退出，轮末收尸：%d 条在领任务已回退待领", slot, m)
 
 
-#: 每轮从 .env 并回 `os.environ` 时**只放行**的键——门 / 窗口 / 间隔三类，即
+#: 每轮从 .env 并回 `os.environ` 时**只放行**的键——门 / 窗口 / 调度与限速配置，即
 #: `schedule.day_off`（周末两键 + 暂停）、`schedule.weekend_flags` 与
-#: `schedule._schedule_config` 实际读取的键（起止、模式、排序/分布、前后裁剪、
-#: **账号间隔与重试间隔**），外加兜底自己的扫描间隔。旧实现"除身份/出口键外**全部**
+#: `schedule._schedule_config` / `schedule.planner_config` 实际读取的键（起止、模式、
+#: 排序/分布、前后裁剪、**账号间隔与重试间隔**、μ/σ 区间、块容量、自选时段偏好、出口
+#: 速率、执行体清单），外加兜底自己的扫描间隔。旧实现"除身份/出口键外**全部**
 #: 覆盖"，爆炸半径远大于自述：运行期会被 .env 改写进程的库路径 / 状态目录等，把
 #: "重判门"变成"重载整份配置"。白名单必须与上述函数实际读取的键**逐个对齐**——
 #: 遗漏任何一个都会让"每轮重判门"名不副实（窗口内点一键暂停照签；改账号间隔不生效）。
+#:
+#: **配置面以 `schedule._schedule_config` / `schedule.planner_config` 实际读取的键为准**
+#: （工单 ba-p03-08）：μ/σ 区间、`YIBAN_BLOCK_CAP`、`YIBAN_ALLOW_TIME_PREF` 由
+#: `_schedule_config` 读；`YIBAN_EGRESS_RATE`（出口桶速率）与 `YIBAN_EXECUTORS`
+#: （执行体清单 = HRW 分片名册 + 存活豁免/死主接管名单）由 `planner_config` 补读。
+#: 这两个增量键尤其重要：兜底是唯一跨越整个窗口的执行体，管理员的运行期降速/摘出口/
+#: 改执行体清单必须对它生效，否则唯一的"第一手处置"要重启才生效。
 _ENV_RELOAD_KEYS = frozenset({
     "YIBAN_SIGN_START", "YIBAN_SIGN_END",
     "YIBAN_SIGN_MODE", "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST",
@@ -368,6 +376,10 @@ _ENV_RELOAD_KEYS = frozenset({
     "YIBAN_EXEC_GAP_MIN", "YIBAN_MIN_EXEC_GAP",
     "YIBAN_AVG_ATTEMPT_SEC", "YIBAN_RETRY_MIN_INTERVAL",
     "YIBAN_FALLBACK_INTERVAL",
+    "YIBAN_SCHEDULE_MU_MIN_PCT", "YIBAN_SCHEDULE_MU_MAX_PCT",
+    "YIBAN_SCHEDULE_SIGMA_MIN_PCT", "YIBAN_SCHEDULE_SIGMA_MAX_PCT",
+    "YIBAN_BLOCK_CAP", "YIBAN_ALLOW_TIME_PREF",
+    "YIBAN_EGRESS_RATE", "YIBAN_EXECUTORS",
 })
 
 
@@ -527,7 +539,7 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         #   与无前缀历史行一并复活，等于让熔断账号每轮再真实登录一次。这类账号的
         #   第二次机会只留给一次性补签轮与手动。
         # - `elbow_sec=executor_v3.FALLBACK_ELBOW_SEC`：**肘界谓词就是让位机制**
-        #   （工单 `l1rx` R4；`docs/refactor/130` §3.3）。兜底只领"已过期超过肘界"的行，
+        #   （工单 `l1rx` R4）。兜底只领"已过期超过肘界"的行，
         #   故它**结构上**不可能抢走计划轮此刻该领的新鲜工作——那个 10-07 型启动竞态
         #   （兜底赢下亚秒窗口后吸收整轮 84/100）从机制上消失。原先的两道锁探测
         #   （轮内 `yield_probe` 与循环顶 `_round_in_flight`）**都已删**：它们是轮内止损，

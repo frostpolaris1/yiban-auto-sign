@@ -38,8 +38,8 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
+from yiban.adapters.persistence import connection, migrations, queue_store
 from yiban.core import clock, hrw, status
-from yiban.store import connection, migrations, queue_store
 
 PHONE_A = "13800000001"
 PHONE_B = "13800000002"

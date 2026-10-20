@@ -45,7 +45,8 @@ import signin
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 from werkzeug.security import generate_password_hash
 
-from yiban.infra import account_crypto
+from web.services import notify_mail as _notify_mail
+from yiban.adapters.config import account_crypto
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -506,7 +507,7 @@ class _Batch11WebBase(unittest.TestCase):
         # 告警/邮件全量 mock（conftest 已禁用真实发信；此处再拦截调用便于断言）
         self.alerts = []
         self.user_mails = []
-        p1 = mock.patch.object(self.webapp, "send_notification",
+        p1 = mock.patch.object(_notify_mail, "send_notification",
                                # send_notification 新增 force=，假实现同步接收
                                # 新增 ledger=（M8 登录失败告警独立账本）
                                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c)))

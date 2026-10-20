@@ -11,7 +11,9 @@
 CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 
 **复用**
-`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；
+`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；批 3-a 拆墙后
+它只承担 app.py **自有**的那批名字（env 句柄、缓存、SID 签发、窗口常量、`_json_body`
+等）；app.py 以 import 形态转发的名字（A 类）已由各域从真源模块直取；
 `login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账；
 `high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包，
 `admin_delete_limited()` 取回同族的"删除/通道变更"限速判定；
@@ -52,6 +54,19 @@ def appmod():
         import web.app
         mod = web.app
     return mod
+
+
+def session_abs_ttl():
+    """会话绝对过期秒数（`web.app.SESSION_ABS_TTL_SECONDS` 的唯一路由侧取用点）。
+
+    必须按调用时刻现取，不能 `from web.app import SESSION_ABS_TTL_SECONDS`：后者固化
+    导入期值，而 `create_app` 依 `YIBAN_SESSION_ABS_DAYS` 把它重新解析后回写模块全局。
+    取错了不会报错，只会让"被盗 Cookie 最多续命 N 天"的硬上限静默失准。
+
+    与 `appmod()` 同源（按 `current_app.import_name` 认领本尊模块），理由见该函数：
+    测试以别名加载 `app.py`，`import web.app` 会再执行一份副本。
+    """
+    return appmod().SESSION_ABS_TTL_SECONDS
 
 
 def page_args():

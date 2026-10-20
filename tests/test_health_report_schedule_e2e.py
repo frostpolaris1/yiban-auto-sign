@@ -39,11 +39,12 @@ from test_rekey_key_source import (  # noqa: E402  （同目录夹具，须在 s
 )
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services.env_io import (  # noqa: E402
     health_report_time_str,
     health_report_weekday_setting,
 )
-from yiban import config_loader  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 
 TIME_KEY = "YIBAN_HEALTH_REPORT_TIME"
 WEEKDAY_KEY = "YIBAN_HEALTH_REPORT_WEEKDAY"
@@ -390,7 +391,7 @@ class SettingsEntryTest(_HealthScheduleBase):
         # 会被判成没改 ⇒ 键永不落盘，而回显仍是空串 ⇒ 每次打开设置页都有一条永远
         # 清不掉的脏标记（保存成功了，界面却说还有未保存的修改）。
         self.assertEqual(
-            self.webapp._settings_effective_values(self.env_file)["health_report_weekday"],
+            _env_io_svc._settings_effective_values(self.env_file)["health_report_weekday"],
             "", "变更判定的现值口径与 GET 回显同源")
 
     def test_master_saves_and_loader_reads_back(self):

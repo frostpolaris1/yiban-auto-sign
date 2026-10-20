@@ -54,7 +54,7 @@ NOW = f"{DAY} 06:40:00.000"
 PHONE = "13800000001"
 TEST_KEY = "a" * 64
 
-#: 子进程脚本：独立进程、独立连接，按 `MODE` 在**同一发令时刻**后行动。
+#: 子进程脚本：独立进程、独立连接，报就绪后等父进程统一发令再行动。
 _CHILD_SRC = r'''
 import json, os, sys, time
 
@@ -64,7 +64,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 os.environ.update(json.loads(os.environ["PROBE_ENV"]))
 
 import db  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
+from yiban.adapters.persistence import queue_store  # noqa: E402
 
 db.init_db(os.environ["YIBAN_DB_FILE"], env_file=os.environ["YIBAN_ENV_FILE"], cleanup=False)
 MODE = os.environ["PROBE_MODE"]
@@ -73,6 +73,8 @@ DAY = os.environ["PROBE_DAY"]
 NOW = os.environ["PROBE_NOW"]
 PHONE = os.environ["PROBE_PHONE"]
 OUT = os.environ["PROBE_OUT"]
+READY = os.environ.get("PROBE_READY", "")
+GATE = os.environ.get("PROBE_GATE", "")
 
 
 def emit(**kw):
@@ -85,29 +87,52 @@ def _rows(sql, params):
     return conn.execute(sql, params).fetchall()
 
 
-if MODE in ("claim", "hold"):
+def wait_gate():
+    """父进程放开闸门后再进入临界区。
+
+    有 `PROBE_GATE` 时轮询闸门文件；无则退回墙钟发令（单进程用例用）。
+    闸门由父进程在**全部子进程报就绪之后**创建：墙钟发令在满载时可能早于子进程
+    解释器启动，三个进程于是串行执行，"同时争用"这一维没被测到。
+    """
+    if GATE:
+        deadline = time.monotonic() + 120.0
+        while not os.path.exists(GATE):
+            if time.monotonic() >= deadline:
+                raise SystemExit("gate timeout")
+            time.sleep(0.002)
+        return
     start = float(os.environ["PROBE_START"])
     time.sleep(max(0.0, start - time.time()))
-    # 有界重试，理由：`claim_batch` 输给 SQLite 写锁竞争时返回空，**不是**并发被放行。
-    # 三进程在 CI 上抢同一行，三个都空手而归是可能的（实测红：won=[] ×3）——那是
-    # **活性**抖动，不违反"同一账号不得被并发持有"这条红线。重试与生产一致（队列本
-    # 就会重试），且**安全断言一点没放松**：一旦谁赢了，行变成 claimed，后来者必然
-    # 拿 0；真出现双赢仍会被父进程抓到。
+
+
+if READY:
+    with open(READY, "w", encoding="utf-8") as f:
+        f.write("ready")
+
+
+if MODE in ("claim", "hold"):
+    wait_gate()
+    # 只有 `None`（读不通哨兵：表未落地/库异常）值得重试。`[]` 是"没有可领的行"
+    # ——行已被别人领走或确实为空，必须立即返回：继续重试会让输家空转 20s，
+    # 拖长墙钟并把真实原因藏进"0 赢家"。安全断言不放松：一旦谁赢了，行变成
+    # claimed，后来者必然拿 `[]`；真出现双赢仍会被父进程抓到。
     deadline = time.monotonic() + 20.0
-    got = None
+    unreadable = False
     while True:
         got = queue_store.claim_batch(OWNER, DAY, (0,), now=NOW)
-        if got or time.monotonic() >= deadline:
+        if got is not None:
+            break
+        if time.monotonic() >= deadline:
+            unreadable = True
             break
         time.sleep(0.05)
     won = [r["phone"] for r in got] if got else []
-    emit(mode=MODE, owner=OWNER, won=won)
+    emit(mode=MODE, owner=OWNER, won=won, unreadable=unreadable)
     if MODE == "hold":
         time.sleep(600)          # 持有在飞行，等父进程 SIGKILL
 elif MODE == "claim_broken":
     # 破坏版：先查后写（跨语句窗口）。sleep 保证所有竞位者都在任何写之前读到 pending。
-    start = float(os.environ["PROBE_START"])
-    time.sleep(max(0.0, start - time.time()))
+    wait_gate()
     conn = db.get_conn()
     seen = conn.execute("SELECT phone FROM sign_tasks WHERE day=? AND state='pending'",
                         (DAY,)).fetchall()
@@ -121,8 +146,7 @@ elif MODE == "claim_broken":
     emit(mode=MODE, owner=OWNER, won=won)
 elif MODE == "claim_steal":
     # 破坏版：忽略 state 的无条件抢（把在飞行也抢走）。
-    start = float(os.environ["PROBE_START"])
-    time.sleep(max(0.0, start - time.time()))
+    wait_gate()
     conn = db.get_conn()
     cur = conn.execute("UPDATE sign_tasks SET state='claimed', owner=?, epoch=epoch+1 "
                        "WHERE day=? AND phone=?", (OWNER, DAY, PHONE))
@@ -139,28 +163,25 @@ else:
 '''
 
 
-def _seed(db_file, env_file, tmp):
-    """建库并写一行 pending（在父进程内，用独立于子进程的连接）。
+def _switch_to_fresh_db(db_file, env_file):
+    """把进程级连接单例切到 `db_file`，返回连接。
 
-    `sys.path` 无需自插：`pyproject.toml` 的 `pythonpath` 已含 `.` 与 `scripts`。
-    环境变量用 `mock.patch.dict` 夹住，退出即还原，不把临时库路径泄给同进程后续用例。
+    **为什么必须显式切**：`db.init_db(path)` 在进程已有连接时是**空操作**——它直接
+    返回旧连接，只刷新路径元数据。`-n auto --dist loadfile` 下同一 worker 会连跑
+    多个文件，前一个文件留下的连接会让种子行写进**别人的库**；三个子进程打开自己
+    的空库 ⇒ 无人可领 ⇒ 假红"0 赢家"（2026-10-19 全量实测）。故先关旧连接、再
+    reset、最后 init。
     """
-    with mock.patch.dict(os.environ, {
-        "YIBAN_ACCOUNTS_KEY": TEST_KEY,
-        "YIBAN_ENV_FILE": env_file,
-        "YIBAN_DB_FILE": db_file,
-        "YIBAN_STATE_DIR": tmp,
-    }):
-        import db
-        db.init_db(db_file, env_file=env_file, cleanup=False)
-        conn = db.get_conn()
-        conn.execute(
-            "INSERT INTO sign_tasks (phone,day,vshard,owner,run_at,priority,state,"
-            "attempts,lease_until,result,epoch,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (PHONE, DAY, 0, "", NOW, 5, "pending", 0, "", "", 0, f"{DAY} 06:30:00.000"))
-        conn.commit()
-        conn.close()
-        db._conn = None
+    import db
+
+    from yiban.adapters.persistence import connection
+    stale = connection.current()
+    if stale is not None:
+        with contextlib.suppress(Exception):
+            stale.close()
+    connection.reset_conn()
+    db.init_db(db_file, env_file=env_file, cleanup=False)
+    return db.get_conn()
 
 
 @unittest.skipUnless(_POSIX, "真 SIGKILL 与独立进程争用仅 POSIX 可用")
@@ -177,7 +198,7 @@ class LiveCrossProcessContentionTest(unittest.TestCase):
         with open(self.child, "w", encoding="utf-8") as f:
             f.write(_CHILD_SRC)
         self._procs = []
-        _seed(self.db_file, self.env_file, self.tmp)
+        self._seed()
 
     def tearDown(self):
         # 兜底回收：任一断言失败时，持有子进程（hold 模式 sleep 600s）也必须被清掉，
@@ -185,12 +206,46 @@ class LiveCrossProcessContentionTest(unittest.TestCase):
         for p in self._procs:
             if p.poll() is None:
                 p.kill()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    p.wait(timeout=30)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                p.wait(timeout=30)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _fresh_conn(self):
+        """切到本轮自己的库，并断言真的落在它上面。"""
+        conn = _switch_to_fresh_db(self.db_file, self.env_file)
+        bound = conn.execute("PRAGMA database_list").fetchone()[2]
+        self.assertEqual(
+            os.path.realpath(bound), os.path.realpath(self.db_file),
+            "种子/读取必须落在本轮自己的库上（进程连接单例不得复用别人的库）")
+        return conn
+
+    def _close(self):
+        from yiban.adapters.persistence import connection
+        conn = connection.current()
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+        connection.reset_conn()
+
+    def _seed(self):
+        """建库并写一行 pending（父进程内，连接切到本轮自己的库）。"""
+        with mock.patch.dict(os.environ, {
+            "YIBAN_ACCOUNTS_KEY": TEST_KEY,
+            "YIBAN_ENV_FILE": self.env_file,
+            "YIBAN_DB_FILE": self.db_file,
+            "YIBAN_STATE_DIR": self.tmp,
+        }):
+            conn = self._fresh_conn()
+            conn.execute(
+                "INSERT INTO sign_tasks (phone,day,vshard,owner,run_at,priority,state,"
+                "attempts,lease_until,result,epoch,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (PHONE, DAY, 0, "", NOW, 5, "pending", 0, "", "", 0, f"{DAY} 06:30:00.000"))
+            conn.commit()
+        self._close()
+
     # ---- 子进程助手 ----
-    def _spawn(self, mode, owner, out, start_at=None, phone=PHONE):
+    def _spawn(self, mode, owner, out, start_at=None, phone=PHONE,
+               ready=None, gate=None):
         env = dict(os.environ)
         env.update({
             "PROBE_MODE": mode,
@@ -199,6 +254,8 @@ class LiveCrossProcessContentionTest(unittest.TestCase):
             "PROBE_NOW": NOW,
             "PROBE_PHONE": phone,
             "PROBE_OUT": out,
+            "PROBE_READY": ready or "",
+            "PROBE_GATE": gate or "",
             "PROBE_START": str(start_at if start_at is not None else time.time() + 1.5),
             "PROBE_ENV": json.dumps({
                 "YIBAN_ACCOUNTS_KEY": TEST_KEY, "YIBAN_ENV_FILE": self.env_file,
@@ -223,16 +280,38 @@ class LiveCrossProcessContentionTest(unittest.TestCase):
             time.sleep(0.05)
         raise AssertionError("子进程未在 %ss 内产出结果文件 %s" % (timeout, out))
 
+    def _wait_ready(self, paths, timeout=120):
+        """等到全部子进程报"已建好连接"。
+
+        这是争用用例的确定性屏障。旧写法给所有子进程一个**父进程算出的墙钟**
+        发令时刻，满载时子进程可能连解释器都没起来，发令早已过去 ⇒ 三个进程
+        串行执行，"同时争用"这一维没被测到。
+        """
+        end = time.time() + timeout
+        pending = list(paths)
+        while pending and time.time() < end:
+            pending = [p for p in pending if not os.path.exists(p)]
+            if pending:
+                time.sleep(0.01)
+        self.assertEqual(pending, [],
+                         "子进程未在 %ss 内全部就绪：%s" % (timeout, pending))
+
     def _race(self, mode, n=3):
-        """n 个独立进程同一发令时刻执行 mode，返回每个进程的 won 列表。"""
-        start = time.time() + 1.5
-        procs, outs = [], []
+        """n 个独立进程：全部就绪 → 同一发令 → 显式 join，返回各自的 won 列表。"""
+        gate = os.path.join(self.tmp, mode + ".go")
+        procs, outs, readies = [], [], []
         for i in range(n):
             out = os.path.join(self.tmp, f"{mode}-{i}.json")
+            ready = os.path.join(self.tmp, f"{mode}-{i}.ready")
             outs.append(out)
-            procs.append(self._spawn(mode, f"single@host{i}", out, start_at=start))
+            readies.append(ready)
+            procs.append(self._spawn(mode, f"single@host{i}", out,
+                                     ready=ready, gate=gate))
+        self._wait_ready(readies)
+        with open(gate, "w", encoding="utf-8") as f:
+            f.write("go")
         for p in procs:
-            o, _ = p.communicate(timeout=120)
+            o, _ = p.communicate(timeout=180)
             self.assertEqual(p.returncode, 0,
                              "%s 子进程异常退出：%s" % (mode, (o or b"").decode("utf-8", "replace")))
         return [self._result(o) for o in outs]
@@ -244,13 +323,11 @@ class LiveCrossProcessContentionTest(unittest.TestCase):
             "YIBAN_DB_FILE": self.db_file,
             "YIBAN_STATE_DIR": self.tmp,
         }):
-            import db
-            db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-            row = db.get_conn().execute(
+            conn = self._fresh_conn()
+            row = conn.execute(
                 "SELECT state, owner, epoch FROM sign_tasks WHERE day=? AND phone=?",
                 (DAY, PHONE)).fetchone()
-            db.get_conn().close()
-            db._conn = None
+        self._close()
         return dict(row)
 
     # ---- ① claim 原子性 ----

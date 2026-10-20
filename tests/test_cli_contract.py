@@ -7,7 +7,7 @@
     `db backup/integrity` 需 `--yes` 且拒绝目标等于源、`version` 与 `yiban.__version__`
     同源、`capacity` 建议值与网页同公式、未知/空子命令退 2 且 stdout 为空、不读 stdin。
 对应实现：`yiban/entry/cli/__init__.py`（实现；转发到 `yiban/adapters/persistence/migrations.py`、
-    `yiban/engine` 等）。`yiban/cli.py` 是转发壳（批 A1 后）。
+    `yiban/engine` 等）。旧入口转发壳（批 A1 落地）已于 `145-E` 退役。
 关键断言：退出码、stdout/stderr 分流、"默认不动手"三条都是进程级契约——断的是真实
     子进程的行为，不是 `main()` 的返回值。
 依赖：起 `sys.executable -m yiban.entry.cli` 子进程（纯 Python，不需 bash/docker/网络）；
@@ -23,7 +23,7 @@ import subprocess
 import sys
 import unittest
 
-from yiban.store import migrations
+from yiban.adapters.persistence import migrations
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -68,7 +68,7 @@ def _run(argv, env, stdin=subprocess.DEVNULL, timeout=120):
 
 def _make_db(tmp_path, env):
     """造一个真实 schema 的临时库（走数据层的初始化，绝不碰别的库）。"""
-    code = ("import sys; from yiban.store import db;"
+    code = ("import sys; from yiban.adapters.persistence import db;"
             "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "db.get_conn().close()")
     r = subprocess.run([sys.executable, "-c", code, str(tmp_path / "yiban.db"),
@@ -101,7 +101,7 @@ class CliContractTest(unittest.TestCase):
 
     def _add_account(self):
         """往临时库写一个 active 账号（走数据层，密码按密钥加密）。"""
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.add_account({'name': 'A', 'phone': '13800138000', 'password': 'p1',"
                 " 'status': 'active', 'owner': 'admin'})")
@@ -382,7 +382,7 @@ class CliContractTest(unittest.TestCase):
         # 对照组：真实路径（init_db 缺省 migrate=True）会把这个库迁到当前版本
         r = subprocess.run(
             [sys.executable, "-c",
-             "import sys; from yiban.store import db;"
+             "import sys; from yiban.adapters.persistence import db;"
              "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False)",
              str(self.root / "yiban.db"), str(self.root / ".env")],
             cwd=BASE, env=self.env, capture_output=True, text=True,

@@ -9,7 +9,7 @@
   一键暂停挡下**时拉起 `sign --fallback`，窗口结束由进程自己退出（判据全部复用引擎
   实现，见 `_fallback_should_run`；与宿主 cron 的 `scripts/yiban-fallback.sh` 同语义）
 - 每日 03:00 清理 /data/logs 与 /data/state 下过期的按天日志/状态文件
-  （策略唯一在 yiban/state_gc.py，与宿主 cron 共用一张表）
+  （策略唯一在 yiban/adapters/statefiles/state_gc.py，与宿主 cron 共用一张表）
 - 每日 02:00 定时备份（2026-10-01 · M44）：容器形态过去**没有任何备份**——宿主形态有
   cron 那条 02:00 行，而容器部署的用户根本没有宿主 cron，容器调度器也漏了这个挂点，
   等于"看着在跑、其实从没备份过"。这里补上：复用 `docker/backup-docker.sh`（上一批刚
@@ -55,7 +55,7 @@ for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
 # signin 等重导入链仍在 `--check-health` 之后。这笔开销必须付：状态目录可以只写在
 # `.env` 里。写心跳的一方与探活读的一方要算出同一个目录。读方若只认进程环境，它会去
 # 别的目录找心跳。健康检查于是恒判不健康，容器被反复重启。
-from yiban.infra import env_io  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 活体心跳与探活快路（必须位于业务导入图之前）
@@ -108,7 +108,7 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 import signin  # noqa: E402
 from child_env import build_child_env, parse_env_file  # noqa: E402
 
-from yiban import state_gc  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import (  # noqa: E402
     clock,
     window,
@@ -218,6 +218,10 @@ def _slot_marker(kind):
     追加一轮必然 skipped_window 的全站负载并覆盖当日已 success 的状态。
     落盘标记使「同一时段二次触发不重跑」跨重启成立；标记不可写时退化为
     既有闩锁语义。按日命名，跨日自动失效。"""
+    # census-P2-sched-slot-kind：kind 段有枚举（state_gc.SCHED_SLOT_KINDS），写侧与
+    # 清理侧共用；未知拼写直接拒绝，不许生成一个永远不会被清理的按日文件。
+    if kind not in state_gc.SCHED_SLOT_KINDS:
+        raise ValueError(f"未知的调度槽位 kind：{kind!r}（允许：{state_gc.SCHED_SLOT_KINDS}）")
     return os.path.join(STATEDIR, f"sched-slot-{kind}-{clock.now():%Y-%m-%d}.json")
 
 
@@ -313,7 +317,7 @@ def healthcheck_main(state_dir=None):
 
 
 def _cleanup_state():
-    """按天状态文件的过期清理（策略唯一在 `yiban/state_gc.py`，与宿主 cron 同一份）。
+    """按天状态文件的过期清理（策略唯一在 `yiban/adapters/statefiles/state_gc.py`，与宿主 cron 同一份）。
 
     原实现只清按天日志（`sign-*.log`）而不管状态目录：容器形态下
     `/data/state` 里的 `sched-run-*` / `sched-slot-*` / `sign-daily-*` /
@@ -322,7 +326,12 @@ def _cleanup_state():
     清理失败仅记日志：它是后台维护动作，不该影响调度循环。
     """
     try:
-        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR)
+        # ba-p10-03：保留期必须按 `.env` 口径解析（M27：`.env` 优先、进程环境补缺）。
+        # 旧调用不传 env，`retention_days()` 落回 os.environ——写在 `.env` 里的
+        # YIBAN_RETENTION_DAYS / YIBAN_SNAPSHOT_RETENTION_DAYS 对容器清理恒不生效。
+        cleanup_env = dict(os.environ)
+        cleanup_env.update(parse_env_file(ENV_FILE))
+        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR, env=cleanup_env)
         if removed:
             logger.info("已清理 %d 个过期状态/日志文件", removed)
     except (OSError, ValueError) as e:
@@ -365,11 +374,16 @@ def _backup_env():
     已经这么判（`_fallback_gate_env` 的注释），备份的路径类参数必须同口径，否则
     compose 里显式注入的 `YIBAN_BACKUP_*` 会被 Web 设置页/`.env` 里的同名键悄悄顶掉。
     口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
-    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。
+    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。`.env` 里若残留
+    `YIBAN_BACKUP_PASSPHRASE`，`parse_env_file` 会把它并进 `src`——这里**显式剔除**
+    两个口令键，子进程拿不到口令，`/proc/<pid>/environ` 也就没有它（P12-09）。
     """
     src = dict(os.environ)
     src.update(parse_env_file(ENV_FILE))   # `.env` 优先；它只认 YIBAN_ 前缀的键
     env = dict(src)
+    for _secret_key in ("YIBAN_BACKUP_PASSPHRASE", "BACKUP_GPG_PASSPHRASE"):
+        env.pop(_secret_key, None)
+        src.pop(_secret_key, None)
     # 调度器的 YIBAN_BACKUP_* → backup-docker.sh 自己的参数名（后者才是脚本认的）。
     # 显式设了 YIBAN_BACKUP_* 就**压住**同名的进程环境变量（否则 compose 注入的
     # BACKUP_DIR 会反过来盖掉 .env —— 正是 M27 要消灭的那种"两处打架"）。

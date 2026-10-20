@@ -38,11 +38,15 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import scheduler  # noqa: E402  （docker/scheduler.py）
 
-from yiban import cred_state, state_gc  # noqa: E402
 from yiban.adapters.notifier import report as alerts  # noqa: E402
-from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.adapters.notifier.notify import ledger  # noqa: E402
+from yiban.adapters.statefiles import (  # noqa: E402
+    cred_state,
+    state_gc,
+    state_io,
+)
 from yiban.app import probe, runner  # noqa: E402
-from yiban.notify import ledger  # noqa: E402
+from yiban.infra import private_json  # noqa: E402
 
 
 class SlotMarkerAtomicWriteTest(unittest.TestCase):
@@ -159,6 +163,36 @@ class SignStateBomReadTest(unittest.TestCase):
 
 
 _PHONE = "13800000001"
+
+
+class SignStateBusinessDayTest(unittest.TestCase):
+    """`day` 形参是业务日：跨午夜写入/读取必须按业务日命名，不按墙钟日期另起一天。
+
+    执行体在入口定一次 `ctx.day` 并随 settle/requeue 使用；状态文件若按 `clock.now()`
+    的日期落盘，跨午夜的两半写入会分裂到两个文件，补签闸门与记录读者读到的不是
+    同一批事实（工单 ba-p03-07）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-signstate-day-")
+        p = mock.patch.object(state_io, "_state_dir", return_value=self.tmp)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_write_and_read_use_the_business_day(self):
+        day = "2026-09-22"
+        self.assertTrue(state_io._write_sign_state(
+            _PHONE, state_io.STATUS_SUCCESS, "签到成功", day=day))
+        path = os.path.join(self.tmp, f"sign-state-{day}.json")
+        self.assertTrue(os.path.exists(path), "写入必须落在业务日的文件名上")
+        with open(path, encoding="utf-8-sig") as f:
+            self.assertEqual(json.load(f)[_PHONE]["status"], "success")
+        self.assertEqual(state_io._daily_statuses(day)[_PHONE], "success",
+                         "读侧必须与写侧同源（同一 day 形参）")
+        other = "2026-09-23"
+        self.assertEqual(state_io._daily_statuses(other), {},
+                         "别的业务日不得看见这条结论")
 
 
 @unittest.skipUnless(os.name == "posix", "umask 与 POSIX 模式位在 Windows 上不生效")
@@ -294,6 +328,19 @@ class StateWritesArePrivateUnderWideUmaskTest(unittest.TestCase):
         """既有用法（并行执行体心跳）同口径回归：它是最早走单通道的一处。"""
         state_io.mark_worker_started(1)
         self._assert_private(state_io.worker_alive_path(1), "并行执行体心跳")
+
+    def test_private_json_creates_dir_0700_under_wide_umask(self):
+        """状态目录本身也不得随 umask：`ensure_dir=True` 建的目录必须是 0700。
+
+        文件 0600 只挡住内容；目录 0755 会让同机其他用户列举文件名（暴露日期与部署
+        节律），后续不走本模块的临时件也再无模式护栏（工单 ba-p08-09）。
+        """
+        nested = os.path.join(self.tmp, "nested", "deep")
+        path = os.path.join(nested, "state.json")
+        private_json.write_private_json(path, {"a": 1})
+        mode = stat.S_IMODE(os.stat(nested).st_mode)
+        self.assertEqual(mode, 0o700, f"umask(0o000) 下目录模式必须是 0700，实际 {oct(mode)}")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
 
 if __name__ == "__main__":

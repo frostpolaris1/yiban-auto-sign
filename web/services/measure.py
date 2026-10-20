@@ -8,9 +8,9 @@
 可实测账号的挑选 `_pick_measure_account`。
 
 **归属**
-原 `web/app.py` 的模块级实测辅助，唯一真源在本模块；`web/app.py` 只保留名字面与转发，
-把它自己持有、而本模块需要的模块级名字——状态目录 `STATE_DIR`、原子落盘 `_atomic_write`
-——在调用时刻现取后注入。实测冷却时长 `MEASURE_COOLDOWN_SEC` 与端点的其余判据（仅主管理员、
+原 `web/app.py` 的模块级实测辅助，唯一真源在本模块。批 3-d 删除 `web/app.py` 的转发
+包装：路由与测试直取本模块。状态目录 `STATE_DIR` 与原子落盘 `_atomic_write` 经
+`configure(...)` 登记进 `_hooks`，按调用时刻解析。实测冷却时长 `MEASURE_COOLDOWN_SEC` 与端点的其余判据（仅主管理员、
 签到窗口内拒绝、跨进程持锁）留在 `web.app` 与路由：前者是路由经 `m.*` 取用的配置常量，
 后两者是请求上下文里的权限与顺序约束。
 
@@ -22,9 +22,8 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。状态目录与原子落盘都作为显式参数接收：它们在 `web.app` 上是会被测试改写、也会随
-`--config` 变化的模块级名字（既有测试直接赋值 `web.app.STATE_DIR`、又在 `web.app` 上打桩
-`_atomic_write`），本模块另持一份绑定会让这些改写静默失效。
+模块）。状态目录与原子落盘经 `configure(...)` 登记，按调用时刻解析：测试赋值
+`STATE_DIR`、打桩 `_atomic_write` 仍然生效。未登记即 `RuntimeError`（fail-closed）。
 """
 
 import json
@@ -33,24 +32,51 @@ import math
 import os
 from datetime import datetime
 
+from yiban.adapters.persistence import db
 from yiban.core import clock
-from yiban.store import db
 
 # 与 web.app 同名的日志通道：实测状态文件不可写的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(state_dir=None, atomic_write=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。"""
+    if state_dir is not None:
+        _hooks["state_dir"] = state_dir
+    if atomic_write is not None:
+        _hooks["atomic_write"] = atomic_write
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed；`try` 只包取键、不包调用。"""
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.measure 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾"
+            "调用了 web.services.measure.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 #: 实测冷却状态文件（单条记录，固定名，故不随时间增长）。落状态目录而非进程内存：
 #: web 重启后冷却仍有效。
 MEASURE_STATE_FILE = "capacity-measure.json"
 
 
-def _measure_state_path(state_dir):
+def _measure_state_path():
     """实测冷却状态文件的路径。
 
-    状态目录由调用方传入（`web.app` 的 `STATE_DIR`）——它会被测试赋值改写，
-    也会随 `--config` 变化。
+    状态目录从宿主取（`STATE_DIR` 会被测试赋值改写，也会随 `--config` 变化）。
     """
-    return os.path.join(state_dir, MEASURE_STATE_FILE)
+    return os.path.join(_host("state_dir"), MEASURE_STATE_FILE)
 
 
 def _read_measure_state(path):
@@ -64,15 +90,15 @@ def _read_measure_state(path):
     return data if isinstance(data, dict) else {}
 
 
-def _write_measure_state(path, payload, atomic_write):
+def _write_measure_state(path, payload):
     """原子写实测状态（创建即 0600）。失败只告警——状态文件不该阻断实测本身。
 
-    原子落盘实现由调用方传入（`web.app` 的 `_atomic_write`）：它既是"每一次落盘"的
-    观测点（测试在此打桩），也负责权限位与替换重试，本模块另持绑定会让打桩静默失效。
+    原子落盘实现从宿主取（`_atomic_write`）：它既是"每一次落盘"的观测点（测试在此
+    打桩），也负责权限位与替换重试，本模块另持绑定会让打桩静默失效。
     """
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        atomic_write(path, json.dumps(payload, ensure_ascii=False), chmod_priv=True)
+        _host("atomic_write")(path, json.dumps(payload, ensure_ascii=False), chmod_priv=True)
     except OSError:
         logger.warning("实测状态文件不可写（本次实测结果仍会返回，但冷却可能不生效）")
 

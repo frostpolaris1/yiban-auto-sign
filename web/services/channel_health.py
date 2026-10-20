@@ -36,11 +36,11 @@ import json
 import logging
 
 from web.services.notify_mail import _NOTIFY_LEDGER_LABELS, _alert_mail_recipients, _nl_safe
-from yiban import mail as mailer
-from yiban import notify
+from yiban.adapters.notifier import mail as mailer
+from yiban.adapters.notifier import notify
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
 from yiban.core import clock
-from yiban.mail import layout as mail_layout
-from yiban.store import db
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
@@ -222,10 +222,10 @@ def _channel_status_lines(alert_channel_status, status=None):
             # 配过但当前不可用（密钥被清 / 换钥后解不开 = 已知病症）
             lines.append("推送通道：⚠ 已配置但不可用（密钥缺失或解密失败，需重新配置）")
         else:
-            # 「未配置」同样标 ⚠ 并计入降级。旧写法把它当正常文本，于是
-            # "只关 admin_notify + 关闭推送（type 置空后 configured 一并转假）" 这个
-            # 组合变体两行都不带 ⚠ —— 日报既发不出去、又一条痕迹不落。手机推送这路
-            # 不存在是真实的致盲风险（邮件一挂就零告警），必须看得见。
+            # 纯展示行：说明"推送这路不存在"这一事实，**不挂降级旗标**。
+            # 降级判据由 `_channel_health_degraded()` 独立回答（见其 docstring 的 (c)：
+            # 只有 push_ever_configured 且当前不可用才算降级；从未配置推送是合法终态）。
+            # 本行的 ⚠ 只是正文提示，不回过来被任何判据嗅探——**不要**按它把判据改回去。
             lines.append("推送通道：⚠ 未配置（手机推送这路不存在，告警只剩邮件一条出口）")
         lines.extend(_daily_budget_desc(st))
     return lines

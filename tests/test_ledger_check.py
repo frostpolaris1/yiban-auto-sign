@@ -37,9 +37,9 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
+from yiban.adapters.persistence import migrations
 from yiban.core import clock
 from yiban.core.masking import mask_phone
-from yiban.store import migrations
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "ledger_check.py")

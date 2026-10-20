@@ -26,7 +26,8 @@
    同一份清单）：core.js 的写请求前置校验读它，前端不另抄第二份字符清单。
    放在 head（非 defer）确保早于 defer 的 core.js 执行。 #}
 {% block head_scripts %}
-<script>window.YB_ENV_LINE_BREAK_CODES = {{ env_line_break_codes | tojson }};</script>
+{# 动态数据块无法外置（内容随请求变化）；CSP 用逐请求 nonce 授权，不放开 unsafe-inline #}
+<script nonce="{{ csp_nonce }}">window.YB_ENV_LINE_BREAK_CODES = {{ env_line_break_codes | tojson }};</script>
 {% endblock %}
 
 {% block head_styles %}

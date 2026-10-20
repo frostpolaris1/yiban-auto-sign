@@ -4,7 +4,7 @@
 `db` 子命令的实现：只读状态 / 完整性检查、在线备份（覆盖守卫）、从副本恢复（恢复前校验
 + 覆盖前副本 + 指纹确认）。
 
-**为什么单独成模块**：`yiban/cli.py` 是命令行门面的唯一宿主，已贴近体量门上限；`db` 维护
+**为什么单独成模块**：`yiban/entry/cli/__init__.py` 是命令行门面的唯一宿主，已贴近体量门上限；`db` 维护
 这一族（快照读取、备份、恢复）服务的是"库文件本身的运维动作"这一独立变更轴，且被
 `capacity` / `version` 子命令复用（只读快照），故从入口模块外移（体量门登记的下一步拆法）。
 
@@ -26,7 +26,7 @@ SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.store
 2，含义见 `docs/dev/cli.md` §3）。
 调用谁：`yiban.store.db`（只读打开、账号只读装载）、`yiban.store.purge_guard`（内容指纹与
 回显比对）、`yiban.engine.cli_support`（输出收口）。
-谁调用：`yiban/cli.py` 的 `_dispatch`。
+谁调用：`yiban/entry/cli/__init__.py` 的 `_dispatch`。
 """
 import datetime
 import os

@@ -37,6 +37,11 @@ from _mail_body import render_body
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
 from werkzeug.security import generate_password_hash
 
+from web import security as _security
+from web.services import env_io as _env_io_svc
+from web.services import limits as _limits
+from web.services import notify_mail as _notify_mail
+
 # 单条端点改不透明 id 后，"不存在用户"用例用一个不会撞上的数字 id 表达。
 GHOST_ID = 987654321
 
@@ -107,6 +112,9 @@ class SecurityFixes021Test(unittest.TestCase):
         # 保持 .env 基本配置稳定；测试内按需改写 YIBAN_COOKIE_SECURE/YIBAN_MAX_USERS
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", "0")
+        # 每格复位转发头信任（缺省不信任）；要测反代分支的用例自己显式置 1
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "")
 
     def _login(self, c, username, password):
         r = c.post("/api/login", json={"username": username, "password": password})
@@ -239,6 +247,9 @@ class SecurityFixes021Test(unittest.TestCase):
         "显式关"混成了同一个 False，两者必须分开判。
         """
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        # 反代形态必须显式采信转发头（缺省已翻转为不信任，ba-p07-01）
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         self.assertFalse(app.config["SESSION_COOKIE_SECURE"], "起点：未配置 = 默认关")
         c = app.test_client()
@@ -256,6 +267,8 @@ class SecurityFixes021Test(unittest.TestCase):
         表现为"登录不上"——比"少一个 Secure"更难排查。
         """
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         c = app.test_client()
         c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
@@ -266,6 +279,8 @@ class SecurityFixes021Test(unittest.TestCase):
     def test_forwarded_proto_falls_back_when_header_disappears(self):
         """反代头消失后 Secure 必须能回落（逐请求判定，不粘住进程）。"""
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         c = app.test_client()
         c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
@@ -278,6 +293,8 @@ class SecurityFixes021Test(unittest.TestCase):
     def test_forwarded_proto_takes_first_hop_only(self):
         """逗号链只认最靠近客户端的那一跳（与 `_client_ip` 读 XFF 的口径一致）。"""
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         c = app.test_client()
         c.get("/api/clock", headers={"X-Forwarded-Proto": "http, https"},
@@ -319,7 +336,7 @@ class SecurityFixes021Test(unittest.TestCase):
         self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
         self.assertEqual(c.get("/api/me").status_code, 200)
         # 运维照 README：删 HASH 行 + 清 PW_VERSION + 写新明文
-        self.webapp.write_env_batch(self.env_file, {
+        _env_io_svc.write_env_batch(self.env_file, {
             "YIBAN_ADMIN_PASSWORD_HASH": "",
             "YIBAN_ADMIN_PW_VERSION": "",
             "YIBAN_ADMIN_PASSWORD": "RecoveredPass#2026",
@@ -374,7 +391,7 @@ class SecurityFixes021Test(unittest.TestCase):
             # 本次改密再 +1 ⇒ 3；改密必须始终把版本推高。
             self.assertIn("YIBAN_ADMIN_PW_VERSION=3", content)
         finally:
-            self.webapp.write_env_batch(self.env_file, {
+            _env_io_svc.write_env_batch(self.env_file, {
                 "YIBAN_ADMIN_PASSWORD_HASH": "",
                 "YIBAN_ADMIN_PW_VERSION": "",
                 "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
@@ -382,7 +399,7 @@ class SecurityFixes021Test(unittest.TestCase):
 
     def _restore_admin_env(self):
         """改密用例共用复位：清哈希/版本键，恢复明文口令基线。"""
-        self.webapp.write_env_batch(self.env_file, {
+        _env_io_svc.write_env_batch(self.env_file, {
             "YIBAN_ADMIN_PASSWORD_HASH": "",
             "YIBAN_ADMIN_PW_VERSION": "",
             "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
@@ -420,8 +437,8 @@ class SecurityFixes021Test(unittest.TestCase):
         try:
             c = self.webapp.create_app().test_client()
             token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
-            with mock.patch.object(self.webapp, "_env_write_lock", spy_lock), \
-                 mock.patch.object(self.webapp, "load_env_int", spy_read):
+            with mock.patch.object(_env_io_svc, "_env_write_lock", spy_lock), \
+                 mock.patch.object(_env_io_svc, "load_env_int", spy_read):
                 r = c.post("/api/me/password", json={
                     "old_password": ADMIN_PASS,
                     "new_password": new_pass,
@@ -1004,7 +1021,7 @@ class RoleHardeningTest(unittest.TestCase):
     def test_role_with_reconfirm_ok_and_audited(self):
         self._make_formal_user("u4@test.local", "13800138004")
         ac, at = self._admin_client()
-        with mock.patch.object(self.webapp, "send_notification") as notify:
+        with mock.patch.object(_notify_mail, "send_notification") as notify:
             r = ac.post(user_path(db, "u4@test.local", "/role"),
                         json={"role": "admin", "confirm_password": ADMIN_PASS_ROLE},
                         headers={"X-CSRF-Token": at})
@@ -1099,9 +1116,9 @@ class RoleHardeningTest(unittest.TestCase):
             for body, expect, name in states:
                 with self.subTest(state=name):
                     self._rewrite_env(body)
-                    self.assertEqual(self.webapp._builtin_admin_loginable(), expect, name)
+                    self.assertEqual(_security._builtin_admin_loginable(), expect, name)
                     self.assertEqual(
-                        self.webapp.verify_admin("admin", ADMIN_PASS_ROLE), expect,
+                        _security.verify_admin("admin", ADMIN_PASS_ROLE), expect,
                         f"{name}：兜底判据与 verify_admin 漂移")
         finally:
             self._rewrite_env(self._env_content)
@@ -1180,14 +1197,14 @@ class _GateBase(unittest.TestCase):
                    env_file=self.env_file)
         # 每用例回到"两开关均未配置（=开放）+ 门禁旋钮走默认值"基线；B 档三键同清——
         # 它们是豁免用例的"真变更"载体，上一条用例留下的值会让下一条根本不进门禁
-        self.webapp.write_env_batch(self.env_file, {
+        _env_io_svc.write_env_batch(self.env_file, {
             "YIBAN_GLOBAL_PAUSE": "", "YIBAN_REGISTRATION_PAUSE": "",
             "YIBAN_PW_CONFIRM_TTL": "", "YIBAN_PW_CONFIRM_COOLDOWN_SEC": "",
             "YIBAN_SIGN_ORDER": "", "YIBAN_SIGN_DIST": "", "YIBAN_SIGN_MODE": "",
         })
         self.alerts = []
         patcher = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
             self.alerts.append((t, render_body(c), urgent)))
         patcher.start()
@@ -1272,7 +1289,7 @@ class CooldownTest(_GateBase):
         self.assertEqual(self.webapp.SENSITIVE_PW_FAIL_NOTIFY, 3,
                          "门禁侧阈值必须是 3（门禁侧自己的取值，与登录告警阈值无关）")
         self.assertNotEqual(self.webapp.SENSITIVE_PW_FAIL_NOTIFY,
-                            self.webapp.LOGIN_FAIL_NOTIFY,
+                            _limits.LOGIN_FAIL_NOTIFY,
                             "两个阈值必须是两个常量——值相同同样会随一侧调参一起漂移")
         # 行为面：恰好第 3 次失败布防冷却、第 4 次起 429（与登录侧那个更大的阈值无关）
         c = self._login()
@@ -1351,7 +1368,7 @@ class CooldownTest(_GateBase):
 
     def test_cooldown_expires_and_gate_reopens(self):
         """冷却窗口过后门禁重新可用（可配的短窗口，免睡长秒）。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "1"})
         c = self._login()
         self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         self.assertEqual(self._attempt(c, "switch", ADMIN_PASS).status_code, 429)
@@ -1367,7 +1384,7 @@ class CooldownTest(_GateBase):
         4、5… 次失败既不再告警也不再被挡，攻击者就等于拿到了每 300 秒一次的免费
         口令散列批次——正是本次要堵的那个洞。
         """
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "1"})
         c = self._login()
         self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         time.sleep(1.2)
@@ -1378,7 +1395,7 @@ class CooldownTest(_GateBase):
 
     def test_zero_cooldown_keeps_alert_but_no_lockout(self):
         """冷却窗口 0 = 关闭冷却（告警与独立计数照旧），用于运维按 .env 降级。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
         c = self._login()
         self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         self.assertEqual(self._attempt(c, "switch", ADMIN_PASS).status_code, 200)
@@ -1394,7 +1411,7 @@ class P18IsolationTest(_GateBase):
         app = self.webapp.create_app()
         c = self._login(app=app)
         # 远超登录锁定阈值（LOGIN_MAX_FAILS）次数的门禁失败
-        codes = self._fail_gate_times(c, self.webapp.LOGIN_MAX_FAILS + 2)
+        codes = self._fail_gate_times(c, _limits.LOGIN_MAX_FAILS + 2)
         self.assertIn(429, codes, "阈值后应进冷却")
         self.assertNotIn(401, codes)
         probe = app.test_client()
@@ -1410,7 +1427,7 @@ class P18IsolationTest(_GateBase):
         于是同出口的登录失败会把主管理员一并锁在**所有高危操作**之外（运维 DoS）；
         现在门禁只看自己的冷却表，登录锁着也照样能用正确口令做高危操作。"""
         c = self._login()
-        for _ in range(self.webapp.LOGIN_MAX_FAILS):
+        for _ in range(_limits.LOGIN_MAX_FAILS):
             r = c.post("/api/login", json={"username": "admin", "password": WRONG_PASS})
         self.assertEqual(r.status_code, 429, "前置：登录侧此刻已锁定")
         # 单条操作按不透明 id 定位（2-9b）：用一个**不存在的数字 id** 复刻旧
@@ -1466,7 +1483,7 @@ class ExemptionTest(_GateBase):
 
     def test_exemption_disabled_by_ttl_zero(self):
         """`YIBAN_PW_CONFIRM_TTL=0` = 关闭豁免（每次都要口令）。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_TTL": "0"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_TTL": "0"})
         c = self._login()
         self.assertEqual(self._switch_with(c, ADMIN_PASS).status_code, 200)
         r = c.post("/api/settings", json={"sign_order": "random"}, headers=self._hdr(c))
@@ -1474,7 +1491,7 @@ class ExemptionTest(_GateBase):
 
     def test_exemption_expires_after_ttl(self):
         """超过 TTL 后回到"每次都要口令"。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_TTL": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_TTL": "1"})
         c = self._login()
         self.assertEqual(self._switch_with(c, ADMIN_PASS).status_code, 200)
         time.sleep(1.2)
@@ -1538,7 +1555,7 @@ class ExemptionTest(_GateBase):
         """旋钮钳制：TTL 0~900（越界夹回），冷却非负；避免误配出一个永久豁免。"""
         for raw, want in (("99999", 900), ("-5", 0), ("120", 120), ("", 300)):
             with self.subTest(raw=raw):
-                self.webapp.write_env_batch(self.env_file,
+                _env_io_svc.write_env_batch(self.env_file,
                                             {"YIBAN_PW_CONFIRM_TTL": raw})
                 ttl, _cd = self.webapp._sensitive_gate_params(self.env_file)
                 self.assertEqual(ttl, want)

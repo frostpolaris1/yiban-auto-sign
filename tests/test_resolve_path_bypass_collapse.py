@@ -85,7 +85,7 @@ out = {}
 if "constants" in want:
     webapp = load("webapp_probe", os.path.join("web", "app.py"))
     sched = load("sched_probe", os.path.join("docker", "scheduler.py"))
-    from yiban.store import connection, db
+    from yiban.adapters.persistence import connection, db
     out["web.ENV_DEFAULT"] = webapp.ENV_DEFAULT
     out["web.DB_DEFAULT"] = webapp.DB_DEFAULT
     out["web.ACCOUNTS_DEFAULT"] = webapp.ACCOUNTS_DEFAULT
@@ -98,19 +98,19 @@ if "constants" in want:
     out["scheduler.ENV_FILE"] = sched.ENV_FILE
     out["scheduler.LOGDIR"] = sched.LOGDIR
 if "db_engine" in want:
-    from yiban.store import connection, db
+    from yiban.adapters.persistence import connection, db
     db.init_db(cleanup=False, migrate=False)
     out["db_engine.opened"] = connection.current_db_file()
 if "db_web" in want:
     webapp = load("webapp_probe", os.path.join("web", "app.py"))
-    from yiban.store import connection, db
+    from yiban.adapters.persistence import connection, db
     db.init_db(webapp.DB_FILE, env_file=webapp.ENV_FILE, cleanup=False, migrate=False)
     out["db_web.opened"] = connection.current_db_file()
     out["db_web.declared"] = webapp.DB_FILE
 if "sweep" in want:
     # 真入口 _cleanup_state() + 记录实参的 sweep 替身：只读，不在机器目录上删东西。
     sched = load("sched_probe", os.path.join("docker", "scheduler.py"))
-    from yiban import state_gc
+    from yiban.adapters.statefiles import state_gc
     seen = {}
 
     def _spy(state_dir, log_dir=None, env=None, now=None):
@@ -383,7 +383,7 @@ class PointerReadersTakeValuesFromProcessEnvOnlyTest(unittest.TestCase):
     """
 
     def setUp(self):
-        from yiban.store import audit_chain
+        from yiban.adapters.persistence import audit_chain
 
         self.tmp = tempfile.mkdtemp(prefix="yiban-pointer-readers-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -407,8 +407,8 @@ class PointerReadersTakeValuesFromProcessEnvOnlyTest(unittest.TestCase):
             f.write("YIBAN_ENV_FILE=%s\n" % os.path.join(self.tmp, "elsewhere.env"))
 
     def _readers(self):
+        from yiban.adapters.persistence import audit_chain, db
         from yiban.engine import config_check
-        from yiban.store import audit_chain, db
 
         return (config_check._key_env_file(), db.resolve_env_file(),
                 audit_chain._resolve_key_env_file())

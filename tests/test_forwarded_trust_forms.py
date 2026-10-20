@@ -9,8 +9,9 @@
 对应实现：`web/security.py` 的 `_is_loopback_addr` / `_forwarded_trust_enabled` /
 `_client_ip`，`web/app.py` 的 `_forwarded_proto_is_https` 与 `_report_ambiguous_forwarded_trust`。
 关键断言：①取值域按 `ipaddress` 段语义（127.0.0.0/8 与 ::1），并显式判 `ipv4_mapped`；
-②默认（键未设）与非法值都保持"回环即可信"的现行为；③显式关时任何转发头都不采信；
-④缺省且出现"回环来源 + XFF"时只告警一次；⑤`web/` 下回环谓词只有一个定义点。
+②默认（键未设）与非法值都按"**不信任**"执行（fail-closed）；③显式开时回环首跳采信、
+非回环首跳仍丢弃；④缺省且出现"回环来源 + XFF"时只告警一次；⑤`web/` 下回环谓词只有
+一个定义点。
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口。
 """
 
@@ -42,28 +43,40 @@ def _read_env_lines(path):
         return [ln.rstrip("\n") for ln in f if ln.strip()]
 
 
-#: 逐部署形态对拍表（默认档 = 键未设 ⇒ 保持"回环即可信"的现行为）。
+#: 逐部署形态对拍表（默认档 = 键未设 ⇒ **不信任**转发头，fail-closed）。
 #: 每行 = (形态名, REMOTE_ADDR, X-Forwarded-For 或 None, 期望桶, 备注)。
-#: `期望桶` 是本版落地后的行为；"误开"行的期望值仍是客户端自报的 XFF——本版
-#: 按工单评论的 PM 裁定**不翻转默认**，翻转留给 B 半，届时这些行必须改成 REMOTE_ADDR。
+#: `期望桶` 是默认档的行为：回环来源也只认 `remote_addr`。显式置 1（反代形态）
+#: 时由 `ForwardedTrustSwitchTest` 另用 `WANT_TRUSTED` 对拍。
 FORMS = (
-    ("nginx 反代（systemd）", "127.0.0.1", "203.0.113.9", "203.0.113.9",
-     "nginx 覆盖式写 XFF：读到真实客户端 IP"),
+    ("nginx 反代（systemd）", "127.0.0.1", "203.0.113.9", "127.0.0.1",
+     "缺省不信任：反代部署须显式置 1（compose 已置）"),
     ("compose healthcheck（容器内直连，不带 XFF）", "127.0.0.1", None, "127.0.0.1",
-     "healthcheck 自身不发 XFF，桶即回环地址"),
-    ("compose 容器内直连（自报 XFF）", "127.0.0.1", "198.51.100.7", "198.51.100.7",
-     "误开：本版保留（PM 裁定不翻转默认）"),
+     "不带 XFF，两种档位下桶都是回环地址"),
+    ("compose 容器内直连（自报 XFF）", "127.0.0.1", "198.51.100.7", "127.0.0.1",
+     "缺省不信任：客户端自报值被丢弃"),
     ("--host 0.0.0.0 显式直连", "203.0.113.9", "198.51.100.7", "203.0.113.9",
      "首跳非回环：XFF 被丢弃、退回 remote_addr"),
-    ("回环直连（默认监听，本机调试/冒烟）", "127.0.0.1", "198.51.100.7", "198.51.100.7",
-     "误开：本版保留（PM 裁定不翻转默认）"),
-    ("ssh -L 隧道", "127.0.0.1", "198.51.100.7", "198.51.100.7",
-     "误开：本版保留（PM 裁定不翻转默认）"),
-    ("双栈 IPv6 监听（v4 客户端）", "::ffff:127.0.0.1", "203.0.113.9", "203.0.113.9",
-     "误关：本版起认 IPv4-mapped 回环"),
-    ("绑 127.0.0.2（非 .1 回环）", "127.0.0.2", "203.0.113.9", "203.0.113.9",
-     "反向：本版起与监听侧判据同源"),
+    ("回环直连（默认监听，本机调试/冒烟）", "127.0.0.1", "198.51.100.7", "127.0.0.1",
+     "缺省不信任：回环直连的客户端不能自选 IP 桶"),
+    ("ssh -L 隧道", "127.0.0.1", "198.51.100.7", "127.0.0.1",
+     "缺省不信任：隧道客户端没有本机权限，不能自选 IP 桶"),
+    ("双栈 IPv6 监听（v4 客户端）", "::ffff:127.0.0.1", "203.0.113.9", "::ffff:127.0.0.1",
+     "缺省不信任；回环谓词认 IPv4-mapped 形态"),
+    ("绑 127.0.0.2（非 .1 回环）", "127.0.0.2", "203.0.113.9", "127.0.0.2",
+     "缺省不信任；回环谓词与监听侧判据同源"),
 )
+
+#: 显式置 1（反代形态）的期望桶：回环首跳采信 XFF，非回环首跳仍丢弃。
+WANT_TRUSTED = {
+    "nginx 反代（systemd）": "203.0.113.9",
+    "compose healthcheck（容器内直连，不带 XFF）": "127.0.0.1",
+    "compose 容器内直连（自报 XFF）": "198.51.100.7",
+    "--host 0.0.0.0 显式直连": "203.0.113.9",
+    "回环直连（默认监听，本机调试/冒烟）": "198.51.100.7",
+    "ssh -L 隧道": "198.51.100.7",
+    "双栈 IPv6 监听（v4 客户端）": "203.0.113.9",
+    "绑 127.0.0.2（非 .1 回环）": "203.0.113.9",
+}
 
 #: 取值域单元表：地址串 → 是否回环。`ipaddress` 段语义 + 显式 `ipv4_mapped`
 #: + glibc 缩写 IPv4（`socket.inet_aton` 归一）。
@@ -139,9 +152,9 @@ class ForwardedTrustFormTableTest(unittest.TestCase):
                 self.assertEqual(self._bucket(remote_addr, xff), want,
                                  f"{form}：{note}")
 
-    def test_裸应用未配开关时按信任执行(self):
-        """裸 Flask 应用没有本键 ⇒ 回退默认（信任），不得因此把回环首跳判成不可信。"""
-        self.assertEqual(self._bucket("127.0.0.1", "203.0.113.9"), "203.0.113.9")
+    def test_裸应用未配开关时按不信任执行(self):
+        """裸 Flask 应用没有本键 ⇒ 回退默认（不信任），客户端自报 XFF 不得生效。"""
+        self.assertEqual(self._bucket("127.0.0.1", "203.0.113.9"), "127.0.0.1")
 
 
 class LoopbackPredicateDomainTest(unittest.TestCase):
@@ -160,7 +173,7 @@ class LoopbackPredicateDomainTest(unittest.TestCase):
 
     def test_入站与出站判据不混用(self):
         """入站信任门与出站 SSRF 判据不得互换：两边共用的只有"是否回环"这一层事实。"""
-        from yiban.notify import config as notify_config
+        from yiban.adapters.notifier.notify import config as notify_config
         self.assertIs(self.sec._is_loopback_addr("127.0.0.2"), True)
         # 出站判据对同一地址给的是"不可路由 ⇒ 拒"，两者不是同一个函数、也不互换
         self.assertIsNot(self.sec._is_loopback_addr, notify_config._is_nonroutable_target)
@@ -235,9 +248,10 @@ class _AppBase(unittest.TestCase):
 class ForwardedTrustSwitchTest(_AppBase):
     """显式开关 `YIBAN_TRUST_FORWARDED_HEADERS` 的三态。"""
 
-    def test_键未设时保持信任回环首跳(self):
+    def test_键未设时不信任回环首跳(self):
         app, _c = self._app(None)
-        self.assertEqual(self._bucket(app, "127.0.0.1", "203.0.113.9"), "203.0.113.9")
+        self.assertEqual(self._bucket(app, "127.0.0.1", "203.0.113.9"), "127.0.0.1",
+                         "缺省必须 fail-closed：客户端自报 XFF 不得成为 IP 桶")
 
     def test_显式关时任何转发头都不采信(self):
         app, _c = self._app("0")
@@ -246,13 +260,14 @@ class ForwardedTrustSwitchTest(_AppBase):
                 self.assertEqual(self._bucket(app, remote_addr, xff or ""), remote_addr,
                                  f"{form}：显式关后桶必须是 remote_addr")
 
-    def test_显式开时与缺省同行为(self):
+    def test_显式开时回环首跳采信(self):
         app, _c = self._app("1")
-        for form, remote_addr, xff, want, _note in FORMS:
+        for form, remote_addr, xff, _want, _note in FORMS:
             with self.subTest(form=form):
-                self.assertEqual(self._bucket(app, remote_addr, xff or ""), want)
+                self.assertEqual(self._bucket(app, remote_addr, xff or ""),
+                                 WANT_TRUSTED[form])
 
-    def test_非法值回退信任并告警(self):
+    def test_非法值回退不信任并告警(self):
         """非法值：解析发生在 create_app，故采集必须包住建应用这一步。"""
         seen = []
 
@@ -261,7 +276,7 @@ class ForwardedTrustSwitchTest(_AppBase):
             seen.append(self._bucket(app, "127.0.0.1", "203.0.113.9"))
 
         lines = _capture_web_log(_run)
-        self.assertEqual(seen, ["203.0.113.9"], "非法值必须回退缺省的「信任」")
+        self.assertEqual(seen, ["127.0.0.1"], "非法值必须回退缺省的「不信任」")
         self.assertTrue(any(TRUST_ENV_KEY in ln and "非法" in ln for ln in lines),
                         f"非法值必须留一条可 grep 的告警：{lines}")
 
@@ -280,12 +295,17 @@ class ForwardedProtoTrustTest(_AppBase):
               environ_base={"REMOTE_ADDR": remote_addr})
         return app.config["SESSION_COOKIE_SECURE"]
 
-    def test_回环首跳采信proto(self):
+    def test_缺省时回环首跳也不采信proto(self):
         app, c = self._app(None, cookie_secure="")
+        self.assertFalse(self._secure_after(app, c, "127.0.0.1", "https"),
+                         "缺省不信任转发头：X-Forwarded-Proto 同样不得采信")
+
+    def test_显式开时回环首跳采信proto(self):
+        app, c = self._app("1", cookie_secure="")
         self.assertTrue(self._secure_after(app, c, "127.0.0.1", "https"))
 
     def test_非回环首跳丢弃proto(self):
-        app, c = self._app(None, cookie_secure="")
+        app, c = self._app("1", cookie_secure="")
         self.assertFalse(self._secure_after(app, c, "203.0.113.9", "https"))
 
     def test_显式关时回环首跳也不采信proto(self):
@@ -348,7 +368,7 @@ class PwGateTierBucketSwitchIsRealTest(_AppBase):
         return seen
 
     def test_测试客户端默认remote_addr是回环(self):
-        app, c = self._app(None)
+        app, c = self._app("1")
         seen = self._probe(app)
         r = c.get(self.ANON_PATH, headers={"X-Forwarded-For": "203.0.113.9"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -358,7 +378,7 @@ class PwGateTierBucketSwitchIsRealTest(_AppBase):
         self.assertEqual(seen.get("bucket"), "203.0.113.9")
 
     def test_两个不同XFF给出两个不同桶(self):
-        app, c = self._app(None)
+        app, c = self._app("1")
         seen = self._probe(app)
         buckets = []
         for xff in ("203.0.113.7", "203.0.113.9"):
@@ -366,6 +386,16 @@ class PwGateTierBucketSwitchIsRealTest(_AppBase):
             buckets.append(seen["bucket"])
         self.assertEqual(buckets, ["203.0.113.7", "203.0.113.9"],
                          "两个不同 XFF 必须给出两个不同的桶（否则那批用例在自证）")
+
+    def test_缺省不信任时不同XFF落同一个回环桶(self):
+        """默认档的反面：不采信 XFF ⇒ 两个自报值落同一个桶（fail-closed 的直接后果）。"""
+        app, c = self._app(None)
+        seen = self._probe(app)
+        buckets = []
+        for xff in ("203.0.113.7", "203.0.113.9"):
+            c.get(self.ANON_PATH, headers={"X-Forwarded-For": xff})
+            buckets.append(seen["bucket"])
+        self.assertEqual(buckets, ["127.0.0.1", "127.0.0.1"])
 
 
 class NginxOverwriteFormGuardTest(unittest.TestCase):

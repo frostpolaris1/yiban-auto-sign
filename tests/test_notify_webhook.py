@@ -35,18 +35,20 @@ from unittest import mock
 import pytest
 
 import web.security as web_security
-from web.routes import auth as web_routes_auth
-from yiban.notify import ledger as notify_ledger
-from yiban.notify import transport as _notify_K2
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
 # 打桩必须打在**真正持有并调用该名字**的模块上，否则会静默失效。
-from yiban import notify  # noqa: E402
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import config as notify_config  # noqa: E402
-from yiban.notify import transport as notify_transport  # noqa: E402
+# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from web import security as _security  # noqa: E402
+from web.routes import auth as web_routes_auth  # noqa: E402
+from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier import notify  # noqa: E402
+from yiban.adapters.notifier.notify import config as notify_config  # noqa: E402
+from yiban.adapters.notifier.notify import ledger as notify_ledger  # noqa: E402
+from yiban.adapters.notifier.notify import transport as _notify_K2  # noqa: E402
+from yiban.adapters.notifier.notify import transport as notify_transport  # noqa: E402
 
 KEY = "f" * 64
 SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"
@@ -115,6 +117,17 @@ def _enc_with(key_hex, secret):
     """用指定密钥加密（走 .env 取钥路径的用例不能用进程内 load_key）。"""
     return json.dumps(account_crypto.encrypt_text(secret, account_crypto._decode_key(key_hex)),
                       ensure_ascii=False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch):
+    """ba-p09-06：发送期域名复核不得触网。
+
+    默认把域名解析为公网地址（正常放行）；解析到内网/解析失败的行为由专门用例
+    覆盖。没有这层隔离，纯本机用例会因环境 DNS 而抖动。
+    """
+    monkeypatch.setattr(notify_config, "_resolve_host_ips",
+                        lambda host: ["93.184.216.34"])
 
 
 class _Resp:
@@ -283,6 +296,83 @@ def test_custom_sends_json_and_masks_host(monkeypatch, caplog):
     assert "user:pass" not in caplog.text
 
 
+def test_custom_domain_resolving_to_internal_is_refused(monkeypatch, caplog):
+    """ba-p09-06：域名目标在发送前必须逐 IP 复核，解析到内网/保留段即拒发。
+
+    旧实现只判 IP 字面量，域名一律放行，理由写的是「DNS rebinding 由发送超时兜底」
+    ——超时限制不了请求打出去，形同虚设。这里钉住：解析结果任一落在不可路由段，
+    请求一次都不发。
+    """
+    _clear(monkeypatch)
+    _set(monkeypatch, TYPE="custom", SECRET_ENC=_enc("https://rebind.example/hook"),
+         COOLDOWN="0")
+    monkeypatch.setattr(notify_config, "_resolve_host_ips",
+                        lambda host: ["93.184.216.34", "169.254.169.254"])
+    calls = []
+    monkeypatch.setattr(notify_transport.requests, "post",
+                        lambda *a, **k: calls.append(1) or _Resp())
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify.send("告警", "内容") is False
+    assert calls == [], "解析到元数据/内网地址必须拒发，不得先发出去再靠超时"
+    assert "解析到内网/保留地址" in caplog.text
+
+
+def test_custom_domain_resolution_failure_is_refused(monkeypatch, caplog):
+    """ba-p09-06：解析不出地址时 fail-closed（不发请求）。"""
+    _clear(monkeypatch)
+    _set(monkeypatch, TYPE="custom", SECRET_ENC=_enc("https://nxdomain.example/hook"),
+         COOLDOWN="0")
+    monkeypatch.setattr(notify_config, "_resolve_host_ips", lambda host: [])
+    calls = []
+    monkeypatch.setattr(notify_transport.requests, "post",
+                        lambda *a, **k: calls.append(1) or _Resp())
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify.send("告警", "内容") is False
+    assert calls == [], "域名解析失败不得放行"
+
+
+def test_custom_failure_log_does_not_echo_http_status(monkeypatch, caplog):
+    """ba-p09-06：custom 失败日志只留粗分类，不回显 HTTP 状态码。
+
+    状态码是内网可达性/服务指纹 oracle：持被窃管理员会话者可借设置页把目标指向
+    内网主机，再从管理员可读日志里读回「端口开没开」。与 mail/transport 的
+    「只记粗分类、不回显原始异常类型」同一收口口径。
+    """
+    _clear(monkeypatch)
+    _set(monkeypatch, TYPE="custom", SECRET_ENC=_enc("https://hook.example.com/push"),
+         COOLDOWN="0")
+
+    class StatusResp:
+        status_code = 503
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: StatusResp())
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify.send("告警", "内容") is False
+    assert "503" not in caplog.text, "失败日志不得回显 HTTP 状态码（探测指纹）"
+
+
+def test_custom_receipt_refusal_log_does_not_echo_http_status(monkeypatch, caplog):
+    """ba-p09-06：200+错误 body 这条拒绝日志同样不得回显状态码。"""
+    _clear(monkeypatch)
+    _set(monkeypatch, TYPE="custom", SECRET_ENC=_enc("https://hook.example.com/push"),
+         COOLDOWN="0")
+
+    class BodyResp:
+        status_code = 200
+
+        def json(self):
+            return {"errcode": 40001}
+
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: BodyResp())
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify.send("告警", "内容") is False
+    assert "errcode=40001" in caplog.text, "拒绝原因仍应可定位"
+    assert "HTTP 200" not in caplog.text, "拒绝日志不得回显 HTTP 状态码"
+
+
 def test_custom_rejects_unsafe_url(monkeypatch):
     _clear(monkeypatch)
     for bad in ("http://example.com/hook",
@@ -308,8 +398,9 @@ def test_is_safe_url_rejects_loopback_variants():
     实测 `https://2130706433/hook`、`https://0x7f000001/hook`、`https://0177.0.0.1/hook`、
     `https://127.1/hook`、`https://localhost./hook` 全部直通（原实现非 IP 域名一律
     放行）。`[::ffff:127.0.0.1]`/`[::1]`/`169.254.169.254` 已拦住（ipaddress 可解析）。
-    改法 (a)：静态层拦 IP 字面量变体；`*.nip.io` 类域名型重绑定需连接期 DNS 复检
-    （选项 b，引入 DNS 依赖与 TOCTOU 残余，本批按工单建议不做）。
+    改法 (a)：静态层拦 IP 字面量变体；`*.nip.io` 类域名型重绑定由发送前的
+    解析复核兜底（ba-p09-06：`notify_config.is_safe_url_resolved`，见
+    `test_custom_domain_resolving_to_internal_is_refused`）。
     """
     bad = [
         "https://2130706433/hook",              # 十进制 IP 字面量（127.0.0.1）
@@ -783,6 +874,38 @@ def test_urgent_only_accepts_false_and_daily_max_negative_not_unlimited(monkeypa
     # 对照：显式写 0 才是合法的不限额（返回 0，调用侧判 <=0 为不限）
     _set(monkeypatch, DAILY_MAX="0")
     assert notify_config._env_int("DAILY_MAX", 5) == 0
+
+
+def test_bad_value_warnings_are_namespaced_per_reader(monkeypatch, caplog):
+    """ba-p09-10：`_env_int` 与 `_env_flag` 对同名键各有各的「只喊一次」闩。
+
+    旧实现共用一张按短名去重的集合：先被整数读取喊过，开关读取的非法值就被永久
+    吞掉（反之亦然）——「笔误应当出声」在两条读键路径上互相顶掉。
+    """
+    notify_config._bad_value_warned.clear()
+    monkeypatch.setenv("YIBAN_NOTIFY_SAMEKEY", "-1")
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify_config._env_int("SAMEKEY", 7) == 7
+    first = len(caplog.records)
+    assert first >= 1, "负值整数要出声"
+    monkeypatch.setenv("YIBAN_NOTIFY_SAMEKEY", "bogus")
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify_config._env_flag("SAMEKEY", 0) == 0
+    assert len(caplog.records) > first, "同名键的开关告警不得被整数告警的闩吞掉"
+
+
+def test_loginfail_bad_value_uses_real_key_and_separate_latch(monkeypatch, caplog):
+    """ba-p09-10：ledger 的 login_fail 告警用真实键名，且不占用 notify 短名闩。"""
+    notify_config._bad_value_warned.clear()
+    monkeypatch.setenv("YIBAN_LOGINFAIL_DAILY_MAX", "-1")
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify_ledger._loginfail_daily_limit() == notify_config.DEFAULT_LOGINFAIL_DAILY_MAX
+    assert "YIBAN_LOGINFAIL_DAILY_MAX='-1'" in caplog.text, "日志必须给出真实 .env 键名"
+    # 同一短名在 _env_int 侧仍能独立出声（旧实现被 ledger 塞入的自造名吞掉）
+    monkeypatch.setenv("YIBAN_NOTIFY_LOGINFAIL_DAILY_MAX", "-1")
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        assert notify_config._env_int("LOGINFAIL_DAILY_MAX", 3) == 3
+    assert "YIBAN_NOTIFY_LOGINFAIL_DAILY_MAX='-1'" in caplog.text
 
 
 def test_refund_across_day_does_not_charge_next_day(monkeypatch):
@@ -1368,17 +1491,17 @@ class Batch18Knife2WebTest(unittest.TestCase):
         次是 401。
         """
         c = self.webapp.create_app().test_client()
-        threshold = self.webapp.LOGIN_FAIL_NOTIFY
+        threshold = _limits.LOGIN_FAIL_NOTIFY
         # 口令校验的**两份绑定都要打**：`web.routes.auth.check_password_hash` 覆盖注册
         # 用户路径（该路由自 145-B `T1` 片起自己从 werkzeug 导入，打 web.app 会静默
         # 失效），`web_security.check_password_hash` 覆盖内置管理员路径（`web/security.py`
         # 的 verify_admin 用该模块自己的绑定，app 侧打桩到不了它）。本 block 内
         # verify_admin 已被打成 False 短路内置路径，security 侧这一桩是防"日后去掉
         # verify_admin 桩"时真实 scrypt 悄悄回流的兜底。
-        with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
+        with mock.patch.object(_security, "verify_admin", return_value=False), \
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
-             mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp.notify, "send") as nsend:
             for _ in range(threshold - 1):
                 r = c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
@@ -1400,27 +1523,30 @@ class Batch18Knife2WebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         long_a, long_b = "a" * 200, "a" * 128 + "b" * 72
         # 两份 check_password_hash 绑定同 test_m8_login_alert_routed_to_loginfail_ledger。
-        with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
+        with mock.patch.object(_security, "verify_admin", return_value=False), \
              mock.patch.object(web_routes_auth, "check_password_hash", return_value=False), \
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
-             mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
-             mock.patch.object(self.webapp, "send_notification"):
+             mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(_notify_mail, "send_notification"):
             # 前 threshold-1 次在长键 A、B 之间分摊：只有"两键被截成同一个键"才会累计到锁定
-            for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+            for i in range(_limits.LOGIN_MAX_FAILS - 1):
                 name = long_a if i % 2 == 0 else long_b
                 r = c.post("/api/login", json={"username": name, "password": "x"})
                 self.assertEqual(r.status_code, 401)
             r = c.post("/api/login", json={"username": long_b, "password": "x"})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
-        self.assertIn("已锁定", r.get_json()["error"], "同 128 前缀应合并计数并锁定")
+        # 文案不得回显锁定时长（ba-p06-05 信息分层），但仍须明确"已锁定"语义
+        msg = r.get_json()["error"]
+        self.assertIn("密码错误次数过多", msg, "同 128 前缀应合并计数并锁定")
+        self.assertNotIn("分钟", msg, "不得向匿名调用方回显锁定窗口参数")
 
     def test_p31_restore_fail_key_truncated_to_128(self):
         """验收：restore 的 200 长邮箱同样截断 [:128]（累计到锁定阈值即锁定）。"""
         c = self.webapp.create_app().test_client()
         long_a, long_b = "r" * 200, "r" * 128 + "s" * 72
-        with mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
-             mock.patch.object(self.webapp, "send_notification"):
-            for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+        with mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(_notify_mail, "send_notification"):
+            for i in range(_limits.LOGIN_MAX_FAILS - 1):
                 email = long_a if i % 2 == 0 else long_b
                 r = c.post("/api/me/restore", json={"email": email, "password": "x"})
                 self.assertEqual(r.status_code, 400)
@@ -1451,11 +1577,11 @@ class Batch18Knife2WebTest(unittest.TestCase):
             seen.append(max_age)
             return real_trim(store, max_age)
 
-        with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy), \
-             mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
-             mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(web_security, "_ip_store_trim", side_effect=spy), \
+             mock.patch.object(web_security, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(_notify_mail, "send_notification"):
             c.post("/api/me/restore", json={"email": "gone@qq.com", "password": "x"})
-        want = self.webapp.RESTORE_FAIL_WINDOW + self.webapp._IP_STORE_MAX_AGE
+        want = _limits.RESTORE_FAIL_WINDOW + self.webapp._IP_STORE_MAX_AGE
         self.assertIn(want, seen,
                       f"restore 失败路径应以 max_age={want} trim _restore_fail_rate，实际 {seen}")
 
