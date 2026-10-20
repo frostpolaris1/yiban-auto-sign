@@ -51,6 +51,7 @@ ROSTER_FILES = (
     "yiban/app/runner.py",
     "yiban/engine/schedule.py",
     "yiban/adapters/persistence/claims.py",
+    "yiban/adapters/persistence/accounts.py",
 )
 
 #: 键 → (声明形态, 理由)。理由逐键写死：判级依据必须是说出来的，不是沉默的缺省。
@@ -99,6 +100,10 @@ ROSTER = {
         CRITICAL, "有效窗口被压缩到窗口宽度的 80%：与配置不符，且重试空间随之减少"),
     ("yiban/adapters/persistence/claims.py", "签到领取池不可用"): (
         CRITICAL, "领取池不可用 ⇒ 本执行体拒绝执行签到，一轮至多一条"),
+    ("yiban/adapters/persistence/accounts.py", "账号有效性复核失败"): (
+        CRITICAL, "账号状态查询失败 ⇒ 相关账号 fail-closed 拒绝发起真实登录；"
+                  "同一场库故障进程内只报一条，可能整天漏签且原因在库，须当机处置"
+                  "（工单 ba-p02-06 新增调用点，同批定级）"),
     ("yiban/engine/crash_semantics.py", "易班签到：崩溃遗留的未定论尝试"): (
         CRITICAL, "崩溃遗留的 unknown_outcome：可能已发出请求未拿结果，"
                   "当天该账号结局未定，须当机处置（读平台 State 定论或人工核对）；"
