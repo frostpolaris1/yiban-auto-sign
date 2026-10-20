@@ -40,6 +40,8 @@ DEFAULT_URL_TIMEOUT = 10
 MAX_TITLE_CHARS = 32  # Server酱服务端对 title 的长度上限，超了会被拒
 # 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
 SKIP_LOG_WINDOW = 60
+# 节流状态文件名：判定占位与失败回滚共用同一个常量，锁的落点只有一处定义。
+_THROTTLE_STATE_FILE = "notify-throttle.json"
 
 
 def _throttle_acquire(title):
@@ -65,7 +67,7 @@ def _throttle_acquire(title):
             return False  # False = 节流命中，调用方据此跳过
         # 磁盘权威：单次文件锁临界区内 读盘 → 判定 → 更新 → 写回。
         # 与账本同构——另一进程放行过的窗口内标题会被这里拦下，双进程不双发。
-        with ledger_mod._state_file_lock("notify-throttle.json"):
+        with ledger_mod._state_file_lock(_THROTTLE_STATE_FILE):
             disk = ledger_mod._load_throttle_file()
             if now - disk.get(title, 0.0) < cooldown:
                 return False
@@ -94,7 +96,7 @@ def _throttle_release(title, token):
     with ledger_mod._throttle_lock:
         if ledger_mod._throttle_ts.get(title) == token:
             ledger_mod._throttle_ts.pop(title, None)
-        with ledger_mod._state_file_lock("notify-throttle.json"):
+        with ledger_mod._state_file_lock(_THROTTLE_STATE_FILE):
             disk = ledger_mod._load_throttle_file()
             if disk.get(title) == token:
                 del disk[title]
