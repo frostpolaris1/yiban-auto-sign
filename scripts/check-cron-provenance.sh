@@ -29,8 +29,16 @@ MANIFEST="$REPO_ROOT/deploy/prod/manifest.tsv"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --cron-dir) CRON_DIR="$2"; shift 2 ;;
-        --manifest) MANIFEST="$2"; shift 2 ;;
+        --cron-dir|--manifest)
+            # 缺值不是"有来源违规"：set -u 下直接引用 "$2" 会以 unbound variable 退出 1，
+            # 与头注释的 1=存在无来源路径 混码。用法错误一律 rc=2。
+            if [ $# -lt 2 ]; then
+                echo "check-cron-provenance: $1 缺少值" >&2
+                echo "用法: $0 [--cron-dir DIR] [--manifest FILE]" >&2
+                exit 2
+            fi
+            if [ "$1" = "--cron-dir" ]; then CRON_DIR="$2"; else MANIFEST="$2"; fi
+            shift 2 ;;
         *) echo "check-cron-provenance: 未知参数: $1" >&2; exit 2 ;;
     esac
 done

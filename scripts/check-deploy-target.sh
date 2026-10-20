@@ -41,7 +41,10 @@ fi
 
 git fetch --quiet "$remote" "refs/heads/$branch" \
     || { echo "不可达: fetch $remote refs/heads/$branch 失败" >&2; exit 2; }
-remote_head=$(git rev-parse --short FETCH_HEAD)
+# FETCH_HEAD 解析失败属"工具没跑起来"，不是"远端分支不含目标提交"：set -e 下
+# 直接赋值会让脚本以 1 退出，与发布线落后的语义共用同一个码（P12-23）。
+remote_head=$(git rev-parse --short FETCH_HEAD) \
+    || { echo "不可达: 无法解析 FETCH_HEAD（本地 git 状态异常）" >&2; exit 2; }
 
 if git merge-base --is-ancestor "$sha" FETCH_HEAD; then
     echo "可达: ${remote}/${branch}（现 ${remote_head}）已包含 ${sha} —— 按现流程 git pull ${remote} ${branch} 可部署到该提交"

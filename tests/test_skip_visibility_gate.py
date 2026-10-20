@@ -80,6 +80,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 sqlite3 命令（一致性快照与 integrity_check 判据）"
   ]
  ],
+ "tests/test_backup_docker_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_backup_e2e.py": [
   [
    "skipIf",
@@ -98,6 +104,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipTest",
    "无 bash 环境"
+  ]
+ ],
+ "tests/test_backup_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 sqlite3"
   ]
  ],
  "tests/test_backup_require_encrypt.py": [
@@ -382,6 +398,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "git 不可用：跳过 PR 模板守卫"
   ]
  ],
+ "tests/test_run_entry_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_run_sh_logging.py": [
   [
    "skipIf",
@@ -478,6 +500,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipTest",
    "宿主文件系统不保留 POSIX mode（Windows 开发机）"
+  ]
+ ],
+ "tests/test_scripts_gate_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 git 判断忽略规则"
   ]
  ],
  "tests/test_second_round_rc_contract.py": [

@@ -39,12 +39,19 @@ fi
 business_day() {
     # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
     # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d
+    local _d _tz
     _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
     case "$_d" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
     esac
-    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
+    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
+    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
+    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
+    if [ "$_tz" = "+0800" ]; then
+        TZ=Asia/Shanghai date +%F
+        return 0
+    fi
+    _err "警告: 宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天"
     date +%F
 }
 
@@ -63,7 +70,8 @@ business_day() {
 #
 # `.env` 路径**不受这条口径约束**（它是"读哪个文件"的指针，不是被管的配置）：
 # 一律 $APP_DIR/data/.env，与 run_probe.sh / 容器调度器（/data/.env）同口径；
-# 可由 YIBAN_ENV_FILE 覆盖（上面已 export）。
+# 该指针**没有环境变量覆盖面**（旧注释声称可由 YIBAN_ENV_FILE 覆盖，实现从未读该键；
+# 与 scripts/yiban-fallback.sh 同批订正，见工单 p12-13）。
 #
 # 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
 # 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
@@ -668,7 +676,15 @@ if _need_second_round; then
         _log "=== 补签轮结束，退出码: $EXIT_CODE ==="
     fi
 else
-    _log "补签轮：无需补跑（当日已收尾且无未了结账号）"
+    # P12-18：_need_second_round 的四条返回 1 的路径里，只有"判定码 != 10"跑过
+    # --second-run-check（SEAL_CHECK_RC 有值）；开关关闭/本轮即补签轮/全站暂停三条
+    # 根本没跑判定（SEAL_CHECK_RC 为空）。else 一律说"已收尾且无未了结"是把未判
+    # 说成已判——恰是排查漏签时最需要区分的一种假象。
+    case "${SEAL_CHECK_RC}" in
+        "") _log "补签轮：无需补跑——未做库内事实判定（补签开关关闭、本轮即补签轮或全站暂停）" ;;
+        10) _log "补签轮：无需补跑——库内判定为需要补跑但条件未成立（不应到达）" ;;
+        *)  _log "补签轮：无需补跑——库内判定退出 ${SEAL_CHECK_RC}（无未了结账号）" ;;
+    esac
 fi
 
 # ---- 当日收尾标记的封存：前置 = 库内事实"确实无未了结" ----
@@ -689,7 +705,21 @@ _seal_second_done_marker() {
         SEAL_CHECK_RC=$?
     fi
     if [ "$SEAL_CHECK_RC" = "0" ]; then
-        if ! : > "$SECOND_DONE_MARKER" 2>/dev/null; then
+        # census-P2-settled-marker：`: > "$SECOND_DONE_MARKER"` 是裸覆盖（非 noclobber、
+        # 非 tmp+mv），写到一半被杀会留下半截/空文件；权限只靠 umask 077，不显式。
+        # 改 mktemp + mv（同目录原子 rename）+ 显式 0600。
+        local _tmp_marker="" _marker_ok=0
+        if [ -e "$SECOND_DONE_MARKER" ] && [ ! -f "$SECOND_DONE_MARKER" ]; then
+            # 目标被占成目录/设备：mv 会把临时件挪进去且"看似成功"，先拒。
+            _marker_ok=0
+        elif _tmp_marker="$(mktemp "${SECOND_DONE_MARKER}.tmp.XXXXXX" 2>/dev/null)" \
+            && : > "$_tmp_marker" && chmod 600 "$_tmp_marker" \
+            && mv -f "$_tmp_marker" "$SECOND_DONE_MARKER" \
+            && [ -f "$SECOND_DONE_MARKER" ]; then
+            _marker_ok=1
+        fi
+        if [ "$_marker_ok" -eq 0 ]; then
+            [ -n "$_tmp_marker" ] && rm -f "$_tmp_marker"
             _err "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮"
             _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
             if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi

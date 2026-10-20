@@ -14,5 +14,6 @@
 0644	deploy/prod/cron.d/yiban-sign	/etc/cron.d/yiban-sign
 0644	deploy/prod/cron.d/yiban-probe	/etc/cron.d/yiban-probe
 0644	deploy/prod/cron.d/yiban-audit	/etc/cron.d/yiban-audit
+0644	deploy/prod/cron.d/yiban-backup	/etc/cron.d/yiban-backup
 0644	deploy/prod/cron.d/yiban-backup-sentinel	/etc/cron.d/yiban-backup-sentinel
 0644	deploy/prod/tmpfiles.d/yiban.conf	/etc/tmpfiles.d/yiban.conf
