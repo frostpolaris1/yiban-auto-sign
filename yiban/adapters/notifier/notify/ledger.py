@@ -89,7 +89,7 @@ _LEDGERS = {"general": _general_daily, "urgent": _urgent_daily,
 def _state_dir():
     """状态目录解析：与全仓路径类配置**同一口径**（`env_io.resolve_path`）。
 
-    优先级：进程环境 → `.env` → `/var/log/yiban`。缺省与 `run.sh`、`web/app.py`
+    优先级：进程环境 → `.env` → 全仓缺省状态目录。缺省与 `run.sh`、`web/app.py`
     的 `STATE_DIR_DEFAULT`、`audit_chain` 一致——web（常驻）与 signin（cron）
     因此总指向同一目录，跨进程共享额度与节流窗口的目标才成立。
 

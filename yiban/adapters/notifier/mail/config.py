@@ -256,7 +256,10 @@ def get_config(envs=None):
     if envs is None:
         envs = _read_env_file()
     entries = smtp_list(envs)
-    entry0 = entries[0] if entries else None
+    # 只有 SMTPS_ENC 真正配置时才按条目回显（ba-p09-08）；旧单条键的 smtp_list 会把
+    # 非法端口归一成 465，若也走条目分支，get_config 就再也看不到「端口被回退」这件事。
+    entry0 = (entries[0] if entries and _env_value("SMTPS_ENC", envs)
+              else None)
     if entry0 is not None:
         host = str(entry0.get("host") or "").strip()
         try:
