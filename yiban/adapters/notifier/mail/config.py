@@ -64,6 +64,20 @@ def _is_toggleable_private(ip):
     return ip == _LOOPBACK_V6
 
 
+#: `check_smtp_host` 的「内网/保留地址」类拒绝原因。发送侧按这个类别单独持一次性
+#: 告警旗；空主机、方括号不闭合、非标准 IPv4 字面量等配置错误**不**属此类，否则一条
+#: 无关配置错误就会把内网目标提示永久静音（ba-p09-09）。
+_REASON_LOOPBACK_NAME = "目标为本机回环名，属内网地址"
+_REASON_PRIVATE = "目标为内网/回环地址，如需保留请开启 YIBAN_MAIL_ALLOW_PRIVATE_HOST"
+_REASON_NONROUTABLE = "目标为链路本地/CGNAT/组播/保留等不可路由地址，不允许作为 SMTP 目标"
+_PRIVATE_REASONS = (_REASON_LOOPBACK_NAME, _REASON_PRIVATE, _REASON_NONROUTABLE)
+
+
+def is_private_target_reason(reason):
+    """该拒绝原因是否属「内网/保留地址」类（发送侧一次性告警的分类判据）。"""
+    return reason in _PRIVATE_REASONS
+
+
 def check_smtp_host(host, env=None):
     """SMTP 目标地址判据：返回拒绝原因（中文文案）或 None（放行）。
 
@@ -90,7 +104,7 @@ def check_smtp_host(host, env=None):
     if not candidate:
         return "SMTP 主机为空"
     if candidate == "localhost":
-        return "目标为本机回环名，属内网地址"
+        return _REASON_LOOPBACK_NAME
     try:
         ip = ipaddress.ip_address(candidate)
     except ValueError:
@@ -106,8 +120,8 @@ def check_smtp_host(host, env=None):
     if _is_toggleable_private(ip):
         if _allow_private_host(env):
             return None
-        return "目标为内网/回环地址，如需保留请开启 YIBAN_MAIL_ALLOW_PRIVATE_HOST"
-    return "目标为链路本地/CGNAT/组播/保留等不可路由地址，不允许作为 SMTP 目标"
+        return _REASON_PRIVATE
+    return _REASON_NONROUTABLE
 
 
 def _read_env_file():
@@ -119,16 +133,24 @@ def _read_env_file():
     return env_io.parse_env_file(env_io.env_path())
 
 
-def _get(key):
+def _env_value(key, envs):
+    """从一份已解析的 .env 快照取键：**.env 优先、进程环境只补缺**（M27）。"""
+    return (envs.get(_PREFIX + key, "").strip()
+            or os.environ.get(_PREFIX + key, "").strip())
+
+
+def _get(key, envs=None):
     """读取配置：**.env 文件优先**，进程环境只补缺（M27）。
 
     与 `yiban/notify/config._env_str` 同一口径、同一理由：本组件的写侧（设置页落盘）
     与 web 读侧都是「`.env` 优先」，读侧若反过来，键一旦进了 web 进程环境，设置页的
     写入就静默失效、GET 回显与磁盘状态长期不一致。进程环境保留为兜底（`.env` 没有该键
     的部署形态仍取得到值）。
+
+    envs：调用方本轮已解析好的 .env 快照。一次取多个键的路径（smtp_list / get_config /
+    smtp_channel_state）传同一份，不再逐键重读全文件（ba-p09-07）。
     """
-    return (_read_env_file().get(_PREFIX + key, "").strip()
-            or os.environ.get(_PREFIX + key, "").strip())
+    return _env_value(key, _read_env_file() if envs is None else envs)
 
 
 def _mask_addr(addr):
@@ -154,7 +176,7 @@ def _mask_addr(addr):
     return visible + "*" * max(3, len(name) - len(visible)) + "@" + domain
 
 
-def _smtps_enc_decrypts_to_list():
+def _smtps_enc_decrypts_to_list(envs=None):
     """SMTPS_ENC 密文能否解出一个 JSON 列表（内容不限，元素有效性由 smtp_list 过滤）。
 
     供 smtp_channel_state 区分「解密成功但无有效条目」（设置页允许 smtps: [] 的合法
@@ -162,14 +184,14 @@ def _smtps_enc_decrypts_to_list():
     病因却完全不同。
     """
     try:
-        entry = json.loads(_get("SMTPS_ENC"))
+        entry = json.loads(_get("SMTPS_ENC", envs))
         plain = account_crypto.decrypt_text(entry, account_crypto.load_key(env_io.env_path()))
         return isinstance(json.loads(plain), list)
     except (ValueError, OSError, TypeError):
         return False
 
 
-def smtp_list():
+def smtp_list(envs=None):
     """SMTP 发信条目列表（主备 failover，按列表顺序逐条尝试）。
 
     优先读 YIBAN_MAIL_SMTPS_ENC（web 设置页写入：明文 JSON 列表经
@@ -178,8 +200,14 @@ def smtp_list():
     绝不抛出（发信配置损坏不能拖累主流程）。
     旧单条键（SMTP_HOST/SMTP_PORT/USER/PASS/ADMIN_TO）仍兼容：USER 与 PASS
     均非空时返回单元素列表，否则 []（未配置）。
+
+    envs：本轮已解析的 .env 快照。给出时一条路径只读这一份（ba-p09-07）；省略则
+    本函数自己读一次。逐键各读一遍文件还会让同一次发信的 user/pass/host 来自
+    .env 的两代内容（设置页正在改写时的撕裂读）。
     """
-    raw = _get("SMTPS_ENC")
+    if envs is None:
+        envs = _read_env_file()
+    raw = _env_value("SMTPS_ENC", envs)
     if raw:
         try:
             # 密钥路径口径与 _read_env_file 一致（YIBAN_ENV_FILE 优先）。不能省路径：
@@ -194,55 +222,81 @@ def smtp_list():
         except (ValueError, OSError, TypeError) as e:
             # ValueError：json 解析/密文格式/密钥不匹配；OSError：密钥文件读失败
             logger.warning("YIBAN_MAIL_SMTPS_ENC 解密失败（%s），回落旧单条键", type(e).__name__)
-    if _get("USER") and _get("PASS"):
+    if _env_value("USER", envs) and _env_value("PASS", envs):
         try:
-            port = int(_get("SMTP_PORT") or "465")
+            port = int(_env_value("SMTP_PORT", envs) or "465")
         except ValueError:
             port = 465
         return [{
-            "host": _get("SMTP_HOST") or "smtp.qq.com",
+            "host": _env_value("SMTP_HOST", envs) or "smtp.qq.com",
             "port": port,
-            "user": _get("USER"),
-            "pass": _get("PASS"),
-            "admin_to": _get("ADMIN_TO"),
+            "user": _env_value("USER", envs),
+            "pass": _env_value("PASS", envs),
+            "admin_to": _env_value("ADMIN_TO", envs),
         }]
     return []
 
 
-def get_config():
+def _enabled_flag(envs=None):
+    """`YIBAN_MAIL_ENABLE` 的开关判定（`.env` 优先、环境变量补缺）。"""
+    return _get("ENABLE", envs).strip().lower() in ("1", "true", "on", "yes")
+
+
+def get_config(envs=None):
     """读取邮件配置概览（脱敏：不含授权码，发件地址打码），供设置页/日志展示。
 
-    port_fallback：SMTP_PORT 缺省或非法时为 True——展示层据此提示「端口未按预期生效，
-    实际按 465 处理」，不再无声回退。
+    回显口径是**实际发信用的第一主条目**（ba-p09-08）：SMTPS_ENC 配置时 host/port
+    也取 `entries[0]`，不能只让 user 走条目、host/port 仍读旧单条键——否则设置页
+    恒显示 smtp.qq.com:465，管理员核对不了告警实际发往哪个中继。
+
+    port_fallback：实际生效端口不是配置写的值时为 True（旧键缺省/非法，或条目
+    端口非法回退 465）——展示层据此提示「端口未按预期生效」，不再无声回退。
     """
     global _port_warned
-    raw_port = _get("SMTP_PORT")
-    try:
-        port = int(raw_port or "465")
-        port_fallback = not raw_port.strip()
-    except ValueError:
-        port = 465
-        port_fallback = True
-        if raw_port and not _port_warned:
-            _port_warned = True
-            logger.warning(
-                "YIBAN_MAIL_SMTP_PORT=%r 不是合法端口，已回退 465；请修正 .env",
-                raw_port,
-            )
-    entries = smtp_list()
+    if envs is None:
+        envs = _read_env_file()
+    entries = smtp_list(envs)
+    # 只有 SMTPS_ENC 真正配置时才按条目回显（ba-p09-08）；旧单条键的 smtp_list 会把
+    # 非法端口归一成 465，若也走条目分支，get_config 就再也看不到「端口被回退」这件事。
+    entry0 = (entries[0] if entries and _env_value("SMTPS_ENC", envs)
+              else None)
+    if entry0 is not None:
+        host = str(entry0.get("host") or "").strip()
+        try:
+            port = int(entry0.get("port", 465))
+            port_fallback = False
+        except (TypeError, ValueError):
+            port = 465
+            port_fallback = True
+    else:
+        raw_port = _get("SMTP_PORT", envs)
+        host = _get("SMTP_HOST", envs) or "smtp.qq.com"
+        try:
+            port = int(raw_port or "465")
+            port_fallback = not raw_port.strip()
+        except ValueError:
+            port = 465
+            port_fallback = True
+            if raw_port and not _port_warned:
+                _port_warned = True
+                logger.warning(
+                    "YIBAN_MAIL_SMTP_PORT=%r 不是合法端口，已回退 465；请修正 .env",
+                    raw_port,
+                )
     return {
-        "enable": _get("ENABLE"),
-        "host": _get("SMTP_HOST") or "smtp.qq.com",
+        "enable": _get("ENABLE", envs),
+        "host": host,
         "port": port,
         "port_fallback": port_fallback,
         # user 打码显示第一主条目（SMTPS_ENC 配置时旧键 USER 可能为空）
-        "user": _mask_addr(entries[0].get("user")) if entries else _mask_addr(_get("USER")),
-        "admin_to": _mask_addr(_get("ADMIN_TO")),
-        "admin_notify": admin_notify_enabled(),
+        "user": _mask_addr(entry0.get("user")) if entry0 is not None else _mask_addr(
+            _get("USER", envs)),
+        "admin_to": _mask_addr(_get("ADMIN_TO", envs)),
+        "admin_notify": admin_notify_enabled(envs),
     }
 
 
-def smtp_channel_state():
+def smtp_channel_state(envs=None):
     """邮件发信通道三态判定：返回 (state, detail)。
 
     state：ok=已开启且有真正可发信的条目；broken=已开启但一封都发不出去
@@ -255,16 +309,19 @@ def smtp_channel_state():
 
     刻意保留：密文解不开但旧单条键可用时按 ok 报（沿用旧键发信确实可达），解密失败的
     WARNING 由 smtp_list 记录；不把"密文废但旧键活"误报成坏。
+    envs：本轮已解析的 .env 快照（与 smtp_list 共用同一份，ba-p09-07）。
     """
-    if _get("ENABLE").strip().lower() not in ("1", "true", "on", "yes"):
+    if envs is None:
+        envs = _read_env_file()
+    if not _enabled_flag(envs):
         return "off", "YIBAN_MAIL_ENABLE 未开启"
-    entries = smtp_list()
-    if _get("SMTPS_ENC"):
+    entries = smtp_list(envs)
+    if _env_value("SMTPS_ENC", envs):
         # 密文存在但条目为空 = smtp_list 已回落旧键仍空。两种病因分开报：解密成功但无
         # 有效条目（含合法清空）只该补条目；解不开才指向密钥失配，否则一次合法的
         # smtps: [] 清空会把 ops 引去排查换钥问题
         if not entries:
-            if _smtps_enc_decrypts_to_list():
+            if _smtps_enc_decrypts_to_list(envs):
                 return "broken", ("YIBAN_MAIL_SMTPS_ENC 解密成功但无有效发信条目"
                                   "（未配置或已清空，请在设置页补齐 SMTP 列表）")
             return "broken", ("YIBAN_MAIL_SMTPS_ENC 无法解密或已损坏（换钥后密钥不匹配？），"
@@ -278,27 +335,35 @@ def smtp_channel_state():
     return "ok", f"{len(entries)} 条发信条目"
 
 
-def is_enabled():
+def is_enabled(envs=None, entries=None):
     """邮件通知是否启用：仅当通道状态为 ok（开关开且发信条目真正可用）。
 
     与 smtp_channel_state 单源，只有 ok 算启用——否则条目缺 user/pass、或密文解不开且
     旧键也为空时会被报成启用，日报显示「已开启」而实际一封都发不出去。
+
+    entries：调用方已解析的条目。给出时直接用它与同一轮 envs 复算判据，不再重新
+    解密 SMTPS_ENC（`_send` 传它，避免第二次 AES-GCM，ba-p09-07）。
     """
-    return smtp_channel_state()[0] == "ok"
+    if entries is None:
+        return smtp_channel_state(envs)[0] == "ok"
+    if not _enabled_flag(envs):
+        return False
+    return any(str(e.get("user") or "").strip() and str(e.get("pass") or "")
+               for e in entries)
 
 
-def admin_recipients():
+def admin_recipients(envs=None):
     """YIBAN_MAIL_ADMIN_TO 拆分为邮箱列表（未配置返回空列表）。
 
     供调用方按收件人个人开关（users.mail_notify）过滤后回传给 send_admin_alert。
     """
-    return [a.strip() for a in _get("ADMIN_TO").split(",") if a.strip()]
+    return [a.strip() for a in _get("ADMIN_TO", envs).split(",") if a.strip()]
 
 
-def admin_notify_enabled():
+def admin_notify_enabled(envs=None):
     """主管理员是否接收发到 ADMIN_TO 的告警邮件（YIBAN_MAIL_ADMIN_NOTIFY，默认接收）。
 
     关闭（0）后：ADMIN_TO 列表不再收到 A 线告警邮件，但普通管理员自动收件人
     （users.role=admin 且 mail_notify=1）不受影响。空值视为接收。
     """
-    return _get("ADMIN_NOTIFY").strip().lower() in ("", "1", "true", "on", "yes")
+    return _get("ADMIN_NOTIFY", envs).strip().lower() in ("", "1", "true", "on", "yes")
