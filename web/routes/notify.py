@@ -36,7 +36,6 @@ from web.routes import high_risk_gate as _high_risk_gate
 from web.routes import reconfirm_admin_password as _reconfirm_admin_password
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
-from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
 from web.services import limits as _limits
@@ -198,14 +197,18 @@ def api_mail_config_save():
     邮件通道是全部安全告警的最后一条送达路径，故**关闭它**不是普通可逆改动：
     静默关掉后签到序列再出事就没有任何告警出口，与推送侧「关闭消息推送通道」同族，
     走同一道高危门禁、占同一本凭据额度（用户拍板：把告警装回去免门，把它拆掉要
-    口令）。其余口径：admin_notify（个人接收偏好，不影响其他管理员）与 admin_to
-    （可逆路由改动）免门免额度；SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令
+    口令）。其余口径：admin_notify（个人接收偏好，不影响其他管理员）免门免额度；
+    admin_to（收件人改道）自 2026-10-02 起单独过
+    `_high_risk_gate(quota="creds", risk_always=True)`——把全部告警改发别处正是静音
+    手法，须当次口令并占 creds 额度（与「关闭邮件通道」同账；同一请求同时关通道时
+    不再重复占）。SMTP 凭据变更（中继/授权码 = 换钥类）仍要当次口令
     （直连 _reconfirm_admin_password，不占高危额度；用户 2026-10-01 拍板后
     `risk_always=True`，即缺省 `risk` 档下同出口也不吃"同出口免口令"）。开关的判据是
     「值真变化」——已是关的重复提交、或只改 admin_to 的保存不再被这门连坐。留痕统一交给
     落盘后的审计行（谁、把哪路从哪改到哪）；告警通道自身无法可靠通报自己的变更（见下方
     落盘处注释）。
-    smtps 与 admin_to 同请求提交时口令只按 smtps 需要（admin_to 免门，不拖累）。
+    smtps 与 admin_to 同请求提交时分别过各自的门（凭据重确认 + 改道高危门）：
+    admin_to 改道占 creds 额度，不由 smtps 的口令确认替代（ba-p05-08）。
     """
     m = _appmod()
     if not _security._is_builtin_admin_session():
@@ -418,8 +421,11 @@ def api_mail_config_save():
             "告警收件人被改道",
             mail_layout.Mail(
                 summary="邮件告警收件人即将变更；本告警发给原收件人，非本人操作请立即核查。",
-                fields=[("原收件人", _accounts_data._mask_email(admin_to_old) if admin_to_old else "（未配置）"),
-                        ("新收件人", _accounts_data._mask_email(admin_to_val))],
+                # 收件人是逗号分隔多地址（MAIL_ADMIN_TO_MAX=10），必须用逐项打码的
+                # `mail_config._mask_addr`；`_mask_email` 只在第一个 @ 处切段，会把
+                # 第 2 个及之后的地址原样留在告警正文（ba-p05-03）。
+                fields=[("原收件人", mail_config._mask_addr(admin_to_old) if admin_to_old else "（未配置）"),
+                        ("新收件人", mail_config._mask_addr(admin_to_val))],
                 notes=["本告警在落盘前发出；落盘后的审计行记打码后的「从哪 → 到哪」。",
                        "若本次保存最终失败，以审计与设置页当前值为准。"],
                 advice=["非本人操作：立即核查近期会话与管理员账号，并按追回手册处理。"],
@@ -540,14 +546,21 @@ def api_notify_config_save():
     numeric = {}
     if "type" in data:
         updates["YIBAN_NOTIFY_TYPE"] = ntype
-        if not secret:
-            # 空 = 删除键（关闭或换型不留旧钥）；带密钥时由闸门之后的加密段填
-            updates["YIBAN_NOTIFY_SECRET_ENC"] = ""
+    if not secret and ("type" in data or "secret" in data):
+        # 空 = 删除键：type 置空/换型不留旧钥；**单独提交 {"secret": ""}** 也走这里。
+        # 旧实现把删键只挂在 type 分支内：仅带 secret 的清钥请求 updates 为空 ⇒
+        # 200 但密钥照旧外发，还白占一格 creds 额度（ba-p05-04）。
+        # 带密钥时由闸门之后的加密段填。
+        updates["YIBAN_NOTIFY_SECRET_ENC"] = ""
     if "cooldown" in data:
         try:
-            cd = max(0, int(data["cooldown"]))
+            cd = int(data["cooldown"])
         except (TypeError, ValueError):
             return jsonify({"error": "冷却参数无效"}), 400
+        # 上界与 cooldown 的用途绑死：它决定同类告警的静音窗口，天文数字等于永久
+        # 关闭同类告警（ba-p05-10）。0 仍合法（关闭节流）。
+        if not 0 <= cd <= 86400:
+            return jsonify({"error": "冷却参数应为 0~86400 秒"}), 400
         # 0 也必须显式落盘：0 → 删键 → 回落 DEFAULT_COOLDOWN=60，设置页
         # "关闭节流"就成了"被节流 60 秒"，与 .env.example 里"0=关闭"的承诺相反。
         updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd)
@@ -560,19 +573,28 @@ def api_notify_config_save():
         numeric["urgent_only"] = bool(data["urgent_only"])
     if "daily_max" in data:
         try:
-            dm = max(0, int(data["daily_max"]))
+            dm = int(data["daily_max"])
         except (TypeError, ValueError):
             return jsonify({"error": "每日上限参数无效"}), 400
-        updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)  # 0 = 不限（显式写 0）
+        # 0 = 不限（显式写 0）；越界值会让额度失去意义（ba-p05-10）
+        if not 0 <= dm <= 100000:
+            return jsonify({"error": "每日上限应为 0~100000（0=不限）"}), 400
+        updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)
         numeric["daily_max"] = dm
     if "urgent_daily_max" in data:
         # 紧急账也要能从设置页管理：分账后两本账必须能同时管
         try:
-            udm = max(0, int(data["urgent_daily_max"]))
+            udm = int(data["urgent_daily_max"])
         except (TypeError, ValueError):
             return jsonify({"error": "紧急每日上限参数无效"}), 400
+        if not 0 <= udm <= 100000:
+            return jsonify({"error": "紧急每日上限应为 0~100000（0=不限）"}), 400
         updates["YIBAN_NOTIFY_URGENT_DAILY_MAX"] = "0" if udm == 0 else str(udm)
         numeric["urgent_daily_max"] = udm
+    if not updates and not secret:
+        # 没有任何可更新字段（如空 body）：不得先过口令门/占 creds 额度，再写一个空批次。
+        # 带非空 secret 时更新在闸门之后由加密段补上，不在此列（ba-p05-04）。
+        return jsonify({"error": "没有可更新的字段"}), 400
     if need_reconfirm:
         # 高危动作（换钥/清钥/关闭通道）通过后才占用高危额度
         # 三类互斥且并集恰为 touches_channel（额度/节流键已在上面被排除），无第四种情形。
