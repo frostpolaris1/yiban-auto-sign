@@ -116,6 +116,8 @@ docs/dev/*
 !docs/dev/cli.md
 !docs/dev/dev-verify.md
 !docs/dev/constraints.tsv
+!docs/dev/acceptance-criteria.md
+!docs/dev/umask-decision.md
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
 !docs/dev/architecture-target.md
