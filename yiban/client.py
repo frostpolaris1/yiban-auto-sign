@@ -446,23 +446,38 @@ class YibanClient:
     def _clear_session_cache(self):
         self._session_store.clear()
 
+    def _ensure_sign_session(self):
+        """登录并使会话头就位签到请求（**唯一实现点**，工单 vq97）。
+
+        两个前提顺序不可拆：
+
+        1. 按配置选择登录流程（`use_killyiban` 决定标准 App 特征流或旧流）；
+        2. 旧流的登录链会把 `Origin`/`Referer` 改成 OAuth/回调域，签到接口
+           （nightAttendance）要求 App 域，故登录后必须切回。标准 App 特征流的
+           `KILLYIBAN_HEADERS` 自始至终是 App 域，无需回切。
+
+        任何"登录后拉 signPosition / 提交 signIn"的路径都必须先调本方法。此前
+        `signin()` 与 `verify()` 各写一遍同一段，`scripts/photo_preflight.py`
+        又手抄了第三份——第三份漏抄或改错会让签到请求带 OAuth 域头（上游 e001）。
+        `tests/test_login_session_single_point.py` 用 AST 钉住唯一性。
+        """
+        if not self.logged_in:
+            if self.use_killyiban:
+                self.login_killyiban()
+            else:
+                self.login()
+        if not self.use_killyiban:
+            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+
     # ---- 签到 ----
     def signin(self):
         """执行签到，返回 (success: bool, message: str, skip: bool, status: str)。
 
         skip=True 表示当前不在签到时间窗口内，不需要重试。
         """
-        if not self.logged_in:
-            # 与 attempt_signin 保持一致：按配置选择登录流程（防止直接调 signin() 时走错）
-            if self.use_killyiban:
-                self.login_killyiban()
-            else:
-                self.login()
+        self._ensure_sign_session()
 
         # 1. 获取签到位置范围
-        if not self.use_killyiban:
-            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 yiban/platform.py）
-            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
         resp = yiban_platform.fetch_sign_position(self.session, self.csrf, self._policy)
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
@@ -665,14 +680,7 @@ class YibanClient:
         - ok=False：存在无法自愈的问题（登录失败/校本化失效/图形验证/WAF 等，
           message 已脱敏，供用户可见提示或探针预警）
         """
-        if not self.logged_in:
-            if self.use_killyiban:
-                self.login_killyiban()
-            else:
-                self.login()
-        if not self.use_killyiban:
-            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 yiban/platform.py）
-            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+        self._ensure_sign_session()
         resp = yiban_platform.fetch_sign_position(self.session, self.csrf, self._policy)
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE

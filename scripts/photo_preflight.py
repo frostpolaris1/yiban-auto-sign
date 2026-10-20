@@ -150,14 +150,9 @@ def _probe(account):
     lines = [f"[{phone}] {_safe(account.name) or '(未命名)'}"]
     client = YibanClient(account)
     try:
-        if client.use_killyiban:
-            client.login_killyiban()
-        else:
-            client.login()
-        # 与 `YibanClient.signin` 逐字同序：旧流程的登录链改过 Origin/Referer，
-        # 拉任务前必须改回 App 域；标准 App 特征流程保持 KILLYIBAN_HEADERS 不动。
-        if not client.use_killyiban:
-            client.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+        # 登录＋切回签到域请求头只走唯一实现点（工单 vq97）：本脚本曾手抄一份，
+        # 第三份副本漏抄或改错会让签到请求带 OAuth 域头（上游 e001）。
+        client._ensure_sign_session()
 
         device_ok, device_desc = _read_device(client)
         lines.append(f"  设备：{device_desc}")
