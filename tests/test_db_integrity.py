@@ -44,6 +44,7 @@ from unittest import mock
 import db
 from werkzeug.security import generate_password_hash
 
+from web import security as _security
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1082,13 +1083,15 @@ class SmokeTest(unittest.TestCase):
     # ---- 3. 登录/权限基础（轻量：直接验证 verify_admin 兼容路径）----
     def test_admin_verify_plain_fallback(self):
         # 无哈希时明文回退（旧 .env 兼容）
-        if hasattr(self.webapp, "verify_admin"):
-            old_env = self.webapp.ENV_FILE
-            self.webapp.ENV_FILE = self.env_file
-            try:
-                self.assertFalse(self.webapp.verify_admin("admin", "wrong"))  # 无配置/密码错误应 False
-            finally:
-                self.webapp.ENV_FILE = old_env
+        # 批 3-c S3：verify_admin 已搬离 web/app.py 的转发墙，读者直取真源。
+        # 原写法 `if hasattr(self.webapp, "verify_admin")` 此后恒为 False ⇒ 本用例会
+        # **静默跳过**（AGENTS §30「跳过 ≠ 绿」）。故判据改指真源，断言逐字保留。
+        old_env = self.webapp.ENV_FILE
+        self.webapp.ENV_FILE = self.env_file
+        try:
+            self.assertFalse(_security.verify_admin("admin", "wrong"))  # 无配置/密码错误应 False
+        finally:
+            self.webapp.ENV_FILE = old_env
 
     # ---- 4. 批量防呆：批量 purge 不能删未软删除账号 ----
     def test_batch_purge_requires_deleted(self):

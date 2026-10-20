@@ -169,6 +169,61 @@ _REPLACE_RETRY_BASE_SEC = 0.05
 # 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
 _dummy_pw_hash = None
 
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-c S3）
+# ---------------------------------------------------------------------------
+# 为什么需要这一层：本模块对 `.env` 的读取（`read_env`）、键行计数
+# （`_count_env_key_lines`）、写路径（`write_env_key`）、告警出口
+# （`send_notification`）都必须是**组合根持有的、可被测试替换的**模块级名字。
+# 搬来之前它们在 `web/app.py` 上是转发包装，本模块接显式参数；改行为前后都要求
+# 「测试打桩在 `web.app` 上的那个名字仍控制真实调用」。但 `.env` 路径
+# （`ENV_FILE`）本身可被 `--env-file` 与测试赋值改写，服务层自持一份绑定会读到
+# 启动前旧值。故沿用 `yiban/attempt/jobs.py` 已在用的形态：宿主在 import 末尾
+# 一次性登记，本模块按调用时刻从 `_hooks` 取——**登记的是 lambda，不是值**，
+# 因此宿主侧的赋值与打桩在调用时刻才解析。
+#
+# 未登记时 fail-closed：抛 `RuntimeError`（不是静默回退到某个默认路径，也不静默吞掉）。
+# 理由与 `yiban/attempt/jobs.py` 同：静默回退会让"忘记登记"变成安静的功能缺失
+# （读到空 .env ⇒ 管理员登不进 ⇒ 表现为口令错），排查成本远高于启动即崩。
+_hooks = {}
+
+
+def configure(env_file=None, read_env=None, write_env_key=None,
+              count_env_key_lines=None, send_notification=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记，故测试可只替换一项。
+    """
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if read_env is not None:
+        _hooks["read_env"] = read_env
+    if write_env_key is not None:
+        _hooks["write_env_key"] = write_env_key
+    if count_env_key_lines is not None:
+        _hooks["count_env_key_lines"] = count_env_key_lines
+    if send_notification is not None:
+        _hooks["send_notification"] = send_notification
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主登记 lambda 的内部若抛 `KeyError`
+    （例：`read_env` 按缺失键索引），那是一个真实业务错误，必须原样传出。
+    旧写法 `try: return _hooks[key]()` 会把它改写成"尚未登记宿主依赖"，
+    把故障位置抹掉（实测：`read_env` 抛 `KeyError('真实业务键缺失')` 变成
+    `RuntimeError(尚未登记宿主依赖 'read_env')`）。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.security 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾"
+            "调用了 web.security.configure(...)" % (key,)
+        ) from None
+    return fn()
+
 
 # ---------------------------------------------------------------------------
 # 内置主管理员会话凭据
@@ -179,7 +234,7 @@ def _new_admin_sid():
     return secrets.token_hex(16)
 
 
-def _issue_admin_sid(env_path, write_env_key, read_env):
+def _issue_admin_sid():
     """为内置主管理员换发会话凭据并落 `.env`，返回**应当写进 session 的值**。
 
     为什么内置主管理员需要这条凭据：它此前只有 `YIBAN_ADMIN_PW_VERSION` 一个吊销维度，
@@ -194,12 +249,14 @@ def _issue_admin_sid(env_path, write_env_key, read_env):
     或权限坏掉时必然踩中）。沿用旧值则本次登录照常可用，只是这一次换发没生效，
     与口令哈希迁移、`ensure_secret_key` 的降级策略同口径。
 
-    `.env` 写路径与读取器由调用方传入（`web.app` 的 `write_env_key` / `read_env`）：
-    两者都是会被测试打桩或赋值改写的模块级名字，本模块另持绑定会让打桩静默失效。
+    `.env` 路径、写路径与读取器按调用时刻取自宿主登记的 lambda（见 `configure`）：
+    三者都是会被测试打桩或赋值改写的模块级名字。
     """
     sid = _new_admin_sid()
+    read_env = _host("read_env")
+    env_file = _host("env_file")
     try:
-        write_env_key(env_path, ADMIN_SID_ENV_KEY, sid)
+        _host("write_env_key")(env_file, ADMIN_SID_ENV_KEY, sid)
     except (OSError, ValueError) as e:
         # 两种失败同姿态降级：OSError = 文件不可写；ValueError = 写入口 fail-closed
         # 拒绝（.env 既有行含潜伏行分隔符，见 yiban.infra.env_io）。后者尤其关键——
@@ -208,13 +265,13 @@ def _issue_admin_sid(env_path, write_env_key, read_env):
         logger.error(
             "内置主管理员会话凭据落盘失败或被拒（%s 不可写或含潜伏行分隔符？）：%s；"
             "本次登录沿用旧值，服务端吊销面暂时缺位，请修复权限/清理 .env 后重试",
-            env_path, e,
+            env_file, e,
         )
-        return read_env(env_path).get(ADMIN_SID_ENV_KEY, "").strip()
+        return read_env(env_file).get(ADMIN_SID_ENV_KEY, "").strip()
     return sid
 
 
-def _admin_session_facts(env_path, read_env):
+def _admin_session_facts():
     """内置主管理员的两项会话吊销凭据，返回 (口令版本, 当前 sid)。
 
     一次 `.env` 读取取全两项：`_effective_role` 每个请求都要判一次，原实现已经为
@@ -222,10 +279,9 @@ def _admin_session_facts(env_path, read_env):
     版本解析与 `load_env_int` 同语义（缺失/非法回退 1）；sid 缺失或空串返回 ""
     （= 未签发，存量部署兼容口径见 `_effective_role`）。
 
-    `.env` 读取器由调用方传入（`web.app` 的 `read_env`）：它会被测试打桩，本模块
-    另持绑定会让打桩静默失效。
+    `.env` 路径与读取器按调用时刻取自宿主登记的 lambda（见 `configure`）。
     """
-    env = read_env(env_path)
+    env = _host("read_env")(_host("env_file"))
     try:
         version = max(0, int(env.get("YIBAN_ADMIN_PW_VERSION", "")))
     except (TypeError, ValueError):
@@ -236,13 +292,16 @@ def _admin_session_facts(env_path, read_env):
 # ---------------------------------------------------------------------------
 # 身份与角色判定（仅在请求期调用）
 # ---------------------------------------------------------------------------
-def _builtin_admin_email(env_path, read_env):
-    """内置管理员（.env）标识（小写），用于防呆比较：不可改角色/删除。"""
-    env = read_env(env_path)
+def _builtin_admin_email():
+    """内置管理员（.env）标识（小写），用于防呆比较：不可改角色/删除。
+
+    `.env` 路径与读取器按调用时刻取自宿主登记的 lambda（见 `configure`）。
+    """
+    env = _host("read_env")(_host("env_file"))
     return env.get("YIBAN_ADMIN_USER", "").strip().lower()
 
 
-def _is_builtin_admin_session(env_path, read_env):
+def _is_builtin_admin_session():
     """当前会话是否确实是内置管理员（.env）登录，而非同邮箱注册用户/注册管理员。
 
     定为模块级而非 create_app 局部：个人域路由已迁往 web/routes/me_api.py，需按模块
@@ -251,11 +310,11 @@ def _is_builtin_admin_session(env_path, read_env):
     return (
         session.get("auth_source") == "builtin"
         and str(session.get("username") or "").strip().lower()
-        == _builtin_admin_email(env_path, read_env)
+        == _builtin_admin_email()
     )
 
 
-def _effective_role(username, pw_version, env_path, read_env):
+def _effective_role(username, pw_version):
     """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
     内置管理员 → admin；注册用户 → users 表的 role；查无此人 → None。
     管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
@@ -269,13 +328,13 @@ def _effective_role(username, pw_version, env_path, read_env):
     if not session.get("auth_source"):
         return None
     if (
-        username.strip().lower() == _builtin_admin_email(env_path, read_env)
+        username.strip().lower() == _builtin_admin_email()
         and session.get("auth_source") == "builtin"
     ):
         # 内置管理员：必须是 builtin 登录来源，且 session 里的两项凭据都与当前
         # .env 一致（口令版本 + 会话 sid）；auth_source == "user" 的同名注册用户
         # 继续按普通用户判定，不借内置邮箱提权
-        cur, admin_sid = _admin_session_facts(env_path, read_env)
+        cur, admin_sid = _admin_session_facts()
         if pw_version != cur:
             return None
         # 与上面注册用户的 users.sid 逐字同口径：空 = 未签发（升级日存量会话兼容，
@@ -300,7 +359,7 @@ def _effective_role(username, pw_version, env_path, read_env):
     return None
 
 
-def _current_role(abs_ttl_seconds, env_path, read_env):
+def _current_role(abs_ttl_seconds):
     """当前登录会话的实时角色；未登录 → None。
 
     会话绝对过期：滑动续期（14 天）之外另设「自登录起最多 N 天」硬上限，防止被盗
@@ -311,8 +370,8 @@ def _current_role(abs_ttl_seconds, env_path, read_env):
     里按 `YIBAN_SESSION_ABS_DAYS` 重新解析后回写模块全局，本模块自持一份会读到启动
     前的默认值，会话吊销时限静默失准。
 
-    模块级而非工厂局部：`web/routes/*` 的路由体经 `web.routes.appmod()` 取用本函数的
-    转发包装（打桩面要求，见该函数的说明）。
+    模块级而非工厂局部：`web/routes/*` 的路由体直取本函数（打桩面要求，见
+    `web/routes/__init__.py` 的 `appmod()` 说明）。
     """
     if not session.get("auth"):
         return None
@@ -323,8 +382,7 @@ def _current_role(abs_ttl_seconds, env_path, read_env):
     elif now - ts > abs_ttl_seconds:
         session.clear()
         return None
-    return _effective_role(session.get("username"), session.get("pw_version"),
-                           env_path, read_env)
+    return _effective_role(session.get("username"), session.get("pw_version"))
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +710,7 @@ def _sensitive_gate_params(env_path, load_env_int):
     return ttl, cooldown
 
 
-def _pw_gate_tier(env_path, read_env):
+def _pw_gate_tier():
     """敏感口令门禁的档位（`YIBAN_PW_GATE`）唯一解析处，返回 off/risk/full 之一。
 
     缺省与非法值都回退 `PW_GATE_DEFAULT`（risk）——本键是安全件，把拼错的档位当成
@@ -661,13 +719,14 @@ def _pw_gate_tier(env_path, read_env):
     枚举键没有通用读取工具（`load_env_int` 只处理整数），故按 sign_mode / sign_order
     的做法现读现校验。
     """
-    raw = str(read_env(env_path).get(PW_GATE_ENV_KEY, "") or "").strip().lower()
+    env_file = _host("env_file")
+    raw = str(_host("read_env")(env_file).get(PW_GATE_ENV_KEY, "") or "").strip().lower()
     if raw in PW_GATE_TIERS:
         return raw
     if raw:
         logger.warning(
             "%s 的 %s=%r 非法（可选 %s），按 %s 档执行",
-            env_path, PW_GATE_ENV_KEY, raw, "/".join(PW_GATE_TIERS), PW_GATE_DEFAULT,
+            env_file, PW_GATE_ENV_KEY, raw, "/".join(PW_GATE_TIERS), PW_GATE_DEFAULT,
         )
     return PW_GATE_DEFAULT
 
@@ -749,7 +808,7 @@ def check_admin_configured(env_path, read_env):
     )
 
 
-def _builtin_admin_loginable(env_path, read_env, count_env_key_lines):
+def _builtin_admin_loginable():
     """内置（.env）主管理员**此刻是否真的进得来**——"至少保留 1 个管理员"的判据。
 
     只看 `YIBAN_ADMIN_USER` 非空是不够的（原实现如此）。用户名配了而内置实际登不进
@@ -760,17 +819,20 @@ def _builtin_admin_loginable(env_path, read_env, count_env_key_lines):
     这三种态下若再把最后一个注册管理员降权/删除，Web 管理面**一个入口都不剩**
     （内置进不来 + 注册管理员清空），而态 2 恰恰是"改过 .env 权限"后最容易出现的。
     判据与 `verify_admin` 的三道 fail-closed 逐条对齐，一致性由用例对拍（防两侧漂移）。
+
+    `.env` 路径、读取器与键行计数按调用时刻取自宿主登记的 lambda（见 `configure`）。
     """
-    env = read_env(env_path)
+    read_env = _host("read_env")
+    env_file = _host("env_file")
+    env = read_env(env_file)
     if not env.get("YIBAN_ADMIN_USER", "").strip():
         return False
     if not env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
         return False
-    return count_env_key_lines(env_path, "YIBAN_ADMIN_PASSWORD_HASH") == 1
+    return _host("count_env_key_lines")(env_file, "YIBAN_ADMIN_PASSWORD_HASH") == 1
 
 
-def verify_admin(username, password, env_path, read_env, count_env_key_lines,
-                 send_notification, constant_time_dummy):
+def verify_admin(username, password):
     """校验管理员账号（每次登录实时读 .env，修改立即生效）。
 
     口令哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt）优先；哈希缺失而明文仍在
@@ -781,12 +843,12 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
     修成唯一一行即恢复，无需重启。
     注意：compare_digest 不支持非 ASCII 直接比较，先编码为 UTF-8 字节。
 
-    `.env` 路径与读取器、键行计数、告警出口、时延拉平都由调用方传入（`web.app` 的
-    `read_env` / `_count_env_key_lines` / `send_notification` / `_constant_time_dummy`）：
-    它们既会被测试打桩也会随 `--env-file` 改写（`ENV_FILE`），本模块另持绑定会让
-    打桩与运行参数静默失效。
+    `.env` 路径、读取器、键行计数与告警出口按调用时刻取自宿主登记的 lambda
+    （见 `configure`）：它们既会被测试打桩也会随 `--env-file` 改写。
     """
-    env = read_env(env_path)
+    read_env = _host("read_env")
+    env_file = _host("env_file")
+    env = read_env(env_file)
     admin_user = env.get("YIBAN_ADMIN_USER", "").strip()
     # 凭据未配置完整时直接拒绝——
     # 原实现 admin_user/admin_pass 均为空串时 compare_digest(b"", b"") 恒真，
@@ -796,7 +858,7 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
         env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
         or env.get("YIBAN_ADMIN_PASSWORD", "").strip()
     ):
-        constant_time_dummy(password)  # 时延拉平：与真实比对等开销
+        _constant_time_dummy(password)  # 时延拉平：与真实比对等开销
         return False
     # 用户名比较统一小写——登录成功后 session 存小写，
     # 而此处大小写敏感比对导致混合大小写 YIBAN_ADMIN_USER 永远无法自助改密，
@@ -804,7 +866,7 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
     if not secrets.compare_digest(
         username.strip().lower().encode("utf-8"), admin_user.strip().lower().encode("utf-8")
     ):
-        constant_time_dummy(password)
+        _constant_time_dummy(password)
         return False
     pw_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
     if pw_hash:
@@ -812,16 +874,16 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
         # 不该把还在正常提供服务的部署直接 brick；把 .env 修成唯一一行即自动恢复，
         # 无需重启。检测口径与 write_env_batch 的旧行折叠同源（count_env_key_lines）；
         # 统计读取失败计得 0 行，与多行同判 fail-closed（读失败 ≠ 未配置）。
-        dup = count_env_key_lines(env_path, "YIBAN_ADMIN_PASSWORD_HASH")
+        dup = _host("count_env_key_lines")(env_file, "YIBAN_ADMIN_PASSWORD_HASH")
         if dup != 1:
             logger.error(
                 "拒绝管理员登录：%s 的 YIBAN_ADMIN_PASSWORD_HASH 无法确认为恰好一行"
                 "（统计得 %d 行，0 = 读取失败），解析器按后写覆盖先写取值——可能是"
                 "配置错误，也可能是 .env 行分隔符注入提权尝试（2026-09-07）。"
                 "请核对文件属主与内容，只保留唯一一行后恢复正常（无需重启）",
-                env_path, dup,
+                env_file, dup,
             )
-            send_notification(
+            _host("send_notification")(
                 "主管理员凭据歧义告警",
                 mail_layout.Mail(
                     summary=".env 中 YIBAN_ADMIN_PASSWORD_HASH 未确认为恰好一行，"
@@ -837,7 +899,7 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
                 # 不得挤占共享紧急额度（登录失败账本正是为高频可达的告警设立）
                 ledger="login_fail",
             )
-            constant_time_dummy(password)
+            _constant_time_dummy(password)
             return False
         return check_password_hash(pw_hash, password)
     admin_pass = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
@@ -850,9 +912,9 @@ def verify_admin(username, password, env_path, read_env, count_env_key_lines,
             "管理员口令仍为明文存储（%s 缺 YIBAN_ADMIN_PASSWORD_HASH，启动迁移失败态），"
             "明文比对已停用（fail-closed）。请修复 .env 的属主/权限（属主可写）后重启服务，"
             "迁移会自动将口令转为哈希；或手工设置 YIBAN_ADMIN_PASSWORD_HASH",
-            env_path,
+            env_file,
         )
-        constant_time_dummy(password)
+        _constant_time_dummy(password)
         return False
     # 此处两种既有分支均已返回——
     # 哈希存在 → 已比对返回；明文存在 → M1 fail-closed 返回 False。

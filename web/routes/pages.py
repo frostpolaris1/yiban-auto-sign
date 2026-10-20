@@ -40,6 +40,7 @@ from flask import (
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
 from web import security as _security
 from web.routes import appmod as _appmod
+from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import locks as _locks
 from web.services import signstatus as _signstatus
 from web.services import vue_assets as _vue_assets
@@ -94,7 +95,7 @@ def _render_admin_page(template, nav_key, crumbs, extra=None):
         nav_active=nav_key,
         crumbs=crumbs,
         current_username=session.get("username", ""),
-        current_role=m._current_role() or "",
+        current_role=_security._current_role(_session_abs_ttl()) or "",
         env_line_break_codes=_env_line_break_codes(),
         **(extra or {}),
     )
@@ -105,7 +106,7 @@ def _admin_page_redirect():
 
     返回而非装饰，是因为三处守卫各自需要不同模板/导航键，装饰器会增加一层间接。
     """
-    role = _appmod()._current_role()
+    role = _security._current_role(_session_abs_ttl())
     if role is None:
         return redirect(url_for("login_page"))
     if role != "admin":
@@ -211,7 +212,7 @@ def root_page():
     不做成到 /data/dashboard 的盲跳：未登录时会多一跳（/ → /data/dashboard → /login），
     而 theme_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
     """
-    role = _appmod()._current_role()
+    role = _security._current_role(_session_abs_ttl())
     if role is None:
         return redirect(url_for("login_page"))
     if role == "admin":
@@ -226,7 +227,7 @@ def _user_page_redirect():
 
     与管理端守卫同构：返回而非装饰，便于各页按需处理。
     """
-    role = _appmod()._current_role()
+    role = _security._current_role(_session_abs_ttl())
     if role is None:
         return redirect(url_for("login_page"))
     if role != "user":
@@ -307,7 +308,7 @@ def login_page():
             cnt += 1
             loop[ip] = (cnt, first)
         if cnt < 4:
-            return redirect(url_for("dashboard_page") if m._current_role() == "admin" else url_for("user_calendar_page"))
+            return redirect(url_for("dashboard_page") if _security._current_role(_session_abs_ttl()) == "admin" else url_for("user_calendar_page"))
         m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
     return _render_auth_vue_page("login.html", "login.html")
 
