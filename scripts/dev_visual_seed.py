@@ -42,7 +42,8 @@ if BASE not in sys.path:
 #     永远读不到半写状态。
 from web.security import _atomic_write  # noqa: E402
 from yiban.adapters.config import env_io  # noqa: E402
-from yiban.core.status import ALL_STATUSES, DISPLAY as _DISPLAY  # noqa: E402
+from yiban.core.status import ALL_STATUSES  # noqa: E402
+from yiban.core.status import DISPLAY as _DISPLAY  # noqa: E402
 
 # 演示钥不再使用随仓库公开的固定串（工单 sjem）：`account_crypto` 已把
 # `PUBLISHED_DEMO_ACCOUNTS_KEY` 精确拉黑——用它写 .env 会让 `db.add_account`
