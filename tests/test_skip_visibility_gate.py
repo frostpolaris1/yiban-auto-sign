@@ -398,6 +398,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "git 不可用：跳过 PR 模板守卫"
   ]
  ],
+ "tests/test_run_entry_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_run_sh_logging.py": [
   [
    "skipIf",
