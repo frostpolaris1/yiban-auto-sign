@@ -347,7 +347,14 @@ def _flush_mail_on_sigterm(signum, frame):
 # B 线用户失败提醒每日限频：承诺是「每天每个账号最多 1 封」，只靠单次运行终态路径
 # 隐式保证不够——手动 --only 签到与探针进程可在同日追加发送，故用按天状态文件显式
 # 去重（0 或负数 = 不限）。
-USER_FAIL_MAIL_DAILY_CAP = config_check.parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)
+def _user_fail_mail_daily_cap():
+    """读每日额度：每次调用重读环境，不在导入期快照。
+
+    该键在配置名册里是 `reload: hot`（管理员改 .env 即时生效）；兜底常驻每轮把
+    白名单键并回 `os.environ`（`workers._ENV_RELOAD_KEYS`）。导入期取一次会让
+    常驻进程从此看不到新值（工单 ba-p04-07）。
+    """
+    return config_check.parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)
 
 
 def _user_fail_mail_state_path(today_str):
@@ -490,7 +497,7 @@ def _apply_quota(data, kind, phone):
     旧实现的三处口径逐条保留：`cap<=0` 直接放行且不记账；预占时计数非数字按 0；
     归还时账号不在记录里或计数非数字**一律不产生写入**（不无中生有建文件/不改写坏值）。
     """
-    cap = USER_FAIL_MAIL_DAILY_CAP
+    cap = _user_fail_mail_daily_cap()
     if kind == "reserve":
         if cap <= 0:
             return True, False
@@ -528,7 +535,7 @@ def _user_fail_mail_reserve(phone, today_str):
     视图判定（同一进程内与逐条落盘完全一致）；状态目录不可写的 fail-open 退让
     改由落盘时承接（不再在本调用处返回）。
     """
-    if USER_FAIL_MAIL_DAILY_CAP <= 0:
+    if _user_fail_mail_daily_cap() <= 0:
         # 与旧实现同口径：不限频时不碰文件、不建目录（也不进缓冲）
         return True
     path = _user_fail_mail_state_path(today_str)
@@ -621,9 +628,9 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
     沿用签到措辞会误导用户。
 
     仅当用户存在且开启 mail_notify（默认开）时发送；每账号每日上限
-    USER_FAIL_MAIL_DAILY_CAP 封（默认 1，定时/手动/探针三个入口统一计算；
-    发送成功才消耗额度，SMTP 故障不吞当日重试机会）；用户注销/关闭/未配置
-    邮件时静默跳过；发送失败不影响签到（mailer 内部捕获）。
+    `YIBAN_MAIL_USER_FAIL_DAILY_CAP` 封（默认 1，每次调用重读，定时/手动/探针
+    三个入口统一计算；发送成功才消耗额度，SMTP 故障不吞当日重试机会）；
+    用户注销/关闭/未配置邮件时静默跳过；发送失败不影响签到（mailer 内部捕获）。
     内容脱敏：手机号打码、消息经 _sanitize_text 清洗（不含账号密码）。
     """
     if not owner:
@@ -644,7 +651,7 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
     if not _user_fail_mail_reserve(phone, _today):
         logger.info(
             "账号 %s 今日失败提醒已达上限（%d 封），跳过发送",
-            _mask_phone(phone), USER_FAIL_MAIL_DAILY_CAP,
+            _mask_phone(phone), _user_fail_mail_daily_cap(),
         )
         return
     if scenario == "probe":

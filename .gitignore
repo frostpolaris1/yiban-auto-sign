@@ -31,9 +31,10 @@ accounts.json
 # 迁移/升级产出的按日备份（yiban/store/migrations.py 的 _rename_backup；M39）
 accounts.json.bak-*
 users.json.bak-*
-# 通知额度/限速运行时状态（web 进程按 cwd 生成，严禁入库）
-notify-ledger.json
-notify-throttle.json
+# 通知额度/限速运行时状态（现落 YIBAN_STATE_DIR；历史版本曾按 cwd 落在检出根，
+# 保留忽略以防回潮）。带 * 覆盖 .lock 与 .corrupt-<ts>-<pid> 两种伴生件。
+notify-ledger.json*
+notify-throttle.json*
 *.local.lock
 
 # SQLite 数据库（含账号密文/用户哈希/审计日志，严禁入库）
@@ -56,6 +57,10 @@ logs/
 # date-guard.js 也不存在）。负向规则必须紧跟在排除规则之后。
 !frontend/src/logs/
 data/
+# 裸机演练（scripts/drill-baremetal.sh）在演练树根生成的运行件
+/.venv-bare/
+/bare-data/
+/bare-restore/
 
 # Docker 部署本地目录（含加密密钥/数据库/证书私钥，严禁入库）
 certs/
