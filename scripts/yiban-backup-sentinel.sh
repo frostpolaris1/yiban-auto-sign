@@ -27,7 +27,8 @@
 #   `2>&1` 并配 `MAILTO`，或把退出码接进监控。日志与 backup.sh 同文件，排查时按时间挨着看。
 #
 # 环境变量（与 backup.sh / run.sh 同口径）：
-#   BACKUP_DIR（默认 /var/backups）、APP_DIR（默认 /opt/yiban-auto-sign）、
+#   BACKUP_DIR（默认 /var/backups/yiban，与 backup.sh / pull-prod-backup.sh 同值）、
+#   APP_DIR（默认 /opt/yiban-auto-sign）、
 #   YIBAN_BACKUP_INSTALLED（默认 /usr/local/sbin/yiban-backup.sh，防漂移比对对象）、
 #   YIBAN_ENV_FILE（默认 <APP_DIR>/data/.env，由本脚本导出）、
 #   YIBAN_DB_FILE（本脚本**不设**这枚键。库路径由 store 侧 `resolve_path` 三档解析：

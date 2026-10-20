@@ -125,7 +125,7 @@
   },
   "YIBAN_BACKUP_DIR": {
     "type": "path",
-    "default": "/var/backups",
+    "default": "/var/backups/yiban",
     "group": [
       "部署"
     ],
