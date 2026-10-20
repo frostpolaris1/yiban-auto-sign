@@ -1740,7 +1740,14 @@ class EmergencyStopTest(_TierBase):
         self.assertEqual(self._save(c, {"global_pause": 1}).status_code, 200)
 
     def test_stop_shares_high_risk_quota(self):
-        """急停与「删数据 / 拆报警器」共用同一套高危额度（默认 5 次/60 秒）。"""
+        """急停与「删数据 / 拆报警器」共用同一套高危额度（默认 5 次/60 秒）。
+
+        窗口显式拉到 3600s（工单 qzj2）：并行档下 6 轮"恢复+急停"可能超过 60s，
+        最早几次会自然过期，第 6 次于是拿到 200 而不是 429——那是墙钟走时，不是
+        额度机制变了。窗口内"前 MAX 次放行、第 MAX+1 次 429"的判据不变。
+        """
+        _env_io_svc.write_env_batch(
+            self.env_file, {"YIBAN_ADMIN_DELETE_COOLDOWN_SEC": "3600"})
         c = self._master()
         codes = []
         for _ in range(self.webapp.ADMIN_DELETE_MAX + 1):

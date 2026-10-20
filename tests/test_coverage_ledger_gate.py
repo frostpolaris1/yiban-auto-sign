@@ -44,7 +44,7 @@ class EvaluateTest(unittest.TestCase):
     ROOT = BASE
     ROSTER = {"tests/test_a.py", "tests/test_gate_lane_roster.py"}
     TEXTS = {
-        "tests/test_a.py": "from yiban.store import db\n",
+        "tests/test_a.py": "from yiban.adapters.persistence import db\n",
         "tests/test_gate_lane_roster.py": "import scripts.dev_verify_helper\n",
     }
     REG = [
@@ -63,7 +63,7 @@ class EvaluateTest(unittest.TestCase):
         self.assertEqual(len(covered), 1)
 
     def test_source_mentioned_by_a_test_is_covered(self):
-        bad, covered, _ = self._eval(["yiban/store/db.py"])
+        bad, covered, _ = self._eval(["yiban/adapters/persistence/db.py"])
         self.assertEqual(bad, [], covered)
 
     def test_unmentioned_source_is_red(self):
