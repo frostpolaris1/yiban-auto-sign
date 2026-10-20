@@ -59,6 +59,10 @@ def _tree(tmp, script_src, script_dst):
     os.chmod(dst, 0o755)
     _write(os.path.join(tmp, ".venv", "bin", "python3"), PY_STUB, 0o755)
     _write(os.path.join(tmp, "scripts", "signin.py"), "# 测试桩\n", 0o644)
+    # 宿主脚本共用的路径事实（business_day / 按天日志名）：入口脚本 source 它。
+    _write(os.path.join(tmp, "scripts", "lib", "host_paths.sh"),
+           open(os.path.join(BASE, "scripts", "lib", "host_paths.sh"),
+                encoding="utf-8").read(), 0o644)
     os.makedirs(os.path.join(tmp, "data"), exist_ok=True)
     os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
     os.makedirs(os.path.join(tmp, "lock"), exist_ok=True)
@@ -193,7 +197,9 @@ class DrillClockAndTempGateTest(unittest.TestCase):
     def test_clock_judgements_use_asia_shanghai(self):
         self.assertIn('TZ=Asia/Shanghai date +%H:%M', self.src,
                       "首签闩锁预检没有按北京钟取当前时刻")
-        self.assertIn('TZ=Asia/Shanghai date +%F', self.src,
+        # 当日日志名改走 `business_day`（唯一副本在 scripts/lib/host_paths.sh）：
+        # 这里只钉"没有退回宿主钟"，北京业务日由 CrossLanguageShapeTest 与 lib 自身钉住。
+        self.assertIn("business_day", self.src,
                       "当日日志名没有按北京业务日取")
         self.assertNotIn('NOW_HM="$(date +%H:%M)"', self.src,
                          "首签闩锁预检仍用宿主钟")

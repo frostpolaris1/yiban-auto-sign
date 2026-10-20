@@ -51,7 +51,8 @@
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
 
-APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"
+# 部署根：唯一环境键 YIBAN_APP_DIR；APP_DIR 只作旧部署别名（census-P2-repo-root）。
+APP_DIR="${YIBAN_APP_DIR:-${APP_DIR:-/opt/yiban-auto-sign}}"
 # 从仓库里直接跑（未安装）时，没有 APP_DIR 也能定位到仓库根：本脚本就在 scripts/ 下
 if [ ! -f "$APP_DIR/scripts/backup_sentinel.py" ]; then
     APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
