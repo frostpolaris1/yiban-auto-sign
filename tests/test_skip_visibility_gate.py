@@ -174,6 +174,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipIf",
    "bash 不在 PATH：口令交接判据跳过（CI/WSL 有 bash）"
+  ],
+  [
+   "skipIf",
+   "bash 不在 PATH：两代镜像灌数脚本的活体模拟跳过（CI/WSL 有 bash）"
   ]
  ],
  "tests/test_deploy_paths_and_restore_verdict.py": [
@@ -494,6 +498,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipUnless",
    "需要 bash（Git Bash / WSL）"
+  ],
+  [
+   "skipUnless",
+   "需要 bash 与 git（Git Bash / WSL）"
   ]
  ],
  "tests/test_sign_round_guards.py": [
