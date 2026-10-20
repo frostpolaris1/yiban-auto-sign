@@ -56,6 +56,7 @@ from datetime import timedelta
 
 from flask import (
     Flask,
+    g,
     jsonify,
     render_template,
     request,
@@ -852,7 +853,10 @@ _verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
 # 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
 verify_jobs.configure(
     seat=_verify_sem,
-    verify_one=lambda clean: _verify_account_clean(clean),
+    # 异步路径同样走"同一账号互斥"（cgx6）：后台线程可以等，但**绝不与另一次
+    # 真实登录重叠**（同步验证与设备补全占用的是同一把按手机号的权）。
+    verify_one=lambda clean: _verify_queue.run_account_exclusive(
+        clean.get("phone"), lambda: _verify_account_clean(clean)),
     record_failure=lambda st, ph, err, now: _record_verify_failure(st, ph, err, now),
     mask_phone=lambda phone: _mask_phone(phone),
     reject_account=lambda phone, reason, aid, expect: _reject_account(phone, reason, aid, expect),
@@ -1484,6 +1488,18 @@ def create_app(host=None):
     # 不自愈）。收口本身失败只告警，不阻断启动。
     _reclaim_stale_verify_jobs()
     app = Flask(__name__)
+    # CSP nonce（工单 56ed）：脚本已全部外置，剩下**动态数据块**（`window.YB_*_STATE`
+    # 这类服务端下发的内联 <script>）无法变成静态文件——内容随请求变化。用逐请求
+    # nonce 授权它们，`script-src` 因此既不含 'unsafe-inline'、也不需要为内联块开洞。
+    # nonce 每请求重新生成；页面本身是 no-store（见下方 no_cache），不会被缓存复用。
+    @app.before_request
+    def _issue_csp_nonce():
+        g.csp_nonce = secrets.token_urlsafe(16)
+
+    @app.context_processor
+    def _inject_csp_nonce():
+        return {"csp_nonce": getattr(g, "csp_nonce", "")}
+
     # Lucide 图标精灵图：启动时一次性读入并注册为 Jinja 全局 `lucide_sprite`，
     # 模板经 macros/ui.html 的 sprite() 宏原样输出（每次渲染零文件 I/O，见 ui.html 顶部说明）。
     # 读取失败只降级为空串（图标不显示、页面不报错），不阻断启动。
@@ -1562,9 +1578,10 @@ def create_app(host=None):
             _secure_auto_notice["logged"] = True
             logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
 
-    # 歧义形态告警：本版缺省仍是"信任转发头"，而"来源是回环 + 带了 XFF"这一形态
-    # 分不出"反代（该显式开）"与"直连 / ssh -L 隧道（该显式关）"。开关未显式配置时，
-    # 首次满足条件即告警一次，指引运维表态（迁移期用告警换默认翻转）。
+    # 歧义形态告警：缺省**不信任**转发头（fail-closed）。"来源是回环 + 带了 XFF"
+    # 分不出"反代（该显式开）"与"直连 / ssh -L 隧道（该保持关）"。开关未显式配置时，
+    # 首次满足条件即告警一次，指引反代部署显式置 1——否则它的真实客户端 IP 会塌进
+    # 回环桶。缺省方向偏安全：忘配只是"按同一桶限速"，不会让客户端自报的 XFF 生效。
     _forwarded_trust_notice = {"logged": False}
 
     @app.before_request
@@ -1575,11 +1592,10 @@ def create_app(host=None):
                 _is_loopback_addr(request.remote_addr):
             _forwarded_trust_notice["logged"] = True
             logger.warning(
-                "%s 未设置：本次请求来自回环且带了 X-Forwarded-For，应用按缺省「信任」"
-                "转发头执行。反向代理后请显式设 %s=1，并确认代理以覆盖式写入该头；"
-                "直连或 ssh -L 隧道请显式设 %s=0（否则客户端可自报该头伪造 IP 桶）。",
+                "%s 未设置：本次请求来自回环且带了 X-Forwarded-For，应用按缺省「不信任」"
+                "转发头执行（XFF 被丢弃、按回环桶计）。反向代理后请显式设 %s=1，"
+                "并确认代理以覆盖式写入该头；直连或 ssh -L 隧道保持缺省即可。",
                 FORWARDED_TRUST_ENV_KEY, FORWARDED_TRUST_ENV_KEY,
-                FORWARDED_TRUST_ENV_KEY,
             )
 
     @app.before_request
@@ -1989,14 +2005,14 @@ def create_app(host=None):
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
-        # 注意：不使用 CSP nonce——模板含内联 <script> 块（无 src；theme_boot 为主要载体，
-        # 另有若干其它模板），nonce 存在时 'unsafe-inline' 会被浏览器忽略，
-        # 这些内联块会全部失效（theme_boot 静默失效）。真因是内联 <script> 块（主载体）；
-        # 此外内联事件属性（onclick / onerror 共 6 处）也是 nonce 的阻碍——nonce/hash
-        # 不适用于事件处理器属性，撤掉 'unsafe-inline' 后这 6 处同样失效。将来要上 nonce：
-        # 上述两者都得先处理——先把这些内联 <script> 块外移为带 src 的静态文件（或逐块
-        # nonce 化），同时把内联事件属性迁到 addEventListener（或按需改用 'unsafe-hashes'）；
-        # 仅把内联事件迁移到 addEventListener 并不够——内联 <script> 块仍会被 nonce 拦掉。
+        # **script-src 不含 'unsafe-inline'**（工单 56ed）：模板里的内联 <script> 块
+        # （theme_boot 的 3 段）与内联事件属性（onclick / onerror）已全部外置——
+        # 主题/版本引导在 `static/js/theme-boot.js`（同步，位于 <head> 防 FOUC），
+        # 错误页与首屏指示各自有外置脚本；退出登录/更新日志走 `data-action` 委托，
+        # 图片回退走捕获阶段 error 监听。新增内联脚本或 on* 属性会被浏览器直接拦掉，
+        # 由 `tests/test_csp_header_contract.py` 的结构守卫兜底（模板内联块/属性必须为 0）。
+        # style-src 仍保留 'unsafe-inline'：模板大量使用 style="display:none" 这类
+        # 行内样式属性，且不属于本单的脚本注入面。
         resp.headers["X-Content-Type-Options"] = "nosniff"
         # 与边缘 nginx 保持一致（SAMEORIGIN）：防止子路径(经 nginx 反代)下出现
         # "应用 DENY / nginx SAMEORIGIN" 双头取值不一致。SAMEORIGIN 仍防点击劫持，
@@ -2012,8 +2028,15 @@ def create_app(host=None):
         #   if request.is_secure: resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         # 关闭无关能力面（payment 项与 nginx 配置对齐）
         resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+        _nonce = getattr(g, "csp_nonce", "")
+        # 'self' 覆盖全部外置脚本；nonce 只授权服务端下发的动态数据块（见 create_app 内
+        # `_issue_csp_nonce`）。不含 'unsafe-inline'——新增内联脚本会被浏览器拦掉。
+        # 用字符串拼接而不是 f-string：`nonce-{…}` 的 f-string 形状会被
+        # tests/test_state_gc.py 的"按日文件名"扫描误判成一个文件前缀。
+        _script_src = ("script-src 'self' 'nonce-" + _nonce + "'"
+                       if _nonce else "script-src 'self'")
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            f"default-src 'self'; {_script_src}; "
             "style-src 'self' 'unsafe-inline'; img-src 'self'; "
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'; object-src 'none'"
@@ -2526,6 +2549,11 @@ def create_app(host=None):
             # 而那正是最需要看到的一条。写失败只告警，不影响下面的告警与锚点写入。
             try:
                 db.write_audit_health_snapshot(_health, path=_anchor_file, at=now)
+                # 验签签名（ums7）：app_meta 可被应用身份改写，故快照必须能与
+                # "篡改/伪造"区分。签名失败只告警——读端会按"无法定论"回答，
+                # 不会把未签名快照当成健康。
+                if not _security.sign_audit_health_snapshot():
+                    logger.warning("审计体检快照签名失败（巡检页将答'无法定论'）")
             except Exception as snap_err:
                 logger.warning("写入审计体检快照失败（巡检页将显示'尚无体检结果'）: %s",
                                snap_err)

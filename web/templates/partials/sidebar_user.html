@@ -6,7 +6,7 @@
   <div class="brand">
     <div class="brand-logo">
       <img src="{{ request.script_root }}/static/vendor/logo.png?v=2" alt=""
-           onerror="this.style.display='none';var f=document.getElementById('brand-fallback');if(f){f.style.display='grid'}">
+           data-img-fallback="brand">
       <span id="brand-fallback" class="brand-fallback" style="display:none">签</span>
     </div>
     <div class="brand-text">
@@ -50,7 +50,7 @@
          挂 window.doLogout，用 onclick 后这个钩子不再需要任何页面级绑定。
          onclick 里没有插值，不存在用户可控值进 JS 解析器的问题（内联属性禁令见
          test_webui_inline_context，其判据针对的是拼接用户可控值）。 #}
-      <button type="button" class="btn btn--ghost btn--sm" onclick="doLogout()">
+      <button type="button" class="btn btn--ghost btn--sm" data-action="logout">
         {{ icon('log-out') }}<span>退出登录</span>
       </button>
     </div>

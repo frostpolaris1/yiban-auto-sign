@@ -171,6 +171,21 @@ def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
     return raw.decode("utf-8", errors="replace").splitlines()
 
 
+def _read_all_lines(path):
+    """整读文本行（不设尾部上限）——供"当天是否有日志"的日期判定使用。
+
+    与 `_tail_lines` 的分工必须写清：`_tail_lines` 是**倒读**（2MB 上限），用于
+    展示面"只看最近一段"；日期判定问的是"这一天有没有过 yiban 行"，尾部被其他
+    logger 刷屏时倒读会误判"没有"，故这里必须整读。两者不可互换（ba-p07-09）。
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return []
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+
 def parse_sign_log(path):
     """解析签到日志：返回最近日志行列表（可见性口径见 `_log_line_visible`）。
 
@@ -257,13 +272,27 @@ def _log_lines_for(date_str, stats=None):
 _most_recent_log_cache = {"history_date": None, "checked_day": ""}
 
 
-def _today_has_logs():
-    """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
+def _has_visible_logs_on(date_str):
+    """该日文件里是否存在**可见**的 yiban 日志行（整读判定，不走 2MB 倒读）。
 
+    判定委托本函数而不是 `_log_lines_for`：后者经注入的 `tail_lines` 取数，
+    当天日志超过 2MB 且尾部被其他 logger 刷屏时会返回空 ⇒ `_today_has_logs` 判假
+    ⇒ 界面回退到历史日期，把前一天的签到结果显示成"最近记录"（ba-p07-09）。
+    口径与 `_log_lines_for` 相同：行首前缀必须是该日，且过可见性判据。
     """
-    # 整读而不倒读：尾部被其他 logger（如 web 每日清理循环的 yiban.db 告警）刷屏时，
-    # 只看尾部会得出「今天无日志」而回退到历史日期；按天文件体积有限，整读开销可忽略
-    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d")))
+    prefix = f"[{date_str} "
+    for line in _read_all_lines(log_path_for(date_str)):
+        if not line.startswith(prefix):
+            continue
+        m = SIGN_LOG_RE.match(line.strip())
+        if m is not None and _log_line_visible(m.group(2), m.group(3)):
+            return True
+    return False
+
+
+def _today_has_logs():
+    """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。"""
+    return _has_visible_logs_on(clock.now().strftime("%Y-%m-%d"))
 
 
 def _most_recent_log_date(max_days=30):
@@ -282,9 +311,9 @@ def _most_recent_log_date(max_days=30):
         _most_recent_log_cache["history_date"] = None
         for i in range(1, max_days + 1):
             d = (clock.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
-            # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
-            if _log_lines_for(d):
+            # 整读判定（与 _today_has_logs 同口径、同一函数）：尾部被其他 logger 刷屏时
+            # 倒读会漏判，统一走 `_has_visible_logs_on` 保证正确性（按天文件体积有限）
+            if _has_visible_logs_on(d):
                 _most_recent_log_cache["history_date"] = d
                 break
     return _most_recent_log_cache["history_date"] or today
