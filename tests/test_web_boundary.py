@@ -49,6 +49,7 @@ from web import render as _render
 from web import security as _security
 from web.services import accounts_data as _accounts_data
 from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
 from web.services import executor_env as _executor_env
 from web.services import logs as _logs_svc
 from web.services import measure as _measure
@@ -514,7 +515,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_env_write_round_trip_keeps_comments_and_other_lines(self):
         self._write_raw("# 手工注释\nYIBAN_A = 1\nYIBAN_B=2\n")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_A": "9", "YIBAN_C": "3"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_A": "9", "YIBAN_C": "3"})
         with io.open(self.env_file, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("# 手工注释", text, "注释行必须保留")
@@ -523,13 +524,13 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self.assertIn("YIBAN_C=3", text)
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_A"], "9")
         # 空值 = 删键
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_B": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_B": ""})
         self.assertNotIn("YIBAN_B", self.webapp.read_env(self.env_file))
         # 注入校验：值与键名两处都不放行行分隔符
         with self.assertRaises(ValueError):
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_D": "x\ny"})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_D": "x\ny"})
         with self.assertRaises(ValueError):
-            self.webapp.write_env_batch(self.env_file, {"yiban_d": "x"})
+            _env_io_svc.write_env_batch(self.env_file, {"yiban_d": "x"})
 
     def test_write_env_int_and_load_env_int_semantics(self):
         self.webapp.write_env_int(self.env_file, "YIBAN_NUM", 5)
@@ -1261,7 +1262,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
     # 3. 行为逐字不变
     # ------------------------------------------------------------------
     def test_migrate_admin_password_to_hash_roundtrip(self):
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
         with mock.patch.object(self.webapp, "read_env",
                                return_value={"YIBAN_ADMIN_PASSWORD": "Strong#1234"}):
             self.webapp.migrate_admin_password_to_hash(self.env_file)
@@ -1269,7 +1270,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
         self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", text)
         self.assertNotIn("Strong#1234", text, "明文必须被清空（值空 → 删行）")
         self.assertNotIn("YIBAN_ADMIN_PASSWORD=", text)
-        self.assertIs(real_write, self.webapp.write_env_batch)
+        self.assertIs(real_write, _env_io_svc.write_env_batch)
 
     def test_reject_default_admin_password_verbatim_thresholds(self):
         weak = os.path.join(self.tmp, "weak.env")
@@ -1504,7 +1505,7 @@ class WebRenderSplitContractTest(unittest.TestCase):
     def test_site_image_rejects_non_https_round_trip(self):
         self._write_env("YIBAN_SITE_IMAGE=http://img.example.com/a.png\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            self.assertEqual(self.webapp.site_image(), "")
+            self.assertEqual(_render.site_image(), "")
 
 
     # ------------------------------------------------------------------

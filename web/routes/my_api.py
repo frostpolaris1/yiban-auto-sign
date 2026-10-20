@@ -642,7 +642,7 @@ def api_my_account_add():
         # 通知失败不得把提交结果带崩成 500。
         try:
             _locks.run_after_file_lock(
-                m.send_notification,
+                _notify_mail.send_notification,
                 "新账号申请待审核",
                 mail_layout.Mail(
                     summary="有新提交的易班账号待审核。",

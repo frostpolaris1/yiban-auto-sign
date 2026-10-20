@@ -41,6 +41,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
 from _mail_body import render_body  # noqa: E402
 
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 
@@ -104,7 +107,7 @@ class SwitchPasswordGateTest(unittest.TestCase):
         db.init_db(self.db_file, migrate_from=self.accounts_file,
                    env_file=self.env_file)
         # 每用例回到"两开关均未配置（=开放）"基线
-        self.webapp.write_env_batch(self.env_file, {
+        _env_io_svc.write_env_batch(self.env_file, {
             "YIBAN_GLOBAL_PAUSE": "", "YIBAN_REGISTRATION_PAUSE": ""})
 
     @property
@@ -167,7 +170,7 @@ class SwitchPasswordGateTest(unittest.TestCase):
 
     def test_reg_same_value_without_password_200(self):
         """值未变（已是暂停）不带口令 → 200（未变值不要求复核）。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_REGISTRATION_PAUSE": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_REGISTRATION_PAUSE": "1"})
         c, hdr = self._login()
         r = c.post("/api/settings", json={"registration_pause": 1}, headers=hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -188,14 +191,14 @@ class SwitchPasswordGateTest(unittest.TestCase):
         self.assertTrue(self._env_has("YIBAN_GLOBAL_PAUSE=1"))
 
     def test_global_same_value_without_password_200(self):
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
         c, hdr = self._login()
         r = c.post("/api/settings", json={"global_pause": 1}, headers=hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_global_unpause_also_requires_password(self):
         """恢复（1→0）同为变更，同样要求口令——两个方向都不得无口令翻转。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_GLOBAL_PAUSE": "1"})
         c, hdr = self._login()
         r = c.post("/api/settings", json={"global_pause": 0}, headers=hdr)
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
@@ -262,7 +265,7 @@ class SwitchPasswordGateTest(unittest.TestCase):
         """
         th = self._fail_threshold
         c, hdr = self._login()
-        with mock.patch.object(self.webapp, "send_notification") as m:
+        with mock.patch.object(_notify_mail, "send_notification") as m:
             for _ in range(th):
                 r = c.post("/api/settings", json={
                     "registration_pause": 1, "confirm_password": "WrongPass999!"},
@@ -282,7 +285,7 @@ class SwitchPasswordGateTest(unittest.TestCase):
         th = self._fail_threshold
         c, hdr = self._login()
         codes = []
-        with mock.patch.object(self.webapp, "send_notification") as m:
+        with mock.patch.object(_notify_mail, "send_notification") as m:
             for _ in range(th + 2):
                 r = c.post("/api/settings", json={
                     "registration_pause": 1, "confirm_password": "WrongPass999!"},

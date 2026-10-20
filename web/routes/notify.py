@@ -37,8 +37,10 @@ from web.routes import reconfirm_admin_password as _reconfirm_admin_password
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
 from web.services import accounts_data as _accounts_data
+from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
 from web.services import limits as _limits
+from web.services import notify_mail as _notify_mail
 from yiban.adapters.config import account_crypto
 from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
 from yiban.adapters.notifier import mail as mailer
@@ -412,7 +414,7 @@ def api_mail_config_save():
         # 必须在落盘**之前**发：此刻 send_notification 读到的 ADMIN_TO 还是旧值，
         # 告警才能到**原收件人**手里——落盘后再发只能进新收件人，改道若出于恶意
         # 恰好等于报给攻击者。SMTP 中继本请求未动，通道此刻是活的，送达可靠。
-        m.send_notification(
+        _notify_mail.send_notification(
             "告警收件人被改道",
             mail_layout.Mail(
                 summary="邮件告警收件人即将变更；本告警发给原收件人，非本人操作请立即核查。",
@@ -425,7 +427,7 @@ def api_mail_config_save():
             ),
             urgent=True,
         )
-    m.write_env_batch(m.ENV_FILE, updates)
+    _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     # 通道变更不再外发告警（开关 / SMTP 条目两处；收件人改道自 2026-10-02 起在
     # 落盘前向**原**收件人发预警，见上）：改告警通道本身就
     # 是"把报警器拆掉"的动作，用它自己那条通道去通报"通道被改了"只在通道还活着时
@@ -596,7 +598,7 @@ def api_notify_config_save():
             raise  # 同上：自动生成密钥的写回被拒走统一 409，不伪装成加密失败
         except ValueError as e:
             return jsonify({"error": f"加密失败：{e}"}), 500
-    m.write_env_batch(m.ENV_FILE, updates)
+    _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     # 通道变更不再外发告警：改告警通道就是"把报警器拆掉"的动作，用它自己那条通道
     # 通报"通道被改了"只在通道还活着时成立；留痕统一交给下面的审计行（类型/密钥
     # 去向/各限额的新值逐键落盘），运维按审计页即可还原完整动作。

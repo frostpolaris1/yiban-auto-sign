@@ -205,11 +205,6 @@ from web.services.executor_env import (  # noqa: E402
 from web.services.http_request import (  # noqa: E402
     _request_is_same_origin,
 )
-from web.services.limits import (  # noqa: E402
-    DEFAULT_ACCOUNT_GAP_MAX,
-    DEFAULT_MAX_ACCOUNTS,
-    DEFAULT_MAX_USERS,
-)
 from web.services.locks import (  # noqa: E402
     # 进程内锁真源：`_file_lock`（账号/用户读改写）与 `_rate_lock`（限速/失败计数表）
     # 都与 m.<名字> 是同一把，供路由取用；`run_after_file_lock` 是"锁内不得有网络
@@ -298,15 +293,9 @@ from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E
 _doc_cache = {}  # filename -> ((mtime_ns, size), html)
 
 
-def _read_doc_html(filename):
-    """读取并渲染合规文档（实现见 web/render.py）；注入本模块现取的文档根与渲染缓存。"""
-    return _render._read_doc_html(filename, _REPO_ROOT, _doc_cache)
-
-
-def _doc_page(title, body_html, icp_text="", police_text="", base_path="", police_link="https://beian.mps.gov.cn/", description=""):
-    """合规文档独立页（实现见 web/render.py）；摘要留空时取本模块现读的站点简介默认文案。"""
-    return _render._doc_page(title, body_html, icp_text, police_text, base_path, police_link,
-                             description or site_description())
+# `_read_doc_html` / `_doc_page` 已随批 3-d 去壳：读者直取 web/render.py。
+# 文档根（`_REPO_ROOT`）与渲染缓存（`_doc_cache`）经该模块的 configure 登记，
+# 故测试清空/读取 `web.app._doc_cache` 仍是同一份缓存。
 
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
@@ -614,45 +603,17 @@ def _today_has_logs():
 # （它们需要注入本模块持有的 _atomic_write / write_env_batch / _env_flag / 设置缺省值）。
 
 
-# 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py，本模块只转发。
-# `.env` 一律经本模块的 `read_env(ENV_FILE)` 调用时刻现读，保持既有打桩面（测试与
-# `--env` 都会改写 ENV_FILE，由转发处取用才不会被 render 层的副本绑定架空）。
-def email_domain_error(email):
-    """邮箱域名可用性审查（实现见 web/render.py）。"""
-    return _render.email_domain_error(email, read_env(ENV_FILE))
-
-
-def icp_info():
-    """网站 ICP 备案信息（可选，实现见 web/render.py）。"""
-    return _render.icp_info(read_env(ENV_FILE))
-
-
-def police_info():
-    """公安备案信息（可选，实现见 web/render.py）。"""
-    return _render.police_info(read_env(ENV_FILE))
-
-
-def police_link():
-    """公安备案查询链接（实现见 web/render.py；scheme 白名单与回落同在其中）。"""
-    return _render.police_link(read_env(ENV_FILE))
-
+# 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py。
+# 批 3-d 删除了本模块的转发包装（`email_domain_error` / `icp_info` / `police_info` /
+# `police_link` / `site_description` / `site_image`）：路由与测试直取该模块，
+# `.env` 路径与读取器经该模块的 configure 登记。
 
 # 站点简介默认文案（分享预览用；措辞取自 README 项目介绍，勿写成营销语）。
-# 部署方可经 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。
+# 部署方可经 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。本常量仍留本模块并登记给 render。
 SITE_DESCRIPTION_DEFAULT = (
     "易班自动签到辅助工具：配置一次后每天定时自动完成易班早操签到，"
     "无需手动操作；提供网页管理后台，支持多账号管理、失败重试与告警通知。"
 )
-
-
-def site_description():
-    """站点简介（实现见 web/render.py）；留空时用本模块的默认文案。"""
-    return _render.site_description(read_env(ENV_FILE), SITE_DESCRIPTION_DEFAULT)
-
-
-def site_image():
-    """分享预览配图绝对地址（可选，实现见 web/render.py）。"""
-    return _render.site_image(read_env(ENV_FILE))
 
 
 # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
@@ -671,16 +632,9 @@ def edge_front_sec():
 # 路由与测试直取该模块，本模块不再保留转发包装。唯一口径仍在 `yiban.window.bounds`。
 
 
-# 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
-# 三个容量缺省值与开关解析器 `_env_flag` 由本模块现取注入（它们是本模块的名字，会被测试改写）。
-def _settings_effective_values(env_file):
-    """A/B 档设置项的当前生效值（实现见 web/services/env_io.py）。"""
-    return _env_io_svc._settings_effective_values(
-        env_file, _env_flag,
-        gap_max_default=DEFAULT_ACCOUNT_GAP_MAX,
-        max_users_default=DEFAULT_MAX_USERS,
-        max_accounts_default=DEFAULT_MAX_ACCOUNTS,
-    )
+# 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py。
+# 批 3-d 删除了 `_settings_effective_values` 的转发包装：路由与测试直取该模块；
+# 开关解析器 `_env_flag` 与容量缺省值分别经该模块的 configure 与 limits 取得。
 
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 允许 1~64 → 下标 0~63）；
@@ -696,7 +650,7 @@ def _settings_effective_values(env_file):
 
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入（实现见 web/services/env_io.py）。"""
-    return _env_io_svc.write_env_int(env_path, key, value, write_env_batch)
+    return _env_io_svc.write_env_int(env_path, key, value)
 
 
 # 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 yiban/adapters/config/env_io.py
@@ -716,7 +670,7 @@ _count_env_key_lines = env_io.count_key_lines
 def _env_write_refuse_audit(code, detail):
     """.env 写入被拒的 fail-closed 审计回调（写入与业务无法同事务，见 audit_or_refuse）。
 
-    注入给 `write_env_batch` 与 `ensure_secret_key`：任何"写入被拒"都必须留痕，否则一次
+    登记给服务层写入路径（`write_env_batch` / `ensure_secret_key`）：任何"写入被拒"都必须留痕，否则一次
     被拒的注入尝试在审计链上等于没发生。detail 已由 env_io 保证只含键名/行号，绝不回带
     值原文（口令/明文代理串不进审计）。审计失败也不把拒绝变成放行——写入本来就已经被拒，
     本回调只吞异常并记日志，绝不向上抛（抛错会盖住真正的拒绝原因）。
@@ -734,30 +688,23 @@ def _env_write_refuse_audit(code, detail):
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
-    实现见 web/services/env_io.py；写回落在本模块的 `write_env_batch` 上（同一观测点）。
+    实现见 web/services/env_io.py；落盘观测点 `write_env_batch` 现取该模块的真源。
     """
-    return _env_io_svc.write_env_key(env_path, key, value, write_env_batch)
+    return _env_io_svc.write_env_key(env_path, key, value)
 
 
-def write_env_batch(env_path, updates):
-    """批量写入多个键值（原子操作，实现见 web/services/env_io.py）。
-
-    落盘交给本模块现取的 `_atomic_write`：它是"每一次 .env 落盘"的观测点（测试在此
-    打桩快照全文），且 Windows 上的替换重试策略在那里；服务层另持绑定会让打桩静默失效。
-    行模型/校验/键集合 diff 单源在 `yiban.infra.env_io.write_env_keys`；写入被拒时经
-    `_env_write_refuse_audit` 强制留痕。
-    """
-    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write,
-                                       _env_write_refuse_audit)
+# `write_env_batch` 已随批 3-d 去壳：读者直取 web/services/env_io.py。
+# `_atomic_write` 与 `_env_write_refuse_audit` 经该模块的 configure 登记，故测试在
+# `web.app` 上的打桩仍经 hook 生效；`.env` 落盘的观测点改为
+# `web.services.env_io.write_env_batch`。
 
 
 def ensure_secret_key(env_path):
     """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值，实现见 web/services/env_io.py）。
 
-    落盘同样交本模块现取的 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
+    落盘经该模块的 hook 取 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
     """
-    return _env_io_svc.ensure_secret_key(env_path, _atomic_write,
-                                         _env_write_refuse_audit)
+    return _env_io_svc.ensure_secret_key(env_path)
 
 
 # 内置主管理员（.env 账号）的会话凭据族（_new_admin_sid / _issue_admin_sid /
@@ -789,7 +736,7 @@ def migrate_admin_password_to_hash(env_path):
     参数、不读请求上下文。
     """
     return _security.migrate_admin_password_to_hash(
-        env_path, read_env, load_env_int, write_env_batch)
+        env_path, read_env, load_env_int, _env_io_svc.write_env_batch)
 
 
 # `os.replace` 的瞬态失败重试预算与 `_replace_with_retry` / `_atomic_write` 实现见
@@ -941,18 +888,8 @@ def check_admin_configured():
 # `_audit_alert_facts`、变更与审核邮件 `_change_mail` / `_review_reject_mail` 及随族常量）
 # 实现见 web/services/notify_mail.py，此处以导入区
 # 再导出保持 m.* 可达；`_last_cleanup_text` / `_alert_mail_recipients` 的 m.* 名字面已随
-# W0 删除（零读者）。`send_notification` 与 `_push_ever_configured` 需要注入本模块
-# 持有的名字，故在下方转发。
-
-
-def send_notification(title, content, urgent=False, force=False, ledger=None):
-    """发送告警通知（A 线邮件 + Webhook 双通道，实现见 web/services/notify_mail.py）。
-
-    同类型告警邮件节流 `_mail_alert_due` 按调用时刻现取本模块的（测试会打桩
-    `webapp._mail_alert_due`，服务层另持绑定会让这个桩静默失效）。
-    """
-    return _notify_mail.send_notification(
-        title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
+# W0 删除（零读者）。`send_notification` 已随批 3-d 去壳：读者直取该模块，
+# `_mail_alert_due` 经该模块的 configure 登记。`_push_ever_configured` 仍留本模块转发。
 
 
 def _audit_unhealthy_log(health):
@@ -998,7 +935,7 @@ def _alert_audit_unhealthy(health):
                    "或存在未留痕的管理操作。")
         advice = ["立即核查审计链与库外锚点",
                   "确认之前不要依赖审计记录做处置结论"]
-    delivered = send_notification(
+    delivered = _notify_mail.send_notification(
         label,
         mail_layout.Mail(
             summary=summary,
@@ -1070,7 +1007,8 @@ def _send_channel_health_report(force=False):
     """
     return _channel_health._send_channel_health_report(
         force, alert_channel_status=_alert_channel_status,
-        status_lines=_channel_status_lines, send_notification=send_notification)
+        status_lines=_channel_status_lines,
+        send_notification=_notify_mail.send_notification)
 
 
 # 告警通道健康报告的例行播报日（0=周一）。日报的价值在"通道被关掉这件事看得见"，
@@ -1261,6 +1199,17 @@ _signstatus.configure(
 _render.configure(
     env_file=lambda: ENV_FILE,
     read_env=lambda: read_env,
+    repo_root=lambda: _REPO_ROOT,
+    doc_cache=lambda: _doc_cache,
+    site_description_default=lambda: SITE_DESCRIPTION_DEFAULT,
+)
+_notify_mail.configure(
+    mail_alert_due=lambda: _mail_alert_due,
+)
+_env_io_svc.configure(
+    atomic_write=lambda: _atomic_write,
+    env_write_refuse_audit=lambda: _env_write_refuse_audit,
+    env_flag=lambda: _env_flag,
 )
 _logs_svc.configure(
     state_dir=lambda: STATE_DIR,
@@ -1272,7 +1221,7 @@ _manual_sign.configure(
 )
 _executor_env.configure(
     env_file=lambda: ENV_FILE,
-    write_env_batch=lambda: write_env_batch,
+    write_env_batch=lambda: _env_io_svc.write_env_batch,
     sign_window=lambda: _signstatus._sign_window,
 )
 _measure.configure(
@@ -1285,7 +1234,7 @@ _capacity.configure(
     read_env=lambda: read_env,
     sign_window=lambda: _signstatus._sign_window,
     edge_config=lambda: _render.edge_config,
-    send_notification=lambda: send_notification,
+    send_notification=lambda: _notify_mail.send_notification,
 )
 # 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
 # `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
@@ -1302,7 +1251,7 @@ _security.configure(
     read_env=lambda: read_env,
     write_env_key=lambda: write_env_key,
     count_env_key_lines=lambda: _count_env_key_lines,
-    send_notification=lambda: send_notification,
+    send_notification=lambda: _notify_mail.send_notification,
 )
 _verify_queue.configure(
     seat=lambda: _verify_sem,
@@ -1339,7 +1288,8 @@ def _report_env_key_collisions(env_path):
     if _env_collision_reported:
         return
     _env_collision_reported = True
-    return _env_io_svc._report_env_key_collisions(env_path, send_notification)
+    return _env_io_svc._report_env_key_collisions(
+        env_path, _notify_mail.send_notification)
 
 
 # ---------------------------------------------------------------------------
@@ -1941,10 +1891,10 @@ def create_app(host=None):
         base = dict(
             web_version=WEB_VERSION,
             app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            site_description=site_description(),
+            icp_info=_render.icp_info(),
+            police_info=_render.police_info(),
+            police_link=_render.police_link(),
+            site_description=_render.site_description(),
             err_code=code,
             err_title=title,
             err_message=message,
@@ -2222,7 +2172,7 @@ def create_app(host=None):
         if cnt == SENSITIVE_PW_FAIL_NOTIFY:
             # 告警按 `== 阈值`只发一条（同一窗口不刷屏，运维口径）。判据不能换成"是否已
             # 布防"：冷却可被 .env 配成 0，那种部署下这就是唯一的管理员侧信号。
-            send_notification(
+            _notify_mail.send_notification(
                 "高危操作二次鉴权失败告警",
                 mail_layout.Mail(
                     summary=f"IP {_nl_safe(key[0])} 对「{action}」连续 {cnt} 次口令验证失败。",
@@ -2600,7 +2550,7 @@ def create_app(host=None):
             # 绝不能让它看起来像一次通过。
             logger.error("审计链每日校验/锚点写入失败: %s", e)
             with contextlib.suppress(Exception):
-                send_notification(
+                _notify_mail.send_notification(
                     "审计链自检未执行",
                     mail_layout.Mail(
                         summary="审计可追溯性每日自检未能执行（不等于通过）："

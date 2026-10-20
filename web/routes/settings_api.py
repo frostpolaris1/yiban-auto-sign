@@ -124,7 +124,7 @@ def _executor_change_alert(action, changed):
     if not changed or _security._pw_gate_tier() == _security.PW_GATE_FULL:
         return
     try:
-        m.send_notification(
+        _notify_mail.send_notification(
             "系统设置变更告警",
             _notify_mail._change_mail(
                 "执行体配置已变更。",
@@ -622,7 +622,7 @@ def api_settings_save():
     # 正态 μ/σ 区间四键：与 GET 回显同形（整数字符串），未携带的键不进变更判定
     for _k in SCHEDULE_DIST_KEYS:
         proposed[_k] = None if _k not in dist_params else str(dist_params[_k])
-    cur_vals = m._settings_effective_values(m.ENV_FILE)
+    cur_vals = _env_io_svc._settings_effective_values(m.ENV_FILE)
     # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
     changes = []
     for _k in sorted(set(data).intersection(
@@ -743,7 +743,7 @@ def api_settings_save():
         if _k in dist_params:
             updates[_env_key] = str(dist_params[_k])
     try:
-        m.write_env_batch(m.ENV_FILE, updates)
+        _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     except _EnvWriteRefused as e:
         # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
         # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
@@ -1085,7 +1085,7 @@ def api_scheduler_executors_save():
                 data, "整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
             if denied:
                 return denied
-            m.write_env_batch(m.ENV_FILE, updates)
+            _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
@@ -1598,7 +1598,7 @@ def api_announcement_save():
     else:
         updates[_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY] = ""  # 空草稿 = 两键一起删
     # 一次批量写：正文与作者/时刻要么同时生效、要么都不生效（不存在"有草稿无作者"）
-    m.write_env_batch(m.ENV_FILE, updates)
+    _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     db.audit(
         session.get("username") or "?",
         "announcement_draft_save",
@@ -1607,7 +1607,7 @@ def api_announcement_save():
     )
     m.logger.info("公告草稿已更新: %s", text[:50] or "（已清除）")
     # 草稿不改变对外可见内容，故沿用非紧急告警（紧急账每天只有几条，得留给真发布）
-    m.send_notification(
+    _notify_mail.send_notification(
         "公告变更告警",
         _notify_mail._change_mail(
             f"公告草稿{'已更新' if text else '已清除'}"
@@ -1649,7 +1649,7 @@ def api_announcement_publish():
             return jsonify({"error": "当前既没有待发布草稿，线上也没有公告"}), 400
         # 空草稿 + 线上有内容 = 下线（用户裁决：不另设 clear 端点，一收一发走同一条
         # 双人发布的后半程，权限档完全一致——主管理员 + 当次口令）
-        m.write_env_batch(m.ENV_FILE, {
+        _env_io_svc.write_env_batch(m.ENV_FILE, {
             _env_io_svc.ANNOUNCEMENT_KEY: "",
             _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: "",
             _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
@@ -1659,7 +1659,7 @@ def api_announcement_publish():
         db.audit(who, "announcement_publish", "announcement",
                  f"下线｜原: {_notify_mail._nl_safe(before[:60])} → 新: （空）")
         m.logger.info("公告已下线: %s", before[:50])
-        m.send_notification(
+        _notify_mail.send_notification(
             "公告发布告警",
             _notify_mail._change_mail(
                 "全站公告已由主管理员下线。",
@@ -1678,7 +1678,7 @@ def api_announcement_publish():
     author, _at = _env_io_svc._parse_announcement_meta(
         env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY, ""))
     # 单批写入 = 一次读-改-写 + 一次原子替换：不存在"正式已被清、草稿还没落"的中间态
-    m.write_env_batch(m.ENV_FILE, {
+    _env_io_svc.write_env_batch(m.ENV_FILE, {
         _env_io_svc.ANNOUNCEMENT_KEY: draft,
         _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: f"{who.strip().lower()}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}{now_ts}",
         _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
@@ -1694,7 +1694,7 @@ def api_announcement_publish():
     m.logger.info("公告已发布（%s）: %s", change, draft[:50])
     # 对外可见内容变了才走紧急 + force：被盗主管理员发布伪造公告是本系统最坏的
     # 单点，这条必须送达（同类节流会吞掉第二条，运维反而看不到）
-    m.send_notification(
+    _notify_mail.send_notification(
         "公告发布告警",
         _notify_mail._change_mail(
             f"全站公告已由主管理员 {change}。",
