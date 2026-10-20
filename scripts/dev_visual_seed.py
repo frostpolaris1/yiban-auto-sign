@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import os
 import random
 import secrets
@@ -37,13 +36,16 @@ if BASE not in sys.path:
 #     并做原子 0600 替换。裸 open 既无锁又可被并发写方读到半截内容；更重要的是它是
 #     生产上**唯一**的 .env 写入口（`tests/test_env_writers_take_lock.py` 的 grep 格
 #     就按这条断言扫全仓运行时代码），演示脚本另开一条裸写路径会让那条守卫永远红。
-#   · 账号 JSON / 日志 / 按日状态 → `web.security._atomic_write`：tmp + fsync +
-#     os.replace，与 web/引擎侧落盘同一份实现，读者（web 端按天读日志、按日读日历）
+#   · 账号 JSON / 日志 → `web.security._atomic_write`：tmp + fsync +
+#     os.replace，与 web/引擎侧落盘同一份实现，读者（web 端按天读日志）
 #     永远读不到半写状态。
+#   · 按日状态件（sign-daily）→ `yiban.infra.private_json.write_private_json`：
+#     状态文件的**私有写单通道**，创建即 0600（census-P2-sign-daily）。
 from web.security import _atomic_write  # noqa: E402
 from yiban.adapters.config import env_io  # noqa: E402
 from yiban.core.status import ALL_STATUSES  # noqa: E402
 from yiban.core.status import DISPLAY as _DISPLAY  # noqa: E402
+from yiban.infra import private_json  # noqa: E402
 
 # 演示钥不再使用随仓库公开的固定串（工单 sjem）：`account_crypto` 已把
 # `PUBLISHED_DEMO_ACCOUNTS_KEY` 精确拉黑——用它写 .env 会让 `db.add_account`
@@ -286,10 +288,11 @@ def seed(tmp: str, reset: bool = False) -> dict:
             _log_line(datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"), i, "演示账号", r["phone"], r["status"])  # noqa: DTZ007 解析本脚本生成的业务格式串
         )
     for _i, day in enumerate(sorted(txt_by_day)):
-        path = os.path.join(log_dir, f"sign-{day}.log")
+        path = env_io.day_log_path(day, log_file=os.path.join(log_dir, env_io.LOG_BASENAME))
         _atomic_write(path, "\n".join(txt_by_day[day]) + "\n")
     # 今天必须有日志文件，否则日志页空态
-    today_path = os.path.join(log_dir, f"sign-{now.strftime('%Y-%m-%d')}.log")
+    today_path = env_io.day_log_path(now.strftime('%Y-%m-%d'),
+                                      log_file=os.path.join(log_dir, env_io.LOG_BASENAME))
     if not os.path.exists(today_path):
         _atomic_write(today_path, _log_line(now, 0, "演示账号", ACCOUNTS[0][1], "success") + "\n")
 
@@ -324,8 +327,11 @@ def seed(tmp: str, reset: bool = False) -> dict:
             day_data[phone] = _sym[code]
         if not day_data:
             continue
-        _atomic_write(os.path.join(state_dir, f"sign-daily-{date}.json"),
-                      json.dumps(day_data, ensure_ascii=False))
+        # 按日状态件走**状态文件私有写单通道**（census-P2-sign-daily）：创建即 0600，
+        # 与生产写入方 `state_io._write_private_json` 同一个底层入口。演示脚本另开
+        # 一条 `web.security._atomic_write` 会让"单通道"这条约束对它不成立。
+        private_json.write_private_json(
+            env_io.sign_daily_path(date, state_dir=state_dir), day_data)
 
     return {
         "tmp": tmp, "env_file": env_file, "db_file": db_file,

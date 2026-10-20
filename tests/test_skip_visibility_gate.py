@@ -382,6 +382,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash（Git Bash / WSL）"
   ]
  ],
+ "tests/test_path_single_definition.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash / WSL）"
+  ]
+ ],
  "tests/test_pause_flag_truthiness_e2e.py": [
   [
    "skipIf",
