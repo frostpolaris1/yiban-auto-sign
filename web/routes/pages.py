@@ -68,7 +68,7 @@ def _calendar_page_context():
     "排队待签"）。图例的 markup 由 Vue 渲染（前端只负责"只解释看得见的颜色"这一层收敛），
     档位与中文短名一律不落前端。
 
-    `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
+    `day_off` 取 `web.services.signstatus._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
     在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
     """
     payload = _yiban_status.display_payload()

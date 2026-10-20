@@ -217,8 +217,8 @@ def _my_phone():
 def _pref_slots(win):
     """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
 
-    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.app.sign_window_bounds` 现取
-    后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
+    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.services.signstatus.sign_window_bounds`
+    现取后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
     会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口排期，网页却把片全置灰）。
     掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
     disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
