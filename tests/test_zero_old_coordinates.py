@@ -147,6 +147,16 @@ EXEMPT_FILES = {
         "契约元测试：迁移期坐标枚举，改字面量会改判定语义",
 }
 
+#: **跨镜像旧坐标桥**（工单 e0ro，2026-10-20）：`scripts/deploy_gate.sh` 的灌数代码在
+#: v0.6.2 旧镜像里执行，旧镜像只有 `yiban.store`。豁免按**逐字行**给，不按文件：
+#: 整文件豁免会让该脚本其余位置也能回退旧坐标。与 `tests/test_t6_relocation.py` 的
+#: `LEGACY_BRIDGE_LINES` 是同一条桥——两门各扫一面，故各登记一次（内容逐字相同）。
+LEGACY_BRIDGE_LINES = {
+    "scripts/deploy_gate.sh": (
+        "old) printf 'yiban.store\\n' ;;",
+    ),
+}
+
 #: 日志通道名：不是坐标，是**运维可见的日志出口名**。改名即改语义，故保留。
 #: 只在 `getLogger`／`assertLogs`／`assertNoLogs` 的**实参位**豁免。
 LOGGER_CHANNELS = frozenset((
@@ -325,8 +335,12 @@ def old_coordinate_hits(path):
     """
     text = _read(path)
     if not path.endswith(".py"):
+        rel = os.path.relpath(path, BASE).replace("\\", "/")
+        bridge = LEGACY_BRIDGE_LINES.get(rel, ())
         hits = []
         for i, line in enumerate(text.splitlines(), 1):
+            if line.strip() in bridge:
+                continue
             if any(_OLD_LITERAL[m].search(line) for m in OLD_MODULES):
                 hits.append((i, "文本件含旧坐标字面量"))
             elif alias_names(line):
@@ -472,6 +486,21 @@ class ZeroOldCoordinateReaderTest(unittest.TestCase):
                 self.assertTrue(old_coordinate_hits(path),
                                 "%s 已不再写出旧坐标——豁免失去理由，须从豁免面移除"
                                 % rel)
+
+    def test_legacy_image_bridge_is_anchored_and_narrow(self):
+        """e0ro 跨镜像桥：登记的逐字行仍在，且该文件桥以外零旧坐标读者。"""
+        for rel, lines in sorted(LEGACY_BRIDGE_LINES.items()):
+            with self.subTest(rel=rel):
+                path = os.path.join(BASE, rel)
+                self.assertTrue(os.path.isfile(path), "桥文件 %s 不在了" % rel)
+                stripped = [ln.strip() for ln in _read(path).splitlines()]
+                for expected in lines:
+                    self.assertIn(expected, stripped,
+                                  "%s 里登记的桥行已不存在：豁免失去理由" % rel)
+                self.assertEqual(
+                    old_coordinate_hits(path), [],
+                    "%s 在桥以外仍有旧坐标读者（豁免只该覆盖登记行）：%r"
+                    % (rel, old_coordinate_hits(path)))
 
     def test_logger_channel_exemption_is_anchored(self):
         """日志通道名豁免不腐烂：登记的名字须仍是实现里的 `getLogger` 实参。"""

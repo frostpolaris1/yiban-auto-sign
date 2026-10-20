@@ -197,11 +197,33 @@ c_uv() { # user_version（不过 init_db，只读）
     c_in_py "$1" "$2" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute('PRAGMA user_version').fetchone()[0])"
 }
 
+# 存储模块的**镜像代次**映射：唯一事实源（工单 e0ro）。
+# Phase A/C 跑本树构建的新镜像（`yiban.adapters.persistence`）；Phase B 的 B3 跑
+# v0.6.2 旧镜像（只有旧 store 包）。这段 Python 在**别人的镜像**里执行，故
+# import 不能只写一侧——迁移只看本树读者就会把另一侧改坏（T6 实测：B3/B6/B8/B11 连锁红）。
+store_module() { # $1 = new|old；输出该代镜像的存储包路径
+    case "${1:-}" in
+        new) printf 'yiban.adapters.persistence\n' ;;
+        old) printf 'yiban.store\n' ;;
+        *) echo "store_module: 未知镜像代次 '${1:-}'（只认 new|old）" >&2; return 2 ;;
+    esac
+}
+
+py_db_import() { # $1 = new|old；输出可拼进 `python -c` 的 import 语句
+    local mod
+    mod="$(store_module "$1")" || return 2
+    printf 'from %s import db;' "$mod"
+}
+
 seed_sql_py() { # 灌合成数据：n 个账号 + 若干审计行 [+ 一条旧出口行]
+    # $1 = plain|legacy；$2 = 镜像代次 new|old（**必填**：同一函数在两代镜像里执行）
+    local mode="${1:-plain}" gen="${2:?seed_sql_py 缺少镜像代次（new|old）}" mod
+    mod="$(store_module "$gen")" || return 2
     cat <<PY
 import sys
-from yiban.adapters.persistence import db, accounts
+from ${mod} import db, accounts
 db.init_db()
+print("STORE_MODULE", db.__name__)
 n = $GATE_SEED_N
 rows = [{"name": "seed%05d" % i, "phone": "13%09d" % i,
          "password": "seedpass", "status": "active", "owner": "admin"}
@@ -209,10 +231,15 @@ rows = [{"name": "seed%05d" % i, "phone": "13%09d" % i,
 accounts.replace_accounts(rows)
 for i in range(20):
     db.audit("gate-seed", "seed_audit", "t%d" % i, "row %d" % i)
-$([ "$1" = legacy ] && echo "db.get_conn().execute(\"INSERT OR REPLACE INTO egress_state (egress, rate, burst, tat, updated_at) VALUES ('worker-0@gatehost', 1.0, 0, 0, '2026-01-01 00:00:00')\"); db.get_conn().commit()")
+$([ "$mode" = legacy ] && echo "db.get_conn().execute(\"INSERT OR REPLACE INTO egress_state (egress, rate, burst, tat, updated_at) VALUES ('worker-0@gatehost', 1.0, 0, 0, '2026-01-01 00:00:00')\"); db.get_conn().commit()")
 print("ACCOUNTS=", db.get_conn().execute("SELECT COUNT(*) FROM accounts").fetchone()[0])
 print("AUDIT=", db.get_conn().execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0])
 PY
+}
+
+# 读灌数脚本自报的实际模块名，与所在镜像代次对账：单向改写会在这里当场红。
+seed_module_of() { # $1 = 灌数输出；输出 STORE_MODULE 行里的模块名（缺失即空）
+    printf '%s\n' "$1" | sed -n 's/^STORE_MODULE //p' | head -1
 }
 
 # ============================================================
@@ -261,12 +288,19 @@ phase_A() {
     lcode="$lresp"
     if [ "$lcode" = "200" ]; then pass "A4 .env 管理员登录 /api/login" "200"; else fail "A4 管理员登录" "HTTP $lcode"; fi
 
-    local out
-    out="$(c_in_py "$proj" "$ov" "$(seed_sql_py plain)" 2>>"$log")"
+    local out seed_mod want_mod got
+    out="$(c_in_py "$proj" "$ov" "$(seed_sql_py plain new)" 2>>"$log")"
     echo "$out" >> "$log"
-    local n got
     got="$(printf '%s\n' "$out" | sed -n 's/^ACCOUNTS= //p' | head -1)"
-    if [ "${got:-0}" = "$GATE_SEED_N" ]; then pass "A5 灌合成账号并计数" "accounts=$got"; else fail "A5 灌合成账号" "期望 $GATE_SEED_N 实得 ${got:-?}"; fi
+    seed_mod="$(seed_module_of "$out")"
+    want_mod="$(store_module new).db"
+    # 守卫（工单 e0ro）：灌数脚本实际导入的模块必须属于**新镜像**。单向改写（把
+    # import 改回只存在于旧镜像的模块）会在这里红，而不是等到 B3 连锁红。
+    if [ "${got:-0}" = "$GATE_SEED_N" ] && [ "$seed_mod" = "$want_mod" ]; then
+        pass "A5 灌合成账号并计数" "accounts=$got module=$seed_mod"
+    else
+        fail "A5 灌合成账号" "期望 $GATE_SEED_N 实得 ${got:-?}；STORE_MODULE=${seed_mod:-?}（期望 $want_mod）"
+    fi
 
     cleanup_proj "$proj" "$ov"
 }
@@ -346,12 +380,19 @@ phase_B() {
     uv_before="$(c_uv "$proj" "$ov" 2>>"$log")"
     if [ "$uv_before" = "21" ]; then pass "B2 旧版 user_version=21" "21"; else fail "B2 旧版 user_version" "实得 $uv_before（期望 21）"; fi
 
-    local out accounts_before head_before
-    out="$(c_in_py "$proj" "$ov" "$(seed_sql_py legacy)" 2>>"$log")"; echo "$out" >>"$log"
+    local out accounts_before head_before seed_mod want_mod
+    out="$(c_in_py "$proj" "$ov" "$(seed_sql_py legacy old)" 2>>"$log")"; echo "$out" >>"$log"
     accounts_before="$(printf '%s\n' "$out" | sed -n 's/^ACCOUNTS= //p' | head -1)"
-    head_before="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(cleanup=False, migrate=False); print('HEAD', db.audit_head_hash())" 2>>"$log")"
+    seed_mod="$(seed_module_of "$out")"
+    want_mod="$(store_module old).db"
+    head_before="$(c_in_py "$proj" "$ov" "$(py_db_import old) db.init_db(cleanup=False, migrate=False); print('HEAD', db.audit_head_hash())" 2>>"$log")"
     echo "$head_before" >>"$log"
-    if [ "${accounts_before:-0}" = "$GATE_SEED_N" ]; then pass "B3 旧版灌数（账号+审计+旧出口行）" "accounts=$accounts_before"; else fail "B3 旧版灌数" "accounts=${accounts_before:-?}"; fi
+    # 守卫（工单 e0ro）：B3 在 **v0.6.2 旧镜像**里执行，实际导入必须是旧模块。
+    if [ "${accounts_before:-0}" = "$GATE_SEED_N" ] && [ "$seed_mod" = "$want_mod" ]; then
+        pass "B3 旧版灌数（账号+审计+旧出口行）" "accounts=$accounts_before module=$seed_mod"
+    else
+        fail "B3 旧版灌数" "accounts=${accounts_before:-?}；STORE_MODULE=${seed_mod:-?}（期望 $want_mod）"
+    fi
 
     # --- B4 升级到 develop 顶端 ---
     _write_mig_override "${proj}-new" "$BASE"
@@ -373,7 +414,7 @@ phase_B() {
     egress_left="$(c_in_py "$proj" "$ov" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute(\"SELECT COUNT(*) FROM egress_state WHERE egress='worker-0@gatehost'\").fetchone()[0])" 2>>"$log")"
     if [ "${egress_left:-1}" = "0" ]; then pass "B7 v22 清空旧出口行（egress_state 重建）" "旧键剩 0 行"; else fail "B7 v22 清空旧出口行" "旧键剩 ${egress_left:-?} 行"; fi
 
-    chain="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
+    chain="$(c_in_py "$proj" "$ov" "$(py_db_import new) db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
     echo "$chain" >>"$log"
     if printf '%s' "$chain" | grep -q 'CHAIN True'; then pass "B8 升级后审计链自洽 chain_ok=True" "True"; else fail "B8 审计链" "$chain"; fi
 
@@ -466,10 +507,10 @@ phase_C() {
         cleanup_proj "$proj" "$ov"
         return
     fi
-    c_in_py "$proj" "$ov" "$(seed_sql_py plain)" >>"$log" 2>&1
+    c_in_py "$proj" "$ov" "$(seed_sql_py plain new)" >>"$log" 2>&1
     # 落一次审计链外部锚点（README 承诺备份含 audit-anchor.log）：锚点由每日线程/事件写，
     # 全新库"首次备份前"可能尚未存在，故先显式落一次，再断言包内确实含它。
-    c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(); db.record_audit_anchor()" >>"$log" 2>&1
+    c_in_py "$proj" "$ov" "$(py_db_import new) db.init_db(); db.record_audit_anchor()" >>"$log" 2>&1
 
     # 复刻调度器 02:00 的备份调用环境（docker/scheduler.py 的 _backup_env）：
     #   * 身份 = uid 10001（yiban）；
@@ -532,7 +573,7 @@ phase_C() {
 
     local accounts chain
     accounts="$(c_in_py "$proj" "$ov" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute('SELECT COUNT(*) FROM accounts').fetchone()[0])" 2>>"$log")"
-    chain="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence import db; db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
+    chain="$(c_in_py "$proj" "$ov" "$(py_db_import new) db.init_db(cleanup=False, migrate=False); print('CHAIN', db.verify_audit_chain()[0])" 2>>"$log")"
     echo "accounts=$accounts $chain" >>"$log"
     if [ "${accounts:-0}" = "$GATE_SEED_N" ] && printf '%s' "$chain" | grep -q 'CHAIN True'; then
         pass "C8 恢复后数据自检（账号数+审计链）" "accounts=$accounts chain_ok=True"
