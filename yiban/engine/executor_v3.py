@@ -237,38 +237,44 @@ def scheduler_v3_enabled(env=None):
     return True
 
 
-def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None):
-    """装订式抖动退避的落点 → datetime；`None` = 有效窗口放不下，放弃重试。
+def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None, day=None):
+    """装订式抖动退避的落点 → datetime；`None` = 窗口放不下 / 守不住最小间隔，放弃重试。
 
     `delay = min(cap, uniform(base, max(base, last_delay × 3)))`，其中
     `cap = min(RETRY_CAP_SEC, 剩余有效窗口 × 0.3)`：下界是 `YIBAN_RETRY_MIN_INTERVAL`
     （防连击），上界随剩余窗口收缩（不在尾端扎堆），落点再夹到有效窗口结束——**绝不让
-    重试越过窗口**，放不下就返回 `None`。窗口几何一律走 `window.bounds`（排计划、判
-    关闭、容量预估的同一准绳）。`last_delay` 是上一次的 delay（进程内记账、无持久化）：
-    换执行体接手或首次重试时未知，调用方传 `base` 即可——保守且收敛。
+    重试越过窗口**。`cap < base` 时**返回 `None`**：窗口尾段放不下一个合法间隔，宁可
+    当日放弃重试，也不把间隔压到配置的最小值之下（工单 ba-p03-04；旧实现取
+    `min(cap, ...)`，把 60s 下限压到 10s 甚至秒级，正是该安全键要防的行为）。
+    窗口几何一律走 `window.bounds`（排计划、判关闭、容量预估的同一准绳）。`last_delay`
+    是上一次的 delay（进程内记账、无持久化）：换执行体接手或首次重试时未知，调用方传
+    `base` 即可——保守且收敛。
 
-    **落点用绝对时刻夹取，不拿「当天第几分钟」配零点**（M16）：`win.hi_min` 是不含
-    日期的分钟数，用 `to_dt(now 的零点, hi_min)` 当上界，在长轮次跨过午夜后算的是
-    **次日**的窗口结束；而 `remaining_sec` 同样只看分钟数，00:10 被算成"今天还剩一整
-    窗"，于是 `now + delay` 小于上界而原样胜出——落点变成 00:1x，**窗口之前**。
-    通道只判"窗口没关"（`_window_closed` 对 00:10 为假），那条行遂在窗口外被真实登录，
-    还会被记成 `skipped_window`。故：
+    **日基准是业务日，不是墙钟日期**（工单 ba-p03-06）：`day` 传调用方的 `ctx.day`，
+    窗口两端用 `bounds_dt(业务日)` 取绝对时刻，剩余窗口按
+    `(hi_dt − now_dt)` 算。跨过午夜后业务日仍是启动日，窗口已过 ⇒ 返回 `None`，绝不把
+    落点写进次日窗口而让行留在启动日的 `day` 上（那种行按日领取、永远没人领 = 静默漏签）。
+    `day` 缺省取 `now_dt` 的日期，与既有一次性调用点同语义。
 
     - 已经进窗口（正常路径）：`min(now + delay, hi_dt)`，与旧实现逐字同值；
-    - 还没进窗口（跨零点的长轮次、或提前拉起的执行体）：落点钉进**同一时间窗**内的
-      绝对时刻（`min(lo_dt + delay, hi_dt)`），而不是窗口外的 `now + delay`。
+    - 还没进窗口（提前拉起的执行体）：落点钉进**同一时间窗**内的绝对时刻
+      （`min(lo_dt + delay, hi_dt)`），而不是窗口外的 `now + delay`。
 
-    窗口已过（`remaining <= 0`）仍返回 `None`：当天不再重试。
+    业务日窗口已过（`remaining <= 0`）返回 `None`：当天不再重试。
     """
     rng = rng or random.Random()
     base = max(1, int(sch_cfg["retry_min_interval"]))
     win = window.bounds(sch_cfg)
-    remaining = win.remaining_sec(now_dt)
+    day_date = (datetime.date.fromisoformat(day) if day is not None
+                else now_dt.date())
+    lo_dt, hi_dt = win.bounds_dt(day_date)
+    remaining = (hi_dt - now_dt).total_seconds()
     if remaining <= 0:
         return None
     cap = min(RETRY_CAP_SEC, remaining * 0.3)
-    delay = min(cap, rng.uniform(base, max(base, float(last_delay) * 3)))
-    lo_dt, hi_dt = win.bounds_dt(now_dt)
+    if cap < base:
+        return None
+    delay = max(base, min(cap, rng.uniform(base, max(base, float(last_delay) * 3))))
     if now_dt < lo_dt:
         target = min(lo_dt + datetime.timedelta(seconds=delay), hi_dt)
     else:
@@ -356,22 +362,30 @@ def _plan_covers(day, accounts):
     根本没有行 ⇒ 全天零签到。`write_plan` 是 `INSERT OR IGNORE`，补建不会覆盖 manual
     行（也不会复活 `vshard = -1` 的历史惰性行——本函数只对 `vshard >= 0` 计数，与
     `_max_vshard` 同界）。
+
+    `IN (...)` 按 `queue_store.SQL_VAR_CHUNK` 分块（与 `row_owners` / `reap_expired`
+    同一纪律）：目标规模 1~2 千账号，整段拼进一条 SQL 会越过 SQLite 老版本的 999 个
+    绑定变量上限，异常被本函数吞成"未覆盖"⇒ 每轮重写计划并刷 warning，覆盖面判据在
+    大站永久失明（工单 ba-p03-10）。各块手机号互不重叠，故 DISTINCT 计数可按块累加。
     """
     phones = planner._phones(accounts)
     if not phones:
         return True
+    covered = 0
     try:
         conn, lock = queue_store._queue_conn()
         with lock:
-            placeholders = ",".join("?" for _ in phones)
-            row = conn.execute(
-                "SELECT COUNT(DISTINCT phone) FROM sign_tasks "
-                f"WHERE day=? AND vshard >= 0 AND phone IN ({placeholders})",
-                (day, *phones)).fetchone()
+            for chunk in queue_store._chunks(phones):
+                placeholders = ",".join("?" for _ in chunk)
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT phone) FROM sign_tasks "
+                    f"WHERE day=? AND vshard >= 0 AND phone IN ({placeholders})",
+                    (day, *chunk)).fetchone()
+                covered += int(row[0] or 0)
     except Exception as e:
         logger.warning("读取当日计划覆盖面失败（按未覆盖处理）: %s", e)
         return False
-    return int(row[0] or 0) == len(phones)
+    return covered == len(phones)
 
 
 def _ensure_plan(accounts, day, cfg, force=False):
@@ -563,15 +577,17 @@ def _settle(ctx, phone, epoch, state, message):
 def _finish(ctx, phone, epoch, result, state_message, state):
     """零请求收尾（暂停 / 账号已不在配置）：写状态、事件、结果并了结该行。
 
-    以 `failed` 了结时同样带档位前缀（账密暂停属保守档，只有显式路径可回炉——
-    自动回炉等于绕开凭据熔断反复真实登录）；`done` 是了结态，不带前缀。
+    以 `failed` 了结时带档位前缀（账密暂停属**管理侧当日结论**，故落终态 `skipped`，
+    与 `migrations._JSON_TERMINAL_TO_TASK_STATE` 同口径；落 `failed` 会让补签闸门的
+    队列腿把它算成"未了结"，补签轮再真实登录一次，工单 48b9 / vqmb）。`done` 同样是
+    了结态，不带前缀。
 
     进度打点按状态取节点：账密暂停落 `pause`，其余非成功终态落 `fail`。本函数是
     **所有零请求收尾的唯一出口**，故打点挂在这里而不是两个调用点各写一遍。
     """
     _ok, _msg, _skip, status = result
     ctx.results[phone] = result
-    state_io._write_sign_state(phone, status, state_message)
+    state_io._write_sign_state(phone, status, state_message, day=ctx.day)
     _emit_event(ctx, phone, status, state_message)
     _report(ctx, run_events.NODE_PAUSE if status == STATUS_PAUSED
             else run_events.NODE_FAIL, phone, state_message)
@@ -705,10 +721,13 @@ async def _attempt(ctx, item):
         return
     cred = ctx.cred_state.get(phone, {})
     if cred.get("paused_since") and not attempts._probe_due(cred, today):
-        # 熔断判定排在取额度之后、发请求之前：这里必须把行了结成 failed 而不是丢着不管，
-        # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）
+        # 熔断判定排在取额度之后、发请求之前：这里必须把行了结成终态而不是丢着不管，
+        # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）。
+        # 落 `skipped` 而**不是** `failed`：账密暂停是管理侧当日结论，队列侧的
+        # "未了结"判据（`db.task_open_count`）只看 OPEN_STATES，落 failed 会让补签轮
+        # 再真实登录一次（工单 48b9 / vqmb；与 JSON 终态映射同口径）。
         _finish(ctx, phone, epoch, (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED),
-                "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_FAILED)
+                "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_SKIPPED)
         logger.info("%s [%s] ⏸️ 账密异常已暂停，请修改密码", ctx.log_tag, _mask_phone(phone))
         return
     ctx.gap_gate.commit(phone, _mono())  # 走到这才是"真要发请求"：gap 的推进点必须与尝试一一对应
@@ -727,7 +746,7 @@ async def _attempt(ctx, item):
         ctx.inflight -= 1
     dur = _mono() - t0
     # 每次尝试结束即物化状态：v2 是逐账号增量写，v3 只在收尾物化会让当天网页日历空窗
-    state_io._write_sign_state(phone, status, message, dur=dur)
+    state_io._write_sign_state(phone, status, message, dur=dur, day=ctx.day)
     _emit_event(ctx, phone, status, message, dur=dur, attempt_no=attempts_n + 1)
     # 进度打点「成功/失败」：一次尝试的结论，与上一行的 sign_events 同一时刻、同一判据
     # （了结态集合 `CLAIM_DONE_STATUSES`）。重试中的尝试同样落 fail——那是这次尝试的
@@ -750,21 +769,30 @@ async def _attempt(ctx, item):
         ctx.limiter.on_risk_signal(ctx.egress, _mono())
     if skip:
         ctx.results[phone] = (False, message, True, status)
-        _settle(ctx, phone, epoch, queue_store.STATE_FAILED,
-                _tier_prefix(status) + message)
+        # 暂停/取消/补签中都是**管理侧或平台侧已定的当日结论**：队列按终态 `skipped`
+        # 收尾（与 `migrations._JSON_TERMINAL_TO_TASK_STATE` 同口径）。落 `failed` 会让
+        # 补签闸门的队列腿（`db.task_open_count`）判"未了结"，补签轮于是把该账号再
+        # 真实登录一次（工单 48b9 / vqmb）。窗口外仍落 `failed`——那是"还该再试"。
+        state = (queue_store.STATE_SKIPPED
+                 if status in (yiban_status.STATUS_SUPPLEMENTING, STATUS_USER_CANCELLED)
+                 else queue_store.STATE_FAILED)
+        _settle(ctx, phone, epoch, state,
+                message if state == queue_store.STATE_SKIPPED
+                else _tier_prefix(status) + message)
         return
     max_attempts, clear_cache = attempts._retry_budget(message)
     if clear_cache:
         attempts.clear_session_cache_quiet(phone)
     if attempts_n + 1 < max_attempts:
         base = max(1, int(ctx.cfg["retry_min_interval"]))
-        nxt = next_retry_at_v3(_now(), ctx.cfg, ctx.last_delay.get(phone, base), ctx.rng)
+        nxt = next_retry_at_v3(_now(), ctx.cfg, ctx.last_delay.get(phone, base), ctx.rng,
+                               day=ctx.day)
         if nxt is not None:
             ctx.last_delay[phone] = (nxt - _now()).total_seconds()
             queue_store.requeue_task(phone, ctx.day, _stamp_ms(nxt), priority_delta=1,
                                      result=message, epoch=epoch)
             retry_msg = f"待重试（已 {attempts_n + 1} 次）: {_sanitize_text(message)}"
-            state_io._write_sign_state(phone, STATUS_RETRYING, retry_msg)
+            state_io._write_sign_state(phone, STATUS_RETRYING, retry_msg, day=ctx.day)
             _emit_event(ctx, phone, STATUS_RETRYING, retry_msg, attempt_no=attempts_n + 1)
             logger.warning("%s [%s] ⏳ %s", ctx.log_tag, _mask_phone(phone), retry_msg)
             return
@@ -1000,10 +1028,12 @@ def _prescan(ctx, accounts):
       就会在汇总里变成"未执行"（按失败计），与 v2 的"跳过"口径不符。由**归属执行体**
       登记一次。
 
-    登记当日**只做一次**（判据＝当日状态文件里已是 `user_cancelled`）：兜底常驻每 ~5s
+    登记当日**只做一次**（判据＝当日状态文件里已是 `user_cancelled`，并由
+    `_write_sign_state(..., only_if_absent=True)` 的 CAS 收口并发）：兜底常驻每 ~5s
     重扫、窗口内可上百轮，重复登记会按轮灌 `user_cancelled` 事件与 `pause` 进度行
     （2026-10-13 生产单日 752+752，工单 uuqb），并把"本轮有活"喂给紧循环（`own` 恒 > 0
-    ⇒ 扫描间隔从 60s 掉到 5s）。两个调用形态的差异必须保留：
+    ⇒ 扫描间隔从 60s 掉到 5s）。宽分片（`claim_all`）下分片集判据挡不住兜底与归属
+    执行体同时登记，故"只登记一次"必须靠写侧 CAS，不能靠分片集（工单 ba-p03-05）。两个调用形态的差异必须保留：
 
     - **一次性轮**（`round_no` 为 `None`：定时全量、手动 `--only`）即便状态文件已有该
       结论**仍登记进 `results`**——汇总按 `results` 计"跳过"，不登记就会被算成"未执行"
@@ -1024,17 +1054,27 @@ def _prescan(ctx, accounts):
             ctx.user_paused.add(phone)
             if recorded is None:
                 # 当日状态快照按需取一次：没暂停账号的部署（常态）不必每轮多读一次盘。
-                recorded = state_io._daily_statuses()
+                recorded = state_io._daily_statuses(ctx.day)
             already = str(recorded.get(phone, "")).strip() == STATUS_USER_CANCELLED
             if already and ctx.round_no is not None:
                 # 常驻重复轮：当日结论已在，本轮无活可做（见 docstring）。
                 continue
             if not already:
-                state_io._write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
-                _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
-                # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
-                # claim/start 行——进度流里只出现这一行 pause 是正确形态。
-                _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
+                # **CAS**：两个进程同时首见该号时只有一个能写成功，也只有它发事件/
+                # 进度行。读状判断再写会让两边都读到 already=False，各写一次状态、
+                # 各发一条 user_cancelled（工单 ba-p03-05：宽分片下 delegated 恒空，
+                # 分片集判据挡不住兜底与归属执行体同时登记）。
+                wrote = state_io._write_sign_state(
+                    phone, STATUS_USER_CANCELLED, "用户已取消签到",
+                    only_if_absent=True, day=ctx.day)
+                if wrote:
+                    _emit_event(ctx, phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                    # 用户自暂停是账号级「暂停」节点：它没有计划行、不经过队列，故没有
+                    # claim/start 行——进度流里只出现这一行 pause 是正确形态。
+                    _report(ctx, run_events.NODE_PAUSE, phone, "用户已取消签到")
+                elif ctx.round_no is not None:
+                    # 并发对手已登记同一结论：本常驻轮无活可做（与 already 分支同口径）。
+                    continue
             ctx.results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
 
 
@@ -1049,7 +1089,7 @@ def _mark_window_skips(ctx, accounts):
     """
     if getattr(ctx, "reclaim", False) or not schedule._window_closed(ctx.cfg, _now()):
         return
-    recorded = state_io._daily_statuses()
+    recorded = state_io._daily_statuses(ctx.day)
     for acc in accounts:
         phone = acc.phone
         if phone in ctx.results:
@@ -1061,7 +1101,7 @@ def _mark_window_skips(ctx, accounts):
             ctx.results[phone] = (False, "已有当日结论", False, rec)
             continue
         if not state_io._write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束",
-                                          only_if_absent=True):
+                                          only_if_absent=True, day=ctx.day):
             continue
         ctx.results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
         _emit_event(ctx, phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
