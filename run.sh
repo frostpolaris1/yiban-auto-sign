@@ -681,9 +681,9 @@ else
     # 根本没跑判定（SEAL_CHECK_RC 为空）。else 一律说"已收尾且无未了结"是把未判
     # 说成已判——恰是排查漏签时最需要区分的一种假象。
     case "${SEAL_CHECK_RC}" in
-        "") _log "补签轮：未做库内事实判定（补签开关关闭、本轮即补签轮或全站暂停），跳过" ;;
-        10) _log "补签轮：库内判定为需要补跑，但补跑条件未成立（不应到达），跳过" ;;
-        *)  _log "补签轮：库内判定退出 ${SEAL_CHECK_RC}（无未了结账号），跳过" ;;
+        "") _log "补签轮：无需补跑——未做库内事实判定（补签开关关闭、本轮即补签轮或全站暂停）" ;;
+        10) _log "补签轮：无需补跑——库内判定为需要补跑但条件未成立（不应到达）" ;;
+        *)  _log "补签轮：无需补跑——库内判定退出 ${SEAL_CHECK_RC}（无未了结账号）" ;;
     esac
 fi
 
@@ -708,10 +708,17 @@ _seal_second_done_marker() {
         # census-P2-settled-marker：`: > "$SECOND_DONE_MARKER"` 是裸覆盖（非 noclobber、
         # 非 tmp+mv），写到一半被杀会留下半截/空文件；权限只靠 umask 077，不显式。
         # 改 mktemp + mv（同目录原子 rename）+ 显式 0600。
-        local _tmp_marker=""
-        if ! _tmp_marker="$(mktemp "${SECOND_DONE_MARKER}.tmp.XXXXXX" 2>/dev/null)" \
-            || ! { : > "$_tmp_marker" && chmod 600 "$_tmp_marker" \
-                   && mv -f "$_tmp_marker" "$SECOND_DONE_MARKER"; }; then
+        local _tmp_marker="" _marker_ok=0
+        if [ -e "$SECOND_DONE_MARKER" ] && [ ! -f "$SECOND_DONE_MARKER" ]; then
+            # 目标被占成目录/设备：mv 会把临时件挪进去且"看似成功"，先拒。
+            _marker_ok=0
+        elif _tmp_marker="$(mktemp "${SECOND_DONE_MARKER}.tmp.XXXXXX" 2>/dev/null)" \
+            && : > "$_tmp_marker" && chmod 600 "$_tmp_marker" \
+            && mv -f "$_tmp_marker" "$SECOND_DONE_MARKER" \
+            && [ -f "$SECOND_DONE_MARKER" ]; then
+            _marker_ok=1
+        fi
+        if [ "$_marker_ok" -eq 0 ]; then
             [ -n "$_tmp_marker" ] && rm -f "$_tmp_marker"
             _err "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮"
             _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
