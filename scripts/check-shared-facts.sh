@@ -325,21 +325,27 @@ if [ -n "$TRACKED_LIST" ]; then
 elif [ "$ASSUME_ALL_TRACKED" = 1 ]; then
     TRACKED_MODE="--assume-all-tracked（非 git 树：全部磁盘文件视为跟踪）"
 else
-    GD="$ROOT/.git"
-    if [ ! -d "$GD" ] && [ -f "$ROOT/.git" ]; then
-        # worktree：.git 是文件，里面 `gitdir: <路径>` 指回主仓。相对路径按 --root 解析；
-        # Windows 盘符路径按 /mnt/<盘>/... 翻（与 dev-verify 的 win_to_unix 同口径），
-        # 翻完仍不可用才失败——直跑测试/`--ci` 的 worktree 形态不该被误判成"无 git"。
-        G=$(sed -n 's/^gitdir: *//p' "$ROOT/.git" | head -1 | tr -d '\r')
-        G=${G//\\//}
-        case "$G" in
-            /mnt/[a-z]/*) GD="$G" ;;
-            [A-Za-z]:/*)
-                DRV=$(printf '%s' "${G:0:1}" | tr 'A-Z' 'a-z')
-                GD="/mnt/${DRV}${G:2}" ;;
-            /*) GD="$G" ;;
-            *)  GD="$ROOT/$G" ;;
-        esac
+    # 先让 git 自己解析：`git -C` 同时认 `.git` 目录与 worktree 的 `.git` 文件，
+    # 且不需要把 gitdir 文本里的 Windows 盘符翻成 /mnt/<盘>（那是 WSL 口径，
+    # Git Bash 里没有 /mnt/d，硬翻会把标准 worktree 误判成"无 git"——2026-10-20
+    # 主会话实测：work/gate-trust 直跑 rc=2）。只有 git 也解析不出时才走手写解析。
+    if GD=$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null) && [ -d "$GD" ]; then
+        :
+    else
+        GD="$ROOT/.git"
+        if [ ! -d "$GD" ] && [ -f "$ROOT/.git" ]; then
+            # 兜底：相对路径按 --root 解析；Windows 盘符路径按 /mnt/<盘>/... 翻。
+            G=$(sed -n 's/^gitdir: *//p' "$ROOT/.git" | head -1 | tr -d '\r')
+            G=${G//\\//}
+            case "$G" in
+                /mnt/[a-z]/*) GD="$G" ;;
+                [A-Za-z]:/*)
+                    DRV=$(printf '%s' "${G:0:1}" | tr 'A-Z' 'a-z')
+                    GD="/mnt/${DRV}${G:2}" ;;
+                /*) GD="$G" ;;
+                *)  GD="$ROOT/$G" ;;
+            esac
+        fi
     fi
     if [ ! -d "$GD" ] || ! git --git-dir="$GD" --work-tree="$ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
         echo "check-shared-facts: 求不出跟踪集（--root=$ROOT 无 git 元数据）。" \
