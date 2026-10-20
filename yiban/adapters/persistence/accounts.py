@@ -48,6 +48,11 @@ logger = logging.getLogger("yiban.store.accounts")
 # 落库值**的唯一列举点，新增审核态时必须同步这里，否则新态的账号会被签到进程放行）。
 ACCOUNT_AUDIT_INACTIVE = ("pending", "rejected")
 
+#: `account_still_signable` 的异常留痕是否已报过（进程内一次）。与
+#: `claims._pool_down_notified` 同法：同一场库故障只写一条 ERROR、只进一次当日汇总，
+#: 防逐账号刷屏把真正的信号淹掉。
+_validity_check_failure_reported = False
+
 
 def _facade():
     """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
@@ -107,10 +112,17 @@ def is_signable(account_id):
 def account_still_signable(account):
     """运行期复核：账号**对象**当前是否仍可签到（见 `is_signable`）。
 
-    查询异常按"仍有效"处理——不因一次库抖动跳过全部账号；JSON/环境变量账号模式
-    （account_id=0）恒为 True。查询本身即 `is_signable`（db 层已将同名函数导出为
-    `account_is_signable`）。
+    **查询异常按 fail-closed 拒绝**（工单 ba-p02-06）：旧实现返回 True，理由是"不因一次
+    库抖动跳过全部账号"；但那等于在库抖动/连接断开期间让管理员刚删除或停用的账号继续
+    被真实登录（静默多签，且现场只留 DEBUG 行，事后无法回答"是谁在什么状态下签的"）。
+    拿不到账号状态就不做有风控暴露面的动作——与 `claims.notify_pool_down` 的
+    fail-closed 同口径。留痕分两层：进程内只报一次 ERROR，并并入当日管理员汇总
+    （`_collect_admin_mail`），同一场库故障不得按账号刷屏。
+
+    JSON/环境变量账号模式（account_id=0）恒为 True：没有库内行可查，不存在"行过期"。
+    查询本身即 `is_signable`（db 层已将同名函数导出为 `account_is_signable`）。
     """
+    global _validity_check_failure_reported
     account_id = getattr(account, "account_id", 0)
     if not account_id:
         return True
@@ -118,9 +130,28 @@ def account_still_signable(account):
         return _facade().account_is_signable(account_id)
     except Exception as e:
         from yiban.core import masking
-        logger.debug(f"[{getattr(account, 'phone', '')}] 账号有效性复核失败（按有效处理）: "
-                     f"{masking.sanitize_text(e)}")
-        return True
+        reason = masking.sanitize_text(e)
+        if not _validity_check_failure_reported:
+            # 去重是**全局**的（进程内一次），不是逐账号：同一场库故障下逐账号重报会把
+            # 几百个账号刷成几百条 ERROR 与邮件，掩盖真正的信号（与 notify_pool_down 同法）
+            _validity_check_failure_reported = True
+            logger.error(
+                "[%s] 账号有效性复核失败（fail-closed 拒绝发起真实登录）: %s",
+                _mask_phone(str(getattr(account, "phone", ""))), reason,
+            )
+            try:
+                # 局部导入：notifier 经引擎入口反向依赖数据层，模块级互引会成环
+                from yiban.adapters.notifier import report as alerts
+                alerts._collect_admin_mail(
+                    "账号有效性复核失败",
+                    "账号状态查询失败，相关账号已拒绝发起登录"
+                    f"（防已删除/停用账号继续被真实登录）：{reason}",
+                    level=alerts.ALERT_LEVEL_CRITICAL,
+                )
+            except Exception as alert_err:
+                logger.warning("账号有效性复核告警入账失败: %s",
+                               masking.sanitize_text(alert_err))
+        return False
 
 
 def purge_orphan_session_cache(conn):
@@ -562,14 +593,23 @@ def set_account_deleted(account_id, deleted, deleted_at="", deleted_by="", audit
     audit_spec（dict username/action/target/detail）非 None 时，审计行与本次 UPDATE
     同事务写入（`with conn` 退出时统一提交）：软删除不可逆程度不高但同属"改了谁"的
     追责点，同事务使"删了却无痕"不存在。
+
+    **软删即停用凭据缓存**（工单 ba-p02-04）：`session_cache` 存的是易班登录态
+    （cookie + csrf 密文）。软删后到物理清除之间最长 7 天，凭据一直可从库文件/备份
+    解密复用；`users.soft_delete_user_with_accounts` 早已"注销即刻停用"，账号级软删
+    漏了同一半。清理与 UPDATE 同事务：审计写失败时整体回滚，不会留下"号没删、缓存
+    已清"或"号删了、缓存还在"的半程状态。恢复（deleted=0）不重建缓存——重新登录即可。
     """
     db = _facade()
     conn = db.get_conn()
     with db._conn_lock, conn:
+        row = conn.execute("SELECT phone FROM accounts WHERE id=?", (account_id,)).fetchone()
         conn.execute(
             "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
             (1 if deleted else 0, deleted_at, deleted_by if deleted else "", account_id),
         )
+        if deleted and row is not None:
+            db._clear_session_cache_by_phones(conn, [row["phone"]])
         if audit_spec:
             db.record_in_txn(conn, **audit_spec)
 
@@ -727,10 +767,17 @@ def batch_account_ops(ops):
                     _, account_id, deleted, deleted_at = op
                     try:
                         # 批量操作仅管理员可达：留痕 'admin'（v10 用户撤销仅限本人自删行）
+                        # 软删同样即刻停用凭据缓存（工单 ba-p02-04 的同形状调用点：
+                        # 管理员批量删除走的是本分支，不经过 set_account_deleted）。
+                        row = conn.execute(
+                            "SELECT phone FROM accounts WHERE id=?", (account_id,)
+                        ).fetchone()
                         conn.execute(
                             "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
                             (1 if deleted else 0, deleted_at, "admin", account_id),
                         )
+                        if deleted and row is not None:
+                            db._clear_session_cache_by_phones(conn, [row["phone"]])
                     except sqlite3.IntegrityError as e:
                         _convert_integrity_error(e)
                 elif kind == "purge":
