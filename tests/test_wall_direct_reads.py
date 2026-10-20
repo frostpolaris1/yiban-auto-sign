@@ -839,7 +839,9 @@ class WallResidualDebtTest(unittest.TestCase):
         svc = set()
         for path in _service_modules():
             svc |= _toplevel_definitions(_read_abs(path))
-        self.assertGreater(len(app), 100, "app.py 定义面过小：解析器失效")
+        # 批 3-d 删 39 个转发包装后，app.py 模块级真定义实测 79 个（ref=工作树 S4 前 92）。
+        # 下限只保"解析器没失效"，故按实测值留余量；判据本身不是"定义越多越好"。
+        self.assertGreater(len(app), 60, "app.py 定义面过小：解析器失效")
         self.assertGreater(len(svc), 50, "服务层定义面过小：扫描面失效")
         allowed = set(B_NAMES) | set(ALIAS_NOT_MIGRATED) | set(_WALL_RESIDUAL_DEBT)
         unexpected = sorted((app & svc) - allowed)

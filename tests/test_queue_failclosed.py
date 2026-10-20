@@ -555,9 +555,7 @@ class ProgressEndpointUnreadableTest(unittest.TestCase):
 
         # 假 app 模块只剩 app.py **自有**的名字（A 类转发名直取真源，见批 3-a）。
         # 批 3-d：`_in_run_period` 的读者已直取 web.services.signstatus，故桩打在真源上。
-        m = SimpleNamespace(
-            _executors_window=lambda: ((6, 30), (7, 50)),
-        )
+        m = SimpleNamespace()
         # 批 3-c S3：`_is_builtin_admin_session` 已从 app.py 的转发墙搬走，读者直取
         # `web.security`。原先打在假 app 模块上的那个桩因此失效——端点会转而调用真源，
         # 在无会话的 request context 里判成"非主管理员"并返回 403（本用例三条当场红）。
@@ -565,6 +563,8 @@ class ProgressEndpointUnreadableTest(unittest.TestCase):
         with Flask("probe").test_request_context(), \
                 mock.patch.object(_security, "_is_builtin_admin_session", lambda: True), \
                 mock.patch.object(settings_api, "_appmod", return_value=m), \
+                mock.patch.object(_executor_env, "_executors_window",
+                                  lambda: ((6, 30), (7, 50))), \
                 mock.patch.object(_signstatus, "_in_run_period", lambda bounds: False), \
                 mock.patch.object(_clock, "today", lambda: DAY), \
                 mock.patch.object(_db, "task_latest_day", lambda: DAY), \

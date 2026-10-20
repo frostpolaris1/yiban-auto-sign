@@ -57,6 +57,7 @@ from web.routes import read_audit_trace as _read_audit_trace
 from web.routes import verify_fails as _verify_fails
 from web.routes import verify_limits as _verify_limits
 from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
 from web.services import executor_env as _executor_env
 from web.services import http_request as _http
@@ -288,8 +289,8 @@ def api_account_add():
         # 不会新增（随后 400 拦截），不计增量，保持原错误优先级
         holds_live = email_screen and any(
             a.get("owner") == email_screen and not a["deleted"] for a in accounts_pre)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
             return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
         if _accounts_data.find_account_index(accounts_pre, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
@@ -346,8 +347,8 @@ def api_account_add():
         # 归属邮箱已持有活跃账号的重复添加不新增，不计增量（保持原错误优先级）
         max_accounts = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS)
         holds_live = email and any(a.get("owner") == email and not a["deleted"] for a in accounts)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts, "账号数量")
             return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
         if _accounts_data.find_account_index(accounts, clean["phone"]) is not None:
             return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
@@ -373,8 +374,8 @@ def api_account_add():
                     return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
                 # 自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
                 max_users = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS)
-                if m._users_at_capacity():
-                    m._notify_capacity_once("users", max_users, "注册人数")
+                if _capacity._users_at_capacity():
+                    _capacity._notify_capacity_once("users", max_users, "注册人数")
                     return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
                 du = db.find_user_any(email)
                 if (
@@ -744,7 +745,7 @@ def api_accounts_batch():
                     _accounts_data.ACCOUNT_STATUS_REJECTED,
                 )
             )
-            if become and m._accounts_at_capacity(become):
+            if become and _capacity._accounts_at_capacity(become):
                 return jsonify({
                     "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
@@ -764,7 +765,7 @@ def api_accounts_batch():
                     _accounts_data.ACCOUNT_STATUS_REJECTED,
                 )
             )
-            if become and m._accounts_at_capacity(become):
+            if become and _capacity._accounts_at_capacity(become):
                 return jsonify({
                     "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
@@ -952,7 +953,7 @@ def api_account_restore(idx):
         # （status 已通过审核）判定，pending/rejected 行恢复后仍不签到，不误伤。
         if (
             acc.get("status") not in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED)
-            and m._accounts_at_capacity(1)
+            and _capacity._accounts_at_capacity(1)
         ):
             return jsonify({
                 "error": "账号数量已达上限，无法恢复。请清理不用的账号或提高账号容量上限后重试"
@@ -1039,7 +1040,7 @@ def api_account_review(idx):
             # 容量闸门：通过审核 = 让这一行开始产生签到负载。未通过审核的行不计入
             # 账号容量（见 _capacity_account_count），故此处是本口径下唯一的把关点——
             # 不放这道门就等于"提交时受限、审批时任意越界"，容量上限失去意义。
-            if m._accounts_at_capacity(1):
+            if _capacity._accounts_at_capacity(1):
                 return jsonify({
                     "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
                 }), 403
