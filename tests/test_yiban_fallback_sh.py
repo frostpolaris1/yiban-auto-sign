@@ -63,6 +63,10 @@ class YibanFallbackShTest(unittest.TestCase):
         self.scripts = os.path.join(self.tmp, "scripts")
         os.makedirs(self.scripts)
         shutil.copy(SRC_SH, os.path.join(self.scripts, "yiban-fallback.sh")) # 复制到临时「应用目录」而非给脚本加测试开关：APP_DIR 是由 dirname $0/.. 反推的
+        # 宿主脚本共用的路径事实（business_day / 按天日志名）：入口脚本 source 它。
+        os.makedirs(os.path.join(self.scripts, "lib"))
+        shutil.copy(os.path.join(BASE, "scripts", "lib", "host_paths.sh"),
+                    os.path.join(self.scripts, "lib", "host_paths.sh"))
         self.venv_bin = os.path.join(self.tmp, ".venv", "bin")
         os.makedirs(self.venv_bin)
         self.state = os.path.join(self.tmp, "state")

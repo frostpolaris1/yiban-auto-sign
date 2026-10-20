@@ -37,7 +37,10 @@
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
 
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 应用目录：唯一环境键 YIBAN_APP_DIR；未设时按本脚本所在检出反推
+# （`scripts/lib/host_paths.sh`，与 run.sh / run_probe.sh 同一算法）。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 
 # `.env` 指针唯一口径：一律 $APP_DIR/data/.env（工单 p12-13）。
 # 与 run.sh / run_probe.sh 同源；**不读 YIBAN_ENV_FILE**——旧写法让 cron 行前缀一次
@@ -112,24 +115,7 @@ else
     exit 1
 fi
 
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d _tz
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
-    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
-    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
-    if [ "$_tz" = "+0800" ]; then
-        TZ=Asia/Shanghai date +%F
-        return 0
-    fi
-    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
-    date +%F
-}
+# 业务日与按天日志名来自 `scripts/lib/host_paths.sh`（宿主脚本唯一 bash 定义点）。
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 # M07：状态目录属主 + 700 硬检查（与 run.sh 同一判据）——已存在目录同样校验：
@@ -138,8 +124,7 @@ if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
     echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝启动兜底执行体" >&2
     exit 1
 fi
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
+LOG_FILE="$(yiban_day_log_file "$STATE_DIR")"
 
 # 窗口关闭时引擎自己退出，故无需额外 timeout；本行之后进程被 exec 替换
 exec "$PY" -m yiban.entry.cli sign --fallback >> "$LOG_FILE" 2>&1

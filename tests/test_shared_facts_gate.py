@@ -27,8 +27,8 @@
        变废键时必须红）。再加一条**真名册活体反例**（D6）：临时小树 + 真名册 +
        往某 active 键覆盖的真文件里加一处真定义点 ⇒ 必红并点名——合成 token 的
        反例钉不到"真模式/真上限在真文件上还开火"这条。
-    另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数，且"每账号
-    请求数 6"这枚**零定义点**键必须以 pending 显式登记。
+    另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数；"每账号
+    请求数 6"原先零定义点、只能 pending，2026-10-20 已建立定义点并翻 active。
 
     gxf4（B0.5 名册补齐，2026-10-06）补登记 census 余下两族的 25 枚真键。
     信任权限 10 枚，线格式身份 15 枚。线格式身份有 1 枚零定义点键，只能 pending。
@@ -107,7 +107,7 @@ PRODUCTION_PATHS = ("yiban", "scripts", "web", "docker", "deploy", ".github",
                     "run.sh", "run_probe.sh")
 #: 测试路径名——与生产口径混在一行就是 gxf4 要消灭的 `tsv:92` 形状
 TEST_PATHS = ("tests",)
-#: 显式登记为 pending 的"零定义点"键：今天无可计数载体，不许硬编上限
+#: 曾是"零定义点"的键（census-P2-req6）：2026-10-20 建起定义点后必须保持 active
 ZERO_DEF_KEY = "每账号 HTTP 请求数 6"
 #: 合成反例用的假模式（绝不出现在真名册里）
 SYNTH_TOKEN = "synth-shared-fact-token"
@@ -161,8 +161,11 @@ def _func_body(text, func):
 
 
 def _run(script, *args):
+    # 超时按**实测**给（2026-10-20：真树整册扫描在本机 172s；门的成本是
+    # O(在册键 × 扫描面文件)）。原 120s 上限会在慢机上把"门还在算"误报成
+    # TimeoutExpired——那不是门红，是跑不完。
     return subprocess.run([BASH, script, *args], capture_output=True, text=True,
-                          cwd=BASE, timeout=120)
+                          cwd=BASE, timeout=300)
 
 
 def _gate_counts(stdout):
@@ -229,13 +232,19 @@ class SharedFactsRosterShapeTest(unittest.TestCase):
                                  f"pending 行不许带假上限凑数（工单 §四.5）: {r}")
                 self.assertTrue(r["口径备注"].strip(), f"pending 行必须写明原因: {r}")
 
-    def test_zero_definition_point_key_is_registered_pending(self):
-        """『每账号请求数 6』是零定义点键：必须显式登记 pending 并指向 B3，不许静默丢弃。"""
+    def test_requests_per_account_key_has_a_definition_point(self):
+        """『每账号请求数 6』原先零定义点（pending）；2026-10-20 已建定义点并翻 active。
+
+        census-P2-req6：常量在 `yiban/platform.py`（六跳链路 = 登录 4 + 签到 2）。
+        本用例钉住"这枚键不许退回 pending"——退回就意味着那个数又只剩散文。
+        """
         hit = [r for r in _rows() if r["键"].startswith(ZERO_DEF_KEY)]
         self.assertEqual(len(hit), 1,
-                         "『每账号请求数 6』必须以 pending 显式登记（静默丢弃=缺陷）")
-        self.assertEqual(hit[0]["状态"], "pending")
-        self.assertIn("B3", hit[0]["口径备注"])
+                         "『每账号 HTTP 请求数 6』不许从名册里消失（静默丢弃=缺陷）")
+        self.assertEqual(hit[0]["状态"], "active",
+                         "该键已建定义点，必须 active 判定（pending = 没人守）")
+        self.assertEqual(int(hit[0]["允许上限"]), 1,
+                         "定义点只许一处赋值")
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")

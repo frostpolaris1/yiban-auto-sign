@@ -13,10 +13,11 @@ _err() {
 
 # 易班自动签到运行脚本
 #
-# 应用目录：默认生产路径；可用 YIBAN_APP_DIR 覆盖。原实现把 /opt/yiban-auto-sign
-# 硬编码在多处，导致本脚本无法在任意目录下被回归测试或本地演练——改为变量后
-# 生产行为完全不变（默认值仍是 /opt/yiban-auto-sign）。
-APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
+# 应用目录：唯一环境键 YIBAN_APP_DIR；未设时按本脚本所在检出反推（见
+# `scripts/lib/host_paths.sh`）。旧实现把 /opt/yiban-auto-sign 硬编码，导致本脚本
+# 无法在任意目录下被回归测试或本地演练——生产检出就在 /opt，反推值与旧默认相同。
+. "$(dirname "${BASH_SOURCE[0]}")/scripts/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 cd "$APP_DIR" 2>/dev/null || { _err "致命: 无法进入应用目录 $APP_DIR"; exit 1; }
 # .env 在检出内的 data/ 下（工单 ybg8）：运行数据与代码分离，检出根才能属 root
 # 且组/其他不可写（install.sh 的 M01 门要求）。data/ 由 install.sh 建立（属服务
@@ -31,29 +32,9 @@ else
     PY=/usr/bin/python3
 fi
 
-# 业务日唯一来源（MF-109）：yiban.core.clock 的北京钟，与引擎/web 同一事实源。宿主时区
-# ≠北京（UTC 16:00-24:00 窗口）时宿主 `date` 的"当天"与引擎业务日差一天——状态文件、
-# 日志、触发标记、收尾标记与库内"当日事实"查询一律取这里。取不到 yiban.core.clock
-# （python 缺失/损坏）时退化 `TZ=Asia/Shanghai date`（需宿主 tzdata），再退化宿主
-# `date`（保持可运行的降级形态，此时与引擎业务日可能差一天）。
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d _tz
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
-    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
-    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
-    if [ "$_tz" = "+0800" ]; then
-        TZ=Asia/Shanghai date +%F
-        return 0
-    fi
-    _err "警告: 宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天"
-    date +%F
-}
+# 业务日（`business_day`）与按天日志名（`yiban_day_log_file`）来自
+# `scripts/lib/host_paths.sh`：宿主脚本的唯一 bash 定义点，与
+# `yiban/adapters/config/env_io.py` 逐字同形（守卫 tests/test_path_single_definition.py）。
 
 # 加载环境变量（逐行安全解析，显式 export；必须先于日志/状态路径计算：
 # YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供）
@@ -149,9 +130,8 @@ if [ ! -w "$STATE_DIR" ]; then
 fi
 
 # 日志按天分文件（2026-08-16）：sign-YYYY-MM-DD.log，web 端按日期直接读取对应文件；
-# 保留 YIBAN_LOG_FILE 配置的目录语义（默认 $STATE_DIR/sign.log）。
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
+# 保留 YIBAN_LOG_FILE 配置的目录语义。名字由 host_paths.sh 给出（bash 侧唯一定义点）。
+LOG_FILE="$(yiban_day_log_file "$STATE_DIR")"
 
 # ---- 触发来源前缀与退出码留痕 ----
 # 排程（cron / systemd / 容器调度）与手工执行共用同一个 sign-YYYY-MM-DD.log，光看时间

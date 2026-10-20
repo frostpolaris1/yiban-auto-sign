@@ -206,11 +206,11 @@ def _probe_time_overlaps_sign_window(probe_time=None, cfg=None):
 def _apply_egress_proxy(client):
     """把本进程身份对应的出口套到客户端 session 上（读侧出口管控，M35）。
 
-    **为什么这里要再套一次**：`YibanClient.__init__` 只读 `os.environ["YIBAN_PROXY"]`。
-    注册/添加账号的在线校验与设备登记补全跑在 **web 进程**里，而该进程的环境通常没有
-    这个键（出口是给执行体子进程注入的），于是这一次"服务器代用户向易班发起真实登录"
-    就**直连出网**——恰恰是风控暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径，却绕过
-    了管控。
+    **为什么这里要再套一次**：`YibanClient.__init__` 按 `egress.resolve(ROLE_SINGLE)`
+    取单执行体出口；web 进程的环境通常没有 `YIBAN_PROXY`（出口是给执行体子进程
+    注入的），于是这一次"服务器代用户向易班发起真实登录"就**直连出网**——恰恰是风控
+    暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径。这里按**进程身份**重解析一次，
+    把清单/多执行体形态下该槽位自己的出口套上去。
 
     **出口怎么取**：按**本进程执行体身份**解析（`_resolve_egress`）。web 进程无
     `YIBAN_EXECUTOR_ID` ⇒ 单执行体角色 ⇒ 读 `YIBAN_PROXY`（与改造前逐字一致）；探针在

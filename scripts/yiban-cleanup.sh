@@ -17,7 +17,10 @@
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
 
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 应用目录：唯一环境键 YIBAN_APP_DIR；未设时按本脚本所在检出反推
+# （`scripts/lib/host_paths.sh`，与 run.sh / 兜底脚本同一算法，census-P2-repo-root）。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"

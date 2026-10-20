@@ -61,6 +61,7 @@ from web.services.env_io import (
 )
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
 from yiban import egress as yb_egress
+from yiban import platform as yb_platform
 from yiban.adapters.config import env_io
 from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
 from yiban.adapters.config.env_io import parse_env_flag as _parse_env_flag
@@ -1325,8 +1326,9 @@ def api_scheduler_executors_measure():
     响应结构与错误码见 `docs/dev/api-executors.md`。
 
     ⚠ **两次约束叠加后有个结构性偏差，页面与文档都必须说清**：
-    本端点走的是"登录 + 拉任务"这条**只读链路**（5 次请求：登录 4 + 拉任务 1），
-    而真实签到还要往下走**定位计算 + 提交签到**（6 次请求 + 一段 CPU 计算）；
+    本端点走的是"登录 + 拉任务"这条**只读链路**（`LOGIN_CHAIN_REQUESTS + 1` 次请求），
+    而真实签到还要往下走**定位计算 + 提交签到**（`REQUESTS_PER_ACCOUNT` 次请求
+    ＋一段 CPU 计算；两个数都定义在 `yiban.platform`）；
     又因为窗口内被拒（409），**它永远只测得到窗口外的最小链路**——服务端在窗口外
     本来就没有可提交的任务。所以这里量出的秒数**天然偏小、据此换算的容量偏乐观**。
     本数只作**现场粗值参考**，与部署者按完整链路量取后录入 `YIBAN_CAPACITY_MEASURED`
@@ -1399,9 +1401,10 @@ def api_scheduler_executors_measure():
         # 机器可判字段——目前只有"窗口外粗量"这一种口径；将来出现第二种口径不同的实测
         # （如容器形态、带尾延迟的档位）时再加，届时前端会主动来要。
         "note": ("实测单账号耗时 × 有效窗口的容量估算；建议值含余量（×2/3）。"
-                 "注意：本次只覆盖「窗口外的最小链路」（登录 + 拉任务，5 次请求），"
-                 "真实签到还要加定位计算与提交（6 次请求），所以这里的秒数偏小、据此换算的"
-                 "容量偏乐观；正式定档请以部署者自行量取的完整链路基准为准，两种数字不要混用。"),
+                 "注意：本次只覆盖「窗口外的最小链路」（登录 + 拉任务，%d 次请求），"
+                 "真实签到还要加定位计算与提交（%d 次请求），所以这里的秒数偏小、据此换算的"
+                 "容量偏乐观；正式定档请以部署者自行量取的完整链路基准为准，两种数字不要混用。"
+                 % (yb_platform.LOGIN_CHAIN_REQUESTS + 1, yb_platform.REQUESTS_PER_ACCOUNT)),
     })
 
 
