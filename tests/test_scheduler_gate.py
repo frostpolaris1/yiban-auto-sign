@@ -58,6 +58,7 @@ import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
 
 from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
@@ -756,7 +757,7 @@ class WebB12Test(unittest.TestCase):
     # ---- B12-8 内置管理员改密告警 ----
     def test_builtin_admin_password_change_alerts(self):
         self._login_admin()
-        with mock.patch.object(self.webapp, "send_notification") as notify:
+        with mock.patch.object(_notify_mail, "send_notification") as notify:
             r = self.c.post(
                 "/api/me/password",
                 json={"old_password": ADMIN_PASS, "new_password": "Rotated#2026", "confirm_password": "Rotated#2026"},

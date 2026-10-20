@@ -111,6 +111,13 @@ class EnsureSecretKeyStrictReadTest(unittest.TestCase):
                 f.write(content)
         return _write
 
+    def _ensure_with_stub(self, path, stub):
+        """批 3-d：落盘改为宿主 hook 注入，用例只换 hook 不传位置参数。"""
+        with mock.patch.dict(svc._hooks, {
+                "atomic_write": lambda: stub,
+                "env_write_refuse_audit": lambda: None}):
+            return svc.ensure_secret_key(path)
+
     # ---- 1. 活体反例对：同一窗口垫片，旧形状顶钥，新实现零写盘 ----
 
     def _old_shape_ensure(self, env_path, atomic_write):
@@ -150,7 +157,7 @@ class EnsureSecretKeyStrictReadTest(unittest.TestCase):
         before = io.open(path, "rb").read()
         written = []
         with _OneShotReadWindow(path), self.assertLogs("web", level="WARNING") as logs:
-            got = svc.ensure_secret_key(path, self._stub_atomic_write(written))
+            got = self._ensure_with_stub(path, self._stub_atomic_write(written))
         self.assertEqual(written, [], "读失败判定下绝不允许落盘")
         self.assertEqual(io.open(path, "rb").read(), before, "磁盘必须逐字节不变")
         self.assertEqual(len(got), 64)
@@ -164,7 +171,7 @@ class EnsureSecretKeyStrictReadTest(unittest.TestCase):
         写后 SECRET_KEY 与 REGISTRATION_PAUSE 各只有**一行**——单一写入口的
         key_line_pattern 折叠保证不出现新/旧并存或 =1/=0 并存（影子行机制）。"""
         path = self._mk_env(text="")
-        got = svc.ensure_secret_key(path, self._stub_atomic_write([]))
+        got = self._ensure_with_stub(path, self._stub_atomic_write([]))
         text = io.open(path, encoding="utf-8").read()
         self.assertEqual(infra_env_io.count_key_lines(path, "YIBAN_SECRET_KEY"), 1)
         self.assertEqual(infra_env_io.count_key_lines(path, "YIBAN_REGISTRATION_PAUSE"), 1)
@@ -176,7 +183,7 @@ class EnsureSecretKeyStrictReadTest(unittest.TestCase):
     def test_comment_only_file_treated_as_fresh_single_key(self):
         """仅注释的文件 = 无有效键 = 全新部署：建钥 + PAUSE=1，注释保留。"""
         path = self._mk_env(text="# 部署者留下的说明\n")
-        got = svc.ensure_secret_key(path, self._stub_atomic_write([]))
+        got = self._ensure_with_stub(path, self._stub_atomic_write([]))
         text = io.open(path, encoding="utf-8").read()
         self.assertIn("# 部署者留下的说明", text)
         self.assertIn("YIBAN_SECRET_KEY=" + got, text)
@@ -211,7 +218,7 @@ class EnsureSecretKeyStrictReadTest(unittest.TestCase):
     def test_existing_key_returned_without_any_write(self):
         path = self._mk_env()
         written = []
-        got = svc.ensure_secret_key(path, self._stub_atomic_write(written))
+        got = self._ensure_with_stub(path, self._stub_atomic_write(written))
         self.assertEqual(got, OLD_KEY, "读得到的既有密钥必须原样返回")
         self.assertEqual(written, [], "已有密钥时不得再落盘（不得翻转 PAUSE/换钥）")
 

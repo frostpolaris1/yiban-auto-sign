@@ -40,17 +40,20 @@ import signin
 from flask import jsonify, request, session
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
 from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
 from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import notify_mail as _notify_mail
+from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
@@ -109,9 +112,8 @@ def _my_account_view(accounts, indices):
     排队说明：开启签到调度时按当日计划时间执行，否则按账号列表顺序（队列重试）；
     queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
     """
-    m = _appmod()
-    recent = m.parse_sign_log(m.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
-    states = m.load_sign_state()  # 今日状态事实源（signin.py 写入）
+    recent = _logs_svc.parse_sign_log(_logs_svc.log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
+    states = _logs_svc.load_sign_state()  # 今日状态事实源（signin.py 写入）
     # 今日计划时刻的唯一事实源是台账 `sign_tasks.run_at`（执行体 claim_batch 的领取依据）；
     # 读不通回 None 哨兵 → 当作"今日无计划"，展示「待生成」，绝不回退旧的派生算法。
     run_at = _today_plan_map()
@@ -215,8 +217,8 @@ def _my_phone():
 def _pref_slots(win):
     """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
 
-    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.app.sign_window_bounds` 现取
-    后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
+    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.services.signstatus.sign_window_bounds`
+    现取后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
     会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口排期，网页却把片全置灰）。
     掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
     disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
@@ -325,7 +327,7 @@ def api_my_time_pref():
     偏好标签与保存提示都以它为基准，直读原始配置会在回退时让同一页面出现两个钟点。
     """
     m = _appmod()
-    win = m.sign_window_bounds()
+    win = _signstatus.sign_window_bounds()
     phone = _my_phone()
     pref = db.get_time_pref(phone) if phone else None
     stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
@@ -347,11 +349,11 @@ def api_my_time_pref():
             "disabled": s["disabled"],     # 完全在裁剪区 → 灰色不可选
             "edge_note": s["edge_note"],   # 部分裁剪提示（如"开头 2 分钟保留"）
         })
-    estimated, estimate_note = m._estimate_slot(phone) if phone else (None, "")
-    front_sec, back_sec = m.edge_config()
+    estimated, estimate_note = _accounts_data._estimate_slot(phone) if phone else (None, "")
+    front_sec, back_sec = _render.edge_config()
     return jsonify({
         "ok": True,
-        "pref": m._slot_to_label(pref["slot_min"]) if pref else None,
+        "pref": _accounts_data._slot_to_label(pref["slot_min"]) if pref else None,
         "pref_slot": pref["slot_min"] if pref else None,
         "slots": slots,
         "allowed": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
@@ -403,7 +405,7 @@ def api_my_time_pref_save():
         # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
         # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
         # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
-        win = m.sign_window_bounds()
+        win = _signstatus.sign_window_bounds()
         span = win.end_min - win.start_min
         front_min = win.front_sec / 60.0
         back_min = win.back_sec / 60.0
@@ -458,7 +460,7 @@ def api_my_time_pref_save():
         # updated_at 带微秒：同秒保存的"先到先得"可区分先后，
         # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
         db.set_time_pref(phone, slot, clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
-        db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), m._slot_to_label(slot))
+        db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), _accounts_data._slot_to_label(slot))
         # 生效分界（卡点缓冲）：
         # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
         # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
@@ -485,14 +487,14 @@ def api_my_time_pref_save():
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
             boundary = midnight + timedelta(seconds=win.lo_min * 60)
         when = "今日生效" if now < boundary else "明日生效"
-        return jsonify({"ok": True, "msg": f"已保存自选 {m._slot_to_label(slot)}，{when}{full_notice}"})
+        return jsonify({"ok": True, "msg": f"已保存自选 {_accounts_data._slot_to_label(slot)}，{when}{full_notice}"})
 
 
 def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
     stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
-    slots = _pref_slots(m.sign_window_bounds())
+    slots = _pref_slots(_signstatus.sign_window_bounds())
     cap = _engine_block_cap(m, _accounts_data.load_accounts_raw(), slots)
     return jsonify({
         "ok": True,
@@ -523,8 +525,8 @@ def api_my_account_add():
         # 容量兜底：账号配额 = 活跃账号数（含裸账号）；
         # 提交者已持有未删除账号时不新增（随后 400 拦截），不计增量，保持原错误优先级
         holds_live = any(a.get("owner") == email_pre and not a["deleted"] for a in accounts_pre)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
             # 不向普通用户暴露容量数字（信息分层）
             return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
         if holds_live:
@@ -600,8 +602,8 @@ def api_my_account_add():
         email = session.get("username", "").lower()
         # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
         has_live = any(a.get("owner") == email and not a["deleted"] for a in accounts)
-        if m._accounts_at_capacity(0 if has_live else 1):
-            m._notify_capacity_once("accounts", max_accounts, "账号数量")
+        if _capacity._accounts_at_capacity(0 if has_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts, "账号数量")
             # 不向普通用户暴露容量数字（信息分层）
             return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
         if has_live:
@@ -640,7 +642,7 @@ def api_my_account_add():
         # 通知失败不得把提交结果带崩成 500。
         try:
             _locks.run_after_file_lock(
-                m.send_notification,
+                _notify_mail.send_notification,
                 "新账号申请待审核",
                 mail_layout.Mail(
                     summary="有新提交的易班账号待审核。",
@@ -765,13 +767,12 @@ def api_my_logs():
     读按天文件（sign-YYYY-MM-DD.log）：历史日期同样可查（只读当前 sign.log 时，
     轮转后历史日期恒为空）。
     """
-    m = _appmod()
     date = str(request.args.get("date", "")).strip()
     if date and not _logs_svc._is_valid_date_str(date):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
     # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
     if not date:
-        date = m._most_recent_log_date()
+        date = _logs_svc._most_recent_log_date()
     accounts = _accounts_data.load_accounts()
     indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
     # 日志仅回显已生效账号的历史（pending/rejected/软删除不回显）
@@ -781,7 +782,7 @@ def api_my_logs():
     # 落 `[遮罩号]`。过滤必须两种形态同时认，只认完整号会让加固纪元的日志
     # 在日历"我的日志"面板恒为空（历史日期照常可读）。
     needles = [(f"[{p}]", f"[{signin._mask_phone(p)}]") for p in phones]
-    for line in m._log_lines_for(date):
+    for line in _logs_svc._log_lines_for(date):
         if any(full in line or masked in line for full, masked in needles):
             out.append(line.strip())
     # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）

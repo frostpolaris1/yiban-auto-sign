@@ -39,6 +39,7 @@ from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
 from web.services import limits as _limits
+from web.services import logs as _logs_svc
 from web.services import manual_sign as _manual_sign
 from yiban.adapters.persistence import db
 from yiban.core import masking as _masking
@@ -165,7 +166,7 @@ def _reap_signin(m, state, phone, proc):
                 state["procs"].pop(phone, None)
     # 退出码透传：exit 3（队列忙/运行锁占用）等非 0 退出若被静默吞掉，
     # 用户看到"已触发"实际没签——真实原因写入签到日志（日志页可见）
-    m._log_manual_sign_exit(_masking.mask_phone(phone), proc.returncode)
+    _manual_sign._log_manual_sign_exit(_masking.mask_phone(phone), proc.returncode)
 
 
 def _launch_signin_proc(m, only_arg):
@@ -185,7 +186,7 @@ def _launch_signin_proc(m, only_arg):
     env["YIBAN_ENV_FILE"] = m.ENV_FILE
     log_fh = None
     with contextlib.suppress(OSError):
-        log_fh = open(m.log_path_for(), "a", encoding="utf-8", buffering=1)
+        log_fh = open(_logs_svc.log_path_for(), "a", encoding="utf-8", buffering=1)
     try:
         return subprocess.Popen(
             [sys.executable, script, "--only", only_arg],
@@ -386,7 +387,7 @@ def api_signin_batch():
             _manual_sign._wait_signin_proc(proc, timeout=_manual_sign._batch_wait_timeout(len(phones)))
             m.logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
             # 非 0 退出码（如 exit 3 队列忙）如实留痕到签到日志，不冒充成功
-            m._log_manual_sign_exit(
+            _manual_sign._log_manual_sign_exit(
                 f"批量签到 {len(phones)} 个账号", proc.returncode)
         finally:
             # 此处不再无条件重置冷却基准——它由 _spawn_signin_many 在 spawn 成功

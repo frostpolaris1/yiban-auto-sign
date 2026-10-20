@@ -51,6 +51,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
 from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,7 +75,7 @@ def _load_webapp(tag):
     sys.modules[f"webapp_{tag}"] = mod
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
-    assert hasattr(mod, "write_env_batch"), "web/app.py 加载失败（exec_module 异常被抑制）"
+    assert callable(getattr(mod, "create_app", None)), "web/app.py 加载失败（exec_module 异常被抑制）"
     return _db, mod
 
 
@@ -228,7 +230,7 @@ class V2LatentCommentTest(_WebBase):
 
         with self.assertRaises(ValueError):
             # "只改签到模式"的例行保存——攻击的实体化触发点
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
 
         self.assertEqual(_read_bytes(self.env_file), before_bytes,
                          "拒绝写入时 .env 必须一个字节都不改")
@@ -301,7 +303,7 @@ class BuiltinAdminDirtyEnvLoginTest(_WebBase):
         lines.insert(1, "# 例行备注\u0085YIBAN_GLOBAL_PAUSE=1")
         self._write_fixture("\n".join(lines))
         self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             app = self.webapp.create_app()
         c = app.test_client()
         with self.assertLogs("web", level="ERROR") as logs:
@@ -342,7 +344,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
 
     def _login_master(self):
         self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             app = self.webapp.create_app()
         c = app.test_client()
         r = c.post("/api/login",
@@ -435,7 +437,7 @@ class BothSidesSameSentenceTest(_WebBase):
                 if ch not in EXTRA_BREAKS:
                     continue
                 with self.assertRaises(ValueError) as cw:
-                    self.webapp.write_env_batch(self.env_file,
+                    _env_io_svc.write_env_batch(self.env_file,
                                                 {"YIBAN_SIGN_ORDER": payload})
                 self.assertEqual(str(cw.exception), str(ce.exception),
                                  "两侧拒绝文案必须同源（同一校验器同一句）")
@@ -450,7 +452,7 @@ class BothSidesSameSentenceTest(_WebBase):
         before = _read_bytes(self.env_file)
         payload = "x" + "".join(EXTRA_BREAKS) + "y"
         with self.assertRaises(ValueError) as cw:
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": payload})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": payload})
         with self.assertRaises(ValueError) as ce:
             env_io.write_env_keys(self.env_file, {"YIBAN_SIGN_ORDER": payload})
         self.assertEqual(str(cw.exception), str(ce.exception),
@@ -592,16 +594,16 @@ class ReadToleranceAndLegalFlowTest(_WebBase):
 
     def test_legal_change_touches_only_target_line(self):
         before = self.base_env
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
         expected = before.replace("YIBAN_SIGN_ORDER=sequence",
                                   "YIBAN_SIGN_ORDER=random")
         self.assertEqual(_read_text(self.env_file), expected,
                          "合法保存只应改动目标行（逐字节回归）")
 
     def test_legal_add_and_delete(self):
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_NEW": "v1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_NEW": "v1"})
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_NEW"], "v1")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_NEW": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_NEW": ""})
         self.assertNotIn("YIBAN_NEW", self.webapp.read_env(self.env_file))
         # 其他键一个不动
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_SIGN_ORDER"],

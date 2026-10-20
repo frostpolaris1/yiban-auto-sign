@@ -35,6 +35,8 @@ import types
 import unittest
 from unittest import mock
 
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PHONE_RAW = "13800001234"
@@ -190,7 +192,6 @@ class SpawnArgvEnvironSurfaceTest(unittest.TestCase):
             ENV_FILE=env_file,
             DB_FILE=os.path.join(root, "yiban.db"),
             child_env=_load_child_env(),
-            log_path_for=lambda: os.path.join(root, "sign.log"),
         )
         captured = {}
 
@@ -203,7 +204,9 @@ class SpawnArgvEnvironSurfaceTest(unittest.TestCase):
         for k in saved:
             del os.environ[k]
         try:
-            with mock.patch.object(subprocess, "Popen", fake_popen):
+            with mock.patch.object(subprocess, "Popen", fake_popen), \
+                    mock.patch.object(_logs_svc, "log_path_for",
+                                      lambda: os.path.join(root, "sign.log")):
                 signin_api._launch_signin_proc(m, PHONE_RAW)
         finally:
             os.environ.update(saved)

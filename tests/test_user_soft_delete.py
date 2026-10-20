@@ -31,6 +31,7 @@ from datetime import timedelta
 from _mail_body import render_body
 from werkzeug.security import generate_password_hash
 
+from web.services import notify_mail as _notify_mail
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -332,16 +333,16 @@ class _Base(unittest.TestCase):
         self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         # 告警探针：替换模块级 send_notification（handler 走全局查找，运行时生效）
         self.alerts = []
-        self._orig_send = self.webapp.send_notification
+        self._orig_send = _notify_mail.send_notification
 
         def _probe(title, content, **kw):
             self.alerts.append((title, render_body(content), kw))
             return True
 
-        self.webapp.send_notification = _probe
+        _notify_mail.send_notification = _probe
 
     def tearDown(self):
-        self.webapp.send_notification = self._orig_send
+        _notify_mail.send_notification = self._orig_send
 
     # ---- 脚手架 ----
     def _mk_registered_admin(self):

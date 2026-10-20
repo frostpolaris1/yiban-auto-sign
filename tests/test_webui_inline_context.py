@@ -31,6 +31,8 @@ from unittest import mock
 
 from _frontend_src import frontend_source
 
+from web import render as _render
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -83,7 +85,7 @@ class PoliceLinkSchemeTest(unittest.TestCase):
             if value is not None:
                 f.write(f"YIBAN_POLICE_LINK={value}\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            return self.webapp.police_link()
+            return _render.police_link()
 
     def test_https_passthrough(self):
         self.assertEqual(self._link("https://beian.example.gov.cn/?q=123"),

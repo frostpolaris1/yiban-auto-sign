@@ -10,12 +10,11 @@
 `_notify_capacity_once`（每进程每种资源一次）。
 
 **归属**
-原 `web/app.py` 的模块级容量与触顶告警辅助，唯一真源在本模块；`web/app.py` 只保留
-名字面与转发，把它自己持有、而本模块需要的模块级名字——`.env` 路径 `ENV_FILE`、整数
-配置读取器 `load_env_int`、`.env` 宽松读取器 `read_env`（注册暂停开关的布尔判定用）、
-两个缺省上限 `DEFAULT_MAX_ACCOUNTS` / `DEFAULT_MAX_USERS`、
-窗口解析器 `_sign_window`、掐头去尾口径 `edge_config`、告警出口
-`send_notification`——在调用时刻现取后注入。
+原 `web/app.py` 的模块级容量与触顶告警辅助，唯一真源在本模块。批 3-d 删除
+`web/app.py` 的转发包装：路由与测试直取本模块。`.env` 路径 `ENV_FILE`、整数配置
+读取器 `load_env_int`、宽松读取器 `read_env`、窗口解析器、掐头去尾口径与告警出口
+`send_notification` 经 `configure(...)` 登记进 `_hooks`，按调用时刻解析。两个缺省上限
+直接取自 `web/services/limits.py`。
 
 **复用**
 `_capacity_account_count` 与 `_capacity_audit_count` 互斥互补（两者之和 = 全部非删除
@@ -30,18 +29,19 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。`.env` 路径、读取器、缺省上限、窗口/裁剪口径与告警出口都作为显式参数接收：
-它们在 `web.app` 上会被测试打桩或直接赋值改写（`_sign_window` / `edge_config` /
-`load_env_int` / `ENV_FILE` / `send_notification` 都是既有打桩名），本模块另持一份绑定
-会让这些改写静默失效。数据访问层 `db` 与引擎公式直接取真源（与 `web.app.db` 是同一
-模块对象），不另立第二套读写。
+模块）。`.env` 路径、读取器、窗口/裁剪口径与告警出口经 `configure(...)` 登记，按调用
+时刻解析：测试打桩 `_sign_window` / `edge_config` / `load_env_int` / `read_env` /
+`send_notification` 与赋值 `ENV_FILE` 仍然生效。未登记即 `RuntimeError`（fail-closed）。
+数据访问层 `db` 与引擎公式直接取真源（与 `web.app.db` 是同一模块对象），不另立第二套读写。
 """
 
 import logging
+import os
 import threading
 import time
 
 from web.services.accounts_data import load_accounts_raw
+from web.services.limits import DEFAULT_MAX_ACCOUNTS, DEFAULT_MAX_USERS
 from web.services.locks import run_after_file_lock
 from yiban.adapters.config.env_io import parse_env_flag
 from yiban.adapters.notifier.mail import layout as mail_layout
@@ -51,6 +51,50 @@ from yiban.engine.schedule import capacity_of
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(env_file=None, load_env_int=None, read_env=None, sign_window=None,
+              edge_config=None, send_notification=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if load_env_int is not None:
+        _hooks["load_env_int"] = load_env_int
+    if read_env is not None:
+        _hooks["read_env"] = read_env
+    if sign_window is not None:
+        _hooks["sign_window"] = sign_window
+    if edge_config is not None:
+        _hooks["edge_config"] = edge_config
+    if send_notification is not None:
+        _hooks["send_notification"] = send_notification
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.capacity 尚未登记宿主依赖 %r：请确认 web/app.py 的 import "
+            "末尾调用了 web.services.capacity.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 def _capacity_account_count():
@@ -80,7 +124,7 @@ def _capacity_audit_count():
                if not a["deleted"] and not db.account_signs_in(a))
 
 
-def _capacity_estimate(gap=0, *, sign_window, edge_config, env=None):
+def _capacity_estimate(gap=0):
     """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
 
     公式与引擎共用 `yiban.engine.schedule.capacity_of`；本展示/闸门口径**显式固定 v2
@@ -90,14 +134,15 @@ def _capacity_estimate(gap=0, *, sign_window, edge_config, env=None):
     `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
     出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
 
-    `env`：avg 的取值配置层，由 `web.app` 转发时传入**生效配置层**
-    （进程环境为底、`.env` 覆盖——与 run.sh 起引擎子进程前的 export 同一优先级）。
-    不传的话 avg 会落 web 进程环境：web 进程从不把 `.env` 装进环境，而 gap 偏读
-    `.env`，一次估算跨两层、按偏小的默认 avg 高估容量（MF-93）。展示面与判定面
-    共用本函数 ⇒ "同一份配置两侧必然同值"由结构保证。
+    avg 的取值配置层是**生效配置层**（进程环境为底、`.env` 覆盖——与 run.sh 起引擎
+    子进程前的 export 同一优先级）。只读进程环境会让 avg 与 gap 跨两层，按偏小的默认
+    avg 高估容量（MF-93）。展示面与判定面共用本函数 ⇒ "同一份配置两侧必然同值"由结构保证。
 
-    参数注入口径见模块头「通信」（`_sign_window` / `edge_config` 都是既有打桩点）。
+    宿主注入口径见模块头「通信」（`_sign_window` / `edge_config` 都是既有打桩点）。
     """
+    sign_window = _host("sign_window")
+    edge_config = _host("edge_config")
+    env = {**os.environ, **_host("read_env")(_host("env_file"))}
     win = yb_window.bounds({
         "sign_start": sign_window()[0], "sign_end": sign_window()[1],
         "edge_front_sec": edge_config()[0], "edge_back_sec": edge_config()[1],
@@ -108,15 +153,16 @@ def _capacity_estimate(gap=0, *, sign_window, edge_config, env=None):
     return capacity_of(win.full_sec(), gap=gap, enabled=False, env=env)
 
 
-def _accounts_at_capacity(extra_accounts=0, *, env_file, load_env_int, max_accounts_default):
+def _accounts_at_capacity(extra_accounts=0):
     """账号配额判定：占用 = **会签到的账号数** + 本次将新增账号数，
     > 上限则 True（0 = 不限）。调小上限不删除存量账号，只限制新增。
 
     计入口径见 `_capacity_account_count`（唯一判据，此处不重述）。
     extra_accounts：本次将新增（或转为参与签到）的账号数，添加/通过恰为 1 个。
-    参数注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `DEFAULT_MAX_ACCOUNTS`）。
+    宿主注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `DEFAULT_MAX_ACCOUNTS`）。
     """
-    max_accounts = load_env_int(env_file, "YIBAN_MAX_ACCOUNTS", max_accounts_default)
+    max_accounts = _host("load_env_int")(
+        _host("env_file"), "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
     if max_accounts <= 0:
         return False  # 0 与负数都是"不限额"，不是"一个都不许加"
     # 严格 >：加完正好等于上限仍放行（额度是"不超过"）。审核通过（api_account_review 的
@@ -125,7 +171,7 @@ def _accounts_at_capacity(extra_accounts=0, *, env_file, load_env_int, max_accou
     return _capacity_account_count() + extra_accounts > max_accounts
 
 
-def _registration_paused(env_file, read_env):
+def _registration_paused():
     """注册是否处于暂停状态。
 
     默认允许注册（升级后 .env 无此键时行为不变）；新部署由 ensure_secret_key 首次创建
@@ -137,20 +183,20 @@ def _registration_paused(env_file, read_env):
     原实现 `load_env_int(...) == 1` 只认整数，`=true` 会让引擎真停注册、此门（及登录页
     探测端点）却判"开放"——与面板显示的同一处假安心（census P0-1）。
     """
-    raw = read_env(env_file).get("YIBAN_REGISTRATION_PAUSE", "")
+    raw = _host("read_env")(_host("env_file")).get("YIBAN_REGISTRATION_PAUSE", "")
     return parse_env_flag(raw, default=False,
                           key="YIBAN_REGISTRATION_PAUSE", log=logger)
 
 
-def _users_at_capacity(*, env_file, load_env_int, max_users_default):
+def _users_at_capacity():
     """用户配额判定（与 `_accounts_at_capacity` 同构的"超过上限才拒绝"语义，
     容量阈值语义统一）：再注册 1 人后全部未删除注册用户数
     > 上限 则 True（注册每次恰好新增 1 用户；0 = 不限）。
     users 口径 = 全部未删除注册用户（含空用户）。
 
-    参数注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `DEFAULT_MAX_USERS`）。
+    宿主注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `DEFAULT_MAX_USERS`）。
     """
-    max_users = load_env_int(env_file, "YIBAN_MAX_USERS", max_users_default)
+    max_users = _host("load_env_int")(_host("env_file"), "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
     if max_users <= 0:
         return False  # 0 与负数都是"不限额"
     return len(db.load_users()) + 1 > max_users  # +1 = 把本次要注册的这人算进去再比
@@ -197,7 +243,7 @@ def _mail_alert_due(title, env_file, load_env_int, level=None):
 _capacity_alerts = {"users": False, "accounts": False}
 
 
-def _notify_capacity_once(kind, limit, label, *, send_notification):
+def _notify_capacity_once(kind, limit, label):
     """容量触顶通知（每进程每种资源只发一次）：管理员知情且不刷屏。
 
     调用点持 `_file_lock`，故发信经 `run_after_file_lock` 登记、出锁后执行
@@ -214,7 +260,7 @@ def _notify_capacity_once(kind, limit, label, *, send_notification):
     _capacity_alerts[kind] = True
     logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
     run_after_file_lock(
-        send_notification,
+        _host("send_notification"),
         f"{label}已达上限",
         mail_layout.Mail(
             summary=f"{label}已达上限，新的注册/添加已被拒绝。",

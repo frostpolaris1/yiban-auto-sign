@@ -38,6 +38,7 @@ from flask import (
 )
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import session_abs_ttl as _session_abs_ttl
@@ -67,12 +68,11 @@ def _calendar_page_context():
     "排队待签"）。图例的 markup 由 Vue 渲染（前端只负责"只解释看得见的颜色"这一层收敛），
     档位与中文短名一律不落前端。
 
-    `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
+    `day_off` 取 `web.services.signstatus._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
     在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
     """
-    m = _appmod()
     payload = _yiban_status.display_payload()
-    payload["day_off"] = _signstatus.day_off_payload(m._day_off_reason())
+    payload["day_off"] = _signstatus.day_off_payload(_signstatus._day_off_reason())
     payload["legend"] = _yiban_status.legend_items()
     return {"calendar_state": payload}
 
@@ -89,9 +89,9 @@ def _render_admin_page(template, nav_key, crumbs, extra=None):
         template,
         web_version=m.WEB_VERSION,
         app_version=APP_VERSION,
-        icp_info=m.icp_info(),
-        police_info=m.police_info(),
-        police_link=m.police_link(),
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
         nav_active=nav_key,
         crumbs=crumbs,
         current_username=session.get("username", ""),
@@ -247,9 +247,9 @@ def _render_user_page(template, nav_key, crumbs, extra=None):
         template,
         web_version=m.WEB_VERSION,
         app_version=APP_VERSION,
-        icp_info=m.icp_info(),
-        police_info=m.police_info(),
-        police_link=m.police_link(),
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
         nav_active=nav_key,
         crumbs=crumbs,
         **(extra or {}),
@@ -328,13 +328,13 @@ def _render_auth_vue_page(entry, template):
         template,
         web_version=m.WEB_VERSION,
         app_version=APP_VERSION,
-        icp_info=m.icp_info(),
-        police_info=m.police_info(),
-        police_link=m.police_link(),
-        site_description=m.site_description(),
-        site_image=m.site_image(),
-        agreement_html=m._read_doc_html("USER_AGREEMENT.md"),
-        privacy_html=m._read_doc_html("PRIVACY_POLICY.md"),
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
+        site_description=_render.site_description(),
+        site_image=_render.site_image(),
+        agreement_html=_render._read_doc_html("USER_AGREEMENT.md"),
+        privacy_html=_render._read_doc_html("PRIVACY_POLICY.md"),
         vue_js=assets["js"][0],
         vue_preloads=assets["preloads"],
         vue_css=assets["css"],
@@ -343,16 +343,16 @@ def _render_auth_vue_page(entry, template):
 
 def terms_page():
     """用户协议独立页（footer / 隐私链接可指向）。"""
-    m = _appmod()
-    return m._doc_page("用户协议", m._read_doc_html("USER_AGREEMENT.md"),
-                       m.icp_info(), m.police_info(), request.script_root, m.police_link())
+    return _render._doc_page("用户协议", _render._read_doc_html("USER_AGREEMENT.md"),
+                             _render.icp_info(), _render.police_info(),
+                             request.script_root, _render.police_link())
 
 
 def privacy_page():
     """隐私政策独立页（footer / 隐私链接可指向）。"""
-    m = _appmod()
-    return m._doc_page("隐私政策", m._read_doc_html("PRIVACY_POLICY.md"),
-                       m.icp_info(), m.police_info(), request.script_root, m.police_link())
+    return _render._doc_page("隐私政策", _render._read_doc_html("PRIVACY_POLICY.md"),
+                             _render.icp_info(), _render.police_info(),
+                             request.script_root, _render.police_link())
 
 
 # 管理端各功能页。拆页而非单页 tab：URL 可书签/可分享、刷新不丢状态，

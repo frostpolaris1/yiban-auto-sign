@@ -55,6 +55,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web.services import signstatus as _signstatus  # noqa: E402
 from yiban.core import status as yiban_status  # noqa: E402
 
 #: 日历前端口径（**刻意保留纯 JS**，Node 对拍用例按字面量抽函数——见该文件头部说明）。
@@ -508,7 +509,7 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
         # 引擎侧：真值来自同一份 .env
         self.assertEqual(yb_schedule.day_off(WEDNESDAY, env=self_env_file()), "paused")
         # web 侧：显示判定与页面上下文
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "paused")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "paused")
         ctx = self._inline_context(self._calendar_html())
         self.assertEqual(ctx["day_off"]["reason"], "paused")
         self.assertIn("急停", ctx["day_off"]["text"])
@@ -516,7 +517,7 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
         self._write_env("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_SATURDAY_SIGN=1\nYIBAN_SUNDAY_SIGN=1\nYIBAN_GLOBAL_PAUSE=0\n")
         self.assertEqual(yb_schedule.day_off(WEDNESDAY, env=self_env_file()), "")
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "")
         ctx = self._inline_context(self._calendar_html())
         self.assertIsNone(ctx["day_off"])
 
@@ -524,22 +525,22 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
         """周末门同源：`.env` 关周六签到 ⇒ 周六 web 侧判"周六不签"（原先恒不生效）。"""
         self._write_env("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_SATURDAY_SIGN=0\nYIBAN_SUNDAY_SIGN=0\n")
-        self.assertEqual(self.webapp._day_off_reason(SATURDAY), "saturday")
-        self.assertEqual(self.webapp._day_off_reason(SUNDAY), "sunday")
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(SATURDAY), "saturday")
+        self.assertEqual(_signstatus._day_off_reason(SUNDAY), "sunday")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "")
 
     def test_weekend_gate_open_when_env_file_says_so(self):
         """`.env` 开启周六签到 ⇒ 周六不再被判"不签"（读到的是真值而不是缺省）。"""
         self._write_env("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_SATURDAY_SIGN=1\nYIBAN_SUNDAY_SIGN=1\n")
-        self.assertEqual(self.webapp._day_off_reason(SATURDAY), "")
-        self.assertEqual(self.webapp._day_off_reason(SUNDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(SATURDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(SUNDAY), "")
 
     def test_day_off_reason_never_raises_on_missing_env(self):
         """`.env` 读不到 ⇒ 按"照常"返回空串（展示侧不得因为读不到配置而 500）。"""
         with contextlib.suppress(OSError):
             os.remove(self.env_file)
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "")
 
 
 def self_env_file():
