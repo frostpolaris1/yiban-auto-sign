@@ -38,6 +38,7 @@ from flask import jsonify, session
 from web import security as _security
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
+from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
 from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
@@ -48,6 +49,7 @@ from web.services import logs as _logs_svc
 from web.services import measure as _measure
 from web.services import notify_mail as _notify_mail
 from web.services import signstatus as _signstatus
+from web.services import startup_cache as _startup_cache
 from web.services.env_io import (
     SCHEDULE_DIST_DEFAULTS,
     SCHEDULE_DIST_ENV_KEYS,
@@ -118,7 +120,7 @@ def _executor_change_alert(action, changed):
     用户输入，一律不进正文。
     """
     m = _appmod()
-    if not changed or m._pw_gate_tier(m.ENV_FILE) == _security.PW_GATE_FULL:
+    if not changed or _security._pw_gate_tier() == _security.PW_GATE_FULL:
         return
     try:
         m.send_notification(
@@ -346,7 +348,7 @@ def api_settings():
 def api_settings_save():
     m = _appmod()
     data = _http._json_body()
-    is_master = m._is_builtin_admin_session()
+    is_master = _security._is_builtin_admin_session()
     # 本次请求的 A 档键集：`web/services/env_io.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
     # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 + 当次口令）
     # 复刻在这里；键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
@@ -828,15 +830,16 @@ def api_settings_save():
 def api_changelog():
     """更新日志：读取项目根 CHANGELOG.md（公开，无需登录；启动后缓存，部署重启自然失效）。"""
     m = _appmod()
-    if m._changelog_cache[0] is None:
+    if _startup_cache._changelog_cache[0] is None:
+        # `m.__file__` 是 app.py 自身属性，仍从 `m` 取：dirname 两次即仓库根。
         base = os.path.dirname(os.path.dirname(os.path.abspath(m.__file__)))
         path = os.path.join(base, "CHANGELOG.md")
         try:
             with open(path, encoding="utf-8") as f:
-                m._changelog_cache[0] = f.read()
+                _startup_cache._changelog_cache[0] = f.read()
         except OSError:
-            m._changelog_cache[0] = "暂无更新日志"
-    return jsonify({"ok": True, "text": m._changelog_cache[0]})
+            _startup_cache._changelog_cache[0] = "暂无更新日志"
+    return jsonify({"ok": True, "text": _startup_cache._changelog_cache[0]})
 
 
 def api_executors():
@@ -876,7 +879,7 @@ def api_executors():
     `yiban.egress.parse_owner`（判不出即 `unknown`，照实回不猜）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看执行体配置"}), 403
     env = _env_io_svc.read_env(m.ENV_FILE)
     # 执行体清单（唯一口径 yiban.egress）：清单缺失时按旧三键回退读，并在首次读到
@@ -1015,7 +1018,7 @@ def api_scheduler_executors_save():
     才是"实际在不在跑"的判据。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
     updates = {}
@@ -1110,7 +1113,7 @@ def api_scheduler_executor_worker_egress(index):
     **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或重启执行体后生效。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     env_now = _env_io_svc.read_env(m.ENV_FILE)
     manifest_rows = yb_egress.parse_manifest(env_now.get(yb_egress.ENV_MANIFEST))
@@ -1140,8 +1143,7 @@ def api_scheduler_executor_fallback_egress():
     **缺 `egress` 键 → 400**。响应：`{"ok": true, "index": "fallback", "egress": "…"}`。
     **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或重启兜底执行体后生效。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     return _reply_slot_egress(yb_egress.ENV_FALLBACK, None)
 
@@ -1162,7 +1164,7 @@ def api_scheduler_executor_row_add():
     审计只落槽位名，不记凭据、不记自定义名。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
     rtype = str(data.get("type") or yb_egress.TYPE_WORKER).strip()
@@ -1208,7 +1210,7 @@ def api_scheduler_executor_row_update(slot):
     "name": <自定义名或 null>}`。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
     if "type" not in data and "proxy" not in data and "name" not in data:
@@ -1263,7 +1265,7 @@ def api_scheduler_executor_row_delete(slot):
     响应：`{"ok": true, "slot": <int>, "type": "<被删行的类型>", "deleted": true}`。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
     denied = _executor_write_guard(data, f"{yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
@@ -1315,7 +1317,7 @@ def api_scheduler_executors_measure():
     自己量取的完整链路基准为准"。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可做耗时实测"}), 403
     bounds = m._executors_window()
     if _signstatus._in_sign_window(bounds):
@@ -1403,7 +1405,7 @@ def api_scheduler_executors_progress():
     "读数不可用"与"当日无记录（全 0）"是两件事，不许合成一件（ba-p01-01）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看签到进度"}), 403
     day = db.task_latest_day() or clock.today()
     by_executor, activity_totals = _executor_env._executor_activity(day)
@@ -1454,8 +1456,7 @@ def api_scheduler_executors_ownership():
     `compared: false` 且 `migration: []`——不猜、不拿更早的日子凑，前端据 `compared`
     决定要不要显示这一段。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看归属分布"}), 403
     day = db.task_latest_day() or clock.today()
     owners_now = db.task_owners_for_day(day)
@@ -1532,16 +1533,18 @@ def api_announcement():
     """公告读取：对外只给**已发布**文本；管理员会话额外看到待发布草稿三键。
 
     公开响应的形状是契约（登录页与全站顶横幅都取它，且未登录也要能读）：
-    `{"ok": true, "text": <已发布>}` 两键一字不动。草稿刻意不进 `_announcement_cache`
+    `{"ok": true, "text": <已发布>}` 两键一字不动。草稿刻意不进
+    `web.services.startup_cache._announcement_cache`
     ——它按会话现读，缓存它等于把"尚不成立的事实"广播给所有匿名请求。
     """
     m = _appmod()
     env = None
-    if m._announcement_cache[0] is None:
+    if _startup_cache._announcement_cache[0] is None:
         env = _env_io_svc.read_env(m.ENV_FILE)
-        m._announcement_cache[0] = env.get(_env_io_svc.ANNOUNCEMENT_KEY, "").strip()
-    body = {"ok": True, "text": m._announcement_cache[0]}
-    if m._current_role() == "admin":
+        _startup_cache._announcement_cache[0] = env.get(
+            _env_io_svc.ANNOUNCEMENT_KEY, "").strip()
+    body = {"ok": True, "text": _startup_cache._announcement_cache[0]}
+    if _security._current_role(_session_abs_ttl()) == "admin":
         if env is None:
             env = _env_io_svc.read_env(m.ENV_FILE)
         draft_by, draft_at = _env_io_svc._parse_announcement_meta(
@@ -1633,7 +1636,7 @@ def api_announcement_publish():
     响应：`{"ok": true, "msg": …, "text": <刚发布/清空后的文本>}`，前端据此刷新横幅。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可发布公告"}), 403
     denied = sensitive_password_gate()(_http._json_body(), "发布全站公告", always_required=True)
     if denied is not None:
@@ -1656,7 +1659,7 @@ def api_announcement_publish():
             _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
             _env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY: "",
         })
-        m._announcement_cache[0] = ""
+        _startup_cache._announcement_cache[0] = ""
         db.audit(who, "announcement_publish", "announcement",
                  f"下线｜原: {_notify_mail._nl_safe(before[:60])} → 新: （空）")
         m.logger.info("公告已下线: %s", before[:50])
@@ -1685,7 +1688,7 @@ def api_announcement_publish():
         _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
         _env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY: "",
     })
-    m._announcement_cache[0] = draft  # 同步内存缓存（与 PUT 不同：这次真改了对外文本）
+    _startup_cache._announcement_cache[0] = draft  # 同步内存缓存（与 PUT 不同：这次真改了对外文本）
     change = "新发布" if not before else "覆盖发布"
     db.audit(
         who, "announcement_publish", "announcement",
@@ -1721,7 +1724,7 @@ def api_env_cleanup():
     （跨进程写锁、失败按原字节回滚、审计留痕），成功后前端提示重试保存。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
     data = _http._json_body()
     try:

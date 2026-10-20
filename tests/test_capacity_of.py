@@ -226,6 +226,7 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         import flask
         import signin
 
+        from web import security as _security
         from web.routes import settings_api
         from web.services import accounts_data as _accounts_data
         from web.services import env_io as _env_io_svc
@@ -248,12 +249,15 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         # 纯常量与纯助手已搬 web/services/*，见批 3-b，故这两类的打桩点落在新家上）。
         m = SimpleNamespace(
             ENV_FILE=".env",
-            _is_builtin_admin_session=lambda: True,
             _executors_window=lambda: _Bounds(),
             _measure_state_path=lambda: os.path.join(tempfile.gettempdir(), "m.json"),
             _write_measure_state=lambda p, d: None,
         )
+        # 批 3-c S3：`_is_builtin_admin_session` 已从 app.py 的转发墙搬走，路由直取
+        # `web.security`。原先把桩挂在假 app 模块上 ⇒ 路由不再读到它 ⇒ 真源在无请求
+        # 上下文时抛 RuntimeError（本用例当场红）。故打桩点改到真源上。
         with mock.patch.object(settings_api, "_appmod", lambda: m), \
+                mock.patch.object(_security, "_is_builtin_admin_session", lambda: True), \
                 mock.patch.object(_limits, "DEFAULT_ACCOUNT_GAP_MAX", 10), \
                 mock.patch.object(_limits, "MEASURE_COOLDOWN_SEC", 300), \
                 mock.patch.object(_http, "_json_body", lambda: {}), \

@@ -213,3 +213,6 @@ skills-lock.json
 
 # 会话临时产物（pytest tmp_path / 截图 / visual-seed 演示数据），纪律见 .tmp/README.md；2026-09-30 起 C 盘禁写
 .tmp/
+
+# DSH 文件工具的更新锁（工具产物，非代码）
+.dsh-ops-update-*.lock

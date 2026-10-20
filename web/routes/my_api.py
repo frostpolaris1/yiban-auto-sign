@@ -43,6 +43,7 @@ from flask import jsonify, request, session
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
+from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
@@ -81,9 +82,8 @@ def _my_account_indices_of(accounts):
     YIBAN_ADMIN_USER 设为管理员本人邮箱以分开两义。
     普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
     """
-    m = _appmod()
     email = session.get("username", "").lower()
-    if m._current_role() == "admin":
+    if _security._current_role(_session_abs_ttl()) == "admin":
         return [
             i for i, a in enumerate(accounts) if a.get("owner") == email and not a.get("deleted")
         ]
@@ -290,8 +290,7 @@ def _verify_job_visible(job, username):
     "同为管理员"就能做的；按 `role == "admin"` 放行等于任意注册管理员都能读/取消
     别人的任务，故按"权限歧义取窄侧"收窄为：本人 + 内置主管理员。
     """
-    m = _appmod()
-    if m._is_builtin_admin_session():
+    if _security._is_builtin_admin_session():
         return True
     return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
 
@@ -564,22 +563,22 @@ def api_my_account_add():
     # 认证失败另有按手机号的冷却（密码错误反复重交会把易班账号打锁定，
     # 冷却同时给用户明确提示）
     verify_async_job = False
-    if m._account_verify_enabled():
+    if _verify_queue._account_verify_enabled():
         if _security._verify_fail_cooldown_remaining(verify_fails(), clean["phone"], time.time()) > 0:
-            return jsonify({"error": m.VERIFY_FAIL_COOLDOWN_MSG}), 429
-        if m.verify_async_enabled():
+            return jsonify({"error": _verify_queue.VERIFY_FAIL_COOLDOWN_MSG}), 429
+        if _verify_queue.verify_async_enabled():
             # 异步：请求线程只**先扣配额**，外呼交给后台任务。
             # 待办队列满 → 503（账号尚未落库，拒绝无副作用）。
             if _verify_queue._verify_queue_full():
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
             if not _security._verify_attempt_allowed(verify_limits(), email_pre):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_async_job = True
         else:
             try:
-                verify_err = m.run_verify_with_gate(clean, email_pre, verify_limits())
+                verify_err = _verify_queue.run_verify_with_gate(clean, email_pre, verify_limits())
             except _verify_queue.VerifyGateBusy:
-                return jsonify({"error": m.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                return jsonify({"error": _verify_queue.VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
             except _verify_queue.VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             if verify_err:
@@ -876,7 +875,7 @@ def api_my_account_update(idx):
             _locks.run_after_file_lock(
                 _start_edit_probe,
                 clean, _probe_user, _probe_fails, _probe_limits, _verify_queue._start_verify_job,
-                m._account_verify_enabled, _verify_queue._verify_queue_full,
+                _verify_queue._account_verify_enabled, _verify_queue._verify_queue_full,
                 lambda: _security._verify_attempt_allowed(_probe_limits, _probe_user),
                 lambda: _security._verify_fail_cooldown_remaining(
                     _probe_fails, clean["phone"], time.time()),

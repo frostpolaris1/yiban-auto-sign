@@ -45,6 +45,8 @@ from unittest import mock
 import flask
 from werkzeug.security import generate_password_hash
 
+from web import security as _security
+from web.services import verify_queue as _verify_queue
 from yiban.core import clock
 from yiban.core import status as yiban_status
 from yiban.core.masking import mask_email_local
@@ -141,13 +143,13 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         self._write_raw("YIBAN_VERIFY_ASYNC=1\n")
         os.environ["YIBAN_VERIFY_ASYNC"] = "0"
         try:
-            self.assertFalse(self.webapp.verify_async_enabled(),
+            self.assertFalse(_verify_queue.verify_async_enabled(),
                              "os.environ 优先（便于临时覆盖）")
         finally:
             os.environ.pop("YIBAN_VERIFY_ASYNC", None)
-        self.assertTrue(self.webapp.verify_async_enabled(), "未设环境变量时读 .env")
+        self.assertTrue(_verify_queue.verify_async_enabled(), "未设环境变量时读 .env")
         self._write_raw("")
-        self.assertFalse(self.webapp.verify_async_enabled(), "默认关")
+        self.assertFalse(_verify_queue.verify_async_enabled(), "默认关")
 
 
     # ------------------------------------------------------------------
@@ -1331,33 +1333,35 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                         mock.patch.object(self.webapp.db, "find_user", return_value=None), \
                         self.flask_app.test_request_context():
                     flask.session.update(data)
-                    got = self.webapp._effective_role(data.get("username"), pwv)
+                    got = _security._effective_role(data.get("username"), pwv)
                 self.assertEqual(got, want)
         # 升级日存量部署兼容：.env 尚未签发 sid（空）时不强制重登
         with mock.patch.object(self.webapp, "read_env",
                                return_value={"YIBAN_ADMIN_USER": "admin"}), \
                 self.flask_app.test_request_context():
             flask.session.update({"auth_source": "builtin", "username": "admin"})
-            self.assertEqual(self.webapp._effective_role("admin", 1), "admin")
+            self.assertEqual(_security._effective_role("admin", 1), "admin")
         with mock.patch.object(self.webapp, "read_env", return_value=env), \
                 mock.patch.object(self.webapp.db, "find_user",
                                   return_value={"role": "admin", "sid": "s", "pw_version": 2}), \
                 self.flask_app.test_request_context():
             flask.session.update({"auth_source": "user", "username": "u@x.io", "sid": "s"})
-            self.assertEqual(self.webapp._effective_role("u@x.io", 2), "admin")
-            self.assertEqual(self.webapp._effective_role("u@x.io", 1), None,
+            self.assertEqual(_security._effective_role("u@x.io", 2), "admin")
+            self.assertEqual(_security._effective_role("u@x.io", 1), None,
                              "pw_version 不匹配即失效")
 
     def test_current_role_absolute_expiry_clears_session(self):
         env = {"YIBAN_ADMIN_USER": "admin"}
         with mock.patch.object(self.webapp, "read_env", return_value=env), \
                 self.flask_app.test_request_context():
-            self.assertIsNone(self.webapp._current_role(), "无 auth 即未登录")
+            self.assertIsNone(_security._current_role(
+            self.webapp.SESSION_ABS_TTL_SECONDS), "无 auth 即未登录")
             flask.session["auth"] = True
             flask.session["username"] = "u@x.io"
             flask.session["login_ts"] = int(time.time()) - self.webapp.SESSION_ABS_TTL_SECONDS - 5
             with mock.patch.object(self.webapp.db, "find_user", return_value=None):
-                self.assertIsNone(self.webapp._current_role())
+                self.assertIsNone(_security._current_role(
+            self.webapp.SESSION_ABS_TTL_SECONDS))
             self.assertEqual(len(flask.session), 0, "超限必须清空会话（视为未登录）")
 
     def test_client_ip_trusted_proxy_and_fallback(self):
@@ -1401,7 +1405,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "read_env") as re_:
             re_.return_value = {"YIBAN_ADMIN_USER": "admin",
                                 "YIBAN_ADMIN_PASSWORD_HASH": "not-a-hash"}
-            self.assertFalse(self.webapp.verify_admin("admin", "pw"))
+            self.assertFalse(_security.verify_admin("admin", "pw"))
 
     def test_builtin_admin_loginable_three_states(self):
         cases = [
@@ -1415,7 +1419,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                     mock.patch.object(self.webapp, "read_env", return_value=env), \
                     mock.patch.object(self.webapp, "_count_env_key_lines",
                                       return_value=lines):
-                self.assertEqual(self.webapp._builtin_admin_loginable(), want)
+                self.assertEqual(_security._builtin_admin_loginable(), want)
 
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
@@ -1986,8 +1990,14 @@ class ForwardingWallReaderGateTest(unittest.TestCase):
                                  "web/services/y.py"),
             [], "没有宿主模块参数却报出读者：本面会误红")
         self.assertGreaterEqual(
-            len(_wall_host_module_reads()), 10,
-            "服务层读者面过小（实测 14 处，全在 device_refresh）——形参别名探测失效")
+            len(_wall_host_module_reads()), 6,
+            "服务层读者面过小——形参别名探测失效（扫空不得当绿）。"
+            "现量口径：批 3-c S3 末（refactor/3c-cred-state）实测 8 处，全在 device_refresh"
+            "（db 4 处 ＋ _mask_phone 3 处 ＋ _record_verify_failure 1 处）。"
+            "批 3-b 时是 14 处；差额来自 S3 把该文件的 m.VerifyQuotaExceeded / "
+            "m.VerifyGateBusy / m._verify_fail_cooldown_remaining / m.run_gated_call / "
+            "m.VERIFY_*_MSG 五族改为直取真源——分母缩小，那些名字本身仍被本门覆盖。"
+            "下限按实测值留 2 处余量，不是估算。")
 
     def test_exempt_names_are_still_f401(self):
         """豁免清单不得腐烂：登记的名字必须仍在 F401 名集里。
