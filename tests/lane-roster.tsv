@@ -55,9 +55,11 @@ fast	tests/test_audit_read_api.py
 fast	tests/test_audit_status_block.py
 fast	tests/test_audit_transaction.py
 fast	tests/test_backup_db_path.py
+fast	tests/test_backup_docker_hardening.py	# docker 备份脚本旗标/口令/锚点/轮转（stub gpg，本机 2s）
 slow	tests/test_backup_docker_script.py	# 真子进程＋遍历：真跑 docker/backup-docker.sh 并扫 DATA_DIR（本机 6.7s）
 slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gpg/tar 回环（本机 4.4s）
 fast	tests/test_backup_flag_parsing.py
+fast	tests/test_backup_hardening.py	# backup.sh 回环/优先级/状态件（stub gpg，本机 9s）
 fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
 slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
@@ -243,6 +245,7 @@ fast	tests/test_ruff_config_guard.py
 fast	tests/test_run_events_inspection.py
 fast	tests/test_run_lock_fail_closed.py
 fast	tests/test_run_sh_logging.py
+fast	tests/test_run_entry_hardening.py	# 探针/兜底/run.sh 收尾标记（stub python，本机 4s）
 fast	tests/test_run_sh_stderr_timestamps.py
 fast	tests/test_run_sh_workers.py
 fast	tests/test_runsh_env_parse.py
@@ -258,6 +261,7 @@ fast	tests/test_scheduler_exception_surface.py
 fast	tests/test_scheduler_gate.py
 slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
 fast	tests/test_script_safety_guards.py	# 四个运维脚本的破坏性动作守卫（子进程跑脚本，秒级）
+fast	tests/test_scripts_gate_hardening.py	# 拉取/闸门脚本退出码与 cron 来源门（stub ssh/git，本机 2s）
 fast	tests/test_secret_key_strict_read.py
 fast	tests/test_sentinel_db_readonly.py
 fast	tests/test_session.py
@@ -275,6 +279,7 @@ fast	tests/test_slot_geometry.py
 fast	tests/test_smtp_identity_frontend.py
 fast	tests/test_state_file_writes.py
 fast	tests/test_state_gc.py
+fast	tests/test_state_helpers_hardening.py	# sched-run/slot kind/清理不可读目录（本机 1.5s）
 fast	tests/test_state_purge_guard.py
 fast	tests/test_state_rosters_mutual.py
 fast	tests/test_state_write_batching.py
