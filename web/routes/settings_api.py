@@ -35,6 +35,7 @@ import signin
 from flask import jsonify, session
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
@@ -214,11 +215,11 @@ def api_settings():
                                     key=key, log=logger) else 0
 
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-    sw = m._sign_window()
+    sw = _signstatus._sign_window()
     # 窗口不可用（已回退默认）时把"配置异常、已按 X~Y 运行"暴露给设置页：那才是管理员
     # 会去修的地方，只写日志+邮件等于让他继续按错的窗口签到。文案与 /api/clock 同源
     # （`signstatus.window_fallback_text`），正常窗口为空串（响应逐字不变）。
-    _fallback_text = _signstatus.window_fallback_text(m.sign_window_bounds())
+    _fallback_text = _signstatus.window_fallback_text(_signstatus.sign_window_bounds())
     # 容量口径（与配额检查同源 `_capacity_account_count`）：
     #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
     #   账号 = **会发起易班请求的账号**（非删除且审核态已通过，含 admin 直属裸账号）
@@ -281,9 +282,9 @@ def api_settings():
             "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
                 "normal" if mode == "normal" else "front"),
             # 掐头去尾（前后独立，秒；window_edge_sec 兼容旧前端 = 前裁）
-            "window_edge_sec": m.edge_config()[0],
-            "edge_front_sec": m.edge_config()[0],
-            "edge_back_sec": m.edge_config()[1],
+            "window_edge_sec": _render.edge_config()[0],
+            "edge_front_sec": _render.edge_config()[0],
+            "edge_back_sec": _render.edge_config()[1],
             # 正态 μ/σ 区间四键（%，定义的是区间、每天在区间内取一次值）。A 档：
             # 仅主管理员可改。回显与"生效值"同源（`load_env_int` + 引擎缺省），
             # 否则提交一个等于回显的值会被判成"没改"、A 档口令门禁被绕过。
@@ -571,7 +572,7 @@ def api_settings_save():
     # 后裁跟着变"这件事在变更判定里是隐形的
     edge_note = ""
     if edge_front is not None or edge_back is not None:
-        _cur_edge = m.edge_config()
+        _cur_edge = _render.edge_config()
         if edge_front is None:
             edge_front = _cur_edge[0]
         if edge_back is None:
@@ -583,7 +584,7 @@ def api_settings_save():
         if win_start_str is not None:
             _win_lo, _win_hi = (sh, sm), (eh, em)
         else:
-            _win_lo, _win_hi = m._sign_window()
+            _win_lo, _win_hi = _signstatus._sign_window()
         _win_sec = ((_win_hi[0] * 60 + _win_hi[1]) - (_win_lo[0] * 60 + _win_lo[1])) * 60
         _cap = yb_window.edge_cap_sec(_win_sec)
         _edge_before = (edge_front, edge_back)
@@ -937,7 +938,7 @@ def api_executors():
     fallback_enabled = _signstatus._env_flag(env.get("YIBAN_FALLBACK_ENABLE"))
     # `in_window` 用"本应运行时段"口径（窗口内 且 今天没被周末门/暂停门挡下）：
     # 兜底在这两种日子会直接退出，只按钟点算会让页面每逢周末/暂停就误报"开了没跑起来"
-    in_window = m._in_run_period(bounds)
+    in_window = _signstatus._in_run_period(bounds)
     if fallback_enabled:
         fallback_status = "running" if fallback_alive else "declared_not_running"
     else:
@@ -1424,7 +1425,7 @@ def api_scheduler_executors_progress():
         "day": day,
         # 今天没跑过记录时 day 是历史日；页面据此提示"下面是最近一次记录"，别当成实时
         "is_today": day == clock.today(),
-        "in_window": m._in_run_period(bounds),
+        "in_window": _signstatus._in_run_period(bounds),
         # 全站分布：state 计数 + 派生的 settled/open/total（派生口径见 queue_store.day_counts）
         "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS}
                   if counts is not None else dict.fromkeys(_PROGRESS_STATE_KEYS, 0),

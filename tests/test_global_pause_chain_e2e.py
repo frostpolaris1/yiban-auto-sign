@@ -61,6 +61,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import signstatus as _signstatus
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 #: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）
@@ -453,7 +455,7 @@ class GlobalPauseChainTest(_ChainBase):
         now = clock.now()
         engine_truth = self._engine_truth_reason(now)
         self.assertEqual(engine_truth, "paused")
-        self.assertEqual(self.webapp._day_off_reason(now), engine_truth,
+        self.assertEqual(_signstatus._day_off_reason(now), engine_truth,
                          "web 显示判定必须与引擎读同一份 .env 得同一结论")
 
         # ⑥ 页面数据源（内联上下文）与显示表逐字段一致——显示的是"已暂停"，不是"失败/未签/排队"。
@@ -517,7 +519,7 @@ class GlobalPauseChainTest(_ChainBase):
 
         now = clock.now()
         self.assertEqual(self._engine_truth_reason(now), "", "引擎判定未随文件翻转")
-        self.assertEqual(self.webapp._day_off_reason(now), "", "web 显示判定未随文件翻转")
+        self.assertEqual(_signstatus._day_off_reason(now), "", "web 显示判定未随文件翻转")
         ctx = self._inline_context(self._calendar_html())
         self.assertIsNone(ctx["day_off"])
 
@@ -570,12 +572,12 @@ class GlobalPauseChainTest(_ChainBase):
         now = clock.now()
         truth = self._engine_truth_reason(now)
         self.assertEqual(truth, "paused")            # 本轮 .env 写着急停（setUp 默认）
-        self.assertEqual(self.webapp._day_off_reason(now), truth)  # 正常态：两侧一致
+        self.assertEqual(_signstatus._day_off_reason(now), truth)  # 正常态：两侧一致
         # 伪造 web 读源（旧病灶 `env=None` 落回 os.environ 的形状）：读不到文件真值。
         # 具体落点随星期漂移（周末门可能先以 saturday/sunday 形态出现）——判据不关心
         # 它错成哪一种，只关心它**不再是 paused**：真实日期下 ''/周末原因都构成失配。
         with mock.patch.object(self.webapp, "read_env", return_value={}):
-            forged = self.webapp._day_off_reason(now)
+            forged = _signstatus._day_off_reason(now)
         self.assertNotEqual(forged, "paused",
                             "read_env 桩必须演示得出'读不到真值'的旧病灶（急停显示丢失）")
         self.assertNotEqual(forged, truth,
@@ -588,20 +590,20 @@ class GlobalPauseChainTest(_ChainBase):
         from yiban.core import clock
         now = clock.now()
         self.assertEqual(self._engine_truth_reason(now), "paused")
-        self.assertEqual(self.webapp._day_off_reason(now), "paused")
+        self.assertEqual(_signstatus._day_off_reason(now), "paused")
         stale_engine_fact = "paused"  # 上一急停轮的判码结果（run.sh 已写盘的历史事实）
 
         self._write_env(pause="0", user_paused="false")
         self.assertEqual(self._engine_truth_reason(now), "",
                          "引擎判定读的是改写后的同一份 .env")
-        self.assertEqual(self.webapp._day_off_reason(now), "",
+        self.assertEqual(_signstatus._day_off_reason(now), "",
                          "web 显示判定与引擎读同一份 .env，翻页必须同步")
-        self.assertNotEqual(self.webapp._day_off_reason(now), stale_engine_fact,
+        self.assertNotEqual(_signstatus._day_off_reason(now), stale_engine_fact,
                            "显示只认源：与旧轮判码的不一致是设计上的正确行为，判据必须报出来")
         # 再翻回 1：两侧再同步回到 paused（"各读一次同一源"不是一次性快照）
         self._write_env(pause="1", user_paused="false")
         self.assertEqual(self._engine_truth_reason(now), "paused")
-        self.assertEqual(self.webapp._day_off_reason(now), "paused")
+        self.assertEqual(_signstatus._day_off_reason(now), "paused")
 
 
 if __name__ == "__main__":

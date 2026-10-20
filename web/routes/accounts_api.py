@@ -64,6 +64,7 @@ from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import logs as _logs_svc
 from web.services import notify_mail as _notify_mail
+from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
@@ -145,7 +146,7 @@ def api_accounts():
     last_exec = _executor_env._last_executors(db.task_latest_day())
     # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
     # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
-    _win = m.sign_window_bounds()
+    _win = _signstatus.sign_window_bounds()
     _span_min = _win.end_min - _win.start_min
 
     def _edge_mark(slot):
@@ -162,7 +163,7 @@ def api_accounts():
         "accounts": [
             {
                 **_accounts_data.mask_account(a, base_index + i),
-                "time_pref": m._slot_to_label(prefs.get(a["phone"])),
+                "time_pref": _accounts_data._slot_to_label(prefs.get(a["phone"])),
                 "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
                 # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
                 # 误以为"有归属但字段缺失"）

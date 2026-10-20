@@ -70,9 +70,8 @@ def _calendar_page_context():
     `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
     在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
     """
-    m = _appmod()
     payload = _yiban_status.display_payload()
-    payload["day_off"] = _signstatus.day_off_payload(m._day_off_reason())
+    payload["day_off"] = _signstatus.day_off_payload(_signstatus._day_off_reason())
     payload["legend"] = _yiban_status.legend_items()
     return {"calendar_state": payload}
 

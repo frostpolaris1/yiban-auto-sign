@@ -28,8 +28,10 @@ from unittest import mock
 
 import signin
 
+from web import render as _render
 from web.routes import my_api
 from web.services import accounts_data
+from web.services import signstatus as _signstatus
 from yiban.core import window
 from yiban.engine import planner, schedule
 
@@ -169,21 +171,26 @@ class PrefSliceEndToEndTest(unittest.TestCase):
 class SlotOffsetSemanticsTest(unittest.TestCase):
     def test_offset_zero_is_window_start(self):
         """`slot_min` 是相对**有效**窗口起点的分钟偏移：偏移 0 → 窗口起点，不是绝对分钟。"""
-        self.assertEqual(
-            accounts_data._slot_to_label(0, lambda: window.from_env(
-                {"YIBAN_SIGN_START": "06:30", "YIBAN_SIGN_END": "07:50"})), "06:30")
-        self.assertEqual(
-            accounts_data._slot_to_label(30, lambda: window.from_env(
-                {"YIBAN_SIGN_START": "07:00", "YIBAN_SIGN_END": "08:00"})),
-            "07:30", "偏移应加在窗口起点上，而非按当天 0:00 计")
+        with mock.patch.object(_signstatus, "sign_window_bounds",
+                               return_value=window.from_env(
+                                   {"YIBAN_SIGN_START": "06:30",
+                                    "YIBAN_SIGN_END": "07:50"})):
+            self.assertEqual(accounts_data._slot_to_label(0), "06:30")
+        with mock.patch.object(_signstatus, "sign_window_bounds",
+                               return_value=window.from_env(
+                                   {"YIBAN_SIGN_START": "07:00",
+                                    "YIBAN_SIGN_END": "08:00"})):
+            self.assertEqual(accounts_data._slot_to_label(30), "07:30",
+                             "偏移应加在窗口起点上，而非按当天 0:00 计")
 
     def test_non_fallback_label_uses_original_window_start(self):
         """非回退：有效窗口起点与原始窗口起点逐值相等 ⇒ 标签逐值不变（生产显示不变）。"""
         win = window.bounds({"sign_start": (7, 0), "sign_end": (8, 0),
                              "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertFalse(win.fell_back)
-        self.assertEqual(accounts_data._slot_to_label(0, lambda: win), "07:00")
-        self.assertEqual(accounts_data._slot_to_label(30, lambda: win), "07:30")
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=win):
+            self.assertEqual(accounts_data._slot_to_label(0), "07:00")
+            self.assertEqual(accounts_data._slot_to_label(30), "07:30")
 
     def test_clamped_label_uses_window_start(self):
         """缓冲收缩：基点仍是窗口起点（07:00），而非收缩后的有效窗口起点（07:01）。
@@ -197,8 +204,9 @@ class SlotOffsetSemanticsTest(unittest.TestCase):
         self.assertFalse(win.fell_back)
         self.assertEqual((win.start_min, win.end_min), (420, 430))
         self.assertEqual((win.lo_min, win.hi_min), (421.0, 429.0))
-        self.assertEqual(accounts_data._slot_to_label(0, lambda: win), "07:00")
-        self.assertEqual(accounts_data._slot_to_label(5, lambda: win), "07:05")
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=win):
+            self.assertEqual(accounts_data._slot_to_label(0), "07:00")
+            self.assertEqual(accounts_data._slot_to_label(5), "07:05")
 
 
 class WebPrefSlotsYardstickTest(unittest.TestCase):
@@ -240,10 +248,9 @@ class WebPrefSlotsYardstickTest(unittest.TestCase):
 
     def test_app_forward_hands_window_over_to_bounds(self):
         """`web.app.sign_window_bounds` 只转发：起止与前后裁剪交给 `yiban.window.bounds`。"""
-        import web.app as webapp
-        with mock.patch.object(webapp, "_sign_window", return_value=((6, 30), (6, 40))), \
-                mock.patch.object(webapp, "edge_config", return_value=(300, 300)):
-            win = webapp.sign_window_bounds()
+        with mock.patch.object(_signstatus, "_sign_window", return_value=((6, 30), (6, 40))), \
+                mock.patch.object(_render, "edge_config", return_value=(300, 300)):
+            win = _signstatus.sign_window_bounds()
         self.assertTrue(win.edges_clamped)
         self.assertFalse(win.fell_back)
         self.assertEqual((win.start_min, win.end_min), (390, 400))
