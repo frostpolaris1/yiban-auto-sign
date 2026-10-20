@@ -5,7 +5,7 @@
 覆盖：`notify.is_configured()` 的判定口径（类型已设、含旧明文 URL 兼容，且密钥可解出）；
     signin 即时告警门控从已废弃的 `YIBAN_NOTIFY_URL` 死键改判 `is_configured`；
     `_flush_admin_mail_summary` 收件人集为空时的整卷兜底。
-对应实现：通道判定在 `yiban/notify/`（配置解析与 `is_configured`），门控调用点在
+对应实现：通道判定在 `yiban/adapters/notifier/notify/`（配置解析与 `is_configured`），门控调用点在
     `yiban/adapters/notifier/report.py`（壳 `scripts/signin.py` 转发），邮件汇总在 web 侧。
 关键断言：源级断言不再出现 `if notify_url:` 那类死键门（生产不配旧键 → 账号级失败与
     耗时推送此前永不发出）；收件人为空时推送已配置 → 同一份汇总改走推送**恰好一次**

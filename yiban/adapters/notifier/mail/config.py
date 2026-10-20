@@ -142,7 +142,7 @@ def _env_value(key, envs):
 def _get(key, envs=None):
     """读取配置：**.env 文件优先**，进程环境只补缺（M27）。
 
-    与 `yiban/notify/config._env_str` 同一口径、同一理由：本组件的写侧（设置页落盘）
+    与 `yiban/adapters/notifier/notify/config._env_str` 同一口径、同一理由：本组件的写侧（设置页落盘）
     与 web 读侧都是「`.env` 优先」，读侧若反过来，键一旦进了 web 进程环境，设置页的
     写入就静默失效、GET 回显与磁盘状态长期不一致。进程环境保留为兜底（`.env` 没有该键
     的部署形态仍取得到值）。
