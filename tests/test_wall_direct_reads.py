@@ -103,6 +103,9 @@ def _walk_module_scope(nodes):
     绑定在模块级同样让 `web.app.<名>` 重新可用；只扫 `tree.body` 的直接子节点会静默
     放行这些形态（2026-10-20 独立审查实测：五种形态全部漏判，判据⑦与⑨同时失明）。
     函数体与类体仍然不进入——判据⑨是跨文件求交集，局部名会把交集淹没。
+
+    `ast.TryStar`（`try … except*`）**不是** `ast.Try` 的子类，必须单列——复审实测
+    它原本漏判（追加 `except*` 块内的 import 仍绿），故与本函数同批补上。
     """
     stack = list(nodes)
     while stack:
@@ -113,7 +116,7 @@ def _walk_module_scope(nodes):
         if isinstance(node, ast.If):
             stack.extend(node.body)
             stack.extend(node.orelse)
-        elif isinstance(node, ast.Try):
+        elif isinstance(node, (ast.Try, ast.TryStar)):
             stack.extend(node.body)
             stack.extend(node.orelse)
             stack.extend(node.finalbody)
@@ -129,6 +132,24 @@ def _walk_module_scope(nodes):
                 stack.extend(case.body)
 
 
+def _assign_target_names(target):
+    """赋值目标里的名字：`X` / `a, b` / `*a, b` / `[a, b]` 全部展开。
+
+    只认 `ast.Name` 会漏掉元组与星号目标（`send_notification, _x = f()` 在模块级
+    同样让 `web.app.send_notification` 可用）。复审实测：旧实现对该形态放行。
+    """
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        out = set()
+        for elt in target.elts:
+            out |= _assign_target_names(elt)
+        return out
+    if isinstance(target, ast.Starred):
+        return _assign_target_names(target.value)
+    return set()
+
+
 def _toplevel_definitions(src):
     """一段源码里的**模块级**真定义名（`def` / `class` / 赋值目标）。
 
@@ -142,7 +163,8 @@ def _toplevel_definitions(src):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             out.add(node.name)
         elif isinstance(node, ast.Assign):
-            out.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            for t in node.targets:
+                out |= _assign_target_names(t)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             out.add(node.target.id)
     return out
@@ -151,7 +173,8 @@ def _toplevel_definitions(src):
 #: 仓库根（`web/` 的上一级）。
 _REPO_ROOT = os.path.dirname(_WEB_DIR)
 #: 面外载体目录：持有 `web/app.py` 模块对象、却不经 `web/routes` 的代码。
-#: 现量：`frontend/e2e` 1 ＋ `scripts` 17 ＋ `docker` 3 ＋ `deploy` 1 = 22 个 `.py`。
+#: 现量（2026-10-20 实测）：`frontend/e2e` 1 ＋ `scripts` 20 ＋ `docker` 1 ＝ 22 个 `.py`
+#: （`deploy/` 下无 `.py`，仍保留在清单里——它是最可能新增长期读者的地方）。
 _OUT_OF_FACE_DIRS = ("frontend/e2e", "scripts", "docker", "deploy")
 #: 扫描面下限（实测 22；低于 15 即目录改名或过滤失效）。
 _OUT_OF_FACE_MIN_FILES = 15
@@ -174,16 +197,20 @@ def _out_of_face_hits(src):
     """一段源码里**经 app 模块对象**读 3-d 已迁名 → `行号: 基.名`。
 
     面外载体经 importlib 载入的是 `web/app.py` 的**模块对象**，基底名不固定
-    （`webapp` / `app_mod` / `webapp_e2e` / `web_app`）。判据只收"基底名含 `app`"
-    的属性读取：直取服务层真源（`_logs_svc.log_path_for`）是**正确**写法，不得误红
-    ——旧版规则按属性名一刀切，本门自己的第一版就被这条误红（2026-10-20 实测）。
+    （`webapp` / `app_mod` / `webapp_e2e` / `web_app`），也可能挂在属性上
+    （`self.webapp.x` / `mod.webapp.x`）。故基底取"裸名"或"属性链的末段名"，
+    并只收名字含 `app` 的那些：直取服务层真源（`_logs_svc.log_path_for`）是
+    **正确**写法，不得误红——旧版按属性名一刀切，本门第一版就误红了这条。
     """
     hits = []
     for node in ast.walk(ast.parse(src)):
-        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-                and "app" in node.value.id.lower()
-                and node.attr in BATCH3D_NAMES):
-            hits.append("%d: %s.%s" % (node.lineno, node.value.id, node.attr))
+        if not (isinstance(node, ast.Attribute) and node.attr in BATCH3D_NAMES):
+            continue
+        base = node.value
+        name = (base.id if isinstance(base, ast.Name)
+                else base.attr if isinstance(base, ast.Attribute) else "")
+        if "app" in name.lower():
+            hits.append("%d: %s.%s" % (node.lineno, name, node.attr))
     return hits
 
 
@@ -672,7 +699,8 @@ def app_binding_names(src):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             out.add(node.name)
         elif isinstance(node, ast.Assign):
-            out.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            for t in node.targets:
+                out |= _assign_target_names(t)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             out.add(node.target.id)
         elif isinstance(node, ast.ImportFrom):
@@ -925,14 +953,19 @@ class WallDirectReadsGateTest(unittest.TestCase):
         self.assertEqual(
             _out_of_face_hits("x = _logs_svc.log_path_for('2026-01-01')\n"), [],
             "面外扫描器把直取真源误判成墙读：本判据会逼人改写对的代码")
+        # 属性链基底（`self.webapp.x`）同样要命中——复审实测旧实现只认裸名，漏这种。
+        self.assertEqual(
+            _out_of_face_hits("x = self.webapp.log_path_for('2026-01-01')\n"),
+            ["1: webapp.log_path_for"],
+            "面外扫描器对 `self.webapp.<名>` 不命中：属性链形态漏判")
 
     def test_3d_gate_has_teeth(self):
         """突变验证：把桩**追加到真实 `web/app.py` 源**上，判据⑦ 必须命中。
 
         只喂一段孤立源码是字符串级自证：名单被换成别的名字时，孤立源码照样命中，
         真实文件却已不受保护（独立审查实测：换一名 ＋ 塞回 import ⇒ 26 passed）。
-        故这里拿真源拼接；并覆盖块内绑定（`try` / `if` / `with` / `for`）——
-        只扫 `tree.body` 的旧实现对这四种全部失明。
+        故这里拿真源拼接；并覆盖块内绑定（`try` / `except*` / `if` / `with` / `for`）
+        与元组赋值目标——只扫 `tree.body` 的旧实现对这几种全部失明。
         """
         real = _read_abs(_APP_PY)
         cases = (
@@ -942,9 +975,13 @@ class WallDirectReadsGateTest(unittest.TestCase):
             ("import web.render as site_image\n", "site_image"),
             ("try:\n    def log_path_for(d=None):\n        pass\n"
              "except Exception:\n    pass\n", "log_path_for"),
+            ("try:\n    pass\nexcept* ValueError:\n"
+             "    from web.services.logs import parse_sign_log\n", "parse_sign_log"),
             ("if True:\n    from web.services.logs import parse_sign_log\n", "parse_sign_log"),
             ("with open(__file__) as parse_sign_log:\n    pass\n", "parse_sign_log"),
             ("for load_sign_state in ():\n    pass\n", "load_sign_state"),
+            ("send_notification, _unused = (None, None)\n", "send_notification"),
+            ("*write_env_batch, _rest = ()\n", "write_env_batch"),
         )
         for stub, name in cases:
             with self.subTest(stub=stub.strip().splitlines()[0]):
@@ -1239,8 +1276,13 @@ class HookRegistrationContractTest(unittest.TestCase):
                           "若这是有意的（改成 per-instance 登记），请同批更新"
                           "HookRegistrationContractTest 的 docstring。")
         finally:
-            # 复原：把登记指回第一份，避免污染后续用例。
-            _reconfigure_to(first)
+            # 复原：必须指回**真模块**，不能指回任一副本。
+            # 副本只在本用例内存在；指向副本会让同 worker 的后续用例读到副本的模块级
+            # 状态（它们改的是 `web.app.ENV_FILE` 一类），而登记在副本上 ⇒ 改不动。
+            # 独立审查实测：整改前残留 2 个登记点、整改后若指回副本会放大到 11 个。
+            import web.app as _real_app
+            _reconfigure_to(_real_app)
+            sys.modules.pop("wallhook_first", None)
             sys.modules.pop("wallhook_second", None)
 
 
