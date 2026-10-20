@@ -33,6 +33,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
+from yiban.adapters.config import env_io  # noqa: E402
 from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import clock  # noqa: E402
 
@@ -262,6 +263,15 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     #: 逃逸 ⑤：非按日命名的固定名件（名字里没有日期表达式）。
     _NONDAILY_RE = re.compile(
         r'["\']([a-z][a-z0-9-]+\.(?:json|jsonl|log|txt|marker))["\']')
+    #: 逃逸 ⑥（2026-10-20）：前缀收进 `env_io` 常量后，字面量扫描看不见它。
+    #: 认常量引用即算"该前缀有写入点"——新按日文件仍只能写字面量（或再改 env_io，
+    #: 那是可审查的入口），故元测试的检出面不缩。
+    _CONST_PREFIXES = {  # noqa: RUF012 —— 类常量映射，测试内只读
+        "env_io.DAY_LOG_PREFIX": env_io.DAY_LOG_PREFIX,
+        "env_io.SIGN_STATE_PREFIX": env_io.SIGN_STATE_PREFIX,
+        "env_io.SIGN_DAILY_PREFIX": env_io.SIGN_DAILY_PREFIX,
+    }
+    _CONST_PREFIX_RE = re.compile(r"\b(" + "|".join(_CONST_PREFIXES) + r")\b")
 
     def _scan(self, root=None):
         """→ (按日前缀 dict, 固定名集合)；`root` 供逃逸用例扫合成树（默认本仓）。"""
@@ -290,6 +300,8 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
             for _label, rx in self._ESCAPE_RES:
                 for m in rx.finditer(src):
                     found.setdefault(m.group(m.lastindex), set()).add(rel)
+            for m in self._CONST_PREFIX_RE.finditer(src):
+                found.setdefault(self._CONST_PREFIXES[m.group(1)], set()).add(rel)
             for m in self._NONDAILY_RE.finditer(src):
                 nondaily.add(m.group(1))
         return found, nondaily

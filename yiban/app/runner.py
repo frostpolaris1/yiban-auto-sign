@@ -173,7 +173,8 @@ def _write_sign_daily(state_dir, accounts, results):
     try:
         os.makedirs(state_dir, exist_ok=True)
         # 以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
-        daily_path = os.path.join(state_dir, f"sign-daily-{clock.now().strftime('%Y-%m-%d')}.json")
+        daily_path = env_io.sign_daily_path(clock.now().strftime("%Y-%m-%d"),
+                                            state_dir=state_dir)
         with cli_support._state_file_lock(daily_path):
             daily = {}
             if os.path.exists(daily_path):

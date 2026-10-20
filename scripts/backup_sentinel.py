@@ -383,7 +383,8 @@ def _broadcast_anchor(day, archive, sidecar_ok):
 def main(argv=None):
     """跑一次哨兵；返回进程退出码（0=检查完成，1=检查或告警失败）。"""
     backup_dir = _env("BACKUP_DIR", DEFAULT_BACKUP_DIR)
-    app_dir = _env("APP_DIR", DEFAULT_APP_DIR)
+    # 部署根：唯一环境键 YIBAN_APP_DIR；APP_DIR 只作旧部署别名（census-P2-repo-root）。
+    app_dir = _env("YIBAN_APP_DIR", "") or _env("APP_DIR", DEFAULT_APP_DIR)
     installed = _env("YIBAN_BACKUP_INSTALLED", DEFAULT_INSTALLED)
     day = _now()
 

@@ -213,6 +213,7 @@ fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
 fast	tests/test_panel_false_signals.py
 fast	tests/test_path_env_read_gate.py
+fast	tests/test_path_single_definition.py
 slow	tests/test_pause_flag_truthiness_e2e.py	# 真子进程：真跑 run.sh/fallback/probe 三份 bash（本机 1.5s）
 fast	tests/test_planner.py
 fast	tests/test_pr_template_gate.py

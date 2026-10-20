@@ -85,6 +85,8 @@ for _p in (REPO, os.path.join(REPO, "scripts")):
 #: 故不会命中 `account_crypto` 的两道拒绝/告警判据。
 KEY = secrets.token_hex(32)
 MOCK = os.path.join(REPO, "yiban", "adapters", "protocol_fake", "__init__.py")
+# 假上游轨迹的固定基名唯一在 protocol_fake（census-P2-fake-server），此处不另写。
+from yiban.adapters import protocol_fake  # noqa: E402
 
 #: 采样间隔（秒）：I1 的"没经释放的换手"要求采样足够密才不误判为合法换手。
 SAMPLE_SEC = 0.02
@@ -558,7 +560,7 @@ def _mutation_applied(mutate: str, probe: dict) -> bool:
 
 def start_mock(tmp: str) -> tuple[subprocess.Popen, int]:
     ready = os.path.join(tmp, "mock.ready")
-    log = os.path.join(tmp, "mock.jsonl")
+    log = protocol_fake.trace_path(tmp)
     proc = subprocess.Popen(
         [sys.executable, MOCK, "--no-tls", "--port", "0", "--no-ipv6",
          "--ready-file", ready, "--log", log],
@@ -1100,7 +1102,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         result["final_rows"] = rows
         result["i2_ok"] = not result["i2_claimed_left"]
         result["i1_ok"] = not result["i1_violations"]
-        trace = mock_trace(os.path.join(tmp, "mock.jsonl"))
+        trace = mock_trace(protocol_fake.trace_path(tmp))
         result["mock_requests"] = len(trace)
         result["mock_signin_count"] = sum(
             1 for r in trace if r.get("path", "").endswith("/signIn"))
@@ -1125,9 +1127,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             with open(os.path.join(evidence_dir, "monitor.jsonl"), "w", encoding="utf-8") as f:
                 for t in monitor.trace:
                     f.write(json.dumps(t, ensure_ascii=False) + "\n")
-            if os.path.exists(os.path.join(tmp, "mock.jsonl")):
-                shutil.copy(os.path.join(tmp, "mock.jsonl"),
-                            os.path.join(evidence_dir, "mock.jsonl"))
+            _trace = protocol_fake.trace_path(tmp)
+            if os.path.exists(_trace):
+                shutil.copy(_trace, os.path.join(evidence_dir, protocol_fake.TRACE_BASENAME))
             for name in os.listdir(os.path.join(info["state"])):
                 src = os.path.join(info["state"], name)
                 if os.path.isfile(src):
