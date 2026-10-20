@@ -53,6 +53,8 @@ import db  # noqa: E402  # 顶层导入供 user_path(db, …) 与既有局部导
 from werkzeug.security import generate_password_hash  # noqa: E402
 
 from web import security as _security  # noqa: E402
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -165,7 +167,7 @@ class _TierBase(unittest.TestCase):
         self._reset_db()
         self.alerts = []
         p = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
                 self.alerts.append((t, render_body(c), urgent)),
         )
@@ -193,7 +195,7 @@ class _TierBase(unittest.TestCase):
 
     def _set_tier(self, value):
         """把档位写进 `.env`（空值 = 删键，用于钉缺省档）。"""
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_GATE": value or ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_PW_GATE": value or ""})
 
     def _reset_db(self):
         import db
@@ -614,7 +616,7 @@ class RiskTriggerTest(_TierBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
         # 两次都必须是**真变更**：无变更的保存根本不进门禁，那样断言会假绿
-        cur = self.webapp._settings_effective_values(self.env_file).get("sign_order") or "sequential"
+        cur = _env_io_svc._settings_effective_values(self.env_file).get("sign_order") or "sequential"
         other = "sequential" if cur == "random" else "random"
 
         def save(order, xff):

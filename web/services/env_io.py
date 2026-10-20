@@ -19,9 +19,10 @@
 键名与键的读写同处一模块：改名或增键时只有一处要动。
 
 **归属**
-原 `web/app.py` 的模块级 env 辅助，唯一真源在本模块；`web/app.py` 只保留名字面与转发，
-把它自己持有、而本模块需要的东西——落盘用的 `_atomic_write`、设置缺省值、开关解析器
-`_env_flag`、告警出口 `send_notification`——在调用时刻现取后注入。
+原 `web/app.py` 的模块级 env 辅助，唯一真源在本模块。批 3-d 删除 `web/app.py` 的
+转发包装：路由与测试直取本模块。落盘用的 `_atomic_write`、写拒绝审计回调、开关解析器
+`_env_flag` 与告警出口 `send_notification` 经 `configure(...)` 登记进 `_hooks`，
+按调用时刻解析。设置项缺省值直接取自 `web/services/limits.py`。
 
 **复用**
 批量写是单键写与整数写的底层（`write_env_key` / `write_env_int` 都折成
@@ -32,10 +33,10 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以 `spec_from_file_location` 别名加载 `app.py`，
-普通 import 会再执行一份副本模块）。落盘动作与设置项缺省值/开关判定都作为显式参数接收：
-它们在 `web.app` 上是会被测试改写、也会随运行方式变化的模块级名字（既有测试正是在
-`web.app` 上打桩 `_atomic_write` / `write_env_batch` 来观测每一次落盘），本模块另持一份
-绑定会让打桩静默失效。跨进程写锁沿用 `yiban.infra.env_lock` 的真源，不自建第二套。
+普通 import 会再执行一份副本模块）。落盘动作、审计回调与开关判定经 `configure(...)`
+登记，按调用时刻解析：测试打桩 `_atomic_write` / `write_env_batch` / `_env_flag` 仍然
+生效。未登记即 `RuntimeError`（fail-closed）。跨进程写锁沿用 `yiban.infra.env_lock`
+的真源，不自建第二套。
 """
 
 import contextlib
@@ -47,6 +48,11 @@ from datetime import datetime
 
 from flask import jsonify
 
+from web.services.limits import (
+    DEFAULT_ACCOUNT_GAP_MAX,
+    DEFAULT_MAX_ACCOUNTS,
+    DEFAULT_MAX_USERS,
+)
 from yiban.adapters.config import env_io as _env_io
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.core import window as yb_window
@@ -55,6 +61,44 @@ from yiban.infra import env_lock
 
 # 与 web.app 同名的日志通道：.env 读写与启动检测的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：测试打桩 `_atomic_write` / `write_env_batch` / `_env_flag`
+# 必须在调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(atomic_write=None, env_write_refuse_audit=None, env_flag=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if atomic_write is not None:
+        _hooks["atomic_write"] = atomic_write
+    if env_write_refuse_audit is not None:
+        _hooks["env_write_refuse_audit"] = env_write_refuse_audit
+    if env_flag is not None:
+        _hooks["env_flag"] = env_flag
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.env_io 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾"
+            "调用了 web.services.env_io.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +303,7 @@ def health_report_weekday_setting(env):
     return str(idx) if 0 <= idx <= 6 else ""
 
 
-def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users_default,
-                               max_accounts_default):
+def _settings_effective_values(env_file):
     """A/B 档设置项的**当前生效值**（归一为字符串），取值口径与 `GET /api/settings` 一致。
 
     只用于"这次请求到底改没改配置"的判定：一律现读现算，绝不信请求自带的旧值——
@@ -271,9 +314,10 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
     两边不一致时"提交一个等于回显的值"会被判成改过（多要一次口令）或没改过（设置永不落盘，
     而每次打开设置页都显示一条清不掉的脏标记）。
 
-    开关解析器与三个容量缺省值由调用方传入：它们是 `web.app` 的模块级名字（`_env_flag`
-    之后还会随签到状态域迁走），本模块另持绑定会让打桩与后续搬动静默失效。
+    开关解析器从宿主取（`_env_flag` 是既有打桩点）；三个容量缺省值直接取自
+    `web/services/limits.py`（单一事实源）。
     """
+    env_flag = _host("env_flag")
     env = read_env(env_file)
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
     w_start, w_end, _invalid = yb_window.parse_window(env)
@@ -284,7 +328,8 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
 
     vals = {
         "start_delay_max": str(load_env_int(env_file, "YIBAN_START_DELAY_MAX", 0)),
-        "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX", gap_max_default)),
+        "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX",
+                                    DEFAULT_ACCOUNT_GAP_MAX)),
         "sign_window": (f"{w_start[0]:02d}:{w_start[1]:02d}"
                         f"~{w_end[0]:02d}:{w_end[1]:02d}"),
         # 旧键（前后对称）**一次写两侧**：现值取「前/后」组合串。只按前裁比的话，
@@ -321,9 +366,9 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         # 设置页都会显示一条永远清不掉的"未保存的修改"。生效缺省（未配置 ⇒ 周一）由
         # 运行期判定 `web.app._health_report_cfg()` 承担。
         "health_report_weekday": health_report_weekday_setting(env),
-        "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", max_users_default)),
+        "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)),
         "max_accounts": str(load_env_int(env_file, "YIBAN_MAX_ACCOUNTS",
-                                         max_accounts_default)),
+                                         DEFAULT_MAX_ACCOUNTS)),
     }
     # 正态 μ/σ 区间四键：取值口径（现读 + 引擎缺省）与 `GET /api/settings` 的回显
     # 必须逐字一致——否则提交一个等于回显的值会被判成"没改"，A 档口令门禁被绕过。
@@ -365,22 +410,22 @@ def _env_write_lock(env_path):
         yield
 
 
-def write_env_int(env_path, key, value, write_batch):
+def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
-    write_env_key(env_path, key, str(value) if value > 0 else "", write_batch)
+    write_env_key(env_path, key, str(value) if value > 0 else "")
 
 
-def write_env_key(env_path, key, value, write_batch):
+def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
     单键形态 = write_env_batch({key: value})：行分隔符注入校验、写锁、原子替换
-    均单源在 write_env_batch（防两份安全校验实现漂移）。`write_batch` 由调用方传入
-    `web.app` 的 `write_env_batch`——它是既有测试观测"每一次 .env 落盘"的打桩点。
+    均单源在 write_env_batch（防两份安全校验实现漂移）。本函数按模块名调用它，
+    故测试打桩 `web.services.env_io.write_env_batch` 仍是"每一次 .env 落盘"的观测点。
     """
-    write_batch(env_path, {key: value})
+    write_env_batch(env_path, {key: value})
 
 
-def write_env_batch(env_path, updates, atomic_write, audit=None):
+def write_env_batch(env_path, updates):
     """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
     避免多次独立写入时进程崩溃导致配置不一致。
     updates: dict {key: value}，value 为空字符串则删除该键。
@@ -390,13 +435,15 @@ def write_env_batch(env_path, updates, atomic_write, audit=None):
     本函数只负责 web 侧特有的落盘注入（`atomic_write`）。外层锁已就此去重——写锁
     下沉进 `write_env_keys` 后，这里再包一层是对同一路径的纯冗余嵌套；只在本函数
     之外还有"判定读取"要与之同临界区的调用方（改密、保存设置、执行体读-改-写）才
-    需要继续自持 `_env_write_lock`。`audit` 由调用方（web.app 转发）注入 db 审计回调：
-    写入被拒（潜伏分隔符/未请求的键变化）时必须留痕，调用方不传也不影响拒绝本身。
+    需要继续自持 `_env_write_lock`。审计回调从宿主取：
+    写入被拒（潜伏分隔符/未请求的键变化）时必须留痕。
 
     为什么不再自己用宽行模型读-改-写：宽行模型会把注释里潜伏的
     U+0085/U+2028 等先拆成两行、再把后半截实体化成真配置行（一次无关保存即可注入
     `YIBAN_GLOBAL_PAUSE=1`）。单一行模型同时是"校验行模型 = 写入行模型"的前提。
     """
+    atomic_write = _host("atomic_write")
+    audit = _host("env_write_refuse_audit")
     _env_io.write_env_keys(
         env_path, updates,
         write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
@@ -512,7 +559,7 @@ def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
         return True, f"已移除第 {line_no} 行；剩余含分隔符行 {len(still_bad)} 行", len(still_bad)
 
 
-def ensure_secret_key(env_path, atomic_write, audit=None):
+def ensure_secret_key(env_path):
     """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
 
     .env 不可写、或既有行含潜伏行分隔符（写入被 fail-closed 拒绝）时降级为进程内随机
@@ -557,6 +604,8 @@ def ensure_secret_key(env_path, atomic_write, audit=None):
         if new_deployment:
             updates["YIBAN_REGISTRATION_PAUSE"] = "1"
         try:
+            atomic_write = _host("atomic_write")
+            audit = _host("env_write_refuse_audit")
             _env_io.write_env_keys(
                 env_path, updates,
                 write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),

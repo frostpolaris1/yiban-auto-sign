@@ -45,6 +45,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from web.services import notify_mail as _notify_mail
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -616,7 +618,7 @@ class NewIndeterminateStillAlertsTest(_Fixture):
         webapp = _load_webapp("legacy_prefix_alert")
         facts = dict(webapp._audit_alert_facts(h))
         self.assertIn("无法定论", facts["库外锚点"])
-        with mock.patch.object(webapp, "send_notification", return_value=True) as m:
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True) as m:
             self.assertTrue(webapp._alert_audit_unhealthy(h), "无法定论仍必须外发")
         self.assertEqual(m.call_count, 1)
         title, mail = m.call_args[0][0], m.call_args[0][1]
@@ -651,10 +653,10 @@ class NewIndeterminateStillAlertsTest(_Fixture):
         webapp = _load_webapp("legacy_prefix_dedupe_level")
         self._seed(2)
         h = self._health()
-        with mock.patch.object(webapp, "send_notification", return_value=True):
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True):
             self.assertTrue(webapp._alert_audit_unhealthy(h), "首次外发（推进基线）")
         with self.assertLogs(webapp.logger, level=_logging.DEBUG) as cap, \
-             mock.patch.object(webapp, "send_notification", return_value=True) as m2:
+             mock.patch.object(_notify_mail, "send_notification", return_value=True) as m2:
             # 第二次同一结论：走"不重复外发"的去重分支
             self.assertFalse(webapp._alert_audit_unhealthy(h))
             self.assertEqual(m2.call_count, 0, "同结论不重复外发")
@@ -674,10 +676,10 @@ class NewIndeterminateStillAlertsTest(_Fixture):
         self._raw("DELETE FROM audit_logs WHERE id = 2")     # 删锚点定点行 ⇒ tampered
         h = self._health()
         self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
-        with mock.patch.object(webapp, "send_notification", return_value=True):
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True):
             self.assertTrue(webapp._alert_audit_unhealthy(h))
         with self.assertLogs(webapp.logger, level=_logging.DEBUG) as cap, \
-             mock.patch.object(webapp, "send_notification", return_value=True):
+             mock.patch.object(_notify_mail, "send_notification", return_value=True):
             self.assertFalse(webapp._alert_audit_unhealthy(h))
         dedupe = [r for r in cap.records if "不重复外发" in r.getMessage()]
         self.assertEqual(len(dedupe), 1)
@@ -777,28 +779,28 @@ class AlertDeliveryGatingTest(_Fixture):
              mock.patch.object(webapp._notify_mail.mailer, "send_admin_alert",
                                return_value=True), \
              mock.patch.object(webapp._notify_mail.notify, "send", return_value=False):
-            self.assertTrue(webapp.send_notification("t", "c"), "邮件送达即算送达")
+            self.assertTrue(_notify_mail.send_notification("t", "c"), "邮件送达即算送达")
         with mock.patch.object(webapp._notify_mail, "_alert_mail_recipients",
                                return_value=["a@test.local"]), \
              mock.patch.object(webapp, "_mail_alert_due", return_value=True), \
              mock.patch.object(webapp._notify_mail.mailer, "send_admin_alert",
                                return_value=False), \
              mock.patch.object(webapp._notify_mail.notify, "send", return_value=True):
-            self.assertTrue(webapp.send_notification("t", "c"), "推送送达即算送达")
+            self.assertTrue(_notify_mail.send_notification("t", "c"), "推送送达即算送达")
         with mock.patch.object(webapp._notify_mail, "_alert_mail_recipients",
                                return_value=["a@test.local"]), \
              mock.patch.object(webapp, "_mail_alert_due", return_value=True), \
              mock.patch.object(webapp._notify_mail.mailer, "send_admin_alert",
                                return_value=False), \
              mock.patch.object(webapp._notify_mail.notify, "send", return_value=False):
-            self.assertFalse(webapp.send_notification("t", "c"), "两路皆失败必须返回 False")
+            self.assertFalse(_notify_mail.send_notification("t", "c"), "两路皆失败必须返回 False")
 
     def test_unhealthy_alert_marks_baseline_only_when_delivered(self):
         webapp = _load_webapp("alert_gate_mark")
         self._seed(2)
         h = self._health()
         self.assertTrue(db.audit_alert_needs_attention(h), "夹具前提：首次结论待发")
-        with mock.patch.object(webapp, "send_notification", return_value=True) as m_send:
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True) as m_send:
             self.assertTrue(webapp._alert_audit_unhealthy(h))
         self.assertEqual(m_send.call_count, 1)
         self.assertFalse(db.audit_alert_needs_attention(h),
@@ -808,12 +810,12 @@ class AlertDeliveryGatingTest(_Fixture):
         webapp = _load_webapp("alert_gate_retry")
         self._seed(2)
         h = self._health()
-        with mock.patch.object(webapp, "send_notification", return_value=False):
+        with mock.patch.object(_notify_mail, "send_notification", return_value=False):
             self.assertFalse(webapp._alert_audit_unhealthy(h))
         self.assertTrue(db.audit_alert_needs_attention(h),
                         "全通道失败不得推进基线——下一轮必须仍待发")
         # 下一轮通道恢复：同一故障态重新外发并推进基线（未被上次失败永久静默）
-        with mock.patch.object(webapp, "send_notification", return_value=True) as m_send:
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True) as m_send:
             self.assertTrue(webapp._alert_audit_unhealthy(h))
         self.assertEqual(m_send.call_count, 1, "恢复送达后本次真正外发")
         self.assertFalse(db.audit_alert_needs_attention(h))
