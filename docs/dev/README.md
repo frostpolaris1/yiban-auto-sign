@@ -7,6 +7,7 @@
 | `README.md`（本文件） | 模块树、依赖方向、多执行体现状与出口配置 |
 | `api-executors.md` | 执行体与出口接口契约（前端用） |
 | `cli.md` | CLI 契约（面向 agent/自动化） |
+| `constraints.tsv` | **在册约束**（id / 载体 / 门或豁免理由 / 工单）；`tests/test_constraint_registry_gate.py` 逐条真跑 |
 | `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
 | `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
