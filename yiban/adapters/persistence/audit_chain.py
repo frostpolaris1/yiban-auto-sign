@@ -989,6 +989,10 @@ def _anchor_meta_line_count(meta):
     `_anchor_file_state_ex` 位于 `_anchor_status` 的 try 之外——一次手工损坏即让每日
     体检整体抛异常、被 web 日线线程吞成 WARNING，当日校验静默不跑（正是"把查不动印成
     无异常"的失败形态）。故就地降级为 corrupt，由调用方转成"无法定论 ⇒ 不健康"，绝不外抛。
+
+    **缺失 ≠ 0**：本函数对缺键返回 `(0, "ok")` 只为保持旧调用面的形状；调用方必须
+    先用 `_anchor_meta_has_line_count` 区分"指纹没写上"与"指纹登记为 0 行"。把缺失
+    当 0 会让行数三支整段跳过（工单 ba-p01-04）。
     """
     if not meta:
         return 0, "ok"
@@ -999,6 +1003,11 @@ def _anchor_meta_line_count(meta):
         return int(raw), "ok"
     except (TypeError, ValueError):
         return 0, "corrupt"
+
+
+def _anchor_meta_has_line_count(meta):
+    """库内指纹是否真的登记过行数高水位。缺键/None 值 ⇒ False（缺失 ≠ 0 行）。"""
+    return bool(meta) and meta.get("lines") is not None
 
 
 def _audit_purge_total(conn):
@@ -1093,16 +1102,31 @@ def record_audit_anchor(path=None):
             # 顺序有讲究：先读**单调计数器** purge_total，再取行快照。反过来的话，
             # 两次读之间发生的物理删除会被算进"锚点之前"的额度，而锚点记的行数却是
             # 删除后的——校验时"少了行却没有对应留痕"，合法的保留期清理会被判成篡改。
-            purge_total = _facade()._audit_purge_total(conn)
-            row = conn.execute(
-                "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
-            ).fetchone()
-            # 链头必须**按 max_id 取值**，不能另取"当前最后一行"：后者是第二次读，
-            # 并发写入落在两次读之间时，锚点行的 max_id 与 head 指向不同行，此后每次
-            # 校验都会报"链尾内容被篡改"（旧判据在 max_id 不等时会跳过比对，反而不报）。
-            anchored = (conn.execute("SELECT hash FROM audit_logs WHERE id=?",
-                                     (int(row["max_id"]),)).fetchone()
-                        if row and row["max_id"] is not None else None)
+            #
+            # 但**顺序本身不够**（工单 ba-p01-05）：`_conn_lock` 只覆盖本进程，另一次
+            # 跨进程清理若恰在两次读之间提交，锚点仍会记成"行数少了 k、留痕累计没变"，
+            # 下一次校验落入 `missing < exp` 一支，把合法清理判成"留痕被伪造"。三读取
+            # 必须取自**同一快照**：显式开一个只读事务（BEGIN），读完再结束。SQLite 的
+            # 读快照在 BEGIN 后第一次 SELECT 时建立，WAL 下不阻塞并发写者。
+            started_read_txn = False
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
+                started_read_txn = True
+            try:
+                purge_total = _facade()._audit_purge_total(conn)
+                row = conn.execute(
+                    "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
+                ).fetchone()
+                # 链头必须**按 max_id 取值**，不能另取"当前最后一行"：后者是第二次读，
+                # 并发写入落在两次读之间时，锚点行的 max_id 与 head 指向不同行，此后每次
+                # 校验都会报"链尾内容被篡改"（旧判据在 max_id 不等时会跳过比对，反而不报）。
+                anchored = (conn.execute("SELECT hash FROM audit_logs WHERE id=?",
+                                         (int(row["max_id"]),)).fetchone()
+                            if row and row["max_id"] is not None else None)
+            finally:
+                if started_read_txn:
+                    # 只读事务：rollback 与 commit 等价，都只是释放快照读锁
+                    conn.rollback()
         if not row or row["max_id"] is None:
             return None
         min_id, max_id, count = int(row["min_id"]), int(row["max_id"]), int(row["n"])
@@ -1303,6 +1327,13 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
     判"无法定论"，与"不可解析的行"同档：它不受行间链约束、也不带 min_id/max_id，
     静默放过等于给"在文件任意位置留一条三字段行"开后门。该判据排在行间链校验之后
     ——链不符是确证篡改，比"无法定论"更响，先报前者。
+
+    **库内指纹缺失时判"无法定论"，不得返回 ok**（工单 ba-p01-04）：行间链只保证
+    "历史行彼此自洽"，对"截掉末行再补一条自洽的新末行"无效——兜住这一形态的只有
+    库内行数高水位。`_record_anchor_trace` 的 app_meta 写失败只记一条 WARNING
+    （并明说"不影响锚点本身"），故缺指纹并不罕见；此时若按"没有指纹可比，跳过
+    三支判据"返回 ok，锚点防线会悄悄回到没有指纹之前的强度。下一次成功写锚点
+    （`record_audit_anchor` → `_record_anchor_trace`）会补回指纹，本判定自愈。
     """
     if lines is None:
         lines, status = _read_anchor_lines_ex(path)
@@ -1318,20 +1349,30 @@ def _anchor_file_state_ex(path=None, lines=None, meta=None):
             "库内锚点指纹的行数字段无法解析为整数（app_meta 被手工损坏或改写）"
             "——校验无法定论（不等于无异常），请立即核查",
         )
-    if recorded:
-        if len(lines) < recorded:
+    if not _anchor_meta_has_line_count(meta):
+        if lines:
             return (
-                "tampered",
-                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
-                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）",
+                "indeterminate",
+                f"库内锚点指纹缺失（app_meta 无 audit_anchor_meta 的行数字段），"
+                f"但锚点文件有 {len(lines)} 行——没有库内高水位可交叉对照，锚点文件"
+                "被截断或追加时无法检出；本次校验无法定论（不等于无异常），请立即"
+                "核查（下一次成功写入锚点会补回指纹）",
             )
-        if len(lines) > recorded:
-            return (
-                "tampered",
-                f"锚点文件行数由库内指纹记录的 {recorded} 增至 {len(lines)}"
-                "——应用写入之外被追加了行（仅追加 1 条垃圾行即可同时骗过"
-                "「变少/相等」两支判据，故此处与减少同等判红）",
-            )
+        # 空文件没有可保护的历史行：首次运行/从未写锚点的口径不变
+        return "ok", ""
+    if len(lines) < recorded:
+        return (
+            "tampered",
+            f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
+            "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）",
+        )
+    if len(lines) > recorded:
+        return (
+            "tampered",
+            f"锚点文件行数由库内指纹记录的 {recorded} 增至 {len(lines)}"
+            "——应用写入之外被追加了行（仅追加 1 条垃圾行即可同时骗过"
+            "「变少/相等」两支判据，故此处与减少同等判红）",
+        )
     # 解析一次、三个判据共用：`parsed_lines` 与 `lines` 同长且同序（不可解析处为 None），
     # 故后面的行间链与老格式判据都能按下标与 `lines` 对齐，不必再解析一遍、也不依赖
     # "上一段已经排除过 None"这种隐式前提。
