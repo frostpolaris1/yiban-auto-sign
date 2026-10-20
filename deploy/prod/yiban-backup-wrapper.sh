@@ -5,6 +5,10 @@
 # 安装位：  /usr/local/sbin/yiban-backup-wrapper.sh（0700 root，install.sh 落位）
 # root crontab 唯一允许形态（口令不进 crontab 行 / 命令历史 / 任何进程的 env）：
 #   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+# 备份目录：本 wrapper **不设 BACKUP_DIR**，继承 yiban-backup.sh 的默认
+#   /var/backups/yiban。该默认同时是 pull-prod-backup.sh 的 REMOTE_BACKUP_DIR 与
+#   backup_sentinel.py 的 DEFAULT_BACKUP_DIR；三处必须同值（tests/test_backup_hardening.py
+#   的 BackupDirSingleDefaultTest 钉住），要改就显式 env 前缀并在三处同批改。
 # 口令文件：/etc/yiban/backup-passphrase —— 0600 root，内容只有一行口令。
 #
 # 为什么存在（现象原文）：旧版 wrapper 用 `export BACKUP_GPG_PASSPHRASE=...` 注入口令，
