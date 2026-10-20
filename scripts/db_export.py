@@ -3,11 +3,15 @@
 """db → JSON 回滚逃生门：把 yiban.db 导出为 accounts.json / users.json（降级/迁移用）。
 
 用法：python3 scripts/db_export.py [--out 输出目录] [--db yiban.db 路径] [--plaintext]
+       [--force] [--dry-run]
 
 安全设计：
 - 默认导出**密文**（password/phone_code 保持 AES-GCM 密文对象），不产生明文凭据文件；
-- 仅显式 --plaintext 才导出解密后的明文密码（运维恢复演练等确需场景），并打印醒目警告；
-- 导出文件以 0600 创建（含凭据数据，防同主机其他用户读取）。
+- 仅显式 --plaintext 才导出解密后的明文密码（运维恢复演练等确需场景），并**先**打印醒目警告；
+- 导出文件以 0600 创建（含凭据数据，防同主机其他用户读取）；
+- **默认拒绝覆盖既有文件**（工单 ba-p11-06）：缺省 `--out .` 与 web 侧
+  `accounts.json` 回落名逐字相同，无条件覆写会把 JSON→SQLite 的迁移基线/回滚源
+  就地截断。`--force` 才允许替换；`--dry-run` 只报告目标与行数，不写盘。
 """
 import argparse
 import contextlib
@@ -17,6 +21,24 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+_TARGET_NAMES = ("accounts.json", "users.json")
+
+
+def _existing_targets(out_dir):
+    """返回已存在、且不是普通文件的目标项（不能安全替换）。"""
+    blockers = []
+    for name in _TARGET_NAMES:
+        path = os.path.join(out_dir, name)
+        if os.path.exists(path) and not os.path.isfile(path):
+            blockers.append(path)
+    return blockers
+
+
+def _refuse_overwrite(out_dir):
+    """返回既有的普通文件清单（未给 --force 时须拒绝）。"""
+    return [os.path.join(out_dir, name) for name in _TARGET_NAMES
+            if os.path.isfile(os.path.join(out_dir, name))]
 
 
 def main(argv=None):
@@ -28,6 +50,14 @@ def main(argv=None):
         "--plaintext",
         action="store_true",
         help="导出解密后的明文密码（默认导出密文，避免明文凭据落盘）",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="允许覆盖输出目录里已存在的 accounts.json / users.json（默认拒绝）",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="只报告将写出的目标与行数，不写盘、不写审计",
     )
     args = parser.parse_args(argv)
     if args.db:
@@ -41,10 +71,39 @@ def main(argv=None):
     db.init_db(env_file=args.env, cleanup=False, migrate=False)
     accounts = db.load_accounts() if args.plaintext else db.load_accounts_raw()
     users = db.load_users()
+
+    blockers = _existing_targets(args.out)
+    existing = _refuse_overwrite(args.out)
+    if args.dry_run:
+        print(f"[dry-run] 将导出 {len(accounts)} 个账号 / {len(users)} 个用户 → {args.out}/")
+        for name in _TARGET_NAMES:
+            path = os.path.join(args.out, name)
+            note = "（已存在，需 --force）" if os.path.isfile(path) else ""
+            if os.path.exists(path) and not os.path.isfile(path):
+                note = "（不是普通文件，无法替换）"
+            print(f"  {path}{note}")
+        return 0
+
+    if blockers:
+        print("拒绝执行：以下目标不是普通文件，无法安全替换：" + "、".join(blockers),
+              file=sys.stderr)
+        return 2
+    if existing and not args.force:
+        print("拒绝执行：目标文件已存在，覆盖会替换既有 JSON 回滚基线："
+              + "、".join(existing), file=sys.stderr)
+        print("  确认要替换时加 --force；只想看目标时加 --dry-run。", file=sys.stderr)
+        return 2
+
+    if args.plaintext:
+        # 警告必须在写盘**之前**：写完之后才提示，读者可能已经离开终端。
+        print("⚠️  即将导出明文凭据（--plaintext），请立即转移到安全位置并删除该文件",
+              file=sys.stderr)
     os.makedirs(args.out, exist_ok=True)
     for name, data in (("accounts.json", accounts), ("users.json", users)):
         path = os.path.join(args.out, name)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT
+        flags |= os.O_TRUNC if args.force else os.O_EXCL
+        fd = os.open(path, flags, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         # 显式收紧权限：新建时由 os.open 0600 保证，已存在文件也统一覆盖为 0600
@@ -59,10 +118,8 @@ def main(argv=None):
             f"导出 {len(accounts)} 账号 / {len(users)} 用户"
             f"（{'明文凭据' if args.plaintext else '密文'}，escape hatch）",
         )
-    if args.plaintext:
-        print("⚠️  已导出明文凭据（--plaintext），请立即转移到安全位置并删除该文件")
     print(f"已导出 {len(accounts)} 个账号 / {len(users)} 个用户 → {args.out}/")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
