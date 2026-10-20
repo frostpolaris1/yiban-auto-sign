@@ -7,10 +7,17 @@
 | `README.md`（本文件） | 模块树、依赖方向、多执行体现状与出口配置 |
 | `api-executors.md` | 执行体与出口接口契约（前端用） |
 | `cli.md` | CLI 契约（面向 agent/自动化） |
+| `constraints.tsv` | **在册约束**（id / 载体 / 门或豁免理由 / 工单）；`tests/test_constraint_registry_gate.py` 逐条真跑 |
+| `acceptance-criteria.md` | D1 验收（改坏守卫必须报警）、负数条款、对外交付逐条核对清单 |
+| `umask-decision.md` | 生产入口 `umask 077` 不还原的评估结论与影响面 |
 | `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
 | `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
+
+**文稿归属（工单 b7la）**：设计/调研/计划类文稿的**唯一家**是主仓 `docs/`（本目录与
+`docs/refactor/` 等本地目录）。工作树（`work/*`）里出现的同名文稿一律视为草稿；要长期
+保留的内容必须收进主仓 `docs/`，并在 `scripts/check-doc-numbering.py` 的编号巡检下唯一。
 
 ## 目录树与职责（一句话版）
 
@@ -31,7 +38,7 @@ yiban/                        签到引擎与共享基础（可被 web / scripts
 ├── adapters/protocol_fake/   测试假上游（e2e 与演练用；生产链路不引）
 ├── adapters/notifier/        通知适配：notify（推送：config/ledger/transport）
 │                             与 mail（邮件：config/layout/transport）
-│                             ← 旧坐标 yiban/notify/ 与 yiban/mail/ 是转发壳
+│                             ← 旧坐标 yiban/notify/ 与 yiban/mail/ 的转发壳已于 145-E 退役
 ├── geo.py                    多边形内随机定位点（偶奇射线法 + 拒绝采样 + 显式兜底）
 ├── challenge.py              风控挑战**检测**（只检测不求解）
 ├── infra/                    叶子工具：locks / env_io / env_lock / account_crypto

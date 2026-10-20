@@ -101,8 +101,14 @@ class EmailPolicyUnitTest(unittest.TestCase):
         email_policy._DATA_FILE = os.path.join(tempfile.gettempdir(), "no-such-blocklist.conf")
         email_policy._cache["key"] = None
         try:
-            self.assertEqual(email_policy.review_email("a@example.com"), ERR_BLOCKED)  # 内置兜底
-            self.assertIsNone(email_policy.review_email("a@mailinator.com"))  # 文件名单失效
+            with self.assertLogs("email_policy", level="WARNING") as logs:
+                self.assertEqual(email_policy.review_email("a@example.com"), ERR_BLOCKED)  # 内置兜底
+                self.assertIsNone(email_policy.review_email("a@mailinator.com"))  # 文件名单失效
+            self.assertTrue(
+                any("不存在" in line and "内置保留名单" in line for line in logs.output),
+                "数据文件缺失必须留痕：黑名单整块失效的方向是放行，静默就等于没有证据。"
+                f"实得日志: {logs.output}",
+            )
         finally:
             email_policy._DATA_FILE = orig
             email_policy._cache["key"] = None

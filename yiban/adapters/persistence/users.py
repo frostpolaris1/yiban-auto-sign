@@ -521,10 +521,15 @@ def purge_deleted_users_hard(emails, audit_spec=None):
         _facade()._begin_immediate(conn)
         try:
             for email in emails:
-                row = conn.execute(
-                    "SELECT id FROM users WHERE email=? AND deleted=1", (email,)
-                ).fetchone()
-                if row is None:
+                # 同邮箱可有多张已注销行（users.email 自 v5 起只对活跃行部分唯一，
+                # 见 migrations 的 idx_users_email_live）。必须一次删净：旧实现
+                # fetchone() 取"第一张"再按 id 删，只删一行却按邮箱记成"已清除"，
+                # PII（email + password_hash）残留、审计失真（工单 ba-p02-05）。
+                # rowcount 承载"这个邮箱实际删了几行"，留痕按实际结果计。
+                cur = conn.execute(
+                    "DELETE FROM users WHERE email=? AND deleted=1", (email,)
+                )
+                if cur.rowcount <= 0:
                     continue
                 phones = [
                     r["phone"]
@@ -534,14 +539,8 @@ def purge_deleted_users_hard(emails, audit_spec=None):
                 ]
                 conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
                 _facade()._cascade_phone_owned(conn, phones)
-                # DELETE 复核 deleted=1——SELECT 与 DELETE 之间用户可能被并发 restore
-                # （跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
-                cur = conn.execute(
-                    "DELETE FROM users WHERE id=? AND deleted=1", (row["id"],)
-                )
-                if cur.rowcount > 0:
-                    purged.append(email)
-                    _delete_user_delete_requests(conn, email)  # 冷却计数连带清除
+                purged.append(email)
+                _delete_user_delete_requests(conn, email)  # 冷却计数连带清除
             if purged and audit_spec:
                 # target/计数在事务内按实际清除结果产出：按"请求清单"写会把被
                 # 跳过的（非已注销）项也留痕成清除过。
