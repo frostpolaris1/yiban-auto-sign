@@ -25,6 +25,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
 from yiban.adapters.config import account_crypto, env_io
 from yiban.adapters.notifier.mail import config as mailer
 from yiban.adapters.notifier.mail import transport as mailer_transport
@@ -511,7 +513,7 @@ class AdminToWriteTest(_Base):
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
-                mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
+                mock.patch.object(_notify_mail, "send_notification", return_value=None) as sn:
             r0 = c.put("/api/mail-config", json={"admin_to": "new@test.local"}, headers=h)
             self.assertEqual(r0.status_code, 400, r0.get_data(as_text=True))
             self.assertEqual(r0.get_json().get("reason"), "password_required")
@@ -533,7 +535,7 @@ class AdminToWriteTest(_Base):
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=same@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
-                mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
+                mock.patch.object(_notify_mail, "send_notification", return_value=None) as sn:
             r = c.put("/api/mail-config",
                       json={"admin_to": "same@test.local", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1092,7 +1094,7 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
 
     def _spy_write(self):
         """记录含 YIBAN_MAIL_* 键的 write_env_batch 调用，其余照常透传。"""
-        real = self.webapp.write_env_batch
+        real = _env_io_svc.write_env_batch
         calls = []
 
         def spy(env_path, updates):
@@ -1100,7 +1102,7 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
                 calls.append(dict(updates))
             return real(env_path, updates)
 
-        return mock.patch.object(self.webapp, "write_env_batch", side_effect=spy), calls
+        return mock.patch.object(_env_io_svc, "write_env_batch", side_effect=spy), calls
 
     def test_smtps_and_flags_in_one_atomic_write(self):
         self._reset_env_file()
@@ -1140,11 +1142,11 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
         c, h = self._master()
         alerts = []
         with mock.patch.object(
-                self.webapp, "send_notification",
+                _notify_mail, "send_notification",
                 side_effect=lambda t, c_, urgent=False, force=False, ledger=None:
                 alerts.append(t)):
             # 写入失败（模拟磁盘错）：不得外发，也不得在 .env 上留半个键
-            with mock.patch.object(self.webapp, "write_env_batch",
+            with mock.patch.object(_env_io_svc, "write_env_batch",
                                    side_effect=RuntimeError("disk full")):
                 r = c.put("/api/mail-config",
                           json={"enabled": True, "smtps": self.smtps(),

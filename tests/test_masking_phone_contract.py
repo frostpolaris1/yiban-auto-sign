@@ -33,6 +33,8 @@ import sys
 import tempfile
 import unittest
 
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -293,7 +295,7 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         cls.today = datetime.now().strftime("%Y-%m-%d")
         # 日志文本里放四种未遮形态：裸号、次位 0–2 的已入库号（写侧校验收、旧 `1[3-9]` 口径漏）、
         # `+86` 前缀、空格分段。写入**按天文件名**（`log_path_for` 的派生规则），故用它的返回值。
-        with open(cls.webapp.log_path_for(cls.today), "w", encoding="utf-8") as fh:
+        with open(_logs_svc.log_path_for(cls.today), "w", encoding="utf-8") as fh:
             fh.write("\n".join([
                 f"[{cls.today} 06:31:01] [INFO] yiban: [{PHONE}] 签到成功",
                 f"[{cls.today} 06:31:02] [WARNING] yiban: 上游回显 +8613800138000 与 138 0013 8000",
@@ -326,7 +328,7 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         unittest 直跑则落真实部署路径，故仍须自设。
         隔离一旦被改回，这条红；`tearDownClass` 删整个临时目录，故植入行不残留。
         """
-        path = self.webapp.log_path_for(self.today)
+        path = _logs_svc.log_path_for(self.today)
         self.assertEqual(os.path.dirname(path), self.tmp,
                          f"日志路径未隔离到临时目录：{path}")
         self.assertTrue(os.path.isfile(path), "临时按天日志未按夹具写入")

@@ -35,6 +35,8 @@ from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
+from web.services import notify_mail as _notify_mail
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "e" * 64
@@ -104,7 +106,7 @@ class _GateNarrowBase(unittest.TestCase):
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
         self.alerts = []
         p = mock.patch.object(
-            self.webapp, "send_notification",
+            _notify_mail, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None: (
                 self.alerts.append((t, urgent)), True)[1])
         p.start()

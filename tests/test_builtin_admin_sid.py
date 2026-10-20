@@ -38,6 +38,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -119,8 +122,8 @@ class _AdminSidBase(unittest.TestCase):
         # 明文→哈希与真实首启同源（verify_admin 对"只有明文"是 fail-closed 拒绝）；
         # 这条路径刻意不轮换 sid（口令本身没变），签发留给登录。
         self.webapp.migrate_admin_password_to_hash(self.env_file)
-        self.webapp.write_env_batch(self.env_file, {SID_KEY: ""})
-        patcher = mock.patch.object(self.webapp, "send_notification")
+        _env_io_svc.write_env_batch(self.env_file, {SID_KEY: ""})
+        patcher = mock.patch.object(_notify_mail, "send_notification")
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -248,7 +251,7 @@ class RevocationTest(_AdminSidBase):
         self.assertEqual(self._client_with_cookie(name, val).get("/api/me").status_code,
                          200, "前置：被窃副本此刻还有效")
         # 模拟运维在 SSH 里重设明文口令（哈希仍是旧的）；sid 那行原样留着
-        self.webapp.write_env_batch(self.env_file,
+        _env_io_svc.write_env_batch(self.env_file,
                                     {"YIBAN_ADMIN_PASSWORD": "RecoveredPass5555!"})
         self.webapp.migrate_admin_password_to_hash(self.env_file)
         self.assertNotEqual(self._env()[SID_KEY], before, "追回必须换发新 sid")

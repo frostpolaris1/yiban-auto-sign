@@ -27,6 +27,7 @@ from test_rekey_key_source import _B14AlertGateBase
 import web.security as web_security
 from web.routes import auth as web_routes_auth
 from web.services import limits as _limits
+from web.services import notify_mail as _notify_mail
 from yiban.adapters.config import account_crypto
 from yiban.adapters.notifier import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.core.masking import mask_email
@@ -348,7 +349,7 @@ class NewApplicationAlertTest(_B14AlertGateBase):
                    json={"email": self.EMAIL, "password": self.PASSWORD, "agree": True})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = self._login(c, self.EMAIL, self.PASSWORD)
-        with mock.patch.object(self.webapp, "send_notification",
+        with mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("通道炸了")):
             r2 = c.post(
                 "/api/my-accounts",
@@ -393,8 +394,8 @@ class MailAlertThrottleKeyTest(_B14AlertGateBase):
              mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
                                return_value=None):
             self.webapp._mail_alert_ts.clear()
-            self.webapp.send_notification("账号安全事件告警", "用户自助改密")
-            self.webapp.send_notification("账号安全事件告警", "内置主管理员改密", urgent=True)
+            _notify_mail.send_notification("账号安全事件告警", "用户自助改密")
+            _notify_mail.send_notification("账号安全事件告警", "内置主管理员改密", urgent=True)
         self.assertEqual(
             mails, ["账号安全事件告警", "账号安全事件告警"],
             "同标题、不同级别必须各发一封（否则低档用户可跨权限静音管理员的紧急告警）",
@@ -411,8 +412,8 @@ class MailAlertThrottleKeyTest(_B14AlertGateBase):
              mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
                                return_value=None):
             self.webapp._mail_alert_ts.clear()
-            self.webapp.send_notification("高危管理操作告警", "第一次")
-            self.webapp.send_notification("高危管理操作告警", "第二次")
+            _notify_mail.send_notification("高危管理操作告警", "第一次")
+            _notify_mail.send_notification("高危管理操作告警", "第二次")
         self.assertEqual(len(mails), 1, "同标题同级别仍在窗口内节流（SMTP 额度保护不回归）")
 
 
