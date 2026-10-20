@@ -94,7 +94,10 @@ services:
       test: ["CMD-SHELL",
              "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:17892/login', timeout=3)\" && python3 scripts/container_scheduler.py --check-health"]
       interval: 30s
-      timeout: 5s
+      # P13-09：这条 CMD-SHELL 要起两次 python3（urllib 探活 timeout=3 本身就可能
+      # 吃掉 3s；web 侧是 -w 1 --threads 8 的单 worker，首签窗口内 /login 排队常见）。
+      # timeout 5s 是整条命令的上限，高峰期会被判假 unhealthy；给足 15s。
+      timeout: 15s
       retries: 3
       start_period: 20s
 
