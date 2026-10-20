@@ -13,6 +13,9 @@
 ⑦ 批 3-d 已迁名（`BATCH3D_NAMES`，39 名）在 `web/app.py` 不得再有**任何绑定**
    （含 import）：它们的目的地只有 `web/services/*` 与 `web/render.py`。
 ⑧ 墙上剩余名字必须**恰好等于**永驻名单（5 名）＋ `__file__`——不是"⊆"。
+⑨ 双源债务集（`_WALL_RESIDUAL_DEBT`）只许缩：每项必须仍真的双源。
+⑩ **面外载体**（`frontend/e2e` / `scripts` / `docker` / `deploy`）不得经 app 模块对象读
+   3-d 已迁名——它们不经 `web/routes`，判据① 扫不到（Playwright 启动器即其一）。
 
 **来源与日期**
 批 3-a 名单取自 `origin/develop` 的 `5823c48e`（2026-10-19）：A 名＝`web/app.py` 以
@@ -93,16 +96,49 @@ def _read_abs(path):
         return f.read()
 
 
+def _walk_module_scope(nodes):
+    """遍历**模块作用域**的语句节点，穿过复合语句、不进入函数/类体。
+
+    为什么必须穿：`try:` / `if TYPE_CHECKING:` / `with … as X:` / `for X in …:` 里的
+    绑定在模块级同样让 `web.app.<名>` 重新可用；只扫 `tree.body` 的直接子节点会静默
+    放行这些形态（2026-10-20 独立审查实测：五种形态全部漏判，判据⑦与⑨同时失明）。
+    函数体与类体仍然不进入——判据⑨是跨文件求交集，局部名会把交集淹没。
+    """
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue                      # 自身是绑定，但不进它的体
+        if isinstance(node, ast.If):
+            stack.extend(node.body)
+            stack.extend(node.orelse)
+        elif isinstance(node, ast.Try):
+            stack.extend(node.body)
+            stack.extend(node.orelse)
+            stack.extend(node.finalbody)
+            for h in node.handlers:
+                stack.extend(h.body)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            stack.extend(node.body)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            stack.extend(node.body)
+            stack.extend(node.orelse)
+        elif isinstance(node, ast.Match):
+            for case in node.cases:
+                stack.extend(case.body)
+
+
 def _toplevel_definitions(src):
     """一段源码里的**模块级**真定义名（`def` / `class` / 赋值目标）。
 
-    与 `app_definition_names` 的差别：只看 `tree.body`，不收函数体内的局部名。
+    与 `app_definition_names` 的差别：不收函数体内的局部名。
     为什么必须分开：判据⑨是跨文件求交集，若把局部变量算进来（实测多出 21 个假
     命中，如 `path` / `raw` / `result` / `ts`），交集立刻被噪声淹没，判据失去分辨力。
+    复合语句里的模块级绑定算真定义（见 `_walk_module_scope`）。
     """
-    tree = ast.parse(src)
     out = set()
-    for node in tree.body:
+    for node in _walk_module_scope(ast.parse(src).body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             out.add(node.name)
         elif isinstance(node, ast.Assign):
@@ -110,6 +146,45 @@ def _toplevel_definitions(src):
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             out.add(node.target.id)
     return out
+
+
+#: 仓库根（`web/` 的上一级）。
+_REPO_ROOT = os.path.dirname(_WEB_DIR)
+#: 面外载体目录：持有 `web/app.py` 模块对象、却不经 `web/routes` 的代码。
+#: 现量：`frontend/e2e` 1 ＋ `scripts` 17 ＋ `docker` 3 ＋ `deploy` 1 = 22 个 `.py`。
+_OUT_OF_FACE_DIRS = ("frontend/e2e", "scripts", "docker", "deploy")
+#: 扫描面下限（实测 22；低于 15 即目录改名或过滤失效）。
+_OUT_OF_FACE_MIN_FILES = 15
+
+
+def _out_of_face_files():
+    """面外载体 `.py` 文件绝对路径（只扫清单内目录，不递归进测试圈）。"""
+    out = []
+    for rel in _OUT_OF_FACE_DIRS:
+        d = os.path.join(_REPO_ROOT, *rel.split("/"))
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith(".py"):
+                out.append(os.path.join(d, fn))
+    return out
+
+
+def _out_of_face_hits(src):
+    """一段源码里**经 app 模块对象**读 3-d 已迁名 → `行号: 基.名`。
+
+    面外载体经 importlib 载入的是 `web/app.py` 的**模块对象**，基底名不固定
+    （`webapp` / `app_mod` / `webapp_e2e` / `web_app`）。判据只收"基底名含 `app`"
+    的属性读取：直取服务层真源（`_logs_svc.log_path_for`）是**正确**写法，不得误红
+    ——旧版规则按属性名一刀切，本门自己的第一版就被这条误红（2026-10-20 实测）。
+    """
+    hits = []
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and "app" in node.value.id.lower()
+                and node.attr in BATCH3D_NAMES):
+            hits.append("%d: %s.%s" % (node.lineno, node.value.id, node.attr))
+    return hits
 
 
 def _service_modules():
@@ -588,11 +663,12 @@ def app_binding_names(src):
     `import-as` 是其中可用且真实可达的一种）。
 
     仍不覆盖的动态形态（`__getattr__` / `globals()[k]=` / `setattr`）由
-    `test_wall_no_dynamic_forwarding` 单独钉住。
+    `test_wall_no_dynamic_forwarding` 单独钉住。复合语句（`try` / `if` / `with … as` /
+    `for … in`）里的模块级绑定同样算——只扫 `tree.body` 会让这些形态静默放行，
+    2026-10-20 独立审查已实测五种全部漏判（见 `_walk_module_scope`）。
     """
-    tree = ast.parse(src)
     out = set()
-    for node in tree.body:
+    for node in _walk_module_scope(ast.parse(src).body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             out.add(node.name)
         elif isinstance(node, ast.Assign):
@@ -606,6 +682,13 @@ def app_binding_names(src):
         elif isinstance(node, ast.Import):
             for a in node.names:
                 out.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if isinstance(item.optional_vars, ast.Name):
+                    out.add(item.optional_vars.id)
+        elif (isinstance(node, (ast.For, ast.AsyncFor))
+              and isinstance(node.target, ast.Name)):
+            out.add(node.target.id)
     return out
 
 
@@ -678,6 +761,10 @@ class WallDirectReadsGateTest(unittest.TestCase):
         self.assertEqual(len(B_NAMES), 5, "永驻墙名必须恰好 5 名（批 3-d 收口口径）")
         self.assertGreaterEqual(len(BATCH3B_NAMES), 47, "批 3-b 已迁名单过小：名单被截断")
         self.assertEqual(len(BATCH3D_NAMES), 39, "批 3-d 已迁名单过小：名单被截断")
+        # 名单与真源表必须逐一对应：只钉"39 名"挡不住"换掉一名仍 39 名"——
+        # 那样门会盯着一个没搬的名字，而真正搬走的那名失去保护（独立审查实测可绕）。
+        self.assertEqual(sorted(BATCH3D_NAMES), sorted(BATCH3D_TRUE_SOURCE),
+                         "3-d 已迁名单与 BATCH3D_TRUE_SOURCE 键集不一致：两份名单已漂移")
         self.assertGreaterEqual(len(UNWRAPPED_IN_3C_S2), 2,
                                 "批 3-c S2 已去壳名单过小：名单被截断")
 
@@ -809,18 +896,61 @@ class WallDirectReadsGateTest(unittest.TestCase):
             "墙上名字与永驻名单不一致：多出的名字要么迁走、要么登记进 B_NAMES；"
             "少掉的名字要有人看见")
 
+    def test_migrated_names_are_not_read_out_of_face(self):
+        """判据⑩：**面外载体**不得读 3-d 已迁名。
+
+        为什么需要这一条：`web/routes/*` 不是唯一读者面。`frontend/e2e/server.py`
+        用 importlib 载入 `web/app.py` 后按属性取名字（Playwright 的 webServer）。
+        批 3-d 删掉 `log_path_for` 后该文件启动即 `AttributeError`，而 pytest 全绿、
+        CI 不跑 Playwright —— 属**静默断点**（2026-10-20 独立审查实测）。
+        面外载体清单是显式的：清单外新增一个读者不会自动纳入本判据，须登记。
+        """
+        files = _out_of_face_files()
+        self.assertGreaterEqual(
+            len(files), _OUT_OF_FACE_MIN_FILES,
+            "面外载体扫描面过小（实测 22）：目录改名或过滤失效（扫空不得当绿）")
+        hits = []
+        for path in files:
+            rel = os.path.relpath(path, _REPO_ROOT)
+            hits.extend("%s → %s" % (rel, h) for h in _out_of_face_hits(_read_abs(path)))
+        self.assertEqual(
+            hits, [],
+            "面外载体仍在读 3-d 已迁名（启动即 AttributeError）：\n" + "\n".join(hits))
+        # 牙口自证：同一扫描器对一段旧形状源码必须命中（否则"扫空即绿"）。
+        self.assertEqual(
+            _out_of_face_hits("x = webapp.log_path_for('2026-01-01')\n"),
+            ["1: webapp.log_path_for"],
+            "面外扫描器对已知旧形状不命中：本判据没有牙")
+        # 反向牙口：直取服务层真源是正确写法，不得误红。
+        self.assertEqual(
+            _out_of_face_hits("x = _logs_svc.log_path_for('2026-01-01')\n"), [],
+            "面外扫描器把直取真源误判成墙读：本判据会逼人改写对的代码")
+
     def test_3d_gate_has_teeth(self):
-        """突变验证：塞回 3-d 已迁名的 `def` / `import` / `m.<名>` ⇒ 判据⑦ 必须命中。"""
-        for src in ("def send_notification(t, c):\n    pass\n",
-                    'write_env_batch = _env_io_svc.write_env_batch\n',
-                    "from web.services.logs import log_path_for\n",
-                    "import web.render as site_image\n"):
-            with self.subTest(src=src.strip()):
-                name = ("send_notification" if "def send_notification" in src
-                        else "write_env_batch" if "write_env_batch =" in src
-                        else "log_path_for" if "log_path_for" in src else "site_image")
-                self.assertIn(name, app_binding_names(src),
-                              "塞回 3-d 已迁名的绑定未被判据⑦命中：本门没有牙")
+        """突变验证：把桩**追加到真实 `web/app.py` 源**上，判据⑦ 必须命中。
+
+        只喂一段孤立源码是字符串级自证：名单被换成别的名字时，孤立源码照样命中，
+        真实文件却已不受保护（独立审查实测：换一名 ＋ 塞回 import ⇒ 26 passed）。
+        故这里拿真源拼接；并覆盖块内绑定（`try` / `if` / `with` / `for`）——
+        只扫 `tree.body` 的旧实现对这四种全部失明。
+        """
+        real = _read_abs(_APP_PY)
+        cases = (
+            ("def send_notification(t, c):\n    pass\n", "send_notification"),
+            ('write_env_batch = _env_io_svc.write_env_batch\n', "write_env_batch"),
+            ("from web.services.logs import log_path_for\n", "log_path_for"),
+            ("import web.render as site_image\n", "site_image"),
+            ("try:\n    def log_path_for(d=None):\n        pass\n"
+             "except Exception:\n    pass\n", "log_path_for"),
+            ("if True:\n    from web.services.logs import parse_sign_log\n", "parse_sign_log"),
+            ("with open(__file__) as parse_sign_log:\n    pass\n", "parse_sign_log"),
+            ("for load_sign_state in ():\n    pass\n", "load_sign_state"),
+        )
+        for stub, name in cases:
+            with self.subTest(stub=stub.strip().splitlines()[0]):
+                self.assertIn(
+                    name, app_binding_names(real + "\n" + stub),
+                    "把 %r 追加到真实 app.py 后判据⑦ 没命中：本门没有牙" % name)
         src = ("def view():\n"
                "    m = _appmod()\n"
                "    return m.sign_window_bounds()\n")
@@ -946,7 +1076,8 @@ class WallResidualDebtTest(unittest.TestCase):
         svc = set()
         for path in _service_modules():
             svc |= _toplevel_definitions(_read_abs(path))
-        # 批 3-d 删 39 个转发包装后，app.py 模块级真定义实测 79 个（ref=工作树 S4 前 92）。
+        # 批 3-d 删 39 个转发包装后，app.py 模块级真定义实测 82 个
+        # （ref=`0423b225`＋批 3-d 收口树，2026-10-20 主会话现量；含复合语句里的模块级绑定）。
         # 下限只保"解析器没失效"，故按实测值留余量；判据本身不是"定义越多越好"。
         self.assertGreater(len(app), 60, "app.py 定义面过小：解析器失效")
         self.assertGreater(len(svc), 50, "服务层定义面过小：扫描面失效")
@@ -1126,24 +1257,13 @@ def _load_app_copy(tag, app_py):
 
 
 def _reconfigure_to(app_mod):
-    """把两个登记点重新指回给定副本（测试收尾用）。"""
-    import web.security as _sec
-    from web.services import verify_queue as _vq
+    """把**全部**登记点重新指回给定副本（测试收尾用）。
 
-    _sec.configure(
-        env_file=lambda: app_mod.ENV_FILE,
-        read_env=lambda: app_mod.read_env,
-        write_env_key=lambda: app_mod.write_env_key,
-        count_env_key_lines=lambda: app_mod._count_env_key_lines,
-        send_notification=lambda: app_mod.send_notification,
-    )
-    _vq.configure(
-        seat=lambda: app_mod._verify_sem,
-        attempt_allowed=lambda: app_mod._verify_attempt_allowed,
-        verify_clean=lambda: app_mod._verify_account_clean,
-        env_file=lambda: app_mod.ENV_FILE,
-        read_env=lambda: app_mod.read_env,
-    )
+    批 3-d 起登记点由 2 个扩到 11 个模块，故本处不再逐模块抄一份参数表——
+    那会是登记契约的第二份定义、且必然漂移。副本自带 `_register_host_hooks()`，
+    调用它即按该副本的模块级名字重登记（登记的是 lambda，解析仍在调用时刻）。
+    """
+    app_mod._register_host_hooks()
 
 
 if __name__ == "__main__":

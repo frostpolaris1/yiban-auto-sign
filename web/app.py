@@ -1192,75 +1192,85 @@ def _mail_alert_due(title, level=None):
 # 批 3-d 拆除 `web/app.py` 的转发包装后，服务层不再收显式注入参数，改由本段登记
 # lambda。登记的是 lambda 而不是值：调用时刻才解析，故 `--env-file` 改写 `ENV_FILE`、
 # 测试赋值与打桩都仍然生效。
-_signstatus.configure(
-    env_file=lambda: ENV_FILE,
-    read_env=lambda: read_env,
-    load_env_int=lambda: load_env_int,
-)
-_render.configure(
-    env_file=lambda: ENV_FILE,
-    read_env=lambda: read_env,
-    repo_root=lambda: _REPO_ROOT,
-    doc_cache=lambda: _doc_cache,
-    site_description_default=lambda: SITE_DESCRIPTION_DEFAULT,
-)
-_notify_mail.configure(
-    mail_alert_due=lambda: _mail_alert_due,
-)
-_env_io_svc.configure(
-    atomic_write=lambda: _atomic_write,
-    env_write_refuse_audit=lambda: _env_write_refuse_audit,
-    env_flag=lambda: _env_flag,
-)
-_logs_svc.configure(
-    state_dir=lambda: STATE_DIR,
-    log_file=lambda: LOG_FILE,
-    tail_lines=lambda: _tail_lines,
-)
-_manual_sign.configure(
-    log_path_for=lambda: _logs_svc.log_path_for,
-)
-_executor_env.configure(
-    env_file=lambda: ENV_FILE,
-    write_env_batch=lambda: _env_io_svc.write_env_batch,
-    sign_window=lambda: _signstatus._sign_window,
-)
-_measure.configure(
-    state_dir=lambda: STATE_DIR,
-    atomic_write=lambda: _atomic_write,
-)
-_capacity.configure(
-    env_file=lambda: ENV_FILE,
-    load_env_int=lambda: load_env_int,
-    read_env=lambda: read_env,
-    sign_window=lambda: _signstatus._sign_window,
-    edge_config=lambda: _render.edge_config,
-    send_notification=lambda: _notify_mail.send_notification,
-)
-# 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
-# `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
-# `_verify_attempt_allowed` / `_verify_sem`）都在本模块**之后**才定义，import 区里
-# 它们还不存在。登记的是 lambda 而不是值：调用时刻才解析，故后续赋值
-# （`--env-file` 改写 `ENV_FILE`、create_app 回写 `SESSION_ABS_TTL_SECONDS`）与测试打桩
-# 都仍然生效——这正是搬到服务层之前那批转发包装提供的性质，本段是它的等价替代。
-#
-# 未登记即 fail-closed（`web.security._host` / `web.services.verify_queue._host` 抛
-# RuntimeError 并点名键）。不静默回退默认值：静默回退会让"忘记登记"表现为
-# "管理员永远登不进"或"校验永远放行"，属最坏的假绿方向。
-_security.configure(
-    env_file=lambda: ENV_FILE,
-    read_env=lambda: read_env,
-    write_env_key=lambda: write_env_key,
-    count_env_key_lines=lambda: _count_env_key_lines,
-    send_notification=lambda: _notify_mail.send_notification,
-)
-_verify_queue.configure(
-    seat=lambda: _verify_sem,
-    attempt_allowed=lambda: _verify_attempt_allowed,
-    verify_clean=lambda: _verify_account_clean,
-    env_file=lambda: ENV_FILE,
-    read_env=lambda: read_env,
-)
+def _register_host_hooks():
+    """把本模块持有的依赖登记给各服务模块（宿主接缝，见上方说明）。
+
+    **为何是函数而不是纯模块级调用**：测试会用 importlib 另载一份 `web/app.py` 副本，
+    再靠重调本函数把登记指回该副本（`tests/test_wall_direct_reads.py` 的
+    `HookRegistrationContractTest`）。写成函数，登记只有一份定义，不会在测试里
+    抄出第二份会漂移的名单。
+    """
+    _signstatus.configure(
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+        load_env_int=lambda: load_env_int,
+    )
+    _render.configure(
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+        repo_root=lambda: _REPO_ROOT,
+        doc_cache=lambda: _doc_cache,
+        site_description_default=lambda: SITE_DESCRIPTION_DEFAULT,
+    )
+    _notify_mail.configure(
+        mail_alert_due=lambda: _mail_alert_due,
+    )
+    _env_io_svc.configure(
+        atomic_write=lambda: _atomic_write,
+        env_write_refuse_audit=lambda: _env_write_refuse_audit,
+        env_flag=lambda: _env_flag,
+    )
+    _logs_svc.configure(
+        state_dir=lambda: STATE_DIR,
+        log_file=lambda: LOG_FILE,
+        tail_lines=lambda: _tail_lines,
+    )
+    _manual_sign.configure(
+        log_path_for=lambda: _logs_svc.log_path_for,
+    )
+    _executor_env.configure(
+        env_file=lambda: ENV_FILE,
+        write_env_batch=lambda: _env_io_svc.write_env_batch,
+        sign_window=lambda: _signstatus._sign_window,
+    )
+    _measure.configure(
+        state_dir=lambda: STATE_DIR,
+        atomic_write=lambda: _atomic_write,
+    )
+    _capacity.configure(
+        env_file=lambda: ENV_FILE,
+        load_env_int=lambda: load_env_int,
+        read_env=lambda: read_env,
+        sign_window=lambda: _signstatus._sign_window,
+        edge_config=lambda: _render.edge_config,
+        send_notification=lambda: _notify_mail.send_notification,
+    )
+    # 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
+    # `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /
+    # `_verify_attempt_allowed` / `_verify_sem`）都在本模块**之后**才定义，import 区里
+    # 它们还不存在。登记的是 lambda 而不是值：调用时刻才解析，故后续赋值
+    # （`--env-file` 改写 `ENV_FILE`、create_app 回写 `SESSION_ABS_TTL_SECONDS`）与测试打桩
+    # 都仍然生效——这正是搬到服务层之前那批转发包装提供的性质，本段是它的等价替代。
+    #
+    # 未登记即 fail-closed（`web.security._host` / `web.services.verify_queue._host` 抛
+    # RuntimeError 并点名键）。不静默回退默认值：静默回退会让"忘记登记"表现为
+    # "管理员永远登不进"或"校验永远放行"，属最坏的假绿方向。
+    _security.configure(
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+        write_env_key=lambda: write_env_key,
+        count_env_key_lines=lambda: _count_env_key_lines,
+        send_notification=lambda: _notify_mail.send_notification,
+    )
+    _verify_queue.configure(
+        seat=lambda: _verify_sem,
+        attempt_allowed=lambda: _verify_attempt_allowed,
+        verify_clean=lambda: _verify_account_clean,
+        env_file=lambda: ENV_FILE,
+        read_env=lambda: read_env,
+    )
+
+_register_host_hooks()
 
 
 
