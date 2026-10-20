@@ -21,6 +21,7 @@
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -138,12 +139,33 @@ class MypyGateWiringTest(unittest.TestCase):
         self.assertIn('resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}"', self.text,
                       "统一裁决点没收到归一后的静态检查码")
 
+    def test_mypy_uses_an_isolated_cache_in_both_modes(self):
+        """工单 dq2n：mypy 的判定不得取决于 `.mypy_cache` 新旧。
+
+        mypy 在 `(path, size, mtime)` 相同时**不校验内容哈希**，直接信任缓存里的
+        错误 ⇒ 同一份代码旧缓存红、新缓存绿。门每次运行都必须用**新建**的缓存目录，
+        把上一轮（甚至 Windows 侧）的缓存排除在判定之外。
+        """
+        self.assertRegex(
+            self.text, r'MYPY_CACHE="\$\(mktemp -d\)"',
+            "全量/fast 模式必须每次新建缓存目录（mktemp -d），不得复用 .mypy_cache")
+        self.assertIn('"$PY" -m mypy --cache-dir "$MYPY_CACHE"', self.text,
+                      "全量/fast 模式的 mypy 步必须显式指定隔离缓存目录")
+        m = re.search(r"^run_ci\(\) \{(.*?)^\}", self.text, re.M | re.S)
+        self.assertIsNotNone(m, "抽不出 run_ci 函数体——结构改了？")
+        self.assertIn('"$py" -m mypy --cache-dir "$CI_MYPY_CACHE"', m.group(1),
+                      "--ci 的 mypy 步也必须用隔离缓存（就地跑最容易踩到脏缓存）")
+        self.assertIn('CI_MYPY_CACHE="$(mktemp -d)"', m.group(1),
+                      "--ci 的缓存目录必须每次新建")
+
 
 class MypyGateLiveTest(unittest.TestCase):
     """④：活体正反例——收编模块绿；注入类型错必红；换成默认档又不红。"""
 
     def test_adopted_modules_are_clean_under_the_repo_config(self):
-        rc, out = _run_mypy([], BASE)
+        # 隔离缓存：本用例的结论也不得取决于仓内 `.mypy_cache` 的新旧（工单 dq2n）。
+        with tempfile.TemporaryDirectory() as cache:
+            rc, out = _run_mypy(["--cache-dir", cache], BASE)
         self.assertEqual(rc, 0,
                          "收编模块在 [tool.mypy] 下必须绿（真跑 mypy 的输出如下）：\n" + out)
         # 缺 mypy 时 rc 也非 0：点明是"工具不在场"，不是"代码有错"。
@@ -168,6 +190,67 @@ class MypyGateLiveTest(unittest.TestCase):
                       "红的理由不是 no-untyped-def：说明红的来源不是配置里的严格键\n" + out_strict)
         self.assertEqual(rc_default, 0,
                          "默认档本该放行未标注 def——它却红了，本用例的对照失效\n" + out_default)
+
+
+class MypyCacheDeterminismTest(unittest.TestCase):
+    """工单 dq2n：同一份代码，旧缓存/新缓存必须给同一结论。
+
+    mypy 的缓存校验只看 `(path, size, mtime)`：三者都相同时**不算内容哈希**，直接
+    信任缓存里记录的错误。于是"先跑错误版本（缓存记下红）→ 还原正确版本（同字节数、
+    同 mtime）"会让同一份正确代码在旧缓存下红、新缓存下绿。门的处置是每次运行新建
+    缓存目录：上一轮的判定不可能进入这一轮。
+    """
+
+    _GOOD = "def f(x: int) -> int:\n    return x\n"
+    _BAD = "def f(x: int) -> int:\n    return y\n"   # 同字节数，只换名字
+
+    def _sandbox(self):
+        tmp = tempfile.mkdtemp(prefix="mypy-cache-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with open(os.path.join(tmp, "pyproject.toml"), "w", encoding="utf-8") as f:
+            f.write('[tool.mypy]\npython_version = "3.10"\nfiles = ["m.py"]\n'
+                    "disallow_untyped_defs = true\n")
+        return tmp
+
+    def _write(self, tmp, text, mtime=1700000000):
+        path = os.path.join(tmp, "m.py")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def test_stale_cache_can_flip_the_verdict_but_isolated_caches_cannot(self):
+        tmp = self._sandbox()
+        poisoned = os.path.join(tmp, "poisoned")
+        # 1) 错误版本 + 新缓存 ⇒ 红（缓存里记下 name-defined）
+        self._write(tmp, self._BAD)
+        rc_bad, out_bad = _run_mypy(["--cache-dir", poisoned], tmp)
+        self.assertNotEqual(rc_bad, 0, "错误版本必须红：\n" + out_bad)
+        # 2) 还原正确版本：字节数相同、mtime 相同 ⇒ 旧缓存不失效（缺陷本体）
+        self._write(tmp, self._GOOD)
+        rc_stale, out_stale = _run_mypy(["--cache-dir", poisoned], tmp)
+        # 3) 同一份正确文本 + 新缓存 ⇒ 绿（门每次都走这条）
+        fresh = os.path.join(tmp, "fresh")
+        rc_fresh, out_fresh = _run_mypy(["--cache-dir", fresh], tmp)
+        self.assertEqual(rc_fresh, 0, "正确文本在新缓存下必须绿：\n" + out_fresh)
+        self.assertNotEqual(
+            rc_stale, 0,
+            "旧缓存没能复现非确定性——本用例的前提失效（mypy 改了缓存校验策略？）")
+        self.assertIn("name-defined", out_stale,
+                      "旧缓存的红必须来自上一轮的错误（否则前提不成立）：\n" + out_stale)
+
+    def test_gate_creates_a_new_cache_dir_on_every_run(self):
+        """接线判据：门里的缓存目录来自 mktemp，不是固定路径。
+
+        固定路径（哪怕在 /tmp）会把上一轮的缓存带进这一轮，等价于没修。
+        """
+        text = _read(ENTRY)
+        self.assertRegex(text, r'MYPY_CACHE="\$\(mktemp -d\)"',
+                         "全量/fast 的缓存目录必须 mktemp -d 新建")
+        m = re.search(r"^run_ci\(\) \{(.*?)^\}", text, re.M | re.S)
+        self.assertIsNotNone(m, "抽不出 run_ci")
+        self.assertRegex(m.group(1), r'CI_MYPY_CACHE="\$\(mktemp -d\)"',
+                         "--ci 的缓存目录必须 mktemp -d 新建")
 
 
 if __name__ == "__main__":

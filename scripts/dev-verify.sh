@@ -279,7 +279,10 @@ guard_worktree_crlf() { # --ci 就地跑不做归一化：工作树真有 CRLF �
 
 run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 tests/test_dev_verify_entry.py，加一步必须同批改那份清单
     local py
-    trap 'rc=$?; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
+    # 隔离缓存（工单 dq2n）：mypy 在 (path,size,mtime) 相同时不校验内容哈希，会信任
+    # 上一轮缓存里的错误。就地跑最容易踩到脏 .mypy_cache，故每次新建缓存目录。
+    CI_MYPY_CACHE=""
+    trap 'rc=$?; if [ -n "${CI_MYPY_CACHE:-}" ]; then rm -rf "$CI_MYPY_CACHE"; fi; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
     py=${DEV_VERIFY_PY:-python}
     command -v "$py" >/dev/null 2>&1 || die "找不到解释器：$py"
     py=$(command -v "$py")
@@ -289,8 +292,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     cd "$REPO"
     echo "DEV-VERIFY(ci) lint"
     "$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
-    echo "DEV-VERIFY(ci) mypy（收编名单住 pyproject.toml 的 [tool.mypy] files）"
-    "$py" -m mypy
+    CI_MYPY_CACHE="$(mktemp -d)"
+    echo "DEV-VERIFY(ci) mypy（收编名单住 pyproject.toml 的 [tool.mypy] files；隔离缓存 $CI_MYPY_CACHE）"
+    "$py" -m mypy --cache-dir "$CI_MYPY_CACHE"
     "$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
     echo "DEV-VERIFY(ci) 快集（车道名册的 fast 行；与本地 --fast 同集）"
     # 关键词子集 → 车道名册（2026-10-17，工单 vckk 阶段 2-a）。旧子集是 `-k` 关键词命中面：
@@ -832,8 +836,12 @@ fi
 PY="$FIXED_VENV/bin/python"
 [ -x "$PY" ] || die "固定 venv 不可用：$PY（不许退化成 PATH 上的任意 python）"
 TMPOUT=$(mktemp)
+# mypy 隔离缓存（工单 dq2n）：mypy 的缓存校验只看 (path,size,mtime)，三者相同时
+# **不校验内容哈希**，会信任上一轮记录的错误 ⇒ 同一份代码旧缓存红、新缓存绿。
+# 每次运行新建目录，把上一轮（含 Windows 侧）的缓存排除在判定之外。
+MYPY_CACHE=$(mktemp -d)
 IGNORE_LIST=
-trap 'rm -f "$TMPOUT" "$IGNORE_LIST"' EXIT
+trap 'rm -f "$TMPOUT" "$IGNORE_LIST"; rm -rf "$MYPY_CACHE"' EXIT
 
 echo "DEV-VERIFY log: ${LOG:-<未落盘>}"
 echo "DEV-VERIFY repo: $REPO"
@@ -958,9 +966,9 @@ echo "DEV-VERIFY ruff_exit=$ruff_rc"
 
 # mypy 静态类型门禁（收编名单住 pyproject.toml 的 [tool.mypy] files）：与 ruff 同属静态检查，
 # 排在 ruff 之后、pytest 之前。裸 `mypy` 即读 [tool.mypy] 的 files 白名单——收编名单只此一处。
-echo "DEV-VERIFY mypy: mypy（收编名单见 pyproject.toml [tool.mypy] files）"
+echo "DEV-VERIFY mypy: mypy（收编名单见 pyproject.toml [tool.mypy] files；隔离缓存 $MYPY_CACHE）"
 set +e
-"$PY" -m mypy
+"$PY" -m mypy --cache-dir "$MYPY_CACHE"
 mypy_rc=$?
 set -e
 echo "DEV-VERIFY mypy_exit=$mypy_rc"
