@@ -64,7 +64,7 @@ _THREAD_CALLS = ("Thread", "ThreadPoolExecutor", "Barrier")
 #: 这些用例宣称跨进程语义，但**只在同一个进程内**制造并发错觉，故**不作跨进程判据**。
 #: 真跨进程判据在别处（见理由列）。**本表不许留假条目**：条目不再命中判据即转红。
 NAMED_SMOKE = {
-    # 重导入 `yiban.notify` 模拟"新进程"，但 `yiban.infra.locks` 的每路径 RLock 与
+    # 重导入 `yiban.adapters.notifier.notify` 模拟"新进程"，但 `yiban.infra.locks` 的每路径 RLock 与
     # 进程内全局**不随重导入复位** ⇒ 模拟出的"第二进程"与第一进程共享进程内锁，
     # 不是真进程。真跨进程账本判据在 `test_notify_ledger.py` 的
     # `test_no_process_lock_concurrent_not_overspent` 之外——见下条与本门 B 组。
