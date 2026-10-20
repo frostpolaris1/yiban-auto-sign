@@ -95,6 +95,20 @@ if [[ ! "$MAX_FETCH" =~ ^[0-9]+$ ]]; then
         "$(printf '，收到 %q' "$MAX_FETCH")" >&2
     exit 3
 fi
+# STALE_DAYS / LOCAL_KEEP 直接参与判据：非法值时 `[ "$age_days" -gt "$STALE_DAYS" ]`
+# 返回 2（被 if 当假 ⇒ 新鲜度门静默放行），`$((LOCAL_KEEP + 1))` 展开失败会让整条
+# 删除管道不执行（本地轮转静默失效）。与上面三个注入面同一白名单、同一退出码
+# （P12-16；MF-78）。
+if [[ ! "$STALE_DAYS" =~ ^[0-9]+$ ]]; then
+    printf '配置非法：STALE_DAYS 必须是非负整数（用于新鲜度判据）%s\n' \
+        "$(printf '，收到 %q' "$STALE_DAYS")" >&2
+    exit 3
+fi
+if [[ ! "$LOCAL_KEEP" =~ ^[0-9]+$ ]]; then
+    printf '配置非法：LOCAL_KEEP 必须是非负整数（用于本地保留份数判据）%s\n' \
+        "$(printf '，收到 %q' "$LOCAL_KEEP")" >&2
+    exit 3
+fi
 
 mkdir -p "$LOCAL_MIRROR_DIR" || { echo "无法创建本地镜像目录 $LOCAL_MIRROR_DIR" >&2; exit 1; }
 LOG="$LOCAL_MIRROR_DIR/pull.log"
@@ -325,7 +339,9 @@ done
 
 if [ "$MODE" = "check" ]; then
     log "=== 检查完成：待拉取 $fetched 份，已同步 $skipped 份，隔离 $failed 份 ==="
-    freshness_check
+    # P12-15：--check 是"不下载、只看状态"的自动化入口，必须与 --status/--verify/默认
+    # pull 一样把新鲜度结论接进退出码；旧实现丢弃返回值，副本早已停更仍报 0。
+    freshness_check || exit 1
     [ "$failed" -eq 0 ] || exit 1
     exit 0
 fi
