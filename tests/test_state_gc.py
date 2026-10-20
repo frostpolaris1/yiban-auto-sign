@@ -242,8 +242,10 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     前四类并入同一份前缀名册核对；第 ⑤ 类另立"固定名枚举"判据（`_scan` 的第二返回值）。
     """
 
+    #: 前缀字符类含下划线：Python 模块名惯例就是下划线，按日件照此命名时不得
+    #: 静默逃逸（`elbow_shadow-<day>.json`）。连字符形态照旧匹配。
     _NAME_RE = re.compile(
-        r'["\'](?:\$[A-Za-z_{][^"\'\n]*/)?([a-z][a-z0-9-]*)-[^"\'\n]*'
+        r'["\'](?:\$[A-Za-z_{][^"\'\n]*/)?([a-z][a-z0-9_-]*)-[^"\'\n]*'
         r'(?:\{[^}]*\}|\$\([^)]*\)|%Y|YYYY)'
     )
 
@@ -251,13 +253,13 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     #: `"…: %s" % msg` 这类日志文案当成文件名（误报会喂假绿）。
     _ESCAPE_RES = (
         ("%s 拼名", re.compile(
-            r'["\']([a-z][a-z0-9-]*-)%s\.(?:json|jsonl|log|txt|marker)["\']')),
+            r'["\']([a-z][a-z0-9_-]*-)%s\.(?:json|jsonl|log|txt|marker)["\']')),
         ("月粒度", re.compile(
-            r'["\']([a-z][a-z0-9-]*-)%m\.(?:json|jsonl|log|txt|marker)["\']')),
+            r'["\']([a-z][a-z0-9_-]*-)%m\.(?:json|jsonl|log|txt|marker)["\']')),
         ("常量拼接", re.compile(
-            r'[A-Z][A-Z0-9_]*FILE_PREFIX\s*=\s*["\']([a-z][a-z0-9-]*-)["\']')),
+            r'[A-Z][A-Z0-9_]*FILE_PREFIX\s*=\s*["\']([a-z][a-z0-9_-]*-)["\']')),
         (".corrupt-", re.compile(
-            r'["\']([a-z][a-z0-9-]*-)[^"\'\n]*\.(?:json|jsonl|log|txt|marker)\.corrupt-')),
+            r'["\']([a-z][a-z0-9_-]*-)[^"\'\n]*\.(?:json|jsonl|log|txt|marker)\.corrupt-')),
     )
     #: 逃逸 ⑤：非按日命名的固定名件（名字里没有日期表达式）。
     _NONDAILY_RE = re.compile(
@@ -347,6 +349,18 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
         """
         found, _ = self._scan_escape('A = "sign-delta-%s.json.corrupt-1" % day\n')
         self.assertIn("sign-delta-", found, ".corrupt- 变体的按日前缀逃过了扫描")
+
+    def test_escape_underscore_prefix_is_detected(self):
+        """下划线命名的按日前缀必须被抓到；补下划线后正常连字符名字仍须命中。
+
+        Python 模块名惯例用下划线，按日件完全可能照此命名；前缀类只收连字符时，
+        `elbow_shadow-<day>.json` 会静默绕开"新增按日文件必须登记清理策略"这道门。
+        """
+        found, _ = self._scan_escape(
+            'A = "elbow_shadow-%s.json" % day\n'
+            'B = "sign-state-%s.json" % day\n')
+        self.assertIn("elbow_shadow-", found, "下划线命名的按日前缀逃过了扫描")
+        self.assertIn("sign-state-", found, "补下划线后正常连字符名字仍须命中")
 
     def test_escape_non_daily_name_is_detected(self):
         """逃逸 ⑤：非按日命名（固定名、无日期表达式）必须走另一条枚举判据。"""

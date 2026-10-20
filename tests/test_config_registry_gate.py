@@ -15,6 +15,7 @@
     同形状的污染断言。
 依赖：起子进程跑门禁脚本；临时夹具树自带名册与源码；无网络、无 docker CLI。
 """
+import ast
 import json
 import os
 import shutil
@@ -316,6 +317,100 @@ class GateDeadGateGuardTest(unittest.TestCase):
             self.assertIn("不存在", r.stderr, "红的必须是扫描面存在性拒判：" + r.stderr)
             self.assertNotIn("顶层目录", r.stderr,
                              "不许被扫描面残缺守卫抢答（那说明本用例没走到目标分支）")
+
+
+_IMPORT_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _module_level_key_reads(source, keys):
+    """→ 在**模块导入期**读取的配置键集合（函数/类体内的读取不算）。
+
+    `keys` 是关心的键名集合。判据只认"赋值语句的右值里出现键名字面量"这一形态：
+    `CAP = parse_env_int("KEY", 1)` 与 `X = os.environ["KEY"]` 都会被抓住；
+    函数体内的同一写法是"读时取"，按设计放行。
+    """
+    tree = ast.parse(source)
+    found = set()
+
+    def scan(node):
+        if isinstance(node, _IMPORT_SCOPE):
+            return
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for sub in ast.walk(node.value):
+                if isinstance(sub, ast.Call):
+                    for arg in sub.args:
+                        if isinstance(arg, ast.Constant) and arg.value in keys:
+                            found.add(arg.value)
+                elif isinstance(sub, ast.Subscript):
+                    sl = sub.slice
+                    if isinstance(sl, ast.Constant) and sl.value in keys:
+                        found.add(sl.value)
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.stmt):
+                scan(child)
+
+    for stmt in tree.body:
+        scan(stmt)
+    return found
+
+
+class HotKeyImportSnapshotTest(unittest.TestCase):
+    """`reload: hot` 的键不得在模块导入期快照（工单 ba-p04-07 的形状门）。
+
+    常驻进程（兜底执行体）运行期改 `.env` 只经 `workers._reload_env_into_environ()`
+    并回进程环境；键若在导入期取过一次，白名单再全也改变不了已求值的常量。
+    `hot` 的语义就是"改了立刻生效"，故这是一条任何时刻都不该被违反的性质，
+    不是某条调用链的编舞。
+    """
+
+    SCAN_DIRS = ("yiban", "web", "scripts", "docker")
+
+    def _hot_keys(self):
+        with open(REGISTRY, encoding="utf-8") as f:
+            data = json.load(f)
+        return {k for k, v in data.items()
+                if isinstance(v, dict) and v.get("reload") == "hot"}
+
+    def test_no_hot_key_is_snapshotted_at_import(self):
+        hot = self._hot_keys()
+        self.assertGreaterEqual(len(hot), 40, "名册的 reload=hot 集塌了，门会假绿")
+        offenders = {}
+        scanned = 0
+        for sub in self.SCAN_DIRS:
+            for dirpath, dirs, files in os.walk(os.path.join(BASE, sub)):
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                for name in files:
+                    if not name.endswith(".py"):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    scanned += 1
+                    with open(path, encoding="utf-8", errors="ignore") as f:
+                        src = f.read()
+                    try:
+                        hits = _module_level_key_reads(src, hot)
+                    except SyntaxError:
+                        continue
+                    if hits:
+                        rel = os.path.relpath(path, BASE).replace(os.sep, "/")
+                        offenders[rel] = sorted(hits)
+        self.assertGreaterEqual(scanned, 100, "扫描面塌了 ⇒ 零命中不等于合规")
+        self.assertEqual(
+            offenders, {},
+            "hot 键在导入期被快照；常驻进程改 .env 永远不生效（见 ba-p04-07）")
+
+    def test_detector_has_teeth(self):
+        hot = {"YIBAN_MAIL_USER_FAIL_DAILY_CAP"}
+        bad = 'CAP = parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)\n'
+        self.assertEqual(_module_level_key_reads(bad, hot), hot)
+        bad_sub = 'CAP = int(os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"])\n'
+        self.assertEqual(_module_level_key_reads(bad_sub, hot), hot)
+        # 函数体内读取＝读时取，放行
+        good = ('def cap():\n'
+                '    return parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)\n')
+        self.assertEqual(_module_level_key_reads(good, hot), set())
+        # 非 hot 档（restart）允许导入期快照，不在本判据范围
+        restart = 'X = parse_env_int("YIBAN_QUOTA_STATE_FLUSH_MAX", 64)\n'
+        self.assertEqual(_module_level_key_reads(restart, hot), set())
 
 
 class GateRealRegistryContentTest(unittest.TestCase):
