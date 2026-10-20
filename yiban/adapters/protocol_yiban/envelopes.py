@@ -79,6 +79,19 @@ def parse_api_envelope(body: str | bytes) -> Envelope:
     return Envelope(code=code, msg=msg, data=raw.get("data"), raw=raw)
 
 
+def code_is_ok(raw_code: object) -> bool:
+    """信封 ``code`` 是否为"成功"：数字 ``0`` 与字符串 ``"0"`` 都算成功。
+
+    上游同一字段可能发数字也可能发数字字符串（SPEC §3.1；本文件 ``parse_api_envelope``
+    对 ``999`` 已按双态收敛）。判据必须与解析层同一容忍度：严格 ``== 0`` 会把载荷完好的
+    字符串 ``"0"`` 判成失败，落到 RISK/通用档打满重试（每次都是真实登录）。
+    ``bool`` 不是成功码（Python 里 ``False == 0``，不显式排除就会把 ``false`` 判成功）。
+    """
+    if isinstance(raw_code, bool):
+        return False
+    return raw_code == 0 or raw_code == "0"
+
+
 def parse_usersure_response(body: str | bytes) -> UsersureResult:
     """解析 usersure 响应。
 
