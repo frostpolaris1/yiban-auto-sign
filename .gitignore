@@ -83,6 +83,10 @@ demo/
 # 备份目录（防历史敏感文件被误提交）
 backup-*/
 .backup-*/
+# 2026-10-20 P13-01：无尾斜杠形态同时覆盖文件与目录——README 教部署者在仓库根创建
+# `backup-passphrase`（解密全部历史备份的口令），旧规则只写了目录形式，文件形态漏网：
+# 它会以 untracked 出现在 `git status` 里，一次 `git add -A` 即泄密。
+backup-*
 # 2026-08-20 对抗性审查修复：复数形式 backups/ 此前漏网（内含 deploy-local
 # 敏感文档副本与源码快照，一次 git add -A 即泄露）
 backups/
