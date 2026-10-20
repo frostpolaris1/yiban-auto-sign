@@ -160,24 +160,60 @@ class RetryLandingTest(unittest.TestCase):
         self.assertIsNone(executor_v3.next_retry_at_v3(now, _cfg(), 60))
 
     def test_still_inside_window_at_the_last_second_is_not_none(self):
-        """窗口尚未过（哪怕只差 1s）仍要给落点——不得被新夹取误伤。"""
-        now = DAY1.replace(hour=7, minute=48, second=59)
-        target = executor_v3.next_retry_at_v3(now, _cfg(), 60, random.Random(2))
+        """窗口只剩 1s：`cap` 已小于最小间隔 → 放弃重试（None），不把间隔压到 60s 之下。
+
+        这是 ba-p03-04 的不变量：`YIBAN_RETRY_MIN_INTERVAL` 是硬下界。降到 1s 下界时，
+        1s 的剩余窗口仍容不下（cap=0.3 < 1）；窗口剩 5s 时 cap=1.5 ≥ 1，应给出窗内落点。
+        """
+        last_second = DAY1.replace(hour=7, minute=48, second=59)
+        self.assertIsNone(executor_v3.next_retry_at_v3(
+            last_second, _cfg(), 60, random.Random(2)))
+        cfg_low = _cfg(retry_min_interval=1)
+        self.assertIsNone(executor_v3.next_retry_at_v3(
+            last_second, cfg_low, 60, random.Random(2)),
+            "1s 剩余窗口连 1s 下界也放不下 ⇒ 仍须 None")
+        now = DAY1.replace(hour=7, minute=48, second=55)
+        target = executor_v3.next_retry_at_v3(now, cfg_low, 60, random.Random(2))
         self.assertIsNotNone(target)
         self._in_window(target, DAY1)
 
     # ---- 退化窗口：夹取不得越界 ----
     def test_narrow_window_still_clamps_inside(self):
-        """窗口极窄时（只剩 10s）落点仍必须在窗内。"""
+        """窗口极窄时（只剩 10s）：默认最小间隔放不下 ⇒ None；降下界后落点仍在窗内。"""
         cfg = _cfg(sign_end=(6, 42), edge_back_sec=110, edge_front_sec=0)
         now = DAY1.replace(hour=6, minute=40)
         _lo, hi_dt = window.bounds(cfg).bounds_dt(DAY1)
         for last_delay in (60, 600, 10 ** 6):
             with self.subTest(last_delay=last_delay):
-                target = executor_v3.next_retry_at_v3(now, cfg, last_delay,
-                                                       random.Random(5))
+                self.assertIsNone(executor_v3.next_retry_at_v3(
+                    now, cfg, last_delay, random.Random(5)))
+        cfg_low = dict(cfg, retry_min_interval=1)
+        for last_delay in (60, 600, 10 ** 6):
+            with self.subTest(last_delay=last_delay, retry_min_interval=1):
+                target = executor_v3.next_retry_at_v3(
+                    now, cfg_low, last_delay, random.Random(5))
                 self.assertIsNotNone(target)
                 self.assertLessEqual(target, hi_dt)
+
+    def test_business_day_passed_after_midnight_returns_none(self):
+        """业务日仍是昨天时，跨过午夜后的重试落点必须是 None（ba-p03-06）。
+
+        `day` 是队列行所属的业务日；`bounds_dt(业务日)` 的上界在昨天，00:10 时剩余为负。
+        旧实现只喂墙钟时刻，会把落点算到"次日窗口"而把行留在昨日的 `day` 上——按日
+        领取的队列永远领不到它（静默漏签）。故这里钉的是"绝不返回一个属于次日的落点"。
+        """
+        now = DAY2.replace(hour=0, minute=10)
+        self.assertIsNone(executor_v3.next_retry_at_v3(
+            now, _cfg(), 60, random.Random(1), day=DAY1.strftime("%Y-%m-%d")))
+
+    def test_business_day_inside_window_lands_on_that_day(self):
+        """正常路径：显式业务日与 now 同日时，落点仍落在该业务日的窗口内。"""
+        now = DAY1.replace(hour=6, minute=40)
+        day = DAY1.strftime("%Y-%m-%d")
+        target = executor_v3.next_retry_at_v3(now, _cfg(), 60, random.Random(5), day=day)
+        self.assertIsNotNone(target)
+        self.assertEqual(target.date(), DAY1.date())
+        self._in_window(target, DAY1)
 
 
 if __name__ == "__main__":
