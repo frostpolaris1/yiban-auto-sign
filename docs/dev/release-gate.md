@@ -74,6 +74,14 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 7=密文校验不过、8=轮转后当日归档失踪——任一非 0 都必须先修再谈发布）。
 **照抄 compose 的 environment**，否则会出现"手动 run 缺 6 个键 → 打不开数据库"的假失败。
 
+两种演练形态各有一键脚本（演练轮，证据只进本地 `work/`，不计入 §3 的有效轮次）：
+
+- **裸机（宿主 / systemd 形态）**：`scripts/drill-baremetal.sh` —— B1 依赖装配、
+  B2 `--check-config` 脱敏、B3 假上游 e2e、B4 备份、B5 `--restore` 恢复、B6 `run.sh`
+  整轮真签到（三行判据）。在演练树根目录执行，需要 `.venv-bare`。
+- **容器形态**：`scripts/drill-container.sh` —— supervisord → container_scheduler →
+  signin 全链，含内部网隔离与 egress 探针。
+
 容器形态与 netns/hosts/iptables 全隔离演练
 为**按需使用**：只在改动部署面（入口脚本/镜像/cron 模板）或网络面时跑，不再是每次晋升的固定门槛；
 镜像内容兜底仍由 `tests/test_docker_image_contents.py` 常跑承接。

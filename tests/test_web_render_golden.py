@@ -78,6 +78,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from werkzeug.security import generate_password_hash
 
@@ -277,13 +278,17 @@ class WebRenderGoldenTest(unittest.TestCase):
 
     def _assert_golden(self, name, actual):
         path = self._golden_path(name)
-        if self.update_golden or not os.path.exists(path):
+        if self.update_golden:
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(actual)
-        self.assertTrue(
-            os.path.exists(path),
-            f"金标准快照缺失：{path}\n首次建立请运行 UPDATE_GOLDEN=1 python -m pytest {__file__} -q",
-        )
+        elif not os.path.exists(path):
+            # 缺失**不得**自产：金标准是回归基线，自产等于把基线交给产生回归的代码，
+            # 这条守卫从此静默失效。只有显式 UPDATE_GOLDEN=1 才允许写盘。
+            self.fail(
+                f"金标准快照缺失：{path}\n"
+                f"缺失意味着这条守卫已经失效。确认这是首次建立后运行\n"
+                f"    UPDATE_GOLDEN=1 python -m pytest {__file__} -q"
+            )
         with open(path, encoding="utf-8") as f:
             expected = f.read()
         if actual != expected:
@@ -295,6 +300,58 @@ class WebRenderGoldenTest(unittest.TestCase):
                 f"如果这是**无意的回归**：这就是它要抓的东西。\n\n"
                 f"{_first_diff_lines(expected, actual)}"
             )
+
+    def _assert_golden_json(self, name, actual):
+        path = self._golden_path(name)
+        if self.update_golden:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(actual, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+        elif not os.path.exists(path):
+            self.fail(
+                f"金标准快照缺失：{path}\n"
+                f"缺失意味着这条守卫已经失效。确认这是首次建立后运行\n"
+                f"    UPDATE_GOLDEN=1 python -m pytest {__file__} -q"
+            )
+        with open(path, encoding="utf-8") as f:
+            expected = json.load(f)
+        if actual != expected:
+            self.fail(
+                f"{name} 与金标准不一致（页面引用的 CSS/JS 变了）。\n"
+                "有意外提/新增/删除资源时，确认无误后更新金标准并在提交里说明。\n"
+                f"  expected: {json.dumps(expected, ensure_ascii=False, indent=2)}\n"
+                f"  actual  : {json.dumps(actual, ensure_ascii=False, indent=2)}"
+            )
+
+    def test_missing_golden_snapshot_fails_instead_of_self_creating(self):
+        """金标准缺失必须红：缺失时自产快照＝把回归基线交给产生回归的代码。"""
+        name = "__missing_golden_probe__.rendered.html"
+        path = self._golden_path(name)
+        if os.path.exists(path):
+            os.remove(path)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+
+        with mock.patch.object(self, "update_golden", False), \
+                self.assertRaises(AssertionError) as caught:
+            self._assert_golden(name, "<html>actual</html>")
+
+        self.assertIn("金标准快照缺失", str(caught.exception))
+        self.assertFalse(os.path.exists(path), "缺失时不得写盘自产金标准")
+
+    def test_missing_asset_manifest_fails_instead_of_self_creating(self):
+        """assets.json 缺失同样必须红，且不得写盘（与结构指纹同一条不变量）。"""
+        name = "__missing_assets_probe__.json"
+        path = self._golden_path(name)
+        if os.path.exists(path):
+            os.remove(path)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+
+        with mock.patch.object(self, "update_golden", False), \
+                self.assertRaises(AssertionError) as caught:
+            self._assert_golden_json(name, {"index": []})
+
+        self.assertIn("金标准快照缺失", str(caught.exception))
+        self.assertFalse(os.path.exists(path), "缺失时不得写盘自产金标准")
 
     # ---- 用例 ----
 
@@ -362,20 +419,7 @@ class WebRenderGoldenTest(unittest.TestCase):
                 "页面引用了磁盘上不存在的静态资源（清单与磁盘不一致）：\n" + "\n".join(missing)
             )
 
-        path = self._golden_path("assets.json")
-        if self.update_golden or not os.path.exists(path):
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                json.dump(actual, f, ensure_ascii=False, indent=2)
-                f.write("\n")
-        with open(path, encoding="utf-8") as f:
-            expected = json.load(f)
-        if actual != expected:
-            self.fail(
-                "静态资源引用清单与金标准不一致（页面引用的 CSS/JS 变了）。\n"
-                "有意外提/新增/删除资源时，确认无误后更新 assets.json 并在提交里说明。\n"
-                f"  expected: {json.dumps(expected, ensure_ascii=False, indent=2)}\n"
-                f"  actual  : {json.dumps(actual, ensure_ascii=False, indent=2)}"
-            )
+        self._assert_golden_json("assets.json", actual)
 
 
 if __name__ == "__main__":
