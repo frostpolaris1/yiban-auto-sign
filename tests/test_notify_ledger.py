@@ -616,3 +616,48 @@ class UserFailMailQuotaTest(unittest.TestCase):
             signin.send_user_fail_mail(EMAIL, PHONE, "网络超时")
             signin.send_user_fail_mail(EMAIL, PHONE, "网络超时")
         self.assertEqual(send.call_count, 1, "成功后当天不再重复发")
+
+
+def _reset_ledger_memory():
+    for led in notify_ledger._LEDGERS.values():
+        led["state"].update({"date": "", "count": 0})
+        led["notice"].update({"pending": False, "notified": False, "warned": False})
+
+
+def test_ledger_write_failure_denies_budget(tmp_path, monkeypatch, caplog):
+    """ba-p09-04：额度账写不进磁盘时必须 fail-closed，而不是静默按内存放行。
+
+    旧实现 `_save_ledger_file` 只 warning「额度仍按内存计数」，但
+    `_with_ledger_locked` 每次都在锁内重读磁盘、用磁盘 count 覆盖内存——内存计数
+    活不过一次调用。状态目录不可写时 count 恒读回 0 ⇒ 每次都放行 ⇒ 突破第三方
+    全局日配额。判据：无法持久化占用 ⇒ 本次不放行，并留一条 ERROR。
+    """
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "no-such.env"))
+    monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", KEY)
+    monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "5")
+    _reset_ledger_memory()
+
+    def _boom(*_a, **_k):
+        raise OSError("state dir is read-only")
+
+    monkeypatch.setattr(notify_ledger.private_json, "write_private_json", _boom)
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        ticket = notify_ledger._consume_daily_budget("general")
+    assert ticket.allowed is False, "账本无法落盘时不得放行（fail-closed）"
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), \
+        "账本写盘失败必须响亮告警，不能只留一行 warning"
+
+
+def test_state_dir_defaults_to_var_log_yiban(tmp_path, monkeypatch):
+    """ba-p09-05：无 YIBAN_STATE_DIR 时与 run.sh / web / audit_chain 同一口径。"""
+    monkeypatch.delenv("YIBAN_STATE_DIR", raising=False)
+    monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "missing.env"))
+    assert notify_ledger._state_dir() == "/var/log/yiban", \
+        "第三档必须走 env_io.resolve_path 的缺省，不得回落到 cwd/.env 所在目录"
+
+
+def test_state_dir_honours_env_var(tmp_path, monkeypatch):
+    """对照：显式配置仍以进程环境为准（单源解析不得改变优先档）。"""
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    assert notify_ledger._state_dir() == str(tmp_path)
