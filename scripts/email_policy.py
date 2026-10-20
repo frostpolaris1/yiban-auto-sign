@@ -71,11 +71,26 @@ def _split_domains(raw):
 
 
 def _load_blocklist():
-    """读取数据文件黑名单；文件缺失/读取失败回退空集合（内置保留名单独立生效）。"""
+    """读取数据文件黑名单；文件缺失/读取失败回退空集合（内置保留名单独立生效）。
+
+    回退**不阻塞注册**，但必须留痕（工单 ba-p11-05）：文件没随包带走时，8376 行
+    一次性邮箱黑名单整块失效，注册门只剩内置保留域名。静默回退会让"黑名单没生效"
+    这件事事后无法证明——失效方向是**放行**，正是要留痕的那一类。
+    """
     try:
         st = os.stat(_DATA_FILE)
         key = (st.st_mtime_ns, st.st_size)
-    except OSError:
+    except FileNotFoundError:
+        logger.warning(
+            "邮箱黑名单数据文件不存在，本进程仅保留内置保留名单（一次性邮箱域名不会被拦截）: %s",
+            _DATA_FILE,
+        )
+        return frozenset()
+    except OSError as e:
+        logger.warning(
+            "邮箱黑名单数据文件不可访问，本进程仅保留内置保留名单（一次性邮箱域名不会被拦截）: %s",
+            e,
+        )
         return frozenset()
     with _cache_lock:
         if _cache["key"] == key:

@@ -247,6 +247,7 @@ fast	tests/test_scheduler_env_probe.py
 fast	tests/test_scheduler_exception_surface.py
 fast	tests/test_scheduler_gate.py
 slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
+fast	tests/test_script_safety_guards.py	# 四个运维脚本的破坏性动作守卫（子进程跑脚本，秒级）
 fast	tests/test_secret_key_strict_read.py
 fast	tests/test_sentinel_db_readonly.py
 fast	tests/test_session.py
