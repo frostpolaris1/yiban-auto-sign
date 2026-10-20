@@ -168,18 +168,27 @@ class NotifyLedgerDiskTest(unittest.TestCase):
             for k in [k for k in sys.modules if k.startswith("yiban.adapters.notifier.notify")]:
                 del sys.modules[k]
             sys.modules.update(saved_modules)
-            # 只还原 sys.modules 不够：`from yiban import notify` 取的是**父包上的属性**，
-            # 子模块重新导入时该属性已被换成新对象。属性不一起还原，进程里就留下两份
-            # `yiban.notify`——先导入的模块（如 web/services/notify_mail）握着旧对象，
-            # 后导入的（测试里 importlib 重载的 webapp）握着新对象，于是
-            # `mock.patch.object(webapp.notify, "send")` 打不到真正被调用的那一份，
-            # 告警用例表现为"0 次调用"（本文件先跑才复现）。
-            pkg = sys.modules.get("yiban")
+            # 只还原 sys.modules 不够：子模块重新导入时，导入机制会把**父包上的属性**
+            # 换成新对象。消费方经 `from yiban.adapters.notifier import notify` 取名字，
+            # 解析的正是该属性；属性不还原，进程里就留下两份 notify 模块——先导入的
+            # 模块（如 web/services/notify_mail）握着旧对象，后导入的（测试里重新
+            # 装载的 webapp）握着新对象，于是 `mock.patch.object(webapp.notify, "send")`
+            # 打不到真正被调用的那一份，告警用例表现为"0 次调用"（本文件先跑才复现）。
+            # 父包必须是 `yiban.adapters.notifier`。旧代码还原到 `yiban.notify`
+            # （已删净的旧坐标）上，实测该属性仍指向重新导入的新对象，等于没还原。
+            pkg = sys.modules.get("yiban.adapters.notifier")
             if pkg is not None and "yiban.adapters.notifier.notify" in saved_modules:
                 pkg.notify = saved_modules["yiban.adapters.notifier.notify"]
                 for k, v in saved_modules.items():
                     if k.startswith("yiban.adapters.notifier.notify."):
                         setattr(saved_modules["yiban.adapters.notifier.notify"], k.rsplit(".", 1)[1], v)
+                # 校验者：还原必须真的落到**消费方解析的那个父包属性**上。
+                # 旧实现把属性写到 `yiban.notify`（已删净的旧坐标），父包属性仍指向
+                # 新对象，进程里留下两份模块；本断言当场点名，不再靠别的文件偶发红。
+                self.assertIs(
+                    pkg.notify, saved_modules["yiban.adapters.notifier.notify"],
+                    "notify 父包属性未还原：进程内会留下两份模块对象，"
+                    "后续用例的打桩将落在没人调用的那一份上")
 
         self.addCleanup(_restore_notify_modules)
         for k in list(saved_modules):
