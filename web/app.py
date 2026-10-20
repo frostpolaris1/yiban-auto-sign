@@ -596,25 +596,8 @@ STATUS_TEXT = yiban_status.TEXT
 
 
 # 账号状态族（`load_sign_state` / `accounts_terminal_summary` / `_cred_paused_phones` /
-# `clear_fuse_pause` / `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：前两个与
-# 凭据熔断清理族在导入区再导出，`load_sign_state` / `accounts_terminal_summary` 在下方转发
-# （需注入本模块持有的 STATE_DIR）。
-
-
-def load_sign_state(date_str=None):
-    """读取按日结构化状态文件（实现见 web/services/logs.py）。
-
-    状态目录按调用时刻现取本模块的 `STATE_DIR`（可被 `--config` 等参数覆盖）。
-    """
-    return _logs_svc.load_sign_state(STATE_DIR, date_str)
-
-
-def accounts_terminal_summary(days=30):
-    """窗口内账号终态统计（实现见 web/services/logs.py 的同名函数）。
-
-    状态目录按调用时刻现取本模块的 `STATE_DIR`（与 `load_sign_state` 同一份）。
-    """
-    return _logs_svc.accounts_terminal_summary(STATE_DIR, days)
+# `clear_fuse_pause` / `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：
+# 读者直取该模块（批 3-d 删除了本模块的转发包装）。
 
 logger = logging.getLogger("web")
 
@@ -623,46 +606,18 @@ logger = logging.getLogger("web")
 # 签到日志解析
 # ---------------------------------------------------------------------------
 # 实现见 web/services/logs.py：`_tail_lines` / `_most_recent_log_cache`
-# 与 `_is_valid_date_str` 在导入区再导出（`_LOG_TAIL_BYTES` 的 m.* 名字面已随 W0 删除）；
-# 需要本模块模块级状态的入口（日志目录 LOG_FILE、
-# 倒读实现 `_tail_lines`）在下方转发时调用时刻现取后注入——它们会被测试改写（既有测试直接
-# 赋值 `web.app.LOG_FILE`、并在 `web.app` 上打桩 `_tail_lines`），服务层另持一份绑定会让
-# 打桩静默失效。
-
-
-def parse_sign_log(path):
-    """解析签到日志（实现见 web/services/logs.py）；倒读实现现取本模块的 `_tail_lines`。"""
-    return _logs_svc.parse_sign_log(path, _tail_lines)
-
-
-def log_path_for(date_str=None):
-    """按天日志文件路径（实现见 web/services/logs.py）；日志目录现取本模块的 `LOG_FILE`。"""
-    return _logs_svc.log_path_for(LOG_FILE, date_str)
-
-
-def _log_lines_for(date_str, stats=None):
-    """读取指定日期日志的行（实现见 web/services/logs.py）。
-
-    路径与倒读实现都按调用时刻现取本模块的（`LOG_FILE` 可被测试直接赋值改写）。
-    `stats` 可选 dict：服务层把解析不出而被丢弃的行数写进 `stats["dropped"]`。
-    """
-    return _logs_svc._log_lines_for(date_str, log_path_for, _tail_lines, stats)
+# 与 `_is_valid_date_str` 在导入区再导出（`_LOG_TAIL_BYTES` 的 m.* 名字面已随 W0 删除）。
+# 批 3-d 删除了 `parse_sign_log` / `log_path_for` / `_log_lines_for` /
+# `_most_recent_log_date` 的转发包装：读者直取服务层，日志目录与倒读实现经 hook 解析。
+# `_today_has_logs` 仍留本模块（另有读者按属性读取），它直调服务层真源。
 
 
 def _today_has_logs():
     """今天是否有 yiban 签到日志行（实现见 web/services/logs.py）。
 
-    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
+    日志路径与倒读实现经服务层的 hook 解析（`LOG_FILE` / `_tail_lines` 的既有改写有效）。
     """
-    return _logs_svc._today_has_logs(log_path_for, _tail_lines)
-
-
-def _most_recent_log_date(max_days=30):
-    """查找最近有日志的日期（实现见 web/services/logs.py）。
-
-    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
-    """
-    return _logs_svc._most_recent_log_date(max_days, log_path_for, _tail_lines)
+    return _logs_svc._today_has_logs()
 
 
 # ---------------------------------------------------------------------------
@@ -929,13 +884,8 @@ def _sensitive_gate_params(env_path):
 # 退出码原因 `_manual_sign_failure_reason`）实现见 web/services/manual_sign.py，此处以
 # 导入区再导出保持 m.* 可达；退出码表 `_SIGNIN_EXIT_REASONS` 的 m.* 名字面已随 W0 删除。
 # 只有 `_log_manual_sign_exit` 需要注入本模块持有的入口，故在下方转发。
-def _log_manual_sign_exit(phone_label, returncode):
-    """手动签到退出码留痕（实现见 web/services/manual_sign.py）。
-
-    日志路径按调用时刻现取本模块的 `log_path_for`（它再现取 `LOG_FILE`）：测试会赋值
-    `webapp.LOG_FILE` 换日志目录，转发处不现取就会被服务层的副本绑定架空。
-    """
-    return _manual_sign._log_manual_sign_exit(phone_label, returncode, log_path_for)
+# 手动签到退出码留痕 `_log_manual_sign_exit` 已随批 3-d 去壳：读者直取
+# web/services/manual_sign.py，日志路径经该模块的 configure 登记。
 
 
 # `.env` 写互斥与公告元数据解析的实现见 web/services/env_io.py：
@@ -1392,6 +1342,14 @@ _signstatus.configure(
 _render.configure(
     env_file=lambda: ENV_FILE,
     read_env=lambda: read_env,
+)
+_logs_svc.configure(
+    state_dir=lambda: STATE_DIR,
+    log_file=lambda: LOG_FILE,
+    tail_lines=lambda: _tail_lines,
+)
+_manual_sign.configure(
+    log_path_for=lambda: _logs_svc.log_path_for,
 )
 # 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
 # `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /

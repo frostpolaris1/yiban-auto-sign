@@ -48,6 +48,7 @@ from werkzeug.security import generate_password_hash
 from web import render as _render
 from web import security as _security
 from web.services import accounts_data as _accounts_data
+from web.services import logs as _logs_svc
 from web.services import signstatus as _signstatus
 from web.services import verify_queue as _verify_queue
 from yiban.core import clock
@@ -735,12 +736,12 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f"[{today} 06:40:08] [DEBUG] yiban: 探针跳过",
             "不是日志行",
         ]
-        path = self.webapp.log_path_for(today)
+        path = _logs_svc.log_path_for(today)
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        got = self.webapp.parse_sign_log(path)
+        got = _logs_svc.parse_sign_log(path)
         self.assertEqual(got, [lines[0], lines[1], lines[2], lines[4]])
-        self.assertEqual(self.webapp._log_lines_for(today), got,
+        self.assertEqual(_logs_svc._log_lines_for(today), got,
                          "两条路径必须共用同一条可见性规则")
 
     def test_is_valid_date_str_is_calendar_strict(self):
@@ -771,7 +772,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                      encoding="utf-8") as f:
             f.write('{"13800138000": "✅", "13900139000": "❌", '
                     '"13700137000": "➖", "13600136000": "?"}')
-        got = self.webapp.load_sign_state(date)
+        got = _logs_svc.load_sign_state(date)
         self.assertEqual(got["13800138000"]["status"], yiban_status.STATUS_SUCCESS)
         self.assertEqual(got["13900139000"]["status"], yiban_status.STATUS_FAILED)
         self.assertEqual(got["13700137000"]["status"], yiban_status.STATUS_NO_TASK)
@@ -780,14 +781,14 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         structured = os.path.join(self.tmp, f"sign-state-{date}.json")
         with io.open(structured, "w", encoding="utf-8") as f:
             f.write('{"13800138000": {"status": "success"}}')
-        self.assertEqual(self.webapp.load_sign_state(date),
+        self.assertEqual(_logs_svc.load_sign_state(date),
                          {"13800138000": {"status": "success"}})
         with io.open(structured, "w", encoding="utf-8") as f:
             f.write("{}")
-        self.assertEqual(len(self.webapp.load_sign_state(date)), 4, "空结构化文件回退旧格式")
+        self.assertEqual(len(_logs_svc.load_sign_state(date)), 4, "空结构化文件回退旧格式")
         for name in (structured, os.path.join(self.tmp, f"sign-daily-{date}.json")):
             os.remove(name)
-        self.assertEqual(self.webapp.load_sign_state(date), {})
+        self.assertEqual(_logs_svc.load_sign_state(date), {})
 
     def test_legacy_daily_symbols_all_decode_to_a_real_status(self):
         """`SYMBOL` 全表的**每个**符号，回退反查都必须解出同符的状态码（不得落 `pending`）。
@@ -812,7 +813,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         with io.open(os.path.join(self.tmp, f"sign-daily-{date}.json"), "w",
                      encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
-        got = self.webapp.load_sign_state(date)
+        got = _logs_svc.load_sign_state(date)
         self.assertEqual(len(got), len(rows), "每个符号都要解出一条记录")
         for phone, sym in rows.items():
             # 漏格时该符号解成 `pending`，而 `pending` 只同符 ⏳ ⇒ 除 ⏳ 外一律当场翻红
@@ -986,8 +987,8 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write("[2020-01-02 06:40:00] [INFO] yiban: 签到\n")
         with mock.patch.object(self.webapp.clock, "now",
                                return_value=datetime(2020, 1, 5, 9, 0)):
-            self.assertEqual(self.webapp._most_recent_log_date(30), "2020-01-02")
-            self.assertEqual(self.webapp._most_recent_log_date(1), "2020-01-02",
+            self.assertEqual(_logs_svc._most_recent_log_date(30), "2020-01-02")
+            self.assertEqual(_logs_svc._most_recent_log_date(1), "2020-01-02",
                              "同日命中缓存：不因本次的扫描范围更窄而改写答案")
             self.assertEqual(self.webapp._most_recent_log_cache["checked_day"], "2020-01-05")
         # 今天有日志时立即返回今天（并刷新缓存）
@@ -997,7 +998,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write("[2020-01-05 06:40:00] [INFO] yiban: 签到\n")
         with mock.patch.object(self.webapp.clock, "now",
                                return_value=datetime(2020, 1, 5, 9, 0)):
-            self.assertEqual(self.webapp._most_recent_log_date(30), "2020-01-05")
+            self.assertEqual(_logs_svc._most_recent_log_date(30), "2020-01-05")
 
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
