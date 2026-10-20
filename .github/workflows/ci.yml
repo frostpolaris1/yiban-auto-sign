@@ -26,6 +26,12 @@ on:
   push:
     branches: [develop, server-web, main, 'feature/**']
 
+# 同一 ref 的连续推送只保留最新一次：旧 run 排队/占 runner 会直接顶掉快轨 ≤3min 目标，
+# 且"最新一次绿"会被旧 run 的结果干扰（P13-10）。与 deploy-gate.yml 同口径。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 # 最小权限：仅读取代码与 PR 元数据
 permissions:
   contents: read
