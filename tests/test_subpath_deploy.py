@@ -181,7 +181,8 @@ class SubpathDeployTest(unittest.TestCase):
         r = self.c.get("/login")
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
-        self.assertIn('const BASE = "";', body)  # tojson 渲染：空串带双引号
+        # 工单 56ed：BASE 经 meta 下发（HTML 属性转义），脚本消费它
+        self.assertIn('<meta name="yiban-base" content="">', body)
         # 承载断言改用当前登录页真实引用的自托管资源（换壳后旧栈 tailwind.js 已退役）。
         # 意图不变：登录页的静态资源必须走 /static/ 且能取到。
         self.assertIn('src="/static/js/core.js', body)
@@ -225,7 +226,8 @@ class SubpathDeployTest(unittest.TestCase):
         r = self.c.get(P + "/login")
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
-        self.assertIn(f'const BASE = "{P}";', body)  # tojson 渲染：JSON 字符串带双引号
+        # 工单 56ed：BASE 经 meta 下发（HTML 属性转义），脚本消费它
+        self.assertIn(f'<meta name="yiban-base" content="{P}">', body)
         self.assertIn(f'src="{P}/static/js/core.js', body)
         self.assertIn(f'href="{P}/static/vendor/adminator/adminator.css', body)
         self.assertIn(f'href="{P}/terms"', body)
@@ -242,7 +244,7 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(r.headers.get("Location"), P + "/data/dashboard")
         r = self.c.get(P + "/data/dashboard")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(f'const BASE = "{P}";', r.get_data(as_text=True))
+        self.assertIn(f'<meta name="yiban-base" content="{P}">', r.get_data(as_text=True))
 
 
 if __name__ == "__main__":

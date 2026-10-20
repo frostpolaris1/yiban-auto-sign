@@ -370,7 +370,7 @@ git pull && docker compose up -d --build   # 更新代码后重建
 
 - **定时签到**：不依赖宿主 cron，由容器内 `supervisor` 常驻的 `docker/scheduler.py` 承担（首签 + 补签 + 每日清理）。
 - **时区**：容器固定 `Asia/Shanghai`；同时窗口与日期判定本身按北京时间计算（`yiban/core/clock.py`），宿主是 UTC 也不会算错。
-- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量。**信任模型（M12）**：应用只在**请求来源是回环地址**（`127.0.0.0/8` 整段、`::1`、双栈下的 `::ffff:127.0.0.1`）**且转发头信任开关为开**时才采信 `X-Forwarded-For`；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。开关是 `YIBAN_TRUST_FORWARDED_HEADERS`（见 `.env.example`）：**本版不设该键即按"信任"执行**（与旧版行为一致），下一版把缺省翻转为"不信任"。要伪造 XFF 得先能在回环上发连接——**但 `ssh -L` 隧道与"回环直连"两种形态下这条不成立**：隧道客户端没有本机权限，却拿到回环身份。这两种形态请显式设 `YIBAN_TRUST_FORWARDED_HEADERS=0`（关闭会同时停用 `X-Forwarded-Proto` 的 Cookie Secure 自动判定；这两种形态不经反代，本来也不该采信该头）。
+- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用只见回环流量。**信任模型（M12）**：应用只在**请求来源是回环地址**（`127.0.0.0/8` 整段、`::1`、双栈下的 `::ffff:127.0.0.1`）**且转发头信任开关为开**时才采信 `X-Forwarded-For`；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。开关是 `YIBAN_TRUST_FORWARDED_HEADERS`（见 `.env.example`）：**缺省为"不信任"（fail-closed）**；`docker-compose.yml` 已为容器内 nginx 显式置 `1`，非 compose 的反代部署请自行置 1。要伪造 XFF 得先能在回环上发连接——**`ssh -L` 隧道与"回环直连"两种形态下这条不成立**：隧道客户端没有本机权限，却拿到回环身份。这两种形态保持缺省（不信任）即可；显式设 0 会同时停用 `X-Forwarded-Proto` 的 Cookie Secure 自动判定（这两种形态不经反代，本来也不该采信该头）。
 - **定时备份（M44，2026-10-01 补）**：容器形态现在**自带每日 02:00 的定时备份**，不再需要宿主 cron——容器部署的用户本来就没有宿主 cron，容器调度器此前又漏了这个挂点，等于"看着在跑、其实从没备份过"。挂点由 `docker/scheduler.py` 的 `BACKUP_AT=(2, 0)` 承担，**复用 `docker/backup-docker.sh`**（加密落盘、自检、保留期轮转）。落点是 compose 声明的命名卷 `yiban-backups` → 容器 `/backups`，**刻意不在 `/data` 里**（否则每轮 tar 会把上一轮备份再打进去，体积逐轮翻倍）。启用只需两步，验证另有三步，见下方「容器形态现在自带定时备份」。
 - **自定义 Web 图标**：取消 `docker-compose.yml` 中 `yiban` 服务里那行被注释的挂载（宿主 `./logo.png` → 容器 `web/static/vendor/logo.png`），把图标放到仓库根 `logo.png`。
 
@@ -963,7 +963,7 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 
 **部署契约（务必遵守）**：反向代理把完整 URI【原样透传】给后端——nginx 的 `proxy_pass` 后**不要**加 `/`（加 `/` 会剥掉前缀，自动识别失效）。应用会从请求路径自动识别挂载前缀，登录后的跳转、静态资源、API 请求都会带上正确前缀；不依赖 nginx/Caddy/Apache 的特定配置，直连 17892 也能用。
 
-> 顺带把 IP 口径说清（同一节的"直连也能用"经常被误读成"直连时 XFF 也算数"）：**只有当请求的 `remote_addr` 是回环地址、且转发头信任开关为开时，应用才采信 `X-Forwarded-For`**；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。**"直连 `17892` 时 `remote_addr` 就是那台客户端自己的地址"这句只在显式 `.venv/bin/python3 -m web --host 0.0.0.0` 下成立**——默认监听是回环（`--host` 缺省 `127.0.0.1`），此时 `remote_addr` 恒为 `127.0.0.1`、客户端自带的 XFF 反而会被采信。反代场景下 nginx 到应用恒为回环且它会覆盖式重写 XFF，那一跳读到的就是真实客户端 IP。**回环直连、`ssh -L` 隧道这两种形态请显式设 `YIBAN_TRUST_FORWARDED_HEADERS=0`**；不要为了"方便调试"把应用监听到非回环，那时 XFF 才会变成可伪造的输入。
+> 顺带把 IP 口径说清（同一节的"直连也能用"经常被误读成"直连时 XFF 也算数"）：**只有当请求的 `remote_addr` 是回环地址、且转发头信任开关为开时，应用才采信 `X-Forwarded-For`**；非回环来源的 XFF 一律丢弃、退回 `remote_addr`。开关**缺省为"不信任"（fail-closed）**，因此回环直连与 `ssh -L` 隧道下客户端自报的 XFF 不会被采信。**"直连 `17892` 时 `remote_addr` 就是那台客户端自己的地址"这句只在显式 `.venv/bin/python3 -m web --host 0.0.0.0` 下成立**——默认监听是回环（`--host` 缺省 `127.0.0.1`），此时 `remote_addr` 恒为 `127.0.0.1`；只有显式置 `YIBAN_TRUST_FORWARDED_HEADERS=1` 才会采信客户端自带 XFF。反代场景下 nginx 到应用恒为回环且它会覆盖式重写 XFF，那一跳读到的就是真实客户端 IP——该形态必须显式置 1。
 
 - 子路径首页请**带尾斜杠访问**；不带尾斜杠的裸路径按 404 处理（避免误伤根路径部署）。
 - 若挂载前缀本身包含 `/api`、`/static` 或页面名等会与应用路由撞车的段（极少见），自动识别可能切错，请在 `.env` 显式设置 `YIBAN_BASE_PATH=/你的/前缀` 兜底。
@@ -1022,17 +1022,19 @@ curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: a
 
 ### 备份与恢复
 
-`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。
+`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。本地归档默认落 `/var/backups/yiban`（专用子目录；与 `pull-prod-backup.sh` 的 `REMOTE_BACKUP_DIR` 默认同值，改一处必须同批改三处）。
 
 包内内容除 `yiban.db`、`.env`、密钥文件外，还含**当日闸门标记与账本**（`sched-run-*`/`sched-slot-*`/`sched-snapshot-*`/`notify-ledger.json`/`notify-throttle.json`/`cred-state.json`）与**审计链外部锚点** `audit-anchor.log`：缺前者恢复当天会重签或漏签、告警日额度被重置；缺后者恢复出来的库就再也验不了"删尾/删前缀/整表清空"。`--restore` 解包后会自动跑 `integrity_check` 与 `audit_verify.py`（链 + 锚点 + 欠账）并带回结论，同时提示"先停服再覆盖"与"必须删除残留 `-wal`/`-shm`"。
 
 ```bash
 # 备份（生产执行件收编在 deploy/prod/：backup.sh→/usr/local/sbin/yiban-backup.sh、
-# wrapper、三张 cron 表一起按 manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
+# wrapper、各 cron 表（含 02:00 备份 deploy/prod/cron.d/yiban-backup）一起按
+# manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
 # 单独手工安装亦可：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
 sudo bash deploy/prod/install.sh
-# root crontab 调 wrapper（--require-encrypt 由 wrapper 钉死，不带时加密配置失效会
-# 静默产出含全部密钥与口令哈希的明文归档）。口令从 0600 口令文件经 **stdin fd 0 单跳**
+# root cron 调 wrapper（权威件 deploy/prod/cron.d/yiban-backup；--require-encrypt 由
+# wrapper 钉死，不带时加密配置失效会静默产出含全部密钥与口令哈希的明文归档）。
+# 口令从 0600 口令文件经 **stdin fd 0 单跳**
 # 注入，不进 crontab 行 / 命令历史 / 任何子进程的 env（M3 批次0 起，MF-42）：
 #   printf '你的备份口令\n' | sudo tee /etc/yiban/backup-passphrase && sudo chmod 600 /etc/yiban/backup-passphrase
 #   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
@@ -1055,7 +1057,7 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
 
 > ℹ️ **升级提示（曾装过"审计独立见证"的旧部署请清理）**：审计的独立见证纵深已移除，`deploy/prod` 不再提供 `yiban-audit-witness.sh` 与 `/etc/cron.d/yiban-audit-witness`。此前按旧文档装过见证的主机请手工删掉这两个文件——`sudo rm -f /usr/local/sbin/yiban-audit-witness.sh /etc/cron.d/yiban-audit-witness`——否则残留的 root cron 会每 10 分钟调用已删除的脚本并持续报错（仅噪声，不影响体检结论）。移除后"锚点之后的追加行被删除"这一窗口不再由本机检出（见上文「诚实边界」）。
 
-> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
+> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups/yiban` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
 >
 > ⚠️ **公钥模式（`BACKUP_GPG_RECIPIENT`）没有回环自检，这是它的代价**：服务器只存公钥、没有对应私钥，所以每轮备份的「解密 → 解包 → `integrity_check`」这一步**在本机根本做不到**，脚本只能降级成「密文 ≥200 字节」这一句尺寸检查。后果要说清：**一把 >200 字节的损坏密文会被判为合格**——脚本照常删明文、写 `.sha256` 清单、跑异机同步与保留期轮转，本地只剩一把解不开的密文；而哨兵（只要求归档与 `.sha256` 旁挂件同在）会判它健康。这个边界**在本机无法消解**（本机没有私钥），只有两条路能盖住：① **按计划跑 `--restore` 演练**（唯一的真判据）；② 异机侧真解一次。两条都做不了就用口令模式（能回环自检），别用公钥模式。
 >
@@ -1308,7 +1310,7 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
             ├── adapters/protocol_fake/  测试假上游（e2e 与演练用；生产链路不引）
             ├── adapters/notifier/       通知适配：`notify/`（推送）与 `mail/`（邮件）
-            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 是转发壳
+            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 的转发壳已于 145-E 退役
             ├── geo.py           多边形内定位点采样（偶奇射线法 + 拒绝采样 + 显式兜底）
             ├── challenge.py     风控挑战检测（只检测不求解）
             ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密

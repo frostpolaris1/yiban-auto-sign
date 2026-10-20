@@ -23,8 +23,8 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与可选 `argv`
 （`--dry-run` 只报告不删；未知参数按用法错误退 2，不静默丢弃）。
 输出：被清理的文件、`<state_dir>/cleanup.log` 追加行；退出码 0 = 正常（无过期文件
-也是 0），1 = 保留期配置非法或目录不可用（响亮失败，不静默退化——静默退化会让磁盘
-慢慢涨满而没人发现），2 = 未知/多余参数（用法错误，不静默丢弃）。
+也是 0），1 = 保留期配置非法、目录不可用或清理日志写入失败（响亮失败，不静默退化——
+静默退化会让磁盘慢慢涨满而没人发现），2 = 未知/多余参数（用法错误，不静默丢弃）。
 调用谁：只有 `yiban.state_gc`（策略与实现；它是本文件唯一的项目内 import）。
 日志时间戳用 `datetime.datetime.now()`（宿主本地钟——它是**展示时刻**，跟随宿主
 时区属预期，见 README 部署章节的时区说明）；日志行里的"截止 X"自 MF-109 统一起
@@ -56,14 +56,20 @@ log_dir_from_env = state_gc.log_dir_from_env
 
 
 def _append_log(log_path, message):
-    """追加一行清理日志（0600：与状态目录其它文件同权限）。"""
+    """追加一行清理日志（0600：与状态目录其它文件同权限）；失败返回 False。
+
+    留痕写不进去时**不许静默**（工单 ba-p11-09）：删除动作已经发生，退出码却仍是 0，
+    事后无法证明哪天清了哪些文件。调用方据返回值把退出码抬到 1，并把原因写到 stderr。
+    """
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(message + "\n")
-    except OSError:
-        pass
+        return True
+    except OSError as e:
+        print(f"清理日志写入失败（{log_path}）: {e}", file=sys.stderr)
+        return False
 
 
 def main(argv=None):
@@ -107,8 +113,10 @@ def main(argv=None):
         removed, detail = state_gc.sweep(state_dir, log_dir)
     except ValueError as e:
         # 与旧脚本"无法计算保留截止日期，跳过"同向：响亮失败，不静默不清理
-        _append_log(log_path, f"[{stamp}] 保留期配置非法，跳过清理: {e}")
+        logged = _append_log(log_path, f"[{stamp}] 保留期配置非法，跳过清理: {e}")
         print(f"保留期配置非法，跳过清理: {e}", file=sys.stderr)
+        if not logged:
+            print("且清理日志也不可写：本次跳过没有任何持久留痕。", file=sys.stderr)
         return 1
     if state_gc.sweep_empty_cred_state(state_dir):
         removed += 1
@@ -118,13 +126,17 @@ def main(argv=None):
         # 此前这里用宿主本地钟，UTC 主机上会与实际生效的截止日差一天（只差文案）。
         from yiban.core.clock import now as _clock_now
         cutoff = (_clock_now() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
-        _append_log(
+        logged = _append_log(
             log_path,
             f"[{stamp}] 已清理 {removed} 个过期文件"
             f"（日志/状态保留 {hold} 天，快照保留 {snap} 天，截止 {cutoff}）: "
             + "、".join(detail[:20])
             + ("…" if len(detail) > 20 else ""),
         )
+        if not logged:
+            print(f"已清理 {removed} 个过期文件，但清理日志写入失败："
+                  "删除动作已完成，留痕丢失。", file=sys.stderr)
+            return 1
     return 0
 
 

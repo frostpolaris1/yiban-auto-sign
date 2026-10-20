@@ -48,11 +48,18 @@ def configure(seat=None, verify_one=None, record_failure=None, mask_phone=None,
         _hooks["queue_full"] = queue_full
 
 
-def start(clean, username, account_id, fails, limits):
+def start(clean, username, account_id, fails, limits=None):
     """建任务 + 起后台线程，返回 (job_id, created_at)；队列满返回 None。
 
     调用方在返回 None 时翻成 503（本模块不抛宿主的异常类型，避免反向依赖）。
+
+    `limits` **不消费也不下传**（工单 ba-p10-06）：用户级配额只在宿主侧的同步路径
+    （`web/services/verify_queue.py::run_verify_with_gate` 的 `attempt_allowed`）判定，
+    后台线程从不按它扣额。保留形参只为兼容既有调用方（该调用点不在本批改动边界内）；
+    线程参数里不再带它——旧实现把它一路透传进 `run` 却全程不读，让读者以为异步路径
+    也持有限额判据。
     """
+    del limits  # 宿主侧已判；后台线程不消费（见 docstring）
     if _hooks["queue_full"]():
         return None
     prev_status = str(clean.get("status") or store.VERIFY_JOB_PENDING)
@@ -60,7 +67,7 @@ def start(clean, username, account_id, fails, limits):
                                      prev_status=prev_status)
     t = threading.Thread(
         target=run,
-        args=(job_id, clean, username, account_id, prev_status, fails, limits),
+        args=(job_id, clean, username, account_id, prev_status, fails),
         name=f"verify-job-{job_id}",
         daemon=True,
     )
@@ -68,7 +75,7 @@ def start(clean, username, account_id, fails, limits):
     return job_id, created_at
 
 
-def run(job_id, clean, username, account_id, prev_status, fails, limits):
+def run(job_id, clean, username, account_id, prev_status, fails):
     """执行一条任务（后台线程）。落终态后写账号的那一步同样带 CAS：
     `prev_status` 是任务建立时的账号状态，人工审批先于迟到的校验结果。"""
     if not store.claim(job_id):

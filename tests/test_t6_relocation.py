@@ -115,6 +115,17 @@ FACE_EXEMPT = frozenset((
     "tests/test_zero_old_coordinates.py",
 ))
 
+#: **跨镜像旧坐标桥**（工单 e0ro，2026-10-20）：`scripts/deploy_gate.sh` 的灌数/检查
+#: 代码在 **v0.6.2 旧镜像**里执行，旧镜像只有 `yiban.store`，故必须能 import 它。
+#: 豁免按**逐字行**给，不按文件：整文件豁免会让该脚本其余位置也能回退到旧坐标。
+#: 未登记的旧坐标行仍判红；桥行消失后本条豁免自动陈旧（锚点测试会红）。
+#: 判据层看它是运行期字符串；它在旧镜像里就是要执行的 import。
+LEGACY_BRIDGE_LINES = {
+    "scripts/deploy_gate.sh": (
+        "old) printf 'yiban.store\\n' ;;",
+    ),
+}
+
 #: 自有面目录（不含面外 `frontend/**` 与 `web/static/**`：归用户独立完成）。
 FACE_DIRS = ("yiban", "web", "scripts", "docker", "tests")
 FACE_SHELL = ("run.sh",)
@@ -317,6 +328,9 @@ def _scan(path):
         for i, line in enumerate(text.splitlines(), 1):
             s = line.strip()
             if not s or s.startswith("#"):
+                continue
+            if s in LEGACY_BRIDGE_LINES.get(rel, ()):
+                hits.append((i, "legacy", "跨镜像旧坐标桥（e0ro） " + s[:70]))
                 continue
             if _OLD_LITERAL.search(s):
                 hits.append((i, "str", "shell 非注释行含旧坐标字面量 " + s[:70]))
@@ -608,6 +622,31 @@ class T6ExemptionAnchorTest(unittest.TestCase):
                                 f"豁免文件 {rel} 不在了")
                 self.assertTrue(_scan(os.path.join(BASE, rel)),
                                 f"{rel} 已不再含旧坐标：豁免失去理由，须从豁免面移除")
+
+    def test_legacy_image_bridge_is_anchored_and_narrow(self):
+        """e0ro 的跨镜像桥：只许登记的那一行是旧坐标；该文件其余读者必须为零。
+
+        `scripts/deploy_gate.sh` 的灌数代码在 v0.6.2 旧镜像里执行，必须 import
+        `yiban.store`。这条豁免不得扩大成"整个脚本可以回退旧坐标"——故同时断言
+        桥以外的读者命中为空（新坐标迁移仍受本门保护）。
+        """
+        for rel, lines in sorted(LEGACY_BRIDGE_LINES.items()):
+            with self.subTest(rel=rel):
+                path = os.path.join(BASE, rel)
+                self.assertTrue(os.path.isfile(path), f"桥文件 {rel} 不在了")
+                stripped = [ln.strip() for ln in _read(path).splitlines()]
+                for expected in lines:
+                    self.assertIn(
+                        expected, stripped,
+                        f"{rel} 里登记的桥行已不存在：豁免失去理由，须从 "
+                        "LEGACY_BRIDGE_LINES 移除（或修回桥）")
+                kinds = [kind for _ln, kind, _why in _scan(path)]
+                self.assertIn("legacy", kinds, "桥行没有被判成 legacy：豁免没有生效")
+                self.assertEqual(
+                    t6_old_coordinate_hits(path), [],
+                    f"{rel} 在桥以外仍有旧坐标读者（豁免只该覆盖登记行）：\n"
+                    + "\n".join(f"{ln}: {why}"
+                                for ln, why in t6_old_coordinate_hits(path)))
 
 
 class T6GateHasTeethTest(unittest.TestCase):

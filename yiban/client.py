@@ -27,7 +27,7 @@ from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 from yiban import platform as yiban_platform
 from yiban import security
 from yiban.adapters.persistence.accounts import account_still_signable, update_account
-from yiban.adapters.protocol_yiban import ParseError, parse_device_state
+from yiban.adapters.protocol_yiban import ParseError, code_is_ok, parse_device_state
 from yiban.core import masking
 from yiban.core import status as yiban_status
 from yiban.geo import generate_position_in_polygon
@@ -165,10 +165,13 @@ class _SessionCache:
         client = self._client
         if not db.is_initialized():
             return
-        if not account_still_signable(client.account):
-            # 账号在登录过程中被删除/停用：不落库。session_cache 的清理全按现存账号行
+        still = account_still_signable(client.account)
+        if not still:
+            # 账号在登录过程中被删除/停用，或状态查询本身失败（None，fail-closed）：
+            # 两种情况都不落库。session_cache 的清理全按现存账号行
             # 的 phone 驱动，为已消失的账号写入会留下**永久孤儿**凭据缓存。
-            logger.debug(f"[{client.account.phone}] 账号已删除/停用，不保存会话缓存")
+            reason = "状态复核失败" if still is None else "已删除/停用"
+            logger.debug(f"[{client.account.phone}] 账号{reason}，不保存会话缓存")
             return
         cookies = dict_from_cookiejar(session.cookies)
         if not cookies:
@@ -318,7 +321,7 @@ class YibanClient:
             self._registered_device_blocked = True
             self._registered_device_problem = "设备登记接口被风控拦截"
             return None
-        if not isinstance(resp.data, dict) or resp.data.get("code") != 0:
+        if not isinstance(resp.data, dict) or not code_is_ok(resp.data.get("code")):
             self._registered_device_problem = "设备登记接口未正常应答"
             return None
         try:
@@ -444,11 +447,20 @@ class YibanClient:
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
         data = resp.data
-        if data.get("code") != 0:
+        if not isinstance(data, dict):
+            # 降级分支（`_parse_api_body` 的 `resp.json()`）可以合法返回 None / list /
+            # 标量：此时没有信封，更没有任何签发回执。抛含 HARD_FAIL 词元的 RuntimeError
+            # ——与登录链 `envelopes.py` 的"无签发方回执"同形，落硬失败档（1 次尝试、
+            # 清缓存），不要在通用档打满 3 次真实登录（工单 ba-p08-07）。
+            raise RuntimeError("最终认证失败: 无签发方回执（签到接口响应不是对象）")
+        if not code_is_ok(data.get("code")):
             return (False, f"获取签到任务失败: {masking.sanitize_text(data.get('msg'))}",
                     False, yiban_status.STATUS_FAILED)
 
-        data_obj = data["data"]
+        data_obj = data.get("data")
+        if not isinstance(data_obj, dict):
+            # 同一条守卫的另一半：`code` 成功但载荷缺失/非对象 = 伪造成功或无回执。
+            raise RuntimeError("最终认证失败: 无签发方回执（signPosition 响应缺 data 对象）")
         msg = data_obj.get("Msg", "")
         # 判据**只看结构化的 State**；`Msg` 只作日志原文（排障用），不再作判据——
         # 中文文本判据会随平台文案改词而静默改变判定（见 SIGN_POSITION_STATE_STATUS）。
@@ -572,7 +584,7 @@ class YibanClient:
             if submitted.blocked:
                 return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
             result = submitted.data
-            if result.get("code") == 0 and result.get("data"):
+            if code_is_ok(result.get("code")) and result.get("data"):
                 results_tasks.append((task_name, True, ""))
                 # 「随机选点、任一成功即停」：命中任一任务即视为当日已签，
                 # 停止提交后续任务（省请求、降风控）
@@ -625,6 +637,7 @@ class YibanClient:
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE
         data = resp.data
-        if data.get("code") != 0:
-            return False, f"获取签到任务失败: {masking.sanitize_text(data.get('msg'))}"
+        if not isinstance(data, dict) or not code_is_ok(data.get("code")):
+            msg = data.get("msg") if isinstance(data, dict) else ""
+            return False, f"获取签到任务失败: {masking.sanitize_text(msg)}"
         return True, "账号健康，可正常签到"

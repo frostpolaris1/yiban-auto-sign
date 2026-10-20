@@ -84,13 +84,18 @@ audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loa
 命中入口自检与文档相关用例（本树实测 rc=0、覆盖非空：裸词回退命中 11 个用例文件）。
 两种 fast 档都打印 `covered=<用例数>`（pytest 汇总四数之和：passed + failed + errors + skipped），
 据此区分"只跑了入口自检"与"真的覆盖了"。
+汇总之后另打 `DEV-VERIFY skip list: total=N` 与最多 5 条跳过名单（classname + 理由），
+全量明细在日志里。**全量与 `--ci` 下未登记的运行期跳过判红**（工单 1ffr，AGENTS §十三.30）：
+豁免按来源登记在 `scripts/dev-verify.sh` 的 `SKIP_EXEMPT_PATHS` / `SKIP_EXEMPT_REASONS`，
+与 `tests/test_skip_visibility_gate.py` 的 `NEVER_RUNS_IN_CI` 对账。fast 两档只要求可见，
+不判红（它们不是门禁）。
 
 **退出码只有四种**，3 **由空覆盖独占**：
 
 | 码 | 含义 |
 |---|---|
-| `0` | 通过：ruff、mypy 与 pytest 都 0，且覆盖非空 |
-| `1` | 有红：ruff 或 mypy 非 0，或 pytest 非 0 |
+| `0` | 通过：ruff、mypy 与 pytest 都 0，且覆盖非空、没有未登记的跳过 |
+| `1` | 有红：ruff 或 mypy 非 0、pytest 非 0，或全量下存在未登记的运行期跳过 |
 | `2` | 环境错误：守卫判红或参数被拒（见 §2 表） |
 | `3` | 空覆盖：范围档没测到任何真实用例，只跑了入口自检 |
 
@@ -148,14 +153,14 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 | 并发 | `-n auto --dist loadfile` | `--dist loadfile` 不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红 |
 | 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按模式分开（全量 `yiban-dev-verify-logs`，fast 两档 `yiban-dev-verify-logs-fast`，见 §1.1）：两档走不同的锁、可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码 |
 | ruff | `ruff check yiban/ tests/ scripts/ web/ docker/ --quiet` | 与 CI 同口径（含 `web/` 与 `docker/`） |
-| mypy | `mypy`（裸调，读 `pyproject.toml` 的 `[tool.mypy]`） | 静态类型门禁：收编名单住 `[tool.mypy].files`，只此一处；名单内严格档全开。与 ruff 同属静态检查，排在 ruff 之后、pytest 之前 |
+| mypy | `mypy --cache-dir <每次 mktemp -d 新建的目录>`（收编名单读 `pyproject.toml` 的 `[tool.mypy]`） | 静态类型门禁：收编名单住 `[tool.mypy].files`，只此一处；名单内严格档全开。与 ruff 同属静态检查，排在 ruff 之后、pytest 之前。**缓存目录每次新建**（工单 dq2n）：mypy 在 `(path,size,mtime)` 相同时不校验内容哈希，会信任上一轮缓存里的错误 ⇒ 同一份代码旧缓存红、新缓存绿；隔离后同一代码同一结论。实测（native 副本）默认冷缓存 5.38s、隔离 3.80/3.99s；`/mnt/d` 工作树 11.54s vs 2.46/2.39s |
 
 退出码（四种，全量模式与 fast 两档共用同一套裁决点）：
 
 | 码 | 含义 | 什么时候出现 |
 |---|---|---|
-| `0` | 通过 | ruff、mypy 与 pytest 都 0，且覆盖非空 |
-| `1` | 有红 | ruff 或 mypy 非 0，或 pytest 非 0（失败/错误都算）。**原始码不透出**，逐行打印在日志里（`ruff_exit=` / `mypy_exit=` / `pytest_exit=`） |
+| `0` | 通过 | ruff、mypy 与 pytest 都 0，且覆盖非空、没有未登记的跳过 |
+| `1` | 有红 | ruff 或 mypy 非 0、pytest 非 0（失败/错误都算），或全量下存在未登记的运行期跳过。**原始码不透出**，逐行打印在日志里（`ruff_exit=` / `mypy_exit=` / `pytest_exit=`） |
 | `2` | 环境错误 | 守卫判红：副本 `.git` 失活、副本残留 CRLF、副本跟踪集为空、源仓库不可解析为 git 仓库、固定 venv 不可用、参数被响亮拒绝（互斥/失效参数）、`FAST_KNOWN_SLOW` 名单坏 |
 | `3` | 空覆盖 | 只出现在 `--fast-scoped`：没测到任何真实用例，只跑了入口自检（见 §1.1）。**此码由空覆盖独占**：红优先，空覆盖同时有红时给 1 |
 
@@ -169,11 +174,12 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 
 ```bash
 python -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
-python -m mypy
+python -m mypy --cache-dir "$CI_MYPY_CACHE"   # dq2n：每次 mktemp -d 新建
 python -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
 # 快集 = tests/lane-roster.tsv 的 fast 行（2026-10-17 vckk 2-a 起取代 -k 关键词子集；
 #   改动落在关键词命中面之外时子集照样绿、全量红——静默的不重合，AGENTS §十三 第 29 条）
-python -m pytest tests/ -q -n 4 --dist loadfile --ignore=<slow ∪ serial 行> --deselect=<长尾 nodeid>
+python -m pytest tests/ -q -n 4 --dist loadfile --ignore=<slow ∪ serial 行> --deselect=<长尾 nodeid> --junitxml="$CI_SKIP_XML"
+# 跳过面（1ffr）：junit 报告 → skip list；未登记跳过判红
 # 串行专轨 = 名册的 serial 行（2026-10-18 起＝真起 gunicorn 打并发的限速用例；独占核才稳）
 python -m pytest tests/test_web_rate_limit_concurrency_e2e.py -q -p no:randomly
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
@@ -210,8 +216,8 @@ verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，�
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
 `check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
 缺省值字面量在代码内清零、未登记键不得出现在生产代码），`check-import-linter.py` 跑
-`.importlinter` 的依赖方向契约（P0 批四条；批 A0 为新层补三条。观测模式：只对基线之外
-的新增违规红）。名册门禁的
+`.importlinter` 的依赖方向契约（P0 批四条；批 A0 为新层补三条。门禁对**任何**违规
+红；确需接受的边逐条写进对应契约的 `ignore_imports`，基线文件只是墓碑）。名册门禁的
 元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
