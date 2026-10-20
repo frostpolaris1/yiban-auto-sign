@@ -5,15 +5,15 @@
 覆盖：v2 build_schedule
    的统一填充框架：小人数免分块与分块复用、顺序×均匀线性填块、随机×均匀循环填块、顺序×正态锚点稳定、随机×正态每日重排、四组合首尾缓冲、σ_eff
    封顶、压缩模式全量给点、旧 YIBAN_SIGN_MODE 兼容映射、固定 seed
-   可复现、对抗配置（空有效窗口、edge=600 掐首块、窗口起点非 5
-   分钟倍数）、到点等待后再判窗口、min_exec_gap 与 exec_gap_min 的取大关系。
-对应实现：scripts/signin.py（build_schedule、_anchor_z、_schedule_config、_schedule_blocks、_nearest_available）、yiban/engine/schedule.py
-   与 run_queue_retry 的等待/间隔路径、web/app.py 设置页。
+   可复现、对抗配置（空有效窗口、edge=600 掐首块、窗口起点非 5 分钟倍数）。
+   2026-10-20（工单 `77s2`）：原先驱动冻结载体 `run_queue_retry` 的"等完再判窗口"
+   与 `min_exec_gap` 两组用例已删。前者由 v3 的 `_mark_window_skips` 承担
+   （`tests/test_executor_v3.py`）；后者在 v3 没有消费者（`min_exec_gap` 只被冻结的
+   旧领取池读取），删掉的是死路径上的断言。
+对应实现：scripts/signin.py（build_schedule、_anchor_z、_schedule_config、_schedule_blocks、_nearest_available）、yiban/engine/schedule.py、web/app.py 设置页。
 关键断言：顺序 vs 随机是「可预期性」契约而非风格：顺序×均匀必须不同 seed
    落同一块，随机×正态必须每天重排。所有组合的落点必须留在 [06:31, 07:49]
-   内，且账号一个不丢。到点等待/间隔对齐之后必须再判一次窗口——否则等待期间跨过关停点仍会发出请求。min_exec_gap
-   与 exec_gap_min 是取 max
-   而不是互相取消（过点对齐语义不能被新的账号级间隔削掉）。
+   内，且账号一个不丢。
 依赖：临时 .env + 临时库 + 全新 Flask app（web
    类用例）；纯调度用例只动环境变量。不发网络请求。整文件在本机执行，无 skip。
 
@@ -29,7 +29,6 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime as _dt
 from unittest import mock
 
 import db
@@ -356,124 +355,6 @@ class _WebBase(unittest.TestCase):
         r = self.c.post("/api/login", json={"username": EMAIL, "password": USER_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         return self.c.get("/api/me").get_json()["csrf_token"]
-
-
-class WindowRecheckAfterSleepTest(unittest.TestCase):
-    """SCH-10：等待/间隔对齐之后必须再判一次窗口。"""
-
-    def setUp(self):
-        for k in ("YIBAN_RETRY_MIN_INTERVAL", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
-                  "YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC",
-                  "YIBAN_WINDOW_EDGE_BACK_SEC", "YIBAN_MIN_EXEC_GAP", "YIBAN_EXEC_GAP_MIN"):
-            os.environ.pop(k, None)
-        self.tmp = tempfile.mkdtemp(prefix="yiban-sch10-")
-        os.environ["YIBAN_STATE_DIR"] = self.tmp
-        os.environ["YIBAN_SIGN_END"] = "07:50"
-
-    def tearDown(self):
-        for k in ("YIBAN_STATE_DIR", "YIBAN_SIGN_END"):
-            os.environ.pop(k, None)
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_no_request_after_window_passes_during_wait(self):
-        """到点时间在窗口内、但等完之后已过窗口 → 零请求且记为窗口外跳过。"""
-        start = signin.clock.now().replace(hour=7, minute=0, second=0, microsecond=0)
-        # 第一次取时（弹出判窗口）= 07:00；睡完之后（二次判定）= 08:00
-        calls = {"n": 0}
-
-        def fake_now():
-            calls["n"] += 1
-            return start if calls["n"] <= 2 else start.replace(hour=8, minute=0)
-
-        acc = signin.Account(phone=PHONE, password="p")
-        with mock.patch.object(signin.clock, "now", side_effect=fake_now), \
-                mock.patch.object(signin, "attempt_signin") as attempt, \
-                mock.patch.object(signin, "_update_cred_state"), \
-                mock.patch.object(signin.time, "sleep"), \
-                mock.patch.object(signin.time, "monotonic", return_value=100.0):
-            results = signin.run_queue_retry(
-                [acc], "", 0, 0,
-                schedule={PHONE: start + signin.timedelta(seconds=30)})
-        self.assertEqual(attempt.call_count, 0, "越过窗口后不得再发起请求")
-        self.assertEqual(results[PHONE][3], signin.STATUS_SKIPPED_WINDOW)
-
-
-class FakeNow:
-    NOW = _dt(2026, 8, 27, 7, 0, 0)
-
-    @classmethod
-    def now(cls):
-        return cls.NOW
-
-
-class MinExecGapTest(unittest.TestCase):
-    def setUp(self):
-        for k in ("YIBAN_MIN_EXEC_GAP", "YIBAN_EXEC_GAP_MIN",
-                  "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST", "YIBAN_SIGN_MODE"):
-            os.environ.pop(k, None)
-
-    def _run(self, schedule, min_gap, exec_gap, mono_vals):
-        """跑 run_queue_retry（首 attempt 全成功），返回 (attempt, sleeps)。"""
-        os.environ["YIBAN_MIN_EXEC_GAP"] = str(min_gap)
-        os.environ["YIBAN_EXEC_GAP_MIN"] = str(exec_gap)
-        accs = [signin.Account(phone=p, password="p") for p in schedule]
-        sleeps = []
-        try:
-            with mock.patch.object(signin.clock, "now", FakeNow.now), \
-                 mock.patch.object(signin, "attempt_signin",
-                                   return_value=(True, "ok", False, signin.STATUS_SUCCESS)) as attempt, \
-                 mock.patch.object(signin, "_write_sign_state"), \
-                 mock.patch.object(signin, "_update_cred_state"), \
-                 mock.patch.object(signin.time, "monotonic", side_effect=mono_vals), \
-                 mock.patch.object(signin.time, "sleep", side_effect=lambda s: sleeps.append(s)):
-                signin.run_queue_retry(accs, "", 0, 0, schedule=schedule)
-            return attempt, sleeps
-        finally:
-            os.environ.pop("YIBAN_MIN_EXEC_GAP", None)
-            os.environ.pop("YIBAN_EXEC_GAP_MIN", None)
-
-    def test_enforces_min_gap_on_past_due_accounts(self):
-        """两账号均过点、与上次请求仅隔 0s → 第二次前补足 min_exec_gap(15s)。
-
-        monotonic：t0(首)=100, last_done(首)=100, F1检查(二)=100, t0(二)=100, last_done(二)=100
-        → gap = 15 - (100-100) = 15 → sleep(15)。
-        """
-        t0 = _dt(2026, 8, 27, 6, 40)  # 已过点
-        sched = {"13800138000": t0, "13800138001": t0}
-        attempt, sleeps = self._run(sched, 15, 0, [100.0] * 5)
-        self.assertEqual(attempt.call_count, 2)
-        self.assertTrue(any(abs(s - 15) < 1e-6 for s in sleeps), f"未补足 min_exec_gap: {sleeps}")
-
-    def test_no_extra_sleep_when_gap_sufficient(self):
-        """间隔已 ≥ min_exec_gap → 不额外 sleep（向后兼容）。
-
-        monotonic：t0(首)=100, last_done(首)=100, F1检查(二)=130（距上次 30s > 15）→ 不补。
-        """
-        t0 = _dt(2026, 8, 27, 6, 40)
-        sched = {"13800138000": t0, "13800138001": t0}
-        attempt, sleeps = self._run(sched, 15, 0, [100.0, 100.0, 130.0, 130.0, 130.0])
-        self.assertEqual(attempt.call_count, 2)
-        self.assertEqual(sleeps, [], f"间隔充足时不应额外 sleep: {sleeps}")
-
-    def test_exec_gap_min_still_respected(self):
-        """过点账号启动对齐（exec_gap_min=10）语义保留：min_exec_gap=5 不削它的效果 → 补 max(5,10)=10。"""
-        t0 = _dt(2026, 8, 27, 6, 40)
-        sched = {"13800138000": t0, "13800138001": t0}
-        attempt, sleeps = self._run(sched, 5, 10, [100.0] * 5)
-        self.assertEqual(attempt.call_count, 2)
-        self.assertTrue(any(abs(s - 10) < 1e-6 for s in sleeps), f"应补 exec_gap_min=10s: {sleeps}")
-
-    def test_due_account_gets_min_gap_after_slot_sleep(self):
-        """到点账号：sleep 到计划时刻后仍受 min_exec_gap 兜底（到点路径不叠加 exec_gap_min）。"""
-        sched = {
-            "13800138000": _dt(2026, 8, 27, 6, 40),      # 过点（A）
-            "13800138001": _dt(2026, 8, 27, 7, 1, 0),    # 未来 60s（B）
-        }
-        attempt, sleeps = self._run(sched, 5, 10, [100.0] * 5)
-        self.assertEqual(attempt.call_count, 2)
-        # A 过点：last_done=None 不补；B 到点：sleep(60) 到落点，再补 min_gap=5（距上次 0s）
-        self.assertTrue(any(abs(s - 60) < 1e-6 for s in sleeps), f"应 sleep 到落点: {sleeps}")
-        self.assertTrue(any(abs(s - 5) < 1e-6 for s in sleeps), f"到点后应补 min_gap=5: {sleeps}")
 
 
 class BlockCapacityTest(unittest.TestCase):
