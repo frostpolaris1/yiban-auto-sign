@@ -53,8 +53,10 @@ _SKIP_DIR_PARTS = ("node_modules", ".git", "__pycache__", ".pytest_cache",
 #: 条目必须在库内仍然**无人消费**，否则本门判陈旧 ⇒ 红（逼人删条目）。
 UNCONSUMED_KNOBS = {
     # ---- 时序面（能注入，但没人真的注入：140 §六-2 底数 B 的口径）----
-    "--delay-ms": ("每请求固定人工延迟：无用例开过 ⇒ '等待/让位/配速'这一维零行为载体"
-                   "（能力在，路径没走过）", "140 §六-2"),
+    # `--delay-ms` 已于工单 `6mru` 被消费：`scripts/drill_multi_exec.py` 的
+    # `start_mock(delay_ms=...)` 透传它，供引擎级一轮负载用例（
+    # `tests/test_multi_executor_drill_e2e.py::EngineRoundLoadWithInjectedDelayTest`）
+    # 让"等待行为"有真实载体。按本门的反向陈旧规则，条目删除。
     "--tail-delay-ms": ("尾延迟（长尾）模型：无用例开过", "140 §六-2"),
     "--tail-every": ("尾延迟的间隔参数：无用例开过", "140 §六-2"),
     # ---- 进程形状面 ----

@@ -8,10 +8,9 @@
    常量）、yiban/app/runner.py（兜底常驻分支与派发前的门）、yiban/engine/schedule.py
    的窗口判定与 state_io 心跳。
 关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
-   run_queue_retry
-   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据是**行的函数**：兜底只领已过期超过肘界的行（`elbow_sec`），不再探测"有没有一轮在飞"——旧的整段让位与轮内锁探测随 `l1rx` R4 删除。`_run_lock_held` 仍保留为带 fail-closed 校验者的锁原语（**当前无生产调用点**，见 `cli_support` 模块头）。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
+   `executor_v3.run_executor_v3` 的手动轮本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据是**行的函数**：兜底只领已过期超过肘界的行（`elbow_sec`），不再探测"有没有一轮在飞"——旧的整段让位与轮内锁探测随 `l1rx` R4 删除。`_run_lock_held` 仍保留为带 fail-closed 校验者的锁原语（**当前无生产调用点**，见 `cli_support` 模块头）。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
 依赖：临时状态目录 + clock.now 替身（按序列返回、超过 max_calls
-   抛错以暴露死循环）+ 打桩 run_queue_retry / 锁探测 /
+   抛错以暴露死循环）+ 打桩 executor_v3.run_executor_v3 / 锁探测 /
    心跳写盘 / 领取池在场判定（只打桩 `is_initialized`——`workers` 只读它；旧夹具还
    打了 `pool_db_declared`，那处 patch 空转，工单 uob1 X7）/ 池事件签名（按 `events`
    序列返回，用尽重复末值）。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上
@@ -178,17 +177,17 @@ class _FallbackHarness(_WeekdayGuard):
         """跑一次兜底常驻主循环，返回 (退出码, 睡过的秒数, 心跳时刻, 扫描次数)。
 
         必须显式打桩：真探测会去读宿主 `YIBAN_STATE_DIR`，测试之间会互相串味。
-        `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
+        `mutate_cred`：模拟生产执行体就地改熔断快照；写回调用记录在
         `self.saves`（(data, touched) 列表）。
         `pool`：领取池在场判定（只给 `is_initialized`——`workers` 只读它；
         `round.py` 消费的 `pool_db_declared` 不在这条路径上，打桩它是空转）。
         `events`：池事件签名的返回序列（用尽后重复末值；缺省一个恒定签名 = 无新事件）。
-        `on_scan`：每次扫描（`run_queue_retry` 被调用）时回调，供用例在**运行中**改
+        `on_scan`：每次扫描（`executor_v3.run_executor_v3` 被调用）时回调，供用例在**运行中**改
         `.env`（模拟管理员从网页写配置）后断言下一轮的门看到新值。
         """
         sleeps, beats, scans, saves = [], [], [], [] # 四本流水账分别对应睡过/心跳/扫过/写回，主循环的每个副作用都留痕
         self.saves = saves
-        #: 兜底腿**真实**传给 run_queue_retry 的关键字（供判定"是不是显式重领路径"）
+        #: 兜底腿**真实**传给生产执行体 `run_executor_v3` 的关键字（供判定"是不是显式重领路径"）
         self.retry_kwargs = {}
         evs = list(events) if events else [("sig", "t0")]
 
@@ -404,7 +403,7 @@ class FallbackEnvReloadWhitelistTest(_FallbackHarness):
 class FallbackCredStatePersistTest(_FallbackHarness):
     """兜底轮末必须把熔断计数写回磁盘。
 
-    `_load_cred_state()` 每轮返回**新 dict**，`run_queue_retry` 就地改它；若轮末不写回，
+    `_load_cred_state()` 每轮返回**新 dict**，生产执行体就地改它；若轮末不写回，
     "连续凭据失败达阈值 → 暂停"只在内存里成立，下一轮又从零读盘——错密码账号被无限次
     真实登录（易班侧照实计数，加重风控），兜底这条路成了熔断的缺口。
     """
