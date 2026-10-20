@@ -81,7 +81,10 @@ def refresh_account_device(m, acc, username, limits, fails, audit_action):
     account = _as_signin_account(acc)
     try:
         result = _verify_queue.run_gated_call(
-            lambda: signin.refresh_registered_device(account), username, limits)
+            lambda: signin.refresh_registered_device(account), username, limits,
+            # 同账号互斥（cgx6）：设备补全与账号验证共用一把按手机号的 in-flight 权，
+            # 两次 device-refresh 不再重叠两次真实登录
+            subject=phone)
     except _verify_queue.VerifyGateBusy:
         return 503, {"ok": False, "reason": "busy", "error": _verify_queue.VERIFY_BUSY_MSG}
     except _verify_queue.VerifyQuotaExceeded:

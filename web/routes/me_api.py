@@ -193,8 +193,10 @@ def api_me_password():
                     "detail": "自助改密",
                 },
             )
-            # 自助改密轮换 sid——当前会话保持有效（同步 session），
-            # 被窃取的 cookie 副本随旧 sid 失效
+            # 自助改密轮换 sid，并**不同步** session 里的 pw_version：
+            # 改密即当前会话失效（pw_version 已 +1，_effective_role 下一次请求即判未登录），
+            # 被窃取的 cookie 副本随旧 sid 一起失效。不要为本会话回填新 pw_version——
+            # 那等于让自助改密不再吊销任何旧会话（含被窃的那份）。
             new_sid = secrets.token_hex(16)
             db.set_user_sid(username.strip().lower(), new_sid)
             session["sid"] = new_sid
@@ -321,7 +323,10 @@ def api_me_delete():
         if u.get("role") == "admin" and db.is_last_registered_admin(email):
             return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
         # 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
-        db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
+        # 审计 target 列与 users_api/me_api 其余写点同口径：邮箱遮罩后才入链
+        # （明文邮箱会进备份包与 /api/audit-logs 响应体，与写入口声明的脱敏口径相反）
+        db.audit(username, "user_self_delete_request",
+                 _accounts_data._mask_email(email), "用户发起注销申请")
         try:
             _deleted = db.soft_delete_user_with_accounts(email)
         except db.LastAdminError:
@@ -332,7 +337,8 @@ def api_me_delete():
             return jsonify({"error": "注销失败，请稍后再试"}), 500
         # 防批量计数仅在注销成功后才记录（失败不占冷却额度）
         db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
-        db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，7 天宽限期）")
+        db.audit(username, "user_self_delete_confirm",
+                 _accounts_data._mask_email(email), "注销已确认（软删除，7 天宽限期）")
         with _locks._rate_lock:
             _login_fails().pop(fail_key, None)
         m.logger.info("用户 %s 已注销账号（7 天宽限期）", _accounts_data._mask_email(username))
@@ -449,7 +455,8 @@ def api_me_restore():
     db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
     with _locks._rate_lock:
         _login_fails().pop(fail_key, None)
-    db.audit(email, "user_self_delete_restore", email, "冷静期内恢复账号")
+    db.audit(email, "user_self_delete_restore",
+             _accounts_data._mask_email(email), "冷静期内恢复账号")
     # 恢复即登录：与 api_login 同款会话建立（防 session 固定）
     role = "admin" if u.get("role") == "admin" else "user"
     session.clear()
@@ -553,7 +560,8 @@ def api_my_mail_notify_save():
         return jsonify({
             "error": "当前账号不支持此设置（内置管理员请用管理员邮件配置）"
         }), 404
-    db.audit(email, "mail_notify", email, "on" if enabled else "off")
+    db.audit(email, "mail_notify", _accounts_data._mask_email(email),
+             "on" if enabled else "off")
     if not enabled:
         # 关闭通知本身是"先静默关通知再作案"攻击链的一环——
         # 确认邮件直接 send_user 绕过刚被关闭的开关，让本人知情

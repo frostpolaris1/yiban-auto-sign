@@ -27,6 +27,7 @@ import tempfile
 import unittest
 import unittest.mock as mock
 from datetime import datetime
+from types import SimpleNamespace
 
 import signin
 
@@ -35,6 +36,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 from yiban.adapters.statefiles import cred_state  # noqa: E402
+from yiban.engine import attempts as attempts_mod  # noqa: E402
 
 
 class BreakerTest(unittest.TestCase):
@@ -408,6 +410,35 @@ class BreakerTest(unittest.TestCase):
         self.assertIn("31.0", dict(signin._mail_summary[0][1])["耗时"])
 
 
+
+
+class AccountValidityAttributionTest(unittest.TestCase):
+    """`attempt_signin` 对三态复核结果的归因（`ba-p02-06` 同族残余）。
+
+    持久层把查询异常改成 fail-closed 后，返回值同时承载"确实不可签"与"状态未知"两种
+    False 语义。调用方若统一显示"账号已被删除或停用"，一次 DB 抖动就被说成删除——归因
+    错误。判据：异常分支的消息不得含"已删除"，状态码必须区分（环境故障 != 用户取消）。
+    """
+
+    @staticmethod
+    def _account():
+        return SimpleNamespace(phone="13800138000", password="p", account_id=1)
+
+    def test_unknown_state_reports_db_error(self):
+        with mock.patch.object(attempts_mod, "account_still_signable", lambda a: None):
+            res = attempts_mod.attempt_signin(self._account())
+        self.assertEqual(res[2], True, "不发起请求（fail-closed）")
+        self.assertEqual(res[3], attempts_mod.STATUS_FAILED,
+                         "环境故障落 failed，不是 user_cancelled")
+        self.assertIn("复核失败", res[1])
+        self.assertNotIn("已删除", res[1], "库错误不得归因成账号被删除")
+
+    def test_confirmed_unsignable_still_says_deleted(self):
+        with mock.patch.object(attempts_mod, "account_still_signable", lambda a: False):
+            res = attempts_mod.attempt_signin(self._account())
+        self.assertEqual(res[3], attempts_mod.STATUS_USER_CANCELLED)
+        self.assertEqual(res[1], "账号已被删除或停用",
+                         "确实不可签的归因保持不变")
 
 
 P1, P2 = "13800138000", "13800138001"

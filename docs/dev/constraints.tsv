@@ -1,0 +1,5 @@
+id	constraint	carrier	gate	ticket	reason
+protocol-zero-third-party	协议洁净室核心模块不得 import 第三方包（crypto.py 是唯一可选附加件；其余模块只在函数内惰性导入它）	yiban/adapters/protocol_yiban/**	checker:protocol_zero_third_party	ybt8	
+supervisord-single-worker	容器 web 只跑一个 worker（限速/防抖状态在进程内存）	docker/supervisord.conf	checker:supervisord_single_worker	tef8	
+m01-deploy-ownership	root 安装时 M01 门必须覆盖依赖同步步的三个检出内触点	deploy/prod/install.sh	checker:m01_deploy_ownership	1ffr	
+requirements-audited-equals-deployed	被审计的依赖产物必须等于被部署的产物	requirements.txt	checker:requirements_audited_is_deployed	j06f	

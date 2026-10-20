@@ -9,9 +9,10 @@
     {% endif %}
     {% if police_info %}
     <a id="footer-police" href="{{ police_link }}" target="_blank" rel="noopener">
-      {# onerror 只隐藏裂图、不隐藏元素：width/height 占位仍在，未放图时行高不跳变 #}
+      {# 裂图只隐藏自己、不隐藏元素：width/height 占位仍在，未放图时行高不跳变。
+         回退逻辑在 theme-boot.js（CSP 不允许内联 onerror）。 #}
       <img src="{{ request.script_root }}/gongan-beian.png" alt="" width="12" height="13"
-           onerror="this.onerror=null;this.style.visibility='hidden'">{{ police_info }}
+           data-img-hide-on-error>{{ police_info }}
     </a>
     {% endif %}
     {% if not icp_info and not police_info %}
@@ -19,7 +20,7 @@
     {% endif %}
   </div>
   <div class="footer-meta">
-    <button type="button" class="linklike" onclick="openChangelog()"
+    <button type="button" class="linklike" data-action="changelog"
             title="查看更新日志">易班自动签到 v{{ app_version }} · 更新日志</button>
     <span class="sep" aria-hidden="true">·</span>
     <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener"

@@ -184,6 +184,26 @@ class PlaintextPatchTest(unittest.TestCase):
             self.assertNotIn("secret1", joined, "告警不得泄露明文")
             self.assertNotIn("secret2", joined, "告警不得泄露明文")
 
+    def test_legacy_env_rejects_empty_password(self):
+        """旧格式漏写口令（`phone:`）必须在装载期抛 ValueError，不得产出空口令账号。
+
+        空口令账号会拿空密码打一次真实登录，失败文案落凭据档，三天后把账号推进熔断
+        （工单 ba-p04-06）。判据与数据库 / JSON 两条来源共用 `_parse_account_dict`。
+        """
+        with mock.patch.dict(os.environ, {"YIBAN_ACCOUNTS": "13800138000:"},
+                             clear=False), self.assertRaises(ValueError) as ctx:
+            signin._load_accounts_from_legacy_env()
+        self.assertIn("password", str(ctx.exception))
+        self.assertNotIn("13800138000", str(ctx.exception).replace(
+            "phone=13800138000", ""), "异常只带登录名，不带其它凭据")
+
+    def test_legacy_env_accepts_valid_entry(self):
+        with mock.patch.dict(os.environ, {"YIBAN_ACCOUNTS": "13800138000:secret1"},
+                             clear=False):
+            accs = signin._load_accounts_from_legacy_env()
+        self.assertEqual([a.phone for a in accs], ["13800138000"])
+        self.assertEqual(accs[0].password, "secret1")
+
     def test_legacy_env_no_warning_when_unset(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("YIBAN_ACCOUNTS", None)

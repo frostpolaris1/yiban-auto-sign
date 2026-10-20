@@ -9,6 +9,7 @@ from yiban.adapters.protocol_yiban import (
     ParseError,
     SessionExpired,
     UsersureResult,
+    code_is_ok,
     looks_like_challenge,
     parse_api_envelope,
     parse_usersure_response,
@@ -30,6 +31,14 @@ _ALL_GOOD_FIXTURES = [
 
 
 # --- 信封 ------------------------------------------------------------------
+
+def test_code_is_ok_accepts_numeric_and_string_zero():
+    """成功判据与解析层同一容忍度：0 与 "0" 都成功，其余都不是（SPEC §3.1）。"""
+    assert code_is_ok(0) is True
+    assert code_is_ok("0") is True
+    for bad in (None, 1, "1", "e001", "", False):
+        assert code_is_ok(bad) is False, f"{bad!r} 不得判成功"
+
 
 def test_code_zero_returned_verbatim():
     """code:0 的信封原样返回。"""
