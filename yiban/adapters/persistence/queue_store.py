@@ -598,7 +598,10 @@ def fallback_event(day: str, exclude_owner: str = "") -> tuple[int, int] | None:
     tail, ex = "", []
     if exclude_owner:
         tail = " AND owner<>? AND instr(owner, ?)<>1"
-        ex = [exclude_owner, exclude_owner]
+        # 前缀必须带分隔符：稳定槽位名 worker-1 与 worker-12:... 互为字节前缀，
+        # 裸名匹配会把别人名下的行一起剔出唤醒签名（工单 ba-p01-06）。与
+        # reap_expired / reap_abandoned / requeue_failed 的 `owner + ":"` 同源。
+        ex = [exclude_owner, exclude_owner + ":"]
     sql = ("SELECT COUNT(*) AS n, MAX(epoch) AS h FROM sign_tasks "
            "WHERE day=? AND state=? AND vshard >= 0 AND substr(result, 1, ?)=?" + tail)
     probe = [day, STATE_FAILED, len(yiban_status.RESULT_RETRY_PREFIX),

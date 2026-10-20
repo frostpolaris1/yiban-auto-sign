@@ -112,6 +112,9 @@ class SecurityFixes021Test(unittest.TestCase):
         # 保持 .env 基本配置稳定；测试内按需改写 YIBAN_COOKIE_SECURE/YIBAN_MAX_USERS
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", "0")
+        # 每格复位转发头信任（缺省不信任）；要测反代分支的用例自己显式置 1
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "")
 
     def _login(self, c, username, password):
         r = c.post("/api/login", json={"username": username, "password": password})
@@ -244,6 +247,9 @@ class SecurityFixes021Test(unittest.TestCase):
         "显式关"混成了同一个 False，两者必须分开判。
         """
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        # 反代形态必须显式采信转发头（缺省已翻转为不信任，ba-p07-01）
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         self.assertFalse(app.config["SESSION_COOKIE_SECURE"], "起点：未配置 = 默认关")
         c = app.test_client()
@@ -261,6 +267,8 @@ class SecurityFixes021Test(unittest.TestCase):
         表现为"登录不上"——比"少一个 Secure"更难排查。
         """
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         c = app.test_client()
         c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
@@ -271,6 +279,8 @@ class SecurityFixes021Test(unittest.TestCase):
     def test_forwarded_proto_falls_back_when_header_disappears(self):
         """反代头消失后 Secure 必须能回落（逐请求判定，不粘住进程）。"""
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         c = app.test_client()
         c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
@@ -283,6 +293,8 @@ class SecurityFixes021Test(unittest.TestCase):
     def test_forwarded_proto_takes_first_hop_only(self):
         """逗号链只认最靠近客户端的那一跳（与 `_client_ip` 读 XFF 的口径一致）。"""
         self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        self.webapp.write_env_key(
+            self.env_file, "YIBAN_TRUST_FORWARDED_HEADERS", "1")
         app = self.webapp.create_app()
         c = app.test_client()
         c.get("/api/clock", headers={"X-Forwarded-Proto": "http, https"},

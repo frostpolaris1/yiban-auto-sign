@@ -11,7 +11,7 @@
 坏掉、备份脚本自身逻辑错都不在它视野内；它自己没被 cron 调起时同样没人知道。
 
 三项检查：
-1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups}/yiban-<今天>.tar.gz.gpg` 与它的
+1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups/yiban}/yiban-<今天>.tar.gz.gpg` 与它的
    `.sha256` 旁挂件都在（age 密文形态也认，见 `_archive_candidates`）。
    **明文包（裸 `.tar.gz`）不计入健康**（M3 批次0 · MF-79）：backup.sh 只在加密配置
    失效或显式 BACKUP_PLAINTEXT=1 时才产出明文包，把它当"当日备份完成"正是曾经
@@ -82,7 +82,7 @@ from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
 logger = logging.getLogger("yiban")
 
 #: 备份目录默认值（与 `scripts/backup.sh` 的 `BACKUP_DIR` 默认一致）
-DEFAULT_BACKUP_DIR = "/var/backups"
+DEFAULT_BACKUP_DIR = "/var/backups/yiban"
 #: 项目部署目录默认值（与 `scripts/backup.sh` 的 `APP_DIR` 默认一致）
 DEFAULT_APP_DIR = "/opt/yiban-auto-sign"
 #: 安装拷贝的默认落点（`backup.sh` 头部的安装命令写的就是这个路径）

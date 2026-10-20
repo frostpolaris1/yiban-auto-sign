@@ -137,7 +137,12 @@ class _TransportBase(unittest.TestCase):
                 os.environ[k] = v
 
     def setUp(self):
+        # 每例重置 .env：`_write_entries` 会写入 SMTPS_ENC，残留到下一例会盖过
+        # 该例用环境变量配的旧单条键（同一 class 共享 cls.env_file）。
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
         mailer_transport._private_target_warned = False
+        mailer_transport._target_reason_warned.clear()
         mailer_transport._entry_port_warned = False
         for k in _MAIL_ENV_KEYS:
             os.environ.pop(k, None)
@@ -148,6 +153,14 @@ class _TransportBase(unittest.TestCase):
         os.environ["YIBAN_MAIL_PASS"] = "auth-code-fake"
         os.environ["YIBAN_MAIL_SMTP_HOST"] = host
         os.environ["YIBAN_MAIL_SMTP_PORT"] = port
+
+    def _write_entries(self, entries):
+        enc = account_crypto.encrypt_text(
+            json.dumps(entries, ensure_ascii=False),
+            account_crypto.load_key(self.env_file))
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                    f"YIBAN_MAIL_SMTPS_ENC={json.dumps(enc, ensure_ascii=False)}\n")
 
 
 class SendFailureLogGranularityTest(_TransportBase):
@@ -241,6 +254,29 @@ class PrivateTargetWarningTest(_TransportBase):
         with mock.patch("smtplib.SMTP_SSL", side_effect=self._FakeOK), \
              self.assertNoLogs("mailer", level="WARNING"):
             self.assertTrue(mailer_transport.send_user("to@example.com", "s", "b"))
+
+    def test_config_error_does_not_suppress_private_target_warning(self):
+        """ba-p09-09：无关配置错误（空主机）不得把「内网/保留」告警的一次性旗吃掉。
+
+        旧实现用同一把 `_private_target_warned` 覆盖 check_smtp_host 的**全部**非空
+        reason；第一条 host 为空的坏配置就置旗，此后真正指向 127.0.0.1 的条目
+        不再留任何声音——库层唯一的内网目标提示自己把牙掉了。
+        """
+        # 第一条：host 为空 ⇒ 配置错误（与内网无关），必须自己出声
+        self._write_entries([{"host": "", "port": 465, "user": "a@x.com", "pass": "p"}])
+        os.environ["YIBAN_MAIL_ENABLE"] = "1"
+        with mock.patch("smtplib.SMTP_SSL", side_effect=self._FakeOK), \
+             self.assertLogs("mailer", level="WARNING") as first:
+            self.assertTrue(mailer_transport.send_user("to@example.com", "s", "b"))
+        self.assertIn("主机为空", "\n".join(first.output), "配置错误本身要可见")
+        # 第二条：真正指向回环 ⇒ 内网告警必须仍然可见（不得被上一条吃掉）
+        self._write_entries([{"host": "127.0.0.1", "port": 465, "user": "a@x.com",
+                              "pass": "p"}])
+        with mock.patch("smtplib.SMTP_SSL", side_effect=self._FakeOK), \
+             self.assertLogs("mailer", level="WARNING") as second:
+            self.assertTrue(mailer_transport.send_user("to@example.com", "s", "b"))
+        self.assertIn("内网/保留地址", "\n".join(second.output),
+                      "无关的配置错误不得让内网目标告警永久静音")
 
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

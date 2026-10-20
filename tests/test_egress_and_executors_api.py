@@ -262,6 +262,15 @@ class OwnerTagTest(unittest.TestCase):
         self.assertEqual(egress.owner_tag(egress.runtime_owner(stable, pid=9, gen="101010")),
                          egress.owner_tag(stable))
 
+    def test_default_runtime_gen_carries_the_date(self):
+        """默认代次是 `YYYYMMDDHHMMSS`（14 位）：只到时分秒会让跨天同秒同 pid 重合。
+
+        容器里重启后 pid 恒为 1，缺日期这一维时代次只剩时分秒——两代进程可能拿到
+        完全相同的运行时身份，领取池按 owner 认"自己人"（工单 ba-p08-15）。
+        """
+        self.assertRegex(egress._RUNTIME_GEN, r"^\d{14}$",
+                         "代次必须含日期（%Y%m%d%H%M%S），不能只到时分秒")
+
 
 class _WebBase(unittest.TestCase):
     """临时库/环境 + 主管理员登录（与既有 web 测试同一套骨架）。"""
