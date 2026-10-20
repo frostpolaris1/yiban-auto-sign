@@ -246,8 +246,12 @@ def verify_account(account):
     （探针轮则由执行体注入的出口兜着），三处必须同源，见该函数说明（M35）。
     """
     phone = account.phone
-    if not account_still_signable(account):
-        # 探针同样会完整登录（与签到同一风控暴露面）：账号已被删除/停用则不发起
+    still = account_still_signable(account)
+    if not still:
+        # 探针同样会完整登录（与签到同一风控暴露面）：账号已删除/停用或状态查询失败
+        # （None，fail-closed）都不发起。归因分开——库错误不得显示成"账号已删除"。
+        if still is None:
+            return False, "账号状态复核失败（数据库查询异常），本次不发起登录"
         return False, "账号已被删除或停用"
     try:
         client = YibanClient(account)
@@ -294,8 +298,14 @@ def refresh_registered_device(account):
     `partial` / `persist_failed`（读到过但没落库）与 `not_registered` / `read_failed`。
     """
     phone = account.phone
-    if not account_still_signable(account):
-        # 与 verify_account 同口径：完整登录（与签到同一风控暴露面），账号已停用则不发起
+    still = account_still_signable(account)
+    if not still:
+        # 与 verify_account 同口径：完整登录（与签到同一风控暴露面），账号已停用或
+        # 状态查询失败（None，fail-closed）都不发起。`read_failed` 的语义是"读不到"，
+        # 对库错误是如实归因（web 侧按 502 处置）。
+        if still is None:
+            return _refresh_result(False, "read_failed",
+                                   "账号状态复核失败（数据库查询异常），本次不发起登录")
         return _refresh_result(False, "account_inactive", "账号已被删除或停用")
 
     client = None

@@ -53,6 +53,13 @@ ACCOUNT_AUDIT_INACTIVE = ("pending", "rejected")
 #: 防逐账号刷屏把真正的信号淹掉。
 _validity_check_failure_reported = False
 
+#: `account_still_signable` 的**查询异常哨兵**：`None` = 账号状态未知（查询本身失败）。
+#: 调用方一律按 fail-closed 拒绝发起真实登录；但文案必须与"确实不可签"区分——把一次
+#: 库错误显示成"账号已被删除或停用"是归因错误（工单 ba-p02-06 同族残余）。刻意用
+#: `None` 而不是第二个布尔：`if not account_still_signable(...)` 的既有调用点自动
+#: 继续 fail-closed，只有需要区分文案的调用点才显式判 `is None`。
+VALIDITY_UNKNOWN = None
+
 
 def _facade():
     """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
@@ -121,6 +128,11 @@ def account_still_signable(account):
 
     JSON/环境变量账号模式（account_id=0）恒为 True：没有库内行可查，不存在"行过期"。
     查询本身即 `is_signable`（db 层已将同名函数导出为 `account_is_signable`）。
+
+    **返回值三态**：`True` = 可签；`False` = 确实不可签（行已删/停用/审核态不符）；
+    `VALIDITY_UNKNOWN`（`None`）= 查询异常、状态未知。调用方必须把后两者都按"不发起
+    真实登录"处理（fail-closed），但**文案/分支要分开**：把库错误说成"账号已被删除或
+    停用"会误导管理员对账号做补救。
     """
     global _validity_check_failure_reported
     account_id = getattr(account, "account_id", 0)
@@ -151,7 +163,7 @@ def account_still_signable(account):
             except Exception as alert_err:
                 logger.warning("账号有效性复核告警入账失败: %s",
                                masking.sanitize_text(alert_err))
-        return False
+        return VALIDITY_UNKNOWN
 
 
 def purge_orphan_session_cache(conn):

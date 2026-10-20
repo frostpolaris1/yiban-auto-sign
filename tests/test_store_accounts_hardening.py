@@ -142,8 +142,10 @@ class ValidityCheckFailureIsFailClosedTest(_Fixture):
                                side_effect=RuntimeError("db down")), \
                 self.assertLogs("yiban.store.accounts", level="ERROR") as logs:
             allowed = accounts_mod.account_still_signable(self._account())
-        self.assertFalse(allowed,
-                         "有效性查不出来时不得按『仍有效』放行——那是静默多签")
+        self.assertIs(allowed, accounts_mod.VALIDITY_UNKNOWN,
+                      "有效性查不出来时不得按『仍有效』放行；且必须是'状态未知'哨兵，"
+                      "调用方才分得清'库错误'与'确实不可签'")
+        self.assertFalse(allowed, "哨兵在布尔判据下仍是 fail-closed")
         self.assertTrue(any("有效性复核" in line for line in logs.output), logs.output)
 
     def test_query_failure_is_reported_once_per_process(self):
@@ -152,8 +154,10 @@ class ValidityCheckFailureIsFailClosedTest(_Fixture):
                                side_effect=RuntimeError("db down")), \
              mock.patch.object(alerts, "_collect_admin_mail") as collect, \
              self.assertLogs("yiban.store.accounts", level="ERROR"):
-            self.assertFalse(accounts_mod.account_still_signable(self._account()))
-            self.assertFalse(accounts_mod.account_still_signable(self._account()))
+            self.assertIs(accounts_mod.account_still_signable(self._account()),
+                          accounts_mod.VALIDITY_UNKNOWN)
+            self.assertIs(accounts_mod.account_still_signable(self._account()),
+                          accounts_mod.VALIDITY_UNKNOWN)
         self.assertEqual(collect.call_count, 1,
                          "同一场库故障只进一次当日汇总（防逐账号刷屏）")
 

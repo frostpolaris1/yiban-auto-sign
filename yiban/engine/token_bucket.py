@@ -17,7 +17,10 @@
 
 **功能**
 出口限速件：按出口整形的令牌桶（GCRA/TAT，不累积额度）+ AIMD 自适应 + 全局聚合
-速率上界 Λ + 每账号间隔安全件 + EWMA 外环微调。
+速率上界 Λ + 每账号间隔安全件。**EWMA 外环与站点级熔断未接线**（工单 ba-p04-03）：
+`apply_ewma` 与 `downgrade_all` 全仓没有生产调用点，只有测试在调；生产执行体只调
+`on_success` / `on_risk_signal` / `persist`。本模块**不**提供"风控信号率超阈 ⇒ 全体
+出口降到 RATE_MIN"的保险，调用方不得按那层保险设计。
 
 **单位（全模块唯一口径）**：速率一律是**账号尝试/s**（attempt/s）。本项目单账号
 = 6 次 HTTP 请求（登录链 4 + 定位 + 签到），故 `rate = 1` 的语义是 1 次尝试/s
@@ -34,9 +37,10 @@
 - `EgressBucket`：单出口 GCRA 桶（纯状态机，注入 `now` 即可测）；
 - `EgressLimiter`：`{egress: EgressBucket}` + AIMD/半开 + **出口预算均分**（`shares`
   = 同出口执行体数，子桶速率 = 出口级 rate ÷ shares）+ `snapshot` / `persist` /
-  `restore_from_store`（落库往返与崩溃重启恢复）+ `downgrade_all`（全体降档入口）；
+  `restore_from_store`（落库往返与崩溃重启恢复）+ `downgrade_all`（全体降档入口，
+  **无生产调用点**，见模块"功能"节）；
 - `GlobalLimiter`：Λ 上界；`AccountGapGate`：每账号 gap 安全件；
-- `apply_ewma`：外环一步速率更新（平滑系数归调用侧）；
+- `apply_ewma`：外环一步速率更新（平滑系数归调用侧；**无生产调用点**，见模块"功能"节）；
 - 配置面收口：`limiter_from_env`（速率 + 突发额度一次读全，并在显式配速率时标记
   人工接管）、`burst_from_env` / `burst_cap`（`YIBAN_MIN_EXEC_GAP` → 突发额度）、
   `gap_gate_from_env`（gap 门）。
@@ -54,8 +58,9 @@ load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路
 （突发额度收口，见 `burst_from_env`）、`YIBAN_ACCOUNT_GAP_MAX` /
 `YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
 调用谁：`yiban.store.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
-`on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）与探针
-（`probe.run_probe` 每账号前取额度、轮末 `persist`；只消费额度、不喂 AIMD 信号）。
+`on_risk_signal`、10s 循环 `persist`）与探针（`probe.run_probe` 每账号前取额度、轮末
+`persist`；只消费额度、不喂 AIMD 信号）。`downgrade_all` 与 `apply_ewma` **当前无生产
+调用点**（工单 ba-p04-03 复核：全仓除测试外零调用）。
 生产入口有两处：执行体 `executor_v3`（台账单池化后的唯一执行体）与探针 `probe`——探测是
 真实登录、与签到同一风控暴露面，故与同出口的执行体**共用同一个出口标识**。**持久键**是
 出口标识（`yiban.egress.egress_identity`：空出口归一为 `direct`，否则取去 userinfo 的
@@ -309,6 +314,10 @@ class EgressLimiter:
 
         站点级熔断（风控信号率超阈）的**降档入口**：阈值判定与告警归调用方，本方法只做
         降档本身；人工接管不阻止降档（安全反应优先于"速率由管理员定"）。
+
+        **当前无生产调用点**（工单 ba-p04-03）：执行体没有"风控信号率超阈"的判据，
+        故**不存在**站点级熔断这一层。本方法只由测试调用；要接线必须先有阈值与告警的
+        唯一判据，不得让读者以为它已在跑。
         """
         self.rate = RATE_MIN  # 粘住的降档：新建桶（份额随 self.rate）也按降档值起算
         for egress in list(self._buckets):
@@ -320,6 +329,8 @@ class EgressLimiter:
     def snapshot(self) -> dict[str, dict[str, float]]:
         """落库用快照：`{egress: {"rate", "burst", "tat"}}`。`rate` / `burst` 是**出口级**量
         （与 `egress_state` 列同口径）；`tat` 是子桶的本进程令牌位置（只作观测，不落库）。
+
+        **当前无生产调用点**（工单 ba-p04-03）：`persist` 直接按属性写库，不走本函数。
         """
         return {e: {"rate": self.rate, "burst": self.burst, "tat": b.tat}
                 for e, b in self._buckets.items()}
@@ -472,8 +483,9 @@ def apply_ewma(prev_rate: float, risk_ratio_hat: float, r_target: float,
     `risk_ratio_hat` 的 EWMA 平滑**在调用侧做**（α 见 `EWMA_ALPHA`）：本函数只吃平滑后的 r̂，
     故不收 α——α 的作用点在采样，不在这一步更新。
 
-    与 AIMD 的分工与次序（调用方必须照此排）：先处理 AIMD 事件、再跑本函数，且只在两次尝试
-    之间调整（单次尝试中途变速率会让半程限速的状态不一致）；人工接管的出口不再调用本函数。
+    **当前无生产调用点**（工单 ba-p04-03）：执行体只跑 AIMD 事件式回退/上探，没有外环
+    采样与调用本函数的路径。下面"与 AIMD 的分工与次序"是**若将来接线**时必须遵守的
+    次序，不是现状。
     """
     prev = clamp_rate(prev_rate)
     if not r_target or float(r_target) <= 0:

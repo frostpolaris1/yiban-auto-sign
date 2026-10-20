@@ -226,8 +226,8 @@ class ManifestModelTest(unittest.TestCase):
         self.assertEqual(revived[1]["proxy"], "http://w1:2")
 
     def test_apply_legacy_config_keeps_slots_and_appends_with_max_plus_one(self):
-        rows = [{"slot": 0, "type": "worker", "proxy": "old0"},
-                {"slot": 2, "type": "worker", "proxy": "old2"},
+        rows = [{"slot": 0, "type": "worker", "proxy": "old0", "name": "主出口"},
+                {"slot": 2, "type": "worker", "proxy": "old2", "name": "备用"},
                 {"slot": 5, "type": "disabled", "proxy": "kept"},
                 {"slot": 6, "type": "fallback", "proxy": "oldfb"}]
         env = {"YIBAN_WORKERS": "5", "YIBAN_PROXY_LIST": "p1,p2,p3,p4,p5",
@@ -236,6 +236,8 @@ class ManifestModelTest(unittest.TestCase):
         by_slot = {r["slot"]: r for r in out}
         self.assertEqual((by_slot[0]["proxy"], by_slot[2]["proxy"]), ("p1", "p2"),
                          "已存在的槽位保留、按顺序吃新出口")
+        self.assertEqual((by_slot[0]["name"], by_slot[2]["name"]), ("主出口", "备用"),
+                         "旧接口整份重写不得抹掉 worker 行的自定义名（工单 ba-p08-08）")
         self.assertEqual([s for s in by_slot if by_slot[s]["type"] == "worker"],
                          [0, 2, 7, 8, 9], "新增的执行体拿 max + 1（只增不复用）")
         self.assertEqual(by_slot[5]["type"], "disabled", "停用行不因旧接口写入而丢失")
@@ -245,6 +247,7 @@ class ManifestModelTest(unittest.TestCase):
                                                  "YIBAN_PROXY_LIST": "only"})
         self.assertEqual([(r["slot"], r["type"]) for r in out2],
                          [(0, "worker"), (5, "disabled"), (6, "fallback")])
+        self.assertEqual(out2[0]["name"], "主出口", "减少执行体数同样不得丢名字")
 
 
 # ---------------------------------------------------------------------------
