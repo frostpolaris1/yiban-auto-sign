@@ -204,6 +204,7 @@ fast	tests/test_mypy_type_gate.py
 fast	tests/test_no_literal_date_in_fixtures.py
 fast	tests/test_no_position.py
 fast	tests/test_notify_ledger.py
+fast	tests/test_notify_p05_routes.py
 fast	tests/test_notify_throttle.py
 fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）

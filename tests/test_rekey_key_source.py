@@ -888,7 +888,8 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                          "0=不限 → 剩余应为 None（get_config 口径）")
         r2 = c.put("/api/notify-config",
                    json={"urgent_daily_max": -5, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))  # max(0,…) 与 daily_max 一致
+        # ba-p05-10：负值不再 max(0,·) 钳成「不限额」，而是越界 400、零落盘
+        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=0", _read_env(self.env_file))
         r3 = c.put("/api/notify-config", json={"urgent_daily_max": "many"}, headers=self._csrf(t))
         self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
