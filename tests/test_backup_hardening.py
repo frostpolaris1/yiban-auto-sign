@@ -22,7 +22,9 @@ P12-07/P12-17 的"默认值/四份副本一致性"属结构不变量，用最小
 测试夹具里的口令/密钥全部是明显假值，不含任何真实凭据。
 """
 import glob
+import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -336,6 +338,43 @@ class BackupDirDefaultTest(BackupHardeningBase):
             src = f.read()
         self.assertIn('BACKUP_DIR="${BACKUP_DIR:-/var/backups/yiban}"', src,
                       "BACKUP_DIR 默认值仍是共享的 /var/backups")
+
+    def test_all_carriers_share_one_default(self):
+        """跨载体对齐：写入端、哨兵、拉取端、配置名册必须是同一个默认值。"""
+        with open(SCRIPT, encoding="utf-8") as f:
+            backup_src = f.read()
+        with open(PULL, encoding="utf-8") as f:
+            pull_src = f.read()
+        sentinel_py = os.path.join(BASE, "scripts", "backup_sentinel.py")
+        with open(sentinel_py, encoding="utf-8") as f:
+            sentinel_src = f.read()
+        with open(os.path.join(BASE, "config", "registry.json"), encoding="utf-8") as f:
+            registry = json.load(f)
+        values = {
+            "scripts/backup.sh": re.search(
+                r'BACKUP_DIR="\$\{BACKUP_DIR:-([^}]+)\}"', backup_src).group(1),
+            "scripts/pull-prod-backup.sh": re.search(
+                r'REMOTE_DIR="\$\{REMOTE_BACKUP_DIR:-([^}]+)\}"', pull_src).group(1),
+            "scripts/backup_sentinel.py": re.search(
+                r'DEFAULT_BACKUP_DIR\s*=\s*"([^"]+)"', sentinel_src).group(1),
+            "config/registry.json": registry["YIBAN_BACKUP_DIR"]["default"],
+        }
+        self.assertEqual({"/var/backups/yiban"}, set(values.values()),
+                         f"备份目录默认值跨载体漂移：{values}")
+
+    def test_no_old_default_left_in_docs_or_wrapper(self):
+        wrapper = os.path.join(BASE, "deploy", "prod", "yiban-backup-wrapper.sh")
+        sentinel_sh = os.path.join(BASE, "scripts", "yiban-backup-sentinel.sh")
+        for path in (wrapper, sentinel_sh, os.path.join(BASE, "README.md")):
+            with open(path, encoding="utf-8") as f:
+                body = f.read()
+            self.assertNotIn("默认 /var/backups、", body,
+                             f"{os.path.basename(path)} 仍写旧默认")
+            self.assertNotIn("`/var/backups` 下", body,
+                             f"{os.path.basename(path)} 仍把旧目录写成默认落点")
+        with open(wrapper, encoding="utf-8") as f:
+            self.assertIn("/var/backups/yiban", f.read(),
+                          "wrapper 没有写明它继承的新默认")
 
     def test_shared_dir_is_refused_before_chmod(self):
         r = self._run(extra_env={"BACKUP_DIR": "/var/backups",

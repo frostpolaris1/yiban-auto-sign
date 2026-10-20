@@ -1022,17 +1022,19 @@ curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: a
 
 ### 备份与恢复
 
-`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。
+`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。本地归档默认落 `/var/backups/yiban`（专用子目录；与 `pull-prod-backup.sh` 的 `REMOTE_BACKUP_DIR` 默认同值，改一处必须同批改三处）。
 
 包内内容除 `yiban.db`、`.env`、密钥文件外，还含**当日闸门标记与账本**（`sched-run-*`/`sched-slot-*`/`sched-snapshot-*`/`notify-ledger.json`/`notify-throttle.json`/`cred-state.json`）与**审计链外部锚点** `audit-anchor.log`：缺前者恢复当天会重签或漏签、告警日额度被重置；缺后者恢复出来的库就再也验不了"删尾/删前缀/整表清空"。`--restore` 解包后会自动跑 `integrity_check` 与 `audit_verify.py`（链 + 锚点 + 欠账）并带回结论，同时提示"先停服再覆盖"与"必须删除残留 `-wal`/`-shm`"。
 
 ```bash
 # 备份（生产执行件收编在 deploy/prod/：backup.sh→/usr/local/sbin/yiban-backup.sh、
-# wrapper、三张 cron 表一起按 manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
+# wrapper、各 cron 表（含 02:00 备份 deploy/prod/cron.d/yiban-backup）一起按
+# manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
 # 单独手工安装亦可：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
 sudo bash deploy/prod/install.sh
-# root crontab 调 wrapper（--require-encrypt 由 wrapper 钉死，不带时加密配置失效会
-# 静默产出含全部密钥与口令哈希的明文归档）。口令从 0600 口令文件经 **stdin fd 0 单跳**
+# root cron 调 wrapper（权威件 deploy/prod/cron.d/yiban-backup；--require-encrypt 由
+# wrapper 钉死，不带时加密配置失效会静默产出含全部密钥与口令哈希的明文归档）。
+# 口令从 0600 口令文件经 **stdin fd 0 单跳**
 # 注入，不进 crontab 行 / 命令历史 / 任何子进程的 env（M3 批次0 起，MF-42）：
 #   printf '你的备份口令\n' | sudo tee /etc/yiban/backup-passphrase && sudo chmod 600 /etc/yiban/backup-passphrase
 #   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
@@ -1055,7 +1057,7 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
 
 > ℹ️ **升级提示（曾装过"审计独立见证"的旧部署请清理）**：审计的独立见证纵深已移除，`deploy/prod` 不再提供 `yiban-audit-witness.sh` 与 `/etc/cron.d/yiban-audit-witness`。此前按旧文档装过见证的主机请手工删掉这两个文件——`sudo rm -f /usr/local/sbin/yiban-audit-witness.sh /etc/cron.d/yiban-audit-witness`——否则残留的 root cron 会每 10 分钟调用已删除的脚本并持续报错（仅噪声，不影响体检结论）。移除后"锚点之后的追加行被删除"这一窗口不再由本机检出（见上文「诚实边界」）。
 
-> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
+> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups/yiban` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
 >
 > ⚠️ **公钥模式（`BACKUP_GPG_RECIPIENT`）没有回环自检，这是它的代价**：服务器只存公钥、没有对应私钥，所以每轮备份的「解密 → 解包 → `integrity_check`」这一步**在本机根本做不到**，脚本只能降级成「密文 ≥200 字节」这一句尺寸检查。后果要说清：**一把 >200 字节的损坏密文会被判为合格**——脚本照常删明文、写 `.sha256` 清单、跑异机同步与保留期轮转，本地只剩一把解不开的密文；而哨兵（只要求归档与 `.sha256` 旁挂件同在）会判它健康。这个边界**在本机无法消解**（本机没有私钥），只有两条路能盖住：① **按计划跑 `--restore` 演练**（唯一的真判据）；② 异机侧真解一次。两条都做不了就用口令模式（能回环自检），别用公钥模式。
 >

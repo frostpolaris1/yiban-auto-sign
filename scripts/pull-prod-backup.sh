@@ -33,7 +33,9 @@
 #
 # 环境变量（均可覆盖）：
 #   YIBAN_SSH_HOST       ssh 别名，默认 yiban（~/.ssh/config 中已配置，禁止直连 IP）
-#   REMOTE_BACKUP_DIR    生产备份目录，默认 /var/backups
+#   REMOTE_BACKUP_DIR    生产备份目录，默认 /var/backups/yiban
+#                        （必须与 scripts/backup.sh 的 BACKUP_DIR 默认同值：
+#                        生产备份落在专用子目录，拉取端去旧目录会静默拉不到）
 #   LOCAL_MIRROR_DIR     本地镜像目录，默认 $HOME/yiban-prod-mirror
 #                        （运维若想落在别处——例如非系统盘——请显式传入该变量，
 #                        不要把个人目录布局写进脚本默认值：本仓库公开）
@@ -43,12 +45,13 @@
 #                        远端，均视为异常并非 0 退出
 #
 # 退出码：0=成功且新鲜；1=失败/校验不过/不新鲜；2=用法错误；
-#         3=环境变量非法（MF-78 注入白名单拒绝，发生在构建任何远端命令之前）
+#         3=环境变量非法（MF-78 注入白名单拒绝，或 STALE_DAYS/LOCAL_KEEP 非整数；
+#           都发生在构建任何远端命令之前）
 umask 077
 set -u
 
 SSH_HOST="${YIBAN_SSH_HOST:-yiban}"
-REMOTE_DIR="${REMOTE_BACKUP_DIR:-/var/backups}"
+REMOTE_DIR="${REMOTE_BACKUP_DIR:-/var/backups/yiban}"
 LOCAL_KEEP="${LOCAL_KEEP:-60}"
 MAX_FETCH="${PULL_MAX_FETCH:-30}"
 STALE_DAYS="${STALE_DAYS:-2}"
