@@ -181,6 +181,11 @@ class _TierBase(unittest.TestCase):
             "YIBAN_ADMIN_USER=admin",
             f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}",
             "YIBAN_MAIL_ADMIN_TO=admin@test.local",
+            # 显式声明"反代形态"：本文件用 X-Forwarded-For 换出口 IP 验证「换环境」
+            # 判据。转发头信任缺省已翻转为"不信任"（ba-p07-01），不写这一行时
+            # `_client_ip` 会退回回环 remote_addr，全部请求落进同一个桶、换桶断言
+            # 退化成自证。
+            "YIBAN_TRUST_FORWARDED_HEADERS=1",
             # 发公告那一路要有草稿，否则它先报"没有待发布草稿"
             "YIBAN_ANNOUNCEMENT_DRAFT=测试公告草稿",
         ]

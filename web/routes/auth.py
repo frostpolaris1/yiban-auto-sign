@@ -213,7 +213,14 @@ def api_login():
         # 故只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
         # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
         with _locks._rate_lock:
-            distinct_users = sum(1 for (fip, _u) in _login_fails() if fip == ip)
+            # 「正对多个不同用户名失败」必须有窗口：该表只在 len>_IP_STORE_LIMIT 时 trim、
+            # 且只在登录成功时 pop，按全部历史键计数会把共享出口的历史噪声永久算成喷洒
+            # （此后每次忘密码都标 urgent，挤掉真紧急信号）。判据与该表的锁定窗口同源。
+            _spray_since = now - _security.LOGIN_LOCK_SECONDS
+            distinct_users = sum(
+                1 for (fip, _u), val in _login_fails().items()
+                if fip == ip and val[-1] >= _spray_since
+            )
         _notify_mail.send_notification(
             "登录失败告警",
             mail_layout.Mail(
@@ -235,9 +242,9 @@ def api_login():
             ledger="login_fail",
         )
     if lock_now:
-        return jsonify(
-            {"error": f"密码错误次数过多，已锁定 {_security.LOGIN_LOCK_SECONDS // 60} 分钟"}
-        ), 429
+        # 不暴露锁定窗口参数（信息分层）：与同函数前置锁定分支、me_api 三处同文案。
+        # 回显 LOGIN_LOCK_SECONDS//60 等于把可配安全参数交给匿名调用方，并确认"已触顶"。
+        return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
     return jsonify({"error": "用户名或密码错误"}), 401
 
 
@@ -324,10 +331,12 @@ def api_register():
                 created_at=clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
                 # 审计与 INSERT 同事务：注册即建立账号凭据，中间被杀不留"建了却无痕"。
+                # 审计 target 与个人域/用户管理域同口径：邮箱遮罩后入链
+                # （明文邮箱会随审计链进备份包与 /api/audit-logs 响应体）
                 audit_spec={
                     "username": email,
                     "action": "user_register",
-                    "target": email,
+                    "target": _accounts_data._mask_email(email),
                     "detail": "开放注册",
                 },
             )

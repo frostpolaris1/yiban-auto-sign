@@ -73,15 +73,28 @@ def api_logs_export():
         return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
     if not os.path.exists(_logs_svc.log_path_for(date)):
         return jsonify({"error": f"{date} 无签到日志"}), 404
-    text = "".join(_logs_svc._mask_log_phones(ln) + "\n" for ln in _logs_svc._log_lines_for(date))
+    # 与展示层同一契约（ba-p06-03）：stats 出参必须传——不传时 _log_lines_for
+    # 丢弃的残缺行在导出物里一个字都不留（管理员拿到看似完整、实际缺行的归档）。
+    _line_stats = {}
+    text = "".join(
+        _logs_svc._mask_log_phones(ln) + "\n"
+        for ln in _logs_svc._log_lines_for(date, _line_stats)
+    )
+    dropped = int(_line_stats.get("dropped", 0))
+    if dropped:
+        # 缺行必须可见：响应头给下游归档脚本，审计 detail 给事后取证（两者同数）。
+        _appmod().logger.warning(
+            "签到日志导出丢弃 %d 行（宽行模型劈开的残缺行）：%s", dropped, date)
     db.audit(
         session.get("username") or "?",
         "logs_export",
         date,
-        f"导出 {date} 签到日志（脱敏）",
+        f"导出 {date} 签到日志（脱敏；丢弃 {dropped} 行）",
     )
     return Response(text, mimetype="text/plain", headers={
         "Content-Disposition": f"attachment; filename=sign-{date}.log",
+        # 0 也显式回执：下游无需区分"字段缺失"与"没有丢行"
+        "X-Yiban-Dropped-Lines": str(dropped),
     })
 
 

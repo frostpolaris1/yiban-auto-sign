@@ -181,6 +181,7 @@ fast	tests/test_manual_paused_spawn_filter.py
 fast	tests/test_manual_sign_reporting.py
 fast	tests/test_masking_phone_contract.py
 fast	tests/test_masking_ssrf_gaps.py
+fast	tests/test_masking_tree_parity.py
 fast	tests/test_masking_tokens.py
 fast	tests/test_migration_compat.py
 slow	tests/test_migrations_fail_closed.py	# 真子进程：真起子进程验迁移拒启/kill 重跑收敛（本机 3.0s）
@@ -298,6 +299,7 @@ fast	tests/test_web_api_security.py
 fast	tests/test_web_audit_page.py
 fast	tests/test_web_auth_security.py
 fast	tests/test_web_boundary.py
+fast	tests/test_web_hardening_batch.py
 fast	tests/test_web_calendar_parity.py
 fast	tests/test_web_css_contrast.py
 fast	tests/test_web_dashboard_page.py

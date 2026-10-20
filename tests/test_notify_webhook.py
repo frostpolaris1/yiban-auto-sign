@@ -1414,7 +1414,10 @@ class Batch18Knife2WebTest(unittest.TestCase):
                 self.assertEqual(r.status_code, 401)
             r = c.post("/api/login", json={"username": long_b, "password": "x"})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
-        self.assertIn("已锁定", r.get_json()["error"], "同 128 前缀应合并计数并锁定")
+        # 文案不得回显锁定时长（ba-p06-05 信息分层），但仍须明确"已锁定"语义
+        msg = r.get_json()["error"]
+        self.assertIn("密码错误次数过多", msg, "同 128 前缀应合并计数并锁定")
+        self.assertNotIn("分钟", msg, "不得向匿名调用方回显锁定窗口参数")
 
     def test_p31_restore_fail_key_truncated_to_128(self):
         """验收：restore 的 200 长邮箱同样截断 [:128]（累计到锁定阈值即锁定）。"""
