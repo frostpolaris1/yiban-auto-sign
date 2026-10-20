@@ -385,21 +385,35 @@ class BackupDirDefaultTest(BackupHardeningBase):
 
 
 class BusinessDayFallbackChainTest(unittest.TestCase):
-    """P12-17：四份 business_day 副本都必须判定 TZ 是否真的生效。"""
+    """P12-17 + census-P2-sign-day-log：退化链只在 `scripts/lib/host_paths.sh` 写一份。
 
-    FILES = (RUN_SH, SCRIPT, FALLBACK, PULL)
+    四份 `business_day` 副本（run.sh / backup.sh / 兜底 / pull）已收进该文件；
+    本类钉两件事：① 唯一副本仍校验 tzdata 是否真的生效；② 四个入口都 source 它，
+    不许再抄第二份（否则同一业务日在不同入口可能算出不同值）。
+    """
 
-    def test_all_copies_check_tz_effective(self):
-        for path in self.FILES:
+    CARRIERS = (RUN_SH, SCRIPT, FALLBACK, PULL)
+    LIB = os.path.join(BASE, "scripts", "lib", "host_paths.sh")
+
+    def test_single_copy_checks_tz_effective(self):
+        with open(self.LIB, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("+0800", src, "business_day 未校验 tzdata 是否生效")
+        self.assertNotIn('TZ=Asia/Shanghai date +%F 2>/dev/null && return 0', src,
+                         "仍把 GNU date 的 0 当成功判据")
+        self.assertIn("TZ=Asia/Shanghai date +%z", src,
+                      "未用 date +%z 判定时区生效")
+
+    def test_carriers_source_the_single_copy(self):
+        for path in self.CARRIERS:
             with open(path, encoding="utf-8") as f:
                 src = f.read()
-            self.assertIn("+0800", src,
-                          f"{os.path.basename(path)} 的 business_day 未校验 tzdata 是否生效")
-            self.assertNotIn('TZ=Asia/Shanghai date +%F 2>/dev/null && return 0',
+            self.assertIn("lib/host_paths.sh", src,
+                          f"{os.path.basename(path)} 没有引用 business_day 的唯一副本")
+            self.assertNotIn("_d=\"$(\"$PY\" -c \"import sys; sys.path.insert(0, sys.argv[1]); "
+                             "from yiban.core.clock import today",
                              src,
-                             f"{os.path.basename(path)} 仍把 GNU date 的 0 当成功判据")
-            self.assertIn("TZ=Asia/Shanghai date +%z", src,
-                          f"{os.path.basename(path)} 未用 date +%z 判定时区生效")
+                             f"{os.path.basename(path)} 仍自带一份业务日取时实现")
 
 
 if __name__ == "__main__":

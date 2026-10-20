@@ -37,6 +37,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
+from yiban.adapters.config import env_io
 from yiban.adapters.statefiles import cred_state
 from yiban.core import clock
 from yiban.core import status as yiban_status
@@ -223,11 +224,10 @@ def log_path_for(date_str=None):
     日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
     run.sh / signin.py / 手动签到子进程均写入当天文件（保留 `LOG_FILE` 配置的目录）。
 
-    日志路径从宿主取（`LOG_FILE` 可被测试直接赋值改写）。
+    形状唯一在 `env_io.day_log_path`（census-P2-sign-day-log）：本函数只负责把
+    宿主注入的 `LOG_FILE` 传进去（测试赋值 `LOG_FILE` 的打桩面照旧生效）。
     """
-    log_file = _host("log_file")
-    date_str = date_str or clock.now().strftime("%Y-%m-%d")
-    return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
+    return env_io.day_log_path(date_str, log_file=_host("log_file"))
 
 
 def _log_lines_for(date_str, stats=None):
@@ -362,7 +362,7 @@ def load_sign_state_ex(state_dir, date_str=None):
       `"none"`  两者都读不到（缺失、损坏、非 dict）——调用方按"无数据"处理。
     """
     date_str = date_str or clock.now().strftime("%Y-%m-%d")
-    path = os.path.join(state_dir, f"sign-state-{date_str}.json")
+    path = env_io.sign_state_path(date_str, state_dir=state_dir)
     try:
         # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
         with open(path, encoding="utf-8-sig") as f:
@@ -372,7 +372,7 @@ def load_sign_state_ex(state_dir, date_str=None):
     except (OSError, ValueError):
         pass
     # 回退：sign-daily（旧版符号）→ 状态码（反查表见模块级 `_SYM_TO_STATUS`，由 `SYMBOL` 取反）
-    daily_path = os.path.join(state_dir, f"sign-daily-{date_str}.json")
+    daily_path = env_io.sign_daily_path(date_str, state_dir=state_dir)
     try:
         with open(daily_path, encoding="utf-8-sig") as f:
             daily = json.load(f)

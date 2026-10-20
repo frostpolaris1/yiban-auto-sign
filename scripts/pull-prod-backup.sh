@@ -116,31 +116,16 @@ fi
 mkdir -p "$LOCAL_MIRROR_DIR" || { echo "无法创建本地镜像目录 $LOCAL_MIRROR_DIR" >&2; exit 1; }
 LOG="$LOCAL_MIRROR_DIR/pull.log"
 # 项目根（脚本在 <repo>/scripts/ 下）：业务日取时经 yiban.core.clock 与引擎同源
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 项目根（唯一环境键 YIBAN_APP_DIR；未设时按检出反推）与业务日唯一来源
+# （`business_day`）来自 `scripts/lib/host_paths.sh`——宿主脚本的唯一 bash 定义点。
+# 业务日取时经 yiban.core.clock 与引擎同源；退化链与 backup.sh 同口径。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
 else
     PY="$(command -v python3 || echo /usr/bin/python3)"
 fi
-# 业务日唯一来源（MF-109）：yiban.core.clock 的北京钟；退化链与 backup.sh 同口径
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d _tz
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
-    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
-    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
-    if [ "$_tz" = "+0800" ]; then
-        TZ=Asia/Shanghai date +%F
-        return 0
-    fi
-    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
-    date +%F
-}
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG" >&2; }
 

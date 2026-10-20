@@ -23,7 +23,8 @@
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-APP_ROOT="${YIBAN_APP_ROOT:-/opt/yiban-auto-sign}"
+# 生产检出根：唯一环境键 YIBAN_APP_DIR；YIBAN_APP_ROOT 只作旧部署别名（census-P2-repo-root）。
+APP_ROOT="${YIBAN_APP_DIR:-${YIBAN_APP_ROOT:-/opt/yiban-auto-sign}}"
 CRON_DIR="$REPO_ROOT/deploy/prod/cron.d"
 MANIFEST="$REPO_ROOT/deploy/prod/manifest.tsv"
 

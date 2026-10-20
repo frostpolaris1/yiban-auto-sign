@@ -67,6 +67,17 @@ from yiban.adapters.protocol_yiban import crypto as _lib_crypto
 
 logger = logging.getLogger("yiban.platform")
 
+#: 单账号一次完整尝试的 HTTP 请求数（census-P2-req6，**唯一定义点**）。
+#:
+#: 六跳链路 = 登录链 4 跳（OAuth 页 / usersure / iframe / auth）＋
+#: 签到链 2 跳（signPosition / signIn）。容量与限速的"账号尝试数 ↔ 请求数"换算
+#: 只认这一枚常量；过去这个数只活在 7 处散文里，协议层的调用点没有东西在数它。
+#: **会话缓存命中时登录链被跳过**（实际 < 6）：这是按最坏形态给的**上限**，
+#: 容量评估宁可略保守，不要据此当成"每次必有 6 次请求"。
+LOGIN_CHAIN_REQUESTS = 4
+SIGNIN_CHAIN_REQUESTS = 2
+REQUESTS_PER_ACCOUNT = LOGIN_CHAIN_REQUESTS + SIGNIN_CHAIN_REQUESTS
+
 # ---------------------------------------------------------------------------
 # 平台事实：客户端标识、端点、请求头与版本
 # ---------------------------------------------------------------------------
