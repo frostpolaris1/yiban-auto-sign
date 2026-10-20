@@ -432,13 +432,13 @@ class YibanClient:
         两个前提顺序不可拆：
 
         1. 按配置选择登录流程（`use_killyiban` 决定标准 App 特征流或旧流）；
-        2. 登录链把 `Origin`/`Referer` 指向 `c.uyiban.com`（OAuth 域）。旧流拉签到
+        2. 登录链把 `Origin`/`Referer` 指向 `c.uyiban.com`（KillYiBan 客户端域）。旧流拉签到
            任务前必须改回 App 域 `app.uyiban.com`；标准 App 特征流保持
            `c.uyiban.com`，实测可用，不回切。
 
         任何"登录后拉 signPosition / 提交 signIn"的路径都必须先调本方法。此前
         `signin()` 与 `verify()` 各写一遍同一段，另一条分支上的只读预演脚本又手抄了
-        第三份——第三份漏抄或改错会让旧流的签到请求带 OAuth 域头（上游 e001）。
+        第三份——第三份漏抄或改错会让旧流的签到请求带 `c.uyiban.com` 域头（上游 e001）。
         `tests/test_login_session_single_point.py` 用 AST 钉住唯一性。
         """
         if not self.logged_in:
