@@ -182,13 +182,15 @@ class NotifyLedgerDiskTest(unittest.TestCase):
                 for k, v in saved_modules.items():
                     if k.startswith("yiban.adapters.notifier.notify."):
                         setattr(saved_modules["yiban.adapters.notifier.notify"], k.rsplit(".", 1)[1], v)
-                # 校验者：还原必须真的落到**消费方解析的那个父包属性**上。
-                # 旧实现把属性写到 `yiban.notify`（已删净的旧坐标），父包属性仍指向
-                # 新对象，进程里留下两份模块；本断言当场点名，不再靠别的文件偶发红。
-                self.assertIs(
-                    pkg.notify, saved_modules["yiban.adapters.notifier.notify"],
-                    "notify 父包属性未还原：进程内会留下两份模块对象，"
-                    "后续用例的打桩将落在没人调用的那一份上")
+            # 校验者：查**消费方真正解析的那个属性**，不查上面的 `pkg` 变量。
+            # 查 `pkg` 等于"断言我刚赋过的值"——父包选错时照样绿，那是门给自己作证。
+            # 实测：把 `pkg` 改回 `yiban`（旧实现），本断言当场点名。
+            parent = sys.modules.get("yiban.adapters.notifier")
+            self.assertIs(
+                getattr(parent, "notify", None),
+                saved_modules["yiban.adapters.notifier.notify"],
+                "notify 父包属性未还原：进程内会留下两份模块对象，"
+                "后续用例的打桩将落在没人调用的那一份上")
 
         self.addCleanup(_restore_notify_modules)
         for k in list(saved_modules):
