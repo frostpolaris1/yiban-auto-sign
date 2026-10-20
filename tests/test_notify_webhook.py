@@ -9,7 +9,7 @@
     发送失败退还额度、首次耗尽一次性告知、跨日同时归零、跳过原因日志去重；
     耗尽标记与计数同账本、虚警判定与撤回合并在同一把锁内、`get_secret` 按
     `YIBAN_ENV_FILE` 取钥且不在 cwd 生成游离密钥。
-对应实现：`yiban/notify/`（`config`/`transport`/`ledger` 三个子模块，公共面走包）；
+对应实现：`yiban/adapters/notifier/notify/`（`config`/`transport`/`ledger` 三个子模块，公共面走包）；
     白名单判定复用 `yiban/config` 的 `is_safe_url`。
 关键断言：白名单只管"你给的这一个 URL"，跟随跳转等于绕过——故发送侧必须
     `allow_redirects=False`，两者是一对；退还额度按占用凭证执行（跨日凭证作废、
