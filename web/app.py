@@ -370,12 +370,8 @@ DB_FILE = DB_DEFAULT
 # web/services/limits.py：本模块不再持有其定义，路由与测试按域直取新家。
 
 
-def _executors_window():
-    """执行体接口口径的**有效签到窗口**（实现见 web/services/executor_env.py）。
-
-    `.env` 路径与窗口解析器按调用时刻现取（测试与 `--config` 都改写 `ENV_FILE`）。
-    """
-    return _executor_env._executors_window(ENV_FILE, _signstatus._sign_window)
+# 执行体窗口 `_executors_window` 已随批 3-d 去壳：读者直取
+# web/services/executor_env.py，`.env` 路径与窗口解析器经该模块的 configure 登记。
 
 
 # ---------------------------------------------------------------------------
@@ -384,17 +380,8 @@ def _executors_window():
 #: 两次实测之间的全局冷却（秒）；可被 `.env` 的 YIBAN_MEASURE_COOLDOWN 覆盖。
 #: 常量本体（`MEASURE_COOLDOWN_SEC`）已随批 3-b 搬入 web/services/limits.py。
 # 实测状态文件的路径/读写/冷却判定与可实测账号的挑选实现见 web/services/measure.py；
-# 本模块的 `_measure_state_path` 与 `_write_measure_state` 转发时现取本模块的
-# STATE_DIR 与 _atomic_write（测试会赋值 `web.app.STATE_DIR`、在 `web.app` 上打桩
-# `_atomic_write`），其余三个名字以导入区再导出保持 m.* 可达。
-def _measure_state_path():
-    """实测冷却状态文件路径（实现见 web/services/measure.py）。"""
-    return _measure._measure_state_path(STATE_DIR)
-
-
-def _write_measure_state(path, payload):
-    """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
-    return _measure._write_measure_state(path, payload, _atomic_write)
+# `_measure_state_path` / `_write_measure_state` 已随批 3-d 去壳，读者直取该模块
+# （STATE_DIR 与 `_atomic_write` 经该模块的 configure 登记）。
 
 
 # 登录时延拉平（`_constant_time_dummy` 与其占位哈希缓存 `_dummy_pw_hash`）实现见
@@ -702,31 +689,9 @@ def _settings_effective_values(env_file):
 
 
 # 执行体清单的写入与校验（`YIBAN_EXECUTORS`）实现见 web/services/executor_env.py。
-# 写回一律经本模块的 `write_env_batch` 现取注入：它既是"每一次 .env 落盘"的观测点
-# （测试在此打桩），也负责把落盘交给本模块的 `_atomic_write`。
-def _save_slot_egress(env_path, key, index, value):
-    """读-改-写 `.env` 里一段出口（实现见 web/services/executor_env.py）。"""
-    return _executor_env._save_slot_egress(env_path, key, index, value, write_env_batch)
-
-
-def _executor_rows(env_path=ENV_FILE):
-    """读执行体清单，必要时按旧三键迁移写回（实现见 web/services/executor_env.py）。"""
-    return _executor_env._executor_rows(env_path, write_env_batch)
-
-
-def _mutate_executor_rows(mutator, env_path=ENV_FILE):
-    """`.env` 写锁内读清单 → 应用 mutator → 写回（实现见 web/services/executor_env.py）。"""
-    return _executor_env._mutate_executor_rows(mutator, env_path, write_env_batch)
-
-
-def _save_row_egress(env_path, slot, value):
-    """清单模式下只改该行的出口（实现见 web/services/executor_env.py）。"""
-    return _executor_env._save_row_egress(env_path, slot, value, write_env_batch)
-
-
-def _save_fallback_egress(env_path, value):
-    """清单模式下改兜底行的出口（实现见 web/services/executor_env.py）。"""
-    return _executor_env._save_fallback_egress(env_path, value, write_env_batch)
+# 批 3-d 删除了本模块的 5 个转发包装（`_save_slot_egress` / `_executor_rows` /
+# `_mutate_executor_rows` / `_save_row_egress` / `_save_fallback_egress`）：读者直取
+# 该模块；清单写回经 `write_env_batch` hook 解析（仍是"每一次 .env 落盘"的观测点）。
 
 
 def write_env_int(env_path, key, value):
@@ -1260,51 +1225,11 @@ def _channel_health_report_due(status=None, since=None, unconfigured_hm=None):
 # `_mail_alert_due` 与触顶通知 `_notify_capacity_once`，含去重表 `_capacity_alerts`、
 # 节流表 `_mail_alert_ts` 与缺省窗口常量）实现见
 # web/services/capacity.py，此处以导入区再导出保持 m.* 可达；`_capacity_audit_count` /
-# `_mail_alert_lock` 的 m.* 名字面已随 W0 删除（零读者）。需要现取本模块名字
-# （`.env` 路径与读取器、缺省上限、窗口/裁剪口径、告警出口）的入口在下方转发。
-def _capacity_estimate(gap=0):
-    """按当前窗口与账号间隔预估可容纳账号数（实现见 web/services/capacity.py）。
-
-    窗口解析器与掐头去尾口径按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`
-    与 `web.app.edge_config`），故转发必须现取后传入。
-
-    `env` 传**生效配置层**（进程环境为底、`.env` 覆盖，与 run.sh 起引擎前的 export
-    同一优先级）：web 进程从不把 `.env` 装进环境，avg/开关若按 os.environ 读而
-    gap 按 `.env` 读，一次估算就跨两层、按缺省 avg 高估容量（MF-93）。
-    """
-    return _capacity._capacity_estimate(
-        gap, sign_window=_signstatus._sign_window, edge_config=_render.edge_config,
-        env={**os.environ, **read_env(ENV_FILE)})
-
-
-def _accounts_at_capacity(extra_accounts=0):
-    """账号配额判定（实现见 web/services/capacity.py）。
-
-    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
-    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
-    """
-    return _capacity._accounts_at_capacity(
-        extra_accounts, env_file=ENV_FILE, load_env_int=load_env_int,
-        max_accounts_default=DEFAULT_MAX_ACCOUNTS)
-
-
-def _registration_paused():
-    """注册是否处于暂停状态（实现见 web/services/capacity.py）。
-
-    `.env` 路径与宽松读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
-    `read_env`），故转发必须现取后传入。
-    """
-    return _capacity._registration_paused(ENV_FILE, read_env)
-
-
-def _users_at_capacity():
-    """用户配额判定（实现见 web/services/capacity.py）。
-
-    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
-    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
-    """
-    return _capacity._users_at_capacity(
-        env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
+# `_mail_alert_lock` 的 m.* 名字面已随 W0 删除（零读者）。`_mail_alert_due` 仍留本模块
+# （测试按属性打桩的既有面），它直调服务层真源。
+# 容量判定与预估、触顶通知的 5 个转发包装已随批 3-d 删除：
+# `_capacity_estimate` / `_accounts_at_capacity` / `_registration_paused` /
+# `_users_at_capacity` / `_notify_capacity_once` 的读者直取 web/services/capacity.py。
 
 
 def _mail_alert_due(title, level=None):
@@ -1318,14 +1243,8 @@ def _mail_alert_due(title, level=None):
         title, ENV_FILE, load_env_int, level=level)
 
 
-def _notify_capacity_once(kind, limit, label):
-    """容量触顶通知（实现见 web/services/capacity.py）。
-
-    告警出口按调用时刻现取本模块的 `send_notification`（测试会打桩
-    `webapp.send_notification`），服务层另持绑定会让那些桩静默失效。
-    """
-    return _capacity._notify_capacity_once(
-        kind, limit, label, send_notification=send_notification)
+# 容量触顶通知 `_notify_capacity_once` 已随批 3-d 去壳：读者直取
+# web/services/capacity.py，告警出口经该模块的 configure 登记。
 
 
 # ---------------------------------------------------------------------------
@@ -1350,6 +1269,23 @@ _logs_svc.configure(
 )
 _manual_sign.configure(
     log_path_for=lambda: _logs_svc.log_path_for,
+)
+_executor_env.configure(
+    env_file=lambda: ENV_FILE,
+    write_env_batch=lambda: write_env_batch,
+    sign_window=lambda: _signstatus._sign_window,
+)
+_measure.configure(
+    state_dir=lambda: STATE_DIR,
+    atomic_write=lambda: _atomic_write,
+)
+_capacity.configure(
+    env_file=lambda: ENV_FILE,
+    load_env_int=lambda: load_env_int,
+    read_env=lambda: read_env,
+    sign_window=lambda: _signstatus._sign_window,
+    edge_config=lambda: _render.edge_config,
+    send_notification=lambda: send_notification,
 )
 # 为什么登记放在这里而不是 import 区：被登记的名字（`write_env_key` /
 # `_count_env_key_lines` / `send_notification` / `_verify_account_clean` /

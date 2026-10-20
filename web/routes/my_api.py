@@ -46,6 +46,7 @@ from web.routes import appmod as _appmod
 from web.routes import dupcheck_limits, read_audit_denied_trace, verify_fails, verify_limits
 from web.routes import session_abs_ttl as _session_abs_ttl
 from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
 from web.services import env_io as _env_io_svc
 from web.services import http_request as _http
 from web.services import limits as _limits
@@ -524,8 +525,8 @@ def api_my_account_add():
         # 容量兜底：账号配额 = 活跃账号数（含裸账号）；
         # 提交者已持有未删除账号时不新增（随后 400 拦截），不计增量，保持原错误优先级
         holds_live = any(a.get("owner") == email_pre and not a["deleted"] for a in accounts_pre)
-        if m._accounts_at_capacity(0 if holds_live else 1):
-            m._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+        if _capacity._accounts_at_capacity(0 if holds_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts_pre, "账号数量")
             # 不向普通用户暴露容量数字（信息分层）
             return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
         if holds_live:
@@ -601,8 +602,8 @@ def api_my_account_add():
         email = session.get("username", "").lower()
         # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
         has_live = any(a.get("owner") == email and not a["deleted"] for a in accounts)
-        if m._accounts_at_capacity(0 if has_live else 1):
-            m._notify_capacity_once("accounts", max_accounts, "账号数量")
+        if _capacity._accounts_at_capacity(0 if has_live else 1):
+            _capacity._notify_capacity_once("accounts", max_accounts, "账号数量")
             # 不向普通用户暴露容量数字（信息分层）
             return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
         if has_live:
