@@ -253,3 +253,50 @@ def test_send_throttle_zero_still_allows_each(tmp_path, monkeypatch):
     assert notify.send("不节流标题", "2") is True
     assert len(calls) == 2
     assert not os.path.exists(_throttle_file(tmp_path)), "关闭节流不产生磁盘文件"
+
+
+def test_failed_send_does_not_consume_throttle_window(tmp_path, monkeypatch):
+    """ba-p09-03：一次失败的发送不得把该标题静音一整个 COOLDOWN 窗口。
+
+    节流判定与占位发生在发送之前（这是"窗口内只放一条"的跨进程前提），但失败时
+    必须把这次占位回滚——既有不变量是「额度只在真发出去后才算花掉」，节流同源。
+    否则最需要重试的失败场景恰好被自家节流挡住。
+    """
+    monkeypatch.setenv("YIBAN_NOTIFY_TYPE", "serverchan")
+    monkeypatch.setenv("YIBAN_NOTIFY_SECRET_ENC", _enc(SCT_KEY))
+    monkeypatch.setenv("YIBAN_NOTIFY_COOLDOWN", "3600")
+    calls = []
+
+    class RejectResp:
+        def json(self):
+            return {"code": 40001, "message": "quota"}
+
+    monkeypatch.setattr(notify_transport.requests, "post",
+                        lambda *a, **k: calls.append(1) or RejectResp())
+    assert notify.send("失败标题", "第一次") is False
+    assert len(calls) == 1
+    # 失败后立刻重试：必须真的再发一次，而不是被自己的占位节流掉
+    assert notify.send("失败标题", "重试") is False
+    assert len(calls) == 2, "失败占位必须回滚：重试不得被节流窗口吞掉"
+    disk_file = _throttle_file(tmp_path)
+    if os.path.exists(disk_file):
+        assert "失败标题" not in _read_disk(tmp_path), "失败不得在磁盘节流表留下占位"
+
+
+def test_successful_send_still_consumes_throttle_window(tmp_path, monkeypatch):
+    """对照组：成功发送后同标题仍在窗口内被节流（回滚只针对失败那一次）。"""
+    monkeypatch.setenv("YIBAN_NOTIFY_TYPE", "serverchan")
+    monkeypatch.setenv("YIBAN_NOTIFY_SECRET_ENC", _enc(SCT_KEY))
+    monkeypatch.setenv("YIBAN_NOTIFY_COOLDOWN", "3600")
+    calls = []
+
+    class OkResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify_transport.requests, "post",
+                        lambda *a, **k: calls.append(1) or OkResp())
+    assert notify.send("成功标题", "第一次") is True
+    assert notify.send("成功标题", "第二次") is False
+    assert len(calls) == 1, "成功后的节流语义不得被回滚机制破坏"
+    assert "成功标题" in _read_disk(tmp_path)

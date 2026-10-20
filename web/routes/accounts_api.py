@@ -611,13 +611,15 @@ def api_account_update(idx):
                 except Exception as e:
                     m.logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
         # 改写他人凭据靠"事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员
-        # 可追溯、可回滚（此前只通知当事人，管理员侧零信号）。抑制口径随门走：
-        # 本次若真被口令门拦过（门内动作 + full 档）就不重复发；识别码免门后，
-        # full 档的识别码改动同样需要这封事后告警。
+        # 可追溯、可回滚（此前只通知当事人，管理员侧零信号）。抑制口径随**门是否真
+        # 索要口令**走，而不是只认 full 档：本落点 2026-10-01 起 `risk_always=True`，
+        # risk（缺省）档同样当次要口令；只有 off 档不索要口令、事后告警是唯一信号。
+        # 只认 full 会让缺省档里每一次合法改写都多发一封 urgent 告警，抢
+        # DEFAULT_URGENT_DAILY_MAX=3 的紧急日账（ba-p05-02）。
         gated_creds = (bool(str(data.get("password", "")).strip())
                        or clean["phone"] != old.get("phone"))
         if (creds_written and not (gated_creds and
-                                   _security._pw_gate_tier() == _security.PW_GATE_FULL)):
+                                   _security._pw_gate_tier() != _security.PW_GATE_OFF)):
             _locks.run_after_file_lock(
                 _notify_mail.send_notification,
                 "高危管理操作告警",
