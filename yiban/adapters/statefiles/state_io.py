@@ -451,7 +451,8 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     "返回 True 而盘上已是别的结论"的分歧：调用方（`_mark_window_skips`）按返回值把该号
     记成 `skipped_window`，而日历/状态行按盘上结论——两个事实源不一致。故本路径先冲刷
     本路径已有条目（让盘上含本轮结论），再走原子读改写。代价是该路径回到逐条写盘，
-    但调用点只有窗口收尾那两处，且只对"本轮没轮到"的账号发。
+    但调用点只有窗口收尾与 `_prescan` 自暂停登记两处，且只对"本轮没轮到 / 尚无当日
+    结论"的账号发。
     """
     path = _sign_state_path(day)
     if only_if_absent:
