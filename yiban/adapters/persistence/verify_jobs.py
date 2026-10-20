@@ -190,14 +190,27 @@ def reclaim_stale(stale_seconds=VERIFY_JOB_STALE_SECONDS, reject_status="",
 
 
 def purge(days=VERIFY_JOB_RETENTION_DAYS):
-    """清理保留期外的任务；失败仅告警，返回删除行数。"""
+    """清理保留期外的任务；失败仅告警，返回删除行数。
+
+    **接时钟跳变守卫**（工单 ba-p02-09）：本表含明文手机号与错误文本。系统时间被
+    拨快 >72h 时按日比较的 cutoff 会跳到未来，"保留期外"的判据把最近几天的任务
+    全算超期——一次性删空且无告警。claims.purge / cleanup 的两处 /
+    events._event_cleanup / users 的两处都接了守卫，本函数是五处同族清理里的唯一
+    缺口（今天保留期实际由 events._event_cleanup 代跑，属潜伏面：门面名一旦被复用
+    即绕过守卫）。越界只跳本轮：守卫在越界路径上也推进参照点。
+    """
     from yiban.adapters.persistence import db
     try:
         conn = db.get_conn()
-        cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
         with db._conn_lock:
+            ok, note = db._clock_jump_guard(conn, "purge_verify_jobs_clock")
+            if not ok:
+                logger.error("%s", note)
+                conn.rollback()   # 越界路径已在守卫内提交参照点；此处只是解除写锁
+                return 0
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             cur = conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (cutoff,))
             conn.commit()
             return cur.rowcount
