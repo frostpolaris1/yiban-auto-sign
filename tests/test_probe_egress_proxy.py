@@ -186,5 +186,29 @@ class VerifyAccountUsesProxyTest(_Base):
         self.assertEqual(called, [], "短路时不得构造客户端（更不得出网）")
 
 
+    def test_unknown_validity_reports_db_error_not_deletion(self):
+        """复核查询失败（None）同样短路，但文案与原因码不得说"账号已删除"。
+
+        `account_still_signable` 的异常返回是哨兵（状态未知）；把库错误显示成账号
+        被删除会误导管理员去做账号补救（工单 ba-p02-06 同族残余）。
+        """
+        self._write_env(f"YIBAN_PROXY={PROXY}\n")
+        self._use_env()
+        called = []
+        acc = SimpleNamespace(phone="13800000001", password="p", phone_model="",
+                              phone_code="", account_id=0)
+        with mock.patch.object(probe, "YibanClient",
+                               lambda a: called.append(1)), \
+             mock.patch.object(probe, "account_still_signable", lambda a: None):
+            ok, msg = probe.verify_account(acc)
+            refreshed = probe.refresh_registered_device(acc)
+        self.assertFalse(ok)
+        self.assertIn("复核失败", msg)
+        self.assertNotIn("已删除", msg)
+        self.assertEqual(refreshed["reason"], "read_failed",
+                         "设备补全路径同样要按'读不到'归因，不得回 account_inactive")
+        self.assertEqual(called, [], "短路时不得构造客户端（更不得出网）")
+
+
 if __name__ == "__main__":
     unittest.main()
