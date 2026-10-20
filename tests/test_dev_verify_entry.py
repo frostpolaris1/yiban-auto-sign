@@ -62,7 +62,8 @@ EXPECTED_CI_COMMANDS = (
     # test_ci_subset_commands_are_frozen_byte_for_byte 的注释。
     '"$py" -m pytest tests/ -q -n 4 --dist loadfile'
     ' ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"}'
-    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}'
+    ' --junitxml="$CI_SKIP_XML"',
     # 串行专轨：文件名来自名册的 serial 行，不带 -n（需独占 runner 的核，工单 zdvd）。
     '"$py" -m pytest ${LANE_SERIAL_FILES[@]} -q -p no:randomly',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
