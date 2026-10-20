@@ -14,8 +14,8 @@ import contextlib
 import importlib.util
 import io
 import os
-import sys
 import unittest
+from typing import ClassVar
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(BASE, "scripts", "check-coverage-ledger.py")
@@ -42,12 +42,12 @@ class EvaluateTest(unittest.TestCase):
     """纯函数：覆盖判定与登记对账。"""
 
     ROOT = BASE
-    ROSTER = {"tests/test_a.py", "tests/test_gate_lane_roster.py"}
-    TEXTS = {
+    ROSTER: ClassVar[set[str]] = {"tests/test_a.py", "tests/test_gate_lane_roster.py"}
+    TEXTS: ClassVar[dict[str, str]] = {
         "tests/test_a.py": "from yiban.adapters.persistence import db\n",
         "tests/test_gate_lane_roster.py": "import scripts.dev_verify_helper\n",
     }
-    REG = [
+    REG: ClassVar[list[tuple[str, str, str]]] = [
         ("docs/*", "uncovered=文档", "文档"),
         ("scripts/dev-verify.sh", "covered_by=tests/test_gate_lane_roster.py", "命令表冻结"),
         ("broken.sh", "covered_by=tests/test_missing.py", "悬空登记"),
@@ -58,7 +58,7 @@ class EvaluateTest(unittest.TestCase):
             changed, self.ROSTER, self.TEXTS, self.REG, self.ROOT)
 
     def test_test_file_itself_is_covered(self):
-        bad, covered, reg = self._eval(["tests/test_a.py"])
+        bad, covered, _reg = self._eval(["tests/test_a.py"])
         self.assertEqual(bad, [])
         self.assertEqual(len(covered), 1)
 
